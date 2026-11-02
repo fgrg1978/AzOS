@@ -15182,9 +15182,10 @@ PY
             esac
         done
         y_elf="$dir/y.elf"; n_elf="$dir/other.elf"
-        "$nm" "$y_elf" | grep -q 'balance_idle_pull' && "$nm" "$n_elf" | grep -q 'balance_idle_pull' || why="the symbol query went blind"
-        [ -z "$why" ] && { "$nm" "$y_elf" | grep -q 'misfit_look' || why="y links no misfit_look"; }
-        [ -z "$why" ] && "$nm" "$n_elf" | grep -q 'misfit_look' && why="n links misfit_look"
+        "$nm" "$y_elf" >"$dir/y.nm"; "$nm" "$n_elf" >"$dir/other.nm"
+        grep -q 'balance_idle_pull' "$dir/y.nm" && grep -q 'balance_idle_pull' "$dir/other.nm" || why="the symbol query went blind"
+        [ -z "$why" ] && { grep -q 'misfit_look' "$dir/y.nm" || why="y links no misfit_look"; }
+        [ -z "$why" ] && grep -q 'misfit_look' "$dir/other.nm" && why="n links misfit_look"
         local ty tn
         ty="$("$bin/llvm-size" "$y_elf" | sed -n '2p' | sed 's/^ *//; s/[[:space:]].*//')"
         tn="$("$bin/llvm-size" "$n_elf" | sed -n '2p' | sed 's/^ *//; s/[[:space:]].*//')"
