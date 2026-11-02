@@ -16,6 +16,9 @@ ktest = []
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.
 revoke-chain-canary = []
+# `cap_store.rs` `grant_like`: the copy of a fork is not checked against a revoke
+# that finished while it was being made (host test in tests/host/cap-tests).
+fork-revoke-canary = []
 # Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
 # mapping instead of the alias; W^X must stop it with a store fault.
 text-poke-wx-canary = []

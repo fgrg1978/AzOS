@@ -1034,6 +1034,14 @@ pub fn grant_op_masked<T: CapTarget>(
 }
 
 /// A copy of the capability `handle` of `from`'s table, for `to`'s table, naming
+    grant_like_between(from, handle, to, resource, || {})
+}
+
+/// [`grant_like`], running `between` after the source is read and before the
+/// copy is installed: the window in which a revoke of an ancestor can complete
+/// (host test `a_fork_copy_made_across_a_revoke_is_not_kept`).
+#[doc(hidden)]
+pub fn grant_like_between(from: u32, handle: CapHandle, to: u32, resource: u32, between: impl FnOnce()) -> Option<CapHandle> {
 /// `resource` (a duplicated descriptor names another one): the same kind,
 /// rights, badge and place in the warrant tree, so the copy is a sibling of
 /// the original. A fork duplicates a descriptor and delegates nothing: a revoke
@@ -1049,7 +1057,13 @@ pub fn grant_like(from: u32, handle: CapHandle, to: u32, resource: u32) -> Optio
         Some((kind, perms, t.warrant_of(handle)?, t.ext_of(handle)?))
     })
     .flatten()?;
-    with_table(to, |t| t.grant_warranted(kind, perms, resource, ext, warrant)).flatten()
+    between();
+    let copy = with_table(to, |t| t.grant_warranted(kind, perms, resource, ext, warrant)).flatten()?;
+    if !cfg!(feature = "fork-revoke-canary") && warrant.parent != 0 && warrant_step(warrant.parent).is_none() {
+        with_table(to, |t| t.delete_raw(copy));
+        return None;
+    }
+    Some(copy)
 }
 
 /// Make `tid`'s table a shadow task's (a topology row with `shadow = true`):

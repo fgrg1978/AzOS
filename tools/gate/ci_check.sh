@@ -11510,6 +11510,16 @@ host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-r
 # answers for a capability whose ancestor was revoked until the sweep frees it.
 host_job host_canary_row "ipc: resolve cache in a revocation canary" ipc-tests revoke-chain-canary \
     a_descendant_of_a_revoked_capability_misses_before_the_sweep
+# fork-revoke-canary: a fork copy made across a revoke of its ancestor is kept
+# live (the personality's grant_like does not look at the parent again).
+host_job host_canary_row "cap: fork copy across a revoke canary" cap-tests fork-revoke-canary \
+    a_fork_copy_made_across_a_revoke_is_not_kept
+# sshd-backlog-canary: the server reads the peer whatever replies it has queued.
+host_job host_canary_row "sshd: unread replies canary" sshd-tests sshd-backlog-canary \
+    a_client_that_does_not_read_is_not_read_from_without_bound
+# x86-region-round-canary: a DMAR/IVRS region whose page rounding overflows is kept.
+host_job host_canary_row "x86: region page rounding canary" x86-platform-tests x86-region-round-canary \
+    a_region_the_page_rounding_overflows_is_refused
 # memobj-resolve-one-answer-canary: the cache keeps one answer a process, so a shm
 # word and a private word in turn evict each other's.
 host_job host_canary_row "memobj: one resolve answer a process canary" ipc-tests memobj-resolve-one-answer-canary \
