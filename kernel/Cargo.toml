@@ -326,6 +326,11 @@ kill-reblock-canary = ["azos_sched/kill-reblock-canary"]
 revoke-chain-canary = ["azos_ipc/revoke-chain-canary"]
 # QoS timer tolerance: an RT task gets slack (ktest `qos_timer_slack_never_real_time`).
 qos-rt-slack-canary = ["azos_sched/qos-rt-slack-canary"]
+eevdf-late-unlink-canary = ["azos_sched/eevdf-late-unlink-canary"]
+eevdf-place-reread-canary = ["azos_sched/eevdf-place-reread-canary"]
+eevdf-take-unchecked-canary = ["azos_sched/eevdf-take-unchecked-canary"]
+eevdf-charge-queued-canary = ["azos_sched/eevdf-charge-queued-canary"]
+eevdf-tree-canary = ["azos_sched/eevdf-tree-canary"]
 # Cross-class wake-up preemption: a preempting wake does not ask the waking CPU
 # to reschedule (host row: tests/host/sched-wake-tests; ktest
 # `sched_wake_preempts_a_worse_class_on_the_same_cpu`).

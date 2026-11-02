@@ -1822,20 +1822,19 @@ mod donation_race_tests {
 /// index without `get`: `garbage_links_never_index_out_of_range` panics.
 #[cfg(test)]
 mod ready_list_tests {
-    use super::ready_list::{ReadyList, EMPTY};
-    use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    use super::ready_list::{Link, ReadyList, EMPTY};
 
     const CAP: usize = 64;
 
-    fn links() -> Vec<AtomicU32> {
-        (0..CAP).map(|_| AtomicU32::new(0)).collect()
+    fn links() -> Vec<Link> {
+        (0..CAP).map(|_| Link::new()).collect()
     }
-    fn push(q: &ReadyList, next: &[AtomicU32], v: &[usize]) {
+    fn push(q: &ReadyList, next: &[Link], v: &[usize]) {
         for &x in v {
             q.push_back(next, x, q.count());
         }
     }
-    fn read(q: &ReadyList, next: &[AtomicU32]) -> Vec<usize> {
+    fn read(q: &ReadyList, next: &[Link]) -> Vec<usize> {
         q.iter(next).collect()
     }
 
@@ -1902,7 +1901,7 @@ mod ready_list_tests {
         let next = links();
         let q = EMPTY;
         push(&q, &next, &[1, 2]);
-        next[2].store(1, Relaxed); // 2 -> 1 again: a cycle
+        next[2].set_next(1); // 2 -> 1 again: a cycle
         assert_eq!(read(&q, &next).len(), 2, "bounded by count");
         assert_eq!(q.remove(&next, 9), None, "a remove over a cycle ends");
     }
@@ -1912,10 +1911,10 @@ mod ready_list_tests {
         let next = links();
         let q = EMPTY;
         push(&q, &next, &[1, 2, 3]);
-        next[2].store(u32::MAX, Relaxed);
+        next[2].set_next(u32::MAX);
         assert_eq!(read(&q, &next), vec![1, 2], "the walk stops at the bad link");
         assert_eq!(q.remove(&next, 3), None);
-        next[1].store(CAP as u32 + 7, Relaxed);
+        next[1].set_next(CAP as u32 + 7);
         q.pop_front(&next, q.count());
         assert!(read(&q, &next).is_empty() || read(&q, &next).iter().all(|&s| s < CAP));
     }
@@ -1928,6 +1927,61 @@ mod ready_list_tests {
         let q = ReadyList::default();
         assert_eq!(q.count(), 0);
         assert!(read(&q, &links()).is_empty());
+    }
+
+    /// A slot in another list, or back out of one, is not in this one.
+    #[test]
+    fn a_removal_answers_for_its_own_list_only() {
+        let next = links();
+        let (a, b) = (EMPTY, EMPTY);
+        push(&a, &next, &[1, 2]);
+        push(&b, &next, &[3]);
+        assert_eq!(b.remove(&next, 1), None);
+        assert_eq!(a.remove(&next, 3), None);
+        assert_eq!(a.pop_front(&next, a.count()), Some(1));
+        assert_eq!(a.remove(&next, 1), None, "popped: not in the list any more");
+        assert_eq!(read(&a, &next), vec![2]);
+        assert_eq!(read(&b, &next), vec![3]);
+    }
+
+    /// The fair pick at N queued with a lagged waker at the tail, in the middle,
+    /// at the head. Every link but the removed slot's and its two neighbours' is
+    /// broken first, so a removal that read any other node fails: three nodes at
+    /// any N, where the walk from the head read up to N.
+    #[test]
+    fn a_removal_visits_the_slot_and_its_neighbours_at_any_length() {
+        for n in [8usize, 64, 512] {
+            for at in [n - 1, n / 2, 0] {
+                let next: Vec<Link> = (0..n).map(|_| Link::new()).collect();
+                let q = EMPTY;
+                let all: Vec<usize> = (0..n).collect();
+                push(&q, &next, &all);
+                for i in 0..n {
+                    if i + 1 < at || i > at + 1 {
+                        next[i].set_next(u32::MAX);
+                    }
+                }
+                assert_eq!(q.remove(&next, at), Some(n - 1), "slot {at} of {n}");
+                assert_eq!(q.count(), n - 1);
+            }
+        }
+    }
+
+    #[test]
+    fn removals_keep_both_directions_of_the_list() {
+        let next = links();
+        let q = EMPTY;
+        push(&q, &next, &[1, 2, 3, 4, 5, 6]);
+        for (slot, left) in [(3, vec![1, 2, 4, 5, 6]), (6, vec![1, 2, 4, 5]), (1, vec![2, 4, 5]), (4, vec![2, 5])] {
+            assert_eq!(q.remove(&next, slot), Some(left.len()));
+            assert_eq!(read(&q, &next), left);
+        }
+        push(&q, &next, &[7]);
+        assert_eq!(q.remove(&next, 5), Some(2));
+        assert_eq!(read(&q, &next), vec![2, 7]);
+        assert_eq!(q.remove(&next, 7), Some(1));
+        assert_eq!(q.remove(&next, 2), Some(0));
+        assert_eq!(read(&q, &next), Vec::<usize>::new());
     }
 }
 
@@ -3198,7 +3252,7 @@ mod reap_flag_gate {
         let flag = res.find("fetch_or(F_RESV").expect("the flag set");
         assert!(slot < flag, "F_RESV is set before the slot it announces");
         // release: the flag is cleared only once every slot is empty.
-        let rel = code(body_of(RT, "pub(super) fn release("));
+        let rel = code(body_of(RT, "fn clear_resv_if_empty("));
         let empty = rel.find(".all(|s| s.load(Ordering::Relaxed) == usize::MAX)").expect("emptiness test");
         let clear = rel.find("fetch_and(!F_RESV").expect("the flag clear");
         assert!(empty < clear, "F_RESV is cleared without checking the set is empty");

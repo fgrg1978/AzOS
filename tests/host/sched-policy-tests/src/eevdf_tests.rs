@@ -20,6 +20,7 @@
 //! | `eevdf-nowake-canary` | a waker keeps its old `v` | `lag_survives_a_sleep`, `lag_is_clamped_when_placed`, `a_long_sleeper_does_not_starve_the_others`, `a_sleeper_that_left_without_a_lag_does_not_starve_the_others`, `a_short_slice_is_served_within_its_deadline` |
 
 use super::eevdf_core::*;
+use super::eevdf_tree_tests::choose;
 
 const SLICE: u64 = 3000;
 

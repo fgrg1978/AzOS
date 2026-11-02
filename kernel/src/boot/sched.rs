@@ -1665,6 +1665,123 @@ mod pi_boost_ktests {
     }
 }
 
+// The fair tree against the ready lists, at the moments they could part: each
+// test parks a fair task pinned to the driver's CPU, and the driver, more urgent
+// and not a fair candidate, wakes it with interrupts masked and steps through
+// one interleaving.
+//
+// `fair_unlink_keeps_the_claim`: a delayed duplicate waker (K-C12) on another CPU
+// meets the claim, not the node. Canary `eevdf-late-unlink-canary`, the claim
+// goes first: the waker reaches a linked node, with
+// `zz_no_tree_refusal_since_boot` red too.
+// `fair_enqueue_reads_one_priority`: a restore between the enqueue's read of the
+// priority and its link. Canary `eevdf-place-reread-canary`.
+// `fair_take_recovers_a_stale_node`, `fair_take_leaves_a_reservation`: what the
+// pick does with a node the lists do not back. Canary
+// `eevdf-take-unchecked-canary`.
+#[cfg(feature = "ktest")]
+mod fair_tree_ktests {
+    use azos_arch::Interrupts;
+    use azos_sched::scheduler as sched;
+    use azos_sync::waitqueue::WaitQueue;
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
+    const TARGET_PRIO: u32 = 20;
+    const DRIVER_PRIO: u32 = 4;
+    const BAND_PRIO: u32 = 8;
+    static Q: WaitQueue = WaitQueue::new();
+    static GO: AtomicBool = AtomicBool::new(false);
+    static TID: AtomicU32 = AtomicU32::new(0);
+    static ANSWER: AtomicU32 = AtomicU32::new(0);
+    static STEP: AtomicUsize = AtomicUsize::new(0);
+    const PASSED: u32 = 1;
+    const FAILED: u32 = 2;
+    const STEPS: [fn(u32) -> Result<(), &'static str>; 4] = [
+        sched::ktest_late_waker,
+        |tid| sched::ktest_restore_during_enqueue(tid, BAND_PRIO),
+        sched::ktest_take_stale,
+        sched::ktest_take_reserved,
+    ];
+
+    fn target(_: usize) {
+        TID.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO.load(Ordering::Acquire) {
+            Q.wait_if(|| !GO.load(Ordering::Acquire));
+        }
+    }
+
+    fn driver(_: usize) {
+        let tid = loop {
+            let t = TID.load(Ordering::Acquire);
+            if t != 0 && sched::ktest_parked(t) {
+                break t;
+            }
+            let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 500;
+            azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+        };
+        GO.store(true, Ordering::Release);
+        let irq = azos_arch::ARCH.disable_all();
+        let r = STEPS[STEP.load(Ordering::Acquire)](tid);
+        azos_arch::ARCH.restore(irq);
+        if let Err(why) = r {
+            azos_drv_sys::kprintln!("# fair tree: {}", why);
+        }
+        ANSWER.store(if r.is_ok() { PASSED } else { FAILED }, Ordering::Release);
+    }
+
+    fn run(step: usize) -> Result<(), &'static str> {
+        if azos_percpu::nr_cpu_ids() < 2 {
+            return azos_ktest::skip!("these interleavings need a second CPU");
+        }
+        GO.store(false, Ordering::Release);
+        TID.store(0, Ordering::Release);
+        ANSWER.store(0, Ordering::Release);
+        STEP.store(step, Ordering::Release);
+        let cpu = azos_percpu::nr_cpu_ids() - 1;
+        azos_sched::task_create_affinity("tree-target", target, 0, TARGET_PRIO, cpu as i8);
+        azos_sched::task_create_affinity("tree-driver", driver, 0, DRIVER_PRIO, cpu as i8);
+        crate::ktest::wait("the fair tree driver never finished", || ANSWER.load(Ordering::Acquire) != 0)?;
+        if ANSWER.load(Ordering::Acquire) != PASSED {
+            return Err("the tree and the lists parted (the line above says how)");
+        }
+        Ok(())
+    }
+
+    azos_ktest::ktest_late! {
+        fn fair_unlink_keeps_the_claim() {
+            run(0)
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn fair_enqueue_reads_one_priority() {
+            run(1)
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn fair_take_recovers_a_stale_node() {
+            run(2)
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn fair_take_leaves_a_reservation() {
+            run(3)
+        }
+    }
+
+    // Last by name: nothing in the whole boot was refused by a tree.
+    azos_ktest::ktest_late! {
+        fn zz_no_tree_refusal_since_boot() {
+            if sched::ktest_tree_refused() != 0 {
+                return Err("a fair tree refused a node during this boot");
+            }
+            Ok(())
+        }
+    }
+}
+
 // The accessors of "the task running here" (`current_task_slot`,
 // `current_proc_tid`, `current_user_pt`, the syscall-filter verdicts, the
 // writer `set_current_task_satp`, ...) read the hart id and then a per-hart

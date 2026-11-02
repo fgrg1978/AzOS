@@ -94,8 +94,10 @@ use super::inspect_tasks::{self, Task, TaskList};
 const BLOCKED_ON: [&str; 5] = ["fast_client", "fast_server", "timer", "wait_queue", "other"];
 const RT_STATS: [&str; 4] = ["band_throttles", "cbs_exhausted", "admitted", "refused"];
 /// `fairq::BalanceStats`, in the order `refresh` writes them.
-const BALANCE_STATS: [&str; 8] =
-    ["pulled", "pushed", "within_cache", "across_node", "across_package", "idle_tries", "idle_empty", "busy"];
+const BALANCE_STATS: [&str; 10] = [
+    "pulled", "pushed", "within_cache", "across_node", "across_package", "idle_tries", "idle_empty", "busy",
+    "tree_refused", "tree_recovered",
+];
 
 /// The nodes the refresh writes.
 struct Ids {
@@ -516,8 +518,9 @@ impl State {
         }
         let b = azos_sched::scheduler::fairq::balance_stats();
         let hops = b.by_hop;
+        let t = azos_sched::scheduler::fairq::tree_stats();
         for (id, n) in ids.balance.iter().zip([
-            b.pulled, b.pushed, hops[0], hops[1], hops[2], b.idle_tries, b.idle_empty, b.busy,
+            b.pulled, b.pushed, hops[0], hops[1], hops[2], b.idle_tries, b.idle_empty, b.busy, t.refused, t.recovered,
         ]) {
             put(*id, n as u64);
         }

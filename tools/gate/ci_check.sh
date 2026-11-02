@@ -11702,6 +11702,21 @@ host_job host_canary_row "elf: fill without memory canary (host)" sched-wake-tes
 # the `ktest QoS RT slack canary` rows.
 host_job host_canary_row "qos: RT timer slack canary (host)" sched-policy-tests qos-rt-slack-canary \
     qos_timer_slack_is_fair_class_only
+# The fair queue's tree: `eevdf-tree-canary` never recomputes a node's least `v`
+# once it is linked, so the descent skips an eligible subtree and the tree's
+# pick differs from the list's (`tests/host/sched-policy-tests/src/eevdf_tree_tests.rs`).
+host_job host_canary_row "sched: fair weight canary (host)" sched-policy-tests eevdf-weight-canary \
+    vdelta_scales_with_weight
+host_job host_canary_row "sched: fair eligible canary (host)" sched-policy-tests eevdf-eligible-canary \
+    a_runner_ahead_of_its_share_yields
+host_job host_canary_row "sched: fair fifo canary (host)" sched-policy-tests eevdf-fifo-canary \
+    an_earlier_deadline_wins_among_the_eligible
+host_job host_canary_row "sched: fair lag clamp canary (host)" sched-policy-tests eevdf-noclamp-canary \
+    lag_is_clamped_when_stored
+host_job host_canary_row "sched: fair wake lag canary (host)" sched-policy-tests eevdf-nowake-canary \
+    lag_survives_a_sleep
+host_job host_canary_row "sched: fair tree augmentation canary (host)" sched-policy-tests eevdf-tree-canary \
+    the_tree_picks_what_the_list_picks_over_random_sequences
 # A real board has no rangefinder driver: the refusal must leave a record
 # (`drivers-tests` stands in for `azos_drv_sys` with `ON_QEMU` false; a QEMU
 # kernel never refuses).
@@ -14836,8 +14851,11 @@ PY
     # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked
     # (canary `exit-irq-masked-canary`) -> 156, arm 160.
     # +1 refusal_flood_costs_no_other_domain (canary `refusal-limit-off`) -> 155, arm 159.
-    KTEST_N_RV=157
-    KTEST_N_ARM=161
+    # +2 fair_tree_pick_is_the_scan, fair_tree_follows_the_lists; +5 fair_unlink_keeps_the_claim,
+    # fair_enqueue_reads_one_priority, fair_take_recovers_a_stale_node,
+    # fair_take_leaves_a_reservation, zz_no_tree_refusal_since_boot -> 161, arm 165.
+    KTEST_N_RV=164
+    KTEST_N_ARM=168
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15284,6 +15302,17 @@ PY
     # QoS timer tolerance: `sc::timer_slack_us` gives the stop, deadline and
     # real-time classes the fair class's window (`qos-rt-slack-canary`, a
     # cargo feature: the arm path takes no runtime canary).
+    # The fair tree against the ready lists (`kernel/src/boot/sched.rs`, `fair_tree_ktests`).
+    par "ktest fair late unlink canary (rv)" ktest_row "ktest fair late unlink canary (rv)" rv ",eevdf-late-unlink-canary" "fair_unlink_keeps_the_claim zz_no_tree_refusal_since_boot"
+    par "ktest fair late unlink canary (arm)" ktest_row "ktest fair late unlink canary (arm)" arm ",eevdf-late-unlink-canary" "fair_unlink_keeps_the_claim zz_no_tree_refusal_since_boot"
+    par "ktest fair enqueue priority canary (rv)" ktest_row "ktest fair enqueue priority canary (rv)" rv ",eevdf-place-reread-canary" "fair_enqueue_reads_one_priority"
+    par "ktest fair enqueue priority canary (arm)" ktest_row "ktest fair enqueue priority canary (arm)" arm ",eevdf-place-reread-canary" "fair_enqueue_reads_one_priority"
+    par "ktest fair take unchecked canary (rv)" ktest_row "ktest fair take unchecked canary (rv)" rv ",eevdf-take-unchecked-canary" "fair_take_leaves_a_reservation fair_take_recovers_a_stale_node"
+    par "ktest fair take unchecked canary (arm)" ktest_row "ktest fair take unchecked canary (arm)" arm ",eevdf-take-unchecked-canary" "fair_take_leaves_a_reservation fair_take_recovers_a_stale_node"
+    par "ktest fair charge queued canary (rv)" ktest_row "ktest fair charge queued canary (rv)" rv ",eevdf-charge-queued-canary" "fair_tree_follows_the_lists"
+    par "ktest fair charge queued canary (arm)" ktest_row "ktest fair charge queued canary (arm)" arm ",eevdf-charge-queued-canary" "fair_tree_follows_the_lists"
+    par "ktest fair tree augmentation canary (rv)" ktest_row "ktest fair tree augmentation canary (rv)" rv ",eevdf-tree-canary" "fair_tree_follows_the_lists fair_tree_pick_is_the_scan"
+    par "ktest fair tree augmentation canary (arm)" ktest_row "ktest fair tree augmentation canary (arm)" arm ",eevdf-tree-canary" "fair_tree_follows_the_lists fair_tree_pick_is_the_scan"
     par "ktest QoS RT slack canary (rv)" ktest_row "ktest QoS RT slack canary (rv)" rv ",qos-rt-slack-canary" "qos_timer_slack_never_real_time qos_timer_slack_rt_task_gets_zero"
     par "ktest QoS RT slack canary (arm)" ktest_row "ktest QoS RT slack canary (arm)" arm ",qos-rt-slack-canary" "qos_timer_slack_never_real_time qos_timer_slack_rt_task_gets_zero"
     # The integrated coalescing path (`timer_sleepers::ktest_coalescing`): the
@@ -15833,7 +15862,8 @@ PY
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
     # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
     # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked -> 165.
-    KTEST_N_X86=166
+    # +7 the fair tree tests, as on rv and arm -> 170.
+    KTEST_N_X86=173
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16933,6 +16963,11 @@ PY
     }
     par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" "" "" "" \
         $'\\[HV\\] svm rev\n^ok [0-9]+ - hv_svm_guest_exits$\n^ok [0-9]+ - hv_enter_guest$'
+    par "ktest fair late unlink canary (x86)" x86_ktest_row "ktest fair late unlink canary (x86)" ",eevdf-late-unlink-canary" "fair_unlink_keeps_the_claim zz_no_tree_refusal_since_boot"
+    par "ktest fair enqueue priority canary (x86)" x86_ktest_row "ktest fair enqueue priority canary (x86)" ",eevdf-place-reread-canary" "fair_enqueue_reads_one_priority"
+    par "ktest fair take unchecked canary (x86)" x86_ktest_row "ktest fair take unchecked canary (x86)" ",eevdf-take-unchecked-canary" "fair_take_leaves_a_reservation fair_take_recovers_a_stale_node"
+    par "ktest fair charge queued canary (x86)" x86_ktest_row "ktest fair charge queued canary (x86)" ",eevdf-charge-queued-canary" "fair_tree_follows_the_lists"
+    par "ktest fair tree augmentation canary (x86)" x86_ktest_row "ktest fair tree augmentation canary (x86)" ",eevdf-tree-canary" "fair_tree_follows_the_lists fair_tree_pick_is_the_scan"
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'

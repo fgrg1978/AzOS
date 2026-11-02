@@ -26,6 +26,9 @@ decision-dev = ["azos_decision/on"]
 eevdf-weight-canary = []
 eevdf-eligible-canary = []
 eevdf-fifo-canary = []
+# `eevdf_tree.rs`: a node's least `v` is never recomputed once linked; the
+# differential tests of `eevdf_tree_tests.rs` must go red.
+eevdf-tree-canary = []
 fair-place-all-canary = []
 eevdf-noclamp-canary = []
 eevdf-nowake-canary = []

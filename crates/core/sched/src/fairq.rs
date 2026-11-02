@@ -13,22 +13,22 @@
 //! lock, with the `queued` claim (K-C12) and the level's bit in the ready
 //! bitmap. The lists remain the membership truth, so the removal paths, the
 //! claim audit and the K-C24/K-C26 re-enqueues are untouched. What changed is
-//! the *order*: the pick walks every fair level of the hart and takes
-//! [`eevdf_core::choose`](crate::eevdf_core::choose)'s task, and the priority
+//! the *order*: the pick takes the task [`eevdf_tree::Tree::pick`](crate::eevdf_tree::Tree::pick)
+//! finds over every fair level of the hart, and the priority
 //! is no longer a strict order among fair tasks but a weight
 //! ([`eevdf_core::weight_of_prio`](crate::eevdf_core::weight_of_prio), the
-//! default priority being nice 0). The cost is O(ready fair tasks on the
-//! hart) per pick and tick, and O(FAIR_PLACE_SAMPLE) per wake and sleep (the
-//! mean they place against, [`eevdf_core::avg_of_first`]); `eevdf_core.rs`
-//! says why that, and not a tree, is the choice.
+//! default priority being nice 0). The order is the per-hart tree of
+//! `eevdf_tree.rs`, linked and unlinked beside the lists, so a pick and a tick
+//! cost O(log ready fair tasks) with interrupts masked, and a wake and a sleep
+//! O(FAIR_PLACE_SAMPLE) (the mean they place against,
+//! [`eevdf_core::avg_of_first`]).
 //!
 //! # The running task counts
 //!
 //! The running task is not in a list but it is in the mean and a candidate of
 //! the pick ([`pick`]): a task that is still the best keeps the CPU, and one
-//! that is ahead of its share does not. The mean is recomputed from the
-//! members every time (no stored sums): a missed hook costs one pick's
-//! accuracy, never a wrong sum that lives on.
+//! that is ahead of its share does not. The tree's sums have the running task
+//! added at the pick, not stored.
 //!
 //! # Where each rule runs
 //!
@@ -58,6 +58,7 @@
 //! the weight is its priority's and the slice `FAIR_SLICE_US`; the SC's
 //! `qos_id` will choose both there (`qos_override`), and nothing else moves.
 
+use core::cell::UnsafeCell;
 use core::sync::atomic::{
     AtomicI64, AtomicU32, AtomicU64,
     Ordering::{Acquire, Relaxed, Release},
@@ -66,13 +67,16 @@ use core::sync::atomic::{
 use azos_arch::Interrupts;
 
 use crate::eevdf_core::{self as eevdf, Avg, Choice, Ent};
+#[cfg(feature = "ktest")]
+use crate::eevdf_tree::Store as _;
+use crate::eevdf_tree::{self, AtomicNodes, Tree, Unlink};
 use crate::task::{CtxReg, TaskState, DEFAULT_PRIORITY, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
 use super::balance::{self, Load, Mask, Moved, Params, Rq, Take};
 use super::{
-    cpu_enqueue_locked, cpu_queues, cpu_remove, enqueue_remote_aware, hist_reaccount, ncpu,
+    cpu_enqueue, cpu_enqueue_locked, cpu_queues, cpu_remove, enqueue_remote_aware, hist_reaccount, ncpu,
     prio_bucket, rt, task_mut, task_ref, CpuLockGuard, CpuLockIrqsOff, CPU_LOCKS, MAX_CPUS,
-    MAX_TASKS, PER_CPU, RQ_NEXT, SCHED_ENQ_REFUSED, TASK_VALID,
+    MAX_TASKS, PER_CPU, RQ_LINKS, SCHED_ENQ_REFUSED, TASK_VALID,
 };
 
 /// One task's EEVDF state. The weight and slice are not stored: they are
@@ -100,6 +104,35 @@ static SLOTS: [Slot; MAX_TASKS] = [const {
         since: AtomicU64::new(0),
     }
 }; MAX_TASKS];
+
+/// The order of each CPU's fair queue (`eevdf_tree.rs`), beside the lists that
+/// hold its membership: a task is linked here by [`place`] when it joins a
+/// list and unlinked by [`unlink`] when it leaves one.
+struct TreeCell(UnsafeCell<Tree>);
+
+// SAFETY: a CPU's tree is read and written only with `CPU_LOCKS[cpu]` held.
+unsafe impl Sync for TreeCell {}
+
+static TREES: [TreeCell; MAX_CPUS] = {
+    let mut t = [const { TreeCell(UnsafeCell::new(Tree::new(0))) }; MAX_CPUS];
+    let mut cpu = 0;
+    while cpu < MAX_CPUS {
+        t[cpu] = TreeCell(UnsafeCell::new(Tree::new(cpu as u32)));
+        cpu += 1;
+    }
+    t
+};
+
+/// One node per task: a task is on one queue at a time.
+static NODES: AtomicNodes<MAX_TASKS> = AtomicNodes::new();
+
+/// `cpu`'s tree. Caller holds `CPU_LOCKS[cpu]`, and does not keep the
+/// reference past it.
+#[inline(always)]
+unsafe fn tree(cpu: usize) -> &'static mut Tree {
+    // SAFETY: the lock is the exclusion `TreeCell` relies on.
+    unsafe { &mut *TREES[cpu].0.get() }
+}
 
 /// The fair slice in timer counts (`FAIR_SLICE_US`).
 const SLICE: u64 = azos_drv_sys::timebase::TIMER_FREQ * azos_limits::FAIR_SLICE_US / 1_000_000;
@@ -173,7 +206,7 @@ unsafe fn members(cpu: usize) -> impl Iterator<Item = (usize, Ent)> {
     let levels = PER_CPU[cpu].ready_bitmap.load(Relaxed) & rt::LEVELS_NONBAND;
     (RT_PRIORITY_THRESHOLD as usize..IDLE_PRIORITY as usize)
         .filter(move |l| levels >> l & 1 != 0)
-        .flat_map(move |l| cpu_queues(cpu)[l].iter(&RQ_NEXT))
+        .flat_map(move |l| cpu_queues(cpu)[l].iter(&RQ_LINKS))
         .filter(move |&idx| idx < MAX_TASKS && !rt::reserved_here(cpu, idx))
         .map(|idx| (idx, ent(idx, prio_of(idx))))
 }
@@ -281,10 +314,45 @@ pub(super) enum Fair {
     Task(usize),
 }
 
-/// The pick: the running fair task (if it is one) against the queued ones.
-/// Caller holds `CPU_LOCKS[cpu]`.
-pub(super) unsafe fn pick(cpu: usize) -> Fair {
-    match eevdf::choose(|| unsafe { members(cpu) }, unsafe { cur_cand(cpu) }) {
+/// The pick, taken off its list: the running fair task (if it is one) against
+/// the queued ones. Caller holds `CPU_LOCKS[cpu]`.
+///
+/// A node the lists do not back is unlinked and counted. A reservation admitted
+/// while its task was queued is one (the DL class's now, moved by the admission
+/// next); an enqueue that raced a priority change is another, its list found by
+/// `cpu_remove_stale`; a task in no list, refused by another CPU's tree for this
+/// node, goes back on this queue. Each attempt shrinks the tree, so the pick
+/// cannot repeat. With a running task the masked window stays short and that task
+/// keeps the CPU until the next pass. Without one the answer must be true, for an
+/// idle CPU and a drain: every node is looked at, once.
+///
+/// `with_running`: the running task competes; a drain wants the queue only.
+#[inline(never)]
+pub(super) unsafe fn take(cpu: usize, with_running: bool) -> Fair {
+    let cur = if with_running { unsafe { cur_cand(cpu) } } else { None };
+    let (tries, exhausted) = match cur {
+        Some(_) => (eevdf_tree::TAKE_TRIES, Choice::Cur),
+        None => (unsafe { tree(cpu) }.len() + 1, Choice::Empty),
+    };
+    let checked = !cfg!(feature = "eevdf-take-unchecked-canary");
+    let choice = eevdf_tree::take(
+        tries,
+        exhausted,
+        || unsafe { tree(cpu) }.pick(&NODES, cur),
+        |idx| !(checked && rt::reserved_here(cpu, idx)) && unsafe { cpu_remove(cpu, idx) },
+        |idx| {
+            if !checked {
+                return;
+            }
+            unsafe { tree(cpu) }.remove(&NODES, idx);
+            TREE_RECOVERED.fetch_add(1, Relaxed);
+            let t = unsafe { task_ref(idx) };
+            if t.state() == TaskState::Ready && !t.queued.load(Acquire) {
+                unsafe { cpu_enqueue(cpu, idx) };
+            }
+        },
+    );
+    match choice {
         Choice::Empty => Fair::Empty,
         Choice::Cur => Fair::Keep,
         Choice::Task(idx) => Fair::Task(idx),
@@ -295,8 +363,8 @@ pub(super) unsafe fn pick(cpu: usize) -> Fair {
 /// next, the running one not considered, not removed.
 pub(super) unsafe fn peek(cpu: usize) -> Option<usize> {
     let _g = CpuLockGuard::acquire(cpu);
-    match eevdf::choose(|| unsafe { members(cpu) }, None) {
-        Choice::Task(idx) => Some(idx),
+    match unsafe { tree(cpu) }.pick(&NODES, None) {
+        Choice::Task(idx) if !rt::reserved_here(cpu, idx) => Some(idx),
         _ => None,
     }
 }
@@ -339,7 +407,7 @@ pub(super) unsafe fn tick(cpu: usize, cur: usize) -> bool {
     // should have it (before the pick, so the pick sees what stays).
     unsafe { balance_push(cpu) };
     let _g = CpuLockGuard::acquire(cpu);
-    matches!(unsafe { pick(cpu) }, Fair::Task(_))
+    matches!(unsafe { tree(cpu) }.pick(&NODES, unsafe { cur_cand(cpu) }), Choice::Task(_))
 }
 
 /// The top of `do_schedule` on `cpu`: the current task, if fair, is charged
@@ -415,23 +483,124 @@ pub(super) unsafe fn left(cpu: usize, idx: usize) {
     SLOTS[idx].lag.store(lag, Relaxed);
 }
 
-/// `idx` is about to join `cpu`'s lists (`cpu_enqueue`, lock held, not yet
+/// Fair `idx` is about to join `cpu`'s lists (`cpu_enqueue`, lock held, not yet
 /// linked). `requeue`: it is the task that was just running (or a pick put
 /// back), which keeps its `v` and deadline; any other enqueue is a wake or a
-/// move and is placed against the queue by its lag.
-pub(super) unsafe fn place(cpu: usize, idx: usize, requeue: bool) {
-    if requeue {
-        return;
+/// move and is placed against the queue by its lag. It joins the tree with the
+/// numbers it ends with; a reservation is the DL class's and stays out of it.
+/// `bucket` is the list it joins: `priority` can move under the enqueue, and the
+/// tree and the list must answer the same question or a node outlives its entry.
+/// False when the tree refused it: the claim cannot be honoured.
+///
+/// A task still being timed stops here, not at the switch, so its node holds what
+/// its slot holds: a requeue was charged by `begin` a moment ago, and the switch
+/// path after this point is nobody's. `eevdf-charge-queued-canary`: the switch
+/// charges it, behind the node's back.
+#[inline(never)]
+pub(super) unsafe fn place(cpu: usize, idx: usize, requeue: bool, bucket: usize) -> bool {
+    let p = if cfg!(feature = "eevdf-place-reread-canary") { prio_of(idx) } else { bucket as u32 };
+    if cfg!(feature = "eevdf-place-reread-canary") && !is_fair(p) {
+        return true;
     }
-    let p = prio_of(idx);
-    if !is_fair(p) {
-        return;
+    let since = SLOTS[idx].since.load(Relaxed);
+    if since != 0 && !cfg!(feature = "eevdf-charge-queued-canary") {
+        if !requeue {
+            let (mut e, t) = (ent(idx, p), now());
+            if t > since {
+                eevdf::charge(&mut e, t - since);
+                store(idx, &e);
+            }
+        }
+        SLOTS[idx].since.store(0, Relaxed);
     }
-    let o = unsafe { others(cpu, idx) };
     let mut e = ent(idx, p);
-    let lag = SLOTS[idx].lag.swap(NO_LAG, Relaxed);
-    eevdf::place_wake(&o, &mut e, (lag != NO_LAG).then_some(lag), tick_len());
-    store(idx, &e);
+    if !requeue {
+        let o = unsafe { others(cpu, idx) };
+        let lag = SLOTS[idx].lag.swap(NO_LAG, Relaxed);
+        eevdf::place_wake(&o, &mut e, (lag != NO_LAG).then_some(lag), tick_len());
+        store(idx, &e);
+    }
+    if !rt::reserved_here(cpu, idx) && !unsafe { tree(cpu) }.insert(&NODES, idx, &e, p) {
+        tree_refusal(cpu, idx);
+        return false;
+    }
+    true
+}
+
+/// `idx` has just left a fair list of `cpu` (removed or picked). Caller holds
+/// `CPU_LOCKS[cpu]`.
+#[inline(never)]
+pub(super) unsafe fn unlink(cpu: usize, idx: usize) {
+    if unsafe { tree(cpu) }.remove(&NODES, idx) == Unlink::Foreign {
+        tree_refusal(cpu, idx);
+    }
+}
+
+/// Node operations a tree refused: a task's node is held by another CPU's tree,
+/// which only a broken `queued` claim allows. The console judge fails a row on
+/// the line it prints; the holder's next pick puts the task back ([`take`]).
+static TREE_REFUSED: AtomicU32 = AtomicU32::new(0);
+/// Nodes a pick found that the lists do not back.
+static TREE_RECOVERED: AtomicU32 = AtomicU32::new(0);
+
+#[cold]
+#[inline(never)]
+fn tree_refusal(cpu: usize, idx: usize) {
+    TREE_REFUSED.fetch_add(1, Relaxed);
+    azos_drv_sys::kerr!("[SCHED] WARNING: cpu{} refused a node held elsewhere, slot {}", cpu, idx);
+}
+
+/// The fair trees' disagreements with the lists, since boot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeStats {
+    pub refused: u32,
+    pub recovered: u32,
+}
+
+/// See [`TreeStats`].
+pub fn tree_stats() -> TreeStats {
+    TreeStats { refused: TREE_REFUSED.load(Relaxed), recovered: TREE_RECOVERED.load(Relaxed) }
+}
+
+/// The tree of `cpu` against its lists: the invariants of the tree, one node for
+/// each fair task listed, holding the numbers its slot holds. Returns how many
+/// are listed.
+#[cfg(feature = "ktest")]
+pub fn ktest_check(cpu: usize) -> Result<usize, &'static str> {
+    {
+        let _g = CpuLockGuard::acquire(cpu);
+        unsafe { tree(cpu) }.check(&NODES)?;
+        for (idx, e) in unsafe { members(cpu) } {
+            let n = NODES.node(idx);
+            if n.vruntime != e.vruntime || n.deadline != e.deadline {
+                return Err("a node does not hold the numbers of its slot");
+            }
+        }
+    }
+    ktest_lists(cpu)
+}
+
+/// One node for each fair task listed on `cpu`, and no other. Returns how many.
+#[cfg(feature = "ktest")]
+pub fn ktest_lists(cpu: usize) -> Result<usize, &'static str> {
+    let _g = CpuLockGuard::acquire(cpu);
+    let mut listed = 0;
+    for (idx, _) in unsafe { members(cpu) } {
+        listed += 1;
+        if NODES.node(idx).weight == 0 {
+            return Err("a listed fair task has no node");
+        }
+    }
+    if listed != unsafe { tree(cpu) }.len() {
+        return Err("the tree and the lists hold different numbers of tasks");
+    }
+    Ok(listed)
+}
+
+/// Whether slot `idx` has a node linked in any tree.
+#[cfg(feature = "ktest")]
+pub(super) fn ktest_linked(idx: usize) -> bool {
+    NODES.node(idx).weight != 0
 }
 
 /// Must queued `cand` take the CPU from running `cur` (the class's
@@ -650,7 +819,7 @@ impl Rq for Queues {
             while levels != 0 {
                 let l = levels.trailing_zeros() as usize;
                 levels &= levels - 1;
-                for idx in cpu_queues(src)[l].iter(&RQ_NEXT) {
+                for idx in cpu_queues(src)[l].iter(&RQ_LINKS) {
                     if *scan == 0 {
                         return Take::Nothing;
                     }

@@ -20,7 +20,8 @@
 //! it. With `V` the weighted mean of the `v` of every entity on the queue
 //! (the running one included), an entity is *eligible* when `v <= V` (its
 //! *lag* `V - v` is not negative: it is not owed less than it has had). The
-//! pick is the eligible entity with the earliest deadline ([`choose`]).
+//! pick is the eligible entity with the earliest deadline
+//! ([`Tree::pick`](crate::eevdf_tree::Tree::pick)).
 //!
 //! Eligibility bounds how far ahead of its share an entity can get; the
 //! deadline order lets a short slice be served soon without more than its
@@ -44,19 +45,19 @@
 //! an hour returns at most two slices ahead; one that was owed service
 //! returns owed at most two slices, not an hour.
 //!
-//! # Why no tree
+//! # The queue
 //!
 //! Linux keeps the queue in an rb-tree augmented with the subtree's minimum
 //! deadline (O(log n) pick). Here the *membership* of a ready queue is the
 //! per-priority ready lists (`ready_list.rs`): `queued` (K-C12), the removal
-//! paths, the claim audit and the K-C24/K-C26 re-enqueues are all written
-//! against them. A tree would be a second membership structure with its own
-//! copy of each of those invariants, and it would buy nothing at the queue
-//! lengths this kernel has: a hart's ready *fair* set, not `MAX_TASKS`, is
-//! what [`choose`] walks (two passes, no allocation, no stored sums that a
-//! missed hook could leave wrong: the mean is recomputed from the members
-//! every time). If a fleet profile shows that walk in a profile, the tree
-//! goes behind this same interface.
+//! paths, the claim audit and the K-C24/K-C26 re-enqueues are written against
+//! them, and they stay the truth. `eevdf_tree.rs` is the *order* over that
+//! membership: an AVL tree keyed by virtual deadline, each node carrying the
+//! minimum `v` of its subtree, so that the eligible entity with the earliest
+//! deadline is found in one descent and a pick costs O(log n) with interrupts
+//! masked, whatever length a user makes the queue. The sums the mean is read
+//! from are kept with it, added and taken away by the same two operations
+//! that link and unlink a task.
 //!
 //! # The hook
 //!
@@ -201,6 +202,24 @@ impl Avg {
         self.s += e.weight as i128 * (e.vruntime as i128 - self.anchor as i128);
     }
 
+    /// Take `e` out of the set: the exact inverse of [`add`](Self::add) for an
+    /// `e` that was added with these numbers.
+    pub fn remove(&mut self, e: &Ent) {
+        self.w = self.w.saturating_sub(e.weight as u64);
+        if self.w == 0 {
+            self.s = 0;
+        } else {
+            self.s -= e.weight as i128 * (e.vruntime as i128 - self.anchor as i128);
+        }
+    }
+
+    /// Do `self` and `other` hold the same set (the same weight and the same
+    /// weighted sum, whatever anchor each was built on)?
+    pub fn same_sums(&self, other: &Avg) -> bool {
+        self.w == other.w
+            && self.s + self.w as i128 * (self.anchor as i128 - other.anchor as i128) == other.s
+    }
+
     /// Nothing in the set.
     pub fn is_empty(&self) -> bool {
         self.w == 0
@@ -219,12 +238,17 @@ impl Avg {
     }
 
     /// Is `e` eligible (`v <= V`)? Everything is, in the empty set.
-    /// `eevdf-eligible-canary`: everything is eligible, always.
     pub fn eligible(&self, e: &Ent) -> bool {
+        self.admits(e.vruntime)
+    }
+
+    /// Is virtual runtime `v` at or below the mean?
+    /// `eevdf-eligible-canary`: everything is eligible, always.
+    pub fn admits(&self, v: i64) -> bool {
         if cfg!(feature = "eevdf-eligible-canary") || self.w == 0 {
             return true;
         }
-        self.s >= (e.vruntime as i128 - self.anchor as i128) * self.w as i128
+        self.s >= (v as i128 - self.anchor as i128) * self.w as i128
     }
 }
 
@@ -247,8 +271,8 @@ pub fn avg_of(it: impl Iterator<Item = Ent>) -> Avg {
 /// a mean on a wake, with interrupts masked, and the queue's length is a
 /// user's to choose. Past `cap` it is an estimate inside the range of the `v`
 /// it saw, and every queued `v` is within about a lag limit of the true mean,
-/// so a placement moves by about that much and no more; [`choose`] still reads
-/// all of them. `fair-place-all-canary`: no cap, ktest `irqoff_timer_storm` goes red.
+/// so a placement moves by about that much and no more; the pick reads the
+/// exact sums of the tree. `fair-place-all-canary`: no cap, ktest `irqoff_timer_storm` goes red.
 pub fn avg_of_first(it: impl Iterator<Item = Ent>, cap: usize) -> (Avg, usize) {
     let cap = if cfg!(feature = "fair-place-all-canary") { usize::MAX } else { cap };
     let mut a = Avg::new();
@@ -299,7 +323,7 @@ pub fn place_wake(others: &Avg, e: &mut Ent, lag: Option<i64>, tick: u64) {
     e.deadline = e.vruntime.saturating_add(vslice(e));
 }
 
-/// What [`choose`] decided.
+/// What the pick ([`Tree::pick`](crate::eevdf_tree::Tree::pick)) decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
     /// Nothing is runnable.
@@ -308,62 +332,6 @@ pub enum Choice {
     Cur,
     /// This queued entity takes it.
     Task(usize),
-}
-
-/// The pick: among the queued entities (`queued` is walked twice, in the same
-/// order, so it is a function) and the running one `cur`, the eligible
-/// one with the earliest deadline. Ties go to `cur`, then to the first queued
-/// (FIFO). `V` is the mean over the queue and `cur`.
-///
-/// `eevdf-fifo-canary`: the first eligible queued entity, not the earliest
-/// deadline (a round robin over the eligible).
-pub fn choose<I>(queued: impl Fn() -> I, cur: Option<(usize, Ent)>) -> Choice
-where
-    I: Iterator<Item = (usize, Ent)>,
-{
-    let mut avg = Avg::new();
-    let mut n = 0usize;
-    for (_, e) in queued() {
-        avg.add(&e);
-        n += 1;
-    }
-    if n == 0 {
-        return if cur.is_some() { Choice::Cur } else { Choice::Empty };
-    }
-    if let Some((_, c)) = &cur {
-        avg.add(c);
-    }
-    let mut best: Option<(usize, i64)> = None;
-    for (id, e) in queued() {
-        if !avg.eligible(&e) {
-            continue;
-        }
-        if cfg!(feature = "eevdf-fifo-canary") {
-            best = Some((id, e.deadline));
-            break;
-        }
-        if best.is_none_or(|(_, d)| e.deadline < d) {
-            best = Some((id, e.deadline));
-        }
-    }
-    match (best, cur) {
-        // The mean lies between the smallest and the largest `v`, so a queued
-        // entity is eligible unless `cur` is the one below it, and then `cur`
-        // is. A queue with a member and no eligible one cannot happen; the
-        // earliest deadline overall keeps the answer total anyway.
-        (None, Some(_)) => Choice::Cur,
-        (None, None) => queued()
-            .min_by_key(|(_, e)| e.deadline)
-            .map_or(Choice::Empty, |(id, _)| Choice::Task(id)),
-        (Some((id, _)), None) => Choice::Task(id),
-        (Some((id, d)), Some((_, c))) => {
-            if avg.eligible(&c) && c.deadline <= d {
-                Choice::Cur
-            } else {
-                Choice::Task(id)
-            }
-        }
-    }
 }
 
 /// Does `cand` come before `cur` in deadline order (the fair class's

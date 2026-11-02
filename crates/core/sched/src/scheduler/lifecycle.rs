@@ -2136,7 +2136,7 @@ pub fn rebalance_from_offline_cpus(online: usize, _total: usize) -> usize {
     unsafe {
         for dead_cpu in online..total {
             loop {
-                let idx = match cpu_dequeue_locked(dead_cpu) {
+                let idx = match cpu_drain_locked(dead_cpu) {
                     Some(idx) => idx,
                     None => break, // This dead hart's queue is fully drained.
                 };
@@ -2330,7 +2330,7 @@ unsafe fn migrate_queue_off(cpu: usize, move_pinned: bool) -> Result<usize, usiz
     let mut n_idle = 0;
     let mut pinned_stop = false;
     unsafe {
-        while let Some(idx) = cpu_dequeue_locked(cpu) {
+        while let Some(idx) = cpu_drain_locked(cpu) {
             let task = task_mut(idx);
             let is_idle = task.priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY;
             let pinned = task.affinity() >= 0 && !move_pinned;

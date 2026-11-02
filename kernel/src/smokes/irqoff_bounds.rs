@@ -72,6 +72,11 @@ fn urgent_sleeper(_: usize) {
 /// One storm of `k` sleepers pinned to this CPU, due at one instant: its
 /// longest timer pass in timer counts, and the most sleepers a pass popped.
 fn storm(k: usize) -> Result<(u64, usize), &'static str> {
+    storm_with(k, || Ok(()))
+}
+
+/// [`storm`], running `mid` once every sleeper is up and none is due.
+fn storm_with(k: usize, mid: impl FnOnce() -> Result<(), &'static str>) -> Result<(u64, usize), &'static str> {
     let cpu = azos_sched::smp::current_cpu_id() as i8;
     STORM_AT.store(0, Ordering::Release);
     STORM_READY.store(0, Ordering::Release);
@@ -94,6 +99,7 @@ fn storm(k: usize) -> Result<(u64, usize), &'static str> {
         }
     }
     crate::ktest::wait("the sleepers did not start", || STORM_READY.load(Ordering::Acquire) == k + URGENT)?;
+    mid()?;
     let _ = azos_sched::ktest_take_tick_pass_max();
     azos_sched::ktest_wake_order_reset();
     // Far enough for every sleeper to commit its block first, on any host.
@@ -139,6 +145,139 @@ azos_ktest::ktest_late! {
             }
             // The slots come back when the sleepers have left.
             crate::ktest::wait("the sleepers' slots did not come back", || azos_sched::free_task_slots() >= most)?;
+        }
+        Ok(())
+    }
+}
+
+azos_ktest::ktest_late! {
+    // The fair queue's tree holds what the ready lists hold, with a queue a
+    // user sized: every sleeper of the storm yields in a loop, queued on this CPU.
+    fn fair_tree_follows_the_lists() {
+        let k = azos_sched::free_task_slots().saturating_sub(8).min(48);
+        if k < 8 {
+            return azos_ktest::skip!("too few free task slots for a queue");
+        }
+        let cpu = azos_sched::smp::current_cpu_id();
+        let mut queued = Ok(0);
+        storm_with(k, || {
+            queued = azos_sched::scheduler::fairq::ktest_check(cpu);
+            Ok(())
+        })?;
+        // Before the verdict: a red test leaves the next ones their task slots.
+        crate::ktest::wait("the sleepers' slots did not come back", || azos_sched::free_task_slots() >= k)?;
+        if queued? < k / 2 {
+            return Err("the sleepers were not queued when the tree was checked");
+        }
+        azos_sched::scheduler::fairq::ktest_check(cpu).map(|_| ())
+    }
+}
+
+azos_ktest::ktest! {
+    // The tree's pick is the definition's, on this ISA: random links, unlinks
+    // and picks against a scan of the same entities.
+    fn fair_tree_pick_is_the_scan() {
+        use azos_sched::eevdf_core::{Avg, Choice, Ent, WEIGHTS};
+        use azos_sched::eevdf_tree::{AtomicNodes, Tree, Unlink};
+
+        const N: usize = 48;
+        static NODES: AtomicNodes<N> = AtomicNodes::new();
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |n: u64| {
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            rng.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
+        };
+        let mut tree = Tree::new(0);
+        // Entity, level and arrival of each linked task.
+        let mut m: [Option<(Ent, u32, u64)>; N] = [None; N];
+        let mut seq = 0u64;
+        let mut cur: Option<(usize, Ent)> = None;
+        let mut cur_level = 0;
+        for _ in 0..600 {
+            let i = next(N as u64) as usize;
+            match (next(3), m[i]) {
+                (0, None) if cur.map(|c| c.0) != Some(i) => {
+                    let mut e = Ent::new(WEIGHTS[next(40) as usize], 1000 + next(3000));
+                    e.vruntime = next(60) as i64 - 30;
+                    e.deadline = next(20) as i64;
+                    let level = next(3) as u32;
+                    if !tree.insert(&NODES, i, &e, level) {
+                        return Err("a free node was refused");
+                    }
+                    m[i] = Some((e, level, seq));
+                    seq += 1;
+                }
+                (1, Some(_)) => {
+                    if tree.remove(&NODES, i) != Unlink::Done {
+                        return Err("a linked task was not found");
+                    }
+                    m[i] = None;
+                }
+                _ => {}
+            }
+            let mut order: [Option<(usize, Ent)>; N] = [None; N];
+            let mut n = 0;
+            let mut avg = Avg::new();
+            for lvl in 0..3u32 {
+                let mut by_seq = [(u64::MAX, 0usize); N];
+                let mut k = 0;
+                for (j, x) in m.iter().enumerate() {
+                    if let Some((_, l, s)) = x {
+                        if *l == lvl {
+                            by_seq[k] = (*s, j);
+                            k += 1;
+                        }
+                    }
+                }
+                by_seq[..k].sort_unstable();
+                for &(_, j) in &by_seq[..k] {
+                    let e = m[j].unwrap().0;
+                    avg.add(&e);
+                    order[n] = Some((j, e));
+                    n += 1;
+                }
+            }
+            let want = if n == 0 {
+                if cur.is_some() { Choice::Cur } else { Choice::Empty }
+            } else {
+                if let Some((_, c)) = &cur {
+                    avg.add(c);
+                }
+                let mut best: Option<(usize, i64)> = None;
+                for &(j, e) in order[..n].iter().flatten() {
+                    if avg.eligible(&e) && best.is_none_or(|(_, d)| e.deadline < d) {
+                        best = Some((j, e.deadline));
+                    }
+                }
+                match (best, cur) {
+                    (None, _) => Choice::Cur,
+                    (Some((j, _)), None) => Choice::Task(j),
+                    (Some((j, d)), Some((_, c))) => {
+                        if avg.eligible(&c) && c.deadline <= d { Choice::Cur } else { Choice::Task(j) }
+                    }
+                }
+            };
+            if tree.pick(&NODES, cur) != want {
+                return Err("the tree and the scan pick differently");
+            }
+            tree.check(&NODES)?;
+            if let Choice::Task(j) = want {
+                if tree.remove(&NODES, j) != Unlink::Done {
+                    return Err("the picked task was not linked");
+                }
+                let (e, l, _) = m[j].take().unwrap();
+                if let Some((o, oe)) = cur.take() {
+                    if !tree.insert(&NODES, o, &oe, cur_level) {
+                        return Err("a free node was refused");
+                    }
+                    m[o] = Some((oe, cur_level, seq));
+                    seq += 1;
+                }
+                cur = Some((j, e));
+                cur_level = l;
+            }
         }
         Ok(())
     }

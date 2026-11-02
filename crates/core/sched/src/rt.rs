@@ -598,14 +598,14 @@ unsafe fn throttled(cpu: usize, idx: usize) -> bool {
 /// reservation. Caller holds `CPU_LOCKS[cpu]`.
 unsafe fn ring_first_eligible(cpu: usize, level: usize, resv: bool) -> Option<usize> {
     let q = &super::cpu_queues(cpu)[level];
-    q.iter(&super::RQ_NEXT).find(|&idx| idx < MAX_TASKS && !(resv && unsafe { throttled(cpu, idx) }))
+    q.iter(&super::RQ_LINKS).find(|&idx| idx < MAX_TASKS && !(resv && unsafe { throttled(cpu, idx) }))
 }
 
 /// Ring `level` of `cpu`: the first exempt entry that is not a throttled
 /// reservation. Caller holds `CPU_LOCKS[cpu]`.
 unsafe fn ring_first_exempt(cpu: usize, level: usize, resv: bool) -> Option<usize> {
     let q = &super::cpu_queues(cpu)[level];
-    q.iter(&super::RQ_NEXT).find(|&idx| exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }))
+    q.iter(&super::RQ_LINKS).find(|&idx| exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }))
 }
 
 // ───────────────────── N6 class peeks (`classes.rs`) ──────────────────────
@@ -670,7 +670,7 @@ pub(super) unsafe fn peek_levels(cpu: usize, mask: u32) -> Option<usize> {
     while levels != 0 {
         let l = levels.trailing_zeros() as usize;
         let q = &super::cpu_queues(cpu)[l];
-        let first = q.iter(&super::RQ_NEXT)
+        let first = q.iter(&super::RQ_LINKS)
             .find(|&idx| idx < MAX_TASKS && !(resv && slot_of(cpu, idx).is_some()));
         if first.is_some() {
             return first;
@@ -863,13 +863,8 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
         // level: the running fair task is a candidate, and when it is still
         // the best nothing is dispatched.
         if super::fairq::is_fair(l) {
-            match unsafe { super::fairq::pick(cpu) } {
-                super::fairq::Fair::Task(idx) => {
-                    if unsafe { cpu_remove(cpu, idx) } {
-                        return Pick::Task { idx, force };
-                    }
-                    return Pick::Keep;
-                }
+            match unsafe { super::fairq::take(cpu, true) } {
+                super::fairq::Fair::Task(idx) => return Pick::Task { idx, force },
                 super::fairq::Fair::Keep => return Pick::Keep,
                 // Only reservations queued at these levels: past them.
                 super::fairq::Fair::Empty => {
@@ -1177,6 +1172,30 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
     }
 }
 
+/// Ktest: slot `idx` is in `cpu`'s set, or out of it, with no budget behind it:
+/// what `reserved_here` answers and nothing more. Whether that was done.
+#[cfg(feature = "ktest")]
+pub(super) fn ktest_mark_reserved(cpu: usize, idx: usize, on: bool) -> bool {
+    let (from, to) = if on { (usize::MAX, idx) } else { (idx, usize::MAX) };
+    let Some(k) = set_of(cpu).iter().position(|s| s.load(Ordering::Relaxed) == from) else {
+        return false;
+    };
+    set_of(cpu)[k].store(to, Ordering::Release);
+    if on {
+        FLAGS[cpu].fetch_or(F_RESV, Ordering::Release);
+    } else {
+        clear_resv_if_empty(cpu);
+    }
+    true
+}
+
+/// `cpu`'s set has just lost a slot: the flag goes when no slot is left.
+fn clear_resv_if_empty(cpu: usize) {
+    if set_of(cpu).iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
+        FLAGS[cpu].fetch_and(!F_RESV, Ordering::Release);
+    }
+}
+
 /// Drop task `idx`'s reservation, if it has one: out of its hart's set and
 /// ledger. Called when the slot is freed (exit) and when it is reused.
 pub(super) fn release(idx: usize) {
@@ -1202,9 +1221,7 @@ pub(super) fn release(idx: usize) {
         }
         #[cfg(feature = "energy")]
         ADMITTED_PPM[cpu].store(load[cpu].total_ppm, Ordering::Relaxed);
-        if set_of(cpu).iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
-            FLAGS[cpu].fetch_and(!F_RESV, Ordering::Release);
-        }
+        clear_resv_if_empty(cpu);
         if cpu == crate::smp::current_cpu_id() {
             let o = unsafe { &mut *owner_of(cpu) };
             // Its own task or a proxy running on it.
