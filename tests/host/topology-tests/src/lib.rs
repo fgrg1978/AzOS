@@ -3508,7 +3508,7 @@ priority_range      = [0, 11]
                 let cpu = (next() % ncpus as u64) as usize;
                 let d = ((runtime as u64 * PPM as u64) + period as u64 - 1) / period as u64;
                 sum[cpu] += d;
-                items.push(Item { task: i as u16, class: 0, level: 0, profile: SchedProfile { period_us: period, runtime_us: runtime, deadline_us: 0, cpu_mask: 1 << cpu } });
+                items.push(Item { task: i as u16, class: 0, level: 0, profile: SchedProfile { period_us: period, runtime_us: runtime, deadline_us: 0, cpu_mask: 1 << cpu, core_class: None } });
             }
             let want = (0..ncpus).all(|c| sum[c] <= PPM as u64);
             assert_eq!(admit(&items, ncpus, &budget, LevelOrder::Edf).is_ok(), want, "round {round}: sums {:?}", &sum[..ncpus]);
@@ -6104,7 +6104,7 @@ mod exports_tests {
     #[test]
     fn a_proxy_endpoint_is_called_by_ordinary_rows_and_served_by_rpcsrv_only() {
         let env = Env { desktop: false };
-        let rt = SchedProfile { period_us: 1000, runtime_us: 100, deadline_us: 0, cpu_mask: 0 };
+        let rt = SchedProfile { period_us: 1000, runtime_us: 100, deadline_us: 0, cpu_mask: 0, core_class: None };
         let call = cap(CapPerms::WRITE, b"endpoint.rpc-decisions");
         let serve = cap(CapPerms::READ, b"endpoint.rpc-decisions");
         // A real-time caller, and a real-time row of any right.

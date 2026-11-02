@@ -183,7 +183,7 @@ pub const INADRV_PRIORITY: u8 = 15;
 /// few register-form `i2c` calls) and leaves room for the proxied reads a
 /// period serves; the deadline is the period.
 pub const INADRV_RT: crate::deadline::SchedProfile =
-    crate::deadline::SchedProfile { period_us: 100_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 0 };
+    crate::deadline::SchedProfile { period_us: 100_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 0, core_class: None };
 /// `DRV_KIND_POWER_MON` (0x0011) in decimal.
 const RESOURCE_DRV_POWER_MON: &[u8] = b"drv.17";
 /// Frame budget of one `ABICHILD.ELF` process, in topology pages (4 KiB,
@@ -1119,7 +1119,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             MaybeStr::from_bytes(NAME_HARD_RT),
             8,
             &[],
-            crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 6_000, deadline_us: 0, cpu_mask: 1 },
+            crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 6_000, deadline_us: 0, cpu_mask: 1, core_class: None },
         )
         .expect("default_minimal_topology: deadline canary push failed");
         // A band row with a profile must be `mem = "locked"` (wave 11), or the
@@ -1134,7 +1134,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         MaybeStr::from_bytes(NAME_HARD_RT),
         8,
         &[],
-        crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 1_000, deadline_us: 0, cpu_mask: 1 << 3 },
+        crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 1_000, deadline_us: 0, cpu_mask: 1 << 3, core_class: None },
     )
     .expect("default_minimal_topology: hart canary push failed");
     // Locked, as every profiled band row must be (wave 11): see above.
@@ -1150,8 +1150,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // attach to the placement (`topo_sched::row_reservation`).
     #[cfg(feature = "sched-rt-smoke")]
     for (name, profile) in [
-        (&b"rt-edf-a"[..], crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 1_500, deadline_us: 3_000, cpu_mask: 1 }),
-        (&b"rt-edf-b"[..], crate::deadline::SchedProfile { period_us: 20_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 1 }),
+        (&b"rt-edf-a"[..], crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 1_500, deadline_us: 3_000, cpu_mask: 1, core_class: None }),
+        (&b"rt-edf-b"[..], crate::deadline::SchedProfile { period_us: 20_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 1, core_class: None }),
     ] {
         topo.push_task_profiled(MaybeStr::from_bytes(name), MaybeStr::from_bytes(NAME_SAFETY), 4, &[], profile)
             .expect("default_minimal_topology: SCHED-RT row push failed");
@@ -1200,7 +1200,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             MaybeStr::from_bytes(NAME_HARD_RT),
             12,
             &[],
-            crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 1 << 3 },
+            crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 1 << 3, core_class: None },
         )
         .expect("default_minimal_topology: CAPTEST.ELF push failed");
         topo.set_last_task_mem_pages(512);

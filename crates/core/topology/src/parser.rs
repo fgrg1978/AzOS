@@ -1755,10 +1755,11 @@ fn handle_task_kv<'a>(
         // Real-time profile, checked for feasibility by `Topology::deadline_admission`.
         // Decimal `u32`s; a value that does not fit is rejected, never truncated,
         // because a period that wrapped is a different schedule.
-        "period_us" | "runtime_us" | "deadline_us" | "cpu_mask" => {
+        "period_us" | "runtime_us" | "deadline_us" | "cpu_mask" | "core_class" => {
             let (n, _) = parse_unsigned_int(after)?;
             let n = u32::try_from(n).map_err(|_| ParseError::BadValue)?;
             match key_str {
+                "core_class" => profile.core_class = Some(u8::try_from(n).map_err(|_| ParseError::BadValue)?),
                 "period_us" => profile.period_us = n,
                 "runtime_us" => profile.runtime_us = n,
                 "deadline_us" => profile.deadline_us = n,

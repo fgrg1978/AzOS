@@ -473,7 +473,12 @@ fn admit(
     // The cross-level rule binds only in the order the scheduler dispatches
     // reservations in (`classes::level_order`; the `sched-dl-in-level`
     // canary is armed before this runs), as at run-time `reserve`.
-    let step = ba::deadline_step(topo, num_cpus, azos_sched::classes::level_order());
+    let mut classes = [0u8; azos_sched::topo::MAX_CPUS];
+    let n = num_cpus.min(classes.len());
+    for (c, k) in classes[..n].iter_mut().enumerate() {
+        *k = azos_sched::topo::class(c);
+    }
+    let step = ba::deadline_step(topo, num_cpus, azos_sched::classes::level_order(), &classes[..n]);
     step.receipts().for_each(ba::Receipt::record);
     let (r, band) = match step.outcome {
         DeadlineOutcome::Refused(e) => {

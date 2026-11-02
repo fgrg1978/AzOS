@@ -84,9 +84,13 @@ impl DeadlineStep {
 /// refusal `placed` is 0 and the third number names the first row refused,
 /// `DeadlineRefusal::record_row`), then, when some row was placed,
 /// `RtBandCap` (subject = `ncpus`; `placed`, the cap, the row refused or 0).
-pub fn deadline_step(topo: &Topology<'_>, ncpus: usize, order: LevelOrder) -> DeadlineStep {
+pub fn deadline_step(topo: &Topology<'_>, ncpus: usize, order: LevelOrder, classes: &[u8]) -> DeadlineStep {
     let rows = topo.tasks().len() as u64;
     let cpus = ncpus as u32;
+    if let Err(e) = core_class_check(topo, classes) {
+        let refused = Receipt { rule: Rule::DeadlineAdmission, verdict: Verdict::Refuse, subject: cpus, numbers: [0, rows, e.record_row()] };
+        return DeadlineStep { outcome: DeadlineOutcome::Refused(AdmissionError::Deadline(e)), receipts: [Some(refused), None] };
+    }
     let r = match topo.deadline_admission(ncpus, order) {
         Ok(r) => r,
         Err(e) => {
@@ -111,6 +115,36 @@ pub fn deadline_step(topo: &Topology<'_>, ncpus: usize, order: LevelOrder) -> De
         Err(e) => DeadlineOutcome::BandRefused(r, e),
     };
     DeadlineStep { outcome, receipts: [Some(admitted), Some(band_receipt)] }
+}
+
+/// Single-type cluster: where the CPUs differ in core class (`classes[c]` is
+/// CPU `c`'s, empty when the build does not tell them apart), a profiled row
+/// names the class its budget was measured on and a non-empty `cpu_mask` of
+/// CPUs of that class only. Budgets are not scaled across classes.
+pub fn core_class_check(topo: &Topology<'_>, classes: &[u8]) -> Result<(), DeadlineRefusal> {
+    if classes.iter().all(|&c| c == classes[0]) {
+        return Ok(());
+    }
+    for (ti, t) in topo.tasks().iter().enumerate() {
+        if !t.profile.is_declared() {
+            continue;
+        }
+        let refused = DeadlineRefusal::CoreClass { task: ti as u16 };
+        let Some(k) = t.profile.core_class else { return Err(refused) };
+        let mut any = false;
+        for (c, &cc) in classes.iter().enumerate().take(32) {
+            if t.profile.cpu_mask >> c & 1 != 0 {
+                if cc != k {
+                    return Err(refused);
+                }
+                any = true;
+            }
+        }
+        if !any {
+            return Err(refused);
+        }
+    }
+    Ok(())
 }
 
 /// The band condition of [`deadline_step`]: on every CPU, the placed rows
