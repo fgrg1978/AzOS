@@ -41,6 +41,13 @@ mod ucode;
 mod cpu {
     pub(crate) use super::x86_features as features;
 }
+// The machine-check record and the CPUID gates (`ext/mce.rs`).
+#[allow(dead_code)]
+#[path = "../../../../arch/x86_64/src/ext/mce.rs"]
+mod mce;
+
+#[cfg(test)]
+mod mce_tests;
 
 #[cfg(test)]
 mod limine_tests;

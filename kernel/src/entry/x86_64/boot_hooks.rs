@@ -1096,6 +1096,25 @@ pub fn timer_init() {
 pub fn boot_selftests() {
     #[cfg(feature = "boot-selftests")]
     interrupt_selftests();
+    #[cfg(feature = "mce-smoke")]
+    machine_check_smoke();
+}
+
+/// Gate smoke `mce-smoke` (row `x86_64: machine check`): QEMU raises no
+/// machine check, so the vector is raised by `int $18`. The handler stops the
+/// actuators, records and halts; it never returns, and the row reads what it
+/// printed.
+#[cfg(feature = "mce-smoke")]
+fn machine_check_smoke() {
+    #[cfg(feature = "use-robot")]
+    let before = azos_robot::motor_cmd_is_valid();
+    #[cfg(not(feature = "use-robot"))]
+    let before = false;
+    kprintln!("[MCE] smoke: CR4.MCE={} on cpu 0, motor_stop={} before, raising #MC",
+        (azos_arch::mmu::cpu::read_cr4() & azos_arch::ext::mce::CR4_MCE != 0) as u8, before);
+    // SAFETY: #MC is a gate on its own IST stack; the handler does not return.
+    unsafe { core::arch::asm!("int 18", options(nostack)) };
+    azos_drv_sys::kerr!("[MCE] FAILED: the machine check returned");
 }
 
 /// Three facts the rest of the boot relies on, each printed PASS/FAILED:
@@ -1310,14 +1329,16 @@ pub fn install_resume() {
 /// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): the
 /// state [`user_visible_state_wrong`] reads, by its `bad` index.
 #[cfg(feature = "ktest")]
-pub(crate) const USER_STATE: &[&str] = &["LDTR", "FS/GS selectors", "IA32_FS_BASE", "IA32_TSC_AUX"];
+pub(crate) const USER_STATE: &[&str] = &["LDTR", "FS/GS selectors", "IA32_FS_BASE", "IA32_TSC_AUX", "CR4.MCE"];
 
 /// ktest `user_visible_state_is_set_on_every_cpu`: `bad(i, value)` for each
 /// item of [`USER_STATE`] CPU `cpu` holds at a value ring 3 can reach and no
 /// task was given. x86_64: no LDT, null FS and GS selectors, a zero FS base
 /// in a task with no thread pointer (`cpu::load_gdt_and_tss`,
 /// `cpu::enable_syscall`, `azos_sched::fp::switch_thread_pointer`), and
-/// `IA32_TSC_AUX` this CPU's number where it exists (`cpu::init_tsc_aux`).
+/// `IA32_TSC_AUX` this CPU's number where it exists (`cpu::init_tsc_aux`),
+/// and CR4.MCE set where the CPU reports machine checks (`ext::mce`), which is
+/// not ring-3 state but is set by the same per-CPU bring-up.
 #[cfg(feature = "ktest")]
 pub(crate) fn user_visible_state_wrong(cpu: usize, bad: &mut dyn FnMut(usize, u64)) {
     use azos_arch::cpu::{rdmsr, tsc_aux_value, user_selectors, IA32_FS_BASE, IA32_TSC_AUX};
@@ -1340,6 +1361,10 @@ pub(crate) fn user_visible_state_wrong(cpu: usize, bad: &mut dyn FnMut(usize, u6
         if aux != tsc_aux_value(cpu) {
             bad(3, aux);
         }
+    }
+    let cr4 = azos_arch::mmu::cpu::read_cr4();
+    if azos_arch::ext::mce::has_mce(azos_arch::platform_impl::cpuid(1, 0).3) && cr4 & azos_arch::ext::mce::CR4_MCE == 0 {
+        bad(4, cr4);
     }
 }
 

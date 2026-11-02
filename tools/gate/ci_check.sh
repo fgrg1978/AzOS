@@ -15876,6 +15876,23 @@ PY
     }
     par "boot: no self-tests by default (x86)" x86_selftests_off_row
     # CPU microcode at boot (Kconfig X86_UCODE_LOAD, arch/x86_64/src/
+    # A machine check (#MC): QEMU raises none, so the smoke raises the vector
+    # with `int $18`. The handler stops the actuators before it records, names
+    # the check, and halts. Canaries: CR4.MCE left clear (the smoke reads it),
+    # the record skipped (`count=0`), the stop left to the fatal tail
+    # (`motor_stop=false`).
+    x86_mce_row() { # x86_mce_row <label> <canary features or ""> <want, |-separated>
+        x86_boot_row "$1" 2 max "$3" "halting|KERNEL PANIC" "use-robot,mce-smoke$2"
+    }
+    MCE_SMOKE="[MCE] smoke: CR4.MCE=1 on cpu 0, motor_stop=false before, raising #MC"
+    par "x86_64: machine check stops, records, halts" x86_mce_row "x86_64: machine check stops, records, halts" "" \
+        "$MCE_SMOKE|[MCE] machine check on cpu 0: |count=1 motor_stop=true; halting"
+    par "x86_64: machine check, CR4.MCE canary" x86_mce_row "x86_64: machine check, CR4.MCE canary" ",mce-cr4-canary" \
+        "CR4.MCE=0 on cpu 0"
+    par "x86_64: machine check, record canary" x86_mce_row "x86_64: machine check, record canary" ",mce-record-canary" \
+        "count=0 motor_stop=true; halting"
+    par "x86_64: machine check, stop canary" x86_mce_row "x86_64: machine check, stop canary" ",mce-stop-canary" \
+        "count=1 motor_stop=false; halting"
     # cpu/ucode.rs, kernel/src/entry/x86_64/ext/ucode.rs): the signed image
     # (`make ucode`, mk/firmware.mk, every Intel and AMD file under AZOS_DL) as
     # the PVH boot module, one kernel embedding the TEST key the image is
@@ -17122,6 +17139,8 @@ PY
     par "ktest geofence stale read canary (x86)" x86_ktest_row "ktest geofence stale read canary (x86)" "" \
         "safety_geofence_breach_latches_estop" "canary=geofence-stale-read"
     # N1 (lockdep-lite): see `ktest lockdep canaries (rv)`.
+    # CR4.MCE is part of the same per-CPU check; canary `mce-cr4-canary`.
+    par "ktest mce cr4 canary (x86)" x86_ktest_row "ktest mce cr4 canary (x86)" ",mce-cr4-canary" "user_visible_state_is_set_on_every_cpu"
     par "ktest lockdep canaries (x86)" x86_ktest_row "ktest lockdep canaries (x86)" "" \
         "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES"
     # GR3: see `ktest exit status canary (rv)`; x86_64's clean status is 1.

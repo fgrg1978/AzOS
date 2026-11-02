@@ -1222,6 +1222,17 @@ el0-state-canary = ["azos_arch/el0-state-canary"]
 # Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never
 # armed; ipctest's phase P must then fail its timer check (gate rows
 # `portwait: ring-3 multi-source wait`, riscv64 and aarch64).
+# x86_64 machine check (`azos_arch::ext::mce`, `entry/x86_64/trap.rs`). The
+# smoke raises #MC with `int $18` at the end of the boot self-tests (QEMU
+# raises none): the handler must stop the actuators, record, name the check on
+# the console and halt (row `x86_64: machine check`). `mce-cr4-canary` leaves
+# CR4.MCE clear (ktest `user_visible_state_is_set_on_every_cpu` goes red);
+# `mce-record-canary` skips the record (the row's `count=1` is missing);
+# `mce-stop-canary` leaves the stop to the fatal tail (`motor_stop=false`).
+mce-smoke = []
+mce-cr4-canary = []
+mce-record-canary = []
+mce-stop-canary = []
 portwait-timer-canary = ["qemu", "azos_syscall/portwait-timer-canary"]
 # Wave 11 PIFAST: a priority-13 kernel client calls a
 # priority-24 kernel server through fast IPC (582) while a priority-18 hog

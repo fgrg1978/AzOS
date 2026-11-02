@@ -138,6 +138,12 @@ pub fn init_cpu(cpu: usize) {
     // trap entry depends on it from the first interrupt on.
     cpu::set_percpu(cpu);
     cpu::enable_syscall(syscall_entry as *const () as u64);
+    // The #MC gate and its IST stack are loaded: from here a machine check
+    // reaches the handler instead of shutting the CPU down. Gate canary
+    // `mce-cr4-canary`: left clear.
+    if !cfg!(feature = "mce-cr4-canary") {
+        azos_arch::ext::mce::enable_this_cpu();
+    }
     // IA32_TSC_AUX, which ring 3 reads with `rdtscp` and `rdpid`: this CPU's
     // number (`cpu::tsc_aux_value`). Gate canary `el0-state-canary`: not
     // written, the firmware's value (QEMU's 0) stays, and the ktest
