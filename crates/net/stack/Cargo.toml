@@ -40,6 +40,13 @@ slaac-no-dad-canary = []
 # one holds is taken, as it was: the `NODE_LISTEN` that must say `AddrInUse`
 # (std's `TcpListener::bind` of a taken port) succeeds. Never in a real build.
 listen-dup-canary = []
+# Gate canary (host suite `net-tests`): a segment without the ACK bit is
+# processed like one with it in a synchronised state, so its payload is
+# delivered. Never in a real build.
+tcp-no-ack-canary = []
+# Gate canary (host suite `net-tests`): CLOSE-WAIT takes the segment text the
+# peer sends after its FIN. Never in a real build.
+tcp-closewait-data-canary = []
 # Canary (host suite `net-tests`): a refresh's valid lifetime over two hours
 # but under what remains is lowered to two hours (RFC 4862 §5.5.3 (e) read
 # wrong). Never in a real build.

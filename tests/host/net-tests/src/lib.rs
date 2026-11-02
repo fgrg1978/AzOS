@@ -2430,6 +2430,7 @@ mod tcp_blind_attacker {
     const ACK: u8 = 0x10;
     const SYN: u8 = 0x02;
     const PSH: u8 = 0x08;
+    const FIN: u8 = 0x01;
 
     /// **A blind attacker's payload must not enter the stream through the
     /// out-of-order queue.**
@@ -2542,6 +2543,105 @@ mod tcp_blind_attacker {
         wire::clear_sent();
         deliver(&segment(42614, 7499, 0x0500_0000, 0, SYN, 4096, &[]));
         assert_eq!(outbound().iter().filter(|o| o.flags & RST != 0).count(), 1);
+    }
+
+    /// **A segment without the ACK bit carries nothing in a synchronised
+    /// state** (RFC 9293 §3.10.7.4: drop it and return). The ACK-value check
+    /// only looked at segments that carried the bit, so leaving it off skipped
+    /// the check and the payload went to the stream and the out-of-order queue
+    /// on a sequence number inside the window alone.
+    /// Canary `tcp-no-ack-canary` (gate row): the bit is not required.
+    #[test]
+    fn data_without_the_ack_bit_is_not_delivered() {
+        let _g = begin();
+        let (idx, ours, theirs) = establish(7430, 42630, 0x0700_0000);
+
+        // In order, with the ACK field exactly right: the best a blind sender can do.
+        for flags in [0u8, PSH] {
+            deliver(&segment(42630, 7430, theirs, ours, flags, 4096, b"EVIL"));
+        }
+        // Ahead of RCV.NXT, in the window: the out-of-order queue.
+        deliver(&segment(42630, 7430, theirs.wrapping_add(4), ours, 0, 4096, b"OOO!"));
+        assert_eq!(wire::sent_count(), 0, "a segment without ACK is dropped unanswered");
+
+        let mut buf = [0u8; 16];
+        assert_eq!(tcp::recv(idx, &mut buf), 0, "nothing may be readable yet");
+
+        // The peer, for real.
+        deliver(&segment(42630, 7430, theirs, ours, PSH | ACK, 4096, b"ABCD"));
+        let n = tcp::recv(idx, &mut buf);
+        assert_eq!(&buf[..n.max(0) as usize], b"ABCD",
+            "only the segment that carried ACK may be delivered, or queued behind a hole");
+        assert_eq!(outbound().last().unwrap().ack, theirs.wrapping_add(4),
+            "and the acknowledgement stops where the genuine bytes do");
+
+        // A FIN without ACK ends nothing either.
+        wire::clear_sent();
+        deliver(&segment(42630, 7430, theirs.wrapping_add(4), ours, FIN, 4096, &[]));
+        assert!(tcp::conn_state(idx) == tcp::TcpState::Established,
+            "a FIN without ACK moved the connection to {}", st(tcp::conn_state(idx)));
+    }
+
+    /// The same rule in the states a close passes through: the segments there
+    /// ran the payload path with no regard to the bit, or to the value, at all.
+    #[test]
+    fn a_closing_connection_takes_nothing_without_the_ack_bit() {
+        let _g = begin();
+        let (idx, ours, theirs) = establish(7431, 42631, 0x0710_0000);
+        tcp::close(idx);
+        assert!(tcp::conn_state(idx) == tcp::TcpState::FinWait1, "precondition: FinWait1");
+        wire::clear_sent();
+
+        deliver(&segment(42631, 7431, theirs, ours, 0, 4096, b"EVIL"));
+        let mut buf = [0u8; 16];
+        assert_eq!(tcp::recv(idx, &mut buf), 0, "FinWait1 took data without ACK");
+        deliver(&segment(42631, 7431, theirs, ours.wrapping_add(100_000), ACK, 4096, b"EVIL"));
+        assert_eq!(tcp::recv(idx, &mut buf), 0, "FinWait1 took data with an ACK beyond SND.NXT");
+        deliver(&segment(42631, 7431, theirs, ours, FIN, 4096, &[]));
+        assert!(tcp::conn_state(idx) == tcp::TcpState::FinWait1,
+            "FinWait1 took a FIN without ACK, now {}", st(tcp::conn_state(idx)));
+
+        // Our FIN is acknowledged: FinWait2.
+        deliver(&segment(42631, 7431, theirs, ours.wrapping_add(1), ACK, 4096, &[]));
+        assert!(tcp::conn_state(idx) == tcp::TcpState::FinWait2, "precondition: FinWait2");
+        wire::clear_sent();
+        deliver(&segment(42631, 7431, theirs, ours.wrapping_add(1), 0, 4096, b"EVIL"));
+        assert_eq!(tcp::recv(idx, &mut buf), 0, "FinWait2 took data without ACK");
+        deliver(&segment(42631, 7431, theirs, ours.wrapping_add(100_000), ACK, 4096, b"EVIL"));
+        assert_eq!(tcp::recv(idx, &mut buf), 0, "FinWait2 took data with an ACK beyond SND.NXT");
+        deliver(&segment(42631, 7431, theirs, ours.wrapping_add(1), FIN, 4096, &[]));
+        assert!(tcp::conn_state(idx) == tcp::TcpState::FinWait2,
+            "FinWait2 took a FIN without ACK, now {}", st(tcp::conn_state(idx)));
+        assert_eq!(wire::sent_count(), 0);
+    }
+
+    /// **After the peer's FIN, its bytes are not ours** (RFC 9293 §3.10.7.4,
+    /// CLOSE-WAIT: ignore the segment text). A repeat of bytes already taken is
+    /// still answered, as in every state.
+    /// Canary `tcp-closewait-data-canary` (gate row): CLOSE-WAIT takes the text.
+    #[test]
+    fn data_after_the_peers_fin_is_ignored() {
+        let _g = begin();
+        let (idx, ours, theirs) = establish(7432, 42632, 0x0720_0000);
+        deliver(&segment(42632, 7432, theirs, ours, PSH | ACK, 4096, b"ABCD"));
+        deliver(&segment(42632, 7432, theirs.wrapping_add(4), ours, FIN | ACK, 4096, &[]));
+        assert!(tcp::conn_state(idx) == tcp::TcpState::CloseWait, "precondition: CloseWait");
+        let mut buf = [0u8; 16];
+        assert_eq!(tcp::recv(idx, &mut buf), 4, "precondition: the bytes before the FIN");
+        let next = theirs.wrapping_add(5);
+
+        wire::clear_sent();
+        deliver(&segment(42632, 7432, next, ours, PSH | ACK, 4096, b"LATE"));
+        assert!(tcp::recv(idx, &mut buf) <= 0, "CloseWait delivered bytes sent after the FIN");
+        assert_eq!(wire::sent_count(), 0, "and acknowledged them");
+        assert!(tcp::conn_state(idx) == tcp::TcpState::CloseWait);
+
+        // Control: a repeat of the first segment draws the acknowledgement again.
+        deliver(&segment(42632, 7432, theirs, ours, PSH | ACK, 4096, b"ABCD"));
+        let sent = outbound();
+        assert_eq!(sent.len(), 1, "a repeat of bytes already received is answered once");
+        assert_eq!(sent[0].ack, next);
+        assert!(tcp::recv(idx, &mut buf) <= 0, "and not delivered a second time");
     }
 }
 
@@ -3439,25 +3539,33 @@ mod tcp_close {
     }
 
     /// Simultaneous close: the peer's FIN arrives while our own is still
-    /// unacknowledged. FinWait1 goes straight to TimeWait — but only for a FIN
-    /// inside the window.
+    /// unacknowledged, so its ACK covers what we sent before our FIN and not
+    /// the FIN. FinWait1 goes straight to TimeWait -- but only for a FIN inside
+    /// the window whose ACK is one the peer could have sent.
     #[test]
     fn a_simultaneous_close_reaches_time_wait_only_from_inside_the_window() {
         let _g = begin();
-        let (idx, _ours, theirs) = establish(7404, 44400, 0x5500_0000);
+        let (idx, ours, theirs) = establish(7404, 44400, 0x5500_0000);
         tcp::close(idx);
         assert!(tcp::conn_state(idx) == tcp::TcpState::FinWait1);
 
         // Out of window first: nothing may move.
-        deliver(&segment(44400, 7404, theirs.wrapping_add(200_000), 0, FIN, 4096, &[]));
+        deliver(&segment(44400, 7404, theirs.wrapping_add(200_000), ours, FIN | ACK, 4096, &[]));
         assert!(
             tcp::conn_state(idx) == tcp::TcpState::FinWait1,
             "an out-of-window FIN must not force a simultaneous close, got {}",
             st(tcp::conn_state(idx)),
         );
+        // In window, acknowledging bytes we never sent.
+        deliver(&segment(44400, 7404, theirs, ours.wrapping_add(100_000), FIN | ACK, 4096, &[]));
+        assert!(
+            tcp::conn_state(idx) == tcp::TcpState::FinWait1,
+            "a FIN with an ACK beyond SND.NXT must not force a simultaneous close, got {}",
+            st(tcp::conn_state(idx)),
+        );
 
         wire::clear_sent();
-        deliver(&segment(44400, 7404, theirs, 0, FIN, 4096, &[]));
+        deliver(&segment(44400, 7404, theirs, ours, FIN | ACK, 4096, &[]));
         assert!(
             tcp::conn_state(idx) == tcp::TcpState::TimeWait,
             "a FIN in window while our own is unacknowledged is a simultaneous \
@@ -3713,15 +3821,15 @@ mod tcp_half_close {
     #[test]
     fn fin_wait1_accepts_data_that_arrives_before_our_fin_is_acknowledged() {
         let _g = begin();
-        let (idx, _ours, theirs) = establish(7707, 45600, 0xA700_0000);
+        let (idx, ours, theirs) = establish(7707, 45600, 0xA700_0000);
         tcp::close(idx);
         assert!(tcp::conn_state(idx) == tcp::TcpState::FinWait1, "precondition");
 
         wire::clear_sent();
-        // The peer has not yet acknowledged our FIN (ack=0, unrelated to
-        // fin_seq) but sends data anyway -- perfectly legal, the two
+        // The peer has not yet acknowledged our FIN (its ACK stops at the byte
+        // before it) but sends data anyway -- perfectly legal, the two
         // directions are independent.
-        deliver(&segment(45600, 7707, theirs, 0, PSH | ACK, 4096, b"early"));
+        deliver(&segment(45600, 7707, theirs, ours, PSH | ACK, 4096, b"early"));
         let mut buf = [0u8; 16];
         assert_eq!(
             tcp::recv(idx, &mut buf), 5,

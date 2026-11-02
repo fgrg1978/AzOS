@@ -2016,6 +2016,18 @@ fn ack_acceptable(ack: u32, snd_una: u32, snd_nxt: u32) -> bool {
     ack.wrapping_sub(lower) <= snd_nxt.wrapping_sub(lower)
 }
 
+/// Does a segment to a connection that has sent its FIN carry an ACK that
+/// acknowledges something we could have sent? Without the bit, or with a value
+/// outside the flight, it is not from a peer that sees the flow (RFC 9293
+/// §3.10.7.4, RFC 5961 §5). `SND.NXT` is one past `seq`: the FIN takes a
+/// sequence number that `seq` does not count.
+fn ack_credible(idx: usize, flags: u8, ack_num: u32) -> bool {
+    if flags & TCP_ACK == 0 { return false; }
+    let t = TCP.lock();
+    let c = &t.conns[idx];
+    ack_acceptable(ack_num, c.snd_una, c.seq.wrapping_add(1))
+}
+
 /// RFC 793 §3.3 acceptability test for a segment on a synchronised connection.
 ///
 /// Every inbound segment must pass this — not only the ones carrying data.
@@ -3539,27 +3551,25 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
 
                 // --- ACK acceptability (RFC 5961 §5.2) ---
                 //
-                // The sequence check above is the ONLY thing a segment used to
-                // need, and the ACK processing below trusts the segment with
-                // `remote_window`, `persist_probes` and `last_activity`. So a
-                // blind attacker who landed `seq` in the 64 KiB window — 2^16
-                // guesses — could advertise window 0 with any ACK value and
-                // stall our send side, or keep a dead connection looking alive.
-                // Requiring the ACK to acknowledge something we could actually
-                // have sent multiplies that by another ~2^16.
+                // The ACK processing below trusts the segment with
+                // `remote_window`, `persist_probes` and `last_activity`, and
+                // the payload below trusts it with the stream. A blind sender
+                // who lands `seq` in the 64 KiB window — 2^16 guesses — must
+                // not get either by guessing the rest: the segment has to
+                // carry an ACK that acknowledges something we could have sent.
                 //
-                // U06-1 (2026-09-26): an unacceptable ACK used to SKIP only the
-                // ACK processing below, not the segment — `process_inbound_payload`
-                // ran regardless, and its out-of-order queue (`store_ooo_segment`)
-                // stores on `seq` alone. That made "inject data into the stream"
-                // a ~2^16 guess (`seq` inside the receive window), not the ~2^32
-                // this comment used to claim, because the ACK half of the guess
-                // was never checked. RFC 5961 §5 (Blind Data Injection Attack
-                // Mitigation) and Linux's `tcp_ack()`/`tcp_rcv_established()`
-                // posture: a segment that carries the ACK bit with an
-                // unacceptable ACK is dropped in its entirety, silently, before
-                // payload or FIN are looked at. See the `return` right below.
+                // Dropped whole, silently, before payload or FIN are looked at
+                // (RFC 9293 §3.10.7.4: no ACK bit, drop; RFC 5961 §5, blind
+                // data injection). That includes a segment WITHOUT the bit: the
+                // value check used to run only for segments that carried it, so
+                // leaving it off skipped the check and delivered the payload.
+                // Cost: a genuine peer whose ACK lags more than one window
+                // loses this segment to its own retransmission timer; rare on a
+                // one-hop robot link.
                 let ack_present = flags & TCP_ACK != 0;
+                if !cfg!(feature = "tcp-no-ack-canary") && !ack_present {
+                    return;
+                }
                 let ack_ok = ack_present && {
                     let (snd_una, snd_nxt) = {
                         let t = TCP.lock();
@@ -3568,11 +3578,6 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                     };
                     ack_acceptable(ack_num, snd_una, snd_nxt)
                 };
-
-                // Drop the WHOLE segment — no payload, no FIN, no reply — when
-                // it carries ACK but the ACK is not acceptable. Cost: a genuine
-                // peer whose ACK lags more than one window loses this segment to
-                // its own retransmission timer; rare on a one-hop robot link.
                 if ack_present && !ack_ok {
                     return;
                 }
@@ -3586,10 +3591,22 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                 }
 
                 // --- Payload processing with OOO reassembly (F01) ---
+                //
+                // After the peer's FIN there is no more text to take (RFC 9293
+                // §3.10.7.4, CLOSE-WAIT: ignore it): `RCV.NXT` is past the FIN,
+                // so what starts there is bytes the peer promised not to send.
+                // A repeat of bytes from before the FIN is still answered with
+                // the acknowledgement the peer lost.
                 let marked = ecn_note(idx, flags, ce);
-                process_inbound_payload(idx, &mac, &ip,
-                                        seq, payload, expected_ack, rcv_wnd, fin,
-                                        flags & TCP_PSH != 0, marked, now);
+                let behind = expected_ack.wrapping_sub(seq);
+                let repeat = behind != 0 && behind < 1u32 << 31 && behind as usize >= payload.len();
+                if state != TcpState::CloseWait || repeat
+                    || cfg!(feature = "tcp-closewait-data-canary")
+                {
+                    process_inbound_payload(idx, &mac, &ip,
+                                            seq, payload, expected_ack, rcv_wnd, fin,
+                                            flags & TCP_PSH != 0, marked, now);
+                }
 
                 // --- FIN handling ---
                 if flags & TCP_FIN != 0 {
@@ -3634,6 +3651,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
             // trailing data arriving here must be stored and ACKed, not
             // dropped.
             TcpState::FinWait1 => {
+                // Same drop as the synchronised arm above: the payload below is
+                // stored on `seq` alone.
+                if !ack_credible(idx, flags, ack_num) { return; }
                 let fin = flags & TCP_FIN != 0;
                 let (expected_ack, rcv_wnd) = {
                     let t = TCP.lock();
@@ -3646,7 +3666,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                 ack_data_in_fin_state(idx, &mac, &ip, seq, ack_num, flags, peer_win,
                                       payload.len(), expected_ack, rcv_wnd,
                                       &data[TCP_HDR_MIN..off], ts_in.map(|t| t.1), now);
-                if flags & TCP_ACK != 0 {
+                {
                     let mut t = TCP.lock();
                     let c = &mut t.conns[idx];
                     // Our FIN has been ACKed
@@ -3687,24 +3707,24 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                             // been acknowledged, which is what got us here.
                             c.retx_time = now;
                         }
+                    } else if flags & TCP_FIN != 0 {
+                        // The peer's FIN crossed ours: its ACK covers what we
+                        // sent before the FIN, not the FIN. The same window and
+                        // "landed" tests as above; the ACK value was checked at
+                        // the top of the arm.
+                        if !seq_in_window(seq, expected_ack, rcv_wnd) { return; }
+                        if c.ack != seq.wrapping_add(payload.len() as u32) { return; }
+                        c.ack = fin_next_ack(seq, payload.len());
+                        c.state = TcpState::TimeWait;
+                        c.time_wait_start = now;
+                        let a = c.take_ack(now);
+                        drop(t);
+                        send_ack(&mac, &a);
                     }
-                } else if flags & TCP_FIN != 0 {
-                    // Peer FIN before our FIN is ACKed → simultaneous close.
-                    // Unvalidated, any spoofed FIN carrying any sequence at all
-                    // pushed us into TimeWait and desynchronised the flow.
-                    let mut t = TCP.lock();
-                    let c = &mut t.conns[idx];
-                    if !seq_in_window(seq, expected_ack, rcv_wnd) { return; }
-                    if c.ack != seq.wrapping_add(payload.len() as u32) { return; }
-                    c.ack = fin_next_ack(seq, payload.len());
-                    c.state = TcpState::TimeWait;
-                    c.time_wait_start = now;
-                    let a = c.take_ack(now);
-                    drop(t);
-                    send_ack(&mac, &a);
                 }
             }
             TcpState::FinWait2 => {
+                if !ack_credible(idx, flags, ack_num) { return; }
                 let (expected_ack, rcv_wnd) = {
                     let t = TCP.lock();
                     (t.conns[idx].ack, t.conns[idx].rcv_wnd_max())

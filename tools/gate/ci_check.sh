@@ -11151,6 +11151,10 @@ host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-ca
 # says so (found by the `<isa>: sdktest boots` rows, `net_edges_and_udp_timeouts`);
 # `listen-dup-canary` takes the second listener, as the stack did.
 host_job host_canary_row "net: second listener canary (host)" net-tests listen-dup-canary a_second_listener_on_a_taken_port_is_refused
+# TCP segments a synchronised state must not take (crates/net/stack/src/tcp.rs, RFC 9293
+# §3.10.7.4): data in a segment without the ACK bit, and text after the peer's FIN.
+host_job host_canary_row "tcp: no-ACK data canary" net-tests tcp-no-ack-canary data_without_the_ack_bit_is_not_delivered
+host_job host_canary_row "tcp: close-wait data canary" net-tests tcp-closewait-data-canary data_after_the_peers_fin_is_ignored
 host_job host_canary_row "ipv6: no DAD canary" net-tests slaac-no-dad-canary the_advertisement_slirp_sends_forms_its_address_through_duplicate_address_detection
 host_job host_canary_row "ipv6: claim ignored canary" net-tests slaac-no-dad-canary a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned
 host_job host_canary_row "ipv6: two hours canary" net-tests slaac-two-hours-canary a_refresh_over_two_hours_is_taken_as_it_is_even_when_it_lowers_what_remains
