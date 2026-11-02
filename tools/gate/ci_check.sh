@@ -11155,6 +11155,9 @@ host_job host_canary_row "net: second listener canary (host)" net-tests listen-d
 # §3.10.7.4): data in a segment without the ACK bit, and text after the peer's FIN.
 host_job host_canary_row "tcp: no-ACK data canary" net-tests tcp-no-ack-canary data_without_the_ack_bit_is_not_delivered
 host_job host_canary_row "tcp: close-wait data canary" net-tests tcp-closewait-data-canary data_after_the_peers_fin_is_ignored
+# IPv6 sources (ipv6.rs, RFC 4291 §2.5.2): `::` is not a source for TCP or UDP.
+host_job host_canary_row "ipv6: unspecified TCP source canary" net-tests ipv6-unspecified-src-canary a_tcp_syn_from_the_unspecified_address_is_dropped
+host_job host_canary_row "ipv6: unspecified UDP source canary" net-tests ipv6-unspecified-src-canary a_udp_datagram_from_the_unspecified_address_is_dropped
 host_job host_canary_row "ipv6: no DAD canary" net-tests slaac-no-dad-canary the_advertisement_slirp_sends_forms_its_address_through_duplicate_address_detection
 host_job host_canary_row "ipv6: claim ignored canary" net-tests slaac-no-dad-canary a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned
 host_job host_canary_row "ipv6: two hours canary" net-tests slaac-two-hours-canary a_refresh_over_two_hours_is_taken_as_it_is_even_when_it_lowers_what_remains
