@@ -87,6 +87,7 @@ pub(crate) static DTB_HWCAP: core::sync::atomic::AtomicU64 = core::sync::atomic:
 /// a CPU that has the instructions.
 pub(crate) fn narrow_hwcap_to_this_cpu(cpu: usize) {
     let mine = detect_hwcap();
+    // arch-only: riscv64's weak CPU is in the device tree.
     #[cfg(not(target_arch = "riscv64"))]
     let mine = if cpu + 1 == azos_percpu::nr_cpu_ids() && canary!("asym-weak-last-cpu") {
         mine & !weak_cpu_lacks()
@@ -104,12 +105,46 @@ pub(crate) fn narrow_hwcap_to_this_cpu(cpu: usize) {
 /// Runtime canary `asym-weak-last-cpu`: the bit the last CPU claims to lack,
 /// because QEMU has one CPU type per machine: the one the kernel's own SHA-256
 /// reads on aarch64.
+// arch-only: each ISA numbers its hwcap bits.
 #[cfg(not(target_arch = "riscv64"))]
 fn weak_cpu_lacks() -> u64 {
     #[cfg(target_arch = "aarch64")]
     return azos_abi::vdso::HWCAP_A64_SHA2;
     #[cfg(target_arch = "x86_64")]
     return azos_abi::vdso::HWCAP_X86_POPCNT;
+}
+
+/// Ktest: the bit one CPU of this machine lacks, and whether one does. riscv64
+/// has it from the device tree of a machine whose `cpus_differ`, the others from
+/// `canary=asym-weak-last-cpu`.
+#[cfg(feature = "ktest")]
+pub(crate) fn weak_cpu_hwcap(cpus_differ: bool) -> (u64, bool) {
+    // arch-only: each ISA numbers its hwcap bits.
+    #[cfg(target_arch = "riscv64")]
+    return (azos_abi::vdso::HWCAP_RV_ZBB, cpus_differ);
+    // arch-only: each ISA numbers its hwcap bits.
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        let _ = cpus_differ;
+        (weak_cpu_lacks(), canary!("asym-weak-last-cpu"))
+    }
+}
+
+/// Ktest: the kernel's SHA-256 does not need `bit`.
+#[cfg(feature = "ktest")]
+pub(crate) fn sha256_avoids(bit: u64) -> bool {
+    // arch-only: the SHA-256 backends are per ISA.
+    #[cfg(target_arch = "aarch64")]
+    if bit == azos_abi::vdso::HWCAP_A64_SHA2 {
+        return azos_crypto::sha256::backend() == "generic";
+    }
+    // arch-only: the SHA-256 backends are per ISA.
+    #[cfg(target_arch = "riscv64")]
+    if bit == azos_abi::vdso::HWCAP_RV_ZBB {
+        return azos_crypto::sha256::backend() == "generic";
+    }
+    let _ = bit;
+    true
 }
 
 /// The vDSO `hwcap` word (wave 13; the AT_HWCAP analogue): what this CPU

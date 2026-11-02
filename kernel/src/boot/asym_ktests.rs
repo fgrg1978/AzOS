@@ -212,21 +212,14 @@ azos_ktest::ktest_late! {
     // The bit the row made one CPU lack: rv its DTB's Zbb on the last CPU, else
     // `canary=asym-weak-last-cpu`.
     fn asym_hwcap_is_the_weakest_cpus() {
-        use azos_abi::vdso::*;
-        #[cfg(target_arch = "riscv64")]
-        let (bit, armed) = (HWCAP_RV_ZBB, topo::differs());
-        #[cfg(target_arch = "aarch64")]
-        let (bit, armed) = (HWCAP_A64_SHA2, canary!("asym-weak-last-cpu"));
-        #[cfg(target_arch = "x86_64")]
-        let (bit, armed) = (HWCAP_X86_POPCNT, canary!("asym-weak-last-cpu"));
+        let (bit, armed) = super::seams::weak_cpu_hwcap(topo::differs());
         if !armed {
             return skip!("needs CPUs that differ in hwcap");
         }
         if azos_mm::vdso::vdso_hwcap() & bit != 0 {
             return Err("the shared hwcap word advertises what one CPU lacks");
         }
-        #[cfg(target_arch = "aarch64")]
-        if azos_crypto::sha256::backend() != "generic" {
+        if !super::seams::sha256_avoids(bit) {
             return Err("the kernel's SHA-256 still uses what one CPU lacks");
         }
         Ok(())
