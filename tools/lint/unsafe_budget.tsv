@@ -11,7 +11,7 @@
 # its reason in the commit message.
 # crate	blocks	fns	impls	attrs	forbid	share
 .	5	10	1	0	0	-
-arch/aarch64	202	49	1	2	0	77
+arch/aarch64	202	49	1	2	0	76
 arch/api	31	10	0	0	0	29
 arch/facade	0	0	0	0	1	0
 arch/riscv64	160	42	0	3	0	91
@@ -70,7 +70,7 @@ crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	11	0	0	0	0	100
-crates/drivers/dma	22	12	2	0	0	56
+crates/drivers/dma	22	12	2	0	0	54
 crates/drivers/driver_server	0	0	0	0	1	0
 crates/drivers/dtb	96	41	0	0	0	100
 crates/drivers/fb	10	1	2	0	0	39
@@ -107,7 +107,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	365	14	12	52	0	61
+kernel	365	14	12	52	0	62
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
