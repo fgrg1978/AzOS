@@ -300,3 +300,30 @@ fn modifiers_buttons_and_axes_do_not_repeat() {
     assert!(Repeat::repeats(KEY_UP) && Repeat::repeats(KEY_A));
     assert!(!Repeat::repeats(KEY_RIGHTALT) && !Repeat::repeats(BTN_MIDDLE) && !Repeat::repeats(0));
 }
+
+/// A keyboard whose one array field holds indices from `lmin` to `lmax`, 32 bits wide.
+fn wide_array(lmin: i32, lmax: i32) -> Vec<u8> {
+    let mut d = vec![0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07, 0x19, 0x04, 0x29, 0x65];
+    d.push(0x17);
+    d.extend(lmin.to_le_bytes());
+    d.push(0x27);
+    d.extend(lmax.to_le_bytes());
+    d.extend([0x75, 0x20, 0x95, 0x01, 0x81, 0x00, 0xc0]);
+    d
+}
+
+#[test]
+fn a_key_array_as_wide_as_its_field_does_not_overflow() {
+    for (lmin, lmax, v) in [(0, i32::MAX, i32::MAX), (-2, i32::MAX, i32::MAX), (i32::MIN, i32::MAX, 5)] {
+        let Ok(l) = Layout::parse(&wide_array(lmin, lmax)) else { continue };
+        let mut d = Decoder::new();
+        assert_eq!(run(&mut d, &l, &v.to_le_bytes()), vec![], "no key lies that far past the first usage");
+    }
+}
+
+#[test]
+fn a_key_array_the_usages_can_hold_still_decodes() {
+    let l = Layout::parse(&wide_array(0, 0x61)).unwrap();
+    let mut d = Decoder::new();
+    assert_eq!(run(&mut d, &l, &0u32.to_le_bytes()), vec![key(KEY_A, 1)]);
+}
