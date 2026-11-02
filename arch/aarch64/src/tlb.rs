@@ -64,7 +64,7 @@ pub fn holders(root_phys: usize) -> usize {
     // The caller's stores that moved every user off the table, before the
     // loads of the published roots.
     fence(Ordering::SeqCst);
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     {
         if azos_limits::CANARY_RUNTIME && CANARY_HOLDERS_SELF.load(Ordering::Relaxed) {
             let me = crate::cpu::hart_id();
