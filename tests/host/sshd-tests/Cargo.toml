@@ -8,6 +8,11 @@ description = "Host-side tests for the SSH server (userspace/services/sshd): its
 
 # Run with:  cd tests/host/sshd-tests && cargo test --release
 
+[features]
+# `server.rs` `Server::wants_input`: the server reads the peer whatever it has
+# queued, so `a_client_that_does_not_read_is_not_read_from_without_bound` goes red.
+sshd-backlog-canary = []
+
 [dependencies]
 azos_abi = { path = "../../../crates/core/abi" }
 azos_crypto = { path = "../../../crates/core/crypto" }

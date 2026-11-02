@@ -617,3 +617,26 @@ fn a_data_packet_is_one_segment_at_most() {
     exchange(&mut cl, &mut srv, &mut env);
     assert_eq!(chan_msg(&cl.take_type(MSG_CHANNEL_DATA)).2.len(), MAX_DATA);
 }
+
+/// One unknown message earns one UNIMPLEMENTED, so a client that sends them
+/// and never reads the replies grows the queue until the host stops reading it
+/// (`Server::wants_input`). Canary `sshd-backlog-canary`: it never stops.
+#[test]
+fn a_client_that_does_not_read_is_not_read_from_without_bound() {
+    let cfg = config();
+    let mut env = TestEnv::default();
+    let (mut srv, mut cl) = with_channel(&cfg, &mut env, true);
+    exchange(&mut cl, &mut srv, &mut env);
+    let mut sent = 0;
+    while srv.wants_input() && sent < 20_000 {
+        cl.send(&[0xC7]);
+        let b = std::mem::take(&mut cl.out);
+        srv.feed(&mut env, &b);
+        sent += 1;
+    }
+    assert!(!srv.wants_input(), "{sent} unknown messages, {} bytes queued, and the server still reads", srv.backlog());
+    assert!(srv.backlog() < MAX_BACKLOG + 1024, "the queue overshot the limit by a packet or so, not more");
+    let b = srv.pending().to_vec();
+    srv.advance(b.len());
+    assert!(srv.wants_input(), "reading resumes once the replies are sent");
+}

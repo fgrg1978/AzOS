@@ -664,7 +664,7 @@ fn serve(host: &mut Host, listener: u32, sock: u32, cfg: &Config) {
         let mut moved = false;
 
         // Bytes from the peer.
-        if closing_since.is_none() {
+        if closing_since.is_none() && srv.wants_input() {
             let n = sys::recv_typed(sock, &mut buf);
             if n > 0 {
                 srv.feed(host, &buf[..n as usize]);
@@ -728,7 +728,7 @@ fn serve(host: &mut Host, listener: u32, sock: u32, cfg: &Config) {
             if s.pump(now) {
                 moved = true;
             }
-            while !s.output().is_empty() && srv.pending().len() < 16 * 1024 {
+            while !s.output().is_empty() && srv.backlog() < 16 * 1024 {
                 let n = srv.write(s.output());
                 if n == 0 {
                     break;
