@@ -11,14 +11,19 @@
 //!   (`GetCapability(TPM_CAP_PCRS)`) says which banks the TPM allocated and
 //!   which PCRs each holds: an extend into a bank that is not allocated is
 //!   accepted and dropped by the TPM, so the caller checks first.
-//! * `nv_define` / `nv_read_public` / `nv_read` / `nv_write` and `floor_*`:
-//!   the anti-rollback floor in a 4-byte NV index. The floor only goes up:
-//!   `floor_raise` reads first and never writes a value at or below the
-//!   stored one. An index that already exists at provisioning is adopted only
-//!   if `NV_ReadPublic` shows exactly the attributes, size, name algorithm
-//!   and empty policy the driver defines; anything else fails closed. (What
-//!   `NV_ReadPublic` cannot show is the index's auth value: the floor is as
-//!   safe as that password is secret.)
+//! * `nv_define` / `nv_read_public` / `nv_read` / `nv_write` / `nv_set_bits`
+//!   and `floor_*`: the anti-rollback floor in a `TPM_NT_BITS` NV index (8
+//!   bytes). The TPM itself only lets such an index gain bits (`NV_SetBits`
+//!   ORs, `NV_Write` is refused on it, nothing clears a bit), so the floor,
+//!   the position of the highest set bit, can only rise whoever holds the
+//!   index's auth. A raise is one command, whatever the jump (a counter index
+//!   would take one increment per step, from a base the TPM picks), and the
+//!   floor tops out at [`FLOOR_MAX`]. An index that already exists at
+//!   provisioning is adopted only if `NV_ReadPublic` shows exactly the
+//!   attributes, size, name algorithm and empty policy the driver defines, so
+//!   an ordinary index left by an earlier build fails closed. (What
+//!   `NV_ReadPublic` cannot show is the index's auth value: a holder can still
+//!   raise the floor, which refuses images, but never lower it.)
 //!
 //! * `secret_*`: a 32-byte secret in an NV index of its own, for the
 //!   keystore's TPM backend (`azos_crypto::keystore::Backend::TpmNv`). It is
@@ -57,15 +62,21 @@ pub const DIGEST_BYTES: usize = 32;
 pub const AUTH_MAX: usize = 32;
 /// Most NV bytes moved by one `nv_read` / `nv_write`.
 pub const NV_MAX: usize = 128;
-/// Size of the floor index: one big-endian `u32`.
-pub const FLOOR_BYTES: u16 = 4;
+/// Size of a `TPM_NT_BITS` index: one big-endian `u64`.
+pub const FLOOR_BYTES: u16 = 8;
+/// The highest floor the bit field can hold: floor `n` is bit `n - 1`.
+pub const FLOOR_MAX: u32 = 64;
 /// Default NV index of the rollback floor: the owner range (`0x01000000`
 /// to `0x01BFFFFF`), a number of our own.
 pub const FLOOR_INDEX: u32 = 0x0150_0001;
-/// `TPMA_NV` of the floor index: `AUTHWRITE` | `AUTHREAD` | `NO_DA` (the
+/// `TPMA_NV` of an ordinary index: `AUTHWRITE` | `AUTHREAD` | `NO_DA` (the
 /// dictionary-attack lockout must not be able to freeze the boot's floor
 /// read). Type bits 7:4 are zero: an ordinary index.
-pub const FLOOR_ATTRS: u32 = (1 << 2) | (1 << 18) | (1 << 25);
+pub const ORDINARY_ATTRS: u32 = (1 << 2) | (1 << 18) | (1 << 25);
+/// `TPM_NT_BITS` in `TPMA_NV` bits 7:4.
+pub const NV_NT_BITS: u32 = 2 << 4;
+/// `TPMA_NV` of the floor index: the ordinary rights as a bit field.
+pub const FLOOR_ATTRS: u32 = ORDINARY_ATTRS | NV_NT_BITS;
 /// Size of the keystore secret's index: 32 bytes.
 pub const SECRET_BYTES: u16 = 32;
 /// Default NV index of the keystore secret: the owner range, next to the floor.
@@ -76,11 +87,11 @@ pub const NV_WRITE_STCLEAR: u32 = 1 << 14;
 /// `TPMA_NV_READ_STCLEAR`: `NV_ReadLock` is allowed, and holds until the next
 /// TPM Reset or Restart.
 pub const NV_READ_STCLEAR: u32 = 1 << 31;
-/// `TPMA_NV` of the secret's index: the floor's (`AUTHWRITE` | `AUTHREAD` |
+/// `TPMA_NV` of the secret's index: the ordinary (`AUTHWRITE` | `AUTHREAD` |
 /// `NO_DA`), and lockable for the session in both directions. `NO_DA` stays:
 /// the password is public, so the lockout would protect nothing and would let
 /// anyone who can reach the TPM lock the boot out of its own read.
-pub const SECRET_ATTRS: u32 = FLOOR_ATTRS | NV_WRITE_STCLEAR | NV_READ_STCLEAR;
+pub const SECRET_ATTRS: u32 = ORDINARY_ATTRS | NV_WRITE_STCLEAR | NV_READ_STCLEAR;
 /// `TPMA_NV_WRITTEN`: set by the TPM after the first write. It is state, not
 /// a property chosen at definition, so it is not compared.
 const NV_WRITTEN: u32 = 1 << 29;
@@ -393,6 +404,22 @@ impl<T: Transport> Tpm<T> {
         wire::session_params(body).map(|_| ())
     }
 
+    /// `TPM2_NV_SetBits`: OR `bits` into a `TPM_NT_BITS` index, authorized by
+    /// the index's own password. The TPM has no command that clears a bit.
+    pub fn nv_set_bits(&mut self, index: u32, auth: &[u8], bits: u64) -> Result<(), Error> {
+        if auth.len() > AUTH_MAX {
+            return Err(Error::BadArgument);
+        }
+        let mut c = Cmd::new(wire::ST_SESSIONS, wire::CC_NV_SET_BITS);
+        c.u32(index);
+        c.u32(index);
+        c.pw_auth(auth);
+        c.u64(bits);
+        let mut out = [0u8; RESP_MAX];
+        let body = self.run(c.finish()?, Duration::Medium, wire::ST_SESSIONS, &mut out)?;
+        wire::session_params(body).map(|_| ())
+    }
+
     /// `TPM2_NV_Read` of `out.len()` bytes at `offset`.
     pub fn nv_read(&mut self, index: u32, auth: &[u8], offset: u16, out: &mut [u8]) -> Result<(), Error> {
         if auth.len() > AUTH_MAX || out.is_empty() || out.len() > NV_MAX {
@@ -469,11 +496,13 @@ impl<T: Transport> Tpm<T> {
         self.nv_adopt(owner_auth, index, FLOOR_ATTRS, FLOOR_BYTES, auth)
     }
 
-    /// The stored floor; 0 while the index is defined but never written.
+    /// The stored floor: the position of the highest set bit, 0 while the
+    /// index is defined but nothing was ever set. Stray lower bits do not move
+    /// it, and a set bit only ever raises it.
     pub fn floor_read(&mut self, index: u32, auth: &[u8]) -> Result<u32, Error> {
         let mut b = [0u8; FLOOR_BYTES as usize];
         match self.nv_read(index, auth, 0, &mut b) {
-            Ok(()) => Ok(u32::from_be_bytes(b)),
+            Ok(()) => Ok(u64::BITS - u64::from_be_bytes(b).leading_zeros()),
             Err(Error::Tpm(wire::RC_NV_UNINITIALIZED)) => Ok(0),
             Err(e) => Err(e),
         }
@@ -481,13 +510,17 @@ impl<T: Transport> Tpm<T> {
 
     /// Raise the floor to `to` if that is higher than the stored value;
     /// returns the floor now in force. A value at or below the stored one is
-    /// not written.
+    /// not sent, and the TPM would not lower it anyway. Above [`FLOOR_MAX`]
+    /// there is no bit to set: `BadArgument`.
     pub fn floor_raise(&mut self, index: u32, auth: &[u8], to: u32) -> Result<u32, Error> {
+        if to > FLOOR_MAX {
+            return Err(Error::BadArgument);
+        }
         let cur = self.floor_read(index, auth)?;
         if to <= cur {
             return Ok(cur);
         }
-        self.nv_write(index, auth, 0, &to.to_be_bytes())?;
+        self.nv_set_bits(index, auth, 1u64 << (to - 1))?;
         Ok(to)
     }
 

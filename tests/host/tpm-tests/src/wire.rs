@@ -80,21 +80,24 @@ fn nv_cmd(cc: &str, tail_len: usize, body: &str) -> String {
 }
 
 fn nv_read4() -> String {
-    nv_cmd("4E", 4, "00 04 00 00")
+    nv_cmd("4E", 4, "00 08 00 00")
 }
 
-fn nv_write4(v: u32) -> String {
-    nv_cmd("37", 2 + 4 + 2, &format!("00 04 {} 00 00", hexs(&v.to_be_bytes())))
+/// The `NV_SetBits` that raises the floor to `n`: bit `n - 1`.
+fn nv_set_bits(n: u32) -> String {
+    nv_cmd("35", 8, &hexs(&(1u64 << (n - 1)).to_be_bytes()))
 }
 
-fn nv_read_rsp(v: u32) -> String {
-    format!("80 02 00 00 00 19 00 00 00 00 00 00 00 06 00 04 {} 00 00 01 00 00", hexs(&v.to_be_bytes()))
+/// The `NV_Read` reply of a bit field whose highest bit is `n - 1`.
+fn nv_read_rsp(n: u32) -> String {
+    let v = if n == 0 { 0 } else { 1u64 << (n - 1) };
+    format!("80 02 00 00 00 1D 00 00 00 00 00 00 00 0A 00 08 {} 00 00 01 00 00", hexs(&v.to_be_bytes()))
 }
 
 fn nv_define_floor() -> String {
     let auth = floor::nv_auth(FLOOR_INDEX);
     format!(
-        "80 02 00 00 00 4D 00 00 01 2A 40 00 00 01 {AUTH_AREA_EMPTY} 00 20 {} 00 0E 01 50 00 01 00 0B 02 04 00 04 00 00 00 04",
+        "80 02 00 00 00 4D 00 00 01 2A 40 00 00 01 {AUTH_AREA_EMPTY} 00 20 {} 00 0E 01 50 00 01 00 0B 02 04 00 24 00 00 00 08",
         hexs(&auth)
     )
 }
@@ -107,10 +110,10 @@ fn nv_command_builders_agree_with_the_driver() {
     let (mut t, r) = rig(Kind::Direct, 0);
     r.dev.borrow_mut().expect(&nv_read4(), &nv_read_rsp(0x2A));
     assert_eq!(t.floor_read(FLOOR_INDEX, &floor::nv_auth(FLOOR_INDEX)), Ok(0x2A));
-    r.dev.borrow_mut().expect(&nv_write4(0x2B), &extend_rsp());
-    t.nv_write(FLOOR_INDEX, &floor::nv_auth(FLOOR_INDEX), 0, &0x2Bu32.to_be_bytes()).unwrap();
+    r.dev.borrow_mut().expect(&nv_set_bits(0x2B), &extend_rsp());
+    t.nv_set_bits(FLOOR_INDEX, &floor::nv_auth(FLOOR_INDEX), 1 << 0x2A).unwrap();
     r.dev.borrow_mut().expect(&nv_define_floor(), &extend_rsp());
-    t.nv_define(&[], FLOOR_INDEX, azos_tpm::tpm::FLOOR_ATTRS, 4, &floor::nv_auth(FLOOR_INDEX)).unwrap();
+    t.nv_define(&[], FLOOR_INDEX, azos_tpm::tpm::FLOOR_ATTRS, 8, &floor::nv_auth(FLOOR_INDEX)).unwrap();
     r.assert_clean();
 }
 
@@ -249,7 +252,7 @@ fn ota_floor_is_raised_only_upward_through_the_backend() {
         // One above: read, then write.
         script(|d| {
             d.expect(&nv_read4(), &nv_read_rsp(0x2A));
-            d.expect(&nv_write4(0x2B), &extend_rsp());
+            d.expect(&nv_set_bits(0x2B), &extend_rsp());
         });
         floor::commit(0x2B);
         clean();
@@ -287,7 +290,7 @@ fn ota_floor_failed_raise_is_counted_and_retried_while_the_volume_holds() {
     // The next confirmation retries and succeeds.
     script(|d| {
         d.expect(&nv_read4(), &nv_read_rsp(0x05));
-        d.expect(&nv_write4(0x06), &extend_rsp());
+        d.expect(&nv_set_bits(0x06), &extend_rsp());
     });
     floor::commit(0x06);
     clean();

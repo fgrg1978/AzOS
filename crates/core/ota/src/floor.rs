@@ -49,11 +49,12 @@ static KNOWN: AtomicU32 = AtomicU32::new(0);
 static RAISE_FAILURES: AtomicU32 = AtomicU32::new(0);
 
 /// The password of the floor's NV index (`index` is the index's number). The
-/// index is an ordinary one and nothing else guards it, so it is as safe as
-/// this value is secret, and this one is a derivation of public inputs: it
-/// keeps out software that does not know the scheme, not an attacker who has
-/// read this file. A policy bound to PCRs, which the driver's empty-policy
-/// definition does not carry, is the next step.
+/// index is a bit field the TPM only lets grow, so a holder of this value can
+/// raise the floor (refusing images) but not lower it. The value is a
+/// derivation of public inputs: it keeps out software that does not know the
+/// scheme, not an attacker who has read this file. A policy bound to PCRs,
+/// which the driver's empty-policy definition does not carry, is the next
+/// step.
 #[must_use]
 pub fn nv_auth(index: u32) -> [u8; 32] {
     const TAG: &[u8; 17] = b"azos/ota-floor/v1";
