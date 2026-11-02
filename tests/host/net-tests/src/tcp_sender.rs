@@ -1877,3 +1877,144 @@ fn the_tail_of_a_flight_is_rescued_once_before_the_timer() {
         "S5 must be rescued exactly once");
     assert_eq!(out[0].payload, pattern(off + 5 * SEG, SEG));
 }
+
+// ── Retransmissions never leave the written stream, at any ISN ─────────────
+
+/// A deterministic generator (xorshift64*), so a failing seed replays.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Our ISN for the 4-tuple (`port`, `peer_port`) when the SYN arrives at clock
+/// `t`: the keyed part is fixed by the tuple, the clock is added, so one probe
+/// gives the offset to any ISN wanted.
+fn isn_at(port: u16, peer_port: u16, t: u64) -> u32 {
+    let _g = begin();
+    assert!(tcp::listen(port) >= 0);
+    azos_drv_irqchip::clint::set_test_time(t);
+    wire::clear_sent();
+    deliver(&seg(peer_port, port, 1, 0, SYN, WIN, &mss(SEG as u16), &[]));
+    sent().pop().expect("a SYN-ACK").seq
+}
+
+/// One run: a bulk sender with SACK on a connection whose ISN is `iss`, against
+/// a peer that acknowledges, SACKs, closes its window, repeats itself and lets
+/// the timer fire, in an order drawn from `seed`. Every data segment that
+/// leaves must lie inside the written stream and carry its bytes. Returns the
+/// first violation.
+fn replay(seed: u64, iss: u32) -> Result<(usize, usize), String> {
+    const PORT: u16 = 7970;
+    const PEER: u16 = 46510;
+    const T: u64 = 1 << 32;
+    let h = isn_at(PORT, PEER, 20_000).wrapping_sub(20_000);
+    let t_syn = T + u64::from(iss.wrapping_sub(h));
+    let _g = begin();
+    assert!(tcp::listen(PORT) >= 0);
+    azos_drv_irqchip::clint::set_test_time(t_syn);
+    let mut opts = mss(SEG as u16).to_vec();
+    opts.extend_from_slice(&SACK_PERM);
+    wire::clear_sent();
+    deliver(&seg(PEER, PORT, 5000, 0, SYN, WIN, &opts, &[]));
+    let ours = sent().pop().expect("a SYN-ACK").seq.wrapping_add(1);
+    if ours.wrapping_sub(1) != iss {
+        return Err(format!("could not set the ISN: wanted {iss:#x}, got {:#x}", ours.wrapping_sub(1)));
+    }
+    let idx = slot_in(tcp::TcpState::SynRcvd).expect("half-open");
+    let mut now = t_syn + 1_000;
+    azos_drv_irqchip::clint::set_test_time(now);
+    let theirs = 5001u32;
+    deliver(&seg(PEER, PORT, theirs, ours, ACK, WIN, &[], &[]));
+    if tcp::conn_state(idx) != tcp::TcpState::Established {
+        return Err("not established".into());
+    }
+    wire::clear_sent();
+
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let (mut written, mut una) = (0usize, 0usize);
+    let (mut sent_segs, mut repeats, mut top) = (0usize, 0usize, 0usize);
+    for step in 0..120 {
+        match rng.below(7) {
+            0 | 1 | 2 => loop {
+                let n = tcp::send_data(idx, &pattern(written, SEG));
+                if n <= 0 { break; }
+                written += n as usize;
+            },
+            3 | 4 => {
+                // An ACK somewhere in the flight, with SACK blocks over what lies above it.
+                let at = una + rng.below((written - una) as u64 + 1) as usize;
+                let mut blocks = Vec::new();
+                let mut from = at + 1 + rng.below(2 * SEG as u64) as usize;
+                for _ in 0..rng.below(4) {
+                    let l = from + rng.below(SEG as u64) as usize;
+                    let r = l + 1 + rng.below(2 * SEG as u64) as usize;
+                    if r > written { break; }
+                    blocks.push((ours.wrapping_add(l as u32), ours.wrapping_add(r as u32)));
+                    from = r + 1;
+                }
+                let win = [WIN, 0, 1500, rng.below(65536) as u16][rng.below(4) as usize];
+                peer_ack(PORT, PEER, theirs, ours.wrapping_add(at as u32), win, &blocks);
+                una = una.max(at);
+            }
+            5 => {
+                let win = [WIN, 0, 700][rng.below(3) as usize];
+                peer_ack(PORT, PEER, theirs, ours.wrapping_add(una as u32), win, &[]);
+            }
+            _ => {
+                now += rng.below(25_000_000);
+                azos_drv_irqchip::clint::set_test_time(now);
+                tcp::tcp_tick();
+            }
+        }
+        for o in data_sent() {
+            let off = o.seq.wrapping_sub(ours) as usize;
+            if off > written || off + o.payload.len() > written {
+                return Err(format!(
+                    "step {step}: segment [{off}, {}) lies past the {written} bytes written",
+                    off + o.payload.len()));
+            }
+            if o.payload != pattern(off, o.payload.len()) {
+                return Err(format!("step {step}: segment at {off} does not carry the stream"));
+            }
+            sent_segs += 1;
+            if off < top { repeats += 1; }
+            top = top.max(off + o.payload.len());
+        }
+        wire::clear_sent();
+        if tcp::conn_state(idx) != tcp::TcpState::Established {
+            break;
+        }
+    }
+    Ok((sent_segs, repeats))
+}
+
+#[test]
+fn nothing_leaves_past_the_written_stream_at_any_isn() {
+    let mut failures = Vec::new();
+    for iss in [0x1234_5678u32, 0x7FFF_F000, 0x8000_0000, 0xBA8D_1D85, 0xFFFF_F000] {
+        let (mut segs, mut repeats) = (0, 0);
+        for seed in 0..300u64 {
+            match replay(seed, iss) {
+                Ok((s, r)) => { segs += s; repeats += r; }
+                Err(e) => {
+                    failures.push(format!("isn {iss:#010x} seed {seed}: {e}"));
+                    break;
+                }
+            }
+        }
+        if !failures.is_empty() { continue; }
+        // The runs must have sent, and resent, enough to mean something.
+        println!("isn {iss:#010x}: {segs} data segments, {repeats} of them resent");
+        assert!(segs > 5_000 && repeats > 500, "isn {iss:#010x}: the replay barely exercised the sender");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
