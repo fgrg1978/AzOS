@@ -25,6 +25,19 @@
 # disk-*.img, console.log, spec.json}, gate.txt (the row's output) and meta.json.
 # Replay it with tools/dev/rr_replay.sh DIR/<row>-<time> [--gdb].
 #
+# Where the recorded run differs from the gate's (printed when a recording is kept, and in
+# each boot's spec.json "notes"):
+#   * ONE CPU. QEMU 11.0 stops with "Record/replay is not supported with multiple CPUs".
+#     This script sets KTEST_SMP=1 (the ktest rows read it; default 4 in the gate) unless
+#     you set it. The ktest tests that need 2 or 3 CPUs then report `not ok ... # needs
+#     N CPUs` (8 of them on riscv64), so a ktest row FAILS the gate's check at one CPU: the
+#     recording is still deterministic and replays to the same lines. A row with a fixed
+#     `-smp N` is refused.
+#   * icount shift=0,sleep=off instead of the host's timing (the gate's `-icount` rows use
+#     the same setting). A failure that needs host timing may not show: repeat with --runs.
+#   * x86_64: `-cpu ...,-x2apic`: QEMU 11.0.0 aborts "Bad icount read" otherwise (the gate's
+#     own `-icount (x86)` rows do the same); the kernel uses the xAPIC.
+#
 # What record/replay cannot take (tools/dev/rr_qemu.py header has the list): HVF/KVM,
 # host network backends (virtio-net on -netdev user/tap), host sockets or ptys as
 # consoles, the stall watcher (unset STALL_WATCH), USB passthrough, audio, windows,
@@ -67,6 +80,7 @@ for t in riscv64 aarch64 x86_64; do command -v "qemu-system-$t" >/dev/null || di
 out="${out:-$AZOS_OUT/rr}"
 mkdir -p "$out" || die "cannot make $out"
 [ "$(qemu_count)" -le 2 ] || { echo "rr_row: $(qemu_count) QEMU processes are running (more than 2); not starting" >&2; exit 4; }
+export KTEST_SMP="${KTEST_SMP:-1}"
 free_gb="$(df -g "$out" | awk 'NR == 2 { print $4 }')"
 [ "${free_gb:-0}" -ge 25 ] || die "only ${free_gb} GB free under $out (need 25)"
 
