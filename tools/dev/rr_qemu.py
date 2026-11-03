@@ -52,6 +52,9 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "../lib"))
+from out_dir import out_root  # noqa: E402
+
 ICOUNT = "shift=0,sleep=off"
 FILE_OPTS = ("-kernel", "-initrd", "-dtb")  # -bios too, unless it names a built-in firmware
 SOCKET_CHARDEVS = ("socket", "pty", "pipe", "udp", "tty", "serial", "parport", "spiceport", "braille", "msmouse")
@@ -387,9 +390,9 @@ def record_main():
     spec = {"isa": isa_of(name), "prog": name, "argv": args, "files": files, "rr": "rr.bin"}
     kern = next((v for key, v in files.items() if args[int(key) - 1] == "-kernel"), None)
     if kern and spec["isa"] == "aarch64":
-        out = os.environ.get("AZOS_OUT", "")
-        logs = os.environ.get("CI_LOG_DIR", os.path.join(out, "build/ci-logs"))
-        dirs = [os.path.join(out, "target/aarch64-unknown-none-softfloat/release"), os.path.join(logs, "par")]
+        OUT = out_root()
+        logs = os.environ.get("CI_LOG_DIR", os.path.join(OUT, "build", "ci-logs"))
+        dirs = [os.path.join(OUT, "target", "aarch64-unknown-none-softfloat", "release"), os.path.join(logs, "par")]
         elf = find_elf(os.path.join(bd, kern), dirs)
         if elf:
             clone(elf, os.path.join(bd, "kernel.elf"))
