@@ -5854,7 +5854,7 @@ fn rst_budget_allows(now: u64) -> bool {
 
 /// Host tests: start a window with nothing spent. The budget is global, and the
 /// tests share one clock, so without this one test's resets count against the next.
-#[cfg(test)]
+#[doc(hidden)]
 pub fn reset_rst_budget() {
     use core::sync::atomic::Ordering;
     RST_WINDOW_START.store(0, Ordering::Relaxed);
