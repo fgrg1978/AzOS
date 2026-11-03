@@ -5852,6 +5852,15 @@ fn rst_budget_allows(now: u64) -> bool {
     RST_SENT_IN_WINDOW.fetch_add(1, Ordering::Relaxed) < RST_BUDGET_PER_WINDOW
 }
 
+/// Host tests: start a window with nothing spent. The budget is global, and the
+/// tests share one clock, so without this one test's resets count against the next.
+#[cfg(test)]
+pub fn reset_rst_budget() {
+    use core::sync::atomic::Ordering;
+    RST_WINDOW_START.store(0, Ordering::Relaxed);
+    RST_SENT_IN_WINDOW.store(0, Ordering::Relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // ICMP Fragmentation Needed (RFC 1191 §4, validated per RFC 5927)
 // ---------------------------------------------------------------------------

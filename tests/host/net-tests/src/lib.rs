@@ -342,8 +342,12 @@ pub mod raw {
 
     pub static FRAMES: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
+    /// Also the reset budget: every test clears the sent frames first, and the budget is
+    /// stack-wide state on one fixed clock, so what an earlier test spent would otherwise
+    /// silence the reset a later one expects.
     pub fn reset() {
         FRAMES.lock().unwrap().clear();
+        crate::tcp::reset_rst_budget();
     }
 
     pub fn all() -> Vec<Vec<u8>> {
