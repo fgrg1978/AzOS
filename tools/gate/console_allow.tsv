@@ -29,3 +29,4 @@ ktest slab canary \((rv|arm)\)	*	Bail out! ktest: kheap_slab_selftest panicked	c
 ktest rcu canaries \((rv|arm|x86)\)	lockdep	# lockdep: (sleep or device wait under a SpinLock \(WaitQueue::wait_if\); holding RcuRead|violations=1 )	the row sleeps inside an RCU read section on purpose
 ktest masked exit canary \((rv|arm|x86)\)	lockdep	# lockdep: (sleep or device wait with interrupts off|violations=1 )	canary exit-irq-masked-canary leaves the trap's interrupt mask on through the exit hook, which lockdep reports
 ktest fair late unlink canary \((rv|arm|x86)\)	warn	refused a node held elsewhere	the canary provokes the refusal the judge fails every other row on
+ktest RT console (user )?canary \((rv|arm)\)	*	Bail out! ktest: console_rt_lines_only_append panicked	canaries rt-console-own and rt-console-own-user panic in that test on purpose (RT_CONSOLE_WIRE_CHECK)
