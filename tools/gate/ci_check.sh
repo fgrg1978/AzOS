@@ -14854,8 +14854,9 @@ PY
     # +2 fair_tree_pick_is_the_scan, fair_tree_follows_the_lists; +5 fair_unlink_keeps_the_claim,
     # fair_enqueue_reads_one_priority, fair_take_recovers_a_stale_node,
     # fair_take_leaves_a_reservation, zz_no_tree_refusal_since_boot -> 161, arm 165.
-    KTEST_N_RV=164
-    KTEST_N_ARM=168
+    # +9 asym_* (boot/asym_ktests.rs; skipped but on the `asym` rows) -> 163, arm 167.
+    KTEST_N_RV=163
+    KTEST_N_ARM=167
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14995,7 +14996,12 @@ PY
             [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
                 && why="no matching summary line"
         fi
-        if [ -z "$why" ] && [ -n "${6:-}" ] && ! grep -aqE "$6" "$log"; then why="no line matching: $6"; fi
+        if [ -z "$why" ] && [ -n "${6:-}" ]; then
+            # One pattern per line, all required.
+            while IFS= read -r pat; do
+                [ -n "$pat" ] && ! grep -aqE "$pat" "$log" && { why="no line matching: $pat"; break; }
+            done <<< "$6"
+        fi
         local qwhy=""
         if [ "$qrc" = timeout ]; then qwhy="QEMU did not power off"
         elif [ -z "$want" ] && [ "$qrc" != 0 ]; then qwhy="QEMU exit status $qrc after a clean run"
@@ -15190,6 +15196,129 @@ PY
     par "ktest ttbr0 holders canary (arm)" ktest_row "ktest ttbr0 holders canary (arm)" arm "" "tlb_shootdown_cross_cpu" "canary=ttbr0-holders-self" "root_holders did not name exactly"
     par "ktest save gate redraw canary (arm)" ktest_row "ktest save gate redraw canary (arm)" arm "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest refusal limit canary (arm)" ktest_row "ktest refusal limit canary (arm)" arm "" "refusal_flood_costs_no_other_domain" "canary=refusal-limit-off"
+    # CPUs that differ (Kconfig SCHED_ASYM_CPUS): logic only, QEMU's CPUs do not
+    # differ in speed. A DTB with `capacity-dmips-mhz` (tools/gate/asym_dtb.sh);
+    # aarch64's weak CPU is `canary=asym-weak-last-cpu`, riscv64's is in the DTB.
+    ASYM_RUN_Y='^ok [0-9]+ - asym_classes_installed$
+^ok [0-9]+ - asym_admission_within_one_class$
+^ok [0-9]+ - asym_rt_task_placed_on_a_big_cpu$
+^ok [0-9]+ - asym_misfit_leaves_the_small_cpu$
+^ok [0-9]+ - asym_misfit_leaves_real_time_and_pinned_alone$
+^ok [0-9]+ - asym_hwcap_is_the_weakest_cpus$
+^ok [0-9]+ - asym_periodic_hog_does_not_bounce$
+^ok [0-9]+ - asym_builtin_rows_on_the_biggest_class$
+^\[TOPO\] 2 core classes: the biggest is class 0$'
+    ASYM_RUN_N='^ok [0-9]+ - asym_off_warns_records_and_counts_cpus_equal$
+\[TOPO\] 2 core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal$'
+    asym_row() { # asym_row <label> <rv|arm> <y|n> <expected not-ok> <canaries> [patterns]
+        local label="$1" isa="$2" yn="$3" want="$4" can="$5" pats="${6:-}" extra="" tag dtb weak=""
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        mkdir -p "$CI_LOG_DIR"
+        dtb="$CI_LOG_DIR/asym-$tag.dtb"
+        [ "$yn" = y ] && extra=",CONFIG_SCHED_ASYM_CPUS=y"
+        [ "$isa" = arm ] && case ",$can," in *,asym-weak-other-bit,*) ;; *) weak="asym-weak-last-cpu," ;; esac
+        if ! bash tools/gate/asym_dtb.sh "$isa" 6 "$dtb"; then
+            printf "  %-26s" "${label}..."; bad; echo "      no asymmetric DTB (qemu dumpdtb, fdtput)"; return
+        fi
+        can="$weak$can"; can="${can%,}"
+        KTEST_SMP=6 KTEST_QEMU_EXTRA="-dtb $dtb" ktest_row "$label" "$isa" "$extra" "$want" "${can:+canary=$can}" "$pats"
+        rm -f "$dtb"
+    }
+    # The option changes the build: the capacity paths are in y, out of n, and
+    # a control symbol in both says the query can see. `expect=same` is its
+    # canary: y against y must fail the comparison.
+    asym_build_row() { # asym_build_row <label> <rv|arm|x86> <n-side y|n>
+        local label="$1" isa="$2" other="$3" yn dir side bin nm y_elf n_elf why=""
+        bin="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+        nm="$bin/llvm-nm"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        dir="$CI_LOG_DIR/asym-build-$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"; mkdir -p "$dir"
+        for side in y other; do
+            yn=y; [ "$side" = other ] && yn="$other"
+            local cf=""; [ "$yn" = y ] && cf=",CONFIG_SCHED_ASYM_CPUS=y"
+            case "$isa" in
+            rv) kbuild "qemu$cf" || { bad; echo "      riscv64 did not build"; return; }; cp "$KERNEL" "$dir/$side.elf" ;;
+            arm) a64_kbuild "qemu$cf" || { bad; echo "      aarch64 did not build"; return; }; cp "$A64_KERNEL" "$dir/$side.elf" ;;
+            x86) x86_kbuild "energy$cf" "$dir/$side.elf" || { bad; echo "      x86_64 did not build"; return; } ;;
+            esac
+        done
+        y_elf="$dir/y.elf"; n_elf="$dir/other.elf"
+        "$nm" "$y_elf" >"$dir/y.nm"; "$nm" "$n_elf" >"$dir/other.nm"
+        grep -q 'balance_idle_pull' "$dir/y.nm" && grep -q 'balance_idle_pull' "$dir/other.nm" || why="the symbol query went blind"
+        local sym
+        for sym in misfit_look pick_cpu_biggest_of_free single_class; do
+            [ -z "$why" ] && { grep -q "$sym" "$dir/y.nm" || why="y links no $sym"; }
+            [ -z "$why" ] && grep -q "$sym" "$dir/other.nm" && why="n links $sym"
+        done
+        local ty tn
+        ty="$("$bin/llvm-size" -A "$y_elf" | sed -n 's/^\.text  *\([0-9]*\).*/\1/p')"
+        tn="$("$bin/llvm-size" -A "$n_elf" | sed -n 's/^\.text  *\([0-9]*\).*/\1/p')"
+        [ -z "$why" ] && { [ "$ty" -gt "$tn" ] || why="y .text $ty not above n .text $tn"; }
+        rm -rf "$dir"
+        if [ "$other" = y ]; then
+            if [ -n "$why" ]; then ok; echo "      canary caught: $why"; else bad; echo "      y against y passed the comparison"; fi
+        elif [ -z "$why" ]; then ok; echo "      text y=$ty n=$tn"
+        else bad; echo "      $why"; fi
+    }
+    # A CPU that differs from what the boot CPU committed to stays offline, on
+    # record, and the machine goes on; the canary lets it up.
+    asym_refuse_row() { # asym_refuse_row <label> <rv|arm|x86> <PASS|FAIL> <canaries>
+        local label="$1" isa="$2" expect="$3" can="$4" log kimg i=0 pid
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        log="$CI_LOG_DIR/$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').log"; kimg="$log.kernel"; rm -f "$log"
+        case "$isa" in
+        rv) kbuild "qemu" || { bad; echo "      riscv64 did not build"; return; }; cp "$KERNEL" "$kimg" ;;
+        arm) a64_kbuild "qemu" || { bad; echo "      aarch64 did not build"; return; }; cp "$A64_IMG" "$kimg" ;;
+        x86) x86_kbuild "" "$kimg" || { bad; echo "      x86_64 did not build"; return; } ;;
+        esac
+        par_ready
+        while [ $(qemu_count) -ge 4 ]; do sleep 2; done
+        case "$isa" in
+        rv) "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
+        arm) qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kimg" -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
+        x86) qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot -smp 4 -kernel "$kimg" -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
+        esac
+        pid=$!
+        while [ "$i" -lt 360 ] && kill -0 "$pid" 2>/dev/null; do
+            grep -aq "CPU(s) refused for differing" "$log" 2>/dev/null && { sleep 3; break; }
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$kimg" "$kimg.features"
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        local refused=0 went_on=1
+        grep -aq "\[SMP\] CPU 3 refused: ASID bits differs" "$log" && grep -aq "\[SMP\] 1 CPU(s) refused" "$log" && refused=1
+        grep -aq "CPU(s) refused for differing" "$log" || went_on=0
+        grep -aqE "\[FATAL\]|KERNEL PANIC|panicked" "$log" && went_on=0
+        if [ "$expect" = PASS ] && [ "$refused" = 1 ] && [ "$went_on" = 1 ]; then
+            ok; grep -a "CPU 3 refused" "$log" | sed 's/^/      /'; rm -f "$log"
+        elif [ "$expect" = FAIL ] && [ "$refused" = 0 ] && [ "$went_on" = 1 ]; then
+            ok; echo "      canary caught: no refusal line"; rm -f "$log"
+        else
+            bad; echo "      refused=$refused went_on=$went_on; log kept: $log"
+        fi
+    }
+    for asym_isa in rv arm; do
+        par "asym y ($asym_isa)" asym_row "asym y ($asym_isa)" "$asym_isa" y "" "" "$ASYM_RUN_Y"
+        par "asym n warns and records ($asym_isa)" asym_row "asym n warns and records ($asym_isa)" "$asym_isa" n "" "" "$ASYM_RUN_N"
+        par "asym admission canary ($asym_isa)" asym_row "asym admission canary ($asym_isa)" "$asym_isa" y "asym_admission_within_one_class" "asym-admit-skip"
+        par "asym placement canary ($asym_isa)" asym_row "asym placement canary ($asym_isa)" "$asym_isa" y "asym_rt_task_placed_on_a_big_cpu" "asym-rt-place-flat"
+        par "asym misfit canary ($asym_isa)" asym_row "asym misfit canary ($asym_isa)" "$asym_isa" y "asym_misfit_leaves_the_small_cpu" "asym-misfit-off"
+        par "asym hwcap canary ($asym_isa)" asym_row "asym hwcap canary ($asym_isa)" "$asym_isa" y "asym_hwcap_is_the_weakest_cpus" "asym-hwcap-boot-only"
+        par "asym capacity canary ($asym_isa)" asym_row "asym capacity canary ($asym_isa)" "$asym_isa" y "asym_classes_installed asym_misfit_leaves_the_small_cpu asym_rt_task_placed_on_a_big_cpu" "asym-capacity-flat"
+        par "asym misfit real-time canary ($asym_isa)" asym_row "asym misfit real-time canary ($asym_isa)" "$asym_isa" y "asym_misfit_leaves_real_time_and_pinned_alone" "asym-misfit-rt"
+        par "asym misfit pinned canary ($asym_isa)" asym_row "asym misfit pinned canary ($asym_isa)" "$asym_isa" y "asym_misfit_leaves_real_time_and_pinned_alone" "asym-misfit-pinned"
+        par "asym bounce canary ($asym_isa)" asym_row "asym bounce canary ($asym_isa)" "$asym_isa" y "asym_periodic_hog_does_not_bounce asym_rt_task_placed_on_a_big_cpu" "asym-place-small"
+        par "asym cpu refused ($asym_isa)" asym_refuse_row "asym cpu refused ($asym_isa)" "$asym_isa" PASS "asym-cpu-mismatch-last"
+        par "asym cpu refused canary ($asym_isa)" asym_refuse_row "asym cpu refused canary ($asym_isa)" "$asym_isa" FAIL "asym-cpu-mismatch-last,asym-cpu-refusal-off"
+        [ "$asym_isa" = arm ] && par "asym weak other bit (arm)" asym_row "asym weak other bit (arm)" arm y "" "asym-weak-other-bit" "^ok [0-9]+ - asym_hwcap_is_the_weakest_cpus$
+CPU 5 lacks hwcap bits"
+        par "asym n silent canary ($asym_isa)" asym_row "asym n silent canary ($asym_isa)" "$asym_isa" n "asym_off_warns_records_and_counts_cpus_equal" "asym-n-silent"
+        par "asym build y against n ($asym_isa)" asym_build_row "asym build y against n ($asym_isa)" "$asym_isa" n
+        par "asym build canary ($asym_isa)" asym_build_row "asym build canary ($asym_isa)" "$asym_isa" y
+    done
     par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
@@ -15863,7 +15992,7 @@ PY
     # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
     # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked -> 165.
     # +7 the fair tree tests, as on rv and arm -> 170.
-    KTEST_N_X86=173
+    KTEST_N_X86=172
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16981,6 +17110,56 @@ PY
     par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest save gate redraw canary (x86)" x86_ktest_row "ktest save gate redraw canary (x86)" "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest refusal limit canary (x86)" x86_ktest_row "ktest refusal limit canary (x86)" "" "refusal_flood_costs_no_other_domain" "canary=refusal-limit-off"
+    # The CPUs report core types only through CPUID, which QEMU cannot make
+    # differ: `canary=x86-hybrid-synth` makes the first half efficiency cores, and
+    # the rest runs: install_energy_after_smp, the core classes, the late check.
+    ASYM_X86_RUN_Y="$ASYM_RUN_Y
+^\[ENERGY\] mode=.* model=cpuid
+^\[TOPO\] built-in real-time rows go to core class 0 when they start"
+    asym_x86_row() { # asym_x86_row <label> <y|n> <expected not-ok> <canaries> [patterns] [features, default energy]
+        local extra=",${6-energy}"; extra="${extra%,}"
+        [ "$2" = y ] && extra="$extra,CONFIG_SCHED_ASYM_CPUS=y"
+        local can="x86-hybrid-synth,asym-weak-last-cpu,$4"
+        KTEST_SMP=6 x86_ktest_row "$1" "$extra" "$3" "canary=${can%,}" "" "${5:-}"
+    }
+    par "asym y (x86)" asym_x86_row "asym y (x86)" y "" "" "$ASYM_X86_RUN_Y"
+    ASYM_X86_NO_MODEL="$ASYM_RUN_Y
+^\[TOPO\] built-in real-time rows go to core class 0 when they start"
+    par "asym y without energy (x86)" asym_x86_row "asym y without energy (x86)" y "" "" "$ASYM_X86_NO_MODEL" ""
+    par "asym y with a topology model (x86)" asym_x86_row "asym y with a topology model (x86)" y "" "" "$ASYM_X86_NO_MODEL" "energy-smoke"
+    par "asym n warns and records (x86)" asym_x86_row "asym n warns and records (x86)" n "" "" "$ASYM_RUN_N"
+    par "asym admission canary (x86)" asym_x86_row "asym admission canary (x86)" y "asym_admission_within_one_class" "asym-admit-skip"
+    par "asym placement canary (x86)" asym_x86_row "asym placement canary (x86)" y "asym_rt_task_placed_on_a_big_cpu" "asym-rt-place-flat"
+    par "asym misfit canary (x86)" asym_x86_row "asym misfit canary (x86)" y "asym_misfit_leaves_the_small_cpu" "asym-misfit-off"
+    par "asym hwcap canary (x86)" asym_x86_row "asym hwcap canary (x86)" y "asym_hwcap_is_the_weakest_cpus" "asym-hwcap-boot-only"
+    par "asym n silent canary (x86)" asym_x86_row "asym n silent canary (x86)" n "asym_off_warns_records_and_counts_cpus_equal" "asym-n-silent"
+    par "asym capacity canary (x86)" asym_x86_row "asym capacity canary (x86)" y "asym_classes_installed asym_misfit_leaves_the_small_cpu asym_rt_task_placed_on_a_big_cpu" "asym-capacity-flat"
+    par "asym misfit real-time canary (x86)" asym_x86_row "asym misfit real-time canary (x86)" y "asym_misfit_leaves_real_time_and_pinned_alone" "asym-misfit-rt"
+    par "asym misfit pinned canary (x86)" asym_x86_row "asym misfit pinned canary (x86)" y "asym_misfit_leaves_real_time_and_pinned_alone" "asym-misfit-pinned"
+    par "asym bounce canary (x86)" asym_x86_row "asym bounce canary (x86)" y "asym_periodic_hog_does_not_bounce asym_rt_task_placed_on_a_big_cpu" "asym-place-small"
+    par "asym built-in row canary (x86)" asym_x86_row "asym built-in row canary (x86)" y "asym_builtin_rows_on_the_biggest_class" "asym-row-any-class"
+    par "asym cpu refused (x86)" asym_refuse_row "asym cpu refused (x86)" x86 PASS "asym-cpu-mismatch-last"
+    par "asym cpu refused canary (x86)" asym_refuse_row "asym cpu refused canary (x86)" x86 FAIL "asym-cpu-mismatch-last,asym-cpu-refusal-off"
+    # The refusal of a row not on one class, once the core types are known: the
+    # built-in rows take it, a signed volume being the only other way to reach it.
+    asym_late_row() {
+        local label="$1" log kimg
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        log="$CI_LOG_DIR/asym-late.log"; kimg="$log.kernel"; rm -f "$log"
+        x86_kbuild "energy,CONFIG_SCHED_ASYM_CPUS=y" "$kimg" || { bad; echo "      x86_64 did not build"; return; }
+        par_ready
+        x86_qemu "$kimg" "$log" 60 'REFUSED once the core types are known' -smp 4 -append "canary=x86-hybrid-synth,asym-late-check-rows"
+        rm -f "$kimg" "$kimg.features"
+        if grep -aq 'Deadline admission REFUSED once the core types are known: CoreClass' "$log"; then
+            ok; rm -f "$log"
+        else
+            bad; echo "      no late refusal; log kept: $log"
+        fi
+    }
+    par "asym late row refusal (x86)" asym_late_row "asym late row refusal (x86)"
+    par "asym build y against n (x86)" asym_build_row "asym build y against n (x86)" x86 n
+    par "asym build canary (x86)" asym_build_row "asym build canary (x86)" x86 y
     par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""

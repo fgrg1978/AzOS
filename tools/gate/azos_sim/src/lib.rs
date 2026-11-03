@@ -132,7 +132,7 @@ pub fn dry_boot(topo: &Topology<'_>, cpus: usize) -> DryBoot {
     d.rows = tasks.len();
     // The kernel's order (`classes::level_order`) is `Edf` unless the
     // `sched-dl-in-level` canary is armed, which a dry boot never is.
-    let step = ba::deadline_step(topo, ncpus, LevelOrder::Edf);
+    let step = ba::deadline_step(topo, ncpus, LevelOrder::Edf, &[]);
     d.receipts.extend(step.receipts().copied());
     d.deadline = Some(step.outcome);
     if let DeadlineOutcome::Admitted(r) | DeadlineOutcome::BandRefused(r, _) = step.outcome {

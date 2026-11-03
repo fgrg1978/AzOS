@@ -182,6 +182,21 @@ fn load(w: u32, cap: u16) -> Load {
 }
 
 #[test]
+fn a_misfit_goes_to_the_biggest_idle_cpu_only() {
+    let mut m = Model::new(4);
+    m.cap = vec![512, 512, 800, 1024];
+    assert_eq!(misfit_target(&mut m, 0, all(4)), Some(3), "the biggest of the idle bigger CPUs");
+    m.add(3, 1, 100, ANY);
+    assert_eq!(misfit_target(&mut m, 0, all(4)), Some(2), "a busy CPU is not a target");
+    assert_eq!(misfit_target(&mut m, 2, all(4)), None, "nothing idle is bigger");
+    assert_eq!(misfit_target(&mut m, 0, all(4) & !(1 << 2)), None, "an ineligible CPU is not a target");
+    assert_eq!(misfit_target(&mut m, 0, all(4) & !1), None, "a CPU out of the set sends nothing");
+    assert_eq!(misfit_target(&mut m, 1, 1 << 1), None, "an equal CPU never qualifies");
+    let mut same = Model::new(2);
+    assert_eq!(misfit_target(&mut same, 0, all(2)), None, "equal capacities: no misfit");
+}
+
+#[test]
 fn a_move_needs_a_gap_that_survives_it() {
     let big = load(2048, 1024);
     // 2 -> 0 of weight 1024: the receiver ends at 1024, below 2048.

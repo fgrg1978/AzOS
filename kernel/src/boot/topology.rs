@@ -109,8 +109,24 @@ fn declare_endpoints() {
     kprintln!("[TOPO] {} named endpoint(s) declared", n);
 }
 
+/// The rows installed are the built-in ones (see `late_core_class_check`).
+// arch-only: x86 hybrid cores (CPUID core types).
+#[cfg(target_arch = "x86_64")]
+static BUILTIN_ROWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 fn install_builtin(num_cpus: usize) {
-    if let Err(e) = azos_topology::init_with(azos_topology::fill_default_minimal) {
+    // arch-only: x86 hybrid cores (CPUID core types).
+    #[cfg(target_arch = "x86_64")]
+    BUILTIN_ROWS.store(true, core::sync::atomic::Ordering::Relaxed);
+    let tie = |t: &mut azos_topology::Topology<'static>| {
+        azos_topology::fill_default_minimal(t);
+        // No built-in budget was measured on a smaller core class.
+        if azos_sched::topo::differs() && azos_sched::topo::ASYM {
+            let n = t.tie_profiled_rows_to_class(0, azos_sched::topo::class_mask(0));
+            kprintln!("[TOPO] {} built-in real-time row(s) tied to core class 0", n);
+        }
+    };
+    if let Err(e) = azos_topology::init_with(tie) {
         if let azos_topology::InitError::Admission(a) = &e {
             record_neverallow(a);
             record_isolated_without_cpu(a, num_cpus);
@@ -473,7 +489,12 @@ fn admit(
     // The cross-level rule binds only in the order the scheduler dispatches
     // reservations in (`classes::level_order`; the `sched-dl-in-level`
     // canary is armed before this runs), as at run-time `reserve`.
-    let step = ba::deadline_step(topo, num_cpus, azos_sched::classes::level_order());
+    let mut classes = [0u8; azos_sched::topo::MAX_CPUS];
+    let n = num_cpus.min(classes.len());
+    for (c, k) in classes[..n].iter_mut().enumerate() {
+        *k = azos_sched::topo::class(c);
+    }
+    let step = ba::deadline_step(topo, num_cpus, azos_sched::classes::level_order(), &classes[..n]);
     step.receipts().for_each(ba::Receipt::record);
     let (r, band) = match step.outcome {
         DeadlineOutcome::Refused(e) => {
@@ -653,6 +674,31 @@ mod dma_contig_canary {
             }
             kprintln!("[CANARY] dma-contig: {} frames given back, {} free", back, azos_mm::pmm::free_pages());
         }
+    }
+}
+
+/// x86: the core types are known only once every CPU has run, after the rows
+/// were admitted. The signed rows, whose budgets were measured, are checked
+/// against them now, and one not on one core class halts the board as at boot
+/// admission. The built-in rows were measured nowhere and are tied to the biggest
+/// class when they start (`azos_syscall::topo_sched::row_reservation`).
+// arch-only: x86 hybrid cores (CPUID core types).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn late_core_class_check(num_cpus: usize) {
+    let Some(topo) = azos_topology::get() else { return };
+    if BUILTIN_ROWS.load(core::sync::atomic::Ordering::Relaxed) && !canary!("asym-late-check-rows") {
+        kprintln!("[TOPO] built-in real-time rows go to core class 0 when they start");
+        return;
+    }
+    let mut classes = [0u8; azos_sched::topo::MAX_CPUS];
+    let n = num_cpus.min(classes.len());
+    for (c, k) in classes[..n].iter_mut().enumerate() {
+        *k = azos_sched::topo::class(c);
+    }
+    if let Err(e) = azos_topology::boot_admission::core_class_check(topo, &classes[..n]) {
+        azos_decision::record(azos_decision::Rule::DeadlineAdmission, azos_decision::Verdict::Refuse, n as u32,
+            [0, topo.tasks().len() as u64, e.record_row()]);
+        halt_refused(format_args!("[TOPO] Deadline admission REFUSED once the core types are known: {:?}", e));
     }
 }
 

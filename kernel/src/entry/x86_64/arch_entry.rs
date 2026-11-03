@@ -74,6 +74,13 @@ impl ArchEntry for Entry {
     fn boot_patch(&self, text_start: usize, text_end: usize) {
         crate::boot::spin_patch::patch(text_start, text_end)
     }
+    fn cpu_commitments(&self) -> (u64, u64) {
+        // XCR0 sizes and lays out every saved FP state; PCID and INVPCID key the
+        // address space switch.
+        let f = azos_arch::cpu::features::detect();
+        (azos_arch::fp::xcr0(), f.pcid as u64 | (f.invpcid as u64) << 1)
+    }
+
     fn wake_secondaries(&self, num_cpus: usize) {
         crate::boot_hooks::arch_wake_secondaries(num_cpus)
     }

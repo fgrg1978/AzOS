@@ -30,3 +30,5 @@ ktest rcu canaries \((rv|arm|x86)\)	lockdep	# lockdep: (sleep or device wait und
 ktest masked exit canary \((rv|arm|x86)\)	lockdep	# lockdep: (sleep or device wait with interrupts off|violations=1 )	canary exit-irq-masked-canary leaves the trap's interrupt mask on through the exit hook, which lockdep reports
 ktest fair late unlink canary \((rv|arm|x86)\)	warn	refused a node held elsewhere	the canary provokes the refusal the judge fails every other row on
 ktest RT console (user )?canary \((rv|arm)\)	*	Bail out! ktest: console_rt_lines_only_append panicked	canaries rt-console-own and rt-console-own-user panic in that test on purpose (RT_CONSOLE_WIRE_CHECK)
+asym cpu refused \((rv|arm|x86)\)	*	only 3/4 (harts|CPUs) started	The row refuses the last CPU on purpose.
+asym cpu refused \((rv|arm|x86)\)	*	CPU 3 refused: ASID bits differs	The row refuses the last CPU on purpose.

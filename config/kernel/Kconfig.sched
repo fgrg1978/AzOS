@@ -598,9 +598,44 @@ config ENERGY_APPLY_DEADLINE_MS
       both. A board with no actuator asserts nothing. No effect without
       ENERGY.
 
+config SCHED_ASYM_CPUS
+    bool "Asymmetric CPUs: capacity-aware scheduling and real-time admission"
+    default y if PRESET_DESKTOP || PRESET_WEARABLE
+    help
+      The scheduler treats CPUs that differ in performance as different
+      (big.LITTLE from the DTB's capacity-dmips-mhz, a hybrid x86 part from
+      its CPUID core types). Capacity-scaled fair balancing; a fair task that
+      has held a smaller CPU for SCHED_MISFIT_TICKS ticks moves to an idle,
+      bigger one; an unpinned real-time task goes to the biggest CPU among
+      equally loaded ones;
+      boot admission of real-time rows is a single-type cluster: a signed
+      row with a reservation declares the core class its budget was measured
+      on (`core_class`, 0 the biggest) and a `cpu_mask` of CPUs of that class,
+      or the topology is refused with a decision record. At run time a request
+      names one class by a mask or a pin, or by being made by the running task
+      for itself, which is then pinned where it runs (`SYS_SCHEDCTL`). Budgets
+      are not scaled by capacity and there are no per-class budgets.
+
+      n: every CPU counts as equal, in the balancer too: capacity-scaled
+      balancing, which needs this symbol, is gone on every preset that does not
+      default it on. Detection stays, so a machine that reports differing CPUs
+      still boots, with a warning line and a decision record: a budget measured
+      on one core type runs on any, but never unnoticed.
+
+config SCHED_MISFIT_TICKS
+    int "Ticks a fair task holds a small CPU before it counts as misfit"
+    range 1 1000
+    default 4
+    help
+      A fair task that has run on a CPU smaller than the biggest for this many
+      consecutive ticks, with a bigger CPU idle, is moved there at once. A
+      queued task needs no such move: the balancer has it. Longer waits are
+      less eager to move short bursts. A real-time task is never moved. No
+      effect without SCHED_ASYM_CPUS and SCHED_BALANCE.
+
 config SCHED_EAS
     bool "Energy-aware wake placement on asymmetric CPUs"
-    depends on ENERGY
+    depends on ENERGY && SCHED_ASYM_CPUS
     default y if PRESET_DESKTOP || PRESET_WEARABLE
     help
       When CPUs differ in capacity (big.LITTLE from the

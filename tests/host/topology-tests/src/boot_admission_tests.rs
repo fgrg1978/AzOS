@@ -49,7 +49,7 @@ fn plain(name: &str) -> String {
 }
 
 fn receipts(t: &Topology<'_>, ncpus: usize) -> Vec<Receipt> {
-    deadline_step(t, ncpus, LevelOrder::Edf).receipts().copied().collect()
+    deadline_step(t, ncpus, LevelOrder::Edf, &[]).receipts().copied().collect()
 }
 
 fn rc(rule: Rule, verdict: Verdict, subject: u32, numbers: [u64; 3]) -> Receipt {
@@ -66,7 +66,7 @@ fn an_admitted_set_writes_placed_rows_then_the_band() {
         rc(Rule::DeadlineAdmission, Verdict::Admit, 2, [2, 3, 0]),
         rc(Rule::RtBandCap, Verdict::Admit, 2, [2, cap, 0]),
     ]);
-    assert!(matches!(deadline_step(&t, 2, LevelOrder::Edf).outcome, DeadlineOutcome::Admitted(r) if r.placed == 2));
+    assert!(matches!(deadline_step(&t, 2, LevelOrder::Edf, &[]).outcome, DeadlineOutcome::Admitted(r) if r.placed == 2));
 }
 
 /// The same set on one CPU: refused, `placed` 0, the first row refused
@@ -76,7 +76,7 @@ fn a_refused_set_writes_one_record_with_nothing_placed() {
     let t = topo(row("a", 6000, 3) + &row("b", 6000, 3) + &plain("c"));
     assert_eq!(receipts(&t, 1), [rc(Rule::DeadlineAdmission, Verdict::Refuse, 1, [0, 3, 2])]);
     assert!(matches!(
-        deadline_step(&t, 1, LevelOrder::Edf).outcome,
+        deadline_step(&t, 1, LevelOrder::Edf, &[]).outcome,
         DeadlineOutcome::Refused(AdmissionError::Deadline(DeadlineRefusal::NoCpuFits { task: 1 }))
     ));
 }
@@ -102,7 +102,7 @@ fn a_row_over_the_band_cap_is_admitted_by_deadline_and_refused_by_the_band() {
         rc(Rule::DeadlineAdmission, Verdict::Admit, 1, [1, 1, 0]),
         rc(Rule::RtBandCap, Verdict::Refuse, 1, [1, cap as u64, 1]),
     ]);
-    assert!(matches!(deadline_step(&t, 1, LevelOrder::Edf).outcome, DeadlineOutcome::BandRefused(_, DeadlineRefusal::BandCap { task: 0 })));
+    assert!(matches!(deadline_step(&t, 1, LevelOrder::Edf, &[]).outcome, DeadlineOutcome::BandRefused(_, DeadlineRefusal::BandCap { task: 0 })));
 }
 
 /// The install-time records: a `neverallow` refusal names the row, rule, kind
@@ -143,4 +143,52 @@ fn dry_boot_of_the_builtin_topology() {
             println!("dry boot, {ncpus} CPU(s): {}", line.trim_end());
         }
     }
+}
+
+/// `row` with the core class its budget was measured on.
+fn typed_row(name: &str, runtime_us: u32, mask: u32, class: u32) -> String {
+    row(name, runtime_us, mask).replace("caps = []", &format!("core_class = {class}\ncaps = []"))
+}
+
+/// CPUs 0-1 are class 0 (big), 2-3 class 1: a budget is admitted on the class
+/// it declares and refused, with the row named, on any other or on none.
+#[test]
+fn a_budget_is_admitted_only_on_the_core_class_it_was_measured_on() {
+    let classes = [0u8, 0, 1, 1];
+    let step = |t: &Topology<'_>, cl: &[u8]| deadline_step(t, 4, LevelOrder::Edf, cl);
+    let refused = |t: &Topology<'_>, cl: &[u8]| matches!(step(t, cl).outcome,
+        DeadlineOutcome::Refused(AdmissionError::Deadline(DeadlineRefusal::CoreClass { task: 0 })));
+
+    let on_big = topo(typed_row("a", 2000, 0b0011, 0));
+    assert!(matches!(step(&on_big, &classes).outcome, DeadlineOutcome::Admitted(_)));
+    // The row's mask reaches a little CPU; the class is the declared one.
+    assert!(refused(&topo(typed_row("a", 2000, 0b0110, 0)), &classes), "mask crosses classes");
+    // Declared the little class, pinned to the big CPUs.
+    assert!(refused(&topo(typed_row("a", 2000, 0b0011, 1)), &classes), "wrong class");
+    // Any CPU is not a class.
+    assert!(refused(&topo(typed_row("a", 2000, 0, 0)), &classes), "no mask");
+    // No declaration where the CPUs differ.
+    assert!(refused(&topo(row("a", 2000, 0b0011)), &classes), "no class");
+    // The refusal is a record with the row plus one, nothing placed.
+    assert_eq!(step(&topo(row("a", 2000, 0b0011)), &classes).receipts().copied().collect::<Vec<_>>(),
+        [rc(Rule::DeadlineAdmission, Verdict::Refuse, 4, [0, 1, 1])]);
+    // Equal CPUs, or a build that does not tell them apart: the declaration is not read.
+    assert!(matches!(step(&topo(row("a", 2000, 0b0011)), &[0, 0, 0, 0]).outcome, DeadlineOutcome::Admitted(_)));
+    assert!(matches!(step(&topo(row("a", 2000, 0b0011)), &[]).outcome, DeadlineOutcome::Admitted(_)));
+}
+
+/// The built-in rows name no class: tied to the biggest one, on its CPUs when
+/// they name none, they are admitted where the CPUs differ; a row that names a
+/// little CPU keeps it and is refused.
+#[test]
+fn built_in_rows_are_tied_to_the_biggest_class() {
+    let classes = [0u8, 0, 1, 1];
+    let step = |t: &Topology<'_>| deadline_step(t, 4, LevelOrder::Edf, &classes);
+    let mut any = topo(row("a", 2000, 0));
+    assert!(matches!(step(&any).outcome, DeadlineOutcome::Refused(_)), "untied, no class");
+    assert_eq!(any.tie_profiled_rows_to_class(0, 0b0011), 1);
+    assert!(matches!(step(&any).outcome, DeadlineOutcome::Admitted(_)));
+    let mut little = topo(row("a", 2000, 0b0100));
+    little.tie_profiled_rows_to_class(0, 0b0011);
+    assert!(matches!(step(&little).outcome, DeadlineOutcome::Refused(_)), "a little CPU stays refused");
 }

@@ -400,6 +400,9 @@ pub(super) unsafe fn tick(cpu: usize, cur: usize) -> bool {
     if bm & rt::LEVELS_BAND != 0 {
         return true;
     }
+    if unsafe { misfit_tick(cpu, cur) } {
+        return true;
+    }
     if bm & rt::LEVELS_NONBAND == 0 {
         return false;
     }
@@ -900,6 +903,181 @@ unsafe fn balance_pass(cpu: usize, push: bool) -> Moved {
         BUSY.fetch_add(r.busy, Relaxed);
     }
     r
+}
+
+/// SCHED_ASYM_CPUS, per CPU and written by that CPU only (`to`: also cleared).
+#[repr(align(64))]
+struct MisfitCpu {
+    /// The running task and the ticks it has held the CPU without a voluntary
+    /// switch: `idx + 1 << 32 | ticks`.
+    run: AtomicU64,
+    /// What the tick decided: `idx + 1 << 32 | to + 1`.
+    to: AtomicU64,
+}
+static MISFIT: [MisfitCpu; MAX_CPUS] = [const { MisfitCpu { run: AtomicU64::new(0), to: AtomicU64::new(0) } }; MAX_CPUS];
+static MISFIT_MOVES: AtomicU32 = AtomicU32::new(0);
+
+/// Runtime canaries `asym-misfit-off` (nothing is marked), `asym-misfit-rt` (the
+/// real-time filter is gone) and `asym-misfit-pinned` (the pin is ignored).
+#[cfg(feature = "ktest")]
+pub mod misfit_canary {
+    use super::{AtomicU32, Relaxed};
+    pub const OFF: u32 = 1;
+    pub const RT: u32 = 2;
+    pub const PINNED: u32 = 4;
+    static ARMED: AtomicU32 = AtomicU32::new(0);
+    pub fn arm(what: u32) {
+        ARMED.fetch_or(what, Relaxed);
+    }
+    pub(super) fn on(what: u32) -> bool {
+        ARMED.load(Relaxed) & what != 0
+    }
+}
+/// The last task moved as a misfit, so a test can tell it from any other.
+#[cfg(feature = "ktest")]
+static MISFIT_LAST_TID: AtomicU32 = AtomicU32::new(0);
+/// Ktest: may the task in slot `idx` be moved as a misfit, as it is now?
+#[cfg(feature = "ktest")]
+pub fn ktest_misfit_may_move(idx: usize) -> bool {
+    misfit_may_move(idx, prio_of(idx))
+}
+/// The one task a test counts the misfit moves of.
+#[cfg(feature = "ktest")]
+static MISFIT_WATCHED: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "ktest")]
+static MISFIT_WATCHED_MOVES: AtomicU32 = AtomicU32::new(0);
+/// Count the misfit moves of `tid` from now on.
+#[cfg(feature = "ktest")]
+pub fn misfit_watch(tid: u32) {
+    MISFIT_WATCHED_MOVES.store(0, Relaxed);
+    MISFIT_WATCHED.store(tid, Relaxed);
+}
+/// See [`misfit_watch`].
+#[cfg(feature = "ktest")]
+pub fn misfit_watched_moves() -> u32 {
+    MISFIT_WATCHED_MOVES.load(Relaxed)
+}
+/// See [`MISFIT_LAST_TID`].
+#[cfg(feature = "ktest")]
+pub fn misfit_last_tid() -> u32 {
+    MISFIT_LAST_TID.load(Relaxed)
+}
+
+/// Running tasks moved off a CPU too small for them.
+pub fn misfit_moves() -> u32 {
+    MISFIT_MOVES.load(Relaxed)
+}
+
+/// May a task of priority `p`, pinned or not, be moved as a misfit? A real-time
+/// task or a pinned one never.
+#[inline]
+fn misfit_may_move(idx: usize, p: u32) -> bool {
+    #[cfg(feature = "ktest")]
+    let (fair, free) = (
+        misfit_canary::on(misfit_canary::RT) && p < IDLE_PRIORITY,
+        misfit_canary::on(misfit_canary::PINNED),
+    );
+    #[cfg(not(feature = "ktest"))]
+    let (fair, free) = (false, false);
+    (fair || is_fair(p)) && (free || unsafe { task_ref(idx) }.affinity() < 0)
+}
+
+/// The tick of `cpu` with `cur` running: true when `cur` has held the CPU for
+/// `SCHED_MISFIT_TICKS` ticks and a bigger CPU is idle, so this tick must switch
+/// it away. A queued task is the balancer's; a running one cannot be taken from
+/// another CPU, as only the switch here frees its context. A CPU that has
+/// nowhere bigger to send anything pays one load; the others read the CPUs once
+/// per window, however long the task runs.
+#[inline]
+unsafe fn misfit_tick(cpu: usize, cur: usize) -> bool {
+    if !(crate::topo::ASYM && azos_limits::SCHED_BALANCE) || crate::topo::class(cpu) == 0 {
+        return false;
+    }
+    let who = (cur as u64 + 1) << 32;
+    let run = MISFIT[cpu].run.load(Relaxed);
+    let ticks = if run & !0xffff_ffff == who { run as u32 + 1 } else { 1 };
+    if ticks < azos_limits::SCHED_MISFIT_TICKS as u32 {
+        MISFIT[cpu].run.store(who | ticks as u64, Relaxed);
+        return false;
+    }
+    MISFIT[cpu].run.store(who, Relaxed);
+    unsafe { misfit_look(cpu, cur) }
+}
+
+#[inline(never)]
+unsafe fn misfit_look(cpu: usize, cur: usize) -> bool {
+    #[cfg(feature = "ktest")]
+    if misfit_canary::on(misfit_canary::OFF) {
+        return false;
+    }
+    if !misfit_may_move(cur, prio_of(cur)) {
+        return false;
+    }
+    // A CPU with real-time state takes no part, as in the balancer.
+    if unsafe { rt_cpu(cpu) } {
+        return false;
+    }
+    let online = crate::smp::NUM_ONLINE_CPUS.load(Relaxed).min(ncpu()).min(MAX_CPUS);
+    let isolated = ISOLATED.load(Relaxed);
+    let mut eligible: Mask = 0;
+    for c in 0..online {
+        if isolated >> c & 1 == 0 && !unsafe { rt_cpu(c) } {
+            eligible |= 1u64 << c;
+        }
+    }
+    let Some(to) = balance::misfit_target(&mut Queues { me: cpu }, cpu, eligible) else {
+        return false;
+    };
+    #[cfg(feature = "energy")]
+    let Some(to) = crate::energy::misfit_verdict(cur, cpu, to, eligible as u32) else {
+        return false;
+    };
+    MISFIT[cpu].to.store((cur as u64 + 1) << 32 | (to as u64 + 1), Relaxed);
+    true
+}
+
+/// The top of `do_schedule` on `cpu`, leaving `cur`: the CPU it must go to, if the
+/// tick decided so of this very task and it may still go. Read once. A voluntary
+/// switch ends the task's run on this CPU.
+#[inline(never)]
+pub(super) unsafe fn misfit_take(cpu: usize, cur: usize, voluntary: bool) -> Option<usize> {
+    let m = &MISFIT[cpu];
+    if voluntary && m.run.load(Relaxed) != 0 {
+        m.run.store(0, Relaxed);
+    }
+    let v = m.to.load(Relaxed);
+    if v == 0 {
+        return None;
+    }
+    m.to.store(0, Relaxed);
+    if v >> 32 != cur as u64 + 1 || cur >= MAX_TASKS || !misfit_may_move(cur, prio_of(cur)) {
+        return None;
+    }
+    Some((v as u32 - 1) as usize)
+}
+
+/// `do_schedule` on `cpu` sends `idx`, the task it is leaving, to `to` instead
+/// of its own queue. `idx` is `Ready` with `context_saving` set, so `to` waits
+/// at the dispatch gate for the save to finish and writes `context.tp` itself.
+pub(super) unsafe fn misfit_send(cpu: usize, idx: usize, to: usize) {
+    let t = unsafe { task_mut(idx) };
+    unsafe { sleep(cpu, idx) };
+    t.context.tp = to as CtxReg;
+    unsafe { hist_reaccount(idx) };
+    t.ready_site.store(crate::task::ready_site::REBALANCE | ((to as u8) << 4), Relaxed);
+    if !unsafe { enqueue_remote_aware(to, idx) } {
+        SCHED_ENQ_REFUSED.fetch_add(1, Relaxed);
+    }
+    MOVED_IN[to].fetch_add(1, Relaxed);
+    MOVED_OUT[cpu].fetch_add(1, Relaxed);
+    MISFIT_MOVES.fetch_add(1, Relaxed);
+    #[cfg(feature = "ktest")]
+    {
+        MISFIT_LAST_TID.store(t.tid, Relaxed);
+        if MISFIT_WATCHED.load(Relaxed) == t.tid {
+            MISFIT_WATCHED_MOVES.fetch_add(1, Relaxed);
+        }
+    }
 }
 
 /// The tick of `cpu`, with fair tasks queued behind its running one: once per

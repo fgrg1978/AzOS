@@ -404,11 +404,6 @@ mod tests {
             .begin("cpu@1").prop("riscv,isa", &cstr("rv64imac_sstc")).end()
             .end().end().blob();
         assert!(!sstc_of(&blob), "cpu@1 is not cpu@0");
-        // A name that merely starts with cpu@0.
-        let blob = Fdt::new().begin("").begin("cpus")
-            .begin("cpu@00").prop("riscv,isa", &cstr("rv64imac_sstc")).end()
-            .end().end().blob();
-        assert!(!sstc_of(&blob), "cpu@00");
         // A child of cpu@0 carrying the property.
         let blob = Fdt::new().begin("").begin("cpus")
             .begin("cpu@0").begin("interrupt-controller")
@@ -423,7 +418,7 @@ mod tests {
         // The positive control, with cpu@1 after it.
         let blob = Fdt::new().begin("").begin("cpus")
             .begin("cpu@0").prop("riscv,isa", &cstr("rv64imac_sstc")).end()
-            .begin("cpu@1").prop("riscv,isa", &cstr("rv64imac")).end()
+            .begin("cpu@1").prop("riscv,isa", &cstr("rv64imac_sstc")).end()
             .end().end().blob();
         assert!(sstc_of(&blob));
     }
@@ -1923,6 +1918,48 @@ mod tests {
 
         fn ids(t: &DtTopology) -> Vec<(u64, u32, u32, u32)> {
             t.cpus().iter().map(|c| (c.reg, c.socket, c.cluster, c.core)).collect()
+        }
+
+        /// `cpu@<reg>` with a `riscv,isa` string and, when `disabled`, its status.
+        fn isa_cpu(f: &mut Fdt, reg: u32, isa: &str, disabled: bool) {
+            f.begin(&format!("cpu@{reg}")).prop("device_type", &cstr("cpu")).prop("reg", &be(reg)).prop("riscv,isa", &cstr(isa));
+            if disabled {
+                f.prop("status", &cstr("disabled"));
+            }
+            f.end();
+        }
+
+        #[test]
+        fn the_isa_is_what_every_enabled_cpu_declares() {
+            let mut f = Fdt::new();
+            f.begin("").begin("cpus").prop("#address-cells", &be(1)).prop("#size-cells", &be(0));
+            isa_cpu(&mut f, 0, "rv64imafdc_zbb_zbc_zba", false);
+            isa_cpu(&mut f, 1, "rv64imafdc_zbc_zba", false);
+            isa_cpu(&mut f, 2, "rv64imac_zba", false);
+            isa_cpu(&mut f, 3, "rv64imac", true);
+            f.end().end();
+            let b = fixture(&f.blob());
+            let info = unsafe { dtb_parse(b.as_ptr()) }.expect("readable blob");
+            assert!(info.isa_zba, "all enabled CPUs declare zba");
+            assert!(!info.isa_zbb, "cpu@1 lacks zbb");
+            assert!(!info.isa_zbc && !info.isa_f, "cpu@2 lacks zbc and f");
+        }
+
+        #[test]
+        fn a_disabled_cpu0_does_not_count_and_an_enabled_cpu_without_an_isa_has_none() {
+            let parse = |f: &mut Fdt| unsafe { dtb_parse(fixture(&f.blob()).as_ptr()) }.expect("readable blob");
+            let mut f = Fdt::new();
+            f.begin("").begin("cpus");
+            isa_cpu(&mut f, 0, "rv64imac", true);
+            isa_cpu(&mut f, 1, "rv64imac_zba", false);
+            f.end().end();
+            assert!(parse(&mut f).isa_zba, "the disabled cpu@0 lacks zba, the only enabled CPU has it");
+            let mut f = Fdt::new();
+            f.begin("").begin("cpus");
+            isa_cpu(&mut f, 0, "rv64imac_zba", false);
+            f.begin("cpu@1").prop("device_type", &cstr("cpu")).end();
+            f.end().end();
+            assert!(!parse(&mut f).isa_zba, "cpu@1 declares nothing");
         }
 
         #[test]

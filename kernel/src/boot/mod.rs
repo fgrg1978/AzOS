@@ -168,6 +168,8 @@ mod seams;
 pub(crate) use seams::*;
 // Kconfig CHAOS / DECISION_RECORDS_DEV: command line, canaries, ktests.
 pub(crate) mod chaos;
+#[cfg(feature = "ktest")]
+mod asym_ktests;
 mod robot;
 pub(crate) use robot::*;
 mod ota;

@@ -85,11 +85,14 @@ pub struct SchedProfile {
     pub deadline_us: u32,
     /// CPUs the task may run on, bit `n` = CPU `n`. Zero means "any CPU".
     pub cpu_mask: u32,
+    /// The core class the budget was measured on (0 the biggest CPUs of the
+    /// machine, `azos_sched::topo::class`). Read only where CPUs differ.
+    pub core_class: Option<u8>,
 }
 
 impl SchedProfile {
     /// No profile declared.
-    pub const NONE: Self = Self { period_us: 0, runtime_us: 0, deadline_us: 0, cpu_mask: 0 };
+    pub const NONE: Self = Self { period_us: 0, runtime_us: 0, deadline_us: 0, cpu_mask: 0, core_class: None };
 
     /// Whether any field is set. A partly filled profile counts as declared, so
     /// that it is rejected as malformed and not silently ignored.
@@ -176,6 +179,15 @@ pub enum DeadlineRefusal {
         /// The level whose deadlines that set could not guarantee.
         failing_level: u32,
     },
+    /// The machine's CPUs differ in core class (Kconfig `SCHED_ASYM_CPUS`) and
+    /// the row's budget is not tied to one: it declares no `core_class`, or
+    /// its `cpu_mask` is empty or names a CPU of another class. The budget was
+    /// measured on one core type and is neither scaled nor kept per type, so
+    /// it is admitted on that type only.
+    CoreClass {
+        /// Index of the task in the topology.
+        task: u16,
+    },
     /// More profiled tasks than one admission run will consider.
     TooManyProfiles,
 }
@@ -192,6 +204,7 @@ impl DeadlineRefusal {
             | DeadlineRefusal::ClassBudget { task }
             | DeadlineRefusal::BandCap { task }
             | DeadlineRefusal::BandNotLocked { task }
+            | DeadlineRefusal::CoreClass { task }
             | DeadlineRefusal::Levels { task, .. } => Some(task),
             DeadlineRefusal::TooManyProfiles => None,
         }

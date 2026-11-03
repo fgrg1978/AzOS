@@ -183,6 +183,42 @@ pub unsafe fn wake_hart(hart_id: usize) -> isize {
 /// The boot CPU identifies itself through [`current_cpu_id`], which is
 /// correct here without help: `wake_harts` runs on the boot CPU inside
 /// `kernel_main`, and `boot.S` sets `tp` (riscv64) to 0 before calling it.
+/// How a secondary CPU stands against what the boot CPU committed to: 0 unknown,
+/// 1 it fits, 2 refused. A store, not a read-modify-write: the CPU that writes it
+/// may lack the atomics the kernel selected.
+static CPU_CHECK: [core::sync::atomic::AtomicU8; crate::topo::MAX_CPUS] = [const { core::sync::atomic::AtomicU8::new(0) }; crate::topo::MAX_CPUS];
+
+/// The calling CPU has been compared with the boot CPU.
+pub fn note_cpu_checked(cpu: usize, refused: bool) {
+    if let Some(c) = CPU_CHECK.get(cpu) {
+        c.store(if refused { 2 } else { 1 }, Ordering::Release);
+    }
+}
+
+/// `cpu` differs from what the boot CPU committed to and stays offline.
+pub fn cpu_refused(cpu: usize) -> bool {
+    CPU_CHECK.get(cpu).is_some_and(|c| c.load(Ordering::Acquire) == 2)
+}
+
+/// Wait for the started CPUs in `alive` to say how they compare with the boot
+/// CPU, and take the refused ones out. One that says nothing in time stays, as a
+/// CPU that started always has.
+fn drop_refused_cpus(mut alive: u64, boot: usize, num_cpus: usize) -> u64 {
+    let hz = azos_drv_sys::timebase::TIMER_FREQ;
+    let until = azos_drv_sys::timebase::now() + 5 * hz;
+    let started = alive;
+    for cpu in (0..num_cpus).filter(|&c| c != boot && started >> c & 1 != 0) {
+        while CPU_CHECK[cpu].load(Ordering::Acquire) == 0 && azos_drv_sys::timebase::now() < until {
+            core::hint::spin_loop();
+        }
+        if cpu_refused(cpu) {
+            alive &= !(1 << cpu);
+            azos_percpu::set_cpu_online(cpu, false);
+        }
+    }
+    alive
+}
+
 pub unsafe fn wake_harts(num_cpus: usize) -> usize {
     // percpu-hint: wake_harts runs on the boot hart in kernel_main, before any task exists
     let boot = current_cpu_id();
@@ -215,6 +251,7 @@ pub unsafe fn wake_harts(num_cpus: usize) -> usize {
         }
     }
 
+    let alive = drop_refused_cpus(alive, boot, num_cpus);
     ALIVE.store(alive, Ordering::Release);
     let online = hart_set::online_prefix(alive, num_cpus);
 

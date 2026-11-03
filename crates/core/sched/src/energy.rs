@@ -346,6 +346,13 @@ fn cpu_capacity(cpu: usize) -> Option<u16> {
     Some(opp.capacity)
 }
 
+/// [`azos_energy::model::misfit_policy`] for the task in slot `idx` running on
+/// `cpu`, with `to` the bigger idle CPU found, among `candidates`.
+pub fn misfit_verdict(idx: usize, cpu: usize, to: usize, candidates: u32) -> Option<usize> {
+    let eas = (azos_limits::SCHED_EAS && eas_active()).then(|| eas_place(idx, cpu, candidates));
+    azos_energy::model::misfit_policy(mode(), eas, cpu_capacity(cpu), cpu_capacity, to)
+}
+
 /// The CPU a fair task in pool slot `idx`, last run on `prev_cpu`, should be
 /// woken on, among `candidates` (bit n = CPU n; the model names at most 32 CPUs); `None` when the energy
 /// comparison does not apply (the load balancer's placement then decides):

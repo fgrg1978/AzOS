@@ -231,7 +231,7 @@ The one module outside the shared set that sits outside `ext/` is aarch64's
 | `resume.rs` | yes | yes | yes |
 | `smp.rs` | yes | yes | yes |
 | `trap.rs` | yes | yes | yes |
-| `ext/` | `hv.rs`, `zicboz.rs` | `hv_vectors.rs`, `its_route.rs` (PCI MSI routes through the GICv3 ITS, feature `pci`), `pan_patch.rs`, `rpi_mbox.rs` (the VideoCore mailbox as the thermal board object, feature `thermal`), `selftests.rs` | `cpu_init.rs`, `hv.rs`, `hybrid_energy.rs` (core types for the energy model, feature `energy`), `limine.rs`, `thermal_hw.rs` (the thermal board object's MSR and PCI access, feature `thermal`) |
+| `ext/` | `hv.rs`, `zicboz.rs` | `hv_vectors.rs`, `its_route.rs` (PCI MSI routes through the GICv3 ITS, feature `pci`), `pan_patch.rs`, `rpi_mbox.rs` (the VideoCore mailbox as the thermal board object, feature `thermal`), `selftests.rs` | `cpu_init.rs`, `hv.rs`, `hybrid.rs` (core types for the energy model, feature `energy`), `limine.rs`, `thermal_hw.rs` (the thermal board object's MSR and PCI access, feature `thermal`) |
 
 Extra asm files outside the shared set: `kernel/src/entry/riscv64/asm/context_switch_rvv.S` (the
 vector-extension variant) and `kernel/src/entry/x86_64/asm/ap_entry.S` (the application-processor

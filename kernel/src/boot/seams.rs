@@ -75,11 +75,110 @@ pub(crate) fn install_vdso(timebase_hz: u64, counter_scale: Option<(u64, u64, u6
     }
 }
 
-/// riscv64: the vDSO `hwcap` bits cpu@0's device-tree ISA declares
+/// riscv64: the vDSO `hwcap` bits every CPU's device-tree ISA declares
 /// (`boot_hooks` stores them right after the DTB walk, before
 /// [`install_vdso`]). aarch64 reads its ID registers instead.
 #[cfg(target_arch = "riscv64")]
 pub(crate) static DTB_HWCAP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// A CPU coming up, before it counts as online: the `hwcap` word keeps only what
+/// this CPU has too, since a task may migrate here, and the kernel's SHA-256
+/// follows it. No task runs on this CPU yet and a hash already running stays on
+/// a CPU that has the instructions.
+pub(crate) fn narrow_hwcap_to_this_cpu(cpu: usize) {
+    let mine = detect_hwcap();
+    // arch-only: riscv64's weak CPU is in the device tree.
+    #[cfg(not(target_arch = "riscv64"))]
+    let mine = if cpu + 1 != azos_percpu::nr_cpu_ids() {
+        mine
+    } else if canary!("asym-weak-last-cpu") {
+        mine & !weak_cpu_lacks()
+    } else if canary!("asym-weak-other-bit") {
+        mine & !weak_cpu_lacks_other()
+    } else {
+        mine
+    };
+    if canary!("asym-hwcap-boot-only") {
+        return;
+    }
+    let Some(shared) = azos_mm::vdso::vdso_narrow_hwcap(mine) else { return };
+    azos_drv_sys::kwarn!("[VDSO] CPU {} lacks hwcap bits the others have: the shared word is now {:#x}", cpu, shared);
+    sha256_after_narrowing(shared);
+}
+
+/// The boot selection is sealed (`select_hook` panics from then on) and CPUs
+/// narrow the word concurrently, so a CPU only ever leaves the instructions for
+/// the portable path, and no order of CPUs can bring them back.
+fn sha256_after_narrowing(shared: u64) {
+    // arch-only: FEAT_SHA256 is the only backend chosen by a bit a CPU can lack
+    // here; riscv64's word already is the weakest before the selection.
+    #[cfg(target_arch = "aarch64")]
+    if shared & azos_abi::vdso::HWCAP_A64_SHA2 == 0 {
+        azos_crypto::sha256::select_generic();
+        kprintln!("[CRYPTO] sha256 blocks: generic");
+    }
+    let _ = shared;
+}
+
+/// Runtime canary `asym-weak-last-cpu`: the bit the last CPU claims to lack,
+/// because QEMU has one CPU type per machine: the one the kernel's own SHA-256
+/// reads on aarch64.
+// arch-only: each ISA numbers its hwcap bits.
+#[cfg(not(target_arch = "riscv64"))]
+fn weak_cpu_lacks() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    return azos_abi::vdso::HWCAP_A64_SHA2;
+    #[cfg(target_arch = "x86_64")]
+    return azos_abi::vdso::HWCAP_X86_POPCNT;
+}
+
+/// Runtime canary `asym-weak-other-bit`: a bit no SHA-256 backend reads.
+// arch-only: each ISA numbers its hwcap bits.
+#[cfg(not(target_arch = "riscv64"))]
+fn weak_cpu_lacks_other() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    return azos_abi::vdso::HWCAP_A64_CRC32;
+    #[cfg(target_arch = "x86_64")]
+    return azos_abi::vdso::HWCAP_X86_BMI1;
+}
+
+/// Ktest: the bit one CPU of this machine lacks, and whether one does. riscv64
+/// has it from the device tree of a machine whose `cpus_differ`, the others from
+/// `canary=asym-weak-last-cpu`.
+#[cfg(feature = "ktest")]
+pub(crate) fn weak_cpu_hwcap(cpus_differ: bool) -> (u64, bool) {
+    // arch-only: each ISA numbers its hwcap bits.
+    #[cfg(target_arch = "riscv64")]
+    return (azos_abi::vdso::HWCAP_RV_ZBB, cpus_differ);
+    // arch-only: each ISA numbers its hwcap bits.
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        let _ = cpus_differ;
+        if canary!("asym-weak-other-bit") {
+            (weak_cpu_lacks_other(), true)
+        } else {
+            (weak_cpu_lacks(), canary!("asym-weak-last-cpu"))
+        }
+    }
+}
+
+/// Ktest: the kernel's SHA-256 follows the word: off the instructions if `bit`
+/// was theirs, and on them if another bit went (aarch64, whose hook is sealed).
+#[cfg(feature = "ktest")]
+pub(crate) fn sha256_follows(bit: u64) -> bool {
+    // arch-only: the SHA-256 backends are per ISA.
+    #[cfg(target_arch = "aarch64")]
+    return (azos_crypto::sha256::backend() == "generic") == (bit == azos_abi::vdso::HWCAP_A64_SHA2);
+    // arch-only: the SHA-256 backends are per ISA.
+    #[cfg(target_arch = "riscv64")]
+    return bit != azos_abi::vdso::HWCAP_RV_ZBB || azos_crypto::sha256::backend() == "generic";
+    // arch-only: the SHA-256 backends are per ISA.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = bit;
+        true
+    }
+}
 
 /// The vDSO `hwcap` word (wave 13; the AT_HWCAP analogue): what this CPU
 /// implements, from the ID registers (aarch64), CPUID (x86_64) or the
@@ -148,8 +247,10 @@ pub(crate) fn detect_hwcap() -> u64 {
     };
     #[cfg(target_arch = "riscv64")]
     let h = {
-        use azos_abi::vdso::HWCAP_RV_V;
+        use azos_abi::vdso::{HWCAP_RV_V, HWCAP_RV_ZBB};
         let h = DTB_HWCAP.load(core::sync::atomic::Ordering::Acquire);
+        // As if the device tree's cpu@0 spoke for every CPU.
+        let h = if canary!("asym-hwcap-boot-only") { h | HWCAP_RV_ZBB } else { h };
         if cfg!(feature = "rvv") { h } else { h & !HWCAP_RV_V }
     };
     #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64", target_arch = "x86_64")))]
@@ -229,7 +330,8 @@ fn pmu_hwcap() -> u64 {
     h
 }
 
-/// riscv64 boot: record cpu@0's device-tree ISA for [`detect_hwcap`].
+/// riscv64 boot: record the device-tree ISA every CPU declares for
+/// [`detect_hwcap`].
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn note_dtb_isa(zbb: bool, zbc: bool, zknh: bool, v: bool) {
     use azos_abi::vdso::*;
@@ -245,8 +347,8 @@ pub(crate) fn note_dtb_isa(zbb: bool, zbc: bool, zknh: bool, v: bool) {
 /// The kernel's SHA-256 (module verify, image digests) on the CPU's SHA-2
 /// instructions when the hwcap word says it has them (wave 13): aarch64
 /// FEAT_SHA256, riscv64 Zknh, else riscv64 Zbb rotates, else generic. Each
-/// path is kept only after its self-test (`azos_crypto::sha256`). Runs
-/// once, at boot, before anything else hashes.
+/// path is kept only after its self-test (`azos_crypto::sha256`). Runs at
+/// boot, before anything else hashes, and again if a CPU narrows the word.
 fn select_sha256(h: u64) {
     #[cfg(target_arch = "aarch64")]
     let name = if h & azos_abi::vdso::HWCAP_A64_SHA2 != 0
@@ -254,6 +356,7 @@ fn select_sha256(h: u64) {
     {
         "armv8-ce"
     } else {
+        azos_crypto::sha256::select_generic();
         "generic"
     };
     #[cfg(target_arch = "riscv64")]

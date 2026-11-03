@@ -54,7 +54,7 @@ pub(crate) fn install_energy(num_cpus: usize, dtb_ptr: usize) {
     if from_dtb.is_none() && !spec.model.is_present() && num_cpus > 1 {
         // The boot CPU records its own core type now; the others do as they
         // come up. A part that reports none has nothing to wait for.
-        if crate::entry::x86_64::ext::hybrid_energy::boot_cpu_reports_a_core_type() {
+        if crate::entry::x86_64::ext::hybrid::boot_cpu_reports_a_core_type() {
             kprintln!("[ENERGY] cpuid: the boot CPU reports a core type; the model waits for the other CPUs");
             CPUID_PENDING.store(true, core::sync::atomic::Ordering::Release);
         }
@@ -111,7 +111,7 @@ fn firmware_model(_dtb_ptr: usize, _num_cpus: usize) -> Option<Result<azos_energ
 // arch-only: x86 hybrid cores (CPUID core types and the TSC rate).
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn install_energy_after_smp(num_cpus: usize, online: usize) {
-    use crate::entry::x86_64::ext::hybrid_energy::{recorded_class, tsc_khz};
+    use crate::entry::x86_64::ext::hybrid::{recorded_class, tsc_khz};
     if !CPUID_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel) {
         return;
     }

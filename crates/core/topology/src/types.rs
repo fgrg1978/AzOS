@@ -4047,6 +4047,25 @@ impl<'a> Topology<'a> {
         Ok(())
     }
 
+    /// The built-in rows are not measured on any machine: where the CPUs differ
+    /// in core class, each row with a reservation is tied to `class`, on the
+    /// CPUs of `class_mask` when it names none. A row that names CPUs keeps
+    /// them, so boot admission still refuses one on another class. Returns how
+    /// many rows it tied.
+    pub fn tie_profiled_rows_to_class(&mut self, class: u8, class_mask: u32) -> usize {
+        let mut n = 0;
+        for t in &mut self.tasks[..self.tasks_len as usize] {
+            if t.profile.is_declared() && t.profile.core_class.is_none() {
+                t.profile.core_class = Some(class);
+                if t.profile.cpu_mask == 0 {
+                    t.profile.cpu_mask = class_mask;
+                }
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Declare a frame budget for the task pushed most recently.
     ///
     /// A setter rather than an argument to `push_task_profiled`: that call

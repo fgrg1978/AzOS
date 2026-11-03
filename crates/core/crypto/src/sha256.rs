@@ -294,7 +294,13 @@ pub fn select_hook(f: BlocksFn) -> bool {
     false
 }
 
-/// riscv64: Zknh, else Zbb, else generic, from what cpu@0 declares. Returns
+/// Back to the portable path, for good: a CPU that came up after [`select_hook`]
+/// lacks the hook's instructions. Needs no write to the sealed hook.
+pub fn select_generic() {
+    MODE.store(MODE_GENERIC, Ordering::Release);
+}
+
+/// riscv64: Zknh, else Zbb, else generic, from what every CPU declares. Returns
 /// the backend kept. Boot only, before anything else hashes.
 // arch-only: an optional riscv64 extension path (Zbb/Zknh), probed at boot;
 // every other ISA takes the portable code or the select_hook path

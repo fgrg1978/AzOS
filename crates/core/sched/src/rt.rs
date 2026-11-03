@@ -1028,6 +1028,54 @@ fn booked(r: &Reservation, density: u32) -> rt_core::Booked {
     }
 }
 
+/// Runtime canary `asym-row-any-class`: a row placed before the core types were
+/// known stays where that placement put it (`row_reservation`).
+#[cfg(feature = "ktest")]
+static CANARY_ROW_ANY_CLASS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// See [`CANARY_ROW_ANY_CLASS`].
+#[cfg(feature = "ktest")]
+pub fn canary_row_any_class_arm() {
+    CANARY_ROW_ANY_CLASS.store(true, Ordering::Relaxed);
+}
+/// See [`CANARY_ROW_ANY_CLASS`].
+#[inline(always)]
+pub fn canary_row_any_class() -> bool {
+    #[cfg(feature = "ktest")]
+    {
+        CANARY_ROW_ANY_CLASS.load(Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "ktest"))]
+    {
+        false
+    }
+}
+
+/// Ktest: give up `idx`'s reservation, as its exit does.
+#[cfg(feature = "ktest")]
+pub fn ktest_release(idx: usize) {
+    release(idx);
+}
+
+/// Runtime canary `asym-admit-skip`: run-time admission ignores core classes.
+#[cfg(feature = "ktest")]
+static CANARY_CLASS_SKIP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// See [`CANARY_CLASS_SKIP`].
+#[cfg(feature = "ktest")]
+pub fn canary_class_skip() {
+    CANARY_CLASS_SKIP.store(true, Ordering::Relaxed);
+}
+#[inline(always)]
+fn canary_class_skipped() -> bool {
+    #[cfg(feature = "ktest")]
+    {
+        CANARY_CLASS_SKIP.load(Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "ktest"))]
+    {
+        false
+    }
+}
+
 /// Run-time admission: give task `idx` the reservation `r`, on the first hart
 /// of its mask with room, and pin it there. Refusals are loud: a
 /// `[SCHED-RT] admission REFUSED` line names the task, the reason and the
@@ -1071,14 +1119,27 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         let t = unsafe { task_mut(idx) };
         let online_mask = if online >= 32 { u32::MAX } else { (1u32 << online) - 1 };
         let mut mask = if r.cpu_mask == 0 { online_mask } else { r.cpu_mask & online_mask };
+        let mut explicit = r.cpu_mask != 0 || t.pinned().is_some();
+        // The CPUs the request names, before the caller's own hart narrows it.
+        let mut span = mask;
         if let Some(pin) = t.pinned() {
             // A reservation mask is a u32 (the syscall ABI's): a pin past
             // CPU 31 cannot be named in it and leaves nothing to fit.
             mask &= u32::try_from(pin).ok().and_then(|p| 1u32.checked_shl(p)).unwrap_or(0);
+            span = mask;
         } else if unsafe { PER_CPU[me].current_idx.load(Ordering::Relaxed) } == idx {
             mask &= 1u32.checked_shl(me as u32).unwrap_or(0);
+            // A running task that names no CPU is pinned where it runs: one
+            // class. `SYS_SCHEDCTL` is this request; ring 3 has no pin of its own.
+            if r.cpu_mask == 0 {
+                span = mask;
+                explicit = true;
+            }
         }
         asked_mask = mask;
+        if crate::topo::ASYM && crate::topo::differs() && !canary_class_skipped() {
+            rt_core::single_class(explicit, span, crate::topo::class)?;
+        }
         let mut load = ADMIT.lock_irqsave();
         if (0..ncpu()).any(|c| slot_of(c, idx).is_some()) {
             return Err(Refusal::Busy);
@@ -1133,6 +1194,12 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
                 }
             }
             ADMITTED.fetch_add(1, Ordering::Relaxed);
+            // The budget now binds to this class: a task the balancer had moved
+            // before it asked can read here why its budget throttles.
+            if crate::topo::ASYM && crate::topo::differs() {
+                azos_decision::record(azos_decision::Rule::RtCoreClass, azos_decision::Verdict::Place, tid,
+                    [crate::topo::class(cpu) as u64, cpu as u64, crate::topo::capacity(cpu) as u64]);
+            }
             super::classes::on_reserved(idx, &r);
             // N7: the task is DL now; where it waits, it re-sorts.
             super::classes::pi_attr_changed(idx);

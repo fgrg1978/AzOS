@@ -76,11 +76,11 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
          "thermal", "durability", "net-timeout", "usb-host-fault",
          "call-admission", "opp-apply", "power-assertion", "nic-queue",
          "clocksource", "ioport-reserved", "rangefinder", "hang", "core-dump",
-         "refusal-limited"]
+         "refusal-limited", "asym-cpus"]
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
-REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope"]
+REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope", "core-class"]
 # Fields of a rule's three numbers (`RuleInfo::fields`); "boot|run-time" pairs
 # are split on `|`: the run-time form (a reason in the third number's high
 # half) takes the second name.
@@ -169,6 +169,7 @@ FIELDS = {
     "hang": (["waited_ms", "kind<<32|culprit", "action<<32|detail"], None),
     "core-dump": (["written", "limit", "dropped"], None),
     "refusal-limited": (["rule", "held", "started"], None),
+    "asym-cpus": (["classes", "asym_cpus", "zero"], None),
 }
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",

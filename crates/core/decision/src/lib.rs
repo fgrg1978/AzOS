@@ -111,8 +111,8 @@ pub const VIEW_ROWS: usize = azos_limits::DECISION_VIEW_ROWS as usize;
 /// (`azos_sched::rt_core::Refusal::code`, 0 = none; a host test in
 /// `sched-policy-tests` holds the two tables together). The third number of
 /// such a refusal carries the code in bits 32..40 ([`prov`](crate)'s chain).
-pub const REFUSAL_REASONS: [&str; 8] =
-    ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope"];
+pub const REFUSAL_REASONS: [&str; 9] =
+    ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope", "core-class"];
 
 /// The rules that write a record.
 ///
@@ -350,6 +350,17 @@ impl Rule {
     pub const fn caller_paced(self) -> bool {
         matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle)
     }
+    /// The CPUs differ in core class and Kconfig `SCHED_ASYM_CPUS` is off, so
+    /// every CPU counts as equal: a real-time budget measured on one core
+    /// type runs on any (`azos_sched::topo::differs`, noted once at boot).
+    AsymCpus = 79,
+    /// A reservation was admitted on CPUs that differ, and binds to the core
+    /// class of the CPU it pinned to: the one the request named, or the one the
+    /// running task was on when it asked for itself (`SYS_SCHEDCTL`).
+    RtCoreClass = 80,
+    /// A secondary CPU differs in something the kernel already committed to on
+    /// the boot CPU and was left offline (`boot::smp`).
+    CpuRefused = 81,
 }
 
 /// The verdict of a record.
@@ -377,7 +388,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 79] = [
+pub const RULES: [RuleInfo; 82] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1171,6 +1182,30 @@ pub const RULES: [RuleInfo; 79] = [
         fields: ["rule", "held", "started"],
         rejected_if_yes: "-",
         rejected_if_no: "write every record of the rule: one Domain's loop would fill the medium and push other Domains' receipts out",
+    },
+    RuleInfo {
+        // Place: the CPUs differ and SCHED_ASYM_CPUS is off; no class is checked.
+        name: "asym-cpus",
+        subject: "cpus",
+        fields: ["classes", "asym_cpus", "0"],
+        rejected_if_yes: "-",
+        rejected_if_no: "treat the CPUs as unequal: build with SCHED_ASYM_CPUS, so a row's budget is admitted on the core class it declares, and a run-time budget binds to one class and is recorded with it",
+    },
+    RuleInfo {
+        // Place: `azos_sched::rt::reserve`, on CPUs that differ.
+        name: "rt-core-class",
+        subject: "tid",
+        fields: ["core_class", "cpu", "capacity"],
+        rejected_if_yes: "-",
+        rejected_if_no: "refuse: the task named no class and may have been moved before it asked",
+    },
+    RuleInfo {
+        // Refuse: `boot::smp`, the CPU stays offline.
+        name: "cpu-refused",
+        subject: "cpu",
+        fields: ["fact", "boot_value", "this_cpu_value"],
+        rejected_if_yes: "bring the CPU up: code the boot CPU's facts selected would fault or corrupt state on it",
+        rejected_if_no: "-",
     },
 ];
 

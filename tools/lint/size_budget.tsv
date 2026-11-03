@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2720006
-riscv64-qemu	.rodata	455800
-riscv64-qemu	.data	3266608
+riscv64-qemu	.text	2711482
+riscv64-qemu	.rodata	459824
+riscv64-qemu	.data	3258800
 riscv64-qemu	.bss	5799648
-riscv64-qemu	reason	merge of T1 fixes: fair tree, durable refusal limits, machine check, net fixes
+riscv64-qemu	reason	asym: runtime canary names, misfit, CPU refusal, ISA facts table

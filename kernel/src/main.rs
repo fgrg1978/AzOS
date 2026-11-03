@@ -519,7 +519,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Kconfig CHAOS: the command line's injection points fire from here on.
     boot::chaos::go_live();
 
+    boot::smp::commit_boot_cpu_facts();
     ARCH_ENTRY.wake_secondaries(num_cpus);
+    boot::smp::report_refused_cpus();
 
     // The boot hart's timer interrupt stays off until the end of kernel_main
     // (see there); the other harts are already running tasks.

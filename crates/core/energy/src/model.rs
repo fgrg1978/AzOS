@@ -879,6 +879,32 @@ pub enum EnergyMode {
     Endurance,
 }
 
+/// Where a running task the scheduler found too big for a CPU of capacity `here`
+/// goes, `to` being the bigger idle CPU it found; `None` to stay. `eas`: the
+/// answer of wake placement for this task (`Some(None)`: it does not apply, the
+/// task fits nothing), `None` where placement is not energy-aware. Move and wake
+/// must give one answer or the task pays both every period, so wake placement's
+/// answer is taken as it stands; on `Endurance` a task that fits nothing stays,
+/// as battery life comes before its throughput. Capacities are at the CPU's
+/// present operating point: a big CPU the heat capped may be no bigger.
+pub fn misfit_policy(
+    mode: EnergyMode,
+    eas: Option<Option<usize>>,
+    here: Option<u16>,
+    capacity_of: impl Fn(usize) -> Option<u16>,
+    to: usize,
+) -> Option<usize> {
+    let to = match eas {
+        Some(Some(c)) => c,
+        Some(None) if mode == EnergyMode::Endurance => return None,
+        _ => to,
+    };
+    match (here, capacity_of(to)) {
+        (Some(h), Some(t)) if t <= h => None,
+        _ => Some(to),
+    }
+}
+
 impl EnergyMode {
     /// Parse the topology's spelling.
     pub fn from_str(s: &[u8]) -> Option<Self> {
