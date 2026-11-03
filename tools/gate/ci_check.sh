@@ -14855,8 +14855,8 @@ PY
     # fair_enqueue_reads_one_priority, fair_take_recovers_a_stale_node,
     # fair_take_leaves_a_reservation, zz_no_tree_refusal_since_boot -> 161, arm 165.
     # +9 asym_* (boot/asym_ktests.rs; skipped but on the `asym` rows) -> 163, arm 167.
-    KTEST_N_RV=155
-    KTEST_N_ARM=159
+    KTEST_N_RV=175
+    KTEST_N_ARM=179
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15999,7 +15999,7 @@ CPU 5 lacks hwcap bits"
     # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
     # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked -> 165.
     # +7 the fair tree tests, as on rv and arm -> 170.
-    KTEST_N_X86=164
+    KTEST_N_X86=184
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
