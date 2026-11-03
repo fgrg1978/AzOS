@@ -11942,6 +11942,14 @@ printf "  %-26s" "stall attach tests..."
 if sat_out="$(python3 "${REPO_ROOT}/tools/dev/test_stall_attach.py" 2>&1)"; then ok
 else bad; printf '%s\n' "$sat_out" | grep -E "^(FAIL|ERROR)" | sed 's/^/      /'; fi
 fi; ci_row_end
+# Record and replay of a gate row (tools/dev/rr_row.sh, rr_replay.sh, rr_qemu.py): the
+# refusals, the record and replay command lines, the console comparison, the record
+# wrapper against a stand-in QEMU and the scripts' argument checks. No QEMU.
+if ci_row_begin "rr tools tests"; then
+printf "  %-26s" "rr tools tests..."
+if rrt_out="$(python3 "${REPO_ROOT}/tools/dev/test_rr.py" 2>&1)"; then ok
+else bad; printf '%s\n' "$rrt_out" | grep -E "^(FAIL|ERROR)" | sed 's/^/      /'; fi
+fi; ci_row_end
 # The generated "Userspace programs" menu (config/Kconfig.userspace): the
 # board defaults are the topology's images, a program directory added or
 # deleted under userspace/ enters or leaves the menu, a console program that
