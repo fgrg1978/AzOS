@@ -3134,7 +3134,7 @@ const RECV_LANE_BYTES: usize = 512;
 const RECV_LANE_PORT: u16 = 7110;
 
 /// `ioring-recv`: the poll `brain_client` makes of its link every tick, on a
-/// quiet bound datagram socket (nothing queued, so each receive answers `0`):
+/// quiet bound datagram socket (nothing queued, so each receive answers `-EAGAIN`):
 ///  * `recv-call`      — `NODE_RECV` as a syscall, into a stack buffer;
 ///  * `ioring-recv xN` — N `OP_NET_RECV` entries through one `SYS_RING_ENTER`,
 ///    into the ring's data buffer;
@@ -3208,7 +3208,7 @@ fn ioring_recv_lanes(abi: &(impl Abi + Net), floor_ns: u64) {
     let mut buf = [0u8; RECV_LANE_BYTES];
     let mut twin_bad = 0u32;
     let t_call = batch(N_IORING_OPS, || {
-        if sys::recv_typed(sock, &mut buf) != 0 { twin_bad += 1; }
+        if sys::recv_typed(sock, &mut buf) != -11 { twin_bad += 1; }
     });
     if twin_bad != 0 {
         cleanup();
@@ -3232,7 +3232,7 @@ fn ioring_recv_lanes(abi: &(impl Abi + Net), floor_ns: u64) {
                 if rc != n as isize { bad += 1; last = rc as i64; }
                 let mut got = 0;
                 while let Some((_, result, flags)) = ring.pop() {
-                    if flags & sys::ioring::CQE_F_REFUSED != 0 || result != 0 {
+                    if flags & sys::ioring::CQE_F_REFUSED != 0 || result != -11 {
                         bad += 1;
                         last = result as i64;
                     }

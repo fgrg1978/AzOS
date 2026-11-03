@@ -793,8 +793,8 @@ fn a_net_send_entry_resolves_the_owners_socket_cap_and_never_waits() {
 /// READ handle on a socket another task owns is refused (the owner stamp, as
 /// `socket_access_ok`); a READ handle on the owner's own socket reaches
 /// `socket_recv` and answers its result unflagged, `-1` while the datagram
-/// socket is unbound and `0` once it is bound with nothing queued: it never
-/// waits.
+/// socket is unbound and `-EAGAIN` once it is bound with nothing queued: it
+/// never waits.
 ///
 /// **Canaries.** Resolve with `WRITE`: the WRITE handle reaches the socket.
 /// Drop the owner-stamp check: the stranger's socket answers -1, unrefused.
@@ -831,7 +831,7 @@ fn a_net_recv_entry_resolves_the_owners_socket_cap_and_never_waits() {
     // itself, once per look, as the typed call does.
     azos_net::shim_arm_net_poll(true);
     let (n, c) = unsafe { submit(cap, ring, sqe(OP_NET_RECV, ro, 0, 4)) };
-    assert_eq!((n, done(c)), (1, (0, 0)), "nothing queued answers 0 at once");
+    assert_eq!((n, done(c)), (1, (-11, 0)), "nothing queued answers -EAGAIN at once");
     assert_eq!(azos_net::shim_net_polls(), Some(1), "the receive did not poll the NIC as the typed call does");
     azos_net::shim_arm_net_poll(false);
     // An empty window is `-1`, as the typed call's `len == 0`.

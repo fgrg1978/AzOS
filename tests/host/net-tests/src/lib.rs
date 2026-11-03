@@ -4664,6 +4664,34 @@ mod udp_icmp {
         assert_eq!(&buf[..7], b"payload");
     }
 
+    /// A receive tells an empty queue (`-EAGAIN`) from an empty datagram (`0`),
+    /// by `recv` and by `recvfrom` (which also names the sender of the empty one).
+    ///
+    /// **Canary.** Make `pop` answer 0 for an empty queue: the first assertion
+    /// reads 0 where `-EAGAIN` is due, and the drain loop never ends.
+    #[test]
+    fn an_empty_datagram_is_told_apart_from_an_empty_queue() {
+        let _g = begin();
+        let sock = udp::bind(6090);
+        assert!(sock >= 0, "bind failed");
+        let mut buf = [0u8; 32];
+        let (mut ip, mut port) = ([0u8; 4], 0u16);
+        assert_eq!(udp::recv(sock as usize, &mut buf), udp::RECV_EMPTY, "nothing queued");
+        assert_eq!(udp::recvfrom(sock, &mut buf, &mut ip, &mut port), udp::RECV_EMPTY);
+
+        deliver_udp(&datagram(45090, 6090, b"", None, None));
+        deliver_udp(&datagram(45091, 6090, b"after", None, None));
+        assert_eq!(udp::recvfrom(sock, &mut buf, &mut ip, &mut port), 0, "the empty datagram");
+        assert_eq!((ip, port), (PEER_IP, 45090), "its sender");
+        assert_eq!(udp::recv(sock as usize, &mut buf), 5, "the datagram behind it");
+        assert_eq!(&buf[..5], b"after");
+        assert_eq!(udp::recv(sock as usize, &mut buf), udp::RECV_EMPTY, "drained");
+
+        deliver_udp(&datagram(45092, 6090, b"", None, None));
+        assert_eq!(udp::recv(sock as usize, &mut buf), 0, "an empty datagram through recv");
+        assert_eq!(udp::recv(sock as usize, &mut buf), udp::RECV_EMPTY);
+    }
+
     /// RFC 768: on IPv4 the UDP checksum is OPTIONAL, and an all-zero field
     /// means the sender computed none. Rejecting those would silently break
     /// address acquisition — `dhcp.rs` transmits this way, and so do many real
@@ -4793,7 +4821,7 @@ mod udp_icmp {
         let mut buf = [0u8; 4096];
         let n = udp::recv(sock as usize, &mut buf);
         assert_eq!(
-            n, 0,
+            n, udp::RECV_EMPTY,
             "nothing may be delivered: {n} bytes means the datagram was \
              truncated and passed off as whole",
         );
@@ -4840,7 +4868,7 @@ mod udp_icmp {
         // a datagram is delivered once, whole or not at all.
         let mut again = [0u8; 2048];
         assert_eq!(
-            udp::recv(sock as usize, &mut again), 0,
+            udp::recv(sock as usize, &mut again), udp::RECV_EMPTY,
             "the remainder must not surface as a second datagram",
         );
     }
@@ -5652,7 +5680,7 @@ mod mcast_sockets {
         let mut buf = [0u8; 32];
 
         ip::handle(&d, &OUR_MAC, &OUR_IP);
-        assert_eq!(socket::socket_recv(s, &mut buf), 0, "traffic for an unjoined group was delivered");
+        assert_eq!(socket::socket_recv(s, &mut buf), udp::RECV_EMPTY, "traffic for an unjoined group was delivered");
 
         assert_eq!(join(s, &g), Ok(()));
         ip::handle(&d, &OUR_MAC, &OUR_IP);
@@ -5661,7 +5689,7 @@ mod mcast_sockets {
 
         assert_eq!(leave(s, &g), Ok(()));
         ip::handle(&d, &OUR_MAC, &OUR_IP);
-        assert_eq!(socket::socket_recv(s, &mut buf), 0, "traffic was still delivered after the leave");
+        assert_eq!(socket::socket_recv(s, &mut buf), udp::RECV_EMPTY, "traffic was still delivered after the leave");
     }
 
     /// A datagram a local socket sends to a joined group reaches the local

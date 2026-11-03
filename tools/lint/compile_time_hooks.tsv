@@ -296,6 +296,7 @@ trace-producer-canary	pending
 trace-wx-canary	pending	
 txn-align-route-canary	pending	
 uaccess-mmio-canary	pending	
+udp-recv-zero-canary	hot	crates/net/stack/src/udp.rs: the receive path
 user-stack-request-canary	pending	
 vdso-write-canary	hot	crates/core/mm/src/vmm.rs: the page-table walk
 vdso-write-window	pending	

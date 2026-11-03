@@ -6,6 +6,9 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
+# Gate canary: an empty queue answers 0 again, as an empty datagram does.
+# abitest's `udp: ...` checks must fail.
+udp-recv-zero-canary = []
 arp-timing = []
 # Gate row: `ip::loopback_deliver` asks for a reschedule inside its window on
 # every delivery, as a timer tick landing there would.

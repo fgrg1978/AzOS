@@ -8,7 +8,8 @@
 //! read into a [`Kind`] by [`netpure::kind_of`].
 //!
 //! **Blocking is a sleep, not a trap.** `NODE_RECV` and `NODE_RECVFROM` do not
-//! block (0 is "nothing yet") and a full send window answers 0, so a blocking
+//! block (0 is "nothing yet" on a stream, `-EAGAIN` on a datagram socket, where
+//! 0 is an empty datagram) and a full send window answers 0, so a blocking
 //! call polls, sleeping on the absolute sleep (`SYS_SLEEP_UNTIL`, the one way to
 //! wait) for the [`Backoff`] step between looks, never past its deadline. The
 //! timeouts and the nonblocking flag are this layer's: the kernel has none.
@@ -35,7 +36,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use crate::netpure::{self, Addr, Backoff, Kind, Op, AF_INET, AF_INET6, SOCK_DGRAM, SOCK_STREAM};
+use crate::netpure::{self, Addr, Backoff, Kind, Op, RecvStep, AF_INET, AF_INET6, SOCK_DGRAM, SOCK_STREAM};
 use crate::sys::{invoke, syscall6};
 use crate::time;
 use azos_abi::invoke as inv;
@@ -281,22 +282,17 @@ impl Socket {
                     invoke(held.h(), inv::NODE_RECV, [buf.as_mut_ptr() as u64, len, 0, 0]).0
                 }
             };
-            if r > 0 {
-                if let Some(f) = from.as_mut() {
-                    **f = Addr::decode(&raw);
+            match netpure::recv_step(self.stream, r) {
+                RecvStep::Data(n) => {
+                    if let Some(f) = from.as_mut() {
+                        **f = Addr::decode(&raw);
+                    }
+                    return Ok(n);
                 }
-                return Ok(r as usize);
+                RecvStep::Wait => self.wait(&mut backoff, deadline)?,
+                RecvStep::Eof => return Ok(0),
+                RecvStep::Refused(kind) => return Err(kind),
             }
-            if r < 0 {
-                // The end of a stream has a code of its own; a bare -1 is a
-                // refusal and must not read as a clean end of file.
-                if self.stream && netpure::is_eof(r) {
-                    return Ok(0);
-                }
-                let op = if self.stream { Op::RecvStream } else { Op::RecvDgram };
-                return Err(netpure::kind_of(r, op));
-            }
-            self.wait(&mut backoff, deadline)?;
         }
     }
 

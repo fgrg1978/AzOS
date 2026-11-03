@@ -369,7 +369,8 @@ fn net_send(owner_tid: u32, cap_raw: u32, data: *const u8, len: usize) -> OpResu
 /// bounded: no bounce buffer and no `copy_to_user`, because the window is
 /// kernel memory (the ring's data buffer, or a registered buffer). Never waits.
 ///
-/// The answers are the typed call's: the byte count, `0` with nothing queued,
+/// The answers are the typed call's: the byte count, `-EAGAIN` with nothing queued
+/// on a datagram socket (`0` on a stream, `0` is also an empty datagram),
 /// `-1` for a socket that cannot receive, `-EEOF` once a stream has ended.
 /// Like the typed call it drains the NIC itself when no net-poll task runs.
 fn net_recv(owner_tid: u32, cap_raw: u32, buf: *mut u8, len: usize) -> OpResult {

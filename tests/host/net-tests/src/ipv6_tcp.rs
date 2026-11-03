@@ -501,7 +501,7 @@ fn a_udp_datagram_from_the_unspecified_address_is_dropped() {
     let from = |src: [u8; 16]| frame6(OUR_MAC, src, me, 17, 64, dgram.clone(), 6);
     let mut buf = [0u8; 8];
     inject(from(unspecified));
-    assert_eq!(super::udp::recv(sock as usize, &mut buf), 0, "a datagram from :: was delivered");
+    assert_eq!(super::udp::recv(sock as usize, &mut buf), super::udp::RECV_EMPTY, "a datagram from :: was delivered");
 
     // Control: the same datagram from a link-local peer is taken.
     inject(from(FE80_PEER));
