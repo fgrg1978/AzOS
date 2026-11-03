@@ -5,7 +5,7 @@
 The linker script brackets the section with `__start_azos_ktest` /
 `__stop_azos_ktest` (crates/core/ktest) and an entry is 32 bytes on a 64-bit
 target, so the count is `(end - start) / 32`: the plan a clean boot must print.
-The gate keeps that number by hand (KTEST_N_RV); a board image has its own
+The gate reads it from the source (tools/gate/ktest_registry.py); a board image has its own
 feature set (no `qemu`, `chaos` and `decisions` only if its config says so), so
 the farm reads it off the image it built. ELF64 little-endian only, which is
 every ISA this tree builds.

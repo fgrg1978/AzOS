@@ -286,6 +286,14 @@ ci_phase_report() {
         ci_slowest "$CI_ROWS_TSV" 20
     fi
 }
+ci_triage_report() { # one triage file per red row (tools/gate/triage.py), its path printed
+    [ -s "${CI_ROWS_TSV:-}" ] || return 0
+    local label out
+    awk -F'\t' '$5 == "FAIL" {print $1}' "$CI_ROWS_TSV" | while IFS= read -r label; do
+        out="$CI_LOG_ABS/triage-$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').txt"
+        python3 tools/gate/triage.py --row "$label" --logdir "$CI_LOG_ABS" --out "$out" >/dev/null 2>&1 && echo "  triage: $label -> $out"
+    done
+}
 ci_kcache_report() { # what the kernel cache saved (tools/gate/ci_cargo.py)
     local f="$CI_LOG_ABS/cargo-calls.tsv"
     [ -s "$f" ] || return 0
@@ -14753,9 +14761,11 @@ PY
     # `pifast:` (-smp 1 -icount latency bound), `aarch64 driver restarted`
     # (kills a ring-3 driver past its restart budget: global).
     #
-    # The pass row requires the plan to be exactly KTEST_N_<ISA> (a dropped or
-    # unregistered test turns it red), every number 1..N reported once, no
-    # `not ok`, and the summary. Raise the count when a test is added.
+    # The pass row requires the plan to be exactly the tests the source registers
+    # for that kernel (tools/gate/ktest_registry.py: the `ktest!` sites, their cfg
+    # evaluated for the ISA and the row's configuration; a dropped or unregistered
+    # test turns it red), every number 1..N reported once, no `not ok`, and the
+    # summary. Nothing keeps a count by hand.
     #
     # The canary rows build the same kernel with gate canaries on and require
     # `not ok` for exactly the tests named, `ok` for the others (or a
@@ -14791,212 +14801,6 @@ PY
     # (crates/core/chaos) and check the fault is refused cleanly, leaks
     # nothing and is counted; the `decision_*` tests read the boot's
     # admission record and a capability denial's (crates/core/decision).
-    # +1 camera_one_encode_per_frame (wave 15, B2).
-    # +2 lockdep_lock_order_consistent, lockdep_no_spinlock_across_block_io
-    # (wave 15, N1: Kconfig LOCKDEP_KTEST rides in every ktest kernel, and
-    # any lockdep violation turns the running test, or the run, red).
-    # +4 lockdep_scope_rules, lockdep_irq_safe_class_taken_irqsave,
-    # lockdep_spinlock_hold_bounded, lockdep_rt_tasks_share_only_spinlocks
-    # (wave 15, N1b: scope types, IRQ-safety inference, hold times, F7).
-    # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (wave 15,
-    # N2: SpinWait on the path the boot selected, `[SPIN]` line).
-    # +1 spin_sites_patched (wave 15, N2b: every SpinWait probe site holds
-    # the probe's word after the boot patch).
-    # +1 spin_lock_fifo_bounded (wave 15, N3: four CPUs on one SpinLock;
-    # FIFO under Kconfig SPINLOCK_IMPL=mcs, red under ttas).
-    # +1 link_key_hook_runs_unlocked (N3: the link-key reader, a block read,
-    # runs with its hook's SpinLock released; lockdep checks it).
-    # +5 rcu_free_waits_for_the_reader, rcu_idle_cpu_is_quiescent,
-    # rcu_stall_detector_names_the_cpu, lockdep_no_sleep_in_rcu_read,
-    # cap_lookup_lock_free_never_stale (wave 15, N4: Kconfig RCU_QSBR; the
-    # canaries are `ktest rcu canaries (rv|arm|x86)`).
-    # +4 ipc_server_death_completes_call_peer_died,
-    # ipc_endpoint_destroy_completes_call_revoked,
-    # ipc_endpoint_many_callers_queue, ipc_endpoint_slot_reused_after_grace
-    # (wave 15, N5; canaries `ktest ipc
-    # canary (rv|arm|x86)` and the rcu canaries' rcu-free-no-grace).
-    # +1 futex_requeue_wakes_one_not_the_herd (wave 15, N9: Kconfig
-    # FUTEX_REQUEUE; canary `ktest futex canary (rv|arm|x86)`).
-    # +4 ipc_no_senders_on_last_revoke,
-    # ipc_no_senders_once_after_staggered_exits,
-    # ipc_no_senders_grant_revoke_race, port_source_gone_wakes_the_waiter
-    # (wave 15, N5b: Kconfig IPC_PORT_NOTICES; canaries in `ktest ipc
-    # canary (rv|arm|x86)`).
-    # +1 console_task_line_waits_never_drops (wave 15, XC; canary
-    # `console-drop` in tools/gate/check_fast.py SETS).
-    # +1 futex_pi_boosts_the_owner (wave 15, N10w: Kconfig WAIT_GRAPH +
-    # FUTEX_PI, Ok at once with either n; canary `futex-pi-no-edge` on a
-    # y-config boot only).
-    # +1 fat_write_device_wait_holds_no_mutex (wave 15, N8c: Kconfig
-    # WAIT_GRAPH, Ok at once with n).
-    # +1 ipc_v2_call_carries_caps_words_and_badge (wave 15, N11b; canary
-    # `ipc-v2-as-v1` in `ktest ipc canary (rv|arm|x86)`).
-    # +1 sched_dl_above_rt (wave 15, N6b: DL ranks above the RT band; canary
-    # `sched-dl-in-level` in `ktest sched canary (rv|arm|x86)`).
-    # +1 schedctl_self_promotion_refused (wave 15, N6b: SYS_SCHEDCTL needs
-    # a Cap<TimeWarrant> for RT and DL; canary `schedctl-no-warrant`).
-    # +1 ipc_v2_call_refused_by_v1_accept (wave 15, N11c; canary
-    # `ipc-v1-takes-v2` in `ktest ipc canary (rv|arm|x86)`).
-    # +2 waitgraph_exit_clears_state, kmutex_held_back_newcomer_is_in_the_graph
-    # (wave 15, N7b: WAIT_GRAPH, Ok at once with n; canary
-    # `exit-keeps-graph` red only on a WAIT_GRAPH y build).
-    # +1 tlb_space_mask_reaches_the_harts_that_ran (wave 15, N12b: Kconfig
-    # TLB_SPACE_MASK; runs on rv, Ok at once on arm (broadcast TLBI, no
-    # mask) and on x86 microvm (no PCID); canary `tlb-space-mask-drop`).
-    # +1 ipc_v2_refused_call_caps_revoked_on_caller_exit (wave 15, FX3; its
-    # canary is a source revert of the exit sweep, host row
-    # `a_caller_exiting_after_a_refusal_strands_every_cap_with_the_refuser`).
-    # +1 kmutex_dead_holder_leaves_the_held_table (wave 15, N7d; canary
-    # `held-keeps-dead`).
-    # +1 asid_one_per_space_across_rollover (wave 15, N12c: one ASID per
-    # address space; runs on rv and arm, Ok at once on x86 microvm (no
-    # PCID); canary `asid-per-thread`).
-    # +1 futex_pi_owner_exit_hands_over (wave 15, N10b: Kconfig WAIT_GRAPH +
-    # FUTEX_PI, Ok at once with either n; canary `futex-pi-exit-silent` on a
-    # y-config boot only).
-    # +1 signal_retarget_on_thread_detach (wave 15, FX5: a process signal
-    # pending on a detached non-leader thread goes back to the process;
-    # canary `sig-exit-drop` in the sched canary boot).
-    # +1 waitgraph_ring3_owner_floored (wave 15, N7f, owner decision 10-10:
-    # WAIT_GRAPH, Ok at once with n; canary
-    # `pi-ring3-unclamped` red only on a WAIT_GRAPH y build).
-    # +1 futex_requeue_pi_hands_the_mutex_over (wave 15, N10d: Kconfig
-    # WAIT_GRAPH + FUTEX_PI, Ok at once with either n; canaries
-    # `futex-requeue-pi-plain` and, N10e, `futex-requeue-pi-no-proxy` on a
-    # y-config boot only).
-    # +1 kernel_half_shared_by_every_root (wave 15, N12f, Kconfig
-    # RV_KERNEL_GLOBAL: every root links the kernel-only slots; Ok at once on
-    # arm and x86; canary `kernel-l1-copy` red on rv).
-    # +1 waitgraph_ipc_call_boosts_server (wave 15, N7g: WAIT_GRAPH, Ok at
-    # once with n; canary `ipc-call-no-edge` red only on a WAIT_GRAPH y build).
-    # +1 lockdep_boot_phase_clean (wave 15, N1d: a lockdep violation before
-    # the first test is this test's `not ok`, not the summary's bail-out;
-    # canary `lockdep-early-abba`, an ABBA planted in early_main).
-    # +1 fat_claim_waiter_donates_to_owner (FX12: a FAT32 claim waiter lends
-    # its priority to the owner; canary `claim-no-donate`, the owner keeps
-    # its own priority while the waiter blocks).
-    # +2 ipc_fastpath_taken_when_parked, ipc_fastpath_not_taken_when_calls_queued
-    # (Chain E stage a, Kconfig IPC_FASTPATH: the per-task hit counters move
-    # for a parked peer and not with calls queued; canary `ipc-force-slow`,
-    # in the IPC set, turns the first red).
-    # +1 ipc_resolve_cache_follows_revoke_and_reown (Chain E commit 5, Kconfig
-    # IPC_RESOLVE_CACHE: a cached destination reaches the endpoint's new
-    # owner, and a revoked capability is refused after a cached hit; on the
-    # ordinary path too, so green under `ipc-force-slow` and WAIT_GRAPH y).
-    # +1 preempt_count_survives_irq_nesting (Chain E commit 7: the per-hart
-    # preempt count moves by a load and a store; a timer interrupt takes a
-    # guard on top of the test's; canary `preempt-isr-leak`, in the runtime
-    # set, turns it red).
-    # +4 ipc_fastpath_resumes_at_the_point, ipc_fastpath_resume_point_kill,
-    # ipc_fastpath_resume_point_drain, ipc_fastpath_resume_point_ordinary_call
-    # (Chain E commit 9, Kconfig IPC_FASTPATH_RESUME: a claim finishes a
-    # parked peer's syscall at its resume point, both ways; a kill, a drain
-    # and an ordinary call resume it where it blocked, its point spent;
-    # canaries `ipc-resume-off` (the first and, by their precondition, the
-    # other three) and `ipc-resume-stale` (the other three), in the IPC set).
-    # +2 ipc_fastpath_boosting_call_is_slow_and_boosts,
-    # ipc_fastpath_call_edge_is_in_the_graph (Chain E, the fast path under
-    # WAIT_GRAPH: a call that must boost keeps the ordinary path and boosts;
-    # a fast-blocked caller's edge is the one a deadlock walk follows; Ok at
-    # once with WAIT_GRAPH n; `ipc-force-slow` turns the second red on a y
-    # kernel, tools/gate/check_fast.py Y_ALSO).
-    # +1 waitgraph_quiet_keys_match_base (Chain E cut 6: every live task's
-    # quiet key is its base attribute's; Ok at once with WAIT_GRAPH n; a key
-    # store dropped from a class writer turns it red on a y kernel).
-    # -1 sync_pimutex_donation_one_cpu (Chain A: PiMutex and its smoke are gone).
-    # +3 claim_holds_no_mutex_across_a_device_wait (canary `claim-mutex-held`),
-    # claim_excludes_across_a_wait_and_wakes_a_contender,
-    # claim_dead_owner_leaves_the_held_table (canary `claim-held-keeps-dead`;
-    # the dead-owner test of the table the panic path reads, it replaces the
-    # sleeping-lock one, whose +1 is gone from this list) (Chain A: rule F1's
-    # claim).
-    # +1 block_read_has_a_bounce_buffer_per_call (Chain A: SYS_DISK_READ
-    # takes its own buffer; Ok at once without a disk; no runtime canary).
-    # +2 qos_timer_slack_never_real_time, qos_timer_slack_rt_task_gets_zero (QoS
-    # timer tolerance: an RT task's timer has no slack; cargo-feature canary
-    # `qos-rt-slack-canary`, both `not ok`).
-    # +1 qos_timer_coalescing_path (the integrated arm -> coalesce -> peek_live
-    # path; cargo-feature canaries `qos-fire-canary`, `qos-armed-at-canary`).
-    # Recounted from the registry after the EEVDF, Domain, warrant and QoS fronts:
-    # (__stop_azos_ktest - __start_azos_ktest) / sizeof(KTest) = 3488 / 32 = 109
-    # on riscv64 and aarch64 (`qemu,ktest,chaos,decisions`, the qemu defconfigs).
-    # +1 mm_zone_no_cross_type_reuse (a freed page-table frame stays in its
-    # frame zone; cargo-feature canary `zone-share-canary`, `not ok`) -> 110
-    # on riscv64 and aarch64, 112 on x86_64.
-    # +2 kernel_endpoint_call_reaches_a_task_server,
-    # kernel_endpoint_call_is_refused_under_a_spinlock (Phase 4: the kernel's
-    # own call to a task-served endpoint through the generated stubs, and its
-    # refusal under a spinlock and in with_table's closure; canary
-    # `kcall-atomic-canary`, the second) -> 112.
-    # +2 irq_storm_is_contained (canary `irq-storm`),
-    # irq_msi_reaches_a_ring3_binding (interrupts as scheduled objects) -> 114.
-    # +3 mm_ro_after_init_sealed (canary `canary=ro-seal-skip`),
-    # mm_kaslr_image_alias, kaslr_stored_pointers_follow_the_image (virtual
-    # KASLR; they landed while the gate's slid kernels never reached the plan)
-    # -> 117.
-    # +1 copyout_refused_in_kernel_context (a copy helper called by a task with
-    # no user page table refuses a user-range VA instead of storing through
-    # it; canary `copyout-raw-kernel-ctx`) -> 118.
-    # +1 percpu_accessors_read_masked (the accessors of the running task read
-    # the hart id and its slot in one masked window; cargo-feature canary
-    # `percpu-accessor-race-canary`) -> 119.
-    # +1 percpu_hazard_reads_are_masked (the hart-id-then-table audit; canary
-    # `percpu-hazard-canary`) -> 120.
-    # +1 mm_fdt_reserved (riscv64 and aarch64: the device tree blob is out of
-    # the page allocator; runtime canary `fdt-reserve-skip`) -> 121.
-    # -1 procfs_entries_registered (the kernel keeps no procfs) -> 120.
-    # +1 uaccess_refuses_a_user_device_window (a user device window as a copy
-    # buffer is EFAULT; host canary `uaccess-mmio-canary` in syscall-tests:
-    # in a kernel the canary is a fatal kernel fault, not a `not ok`) -> 121.
-    # +1 shootdown_reaches_a_masked_lock_waiter (a lock's holder shoots a page
-    # down while another CPU waits for the lock masked; canary
-    # `spin-service-canary`, x86_64 only: the run hangs) -> 122.
-    # +1 txn_rolls_back_an_el1_alignment_fault (aarch64 only: I-13 takes an
-    # EL1 Alignment fault of the control task; canary
-    # `txn-align-route-canary`, a fatal kernel page fault) -> arm 123.
-    # +1 lx_class_server_keeps_tpidr_el0 (aarch64 only: a Linux class
-    # server's TPIDR_EL0 is kept per task) -> arm 124.
-    # -1 lx_class_server_keeps_tpidr_el0, +2 native_tasks_keep_tpidr_el0 and
-    # new_task_starts_with_tpidr_el0_zero (aarch64 only: EVERY task's
-    # TPIDR_EL0 is kept per task; canary `tpidr-foreign-only-canary`) -> arm 125.
-    # +1 rt_motor_coasts_a_held_wheel (B2: the control loop coasts a wheel the
-    # kernel holds in its safe state) -> rv 123, arm 126.
-    # +1 user_visible_state_is_set_on_every_cpu (tls-hygiene: the per-CPU
-    # state ring 3 can read is set on every CPU; canary `el0-state-canary`,
-    # aarch64) -> 124, arm 127.
-    # +1 inspect_refresh_leaves_interrupts_as_they_were -> 125, arm 128.
-    # +1 blk_reap_reports_once -> 126, arm 130.
-    # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
-    # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
-    # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
-    # +1 kheap_irq_token_follows_the_interrupt_state -> 131, arm 135.
-    # +1 unswitched_block_returns_running (canary `unswitched-block-stays`) -> 132, arm 136.
-    # +1 timer_record_on_the_last_cpu (canary `timer-record-16`, -smp 17) -> 133, arm 137.
-    # +1 pi_boost_lands_on_a_racing_wake (canary `pi-boost-stale-bucket`) -> 134, arm 138.
-    # +2 futex_look_under_the_table_faults_nothing,
-    # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
-    # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
-    # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
-    # +2 hung_task_detector_reports_a_blocked_owner_wait,
-    # stuck_cpu_detector_names_the_cpu (Kconfig HUNG_DETECT; canaries `ktest hung
-    # canary (rv|arm|x86)`) -> 143 + 2 = 145, arm 149.
-    # +2 kheap_guard_reports_a_buffer_overflow, kheap_guard_reports_a_use_after_free -> 147, arm 151.
-    # +1 kheap_leaks_reports_a_block_nobody_freed -> 148, arm 152.
-    # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 150, arm 154.
-    # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
-    # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
-    # +1 save_gate_stuck_top_lets_lower_run (canary `save-gate-no-redraw`) -> 154, arm 158.
-    # +1 kheap_guard_quarantine_never_holds_more_than_its_slots (canary
-    # `kheap-guard-hold-canary`) -> 155, arm 159.
-    # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked
-    # (canary `exit-irq-masked-canary`) -> 156, arm 160.
-    # +1 refusal_flood_costs_no_other_domain (canary `refusal-limit-off`) -> 155, arm 159.
-    # +2 fair_tree_pick_is_the_scan, fair_tree_follows_the_lists; +5 fair_unlink_keeps_the_claim,
-    # fair_enqueue_reads_one_priority, fair_take_recovers_a_stale_node,
-    # fair_take_leaves_a_reservation, zz_no_tree_refusal_since_boot -> 161, arm 165.
-    # +9 asym_* (boot/asym_ktests.rs; skipped but on the `asym` rows) -> 163, arm 167.
-    KTEST_N_RV=176
-    KTEST_N_ARM=180
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15058,12 +14862,12 @@ PY
         echo "      stalled: 20 s of console silence before the marker; state dumped twice: $STALL_PREFIX.stall-a.txt $STALL_PREFIX.stall-b.txt"
     }
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match] [disk image target]
-        local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
+        local label="$1" isa="$2" extra="$3" want="$4" n_want rcfg
         local -a app=(); [ -n "${5:-}" ] && app=(-append "$5")
         # A disk (K1): a private copy of a fresh image, so FAT32 mounts and
         # `fs-wb` runs (the `ktest disk` rows).
         local -a drv=() dimg=
-        [ "$isa" = arm ] && n_want=$KTEST_N_ARM
+        if [ "$isa" = arm ]; then rcfg="$AARCH64_CONFIG"; else rcfg="${KCONFIG_CONFIG:-$PRIMARY_CONFIG}"; fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -15082,8 +14886,11 @@ PY
         else
             a64_kbuild "$KTEST_FEATS$extra" || { bad; echo "      aarch64 --features $KTEST_FEATS$extra did not build"; return; }
             a64_kernel_check || return
-            cp "$A64_IMG" "$kimg"
+            cp "$A64_IMG" "$kimg" && cp "$A64_KERNEL" "$kimg.elf"
         fi
+        [ "$isa" = arm ] && [ -n "${KTEST_KERNEL:-}" ] && [ -f "$KTEST_KERNEL.elf" ] && cp "$KTEST_KERNEL.elf" "$kimg.elf"
+        n_want="$(python3 tools/gate/ktest_registry.py count --isa "$isa" --select "$KTEST_FEATS$extra" --config "$rcfg" 2>&1)" \
+            || { bad; echo "      the source's test list: $n_want"; rm -f "$kimg" "$kimg.elf"; return; }
         par_ready
         while [ $(qemu_count) -ge 4 ]; do sleep 2; done
         stall_setup "$isa" "$tag"
@@ -15114,14 +14921,15 @@ PY
         if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         else wait "$pid" 2>/dev/null; qrc=$?; fi
         stall_finish
-        rm -f "$kimg" ${dimg:+"$dimg"}
+        rm -f ${dimg:+"$dimg"}
         tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
         local plan why="" k name got
         plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
         got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
         want="$(printf '%s\n' $want | grep . | sort | tr '\n' ' ')"
         if [ -z "$plan" ]; then why="no TAP plan line (1..N)"
-        elif [ "$plan" != "$n_want" ]; then why="plan 1..$plan, the gate expects $n_want tests (KTEST_N_*)"
+        elif [ "$plan" != "$n_want" ]; then
+            why="plan 1..$plan, the source registers $n_want tests: $(python3 tools/gate/ktest_registry.py verify --isa "$isa" --select "$KTEST_FEATS$extra" --config "$rcfg" --log "$log" 2>&1)"
         elif [ "$got" != "$want" ]; then why="not ok: [${got% }], expected [${want% }]"
         elif grep -aq '^Bail out!' "$log"; then
             # Only a canary that panics may stop the run, and only in its test.
@@ -15151,18 +14959,19 @@ PY
         # must hold and the status check must be what fails.
         if [ -z "$why" ] && [ "${KTEST_STATUS_CANARY:-0}" = 1 ]; then
             case "$qwhy" in
-            *"after a failed run"*) ok; echo "      the status check fired: $qwhy"; rm -f "$log"; return ;;
+            *"after a failed run"*) ok; echo "      the status check fired: $qwhy"; rm -f "$log" "$kimg" "$kimg.elf"; return ;;
             *) why="the status check did not fire on a failed run (QEMU status $qrc)" ;;
             esac
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
             ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'
-            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log"; return
+            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log" "$kimg" "$kimg.elf" "$kimg.features"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
         echo "      log kept: $log"
+        echo "      kernel kept: $([ -f "$kimg.elf" ] && echo "$kimg.elf" || echo "$kimg")"
         stall_report
     }
     par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
@@ -16056,94 +15865,6 @@ CPU 5 lacks hwcap bits"
     #                               the low half again (the layout before the
     #                               kernel linked high); x86_low_half_maps_no_ram
     #                               alone not ok
-    # +9 with Kconfig CHAOS / DECISION_RECORDS_DEV (`chaos`, `decisions` ride in
-    # every x86 ktest kernel, as on rv and arm); +2 x86_low_half_maps_no_ram,
-    # x86_direct_map_image_alias_read_only; +1 camera_one_encode_per_frame
-    # (wave 15, B2).
-    #   ktest camera encode canary (x86)  canary=camera-encode-per-consumer:
-    #                               each camera ring consumer encodes its own
-    #                               frame again; camera_one_encode_per_frame
-    #                               alone not ok
-    # +2 the lockdep tests (N1), as on rv and arm.
-    # +4 the N1b lockdep tests, as on rv and arm.
-    # +2 spin_wait_cas_semantics, spin_lock_contended_cross_cpu (N2).
-    # +1 spin_sites_patched (N2b; x86_64 links no site, so it holds).
-    # +1 spin_lock_fifo_bounded (N3; -smp 4, as on rv and arm).
-    # +1 link_key_hook_runs_unlocked (N3), as on rv and arm.
-    # +5 the N4 RCU tests, as on rv and arm.
-    # +4 the N5 endpoint tests, as on rv and arm.
-    # +1 the N9 futex requeue test, as on rv and arm.
-    # +4 the N5b notice tests, as on rv and arm.
-    # +1 console_task_line_waits_never_drops (XC).
-    # +1 futex_pi_boosts_the_owner (N10w), as on rv and arm.
-    # +1 fat_write_device_wait_holds_no_mutex (N8c), as on rv and arm.
-    # +1 the N11b v2 call test, as on rv and arm.
-    # +2 sched_dl_above_rt, schedctl_self_promotion_refused (N6b), as on
-    # rv and arm.
-    # +1 the N11c v1-accept refusal test, as on rv and arm.
-    # +2 waitgraph_exit_clears_state, kmutex_held_back_newcomer_is_in_the_graph
-    # (N7b), as on rv and arm.
-    # +1 tlb_space_mask_reaches_the_harts_that_ran (N12b), as on rv and arm.
-    # +1 the FX3 refused-call exit-sweep test, as on rv and arm.
-    # +1 kmutex_dead_holder_leaves_the_held_table (N7d), as on rv and arm.
-    # +1 asid_one_per_space_across_rollover (N12c), as on rv and arm.
-    # +1 futex_pi_owner_exit_hands_over (N10b), as on rv and arm.
-    # +1 waitgraph_ring3_owner_floored (N7f), as on rv and arm.
-    # +1 futex_requeue_pi_hands_the_mutex_over (N10d), as on rv and arm.
-    # +1 kernel_half_shared_by_every_root (N12f), Ok at once on x86_64.
-    # +1 waitgraph_ipc_call_boosts_server (N7g), as on rv and arm.
-    # +1 lockdep_boot_phase_clean (N1d), as on rv and arm.
-    # +2 ipc_fastpath_taken_when_parked, ipc_fastpath_not_taken_when_calls_queued
-    # (Chain E stage a), as on rv and arm.
-    # +1 ipc_resolve_cache_follows_revoke_and_reown (Chain E commit 5), as on
-    # rv and arm.
-    # +1 preempt_count_survives_irq_nesting (Chain E commit 7), as on rv and
-    # arm.
-    # +4 the resume-point tests (Chain E commit 9), as on rv and arm.
-    # +2 the WAIT_GRAPH fast-path tests (Chain E), as on rv and arm.
-    # +1 waitgraph_quiet_keys_match_base (Chain E cut 6), as on rv and arm.
-    # +3 the claim tests and +1 block_read_has_a_bounce_buffer_per_call
-    # (Chain A), +1 why_resolves_a_refused_reservation, +2 the QoS timer slack
-    # tests, +1 the coalescing path test, as on rv and arm.
-    # The same count on x86_64: 3552 / 32 = 111.
-    # +2 as above, +2 for the interrupt ktests -> 116.
-    # +1 hv_enter_guest (the guest entry of `Hypervisor::enter` on a real SVM CPU),
-    # +1 hv_svm_guest_exits (the SVM guest-exit ladder, x86_64 only) -> 118.
-    # +3 mm_ro_after_init_sealed, mm_kaslr_image_alias,
-    # kaslr_stored_pointers_follow_the_image, as on rv and arm -> 121.
-    # +1 copyout_refused_in_kernel_context, as on rv and arm -> 122.
-    # +1 percpu_accessors_read_masked, as on rv and arm -> 123.
-    # +1 percpu_hazard_reads_are_masked, as on rv and arm -> 124.
-    # -1 procfs_entries_registered, as on rv and arm -> 123.
-    # +1 uaccess_refuses_a_user_device_window, as on rv and arm -> 124.
-    # +1 shootdown_reaches_a_masked_lock_waiter, as on rv and arm -> 125.
-    # +1 rt_motor_coasts_a_held_wheel, as on rv and arm -> 126.
-    # +1 tlb_kernel_shootdown_names_every_online_cpu (x86_64 only) -> 127.
-    # +2 fs_selector_load_keeps_the_next_task_s_fs_base and
-    # fs_gs_selectors_do_not_follow_a_task (tls-hygiene, x86_64 only; canary
-    # `fs-base-cache-canary`) -> 129.
-    # +1 user_visible_state_is_set_on_every_cpu (tls-hygiene), as on rv and
-    # arm -> 130.
-    # +1 inspect_refresh_leaves_interrupts_as_they_were, as on rv and arm -> 131.
-    # +1 blk_reap_reports_once, as on rv and arm -> 132.
-    # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
-    # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
-    # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
-    # +1 kheap_irq_token_follows_the_interrupt_state, as on rv and arm -> 137.
-    # +4 the scheduler findings' ktests, the three of rv and arm and x86's own -> 141.
-    # +2 futex_look_under_the_table_faults_nothing,
-    # ipc_handover_abort_wakes_the_old_server -> 143.
-    # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
-    # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
-    # +4 the hotplug_* tests -> 150.
-    # +2 the hung-task and stuck-CPU tests, as on rv and arm.
-    # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
-    # tests, as on rv and arm -> 152 + 7 = 159.
-    # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
-    # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked -> 165.
-    # +7 the fair tree tests, as on rv and arm -> 170.
-    KTEST_N_X86=185
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -17187,6 +16908,10 @@ CPU 5 lacks hwcap bits"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
         x86_kbuild "use-robot,ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_SELECT=use-robot,ktest,chaos,decisions$extra did not build"; return; }
+        local rcfg="$AZOS_OUT/build/x86_64-$(gate_defc x86 "use-robot,ktest,chaos,decisions$extra").config" n_want
+        case " ${X86_KBUILD_ARGS:-} " in *" X86_64_KCONFIG="*) rcfg="$(printf '%s\n' "$X86_KBUILD_ARGS" | sed 's/.*X86_64_KCONFIG=\([^ ]*\).*/\1/')" ;; esac
+        n_want="$(python3 tools/gate/ktest_registry.py count --isa x86 --select "use-robot,ktest,chaos,decisions$extra" --config "$rcfg" 2>&1)" \
+            || { bad; echo "      the source's test list: $n_want"; rm -f "$kimg" "$kimg.features"; return; }
         if [ -n "${5:-}" ]; then
             dimg="$CI_LOG_DIR/disk-ktest-${tag}.img"
             fresh_disk "$5" && cp "$5" "$dimg" || { bad; echo "      disk image $5 did not build"; return; }
@@ -17194,12 +16919,13 @@ CPU 5 lacks hwcap bits"
         fi
         par_ready
         x86_qemu "$kimg" "$log" 300 "" -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} || { rm -f "$kimg" "$kimg.features" ${dimg:+"$dimg"}; return; }
-        rm -f "$kimg" "$kimg.features" ${dimg:+"$dimg"}
+        rm -f ${dimg:+"$dimg"}
         plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
         got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
         want="$(printf '%s\n' $want | grep . | sort | tr '\n' ' ')"
         if [ -z "$plan" ]; then why="no TAP plan line (1..N)"
-        elif [ "$plan" != "$KTEST_N_X86" ]; then why="plan 1..$plan, the gate expects $KTEST_N_X86 tests (KTEST_N_X86)"
+        elif [ "$plan" != "$n_want" ]; then
+            why="plan 1..$plan, the source registers $n_want tests: $(python3 tools/gate/ktest_registry.py verify --isa x86 --select "use-robot,ktest,chaos,decisions$extra" --config "$rcfg" --log "$log" 2>&1)"
         elif [ "$got" != "$want" ]; then why="not ok: [${got% }], expected [${want% }]"
         elif grep -aq '^Bail out!' "$log"; then
             # Only a canary that panics may stop the run, and only in its test
@@ -17231,18 +16957,19 @@ CPU 5 lacks hwcap bits"
         # KTEST_STATUS_CANARY=1: see `ktest_row`.
         if [ -z "$why" ] && [ "${KTEST_STATUS_CANARY:-0}" = 1 ]; then
             case "$qwhy" in
-            *"after a failed run"*) ok; echo "      the status check fired: $qwhy"; rm -f "$log"; return ;;
+            *"after a failed run"*) ok; echo "      the status check fired: $qwhy"; rm -f "$log" "$kimg" "$kimg.features"; return ;;
             *) why="the status check did not fire on a failed run (QEMU status $X86_QRC)" ;;
             esac
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
             ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'
-            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log"; return
+            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log" "$kimg" "$kimg.elf" "$kimg.features"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
         echo "      log kept: $log"
+        echo "      kernel kept: $([ -f "$kimg.elf" ] && echo "$kimg.elf" || echo "$kimg")"
         stall_report
     }
     par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
@@ -27699,6 +27426,7 @@ else
 fi
 
 if [ "$FAIL" -gt 0 ]; then
+    ci_triage_report
     echo "=== CI FAILED ==="
     exit 1
 fi

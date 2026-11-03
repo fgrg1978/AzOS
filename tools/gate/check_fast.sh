@@ -61,6 +61,9 @@ kcfg() {
     case $1 in rv) echo "$RV_CFG" ;; arm) echo "$ARM_CFG" ;;
         x86) echo "$AZOS_OUT/build/x86_64.config" ;; esac
 }
+ktest_sel() { # the selection of the ISA's ktest kernel (x86 names no `qemu`)
+    case $1 in x86) echo ktest,chaos,decisions ;; *) echo "$KTEST_FEATS" ;; esac
+}
 OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
 
 # The kernels build from their cell with a selection applied
@@ -170,11 +173,11 @@ chain() {
     local isa="$1" v="$OUT/$isa.verdict" c0=$SECONDS rc can fail=0
     : >"$v"
     rc="$(boot "$isa" ktest "$OUT/$isa-ktest.log" "${CHECK_FAST_KTEST_APPEND:-}")"
-    { echo "[$isa] ktest ($(( SECONDS - c0 )) s)"; CHECK_FAST_CONFIG="$(kcfg "$isa")" python3 tools/gate/check_fast.py ktest "$isa" "$OUT/$isa-ktest.log" "$rc"; } >>"$v" || fail=1
+    { echo "[$isa] ktest ($(( SECONDS - c0 )) s)"; CHECK_FAST_CONFIG="$(kcfg "$isa")" CHECK_FAST_SELECT="$(ktest_sel "$isa")" python3 tools/gate/check_fast.py ktest "$isa" "$OUT/$isa-ktest.log" "$rc"; } >>"$v" || fail=1
     c0=$SECONDS
     if can="$(python3 tools/gate/check_fast.py cmdline "$isa" "$(kcfg "$isa")" 2>>"$v")"; then
         rc="$(boot "$isa" canary "$OUT/$isa-canary.log" "$can")"
-        { echo "[$isa] runtime canaries, one boot ($(( SECONDS - c0 )) s)"; python3 tools/gate/check_fast.py canary "$isa" "$OUT/$isa-canary.log" "$rc"; } >>"$v" || fail=1
+        { echo "[$isa] runtime canaries, one boot ($(( SECONDS - c0 )) s)"; CHECK_FAST_CONFIG="$(kcfg "$isa")" CHECK_FAST_SELECT="$(ktest_sel "$isa")" python3 tools/gate/check_fast.py canary "$isa" "$OUT/$isa-canary.log" "$rc"; } >>"$v" || fail=1
     else
         echo "[$isa] runtime canaries: FAIL, the canary= list does not fit KERNEL_CMDLINE_MAX (line above)" >>"$v"; fail=1
     fi

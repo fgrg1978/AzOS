@@ -7,7 +7,8 @@ One QEMU log in, one `ok`/`FAIL` line per property out; exit 0 when every
 property holds. The properties are the full gate's, read from
 tools/gate/ci_check.sh so the two cannot drift:
 
-  ktest    the `ktest (rv|arm|x86)` rows: plan == KTEST_N_<ISA>, every test
+  ktest    the `ktest (rv|arm|x86)` rows: plan == the tests the source registers
+           for the kernel (tools/gate/ktest_registry.py), every test
            1..N reported exactly once, no `not ok`, the summary line, no
            `Bail out!`, and QEMU's exit status (0 rv/arm, 1 x86).
   canary   the ktest runtime-canary rows, all armed in ONE boot: the `not
@@ -37,6 +38,10 @@ tools/gate/ci_check.sh so the two cannot drift:
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+import azos_tools  # noqa: E402,F401
+import ktest_registry  # noqa: E402
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 GATE = os.path.join(ROOT, "tools/gate/ci_check.sh")
@@ -77,7 +82,18 @@ SETS = {
 }
 CLEAN_STATUS = {"rv": "0", "arm": "0", "x86": "1"}
 FAILED_STATUS = {"rv": "1", "arm": "1", "x86": "3"}
-PLAN_VAR = {"rv": "KTEST_N_RV", "arm": "KTEST_N_ARM", "x86": "KTEST_N_X86"}
+
+
+def registered(isa):
+    """The tests the source registers for the kernel check-fast.sh built: its configuration
+    (CHECK_FAST_CONFIG) and selection (CHECK_FAST_SELECT)."""
+    cfg, sel = os.environ.get("CHECK_FAST_CONFIG"), os.environ.get("CHECK_FAST_SELECT", "")
+    if not cfg:
+        sys.exit("check_fast: CHECK_FAST_CONFIG names no kernel configuration, so no test list can be derived")
+    try:
+        return [r[0] for r in ktest_registry.registry(isa, ktest_registry.kernel_features(cfg, sel))]
+    except ktest_registry.Unsupported as e:
+        sys.exit("check_fast: %s" % e)
 
 
 def gate_vars():
@@ -152,10 +168,11 @@ def read(log):
 
 def judge_ktest(isa, log, status, want):
     text = read(log)
-    n = int(gate_vars()[PLAN_VAR[isa]])
+    names = registered(isa)
+    n = len(names)
     plans = re.findall(r"^1\.\.(\d+)$", text, re.M)
-    prop("ktest plan 1..%d (%s)" % (n, PLAN_VAR[isa]), plans[:1] == [str(n)],
-         "plan %s" % (plans[:1] or "missing"))
+    prop("ktest plan 1..%d (the source's list)" % n, plans[:1] == [str(n)],
+         "plan %s; %s" % (plans[:1] or "missing", ktest_registry.diff_against_log(names, text)))
     seen = {}
     for k in re.findall(r"^(?:not )?ok (\d+) - ", text, re.M):
         seen[int(k)] = seen.get(int(k), 0) + 1

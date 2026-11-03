@@ -55,127 +55,34 @@ import azos_tools  # noqa: E402
 
 # ── the kernel's tables ──────────────────────────────────────────────────────
 
-# `azos_decision::RULES` order (crates/core/decision/src/lib.rs).
-RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placement",
-         "cap-denial", "deadline-expired", "split-lock", "cap-derive",
-         "cap-revoke", "neverallow", "device-admission", "irq-budget",
-         "placement", "package-install", "wait-cycle", "effect-deadline",
-         "safe-state", "compensation", "receipt-caveat", "declassify",
-         "shadow-refusal", "subtree-policy", "remote-revoke", "compress",
-         "swap-out", "kmem-charge", "clock-step", "packet-refused",
-         "guest-egress", "livepatch", "cpu-hotplug", "suspend",
-         "battery-degrade", "provenance-meet", "effect-record", "measured-boot",
-         "hardening-fallback",
-         "pledge", "accel-admission", "tsn-admission", "envelope-config",
-         "envelope-ota", "envelope-egress", "envelope-delete", "envelope-rt-time",
-         "freeze", "thread-control", "login", "key-use",
-         "mem-pressure", "purge", "wipe", "mission-energy",
-         "deferred-activity", "time-protection", "attest", "boot-chain",
-         "ras", "fieldbus", "audio-capture", "focus",
-         "usb-authorize", "block-timeout", "clock-set", "estop-release",
-         "thermal", "durability", "net-timeout", "usb-host-fault",
-         "call-admission", "opp-apply", "power-assertion", "nic-queue",
-         "clocksource", "ioport-reserved", "rangefinder", "hang", "core-dump",
-         "refusal-limited", "asym-cpus", "rt-core-class", "cpu-refused",
-         "cap-slot-restart", "cap-table-full"]
+# `azos_decision::RULES`, read from the source so that a new rule needs no edit here:
+# the names in table order, and each rule's three field names as `RuleInfo::fields`
+# fixes them: a boot form and, after a `|`, a run-time form (a reason in the third
+# number's high half takes the second name; `reason<<32+x` names the low half `x`);
+# a leading `?` marks a number left out when zero. A pipe in only some of the names
+# (`kind<<32|culprit`) is a packed number, not a pair of forms.
+def _decision_rules():
+    root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
+    with open(os.path.join(root, "crates/core/decision/src/lib.rs"), encoding="utf-8") as fh:
+        dec = fh.read()
+    i = dec.index("pub const RULES")
+    body = dec[i:dec.index("\n];", i)]
+    names, fields = [], {}
+    for name, raw in re.findall(r'name: "([a-z-]+)",.*?fields: \[([^\]]*)\]', body, re.S):
+        got = [f.strip().strip('"') for f in raw.split(",")]
+        pair = all("|" in g for g in got)
+        boot = [(g.split("|")[0] if pair else g).lstrip("?") for g in got]
+        run = [g.split("|")[1].split("+")[-1] for g in got] if pair else None
+        names.append(name)
+        fields[name] = (boot, run)
+    return names, fields
+
+
+RULES, FIELDS = _decision_rules()
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
-REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope", "core-class"]
-# Fields of a rule's three numbers (`RuleInfo::fields`); "boot|run-time" pairs
-# are split on `|`: the run-time form (a reason in the third number's high
-# half) takes the second name.
-FIELDS = {
-    "deadline-admission": (["placed", "rows", "row+1"], ["runtime_us", "period_us", "available_us"]),
-    "rt-band-cap": (["placed", "cap_pct", "row+1"], None),
-    "memory-admission": (["need_pages", "free_pages", "reserve_pages"], None),
-    "wake-placement": (["cpu", "last_cpu", "prio"], None),
-    "cap-denial": (["kind", "reason", "dropped"], None),
-    "deadline-expired": (["deadline_ns", "now_ns", "clock"], None),
-    "split-lock": (["rip", "cpu", "-"], None),
-    "cap-derive": (["-", "-", "expiry_ns"], None),
-    "cap-revoke": (["-", "-", "descendant"], None),
-    "neverallow": (["rule", "kind", "grant"], None),
-    "irq-budget": (["line", "masked", "overruns"], None),
-    "placement": (["move", "measured_ns", "limit_ns"], None),
-    "package-install": (["images", "signer", "reason"], None),
-    "wait-cycle": (["kind", "owner", "links"], None),
-    "device-admission": (["bus", "id", "why"], None),
-    # `needed_ns`: the driver's placement latency plus the device row's `commit_ns`.
-    "effect-deadline": (["effect", "deadline_ns", "needed_ns"], None),
-    # The subject is a device (`kind << 16 | wheel`); `from`/`to` 1 commanded,
-    # 2 safe; `cause` is `tid << 8 | code` (1 missed commit deadline, 2 refused
-    # because the device is held in its safe state).
-    "safe-state": (["from", "to", "cause"], None),
-    # `action` the row's compensate op; `status` 0 ran, 1 no inverse, 2 refused.
-    "compensation": (["effect", "action", "status"], None),
-    "receipt-caveat": (["caveat", "age_ms", "limit_ms"], None),
-    "declassify": (["from_label", "to_label", "grant"], None),
-    "shadow-refusal": (["rule", "verdict", "would_be"], None),
-    "subtree-policy": (["policy", "depth", "action"], None),
-    "remote-revoke": (["domain", "cap", "epoch"], None),
-    "compress": (["pages", "bytes_in", "bytes_out"], None),
-    "swap-out": (["pages", "reason", "free_pages"], None),
-    "kmem-charge": (["bytes", "used", "limit"], None),
-    "clock-step": (["clock", "delta_ns", "limit_ns"], None),
-    "packet-refused": (["proto", "reason", "len"], None),
-    "guest-egress": (["kind", "target", "reason"], None),
-    "livepatch": (["patch", "symbol", "reason"], None),
-    "cpu-hotplug": (["op", "load", "reason"], None),
-    "suspend": (["state", "blockers", "reason"], None),
-    "battery-degrade": (["level_pct", "from_mode", "to_mode"], None),
-    "provenance-meet": (["inputs", "label", "result"], None),
-    "effect-record": (["effect", "reason", "ring_len"], None),
-    "measured-boot": (["stage", "digest", "how"], None),
-    "hardening-fallback": (["isa", "-", "-"], None),
-    "pledge": (["mask", "action", "nr"], None),
-    "accel-admission": (["accel", "need_kib", "free_kib"], None),
-    "tsn-admission": (["period_ns", "frame_bytes", "reason"], None),
-    "envelope-config": (["op", "key", "level"], None),
-    "envelope-ota": (["step", "slot", "level"], None),
-    "envelope-egress": (["dest", "class", "level"], None),
-    "envelope-delete": (["op", "volume", "level"], None),
-    "envelope-rt-time": (["asked_ppm", "ceiling_ppm", "level"], None),
-    "freeze": (["op", "tasks", "reason"], None),
-    "thread-control": (["target", "op", "reason"], None),
-    "login": (["method", "attempt", "reason"], None),
-    "key-use": (["key", "op", "reason"], None),
-    "mem-pressure": (["level", "free_pages", "action"], None),
-    "purge": (["what", "bytes", "reason"], None),
-    "wipe": (["how", "bytes", "status"], None),
-    "mission-energy": (["need_mj", "left_mj", "reserve_mj"], None),
-    "deferred-activity": (["kind", "wait_ms", "reason"], None),
-    "time-protection": (["from", "to", "mechanism"], None),
-    "attest": (["scope", "nonce", "reason"], None),
-    "boot-chain": (["version", "floor", "reason"], None),
-    "ras": (["kind", "addr", "action"], None),
-    "fieldbus": (["node", "id", "reason"], None),
-    "audio-capture": (["device", "rate_hz", "reason"], None),
-    "focus": (["from", "to", "reason"], None),
-    "usb-authorize": (["vid_pid", "class", "reason"], None),
-    "block-timeout": (["sector", "waited_ms", "action"], None),
-    "clock-set": (["clock", "new_ns", "reason"], None),
-    "estop-release": (["cause", "floor", "nonce"], None),
-    "thermal": (["event", "arg", "temp_mdeg"], None),
-    "durability": (["from", "to", "flush"], None),
-    "net-timeout": (["pending", "waited_ms", "action"], None),
-    "usb-host-fault": (["cause_trb", "waited_ms", "action"], None),
-    "call-admission": (["deadline_ns", "alt", "kind<<32+server"], None),
-    "opp-apply": (["choice", "target", "outcome"], None),
-    "power-assertion": (["reason", "ttl_ms", "id"], None),
-    "nic-queue": (["ifindex", "queue", "why"], None),
-    "clocksource": (["reason", "drift_ppm", "limit_ppm"], None),
-    "ioport-reserved": (["first", "last", "kernel_port"], None),
-    "rangefinder": (["asked", "max", "-"], None),
-    "hang": (["waited_ms", "kind<<32|culprit", "action<<32|detail"], None),
-    "core-dump": (["written", "limit", "dropped"], None),
-    "refusal-limited": (["rule", "held", "started"], None),
-    "asym-cpus": (["classes", "asym_cpus", "zero"], None),
-    "rt-core-class": (["core_class", "cpu", "capacity"], None),
-    "cpu-refused": (["fact", "boot_value", "this_cpu_value"], None),
-    "cap-slot-restart": (["slot", "restarts", "-"], None),
-    "cap-table-full": (["live", "parked", "refusals"], None),
-}
+REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope"]
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",
           5: "skill_start", 6: "skill_end", 7: "waypoint", 8: "error"}
@@ -424,23 +331,8 @@ def _rust_list(src, anchor, pat):
 
 
 def check_tables(root):
-    """The tables above against the kernel's sources (a checkout's)."""
+    """The tables above (the rules' are read from the source) against the kernel's sources (a checkout's)."""
     dec = open(os.path.join(root, "crates/core/decision/src/lib.rs")).read()
-    names = _rust_list(dec, "pub const RULES", r'name: "([a-z-]+)"')[:len(RULES)]
-    assert names == RULES, f"rules differ from decision/src/lib.rs: {names}"
-    # Every rule's three field names, as `RuleInfo::fields` fixes them: a boot
-    # form and, after a `|`, a run-time form; a leading `?` marks a number that
-    # is left out when zero, which `numbers` does for `dropped` and `row+1`. The run-time
-    # form's `reason<<32+x` names the low half `x`, as `numbers` unpacks it.
-    body = dec[dec.index("pub const RULES"):dec.index("\n];", dec.index("pub const RULES"))]
-    for name, raw in re.findall(r'name: "([a-z-]+)",.*?fields: \[([^\]]*)\]', body, re.S):
-        got = [f.strip().strip('"') for f in raw.split(",")]
-        boot = [g.split("|")[0].lstrip("?") for g in got]
-        run = [g.split("|")[1].split("+")[-1] for g in got] if any("|" in g for g in got) else None
-        assert name in FIELDS, f"rule {name!r}: no FIELDS entry"
-        t_boot, t_run = FIELDS[name]
-        assert (t_boot, t_run) == (boot, run), f"rule {name!r}: fields {t_boot, t_run} vs {boot, run}"
-    assert set(FIELDS) <= set(RULES), f"FIELDS names unknown rules: {set(FIELDS) - set(RULES)}"
     vs = re.search(r'pub const VERDICTS: \[&str; \d+\] = (\[[^\]]*\])', dec).group(1)
     assert json.loads(vs) == VERDICTS, f"verdicts differ: {vs}"
     rr = re.search(r'pub const REFUSAL_REASONS: \[&str; \d+\] =\s*(\[[^\]]*\])', dec).group(1)
