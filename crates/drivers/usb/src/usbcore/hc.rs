@@ -258,4 +258,9 @@ impl<R: Regs, M: Memory, C: Clock> Hc<R, M, C> {
     pub fn recover_halted(&mut self) -> usize {
         each_mut!(self, c => c.recover_halted())
     }
+    /// End what endpoint `ep` holds now: on return the controller no longer
+    /// touches those buffers, or it is dead and quarantined its memory.
+    pub fn abort_ep(&mut self, ep: u16) {
+        each_mut!(self, c => c.abort_ep(ep))
+    }
 }

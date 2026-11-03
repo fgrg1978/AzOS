@@ -29,6 +29,10 @@
 //! - a function no kernel driver binds is blocked: ring 3 has no DMA path
 //!   yet, so nothing it drives can need one.
 //!
+//! The first two stay in pass-through until their driver has run. Once every
+//! PCI driver had its turn, [`iommu_settle`] blocks each function none of them
+//! took and only then says which ones translate.
+//!
 //! IOMMU_BYPASS puts every function in pass-through instead.
 
 use azos_dma::{AddrRange, DmaAddr, DmaDomain, DmaError, Direction, DomainKind, DomainOps, IdentityDomain, SoftState, FULL_RANGE};
@@ -53,6 +57,12 @@ impl<S> Locked<S> {
 
     pub(crate) fn set(&self, domain: S) {
         *self.0.lock() = Some(domain);
+    }
+
+    /// `f` of the domain in this slot, if it holds one.
+    #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
+    fn with<T>(&self, f: impl FnOnce(&S) -> T) -> Option<T> {
+        self.0.lock().as_ref().map(f)
     }
 }
 
@@ -259,7 +269,7 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
     feature = "iommu-vtd",
     feature = "iommu-amdvi"
 ))]
-pub(crate) use hw::{fault_task, iommu_init, iommu_up};
+pub(crate) use hw::{fault_task, iommu_init, iommu_settle, iommu_up};
 
 #[cfg(any(
     feature = "iommu-riscv",
@@ -272,7 +282,7 @@ mod hw {
 
     use azos_iommu::domain::IoDomain;
     use azos_iommu::{
-        DmaFault, DomainMode, Flavour, IommuError, IommuUnit, Mmio, PtFormat, TableMem, UnitHandle,
+        DmaFault, DomainMode, Flavour, IommuError, IommuUnit, Mmio, PtFormat, Settled, TableMem, UnitHandle,
     };
     use azos_sync::SpinLock;
 
@@ -435,6 +445,8 @@ mod hw {
 
     /// The unit the fault task drains.
     static FAULTS: SpinLock<Option<&'static dyn UnitHandle>> = SpinLock::new(None);
+    /// The unit's own requester id, when it is a PCI function.
+    static OWN: SpinLock<Option<u32>> = SpinLock::new(None);
     static UP: AtomicBool = AtomicBool::new(false);
 
     /// Is an IOMMU being driven (so there is a fault task to create)?
@@ -549,10 +561,19 @@ mod hw {
         let _ = (dmar, ivhd, funcs);
         #[cfg(feature = "iommu-vtd")]
         if let Some(base) = dmar.map(|b| b as usize) {
+            // The capability registers lie in the first page and say how many
+            // the rest take.
             if !crate::boot::map_mmio_region(base, 0x1000) {
+                azos_drv_sys::kerr!("[IOMMU] vt-d at {:#x} not used: registers not mapped", base);
                 return None;
             }
-            return match azos_iommu::vtd::Vtd::new(KMmio { base }, &MEM) {
+            let mmio = KMmio { base };
+            let span = azos_iommu::vtd::register_span(mmio.read64(azos_iommu::vtd::REG_CAP), mmio.read64(azos_iommu::vtd::REG_ECAP));
+            if !crate::boot::map_mmio_region(base, span) {
+                azos_drv_sys::kerr!("[IOMMU] vt-d at {:#x} not used: {:#x} bytes of registers not mapped", base, span);
+                return None;
+            }
+            return match azos_iommu::vtd::Vtd::new(mmio, &MEM, span) {
                 Ok(u) => Some(found(&VTD, u, base, None)),
                 Err(e) => {
                     kprintln!("[IOMMU] vt-d at {:#x} not used: {:?}", base, e);
@@ -581,7 +602,8 @@ mod hw {
     /// Bring up the IOMMU and place every function ([`Placement`]). A refusal
     /// is a line: a function whose entry the unit refused stays as a fresh
     /// unit has every function, blocked; one whose domain could not be built
-    /// stays in pass-through.
+    /// stays in pass-through. Nothing translates yet: [`iommu_settle`] says
+    /// what came of it.
     pub(crate) fn iommu_init<C: azos_pci::ConfigSpace>(
         cfg: &mut C,
         funcs: &[Option<azos_pci::FunctionInfo>],
@@ -590,7 +612,6 @@ mod hw {
         let Some(f) = bring_up(cfg, funcs, window) else { return };
 
         let mut pool = POOL.iter();
-        let (mut translated, mut passed, mut blocked) = (0, 0, 0);
         for info in funcs.iter().flatten() {
             let rid = info.bdf.requester_id();
             let place = placement(rid, crate::boot::hwbus::driver_of(info), f.own);
@@ -601,31 +622,71 @@ mod hw {
             }
             match place {
                 Placement::Translate(driver) => match install(&f, rid, pool.next()) {
-                    Ok(()) => {
-                        translated += 1;
-                        kprintln!("[IOMMU] {} {}: translating domain installed", info.bdf, driver);
-                    }
+                    Ok(()) => kprintln!("[IOMMU] {} {}: domain ready, pass-through until its driver enables it", info.bdf, driver),
                     Err(why) => {
-                        passed += 1;
                         azos_drv_sys::kwarn!("[IOMMU] {} {}: DMA NOT translated (pass-through): {}",
                                              info.bdf, driver, why);
                     }
                 },
                 // Said per function, so the summary is not read as protection.
                 Placement::Bypass(why) => {
-                    passed += 1;
                     azos_drv_sys::kwarn!("[IOMMU] {}: DMA NOT translated (pass-through): {}", info.bdf, why);
                 }
                 Placement::Block => {
-                    blocked += 1;
                     kprintln!("[IOMMU] {}: DMA blocked (no kernel driver)", info.bdf);
                 }
             }
         }
-        kprintln!("[IOMMU] {} function(s) translating, {} in pass-through, {} blocked", translated, passed, blocked);
 
+        *OWN.lock() = f.own;
         *FAULTS.lock() = Some(f.unit);
         UP.store(true, Ordering::Release);
+    }
+
+    /// Every PCI driver had its turn: a function none of them took goes to
+    /// Block, whatever it was placed as (its hardware may be why the driver
+    /// gave up, and it must not keep every page), and the log says where each
+    /// function really is. The unit's own function and IOMMU_BYPASS stay out.
+    pub(crate) fn iommu_settle(funcs: &[Option<azos_pci::FunctionInfo>]) {
+        let Some(unit) = *FAULTS.lock() else { return };
+        let own = *OWN.lock();
+        let (mut translated, mut passed, mut blocked) = (0, 0, 0);
+        for info in funcs.iter().flatten() {
+            let rid = info.bdf.requester_id();
+            let driver = crate::boot::hwbus::driver_of(info);
+            match placement(rid, driver, own) {
+                Placement::Block => {
+                    blocked += 1;
+                    continue;
+                }
+                Placement::Bypass(_) if azos_limits::IOMMU_BYPASS || own == Some(rid) => {
+                    passed += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            let enabled = POOL.iter().any(|s| s.with(|d| d.dev() == rid && d.enabled()) == Some(true));
+            // Canary: a function whose driver gave up keeps what the boot gave it.
+            let bound = crate::boot::hwbus::pci_bound(info) || canary!("iommu-fail-open");
+            match azos_iommu::settle(bound, enabled) {
+                Settled::Translating => {
+                    translated += 1;
+                    kprintln!("[IOMMU] {} {}: translating", info.bdf, driver.unwrap_or("?"));
+                }
+                Settled::PassThrough => passed += 1,
+                Settled::Blocked => match unit.attach(rid, DomainMode::Block) {
+                    Ok(()) => {
+                        blocked += 1;
+                        kprintln!("[IOMMU] {}: DMA blocked (its driver did not bind)", info.bdf);
+                    }
+                    Err(e) => {
+                        passed += 1;
+                        azos_drv_sys::kerr!("[IOMMU] {}: no driver, Block refused, DMA NOT confined: {:?}", info.bdf, e);
+                    }
+                },
+            }
+        }
+        kprintln!("[IOMMU] {} function(s) translating, {} in pass-through, {} blocked", translated, passed, blocked);
     }
 
     /// Give function `rid` the translating domain in `slot` and install it
@@ -662,6 +723,63 @@ mod hw {
                         f.device_id, f.fault_addr, f.kind, total);
                 }
             });
+        }
+    }
+}
+
+#[cfg(feature = "ktest")]
+mod unmap_ktests {
+    use azos_dma::{Direction, DmaAddr, DmaDomain, DmaError, DomainKind, PageSource};
+
+    struct Frames;
+    impl PageSource for Frames {
+        fn alloc(&self, _len: usize) -> Option<u64> {
+            azos_mm::pmm::alloc_page().ok().map(|p| p.as_usize() as u64)
+        }
+        fn free(&self, pa: u64, _len: usize) {
+            let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa as usize));
+        }
+    }
+
+    /// A domain whose IOTLB flush never completes.
+    struct StuckFlush;
+    impl DmaDomain for StuckFlush {
+        fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
+            Ok(DmaAddr(pa))
+        }
+        fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
+            Err(DmaError::Iommu)
+        }
+        fn coherent(&self) -> bool {
+            true
+        }
+        fn kind(&self) -> DomainKind {
+            DomainKind::Identity
+        }
+        fn enable(&self) -> Result<(), DmaError> {
+            Ok(())
+        }
+        fn allow_msi(&self, _doorbell: u64) -> Result<(), DmaError> {
+            Ok(())
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn dma_failed_unmap_keeps_the_frame() {
+            azos_dma::canary_free_anyway(canary!("dma-unmap-frees"));
+            let page = azos_arch::PAGE_SIZE;
+            let Some(pa) = Frames.alloc(page) else { return Err("no frame") };
+            let leaked = azos_dma::leaked_bytes();
+            let r = azos_dma::unmap_and_free(&StuckFlush, &Frames, pa, DmaAddr(pa), page);
+            azos_dma::canary_free_anyway(false);
+            if azos_mm::pmm::range_is_free(pa as usize, page) {
+                return Err("a frame the device can still reach went back to the allocator");
+            }
+            if r.is_ok() || azos_dma::leaked_bytes() != leaked + page as u64 {
+                return Err("the kept frame was not counted");
+            }
+            Frames.free(pa, page);
+            Ok(())
         }
     }
 }

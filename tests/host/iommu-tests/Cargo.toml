@@ -12,6 +12,9 @@ description = "Host-side tests for crates/drivers/iommu: encoders against hand-c
 azos_iommu = { path = "../../../crates/drivers/iommu" }
 azos_dma = { path = "../../../crates/drivers/dma" }
 
+[features]
+vtd-window-canary = ["azos_iommu/vtd-window-canary"]
+
 [profile.release]
 overflow-checks = true
 

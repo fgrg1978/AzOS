@@ -18,3 +18,7 @@ tests/host/iommu-tests.
 
 [dependencies]
 azos_dma = { path = "../dma" }
+
+[features]
+# Gate canary only: registers past the mapped window are accessed anyway.
+vtd-window-canary = []

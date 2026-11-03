@@ -46,6 +46,11 @@ canary-dwc2-toggle = ["azos_usb/canary-dwc2-toggle"]
 canary-dwc2-no-bounce = ["azos_usb/canary-dwc2-no-bounce"]
 canary-dwc2-split = ["azos_usb/canary-dwc2-split"]
 canary-arena-clean = ["azos_usb/canary-arena-clean"]
+canary-ep0-close-no-abort = ["azos_usb/canary-ep0-close-no-abort"]
+canary-core-control-no-abort = ["azos_usb/canary-core-control-no-abort"]
+canary-xhci-refusal-ignored = ["azos_usb/canary-xhci-refusal-ignored"]
+canary-dwc2-halt-ignored = ["azos_usb/canary-dwc2-halt-ignored"]
+canary-dead-hc-frees = ["azos_usb/canary-dead-hc-frees"]
 
 [profile.release]
 overflow-checks = true

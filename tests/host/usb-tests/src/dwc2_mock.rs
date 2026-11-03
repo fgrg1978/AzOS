@@ -108,6 +108,12 @@ pub struct St2 {
     pub stall_next: Vec<(u8, u8)>,
     pub xacterr_next: Vec<(u8, u8)>,
     pub fault: Option<String>,
+    /// A channel told to halt keeps running.
+    halts_stuck: bool,
+    /// `free_region` keeps the memory from now on ([`Memory::quarantine`]).
+    quarantined: bool,
+    /// Regions the driver gave back after the quarantine.
+    leaked: u32,
     /// Channel runs started: (address, endpoint address, transfer size).
     pub runs: Vec<(u8, u8, u32)>,
 }
@@ -304,6 +310,9 @@ impl St2 {
     fn write_hcchar(&mut self, ch: usize, val: u32) {
         let was = self.chans[ch].hcchar;
         if val & HCCHAR_CHDIS != 0 && was & HCCHAR_CHENA != 0 {
+            if self.halts_stuck {
+                return;
+            }
             // Halt a running channel.
             let c = &mut self.chans[ch];
             c.hcchar = val & !(HCCHAR_CHENA | HCCHAR_CHDIS);
@@ -551,6 +560,9 @@ impl Hw2 {
                 stall_next: Vec::new(),
                 xacterr_next: Vec::new(),
                 fault: None,
+                halts_stuck: false,
+                quarantined: false,
+                leaked: 0,
                 runs: Vec::new(),
             }),
             now: Cell::new(0),
@@ -611,6 +623,18 @@ impl Hw2 {
         self.st.borrow().addrs.iter().find(|(_, d)| Rc::ptr_eq(d, dev)).map(|(a, _)| *a)
     }
 
+    /// From now on a channel told to halt keeps running.
+    pub fn stick_halts(&self) {
+        self.st.borrow_mut().halts_stuck = true;
+    }
+    /// Regions the driver gave back after its controller died.
+    pub fn leaked(&self) -> u32 {
+        self.st.borrow().leaked
+    }
+    /// Is the bus address memory the driver still holds?
+    pub fn mapped(&self, bus: u64) -> bool {
+        self.st.borrow().region_of(bus, 1).is_some()
+    }
     pub fn fault(&self) -> Option<String> {
         self.st.borrow().fault.clone()
     }
@@ -674,7 +698,15 @@ impl Memory for Mem2 {
         Some(unsafe { DmaBuf::new(ptr, bus, len) })
     }
     fn free_region(&self, b: DmaBuf) {
-        self.0.st.borrow_mut().regions.retain(|r| r.bus != b.bus());
+        let mut st = self.0.st.borrow_mut();
+        if st.quarantined {
+            st.leaked += 1;
+            return;
+        }
+        st.regions.retain(|r| r.bus != b.bus());
+    }
+    fn quarantine(&self) {
+        self.0.st.borrow_mut().quarantined = true;
     }
     fn enable(&self) -> bool {
         true

@@ -47,6 +47,8 @@ pub struct IoDomain<const N: usize> {
     mem: &'static dyn TableMem,
     pt: IoPageTable,
     coherent: bool,
+    /// The unit translates through this domain's table.
+    enabled: bool,
     entries: [Option<Entry>; N],
 }
 
@@ -72,7 +74,17 @@ impl<const N: usize> IoDomain<N> {
         coherent: bool,
     ) -> Result<Self, DmaError> {
         let pt = IoPageTable::new(fmt, mem).map_err(pt_err)?;
-        Ok(IoDomain { dev, flavour, unit, mem, pt, coherent, entries: [None; N] })
+        Ok(IoDomain { dev, flavour, unit, mem, pt, coherent, enabled: false, entries: [None; N] })
+    }
+
+    /// The requester id this domain is for.
+    pub fn dev(&self) -> u32 {
+        self.dev
+    }
+
+    /// Has `enable` pointed the unit at this table?
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 
     /// Make the table agree with `entries` for pages `first..=last`: each
@@ -168,6 +180,8 @@ impl<const N: usize> DomainOps for IoDomain<N> {
     fn enable(&mut self) -> Result<(), DmaError> {
         self.unit
             .attach(self.dev, DomainMode::Translate { root_pa: self.pt.root_pa() })
-            .map_err(|_| DmaError::Iommu)
+            .map_err(|_| DmaError::Iommu)?;
+        self.enabled = true;
+        Ok(())
     }
 }

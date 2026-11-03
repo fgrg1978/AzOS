@@ -58,6 +58,14 @@
 //! 2026-10-23): one reset, shared with the timeouts, and the next fault of
 //! any of the three causes latches. The record names the cause
 //! ([`Fault`]).
+//!
+//! # When a buffer is the driver's again
+//!
+//! A descriptor completes only once the controller can no longer touch its
+//! buffer: it ran, its endpoint was stopped or dropped, or the controller was
+//! reset. A command that would stop it and is refused goes through the same
+//! policy as a timeout. A controller latched dead promises nothing:
+//! [`Memory::quarantine`] turns every later free into a leak.
 
 use super::context::{self, EpParams, Layout, SlotParams};
 use super::regs::{self, Caps, Speed};
@@ -120,6 +128,9 @@ pub enum Fault {
     HostSystemError = 2,
     /// USBSTS.HCE: the controller found an internal error.
     HostControllerError = 3,
+    /// The controller refused a command that takes an endpoint out of its
+    /// hands, so it may still be writing that endpoint's buffers.
+    Refused = 4,
 }
 
 impl Fault {
@@ -746,6 +757,7 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
         if cfg!(feature = "canary-xhci-no-reset") {
             self.recovery.latch();
             self.halt();
+            self.quarantine_if_dead();
             return;
         }
         match self.recovery.timed_out(detail, waited_ms) {
@@ -759,6 +771,27 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             Verdict::Latch => self.halt(),
             Verdict::Handled => {}
         }
+        self.quarantine_if_dead();
+    }
+
+    fn quarantine_if_dead(&self) {
+        // Canary: a controller whose halt nobody confirmed gets its buffers freed.
+        if self.recovery.dead() && !cfg!(feature = "canary-dead-hc-frees") {
+            self.mem.quarantine();
+        }
+    }
+
+    /// A command that takes endpoint state out of the controller's hands
+    /// ended with `r`. A refusal leaves the controller running what it was
+    /// told to stop, so it faults; a timeout, a dead or a reset controller
+    /// already went through [`Xhci::fault`]. Whether the buffers are free
+    /// again: everything but a controller latched dead.
+    fn stopped_or_fault(&mut self, r: Result<(), Error>, ty: u8) -> bool {
+        // Canary: a refused stop is taken for a stop.
+        if matches!(r, Err(Error::Command(_))) && !cfg!(feature = "canary-xhci-refusal-ignored") {
+            self.fault(Fault::Refused, ty, 0);
+        }
+        !self.recovery.dead()
     }
 
     /// Halt the controller (Run/Stop cleared, so it walks no ring again), and
@@ -1048,26 +1081,25 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     }
 
     /// Drop endpoints (Configure Endpoint with drop flags) and free their
-    /// rings. Descriptors still in flight complete as stopped.
+    /// rings. Descriptors still in flight complete as stopped, once the
+    /// controller has let go of them ([`Xhci::stopped_or_fault`]).
     pub fn drop_endpoints(&mut self, slot: u8, dcis: u32) -> Result<(), Error> {
         let si = self.slot_ix(slot)?;
         let dcis = dcis & !0b11; // endpoint 0 and the slot are never dropped
-        for dci in 2..32u8 {
-            if dcis & 1 << dci != 0 {
-                self.abort_endpoint(si, dci, cc::STOPPED);
-            }
-        }
         self.configured[si] &= !dcis;
         // The input context is rebuilt with the drop flags; the slot's entry
         // count is recomputed from what stays.
         self.fill_input(si, dcis, 1, &[]);
-        let r = self.command(Trb::configure_endpoint(slot, self.input.bus(), false));
-        for dci in 2..32u8 {
-            if dcis & 1 << dci != 0 {
-                self.free_endpoint(si, dci);
+        let r = self.command(Trb::configure_endpoint(slot, self.input.bus(), false)).map(|_| ());
+        if self.stopped_or_fault(r, ty::CONFIGURE_ENDPOINT) {
+            for dci in 2..32u8 {
+                if dcis & 1 << dci != 0 {
+                    self.abort_endpoint(si, dci, cc::STOPPED);
+                    self.free_endpoint(si, dci);
+                }
             }
         }
-        r.map(|_| ())
+        r
     }
 
     fn abort_endpoint(&mut self, si: usize, dci: u8, code: u8) {
@@ -1116,7 +1148,9 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     pub fn disable_slot(&mut self, slot: u8) -> Result<(), Error> {
         self.slot_ix(slot)?;
         let r = self.command(Trb::disable_slot(slot)).map(|_| ());
-        self.release_slot_memory(slot);
+        if self.stopped_or_fault(r, ty::DISABLE_SLOT) {
+            self.release_slot_memory(slot);
+        }
         r
     }
 
@@ -1329,46 +1363,80 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
                 // A bus error on an isochronous endpoint loses that interval's
                 // data and nothing else: the endpoint keeps running.
                 let keeps_running = self.eps[ix].isoch && !cfg!(feature = "canary-isoch-halt");
-                if !keeps_running && !matches!(code, cc::STOPPED | cc::STOPPED_LENGTH_INVALID) {
+                if !keeps_running && !matches!(code, cc::STOPPED | cc::STOPPED_LENGTH_INVALID | cc::STOPPED_SHORT_PACKET) {
                     self.eps[ix].halted = true;
                 }
             }
         }
     }
 
-    /// Bring every halted endpoint back: Reset Endpoint, the descriptors
-    /// queued behind the failure complete as stopped, and the dequeue pointer
-    /// moves to the enqueue pointer. Returns how many were recovered.
+    /// Bring every halted endpoint back: the controller lets go of it, the
+    /// descriptors queued behind the failure complete as stopped, and the
+    /// ring is usable again. Returns how many were recovered.
     pub fn recover_halted(&mut self) -> usize {
         let mut n = 0;
         for ix in 0..MAX_EPS {
             if !self.eps[ix].halted || self.recovery.dead() || self.reset_pending {
                 continue;
             }
-            let (slot, dci) = (self.eps[ix].slot, self.eps[ix].dci);
-            // A reset of an endpoint that is not halted fails with a context
-            // state error, which only means there was nothing to reset.
-            let _ = self.command(Trb::reset_endpoint(slot, dci));
-            while self.eps[ix].count > 0 {
-                let t = self.eps[ix].pop();
-                self.push_event(HcEvent::Done(Done {
-                    owner: t.owner,
-                    tag: t.tag,
-                    code: cc::STOPPED,
-                    actual: 0,
-                    slot,
-                    dci,
-                }));
+            let (r, ty) = self.quiesce(ix);
+            // A refusal resets the controller and the core's removal ends the
+            // descriptors; it does not hand them back as stopped here.
+            if self.stopped_or_fault(r, ty) && (r.is_ok() || cfg!(feature = "canary-xhci-refusal-ignored")) {
+                self.flush_tds(ix);
+                n += 1;
             }
-            if let Some(ring) = self.eps[ix].ring.as_ref() {
-                let (deq, dcs) = ring.enqueue_ptr();
-                let _ = self.command(Trb::set_tr_dequeue(slot, dci, deq, dcs));
-            }
-            self.eps[ix].inflight = 0;
-            self.eps[ix].halted = false;
-            n += 1;
         }
         n
+    }
+
+    /// End every descriptor on endpoint `ep` before the device has finished
+    /// it: when this returns the controller no longer touches their buffers
+    /// ([`Xhci::stopped_or_fault`]) and their completions are in the queue as
+    /// stopped. Every owner's: endpoint 0 is shared by the pipes on a device.
+    pub fn abort_ep(&mut self, ep: u16) {
+        let Ok(ix) = self.ep_ix(ep) else { return };
+        if self.eps[ix].count == 0 || self.recovery.dead() {
+            return;
+        }
+        // The reset of a controller under way already stopped it.
+        let (r, ty) = if self.reset_pending { (Ok(()), 0) } else { self.quiesce(ix) };
+        if self.stopped_or_fault(r, ty) {
+            self.flush_tds(ix);
+        }
+    }
+
+    /// Stop `ix` and skip what it holds: a halted endpoint takes Reset
+    /// Endpoint and a running one Stop Endpoint (the wrong one for the state
+    /// answers Context State Error, and a software flag can lag the context),
+    /// then the dequeue pointer moves to the enqueue pointer. The first
+    /// command that failed and its type.
+    fn quiesce(&mut self, ix: usize) -> (Result<(), Error>, u8) {
+        let (slot, dci) = (self.eps[ix].slot, self.eps[ix].dci);
+        let reset = (Trb::reset_endpoint(slot, dci), ty::RESET_ENDPOINT);
+        let stop = (Trb::stop_endpoint(slot, dci), ty::STOP_ENDPOINT);
+        let order = if self.eps[ix].halted { [reset, stop] } else { [stop, reset] };
+        for (t, ty) in order {
+            match self.command(t) {
+                Ok(_) => break,
+                Err(Error::Command(cc::CONTEXT_STATE_ERROR)) => {}
+                Err(e) => return (Err(e), ty),
+            }
+        }
+        let Some(ring) = self.eps[ix].ring.as_ref() else { return (Ok(()), 0) };
+        let (deq, dcs) = ring.enqueue_ptr();
+        (self.command(Trb::set_tr_dequeue(slot, dci, deq, dcs)).map(|_| ()), ty::SET_TR_DEQUEUE)
+    }
+
+    /// The controller let go of `ix`: what it held completes as stopped.
+    fn flush_tds(&mut self, ix: usize) {
+        let (slot, dci) = (self.eps[ix].slot, self.eps[ix].dci);
+        while self.eps[ix].count > 0 {
+            let t = self.eps[ix].pop();
+            self.push_event(HcEvent::Done(Done { owner: t.owner, tag: t.tag, code: cc::STOPPED, actual: 0, slot, dci }));
+        }
+        self.eps[ix].inflight = 0;
+        self.eps[ix].halted = false;
     }
 
     /// The device context of `slot`, as the controller last wrote it

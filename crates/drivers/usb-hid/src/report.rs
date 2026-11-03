@@ -423,6 +423,11 @@ impl Parser {
             if self.app == App::Keyboard && count <= u16::MAX as u32 {
                 if let Some(first) = self.l.min.or_else(|| self.l.usages[..self.l.n].first().copied()) {
                     if first >> 16 == PAGE_KEYBOARD as u32 {
+                        // Indices past the last usage name nothing.
+                        let span = lmax as i64 - lmin as i64;
+                        if !cfg!(feature = "canary-hid-array-range") && (span < 0 || (first & 0xffff) as i64 + span > u16::MAX as i64) {
+                            return Ok(());
+                        }
                         self.layout.keys = true;
                         return self.push(Control {
                             kind: Kind::Array,

@@ -141,6 +141,10 @@ pub trait Memory {
     fn alloc_region(&self, len: usize, align: usize, mask: u64) -> Option<DmaBuf>;
     /// Give a block back (unmapped first).
     fn free_region(&self, b: DmaBuf);
+    /// The controller this memory serves went dead without proof that it
+    /// stopped: from now on `free_region` leaks and counts instead of freeing,
+    /// whoever calls it. For good: a dead controller stays dead until reboot.
+    fn quarantine(&self);
     /// Every region the controller will ever be given is mapped: start
     /// enforcing the DMA domain (a translating one now refuses the device any
     /// page that is not mapped). Called once, before the controller runs.

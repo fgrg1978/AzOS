@@ -1004,6 +1004,18 @@ pub(crate) fn driver_of(f: &azos_pci::FunctionInfo) -> Option<&'static str> {
     }
 }
 
+/// Did a driver take PCI function `f`?
+#[cfg(all(feature = "pci", any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi")))]
+pub(crate) fn pci_bound(f: &azos_pci::FunctionInfo) -> bool {
+    hwbus::with(|b| {
+        b.iter().any(|(_, s)| {
+            s.state == State::Bound
+                && s.dev.kind == hwbus::BusKind::Pci
+                && (s.dev.pci.bus, s.dev.pci.device, s.dev.pci.function) == (f.bdf.bus, f.bdf.device, f.bdf.function)
+        })
+    })
+}
+
 /// The first function of `funcs` the native table gives to `driver`: for the
 /// boot self-tests' NIC and the RISC-V IOMMU's probe, its only callers.
 #[cfg(all(feature = "pci", any(feature = "boot-selftests", feature = "iommu-riscv")))]

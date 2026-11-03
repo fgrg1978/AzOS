@@ -69,6 +69,15 @@ pub const fn frcd_count(cap: u64) -> usize {
     (((cap >> 40) & 0xff) as usize) + 1
 }
 
+/// Bytes of register window a unit with these capabilities uses: the invalidate
+/// and fault-recording blocks sit wherever it says, past the first 4 KiB on some.
+pub const fn register_span(cap: u64, ecap: u64) -> usize {
+    let iotlb = iotlb_reg(ecap) + 8;
+    let faults = frcd_base(cap) + frcd_count(cap) * 16;
+    let top = if iotlb > faults { iotlb } else { faults };
+    if top > 0x1000 { top } else { 0x1000 }
+}
+
 /// `CAP.SAGAW`: bit 1 = 39-bit (3-level), bit 2 = 48-bit (4-level).
 pub const fn sagaw(cap: u64) -> u32 {
     ((cap >> 8) & 0x1f) as u32
@@ -190,9 +199,14 @@ pub struct Vtd<M: Mmio> {
 impl<M: Mmio> Vtd<M> {
     /// Bring the unit up with an empty root table (every device refused until
     /// `attach`ed) and translation on.
-    pub fn new(mmio: M, mem: &'static dyn TableMem) -> Result<Self, IommuError> {
+    /// `window`: the bytes of its registers `mmio` reaches ([`register_span`]
+    /// says how many it needs).
+    pub fn new(mmio: M, mem: &'static dyn TableMem, window: usize) -> Result<Self, IommuError> {
         let cap = mmio.read64(REG_CAP);
         let ecap = mmio.read64(REG_ECAP);
+        if register_span(cap, ecap) > window && !cfg!(feature = "vtd-window-canary") {
+            return Err(IommuError::Unsupported("vt-d: registers past the mapped window"));
+        }
         let (levels, aw) = if sagaw(cap) & 0b010 != 0 {
             (3, 1)
         } else if sagaw(cap) & 0b100 != 0 {

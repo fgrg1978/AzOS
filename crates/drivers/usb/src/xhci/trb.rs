@@ -53,6 +53,7 @@ pub mod cc {
     pub const COMMAND_ABORTED: u8 = 25;
     pub const STOPPED: u8 = 26;
     pub const STOPPED_LENGTH_INVALID: u8 = 27;
+    pub const STOPPED_SHORT_PACKET: u8 = 28;
 }
 
 // Control word bits.

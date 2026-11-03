@@ -792,7 +792,8 @@ pub(crate) fn bring_up(early: &EarlyBoot, num_cpus: usize) {
     // Kconfig IOMMU_*: bring the IOMMU up before any PCI driver touches
     // its device (a function whose driver maps its DMA gets a translating
     // domain its driver enables, one whose driver does not stays in
-    // pass-through, one no kernel driver binds is blocked).
+    // pass-through, one no kernel driver binds is blocked, at once or, for
+    // one whose driver bails out, by `iommu_settle` below).
     #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
     boot::iommu_init(&mut cfg, &funcs[..pci_n], &mut window);
 
@@ -1098,6 +1099,10 @@ pub(crate) fn bring_up(early: &EarlyBoot, num_cpus: usize) {
     // in PCI order (a PC has no device tree to bind them from).
     #[cfg(feature = "i2c-dw")]
     boot::hwbus::bind_pci(&["i2c-lpss-spt", "i2c-lpss-cnl"], &mut pci_bind);
+
+    // Every PCI driver had its turn: what none of them took is blocked.
+    #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
+    boot::iommu_settle(&funcs[..pci_n]);
 
     #[cfg(feature = "mmc-flush-smoke")]
     mmc_flush_smoke(&mut cfg, &funcs[..pci_n], &mut window);

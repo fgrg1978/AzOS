@@ -517,7 +517,7 @@ impl<R: Regs, M: Memory, C: Clock> Dwc2<R, M, C> {
         self.wait(GRSTCTL, GRSTCTL_RXFFLSH, 0, RESET_TIMEOUT_US)?;
         // Every channel halted and quiet.
         for ch in 0..self.nchan as usize {
-            self.halt_channel(ch);
+            self.halt_channel(ch)?;
             self.wr(hc(ch) + HCINTMSK, 0);
         }
         self.wr(HAINTMSK, 0);
@@ -755,7 +755,7 @@ impl<R: Regs, M: Memory, C: Clock> Dwc2<R, M, C> {
                 return Err(Error::Dead);
             }
             if self.clock.now_us() >= deadline {
-                self.abort_ep(ix, cc::STOPPED);
+                self.end_tds(ix, cc::STOPPED);
                 return Err(Error::Timeout);
             }
             self.clock.delay_us(50);
@@ -817,7 +817,7 @@ impl<R: Regs, M: Memory, C: Clock> Dwc2<R, M, C> {
         for ix in MAX_DEVICES..MAX_EPS {
             let e = &self.eps[ix];
             if e.used && e.slot == slot && e.dci >= 2 && dcis & (1 << e.dci) != 0 {
-                self.abort_ep(ix, cc::STOPPED);
+                self.end_tds(ix, cc::STOPPED);
                 self.eps[ix] = Ep::FREE;
             }
         }
@@ -830,7 +830,7 @@ impl<R: Regs, M: Memory, C: Clock> Dwc2<R, M, C> {
         let si = self.slot_ix(slot)?;
         for ix in 0..MAX_EPS {
             if self.eps[ix].used && self.eps[ix].slot == slot {
-                self.abort_ep(ix, cc::STOPPED);
+                self.end_tds(ix, cc::STOPPED);
                 self.eps[ix] = Ep::FREE;
             }
         }
@@ -922,12 +922,34 @@ impl<R: Regs, M: Memory, C: Clock> Dwc2<R, M, C> {
         e.errors = 0;
     }
 
+    /// End what endpoint `ep` holds now, as [`Dwc2::end_tds`] with stopped.
+    pub fn abort_ep(&mut self, ep: u16) {
+        let ix = ep as usize;
+        if ix < MAX_EPS && self.eps[ix].used && !self.dead {
+            self.end_tds(ix, cc::STOPPED);
+        }
+    }
+
+    /// Latched dead until reboot: nothing it started is known to have stopped.
+    fn die(&mut self) {
+        self.dead = true;
+        // Canary: the buffers of a channel that never halted are freed.
+        if !cfg!(feature = "canary-dead-hc-frees") {
+            self.mem.quarantine();
+        }
+    }
+
     /// Stop endpoint `ix`: its channel is halted and freed, every descriptor
-    /// it holds completes with `code`.
-    fn abort_ep(&mut self, ix: usize, code: u8) {
+    /// it holds completes with `code`. A channel that does not halt may yet
+    /// write: this core has no reset path, so it dies and nothing completes.
+    fn end_tds(&mut self, ix: usize, code: u8) {
         let ch = self.eps[ix].chan;
         if ch != NO_CHAN {
-            self.halt_channel(ch as usize);
+            // Canary: the channel is taken for halted.
+            if self.halt_channel(ch as usize).is_err() && !cfg!(feature = "canary-dwc2-halt-ignored") {
+                self.die();
+                return;
+            }
             self.chans[ch as usize] = CHAN_FREE;
             self.eps[ix].chan = NO_CHAN;
         }
@@ -946,13 +968,14 @@ impl<R: Regs, M: Memory, C: Clock> Dwc2<R, M, C> {
     }
 
     /// Halt channel `ch` if it runs, and clear its interrupts.
-    fn halt_channel(&self, ch: usize) {
+    fn halt_channel(&self, ch: usize) -> Result<(), Error> {
         let c = self.rd(hc(ch) + HCCHAR);
         if c & HCCHAR_CHENA != 0 {
             self.wr(hc(ch) + HCCHAR, (c & !HCCHAR_EPDIR_IN) | HCCHAR_CHENA | HCCHAR_CHDIS);
-            let _ = self.wait(hc(ch) + HCCHAR, HCCHAR_CHENA, 0, HALT_TIMEOUT_US);
+            self.wait(hc(ch) + HCCHAR, HCCHAR_CHENA, 0, HALT_TIMEOUT_US)?;
         }
         self.wr(hc(ch) + HCINT, HCINT_ALL);
+        Ok(())
     }
 
     /// One turn: the port, the channels that halted, then a channel for every
@@ -969,7 +992,7 @@ impl<R: Regs, M: Memory, C: Clock> Dwc2<R, M, C> {
         if g & GINTSTS_CURMOD_HOST == 0 {
             // The core left host mode (an ID-pin flip on an OTG port): nothing
             // the driver started can finish.
-            self.dead = true;
+            self.die();
             return;
         }
         let changes = self.port_status(1).changes();

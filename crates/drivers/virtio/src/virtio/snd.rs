@@ -142,6 +142,9 @@ pub enum Error {
     NotReady,
     /// The device failed the request or did not answer.
     Fault,
+    /// The arena could not be taken back from the device: it may still reach
+    /// it. The caller keeps its pin for good.
+    ArenaHeld,
 }
 
 /// Why a bring-up did not produce a device.
@@ -207,9 +210,10 @@ fn sound_formats(info: &p::PcmInfo) -> u32 {
 #[derive(Clone, Copy)]
 enum Transport {
     Mmio(VirtioDev),
-    /// virtio-pci: the address of each queue's notify register.
+    /// virtio-pci: the address of each queue's notify register and of the
+    /// device status register.
     #[cfg(all(feature = "pci", target_os = "none"))]
-    Pci { notify: [usize; 4] },
+    Pci { notify: [usize; 4], status: usize },
     /// The host tests' device: the doorbell is nothing, the test steps the
     /// simulated device.
     #[cfg(test)]
@@ -217,6 +221,39 @@ enum Transport {
 }
 
 impl Transport {
+    /// Status 0, and the device says it took it (virtio 1.x spec §2.4): it no
+    /// longer touches anything it was given. `false`: within [`WAIT_MS`] it did not.
+    fn reset(&self) -> bool {
+        let deadline = timebase::now().saturating_add(ticks(WAIT_MS));
+        loop {
+            let done = match *self {
+                #[cfg(test)]
+                Transport::Null => {
+                    tests::RESETS.fetch_add(1, Ordering::Relaxed);
+                    return !tests::RESET_STUCK.load(Ordering::Relaxed);
+                }
+                // SAFETY: `d` is the initialised device's mapped window.
+                Transport::Mmio(d) => unsafe {
+                    mmio_write(d.base, VIRTIO_MMIO_STATUS, 0);
+                    mmio_read(d.base, VIRTIO_MMIO_STATUS) == 0
+                },
+                #[cfg(all(feature = "pci", target_os = "none"))]
+                Transport::Pci { status, .. } => {
+                    let mut bar = super::pci::msix_selftest::KernelBar::new(status);
+                    super::pci::Mmio::write8(&mut bar, 0, 0);
+                    super::pci::Mmio::read8(&bar, 0) == 0
+                }
+            };
+            if done {
+                return true;
+            }
+            if timebase::now() >= deadline {
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     fn kick(&self, queue: u32) {
         match *self {
             #[cfg(test)]
@@ -228,7 +265,7 @@ impl Transport {
                 unsafe { virtq_notify_mmio(&d, queue) }
             }
             #[cfg(all(feature = "pci", target_os = "none"))]
-            Transport::Pci { notify } => {
+            Transport::Pci { notify, .. } => {
                 // SAFETY: the notify register of a mapped BAR.
                 unsafe { super::virtq_notify_pci(notify[queue as usize], queue as u16) }
             }
@@ -1016,8 +1053,12 @@ impl Device {
             }
             Err(e) => {
                 let (bus, len) = (data.s[d].arena_bus, data.s[d].geo.arena_bytes as usize);
-                data.dma.unmap(bus, len);
+                let unmapped = data.dma.unmap(bus, len);
                 data.s[d].clear();
+                if unmapped.is_err() {
+                    azos_dma::note_leak(len);
+                    return Err(Error::ArenaHeld);
+                }
                 Err(e)
             }
         }
@@ -1146,15 +1187,25 @@ impl Device {
         let mut c = self.ctl.lock();
         let was_open = matches!(self.data.lock().s[d].phase, Phase::Open | Phase::Running);
         let r = self.flush(&mut c, d, Flush::Cancel, false);
+        // A device that failed the stop may still write the periods it holds,
+        // and `abandon` wrote them off as given back.
+        let let_go = r.is_ok() || cfg!(feature = "snd-no-reset-canary") || {
+            c.dead = true;
+            c.t.is_none_or(|t| t.reset())
+        };
         let mut data = self.data.lock();
         if was_open {
             OPEN_STREAMS.fetch_sub(1, Ordering::AcqRel);
         }
         let (bus, len) = (data.s[d].arena_bus, data.s[d].geo.arena_bytes as usize);
-        if was_open || data.s[d].phase == Phase::Opening {
-            data.dma.unmap(bus, len);
-        }
+        let mapped = was_open || data.s[d].phase == Phase::Opening;
+        let unmapped = !mapped || (let_go && data.dma.unmap(bus, len).is_ok());
         data.s[d].clear();
+        if !unmapped {
+            azos_dma::note_leak(len);
+            kprintln!("[VIRTIO-SND] {} bytes of arena stay with the device, which will not let go", len);
+            return Err(Error::ArenaHeld);
+        }
         r
     }
 
@@ -1549,8 +1600,12 @@ where
         let (caps, n) = find_virtio_caps(cfg, info.bdf);
         let bar = common_cfg_bar(&caps, n).ok_or(InitError::Pci("no virtio capabilities"))?;
         let dev_base = bar_base.get(bar as usize).copied().filter(|&b| b != 0).ok_or(InitError::Pci("bar unmapped"))?;
-        let mut pdev = VirtioPciDevice::new(KernelBar::new(dev_base), &caps, n, bar)
-            .ok_or(InitError::Pci("capabilities in different BARs"))?;
+        let mut pdev = VirtioPciDevice::new(KernelBar::new(dev_base), &caps, n, bar, super::pci::bar_size(info, bar))
+            .ok_or(InitError::Pci("capabilities in different BARs, or outside theirs"))?;
+        if !pdev.device_cfg_holds(12) {
+            pdev.reset();
+            return Err(InitError::Pci("device config too small"));
+        }
         pdev.begin(0, VIRTIO_F_ACCESS_PLATFORM_HI_BIT).map_err(|_| InitError::Features)?;
         pdev.set_msix_config_vector(VIRTIO_PCI_NO_VECTOR);
 
@@ -1575,7 +1630,11 @@ where
                 return Err(InitError::Pci("vector refused"));
             }
             let off = pdev.queue_notify_off_of(q as u16);
-            notify[q as usize] = dev_base + pdev.queue_notify_offset(off);
+            let Some(at) = pdev.queue_notify_offset(off) else {
+                pdev.reset();
+                return Err(InitError::Pci("notify offset outside its window"));
+            };
+            notify[q as usize] = dev_base + at;
         }
         // Three words at the start of the device config: jacks, streams, chmaps.
         let bar_mem = KernelBar::new(dev_base);
@@ -1584,7 +1643,7 @@ where
             raw[i * 4..i * 4 + 4].copy_from_slice(&BarMem::read32(&bar_mem, pdev.device_cfg + i * 4).to_le_bytes());
         }
         dma.enable().map_err(|_| InitError::Dma)?;
-        let t = Transport::Pci { notify };
+        let t = Transport::Pci { notify, status: dev_base + pdev.status_offset() };
         c.t = Some(t);
         d.t = Some(t);
         pdev.set_driver_ok();
@@ -1619,6 +1678,10 @@ mod tests {
     /// The statics (`OPEN_STREAMS`, the MSI token) are shared by every test of
     /// the module.
     static SERIAL: StdMutex<()> = StdMutex::new(());
+
+    /// Resets the transport was asked for, and whether it refuses them.
+    pub(super) static RESETS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    pub(super) static RESET_STUCK: AtomicBool = AtomicBool::new(false);
 
     const PERIOD_FRAMES: u32 = 64;
     const PERIODS: u32 = 32;
@@ -2375,6 +2438,31 @@ mod tests {
         assert_eq!(r.dev.start_stream(DIR_PLAYBACK), Err(Error::NoDevice));
         assert_eq!(r.open(DIR_CAPTURE), Err(Error::NoDevice));
         assert!(t0.elapsed() < std::time::Duration::from_millis(100), "a dead device is not waited for again");
+    }
+
+    #[test]
+    fn a_close_the_device_did_not_answer_resets_it_before_the_arena_goes_back() {
+        let r = rig();
+        RESETS.store(0, Ordering::Relaxed);
+        r.open(DIR_PLAYBACK).unwrap();
+        r.dev.start_stream(DIR_PLAYBACK).unwrap();
+        r.dev.submit(DIR_PLAYBACK, 0, 64);
+        r.sim().mute = true;
+        assert_eq!(r.dev.close(DIR_PLAYBACK), Err(Error::Fault));
+        assert_eq!(RESETS.load(Ordering::Relaxed), 1, "the device still holds the period when its arena goes back");
+    }
+
+    #[test]
+    fn a_device_that_will_not_reset_keeps_its_arena() {
+        let r = rig();
+        RESET_STUCK.store(true, Ordering::Relaxed);
+        r.open(DIR_PLAYBACK).unwrap();
+        r.dev.start_stream(DIR_PLAYBACK).unwrap();
+        r.dev.submit(DIR_PLAYBACK, 0, 64);
+        r.sim().mute = true;
+        let closed = r.dev.close(DIR_PLAYBACK);
+        RESET_STUCK.store(false, Ordering::Relaxed);
+        assert_eq!(closed, Err(Error::ArenaHeld));
     }
 
     // ── interrupts ───────────────────────────────────────────────────────

@@ -428,3 +428,20 @@ fn every_authorization_is_recorded() {
     assert_eq!((r.verdict, r.subject), (0, 3));
     assert_eq!(r.n, [0x5555_0001, 3 << 16 | 1 << 8 | 1, 0]);
 }
+
+#[test]
+fn a_report_descriptor_answered_after_the_timeout_writes_nothing_freed() {
+    let mut b = Bench::new(ADMIT);
+    let kb = keyboard_with_descriptor(0x1111, 0x0007);
+    kb.borrow_mut().nak_requests.push((0x81, 6));
+    b.rig.hw.attach_root(1, kb.clone());
+    b.settle();
+    assert_eq!(b.hid.0.state(0), State::Descriptor);
+    b.run(5_100);
+    assert_eq!(b.hid.0.state(0), State::Failed);
+    kb.borrow_mut().nak_requests.clear();
+    b.rig.hw.kick_dev(&kb);
+    b.run(10);
+    assert!(b.rig.hw.fault().is_none(), "{:?}", b.rig.hw.fault());
+}
+

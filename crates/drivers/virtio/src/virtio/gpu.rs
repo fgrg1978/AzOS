@@ -670,8 +670,8 @@ fn init_pci_locked<C: azos_pci::ConfigSpace>(
     let (caps, n) = find_virtio_caps(cfg, info.bdf);
     let bar = common_cfg_bar(&caps, n).ok_or(GpuError::Pci("no virtio capabilities"))?;
     let dev_base = bar_base.get(bar as usize).copied().filter(|&b| b != 0).ok_or(GpuError::Pci("bar unmapped"))?;
-    let mut dev = VirtioPciDevice::new(KernelBar::new(dev_base), &caps, n, bar)
-        .ok_or(GpuError::Pci("capabilities in different BARs"))?;
+    let mut dev = VirtioPciDevice::new(KernelBar::new(dev_base), &caps, n, bar, super::pci::bar_size(info, bar))
+        .ok_or(GpuError::Pci("capabilities in different BARs, or outside theirs"))?;
     dev.begin(p::F_EDID, VIRTIO_F_ACCESS_PLATFORM_HI_BIT).map_err(|_| GpuError::Features)?;
     let edid = dev.driver_features_low() & p::F_EDID != 0;
 
@@ -688,7 +688,11 @@ fn init_pci_locked<C: azos_pci::ConfigSpace>(
         unsafe { super::virtq_resize(&mut g.vq, agreed) };
     }
     let off = dev.queue_notify_off_of(CONTROLQ as u16);
-    let notify = dev_base + dev.queue_notify_offset(off);
+    let Some(at) = dev.queue_notify_offset(off) else {
+        dev.reset();
+        return Err(GpuError::Pci("notify offset outside its window"));
+    };
+    let notify = dev_base + at;
     dma.enable().map_err(|_| GpuError::Dma)?;
     g.t = Some(Transport::Pci { notify });
     dev.set_driver_ok();

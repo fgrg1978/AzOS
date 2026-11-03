@@ -137,7 +137,11 @@ impl Decoder {
                         if v < c.lmin || v > c.lmax {
                             continue;
                         }
+                        #[cfg(feature = "canary-hid-array-range")]
                         let usage = (c.base as i32 + (v - c.lmin)) as u16;
+                        // Both limits are the device's: as wide as the field.
+                        #[cfg(not(feature = "canary-hid-array-range"))]
+                        let Ok(usage) = u16::try_from(c.base as i64 + (v as i64 - c.lmin as i64)) else { continue };
                         if is_array_error(usage) {
                             // The keyboard cannot tell which keys are down: the
                             // report changes nothing.

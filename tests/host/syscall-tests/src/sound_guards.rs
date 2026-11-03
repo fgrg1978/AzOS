@@ -364,6 +364,21 @@ fn a_task_holds_one_stream_and_the_arena_stays_pinned() {
     assert_eq!(c.sv().close().code, outcome::OK, "close is served when nothing is open");
 }
 
+/// A device that will not let go may still write the frames: its pin is never
+/// given back, and the handle's release does not free them either.
+#[test]
+fn a_device_that_keeps_the_arena_keeps_the_pin() {
+    let _g = serial();
+    let c = client();
+    assert_eq!(c.open(params(DIR_PLAYBACK)).code, outcome::OK);
+    azos_ipc::cap_store::read_table(c.tid, |t| memobj_release_cap(c.tid, t, azos_ipc::cap::Cap::<azos_ipc::cap::targets::Shm>::from_raw(azos_abi::cap::CapHandle(c.arena.0))))
+        .expect("a table")
+        .expect("released");
+    fake().fail_close = Some(azos_drv_virtio::virtio::snd::Error::ArenaHeld);
+    let _ = c.sv().close();
+    assert!(memobj_describe_ref(c.arena.1).is_ok(), "the frames went back while the device can reach them");
+}
+
 #[test]
 fn a_refusal_by_the_device_leaves_nothing_behind() {
     let _g = serial();

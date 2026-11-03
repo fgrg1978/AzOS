@@ -556,6 +556,7 @@ pub mod virtio {
             BadArgument,
             NotReady,
             Fault,
+            ArenaHeld,
         }
 
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -595,6 +596,7 @@ pub mod virtio {
             /// `"open play"`, `"stop rec"`, ...: every call, in order.
             pub calls: Vec<String>,
             pub fail_open: Option<Error>,
+            pub fail_close: Option<Error>,
             /// Periods the device takes at once.
             pub room: usize,
             /// Frames the capture buffer being filled holds when a drain asks.
@@ -609,6 +611,7 @@ pub mod virtio {
                         Stream { open: false, running: false, draining: false, arena_phys: 0, in_flight: Vec::new(), submitted: Vec::new(), done: VecDeque::new() }],
                     calls: Vec::new(),
                     fail_open: None,
+                    fail_close: None,
                     room: 4,
                     partial_frames: 0,
                 }
@@ -750,7 +753,10 @@ pub mod virtio {
             st.open = false;
             st.running = false;
             st.draining = false;
-            Ok(())
+            match f.fail_close.take() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
         }
 
         pub fn room(dir: u32) -> bool {

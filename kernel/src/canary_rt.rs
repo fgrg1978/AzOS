@@ -30,6 +30,12 @@ pub(crate) const NAMES: &[&str] = &[
     // entry/x86_64/fp.rs: a fork's child gets the initial FP state, not the
     // parent's (ktest `x86_ring3_syscall_fork_fp`, x86_64 only).
     "x86-fork-fp-skip",
+    // boot/dma.rs `iommu_settle`: a function whose driver gave up stays as the
+    // boot placed it (gate rows `... fail open canary`).
+    "iommu-fail-open",
+    // drivers/dma/src/alloc.rs `unmap_and_free`: a frame whose unmap failed
+    // goes back to the allocator (ktest `dma_failed_unmap_keeps_the_frame`).
+    "dma-unmap-frees",
     // boot/chaos.rs: `azos_chaos::arm` arms nothing (every `chaos_*` ktest
     // but the parser's).
     "chaos-inert",

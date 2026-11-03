@@ -48,6 +48,9 @@ impl Memory for SendMem {
     fn free_region(&self, b: DmaBuf) {
         self.0.free_region(b)
     }
+    fn quarantine(&self) {
+        self.0.quarantine()
+    }
     fn enable(&self) -> bool {
         self.0.enable()
     }

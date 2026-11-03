@@ -110,6 +110,14 @@ pub struct VirtioPciCap {
     pub notify_off_multiplier: Option<u32>,
 }
 
+/// Bytes of `virtio_pci_common_cfg` (virtio 1.x spec §4.1.4.3).
+const COMMON_CFG_LEN: u32 = 56;
+
+/// The size of BAR `index` of `info`: 0 when it has none, which no capability fits.
+pub fn bar_size(info: &azos_pci::FunctionInfo, index: u8) -> u64 {
+    info.bars[..info.bar_count].iter().flatten().find(|b| b.index == index).map_or(0, |b| b.size)
+}
+
 /// Parse one vendor-specific capability (`cap.id == CAP_ID_VENDOR`,
 /// already located by `azos_pci::walk_capabilities`) as a
 /// `virtio_pci_cap`. Field layout (virtio 1.x spec §4.1.4):
@@ -225,8 +233,10 @@ pub struct VirtioPciDevice<M: Mmio> {
     common: usize,
     notify: usize,
     notify_off_multiplier: u32,
+    notify_len: u32,
     isr: usize,
     pub device_cfg: usize,
+    device_cfg_len: u32,
 }
 
 impl<M: Mmio> VirtioPciDevice<M> {
@@ -234,21 +244,42 @@ impl<M: Mmio> VirtioPciDevice<M> {
     /// COMMON_CFG, NOTIFY_CFG or ISR_CFG is missing (DEVICE_CFG is
     /// allowed to be absent — some device types don't need one) or if
     /// any required cap is not in `expected_bar` (this module doesn't
-    /// map more than one BAR).
-    pub fn new(mmio: M, caps: &[Option<VirtioPciCap>], n: usize, expected_bar: u8) -> Option<Self> {
+    /// map more than one BAR), or if a cap's window leaves the `bar_size`
+    /// bytes of that BAR: the offsets are the device's word, and every
+    /// register access is base + offset.
+    pub fn new(mmio: M, caps: &[Option<VirtioPciCap>], n: usize, expected_bar: u8, bar_size: u64) -> Option<Self> {
         let common = find_cfg_type(caps, n, VIRTIO_PCI_CAP_COMMON_CFG).filter(|c| c.bar == expected_bar)?;
         let notify = find_cfg_type(caps, n, VIRTIO_PCI_CAP_NOTIFY_CFG).filter(|c| c.bar == expected_bar)?;
         let isr = find_cfg_type(caps, n, VIRTIO_PCI_CAP_ISR_CFG).filter(|c| c.bar == expected_bar)?;
         let device_cfg = find_cfg_type(caps, n, VIRTIO_PCI_CAP_DEVICE_CFG).filter(|c| c.bar == expected_bar);
+        let fits = |c: &VirtioPciCap, least: u32| {
+            cfg!(feature = "virtio-cap-bounds-canary")
+                || (c.length >= least && c.offset as u64 + c.length as u64 <= bar_size)
+        };
+        if !fits(&common, COMMON_CFG_LEN) || !fits(&notify, 2) || !fits(&isr, 1) || !device_cfg.as_ref().is_none_or(|c| fits(c, 0)) {
+            return None;
+        }
 
         Some(VirtioPciDevice {
             mmio,
             common: common.offset as usize,
             notify: notify.offset as usize,
             notify_off_multiplier: notify.notify_off_multiplier.unwrap_or(0),
+            notify_len: notify.length,
             isr: isr.offset as usize,
-            device_cfg: device_cfg.map(|c| c.offset as usize).unwrap_or(0),
+            device_cfg: device_cfg.as_ref().map(|c| c.offset as usize).unwrap_or(0),
+            device_cfg_len: device_cfg.as_ref().map_or(0, |c| c.length),
         })
+    }
+
+    /// Does the device-config window hold the first `n` bytes a driver reads?
+    pub fn device_cfg_holds(&self, n: usize) -> bool {
+        n as u64 <= self.device_cfg_len as u64
+    }
+
+    /// The device status register's offset in the BAR.
+    pub fn status_offset(&self) -> usize {
+        self.c(common_off::DEVICE_STATUS)
     }
 
     fn c(&self, off: usize) -> usize {
@@ -368,16 +399,20 @@ impl<M: Mmio> VirtioPciDevice<M> {
 
     /// The notify-capability's per-queue offset multiplier applied — the
     /// byte offset (within the BAR) to write `queue_idx` to in order to
-    /// kick that queue (virtio 1.x spec §4.1.4.4).
-    pub fn queue_notify_offset(&self, queue_notify_off: u16) -> usize {
-        self.notify + (queue_notify_off as usize) * (self.notify_off_multiplier as usize)
+    /// kick that queue (virtio 1.x spec §4.1.4.4). `None`: the device's
+    /// `queue_notify_off` lands outside its notify window.
+    pub fn queue_notify_offset(&self, queue_notify_off: u16) -> Option<usize> {
+        let at = queue_notify_off as u64 * self.notify_off_multiplier as u64;
+        (cfg!(feature = "virtio-cap-bounds-canary") || at + 2 <= self.notify_len as u64).then_some(self.notify + at as usize)
     }
 
-    pub fn notify_queue(&mut self, queue_idx: u16, queue_notify_off: u16) {
-        let off = self.queue_notify_offset(queue_notify_off);
+    /// `false`: the queue's notify offset is outside the window, nothing written.
+    pub fn notify_queue(&mut self, queue_idx: u16, queue_notify_off: u16) -> bool {
+        let Some(off) = self.queue_notify_offset(queue_notify_off) else { return false };
         // The ring writes before the doorbell (`virtq_notify_pci`).
         azos_dma::order::io_wmb();
         self.mmio.write16(off, queue_idx);
+        true
     }
 
     /// Read-and-clear the ISR status byte. Bit 0: a queue interrupt is
@@ -790,7 +825,7 @@ pub mod msix_selftest {
         if dev_base == 0 {
             return Err(SelftestError::NoVirtioCaps);
         }
-        let mut dev = VirtioPciDevice::new(KernelBar { base: dev_base }, &caps, n, common_bar)
+        let mut dev = VirtioPciDevice::new(KernelBar { base: dev_base }, &caps, n, common_bar, bar_size(info, common_bar))
             .ok_or(SelftestError::NoVirtioCaps)?;
         dev.begin(0, VIRTIO_F_ACCESS_PLATFORM_HI_BIT).map_err(SelftestError::Negotiate)?;
         dev.set_msix_config_vector(0);
@@ -828,7 +863,9 @@ pub mod msix_selftest {
             ((avail + 2) as *mut u16).write_volatile(1);
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         }
-        dev.notify_queue(TX_QUEUE, notify_off);
+        if !dev.notify_queue(TX_QUEUE, notify_off) {
+            return Err(SelftestError::NoVirtioCaps);
+        }
 
         // Wait for the completion, then give its MSI time to be claimed.
         let hz = azos_drv_sys::timebase::TIMER_FREQ;
