@@ -14,7 +14,7 @@
 //! cases that need a particular grant (a sensor, an endpoint to call) stay
 //! with the kernel that declares it.
 
-use azos_abi::cap::{ty, CapHandle, CapPerms};
+use azos_abi::cap::{ty, CapHandle};
 use azos_abi::error::Errno;
 
 /// What a kernel's ring-3 test provides: the ABI operations the cases use,

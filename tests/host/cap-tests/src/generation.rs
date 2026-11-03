@@ -55,7 +55,10 @@ fn a_domain_opens_and_closes_past_every_cycle_with_one_slot() {
         assert_eq!(cap_store::get(t.tid, c, CapPerms::READ), Ok(i));
         close(&t, c);
     }
-    let restarts = records(Rule::CapSlotRestart, since);
+    // A sweep restarts every parked slot of every domain, so a slot another test left
+    // parked can restart during this loop: only this domain's records count.
+    let mut restarts = records(Rule::CapSlotRestart, since);
+    restarts.retain(|r| r.subject == key(&t));
     assert_eq!(restarts.len(), 3);
     assert_eq!(restarts[2].n[0], slot.unwrap() as u64, "the record names the slot");
     assert_eq!(restarts[2].n[1], 3);
@@ -120,6 +123,7 @@ fn a_stale_handle_is_refused_across_the_old_limit_and_the_restart() {
     assert_eq!(cap_store::get(t.tid, ch(first_raw), CapPerms::READ), Ok(9), "the documented recurrence");
 }
 
+// REQ-001
 /// A reference between domains does not revive: a copy whose parent was revoked
 /// went with it, and a copy whose parent was deleted was hung elsewhere, so a
 /// later occupant at the very generation the parent had is nobody's parent.

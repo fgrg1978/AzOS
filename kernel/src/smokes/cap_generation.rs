@@ -138,6 +138,7 @@ fn run(name: &'static str, k: usize) -> Verdict_ {
 }
 
 azos_ktest::ktest_late! {
+    // REQ-001
     fn cap_slot_restarts_past_its_last_generation() {
         run("cap-gen-churn", 0)
     }

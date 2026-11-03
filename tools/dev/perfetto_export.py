@@ -76,7 +76,8 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
          "thermal", "durability", "net-timeout", "usb-host-fault",
          "call-admission", "opp-apply", "power-assertion", "nic-queue",
          "clocksource", "ioport-reserved", "rangefinder", "hang", "core-dump",
-         "refusal-limited", "asym-cpus", "cap-slot-restart", "cap-table-full"]
+         "refusal-limited", "asym-cpus", "rt-core-class", "cpu-refused",
+         "cap-slot-restart", "cap-table-full"]
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
@@ -170,6 +171,8 @@ FIELDS = {
     "core-dump": (["written", "limit", "dropped"], None),
     "refusal-limited": (["rule", "held", "started"], None),
     "asym-cpus": (["classes", "asym_cpus", "zero"], None),
+    "rt-core-class": (["core_class", "cpu", "capacity"], None),
+    "cpu-refused": (["fact", "boot_value", "this_cpu_value"], None),
     "cap-slot-restart": (["slot", "restarts", "-"], None),
     "cap-table-full": (["live", "parked", "refusals"], None),
 }
