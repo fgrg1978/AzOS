@@ -567,7 +567,7 @@ mod tests {
             (Rule::CoreDump, 77, "core-dump"),
             (Rule::RefusalLimited, 78, "refusal-limited"),
         ];
-        assert_eq!(azos_decision::RULES.len(), all.len(), "a rule without a name, or a name without a rule");
+        assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {
             assert_eq!(rule as u8, num, "{name}: the number is part of the record format");
             assert_eq!(azos_decision::RULES[num as usize].name, name);
@@ -579,12 +579,59 @@ mod tests {
             p.write_chain(&mut out).unwrap();
             assert!(out.contains(&format!("rule      {name}\n")), "{out}");
         }
+        // Rules added after the pinned ones take their number from their place.
+        for (num, info) in azos_decision::RULES.iter().enumerate().skip(all.len()) {
+            assert_eq!(cli::rule_by_name(info.name.as_bytes()), Some(num as u8), "{}", info.name);
+            let mut out = String::new();
+            let mut p = ProvenanceRecord::new(num as u8, Verdict::Refuse as u8, 1, [0; 3]);
+            p.seq = 1;
+            p.write_chain(&mut out).unwrap();
+            assert!(out.contains(&format!("rule      {}\n", info.name)), "{out}");
+        }
         let mut names: Vec<&str> = azos_decision::RULES.iter().map(|r| r.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), all.len(), "two rules share a name");
+        assert_eq!(names.len(), azos_decision::RULES.len(), "two rules share a name");
         assert_eq!(cli::rule_by_name(b"no-such-rule"), None);
-        assert!(azos_decision::RULES.get(all.len()).is_none());
+        assert!(azos_decision::RULES.get(azos_decision::RULES.len()).is_none());
+    }
+
+    /// The enum and the table agree rule by rule, and the number is the place:
+    /// each variant of `Rule`, in the order the source gives them (an explicit
+    /// `= N` must be the next number), is named like the `RULES` entry at its
+    /// number, and there is an entry for every variant and a variant for every
+    /// entry. A merge that keeps two fronts' new rules in a different order in
+    /// the enum and in the table goes red here. **Canary.** Swap two new
+    /// variants of the enum, or two new entries of `RULES`: red.
+    #[test]
+    fn every_variant_sits_where_the_table_puts_it() {
+        let src = include_str!("../../../../crates/core/decision/src/lib.rs");
+        let start = src.find("pub enum Rule {").expect("the enum");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("the enum's end")];
+        let mut next = 0usize;
+        for line in body.lines().skip(1) {
+            let l = line.trim().trim_end_matches(',');
+            if l.is_empty() || l.starts_with("//") {
+                continue;
+            }
+            let (name, explicit) = match l.split_once(" = ") {
+                Some((n, v)) => (n, Some(v.parse::<usize>().expect("a number"))),
+                None => (l, None),
+            };
+            assert_eq!(explicit.unwrap_or(next), next, "{name}: a number that is not its place");
+            let mut kebab = String::new();
+            for (i, c) in name.chars().enumerate() {
+                if c.is_ascii_uppercase() && i > 0 {
+                    kebab.push('-');
+                }
+                kebab.push(c.to_ascii_lowercase());
+            }
+            let info = azos_decision::RULES.get(next).unwrap_or_else(|| panic!("{name}: no RuleInfo at {next}"));
+            assert_eq!(info.name, kebab, "{name} is variant {next}: the entry there is another rule");
+            next += 1;
+        }
+        assert_eq!(next, azos_decision::RULES.len(), "an entry of RULES without a variant");
     }
     // ── the kernel's view of the records ────────────────────────────────
 

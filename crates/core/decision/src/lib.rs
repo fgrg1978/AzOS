@@ -121,6 +121,13 @@ pub const REFUSAL_REASONS: [&str; 8] =
 /// a producer and never edit this enum or [`RULES`]. Until its producer lands a
 /// reserved rule writes no record, and its fields are what the first producer
 /// fills.
+///
+/// A rule added after `RefusalLimited` takes no number: its variant goes last
+/// in this enum without `= N` and its [`RuleInfo`] last in [`RULES`], and its
+/// number is its place, so two fronts that each add one cannot pick the same
+/// number (a merge keeps both, in the same order in both places). The host test
+/// `every_variant_sits_where_the_table_puts_it` reads this enum's text against
+/// [`RULES`]; the numbers up to `RefusalLimited = 78` are pinned there.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Rule {
@@ -377,7 +384,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 79] = [
+pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,

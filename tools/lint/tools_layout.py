@@ -76,9 +76,9 @@ ROLES = {
         "check_fast.py", "check_fast.sh", "ci_cargo.py", "ci_check.sh", "ci_full.sh",
         "reclaim_row.py", "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "core_check.py", "coverage.sh", "debug_row.py", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
-        "hyp_refusal_row.py", "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
+        "hyp_refusal_row.py", "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "ktest_registry.py", "land_bisect.sh", "link_peer.py", "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_sendkeys.py", "qemu_tap.py", "repro_check.sh", "rows_for_diff.py",
-        "sbom.sh", "text_equiv.py", "vmmd_withhold_row.sh", "volume_stale_selftest.sh",
+        "sbom.sh", "text_equiv.py", "triage.py", "vmmd_withhold_row.sh", "volume_stale_selftest.sh",
     ],
     "lint": [
         "aarch64_fp_free_check.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
@@ -107,7 +107,7 @@ ROLES = {
     ],
     "dev": [
         "debug_script.py", "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
-        "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh", "stall_attach.py", "symbolize_bt.py",
+        "merge_generated.py", "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh", "stall_attach.py", "symbolize_bt.py",
         "test_debug.py", "test_farm.py", "test_stall_attach.py", "tftp_serve.py", "worktree_seed.py",
     ],
     "lib": ["azos_tools.py", "out_dir.py", "qemu_count.sh", "volume_stale.sh"],
@@ -127,6 +127,7 @@ INCOMING = {
 # and each line says why it stays manual (owner batch IV, 2026-10-24; the other
 # tools that had no caller were wired, merged, moved out or deleted).
 NO_CALLER = {
+    "merge_generated.py": "settles a merge's conflicts in the regenerated files and the budget baselines: run by hand in a stopped merge",
     "check_prod_key.sh": "checks the production public key before a release build: only on the machine that holds it",
     "coverage.sh": "host-suite region coverage: an occasional measurement, minutes of instrumented builds",
     "dev_dfu_recovery.sh": "USB DFU recovery of a VF2/K1 held in its boot ROM: needs the board (kept until it)",
