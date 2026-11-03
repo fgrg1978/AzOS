@@ -404,24 +404,35 @@ mod refusal_limit_ktests {
                 let _ = azos_syscall::ipc_deadline::check(&d, 1_000, flood);
             }
             let _ = azos_syscall::ipc_deadline::check(&d, 1_000, quiet);
-            // A second of quiet: the log flusher's check runs the same call.
+            // A second of quiet: the log flusher's check runs the same call. The sleep can end
+            // early, and the flusher may hold the run it took and not yet have written it, so the
+            // count is read again until it is all there.
             let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * 5 / 4;
-            azos_sched::task_block(azos_sched::WaitReason::Timer(until));
-            azos_decision::flush_limited();
             let (mut flooded, mut quieted, mut held) = (0u64, 0u64, 0u64);
-            azos_decision::for_each_held(|p| {
-                // The ring takes every call; the journal only what went durable.
-                if !azos_decision::durable_held(p.seq) {
-                    return;
+            for _ in 0..100 {
+                while azos_drv_sys::timebase::now() < until {
+                    azos_sched::task_block(azos_sched::WaitReason::Timer(until));
                 }
-                if p.rule == Rule::DeadlineExpired as u8 && p.subject == flood {
-                    flooded += 1;
-                } else if p.rule == Rule::DeadlineExpired as u8 && p.subject == quiet {
-                    quieted += 1;
-                } else if p.rule == Rule::RefusalLimited as u8 && p.subject == flood && p.n[0] == Rule::DeadlineExpired as u64 {
-                    held += p.n[1];
+                azos_decision::flush_limited();
+                (flooded, quieted, held) = (0, 0, 0);
+                azos_decision::for_each_held(|p| {
+                    // The ring takes every call; the journal only what went durable.
+                    if !azos_decision::durable_held(p.seq) {
+                        return;
+                    }
+                    if p.rule == Rule::DeadlineExpired as u8 && p.subject == flood {
+                        flooded += 1;
+                    } else if p.rule == Rule::DeadlineExpired as u8 && p.subject == quiet {
+                        quieted += 1;
+                    } else if p.rule == Rule::RefusalLimited as u8 && p.subject == flood && p.n[0] == Rule::DeadlineExpired as u64 {
+                        held += p.n[1];
+                    }
+                });
+                if held == calls - DENY_DURABLE_BURST {
+                    break;
                 }
-            });
+                azos_syscall::sleep::sleep_ms(20);
+            }
             if quieted != 1 {
                 return Err("another Domain's one refusal was not held");
             }
