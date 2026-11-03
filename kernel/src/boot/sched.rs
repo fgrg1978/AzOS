@@ -1740,7 +1740,13 @@ mod fair_tree_ktests {
         let cpu = azos_percpu::nr_cpu_ids() - 1;
         azos_sched::task_create_affinity("tree-target", target, 0, TARGET_PRIO, cpu as i8);
         azos_sched::task_create_affinity("tree-driver", driver, 0, DRIVER_PRIO, cpu as i8);
-        crate::ktest::wait("the fair tree driver never finished", || ANSWER.load(Ordering::Acquire) != 0)?;
+        let finished = crate::ktest::wait("the fair tree driver never finished", || ANSWER.load(Ordering::Acquire) != 0);
+        // A step that discards the node leaves the target asleep, pinned to the last CPU, where it
+        // would refuse that CPU's hotplug: wake it with GO set, so it returns.
+        Q.wake_all();
+        let tid = TID.load(Ordering::Acquire);
+        let _ = crate::ktest::until_for(1000, || !sched::ktest_parked(tid));
+        finished?;
         if ANSWER.load(Ordering::Acquire) != PASSED {
             return Err("the tree and the lists parted (the line above says how)");
         }
