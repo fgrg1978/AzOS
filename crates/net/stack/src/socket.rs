@@ -901,6 +901,13 @@ pub fn socket_sendto(fd: i32, data: &[u8], dst: &SockAddr) -> i32 {
     }
 }
 
+/// Whether `fd` is a datagram socket: the kind whose message may be empty.
+pub fn socket_is_datagram(fd: i32) -> bool {
+    if fd < 0 || fd as usize >= MAX_SOCKETS { return false; }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS);
+    matches!(SOCKS.lock().sockets[fd].kind, SockKind::Udp)
+}
+
 /// Receive, reporting the sender.
 ///
 /// Same story: `udp::recvfrom` has filled `src_ip`/`src_port` all along and
@@ -920,7 +927,7 @@ pub fn socket_recvfrom(fd: i32, buf: &mut [u8], src: &mut SockAddr) -> i32 {
             let mut ip = [0u8; 4];
             let mut port = 0u16;
             let n = udp::recvfrom(slot, buf, &mut ip, &mut port);
-            if n > 0 {
+            if n >= 0 {
                 src.family = 2;
                 src.addr = ip;
                 src.port = port;

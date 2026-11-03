@@ -7065,6 +7065,74 @@ foreign_canary_judge() {
     bad; echo "      $why"
     echo "      log kept: $log"
 }
+# `udp-recv-zero-canary`: the stack answers 0 again for an empty queue. abitest's
+# `udp empty:` checks send an empty datagram and a non-empty one and read both;
+# the empty-queue check (`-EAGAIN`) must be red, the sends must still pass.
+udp_empty_canary_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2" feats="qemu,udp-recv-zero-canary"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
+        rm -f $AZOS_OUT/build/disk-abitest.img
+        make_disk $AZOS_OUT/build/disk-abitest.img
+        cp "$KERNEL" "$kcopy"; cp $AZOS_OUT/build/disk-abitest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
+        if ! make $AZOS_OUT/build/disk-aarch64-abitest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-abitest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 fault='panic|\[FATAL\]|AARCH64-TRAP\] unhandled'
+    while [ "$i" -lt 180 ]; do
+        grep -aqE "ABITEST\] [0-9]+ check\(s\) run" "$log" 2>/dev/null && break
+        grep -aqiE "$fault" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    sleep 1; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    udp_empty_canary_judge "$log"
+}
+# udp_empty_canary_judge <log>: the canary's verdict, shared with x86_64's row.
+udp_empty_canary_judge() {
+    local log="$1" why="" fails oks
+    if grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled|KERNEL PANIC' "$log" 2>/dev/null; then
+        why="the kernel faulted: $(grep -aiE -m1 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" | tr -d '\r')"
+    elif ! grep -aqE "ABITEST\] [0-9]+ check\(s\) run" "$log"; then
+        why="abitest never printed its own summary line"
+    else
+        fails="$(grep -a '\[ABITEST\]  FAIL  udp empty: ' "$log" | tr -d '\r')"
+        oks="$(grep -a '\[ABITEST\]   ok   udp empty: ' "$log" | tr -d '\r')"
+        if ! printf '%s\n' "$fails" | qgrep -qF "an empty queue answers -EAGAIN"; then
+            why="the canary did not turn the empty-queue check red"
+        else
+            for w in "an empty datagram is sent" "a non-empty datagram is sent behind it"; do
+                printf '%s\n' "$oks" | qgrep -qF "$w" || { why="not the canary's failure alone: udp empty: $w did not pass"; break; }
+            done
+        fi
+    fi
+    if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+    bad; echo "      $why"
+    echo "      log kept: $log"
+}
+par_row udp_empty_canary_row "udp: canary, empty queue answers 0 (rv)"  rv
+par_row udp_empty_canary_row "udp: canary, empty queue answers 0 (arm)" arm
 par_row foreign_canary_row "foreign: canary, resume drops the frame (rv)"  rv
 par_row foreign_canary_row "foreign: canary, resume drops the frame (arm)" arm
 par_row sysabi_canary_row "sysabi: canary, callee-saved bit lost (rv)"  rv
@@ -17685,6 +17753,8 @@ CPU 5 lacks hwcap bits"
                      stop='ABITEST\] [0-9]+ check\(s\) run' ;;
             foreigncanary) label="x86_64 abitest foreign regs canary"; disk_t=$AZOS_OUT/build/disk-x86_64-abitest.img
                      stop='ABITEST\] [0-9]+ check\(s\) run' ;;
+            udpcanary) label="x86_64 abitest udp empty canary"; disk_t=$AZOS_OUT/build/disk-x86_64-abitest.img
+                     stop='ABITEST\] [0-9]+ check\(s\) run' ;;
             # The riscv64 "userspace: syscall ABI" / "userspace: syscall
             # latency" / "userspace: capabilities" twins. captest runs on its
             # own hard-reservation row (`captest-row`, CPU 3: four CPUs), the
@@ -17712,6 +17782,7 @@ CPU 5 lacks hwcap bits"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" disk="$CI_LOG_DIR/disk-x86-${tag}.img"
         local kfeat=""; [ "$which" = sysabicanary ] && kfeat=syscall-abi-canary
         [ "$which" = foreigncanary ] && kfeat=foreign-regs-canary
+        [ "$which" = udpcanary ] && kfeat=udp-recv-zero-canary
         [ "$which" = captest ] && kfeat=captest-row
         # The robot kernel without the row: the sensors and motors captest
         # reads are there, the hard reservation is not (the generic kernel
@@ -17733,6 +17804,7 @@ CPU 5 lacks hwcap bits"
         local why="" fails fail_lines
         if [ "$which" = sysabicanary ]; then sysabi_canary_judge "$log"; return; fi
         if [ "$which" = foreigncanary ]; then foreign_canary_judge "$log"; return; fi
+        if [ "$which" = udpcanary ]; then udp_empty_canary_judge "$log"; return; fi
         case "$which" in
             canary)
                 if ! grep -aqF "[AUTORUN] REFUSED: /fat/ABITEST.ELF" "$log"; then why="autorun did not refuse the altered ABITEST.ELF"
@@ -17813,6 +17885,7 @@ CPU 5 lacks hwcap bits"
     par "x86_64 abitest hwcap canary, -sha-ni" x86_autorun_row hwcapcanary
     par "x86_64 abitest sysabi canary" x86_autorun_row sysabicanary
     par "x86_64 abitest foreign regs canary" x86_autorun_row foreigncanary
+    par "x86_64 abitest udp empty canary" x86_autorun_row udpcanary
     # The SDK's own test on x86_64 (see `sdktest_judge`).
     x86_sdktest_row() { # x86_sdktest_row <label> <PASS|CANARY>
         local label="$1" expect="$2" feats=""

@@ -26,7 +26,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use azos_abi::error::Errno;
 use azos_stdrt::netpure::{
-    deadline, ephemeral_port, is_eof, kind_of, timeout_ns, Addr, Backoff, Kind, Op, AF_INET, AF_INET6, EPHEMERAL_FIRST, RECV_MAX,
+    deadline, ephemeral_port, is_eof, kind_of, recv_step, timeout_ns, Addr, Backoff, Kind, Op, RecvStep, AF_INET, AF_INET6, EPHEMERAL_FIRST, RECV_MAX,
     SEND_MAX, SOCKADDR_V4_LEN, SOCKADDR_V6_LEN,
 };
 
@@ -310,4 +310,20 @@ fn the_buffer_limits_are_the_kernels() {
     assert!(LIBSYS.contains(&format!("pub const SOCK_RECV_MAX: usize = {RECV_MAX};")));
     assert!(KERNEL_HANDLERS.contains("let count = (len as usize).min(1460);"));
     assert!(KERNEL_HANDLERS.contains("(len as usize).min(4096)"));
+}
+
+/// A datagram socket answers `-EAGAIN` for "nothing yet" and `0` for an empty
+/// datagram; a stream answers `0` for "nothing yet".
+///
+/// **Canary.** Make `recv_step` read `0` as `Wait` on a datagram socket: an
+/// empty datagram is waited for forever and the first assertion fails.
+#[test]
+fn a_datagram_receive_waits_on_eagain_and_returns_an_empty_datagram() {
+    assert_eq!(recv_step(false, 0), RecvStep::Data(0));
+    assert_eq!(recv_step(false, 7), RecvStep::Data(7));
+    assert_eq!(recv_step(false, -11), RecvStep::Wait);
+    assert_eq!(recv_step(false, -1), RecvStep::Refused(Kind::InvalidInput));
+    assert_eq!(recv_step(true, 0), RecvStep::Wait);
+    assert_eq!(recv_step(true, -218), RecvStep::Eof);
+    assert_eq!(recv_step(true, -11), RecvStep::Refused(Kind::WouldBlock));
 }

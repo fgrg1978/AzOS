@@ -195,7 +195,9 @@ impl UdpRxBuf {
     }
 
     fn pop(&mut self, buf: &mut [u8], src_ip: &mut [u8; 4], src_port: &mut u16) -> i32 {
-        if self.count == 0 { return 0; }
+        if self.count == 0 {
+            return if cfg!(feature = "udp-recv-zero-canary") { 0 } else { RECV_EMPTY };
+        }
         let slot = &self.pkts[self.head];
         // POSIX truncation: the caller asked for fewer bytes than arrived, so
         // the tail goes. What POSIX also does and we cannot yet is report it —
@@ -368,8 +370,14 @@ pub fn send_raw(
     ip::send(our_mac, our_ip, dst_ip, ip::IP_PROTO_UDP, &buf[..total_len])
 }
 
+/// What a receive answers while nothing is queued: `-EAGAIN`. `0` is a
+/// datagram with no payload, which UDP allows and which must not read as
+/// "nothing yet".
+pub const RECV_EMPTY: i32 = -(azos_abi::error::Errno::EAGAIN as i32);
+
 /// Receive a datagram from a bound socket (non-blocking).
-/// Returns bytes copied (>0), 0 if nothing pending, -1 on error.
+/// Returns bytes copied (0 for an empty datagram), [`RECV_EMPTY`] if nothing
+/// is pending, -1 on error.
 /// Fills `src_ip` and `src_port` with the sender's address.
 pub fn recvfrom(
     sock:     i32,
@@ -384,7 +392,7 @@ pub fn recvfrom(
     t.rx[idx].pop(buf, src_ip, src_port)
 }
 
-/// Simple recv (no source address).  Kept for backward compat with socket layer.
+/// Receive without the sender's address; answers as [`recvfrom`].
 pub fn recv(idx: usize, buf: &mut [u8]) -> i32 {
     if idx >= UDP_MAX_SOCKETS { return -1; }
     let mut t = UDP_SOCKETS.lock();

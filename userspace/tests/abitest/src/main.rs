@@ -183,6 +183,7 @@ fn abitest_main() -> ! {
     check_missing_dispatch_arms();
     check_inline_dispatch_arms_refuse();
     check_udp_loopback();
+    check_udp_empty_datagram();
     check_wait_reaps_child();
     check_wait_status_reports_the_exit_code();
     check_waitpid_targets_one_child();
@@ -1405,6 +1406,56 @@ fn check_sleep_blocks() {
 }
 
 // ── Syscalls the kernel answers with sys_stub() ─────────────────────────────
+
+/// A datagram socket tells an empty queue (`-EAGAIN`) from an empty datagram
+/// (`0`): an empty one and a non-empty one are sent, and both arrive, in order,
+/// the empty one with its sender.
+fn check_udp_empty_datagram() {
+    let raw = sys::net_getip();
+    if raw <= 0 { return; }
+    let ip = (raw as u32).to_be_bytes();
+    let rx = sys::socket_typed(2, 2, 0);
+    let tx = sys::socket_typed(2, 2, 0);
+    if rx < 0 || tx < 0 { return; }
+    let rx_addr = sys::sockaddr_in(ip, 7314);
+    let tx_addr = sys::sockaddr_in(ip, 7315);
+    expect_eq(b"udp empty: bind the receiver", sys::bind_typed(rx as u32, &rx_addr), 0);
+    expect_eq(b"udp empty: bind the sender", sys::bind_typed(tx as u32, &tx_addr), 0);
+
+    let mut buf = [0u8; 32];
+    let mut from = [0u8; sys::SOCKADDR_LEN];
+    expect_eq(b"udp empty: an empty queue answers -EAGAIN",
+              sys::recvfrom_typed(rx as u32, &mut buf, Some(&mut from)), -11);
+    expect_eq(b"udp empty: an empty datagram is sent",
+              sys::sendto_typed(tx as u32, &[], Some(&rx_addr)), 0);
+    expect_eq(b"udp empty: a non-empty datagram is sent behind it",
+              sys::sendto_typed(tx as u32, b"after", Some(&rx_addr)), 5);
+
+    let mut n = -11isize;
+    let mut deadline = Deadline::in_ms(5_000);
+    while !deadline.expired() {
+        n = sys::recvfrom_typed(rx as u32, &mut buf, Some(&mut from));
+        if n != -11 { break; }
+        sys::yield_now();
+    }
+    expect_eq(b"udp empty: the empty datagram arrives as 0", n, 0);
+    let port = ((from[2] as u16) << 8) | from[3] as u16;
+    expect_eq(b"udp empty: the empty datagram names its sender", port as isize, 7315);
+
+    n = -11;
+    deadline = Deadline::in_ms(5_000);
+    while !deadline.expired() {
+        n = sys::recv_typed(rx as u32, &mut buf);
+        if n != -11 { break; }
+        sys::yield_now();
+    }
+    expect_eq(b"udp empty: the datagram behind it arrives", n, 5);
+    expect_true(b"udp empty: its payload is intact", n == 5 && &buf[..5] == b"after");
+    expect_eq(b"udp empty: drained, the queue answers -EAGAIN again",
+              sys::recv_typed(rx as u32, &mut buf), -11);
+    sys::close_typed(tx as u32);
+    sys::close_typed(rx as u32);
+}
 
 /// Connected UDP + local delivery, from ring 3.
 ///

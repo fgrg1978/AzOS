@@ -2011,9 +2011,10 @@ pub fn send_typed(cap: u32, buf: &[u8]) -> isize {
 }
 
 /// Receive through a `Cap<Socket>`. Needs `READ`, which containment leaves
-/// live. Does not block: `0` means nothing has arrived yet. A TCP socket whose
-/// connection has ended with nothing left to read answers `-EEOF` (the end of
-/// the stream); other refusals are negative too.
+/// live. Does not block: on a datagram socket `-EAGAIN` means nothing has
+/// arrived yet and `0` is an empty datagram; on a stream `0` means nothing has
+/// arrived yet. A TCP socket whose connection has ended with nothing left to
+/// read answers `-EEOF` (the end of the stream); other refusals are negative too.
 pub fn recv_typed(cap: u32, buf: &mut [u8]) -> isize {
     invoke(cap, invoke_abi::NODE_RECV, [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0]).0
 }
@@ -2038,15 +2039,17 @@ pub fn accept_typed(cap: u32) -> isize {
 }
 
 /// Send `buf` on a `Cap<Socket>` to `addr`, or to the connected peer when
-/// `addr` is `None`. Needs `WRITE`. The bytes sent, or negative.
+/// `addr` is `None`. Needs `WRITE`. The bytes sent, or negative; an empty `buf`
+/// on a datagram socket sends an empty datagram.
 pub fn sendto_typed(cap: u32, buf: &[u8], addr: Option<&[u8; SOCKADDR_LEN]>) -> isize {
     let p = addr.map_or(0, |a| a.as_ptr() as u64);
     invoke(cap, invoke_abi::NODE_SENDTO, [buf.as_ptr() as u64, buf.len() as u64, p, 0]).0
 }
 
 /// Receive on a `Cap<Socket>` into `buf`, the sender's `sockaddr_in` into
-/// `from` when given. Needs `READ`. **Does not block**: the bytes received, or
-/// negative when nothing is queued.
+/// `from` when given. Needs `READ`. **Does not block**: the bytes received (`0`
+/// for an empty datagram, whose sender is reported too), or negative when nothing
+/// is queued (`-EAGAIN` on a datagram socket).
 pub fn recvfrom_typed(cap: u32, buf: &mut [u8], from: Option<&mut [u8; SOCKADDR_LEN]>) -> isize {
     let p = from.map_or(0, |a| a.as_mut_ptr() as u64);
     invoke(cap, invoke_abi::NODE_RECVFROM, [buf.as_mut_ptr() as u64, buf.len() as u64, p, 0]).0

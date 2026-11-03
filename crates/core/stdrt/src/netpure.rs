@@ -147,6 +147,38 @@ pub fn is_eof(code: isize) -> bool {
     code as i64 == azos_abi::error::Errno::EEOF.to_syscall_ret()
 }
 
+/// What one `NODE_RECV` / `NODE_RECVFROM` result tells the blocking loop.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecvStep {
+    /// A read of that many bytes; on a datagram socket, `0` is an empty datagram.
+    Data(usize),
+    /// Nothing queued yet: sleep a step and look again.
+    Wait,
+    /// A stream that has ended.
+    Eof,
+    Refused(Kind),
+}
+
+/// Reads `r`, the result of a receive on a stream (`stream`) or a datagram
+/// socket. A stream answers `0` while it has nothing yet; a datagram socket
+/// answers `-EAGAIN` for that and keeps `0` for an empty datagram.
+pub fn recv_step(stream: bool, r: isize) -> RecvStep {
+    if r > 0 || (r == 0 && !stream) {
+        return RecvStep::Data(r as usize);
+    }
+    if r == 0 {
+        return RecvStep::Wait;
+    }
+    if stream && is_eof(r) {
+        return RecvStep::Eof;
+    }
+    let op = if stream { Op::RecvStream } else { Op::RecvDgram };
+    match kind_of(r, op) {
+        Kind::WouldBlock if !stream => RecvStep::Wait,
+        kind => RecvStep::Refused(kind),
+    }
+}
+
 /// What a failed call means, in terms `std::io::ErrorKind` names. This crate is
 /// `no_std` and cannot name that type; the port maps one to the other.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

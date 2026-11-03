@@ -2642,7 +2642,8 @@ pub fn sys_connect_syscall(fd: u64, addr_ptr: u64, addrlen: u64) -> i64 {
 /// the same refusal `NODE_SEND` gives, checked before either copy.
 pub fn sys_sendto_syscall(fd: u64, buf_ptr: u64, len: u64, addr_ptr: u64) -> i64 {
     if !socket_access_ok(fd) { return -1; }
-    if buf_ptr == 0 || len == 0 { return -1; }
+    let empty = len == 0 && azos_net::socket::socket_is_datagram(fd as i32);
+    if (buf_ptr == 0 || len == 0) && !empty { return -1; }
     if untyped_write_contained() { return E_CONTAINED; }
     // With no address it behaves as `send`: that is what it did before, and a
     // caller passing 0 must not start failing because of this change.
@@ -2650,7 +2651,9 @@ pub fn sys_sendto_syscall(fd: u64, buf_ptr: u64, len: u64, addr_ptr: u64) -> i64
     let addr = match read_sockaddr(addr_ptr) { Some(a) => a, None => return -1 };
     let count = (len as usize).min(1460);
     let mut tmp = [0u8; 1460];
-    if azos_sched::UserSlice::<u8>::new(buf_ptr, count).read_into(&mut tmp[..count]).is_err() {
+    if !empty
+        && azos_sched::UserSlice::<u8>::new(buf_ptr, count).read_into(&mut tmp[..count]).is_err()
+    {
         return -1;
     }
     azos_net::socket::socket_sendto(fd as i32, &tmp[..count], &addr) as i64
@@ -2690,13 +2693,18 @@ fn recvfrom_bounced(fd: u64, buf_ptr: u64, count: usize, addr_ptr: u64) -> i64 {
             return -1;
         }
         let mut tmp = [0u8; 4096];
-        let mut src = azos_net::socket::SockAddr { family: 2, port: 0, addr: [0; 4] };
+        let mut src = azos_net::socket::SockAddr { family: 0, port: 0, addr: [0; 4] };
         let n = azos_net::socket::socket_recvfrom(fd as i32, &mut tmp[..count], &mut src);
         if n == -1 && azos_net::socket::socket_stream_ended(fd as i32) {
             return end_of_stream();
         }
-        if n <= 0 { return n as i64; }
-        if azos_sched::UserSlice::<u8>::new(buf_ptr, n as usize).write_from(&tmp[..n as usize]).is_err() {
+        if n < 0 { return n as i64; }
+        // A zero is an empty datagram only when the stack named a sender; on a
+        // stream it is "nothing yet" and the caller's address stays as it was.
+        if n == 0 && src.family == 0 { return 0; }
+        if n > 0
+            && azos_sched::UserSlice::<u8>::new(buf_ptr, n as usize).write_from(&tmp[..n as usize]).is_err()
+        {
             return -1;
         }
         // The address is written AFTER the data: if copying the sender out
@@ -2722,8 +2730,13 @@ pub fn sys_send_syscall(fd: u64, buf_ptr: u64, len: u64, _flags: u64) -> i64 {
     // ungated send lets any task write into another task's outbound stream,
     // e.g. forging commands on the brain link or corrupting an OTA image.
     if !socket_access_ok(fd) { return -1; }
-    if buf_ptr == 0 || len == 0 { return -1; }
+    // An empty datagram is a message; an empty write to a stream is nothing.
+    let empty = len == 0 && azos_net::socket::socket_is_datagram(fd as i32);
+    if (buf_ptr == 0 || len == 0) && !empty { return -1; }
     if untyped_write_contained() { return E_CONTAINED; }
+    if empty {
+        return azos_net::socket::socket_send(fd as i32, &[]) as i64;
+    }
     let count = (len as usize).min(1460);
     // Yield-aware, exactly as `sys_connect_syscall` is: on an ARP cache miss
     // the TCP layer resolves the peer's MAC before the segment goes out,

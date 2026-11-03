@@ -492,7 +492,7 @@ submission), `result` i32 at 8 (bytes, or a negative code), `flags` u32 at 12:
 | `OP_PWM_SET` | 6 | set a PWM channel duty |
 | `OP_MOTOR_SPEED` | 7 | set wheel speeds, through the actuation gate |
 | `OP_NET_SEND` | 8 | queue a send on a socket handle (`WRITE`); completes `CQE_F_QUEUED` |
-| `OP_NET_RECV` | 9 | receive from a socket handle (`READ`) without waiting: the byte count, `0` with nothing queued, `-1` for a socket that cannot receive, `-EEOF` once a stream has ended |
+| `OP_NET_RECV` | 9 | receive from a socket handle (`READ`) without waiting: the byte count, `-EAGAIN` with nothing queued on a datagram socket (`0` there is an empty datagram; on a stream `0` is nothing queued), `-1` for a socket that cannot receive, `-EEOF` once a stream has ended |
 | `OP_BUF_REGISTER` | 10 | pin a range of a `MemObj` this task maps as registered buffer `reg`: `param0` a `Cap<Shm>` handle (`READ | WRITE | MAP`), `param1` the byte offset, `param2` the length |
 | `OP_BUF_UNREGISTER` | 11 | give back the pin of registered buffer `reg` |
 | `OP_FILE_READ` | 12 | `NODE_READ` on a file handle into a data buffer window; completes from the io_ring worker, never in the submit (Kconfig `IORING_ASYNC`) |
