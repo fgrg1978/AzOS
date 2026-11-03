@@ -35,10 +35,14 @@ What record/replay cannot do (QEMU 11.0, TCG only) and this tool refuses:
   * Disks other than `-drive if=none,file=...` (blkreplay wraps those) and
     read-only pflash; -blockdev, -hda, -cdrom, if=virtio.
   * -accel tcg,thread=multi: icount runs the vCPUs round-robin in one thread.
-  Not refused, but a limit of the method: with -smp N the vCPUs interleave
-  deterministically but NOT as in the gate's unrecorded run (multi-threaded TCG,
-  real timing), so a failure that needs that interleaving may never show while
-  recording; that is why rr_row.sh repeats runs.
+  * -smp N with N > 1: QEMU 11.0 stops with "Record/replay is not supported with
+    multiple CPUs". A gate row that reads KTEST_SMP (the ktest rows) runs
+    with KTEST_SMP=1 under rr_row.sh: a failure that needs two CPUs cannot be
+    recorded, and a one-CPU run is not the gate's run; that is the cost of the
+    method (the stall watcher's dumps stay the tool for SMP hangs).
+  Also a limit of the method: icount (shift=0) replaces the gate's real timing, so a
+  failure that depends on host timing may never show while recording; that is why
+  rr_row.sh repeats runs.
 """
 import json
 import os
@@ -147,10 +151,36 @@ def refusals(argv):
         elif a == "-icount":
             if get(arg(i), "rr"):
                 why.append(f"-icount {arg(i)}: the command line already records or replays")
+        elif a == "-smp":
+            m = re.match(r"(?:cpus=)?(\d+)", arg(i))
+            cpus = int(m.group(1)) if m else 1
+            for k, val in kv(arg(i)):
+                if k in ("maxcpus", "sockets", "cores", "threads", "clusters", "dies") and val and val.isdigit() and int(val) > 1 and not m:
+                    cpus = max(cpus, int(val))
+            if cpus > 1:
+                why.append(f"-smp {arg(i)}: QEMU 11.0 refuses record/replay with more than one CPU "
+                           "(\"Record/replay is not supported with multiple CPUs\"); a row that reads KTEST_SMP runs with KTEST_SMP=1")
         elif a == "-cpu" and arg(i).split(",")[0] == "host":
             why.append("-cpu host: record/replay is TCG only")
         i += 1
     return why
+
+
+def adjust(isa, argv):
+    """Changes the recording needs to run at all: (argv, notes). Each one is a difference from the gate's run.
+
+    x86_64: QEMU 11.0.0 aborts "Bad icount read" at `[IRQ] MSI address` under any -icount when the
+    guest has x2APIC (the gate says so at its `-icount (x86)` rows, which use -cpu max,-x2apic); the
+    kernel then uses the xAPIC.
+    """
+    argv = list(argv)
+    notes = []
+    if isa == "x86_64":
+        for i, a in enumerate(argv[:-1]):
+            if a == "-cpu" and "x2apic" not in argv[i + 1]:
+                argv[i + 1] += ",-x2apic"
+                notes.append("-cpu %s: x2APIC off (QEMU 11.0.0 aborts 'Bad icount read' with it under -icount); the kernel uses the xAPIC" % argv[i + 1])
+    return argv, notes
 
 
 def snapshot_flag(argv):
@@ -241,14 +271,11 @@ def find_elf(image, search_dirs):
         return None
     cands = []
     for d in search_dirs:
-        if not os.path.isdir(d):
+        try:
+            names = os.listdir(d)
+        except OSError:
             continue
-        for root, _dirs, names in os.walk(d):
-            for nm in names:
-                if nm.endswith(".img") and os.path.isfile(os.path.join(root, nm[:-4])):
-                    cands.append(os.path.join(root, nm))
-            if root.count(os.sep) - d.count(os.sep) > 6:
-                _dirs[:] = []
+        cands += [os.path.join(d, nm) for nm in names if nm.endswith(".img") and os.path.isfile(os.path.join(d, nm[:-4]))]
     for c in cands:
         try:
             if os.path.getsize(c) == want and open(c, "rb").read() == open(image, "rb").read():
@@ -337,6 +364,7 @@ def record_main():
             f.write("".join(f"{name}: {w}\n" for w in why))
         sys.stderr.write("".join(f"rr_qemu: refused: {w}\n" for w in why))
         sys.exit(97)
+    args, notes = adjust(isa_of(name), args)
     k = 1
     while True:
         bd = os.path.join(rr_dir, f"boot-{k}")
@@ -359,13 +387,16 @@ def record_main():
     spec = {"isa": isa_of(name), "prog": name, "argv": args, "files": files, "rr": "rr.bin"}
     kern = next((v for key, v in files.items() if args[int(key) - 1] == "-kernel"), None)
     if kern and spec["isa"] == "aarch64":
-        dirs = [os.path.join(os.environ.get("AZOS_OUT", ""), "target"), os.path.join(os.environ.get("CI_LOG_DIR", os.path.join(os.environ.get("AZOS_OUT", ""), "build/ci-logs")))]
+        out = os.environ.get("AZOS_OUT", "")
+        logs = os.environ.get("CI_LOG_DIR", os.path.join(out, "build/ci-logs"))
+        dirs = [os.path.join(out, "target/aarch64-unknown-none-softfloat/release"), os.path.join(logs, "par")]
         elf = find_elf(os.path.join(bd, kern), dirs)
         if elf:
             clone(elf, os.path.join(bd, "kernel.elf"))
             spec["elf"] = "kernel.elf"
     elif kern:
         spec["elf"] = kern
+    spec["notes"] = notes
     with open(os.path.join(bd, "spec.json"), "w", encoding="utf-8") as f:
         json.dump(spec, f, indent=1)
     fork_console_keeper(os.path.join(bd, "console.log"))
@@ -445,6 +476,12 @@ def main(argv):
                 print(f"{k}\t{m}")
                 return 0
         return 1
+    if len(argv) >= 2 and argv[1] == "main-boot":
+        # A row's lints may boot QEMU too (always-run rows): the row's boot is the one with a TAP plan, else the last.
+        ks = boots_of(argv[2])
+        plan = [k for k in ks if re.search(r"^1\.\.\d+$", console_of(argv[2], k) or "", re.M)]
+        print((plan or ks or [1])[0] if plan else (ks[-1] if ks else 1))
+        return 0
     if len(argv) >= 2 and argv[1] == "compare":
         d, boot, rlog = argv[2], int(argv[3]), argv[4]
         marker = None

@@ -28,11 +28,11 @@ import azos_tools  # noqa: E402,F401
 
 import rr_qemu  # noqa: E402
 
-KTEST_RV = ["-machine", "virt", "-nographic", "-bios", "default", "-kernel", "K", "-smp", "4"]
-KTEST_ARM = ["-M", "virt,gic-version=3", "-cpu", "max,pauth=on", "-smp", "4", "-nographic",
+KTEST_RV = ["-machine", "virt", "-nographic", "-bios", "default", "-kernel", "K", "-smp", "1"]
+KTEST_ARM = ["-M", "virt,gic-version=3", "-cpu", "max,pauth=on", "-smp", "1", "-nographic",
              "-semihosting-config", "enable=on,target=native", "-kernel", "K"]
 KTEST_X86 = ["-M", "microvm", "-cpu", "max", "-m", "256M", "-nographic", "-no-reboot",
-             "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-smp", "4", "-kernel", "K"]
+             "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-smp", "1", "-kernel", "K"]
 DISK = ["-drive", "file=D,if=none,format=raw,id=hd0", "-device", "virtio-blk-device,drive=hd0"]
 
 
@@ -40,6 +40,13 @@ class Refusals(unittest.TestCase):
     def test_gate_ktest_command_lines_are_taken(self):
         for argv in (KTEST_RV, KTEST_ARM, KTEST_X86, KTEST_RV + DISK, KTEST_RV + ["-append", "canary=x"]):
             self.assertEqual(rr_qemu.refusals(argv), [], argv)
+
+    def test_more_than_one_cpu_is_refused(self):
+        for argv in (["-smp", "4"], ["-smp", "cpus=2"], ["-smp", "2,sockets=1"]):
+            why = rr_qemu.refusals(argv)
+            self.assertTrue(any("more than one CPU" in w and "KTEST_SMP=1" in w for w in why), argv)
+        self.assertEqual(rr_qemu.refusals(["-smp", "1"]), [])
+        self.assertEqual(rr_qemu.refusals(["-smp", "cpus=1"]), [])
 
     def test_hvf_and_kvm_are_refused_tcg_is_not(self):
         for a in (["-accel", "hvf"], ["-accel", "kvm"], ["-enable-kvm"], ["-machine", "virt,accel=hvf"], ["-cpu", "host"]):
@@ -111,6 +118,18 @@ class Commands(unittest.TestCase):
     def test_global_snapshot_is_dropped(self):
         out = rr_qemu.final_args(self.spec(KTEST_RV + ["-snapshot"], {"6": "kernel"}), "/d", "record")
         self.assertNotIn("-snapshot", out)
+
+
+class Adjust(unittest.TestCase):
+    def test_x86_gets_x2apic_off_once_other_isas_are_untouched(self):
+        argv, notes = rr_qemu.adjust("x86_64", KTEST_X86)
+        self.assertEqual(argv[argv.index("-cpu") + 1], "max,-x2apic")
+        self.assertEqual(len(notes), 1)
+        again, notes2 = rr_qemu.adjust("x86_64", argv)
+        self.assertEqual((again, notes2), (argv, []))
+        for isa, a in (("riscv64", KTEST_RV), ("aarch64", KTEST_ARM)):
+            self.assertEqual(rr_qemu.adjust(isa, a), (a, []))
+        self.assertEqual(rr_qemu.adjust("x86_64", ["-cpu", "max,-x2apic"]), (["-cpu", "max,-x2apic"], []))
 
 
 class Marker(unittest.TestCase):

@@ -105,7 +105,7 @@ while [ "$n" -lt "$runs" ]; do
         *ok*|*" ok") state=pass ;;
         *) sed -n '1,60p' "$rdir/gate.txt" >&2; die "no verdict for '$label' in the gate output (exit $grc); see $rdir/gate.txt" ;;
     esac
-    marker=""; mboot=1
+    marker=""; mboot="$(python3 "$HERE/rr_qemu.py" main-boot "$rdir")"
     if m="$(python3 "$HERE/rr_qemu.py" marker "$rdir" ${until_re:+--until "$until_re"})"; then
         mboot="${m%%$'\t'*}"; marker="${m#*$'\t'}"
     fi
@@ -128,6 +128,10 @@ PY
         echo "          tools/dev/rr_replay.sh $keep"
         echo "        paused at the first instruction, gdb stub on :1234, symbols loaded by $keep/gdb.cmd:"
         echo "          tools/dev/rr_replay.sh $keep --gdb"
+        python3 -I -c 'import json,sys,glob
+for f in sorted(glob.glob(sys.argv[1] + "/boot-*/spec.json")):
+    for n in json.load(open(f)).get("notes", []):
+        print("rr_row: differs from the gate run (%s): %s" % (f.split("/")[-2], n))' "$keep"
         python3 "$HERE/rr_qemu.py" replay-cmd "$keep" --boot "$mboot" --gdb | sed 's/^/        raw command: /'
         exit 0
     fi
@@ -138,10 +142,10 @@ echo "rr_row: $runs run(s) passed, no failure to keep"
 if [ "$keep_pass" = 1 ]; then
     keep="$out/$tag-$stamp-pass"
     rm -rf "$keep"; mv "$last" "$keep"
-    python3 - "$keep" "$label" "$runs" <<'PY'
+    python3 - "$keep" "$label" "$runs" "$mboot" <<'PY'
 import json, sys
-d, label, n = sys.argv[1:4]
-json.dump({"row": label, "run": int(n), "reason": "passing run kept", "marker": None, "boot": 1, "row_verdict": "pass"},
+d, label, n, boot = sys.argv[1:5]
+json.dump({"row": label, "run": int(n), "reason": "passing run kept", "marker": None, "boot": int(boot), "row_verdict": "pass"},
           open(d + "/meta.json", "w"), indent=1)
 PY
     echo "rr_row: last passing recording kept: $keep"
