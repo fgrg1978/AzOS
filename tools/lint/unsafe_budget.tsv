@@ -15,7 +15,7 @@ arch/aarch64	202	49	1	2	0	76
 arch/api	31	10	0	0	0	29
 arch/facade	0	0	0	0	1	0
 arch/riscv64	160	42	0	3	0	91
-arch/x86_64	156	18	4	11	0	59
+arch/x86_64	157	18	4	11	0	59
 crates/core/abi	0	0	0	0	1	0
 crates/core/actuation	0	0	0	0	1	0
 crates/core/azos-config	0	0	0	0	1	-
@@ -25,7 +25,7 @@ crates/core/chaos	0	0	0	0	1	0
 crates/core/common	4	0	0	0	0	40
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	16	2	1	0	0	26
-crates/core/decision	2	0	2	0	0	60
+crates/core/decision	2	0	2	0	0	61
 crates/core/devif	0	0	0	0	1	0
 crates/core/energy	0	0	0	0	1	0
 crates/core/hv	3	1	0	0	0	5
@@ -39,15 +39,15 @@ crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	284	42	11	0	0	80
+crates/core/mm	286	42	11	0	0	80
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	56
 crates/core/rings	25	6	4	0	0	98
-crates/core/sched	444	148	12	3	0	69
+crates/core/sched	471	159	13	3	0	68
 crates/core/stdrt	45	1	4	0	0	-
-crates/core/sync	45	9	18	0	0	82
+crates/core/sync	44	9	18	0	0	82
 crates/core/syscall	41	2	0	0	0	39
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	26	0	1	0	0	30
@@ -107,7 +107,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	365	14	12	52	0	62
+kernel	366	14	12	52	0	61
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -160,4 +160,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	504
