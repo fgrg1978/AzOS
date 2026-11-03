@@ -15499,7 +15499,9 @@ CPU 5 lacks hwcap bits"
     # (`mm_fdt_reserved`; QEMU leaves it in free RAM on both ISAs: riscv64
     # near the top, aarch64 mid-RAM).
     KTEST_RT_CANARIES="canary=stack-guard-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer,preempt-isr-leak,irq-storm,commander-exit-late,fdt-reserve-skip,geofence-stale-read"
-    KTEST_RT_CANARIED="sched_stack_guards_unmapped chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels mm_fdt_reserved safety_geofence_breach_latches_estop"
+    # `decision-skip` also silences the records these tests read: cap_table_full_refuses_with_a_record,
+    # crash_core_refusal_is_a_decision_record, refusal_flood_costs_no_other_domain and the two hang detectors.
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels mm_fdt_reserved safety_geofence_breach_latches_estop cap_table_full_refuses_with_a_record crash_core_refusal_is_a_decision_record hung_task_detector_reports_a_blocked_owner_wait refusal_flood_costs_no_other_domain stuck_cpu_detector_names_the_cpu"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     # Wave 15 (N1, lockdep-lite): `canary=lockdep-abba` takes the test's two
