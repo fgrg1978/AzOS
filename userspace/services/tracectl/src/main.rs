@@ -276,7 +276,7 @@ fn cap() -> u32 {
     if found >= 0 {
         found as u32
     } else {
-        azos_abi::cap::CapHandle::pack(sys::ty::TRACE, azos_abi::cap::CapPerms::NONE, 0, 0).as_raw()
+        azos_abi::cap::CapHandle::pack(sys::ty::TRACE, 0, 0).as_raw()
     }
 }
 

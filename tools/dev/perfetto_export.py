@@ -76,7 +76,7 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
          "thermal", "durability", "net-timeout", "usb-host-fault",
          "call-admission", "opp-apply", "power-assertion", "nic-queue",
          "clocksource", "ioport-reserved", "rangefinder", "hang", "core-dump",
-         "refusal-limited", "asym-cpus"]
+         "refusal-limited", "asym-cpus", "cap-slot-restart", "cap-table-full"]
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
@@ -170,6 +170,8 @@ FIELDS = {
     "core-dump": (["written", "limit", "dropped"], None),
     "refusal-limited": (["rule", "held", "started"], None),
     "asym-cpus": (["classes", "asym_cpus", "zero"], None),
+    "cap-slot-restart": (["slot", "restarts", "-"], None),
+    "cap-table-full": (["live", "parked", "refusals"], None),
 }
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",

@@ -17,13 +17,12 @@ invariants of the typed capability table's forgery resistance:
 
 Run with TLC, default config in `cap_table.cfg` (next to this file).
 
-MODEL VS CODE (doc audit, 2026-09-26, updated to match A2's retirement
-scheme): this spec now models the same policy `crates/core/ipc/src/cap.rs`
-does — a slot's generation is monotonic and RETIRES at `MaxGen` (the
-model's stand-in for `CapHandle::MAX_GENERATION`, 8,191 in the real
-13-bit field) rather than wrapping back to 1. `Grant` below refuses a
-retired slot the same way `CapTable::grant_raw` does (`cap.rs:333-345,
-831-833`). This model is still per-slot only: a separate, pool-wide
+MODEL VS CODE: this spec models one cycle of a slot: its generation is
+monotonic and it is RETIRED (the code's "parked") at `MaxGen`, the model's
+stand-in for `CapHandle::MAX_GENERATION`, 65,535 in the real 16-bit field.
+The restart (`CapTable::unpark`, after a confirming sweep) is not modelled: it
+would break `RevokedNeverValid` by design for a handle kept past a whole
+cycle, which `Documentation/capabilities.md` states. This model is still per-slot only: a separate, pool-wide
 24-bit generation (one per object kind — `crates/core/ipc/src/memobj.rs:170`,
 `crates/core/ipc/src/objref.rs:146-154`) DOES wrap, and its wrap revokes
 every capability of that kind across every task's table at once. That

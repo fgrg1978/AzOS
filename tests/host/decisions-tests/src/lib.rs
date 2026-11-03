@@ -569,6 +569,8 @@ mod tests {
             (Rule::AsymCpus, 79, "asym-cpus"),
             (Rule::RtCoreClass, 80, "rt-core-class"),
             (Rule::CpuRefused, 81, "cpu-refused"),
+            (Rule::CapSlotRestart, 82, "cap-slot-restart"),
+            (Rule::CapTableFull, 83, "cap-table-full"),
         ];
         assert_eq!(azos_decision::RULES.len(), all.len(), "a rule without a name, or a name without a rule");
         for &(rule, num, name) in all {

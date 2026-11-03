@@ -59,14 +59,16 @@ Source: `crates/core/abi/src/cap.rs` (`slot_word`, `CapHandle`),
 
 ### Generations
 
-A slot's generation is never reused. A freed slot keeps its generation; the next
-grant of the slot increments it, so a handle held from an earlier grant no
-longer matches. The counter does not wrap: when a slot reaches
-`CapHandle::MAX_GENERATION` (2,047 with the 11-bit field) it is retired and
-`CapTable::grant_raw` never allocates it again. A task that retires every slot
-gets `None` from its own grants and affects no other task;
-`CapTable::retired` counts retired slots. Generation `0` never appears on a
-granted slot.
+A freed slot keeps its generation; the next grant of the slot increments it, so
+a handle held from an earlier grant no longer matches. A slot freed at
+`CapHandle::MAX_GENERATION` (65,535) is parked: no grant takes it until the
+capability sweep has confirmed that no warrant names it, then
+`CapTable::unpark` restarts it and writes a `cap-slot-restart` decision record.
+So a reference between domains never revives. A stale handle, which only the
+domain owning the table can present, is refused for 65,534 grants of its slot
+and can name that slot's occupant at the 65,535th. A grant that finds no slot is
+refused with `-EMFILE` and a `cap-table-full` record, which counts live and
+parked slots. Generation `0` never appears on a granted slot.
 
 Tables are indexed by Domain slot, not by task id. The table records which
 Domain key (slot plus generation) owns it, and every accessor wipes a table it
@@ -74,7 +76,7 @@ finds owned by a different key, so a new Domain cannot inherit the previous
 one's capabilities. A table is also wiped when its Domain's last member exits.
 
 Source: `crates/core/ipc/src/cap.rs` (`CapSlot::generation`,
-`CapTable::grant_warranted`, `CapTable::retired`),
+`CapTable::grant_warranted`, `CapTable::unpark`),
 `crates/core/ipc/src/cap_store.rs`.
 
 ### Resolving a handle

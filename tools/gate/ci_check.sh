@@ -14855,8 +14855,8 @@ PY
     # fair_enqueue_reads_one_priority, fair_take_recovers_a_stale_node,
     # fair_take_leaves_a_reservation, zz_no_tree_refusal_since_boot -> 161, arm 165.
     # +9 asym_* (boot/asym_ktests.rs; skipped but on the `asym` rows) -> 163, arm 167.
-    KTEST_N_RV=163
-    KTEST_N_ARM=167
+    KTEST_N_RV=155
+    KTEST_N_ARM=159
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15319,6 +15319,13 @@ CPU 5 lacks hwcap bits"
         par "asym build y against n ($asym_isa)" asym_build_row "asym build y against n ($asym_isa)" "$asym_isa" n
         par "asym build canary ($asym_isa)" asym_build_row "asym build canary ($asym_isa)" "$asym_isa" y
     done
+    par "ktest cap generation canary (rv)" ktest_row "ktest cap generation canary (rv)" rv "" "cap_slot_restarts_past_its_last_generation" "canary=cap-gen-retire"
+    par "ktest cap full record canary (rv)" ktest_row "ktest cap full record canary (rv)" rv "" "cap_table_full_refuses_with_a_record" "canary=cap-full-silent"
+    par "ktest unswitched block canary (arm)" ktest_row "ktest unswitched block canary (arm)" arm "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest ttbr0 holders canary (arm)" ktest_row "ktest ttbr0 holders canary (arm)" arm "" "tlb_shootdown_cross_cpu" "canary=ttbr0-holders-self" "root_holders did not name exactly"
+    par "ktest save gate redraw canary (arm)" ktest_row "ktest save gate redraw canary (arm)" arm "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
+    par "ktest cap generation canary (arm)" ktest_row "ktest cap generation canary (arm)" arm "" "cap_slot_restarts_past_its_last_generation" "canary=cap-gen-retire"
+    par "ktest cap full record canary (arm)" ktest_row "ktest cap full record canary (arm)" arm "" "cap_table_full_refuses_with_a_record" "canary=cap-full-silent"
     par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
@@ -15992,7 +15999,7 @@ CPU 5 lacks hwcap bits"
     # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
     # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked -> 165.
     # +7 the fair tree tests, as on rv and arm -> 170.
-    KTEST_N_X86=172
+    KTEST_N_X86=164
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -17160,6 +17167,8 @@ CPU 5 lacks hwcap bits"
     par "asym late row refusal (x86)" asym_late_row "asym late row refusal (x86)"
     par "asym build y against n (x86)" asym_build_row "asym build y against n (x86)" x86 n
     par "asym build canary (x86)" asym_build_row "asym build canary (x86)" x86 y
+    par "ktest cap generation canary (x86)" x86_ktest_row "ktest cap generation canary (x86)" "" "cap_slot_restarts_past_its_last_generation" "canary=cap-gen-retire"
+    par "ktest cap full record canary (x86)" x86_ktest_row "ktest cap full record canary (x86)" "" "cap_table_full_refuses_with_a_record" "canary=cap-full-silent"
     par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""

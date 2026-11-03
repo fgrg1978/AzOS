@@ -11,8 +11,7 @@
 //! The rules are the main kernel's (`crates/core/ipc/src/cap.rs`): a handle
 //! is checked for occupancy, generation, kind and rights in that order; a
 //! freed slot keeps its generation and the next grant takes the next one;
-//! a slot whose generation reached the field's maximum is retired, never
-//! reissued.
+//! a slot past the field's maximum restarts.
 
 use azos_abi::cap::{slot_word, CapHandle, CapPerms, CapType};
 
@@ -57,14 +56,16 @@ impl<'a> CapTable<'a> {
     }
 
     /// Mint a capability into a free slot; its handle, or `None` when the
-    /// table is full (every slot occupied or retired).
+    /// table is full. No warrant names a slot here, so a slot at the top
+    /// generation restarts at once; a stale handle recurs after 65,535 grants.
     pub fn install(&mut self, kind: CapType, perms: CapPerms, resource: u32) -> Option<CapHandle> {
-        let idx = self.slots.iter().position(|s| {
-            !slot_word::occupied(s.hot) && slot_word::generation(s.hot) < CapHandle::MAX_GENERATION
-        })?;
-        let generation = slot_word::generation(self.slots[idx].hot) + 1;
+        let idx = self.slots.iter().position(|s| !slot_word::occupied(s.hot))?;
+        let generation = match slot_word::generation(self.slots[idx].hot).checked_add(1) {
+            Some(g) => g,
+            None => 1,
+        };
         self.slots[idx].hot = slot_word::encode(kind, perms, generation, resource);
-        Some(CapHandle::pack(kind, perms, generation, idx as u16))
+        Some(CapHandle::pack(kind, generation, idx as u16))
     }
 
     fn slot_of(&self, h: CapHandle) -> Result<usize, CapError> {
@@ -114,7 +115,7 @@ impl<'a> CapTable<'a> {
         self.slots.iter().enumerate().find_map(|(i, s)| {
             let w = s.hot;
             (slot_word::ty_is(w, kind) && slot_word::resource(w) == resource).then(|| {
-                CapHandle::pack(kind, slot_word::perms(w), slot_word::generation(w), i as u16)
+                CapHandle::pack(kind, slot_word::generation(w), i as u16)
             })
         })
     }

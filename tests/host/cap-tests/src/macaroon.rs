@@ -294,18 +294,18 @@ fn an_installed_copy_keeps_the_caveats() {
     let (t, h) = table_with(with_caveats(&[(caveat::OP_MASK, 0b10)]));
     let w = t.warrant_of(h).unwrap();
     let child = crate::cap::CapTable::empty();
-    let at = CapHandle::pack(ty::PORT, CapPerms::RW_DELEGATE, 1, 3);
-    assert!(child.install_at(at, 7, &w));
+    let at = CapHandle::pack(ty::PORT, 1, 3);
+    assert!(child.install_at(at, CapPerms::RW_DELEGATE, 7, &w));
     assert_eq!(child.warrant_of(at).unwrap().caveats, w.caveats);
     assert_eq!(use_op(&child, at, 0), Err(CapError::MissingPerms));
     assert_eq!(use_op(&child, at, 1), Ok(7));
     // A full pool refuses the copy rather than install it unrestricted.
     let n = child.free_caveat_blocks();
     for i in 0..n {
-        let hh = CapHandle::pack(ty::PORT, CapPerms::RW_DELEGATE, 1, 10 + i as u16);
-        assert!(child.install_at(hh, 1, &w));
+        let hh = CapHandle::pack(ty::PORT, 1, 10 + i as u16);
+        assert!(child.install_at(hh, CapPerms::RW_DELEGATE, 1, &w));
     }
-    assert!(!child.install_at(CapHandle::pack(ty::PORT, CapPerms::RW_DELEGATE, 1, 4), 7, &w));
+    assert!(!child.install_at(CapHandle::pack(ty::PORT, 1, 4), CapPerms::RW_DELEGATE, 7, &w));
 }
 
 // ── A call to an endpoint the kernel hosts: the mask is over IDL ops ─────────
@@ -334,7 +334,7 @@ fn a_hosted_call_passes_an_op_mask_and_reports_it() {
     let (u, uh) = table_with(Warrant::ROOT);
     assert_eq!(hosted_resolve(&u, uh), Ok(7));
     assert_eq!(u.hosted_op_mask(uh), u64::MAX, "no caveat, every op");
-    assert_eq!(u.hosted_op_mask(CapHandle::pack(ty::PORT, CapPerms::RW_DELEGATE, 9, 200)), 0, "not a live handle: no op");
+    assert_eq!(u.hosted_op_mask(CapHandle::pack(ty::PORT, 9, 200)), 0, "not a live handle: no op");
 }
 
 /// Passing the mask passes nothing else: a hosted call is a use, so a deadline

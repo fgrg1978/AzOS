@@ -1047,7 +1047,7 @@ fn a_tracer_op_without_its_grant_is_refused_by_the_table_through_invoke() {
         let mut out = crate::dispatch::SyscallOut::new();
         crate::invoke::sys_invoke(handle as u64, INVOKE_REGS | op as u64, 0, 0, 0, 0, &mut out)
     };
-    let no_slot = azos_abi::cap::CapHandle::pack(ty::TRACE, CapPerms::NONE, 0, 0).as_raw();
+    let no_slot = azos_abi::cap::CapHandle::pack(ty::TRACE, 0, 0).as_raw();
     for op in [LOG_TRACE_INFO, LOG_TRACE_SET_MASK] {
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         assert_eq!(invoke(no_slot, op), Errno::ECAPSTALE.to_syscall_ret(), "op {op:#06x}: not the table's refusal");

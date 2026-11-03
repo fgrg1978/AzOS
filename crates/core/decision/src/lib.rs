@@ -339,17 +339,7 @@ pub enum Rule {
     /// key, the numbers the rule held back, how many records, and whether the
     /// run just began.
     RefusalLimited = 78,
-}
 
-impl Rule {
-    /// Rules whose records an unprivileged task can raise once per syscall:
-    /// their durable path is rate-limited per Domain
-    /// (`DECISION_DENY_DURABLE_PER_SEC`), and what the limit holds back is
-    /// reported by [`Rule::RefusalLimited`]. Every other rule's refusals are
-    /// system events and are never limited.
-    pub const fn caller_paced(self) -> bool {
-        matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle)
-    }
     /// The CPUs differ in core class and Kconfig `SCHED_ASYM_CPUS` is off, so
     /// every CPU counts as equal: a real-time budget measured on one core
     /// type runs on any (`azos_sched::topo::differs`, noted once at boot).
@@ -361,6 +351,22 @@ impl Rule {
     /// A secondary CPU differs in something the kernel already committed to on
     /// the boot CPU and was left offline (`boot::smp`).
     CpuRefused = 81,
+    /// A capability slot's generation ran out and a sweep restarted it: from
+    /// here a handle of that slot's previous cycle can recur.
+    CapSlotRestart = 82,
+    /// A grant found no slot in the domain's capability table.
+    CapTableFull = 83,
+}
+
+impl Rule {
+    /// Rules whose records an unprivileged task can raise once per syscall:
+    /// their durable path is rate-limited per Domain
+    /// (`DECISION_DENY_DURABLE_PER_SEC`), and what the limit holds back is
+    /// reported by [`Rule::RefusalLimited`]. Every other rule's refusals are
+    /// system events and are never limited.
+    pub const fn caller_paced(self) -> bool {
+        matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle)
+    }
 }
 
 /// The verdict of a record.
@@ -388,7 +394,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 82] = [
+pub const RULES: [RuleInfo; 84] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1206,6 +1212,21 @@ pub const RULES: [RuleInfo; 82] = [
         fields: ["fact", "boot_value", "this_cpu_value"],
         rejected_if_yes: "bring the CPU up: code the boot CPU's facts selected would fault or corrupt state on it",
         rejected_if_no: "-",
+    },
+    RuleInfo {
+        name: "cap-slot-restart",
+        subject: "domain",
+        fields: ["slot", "restarts", "-"],
+        rejected_if_yes: "retire the slot for the domain's life: a long-running task would run out of slots",
+        rejected_if_no: "-",
+    },
+    RuleInfo {
+        // `parked` slots return with the sweep their park owed.
+        name: "cap-table-full",
+        subject: "domain",
+        fields: ["live", "parked", "refusals"],
+        rejected_if_yes: "-",
+        rejected_if_no: "grant a slot: every one is live, or waits for the sweep that restarts it",
     },
 ];
 

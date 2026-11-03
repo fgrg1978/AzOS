@@ -608,8 +608,8 @@ fn an_irq_bind_refuses_in_its_documented_order() {
     let ro_port = held::<Port>(a, CapPerms::READ, r);
     let irq = held::<Irq>(a, CapPerms::READ, IRQ);
     let wo_irq = held::<Irq>(a, CapPerms::WRITE, IRQ);
-    let forged_irq = CapHandle::pack(ty::IRQ, CapPerms::READ, 1, 77).as_raw() as u64;
-    let forged_port = CapHandle::pack(ty::PORT, CapPerms::WRITE, 1, 78).as_raw() as u64;
+    let forged_irq = CapHandle::pack(ty::IRQ, 1, 77).as_raw() as u64;
+    let forged_port = CapHandle::pack(ty::PORT, 1, 78).as_raw() as u64;
     let any = DEVICE_IRQ_CPU_ANY;
 
     assert_eq!(irq_invoke(irq, op(CapKind::Device, CLASS_DRIVER, 99), 0, 0, 0), errno(Errno::EINVAL), "an unknown op");

@@ -59,21 +59,6 @@ mod cap_tests {
         ty::TRACE,
     ];
 
-    /// Every permission combination worth distinguishing: each single
-    /// bit, the named unions, and the empty/full extremes.
-    const ALL_PERMS: [CapPerms; 10] = [
-        CapPerms::NONE,
-        CapPerms::READ,
-        CapPerms::WRITE,
-        CapPerms::EXEC,
-        CapPerms::DUP,
-        CapPerms::TRANSFER,
-        CapPerms::MAP,
-        CapPerms::RW,
-        CapPerms::RW_DELEGATE,
-        CapPerms::ALL,
-    ];
-
     #[test]
     fn null_is_zero() {
         assert!(CAP_NULL.is_null());
@@ -82,46 +67,35 @@ mod cap_tests {
 
     #[test]
     fn pack_unpack_round_trip() {
-        // Slot is 8 bits wide post-widening (0..=255); 0xAB fits and
-        // stays readable as hex.
-        let h = CapHandle::pack(ty::PORT, CapPerms::RW_DELEGATE, 0x42, 0xAB);
+        let h = CapHandle::pack(ty::PORT, 0x42, 0xAB);
         assert_eq!(h.kind(), ty::PORT.raw());
-        assert!(h.perms().contains(CapPerms::READ));
-        assert!(h.perms().contains(CapPerms::WRITE));
-        assert!(h.perms().contains(CapPerms::DUP));
-        assert!(!h.perms().contains(CapPerms::EXEC));
         assert_eq!(h.generation(), 0x42);
         assert_eq!(h.slot(), 0xAB);
     }
 
-    /// Every named type round-trips through pack/unpack, crossed with every
-    /// permission combination and the generation extremes.
+    /// Every named type round-trips through pack/unpack, crossed with the
+    /// generation extremes.
     #[test]
-    fn round_trip_every_type_perm_and_gen_extreme() {
+    fn round_trip_every_type_and_gen_extreme() {
         for &ty in &ALL_TYPES {
-            for &perms in &ALL_PERMS {
+            {
                 for &gen in &[0u16, CapHandle::MAX_GENERATION] {
                     for &slot in &[0u16, (ADDRESSABLE_SLOTS - 1) as u16] {
-                        let h = CapHandle::pack(ty, perms, gen, slot);
+                        let h = CapHandle::pack(ty, gen, slot);
                         assert_eq!(
                             h.kind(),
                             ty.raw(),
-                            "type mismatch for {ty:?}/{perms:?}/gen={gen}/slot={slot}"
-                        );
-                        assert_eq!(
-                            h.perms().bits(),
-                            perms.bits(),
-                            "perms mismatch for {ty:?}/{perms:?}/gen={gen}/slot={slot}"
+                            "type mismatch for {ty:?}/gen={gen}/slot={slot}"
                         );
                         assert_eq!(
                             h.generation(),
                             gen,
-                            "generation mismatch for {ty:?}/{perms:?}/gen={gen}/slot={slot}"
+                            "generation mismatch for {ty:?}/gen={gen}/slot={slot}"
                         );
                         assert_eq!(
                             h.slot(),
                             slot,
-                            "slot mismatch for {ty:?}/{perms:?}/gen={gen}/slot={slot}"
+                            "slot mismatch for {ty:?}/gen={gen}/slot={slot}"
                         );
                     }
                 }
@@ -149,36 +123,23 @@ mod cap_tests {
     /// NOT round-trip — it silently truncates instead of being rejected,
     /// which is exactly the sharp edge callers must not hit. The fleet
     /// profile sat on the wrong side of this edge until 2026-09-18.
-    /// The same sharp edge on the generation field. It matters more than the
-    /// slot one: `crates/core/ipc` retires a slot at `MAX_GENERATION` precisely so a
-    /// generation is never reissued, and a generation that truncated back to a
-    /// live value would defeat that from the other side.
+    /// A generation is the whole of the slot word's field: the handle cannot
+    /// name one the slot could not store, nor the reverse.
     #[test]
-    fn generation_one_past_maximum_does_not_round_trip() {
-        let one_past_max = CapHandle::MAX_GENERATION + 1;
-        let h = CapHandle::pack(ty::PORT, CapPerms::RW, one_past_max, 3);
-        assert_ne!(
-            h.generation(),
-            one_past_max,
-            "a generation past the field must not survive packing"
-        );
-        assert_eq!(h.slot(), 3, "the slot field must not be disturbed by it");
-        assert_eq!(h.kind(), ty::PORT.raw());
-    }
-
-    /// 11 bits since 2026-10-17 (13 before, 8 before that, which wrapped and
-    /// reissued generations): two bits went to the `TRANSFER` and `MAP` rights.
-    #[test]
-    fn the_generation_field_holds_what_the_slot_retirement_rule_assumes() {
-        assert_eq!(CapHandle::MAX_GENERATION, 2047, "11-bit generation field");
-        let h = CapHandle::pack(ty::SHM, CapPerms::RW, CapHandle::MAX_GENERATION, 1);
+    fn the_generation_field_is_the_slot_words() {
+        assert_eq!(CapHandle::MAX_GENERATION, u16::MAX);
+        let h = CapHandle::pack(ty::SHM, CapHandle::MAX_GENERATION, 1);
         assert_eq!(h.generation(), CapHandle::MAX_GENERATION);
+        assert_eq!(h.slot(), 1);
+        assert_eq!(h.kind(), ty::SHM.raw());
+        let w = azos_abi::cap::slot_word::encode(ty::SHM, CapPerms::RW, CapHandle::MAX_GENERATION, 9);
+        assert_eq!(azos_abi::cap::slot_word::generation(w), h.generation());
     }
 
     #[test]
     fn slot_one_past_maximum_does_not_round_trip() {
         let one_past_max = ADDRESSABLE_SLOTS as u16;
-        let h = CapHandle::pack(ty::PORT, CapPerms::NONE, 0, one_past_max);
+        let h = CapHandle::pack(ty::PORT, 0, one_past_max);
         assert_ne!(
             h.slot(),
             one_past_max,
@@ -251,7 +212,7 @@ mod cap_tests {
 
     #[test]
     fn nonzero_view() {
-        let h = CapHandle::pack(ty::SHM, CapPerms::RW, 1, 7);
+        let h = CapHandle::pack(ty::SHM, 1, 7);
         assert!(h.as_nonzero().is_some());
         assert!(CAP_NULL.as_nonzero().is_none());
     }
@@ -457,10 +418,10 @@ mod invoke_abi {
 
     /// `tools/build/syscall_defs.py` gives the hand-assembled programs the self
     /// handle as a literal: type 21 (`Domain`, class 1) in the top 6 bits,
-    /// every right, no generation, no slot.
+    /// no generation, no slot.
     #[test]
     fn the_self_handle_is_the_number_the_assembler_is_given() {
-        assert_eq!(DOMAIN_SELF.as_raw(), (21u32 << 26) | (0x3F << 20));
+        assert_eq!(DOMAIN_SELF.as_raw(), 21u32 << 26);
     }
 }
 

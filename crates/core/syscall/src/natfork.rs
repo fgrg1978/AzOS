@@ -149,14 +149,14 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
     }
     let row_kinds = row.map_or(0u64, row_kind_mask);
     let mut placeholder = [0u64; WORDS];
-    let mut cand = [(CapHandle::from_raw(0), 0u32); CANDIDATES];
+    let mut cand = [(CapHandle::from_raw(0), CapPerms::NONE, 0u32); CANDIDATES];
     let mut ncand = 0usize;
 
     let t_ph = azos_sched::prof::t();
     // 1. Descriptors at the parent's handles, placeholders for the rest.
     let mut from = 0usize;
     loop {
-        let mut chunk = [(CapHandle::from_raw(0), 0u32); CHUNK];
+        let mut chunk = [(CapHandle::from_raw(0), CapPerms::NONE, 0u32); CHUNK];
         let Some((n, next)) =
             azos_ipc::cap_store::with_table(parent, |t| t.scan(from, &mut chunk, |_| true))
         else {
@@ -165,10 +165,10 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
         // Descriptors one by one (each duplicate is made with no table lock
         // held), then this chunk's placeholders under one hold of the child's.
         let mut keep = [false; CHUNK];
-        for (k, &(h, res)) in chunk[..n].iter().enumerate() {
+        for (k, &(h, perms, res)) in chunk[..n].iter().enumerate() {
             let kind = CapType::from_raw(h.kind()).unwrap_or(CapType::NULL);
             if inherits(parent, kind, res) {
-                if !inherit_one(parent, child, h, kind, res) {
+                if !inherit_one(parent, child, h, perms, kind, res) {
                     return false;
                 }
             } else {
@@ -176,12 +176,12 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
             }
         }
         let placed = azos_ipc::cap_store::with_table(child, |t| {
-            chunk[..n].iter().zip(keep).all(|(&(h, res), k)| !k || t.install_at(h, res, &Warrant::ROOT))
+            chunk[..n].iter().zip(keep).all(|(&(h, perms, res), k)| !k || t.install_at(h, perms, res, &Warrant::ROOT))
         });
         if placed != Some(true) {
             return false;
         }
-        for (&(h, res), k) in chunk[..n].iter().zip(keep) {
+        for (&(h, perms, res), k) in chunk[..n].iter().zip(keep) {
             if !k {
                 continue;
             }
@@ -193,7 +193,7 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
                 && ncand < CANDIDATES
                 && azos_ipc::cap_store::read_table(parent, |t| t.is_plain_root(h)) == Some(true)
             {
-                cand[ncand] = (h, res);
+                cand[ncand] = (h, perms, res);
                 ncand += 1;
             }
         }
@@ -260,18 +260,18 @@ fn inherits(parent: u32, kind: CapType, res: u32) -> bool {
 /// ([`azos_mm::cow::fork_share_range`]) and the mapping booked in the
 /// region's record and in the child's window, so its own later maps cannot
 /// land on it. Everything done is undone if a step fails.
-fn inherit_shm(parent: u32, child: u32, h: CapHandle, r: u32, warrant: &Warrant) -> bool {
+fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> bool {
     // A volatile object is not purged while the child's leaves are copied and
     // booked (`memobj_pin_for_map`); a purged one is not inherited.
     let Ok(pinned) = azos_ipc::memobj::memobj_pin_for_map(r) else { return false };
-    let inherited = inherit_shm_pinned(parent, child, h, r, warrant);
+    let inherited = inherit_shm_pinned(parent, child, h, perms, r, warrant);
     if pinned {
         azos_ipc::memobj::memobj_frames_unpin(r);
     }
     inherited
 }
 
-fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, r: u32, warrant: &Warrant) -> bool {
+fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> bool {
     use azos_ipc::memobj::{self, MapAccess};
     let Ok(Some((va, pages))) = memobj::memobj_mapping_of_ref(parent, r) else { return false };
     let (Some(parent_pt), Some(child_pt)) = (azos_sched::task_user_pt(parent), azos_sched::task_user_pt(child)) else {
@@ -312,13 +312,13 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, r: u32, warrant: &W
         }
         undo_window();
     };
-    let writable = h.perms().contains(CapPerms::WRITE);
+    let writable = perms.contains(CapPerms::WRITE);
     let access = MapAccess { write: writable, max_write: writable };
     if !matches!(memobj::memobj_note_mapping_ref(child, r, child_pt, va, pages, access), Ok(true)) {
         undo_map();
         return false;
     }
-    if azos_ipc::cap_store::with_table(child, |t| t.install_at(h, r, warrant)) != Some(true) {
+    if azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, r, warrant)) != Some(true) {
         let _ = memobj::memobj_take_mapping_ref(child, r);
         undo_map();
         return false;
@@ -327,16 +327,16 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, r: u32, warrant: &W
 }
 
 /// Give `child` its own reference to what `parent`'s `h` names, at `h`.
-fn inherit_one(parent: u32, child: u32, h: CapHandle, kind: CapType, res: u32) -> bool {
+fn inherit_one(parent: u32, child: u32, h: CapHandle, perms: CapPerms, kind: CapType, res: u32) -> bool {
     // The copy keeps the original's place in the warrant tree (a sibling, the
     // deadline and quota included): a fork neither sheds a revoke nor a
     // deadline. A handle revoked since the scan is not inherited.
     let Some(warrant) = azos_ipc::cap_store::read_table(parent, |t| t.warrant_of(h)).flatten() else { return false };
     match kind {
-        ty::SHM => inherit_shm(parent, child, h, res, &warrant),
+        ty::SHM => inherit_shm(parent, child, h, perms, res, &warrant),
         // The console is one object for the whole kernel: the child holds it at
         // the handle the parent does, with the parent's place in the warrant tree.
-        ty::CONSOLE => azos_ipc::cap_store::with_table(child, |t| t.install_at(h, res, &warrant)) == Some(true),
+        ty::CONSOLE => azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, res, &warrant)) == Some(true),
         _ => {
             let Some(ops) = crate::file_ops::file_ops() else { return false };
             let nfd = ops.dup(res as i32);
@@ -349,7 +349,7 @@ fn inherit_one(parent: u32, child: u32, h: CapHandle, kind: CapType, res: u32) -
             }
             // Owned by the child from here: its exit closes it if the
             // install fails.
-            azos_ipc::cap_store::with_table(child, |t| t.install_at(h, nfd as u32, &warrant)) == Some(true)
+            azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, nfd as u32, &warrant)) == Some(true)
         }
     }
 }
@@ -358,7 +358,7 @@ fn inherit_one(parent: u32, child: u32, h: CapHandle, kind: CapType, res: u32) -
 /// `cursor` round: rows mint in a fixed order, so the parent's copies are
 /// usually met in the same order and each search is one step.
 fn find_candidate(
-    cand: &[(CapHandle, u32)],
+    cand: &[(CapHandle, CapPerms, u32)],
     cursor: &mut usize,
     kind: CapType,
     perms: CapPerms,
@@ -367,8 +367,8 @@ fn find_candidate(
     let n = cand.len();
     for k in 0..n {
         let i = (*cursor + k) % n;
-        let (h, r) = cand[i];
-        if r == res && h.kind() == kind.raw() && h.perms() == perms {
+        let (h, p, r) = cand[i];
+        if r == res && h.kind() == kind.raw() && p == perms {
             *cursor = i + 1;
             return Some(i);
         }
@@ -508,7 +508,7 @@ fn seed_child_row(
     row: usize,
     filter: &azos_sched::filter::SyscallFilter,
     placeholder: &mut [u64; WORDS],
-    cand: &mut [(CapHandle, u32)],
+    cand: &mut [(CapHandle, CapPerms, u32)],
 ) {
     let Some(topo) = azos_topology::get() else { return };
     let Some(task) = topo.tasks().get(row) else { return };
@@ -569,7 +569,7 @@ fn seed_child_row(
 /// Matches a row capability with the parent's placeholder holding exactly
 /// it (see [`find_candidate`]).
 struct Aligner<'a> {
-    cand: &'a mut [(CapHandle, u32)],
+    cand: &'a mut [(CapHandle, CapPerms, u32)],
     cursor: usize,
     placeholder: &'a mut [u64; WORDS],
 }

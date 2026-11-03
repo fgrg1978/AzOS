@@ -46,14 +46,13 @@ assertion checks the sum):
 
 ```text
   bits 31..26  type         6 bits: kind (4) + class (2)
-  bits 25..20  rights       6 bits: READ WRITE EXEC DUP TRANSFER MAP
-  bits 19..9   generation   11 bits
-  bits  8..0   slot         9 bits: up to 512 slots
+  bits 25..10  generation   16 bits
+  bits  9..0   slot         10 bits
 ```
 
-The handle carries the rights as well as the table does, because some paths
-rebuild a slot from the handle alone and a handle that dropped a right would
-hand the new holder less than the old one held. A handle is not stored on disk
+The rights are the slot's (READ WRITE EXEC DUP TRANSFER MAP), not the handle's:
+the generation is the only defence the copies of a handle in user memory have,
+so it took their bits. A handle is not stored on disk
 or put on any wire except a syscall argument register: a topology names kinds
 as text and the kernel mints a fresh handle at admission.
 
@@ -116,12 +115,12 @@ marks a warrant that carries a deadline, one marks a weak warrant (section 6).
 The number of slots is a build option per profile (`MAX_CAPS_PER_TASK`: 32 on
 embedded, 256 on edge, 512 on fleet).
 
-**Generations never wrap.** A slot's generation survives a revoke, so a
-re-grant gets a fresh one and the previous holder's handle is detectably stale.
-Because a wrapped counter would reissue a generation a previous holder still
-has, a slot whose generation reaches `MAX_GENERATION` is *retired* and never
-granted again. The 11-bit field keeps that budget finite per slot; retired
-slots are counted so exhaustion is observable.
+**Generations restart behind a sweep.** A slot's generation survives a revoke,
+so a re-grant gets a fresh one and the previous holder's handle is detectably
+stale. A slot freed at `MAX_GENERATION` is *parked*: no grant takes it until a
+sweep confirms no warrant names it, then it restarts and a decision record says
+so. Warrant references between domains stay exact; a stale handle in its owner's
+memory can recur after 65,535 grants of its slot.
 
 **Object generation.** The slot generation answers "is this still the
 capability that was granted". For kinds whose objects live in a pool (ports,
@@ -435,9 +434,8 @@ Source: the publications and systems named above; no repository path.
 
 - **Compile-time kind safety is kernel-internal.** Ring 3 checks types at run
   time through the handle's type bits.
-- **Generation budget is finite.** A slot is retired when its generation
-  reaches `MAX_GENERATION`; a task that opens and closes capabilities in a loop
-  retires its low slots, and nothing is reused.
+- **A stale handle can recur.** After 65,535 grants of its slot a handle kept
+  by its owner names that slot's occupant again: detection, not a guarantee.
 - **`OP_MASK` is evaluated only by paths that carry an op.** The syscall layer
   names one at every resolve (a typed handler its op, a numbered syscall the
   class-only op of its class). A path that resolves with `get` and no op, as

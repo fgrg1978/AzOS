@@ -94,6 +94,10 @@ mod cap_store_tests {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    mod generation {
+        include!("generation.rs");
+    }
+
     // Macaroon-style caveats (`macaroon.rs`): a child module, so it shares this
     // module's lock, test clock and slot helpers.
     mod macaroon {
@@ -473,7 +477,7 @@ mod cap_store_tests {
             // The table goes to a new owner (a fork child's claim wipes it),
             // and the child gets the parent's handle at the same slot.
             t.clear_all();
-            assert!(t.install_at(b, 3, &crate::cap::Warrant::ROOT));
+            assert!(t.install_at(b, CapPerms::RW_DELEGATE, 3, &crate::cap::Warrant::ROOT));
             t.ext_of(b).map(|e| e.badge)
         };
         assert_eq!(badge_after_reuse(), Some(0), "a fork child reads a previous owner's badge");
@@ -1391,7 +1395,7 @@ mod cap_store_tests {
         // The fork: the child's table answers to the very handle, carrying the
         // original's warrant (what `natfork::inherit_one` does).
         let w = warrant(&b, b1);
-        assert!(cap_store::with_table(child.tid, |t| t.install_at(b1, 5, &w)).unwrap());
+        assert!(cap_store::with_table(child.tid, |t| t.install_at(b1, CapPerms::RW_DELEGATE, 5, &w)).unwrap());
         assert_eq!(warrant(&child, b1), w, "the copy is a sibling: same parent, same depth, same deadline");
         NOW.store(1000, Ordering::SeqCst);
         assert_eq!(cap_store::get(child.tid, ch(b1), CapPerms::READ), Err(CapError::Revoked), "forking sheds no deadline");
@@ -1466,7 +1470,7 @@ mod cap_store_tests {
         assert!(!is_plain(&a, masked.raw()), "an op mask is not plain");
         assert!(!is_plain(&a, timed), "a deadline is not plain");
         assert!(!is_plain(&b, derived), "a derived copy is not plain");
-        let gone = CapHandle::pack(ty::PORT, CapPerms::RW, 9, 60);
+        let gone = CapHandle::pack(ty::PORT, 9, 60);
         assert!(!is_plain(&a, gone), "a handle that names nothing is not plain");
     }
 
@@ -1720,7 +1724,6 @@ mod cap_store_tests {
         let (masked, stored) = cap_store::with_table(a.tid, |t| (t.peek_raw(wend), t.peek_stored(wend))).unwrap();
         assert_eq!(masked.unwrap().1, CapPerms::NONE, "authority: a weak write end holds nothing");
         assert_eq!(stored.unwrap().1, CapPerms::WRITE, "bookkeeping: it is still a write end");
-        assert_eq!(wend.perms(), CapPerms::WRITE, "the handle names what was granted");
 
         // The revoke event names the end that went.
         cap_store::set_cap_event_hook(hook);
@@ -1866,7 +1869,7 @@ mod nospec_tests {
         let h = t.grant_raw(ty::SOCKET, CapPerms::READ, 7).unwrap();
         // The same handle with its slot moved past the table (the 9-bit
         // field reaches 511; the table holds `MAX_CAPS_PER_TASK`).
-        let past = CapHandle::pack(ty::SOCKET, CapPerms::READ, h.generation(),
+        let past = CapHandle::pack(ty::SOCKET, h.generation(),
                                    (MAX_CAPS_PER_TASK as u16).min(511));
         if (past.slot() as usize) < MAX_CAPS_PER_TASK { return; } // a 512-slot table
         let cap: Cap<Socket> = Cap::from_raw(past);

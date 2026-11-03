@@ -133,6 +133,12 @@ pub(crate) const NAMES: &[&str] = &[
     "asym-admit-skip",
     // boot/smp.rs: differing CPUs with SCHED_ASYM_CPUS off go unsaid.
     "asym-n-silent",
+    // cap.rs `unpark`: a slot past its last generation is lost for the domain's
+    // life (ktest `cap_slot_restarts_past_its_last_generation`).
+    "cap-gen-retire",
+    // cap.rs `note_no_slot`: a grant into a full table is refused without a
+    // record (ktest `cap_table_full_refuses_with_a_record`).
+    "cap-full-silent",
     // drivers/sys/src/timebase.rs `record`: a CPU id from 16 up has no comparator
     // record (ktest `timer_record_on_the_last_cpu`; the row needs -smp 17).
     "timer-record-16",
