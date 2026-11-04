@@ -72,6 +72,9 @@ qos-rt-slack-canary = []
 # Host test `a_reservation_the_row_holds_is_refused_and_leaves_one_record`
 # (tests/host/sched-policy-tests) must go red.
 rt-envelope-canary = []
+# Gate canary, never in a real build: `rt_core::first_fit_by` cuts the CPU mask
+# to 32 bits. Host test `a_reservation_lands_on_cpu_40` must go red.
+rt-mask32-canary = []
 # Gate canaries of the QoS timer coalescing path (`timer_sleepers.rs`), never
 # in a build; ktest `qos_timer_coalescing_path` must go red on each.
 # `qos-fire-canary`: `fire_of` forgets the slot's slack, so `peek_live` pulls a

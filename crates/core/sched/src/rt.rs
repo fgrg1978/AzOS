@@ -982,7 +982,7 @@ pub struct Reservation {
     pub hard: bool,
     /// Harts it may be placed on; 0 = any online hart. Narrowed to the
     /// task's pin if it has one.
-    pub cpu_mask: u32,
+    pub cpu_mask: u64,
     /// The task runs in the band (its priority is, or will be once admitted,
     /// below `RT_PRIORITY_THRESHOLD`): the hart's band cap applies.
     pub band: bool,
@@ -1102,7 +1102,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
     let online = crate::smp::NUM_ONLINE_CPUS.load(Ordering::Acquire).clamp(1, MAX_CPUS);
     // The harts the request could have gone to, for the refusal's record;
     // 0 until the mask is known.
-    let mut asked_mask = 0u32;
+    let mut asked_mask = 0u64;
     let res_ = (|| {
         if held {
             return Err(Refusal::Envelope);
@@ -1117,18 +1117,16 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         }
         let density = rt_core::density_ppm(r.runtime_us, r.period_us, r.deadline_us)?;
         let t = unsafe { task_mut(idx) };
-        let online_mask = if online >= 32 { u32::MAX } else { (1u32 << online) - 1 };
+        let online_mask = if online >= 64 { u64::MAX } else { (1u64 << online) - 1 };
         let mut mask = if r.cpu_mask == 0 { online_mask } else { r.cpu_mask & online_mask };
         let mut explicit = r.cpu_mask != 0 || t.pinned().is_some();
         // The CPUs the request names, before the caller's own hart narrows it.
         let mut span = mask;
         if let Some(pin) = t.pinned() {
-            // A reservation mask is a u32 (the syscall ABI's): a pin past
-            // CPU 31 cannot be named in it and leaves nothing to fit.
-            mask &= u32::try_from(pin).ok().and_then(|p| 1u32.checked_shl(p)).unwrap_or(0);
+            mask &= u32::try_from(pin).ok().and_then(|p| 1u64.checked_shl(p)).unwrap_or(0);
             span = mask;
         } else if unsafe { PER_CPU[me].current_idx.load(Ordering::Relaxed) } == idx {
-            mask &= 1u32.checked_shl(me as u32).unwrap_or(0);
+            mask &= 1u64.checked_shl(me as u32).unwrap_or(0);
             // A running task that names no CPU is pinned where it runs: one
             // class. `SYS_SCHEDCTL` is this request; ring 3 has no pin of its own.
             if r.cpu_mask == 0 {
@@ -1444,7 +1442,7 @@ pub fn running_reservation(idx: usize) -> Option<(u64, u64)> {
 pub fn check(r: &Reservation) -> Result<usize, Refusal> {
     let density = rt_core::density_ppm(r.runtime_us, r.period_us, r.deadline_us)?;
     let online = crate::smp::NUM_ONLINE_CPUS.load(Ordering::Acquire).clamp(1, MAX_CPUS);
-    let online_mask = if online >= 32 { u32::MAX } else { (1u32 << online) - 1 };
+    let online_mask = if online >= 64 { u64::MAX } else { (1u64 << online) - 1 };
     let mask = if r.cpu_mask == 0 { online_mask } else { r.cpu_mask & online_mask };
     let load = ADMIT.lock_irqsave();
     if !ADMIT_ON {

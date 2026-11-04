@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2723978
-riscv64-qemu	.rodata	459896
-riscv64-qemu	.data	3266480
+riscv64-qemu	.text	2733998
+riscv64-qemu	.rodata	463992
+riscv64-qemu	.data	3266992
 riscv64-qemu	.bss	5799648
-riscv64-qemu	reason	merge of asym CPUs and capability generation
+riscv64-qemu	reason	64-bit reservation and energy CPU masks, interrupt migration off a stopping CPU

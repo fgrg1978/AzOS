@@ -200,7 +200,7 @@ pub struct Policy {
     idle_depth: AtomicU8,
     power_cap_mw: [AtomicU32; MAX_DOMAINS],
     power_cap_opp: [AtomicU8; MAX_DOMAINS],
-    parked: AtomicU32,
+    parked: AtomicU64,
     qos_domains: [AtomicU8; QOS_CLASSES],
     rows: [AtomicU32; POLICY_DEGRADE_ROWS_MAX],
     soc_pct: AtomicU8,
@@ -218,6 +218,7 @@ pub struct Policy {
     floor_wins: AtomicU32,
     by_reason: [AtomicU32; POLICY_REFUSED_COUNT],
     log: [AtomicU64; LOG_LEN],
+    log_hi: [AtomicU32; LOG_LEN],
 }
 
 impl Policy {
@@ -233,7 +234,7 @@ impl Policy {
             idle_depth: AtomicU8::new(NONE_U8),
             power_cap_mw: [const { AtomicU32::new(0) }; MAX_DOMAINS],
             power_cap_opp: [const { AtomicU8::new(NONE_U8) }; MAX_DOMAINS],
-            parked: AtomicU32::new(0),
+            parked: AtomicU64::new(0),
             qos_domains: [const { AtomicU8::new(u8::MAX) }; QOS_CLASSES],
             rows: [const { AtomicU32::new(0) }; POLICY_DEGRADE_ROWS_MAX],
             soc_pct: AtomicU8::new(NONE_U8),
@@ -251,6 +252,7 @@ impl Policy {
             floor_wins: AtomicU32::new(0),
             by_reason: [const { AtomicU32::new(0) }; POLICY_REFUSED_COUNT],
             log: [const { AtomicU64::new(0) }; LOG_LEN],
+            log_hi: [const { AtomicU32::new(0) }; LOG_LEN],
         }
     }
 
@@ -321,7 +323,7 @@ impl Policy {
         }
     }
     /// The mask of parked CPUs.
-    pub fn parked(&self) -> u32 {
+    pub fn parked(&self) -> u64 {
         self.parked.load(Relaxed)
     }
     /// The mask of domains QoS class `class` may be placed on (all of them
@@ -399,6 +401,15 @@ impl Policy {
         self.log[(n - 1 - i) % LOG_LEN].load(Relaxed)
     }
 
+    /// Bits 63..32 of the argument of the `i`-th most recent refusal record.
+    pub fn refusal_arg_hi(&self, i: usize) -> u32 {
+        let n = self.refused.load(Relaxed) as usize;
+        if i >= n.min(LOG_LEN) {
+            return 0;
+        }
+        self.log_hi[(n - 1 - i) % LOG_LEN].load(Relaxed)
+    }
+
     // ── the words the power service reads ────────────────────────────────
 
     /// The state word `sel` (`POLICY_STATE_*`), `None` for an unknown one.
@@ -423,7 +434,7 @@ impl Policy {
             POLICY_STATE_HEADROOM => self.headroom_pct() as u64,
             POLICY_STATE_RATE_LIMIT => self.rate_limit_us() as u64,
             POLICY_STATE_IDLE_DEPTH => self.idle_depth() as u64,
-            POLICY_STATE_PARKED => self.parked() as u64,
+            POLICY_STATE_PARKED => self.parked(),
             POLICY_STATE_BATTERY => {
                 self.soc_pct() as u64
                     | (self.level() as u64) << 8
@@ -488,6 +499,9 @@ impl Policy {
             s if (POLICY_STATS_LOG_BASE..POLICY_STATS_LOG_BASE + LOG_LEN as u64).contains(&s) => {
                 self.refusal((s - POLICY_STATS_LOG_BASE) as usize)
             }
+            s if (POLICY_STATS_LOG_HI_BASE..POLICY_STATS_LOG_HI_BASE + LOG_LEN as u64).contains(&s) => {
+                self.refusal_arg_hi((s - POLICY_STATS_LOG_HI_BASE) as usize) as u64
+            }
             s if (POLICY_STATS_BY_REASON_BASE..POLICY_STATS_BY_REASON_BASE + POLICY_REFUSED_COUNT as u64)
                 .contains(&s) =>
             {
@@ -499,7 +513,7 @@ impl Policy {
 
     // ── setters ──────────────────────────────────────────────────────────
 
-    fn done(&self, op: Op, arg: u32, r: Result<(), Refusal>) -> Result<(), Refusal> {
+    fn done(&self, op: Op, arg: u64, r: Result<(), Refusal>) -> Result<(), Refusal> {
         match r {
             Ok(()) => {
                 self.applied.fetch_add(1, Relaxed);
@@ -511,8 +525,9 @@ impl Policy {
                     let rec = (op as u64) << 56
                         | (why as u64) << 48
                         | ((n as u64) & 0xFFFF) << 32
-                        | arg as u64;
+                        | (arg & 0xFFFF_FFFF);
                     self.log[n as usize % LOG_LEN].store(rec, Relaxed);
+                    self.log_hi[n as usize % LOG_LEN].store((arg >> 32) as u32, Relaxed);
                 }
             }
         }
@@ -536,7 +551,7 @@ impl Policy {
                 _ => Err(Refusal::Governor),
             }
         };
-        self.done(Op::Governor, gov, r)
+        self.done(Op::Governor, gov as u64, r)
     }
 
     /// Restrict domain `domain` to OPPs `min..=max`. `admitted_ppm` is the
@@ -572,7 +587,7 @@ impl Policy {
             self.opp_max[domain as usize].store(max as u8, Relaxed);
             Ok(())
         })();
-        self.done(Op::OppRange, arg, r)
+        self.done(Op::OppRange, arg as u64, r)
     }
 
     /// Set the schedutil headroom, percent.
@@ -583,7 +598,7 @@ impl Policy {
         } else {
             Err(Refusal::Headroom)
         };
-        self.done(Op::Headroom, pct, r)
+        self.done(Op::Headroom, pct as u64, r)
     }
 
     /// Set the shortest interval between governor evaluations, microseconds.
@@ -594,7 +609,7 @@ impl Policy {
         } else {
             Err(Refusal::RateLimit)
         };
-        self.done(Op::RateLimit, us, r)
+        self.done(Op::RateLimit, us as u64, r)
     }
 
     /// Limit the idle governor to states `0..=depth` ([`POLICY_IDLE_UNLIMITED`]
@@ -612,7 +627,7 @@ impl Policy {
             self.idle_depth.store(depth as u8, Relaxed);
             Ok(())
         };
-        self.done(Op::IdleDepth, depth, r)
+        self.done(Op::IdleDepth, depth as u64, r)
     }
 
     /// Cap domain `domain` at `mw` milliwatts (0 lifts the cap): the highest
@@ -652,7 +667,7 @@ impl Policy {
             self.power_cap_opp[domain as usize].store(opp, Relaxed);
             Ok(())
         })();
-        self.done(Op::PowerCap, arg, r)
+        self.done(Op::PowerCap, arg as u64, r)
     }
 
     /// Park the CPUs of `mask` (bit n = CPU n) and unpark the rest. Parked
@@ -665,12 +680,12 @@ impl Policy {
     /// CPU `c`. Refused when the mask names CPU 0 (it keeps the watchdog), a
     /// CPU the model does not cover, or every CPU of a domain; a CPU with
     /// admitted real-time work is refused as the deadline floor (I1).
-    pub fn set_parked(&self, model: &EnergyModel, mask: u32, admitted_ppm: &[u32]) -> Result<(), Refusal> {
+    pub fn set_parked(&self, model: &EnergyModel, mask: u64, admitted_ppm: &[u32]) -> Result<(), Refusal> {
         let r = (|| {
             if !model.is_present() {
                 return Err(Refusal::NoModel);
             }
-            let covered = model.domains().iter().fold(0u32, |a, d| a | d.cpus);
+            let covered = model.domains().iter().fold(0u64, |a, d| a | d.cpus);
             if mask & 1 != 0 || mask & !covered != 0 {
                 return Err(Refusal::Park);
             }
@@ -678,7 +693,7 @@ impl Policy {
                 return Err(Refusal::Park);
             }
             let rt = (0..MAX_MODEL_CPUS.min(admitted_ppm.len()))
-                .any(|c| mask & (1 << c) != 0 && admitted_ppm[c] != 0);
+                .any(|c| mask & (1u64 << c) != 0 && admitted_ppm[c] != 0);
             if rt && !cfg!(feature = "pl-limit-canary") {
                 return Err(Refusal::DeadlineFloor);
             }
@@ -718,7 +733,7 @@ impl Policy {
             self.qos_domains[class as usize].store(domains as u8, Relaxed);
             Ok(())
         })();
-        self.done(Op::QosDomains, arg, r)
+        self.done(Op::QosDomains, arg as u64, r)
     }
 
     /// The power service reports the battery: the charge it estimated and the
@@ -741,7 +756,7 @@ impl Policy {
         } else {
             Ok(())
         };
-        self.done(Op::Battery, arg, verdict)?;
+        self.done(Op::Battery, arg as u64, verdict)?;
         let held = soc_pct <= self.reserve_pct() as u32 && !cfg!(feature = "pl-reserve-canary");
         self.soc_pct.store(soc_pct as u8, Relaxed);
         if held && !self.reserve_charge.swap(true, Relaxed) {

@@ -63,8 +63,8 @@ pub const PPM: u32 = azos_abi::rt_levels::PPM as u32;
 /// asserts the two are equal at compile time, like [`RT_BAND_THRESHOLD`].
 pub const MAX_ROW_LEVEL: u32 = 30;
 
-/// CPUs a profile's mask can name. `cpu_mask` is a `u32`.
-pub const MAX_ADMISSION_CPUS: usize = 32;
+/// CPUs a profile's mask can name. `cpu_mask` is a `u64`.
+pub const MAX_ADMISSION_CPUS: usize = 64;
 
 /// Most profiled tasks one admission run will consider. It bounds the work: the
 /// placement is O(n²), and this runs at boot, where there is no watchdog to kick
@@ -84,7 +84,7 @@ pub struct SchedProfile {
     /// Relative deadline, microseconds. Zero means "the period" (implicit).
     pub deadline_us: u32,
     /// CPUs the task may run on, bit `n` = CPU `n`. Zero means "any CPU".
-    pub cpu_mask: u32,
+    pub cpu_mask: u64,
     /// The core class the budget was measured on (0 the biggest CPUs of the
     /// machine, `azos_sched::topo::class`). Read only where CPUs differ.
     pub core_class: Option<u8>,
@@ -341,8 +341,8 @@ fn density_ppm(runtime_us: u32, window_us: u32) -> u32 {
 
 /// The CPUs `mask` names among the first `ncpus`, as a bitmask.
 #[inline]
-fn effective_mask(mask: u32, ncpus: usize) -> u32 {
-    let all = if ncpus >= 32 { u32::MAX } else { (1u32 << ncpus) - 1 };
+fn effective_mask(mask: u64, ncpus: usize) -> u64 {
+    let all = if ncpus >= 64 { u64::MAX } else { (1u64 << ncpus) - 1 };
     if mask == 0 { all } else { mask & all }
 }
 
@@ -428,7 +428,7 @@ pub fn admit(
         let mut had_room_on_a_cpu = false;
         let mut levels: Option<(u8, u32)> = None;
         for cpu in 0..ncpus {
-            if mask & (1u32 << cpu) == 0 {
+            if mask & (1u64 << cpu) == 0 {
                 continue;
             }
             if cpu_load[cpu].saturating_add(d) > PPM {

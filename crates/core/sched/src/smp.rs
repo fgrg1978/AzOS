@@ -370,6 +370,38 @@ pub fn current_cpu_id() -> usize {
 // gets its prefix published. A change still running (`REQUESTED`, `STARTED`)
 // makes the new request wait its turn (`Busy`).
 
+azos_common::ro_hook! {
+    /// Moves the interrupt lines and bound MSI vectors of a CPU (`fn(from, to,
+    /// back)`, answering how many lines, MSI vectors and refusals); installed at
+    /// boot by the kernel, since the bindings are above this crate. Unset: no
+    /// binding exists (host suites).
+    static IRQ_MOVE_HOOK: fn(u32, u32, bool) -> (usize, usize, usize);
+}
+
+/// Install [`IRQ_MOVE_HOOK`]. Once, at boot.
+pub fn set_irq_move_hook(hook: fn(u32, u32, bool) -> (usize, usize, usize)) {
+    IRQ_MOVE_HOOK.set(hook);
+}
+
+/// Move the interrupts bound to `cpu` to `to` (`back`: return them to `cpu`),
+/// and record it. Linux's `irq_migrate_all_off_this_cpu` moves a descriptor at
+/// a time under its lock and falls back to any online CPU; here the bindings
+/// are a short table the controller programs one by one, and the takeover CPU
+/// is the one the timers go to.
+fn move_interrupts(cpu: usize, to: usize, back: bool) {
+    use azos_decision::{Rule, Verdict};
+    let Some(hook) = IRQ_MOVE_HOOK.get() else { return };
+    let (lines, msis, failed) = hook(cpu as u32, to as u32, back);
+    if lines + msis + failed == 0 {
+        return;
+    }
+    let op = if back { HotplugOp::IrqReturn } else { HotplugOp::IrqMove };
+    let verdict = if failed == 0 { Verdict::Admit } else { Verdict::Refuse };
+    azos_decision::record(Rule::CpuHotplug, verdict, cpu as u32, [op as u64, (lines + msis) as u64, failed as u64]);
+    azos_drv_sys::kprintln!("[HOTPLUG] cpu {} interrupts {} cpu {} ({} lines, {} msi, {} stayed)", cpu,
+        if back { "back to" } else { "moved to" }, if back { cpu } else { to }, lines, msis, failed);
+}
+
 /// The boot CPU, set by [`wake_harts`].
 static BOOT_CPU: AtomicUsize = AtomicUsize::new(0);
 
@@ -675,6 +707,12 @@ unsafe fn offline_here(cpu: usize) -> Result<(), Why> {
         }
     }
 
+    // The lines and MSI vectors bound here: a delivery after the stop would go
+    // to a CPU that runs nothing.
+    if let Some(to) = hart_set::takeover_cpu(after, crate::scheduler::ncpu(), cpu) {
+        move_interrupts(cpu, to, false);
+    }
+
     // Leave the shootdown's scan and RCU's wait, then stop. Undone if the
     // firmware refuses.
     #[cfg(feature = "ktest")]
@@ -763,6 +801,7 @@ fn finish_online(cpu: usize) -> usize {
     ALIVE.store(now, Ordering::Release);
     azos_percpu::set_cpu_online(cpu, true);
     publish_prefix(now);
+    move_interrupts(cpu, cpu, true);
     // The thread reports BACK and then ends: until it has, it is the real-time
     // task the next request for this CPU would be refused for.
     let tid = THREAD_TID.get(cpu).map_or(0, |t| t.load(Ordering::Acquire));

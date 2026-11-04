@@ -36,7 +36,7 @@ pub fn held_by_row(tid: u32, runtime_us: u64, period_us: u64, deadline_us: u64) 
 /// A refusal by the Domain's row ([`Refusal::Envelope`]) writes nothing here:
 /// the effect gate wrote it (`Rule::EnvelopeRtTime`, with its receipt) when it
 /// answered no, and a refusal is one record.
-pub fn record_refusal(tid: u32, why: Refusal, ask: Ask, loads: &[HartLoad], mask: u32, band_limit_ppm: u32) {
+pub fn record_refusal(tid: u32, why: Refusal, ask: Ask, loads: &[HartLoad], mask: u64, band_limit_ppm: u32) {
     if why == Refusal::Envelope {
         return;
     }

@@ -112,7 +112,7 @@ pub trait Power {
     #[on_failure(degrade)]
     #[deadline_ns = 5_000_000]
     #[budget_us = 200]
-    fn set_parked(&mut self, mask: u32) -> Out<u32>;
+    fn set_parked(&mut self, mask: u64) -> Out<u32>;
     /// Place tasks of QoS class `class` on the domains of `domains` only
     /// (bit d = domain d).
     #[on_failure(degrade)]

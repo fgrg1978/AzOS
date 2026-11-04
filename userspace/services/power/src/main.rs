@@ -127,7 +127,7 @@ impl PowerPolicy for Kernel {
     fn set_power_cap(&mut self, domain: u32, mw: u32) -> u32 {
         verdict(self.c.set_power_cap(domain, mw))
     }
-    fn set_parked(&mut self, mask: u32) -> u32 {
+    fn set_parked(&mut self, mask: u64) -> u32 {
         verdict(self.c.set_parked(mask))
     }
     fn set_qos_domains(&mut self, class: u32, domains: u32) -> u32 {
@@ -274,7 +274,7 @@ fn log_decision(d: &Decision) {
         }
         Step::Parked(mask) => {
             put(1, b"set_parked ");
-            put_num(1, false, mask as u64);
+            put_num(1, false, mask);
         }
         Step::QosDomains { class, domains } => {
             put(1, b"set_qos_domains class ");

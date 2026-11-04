@@ -295,6 +295,9 @@ pub(crate) const NAMES: &[&str] = &[
     // scheduler/mod.rs `ring_doorbell`: a wake placed on a CPU that stopped stays
     // there (ktest `hotplug_wake_placed_on_the_stopped_cpu_runs`).
     "hotplug-stale-wake-stays",
+    // ipc/irq_bind.rs `irq_move_cpu`: a stopping CPU keeps the interrupts bound
+    // to it (ktest `hotplug_irq_line_moves_off_the_stopped_cpu`).
+    "irq-move-skip",
     // kernel/src/panic.rs `quiesce`: the panic handler does not stop the
     // other CPUs (no stop IPI, no wait); it still owns the console. The
     // `panic: other CPUs parked` rows must fail on the parked count.

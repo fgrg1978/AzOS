@@ -62,7 +62,7 @@ impl ArmClock {
     /// let through.
     pub fn energy_model(&self, num_cpus: usize) -> Result<EnergyModel, ModelFault> {
         let n = num_cpus.min(MAX_MODEL_CPUS);
-        let cpus = if n >= 32 { u32::MAX } else { (1u32 << n) - 1 };
+        let cpus = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
         EnergyModel::from_clock_range(cpus, self.min_hz / 1000, self.max_hz / 1000, MODEL_STEP_KHZ)
     }
 }

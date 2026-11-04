@@ -4604,6 +4604,18 @@ pub(crate) fn arch_irq_bound(irq: u32, cpu: u32) -> bool {
     }
 }
 
+/// CPU hotplug (`azos_sched::smp::set_irq_move_hook`): the interrupts bound to
+/// CPU `from` go to `to` through the same controller programming a bind uses
+/// ([`arch_irq_bound`]), or, with `back`, return to `from` when the topology's
+/// `[sched] irq_return` asks. Answers lines, MSI vectors and refusals.
+pub fn irq_move_hook(from: u32, to: u32, back: bool) -> (usize, usize, usize) {
+    if back && !azos_topology::get().is_some_and(|t| t.sched_config().irq_return) {
+        return (0, 0, 0);
+    }
+    let m = azos_ipc::irq_bind::irq_move_cpu(from, to, back, arch_irq_bound);
+    (m.lines, m.msis, m.failed)
+}
+
 /// Route the binding of `irq` that `tid` just stored ([`arch_irq_bound`]);
 /// when the controller refuses the line, drop that binding again
 /// (`irq_bind::irq_unbind`) and answer `false`: `DEVICE_IRQ_BIND` then returns

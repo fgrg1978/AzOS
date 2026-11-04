@@ -178,7 +178,7 @@ pub enum Step {
         mw: u32,
     },
     /// `set_parked`.
-    Parked(u32),
+    Parked(u64),
     /// `set_qos_domains`.
     QosDomains {
         /// QoS class.
@@ -533,7 +533,7 @@ pub struct Machine {
     /// Domains.
     pub domains: usize,
     /// CPUs of each domain.
-    pub cpus: [u32; MAX_DOMAINS],
+    pub cpus: [u64; MAX_DOMAINS],
     /// Power of each domain's top OPP, milliwatts.
     pub top_mw: [u32; MAX_DOMAINS],
     /// Capacity of each domain's top OPP.
@@ -576,7 +576,7 @@ impl Machine {
         for d in 0..n {
             m.cpus[d] = match p.state(POLICY_STATE_CPUS_BASE as u32 + d as u32) {
                 WORD_ERR => return None,
-                w => w as u32,
+                w => w,
             };
             let info = domain(p, d as u32)?;
             let (mw, cap) = opp(d, info.n_opps.checked_sub(1)?)?;
@@ -614,12 +614,12 @@ impl Machine {
     /// The CPUs `count` asks to park (as many as allowed when it is larger): the
     /// highest-numbered ones, never CPU 0, a CPU in no domain, or the last
     /// CPU of a domain.
-    pub fn park_mask(&self, count: u32) -> u32 {
+    pub fn park_mask(&self, count: u32) -> u64 {
         let covered = self.cpus[..self.domains].iter().fold(0, |a, c| a | c);
-        let mut mask = 0u32;
+        let mut mask = 0u64;
         let mut parked = 0;
-        for cpu in (1..32).rev() {
-            let bit = 1u32 << cpu;
+        for cpu in (1..64).rev() {
+            let bit = 1u64 << cpu;
             if parked >= count || covered & bit == 0 {
                 continue;
             }

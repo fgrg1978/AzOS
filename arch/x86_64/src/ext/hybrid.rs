@@ -125,7 +125,7 @@ pub fn read_this_cpu() -> HybridLeaves {
 
 /// CPUs whose kind can be recorded: the energy model names at most 32
 /// (`azos_energy::model::MAX_MODEL_CPUS`).
-pub const MAX_RECORDED: usize = 32;
+pub const MAX_RECORDED: usize = 64;
 
 /// Per CPU: 0 not recorded, else `kind + 1`.
 static RECORDED: [AtomicU8; MAX_RECORDED] = [const { AtomicU8::new(0) }; MAX_RECORDED];

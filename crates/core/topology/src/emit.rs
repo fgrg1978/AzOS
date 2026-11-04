@@ -89,6 +89,9 @@ pub fn emit_sched<W: Write>(topo: &Topology<'_>, out: &mut W) -> Result<(), Emit
     if topo.sched_config().isolcpus != 0 {
         writeln!(out, "isolcpus = {}", topo.sched_config().isolcpus)?;
     }
+    if topo.sched_config().irq_return {
+        writeln!(out, "irq_return = true")?;
+    }
     for c in topo.classes() {
         writeln!(out)?;
         writeln!(out, "[class.{}]", section_name(&c.name)?)?;
@@ -430,6 +433,9 @@ pub fn first_difference(a: &Topology<'_>, b: &Topology<'_>) -> Option<&'static s
     }
     if a.sched_config().isolcpus != b.sched_config().isolcpus {
         return Some("sched isolcpus");
+    }
+    if a.sched_config().irq_return != b.sched_config().irq_return {
+        return Some("sched irq_return");
     }
     if a.tasks().len() != b.tasks().len() {
         return Some("task count");

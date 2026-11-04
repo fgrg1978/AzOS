@@ -27,6 +27,8 @@ qos-rt-slack-canary = []
 # The shared rt_core.rs names ipc-deadline-budget's proxy canary in a
 # `cfg!`; declared for the same reason, never enabled (micro has no IPC proxy).
 rt-proxy-canary = []
+# The shared rt_core.rs names the CPU-mask canary in a `cfg!`; declared, never enabled.
+rt-mask32-canary = []
 
 [dependencies]
 azos_abi = { path = "../crates/core/abi" }

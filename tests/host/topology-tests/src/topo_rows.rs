@@ -414,9 +414,9 @@ fn isolcpus_must_leave_a_cpu_for_everything_else() {
     let (u, _) = parse_with(&sched, "format = 7\n");
     assert_eq!(u.deadline_admission(4, LevelOrder::Edf).err(), Some(AdmissionError::BadRow(RowKind::Sched)));
     assert!(u.deadline_admission(8, LevelOrder::Edf).is_ok(), "but not a machine with 8");
-    // And a mask that names all 32 is refused at topology admission, before
+    // And a mask that names all 64 is refused at topology admission, before
     // the CPU count is known.
-    let sched = ISO_SCHED.replace("isolcpus = 12", "isolcpus = 4294967295");
+    let sched = ISO_SCHED.replace("isolcpus = 12", "isolcpus = 18446744073709551615");
     let (u, _) = parse_with(&sched, "format = 7\n");
     assert_eq!(u.admission_check(), Err(AdmissionError::BadRow(RowKind::Sched)));
     t.set_sched_config(azos_topology::SchedConfig::DEFAULT);
@@ -425,15 +425,15 @@ fn isolcpus_must_leave_a_cpu_for_everything_else() {
 
 #[test]
 fn a_malformed_isolcpus_is_refused() {
-    for line in ["isolcpus = 4294967296", "isolcpus = -1", "isolcpus = \"4\"", "isolcpus = 4 4", "isolcpus ="] {
+    for line in ["isolcpus = 18446744073709551616", "isolcpus = -1", "isolcpus = \"4\"", "isolcpus = 4 4", "isolcpus ="] {
         let sched = format!("[sched]\n{line}\n");
         let mut t = Box::new(Topology::empty());
         assert!(parse_sched(sched.as_bytes(), &mut t).is_err(), "{line}");
     }
     // A mask that fits is taken as it is.
     let mut t = Box::new(Topology::empty());
-    parse_sched(b"[sched]\nisolcpus = 4294967295\n", &mut t).unwrap();
-    assert_eq!(t.sched_config().isolcpus, u32::MAX);
+    parse_sched(b"[sched]\nisolcpus = 18446744073709551615\n", &mut t).unwrap();
+    assert_eq!(t.sched_config().isolcpus, u64::MAX);
 }
 
 #[test]

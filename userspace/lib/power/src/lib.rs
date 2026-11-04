@@ -43,7 +43,7 @@ pub trait PowerPolicy {
     /// Cap domain `domain` at `mw` milliwatts; 0 lifts the cap.
     fn set_power_cap(&mut self, domain: u32, mw: u32) -> u32;
     /// Park the CPUs of `mask` (bit n = CPU n) and unpark the others.
-    fn set_parked(&mut self, mask: u32) -> u32;
+    fn set_parked(&mut self, mask: u64) -> u32;
     /// Place QoS class `class` on the domains of `domains` (bit d = domain d).
     fn set_qos_domains(&mut self, class: u32, domains: u32) -> u32;
     /// Report the charge (percent) and the degrade level held.

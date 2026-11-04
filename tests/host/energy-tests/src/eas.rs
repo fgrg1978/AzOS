@@ -20,9 +20,9 @@
 use azos_energy::model::{invariant_util, EasChoice, EAS_FIT_PCT};
 use azos_energy::{EnergyModel, ModelSource, Opp, PerfDomain};
 
-const LITTLE: u32 = 0x0f;
-const BIG: u32 = 0xf0;
-const ALL: u32 = 0xff;
+const LITTLE: u64 = 0x0f;
+const BIG: u64 = 0xf0;
+const ALL: u64 = 0xff;
 
 fn opp(f: u32, c: u16, p: u32) -> Opp {
     Opp { freq_khz: f, capacity: c, power_mw: p }
@@ -147,7 +147,7 @@ fn a_task_that_fits_nowhere_is_overutilised() {
 #[test]
 fn only_candidates_are_chosen() {
     let m = big_little();
-    for mask in [0x01u32, 0x02, 0x06, 0x30, 0xc1, 0xfe, 0x7f] {
+    for mask in [0x01u64, 0x02, 0x06, 0x30, 0xc1, 0xfe, 0x7f] {
         for task in [0u32, 20, 90, 250, 400, 700] {
             for prev in 0..8 {
                 if let EasChoice::Cpu(c) = m.eas_pick(&idle(), task, prev, mask) {
@@ -248,7 +248,7 @@ fn the_pick_is_within_the_stay_margin_of_the_cheapest_cpu_that_fits() {
         }
         let task = r.next(400) as u32;
         let prev = r.next(8) as usize;
-        let mask = (r.next(255) + 1) as u32;
+        let mask = (r.next(255) + 1) as u64;
         let got = m.eas_pick(&u, task, prev, mask);
         let judged_full = m.eas_overutilised(&u, mask);
         // The cheapest CPU the task fits, by brute force over every candidate.

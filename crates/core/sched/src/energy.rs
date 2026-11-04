@@ -575,7 +575,7 @@ fn assert_applied(di: usize, at: u64) {
 
 /// The domain index of `cpu` in the installed model.
 fn domain_index(cpu: usize) -> Option<usize> {
-    let bit = 1u32.checked_shl(cpu as u32)?;
+    let bit = 1u64.checked_shl(cpu as u32)?;
     model().domains().iter().position(|d| d.cpus & bit != 0)
 }
 
@@ -613,8 +613,8 @@ pub fn gov_maybe(_cpu: usize, at: u64) -> u32 {
             continue;
         }
         let mut util = 0u32;
-        for c in 0..super::ncpu().min(32) {
-            if d.cpus & (1 << c) != 0 {
+        for c in 0..super::ncpu().min(64) {
+            if d.cpus & (1u64 << c) != 0 {
                 util = util.max(cpu_util_at(c, at));
             }
         }
@@ -660,8 +660,8 @@ pub fn gov_maybe(_cpu: usize, at: u64) -> u32 {
 /// never lowers a clock under it).
 pub fn domain_admitted_ppm(di: usize) -> u32 {
     let Some(d) = model().domains().get(di) else { return 0 };
-    (0..super::ncpu().min(32))
-        .filter(|c| d.cpus & (1 << c) != 0)
+    (0..super::ncpu().min(64))
+        .filter(|c| d.cpus & (1u64 << c) != 0)
         .map(|c| super::rt::ADMITTED_PPM[c].load(Ordering::Relaxed))
         .max()
         .unwrap_or(0)
@@ -706,9 +706,9 @@ pub fn policy_set_power_cap(domain: u32, mw: u32) -> Result<(), Refusal> {
 }
 
 /// Park the CPUs of `mask` and unpark the others.
-pub fn policy_set_parked(mask: u32) -> Result<(), Refusal> {
-    let mut ppm = [0u32; 32];
-    for (c, p) in ppm.iter_mut().enumerate().take(super::ncpu().min(32)) {
+pub fn policy_set_parked(mask: u64) -> Result<(), Refusal> {
+    let mut ppm = [0u32; 64];
+    for (c, p) in ppm.iter_mut().enumerate().take(super::ncpu().min(64)) {
         *p = super::rt::ADMITTED_PPM[c].load(Ordering::Relaxed);
     }
     POLICY.set_parked(model(), mask, &ppm)

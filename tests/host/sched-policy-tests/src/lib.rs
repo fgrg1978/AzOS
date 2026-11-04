@@ -725,6 +725,27 @@ mod rt_core_tests {
         assert_eq!(Refusal::Levels.errno(), 16);
     }
 
+    /// A reservation naming CPU 40 lands there (NR_CPUS goes to 64); the mask
+    /// was a `u32`, so CPUs 32..63 could never host one.
+    #[test]
+    fn a_reservation_lands_on_cpu_40() {
+        let mut loads = [HartLoad::default(); 64];
+        assert_eq!(first_fit_by(&loads, 1u64 << 40, 100_000, false, 950_000, |_| true), Ok(40));
+        assert_eq!(first_fit(&loads, 1u64 << 63, 100_000, false, 950_000), Ok(63));
+        // The first CPU of the mask with room: 40 is full, 41 takes it.
+        loads[40] = HartLoad { total_ppm: 1_000_000, band_ppm: 0 };
+        assert_eq!(first_fit(&loads, 3u64 << 40, 100_000, false, 950_000), Ok(41));
+        // The refusal receipt counts the room of the CPUs the mask names.
+        let ask = Ask { runtime_us: 1_000, period_us: 10_000, deadline_us: 0, band: false };
+        let n = refusal_numbers(Refusal::NoRoom, ask, &loads, 1u64 << 40, 950_000);
+        assert_eq!(n[2] & 0xFFFF_FFFF, 0, "CPU 40 is full: no room to report");
+        loads[40] = HartLoad::default();
+        let n = refusal_numbers(Refusal::NoRoom, ask, &loads, 1u64 << 40, 950_000);
+        assert!(n[2] & 0xFFFF_FFFF > 0, "the receipt sees CPU 40");
+        assert_eq!(single_class(true, 1u64 << 40 | 1 << 41, |_| 0), Ok(()));
+        assert_eq!(single_class(true, 1u64 << 3 | 1 << 40, |c| (c >= 32) as u8), Err(Refusal::CoreClass));
+    }
+
     #[test]
     fn edf_orders_by_level_then_deadline_and_ties_keep_the_incumbent() {
         assert!(edf_before(4, 900, 5, 10));
@@ -1431,7 +1452,7 @@ mod refusal_receipts {
     /// a refusal the one `record_refusal` call. (`rt.rs` itself links the
     /// scheduler's statics; `reserve_calls_record_refusal_once_from_its_refusal_arm`
     /// ties this model to it.) Returns the sink's records and the ring total.
-    fn reserve_model(tid: u32, ask: Ask, loads: &[HartLoad], mask: u32) -> (Result<usize, Refusal>, Vec<(u8, u8, u32, [u64; 3])>, u64) {
+    fn reserve_model(tid: u32, ask: Ask, loads: &[HartLoad], mask: u64) -> (Result<usize, Refusal>, Vec<(u8, u8, u32, [u64; 3])>, u64) {
         azos_decision::set_durable_sink(sink);
         GOT.lock().unwrap().clear();
         let before = azos_decision::total();

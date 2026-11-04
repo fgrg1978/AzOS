@@ -1757,13 +1757,16 @@ fn handle_task_kv<'a>(
         // because a period that wrapped is a different schedule.
         "period_us" | "runtime_us" | "deadline_us" | "cpu_mask" | "core_class" => {
             let (n, _) = parse_unsigned_int(after)?;
+            if key_str == "cpu_mask" {
+                profile.cpu_mask = n;
+                return Ok(());
+            }
             let n = u32::try_from(n).map_err(|_| ParseError::BadValue)?;
             match key_str {
                 "core_class" => profile.core_class = Some(u8::try_from(n).map_err(|_| ParseError::BadValue)?),
                 "period_us" => profile.period_us = n,
                 "runtime_us" => profile.runtime_us = n,
-                "deadline_us" => profile.deadline_us = n,
-                _ => profile.cpu_mask = n,
+                _ => profile.deadline_us = n,
             }
             Ok(())
         }
@@ -3551,7 +3554,7 @@ pub fn parse_energy(input: &[u8]) -> Result<azos_energy::EnergySpec, ParseError>
                 match key {
                     b"cpus" => {
                         let (n, _) = parse_unsigned_int(value)?;
-                        d.cpus = u32::try_from(n).map_err(|_| ParseError::BadValue)?;
+                        d.cpus = n;
                     }
                     b"wcet_ref_khz" => {
                         let (n, _) = parse_unsigned_int(value)?;
@@ -3752,12 +3755,12 @@ fn handle_sched_kv(line: &[u8], cfg: &mut SchedConfig) -> Result<(), ParseError>
             }
             cfg.partition_window_us = n as u32;
         }
-        // The CPUs kept for isolated rows, a mask like `cpu_mask` (a `u32`,
-        // refused rather than truncated). Checked against the rows and the
-        // machine at admission.
+        // The CPUs kept for isolated rows, a mask like `cpu_mask` (a `u64`).
+        // Checked against the rows and the machine at admission.
         "isolcpus" => {
-            cfg.isolcpus = uint_only(after, u32::MAX as u64)? as u32;
+            cfg.isolcpus = uint_only(after, u64::MAX)?;
         }
+        "irq_return" => cfg.irq_return = bool_only(after)?,
         _ => return Err(ParseError::UnknownField),
     }
     Ok(())

@@ -286,7 +286,7 @@ enum CpuPerf {
 /// tick pairs it with the kernel's [`Platform`] in an [`Actuator`].
 pub struct X86Pstate {
     hw: Hw,
-    dom_cpus: [u32; MAX_DOMAINS],
+    dom_cpus: [u64; MAX_DOMAINS],
     /// Per domain, the frequency of its slowest and fastest OPP, kHz.
     dom_khz: [(u32, u32); MAX_DOMAINS],
     cpu: [CpuPerf; MAX_MODEL_CPUS],
@@ -451,7 +451,7 @@ impl<P: Platform> OppActuator for Actuator<'_, P> {
         let mut first_err = None;
         let mut done = 0u32;
         for cpu in 0..MAX_MODEL_CPUS {
-            if st.dom_cpus[domain] & 1 << cpu == 0 || !self.platform.cpu_online(cpu) {
+            if st.dom_cpus[domain] & 1u64 << cpu == 0 || !self.platform.cpu_online(cpu) {
                 continue;
             }
             let step = st.bring_up(&mut self.platform, cpu).and_then(|r| {

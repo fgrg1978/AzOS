@@ -3515,6 +3515,19 @@ priority_range      = [0, 11]
         }
     }
 
+    /// A profile naming CPU 40 is placed there on a 64-CPU machine (the mask was
+    /// a `u32`: CPUs 32..63 could never host a reservation).
+    #[test]
+    fn a_profile_lands_on_cpu_40() {
+        let budget = [PPM; MAX_CLASSES];
+        let p = SchedProfile { period_us: 10_000, runtime_us: 1_000, deadline_us: 0, cpu_mask: 1 << 40, core_class: None };
+        let r = admit(&[Item { task: 0, class: 0, level: 0, profile: p }], 64, &budget, LevelOrder::Edf).unwrap();
+        assert_eq!(r.cpu_of(0), Some(40));
+        assert_eq!(r.cpu_load_ppm[40], 100_000);
+        let too_few = admit(&[Item { task: 0, class: 0, level: 0, profile: p }], 32, &budget, LevelOrder::Edf);
+        assert!(matches!(too_few, Err(DeadlineRefusal::Invalid { fault: ProfileFault::NoCpuInMask, .. })));
+    }
+
     // ── wave 11 SCHED-RT: a band row needs a reservation AND locked memory ──
 
     /// The one rule topology admission and `SYS_SPAWN_EX` both apply.

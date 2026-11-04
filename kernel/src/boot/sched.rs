@@ -362,6 +362,9 @@ pub(crate) fn install_sched_hooks() {
     if canary!("hotplug-wake-list-skip") {
         azos_sched::scheduler::canary_stopped_list_stays();
     }
+    if canary!("irq-move-skip") {
+        azos_ipc::irq_bind::canary_move_skip_arm();
+    }
     if canary!("hotplug-stale-wake-stays") {
         azos_sched::scheduler::canary_stopped_wake_stays();
     }
@@ -1763,6 +1766,43 @@ mod hotplug_ktests {
                 azos_sched::scheduler::ktest_rescue_stopped(cpu);
                 settle(|| RAN[0].load(Ordering::Acquire));
                 Err("a deferred wake left on the stopping CPU never ran")
+            })
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn hotplug_irq_line_moves_off_the_stopped_cpu() {
+            run(|cpu| {
+                use azos_ipc::irq_bind::{self, Route};
+                const LINE: u32 = 0x7EC;
+                let tid = azos_sched::current_task_tid();
+                let Some(port) = azos_ipc::port::port_create_ref(tid as usize) else { return Err("no port") };
+                irq_bind::set_test_line(Some(LINE));
+                let verdict = (|| {
+                    irq_bind::irq_bind_port_plain(LINE, tid, port, 1, Route::Cpu(cpu as u32))
+                        .map_err(|_| "the bind was refused")?;
+                    offline(cpu)?;
+                    let now = irq_bind::irq_binding_cpu(LINE);
+                    if now.is_none_or(|c| c as usize == cpu) {
+                        return Err("the line stayed on the stopped CPU");
+                    }
+                    irq_bind::irq_dispatch(LINE);
+                    let ev = azos_ipc::port::port_poll_ref(port).map_err(|_| "the next interrupt was not delivered")?;
+                    if Some(ev.cpu as u32) != now {
+                        return Err("the delivery named the stopped CPU");
+                    }
+                    // The CPU is back: the move to it again, as the topology's `irq_return` asks.
+                    azos_sched::smp::cpu_online(cpu).map_err(|w| w.name())?;
+                    irq_bind::irq_move_cpu(cpu as u32, 0, true, |_, _| true);
+                    if irq_bind::irq_binding_cpu(LINE) != Some(cpu as u32) {
+                        return Err("the line did not return to its CPU");
+                    }
+                    Ok(())
+                })();
+                irq_bind::irq_unbind_all(tid);
+                irq_bind::set_test_line(None);
+                let _ = azos_ipc::port::port_destroy_ref(port);
+                verdict
             })
         }
     }

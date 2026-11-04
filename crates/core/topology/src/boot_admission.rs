@@ -132,7 +132,7 @@ pub fn core_class_check(topo: &Topology<'_>, classes: &[u8]) -> Result<(), Deadl
         let refused = DeadlineRefusal::CoreClass { task: ti as u16 };
         let Some(k) = t.profile.core_class else { return Err(refused) };
         let mut any = false;
-        for (c, &cc) in classes.iter().enumerate().take(32) {
+        for (c, &cc) in classes.iter().enumerate().take(64) {
             if t.profile.cpu_mask >> c & 1 != 0 {
                 if cc != k {
                     return Err(refused);

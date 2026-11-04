@@ -305,7 +305,7 @@ mod model {
         m
     }
 
-    fn rebuilt(cpus: u32, opps: &[Opp], idle: &[IdleState]) -> PerfDomain {
+    fn rebuilt(cpus: u64, opps: &[Opp], idle: &[IdleState]) -> PerfDomain {
         let mut d = PerfDomain::new(cpus);
         for o in opps {
             d.push_opp(*o).unwrap();
@@ -540,7 +540,7 @@ idle = [ { name = "wfi", exit_latency_us = 1, target_residency_us = 1 } ]
         assert_eq!(err("[energy]\nmode = \"turbo\"\n"), ParseError::UnknownEnumValue);
         assert_eq!(err("[energy]\nspeed = 3\n"), ParseError::UnknownField);
         assert_eq!(err(&format!("{d}cores = 1\n")), ParseError::UnknownField);
-        assert_eq!(err(&format!("{d}cpus = 4294967296\n")), ParseError::BadValue);
+        assert_eq!(err(&format!("{d}cpus = 18446744073709551616\n")), ParseError::BadValue);
         assert_eq!(err(&format!("{d}opps = [ {{ freq_khz = 1, capacity = 1 }} ]\n")), ParseError::MissingField);
         assert_eq!(err(&format!("{d}opps = [ {{ freq_khz = 1, capacity = 1, power_mw = 1, volts = 1 }} ]\n")), ParseError::UnknownField);
         assert_eq!(err(&format!("{d}opps = [ {{ freq_khz = 1, capacity = 1, power_mw = 1, power_mw = 2 }} ]\n")), ParseError::BadValue);
@@ -753,7 +753,7 @@ mod dt {
     #[test]
     fn a_private_table_is_a_domain_per_cpu() {
         let m = model_of("energy-private.dtb").unwrap().unwrap();
-        let masks: Vec<u32> = m.domains().iter().map(|d| d.cpus).collect();
+        let masks: Vec<u64> = m.domains().iter().map(|d| d.cpus).collect();
         assert_eq!(masks, [1, 2, 4, 8]);
         assert_eq!(m.validate(4), Ok(()));
     }

@@ -106,7 +106,7 @@ impl PowerPolicy for Sim {
     fn set_power_cap(&mut self, d: u32, mw: u32) -> u32 {
         self.0.set_power_cap(d, mw)
     }
-    fn set_parked(&mut self, mask: u32) -> u32 {
+    fn set_parked(&mut self, mask: u64) -> u32 {
         self.0.set_parked(mask)
     }
     fn set_qos_domains(&mut self, class: u32, domains: u32) -> u32 {
@@ -674,7 +674,7 @@ mod budgets {
     fn budget_parking_refused_for_admitted_work_parks_nothing() {
         let mut sim = Sim::new(false);
         sim.0.admitted_ppm = 100_000;
-        sim.0.policy.set_parked(&sim.0.model, 0b0010, &[0; 32]).unwrap();
+        sim.0.policy.set_parked(&sim.0.model, 0b0010, &[0; 64]).unwrap();
         let m = Machine::read(&sim).unwrap();
         let b = Budget { power_cap_pct: 100, park: 1, efficient_qos: 0 };
         let mut log = Vec::new();
@@ -710,7 +710,7 @@ mod budgets {
         let m = Machine::read(&sim).unwrap();
         let before = budget_signature(&sim, &m);
         assert_eq!(budget_signature(&sim, &m), before);
-        sim.0.policy.set_parked(&sim.0.model, 0b1000, &[0; 32]).unwrap();
+        sim.0.policy.set_parked(&sim.0.model, 0b1000, &[0; 64]).unwrap();
         assert_ne!(budget_signature(&sim, &m), before);
     }
 }

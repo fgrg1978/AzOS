@@ -414,9 +414,9 @@ pub fn install_core_types(class: impl Fn(usize) -> u8, capacity: impl Fn(usize) 
     }
 }
 
-/// The CPUs (of the first 32, a reservation's mask) of core class `k`.
-pub fn class_mask(k: u8) -> u32 {
-    (0..installed().min(32)).filter(|&c| class(c) == k).fold(0, |m, c| m | 1 << c)
+/// The CPUs (of the first 64, a reservation's mask) of core class `k`.
+pub fn class_mask(k: u8) -> u64 {
+    (0..installed().min(64)).filter(|&c| class(c) == k).fold(0, |m, c| m | 1u64 << c)
 }
 
 /// The installed CPUs are not all of one core class, whether or not

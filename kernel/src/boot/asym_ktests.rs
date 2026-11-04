@@ -87,7 +87,7 @@ azos_ktest::ktest_late! {
     }
 }
 
-fn budget(cpu_mask: u32) -> Reservation {
+fn budget(cpu_mask: u64) -> Reservation {
     Reservation { runtime_us: 100, period_us: 10_000, deadline_us: 0, hard: true, cpu_mask, band: false, level: FAIR_PRIO }
 }
 

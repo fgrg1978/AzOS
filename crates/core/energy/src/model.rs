@@ -38,8 +38,8 @@ pub const MAX_IDLE_STATES: usize = 4;
 pub const IDLE_NAME_LEN: usize = 16;
 /// Capacity of the fastest CPU at its fastest OPP.
 pub const CAPACITY_SCALE: u16 = 1024;
-/// CPUs a domain's mask can name (`cpus` is a `u32`).
-pub const MAX_MODEL_CPUS: usize = 32;
+/// CPUs a domain's mask can name (`cpus` is a `u64`).
+pub const MAX_MODEL_CPUS: usize = 64;
 
 /// One operating point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,7 +108,7 @@ impl IdleState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PerfDomain {
     /// The CPUs, bit `n` = CPU `n` (the encoding of a profile's `cpu_mask`).
-    pub cpus: u32,
+    pub cpus: u64,
     /// The clock at which the safety path's WCET bounds were established,
     /// kHz (invariant I6: no governor goes below the first OPP at or above
     /// it). 0 = not declared: the fastest OPP is the floor.
@@ -131,7 +131,7 @@ impl PerfDomain {
     };
 
     /// An empty domain over `cpus`.
-    pub const fn new(cpus: u32) -> Self {
+    pub const fn new(cpus: u64) -> Self {
         Self { cpus, ..Self::EMPTY }
     }
 
@@ -281,7 +281,7 @@ impl EnergyModel {
         if cpu >= MAX_MODEL_CPUS {
             return None;
         }
-        self.domains().iter().find(|d| d.cpus & (1 << cpu) != 0)
+        self.domains().iter().find(|d| d.cpus & (1u64 << cpu) != 0)
     }
 
     /// Check the model against a machine of `num_cpus` CPUs.
@@ -306,14 +306,14 @@ impl EnergyModel {
         if self.n_domains == 0 {
             return Err(ModelFault::NoDomains);
         }
-        let mut seen = 0u32;
+        let mut seen = 0u64;
         let mut full = false;
         for (di, d) in self.domains().iter().enumerate() {
             let di = di as u8;
             if d.cpus == 0 {
                 return Err(ModelFault::EmptyCpuMask { domain: di });
             }
-            let past = if num_cpus >= 32 { 0 } else { d.cpus >> num_cpus };
+            let past = if num_cpus >= 64 { 0 } else { d.cpus >> num_cpus };
             if past != 0 {
                 return Err(ModelFault::CpuAbsent { domain: di, cpu: (past.trailing_zeros() as usize + num_cpus) as u8 });
             }
@@ -370,7 +370,7 @@ impl EnergyModel {
                 prev_idle = Some(*s);
             }
         }
-        let all = if num_cpus >= 32 { u32::MAX } else { (1u32 << num_cpus) - 1 };
+        let all = if num_cpus >= 64 { u64::MAX } else { (1u64 << num_cpus) - 1 };
         if seen & all != all {
             return Err(ModelFault::CpuUncovered { cpu: (!seen & all).trailing_zeros() as u8 });
         }
@@ -442,7 +442,7 @@ impl EnergyModel {
             return Err(ModelFault::CoreClassUnknown { cpu: cpu as u8 });
         }
         let mask = |want: CoreClass| {
-            classes.iter().enumerate().filter(|(_, c)| **c == want).fold(0u32, |m, (i, _)| m | 1 << i)
+            classes.iter().enumerate().filter(|(_, c)| **c == want).fold(0u64, |m, (i, _)| m | 1u64 << i)
         };
         let (perf, eff) = (mask(CoreClass::Performance), mask(CoreClass::Efficiency));
         if perf == 0 || eff == 0 {
@@ -472,11 +472,11 @@ impl EnergyModel {
     ) -> CoreReports {
         let n = n.min(MAX_MODEL_CPUS);
         let mut classes = [CoreClass::Unknown; MAX_MODEL_CPUS];
-        let mut missing = 0u32;
+        let mut missing = 0u64;
         for (cpu, c) in classes.iter_mut().enumerate().take(n) {
             match report(cpu) {
                 Some(k) => *c = k,
-                None => missing |= 1 << cpu,
+                None => missing |= 1u64 << cpu,
             }
         }
         CoreReports { model: Self::from_core_classes(&classes[..n], ref_khz).transpose(), missing }
@@ -506,7 +506,7 @@ impl EnergyModel {
     ///
     /// `Err(ClockRangeDegenerate)` for a zero minimum, a minimum not below the
     /// maximum, a zero step or no CPU.
-    pub fn from_clock_range(cpus: u32, min_khz: u32, max_khz: u32, step_khz: u32) -> Result<Self, ModelFault> {
+    pub fn from_clock_range(cpus: u64, min_khz: u32, max_khz: u32, step_khz: u32) -> Result<Self, ModelFault> {
         if !cfg!(feature = "firmware-model-canary") && (cpus == 0 || step_khz == 0 || min_khz == 0 || min_khz >= max_khz) {
             return Err(ModelFault::ClockRangeDegenerate);
         }
@@ -544,7 +544,7 @@ pub struct CoreReports {
     /// As `resolve` takes it: `None` when the machine is symmetric.
     pub model: Option<Result<EnergyModel, ModelFault>>,
     /// CPUs (bit per CPU) that reported nothing.
-    pub missing: u32,
+    pub missing: u64,
 }
 
 // ── Energy-aware placement ───────────────────────────────────────────────────
@@ -617,7 +617,7 @@ impl EnergyModel {
     /// Whether some CPU of `cpus` is full: its utilisation (capacity
     /// invariant, see above) does not fit the capacity of its domain's
     /// fastest OPP. A CPU in no domain is not judged.
-    pub fn eas_overutilised(&self, util: &[u32], cpus: u32) -> bool {
+    pub fn eas_overutilised(&self, util: &[u32], cpus: u64) -> bool {
         self.domains().iter().any(|d| {
             let mut m = d.cpus & cpus;
             while m != 0 {
@@ -652,7 +652,7 @@ impl EnergyModel {
     ///
     /// [`EasChoice::Overutilised`] when [`eas_overutilised`](Self::eas_overutilised)
     /// holds for `candidates`, or the task fits none of them.
-    pub fn eas_pick(&self, util: &[u32], task_util: u32, prev_cpu: usize, candidates: u32) -> EasChoice {
+    pub fn eas_pick(&self, util: &[u32], task_util: u32, prev_cpu: usize, candidates: u64) -> EasChoice {
         if self.eas_overutilised(util, candidates) {
             return EasChoice::Overutilised;
         }
@@ -705,7 +705,7 @@ impl EnergyModel {
             try_cpu(room);
             if prev_cpu != room
                 && prev_cpu < MAX_MODEL_CPUS
-                && d.cpus & candidates & (1 << prev_cpu) != 0
+                && d.cpus & candidates & (1u64 << prev_cpu) != 0
                 && eas_fits(eas_util_of(util, prev_cpu) + task, d.max_capacity())
             {
                 try_cpu(prev_cpu);

@@ -252,21 +252,21 @@ fn the_model_covers_the_cpus_that_started_and_validates_for_exactly_them() {
     let r = reports(6, |i| Some(c[i]));
     assert_eq!(r.missing, 0);
     let Some(Ok(m)) = r.model else { panic!("{:?}", r.model) };
-    assert_eq!(m.domains().iter().fold(0u32, |a, d| a | d.cpus), 0b11_1111);
+    assert_eq!(m.domains().iter().fold(0u64, |a, d| a | d.cpus), 0b11_1111);
     assert_eq!(m.validate(6), Ok(()));
     assert!(m.validate(8).is_err());
 }
 
 #[test]
 fn cpus_past_what_a_model_can_name_are_left_out() {
-    let c: Vec<_> = (0..48).map(|i| if i < 24 { CoreClass::Performance } else { CoreClass::Efficiency }).collect();
-    let m = model(&c[..40]);
-    assert_eq!((m.domains()[0].cpus, m.domains()[1].cpus), (0x00ff_ffff, 0xff00_0000));
-    // Validated against the 32 CPUs it can name, as `validate` clamps.
-    assert_eq!(m.validate(48), Ok(()));
-    // A type past the 32nd that nothing could name is not judged.
+    let c: Vec<_> = (0..80).map(|i| if i < 24 { CoreClass::Performance } else { CoreClass::Efficiency }).collect();
+    let m = model(&c[..70]);
+    assert_eq!((m.domains()[0].cpus, m.domains()[1].cpus), (0x00ff_ffff, 0xffff_ffff_ff00_0000));
+    // Validated against the 64 CPUs it can name, as `validate` clamps.
+    assert_eq!(m.validate(80), Ok(()));
+    // A type past the 64th that nothing could name is not judged.
     let mut c = c;
-    c[40] = CoreClass::Unknown;
+    c[70] = CoreClass::Unknown;
     assert!(EnergyModel::from_core_classes(&c, REF_KHZ).is_ok());
 }
 

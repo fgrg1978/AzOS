@@ -11421,6 +11421,7 @@ host_job host_canary_row "envelope: config row canary" actuation-tests envelope-
 host_job host_canary_row "envelope: ota row canary" actuation-tests envelope-row-canary an_ota_row_stops_a_domain_at_the_step_its_level_reaches
 host_job host_canary_row "envelope: rt_time row canary" actuation-tests envelope-row-canary an_rt_time_row_caps_what_one_reservation_may_take
 host_job host_canary_row "envelope: reserve canary" sched-policy-tests rt-envelope-canary a_reservation_the_row_holds_is_refused_and_leaves_one_record
+host_job host_canary_row "rt: CPU mask 32-bit canary" sched-policy-tests rt-mask32-canary a_reservation_lands_on_cpu_40
 # The flight recorder's boot replay is bounded by the newest file, not the
 # history: a file opens with the latch, nonce floor and key pin as of its open,
 # the walk ends there, and once the names have wrapped the newest file is found
@@ -15513,11 +15514,13 @@ CPU 5 lacks hwcap bits"
     par "ktest hotplug coming back canary (rv)" ktest_row_hotplug "ktest hotplug coming back canary (rv)" rv "" "hotplug_cpu_coming_back_is_waited_for" "canary=rcu-back-unseen"
     par "ktest hotplug stop window wake canary (rv)" ktest_row_hotplug "ktest hotplug stop window wake canary (rv)" rv "" "hotplug_deferred_wake_in_the_stop_window_runs" "canary=hotplug-wake-list-skip"
     par "ktest hotplug stale placement canary (rv)" ktest_row_hotplug "ktest hotplug stale placement canary (rv)" rv "" "hotplug_wake_placed_on_the_stopped_cpu_runs" "canary=hotplug-stale-wake-stays"
+    par "ktest hotplug irq move canary (rv)" ktest_row_hotplug "ktest hotplug irq move canary (rv)" rv "" "hotplug_irq_line_moves_off_the_stopped_cpu" "canary=irq-move-skip"
     par "ktest hotplug (arm)" ktest_row_hotplug "ktest hotplug (arm)" arm "" "" "" '\[HOTPLUG\] cpu [0-9]+ offline'
     par "ktest hotplug grace period canary (arm)" ktest_row_hotplug "ktest hotplug grace period canary (arm)" arm "" "hotplug_stop_ends_a_grace_period" "canary=rcu-stop-holds-gp"
     par "ktest hotplug coming back canary (arm)" ktest_row_hotplug "ktest hotplug coming back canary (arm)" arm "" "hotplug_cpu_coming_back_is_waited_for" "canary=rcu-back-unseen"
     par "ktest hotplug stop window wake canary (arm)" ktest_row_hotplug "ktest hotplug stop window wake canary (arm)" arm "" "hotplug_deferred_wake_in_the_stop_window_runs" "canary=hotplug-wake-list-skip"
     par "ktest hotplug stale placement canary (arm)" ktest_row_hotplug "ktest hotplug stale placement canary (arm)" arm "" "hotplug_wake_placed_on_the_stopped_cpu_runs" "canary=hotplug-stale-wake-stays"
+    par "ktest hotplug irq move canary (arm)" ktest_row_hotplug "ktest hotplug irq move canary (arm)" arm "" "hotplug_irq_line_moves_off_the_stopped_cpu" "canary=irq-move-skip"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
     par "ktest kcall atomic canary (arm)" ktest_row "ktest kcall atomic canary (arm)" arm ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
     # arm-tpidr-all-tasks: only a Linux task's TPIDR_EL0 is kept, not a
@@ -17406,6 +17409,7 @@ CPU 5 lacks hwcap bits"
     par "ktest hotplug coming back canary (x86)" x86_ktest_row_hotplug "ktest hotplug coming back canary (x86)" "" "hotplug_cpu_coming_back_is_waited_for" "canary=rcu-back-unseen"
     par "ktest hotplug stop window wake canary (x86)" x86_ktest_row_hotplug "ktest hotplug stop window wake canary (x86)" "" "hotplug_deferred_wake_in_the_stop_window_runs" "canary=hotplug-wake-list-skip"
     par "ktest hotplug stale placement canary (x86)" x86_ktest_row_hotplug "ktest hotplug stale placement canary (x86)" "" "hotplug_wake_placed_on_the_stopped_cpu_runs" "canary=hotplug-stale-wake-stays"
+    par "ktest hotplug irq move canary (x86)" x86_ktest_row_hotplug "ktest hotplug irq move canary (x86)" "" "hotplug_irq_line_moves_off_the_stopped_cpu" "canary=irq-move-skip"
     # The SpinLock hold bound in instruction time on x86_64: see `ktest hold bound,
     # -icount (rv)`. The kernel is built from a configuration with
     # LOCKDEP_HOLD_ENFORCE=y and LOCK_MAX_HOLD_US=$KTEST_HOLD_US, into a target

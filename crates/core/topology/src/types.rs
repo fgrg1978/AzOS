@@ -667,7 +667,11 @@ pub struct SchedConfig {
     /// that covers every CPU of the machine is refused by
     /// [`Topology::deadline_admission`], since nothing could run the rest.
     /// Consumed by NOHZ-FULL (W20) and CPU-TOPO (W12).
-    pub isolcpus: u32,
+    pub isolcpus: u64,
+    /// `irq_return = true` in `[sched]`: the interrupts that CPU hotplug took
+    /// off a CPU go back to it when it comes online again. Default: they stay
+    /// where they went.
+    pub irq_return: bool,
 }
 
 impl SchedConfig {
@@ -675,6 +679,7 @@ impl SchedConfig {
     pub const DEFAULT: Self = Self {
         partition_window_us: 10_000,
         isolcpus: 0,
+        irq_return: false,
     };
 }
 
@@ -4052,7 +4057,7 @@ impl<'a> Topology<'a> {
     /// CPUs of `class_mask` when it names none. A row that names CPUs keeps
     /// them, so boot admission still refuses one on another class. Returns how
     /// many rows it tied.
-    pub fn tie_profiled_rows_to_class(&mut self, class: u8, class_mask: u32) -> usize {
+    pub fn tie_profiled_rows_to_class(&mut self, class: u8, class_mask: u64) -> usize {
         let mut n = 0;
         for t in &mut self.tasks[..self.tasks_len as usize] {
             if t.profile.is_declared() && t.profile.core_class.is_none() {
@@ -4425,7 +4430,7 @@ impl<'a> Topology<'a> {
     /// does not pick the CPU of an isolated row for it.
     fn isolation_admission(&self) -> Result<(), AdmissionError> {
         let iso = self.sched_config.isolcpus;
-        let mut taken = 0u32;
+        let mut taken = 0u64;
         for (ti, t) in self.tasks().iter().enumerate() {
             let m = t.profile.cpu_mask;
             if !t.isolated {
@@ -4512,7 +4517,7 @@ impl<'a> Topology<'a> {
     ) -> Result<crate::deadline::Report, AdmissionError> {
         use crate::deadline::{admit, DeadlineRefusal, Item, SchedProfile, MAX_PROFILED, PPM};
         let iso = self.sched_config.isolcpus;
-        let all = if ncpus >= 32 { u32::MAX } else { (1u32 << ncpus) - 1 };
+        let all = if ncpus >= 64 { u64::MAX } else { (1u64 << ncpus) - 1 };
         // `isolcpus` must leave the machine a CPU for everything else.
         if ncpus > 0 && iso & all == all {
             return Err(AdmissionError::BadRow(crate::RowKind::Sched));

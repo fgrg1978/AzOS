@@ -106,6 +106,10 @@ fn low_mask(bits: usize) -> u64 {
 pub enum HotplugOp {
     Offline = 0,
     Online = 1,
+    /// The interrupts bound to a stopping CPU went to another.
+    IrqMove = 2,
+    /// They went back to the CPU that returned.
+    IrqReturn = 3,
 }
 
 /// Why a hotplug request was refused or failed. The numbers are the reason the

@@ -1209,6 +1209,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     topo.set_sched_config(SchedConfig {
         partition_window_us: 10_000,
         isolcpus: 0,
+        irq_return: false,
     });
 
     // The hardware bus rows of this image (`BUILTIN_DEVICE_ROWS`).

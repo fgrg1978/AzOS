@@ -46,8 +46,8 @@ pub type LogicalOf<'a> = &'a dyn Fn(u64) -> Option<usize>;
 
 /// The logical-CPU bit of node `c`, 0 when it has none (no CPU of this boot,
 /// or past the 32 a domain mask holds).
-fn bit_of(c: &DtCpuEnergy, logical: LogicalOf) -> u32 {
-    logical(c.reg).filter(|&l| l < 32).map_or(0, |l| 1 << l)
+fn bit_of(c: &DtCpuEnergy, logical: LogicalOf) -> u64 {
+    logical(c.reg).filter(|&l| l < 64).map_or(0, |l| 1u64 << l)
 }
 
 /// The model the DTB describes: `None` when no CPU names an OPP table,
@@ -64,7 +64,7 @@ pub fn from_dt(dt: &DtEnergy, logical: LogicalOf) -> Option<Result<EnergyModel, 
 
 /// The CPU node whose idle states the domain of logical CPUs `mask` took:
 /// its first node in document order, as [`from_dt`] chose it.
-pub fn domain_first_cpu<'a>(dt: &'a DtEnergy, mask: u32, logical: LogicalOf) -> Option<&'a DtCpuEnergy> {
+pub fn domain_first_cpu<'a>(dt: &'a DtEnergy, mask: u64, logical: LogicalOf) -> Option<&'a DtCpuEnergy> {
     dt.cpus().iter().find(|c| bit_of(c, logical) & mask != 0)
 }
 

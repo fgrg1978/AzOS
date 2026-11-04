@@ -117,7 +117,7 @@ mod kern {
             let r = self.policy.set_power_cap(&self.model, domain, mw, self.admitted_ppm);
             self.code(r)
         }
-        fn set_parked(&mut self, mask: u32) -> u32 {
+        fn set_parked(&mut self, mask: u64) -> u32 {
             let r = self.policy.set_parked(&self.model, mask, &[self.admitted_ppm; 32]);
             self.code(r)
         }
@@ -330,7 +330,7 @@ mod decisions {
             fn set_rate_limit(&mut self, _: u32) -> u32 { self.0 += 1; POLICY_REFUSED_RATE_LIMIT }
             fn set_idle_depth(&mut self, _: u32) -> u32 { self.0 += 1; POLICY_REFUSED_IDLE_DEPTH }
             fn set_power_cap(&mut self, _: u32, _: u32) -> u32 { self.0 += 1; POLICY_REFUSED_RANGE }
-            fn set_parked(&mut self, _: u32) -> u32 { self.0 += 1; POLICY_REFUSED_PARK }
+            fn set_parked(&mut self, _: u64) -> u32 { self.0 += 1; POLICY_REFUSED_PARK }
             fn set_qos_domains(&mut self, _: u32, _: u32) -> u32 { self.0 += 1; POLICY_REFUSED_QOS }
             fn report_battery(&mut self, _: u32, _: u32) -> u32 { self.0 += 1; POLICY_REFUSED_BATTERY }
             fn state(&self, sel: u32) -> u64 {
@@ -432,7 +432,7 @@ mod wire {
         fn set_rate_limit(&mut self, us: u32) -> Out<u32> { out(self.0.set_rate_limit(us)) }
         fn set_idle_depth(&mut self, depth: u32) -> Out<u32> { out(self.0.set_idle_depth(depth)) }
         fn set_power_cap(&mut self, domain: u32, mw: u32) -> Out<u32> { out(self.0.set_power_cap(domain, mw)) }
-        fn set_parked(&mut self, mask: u32) -> Out<u32> { out(self.0.set_parked(mask)) }
+        fn set_parked(&mut self, mask: u64) -> Out<u32> { out(self.0.set_parked(mask)) }
         fn set_qos_domains(&mut self, class: u32, domains: u32) -> Out<u32> {
             out(self.0.set_qos_domains(class, domains))
         }

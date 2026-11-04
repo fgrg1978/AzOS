@@ -119,6 +119,9 @@ pub struct IrqBinding {
     pub key: u64,
     /// The CPU the line is routed to.
     pub cpu: u32,
+    /// The CPU the bind asked for: where a line that [`irq_move_cpu`] took off
+    /// a stopped CPU goes back to when that CPU returns.
+    pub home: u32,
     /// The owner serves the line on its reservation (counted in its SC);
     /// only with `IRQ_THREADED`.
     pub budgeted: bool,
@@ -147,6 +150,7 @@ impl IrqBinding {
             epoch: 0,
             key: 0,
             cpu: 0,
+            home: 0,
             budgeted: false,
             in_service: false,
             throttled: false,
@@ -355,6 +359,7 @@ fn bind(
         epoch,
         key,
         cpu,
+        home: cpu,
         budgeted,
         in_service: false,
         throttled: false,
@@ -849,9 +854,13 @@ pub fn irq_msi_dispatch(hw: u32) -> bool {
 
 /// Queue the event of a delivery on its binding's port.
 fn queue(port: u32, epoch: u32, key: u64, irq: u32, cpu: u32) -> bool {
+    queue_coded(port, epoch, key, irq, cpu, 0)
+}
+
+fn queue_coded(port: u32, epoch: u32, key: u64, irq: u32, cpu: u32, code: u16) -> bool {
     // The event carries the CPU the line is routed to (`PortEvent::cpu`): where
     // the handler, pinned there under `IRQ_THREADED`, is woken.
-    let event = PortEvent { key, source_type: PORT_EVENT_IRQ, source_id: irq, code: 0, cpu: cpu as u8 };
+    let event = PortEvent { key, source_type: PORT_EVENT_IRQ, source_id: irq, code, cpu: cpu as u8 };
     // The wakes this delivery makes are the line's: the scheduler logs them
     // with `irq` as their source (`azos_sched::wake_log`).
     azos_sched::wake_irq_enter(irq);
@@ -865,6 +874,116 @@ fn queue(port: u32, epoch: u32, key: u64, irq: u32, cpu: u32) -> bool {
         IRQ_PORT_DROPS.fetch_add(1, Ordering::Relaxed);
         false
     }
+}
+
+/// `PortEvent::code` of an MSI binding whose vector was moved to another CPU
+/// (`irq_move_cpu`): the device still holds the old message; bind again for the
+/// new one.
+pub const IRQ_EVENT_MOVED: u16 = 1;
+
+/// What [`irq_move_cpu`] did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Moved {
+    /// Controller lines routed to the new CPU.
+    pub lines: usize,
+    /// MSI vectors enabled on the new CPU (their owners were told).
+    pub msis: usize,
+    /// Bindings the controller would not move; they stay where they are.
+    pub failed: usize,
+}
+
+/// CPU hotplug: take the bindings of CPU `from` to CPU `to`, so an interrupt
+/// raised after `from` stopped is delivered on a CPU that runs. `route(irq, cpu)`
+/// reprograms a controller line (`false`: refused). With `back`, the bindings
+/// whose `home` is `from` and that sit elsewhere return to it instead, the
+/// route taken when the topology asks for it. A binding on an owner's
+/// reservation stays: the CPU that holds one is never taken offline.
+pub fn irq_move_cpu(from: u32, to: u32, back: bool, route: fn(u32, u32) -> bool) -> Moved {
+    let dest = if back { from } else { to };
+    let mut pick = [(0usize, 0u32, false, 0u32); MAX_IRQ_BINDINGS];
+    let mut n = 0;
+    {
+        let bindings = IRQ_BINDINGS.lock_irqsave();
+        for (i, b) in bindings.iter().enumerate() {
+            let hit = if back { b.home == from && b.cpu != from } else { b.cpu == from };
+            if b.active && !b.budgeted && hit && !(canary_move_skip() && !back) {
+                pick[n] = (i, b.irq, b.msi, b.hw);
+                n += 1;
+            }
+        }
+    }
+    let ops = msi_ops();
+    let mut out = Moved::default();
+    let mut told = [(0u32, 0u32, 0u64, 0u32); MAX_IRQ_BINDINGS];
+    let mut nt = 0;
+    for &(i, irq, msi, hw) in &pick[..n] {
+        let ok = if msi {
+            ops.is_some_and(|o| (o.enable)(hw, dest))
+        } else {
+            test_line_owned(irq) || route(irq, dest)
+        };
+        if !ok {
+            out.failed += 1;
+            continue;
+        }
+        let mut bindings = IRQ_BINDINGS.lock_irqsave();
+        let b = &mut bindings[i];
+        if !(b.active && b.irq == irq) {
+            continue;
+        }
+        b.cpu = dest;
+        if msi {
+            out.msis += 1;
+            told[nt] = (b.port, b.epoch, b.key, irq);
+            nt += 1;
+        } else {
+            out.lines += 1;
+        }
+    }
+    for &(port, epoch, key, irq) in &told[..nt] {
+        queue_coded(port, epoch, key, irq, dest, IRQ_EVENT_MOVED);
+    }
+    out
+}
+
+/// The CPU `irq` is routed to, `None` when no task binds it.
+pub fn irq_binding_cpu(irq: u32) -> Option<u32> {
+    IRQ_BINDINGS.lock_irqsave().iter().find(|b| b.active && b.irq == irq).map(|b| b.cpu)
+}
+
+/// Is `irq` the test line, which no controller routes?
+#[inline(always)]
+fn test_line_owned(irq: u32) -> bool {
+    #[cfg(any(test, feature = "ktest"))]
+    {
+        irq == TEST_LINE.load(Ordering::Acquire)
+    }
+    #[cfg(not(any(test, feature = "ktest")))]
+    {
+        let _ = irq;
+        false
+    }
+}
+
+/// Runtime canary `irq-move-skip` (ktest `hotplug_irq_line_moves_off_the_stopped_cpu`):
+/// the offline path leaves every binding on the CPU it stops.
+static CANARY_MOVE_SKIP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm runtime canary `irq-move-skip`.
+pub fn canary_move_skip_arm() {
+    CANARY_MOVE_SKIP.store(true, Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn canary_move_skip() -> bool {
+    CANARY_MOVE_SKIP.load(Ordering::Relaxed)
+}
+
+/// Bind `irq` on `route` whatever `IRQ_THREADED` says, with no reservation
+/// behind it (the ktests of CPU hotplug: a line that moves).
+#[cfg(any(test, feature = "ktest"))]
+pub fn irq_bind_port_plain(irq: u32, owner_task: u32, port_ref: u32, key: u64, route: Route) -> Result<Bound, BindError> {
+    bind(irq, owner_task, port_ref, key, route, false)
 }
 
 /// Wipe the binding table and the counters. Host-test hygiene only.

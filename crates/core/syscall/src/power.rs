@@ -201,13 +201,13 @@ impl azos_devif::Power for Server {
         Out::err(outcome::UNSUPPORTED)
     }
 
-    fn set_parked(&mut self, mask: u32) -> Out<u32> {
+    fn set_parked(&mut self, mask: u64) -> Out<u32> {
         if let Err(o) = self.gate(CapPerms::WRITE, "power policy set") {
             return o;
         }
         #[cfg(feature = "energy")]
         {
-            self.verdict(POWER_OP_POLICY_PARK, mask as u64, azos_sched::energy::policy_set_parked(mask).map_err(|w| w.code() as u32))
+            self.verdict(POWER_OP_POLICY_PARK, mask, azos_sched::energy::policy_set_parked(mask).map_err(|w| w.code() as u32))
         }
         #[cfg(not(feature = "energy"))]
         {

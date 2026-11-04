@@ -436,7 +436,7 @@ impl Refusal {
 /// task's pin or its running there did, not the default of every CPU) and they
 /// are of one class.
 #[inline(never)]
-pub fn single_class(explicit: bool, mask: u32, class_of: impl Fn(usize) -> u8) -> Result<(), Refusal> {
+pub fn single_class(explicit: bool, mask: u64, class_of: impl Fn(usize) -> u8) -> Result<(), Refusal> {
     if !explicit {
         return Err(Refusal::CoreClass);
     }
@@ -445,7 +445,7 @@ pub fn single_class(explicit: bool, mask: u32, class_of: impl Fn(usize) -> u8) -
         return Ok(());
     }
     let first = class_of(mask.trailing_zeros() as usize);
-    if (0..32).any(|c| mask >> c & 1 != 0 && class_of(c) != first) {
+    if (0..64).any(|c| mask >> c & 1 != 0 && class_of(c) != first) {
         return Err(Refusal::CoreClass);
     }
     Ok(())
@@ -532,10 +532,10 @@ pub struct Ask {
 /// larger of the harts in `mask` (none: 0), turned into microseconds of the
 /// window ([`ppm_of_us`]). Rounded down, so a refusal for density always
 /// shows `runtime_us > available`.
-pub fn refusal_numbers(why: Refusal, ask: Ask, loads: &[HartLoad], mask: u32, band_limit_ppm: u32) -> [u64; 3] {
+pub fn refusal_numbers(why: Refusal, ask: Ask, loads: &[HartLoad], mask: u64, band_limit_ppm: u32) -> [u64; 3] {
     let mut best_ppm = 0u32;
-    for (h, l) in loads.iter().enumerate().take(32) {
-        if mask & (1u32 << h) == 0 {
+    for (h, l) in loads.iter().enumerate().take(64) {
+        if mask & (1u64 << h) == 0 {
             continue;
         }
         best_ppm = best_ppm.max(headroom(*l, ask.band, band_limit_ppm));
@@ -546,7 +546,7 @@ pub fn refusal_numbers(why: Refusal, ask: Ask, loads: &[HartLoad], mask: u32, ba
 
 /// First hart in `mask` (bit n = hart n, among `loads`) that fits. Returns the
 /// hart, or the refusal of the last hart tried (`NoRoom` beats nothing tried).
-pub fn first_fit(loads: &[HartLoad], mask: u32, density: u32, band: bool, band_limit_ppm: u32)
+pub fn first_fit(loads: &[HartLoad], mask: u64, density: u32, band: bool, band_limit_ppm: u32)
     -> Result<usize, Refusal>
 {
     first_fit_by(loads, mask, density, band, band_limit_ppm, |_| true)
@@ -555,12 +555,13 @@ pub fn first_fit(loads: &[HartLoad], mask: u32, density: u32, band: bool, band_l
 /// [`first_fit`] with one more test per hart, `levels_ok(hart)` (the
 /// cross-level check, [`levels_check`]): a hart whose density fits but whose
 /// levels do not is skipped, and refuses with [`Refusal::Levels`].
-pub fn first_fit_by(loads: &[HartLoad], mask: u32, density: u32, band: bool, band_limit_ppm: u32,
+pub fn first_fit_by(loads: &[HartLoad], mask: u64, density: u32, band: bool, band_limit_ppm: u32,
     levels_ok: impl Fn(usize) -> bool) -> Result<usize, Refusal>
 {
+    let mask = if cfg!(feature = "rt-mask32-canary") { mask & u32::MAX as u64 } else { mask };
     let mut why = Refusal::NoRoom;
-    for (h, l) in loads.iter().enumerate().take(32) {
-        if mask & (1u32 << h) == 0 {
+    for (h, l) in loads.iter().enumerate().take(64) {
+        if mask & (1u64 << h) == 0 {
             continue;
         }
         match fits(*l, density, band, band_limit_ppm) {

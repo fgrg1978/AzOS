@@ -143,7 +143,7 @@ pub fn row_reservation(name: &[u8]) -> Option<azos_sched::rt::Reservation> {
         // before it. A signed row without a class was refused.
         Some(_) if azos_sched::topo::ASYM && azos_sched::topo::differs() && task.profile.core_class.is_none()
             && !azos_sched::rt::canary_row_any_class() => azos_sched::topo::class_mask(0),
-        Some(cpu) => 1u32 << cpu,
+        Some(cpu) => 1u64 << cpu,
         None => return None,
     };
     let (lo, hi) = class.priority_range;

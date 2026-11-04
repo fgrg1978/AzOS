@@ -187,6 +187,10 @@ pub const POLICY_STATS_LOG_BASE: u64 = 0x10;
 /// Stats selector base: `POLICY_STATS_BY_REASON_BASE + r` counts refusals with
 /// reason `r`.
 pub const POLICY_STATS_BY_REASON_BASE: u64 = 0x20;
+/// Stats selector base: `POLICY_STATS_LOG_HI_BASE + i` is bits 63..32 of the
+/// argument of the `i`-th most recent refusal record (a CPU mask can name 64
+/// CPUs; the record word carries the low 32 bits).
+pub const POLICY_STATS_LOG_HI_BASE: u64 = 0x40;
 
 /// `soc_pct` before the power service reported one.
 pub const POLICY_SOC_UNKNOWN: u32 = 255;
