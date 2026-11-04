@@ -31,6 +31,9 @@ el0-state-canary = ["azos_arch_riscv64/el0-state-canary", "azos_arch_aarch64/el0
 # Kconfig HV: keep EL2 at the boot drop and run guests (aarch64 only; the
 # dependency is target-specific, so the other ISAs never see it).
 hv = ["azos_arch_aarch64/hv"]
+# Kconfig HYP_MONITOR: the boot trampoline keeps EL2 and starts the resident
+# monitor (aarch64 only; the dependency is target-specific).
+hyp-monitor = ["azos_arch_aarch64/hyp-monitor"]
 # Masked-window tracer (Kconfig `LAT_TRACE`): hooks in both ISA crates.
 lat-trace = ["azos_arch_riscv64/lat-trace", "azos_arch_aarch64/lat-trace"]
 irq-nomem-canary = ["azos_arch_riscv64/irq-nomem-canary", "azos_arch_aarch64/irq-nomem-canary", "azos_arch_x86_64?/irq-nomem-canary"]

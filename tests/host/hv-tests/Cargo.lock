@@ -77,6 +77,7 @@ dependencies = [
  "azos_decision",
  "azos_devif",
  "azos_hv",
+ "azos_hyp_api",
  "azos_idl",
  "azos_limits",
  "azos_topology",
@@ -89,6 +90,10 @@ dependencies = [
  "azos-config",
  "azos_limits",
 ]
+
+[[package]]
+name = "azos_hyp_api"
+version = "0.1.0"
 
 [[package]]
 name = "azos_idl"

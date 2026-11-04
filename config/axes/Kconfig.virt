@@ -89,17 +89,30 @@ menu "Hypervisor"
 config HV
     # cargo-feature: hv
     bool
-    default y if !VIRT_NONE
+    default y if VIRT_HOSTED || VIRT_STATIC
     default n
     help
       The hypervisor core is built in (crates/core/hv): Vm and Vcpu, the
       `vm` and `vcpu` kernel-hosted interfaces, the topology's guest rows
-      admitted at boot. Derived from VIRT, never asked.
+      admitted at boot. Derived from VIRT, never asked. VIRT_SPLIT does not
+      build it: the split image runs under HYP_MONITOR, with no guest core.
+
+config HYP_MONITOR
+    # cargo-feature: hyp-monitor
+    bool
+    default y if VIRT_SPLIT
+    default n
+    help
+      The resident monitor is linked into the image and the boot trampoline
+      keeps EL2 to start it, instead of building the guest-hosting core (HV).
+      The kernel runs under the monitor (crates/core/hyp-mon, `.incbin`'d into
+      the `.hyp` section). Derived from VIRT_SPLIT, never asked; selectable
+      only where ARCH_HAS_HYP_MONITOR is set.
 
 config HV_REQUIRE
     bool "Refuse to boot when the CPU cannot host the guests"
-    depends on HV
-    default y if VIRT_STATIC
+    depends on HV || HYP_MONITOR
+    default y if VIRT_STATIC || VIRT_SPLIT
     default n
     help
       The role says guests run, and the CPU (or firmware, or the way the

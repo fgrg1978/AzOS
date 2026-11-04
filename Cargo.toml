@@ -437,6 +437,7 @@ members = [
     "crates/core/rings",
     "crates/core/bytepipe",
     "crates/core/hv",
+    "crates/core/hyp-api",
     "crates/lib/control/ahrs",
     "crates/drivers/gps",
     "crates/domains/robot/flight",
@@ -577,6 +578,7 @@ azos_channel  = { path = "crates/core/channel" }
 azos_rings    = { path = "crates/core/rings" }
 azos_bytepipe = { path = "crates/core/bytepipe" }
 azos_hv       = { path = "crates/core/hv" }
+azos_hyp_api  = { path = "crates/core/hyp-api" }
 azos_ahrs     = { path = "crates/lib/control/ahrs" }
 azos_gps       = { path = "crates/drivers/gps" }
 azos_flight    = { path = "crates/domains/robot/flight" }

@@ -530,6 +530,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_hyp_api"
+version = "0.1.0"
+
+[[package]]
 name = "azos_idl"
 version = "0.1.0"
 dependencies = [
@@ -650,6 +654,7 @@ dependencies = [
  "azos_fs",
  "azos_gps",
  "azos_hv",
+ "azos_hyp_api",
  "azos_imu",
  "azos_input_wire",
  "azos_inspect",

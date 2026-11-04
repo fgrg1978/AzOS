@@ -151,6 +151,9 @@ pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
     kprintln!("[BOOT] DTB addr:   {:#x}", dtb_ptr);
     kprintln!("[BOOT] Entered at: EL{} ({})", if entry_el_2 { 2 } else { 1 },
         if entry_el_2 { "dropped to EL1 via _azos_drop_to_el1" } else { "QEMU started us at EL1 directly" });
+    #[cfg(feature = "hyp-monitor")]
+    crate::entry::aarch64::ext::hyp_monitor::report();
+    #[cfg(not(feature = "hyp-monitor"))]
     crate::entry::aarch64::ext::hv_vectors::report();
     match DT_CONSOLE.load(Ordering::Relaxed) {
         0 => kprintln!("[BOOT] Console:    PL011 at {:#x} (no stdout-path UART in the device tree)", hw::UART_BASE),

@@ -1069,6 +1069,19 @@ decisions = ["azos_decision/on"]
 # topology's `[guest.NAME]` rows (`kernel/src/boot/hv.rs`) and the syscall
 # crate hosts the `vm` and `vcpu` interfaces over it.
 hv = ["dep:azos_hv", "azos_syscall/hv", "azos_arch/hv"]
+# Kconfig HYP_MONITOR (derived from VIRT_SPLIT): the resident monitor. The boot
+# trampoline keeps EL2 to start it (azos_arch/hyp-monitor) and the kernel
+# `.incbin`s the monitor blob into the `.hyp` section. No guest core (not `hv`).
+hyp-monitor = ["azos_arch/hyp-monitor", "dep:azos_hyp_api"]
+# Gate-only (test hooks): build a split image and its canaries without a
+# reachable Kconfig path (ARCH_HAS_HYP_MONITOR is unset until F5). Each canary
+# `.incbin`s the matching monitor variant its row built (tools/build/hyp_mon.sh
+# HYP_MON_FEATURES=...), so removing one mechanism turns exactly one row red.
+hyp-monitor-row = ["hyp-monitor", "qemu"]
+hyp-mmu-off-canary = ["hyp-monitor-row"]
+hyp-no-secondary-init-canary = ["hyp-monitor-row"]
+hyp-hole-mapped-canary = ["hyp-monitor-row"]
+hyp-tsc-off-canary = ["hyp-monitor-row"]
 # Kconfig INSPECT: the introspection tree (crates/core/inspect), published
 # by kernel/src/boot/inspect.rs. A `base` tag: emitted unless the symbol is n.
 # With the USB host, its `usb/devN` listing joins the tree.
@@ -1317,6 +1330,7 @@ path = "src/main.rs"
 azos_driver_server = { workspace = true }
 azos_common = { workspace = true }
 azos_arch = { workspace = true }
+azos_hyp_api = { workspace = true, optional = true }
 azos_arch_api = { workspace = true }
 azos_sync = { workspace = true }
 azos_percpu = { workspace = true }

@@ -22,6 +22,7 @@ mod arm_enter;
 mod exits;
 mod fakes;
 mod glue;
+mod hyp_api;
 mod iface;
 mod monitor;
 mod pause;

@@ -82,6 +82,17 @@ _azos_drop_to_el1:
     movk    x10, #0x8000, lsl #16
     msr     HCR_EL2, x10
 
+.if {hyp_mon}
+    // Split image: hand the PE to the resident monitor (the start of the
+    // `.hyp` blob, `_azos_monitor_enter`). It owns EL2 — MMU, host stage-2,
+    // the PSCI filter and the EL1 grants — and `eret`s back into our caller
+    // at EL1. We branch (not call): LR still holds the EL1 return the monitor
+    // reads, and nothing below this runs on the split path.
+    adrp    x10, _hyp_blob_start
+    add     x10, x10, :lo12:_hyp_blob_start
+    br      x10
+.endif
+
 .if {hv}
     // Keep EL2: vectors first, so no later instruction here can trap into the
     // void; then the record. MMU off, so a plain byte store (no exclusives).
@@ -208,7 +219,12 @@ _azos_drop_to_el1:
     sctlr_lo = const (crate::sysregs::SCTLR_EL1_BOOT & 0xFFFF) as u16,
     sctlr_hi = const ((crate::sysregs::SCTLR_EL1_BOOT >> 16) & 0xFFFF) as u16,
     hv = const cfg!(all(feature = "hv", target_os = "none")) as u8,
+    hyp_mon = const cfg!(all(feature = "hyp-monitor", target_os = "none")) as u8,
 );
+
+// The stub (hosted) and the monitor (split) are never in one image.
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(!(cfg!(feature = "hv") && cfg!(feature = "hyp-monitor")));
 
 /// Drop the calling thread from EL2 to EL1.
 ///

@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The resident monitor (VIRT_SPLIT): a separately linked flat image, not a
+# workspace member. It is built by `mk/` (hyp-mon-<isa>), objcopy'd flat and
+# `.incbin`'d into the kernel's `.hyp` section. Its own `[workspace]` keeps it
+# out of the kernel's build graph, so a monitor reference to a kernel symbol is
+# a link error, not a review item. Its only dependency is the ISA-neutral ABI.
+[package]
+name = "azos_hyp_mon"
+version = "0.1.0"
+edition = "2021"
+description = "AzOS resident monitor (EL2 on aarch64): host stage-2, PSCI filter, self-protection"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "hyp-mon"
+path = "src/main.rs"
+
+[dependencies]
+azos_hyp_api = { path = "../hyp-api" }
+
+[features]
+# One variant per gate canary: each removes exactly one mechanism so its row
+# turns red. Built by the monitor's make target (HYP_MON_FEATURES), never named
+# in a kernel cargo build.
+hyp-mmu-off-canary = []
+hyp-no-secondary-init-canary = []
+hyp-hole-mapped-canary = []
+hyp-tsc-off-canary = []
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true

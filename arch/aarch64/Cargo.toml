@@ -63,6 +63,10 @@ canary-psci-forwarded = []
 # (`ext/hv/stub.rs`, `vcpu.rs`). `_azos_drop_to_el1` keeps EL2 only with it; an
 # image without it drops to EL1 as it did before the hypervisor.
 hv = []
+# Kconfig HYP_MONITOR (derived from VIRT_SPLIT): the boot trampoline keeps EL2
+# and branches to the resident monitor's entry (`.hyp` section) instead of
+# installing the stub vectors or dropping to EL1. Mutually exclusive with `hv`.
+hyp-monitor = []
 # The timer PPI is listed again over one the guest is handling.
 canary-ppi-listed-twice = []
 # Each vCPU of a VM gets its own CNTVOFF_EL2.

@@ -247,6 +247,21 @@ SECTIONS
     .gnu.hash : ALIGN(8) { *(.gnu.hash) } > RAM_VMA AT> RAM_LMA
     .hash     : ALIGN(8) { *(.hash) }     > RAM_VMA AT> RAM_LMA
     .dynstr   : ALIGN(8) { *(.dynstr) }   > RAM_VMA AT> RAM_LMA
+    /*
+     * The resident monitor's flat image (Kconfig HYP_MONITOR, VIRT_SPLIT),
+     * `.incbin`'d by kernel/src/entry/aarch64/ext/hyp_monitor.rs. In the
+     * rodata range so the kernel maps it read-only and non-executable at EL1
+     * (the kernel never runs it there; the boot trampoline branches to
+     * `_hyp_blob_start` at EL2, and the monitor runs it on its own EL2 tables).
+     * The host stage-2 unmaps this extent so EL1 cannot read it either (I1).
+     * Page-aligned so that unmap is exact; empty with HYP_MONITOR off.
+     */
+    . = ALIGN(AZOS_PAGE_SIZE);
+    .hyp : ALIGN(AZOS_PAGE_SIZE)
+    {
+        KEEP(*(.hyp))
+        . = ALIGN(AZOS_PAGE_SIZE);
+    } > RAM_VMA AT> RAM_LMA
     _rodata_end = .;
 
     /* Initialized data */
