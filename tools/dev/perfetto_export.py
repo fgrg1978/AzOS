@@ -82,7 +82,7 @@ RULES, FIELDS = _decision_rules()
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
-REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope"]
+REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope", "core-class"]
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",
           5: "skill_start", 6: "skill_end", 7: "waypoint", 8: "error"}
