@@ -36,4 +36,4 @@ asym cpu refused \((rv|arm|x86)\)	*	CPU 3 refused: ASID bits differs	The row ref
 safe mode: attempts exhausted	warn	\[WDT\] WARNING: 3 consecutive crashes detected	the row crashes the boots on purpose to reach safe mode
 safe mode: attempts exhausted	warn	\[OTA\] ##### WARNING: INSTALLING AN UNAUTHENTICATED IMAGE	the row installs its unsigned image over the OTA listener, the dev path
 (aarch64|riscv64): seed spares the filesystem	warn	\[CFG\] WARNING: CONFIG\.INI not trusted \(device not provisioned\)	the row cuts the medium's reserved tail, which holds the device record
-smp: canary, no clamp \((rv|arm)\)	warn	\[SMP\] WARNING: only 4/8 harts started	the canary lifts the NR_CPUS clamp on purpose, so the kernel starts CPUs it has no room for
+smp: (canary, no clamp|NR_CPUS 4 at -smp 8 qemu,nr-cpus-clamp-canary) \((rv|arm)\)	warn	\[SMP\] WARNING: only 4/8 harts started	the canary lifts the NR_CPUS clamp on purpose, so the kernel starts CPUs it has no room for
