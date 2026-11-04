@@ -362,6 +362,11 @@ pub const DOMAIN_MMIO_MAP: u16 = op(CapKind::Domain, CLASS_DRIVER, 48);
 /// range. `-EINVAL` for a misaligned or empty range, `-ENOMEM` for a page the
 /// caller does not own.
 pub const DOMAIN_MPROTECT: u16 = op(CapKind::Domain, CLASS_CTL, 49);
+/// Name the 32-bit word the calling thread's end clears and futex-wakes
+/// (`w0`, 4-aligned; 0 names none): what `SYS_THREAD_CREATE`'s `ctid` does for
+/// a thread at its creation, for the thread that is already running (the main
+/// thread of a program). `-EINVAL` for an unaligned address.
+pub const DOMAIN_SET_CLEAR_TID: u16 = op(CapKind::Domain, CLASS_CTL, 50);
 
 // ── Node: a file or a socket the caller holds ─────────────────────────────
 

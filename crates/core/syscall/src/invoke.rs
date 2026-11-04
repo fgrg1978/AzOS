@@ -26,7 +26,7 @@ use azos_abi::invoke::{
     DOMAIN_MMIO_MAP, DOMAIN_DRIVER_FETCH, DOMAIN_DRIVER_REPLY, DOMAIN_DRIVER_REPLY_FETCH, DOMAIN_DRIVER_REPLY_WAIT,
     DOMAIN_DRIVER_REGISTER, DOMAIN_DRIVER_UNREGISTER,
     DEVICE_IRQ_ACK, DEVICE_IRQ_BIND, ENDPOINT_DERIVE, EndpointDerive,
-    DOMAIN_MPROTECT, DOMAIN_UPTIME, DOMAIN_VDSO_MAP, DOMAIN_WAIT,
+    DOMAIN_MPROTECT, DOMAIN_SET_CLEAR_TID, DOMAIN_UPTIME, DOMAIN_VDSO_MAP, DOMAIN_WAIT,
     MEMOBJ_ACQUIRE, MEMOBJ_END_DROP,
     PORT_BIND, PORT_DESTROY, PORT_POLL,
     DOMAIN_CREATE_ENDPOINT, DOMAIN_CREATE_PORT, DOMAIN_EXIT_STATS, DOMAIN_PLEDGE, DOMAIN_SET_FILTER,
@@ -240,6 +240,11 @@ fn domain_self_op(c: &mut Call) -> i64 {
         DOMAIN_WAIT if w[0] == 0 => crate::handlers::sys_wait_status(w[1]),
         DOMAIN_WAIT => crate::handlers::sys_waitpid(w[0], w[1]),
         DOMAIN_MPROTECT => crate::handlers::sys_mprotect(w[0], w[1], w[2]),
+        DOMAIN_SET_CLEAR_TID if w[0] & 3 != 0 => azos_abi::error::Errno::EINVAL.to_syscall_ret(),
+        DOMAIN_SET_CLEAR_TID => {
+            azos_sched::group::set_current_clear_tid(w[0]);
+            0
+        }
         DOMAIN_VDSO_MAP => crate::vdso_notify::sys_vdso_task_map(),
         #[cfg(feature = "lx-loader")]
         DOMAIN_MODULE_VERIFY => crate::module_ops::sys_module_verify(w[0], w[1], w[2], w[3]),

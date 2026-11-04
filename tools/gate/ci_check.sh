@@ -17846,6 +17846,10 @@ CPU 5 lacks hwcap bits"
             "lx: rt: stat a directory ok" "lx: rt: missing file ok" "lx: rt: getdents64 ok" "lx: writev ok" \
             "lx: rt: wait4 ok" "lx: rt: fcntl ok" "lx: rt: create outside caps refused ok" \
             "lx: rt: lseek ok" "lx: rt: mprotect ok" "lx: rt: futex ok" "lx: rt: kill ok" \
+<<<<<<< HEAD
+=======
+            "lx: rt: threads ok" "lx: rt: thread exit ok" "lx: rt: execve ok" \
+>>>>>>> f/c2-11
             "lx: rt: unanswered call ok" "lx: fork+wait4 ok" "lx: fork child ids ok" \
             "lx: fork child holds only its row ok" "lx: fork shares the file offset ok" \
             "lx: rt done failures=0" "lx: spawn cwd=/fat" "lx: spawn stdin kind=fifo" \
@@ -24696,12 +24700,14 @@ echo after-lx \$?" 120 \
         # the calls the runtime answers over the native ABI today (the
         # in-kernel personality answers every one of them too, so the stage
         # compares the two by cost, not by answer); the full `lxhello` run stays
-        # on the in-kernel rows above until the runtime answers threads and
-        # exec (C2-11). `lseek`, `mprotect`, futex wait/wake and `kill` with a
-        # handler are answered (C2-10): `lx: rt: lseek|mprotect|futex|kill ok`,
-        # each with a canary row below that builds the runtime with
-        # `canary-no-<gap>` (the call is `-ENOSYS` again) and must see that
-        # gap's `FAIL` line with the rest of the stage running.
+        # on the in-kernel rows above until C2-12 deletes them. `lseek`,
+        # `mprotect`, futex wait/wake, `kill` with a handler (C2-10), threads
+        # (`clone` as a thread, `set_tid_address`, the exit of a thread against
+        # the group's) and `execve` (C2-11) are answered: `lx: rt: lseek|mprotect|
+        # futex|kill|threads|thread exit|execve ok`, each gap with a canary row
+        # below that builds the runtime with `canary-no-<gap>` (the call is
+        # `-ENOSYS` again) and must see that gap's `FAIL` line with the rest of
+        # the stage running.
         # `[SPAWN] ... hosted by the ring-3
         # runtime` is printed only for a hosted child (`spawn-log`).
         # `lxhello spawn` then runs three spawns whose request names more than
@@ -24798,7 +24804,7 @@ cat /fat/RTOUT.TXT"
             # and the rest of the stage still runs.
             lx_rt_elf="$AZOS_OUT/build/linux_rt.elf"
             [ "$ush_isa" = rv ] || lx_rt_elf="$AZOS_OUT/build/aarch64/linux_rt.elf"
-            for gap in lseek mprotect futex kill; do
+            for gap in lseek mprotect futex kill threads execve; do
                 lx_rt_kg="$CI_LOG_DIR/kernel-lxrt-nogap-${gap}-${ush_isa}"
                 if make -s LXRT_FEATURES="canary-no-${gap}" "$lx_rt_elf" >/dev/null 2>&1 \
                    && if [ "$ush_isa" = rv ]; then

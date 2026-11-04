@@ -486,7 +486,9 @@ mod profiles {
         for n in [SYS_SPAWN_EX, SYS_ALERT] {
             let holders: &[&str] =
                 match n {
-                    SYS_SPAWN_EX => &["SH.ELF", "VSBENCH.ELF", "ABICHILD.ELF", "COMPMGR.ELF", "SSHD.ELF", "LOGIND.ELF"],
+                    // LXHELLO.ELF: the ring-3 runtime's `execve` starts the image with it
+                    // (a Linux row's `execve` reaches it, still behind `Cap<Launch>` `EXEC`).
+                    SYS_SPAWN_EX => &["SH.ELF", "VSBENCH.ELF", "ABICHILD.ELF", "COMPMGR.ELF", "SSHD.ELF", "LOGIND.ELF", "LXHELLO.ELF"],
                     _ => &["SH.ELF", "LXHELLO.ELF", "IPCTEST.ELF", "COMPMGR.ELF", "SSHD.ELF", "ABICHILD.ELF", "LOGIND.ELF"],
                 };
             let n = n as u16;

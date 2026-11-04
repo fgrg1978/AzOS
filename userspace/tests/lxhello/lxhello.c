@@ -1087,6 +1087,110 @@ static void stage_rt_gaps(void)
           && cst == 1000 + 9 && ks == -3 /* ESRCH */, "child", cst);
 }
 
+// The runtime's threads and execve (C2-11). `lx_clone_thread` is a thread
+// `clone` (flags, stack top, ptid, tls, ctid) that runs `fn` on the new stack
+// and ends the thread with `exit` when it returns.
+i64 lx_clone_thread(u64 flags, void *stack_top, void *ptid, void *tls, void *ctid, void (*fn)(void));
+#if defined(__riscv)
+__asm__(".globl lx_clone_thread\n"
+        "lx_clone_thread:\n"
+        "  addi a1, a1, -16\n"
+        "  sd a5, 0(a1)\n"
+        "  li a7, 220\n"
+        "  ecall\n"
+        "  bnez a0, 1f\n"
+        "  ld t0, 0(sp)\n"
+        "  jalr t0\n"
+        "  li a0, 0\n"
+        "  li a7, 93\n"
+        "  ecall\n"
+        "1: ret\n");
+#else
+__asm__(".globl lx_clone_thread\n"
+        "lx_clone_thread:\n"
+        "  sub x1, x1, #16\n"
+        "  str x5, [x1]\n"
+        "  mov x8, #220\n"
+        "  svc #0\n"
+        "  cbnz x0, 1f\n"
+        "  ldr x9, [sp]\n"
+        "  blr x9\n"
+        "  mov x0, #0\n"
+        "  mov x8, #93\n"
+        "  svc #0\n"
+        "1: ret\n");
+#endif
+
+#define TH_FLAGS 0x350f00   /* VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|PARENT_SETTID|CHILD_CLEARTID */
+#define TH_FLAGS_NOCLEAR 0x150f00
+static char th_stack[16384] __attribute__((aligned(16)));
+static char th_stack2[16384] __attribute__((aligned(16)));
+static volatile u32 th_ctid, th_ptid, th_word2;
+static volatile i64 th_tid_seen, th_pid_seen, th_ran;
+
+static void th_body(void)
+{
+    th_tid_seen = lx_sc0(NR_gettid);
+    th_pid_seen = lx_sc0(NR_getpid);
+    th_ran = 1;
+}
+
+static void th_body_tidaddr(void)
+{
+    th_tid_seen = lx_sc1(NR_set_tid_address, &th_word2);
+    nap(2);
+}
+
+static void th_group_exit(void)
+{
+    nap(40);
+    lx_sc1(NR_exit_group, 5);
+}
+
+// Wait (futex, bounded) until `*w` reads 0.
+static int th_join(volatile u32 *w)
+{
+    struct timespec to = { 0, 50 * 1000000L };
+    for (int i = 0; i < 100 && *w != 0; i++)
+        lx_sc4(NR_futex, w, FUTEX_WAIT_PRIVATE, *w, &to);
+    return *w == 0;
+}
+
+static void stage_rt_threads(void)
+{
+    i64 me = lx_sc0(NR_getpid);
+    th_ctid = 1;
+    i64 t = lx_clone_thread(TH_FLAGS, th_stack + sizeof th_stack, (void *)&th_ptid, 0, (void *)&th_ctid, th_body);
+    int joined = t > 0 && th_join(&th_ctid);
+    check("rt: threads", t > 0 && t != me && joined && th_ran == 1 && th_tid_seen == t && th_pid_seen == me
+          && th_ptid == (u32)t && lx_sc0(NR_gettid) == me, "tid", t);
+
+    // set_tid_address on a running thread: its end clears the word and wakes the joiner.
+    th_word2 = 1;
+    i64 t2 = lx_clone_thread(TH_FLAGS_NOCLEAR, th_stack2 + sizeof th_stack2, 0, 0, 0, th_body_tidaddr);
+    int joined2 = t2 > 0 && th_join(&th_word2);
+    // exit of a thread is not the group's: the leader leaves with exit(3) while its
+    // thread runs; the thread's exit_group(5) is the process's status.
+    i64 c = lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0);
+    if (c == 0) {
+        i64 u = lx_clone_thread(TH_FLAGS_NOCLEAR, th_stack + sizeof th_stack, 0, 0, 0, th_group_exit);
+        if (u <= 0) lx_sc1(NR_exit_group, 99);
+        lx_sc1(NR_exit, 3);
+    }
+    int cst = c > 0 ? wait_status(c) : -1;
+    check("rt: thread exit", joined2 && th_tid_seen == t2 && cst == 5, "status", cst);
+
+    // execve of this same image in a fork child: the exec'd image exits 7.
+    char *const xargv[] = { "lxhello", "exec-child", 0 };
+    c = lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0);
+    if (c == 0) {
+        lx_sc3(NR_execve, "/fat/LXHELLO.ELF", xargv, 0);
+        lx_sc1(NR_exit_group, 99);
+    }
+    cst = c > 0 ? wait_status(c) : -1;
+    check("rt: execve", c > 0 && cst == 7, "status", cst);
+}
+
 static void stage_rt(void)
 {
     i64 pid = lx_sc0(NR_getpid);
@@ -1202,6 +1306,7 @@ static void stage_rt(void)
     if (r >= 0) lx_sc1(NR_close, r);
 
     stage_rt_gaps();
+    stage_rt_threads();
 
     r = lx_sc0(1000);
     check("rt: unanswered call", r == -ENOSYS, "rc", r);

@@ -13,6 +13,8 @@ canary-no-lseek = []
 canary-no-mprotect = []
 canary-no-futex = []
 canary-no-kill = []
+canary-no-threads = []
+canary-no-execve = []
 
 [dependencies]
 azos_abi = { path = "../../../crates/core/abi" }

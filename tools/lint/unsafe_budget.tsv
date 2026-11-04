@@ -119,7 +119,7 @@ userspace/lib/compose	0	0	0	0	1	-
 userspace/lib/compositor	1	0	0	0	0	-
 userspace/lib/decisions	0	0	0	0	1	-
 userspace/lib/inspect	2	1	0	0	0	-
-userspace/lib/linux_rt	10	2	1	0	0	-
+userspace/lib/linux_rt	12	2	1	0	0	-
 userspace/lib/login	0	0	0	0	1	-
 userspace/lib/mcp	0	0	0	0	1	-
 userspace/lib/ml	0	0	0	0	1	-
@@ -143,7 +143,7 @@ userspace/services/infsrv	11	2	0	0	0	-
 userspace/services/inputd	3	0	2	0	0	-
 userspace/services/logd	1	0	0	0	0	-
 userspace/services/logind	1	0	0	0	0	-
-userspace/services/lxrt	11	3	1	3	0	-
+userspace/services/lxrt	17	3	1	3	0	-
 userspace/services/lxsrv	25	0	2	0	0	-
 userspace/services/mcpd	1	0	0	0	0	-
 userspace/services/namesd	1	0	0	0	0	-

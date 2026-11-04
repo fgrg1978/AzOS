@@ -168,7 +168,7 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     // A file's size is read through its held `Cap<File>`; a directory
     // descriptor is stat'ed by its path.
     (nr::FSTAT, "fstat", &[k::SYS_INVOKE as u16]),
-    (nr::EXIT, "exit", &[k::SYS_EXIT as u16]),
+    (nr::EXIT, "exit", &[k::SYS_EXIT as u16, k::SYS_THREAD_EXIT as u16]),
     (nr::EXIT_GROUP, "exit_group", &[k::SYS_EXIT as u16]),
     // The word the calling thread's exit clears and wakes (wave 13).
     (nr::SET_TID_ADDRESS, "set_tid_address", &[]),
@@ -231,7 +231,7 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     (nr::CLONE, "clone", &[k::SYS_FOREIGN_FORK as u16, k::SYS_CAP_CLOSE as u16, k::SYS_THREAD_CREATE as u16]),
     // Within the caller's own row only (stage 3); its close-on-exec
     // descriptors are closed.
-    (nr::EXECVE, "execve", &[k::SYS_INVOKE as u16, k::SYS_CAP_CLOSE as u16]),
+    (nr::EXECVE, "execve", &[k::SYS_INVOKE as u16, k::SYS_CAP_CLOSE as u16, k::SYS_SPAWN_EX as u16]),
 ];
 
 /// The native numbers Linux call `n` may reach, or `None` if the personality

@@ -13,7 +13,7 @@ mod tests {
     use azos_linux_abi::nr;
     use azos_abi::cap::{CapHandle, ty, CapType};
     use azos_abi::ushell::{StartupFd, FD_CONSOLE, FD_HANDLE, STARTUP_FDS};
-    use azos_linux_rt::{Native, PipeReady, Runtime, Startup, NAME_BYTES};
+    use azos_linux_rt::{ExecFd, Native, PipeReady, Runtime, SpawnImage, Startup, NAME_BYTES};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
@@ -61,6 +61,20 @@ mod tests {
         futex_wakes: Vec<(u64, u32)>,
         /// `mprotect` calls (addr, len, prot).
         protects: Vec<(u64, u64, u64)>,
+        /// `thread_create` calls: (newsp, clear_tid, tls, settid, result register, sp register).
+        threads: Vec<(u64, u64, u64, [u64; 2], u64, u64)>,
+        /// The next thread's id, and the code a thread's `thread_exit` ended with.
+        next_thread: i64,
+        thread_exited: Option<i32>,
+        /// The word `set_clear_tid` named last.
+        clear_tid: u64,
+        /// `spawn_image` calls (path, argv, argc, env, envc, cwd, fds), what the next answers (0: a
+        /// child id) and the exit code the child will have.
+        spawned: Vec<(Vec<u8>, Vec<u8>, u32, Vec<u8>, u32, Vec<u8>, [ExecFd; 8])>,
+        spawn_answer: i64,
+        spawn_code: i32,
+        /// The spawned child ends after this many sleeps (0: it has ended at the spawn).
+        late_after: usize,
         /// `alert` calls (tid, signo).
         alerts: Vec<(u32, u32)>,
         /// The write ends of the model's pipes (a pipe's handles are otherwise alike).
@@ -233,6 +247,10 @@ mod tests {
             let mut m = self.0.borrow_mut();
             m.slept_until = Some(deadline_ns);
             m.sleeps.push(deadline_ns);
+            if m.late_after > 0 && m.sleeps.len() >= m.late_after {
+                let code = m.spawn_code;
+                m.ended.insert(500, code);
+            }
             if let Some((id, data)) = m.fill_on_sleep.take() {
                 m.pipes[id].extend(data);
             }
@@ -308,6 +326,41 @@ mod tests {
         }
         fn sigreturn_code(&self) -> u64 {
             0x7000
+        }
+        fn thread_create(&self, start: &ForeignFrame, newsp: u64, clear_tid: u64, tls: u64, settid: [u64; 2]) -> i64 {
+            let mut m = self.0.borrow_mut();
+            if m.next_thread == 0 {
+                return -11;
+            }
+            let id = m.next_thread;
+            m.next_thread += 1;
+            m.threads.push((newsp, clear_tid, tls, settid, start.gpr[REG_RESULT], start.gpr[azos_abi::foreign::REG_SP]));
+            id
+        }
+        fn thread_exit(&self, code: i32) -> ! {
+            self.0.borrow_mut().thread_exited = Some(code);
+            panic!("thread_exit({code})");
+        }
+        fn set_clear_tid(&self, addr: u64) -> i64 {
+            self.0.borrow_mut().clear_tid = addr;
+            0
+        }
+        fn thread_pointer(&self) -> u64 {
+            0x7777
+        }
+        fn spawn_image(&self, img: &SpawnImage) -> i64 {
+            let mut m = self.0.borrow_mut();
+            m.spawned.push((img.path.to_vec(), img.argv.to_vec(), img.argc, img.env.to_vec(), img.envc, img.cwd.to_vec(), img.fds));
+            if m.spawn_answer < 0 {
+                return m.spawn_answer;
+            }
+            let child = 500;
+            m.kids.push(child);
+            let code = m.spawn_code;
+            if m.late_after == 0 {
+                m.ended.insert(child, code);
+            }
+            child as i64
         }
         fn resume_with_thread_pointer(&self, frame: &ForeignFrame, tp: u64) -> i64 {
             let fails = {
@@ -750,15 +803,12 @@ mod tests {
     #[test]
     fn what_has_no_native_primitive_yet_answers_enosys_and_is_reported_once_per_call() {
         let r = rt();
-        assert_eq!(call(&r, nr::EXECVE, [0, 0, 0, 0, 0, 0]), -le::ENOSYS);
         assert_eq!(call(&r, nr::SET_ROBUST_LIST, [0, 24, 0, 0, 0, 0]), -le::ENOSYS);
-        // A thread (CLONE_THREAD and friends) is not answered.
-        assert_eq!(call(&r, nr::CLONE, [0x7d0f00, 0x1000, 0, 0, 0, 0]), -le::ENOSYS);
         // Requeue and priority inheritance are the native PI wait's job (D5).
         assert_eq!(call(&r, nr::FUTEX, [0x1000, 3, 1, 1, 0x2000, 0]), -le::ENOSYS);
         let console = String::from_utf8(r.native().0.borrow().console.clone()).unwrap();
-        assert_eq!(console.matches("not answered by the personality: -ENOSYS").count(), 4);
-        assert!(console.contains("syscall 221 "));
+        assert_eq!(console.matches("not answered by the personality: -ENOSYS").count(), 2);
+        assert!(console.contains("syscall 99 "));
         // With no child to wait for, wait4 says so.
         assert_eq!(call(&r, nr::WAIT4, [u64::MAX, 0, 0, 0, 0, 0]), -le::ECHILD);
     }
@@ -960,6 +1010,141 @@ mod tests {
         assert_eq!(&buf, b"\x7fELF");
     }
 
+    /// What musl's `pthread_create` passes: the thread shape, `CLONE_SYSVSEM`,
+    /// `CLONE_SETTLS`, `CLONE_PARENT_SETTID`, `CLONE_CHILD_CLEARTID`, `CLONE_DETACHED`.
+    const MUSL_THREAD: u64 = 0x7d0f00;
+
+    fn caught(r: &Runtime<Mock>, f: impl FnOnce() -> i64) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        let _ = r;
+    }
+
+    #[test]
+    fn clone_as_a_thread_is_a_native_thread_with_the_creators_frame() {
+        let r = rt();
+        r.native().0.borrow_mut().next_thread = 43;
+        let (mut ptid, mut ctid) = (0u32, 0u32);
+        let (pp, cp) = (&mut ptid as *mut u32 as u64, &mut ctid as *mut u32 as u64);
+        // asm-generic order: flags, newsp, ptid, tls, ctid.
+        assert_eq!(call(&r, nr::CLONE, [MUSL_THREAD, 0x8000, pp, 0x5555, cp, 0]), 43);
+        {
+            let m = r.native().0.borrow();
+            assert_eq!(m.threads.len(), 1);
+            let t = m.threads[0];
+            assert_eq!((t.0, t.1, t.2, t.3), (0x8000, cp, 0x5555, [pp, 0]), "stack, clear-tid word, tls, ids stored");
+            assert_eq!((t.4, t.5), (0, 0x8000), "the thread resumes with result 0 on its stack");
+        }
+        // Without CLONE_SETTLS it keeps the creator's thread pointer.
+        let plain = MUSL_THREAD & !0x80000;
+        assert_eq!(call(&r, nr::CLONE, [plain, 0x9000, 0, 0, 0, 0]), 44);
+        assert_eq!(r.native().0.borrow().threads[1].2, 0x7777);
+        // A misaligned stack is refused; the shape without a stack is not a thread.
+        assert_eq!(call(&r, nr::CLONE, [MUSL_THREAD, 0x8008, 0, 0, 0, 0]), -le::EINVAL);
+        assert_eq!(call(&r, nr::CLONE, [MUSL_THREAD, 0, 0, 0, 0, 0]), -le::ENOSYS);
+        // A thread past the native limit is EAGAIN and is not counted.
+        r.native().0.borrow_mut().next_thread = 0;
+        assert_eq!(call(&r, nr::CLONE, [MUSL_THREAD, 0xa000, 0, 0, 0, 0]), -le::EAGAIN);
+    }
+
+    #[test]
+    fn a_threaded_process_exits_by_thread_until_the_last_and_exit_group_ends_all() {
+        let r = rt();
+        r.native().0.borrow_mut().next_thread = 43;
+        assert_eq!(call(&r, nr::CLONE, [MUSL_THREAD, 0x8000, 0, 0, 0, 0]), 43);
+        // gettid is the calling thread's native id; getpid stays the process's.
+        r.native().0.borrow_mut().pid = 43;
+        assert_eq!((call(&r, nr::GETPID, [0; 6]), call(&r, nr::GETTID, [0; 6])), (42, 43));
+        // tgkill of a sibling thread is the process's own signal; of a stranger, ESRCH.
+        assert_eq!(call(&r, nr::TGKILL, [42, 43, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::TGKILL, [42, 99, 0, 0, 0, 0]), -le::ESRCH);
+        // The thread's `exit` ends the thread only.
+        caught(&r, || call(&r, nr::EXIT, [3, 0, 0, 0, 0, 0]));
+        assert_eq!(r.native().0.borrow().thread_exited, Some(3));
+        assert_eq!(r.native().0.borrow().exited, None);
+        assert_eq!(call(&r, nr::TGKILL, [42, 43, 0, 0, 0, 0]), -le::ESRCH, "an ended thread is gone");
+        // The last thread's `exit` ends the process.
+        caught(&r, || call(&r, nr::EXIT, [4, 0, 0, 0, 0, 0]));
+        assert_eq!(r.native().0.borrow().exited, Some(4));
+        // `exit_group` ends the process whatever runs.
+        let r = rt();
+        r.native().0.borrow_mut().next_thread = 43;
+        call(&r, nr::CLONE, [MUSL_THREAD, 0x8000, 0, 0, 0, 0]);
+        caught(&r, || call(&r, nr::EXIT_GROUP, [5, 0, 0, 0, 0, 0]));
+        assert_eq!((r.native().0.borrow().exited, r.native().0.borrow().thread_exited), (Some(5), None));
+    }
+
+    #[test]
+    fn set_tid_address_names_the_clear_word_natively() {
+        let r = rt();
+        assert_eq!(call(&r, nr::SET_TID_ADDRESS, [0x6000, 0, 0, 0, 0, 0]), 42);
+        assert_eq!(r.native().0.borrow().clear_tid, 0x6000);
+    }
+
+    /// A `char *const *` the runtime reads as the program's own memory.
+    fn strv(items: &[&[u8]]) -> (Vec<Vec<u8>>, Vec<u64>) {
+        let owned: Vec<Vec<u8>> = items.iter().map(|i| c(std::str::from_utf8(i).unwrap())).collect();
+        let mut ptrs: Vec<u64> = owned.iter().map(|o| o.as_ptr() as u64).collect();
+        ptrs.push(0);
+        (owned, ptrs)
+    }
+
+    #[test]
+    fn execve_starts_the_image_with_its_strings_and_descriptors_and_exits_with_its_code() {
+        let r = rt();
+        r.native().0.borrow_mut().spawn_code = 7;
+        let (_a, argv) = strv(&[b"lxhello", b"exec-child"]);
+        let (_e, envp) = strv(&[b"A=1"]);
+        let path = c("/proc/self/exe");
+        // fd 3 is close-on-exec: it does not reach the image.
+        let fd = call(&r, nr::OPENAT, [lx::AT_FDCWD as u64, c("/fat/OTHER.TXT").as_ptr() as u64, 0, 0, 0, 0]);
+        assert_eq!(fd, 3);
+        assert_eq!(call(&r, nr::FCNTL, [3, 2 /* F_SETFD */, 1, 0, 0, 0]), 0);
+        caught(&r, || call(&r, nr::EXECVE, [path.as_ptr() as u64, argv.as_ptr() as u64, envp.as_ptr() as u64, 0, 0, 0]));
+        let m = r.native().0.borrow();
+        assert_eq!(m.exited, Some(7), "the caller exits with the image's code");
+        let s = &m.spawned[0];
+        assert_eq!(s.0, c("/fat/HELLO.ELF"), "/proc/self/exe is the running image");
+        assert_eq!((s.1.as_slice(), s.2), (&b"lxhello exec-child "[..], 2));
+        assert_eq!((s.3.as_slice(), s.4), (&b"A=1 "[..], 1));
+        assert_eq!(s.5, c("/"));
+        assert_eq!(&s.6[..4], &[ExecFd::Console, ExecFd::Console, ExecFd::Console, ExecFd::Closed]);
+    }
+
+    #[test]
+    fn execve_polls_for_the_image_with_a_backoff_from_5ms_up_to_1s() {
+        let r = rt();
+        {
+            let mut m = r.native().0.borrow_mut();
+            m.late_after = 12;
+            m.spawn_code = 2;
+        }
+        let (_a, argv) = strv(&[b"x"]);
+        let p = c("/fat/HELLO.ELF");
+        caught(&r, || call(&r, nr::EXECVE, [p.as_ptr() as u64, argv.as_ptr() as u64, 0, 0, 0, 0]));
+        let m = r.native().0.borrow();
+        assert_eq!(m.exited, Some(2));
+        // The mock's clock does not move while it sleeps: a deadline is the interval.
+        let ms: Vec<u64> = m.sleeps.iter().map(|d| (d + 500_000) / 1_000_000).collect();
+        assert_eq!(ms, [5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000, 1000, 1000]);
+    }
+
+    #[test]
+    fn execve_errors_leave_the_process_running() {
+        let r = rt();
+        let (_a, argv) = strv(&[b"x"]);
+        let p = c("/fat/NOPE");
+        r.native().0.borrow_mut().spawn_answer = -13;
+        assert_eq!(call(&r, nr::EXECVE, [p.as_ptr() as u64, argv.as_ptr() as u64, 0, 0, 0, 0]), -le::EACCES);
+        r.native().0.borrow_mut().spawn_answer = -1;
+        assert_eq!(call(&r, nr::EXECVE, [p.as_ptr() as u64, argv.as_ptr() as u64, 0, 0, 0, 0]), -le::ENOENT);
+        // More strings than the request carries.
+        let many: Vec<&[u8]> = vec![b"a"; 17];
+        let (_m, big) = strv(&many);
+        assert_eq!(call(&r, nr::EXECVE, [p.as_ptr() as u64, big.as_ptr() as u64, 0, 0, 0, 0]), -7);
+        assert_eq!(call(&r, nr::EXECVE, [0, 0, 0, 0, 0, 0]), -le::EFAULT);
+        assert_eq!(r.native().0.borrow().exited, None);
+    }
+
     #[test]
     fn exit_ends_the_process_with_the_low_byte() {
         let r = rt();
@@ -1115,8 +1300,16 @@ mod tests {
         r.native().0.borrow_mut().ended.insert(77, 5);
         assert_eq!(xcall(&r, xnr::WAIT4, [77, &mut st as *mut i32 as u64, 0, 0, 0, 0]), 77);
         assert_eq!(st, 5 << 8);
-        // x86-64 `clone` with a thread's flags is not answered, as on the other ISAs.
-        assert_eq!(xcall(&r, xnr::CLONE, [0x7d0f00, 0x1000, 0, 0, 0, 0]), -le::ENOSYS);
+        // x86-64 `clone` arrives as the asm-generic one: tls and ctid swap.
+        {
+            let r = rt();
+            r.native().0.borrow_mut().next_thread = 60;
+            let (mut ptid, mut ctid) = (0u32, 0u32);
+            let (pp, cp) = (&mut ptid as *mut u32 as u64, &mut ctid as *mut u32 as u64);
+            assert_eq!(xcall(&r, xnr::CLONE, [MUSL_THREAD, 0x1000, pp, cp, 0x5555, 0]), 60);
+            let m = r.native().0.borrow();
+            assert_eq!((m.threads[0].0, m.threads[0].1, m.threads[0].2, m.threads[0].3), (0x1000, cp, 0x5555, [pp, 0]));
+        }
     }
 
     #[test]

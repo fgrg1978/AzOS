@@ -165,6 +165,84 @@ impl Native for Sys {
     fn sigreturn_code(&self) -> u64 {
         lxrt_sigreturn as *const () as usize as u64
     }
+    fn thread_create(&self, start: &ForeignFrame, newsp: u64, clear_tid: u64, tls: u64, settid: [u64; 2]) -> i64 {
+        let size = core::mem::size_of::<ThreadStart>() as u64;
+        if newsp < size + 256 {
+            return azos_abi::error::Errno::EINVAL.to_syscall_ret();
+        }
+        // The hand-over block goes just below the new stack pointer, where the
+        // thread's trampoline runs: the program's own use of that stack begins
+        // only after the trampoline has resumed it.
+        let at = (newsp - size) & !15;
+        // SAFETY: the new thread's stack, which nothing runs on yet.
+        unsafe { core::ptr::write(at as *mut ThreadStart, ThreadStart { frame: *start, settid }) };
+        sys::thread_create_with_tls(lxrt_thread_start, at as usize, at, clear_tid as *mut u32, tls) as i64
+    }
+    fn thread_exit(&self, code: i32) -> ! {
+        sys::thread_exit(code)
+    }
+    fn set_clear_tid(&self, addr: u64) -> i64 {
+        sys::set_clear_tid(addr) as i64
+    }
+    fn thread_pointer(&self) -> u64 {
+        let tp: u64;
+        // SAFETY: reads a register the program owns; the runtime never writes it.
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("mv {}, tp", out(reg) tp, options(nomem, nostack));
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("mrs {}, tpidr_el0", out(reg) tp, options(nomem, nostack));
+        }
+        // x86-64: ring 3 cannot read its FS base; the runtime keeps the one it installed.
+        #[cfg(target_arch = "x86_64")]
+        {
+            tp = 0;
+        }
+        tp
+    }
+    // The pipe ends are shared (the region's capability goes in the list, the
+    // kernel counts the end the image's fd position names: a read end only on
+    // fd 0, a write end on 1..), the files are moved.
+    fn spawn_image(&self, img: &azos_linux_rt::SpawnImage) -> i64 {
+        use azos_abi::ushell::{Move, SpawnReq, MOVE_CONSOLE, SPAWN_F_DIE_WITH_PARENT, SPAWN_REQ_VERSION};
+        let mut req = SpawnReq {
+            version: SPAWN_REQ_VERSION,
+            // A signal that ends this process (it is the pid the caller's parent
+            // knows) ends the image with it.
+            flags: SPAWN_F_DIE_WITH_PARENT,
+            argv_ptr: if img.argv.is_empty() { 0 } else { img.argv.as_ptr() as u64 },
+            argv_bytes: img.argv.len() as u32,
+            argc: img.argc,
+            env_ptr: if img.env.is_empty() { 0 } else { img.env.as_ptr() as u64 },
+            env_bytes: img.env.len() as u32,
+            envc: img.envc,
+            cwd_ptr: img.cwd.as_ptr() as u64,
+            ..SpawnReq::default()
+        };
+        for (fd, f) in img.fds.iter().enumerate() {
+            let handle = match *f {
+                azos_linux_rt::ExecFd::Closed => continue,
+                azos_linux_rt::ExecFd::Console => MOVE_CONSOLE,
+                azos_linux_rt::ExecFd::File(h) => h,
+                azos_linux_rt::ExecFd::Pipe(tok) => {
+                    match (sys::pipe::end_of(tok), fd) {
+                        (Some(sys::pipe::End::Read), 0) | (Some(sys::pipe::End::Write), 1..) => {}
+                        _ => return azos_abi::error::Errno::EINVAL.to_syscall_ret(),
+                    }
+                    match sys::pipe::region_of(tok) {
+                        Ok((cap, _)) => cap,
+                        Err(e) => return e as i64,
+                    }
+                }
+            };
+            let n = req.nmoves as usize;
+            req.moves[n] = Move { child_fd: fd as u32, handle, perms: 0, _pad: 0 };
+            req.nmoves += 1;
+        }
+        sys::spawn_ex(img.path, Some(&req)) as i64
+    }
     fn resume_with_thread_pointer(&self, frame: &ForeignFrame, tp: u64) -> i64 {
         #[cfg(target_arch = "x86_64")]
         {
@@ -188,8 +266,9 @@ mod successor {
     use azos_abi::syscall_nr::{SLEEP_RELATIVE, SYS_SLEEP_UNTIL, SYS_THREAD_CREATE};
 
     /// The successor's stack: used from its first instruction to its resume
-    /// of the program, by one successor at a time (the runtime hosts no Linux
-    /// threads on x86_64, so one thread traps at a time).
+    /// of the program, by one successor at a time (x86_64 has no Linux-thread
+    /// rows yet: two threads of one program calling `arch_prctl(ARCH_SET_FS)`
+    /// at once would share it).
     const STACK_BYTES: usize = 4096;
     #[repr(C, align(16))]
     struct Stack(core::cell::UnsafeCell<[u8; STACK_BYTES]>);
@@ -273,6 +352,33 @@ mod successor {
     }
 }
 
+
+/// What a Linux thread's creator leaves on the new stack for the thread's
+/// first instructions: the registers to resume and the words to store its id in.
+#[repr(C)]
+struct ThreadStart {
+    frame: ForeignFrame,
+    settid: [u64; 2],
+}
+
+/// A Linux thread starts here (`SYS_THREAD_CREATE`'s entry: `(0, stack, start)`),
+/// stores its id where `clone` asked and resumes the program on the creator's
+/// registers with the result 0.
+extern "C" fn lxrt_thread_start(_zero: u64, _stack: u64, start: u64) -> ! {
+    // SAFETY: `Sys::thread_create` wrote the block at `start` before the
+    // thread could run.
+    let st = unsafe { &*(start as *const ThreadStart) };
+    let tid = sys::getpid() as i32;
+    for a in st.settid {
+        if a != 0 {
+            // SAFETY: the 32-bit words the program named in its `clone`.
+            unsafe { core::ptr::write_volatile(a as *mut i32, tid) };
+        }
+    }
+    // SAFETY: the frame is the creator's, copied.
+    unsafe { sys::foreign_resume(&st.frame) };
+    sys::exit(121)
+}
 
 static RT: Runtime<Sys> = Runtime::new(Sys);
 

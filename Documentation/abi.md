@@ -351,6 +351,7 @@ where the source states them.
 | `NODE_ACCEPT` | 0x680F | NET | Take one established connection as a new `ty::SOCKET` handle (`READ\|WRITE`); `-EAGAIN` when none waits. Non-blocking. Needs `READ`. |
 | `NODE_OPENAT` | 0x650C | FS_OPEN | Open a name beneath a held directory handle; absolute names and `..` above the directory are refused. A write-mode open also needs a held tree with `WRITE` that covers the result. |
 | `NODE_MMAP` | 0x630D | CTL | Map a file (shared or private) from the page cache; `PROT_EXEC` is never allowed. |
+| `DOMAIN_SET_CLEAR_TID` | 0x5332 | CTL | Name the 32-bit word (`w0`, 4-aligned, 0: none) the calling thread's end clears and futex-wakes, as `SYS_THREAD_CREATE`'s `ctid` does for a new thread. |
 | `NODE_SEEK` | 0x6010 | READ | Reposition the file's open description (`w0` offset, `w1` whence 0/1/2); returns the new offset. Any permission. |
 
 `ROOT_DIR_RESOURCE` is the `ty::FILE` resource of the directory on `/`, which

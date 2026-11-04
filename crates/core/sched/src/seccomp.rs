@@ -328,6 +328,7 @@ const CONSOLE_OPS: &[u16] = inv_ops![LOG_CONSOLE_WRITE];
 const LINUX_RT_OPS: &[u16] = inv_ops![
     LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_STAT, DOMAIN_READDIR, DOMAIN_UPTIME,
     DOMAIN_WAIT, MEMOBJ_ACQUIRE, MEMOBJ_END_DROP, NODE_SEEK, DOMAIN_MPROTECT,
+    DOMAIN_SET_CLEAR_TID,
 ];
 
 /// No kernel-hosted endpoint: the row of a binary that calls none.
@@ -1450,6 +1451,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // Wave 13: `clone` also reaches the thread create (derived from
             // the personality's table: LXHELLO itself forks only).
             SYS_THREAD_CREATE,
+            // C2-11: the runtime ends a thread (`exit`) and starts an image
+            // for `execve`.
+            SYS_THREAD_EXIT, SYS_SPAWN_EX,
             // Wave 15: `futex` (a robust lock's waiter, a parked thread).
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             // The ring-3 runtime's own calls (Kconfig LINUX_RUNTIME,

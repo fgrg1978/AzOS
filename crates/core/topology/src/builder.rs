@@ -2500,9 +2500,9 @@ const LXHELLO_MEM_PAGES: u32 = 48;
 /// `/tmp` read-write (round 48: its fork test writes one inherited file
 /// from parent and child); nothing under `/fat`.
 #[cfg(all(feature = "linux-abi-test", not(feature = "linux-abi-caps-canary")))]
-const LXHELLO_CAPS: &[CapSpec] = &[TMP_RW, ROOT_RO];
+const LXHELLO_CAPS: &[CapSpec] = &[TMP_RW, ROOT_RO, LXHELLO_LAUNCH];
 #[cfg(all(feature = "linux-abi-test", feature = "linux-abi-caps-canary"))]
-const LXHELLO_CAPS: &[CapSpec] = &[TMP_RW, ROOT_RO, CapSpec {
+const LXHELLO_CAPS: &[CapSpec] = &[TMP_RW, ROOT_RO, LXHELLO_LAUNCH, CapSpec {
     kind: CapKind::Node,
     perms: CapPerms::RW,
     target: MaybeStr::from_bytes(b"/fat"), transfer: false, ops: 0,

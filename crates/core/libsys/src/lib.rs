@@ -1902,6 +1902,12 @@ pub fn mprotect(addr: u64, len: u64, prot: u64) -> isize {
     domain_op(invoke_abi::DOMAIN_MPROTECT, [addr, len, prot, 0])
 }
 
+/// Name the word the calling thread's end clears and wakes (`DOMAIN_SET_CLEAR_TID`;
+/// 0: none), as `thread_create`'s `ctid` does for a new thread.
+pub fn set_clear_tid(addr: u64) -> isize {
+    domain_op(invoke_abi::DOMAIN_SET_CLEAR_TID, [addr, 0, 0, 0])
+}
+
 /// Capacity and free space of the filesystem `path` (**NUL-terminated**) is
 /// on, written to `buf` in the layout `azos_abi::syscall_nr::STATFS_BYTES`
 /// documents. The kernel is told `buf.len()` and refuses a short one.

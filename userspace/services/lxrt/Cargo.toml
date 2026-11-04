@@ -11,6 +11,8 @@ canary-no-lseek = ["azos_linux_rt/canary-no-lseek"]
 canary-no-mprotect = ["azos_linux_rt/canary-no-mprotect"]
 canary-no-futex = ["azos_linux_rt/canary-no-futex"]
 canary-no-kill = ["azos_linux_rt/canary-no-kill"]
+canary-no-threads = ["azos_linux_rt/canary-no-threads"]
+canary-no-execve = ["azos_linux_rt/canary-no-execve"]
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }

@@ -49,13 +49,31 @@
 //!
 //! # What it does not answer yet
 //!
-//! `clone` as a thread (the native thread's start and clear-on-exit are not a
-//! Linux thread's), `execve` (the native exec refuses a Linux image and
-//! carries no argument vector), requeue and priority-inheritance futexes
-//! (D5), `set_robust_list`, and console input. Each answers `-ENOSYS` (or end
+//! requeue and priority-inheritance futexes (D5), `set_robust_list`, and
+//! console input. Each answers `-ENOSYS` (or end
 //! of file, for the console) and is reported once per call number, never
 //! silently. `lseek`, `mprotect` and `futex` wait and wake are answered over
 //! `NODE_SEEK`, `DOMAIN_MPROTECT` and `SYS_FUTEX_WAIT/WAKE`.
+//!
+//! # Threads and `execve`
+//!
+//! `clone` with `CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+//! CLONE_THREAD` is `SYS_THREAD_CREATE`: the new thread starts in the image's
+//! trampoline, which stores its id at `ptid`/`ctid` (`CLONE_PARENT_SETTID`,
+//! `CLONE_CHILD_SETTID`) and resumes a copy of the creator's registers with a
+//! 0 result on the new stack; `CLONE_CHILD_CLEARTID` is the native `ctid`
+//! (cleared and woken when the thread ends) and `set_tid_address` is
+//! `DOMAIN_SET_CLEAR_TID`. `exit` ends the calling thread (`SYS_THREAD_EXIT`)
+//! unless it is the last, `exit_group` the process. The runtime's state is
+//! the process's and shared by every thread; the signal mask and the pending
+//! set are the process's too, so a signal a thread sends to another thread of
+//! its process runs its handler on the sender.
+//!
+//! `execve` has no in-place native exec to ask for, so it starts the image
+//! with `SYS_SPAWN_EX` (arguments, environment, working directory and the
+//! descriptors that are not close-on-exec, 0..=7), closes what it held, waits
+//! for it and exits with its code. The process id the caller's parent waits on
+//! stays; the image has its own, and its parent is the caller.
 //!
 //! `clone` in the fork and vfork shapes and `wait4` are answered over the
 //! foreign-ABI family's `SYS_FOREIGN_FORK` and the domain's `wait` op: the
@@ -67,7 +85,7 @@
 #![no_std]
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 
 use azos_abi::foreign::{ForeignFrame, REG_NUMBER, REG_RESULT, REG_SP};
 use azos_abi::time::{ClockError, ClockId};
@@ -113,7 +131,40 @@ pub const RUNTIME_OPS: &[u16] = &[
     azos_abi::invoke::MEMOBJ_END_DROP,
     azos_abi::invoke::NODE_SEEK,
     azos_abi::invoke::DOMAIN_MPROTECT,
+    azos_abi::invoke::DOMAIN_SET_CLEAR_TID,
 ];
+
+/// A descriptor as `execve` hands it to the image it starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecFd {
+    Closed,
+    Console,
+    /// A `Cap<File>` handle (moved).
+    File(u32),
+    /// A pipe end (shared).
+    Pipe(u32),
+}
+
+/// What `execve` asks `SYS_SPAWN_EX` for.
+pub struct SpawnImage<'a> {
+    /// The image's absolute path, NUL-terminated.
+    pub path: &'a [u8],
+    /// NUL-separated argument strings and their count.
+    pub argv: &'a [u8],
+    pub argc: u32,
+    /// NUL-separated `KEY=VALUE` strings and their count.
+    pub env: &'a [u8],
+    pub envc: u32,
+    /// The working directory, NUL-terminated.
+    pub cwd: &'a [u8],
+    /// The image's descriptors 0..=7.
+    pub fds: [ExecFd; 8],
+}
+
+/// Most NUL-separated bytes of argument strings and of environment strings,
+/// and strings of each, that `SYS_SPAWN_EX` carries.
+pub const EXEC_STRINGS: usize = azos_abi::ushell::SPAWN_ARGV_MAX;
+pub const EXEC_ARGC: usize = azos_abi::ushell::SPAWN_ARGC_MAX;
 
 /// Descriptors per process (0..FDS).
 pub const FDS: usize = 16;
@@ -223,6 +274,20 @@ pub trait Native {
     fn futex_wait(&self, addr: u64, expected: u32, timeout_ns: u64) -> i64;
     /// `SYS_FUTEX_WAKE`: how many waiters were woken.
     fn futex_wake(&self, addr: u64, n: u32) -> i64;
+    /// `SYS_THREAD_CREATE` for a Linux thread: it resumes `start` (the
+    /// creator's registers, result 0, stack pointer `newsp`) with the thread
+    /// pointer `tls`, after storing its own id at every non-zero address in
+    /// `settid`; `clear_tid` is the word its end clears and wakes (0: none).
+    /// The thread's id, or a negative native code.
+    fn thread_create(&self, start: &ForeignFrame, newsp: u64, clear_tid: u64, tls: u64, settid: [u64; 2]) -> i64;
+    /// `SYS_THREAD_EXIT`: end the calling thread only.
+    fn thread_exit(&self, code: i32) -> !;
+    /// `DOMAIN_SET_CLEAR_TID`: the word the calling thread's end clears and wakes.
+    fn set_clear_tid(&self, addr: u64) -> i64;
+    /// The calling thread's thread pointer (0 where ring 3 cannot read it).
+    fn thread_pointer(&self) -> u64;
+    /// `SYS_SPAWN_EX` for `execve`: the child's id or a negative native code.
+    fn spawn_image(&self, img: &SpawnImage) -> i64;
     /// `SYS_ALERT` on the descendant `tid`: it ends with `128 + signo`.
     fn alert(&self, tid: u32, signo: u32) -> i64;
     /// The address of code that issues `rt_sigreturn` (a handler's return
@@ -349,6 +414,8 @@ struct State {
     reported: u8,
     /// The thread-id word `set_tid_address` was given.
     tid_addr: u64,
+    /// The ids of the threads `clone` made and that still run (0: free).
+    threads: [u32; THREADS],
     /// Children forked and not yet reaped (0: free).
     children: [u32; CHILDREN],
     /// The program break (0 until the program first asks): what `brk` answers.
@@ -358,6 +425,9 @@ struct State {
     /// The FS base `arch_prctl(ARCH_SET_FS)` installed (x86-64; 0 at start).
     fs_base: u64,
 }
+
+/// Threads one process may have besides its first (the native limit is 16 per group).
+pub const THREADS: usize = 16;
 
 /// Children one process may have unreaped at once.
 pub const CHILDREN: usize = 16;
@@ -376,6 +446,7 @@ const STATE_INIT: State = State {
     exe_len: 0,
     reported: 0,
     tid_addr: 0,
+    threads: [0; THREADS],
     children: [0; CHILDREN],
     brk_cur: 0,
     brk_end: 0,
@@ -407,13 +478,17 @@ pub struct Runtime<N: Native> {
     /// The id of the process that forked this one, or 1 for one the shell
     /// started (the native ABI does not say who started a process).
     ppid: AtomicI64,
+    /// Threads of the process still running, the first included.
+    live: AtomicU32,
+    /// A `clone` made a thread: `gettid` is then the calling thread's id.
+    threaded: AtomicBool,
 }
 
 impl<N: Native> Runtime<N> {
     /// A runtime with the process's initial state: the console on
     /// descriptors 0, 1 and 2, working directory `/`.
     pub const fn new(native: N) -> Self {
-        Self { native, st: Lock::new(STATE_INIT), pid: AtomicI64::new(0), ppid: AtomicI64::new(1) }
+        Self { native, st: Lock::new(STATE_INIT), pid: AtomicI64::new(0), ppid: AtomicI64::new(1), live: AtomicU32::new(1), threaded: AtomicBool::new(false) }
     }
 
     /// The native calls, for the image that wraps the runtime.
@@ -427,6 +502,8 @@ impl<N: Native> Runtime<N> {
     /// and the image's path (what `/proc/self/exe` names).
     pub fn init(&self, exe: &[u8], startup: Option<&Startup>) {
         self.pid.store(self.native.getpid(), Ordering::Relaxed);
+        self.live.store(1, Ordering::Relaxed);
+        self.threaded.store(false, Ordering::Relaxed);
         self.st.with(|s| {
             *s = STATE_INIT;
             s.cwd[0] = b'/';
@@ -479,7 +556,11 @@ impl<N: Native> Runtime<N> {
             return;
         }
         let a = |i: usize| f.gpr[REG_RESULT + i];
-        let r = self.call(num, a(0), a(1), a(2), a(3), a(4), a(5));
+        let r = if num == nr::CLONE && is_thread_clone(a(0), a(1)) {
+            self.sys_clone_thread(f, (REG_RESULT, REG_SP), a(0), a(1), a(2), a(3), a(4))
+        } else {
+            self.call(num, a(0), a(1), a(2), a(3), a(4), a(5))
+        };
         f.gpr[REG_RESULT] = r as u64;
         self.deliver(f);
     }
@@ -501,6 +582,9 @@ impl<N: Native> Runtime<N> {
             Some(c) => {
                 let a = c.args;
                 match c.post {
+                    Post::None if c.num == nr::CLONE && is_thread_clone(a[0], a[1]) => {
+                        self.sys_clone_thread(f, (x86::REG_RESULT, X86_RSP), a[0], a[1], a[2], a[3], a[4])
+                    }
                     Post::None => self.call(c.num, a[0], a[1], a[2], a[3], a[4], a[5]),
                     Post::PollMs(ms) => {
                         let wait = if (ms as i32) < 0 {
@@ -563,7 +647,13 @@ impl<N: Native> Runtime<N> {
     fn call(&self, num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
         match num {
             // A process is a thread group of one here; its id is the thread's.
-            nr::GETPID | nr::GETTID => self.pid.load(Ordering::Relaxed),
+            nr::GETPID => self.pid.load(Ordering::Relaxed),
+            nr::GETTID => self.tid(),
+            nr::SET_TID_ADDRESS if !cfg!(feature = "canary-no-threads") => {
+                self.st.with(|s| s.tid_addr = a0);
+                let r = self.native.set_clear_tid(a0);
+                if r < 0 { lx::errno_from_native(r, le::EINVAL) } else { self.tid() }
+            }
             nr::SET_TID_ADDRESS => {
                 self.st.with(|s| s.tid_addr = a0);
                 self.pid.load(Ordering::Relaxed)
@@ -586,7 +676,9 @@ impl<N: Native> Runtime<N> {
             nr::IOCTL => self.sys_ioctl(a0, a1, a2),
             nr::GETCWD => self.sys_getcwd(a0, a1),
             nr::CHDIR => self.sys_chdir(a0),
+            nr::EXIT if !cfg!(feature = "canary-no-threads") => self.sys_exit(a0),
             nr::EXIT | nr::EXIT_GROUP => self.native.exit((a0 & 0xff) as i32),
+            nr::EXECVE if !cfg!(feature = "canary-no-execve") => self.sys_execve(a0, a1, a2),
             nr::CLONE => self.sys_clone(a0, a1),
             nr::WAIT4 => self.sys_wait4(a0, a1, a2, a3),
             nr::GETPPID => self.ppid.load(Ordering::Relaxed),
@@ -684,7 +776,12 @@ impl<N: Native> Runtime<N> {
             // The child: its own id, its parent's id, nobody's child yet.
             self.pid.store(self.native.getpid(), Ordering::Relaxed);
             self.ppid.store(parent, Ordering::Relaxed);
-            self.st.with(|s| s.children = [0; CHILDREN]);
+            self.live.store(1, Ordering::Relaxed);
+            self.threaded.store(false, Ordering::Relaxed);
+            self.st.with(|s| {
+                s.children = [0; CHILDREN];
+                s.threads = [0; THREADS];
+            });
             return 0;
         }
         let kept = self.st.with(|s| match s.children.iter().position(|&c| c == 0) {
@@ -698,6 +795,170 @@ impl<N: Native> Runtime<N> {
         // `wait4(-1)` (a native waiter can still take it by id).
         let _ = kept;
         r
+    }
+
+    /// The calling thread's id: the process's until a `clone` made a thread.
+    fn tid(&self) -> i64 {
+        if self.threaded.load(Ordering::Relaxed) {
+            self.native.getpid()
+        } else {
+            self.pid.load(Ordering::Relaxed)
+        }
+    }
+
+    /// `exit`: the calling thread only. The last thread ends the process
+    /// with its code.
+    fn sys_exit(&self, code: u64) -> i64 {
+        let code = (code & 0xff) as i32;
+        if self.live.fetch_sub(1, Ordering::AcqRel) > 1 {
+            let me = self.native.getpid() as u32;
+            self.st.with(|s| {
+                if let Some(t) = s.threads.iter_mut().find(|t| **t == me) {
+                    *t = 0;
+                }
+            });
+            self.native.thread_exit(code)
+        }
+        self.native.exit(code)
+    }
+
+    /// `clone` as a thread ([`is_thread_clone`]): `SYS_THREAD_CREATE` with the
+    /// creator's registers as the new thread's, result 0, on `newsp`.
+    fn sys_clone_thread(&self, f: &ForeignFrame, regs: (usize, usize), flags: u64, newsp: u64, ptid: u64, tls: u64, ctid: u64) -> i64 {
+        use lx::clone::*;
+        if cfg!(feature = "canary-no-threads") {
+            return self.unanswered(nr::CLONE);
+        }
+        if newsp & 15 != 0 {
+            return neg(le::EINVAL);
+        }
+        let mut start = *f;
+        start.gpr[regs.0] = 0;
+        start.gpr[regs.1] = newsp;
+        let clear = if flags & CLONE_CHILD_CLEARTID != 0 { ctid } else { 0 };
+        let tp = if flags & CLONE_SETTLS != 0 {
+            tls
+        } else {
+            // The thread keeps its creator's thread pointer.
+            match self.native.thread_pointer() {
+                0 => self.st.with(|s| s.fs_base),
+                t => t,
+            }
+        };
+        let settid = [
+            if flags & CLONE_PARENT_SETTID != 0 { ptid } else { 0 },
+            if flags & CLONE_CHILD_SETTID != 0 { ctid } else { 0 },
+        ];
+        self.threaded.store(true, Ordering::Relaxed);
+        self.live.fetch_add(1, Ordering::AcqRel);
+        let r = self.native.thread_create(&start, newsp, clear, tp, settid);
+        if r < 0 {
+            self.live.fetch_sub(1, Ordering::AcqRel);
+            return neg(le::EAGAIN);
+        }
+        self.st.with(|s| {
+            if let Some(t) = s.threads.iter_mut().find(|t| **t == 0) {
+                *t = r as u32;
+            }
+        });
+        r
+    }
+
+    /// `execve(path, argv, envp)`: the image is started over `SYS_SPAWN_EX`
+    /// with the strings, the working directory and the descriptors 0..=7 that
+    /// are not close-on-exec; this process closes what it held, waits for the
+    /// image and exits with its code. Descriptors at 8 and above that stay
+    /// open across an exec are `-EMFILE` (the request carries eight). `-E2BIG`
+    /// past the request's limits, `-ENOENT` when the image cannot be read,
+    /// `-EACCES` when the row may not start it.
+    fn sys_execve(&self, path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
+        let mut raw = [0u8; PATH_MAX];
+        let n = match user_path(path_ptr, &mut raw) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        let mut abs = [0u8; PATH_MAX];
+        let alen = match self.resolve(lx::AT_FDCWD, &raw[..n], &mut abs) {
+            Ok(l) => l,
+            Err(e) => return e,
+        };
+        let mut z = [0u8; PATH_MAX + 1];
+        let path = match nul_terminated(&abs[..alen], &mut z) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let mut argv = [0u8; EXEC_STRINGS];
+        let mut env = [0u8; EXEC_STRINGS];
+        let (al, argc) = match user_strv(argv_ptr, &mut argv) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let (el, envc) = match user_strv(envp_ptr, &mut env) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let (fds, cwd, cwd_len) = self.st.with(|s| (s.fds, s.cwd, s.cwd_len as usize));
+        let mut zc = [0u8; CWD_MAX + 1];
+        zc[..cwd_len].copy_from_slice(&cwd[..cwd_len]);
+        let mut carry = [ExecFd::Closed; 8];
+        for (i, e) in fds.iter().enumerate() {
+            let c = match e.kind {
+                Kind::Closed | Kind::Dir => ExecFd::Closed,
+                _ if e.cloexec => ExecFd::Closed,
+                Kind::Console => ExecFd::Console,
+                Kind::File => ExecFd::File(e.handle),
+                Kind::Pipe => ExecFd::Pipe(e.handle),
+            };
+            if i < 8 {
+                carry[i] = c;
+            } else if c != ExecFd::Closed {
+                return neg(le::EMFILE);
+            }
+        }
+        let img = SpawnImage {
+            path,
+            argv: &argv[..al],
+            argc,
+            env: &env[..el],
+            envc,
+            cwd: &zc[..cwd_len + 1],
+            fds: carry,
+        };
+        let child = self.native.spawn_image(&img);
+        if child < 0 {
+            return match child {
+                -13 => neg(le::EACCES),
+                -24 => neg(le::EMFILE),
+                -22 => neg(le::EINVAL),
+                -11 => neg(le::EAGAIN),
+                _ => neg(le::ENOENT),
+            };
+        }
+        // What the image does not inherit goes: the file handles were moved,
+        // the pipe ends were shared and are still this process's.
+        for e in fds.iter() {
+            match e.kind {
+                Kind::Pipe => {
+                    let _ = self.native.handle_close(e.handle);
+                }
+                Kind::File if e.cloexec => {
+                    let _ = self.native.handle_close(e.handle);
+                }
+                _ => {}
+            }
+        }
+        // No blocking wait for a child's exit reaches a Linux row: the console's
+        // `WAIT` op is the terminal server's alone (seccomp-tests), and
+        // `DOMAIN_WAIT` does not block. The poll backs off, 5 ms doubling to 1 s.
+        let mut back = 5_000_000u64;
+        loop {
+            let mut code = 0i32;
+            if self.native.waitpid(child as u32, &mut code) > 0 {
+                self.native.exit(code & 0xff);
+            }
+            self.native.sleep_until_ns(self.native.now_ns().saturating_add(back));
+            back = (back * 2).min(1_000_000_000);
+        }
     }
 
     /// `wait4(pid, wstatus, options, rusage)`: `pid > 0` or `-1`; `WNOHANG`
@@ -1639,10 +1900,13 @@ impl<N: Native> Runtime<N> {
         if sig > lx::sig::NSIG_MAX {
             return neg(le::EINVAL);
         }
-        if tgid != tid {
+        let own_thread = tgid as i64 == self.pid.load(Ordering::Relaxed)
+            && tid != 0
+            && self.st.with(|s| s.threads.contains(&(tid as u32)));
+        if tgid != tid && !own_thread {
             return neg(le::ESRCH);
         }
-        if tid as i64 == self.pid.load(Ordering::Relaxed) {
+        if own_thread || tid as i64 == self.pid.load(Ordering::Relaxed) {
             self.post_self(sig)
         } else {
             self.signal_child(tid as u32, sig)
@@ -1931,6 +2195,56 @@ fn get_user(ptr: u64, bytes: &mut [u8]) -> i64 {
 }
 
 /// Copy a NUL-terminated user path into `buf`; its length, or a Linux errno.
+/// `rsp` in the frame's x86-64 register order (the hardware encoding, `azos_abi::foreign`).
+const X86_RSP: usize = 4;
+
+/// Is this `clone` a thread: `CLONE_VM | CLONE_FS | CLONE_FILES |
+/// CLONE_SIGHAND | CLONE_THREAD`, the optional flags a C library adds, and a
+/// stack of its own.
+fn is_thread_clone(flags: u64, newsp: u64) -> bool {
+    use lx::clone::*;
+    let thread = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+    let optional = CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED
+        | CLONE_CHILD_SETTID;
+    flags & thread == thread && flags & !(thread | optional) == 0 && newsp != 0
+}
+
+/// The NUL-terminated strings of the pointer vector at `ptr` (null: none),
+/// NUL-separated into `out`: their bytes and count. `-E2BIG` past `out` or
+/// `EXEC_ARGC` strings.
+fn user_strv(ptr: u64, out: &mut [u8]) -> Result<(usize, u32), i64> {
+    const E2BIG: i64 = 7;
+    if ptr == 0 {
+        return Ok((0, 0));
+    }
+    let (mut used, mut n) = (0usize, 0u32);
+    loop {
+        // SAFETY: the program's own vector, read up to its null terminator.
+        let sp = unsafe { *((ptr + 8 * u64::from(n)) as *const u64) };
+        if sp == 0 {
+            return Ok((used, n));
+        }
+        if n as usize >= EXEC_ARGC {
+            return Err(neg(E2BIG));
+        }
+        let mut i = 0usize;
+        loop {
+            // SAFETY: the program's own string, up to its terminator.
+            let b = unsafe { *((sp + i as u64) as *const u8) };
+            if used + i >= out.len() {
+                return Err(neg(E2BIG));
+            }
+            out[used + i] = b;
+            i += 1;
+            if b == 0 {
+                break;
+            }
+        }
+        used += i;
+        n += 1;
+    }
+}
+
 fn user_path(ptr: u64, buf: &mut [u8; PATH_MAX]) -> Result<usize, i64> {
     if ptr == 0 {
         return Err(neg(le::EFAULT));
