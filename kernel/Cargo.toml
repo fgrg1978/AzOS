@@ -1261,6 +1261,7 @@ sched-rt-smoke = ["qemu", "use-robot", "azos_topology/sched-rt-smoke"]
 # Its canaries, one property broken each; the named check must print FAIL.
 rt-band-canary = ["sched-rt-smoke", "azos_sched/rt-band-canary"]
 rt-edf-canary = ["sched-rt-smoke", "azos_sched/rt-edf-canary"]
+dispatch-skip-class-canary = ["sched-rt-smoke", "azos_sched/dispatch-skip-class-canary"]
 rt-cbs-canary = ["sched-rt-smoke", "azos_sched/rt-cbs-canary"]
 rt-admit-canary = ["sched-rt-smoke", "azos_sched/rt-admit-canary"]
 rt-exempt-canary = ["sched-rt-smoke", "azos_sched/rt-exempt-canary"]

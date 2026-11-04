@@ -334,9 +334,3 @@ pub enum Choice {
     Task(usize),
 }
 
-/// Does `cand` come before `cur` in deadline order (the fair class's
-/// `preempt_check`)?
-#[inline]
-pub fn before(cand: &Ent, cur: &Ent) -> bool {
-    cand.deadline < cur.deadline
-}

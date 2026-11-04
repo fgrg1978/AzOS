@@ -16,7 +16,7 @@
 //! dispatch the target?" and refuses every case where the answer is not a
 //! certain yes:
 //!
-//! * SCHED-RT state on the hart, or a band task on either side — `rt::pick`
+//! * SCHED-RT state on the hart, or a band task on either side — the class walk
 //!   decides and the dispatch tail charges the band and the reservations;
 //! * APS dispatch — its policies pick, not the bitmap queue;
 //! * the target pinned to another hart — the ordinary wake would send it there;

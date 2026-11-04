@@ -260,6 +260,9 @@ wake-ring-canary = []
 rt-band-canary = []
 # Reservation tasks of one level are taken FIFO, not by deadline.
 rt-edf-canary = []
+# Gate canary: the class walk skips DL (`classes::DlClass::ON`), so a reservation
+# waits behind the band; the sched-rt EDF check must fail.
+dispatch-skip-class-canary = []
 # Reservations are never charged: an overrun is neither throttled nor postponed.
 rt-cbs-canary = []
 # Run-time admission accepts every well-formed reservation.

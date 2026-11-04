@@ -60,8 +60,10 @@
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::rt_core::{self, Band, Cbs, HartLoad, Refusal};
+use crate::sc::{Class, Step};
 use crate::task::{TaskState, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
+use super::classes::PickCtx;
 use super::{
     cpu_remove, ncpu, prio_bucket, task_mut, task_ref, CpuLockGuard, MAX_CPUS, MAX_TASKS, PER_CPU,
 };
@@ -608,7 +610,7 @@ unsafe fn ring_first_exempt(cpu: usize, level: usize, resv: bool) -> Option<usiz
     q.iter(&super::RQ_LINKS).find(|&idx| exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }))
 }
 
-// ───────────────────── N6 class peeks (`classes.rs`) ──────────────────────
+// ───────────────────── levels and deadlines the classes read ──────────────────────
 
 /// Ready-bitmap levels of the band, outside it (idle excluded), and idle.
 pub(super) const LEVELS_BAND: u32 = BAND_LEVELS;
@@ -618,66 +620,6 @@ pub(super) const LEVELS_IDLE: u32 = 1u32 << IDLE_PRIORITY;
 /// The absolute deadline of `idx`'s reservation on `cpu`. Owner state.
 pub(super) unsafe fn dl_deadline(cpu: usize, idx: usize) -> Option<u64> {
     slot_of(cpu, idx).map(|k| unsafe { res(cpu, k) }.deadline)
-}
-
-/// Is `cpu`'s band skipped by the pick (exhausted, a non-band task ready)?
-/// Owner state: call on `cpu` itself.
-pub(super) unsafe fn band_skipped(cpu: usize) -> bool {
-    if !active(cpu) {
-        return false;
-    }
-    let o = unsafe { &*owner_of(cpu) };
-    let bm = PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed);
-    o.band.exhausted && bm & NONBAND_LEVELS != 0
-}
-
-/// The DL class's peek: the queued, eligible reservation on `cpu` that EDF
-/// runs first (level, then absolute deadline), throttled ones skipped. Not
-/// removed from its queue. Owner state: call on `cpu` itself.
-pub(super) unsafe fn peek_dl(cpu: usize) -> Option<usize> {
-    let skip_band = unsafe { band_skipped(cpu) };
-    let classes = super::classes::dl_above_band();
-    let mut best = None;
-    let (mut bp, mut bd) = (u32::MAX, u64::MAX);
-    for (k, holder) in set_iter(cpu) {
-        let r = unsafe { res(cpu, k) };
-        if r.throttled {
-            continue;
-        }
-        let Some(idx) = (unsafe { runner(cpu, holder) }) else { continue };
-        let t = unsafe { task_ref(idx) };
-        let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
-        if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), skip_band) {
-            continue;
-        }
-        let p = rt_core::dl_rank(classes, p);
-        if best.is_none() || rt_core::edf_before(p, r.deadline, bp, bd) {
-            best = Some(idx);
-            bp = p;
-            bd = r.deadline;
-        }
-    }
-    best
-}
-
-/// The first eligible queued task in the most urgent of `cpu`'s ready levels
-/// inside `mask` (reservations skipped: they are the DL class's). Not
-/// removed from its queue.
-pub(super) unsafe fn peek_levels(cpu: usize, mask: u32) -> Option<usize> {
-    let resv = FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0;
-    let _g = CpuLockGuard::acquire(cpu);
-    let mut levels = PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) & mask;
-    while levels != 0 {
-        let l = levels.trailing_zeros() as usize;
-        let q = &super::cpu_queues(cpu)[l];
-        let first = q.iter(&super::RQ_LINKS)
-            .find(|&idx| idx < MAX_TASKS && !(resv && slot_of(cpu, idx).is_some()));
-        if first.is_some() {
-            return first;
-        }
-        levels &= levels - 1;
-    }
-    None
 }
 
 /// The most urgent queued exempt band loop of `cpu` (its level, its task),
@@ -695,28 +637,13 @@ unsafe fn first_exempt(cpu: usize, bm: u32, resv: bool) -> Option<(u32, usize)> 
     None
 }
 
-/// The stop class's peek (`classes::StopClass`): the
-/// most urgent queued exempt band loop. Not removed from its queue.
-pub(super) unsafe fn peek_exempt(cpu: usize) -> Option<usize> {
-    let resv = FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0;
-    let _g = CpuLockGuard::acquire(cpu);
-    let bm = PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed);
-    unsafe { first_exempt(cpu, bm, resv) }.map(|(_, idx)| idx)
-}
+// ───────────────────── the class steps of the walk ──────────────────────
 
-/// What the RT pick decided.
-pub(super) enum Pick {
-    /// Dispatch this task (already removed from its ready queue). `force`:
-    /// the running task must give up the hart even to a lower priority (its
-    /// band is exhausted, or its reservation is throttled).
-    Task { idx: usize, force: bool },
-    /// Nothing better than the running task: keep it.
-    Keep,
-}
-
-/// The pick for a hart with RT state ([`active`]). `old_idx` is the task
-/// current on `cpu`, still `Running` if it was preempted.
-pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
+/// The pick's charging on a hart with RT state ([`active`]), once per
+/// `do_schedule` and before the run-queue lock: the band window, the running
+/// reservation's budget, the reservation set, the flags, the proxy timeouts.
+/// `prev` is the task current on `cpu`, still `Running` if it was preempted.
+pub(super) unsafe fn pick_begin(cpu: usize, prev: usize) {
     let now = now();
     let o = unsafe { &mut *owner_of(cpu) };
     if o.band.since != 0 {
@@ -724,68 +651,85 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
     } else if o.band.exhausted {
         o.band.roll(now, WINDOW);
     }
-    if o.cur < MAX_TASKS && o.cur == old_idx
-        && unsafe { task_ref(old_idx) }.state() == TaskState::Running
-    {
+    if o.cur < MAX_TASKS && o.cur == prev && unsafe { task_ref(prev) }.state() == TaskState::Running {
         unsafe { charge_cur(cpu, o, now, true) };
     }
     unsafe { refresh_set(cpu, now) };
     sync_flags(cpu, o);
     flush_timeout(o);
-    let resv = FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0;
+}
+
+/// The RT state of one pick, read under `CPU_LOCKS[cpu]`: whether the band
+/// is skipped, whether the running task must go even to a worse class (its
+/// band is skipped, or its reservation is throttled), and the rank and
+/// deadline it keeps the hart with if it is a reservation that still comes
+/// first.
+pub(super) unsafe fn pick_state(ctx: &mut PickCtx) {
+    let cpu = ctx.cpu;
+    let o = unsafe { &*owner_of(cpu) };
+    ctx.resv = FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0;
     // Every reservation ranks above the band (`rt_core::dl_rank`).
-    let classes = super::classes::dl_above_band();
-
-    let _g = CpuLockGuard::acquire(cpu);
-    let bm = unsafe { PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) };
-    let skip_band = o.band.exhausted && bm & NONBAND_LEVELS != 0;
-
-    // The running task as a candidate: a Running reservation task that still
-    // comes first keeps the hart rather than being switched for a worse pick.
-    let mut force = false;
-    let mut keep: Option<(u32, u64)> = None;
-    if old_idx < MAX_TASKS {
-        let t = unsafe { task_ref(old_idx) };
+    ctx.classes = super::classes::dl_above_band();
+    ctx.skip_band = o.band.exhausted && ctx.bm & NONBAND_LEVELS != 0;
+    let prev = ctx.prev;
+    if prev < MAX_TASKS {
+        let t = unsafe { task_ref(prev) };
         if t.state() == TaskState::Running {
             let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
-            let r = if o.cur == old_idx { Some(unsafe { res(cpu, o.cur_slot) }) } else { None };
-            if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(old_idx), skip_band) {
-                force = true;
+            let r = if o.cur == prev { Some(unsafe { res(cpu, o.cur_slot) }) } else { None };
+            if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(prev), ctx.skip_band) {
+                ctx.force = true;
                 BAND_THROTTLES.fetch_add(1, Ordering::Relaxed);
             } else if let Some(r) = r {
                 if r.throttled {
-                    force = true;
+                    ctx.force = true;
                 } else {
-                    keep = Some((rt_core::dl_rank(classes, p), r.deadline));
+                    ctx.keep = Some((rt_core::dl_rank(ctx.classes, p), r.deadline));
                 }
             }
         }
     }
+}
 
-    // The exempt band loops are the stop class, above DL and the rest of the
-    // band (owner decision 10-10).
-    let running = if old_idx < MAX_TASKS && !force && exempt(old_idx)
-        && unsafe { task_ref(old_idx) }.state() == TaskState::Running
-    {
-        Some(prio_bucket(unsafe { task_ref(old_idx) }.priority.load(Ordering::Relaxed)) as u32)
+/// Is the running task an exempt band loop (the stop class)?
+#[inline(always)]
+pub(super) fn prev_is_exempt(prev: usize) -> bool {
+    exempt(prev)
+}
+
+/// The stop class's step: the exempt band loops (actuation, e-stop,
+/// watchdog) run above DL and the rest of the band (owner decision 10-10).
+/// Between two of them the more urgent level wins; a tie keeps the running one.
+pub(super) unsafe fn step_stop(ctx: &mut PickCtx) -> Step {
+    if !ctx.active {
+        return Step::Pass;
+    }
+    let running = if ctx.prev_class == Some(Class::Stop) {
+        Some(prio_bucket(unsafe { task_ref(ctx.prev) }.priority.load(Ordering::Relaxed)) as u32)
     } else {
         None
     };
-    let queued = unsafe { first_exempt(cpu, bm, resv) };
+    let queued = unsafe { first_exempt(ctx.cpu, ctx.bm, ctx.resv) };
     match rt_core::stop_pick(running, queued.map(|(l, _)| l)) {
-        rt_core::StopPick::Keep => return Pick::Keep,
-        rt_core::StopPick::Take => {
-            if let Some((_, idx)) = queued {
-                if unsafe { cpu_remove(cpu, idx) } {
-                    return Pick::Task { idx, force: true };
-                }
-            }
-        }
-        rt_core::StopPick::Pass => {}
+        rt_core::StopPick::Keep => Step::Keep,
+        rt_core::StopPick::Take => match queued {
+            Some((_, idx)) if unsafe { cpu_remove(ctx.cpu, idx) } => Step::Run { idx, force: true },
+            _ => Step::Pass,
+        },
+        rt_core::StopPick::Pass => Step::Pass,
     }
+}
 
-    // The best eligible queued reservation (its holder, or its proxy), and
-    // the level it is queued at.
+/// The DL class's step: the eligible queued reservation EDF runs first (its
+/// holder, or its proxy), against the running reservation, which keeps the
+/// hart unless a queued one has an earlier deadline. A reservation taken
+/// past a running band task at a better level forces the switch.
+pub(super) unsafe fn step_dl(ctx: &mut PickCtx) -> Step {
+    if !ctx.active {
+        return Step::Pass;
+    }
+    let cpu = ctx.cpu;
+    let classes = ctx.classes;
     let mut best = usize::MAX;
     let (mut bp, mut bd) = (u32::MAX, u64::MAX);
     let mut best_level = 0u32;
@@ -797,7 +741,7 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
         let Some(idx) = (unsafe { runner(cpu, holder) }) else { continue };
         let t = unsafe { task_ref(idx) };
         let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
-        if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), skip_band) {
+        if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), ctx.skip_band) {
             continue;
         }
         let level = p;
@@ -809,76 +753,84 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
             best_level = level;
         }
     }
-
-    // While the band is skipped, the exempt safety loops in it are not: the
-    // first one queued, most urgent level first.
-    if skip_band {
-        let mut bl = bm & BAND_LEVELS;
-        while bl != 0 {
-            let l = bl.trailing_zeros() as usize;
-            if let Some(idx) = unsafe { ring_first_exempt(cpu, l, resv) } {
-                let best_rank = if best == usize::MAX { None } else { Some(bp) };
-                if rt_core::exempt_first(classes, l as u32, best_rank) {
-                    if unsafe { cpu_remove(cpu, idx) } {
-                        return Pick::Task { idx, force };
-                    }
-                }
-            }
-            bl &= bl - 1;
+    // The most urgent level the later classes would take, the running task's
+    // included. Every reservation ranks 0 in the dispatch order, so this only
+    // matters under canary `sched-dl-in-level`, which ranks a reservation by
+    // its level again.
+    let mut l = {
+        let levels = if ctx.skip_band { ctx.bm & !BAND_LEVELS } else { ctx.bm };
+        if levels != 0 { levels.trailing_zeros() } else { u32::MAX }
+    };
+    if ctx.keep.is_none() && ctx.prev_class.is_some() {
+        l = l.min(prio_bucket(unsafe { task_ref(ctx.prev) }.priority.load(Ordering::Relaxed)) as u32);
+    }
+    if let Some((kp, kd)) = ctx.keep {
+        // Canary: no deadline order, so a running reservation keeps the hart
+        // against a queued one of its rank.
+        let wins = best == usize::MAX
+            || if EDF_ON { !rt_core::edf_before(bp, bd, kp, kd) } else { kp <= bp };
+        if wins && kp <= l {
+            return Step::Keep;
         }
     }
+    if best == usize::MAX || bp > l {
+        return Step::Pass;
+    }
+    let idx = if EDF_ON {
+        best
+    } else {
+        // Canary: FIFO among the eligible entries of the best's level (its
+        // rank is 0 under the default order, not its level).
+        unsafe { ring_first_eligible(cpu, best_level as usize, ctx.resv) }.unwrap_or(best)
+    };
+    if unsafe { cpu_remove(cpu, idx) } {
+        // The reservation may sit at a worse level than the running band
+        // task it displaces.
+        Step::Run { idx, force: ctx.force || classes }
+    } else {
+        Step::Keep
+    }
+}
 
-    let mut levels = if skip_band { bm & !BAND_LEVELS } else { bm };
-    loop {
-        let l = if levels != 0 { levels.trailing_zeros() } else { u32::MAX };
-        if let Some((kp, kd)) = keep {
-            // Canary: no deadline order, so a running reservation keeps the
-            // hart against a queued one of its rank.
-            let wins = best == usize::MAX
-                || if EDF_ON { !rt_core::edf_before(bp, bd, kp, kd) } else { kp <= bp };
-            if wins && kp <= l {
-                return Pick::Keep;
-            }
-        }
-        if best != usize::MAX && bp <= l {
-            let idx = if EDF_ON {
-                best
-            } else {
-                // Canary: FIFO among the eligible entries of the best's level
-                // (its rank is 0 under the default order, not its level).
-                unsafe { ring_first_eligible(cpu, best_level as usize, resv) }.unwrap_or(best)
-            };
-            if unsafe { cpu_remove(cpu, idx) } {
-                // The reservation may sit at a worse level
-                // than the running band task it displaces; `do_schedule`'s
-                // worse-priority guard must not put it back.
-                return Pick::Task { idx, force: force || classes };
-            }
-            return Pick::Keep;
-        }
-        if l == u32::MAX {
-            return Pick::Keep;
-        }
-        // The fair levels are one EEVDF queue (`fairq.rs`), not one list per
-        // level: the running fair task is a candidate, and when it is still
-        // the best nothing is dispatched.
-        if super::fairq::is_fair(l) {
-            match unsafe { super::fairq::take(cpu, true) } {
-                super::fairq::Fair::Task(idx) => return Pick::Task { idx, force },
-                super::fairq::Fair::Keep => return Pick::Keep,
-                // Only reservations queued at these levels: past them.
-                super::fairq::Fair::Empty => {
-                    levels &= !NONBAND_LEVELS;
-                    continue;
+/// The band's step (the RT class; the fair class's first part when the RT
+/// class is compiled out): the first eligible task of the most urgent band
+/// level, FIFO inside a level; skipped while the band is exhausted and a
+/// task outside it is ready. A running band task keeps the hart against a
+/// worse level and gives it up to its own (round robin).
+pub(super) unsafe fn step_band(ctx: &mut PickCtx) -> Step {
+    let prev_band = ctx.prev_class.is_some()
+        && ctx.keep.is_none()
+        && !matches!(ctx.prev_class, Some(Class::Stop))
+        && unsafe { task_ref(ctx.prev) }.priority.load(Ordering::Relaxed) < RT_PRIORITY_THRESHOLD;
+    if !(ctx.active && ctx.skip_band) {
+        let mut levels = ctx.bm & BAND_LEVELS;
+        while levels != 0 {
+            let l = levels.trailing_zeros() as usize;
+            if let Some(idx) = unsafe { ring_first_eligible(ctx.cpu, l, ctx.resv) } {
+                if prev_band
+                    && unsafe { task_ref(idx) }.priority.load(Ordering::Relaxed)
+                        > unsafe { task_ref(ctx.prev) }.priority.load(Ordering::Relaxed)
+                {
+                    return Step::Keep;
+                }
+                if unsafe { cpu_remove(ctx.cpu, idx) } {
+                    return Step::Run { idx, force: ctx.force };
                 }
             }
+            levels &= levels - 1;
         }
-        if let Some(idx) = unsafe { ring_first_eligible(cpu, l as usize, resv) } {
-            if unsafe { cpu_remove(cpu, idx) } {
-                return Pick::Task { idx, force };
-            }
-        }
-        levels &= levels - 1;
+    }
+    if prev_band { Step::Keep } else { Step::Pass }
+}
+
+/// The idle class's step: the idle level's task.
+pub(super) unsafe fn step_idle(ctx: &mut PickCtx) -> Step {
+    if ctx.bm & LEVELS_IDLE == 0 {
+        return Step::Pass;
+    }
+    match unsafe { ring_first_eligible(ctx.cpu, IDLE_PRIORITY as usize, ctx.resv) } {
+        Some(idx) if unsafe { cpu_remove(ctx.cpu, idx) } => Step::Run { idx, force: ctx.force },
+        _ => Step::Pass,
     }
 }
 

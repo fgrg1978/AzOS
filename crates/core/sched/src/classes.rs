@@ -17,22 +17,18 @@
 //! | fair | every other task (EEVDF, `fairq.rs`) | the other levels, one EEVDF queue |
 //! | idle | the per-CPU idle task | the idle level |
 //!
-//! # What dispatches today
+//! # The dispatch
 //!
-//! `do_schedule` takes its pick from the fused path (`rt::pick` or the
-//! bitmap dequeue). Across RT, fair and idle that pick *is* this precedence:
-//! the classes own disjoint level ranges in that order. For DL, `rt::pick`
-//! and `rt::tick` rank every eligible reservation above the rest of the band
-//! (`rt_core::dl_rank`; deadline order among reservations) and force the
-//! switch past a better-priority band task, while the band's exempt safety
-//! loops are the stop class and run above DL (`rt_core::stop_pick`, owner
-//! decision 10-10), so the dispatch order is the strict precedence. The
-//! walk ([`pick_here`]) is the class view of the same queues (ktest `sched_class_precedence`): the switch path keeps the
-//! fused pick, its charging and its re-enqueue invariants. A wake-up
-//! compares classes (`scheduler/wake/preempt.rs`): a task woken onto the
-//! waking CPU that outranks the one it runs sets `need_resched`, and a wake
-//! onto another CPU rings that CPU's doorbell, whose own tick makes the exact
-//! choice.
+//! `do_schedule` takes its pick from [`pick`]: the walk of `sc.rs` over the
+//! five classes below, under the CPU's run-queue lock, with the running task
+//! competing in its own class (a band task keeps the hart against a worse
+//! level, a fair one against a later virtual deadline, a reservation against
+//! a later deadline) and outranking every later class. A class whose budget
+//! throttles the running task (`force`) takes it out of the competition. The
+//! RT state's charging runs once before the lock (`rt::pick_begin`). A
+//! wake-up compares classes (`scheduler/wake/preempt.rs`): a task woken onto
+//! the waking CPU that outranks the one it runs sets `need_resched`, and a
+//! wake onto another CPU rings that CPU's doorbell.
 //!
 //! # SC per task
 //!
@@ -59,13 +55,10 @@ use azos_arch::Interrupts;
 use azos_sync::waitgraph::{self, PiAttr, SchedPi, TaskId, WaitObj};
 
 use crate::rt_core::LevelOrder;
-use crate::sc::{classify, Class, ClassTable, SchedClassOps, SchedContext, NO_CPU};
+use crate::sc::{classify, walk, Class, ClassStep, SchedContext, Step, WalkCtx, NO_CPU};
 use crate::task::{TaskState, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
-use super::{
-    cpu_enqueue_locked, cpu_remove, fairq, ncpu, prio_bucket, rt, task_ref, CpuLockGuard,
-    MAX_CPUS, MAX_TASKS, PER_CPU,
-};
+use super::{fairq, ncpu, rt, task_ref, CpuLockIrqsOff, MAX_CPUS, MAX_TASKS, PER_CPU};
 
 /// The classes this build has (Kconfig `SCHED_CLASS_*`). Fair and idle are
 /// not optional: every task outside the band is fair, every CPU has an idle
@@ -308,30 +301,67 @@ pub(super) fn on_released(idx: usize) {
     }
 }
 
-fn prio(idx: usize) -> u32 {
-    prio_bucket(unsafe { task_ref(idx) }.priority.load(Ordering::Relaxed)) as u32
+/// The state of one pick on one CPU, built under its run-queue lock.
+pub(super) struct PickCtx {
+    pub(super) cpu: usize,
+    /// The task current on `cpu`.
+    pub(super) prev: usize,
+    /// The running task competes (no misfit sends it to another CPU).
+    pub(super) prev_competes: bool,
+    pub(super) prev_class: Option<Class>,
+    /// The hart has RT state (`rt::active`).
+    pub(super) active: bool,
+    /// The ready bitmap.
+    pub(super) bm: u32,
+    /// A reservation is admitted on the hart.
+    pub(super) resv: bool,
+    /// The band is exhausted and a task outside it is ready.
+    pub(super) skip_band: bool,
+    /// The running task gives the hart up even to a worse class.
+    pub(super) force: bool,
+    /// The running reservation's rank and deadline, if it still competes.
+    pub(super) keep: Option<(u32, u64)>,
+    /// Reservations rank above the band ([`dl_above_band`]).
+    pub(super) classes: bool,
 }
 
-fn ready(idx: usize) -> bool {
-    let t = unsafe { task_ref(idx) };
-    t.queued.load(Ordering::Relaxed) && t.state() == TaskState::Ready
-}
-
-fn enqueue_any(cpu: usize, idx: usize) -> bool {
-    idx < MAX_TASKS && unsafe { cpu_enqueue_locked(cpu, idx) }
-}
-
-fn dequeue_any(cpu: usize, idx: usize) -> bool {
-    if idx >= MAX_TASKS {
-        return false;
+impl WalkCtx for PickCtx {
+    #[inline(always)]
+    fn prev_class(&self) -> Option<Class> {
+        self.prev_class
     }
-    let _g = CpuLockGuard::acquire(cpu);
-    unsafe { cpu_remove(cpu, idx) }
 }
 
-/// Stop: one per-CPU slot, runs whenever it is ready.
+/// The class the running task competes in: none when it is not running, its
+/// class throttles it, or a misfit sends it away.
+#[inline(always)]
+unsafe fn prev_class(ctx: &PickCtx) -> Option<Class> {
+    if !ctx.prev_competes || ctx.force || ctx.prev >= MAX_TASKS {
+        return None;
+    }
+    let t = unsafe { task_ref(ctx.prev) };
+    if t.state() != TaskState::Running {
+        return None;
+    }
+    if ctx.active && rt::prev_is_exempt(ctx.prev) {
+        return Some(Class::Stop);
+    }
+    if ctx.keep.is_some() {
+        return Some(Class::Dl);
+    }
+    let p = t.priority.load(Ordering::Relaxed);
+    Some(if p >= IDLE_PRIORITY {
+        Class::Idle
+    } else if RT_ON && p < RT_PRIORITY_THRESHOLD {
+        Class::Rt
+    } else {
+        Class::Fair
+    })
+}
+
+/// Stop: the exempt band loops, above everything.
 pub struct StopClass;
-/// DL: the hart's reservation set, EDF (level, then absolute deadline).
+/// DL: the hart's reservation set, EDF.
 pub struct DlClass;
 /// RT: the band levels, fixed priority, FIFO inside a level, band budget.
 pub struct RtClass;
@@ -340,118 +370,104 @@ pub struct FairClass;
 /// Idle: the idle level.
 pub struct IdleClass;
 
-impl SchedClassOps for StopClass {
-    fn class(&self) -> Class { Class::Stop }
-    fn enqueue(&self, cpu: usize, idx: usize) -> bool { enqueue_any(cpu, idx) }
-    fn dequeue(&self, cpu: usize, idx: usize) -> bool { dequeue_any(cpu, idx) }
-    fn pick(&self, cpu: usize) -> Option<usize> {
-        if cpu >= MAX_CPUS {
-            return None;
-        }
-        let idx = STOP_TASK[cpu].load(Ordering::Acquire);
-        if idx < MAX_TASKS && ready(idx) {
-            return Some(idx);
-        }
-        // The exempt band loops are stop work.
-        if rt::active(cpu) { unsafe { rt::peek_exempt(cpu) } } else { None }
-    }
-    /// Stop work runs to completion.
-    fn tick(&self, _cpu: usize, _cur: usize) -> bool { false }
-    fn preempt_check(&self, _cpu: usize, _cur: usize, _cand: usize) -> bool { false }
-}
-
-impl SchedClassOps for DlClass {
-    fn class(&self) -> Class { Class::Dl }
-    fn enqueue(&self, cpu: usize, idx: usize) -> bool { enqueue_any(cpu, idx) }
-    fn dequeue(&self, cpu: usize, idx: usize) -> bool { dequeue_any(cpu, idx) }
-    fn pick(&self, cpu: usize) -> Option<usize> {
-        if !DL_ON { None } else { unsafe { rt::peek_dl(cpu) } }
-    }
-    /// The CBS charge and the band window, as the Legacy tick does.
-    fn tick(&self, cpu: usize, cur: usize) -> bool {
-        DL_ON && rt::active(cpu) && unsafe { rt::tick(cpu, cur) }
-    }
-    fn preempt_check(&self, cpu: usize, cur: usize, cand: usize) -> bool {
-        let classes = dl_above_band();
-        let (pc, pn) = (crate::rt_core::dl_rank(classes, prio(cur)), crate::rt_core::dl_rank(classes, prio(cand)));
-        match unsafe { (rt::dl_deadline(cpu, cur), rt::dl_deadline(cpu, cand)) } {
-            (Some(dc), Some(dn)) => crate::rt_core::edf_before(pn, dn, pc, dc),
-            _ => pn < pc,
-        }
+impl ClassStep<PickCtx> for StopClass {
+    const CLASS: Class = Class::Stop;
+    #[inline(always)]
+    fn pick_next(ctx: &mut PickCtx) -> Step {
+        unsafe { rt::step_stop(ctx) }
     }
 }
 
-impl SchedClassOps for RtClass {
-    fn class(&self) -> Class { Class::Rt }
-    fn enqueue(&self, cpu: usize, idx: usize) -> bool { enqueue_any(cpu, idx) }
-    fn dequeue(&self, cpu: usize, idx: usize) -> bool { dequeue_any(cpu, idx) }
-    /// The band's most urgent level, unless the band budget skips it (the
-    /// exempt safety loops are found by `rt::pick`, which still dispatches).
-    fn pick(&self, cpu: usize) -> Option<usize> {
-        if !RT_ON || unsafe { rt::band_skipped(cpu) } {
-            return None;
-        }
-        unsafe { rt::peek_levels(cpu, rt::LEVELS_BAND) }
-    }
-    fn tick(&self, cpu: usize, cur: usize) -> bool {
-        RT_ON && rt::active(cpu) && unsafe { rt::tick(cpu, cur) }
-    }
-    fn preempt_check(&self, _cpu: usize, cur: usize, cand: usize) -> bool {
-        prio(cand) < prio(cur)
+impl ClassStep<PickCtx> for DlClass {
+    const CLASS: Class = Class::Dl;
+    /// Gate canary `dispatch-skip-class`: the walk skips DL, so a queued
+    /// reservation waits behind the band.
+    const ON: bool = DL_ON && !cfg!(feature = "dispatch-skip-class-canary");
+    #[inline(always)]
+    fn pick_next(ctx: &mut PickCtx) -> Step {
+        unsafe { rt::step_dl(ctx) }
     }
 }
 
-impl SchedClassOps for FairClass {
-    fn class(&self) -> Class { Class::Fair }
-    fn enqueue(&self, cpu: usize, idx: usize) -> bool { enqueue_any(cpu, idx) }
-    fn dequeue(&self, cpu: usize, idx: usize) -> bool { dequeue_any(cpu, idx) }
-    fn pick(&self, cpu: usize) -> Option<usize> {
+impl ClassStep<PickCtx> for RtClass {
+    const CLASS: Class = Class::Rt;
+    const ON: bool = RT_ON;
+    #[inline(always)]
+    fn pick_next(ctx: &mut PickCtx) -> Step {
+        unsafe { rt::step_band(ctx) }
+    }
+}
+
+impl ClassStep<PickCtx> for FairClass {
+    const CLASS: Class = Class::Fair;
+    #[inline(always)]
+    fn pick_next(ctx: &mut PickCtx) -> Step {
         // Without the RT class the band levels are fair levels, strict
         // priority as the band is (they are not EEVDF tasks: `fairq::is_fair`).
         if !RT_ON {
-            if let Some(idx) = unsafe { rt::peek_levels(cpu, rt::LEVELS_BAND) } {
-                return Some(idx);
+            match unsafe { rt::step_band(ctx) } {
+                Step::Pass => {}
+                s => return s,
             }
         }
-        unsafe { fairq::peek(cpu) }
-    }
-    /// Charge the running fair task; `true`: a queued one now beats it.
-    /// `schedule()`'s tick is this call.
-    fn tick(&self, cpu: usize, cur: usize) -> bool { unsafe { fairq::tick(cpu, cur) } }
-    /// Earlier virtual deadline.
-    fn preempt_check(&self, _cpu: usize, cur: usize, cand: usize) -> bool {
-        fairq::before(cand, cur)
+        if ctx.bm & rt::LEVELS_NONBAND == 0 {
+            return Step::Pass;
+        }
+        // The running fair task is a candidate: still the best, it keeps the CPU.
+        match unsafe { fairq::take(ctx.cpu, true) } {
+            fairq::Fair::Task(idx) => Step::Run { idx, force: ctx.force },
+            fairq::Fair::Keep => Step::Keep,
+            // Only reservations queued at these levels.
+            fairq::Fair::Empty => Step::Pass,
+        }
     }
 }
 
-impl SchedClassOps for IdleClass {
-    fn class(&self) -> Class { Class::Idle }
-    fn enqueue(&self, cpu: usize, idx: usize) -> bool { enqueue_any(cpu, idx) }
-    fn dequeue(&self, cpu: usize, idx: usize) -> bool { dequeue_any(cpu, idx) }
-    fn pick(&self, cpu: usize) -> Option<usize> {
-        unsafe { rt::peek_levels(cpu, rt::LEVELS_IDLE) }
+impl ClassStep<PickCtx> for IdleClass {
+    const CLASS: Class = Class::Idle;
+    #[inline(always)]
+    fn pick_next(ctx: &mut PickCtx) -> Step {
+        unsafe { rt::step_idle(ctx) }
     }
-    fn tick(&self, _cpu: usize, _cur: usize) -> bool { false }
-    fn preempt_check(&self, _cpu: usize, _cur: usize, _cand: usize) -> bool { false }
 }
 
-/// This build's class table, compiled-out classes `None`.
-pub static TABLE: ClassTable<'static> = [
-    Some(&StopClass),
-    if DL_ON { Some(&DlClass) } else { None },
-    if RT_ON { Some(&RtClass) } else { None },
-    Some(&FairClass),
-    Some(&IdleClass),
-];
+/// This build's classes in precedence.
+type Classes = (StopClass, (DlClass, (RtClass, (FairClass, (IdleClass, ())))));
 
-/// The class walk on this CPU: the first class in precedence with a
-/// runnable task, and that task (a peek: nothing leaves its queue).
-/// Interrupts are off for the walk, so the caller cannot migrate between
-/// reading its CPU and reading that CPU's owner-hart RT state.
-pub fn pick_here() -> Option<(Class, usize)> {
+/// The pick on `cpu` (this hart, interrupts masked) with `prev` current on
+/// it: the walk over the classes under the CPU's run-queue lock. `Run`: the
+/// task is off its queue. `active`: the hart has RT state, and
+/// `rt::pick_begin` ran for this `do_schedule`. A refused candidate goes back
+/// with `cpu_requeue_self`; a second pick in the same `do_schedule` (the core
+/// filter, the context-saving gate) calls this again.
+pub(super) unsafe fn pick(cpu: usize, prev: usize, prev_competes: bool, active: bool) -> Step {
+    let _g = CpuLockIrqsOff::acquire(cpu);
+    let mut ctx = PickCtx {
+        cpu,
+        prev,
+        prev_competes,
+        prev_class: None,
+        active,
+        bm: unsafe { PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) },
+        resv: false,
+        skip_band: false,
+        force: false,
+        keep: None,
+        classes: true,
+    };
+    if active {
+        unsafe { rt::pick_state(&mut ctx) };
+    }
+    ctx.prev_class = unsafe { prev_class(&ctx) };
+    walk::<PickCtx, Classes>(&mut ctx)
+}
+
+/// Is anything queued on this CPU (ktest `sched_class_live`)? Interrupts off
+/// for the read, so the caller cannot migrate between the CPU and its bitmap.
+pub fn runnable_here() -> bool {
     let s = azos_arch::ARCH.disable_all();
     let cpu = crate::smp::current_cpu_id();
-    let r = if cpu < ncpu() { crate::sc::pick_in_precedence(&TABLE, cpu) } else { None };
+    let r = cpu < ncpu() && unsafe { PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) } != 0;
     azos_arch::ARCH.restore(s);
     r
 }

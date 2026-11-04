@@ -34,7 +34,7 @@
 //!
 //! | Rule | Where |
 //! |---|---|
-//! | the pick | [`pick`] from `cpu_dequeue` (a hart without RT state) and from `rt::pick`'s non-band levels |
+//! | the pick | [`take`] from the class walk's fair step (`classes::FairClass`) |
 //! | charge | [`on_switch`] (`set_current_task`, every switch incl. the IPC hand-off), [`tick`], [`begin`] |
 //! | yield | [`begin`] (a `Voluntary` switch of a `Running` task) |
 //! | lag stored | [`sleep`] (the `Blocked` arm of `do_schedule`), [`left`] (`cpu_remove_anywhere`: a priority change or a move) |
@@ -359,16 +359,6 @@ pub(super) unsafe fn take(cpu: usize, with_running: bool) -> Fair {
     }
 }
 
-/// The class view (`classes::FairClass::pick`): the queued task EEVDF runs
-/// next, the running one not considered, not removed.
-pub(super) unsafe fn peek(cpu: usize) -> Option<usize> {
-    let _g = CpuLockGuard::acquire(cpu);
-    match unsafe { tree(cpu) }.pick(&NODES, None) {
-        Choice::Task(idx) if !rt::reserved_here(cpu, idx) => Some(idx),
-        _ => None,
-    }
-}
-
 /// Task `idx` runs for what has passed since it was last charged.
 unsafe fn update_curr(idx: usize, prio: u32) {
     let s = &SLOTS[idx];
@@ -390,7 +380,7 @@ pub(super) unsafe fn tick(cpu: usize, cur: usize) -> bool {
         return false;
     }
     // A reservation at a fair level is the DL class's: it is switched at
-    // every tick as before, and `rt::pick` decides whether it keeps the CPU.
+    // every tick as before, and the class walk decides whether it keeps the CPU.
     if rt::reserved_here(cpu, cur) {
         return true;
     }
@@ -604,12 +594,6 @@ pub fn ktest_lists(cpu: usize) -> Result<usize, &'static str> {
 #[cfg(feature = "ktest")]
 pub(super) fn ktest_linked(idx: usize) -> bool {
     NODES.node(idx).weight != 0
-}
-
-/// Must queued `cand` take the CPU from running `cur` (the class's
-/// `preempt_check`)?
-pub(super) fn before(cand: usize, cur: usize) -> bool {
-    eevdf::before(&ent(cand, prio_of(cand)), &ent(cur, prio_of(cur)))
 }
 
 // ── Between CPUs (`SCHED_BALANCE`, policy: `balance.rs`) ─────────────────────

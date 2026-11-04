@@ -401,24 +401,83 @@ impl SchedContext {
     }
 }
 
-/// One dispatch class over its run queue. Indices are task slots.
-///
-/// `pick` is a **peek**: it names the task the class would run next on
-/// `cpu` without taking it off its queue, so a caller can walk the classes
-/// in precedence and commit only the winner (`dequeue`).
-pub trait SchedClassOps: Sync {
+/// What one class's step of the walk decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Dispatch `idx`, already off its queue. `force`: the running task gives
+    /// the CPU up even to a worse class (its own class throttled it).
+    Run { idx: usize, force: bool },
+    /// The running task stays: nothing this class or a later one holds beats it.
+    Keep,
+    /// Nothing of this class runs here: the next class is asked.
+    Pass,
+}
+
+/// The state of one pick that the walk reads besides the classes.
+pub trait WalkCtx {
+    /// The class the running task competes in; `None` when it does not
+    /// (blocked, or its class throttled it).
+    fn prev_class(&self) -> Option<Class>;
+}
+
+/// One dispatch class's step of the walk over `C`, the pick's state on one
+/// CPU (built and walked under that CPU's run-queue lock).
+pub trait ClassStep<C> {
     /// Which class this is.
-    fn class(&self) -> Class;
-    /// Make `idx` runnable on `cpu`. `false`: refused (already queued).
-    fn enqueue(&self, cpu: usize, idx: usize) -> bool;
-    /// Take `idx` off `cpu`'s queue. `false`: it was not there.
-    fn dequeue(&self, cpu: usize, idx: usize) -> bool;
-    /// The task this class runs next on `cpu`, if it has one.
-    fn pick(&self, cpu: usize) -> Option<usize>;
-    /// The tick on `cpu` with `cur` running: charge it; `true` = preempt.
-    fn tick(&self, cpu: usize, cur: usize) -> bool;
-    /// Must `cand` (of this class) take `cpu` from `cur` (of this class)?
-    fn preempt_check(&self, cpu: usize, cur: usize, cand: usize) -> bool;
+    const CLASS: Class;
+    /// Compiled in (`SCHED_CLASS_*`): a class that is not folds out of the walk.
+    const ON: bool = true;
+    /// Take this class's next task, or keep the running one if it competes
+    /// in this class and still comes first.
+    fn pick_next(ctx: &mut C) -> Step;
+}
+
+/// An ordered set of classes, `(A, (B, (C, ())))`, highest first. Generic,
+/// so the walk is unrolled at compile time: no indirect call per class.
+pub trait ClassSet<C> {
+    /// The classes in precedence.
+    fn walk_fwd(ctx: &mut C) -> Step;
+    /// The classes backwards (`canary=sched-class-invert`).
+    fn walk_rev(ctx: &mut C) -> Step;
+}
+
+impl<C> ClassSet<C> for () {
+    #[inline(always)]
+    fn walk_fwd(_: &mut C) -> Step { Step::Pass }
+    #[inline(always)]
+    fn walk_rev(_: &mut C) -> Step { Step::Pass }
+}
+
+impl<C: WalkCtx, A: ClassStep<C>, R: ClassSet<C>> ClassSet<C> for (A, R) {
+    #[inline(always)]
+    fn walk_fwd(ctx: &mut C) -> Step {
+        if A::ON {
+            // The running task outranks this class and every later one.
+            if ctx.prev_class().is_some_and(|p| p.preempts(A::CLASS)) {
+                return Step::Keep;
+            }
+            match A::pick_next(ctx) {
+                Step::Pass => {}
+                s => return s,
+            }
+        }
+        R::walk_fwd(ctx)
+    }
+
+    #[inline(always)]
+    fn walk_rev(ctx: &mut C) -> Step {
+        match R::walk_rev(ctx) {
+            Step::Pass => {}
+            s => return s,
+        }
+        if A::ON {
+            if ctx.prev_class().is_some_and(|p| A::CLASS.preempts(p)) {
+                return Step::Keep;
+            }
+            return A::pick_next(ctx);
+        }
+        Step::Pass
+    }
 }
 
 /// `canary=sched-class-invert`: the walk runs the precedence backwards.
@@ -429,37 +488,10 @@ pub fn canary_invert_precedence() {
     INVERTED.store(true, Ordering::Relaxed);
 }
 
-/// The class table of one build: `None` for a class compiled out.
-pub type ClassTable<'a> = [Option<&'a dyn SchedClassOps>; Class::COUNT];
-
-/// The first class in precedence with a runnable task on `cpu`, and that
-/// task. A class that is compiled out (`None`) is skipped.
-pub fn pick_in_precedence(table: &ClassTable<'_>, cpu: usize) -> Option<(Class, usize)> {
-    let inv = INVERTED.load(Ordering::Relaxed);
-    for k in 0..Class::COUNT {
-        let c = Class::PRECEDENCE[if inv { Class::COUNT - 1 - k } else { k }];
-        if let Some(ops) = table[c as usize] {
-            if let Some(idx) = ops.pick(cpu) {
-                return Some((c, idx));
-            }
-        }
-    }
-    None
-}
-
-/// Must a task of class `cand` take the CPU from one of `cur`? Across classes
-/// precedence decides; inside one the class's own `preempt_check`.
-pub fn should_preempt(
-    table: &ClassTable<'_>,
-    cpu: usize,
-    cur: (Class, usize),
-    cand: (Class, usize),
-) -> bool {
-    if cand.0 != cur.0 {
-        return cand.0.preempts(cur.0) != INVERTED.load(Ordering::Relaxed);
-    }
-    match table[cand.0 as usize] {
-        Some(ops) => ops.preempt_check(cpu, cur.1, cand.1),
-        None => false,
-    }
+/// The pick: the first class in precedence whose step does not pass decides.
+/// When none has anything, the running task stays (an idle CPU stays idle).
+#[inline(always)]
+pub fn walk<C: WalkCtx, S: ClassSet<C>>(ctx: &mut C) -> Step {
+    let s = if INVERTED.load(Ordering::Relaxed) { S::walk_rev(ctx) } else { S::walk_fwd(ctx) };
+    if s == Step::Pass { Step::Keep } else { s }
 }

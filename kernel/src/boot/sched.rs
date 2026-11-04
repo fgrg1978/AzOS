@@ -2261,36 +2261,44 @@ mod user_state_ktests {
 // backwards): `sched_class_precedence` is `not ok`.
 #[cfg(feature = "ktest")]
 mod sched_class_ktests {
-    use azos_sched::sc::{pick_in_precedence, should_preempt, Class, ClassTable, SchedClassOps};
+    use azos_sched::sc::{walk, Class, ClassStep, Step, WalkCtx};
 
-    struct Stub(Class, Option<usize>);
-    impl SchedClassOps for Stub {
-        fn class(&self) -> Class { self.0 }
-        fn enqueue(&self, _: usize, _: usize) -> bool { false }
-        fn dequeue(&self, _: usize, _: usize) -> bool { false }
-        fn pick(&self, _: usize) -> Option<usize> { self.1 }
-        fn tick(&self, _: usize, _: usize) -> bool { false }
-        fn preempt_check(&self, _: usize, cur: usize, cand: usize) -> bool { cand < cur }
+    /// The walk over stub classes: each class holds at most one task, and the
+    /// running task competes in `prev`'s class.
+    struct Ctx {
+        queued: [Option<usize>; Class::COUNT],
+        prev: Option<Class>,
     }
-
-    static STOP: Stub = Stub(Class::Stop, None);
-    static DL: Stub = Stub(Class::Dl, Some(11));
-    static RT: Stub = Stub(Class::Rt, Some(22));
-    static FAIR: Stub = Stub(Class::Fair, Some(33));
-    static IDLE: Stub = Stub(Class::Idle, Some(44));
+    impl WalkCtx for Ctx {
+        fn prev_class(&self) -> Option<Class> { self.prev }
+    }
+    struct Stub<const K: u8, const ON: bool>;
+    impl<const K: u8, const ON: bool> ClassStep<Ctx> for Stub<K, ON> {
+        const CLASS: Class = match Class::from_raw(K) { Some(c) => c, None => Class::Idle };
+        const ON: bool = ON;
+        fn pick_next(ctx: &mut Ctx) -> Step {
+            match ctx.queued[K as usize].take() {
+                Some(idx) => Step::Run { idx, force: false },
+                None if ctx.prev == Some(Self::CLASS) => Step::Keep,
+                None => Step::Pass,
+            }
+        }
+    }
+    type All = (Stub<0, true>, (Stub<1, true>, (Stub<2, true>, (Stub<3, true>, (Stub<4, true>, ())))));
+    type NoDl = (Stub<0, true>, (Stub<1, false>, (Stub<2, true>, (Stub<3, true>, (Stub<4, true>, ())))));
 
     azos_ktest::ktest! {
         fn sched_class_precedence() {
-            let all: ClassTable<'static> = [Some(&STOP), Some(&DL), Some(&RT), Some(&FAIR), Some(&IDLE)];
-            if pick_in_precedence(&all, 0) != Some((Class::Dl, 11)) {
+            let q = [None, Some(11), Some(22), Some(33), Some(44)];
+            if walk::<Ctx, All>(&mut Ctx { queued: q, prev: None }) != (Step::Run { idx: 11, force: false }) {
                 return Err("the class walk did not take DL first (stop empty)");
             }
-            let no_dl: ClassTable<'static> = [None, None, Some(&RT), Some(&FAIR), Some(&IDLE)];
-            if pick_in_precedence(&no_dl, 0) != Some((Class::Rt, 22)) {
+            if walk::<Ctx, NoDl>(&mut Ctx { queued: q, prev: None }) != (Step::Run { idx: 22, force: false }) {
                 return Err("with DL compiled out the walk did not take RT");
             }
-            if !should_preempt(&all, 0, (Class::Fair, 33), (Class::Rt, 22))
-                || should_preempt(&all, 0, (Class::Rt, 22), (Class::Fair, 33))
+            let fair_only = [None, None, None, Some(33), Some(44)];
+            if walk::<Ctx, All>(&mut Ctx { queued: fair_only, prev: Some(Class::Rt) }) != Step::Keep
+                || walk::<Ctx, All>(&mut Ctx { queued: q, prev: Some(Class::Fair) }) != (Step::Run { idx: 11, force: false })
             {
                 return Err("preemption across classes does not follow precedence");
             }
@@ -2475,8 +2483,8 @@ mod sched_class_ktests {
             if azos_sched::classes::class_of(cur) != Some(azos_sched::classes::class_for(cur, base)) {
                 return Err("the running task's SC is not in its priority's class");
             }
-            if azos_sched::classes::pick_here().is_none() {
-                return Err("no class has a runnable task on this CPU");
+            if !azos_sched::classes::runnable_here() {
+                return Err("no task is queued on this CPU (its idle task is)");
             }
             Ok(())
         }

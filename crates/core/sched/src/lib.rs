@@ -131,7 +131,6 @@ pub use scheduler::top_sched_callers;
 /// Times the `context_saving` spin-gate hit its deadline and handed the task
 /// back. **Must stay zero**; always compiled, unlike the census counters.
 pub use scheduler::spin_gate_expired;
-pub use scheduler::prio_guard_no_switch;
 pub use scheduler::ring_claim_audit;
 
 /// `(long, long_with_bell, max_delay_ticks, measured)` — see

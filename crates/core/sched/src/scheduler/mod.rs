@@ -46,6 +46,7 @@ use crate::task::{
     CpuLoad, EnqueueOutcome, enqueue_decision, pick_cpu_by_load,
 };
 use crate::smp::{current_cpu_id, NUM_ONLINE_CPUS};
+use crate::sc::Step;
 use crate::topo::{self, Claim, CorePick, Level};
 use wcet_macro::wcet;
 
@@ -1371,13 +1372,6 @@ unsafe fn cpu_drain_locked(cpu: usize) -> Option<usize> {
     cpu_dequeue_as::<false>(cpu)
 }
 
-/// [`cpu_dequeue_locked`] for `do_schedule`, whose interrupts are masked.
-#[inline(always)]
-unsafe fn cpu_dequeue_irqs_off(cpu: usize) -> Option<usize> {
-    let _g = CpuLockIrqsOff::acquire(cpu);
-    cpu_dequeue(cpu)
-}
-
 /// `do_schedule` putting a task back on ITS OWN hart's queue, interrupts
 /// masked: [`cpu_enqueue_locked`] without the `sstatus` save/restore and
 /// without the doorbell, which only a remote enqueue rings (`cpu` is this
@@ -1764,27 +1758,6 @@ pub static SPIN_GATE_EXPIRED: core::sync::atomic::AtomicU32 =
 /// Reads [`SPIN_GATE_EXPIRED`].
 pub fn spin_gate_expired() -> u32 {
     SPIN_GATE_EXPIRED.load(Ordering::Relaxed)
-}
-
-/// Times the priority guard sent a pick back rather than preempting a Running
-/// task with a strictly worse one.
-///
-/// Instrumented because its absence hid a wedge. A captured hang showed
-/// `do_schedule calls=2023433 switches=13026` with EVERY `unswitched` reason
-/// reading zero — two million returns that no counter explained, because this
-/// arm was the one return out of `do_schedule` that bumped nothing. A
-/// breakdown with an unlabelled majority is worse than none: it reads as "all
-/// paths accounted for" while the interesting one is invisible.
-///
-/// Always compiled, for the same reason as `SPIN_GATE_EXPIRED`: the failure it
-/// reports is one that happens on the board, not only in the instrumented
-/// build.
-pub static PRIO_GUARD_NO_SWITCH: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-
-/// Reads [`PRIO_GUARD_NO_SWITCH`].
-pub fn prio_guard_no_switch() -> u32 {
-    PRIO_GUARD_NO_SWITCH.load(Ordering::Relaxed)
 }
 
 // The audit below represents slot sets as bitmaps over task slots, sized from
@@ -2409,22 +2382,23 @@ unsafe fn do_schedule(why: SwitchReason) {
     } else {
         None
     };
+    // The class walk (`classes::pick`): the running task competes in its own
+    // class unless a misfit sends it away, and `Keep` (nothing beats it) is
+    // the answer an empty queue gives. A hart with RT state charges its band
+    // and reservations once, before the walk.
+    let active = rt::active(cpu);
+    let prev_competes = misfit_to.is_none();
+    if active && core_idle.is_none() {
+        rt::pick_begin(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed));
+    }
     let next_idx = {
-        // Bitmap-based priority queue. A hart with RT state (`rt::active`)
-        // picks through `rt::pick` instead: the band levels skipped while the
-        // band is exhausted and something else is ready, reservation tasks
-        // first in their level by deadline, throttled reservations skipped.
-        // `Keep` is "nothing better than the running task", the same answer
-        // an empty queue gives.
         let picked = if core_idle.is_some() {
             core_idle
-        } else if rt::active(cpu) {
-            match rt::pick(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed)) {
-                rt::Pick::Task { idx, force } => { rt_force = force; Some(idx) }
-                rt::Pick::Keep => None,
-            }
         } else {
-            cpu_dequeue_irqs_off(cpu)
+            match classes::pick(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed), prev_competes, active) {
+                Step::Run { idx, force } => { rt_force |= force; Some(idx) }
+                Step::Keep | Step::Pass => None,
+            }
         };
         match picked {
             Some(idx) => idx,
@@ -2458,45 +2432,6 @@ unsafe fn do_schedule(why: SwitchReason) {
     } else {
         core::ptr::null_mut()
     };
-
-    // A strictly WORSE-priority pick must not preempt a Running current.
-    //
-    // **WHY this is needed at all.** This function picks `next` *before* it
-    // re-enqueues `old`, so the outgoing task is not a candidate in its own
-    // selection. While every hart's queue was empty that never showed: the
-    // pick failed and the early return kept the current task running. Adding
-    // one idle task per hart made the queue never-empty, and suddenly every
-    // voluntary `yield` switched to `idle` — which WFIs, so the hart then sat
-    // until the next 100 Hz tick. Measured: `sched-yield` went from ~4 us to
-    // ~14 ms, a 3500x regression, with the doorbell working correctly (a
-    // self-enqueue rings no doorbell, by design, because "this hart is awake"
-    // — an assumption that breaks the moment the hart switches to idle).
-    //
-    // The guard is about priority, not about idle: idle is simply the first
-    // task low-priority enough to expose it. Between two fair tasks it does
-    // not apply: their order is EEVDF's (a weight, not a priority), and the
-    // pick already weighed the running one.
-    // Not when the RT pick forces the switch (`rt_force`): a band task past its
-    // budget, or a throttled reservation, must yield to a worse priority —
-    // that is the whole point of the budget.
-    if !rt_force && core_idle.is_none() && old_idx < MAX_TASKS && next_idx != old_idx {
-        let old = &*old_t;
-        let (op, np) = (old.priority.load(Ordering::Relaxed), (*next_t).priority.load(Ordering::Relaxed));
-        if old.state() == TaskState::Running
-            && np > op
-            && !(fairq::is_fair(op) && fairq::is_fair(np))
-        {
-            // Put the pick back: the selection above consumed a queue entry,
-            // and dropping it here would leak the task out of every run queue
-            // while leaving it Ready — the exact K-C26 shape guarded below.
-            if !cpu_requeue_self(cpu, next_idx) {
-                SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
-            }
-            PRIO_GUARD_NO_SWITCH.fetch_add(1, Ordering::Relaxed);
-            clear_saving_on_no_switch(cpu);
-            return;
-        }
-    }
 
     // Don't switch if we'd switch to ourselves.
     if next_idx == old_idx {
@@ -2611,12 +2546,12 @@ unsafe fn do_schedule(why: SwitchReason) {
             next_idx,
             &mut stash,
             |i| core_claim_of(cpu, i),
-            || cpu_dequeue_irqs_off(cpu),
-            // The guard above, for a redrawn candidate.
-            |i| {
-                let np = (*task_mut(i)).priority.load(Ordering::Relaxed);
-                np > old_prio && !(fairq::is_fair(old_prio) && fairq::is_fair(np))
+            || match classes::pick(cpu, old_idx, prev_competes, active) {
+                Step::Run { idx, .. } => Some(idx),
+                Step::Keep | Step::Pass => None,
             },
+            // The walk never draws a task the running one outranks.
+            |_| false,
             || cpu_take_idle(cpu),
         );
         for &i in &stash[..pick.stashed] {
@@ -2696,7 +2631,7 @@ unsafe fn do_schedule(why: SwitchReason) {
             // are retried on the next pass with the flag presumably settled.
             // The RT pick removes its task from the ring under the CPU lock,
             // so the same holds for it.
-            match redraw_past_stuck(cpu, old_idx, smt != 0, &mut rt_force, next_idx) {
+            match redraw_past_stuck(cpu, old_idx, smt != 0, &mut rt_force, next_idx, prev_competes, active) {
                 Some(j) => {
                     next_idx = j;
                     next_t = task_mut(j);

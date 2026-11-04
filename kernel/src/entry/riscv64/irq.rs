@@ -121,9 +121,8 @@ fn dump_sched_counters() {
         kprintln!("[SCHED-DBG]   tid={} runtime={} state={} name={}", e.0, e.1, e.3, nm);
     }
     let (rdy, blk, run, per_cpu, runq, blkq, _r) = azos_sched::task_census();
-    kprintln!("[SCHED-DBG]   census: ready={} blocked={} running={} per_cpu_queues={:?} ready_unqueued={} blocked_queued={} spin_gate_expired={} prio_guard_no_switch={}",
-        rdy, blk, run, per_cpu, runq, blkq, azos_sched::spin_gate_expired(),
-        azos_sched::prio_guard_no_switch());
+    kprintln!("[SCHED-DBG]   census: ready={} blocked={} running={} per_cpu_queues={:?} ready_unqueued={} blocked_queued={} spin_gate_expired={}",
+        rdy, blk, run, per_cpu, runq, blkq, azos_sched::spin_gate_expired());
     // Printed here, and asserted by the gate, because
     // the hand-off changes LATENCY and nothing else: every functional IPC test
     // passes byte-identically whether the hint fires on every exchange or on

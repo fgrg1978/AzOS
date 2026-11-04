@@ -3128,8 +3128,8 @@ pub fn stop_die_with_parent_children(dead: u32) -> usize {
 
 /// Core scheduling logic: pick next task for `cpu` and context-switch to it.
 ///
-/// Scheduling order: strict priority over the per-CPU bitmap queues; on a
-/// hart with RT state, `rt::pick` (band budget, EDF + CBS inside a level).
+/// Scheduling order: the class walk (`classes::pick`): stop, DL (EDF + CBS),
+/// the band (fixed priority, band budget), fair (EEVDF), idle.
 ///
 /// # Safety
 /// Should be called with interrupts disabled on the calling CPU (all current
@@ -3521,15 +3521,15 @@ pub fn canary_gate_no_redraw() {
 /// `first`, picked for `cpu`, outlasted the context-saving gate: leave it, and
 /// every candidate drawn after it that does the same, out of this pass and put
 /// them back on the queue, then return the first candidate whose save is
-/// done. `None` when there is none, or when the draw would break a rule the
-/// first pick was held to: the running task keeps the hart against a worse
-/// priority, and a core-scheduled hart (`smt`) draws through `topo::core_pick`
-/// only. At most `SCHED_SAVING_GATE_REDRAWS` draws, so the time spent with
+/// done. `None` when there is none, when the running task keeps the hart
+/// (the walk found nothing that beats it), or on a core-scheduled hart
+/// (`smt`), which draws through `topo::core_pick` only. At most `SCHED_SAVING_GATE_REDRAWS` draws, so the time spent with
 /// interrupts masked is bounded by that many gate waits more.
 #[cold]
 #[inline(never)]
 pub(super) unsafe fn redraw_past_stuck(
     cpu: usize, old_idx: usize, smt: bool, rt_force: &mut bool, first: usize,
+    prev_competes: bool, active: bool,
 ) -> Option<usize> {
     let mut stash = [usize::MAX; azos_limits::SCHED_SAVING_GATE_REDRAWS as usize + 1];
     let mut n = 0;
@@ -3542,13 +3542,9 @@ pub(super) unsafe fn redraw_past_stuck(
         if smt || n == stash.len() || (azos_limits::CANARY_RUNTIME && CANARY_GATE_NO_REDRAW.load(Ordering::Relaxed)) {
             break None;
         }
-        let drawn = if rt::active(cpu) {
-            match rt::pick(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed)) {
-                rt::Pick::Task { idx, force } => { *rt_force = force; Some(idx) }
-                rt::Pick::Keep => None,
-            }
-        } else {
-            cpu_dequeue_irqs_off(cpu)
+        let drawn = match classes::pick(cpu, old_idx, prev_competes, active) {
+            Step::Run { idx, force } => { *rt_force |= force; Some(idx) }
+            Step::Keep | Step::Pass => None,
         };
         let Some(j) = drawn else { break None };
         if j == old_idx {
@@ -3559,18 +3555,6 @@ pub(super) unsafe fn redraw_past_stuck(
             break None;
         }
         let next = task_ref(j);
-        if !*rt_force && old_idx < MAX_TASKS {
-            let old = task_ref(old_idx);
-            let (op, np) = (old.priority.load(Ordering::Relaxed), next.priority.load(Ordering::Relaxed));
-            if old.state() == TaskState::Running
-                && np > op
-                && !(fairq::is_fair(op) && fairq::is_fair(np))
-            {
-                stash[n] = j;
-                n += 1;
-                break None;
-            }
-        }
         if !next.context_saving.load(Ordering::Acquire) || wait_context_saved(next) {
             break Some(j);
         }

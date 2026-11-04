@@ -898,8 +898,8 @@ mod rt_core_tests {
 }
 
 /// Wave 11 SCHED-RT wiring that only the source can show: the old EDF path is
-/// gone, the RT hooks sit where the module doc says, and the forced switch
-/// bypasses the priority guard only when the RT pick asks for it.
+/// gone, the RT hooks sit where the module doc says, and the pick is the
+/// class walk alone.
 #[cfg(test)]
 mod rt_wiring {
     use super::tid_lookup::{body, code};
@@ -924,9 +924,9 @@ mod rt_wiring {
         let switch = ds.rfind("context_switch(old_ptr").unwrap();
         assert!(last_tickless < tail && tail < switch,
                 "rt::on_switch must sit after the tickless write and before the switch");
-        assert!(ds.contains("if !rt_force &&"),
-                "the priority guard must yield to a forced RT switch");
-        assert!(ds.contains("rt::pick(cpu,"), "the RT pick is not wired");
+        assert!(ds.contains("classes::pick(cpu,"), "the class walk is not wired");
+        assert!(!ds.contains("np > op"),
+                "a second priority guard is back beside the walk (the running task competes in it)");
     }
 
     #[test]
@@ -1157,30 +1157,58 @@ mod sc_tests {
         assert_eq!(core::mem::size_of::<SchedContext>(), SC_SIZE, "no field was added");
     }
 
-    struct Stub(Class, Option<usize>);
-    impl SchedClassOps for Stub {
-        fn class(&self) -> Class { self.0 }
-        fn enqueue(&self, _: usize, _: usize) -> bool { false }
-        fn dequeue(&self, _: usize, _: usize) -> bool { false }
-        fn pick(&self, _: usize) -> Option<usize> { self.1 }
-        fn tick(&self, _: usize, _: usize) -> bool { false }
-        fn preempt_check(&self, _: usize, cur: usize, cand: usize) -> bool { cand < cur }
+    struct Ctx {
+        queued: [Option<usize>; Class::COUNT],
+        prev: Option<Class>,
+        asked: u8,
+    }
+    impl WalkCtx for Ctx {
+        fn prev_class(&self) -> Option<Class> { self.prev }
+    }
+    struct Stub<const K: u8, const ON: bool>;
+    impl<const K: u8, const ON: bool> ClassStep<Ctx> for Stub<K, ON> {
+        const CLASS: Class = match Class::from_raw(K) { Some(c) => c, None => Class::Idle };
+        const ON: bool = ON;
+        fn pick_next(ctx: &mut Ctx) -> Step {
+            ctx.asked |= 1 << K;
+            match ctx.queued[K as usize].take() {
+                Some(idx) => Step::Run { idx, force: false },
+                None if ctx.prev == Some(Self::CLASS) => Step::Keep,
+                None => Step::Pass,
+            }
+        }
+    }
+    type All = (Stub<0, true>, (Stub<1, true>, (Stub<2, true>, (Stub<3, true>, (Stub<4, true>, ())))));
+    type FairIdle = (Stub<0, true>, (Stub<1, false>, (Stub<2, false>, (Stub<3, true>, (Stub<4, true>, ())))));
+
+    fn ctx(queued: [Option<usize>; Class::COUNT], prev: Option<Class>) -> Ctx {
+        Ctx { queued, prev, asked: 0 }
     }
 
     #[test]
     fn walk_takes_the_first_class_with_work() {
-        let (s, d, r, f, i) = (Stub(Class::Stop, None), Stub(Class::Dl, None),
-            Stub(Class::Rt, Some(2)), Stub(Class::Fair, Some(3)), Stub(Class::Idle, Some(4)));
-        let t: ClassTable<'_> = [Some(&s), Some(&d), Some(&r), Some(&f), Some(&i)];
-        assert_eq!(pick_in_precedence(&t, 0), Some((Class::Rt, 2)));
-        let t2: ClassTable<'_> = [None, None, None, Some(&f), Some(&i)];
-        assert_eq!(pick_in_precedence(&t2, 0), Some((Class::Fair, 3)));
-        let empty: ClassTable<'_> = [None, None, None, None, None];
-        assert_eq!(pick_in_precedence(&empty, 0), None);
-        assert!(should_preempt(&t, 0, (Class::Fair, 3), (Class::Rt, 2)));
-        assert!(!should_preempt(&t, 0, (Class::Rt, 2), (Class::Fair, 3)));
-        // Inside a class, the class decides.
-        assert!(should_preempt(&t, 0, (Class::Fair, 7), (Class::Fair, 3)));
+        let q = [None, None, Some(2), Some(3), Some(4)];
+        assert_eq!(walk::<Ctx, All>(&mut ctx(q, None)), Step::Run { idx: 2, force: false });
+        let mut c = ctx([None, None, Some(2), Some(3), Some(4)], None);
+        assert_eq!(walk::<Ctx, FairIdle>(&mut c), Step::Run { idx: 3, force: false });
+        assert_eq!(c.asked, 1 << 0 | 1 << 3, "a class compiled out is never asked");
+        // Nothing anywhere: the running task (or the idle CPU) stays.
+        assert_eq!(walk::<Ctx, All>(&mut ctx([None; Class::COUNT], None)), Step::Keep);
+    }
+
+    #[test]
+    fn the_running_task_outranks_every_later_class() {
+        // A running RT task against queued fair and idle work: kept, and the
+        // later classes are not asked.
+        let mut c = ctx([None, None, None, Some(3), Some(4)], Some(Class::Rt));
+        assert_eq!(walk::<Ctx, All>(&mut c), Step::Keep);
+        assert_eq!(c.asked, 1 << 0 | 1 << 1 | 1 << 2);
+        // A running fair task gives way to a queued RT one.
+        let q = [None, None, Some(2), Some(3), None];
+        assert_eq!(walk::<Ctx, All>(&mut ctx(q, Some(Class::Fair))), Step::Run { idx: 2, force: false });
+        // Inside its own class the class decides (the stub keeps it when its
+        // queue is empty).
+        assert_eq!(walk::<Ctx, All>(&mut ctx([None, None, None, None, Some(4)], Some(Class::Fair))), Step::Keep);
     }
 }
 
