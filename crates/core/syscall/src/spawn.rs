@@ -26,7 +26,6 @@
 //!    it with `wait`, `wait_status` or `waitpid`.
 
 use crate::file_ops::file_ops;
-use crate::handlers::EXEC_BOUNCE;
 
 /// A spawn that succeeds prints nothing unless this is on (owner: kernel
 /// console output only in debug modes): `[SPAWN] tid=...` and a
@@ -264,7 +263,7 @@ pub fn spawn_path_ex(
     // nothing is read or hashed.
     let stamp = if crate::image_cache::FRAME_BUDGET != 0 { ops.content_stamp(path) } else { None };
     let (child, plan, sched, hit) = {
-        let mut buf = EXEC_BOUNCE.acquire();
+        let Some(mut buf) = crate::handlers::exec_bounce() else { return SpawnEx::Failed(-1) };
         // An image larger than the bounce buffer is read
         // twice through a descriptor: once to hash it (the plan is made by
         // the digest), once to copy its segments in while hashing again; the

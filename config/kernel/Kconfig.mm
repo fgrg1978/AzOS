@@ -653,6 +653,18 @@ config MM_SWAP_FILE_SHRINK_POLLS
 
       Cost: none.
 
+config MM_PRELOAD_CACHES
+    bool
+    default y if RT_HARD || RT_MIXED || USE_INDUSTRIAL || USE_AUTOMOTIVE
+    help
+      Fill every boot cache (the TLB per-space record, the exec bounce buffer, the
+      TCP connection table, the boot volume's sector cache) at boot and seal it:
+      a sealed cache never asks the page allocator for more, so on a real-time
+      preset no allocation on a task's path reaches the page allocator for these
+      objects, and their RAM is committed up front. Derived from the real-time
+      and industrial/automotive choices; without it the caches take their memory
+      on first use.
+
 config PMM_TYPE_ZONES
     bool "Type-isolated physical frames (page tables and io_ring pages)"
     default y if !SECURITY_GENERAL

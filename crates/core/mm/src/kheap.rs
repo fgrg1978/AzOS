@@ -305,7 +305,7 @@ static CEILING: AtomicUsize = AtomicUsize::new(0);
 
 /// Count `n` more pages against the ceiling; `false` (nothing counted) when
 /// they would pass it.
-fn take(n: usize) -> bool {
+pub(crate) fn take(n: usize) -> bool {
     let ceil = CEILING.load(Ordering::Relaxed);
     let mut h = HELD.load(Ordering::Relaxed);
     loop {
@@ -319,7 +319,7 @@ fn take(n: usize) -> bool {
     }
 }
 
-fn give(n: usize) { HELD.fetch_sub(n, Ordering::Relaxed); }
+pub(crate) fn give(n: usize) { HELD.fetch_sub(n, Ordering::Relaxed); }
 
 /// Set the heap's ceiling to `ceiling` bytes. Pages are taken from the page
 /// allocator on demand from here on, so this must run after `pmm::init` and

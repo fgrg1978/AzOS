@@ -1460,7 +1460,7 @@ impl TcpConn {
 // ---------------------------------------------------------------------------
 
 struct TcpLayer {
-    conns:        [TcpConn; TCP_MAX_CONNS],
+    conns:        ConnTable,
     our_mac:      [u8; 6],
     our_ip:       [u8; 4],
     /// M26: hint for `find_conn` — the slot it matched last time.
@@ -1505,7 +1505,7 @@ pub fn find_conn_slot_touches() -> u64 {
 impl TcpLayer {
     const fn new() -> Self {
         TcpLayer {
-            conns:        [TcpConn::new(); TCP_MAX_CONNS],
+            conns:        ConnTable { p: core::ptr::null_mut() },
             our_mac:      [0; 6],
             our_ip:       [0; 4],
             last_matched: TCP_MAX_CONNS, // out of range: "no hint yet"
@@ -1525,7 +1525,7 @@ impl TcpLayer {
                 return Some(self.last_matched);
             }
         }
-        for i in 0..TCP_MAX_CONNS {
+        for i in 0..self.conns.len() {
             FIND_CONN_SLOT_TOUCHES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             let c = &self.conns[i];
             if c.state != TcpState::Closed
@@ -1543,7 +1543,7 @@ impl TcpLayer {
     /// The listener on `port` for `family`'s side: a listener takes
     /// connections of its own family only (an IPv6 socket is IPv6-only).
     fn find_listener(&self, port: u16, v6: bool) -> Option<usize> {
-        for i in 0..TCP_MAX_CONNS {
+        for i in 0..self.conns.len() {
             let c = &self.conns[i];
             if c.state == TcpState::Listen && c.local_port == port && c.local_ip.is_v6() == v6 {
                 return Some(i);
@@ -1556,7 +1556,7 @@ impl TcpLayer {
     /// for an earlier owner of the slot is stale from here on. The one place
     /// a slot changes hands, so the one place the generation moves.
     fn alloc(&mut self) -> Option<usize> {
-        for i in 0..TCP_MAX_CONNS {
+        for i in 0..self.conns.len() {
             if self.conns[i].state == TcpState::Closed {
                 #[cfg(not(feature = "tcp-handle-gen-canary"))]
                 { self.conns[i].gen = self.conns[i].gen.wrapping_add(1); }
@@ -1579,7 +1579,7 @@ impl TcpLayer {
     /// Does `r` still name the connection it was issued for?
     #[inline]
     fn live(&self, r: Ref) -> bool {
-        r.idx < TCP_MAX_CONNS && r.gen.map_or(true, |g| self.conns[r.idx].gen == g)
+        r.idx < self.conns.len() && r.gen.map_or(true, |g| self.conns[r.idx].gen == g)
     }
 
     /// A free local port from the ephemeral range
@@ -1651,7 +1651,87 @@ impl From<TcpHandle> for Ref {
     fn from(h: TcpHandle) -> Ref { Ref { idx: h.slot as usize, gen: Some(h.gen) } }
 }
 
-static TCP: SpinLock<TcpLayer> = SpinLock::new(TcpLayer::new());
+/// The connection slots as one table. A fresh slot is all zero.
+pub struct ConnArray {
+    c: [TcpConn; TCP_MAX_CONNS],
+}
+
+/// Where the table is: null until the first lock of [`TCP`] takes it from the
+/// source the kernel registered, so a build that never opens a connection
+/// holds no table. Empty to its users while null.
+struct ConnTable {
+    p: *mut ConnArray,
+}
+
+// SAFETY: reached only under the `TCP` lock.
+unsafe impl Send for ConnTable {}
+
+impl core::ops::Deref for ConnTable {
+    type Target = [TcpConn];
+    fn deref(&self) -> &[TcpConn] {
+        // SAFETY: non-null means a whole, owned table.
+        match unsafe { self.p.as_ref() } { Some(a) => &a.c, None => &[] }
+    }
+}
+
+impl core::ops::DerefMut for ConnTable {
+    fn deref_mut(&mut self) -> &mut [TcpConn] {
+        // SAFETY: as above, and the caller holds the lock.
+        match unsafe { self.p.as_mut() } { Some(a) => &mut a.c, None => &mut [] }
+    }
+}
+
+static CONN_SOURCE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Where the connection table comes from (a typed kernel cache, set at boot).
+pub fn set_conn_source(f: fn() -> *mut ConnArray) {
+    CONN_SOURCE.store(f as usize, core::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(target_os = "none"))]
+fn fallback_conns() -> *mut ConnArray {
+    struct Host(core::cell::UnsafeCell<core::mem::MaybeUninit<ConnArray>>);
+    // SAFETY: handed out to the one `TCP` table.
+    unsafe impl Sync for Host {}
+    static HOST: Host = Host(core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()));
+    HOST.0.get().cast()
+}
+#[cfg(target_os = "none")]
+fn fallback_conns() -> *mut ConnArray { core::ptr::null_mut() }
+
+fn conns_source() -> *mut ConnArray {
+    let f = CONN_SOURCE.load(core::sync::atomic::Ordering::Relaxed);
+    if f == 0 { return fallback_conns(); }
+    // SAFETY: stored by `set_conn_source` from a `fn() -> *mut ConnArray`.
+    let f: fn() -> *mut ConnArray = unsafe { core::mem::transmute(f) };
+    f()
+}
+
+/// The table, made with no lock held (it is megabytes: zeroing it under
+/// `TCP` would break the spinlock hold bound). All-zero is the closed state
+/// of every slot.
+static CONNS: azos_sync::once_obj::OnceObj<ConnArray> = azos_sync::once_obj::OnceObj::new();
+
+/// Make the connection table now, from the registered source: the kernel
+/// calls it at boot, before the first lock of [`TCP`]. False when the memory
+/// is not there; the table's users index it up to `TCP_MAX_CONNS`, so the
+/// kernel stops the boot then.
+pub fn provision() -> bool { !CONNS.get(conns_source).is_null() }
+
+struct TcpCell(SpinLock<TcpLayer>);
+
+impl TcpCell {
+    #[inline]
+    #[track_caller]
+    fn lock(&self) -> azos_sync::SpinLockGuard<'_, TcpLayer> {
+        let p = CONNS.get(conns_source);
+        let mut g = self.0.lock();
+        if g.conns.p.is_null() { g.conns.p = p; }
+        g
+    }
+}
+
+static TCP: TcpCell = TcpCell(SpinLock::new(TcpLayer::new()));
 
 // ---------------------------------------------------------------------------
 // ISN generation (RFC 6528)
@@ -2158,7 +2238,7 @@ fn listen_h(port: u16, v6: bool) -> Option<TcpHandle> {
     let mut t = TCP.lock();
     let ip = if v6 { IpAddr::V6([0; 16]) } else { IpAddr::V4(t.our_ip) };
     if !cfg!(feature = "listen-dup-canary")
-        && t.conns[..TCP_MAX_CONNS]
+        && t.conns[..]
             .iter()
             .any(|c| c.state == TcpState::Listen && c.local_port == port && c.local_ip.is_v6() == v6)
     {
@@ -2976,7 +3056,7 @@ pub(crate) fn accept(local_port: u16) -> i32 {
 
 fn accept_h(local_port: u16, v6: bool) -> Option<TcpHandle> {
     let mut t = TCP.lock();
-    for i in 0..TCP_MAX_CONNS {
+    for i in 0..t.conns.len() {
         let c = &mut t.conns[i];
         // `CloseWait` too: a peer that sends everything and half-closes
         // (`tools/dev/ota_send.py` does exactly that) can finish between two

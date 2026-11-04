@@ -914,8 +914,50 @@ const EXEC_MAX_BYTES: usize = 128 * 1024;
 /// loads only from an aligned start (Zbb: ~190 instructions a block fewer
 /// than byte loads). As a bare `[u8; N]` inside the mutex its start had no
 /// alignment, and the spawn census measured the odd-start rate.
-pub(crate) static EXEC_BOUNCE: azos_sync::claim::Claim<ExecBounce> =
-    azos_sync::claim::Claim::new(ExecBounce([0u8; EXEC_MAX_BYTES]));
+pub(crate) static EXEC_BOUNCE: azos_sync::claim::Claim<BounceBuf> =
+    azos_sync::claim::Claim::new(BounceBuf(core::ptr::null_mut()));
+
+/// The claim's payload: the buffer, taken from [`BOUNCE_CACHE`] by the first
+/// [`exec_bounce`].
+pub(crate) struct BounceBuf(*mut ExecBounce);
+
+// SAFETY: the pointer is reached only through the claim's guard.
+unsafe impl Send for BounceBuf {}
+
+impl core::ops::Deref for BounceBuf {
+    type Target = [u8; EXEC_MAX_BYTES];
+    fn deref(&self) -> &Self::Target {
+        assert!(!self.0.is_null());
+        // SAFETY: non-null, and owned for the life of the kernel.
+        unsafe { &(*self.0).0 }
+    }
+}
+
+impl core::ops::DerefMut for BounceBuf {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        assert!(!self.0.is_null());
+        // SAFETY: as above, and the guard is exclusive.
+        unsafe { &mut (*self.0).0 }
+    }
+}
+
+static BOUNCE_CACHE: azos_mm::cache::Cache<ExecBounce> = azos_mm::cache::Cache::new();
+
+/// Own the bounce buffer; `None` when its memory cannot be had.
+pub(crate) fn exec_bounce() -> Option<azos_sync::claim::ClaimGuard<'static, BounceBuf>> {
+    let mut g = EXEC_BOUNCE.acquire();
+    if g.0.is_null() {
+        let p = BOUNCE_CACHE.alloc_zeroed();
+        if p.is_null() { return None; }
+        g.0 = p;
+    }
+    Some(g)
+}
+
+/// Fill and seal the buffer's cache (Kconfig `MM_PRELOAD_CACHES`).
+pub fn preload_exec_bounce() -> bool { BOUNCE_CACHE.preload(1) }
+
+pub fn exec_bounce_sealed() -> bool { BOUNCE_CACHE.is_sealed() }
 
 /// Where `EXEC_BOUNCE` lives (diagnostics: the `lat-fat` smoke's F1 report
 /// names the lock by its address).

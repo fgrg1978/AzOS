@@ -1432,7 +1432,7 @@ pub use vol_cache::VolCache;
 /// the operations, which run the one copy of `bcache`'s code over the
 /// storage (`CacheMut`, `CacheRef`).
 mod vol_cache {
-    use super::{RemovableCache, SectorCache};
+    use super::{BootCacheRef, RemovableCache};
     use crate::bcache::{BlockIo, CacheMut, CacheRef, CacheStats, ConfigError, Dirty, IoError, Mode, Run};
     use azos_sync::{SpinLock, SpinLockGuard};
 
@@ -1440,14 +1440,14 @@ mod vol_cache {
     #[derive(Clone, Copy)]
     pub enum VolCache {
         /// `FS_BLOCK_CACHE_KB` of storage (the boot disk).
-        Boot(&'static SpinLock<SectorCache>),
+        Boot(&'static SpinLock<BootCacheRef>),
         /// `USB_VOLUME_CACHE_KB` of storage (a removable volume).
         Removable(&'static SpinLock<RemovableCache>),
     }
 
     /// A volume's sector cache, locked.
     pub enum CacheGuard<'a> {
-        Boot(SpinLockGuard<'a, SectorCache>),
+        Boot(SpinLockGuard<'a, BootCacheRef>),
         Removable(SpinLockGuard<'a, RemovableCache>),
     }
 
@@ -1455,14 +1455,25 @@ mod vol_cache {
         #[inline]
         pub fn lock(&self) -> CacheGuard<'static> {
             match *self {
-                VolCache::Boot(l) => CacheGuard::Boot(l.lock()),
+                VolCache::Boot(l) => {
+                    let p = super::boot_cache_obj();
+                    let mut g = l.lock();
+                    g.provision(p);
+                    CacheGuard::Boot(g)
+                }
                 VolCache::Removable(l) => CacheGuard::Removable(l.lock()),
             }
         }
         #[inline]
         pub fn try_lock(&self) -> Option<CacheGuard<'static>> {
             match *self {
-                VolCache::Boot(l) => l.try_lock().map(CacheGuard::Boot),
+                VolCache::Boot(l) => {
+                    let p = super::boot_cache_obj();
+                    l.try_lock().map(|mut g| {
+                        g.provision(p);
+                        CacheGuard::Boot(g)
+                    })
+                }
                 VolCache::Removable(l) => l.try_lock().map(CacheGuard::Removable),
             }
         }
@@ -1567,7 +1578,54 @@ mod vol_cache {
 
 /// All-zero until the first mount configures it (`fat32_cache_reset`), so
 /// the storage is `.bss`, not image bytes.
-static BOOT_CACHE: SpinLock<SectorCache> = SpinLock::new(SectorCache::unconfigured());
+static BOOT_CACHE: SpinLock<BootCacheRef> = SpinLock::new(BootCacheRef(core::ptr::null_mut()));
+
+static BOOT_CACHE_POOL: azos_mm::cache::Cache<SectorCache> = azos_mm::cache::Cache::new();
+
+/// The boot volume's cache, null until the first lock takes it from
+/// [`BOOT_CACHE_POOL`].
+pub struct BootCacheRef(*mut SectorCache);
+
+// SAFETY: reached only under `BOOT_CACHE`'s lock.
+unsafe impl Send for BootCacheRef {}
+
+static BOOT_CACHE_OBJ: azos_sync::once_obj::OnceObj<SectorCache> = azos_sync::once_obj::OnceObj::new();
+
+/// The boot volume's cache, made on first use with no lock held: it is
+/// `FS_BLOCK_CACHE_KB` of storage, too much to zero under `BOOT_CACHE`.
+fn boot_cache_obj() -> *mut SectorCache {
+    let p = BOOT_CACHE_OBJ.get(|| BOOT_CACHE_POOL.alloc());
+    assert!(!p.is_null(), "fat32: no memory for the boot sector cache");
+    p
+}
+
+impl BootCacheRef {
+    fn provision(&mut self, p: *mut SectorCache) {
+        if self.0.is_null() { self.0 = p; }
+    }
+}
+
+impl core::ops::Deref for BootCacheRef {
+    type Target = SectorCache;
+    fn deref(&self) -> &SectorCache {
+        assert!(!self.0.is_null());
+        // SAFETY: non-null, a whole zero-initialised cache owned for the life of the kernel.
+        unsafe { &*self.0 }
+    }
+}
+
+impl core::ops::DerefMut for BootCacheRef {
+    fn deref_mut(&mut self) -> &mut SectorCache {
+        assert!(!self.0.is_null());
+        // SAFETY: as above, exclusive under the lock.
+        unsafe { &mut *self.0 }
+    }
+}
+
+/// Fill and seal the boot cache's pool (Kconfig `MM_PRELOAD_CACHES`).
+pub fn preload_boot_cache() -> bool { BOOT_CACHE_POOL.preload(1) }
+
+pub fn boot_cache_sealed() -> bool { BOOT_CACHE_POOL.is_sealed() }
 
 /// A volume's device, as the shared cache sees it.
 struct BlkDev(&'static Vol);

@@ -195,6 +195,10 @@ pub mod claim {
 #[path = "../../../../../../crates/core/sync/src/waitstat.rs"]
 pub mod waitstat;
 
+// The real file: atomics only.
+#[path = "../../../../../../crates/core/sync/src/once_obj.rs"]
+pub mod once_obj;
+
 /// The real `WaitQueue`'s `wait_if`/`wake_all` surface. The host has no
 /// scheduler to block on, so `wait_if` yields the thread when the condition
 /// still holds (the caller re-checks in a loop, exactly as it must against

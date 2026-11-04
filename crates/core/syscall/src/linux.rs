@@ -2730,7 +2730,7 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
     let Some((row, row_len)) = with_me(|p| (p.row, p.row_len)) else { return Err(neg(le::EFAULT)) };
     reach(k::SYS_INVOKE);
     let random = random16();
-    let mut buf = crate::handlers::EXEC_BOUNCE.acquire();
+    let Some(mut buf) = crate::handlers::exec_bounce() else { return Err(neg(le::ENOMEM)) };
     let img = match crate::spawn::read_image(ops, &path[..plen], &mut buf[..]) {
         Ok(i) => i,
         Err(e) => return Err(lx::errno_from_native(e, le::ENOENT)),

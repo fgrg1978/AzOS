@@ -49,6 +49,11 @@ buddy-split-canary = []
 buddy-rotate-hot-canary = []
 # The kernel heap ceiling (KERNEL_HEAP_SIZE) is not checked: the `kheap ceiling` ktest goes red.
 kheap-ceiling-canary = []
+# A typed cache accepts an object that belongs to another cache (the block's tag is
+# not compared): the `kmem cache cross type` ktest goes red.
+kmem-cache-cross-type-canary = []
+# Boot caches are not filled and sealed on a preloading preset: the `kmem preload` ktest goes red.
+kmem-preload-canary = []
 pcp-refill-canary = []
 pcp-drain-canary = []
 frame-index-canary = []

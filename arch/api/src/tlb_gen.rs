@@ -323,8 +323,57 @@ impl<const N: usize> Default for SpaceTable<N> {
     }
 }
 
-/// The kernel's table (Kconfig `TLB_SPACE_SLOTS_BITS`).
-pub static SPACES: SpaceTable<SPACE_SLOTS> = SpaceTable::new();
+/// The kernel's table (Kconfig `TLB_SPACE_SLOTS_BITS`), allocated at boot by
+/// `azos_mm::cache::init_spaces` and installed here. Until then it answers as
+/// an empty, overflowed table: nothing recorded, every miss "unknown", which
+/// over-approximates a shootdown's harts.
+pub struct Spaces {
+    p: core::sync::atomic::AtomicPtr<SpaceTable<SPACE_SLOTS>>,
+}
+
+#[cfg(not(target_os = "none"))]
+static HOST_SPACES: SpaceTable<SPACE_SLOTS> = SpaceTable::new();
+#[cfg(not(target_os = "none"))]
+fn unset() -> Option<&'static SpaceTable<SPACE_SLOTS>> { Some(&HOST_SPACES) }
+#[cfg(target_os = "none")]
+fn unset() -> Option<&'static SpaceTable<SPACE_SLOTS>> { None }
+
+impl Spaces {
+    const fn new() -> Self { Self { p: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()) } }
+
+    /// Make `t` the table. Boot, before the first user switch.
+    pub fn install(&self, t: &'static SpaceTable<SPACE_SLOTS>) {
+        self.p.store(t as *const _ as *mut _, Ordering::Release);
+    }
+
+    #[inline]
+    fn table(&self) -> Option<&'static SpaceTable<SPACE_SLOTS>> {
+        let p = self.p.load(Ordering::Acquire);
+        // SAFETY: `install` stores a `'static` table.
+        if p.is_null() { unset() } else { Some(unsafe { &*p }) }
+    }
+
+    pub fn note(&self, key: usize, h: usize, probe: usize) -> bool {
+        self.table().is_some_and(|t| t.note(key, h, probe))
+    }
+    pub fn lookup(&self, key: usize, probe: usize) -> Option<HartMask> {
+        self.table().and_then(|t| t.lookup(key, probe))
+    }
+    pub fn assign(&self, key: usize, asid: u16) -> bool {
+        self.table().is_some_and(|t| t.assign(key, asid))
+    }
+    pub fn asid_of(&self, key: usize) -> u16 {
+        self.table().map_or(0, |t| t.asid_of(key))
+    }
+    pub fn reset(&self, gen: u32) {
+        if let Some(t) = self.table() { t.reset(gen) }
+    }
+    pub fn generation(&self) -> u32 {
+        self.table().map_or(1, |t| t.generation())
+    }
+}
+
+pub static SPACES: Spaces = Spaces::new();
 
 /// Runtime canary `tlb-space-mask-drop` (`kernel/src/canary_rt.rs`): switch-ins
 /// record nothing, so a shootdown misses the harts that ran the space (ktest

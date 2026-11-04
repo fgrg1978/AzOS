@@ -22,7 +22,7 @@ use crate::{EarlyBoot, ARCH_ENTRY};
 
 /// Stop the boot CPU for good after a FAILED line: nothing past this point
 /// can run without what just failed.
-fn halt() -> ! {
+pub(crate) fn halt() -> ! {
     loop {
         azos_arch::ARCH.wait_for_interrupt();
     }
@@ -508,6 +508,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     azos_mm::kheap::init(crate::HEAP_SIZE);
     kprintln!("[MM] Heap: on demand, ceiling {} KiB", crate::HEAP_SIZE / 1024);
     kprintln!("[MM] Heap initialized");
+    super::caches::init();
 
     {
         // MARKER, asserted by the gate: a real heap allocation, not just an

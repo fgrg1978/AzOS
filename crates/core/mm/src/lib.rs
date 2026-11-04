@@ -65,6 +65,7 @@ pub mod kasan;
 /// Kconfig `KHEAP_LEAKS`: the live blocks of the heap guard, with where each was allocated.
 pub mod kheap_leaks;
 pub mod slab;
+pub mod cache;
 #[cfg(feature = "kheap-census")]
 pub mod kheap_census;
 pub mod vdso;

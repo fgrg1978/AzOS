@@ -2287,3 +2287,70 @@ azos_ktest::ktest_late! {
         }
     }
 }
+
+// ── Typed kernel object caches ──────────────────────────────────────────────
+//
+// An object freed as one type is never reissued as another. Canary
+// `kmem-cache-cross-type-canary` (the block's tag not compared): another
+// cache's object is accepted and handed out again.
+
+#[repr(C)]
+struct CacheT([u64; 6]);
+#[repr(C)]
+struct CacheU([u64; 6]);
+static CACHE_T: azos_mm::cache::Cache<CacheT> = azos_mm::cache::Cache::retained();
+static CACHE_U: azos_mm::cache::Cache<CacheU> = azos_mm::cache::Cache::retained();
+static CACHE_R: azos_mm::cache::Cache<CacheU> = azos_mm::cache::Cache::new();
+
+azos_ktest::ktest_late! {
+    fn kmem_cache_never_reissues_a_freed_object_as_another_type() {
+        let a = CACHE_T.alloc();
+        if a.is_null() { return Err("no T"); }
+        // SAFETY: `a` is T's and unused.
+        if !unsafe { CACHE_T.try_free(a) } { return Err("T refused its own object"); }
+        let b = CACHE_U.alloc();
+        if b.is_null() { return Err("no U"); }
+        if b as usize == a as usize { return Err("a freed T was reissued as a U"); }
+        let p = CACHE_T.alloc();
+        if p.is_null() { return Err("no T"); }
+        // SAFETY: `p` is T's; U must refuse it, leaving it unchanged.
+        let refused = unsafe { !CACHE_U.try_free(p.cast::<CacheU>()) };
+        let q = CACHE_U.alloc();
+        if !refused { return Err("U accepted a T"); }
+        if q as usize == p as usize { return Err("a T's address was reissued as a U"); }
+        // SAFETY: each is its own cache's.
+        unsafe {
+            CACHE_U.free(q);
+            CACHE_U.free(b);
+            CACHE_T.free(p);
+        }
+        Ok(())
+    }
+}
+
+azos_ktest::ktest_late! {
+    fn kmem_cache_gives_back_only_blocks_that_are_not_retained() {
+        let t = CACHE_T.alloc();
+        if t.is_null() { return Err("no T"); }
+        let kept = CACHE_T.held_pages();
+        // SAFETY: `t` is T's and unused.
+        unsafe { CACHE_T.free(t) };
+        if kept == 0 || CACHE_T.held_pages() != kept { return Err("a retained cache gave a block back"); }
+        let r = CACHE_R.alloc();
+        if r.is_null() { return Err("no R"); }
+        if CACHE_R.held_pages() == 0 { return Err("an object without a block"); }
+        // SAFETY: `r` is R's and unused.
+        unsafe { CACHE_R.free(r) };
+        if CACHE_R.held_pages() != 0 { return Err("an emptied block was kept"); }
+        Ok(())
+    }
+}
+
+// Canary `kmem-preload-canary` (preload off): the boot caches are not filled
+// and sealed.
+azos_ktest::ktest_late! {
+    fn kmem_preload_fills_and_seals_the_boot_caches() {
+        if !azos_mm::cache::PRELOAD { return Err("the boot caches are not preloaded"); }
+        if crate::boot::caches::all_sealed() { Ok(()) } else { Err("a boot cache is not filled and sealed") }
+    }
+}

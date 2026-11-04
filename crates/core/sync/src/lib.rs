@@ -8,6 +8,7 @@ pub mod qspinlock;
 pub mod held;
 /// Ownership of a resource across a device wait (owner rule F1).
 pub mod claim;
+pub mod once_obj;
 pub mod waitqueue;
 /// Counters of bounded sleeps that ended by expiry with no wake (lost-wake evidence).
 pub mod waitstat;
