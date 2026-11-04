@@ -14,7 +14,7 @@ config SECURE_BOOT_ENFORCED
     bool "Enforce Ed25519 signature verification at boot" if !BUILD_TYPE_CERTIFIABLE
     default y if !BUILD_TYPE_DEV
     default n
-    select OTA_SIG_MANDATORY
+    depends on OTA_SIG_MANDATORY
     help
       Default: y on every build except BUILD_TYPE_DEV (release-safe;
       the QEMU board is a development build, the boards are release
@@ -27,6 +27,9 @@ config SECURE_BOOT_ENFORCED
       Disable only for development.  MUST be y for any production
       deployment — enforced by cargo feature `secure-boot-enforced`.
       A BUILD_TYPE_CERTIFIABLE build has it on and cannot turn it off.
+      Needs OTA_SIG_MANDATORY (unsigned OTA images would otherwise reach a
+      slot the boot then verifies): a build selection of it on a
+      development configuration names both.
 
 config LINK_PROVISIONING_ENFORCED
     # cargo-feature: link-provisioning-enforced

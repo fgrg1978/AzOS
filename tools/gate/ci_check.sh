@@ -3035,7 +3035,7 @@ build       "dhcp-smoke"          --release --select dhcp-smoke
 # Secure-boot policy is fixed at compile time, so if this feature
 # is not built in CI it can break with nobody noticing — exactly the way
 # esp32c3 rotted.
-build       "secure-boot-enforced" --release --select secure-boot-enforced
+build       "secure-boot-enforced" --release --select secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y
 build       "link-provisioning-enforced" --release --select use-robot,link-provisioning-enforced
 build       "reflex-smoke"        --release --select reflex-smoke
 build       "envelope-smoke"      --release --select envelope-smoke
@@ -4839,7 +4839,7 @@ ota_update_row() { # ota_update_row <riscv64|aarch64> <good|forged>
     rm -rf "$work"; mkdir -p "$work"
     kimg="$work/kernel"; disk="$work/disk.img"; payload="$work/kern_b.bin"; sidecar="$work/KERN_B.SIG"
     if [ "$isa" = riscv64 ]; then
-        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" kbuild "qemu,secure-boot-enforced"; then
+        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" kbuild "qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"; then
             bad; echo "      riscv64 kernel (--features qemu,secure-boot-enforced) did not build"; return
         fi
         cp "$KERNEL" "$kimg"
@@ -4847,7 +4847,7 @@ ota_update_row() { # ota_update_row <riscv64|aarch64> <good|forged>
         make_disk $AZOS_OUT/build/disk.img $AZOS_OUT/build/disk-signed.img
         cp $AZOS_OUT/build/disk-signed.img "$disk"
     else
-        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" a64_kbuild "qemu,secure-boot-enforced"; then
+        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" a64_kbuild "qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"; then
             bad; echo "      aarch64 kernel (--features qemu,secure-boot-enforced) did not build"; return
         fi
         cp "$A64_IMG" "$kimg"
@@ -5170,7 +5170,7 @@ otabun_volume() {
     [ "$isa" = aarch64 ] && tisa=aarch64
     par_shared "make topo-volume" || return 1
     make topo-volume TOPO_IMAGE="$disk" TOPO_ISA="$tisa" TOPO_KCONFIG_RISCV64="$PRIMARY_CONFIG" \
-        TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" TOPO_SELECT="secure-boot-enforced" >"$work/topo.log" 2>&1 || return 1
+        TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" TOPO_SELECT="secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y" >"$work/topo.log" 2>&1 || return 1
     mcopy -n -i "$disk" ::CONFIG.INI "$ini.in" 2>/dev/null \
       && sed -e 's/^behavior_server_port=.*/behavior_server_port=0/' "$ini.in" >"$ini" \
       && grep -q '^behavior_server_port=0' "$ini" \
@@ -5212,7 +5212,7 @@ ota_bundle_row() { # ota_bundle_row <riscv64|aarch64> <good|tampered>
     kimg="$work/kernel"; disk="$work/disk.img"; fifo="$work/in.fifo"
     log1="$work/boot1.log"; log2="$work/boot2.log"; log3="$work/boot3.log"
     if [ "$isa" = riscv64 ]; then
-        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" kbuild "qemu,secure-boot-enforced"; then
+        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" kbuild "qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"; then
             bad; echo "      riscv64 kernel (--features qemu,secure-boot-enforced) did not build"; return
         fi
         cp "$KERNEL" "$kimg"
@@ -5220,7 +5220,7 @@ ota_bundle_row() { # ota_bundle_row <riscv64|aarch64> <good|tampered>
         make_disk $AZOS_OUT/build/disk-sh-signed.img
         cp $AZOS_OUT/build/disk-sh-signed.img "$disk"
     else
-        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" a64_kbuild "qemu,secure-boot-enforced"; then
+        if ! PROD_PUBKEY_PATH="$OTAE2E_KEY" a64_kbuild "qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"; then
             bad; echo "      aarch64 kernel (--features qemu,secure-boot-enforced) did not build"; return
         fi
         cp "$A64_IMG" "$kimg"
@@ -13353,9 +13353,9 @@ else
     make_disk $AZOS_OUT/build/disk.img $AZOS_OUT/build/disk-signed.img $AZOS_OUT/build/disk-badsig.img \
           $AZOS_OUT/build/disk-recovery.img $AZOS_OUT/build/disk-badslotb.img
     PROD_PUBKEY_PATH="$SECBOOT_TEST_KEY" \
-        kbuild "qemu,secure-boot-enforced"
+        kbuild "qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"
     # Every secure-boot row below boots THIS build (ci_kernel_check).
-    CI_EXPECT_RV="qemu,secure-boot-enforced"
+    CI_EXPECT_RV="qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"
 
     # Prove the key actually made it into the binary BEFORE booting anything.
     # Without this, a broken PROD_PUBKEY_PATH degrades into three confusing
@@ -13643,10 +13643,10 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         # same TEST key the riscv64 block pins, ABSOLUTE for the same reason
         # (cargo runs build scripts with CWD = crates/core/ota).
         printf "  %-26s" "aarch64 secboot (build)..."
-        if PROD_PUBKEY_PATH="$SECBOOT_TEST_KEY" a64_kbuild "qemu,secure-boot-enforced"; then
+        if PROD_PUBKEY_PATH="$SECBOOT_TEST_KEY" a64_kbuild "qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"; then
             ok
             # Every aarch64 secure-boot row below boots THIS build (a64_kernel_check).
-            CI_EXPECT_A64="qemu,secure-boot-enforced"
+            CI_EXPECT_A64="qemu,secure-boot-enforced,CONFIG_OTA_SIG_MANDATORY=y"
         else
             bad; echo "      the aarch64 kernel did not build with"
             echo "      --features qemu,secure-boot-enforced — the four rows"
@@ -25512,13 +25512,13 @@ x=con; echo bb\$x-ok
         [ -f $AZOS_OUT/build/disk-signed.img ] || make_disk $AZOS_OUT/build/disk-signed.img
     fi
     con_k=""; con_wanted "console: init= ignored under secure boot (rv)" \
-        && con_k="$(PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" con_kernel rv sboot qemu,secure-boot-enforced)"
+        && con_k="$(PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" con_kernel rv sboot qemu,secure-boot-enforced CONFIG_OTA_SIG_MANDATORY=y)"
     CON_FORBID='\[compmgr\] start TOOLBOX.ELF|the console program of this boot' \
         par_row con_row "console: init= ignored under secure boot (rv)" rv "$con_k" $AZOS_OUT/build/disk-signed.img "init=/fat/TOOLBOX.ELF" PASS \
         "#wait recovery console" 120 \
         "Slot A signature: verified" "[CMDLINE] init=/fat/TOOLBOX.ELF" "[CONSOLE] init=/fat/TOOLBOX.ELF ignored: secure boot is on"
     con_k=""; con_wanted "console: init= canary, check compiled out (rv)" \
-        && con_k="$(PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" con_kernel rv sboot-canary qemu,secure-boot-enforced,cmdline-init-canary)"
+        && con_k="$(PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" con_kernel rv sboot-canary qemu,secure-boot-enforced,cmdline-init-canary CONFIG_OTA_SIG_MANDATORY=y)"
     CON_FORBID='\[compmgr\] start TOOLBOX.ELF|the console program of this boot' \
         par_row con_row "console: init= canary, check compiled out (rv)" rv "$con_k" $AZOS_OUT/build/disk-signed.img "init=/fat/TOOLBOX.ELF" FAIL \
         "#wait recovery console|has the console|TOOLBOX.ELF started" 120 \

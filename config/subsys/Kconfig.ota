@@ -21,7 +21,7 @@ config OTA_SIG_MANDATORY
       Ed25519 signature file (KERN_*.SIG on FAT) before it replaces the slot;
       a signed update set (crates/core/ota/src/update.rs) is verified whatever
       this says.
-      Recommended: set to y whenever SECURE_BOOT_ENFORCED = y so
+      SECURE_BOOT_ENFORCED depends on it, so
       the signing chain is unbroken end-to-end.  A BUILD_TYPE_DEV build
       starts on only for the SECURITY postures but general; a
       BUILD_TYPE_CERTIFIABLE build has it on and cannot turn it off.
