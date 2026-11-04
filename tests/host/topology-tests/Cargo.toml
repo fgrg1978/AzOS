@@ -22,6 +22,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 [features]
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.
 fork-revoke-canary = []
+# Pulled-in source declares it (cap_store.rs cell source); only the kernel uses it.
+cap-table-cross-type-canary = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.
