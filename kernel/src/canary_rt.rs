@@ -474,6 +474,10 @@ pub(crate) const NAMES: &[&str] = &[
     // lifts a ring-3 owner past RT_PRIORITY_THRESHOLD (ktest
     // `waitgraph_ring3_owner_floored`, WAIT_GRAPH y).
     "pi-ring3-unclamped",
+    // crates/core/sched/src/classes.rs `dl_boost_for`: a DL waiter's boost is
+    // the band's top level only, so a later-deadline reservation out-ranks
+    // the owner (ktest `waitgraph_dl_boost_competes_by_deadline`).
+    "pi-dl-top-level",
     // crates/core/mm/src/vmm.rs `canary_private_l1`: a root built after the
     // boot gets a private copy of the first kernel-only slot's L1 instead of
     // a link (ktest `kernel_half_shared_by_every_root`, riscv64 only).

@@ -49,7 +49,7 @@
 //! counted donor (PIFAST, driver proxy, until N7's migrations move
 //! them onto the graph) returning lands on the graph's boost, not under it.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use azos_arch::Interrupts;
 use azos_sync::waitgraph::{self, PiAttr, SchedPi, TaskId, WaitObj};
@@ -253,6 +253,7 @@ pub(super) fn on_slot_reset(idx: usize, prio: u32) {
 pub(super) fn on_slot_graph_reset(idx: usize) {
     if waitgraph::ENABLED && idx < MAX_TASKS {
         PI_PRIO[idx].store(u32::MAX, Ordering::Relaxed);
+        DL_BOOST[idx].store(u64::MAX, Ordering::Relaxed);
         // Detach only: the new task is not running, and an owner-died hook
         // (client lock, wake) is the exit path's (N7c).
         waitgraph::task_reset(idx as TaskId);
@@ -272,6 +273,7 @@ pub fn on_task_exit(idx: usize) {
     }
     waitgraph::task_exit(idx as TaskId);
     PI_PRIO[idx].store(u32::MAX, Ordering::Relaxed);
+    DL_BOOST[idx].store(u64::MAX, Ordering::Relaxed);
 }
 
 static CANARY_EXIT_KEEPS_GRAPH: AtomicBool = AtomicBool::new(false);
@@ -494,6 +496,42 @@ pub fn runnable_here() -> bool {
 const PI_SLOTS: usize = if waitgraph::ENABLED { MAX_TASKS } else { 0 };
 static PI_PRIO: [AtomicU32; PI_SLOTS] = [const { AtomicU32::new(u32::MAX) }; PI_SLOTS];
 
+/// Per slot: the absolute deadline (µs) of the DL waiter the wait graph boosts
+/// the task by, `u64::MAX` for none. A DL-boosted task competes in the DL step
+/// with its donor's deadline (owner decision D4), not only at the band's top
+/// level, where any reservation out-ranks it (`formal/tla/pi_graph.tla`,
+/// EdfInheritance). Sized 0 without `WAIT_GRAPH`.
+static DL_BOOST: [AtomicU64; PI_SLOTS] = [const { AtomicU64::new(u64::MAX) }; PI_SLOTS];
+
+/// The donor's deadline `idx` is boosted to, if a DL waiter boosts it.
+#[inline(always)]
+pub fn dl_boost(idx: usize) -> Option<u64> {
+    DL_BOOST.get(idx).map(|d| d.load(Ordering::Relaxed)).filter(|&d| d != u64::MAX)
+}
+
+/// Runtime canary `pi-dl-top-level`: a DL boost is the band's top level
+/// only, as before D4, so a later-deadline reservation out-ranks the owner.
+static CANARY_PI_DL_TOP_LEVEL: AtomicBool = AtomicBool::new(false);
+
+/// Arm runtime canary `pi-dl-top-level` (boot only).
+pub fn canary_pi_dl_top_level() {
+    CANARY_PI_DL_TOP_LEVEL.store(true, Ordering::Relaxed);
+}
+
+/// The deadline (µs) a boost to `to` gives task `idx` in the DL step, or
+/// `u64::MAX`: none for a non-DL boost, and none for a ring-3 owner, which
+/// the graph never lifts past the band (`graph_floored`).
+fn dl_boost_for(idx: usize, to: PiAttr) -> u64 {
+    match to {
+        PiAttr::Dl { deadline_ns }
+            if !CANARY_PI_DL_TOP_LEVEL.load(Ordering::Relaxed) && graph_floored(idx, 0) == 0 =>
+        {
+            deadline_ns / 1000
+        }
+        _ => u64::MAX,
+    }
+}
+
 /// The priority floor the wait graph holds `idx` at (`u32::MAX`: none). The
 /// donation protocol's base is `min(base_priority, this)`.
 #[inline]
@@ -558,13 +596,15 @@ fn store_class(sc: &SchedContext, idx: usize, class: Class, prio: Option<u32>, b
 
 /// The Legacy priority number an effective attribute runs at. Stop and DL
 /// take the top level: the class precedence (Q6) puts them above every RT
-/// level. A DL donor's deadline stays exact in the graph
+/// level, and a DL boost also competes in the DL step by its donor's
+/// deadline ([`DL_BOOST`]). A DL donor's deadline stays exact in the graph
 /// (`waitgraph::effective`) and is installed in EDF by the pick itself when
 /// the edge is an IPC call (stage 2, proxy execution, `rt::proxy_of`): the
 /// donor's reservation runs its server, in the donor's deadline order and on
 /// the donor's budget. Where it cannot (the server placed on another hart,
 /// or a kernel mutex or PI futex edge, whose object the pick cannot follow
-/// lock-free), the owner runs at the top level, as in stage 1. RT is its own
+/// lock-free), the owner runs at the top level and competes in the DL step by
+/// the donor's deadline (D4). RT is its own
 /// number. Fair and idle do not boost (stage 1: no weight inheritance).
 pub const fn pi_prio(a: PiAttr) -> u32 {
     match a {
@@ -583,6 +623,16 @@ pub struct ClassPi;
 pub static PI: ClassPi = ClassPi;
 
 impl ClassPi {
+    /// Apply the graph's effective attribute `to` to `idx`: the donor's
+    /// deadline first (the pick reads it once the re-bucket below asks for a
+    /// switch), then the priority floor.
+    fn apply(&self, idx: usize, to: PiAttr) {
+        if let Some(d) = DL_BOOST.get(idx) {
+            d.store(dl_boost_for(idx, to), Ordering::Relaxed);
+        }
+        self.write_floor(idx, pi_prio(to));
+    }
+
     /// Install the graph's floor `p` on `idx` and move its live priority:
     /// to `min(base, p)` with no counted donation in flight, else only
     /// upwards (the counted return lands on the floor; `TaskDonation::base`).
@@ -655,11 +705,11 @@ impl SchedPi for ClassPi {
     }
 
     fn boost(&self, t: TaskId, to: PiAttr) {
-        self.write_floor(t as usize, pi_prio(to));
+        self.apply(t as usize, to);
     }
 
     fn unboost(&self, t: TaskId, to: PiAttr) {
-        self.write_floor(t as usize, pi_prio(to));
+        self.apply(t as usize, to);
     }
 
     fn set_blocked_on(&self, t: TaskId, on: Option<WaitObj>) {

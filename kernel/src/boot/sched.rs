@@ -372,6 +372,9 @@ pub(crate) fn install_sched_hooks() {
     if canary!("pi-ring3-unclamped") {
         azos_sched::classes::canary_pi_ring3_unclamped();
     }
+    if canary!("pi-dl-top-level") {
+        azos_sched::classes::canary_pi_dl_top_level();
+    }
     // Wave 15 N7g: a fast call boosts its server through the wait graph
     // (ktest `waitgraph_ipc_call_boosts_server`); the canary takes no edge.
     if azos_sync::waitgraph::ENABLED && canary!("ipc-call-no-edge") {
@@ -2746,6 +2749,36 @@ mod waitgraph_ktests {
             };
             if pi.base_attr(t) != want {
                 return Err("ClassPi::base_attr disagrees with the task's class and base");
+            }
+            Ok(())
+        }
+    }
+
+    // D4: a DL waiter's boost gives the owner its donor's deadline in the DL
+    // step (`classes::dl_boost`, read by `rt::step_dl` and the tick), and the
+    // unboost takes it away. On the running kernel task (no ring-3 floor),
+    // for the instant between the two calls. `canary=pi-dl-top-level`: the
+    // boost is the band's top level only, not ok.
+    azos_ktest::ktest_late! {
+        fn waitgraph_dl_boost_competes_by_deadline() {
+            if !azos_sync::waitgraph::ENABLED {
+                return Ok(());
+            }
+            let Some(cur) = azos_sched::classes::current() else {
+                return Err("the late runner is not a task");
+            };
+            let pi = &azos_sched::classes::PI;
+            let t = cur as TaskId;
+            let base = pi.base_attr(t);
+            pi.boost(t, PiAttr::Dl { deadline_ns: 7_000_000 });
+            let boosted = azos_sched::classes::dl_boost(cur);
+            pi.unboost(t, base);
+            let after = azos_sched::classes::dl_boost(cur);
+            if boosted != Some(7_000) {
+                return Err("a DL boost does not give the owner its donor's deadline");
+            }
+            if after.is_some() {
+                return Err("the unboost left the donor's deadline behind");
             }
             Ok(())
         }

@@ -16055,8 +16055,9 @@ CPU 5 lacks hwcap bits"
     # widened window: the word's ABA loses its wake, so that test fails too.
     # ipc-call-no-edge leaves every IPC call, ordinary or fast, without its
     # wait-graph edge (the fast call is then taken with nothing to boost).
-    KTEST_WG_CANARIES="canary=kmutex-steal-any,kmutex-park-aba,owner-died-silent,exit-keeps-graph,futex-pi-no-edge,futex-pi-exit-silent,futex-requeue-pi-plain,futex-requeue-pi-no-proxy,held-keeps-dead,claim-held-keeps-dead,ipc-call-no-edge,claim-release-silent"
-    KTEST_WG_CANARIED="kmutex_steal_rule_holds_for_top_waiter kmutex_held_back_newcomer_is_in_the_graph kmutex_owner_died_wakes_waiter waitgraph_exit_clears_state futex_pi_boosts_the_owner futex_pi_owner_exit_hands_over futex_requeue_pi_hands_the_mutex_over kmutex_dead_holder_leaves_the_held_table claim_dead_owner_leaves_the_held_table waitgraph_ipc_call_boosts_server ipc_fastpath_boosting_call_is_slow_and_boosts ipc_fastpath_call_edge_is_in_the_graph claim_excludes_across_a_wait_and_wakes_a_contender"
+    # pi-dl-top-level gives a DL boost the band's top level only (pre-D4).
+    KTEST_WG_CANARIES="canary=kmutex-steal-any,kmutex-park-aba,owner-died-silent,exit-keeps-graph,futex-pi-no-edge,futex-pi-exit-silent,futex-requeue-pi-plain,futex-requeue-pi-no-proxy,held-keeps-dead,claim-held-keeps-dead,ipc-call-no-edge,claim-release-silent,pi-dl-top-level"
+    KTEST_WG_CANARIED="kmutex_steal_rule_holds_for_top_waiter kmutex_held_back_newcomer_is_in_the_graph kmutex_owner_died_wakes_waiter waitgraph_exit_clears_state futex_pi_boosts_the_owner futex_pi_owner_exit_hands_over futex_requeue_pi_hands_the_mutex_over kmutex_dead_holder_leaves_the_held_table claim_dead_owner_leaves_the_held_table waitgraph_ipc_call_boosts_server ipc_fastpath_boosting_call_is_slow_and_boosts ipc_fastpath_call_edge_is_in_the_graph claim_excludes_across_a_wait_and_wakes_a_contender waitgraph_dl_boost_competes_by_deadline"
     par "ktest wait-graph canary (rv)" ktest_row "ktest wait-graph canary (rv)" rv "" "$KTEST_WG_CANARIED" "$KTEST_WG_CANARIES"
     par "ktest wait-graph canary (arm)" ktest_row "ktest wait-graph canary (arm)" arm "" "$KTEST_WG_CANARIED" "$KTEST_WG_CANARIES"
     # N6a + N7, one boot of the pass row's kernel: `canary=sched-class-invert`

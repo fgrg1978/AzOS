@@ -677,15 +677,20 @@ pub(super) unsafe fn pick_state(ctx: &mut PickCtx) {
         if t.state() == TaskState::Running {
             let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
             let r = if o.cur == prev { Some(unsafe { res(cpu, o.cur_slot) }) } else { None };
-            if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(prev), ctx.skip_band) {
+            let boost = super::classes::dl_boost(prev);
+            if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(prev) || boost.is_some(), ctx.skip_band) {
                 ctx.force = true;
                 BAND_THROTTLES.fetch_add(1, Ordering::Relaxed);
             } else if let Some(r) = r {
                 if r.throttled {
                     ctx.force = true;
                 } else {
-                    ctx.keep = Some((rt_core::dl_rank(ctx.classes, p), r.deadline));
+                    let d = boost.map_or(r.deadline, |b| b.min(r.deadline));
+                    ctx.keep = Some((rt_core::dl_rank(ctx.classes, p), d));
                 }
+            } else if let Some(b) = boost {
+                // A DL waiter boosts it: it keeps the hart by its donor's deadline.
+                ctx.keep = Some((rt_core::dl_rank(ctx.classes, p), b));
             }
         }
     }
@@ -741,16 +746,36 @@ pub(super) unsafe fn step_dl(ctx: &mut PickCtx) -> Step {
         let Some(idx) = (unsafe { runner(cpu, holder) }) else { continue };
         let t = unsafe { task_ref(idx) };
         let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
-        if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), ctx.skip_band) {
+        if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx) || super::classes::dl_boost(idx).is_some(), ctx.skip_band) {
             continue;
         }
         let level = p;
         let p = rt_core::dl_rank(classes, p);
-        if best == usize::MAX || rt_core::edf_before(p, r.deadline, bp, bd) {
+        let d = super::classes::dl_boost(idx).map_or(r.deadline, |b| b.min(r.deadline));
+        if best == usize::MAX || rt_core::edf_before(p, d, bp, bd) {
             best = idx;
             bp = p;
-            bd = r.deadline;
+            bd = d;
             best_level = level;
+        }
+    }
+    // Tasks a DL waiter boosts (D4) run at the band's top level and compete
+    // here by their donor's deadline; a reservation holder among them was
+    // ranked above with the earlier of the two.
+    if ctx.bm & 1 != 0 {
+        let q = &super::cpu_queues(cpu)[0];
+        for idx in q.iter(&super::RQ_LINKS) {
+            if idx >= MAX_TASKS || slot_of(cpu, idx).is_some() {
+                continue;
+            }
+            let Some(d) = super::classes::dl_boost(idx) else { continue };
+            let p = rt_core::dl_rank(classes, 0);
+            if best == usize::MAX || rt_core::edf_before(p, d, bp, bd) {
+                best = idx;
+                bp = p;
+                bd = d;
+                best_level = 0;
+            }
         }
     }
     // The most urgent level the later classes would take, the running task's
@@ -858,7 +883,13 @@ pub(super) unsafe fn tick(cpu: usize, cur_idx: usize) -> bool {
         }
         let r = unsafe { res(cpu, o.cur_slot) };
         let p = prio_bucket(unsafe { task_ref(cur_idx) }.priority.load(Ordering::Relaxed)) as u32;
-        cur_res = Some((p, r.deadline));
+        let d = super::classes::dl_boost(cur_idx).map_or(r.deadline, |b| b.min(r.deadline));
+        cur_res = Some((p, d));
+    } else if let Some(b) = super::classes::dl_boost(cur_idx) {
+        // A DL waiter boosts it: reservations are ordered against its
+        // donor's deadline, as the pick does.
+        let p = prio_bucket(unsafe { task_ref(cur_idx) }.priority.load(Ordering::Relaxed)) as u32;
+        cur_res = Some((p, b));
     }
     unsafe { refresh_set(cpu, now) };
     if !preempt {
