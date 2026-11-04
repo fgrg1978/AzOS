@@ -27557,6 +27557,44 @@ else
 fi
 fi; ci_row_end
 
+# TLC: the TLA+ priority-inheritance spec (formal/tla/pi_graph.tla) must pass its config, and every
+# pi_graph_mut_*.cfg (one injected defect each) must be rejected for the invariant named on its
+# `expect:` line. The checker is `tlc` on PATH, or `java -jar $TLA2TOOLS_JAR` with a Java
+# that runs (`java -version` exits 0). Neither: a SKIP line, counted neither way.
+if ci_row_begin "formal: TLC pi_graph"; then
+printf "  %-26s" "formal: TLC pi_graph..."
+tlc_jar="${TLA2TOOLS_JAR:-}"
+if command -v tlc >/dev/null 2>&1; then
+    tlc_run() { tlc "$@"; }
+elif [ -n "$tlc_jar" ] && [ -f "$tlc_jar" ] && command -v java >/dev/null 2>&1 \
+     && java -version >/dev/null 2>&1; then
+    tlc_run() { java -jar "$tlc_jar" "$@"; }
+fi
+if ! type tlc_run >/dev/null 2>&1; then
+    echo "skip: no TLC"
+else
+    tlc_meta="$(mktemp -d)"
+    tlc_bad=""
+    tlc_out="$(cd "${REPO_ROOT}/formal/tla" && tlc_run -workers auto -metadir "$tlc_meta/base" \
+        -config pi_graph.cfg pi_graph.tla 2>&1)"
+    printf '%s\n' "$tlc_out" | qgrep -qF "No error has been found" || tlc_bad="pi_graph.cfg"
+    for tlc_cfg in "${REPO_ROOT}"/formal/tla/pi_graph_mut_*.cfg; do
+        tlc_name="$(basename "$tlc_cfg")"
+        tlc_want="$(sed -n 's/^\\\* expect: //p' "$tlc_cfg")"
+        tlc_out="$(cd "${REPO_ROOT}/formal/tla" && tlc_run -workers auto -metadir "$tlc_meta/$tlc_name" \
+            -config "$tlc_name" pi_graph.tla 2>&1)"
+        printf '%s\n' "$tlc_out" | qgrep -qF "Invariant ${tlc_want} is violated" \
+            || tlc_bad="$tlc_bad $tlc_name"
+    done
+    rm -rf "$tlc_meta"
+    if [ -z "$tlc_bad" ]; then
+        ok
+    else
+        bad; echo "      TLC did not behave as expected for:$tlc_bad"
+    fi
+fi
+fi; ci_row_end
+
 # Supply chain (Documentation/design/supply-chain-tools.md), full gate only.
 # The SBOM (tools/gate/sbom.sh, offline `cargo metadata`): a CycloneDX
 # document that lists the kernel crate. The reproducible build
