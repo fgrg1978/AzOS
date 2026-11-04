@@ -9,6 +9,7 @@
 //! source (`#[path]`) so the split image and the hosted stub cannot drift.
 
 #[path = "../../../../../arch/aarch64/src/ext/hv/stage2.rs"]
+#[allow(dead_code)] // reason: shared by source with the hosted stub (ext/hv), which uses the rest
 pub mod stage2;
 
 use crate::state::HYP;

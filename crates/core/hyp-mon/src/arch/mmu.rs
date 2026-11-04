@@ -34,6 +34,7 @@ const fn identity() -> [u64; 512] {
 }
 
 #[repr(align(4096))]
+#[allow(dead_code)] // reason: read by the table walker through TTBR0_EL2, never by Rust
 struct L1([u64; 512]);
 
 #[no_mangle]

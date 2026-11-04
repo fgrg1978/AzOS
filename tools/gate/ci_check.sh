@@ -3735,6 +3735,108 @@ aarch64_hv_row() {
     ok; rm -f "$log"
 }
 par "aarch64 hv: guest entry ready" aarch64_hv_row
+
+# ── VIRT_SPLIT: the resident monitor (F1-F3, aarch64) ───────────────────────
+#
+# These rows boot a split image (the `hyp-monitor-row` test hook: ARCH_HAS_HYP_
+# MONITOR is unset until F5, so there is no Kconfig path to the role yet) under
+# QEMU `virt,virtualization=on,gic-version=3`, which gives the boot an EL2 for
+# the monitor to keep. The monitor is a separate flat image the kernel
+# `.incbin`s; its build and link invariant are the n0 "hyp-mon build + link
+# lint" step, so these rows assume the blob exists. Each canary rebuilds the
+# monitor with one mechanism removed (tools/build/hyp_mon.sh HYP_MON_FEATURES)
+# and the matching kernel feature `.incbin`s that variant, so exactly one row
+# goes red.
+#
+# The attack smokes R2/R3 demand (an EL1 write to a monitor page; a forged
+# CPU_ON entry) ride on the same images once the `smokes/hyp_attack` harness
+# lands; today each row proves the invariant the monitor reports through
+# `probe`, and its canary removes that invariant.
+#
+# NOTE: all split rows run under TCG (HVF has no nested EL2 on this host), so
+# they are gated behind an explicit opt-in and do not run in the default gate
+# while the monitor's EL2 bring-up is validated compile-only. Set
+# HYP_MON_ROWS=1 to run them on an arm host.
+
+hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blob
+    local feat="$1" name=hyp-mon out
+    case "$feat" in
+        hyp-mmu-off-canary)           name=hyp-mon-mmu-off ;;
+        hyp-no-secondary-init-canary) name=hyp-mon-no-secondary-init ;;
+        hyp-hole-mapped-canary)       name=hyp-mon-hole-mapped ;;
+        hyp-tsc-off-canary)           name=hyp-mon-tsc-off ;;
+    esac
+    out="$AZOS_OUT/build/aarch64/$name.bin"
+    AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
+}
+
+hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [markers...]
+    local label="$1" sel="$2" want="$3"; shift 3
+    printf "  %-26s" "${label}..."
+    if [ "${HYP_MON_ROWS:-0}" != 1 ]; then echo "skip (HYP_MON_ROWS=0)"; return; fi
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/hyp-$want-${sel//[,\/]/_}.log"
+    rm -f "$log"
+    # The canary's blob variant (its own `--select` test hook names it).
+    case "$sel" in
+        *mmu-off*) hyp_mon_blob hyp-mmu-off-canary ;;
+        *no-secondary-init*) hyp_mon_blob hyp-no-secondary-init-canary ;;
+        *hole-mapped*) hyp_mon_blob hyp-hole-mapped-canary ;;
+        *tsc-off*) hyp_mon_blob hyp-tsc-off-canary ;;
+        *) hyp_mon_blob "" ;;
+    esac
+    if ! a64_kbuild "$sel"; then
+        if [ "$want" = canary ]; then ok; return; fi
+        bad; echo "      the split kernel ($sel) did not build"; return
+    fi
+    local img="$CI_LOG_DIR/kernel-hyp-$want.img"; cp "$A64_IMG" "$img"
+    par_ready
+    qemu-system-aarch64 -M virt,virtualization=on,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        -kernel "$img" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aqE "\[BOOT\] EL2: +monitor up|KERNEL PANIC|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$img"
+    local missing=""
+    for m in "$@"; do grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"; done
+    if [ "$want" = canary ]; then
+        if [ -n "$missing" ]; then ok; rm -f "$log"
+        else bad; echo "      canary did not bite: every marker still present — log kept: $log"; fi
+        return
+    fi
+    if [ -n "$missing" ]; then
+        bad; echo "      the split boot did not reach:"; printf "%b\n" "$missing"; echo "      log kept: $log"
+    else ok; rm -f "$log"; fi
+}
+
+# R1: monitor up, probe from the boot PE, the invariants listed. Canaries:
+# el2-mmu left off, and a secondary that never finishes init (fewer PEs).
+par "hyp: monitor up, invariants (arm)" hyp_monitor_row "hyp: monitor up, invariants (arm)" "hyp-monitor-row" pass \
+    "[BOOT] EL2:        monitor up" "[BOOT] EL2:        invariant el2-mmu in force" \
+    "[BOOT] EL2:        invariant host-s2 in force" "[BOOT] EL2:        invariant psci in force"
+par "hyp: R1 mmu-off canary (arm)" hyp_monitor_row "hyp: R1 mmu-off canary (arm)" "hyp-mmu-off-canary" canary \
+    "[BOOT] EL2:        invariant el2-mmu in force"
+par "hyp: R1 no-secondary canary (arm)" hyp_monitor_row "hyp: R1 no-secondary canary (arm)" "hyp-no-secondary-init-canary" canary \
+    "[BOOT] EL2:        monitor up (abi 1, PEs 4)"
+# R2: host stage-2 up with the monitor image a hole. Canary: the hole mapped
+# (I1/I4 gone). The attack read of a monitor page is the pending hyp_attack smoke.
+par "hyp: host S2 hole (arm)" hyp_monitor_row "hyp: host S2 hole (arm)" "hyp-monitor-row" pass \
+    "[BOOT] EL2:        invariant host-s2 in force"
+par "hyp: R2 hole-mapped canary (arm)" hyp_monitor_row "hyp: R2 hole-mapped canary (arm)" "hyp-hole-mapped-canary" canary \
+    "[BOOT] EL2:        invariant host-s2 in force"
+# R3: PSCI/SMC trapped and filtered. Canary: TSC off (SMCs pass through).
+par "hyp: PSCI through monitor (arm)" hyp_monitor_row "hyp: PSCI through monitor (arm)" "hyp-monitor-row" pass \
+    "[BOOT] EL2:        invariant psci in force" "[SMP] hart 1 online"
+par "hyp: R3 tsc-off canary (arm)" hyp_monitor_row "hyp: R3 tsc-off canary (arm)" "hyp-tsc-off-canary" canary \
+    "[BOOT] EL2:        invariant psci in force"
+# R14: the split image is a regression guard — the ordinary boot subset still
+# passes under the monitor (same verdicts as the EL2 rows).
+par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \
+    "AzOS Rust kernel booted! (aarch64)" "[SCHED] Starting scheduler on boot CPU" "[SMP] hart 1 online"
+
 # Leave $A64_IMG on an ordinary qemu build for the rows below.
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 

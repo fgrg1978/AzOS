@@ -68,6 +68,39 @@ if [ "$tier" = n0 ]; then
             printf '%s\n' "$out" | grep -E '^(error|warning)' | sed -n 1,5p | sed 's/^/      /'
         fi
     done
+
+    # The resident monitor (VIRT_SPLIT, aarch64): build the flat image and prove
+    # its link invariant (no kernel symbol, a static image), then compile-check
+    # the split kernel that `.incbin`s it. ARCH_HAS_HYP_MONITOR is unset, so no
+    # Kconfig path reaches the split image; the gate-only `hyp-monitor-row`
+    # feature builds it. This is the compile-only proof that the monitor and the
+    # split kernel stay buildable; the QEMU rows (R1-R3, R14) run later on arm.
+    printf "  %-26s" "hyp-mon build + link lint..."
+    if out="$(AZOS_OUT="$AZOS_OUT" bash tools/build/hyp_mon.sh aarch64 \
+                 "$AZOS_OUT/build/aarch64/hyp-mon.bin" 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | grep -iE 'error|FAIL' | sed -n 1,5p | sed 's/^/      /'
+    fi
+    printf "  %-26s" "aarch64 split kernel check..."
+    splitcfg="$AZOS_OUT/cfg/a64-split.config"
+    mkdir -p "$(dirname "$splitcfg")"
+    cp config/defconfigs/generic-sbc-aarch64-dev+qemu+linux+gui.config "$splitcfg.base"
+    KCONFIG_CONFIG="$splitcfg.base" python3 -m olddefconfig >/dev/null 2>&1
+    if sf="$(KCONFIG_CONFIG="$splitcfg.base" python3 tools/build/kconfig_to_cargo.py \
+                --select hyp-monitor-row --out "$splitcfg" "$splitcfg.base" 2>&1)" \
+       && make ARCH=aarch64 CHECK_PRESET=generic "$AZOS_OUT/build/image_hashes_aarch64.rs" >/dev/null 2>&1 \
+       && out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$splitcfg" \
+                 cargo build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+                   --no-default-features --features "${sf##*--features }" \
+                   --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' \
+                   --target-dir "$AZOS_OUT/target/a64-split" 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "${sf:-}" "$out" | grep -E '^error' | sed -n 1,5p | sed 's/^/      /'
+    fi
 fi
 
 # No host's install paths in the tree (tools/lint/host_paths_lint.py): canary, then the tree.

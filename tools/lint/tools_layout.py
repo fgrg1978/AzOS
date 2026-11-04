@@ -67,7 +67,7 @@ SELF = "tools/lint/tools_layout.py"
 ROLES = {
     "build": [
         "busybox_cc.sh", "defconfig_menu.py", "export_kernel_consts.py", "gen_config_index.py", "gen_feature_matrix.py",
-        "gen_userspace_kconfig.py", "kconfig_dropped.py", "kconfig_to_cargo.py", "lx_device_table.py", "lx_kbuild/",
+        "gen_userspace_kconfig.py", "hyp_mon.sh", "kconfig_dropped.py", "kconfig_to_cargo.py", "lx_device_table.py", "lx_kbuild/",
         "make_help.txt", "micro_topology.py", "module_hashes.py", "prune_build.py", "relibc_build.sh",
         "relibc_cc.sh", "sdk_build.py", "sdk_cargo.py", "sdk_std.py", "syscall_defs.py", "test_gen_userspace_kconfig.py",
         "test_kconfig_to_cargo.py", "test_sdk_build.py", "test_preset_prompt.py", "test_user_isa.py", "third_party_fetch.sh", "user_link_args.py",

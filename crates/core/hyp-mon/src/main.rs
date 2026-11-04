@@ -15,7 +15,6 @@
 //! that PA.
 #![no_std]
 #![no_main]
-#![allow(dead_code)]
 
 use azos_hyp_api::{Kind, Ring, Violation};
 use core::sync::atomic::{AtomicU32, Ordering};

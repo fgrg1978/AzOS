@@ -108,6 +108,11 @@ hosted-startup-canary	pending
 huge-leaves-canary	pending	
 huge-leaves-smoke	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 hwcap-clear-canary	pending	
+hyp-hole-mapped-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
+hyp-mmu-off-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
+hyp-monitor-row	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
+hyp-no-secondary-init-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
+hyp-tsc-off-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 ina219-placement-build-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 ina219-placement-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 infer-model-canary	pending	

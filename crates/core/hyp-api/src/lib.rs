@@ -5,6 +5,7 @@
 //! the violation record. Arguments are physical addresses or plain values;
 //! nothing here dereferences anything.
 #![no_std]
+#![forbid(unsafe_code)]
 
 /// Bumped on any change of a call's arguments or of [`Violation`].
 pub const ABI_VERSION: u64 = 1;
