@@ -11888,6 +11888,8 @@ if fleet_config; then
     # The crate's `.cargo/config.toml` names its build target, so cargo nests
     # the profile dir under that triple.
     net_host="$(sed -n 's/^target = "\(.*\)"$/\1/p' "${REPO_ROOT}/tests/host/net-tests/.cargo/config.toml" 2>/dev/null)"
+    # cargo nests the output under the triple "host-tuple" stands for.
+    [ "$net_host" = "host-tuple" ] && net_host="$(rustc -vV | sed -n 's/^host: //p')"
     if [ -z "$net_host" ]; then
         printf "  %-26s" "net-tests fleet config..."
         bad; echo "      no build target read from tests/host/net-tests/.cargo/config.toml"
