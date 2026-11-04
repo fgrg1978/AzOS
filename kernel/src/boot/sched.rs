@@ -1268,6 +1268,11 @@ mod tid_stamp_ktests {
     static HOLD_FREE: AtomicBool = AtomicBool::new(false);
     static HOLD_LIVE: AtomicU32 = AtomicU32::new(0);
 
+    /// The CPU the runner is pinned to (`ktest::late_run`).
+    fn runner_cpu() -> i8 {
+        azos_sched::smp::current_cpu_id() as i8
+    }
+
     fn old(_: usize) {
         TID.store(azos_sched::current_task_tid(), Ordering::Release);
         while !GO.load(Ordering::Acquire) {
@@ -1334,7 +1339,7 @@ mod tid_stamp_ktests {
         let freed = crate::ktest::until(|| idx_for_tid(tid).is_none());
         FREED.store(freed, Ordering::Release);
         if freed {
-            if let Some(s) = try_task_create_affinity("tid-new", new, 0, PRIO, 0) {
+            if let Some(s) = try_task_create_affinity("tid-new", new, 0, PRIO, runner_cpu()) {
                 REUSED.store(s + 1, Ordering::Release);
             }
         }
@@ -1359,7 +1364,7 @@ mod tid_stamp_ktests {
         TID.store(0, Ordering::Release);
         NEW_TID.store(0, Ordering::Release);
         REUSED.store(0, Ordering::Release);
-        let Some(slot) = try_task_create_affinity("tid-old", old, 0, PRIO, 0) else {
+        let Some(slot) = try_task_create_affinity("tid-old", old, 0, PRIO, runner_cpu()) else {
             return Err("no task slot for the old task");
         };
         let _held = Held::below(slot);
