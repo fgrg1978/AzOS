@@ -1014,6 +1014,79 @@ static void stage_orphans(void)
 // in-kernel personality, which answers all of them as well, so one stage
 // tells the two implementations apart by their cost and not by their
 // answers. Prints `lx: rt done failures=N`.
+// The calls the ring-3 runtime closed after the first stage: lseek,
+// mprotect, futex wait and wake, and kill with a handler. The handler is
+// plain integer code: the runtime does not save the FP file in its frame.
+static volatile int rt_sig_seen, rt_sig_info, rt_sig_count;
+
+static void rt_on_sig(int s, void *info, void *uc)
+{
+    (void)uc;
+    rt_sig_seen = s;
+    rt_sig_info = info ? *(int *)info : -1;
+    rt_sig_count++;
+}
+
+static void stage_rt_gaps(void)
+{
+    i64 fd = lx_sc4(NR_openat, AT_FDCWD, "/fat/LXHELLO.ELF", O_RDONLY, 0);
+    char h1[4], h2[4];
+    i64 n1 = fd >= 0 ? lx_sc3(NR_read, fd, h1, 4) : -1;
+    i64 end = fd >= 0 ? lx_sc3(NR_lseek, fd, 0, 2) : -1;
+    i64 back = fd >= 0 ? lx_sc3(NR_lseek, fd, 0, 0) : -1;
+    i64 n2 = fd >= 0 ? lx_sc3(NR_read, fd, h2, 4) : -1;
+    i64 cur = fd >= 0 ? lx_sc3(NR_lseek, fd, -2, 1) : -1;
+    i64 bad = fd >= 0 ? lx_sc3(NR_lseek, fd, 0, 9) : -1;
+    check("rt: lseek", n1 == 4 && end > 4 && back == 0 && n2 == 4 && mem_eq(h1, h2, 4) && cur == 2
+          && bad == -EINVAL && lx_sc3(NR_lseek, 1, 0, 0) == -29 /* ESPIPE */, "end", end);
+    if (fd >= 0) lx_sc1(NR_close, fd);
+
+    u64 pg = (u64)lx_sc6(NR_mmap, 0, 4096, 3, 0x22, -1, 0);
+    if ((i64)pg > 0) ((volatile u8 *)pg)[0] = 5;
+    i64 m1 = lx_sc3(NR_mprotect, pg, 4096, 1);
+    i64 m2 = lx_sc3(NR_mprotect, pg, 4096, 5 /* READ|EXEC */);
+    i64 m3 = lx_sc3(NR_mprotect, pg, 4096, 3);
+    if ((i64)pg > 0 && m3 == 0) ((volatile u8 *)pg)[1] = 6;
+    check("rt: mprotect", (i64)pg > 0 && m1 == 0 && m2 == -EACCES && m3 == 0
+          && ((volatile u8 *)pg)[0] == 5 && ((volatile u8 *)pg)[1] == 6, "rc", m2);
+
+    static volatile u32 word = 1;
+    struct timespec to = { 0, 2 * 1000000L };
+    i64 w0 = lx_sc3(NR_futex, &word, 129 /* WAKE|PRIVATE */, 1);
+    i64 w1 = lx_sc4(NR_futex, &word, FUTEX_WAIT_PRIVATE, 2, 0);
+    i64 w2 = lx_sc4(NR_futex, &word, FUTEX_WAIT_PRIVATE, 1, &to);
+    check("rt: futex", w0 == 0 && w1 == -11 /* EAGAIN */ && w2 == -110 /* ETIMEDOUT */, "rc", w2);
+
+    i64 me = lx_sc0(NR_getpid);
+    i64 hr = set_handler(SIGUSR1, rt_on_sig, 0);
+    i64 k = lx_sc2(NR_kill, me, SIGUSR1);
+    int ran = rt_sig_seen == SIGUSR1 && rt_sig_info == SIGUSR1 && rt_sig_count == 1;
+    set_handler(SIGUSR2, rt_on_sig, 0);
+    u64 set = 1UL << (SIGUSR2 - 1), pend = 0;
+    rt_sig_seen = 0;
+    lx_sc4(NR_rt_sigprocmask, 0 /* SIG_BLOCK */, &set, 0, 8);
+    lx_sc3(NR_tgkill, me, me, SIGUSR2);
+    int held = rt_sig_seen == 0;
+    lx_sc2(NR_rt_sigpending, &pend, 8);
+    lx_sc4(NR_rt_sigprocmask, 1 /* SIG_UNBLOCK */, &set, 0, 8);
+    int unblocked = rt_sig_seen == SIGUSR2 && (pend & set);
+    set_disp(SIGUSR1, 1 /* SIG_IGN */);
+    rt_sig_count = 0;
+    lx_sc2(NR_kill, me, SIGUSR1);
+    int ignored = rt_sig_count == 0;
+    i64 c = lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0);
+    if (c == 0) {
+        struct timespec d = { 0, 5 * 1000000L };
+        for (int i = 0; i < 2000; i++) lx_sc2(NR_nanosleep, &d, 0);
+        lx_sc1(NR_exit_group, 3);
+    }
+    i64 kc = c > 0 ? lx_sc2(NR_kill, c, 9) : -1;
+    int cst = c > 0 ? wait_status(c) : -1;
+    i64 ks = c > 0 ? lx_sc2(NR_kill, c, 0) : 0;
+    check("rt: kill", hr == 0 && k == 0 && ran && held && unblocked && ignored && kc == 0
+          && cst == 1000 + 9 && ks == -3 /* ESRCH */, "child", cst);
+}
+
 static void stage_rt(void)
 {
     i64 pid = lx_sc0(NR_getpid);
@@ -1127,6 +1200,8 @@ static void stage_rt(void)
     r = lx_sc4(NR_openat, AT_FDCWD, "/fat/LXDENY.TXT", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     check("rt: create outside caps refused", r == -EACCES, "rc", r);
     if (r >= 0) lx_sc1(NR_close, r);
+
+    stage_rt_gaps();
 
     r = lx_sc0(1000);
     check("rt: unanswered call", r == -ENOSYS, "rc", r);

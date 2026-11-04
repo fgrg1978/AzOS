@@ -327,7 +327,7 @@ const CONSOLE_OPS: &[u16] = inv_ops![LOG_CONSOLE_WRITE];
 /// Linux calls, in the program's address space, so every Linux row lists them.
 const LINUX_RT_OPS: &[u16] = inv_ops![
     LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_STAT, DOMAIN_READDIR, DOMAIN_UPTIME,
-    DOMAIN_WAIT, MEMOBJ_ACQUIRE, MEMOBJ_END_DROP,
+    DOMAIN_WAIT, MEMOBJ_ACQUIRE, MEMOBJ_END_DROP, NODE_SEEK, DOMAIN_MPROTECT,
 ];
 
 /// No kernel-hosted endpoint: the row of a binary that calls none.

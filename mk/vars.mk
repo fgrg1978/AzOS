@@ -254,6 +254,11 @@ LXRT_UFLAGS_X86_64 = --target $(LXRT_TARGET_X86_64) \
 # `yes` when the .config asks for LINUX_RUNTIME: the runtime ELF then joins the
 # prerequisites of the image-hash tables every kernel build depends on, as the
 # embedded runtime's `include_bytes!` needs it to exist.
+# `LXRT_FEATURES=canary-no-lseek` (gate canaries, `userspace/lib/linux_rt`):
+# the runtime is built with the feature and rebuilt on every make, since the
+# ELF path is the one the kernel embeds. `LXRT_REBUILD=1` puts the plain one back.
+LXRT_FEATURE_FLAGS = $(if $(LXRT_FEATURES),--features $(LXRT_FEATURES))
+LXRT_FORCE         = $(if $(or $(LXRT_FEATURES),$(LXRT_REBUILD)),FORCE)
 LXRT_NEED     = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(or $(KCONFIG_CONFIG),.config) </dev/null && echo yes)
 # Wave 12: the other privileged families' tools, one crate with one binary
 # each (`FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`).

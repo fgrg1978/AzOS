@@ -147,6 +147,24 @@ impl Native for Sys {
         sys::exit(code)
     }
     // x86-64 `arch_prctl(ARCH_SET_FS)`, the only caller: `successor` below.
+    fn handle_seek(&self, h: u32, offset: i64, whence: u32) -> i64 {
+        sys::file_seek_typed(h, offset, u64::from(whence)) as i64
+    }
+    fn mprotect(&self, addr: u64, len: u64, prot: u64) -> i64 {
+        sys::mprotect(addr, len, prot) as i64
+    }
+    fn futex_wait(&self, addr: u64, expected: u32, timeout_ns: u64) -> i64 {
+        sys::futex_wait_addr(addr as usize, expected, timeout_ns) as i64
+    }
+    fn futex_wake(&self, addr: u64, n: u32) -> i64 {
+        sys::futex_wake_addr(addr as usize, n) as i64
+    }
+    fn alert(&self, tid: u32, signo: u32) -> i64 {
+        sys::task_kill(tid, azos_abi::ushell::KILL_REQUEST | azos_abi::ushell::KILL_FORCE, u64::from(signo), 0) as i64
+    }
+    fn sigreturn_code(&self) -> u64 {
+        lxrt_sigreturn as *const () as usize as u64
+    }
     fn resume_with_thread_pointer(&self, frame: &ForeignFrame, tp: u64) -> i64 {
         #[cfg(target_arch = "x86_64")]
         {
@@ -303,9 +321,38 @@ core::arch::global_asm!(
     "    ud2",
 );
 
+// What a handler without `SA_RESTORER` returns to: `rt_sigreturn` (139 on the
+// asm-generic ISAs). x86-64 has no handler frames here, so its stub is never
+// entered.
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    ".section .text.lxrt_sigreturn,\"ax\",@progbits",
+    ".globl lxrt_sigreturn",
+    "lxrt_sigreturn:",
+    "    li a7, 139",
+    "    ecall",
+);
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".section .text.lxrt_sigreturn,\"ax\",@progbits",
+    ".globl lxrt_sigreturn",
+    "lxrt_sigreturn:",
+    "    mov x8, #139",
+    "    svc #0",
+);
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".section .text.lxrt_sigreturn,\"ax\",@progbits",
+    ".globl lxrt_sigreturn",
+    "lxrt_sigreturn:",
+    "    ud2",
+);
+
 unsafe extern "C" {
     /// The trap entry above.
     fn lxrt_trap_entry();
+    /// `rt_sigreturn`'s trampoline.
+    fn lxrt_sigreturn();
 }
 
 /// The Linux process starts: set the runtime up from the initial stack,

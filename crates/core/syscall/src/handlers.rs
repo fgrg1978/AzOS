@@ -2238,6 +2238,22 @@ pub fn sys_fsync_typed(cap_raw: u64) -> i64 {
     }
 }
 
+/// `NODE_SEEK`: reposition the descriptor a `Cap<File>` names (any permission).
+/// The new offset or a negative errno.
+pub fn sys_file_seek_typed(cap_raw: u64, offset: i64, whence: u64) -> i64 {
+    use azos_abi::error::Errno;
+    if whence > 2 {
+        return Errno::EINVAL.to_syscall_ret();
+    }
+    match file_fd_for(cap_raw, azos_abi::cap::CapPerms::NONE, azos_abi::invoke::NODE_SEEK) {
+        Ok(fd) => match file_ops() {
+            Some(o) => o.lseek(fd as i32, offset, whence as i32),
+            None => -1,
+        },
+        Err(e) => e,
+    }
+}
+
 /// `DOMAIN_STATFS`: a0 = path, a1 = buffer, a2 = its length (at least
 /// `STATFS_BYTES`). Writes the layout `STATFS_BYTES` documents and returns
 /// `0`; `-EINVAL` for a short buffer (nothing written), `-EFAULT` for an

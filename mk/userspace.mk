@@ -372,9 +372,9 @@ $(VMMD_ELF): $(VMMD_SRC) $(LIBSYS_SRC)
 	cp $(VMMD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LXRT_ELF): $(LXRT_SRC) $(LIBSYS_SRC)
+$(LXRT_ELF): $(LXRT_SRC) $(LIBSYS_SRC) $(LXRT_FORCE)
 	@mkdir -p $(OUT_BUILD)
-	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS) $(LXRT_FEATURE_FLAGS)
 	cp $(LXRT_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -999,18 +999,18 @@ $(VMMD_ELF_AARCH64): $(VMMD_SRC) $(LIBSYS_SRC)
 # The Linux runtime shares the program's FP/SIMD state, so it is built with the
 # soft-float target (no vector register is named anywhere in it), where every
 # other image is hard-float. 4 KiB granule only.
-$(LXRT_ELF_AARCH64): $(LXRT_SRC) $(LIBSYS_SRC)
+$(LXRT_ELF_AARCH64): $(LXRT_SRC) $(LIBSYS_SRC) $(LXRT_FORCE)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(LXRT_UFLAGS_AARCH64)
+	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(LXRT_UFLAGS_AARCH64) $(LXRT_FEATURE_FLAGS)
 	cp $(OUT_TGT)/$(LXRT_DIR)/$(LXRT_TARGET_AARCH64)/release/lxrt $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # x86_64: the same, on rustc's soft-float `x86_64-unknown-none` (not the
 # hard-float `x86_64-unknown-azos` the other images use, and none of the
 # Kconfig baseline flags, which would enable SSE: lxrt/build.rs).
-$(LXRT_ELF_X86_64): $(LXRT_SRC) $(LIBSYS_SRC)
+$(LXRT_ELF_X86_64): $(LXRT_SRC) $(LIBSYS_SRC) $(LXRT_FORCE)
 	@mkdir -p $(X86_64_DIR)
-	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(LXRT_UFLAGS_X86_64)
+	cd $(LXRT_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXRT_DIR)" && $(USPACE_BUILD) $(LXRT_UFLAGS_X86_64) $(LXRT_FEATURE_FLAGS)
 	cp $(OUT_TGT)/$(LXRT_DIR)/$(LXRT_TARGET_X86_64)/release/lxrt $@
 	@echo "[USPACE-X86_64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 

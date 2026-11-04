@@ -17,7 +17,7 @@
 //! the descriptor table (small integers onto the console, `Cap<File>` handles,
 //! pipe ends and open directories; a pipe end is a byte ring in a shared
 //! region the image maps, `azos_bytepipe`), the working directory, the
-//! umask, the signal actions and mask (state only: nothing is delivered), and
+//! umask, the signal actions, mask and pending set, and
 //! the image's path. A fork copies it with the address space. A spawn hands
 //! the first three over: the descriptors and working directory the spawn
 //! request asked for arrive in the startup block a native child gets
@@ -32,16 +32,30 @@
 //! authority its row gives it; this crate adds none, and a program that
 //! jumps into it gets no more than the image has.
 //!
+//! # Signals
+//!
+//! A signal the process sends itself (`kill` of its own id, `tkill`, `tgkill`,
+//! `raise`) is posted to the pending set and delivered before the call returns:
+//! ignored, ended with `128 + signo` (the default action), or run in the
+//! program's handler on a frame this runtime writes on the program's stack
+//! (`azos_linux_abi::signal`; the program's `rt_sigreturn` comes back here and
+//! restores the frame). The F/D/V state is not saved in the frame. A signal to
+//! a child goes over `SYS_ALERT`, which ends the target with `128 + signo`:
+//! the sender cannot see the target's handlers, so a signal whose default
+//! action ends a process ends it, and SIGKILL is exact. A handler in another
+//! process is not run, and a signal arriving from outside the process is not
+//! delivered: there is no upcall into a running program yet. x86-64 has no
+//! frame layout here, so a handler there is `-ENOSYS`.
+//!
 //! # What it does not answer yet
 //!
-//! Anything that needs a native primitive the ABI does not have until the ABI
-//! cut (D6): `lseek` (a `Cap<File>` has no seek), `mprotect`, signal delivery
-//! and `kill` (no upcall into the process), `clone` as a thread (the native
-//! thread's start and clear-on-exit are not a Linux thread's), `execve` (the
-//! native exec refuses a Linux image and carries no argument vector),
-//! requeue and priority-inheritance futexes, and console input. Each answers
-//! `-ENOSYS` (or end of file, for the console) and is reported once per call
-//! number, never silently.
+//! `clone` as a thread (the native thread's start and clear-on-exit are not a
+//! Linux thread's), `execve` (the native exec refuses a Linux image and
+//! carries no argument vector), requeue and priority-inheritance futexes
+//! (D5), `set_robust_list`, and console input. Each answers `-ENOSYS` (or end
+//! of file, for the console) and is reported once per call number, never
+//! silently. `lseek`, `mprotect` and `futex` wait and wake are answered over
+//! `NODE_SEEK`, `DOMAIN_MPROTECT` and `SYS_FUTEX_WAIT/WAKE`.
 //!
 //! `clone` in the fork and vfork shapes and `wait4` are answered over the
 //! foreign-ABI family's `SYS_FOREIGN_FORK` and the domain's `wait` op: the
@@ -55,7 +69,7 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-use azos_abi::foreign::{ForeignFrame, REG_NUMBER, REG_RESULT};
+use azos_abi::foreign::{ForeignFrame, REG_NUMBER, REG_RESULT, REG_SP};
 use azos_abi::time::{ClockError, ClockId};
 use azos_abi::ushell::{StartupFd, FD_CONSOLE as SFD_CONSOLE, FD_HANDLE as SFD_HANDLE, STARTUP_FDS};
 use azos_abi::syscall_nr::{STAT_BYTES, STAT_OFF_ATIME, STAT_OFF_CTIME, STAT_OFF_MODE, STAT_OFF_MTIME, STAT_OFF_NLINK, STAT_OFF_SIZE, STAT_S_IFDIR, STAT_S_IFMT};
@@ -97,6 +111,8 @@ pub const RUNTIME_OPS: &[u16] = &[
     azos_abi::invoke::DOMAIN_WAIT,
     azos_abi::invoke::MEMOBJ_ACQUIRE,
     azos_abi::invoke::MEMOBJ_END_DROP,
+    azos_abi::invoke::NODE_SEEK,
+    azos_abi::invoke::DOMAIN_MPROTECT,
 ];
 
 /// Descriptors per process (0..FDS).
@@ -198,6 +214,20 @@ pub trait Native {
     fn waitpid(&self, tid: u32, code: &mut i32) -> i64;
     /// `SYS_EXIT`.
     fn exit(&self, code: i32) -> !;
+    /// `NODE_SEEK` on a `Cap<File>` handle: the new offset.
+    fn handle_seek(&self, h: u32, offset: i64, whence: u32) -> i64;
+    /// `DOMAIN_MPROTECT`: read and write bits only; `PROT_EXEC` is refused.
+    fn mprotect(&self, addr: u64, len: u64, prot: u64) -> i64;
+    /// `SYS_FUTEX_WAIT` on the word at `addr` (`timeout_ns` relative, 0: none):
+    /// 0 woken, `-EAGAIN` the word differs, `-ETIMEDOUT` (110), `-EINTR`.
+    fn futex_wait(&self, addr: u64, expected: u32, timeout_ns: u64) -> i64;
+    /// `SYS_FUTEX_WAKE`: how many waiters were woken.
+    fn futex_wake(&self, addr: u64, n: u32) -> i64;
+    /// `SYS_ALERT` on the descendant `tid`: it ends with `128 + signo`.
+    fn alert(&self, tid: u32, signo: u32) -> i64;
+    /// The address of code that issues `rt_sigreturn` (a handler's return
+    /// address when the program gave no `SA_RESTORER`).
+    fn sigreturn_code(&self) -> u64;
     /// Resume the program at `frame` with thread pointer `tp` (x86-64
     /// `arch_prctl(ARCH_SET_FS)`): ring 3 cannot write its FS base, and the
     /// kernel writes one only at a thread's first entry, so a new thread of
@@ -310,6 +340,8 @@ struct State {
     cwd_len: u8,
     act: [lx::KSigaction; NSIG],
     mask: u64,
+    /// Signals posted to this process and not yet delivered.
+    pending: u64,
     umask: u32,
     exe: [u8; EXE_MAX],
     exe_len: u8,
@@ -338,6 +370,7 @@ const STATE_INIT: State = State {
     cwd_len: 0,
     act: [KSA_DFL; NSIG],
     mask: 0,
+    pending: 0,
     umask: 0o022,
     exe: [0; EXE_MAX],
     exe_len: 0,
@@ -440,9 +473,15 @@ impl<N: Native> Runtime<N> {
     /// argument registers (`azos_abi::foreign`).
     pub fn dispatch(&self, f: &mut ForeignFrame) {
         let num = f.gpr[REG_NUMBER];
+        if num == nr::RT_SIGRETURN {
+            self.sigreturn(f);
+            self.deliver(f);
+            return;
+        }
         let a = |i: usize| f.gpr[REG_RESULT + i];
         let r = self.call(num, a(0), a(1), a(2), a(3), a(4), a(5));
         f.gpr[REG_RESULT] = r as u64;
+        self.deliver(f);
     }
 
     /// Answer the x86-64 Linux call in `f` and write the result into it:
@@ -522,7 +561,6 @@ impl<N: Native> Runtime<N> {
 
     #[allow(clippy::too_many_arguments)]
     fn call(&self, num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
-        let _ = a5;
         match num {
             // A process is a thread group of one here; its id is the thread's.
             nr::GETPID | nr::GETTID => self.pid.load(Ordering::Relaxed),
@@ -562,6 +600,12 @@ impl<N: Native> Runtime<N> {
                 self.native.yield_now();
                 0
             }
+            nr::LSEEK if !cfg!(feature = "canary-no-lseek") => self.sys_lseek(a0, a1, a2),
+            nr::MPROTECT if !cfg!(feature = "canary-no-mprotect") => self.sys_mprotect(a0, a1, a2),
+            nr::FUTEX if !cfg!(feature = "canary-no-futex") => self.sys_futex(a0, a1, a2, a3, a5),
+            nr::KILL if !cfg!(feature = "canary-no-kill") => self.sys_kill(a0 as i64, a1),
+            nr::TKILL if !cfg!(feature = "canary-no-kill") => self.sys_tgkill(a0, a0, a1),
+            nr::TGKILL if !cfg!(feature = "canary-no-kill") => self.sys_tgkill(a0, a1, a2),
             nr::RT_SIGACTION => self.sys_rt_sigaction(arch(), a0, a1, a2, a3),
             nr::RT_SIGPROCMASK => self.sys_rt_sigprocmask(a0, a1, a2, a3),
             nr::RT_SIGPENDING => self.sys_rt_sigpending(a0, a1),
@@ -1486,7 +1530,257 @@ impl<N: Native> Runtime<N> {
         raw & (events | POLLERR | POLLHUP | POLLNVAL)
     }
 
-    // ── signals (state only) ────────────────────────────────────────────────
+    // ── signals ─────────────────────────────────────────────────────────────
+
+    /// `lseek`: a file's offset lives in its open description, which the
+    /// native handle names (every duplicate shares it). A directory rewinds;
+    /// the console and pipe ends cannot seek.
+    fn sys_lseek(&self, fd: u64, off: u64, whence: u64) -> i64 {
+        let e = match self.fd_get(fd) {
+            Ok(e) => e,
+            Err(r) => return r,
+        };
+        if whence > 2 {
+            return neg(le::EINVAL);
+        }
+        match e.kind {
+            Kind::File => lx::errno_from_native(self.native.handle_seek(e.handle, off as i64, whence as u32), le::EINVAL),
+            Kind::Dir if off == 0 && whence == 0 => {
+                self.st.with(|s| s.dirs[e.dir as usize].next = 0);
+                0
+            }
+            Kind::Dir => neg(le::EINVAL),
+            _ => neg(le::ESPIPE),
+        }
+    }
+
+    /// `mprotect`: the native call refuses `PROT_EXEC`, so W^X holds here as
+    /// it did in the kernel's table. An empty range is success when aligned.
+    fn sys_mprotect(&self, addr: u64, len: u64, prot: u64) -> i64 {
+        if len == 0 {
+            return if addr & (self.native.page_size() - 1) == 0 { 0 } else { neg(le::EINVAL) };
+        }
+        lx::errno_from_native(self.native.mprotect(addr, len, prot), le::ENOMEM)
+    }
+
+    /// `futex` wait and wake on the plain or `_BITSET(MATCH_ANY)` form. The
+    /// kernel keys the word by the process, so `FUTEX_PRIVATE_FLAG` changes
+    /// nothing. Requeue and priority inheritance are not answered.
+    fn sys_futex(&self, uaddr: u64, op: u64, val: u64, timeout: u64, val3: u64) -> i64 {
+        use lx::futex::*;
+        let cmd = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+        let bitset = cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAKE_BITSET;
+        if bitset && val3 & 0xffff_ffff != FUTEX_BITSET_MATCH_ANY {
+            return self.unanswered(nr::FUTEX);
+        }
+        match cmd {
+            FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+                if uaddr == 0 {
+                    return neg(le::EFAULT);
+                }
+                if uaddr & 3 != 0 {
+                    return neg(le::EINVAL);
+                }
+                let rel = if timeout == 0 {
+                    0
+                } else {
+                    let mut b = [0u8; 16];
+                    if get_user(timeout, &mut b) != 0 {
+                        return neg(le::EFAULT);
+                    }
+                    let Some(ns) = lx::timespec_ns(&b) else { return neg(le::EINVAL) };
+                    if cmd == FUTEX_WAIT {
+                        // Natively 0 is "no timeout"; a zero timespec is "now".
+                        ns.max(1)
+                    } else {
+                        let clock = if op & FUTEX_CLOCK_REALTIME != 0 { ClockId::REAL } else { ClockId::MONO };
+                        let Ok(now) = self.native.clock_ns(clock) else { return neg(le::EINVAL) };
+                        match ns.checked_sub(now) {
+                            Some(d) if d > 0 => d,
+                            _ => return neg(le::ETIMEDOUT),
+                        }
+                    }
+                };
+                match self.native.futex_wait(uaddr, val as u32, rel) {
+                    -110 => neg(le::ETIMEDOUT),
+                    r => lx::errno_from_native(r, le::EINVAL),
+                }
+            }
+            FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+                if uaddr == 0 {
+                    return neg(le::EFAULT);
+                }
+                if uaddr & 3 != 0 || (val as i32) < 0 {
+                    return neg(le::EINVAL);
+                }
+                lx::errno_from_native(self.native.futex_wake(uaddr, val as u32), le::EINVAL)
+            }
+            _ => self.unanswered(nr::FUTEX),
+        }
+    }
+
+    /// `kill(pid, sig)`. Process groups do not exist here.
+    fn sys_kill(&self, pid: i64, sig: u64) -> i64 {
+        if sig > lx::sig::NSIG_MAX {
+            return neg(le::EINVAL);
+        }
+        if pid == 0 || pid == self.pid.load(Ordering::Relaxed) {
+            return self.post_self(sig);
+        }
+        if pid < 0 {
+            return neg(le::ESRCH);
+        }
+        self.signal_child(pid as u32, sig)
+    }
+
+    /// `tgkill(tgid, tid, sig)`: a process is a thread group of one, so the
+    /// thread is the process.
+    fn sys_tgkill(&self, tgid: u64, tid: u64, sig: u64) -> i64 {
+        if sig > lx::sig::NSIG_MAX {
+            return neg(le::EINVAL);
+        }
+        if tgid != tid {
+            return neg(le::ESRCH);
+        }
+        if tid as i64 == self.pid.load(Ordering::Relaxed) {
+            self.post_self(sig)
+        } else {
+            self.signal_child(tid as u32, sig)
+        }
+    }
+
+    fn post_self(&self, sig: u64) -> i64 {
+        if sig == 0 {
+            return 0;
+        }
+        let handled = self.st.with(|s| s.act[sig as usize - 1].handler > lx::sig::SIG_IGN);
+        if handled && lx::Arch::native().is_none() {
+            return self.unanswered(nr::KILL);
+        }
+        self.st.with(|s| s.pending |= lx::signal::bit(sig));
+        0
+    }
+
+    /// A signal to a child over `SYS_ALERT`, which ends it as the default
+    /// action does. A signal whose default action discards it, and signal 0,
+    /// only check that the child exists.
+    fn signal_child(&self, pid: u32, sig: u64) -> i64 {
+        let child = self.st.with(|s| s.children.contains(&pid));
+        if sig == 0 || lx::signal::default_action(sig) != lx::signal::DefaultAction::Terminate {
+            return if child { 0 } else { neg(le::ESRCH) };
+        }
+        if sig > 31 {
+            return self.unanswered(nr::KILL);
+        }
+        match self.native.alert(pid, sig as u32) {
+            r if r > 0 => 0,
+            r => lx::errno_from_native(r, le::ESRCH),
+        }
+    }
+
+    /// The first pending signal the mask lets through, taken off the pending
+    /// set: its action and the mask the interrupted code had.
+    fn take_signal(&self) -> Option<(u64, lx::KSigaction, u64)> {
+        self.st.with(|s| {
+            let ready = s.pending & !s.mask;
+            if ready == 0 {
+                return None;
+            }
+            let sig = u64::from(ready.trailing_zeros()) + 1;
+            s.pending &= !lx::signal::bit(sig);
+            let act = s.act[sig as usize - 1];
+            let old = s.mask;
+            if act.handler > lx::sig::SIG_IGN {
+                s.mask |= act.mask;
+                if act.flags & lx::signal::sa::NODEFER == 0 {
+                    s.mask |= lx::signal::bit(sig);
+                }
+                if act.flags & lx::signal::sa::RESETHAND != 0 {
+                    s.act[sig as usize - 1] = KSA_DFL;
+                }
+            }
+            Some((sig, act, old))
+        })
+    }
+
+    /// Deliver what is pending at the return of the call in `f`: ignore it,
+    /// end the process, or enter the handler on a frame below the program's
+    /// stack pointer.
+    fn deliver(&self, f: &mut ForeignFrame) {
+        use lx::signal::{self as sg, DefaultAction};
+        while let Some((sig, act, old_mask)) = self.take_signal() {
+            match act.handler {
+                lx::sig::SIG_IGN => continue,
+                lx::sig::SIG_DFL => match sg::default_action(sig) {
+                    DefaultAction::Terminate => self.native.exit(128 + sig as i32),
+                    _ => continue,
+                },
+                handler => {
+                    let Some(arch) = lx::Arch::native() else { self.native.exit(128 + 11) };
+                    let base = sg::frame_base(arch, f.gpr[REG_SP]);
+                    let ctx = sg::Context { gpr: f.gpr, pc: f.pc, pstate: f.flags };
+                    let info = sg::Info { signo: sig as u32, code: sg::si::USER, pid: self.pid.load(Ordering::Relaxed) as u32, status: 0 };
+                    let mut w = [0u64; sg::FRAME_WORDS_MAX];
+                    let Some(n) = sg::write_frame(arch, &mut w, &ctx, old_mask, &info, false) else {
+                        self.native.exit(128 + 11)
+                    };
+                    let mut bytes = [0u8; sg::FRAME_WORDS_MAX * 8];
+                    for (i, v) in w[..n].iter().enumerate() {
+                        bytes[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+                    }
+                    put_user(base, &bytes[..n * 8]);
+                    let restorer = if act.flags & sg::sa::RESTORER != 0 && act.restorer != 0 {
+                        act.restorer
+                    } else {
+                        self.native.sigreturn_code()
+                    };
+                    f.gpr[REG_RESULT] = sig;
+                    f.gpr[REG_RESULT + 1] = base;
+                    f.gpr[REG_RESULT + 2] = base + sg::SIGINFO_SIZE as u64;
+                    f.gpr[REG_SP] = base;
+                    match arch {
+                        lx::Arch::Riscv64 => f.gpr[1] = restorer,
+                        lx::Arch::Aarch64 => {
+                            // The frame record {fp, lr} after the ucontext.
+                            let rec = base + 8 * sg::a64_frame_record_word() as u64;
+                            let mut r = [0u8; 16];
+                            r[..8].copy_from_slice(&ctx.gpr[29].to_le_bytes());
+                            r[8..].copy_from_slice(&ctx.gpr[30].to_le_bytes());
+                            put_user(rec, &r);
+                            f.gpr[29] = rec;
+                            f.gpr[30] = restorer;
+                        }
+                    }
+                    f.pc = handler;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// `rt_sigreturn`: restore the registers and mask from the frame at the
+    /// stack pointer the handler returned with. A frame that cannot be read
+    /// ends the process as `SIGSEGV` would.
+    fn sigreturn(&self, f: &mut ForeignFrame) {
+        use lx::signal as sg;
+        let Some(arch) = lx::Arch::native() else { self.native.exit(128 + 11) };
+        let n = sg::head_words(arch);
+        let sp = f.gpr[REG_SP];
+        if sp == 0 || sp & 15 != 0 {
+            self.native.exit(128 + 11);
+        }
+        let mut bytes = [0u8; sg::FRAME_WORDS_MAX * 8];
+        get_user(sp, &mut bytes[..n * 8]);
+        let mut w = [0u64; sg::FRAME_WORDS_MAX];
+        for (i, v) in w[..n].iter_mut().enumerate() {
+            *v = u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap_or([0; 8]));
+        }
+        let Some((ctx, mask, _fp)) = sg::read_frame(arch, &w[..n]) else { self.native.exit(128 + 11) };
+        f.gpr = ctx.gpr;
+        f.pc = ctx.pc;
+        f.flags = ctx.pstate & azos_abi::foreign::FLAGS_USER_MASK;
+        self.st.with(|s| s.mask = mask);
+    }
 
     /// `rt_sigaction`, with the kernel `struct sigaction` of `a`'s layout.
     fn sys_rt_sigaction(&self, a: lx::Arch, s: u64, act: u64, oact: u64, setsize: u64) -> i64 {
@@ -1554,12 +1848,13 @@ impl<N: Native> Runtime<N> {
         0
     }
 
-    /// Nothing is ever pending: no signal is delivered to a hosted process yet.
+    /// The signals posted to this process that its mask holds back.
     fn sys_rt_sigpending(&self, set: u64, size: u64) -> i64 {
         if size != 8 {
             return neg(le::EINVAL);
         }
-        put_user(set, &0u64.to_le_bytes())
+        let held = self.st.with(|s| s.pending & s.mask);
+        put_user(set, &held.to_le_bytes())
     }
 
     /// `sigaltstack`: no alternate stack is offered. The old one reads back

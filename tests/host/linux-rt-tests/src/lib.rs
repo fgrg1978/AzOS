@@ -55,6 +55,14 @@ mod tests {
         /// each call's (thread pointer, result register of the frame).
         resume_fails: i64,
         resumed: Vec<(u64, u64)>,
+        /// `futex_wait` calls (addr, expected, relative ns) and what the next one answers.
+        futex_waits: Vec<(u64, u32, u64)>,
+        futex_answer: i64,
+        futex_wakes: Vec<(u64, u32)>,
+        /// `mprotect` calls (addr, len, prot).
+        protects: Vec<(u64, u64, u64)>,
+        /// `alert` calls (tid, signo).
+        alerts: Vec<(u32, u32)>,
         /// The write ends of the model's pipes (a pipe's handles are otherwise alike).
         write_ends: Vec<u32>,
         /// The pipes whose other end is gone.
@@ -257,6 +265,49 @@ mod tests {
         fn exit(&self, code: i32) -> ! {
             self.0.borrow_mut().exited = Some(code);
             panic!("exit({code})");
+        }
+        fn handle_seek(&self, h: u32, offset: i64, whence: u32) -> i64 {
+            let mut m = self.0.borrow_mut();
+            let Some((path, off, pipe)) = m.handles.get(&h).cloned() else { return -100 };
+            if pipe.is_some() {
+                return -29;
+            }
+            let len = m.files.get(&path).map_or(0, |f| f.len()) as i64;
+            let base = match whence {
+                0 => 0,
+                1 => off as i64,
+                _ => len,
+            };
+            let new = base + offset;
+            if new < 0 {
+                return -22;
+            }
+            m.handles.insert(h, (path, new as usize, None));
+            new
+        }
+        fn mprotect(&self, addr: u64, len: u64, prot: u64) -> i64 {
+            self.0.borrow_mut().protects.push((addr, len, prot));
+            if prot & 4 != 0 { -13 } else { 0 }
+        }
+        fn futex_wait(&self, addr: u64, expected: u32, timeout_ns: u64) -> i64 {
+            let mut m = self.0.borrow_mut();
+            m.futex_waits.push((addr, expected, timeout_ns));
+            m.futex_answer
+        }
+        fn futex_wake(&self, addr: u64, n: u32) -> i64 {
+            self.0.borrow_mut().futex_wakes.push((addr, n));
+            1
+        }
+        fn alert(&self, tid: u32, signo: u32) -> i64 {
+            let mut m = self.0.borrow_mut();
+            if !m.kids.contains(&tid) {
+                return -3;
+            }
+            m.alerts.push((tid, signo));
+            1
+        }
+        fn sigreturn_code(&self) -> u64 {
+            0x7000
         }
         fn resume_with_thread_pointer(&self, frame: &ForeignFrame, tp: u64) -> i64 {
             let fails = {
@@ -697,17 +748,162 @@ mod tests {
     }
 
     #[test]
-    fn what_needs_the_abi_cut_answers_enosys_and_is_reported_once_per_call() {
+    fn what_has_no_native_primitive_yet_answers_enosys_and_is_reported_once_per_call() {
         let r = rt();
-        assert_eq!(call(&r, nr::LSEEK, [3, 0, 0, 0, 0, 0]), -le::ENOSYS);
-        assert_eq!(call(&r, nr::MPROTECT, [0, 4096, 1, 0, 0, 0]), -le::ENOSYS);
+        assert_eq!(call(&r, nr::EXECVE, [0, 0, 0, 0, 0, 0]), -le::ENOSYS);
+        assert_eq!(call(&r, nr::SET_ROBUST_LIST, [0, 24, 0, 0, 0, 0]), -le::ENOSYS);
         // A thread (CLONE_THREAD and friends) is not answered.
         assert_eq!(call(&r, nr::CLONE, [0x7d0f00, 0x1000, 0, 0, 0, 0]), -le::ENOSYS);
+        // Requeue and priority inheritance are the native PI wait's job (D5).
+        assert_eq!(call(&r, nr::FUTEX, [0x1000, 3, 1, 1, 0x2000, 0]), -le::ENOSYS);
         let console = String::from_utf8(r.native().0.borrow().console.clone()).unwrap();
-        assert_eq!(console.matches("not answered by the personality: -ENOSYS").count(), 3);
-        assert!(console.contains("syscall 62 "));
+        assert_eq!(console.matches("not answered by the personality: -ENOSYS").count(), 4);
+        assert!(console.contains("syscall 221 "));
         // With no child to wait for, wait4 says so.
         assert_eq!(call(&r, nr::WAIT4, [u64::MAX, 0, 0, 0, 0, 0]), -le::ECHILD);
+    }
+
+    #[test]
+    fn lseek_moves_a_file_description_and_refuses_what_cannot_seek() {
+        let r = rt();
+        let path = c("/fat/HELLO.ELF");
+        let fd = call(&r, nr::OPENAT, [lx::AT_FDCWD, p(&path), 0, 0, 0, 0]);
+        assert!(fd >= 3);
+        let fd = fd as u64;
+        assert_eq!(call(&r, nr::LSEEK, [fd, 4, 0, 0, 0, 0]), 4);
+        assert_eq!(call(&r, nr::LSEEK, [fd, 2, 1, 0, 0, 0]), 6);
+        assert_eq!(call(&r, nr::LSEEK, [fd, (-3i64) as u64, 2, 0, 0, 0]), 16);
+        assert_eq!(call(&r, nr::LSEEK, [fd, (-100i64) as u64, 1, 0, 0, 0]), -le::EINVAL);
+        assert_eq!(call(&r, nr::LSEEK, [fd, 0, 3, 0, 0, 0]), -le::EINVAL);
+        assert_eq!(call(&r, nr::LSEEK, [1, 0, 0, 0, 0, 0]), -le::ESPIPE);
+        assert_eq!(call(&r, nr::LSEEK, [9, 0, 0, 0, 0, 0]), -le::EBADF);
+    }
+
+    #[test]
+    fn mprotect_passes_the_range_on_and_keeps_exec_refused() {
+        let r = rt();
+        assert_eq!(call(&r, nr::MPROTECT, [0x4000_0000, 8192, 1, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::MPROTECT, [0x4000_0000, 8192, 5, 0, 0, 0]), -le::EACCES);
+        assert_eq!(r.native().0.borrow().protects, vec![(0x4000_0000, 8192, 1), (0x4000_0000, 8192, 5)]);
+        // Empty: success when aligned, no native call.
+        assert_eq!(call(&r, nr::MPROTECT, [0x4000_0000, 0, 1, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::MPROTECT, [0x4000_0001, 0, 1, 0, 0, 0]), -le::EINVAL);
+        assert_eq!(r.native().0.borrow().protects.len(), 2);
+    }
+
+    #[test]
+    fn futex_wait_and_wake_map_onto_the_native_pair() {
+        use lx::futex::*;
+        let r = rt();
+        let word = [7u32; 1];
+        let a = word.as_ptr() as u64;
+        r.native().0.borrow_mut().futex_answer = -11;
+        assert_eq!(call(&r, nr::FUTEX, [a, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 7, 0, 0, 0]), -le::EAGAIN);
+        r.native().0.borrow_mut().futex_answer = 0;
+        let ts = lx::timespec_bytes(2_000_000);
+        assert_eq!(call(&r, nr::FUTEX, [a, FUTEX_WAIT, 7, p(&ts), 0, 0]), 0);
+        r.native().0.borrow_mut().futex_answer = -110;
+        assert_eq!(call(&r, nr::FUTEX, [a, FUTEX_WAIT, 7, p(&ts), 0, 0]), -le::ETIMEDOUT);
+        // An absolute deadline already past never reaches the kernel.
+        let past = lx::timespec_bytes(1);
+        let n = r.native().0.borrow().futex_waits.len();
+        assert_eq!(call(&r, nr::FUTEX, [a, FUTEX_WAIT_BITSET, 7, p(&past), 0, FUTEX_BITSET_MATCH_ANY]), -le::ETIMEDOUT);
+        assert_eq!(r.native().0.borrow().futex_waits.len(), n);
+        assert_eq!(call(&r, nr::FUTEX, [a, FUTEX_WAKE, 3, 0, 0, 0]), 1);
+        assert_eq!(call(&r, nr::FUTEX, [a + 1, FUTEX_WAKE, 3, 0, 0, 0]), -le::EINVAL);
+        // A mask other than MATCH_ANY is not answered.
+        assert_eq!(call(&r, nr::FUTEX, [a, FUTEX_WAKE_BITSET, 1, 0, 0, 2]), -le::ENOSYS);
+        let m = r.native().0.borrow();
+        assert_eq!(m.futex_waits[0], (a, 7, 0));
+        assert_eq!(m.futex_waits[1], (a, 7, 2_000_000));
+        assert_eq!(m.futex_wakes, vec![(a, 3)]);
+    }
+
+    #[test]
+    fn kill_of_self_ends_ignores_or_blocks_by_the_action_and_mask() {
+        let r = rt();
+        let pid = 42u64;
+        // Ignored by default: SIGCHLD.
+        assert_eq!(call(&r, nr::KILL, [pid, 17, 0, 0, 0, 0]), 0);
+        assert_eq!(r.native().0.borrow().exited, None);
+        // Blocked: pending, reported by sigpending, nothing ends.
+        let mut mask = 1u64 << (15 - 1);
+        assert_eq!(call(&r, nr::RT_SIGPROCMASK, [0, p(&mask.to_le_bytes()), 0, 8, 0, 0]), 0);
+        assert_eq!(call(&r, nr::KILL, [pid, 15, 0, 0, 0, 0]), 0);
+        let mut held = [0u8; 8];
+        assert_eq!(call(&r, nr::RT_SIGPENDING, [held.as_mut_ptr() as u64, 8, 0, 0, 0, 0]), 0);
+        assert_eq!(u64::from_le_bytes(held), mask);
+        assert_eq!(r.native().0.borrow().exited, None);
+        // Signal 0 only checks; an unknown process is ESRCH.
+        assert_eq!(call(&r, nr::KILL, [pid, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::KILL, [999, 0, 0, 0, 0, 0]), -le::ESRCH);
+        assert_eq!(call(&r, nr::KILL, [pid, 65, 0, 0, 0, 0]), -le::EINVAL);
+        // Unblocking delivers it: the default action ends the process with 128 + signo.
+        mask = 0;
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            call(&r, nr::RT_SIGPROCMASK, [2, p(&mask.to_le_bytes()), 0, 8, 0, 0])
+        }));
+        assert!(ended.is_err());
+        assert_eq!(r.native().0.borrow().exited, Some(128 + 15));
+    }
+
+    #[test]
+    fn kill_of_a_child_is_a_native_alert_and_a_stranger_is_esrch() {
+        let r = rt();
+        r.native().0.borrow_mut().fork_result = 77;
+        r.native().0.borrow_mut().kids.push(77);
+        assert_eq!(call(&r, nr::CLONE, [17, 0, 0, 0, 0, 0]), 77);
+        assert_eq!(call(&r, nr::KILL, [77, 9, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::KILL, [77, 15, 0, 0, 0, 0]), 0);
+        // Discarded by default: only the child's existence is checked.
+        assert_eq!(call(&r, nr::KILL, [77, 17, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::KILL, [78, 17, 0, 0, 0, 0]), -le::ESRCH);
+        assert_eq!(call(&r, nr::KILL, [78, 9, 0, 0, 0, 0]), -le::ESRCH);
+        assert_eq!(r.native().0.borrow().alerts, vec![(77, 9), (77, 15)]);
+        // A thread of another process: tgkill wants the same id twice.
+        assert_eq!(call(&r, nr::TGKILL, [77, 78, 9, 0, 0, 0]), -le::ESRCH);
+    }
+
+    #[test]
+    fn a_handler_runs_on_a_frame_and_rt_sigreturn_restores_the_interrupted_registers() {
+        if lx::Arch::native().is_none() {
+            return;
+        }
+        use azos_abi::foreign::REG_SP;
+        let r = rt();
+        let act = lx::KSigaction { handler: 0x5000, flags: 0, restorer: 0, mask: 1 << (10 - 1) };
+        let b = act.to_bytes(lx::Arch::native().unwrap());
+        assert_eq!(call(&r, nr::RT_SIGACTION, [12, p(&b), 0, 8, 0, 0]), 0);
+        let mut stack = vec![0u8; 8192];
+        let top = (stack.as_mut_ptr() as u64 + 8192) & !15;
+        let mut f = ForeignFrame::ZERO;
+        f.gpr[REG_NUMBER] = nr::KILL;
+        f.gpr[REG_RESULT] = 42;
+        f.gpr[REG_RESULT + 1] = 12;
+        f.gpr[REG_SP] = top;
+        f.gpr[5] = 0xdead_beef;
+        f.pc = 0x4444;
+        r.dispatch(&mut f);
+        assert_eq!(f.pc, 0x5000);
+        // The handler's return address is the runtime's trampoline.
+        assert!(f.gpr[1] == 0x7000 || f.gpr[30] == 0x7000);
+        assert!(f.gpr[REG_SP] < top && f.gpr[REG_SP] & 15 == 0);
+        let frame = f.gpr[REG_SP];
+        // The handler runs with its own mask and the signal blocked.
+        let mut cur = [0u8; 8];
+        assert_eq!(call(&r, nr::RT_SIGPROCMASK, [0, 0, cur.as_mut_ptr() as u64, 8, 0, 0]), 0);
+        assert_eq!(u64::from_le_bytes(cur), (1 << 11) | (1 << 9));
+        // The handler returns: rt_sigreturn.
+        let mut g = ForeignFrame::ZERO;
+        g.gpr[REG_NUMBER] = nr::RT_SIGRETURN;
+        g.gpr[REG_SP] = frame;
+        r.dispatch(&mut g);
+        assert_eq!(g.pc, 0x4444);
+        assert_eq!(g.gpr[5], 0xdead_beef);
+        assert_eq!(g.gpr[REG_SP], top);
+        assert_eq!(g.gpr[REG_RESULT], 0, "kill returned 0 in the interrupted context");
+        assert_eq!(call(&r, nr::RT_SIGPROCMASK, [0, 0, cur.as_mut_ptr() as u64, 8, 0, 0]), 0);
+        assert_eq!(u64::from_le_bytes(cur), 0);
     }
 
     #[test]
@@ -943,7 +1139,8 @@ mod tests {
     #[test]
     fn x86_unanswered_calls_are_enosys_under_their_own_number() {
         let r = rt();
-        // lseek is 8 here (62 is kill in the asm-generic table and lseek's number there).
+        // lseek is 8 here (62 is kill in the asm-generic table and lseek's number there):
+        // x86-64 translates none of the calls this front closes yet.
         assert_eq!(xcall(&r, xnr::LSEEK, [3, 0, 0, 0, 0, 0]), -le::ENOSYS);
         let console = String::from_utf8(r.native().0.borrow().console.clone()).unwrap();
         assert!(console.contains("syscall 8 not answered"), "{console}");

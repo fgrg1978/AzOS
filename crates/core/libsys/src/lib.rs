@@ -1890,6 +1890,18 @@ pub fn fsync_typed(cap: u32) -> isize {
     invoke(cap, invoke_abi::NODE_FSYNC, [0; 4]).0
 }
 
+/// Reposition a `Cap<File>` (`NODE_SEEK`, any permission): the new offset, or
+/// a negative errno.
+pub fn file_seek_typed(cap: u32, offset: i64, whence: u64) -> isize {
+    invoke(cap, invoke_abi::NODE_SEEK, [offset as u64, whence, 0, 0]).0
+}
+
+/// Change the protection of this task's own pages (`DOMAIN_MPROTECT`): `prot`
+/// is read and write bits only, `PROT_EXEC` is refused.
+pub fn mprotect(addr: u64, len: u64, prot: u64) -> isize {
+    domain_op(invoke_abi::DOMAIN_MPROTECT, [addr, len, prot, 0])
+}
+
 /// Capacity and free space of the filesystem `path` (**NUL-terminated**) is
 /// on, written to `buf` in the layout `azos_abi::syscall_nr::STATFS_BYTES`
 /// documents. The kernel is told `buf.len()` and refuses a short one.

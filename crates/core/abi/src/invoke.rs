@@ -354,6 +354,14 @@ pub const DOMAIN_DRIVER_REPLY_WAIT: u16 = op(CapKind::Domain, CLASS_DRIVER, 47);
 /// returns its virtual address; needs the `Device` (`ty::MMIO`) capability for
 /// the handle, carrying WRITE when WRITE is asked.
 pub const DOMAIN_MMIO_MAP: u16 = op(CapKind::Domain, CLASS_DRIVER, 48);
+/// Change the protection of the caller's own pages: `w0` the page-aligned
+/// address, `w1` the length, `w2` the protection (`PROT_READ` 1, `PROT_WRITE`
+/// 2). `PROT_EXEC` is refused with `-EACCES`, and so is adding write to an
+/// executable page (W^X holds across the call). `PROT_NONE` frees the pages.
+/// It is the memory authority `SYS_MO_MAP` already grants, over the same
+/// range. `-EINVAL` for a misaligned or empty range, `-ENOMEM` for a page the
+/// caller does not own.
+pub const DOMAIN_MPROTECT: u16 = op(CapKind::Domain, CLASS_CTL, 49);
 
 // ── Node: a file or a socket the caller holds ─────────────────────────────
 
@@ -418,6 +426,12 @@ pub const NODE_OPENAT: u16 = op(CapKind::Node, CLASS_FS_OPEN, 12);
 /// cache cannot serve, `-EBUSY` when the caller already maps a window the call
 /// needs, `-EINVAL` for bad arguments.
 pub const NODE_MMAP: u16 = op(CapKind::Node, CLASS_CTL, 13);
+/// Reposition the file the handle names: `w0` the offset (an `i64`), `w1` the
+/// whence (0 from the start, 1 from the current offset, 2 from the end). Any
+/// permission, as `NODE_FSYNC`. The offset belongs to the open description,
+/// which every duplicate of the handle shares. Returns the new offset, or
+/// `-EINVAL` for a bad whence or a negative result.
+pub const NODE_SEEK: u16 = op(CapKind::Node, CLASS_READ, 16);
 /// The `ty::FILE` resource of the directory on `/`, the task's root
 /// `Cap<Dir>`: what `SYS_CAP_INFO` looks up to find it. The kernel interns the
 /// tree on `/` first, so the value never depends on the order the topology

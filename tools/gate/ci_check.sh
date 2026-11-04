@@ -17802,6 +17802,7 @@ CPU 5 lacks hwcap bits"
             "lx: rt: ioctl on a file ok" "lx: rt: stat ok" "lx: rt: lstat ok" "lx: rt: newfstatat ok" \
             "lx: rt: stat a directory ok" "lx: rt: missing file ok" "lx: rt: getdents64 ok" "lx: writev ok" \
             "lx: rt: wait4 ok" "lx: rt: fcntl ok" "lx: rt: create outside caps refused ok" \
+            "lx: rt: lseek ok" "lx: rt: mprotect ok" "lx: rt: futex ok" "lx: rt: kill ok"
             "lx: rt: unanswered call ok" "lx: fork+wait4 ok" "lx: fork child ids ok" \
             "lx: fork child holds only its row ok" "lx: fork shares the file offset ok" \
             "lx: rt done failures=0" "lx: spawn cwd=/fat" "lx: spawn stdin kind=fifo" \
@@ -24652,9 +24653,14 @@ echo after-lx \$?" 120 \
         # the calls the runtime answers over the native ABI today (the
         # in-kernel personality answers every one of them too, so the stage
         # compares the two by cost, not by answer); the full `lxhello` run stays
-        # on the in-kernel rows above until the runtime answers seek,
-        # mprotect, signals, threads and exec. `[SPAWN] ... hosted by the
-        # ring-3 runtime` is printed only for a hosted child (`spawn-log`).
+        # on the in-kernel rows above until the runtime answers threads and
+        # exec (C2-11). `lseek`, `mprotect`, futex wait/wake and `kill` with a
+        # handler are answered (C2-10): `lx: rt: lseek|mprotect|futex|kill ok`,
+        # each with a canary row below that builds the runtime with
+        # `canary-no-<gap>` (the call is `-ENOSYS` again) and must see that
+        # gap's `FAIL` line with the rest of the stage running.
+        # `[SPAWN] ... hosted by the ring-3
+        # runtime` is printed only for a hosted child (`spawn-log`).
         # `lxhello spawn` then runs three spawns whose request names more than
         # the console: a working directory (`cd /fat`: the runtime's `getcwd`
         # must say `/fat`, its default is `/`), a pipe on descriptor 0, and a
@@ -24742,6 +24748,28 @@ cat /fat/RTOUT.TXT"
                         "$lx_rt_script" 150 "${lx_rt_markers[@]}"
                 fi
             done
+            # C2-10: one runtime canary per gap. The runtime ELF is the path the
+            # kernel embeds, so each canary builds it with `canary-no-<gap>`,
+            # builds its kernel, and the plain runtime is put back after the
+            # loop. Red for its own reason: the gap's `FAIL` line is expected
+            # and the rest of the stage still runs.
+            lx_rt_elf="$AZOS_OUT/build/linux_rt.elf"
+            [ "$ush_isa" = rv ] || lx_rt_elf="$AZOS_OUT/build/aarch64/linux_rt.elf"
+            for gap in lseek mprotect futex kill; do
+                lx_rt_kg="$CI_LOG_DIR/kernel-lxrt-nogap-${gap}-${ush_isa}"
+                if make -s LXRT_FEATURES="canary-no-${gap}" "$lx_rt_elf" >/dev/null 2>&1 \
+                   && if [ "$ush_isa" = rv ]; then
+                          KCONFIG_CONFIG="$lx_rt_cfg" kbuild "$ush_feat,linux-abi-test,spawn-log" && cp "$KERNEL" "$lx_rt_kg"
+                      else
+                          CI_KDEFER=0 AARCH64_CONFIG="$lx_rt_cfg" a64_kbuild "$ush_feat,linux-abi-test,spawn-log" && cp "$A64_IMG" "$lx_rt_kg"
+                      fi; then
+                    USH_KERNEL="$lx_rt_kg" USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|SECCOMP" par_row ushell_row "linux: runtime gap canary $gap answers ENOSYS ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" PASS \
+                        "$lx_rt_script" 150 "hosted by the ring-3 runtime" "lx: rt: getpid ok" "lx: rt: ${gap} FAIL" "lx: rt: unanswered call ok"
+                else
+                    printf "  %-26s" "linux: runtime gap canary $gap ($ush_isa)..."; bad; echo "      the kernel with canary-no-$gap did not build"
+                fi
+            done
+            LXRT_REBUILD=1 make -s "$lx_rt_elf" >/dev/null 2>&1
         else
             printf "  %-26s" "linux: hosted by the ring-3 runtime ($ush_isa)..."
             bad; echo "      the LINUX_RUNTIME kernel did not build"

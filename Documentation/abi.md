@@ -315,6 +315,7 @@ where the source states them.
 | `DOMAIN_DRIVER_REPLY_FETCH` | 0x592E | DRIVER | Publish a reply and take the next request. |
 | `DOMAIN_DRIVER_REPLY_WAIT` | 0x592F | DRIVER | As reply-fetch, blocking up to `w3` ms (default and ceiling 1000). |
 | `DOMAIN_MMIO_MAP` | 0x5930 | DRIVER | Map a device's register window; needs the `Device` (`ty::MMIO`) capability. |
+| `DOMAIN_MPROTECT` | 0x5331 | CTL | Change the protection of the caller's own pages (`w0` address, `w1` length, `w2` read/write bits); `PROT_EXEC` is refused with `-EACCES`. |
 
 **Port** (kind 4); see [ipc.md](ipc.md#event-ports)
 
@@ -350,6 +351,7 @@ where the source states them.
 | `NODE_ACCEPT` | 0x680F | NET | Take one established connection as a new `ty::SOCKET` handle (`READ\|WRITE`); `-EAGAIN` when none waits. Non-blocking. Needs `READ`. |
 | `NODE_OPENAT` | 0x650C | FS_OPEN | Open a name beneath a held directory handle; absolute names and `..` above the directory are refused. A write-mode open also needs a held tree with `WRITE` that covers the result. |
 | `NODE_MMAP` | 0x630D | CTL | Map a file (shared or private) from the page cache; `PROT_EXEC` is never allowed. |
+| `NODE_SEEK` | 0x6010 | READ | Reposition the file's open description (`w0` offset, `w1` whence 0/1/2); returns the new offset. Any permission. |
 
 `ROOT_DIR_RESOURCE` is the `ty::FILE` resource of the directory on `/`, which
 `SYS_CAP_INFO` looks up to find the task's root directory handle.
