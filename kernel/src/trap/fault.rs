@@ -99,7 +99,9 @@ pub fn fatal_note<S: FaultServices<F>, F: Frame>(args: fmt::Arguments<'_>) -> ! 
     S::fatal_halt()
 }
 
-/// The page-fault arm of every trap (`TrapClass::PageFault`).
+/// The page-fault arm of every trap (`TrapClass::PageFault`). Out of line: inlined,
+/// it grew the trap entry every syscall runs through (the trap path size rows).
+#[inline(never)]
 pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
     let va = frame.fault_addr();
     let write = frame.fault_is_write();
@@ -149,7 +151,8 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
     fatal::<S, F>(frame, "kernel page fault", Some(fault))
 }
 
-/// Any other synchronous exception (`TrapClass::OtherException`).
+/// Any other synchronous exception (`TrapClass::OtherException`). Out of line, as `page_fault`.
+#[inline(never)]
 pub fn exception<S: FaultServices<F>, F: Frame>(frame: &mut F) {
     match S::arch_exception(frame) {
         Disposition::Resume => return,
