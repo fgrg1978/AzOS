@@ -1235,24 +1235,38 @@ mod wq_window_ktests {
 // A TID-directed wake resolves its slot, then acts on it. If the addressee
 // exits and its slot goes to a new task in between, the wake must not stamp
 // that task: its next block would return at once (a fast-IPC caller's
-// spurious -1). The hook frees and refills the slot inside that window; the
-// new task then blocks with no deadline, so only a stamp ends that block
-// before this test wakes it. Canary `tid-stamp-canary`: `not ok`.
+// spurious -1). The new task blocks with no deadline, so only a stamp ends
+// that block before this test wakes it. Two injections, each its own test:
+// the slot is freed and refilled before the wake first reads the word (the
+// TID check stops it), and after it (the reuse's new generation stops the
+// CAS). Canaries `tid-stamp-canary` (both) and `tid-reuse-gen-canary` (the
+// second): `not ok # ... stamped the slot's new task`.
+//
+// The tasks run on CPU 0 at the runner's priority: the old one is `Ready`
+// (never running) while the runner reads the word, and the new one cannot
+// start before the wake's CAS. The slot is taken deterministically:
+// `alloc_slot` hands out the lowest free one, so fillers hold every free
+// slot below the old task's first.
 #[cfg(feature = "ktest")]
 mod tid_stamp_ktests {
-    use azos_sched::scheduler::{idx_for_tid, ktest_wake_task_by_tid_between};
-    use azos_sched::WaitReason;
-    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use azos_sched::scheduler::{idx_for_tid, ktest_wake_task_by_tid_after_read, ktest_wake_task_by_tid_between};
+    use azos_sched::{free_task_slots, try_task_create_affinity, WaitReason, MAX_TASKS};
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-    const PRIO: u32 = 16;
+    const PRIO: u32 = azos_limits::KTEST_LATE_PRIORITY as u32;
     const TRIES: u32 = 8;
     static GO: AtomicBool = AtomicBool::new(false);
     static BLOCK: AtomicBool = AtomicBool::new(false);
     static WOKEN: AtomicBool = AtomicBool::new(false);
     static AT_ONCE: AtomicBool = AtomicBool::new(false);
     static BACK: AtomicBool = AtomicBool::new(false);
+    static FREED: AtomicBool = AtomicBool::new(false);
     static TID: AtomicU32 = AtomicU32::new(0);
     static NEW_TID: AtomicU32 = AtomicU32::new(0);
+    /// The slot the new task got, plus one; 0 for none.
+    static REUSED: AtomicUsize = AtomicUsize::new(0);
+    static HOLD_FREE: AtomicBool = AtomicBool::new(false);
+    static HOLD_LIVE: AtomicU32 = AtomicU32::new(0);
 
     fn old(_: usize) {
         TID.store(azos_sched::current_task_tid(), Ordering::Release);
@@ -1271,51 +1285,139 @@ mod tid_stamp_ktests {
         BACK.store(true, Ordering::Release);
     }
 
+    fn hold(_: usize) {
+        while !HOLD_FREE.load(Ordering::Acquire) {
+            azos_syscall::sleep::sleep_ms(20);
+        }
+        HOLD_LIVE.fetch_sub(1, Ordering::Release);
+    }
+
+    /// Fillers in every free slot below `slot`, until they are dropped.
+    struct Held {
+        free_before: usize,
+    }
+
+    impl Held {
+        fn below(slot: usize) -> Held {
+            HOLD_FREE.store(false, Ordering::Release);
+            let held = Held { free_before: free_task_slots() };
+            for _ in 0..MAX_TASKS {
+                if free_task_slots() <= 2 {
+                    break;
+                }
+                HOLD_LIVE.fetch_add(1, Ordering::AcqRel);
+                match try_task_create_affinity("tid-hold", hold, 0, PRIO, -1) {
+                    Some(s) if s < slot => {}
+                    Some(_) => break,
+                    None => {
+                        HOLD_LIVE.fetch_sub(1, Ordering::AcqRel);
+                        break;
+                    }
+                }
+            }
+            held
+        }
+    }
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            HOLD_FREE.store(true, Ordering::Release);
+            crate::ktest::until_for(500, || HOLD_LIVE.load(Ordering::Acquire) == 0);
+            crate::ktest::until_for(500, || free_task_slots() >= self.free_before);
+        }
+    }
+
+    /// The injection: the old task exits, its slot is freed, a new task takes it.
+    fn refill() {
+        GO.store(true, Ordering::Release);
+        let tid = TID.load(Ordering::Acquire);
+        let freed = crate::ktest::until(|| idx_for_tid(tid).is_none());
+        FREED.store(freed, Ordering::Release);
+        if freed {
+            if let Some(s) = try_task_create_affinity("tid-new", new, 0, PRIO, 0) {
+                REUSED.store(s + 1, Ordering::Release);
+            }
+        }
+    }
+
+    /// Lets the tasks of a try go whichever way it ends.
+    struct Stop;
+
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            GO.store(true, Ordering::Release);
+            BLOCK.store(true, Ordering::Release);
+        }
+    }
+
+    /// One try. `Ok(false)`: the new task did not get the old one's slot, the
+    /// window was not reproduced.
+    fn attempt(after_read: bool, stamped: &'static str) -> Result<bool, &'static str> {
+        for f in [&GO, &BLOCK, &WOKEN, &AT_ONCE, &BACK, &FREED] {
+            f.store(false, Ordering::Release);
+        }
+        TID.store(0, Ordering::Release);
+        NEW_TID.store(0, Ordering::Release);
+        REUSED.store(0, Ordering::Release);
+        let Some(slot) = try_task_create_affinity("tid-old", old, 0, PRIO, 0) else {
+            return Err("no task slot for the old task");
+        };
+        let _held = Held::below(slot);
+        let _stop = Stop;
+        crate::ktest::wait("the old task never started", || TID.load(Ordering::Acquire) != 0)?;
+        let tid = TID.load(Ordering::Acquire);
+        if idx_for_tid(tid) != Some(slot) {
+            return Err("the old task is not in the slot it was created in");
+        }
+        if after_read {
+            ktest_wake_task_by_tid_after_read(tid, &|_| true, refill);
+        } else {
+            ktest_wake_task_by_tid_between(tid, &|_| true, refill);
+        }
+        if !FREED.load(Ordering::Acquire) {
+            return Err("the old slot was never freed");
+        }
+        let reused = REUSED.load(Ordering::Acquire);
+        if reused == 0 {
+            return Err("no task slot for the new task");
+        }
+        crate::ktest::wait("the new task never started", || NEW_TID.load(Ordering::Acquire) != 0)?;
+        let new_tid = NEW_TID.load(Ordering::Acquire);
+        BLOCK.store(true, Ordering::Release);
+        if !crate::ktest::until_for(200, || BACK.load(Ordering::Acquire)) {
+            WOKEN.store(true, Ordering::Release);
+            azos_sched::scheduler::wake_task_by_tid(new_tid, &|r| matches!(r, WaitReason::Timer(_)));
+        }
+        crate::ktest::wait("the new task never woke", || BACK.load(Ordering::Acquire))?;
+        crate::ktest::wait("the new task never exited", || idx_for_tid(new_tid).is_none())?;
+        if reused != slot + 1 {
+            return Ok(false);
+        }
+        if AT_ONCE.load(Ordering::Acquire) {
+            Err(stamped)
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn reproduce(after_read: bool, stamped: &'static str) -> Result<(), &'static str> {
+        for _ in 0..TRIES {
+            if attempt(after_read, stamped)? {
+                return Ok(());
+            }
+        }
+        Err("the old slot was never reused")
+    }
+
     azos_ktest::ktest_late! {
         fn tid_wake_leaves_a_reused_slot_alone() {
-            for _ in 0..TRIES {
-                for f in [&GO, &BLOCK, &WOKEN, &AT_ONCE, &BACK] {
-                    f.store(false, Ordering::Release);
-                }
-                TID.store(0, Ordering::Release);
-                NEW_TID.store(0, Ordering::Release);
-                azos_sched::task_create("tid-old", old, 0, PRIO);
-                crate::ktest::wait("the old task never started", || TID.load(Ordering::Acquire) != 0)?;
-                let tid = TID.load(Ordering::Acquire);
-                let Some(slot) = idx_for_tid(tid) else { return Err("the old task has no slot") };
-                let mut reused = None;
-                let mut fail = None;
-                ktest_wake_task_by_tid_between(tid, &|_| true, || {
-                    GO.store(true, Ordering::Release);
-                    if let Err(e) = crate::ktest::wait("the old slot was never freed", || idx_for_tid(tid).is_none()) {
-                        fail = Some(e);
-                        return;
-                    }
-                    reused = Some(azos_sched::task_create("tid-new", new, 0, PRIO));
-                });
-                if let Some(e) = fail {
-                    return Err(e);
-                }
-                crate::ktest::wait("the new task never started", || NEW_TID.load(Ordering::Acquire) != 0)?;
-                let new_tid = NEW_TID.load(Ordering::Acquire);
-                BLOCK.store(true, Ordering::Release);
-                if !crate::ktest::until_for(200, || BACK.load(Ordering::Acquire)) {
-                    WOKEN.store(true, Ordering::Release);
-                    azos_sched::scheduler::wake_task_by_tid(new_tid, &|r| matches!(r, WaitReason::Timer(_)));
-                }
-                crate::ktest::wait("the new task never woke", || BACK.load(Ordering::Acquire))?;
-                crate::ktest::wait("the new task never exited", || idx_for_tid(new_tid).is_none())?;
-                if reused != Some(slot) {
-                    // Another slot was lower: the window was not reproduced.
-                    continue;
-                }
-                return if AT_ONCE.load(Ordering::Acquire) {
-                    Err("a wake for an exited TID stamped the slot's new task: its block returned at once")
-                } else {
-                    Ok(())
-                };
-            }
-            Err("the old slot was never reused")
+            reproduce(false, "a wake for an exited TID stamped the slot's new task: its block returned at once")
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn tid_wake_after_read_leaves_a_reused_slot_alone() {
+            reproduce(true, "a wake that read the word before the slot's reuse stamped the slot's new task: its block returned at once")
         }
     }
 }

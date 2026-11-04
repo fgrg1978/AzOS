@@ -15138,8 +15138,12 @@ PY
     par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
-    par "ktest tid stamp canary (rv)" ktest_row "ktest tid stamp canary (rv)" rv ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone"
-    par "ktest tid stamp canary (arm)" ktest_row "ktest tid stamp canary (arm)" arm ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone"
+    par "ktest tid stamp canary (rv)" ktest_row "ktest tid stamp canary (rv)" rv ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
+^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"
+    par "ktest tid stamp reuse canary (rv)" ktest_row "ktest tid stamp reuse canary (rv)" rv ",tid-reuse-gen-canary" "tid_wake_after_read_leaves_a_reused_slot_alone" "" "^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"
+    par "ktest tid stamp canary (arm)" ktest_row "ktest tid stamp canary (arm)" arm ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
+^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"
+    par "ktest tid stamp reuse canary (arm)" ktest_row "ktest tid stamp reuse canary (arm)" arm ",tid-reuse-gen-canary" "tid_wake_after_read_leaves_a_reused_slot_alone" "" "^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"
     par "ktest unswitched block canary (rv)" ktest_row "ktest unswitched block canary (rv)" rv "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest failed unmap frees canary (rv)" ktest_row "ktest failed unmap frees canary (rv)" rv "" "dma_failed_unmap_keeps_the_frame" "canary=dma-unmap-frees"
     par "ktest failed unmap frees canary (arm)" ktest_row "ktest failed unmap frees canary (arm)" arm "" "dma_failed_unmap_keeps_the_frame" "canary=dma-unmap-frees"
@@ -17002,7 +17006,9 @@ CPU 5 lacks hwcap bits"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
-    par "ktest tid stamp canary (x86)" x86_ktest_row "ktest tid stamp canary (x86)" ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone"
+    par "ktest tid stamp canary (x86)" x86_ktest_row "ktest tid stamp canary (x86)" ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
+^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"
+    par "ktest tid stamp reuse canary (x86)" x86_ktest_row "ktest tid stamp reuse canary (x86)" ",tid-reuse-gen-canary" "tid_wake_after_read_leaves_a_reused_slot_alone" "" "" "^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"
     par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest failed unmap frees canary (x86)" x86_ktest_row "ktest failed unmap frees canary (x86)" "" "dma_failed_unmap_keeps_the_frame" "canary=dma-unmap-frees"
     par "ktest save gate redraw canary (x86)" x86_ktest_row "ktest save gate redraw canary (x86)" "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"

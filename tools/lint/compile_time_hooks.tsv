@@ -282,6 +282,7 @@ threads-no-cleartid-canary	pending
 threads-private-table-canary	pending	
 threads-tls-canary	pending	
 tid-stamp-canary	hot	crates/core/sched/src/scheduler/wake.rs: still_holds, on every TID-directed wake (two per IPC round trip); a runtime flag there is a load and a branch per wake
+tid-reuse-gen-canary	const	crates/core/sched/src/task.rs: sched_word::reused, a const fn: the canary drops the generation step it adds
 timer-heap-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 tlb-bound-canary	hot	a site on arch/riscv64/src/tlb.rs
 tlb-smoke	hot	a site on kernel/src/entry/x86_64/trap.rs

@@ -479,7 +479,11 @@ pub mod sched_word {
     /// then fails its CAS, even when that word was `Ready` with the same
     /// generation (a task that exited without blocking again).
     #[inline(always)]
-    pub const fn reused(cur: u32) -> u32 { moved(cur.wrapping_add(GEN_STEP), TaskState::Ready) }
+    pub const fn reused(cur: u32) -> u32 {
+        // The canary keeps the generation, as before the reuse had its own.
+        let next = if cfg!(feature = "tid-reuse-gen-canary") { cur } else { cur.wrapping_add(GEN_STEP) };
+        moved(next, TaskState::Ready)
+    }
 
     /// Decode the state field. Never panics: an out-of-range discriminant
     /// (impossible unless the word is corrupted) decodes to `Invalid`, which

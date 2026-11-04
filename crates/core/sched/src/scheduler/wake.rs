@@ -1200,12 +1200,48 @@ pub fn ktest_wake_task_by_tid_between(tid: u32, pred: &dyn Fn(&WaitReason) -> bo
     !matches!(wake_by_slot(tid, slot, pred, false, NO_CLAIM), WakeOut::NotWoken)
 }
 
+/// [`wake_task_by_tid`] with `after_read` run once, inside the wake, right
+/// after it has read the task's word and found the slot still holding `tid`:
+/// the window in which the slot can be freed and reused with the word already
+/// read, so only the reuse's new generation stops the stamp.
+#[cfg(feature = "ktest")]
+pub fn ktest_wake_task_by_tid_after_read(tid: u32, pred: &dyn Fn(&WaitReason) -> bool, after_read: fn()) -> bool {
+    *KTEST_AFTER_READ.lock() = Some(after_read);
+    KTEST_AFTER_READ_TID.store(tid, Ordering::Release);
+    let woke = wake_task_by_tid(tid, pred);
+    KTEST_AFTER_READ_TID.store(0, Ordering::Release);
+    *KTEST_AFTER_READ.lock() = None;
+    woke
+}
+
+#[cfg(feature = "ktest")]
+static KTEST_AFTER_READ: azos_sync::SpinLock<Option<fn()>> = azos_sync::SpinLock::new(None);
+#[cfg(feature = "ktest")]
+static KTEST_AFTER_READ_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 /// The TID-directed wakers' `addressee`: slot `i` still holds `tid`.
 /// Canary `tid-stamp-canary`: trust the slot resolved before the wake.
 #[inline(always)]
 fn still_holds(i: usize, tid: u32) -> bool {
-    cfg!(feature = "tid-stamp-canary") || slot_holds(i, tid)
+    let held = cfg!(feature = "tid-stamp-canary") || slot_holds(i, tid);
+    ktest_after_read(tid);
+    held
 }
+
+#[cfg(feature = "ktest")]
+#[inline(always)]
+fn ktest_after_read(tid: u32) {
+    if KTEST_AFTER_READ_TID.compare_exchange(tid, 0, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+        let hook = KTEST_AFTER_READ.lock().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
+#[cfg(not(feature = "ktest"))]
+#[inline(always)]
+fn ktest_after_read(_: u32) {}
 
 /// The body of both: `slot` is `idx_for_tid(tid)`, resolved by the caller
 /// so every TID lookup stays visibly in the public entry points.

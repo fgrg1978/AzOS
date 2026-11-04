@@ -106,6 +106,10 @@ state-gen-canary = []
 # A TID-directed wake trusts the slot it resolved before acting on it: the
 # `ktest tid stamp canary` rows must fail.
 tid-stamp-canary = []
+# A reused slot's word keeps the previous occupant's generation: a TID-directed
+# wake that read the word before the reuse can CAS it after; the `ktest tid
+# stamp reuse canary` rows must fail.
+tid-reuse-gen-canary = []
 rodata-exec-canary = []
 # Wave 15 (VI): an exec from a thread that is not the leader drops the
 # leader's pending signals instead of handing them to the exec'ing thread
