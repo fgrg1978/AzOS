@@ -41,7 +41,7 @@
 //! * The target is another CPU: nothing more. The enqueue rings its doorbell
 //!   whenever it appends (K-C15, `ring_doorbell`), on every ISA that arm
 //!   raises the target's own `need_resched` and runs `schedule()`, whose tick
-//!   logic (`rt::tick`, `cpu_peek_highest_prio`, `fairq::tick`) makes the
+//!   logic (`rt::tick`, `classes::tick`) makes the
 //!   exact choice on the state it owns (a DL deadline is that hart's). A
 //!   second ring from here would be a second IPI to a hart already rung.
 //!

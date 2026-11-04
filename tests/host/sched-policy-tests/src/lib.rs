@@ -934,8 +934,8 @@ mod rt_wiring {
         let c = code();
         let s = body(&c, "pub fn schedule()");
         let rt = s.find("rt::tick(cpu, current_idx)").expect("rt::tick missing");
-        let band_return = s.find("is_rt_priority(task_prio)").unwrap();
-        assert!(rt < band_return, "a band task returns before rt::tick could throttle it");
+        let class_return = s.find("classes::tick(cpu, current_idx)").expect("the class tick is not wired");
+        assert!(rt < class_return, "a band task returns before rt::tick could throttle it");
     }
 
     #[test]

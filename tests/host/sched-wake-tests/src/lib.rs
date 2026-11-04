@@ -2873,7 +2873,7 @@ mod hart_set_tests {
 /// A variant that claimed the woken task without asking `ipc_direct::allowed`,
 /// or asked it about the wrong hart's queue, would pass every predicate test
 /// and still dispatch a server ahead of a boosted donee. Canary:
-/// deleting the `ready_bitmap:` field's source hart, or returning `Claimed`
+/// deleting the `queued:` field's source hart, or returning `Claimed`
 /// before the rule, or dropping the post-CAS `context_saving` re-read, turns
 /// these red.
 #[cfg(test)]
@@ -2909,10 +2909,9 @@ mod ipc_direct_wiring {
         assert!(rule < claim, "Claimed is returned before the rule is asked");
         let gate = &b[rule..claim];
         assert!(
-            gate.contains("ready_bitmap: PER_CPU[claim_cpu].ready_bitmap.load("),
+            gate.contains("queued: PER_CPU[claim_cpu].ready_bitmap.load("),
             "the rule must read the queue of the hart that will switch (claim_cpu)"
         );
-        assert!(gate.contains("target_bucket: prio_bucket(prio)"), "the rule must see the target's live bucket");
         assert!(gate.contains("deadline_live: rt::holds_direct_switch("), "SCHED-RT state must refuse the switch");
     }
 

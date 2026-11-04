@@ -462,6 +462,23 @@ pub(super) unsafe fn pick(cpu: usize, prev: usize, prev_competes: bool, active: 
     walk::<PickCtx, Classes>(&mut ctx)
 }
 
+/// The tick on `cpu` with `cur` running, after the RT charging: must `cur`
+/// give the CPU up? A task of a better class queued takes it; inside its own
+/// class, the class decides: RT a more urgent level, fair EEVDF
+/// (`fairq::tick`, which also charges), idle any queued task.
+#[inline]
+pub(super) unsafe fn tick(cpu: usize, cur: usize) -> bool {
+    let p = unsafe { task_ref(cur) }.priority.load(Ordering::Relaxed);
+    let bm = unsafe { PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed) };
+    if crate::task::is_rt_priority(p) {
+        return bm != 0 && bm.trailing_zeros() < p;
+    }
+    if fairq::is_fair(p) {
+        return unsafe { fairq::tick(cpu, cur, bm & rt::LEVELS_BAND != 0) };
+    }
+    true
+}
+
 /// Is anything queued on this CPU (ktest `sched_class_live`)? Interrupts off
 /// for the read, so the caller cannot migrate between the CPU and its bitmap.
 pub fn runnable_here() -> bool {

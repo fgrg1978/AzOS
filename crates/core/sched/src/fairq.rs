@@ -373,8 +373,9 @@ unsafe fn update_curr(idx: usize, prio: u32) {
 
 /// The scheduler tick on `cpu` with fair task `cur` running: charge it, and
 /// say whether a queued task now beats it (its slice is used, or it is ahead
-/// of its share, or a woken task has an earlier deadline).
-pub(super) unsafe fn tick(cpu: usize, cur: usize) -> bool {
+/// of its share, or a woken task has an earlier deadline). `better_class`: a
+/// task of a better class is queued (`classes::tick`), which always does.
+pub(super) unsafe fn tick(cpu: usize, cur: usize, better_class: bool) -> bool {
     let p = prio_of(cur);
     if !is_fair(p) {
         return false;
@@ -385,11 +386,10 @@ pub(super) unsafe fn tick(cpu: usize, cur: usize) -> bool {
         return true;
     }
     unsafe { update_curr(cur, p) };
-    let bm = PER_CPU[cpu].ready_bitmap.load(Relaxed);
-    // A band task queued outranks every fair task: the tick hands it the CPU.
-    if bm & rt::LEVELS_BAND != 0 {
+    if better_class {
         return true;
     }
+    let bm = PER_CPU[cpu].ready_bitmap.load(Relaxed);
     if unsafe { misfit_tick(cpu, cur) } {
         return true;
     }

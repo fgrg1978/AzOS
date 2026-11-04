@@ -582,7 +582,7 @@ const _: () = assert!(MAX_TASKS < i32::MAX as usize, "ready-list links are u32 s
 /// `trailing_zeros()` on the bitmap gives the highest-priority non-empty level in O(1).
 ///
 /// `ready_bitmap` is atomic for the same reason as the `PrioQueue` fields and
-/// with the same `Relaxed` ordering: `cpu_peek_highest_prio` reads it without
+/// with the same `Relaxed` ordering: the tick (`classes::tick`) reads it without
 /// `CPU_LOCKS[cpu]` on purpose. Its doc used to justify that with "the bitmap
 /// write itself is always lock-protected, so this can observe an old-but-
 /// consistent value, never a torn one" — true of the *hardware* and beside
@@ -1332,26 +1332,6 @@ unsafe fn cpu_take_idle(cpu: usize) -> Option<usize> {
         task_mut(idx).queued.store(false, Ordering::Release);
     }
     Some(idx)
-}
-
-/// Return the priority of the highest-priority ready task on `cpu`, or None.
-///
-/// Intentionally lock-free: called from `schedule()` as a preemption *hint*
-/// (RT-task check) on `cpu == current_cpu_id()`. A stale read here (racing a
-/// concurrent cross-CPU `cpu_enqueue_locked` targeting this CPU) only delays
-/// or advances a preemption decision by up to one timer tick.
-///
-/// The old justification for the plain read was "the bitmap write itself is
-/// always lock-protected, so this can observe an old-but-consistent value,
-/// never a torn one". That is a claim about the hardware and it is true; it
-/// is not the rule the compiler follows. A plain load racing a plain store is
-/// UB in the abstract machine, and UB is a licence the optimiser may act on
-/// however it likes — including, in principle, deleting the branch below
-/// because a well-defined program could never reach it with a racing value.
-/// `Relaxed` costs the same `lw` and makes the read legal.
-unsafe fn cpu_peek_highest_prio(cpu: usize) -> Option<u32> {
-    let bitmap = PER_CPU[cpu].ready_bitmap.load(Ordering::Relaxed);
-    if bitmap == 0 { None } else { Some(bitmap.trailing_zeros()) }
 }
 
 /// Dequeue the highest-priority ready task from CPU `cpu`, taking

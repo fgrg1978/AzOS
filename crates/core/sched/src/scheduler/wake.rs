@@ -1384,8 +1384,7 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
                 && task_ref(cur).priority.load(Ordering::Relaxed)
                     == crate::task::IDLE_PRIORITY;
             if cur < MAX_TASKS && core_direct_ok(claim_cpu, cur, i) && ipc_direct::allowed(ipc_direct::DirectSwitch {
-                ready_bitmap: PER_CPU[claim_cpu].ready_bitmap.load(Ordering::Relaxed),
-                target_bucket: prio_bucket(prio),
+                queued: PER_CPU[claim_cpu].ready_bitmap.load(Ordering::Relaxed) & !rt::LEVELS_IDLE,
                 target_affinity: task.affinity(),
                 cpu: claim_cpu,
                 target_is_idle: prio == crate::task::IDLE_PRIORITY,

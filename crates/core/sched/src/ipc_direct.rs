@@ -18,17 +18,17 @@
 //!
 //! * SCHED-RT state on the hart, or a band task on either side — the class walk
 //!   decides and the dispatch tail charges the band and the reservations;
-//! * APS dispatch — its policies pick, not the bitmap queue;
 //! * the target pinned to another hart — the ordinary wake would send it there;
 //! * either task at `IDLE_PRIORITY` — `do_schedule` programs the tickless
 //!   timer on a switch to or from idle, which this path does not replicate;
-//! * **any task already queued on `cpu` at the target's priority bucket or
-//!   better.** `cpu_dequeue` pops the lowest set bit of `ready_bitmap`, FIFO
-//!   within a bucket, so a queued task of equal priority is ahead of a target
-//!   enqueued behind it, and a better one wins outright. This clause is what
-//!   keeps priority inheritance (donation) intact: a donee
-//!   boosted by `boost_ready_task` sits in a better bucket, and the switch
-//!   must refuse so the boosted task runs first.
+//! * **any task queued on `cpu` besides its idle task.** The fair class
+//!   orders its tasks by EEVDF virtual deadline, not by bucket, so a queued
+//!   fair task of any priority may come before the target (model
+//!   `formal/tla/sched_dispatch.tla`, `bucket-rule` mutation: the old bucket
+//!   test let a worse-bucket task with an earlier deadline wait behind a
+//!   direct switch), and a band task or a boosted owner beats it outright.
+//!   With only the idle task queued the class walk certainly takes the target
+//!   (`would_pick`); anything else is refused, never guessed.
 
 /// Number of priority buckets the per-CPU `ready_bitmap` (a `u32`) carries.
 /// Pinned to `task::NUM_PRIORITIES` by a const assert in `scheduler.rs`.
@@ -37,10 +37,9 @@ pub const BITMAP_BUCKETS: usize = 32;
 /// Inputs of the rule, all read by the caller on the switching hart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DirectSwitch {
-    /// `PER_CPU[cpu].ready_bitmap`: bit `b` set = something queued at bucket `b`.
-    pub ready_bitmap: u32,
-    /// The target's `prio_bucket(priority)`; lower is more urgent.
-    pub target_bucket: usize,
+    /// `PER_CPU[cpu].ready_bitmap` without the idle level: bit `b` set =
+    /// something queued at bucket `b`.
+    pub queued: u32,
     /// The target's `cpu_affinity` (`< 0` = unpinned).
     pub target_affinity: i8,
     /// The hart that would switch.
@@ -54,16 +53,6 @@ pub struct DirectSwitch {
     pub deadline_live: bool,
 }
 
-/// Bitmap of every bucket at or better than `bucket` (bits `0..=bucket`).
-#[inline(always)]
-pub const fn at_or_above(bucket: usize) -> u32 {
-    if bucket >= BITMAP_BUCKETS - 1 {
-        u32::MAX
-    } else {
-        (2u32 << bucket) - 1
-    }
-}
-
 /// `true` only when `do_schedule` would certainly dispatch the target next.
 #[inline(always)]
 pub fn allowed(s: DirectSwitch) -> bool {
@@ -73,7 +62,7 @@ pub fn allowed(s: DirectSwitch) -> bool {
     if s.target_affinity >= 0 && s.target_affinity as usize != s.cpu {
         return false;
     }
-    s.ready_bitmap & at_or_above(s.target_bucket) == 0
+    s.queued == 0
 }
 
 /// May the direct switch skip the histogram update for its two re-accounts?
@@ -114,8 +103,7 @@ mod tests {
 
     fn base() -> DirectSwitch {
         DirectSwitch {
-            ready_bitmap: 0,
-            target_bucket: 10,
+            queued: 0,
             target_affinity: -1,
             cpu: 0,
             target_is_idle: false,
@@ -125,41 +113,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_queue_allows() {
+    fn only_the_idle_task_queued_allows() {
         assert!(allowed(base()));
     }
 
+    /// EEVDF orders fair tasks by virtual deadline, not by bucket: a queued
+    /// task of any bucket may come first, so any queued task refuses (a
+    /// boosted owner in a better bucket, an equal one queued earlier, and a
+    /// worse-bucket one with an earlier deadline alike).
     #[test]
-    fn only_worse_priority_queued_allows() {
-        // idle (31) and a background task (20) queued: target at 10 wins.
-        let s = DirectSwitch { ready_bitmap: (1 << 31) | (1 << 20), ..base() };
-        assert!(allowed(s));
-    }
-
-    /// Priority inheritance: a donee was boosted into a better bucket than
-    /// the fast-IPC server being woken. `do_schedule` would dispatch the
-    /// boosted donee first, so the direct switch must refuse.
-    #[test]
-    fn boosted_donee_in_better_bucket_refuses() {
-        let s = DirectSwitch { ready_bitmap: 1 << 3, ..base() };
-        assert!(!allowed(s));
-    }
-
-    /// FIFO within a bucket: an equal-priority task queued earlier is dequeued
-    /// before a target enqueued behind it.
-    #[test]
-    fn equal_priority_queued_refuses() {
-        let s = DirectSwitch { ready_bitmap: 1 << 10, ..base() };
-        assert!(!allowed(s));
-    }
-
-    #[test]
-    fn every_bucket_at_or_above_refuses_and_every_bucket_below_allows() {
-        for t in 0..BITMAP_BUCKETS {
-            for q in 0..BITMAP_BUCKETS {
-                let s = DirectSwitch { ready_bitmap: 1 << q, target_bucket: t, ..base() };
-                assert_eq!(allowed(s), q > t, "target bucket {t}, queued bucket {q}");
-            }
+    fn any_queued_task_refuses() {
+        for q in 0..BITMAP_BUCKETS {
+            assert!(!allowed(DirectSwitch { queued: 1 << q, ..base() }), "queued bucket {q}");
         }
     }
 

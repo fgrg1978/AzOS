@@ -1943,28 +1943,10 @@ pub fn schedule() {
                 return;
             }
 
-            // Hoisted: same reason as `find_best_cpu`'s `t_prio` — an atomic
-            // load is not free for the compiler to CSE across these two uses
-            // the way the plain field it replaced was, and this runs on
-            // every timer tick on every hart.
-            let task_prio = task.priority.load(Ordering::Relaxed);
-            if is_rt_priority(task_prio) {
-                // RT task: only preempt if a higher-priority task is waiting.
-                match cpu_peek_highest_prio(cpu) {
-                    Some(ready_prio) if ready_prio < task_prio => {
-                        // Higher-priority task ready — preempt.
-                    }
-                    _ => {
-                        return; // No higher-priority task — keep running.
-                    }
-                }
-            } else if fairq::is_fair(task_prio) {
-                // Fair task (EEVDF): charged by what it ran; preempted when a
-                // queued task now beats it (its slice is used, it is ahead of
-                // its share, or a woken task has an earlier deadline).
-                if !fairq::tick(cpu, current_idx) {
-                    return;
-                }
+            // The class of the running task decides; a better class with a
+            // task queued always takes the CPU.
+            if !classes::tick(cpu, current_idx) {
+                return;
             }
         } else if rt::active(cpu) && rt::tick(cpu, usize::MAX) {
             // Nothing real runs (idle-equivalent): a replenished reservation
