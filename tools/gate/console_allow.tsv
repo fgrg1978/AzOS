@@ -32,3 +32,8 @@ ktest fair late unlink canary \((rv|arm|x86)\)	warn	refused a node held elsewher
 ktest RT console (user )?canary \((rv|arm)\)	*	Bail out! ktest: console_rt_lines_only_append panicked	canaries rt-console-own and rt-console-own-user panic in that test on purpose (RT_CONSOLE_WIRE_CHECK)
 asym cpu refused \((rv|arm|x86)\)	*	only 3/4 (harts|CPUs) started	The row refuses the last CPU on purpose.
 asym cpu refused \((rv|arm|x86)\)	*	CPU 3 refused: ASID bits differs	The row refuses the last CPU on purpose.
+(aarch64|riscv64): (TCP receive 1 MiB, slow reader|OTA bad update rolls back)	warn	\[OTA\] ##### WARNING: INSTALLING AN UNAUTHENTICATED IMAGE	the row sends an unsigned image to the OTA listener (the dev path) as its TCP sink or as the update that cannot confirm
+safe mode: attempts exhausted	warn	\[WDT\] WARNING: 3 consecutive crashes detected	the row crashes the boots on purpose to reach safe mode
+safe mode: attempts exhausted	warn	\[OTA\] ##### WARNING: INSTALLING AN UNAUTHENTICATED IMAGE	the row installs its unsigned image over the OTA listener, the dev path
+(aarch64|riscv64): seed spares the filesystem	warn	\[CFG\] WARNING: CONFIG\.INI not trusted \(device not provisioned\)	the row cuts the medium's reserved tail, which holds the device record
+smp: NR_CPUS 4 at -smp 8 qemu,nr-cpus-clamp-canary \((rv|arm)\)	warn	\[SMP\] WARNING: only 4/8 harts started	the canary lifts the NR_CPUS clamp on purpose, so the kernel starts CPUs it has no room for
