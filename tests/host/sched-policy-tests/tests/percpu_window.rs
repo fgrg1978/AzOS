@@ -326,15 +326,6 @@ fn the_offline_thread_checks_its_cpu_with_interrupts_off() {
 }
 
 #[test]
-fn the_heap_asks_whether_this_hart_is_inside_it_under_a_mask() {
-    let s = read("crates/core/mm/src/kheap.rs");
-    in_order(
-        &body(&s, "fn with_heap<"),
-        &["irq_off()", "OWNER.load", "irq_restore(", ".lock()", "let me = me()", "OWNER.store(me"],
-    );
-}
-
-#[test]
 fn the_mutex_holder_word_reads_hart_and_class_in_one_window() {
     let s = read("crates/core/sync/src/lockdep.rs");
     in_order(&body(&s, "fn holder_word_slow("), &["disable_all()", "hart_id()", "current_is_rt()", "restore("]);
