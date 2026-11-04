@@ -17846,10 +17846,7 @@ CPU 5 lacks hwcap bits"
             "lx: rt: stat a directory ok" "lx: rt: missing file ok" "lx: rt: getdents64 ok" "lx: writev ok" \
             "lx: rt: wait4 ok" "lx: rt: fcntl ok" "lx: rt: create outside caps refused ok" \
             "lx: rt: lseek ok" "lx: rt: mprotect ok" "lx: rt: futex ok" "lx: rt: kill ok" \
-<<<<<<< HEAD
-=======
             "lx: rt: threads ok" "lx: rt: thread exit ok" "lx: rt: execve ok" \
->>>>>>> f/c2-11
             "lx: rt: unanswered call ok" "lx: fork+wait4 ok" "lx: fork child ids ok" \
             "lx: fork child holds only its row ok" "lx: fork shares the file offset ok" \
             "lx: rt done failures=0" "lx: spawn cwd=/fat" "lx: spawn stdin kind=fifo" \
