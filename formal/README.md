@@ -65,12 +65,13 @@ with `#[kani::unwind(N)]`.
 
 ## TLA+ specs
 
-Source: `formal/tla/cap_table.tla`, `formal/tla/topology_load.tla`, `crates/core/topology/src/state.rs`, `crates/core/topology/src/signed.rs`.
+Source: `formal/tla/cap_table.tla`, `formal/tla/topology_load.tla`, `formal/tla/mm.tla`, `crates/core/topology/src/state.rs`, `crates/core/topology/src/signed.rs`.
 
 | Spec | Config | Invariants checked |
 |---|---|---|
 | `formal/tla/cap_table.tla` | `cap_table.cfg` | `TypeOK`, `AtMostOneValidPerSlot`, `RevokedNeverValid`, `GenInRange`, `RetiredNeverReissued` |
 | `formal/tla/topology_load.tla` | `topology_load.cfg` | `TypeOK`, `SpawnImpliesLoaded` |
+| `formal/tla/mm.tla` | `mm.cfg` | `TypeOK`, `PteIsCache`, `TlbWritableImpliesSole`, `RefIsHolders`, `NoFreeWhileNamed`, `NoInstallAfterRelease`, `ZeroOnFirstUse`, `MapperIsReverse`, `ChargeAtReserve`, `FrameAccounted`, `DestroyLeavesNothing`, `LockedNeverReclaimed`, `TlbNamesSlotOrPending`, `LockOrder`, `SupplyUnlocked`, `ShootdownAfterRelease`, `FaultNeverTakesMm` |
 
 How each model relates to the code:
 
@@ -89,9 +90,20 @@ How each model relates to the code:
   `signed::decide`). `StartLoading` and `LoadFail` have no direct code
   counterpart. The spec states the property the code is meant to refine: no
   user-space spawn is accepted before a topology is published.
+- `mm.tla` models user pages: the slot word as the only truth, the PTE and TLB
+  as caches, flat COW by refcount, frames released only after the shootdown,
+  and the lock order. Its header maps each invariant to the numbered list in
+  `rfcs/c1-mm-one-model-design.md`. The `Mutant` constant injects one defect;
+  each `mm_mut_*.cfg` names the invariant TLC must report on its `expect:`
+  line. The kernel-memory invariants (slab, magazines, stacks) and liveness
+  are not modelled, and `mm.tla` has no code counterpart yet, so it has no
+  rows in `INVARIANTS.md`.
 
-TLC is not part of the gate, so a change to either spec's code counterpart is
-not checked against the spec automatically. To run a spec, use TLC from
+The gate's `formal: TLC mm` row runs `mm.cfg` and every `mm_mut_*.cfg` when TLC
+is available: `tlc` on `PATH`, or `java -jar` on the jar named by
+`TLA2TOOLS_JAR`. Without either it prints `skip: no TLC`. The other two specs
+are not in the gate, so a change to their code counterparts is not checked
+against them automatically. To run a spec, use TLC from
 `tla2tools.jar` (any recent TLA+ tools release; it needs a Java runtime) from
 inside `formal/tla/`:
 
