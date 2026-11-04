@@ -5,11 +5,12 @@
 //! Each domain (`azos_sched::domain`: a process and its threads) owns one
 //! [`crate::cap::CapTable`]; the kernel reaches it through this module's
 //! accessors, which resolve a TID to its task's domain. The table is
-//! **dense**: a fixed `[SpinLock<CapTable>; MAX_TASKS]` lives in BSS and
-//! survives the lifetime of the kernel (one domain per task slot at most).
+//! **dense**: one table per task slot at most, made from a retained cache
+//! when the slot is first claimed and kept for the lifetime of the kernel.
 //!
-//! Memory cost: `MAX_TASKS × sizeof(CapTable)` ≈ 64 × ~2 KiB = 128 KiB
-//! on default builds; configs that lower `MAX_TASKS` scale down linearly.
+//! Memory cost: a pointer per slot (`MAX_TASKS × 8 B`) in BSS, plus one
+//! table for each slot a domain has used; with `MM_PRELOAD_CACHES` the cache
+//! is filled to `MAX_TASKS` tables at boot.
 //!
 //! # Why slot-indexed and not TID-indexed
 //!
