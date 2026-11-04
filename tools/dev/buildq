@@ -51,7 +51,7 @@ if [ "${1:-}" = --self-test ]; then
     t="$(mktemp -d)"; bad=0
     me="$0"
     export BUILDQ_DIR="$t/q" BUILDQ_SLOTS=2 BUILDQ_QUIET=1
-    unset BUILDQ_HELD
+    unset BUILDQ_HELD BUILDQ_JOBS
     # Two long jobs fill the slots; a third must wait for one of them.
     bash "$me" sleep 3 & a=$!
     bash "$me" sleep 3 & b=$!
