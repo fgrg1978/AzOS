@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2734766
-riscv64-qemu	.rodata	459504
-riscv64-qemu	.data	3267056
-riscv64-qemu	.bss	5799648
-riscv64-qemu	reason	kernel heap on demand: the first-fit allocator and its re-entry scheme are gone
+riscv64-qemu	.text	2763852
+riscv64-qemu	.rodata	466256
+riscv64-qemu	.data	825448
+riscv64-qemu	.bss	3141352
+riscv64-qemu	reason	C1: task stacks leave .bss for the stack window, the TCP table and boot sector cache leave .data for typed caches; kstack, caches and MemObj host code added
