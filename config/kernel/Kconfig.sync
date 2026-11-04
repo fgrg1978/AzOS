@@ -90,7 +90,7 @@ config RCU_QSBR
       quiescent state (a context switch, a return to user mode, idle).
       The capability-table reads (`cap_store::get`, SYS_CAP_INFO) run
       this way. Owner decision Q2: QSBR only (no sleepable readers), and
-      callbacks never run on the RT CPUs (RCU_NOCBS_CPUS).
+      callbacks never run on the RT CPUs (RCU_NOCBS_FROM_CLUSTER).
       Costs: 64 bytes per CPU (NR_CPUS), one kernel task (the callback
       task) and, on a kernel entry from user mode or from idle, one atomic
       add and a fence; on a return to user mode, one atomic add with
@@ -101,18 +101,29 @@ config RCU_QSBR
       Default off with one CPU, where a lock is never contended and the
       per-syscall instructions buy nothing.
 
+config RCU_NOCBS_FROM_CLUSTER
+    bool "RCU: the real-time cluster's CPUs are RCU no-callback CPUs"
+    default y
+    help
+      The real-time CPUs are the first TASK_RT_CLUSTER_CPUS CPUs (cut so
+      that one of the NR_CPUS stays outside), RCU_NOCBS_CPUS and, at boot,
+      the topology's `isolcpus`. No RCU callback, thermal, reclaim or
+      net-poll task runs on one of them, and their user mode is a quiescent
+      state with or without a tick (rule F5). The build-time part is a
+      constant: no instruction on the trap path beyond a test of it.
+      n: only RCU_NOCBS_CPUS and `isolcpus` name them.
+      A boot with as many CPUs as the cluster has none left outside: the
+      callback task runs on CPU 0 and the boot records `rcu-callback-cpu`.
+
 config RCU_NOCBS_CPUS
-    hex "RCU: CPUs that never run RCU callbacks (the RT CPUs, a mask)"
+    hex "RCU: more CPUs that never run RCU callbacks (a mask)"
     default 0x0
     help
-      Bit n set: CPU n never runs an RCU callback; the callback task is
-      pinned to the lowest CPU whose bit is clear (CPU 0, with a boot
-      warning, if every possible CPU's bit is set). Set the real-time
-      cluster's CPUs here so a batch of frees never lands in their
-      latency. A CPU in user mode is quiescent with or without a tick
-      (rule F5), so an RT CPU running one user task never holds a grace
-      period. Default none: no board here designates RT CPUs yet. No
-      cost: a constant read at boot.
+      Bit n set: CPU n is a real-time CPU in addition to the cluster's
+      (RCU_NOCBS_FROM_CLUSTER) and `isolcpus`; the callback task is pinned
+      to the lowest CPU outside all of them (CPU 0, with a decision record,
+      if every possible CPU is in them). Default none: the cluster is the
+      set. No cost: a constant.
 
 config RCU_STALL_TIMEOUT_MS
     int "RCU: a grace period older than this is a stall (ms)"

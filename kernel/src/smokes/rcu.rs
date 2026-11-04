@@ -100,7 +100,7 @@ azos_ktest::ktest_late! {
             return Err("the retired object was never freed (no grace period ended)");
         }
         let cpu = RAN_ON.load(Ordering::SeqCst);
-        if Some(cpu) != qsbr::callback_cpu() {
+        if cpu != qsbr::callback_placement().0 {
             return Err("the callback ran off the callback CPU (RCU_NOCBS_CPUS)");
         }
         if b.freed.load(Ordering::SeqCst) {
@@ -271,6 +271,56 @@ azos_ktest::ktest_late! {
         }
         if cap_store::get(tid, cap, CapPerms::READ).is_ok() {
             return Err("the lock-free get resolved a revoked capability");
+        }
+        Ok(())
+    }
+}
+
+const BATCH: usize = 64;
+
+struct Cb(UnsafeCell<RcuHead>);
+// SAFETY: a head is queued once per run and then owned by the callback task.
+unsafe impl Sync for Cb {}
+
+static CBS: [Cb; BATCH] = [const { Cb(UnsafeCell::new(RcuHead::new())) }; BATCH];
+static TALLIED: AtomicUsize = AtomicUsize::new(0);
+
+unsafe fn tally(_: *mut RcuHead) {
+    TALLIED.fetch_add(1, Ordering::SeqCst);
+}
+
+azos_ktest::ktest_late! {
+    fn rcu_callbacks_stay_off_the_rt_cpus() {
+        if !qsbr::ON {
+            return Err("RCU_QSBR is off in this ktest kernel");
+        }
+        let rt = qsbr::rt_cpus();
+        let n = azos_percpu::nr_cpu_ids();
+        let inside = |c: usize| azos_sync::qsbr_core::cpu_in_mask(rt, c);
+        if !(0..n).any(inside) || !(0..n).any(|c| azos_percpu::cpu_possible(c) && !inside(c)) {
+            return azos_ktest::skip!("no real-time CPU, or none outside the real-time set");
+        }
+        let before: [u64; 64] = core::array::from_fn(qsbr::callbacks_on);
+        TALLIED.store(0, Ordering::SeqCst);
+        for cb in CBS.iter() {
+            // SAFETY: each head is static and queued once.
+            unsafe { qsbr::call_rcu(cb.0.get(), tally) };
+        }
+        if !crate::ktest::until_for(4 * qsbr::STALL_TIMEOUT_MS, || TALLIED.load(Ordering::SeqCst) == BATCH) {
+            return Err("the callbacks never ran");
+        }
+        let ran = |c: usize| qsbr::callbacks_on(c) - before[c];
+        let (mut on_rt, mut total) = (0, 0);
+        for c in 0..n.min(64) {
+            total += ran(c);
+            if inside(c) {
+                on_rt += ran(c);
+            }
+        }
+        crate::kprintln!("# rcu-nocbs: rt={:#x} cpus={} callbacks={} on-rt={} cpu0={} cpu1={} cpu2={}",
+            rt, n, total, on_rt, ran(0), ran(1), ran(2));
+        if on_rt != 0 {
+            return Err("an RCU callback ran on a real-time CPU");
         }
         Ok(())
     }

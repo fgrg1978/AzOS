@@ -280,6 +280,9 @@ pub(crate) const NAMES: &[&str] = &[
     "hung-cpu-blind",
     "rcu-idle-qs-skip",
     "rcu-free-no-grace",
+    // boot/sched.rs `create_rcu_callback_task`: the callback task ignores the RT mask and
+    // takes CPU 0 (ktest `rcu_callbacks_stay_off_the_rt_cpus`).
+    "rcu-nocbs-off",
     "lockdep-rcu-sleep",
     // sync/src/qsbr.rs `cpu_stop_begin`: a stopping CPU stays "in the kernel", so a
     // grace period that snapshotted it never ends (ktest

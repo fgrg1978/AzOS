@@ -38,7 +38,8 @@
 //! every syscall instructions for a report the next tick makes anyway): a
 //! CPU running user code passes a quiescent state at its next tick, a
 //! tickless idle CPU and an RT CPU in user mode without a tick are
-//! quiescent without being woken (F5). An RT CPU is one of RCU_NOCBS_CPUS or
+//! quiescent without being woken (F5). An RT CPU is one of [`NOCBS_CPUS`] (the
+//! real-time cluster and RCU_NOCBS_CPUS) or
 //! one the scheduler may run tickless (Kconfig NOHZ_FULL: the topology's
 //! `isolcpus`, [`set_tickless_cpus`]); see [`user_is_eqs`]. No IPI is ever sent for a grace
 //! period. A grace period ends when every online CPU but the waiter's own
@@ -46,9 +47,10 @@
 //! [`synchronize_rcu`]'s caller).
 //!
 //! **Callbacks.** [`call_rcu`] pushes onto this CPU's lock-free list. One
-//! kernel task, pinned to the lowest CPU outside RCU_NOCBS_CPUS
-//! ([`callback_cpu`]), takes every CPU's list, waits one grace period and
-//! runs them: no callback ever runs on a CPU in the mask.
+//! kernel task, pinned to the lowest CPU outside [`rt_cpus`] (the build-time
+//! mask and `isolcpus`; [`callback_cpu`]), takes every CPU's list, waits one
+//! grace period and runs them: no callback runs on an RT CPU unless none is
+//! left (the decision record `rcu-callback-cpu`).
 //!
 //! **Stalls.** A grace period older than RCU_STALL_TIMEOUT_MS is counted
 //! once ([`stalls`]) with the first CPU still holding it
@@ -83,8 +85,15 @@ pub use nohz::user_is_eqs;
 
 /// Kconfig RCU_QSBR.
 pub const ON: bool = azos_limits::RCU_QSBR;
-/// Kconfig RCU_NOCBS_CPUS: CPUs that never run a callback.
-pub const NOCBS_CPUS: usize = azos_limits::RCU_NOCBS_CPUS;
+/// The build-time real-time CPUs, which never run a callback: the real-time
+/// cluster (Kconfig RCU_NOCBS_FROM_CLUSTER) and RCU_NOCBS_CPUS. The topology's
+/// `isolcpus` join them at boot ([`rt_cpus`]).
+pub const NOCBS_CPUS: usize = core_::rt_mask(
+    azos_limits::TASK_RT_CLUSTER_CPUS as usize,
+    azos_limits::RCU_NOCBS_CPUS,
+    azos_limits::RCU_NOCBS_FROM_CLUSTER,
+    azos_limits::NR_CPUS,
+);
 /// Kconfig NOHZ_FULL: isolated CPUs may run tickless ([`set_tickless_cpus`]).
 const NOHZ: bool = azos_limits::NOHZ_FULL;
 /// Some CPU's user mode may be a quiescent state: the hooks below do work.
@@ -122,6 +131,7 @@ static STALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_STALL_CPU: AtomicU32 = AtomicU32::new(u32::MAX);
 static QUEUED: AtomicU64 = AtomicU64::new(0);
 static INVOKED: AtomicU64 = AtomicU64::new(0);
+static INVOKED_ON: [AtomicU64; NCPU] = [const { AtomicU64::new(0) }; NCPU];
 static NO_GRACE: AtomicBool = AtomicBool::new(false);
 azos_common::ro_hook! {
     /// The kernel's clock (`set_hooks`).
@@ -162,12 +172,31 @@ pub fn set_tickless_cpus(mask: u64) {
     }
 }
 
+static ISOLATED_CPUS: AtomicU64 = AtomicU64::new(0);
+
+/// Publish the topology's `isolcpus` (bit n = CPU n), with or without NOHZ_FULL:
+/// they leave the callback task's, and every placed kernel task's, candidates.
+/// The scheduler calls it once, before any such task is created.
+pub fn set_isolated_cpus(mask: u64) {
+    ISOLATED_CPUS.store(mask, Ordering::Release);
+}
+
+/// The topology's `isolcpus` ([`set_isolated_cpus`]).
+pub fn isolated_cpus() -> usize {
+    ISOLATED_CPUS.load(Ordering::Acquire) as usize
+}
+
+/// The real-time CPUs of this boot: [`NOCBS_CPUS`] and `isolcpus`.
+pub fn rt_cpus() -> usize {
+    core_::rt_set(NOCBS_CPUS, ISOLATED_CPUS.load(Ordering::Acquire))
+}
+
 /// Whether `cpu` is an RT CPU (RCU_NOCBS_CPUS, or a CPU that may run
 /// tickless): its user mode is an extended quiescent state. A constant
 /// `false` when the mask is 0 and NOHZ_FULL is off.
 #[inline(always)]
 fn rt_cpu(cpu: usize) -> bool {
-    RT_CPUS && user_is_eqs(NOCBS_CPUS, TICKLESS_CPUS.load(Ordering::Relaxed), cpu)
+    RT_CPUS && user_is_eqs(NOCBS_CPUS, if NOHZ { TICKLESS_CPUS.load(Ordering::Relaxed) } else { 0 }, cpu)
 }
 
 /// Leave an extended quiescent state if this CPU is in one: even → odd,
@@ -618,18 +647,18 @@ fn any_queued() -> bool {
 }
 
 /// The CPU the callback task is pinned to: the lowest possible CPU outside
-/// RCU_NOCBS_CPUS; `None` if every possible CPU is in it (the caller pins
+/// [`rt_cpus`]; `None` if every possible CPU is in it (the caller pins
 /// to CPU 0 and says so).
 pub fn callback_cpu() -> Option<usize> {
-    core_::callback_cpu(azos_percpu::nr_cpu_ids(), NOCBS_CPUS, azos_percpu::cpu_possible)
+    core_::callback_cpu(azos_percpu::nr_cpu_ids(), rt_cpus(), azos_percpu::cpu_possible)
 }
 
 /// The callback task's body: wait for queued callbacks, take every CPU's
 /// list, wait a grace period, run them. Never returns.
 /// The CPU the callback task is pinned to, and whether it is inside
-/// RCU_NOCBS_CPUS because every CPU is.
+/// [`rt_cpus`] because every CPU is.
 pub fn callback_placement() -> (usize, bool) {
-    core_::callback_placement(azos_percpu::nr_cpu_ids(), NOCBS_CPUS, azos_percpu::cpu_possible)
+    core_::callback_placement(azos_percpu::nr_cpu_ids(), rt_cpus(), azos_percpu::cpu_possible)
 }
 
 pub fn callback_task() -> ! {
@@ -667,6 +696,10 @@ pub fn callback_task() -> ! {
                 unsafe { f(batch) };
             }
             INVOKED.fetch_add(1, Ordering::Relaxed);
+            // percpu-hint: the callback task is pinned; the slot is only a tally
+            if let Some(n) = INVOKED_ON.get(this_cpu()) {
+                n.fetch_add(1, Ordering::Relaxed);
+            }
             batch = next;
         }
     }
@@ -699,6 +732,10 @@ pub fn cpu_word(cpu: usize) -> Option<u64> {
 /// Grace periods started and completed.
 pub fn grace_periods() -> (u64, u64) {
     (GPS_STARTED.load(Ordering::Relaxed), GPS_DONE.load(Ordering::Relaxed))
+}
+/// Callbacks run on logical CPU `cpu`.
+pub fn callbacks_on(cpu: usize) -> u64 {
+    INVOKED_ON.get(cpu).map_or(0, |n| n.load(Ordering::Relaxed))
 }
 /// Callbacks queued and run.
 pub fn callbacks() -> (u64, u64) {

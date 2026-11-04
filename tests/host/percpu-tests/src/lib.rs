@@ -255,7 +255,7 @@ mod tests {
 
     // ── Placement classes (azos_percpu::place, Kconfig TASK_*_PLACE) ──────
 
-    use azos_percpu::place::{pin, resolve, Place};
+    use azos_percpu::place::{pin, resolve, resolve_outside, Place};
 
     #[test]
     fn every_class_spelling_parses_and_nothing_else_does() {
@@ -288,6 +288,26 @@ mod tests {
 
     /// The defaults on 4 CPUs are the layout the literal pins gave (control
     /// 0, sensing 1, behavior and sys-wdt 2, net-poll and autorun 3).
+    /// A service task (`general`, `last`) leaves the CPUs it is told to avoid
+    /// (isolcpus, RCU_NOCBS_CPUS) while one is free; the classes that name a
+    /// CPU on purpose, and a boot with every CPU avoided, resolve as before.
+    ///
+    /// Canary (run 2026-11-04): `resolve_outside` returning `resolve`'s answer
+    /// for `last` makes the first line red.
+    #[test]
+    fn service_classes_avoid_the_cpus_they_are_told_to() {
+        assert_eq!(resolve_outside(Place::Last, 4, 2, 0b1000), Some(2));
+        assert_eq!(resolve_outside(Place::Last, 4, 2, 0b1100), Some(1));
+        assert_eq!(resolve_outside(Place::General, 4, 2, 0b0100), Some(3));
+        assert_eq!(resolve_outside(Place::General, 4, 2, 0b1100), Some(0));
+        assert_eq!(resolve_outside(Place::Last, 4, 2, 0), resolve(Place::Last, 4, 2));
+        assert_eq!(resolve_outside(Place::Last, 2, 2, 0b11), resolve(Place::Last, 2, 2));
+        assert_eq!(resolve_outside(Place::General, 3, 2, 0b111), resolve(Place::General, 3, 2));
+        assert_eq!(resolve_outside(Place::Boot, 4, 2, 0b1), Some(0));
+        assert_eq!(resolve_outside(Place::Rt(1), 4, 2, 0b10), Some(1));
+        assert_eq!(resolve_outside(Place::Any, 4, 2, 0b1), None);
+    }
+
     #[test]
     fn four_cpus_keep_the_old_layout() {
         let r = |p| resolve(p, 4, 2);

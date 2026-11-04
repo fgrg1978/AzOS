@@ -15967,6 +15967,35 @@ CPU 5 lacks hwcap bits"
     KTEST_RCU_CANARIED="rcu_free_waits_for_the_reader rcu_idle_cpu_is_quiescent lockdep_no_sleep_in_rcu_read ipc_endpoint_slot_reused_after_grace"
     par "ktest rcu canaries (rv)" ktest_row "ktest rcu canaries (rv)" rv "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
     par "ktest rcu canaries (arm)" ktest_row "ktest rcu canaries (arm)" arm "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # C2-13: the RT CPU set is the cluster (here CPU 0 alone), and the callback task sits outside it.
+    # `rcu_callbacks_stay_off_the_rt_cpus` counts the callbacks run per CPU, none on the mask. The
+    # canary `rcu-nocbs-off` ignores the mask (the task takes CPU 0): that test goes red, and so
+    # does `rcu_free_waits_for_the_reader`, which expects the callback CPU.
+    KTEST_RTC_RE='^# rcu-nocbs: rt=0x1 cpus=4 callbacks=[0-9]+ on-rt=0 '
+    KTEST_RTC_CANARY_RE='^# rcu-nocbs: rt=0x1 cpus=4 callbacks=[0-9]+ on-rt=[1-9]'
+    KTEST_RTC_CANARIED="rcu_free_waits_for_the_reader rcu_callbacks_stay_off_the_rt_cpus"
+    ktest_rtc_row() { # ktest_rtc_row <label> <isa: rv|arm> <expected not-ok names> [kernel command line] [ERE]
+        local label="$1" isa="$2" defc cfg tag
+        defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/${tag}.config"
+        { grep -v '^CONFIG_TASK_RT_CLUSTER_CPUS=' "${REPO_ROOT}/config/defconfigs/${defc}.config"
+          echo 'CONFIG_TASK_RT_CLUSTER_CPUS=1'; } >"$cfg"
+        if ! { (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+                && grep -q '^CONFIG_TASK_RT_CLUSTER_CPUS=1$' "$cfg" && grep -q '^CONFIG_RCU_NOCBS_FROM_CLUSTER=y$' "$cfg"; }; then
+            printf "  %-26s" "${label}..."; bad
+            echo "      $cfg: olddefconfig failed or lost TASK_RT_CLUSTER_CPUS=1 or RCU_NOCBS_FROM_CLUSTER=y"
+            return
+        fi
+        KCONFIG_CONFIG="$cfg" AARCH64_CONFIG="$cfg" KTEST_SMP=4 ktest_row "$label" "$isa" "" "$3" "${4:-}" "${5:-}"
+    }
+    par "ktest rcu callbacks off the RT cpus (rv)" ktest_rtc_row "ktest rcu callbacks off the RT cpus (rv)" rv "" "" "$KTEST_RTC_RE"
+    par "ktest rcu callbacks off the RT cpus (arm)" ktest_rtc_row "ktest rcu callbacks off the RT cpus (arm)" arm "" "" "$KTEST_RTC_RE"
+    par "ktest rcu callbacks off the RT cpus canary (rv)" ktest_rtc_row "ktest rcu callbacks off the RT cpus canary (rv)" rv \
+        "$KTEST_RTC_CANARIED" "canary=rcu-nocbs-off" "$KTEST_RTC_CANARY_RE"
+    par "ktest rcu callbacks off the RT cpus canary (arm)" ktest_rtc_row "ktest rcu callbacks off the RT cpus canary (arm)" arm \
+        "$KTEST_RTC_CANARIED" "canary=rcu-nocbs-off" "$KTEST_RTC_CANARY_RE"
     # Kconfig HUNG_DETECT (kernel/src/smokes/hung.rs): the base row passes both
     # detectors' tests; `canary=hung-task-blind` makes the scan read no task and
     # `hung-cpu-blind` no CPU, so each test must turn red.
@@ -17585,6 +17614,20 @@ CPU 5 lacks hwcap bits"
     # N4: see `ktest rcu canaries (rv)`.
     par "ktest rcu canaries (x86)" x86_ktest_row "ktest rcu canaries (x86)" "" \
         "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # C2-13: see `ktest rcu callbacks off the RT cpus (rv)`.
+    x86_ktest_rtc_row() { # x86_ktest_rtc_row <label> <expected not-ok names> [kernel command line] [ERE]
+        local label="$1" def X86_KBUILD_OUT X86_KBUILD_ARGS
+        mkdir -p "$CI_LOG_DIR"
+        def="$CI_LOG_DIR/x86-ktest-rtc.defconfig"
+        { grep -v '^CONFIG_TASK_RT_CLUSTER_CPUS=' "config/defconfigs/${GATE_ROBOT_DEFC_X86}.config"
+          echo 'CONFIG_TASK_RT_CLUSTER_CPUS=1'; } >"$def"
+        X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-rtc.elf
+        X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-rtc.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-rtc X86_64_IMG=$X86_KBUILD_OUT"
+        KTEST_SMP=4 x86_ktest_row "$label" "" "$2" "${3:-}" "" "${4:-}"
+    }
+    par "ktest rcu callbacks off the RT cpus (x86)" x86_ktest_rtc_row "ktest rcu callbacks off the RT cpus (x86)" "" "" "$KTEST_RTC_RE"
+    par "ktest rcu callbacks off the RT cpus canary (x86)" x86_ktest_rtc_row "ktest rcu callbacks off the RT cpus canary (x86)" \
+        "$KTEST_RTC_CANARIED" "canary=rcu-nocbs-off" "$KTEST_RTC_CANARY_RE"
     # Kconfig HUNG_DETECT: see `ktest hung canary (rv)`.
     par "ktest hung canary (x86)" x86_ktest_row "ktest hung canary (x86)" "" \
         "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"

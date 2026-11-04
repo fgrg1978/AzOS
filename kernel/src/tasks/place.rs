@@ -7,7 +7,12 @@
 //! takes its CPU from there, never from a literal (tools/lint/task_place_lint.py).
 
 use azos_percpu::place::Place;
-pub(crate) use azos_percpu::place::pin;
+
+/// [`azos_percpu::place::pin_avoiding`] the boot's real-time CPUs
+/// (`azos_sync::qsbr::rt_cpus`): the cluster, RCU_NOCBS_CPUS and `isolcpus`.
+pub(crate) fn pin(p: Place) -> i8 {
+    azos_percpu::place::pin_avoiding(p, azos_sync::qsbr::rt_cpus())
+}
 
 #[cfg(feature = "net")]
 pub(crate) const NET_POLL: Place = Place::of_kconfig(azos_limits::TASK_NET_POLL_PLACE);

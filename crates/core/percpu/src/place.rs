@@ -105,6 +105,48 @@ pub const fn resolve(p: Place, ncpu: usize, rt: usize) -> Option<usize> {
     }
 }
 
+/// [`resolve`], moved off the CPUs of `avoid` (bit c = CPU c) for the two
+/// classes that name a service CPU, `general` (looking up from its CPU) and
+/// `last` (looking down): a service task never lands on a real-time CPU while
+/// one is free. The other classes name their CPU on purpose. With every CPU
+/// in `avoid` the answer is [`resolve`]'s.
+pub const fn resolve_outside(p: Place, ncpu: usize, rt: usize, avoid: usize) -> Option<usize> {
+    let Some(c) = resolve(p, ncpu, rt) else { return None };
+    let n = if ncpu == 0 { 1 } else { ncpu };
+    let n = if n > usize::BITS as usize { usize::BITS as usize } else { n };
+    let mut i = 0;
+    match p {
+        Place::General => {
+            while i < n {
+                let k = (c + i) % n;
+                if avoid >> k & 1 == 0 {
+                    return Some(k);
+                }
+                i += 1;
+            }
+        }
+        Place::Last => {
+            while i < n {
+                let k = c - i;
+                if avoid >> k & 1 == 0 {
+                    return Some(k);
+                }
+                i += 1;
+            }
+        }
+        _ => {}
+    }
+    Some(c)
+}
+
+/// [`pin`] with the CPUs of `avoid` avoided ([`resolve_outside`]).
+pub fn pin_avoiding(p: Place, avoid: usize) -> i8 {
+    match resolve_outside(p, crate::nr_cpu_ids(), azos_limits::TASK_RT_CLUSTER_CPUS as usize, avoid) {
+        Some(cpu) => cpu as i8,
+        None => -1,
+    }
+}
+
 /// [`resolve`] against this boot: `nr_cpu_ids` (fixed from the firmware's CPU
 /// map before any task exists) and Kconfig `TASK_RT_CLUSTER_CPUS`, as the
 /// affinity argument of `task_create_affinity` (`-1`: no pin).

@@ -88,3 +88,23 @@ pub fn callback_placement(n: usize, nocbs: usize, possible: impl Fn(usize) -> bo
         None => (0, true),
     }
 }
+
+/// The build-time real-time CPU set (bit c = CPU c): `extra` (Kconfig
+/// RCU_NOCBS_CPUS, the bits named by hand) and, with `from_cluster` (Kconfig
+/// RCU_NOCBS_FROM_CLUSTER), the first `cluster` CPUs (Kconfig
+/// TASK_RT_CLUSTER_CPUS), cut so that one of the `nr_cpus` (Kconfig NR_CPUS,
+/// a ceiling) stays outside. A constant, so the trap boundary tests it for free.
+pub const fn rt_mask(cluster: usize, extra: usize, from_cluster: bool, nr_cpus: usize) -> usize {
+    if !from_cluster || nr_cpus < 2 {
+        return extra;
+    }
+    let n = if cluster < nr_cpus - 1 { cluster } else { nr_cpus - 1 };
+    let bits = if n >= usize::BITS as usize { usize::MAX } else { (1usize << n) - 1 };
+    bits | extra
+}
+
+/// The real-time CPUs of this boot: the build-time mask and the topology's
+/// `isolcpus` (published by the scheduler at boot).
+pub const fn rt_set(build: usize, isolated: u64) -> usize {
+    build | isolated as usize
+}

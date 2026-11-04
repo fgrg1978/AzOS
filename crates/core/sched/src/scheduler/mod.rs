@@ -1442,6 +1442,7 @@ static NOHZ_SEEN: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS
 /// topology is installed). RCU first: a CPU must count its user mode as
 /// quiescent before any tick may stop.
 pub(crate) fn nohz_publish(mask: u64) {
+    azos_sync::qsbr::set_isolated_cpus(mask);
     if !azos_limits::NOHZ_FULL {
         return;
     }

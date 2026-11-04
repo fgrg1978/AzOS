@@ -177,7 +177,9 @@ config TASK_RT_CLUSTER_CPUS
 
       The cluster is a placement of the kernel's own tasks only: it does
       not isolate the CPUs (the topology's `[sched] isolcpus` does) and the
-      scheduler still places other work on them.
+      scheduler still places other work on them. It is also the build-time
+      real-time CPU set of RCU (RCU_NOCBS_FROM_CLUSTER): no RCU callback,
+      thermal or reclaim task runs on it.
 
       Default 2: the control loops (rt.0) and the sensor loops (rt.1) of
       the robot worked example each have a CPU of their own on a 4-CPU board.

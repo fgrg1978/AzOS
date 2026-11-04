@@ -1047,16 +1047,25 @@ pub(crate) fn create_rcu_callback_task() {
     }
     azos_sync::qsbr::set_hooks(rcu_now_ms, rcu_sleep_ms);
     let (cpu, inside_rt_set) = azos_sync::qsbr::callback_placement();
-    if inside_rt_set {
-        azos_drv_sys::kwarn!("[RCU] RCU_NOCBS_CPUS {:#x} names every CPU: callbacks run on CPU 0",
-            azos_sync::qsbr::NOCBS_CPUS);
+    let rt = azos_sync::qsbr::rt_cpus();
+    // A boot with one CPU has no choice to record.
+    if inside_rt_set && azos_percpu::nr_cpu_ids() > 1 {
+        let by_hand = azos_sync::qsbr_core::callback_cpu(azos_percpu::nr_cpu_ids(),
+            azos_limits::RCU_NOCBS_CPUS | azos_sync::qsbr::isolated_cpus(), azos_percpu::cpu_possible).is_none();
+        if by_hand {
+            azos_drv_sys::kwarn!("[RCU] RT CPUs {:#x} name every CPU: callbacks run on CPU 0", rt);
+        } else {
+            kprintln!("[RCU] RT CPUs {:#x} (the cluster) leave no CPU outside: callbacks run on CPU 0", rt);
+        }
         azos_decision::record(azos_decision::Rule::RcuCallbackCpu, azos_decision::Verdict::Place,
-            azos_percpu::nr_cpu_ids() as u32, [azos_sync::qsbr::NOCBS_CPUS as u64, cpu as u64, 0]);
+            azos_percpu::nr_cpu_ids() as u32, [rt as u64, cpu as u64, 0]);
     }
+    // Gate canary `rcu-nocbs-off`: the mask is ignored, the task goes to the lowest CPU.
+    let cpu = if canary!("rcu-nocbs-off") { 0 } else { cpu };
     azos_sched::task_create_affinity("rcu-cb", rcu_callback_task, 0,
         azos_limits::RCU_CALLBACK_PRIORITY as u32, cpu as i8);
-    kprintln!("[SCHED] Created rcu-cb task (prio {}, CPU {}, nocbs {:#x})",
-        azos_limits::RCU_CALLBACK_PRIORITY, cpu, azos_sync::qsbr::NOCBS_CPUS);
+    kprintln!("[SCHED] Created rcu-cb task (prio {}, CPU {}, rt cpus {:#x})",
+        azos_limits::RCU_CALLBACK_PRIORITY, cpu, rt);
 }
 
 pub(crate) fn create_fs_writeback_task() {

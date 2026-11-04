@@ -545,6 +545,30 @@ mod qsbr_tests {
         assert_eq!(callback_cpu(4, 0b0001, |c| c != 1), Some(2));
     }
 
+    /// D10 (b): the build-time RT set is the cluster (cut so a CPU stays
+    /// outside) plus the explicit bits, and `isolcpus` joins at boot; the
+    /// callback task then sits outside all of it.
+    ///
+    /// Canary (run 2026-11-04): `rt_mask` ignoring `from_cluster` or the cut,
+    /// or `rt_set` dropping `isolated`: a line red.
+    #[test]
+    fn the_rt_set_is_the_cluster_plus_the_bits_plus_isolcpus() {
+        let all = |_c: usize| true;
+        assert_eq!(rt_mask(2, 0, true, 64), 0b11, "the cluster alone");
+        assert_eq!(rt_mask(2, 0b1000, true, 64), 0b1011, "manual bits are added");
+        assert_eq!(rt_mask(2, 0b1000, false, 64), 0b1000, "derivation off: the manual bits only");
+        assert_eq!(rt_mask(0, 0, true, 64), 0, "no cluster");
+        assert_eq!(rt_mask(8, 0, true, 4), 0b111, "one CPU of the ceiling stays outside");
+        assert_eq!(rt_mask(2, 0, true, 2), 0b01);
+        assert_eq!(rt_mask(2, 0, true, 1), 0, "a one-CPU kernel has no RT set to derive");
+        assert_eq!(rt_mask(64, 0, true, 64), usize::MAX >> 1);
+        let build = rt_mask(1, 0, true, 8);
+        assert_eq!(callback_cpu(3, rt_set(build, 0), all), Some(1));
+        assert_eq!(callback_cpu(3, rt_set(build, 0b10), all), Some(2), "isolcpus is excluded too");
+        assert_eq!(callback_placement(3, rt_set(build, 0b110), all), (0, true));
+        assert_eq!(callback_placement(3, rt_set(build, 0), all), (1, false));
+    }
+
     /// D9: with every CPU in the mask the callback task still has a place,
     /// CPU 0, and the placement says it is inside the mask (the boot then
     /// writes the `rcu-callback-cpu` record); otherwise it is the callback CPU.

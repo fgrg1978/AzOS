@@ -363,7 +363,7 @@ pub enum Rule {
     CapSlotRestart = 82,
     /// A grant found no slot in the domain's capability table.
     CapTableFull = 83,
-    /// Every CPU is in the real-time set (RCU_NOCBS_CPUS), so the RCU callback
+    /// Every CPU is in the real-time set (`azos_sync::qsbr::rt_cpus`), so the RCU callback
     /// task runs on CPU 0, inside it: the one place QSBR callbacks reach a
     /// real-time CPU (`azos_sync::qsbr::callback_placement`).
     RcuCallbackCpu = 84,
