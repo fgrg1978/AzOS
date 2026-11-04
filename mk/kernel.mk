@@ -397,6 +397,9 @@ $(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) $(AARCH64_KCONFIG).src \
 # caller's shell would silently drop it.
 aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	$(call kernel_select,$(AARCH64_KCONFIG),$(AARCH64_SELECT),$(AARCH64_KCONFIG:.config=-sel.config)); \
+	if grep -q '^CONFIG_HYP_MONITOR=y' "$(AARCH64_KCONFIG:.config=-sel.config)"; then \
+	    AZOS_OUT="$(AZOS_OUT)" bash tools/build/hyp_mon.sh aarch64 "$(OUT_BUILD)/aarch64/hyp-mon.bin" || exit 1; \
+	fi; \
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(AARCH64_KCONFIG:.config=-sel.config)" $(AARCH64_KTARGET_ENV) $(call secboot_key_env,$(AARCH64_KCONFIG)) \
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(AARCH64_KCONFIG))" \
 	    $(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel $$args
