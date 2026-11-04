@@ -532,15 +532,22 @@ pub fn try_task_create_init(
                 Some(idx) => {
                     PARENT_TID[idx].store(init.parent, Ordering::Relaxed);
                     let task = task_mut(idx);
-                    // Before the TID is published: whoever resolves the TID
-                    // (`idx_for_tid`) then finds the domain in place.
-                    task.domain.store(dom.unwrap_or(crate::domain::NONE), Ordering::Relaxed);
 
                     // U02-6 (second half): `alloc_tid` is the old
                     // wrapping-counter dance, now also skipping any
                     // candidate a live task still holds once the counter
                     // has wrapped once — see its doc.
                     let tid = alloc_tid();
+                    // The new TID and the reset donation state under the slot's
+                    // donation lock: a boost or a return for the previous
+                    // occupant either lands before the reset or finds the new
+                    // TID and does nothing (`TaskDonation::holds`).
+                    let dc = TaskDonation::new(idx, 0);
+                    crate::donation::DonationCell::lock(&dc);
+                    // Before the TID is published: whoever resolves the TID
+                    // (`idx_for_tid`) then finds the domain in place, and a
+                    // reader holding this lock sees both of one task.
+                    task.domain.store(dom.unwrap_or(crate::domain::NONE), Ordering::Relaxed);
                     task.tid = tid;
                     TID_SLOT[tid as usize & (TID_SLOT_LEN - 1)].store(idx as u16, Ordering::Relaxed);
 
@@ -554,6 +561,7 @@ pub fn try_task_create_init(
                     // Pool slots are reused: a stale count from the previous
                     // occupant would keep this task permanently "donated to".
                     task.donation_count.store(0, Ordering::Relaxed);
+                    crate::donation::DonationCell::unlock(&dc);
                     // Same slot-reuse hazard for the other cross-hart flags.
                     // A stale `wake_pending` (a wake that raced the previous
                     // occupant's exit and was never consumed) would hand this
@@ -1391,7 +1399,7 @@ fn stop_slot(idx: usize) {
             if tid == 0 {
                 return;
             }
-            record_stop(idx, tid, stop_policy::Stop { force: true, signo: 9 });
+            let _ = record_stop(idx, tid, stop_policy::Stop { force: true, signo: 9 });
             tid
         }
     };
@@ -2942,7 +2950,9 @@ pub fn task_stop(tid: u32, force: bool, signo: u8) -> bool {
             _ => return true,
         }
     }
-    record_stop(idx, tid, stop_policy::Stop { force, signo });
+    if !record_stop(idx, tid, stop_policy::Stop { force, signo }) {
+        return false;
+    }
     wake_stopped(tid, force);
     true
 }
@@ -2964,8 +2974,22 @@ fn wake_stopped(tid: u32, force: bool) {
 
 /// Record stop request `new` for task `tid` in slot `idx` (merged with one
 /// already pending): the request word, the machine-wide forced count, and a
-/// forced stop's empty filter. The caller wakes the task.
-fn record_stop(idx: usize, tid: u32, new: stop_policy::Stop) {
+/// forced stop's empty filter. The caller wakes the task. `false`, and
+/// nothing written, when the slot no longer holds `tid`: under the slot's
+/// lock, which slot reuse also takes to write the next TID, a stop for the
+/// previous occupant cannot land on the next one.
+fn record_stop(idx: usize, tid: u32, new: stop_policy::Stop) -> bool {
+    let slot = TaskDonation::new(idx, tid);
+    crate::donation::DonationCell::lock(&slot);
+    let held = crate::donation::DonationCell::holds(&slot);
+    if held {
+        record_stop_locked(idx, tid, new);
+    }
+    crate::donation::DonationCell::unlock(&slot);
+    held
+}
+
+fn record_stop_locked(idx: usize, tid: u32, new: stop_policy::Stop) {
     let old = if STOP_TID[idx].load(Ordering::Acquire) == tid {
         stop_policy::Stop::decode(STOP_WORD[idx].load(Ordering::Acquire))
     } else {

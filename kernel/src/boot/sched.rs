@@ -377,6 +377,10 @@ pub(crate) fn install_sched_hooks() {
     if canary!("sig-exit-drop") {
         azos_sched::scheduler::signal::canary_exit_drop();
     }
+    // Runtime canary: a signal slot is cleared without waiting for its posts.
+    if canary!("sig-stale-slot") {
+        azos_sched::scheduler::signal::canary_no_quiesce();
+    }
     // Runtime canary: the masks `rt_sigsuspend` saves are one cell for every task.
     if canary!("sigsuspend-shared") {
         azos_sched::scheduler::signal::canary_suspend_shared();
@@ -3616,4 +3620,178 @@ fn kmem_discharge(key: u32, class: u8, bytes: u64) {
 /// (`azos_ipc::cap::set_clock`).
 fn cap_clock_ns() -> u64 {
     azos_abi::time::ticks_to_ns(azos_drv_sys::timebase::now(), azos_drv_sys::timebase::TIMER_FREQ)
+}
+
+// A signal post resolves the target's slot, checks the slot is still its,
+// then writes the pending bit. If the target exits and its slot goes to a
+// new task in between, the bit must not land on that task: a stray signal
+// would run its default action there. The hook lets the target exit inside
+// the window; the exit must wait for the post, so the slot cannot be reused
+// until the post is done. Canary `sig-stale-slot-canary` (the exit does not
+// wait): `not ok`.
+#[cfg(feature = "ktest")]
+mod sig_stale_slot_ktests {
+    use azos_sched::scheduler::idx_for_tid;
+    use azos_sched::scheduler::signal as sig;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const PRIO: u32 = 16;
+    const TRIES: u32 = 8;
+    const SIGUSR2: u32 = 12;
+    static GO: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicBool = AtomicBool::new(false);
+    static OLD: AtomicU32 = AtomicU32::new(0);
+    static NEW: AtomicU32 = AtomicU32::new(0);
+
+    fn old(_: usize) {
+        OLD.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+    }
+
+    fn new(_: usize) {
+        NEW.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !DONE.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+    }
+
+    fn start_new() -> Result<u32, &'static str> {
+        azos_sched::task_create("sig-new", new, 0, PRIO);
+        crate::ktest::wait("the new task never started", || NEW.load(Ordering::Acquire) != 0)?;
+        let t = NEW.load(Ordering::Acquire);
+        if !sig::attach(t, 0, 0) {
+            return Err("attach refused the new task");
+        }
+        Ok(t)
+    }
+
+    azos_ktest::ktest_late! {
+        fn signal_post_leaves_a_reused_slot_alone() {
+            for _ in 0..TRIES {
+                for f in [&GO, &DONE] {
+                    f.store(false, Ordering::Release);
+                }
+                OLD.store(0, Ordering::Release);
+                NEW.store(0, Ordering::Release);
+                azos_sched::task_create("sig-old", old, 0, PRIO);
+                crate::ktest::wait("the old task never started", || OLD.load(Ordering::Acquire) != 0)?;
+                let tid = OLD.load(Ordering::Acquire);
+                let Some(slot) = idx_for_tid(tid) else { return Err("the old task has no slot") };
+                if !sig::attach(tid, 0, 0) {
+                    return Err("attach refused the old task");
+                }
+                let mut new_tid = Ok(0);
+                let _ = sig::ktest_post_thread_between(tid, SIGUSR2, 0, || {
+                    GO.store(true, Ordering::Release);
+                    // The exit waits for this post: the slot stays the old
+                    // task's until the hook returns. Only without the wait is
+                    // it freed here, and then the next task takes it.
+                    if crate::ktest::until_for(50, || idx_for_tid(tid).is_none()) {
+                        new_tid = start_new();
+                    }
+                });
+                crate::ktest::wait("the old slot was never freed", || idx_for_tid(tid).is_none())?;
+                let new_tid = match new_tid? {
+                    0 => start_new()?,
+                    t => t,
+                };
+                let stray = sig::ktest_pending_on(new_tid, SIGUSR2);
+                let same = idx_for_tid(new_tid) == Some(slot);
+                sig::detach(new_tid);
+                DONE.store(true, Ordering::Release);
+                crate::ktest::wait("the new task never exited", || idx_for_tid(new_tid).is_none())?;
+                if !same {
+                    continue;
+                }
+                return if stray {
+                    Err("a signal posted to an exited thread landed on the slot's new task")
+                } else {
+                    Ok(())
+                };
+            }
+            Err("the old slot was never reused")
+        }
+    }
+}
+
+// A priority boost resolves the target's slot, then takes its donation lock
+// and raises it. If the target exits and its slot goes to a new task in
+// between, the new task must keep its own priority: the donor's return can
+// never find it, so a boost that landed would stay for that task's life. The
+// hook frees and refills the slot inside the window. Canary
+// `donation-stale-slot-canary` (the lock does not check the slot's TID):
+// `not ok`.
+#[cfg(feature = "ktest")]
+mod donation_stale_slot_ktests {
+    use azos_sched::scheduler::idx_for_tid;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const PRIO: u32 = 20;
+    const BOOST: u32 = 14;
+    const TRIES: u32 = 8;
+    static GO: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicBool = AtomicBool::new(false);
+    static OLD: AtomicU32 = AtomicU32::new(0);
+    static NEW: AtomicU32 = AtomicU32::new(0);
+
+    fn old(_: usize) {
+        OLD.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+    }
+
+    fn new(_: usize) {
+        NEW.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !DONE.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn donation_boost_leaves_a_reused_slot_alone() {
+            for _ in 0..TRIES {
+                for f in [&GO, &DONE] {
+                    f.store(false, Ordering::Release);
+                }
+                OLD.store(0, Ordering::Release);
+                NEW.store(0, Ordering::Release);
+                azos_sched::task_create("don-old", old, 0, PRIO);
+                crate::ktest::wait("the old task never started", || OLD.load(Ordering::Acquire) != 0)?;
+                let tid = OLD.load(Ordering::Acquire);
+                let Some(slot) = idx_for_tid(tid) else { return Err("the old task has no slot") };
+                let mut fail = None;
+                azos_sched::scheduler::ktest_boost_between(tid, BOOST, || {
+                    GO.store(true, Ordering::Release);
+                    if let Err(e) = crate::ktest::wait("the old slot was never freed", || idx_for_tid(tid).is_none()) {
+                        fail = Some(e);
+                        return;
+                    }
+                    azos_sched::task_create("don-new", new, 0, PRIO);
+                    if let Err(e) = crate::ktest::wait("the new task never started", || NEW.load(Ordering::Acquire) != 0) {
+                        fail = Some(e);
+                    }
+                });
+                if let Some(e) = fail {
+                    return Err(e);
+                }
+                let new_tid = NEW.load(Ordering::Acquire);
+                let prio = azos_sched::scheduler::task_priority(new_tid);
+                let same = idx_for_tid(new_tid) == Some(slot);
+                DONE.store(true, Ordering::Release);
+                crate::ktest::wait("the new task never exited", || idx_for_tid(new_tid).is_none())?;
+                if !same {
+                    continue;
+                }
+                return if prio != Some(PRIO) {
+                    Err("a boost for an exited TID raised the slot's new task")
+                } else {
+                    Ok(())
+                };
+            }
+            Err("the old slot was never reused")
+        }
+    }
 }

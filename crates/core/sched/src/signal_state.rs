@@ -53,6 +53,10 @@ static BLOCKED: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS
 /// Signals whose disposition discards them on arrival: `SIG_IGN`, or
 /// `SIG_DFL` where the default is to ignore. Never `SIGKILL`.
 static IGNORED: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
+/// Posters inside [`post_one`]'s window, between the check that the slot is
+/// still `tid`'s and the last write to its words. A slot's words are cleared
+/// or handed to another task only once this is 0 ([`quiesce`]).
+static POSTERS: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
 /// The TID that sent the latest signal (`si_pid`), 0 for the kernel.
 static SENDER: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
 /// A `rt_sigreturn` waits to be applied at this slot's return to user mode.
@@ -139,9 +143,33 @@ pub fn attach(tid: u32, blocked: u64, ignored: u64) -> bool {
     true
 }
 
+/// Runtime canary `sig-stale-slot`: [`quiesce`] does not wait, so a post can
+/// land on the slot's next task (ktest `signal_post_leaves_a_reused_slot_alone`).
+static CANARY_NO_QUIESCE: AtomicBool = AtomicBool::new(false);
+
+/// Arm the `sig-stale-slot` canary (boot only).
+pub fn canary_no_quiesce() {
+    CANARY_NO_QUIESCE.store(true, Ordering::Relaxed);
+}
+
+/// Wait out the posters that saw slot `idx` still named before its `TID`
+/// was cleared: with `TID` stored 0 first, every later poster sees the 0, and
+/// every earlier one has finished writing. Without this a post that checked
+/// the old TID could land on the slot's next occupant (SeqCst on both sides:
+/// the store and the check, the increment and this load).
+fn quiesce(idx: usize) {
+    if CANARY_NO_QUIESCE.load(Ordering::Relaxed) {
+        return;
+    }
+    while POSTERS[idx].load(Ordering::SeqCst) != 0 {
+        core::hint::spin_loop();
+    }
+}
+
 fn detach_slot(idx: usize) {
     SUSPENDED[idx].store(0, Ordering::Release);
-    TID[idx].store(0, Ordering::Release);
+    TID[idx].store(0, Ordering::SeqCst);
+    quiesce(idx);
     PENDING[idx].store(0, Ordering::Release);
     PROC_PENDING[idx].store(0, Ordering::Release);
     resync(idx);
@@ -158,9 +186,9 @@ fn detach_slot(idx: usize) {
 /// its process's leader is posted to the process again (Linux keeps it in
 /// the shared pending set, which outlives any one thread), unless the whole
 /// process is ending. Its thread-directed ones end with it, as on Linux.
-/// The slot stops taking posts first (`TID` 0), then its pending set is
-/// taken; a post racing the two sees the 0 and takes its bit back
-/// ([`post_one`]), so exactly one side re-posts it.
+/// The slot stops taking posts first (`TID` 0), the posters already past
+/// their check finish ([`quiesce`]), then its pending set is taken, so every
+/// bit posted to the thread is either in that set or never written.
 /// Runtime canary `sig-exit-drop`: [`detach`] drops a process-directed
 /// signal with the thread instead of posting it to the process again (ktest
 /// `signal_retarget_on_thread_detach`).
@@ -175,6 +203,7 @@ pub fn detach(tid: u32) {
     let Some(idx) = slot_of(tid) else { return };
     let lead = crate::group::lead_of_idx(idx);
     TID[idx].store(0, Ordering::SeqCst);
+    quiesce(idx);
     let moved = PENDING[idx].swap(0, Ordering::SeqCst) & PROC_PENDING[idx].swap(0, Ordering::AcqRel);
     let sender = SENDER[idx].load(Ordering::Relaxed);
     detach_slot(idx);
@@ -246,6 +275,10 @@ pub fn post_thread(tid: u32, sig: u32, sender: u32) -> Posted {
 /// Post `sig` to thread `tid`; `process`: the process it was posted to
 /// ([`post`]), `None` for a thread-directed post.
 fn post_one(tid: u32, sig: u32, sender: u32, process: Option<u32>) -> Posted {
+    post_one_between(tid, sig, sender, process, || {})
+}
+
+fn post_one_between(tid: u32, sig: u32, sender: u32, process: Option<u32>, between: impl FnOnce()) -> Posted {
     let Some(idx) = slot_of(tid) else { return Posted::NotLinux };
     let b = bit(sig);
     if b == 0 {
@@ -254,20 +287,31 @@ fn post_one(tid: u32, sig: u32, sender: u32, process: Option<u32>) -> Posted {
     if sig == SIGKILL {
         return if super::task_stop(tid, true, SIGKILL as u8) { Posted::Killed } else { Posted::NotLinux };
     }
-    if IGNORED[idx].load(Ordering::Acquire) & b != 0 {
-        return Posted::Discarded;
-    }
-    SENDER[idx].store(sender, Ordering::Relaxed);
-    if process.is_some() {
-        PROC_PENDING[idx].fetch_or(b, Ordering::AcqRel);
-    }
-    PENDING[idx].fetch_or(b, Ordering::SeqCst);
-    // The thread began to end meanwhile ([`detach`] cleared its TID): take
-    // the bit back if its exit did not, and post it to the process again.
-    if let Some(p) = process {
-        if TID[idx].load(Ordering::SeqCst) == 0 && PENDING[idx].fetch_and(!b, Ordering::AcqRel) & b != 0 {
-            return post(p, sig, sender);
+    {
+        // Preemption off for the window: [`quiesce`] spins until it closes,
+        // possibly on this hart.
+        let _cs = azos_sync::preempt::critical_section();
+        POSTERS[idx].fetch_add(1, Ordering::SeqCst);
+        if TID[idx].load(Ordering::SeqCst) != tid {
+            POSTERS[idx].fetch_sub(1, Ordering::Release);
+            // Ended after `slot_of`: its process takes the signal from another
+            // member, as a post to an ended thread would have.
+            return match process {
+                Some(p) if p != tid => post(p, sig, sender),
+                _ => Posted::NotLinux,
+            };
         }
+        between();
+        if IGNORED[idx].load(Ordering::Acquire) & b != 0 {
+            POSTERS[idx].fetch_sub(1, Ordering::Release);
+            return Posted::Discarded;
+        }
+        SENDER[idx].store(sender, Ordering::Relaxed);
+        if process.is_some() {
+            PROC_PENDING[idx].fetch_or(b, Ordering::AcqRel);
+        }
+        PENDING[idx].fetch_or(b, Ordering::SeqCst);
+        POSTERS[idx].fetch_sub(1, Ordering::Release);
     }
     resync(idx);
     POSTED.fetch_add(1, Ordering::Relaxed);
@@ -277,6 +321,19 @@ fn post_one(tid: u32, sig: u32, sender: u32, process: Option<u32>) -> Posted {
         wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(_)));
     }
     Posted::Pending
+}
+
+/// ktest: [`post_thread`] with `between` run inside the window, after the
+/// check that the slot is still `tid`'s and before its words are written.
+#[cfg(feature = "ktest")]
+pub fn ktest_post_thread_between(tid: u32, sig: u32, sender: u32, between: impl FnOnce()) -> Posted {
+    post_one_between(tid, sig, sender, None, between)
+}
+
+/// ktest: is `sig` pending on `tid`'s slot (whoever holds it)?
+#[cfg(feature = "ktest")]
+pub fn ktest_pending_on(tid: u32, sig: u32) -> bool {
+    idx_for_tid(tid).is_some_and(|i| PENDING[i].load(Ordering::Acquire) & bit(sig) != 0)
 }
 
 /// Has the current task a signal pending that its mask does not block? What

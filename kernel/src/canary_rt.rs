@@ -449,6 +449,10 @@ pub(crate) const NAMES: &[&str] = &[
     // signal pending on a non-leader thread is dropped with the thread
     // (ktest `signal_retarget_on_thread_detach`).
     "sig-exit-drop",
+    // crates/core/sched/src/signal_state.rs `quiesce`: a slot's signal words
+    // are cleared without waiting for the posts already past their check
+    // (ktest `signal_post_leaves_a_reused_slot_alone`).
+    "sig-stale-slot",
     // crates/core/sched/src/signal_state.rs `suspend_cell`: the mask
     // `rt_sigsuspend` saves is one cell for every task, as the per-process
     // field was (ktest `sigsuspend_saves_the_mask_per_thread`).

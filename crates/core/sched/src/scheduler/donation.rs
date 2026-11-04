@@ -8,15 +8,17 @@
 
 use super::*;
 
-/// Donation target: task slot `idx`, through its donation lock.
+/// Donation target: task slot `idx`, through its donation lock, while it
+/// still holds task `tid` (0: whoever holds it, for slot reuse itself).
 pub(super) struct TaskDonation {
     idx: usize,
+    tid: u32,
     irq: core::cell::Cell<Option<azos_arch::InterruptState>>,
 }
 
 impl TaskDonation {
-    pub(super) fn new(idx: usize) -> Self {
-        TaskDonation { idx, irq: core::cell::Cell::new(None) }
+    pub(super) fn new(idx: usize, tid: u32) -> Self {
+        TaskDonation { idx, tid, irq: core::cell::Cell::new(None) }
     }
 }
 
@@ -30,6 +32,12 @@ impl crate::donation::DonationCell for TaskDonation {
             core::hint::spin_loop();
         }
         self.irq.set(Some(prev));
+    }
+    /// Slot reuse writes the new TID and resets count and priorities under
+    /// this lock, so a holder that sees the old TID here acts before the
+    /// reset, and one that sees the new TID does nothing.
+    fn holds(&self) -> bool {
+        self.tid == 0 || cfg!(feature = "donation-stale-slot-canary") || slot_holds(self.idx, self.tid)
     }
     fn unlock(&self) {
         DONATION_LOCKS[self.idx].store(false, Ordering::Release);
@@ -149,13 +157,23 @@ pub fn ktest_boost_during_wake(tid: u32, to: u32) -> bool {
     }
 }
 
+/// ktest: [`boost_ready_task`] with `between` run after the slot is resolved
+/// and before the boost takes the target's donation lock.
+#[cfg(feature = "ktest")]
+pub fn ktest_boost_between(tid: u32, new_prio: u32, between: impl FnOnce()) {
+    if let Some(idx) = idx_for_tid(tid) {
+        between();
+        crate::donation::boost_locked(&TaskDonation::new(idx, tid), new_prio);
+    }
+}
+
 pub fn boost_ready_task(tid: u32, new_prio: u32) {
     // No `current_cpu_id()` here any more, and its absence is the fix: the
     // donor's hart was never the right queue to touch. See
     // `cpu_remove_anywhere`. Count, priority and re-bucketing all happen under
     // the target's donation lock (`donation::boost_locked`).
     if let Some(idx) = idx_for_tid(tid) {
-        crate::donation::boost_locked(&TaskDonation::new(idx), new_prio);
+        crate::donation::boost_locked(&TaskDonation::new(idx, tid), new_prio);
     }
 }
 
@@ -249,7 +267,7 @@ pub fn set_donation_floor_recorder(f: fn(target_tid: u32)) {
 fn note_floored_donation(target: u32) {
     DONATIONS_FLOORED.fetch_add(1, Ordering::Relaxed);
     let Some(i) = idx_for_tid(target) else { return };
-    if FLOOR_RECORDED_TID[i].swap(target, Ordering::Relaxed) == target {
+    if !slot_holds(i, target) || FLOOR_RECORDED_TID[i].swap(target, Ordering::Relaxed) == target {
         return;
     }
     if let Some(f) = DONATION_FLOOR_RECORDER.get() {
@@ -338,7 +356,7 @@ fn call_donation_from(cur: usize, ti: usize, target: u32) -> Option<(u32, bool)>
 /// no-donation path carries none of its register saves.
 #[inline(never)]
 fn donate_for_call_boost(ti: usize, target: u32, prio: u32, floored: bool) {
-    crate::donation::boost_locked(&TaskDonation::new(ti), prio);
+    crate::donation::boost_locked(&TaskDonation::new(ti, target), prio);
     LAST_DONATION.store(((target as u64) << 32) | prio as u64, Ordering::Relaxed);
     if floored {
         note_floored_donation(target);
@@ -355,6 +373,6 @@ pub fn restore_ready_task(tid: u32) {
     // whole of it under the target's donation lock — a boost can no longer
     // land between the count reaching 0 and the base being written.
     if let Some(idx) = idx_for_tid(tid) {
-        crate::donation::restore_locked(&TaskDonation::new(idx), || {});
+        crate::donation::restore_locked(&TaskDonation::new(idx, tid), || {});
     }
 }

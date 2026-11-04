@@ -281,6 +281,7 @@ threads-late-start-canary	pending
 threads-no-cleartid-canary	pending	
 threads-private-table-canary	pending	
 threads-tls-canary	pending	
+donation-stale-slot-canary	hot	crates/core/sched/src/scheduler/donation.rs: TaskDonation::holds, on every fast-IPC call that donates (the IPC path)
 tid-stamp-canary	hot	crates/core/sched/src/scheduler/wake.rs: still_holds, on every TID-directed wake (two per IPC round trip); a runtime flag there is a load and a branch per wake
 tid-reuse-gen-canary	host-shared	crates/core/sched/src/task.rs: sched_word::reused, also built by tests/host/sched-wake-tests with this feature
 timer-heap-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name

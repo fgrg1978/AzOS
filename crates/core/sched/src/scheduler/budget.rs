@@ -361,14 +361,20 @@ pub fn mm_discharge(pages: u32) {
 /// freeing its frames, an io_ring torn down by someone else.
 ///
 /// Applied at once (the budget is atomic). A `tid` that no longer exists needs
-/// nothing (its budget went with its domain); TIDs are not reused before
-/// `NEXT_TID` wraps at 2^32, so the discharge cannot reach a stranger.
+/// nothing (its budget went with its domain). The domain is read under the
+/// slot's lock with the slot still holding `tid`: slot reuse writes the next
+/// task's domain and TID under the same lock, so a slot reused since the
+/// lookup is never credited.
 pub fn mm_discharge_tid(tid: u32, pages: u32) {
     if pages == 0 { return; }
-    unsafe {
-        if let Some(idx) = idx_for_tid(tid) {
-            crate::domain::discharge(TASKS[idx].domain(), pages);
-        }
+    let Some(idx) = idx_for_tid(tid) else { return };
+    let slot = TaskDonation::new(idx, tid);
+    crate::donation::DonationCell::lock(&slot);
+    // SAFETY: `idx` comes from `idx_for_tid`; the domain word is atomic.
+    let dom = crate::donation::DonationCell::holds(&slot).then(|| unsafe { TASKS[idx].domain() });
+    crate::donation::DonationCell::unlock(&slot);
+    if let Some(d) = dom {
+        crate::domain::discharge(d, pages);
     }
 }
 

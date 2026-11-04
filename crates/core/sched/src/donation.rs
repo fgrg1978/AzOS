@@ -148,6 +148,11 @@ pub trait DonationCell {
     /// Take the target's donation lock (the scheduler also masks interrupts:
     /// the holder must not be switched out while another donor spins).
     fn lock(&self);
+    /// Does the cell still belong to the target the caller resolved? Asked
+    /// under the lock; a cell handed to another target is left untouched.
+    fn holds(&self) -> bool {
+        true
+    }
     fn unlock(&self);
     fn count(&self) -> u32;
     fn set_count(&self, c: u32);
@@ -163,6 +168,10 @@ pub trait DonationCell {
 /// the priority does not move (see [`boost_step`]).
 pub fn boost_locked<C: DonationCell>(c: &C, donated: u32) {
     c.lock();
+    if !c.holds() {
+        c.unlock();
+        return;
+    }
     let (n, p) = boost_step(c.count(), c.prio(), donated);
     c.set_count(n);
     if let Some(p) = p {
@@ -180,6 +189,10 @@ pub fn boost_locked<C: DonationCell>(c: &C, donated: u32) {
 /// time to land.
 pub fn restore_locked<C: DonationCell>(c: &C, between: impl FnOnce()) {
     c.lock();
+    if !c.holds() {
+        c.unlock();
+        return;
+    }
     let (n, back) = return_step(c.count());
     c.set_count(n);
     between();

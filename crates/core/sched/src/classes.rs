@@ -560,7 +560,7 @@ impl ClassPi {
         }
         let p = graph_floored(idx, p);
         PI_PRIO[idx].store(p, Ordering::Relaxed);
-        let c = super::TaskDonation::new(idx);
+        let c = super::TaskDonation::new(idx, 0);
         c.lock();
         let target = c.base();
         let cur = c.prio();

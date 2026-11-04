@@ -1465,7 +1465,7 @@ pub fn set_base_priority(idx: usize, prio: u32) {
         return;
     }
     super::classes::on_base_priority(idx, prio);
-    let c = super::TaskDonation::new(idx);
+    let c = super::TaskDonation::new(idx, 0);
     c.lock();
     unsafe { task_ref(idx) }.base_priority.store(prio, Ordering::Relaxed);
     if c.count() == 0 && c.prio() != prio {
