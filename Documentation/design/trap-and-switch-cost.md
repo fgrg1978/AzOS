@@ -178,7 +178,7 @@ Programming the next timer interrupt has a choice on riscv64 and x86_64.
 
 - Without Sstc the timer is programmed with the SBI `set_timer` call, a trip
   into firmware. With Sstc it is one write to the `stimecmp` CSR.
-- `timer_select` (`arch/riscv64/src/irq/clint.rs`) chooses once, at
+- `timer_select` (`arch/riscv/src/irq/clint.rs`) chooses once, at
   boot: Sstc only when the device tree's ISA string declares it and a probe
   confirms that S-mode can actually read `stimecmp`. The probe reads the CSR
   once under a private trap vector, because the device tree says the hart
@@ -195,8 +195,8 @@ Programming the next timer interrupt has a choice on riscv64 and x86_64.
 - aarch64 (the generic timer) has one mechanism. All three are reached through
   `Interrupts::set_timer_deadline` in `azos_arch_api`.
 
-Source: `arch/riscv64/src/irq/clint.rs`,
-`arch/riscv64/src/api_impl.rs`, `arch/x86_64/src/timer.rs`,
+Source: `arch/riscv/src/irq/clint.rs`,
+`arch/riscv/src/api_impl.rs`, `arch/x86_64/src/timer.rs`,
 `arch/api/src/isa.rs`, `config/arch/Kconfig.isa`.
 
 ## 5. Reply and accept in one trap
@@ -364,7 +364,7 @@ its entries, so a change to the space's page tables must reach it.
   On riscv64 that is `sfence.vma` with an ASID operand locally and the SBI
   `remote_sfence_vma_asid` call remotely, with the all-ASID form for a hart
   still running the space under an older generation's ASID
-  (`arch/riscv64/src/tlb.rs`). On aarch64 it is `TLBI ASIDE1IS` or
+  (`arch/riscv/src/tlb.rs`). On aarch64 it is `TLBI ASIDE1IS` or
   `TLBI VAE1IS` on the recorded ASID, falling back to the all-ASID form when a
   CPU's generation differs from the record. On x86_64 the IPIs already reach
   only the CPUs on the root; with INVPCID the shooter invalidates the space's
@@ -393,7 +393,7 @@ to force rollovers, and the runtime canary `asid-rollover-noflush`
 must fail.
 
 Source: `crates/core/sched/src/asid.rs`, `arch/api/src/tlb_gen.rs`,
-`arch/riscv64/src/tlb.rs`, `arch/aarch64/src/api_impl.rs`,
+`arch/riscv/src/tlb.rs`, `arch/aarch64/src/api_impl.rs`,
 `kernel/src/entry/riscv64/asm/context_switch.S`,
 `kernel/src/entry/aarch64/asm/context_switch.S`,
 `kernel/src/entry/x86_64/asm/context_switch.S`, `kernel/src/boot/early.rs`,
@@ -420,5 +420,5 @@ Source: `crates/core/sched/src/asid.rs`, `arch/api/src/tlb_gen.rs`,
   the SBI RFENCE extension.
 
 Source: `kernel/src/trap/syscall.rs`, `crates/core/syscall/src/fastpath.rs`,
-`arch/riscv64/src/irq/clint.rs`, `crates/core/ipc/src/io_ring.rs`,
+`arch/riscv/src/irq/clint.rs`, `crates/core/ipc/src/io_ring.rs`,
 `crates/core/sched/src/asid.rs`.

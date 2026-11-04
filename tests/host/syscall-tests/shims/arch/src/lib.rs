@@ -9,7 +9,7 @@
 //! drift. `firmware` is real CSR/SBI calls with no host meaning, so it is
 //! `todo!()` — nothing in this crate's three test targets reaches it.
 
-#[path = "../../../../../../arch/riscv64/src/mmu.rs"]
+#[path = "../../../../../../arch/riscv/src/mmu.rs"]
 pub mod mmu;
 
 /// Host stand-in for `azos_arch::cache` (cache-block zeroing), needed
@@ -112,7 +112,7 @@ pub mod firmware {
 // active ISA through `azos_arch::ARCH` + `azos_arch_api::Mmu`, not
 // through the free-function `mmu`/`cpu` modules above directly any more —
 // see `crates/core/mm/src/vmm.rs`'s module doc (page-table abstraction, B2).
-// This is the same body as `arch-riscv64/src/api_impl.rs`'s `impl Mmu for
+// This is the same body as `arch/riscv/src/api_impl.rs`'s `impl Mmu for
 // Riscv64`, over this shim's own `mmu`/`cpu` modules (both real,
 // path-pulled above) instead of `crate::mmu`/`crate::cpu` in that crate —
 // intentionally duplicated rather than path-pulled, because `api_impl.rs`

@@ -1513,7 +1513,7 @@ unsafe fn ring_doorbell(cpu: usize, idx: usize, appended: bool) {
     // seconds per exchange, with both peers correct, awake and enqueued. It
     // reads as a hang and is a missing doorbell.
     //
-    // `send_ipi` (`arch/riscv64/src/api_impl.rs`) and the
+    // `send_ipi` (`arch/riscv/src/api_impl.rs`) and the
     // `INT_SOFTWARE_S` trap arm both already existed; the arm was used only
     // for TLB shootdown and nothing ever called the sender. `cpu` is the
     // logical CPU id (`tp`); `firmware::send_ipi` maps it to the hart's

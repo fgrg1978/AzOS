@@ -4,7 +4,7 @@
  * Linker script for the x86_64 kernel (`make ARCH=x86_64`): a PVH ELF
  * QEMU `-M microvm -kernel` loads at its PHYSICAL addresses (PT_LOAD
  * p_paddr). It names the sections and symbols the shared code reads,
- * matched to arch/riscv64/boot/linker.ld and arch/aarch64/boot/linker-aarch64.ld.
+ * matched to arch/riscv/boot/linker.ld and arch/aarch64/boot/linker-aarch64.ld.
  *
  * Layout (the aarch64 TTBR1 model, one offset):
  *   - load address (LMA): KERNEL_PHYS, 1 MiB physical;

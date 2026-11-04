@@ -40,9 +40,12 @@ import azos_tools  # noqa: E402
 
 ISAS = ("riscv64", "aarch64", "x86_64")
 
-# group -> directory, relative to the repo root, with {isa}.
+# ISA -> its directory under arch/ (rv32 and rv64 share arch/riscv).
+ARCH_DIR = {"riscv64": "riscv"}
+
+# group -> directory, relative to the repo root, with {isa} and {archdir}.
 DIRS = {
-    "arch": "arch/{isa}/src",
+    "arch": "arch/{archdir}/src",
     "entry": "kernel/src/entry/{isa}",
     "asm": "kernel/src/entry/{isa}/asm",
 }
@@ -122,7 +125,7 @@ def lint(root, required=REQUIRED, allow_missing=ALLOW_MISSING, allow_extra=ALLOW
     for group, tmpl in DIRS.items():
         have = {}
         for isa in ISAS:
-            rel = tmpl.format(isa=isa)
+            rel = tmpl.format(isa=isa, archdir=ARCH_DIR.get(isa, isa))
             m = modules(os.path.join(root, rel), group)
             if m is None:
                 out.append(f"{rel}: directory missing")
@@ -130,7 +133,7 @@ def lint(root, required=REQUIRED, allow_missing=ALLOW_MISSING, allow_extra=ALLOW
             have[isa] = m
         req = set(required[group])
         for isa in ISAS:
-            rel = tmpl.format(isa=isa)
+            rel = tmpl.format(isa=isa, archdir=ARCH_DIR.get(isa, isa))
             for name in sorted(req - have[isa]):
                 if (group, isa, name) not in allow_missing:
                     out.append(f"{rel}: required module `{name}` missing "
@@ -175,7 +178,7 @@ def self_test():
     extra = {("asm", "x86_64", "ap.S"): "AP entry"}
     tree = {}
     for isa in ISAS:
-        tree[f"arch/{isa}/src"] = ["cpu.rs", "ext/mod.rs", "irq.rs", "lib.rs"]
+        tree[f"arch/{ARCH_DIR.get(isa, isa)}/src"] = ["cpu.rs", "ext/mod.rs", "irq.rs", "lib.rs"]
         tree[f"kernel/src/entry/{isa}"] = ["ext/mod.rs", "mod.rs", "trap.rs", "asm/boot.S"]
     tree["arch/aarch64/src"].remove("irq.rs")
     tree["kernel/src/entry/x86_64"].append("asm/ap.S")
@@ -195,7 +198,7 @@ def self_test():
             build(base, t)
             return lint(base, req, am, ae)
 
-    a = "arch/riscv64/src"
+    a = "arch/riscv/src"
     mutants = [
         ("clean toy tree", None, miss, extra, None),
         ("required module missing", lambda t: t[a].remove("cpu.rs"), miss, extra,

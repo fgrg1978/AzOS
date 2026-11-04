@@ -9,7 +9,7 @@ This document describes how the kernel decides where tasks run, how fast CPUs ru
 | decision logic | `crates/core/energy` | model, utilisation trackers, governors, idle choice, thermal policy, run-time policy; pure data and integer arithmetic |
 | kernel side | `crates/core/sched/src/energy.rs` | utilisation signals on the dispatch path, the installed model, governor evaluation, idle wait, policy setters |
 | boot | `kernel/src/boot/energy.rs` | resolves the model (on a Pi, from the mailbox's clock range), installs idle states, hands the battery rows to the policy, installs the suspend platform |
-| architecture | `arch/riscv64`, `arch/aarch64`, `arch/x86_64` | `Cpu::cpu_idle(depth)`: enters an idle state |
+| architecture | `arch/riscv`, `arch/aarch64`, `arch/x86_64` | `Cpu::cpu_idle(depth)`: enters an idle state |
 | thermal runtime | `crates/drivers/thermal` | sensors and clock actuation behind the thermal policy |
 | thermal task | `kernel/src/boot/thermal.rs` | builds the board's runtime at boot and ticks it from the `thermal` task |
 | device and system PM | `crates/core/devif/src/power.rs`, `crates/drivers/power` | `Power` and `DevicePower` interfaces; the suspend sequence |
@@ -85,7 +85,7 @@ A device-tree state is not entered, on riscv64 and aarch64, if it has no suspend
 
 x86_64: a state is on the ladder only if `MONITOR`/`MWAIT` are usable with the `CPUID.5` extensions, `CPUID.5:EDX` lists a sub-state for its hint, and, for any hint above C1/C1E, the CPU reports that neither the local APIC timer nor the TSC stops in it (`ARAT` and the invariant TSC bit). Exit latencies and residencies come from per-model tables; a model with no table gets no deep state, because a latency is never guessed. AMD and Hygon get the single `MWAITX` C1 state. The model's idle list for a domain without an `idle` table is `[hlt, ladder...]`; a topology-declared table is checked against the ladder, and `cpu_idle` is capped at the first state the table understates (`cap_depth`). With `IF` clear, or no ladder, every depth is `hlt`.
 
-Source: `arch/api/src/lib.rs` (`Cpu::cpu_idle`), `arch/riscv64/src/api_impl.rs`, `arch/riscv64/src/firmware.rs` (`hart_suspend_retentive`, `IdleLadder`, `SuspendState`), `arch/aarch64/src/api_impl.rs`, `arch/aarch64/src/firmware.rs` (`cpu_suspend_standby`, `IdleLadder`, `SuspendState`), `arch/x86_64/src/lib.rs`, `arch/x86_64/src/cpu/idle.rs`, `kernel/src/boot/energy.rs` (`install_idle_states`, `report_idle_ladder`), `kernel/src/tasks/system.rs` (`idle_wait`, `idle_task`), `config/arch/Kconfig.platform` (`CPU_IDLE_POWERDOWN`).
+Source: `arch/api/src/lib.rs` (`Cpu::cpu_idle`), `arch/riscv/src/api_impl.rs`, `arch/riscv/src/firmware.rs` (`hart_suspend_retentive`, `IdleLadder`, `SuspendState`), `arch/aarch64/src/api_impl.rs`, `arch/aarch64/src/firmware.rs` (`cpu_suspend_standby`, `IdleLadder`, `SuspendState`), `arch/x86_64/src/lib.rs`, `arch/x86_64/src/cpu/idle.rs`, `kernel/src/boot/energy.rs` (`install_idle_states`, `report_idle_ladder`), `kernel/src/tasks/system.rs` (`idle_wait`, `idle_task`), `config/arch/Kconfig.platform` (`CPU_IDLE_POWERDOWN`).
 
 ### The idle governor
 
@@ -308,7 +308,7 @@ The scheduler walks the online CPUs as a prefix `0..n`, so offline takes the hig
 | `FirmwareRefused` | the firmware refused; the CPU is as it was |
 | `NeverStopped` | online only: the CPU never stopped here, so there is no saved context to resume |
 
-Source: `crates/core/sched/src/smp.rs` (`cpu_offline`, `cpu_online`), `crates/core/sched/src/hart_set.rs` (`HotplugReason`, `check_offline`, `check_online`), `crates/core/sched/src/scheduler/lifecycle.rs` (`migrate_off_cpu`), `crates/core/sched/src/timer_sleepers.rs` (`migrate_off`), `arch/riscv64/src/firmware.rs`, `arch/aarch64/src/firmware.rs`, `arch/x86_64/src/smp.rs` (`stop_current`, `park_init`), `crates/core/syscall/src/power.rs` (`cpu_online`), `userspace/services/power/src/main.rs` (`cpu_cmd`), `config/arch/Kconfig.platform` (`CPU_HOTPLUG`).
+Source: `crates/core/sched/src/smp.rs` (`cpu_offline`, `cpu_online`), `crates/core/sched/src/hart_set.rs` (`HotplugReason`, `check_offline`, `check_online`), `crates/core/sched/src/scheduler/lifecycle.rs` (`migrate_off_cpu`), `crates/core/sched/src/timer_sleepers.rs` (`migrate_off`), `arch/riscv/src/firmware.rs`, `arch/aarch64/src/firmware.rs`, `arch/x86_64/src/smp.rs` (`stop_current`, `park_init`), `crates/core/syscall/src/power.rs` (`cpu_online`), `userspace/services/power/src/main.rs` (`cpu_cmd`), `config/arch/Kconfig.platform` (`CPU_HOTPLUG`).
 
 ## System suspend
 

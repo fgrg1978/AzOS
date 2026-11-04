@@ -5,7 +5,7 @@
 use azos_arch_api::Hypervisor;
 
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/ext/hv/mod.rs"]
+#[path = "../../../../arch/riscv/src/ext/hv/mod.rs"]
 pub mod rv;
 
 #[allow(dead_code)]

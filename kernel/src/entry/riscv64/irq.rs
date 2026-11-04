@@ -467,7 +467,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             // ready task.
             //
             // **The TLB shootdown does not arrive here.** It exists since wave 8
-            // (`arch/riscv64/src/tlb.rs`) and its remote half is SBI
+            // (`arch/riscv/src/tlb.rs`) and its remote half is SBI
             // `remote_sfence_vma`: OpenSBI runs the `sfence.vma` on the target
             // hart in M-mode and waits for it, so this S-mode arm never sees a
             // shootdown. This arm used to run `cpu::sfence_vma()`

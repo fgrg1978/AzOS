@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the pure parts of arch/riscv64 and arch/aarch64: Sv39/VMSAv8-64 address decomposition, PMP region encoding, PTE attribute encode/decode. Excluded from workspace."
+description = "Host-side tests for the pure parts of arch/riscv and arch/aarch64: Sv39/VMSAv8-64 address decomposition, PMP region encoding, PTE attribute encode/decode. Excluded from workspace."
 
 # Run with:  cd tests/host/arch-tests && cargo test --release
 
 [features]
 # Pulled-in source declares it (arch/x86_64/src/firmware/acpi.rs); only x86-platform-tests uses it.
 x86-region-round-canary = []
-# `arch/riscv64/src/tlb.rs` (pulled in below) reads it: the scan-bound
+# `arch/riscv/src/tlb.rs` (pulled in below) reads it: the scan-bound
 # canary, under which `tlb_bound` must fail.
 tlb-bound-canary = []
 # x86_64 CPUID decode (arch/x86_64/src/cpu/features.rs) ignores the
@@ -41,14 +41,14 @@ pac-canary = []
 # `SpinWait::wait_service`; `a_masked_lock_waiter_acks_the_holders_shootdown`
 # must fail.
 spin-service-canary = ["azos_arch_api/spin-service-canary"]
-# `arch/aarch64/src/sysregs.rs` and `arch-riscv64/src/ext/senvcfg.rs`
+# `arch/aarch64/src/sysregs.rs` and `arch/riscv/src/ext/senvcfg.rs`
 # (pulled in by path) read the kernel's gate canary; nothing here turns it on.
 el0-state-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
 azos_limits = { path = "../../../crates/core/limits" }
-# `arch/riscv64/src/{firmware,tlb}.rs` (pulled in by path) translate
+# `arch/riscv/src/{firmware,tlb}.rs` (pulled in by path) translate
 # logical CPU ids to hart ids through it.
 azos_percpu = { path = "../../../crates/core/percpu" }
 bitflags = "2"

@@ -16,7 +16,7 @@ dependency closure (gate_rows.crate_closure), a file such a crate pulls in with
 `#[path]`/`include!`, or one of BUILD_WIDE (the build graph, the Kconfig tree, the
 toolchain pin). Then:
   * ISA: a path that names one ISA (riscv64, aarch64, x86_64 as a directory or a file
-    name: arch/riscv64/, kernel/src/entry/aarch64/, config/defconfigs/*-x86_64-*) is
+    name: arch/riscv/, kernel/src/entry/aarch64/, config/defconfigs/*-x86_64-*) is
     checked on that ISA; every other path, and BUILD_WIDE, on all three. The union of
     the changed paths decides.
   * preset: `generic` always; `robot` too when a changed path is under
@@ -43,6 +43,8 @@ ROBOT_RE = re.compile(r"use[-_]robot|domains/robot")
 
 def isa_of(path):
     """The ISA a path names, or None."""
+    if path.startswith("arch/riscv/"):
+        return "riscv64"
     hits = {i for i in ISAS if re.search(r"(^|[/_.+-])%s([/_.+-]|$)" % i, path)}
     return hits.pop() if len(hits) == 1 else None
 
@@ -90,7 +92,7 @@ def plan(paths, closure=None, graph=None, read=None):
 
 def self_test():
     bad = []
-    clo = {"kernel", "arch/riscv64", "arch/aarch64", "crates/core/ipc", "crates/domains/robot/nav", "file:crates/x/inc.rs"}
+    clo = {"kernel", "arch/riscv", "arch/aarch64", "crates/core/ipc", "crates/domains/robot/nav", "file:crates/x/inc.rs"}
     rd = lambda p: "use-robot" if p == "kernel/src/robotish.rs" else ""
     g = {}  # no suites in the toy graph
 
@@ -98,7 +100,7 @@ def self_test():
         cells, _, _ = plan(paths, clo, g, rd)
         if cells != want:
             bad.append("%s: %r != %r" % (what, cells, want))
-    t(["arch/riscv64/boot/entry.rs"], [("riscv64", "generic")], "one ISA's arch crate")
+    t(["arch/riscv/boot/entry.rs"], [("riscv64", "generic")], "one ISA's arch crate")
     t(["crates/core/ipc/src/lib.rs"], [(i, "generic") for i in ISAS], "shared crate: three ISAs")
     t(["crates/domains/robot/nav/src/lib.rs"], [(i, p) for p in ("generic", "robot") for i in ISAS], "robot crate: both presets")
     t(["kernel/src/robotish.rs"], [(i, p) for p in ("generic", "robot") for i in ISAS], "use-robot text: both presets")
@@ -106,7 +108,7 @@ def self_test():
     t(["crates/x/inc.rs"], [(i, "generic") for i in ISAS], "included file counts as the kernel's")
     t(["Cargo.lock"], [(i, "generic") for i in ISAS], "build-wide: three ISAs")
     t(["config/defconfigs/generic-sbc-x86_64-dev+qemu+linux+gui.config"], [("x86_64", "generic")], "a defconfig names its ISA")
-    t(["arch/riscv64/a.rs", "arch/aarch64/b.rs"], [("riscv64", "generic"), ("aarch64", "generic")], "union of two ISAs")
+    t(["arch/riscv/a.rs", "arch/aarch64/b.rs"], [("riscv64", "generic"), ("aarch64", "generic")], "union of two ISAs")
     for b in bad:
         print("compile_plan self-test: FAIL " + b)
     if not bad:

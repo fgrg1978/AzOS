@@ -4,7 +4,7 @@
 //!
 //! **It re-exports the real module rather than stubbing it.** The facade crate
 //! is `target_arch`-gated and its CSR/PLIC halves cannot compile on a host,
-//! but `arch-riscv64/src/mmu.rs` is pure arithmetic — the same file
+//! but `arch/riscv/src/mmu.rs` is pure arithmetic — the same file
 //! `tests/host/arch-tests` already covers. Pulling it in with `#[path]` means the
 //! memory manager under test computes page numbers with the kernel's own
 //! definitions of `PAGE_SIZE` and the Sv39 layout, not with a copy that can
@@ -14,7 +14,7 @@
 //! documents at length: a test asserting against a hand-written duplicate of
 //! the logic it claims to watch.
 
-#[path = "../../../../../../arch/riscv64/src/mmu.rs"]
+#[path = "../../../../../../arch/riscv/src/mmu.rs"]
 pub mod mmu;
 
 /// Host stand-in for `azos_arch::cache` (cache-block zeroing).

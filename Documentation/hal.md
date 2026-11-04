@@ -9,7 +9,7 @@ Related pages: [drivers.md](drivers.md) covers the device side (buses, DMA, inte
 | Layer | Path | Role |
 |---|---|---|
 | Contract | `arch/api` (`azos_arch_api`) | Traits and ISA-neutral helpers. No hardware access except `core` atomics. |
-| ISA crates | `arch/riscv64`, `arch/aarch64`, `arch/x86_64` | One implementation of the contract per ISA, plus ISA-only modules under `ext/`. |
+| ISA crates | `arch/riscv`, `arch/aarch64`, `arch/x86_64` | One implementation of the contract per ISA, plus ISA-only modules under `ext/`. |
 | Facade | `arch/facade` (`azos_arch`) | Re-exports the active ISA crate and names its singleton `ARCH` and its type `ArchImpl`. |
 | Kernel entry | `kernel/src/entry/<isa>/` | Boot assembly, the trap stub, the register-frame decode and the `ArchEntry` hooks for that ISA. |
 | Generic trap policy | `kernel/src/trap/` | Syscall, fault and interrupt policy, written once. |

@@ -1,39 +1,49 @@
 /* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
 /*
- * Linker script for AzOS — SpacemiT K1 (BananaPi BPI-F3)
+ * Linker script for AzOS (Rust)
+ * Target: RISC-V 64-bit (QEMU virt)
  *
- * K1 memory layout with U-Boot + OpenSBI:
- *   0x00000000 - 0x001FFFFF : OpenSBI firmware (2 MiB, reserved)
- *   0x00200000 - ...        : Kernel (standard RISC-V load offset)
- *   DDR size: 4-16 GiB from 0x00000000 (LPDDR4X)
- *
- * 8 CPU cores (NUM_CPUS=8 in platform.rs).
- * K1 has native RVV 1.0 (VLEN=256); --features k1 enables RVV code paths.
+ * Memory layout with OpenSBI:
+ *   0x80000000 - 0x801FFFFF : OpenSBI firmware (2MB)
+ *   0x80200000 - ...        : Kernel (loaded here)
  */
 
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
-/* BOOT_STACK_SIZE / BOOT_STACK_REDZONE (B1-01): single source, see
- * kernel/linker-common.ld. */
+/*
+ * BOOT_STACK_SIZE / BOOT_STACK_REDZONE (B1-01): single source in
+ * linker-common.ld, INCLUDEd by every board/profile linker script so the
+ * five copies cannot drift apart. See that file for the measurement this
+ * value is based on.
+ */
 INCLUDE kernel/linker-common.ld
+
+/*
+ * AZOS_RAM_BYTES: the configuration's RAM_SIZE, written by kernel/build.rs.
+ * The image links into the RAM above OpenSBI, so a configuration whose
+ * static tables do not fit its RAM fails here and not at boot.
+ */
+INCLUDE azos_ram.ld
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x00200000, LENGTH = 256M
+    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = AZOS_RAM_BYTES - 0x200000
 }
 
 SECTIONS
 {
-    . = 0x00200000;
+    . = 0x80200000;
 
+    /* Boot code first */
     _text_start = .;
     .text.boot : ALIGN(4K)
     {
         *(.text.boot)
     } > RAM
 
+    /* All other code */
     .text : ALIGN(4K)
     {
         *(.text .text.*)
@@ -54,6 +64,7 @@ SECTIONS
     } > RAM
     _text_end = .;
 
+    /* Read-only data */
     _rodata_start = .;
     .rodata : ALIGN(4K)
     {
@@ -92,9 +103,10 @@ SECTIONS
         __azos_patch_end = .;
     } > RAM
     /* Virtual KASLR: the relocation table (Kconfig KASLR); empty otherwise. */
-    INCLUDE arch/riscv64/boot/reloc-riscv64.ld
+    INCLUDE arch/riscv/boot/reloc-riscv64.ld
     _rodata_end = .;
 
+    /* Initialized data */
     _data_start = .;
     /* Set-once function-pointer hooks and the x86 IDT (azos_common::hook,
      * security audit 2026-10-17 finding D). First in the data range so the
@@ -116,17 +128,25 @@ SECTIONS
     } > RAM
     _data_end = .;
 
+    /* Uninitialized data (BSS) */
     .bss : ALIGN(4K)
     {
         _bss_start = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
         *(COMMON)
-        . = ALIGN(8);
+        . = ALIGN(8);           /* ensure _bss_end is 8-byte aligned for sd-based clear */
         _bss_end = .;
     } > RAM
 
-    /* Boot stack inside the image, below _kernel_end: see arch/riscv64/boot/linker.ld. */
+    /* Boot stack, inside the image: below _kernel_end, so `pmm::init` reserves
+     * it with the kernel and nothing placed after _kernel_end can cover it.
+     * At the top of the RAM window it sat inside the kernel heap's range.
+     * NOLOAD: no bytes in the file. Outside [_bss_start, _bss_end), so the
+     * BSS clear in boot.S, which runs on this stack, leaves it alone.
+     * The red zone below it separates the stack from the last statics of
+     * .bss; boot.S paints both and `boot_stack_report` in kernel/src/boot/stacks.rs reads them
+     * back, so an overflow is reported before it reaches a static. */
     .stack (NOLOAD) : ALIGN(4K)
     {
         _stack_redzone = .;
@@ -151,6 +171,6 @@ ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")
 ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
        "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")
 
-/* The start of RAM (K1), below OpenSBI: the Image header's text_offset. */
-_dram_base = 0x00000000;
-INCLUDE arch/riscv64/boot/image-header-riscv64.ld
+/* The start of RAM (QEMU virt), below OpenSBI: the Image header's text_offset. */
+_dram_base = 0x80000000;
+INCLUDE arch/riscv/boot/image-header-riscv64.ld

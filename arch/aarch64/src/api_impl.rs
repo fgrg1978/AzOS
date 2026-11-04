@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! arch-api trait impls for ARMv8-A.
 //!
-//! See `arch/riscv64/src/api_impl.rs` for the RISC-V reference
+//! See `arch/riscv/src/api_impl.rs` for the RISC-V reference
 //! version (there is no `arch/facade/src/api_impl.rs` — `arch/facade` is
 //! the target_arch facade that re-exports whichever ISA crate is active,
 //! not an impl crate itself). Trait shapes match exactly; the only thing

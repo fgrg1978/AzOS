@@ -5,7 +5,7 @@
 //! the `sigaction` flags the personality honours, and the console's
 //! canonical line discipline.
 //!
-//! Layouts are musl's (`arch/riscv64/bits/signal.h`,
+//! Layouts are musl's (`arch/riscv/bits/signal.h`,
 //! `arch/aarch64/bits/signal.h`, `include/signal.h`), measured with the
 //! toolchain BusyBox is built with: `ucontext_t` is 960 bytes on riscv64 and
 //! 4560 on aarch64, `uc_sigmask` at 40 and `uc_mcontext` at 176 on both;

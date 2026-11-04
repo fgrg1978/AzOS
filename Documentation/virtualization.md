@@ -103,7 +103,7 @@ timer tick.
 
 ## The ISA layer
 
-Source: `arch/api/src/lib.rs`, `arch/riscv64/src/ext/hv/mod.rs`,
+Source: `arch/api/src/lib.rs`, `arch/riscv/src/ext/hv/mod.rs`,
 `arch/aarch64/src/ext/hv/mod.rs`, `arch/x86_64/src/ext/hv/mod.rs`.
 
 `HvKind` names the hardware virtualization an ISA gives the monitor:

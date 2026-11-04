@@ -557,7 +557,7 @@ dhcp-smoke = ["net"]
 # Two riscv64 kernel tasks pinned to the SAME hart each fill v0-v31 with a
 # distinct pattern, yield to each other, then verify their own pattern
 # survived — a canary for the rvv_ctx_save/restore TID-vs-offset-120 bug
-# (arch/riscv64/src/fp.rs). QEMU only, requires `rvv`.
+# (arch/riscv/src/fp.rs). QEMU only, requires `rvv`.
 rvv-isolation-probe = []
 # aarch64 parity program, task 1 — guard-page fault proof. Each of these
 # deliberately touches ONE of the two guard pages `aarch64::kernel_main`

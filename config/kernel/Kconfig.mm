@@ -170,7 +170,7 @@ config TLB_FLUSH_CEILING_PAGES
       kernel's own range: everything) instead of one invalidation per
       page. Linux's tlb_single_page_flush_ceiling, also 33. Read by
       x86_64 (arch/x86_64/src/tlb.rs), by riscv64's local part
-      (arch/riscv64/src/tlb.rs, which runs masked), by aarch64 without
+      (arch/riscv/src/tlb.rs, which runs masked), by aarch64 without
       FEAT_TLBIRANGE (arch/aarch64/src/api_impl.rs: TLBI ASIDE1IS or VMALLE1IS,
       one broadcast; with it a range is at most five operations for any
       length) and by munmap, which then flushes each of its batches whole

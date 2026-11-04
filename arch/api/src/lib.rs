@@ -15,7 +15,7 @@
 //!
 //! # Scope
 //!
-//! `arch/riscv64`, `arch/aarch64` and
+//! `arch/riscv`, `arch/aarch64` and
 //! `arch/x86_64` implement this surface, and `azos_kernel` runs on
 //! all three ISAs against it. Most call sites, however, still reach the ISA
 //! crate directly through the `azos_arch` facade's re-exported modules

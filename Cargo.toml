@@ -475,8 +475,8 @@ members = [
     # on the workspace's riscv64 target this builds as essentially empty.
     # Item 2 Stage 1/2 — riscv64 ISA impl; arch/facade is the
     # per-target_arch facade re-exporting one of the per-ISA crates
-    # (arch/riscv64, arch/aarch64, arch/x86_64).
-    "arch/riscv64",
+    # (arch/riscv, arch/aarch64, arch/x86_64).
+    "arch/riscv",
     # aarch64 (baseline: Kconfig AARCH64_LEVEL). Compiles to near-nothing on
     # riscv64; `tools/gate/ci_check.sh` builds and tests it for aarch64 so it cannot
     # rot unnoticed the way the parked copy did for a month.
@@ -602,7 +602,7 @@ azos_drv_api = { path = "crates/drivers/api" }
 azos_ina219      = { path = "crates/drivers/ina219" }
 azos_buzzer      = { path = "crates/drivers/buzzer" }
 azos_arch_api    = { path = "arch/api" }
-azos_arch_riscv64 = { path = "arch/riscv64" }
+azos_arch_riscv64 = { path = "arch/riscv" }
 azos_arch_aarch64 = { path = "arch/aarch64" }
 azos_cam_ring      = { path = "crates/drivers/cam-ring" }
 azos_multi_stream  = { path = "crates/net/multi-stream" }

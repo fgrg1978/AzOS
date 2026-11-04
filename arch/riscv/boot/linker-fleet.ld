@@ -1,35 +1,49 @@
 /* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
 /*
- * Linker script for AzOS (Rust)
- * Target: RISC-V 64-bit (QEMU virt)
+ * Linker script for AZOS fleet-profile builds.
  *
- * Memory layout with OpenSBI:
- *   0x80000000 - 0x801FFFFF : OpenSBI firmware (2MB)
- *   0x80200000 - ...        : Kernel (loaded here)
+ * The Fleet tier (`HWCLASS_SERVER`) sizes static tables for
+ * 4096 tasks × {channels,pipes,topics,caps} pools.  The image is
+ * ~134 MiB (config/defconfigs/generic-server-riscv64+board-generic.config carries the measured budget), far
+ * above the default linker.ld's 8M RAM region.  The 256 MiB kernel heap
+ * (KERNEL_HEAP_SIZE) is not in the image: kernel_main takes it from the
+ * page allocator after `_kernel_end`, so the RAM must cover both.
+ *
+ * Target hardware: gateway / edge-server boards with ≥ 1 GiB RAM
+ * (RK3588 8-32 GiB, AGX Orin 32 GiB, server-class SoCs).  NOT for
+ * VF2 / K1 / single-robot SBCs — use linker.ld / linker-vf2.ld /
+ * linker-k1.ld for those.
+ *
+ * Memory layout (same OpenSBI base as default; just a bigger RAM):
+ *   0x80000000 - 0x801FFFFF : OpenSBI firmware (2 MiB)
+ *   0x80200000 - 0xC0000000 : Kernel (1022 MiB available)
+ *
+ * 1022 MiB headroom is enough for:
+ *   .text  ~3 MiB
+ *   .rodata ~2 MiB
+ *   .data  ~16 MiB (static tables + caps pool)
+ *   .bss   kernel stacks, TCP rings, pipe pool, per-task buffers
+ *   .stack BOOT_STACK_SIZE boot stack above a BOOT_STACK_REDZONE,
+ *          after .bss and below _kernel_end
+ *   heap   256 MiB from the page allocator, after _kernel_end
+ *
+ * The linker.ld pattern (single RAM region, sections flow in order)
+ * is preserved so build.rs / kernel/src/main.rs see the same
+ * `_text_start` / `_bss_end` / `_kernel_end` / `_stack_start`
+ * symbols that the default script exports.
  */
 
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
-/*
- * BOOT_STACK_SIZE / BOOT_STACK_REDZONE (B1-01): single source in
- * linker-common.ld, INCLUDEd by every board/profile linker script so the
- * five copies cannot drift apart. See that file for the measurement this
- * value is based on.
- */
+/* BOOT_STACK_SIZE / BOOT_STACK_REDZONE (B1-01): single source, see
+ * kernel/linker-common.ld. */
 INCLUDE kernel/linker-common.ld
-
-/*
- * AZOS_RAM_BYTES: the configuration's RAM_SIZE, written by kernel/build.rs.
- * The image links into the RAM above OpenSBI, so a configuration whose
- * static tables do not fit its RAM fails here and not at boot.
- */
-INCLUDE azos_ram.ld
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = AZOS_RAM_BYTES - 0x200000
+    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = 1022M
 }
 
 SECTIONS
@@ -103,7 +117,7 @@ SECTIONS
         __azos_patch_end = .;
     } > RAM
     /* Virtual KASLR: the relocation table (Kconfig KASLR); empty otherwise. */
-    INCLUDE arch/riscv64/boot/reloc-riscv64.ld
+    INCLUDE arch/riscv/boot/reloc-riscv64.ld
     _rodata_end = .;
 
     /* Initialized data */
@@ -128,25 +142,18 @@ SECTIONS
     } > RAM
     _data_end = .;
 
-    /* Uninitialized data (BSS) */
+    /* Uninitialized data (BSS) — fleet profile lives here in bulk. */
     .bss : ALIGN(4K)
     {
         _bss_start = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
         *(COMMON)
-        . = ALIGN(8);           /* ensure _bss_end is 8-byte aligned for sd-based clear */
+        . = ALIGN(8);
         _bss_end = .;
     } > RAM
 
-    /* Boot stack, inside the image: below _kernel_end, so `pmm::init` reserves
-     * it with the kernel and nothing placed after _kernel_end can cover it.
-     * At the top of the RAM window it sat inside the kernel heap's range.
-     * NOLOAD: no bytes in the file. Outside [_bss_start, _bss_end), so the
-     * BSS clear in boot.S, which runs on this stack, leaves it alone.
-     * The red zone below it separates the stack from the last statics of
-     * .bss; boot.S paints both and `boot_stack_report` in kernel/src/boot/stacks.rs reads them
-     * back, so an overflow is reported before it reaches a static. */
+    /* Boot stack inside the image, below _kernel_end: see arch/riscv/boot/linker.ld. */
     .stack (NOLOAD) : ALIGN(4K)
     {
         _stack_redzone = .;
@@ -171,6 +178,6 @@ ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")
 ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
        "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")
 
-/* The start of RAM (QEMU virt), below OpenSBI: the Image header's text_offset. */
+/* The start of RAM (as arch/riscv/boot/linker.ld), below OpenSBI: the Image header's text_offset. */
 _dram_base = 0x80000000;
-INCLUDE arch/riscv64/boot/image-header-riscv64.ld
+INCLUDE arch/riscv/boot/image-header-riscv64.ld

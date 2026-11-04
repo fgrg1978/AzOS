@@ -589,7 +589,7 @@ VF2_SD      ?= /dev/sdb       # SD card device on Linux; use diskN on macOS
 VF2_BAUD    ?= 115200
 
 # VF2 kernel ELF (built with vf2 feature + vf2 linker script)
-VF2_LINKER   := arch/riscv64/boot/linker-vf2.ld
+VF2_LINKER   := arch/riscv/boot/linker-vf2.ld
 VF2_RUSTFLAGS := -C link-arg=-T$(VF2_LINKER)
 VF2_ELF      := $(OUT_TARGET)/$(RISCV64_TARGET)/release/kernel-vf2
 VF2_BIN      = $(OUT_BUILD)/kernel-vf2$(VF2_SUFFIX).bin
@@ -608,7 +608,7 @@ K1_BAUD    ?= 115200
 
 # K1 kernel ELF (built with k1 feature + k1 linker script)
 # K1 has native RVV 1.0 (VLEN=256) — k1 feature enables RVV code paths.
-K1_LINKER   := arch/riscv64/boot/linker-k1.ld
+K1_LINKER   := arch/riscv/boot/linker-k1.ld
 # ISA extensions the K1 has and the VF2 does not.
 #
 # The SpacemiT X60 is an RVA22 part (`config/defconfigs/robot-sbc-riscv64+k1.config`: rv64gcv), and RVA22
@@ -623,7 +623,7 @@ K1_LINKER   := arch/riscv64/boot/linker-k1.ld
 # the VF2 and QEMU kernels and fails if any of these instructions is present.
 #
 # NOT the way to reach an extension that only SOME target has: that is a runtime
-# probe with a scalar fallback (`arch/riscv64/src/cache.rs` for Zicboz). This
+# probe with a scalar fallback (`arch/riscv/src/cache.rs` for Zicboz). This
 # is for extensions the board is known to have at build time.
 #
 # The flags come from the Kconfig (config/arch/Kconfig.isa-riscv64: the K1's RV_ZBA/ZBB/ZBS
@@ -641,7 +641,7 @@ QEMU_RVV_CPU := rv64,v=true,vlen=128,vext_spec=v1.0
 # Fleet profile: gateway boards with ≥ 1 GiB RAM.
 # Static tables + 256 MiB heap don't fit the default 8 MiB linker.
 # linker-fleet.ld carves a 1022 MiB RAM region above OpenSBI.
-FLEET_LINKER   := arch/riscv64/boot/linker-fleet.ld
+FLEET_LINKER   := arch/riscv/boot/linker-fleet.ld
 FLEET_RUSTFLAGS := -C link-arg=-T$(FLEET_LINKER)
 
 # The SHA-256 of every ELF the disk image ships, keyed by the name it is copied

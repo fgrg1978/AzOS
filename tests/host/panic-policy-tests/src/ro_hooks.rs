@@ -97,11 +97,11 @@ fn a_hook_is_small() {
 /// rules: `linker.ld` riscv64 QEMU, `-vf2`/`-k1`/`-fleet`/`-embedded` the
 /// riscv64 boards and profiles, `-aarch64`, `-x86_64` and its Limine twin).
 const SCRIPTS: [(&str, &str); 8] = [
-    ("linker.ld", include_str!("../../../../arch/riscv64/boot/linker.ld")),
-    ("linker-vf2.ld", include_str!("../../../../arch/riscv64/boot/linker-vf2.ld")),
-    ("linker-k1.ld", include_str!("../../../../arch/riscv64/boot/linker-k1.ld")),
-    ("linker-fleet.ld", include_str!("../../../../arch/riscv64/boot/linker-fleet.ld")),
-    ("linker-embedded.ld", include_str!("../../../../arch/riscv64/boot/linker-embedded.ld")),
+    ("linker.ld", include_str!("../../../../arch/riscv/boot/linker.ld")),
+    ("linker-vf2.ld", include_str!("../../../../arch/riscv/boot/linker-vf2.ld")),
+    ("linker-k1.ld", include_str!("../../../../arch/riscv/boot/linker-k1.ld")),
+    ("linker-fleet.ld", include_str!("../../../../arch/riscv/boot/linker-fleet.ld")),
+    ("linker-embedded.ld", include_str!("../../../../arch/riscv/boot/linker-embedded.ld")),
     ("linker-aarch64.ld", include_str!("../../../../arch/aarch64/boot/linker-aarch64.ld")),
     ("linker-x86_64.ld", include_str!("../../../../arch/x86_64/boot/linker-x86_64.ld")),
     ("linker-x86_64-limine.ld", include_str!("../../../../arch/x86_64/boot/linker-x86_64-limine.ld")),

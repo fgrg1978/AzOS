@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side tests for the pure parts of `arch/riscv64` (and
+//! Host-side tests for the pure parts of `arch/riscv` (and
 //! of the aarch64 and x86_64 paging code, further down).
 //!
 //! **WHY.** 1375 lines with no test of any kind, and it is where the bug of
@@ -15,11 +15,11 @@
 //! test still passes.
 
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/mmu.rs"]
+#[path = "../../../../arch/riscv/src/mmu.rs"]
 mod mmu;
 
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/ext/pmp.rs"]
+#[path = "../../../../arch/riscv/src/ext/pmp.rs"]
 mod pmp;
 
 // x86_64 paging and shootdown (wave 15, front X3).
@@ -71,7 +71,7 @@ mod pgsz;
 // silent in the direction that matters — a hart left out keeps a stale
 // translation and nothing faults — so the selection rule is pinned here.
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/tlb.rs"]
+#[path = "../../../../arch/riscv/src/tlb.rs"]
 mod tlb;
 
 /// The shootdown's scan bound: one past the highest hart ever noted, never
@@ -522,7 +522,7 @@ mod svadu {
 // Ssqosid (Kconfig `RV_SSQOSID`): the real `srmcfg` module, pulled in by path
 // (its asm is riscv64-only and compiles out here).
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/ext/ssqosid.rs"]
+#[path = "../../../../arch/riscv/src/ext/ssqosid.rs"]
 mod ssqosid;
 
 /// Ssqosid: the field widths come from a write-ones read-back, the word is
@@ -720,7 +720,7 @@ mod a64_el0_state_tests {
 // riscv64 `senvcfg` (Kconfig `RV_SENVCFG`): the real module, pulled in by path
 // (its asm is riscv64-only and compiles out here).
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/ext/senvcfg.rs"]
+#[path = "../../../../arch/riscv/src/ext/senvcfg.rs"]
 mod senvcfg;
 
 /// el0-state-audit: U-mode gets no cache-block instruction, no pointer

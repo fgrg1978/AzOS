@@ -430,7 +430,7 @@ case "$K1_ISA" in
 esac
 
 build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
-    local label="$1" feat="$2" ld="arch/${5:-riscv64}/boot/linker-${5:-$2}.ld" isa="${3:-}" target="${4:-}"
+    local label="$1" feat="$2" ld="arch/${5:-riscv}/boot/linker-${5:-$2}.ld" isa="${3:-}" target="${4:-}"
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if ! board_config "$feat"; then
@@ -494,7 +494,7 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
 # robot-fleet.config / robot-embedded.config (same profile, USE_ROBOT).
 FLEET_DIR="${FLEET_DIR:-$AZOS_OUT/target/fleet}"
 FLEET_CONFIG="${FLEET_DIR}/fleet.config"
-FLEET_RUSTFLAGS="-C link-arg=-Tarch/riscv64/boot/linker-fleet.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
+FLEET_RUSTFLAGS="-C link-arg=-Tarch/riscv/boot/linker-fleet.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
 FLEET_KERNEL="${FLEET_DIR}/riscv64imac-unknown-none-elf/release/kernel"
 FLEET_BUILT=0
 
@@ -550,7 +550,7 @@ fleet_config_applied() {
 EMBEDDED_DIR="${EMBEDDED_DIR:-$AZOS_OUT/target/embedded}"
 EMBEDDED_CONFIG="${EMBEDDED_DIR}/embedded.config"
 EMBEDDED_KERNEL="${EMBEDDED_DIR}/riscv64imac-unknown-none-elf/release/kernel"
-EMBEDDED_RUSTFLAGS="-C link-arg=-Tarch/riscv64/boot/linker-embedded.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
+EMBEDDED_RUSTFLAGS="-C link-arg=-Tarch/riscv/boot/linker-embedded.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
 EMBEDDED_BUILT=0
 # Debug log level in the gate, as `fleet_config` says. The gate also builds these
 # release profiles with SECURE_BOOT_ENFORCED off (`default y if !BUILD_TYPE_DEV`
@@ -13103,7 +13103,7 @@ else
                     && python3 tools/sign/link_key_provision.py "$img" "$lk" >/dev/null; }; }
         rc=$?; rm -f "$ini" "$sig" "$lk"; return $rc
     }
-    # The embedded image (config/defconfigs/robot-embedded-riscv64+board-generic.config, arch/riscv64/boot/linker-embedded.ld)
+    # The embedded image (config/defconfigs/robot-embedded-riscv64+board-generic.config, arch/riscv/boot/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
     # from the device tree.
     #
@@ -13183,7 +13183,7 @@ else
         for row in "link: release build refuses a keyless boot" "link: release build boots with a key"; do
             printf "  %-26s" "${row}..."; bad; echo "      the release QEMU kernel did not build, or its gate-key volumes were not built; not booted"; done
     fi
-    # The fleet image (config/defconfigs/robot-server-riscv64+board-generic.config, arch/riscv64/boot/linker-fleet.ld), whose
+    # The fleet image (config/defconfigs/robot-server-riscv64+board-generic.config, arch/riscv/boot/linker-fleet.ld), whose
     # tables are sized for 4096 tasks. Its first boots found three faults the
     # marker alone would not have caught:
     #   * RAM_SIZE 256 left no room for the 256 MiB heap after a ~134 MiB image
@@ -26891,7 +26891,7 @@ par -h "hv: guest banner judge" hv_guest_judge
 
 # ── hv: the riscv64 guest entry under H (S6, QEMU `-cpu rv64,h=on`) ───────────
 #
-# `Hypervisor::enter` of riscv64 (arch/riscv64/src/ext/hv/guest.rs)
+# `Hypervisor::enter` of riscv64 (arch/riscv/src/ext/hv/guest.rs)
 # is the first code that runs a guest: the CSRs it loads, `hfence.gvma`, the
 # `sret` into VS-mode, the exit vector. Host tests cover everything around it
 # (tests/host/hv-tests/src/rv_enter.rs) and nothing can cover that part but

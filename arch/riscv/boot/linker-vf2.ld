@@ -1,37 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
 /*
- * Linker script for AZOS fleet-profile builds.
+ * Linker script for AzOS — StarFive VisionFive 2 (JH7110)
  *
- * The Fleet tier (`HWCLASS_SERVER`) sizes static tables for
- * 4096 tasks × {channels,pipes,topics,caps} pools.  The image is
- * ~134 MiB (config/defconfigs/generic-server-riscv64+board-generic.config carries the measured budget), far
- * above the default linker.ld's 8M RAM region.  The 256 MiB kernel heap
- * (KERNEL_HEAP_SIZE) is not in the image: kernel_main takes it from the
- * page allocator after `_kernel_end`, so the RAM must cover both.
- *
- * Target hardware: gateway / edge-server boards with ≥ 1 GiB RAM
- * (RK3588 8-32 GiB, AGX Orin 32 GiB, server-class SoCs).  NOT for
- * VF2 / K1 / single-robot SBCs — use linker.ld / linker-vf2.ld /
- * linker-k1.ld for those.
- *
- * Memory layout (same OpenSBI base as default; just a bigger RAM):
- *   0x80000000 - 0x801FFFFF : OpenSBI firmware (2 MiB)
- *   0x80200000 - 0xC0000000 : Kernel (1022 MiB available)
- *
- * 1022 MiB headroom is enough for:
- *   .text  ~3 MiB
- *   .rodata ~2 MiB
- *   .data  ~16 MiB (static tables + caps pool)
- *   .bss   kernel stacks, TCP rings, pipe pool, per-task buffers
- *   .stack BOOT_STACK_SIZE boot stack above a BOOT_STACK_REDZONE,
- *          after .bss and below _kernel_end
- *   heap   256 MiB from the page allocator, after _kernel_end
- *
- * The linker.ld pattern (single RAM region, sections flow in order)
- * is preserved so build.rs / kernel/src/main.rs see the same
- * `_text_start` / `_bss_end` / `_kernel_end` / `_stack_start`
- * symbols that the default script exports.
+ * JH7110 memory layout with U-Boot + OpenSBI:
+ *   0x40000000 - 0x401FFFFF : OpenSBI firmware (2 MiB, reserved)
+ *   0x40200000 - ...        : Kernel (loaded here by U-Boot)
+ *   DDR size: 4 GiB (0x40000000 .. 0x140000000) on 4 GB board
  */
 
 OUTPUT_ARCH(riscv)
@@ -43,21 +18,19 @@ INCLUDE kernel/linker-common.ld
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = 1022M
+    RAM (rwx) : ORIGIN = 0x40200000, LENGTH = 128M
 }
 
 SECTIONS
 {
-    . = 0x80200000;
+    . = 0x40200000;
 
-    /* Boot code first */
     _text_start = .;
     .text.boot : ALIGN(4K)
     {
         *(.text.boot)
     } > RAM
 
-    /* All other code */
     .text : ALIGN(4K)
     {
         *(.text .text.*)
@@ -78,7 +51,6 @@ SECTIONS
     } > RAM
     _text_end = .;
 
-    /* Read-only data */
     _rodata_start = .;
     .rodata : ALIGN(4K)
     {
@@ -117,10 +89,9 @@ SECTIONS
         __azos_patch_end = .;
     } > RAM
     /* Virtual KASLR: the relocation table (Kconfig KASLR); empty otherwise. */
-    INCLUDE arch/riscv64/boot/reloc-riscv64.ld
+    INCLUDE arch/riscv/boot/reloc-riscv64.ld
     _rodata_end = .;
 
-    /* Initialized data */
     _data_start = .;
     /* Set-once function-pointer hooks and the x86 IDT (azos_common::hook,
      * security audit 2026-10-17 finding D). First in the data range so the
@@ -142,7 +113,6 @@ SECTIONS
     } > RAM
     _data_end = .;
 
-    /* Uninitialized data (BSS) — fleet profile lives here in bulk. */
     .bss : ALIGN(4K)
     {
         _bss_start = .;
@@ -153,7 +123,7 @@ SECTIONS
         _bss_end = .;
     } > RAM
 
-    /* Boot stack inside the image, below _kernel_end: see arch/riscv64/boot/linker.ld. */
+    /* Boot stack inside the image, below _kernel_end: see arch/riscv/boot/linker.ld. */
     .stack (NOLOAD) : ALIGN(4K)
     {
         _stack_redzone = .;
@@ -178,6 +148,6 @@ ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")
 ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
        "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")
 
-/* The start of RAM (as arch/riscv64/boot/linker.ld), below OpenSBI: the Image header's text_offset. */
-_dram_base = 0x80000000;
-INCLUDE arch/riscv64/boot/image-header-riscv64.ld
+/* The start of RAM (JH7110), below OpenSBI: the Image header's text_offset. */
+_dram_base = 0x40000000;
+INCLUDE arch/riscv/boot/image-header-riscv64.ld

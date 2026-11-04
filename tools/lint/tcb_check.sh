@@ -103,7 +103,7 @@ crate_dir() {
 # `azos_robot_drivers`.
 
 CORE_CRATES="
-abi arch/facade arch/api arch/riscv64 arch/aarch64 arch/x86_64 common sync mm limits
+abi arch/facade arch/api arch/riscv arch/aarch64 arch/x86_64 common sync mm limits
 api base irqchip sys gpio bus virtio block net sensor actuator power
 driver_server ina219 buzzer rings pci dma iommu
 ipc sched syscall stack energy

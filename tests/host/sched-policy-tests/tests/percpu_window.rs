@@ -69,10 +69,10 @@ const DIRS: &[&str] = &[
 
 /// Single files of the ISA crates whose other files are boot or hypervisor code.
 const FILES: &[&str] = &[
-    "arch/riscv64/src/tlb.rs",
-    "arch/riscv64/src/api_impl.rs",
-    "arch/riscv64/src/platform_impl.rs",
-    "arch/riscv64/src/cpu.rs",
+    "arch/riscv/src/tlb.rs",
+    "arch/riscv/src/api_impl.rs",
+    "arch/riscv/src/platform_impl.rs",
+    "arch/riscv/src/cpu.rs",
     "arch/aarch64/src/api_impl.rs",
     "arch/aarch64/src/platform_impl.rs",
     "arch/aarch64/src/cpu/mod.rs",
@@ -349,12 +349,12 @@ fn irq_enable_tests_the_hart_and_writes_its_file_under_a_mask() {
 
 #[test]
 fn the_riscv_shootdown_flushes_and_reads_its_hart_in_one_window() {
-    let s = read("arch/riscv64/src/tlb.rs");
+    let s = read("arch/riscv/src/tlb.rs");
     in_order(
         &body(&s, "pub fn shootdown("),
         &["disable_all()", "read_satp()", "sfence_vma", "hart_id()", "restore(", "mark_space_stale(", "remote_sfence_vma"],
     );
-    let a = read("arch/riscv64/src/api_impl.rs");
+    let a = read("arch/riscv/src/api_impl.rs");
     for sig in ["fn flush_tlb_all(", "fn flush_tlb_page("] {
         in_order(&body(&a, sig), &["disable_all()", "sfence_vma", "mark_all_stale(crate::cpu::hart_id())", "restore("]);
     }

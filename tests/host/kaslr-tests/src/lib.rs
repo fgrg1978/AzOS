@@ -713,11 +713,11 @@ mod aarch64_layout {
 
 // ── the riscv64 layout and boot root ──────────────────────────────────────
 //
-// `arch/riscv64/src/mmu.rs` is pure Sv39 arithmetic and pulled by
+// `arch/riscv/src/mmu.rs` is pure Sv39 arithmetic and pulled by
 // path, as `tests/host/arch-tests` does; its `kaslr` submodule is the code
 // under test (the boot half, `kaslr_boot`, is bare-metal only).
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/mmu.rs"]
+#[path = "../../../../arch/riscv/src/mmu.rs"]
 mod riscv_mmu;
 
 mod riscv64_layout {

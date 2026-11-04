@@ -116,7 +116,7 @@ SECTIONS
 {
     . = 0x40080000 + KERNEL_VA_OFFSET_LITERAL;
 
-    /* Boot code first — mirrors arch/riscv64/boot/linker.ld's .text.boot placement. */
+    /* Boot code first — mirrors arch/riscv/boot/linker.ld's .text.boot placement. */
     _text_start = .;
     .text.boot : ALIGN(AZOS_PAGE_SIZE)
     {
@@ -187,7 +187,7 @@ SECTIONS
          * ".secure_boot_pubkey"]`).
          *
          * It MUST be named here, and the reason is specific to this script
-         * rather than to the key. arch/riscv64/boot/linker.ld (riscv64) maps VMA == LMA,
+         * rather than to the key. arch/riscv/boot/linker.ld (riscv64) maps VMA == LMA,
          * so an orphan section there gets a sane load address by accident.
          * This script runs the kernel out of the TTBR1 high half and uses
          * `AT> RAM_LMA` to put every load address back in low physical RAM —
@@ -299,7 +299,7 @@ SECTIONS
 
     /*
      * Boot stack, inside the image: below _kernel_end, so `pmm::init`
-     * reserves it with the kernel image, exactly like arch/riscv64/boot/linker.ld.
+     * reserves it with the kernel image, exactly like arch/riscv/boot/linker.ld.
      * NOLOAD: no bytes in the file. Outside [_bss_start, _bss_end), so
      * the BSS clear in boot.S, which runs on this stack, leaves it
      * alone. boot.S paints both the stack and its red zone; the aarch64

@@ -180,7 +180,7 @@ impl Interrupts for Riscv64 {
     /// that legitimately changed while interrupts were off.
     ///
     /// Unobservable in this tree today, and said plainly rather than
-    /// dressed up as a fix with a rate: `arch/riscv64/src/cpu.rs`
+    /// dressed up as a fix with a rate: `arch/riscv/src/cpu.rs`
     /// declares only `SSTATUS_SIE`, `SSTATUS_SPIE` and `SSTATUS_SPP`, and
     /// nothing writes the latter two inside a critical section. What makes
     /// it worth correcting now is that this function had **no production

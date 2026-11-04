@@ -57,7 +57,7 @@ frames at the allocator, so a topology means the same number of bytes on every
 ISA and granule.
 
 Source: `config/arch/Kconfig.isa` (`AARCH64_PAGE_*`, `PAGE_SHIFT`),
-`arch/api/src/lib.rs`, `arch/riscv64/src/lib.rs`,
+`arch/api/src/lib.rs`, `arch/riscv/src/lib.rs`,
 `arch/aarch64/src/mmu/mod.rs`, `kernel/src/main.rs`,
 `kernel/src/entry/aarch64/mod.rs`, `crates/core/libsys/src/lib.rs`,
 `crates/core/topology/src/memory.rs`.
@@ -202,7 +202,7 @@ entry, as a hint the hardware may ignore.
   extension is a reserved-bit fault, so the decision is made once at boot.
 
 Source: `config/arch/Kconfig.isa-aarch64` (`A64_CONTIG_HINT`, `RV_SVNAPOT_*`),
-`arch/api/src/contig.rs`, `arch/riscv64/src/ext/napot.rs`,
+`arch/api/src/contig.rs`, `arch/riscv/src/ext/napot.rs`,
 `arch/aarch64/src/api_impl.rs`, `crates/core/mm/src/vmm.rs`.
 
 ## 6. The break-before-make gate
@@ -248,7 +248,7 @@ the CPU may raise a TLB conflict abort.
   question.
 
 Source: `arch/api/src/lib.rs`, `arch/aarch64/src/cpu/features.rs`,
-`arch/aarch64/src/api_impl.rs`, `arch/riscv64/src/api_impl.rs`,
+`arch/aarch64/src/api_impl.rs`, `arch/riscv/src/api_impl.rs`,
 `arch/x86_64/src/lib.rs`, `crates/core/mm/src/vmm.rs`,
 `kernel/src/entry/aarch64/smp.rs`.
 

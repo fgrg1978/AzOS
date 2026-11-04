@@ -200,7 +200,7 @@ one.
 Where a module is absent, the function lives elsewhere: riscv64 has no
 `fork_regs` because its fork snapshot is the trap frame's own `[u64; 32]`
 register file (`azos_sched::task::UserRegs`); the riscv64 timer is the
-CLINT/ACLINT in `arch/riscv64/src/irq/clint.rs` and its secondary-hart start is in
+CLINT/ACLINT in `arch/riscv/src/irq/clint.rs` and its secondary-hart start is in
 `kernel/src/entry/riscv64/smp.rs`; the aarch64 TLB invalidation is in `mmu` and
 `api_impl`, and its trap frame is in `kernel/src/entry/aarch64/mod.rs`; x86_64 has no `cache`
 (its DMA is cache-coherent), no `lat_hook` (the masked-window tracer is not built

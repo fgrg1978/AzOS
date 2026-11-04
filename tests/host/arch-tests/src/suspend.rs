@@ -13,7 +13,7 @@
 // module would move the `#[path]` base into directories that do not exist).
 // `x86_s3` reads the FADT as `super::acpi`, so the parser is `acpi` here.
 #[allow(dead_code)]
-#[path = "../../../../arch/riscv64/src/firmware.rs"]
+#[path = "../../../../arch/riscv/src/firmware.rs"]
 mod rv_firmware;
 #[allow(dead_code)]
 #[path = "../../../../arch/x86_64/src/firmware/acpi.rs"]

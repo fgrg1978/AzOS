@@ -5,7 +5,7 @@
 # ---------------------------------------------------------------------------
 # x86_64 (port skeleton)
 # ---------------------------------------------------------------------------
-# The same three tiers riscv64 uses (arch/riscv64/src/cache.rs):
+# The same three tiers riscv64 uses (arch/riscv/src/cache.rs):
 #   1. the compile-time BASELINE (X86_64_LEVEL), the only thing codegen may
 #      assume, checked at boot: a CPU below it is refused with a message;
 #   2. optional extensions, each a runtime CPUID probe before use with a

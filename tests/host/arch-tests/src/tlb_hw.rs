@@ -3,7 +3,7 @@
 //! The hardware side of the TLB shootdowns: x86_64 INVLPGB (operands, range
 //! plan, selection; `arch/x86_64/src/tlb.rs`) and
 //! riscv64 Svinval (encodings, threshold, selection;
-//! `arch/riscv64/src/tlb.rs`). A wrong bit here is silent until a
+//! `arch/riscv/src/tlb.rs`). A wrong bit here is silent until a
 //! Zen 3+ part or an Svinval hart executes it: QEMU's TCG has no INVLPGB (the
 //! x86_64 gate runs the IPI fallback); whether a riscv64 gate CPU model has
 //! Svinval is reported by the `[ISA]` line. The CPUID decode (EBX[3], EDX[15:0]) is tested in

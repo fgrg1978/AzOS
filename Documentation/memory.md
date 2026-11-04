@@ -358,7 +358,7 @@ Source: `crates/core/mm/src/resv.rs`, `crates/core/mm/src/huge.rs`,
 `arch/api/src/lib.rs`, `arch/api/src/contig.rs`,
 `arch/aarch64/src/cpu/features.rs`,
 `arch/aarch64/src/mmu/mod.rs`,
-`arch/riscv64/src/ext/napot.rs`,
+`arch/riscv/src/ext/napot.rs`,
 `config/limits/Kconfig.limits`, `config/arch/Kconfig.isa`.
 
 ## User stacks
@@ -753,7 +753,7 @@ parent's blob for each page the parent has out, after waiting for stores in
 flight.
 
 Source: `arch/api/src/lib.rs`,
-`arch/riscv64/src/mmu.rs`,
+`arch/riscv/src/mmu.rs`,
 `arch/aarch64/src/mmu/mod.rs`,
 `arch/x86_64/src/mmu.rs`, `crates/core/mm/src/demand.rs`,
 `crates/core/mm/src/pager.rs`.
@@ -802,8 +802,8 @@ space's. An MMU whose ASID width probes as 0 flushes on every switch whatever
 
 Source: `arch/api/src/lib.rs`,
 `arch/api/src/tlb_gen.rs`,
-`arch/riscv64/src/api_impl.rs`,
-`arch/riscv64/src/tlb.rs`,
+`arch/riscv/src/api_impl.rs`,
+`arch/riscv/src/tlb.rs`,
 `arch/aarch64/src/api_impl.rs`,
 `arch/x86_64/src/lib.rs`,
 `arch/x86_64/src/tlb.rs`, `config/arch/Kconfig.isa`.

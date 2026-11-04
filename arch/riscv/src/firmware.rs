@@ -5,7 +5,7 @@
 /// SBI provides a standardized interface between S-mode (our kernel)
 /// and M-mode firmware (OpenSBI). All calls are made via `ecall`.
 ///
-/// Ported from kernel/arch/riscv64/sbi/sbi.h
+/// Ported from kernel/arch/riscv/sbi/sbi.h
 
 /// SBI return value: error code + value.
 #[repr(C)]

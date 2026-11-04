@@ -115,7 +115,7 @@ SUBSYS = [
      "userspace/** crates/core/abi/** crates/core/libsys/** crates/core/topology/**"),
 ]
 ARCH_DEPS = {
-    "rv": "arch/riscv64/** arch/riscv64/boot/linker.ld kernel/src/entry/**",
+    "rv": "arch/riscv/** arch/riscv/boot/linker.ld kernel/src/entry/**",
     "arm": "arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/**",
     "x86": "arch/x86_64/** arch/x86_64/boot/linker-x86_64.ld kernel/src/entry/**",
 }
