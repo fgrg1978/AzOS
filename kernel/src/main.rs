@@ -501,8 +501,14 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // built: `.data.ro_after_init` goes read-only, before the ktests, any
     // secondary hart and the first task. A hook set from here on panics.
     // Runtime gate canary `canary=ro-seal-skip`: the hooks stay open and writable.
+    // VIRT_SPLIT (Kconfig HYP_MONITOR): the monitor locks text and rodata,
+    // then `ro_after_init` with the seal.
+    #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
+    crate::entry::aarch64::ext::hyp_monitor::lock_image();
     if !canary!("ro-seal-skip") {
         boot::seal_ro_after_init();
+        #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
+        crate::entry::aarch64::ext::hyp_monitor::lock_ro_data();
     }
 
     // Kconfig KHEAP_LEAKS: the blocks the heap guard tracks from here on carry

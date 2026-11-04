@@ -11,7 +11,8 @@
 
 use azos_drv_sys::kprintln;
 use azos_hyp_api::{
-    is_monitor_call, CALL_PROBE, INVARIANT_NAMES, OK,
+    is_monitor_call, LockDesc, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PROBE, INVARIANT_NAMES,
+    LOCK_RAM_MAX, OK,
 };
 
 // The blob, placed in `.hyp` (a non-exec `alloc` section the linker keeps out
@@ -38,7 +39,8 @@ macro_rules! hyp_blob {
     feature = "hyp-mmu-off-canary",
     feature = "hyp-no-secondary-init-canary",
     feature = "hyp-hole-mapped-canary",
-    feature = "hyp-tsc-off-canary"
+    feature = "hyp-tsc-off-canary",
+    feature = "hyp-text-rw-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -49,6 +51,8 @@ hyp_blob!("/build/aarch64/hyp-mon-no-secondary-init.bin");
 hyp_blob!("/build/aarch64/hyp-mon-hole-mapped.bin");
 #[cfg(feature = "hyp-tsc-off-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-tsc-off.bin");
+#[cfg(feature = "hyp-text-rw-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-text-rw.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
 /// x0..x3). An HVC, which the monitor traps at EL2.
@@ -114,4 +118,85 @@ pub(crate) fn refuse_no_conduit(no_conduit: bool, cpus: usize) {
     crate::boot::isa::refuse_text(
         "[BOOT] EL2:        refused: no PSCI conduit with more than one CPU (split never degrades)",
     )
+}
+
+extern "C" {
+    static _text_start: u8;
+    static _text_end: u8;
+    static _rodata_start: u8;
+    static _rodata_end: u8;
+    static __ro_after_init_start: u8;
+    static __ro_after_init_end: u8;
+    fn _aarch64_secondary_entry();
+}
+
+/// The descriptor the monitor reads by physical address: a static, since a
+/// stack has none (`virt_to_phys` refuses the stack window).
+static mut LOCK_DESC: LockDesc = LockDesc {
+    text: [0; 2], rodata: [0; 2], ro_after_init: [0; 2], ram: [[0; 2]; LOCK_RAM_MAX], nram: 0, secondary_entry: 0,
+};
+
+fn pa_of(va: usize) -> u64 { azos_mm::addr::virt_to_phys(va) as u64 }
+const S2_PAGE: u64 = 4096;
+fn down(a: u64) -> u64 { a & !(S2_PAGE - 1) }
+fn up(a: u64) -> u64 { (a + S2_PAGE - 1) & !(S2_PAGE - 1) }
+
+/// Lock the kernel image at stage 2: text read-only and the only memory EL1
+/// executes, rodata read-only, the secondary entry fixed (I1, I2). Called
+/// with one PE up, after the boot-once text rewrites and the livepatch rows,
+/// before `ro_after_init` is sealed. Everything the boot parsed before here
+/// (the devices, the disk, the topology) ran pre-lock.
+pub(crate) fn lock_image() {
+    // SAFETY: linker symbols, only their addresses taken; one PE runs, and the
+    // static is written once before the monitor reads it.
+    let r = unsafe {
+        let span = |a: &u8, b: &u8| [down(pa_of(a as *const u8 as usize)), up(pa_of(b as *const u8 as usize))];
+        let (ram_pa, ram_len) = azos_mm::pmm::managed_range();
+        let d = &mut *core::ptr::addr_of_mut!(LOCK_DESC);
+        d.text = span(&_text_start, &_text_end);
+        d.rodata = span(&_rodata_start, &_rodata_end);
+        d.ro_after_init = span(&__ro_after_init_start, &__ro_after_init_end);
+        d.ram[0] = [down(ram_pa as u64), up((ram_pa + ram_len) as u64)];
+        d.nram = 1;
+        d.secondary_entry = pa_of(_aarch64_secondary_entry as *const () as usize);
+        monitor_call(CALL_LOCK_KERNEL_IMAGE, pa_of(core::ptr::addr_of!(LOCK_DESC) as usize))
+    };
+    if r[0] as i64 == OK {
+        kprintln!("[BOOT] EL2:        kernel image locked (text, rodata)");
+    } else {
+        kprintln!("[BOOT] EL2:        kernel image lock refused ({})", r[0] as i64);
+    }
+}
+
+/// `ro_after_init` read-only at stage 2, right after the stage-1 seal.
+pub(crate) fn lock_ro_data() {
+    let r = monitor_call(CALL_LOCK_RO_DATA, 0);
+    if r[0] as i64 == OK {
+        kprintln!("[BOOT] EL2:        ro_after_init locked");
+    } else {
+        kprintln!("[BOOT] EL2:        ro_after_init lock refused ({})", r[0] as i64);
+    }
+    report();
+    #[cfg(feature = "hyp-lock-probe")]
+    text_write_probe();
+}
+
+/// Feature `hyp-lock-probe` (the `hyp: R4` rows): map a page of kernel text
+/// writable at stage 1 and write it. Stage 2 must refuse: the boot dies in
+/// the kernel page-fault path. Never in a real build.
+#[cfg(feature = "hyp-lock-probe")]
+fn text_write_probe() {
+    use azos_arch_api::PagePerms;
+    let kpt = azos_mm::vmm::kernel_pagetable();
+    // SAFETY: a linker symbol; only its address is taken.
+    let text_pa = down(pa_of(unsafe { &_text_start as *const u8 as usize })) as usize;
+    let va = azos_mm::kstack::first_guard() & !(azos_arch::PAGE_SIZE - 1);
+    if azos_mm::vmm::map(kpt, va, text_pa, PagePerms::KERNEL_RW).is_err() {
+        kprintln!("[HYP] PROBE FAILED: no alias for the text page");
+        return;
+    }
+    kprintln!("[HYP] PROBE: writing kernel text through a stage-1 RW alias (must fault)");
+    // SAFETY: the probe's purpose is this write; it must not return.
+    unsafe { core::ptr::write_volatile(va as *mut u8, 0) };
+    kprintln!("[HYP] PROBE FAILED: kernel text written after the lock");
 }

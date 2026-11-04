@@ -7,14 +7,18 @@
 //! `_azos_drop_to_el1` trampoline that installs them, so that every user of
 //! the trampoline gets a working EL2. Here is only what the kernel does with them at boot.
 
+#[cfg(not(feature = "hyp-monitor"))]
 use azos_arch::ext::hv::{self, Availability};
+#[cfg(not(feature = "hyp-monitor"))]
 use azos_drv_sys::kprintln;
 
 /// The EL2 lines of the boot banner. With EL2 kept it issues the probe `HVC`
 /// (EL1 to the stub and back: before the stub existed that call hung the PE),
 /// so a stub that is installed but wrong stops the boot here, at its first
 /// use, and not at a guest's first `HVC`. A boot that entered at EL1 has no
-/// EL2: the hypervisor degrades to none, with the reason.
+/// EL2: the hypervisor degrades to none, with the reason. A split image
+/// reports its monitor instead (`hyp_monitor::report`).
+#[cfg(not(feature = "hyp-monitor"))]
 pub(crate) fn report() {
     match hv::availability() {
         Availability::Resident => match hv::probe() {

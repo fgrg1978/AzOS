@@ -13,13 +13,14 @@
 pub mod stage2;
 
 use crate::state::HYP;
-use azos_hyp_api::{Kind, INV_HOST_S2};
+use azos_hyp_api::{lock_desc_error, Kind, LockDesc, DENIED, INVALID, INV_EL1_EXEC_TEXT_ONLY, INV_HOST_S2, INV_IMAGE_RO, INV_RO_DATA, NOT_SUPPORTED, OK};
 use core::sync::atomic::{AtomicU64, Ordering};
-use stage2::{S2Attrs, Stage2, TableMem, VtcrConfig};
+use stage2::{ExecOnly, MemType, S2Attrs, Stage2, TableMem, VtcrConfig};
 
 /// Stage-2 table pool, carved in `.bss`. Enough for an identity map of RAM
 /// with 1 GiB/2 MiB blocks and the sub-gigabyte split around the monitor hole.
-const POOL_TABLES: usize = 32;
+/// The boot map and the locked map, built side by side.
+const POOL_TABLES: usize = 64;
 
 #[repr(align(4096))]
 struct Pool([[u64; 512]; POOL_TABLES]);
@@ -54,7 +55,132 @@ impl TableMem for PoolMem {
 ///
 /// # Safety
 /// Called once at EL2 with the EL2 stage-1 already on.
+/// The monitor's own range, the boot map's config, and the locked map's root
+/// and `ro_after_init` range (0 until the lock).
+static HOLE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static IPA_CFG: AtomicU64 = AtomicU64::new(0);
+static LOCKED_ROOT: AtomicU64 = AtomicU64::new(0);
+static RO_RANGE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static LOCK_ONCE: AtomicU64 = AtomicU64::new(0);
+static RO_ONCE: AtomicU64 = AtomicU64::new(0);
+
+fn parange() -> u8 {
+    let v: u64;
+    unsafe { core::arch::asm!("mrs {}, ID_AA64MMFR0_EL1", out(reg) v) };
+    (v & 0xf) as u8
+}
+
+/// FEAT_XNX (`ID_AA64MMFR1_EL1.XNX`, bits 31:28): stage 2 can split execute
+/// by level. Without it user code would have to be executable at EL1 too.
+fn has_xnx() -> bool {
+    let v: u64;
+    unsafe { core::arch::asm!("mrs {}, ID_AA64MMFR1_EL1", out(reg) v) };
+    (v >> 28) & 0xf != 0
+}
+
+fn install(vttbr: u64, vtcr: u64) {
+    unsafe {
+        core::arch::asm!(
+            "msr VTCR_EL2, {vtcr}",
+            "msr VTTBR_EL2, {vttbr}",
+            "isb",
+            "tlbi vmalls12e1is",
+            "dsb ish",
+            "isb",
+            vtcr = in(reg) vtcr,
+            vttbr = in(reg) vttbr,
+        );
+    }
+}
+
+// Canary `hyp-text-rw-canary`: text stays writable after the lock.
+const TEXT: S2Attrs = S2Attrs { read: true, write: cfg!(feature = "hyp-text-rw-canary"), exec: true, mem: MemType::NormalWb, only: ExecOnly::El1 };
+const RODATA: S2Attrs = S2Attrs { read: true, write: false, exec: false, mem: MemType::NormalWb, only: ExecOnly::Both };
+const USER_RAM: S2Attrs = S2Attrs { read: true, write: true, exec: true, mem: MemType::NormalWb, only: ExecOnly::El0 };
+const RO_DATA_RW: S2Attrs = S2Attrs { read: true, write: true, exec: false, mem: MemType::NormalWb, only: ExecOnly::Both };
+
+/// `lock_kernel_image(desc_pa)`: build the locked map beside the boot one
+/// and switch to it. Refused after a first use, with a second PE up, without
+/// FEAT_XNX, or with a descriptor `lock_desc_error` refuses.
+pub fn lock_kernel_image(desc_pa: u64) -> i64 {
+    if LOCK_ONCE.swap(1, Ordering::AcqRel) != 0 { return DENIED; }
+    if crate::PES_UP.load(Ordering::Acquire) > 1 { return DENIED; }
+    if !has_xnx() { return NOT_SUPPORTED; }
+    // SAFETY: the EL2 identity map covers RAM; the kernel is trusted until the lock.
+    let d: LockDesc = unsafe { core::ptr::read_volatile(desc_pa as *const LockDesc) };
+    let (hole, hole_end) = (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed));
+    if lock_desc_error(&d, hole, hole_end).is_some() { return INVALID; }
+    let cfg = match VtcrConfig::new(40, parange()) { Ok(c) => c, Err(_) => return INVALID };
+    let mut mem = PoolMem;
+    let mut s2 = match Stage2::new(cfg, &mut mem) { Ok(s) => s, Err(_) => return INVALID };
+    let top = 1u64 << cfg.ipa_bits();
+    // Devices: everything below, between and above the RAM ranges.
+    let mut ram = d.ram;
+    ram[..d.nram as usize].sort_unstable_by_key(|r| r[0]);
+    let mut at = 0u64;
+    for r in ram[..d.nram as usize].iter() {
+        if r[0] > at && s2.map_run(at, at, r[0] - at, S2Attrs::MMIO).is_err() { return INVALID; }
+        at = at.max(r[1]);
+    }
+    if at < top && s2.map_run(at, at, top - at, S2Attrs::MMIO).is_err() { return INVALID; }
+    // RAM: cut around the monitor and the three locked ranges.
+    let mut cuts = [(hole, hole_end, None), (d.text[0], d.text[1], Some(TEXT)),
+                    (d.rodata[0], d.rodata[1], Some(RODATA)), (d.ro_after_init[0], d.ro_after_init[1], Some(RO_DATA_RW))];
+    cuts.sort_unstable_by_key(|c| c.0);
+    for r in ram[..d.nram as usize].iter() {
+        let mut p = r[0];
+        for &(lo, hi, a) in cuts.iter() {
+            if hi <= p || lo >= r[1] { continue; }
+            if lo > p && s2.map_run(p, p, lo - p, USER_RAM).is_err() { return INVALID; }
+            if let Some(a) = a {
+                let ok = if a == RO_DATA_RW {
+                    // Pages, so `lock_ro_data` rewrites them in place.
+                    let mut q = lo;
+                    let mut ok = true;
+                    while q < hi { ok &= s2.map_page(q, q, a).is_ok(); q += stage2::S2_PAGE; }
+                    ok
+                } else {
+                    s2.map_run(lo, lo, hi - lo, a).is_ok()
+                };
+                if !ok { return INVALID; }
+            }
+            p = hi;
+        }
+        if p < r[1] && s2.map_run(p, p, r[1] - p, USER_RAM).is_err() { return INVALID; }
+    }
+    let (vtcr, vttbr) = match s2.registers(0) { Ok(r) => r, Err(_) => return INVALID };
+    LOCKED_ROOT.store(s2.root(), Ordering::Release);
+    IPA_CFG.store(parange() as u64, Ordering::Relaxed);
+    RO_RANGE[0].store(d.ro_after_init[0], Ordering::Relaxed);
+    RO_RANGE[1].store(d.ro_after_init[1], Ordering::Relaxed);
+    HYP.set_legal_entry(d.secondary_entry);
+    install(vttbr, vtcr);
+    HYP.set_invariant(INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY);
+    OK
+}
+
+/// `lock_ro_data()`: the `ro_after_init` pages the lock mapped become
+/// read-only. One-shot, after `lock_kernel_image`.
+pub fn lock_ro_data() -> i64 {
+    let root = LOCKED_ROOT.load(Ordering::Acquire);
+    if root == 0 || RO_ONCE.swap(1, Ordering::AcqRel) != 0 { return DENIED; }
+    let cfg = match VtcrConfig::new(40, IPA_CFG.load(Ordering::Relaxed) as u8) { Ok(c) => c, Err(_) => return INVALID };
+    let mut mem = PoolMem;
+    let mut s2 = Stage2::attach(cfg, root, &mut mem);
+    let (lo, hi) = (RO_RANGE[0].load(Ordering::Relaxed), RO_RANGE[1].load(Ordering::Relaxed));
+    let mut q = lo;
+    while q < hi {
+        if s2.set_page_attrs(q, RODATA).is_err() { return INVALID; }
+        q += stage2::S2_PAGE;
+    }
+    unsafe { core::arch::asm!("dsb ishst", "tlbi vmalls12e1is", "dsb ish", "isb") };
+    HYP.set_invariant(INV_RO_DATA);
+    OK
+}
+
 pub unsafe fn build_and_enable(hole_pa: u64, hole_len: u64, ram_top: u64) {
+    HOLE[0].store(hole_pa, Ordering::Relaxed);
+    HOLE[1].store(hole_pa + hole_len, Ordering::Relaxed);
     let parange = {
         let v: u64;
         unsafe { core::arch::asm!("mrs {}, ID_AA64MMFR0_EL1", out(reg) v) };
@@ -80,7 +206,7 @@ pub unsafe fn build_and_enable(hole_pa: u64, hole_len: u64, ram_top: u64) {
         let _ = s2.map_run(hole_pa, hole_pa, hole_len, S2Attrs::RAM);
     }
 
-    let (vttbr, vtcr) = match s2.registers(0) {
+    let (vtcr, vttbr) = match s2.registers(0) {
         Ok(r) => r,
         Err(_) => return,
     };

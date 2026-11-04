@@ -195,13 +195,13 @@ fn permissions_land_in_s2ap_and_xn_and_decode_back() {
     assert_eq!((mmio >> 2) & 0xF, 0b0001, "Device-nGnRE");
     assert_eq!((mmio >> 8) & 3, 0, "SH is ignored for Device memory");
     assert_eq!(
-        leaf_desc(pa, 3, S2Attrs { read: false, write: false, exec: true, mem: MemType::NormalWb }),
+        leaf_desc(pa, 3, S2Attrs { read: false, write: false, exec: true, mem: MemType::NormalWb, only: ExecOnly::Both }),
         Err(S2Error::ExecWithoutRead)
     );
     // Every permission and memory-type combination decodes to what built it.
     for mem in [MemType::Device, MemType::DeviceNgnre, MemType::NormalNc, MemType::NormalWt, MemType::NormalWb] {
         for bits in 0..8u8 {
-            let a = S2Attrs { read: bits & 1 != 0, write: bits & 2 != 0, exec: bits & 4 != 0, mem };
+            let a = S2Attrs { read: bits & 1 != 0, write: bits & 2 != 0, exec: bits & 4 != 0, mem, only: ExecOnly::Both };
             match leaf_desc(pa, 3, a) {
                 Ok(d) => assert_eq!(leaf_attrs(d), Some(a), "{:?}", a),
                 Err(e) => {
@@ -215,7 +215,7 @@ fn permissions_land_in_s2ap_and_xn_and_decode_back() {
 
 #[test]
 fn memory_types_use_the_architected_memattr_values() {
-    let at = |m| (leaf_desc(0x4000_0000, 3, S2Attrs { read: true, write: true, exec: false, mem: m }).unwrap() >> 2) & 0xF;
+    let at = |m| (leaf_desc(0x4000_0000, 3, S2Attrs { read: true, write: true, exec: false, mem: m, only: ExecOnly::Both }).unwrap() >> 2) & 0xF;
     assert_eq!(at(MemType::Device), 0b0000);
     assert_eq!(at(MemType::DeviceNgnre), 0b0001);
     assert_eq!(at(MemType::NormalNc), 0b0101);

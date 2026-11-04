@@ -40,6 +40,8 @@ const D_SH_SHIFT: u32 = 8;
 const D_AF: u64 = 1 << 10;
 /// XN[1] (bit 54), the stage-2 execute-never bit without FEAT_XNX.
 const D_XN: u64 = 1 << 54;
+/// XN[0] (bit 53), FEAT_XNX: with XN[1] it splits execute by level.
+const D_XN0: u64 = 1 << 53;
 
 /// `SH` field: inner shareable, for Normal memory.
 const SH_INNER: u64 = 0b11;
@@ -123,15 +125,28 @@ pub struct S2Attrs {
     pub write: bool,
     pub exec: bool,
     pub mem: MemType,
+    /// FEAT_XNX: execute at one exception level only (`exec` true).
+    pub only: ExecOnly,
+}
+
+/// Stage-2 execute permission split by level (FEAT_XNX, `XN[1:0]`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ExecOnly {
+    /// Both levels, or neither when `exec` is false.
+    Both,
+    /// EL1 only (`XN = 0b11`): kernel text.
+    El1,
+    /// EL0 only (`XN = 0b01`): RAM user code may run from.
+    El0,
 }
 
 impl S2Attrs {
     /// Guest RAM: read, write, execute, write-back.
-    pub const RAM: S2Attrs = S2Attrs { read: true, write: true, exec: true, mem: MemType::NormalWb };
+    pub const RAM: S2Attrs = S2Attrs { read: true, write: true, exec: true, mem: MemType::NormalWb, only: ExecOnly::Both };
     /// Guest read-only memory (a ROM, a CoW source): read, execute.
-    pub const ROM: S2Attrs = S2Attrs { read: true, write: false, exec: true, mem: MemType::NormalWb };
+    pub const ROM: S2Attrs = S2Attrs { read: true, write: false, exec: true, mem: MemType::NormalWb, only: ExecOnly::Both };
     /// A device window passed through: read and write, never executed.
-    pub const MMIO: S2Attrs = S2Attrs { read: true, write: true, exec: false, mem: MemType::DeviceNgnre };
+    pub const MMIO: S2Attrs = S2Attrs { read: true, write: true, exec: false, mem: MemType::DeviceNgnre, only: ExecOnly::Both };
 }
 
 /// Bytes covered by one leaf at `level` (4 KiB granule).
@@ -163,9 +178,12 @@ pub const fn leaf_desc(pa: u64, level: u8, a: S2Attrs) -> Result<u64, S2Error> {
     if level == 3 {
         d |= D_TABLE_OR_PAGE;
     }
-    if !a.exec {
-        d |= D_XN;
-    }
+    d |= match (a.exec, a.only) {
+        (false, _) => D_XN,
+        (true, ExecOnly::Both) => 0,
+        (true, ExecOnly::El1) => D_XN | D_XN0,
+        (true, ExecOnly::El0) => D_XN0,
+    };
     Ok(d)
 }
 
@@ -203,7 +221,13 @@ pub const fn leaf_attrs(d: u64) -> Option<S2Attrs> {
         None => return None,
     };
     let s2ap = (d >> D_S2AP_SHIFT) & 0b11;
-    Some(S2Attrs { read: s2ap & 1 != 0, write: s2ap & 2 != 0, exec: d & D_XN == 0, mem })
+    let only = match (d & D_XN != 0, d & D_XN0 != 0) {
+        (true, true) => ExecOnly::El1,
+        (false, true) => ExecOnly::El0,
+        _ => ExecOnly::Both,
+    };
+    let exec = d & D_XN == 0 || matches!(only, ExecOnly::El1);
+    Some(S2Attrs { read: s2ap & 1 != 0, write: s2ap & 2 != 0, exec, mem, only })
 }
 
 /// Output sizes `ID_AA64MMFR0_EL1.PARange` and `VTCR_EL2.PS` name.
@@ -340,6 +364,11 @@ impl<'a, M: TableMem> Stage2<'a, M> {
         Ok(Stage2 { cfg, root, mem })
     }
 
+    /// The tables already at `root` (built by `new` earlier).
+    pub fn attach(cfg: VtcrConfig, root: u64, mem: &'a mut M) -> Self {
+        Stage2 { cfg, root, mem }
+    }
+
     /// Physical address of the root.
     pub fn root(&self) -> u64 {
         self.root
@@ -465,6 +494,30 @@ impl<'a, M: TableMem> Stage2<'a, M> {
 
     /// Unmap the 4 KiB page at `ipa`; returns the host address it mapped.
     /// The caller invalidates the TLB (`TLBI IPAS2E1IS`) before reusing it.
+    /// Rewrite the permissions of the page mapped at `ipa` (a level-3 leaf;
+    /// one inside a block is refused). The caller invalidates the TLB.
+    pub fn set_page_attrs(&mut self, ipa: u64, a: S2Attrs) -> Result<(), S2Error> {
+        self.check_ipa(ipa)?;
+        let mut table = self.root;
+        let mut lvl = self.cfg.start_level();
+        loop {
+            let e = self.entry_pa(table, lvl, ipa);
+            let d = self.mem.read(e);
+            if !desc_valid(d) {
+                return Err(S2Error::NotMapped);
+            }
+            if lvl == 3 {
+                self.mem.write(e, leaf_desc(desc_pa(d), 3, a)?);
+                return Ok(());
+            }
+            if !desc_is_table(d, lvl) {
+                return Err(S2Error::Overlap);
+            }
+            table = desc_pa(d);
+            lvl += 1;
+        }
+    }
+
     pub fn unmap_page(&mut self, ipa: u64) -> Result<u64, S2Error> {
         self.check_ipa(ipa)?;
         let mut table = self.root;

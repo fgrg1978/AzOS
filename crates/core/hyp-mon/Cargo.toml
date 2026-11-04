@@ -31,6 +31,7 @@ hyp-mmu-off-canary = []
 hyp-no-secondary-init-canary = []
 hyp-hole-mapped-canary = []
 hyp-tsc-off-canary = []
+hyp-text-rw-canary = []
 
 [profile.release]
 panic = "abort"

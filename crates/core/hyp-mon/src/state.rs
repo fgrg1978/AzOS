@@ -50,6 +50,11 @@ impl Hyp {
 
     /// F3: record the single legal entry on the first `CPU_ON`, refuse a change.
     /// Returns the entry in force.
+    /// The lock names the legal entry; it replaces whatever came first.
+    pub fn set_legal_entry(&self, entry: u64) {
+        self.legal_entry.store(entry, Ordering::Release);
+    }
+
     pub fn legal_entry_or_set(&self, entry: u64) -> u64 {
         match self.legal_entry.compare_exchange(0, entry, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => entry,

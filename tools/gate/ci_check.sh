@@ -3765,6 +3765,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-no-secondary-init-canary) name=hyp-mon-no-secondary-init ;;
         hyp-hole-mapped-canary)       name=hyp-mon-hole-mapped ;;
         hyp-tsc-off-canary)           name=hyp-mon-tsc-off ;;
+        hyp-text-rw-canary)           name=hyp-mon-text-rw ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3783,6 +3784,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *no-secondary-init*) hyp_mon_blob hyp-no-secondary-init-canary ;;
         *hole-mapped*) hyp_mon_blob hyp-hole-mapped-canary ;;
         *tsc-off*) hyp_mon_blob hyp-tsc-off-canary ;;
+        *text-rw*) hyp_mon_blob hyp-text-rw-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     if ! a64_kbuild "$sel"; then
@@ -3833,6 +3835,19 @@ par "hyp: PSCI through monitor (arm)" hyp_monitor_row "hyp: PSCI through monitor
     "[BOOT] EL2:        invariant psci in force" "[SMP] hart 1 online"
 par "hyp: R3 tsc-off canary (arm)" hyp_monitor_row "hyp: R3 tsc-off canary (arm)" "hyp-tsc-off-canary" canary \
     "[BOOT] EL2:        invariant psci in force"
+# R4: the kernel image locked at stage 2 before the seal (text, rodata, then
+# ro_after_init), and a write to text through a stage-1 RW alias faults.
+# Canary: the monitor leaves text writable, so the write goes through.
+par "hyp: R4 image locked (arm)" hyp_monitor_row "hyp: R4 image locked (arm)" "hyp-monitor-row" pass \
+    "[BOOT] EL2:        kernel image locked (text, rodata)" "[BOOT] EL2:        ro_after_init locked" \
+    "[BOOT] EL2:        invariant image-ro in force" "[BOOT] EL2:        invariant el1-exec-text-only in force" \
+    "[BOOT] EL2:        invariant ro-data in force"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R4 text write faults (arm)" hyp_monitor_row "hyp: R4 text write faults (arm)" "hyp-lock-probe" pass \
+    "[HYP] PROBE: writing kernel text" "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R4 text-rw canary (arm)" hyp_monitor_row "hyp: R4 text-rw canary (arm)" "hyp-text-rw-canary,hyp-lock-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
 # R14: the split image is a regression guard — the ordinary boot subset still
 # passes under the monitor (same verdicts as the EL2 rows).
 par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \

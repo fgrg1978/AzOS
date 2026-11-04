@@ -241,7 +241,7 @@ fn stage_error(e: S2Error) -> StageError {
 
 /// Guest RAM: write-back, readable always.
 const fn attrs(p: StagePerms) -> S2Attrs {
-    S2Attrs { read: true, write: p.write, exec: p.exec, mem: MemType::NormalWb }
+    S2Attrs { read: true, write: p.write, exec: p.exec, mem: MemType::NormalWb, only: stage2::ExecOnly::Both }
 }
 
 fn free_tree(mem: &mut dyn StageTableMem, table: u64, level: u8, cfg: VtcrConfig) {
