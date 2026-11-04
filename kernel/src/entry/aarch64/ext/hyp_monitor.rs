@@ -92,3 +92,26 @@ pub(crate) fn report() {
         kprintln!("[BOOT] EL2:        no invariants reported");
     }
 }
+
+/// A secondary released through a spin table jumps to a kernel-written address
+/// at EL2, past the monitor, and the monitor cannot intercept that. `found` is
+/// how many spin-table CPUs the tree lists; any is a halt for a split image.
+pub(crate) fn refuse_spin_table(found: usize) {
+    if (found == 0 && !canary!("hyp-fake-spin-table")) || canary!("hyp-halt-skip") {
+        return;
+    }
+    crate::boot::isa::refuse_text(
+        "[BOOT] EL2:        refused: spin-table secondaries bypass the monitor (split never degrades)",
+    )
+}
+
+/// Without a PSCI conduit a second PE cannot be started through the monitor,
+/// so a split image with more than one CPU and no conduit halts.
+pub(crate) fn refuse_no_conduit(no_conduit: bool, cpus: usize) {
+    if !((no_conduit || canary!("hyp-fake-no-conduit")) && cpus > 1) || canary!("hyp-halt-skip") {
+        return;
+    }
+    crate::boot::isa::refuse_text(
+        "[BOOT] EL2:        refused: no PSCI conduit with more than one CPU (split never degrades)",
+    )
+}

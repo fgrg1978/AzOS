@@ -264,7 +264,10 @@ fn spin_table_release(dtb_ptr: usize, cpus: &azos_percpu::CpuMap) {
     }
     let mut spin = [azos_dtb::SpinCpu::default(); azos_percpu::NR_CPUS];
     // SAFETY: the firmware's tree, readable through the bootstrap map.
-    let Some(n) = (unsafe { azos_dtb::dtb_spin_table(dtb_ptr as *const u8, &mut spin) }) else { return };
+    let found = unsafe { azos_dtb::dtb_spin_table(dtb_ptr as *const u8, &mut spin) };
+    #[cfg(feature = "hyp-monitor")]
+    crate::entry::aarch64::ext::hyp_monitor::refuse_spin_table(found.unwrap_or(0));
+    let Some(n) = found else { return };
     let pen = azos_mm::addr::virt_to_phys(_aarch64_spin_pen as *const () as usize) as u64;
     let mut released = 0;
     for c in &spin[..n.min(spin.len())] {
@@ -999,6 +1002,10 @@ pub fn smp_probe(dtb_ptr: usize) {
         if !psci_from_fdt { "crate::entry EL" }
         else if azos_arch::firmware::conduit() == azos_arch::firmware::Conduit::None { "FDT: no /psci node" }
         else { "FDT /psci" });
+    #[cfg(feature = "hyp-monitor")]
+    crate::entry::aarch64::ext::hyp_monitor::refuse_no_conduit(
+        azos_arch::firmware::conduit() == azos_arch::firmware::Conduit::None,
+        azos_percpu::nr_cpu_ids());
     mitigations();
 }
 

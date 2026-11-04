@@ -3791,11 +3791,12 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
     fi
     local img="$CI_LOG_DIR/kernel-hyp-$want.img"; cp "$A64_IMG" "$img"
     par_ready
+    # HYP_APPEND: the kernel command line (runtime canaries); HYP_WAIT: what ends the wait.
     qemu-system-aarch64 -M virt,virtualization=on,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
-        -kernel "$img" >"$log" 2>&1 &
+        -kernel "$img" ${HYP_APPEND:+-append "$HYP_APPEND"} >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ]; do
-        grep -aqE "\[BOOT\] EL2: +monitor up|KERNEL PANIC|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        grep -aqE "${HYP_WAIT:-\[BOOT\] EL2: +monitor up}|KERNEL PANIC|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
         kill -0 "$pid" 2>/dev/null || break
         i=$((i + 1)); sleep 0.5
     done
@@ -3836,6 +3837,25 @@ par "hyp: R3 tsc-off canary (arm)" hyp_monitor_row "hyp: R3 tsc-off canary (arm)
 # passes under the monitor (same verdicts as the EL2 rows).
 par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \
     "AzOS Rust kernel booted! (aarch64)" "[SCHED] Starting scheduler on boot CPU" "[SMP] hart 1 online"
+
+# F3: a split image halts, naming the reason, instead of letting a secondary
+# bypass the monitor. QEMU `virt` has neither a spin table nor a missing
+# conduit, so the runtime canary `hyp-fake-*` makes the input look so and the
+# real halt runs. Canary: `hyp-halt-skip` as well, the boot goes on past it.
+hyp_halt_row() { # hyp_halt_row <label> <fake> <want: pass|canary> <marker>
+    local label="$1" fake="$2" want="$3" marker="$4" app="canary=$2"
+    [ "$want" = canary ] && app="canary=$2,hyp-halt-skip"
+    HYP_APPEND="$app" HYP_WAIT='refused: |AzOS Rust kernel booted' \
+        hyp_monitor_row "$label" "hyp-monitor-row" "$want" "$marker"
+}
+par "hyp: F3 spin-table halts (arm)" hyp_halt_row "hyp: F3 spin-table halts (arm)" hyp-fake-spin-table pass \
+    "[BOOT] EL2:        refused: spin-table"
+par "hyp: F3 spin-table halt canary (arm)" hyp_halt_row "hyp: F3 spin-table halt canary (arm)" hyp-fake-spin-table canary \
+    "[BOOT] EL2:        refused: spin-table"
+par "hyp: F3 no-conduit halts (arm)" hyp_halt_row "hyp: F3 no-conduit halts (arm)" hyp-fake-no-conduit pass \
+    "[BOOT] EL2:        refused: no PSCI conduit"
+par "hyp: F3 no-conduit halt canary (arm)" hyp_halt_row "hyp: F3 no-conduit halt canary (arm)" hyp-fake-no-conduit canary \
+    "[BOOT] EL2:        refused: no PSCI conduit"
 
 # Leave $A64_IMG on an ordinary qemu build for the rows below.
 a64_kbuild "qemu" >/dev/null 2>&1 || true
@@ -5667,6 +5687,25 @@ aarch64_sup_row() {
     ok; rm -f "$log"
 }
 par "aarch64 driver restarted" aarch64_sup_row
+# F3: a split image halts, naming the reason, instead of letting a secondary
+# bypass the monitor. QEMU `virt` has neither a spin table nor a missing
+# conduit, so the runtime canary `hyp-fake-*` makes the input look so and the
+# real halt runs. Canary: `hyp-halt-skip` as well, the boot goes on past it.
+hyp_halt_row() { # hyp_halt_row <label> <fake> <want: pass|canary> <marker>
+    local label="$1" fake="$2" want="$3" marker="$4" app="canary=$2"
+    [ "$want" = canary ] && app="canary=$2,hyp-halt-skip"
+    HYP_APPEND="$app" HYP_WAIT='refused: |AzOS Rust kernel booted' \
+        hyp_monitor_row "$label" "hyp-monitor-row" "$want" "$marker"
+}
+par "hyp: F3 spin-table halts (arm)" hyp_halt_row "hyp: F3 spin-table halts (arm)" hyp-fake-spin-table pass \
+    "[BOOT] EL2:        refused: spin-table"
+par "hyp: F3 spin-table halt canary (arm)" hyp_halt_row "hyp: F3 spin-table halt canary (arm)" hyp-fake-spin-table canary \
+    "[BOOT] EL2:        refused: spin-table"
+par "hyp: F3 no-conduit halts (arm)" hyp_halt_row "hyp: F3 no-conduit halts (arm)" hyp-fake-no-conduit pass \
+    "[BOOT] EL2:        refused: no PSCI conduit"
+par "hyp: F3 no-conduit halt canary (arm)" hyp_halt_row "hyp: F3 no-conduit halt canary (arm)" hyp-fake-no-conduit canary \
+    "[BOOT] EL2:        refused: no PSCI conduit"
+
 # Leave $A64_IMG on an ordinary qemu build for the rows below.
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 

@@ -254,6 +254,13 @@ pub(crate) const NAMES: &[&str] = &[
     // boot; every site stays linked to the fallback (ktest
     // `spin_sites_patched`).
     "spin-patch-skip",
+    // entry/aarch64/ext/hyp_monitor.rs: a split image's tree is taken to list
+    // a spin-table CPU / the PSCI conduit is taken to be absent, so the halt
+    // runs on QEMU `virt` (gate rows `hyp: F3 ...`, aarch64 split only).
+    "hyp-fake-spin-table",
+    "hyp-fake-no-conduit",
+    // The same file: neither halt is taken (the rows' canary).
+    "hyp-halt-skip",
     // kernel/src/ktest.rs `power_off`: the run's verdict is dropped, so a
     // failed run powers off with a clean run's QEMU exit status (riscv64 0,
     // aarch64 0, x86_64 1); the gate's ktest rows must fail on the status
