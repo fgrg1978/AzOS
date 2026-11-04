@@ -63,11 +63,11 @@ impl Bus for Mmio {
     fn read32(&mut self, addr: u64) -> u32 {
         // SAFETY: `addr` is inside a provider window `install` mapped as
         // device memory; the providers keep their offsets word-aligned.
-        unsafe { azos_arch_api::mmio::read32(addr) }
+        unsafe { azos_arch_api::mmio::read32(addr as usize) }
     }
     fn write32(&mut self, addr: u64, val: u32) {
         // SAFETY: as `read32`.
-        unsafe { azos_arch_api::mmio::write32(addr, val) }
+        unsafe { azos_arch_api::mmio::write32(addr as usize, val) }
     }
 }
 
