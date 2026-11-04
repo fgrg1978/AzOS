@@ -560,6 +560,24 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         }
     }
 
+    // Feature `kstack-overflow-probe` (the `<isa> kstack: overflow is
+    // reported` rows): a task recurses until its stack runs into the guard;
+    // the trap must report it from a stack of its own. Never in a real build.
+    #[cfg(feature = "kstack-overflow-probe")]
+    {
+        #[inline(never)]
+        fn deep(n: u64) -> u64 {
+            let pad = core::hint::black_box([n; 32]);
+            if n == u64::MAX { 0 } else { deep(n + 1).wrapping_add(pad[7]) }
+        }
+        fn probe(_: usize) {
+            kprintln!("[KSTACK] PROBE: recursing until the stack runs out");
+            let r = deep(0);
+            azos_drv_sys::kerr!("[KSTACK] PROBE FAILED: the recursion returned {}", r);
+        }
+        azos_sched::task_create("kstack-probe", probe, 0, azos_sched::DEFAULT_PRIORITY);
+    }
+
     // What the boot used: the heap and PMM figures the embedded budget is set
     // from.
     kprintln!("[MM] At scheduler start: heap {} B of {} KiB used, PMM {} of {} pages free",

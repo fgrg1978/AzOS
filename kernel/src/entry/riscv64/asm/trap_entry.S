@@ -45,6 +45,30 @@
 # crates/core/sched/src/process.rs) and by no trap: FRAME_TAG_NATIVE (=
 # the `ecall`-from-U cause) for a native task, 0 for a Linux one. A U-mode
 # trap whose scause equals its frame's tag is a native task's syscall.
+// The kernel stack window (crates/core/mm/src/kstack.rs): a frame whose base
+// has KSTACK_BIT set, in the window (sp >> KSTACK_WSHIFT == KSTACK_WTAG), has
+// run off a task stack's bottom into the guard below it.
+.equ KSTACK_BIT,      {kstack_bit}
+.equ KSTACK_WSHIFT,   {kstack_wshift}
+.equ KSTACK_WTAG,     {kstack_wtag}
+.equ KSTACK_OVF_SHIFT, {kstack_ovf_shift}
+
+// S-mode trap, before the frame is stored: sp is the interrupted kernel SP
+// and sscratch is 0 (put back here). A frame that would land in a task
+// stack's guard goes to `kstack_overflow` instead, which never returns.
+.macro KSTACK_CHECK
+    csrw    sscratch, t0
+    addi    t0, sp, -TRAP_FRAME_SIZE
+    srli    t0, t0, KSTACK_BIT
+    andi    t0, t0, 1
+    beqz    t0, 1f
+    addi    t0, sp, -TRAP_FRAME_SIZE
+    srli    t0, t0, KSTACK_WSHIFT
+    addi    t0, t0, -KSTACK_WTAG
+    beqz    t0, kstack_overflow
+1:  csrrw   t0, sscratch, zero
+.endm
+
 .equ SYSCALL_LEAN,     {syscall_lean}
 .equ TF_TAG,           {tf_tag}
 # Canary `syscall-abi-canary`: the native exit flips bit 0 of s3 when the
@@ -144,6 +168,23 @@ trap_hart_vectors:
     .set  hart_slot_id, hart_slot_id + 1
 .endr
 
+# A kernel stack overflow: the interrupted SP is in a task stack's guard.
+# Fatal, so every register is scratch: the report runs on this hart's own
+# overflow stack (tp is the hart id in the kernel).
+kstack_overflow:
+    mv      a1, sp
+    csrr    a0, sepc
+    csrr    a2, stval
+    li      t0, MAX_HARTS
+    bgeu    tp, t0, 2f
+    la      t0, AZOS_KSTACK_OVERFLOW
+    addi    t1, tp, 1
+    slli    t1, t1, KSTACK_OVF_SHIFT
+    add     sp, t0, t1
+    call    azos_kstack_overflow
+2:  wfi
+    j       2b
+
 .align 4
 .global trap_return
 
@@ -167,6 +208,7 @@ trap_entry_common:
     # SP == 0: we came from S-mode (sscratch was 0). Swap back, then the
     # full save, exactly as with SYSCALL_LEAN_ENTRY off.
     csrrw sp, sscratch, sp
+    KSTACK_CHECK
     addi sp, sp, -TRAP_FRAME_SIZE
     sd x10, 80(sp)    # a0
     sd x11, 88(sp)    # a1
@@ -185,6 +227,7 @@ trap_from_smode:
     # Restore: swap back (get real kernel SP from sscratch)
     csrrw sp, sscratch, sp
     # Now SP = kernel stack, sscratch = 0 again
+    KSTACK_CHECK
 
 trap_save_context:
     # Allocate trap frame

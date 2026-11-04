@@ -13,6 +13,8 @@
 //! over the frame; `tools/lint/trap_lint.py` keeps it out of this directory.
 
 pub mod aarch64;
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+pub mod kstack_overflow;
 pub mod riscv64;
 pub mod x86_64;
 

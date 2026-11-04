@@ -206,6 +206,57 @@ _slot_\name:
     b       _trap_common
 .endm
 
+// The kernel stack window (crates/core/mm/src/kstack.rs): a frame whose base
+// has KSTACK_BIT set, in the window (the arithmetic shift of sp by
+// KSTACK_WSHIFT equals minus the tag, split in two 12-bit halves), has run off
+// a task stack's bottom into the guard below it.
+.equ KSTACK_BIT,       {kstack_bit}
+.equ KSTACK_WSHIFT,    {kstack_wshift}
+.equ KSTACK_NTAG_HI,   {kstack_ntag_hi}
+.equ KSTACK_NTAG_LO,   {kstack_ntag_lo}
+.equ KSTACK_OVF_SHIFT, {kstack_ovf_shift}
+
+// A slot for an exception taken at EL1 on SP_EL1, the kernel's own stack:
+// before the frame is stored, one that would land in a task stack's guard
+// goes to `kstack_overflow` instead. SP_EL0 is the scratch: the kernel never
+// runs on it, every trap stores it in its frame, and every return to EL0
+// reloads it from the frame the EL0 trap stored.
+.macro TRAP_SLOT_CUR name, vecnum
+_slot_\name:
+    sub     sp, sp, #TRAP_FRAME_SIZE
+    msr     SP_EL0, x0
+    mov     x0, sp
+    tbz     x0, #KSTACK_BIT, 1f
+    asr     x0, x0, #KSTACK_WSHIFT
+    add     x0, x0, #KSTACK_NTAG_HI, lsl #12
+    cmn     x0, #KSTACK_NTAG_LO
+    b.eq    kstack_overflow
+1:  mrs     x0, SP_EL0
+    stp     x0, x1, [sp]
+    mov     x0, #\vecnum
+    b       _trap_common
+.endm
+
+// A kernel stack overflow: sp is in a task stack's guard. Fatal, so every
+// register is scratch: the report runs on this PE's own overflow stack
+// (TPIDR_EL1 is the PE's index).
+kstack_overflow:
+    mov     x1, sp
+    mrs     x0, ELR_EL1
+    mrs     x2, FAR_EL1
+    mrs     x9, tpidr_el1
+    cmp     x9, #MAX_HARTS
+    b.hs    2f
+    adrp    x10, AZOS_KSTACK_OVERFLOW
+    add     x10, x10, :lo12:AZOS_KSTACK_OVERFLOW
+    add     x9, x9, #1
+    lsl     x9, x9, #KSTACK_OVF_SHIFT
+    add     x10, x10, x9
+    mov     sp, x10
+    bl      azos_kstack_overflow
+2:  wfi
+    b       2b
+
 // The same slot for an exception taken from EL0: the kernel's key goes in
 // before anything signs.
 .macro TRAP_SLOT_EL0 name, vecnum
@@ -221,10 +272,10 @@ TRAP_SLOT sync_cur_sp0,  0x10
 TRAP_SLOT irq_cur_sp0,   0x11
 TRAP_SLOT fiq_cur_sp0,   0x12
 TRAP_SLOT serr_cur_sp0,  0x13
-TRAP_SLOT sync_cur_spx,  VEC_SYNC_CUR
-TRAP_SLOT irq_cur_spx,   VEC_IRQ_CUR
-TRAP_SLOT fiq_cur_spx,   0x16
-TRAP_SLOT serr_cur_spx,  0x17
+TRAP_SLOT_CUR sync_cur_spx,  VEC_SYNC_CUR
+TRAP_SLOT_CUR irq_cur_spx,   VEC_IRQ_CUR
+TRAP_SLOT_CUR fiq_cur_spx,   0x16
+TRAP_SLOT_CUR serr_cur_spx,  0x17
 .if SYSCALL_LEAN
 // The one slot a syscall arrives through: a native task's `svc` (ESR_EL1.EC
 // equal to its frame's tag, see TF_OFF_TAG above) goes to `_svc_native`;

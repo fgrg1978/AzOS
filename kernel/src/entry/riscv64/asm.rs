@@ -65,7 +65,15 @@ global_asm!(
     // Chain E cut 7: the native path's branch for the two IPC fast calls.
     ipc_fast_entry = const IPC_FAST_ENTRY as u32,
     ipc_fast_lo = const IPC_FAST_LO,
+    // The kernel stack window's overflow test (`KSTACK_CHECK`).
+    kstack_bit = const azos_mm::kstack::OVERFLOW_BIT,
+    kstack_wshift = const azos_mm::kstack::WINDOW_SHIFT,
+    kstack_wtag = const azos_mm::kstack::WINDOW_TAG,
+    kstack_ovf_shift = const crate::entry::kstack_overflow::OVF_SHIFT,
 );
+// `addi t0, t0, -KSTACK_WTAG` takes a 12-bit immediate.
+#[cfg(target_arch = "riscv64")]
+const _: () = assert!(azos_mm::kstack::WINDOW_TAG < 2048);
 
 // Include context switch assembly.
 // Phase 12: when rvv feature is active, use the RVV-aware variant.

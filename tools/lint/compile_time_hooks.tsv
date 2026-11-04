@@ -103,6 +103,7 @@ gate-skip-smoke	pending
 geofence-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 gpio-aq3-smoke	pending	
 guard-fault-probe-null	pending	
+kstack-overflow-probe	pending	
 guard-fault-probe-stack	pending	
 hosted-startup-canary	pending	
 huge-leaves-canary	pending	

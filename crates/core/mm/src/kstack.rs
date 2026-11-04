@@ -42,7 +42,12 @@ const PENDING_MAX: usize = 32;
 const PENDING_ROOM: usize = PENDING_MAX + 2 * CPUS;
 /// Every live task's stack, every CPU's cache, the pending list, and slot 0.
 pub const SLOTS: usize = azos_limits::MAX_TASKS + CPUS * CACHE + PENDING_ROOM + 1;
-pub const WINDOW: usize = (SLOTS * STRIDE).next_power_of_two();
+/// At least 1 GiB of address space (it costs no memory), so the window's tag
+/// (`BASE >> WINDOW_SHIFT`) fits the trap entry's immediates.
+pub const WINDOW: usize = {
+    let w = (SLOTS * STRIDE).next_power_of_two();
+    if w < 1 << 30 { 1 << 30 } else { w }
+};
 
 #[cfg(target_os = "none")]
 const END: usize = azos_arch::mmu::KSTACK_WINDOW_END;
@@ -57,6 +62,13 @@ const _: () = assert!(WINDOW <= 64 << 30, "the stack window must stay in the top
 
 /// The bit an SP inside a stack has clear and one past its bottom has set.
 pub const OVERFLOW_BIT: u32 = P.trailing_zeros();
+/// `sp >> WINDOW_SHIFT` names the window: `BASE >> WINDOW_SHIFT` for an SP
+/// inside it (the trap entry's test, with [`OVERFLOW_BIT`]).
+pub const WINDOW_SHIFT: u32 = WINDOW.trailing_zeros();
+pub const WINDOW_TAG: usize = BASE >> WINDOW_SHIFT;
+/// The same tag as the arithmetic shift of a kernel-half SP sees it: the
+/// negation of this (aarch64, where the window is in the upper half).
+pub const WINDOW_NEG_TAG: usize = BASE.wrapping_neg() >> WINDOW_SHIFT;
 
 struct Lists {
     /// Unmapped slots no CPU can hold a translation of.

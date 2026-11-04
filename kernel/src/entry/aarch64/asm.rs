@@ -82,7 +82,16 @@ global_asm!(
     ipc_fast_lo     = const IPC_FAST_LO,
     // Kconfig A64_PAUTH_PROC_KEYS: the per-process key swap at the EL0 boundary.
     pac_user        = const azos_limits::A64_PAUTH_PROC_KEYS as u32,
+    // The kernel stack window's overflow test (`TRAP_SLOT_CUR`).
+    kstack_bit      = const azos_mm::kstack::OVERFLOW_BIT,
+    kstack_wshift   = const azos_mm::kstack::WINDOW_SHIFT,
+    kstack_ntag_hi  = const azos_mm::kstack::WINDOW_NEG_TAG >> 12,
+    kstack_ntag_lo  = const azos_mm::kstack::WINDOW_NEG_TAG & 0xfff,
+    kstack_ovf_shift = const crate::entry::kstack_overflow::OVF_SHIFT,
 );
+// `add #imm, lsl #12` takes 12 bits of the tag's upper half.
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(azos_mm::kstack::WINDOW_NEG_TAG < 1 << 24);
 
 // Context switch asm — Phase 3 (context switch + scheduler on aarch64).
 // Same B2-01 shape as the two blocks above: every offset read off the real

@@ -566,6 +566,7 @@ rvv-isolation-probe = []
 # see `tools/gate/ci_check.sh`'s "aarch64 guard: ... probe faults" rows, the only
 # callers.
 guard-fault-probe-stack = []
+kstack-overflow-probe = []
 guard-fault-probe-null  = []
 # O3.2 (owner decision, PAN/SUM): touches a USER-tagged page from EL1/S-mode
 # OUTSIDE any UserAccess guard — must fault now that SPAN=0/SUM starts clear.

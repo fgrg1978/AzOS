@@ -8900,6 +8900,46 @@ the boot did not die the expected way"
 }
 par_row aarch64_guard_fault_row "aarch64 guard: stack probe faults" "guard-fault-probe-stack"
 par_row aarch64_guard_fault_row "aarch64 guard: null probe faults"  "guard-fault-probe-null"
+# A real overflow (feature `kstack-overflow-probe`): a task recurses into the
+# guard below its stack; the trap must report it from a stack of its own
+# ("kernel stack overflow") instead of faulting again forever. x86_64's row,
+# #DF on its IST stack, is with the x86_64 rows.
+kstack_overflow_row() { # kstack_overflow_row <label> <rv|arm> <ERE of the report>
+    local label="$1" isa="$2" want="$3"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}-kernel.img"
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log"
+    case "$isa" in
+        rv)  kbuild "qemu,kstack-overflow-probe" || { bad; echo "      riscv64 kernel did not build"; return; }
+             cp "$KERNEL" "$img" ;;
+        arm) a64_kbuild "kstack-overflow-probe" || { bad; echo "      aarch64 kernel did not build"; return; }
+             cp "$A64_IMG" "$img" ;;
+    esac
+    par_ready
+    while [ "$(qemu_count)" -ge 4 ]; do sleep 2; done
+    case "$isa" in
+        rv)  "$QEMU" -machine virt -nographic -bios default -kernel "$img" -smp 2 >"$log" 2>&1 & ;;
+        arm) qemu-system-aarch64 -M virt,gic-version=3 -cpu max -smp 2 -nographic -kernel "$img" >"$log" 2>&1 & ;;
+    esac
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+        grep -aqE "$want" "$log" 2>/dev/null && break
+        grep -aqF "PROBE FAILED" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if ! grep -aqF "[KSTACK] PROBE: recursing" "$log" 2>/dev/null; then
+        bad; echo "      the probe task never ran"; echo "      log kept: $log"; return
+    fi
+    if ! grep -aqE "$want" "$log" 2>/dev/null; then
+        bad; echo "      no overflow report ($want) after the probe ran"; echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$img"
+}
+par_row kstack_overflow_row "riscv64 kstack: overflow is reported" rv "kernel stack overflow"
+par_row kstack_overflow_row "aarch64 kstack: overflow is reported" arm "kernel stack overflow"
 # ── aarch64: ring-3 writes really go through the Console abstraction ───────
 #
 # **This row exists because the property is otherwise UNTESTABLE.**
@@ -17165,6 +17205,23 @@ CPU 5 lacks hwcap bits"
     par "ktest free_pages in flight canary (x86)" x86_ktest_row "ktest free_pages in flight canary (x86)" ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest buddy rotate canary (x86)" x86_ktest_row "ktest buddy rotate canary (x86)" ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
     par "ktest kstack reuse canary (x86)" x86_ktest_row "ktest kstack reuse canary (x86)" ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
+    # The overflow probe (see `kstack_overflow_row`): #DF on its IST stack.
+    x86_kstack_overflow_row() {
+        local label="x86_64 kstack: overflow is reported"
+        printf "  %-26s" "${label}..."
+        local log="$CI_LOG_DIR/x86-kstack-overflow.log" kimg="$CI_LOG_DIR/kernel-x86-kstack-overflow"
+        x86_kbuild "kstack-overflow-probe" "$kimg" || { bad; echo "      x86_64 kernel did not build"; return; }
+        x86_qemu "$kimg" "$log" 60 "#DF|[Dd]ouble fault|PROBE FAILED" -smp 2 || true
+        rm -f "$kimg" "$kimg.features"
+        if ! grep -aqF "[KSTACK] PROBE: recursing" "$log" 2>/dev/null; then
+            bad; echo "      the probe task never ran"; echo "      log kept: $log"; return
+        fi
+        if ! grep -aqE "#DF|[Dd]ouble fault" "$log" 2>/dev/null; then
+            bad; echo "      no double-fault report after the probe ran"; echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "x86_64 kstack: overflow is reported" x86_kstack_overflow_row
     par "ktest kheap ceiling canary (x86)" x86_ktest_row "ktest kheap ceiling canary (x86)" ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest kmem cache cross type canary (x86)" x86_ktest_row "ktest kmem cache cross type canary (x86)" ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
     par "ktest kmem preload canary (x86)" x86_ktest_row "ktest kmem preload canary (x86)" ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
