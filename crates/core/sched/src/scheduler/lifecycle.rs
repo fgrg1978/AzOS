@@ -464,6 +464,8 @@ pub fn try_task_create_init(
     affinity: i8,
     init: TaskInit,
 ) -> Option<usize> {
+    // The kernel stack, before any lock: a fresh one is frames to map.
+    let stack = azos_mm::kstack::alloc()?;
     // D2: every task has a domain. A thread joins its creator's, any other
     // task gets a fresh one: a task made by another task (a spawn, a fork) is
     // a child of its creator's Domain, so the subtree policy follows it; a
@@ -530,6 +532,8 @@ pub fn try_task_create_init(
                     None
                 }
                 Some(idx) => {
+                    // A slot reclaimed at claim time still names its previous stack.
+                    azos_mm::kstack::free(KSTACK[idx].swap(stack, Ordering::Relaxed));
                     PARENT_TID[idx].store(init.parent, Ordering::Relaxed);
                     let task = task_mut(idx);
 
@@ -766,7 +770,7 @@ pub fn try_task_create_init(
                     // Skip when guard pages are active — the bottom page is unmapped
                     // and writing the canary would page fault.
                     if !GUARD_PAGES_ACTIVE.load(Ordering::Acquire) {
-                        (TASK_STACKS.0[idx].as_mut_ptr() as *mut u64).write_volatile(stack_canary());
+                        (KSTACK[idx].load(Ordering::Relaxed) as *mut u64).write_volatile(stack_canary());
                     }
 
                     Some((idx, target_cpu))
@@ -798,6 +802,7 @@ pub fn try_task_create_init(
                     {
                         let _pool = PoolGuard::acquire();
                         TASK_VALID[idx].store(false, Ordering::Relaxed);
+                        azos_mm::kstack::free(KSTACK[idx].swap(0, Ordering::Relaxed));
                         hist_reaccount(idx);
                         crate::domain::leave(TASKS[idx].take_domain());
                         // Mirror of alloc_slot's sentinel protocol: unpublish,
@@ -824,6 +829,9 @@ pub fn try_task_create_init(
 
     if let Some(k) = refused_dom {
         crate::domain::leave(k);
+    }
+    if result.is_none() {
+        azos_mm::kstack::free(stack);
     }
     // The task list shows the task before its creator learns its TID.
     if let Some(idx) = result {
@@ -3752,6 +3760,8 @@ pub(super) unsafe fn reap_zombie_on_switch(old_idx: usize) {
     // the slot can be claimed again.
     rt::release(old_idx);
     TASK_VALID[old_idx].store(false, Ordering::Relaxed);
+    // This hart left the stack for good at the switch that brought it here.
+    azos_mm::kstack::free(KSTACK[old_idx].swap(0, Ordering::Relaxed));
     hist_reaccount(old_idx);
     view_note(old_idx);
     // D2: the task's place in its domain ends with its slot (a thread left

@@ -124,6 +124,12 @@ pub fn is_image_va(va: usize) -> bool {
 /// `azos_arch::mmu::image_phys`), the direct-map base otherwise.
 #[inline(always)]
 pub fn virt_to_phys(va: usize) -> usize {
+    // A task stack is not in the linear map: no stack buffer has a physical
+    // address to hand a device (Kconfig BUILD_TYPE_DEV checks every call).
+    #[cfg(target_os = "none")]
+    if azos_limits::BUILD_TYPE_DEV && crate::kstack::in_window(va) {
+        panic!("virt_to_phys of a kernel stack address {:#x}", va);
+    }
     if is_image_va(va) {
         image_to_phys(va)
     } else {

@@ -258,6 +258,7 @@ buddy-rotate-hot-canary = ["azos_mm/buddy-rotate-hot-canary"]
 kheap-ceiling-canary = ["azos_mm/kheap-ceiling-canary"]
 kmem-cache-cross-type-canary = ["azos_mm/kmem-cache-cross-type-canary"]
 kmem-preload-canary = ["azos_mm/kmem-preload-canary"]
+kstack-reuse-no-shootdown-canary = ["azos_mm/kstack-reuse-no-shootdown-canary"]
 # Gate canary of the admin task list (`kernel/src/boot/inspect_tasks.rs`): a
 # change in a task slot is written by the next refresh instead of where it
 # happens, as before the list was written on change. The `inspect: views`

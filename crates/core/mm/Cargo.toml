@@ -56,6 +56,8 @@ kheap-ceiling-canary = []
 kmem-cache-cross-type-canary = []
 # Boot caches are not filled and sealed on a preloading preset: the `kmem preload` ktest goes red.
 kmem-preload-canary = []
+# Reaped stack slots are reused without the TLB invalidation on every CPU (the `kstack reuse` ktest goes red).
+kstack-reuse-no-shootdown-canary = []
 pcp-refill-canary = []
 pcp-drain-canary = []
 frame-index-canary = []

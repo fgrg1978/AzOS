@@ -12,7 +12,7 @@
 # crate	blocks	fns	impls	attrs	forbid	share
 .	5	10	1	0	0	-
 arch/aarch64	202	49	1	2	0	76
-arch/api	31	10	0	0	0	29
+arch/api	32	10	0	0	0	40
 arch/facade	0	0	0	0	1	0
 arch/riscv64	160	42	0	3	0	91
 arch/x86_64	157	18	4	11	0	59
@@ -22,7 +22,7 @@ crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
-crates/core/common	4	0	0	0	0	40
+crates/core/common	4	0	0	0	0	37
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	16	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	61
@@ -34,23 +34,23 @@ crates/core/hyp-mon	25	3	1	0	0	-
 crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
 crates/core/inspect	1	1	0	0	0	3
-crates/core/ipc	40	10	4	0	0	53
+crates/core/ipc	31	9	4	0	0	43
 crates/core/ktest	3	0	0	0	0	66
 crates/core/libsys	89	10	2	0	0	93
 crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	280	41	11	0	0	80
+crates/core/mm	295	44	12	0	0	82
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	56
 crates/core/rings	25	6	4	0	0	98
-crates/core/sched	471	159	13	3	0	68
+crates/core/sched	468	159	13	3	0	68
 crates/core/stdrt	45	1	4	0	0	-
-crates/core/sync	44	9	18	0	0	82
-crates/core/syscall	41	2	0	0	0	39
+crates/core/sync	45	9	19	0	0	82
+crates/core/syscall	43	2	1	0	0	39
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	26	0	1	0	0	30
 crates/core/wcet-macro	0	0	0	0	1	-
@@ -102,14 +102,14 @@ crates/drivers/tpm	0	0	0	0	1	0
 crates/drivers/usb	19	1	1	0	0	34
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	145	42	8	0	0	90
-crates/fs	46	8	4	0	0	59
+crates/fs	48	8	5	0	0	59
 crates/lib/control/ahrs	0	0	0	0	1	0
 crates/lib/control/flight-math	0	0	0	0	1	0
 crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
-crates/net/stack	17	0	0	0	0	58
+crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	368	14	12	52	0	61
+kernel	377	14	12	52	0	61
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -162,4 +162,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	506

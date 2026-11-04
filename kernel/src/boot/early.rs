@@ -461,14 +461,17 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
         azos_mm::vmm::null_guard();
         kprintln!("[MM] Null pointer guard active (page 0 unmapped)");
 
-        // Guard pages: the bottom 4 KiB of every task's kernel stack
-        // unmapped, so an overflow faults instead of corrupting silently.
-        // Runtime gate canary `canary=stack-guard-skip`: no task stack gets
-        // its guard.
-        if !canary!("stack-guard-skip") {
-            azos_sched::setup_stack_guard_pages();
+        // Task stacks in their own window, each below an unmapped guard, so
+        // an overflow faults instead of corrupting silently. Runtime gate
+        // canary `canary=stack-guard-skip`: the guards are mapped too.
+        let skip = canary!("stack-guard-skip");
+        if !azos_sched::setup_stack_guard_pages(skip) {
+            azos_drv_sys::kerr!("[MM] FAILED: the kernel stack window overlaps a mapping");
+            halt();
         }
-        kprintln!("[MM] Stack guard pages active");
+        if !skip {
+            kprintln!("[MM] Stack guard pages active");
+        }
 
         a.verify_guards();
 

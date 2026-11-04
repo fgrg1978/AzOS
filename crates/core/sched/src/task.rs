@@ -982,7 +982,7 @@ pub struct Task {
     pub name: [u8; TASK_NAME_CAPACITY],  // null-terminated ASCII
 
     // == stack info ==
-    pub stack_idx:  usize,       // index into TASK_STACKS[]
+    pub stack_idx:  usize,       // index into KSTACK[]
 
     // == entry point ==
     pub entry_fn:  usize,        // fn ptr cast to usize

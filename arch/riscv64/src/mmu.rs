@@ -32,6 +32,11 @@ pub const PAGE_SIZE: usize = 4096;
 /// log2(PAGE_SIZE).
 pub const PAGE_SHIFT: usize = 12;
 
+/// The end of the kernel task stack window (`crates/core/mm/src/kstack.rs`):
+/// the top of Sv39's lower half (256 GiB), in the kernel-only root slots
+/// every root shares, far above RAM and the device windows.
+pub const KSTACK_WINDOW_END: usize = 1 << 38;
+
 bitflags! {
     /// Sv39 Page Table Entry flags.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

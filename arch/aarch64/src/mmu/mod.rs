@@ -754,6 +754,10 @@ const _: () = assert!(
     PAGE_SHIFT != 12 || KERNEL_VA_OFFSET == 0xFFFF_FF80_0000_0000,
     "the 4 KiB build's upper half must stay where arch/aarch64/boot/linker-aarch64.ld links it",
 );
+/// The end of the kernel task stack window (`crates/core/mm/src/kstack.rs`):
+/// the top of TTBR1's lower half, the linear map's end, below the image
+/// half. RAM never reaches it on a board this kernel boots.
+pub const KSTACK_WINDOW_END: usize = (KERNEL_VA_OFFSET + (1u64 << (GRANULE.va_bits - 1))) as usize;
 
 /// `TCR_EL1.T1SZ` field position — mirrors `T0SZ` at bits `[5:0]`.
 const TCR_T1SZ_SHIFT: u64 = 16;

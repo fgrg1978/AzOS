@@ -58,6 +58,7 @@ pub mod uaccess;
 /// Wave 14 (SPAWNCACHE): a verified image's frames, kept for its next spawn.
 pub mod image_frames;
 pub mod kheap;
+pub mod kstack;
 /// Kconfig `KHEAP_GUARD_*`: red zones, poison and quarantine around every heap block.
 pub mod kheap_guard;
 /// Kconfig `KASAN`: the kernel address sanitizer's shadow and hooks.

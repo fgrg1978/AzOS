@@ -38,9 +38,10 @@ pub fn true_hart() -> usize {
 
 /// The task slot whose kernel stack holds `sp`, or `usize::MAX`.
 pub fn stack_slot_of(sp: usize) -> usize {
-    let base = core::ptr::addr_of!(TASK_STACKS) as usize;
-    if sp <= base || sp > base + STACK_SIZE * MAX_TASKS { return usize::MAX; }
-    (sp - 1 - base) / STACK_SIZE
+    let s = azos_mm::kstack::slot_holding(sp);
+    if s == usize::MAX { return s; }
+    let base = sp - 1 - (sp - 1) % azos_mm::kstack::STRIDE;
+    (0..MAX_TASKS).find(|&i| KSTACK[i].load(Ordering::Relaxed) == base).unwrap_or(usize::MAX)
 }
 
 #[cold]

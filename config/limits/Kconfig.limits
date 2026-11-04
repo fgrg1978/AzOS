@@ -1089,10 +1089,10 @@ config KERNEL_STACK_SIZE_KB
       the kernel.  Sized for the deepest syscall handler chain including
       interrupt nesting.  Larger on Aarch64/x86_64 due to bigger trap frames.
 
-      A guard page (one base page: 4 KiB, or the aarch64 granule) is taken
-      out of this, so the usable depth is one page less — hence the larger
-      defaults under AARCH64_PAGE_16K (48 = 32 usable) and _64K (128 = 64
-      usable). The size must be a whole number of pages.  Since 2026-09-16 an interrupt HANDLER runs on the hart's
+      The whole size is usable: each stack lives in the kernel stack window
+      with an unmapped guard below it, outside this size. The size must be a
+      whole number of pages, so the aarch64 16K and 64K granules need 48
+      and 128.  Since 2026-09-16 an interrupt HANDLER runs on the hart's
       own INTERRUPT_STACK_SIZE_KB stack, so this size covers the deepest
       syscall chain and the 288-byte trap frame, and no longer has to leave
       room for a handler on top of it.  The frame itself still lands here.

@@ -197,6 +197,10 @@ pub const DIRECT_MAP_BASE: u64 = 0xFFFF_8880_0000_0000;
 /// 273..400), Linux's 4-level `MAX_PHYSMEM_BITS` = 46. RAM above it is left
 /// out of the frame allocator (`boot_hooks::firmware_memory`).
 pub const DIRECT_MAP_BYTES: u64 = 1 << 46;
+/// The end of the kernel task stack window (`crates/core/mm/src/kstack.rs`):
+/// PML4 slot 256, the first of the kernel half, which nothing else uses.
+/// The window is the top of the slot, at most 512 GiB.
+pub const KSTACK_WINDOW_END: usize = 0xFFFF_8080_0000_0000;
 /// GiB of physical memory the boot tables map 1:1 and at [`DIRECT_MAP_BASE`]
 /// (one page directory each, 2 MiB leaves): boot.S and `limine_prepare` build
 /// them before the memory map is known. RAM past them is added by

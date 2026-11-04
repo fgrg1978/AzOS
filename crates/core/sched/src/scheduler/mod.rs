@@ -418,17 +418,11 @@ static mut TASKS: [Task; MAX_TASKS] = unsafe { core::mem::zeroed() };
 static mut TASK_VALID: [AtomicBool; MAX_TASKS] =
     [const { AtomicBool::new(false) }; MAX_TASKS];
 
-/// Stack storage — each stack[i] is exclusively owned by TASKS[i].
-/// Aligned to PAGE_SIZE (4 KiB, or the aarch64 granule) so that guard pages
-/// can unmap exact page boundaries without affecting adjacent BSS data —
-/// which also needs `STACK_SIZE` to be a whole number of pages (asserted).
-#[repr(C)]
-struct StackStorage([[u8; STACK_SIZE]; MAX_TASKS], [azos_arch_api::PageAlign; 0]);
-static mut TASK_STACKS: StackStorage = StackStorage([[0u8; STACK_SIZE]; MAX_TASKS], []);
-const _: () = assert!(
-    STACK_SIZE % azos_arch_api::PAGE_SIZE == 0,
-    "KERNEL_STACK_SIZE_KB must be a whole number of pages: the bottom page of each stack is unmapped as its guard",
-);
+/// The base (lowest mapped byte) of each task's kernel stack in the stack
+/// window (`azos_mm::kstack`), 0 for a slot with none. Written under
+/// POOL_LOCK at create and reap.
+pub(crate) static KSTACK: [AtomicUsize; MAX_TASKS] = [const { AtomicUsize::new(0) }; MAX_TASKS];
+const _: () = assert!(STACK_SIZE == azos_mm::kstack::SIZE);
 
 /// RISC-V calling convention requires the stack pointer 16-byte aligned.
 const STACK_ALIGN_BYTES: usize = 16;
@@ -441,7 +435,7 @@ const STACK_ALIGN_BYTES: usize = 16;
 ///
 /// SAFETY: `stack_idx` must be a valid task-pool index (`< MAX_TASKS`).
 unsafe fn task_stack_top(stack_idx: usize) -> usize {
-    let top = TASK_STACKS.0[stack_idx].as_mut_ptr() as usize + STACK_SIZE;
+    let top = KSTACK[stack_idx].load(Ordering::Relaxed) + STACK_SIZE;
     top & !(STACK_ALIGN_BYTES - 1)
 }
 
@@ -3722,52 +3716,41 @@ static GUARD_PAGES_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Set up guard pages for all task stacks.
 ///
-/// Unmaps the bottom page (4 KiB) of each stack slot so that stack overflow
-/// triggers an immediate page fault instead of silently corrupting adjacent
-/// stacks.  Must be called AFTER `vmm::enable_paging()`.
-///
-/// After this call, the effective usable stack per task is `STACK_SIZE - 4096`.
-/// Stack canary checks are skipped when guard pages are active (the page fault
-/// is a stronger guarantee than polling).
-pub fn setup_stack_guard_pages() {
-    let kpt = azos_mm::vmm::kernel_pagetable();
-    for i in 0..MAX_TASKS {
-        let stack_bottom = unsafe { TASK_STACKS.0[i].as_ptr() as usize };
-        azos_mm::vmm::unmap_kernel(kpt, stack_bottom);
-    }
-    GUARD_PAGES_ACTIVE.store(true, Ordering::Release);
+/// Set up the kernel stack window (`azos_mm::kstack`): every task's stack
+/// is mapped there below an unmapped guard, so an overflow faults instead of
+/// corrupting silently. After `vmm::enable_paging()` and before the first
+/// task. `guard_too` (runtime canary `stack-guard-skip`) maps the guards as
+/// well. False: the window could not be set up, and no task can be made.
+pub fn setup_stack_guard_pages(guard_too: bool) -> bool {
+    let ok = azos_mm::kstack::init(guard_too);
+    GUARD_PAGES_ACTIVE.store(ok && !guard_too, Ordering::Release);
+    ok
 }
 
-/// Read back whether [`setup_stack_guard_pages`] actually left every stack's
-/// guard byte unmapped, rather than trusting that call's return — the same
-/// principle `crates/core/mm::vmm`'s `verify_wx`/`verify_no_exec_outside_image`
-/// already apply to W^X/NX. Walks `vmm::translate` (a fresh page-table read,
-/// not the cached `GUARD_PAGES_ACTIVE` flag) against every stack slot's
-/// bottom address and counts how many come back `None` (unmapped).
-///
-/// Returns `(unmapped, total)` — `total` is `MAX_TASKS`, read back here
-/// rather than hardcoded elsewhere so a `MAX_TASKS` change cannot silently
-/// stop the caller's check from meaning anything.
+/// Read back whether every live task's guard is unmapped, from a fresh
+/// page-table walk rather than the cached `GUARD_PAGES_ACTIVE` flag.
+/// Returns `(unmapped, total)`, `total` being the live tasks with a stack.
 pub fn stack_guard_readback() -> (usize, usize) {
     let kpt = azos_mm::vmm::kernel_pagetable();
-    let mut unmapped = 0usize;
+    let (mut unmapped, mut total) = (0usize, 0usize);
     for i in 0..MAX_TASKS {
-        let stack_bottom = unsafe { TASK_STACKS.0[i].as_ptr() as usize };
-        if azos_mm::vmm::translate(kpt, stack_bottom).is_none() {
+        let base = KSTACK[i].load(Ordering::Relaxed);
+        if base == 0 { continue; }
+        total += 1;
+        if azos_mm::vmm::translate(kpt, base - 1).is_none() {
             unmapped += 1;
         }
     }
-    (unmapped, MAX_TASKS)
+    (unmapped, total)
 }
 
-/// The exact address [`setup_stack_guard_pages`] unmaps for task slot `idx` —
-/// the bottom of its kernel stack. Exists so a fault probe (or gate tooling
-/// reading the probe's own log) can name the address it is about to touch
-/// instead of recomputing the stack layout by hand. Panics on an
-/// out-of-range `idx`, same as the array index it wraps — the right failure
-/// for a caller bug, not something to hide behind an `Option`.
+/// An address in the guard below task slot `idx`'s stack, or below the
+/// window's first stack when that slot has none: what a fault probe touches.
 pub fn stack_guard_addr(idx: usize) -> usize {
-    unsafe { TASK_STACKS.0[idx].as_ptr() as usize }
+    match KSTACK[idx].load(Ordering::Relaxed) {
+        0 => azos_mm::kstack::first_guard(),
+        b => b - 1,
+    }
 }
 
 /// Check stack canaries for all currently-valid task slots.
@@ -3797,7 +3780,7 @@ pub fn stack_canary_check() -> (usize, usize) {
         for i in 0..MAX_TASKS {
             if TASK_VALID[i].load(Ordering::Relaxed) {
                 total += 1;
-                let ptr = TASK_STACKS.0[i].as_ptr() as *const u64;
+                let ptr = KSTACK[i].load(Ordering::Relaxed) as *const u64;
                 if ptr.read_volatile() == stack_canary() {
                     ok += 1;
                 }

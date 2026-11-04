@@ -618,11 +618,10 @@ fn run_validations(cfg: &ConfigMap) {
     let page_bytes: u64 = 1 << page_shift;
 
     // -----------------------------------------------------------------------
-    // KERNEL_STACK_SIZE_KB must leave a positive usable stack after the guard
-    // page (crates/core/sched sets one up — see setup_stack_guard_pages()),
-    // and be a whole number of pages, or the guard of stack i+1 would unmap
-    // the top of stack i. The Kconfig `range 4 256` alone permits 4, which
-    // leaves exactly 0 usable bytes.
+    // KERNEL_STACK_SIZE_KB must be more than one page (the deepest chain is
+    // well above it) and a whole number of pages: each stack is mapped page
+    // by page in the stack window (crates/core/mm/src/kstack.rs), below a
+    // guard of its own outside its size.
     // -----------------------------------------------------------------------
     let stack_guard_page_bytes: u64 = page_bytes;
     let kernel_stack_kb = get_u64_required(cfg, "KERNEL_STACK_SIZE_KB");

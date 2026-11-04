@@ -420,11 +420,9 @@ azos_ktest::ktest! {
     fn mm_wx_image() {
         let v = image()?;
         let rep = azos_mm::vmm::verify_wx(v[0], v[1], v[2], v[3], v[4], v[5]);
-        // After the boot hook's check, `azos_sched::init` unmapped one guard
-        // page at the bottom of every task stack (in .bss): exactly those may
-        // read back unmapped, no other page.
-        let guards = if azos_sched::scheduler::stack_guard_pages_active() { azos_sched::scheduler::stack_guard_readback().0 } else { 0 };
-        if !rep.is_clean() && rep.unmapped != guards {
+        // Task stacks and their guards live in their own window, not in the
+        // image: no image page may read back unmapped.
+        if !rep.is_clean() {
             kprintln!("# mm_wx_image: {} checked, {} W+X, {} wrong-flags, {} unmapped, {} unsplit-mega, first bad {:#x}",
                 rep.checked, rep.write_exec, rep.wrong_flags, rep.unmapped, rep.unsplit_megapage, rep.first_bad);
         }
@@ -436,8 +434,8 @@ azos_ktest::ktest! {
             Err("an image page has the wrong permissions for its section")
         } else if rep.unsplit_megapage != 0 {
             Err("an image page is still in a megapage")
-        } else if rep.unmapped != guards {
-            Err("an image page other than a task-stack guard is unmapped")
+        } else if rep.unmapped != 0 {
+            Err("an image page is unmapped")
         } else {
             Ok(())
         }
@@ -1715,6 +1713,67 @@ azos_ktest::ktest_late! {
         }
         if peak > ceiling {
             return Err("the heap held more pages than KERNEL_HEAP_SIZE");
+        }
+        Ok(())
+    }
+}
+
+// ── A reused kernel stack slot is seen fresh on every CPU ──────────────────
+//
+// A reader on another CPU caches the translation of a stack's first word;
+// the stack is given back past the CPU cache (unmapped here, its slot
+// pending), the pending slots are invalidated and freed, and the same slot
+// is mapped again over new frames with a new word. The reader must see the
+// new word. Canary `kstack-reuse-no-shootdown-canary` (no invalidation): its
+// stale translation still reaches the old frame.
+
+const KSR_OLD: u64 = 0x5afe_0001_0bad_0001;
+const KSR_NEW: u64 = 0x5afe_0002_900d_0002;
+static KSR_VA: AtomicUsize = AtomicUsize::new(0);
+static KSR_STEP: AtomicUsize = AtomicUsize::new(0);
+static KSR_SEEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn ksr_reader(_: usize) {
+    let va = KSR_VA.load(Ordering::Acquire);
+    // Step 1: cache the translation here.
+    let first = unsafe { core::ptr::read_volatile(va as *const u64) };
+    KSR_SEEN.store(first, Ordering::Release);
+    KSR_STEP.store(1, Ordering::Release);
+    while KSR_STEP.load(Ordering::Acquire) != 2 { core::hint::spin_loop(); }
+    // Step 3: read again through whatever this CPU still holds.
+    KSR_SEEN.store(unsafe { core::ptr::read_volatile(va as *const u64) }, Ordering::Release);
+    KSR_STEP.store(3, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn kstack_reused_slot_is_seen_fresh_on_every_cpu() {
+        if azos_percpu::nr_cpu_ids() < 2 {
+            return Err("needs 2 CPUs (the reader elsewhere)");
+        }
+        let here = azos_arch_api::Cpu::hart_id(&azos_arch::ARCH);
+        let other = if here == 0 { 1 } else { 0 };
+        let b = azos_mm::kstack::ktest_alloc_uncached().ok_or("no stack slot")?;
+        unsafe { core::ptr::write_volatile(b as *mut u64, KSR_OLD) };
+        KSR_VA.store(b, Ordering::Release);
+        KSR_STEP.store(0, Ordering::Release);
+        azos_sched::task_create_affinity("ksr-read", ksr_reader, 0, azos_sched::DEFAULT_PRIORITY, other as i8);
+        let deadline = claim_pi_now_ms() + 10_000;
+        while KSR_STEP.load(Ordering::Acquire) != 1 && claim_pi_now_ms() < deadline { core::hint::spin_loop(); }
+        if KSR_STEP.load(Ordering::Acquire) != 1 { return Err("the reader never ran"); }
+        if KSR_SEEN.load(Ordering::Acquire) != KSR_OLD { return Err("the reader did not see the first word"); }
+        azos_mm::kstack::ktest_free_uncached(b);
+        azos_mm::kstack::flush_pending();
+        let b2 = azos_mm::kstack::ktest_alloc_uncached().ok_or("no stack slot the second time")?;
+        if b2 != b { azos_mm::kstack::free(b2); return Err("the freed slot did not come back first"); }
+        unsafe { core::ptr::write_volatile(b2 as *mut u64, KSR_NEW) };
+        KSR_STEP.store(2, Ordering::Release);
+        while KSR_STEP.load(Ordering::Acquire) != 3 && claim_pi_now_ms() < deadline { core::hint::spin_loop(); }
+        let seen = KSR_SEEN.load(Ordering::Acquire);
+        azos_mm::kstack::free(b2);
+        if KSR_STEP.load(Ordering::Acquire) != 3 { return Err("the reader never read the second time"); }
+        if seen != KSR_NEW {
+            kprintln!("# kstack reuse: the reader saw {:#x}, not {:#x}", seen, KSR_NEW);
+            return Err("a CPU still reached the old frame through the reused slot");
         }
         Ok(())
     }
