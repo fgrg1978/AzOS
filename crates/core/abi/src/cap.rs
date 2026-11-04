@@ -878,3 +878,75 @@ mod tests {
         format!("{:?}", t)
     }
 }
+
+/// Error returned by `CapTable::get`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CapError {
+    /// The handle's generation is stale (slot empty or reused).
+    Stale,
+    /// The handle's kind does not match the expected `T`.
+    WrongKind,
+    /// The slot does not have the required permission bits.
+    MissingPerms,
+    /// Degraded mode is armed and this is a write/actuation: the
+    /// capability is valid but its use is contained until degraded mode clears.
+    Contained,
+    /// The RECEIVING table of a capability move has no free slot.
+    ///
+    /// It is its own variant rather than being folded
+    /// into `Stale` because the two say opposite things about the sender: on
+    /// `NoSpace` the sender still holds the capability and nothing moved, and a
+    /// caller that cannot tell those apart cannot know whether to retry or to
+    /// give up.
+    NoSpace,
+    /// The capability's warrant ended: it expired, or the sweep revoked it
+    /// because the warrant it descends from was revoked. Answered where
+    /// `Stale` would be (a dead handle) once the holder has a notice pending,
+    /// and for a use past the deadline.
+    Revoked,
+}
+
+impl CapError {
+    /// The reason code written into a `SAFETY_CAP_DENIED_TYPED` record.
+    ///
+    /// Frozen like every other number that reaches the black box: append,
+    /// never renumber. `Contained` is numbered even though it is never
+    /// recorded (see `logger.rs`'s `SAFETY_CAP_DENIED_TYPED` doc) — closing
+    /// the space is what stops a later "it needs a code" from taking one that
+    /// already means something else.
+    ///
+    /// The four that ARE recorded are four different events, and collapsing
+    /// them would waste the one thing this path knows that the untyped one
+    /// does not: `Stale` is a handle to an object that is gone or was reused —
+    /// the forgery shape; `WrongKind` is a handle to a real object of another
+    /// family — the confusion shape; `MissingPerms` is the right object with
+    /// insufficient rights — the escalation shape; `Revoked` is a handle that
+    /// was real and whose warrant ended (revoked with an ancestor, or past its
+    /// deadline) — a holder using authority it was told it lost.
+    pub const fn code(self) -> u32 {
+        match self {
+            CapError::Stale => 1,
+            CapError::WrongKind => 2,
+            CapError::MissingPerms => 3,
+            CapError::Contained => 4,
+            // Appended, never renumbered — the rule stated above. Numbered
+            // although it is not recorded either: a full receiving table is
+            // the receiver's resource limit, not an attempt on authority, and
+            // recording it would put the sender in the denial ring for
+            // something the sender did not do.
+            CapError::NoSpace => 5,
+            // Appended, never renumbered. A revoked or expired warrant is the
+            // forgery shape's honest twin: the handle was real.
+            CapError::Revoked => 6,
+        }
+    }
+
+    /// Is this refusal a capability DENIAL, or the safety system working?
+    ///
+    /// `Contained` is the second: degraded mode refusing a write from a task
+    /// that holds the capability. Recording it as a denial would bury every
+    /// real one under a containment episode. See `SAFETY_CAP_DENIED_TYPED`.
+    pub const fn is_denial(self) -> bool {
+        !matches!(self, CapError::Contained)
+    }
+}

@@ -22,8 +22,7 @@
 //!   `InodeKey` naming the file), and `azos_fs::FsPageBacking` is the
 //!   implementation. A file `mmap` is a [`Region`] of [`PagerKind::File`] whose
 //!   `obj`/`off` name the cache object and the page in it; the object table is
-//!   not this crate's (it depends on this one), so the fault path reaches it
-//!   through [`FileFrames`], which the syscall layer installs. Two kinds:
+//!   `crate::memobj`'s, which the fault path calls directly. Two kinds:
 //!   **`MAP_SHARED`** maps the cache's own frame (the cache frame IS the mapped
 //!   frame: every mapper sees every store, and the page is written back to the
 //!   file); **`MAP_PRIVATE`** takes a copy of the cache page at the first touch
@@ -119,6 +118,7 @@ pub use page_backing::{fill_page, valid_len, write_back_page, PageBacking, PageI
 use crate::resv::{self, Claim, Filled, ResvTable};
 use crate::zpool::{self, Fault, Fetched, Lookup, PageWords, Packed, Reclaimee};
 use crate::swap;
+use crate::memobj::{self, MemObjError, PagedError};
 use crate::{pmm, vmm};
 
 /// Kconfig `MM_DEMAND_PAGING`: anonymous `mmap` reserves instead of commits.
@@ -172,49 +172,12 @@ pub trait Pager {
     fn supply(&self, req: &PageRequest) -> KResult<Supply>;
 }
 
-/// What the file pager needs of the page cache, which lives in the object table
-/// (`azos_ipc::memobj`, above this crate): installed once by the syscall layer
-/// ([`set_file_frames`]), before the first file region exists.
-///
-/// `obj` is the packed reference a file region carries ([`Region::obj`]), `page`
-/// the page within the object ([`Region::page_index`]). Every method may wait
-/// for the file and is called with no lock of this module held.
-pub trait FileFrames: Sync {
-    /// The cache frame of the page, read from the file first if it is not
-    /// there; `write` says the caller is about to store through it. The frame
-    /// belongs to the cache. It is pinned: the cache drops no frame of `obj`
-    /// until [`FileFrames::installed`], so the caller can put it in a leaf.
-    fn frame(&self, obj: u32, page: usize, write: bool) -> KResult<PhysAddr>;
-
-    /// The caller of a [`FileFrames::frame`] that returned a frame is done with
-    /// it, installed or not: the pin ends.
-    fn installed(&self, obj: u32);
-
-    /// The frame the cache holds for the page now, without filling it.
-    fn resident(&self, obj: u32, page: usize) -> Option<PhysAddr>;
-
-    /// Copy the page into `dst` (one page), through the cache: how many bytes
-    /// the file had there. The caller zeroes the rest.
-    fn read(&self, obj: u32, page: usize, dst: &mut [u8]) -> KResult<usize>;
-
-    /// A region over `obj` came to be (a `mmap`, or a fork's copy of one).
-    fn addref(&self, obj: u32);
-
-    /// A region over `obj` ended (`munmap`, the space's end).
-    fn unref(&self, obj: u32);
-}
-
-static FILE_FRAMES: SpinLock<Option<&'static dyn FileFrames>> = SpinLock::new(None);
-
-/// Install the page cache the file regions fault through. Idempotent.
-pub fn set_file_frames(f: &'static dyn FileFrames) {
-    *FILE_FRAMES.lock_irqsave() = Some(f);
-}
-
-fn file_frames() -> KResult<&'static dyn FileFrames> {
-    // A region can only exist after the install (`reserve_file` refuses
-    // without it), so a miss here is a kernel bug, answered as an unmapped page.
-    (*FILE_FRAMES.lock_irqsave()).ok_or(KernelError::NotMapped)
+fn file_err(e: PagedError) -> KernelError {
+    match e {
+        PagedError::Io(_) => KernelError::IoError,
+        PagedError::Obj(MemObjError::NoMem | MemObjError::Busy) => KernelError::OutOfMemory,
+        PagedError::Obj(_) => KernelError::NotMapped,
+    }
 }
 
 /// Zero-filled anonymous memory.
@@ -1435,7 +1398,7 @@ pub fn reserve(root: usize, start: usize, end: usize, write: bool) -> Result<(),
 /// `MAP_SHARED`. Commits nothing, and charges nothing (the caller charges a
 /// private region as it does `mmap`'s anonymous ones; a shared one is the
 /// cache's memory). The region counts as one user of `obj`
-/// ([`FileFrames::addref`]) until it ends.
+/// ([`memobj::memobj_paged_users_add_ref`]) until it ends.
 ///
 /// `Overlap` as [`reserve`]; `Full` when the space's records are exhausted;
 /// `Invalid` before any page cache is installed.
@@ -1448,7 +1411,6 @@ pub fn reserve_file(
     obj: u32,
     off: usize,
 ) -> Result<(), RegionError> {
-    let ff = file_frames().map_err(|_| RegionError::Invalid)?;
     if !vmm::user_range_vacant(root, start, end) {
         return Err(RegionError::Overlap);
     }
@@ -1463,7 +1425,7 @@ pub fn reserve_file(
             return r;
         }
     }
-    ff.addref(obj);
+    memobj::memobj_paged_users_add_ref(obj);
     Ok(())
 }
 
@@ -1517,7 +1479,7 @@ pub fn has_file(root: usize, s: usize, e: usize) -> bool {
 /// supplied with no lock held, then the region is found again and the entry
 /// installed under the lock.
 ///
-/// * **Shared**: the cache's frame ([`FileFrames::frame`]) is installed with the
+/// * **Shared**: the cache's frame ([`memobj::memobj_paged_frame_pinned_ref`]) is installed with the
 ///   region's permissions. The mapper's record in the object (made by the
 ///   syscall layer when it mapped) is what lets the cache drop the page from
 ///   this space, so after the install the cache is asked again: the same frame
@@ -1528,28 +1490,27 @@ pub fn has_file(root: usize, s: usize, e: usize) -> bool {
 ///   cache and zeros after them. It is owned (munmap and the space's end free
 ///   it) and was charged when the region was reserved.
 fn resolve_file_fault(root: usize, page: usize, r: &Region) -> KResult<()> {
-    let ff = file_frames()?;
     let idx = r.page_index(page);
     // The cache's pin on a shared frame, held to the end of the install.
-    struct Pin<'a>(Option<(&'a dyn FileFrames, u32)>);
-    impl Drop for Pin<'_> {
+    struct Pin(Option<u32>);
+    impl Drop for Pin {
         fn drop(&mut self) {
-            if let Some((ff, obj)) = self.0 {
-                ff.installed(obj);
+            if let Some(obj) = self.0 {
+                memobj::memobj_paged_install_done_ref(obj);
             }
         }
     }
     let mut _pin = Pin(None);
     let frame = if r.shared {
-        let f = ff.frame(r.obj, idx, r.write)?;
-        _pin = Pin(Some((ff, r.obj)));
+        let f = memobj::memobj_paged_frame_pinned_ref(r.obj, idx, r.write).map(PhysAddr::new).map_err(file_err)?;
+        _pin = Pin(Some(r.obj));
         f
     } else {
         // SAFETY: filled right below, before the entry that exposes it exists.
         let f = unsafe { pmm::alloc_page_uninit()? };
         // SAFETY: a frame this call owns, mapped by the direct map.
         let bytes = unsafe { core::slice::from_raw_parts_mut(addr::phys_to_virt(f.as_usize()) as *mut u8, PAGE_SIZE) };
-        match ff.read(r.obj, idx, bytes) {
+        match memobj::memobj_paged_read_ref(r.obj, idx * PAGE_SIZE, bytes).map_err(file_err) {
             Ok(n) => bytes[n.min(PAGE_SIZE)..].fill(0),
             Err(e) => {
                 let _ = pmm::free_page(f);
@@ -1609,7 +1570,7 @@ fn resolve_file_fault(root: usize, page: usize, r: &Region) -> KResult<()> {
     t.s[i].committed += 1;
     drop(t);
     ARCH.flush_tlb_page(page);
-    if r.shared && ff.resident(r.obj, idx) != Some(frame) {
+    if r.shared && memobj::memobj_page_phys_ref(r.obj, idx).ok().flatten().map(PhysAddr::new) != Some(frame) {
         // The cache dropped the page before the install could be covered.
         vmm::unmap(root, page);
         let mut t = TABLE.lock_irqsave();
@@ -1930,11 +1891,9 @@ pub fn release_range(root: usize, s: usize, e: usize) -> Result<usize, RegionErr
     }
     drop(t);
     // The regions are gone: their users in the page cache with them.
-    if let Ok(ff) = file_frames() {
-        for &(_, _, _, file) in &pieces[..np] {
-            if let Some(obj) = file {
-                ff.unref(obj);
-            }
+    for &(_, _, _, file) in &pieces[..np] {
+        if let Some(obj) = file {
+            memobj::memobj_paged_users_drop_ref(obj);
         }
     }
     Ok(paid - paid_committed)
@@ -2039,10 +1998,8 @@ pub fn fork_clone(parent: usize, child: usize) -> Result<usize, RegionError> {
         spans[..ns].iter().map(|&(a, b)| vmm::user_leaves_in(child, a, b)).sum()
     };
     if nf != 0 {
-        if let Ok(ff) = file_frames() {
-            for &obj in &files[..nf] {
-                ff.addref(obj);
-            }
+        for &obj in &files[..nf] {
+            memobj::memobj_paged_users_add_ref(obj);
         }
     }
     // The pages the parent has compressed are the child's too: a share of the
@@ -2123,10 +2080,8 @@ pub fn forget(root: usize) {
     zpool_forget(root);
     // The regions are gone: their users in the page cache with them.
     if nf != 0 {
-        if let Ok(ff) = file_frames() {
-            for &obj in &files[..nf] {
-                ff.unref(obj);
-            }
+        for &obj in &files[..nf] {
+            memobj::memobj_paged_users_drop_ref(obj);
         }
     }
 }

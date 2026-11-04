@@ -147,16 +147,15 @@
 //! Allows two or more processes to map the same physical pages into their
 //! address spaces for zero-copy data sharing (e.g., camera frames, LiDAR scans).
 
-use crate::cap::ty;
 use core::sync::atomic::{AtomicU32, Ordering};
 use azos_sync::{SpinLock, SpinLockGuard};
 
-use crate::cap::objref;
-use crate::cap::{CapError, CapType};
-use azos_mm::pager::{PageBacking, PageIoError, PageKey};
+use azos_abi::cap::CapError;
+use azos_common::slot_ref::{self, Layout};
+use crate::pager::{PageBacking, PageIoError, PageKey};
 
 /// How a `Cap<Shm>` packs `(index, generation)`: 8 + 24 bits (`objref::SHM`).
-const LAYOUT: objref::Layout = objref::SHM;
+const LAYOUT: Layout = slot_ref::SHM;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -182,8 +181,8 @@ pub const MAX_MEMOBJ_PAGES: usize = 64;
 /// A fixed array keeps the whole table in BSS with no allocator on the IPC
 /// path. Eight simultaneous sharers per region is well beyond anything the
 /// robot's pipelines do (producer + a handful of consumers); exhausting it
-/// fails the *acquire*, it never corrupts accounting.
-pub const MAX_MEMOBJ_HOLDERS: usize = 8;
+/// fails the *acquire*, it never corrupts accounting. Kconfig `MAX_MEMOBJ_HOLDERS`.
+pub const MAX_MEMOBJ_HOLDERS: usize = azos_limits::MAX_MEMOBJ_HOLDERS as usize;
 
 /// A `Cap<Shm>` stores a packed `(index, generation)` with `LAYOUT.idx_bits()`
 /// of index, so every region index must fit them.
@@ -491,6 +490,9 @@ struct PagedState {
     /// [`memobj_paged_install_done_ref`]): a frame a fault is about to put in a
     /// leaf is not dropped, whatever page of the object it is.
     installing: u32,
+    /// File regions over the object, and the callers that hold one for the region
+    /// they are about to make: the file cache closes an object nobody uses.
+    users: u32,
 }
 
 impl MemObj {
@@ -645,6 +647,50 @@ static MEMOBJS: SpinLock<MemObjTable> = SpinLock::new(MemObjTable {
 });
 
 // ---------------------------------------------------------------------------
+// The scheduler and the capability table, above this crate
+// ---------------------------------------------------------------------------
+
+/// What the object table needs of the layers above `mm`: the Domain a task
+/// charges, the charge itself, the process of a task, the futex wake, and the
+/// sweep that ends the capabilities of a slot whose generation wrapped.
+/// Installed once at boot by `azos_ipc` ([`set_host`]).
+pub trait Host: Sync {
+    /// The Domain `tid` charges, `None` for a TID that names no live task.
+    fn domain_of(&self, tid: u32) -> Option<u32>;
+    /// Frames of the Domain `key`: all or nothing.
+    fn charge(&self, key: u32, pages: u32) -> bool;
+    fn discharge(&self, key: u32, pages: u32);
+    /// The object's metadata in the Domain's kernel-memory ledger.
+    fn meta_charge(&self, key: u32, bytes: u64) -> bool;
+    fn meta_discharge(&self, key: u32, bytes: u64);
+    /// Frames of the running task's own Domain (a private reservation).
+    fn task_charge(&self, pages: u32) -> bool;
+    fn task_discharge(&self, pages: u32);
+    /// The process a task belongs to: holders are keyed by it.
+    fn proc_tid(&self, tid: u32) -> u32;
+    /// Wake the futex sleepers on the shared word `(obj, offset)`.
+    fn wake_shared(&self, obj: u32, offset: u32);
+    /// Revoke the capabilities that name table slot `slot`: its generation wrapped.
+    fn sweep_slot(&self, slot: u32);
+}
+
+/// A thin pointer to the [`Host`], which the hook cell can hold.
+pub struct HostBox(pub &'static dyn Host);
+
+azos_common::ro_hook! {
+    static HOST: &'static HostBox;
+}
+
+/// Install the [`Host`]. Boot, once, before the first object is made.
+pub fn set_host(h: &'static HostBox) {
+    HOST.set(h);
+}
+
+fn host() -> &'static dyn Host {
+    HOST.get().expect("memobj: no host installed").0
+}
+
+// ---------------------------------------------------------------------------
 // Page-table hooks (boot-registered)
 // ---------------------------------------------------------------------------
 
@@ -767,7 +813,7 @@ fn charge_key_of(tid: u32) -> u32 {
     if tid == MEMOBJ_KERNEL_OWNER {
         return 0;
     }
-    azos_sched::idx_for_tid(tid).map_or(0, azos_sched::task_domain)
+    host().domain_of(tid).unwrap_or(0)
 }
 
 /// Charge a new region to the Domain `key` names: its `pages` frames (the frame
@@ -778,11 +824,11 @@ fn charge_region(key: u32, pages: usize) -> bool {
     if key == 0 {
         return true;
     }
-    if !azos_sched::mm_charge_domain(key, pages as u32) {
+    if !host().charge(key, pages as u32) {
         return false;
     }
-    if !crate::cap_store::kmem_charge(key, crate::cap_store::KMEM_MEMOBJ_META, MEMOBJ_KMEM_BYTES) {
-        azos_sched::mm_discharge_domain(key, pages as u32);
+    if !host().meta_charge(key, MEMOBJ_KMEM_BYTES) {
+        host().discharge(key, pages as u32);
         return false;
     }
     true
@@ -791,8 +837,8 @@ fn charge_region(key: u32, pages: usize) -> bool {
 /// Give back what [`charge_region`] took, for a region that was never published.
 fn uncharge_region(key: u32, pages: usize) {
     if key != 0 {
-        azos_sched::mm_discharge_domain(key, pages as u32);
-        crate::cap_store::kmem_discharge(key, crate::cap_store::KMEM_MEMOBJ_META, MEMOBJ_KMEM_BYTES);
+        host().discharge(key, pages as u32);
+        host().meta_discharge(key, MEMOBJ_KMEM_BYTES);
     }
 }
 
@@ -848,7 +894,7 @@ fn create_core(
     let uncharge = || uncharge_region(key, page_count);
 
     match spec.kind {
-        MemKind::Contig => match azos_mm::pmm::alloc_contiguous(page_count) {
+        MemKind::Contig => match crate::pmm::alloc_contiguous(page_count) {
             Ok(base) => {
                 for (i, p) in pages.iter_mut().enumerate().take(page_count) {
                     *p = base.as_usize() + i * page;
@@ -861,7 +907,7 @@ fn create_core(
         },
         MemKind::Anon => {
             for i in 0..page_count {
-                match azos_mm::pmm::alloc_page() {
+                match crate::pmm::alloc_page() {
                     Ok(frame) => pages[i] = frame.as_usize(),
                     Err(_) => {
                         // OOM: give back what this call already took.
@@ -936,7 +982,7 @@ fn owns_fewer_than_quota(regions: &MemObjTable, owner_task: u32) -> bool {
 /// Give back frames `create_core` allocated but never published.
 fn free_frames(pages: &[usize]) {
     for &p in pages {
-        let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(p));
+        let _ = crate::pmm::free_page(crate::addr::PhysAddr::new(p));
     }
 }
 
@@ -971,12 +1017,12 @@ fn claim_slot_cow(
         let slot = (0..MAX_MEMOBJS).find(|&i| !regions[i].active && regions.next_gen[i] != 0)?;
         // The generation is taken once a free slot is known, so a full table
         // or a quota refusal consumes none.
-        let gen = match objref::take_slot_gen(regions.next_gen[slot], LAYOUT) {
-            objref::SlotGen::Gen(g) => g,
-            objref::SlotGen::Wrap => {
+        let gen = match slot_ref::take_slot_gen(regions.next_gen[slot], LAYOUT) {
+            slot_ref::SlotGen::Gen(g) => g,
+            slot_ref::SlotGen::Wrap => {
                 regions.next_gen[slot] = 0;
                 drop(regions);
-                objref::sweep_index(ty::SHM, slot as u32);
+                host().sweep_slot(slot as u32);
                 regions = MEMOBJS.lock();
                 regions.next_gen[slot] = 1;
                 continue;
@@ -1466,7 +1512,7 @@ fn with_mapped_word_locked<R>(
     // SAFETY: a 4-aligned word of a frame of a live region, which cannot be
     // freed while the guard is held (see the doc); the direct map of a RAM
     // frame is valid for an atomic 32-bit access.
-    let word = unsafe { &*(azos_mm::addr::phys_to_virt(w.phys) as *const AtomicU32) };
+    let word = unsafe { &*(crate::addr::phys_to_virt(w.phys) as *const AtomicU32) };
     // Canary `memobj-word-unlocked-canary`: the word is used with the table
     // unlocked, as the futex paths did with the frame they had resolved.
     let held = if cfg!(feature = "memobj-word-unlocked-canary") {
@@ -1679,7 +1725,7 @@ pub fn memobj_with_word_ref<R>(
     if region.phys_pages[page] == 0 {
         return Ok(None);
     }
-    let va = azos_mm::addr::phys_to_virt(region.phys_pages[page]) + offset % page_size;
+    let va = crate::addr::phys_to_virt(region.phys_pages[page]) + offset % page_size;
     // SAFETY: a 4-aligned word inside a live page of the region, which cannot
     // be freed while this guard is held (see the doc).
     let word = unsafe { &*(va as *const AtomicU32) };
@@ -1726,7 +1772,7 @@ pub fn memobj_with_span_ref<R>(r: u32, bytes: usize, f: impl FnOnce(usize) -> R)
     if first == 0 || (0..pages).any(|k| region.phys_pages[k] != first + k * page) {
         return Ok(None);
     }
-    let out = f(azos_mm::addr::phys_to_virt(first));
+    let out = f(crate::addr::phys_to_virt(first));
     drop(regions);
     Ok(Some(out))
 }
@@ -1887,10 +1933,10 @@ fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) -> Reclaim {
         // Given back to the Domain that holds the charge, from whichever task
         // drops the last reference (the budget is atomic).
         if region.charge_key != 0 {
-            azos_sched::mm_discharge_domain(region.charge_key, region.page_count as u32);
+            host().discharge(region.charge_key, region.page_count as u32);
         }
         if region.meta_key != 0 {
-            crate::cap_store::kmem_discharge(region.meta_key, crate::cap_store::KMEM_MEMOBJ_META, MEMOBJ_KMEM_BYTES);
+            host().meta_discharge(region.meta_key, MEMOBJ_KMEM_BYTES);
         }
         *region = MemObj::empty();
     }
@@ -1949,8 +1995,8 @@ impl Reclaim {
     /// it. With the table lock dropped.
     fn free(self) {
         for (k, &p) in self.frames[..self.n].iter().enumerate() {
-            if self.shared & (1u64 << k) == 0 || azos_mm::cow::page_decref(p) {
-                let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(p));
+            if self.shared & (1u64 << k) == 0 || crate::cow::page_decref(p) {
+                let _ = crate::pmm::free_page(crate::addr::PhysAddr::new(p));
             }
         }
     }
@@ -2095,34 +2141,6 @@ pub struct MapGrant {
     pub writable: bool,
 }
 
-/// Resolve `cap` in `table` for a map: `READ` and `MAP` are required (reading a
-/// region through the kernel is not a window in ring 3: `MAP` is the right to
-/// have one); `WRITE` decides the writable bit of a read-write object. A refusal other than the missing
-/// `WRITE` (a stale or revoked capability, containment) is the map's.
-pub fn memobj_resolve_map(
-    table: &crate::cap::CapTable,
-    cap: crate::cap::Cap<crate::cap::targets::Shm>,
-    op: u16,
-) -> Result<MapGrant, MemObjError> {
-    let r = table.get_op(cap, crate::cap::CapPerms::READ.union(crate::cap::CapPerms::MAP), op)?;
-    let desc = memobj_describe_ref(r)?;
-    // A purged object has no frame to map: say so, not "not reachable".
-    if desc.purge == PurgeState::Purged {
-        return Err(MemObjError::Purged);
-    }
-    let writable = if desc.perms == MemPerms::ReadWrite {
-        match table.get_op(cap, crate::cap::CapPerms::WRITE, op) {
-            Ok(_) => true,
-            // Canary `memobj-share-no-narrow-canary`: an attenuated capability
-            // maps as writable as the object is.
-            Err(CapError::MissingPerms) => cfg!(feature = "memobj-share-no-narrow-canary"),
-            Err(e) => return Err(MemObjError::Cap(e)),
-        }
-    } else {
-        false
-    };
-    Ok(MapGrant { r, desc, writable })
-}
 
 /// Change the access of `tid`'s recorded mapping of the object `r` names to
 /// `write`: the record and the page table change together (through the
@@ -2166,7 +2184,7 @@ fn reclaim_sole_frames(region: &mut MemObj) {
         let bit = 1u64 << page;
         if region.cow_shared & bit != 0 {
             let p = region.phys_pages[page];
-            if azos_mm::cow::page_is_sole(p) && azos_mm::cow::page_forget_if_sole(p) {
+            if crate::cow::page_is_sole(p) && crate::cow::page_forget_if_sole(p) {
                 region.cow_shared &= !bit;
             }
         }
@@ -2198,7 +2216,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     // broke its own copy first), so nothing is left to protect from. The share
     // count is dropped back to "one holder" with the compare-and-swap that tells
     // a clone taken in the meantime (it would be above one) from a sole owner.
-    if azos_mm::cow::page_is_sole(old) && azos_mm::cow::page_forget_if_sole(old) {
+    if crate::cow::page_is_sole(old) && crate::cow::page_forget_if_sole(old) {
         let mut regions = MEMOBJS.lock();
         if let Ok(i) = live_index(&regions, r) {
             if regions[i].generation == key && regions[i].phys_pages[page] == old {
@@ -2210,14 +2228,14 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     // The copy, with no lock held. A second thread breaking the same page
     // races here: whoever finds the bit still set after the allocation swaps,
     // the other frees its copy.
-    let fresh = azos_mm::pmm::alloc_page().map_err(|_| MemObjError::NoMem)?;
+    let fresh = crate::pmm::alloc_page().map_err(|_| MemObjError::NoMem)?;
     // SAFETY: `old` is a live frame of this object (the caller holds a
     // reference, or the break runs under the map that holds one), `fresh` is
     // ours; both are one granule.
     unsafe {
         core::ptr::copy_nonoverlapping(
-            azos_mm::addr::phys_to_virt(old) as *const u8,
-            azos_mm::addr::phys_to_virt(fresh.as_usize()) as *mut u8,
+            crate::addr::phys_to_virt(old) as *const u8,
+            crate::addr::phys_to_virt(fresh.as_usize()) as *mut u8,
             azos_arch::PAGE_SIZE,
         );
     }
@@ -2231,7 +2249,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     });
     let Some(i) = still else {
         drop(regions);
-        let _ = azos_mm::pmm::free_page(fresh);
+        let _ = crate::pmm::free_page(fresh);
         return Err(MemObjError::Busy);
     };
     let o = &mut regions[i];
@@ -2243,8 +2261,8 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     o.cow_shared &= !(1u64 << page);
     drop(regions);
     // Our share of `old` is given up; the last sharer frees it.
-    if azos_mm::cow::page_decref(old) {
-        let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(old));
+    if crate::cow::page_decref(old) {
+        let _ = crate::pmm::free_page(crate::addr::PhysAddr::new(old));
     }
     Ok(())
 }
@@ -2321,7 +2339,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
         if !writable_somewhere && o.kind == MemKind::Anon {
             let mut shared = 0usize;
             for &p in &pages[..n] {
-                if azos_mm::cow::page_addref(p).is_err() {
+                if crate::cow::page_addref(p).is_err() {
                     break;
                 }
                 shared += 1;
@@ -2331,7 +2349,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
                 true
             } else {
                 for &p in &pages[..shared] {
-                    let _ = azos_mm::cow::page_decref(p);
+                    let _ = crate::cow::page_decref(p);
                 }
                 false
             }
@@ -2344,7 +2362,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
         let mask = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
         claim_slot_cow(owner_task, &pages[..n], &spec, key, mask, None).ok_or(MemObjError::NoMem).inspect_err(|_| {
             for &p in &pages[..n] {
-                let _ = azos_mm::cow::page_decref(p);
+                let _ = crate::cow::page_decref(p);
             }
         })
     } else {
@@ -2374,14 +2392,14 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
 fn copy_into_new(src_pages: &[usize], owner_task: u32, spec: &MemSpec, key: u32) -> Result<u32, MemObjError> {
     let mut fresh = [0usize; MAX_MEMOBJ_PAGES];
     for (k, &sp) in src_pages.iter().enumerate() {
-        match azos_mm::pmm::alloc_page() {
+        match crate::pmm::alloc_page() {
             Ok(f) => {
                 // SAFETY: `sp` is held live by the caller's reference, `f` is
                 // ours; one granule each.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
-                        azos_mm::addr::phys_to_virt(sp) as *const u8,
-                        azos_mm::addr::phys_to_virt(f.as_usize()) as *mut u8,
+                        crate::addr::phys_to_virt(sp) as *const u8,
+                        crate::addr::phys_to_virt(f.as_usize()) as *mut u8,
                         azos_arch::PAGE_SIZE,
                     );
                 }
@@ -2493,7 +2511,7 @@ pub fn memobj_warrant_swept(resource: u32, owner: u32) {
     for &tid in &tids[..n] {
         // Canary `memobj-sweep-every-domain-canary`: the owner is not consulted,
         // every Domain's holder loses the object.
-        let in_domain = azos_sched::idx_for_tid(tid).map(azos_sched::task_domain) == Some(owner);
+        let in_domain = host().domain_of(tid) == Some(owner);
         if in_domain || cfg!(feature = "memobj-sweep-every-domain-canary") {
             let _ = memobj_revoke_holder_ref(tid, resource);
         }
@@ -2558,16 +2576,13 @@ pub fn memobj_take_moved_windows(tid: u32, out: &mut [(usize, usize)]) -> usize 
     n
 }
 
-/// The object half of a capability MOVE: [`crate::cap_store::MoveHook`] for
-/// `Cap<Shm>`, registered at boot. The tables key holders by PROCESS, so both
+/// The object half of a capability MOVE for `Cap<Shm>`, registered at boot by
+/// `azos_ipc::memobj::memobj_moved`. The tables key holders by PROCESS, so both
 /// TIDs are resolved to theirs. A refusal ([`Moved::transferred`] false) leaves
 /// the references where they were: nothing is lost, and the sender's mapping is
 /// gone either way.
-pub fn memobj_moved(kind: CapType, resource: u32, from_tid: u32, to_tid: u32) {
-    if kind != ty::SHM {
-        return;
-    }
-    let (from, to) = (azos_sched::group::proc_tid(from_tid), azos_sched::group::proc_tid(to_tid));
+pub fn memobj_moved_shm(resource: u32, from_tid: u32, to_tid: u32) {
+    let (from, to) = (host().proc_tid(from_tid), host().proc_tid(to_tid));
     if from != to {
         let _ = memobj_move(from, to, resource);
     }
@@ -2646,12 +2661,12 @@ pub fn memobj_move(from: u32, to: u32, r: u32) -> Result<Moved, MemObjError> {
         if regions[i].charge_key != 0 {
             let to_key = charge_key_of(to);
             let pages = regions[i].page_count as u32;
-            if to_key == 0 || !azos_sched::mm_charge_domain(to_key, pages) {
+            if to_key == 0 || !host().charge(to_key, pages) {
                 return Ok(not_moved);
             }
             // The receiver is charged; the sender's Domain gets its charge back.
             if !cfg!(feature = "memobj-charge-stays-canary") {
-                azos_sched::mm_discharge_domain(regions[i].charge_key, pages);
+                host().discharge(regions[i].charge_key, pages);
             }
             regions[i].charge_key = to_key;
         }
@@ -2727,7 +2742,7 @@ impl PipeWakes {
     /// Wake the sleepers on every word collected. Called with no lock held.
     fn ring(self) {
         for &(obj, offset) in &self.at[..self.n] {
-            let _ = azos_sched::futex::wake_key(azos_sched::futex::Key::Shared { obj, offset }, u32::MAX);
+            host().wake_shared(obj, offset);
         }
     }
 }
@@ -2745,7 +2760,7 @@ fn pipe_header(region: &MemObj) -> Option<azos_bytepipe::Header> {
     {
         return None;
     }
-    let va = azos_mm::addr::phys_to_virt(region.phys_pages[0]);
+    let va = crate::addr::phys_to_virt(region.phys_pages[0]);
     // SAFETY: the first frame of a live region the table lock pins, page
     // aligned, at least HEADER_BYTES long, mapped in the direct map.
     unsafe { azos_bytepipe::Header::at(va) }
@@ -2817,7 +2832,7 @@ fn ends_merge_locked(region: &mut MemObj, from: u8, ti: usize) {
 /// The creator of the region `r` holds both ends of what may become a pipe.
 /// Nothing is counted: `BytePipe::init` writes the creator's one reader and
 /// one writer itself.
-fn pipe_creator_ends(tid: u32, r: u32) {
+pub fn pipe_creator_ends(tid: u32, r: u32) {
     let mut regions = MEMOBJS.lock();
     if let Ok(i) = live_index(&regions, r) {
         if let Some(hi) = holder_index(&regions[i], tid) {
@@ -2908,7 +2923,7 @@ pub fn memobj_frames_pin(r: u32, out: &mut [usize]) -> Result<usize, MemObjError
     }
     acquire_locked(region, MEMOBJ_KERNEL_OWNER).ok_or(MemObjError::Closed)?;
     for (slot, &pa) in out.iter_mut().zip(&region.phys_pages[..region.page_count]) {
-        *slot = azos_mm::addr::phys_to_virt(pa);
+        *slot = crate::addr::phys_to_virt(pa);
     }
     Ok(region.page_count)
 }
@@ -2983,12 +2998,12 @@ fn pipe_drop_all(tid: u32) {
 /// mapped or marked, or a table was refused.
 pub fn anon_reserve(root: usize, base: usize, pages: usize) -> Result<(), MemObjError> {
     // Canary `memobj-anon-uncharged-canary`: the reservation is not charged.
-    if !cfg!(feature = "memobj-anon-uncharged-canary") && !azos_sched::mm_charge(pages as u32) {
+    if !cfg!(feature = "memobj-anon-uncharged-canary") && !host().task_charge(pages as u32) {
         return Err(MemObjError::NoMem);
     }
-    if azos_mm::demand::map_demand_range(root, base, pages).is_err() {
+    if crate::demand::map_demand_range(root, base, pages).is_err() {
         // The range wrote no marker (all or nothing); the charge goes back.
-        azos_sched::mm_discharge(pages as u32);
+        host().task_discharge(pages as u32);
         return Err(MemObjError::Busy);
     }
     Ok(())
@@ -3004,7 +3019,7 @@ pub fn anon_release_range(root: usize, start: usize, end: usize) -> u32 {
     let mut n = 0u32;
     let mut va = start;
     while va < end {
-        if azos_mm::demand::clear_demand_marker(root, va) {
+        if crate::demand::clear_demand_marker(root, va) {
             n = n.saturating_add(1);
         }
         va += page;
@@ -3071,7 +3086,7 @@ pub struct PagedInfo {
 /// published. The direct map covers it.
 unsafe fn frame_bytes<'a>(phys: usize) -> &'a mut [u8] {
     // SAFETY: the caller's contract above.
-    unsafe { core::slice::from_raw_parts_mut(azos_mm::addr::phys_to_virt(phys) as *mut u8, azos_arch::PAGE_SIZE) }
+    unsafe { core::slice::from_raw_parts_mut(crate::addr::phys_to_virt(phys) as *mut u8, azos_arch::PAGE_SIZE) }
 }
 
 /// The slot of the live Paged object `r` names.
@@ -3129,7 +3144,7 @@ pub fn memobj_create_paged(
         return Err(MemObjError::BadArg);
     }
     let spec = MemSpec { kind: MemKind::Paged, perms, attrs: 0, device_visible: false };
-    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0, installing: 0 };
+    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0, installing: 0, users: 0 };
     claim_slot_cow(MEMOBJ_KERNEL_OWNER, &[0usize; MAX_MEMOBJ_PAGES][..pages], &spec, 0, 0, Some(st))
         .ok_or(MemObjError::NoMem)
 }
@@ -3152,11 +3167,11 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
         let st = o.paged.as_ref().ok_or(MemObjError::BadArg)?;
         (st.backing, st.key, paged_file_off(st, idx), st.size)
     };
-    let frame = azos_mm::pmm::alloc_page().map_err(|_| MemObjError::NoMem)?;
+    let frame = crate::pmm::alloc_page().map_err(|_| MemObjError::NoMem)?;
     // SAFETY: allocated just above and published nowhere yet.
     let bytes = unsafe { frame_bytes(frame.as_usize()) };
-    if let Err(e) = azos_mm::pager::fill_page(backing, &key, off, size, bytes) {
-        let _ = azos_mm::pmm::free_page(frame);
+    if let Err(e) = crate::pager::fill_page(backing, &key, off, size, bytes) {
+        let _ = crate::pmm::free_page(frame);
         return Err(PagedError::Io(e));
     }
     let mut regions = MEMOBJS.lock();
@@ -3167,7 +3182,7 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
         }
         other => {
             drop(regions);
-            let _ = azos_mm::pmm::free_page(frame);
+            let _ = crate::pmm::free_page(frame);
             other.map(|_| ()).map_err(PagedError::from)
         }
     }
@@ -3202,6 +3217,32 @@ pub fn memobj_paged_frame_ref(r: u32, idx: usize, write: bool) -> Result<usize, 
 /// in the hold that reads the frame, and only when it returns a frame.
 pub fn memobj_paged_frame_pinned_ref(r: u32, idx: usize, write: bool) -> Result<usize, PagedError> {
     paged_frame(r, idx, write, true)
+}
+
+/// One more user of the file object `r` (a region over it, or a mapper about to make one).
+pub fn memobj_paged_users_add_ref(r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = paged_slot(&regions, r) {
+        if let Some(st) = regions[i].paged.as_mut() {
+            st.users = st.users.saturating_add(1);
+        }
+    }
+}
+
+/// One user less of the file object `r`.
+pub fn memobj_paged_users_drop_ref(r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = paged_slot(&regions, r) {
+        if let Some(st) = regions[i].paged.as_mut() {
+            st.users = st.users.saturating_sub(1);
+        }
+    }
+}
+
+/// Users of the file object `r`; 0 for an object that is gone.
+pub fn memobj_paged_users_ref(r: u32) -> u32 {
+    let regions = MEMOBJS.lock();
+    paged_slot(&regions, r).ok().and_then(|i| regions[i].paged.as_ref().map(|st| st.users)).unwrap_or(0)
 }
 
 /// End the pin [`memobj_paged_frame_pinned_ref`] took on `r`.
@@ -3374,7 +3415,7 @@ pub fn memobj_paged_writeback_ref(r: u32) -> Result<usize, PagedError> {
         };
         // SAFETY: pinned by `flushing`, which the drop and the kernel's write honour.
         let src = unsafe { frame_bytes(phys) };
-        let res = azos_mm::pager::write_back_page(backing, &key, off, size, src);
+        let res = crate::pager::write_back_page(backing, &key, off, size, src);
         {
             let mut regions = MEMOBJS.lock();
             let i = paged_slot(&regions, r)?;
@@ -3759,7 +3800,7 @@ fn purge_locked(o: &mut MemObj) -> (u32, usize, Reclaim) {
     // stays until the object does.
     let key = o.charge_key;
     if key != 0 {
-        azos_sched::mm_discharge_domain(key, pages as u32);
+        host().discharge(key, pages as u32);
         o.charge_key = 0;
     }
     o.purge = PurgeState::Purged;
@@ -3804,7 +3845,7 @@ pub fn memobj_purge_volatile(max_pages: usize, mem_locked: fn(u32) -> bool) -> u
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MemObjError {
     /// Capability dereference failed (stale / wrong kind / missing perms).
-    Cap(crate::cap::CapError),
+    Cap(CapError),
     /// Out of memory or no free region slot.
     NoMem,
     /// Caller asked for 0 pages or > [`MAX_MEMOBJ_PAGES`].
@@ -3821,147 +3862,10 @@ pub enum MemObjError {
     Purged,
 }
 
-impl From<crate::cap::CapError> for MemObjError {
-    fn from(e: crate::cap::CapError) -> Self {
+impl From<CapError> for MemObjError {
+    fn from(e: CapError) -> Self {
         Self::Cap(e)
     }
-}
-
-/// Derive `CapPerms` for a freshly-minted Shm cap from the region's own access
-/// mode, for the task that made the region: ReadOnly → READ; ReadWrite → RW;
-/// both with `MAP` (its creator maps it), `DUP` (it may share it) and
-/// `TRANSFER` (it may hand it over). Callers that want a more restricted grant
-/// (e.g. duplicating read-only into a child) derive with fewer rights.
-fn cap_perms_for(perms: MemPerms) -> crate::cap::CapPerms {
-    use crate::cap::CapPerms;
-    let access = match perms {
-        MemPerms::ReadOnly => CapPerms::READ,
-        MemPerms::ReadWrite => CapPerms::RW,
-    };
-    access.union(CapPerms::MAP).union(CapPerms::DELEGATE)
-}
-
-/// Typed `memobj_create`: allocates a region with `page_count` pages and
-/// mints a `Cap<Shm>` into `tid`'s cap-table.
-///
-/// On cap-table exhaustion the region is released so the caller never
-/// observes a partial state.
-pub fn memobj_create_cap(
-    tid: u32,
-    page_count: usize,
-    spec: &MemSpec,
-) -> Result<crate::cap::Cap<crate::cap::targets::Shm>, MemObjError> {
-    let r = memobj_create_spec(tid, page_count, spec)?;
-    // A POSIX pipe starts with one reader and one writer, the creator's
-    // (`azos_bytepipe::BytePipe::init`): its record holds both. Meaningless
-    // for a region that is no pipe (nothing reads it then).
-    pipe_creator_ends(tid, r);
-    let perms = spec.perms;
-    // The capability stores the packed `(index, generation)`. `MAP` and
-    // `DELEGATE` (owner decision 2026-09-26, O3.4): the creator maps its own
-    // region and may share or gift it.
-    match objref::grant_packed::<crate::cap::targets::Shm>(tid, cap_perms_for(perms), r) {
-        Some(cap) => Ok(cap),
-        None => {
-            // Roll back the region so we don't leak it on cap-table
-            // exhaustion. `memobj_create` booked one reference against `tid`, so a
-            // single release will free all pages and clear the slot. The
-            // region has never been mapped at this point, so the "no live
-            // mapping" refusal cannot fire.
-            let _ = memobj_release_ref(tid, r);
-            Err(MemObjError::Full)
-        }
-    }
-}
-
-/// Typed clone: a COW snapshot of the object `src` names in `tid`'s table
-/// (requires `READ`), owned by `tid` and charged to its Domain, with its own
-/// `Cap<Shm>` of access mode `perms`. `page_count` is 0 or the source's page
-/// count (`BadArg` otherwise).
-pub fn memobj_clone_cap(
-    tid: u32,
-    src: crate::cap::Cap<crate::cap::targets::Shm>,
-    perms: MemPerms,
-    page_count: usize,
-) -> Result<crate::cap::Cap<crate::cap::targets::Shm>, MemObjError> {
-    let r = crate::cap_store::get(tid, src, crate::cap::CapPerms::READ)?;
-    if page_count != 0 && page_count != memobj_describe_ref(r)?.page_count {
-        return Err(MemObjError::BadArg);
-    }
-    let nr = memobj_clone(tid, r, tid, perms)?;
-    match objref::grant_packed::<crate::cap::targets::Shm>(tid, cap_perms_for(perms), nr) {
-        Some(cap) => Ok(cap),
-        None => {
-            let _ = memobj_release_ref(tid, nr);
-            Err(MemObjError::Full)
-        }
-    }
-}
-
-/// Typed acquire: validates the cap (requires `READ`) and bumps
-/// `tid`'s reference on the region. Returns `(page_count, perms)`.
-///
-/// `tid` must be the task the cap table belongs to — the reference is
-/// booked against it, and only it can give the reference back.
-///
-/// The capability's generation is compared with the region's inside the
-/// table lock the acquire takes: a capability to a freed or
-/// reused region answers `Stale`.
-pub fn memobj_acquire_cap(
-    tid: u32,
-    table: &crate::cap::CapTable,
-    cap: crate::cap::Cap<crate::cap::targets::Shm>,
-    op: u16,
-) -> Result<(usize, MemPerms), MemObjError> {
-    let r = table.get_op(cap, crate::cap::CapPerms::READ, op)?;
-    memobj_acquire_ref(tid, r)
-}
-
-/// Typed release: validates the cap (requires `READ`, since release is
-/// paired with acquire and any holder may give back its own references),
-/// gives back **every** reference `tid` holds on the region except a pinned
-/// one ([`memobj_release_holder_ref`]), **and deletes the cap's slot** (a share
-/// made from it stays with its holder: delete is not revoke). Refused
-/// (`Closed`) while `tid` still has a mapping recorded; the slot is deleted on
-/// every answer.
-///
-/// The capability is `tid`'s only name for those references, so they go
-/// with it: releasing one and revoking the name left the rest booked to `tid`
-/// until its exit.
-///
-/// **WHY the cap is revoked here (W3-F5):** shm ids are handed out
-/// first-free-slot, and `CapTable::get` only validates the cap-table slot's
-/// own generation — which a region teardown does not touch. Leaving the cap
-/// live after the reference is given up means that once the region is freed
-/// and id `n` is reissued to a different task, the stale cap still
-/// dereferences to `n` and drives somebody else's region: a textbook
-/// confused deputy. The previous doc explicitly told callers to revoke
-/// separately; nothing did.
-///
-/// The untyped `SYS_IPC_UNSHARE` it paired with was retired with the move to
-/// generation-stamped handles;
-/// `SYS_MO_UNMAP` removes the caller's mapping before it calls this.
-pub fn memobj_release_cap(
-    tid: u32,
-    table: &crate::cap::CapTable,
-    cap: crate::cap::Cap<crate::cap::targets::Shm>,
-) -> Result<(), MemObjError> {
-    memobj_release_cap_op(tid, table, cap, azos_abi::invoke::op(azos_abi::cap::CapKind::MemObj, azos_abi::invoke::CLASS_CTL, 0))
-}
-
-/// [`memobj_release_cap`] for a release that is an op of the caller's:
-/// `op` discharges an `OP_MASK` caveat of the capability (`SYS_MO_UNMAP`
-/// passes the class-only op of `CTL`, the class that "ends an object").
-pub fn memobj_release_cap_op(
-    tid: u32,
-    table: &crate::cap::CapTable,
-    cap: crate::cap::Cap<crate::cap::targets::Shm>,
-    op: u16,
-) -> Result<(), MemObjError> {
-    let r = table.get_op(cap, crate::cap::CapPerms::READ, op)?;
-    let released = memobj_release_holder_ref(tid, r);
-    table.delete(cap);
-    released
 }
 
 /// Wipe the region table without returning pages, and restart every slot's
@@ -3970,6 +3874,7 @@ pub fn memobj_release_cap_op(
 /// the kernel.
 #[cfg(test)]
 pub fn __memobj_reset_for_tests() {
+    crate::memobj_cap::install_host();
     let mut regions = MEMOBJS.lock();
     for i in 0..MAX_MEMOBJS {
         regions[i] = MemObj::empty();
@@ -4012,6 +3917,8 @@ pub fn __memobj_generation_for_tests(shm_id: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cap::objref;
+    use crate::memobj_cap::*;
     use core::sync::atomic::AtomicUsize;
     use crate::cap::targets::{IoRing, Shm};
     use crate::cap::{Cap, CapPerms};

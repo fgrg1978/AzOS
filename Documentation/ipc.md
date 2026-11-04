@@ -185,7 +185,7 @@ charged, transferred or shared. It is named by a `Cap<Shm>`.
 | `Paged` | 3 | file pages, filled on demand: a file's page cache | the kernel only | no (system memory) |
 
 A region has at most `MAX_MEMOBJ_PAGES` (64) pages and at most
-`MAX_MEMOBJ_HOLDERS` (8) tasks may hold a reference to it at once; a further
+`MAX_MEMOBJ_HOLDERS` (Kconfig, 8) tasks may hold a reference to it at once; a further
 holder is refused at the acquire. Frames of `Anon` and `Contig` objects are
 charged to the Domain of the task that holds the owning reference and given
 back when the last reference goes.
@@ -233,7 +233,7 @@ a write mapping or an explicit break gives the clone its own. A paged object
 is a window of one file; its clean pages are droppable and its dirty pages are
 written back before they go.
 
-Source: `crates/core/ipc/src/memobj.rs`, `crates/core/abi/src/syscall_nr.rs`,
+Source: `crates/core/mm/src/memobj.rs`, `crates/core/abi/src/syscall_nr.rs`,
 `crates/core/abi/src/invoke.rs`.
 
 ## Rings

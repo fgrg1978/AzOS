@@ -251,7 +251,7 @@ Source: `crates/core/ipc/src/cap_seed.rs`, `crates/core/ipc/src/cap_store.rs`
 `crates/core/abi/src/ipc_msg.rs` (`CAP_MODE_MOVE`, `CAP_MODE_DUP`, `MSG_KEEP`),
 `crates/core/abi/src/syscall_nr.rs` (`SYS_CAP_DERIVE`, `SYS_CAP_REVOKE`,
 `SYS_CAP_CLOSE`), `crates/core/abi/src/invoke.rs` (`ENDPOINT_DERIVE`),
-`crates/core/syscall/src/caps.rs`, `crates/core/ipc/src/memobj.rs`,
+`crates/core/syscall/src/caps.rs`, `crates/core/mm/src/memobj.rs`,
 `crates/core/ipc/src/port.rs`, `crates/core/ipc/src/io_ring.rs`,
 `crates/core/ipc/src/endpoint.rs`, `userspace/lib/names/src/lib.rs`.
 

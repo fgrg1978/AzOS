@@ -82,6 +82,7 @@ pub fn reset_state() {
     azos_sched::shim_reset();
     azos_sched::shim_reset_user_windows();
     azos_mm::shim_reset();
+    azos_ipc::memobj::install_host();
     // The page was a frame of the arena just rebuilt: it is free again.
     azos_mm::vdso::shim_forget_page();
     // The COW share counts are the frame descriptors' `refcount`, and

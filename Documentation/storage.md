@@ -611,7 +611,7 @@ Rules of the path (`vfs.rs`, "The page cache seam"):
 
 Source: `crates/fs/src/vfs.rs`, `crates/fs/src/pagecache.rs`,
 `crates/fs/src/bcache.rs`, `crates/core/syscall/src/file_map.rs`,
-`crates/core/ipc/src/memobj.rs`, `kernel/src/boot/pagecache.rs`.
+`crates/core/mm/src/memobj.rs`, `kernel/src/boot/pagecache.rs`.
 
 ## azvol
 

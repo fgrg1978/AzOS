@@ -11741,7 +11741,7 @@ host_job host_canary_row "block: partition scope canary" syscall-tests block-sco
 host_job host_canary_row "block: queued scope canary" syscall-tests block-scope-canary \
     a_run_outside_the_partition_is_refused_and_an_unqueueable_one_falls_back
 # D4/L6 (MemObj): each canary puts one hole of the MemObj operations back and
-# requires exactly its test to fail. The tests are in crates/core/ipc/src/memobj.rs
+# requires exactly its test to fail. The tests are in crates/core/mm/src/memobj.rs
 # (ipc-tests) and carry the property in their doc. memobj-no-kernel-map-canary:
 # the kernel reads a NO_KERNEL_MAP object. memobj-cow-no-break-canary: a clone's
 # write reaches its source. memobj-protect-max-canary: a mapping is made writable

@@ -217,7 +217,7 @@ writer end kept by the shell cannot hold the next stage's input open.
 
 Source: `crates/core/bytepipe/src/lib.rs`, `crates/core/libsys/src/pipe.rs`
 (`MAX_PIPES`), `crates/core/abi/src/invoke.rs` (`MEMOBJ_END_DROP`,
-`SHM_END_READ`, `SHM_END_WRITE`), `crates/core/ipc/src/memobj.rs`,
+`SHM_END_READ`, `SHM_END_WRITE`), `crates/core/mm/src/memobj.rs`,
 `userspace/services/sh/src/main.rs` (`run_pipeline`).
 
 ## 6. The console and the terminal server

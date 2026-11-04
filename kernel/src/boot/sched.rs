@@ -133,6 +133,7 @@ pub(crate) fn install_sched_hooks() {
     azos_syscall::ushell::set_console_start_hook(crate::console_mode::console_start);
     // A MOVE, a revoke or a shrink of a MemObj removes a holder's mapping
     // through this hook. Before the first user task.
+    azos_ipc::memobj::install_host();
     azos_ipc::memobj::set_unmap_hook(mapping_unmap);
     // `SYS_MO_MAP`'s protect form changes a mapping's write permission
     // through this hook.

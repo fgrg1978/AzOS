@@ -51,6 +51,7 @@ pub mod aging;
 /// partition (host-tested, `#[path]`).
 pub mod swap;
 pub mod pager;
+pub mod memobj;
 /// User-memory access sections: what keeps a frame a kernel copy is using
 /// from being freed or reused under it (host-tested, `#[path]`).
 pub mod uaccess;

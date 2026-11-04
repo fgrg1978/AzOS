@@ -7,6 +7,7 @@ pub mod error;
 pub mod hook;
 pub mod panic_policy;
 pub mod path;
+pub mod slot_ref;
 // The cycle counters and the parked-CPU mask are 64-bit atomics: they exist
 // where the target has them. AzOS-micro (riscv32imac, one hart, no panic
 // quiesce, no WCET table) has neither and uses neither.

@@ -64,9 +64,14 @@ pub mod port_link;
 #[path = "../../../../../../crates/core/ipc/src/endpoint.rs"]
 pub mod endpoint;
 
+pub use azos_mm::memobj as memobj_core;
 #[allow(dead_code)]
-#[path = "../../../../../../crates/core/ipc/src/memobj.rs"]
-pub mod memobj;
+#[path = "../../../../../../crates/core/ipc/src/memobj_cap.rs"]
+pub mod memobj_cap;
+pub mod memobj {
+    pub use super::memobj_cap::*;
+    pub use super::memobj_core::*;
+}
 
 // Kconfig INSPECT: `sys_cap_lookup` also translates an introspection key. The
 // real module, which needs only the capability table.

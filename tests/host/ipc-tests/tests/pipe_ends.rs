@@ -48,6 +48,7 @@ const RLOCK: usize = 36;
 fn serial() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     azos_sched::shim_reset();
+    azos_ipc_tests::memobj::install_host();
     azos_mm::shim_reset();
     for t in [A, B, C] {
         memobj_release_all(t);

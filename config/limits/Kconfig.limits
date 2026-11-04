@@ -1221,7 +1221,7 @@ config MAX_MEMOBJS
     default 64  if HWCLASS_SERVER
     default 32
     help
-      crates/core/ipc/src/memobj.rs, MAX_MEMOBJS: the table of named memory
+      crates/core/mm/src/memobj.rs, MAX_MEMOBJS: the table of named memory
       objects (Cap<Shm>): every shared region a task creates or clones, every
       POSIX pipe (a region with a byte ring in it, made by libsys or by the Linux
       personality's pipe2), and the kernel's own (the tracer, the introspection
@@ -1251,7 +1251,7 @@ config MEMOBJ_RESOLVE_WAYS
     range 1 64
     default 16
     help
-      crates/core/ipc/src/memobj.rs, RESOLVE_WAYS (was the constant 16). Every
+      crates/core/mm/src/memobj.rs, RESOLVE_WAYS (was the constant 16). Every
       futex and notify call asks which shm region, if any, the caller's
       process maps at the word's address (memobj_resolve_mapped). The answer
       is remembered per process, in the way its id picks (id modulo this):
@@ -1266,6 +1266,23 @@ config MEMOBJ_RESOLVE_WAYS
       Cost: 80 B of static RAM per way (two 40 B answers; MEMOBJS, .data:
       1280 B at the default 16), the same on every 64-bit ISA.
 
+config MAX_MEMOBJ_HOLDERS
+    int "MemObj: tasks that may hold one object at once"
+    range 2 255
+    default 8
+    help
+      crates/core/mm/src/memobj.rs, MAX_MEMOBJ_HOLDERS (was the constant 8).
+      Every object keeps a holder table: one row per task that holds a
+      reference to it or maps it. A task that asks for a reference when the
+      table is full is refused (a clone, an acquire, a MOVE to a task that
+      has no row). The scans of the table (the resolution of a futex word,
+      the revoke of a holder, a release) walk every row of every one of
+      MAX_MEMOBJS objects, so the cost is linear in this value.
+
+      Cost: one MemHolder row per holder slot of each of MAX_MEMOBJS objects,
+      in the static table (MEMOBJS). At most 255: the table indexes its rows
+      with 8 bits (a compile-time assertion in memobj.rs).
+
 config MEMOBJ_MOVED_WINDOWS
     int "MemObj: windows of mappings a MOVE removed, awaiting their owner"
     range 1 64
@@ -1274,7 +1291,7 @@ config MEMOBJ_MOVED_WINDOWS
     default 32 if HWCLASS_SERVER
     default 8
     help
-      crates/core/ipc/src/memobj.rs, MOVED_WINDOWS. A MOVE of a Cap<Shm> removes
+      crates/core/mm/src/memobj.rs, MOVED_WINDOWS. A MOVE of a Cap<Shm> removes
       the sender's mapping at once; the address window it held is the sender's
       to give back, which only the sender's own next call can do, so the row
       waits here. A full table drops the row: the window stays reserved until

@@ -7,7 +7,7 @@ of the same machinery (the file page cache) is covered again from the
 filesystem side in [storage.md](storage.md).
 
 Most of the code lives in the `azos_mm` crate (`crates/core/mm`). The object
-table lives in `azos_ipc` (`crates/core/ipc/src/memobj.rs`) because it is also
+table lives in `azos_ipc` (`crates/core/mm/src/memobj.rs`) because it is also
 a capability type. Page-table words are built by the per-ISA crates behind the
 `Mmu` trait (`arch/api/src/lib.rs`).
 
@@ -112,7 +112,7 @@ Source: `crates/core/mm/src/frame.rs`, `crates/core/mm/src/buddy.rs`,
 A MemObj is the kernel object for memory that is named, charged, transferred or
 shared. It is named by a `Cap<Shm>`. The object table is a fixed array of
 `MAX_MEMOBJS` slots, each with up to `MAX_MEMOBJ_PAGES` (64) pages and a
-holder table of at most `MAX_MEMOBJ_HOLDERS` (8) tasks.
+holder table of at most `MAX_MEMOBJ_HOLDERS` (Kconfig, 8) tasks.
 
 | `MemKind` | Frames | Charged to a Domain | Frames freed with the object | Created by |
 |-----------|--------|---------------------|------------------------------|------------|
@@ -149,7 +149,7 @@ Operations on an object, all in `memobj.rs`:
 | Move | `memobj_move` hands a task's references, its charge (when it holds the owning reference) and its ownership to another task. |
 | Share | The IPC transfer's duplicate entry derives an attenuated capability; the receiver's map is bounded by the rights it received. |
 
-Source: `crates/core/ipc/src/memobj.rs`.
+Source: `crates/core/mm/src/memobj.rs`.
 
 ## Object rmap
 
@@ -178,7 +178,7 @@ The same `refcount` field is the copy-on-write share count used by
 
 Source: `crates/core/mm/src/frame.rs`, `crates/core/mm/src/pmm.rs`,
 `crates/core/mm/src/cow.rs`, `crates/core/mm/src/cow_table.rs`,
-`crates/core/ipc/src/memobj.rs`.
+`crates/core/mm/src/memobj.rs`.
 
 ## Page cache as a Paged MemObj
 
@@ -221,7 +221,7 @@ Anon objects, because the file already holds a copy. The kernel installs the
 file layer's use of this cache at boot (`kernel/src/boot/pagecache.rs`); see
 [storage.md](storage.md#the-page-cache-path) for that side.
 
-Source: `crates/core/ipc/src/memobj.rs`,
+Source: `crates/core/mm/src/memobj.rs`,
 `crates/core/mm/src/page_backing.rs`, `crates/fs/src/pagecache.rs`,
 `kernel/src/boot/pagecache.rs`.
 
@@ -249,11 +249,10 @@ it with the region's exact permissions.
 * **`MAP_PRIVATE`** is a region of the task's own, placed and charged like an
   anonymous mapping. Each page is a copy of the cache page taken at the first
   touch, so stores never reach the cache or the file.
-* **Pager seam.** The page cache lives above `azos_mm`, so the pager reaches it
-  through the `FileFrames` trait (`frame`, `resident`, `read`, `addref`,
-  `unref`), installed once with `pager::set_file_frames`. `addref`/`unref` are
-  called as regions are made, copied by a fork and removed; a cache entry
-  nobody uses stays until a call needs room and reaps it.
+* **Pager seam.** The page cache is `azos_mm::memobj`'s Paged objects, which the
+  pager calls directly. A file object counts its users (`memobj_paged_users_*`),
+  raised as regions are made or copied by a fork and dropped as they are removed;
+  a cache entry nobody uses stays until a call needs room and reaps it.
 * **Entry point.** `file_map::sys_file_mmap(cap, len, off, prot, flags)`;
   `MAP_SHARED = 1` and `MAP_PRIVATE = 2`.
 
@@ -538,7 +537,7 @@ is refused. Paged objects are kernel-owned and charged to no Domain.
 
 Source: `crates/core/mm/src/budget.rs`, `crates/core/sched/src/domain.rs`,
 `crates/core/sched/src/scheduler/budget.rs`,
-`crates/core/ipc/src/memobj.rs`, `crates/core/ipc/src/cap_store.rs`,
+`crates/core/mm/src/memobj.rs`, `crates/core/ipc/src/cap_store.rs`,
 `kernel/src/boot/sched.rs`.
 
 ## Reclaim order
@@ -700,7 +699,7 @@ storm: `[segments, live bytes, bytes written]`, `Refuse` when nothing went out.
 
 Source: `crates/core/mm/src/zpool.rs`, `crates/core/mm/src/swap.rs`,
 `crates/core/mm/src/pager.rs`, `crates/core/mm/src/budget.rs`,
-`crates/core/crypto/src/wkdm.rs`, `crates/core/ipc/src/memobj.rs`,
+`crates/core/crypto/src/wkdm.rs`, `crates/core/mm/src/memobj.rs`,
 `kernel/src/tasks/reclaim.rs`, `kernel/src/boot/swap.rs`,
 `config/limits/Kconfig.limits`.
 

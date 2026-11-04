@@ -15,6 +15,8 @@ azos_common = { workspace = true }
 azos_limits = { workspace = true }
 azos_chaos = { workspace = true }
 azos_crypto = { workspace = true }
+azos_bytepipe = { workspace = true }
+azos_decision = { workspace = true }
 
 [features]
 # Kconfig KASAN: the sanitizer's hooks and shadow (src/kasan.rs); the kernel is built with -Zsanitizer=kernel-address.
@@ -142,3 +144,39 @@ storm-no-resume-canary = []
 swap-no-restore-slot-canary = []
 # A swap step told Busy rings the faults that wait for a step to end.
 swap-busy-rings-canary = []
+
+# MemObj host canaries (tests/host/ipc-tests, syscall-tests): each puts one
+# hole back so the test that guards it goes red. Never in a real build.
+memobj-move-keeps-map-canary = []
+memobj-share-no-narrow-canary = []
+memobj-charge-stays-canary = []
+memobj-protect-max-canary = []
+memobj-cow-no-break-canary = []
+memobj-no-kernel-map-canary = []
+memobj-anon-uncharged-canary = []
+memobj-refcount-wrap-canary = []
+memobj-sweep-no-hook-canary = []
+memobj-sweep-no-retain-canary = []
+memobj-sweep-every-domain-canary = []
+memobj-purge-held-canary = []
+memobj-purge-kernel-held-canary = []
+memobj-purge-locked-canary = []
+# Front futex-shm-word: a futex's shm word is used with the table unlocked
+# (the frame may change owner under it), and a new mapping leaves a cached
+# "no mapping" answer standing.
+memobj-word-unlocked-canary = []
+memobj-word-spin-canary = []
+memobj-resolve-stale-canary = []
+# Front memobj-multihart: the futex paths' lookups hold the region table for
+# a few thousand spins more, a lock that serialises futex calls. Its user is
+# the `scale` lanes (tools/vsbench_*.sh VSBENCH_AZOS_EXTRA_FEATURES): their
+# host-timed `over floor` did not move with it on a shared host (see their
+# section comment). Never in a real build.
+memobj-hold-canary = []
+# A map or unmap in flight (its leaves exist, its record does not say so) does
+# not count for a clone, a break, a release or a purge.
+memobj-map-unrecorded-canary = []
+# Front memobj-multihart: the resolution cache keeps one answer a process, so a
+# shm word and a private word evict each other's
+# (a_process_alternating_a_shm_word_and_a_private_word_keeps_both_answers).
+memobj-resolve-one-answer-canary = []

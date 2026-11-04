@@ -59,7 +59,7 @@ tree also builds desktop and server configurations.
   allocator over a per-frame descriptor table with per-CPU caches. A memory
   object that is moved over IPC leaves the sender's address space. Drivers
   map DMA buffers through a DMA domain, backed by an IOMMU where the platform
-  has one. Source: `crates/core/mm`, `crates/core/ipc/src/memobj.rs`,
+  has one. Source: `crates/core/mm`, `crates/core/mm/src/memobj.rs`,
   `crates/drivers/dma`, `crates/drivers/iommu`.
 - **Records and recovery.** A flight recorder on the FAT32 volume keeps safety
   records across resets, the panic path writes `CRASH.LOG`, and a recovery

@@ -15,7 +15,13 @@ pub mod port;
 pub mod port_link;
 pub mod trace;
 pub mod irq_bind;
-pub mod memobj;
+pub use azos_mm::memobj as memobj_core;
+mod memobj_cap;
+/// The object table (`azos_mm::memobj`) and its capability face.
+pub mod memobj {
+    pub use super::memobj_cap::*;
+    pub use super::memobj_core::*;
+}
 // Kconfig INSPECT: how a task obtains the introspection regions.
 pub mod inspect_region;
 pub mod kregion;

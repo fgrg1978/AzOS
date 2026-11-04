@@ -30,6 +30,9 @@ azos_abi = { path = "../../../../../crates/core/abi" }
 # WKdm coder and encrypts with its AES-128-CTR, and `pager.rs` takes its key from
 # the entropy pool; none of it has target-specific code.
 azos_crypto = { path = "../../../../../crates/core/crypto" }
+# `memobj.rs` (pulled below): the pipe header calls and the purge decision record.
+azos_bytepipe = { path = "../../../../../crates/core/bytepipe" }
+azos_decision = { path = "../../../../../crates/core/decision" }
 
 [lints.rust]
 # The pulled modules carry feature cfgs the `mm` crate declares; echoed here
@@ -95,3 +98,24 @@ swap-plain-canary = []
 swap-busy-rings-canary = []
 restore-flip-canary = []
 swap-verify-canary = []
+# The pulled `memobj.rs`'s canaries (the ipc shim forwards them).
+memobj-move-keeps-map-canary = []
+memobj-share-no-narrow-canary = []
+memobj-charge-stays-canary = []
+memobj-protect-max-canary = []
+memobj-cow-no-break-canary = []
+memobj-no-kernel-map-canary = []
+memobj-anon-uncharged-canary = []
+memobj-refcount-wrap-canary = []
+memobj-sweep-no-hook-canary = []
+memobj-sweep-no-retain-canary = []
+memobj-sweep-every-domain-canary = []
+memobj-purge-held-canary = []
+memobj-purge-kernel-held-canary = []
+memobj-purge-locked-canary = []
+memobj-word-unlocked-canary = []
+memobj-word-spin-canary = []
+memobj-resolve-stale-canary = []
+memobj-hold-canary = []
+memobj-map-unrecorded-canary = []
+memobj-resolve-one-answer-canary = []

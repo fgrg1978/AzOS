@@ -35,7 +35,7 @@
 //!   registry's count of regions.
 //!
 //! **The count of regions.** An entry stays while a region (of any task) uses
-//! its object ([`FileFrames::addref`] / [`FileFrames::unref`], called by the
+//! its object ([`memobj::memobj_paged_users_add_ref`] / [`memobj::memobj_paged_users_drop_ref`], called by the
 //! pager as regions are made, copied by a fork and removed). An entry nobody
 //! uses is a cache: it stays, clean or dirty, until a call finds no room for
 //! another window and reaps the unused ones (writes back what is dirty, then
@@ -60,12 +60,10 @@
 
 use azos_abi::cap::CapPerms;
 use azos_abi::error::Errno;
-use azos_common::error::{KResult, KernelError};
 use azos_ipc::memobj::{
     self, MapAccess, MemObjError, MemPerms, PagedError, MAX_MEMOBJS, MAX_MEMOBJ_PAGES,
 };
-use azos_mm::addr::PhysAddr;
-use azos_mm::pager::{self, FileFrames, FileRegion, PageBacking, PageKey, PAGE_KEY_LEN};
+use azos_mm::pager::{self, FileRegion, PageBacking, PageKey, PAGE_KEY_LEN};
 use azos_sync::SpinLock;
 
 use crate::file_ops::{file_ops, FileMapSource};
@@ -102,8 +100,6 @@ struct Entry {
     window: u64,
     /// The packed reference of the cache object.
     obj: u32,
-    /// Regions over the object, plus calls that are making one.
-    users: u32,
     /// The file changed (or is gone) under the pages at or after this byte
     /// and a forget of them was refused ([`NOT_STALE`]: it was not). The
     /// object is neither served nor written back until the forget has gone
@@ -121,7 +117,6 @@ const NO_ENTRY: Entry = Entry {
     key: PageKey([0; PAGE_KEY_LEN]),
     window: 0,
     obj: 0,
-    users: 0,
     stale_from: NOT_STALE,
 };
 
@@ -137,7 +132,7 @@ fn entry_matches(e: &Entry, backing: usize, key: &PageKey, window: u64) -> bool 
 }
 
 /// The object of `window` of the file `src` names, made if it is not there; one
-/// use of it is taken (the caller gives it back with [`FileFrames::unref`] once
+/// use of it is taken (the caller gives it back with [`memobj::memobj_paged_users_drop_ref`] once
 /// its own region holds the object).
 fn object_of(src: &FileMapSource, window: u64) -> Result<u32, i64> {
     let obj = object_for(src.backing, &src.key, src.size, window, MAX_MEMOBJS).or_else(|_| {
@@ -147,7 +142,7 @@ fn object_of(src: &FileMapSource, window: u64) -> Result<u32, i64> {
     })?;
     // Pages the file changed under are not mapped: `EAGAIN`, the caller maps again.
     if !settle_stale(obj, false) {
-        CACHE.unref(obj);
+        memobj::memobj_paged_users_drop_ref(obj);
         return Err(Errno::EAGAIN.to_syscall_ret());
     }
     Ok(obj)
@@ -167,7 +162,7 @@ fn object_for(
     {
         let mut reg = REG.lock_irqsave();
         if let Some(e) = reg.iter_mut().find(|e| entry_matches(e, id, key, window)) {
-            e.users += 1;
+            memobj::memobj_paged_users_add_ref(e.obj);
             return Ok(e.obj);
         }
         if reg.iter().filter(|e| e.used).count() >= limit {
@@ -182,7 +177,7 @@ fn object_for(
     // Another task may have made the same window meanwhile: its object stays
     // the one cache (two would hold two copies of a page), ours goes.
     if let Some(e) = reg.iter_mut().find(|e| entry_matches(e, id, key, window)) {
-        e.users += 1;
+        memobj::memobj_paged_users_add_ref(e.obj);
         let obj = e.obj;
         drop(reg);
         let _ = memobj::memobj_paged_close_ref(made);
@@ -191,7 +186,8 @@ fn object_for(
     let room = reg.iter().filter(|e| e.used).count() < limit;
     match reg.iter_mut().find(|e| !e.used).filter(|_| room) {
         Some(e) => {
-            *e = Entry { used: true, closing: false, backing: id, key: *key, window, obj: made, users: 1, stale_from: NOT_STALE };
+            *e = Entry { used: true, closing: false, backing: id, key: *key, window, obj: made, stale_from: NOT_STALE };
+            memobj::memobj_paged_users_add_ref(made);
             Ok(made)
         }
         None => {
@@ -216,7 +212,7 @@ fn close_idle(i: usize) {
     // Closing writes the dirty pages back: not the ones the file changed under.
     let stale = {
         let reg = REG.lock_irqsave();
-        (reg[i].used && reg[i].stale_from != NOT_STALE && reg[i].users == 0).then_some(reg[i].obj)
+        (reg[i].used && reg[i].stale_from != NOT_STALE && memobj::memobj_paged_users_ref(reg[i].obj) == 0).then_some(reg[i].obj)
     };
     if stale.is_some_and(|obj| !settle_stale(obj, false)) {
         return;
@@ -224,7 +220,7 @@ fn close_idle(i: usize) {
     let obj = {
         let mut reg = REG.lock_irqsave();
         let e = &mut reg[i];
-        if !e.used || e.closing || e.users != 0 {
+        if !e.used || e.closing || memobj::memobj_paged_users_ref(e.obj) != 0 {
             return;
         }
         e.closing = true;
@@ -290,48 +286,6 @@ fn writeback_current(obj: u32, wait: bool) -> Result<usize, PagedError> {
 }
 
 // ── The page cache, as the file pager sees it ────────────────────────────────
-
-struct Cache;
-
-static CACHE: Cache = Cache;
-
-fn kernel_err(e: PagedError) -> KernelError {
-    match e {
-        PagedError::Io(_) => KernelError::IoError,
-        PagedError::Obj(MemObjError::NoMem | MemObjError::Busy) => KernelError::OutOfMemory,
-        PagedError::Obj(_) => KernelError::NotMapped,
-    }
-}
-
-impl FileFrames for Cache {
-    fn frame(&self, obj: u32, page: usize, write: bool) -> KResult<PhysAddr> {
-        memobj::memobj_paged_frame_pinned_ref(obj, page, write).map(PhysAddr::new).map_err(kernel_err)
-    }
-
-    fn installed(&self, obj: u32) {
-        memobj::memobj_paged_install_done_ref(obj);
-    }
-
-    fn resident(&self, obj: u32, page: usize) -> Option<PhysAddr> {
-        memobj::memobj_page_phys_ref(obj, page).ok().flatten().map(PhysAddr::new)
-    }
-
-    fn read(&self, obj: u32, page: usize, dst: &mut [u8]) -> KResult<usize> {
-        memobj::memobj_paged_read_ref(obj, page * azos_arch::PAGE_SIZE, dst).map_err(kernel_err)
-    }
-
-    fn addref(&self, obj: u32) {
-        if let Some(e) = REG.lock_irqsave().iter_mut().find(|e| e.used && e.obj == obj) {
-            e.users = e.users.saturating_add(1);
-        }
-    }
-
-    fn unref(&self, obj: u32) {
-        if let Some(e) = REG.lock_irqsave().iter_mut().find(|e| e.used && e.obj == obj) {
-            e.users = e.users.saturating_sub(1);
-        }
-    }
-}
 
 // ── NODE_MMAP ────────────────────────────────────────────────────────────────
 
@@ -418,7 +372,6 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
     if off >= src.size {
         return einval;
     }
-    pager::set_file_frames(&CACHE);
 
     let tid = azos_sched::current_proc_tid();
     let mut pieces = [Piece { obj: 0, base: 0, span: 0 }; MAX_PIECES];
@@ -464,7 +417,7 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
                 .map_err(|_| enomem)
         };
         // The region (if any) has its own use of the object now.
-        CACHE.unref(obj);
+        memobj::memobj_paged_users_drop_ref(obj);
         match r {
             Ok(p) => {
                 pieces[done] = p;
@@ -712,7 +665,7 @@ fn retry_busy<T>(mut op: impl FnMut() -> Result<T, PagedError>) -> Result<T, Pag
 }
 
 /// The object of window `w` of the file, attached at `size`, with one use taken
-/// (give it back with [`FileFrames::unref`]). A full cache gives back the
+/// (give it back with [`memobj::memobj_paged_users_drop_ref`]). A full cache gives back the
 /// objects nobody uses and tries once more. `None`: no object.
 fn use_window(backing: &'static dyn PageBacking, key: &PageKey, size: u64, w: u64) -> Option<u32> {
     let obj = match object_for(backing, key, size, w, CACHE_OBJECTS) {
@@ -723,7 +676,7 @@ fn use_window(backing: &'static dyn PageBacking, key: &PageKey, size: u64, w: u6
         }
     };
     if !settle_stale(obj, true) || retry_busy(|| memobj::memobj_paged_set_size_ref(obj, size)).is_err() {
-        CACHE.unref(obj);
+        memobj::memobj_paged_users_drop_ref(obj);
         return None;
     }
     Some(obj)
@@ -755,7 +708,7 @@ pub fn cache_read(backing: &'static dyn PageBacking, key: &PageKey, size: u64, o
     for (w, at, n) in windows(off, want) {
         let obj = use_window(backing, key, size, w)?;
         let r = memobj::memobj_paged_read_ref(obj, at, &mut dst[done..done + n]);
-        CACHE.unref(obj);
+        memobj::memobj_paged_users_drop_ref(obj);
         match r {
             Ok(m) if m == n => done += n,
             _ => return None,
@@ -773,7 +726,7 @@ pub fn cache_write(backing: &'static dyn PageBacking, key: &PageKey, size: u64, 
     for (w, at, n) in windows(off, src.len()) {
         let Some(obj) = use_window(backing, key, size, w) else { break };
         let r = retry_busy(|| memobj::memobj_paged_write_ref(obj, at, &src[done..done + n]));
-        CACHE.unref(obj);
+        memobj::memobj_paged_users_drop_ref(obj);
         match r {
             Ok((m, nw)) => {
                 done += m;

@@ -127,6 +127,11 @@ pub mod swap;
 #[path = "../../../../../../crates/core/mm/src/pager.rs"]
 pub mod pager;
 
+// The object table: the pager reaches it, and the ipc shim's capability face sits over it.
+#[allow(dead_code)]
+#[path = "../../../../../../crates/core/mm/src/memobj.rs"]
+pub mod memobj;
+
 // Front uaccess-pin: the user-memory access sections the copy loops run in
 // and every user shootdown waits for (`uaccess_race.rs`).
 #[path = "../../../../../../crates/core/mm/src/uaccess.rs"]

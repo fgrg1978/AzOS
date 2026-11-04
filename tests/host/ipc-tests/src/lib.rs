@@ -52,8 +52,17 @@ pub mod irq_bind;
 
 // The region table. It allocates from `shims/mm` and zeroes pages with
 // `shims/arch`'s page size.
-#[path = "../../../../crates/core/ipc/src/memobj.rs"]
-pub mod memobj;
+// The object table lives in `azos_mm`; compiled here against the host shims. `crate::pmm`,
+// `crate::cow`... are the shim's, as `azos_mm::pmm` was.
+pub use azos_mm::{addr, cow, demand, pager, pmm};
+#[path = "../../../../crates/core/mm/src/memobj.rs"]
+pub mod memobj_core;
+#[path = "../../../../crates/core/ipc/src/memobj_cap.rs"]
+pub mod memobj_cap;
+pub mod memobj {
+    pub use super::memobj_cap::*;
+    pub use super::memobj_core::*;
+}
 
 #[cfg(test)]
 mod refcount_wrap;
