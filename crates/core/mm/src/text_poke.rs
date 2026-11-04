@@ -98,6 +98,9 @@ pub enum PokeError {
     Map,
     /// The word read back through the alias is not the word written.
     Readback,
+    /// The resident monitor refused the word (VIRT_SPLIT): not a site it
+    /// was given at the image lock, or not one of that site's two forms.
+    Refused,
     /// Kept for the error's users; no longer returned: a 2-byte-aligned
     /// instruction ([`write_insns_boot`]) that straddles a page is written
     /// through two adjacent alias pages mapped before either half.
@@ -204,6 +207,19 @@ pub fn write_insns_boot(words: &[(usize, u32)]) -> Result<usize, PokeError> {
     write_impl(words, true)
 }
 
+/// Where a 4-aligned word goes once the kernel image is locked at stage 2
+/// (VIRT_SPLIT): the monitor writes it, at its physical address.
+pub type WordHook = fn(pa: usize, word: u32) -> bool;
+
+azos_common::ro_hook! {
+    static WORD_HOOK: WordHook;
+}
+
+/// Route every later [`write_words`] through the monitor. Before the seal.
+pub fn set_word_hook(f: WordHook) {
+    WORD_HOOK.set(f);
+}
+
 fn write_impl(words: &[(usize, u32)], halves: bool) -> Result<usize, PokeError> {
     let alias = alias().ok_or(PokeError::Unavailable)?;
     let (ts, te) = (TEXT_START.load(Ordering::Relaxed), TEXT_END.load(Ordering::Relaxed));
@@ -227,6 +243,16 @@ fn write_impl(words: &[(usize, u32)], halves: bool) -> Result<usize, PokeError> 
             res = Err(PokeError::NotLeaf);
             break;
         };
+        if !halves {
+            if let Some(f) = WORD_HOOK.get() {
+                if !f((pa & !(PAGE_SIZE - 1)) + (va & (PAGE_SIZE - 1)), w) {
+                    res = Err(PokeError::Refused);
+                    break;
+                }
+                done += 1;
+                continue;
+            }
+        }
         let pa_next = if straddles {
             let Some(pa) = vmm::translate(kpt, next) else {
                 res = Err(PokeError::NotLeaf);

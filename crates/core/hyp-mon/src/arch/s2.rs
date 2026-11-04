@@ -13,7 +13,7 @@
 pub mod stage2;
 
 use crate::state::HYP;
-use azos_hyp_api::{lock_desc_error, Kind, LockDesc, DENIED, INVALID, INV_EL1_EXEC_TEXT_ONLY, INV_HOST_S2, INV_IMAGE_RO, INV_RO_DATA, NOT_SUPPORTED, OK};
+use azos_hyp_api::{lock_desc_error, text_site_error, Kind, LockDesc, TextSite, TEXT_SITES_MAX, DENIED, INVALID, INV_EL1_EXEC_TEXT_ONLY, INV_HOST_S2, INV_IMAGE_RO, INV_RO_DATA, NOT_SUPPORTED, OK};
 use core::sync::atomic::{AtomicU64, Ordering};
 use stage2::{ExecOnly, MemType, S2Attrs, Stage2, TableMem, VtcrConfig};
 
@@ -62,6 +62,10 @@ static IPA_CFG: AtomicU64 = AtomicU64::new(0);
 static LOCKED_ROOT: AtomicU64 = AtomicU64::new(0);
 static RO_RANGE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static LOCK_ONCE: AtomicU64 = AtomicU64::new(0);
+/// The sites the lock listed, sorted by PA (`NSITES` of them), and the text
+/// range they were checked against.
+static mut SITES: [TextSite; TEXT_SITES_MAX] = [TextSite::ZERO; TEXT_SITES_MAX];
+static NSITES: AtomicU64 = AtomicU64::new(0);
 static RO_ONCE: AtomicU64 = AtomicU64::new(0);
 
 fn parange() -> u8 {
@@ -110,6 +114,17 @@ pub fn lock_kernel_image(desc_pa: u64) -> i64 {
     let d: LockDesc = unsafe { core::ptr::read_volatile(desc_pa as *const LockDesc) };
     let (hole, hole_end) = (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed));
     if lock_desc_error(&d, hole, hole_end).is_some() { return INVALID; }
+    // The site table, copied into the monitor before anything is locked.
+    let n = d.nsites as usize;
+    // SAFETY: one PE runs (checked above); the copy is the monitor's own.
+    let sites = unsafe { &mut *core::ptr::addr_of_mut!(SITES) };
+    for (i, slot) in sites.iter_mut().enumerate().take(n) {
+        // SAFETY: the EL2 identity map covers RAM; the array is the kernel's, pre-lock.
+        *slot = unsafe { core::ptr::read_volatile((d.sites as *const TextSite).add(i)) };
+        if text_site_error(slot, d.text).is_some() { return INVALID; }
+    }
+    sites[..n].sort_unstable_by_key(|s| s.pa);
+    NSITES.store(n as u64, Ordering::Release);
     let cfg = match VtcrConfig::new(40, parange()) { Ok(c) => c, Err(_) => return INVALID };
     let mut mem = PoolMem;
     let mut s2 = match Stage2::new(cfg, &mut mem) { Ok(s) => s, Err(_) => return INVALID };
@@ -276,4 +291,26 @@ fn reflect_to_el1(elr: u64, spsr: u64, far: u64, is_instr: bool) {
         core::arch::asm!("msr ELR_EL2, {}", in(reg) vbar + 0x200);
         core::arch::asm!("msr SPSR_EL2, {}", in(reg) 0x3C5u64);
     }
+}
+
+/// `text_patch(pa, word)`: one of a listed site's two forms, written from EL2
+/// (stage 2 does not apply here) and made visible to instruction fetch.
+/// Canary `hyp-text-site-skip-canary`: any word anywhere in text.
+pub fn text_patch(pa: u64, word: u64) -> i64 {
+    if LOCKED_ROOT.load(Ordering::Acquire) == 0 { return DENIED; }
+    let n = NSITES.load(Ordering::Acquire) as usize;
+    // SAFETY: written once, at the lock, before NSITES was published.
+    let sites: &[TextSite] = unsafe { &*core::ptr::slice_from_raw_parts(core::ptr::addr_of!(SITES) as *const TextSite, n) };
+    let ok = match sites.binary_search_by_key(&pa, |s| s.pa) {
+        Ok(i) => word as u32 as u64 == word && (word as u32 == sites[i].off || word as u32 == sites[i].on),
+        Err(_) => false,
+    };
+    if !ok && !cfg!(feature = "hyp-text-site-skip-canary") { return DENIED; }
+    // SAFETY: a 4-aligned text word (checked at the lock), mapped at EL2 by
+    // the identity map.
+    unsafe {
+        core::ptr::write_volatile(pa as *mut u32, word as u32);
+        core::arch::asm!("dc cvau, {p}", "dsb ish", "ic ivau, {p}", "dsb ish", "isb", p = in(reg) pa);
+    }
+    OK
 }

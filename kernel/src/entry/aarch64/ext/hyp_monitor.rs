@@ -11,8 +11,8 @@
 
 use azos_drv_sys::kprintln;
 use azos_hyp_api::{
-    is_monitor_call, LockDesc, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PROBE, INVARIANT_NAMES,
-    LOCK_RAM_MAX, OK,
+    is_monitor_call, LockDesc, TextSite, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PROBE,
+    CALL_TEXT_PATCH, INVARIANT_NAMES, LOCK_RAM_MAX, OK, TEXT_SITES_MAX,
 };
 
 // The blob, placed in `.hyp` (a non-exec `alloc` section the linker keeps out
@@ -40,7 +40,8 @@ macro_rules! hyp_blob {
     feature = "hyp-no-secondary-init-canary",
     feature = "hyp-hole-mapped-canary",
     feature = "hyp-tsc-off-canary",
-    feature = "hyp-text-rw-canary"
+    feature = "hyp-text-rw-canary",
+    feature = "hyp-text-site-skip-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -53,12 +54,19 @@ hyp_blob!("/build/aarch64/hyp-mon-hole-mapped.bin");
 hyp_blob!("/build/aarch64/hyp-mon-tsc-off.bin");
 #[cfg(feature = "hyp-text-rw-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-text-rw.bin");
+#[cfg(feature = "hyp-text-site-skip-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-text-site-skip.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
 /// x0..x3). An HVC, which the monitor traps at EL2.
 #[inline]
 fn monitor_call(id: u64, a1: u64) -> [u64; 4] {
-    let (mut x0, mut x1, mut x2, mut x3) = (id, a1, 0u64, 0u64);
+    monitor_call2(id, a1, 0)
+}
+
+#[inline]
+fn monitor_call2(id: u64, a1: u64, a2: u64) -> [u64; 4] {
+    let (mut x0, mut x1, mut x2, mut x3) = (id, a1, a2, 0u64);
     // SAFETY: the monitor is resident (HYP_MONITOR built it in and the
     // trampoline started it) before this runs.
     unsafe {
@@ -134,7 +142,17 @@ extern "C" {
 /// stack has none (`virt_to_phys` refuses the stack window).
 static mut LOCK_DESC: LockDesc = LockDesc {
     text: [0; 2], rodata: [0; 2], ro_after_init: [0; 2], ram: [[0; 2]; LOCK_RAM_MAX], nram: 0, secondary_entry: 0,
+    sites: 0, nsites: 0,
 };
+
+/// The trace static keys' sites (aarch64 `b`/`nop`), the only text the
+/// kernel rewrites after the lock, for the monitor's table.
+static mut LOCK_SITES: [TextSite; TEXT_SITES_MAX] = [TextSite::ZERO; TEXT_SITES_MAX];
+
+/// `text_poke`'s back end after the lock.
+fn text_patch(pa: usize, word: u32) -> bool {
+    monitor_call2(CALL_TEXT_PATCH, pa as u64, word as u64)[0] as i64 == OK
+}
 
 fn pa_of(va: usize) -> u64 { azos_mm::addr::virt_to_phys(va) as u64 }
 const S2_PAGE: u64 = 4096;
@@ -159,10 +177,23 @@ pub(crate) fn lock_image() {
         d.ram[0] = [down(ram_pa as u64), up((ram_pa + ram_len) as u64)];
         d.nram = 1;
         d.secondary_entry = pa_of(_aarch64_secondary_entry as *const () as usize);
+        let sites = &mut *core::ptr::addr_of_mut!(LOCK_SITES);
+        let mut n = 0;
+        for s in azos_trace::key_sites().iter().filter(|s| s.key < 32 && s.kind == azos_trace::jump::KIND_A64_B) {
+            let (Ok(off), Ok(on)) = (s.word(false), s.word(true)) else { continue };
+            if n == TEXT_SITES_MAX { break; }
+            sites[n] = TextSite { pa: pa_of(s.site as usize), off, on };
+            n += 1;
+        }
+        d.sites = pa_of(core::ptr::addr_of!(LOCK_SITES) as usize);
+        d.nsites = n as u64;
         monitor_call(CALL_LOCK_KERNEL_IMAGE, pa_of(core::ptr::addr_of!(LOCK_DESC) as usize))
     };
     if r[0] as i64 == OK {
-        kprintln!("[BOOT] EL2:        kernel image locked (text, rodata)");
+        azos_mm::text_poke::set_word_hook(text_patch);
+        // SAFETY: written once above, before the call.
+        let n = unsafe { (*core::ptr::addr_of!(LOCK_DESC)).nsites };
+        kprintln!("[BOOT] EL2:        kernel image locked (text, rodata; {} key sites)", n);
     } else {
         kprintln!("[BOOT] EL2:        kernel image lock refused ({})", r[0] as i64);
     }
@@ -179,6 +210,24 @@ pub(crate) fn lock_ro_data() {
     report();
     #[cfg(feature = "hyp-lock-probe")]
     text_write_probe();
+    #[cfg(feature = "hyp-key-flip-probe")]
+    key_flip_probe();
+}
+
+/// Feature `hyp-key-flip-probe` (the `hyp: R7` rows): flip a trace class's
+/// static keys and back through the monitor, then ask it to write a word that
+/// is no site. Never in a real build.
+#[cfg(feature = "hyp-key-flip-probe")]
+fn key_flip_probe() {
+    let prev = azos_ipc::trace::set_mask(azos_trace::mask() ^ 1);
+    let _ = azos_ipc::trace::set_mask(prev);
+    kprintln!("[HYP] key flip through the monitor: done");
+    let pa = pa_of(_aarch64_secondary_entry as *const () as usize) as usize;
+    if text_patch(pa, 0xd503_201f) {
+        kprintln!("[HYP] PROBE FAILED: text_patch wrote a word that is no site");
+    } else {
+        kprintln!("[HYP] text_patch of a non-site refused");
+    }
 }
 
 /// Feature `hyp-lock-probe` (the `hyp: R4` rows): map a page of kernel text

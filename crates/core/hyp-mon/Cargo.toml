@@ -32,6 +32,7 @@ hyp-no-secondary-init-canary = []
 hyp-hole-mapped-canary = []
 hyp-tsc-off-canary = []
 hyp-text-rw-canary = []
+hyp-text-site-skip-canary = []
 
 [profile.release]
 panic = "abort"

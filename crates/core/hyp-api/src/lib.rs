@@ -27,6 +27,9 @@ pub const CALL_LOCK_KERNEL_IMAGE: u64 = CALL_BASE + 2;
 /// `lock_ro_data()`: one-shot, after the image lock: the `ro_after_init`
 /// range the lock named becomes read-only.
 pub const CALL_LOCK_RO_DATA: u64 = CALL_BASE + 3;
+/// `text_patch(pa, word)`: after the lock, write `word` at `pa` when `pa` is
+/// a site the lock listed and `word` is one of its two forms.
+pub const CALL_TEXT_PATCH: u64 = CALL_BASE + 4;
 
 pub const fn is_monitor_call(id: u64) -> bool {
     id & CALL_MASK == CALL_BASE
@@ -152,6 +155,21 @@ impl<const N: usize> Default for Ring<N> {
 
 /// RAM ranges a lock descriptor carries.
 pub const LOCK_RAM_MAX: usize = 8;
+/// Text sites a lock descriptor may list for `text_patch`.
+pub const TEXT_SITES_MAX: usize = 1024;
+
+/// One instruction the kernel may rewrite after the lock, and its two forms.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct TextSite {
+    pub pa: u64,
+    pub off: u32,
+    pub on: u32,
+}
+
+impl TextSite {
+    pub const ZERO: TextSite = TextSite { pa: 0, off: 0, on: 0 };
+}
 
 /// What `lock_kernel_image` locks, by physical address, page-aligned. The
 /// kernel builds it before the lock, while it is still trusted.
@@ -166,6 +184,9 @@ pub struct LockDesc {
     pub nram: u64,
     /// The one EL1 entry a secondary or a resumed PE may enter at.
     pub secondary_entry: u64,
+    /// The `TextSite` array (`nsites` entries) `text_patch` may write.
+    pub sites: u64,
+    pub nsites: u64,
 }
 
 /// Why a lock descriptor is refused; `None`: it is well formed against a
@@ -189,5 +210,14 @@ pub fn lock_desc_error(d: &LockDesc, hole: u64, hole_end: u64) -> Option<&'stati
         if m[0] >= m[1] || m[0] % P != 0 || m[1] % P != 0 { return Some("ram range not page-aligned or empty"); }
     }
     if d.secondary_entry < d.text[0] || d.secondary_entry >= d.text[1] { return Some("secondary entry outside text"); }
+    if d.nsites as usize > TEXT_SITES_MAX { return Some("too many text sites"); }
+    None
+}
+
+/// Why a text site is refused against a locked text range; `None`: it is a
+/// 4-aligned word inside text.
+pub fn text_site_error(s: &TextSite, text: [u64; 2]) -> Option<&'static str> {
+    if s.pa % 4 != 0 { return Some("site not 4-aligned"); }
+    if s.pa < text[0] || s.pa + 4 > text[1] { return Some("site outside text"); }
     None
 }

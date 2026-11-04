@@ -3766,6 +3766,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-hole-mapped-canary)       name=hyp-mon-hole-mapped ;;
         hyp-tsc-off-canary)           name=hyp-mon-tsc-off ;;
         hyp-text-rw-canary)           name=hyp-mon-text-rw ;;
+        hyp-text-site-skip-canary)    name=hyp-mon-text-site-skip ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3785,6 +3786,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *hole-mapped*) hyp_mon_blob hyp-hole-mapped-canary ;;
         *tsc-off*) hyp_mon_blob hyp-tsc-off-canary ;;
         *text-rw*) hyp_mon_blob hyp-text-rw-canary ;;
+        *text-site-skip*) hyp_mon_blob hyp-text-site-skip-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     if ! a64_kbuild "$sel"; then
@@ -3839,7 +3841,7 @@ par "hyp: R3 tsc-off canary (arm)" hyp_monitor_row "hyp: R3 tsc-off canary (arm)
 # ro_after_init), and a write to text through a stage-1 RW alias faults.
 # Canary: the monitor leaves text writable, so the write goes through.
 par "hyp: R4 image locked (arm)" hyp_monitor_row "hyp: R4 image locked (arm)" "hyp-monitor-row" pass \
-    "[BOOT] EL2:        kernel image locked (text, rodata)" "[BOOT] EL2:        ro_after_init locked" \
+    "[BOOT] EL2:        kernel image locked (text, rodata;" "[BOOT] EL2:        ro_after_init locked" \
     "[BOOT] EL2:        invariant image-ro in force" "[BOOT] EL2:        invariant el1-exec-text-only in force" \
     "[BOOT] EL2:        invariant ro-data in force"
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
@@ -3848,6 +3850,12 @@ par "hyp: R4 text write faults (arm)" hyp_monitor_row "hyp: R4 text write faults
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
 par "hyp: R4 text-rw canary (arm)" hyp_monitor_row "hyp: R4 text-rw canary (arm)" "hyp-text-rw-canary,hyp-lock-probe" canary \
     "[FATAL] aarch64 kernel page fault"
+# R7: after the lock a static key flips through the monitor's `text_patch`,
+# and a word that is no listed site is refused. Canary: the site check skipped.
+par "hyp: R7 key flip and site check (arm)" hyp_monitor_row "hyp: R7 key flip and site check (arm)" "hyp-key-flip-probe" pass \
+    "[HYP] key flip through the monitor: done" "[HYP] text_patch of a non-site refused"
+par "hyp: R7 site-skip canary (arm)" hyp_monitor_row "hyp: R7 site-skip canary (arm)" "hyp-text-site-skip-canary,hyp-key-flip-probe" canary \
+    "[HYP] text_patch of a non-site refused"
 # R14: the split image is a regression guard — the ordinary boot subset still
 # passes under the monitor (same verdicts as the EL2 rows).
 par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \

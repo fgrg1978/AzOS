@@ -9,8 +9,12 @@
 config LIVEPATCH
     bool "Signed kernel livepatch of non-sleeping functions"
     depends on RCU_QSBR && LIVEPATCH_POOL_KIB != 0 && LIVEPATCH_ENTRY_NOPS != 0
+    depends on !HYP_MONITOR
     default n
     help
+      Not with HYP_MONITOR (VIRT_SPLIT): text is read-only at stage 2 after
+      the image lock, and the monitor writes only the static keys' sites; a
+      signed `text_write` would need the signature checked in the monitor.
       Admits a signed patch blob (a replacement body per function) named by
       a `[livepatch.NAME]` row of the signed topology, and redirects the
       entry of each function it replaces: one `B` on aarch64, one `JAL` on

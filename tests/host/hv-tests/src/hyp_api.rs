@@ -47,6 +47,8 @@ fn desc() -> LockDesc {
         ram: [[0x4000_0000, 0x8000_0000], [0; 2], [0; 2], [0; 2], [0; 2], [0; 2], [0; 2], [0; 2]],
         nram: 1,
         secondary_entry: 0x4020_1000,
+        sites: 0,
+        nsites: 0,
     }
 }
 
@@ -76,4 +78,13 @@ fn a_lock_descriptor_that_could_unlock_anything_is_refused() {
     let mut d = desc();
     d.ram[0] = [0x4100_0000, 0x8000_0000];
     assert!(lock_desc_error(&d, hole.0, hole.1).is_some(), "text outside RAM");
+}
+
+#[test]
+fn a_text_site_must_be_an_aligned_word_inside_text() {
+    let text = [0x4020_0000, 0x4040_0000];
+    assert_eq!(text_site_error(&TextSite { pa: 0x4020_1000, off: 1, on: 2 }, text), None);
+    assert!(text_site_error(&TextSite { pa: 0x4020_1002, off: 1, on: 2 }, text).is_some());
+    assert!(text_site_error(&TextSite { pa: 0x403f_fffe, off: 1, on: 2 }, text).is_some());
+    assert!(text_site_error(&TextSite { pa: 0x4040_0000, off: 1, on: 2 }, text).is_some());
 }
