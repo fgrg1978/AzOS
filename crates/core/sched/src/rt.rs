@@ -65,7 +65,7 @@ use crate::task::{TaskState, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
 use super::classes::PickCtx;
 use super::{
-    cpu_remove, ncpu, prio_bucket, task_mut, task_ref, CpuLockGuard, MAX_CPUS, MAX_TASKS, PER_CPU,
+    cpu_remove, cpu_remove_at, ncpu, prio_bucket, task_mut, task_ref, CpuLockGuard, MAX_CPUS, MAX_TASKS, PER_CPU,
 };
 
 /// Reservations one hart can hold.
@@ -713,7 +713,7 @@ pub(super) unsafe fn step_stop(ctx: &mut PickCtx) -> Step {
     match rt_core::stop_pick(running, queued.map(|(l, _)| l)) {
         rt_core::StopPick::Keep => Step::Keep,
         rt_core::StopPick::Take => match queued {
-            Some((_, idx)) if unsafe { cpu_remove(ctx.cpu, idx) } => Step::Run { idx, force: true },
+            Some((l, idx)) if unsafe { cpu_remove_at(ctx.cpu, idx, l as usize) } => Step::Run { idx, force: true },
             _ => Step::Pass,
         },
         rt_core::StopPick::Pass => Step::Pass,
@@ -813,7 +813,8 @@ pub(super) unsafe fn step_band(ctx: &mut PickCtx) -> Step {
                 {
                     return Step::Keep;
                 }
-                if unsafe { cpu_remove(ctx.cpu, idx) } {
+                // Off the ring it was found in, whatever its priority says now.
+                if unsafe { cpu_remove_at(ctx.cpu, idx, l) } {
                     return Step::Run { idx, force: ctx.force };
                 }
             }
@@ -829,7 +830,7 @@ pub(super) unsafe fn step_idle(ctx: &mut PickCtx) -> Step {
         return Step::Pass;
     }
     match unsafe { ring_first_eligible(ctx.cpu, IDLE_PRIORITY as usize, ctx.resv) } {
-        Some(idx) if unsafe { cpu_remove(ctx.cpu, idx) } => Step::Run { idx, force: ctx.force },
+        Some(idx) if unsafe { cpu_remove_at(ctx.cpu, idx, IDLE_PRIORITY as usize) } => Step::Run { idx, force: ctx.force },
         _ => Step::Pass,
     }
 }
