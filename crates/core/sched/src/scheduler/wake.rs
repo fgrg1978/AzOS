@@ -1200,13 +1200,6 @@ pub fn ktest_wake_task_by_tid_between(tid: u32, pred: &dyn Fn(&WaitReason) -> bo
     !matches!(wake_by_slot(tid, slot, pred, false, NO_CLAIM), WakeOut::NotWoken)
 }
 
-/// Whether slot `i`'s word carries a wake stamp.
-#[cfg(feature = "ktest")]
-pub fn ktest_slot_stamped(i: usize) -> bool {
-    i < MAX_TASKS
-        && unsafe { task_ref(i) }.state_word.load(Ordering::Acquire) & crate::task::sched_word::WAKE_STAMP != 0
-}
-
 /// The TID-directed wakers' `addressee`: slot `i` still holds `tid`.
 /// Canary `tid-stamp-canary`: trust the slot resolved before the wake.
 #[inline(always)]

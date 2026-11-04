@@ -1235,17 +1235,22 @@ mod wq_window_ktests {
 // A TID-directed wake resolves its slot, then acts on it. If the addressee
 // exits and its slot goes to a new task in between, the wake must not stamp
 // that task: its next block would return at once (a fast-IPC caller's
-// spurious -1). The hook frees and refills the slot inside that window.
-// Canary `tid-stamp-canary`: `not ok`.
+// spurious -1). The hook frees and refills the slot inside that window; the
+// new task then blocks with no deadline, so only a stamp ends that block
+// before this test wakes it. Canary `tid-stamp-canary`: `not ok`.
 #[cfg(feature = "ktest")]
 mod tid_stamp_ktests {
-    use azos_sched::scheduler::{idx_for_tid, ktest_slot_stamped, ktest_wake_task_by_tid_between};
+    use azos_sched::scheduler::{idx_for_tid, ktest_wake_task_by_tid_between};
+    use azos_sched::WaitReason;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     const PRIO: u32 = 16;
     const TRIES: u32 = 8;
     static GO: AtomicBool = AtomicBool::new(false);
-    static STOP: AtomicBool = AtomicBool::new(false);
+    static BLOCK: AtomicBool = AtomicBool::new(false);
+    static WOKEN: AtomicBool = AtomicBool::new(false);
+    static AT_ONCE: AtomicBool = AtomicBool::new(false);
+    static BACK: AtomicBool = AtomicBool::new(false);
     static TID: AtomicU32 = AtomicU32::new(0);
     static NEW_TID: AtomicU32 = AtomicU32::new(0);
 
@@ -1258,16 +1263,20 @@ mod tid_stamp_ktests {
 
     fn new(_: usize) {
         NEW_TID.store(azos_sched::current_task_tid(), Ordering::Release);
-        while !STOP.load(Ordering::Acquire) {
+        while !BLOCK.load(Ordering::Acquire) {
             azos_sched::task_yield();
         }
+        azos_sched::task_block(WaitReason::Timer(u64::MAX));
+        AT_ONCE.store(!WOKEN.load(Ordering::Acquire), Ordering::Release);
+        BACK.store(true, Ordering::Release);
     }
 
     azos_ktest::ktest_late! {
         fn tid_wake_leaves_a_reused_slot_alone() {
             for _ in 0..TRIES {
-                GO.store(false, Ordering::Release);
-                STOP.store(false, Ordering::Release);
+                for f in [&GO, &BLOCK, &WOKEN, &AT_ONCE, &BACK] {
+                    f.store(false, Ordering::Release);
+                }
                 TID.store(0, Ordering::Release);
                 NEW_TID.store(0, Ordering::Release);
                 azos_sched::task_create("tid-old", old, 0, PRIO);
@@ -1287,17 +1296,24 @@ mod tid_stamp_ktests {
                 if let Some(e) = fail {
                     return Err(e);
                 }
-                let stamped = ktest_slot_stamped(slot);
-                STOP.store(true, Ordering::Release);
-                crate::ktest::wait("the new task never exited", || {
-                    let t = NEW_TID.load(Ordering::Acquire);
-                    t != 0 && idx_for_tid(t).is_none()
-                })?;
+                crate::ktest::wait("the new task never started", || NEW_TID.load(Ordering::Acquire) != 0)?;
+                let new_tid = NEW_TID.load(Ordering::Acquire);
+                BLOCK.store(true, Ordering::Release);
+                if !crate::ktest::until_for(200, || BACK.load(Ordering::Acquire)) {
+                    WOKEN.store(true, Ordering::Release);
+                    azos_sched::scheduler::wake_task_by_tid(new_tid, &|r| matches!(r, WaitReason::Timer(_)));
+                }
+                crate::ktest::wait("the new task never woke", || BACK.load(Ordering::Acquire))?;
+                crate::ktest::wait("the new task never exited", || idx_for_tid(new_tid).is_none())?;
                 if reused != Some(slot) {
                     // Another slot was lower: the window was not reproduced.
                     continue;
                 }
-                return if stamped { Err("a wake for an exited TID stamped the slot's new task") } else { Ok(()) };
+                return if AT_ONCE.load(Ordering::Acquire) {
+                    Err("a wake for an exited TID stamped the slot's new task: its block returned at once")
+                } else {
+                    Ok(())
+                };
             }
             Err("the old slot was never reused")
         }
