@@ -47,7 +47,7 @@ crates/core/percpu	2	4	1	0	0	74
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	56
 crates/core/rings	25	6	4	0	0	98
-crates/core/sched	468	159	13	3	0	68
+crates/core/sched	462	160	13	3	0	68
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	47	9	20	0	0	82
 crates/core/syscall	43	2	1	0	0	39
