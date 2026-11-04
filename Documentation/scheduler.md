@@ -53,7 +53,7 @@ A task runs on a scheduling context (SC): `classes::SC[slot]`, one `SchedContext
 | `class`, `flags` | `Class` discriminant; `SC_FLAG_TIMER_SLACK` |
 | `qos_id` | the task's QoS hint (`QOS_DEFAULT`..`QOS_BACKGROUND`) |
 | `blocked_on` | address of the `PiWaiters` the task waits on (0 = none); written only by the wait graph |
-| `on_cpu` | CPU the SC runs on, `NO_CPU` if none; written at every switch with `WAIT_GRAPH` |
+| `on_cpu` | CPU the SC runs on, `NO_CPU` if none; written at every switch |
 | `irq` | how many interrupt lines this SC serves (`irq_attach` / `irq_detach`) |
 | `c_lo_us`, `c_hi_us`, `criticality`, `cluster` | reserved: nothing in the tree writes them |
 
@@ -168,7 +168,7 @@ Source: `crates/core/sched/src/scheduler/wake.rs` (`wake_enqueue_preempting`, `w
 
 ## Priority donation and the wait graph
 
-Two priority-inheritance mechanisms coexist. The wait graph is the one selected by `WAIT_GRAPH`; counted donation is the fallback of the clients that have one.
+Two priority-inheritance mechanisms coexist. The wait graph is always built in; counted donation remains for the clients that have not moved onto it.
 
 ### Wait graph
 
@@ -196,11 +196,11 @@ Two priority-inheritance mechanisms coexist. The wait graph is the one selected 
 
 | Client | Mechanism |
 |---|---|
-| fast IPC call | wait graph (`Edge::lend`) with `WAIT_GRAPH`; `donate_priority_for_call_at` without |
+| fast IPC call | wait graph (`Edge::lend`) |
 | user-driver proxy | `donate_priority` / `return_donation` |
-| kernel mutex, PI futex | wait graph; without `WAIT_GRAPH` the mutex sleeps and excludes but boosts nobody and PI futexes answer `ENOSYS` |
+| kernel mutex, PI futex | wait graph |
 
-Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `kernel/src/boot/sched.rs` (`register_sched`, `PROXY_HOOKS`), `crates/fs/src/fat32.rs`, `config/kernel/Kconfig.sync` (`WAIT_GRAPH`, `PI_MAX_DEPTH`, `FUTEX_PI`).
+Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `kernel/src/boot/sched.rs` (`register_sched`, `PROXY_HOOKS`), `crates/fs/src/fat32.rs`, `config/kernel/Kconfig.sync` (`PI_MAX_DEPTH`, `FUTEX_PI`).
 
 ## CPU topology
 

@@ -946,11 +946,9 @@ pub fn blocked_task_at(idx: usize) -> Option<BlockedRow> {
     if t.state_acquire() != TaskState::Blocked {
         return None;
     }
-    let edge = if azos_sync::waitgraph::ENABLED {
+    let edge = {
         use azos_sync::waitgraph::SchedPi;
         classes::PI.blocked_on(idx as azos_sync::waitgraph::TaskId).map(|o| o.peek())
-    } else {
-        None
     };
     Some(BlockedRow {
         tid: t.tid,

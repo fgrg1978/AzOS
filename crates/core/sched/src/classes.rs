@@ -42,7 +42,7 @@
 //! # The wait graph's scheduler side (N7)
 //!
 //! [`ClassPi`] is `azos_sync::waitgraph::SchedPi` over these classes,
-//! registered at boot with `WAIT_GRAPH`. The graph computes the effective
+//! registered at boot. The graph computes the effective
 //! attribute; here it becomes a Legacy priority number ([`pi_prio`]) kept per
 //! slot in `PI_PRIO`, and the live `priority` is re-bucketed under the
 //! slot's donation lock. `TaskDonation::base` reads the same floor, so a
@@ -131,23 +131,17 @@ pub fn class_of(idx: usize) -> Option<Class> {
     sc_of(idx).map(SchedContext::class)
 }
 
-/// The CPU task `idx` runs on, [`NO_CPU`] if none. With `WAIT_GRAPH` one
-/// load of the SC's `on_cpu`, written at every switch ([`on_switch`]);
-/// without, a scan of the per-CPU current task (cold, nothing on the
-/// switch). A hint for the kmutex spin and the graph: a racing switch may
-/// make it stale for one switch, never wrong for longer.
+/// The CPU task `idx` runs on, [`NO_CPU`] if none: one load of the SC's
+/// `on_cpu`, written at every switch ([`on_switch`]). A hint for the kmutex
+/// spin and the graph: a racing switch may make it stale for one switch,
+/// never wrong for longer.
 pub fn on_cpu(idx: usize) -> u16 {
-    if waitgraph::ENABLED {
-        return sc_of(idx).map_or(NO_CPU, |sc| sc.on_cpu.load(Ordering::Relaxed));
-    }
-    (0..ncpu())
-        .find(|&c| unsafe { PER_CPU[c].current_idx.load(Ordering::Relaxed) } == idx)
-        .map_or(NO_CPU, |c| c as u16)
+    sc_of(idx).map_or(NO_CPU, |sc| sc.on_cpu.load(Ordering::Relaxed))
 }
 
 /// N7b: `cpu` switches from `prev` to `next` (`set_current_task`, the one
 /// switch setter): `prev`'s SC leaves the CPU unless another CPU already
-/// claimed it, `next`'s SC names `cpu`. Only with `WAIT_GRAPH`. Two
+/// claimed it, `next`'s SC names `cpu`. Two
 /// bounds checks, one load, two stores; Relaxed (a hint, see [`on_cpu`]).
 #[inline(always)]
 pub(super) fn on_switch(cpu: usize, prev: usize, next: usize) {
@@ -251,7 +245,7 @@ pub(super) fn on_slot_reset(idx: usize, prio: u32) {
 /// the slot is claimed and before the task is enqueued, no lock held and
 /// interrupts on: the graph's lock is taken here, as in [`on_task_exit`].
 pub(super) fn on_slot_graph_reset(idx: usize) {
-    if waitgraph::ENABLED && idx < MAX_TASKS {
+    if idx < MAX_TASKS {
         PI_PRIO[idx].store(u32::MAX, Ordering::Relaxed);
         DL_BOOST[idx].store(u64::MAX, Ordering::Relaxed);
         // Detach only: the new task is not running, and an owner-died hook
@@ -264,11 +258,10 @@ pub(super) fn on_slot_graph_reset(idx: usize) {
 /// and before interrupts go off for the last switch): its wait-graph state
 /// goes now, not at the slot's reuse. The graph detaches any object it
 /// still owns and takes it off any object it waits on; its boost floor is
-/// dropped. Task context, no scheduler lock held. Compiled out without
-/// `WAIT_GRAPH`. Runtime canary `exit-keeps-graph` skips it (ktest
+/// dropped. Task context, no scheduler lock held. Runtime canary `exit-keeps-graph` skips it (ktest
 /// `waitgraph_exit_clears_state`).
 pub fn on_task_exit(idx: usize) {
-    if !waitgraph::ENABLED || idx >= MAX_TASKS || CANARY_EXIT_KEEPS_GRAPH.load(Ordering::Relaxed) {
+    if idx >= MAX_TASKS || CANARY_EXIT_KEEPS_GRAPH.load(Ordering::Relaxed) {
         return;
     }
     waitgraph::task_exit(idx as TaskId);
@@ -492,16 +485,14 @@ pub fn runnable_here() -> bool {
 }
 
 /// Per-slot wait-graph boost as a Legacy priority number, `u32::MAX` = none.
-/// Sized 0 without `WAIT_GRAPH` (nothing writes it then).
-const PI_SLOTS: usize = if waitgraph::ENABLED { MAX_TASKS } else { 0 };
-static PI_PRIO: [AtomicU32; PI_SLOTS] = [const { AtomicU32::new(u32::MAX) }; PI_SLOTS];
+static PI_PRIO: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(u32::MAX) }; MAX_TASKS];
 
 /// Per slot: the absolute deadline (µs) of the DL waiter the wait graph boosts
 /// the task by, `u64::MAX` for none. A DL-boosted task competes in the DL step
 /// with its donor's deadline (owner decision D4), not only at the band's top
 /// level, where any reservation out-ranks it (`formal/tla/pi_graph.tla`,
-/// EdfInheritance). Sized 0 without `WAIT_GRAPH`.
-static DL_BOOST: [AtomicU64; PI_SLOTS] = [const { AtomicU64::new(u64::MAX) }; PI_SLOTS];
+/// EdfInheritance).
+static DL_BOOST: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(u64::MAX) }; MAX_TASKS];
 
 /// The donor's deadline `idx` is boosted to, if a DL waiter boosts it.
 #[inline(always)]
@@ -536,16 +527,13 @@ fn dl_boost_for(idx: usize, to: PiAttr) -> u64 {
 /// donation protocol's base is `min(base_priority, this)`.
 #[inline]
 pub(super) fn pi_floor(idx: usize) -> u32 {
-    if !waitgraph::ENABLED {
-        return u32::MAX;
-    }
     PI_PRIO.get(idx).map_or(u32::MAX, |p| p.load(Ordering::Relaxed))
 }
 
 /// Per slot (Chain E cut 6): the task's base attribute as one integer
 /// ([`PiAttr::quiet_key`]), what [`ClassPiInline::quiet_key`] hands the wait
 /// graph's lock-free quiet test (`waitgraph::block_on_quiet`, every IPC call
-/// with WAIT_GRAPH) in place of two class reads, a jump table and
+/// call) in place of two class reads, a jump table and
 /// `PiAttr::cmp`. It mirrors the two fields [`ClassPiInline::base_attr`]
 /// reads, the SC's class and the task's `base_priority`, and is written
 /// wherever the class is ([`store_class`]), which is wherever a base
@@ -554,9 +542,8 @@ pub(super) fn pi_floor(idx: usize) -> u32 {
 /// `set_current_sched_params`, `rt::set_base_priority`) and takes the
 /// priority being installed. A writer that changes it on a live task
 /// reports it with [`pi_attr_changed`] after this store, whose fence orders
-/// it against a lazy call. Sized 0 without `WAIT_GRAPH`; the initial value
-/// is the class [`SC`] starts in.
-static QUIET_KEY: [AtomicU32; PI_SLOTS] = [const { AtomicU32::new(PiAttr::Fair.quiet_key()) }; PI_SLOTS];
+/// it against a lazy call. The initial value is the class [`SC`] starts in.
+static QUIET_KEY: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(PiAttr::Fair.quiet_key()) }; MAX_TASKS];
 
 /// The quiet key of a task in `class` at base priority `base`: exactly
 /// [`ClassPiInline::base_attr`]'s value as a key, a DL task's being
@@ -572,8 +559,8 @@ pub const fn quiet_key_of(class: Class, base: u32) -> u32 {
     }
 }
 
-/// `idx`'s quiet key as stored ([`waitgraph::QUIET_DL`] without
-/// `WAIT_GRAPH`: never quiet). Inline always: the IPC call reads two
+/// `idx`'s quiet key as stored ([`waitgraph::QUIET_DL`] for a slot out of
+/// range: never quiet). Inline always: the IPC call reads two
 /// (out of line it was two calls and a callee-saved register more).
 #[inline(always)]
 pub fn quiet_key(idx: usize) -> u32 {
@@ -619,7 +606,7 @@ const _: () = assert!(RT_PRIORITY_THRESHOLD <= u8::MAX as u32 && IDLE_PRIORITY <
 /// `azos_sync::waitgraph::SchedPi` over the dispatch classes.
 pub struct ClassPi;
 
-/// The hooks `boot::sched` registers with `WAIT_GRAPH`.
+/// The hooks `boot::sched` registers.
 pub static PI: ClassPi = ClassPi;
 
 impl ClassPi {
@@ -638,7 +625,7 @@ impl ClassPi {
     /// upwards (the counted return lands on the floor; `TaskDonation::base`).
     fn write_floor(&self, idx: usize, p: u32) {
         use crate::donation::DonationCell;
-        if idx >= MAX_TASKS || !waitgraph::ENABLED {
+        if idx >= MAX_TASKS {
             return;
         }
         let p = graph_floored(idx, p);
@@ -729,7 +716,7 @@ impl SchedPi for ClassPi {
 
 /// [`ClassPi`] with its accessors inline, for the wait graph's lock-free
 /// paths (`waitgraph::block_on_lazy` / `unblock_lazy`, every IPC call with
-/// WAIT_GRAPH). The same values as [`PI`]; a DL task's base (a deadline read
+/// call). The same values as [`PI`]; a DL task's base (a deadline read
 /// on its hart) and every mutation stay [`PI`]'s, out of line. Every method
 /// is `#[inline]` (the three accessors `always`: the IPC call arm is large
 /// enough that the inliner otherwise keeps `base_attr` out of line, +40
@@ -793,10 +780,10 @@ impl SchedPi for ClassPiInline {
 
 /// A base attribute of `idx` changed (priority, reservation admitted or
 /// dropped): the wait graph re-sorts it and walks. Call with no run-queue,
-/// donation or admission lock held. Compiled out without `WAIT_GRAPH`.
+/// donation or admission lock held.
 #[inline]
 pub(super) fn pi_attr_changed(idx: usize) {
-    if waitgraph::ENABLED && idx < MAX_TASKS {
+    if idx < MAX_TASKS {
         waitgraph::attr_changed(idx as TaskId);
     }
 }

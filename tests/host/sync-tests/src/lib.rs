@@ -844,27 +844,10 @@ mod mutex_io_tests {
     }
 }
 
-#[cfg(test)]
-mod donor_node_tests {
-    /// N7e: the donor node selector. With `WAIT_GRAPH` n a donor's node is
-    /// zero-sized, so embedding it changes no layout; y selects the graph's
-    /// `PiWaiters` with the donor's edge kind.
-    #[test]
-    fn donor_node_is_zero_sized_without_the_graph() {
-        use super::waitgraph::{DonorNode, EdgeKind, NodeSel, PiWaiters, SelectNode, ENABLED};
-        let want = if ENABLED { core::mem::size_of::<PiWaiters>() } else { 0 };
-        assert_eq!(core::mem::size_of::<DonorNode>(), want);
-        assert_eq!(core::mem::size_of::<<NodeSel<true> as SelectNode>::Node>(),
-                   core::mem::size_of::<PiWaiters>());
-        assert_eq!(<NodeSel<true> as SelectNode>::IPC_CALL.kind(), EdgeKind::IpcCall);
-        assert_eq!(<NodeSel<true> as SelectNode>::DRIVER_PROXY.kind(), EdgeKind::DriverProxy);
-    }
-}
-
 /// N8: the kernel mutex without a scheduler (host): the owner-word states,
 /// exclusion, the slow unlock a marked word forces, and rule F1's release
-/// around a device wait. The graph is off here (`WAIT_GRAPH` n), so no
-/// path reaches a `waitgraph` stub.
+/// around a device wait. No probes are registered here, so no path enters
+/// the wait graph.
 #[cfg(test)]
 mod kmutex_tests {
     use super::kmutex::{word, Mutex};
@@ -980,7 +963,7 @@ mod kmutex_tests {
         assert!(!may_take(None, Some(PiAttr::Idle), false));
     }
 
-    /// Without the graph (host, `WAIT_GRAPH` n) the slow unlock still
+    /// Without probes (host) the slow unlock still
     /// clears the word to FREE: the steal rule's ownerless WAITERS word only
     /// exists while a graph waiter is queued.
     #[test]

@@ -47,16 +47,14 @@
 //! answered `-1` here, as the arm answers it, so the denial is recorded
 //! once; a call refused after that goes on in the arm's own code from the
 //! resolved destination, not from the top); the server is not the caller,
-//! not exiting, and needs no priority
-//! donation (with the wait graph's call edge, Kconfig WAIT_GRAPH: the
-//! caller's edge to the server is lazy, see below); the peer is parked (`Blocked` on exactly the reason the ordinary
+//! not exiting, and its call edge is lazy
+//! (see below); the peer is parked (`Blocked` on exactly the reason the ordinary
 //! wake would match, no stamp, saved); no call is queued on the endpoint or
 //! for the server anywhere; the caller's record is free; preemption is enabled
 //! and no forced stop is pending for the current task; the runtime canary
 //! `ipc-force-slow` is not armed.
 //!
-//! With Kconfig WAIT_GRAPH a call lends its priority through a wait-graph
-//! edge, not a counted donation. The fast call records the caller's edge
+//! A call lends its priority through a wait-graph edge. The fast call records the caller's edge
 //! exactly as the ordinary call does, before the call is published
 //! (`blocked_on`, the lazy flag, the fence: `waitgraph::block_on_quiet`), and
 //! only when the edge stays lazy: the caller is not more urgent than the
@@ -472,10 +470,9 @@ fn call_parked<R: IpcRegs>(
         azos_sched::idx_for_tid(server)?
     };
     let parked = WaitReason::FastIpcServer(server);
-    // With the wait graph's call edge the donation is the edge, decided in
-    // `fastcall::fast_call` (quiet or the ordinary path).
+    // The donation is the call edge, decided in `fastcall::fast_call` (quiet
+    // or the ordinary path).
     if azos_sched::scheduler::slot_is_exiting(server_idx)
-        || (!fastcall::CALL_EDGE && azos_sched::scheduler::call_needs_donation_from(caller_idx, server_idx, server))
         || !ipc_fast_parked(server_idx, server, parked)
     {
         return None;

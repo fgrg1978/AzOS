@@ -261,10 +261,8 @@ pub(crate) fn install_sched_hooks() {
         azos_ipc::ep_queue::canary_v1_takes_v2();
     }
     // N7: the wait graph's scheduler side, before the first task can block
-    // on a graph object. Compiled out without `WAIT_GRAPH`.
-    if azos_sync::waitgraph::ENABLED {
-        azos_sync::waitgraph::register_sched(&azos_sched::classes::PI);
-    }
+    // on a graph object.
+    azos_sync::waitgraph::register_sched(&azos_sched::classes::PI);
     // N7 runtime canary: every wait-graph walk stops after one owner, so a
     // transitive chain is not boosted past its first link.
     if canary!("pi-depth-1") {
@@ -377,7 +375,7 @@ pub(crate) fn install_sched_hooks() {
     }
     // Wave 15 N7g: a fast call boosts its server through the wait graph
     // (ktest `waitgraph_ipc_call_boosts_server`); the canary takes no edge.
-    if azos_sync::waitgraph::ENABLED && canary!("ipc-call-no-edge") {
+    if canary!("ipc-call-no-edge") {
         azos_ipc::fastcall::canary_ipc_call_no_edge();
     }
     // Runtime canary: a thread's exit drops a process signal pending on it.
@@ -411,12 +409,10 @@ pub(crate) fn install_sched_hooks() {
         // N10b: an owner that exits holding a PI word with waiters hands it
         // to the top waiter (Linux exit_pi_state_list; the graph calls the
         // hook after the robust walk). Runtime canary: the hook does nothing.
-        if azos_sync::waitgraph::ENABLED {
-            azos_sync::waitgraph::register_owner_died(
-                azos_sync::waitgraph::EdgeKind::FutexPi,
-                &azos_sched::futex::PI_TABLE,
-            );
-        }
+        azos_sync::waitgraph::register_owner_died(
+            azos_sync::waitgraph::EdgeKind::FutexPi,
+            &azos_sched::futex::PI_TABLE,
+        );
         if canary!("futex-pi-exit-silent") {
             azos_sync::pi_futex::canary_exit_silent();
         }
@@ -451,7 +447,7 @@ pub(crate) fn install_sched_hooks() {
     // Wave 15 N8: the kernel mutex's adaptive-spin probe and wait-graph ids.
     azos_sync::kmutex::set_probes(&KMUTEX_PROBES);
     // N7c, owner decision 10-10: a Mutex owner that exits holding it hands
-    // it to its top waiter (EOWNERDEAD). No-op with WAIT_GRAPH n.
+    // it to its top waiter (EOWNERDEAD).
     azos_sync::kmutex::register_owner_died();
     // Owner rule (wave 15): an RT task never does block I/O. Dev builds
     // (Kconfig RT_BLOCK_IO_CHECK) panic at the block layer's entry.
@@ -513,8 +509,7 @@ pub(crate) fn install_sched_hooks() {
 }
 
 /// `azos_fs::ClaimPiHooks` (FX12): the scheduler's counted donation pair,
-/// with its `donation_for` rule and ring-3 floor, and the graph id for
-/// `WAIT_GRAPH` y.
+/// with its `donation_for` rule and ring-3 floor, and the graph id.
 static FAT_CLAIM_PI_HOOKS: azos_fs::ClaimPiHooks = azos_fs::ClaimPiHooks {
     donate: azos_sched::scheduler::donate_priority,
     give_back: azos_sched::scheduler::return_donation,
@@ -2544,13 +2539,12 @@ mod sched_class_ktests {
 }
 
 // N7: the wait graph, stage 1. Early, on a private graph driven by a
-// recording scheduler (the kernel's graph moves real tasks, and it has no
-// slots without `WAIT_GRAPH`): the transitive chain A <- B <- C boosts A to
+// recording scheduler (the kernel's graph moves real tasks): the transitive chain A <- B <- C boosts A to
 // C and each release gives back what it no longer earns; a cycle is EDEADLK
 // with both tasks unchanged; a DL donor's absolute deadline is inherited;
 // `attr_changed` of a waiter re-boosts its owner; a chain one link past
-// PI_MAX_DEPTH is counted and not boosted at its root. Late, with
-// `WAIT_GRAPH`: the registered class hooks read the running task. Canary
+// PI_MAX_DEPTH is counted and not boosted at its root. Late: the
+// registered class hooks read the running task. Canary
 // `canary=pi-depth-1` (one owner per walk): `waitgraph_transitive_chain`,
 // `waitgraph_dl_donor_and_attr_changed` (attr_changed never reaches the
 // owner) and `waitgraph_depth_cap` (only the last link is boosted) are
@@ -2730,9 +2724,6 @@ mod waitgraph_ktests {
     // Late: the registered hooks read the running task (a created task).
     azos_ktest::ktest_late! {
         fn waitgraph_live_hooks() {
-            if !azos_sync::waitgraph::ENABLED {
-                return Ok(());
-            }
             let Some(cur) = azos_sched::classes::current() else {
                 return Err("the late runner is not a task");
             };
@@ -2761,9 +2752,6 @@ mod waitgraph_ktests {
     // boost is the band's top level only, not ok.
     azos_ktest::ktest_late! {
         fn waitgraph_dl_boost_competes_by_deadline() {
-            if !azos_sync::waitgraph::ENABLED {
-                return Ok(());
-            }
             let Some(cur) = azos_sched::classes::current() else {
                 return Err("the late runner is not a task");
             };
@@ -2793,9 +2781,6 @@ mod waitgraph_ktests {
     // installing its base) is re-read after a yield before it fails.
     azos_ktest::ktest_late! {
         fn waitgraph_quiet_keys_match_base() {
-            if !azos_sync::waitgraph::ENABLED {
-                return Ok(());
-            }
             let pi = &azos_sched::classes::PI;
             let ok = |idx: usize| {
                 azos_sched::scheduler::tid_for_idx(idx).is_none()
@@ -2831,20 +2816,13 @@ mod waitgraph_ktests {
 // Rule F1: `unlocked_for_io` frees the mutex for the device wait, so another
 // task could take it there; lockdep notes a Mutex held across
 // `might_wait_device`. Canary `canary=kmutex-io-held` (the mutex stays held
-// across the wait): `kmutex_unlocked_for_io` is `not ok`. N8b: the PI and
-// steal-rule ktests below need WAIT_GRAPH y and return Ok at once
-// otherwise. Canary `canary=kmutex-steal-any` (a release frees the word
+// across the wait): `kmutex_unlocked_for_io` is `not ok`. N8b: Canary `canary=kmutex-steal-any` (a release frees the word
 // with a waiter queued): `kmutex_steal_rule_holds_for_top_waiter` not ok.
 #[cfg(feature = "ktest")]
 mod kmutex_ktests {
     use azos_sync::kmutex::Mutex;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use azos_sched::{current_task_tid, task_create_affinity, task_exit, task_priority, wq_wake_by_tid};
-
-    /// The PI ktests run only where the mutex is wired to the graph.
-    fn pi_on() -> bool {
-        azos_sync::waitgraph::ENABLED
-    }
 
     const CPU0: i8 = 0;
     /// The runner outranks everything it waits for and blocks, never spins.
@@ -2905,9 +2883,6 @@ mod kmutex_ktests {
     // graph, and the owner is back at its base priority after the unlock.
     azos_ktest::ktest_late! {
         fn kmutex_pi_rt_waiter_boosts_fair_owner() {
-            if !pi_on() {
-                return Ok(());
-            }
             crate::ktest::probe("kmx-pi", pi_run, 0, RUNNER_PRIO, CPU0)?;
             if !PI_ACQUIRED.load(Ordering::SeqCst) {
                 Err("the RT waiter never acquired the Mutex")
@@ -2971,9 +2946,6 @@ mod kmutex_ktests {
 
     azos_ktest::ktest_late! {
         fn waitgraph_ring3_owner_floored() {
-            if !pi_on() {
-                return Ok(());
-            }
             crate::ktest::probe("kmx-r3", r_run, 0, RUNNER_PRIO, CPU0)?;
             let held = R_HELD.load(Ordering::SeqCst);
             if !R_ACQUIRED.load(Ordering::SeqCst) {
@@ -3042,9 +3014,6 @@ mod kmutex_ktests {
     // the section), and the waiters acquire most urgent first.
     azos_ktest::ktest_late! {
         fn kmutex_contended_most_urgent_first() {
-            if !pi_on() {
-                return Ok(());
-            }
             crate::ktest::probe("kmx-cont", c_run, 0, RUNNER_PRIO, CPU0)?;
             let want = (C_HI << 8) | (C_LO << 4) | C_LATE;
             if C_DONE.load(Ordering::SeqCst) != 3 {
@@ -3103,7 +3072,7 @@ mod kmutex_ktests {
     // and the queued waiter still gets it afterwards.
     azos_ktest::ktest_late! {
         fn kmutex_steal_rule_holds_for_top_waiter() {
-            if !pi_on() || !azos_sync::kmutex::STEAL_RULE {
+            if !azos_sync::kmutex::STEAL_RULE {
                 return Ok(());
             }
             crate::ktest::probe("kmx-steal", s_run, 0, RUNNER_PRIO, CPU0)?;
@@ -3165,9 +3134,6 @@ mod kmutex_ktests {
 
     azos_ktest::ktest_late! {
         fn waitgraph_exit_clears_state() {
-            if !pi_on() {
-                return Ok(());
-            }
             crate::ktest::probe("kmx-exit", x_run, 0, RUNNER_PRIO, CPU0)?;
             let slot = X_SLOT.load(Ordering::SeqCst);
             if !X_DONE.load(Ordering::SeqCst) || slot == u32::MAX {
@@ -3228,9 +3194,6 @@ mod kmutex_ktests {
 
     azos_ktest::ktest_late! {
         fn kmutex_owner_died_wakes_waiter() {
-            if !pi_on() {
-                return Ok(());
-            }
             let before = azos_sync::kmutex::owner_died_count();
             crate::ktest::probe("kmx-died", od_run, 0, RUNNER_PRIO, CPU0)?;
             if !OD_QUEUED.load(Ordering::SeqCst) {
@@ -3584,7 +3547,7 @@ mod kmutex_ktests {
 
     azos_ktest::ktest_late! {
         fn kmutex_held_back_newcomer_is_in_the_graph() {
-            if !pi_on() || !azos_sync::kmutex::STEAL_RULE {
+            if !azos_sync::kmutex::STEAL_RULE {
                 return Ok(());
             }
             for _ in 0..D_ROUNDS {

@@ -54,8 +54,7 @@ impl crate::donation::DonationCell for TaskDonation {
     fn prio(&self) -> u32 {
         unsafe { task_mut(self.idx).priority.load(Ordering::Relaxed) }
     }
-    /// The base, held up by the wait graph's boost (`classes::pi_floor`, a
-    /// constant `u32::MAX` without `WAIT_GRAPH`).
+    /// The base, held up by the wait graph's boost (`classes::pi_floor`).
     fn base(&self) -> u32 {
         let b = unsafe { task_mut(self.idx).base_priority.load(Ordering::Relaxed) };
         b.min(classes::pi_floor(self.idx))

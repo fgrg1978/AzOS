@@ -597,7 +597,7 @@ impl PiWord for NoWord {
 /// word was not on it). Under the key the `pi_state` recorded, its top
 /// waiter becomes the owner and is woken; it writes `TID | FUTEX_WAITERS`
 /// itself (`OWNER_DIED` kept only if the robust walk set it). Boot
-/// registers it when `WAIT_GRAPH` and `FUTEX_PI` are y.
+/// registers it when `FUTEX_PI` is y.
 impl azos_sync::waitgraph::OwnerDiedHook for FutexPiTable {
     fn owner_died(&self, obj: &azos_sync::waitgraph::PiWaiters, _dead: TaskId) {
         use azos_sync::pi_futex as pf;

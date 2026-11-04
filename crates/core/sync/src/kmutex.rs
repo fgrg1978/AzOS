@@ -20,7 +20,7 @@
 //!   no probes registered, never spins. An RT spinner and an RT owner on
 //!   different CPUs is the F7 case: lockdep `RT_CROSS_CPU` notes it,
 //!   nothing forbids it (owner decision F7: report-only).
-//! * **Slow path**: set WAITERS; with `WAIT_GRAPH` y and the probes
+//! * **Slow path**: set WAITERS; with the probes
 //!   registered, enter the wait graph behind the owner (`EdgeKind::Mutex`;
 //!   the owner is boosted along the chain); sleep on the mutex's hashed
 //!   park queue (Kconfig `KMUTEX_PARK_BUCKETS`) while the word still reads
@@ -222,7 +222,7 @@ pub fn canary_io_held() {
 
 /// Runtime canary `canary=kmutex-steal-any`: the slow unlock frees the
 /// word even with a waiter queued, so any newcomer overtakes it (the steal
-/// rule broken). With `WAIT_GRAPH` y the ktest
+/// rule broken). The ktest
 /// `kmutex_steal_rule_holds_for_top_waiter` goes red.
 static CANARY_STEAL_ANY: AtomicBool = AtomicBool::new(false);
 
@@ -235,7 +235,7 @@ pub fn canary_steal_any() {
 /// back spins until the word has moved and come back before it parks, and
 /// its park ignores the bucket's wake generation ([`WAKE_GEN`]), so the
 /// word's ABA (`WAITERS` -> taken -> `WAITERS`, the wake already gone) parks
-/// it for good. With `WAIT_GRAPH` y the ktest
+/// it for good. The ktest
 /// `kmutex_held_back_newcomer_is_in_the_graph` goes red.
 static CANARY_PARK_ABA: AtomicBool = AtomicBool::new(false);
 
@@ -272,7 +272,7 @@ static PARK: [WaitQueue; PARK_BUCKETS] = [PARK_INIT; PARK_BUCKETS];
 #[allow(clippy::declare_interior_mutable_const)]
 const GRAPH_LOCK_INIT: SpinLock<()> = SpinLock::new(());
 /// Serialises the graph's owner record against the owner's slow unlock
-/// (module doc, graph protocol). Taken only with `WAIT_GRAPH` y.
+/// (module doc, graph protocol).
 static GRAPH_LOCK: [SpinLock<()>; PARK_BUCKETS] = [GRAPH_LOCK_INIT; PARK_BUCKETS];
 
 /// Offset of a Mutex's graph node from its owner word (the same for every
@@ -296,13 +296,11 @@ pub struct OwnerDiedHook;
 /// Registered by [`register_owner_died`].
 pub static OWNER_DIED_HOOK: OwnerDiedHook = OwnerDiedHook;
 
-/// Install the owner-died hook (kernel boot, once, with `WAIT_GRAPH` y).
+/// Install the owner-died hook (kernel boot, once).
 /// Every `EdgeKind::Mutex` node in the kernel's graph is then a
 /// `Mutex`'s own (tests use their own graphs).
 pub fn register_owner_died() {
-    if waitgraph::ENABLED {
-        waitgraph::register_owner_died(EdgeKind::Mutex, &OWNER_DIED_HOOK);
-    }
+    waitgraph::register_owner_died(EdgeKind::Mutex, &OWNER_DIED_HOOK);
 }
 
 impl waitgraph::OwnerDiedHook for OwnerDiedHook {
@@ -571,8 +569,7 @@ impl<T: ?Sized> Mutex<T> {
     /// the top waiter compared with is the queued one.
     fn take_free(&self, me: u32, w: u32, in_graph: Option<waitgraph::TaskId>) -> Take {
         let next = me | (w & word::WAITERS);
-        let p = if waitgraph::ENABLED { probes() } else { None };
-        let Some(p) = p else {
+        let Some(p) = probes() else {
             return match self.owner.compare_exchange(w, next, Ordering::Acquire, Ordering::Relaxed) {
                 Ok(_) => Take::Taken,
                 Err(now) => Take::Changed(now),
@@ -656,7 +653,7 @@ impl<T: ?Sized> Mutex<T> {
     }
 
     /// Enter the wait graph behind `owner`, the word still being `w`. Only
-    /// with `WAIT_GRAPH` y and the probes registered. Returns the waiter's
+    /// with the probes registered. Returns the waiter's
     /// graph id when it is enqueued (the caller unblocks after it wakes);
     /// `None` when skipped or the owner left (the caller still sleeps on
     /// the word: exclusion never depends on the graph). `Err`: the graph
@@ -669,9 +666,6 @@ impl<T: ?Sized> Mutex<T> {
     fn graph_block(&self, me: u32, owner: u32, w: u32, queued: Option<waitgraph::TaskId>)
         -> Result<Option<waitgraph::TaskId>, WaitError>
     {
-        if !waitgraph::ENABLED {
-            return Ok(None);
-        }
         let Some(p) = probes() else { return Ok(queued) };
         let Some(oid) = (p.graph_id)(owner) else { return Ok(queued) };
         if let Some(id) = queued {
@@ -753,7 +747,7 @@ impl<T: ?Sized> Mutex<T> {
         if self.died.load(Ordering::Relaxed) {
             self.died.store(false, Ordering::Relaxed);
         }
-        let old = if waitgraph::ENABLED {
+        let old = {
             let _g = GRAPH_LOCK[b].lock();
             let cur = self.owner.load(Ordering::Relaxed);
             let id = word::owner(cur).and_then(|o| probes().and_then(|p| (p.graph_id)(o)));
@@ -768,8 +762,6 @@ impl<T: ?Sized> Mutex<T> {
             let hold = STEAL_RULE && !CANARY_STEAL_ANY.load(Ordering::Relaxed);
             let free = if hold && self.waiters.has_waiters() { word::WAITERS } else { word::FREE };
             self.owner.swap(free, Ordering::Release)
-        } else {
-            self.owner.swap(word::FREE, Ordering::Release)
         };
         debug_assert!(word::owner(old).is_some(), "kmutex: unlock of a free Mutex");
         debug_assert!(

@@ -231,14 +231,16 @@ pub mod waitqueue {
     pub fn set_caller_tid(tid: u32) { TID.with(|t| t.set(tid)) }
 }
 
-/// The real `waitgraph` surface FAT32's claim donation names (FX12), with
-/// `WAIT_GRAPH` n: `ENABLED` is false and `DonorNode` is `()`, so no graph
-/// call is reached; the y-only items exist only to type-check.
+/// The real `waitgraph` surface FAT32's claim donation names (FX12). The host
+/// registers no claim hooks, so no graph call is reached: the items exist to
+/// type-check and answer as an empty graph.
 pub mod waitgraph {
-    pub const ENABLED: bool = false;
     pub type TaskId = u32;
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum EdgeKind { Claim }
     pub struct PiWaiters;
     impl PiWaiters {
+        pub const fn new(_: EdgeKind) -> Self { PiWaiters }
         pub fn owner(&self) -> Option<TaskId> { None }
         pub fn set_owner(&self, _: Option<TaskId>) {}
     }
@@ -250,10 +252,6 @@ pub mod waitgraph {
     pub fn block_commit(_: PendingBlock) -> Result<(), WaitError> { Err(WaitError::NoOwner) }
     pub fn unblock(_: TaskId, _: &PiWaiters, _: UnblockReason) {}
     pub fn release(_: TaskId, _: &PiWaiters) -> Option<TaskId> { None }
-    pub struct NodeSel<const Y: bool>;
-    pub trait SelectNode { type Node; const CLAIM: Self::Node; }
-    impl SelectNode for NodeSel<false> { type Node = (); const CLAIM: () = (); }
-    pub type DonorNode = <NodeSel<ENABLED> as SelectNode>::Node;
 }
 
 /// The real `preempt::critical_section` surface. The host has no preemption

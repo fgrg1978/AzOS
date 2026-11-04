@@ -389,19 +389,19 @@ pub(crate) const NAMES: &[&str] = &[
     "kmutex-io-held",
     // crates/core/sync/src/kmutex.rs `unlock_slow`: a release frees the word
     // with a waiter queued, so a newcomer overtakes it (KMUTEX_STEAL_RULE;
-    // ktest `kmutex_steal_rule_holds_for_top_waiter`, WAIT_GRAPH y).
+    // ktest `kmutex_steal_rule_holds_for_top_waiter`).
     "kmutex-steal-any",
     // crates/core/sync/src/kmutex.rs `lock_slow`: a held-back newcomer parks
     // on its word alone, after a widened window, so the word's ABA loses the
-    // wake (ktest `kmutex_held_back_newcomer_is_in_the_graph`, WAIT_GRAPH y).
+    // wake (ktest `kmutex_held_back_newcomer_is_in_the_graph`).
     "kmutex-park-aba",
     // crates/core/sched/src/classes.rs `on_task_exit`: the exit path keeps
     // the task's wait-graph state until its slot is reused (ktest
-    // `waitgraph_exit_clears_state`, WAIT_GRAPH y).
+    // `waitgraph_exit_clears_state`).
     "exit-keeps-graph",
     // crates/core/sync/src/waitgraph.rs `task_exit`: an owner exiting with
     // waiters only detaches its objects, no OwnerDiedHook wakes them (ktest
-    // `kmutex_owner_died_wakes_waiter`, WAIT_GRAPH y).
+    // `kmutex_owner_died_wakes_waiter`).
     "owner-died-silent",
     // crates/core/sync/src/held.rs `held_forget`: a task that exits
     // holding a Mutex stays counted in the held table (ktest
@@ -429,22 +429,22 @@ pub(crate) const NAMES: &[&str] = &[
     // crates/core/sync/src/pi_futex.rs `block_commit`: a PI futex waiter is
     // enqueued but the walk is dropped, so the word's owner is never boosted
     // (the RT-vs-normal inversion program; same binary on Linux; ktest
-    // `futex_pi_boosts_the_owner` under WAIT_GRAPH + FUTEX_PI).
+    // `futex_pi_boosts_the_owner` under FUTEX_PI).
     "futex-pi-no-edge",
     // crates/core/sync/src/pi_futex.rs `exit_handover`: an owner that exits
     // holding a PI word with waiters leaves them asleep (ktest
-    // `futex_pi_owner_exit_hands_over` under WAIT_GRAPH + FUTEX_PI).
+    // `futex_pi_owner_exit_hands_over` under FUTEX_PI).
     "futex-pi-exit-silent",
     // crates/core/sched/src/futex.rs `cmp_requeue_pi`: FUTEX_CMP_REQUEUE_PI
     // takes no PI word for the top waiter and wakes every waiter as a plain
     // wake, so FUTEX_WAIT_REQUEUE_PI returns EAGAIN owning nothing (ktest
-    // `futex_requeue_pi_hands_the_mutex_over` under WAIT_GRAPH + FUTEX_PI).
+    // `futex_requeue_pi_hands_the_mutex_over` under FUTEX_PI).
     "futex-requeue-pi-plain",
     // crates/core/sched/src/futex.rs `cmp_requeue_pi`: FUTEX_CMP_REQUEUE_PI
     // enqueues no waiter on the PI word's wait-graph object by proxy; each
     // wakes requeued and runs its own LOCK_PI (N10d), so the owner is not
     // boosted while they sleep (ktest `futex_requeue_pi_hands_the_mutex_over`
-    // under WAIT_GRAPH + FUTEX_PI).
+    // under FUTEX_PI).
     "futex-requeue-pi-no-proxy",
     // boot/sched.rs `console_drop_veto`: the ktest's probe task may not wait
     // for the console, so its line is dropped into the full deferred buffer
@@ -472,7 +472,7 @@ pub(crate) const NAMES: &[&str] = &[
     "sigsuspend-shared",
     // crates/core/sched/src/classes.rs `graph_floored`: a wait-graph boost
     // lifts a ring-3 owner past RT_PRIORITY_THRESHOLD (ktest
-    // `waitgraph_ring3_owner_floored`, WAIT_GRAPH y).
+    // `waitgraph_ring3_owner_floored`).
     "pi-ring3-unclamped",
     // crates/core/sched/src/classes.rs `dl_boost_for`: a DL waiter's boost is
     // the band's top level only, so a later-deadline reservation out-ranks
@@ -484,7 +484,7 @@ pub(crate) const NAMES: &[&str] = &[
     "kernel-l1-copy",
     // crates/core/ipc/src/fastcall.rs `CallEdge::lend`: a fast call takes no
     // wait-graph edge, so its server is not boosted (ktest
-    // `waitgraph_ipc_call_boosts_server`, WAIT_GRAPH y).
+    // `waitgraph_ipc_call_boosts_server`).
     "ipc-call-no-edge",
     // boot/early.rs (ktest.rs `lockdep_early_abba`): two SpinLocks taken in
     // both orders before the scheduler, an ABBA lockdep reports from boot

@@ -149,7 +149,7 @@ pub(crate) mod ipc_fastpath;
 // Wave 15 N9: the futex requeue wakes one waiter, not the herd.
 #[cfg(feature = "ktest")]
 pub(crate) mod futex_requeue;
-// Wave 15 N10w (Kconfig WAIT_GRAPH + FUTEX_PI): an RT LOCK_PI waiter boosts
+// Wave 15 N10w (Kconfig FUTEX_PI): an RT LOCK_PI waiter boosts
 // the fair owner of the word through the futex table; UNLOCK_PI restores it.
 #[cfg(feature = "ktest")]
 pub(crate) mod futex_pi;

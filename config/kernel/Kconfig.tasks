@@ -279,7 +279,7 @@ config HUNG_DETECT
       A hung task is one blocked on a wait that names who must end it, for
       HUNG_TASK_TIMEOUT_MS with no context switch in between: a synchronous
       IPC call whose reply has not come, or a wait on a lock or futex whose
-      owner is known to the wait graph (WAIT_GRAPH). A server waiting for
+      owner is known to the wait graph. A server waiting for
       calls, an idle worker, an event or a ring wait and a timed sleep have
       no owner and are never reported, however long they last.
 

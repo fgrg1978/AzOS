@@ -22,8 +22,7 @@
 //!   server can no longer answer, the worker answers, the caller gets the
 //!   worker's words, and a second reply on the warrant is refused.
 //!   Canary `canary=ipc-reply-twice`: the second reply is delivered, `not ok`.
-//! * `waitgraph_ipc_call_boosts_server` (wave 15 N7g, WAIT_GRAPH y; Ok at
-//!   once otherwise): an RT client's call boosts a low-priority server
+//! * `waitgraph_ipc_call_boosts_server` (wave 15 N7g): an RT client's call boosts a low-priority server
 //!   through the wait graph's IpcCall edge while it serves, and the reply
 //!   puts the server back at its base. Canary `canary=ipc-call-no-edge`: the
 //!   call takes no edge, the server serves at its base, `not ok`.
@@ -1153,9 +1152,6 @@ fn wg_client(_: usize) {
 
 azos_ktest::ktest_late! {
     fn waitgraph_ipc_call_boosts_server() {
-        if !(azos_sync::waitgraph::ENABLED) {
-            return Ok(());
-        }
         azos_sched::task_create_affinity("n7g-srv", wg_server, 0, WG_SERVER_PRIO, -1);
         crate::ktest::wait("the server never claimed its endpoint", || WG_READY.load(Ordering::Acquire))?;
         azos_sched::task_create_affinity("n7g-cli", wg_client, 0, WG_CLIENT_PRIO, -1);

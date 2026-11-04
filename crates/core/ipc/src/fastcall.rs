@@ -95,8 +95,7 @@ pub struct Abandoned {
 
 // ── Wave 15 N7g: the call's donation as a wait-graph edge ───────────────────
 //
-// With Kconfig WAIT_GRAPH, a call does not lend a
-// counted donation: the caller blocks on its server's `IpcCall` node in the
+// A call does not lend a counted donation: the caller blocks on its server's `IpcCall` node in the
 // wait graph, so the server runs at the most urgent of its callers (the
 // over-boost of two counted donations to one server is gone, owner decision
 // 10-10), a chain of calls inherits transitively, a call that would close a
@@ -106,69 +105,23 @@ pub struct Abandoned {
 // caller also leaves its own edge when it collects or abandons (the replier's
 // unblock runs after the answer is published, so the caller may already be
 // past it); every donee that leaves this file is then NO_DONEE, and
-// `syscall::dispatch` and `ipc_v2` return nothing. Every y body is in the
-// `NodeSel<true>` impl below: with n none of it is compiled.
+// `syscall::dispatch` and `ipc_v2` return nothing.
 
-use azos_sync::waitgraph::{self, DonorNode, NodeSel, PiWaiters, SelectNode, UnblockReason, WaitError};
+use azos_sync::waitgraph::{self, EdgeKind, PiWaiters, UnblockReason, WaitError};
 
-/// The call edge is the graph's: Kconfig WAIT_GRAPH (without it the call
-/// lends a counted donation).
-const GRAPH: bool = waitgraph::ENABLED;
+/// One `IpcCall` node per server task slot.
+static CALL_NODES: [PiWaiters; azos_limits::MAX_TASKS] =
+    [const { PiWaiters::new(EdgeKind::IpcCall) }; azos_limits::MAX_TASKS];
 
-/// One `IpcCall` node per server task slot; zero-sized with WAIT_GRAPH n.
-#[allow(clippy::declare_interior_mutable_const)]
-static CALL_NODES: [DonorNode; azos_limits::MAX_TASKS] =
-    [const { <NodeSel<{ waitgraph::ENABLED }> as SelectNode>::IPC_CALL }; azos_limits::MAX_TASKS];
+/// The call edge's operations.
+struct Edge;
 
-/// A node as the graph sees it: `PiWaiters` (y) or nothing (n).
-trait AsPi {
-    fn pi(&self) -> Option<&PiWaiters>;
-}
-
-impl AsPi for PiWaiters {
-    #[inline(always)]
-    fn pi(&self) -> Option<&PiWaiters> {
-        Some(self)
-    }
-}
-
-impl AsPi for () {
-    #[inline(always)]
-    fn pi(&self) -> Option<&PiWaiters> {
-        None
-    }
-}
-
-/// The call edge's operations; [`Edge`] picks the build's.
-trait CallEdge {
+impl Edge {
     /// At the call: `Some(donee)` (the server's TID when an edge was taken,
     /// else NO_DONEE), `None` when the edge would close a cycle (no call).
-    fn lend(caller_idx: usize, server_idx: usize, server: u32, donate: bool) -> Option<u32>;
-    /// The task in slot `caller_idx` leaves its own call edge, if it has one.
-    fn leave(caller_idx: usize);
-    /// Someone else retires the call of record `caller_idx` whose token
-    /// `donee` it took: the edge to `donee`'s node goes.
-    fn retire(caller_idx: usize, donee: u32);
-    /// The fast path's call (Chain E, under WAIT_GRAPH): the edge [`lend`]
-    /// would take, only when it is lazy (the call boosts nothing, carries no
-    /// chain, closes no cycle): `Some(donee)` as [`lend`]'s, `None` with no
-    /// edge (the ordinary path lends it). The graph lock only to set the
-    /// node's owner, once per server slot, as [`lend`] does.
-    fn lend_quiet(caller_idx: usize, server_idx: usize, server: u32) -> Option<u32>;
-    /// [`lend_quiet`]'s edge to the server in slot `server_idx` goes again
-    /// (the fast call was not made), or the replier `server_idx` retires it.
-    fn retire_at(caller_idx: usize, server_idx: usize);
-    /// The call of record `caller_idx` boosts nothing: its edge, if any, is
-    /// lazy (a reply that would unboost takes the ordinary path).
-    fn quiet(caller_idx: usize) -> bool;
-}
-
-type Edge = NodeSel<GRAPH>;
-
-impl CallEdge for NodeSel<true> {
     #[inline]
     fn lend(caller_idx: usize, server_idx: usize, server: u32, donate: bool) -> Option<u32> {
-        let node = match CALL_NODES.get(server_idx).and_then(AsPi::pi) {
+        let node = match CALL_NODES.get(server_idx) {
             Some(n) if donate && runtime_edge_on() => n,
             _ => return Some(NO_DONEE),
         };
@@ -186,35 +139,43 @@ impl CallEdge for NodeSel<true> {
         }
     }
 
+    /// The task in slot `caller_idx` leaves its own call edge, if it has one.
     #[inline]
     fn leave(caller_idx: usize) {
         use waitgraph::SchedPi;
         let Some(on) = azos_sched::classes::PI.blocked_on(caller_idx as waitgraph::TaskId) else { return };
         let base = CALL_NODES.as_ptr() as usize;
-        let size = core::mem::size_of::<DonorNode>().max(1);
+        let size = core::mem::size_of::<PiWaiters>().max(1);
         let off = on.addr().wrapping_sub(base);
         if off % size != 0 {
             return;
         }
-        if let Some(node) = CALL_NODES.get(off / size).and_then(AsPi::pi) {
+        if let Some(node) = CALL_NODES.get(off / size) {
             waitgraph::unblock_lazy(&azos_sched::classes::PI_INLINE, caller_idx as waitgraph::TaskId, node, UnblockReason::ObjectGone);
         }
     }
 
+    /// Someone else retires the call of record `caller_idx` whose token
+    /// `donee` it took: the edge to `donee`'s node goes.
     #[inline]
     fn retire(caller_idx: usize, donee: u32) {
         if donee == NO_DONEE {
             return;
         }
         let Some(s) = azos_sched::idx_for_tid(donee) else { return };
-        if let Some(node) = CALL_NODES.get(s).and_then(AsPi::pi) {
+        if let Some(node) = CALL_NODES.get(s) {
             waitgraph::unblock_lazy(&azos_sched::classes::PI_INLINE, caller_idx as waitgraph::TaskId, node, UnblockReason::Acquired);
         }
     }
 
+    /// The fast path's call (Chain E): the edge [`Edge::lend`] would take,
+    /// only when it is lazy (the call boosts nothing, carries no chain,
+    /// closes no cycle): `Some(donee)` as `lend`'s, `None` with no edge (the
+    /// ordinary path lends it). The graph lock only to set the node's owner,
+    /// once per server slot, as `lend` does.
     #[inline(always)]
     fn lend_quiet(caller_idx: usize, server_idx: usize, server: u32) -> Option<u32> {
-        let Some(node) = CALL_NODES.get(server_idx).and_then(AsPi::pi) else { return Some(NO_DONEE) };
+        let Some(node) = CALL_NODES.get(server_idx) else { return Some(NO_DONEE) };
         if !runtime_edge_on() {
             return Some(NO_DONEE);
         }
@@ -227,37 +188,21 @@ impl CallEdge for NodeSel<true> {
         waitgraph::block_on_quiet(&azos_sched::classes::PI_INLINE, caller_idx as waitgraph::TaskId, node).then_some(server)
     }
 
+    /// [`Edge::lend_quiet`]'s edge to the server in slot `server_idx` goes
+    /// again (the fast call was not made), or the replier `server_idx`
+    /// retires it.
     #[inline(always)]
     fn retire_at(caller_idx: usize, server_idx: usize) {
-        if let Some(node) = CALL_NODES.get(server_idx).and_then(AsPi::pi) {
+        if let Some(node) = CALL_NODES.get(server_idx) {
             waitgraph::unblock_lazy(&azos_sched::classes::PI_INLINE, caller_idx as waitgraph::TaskId, node, UnblockReason::Acquired);
         }
     }
 
+    /// The call of record `caller_idx` boosts nothing: its edge, if any, is
+    /// lazy (a reply that would unboost takes the ordinary path).
     #[inline(always)]
     fn quiet(caller_idx: usize) -> bool {
         waitgraph::edge_is_quiet(&azos_sched::classes::PI_INLINE, caller_idx as waitgraph::TaskId)
-    }
-}
-
-impl CallEdge for NodeSel<false> {
-    #[inline(always)]
-    fn lend(_: usize, _: usize, _: u32, _: bool) -> Option<u32> {
-        Some(NO_DONEE)
-    }
-    #[inline(always)]
-    fn leave(_: usize) {}
-    #[inline(always)]
-    fn retire(_: usize, _: u32) {}
-    #[inline(always)]
-    fn lend_quiet(_: usize, _: usize, _: u32) -> Option<u32> {
-        Some(NO_DONEE)
-    }
-    #[inline(always)]
-    fn retire_at(_: usize, _: usize) {}
-    #[inline(always)]
-    fn quiet(_: usize) -> bool {
-        true
     }
 }
 
@@ -267,15 +212,12 @@ impl CallEdge for NodeSel<false> {
 /// reader of an edge outside the graph lock is (`Edge::leave`): the pick's
 /// proxy execution follows it (`azos_sched::rt::set_call_server_hook`), and
 /// the worst a stale read does is one pick that runs the server a moment
-/// longer on the caller's reservation. Always `None` with WAIT_GRAPH n.
+/// longer on the caller's reservation.
 pub fn call_server_of(idx: usize) -> Option<usize> {
     use waitgraph::SchedPi;
-    if !GRAPH {
-        return None;
-    }
     let on = azos_sched::classes::PI.blocked_on(idx as waitgraph::TaskId)?;
     let base = CALL_NODES.as_ptr() as usize;
-    let size = core::mem::size_of::<DonorNode>().max(1);
+    let size = core::mem::size_of::<PiWaiters>().max(1);
     let off = on.addr().wrapping_sub(base);
     let s = off / size;
     (off % size == 0 && s < CALL_NODES.len()).then_some(s)
@@ -283,21 +225,18 @@ pub fn call_server_of(idx: usize) -> Option<usize> {
 
 /// Runtime canary `ipc-call-no-edge`: a call takes no wait-graph edge, so a
 /// low-priority server answers at its own priority (ktest
-/// `waitgraph_ipc_call_boosts_server`, WAIT_GRAPH y). Zero-sized with n.
-static CANARY_NO_EDGE: [core::sync::atomic::AtomicBool; GRAPH as usize] =
-    [const { core::sync::atomic::AtomicBool::new(false) }; GRAPH as usize];
+/// `waitgraph_ipc_call_boosts_server`).
+static CANARY_NO_EDGE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 #[inline(always)]
 fn runtime_edge_on() -> bool {
-    !CANARY_NO_EDGE.iter().any(|c| c.load(core::sync::atomic::Ordering::Relaxed))
+    !CANARY_NO_EDGE.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// Arm `canary=ipc-call-no-edge` (boot, once). A no-op with WAIT_GRAPH n.
+/// Arm `canary=ipc-call-no-edge` (boot, once).
 #[inline]
 pub fn canary_ipc_call_no_edge() {
-    for c in &CANARY_NO_EDGE {
-        c.store(true, core::sync::atomic::Ordering::Relaxed);
-    }
+    CANARY_NO_EDGE.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Queue `caller_tid`'s call (task slot `caller_idx`, the current task) on
@@ -322,69 +261,43 @@ pub fn call(caller_idx: usize, caller_tid: u32, dest: Dest, words: [u64; WORDS],
     // Lent before the call is published, recorded in the record in the same
     // hold of the queue lock: the server may accept and reply on another CPU
     // before this one runs its next instruction.
-    let donee = if GRAPH {
-        Edge::lend(caller_idx, server_idx, server, donate)?
-    } else if donate && azos_sched::scheduler::donate_priority_for_call_at(server_idx, server) {
-        server
-    } else {
-        NO_DONEE
-    };
+    let donee = Edge::lend(caller_idx, server_idx, server, donate)?;
     let h = ep_queue::call(
         caller_idx, caller_tid, dest.index(), dest.generation(), server, server_idx,
         words, moved_cap, donee,
     );
     if h.is_none() && donee != NO_DONEE {
-        if GRAPH {
-            Edge::leave(caller_idx);
-        } else {
-            azos_sched::return_donation(donee);
-        }
+        Edge::leave(caller_idx);
     }
     h
 }
 
 /// A live-update rebind moves the donation of the queued call of the task
 /// in slot `caller_idx`, lent to `old` (its donee), to the new server `new`
-/// (task slot `new_idx`): with the wait graph, the caller's call edge leaves
-/// `old`'s node and goes to `new`'s; else the counted donation is returned
-/// (a counted donation lends the running task's priority, so it cannot be
-/// taken again for the caller). Returns the call's new donee ([`NO_DONEE`]
-/// when `new` takes none: a cycle, or the donation is off). Called by
-/// `ep_queue::rebind` under the endpoint's lock.
-pub fn retarget_donation(caller_idx: usize, old: u32, new: u32, new_idx: usize) -> u32 {
-    if GRAPH {
-        Edge::leave(caller_idx);
-        Edge::lend(caller_idx, new_idx, new, true).unwrap_or(NO_DONEE)
-    } else {
-        // A counted donation lends the CURRENT task's priority, and this runs
-        // in the supervisor, not the caller: it is returned and not taken
-        // again (without the wait graph the re-presented call is not boosted).
-        azos_sched::return_donation(old);
-        NO_DONEE
-    }
+/// (task slot `new_idx`): the caller's call edge leaves its old server's
+/// node and goes to `new`'s. Returns the call's new donee ([`NO_DONEE`] when
+/// `new` takes none: a cycle). Called by `ep_queue::rebind` under the
+/// endpoint's lock.
+pub fn retarget_donation(caller_idx: usize, new: u32, new_idx: usize) -> u32 {
+    Edge::leave(caller_idx);
+    Edge::lend(caller_idx, new_idx, new, true).unwrap_or(NO_DONEE)
 }
 
 // ── The IPC fast path (Kconfig IPC_FASTPATH, Chain E stage a) ──────────────
 
 /// The fast path, as far as this crate decides it: Kconfig IPC_FASTPATH.
-/// With the wait graph's call edge ([`CALL_EDGE`]) a
-/// fast call records the edge the ordinary call would, and only a lazy one
+/// A fast call records the edge the ordinary call would, and only a lazy one
 /// (`waitgraph::block_on_quiet`: the call boosts nothing, carries no chain
 /// and closes no cycle); a call the graph must act on keeps the ordinary
 /// path, and so does a reply whose call's edge is no longer lazy.
 pub const FAST_PATH: bool = azos_limits::IPC_FASTPATH;
-
-/// A call lends its priority through its wait-graph edge (Kconfig
-/// WAIT_GRAPH), not a counted donation: the fast
-/// path's donation check is the edge's quiet predicate instead.
-pub const CALL_EDGE: bool = GRAPH;
 
 /// The fast path's call (see `ep_queue::fast_call`): `caller_tid` (task slot
 /// `caller_idx`) calls `dest`, served by the task in slot `server_idx`, with
 /// `words`; `claim` takes the parked server. The handle, or `None` with
 /// nothing done. The call's tracepoint is the one [`call`] records.
 ///
-/// With [`CALL_EDGE`] the caller's lazy edge to the server's node is
+/// The caller's lazy edge to the server's node is
 /// recorded first, before the call is published, as [`call`] lends it, and
 /// the record keeps its token, so whoever ends the call (the reply, the
 /// drain, the collect, the abandon) retires it as for an ordinary call. Not
@@ -402,7 +315,7 @@ pub fn fast_call(
     let Some(h) = ep_queue::fast_call(
         caller_idx, caller_tid, dest.index(), dest.generation(), dest.owner, server_idx, words, donee, claim,
     ) else {
-        if GRAPH && donee != NO_DONEE {
+        if donee != NO_DONEE {
             Edge::retire_at(caller_idx, server_idx);
         }
         return None;
@@ -413,7 +326,7 @@ pub fn fast_call(
 
 /// The fast path's reply (see `ep_queue::fast_reply`): the caller's task
 /// slot and TID, or `None` with nothing done. The reply's tracepoint is the
-/// one [`reply`] records. With [`CALL_EDGE`] only a call whose edge is lazy
+/// one [`reply`] records. Only a call whose edge is lazy
 /// (or absent) is answered here, and the replier retires that edge before
 /// the caller can run again, as [`reply`] does.
 #[inline(always)]
@@ -424,11 +337,11 @@ pub fn fast_reply(
     words: [u64; WORDS],
     claim: impl ep_queue::Claim,
 ) -> Option<(usize, u32)> {
-    if GRAPH && !ep_queue::handle_rec(handle).is_some_and(Edge::quiet) {
+    if !ep_queue::handle_rec(handle).is_some_and(Edge::quiet) {
         return None;
     }
-    let (rec, caller, donee) = ep_queue::fast_reply(handle, replier, replier_idx, words, GRAPH, claim)?;
-    if GRAPH && donee != NO_DONEE {
+    let (rec, caller, donee) = ep_queue::fast_reply(handle, replier, replier_idx, words, claim)?;
+    if donee != NO_DONEE {
         if donee == replier {
             Edge::retire_at(rec, replier_idx);
         } else {
@@ -481,10 +394,8 @@ pub fn accept_v2(server_idx: usize, server_tid: u32) -> Option<AcceptedReq> {
 fn map_reply(r: QReply, replier: u32) -> FastIpcReply {
     let out = match r {
         QReply::Woke { caller, rec, donee } => {
-            if GRAPH {
-                Edge::retire(rec, donee);
-            }
-            FastIpcReply::Woke { caller_tid: caller, slot_idx: rec, donee: if GRAPH { NO_DONEE } else { donee } }
+            Edge::retire(rec, donee);
+            FastIpcReply::Woke { caller_tid: caller, slot_idx: rec, donee: NO_DONEE }
         }
         QReply::Stale => FastIpcReply::Stale,
         QReply::Refused => FastIpcReply::Refused,
@@ -526,25 +437,11 @@ pub fn reply_then_accept(
 #[inline]
 pub fn collect(handle: u64, caller_tid: u32) -> Collected {
     let out = match ep_queue::collect(handle, caller_tid) {
-        QCollected::Reply(w, d) => Collected::Reply(w, d),
-        QCollected::Done(code, d) => Collected::Done(i64::from(code), d),
-        QCollected::Nothing => Collected::Nothing,
+        QCollected::Reply(w, _) => Collected::Reply(w, NO_DONEE),
+        QCollected::Done(code, _) => Collected::Done(i64::from(code), NO_DONEE),
+        QCollected::Nothing => return Collected::Nothing,
     };
-    if GRAPH {
-        return graph_collected(out, caller_tid);
-    }
-    out
-}
-
-/// [`collect`]'s answer with WAIT_GRAPH: the caller leaves its call edge
-/// and owes nothing back.
-#[inline(always)]
-fn graph_collected(out: Collected, caller_tid: u32) -> Collected {
-    let out = match out {
-        Collected::Reply(w, _) => Collected::Reply(w, NO_DONEE),
-        Collected::Done(code, _) => Collected::Done(code, NO_DONEE),
-        Collected::Nothing => return Collected::Nothing,
-    };
+    // The caller leaves its call edge and owes nothing back.
     if let Some(idx) = azos_sched::idx_for_tid(caller_tid) {
         Edge::leave(idx);
     }
@@ -573,13 +470,10 @@ pub fn abandon(handle: u64, caller_tid: u32) -> Abandoned {
     if let Some((ep, h)) = served {
         crate::endpoint::post_call_notice(ep, h, CODE_CANCELED);
     }
-    if GRAPH {
-        if let Some(idx) = azos_sched::idx_for_tid(caller_tid) {
-            Edge::leave(idx);
-        }
-        return Abandoned { donee: NO_DONEE, was_queued: a.was_queued };
+    if let Some(idx) = azos_sched::idx_for_tid(caller_tid) {
+        Edge::leave(idx);
     }
-    Abandoned { donee: a.donee, was_queued: a.was_queued }
+    Abandoned { donee: NO_DONEE, was_queued: a.was_queued }
 }
 
 /// The task-exit hook's caller half: withdraw `tid`'s own call. (Its server
@@ -596,13 +490,8 @@ pub fn release_all(tid: u32) {
     if let Some((ep, h)) = served.filter(|&(_, h)| h == c.handle) {
         crate::endpoint::post_call_notice(ep, h, CODE_CANCELED);
     }
-    // A dying client's donation goes back to its server; nobody else is
-    // left to return it.
-    if GRAPH {
-        Edge::leave(idx);
-    } else if c.donee != NO_DONEE && c.donee != tid {
-        azos_sched::return_donation(c.donee);
-    }
+    // A dying client leaves its call edge; nobody else is left to.
+    Edge::leave(idx);
     // A request never delivered (queued, or refused by a v1 accept and not
     // collected): every capability moved with it is in the server's table
     // and belongs to nothing now. Revoked, not returned (the sender is the
@@ -640,11 +529,7 @@ pub fn drain_endpoint(i: usize, code: i32, server: u32) {
         // A dying server's own boost is not returned: the target is the task
         // being torn down (its slot zeroes the count when reused).
         if c.donee != NO_DONEE && !(code == ep_queue::PEER_DIED && c.donee == server) {
-            if GRAPH {
-                retire_completed(&c);
-            } else {
-                azos_sched::return_donation(c.donee);
-            }
+            retire_completed(&c);
         }
         // By TID, stamping a caller not yet blocked: the drain can land
         // between its call and its block.
@@ -660,16 +545,12 @@ pub fn drain_endpoint(i: usize, code: i32, server: u32) {
 /// or revoked by [`release_all`] when the caller exits first.
 fn complete_one(c: ep_queue::Completed) {
     if c.donee != NO_DONEE {
-        if GRAPH {
-            retire_completed(&c);
-        } else {
-            azos_sched::return_donation(c.donee);
-        }
+        retire_completed(&c);
     }
     azos_sched::wait::wake_fast_ipc_client_tid(c.caller, c.handle);
 }
 
-/// WAIT_GRAPH: a call completed by its endpoint (`c.donee` taken) leaves
+/// A call completed by its endpoint (`c.donee` taken) leaves
 /// its server's node. A dead server's is left to the caller's collect.
 #[inline(always)]
 fn retire_completed(c: &ep_queue::Completed) {

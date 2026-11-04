@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! N7: the wait graph's stage-1 semantics, on a private `Graph` driven by a
-//! recording scheduler (the kernel's instance is sized 0 with `WAIT_GRAPH`
-//! n). Its own test binary: the graph lock moves the host preempt counter,
+//! recording scheduler. Its own test binary: the graph lock moves the host preempt counter,
 //! which the library's preempt tests read, so it must not share their
 //! process. One test function: the depth canary is a global.
 
@@ -310,7 +309,7 @@ fn lazy() {
 
 static OQ: [PiWaiters; 3] = [const { PiWaiters::new(EdgeKind::IpcCall) }; 3];
 
-/// Chain E (the IPC fast path under WAIT_GRAPH): `block_on_quiet` is
+/// Chain E (the IPC fast path): `block_on_quiet` is
 /// `block_on_lazy`'s quiet case and nothing else. Quiet: the same lazy edge.
 /// Not quiet (a boost, an owner already blocked, no owner, a kind that takes
 /// no lazy edge): `false`, no edge left, nothing boosted or walked.

@@ -1170,14 +1170,12 @@ pub fn fast_call(
 
 /// The fast path's reply: `replier` (task slot `replier_idx`) answers the
 /// call `handle` names with `words`, exactly as [`reply_then_accept`] does
-/// when no next call is waiting for it (the donation stays in the record
-/// for the client to return when it collects), or, for a call without a
-/// donation, hands the answer to the claimed caller directly and frees the
-/// record as its collect would ([`Claim::hand_reply`]). With `token` (the
-/// wait graph's call edge: the record's donee is the edge's token, which
-/// the caller does not return) every call may be handed. Returns the
-/// caller's task slot (its record's index), its TID, and the record's donee,
-/// which the caller of this function retires.
+/// when no next call is waiting for it, or hands the answer to the claimed
+/// caller directly and frees the record as its collect would
+/// ([`Claim::hand_reply`]). The record's donee is the call edge's token,
+/// which the caller does not return. Returns the caller's task slot (its
+/// record's index), its TID, and the record's donee, which the caller of
+/// this function retires.
 ///
 /// Refused (`None`, nothing written) unless, under the endpoint's lock: the
 /// call is the one `handle` names, ACCEPTED, and `replier` holds its reply
@@ -1191,7 +1189,6 @@ pub fn fast_reply(
     replier: u32,
     replier_idx: usize,
     words: [u64; WORDS],
-    token: bool,
     mut claim: impl Claim,
 ) -> Option<(usize, u32, u32)> {
     let i = handle_rec(handle)?;
@@ -1211,10 +1208,8 @@ pub fn fast_reply(
     {
         return None;
     }
-    // A donation is the caller's collect's to return: such a call is
-    // answered through the record. A wait-graph token is not returned.
     let donee = r.donee.load(Ordering::Relaxed);
-    if (token || donee == NO_DONEE) && claim.hand_reply(&words) {
+    if claim.hand_reply(&words) {
         free(i, tag_gen(t));
     } else {
         for (d, s) in r.words.iter().zip(words) {
@@ -2467,7 +2462,7 @@ mod tests {
         assert_eq!(take_deposit(SERVER_IDX, SERVER), Some((idx, h)));
         assert_eq!(take_deposit(SERVER_IDX, SERVER), None, "taken once");
         assert_eq!((deposit_caller(idx), [0, 1, 2, 3].map(|k| deposit_word(idx, k))), (tid, REQ));
-        let got = fast_reply(h, SERVER, SERVER_IDX, RSP, false, Yes(true, Some(idx)));
+        let got = fast_reply(h, SERVER, SERVER_IDX, RSP, Yes(true, Some(idx)));
         assert_eq!(got, Some((idx, tid, NO_DONEE)));
         assert_eq!(wait_state(h, tid), 2);
         assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE));
@@ -2479,7 +2474,7 @@ mod tests {
         assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE));
         let h = call_from(0).unwrap();
         let _ = accept(SERVER_IDX, SERVER).unwrap();
-        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, false, Yes(true, Some(idx))), Some((idx, tid, NO_DONEE)));
+        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, Yes(true, Some(idx))), Some((idx, tid, NO_DONEE)));
         assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE));
     }
 
@@ -2495,7 +2490,7 @@ mod tests {
         let h = make_handle(idx, g);
         assert_eq!(call_from(0), Some(h));
         let _ = accept(SERVER_IDX, SERVER).unwrap();
-        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, false, Yes(false, Some(idx))), None);
+        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, Yes(false, Some(idx))), None);
         assert_eq!(wait_state(h, tid), 1, "still accepted, unanswered");
         assert_eq!(collect(h, tid), Collected::Nothing);
     }
@@ -2528,10 +2523,10 @@ mod tests {
         let (idx, tid) = client(0);
         let h = fast_from(0, true).unwrap();
         let _ = take_deposit(SERVER_IDX, SERVER).unwrap();
-        assert_eq!(fast_reply(h, SERVER + 1, SERVER_IDX, RSP, false, Never), None, "not its server");
-        assert_eq!(fast_reply(h ^ (1 << REC_BITS), SERVER, SERVER_IDX, RSP, false, Never), None, "stale");
+        assert_eq!(fast_reply(h, SERVER + 1, SERVER_IDX, RSP, Never), None, "not its server");
+        assert_eq!(fast_reply(h ^ (1 << REC_BITS), SERVER, SERVER_IDX, RSP, Never), None, "stale");
         let h1 = call_from(1).unwrap();
-        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, false, Never), None, "a call is queued");
+        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, Never), None, "a call is queued");
         // The ordinary reply answers it and takes the queued one.
         let (r, next) = reply_then_accept(h, SERVER, false, RSP, SERVER_IDX);
         assert_eq!(r, Reply::Woke { caller: tid, rec: idx, donee: NO_DONEE });
@@ -2583,7 +2578,7 @@ mod tests {
         assert_eq!(census(), (0, 1, 0, 0), "ACCEPTED, in the server's service");
         assert_eq!(wait_state(h, tid), 1);
         let mut hand = Hand::new(idx);
-        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, false, &mut hand), Some((idx, tid, NO_DONEE)));
+        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, &mut hand), Some((idx, tid, NO_DONEE)));
         assert_eq!(hand.reply, Some(RSP), "the caller is handed the answer");
         assert_eq!(census(), (0, 0, 0, 0), "the record is freed, as the collect frees it");
         assert_eq!(collect(h, tid), Collected::Nothing, "nothing is left to collect");
@@ -2607,25 +2602,9 @@ mod tests {
         assert_eq!(collect(h, tid), Collected::Done(PEER_DIED, NO_DONEE));
     }
 
-    /// A call that carries a donation is answered through the record even
-    /// when the claim would hand it over: its caller's collect returns the
-    /// donation. Canary: asking `hand_reply` regardless turns this red.
-    #[test]
-    fn a_donated_call_is_answered_through_the_record() {
-        let _e = env();
-        let (idx, tid) = client(0);
-        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, SERVER).unwrap();
-        let _ = accept(SERVER_IDX, SERVER).unwrap();
-        let mut hand = Hand::new(idx);
-        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, false, &mut hand), Some((idx, tid, SERVER)));
-        assert_eq!(hand.reply, None, "not handed");
-        assert_eq!(collect(h, tid), Collected::Reply(RSP, SERVER), "the collect returns the donation");
-    }
-
-    /// WAIT_GRAPH (Chain E): a fast call carries its edge's token as its
-    /// donee, so every path that ends the call retires the edge (the reply,
-    /// the drain, the collect); the fast reply hands such a call over all the
-    /// same (`token`: nothing to return) and reports the token. Canary:
+    /// A fast call carries its edge's token as its donee, so every path that
+    /// ends the call retires the edge (the reply, the drain, the collect); the
+    /// fast reply hands such a call over and reports the token. Canary:
     /// writing NO_DONEE in the fast call's record turns this red.
     #[test]
     fn a_fast_call_keeps_its_edge_token_for_whoever_ends_it() {
@@ -2634,7 +2613,7 @@ mod tests {
         let mut hand = Hand::new(SERVER_IDX);
         let h = fast_call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, SERVER, &mut hand).unwrap();
         let mut hand = Hand::new(idx);
-        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, true, &mut hand), Some((idx, tid, SERVER)));
+        assert_eq!(fast_reply(h, SERVER, SERVER_IDX, RSP, &mut hand), Some((idx, tid, SERVER)));
         assert_eq!(hand.reply, Some(RSP), "a token is not a donation: handed");
         assert_eq!(census(), (0, 0, 0, 0));
         // Not handed (no resume point): published, the token in the record.

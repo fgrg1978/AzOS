@@ -704,11 +704,8 @@ unsafe fn set_current_task(cpu: usize, next_idx: usize) {
         if crate::fp::SWITCH_STATE && (slow || PER_CPU[cpu].cur_slow.load(Ordering::Relaxed)) {
             crate::fp::switch_slow(prev, next_idx);
         }
-        // N7b: the SC's `on_cpu` follows the switch (WAIT_GRAPH only; n
-        // compiles nothing here and `classes::on_cpu` keeps its scan).
-        if azos_sync::waitgraph::ENABLED {
-            classes::on_switch(cpu, prev, next_idx);
-        }
+        // The SC's `on_cpu` follows the switch.
+        classes::on_switch(cpu, prev, next_idx);
         // EEVDF: the task that stops is charged for its run, the one that
         // starts is stamped (a fair task only; every dispatch path, the IPC
         // hand-off included, comes through here).

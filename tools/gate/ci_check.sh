@@ -16046,7 +16046,7 @@ CPU 5 lacks hwcap bits"
     KTEST_KMUTEX_CANARIED="kmutex_unlocked_for_io claim_holds_no_mutex_across_a_device_wait claim_excludes_across_a_wait_and_wakes_a_contender"
     par "ktest kmutex canary (rv)" ktest_row "ktest kmutex canary (rv)" rv "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
     par "ktest kmutex canary (arm)" ktest_row "ktest kmutex canary (arm)" arm "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
-    # The wait-graph canaries (WAIT_GRAPH y), one boot of the pass row's kernel;
+    # The wait-graph canaries, one boot of the pass row's kernel;
     # each breaks only its own test(s). `claim-release-silent` is here because
     # `claim-no-exclude` above fails the same test before it reaches the wake.
     # kmutex-steal-any lets the releaser's own re-lock overtake the queued

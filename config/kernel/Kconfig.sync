@@ -241,29 +241,16 @@ config FUTEX_REQUEUE
 # ---------------------------------------------------------------------------
 # Wait graph and its clients (wave 15 IF: N7 PI core, N8 kernel mutex,
 # N10 PI futex). Interfaces in crates/core/sync.
+#
+# The wait graph (crates/core/sync/src/waitgraph.rs) is always built in:
+# every object a task blocks on while another task owns it (kernel mutex,
+# PI futex, IPC call, driver proxy) records its waiters by urgency, and a
+# bounded chain walk boosts the owner to its most urgent waiter (a deadline
+# donor passes its absolute deadline). A cycle is refused with EDEADLK.
+# Cost: 16 B per blockable object and a per-task PI record (about 64 B x
+# MAX_TASKS); nothing on an uncontended acquire; one walk of at most
+# PI_MAX_DEPTH steps per contended block or release.
 # ---------------------------------------------------------------------------
-
-config WAIT_GRAPH
-    bool "Wait graph: one priority-inheritance core for mutex, PI futex and IPC"
-    default y
-    help
-      crates/core/sync/src/waitgraph.rs (N7): every object a task blocks
-      on while another task owns it (kernel mutex, PI futex, IPC call,
-      driver proxy) records its waiters by urgency, and a bounded
-      chain walk boosts the owner to its most urgent waiter (a deadline
-      donor passes its absolute deadline). A cycle is refused with EDEADLK.
-      y on every profile (the protocol is priority inheritance). n is for a
-      profile that uses a priority ceiling or a static schedule: every
-      client keeps its counted-donation path (proxy, fast IPC), the
-      kernel Mutex still sleeps and excludes but boosts nobody, and the PI
-      futex answers ENOSYS.
-      Stage 1 serialises the graph under one lock (interrupts off for the
-      length of one walk); per-object locks come later, same API.
-      Cost: 16 B per blockable object and a per-task PI record (about 64 B
-      x MAX_TASKS: effective attribute, its links in two heaps); nothing on
-      an uncontended acquire; one walk of at most PI_MAX_DEPTH steps per
-      contended block or release, each O(log MAX_TASKS) however many tasks
-      wait or objects one task owns. n: zero bytes.
 
 config KMUTEX_ADAPTIVE_SPIN
     int "Kernel mutex: spin-hint iterations while the owner runs, before sleeping"
@@ -284,7 +271,6 @@ config KMUTEX_ADAPTIVE_SPIN
 
 config KMUTEX_STEAL_RULE
     bool "Kernel mutex: after a release only a more urgent task may overtake the top waiter"
-    depends on WAIT_GRAPH
     default y
     help
       After a contended Mutex unlock, the word stays marked (no owner,
@@ -300,7 +286,6 @@ config KMUTEX_STEAL_RULE
 
 config FUTEX_PI
     bool "PI futexes: FUTEX_LOCK_PI/UNLOCK_PI/TRYLOCK_PI and requeue-PI"
-    depends on WAIT_GRAPH
     default y
     help
       crates/core/sync/src/pi_futex.rs (N10): Linux's PI futex word

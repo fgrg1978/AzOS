@@ -82,9 +82,6 @@ azos_ktest::ktest_late! {
         if !azos_sched::hung::ON {
             return Err("HUNG_DETECT is off in this ktest kernel");
         }
-        if !azos_sync::waitgraph::ENABLED {
-            return Err("WAIT_GRAPH is off in this ktest kernel");
-        }
         if canary!("hung-task-blind") {
             azos_sched::hung::canary_blind_tasks();
         }

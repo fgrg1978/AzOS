@@ -600,8 +600,8 @@ mod glue {
         crate::ep_queue::rebind_check(i, gen, new).map_err(map)
     }
     pub fn rebind(i: usize, gen: u32, new: u32, old_idx: usize, new_idx: usize) -> Result<(), HandoverError> {
-        crate::ep_queue::rebind(i, gen, new, old_idx, new_idx, |caller_idx, old| {
-            crate::fastcall::retarget_donation(caller_idx, old, new, new_idx)
+        crate::ep_queue::rebind(i, gen, new, old_idx, new_idx, |caller_idx, _old| {
+            crate::fastcall::retarget_donation(caller_idx, new, new_idx)
         })
         .map_err(map)
     }

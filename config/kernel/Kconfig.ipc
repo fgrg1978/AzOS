@@ -17,7 +17,7 @@ config IPC_FASTPATH
       the collect retry loop and the endpoint queue. Any precondition that
       does not hold (a capability moved, a donation needed, calls already
       queued, the peer not parked, preemption disabled, a kill pending)
-      leaves the call to the ordinary path, unchanged. With WAIT_GRAPH the
+      leaves the call to the ordinary path, unchanged. The
       fast call records the caller's wait-graph edge as the ordinary call
       does, and only when it stays lazy (no boost, no chain, no cycle check:
       no graph lock); a call the graph must act on, and a reply to one, take

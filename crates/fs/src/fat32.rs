@@ -861,12 +861,12 @@ static FAT_MUTATE_CANARY: azos_sync::kmutex::Mutex<()> = azos_sync::kmutex::Mute
 /// chain `Mutex::pi_state` takes. `st` is held for a few stores and the
 /// boost, never across a sleep or device I/O; claims are task context only,
 /// so it needs no interrupt masking. Without hooks (host tests, before
-/// boot) a waiter only sleeps. The counted donation does the boost in both
-/// `WAIT_GRAPH` modes: the graph's stage 1 does not boost a Fair donor
-/// (`classes::pi_prio`: no weight inheritance), and claim waiters are never
-/// RT, so an edge alone would lend `log-flush` (12, Fair) nothing. With
-/// Kconfig `WAIT_GRAPH` y the waiter also takes an `EdgeKind::Claim` edge
-/// (`st` being the object's lock) for the graph's bookkeeping: its
+/// boot) a waiter only sleeps. The counted donation does the boost: the
+/// graph's stage 1 does not boost a Fair donor (`classes::pi_prio`: no
+/// weight inheritance), and claim waiters are never RT, so an edge alone
+/// would lend `log-flush` (12, Fair) nothing. The waiter also takes an
+/// `EdgeKind::Claim` edge (`st` being the object's lock) for the graph's
+/// bookkeeping: its
 /// `blocked_on`, the cycle check, the owner-exit detach. The counted
 /// donation can go once the graph inherits Fair priorities (stage 2).
 ///
@@ -876,8 +876,8 @@ struct ClaimPi {
     st: SpinLock<()>,
     epoch: core::sync::atomic::AtomicU32,
     donations: core::sync::atomic::AtomicU32,
-    /// The claim's wait-graph node (`EdgeKind::Claim`); `()` with `WAIT_GRAPH` n.
-    node: azos_sync::waitgraph::DonorNode,
+    /// The claim's wait-graph node.
+    node: azos_sync::waitgraph::PiWaiters,
 }
 
 /// The scheduler side of [`ClaimPi`], registered by the kernel at boot
@@ -888,7 +888,7 @@ pub struct ClaimPiHooks {
     pub donate: fn(donor: u32, owner: u32) -> bool,
     /// `scheduler::return_donation(owner)`.
     pub give_back: fn(owner: u32),
-    /// The wait-graph id (the scheduler slot) of a TID; read with `WAIT_GRAPH` y only.
+    /// The wait-graph id (the scheduler slot) of a TID.
     pub graph_id: fn(tid: u32) -> Option<azos_sync::waitgraph::TaskId>,
 }
 
@@ -914,7 +914,7 @@ pub fn fat32_canary_claim_no_donate() {
 }
 
 /// What a waiter carries between its sleeps: the acquisition it donated to
-/// (counted path) and its graph id while it sits in the wait graph (y).
+/// (counted path) and its graph id while it sits in the wait graph.
 #[derive(Clone, Copy, Default)]
 struct ClaimWait {
     donated: Option<u32>,
@@ -922,21 +922,18 @@ struct ClaimWait {
 }
 
 impl ClaimPi {
-    #[allow(clippy::declare_interior_mutable_const)]
     const fn new() -> Self {
         ClaimPi {
             st: SpinLock::new(()),
             epoch: core::sync::atomic::AtomicU32::new(0),
             donations: core::sync::atomic::AtomicU32::new(0),
-            node: <azos_sync::waitgraph::NodeSel<{ azos_sync::waitgraph::ENABLED }>
-                as azos_sync::waitgraph::SelectNode>::CLAIM,
+            node: azos_sync::waitgraph::PiWaiters::new(azos_sync::waitgraph::EdgeKind::Claim),
         }
     }
 
-    /// The claim's graph node, `None` with `WAIT_GRAPH` n.
     #[inline(always)]
-    fn pi(&self) -> Option<&azos_sync::waitgraph::PiWaiters> {
-        ClaimNode::pi(&self.node)
+    fn pi(&self) -> &azos_sync::waitgraph::PiWaiters {
+        &self.node
     }
 
     /// Take the claim if `take()` succeeds, recording `me` as its owner in
@@ -950,17 +947,16 @@ impl ClaimPi {
         owner.store(me, SeqCst);
         self.epoch.fetch_add(1, SeqCst);
         self.donations.store(0, SeqCst);
-        if let Some(n) = self.pi() {
-            if let Some(id) = w.graph.take() {
-                azos_sync::waitgraph::unblock(id, n, azos_sync::waitgraph::UnblockReason::Acquired);
-            }
-            n.set_owner(claim_pi_hooks().and_then(|h| (h.graph_id)(me)));
+        let n = self.pi();
+        if let Some(id) = w.graph.take() {
+            azos_sync::waitgraph::unblock(id, n, azos_sync::waitgraph::UnblockReason::Acquired);
         }
+        n.set_owner(claim_pi_hooks().and_then(|h| (h.graph_id)(me)));
         true
     }
 
     /// Before a sleep: lend `me`'s priority to the current owner, once per
-    /// acquisition. With `WAIT_GRAPH` y the waiter also enters the graph
+    /// acquisition. The waiter also enters the graph
     /// behind the owner, once (the graph follows a change of owner itself).
     fn donate(&self, owner: &core::sync::atomic::AtomicU32, me: u32, w: &mut ClaimWait) {
         use core::sync::atomic::Ordering::SeqCst;
@@ -971,7 +967,8 @@ impl ClaimPi {
             return; // no scheduler yet: nobody to lend a priority
         }
         let Some(h) = claim_pi_hooks() else { return };
-        if let (Some(n), None, Some(id)) = (self.pi(), w.graph, (h.graph_id)(me)) {
+        let n = self.pi();
+        if let (None, Some(id)) = (w.graph, (h.graph_id)(me)) {
             let pending = {
                 let _g = self.st.lock();
                 let o = owner.load(SeqCst);
@@ -1006,11 +1003,10 @@ impl ClaimPi {
         use core::sync::atomic::Ordering::SeqCst;
         let _g = self.st.lock();
         let o = owner.swap(0, SeqCst);
-        if let Some(n) = self.pi() {
-            if let Some(id) = n.owner() {
-                let _ = azos_sync::waitgraph::release(id, n);
-                n.set_owner(None);
-            }
+        let n = self.pi();
+        if let Some(id) = n.owner() {
+            let _ = azos_sync::waitgraph::release(id, n);
+            n.set_owner(None);
         }
         free();
         (o, self.donations.swap(0, SeqCst))
@@ -1027,25 +1023,6 @@ impl ClaimPi {
                 (h.give_back)(o);
             }
         }
-    }
-}
-
-/// [`ClaimPi::node`] as the graph sees it: `PiWaiters` (y) or nothing (n).
-trait ClaimNode {
-    fn pi(&self) -> Option<&azos_sync::waitgraph::PiWaiters>;
-}
-
-impl ClaimNode for azos_sync::waitgraph::PiWaiters {
-    #[inline(always)]
-    fn pi(&self) -> Option<&azos_sync::waitgraph::PiWaiters> {
-        Some(self)
-    }
-}
-
-impl ClaimNode for () {
-    #[inline(always)]
-    fn pi(&self) -> Option<&azos_sync::waitgraph::PiWaiters> {
-        None
     }
 }
 

@@ -6,8 +6,7 @@
 //! N10 implements [`PiFutexOps`] ([`PI_FUTEX`]) over a static pool of
 //! `pi_state`s; N9's bucket code calls it through [`PiBucket`] and runs it
 //! from its [`PiTable`], which the Linux personality reaches through
-//! [`sys_futex_pi`]. Kconfig `FUTEX_PI` (default n, depends on
-//! `WAIT_GRAPH`): n, the pool is empty and the PI operations return
+//! [`sys_futex_pi`]. Kconfig `FUTEX_PI` (default n): n, the pool is empty and the PI operations return
 //! `ENOSYS` exactly as today.
 //!
 //! # The word (Linux protocol, bit-exact)

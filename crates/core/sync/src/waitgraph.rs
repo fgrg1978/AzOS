@@ -3,11 +3,10 @@
 //! The wait graph (wave 15 N7): one priority-inheritance core for every
 //! object a task can block on while another task owns it.
 //!
-//! Stage 1, implemented by N7 ([`Graph`]). Nothing calls into this module
-//! while Kconfig `WAIT_GRAPH` is n: [`ENABLED`] is a compile-time `false`,
-//! every client tests it before taking the graph path, and the kernel's
-//! graph then has zero slots. `WAIT_GRAPH` is y on every preset, and the
-//! cycle check below is not tied to a debug or lockdep build.
+//! Stage 1, implemented by N7 ([`Graph`]). The graph is always built into
+//! the kernel: every lock path and every donor goes through it, and the
+//! cycle check below is not tied to a debug or lockdep build. AzOS-micro
+//! keeps its own priority ceiling (`crates/core/micro`).
 //!
 //! # Model
 //!
@@ -79,50 +78,6 @@ use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, O
 
 use crate::pi_heap::{self, Node, NIL};
 use crate::spinlock::SpinLock;
-
-/// Kconfig `WAIT_GRAPH`: the graph is compiled into the lock paths. n: every
-/// client keeps its pre-N7 path and nothing here is reached.
-pub const ENABLED: bool = azos_limits::WAIT_GRAPH;
-
-/// N7e, the donor migration's node selector: the wait-graph node a priority
-/// donor (fast IPC call, driver proxy) embeds in its object is
-/// [`PiWaiters`] with `WAIT_GRAPH` y and `()` with n, so an object that
-/// embeds a [`DonorNode`] keeps its n layout and code. It is a const
-/// generic on [`ENABLED`], not a cfg: a `cargo:rustc-cfg` printed by
-/// `azos_limits`' build script reaches only `azos_limits` itself, never the
-/// crates that would embed the node.
-pub struct NodeSel<const Y: bool>;
-
-/// What [`NodeSel`] selects: the node type and one initializer per donor
-/// kind (a fresh value at each use, as any `const`).
-pub trait SelectNode {
-    /// `PiWaiters` (y) or `()` (n).
-    type Node;
-    /// The node of a call blocked on an endpoint's server.
-    const IPC_CALL: Self::Node;
-    /// The node of a user-mode driver serving a kernel proxy request.
-    const DRIVER_PROXY: Self::Node;
-    /// The node of a FAT32 claim held by its owner.
-    const CLAIM: Self::Node;
-}
-
-#[allow(clippy::declare_interior_mutable_const)]
-impl SelectNode for NodeSel<true> {
-    type Node = PiWaiters;
-    const IPC_CALL: PiWaiters = PiWaiters::new(EdgeKind::IpcCall);
-    const DRIVER_PROXY: PiWaiters = PiWaiters::new(EdgeKind::DriverProxy);
-    const CLAIM: PiWaiters = PiWaiters::new(EdgeKind::Claim);
-}
-
-impl SelectNode for NodeSel<false> {
-    type Node = ();
-    const IPC_CALL: () = ();
-    const DRIVER_PROXY: () = ();
-    const CLAIM: () = ();
-}
-
-/// The node this build's donors embed ([`NodeSel`]): zero-sized with n.
-pub type DonorNode = <NodeSel<ENABLED> as SelectNode>::Node;
 
 /// Kconfig `PI_MAX_DEPTH` (Q4: 16): the longest chain a walk follows. Bounds
 /// the cost of every block/unblock to `PI_MAX_DEPTH` steps.
@@ -467,7 +422,7 @@ struct State<const N: usize> {
 /// per-object locks with trylock-and-restart is a later step that does not
 /// change this API.
 ///
-/// The kernel has one instance ([`GRAPH`], sized by `WAIT_GRAPH`); ktests
+/// The kernel has one instance ([`GRAPH`], one slot per task); ktests
 /// and host tests build their own with a recording [`SchedPi`].
 pub struct Graph<const N: usize> {
     st: SpinLock<State<N>>,
@@ -511,9 +466,8 @@ pub fn canary_no_cycle_check(on: bool) {
     CANARY_NO_CYCLE_CHECK.store(on, Ordering::Relaxed);
 }
 
-/// The kernel's graph: `MAX_TASKS` slots with `WAIT_GRAPH`, none without
-/// (nothing reaches it then, and it costs no `.bss`).
-const SLOTS: usize = if ENABLED { azos_limits::MAX_TASKS } else { 0 };
+/// The kernel's graph: one slot per task.
+const SLOTS: usize = azos_limits::MAX_TASKS;
 static GRAPH: Graph<SLOTS> = Graph::new();
 
 impl<const N: usize> Default for Graph<N> {

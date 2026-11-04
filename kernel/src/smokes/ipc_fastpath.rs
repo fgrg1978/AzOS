@@ -32,7 +32,7 @@
 //!   `ipc_fastpath_resume_point_drain` (a caller completed -EPEERDIED by its
 //!   server's death), `ipc_fastpath_resume_point_ordinary_call` (a server
 //!   woken by an ordinary call).
-//! * The wait graph's call edge (Kconfig WAIT_GRAPH; see its section below):
+//! * The wait graph's call edge (see its section below):
 //!   `ipc_fastpath_boosting_call_is_slow_and_boosts` (a call that must boost
 //!   its server keeps the ordinary path, and boosts),
 //!   `ipc_fastpath_call_edge_is_in_the_graph` (a fast-blocked caller's edge
@@ -919,13 +919,12 @@ azos_ktest::ktest_late! {
     }
 }
 
-// ── The wait graph's call edge (Kconfig WAIT_GRAPH) ─────────────────────────
+// ── The wait graph's call edge ──────────────────────────────────────────────
 //
-// With WAIT_GRAPH a call lends its priority through a wait-graph edge; the
+// A call lends its priority through a wait-graph edge; the
 // fast call records that edge exactly as the ordinary call does, and only a
 // lazy one (`waitgraph::block_on_quiet`), so a call the graph must act on
-// keeps the ordinary path. Both tests are Ok at once without the wait graph
-// or the fast path.
+// keeps the ordinary path. Both tests are Ok at once without the fast path.
 //
 // * `ipc_fastpath_boosting_call_is_slow_and_boosts`: an RT caller calls a
 //   low-priority server parked in its accept, on one hart (every other
@@ -946,9 +945,9 @@ azos_ktest::ktest_late! {
 
 use azos_sync::waitgraph::{self, EdgeKind, PiWaiters, SchedPi as _, UnblockReason, WaitError};
 
-/// Is this a kernel whose fast path records the wait graph's call edge?
+/// Is the fast path on, so that it records the wait graph's call edge?
 fn graph_fast_path() -> bool {
-    fastpath::ENABLED && waitgraph::ENABLED && azos_ipc::fastcall::CALL_EDGE
+    fastpath::ENABLED
 }
 
 const WB_EP: &[u8] = b"fp.wg.boost";

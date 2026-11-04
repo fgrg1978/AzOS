@@ -336,8 +336,8 @@ const PROXY_DEPTH: usize = azos_sync::waitgraph::PI_MAX_DEPTH;
 azos_common::ro_hook! {
     /// The server a task is blocked calling: `fn(slot) -> Option<server
     /// slot>`, `azos_ipc::fastcall::call_server_of` (the task's wait-graph
-    /// edge is an IPC call node). Unset: no proxy execution (host suites, a
-    /// build without `WAIT_GRAPH`). A function address because `azos_ipc` is
+    /// edge is an IPC call node). Unset: no proxy execution (host suites).
+    /// A function address because `azos_ipc` is
     /// above this crate.
     static CALL_SERVER_HOOK: fn(usize) -> Option<usize>;
 }

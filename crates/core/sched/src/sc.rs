@@ -224,9 +224,8 @@ pub struct SchedContext {
     /// ([`timer_slack_us`]). Fair weights per level are the APS groups
     /// (L10), which will read this same field.
     pub qos_id: AtomicU32,
-    /// The CPU the SC runs on, [`NO_CPU`] = none. With `WAIT_GRAPH`
-    /// written by the scheduler at every switch (`classes::on_switch`, N7b);
-    /// without, unused (`classes::on_cpu` scans the per-CPU current task).
+    /// The CPU the SC runs on, [`NO_CPU`] = none. Written by the scheduler
+    /// at every switch (`classes::on_switch`).
     pub on_cpu: AtomicU16,
     /// How many interrupt lines this SC serves (`irq_bind`'s bindings whose
     /// owner runs on it), 0 = none. Written by [`SchedContext::irq_attach`] /

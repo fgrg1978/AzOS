@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The PI futex through the futex table (wave 15 N10w, Kconfig WAIT_GRAPH +
+//! The PI futex through the futex table (wave 15 N10w, Kconfig
 //! FUTEX_PI), every ISA.
 //!
 //! * `futex_pi_boosts_the_owner`: a fair task owns a PI word (`LOCK_PI` on a
@@ -118,7 +118,7 @@ fn finish() -> Result<(), &'static str> {
 
 azos_ktest::ktest_late! {
     fn futex_pi_boosts_the_owner() {
-        if !pf::ENABLED || !wg::ENABLED {
+        if !pf::ENABLED {
             return Ok(());
         }
         if pf::ops().is_none() {
@@ -188,7 +188,7 @@ azos_ktest::ktest_late! {
 // decision 10-10) makes the waiter the owner: its LOCK_PI returns 0 with
 // the word `TID | FUTEX_WAITERS` (no `FUTEX_OWNER_DIED`: the owner had no
 // robust entry for the word, owner decision 10-10 as Linux), and its
-// UNLOCK_PI frees it. Ok at once with WAIT_GRAPH or FUTEX_PI n. Canary
+// UNLOCK_PI frees it. Ok at once with FUTEX_PI n. Canary
 // `canary=futex-pi-exit-silent`: the hook does nothing, the waiter's
 // LOCK_PI times out, `not ok`.
 
@@ -240,7 +240,7 @@ fn exit_waiter(_: usize) {
 
 azos_ktest::ktest_late! {
     fn futex_pi_owner_exit_hands_over() {
-        if !pf::ENABLED || !wg::ENABLED {
+        if !pf::ENABLED {
             return Ok(());
         }
         if pf::ops().is_none() {
@@ -299,7 +299,7 @@ azos_ktest::ktest_late! {
 // at once. Its UNLOCK_PI hands the word to the top one, whose UNLOCK_PI
 // hands it to the other: each returns 0 seeing its own TID in the word,
 // never both inside at once, the word ends free and the owner loses the
-// boost. Ok at once with WAIT_GRAPH or FUTEX_PI n. Canaries:
+// boost. Ok at once with FUTEX_PI n. Canaries:
 // `canary=futex-requeue-pi-plain` (the requeue wakes both as plain wakes,
 // they return EAGAIN) and `canary=futex-requeue-pi-no-proxy` (they wake
 // requeued and lock the word themselves, nobody is proxied): `not ok`.
@@ -383,7 +383,7 @@ fn rq_finish() -> Result<(), &'static str> {
 azos_ktest::ktest_late! {
     fn futex_requeue_pi_hands_the_mutex_over() {
         use azos_sched::futex_table as ft;
-        if !pf::ENABLED || !wg::ENABLED {
+        if !pf::ENABLED {
             return Ok(());
         }
         if pf::ops().is_none() {
