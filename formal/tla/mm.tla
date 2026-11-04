@@ -17,7 +17,9 @@ MODEL VS CODE: one page per object; AS 1 owns private object 1, AS 2 owns
 private object 2 (the fork clone), object 3 is shared and never cloned.
 Compressed and Swapped are one state. Resv, huge runs, Phys and Contig kinds,
 page-table shape, A/D bits, NUMA, colours and caps are not modelled, nor are
-the kernel-memory invariants (9-12) and liveness. Unmap and fork complete
+the kernel-memory invariants (9-12) and liveness. Only hart 1 faults, writes
+and copies from user memory; the others only cache translations, which is all
+a stale entry needs. Unmap and fork complete
 their shootdown before they return. Mutant selects one injected defect; every
 mm_mut_*.cfg must be rejected for the invariant named on its `expect:` line.
 *)
@@ -43,6 +45,7 @@ Objs    == 1..3
 Private == {1, 2}
 Frames  == 1..NumFrames
 Harts   == 1..NumHarts
+Active  == {1}
 Cells   == {<<1, 1>>, <<1, 3>>, <<2, 2>>, <<2, 3>>}
 AsOf(c)  == c[1]
 ObjOf(c) == c[2]
@@ -377,11 +380,12 @@ Next ==
     \/ \E a \in ASes : Destroy(a)
     \/ Fork
     \/ \E o \in Objs : SetLocked(o)
-    \/ \E h \in Harts, c \in Cells, w \in BOOLEAN : FaultMapNow(h, c, w) \/ FaultNeed(h, c, w)
-    \/ \E h \in Harts : FaultSupply(h) \/ FaultInstall(h) \/ FaultAbort(h)
+    \/ \E h \in Active, c \in Cells, w \in BOOLEAN : FaultMapNow(h, c, w) \/ FaultNeed(h, c, w)
+    \/ \E h \in Active : FaultSupply(h) \/ FaultInstall(h) \/ FaultAbort(h)
     \/ \E o \in Objs : ReclaimBegin(o) \/ ReclaimStore(o)
-    \/ \E h \in Harts, c \in Cells : TlbFill(h, c) \/ UserWrite(h, c) \/ UaccessOpen(h, c)
-    \/ \E h \in Harts : UaccessClose(h)
+    \/ \E h \in Harts, c \in Cells : TlbFill(h, c)
+    \/ \E h \in Active, c \in Cells : UserWrite(h, c) \/ UaccessOpen(h, c)
+    \/ \E h \in Active : UaccessClose(h)
     \/ \E f \in Frames : Shootdown(f) \/ Settle(f)
 
 Spec == Init /\ [][Next]_vars
