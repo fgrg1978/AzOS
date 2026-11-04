@@ -3,8 +3,8 @@
 //! `AtomicU64` on every target.
 //!
 //! Targets with 64-bit atomics use the core type, unchanged. AzOS-micro
-//! (riscv32imac) has none, so there the same four operations the ring, the
-//! journal and the counters use (`load`, `store`, `fetch_add`, `swap`) run
+//! (riscv32imac) has none, so there the same three operations the ring, the
+//! journal and the counters use (`load`, `store`, `fetch_add`) run
 //! under one spin flag. The micro image builds this crate without `on` and
 //! `durable`, so no path of it takes the flag in interrupt context; the flag
 //! only keeps the type honest (a 64-bit read is never torn).
@@ -51,9 +51,6 @@ mod fallback {
                 *v = old.wrapping_add(x);
                 old
             })
-        }
-        pub(crate) fn swap(&self, x: u64, _: Ordering) -> u64 {
-            self.with(|v| core::mem::replace(v, x))
         }
     }
 }
