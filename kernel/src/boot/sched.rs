@@ -1232,6 +1232,78 @@ mod wq_window_ktests {
     }
 }
 
+// A TID-directed wake resolves its slot, then acts on it. If the addressee
+// exits and its slot goes to a new task in between, the wake must not stamp
+// that task: its next block would return at once (a fast-IPC caller's
+// spurious -1). The hook frees and refills the slot inside that window.
+// Canary `tid-stamp-canary`: `not ok`.
+#[cfg(feature = "ktest")]
+mod tid_stamp_ktests {
+    use azos_sched::scheduler::{idx_for_tid, ktest_slot_stamped, ktest_wake_task_by_tid_between};
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const PRIO: u32 = 16;
+    const TRIES: u32 = 8;
+    static GO: AtomicBool = AtomicBool::new(false);
+    static STOP: AtomicBool = AtomicBool::new(false);
+    static TID: AtomicU32 = AtomicU32::new(0);
+    static NEW_TID: AtomicU32 = AtomicU32::new(0);
+
+    fn old(_: usize) {
+        TID.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+    }
+
+    fn new(_: usize) {
+        NEW_TID.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !STOP.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn tid_wake_leaves_a_reused_slot_alone() {
+            for _ in 0..TRIES {
+                GO.store(false, Ordering::Release);
+                STOP.store(false, Ordering::Release);
+                TID.store(0, Ordering::Release);
+                NEW_TID.store(0, Ordering::Release);
+                azos_sched::task_create("tid-old", old, 0, PRIO);
+                crate::ktest::wait("the old task never started", || TID.load(Ordering::Acquire) != 0)?;
+                let tid = TID.load(Ordering::Acquire);
+                let Some(slot) = idx_for_tid(tid) else { return Err("the old task has no slot") };
+                let mut reused = None;
+                let mut fail = None;
+                ktest_wake_task_by_tid_between(tid, &|_| true, || {
+                    GO.store(true, Ordering::Release);
+                    if let Err(e) = crate::ktest::wait("the old slot was never freed", || idx_for_tid(tid).is_none()) {
+                        fail = Some(e);
+                        return;
+                    }
+                    reused = Some(azos_sched::task_create("tid-new", new, 0, PRIO));
+                });
+                if let Some(e) = fail {
+                    return Err(e);
+                }
+                let stamped = ktest_slot_stamped(slot);
+                STOP.store(true, Ordering::Release);
+                crate::ktest::wait("the new task never exited", || {
+                    let t = NEW_TID.load(Ordering::Acquire);
+                    t != 0 && idx_for_tid(t).is_none()
+                })?;
+                if reused != Some(slot) {
+                    // Another slot was lower: the window was not reproduced.
+                    continue;
+                }
+                return if stamped { Err("a wake for an exited TID stamped the slot's new task") } else { Ok(()) };
+            }
+            Err("the old slot was never reused")
+        }
+    }
+}
+
 // A block `do_schedule` could not switch away from returns to its caller with
 // the task executing, and a caller that then finds its condition true runs on
 // with no wake to stamp it: the word must say `Running`, or the next switch

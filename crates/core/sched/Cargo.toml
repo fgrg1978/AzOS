@@ -103,6 +103,9 @@ elf-fill-canary = []
 # CAS (`task::sched_word::fast_claim`): host row "sched: fast claim stale
 # save canary (host)" must fail.
 state-gen-canary = []
+# A TID-directed wake trusts the slot it resolved before acting on it: the
+# `ktest tid stamp canary` rows must fail.
+tid-stamp-canary = []
 rodata-exec-canary = []
 # Wave 15 (VI): an exec from a thread that is not the leader drops the
 # leader's pending signals instead of handing them to the exec'ing thread

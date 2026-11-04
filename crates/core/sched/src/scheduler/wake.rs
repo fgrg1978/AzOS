@@ -628,7 +628,7 @@ pub fn try_wake_task(idx: usize, pred: &dyn Fn(&WaitReason) -> bool) {
         // stamped, never enqueued. See `sched_word::wake_transition`.
         // `saved` read after `Blocked` is seen (inside the transition).
         let saved_seen = core::cell::Cell::new(true);
-        let wt = wake_transition(&task.state_word, || pred(&task.wait_reason.load()), false, || {
+        let wt = wake_transition(&task.state_word, || true, || pred(&task.wait_reason.load()), false, || {
             let s = !task.context_saving.load(Ordering::Acquire);
             saved_seen.set(s);
             s
@@ -701,6 +701,7 @@ pub fn wq_wake_by_tid(tid: u32) {
             });
             let wt = wake_transition(
                 &task.state_word,
+                || still_holds(i, tid),
                 || reason_first.unwrap_or_else(|| task.wait_reason.load()) == WaitReason::WaitQueue,
                 true,
                 || {
@@ -821,6 +822,10 @@ pub fn wq_wake_by_tid(tid: u32) {
 /// itself has exited. In that case it takes a `StampPending` on a slot that
 /// is about to be released, which is inert: the old sweep also skipped
 /// Zombies (`state != Blocked`), so this is not a regression.
+/// A slot freed and reused after the lookup is another matter: the new
+/// occupant would take the stamp. [`still_holds`] re-checks the TID after
+/// every read of the word, and the reuse's new generation fails a CAS on
+/// the word read before it.
 ///
 /// # The selector invariant this depends on
 ///
@@ -1163,7 +1168,7 @@ pub(super) unsafe fn reap_one(i: usize) -> Reap {
 }
 
 pub fn wake_task_by_tid(tid: u32, pred: &dyn Fn(&WaitReason) -> bool) -> bool {
-    wake_task_by_tid_placed(idx_for_tid(tid), pred, false)
+    wake_task_by_tid_placed(tid, idx_for_tid(tid), pred, false)
 }
 
 /// [`wake_task_by_tid`] for a synchronous IPC hand-off — the fast-IPC call
@@ -1171,7 +1176,7 @@ pub fn wake_task_by_tid(tid: u32, pred: &dyn Fn(&WaitReason) -> bool) -> bool {
 /// to block on the answer. Placement goes through [`ipc_wake_target_cpu`]
 /// (the IPC-affinity exception) instead of [`wake_target_cpu`].
 pub fn wake_task_by_tid_ipc(tid: u32, pred: &dyn Fn(&WaitReason) -> bool) -> bool {
-    wake_task_by_tid_placed(idx_for_tid(tid), pred, true)
+    wake_task_by_tid_placed(tid, idx_for_tid(tid), pred, true)
 }
 
 /// [`wake_task_by_tid`] for a caller that knows what the wake is (a futex wake,
@@ -1180,18 +1185,42 @@ pub fn wake_task_by_tid_ipc(tid: u32, pred: &dyn Fn(&WaitReason) -> bool) -> boo
 /// is the ordinary one.
 pub fn wake_task_by_tid_as(tid: u32, pred: &dyn Fn(&WaitReason) -> bool, src: attrib::Src) -> bool {
     !matches!(
-        wake_by_slot_as(idx_for_tid(tid), pred, false, NO_CLAIM, attrib::Via::As(src)),
+        wake_by_slot_as(tid, idx_for_tid(tid), pred, false, NO_CLAIM, attrib::Via::As(src)),
         WakeOut::NotWoken
     )
+}
+
+/// [`wake_task_by_tid`] with `between` run after the slot is resolved and
+/// before the wake acts on it: the window in which the slot can be freed and
+/// handed to another task.
+#[cfg(feature = "ktest")]
+pub fn ktest_wake_task_by_tid_between(tid: u32, pred: &dyn Fn(&WaitReason) -> bool, between: impl FnOnce()) -> bool {
+    let slot = idx_for_tid(tid);
+    between();
+    !matches!(wake_by_slot(tid, slot, pred, false, NO_CLAIM), WakeOut::NotWoken)
+}
+
+/// Whether slot `i`'s word carries a wake stamp.
+#[cfg(feature = "ktest")]
+pub fn ktest_slot_stamped(i: usize) -> bool {
+    i < MAX_TASKS
+        && unsafe { task_ref(i) }.state_word.load(Ordering::Acquire) & crate::task::sched_word::WAKE_STAMP != 0
+}
+
+/// The TID-directed wakers' `addressee`: slot `i` still holds `tid`.
+/// Canary `tid-stamp-canary`: trust the slot resolved before the wake.
+#[inline(always)]
+fn still_holds(i: usize, tid: u32) -> bool {
+    cfg!(feature = "tid-stamp-canary") || slot_holds(i, tid)
 }
 
 /// The body of both: `slot` is `idx_for_tid(tid)`, resolved by the caller
 /// so every TID lookup stays visibly in the public entry points.
 #[inline(always)]
-fn wake_task_by_tid_placed(slot: Option<usize>, pred: &dyn Fn(&WaitReason) -> bool, ipc: bool) -> bool {
+fn wake_task_by_tid_placed(tid: u32, slot: Option<usize>, pred: &dyn Fn(&WaitReason) -> bool, ipc: bool) -> bool {
     // `NO_CLAIM`: a constant, so the claim branch in `wake_by_slot` folds away
     // and this compiles to the same wake it always was.
-    !matches!(wake_by_slot(slot, pred, ipc, NO_CLAIM), WakeOut::NotWoken)
+    !matches!(wake_by_slot(tid, slot, pred, ipc, NO_CLAIM), WakeOut::NotWoken)
 }
 
 /// `claim_cpu` value meaning "never claim, always enqueue".
@@ -1218,18 +1247,20 @@ pub(super) enum WakeOut {
 /// [`WakeOut::Claimed`] instead of being enqueued.
 #[inline(always)]
 pub(super) fn wake_by_slot(
+    tid: u32,
     slot: Option<usize>,
     pred: &dyn Fn(&WaitReason) -> bool,
     ipc: bool,
     claim_cpu: usize,
 ) -> WakeOut {
-    wake_by_slot_as(slot, pred, ipc, claim_cpu, if ipc { attrib::Via::Ipc } else { attrib::Via::Targeted })
+    wake_by_slot_as(tid, slot, pred, ipc, claim_cpu, if ipc { attrib::Via::Ipc } else { attrib::Via::Targeted })
 }
 
 /// [`wake_by_slot`] with the way the wake is made told to the attribution
 /// ([`attrib::Via`]): the one body of every TID-directed wake.
 #[inline(always)]
 pub(super) fn wake_by_slot_as(
+    tid: u32,
     slot: Option<usize>,
     pred: &dyn Fn(&WaitReason) -> bool,
     ipc: bool,
@@ -1256,7 +1287,7 @@ pub(super) fn wake_by_slot_as(
             // K-C24: `saved` keeps an unswitched-block target (Blocked but
             // still executing) out of the ready queues — stamp instead.
             let saved_seen = core::cell::Cell::new(true);
-            let wt = wake_transition(&task.state_word, || pred(&task.wait_reason.load()), true, || {
+            let wt = wake_transition(&task.state_word, || still_holds(i, tid), || pred(&task.wait_reason.load()), true, || {
                 let s = !task.context_saving.load(Ordering::Acquire);
                 saved_seen.set(s);
                 s
@@ -1281,6 +1312,8 @@ pub(super) fn wake_by_slot_as(
                 // Unreachable with `stamp_if_unblocked = true`; kept so the
                 // match stays exhaustive against the transition's contract.
                 WakeTransition::NotBlocked => return WakeOut::NotWoken,
+                // Freed or reused after `idx_for_tid` answered.
+                WakeTransition::Gone => {}
             }
         }
         // Every arm above returns, so reaching here means no valid slot

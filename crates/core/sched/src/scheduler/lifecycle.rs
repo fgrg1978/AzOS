@@ -599,17 +599,14 @@ pub fn try_task_create_init(
                     task.context_saving.store(false, Ordering::Relaxed);
                     task.set_affinity(affinity);
                     // One plain store resets state AND clears any stale wake
-                    // stamp from the slot's previous occupant — the only
-                    // place a plain (non-CAS) store of the word is correct,
-                    // because the slot is not yet visible to any waker. The
-                    // generation carries on: a reaper still holding a word of
-                    // the old occupant must not match the new one.
+                    // stamp from the slot's previous occupant. A TID-directed
+                    // waker may still hold this slot from before the free:
+                    // the new generation fails its CAS on the old word, and
+                    // Release orders the new TID before this word for its
+                    // `addressee` check (`sched_word::wake_transition`).
                     task.state_word.store(
-                        crate::task::sched_word::moved(
-                            task.state_word.load(Ordering::Relaxed),
-                            TaskState::Ready,
-                        ),
-                        Ordering::Relaxed,
+                        crate::task::sched_word::reused(task.state_word.load(Ordering::Relaxed)),
+                        Ordering::Release,
                     );
                     // K-C26 provenance — see `Task::ready_site`.
                     task.ready_site.store(

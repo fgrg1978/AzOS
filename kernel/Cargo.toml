@@ -251,6 +251,7 @@ memobj-map-unrecorded-canary = ["azos_ipc/memobj-map-unrecorded-canary"]
 # `free_pages` leaves out the frames a cache refill or flush has in flight
 # (crates/core/mm/Cargo.toml). Never in a real build.
 pmm-inflight-canary = ["azos_mm/pmm-inflight-canary"]
+tid-stamp-canary = ["azos_sched/tid-stamp-canary"]
 # Gate canary of the admin task list (`kernel/src/boot/inspect_tasks.rs`): a
 # change in a task slot is written by the next refresh instead of where it
 # happens, as before the list was written on change. The `inspect: views`

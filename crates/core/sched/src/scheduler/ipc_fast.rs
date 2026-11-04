@@ -59,7 +59,7 @@ pub fn ipc_wake_then_block(
         // IRQs off from the claim to the switch: a tick in between would run
         // `do_schedule` on this hart with the claimed task in no queue.
         let sstatus = azos_arch::ARCH.disable_all();
-        match wake_by_slot(idx_for_tid(tid), pred, true, cpu) {
+        match wake_by_slot(tid, idx_for_tid(tid), pred, true, cpu) {
             // SAFETY: `cpu < MAX_CPUS`; `ti` came from `idx_for_tid` and was
             // just claimed by this hart's CAS, so nothing else dispatches it.
             WakeOut::Claimed(ti) => unsafe { direct_switch_block::<false>(cpu, ti, reason) },

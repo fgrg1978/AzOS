@@ -283,13 +283,13 @@ mod tests {
     /// A targeted wake with a matching reason, as `wake_task_by_tid` issues
     /// it against a PARKED target (context saved — the common case).
     fn wake(w: &AtomicU32, reason_matches: bool) -> WakeTransition {
-        wake_transition(w, || reason_matches, true, || true)
+        wake_transition(w, || true, || reason_matches, true, || true)
     }
 
     /// The same wake against an UNSAVED target (K-C24: Blocked but still
     /// executing past an unswitched block).
     fn wake_unsaved(w: &AtomicU32, reason_matches: bool) -> WakeTransition {
-        wake_transition(w, || reason_matches, true, || false)
+        wake_transition(w, || true, || reason_matches, true, || false)
     }
 
     /// Wave 13 (RT7): `saved` is read only once `Blocked` has been seen. The
@@ -305,13 +305,13 @@ mod tests {
         // Not Blocked: the flag is never consulted.
         let w = word(TaskState::Running);
         let asked = Cell::new(0);
-        assert_eq!(wake_transition(&w, || true, true, || { asked.set(asked.get() + 1); true }),
+        assert_eq!(wake_transition(&w, || true, || true, true, || { asked.set(asked.get() + 1); true }),
                    WakeTransition::Stamped);
         assert_eq!(asked.get(), 0, "saved() consulted before Blocked was seen");
         // The blocker commits (flag already unsaved): the late read stamps.
         let w = word(TaskState::Blocked);
         let flag_saved = Cell::new(false); // the commit's earlier store: unsaved
-        assert_eq!(wake_transition(&w, || true, true, || flag_saved.get()), WakeTransition::Stamped,
+        assert_eq!(wake_transition(&w, || true, || true, true, || flag_saved.get()), WakeTransition::Stamped,
                    "an unsaved Blocked task must be stamped, not dispatched");
         assert_eq!(state_now(&w), TaskState::Blocked);
     }
@@ -500,7 +500,7 @@ mod tests {
         // false`: a sweep cannot tell its addressee from any other task about
         // to sleep, so stamping there would hand random tasks a phantom wake.
         let w = word(TaskState::Running);
-        assert_eq!(wake_transition(&w, || true, false, || true), WakeTransition::NotBlocked);
+        assert_eq!(wake_transition(&w, || true, || true, false, || true), WakeTransition::NotBlocked);
         assert!(!stamped(&w));
         assert_eq!(state_now(&w), TaskState::Running);
     }
@@ -738,7 +738,7 @@ mod tests {
         let w = word(TaskState::Running);
         assert!(commit_blocked_or_consume_wake(&w));
         let ran_again = core::cell::Cell::new(false);
-        let wt = wake_transition(&w, || true, false, || {
+        let wt = wake_transition(&w, || true, || true, false, || {
             if !ran_again.replace(true) {
                 assert_eq!(wake(&w, true), WakeTransition::Dispatched);
                 sched_word::set_state(&w, TaskState::Running);
@@ -795,7 +795,7 @@ mod tests {
             std::thread::spawn(move || {
                 for _ in 0..ROUNDS {
                     start.wait();
-                    let wt = wake_transition(&w, || true, true, || true);
+                    let wt = wake_transition(&w, || true, || true, true, || true);
                     assert_ne!(wt, WakeTransition::Mismatch);
                     assert_ne!(wt, WakeTransition::NotBlocked);
                     end.wait();
@@ -929,7 +929,7 @@ mod tests {
         let (_, accepts) = only_by_tid(&log);
 
         let w = word(TaskState::Running);
-        assert_eq!(wake_transition(&w, || accepts.contains(&WaitReason::None), true, || true),
+        assert_eq!(wake_transition(&w, || true, || accepts.contains(&WaitReason::None), true, || true),
                    WakeTransition::Stamped);
         assert!(!commit_blocked_or_consume_wake(&w),
                 "the waiter slept through an event that landed before its block");
@@ -3028,7 +3028,7 @@ mod ipc_direct_wiring {
     #[test]
     fn ordinary_wakes_never_claim() {
         let b = body_of("fn wake_task_by_tid_placed(");
-        assert!(b.contains("wake_by_slot(slot, pred, ipc, NO_CLAIM)"),
+        assert!(b.contains("wake_by_slot(tid, slot, pred, ipc, NO_CLAIM)"),
             "every ordinary TID wake must pass NO_CLAIM");
     }
 }
@@ -3244,7 +3244,7 @@ mod reap_flag_gate {
         let tick = |w: &AtomicU32| flag.swap(false, Ordering::AcqRel) && reap_orphaned_stamp(w, w.load(Ordering::Acquire));
 
         // The waker stamps a target that is still switching away.
-        assert_eq!(wake_transition(&w, || true, false, || false), WakeTransition::Stamped);
+        assert_eq!(wake_transition(&w, || true, || true, false, || false), WakeTransition::Stamped);
         // A tick before the waker's flag store: gated out, nothing delivered.
         assert!(!tick(&w));
         assert_eq!(sched_word::state_of(w.load(Ordering::Acquire)), TaskState::Blocked);
@@ -3284,14 +3284,14 @@ mod reap_flag_gate {
     fn every_reapable_stamp_moves_the_idle_count() {
         let before = sched_word::reapable_stamps();
         let w = AtomicU32::new(sched_word::pack(TaskState::Blocked));
-        assert_eq!(wake_transition(&w, || true, false, || false), WakeTransition::Stamped);
+        assert_eq!(wake_transition(&w, || true, || true, false, || false), WakeTransition::Stamped);
         let after = sched_word::reapable_stamps();
         assert!(after != before, "an unswitched-block stamp left the count unchanged");
         // A saved task is dispatched, a running one stamped for its own
         // commit to consume: neither is the reaper's, and other tests running
         // in parallel may bump the count, so only the stamp case is asserted.
         let r = AtomicU32::new(sched_word::pack(TaskState::Running));
-        assert_eq!(wake_transition(&r, || true, true, || true), WakeTransition::Stamped);
+        assert_eq!(wake_transition(&r, || true, || true, true, || true), WakeTransition::Stamped);
     }
 
     /// The idle walk: skipped on one load when the count has not moved or
@@ -3346,7 +3346,7 @@ mod reap_flag_gate {
         let w = AtomicU32::new(sched_word::pack(TaskState::Blocked));
         let flag = AtomicBool::new(false);
         let swept = AtomicU32::new(sched_word::reapable_stamps());
-        assert_eq!(wake_transition(&w, || true, false, || false), WakeTransition::Stamped);
+        assert_eq!(wake_transition(&w, || true, || true, false, || false), WakeTransition::Stamped);
         // No `note_unsaved_stamp`: every tick is gated out.
         for _ in 0..3 {
             assert!(!(flag.swap(false, Ordering::AcqRel) && reap_orphaned_stamp(&w, w.load(Ordering::Acquire))));
@@ -3461,3 +3461,33 @@ mod wake_list_tests {
 mod marker_pte;
 #[cfg(test)]
 mod elf_walk;
+
+/// A TID-directed wake whose slot changed hands after it was resolved.
+#[cfg(test)]
+mod tid_reuse {
+    use super::task::sched_word::{self, wake_transition, WakeTransition, WAKE_STAMP};
+    use super::task::TaskState;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn a_wake_for_a_slot_that_changed_hands_touches_nothing() {
+        for s in [TaskState::Ready, TaskState::Running, TaskState::Blocked] {
+            let w = AtomicU32::new(sched_word::pack(s));
+            assert_eq!(wake_transition(&w, || false, || true, true, || true), WakeTransition::Gone);
+            assert_eq!(w.load(Ordering::Relaxed), sched_word::pack(s), "{s:?}");
+        }
+    }
+
+    /// The old occupant ran and exited without blocking again, so without the
+    /// reuse's generation the new word equals one a waker read before.
+    #[test]
+    fn a_reused_slot_never_repeats_its_previous_occupants_word() {
+        let seen = sched_word::pack(TaskState::Ready);
+        let w = AtomicU32::new(seen);
+        sched_word::set_state(&w, TaskState::Running);
+        sched_word::set_state(&w, TaskState::Zombie);
+        w.store(sched_word::reused(w.load(Ordering::Relaxed)), Ordering::Release);
+        assert_eq!(sched_word::state_of(w.load(Ordering::Relaxed)), TaskState::Ready);
+        assert!(w.compare_exchange(seen, seen | WAKE_STAMP, Ordering::Release, Ordering::Relaxed).is_err());
+    }
+}

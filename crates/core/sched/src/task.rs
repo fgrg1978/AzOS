@@ -450,8 +450,9 @@ pub mod sched_word {
     /// the two words look otherwise, and a `context_saving` read after that
     /// word describes that same block.
     pub const GEN_MASK: u32 = !(STATE_MASK | WAKE_STAMP);
+    const GEN_STEP: u32 = GEN_MASK & GEN_MASK.wrapping_neg();
     /// One block. The canary makes a re-block the same word again (the ABA).
-    const GEN_ONE: u32 = if cfg!(feature = "state-gen-canary") { 0 } else { GEN_MASK & GEN_MASK.wrapping_neg() };
+    const GEN_ONE: u32 = if cfg!(feature = "state-gen-canary") { 0 } else { GEN_STEP };
 
     /// Count of `Blocked + WAKE_STAMP` words made (wrapping): bumped by
     /// [`wake_transition`]'s `!saved` arm after its CAS, Release, so a reader
@@ -472,6 +473,13 @@ pub mod sched_word {
     /// `cur` moved to state `s`, stamp cleared, generation kept.
     #[inline(always)]
     pub const fn moved(cur: u32, s: TaskState) -> u32 { (cur & GEN_MASK) | pack(s) }
+
+    /// The word a reused slot starts with: `Ready`, no stamp, the next
+    /// generation. A TID-directed waker that read the previous occupant's word
+    /// then fails its CAS, even when that word was `Ready` with the same
+    /// generation (a task that exited without blocking again).
+    #[inline(always)]
+    pub const fn reused(cur: u32) -> u32 { moved(cur.wrapping_add(GEN_STEP), TaskState::Ready) }
 
     /// Decode the state field. Never panics: an out-of-range discriminant
     /// (impossible unless the word is corrupted) decodes to `Invalid`, which
@@ -505,6 +513,9 @@ pub mod sched_word {
         /// Not `Blocked` and stamping was not requested (broadcast wakes).
         /// Untouched.
         NotBlocked,
+        /// The slot no longer holds the addressee (freed, or reused by another
+        /// task). Untouched.
+        Gone,
     }
 
     /// Blocker side. Called by `block_current()` **after** `wait_reason` is
@@ -628,15 +639,26 @@ pub mod sched_word {
     /// On `Dispatched` the caller owns the task's dispatch: it must clear
     /// `wait_reason` and enqueue. Exactly one waker can win the CAS, so the
     /// ownership is exclusive.
+    ///
+    /// `addressee` is asked after every read of the word, before anything is
+    /// decided from it: a TID-directed waker resolved its slot before this
+    /// call, and the slot may have been freed and reused since. A reuse
+    /// stores [`reused`] (Release) after the new TID, so a word that belongs
+    /// to the new occupant makes `addressee` see the new TID, and a word read
+    /// before the reuse can no longer be CASed. Broadcast sweeps pass `|| true`.
     #[inline]
     pub fn wake_transition(
         w: &AtomicU32,
+        mut addressee: impl FnMut() -> bool,
         mut reason_matches: impl FnMut() -> bool,
         stamp_if_unblocked: bool,
         mut saved: impl FnMut() -> bool,
     ) -> WakeTransition {
         loop {
             let cur = w.load(Ordering::Acquire);
+            if !addressee() {
+                return WakeTransition::Gone;
+            }
             if state_of(cur) == TaskState::Blocked {
                 if !reason_matches() {
                     return WakeTransition::Mismatch;
