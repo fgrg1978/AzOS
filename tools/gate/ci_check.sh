@@ -23246,7 +23246,9 @@ PYEOF
     # Canary rows: each breaks one property and the matching check must print
     # FAIL (`rt-band-canary` cap off, `rt-exempt-canary` no exemption: rt-motor
     # is throttled with the band, `rt-edf-canary` FIFO inside a level,
-    # `rt-cbs-canary` no budget charging, `rt-admit-canary` no admission).
+    # `rt-cbs-canary` no budget charging, `rt-admit-canary` no admission,
+    # `dispatch-skip-class-canary` the class walk skips DL: reservations go FIFO
+    # with the band).
     # Compile-error bucket: `kbuild`/`a64_kbuild` failures are their own FAIL.
     sched_rt_row() { # sched_rt_row <label> <isa: rv|arm> <features> <expect: PASS|band|edf|cbs|admit>
         local label="$1" isa="$2" feats="$3" expect="$4"
@@ -23323,12 +23325,14 @@ PYEOF
     par_row sched_rt_row "sched-rt: riscv64 CBS canary" rv "qemu,rt-cbs-canary" cbs
     par_row sched_rt_row "sched-rt: riscv64 admission canary" rv "qemu,rt-admit-canary" admit
     par_row sched_rt_row "sched-rt: riscv64 exemption canary" rv "qemu,rt-exempt-canary" exempt
+    par_row sched_rt_row "sched-rt: riscv64 class walk skips DL canary" rv "qemu,dispatch-skip-class-canary" edf
     par_row sched_rt_row "sched-rt: aarch64 band/edf/cbs/admit" arm "qemu,sched-rt-smoke" PASS
     par_row sched_rt_row "sched-rt: aarch64 band cap canary" arm "qemu,rt-band-canary" band
     par_row sched_rt_row "sched-rt: aarch64 EDF order canary" arm "qemu,rt-edf-canary" edf
     par_row sched_rt_row "sched-rt: aarch64 CBS canary" arm "qemu,rt-cbs-canary" cbs
     par_row sched_rt_row "sched-rt: aarch64 admission canary" arm "qemu,rt-admit-canary" admit
     par_row sched_rt_row "sched-rt: aarch64 exemption canary" arm "qemu,rt-exempt-canary" exempt
+    par_row sched_rt_row "sched-rt: aarch64 class walk skips DL canary" arm "qemu,dispatch-skip-class-canary" edf
 
     # ── SCHED-RT near the admission bound (wave 15, VB) ──
     #
@@ -27509,6 +27513,44 @@ else
         tlc_want="$(sed -n 's/^\\\* expect: //p' "$tlc_cfg")"
         tlc_out="$(cd "${REPO_ROOT}/formal/tla" && tlc_run -workers auto -metadir "$tlc_meta/$tlc_name" \
             -config "$tlc_name" qsbr.tla 2>&1)"
+        printf '%s\n' "$tlc_out" | qgrep -qF "Invariant ${tlc_want} is violated" \
+            || tlc_bad="$tlc_bad $tlc_name"
+    done
+    rm -rf "$tlc_meta"
+    if [ -z "$tlc_bad" ]; then
+        ok
+    else
+        bad; echo "      TLC did not behave as expected for:$tlc_bad"
+    fi
+fi
+fi; ci_row_end
+
+# TLC: the TLA+ class-dispatch spec (formal/tla/sched_dispatch.tla) must pass its config, and every
+# sched_dispatch_mut_*.cfg (one injected defect each) must be rejected for the invariant named on its
+# `expect:` line. The checker is `tlc` on PATH, or `java -jar $TLA2TOOLS_JAR` with a Java
+# that runs (`java -version` exits 0). Neither: a SKIP line, counted neither way.
+if ci_row_begin "formal: TLC sched_dispatch"; then
+printf "  %-26s" "formal: TLC sched_dispatch..."
+tlc_jar="${TLA2TOOLS_JAR:-}"
+if command -v tlc >/dev/null 2>&1; then
+    tlc_run() { tlc "$@"; }
+elif [ -n "$tlc_jar" ] && [ -f "$tlc_jar" ] && command -v java >/dev/null 2>&1 \
+     && java -version >/dev/null 2>&1; then
+    tlc_run() { java -jar "$tlc_jar" "$@"; }
+fi
+if ! type tlc_run >/dev/null 2>&1; then
+    echo "skip: no TLC"
+else
+    tlc_meta="$(mktemp -d)"
+    tlc_bad=""
+    tlc_out="$(cd "${REPO_ROOT}/formal/tla" && tlc_run -workers auto -metadir "$tlc_meta/base" \
+        -config sched_dispatch.cfg sched_dispatch.tla 2>&1)"
+    printf '%s\n' "$tlc_out" | qgrep -qF "No error has been found" || tlc_bad="sched_dispatch.cfg"
+    for tlc_cfg in "${REPO_ROOT}"/formal/tla/sched_dispatch_mut_*.cfg; do
+        tlc_name="$(basename "$tlc_cfg")"
+        tlc_want="$(sed -n 's/^\\\* expect: //p' "$tlc_cfg")"
+        tlc_out="$(cd "${REPO_ROOT}/formal/tla" && tlc_run -workers auto -metadir "$tlc_meta/$tlc_name" \
+            -config "$tlc_name" sched_dispatch.tla 2>&1)"
         printf '%s\n' "$tlc_out" | qgrep -qF "Invariant ${tlc_want} is violated" \
             || tlc_bad="$tlc_bad $tlc_name"
     done
