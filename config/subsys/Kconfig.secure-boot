@@ -14,6 +14,7 @@ config SECURE_BOOT_ENFORCED
     bool "Enforce Ed25519 signature verification at boot" if !BUILD_TYPE_CERTIFIABLE
     default y if !BUILD_TYPE_DEV
     default n
+    select OTA_SIG_MANDATORY
     help
       Default: y on every build except BUILD_TYPE_DEV (release-safe;
       the QEMU board is a development build, the boards are release
