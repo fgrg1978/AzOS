@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2733998
-riscv64-qemu	.rodata	463992
-riscv64-qemu	.data	3266992
+riscv64-qemu	.text	2734766
+riscv64-qemu	.rodata	459504
+riscv64-qemu	.data	3267056
 riscv64-qemu	.bss	5799648
-riscv64-qemu	reason	64-bit reservation and energy CPU masks, interrupt migration off a stopping CPU
+riscv64-qemu	reason	kernel heap on demand: the first-fit allocator and its re-entry scheme are gone

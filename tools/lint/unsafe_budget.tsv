@@ -34,14 +34,14 @@ crates/core/hyp-mon	25	3	1	0	0	-
 crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
 crates/core/inspect	1	1	0	0	0	3
-crates/core/ipc	40	10	4	0	0	54
+crates/core/ipc	40	10	4	0	0	53
 crates/core/ktest	3	0	0	0	0	66
 crates/core/libsys	89	10	2	0	0	93
 crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	286	42	11	0	0	80
+crates/core/mm	280	41	11	0	0	80
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
@@ -109,7 +109,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	367	14	12	52	0	61
+kernel	368	14	12	52	0	61
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
