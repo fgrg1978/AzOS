@@ -478,6 +478,10 @@ impl Mmu for Riscv64 {
         ((back >> 44) & 0xFFFF).count_ones()
     }
 
+    fn asid_bits_readable(&self) -> bool {
+        crate::cpu::read_satp() >> 60 != 0
+    }
+
     #[inline]
     fn flush_tlb_page(&self, va: usize) {
         // One window, as `flush_tlb_all`.

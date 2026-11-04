@@ -532,6 +532,14 @@ pub trait Mmu: Send + Sync {
     /// ID_AA64MMFR0_EL1.ASIDBits. The default is an ISA without ASIDs.
     fn asid_bits(&self) -> u32 { 0 }
 
+    /// Can [`Self::asid_bits`] be read on the calling CPU right now? A riscv64
+    /// secondary hart that was not given the boot root (no KASLR) runs with
+    /// `satp` Bare, where the ASIDLEN probe has nothing to read: its answer
+    /// says nothing about the hart, and the comparison with the boot CPU
+    /// leaves the fact out. The default is an ISA whose answer needs no MMU
+    /// state.
+    fn asid_bits_readable(&self) -> bool { true }
+
     /// Does turning a table entry into a block (or a block into a table) at
     /// one translation level need break-before-make: the old entry made
     /// invalid and its translations flushed on every CPU that may hold them,
