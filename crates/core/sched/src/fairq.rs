@@ -19,9 +19,9 @@
 //! ([`eevdf_core::weight_of_prio`](crate::eevdf_core::weight_of_prio), the
 //! default priority being nice 0). The order is the per-hart tree of
 //! `eevdf_tree.rs`, linked and unlinked beside the lists, so a pick and a tick
-//! cost O(log ready fair tasks) with interrupts masked, and a wake and a sleep
-//! O(FAIR_PLACE_SAMPLE) (the mean they place against,
-//! [`eevdf_core::avg_of_first`]).
+//! cost O(log ready fair tasks) with interrupts masked, and the mean a wake and
+//! a sleep place against is the tree's own sums, O(1)
+//! ([`eevdf_tree::Tree::avg_without`](crate::eevdf_tree::Tree::avg_without)).
 //!
 //! # The running task counts
 //!
@@ -201,7 +201,9 @@ pub(super) fn reset(idx: usize) {
 }
 
 /// The queued fair tasks of `cpu` with their numbers, reservations (the DL
-/// class's) left out. Caller holds `CPU_LOCKS[cpu]`.
+/// class's) left out: the ktests' view of the lists the tree mirrors. Caller
+/// holds `CPU_LOCKS[cpu]`.
+#[cfg(feature = "ktest")]
 unsafe fn members(cpu: usize) -> impl Iterator<Item = (usize, Ent)> {
     let levels = PER_CPU[cpu].ready_bitmap.load(Relaxed) & rt::LEVELS_NONBAND;
     (RT_PRIORITY_THRESHOLD as usize..IDLE_PRIORITY as usize)
@@ -280,10 +282,8 @@ fn remote_cur(cpu: usize) -> Option<(usize, Ent)> {
 /// (the exit of its own process among them) arrived tens of seconds of `v`
 /// ahead of it, and waited that long for the CPU.
 unsafe fn others(cpu: usize, skip: usize) -> Avg {
-    let queued = unsafe { members(cpu) }.filter(|&(i, _)| i != skip).map(|(_, e)| e);
-    let (mut a, _read) = eevdf::avg_of_first(queued, azos_limits::FAIR_PLACE_SAMPLE as usize);
-    #[cfg(feature = "ktest")]
-    PLACE_READ_MAX.fetch_max(_read as u64, Relaxed);
+    // The tree's own sums: every queued fair task, reservations left out.
+    let mut a = unsafe { tree(cpu) }.avg_without(&NODES, skip);
     // percpu-hint: the caller holds CPU_LOCKS[cpu] (lock_irqsave): interrupts are off
     let cur = if cpu == crate::smp::current_cpu_id() { unsafe { cur_cand(cpu) } } else { remote_cur(cpu) };
     if let Some((i, e)) = cur {
@@ -292,16 +292,6 @@ unsafe fn others(cpu: usize, skip: usize) -> Avg {
         }
     }
     a
-}
-
-/// The most queued tasks one mean read since the last call to [`ktest_take_place_read_max`].
-#[cfg(feature = "ktest")]
-static PLACE_READ_MAX: AtomicU64 = AtomicU64::new(0);
-
-/// See [`PLACE_READ_MAX`]; starts over.
-#[cfg(feature = "ktest")]
-pub fn ktest_take_place_read_max() -> u64 {
-    PLACE_READ_MAX.swap(0, Relaxed)
 }
 
 /// What the pick found on `cpu`.

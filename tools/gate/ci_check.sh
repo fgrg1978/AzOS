@@ -15827,18 +15827,14 @@ CPU 5 lacks hwcap bits"
     par "ktest hold bound, lazy owner scan canary, -icount (arm)" owner_scan_hold_row "ktest hold bound, lazy owner scan canary, -icount (arm)" arm
     ktest_icount_row() { KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" ktest_row "$@"; }
     # A storm of sleepers on one instant and one CPU (`irqoff_timer_storm`): one tick wakes
-    # SCHED_TIMER_WAKES_PER_IRQ, each placed on FAIR_PLACE_SAMPLE queued tasks.
+    # SCHED_TIMER_WAKES_PER_IRQ, each placed in O(1) against the fair tree's sums.
     par "ktest timer wake bound canary, -icount (rv)" ktest_icount_row "ktest timer wake bound canary, -icount (rv)" rv ",timer-wake-unbounded-canary" \
         "$KTEST_HOLD_SMP1 irqoff_timer_storm"
     par "ktest timer wake bound canary, -icount (arm)" ktest_icount_row "ktest timer wake bound canary, -icount (arm)" arm ",timer-wake-unbounded-canary" \
         "$KTEST_HOLD_SMP1 irqoff_timer_storm"
-    par "ktest fair place bound canary, -icount (rv)" ktest_icount_row "ktest fair place bound canary, -icount (rv)" rv ",fair-place-all-canary" \
-        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
     par "ktest timer rank canary, -icount (rv)" ktest_icount_row "ktest timer rank canary, -icount (rv)" rv ",timer-rank-canary" \
         "$KTEST_HOLD_SMP1 irqoff_timer_storm"
     par "ktest timer rank canary, -icount (arm)" ktest_icount_row "ktest timer rank canary, -icount (arm)" arm ",timer-rank-canary" \
-        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
-    par "ktest fair place bound canary, -icount (arm)" ktest_icount_row "ktest fair place bound canary, -icount (arm)" arm ",fair-place-all-canary" \
         "$KTEST_HOLD_SMP1 irqoff_timer_storm"
     # aarch64 without FEAT_TLBIRANGE, a ceiling of one page: the cross-CPU stale read of
     # `tlb_shootdown_cross_cpu` is answered by the whole-space broadcast; `tlb-local-only`
@@ -17569,8 +17565,6 @@ CPU 5 lacks hwcap bits"
     par "ktest timer wake bound canary, -icount (x86)" x86_ktest_icount_row "ktest timer wake bound canary, -icount (x86)" ",timer-wake-unbounded-canary" \
         "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"
     par "ktest timer rank canary, -icount (x86)" x86_ktest_icount_row "ktest timer rank canary, -icount (x86)" ",timer-rank-canary" \
-        "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"
-    par "ktest fair place bound canary, -icount (x86)" x86_ktest_icount_row "ktest fair place bound canary, -icount (x86)" ",fair-place-all-canary" \
         "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"
     par "ktest chaos storm canary, -icount (x86)" x86_ktest_icount_row "ktest chaos storm canary, -icount (x86)" ",chaos-storm-canary" \
         "$KTEST_HOLD_SMP1_X86 chaos_timer_wake_late_is_not_a_storm"

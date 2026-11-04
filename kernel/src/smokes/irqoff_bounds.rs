@@ -117,22 +117,17 @@ azos_ktest::ktest_late! {
         let most = azos_sched::free_task_slots().saturating_sub(8);
         // A storm no larger than the bounds cannot show them, and a small task table
         // with the daemons of a volume (the soak and disk rows) leaves too few slots.
-        if most <= azos_limits::SCHED_TIMER_WAKES_PER_IRQ.max(azos_limits::FAIR_PLACE_SAMPLE as usize) {
+        if most <= azos_limits::SCHED_TIMER_WAKES_PER_IRQ {
             return azos_ktest::skip!("the free task slots do not outnumber the bounds under test");
         }
         for k in [most / 4, most / 2, most] {
-            let _ = azos_sched::scheduler::fairq::ktest_take_place_read_max();
             let (ticks, popped) = storm(k)?;
-            let read = azos_sched::scheduler::fairq::ktest_take_place_read_max();
             let ns = ticks_to_ns(ticks);
             let (urgent_last, fair_first) = (wake_places(&URGENT_SLOT).1, wake_places(&FAIR_SLOT).0);
-            azos_drv_sys::kprintln!("# irqoff timer-storm: sleepers={} popped_one_pass={} longest_pass_ns={} place_read_max={} urgent_last_wake={} fair_first_wake={}",
-                k, popped, ns, read, urgent_last, fair_first);
+            azos_drv_sys::kprintln!("# irqoff timer-storm: sleepers={} popped_one_pass={} longest_pass_ns={} urgent_last_wake={} fair_first_wake={}",
+                k, popped, ns, urgent_last, fair_first);
             if popped > azos_limits::SCHED_TIMER_WAKES_PER_IRQ {
                 return Err("one masked pass woke past SCHED_TIMER_WAKES_PER_IRQ");
-            }
-            if read > azos_limits::FAIR_PLACE_SAMPLE as u64 {
-                return Err("a placement read past FAIR_PLACE_SAMPLE");
             }
             // Due at one instant: the order is the class's, not the slot's. The urgent ones
             // took the highest slots.

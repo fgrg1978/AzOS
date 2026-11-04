@@ -267,23 +267,6 @@ pub fn avg_of(it: impl Iterator<Item = Ent>) -> Avg {
     a
 }
 
-/// The mean over at most `cap` entities, the first of `it`: a placement reads
-/// a mean on a wake, with interrupts masked, and the queue's length is a
-/// user's to choose. Past `cap` it is an estimate inside the range of the `v`
-/// it saw, and every queued `v` is within about a lag limit of the true mean,
-/// so a placement moves by about that much and no more; the pick reads the
-/// exact sums of the tree. `fair-place-all-canary`: no cap, ktest `irqoff_timer_storm` goes red.
-pub fn avg_of_first(it: impl Iterator<Item = Ent>, cap: usize) -> (Avg, usize) {
-    let cap = if cfg!(feature = "fair-place-all-canary") { usize::MAX } else { cap };
-    let mut a = Avg::new();
-    let mut n = 0;
-    for e in it.take(cap) {
-        a.add(&e);
-        n += 1;
-    }
-    (a, n)
-}
-
 /// `e` is leaving the queue (it blocks, or moves): the lag it keeps.
 /// `others` is every entity that stays, the running one included.
 pub fn lag_on_sleep(others: &Avg, e: &Ent, tick: u64) -> i64 {

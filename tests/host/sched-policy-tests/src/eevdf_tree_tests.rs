@@ -586,3 +586,25 @@ fn no_arrival_order_passes_the_height_bound() {
         assert!(a.remove.worst <= 8 * b, "a remove read {} nodes", a.remove.worst);
     }
 }
+
+/// The mean a placement reads is the tree's own sums: every linked entity but
+/// the one being placed, equal to the mean over the others read one by one.
+#[test]
+fn the_placement_mean_is_the_trees_sums_without_the_task() {
+    let st = VecStore::new(8);
+    let mut t = Tree::new(0);
+    let es: Vec<Ent> = (0..5i64)
+        .map(|i| Ent { weight: 1024 + 300 * i as u32, slice: 1000, vruntime: i * 700 - 900, deadline: i * 700 + 100 })
+        .collect();
+    for (i, e) in es.iter().enumerate() {
+        assert!(t.insert(&st, i, e, 0));
+    }
+    for skip in 0..es.len() {
+        let others = avg_of(es.iter().enumerate().filter(|&(i, _)| i != skip).map(|(_, e)| *e));
+        assert!(t.avg_without(&st, skip).same_sums(&others), "skip {skip}");
+    }
+    // A task this tree does not hold takes nothing out.
+    assert!(t.avg_without(&st, 7).same_sums(&avg_of(es.iter().copied())));
+    let other = Tree::new(1);
+    assert!(other.avg_without(&st, 2).is_empty(), "another tree's node is not this tree's");
+}

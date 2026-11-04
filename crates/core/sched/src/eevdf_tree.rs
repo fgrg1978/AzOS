@@ -236,6 +236,18 @@ impl Tree {
         self.len == 0
     }
 
+    /// The sums of every linked entity but `skip` (when this tree holds it):
+    /// the mean a placement reads, in O(1). `skip` is subtracted with the
+    /// numbers it was linked with, as unlinking it would.
+    pub fn avg_without<S: Store>(&self, s: &S, skip: usize) -> Avg {
+        let mut a = self.avg;
+        let n = s.node(skip);
+        if n.weight != 0 && n.owner == self.id {
+            a.remove(&Ent { weight: n.weight, slice: 0, vruntime: n.vruntime, deadline: n.deadline });
+        }
+        a
+    }
+
     fn replace_child<S: Store>(&mut self, s: &S, parent: u32, old: u32, new: u32) {
         if parent == NIL {
             self.root = new;

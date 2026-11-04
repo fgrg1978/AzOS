@@ -59,7 +59,6 @@ timer-wake-unbounded-canary = []
 # Every timer sleeper has one rank: a storm of sleepers due at one instant pops by slot
 # index, not by class (`irqoff_timer_storm`, `wake_due_pops_the_urgent_class_first`).
 timer-rank-canary = []
-fair-place-all-canary = []
 eevdf-noclamp-canary = []
 eevdf-nowake-canary = []
 # Gate canary, never in a real build: `sc::timer_slack_us` gives the stop,
