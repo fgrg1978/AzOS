@@ -18,16 +18,19 @@ config MAX_TASKS
     default 64   if (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 4096 if HWCLASS_SERVER
     help
-      Number of task slots: processes and threads share this one static
-      table.  Everything below is allocated at build time for all MAX_TASKS
-      slots whether or not a task exists, and none of it is heap.  Scheduler
+      Number of task slots: processes and threads share this one table.
+      The kernel stack (the stack window, crates/core/mm/src/kstack.rs) and
+      the capability table (a retained cache) of a slot are taken from the
+      page allocator when the slot is first used; the rest below is still
+      allocated at build time for all MAX_TASKS slots.  Scheduler
       walks (per-tick WCET) and the page-table tracker (PT_META) scan linearly
       in MAX_TASKS.
 
       Cost: ~38,573 B of RAM per task slot (riscv64), 39,757 B (aarch64), at
       the edge values of KERNEL_STACK_SIZE_KB = 32 and MAX_CAPS_PER_TASK = 256.
-      Of that: 32,768 B kernel stack (KERNEL_STACK_SIZE_KB, TASK_STACKS);
-      2,052 B capability table (8 B x MAX_CAPS_PER_TASK + 4, CAP_TABLES);
+      Of that, taken on use: 32,768 B kernel stack (KERNEL_STACK_SIZE_KB);
+      2,052 B capability table (8 B x MAX_CAPS_PER_TASK + 4, CAP_TABLES).
+      Static:
       2,048 B run queues (MAX_CPUS 8 x NUM_PRIORITIES 32 x one 8-byte slot;
       wave 15: now a 4 B ready-queue link, RQ_NEXT, the queues being lists
       -- 2,044 B less per slot than the figures here, which predate it);
