@@ -215,41 +215,6 @@ config MM_PRECOMMIT_RT
       in the fault path) would land inside its period.  Off: such tasks
       demand-fault like any other unless they ask for MAP_POPULATE.
 
-config KHEAP_SLAB
-    bool "Per-CPU size-class cache in front of the kernel heap"
-    default y
-    help
-      Wave 15 (SLAB). Small kernel heap requests (up to KHEAP_SLAB_MAX_CLASS
-      bytes) are served from per-CPU magazines of fixed size classes, a
-      per-class depot of full and empty magazines, and slabs carved from the
-      heap (crates/core/mm/src/slab.rs). Alloc and free of a small object
-      are then O(1) with no lock and no heap walk while the CPU's magazines
-      hold or have room for it; a miss costs at most one magazine of slab
-      work with interrupts masked, never a heap walk. Larger requests, and
-      every request with this off, go to the first-fit heap exactly as
-      before (off is today's allocator, kept for comparison).
-
-      Measured (riscv64, -icount, wave 15): the kernel heap is not on any
-      vsbench hot path (spawn, thread, fork, IPC, file, UDP make no heap
-      allocation); procfs text on open was its main user then (the kernel
-      keeps no /proc since 2026-10-21). So this moves no
-      lane; it bounds what an allocation costs. A heap refusal first gives
-      back what this layer caches (this CPU's magazines, the depot, empty
-      slabs) and retries once; a refusal is still a refusal.
-
-      Cost: 3,712 B of .data (riscv64, measured: 8 CPUs x 2 x 16 magazine
-      pointers and 17 class locks) and about 0.5 KiB of tables, plus, in the
-      heap, what the options below let it cache (edge defaults: at most
-      27 KiB per CPU, 54 KiB of depot, one 4-32 KiB slab per class in use).
-      Instructions (riscv64, -icount): a small alloc or free that its
-      magazine serves is about 40 (an alloc+free pair 81) against 310-360
-      for the first-fit heap on a nearly empty heap and 1,700+ with 256
-      small holes in front of the request; a request above the largest class
-      pays about 7 more than before (the interrupt-context owner check in
-      crates/core/mm/src/kheap.rs).
-      Same on both ISAs: nothing here depends on the page granule.
-      The KHEAP_SLAB_* options below are read only with this on.
-
 config KHEAP_SLAB_DEBUG
     bool "Poison freed objects and check red zones"
     default y if LOG_LEVEL_DEBUG && BUILD_TYPE_DEV

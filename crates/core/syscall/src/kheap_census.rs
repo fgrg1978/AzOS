@@ -125,9 +125,9 @@ fn bench_pass(kind: &str) {
         }
         let tp = c::now() - t0;
         azos_drv_sys::kprintln!(
-            "[KHEAP-BENCH] heap={} size={} alloc_ns={} free_ns={} pair_ns={} slab={} cached={}",
+            "[KHEAP-BENCH] heap={} size={} alloc_ns={} free_ns={} pair_ns={} cached={}",
             kind, s, ta * (1_000_000_000 / f) / n, tf * (1_000_000_000 / f) / n,
-            tp * (1_000_000_000 / f) / n, azos_limits::KHEAP_SLAB, azos_mm::kheap::slab_cached(),
+            tp * (1_000_000_000 / f) / n, azos_mm::kheap::slab_cached(),
         );
     }
 }

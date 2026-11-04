@@ -445,47 +445,40 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
-    // Kernel heap against RAM_SIZE
+    // Kernel heap ceiling against RAM_SIZE
     //
-    // The heap is taken from the page allocator after the image
-    // (kernel/src/boot/early.rs, "[MM] Heap"). RAM_SIZE is the RAM the board
-    // is expected to have (the allocator itself manages whatever the firmware
-    // reports). A heap that is not smaller than RAM_SIZE can never fit, and
-    // the boot stops at "[MM] Heap FAILED:". The image size is not known
-    // here, so this refuses only the impossible case; the boot check covers
-    // the rest.
+    // KERNEL_HEAP_SIZE is a ceiling on the pages the heap takes from the page
+    // allocator on demand (crates/core/mm/src/kheap.rs), not a reservation.
+    // RAM_SIZE is the RAM the board is expected to have. A ceiling above it
+    // bounds nothing, so it is refused as a misconfiguration.
     // -----------------------------------------------------------------------
     if let Some(ram_mib) = get_u64(cfg, "RAM_SIZE") {
         let ram_bytes = ram_mib * 1024 * 1024;
-        if heap_size_bytes >= ram_bytes {
+        if heap_size_bytes > ram_bytes {
             panic!(
-                "validation FAIL: KERNEL_HEAP_SIZE ({heap_size_kib} KiB) >= RAM_SIZE ({ram_mib} MiB). \
-                 The heap is taken from the page allocator after the kernel image and cannot fit. \
-                 Fix: increase RAM_SIZE or decrease KERNEL_HEAP_SIZE in .config."
+                "validation FAIL: KERNEL_HEAP_SIZE ({heap_size_kib} KiB) > RAM_SIZE ({ram_mib} MiB): \
+                 a heap ceiling above the RAM bounds nothing. \
+                 Fix: lower KERNEL_HEAP_SIZE or raise RAM_SIZE in .config."
             );
         }
     }
 
     // -----------------------------------------------------------------------
-    // The two largest claims on the RAM against RAM_SIZE
+    // The per-task kernel stacks against RAM_SIZE
     //
-    // The kernel heap and the per-task kernel stacks (a static arena of
-    // MAX_TASKS x KERNEL_STACK_SIZE_KB, linked into the image) are both exact.
-    // The image holds more (the capability, socket and task tables), so this
-    // is a floor: a configuration under it cannot link or boot, and the
-    // message says which limits to lower, where the linker would only name
-    // the bytes of one section.
+    // The stacks are a static arena of MAX_TASKS x KERNEL_STACK_SIZE_KB linked
+    // into the image, so they are exact. The image holds more (the capability,
+    // socket and task tables), so this is a floor: a configuration under it
+    // cannot link or boot, and the message says which limits to lower, where
+    // the linker would only name the bytes of one section.
     // -----------------------------------------------------------------------
     if let (Some(ram_mib), Some(stack_kib)) = (get_u64(cfg, "RAM_SIZE"), get_u64(cfg, "KERNEL_STACK_SIZE_KB")) {
         let stacks_mib = (max_tasks * stack_kib).div_ceil(1024);
-        let heap_mib = heap_size_kib.div_ceil(1024);
-        if heap_mib + stacks_mib >= ram_mib {
+        if stacks_mib >= ram_mib {
             panic!(
-                "validation FAIL: the limits need at least {} MiB of RAM (KERNEL_HEAP_SIZE {heap_mib} MiB + \
-                 MAX_TASKS {max_tasks} x KERNEL_STACK_SIZE_KB {stack_kib} KiB = {stacks_mib} MiB of kernel \
-                 stacks, before the other tables) but RAM_SIZE gives {ram_mib} MiB. \
-                 Fix: raise RAM_SIZE, or lower MAX_TASKS, KERNEL_STACK_SIZE_KB or KERNEL_HEAP_SIZE in .config.",
-                heap_mib + stacks_mib
+                "validation FAIL: MAX_TASKS {max_tasks} x KERNEL_STACK_SIZE_KB {stack_kib} KiB = {stacks_mib} MiB \
+                 of kernel stacks, before the other tables, but RAM_SIZE gives {ram_mib} MiB. \
+                 Fix: raise RAM_SIZE, or lower MAX_TASKS or KERNEL_STACK_SIZE_KB in .config."
             );
         }
     }

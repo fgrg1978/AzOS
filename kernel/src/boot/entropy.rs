@@ -103,6 +103,13 @@ pub(crate) fn install_entropy(dtb_ptr: usize) {
             "[ENTROPY] pool unseeded: no entropy device; ids, ISN secret and link keys \
              use runtime counters, stack canary fixed");
     }
+    if azos_limits::ALLOC_RANDOM {
+        let mut w = [0u8; 8];
+        if azos_crypto::entropy::fill(&mut w) {
+            azos_mm::pmm::shuffle(u64::from_ne_bytes(w) | 1);
+        }
+        azos_crypto::ct::secure_zero(&mut w);
+    }
     for b in seed.iter_mut() { *b = 0; }
     azos_net::set_random_source(crate::boot::entropy_pool::pool_fill);
     // Wave 9 (P9): ring 3's door onto the same pool (the kernel-hosted `entropy` endpoint,

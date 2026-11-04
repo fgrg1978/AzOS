@@ -496,30 +496,17 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
         }
     }
 
-    // ---- Heap: reserve FIRST, then init, so no window exists where
-    // `alloc_page()` could hand out a page the heap is about to claim.
-    // The lowest run of free frames that holds it: the first free frame is the
-    // start of one huge run where the image starts RAM, and may sit in a small
-    // gap where it does not (x86_64 under Limine).
-    let heap_start = azos_mm::pmm::first_free_run(crate::HEAP_SIZE).unwrap_or_else(azos_mm::pmm::next_free_addr);
-    kprintln!("[MM] Heap: {:#x}, {} KiB", heap_start, crate::HEAP_SIZE / 1024);
-    // `kheap` takes the range as one block, so every page of it must be free
-    // RAM: a page already in use gets two writers, and a page past the end of
-    // RAM does not exist.
-    if !azos_mm::pmm::range_is_free(heap_start, crate::HEAP_SIZE) {
-        azos_drv_sys::kerr!("[MM] Heap FAILED: [{:#x}, {:#x}) is not all free RAM",
-            heap_start, heap_start + crate::HEAP_SIZE);
-        halt();
-    }
-    azos_mm::pmm::reserve_range(heap_start, crate::HEAP_SIZE);
+    // ---- Heap: pages on demand from the page allocator, up to the ceiling.
+    // `heap_start` is only where free RAM starts now (the riscv64 PMP audit
+    // line prints its policy from it); the heap itself has no range.
+    let heap_start = azos_mm::pmm::next_free_addr();
     #[cfg(feature = "kasan")]
     match azos_mm::kasan::boot() {
         Some(n) => kprintln!("[KASAN] shadow {} KiB, checking on", n / 1024),
         None => kprintln!("[KASAN] no free run for the shadow: not checking"),
     }
-    // `heap_start` is PHYSICAL; the allocator writes its own free list through
-    // this pointer, so it gets the kernel's view of that memory.
-    unsafe { azos_mm::kheap::init(azos_mm::addr::phys_to_virt(heap_start), crate::HEAP_SIZE) };
+    azos_mm::kheap::init(crate::HEAP_SIZE);
+    kprintln!("[MM] Heap: on demand, ceiling {} KiB", crate::HEAP_SIZE / 1024);
     kprintln!("[MM] Heap initialized");
 
     {

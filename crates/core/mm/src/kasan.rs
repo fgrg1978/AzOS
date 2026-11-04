@@ -72,7 +72,7 @@ pub unsafe fn init(ram_va: usize, ram_len: usize, shadow_va: usize) {
 }
 
 /// Reserve the shadow (an eighth of the RAM the PMM manages, out of the free
-/// frames after the heap's) and start checking; the bytes reserved, or `None`
+/// frames) and start checking; the bytes reserved, or `None`
 /// when no free run is big enough (the kernel then runs unchecked).
 pub fn boot() -> Option<usize> {
     let (pa, len) = crate::pmm::managed_range();

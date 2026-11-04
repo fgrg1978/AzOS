@@ -1,62 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-/// Kernel heap allocator: `linked_list_allocator` first-fit behind a
-/// `SpinLock`, with (Kconfig `KHEAP_SLAB`) a per-CPU size-class cache in
-/// front of it for small requests (`slab.rs`).
+/// Kernel heap allocator: a per-CPU size-class cache (`slab.rs`) whose slabs
+/// are page blocks of the page allocator, and exact page runs for requests
+/// above the largest class. Pages are taken on demand and given back when
+/// freed; Kconfig `KERNEL_HEAP_SIZE` is a ceiling on the pages held, not a
+/// reservation.
 ///
 /// Implements `GlobalAlloc` so Rust's `alloc` crate works (Vec, Box, String, etc).
-/// Uses our own SpinLock instead of `linked_list_allocator`'s `LockedHeap`
-/// to keep the lock implementation consistent across the kernel.
+/// A refusal (cache, ceiling or page allocator) first has the cache give back
+/// what it holds (`Slab::reclaim`), then is retried once, and a second refusal
+/// is returned as null: OOM is a refusal, never a panic.
 ///
-/// With `KHEAP_SLAB` off the allocator is exactly the first-fit heap, as it
-/// was before wave 15 (kept for comparison). With it on:
-///   * a request the size classes cover (`KHEAP_SLAB_CLASS_LIST`, alignment
-///     permitting) goes to the cache; anything else to the heap;
-///   * a refusal (cache or heap) first has the cache give back what it holds
-///     (`Slab::reclaim`), then is retried once, and a second refusal is
-///     returned as null: OOM is a refusal, never a panic, as before;
-///   * a context that interrupted this same hart inside a heap call (which
-///     spins forever with the slab layer off) has its allocation refused and
-///     its free deferred to the next heap call. Not inside the few
-///     instructions between taking the lock and recording the owner, or
-///     between clearing the owner and releasing the lock: there it still
-///     spins, as before. Closing those needs a try-lock scheme; clearing the
-///     owner after the release instead would let the deferred reschedule
-///     the release can run see a stale owner and refuse a task's request.
-///
-/// Ported from kernel/mm/kheap.c (upgraded from bump to real free-list).
+/// An interrupt handler may allocate: the slab's own locks are taken with
+/// interrupts masked, and so are the page allocator's.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use linked_list_allocator::Heap;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use azos_arch::ARCH;
 use azos_arch_api::Cpu;
-use azos_sync::SpinLock;
+use azos_arch::PAGE_SIZE;
+use crate::addr::{phys_to_virt, virt_to_phys, PhysAddr};
+use crate::buddy::order_for;
 use crate::kheap_guard as guard;
+use crate::pmm::{self, Pfn};
 use crate::slab::{Backing, Params, Slab, NO_CLASS};
-
-struct LockedHeap(SpinLock<Heap>);
-
-/// The hart holding the heap lock, plus one (0: none). Kept on the slab
-/// build's heap path only: it is what lets an interrupt-context call refuse
-/// instead of spinning on a lock its own hart holds.
-static OWNER: AtomicUsize = AtomicUsize::new(0);
-
-/// Frees that found this hart already inside the heap (see `heap_free`): a
-/// stack of the freed blocks themselves, drained under the lock. Two words,
-/// which is `linked_list_allocator`'s smallest block (`HoleList::min_size`).
-#[repr(C)]
-struct Deferred {
-    next: *mut Deferred,
-    /// `size << 8 | log2(align)`.
-    packed: usize,
-}
-static DEFERRED: AtomicPtr<Deferred> = AtomicPtr::new(null_mut());
-
-#[inline(always)]
-// percpu-hint: the accessor: with_heap reads it masked, then again under the lock (preemption off)
-fn me() -> usize { ARCH.hart_id().wrapping_add(1) }
 
 /// Whether the token from `disable_all` says interrupts were enabled. The
 /// encoding is the ISA's: `sstatus.SIE` set on riscv64, `DAIF.I` clear on
@@ -77,73 +45,6 @@ fn token_on(t: u64) -> bool {
 /// enabled. The slab asks it inside its masked window, and an interrupt-context
 /// allocation (the answer is no) never restores them around a backing-heap call.
 pub fn irq_was_on(t: usize) -> bool { token_on(t as u64) }
-
-/// Run `f` on the heap under its lock, owner recorded, deferred frees
-/// drained first. `None` when this hart already holds the lock (an
-/// interrupt landed inside a heap call): the caller refuses or defers.
-#[inline(always)]
-fn with_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> Option<R> {
-    // The re-entry check reads the hart with interrupts masked, so it asks
-    // about the hart that runs it: a task migrated between the id and the
-    // owner word would be refused for a heap call another hart's task is in.
-    let t = irq_off();
-    let held = OWNER.load(Ordering::Relaxed) == me();
-    irq_restore(t);
-    if held { return None; }
-    let mut g = HEAP.0.lock();
-    // The lock holds preemption off from here, so this id is the hart for the
-    // whole hold. The one above may predate a move (a tick between the
-    // masked read and the lock): recorded as the owner it would hide the hold
-    // from an interrupt of THIS hart, which would then spin on the lock it
-    // holds.
-    let me = me();
-    OWNER.store(me, Ordering::Relaxed);
-    if !DEFERRED.load(Ordering::Relaxed).is_null() { drain_deferred(&mut g); }
-    let r = f(&mut g);
-    OWNER.store(0, Ordering::Relaxed);
-    Some(r)
-}
-
-/// Free the blocks `heap_free` deferred. Heap lock held. Out of line: it
-/// almost never runs, and inline its loop costs every heap call a frame.
-#[inline(never)]
-fn drain_deferred(g: &mut Heap) {
-    let mut d = DEFERRED.swap(null_mut(), Ordering::Acquire);
-    while !d.is_null() {
-        unsafe {
-            let next = (*d).next;
-            let p = (*d).packed;
-            let l = Layout::from_size_align_unchecked(p >> 8, 1usize << (p & 0xff));
-            g.deallocate(core::ptr::NonNull::new_unchecked(d as *mut u8), l);
-            d = next;
-        }
-    }
-}
-
-#[inline(always)]
-fn heap_alloc(layout: Layout) -> *mut u8 {
-    with_heap(|h| h.allocate_first_fit(layout).ok().map_or(null_mut(), |nn| nn.as_ptr()))
-        .unwrap_or(null_mut())
-}
-
-#[inline(never)]
-fn heap_free(ptr: *mut u8, layout: Layout) {
-    let done = with_heap(|h| unsafe { h.deallocate(core::ptr::NonNull::new_unchecked(ptr), layout) });
-    if done.is_none() {
-        let d = ptr as *mut Deferred;
-        unsafe {
-            (*d).packed = layout.size() << 8 | layout.align().trailing_zeros() as usize;
-            let mut head = DEFERRED.load(Ordering::Relaxed);
-            loop {
-                (*d).next = head;
-                match DEFERRED.compare_exchange_weak(head, d, Ordering::Release, Ordering::Relaxed) {
-                    Ok(_) => break,
-                    Err(h) => head = h,
-                }
-            }
-        }
-    }
-}
 
 /// Mask interrupts for a magazine operation; the token restores them. Also
 /// the scheduler's window for reading "which task am I" (`on_this_hart`).
@@ -206,16 +107,27 @@ impl Params for KParams {
     const RANDOM: bool = azos_limits::ALLOC_RANDOM;
 }
 
-/// Slabs and magazines come from the first-fit heap; the CPU is the hart.
+/// Slabs and magazines are page blocks of the page allocator, through the
+/// linear map; the CPU is the hart.
 struct KBacking;
 unsafe impl Backing for KBacking {
     #[inline]
     fn alloc(&self, size: usize, align: usize) -> *mut u8 {
-        heap_alloc(unsafe { Layout::from_size_align_unchecked(size, align) })
+        // A slab is a power of two aligned to its size: the buddy block that
+        // holds it is both (a whole page when the slab is smaller).
+        debug_assert!(size.is_power_of_two() && align <= size.max(PAGE_SIZE));
+        let order = order_for(size.div_ceil(PAGE_SIZE));
+        if !take(1 << order) { return null_mut(); }
+        match pmm::alloc(order, pmm::ANY_COLOUR, pmm::ANY_NODE) {
+            Some(pfn) => phys_to_virt(pfn.phys()) as *mut u8,
+            None => { give(1 << order); null_mut() }
+        }
     }
     #[inline]
-    fn free(&self, p: *mut u8, size: usize, align: usize) {
-        heap_free(p, unsafe { Layout::from_size_align_unchecked(size, align) })
+    fn free(&self, p: *mut u8, size: usize, _align: usize) {
+        let order = order_for(size.div_ceil(PAGE_SIZE));
+        let _ = pmm::free(Pfn::from_phys(virt_to_phys(p as usize)), order);
+        give(1 << order);
     }
     #[inline(always)]
     fn irq_off(&self) -> usize { irq_off() }
@@ -270,13 +182,6 @@ const _: () = assert!(crate::slab::MAX_CPUS >= azos_sync::isr_depth::MAX_HARTS);
 /// (`alloc_large`); everything else one tail call to `alloc_small`.
 #[inline(always)]
 unsafe fn inner_alloc(layout: Layout) -> *mut u8 {
-    if !azos_limits::KHEAP_SLAB {
-        return HEAP.0
-            .lock()
-            .allocate_first_fit(layout)
-            .ok()
-            .map_or(null_mut(), |nn| nn.as_ptr());
-    }
     if layout.size() > KSlab::G.max { return alloc_large(layout); }
     if !KParams::DEBUG {
         let c = KSlab::class_fast(layout.size(), layout.align());
@@ -288,19 +193,40 @@ unsafe fn inner_alloc(layout: Layout) -> *mut u8 {
     alloc_small(layout)
 }
 
-/// A request above the largest class: the heap.
+/// A request above the largest class: an exact run of pages, the tail past
+/// the request's last page given straight back. Above `PMM_MAX_ORDER` (the
+/// largest block the page allocator forms) it is refused.
 #[inline(never)]
 fn alloc_large(layout: Layout) -> *mut u8 {
-    let p = heap_alloc(layout);
+    let p = run_alloc(layout);
     if !p.is_null() { return p; }
     refused_large(layout)
 }
 
-/// The heap refused: the cache gives back what it holds, then one retry.
+/// The page allocator or the ceiling refused: the cache gives back what it
+/// holds, then one retry.
 #[inline(never)]
 fn refused_large(layout: Layout) -> *mut u8 {
     if SLAB.reclaim() == 0 { return null_mut(); }
-    heap_alloc(layout)
+    run_alloc(layout)
+}
+
+fn run_pages(layout: Layout) -> usize { layout.size().div_ceil(PAGE_SIZE) }
+
+fn run_alloc(layout: Layout) -> *mut u8 {
+    let n = run_pages(layout);
+    if !take(n) { return null_mut(); }
+    // SAFETY: a heap block's bytes are unspecified until its owner writes them.
+    match unsafe { pmm::alloc_contiguous_aligned_uninit(n, layout.align().max(PAGE_SIZE)) } {
+        Ok(a) => phys_to_virt(a.as_usize()) as *mut u8,
+        Err(_) => { give(n); null_mut() }
+    }
+}
+
+fn run_free(ptr: *mut u8, layout: Layout) {
+    let n = run_pages(layout);
+    let _ = pmm::free_run(PhysAddr::new(virt_to_phys(ptr as usize)), n);
+    give(n);
 }
 
 /// A small request the inline path did not serve (its magazine was empty,
@@ -318,13 +244,7 @@ fn alloc_small(layout: Layout) -> *mut u8 {
 
 #[inline(always)]
 unsafe fn inner_dealloc(ptr: *mut u8, layout: Layout) {
-    if !azos_limits::KHEAP_SLAB {
-        unsafe {
-            HEAP.0.lock().deallocate(core::ptr::NonNull::new_unchecked(ptr), layout);
-        }
-        return;
-    }
-    if layout.size() > KSlab::G.max { return heap_free(ptr, layout); }
+    if layout.size() > KSlab::G.max { return run_free(ptr, layout); }
     if !KParams::DEBUG {
         let c = KSlab::class_fast(layout.size(), layout.align());
         if c != NO_CLASS && unsafe { SLAB.free_fast(c, ptr) } { return; }
@@ -339,11 +259,13 @@ fn dealloc_small(ptr: *mut u8, layout: Layout) {
     if c != NO_CLASS {
         unsafe { SLAB.free(c, ptr, layout.size()) };
     } else {
-        heap_free(ptr, layout);
+        run_free(ptr, layout);
     }
 }
 
-unsafe impl GlobalAlloc for LockedHeap {
+struct KernelHeap;
+
+unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // Kconfig CHAOS, point `heap-alloc` (test scope only): null, as an
         // exhausted heap answers. Off: a constant `false`.
@@ -374,27 +296,48 @@ unsafe impl GlobalAlloc for LockedHeap {
 const RAW: guard::Raw = guard::Raw { alloc: inner_alloc, free: inner_dealloc };
 
 #[global_allocator]
-static HEAP: LockedHeap = LockedHeap(SpinLock::new(Heap::empty()));
+static HEAP: KernelHeap = KernelHeap;
 
-/// Initialize the kernel heap.
-///
-/// # Safety
-/// `start` must point to a valid, unused memory region of at least `size` bytes.
-/// Must be called exactly once before any heap allocation.
-pub unsafe fn init(start: usize, size: usize) {
-    unsafe {
-        HEAP.0.lock().init(start as *mut u8, size);
+/// Pages the heap holds (slabs, magazines and large runs) and the most it may
+/// hold (Kconfig `KERNEL_HEAP_SIZE`; 0 until `init`).
+static HELD: AtomicUsize = AtomicUsize::new(0);
+static CEILING: AtomicUsize = AtomicUsize::new(0);
+
+/// Count `n` more pages against the ceiling; `false` (nothing counted) when
+/// they would pass it.
+fn take(n: usize) -> bool {
+    let ceil = CEILING.load(Ordering::Relaxed);
+    let mut h = HELD.load(Ordering::Relaxed);
+    loop {
+        // Canary `kheap-ceiling-canary`: the ceiling is not checked, so the
+        // heap can hold more than KERNEL_HEAP_SIZE.
+        if h + n > ceil && !cfg!(feature = "kheap-ceiling-canary") { return false; }
+        match HELD.compare_exchange_weak(h, h + n, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(x) => h = x,
+        }
     }
 }
 
-/// Bytes in use: what the heap has handed out, less what the size-class
-/// cache holds free (objects in its slabs, depot and magazines; other
-/// CPUs' magazines read as a snapshot) and what the heap guard holds in
-/// quarantine. Slab headers and tails and the
-/// cache's magazines count as used.
+fn give(n: usize) { HELD.fetch_sub(n, Ordering::Relaxed); }
+
+/// Set the heap's ceiling to `ceiling` bytes. Pages are taken from the page
+/// allocator on demand from here on, so this must run after `pmm::init` and
+/// before the first heap allocation.
+pub fn init(ceiling: usize) {
+    CEILING.store(ceiling / PAGE_SIZE, Ordering::Relaxed);
+}
+
+/// Bytes the heap holds from the page allocator now.
+pub fn held() -> usize { HELD.load(Ordering::Relaxed) * PAGE_SIZE }
+
+/// Bytes in use: what the heap holds, less what the size-class cache holds
+/// free (objects in its slabs, depot and magazines; other CPUs' magazines
+/// read as a snapshot) and what the heap guard holds in quarantine. Slab
+/// headers and tails, the cache's magazines and the unused tail of a large
+/// request's last page count as used.
 pub fn used() -> usize {
-    let h = HEAP.0.lock().used();
-    let h = if azos_limits::KHEAP_SLAB { h.saturating_sub(SLAB.cached_bytes()) } else { h };
+    let h = held().saturating_sub(SLAB.cached_bytes());
     if guard::ENABLED { h.saturating_sub(guard::bytes_held()) } else { h }
 }
 
@@ -404,20 +347,18 @@ pub fn guard_drain() -> usize {
     if guard::ENABLED { unsafe { guard::drain(RAW) } } else { 0 }
 }
 
-/// Get the total heap size in bytes.
+/// The heap's ceiling in bytes (Kconfig `KERNEL_HEAP_SIZE`).
 pub fn size() -> usize {
-    HEAP.0.lock().size()
+    CEILING.load(Ordering::Relaxed) * PAGE_SIZE
 }
 
-/// Free bytes: the heap's own plus what the size-class cache holds free.
+/// Bytes the heap may still take: the ceiling less what is in use.
 pub fn free() -> usize {
     size().saturating_sub(used())
 }
 
-/// Bytes the size-class cache holds free (0 with `KHEAP_SLAB` off).
-pub fn slab_cached() -> usize {
-    if azos_limits::KHEAP_SLAB { SLAB.cached_bytes() } else { 0 }
-}
+/// Bytes the size-class cache holds free.
+pub fn slab_cached() -> usize { SLAB.cached_bytes() }
 
 /// Boot self-test of the size-class cache, in the kernel's own environment
 /// (its interrupt masking, its hart id, the real heap behind it): every
@@ -433,7 +374,6 @@ pub fn slab_cached() -> usize {
 /// boot hart before the others start. Returns the objects checked and the
 /// bytes the final reclaim gave back, or what failed.
 pub fn slab_selftest() -> Result<(usize, usize), &'static str> {
-    if !azos_limits::KHEAP_SLAB { return Ok((0, 0)); }
     const N: usize = 192;
     let g = &KSlab::G;
     let mut ptrs = [null_mut::<u8>(); N];

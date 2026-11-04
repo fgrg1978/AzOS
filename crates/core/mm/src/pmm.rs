@@ -71,7 +71,8 @@ const _: () = assert!(HIGH >= 2 * BATCH, "PMM_PCP_HIGH must be at least twice PM
 #[cfg(target_os = "none")]
 const _: () = assert!(MAX_CPUS >= azos_sync::isr_depth::MAX_HARTS);
 
-/// The free lists. Everything that links or unlinks a block holds this.
+/// The free lists. Everything that links or unlinks a block holds this,
+/// with interrupts masked: an interrupt handler may allocate a frame.
 static BUDDY: SpinLock<Buddy> = SpinLock::new(Buddy::new());
 
 /// The descriptor table, published for lock-free reads: `frame_index` and the
@@ -186,11 +187,11 @@ pub fn init(mem_start: usize, mem_size: usize, kernel_end: usize) -> bool {
     // Forget the previous state first, so a refusal leaves the all-zero one.
     PCP_ON.store(false, Ordering::Relaxed);
     for c in PCP.iter() { c.reset(); }
-    for l in ZONE_LISTS.iter() { l.lock().reset(); }
+    for l in ZONE_LISTS.iter() { l.lock_irqsave().reset(); }
     DESCS.store(core::ptr::null_mut(), Ordering::Relaxed);
     FIRST_PFN.store(0, Ordering::Relaxed);
     FRAME_COUNT.store(0, Ordering::Relaxed);
-    BUDDY.lock().reset();
+    BUDDY.lock_irqsave().reset();
 
     if mem_start > kernel_end {
         return false;
@@ -222,7 +223,7 @@ pub fn init(mem_start: usize, mem_size: usize, kernel_end: usize) -> bool {
     FRAME_COUNT.store(count, Ordering::Relaxed);
 
     let t = table();
-    BUDDY.lock().release_range(&t, Pfn::from_phys(array_end), Pfn(end));
+    BUDDY.lock_irqsave().release_range(&t, Pfn::from_phys(array_end), Pfn(end));
     true
 }
 
@@ -275,9 +276,9 @@ fn cache_alloc() -> Option<Pfn> {
         return Some(p);
     }
     irq_restore(tok);
-    // A miss: a batch off the lists under the lock, interrupts as they were.
+    // A miss: a batch off the lists under the lock.
     let chain = {
-        let mut b = BUDDY.lock();
+        let mut b = BUDDY.lock_irqsave();
         let c = b.take_chain(&t, BATCH);
         XFER_IN.fetch_add(c.len(), Ordering::Relaxed);
         c
@@ -290,7 +291,7 @@ fn cache_alloc() -> Option<Pfn> {
     let cpu = ARCH.hart_id();
     if cpu >= MAX_CPUS {
         irq_restore(tok);
-        let mut b = BUDDY.lock();
+        let mut b = BUDDY.lock_irqsave();
         b.release_chain(&t, chain);
         XFER_IN.fetch_sub(n, Ordering::Relaxed);
         return None;
@@ -334,7 +335,7 @@ fn cache_free(idx: usize) -> bool {
     let mut chain = pcp.detach(&t, BATCH);
     irq_restore(tok);
     chain.push_front(&t, idx);
-    let mut b = BUDDY.lock();
+    let mut b = BUDDY.lock_irqsave();
     b.release_chain(&t, chain);
     XFER_OUT.fetch_sub(BATCH, Ordering::Relaxed);
     drop(b);
@@ -343,6 +344,14 @@ fn cache_free(idx: usize) -> bool {
 #[cfg(not(target_os = "none"))]
 #[inline(always)]
 fn cache_free(_idx: usize) -> bool { false }
+
+/// Kconfig `ALLOC_RANDOM`: rotate every free list once by a random number of
+/// blocks drawn from `seed`, so their starts are not the order boot seeded
+/// them in. Boot only: it walks up to `ROTATE_MAX` blocks per order under the
+/// lock, which an allocation never does. Later calls only fold the seed in.
+pub fn shuffle(seed: u64) {
+    BUDDY.lock_irqsave().reseed(&table(), seed);
+}
 
 /// Allocate a block of `2^order` frames: the frame number of its first frame,
 /// or `None` when no block that size can be made. The block is naturally
@@ -355,7 +364,7 @@ pub fn alloc(order: usize, _colour_mask: u32, _node: u32) -> Option<Pfn> {
     if order == 0 {
         if let Some(p) = cache_alloc() { return Some(p); }
     }
-    BUDDY.lock().alloc(&table(), order)
+    BUDDY.lock_irqsave().alloc(&table(), order)
 }
 
 /// Check that `[pfn, pfn + 2^order)` is managed and every frame is one `free`
@@ -410,7 +419,7 @@ pub fn free(pfn: Pfn, order: usize) -> KResult<()> {
     for i in i0..i0 + (1 << order) {
         t.at(i).flags.store(F_FREE, Ordering::Relaxed);
     }
-    BUDDY.lock().release(&t, pfn, order);
+    BUDDY.lock_irqsave().release(&t, pfn, order);
     Ok(())
 }
 
@@ -431,7 +440,7 @@ fn zone_free(t: &FrameTable, idx: usize) -> bool {
         return false;
     }
     let Some(z) = Zone::of_tag(tag) else { return false };
-    ZONE_LISTS[z.index()].lock().push(t, idx);
+    ZONE_LISTS[z.index()].lock_irqsave().push(t, idx);
     true
 }
 
@@ -452,7 +461,7 @@ pub fn alloc_page_zone(z: Zone) -> KResult<PhysAddr> {
     if !zones_on() { return alloc_page(); }
     let t = table();
     {
-        let mut l = ZONE_LISTS[z.index()].lock();
+        let mut l = ZONE_LISTS[z.index()].lock_irqsave();
         if let Some(p) = l.pop(&t) {
             drop(l);
             let a = PhysAddr::new(p.phys());
@@ -470,7 +479,7 @@ pub fn alloc_page_zone(z: Zone) -> KResult<PhysAddr> {
             Ok(a)
         }
         Err(e) => {
-            ZONE_LISTS[z.index()].lock().ungrow();
+            ZONE_LISTS[z.index()].lock_irqsave().ungrow();
             Err(e)
         }
     }
@@ -479,7 +488,7 @@ pub fn alloc_page_zone(z: Zone) -> KResult<PhysAddr> {
 /// `(free, total)` frames of zone `z`: those on its list and those it owns
 /// (free and handed out).
 pub fn zone_pages(z: Zone) -> (usize, usize) {
-    let l = ZONE_LISTS[z.index()].lock();
+    let l = ZONE_LISTS[z.index()].lock_irqsave();
     (l.pooled(), l.total())
 }
 
@@ -494,7 +503,7 @@ pub fn frame_zone(phys: usize) -> Option<Zone> {
 fn flush_local_cache() {
     let _ = with_cache(|pcp, t| {
         let all = pcp.detach(t, pcp.len());
-        BUDDY.lock().release_chain(t, all);
+        BUDDY.lock_irqsave().release_chain(t, all);
     });
 }
 
@@ -579,7 +588,7 @@ fn claim_run(n: usize, min_order: usize) -> KResult<PhysAddr> {
     if n == 0 {
         return Err(KernelError::InvalidArg);
     }
-    let pfn = BUDDY.lock().alloc_run(&table(), n, min_order).ok_or(KernelError::OutOfMemory)?;
+    let pfn = BUDDY.lock_irqsave().alloc_run(&table(), n, min_order).ok_or(KernelError::OutOfMemory)?;
     Ok(PhysAddr::new(pfn.phys()))
 }
 
@@ -636,6 +645,34 @@ pub fn zero_frame(addr: PhysAddr) {
     zero_new_page(addr)
 }
 
+/// Free a run of `n` frames from `addr`, as [`alloc_contiguous`] and its
+/// forms return them: every frame is checked as one `free_page` would, then
+/// the run goes back to the lists under one hold. Nothing is freed when a
+/// frame of the run is not allocated.
+pub fn free_run(addr: PhysAddr, n: usize) -> KResult<()> {
+    let phys = addr.as_usize();
+    if n == 0 || !addr.is_page_aligned() || phys < table().first().phys() {
+        return Err(KernelError::InvalidArg);
+    }
+    let lo = Pfn::from_phys(phys);
+    for i in 0..n {
+        if let Err(e) = claim(Pfn(lo.0 + i), 0) {
+            let t = table();
+            for j in 0..i {
+                t.at(t.index(Pfn(lo.0 + j)).expect("claimed")).flags.store(F_ALLOCATED, Ordering::Relaxed);
+            }
+            return Err(e);
+        }
+    }
+    let t = table();
+    let i0 = t.index(lo).expect("claimed");
+    for i in i0..i0 + n {
+        t.at(i).flags.store(F_FREE, Ordering::Relaxed);
+    }
+    BUDDY.lock_irqsave().release_range(&t, lo, Pfn(lo.0 + n));
+    Ok(())
+}
+
 /// Free a single 4 KiB physical page.
 pub fn free_page(addr: PhysAddr) -> KResult<()> {
     let phys = addr.as_usize();
@@ -665,7 +702,7 @@ pub fn managed_range() -> (usize, usize) {
 /// types: a refusing general allocation can leave up to the zones' high-water
 /// mark "free" (`zone_pages` tells how much).
 pub fn free_pages() -> usize {
-    let b = BUDDY.lock();
+    let b = BUDDY.lock_irqsave();
     let mut n = b.free_frames();
     if PCP_ON.load(Ordering::Relaxed) {
         // A refill moves frames lists -> chain -> cache and a flush cache ->
@@ -680,7 +717,7 @@ pub fn free_pages() -> usize {
     }
     drop(b);
     if zones_on() {
-        for l in ZONE_LISTS.iter() { n += l.lock().pooled(); }
+        for l in ZONE_LISTS.iter() { n += l.lock_irqsave().pooled(); }
     }
     n
 }
@@ -692,7 +729,7 @@ pub fn used_pages() -> usize {
 
 /// Free blocks of exactly `order` in the lists (the caches are not blocks).
 pub fn free_blocks(order: usize) -> usize {
-    BUDDY.lock().blocks(order)
+    BUDDY.lock_irqsave().blocks(order)
 }
 
 /// Reserve a range of physical memory in the PMM (take what is free in it
@@ -706,7 +743,7 @@ pub fn reserve_range(start: usize, size: usize) {
     flush_local_cache();
     let lo = Pfn::from_phys(start);
     let hi = Pfn::from_phys(start.saturating_add(size).saturating_add(PAGE_SIZE - 1));
-    BUDDY.lock().carve(&table(), lo, hi);
+    BUDDY.lock_irqsave().carve(&table(), lo, hi);
 }
 
 /// Is every page of `[start, start + size)` managed by the PMM and free?
@@ -813,4 +850,53 @@ pub fn release_dma_pool() {
 /// `(physical base, pages)` of the DMA pool; `(0, 0)` before it is reserved.
 pub fn dma_pool() -> (usize, usize) {
     (DMA_POOL_BASE.load(Ordering::Acquire), DMA_POOL_PAGES.load(Ordering::Acquire))
+}
+
+/// Kconfig KTEST: the blocks the free lists walk when an allocation meets a
+/// seed it has not seen (it folds the seed in, so 0).
+#[cfg(feature = "ktest")]
+pub fn ktest_unseen_seed_walk() -> usize {
+    let mut b = BUDDY.lock_irqsave();
+    let before = b.rotation_steps();
+    let next = b.seen().wrapping_add(2) | 1;
+    b.observe(&table(), next);
+    b.rotation_steps() - before
+}
+
+/// Kconfig KTEST: frame allocation from the timer interrupt. Armed on one
+/// hart, each tick there allocates and frees one order-1 block (past the
+/// per-hart cache, straight to the lists).
+#[cfg(feature = "ktest")]
+pub mod ktest_irq_alloc {
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+    static HART: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static OK: AtomicU32 = AtomicU32::new(0);
+    static DRY: AtomicU32 = AtomicU32::new(0);
+
+    pub fn arm(hart: usize) {
+        OK.store(0, Ordering::Relaxed);
+        DRY.store(0, Ordering::Relaxed);
+        HART.store(hart, Ordering::Release);
+    }
+
+    /// Disarm; `(ticks that allocated, ticks that found no block)`.
+    pub fn disarm() -> (u32, u32) {
+        HART.store(usize::MAX, Ordering::Release);
+        (OK.load(Ordering::Relaxed), DRY.load(Ordering::Relaxed))
+    }
+
+    pub fn ticks() -> u32 { OK.load(Ordering::Relaxed) + DRY.load(Ordering::Relaxed) }
+
+    /// The timer interrupt's half.
+    pub fn from_tick() {
+        if HART.load(Ordering::Acquire) != azos_arch::Cpu::hart_id(&azos_arch::ARCH) { return; }
+        match super::alloc(1, super::ANY_COLOUR, super::ANY_NODE) {
+            Some(p) => {
+                let _ = super::free(p, 1);
+                OK.fetch_add(1, Ordering::Relaxed);
+            }
+            None => { DRY.fetch_add(1, Ordering::Relaxed); }
+        }
+    }
 }

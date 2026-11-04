@@ -558,10 +558,11 @@ config KERNEL_HEAP_SIZE
     default 32768  if (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 262144 if HWCLASS_SERVER
     help
-      Heap region the kernel reserves at boot right after _kernel_end
-      (kernel/src/entry/{riscv64,aarch64}/boot_hooks.rs), not part of the image.  It must be free RAM:
-      the image, this heap, and the PMM's page-table and task frames
-      share the board's RAM above the firmware.
+      Ceiling on the pages the kernel heap holds (crates/core/mm/src/kheap.rs).
+      Nothing is reserved at boot: slabs and large requests take pages from
+      the page allocator when they are needed and give them back when freed,
+      and a request that would pass the ceiling is refused like an exhausted
+      heap. It may not exceed RAM_SIZE.
       Edge default: 32 MiB.  Embedded: 512 KiB.  Fleet: 256 MiB.
       Embedded figures (image, what is left on 16 and 64 MiB boards)
       are printed by tools/lint/size_budget.py --memory.
@@ -641,15 +642,15 @@ config KHEAP_SLAB_DEPOT_MAGS
 
 config KHEAP_SLAB_BYTES
     int "Smallest slab (bytes, a power of two)"
-    range 1024 65536
-    default 1024 if HWCLASS_EMBEDDED
+    range 4096 65536
     default 8192 if HWCLASS_SERVER
     default 4096
     help
       A class's slab is the smallest power of two from this that holds
-      KHEAP_SLAB_MIN_OBJS objects after its 64-byte header. Slabs are taken
-      from the heap aligned to their size, so a bigger slab is fewer heap
-      walks and more internal waste for a class used lightly.
+      KHEAP_SLAB_MIN_OBJS objects after its 64-byte header. A slab is one
+      block of the page allocator, so at least a page; a bigger slab is
+      fewer page allocations and more internal waste for a class used
+      lightly.
 
 config KHEAP_SLAB_MIN_OBJS
     int "Fewest objects in a slab"
@@ -677,8 +678,7 @@ config KHEAP_GUARD_REDZONE
     range 16 256
     default 32
     help
-      Read only with KHEAP_GUARD on (as the KHEAP_SLAB_* options below are
-      read only with KHEAP_SLAB).
+      Read only with KHEAP_GUARD on.
       An overflow that skips farther than this lands in the next block
       unseen. Each allocation costs twice this, plus its alignment padding.
 

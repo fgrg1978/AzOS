@@ -15277,7 +15277,11 @@ PY
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img
     par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk-aarch64.img
     par "ktest free_pages in flight canary (rv)" ktest_row "ktest free_pages in flight canary (rv)" rv ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
+    par "ktest buddy rotate canary (rv)" ktest_row "ktest buddy rotate canary (rv)" rv ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
+    par "ktest kheap ceiling canary (rv)" ktest_row "ktest kheap ceiling canary (rv)" rv ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest free_pages in flight canary (arm)" ktest_row "ktest free_pages in flight canary (arm)" arm ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
+    par "ktest buddy rotate canary (arm)" ktest_row "ktest buddy rotate canary (arm)" arm ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
+    par "ktest kheap ceiling canary (arm)" ktest_row "ktest kheap ceiling canary (arm)" arm ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest clone against maps in flight canary (rv)" ktest_row "ktest clone against maps in flight canary (rv)" rv ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
@@ -17153,6 +17157,8 @@ CPU 5 lacks hwcap bits"
     par "ktest kheap guard hold canary (x86)" x86_ktest_row "ktest kheap guard hold canary (x86)" ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
     par "ktest free_pages in flight canary (x86)" x86_ktest_row "ktest free_pages in flight canary (x86)" ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
+    par "ktest buddy rotate canary (x86)" x86_ktest_row "ktest buddy rotate canary (x86)" ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
+    par "ktest kheap ceiling canary (x86)" x86_ktest_row "ktest kheap ceiling canary (x86)" ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"

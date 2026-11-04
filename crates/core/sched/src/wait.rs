@@ -144,6 +144,8 @@ pub fn wake_expired_timers(now_ticks: u64) {
     // ktest (`azos_sync::preempt::ktest_probe`). Off: nothing compiled.
     #[cfg(feature = "ktest")]
     azos_sync::preempt::ktest_probe::from_tick();
+    #[cfg(feature = "ktest")]
+    azos_mm::pmm::ktest_irq_alloc::from_tick();
     // Kconfig CHAOS (points `spurious-irq`, `timer-wake`): the clock this
     // sweep runs at. Off: `now_ticks`, nothing compiled.
     let now_ticks = scheduler::chaos_sweep_now(now_ticks);

@@ -359,6 +359,21 @@ fn buddy_list_order_follows_the_seed() {
     assert_eq!(a, order(0x1234_5678_9abc_def1), "one seed gave two orders");
 }
 
+/// Canary `buddy-rotate-hot-canary`: the rotation runs where an allocation
+/// meets a new seed, so this row sees the lists walked.
+#[test]
+fn a_new_seed_on_the_allocation_path_walks_no_list() {
+    if !azos_limits::ALLOC_RANDOM { return; }
+    let (f, mut b) = comb(128);
+    b.observe(&f.t, 0x1234_5678_9abc_def1);
+    assert_eq!(b.rotation_steps(), 0, "an allocation's seed check rotated the lists");
+    b.reseed(&f.t, 0x0fed_cba9_8765_4321);
+    let boot = b.rotation_steps();
+    assert!(boot > 0, "the boot shuffle walked nothing");
+    b.observe(&f.t, 0x5555_aaaa_5555_aaab);
+    assert_eq!(b.rotation_steps(), boot, "a seed after the shuffle rotated again");
+}
+
 #[test]
 fn buddy_random_placement_loses_nothing_and_merges_back() {
     if !azos_limits::ALLOC_RANDOM { return; }

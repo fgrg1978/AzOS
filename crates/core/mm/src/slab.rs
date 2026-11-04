@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Per-CPU magazine cache of fixed size classes in front of the kernel heap
-//! (wave 15, SLAB). `kheap.rs` routes every small `GlobalAlloc` request here;
-//! large ones, and every request when Kconfig `KHEAP_SLAB` is off, go to the
-//! first-fit heap as before.
+//! Per-CPU magazine cache of fixed size classes: the kernel heap. `kheap.rs`
+//! routes every small `GlobalAlloc` request here and takes the slabs from the
+//! page allocator; requests above the largest class are page runs.
 //!
 //! Three layers, after Bonwick's magazines (USENIX 2001) and Linux SLUB:
 //!
@@ -29,9 +28,8 @@
 //!    burst of small objects used goes back to the large allocations.
 //!
 //! Magazines themselves are objects of an internal class ([`MAGC`]) with
-//! slabs of their own, so the heap only ever sees slab-sized, slab-aligned
-//! blocks from this layer: small magazine blocks scattered between slabs
-//! would leave holes every large first-fit allocation then walks past.
+//! slabs of their own, so the backing only ever sees slab-sized, slab-aligned
+//! blocks from this layer.
 //!
 //! **Cross-CPU free** needs nothing special: a magazine holds any free object
 //! of its class, and slabs are reached only under the class lock.

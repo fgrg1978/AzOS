@@ -429,29 +429,30 @@ Source: `crates/core/syscall/src/image_cache.rs`,
 
 ## Kernel heap
 
-The kernel's `GlobalAlloc` (`kheap.rs`) is a first-fit free-list heap
-(`linked_list_allocator`) behind one `SpinLock`, over a region of
-`KERNEL_HEAP_SIZE` KiB (512 KiB embedded, 32 MiB edge, 256 MiB fleet) taken
-from RAM at boot. The tables the Kconfig limits size are static, not in the
-heap. Exhaustion is a refusal (a null pointer), never a panic.
+The kernel's `GlobalAlloc` (`kheap.rs`) takes its pages from the page
+allocator on demand and gives them back when freed. `KERNEL_HEAP_SIZE` KiB
+(512 KiB embedded, 32 MiB edge, 256 MiB fleet) is a ceiling on the pages it
+holds, not a region reserved at boot. The tables the Kconfig limits size are
+static, not in the heap. Exhaustion, of the ceiling or of RAM, is a refusal
+(a null pointer), never a panic.
 
-With Kconfig `KHEAP_SLAB` (default y) a request that a size class covers
-(`KHEAP_SLAB_CLASSES`, default `16 32 64 128 256 512 1024 2048`, up to
-`KHEAP_SLAB_MAX_CLASS`, alignment permitting) goes to a magazine cache in
-front of the heap (`slab.rs`, after Bonwick's magazines and Linux SLUB):
+A request that a size class covers (`KHEAP_SLAB_CLASSES`, default
+`16 32 64 128 256 512 1024 2048`, up to `KHEAP_SLAB_MAX_CLASS`, alignment
+permitting) goes to a magazine cache (`slab.rs`, after Bonwick's magazines
+and Linux SLUB):
 
 | Layer | What it is |
 |-------|------------|
 | Per-CPU magazines | Per CPU and class, a `loaded` and a `prev` stack of free objects (`KHEAP_SLAB_MAG_DEPTH`). Alloc pops, free pushes, with the CPU's interrupts masked and no lock. |
 | Depot | Per class, under the class lock: full and empty magazines exchanged with a CPU (`KHEAP_SLAB_DEPOT_MAGS` full ones at most; past that a full magazine is flushed back to its slabs). |
-| Slabs | Power-of-two chunks of the heap (`KHEAP_SLAB_BYTES`), aligned to their size, with the header in the last bytes, so `ptr & !(slab_bytes - 1)` finds an object's slab. A slab whose last object comes back returns to the heap once its class keeps `KHEAP_SLAB_KEEP_EMPTY` empty ones. |
+| Slabs | Power-of-two blocks of the page allocator (`KHEAP_SLAB_BYTES`, at least a page), aligned to their size, with the header in the last bytes, so `ptr & !(slab_bytes - 1)` finds an object's slab. A slab whose last object comes back returns to the page allocator once its class keeps `KHEAP_SLAB_KEEP_EMPTY` empty ones. |
 
-Larger requests go to the heap. A refused request first has the cache give
-back what it holds, then is retried once. A slab is taken from the heap with
-the caller's interrupt state restored, so this layer never walks the heap
-masked. A context that interrupted its own hart inside a heap call has its
-allocation refused and its free deferred to the next heap call, where it
-would otherwise spin on a lock its hart holds.
+Larger requests are an exact run of pages (the tail past the last page goes
+straight back), up to the largest block the page allocator forms
+(`PMM_MAX_ORDER`). A refused request first has the cache give back what it
+holds, then is retried once. A slab is taken with the caller's interrupt state
+restored, so this layer never calls the page allocator masked, and the page
+allocator masks interrupts itself, so an interrupt handler may allocate.
 
 Hardening: with `SLAB_HARDENED` (default y) a free object's link is stored as
 `next ^ key ^ byteswap(address)` with a key per slab page, a pop checks the

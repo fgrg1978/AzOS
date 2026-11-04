@@ -748,7 +748,6 @@ dependencies = [
  "azos_limits",
  "azos_percpu",
  "azos_sync",
- "linked_list_allocator",
 ]
 
 [[package]]
@@ -1197,12 +1196,6 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
-
-[[package]]
-name = "linked_list_allocator"
-version = "0.10.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afa463f5405ee81cdb9cc2baf37e08ec7e4c8209442b5d72c04cfb2cd6e6286"
 
 [[package]]
 name = "proc-macro2"

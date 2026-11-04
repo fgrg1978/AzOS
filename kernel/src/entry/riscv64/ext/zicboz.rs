@@ -11,10 +11,9 @@ use azos_drv_sys::kprintln;
 /// back all zero, under whichever zero-fill `zicboz_select` chose. A stride
 /// or block-size bug in `cbo.zero`'s loop would leave `0xAA` behind.
 ///
-/// Placed after `kheap::init`, not right after `pmm::init`, on purpose:
-/// `vmm::init`'s page tables rely on first-fit placing them right after
-/// `kernel_end`, and an alloc/free cycle before it moves the allocator's
-/// scan position, so `kheap::init`'s `range_is_free` check fails.
+/// Placed after `kheap::init`, not right after `pmm::init`: `vmm::init`'s
+/// page tables are taken right after `kernel_end`, and an alloc/free cycle
+/// before them would change which frames they get.
 ///
 /// Then the bench: under `-icount shift=0,sleep=off`,
 /// `rdcycle` is a deterministic proxy for retired instructions; a batch of

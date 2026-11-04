@@ -553,8 +553,8 @@ azos_ktest::ktest! {
 // it): the poison check panics, or the self-test returns an error.
 azos_ktest::ktest! {
     fn kheap_slab_selftest() {
-        if !(azos_limits::KHEAP_SLAB && azos_limits::KHEAP_SLAB_DEBUG) {
-            return Err("KHEAP_SLAB and KHEAP_SLAB_DEBUG are not both on in this configuration");
+        if !azos_limits::KHEAP_SLAB_DEBUG {
+            return Err("KHEAP_SLAB_DEBUG is not on in this configuration");
         }
         match azos_mm::kheap::slab_selftest() {
             Ok((objects, _)) if objects > 0 => Ok(()),
@@ -1622,6 +1622,99 @@ azos_ktest::ktest_late! {
         }
         if under != 0 {
             return Err("free_pages() read below the frames the churner left free: frames in flight between the lists and a cache are counted nowhere");
+        }
+        Ok(())
+    }
+}
+
+// ── Frame allocation from interrupts and the buddy lock's hold bound ───────
+//
+// The free lists are taken with interrupts masked, so the timer interrupt
+// can allocate a frame on a hart that was inside the lock a moment before:
+// the hart allocates in a loop while each tick there allocates too. With the
+// lock taken unmasked, a tick inside the hold spins on itself and the hart
+// never comes back.
+
+const IRQ_ALLOC_TICKS: u32 = 5;
+const IRQ_ALLOC_BOUND_MS: u64 = 10_000;
+
+azos_ktest::ktest_late! {
+    fn pmm_alloc_from_the_timer_interrupt() {
+        use azos_arch_api::Cpu;
+        // No migration while armed: the ticks counted are this hart's.
+        let _pin = azos_sync::critical_section();
+        let hart = azos_arch::ARCH.hart_id();
+        azos_mm::pmm::ktest_irq_alloc::arm(hart);
+        let deadline = claim_pi_now_ms() + IRQ_ALLOC_BOUND_MS;
+        let mut rounds = 0u64;
+        while azos_mm::pmm::ktest_irq_alloc::ticks() < IRQ_ALLOC_TICKS && claim_pi_now_ms() < deadline {
+            if let Some(p) = azos_mm::pmm::alloc(1, azos_mm::pmm::ANY_COLOUR, azos_mm::pmm::ANY_NODE) {
+                let _ = azos_mm::pmm::free(p, 1);
+            }
+            rounds += 1;
+        }
+        let (ok, dry) = azos_mm::pmm::ktest_irq_alloc::disarm();
+        kprintln!("# pmm irq alloc: {} rounds, {} ticks allocated, {} found no block", rounds, ok, dry);
+        if ok + dry < IRQ_ALLOC_TICKS {
+            return Err("too few timer ticks reached the hart while it allocated");
+        }
+        if ok == 0 {
+            return Err("no tick could allocate a frame");
+        }
+        Ok(())
+    }
+}
+
+// Canary `buddy-rotate-hot-canary`: the one-time list rotation is back on
+// the allocation path, so an allocation that meets a new seed walks the lists.
+azos_ktest::ktest_late! {
+    fn pmm_new_seed_walks_no_list_on_alloc() {
+        let walked = azos_mm::pmm::ktest_unseen_seed_walk();
+        if !azos_limits::ALLOC_RANDOM {
+            return Ok(());
+        }
+        if walked != 0 {
+            kprintln!("# pmm: an allocation's seed check walked {} blocks", walked);
+            return Err("an allocation rotated the free lists under the lock");
+        }
+        Ok(())
+    }
+}
+
+// ── The kernel heap's ceiling ───────────────────────────────────────────────
+//
+// The heap takes pages on demand, at most KERNEL_HEAP_SIZE of them: large
+// requests are made until one is refused, and the pages held must never pass
+// the ceiling. Canary `kheap-ceiling-canary` (the ceiling not checked): the
+// requests go past it.
+
+const CEIL_CHUNKS: usize = 264;
+static CEIL_HELD: [AtomicUsize; CEIL_CHUNKS] = [const { AtomicUsize::new(0) }; CEIL_CHUNKS];
+
+azos_ktest::ktest_late! {
+    fn kheap_never_holds_more_than_its_ceiling() {
+        use core::alloc::Layout;
+        let ceiling = azos_mm::kheap::size();
+        let chunk = (ceiling / 256).next_multiple_of(azos_arch::PAGE_SIZE).max(azos_arch::PAGE_SIZE);
+        let lay = Layout::from_size_align(chunk, azos_arch::PAGE_SIZE).map_err(|_| "layout")?;
+        let (mut got, mut peak) = (0usize, 0usize);
+        while got < CEIL_CHUNKS {
+            let p = unsafe { alloc::alloc::alloc(lay) };
+            if p.is_null() { break; }
+            CEIL_HELD[got].store(p as usize, Ordering::Relaxed);
+            got += 1;
+            peak = peak.max(azos_mm::kheap::held());
+        }
+        for h in &CEIL_HELD[..got] {
+            unsafe { alloc::alloc::dealloc(h.load(Ordering::Relaxed) as *mut u8, lay) };
+        }
+        kprintln!("# kheap: ceiling {} KiB, {} chunks of {} KiB, peak held {} KiB",
+                  ceiling >> 10, got, chunk >> 10, peak >> 10);
+        if got == CEIL_CHUNKS {
+            return Err("no request was refused before the chunk budget ran out");
+        }
+        if peak > ceiling {
+            return Err("the heap held more pages than KERNEL_HEAP_SIZE");
         }
         Ok(())
     }

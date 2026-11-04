@@ -202,7 +202,6 @@ config SLAB_HARDENED
 
 config ALLOC_RANDOM
     bool "Randomize allocation order (slab carve order, buddy list order)"
-    depends on KHEAP_SLAB
     default n if BUILD_TYPE_CERTIFIABLE || SECURITY_SEPARATION_STATIC
     default y
     help
@@ -212,17 +211,18 @@ config ALLOC_RANDOM
       addresses, so the neighbour of an object cannot be predicted from the
       allocation sequence. Buddy: once the entropy pool has been drawn
       (the slab layer feeds the page allocator a word with every slab page
-      it creates), each free list is rotated by a random number of blocks
-      once, and every block pushed after that goes to the head or the tail
-      of its list on a random bit. Blocks pushed before the first draw
-      (early boot) keep the plain order.
+      it creates), and every block pushed after that goes to the head or
+      the tail of its list on a random bit. Each free list is also rotated
+      once by a random number of blocks, at boot when the entropy pool is
+      seeded (no seed at boot: no rotation). Blocks pushed before the first
+      draw (early boot) keep the plain order.
 
       Default n when BUILD_TYPE_CERTIFIABLE or SECURITY_SEPARATION_STATIC
       (the industrial and automotive presets): there the same inputs must
       give the same addresses and the same latency on every boot, and
       randomized placement is the one thing here that breaks it. y
-      everywhere else. Depends on KHEAP_SLAB because the seed for the page
-      allocator rides on slab page creation.
+      everywhere else. The seed for the page allocator's placement bits
+      rides on slab page creation.
       Cost: a few instructions per slab page created and per buddy push;
       the order of free lists after reclaim differs from boot to boot.
 

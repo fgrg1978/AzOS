@@ -44,7 +44,8 @@ static SEED: AtomicU64 = AtomicU64::new(0);
 /// Stir one random word into the seed every [`Buddy`] draws its placement
 /// bits from (Kconfig `ALLOC_RANDOM`). Lock-free, so a caller that holds no
 /// page-allocator lock can feed it; a list takes the new seed at its next
-/// `alloc` or `release`. The first seed also rotates each list once.
+/// `alloc` or `release`. The one-time rotation is not done there: it walks
+/// the lists, so it runs from [`Buddy::reseed`] at boot (`pmm::shuffle`).
 /// A word of 0 is ignored (0 is the "none yet" mark).
 pub fn stir(word: u64) {
     if azos_limits::ALLOC_RANDOM && word != 0 {
@@ -76,6 +77,8 @@ pub struct Buddy {
     rng: u64,
     seen: u64,
     rotated: bool,
+    /// Blocks walked by rotations, ever: the allocation path must not add to it.
+    walked: usize,
 }
 
 impl Buddy {
@@ -89,19 +92,18 @@ impl Buddy {
             rng: 0,
             seen: 0,
             rotated: false,
+            walked: 0,
         }
     }
 
     /// Take `seed` (Kconfig `ALLOC_RANDOM`): fold it into the placement
     /// state, and the first time rotate every list by a random number of
     /// blocks (at most [`ROTATE_MAX`]) so the start of each is not the
-    /// order the boot seeded it in. [`Buddy::alloc`] and [`Buddy::release`]
-    /// call it when [`stir`] moved the global seed; hosts call it directly.
+    /// order the boot seeded it in. Up to `ROTATE_MAX` steps per order, so
+    /// it is called once at boot, never from an allocation.
     pub fn reseed(&mut self, t: &FrameTable, seed: u64) {
         if !azos_limits::ALLOC_RANDOM { return; }
-        self.seen = seed;
-        let mut x = self.rng ^ seed;
-        self.rng = splitmix(&mut x);
+        let mut x = self.fold(seed);
         if self.rotated { return; }
         self.rotated = true;
         for order in 0..=MAX_ORDER {
@@ -113,13 +115,38 @@ impl Buddy {
         }
     }
 
+    fn fold(&mut self, seed: u64) -> u64 {
+        self.seen = seed;
+        let mut x = self.rng ^ seed;
+        self.rng = splitmix(&mut x);
+        x
+    }
+
+    /// What an allocation or a release does with a seed it has not seen:
+    /// fold it into the placement bits, O(1).
     #[inline(always)]
-    fn sync_seed(&mut self, t: &FrameTable) {
-        if azos_limits::ALLOC_RANDOM {
-            let s = SEED.load(Ordering::Relaxed);
-            if s != self.seen { self.reseed(t, s); }
+    pub fn observe(&mut self, t: &FrameTable, seed: u64) {
+        if !azos_limits::ALLOC_RANDOM || seed == self.seen { return; }
+        // Canary `buddy-rotate-hot-canary`: the rotation stays on this path,
+        // so an allocation can walk thousands of blocks under the lock.
+        if cfg!(feature = "buddy-rotate-hot-canary") {
+            self.rotated = false;
+            self.reseed(t, seed);
+        } else {
+            self.fold(seed);
         }
     }
+
+    #[inline(always)]
+    fn sync_seed(&mut self, t: &FrameTable) {
+        if azos_limits::ALLOC_RANDOM { self.observe(t, SEED.load(Ordering::Relaxed)); }
+    }
+
+    /// Blocks walked by rotations since this list set was made.
+    pub fn rotation_steps(&self) -> usize { self.walked }
+
+    /// The last seed folded in (0: none yet).
+    pub fn seen(&self) -> u64 { self.seen }
 
     /// The next placement bit: true puts a pushed block at the tail. Always
     /// false until the first seed, so early boot keeps the plain order.
@@ -139,6 +166,7 @@ impl Buddy {
         let old_tail = self.tail[order];
         // The k-th block becomes the head, the (k-1)-th the tail.
         let mut new_tail = old_head;
+        self.walked += k;
         for _ in 1..k {
             new_tail = t.at(new_tail as usize).next.load(Ordering::Relaxed);
             if new_tail == NIL { Self::corrupt("rotate walked off the list", old_head as usize, order); }

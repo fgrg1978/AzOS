@@ -551,7 +551,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // kernel's own environment (crates/core/mm/src/kheap.rs). Development
     // configurations only (`KHEAP_SLAB_DEBUG`); the gate's `kheap slab` rows
     // read this line.
-    if azos_limits::KHEAP_SLAB && azos_limits::KHEAP_SLAB_DEBUG {
+    if azos_limits::KHEAP_SLAB_DEBUG {
         match azos_mm::kheap::slab_selftest() {
             Ok((n, back)) => kprintln!(
                 "[MM] Heap slab self-test: {} objects in {} classes, reclaim returned {} B: PASS",

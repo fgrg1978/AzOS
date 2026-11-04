@@ -15,7 +15,6 @@ azos_common = { workspace = true }
 azos_limits = { workspace = true }
 azos_chaos = { workspace = true }
 azos_crypto = { workspace = true }
-linked_list_allocator = { workspace = true }
 
 [features]
 # Kconfig KASAN: the sanitizer's hooks and shadow (src/kasan.rs); the kernel is built with -Zsanitizer=kernel-address.
@@ -46,6 +45,10 @@ slab-freelist-canary = []
 # Host rows in tests/host/mm-tests must go red.
 buddy-merge-canary = []
 buddy-split-canary = []
+# The buddy lists rotate on the allocation path again (the `buddy rotate` ktest and host row go red).
+buddy-rotate-hot-canary = []
+# The kernel heap ceiling (KERNEL_HEAP_SIZE) is not checked: the `kheap ceiling` ktest goes red.
+kheap-ceiling-canary = []
 pcp-refill-canary = []
 pcp-drain-canary = []
 frame-index-canary = []

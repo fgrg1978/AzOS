@@ -85,7 +85,7 @@ qos-armed-at-canary = []
 # Kconfig KTEST: the hooks the kernel's in-kernel tests use (`group::ktest_*`,
 # `signal::pending_of`, the timer tick's `preempt::ktest_probe`). Off:
 # compiled out.
-ktest = ["azos_sync/ktest"]
+ktest = ["azos_sync/ktest", "azos_mm/ktest"]
 # Wave 15 (VI): the ELF loader's page permissions. `elf-mixed-page-canary`
 # accepts a page shared by segments mapped differently (their union, as
 # before); `rodata-exec-canary` maps read-only segments read-execute (the old

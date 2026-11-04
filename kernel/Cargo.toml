@@ -254,6 +254,8 @@ pmm-inflight-canary = ["azos_mm/pmm-inflight-canary"]
 tid-stamp-canary = ["azos_sched/tid-stamp-canary"]
 tid-reuse-gen-canary = ["azos_sched/tid-reuse-gen-canary"]
 donation-stale-slot-canary = ["azos_sched/donation-stale-slot-canary"]
+buddy-rotate-hot-canary = ["azos_mm/buddy-rotate-hot-canary"]
+kheap-ceiling-canary = ["azos_mm/kheap-ceiling-canary"]
 # Gate canary of the admin task list (`kernel/src/boot/inspect_tasks.rs`): a
 # change in a task slot is written by the next refresh instead of where it
 # happens, as before the list was written on change. The `inspect: views`
