@@ -16,3 +16,4 @@ link: release build boots with a key	link release (qemu)
 generic: riscv64 boots, abitest	generic: riscv64 builds, no robot crate
 generic: aarch64 boots, abitest	generic: aarch64 builds, no robot crate
 vf2: no B extension	vf2 (+linker)
+net-tests fleet config	net-tests (fleet ring)
