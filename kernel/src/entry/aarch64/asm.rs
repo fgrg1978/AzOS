@@ -87,7 +87,6 @@ global_asm!(
     kstack_wshift   = const azos_mm::kstack::WINDOW_SHIFT,
     kstack_ntag_hi  = const azos_mm::kstack::WINDOW_NEG_TAG >> 12,
     kstack_ntag_lo  = const azos_mm::kstack::WINDOW_NEG_TAG & 0xfff,
-    kstack_ovf_shift = const crate::entry::kstack_overflow::OVF_SHIFT,
 );
 // `add #imm, lsl #12` takes 12 bits of the tag's upper half.
 #[cfg(target_arch = "aarch64")]

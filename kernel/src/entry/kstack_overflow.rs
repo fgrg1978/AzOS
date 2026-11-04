@@ -5,15 +5,28 @@
 //! trap would have stored its frame in the guard below a task stack and
 //! faulted again forever, so it runs on a stack of its own instead.
 
-/// Each hart's stack for the report, `1 << OVF_SHIFT` bytes.
-pub const OVF_SHIFT: u32 = 14;
-const OVF: usize = 1 << OVF_SHIFT;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[repr(C, align(16))]
-pub struct OverflowStacks([[u8; OVF]; crate::MAX_HARTS]);
+/// Bytes of each CPU's stack for the report.
+const OVF: usize = 16 << 10;
 
+/// Per CPU, the top of its overflow stack (0: none yet; the trap entry then
+/// stops the CPU where it is). A word per CPU; the stacks are frames.
 #[no_mangle]
-pub static mut AZOS_KSTACK_OVERFLOW: OverflowStacks = OverflowStacks([[0; OVF]; crate::MAX_HARTS]);
+pub static AZOS_KSTACK_OVF_TOP: [AtomicUsize; crate::MAX_HARTS] = [const { AtomicUsize::new(0) }; crate::MAX_HARTS];
+
+/// Give every possible CPU its overflow stack, from the frame allocator.
+/// With the per-CPU areas, before the first task.
+pub(crate) fn setup() {
+    let pages = OVF.div_ceil(1 << azos_limits::PAGE_SHIFT);
+    for cpu in azos_percpu::possible().iter() {
+        if cpu >= crate::MAX_HARTS { continue; }
+        match azos_mm::pmm::alloc_contiguous(pages) {
+            Ok(pa) => AZOS_KSTACK_OVF_TOP[cpu].store(azos_mm::addr::phys_to_virt(pa.as_usize()) + OVF, Ordering::Release),
+            Err(_) => azos_drv_sys::kwarn!("[KSTACK] no overflow stack for CPU {}: an overflow there stops it unreported", cpu),
+        }
+    }
+}
 
 /// The report: the trapping PC, the SP that ran off its stack, the fault
 /// address. Never returns.

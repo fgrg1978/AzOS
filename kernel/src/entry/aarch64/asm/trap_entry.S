@@ -214,7 +214,6 @@ _slot_\name:
 .equ KSTACK_WSHIFT,    {kstack_wshift}
 .equ KSTACK_NTAG_HI,   {kstack_ntag_hi}
 .equ KSTACK_NTAG_LO,   {kstack_ntag_lo}
-.equ KSTACK_OVF_SHIFT, {kstack_ovf_shift}
 
 // A slot for an exception taken at EL1 on SP_EL1, the kernel's own stack:
 // before the frame is stored, one that would land in a task stack's guard
@@ -247,11 +246,10 @@ kstack_overflow:
     mrs     x9, tpidr_el1
     cmp     x9, #MAX_HARTS
     b.hs    2f
-    adrp    x10, AZOS_KSTACK_OVERFLOW
-    add     x10, x10, :lo12:AZOS_KSTACK_OVERFLOW
-    add     x9, x9, #1
-    lsl     x9, x9, #KSTACK_OVF_SHIFT
-    add     x10, x10, x9
+    adrp    x10, AZOS_KSTACK_OVF_TOP
+    add     x10, x10, :lo12:AZOS_KSTACK_OVF_TOP
+    ldr     x10, [x10, x9, lsl #3]
+    cbz     x10, 2f
     mov     sp, x10
     bl      azos_kstack_overflow
 2:  wfi

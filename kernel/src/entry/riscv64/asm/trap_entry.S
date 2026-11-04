@@ -51,7 +51,6 @@
 .equ KSTACK_BIT,      {kstack_bit}
 .equ KSTACK_WSHIFT,   {kstack_wshift}
 .equ KSTACK_WTAG,     {kstack_wtag}
-.equ KSTACK_OVF_SHIFT, {kstack_ovf_shift}
 
 // S-mode trap, before the frame is stored: sp is the interrupted kernel SP
 // and sscratch is 0 (put back here). A frame that would land in a task
@@ -177,10 +176,12 @@ kstack_overflow:
     csrr    a2, stval
     li      t0, MAX_HARTS
     bgeu    tp, t0, 2f
-    la      t0, AZOS_KSTACK_OVERFLOW
-    addi    t1, tp, 1
-    slli    t1, t1, KSTACK_OVF_SHIFT
-    add     sp, t0, t1
+    la      t0, AZOS_KSTACK_OVF_TOP
+    slli    t1, tp, 3
+    add     t0, t0, t1
+    ld      t0, 0(t0)
+    beqz    t0, 2f
+    mv      sp, t0
     call    azos_kstack_overflow
 2:  wfi
     j       2b

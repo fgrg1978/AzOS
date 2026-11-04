@@ -161,6 +161,8 @@ pub(crate) fn setup_per_cpu_areas() {
     #[cfg(feature = "ipc-census")]
     let _ = azos_sched::ring_claim_audit();
     let boot = boot_cpu();
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+    crate::entry::kstack_overflow::setup();
     with_percpu_vars(|vars| {
         let bytes = azos_percpu::area_bytes(vars);
         let mut total = 0usize;
