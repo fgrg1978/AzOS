@@ -35,7 +35,7 @@ azos_crypto = { path = "../../../../../crates/core/crypto" }
 # The pulled modules carry feature cfgs the `mm` crate declares; echoed here
 # rather than silenced so the condition stays visible. Same reasoning, same
 # line, as `tests/host/mm-tests/Cargo.toml`.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("buddy-merge-canary", "buddy-split-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("buddy-merge-canary", "buddy-split-canary", "buddy-rotate-hot-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary"))'] }
 
 [features]
 # `cfg(feature = "budget-racy-charge-canary")` in the pulled-in `budget.rs`
@@ -79,6 +79,7 @@ vdso-write-window = []
 # they only need to be known features.
 buddy-merge-canary = []
 buddy-split-canary = []
+buddy-rotate-hot-canary = []
 pcp-refill-canary = []
 pcp-drain-canary = []
 frame-index-canary = []
