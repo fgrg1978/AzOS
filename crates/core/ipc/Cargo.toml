@@ -12,6 +12,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 # Kconfig KTEST: the hooks only the in-kernel tests use (`irq_bind::canary_storm`,
 # the `irq-storm` canary of ktest `irq_storm_is_contained`). Off: compiled out.
 ktest = []
+# Canary only: capability tables come from a cache of another type, not the retained cell cache
+# (ktest `cap_table_cache_is_type_stable` goes red).
+cap-table-cross-type-canary = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.

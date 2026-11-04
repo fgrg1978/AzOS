@@ -201,6 +201,15 @@ impl<T> Cache<T> {
         true
     }
 
+    /// Does `addr` lie in a block of this cache?
+    ///
+    /// # Safety
+    /// `addr` is an object of some cache.
+    pub unsafe fn owns(&self, addr: usize) -> bool {
+        // SAFETY: per the contract the block base holds a header.
+        unsafe { (*Self::block_of(addr)).tag == self.tag() }
+    }
+
     pub fn is_sealed(&self) -> bool { self.st.lock_irqsave().sealed }
 
     /// Pages this cache holds.

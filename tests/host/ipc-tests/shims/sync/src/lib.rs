@@ -87,3 +87,7 @@ impl<T> SpinLock<T> {
 pub mod spinlock {
     pub use super::{Guard, IrqSaveGuard, SpinLock, SpinLockGuard};
 }
+
+// The real file: atomics only.
+#[path = "../../../../../../crates/core/sync/src/once_obj.rs"]
+pub mod once_obj;

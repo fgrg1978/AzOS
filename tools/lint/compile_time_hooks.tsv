@@ -214,6 +214,7 @@ placement-norecord-canary	pending
 kstack-reuse-no-shootdown-canary	hot	crates/core/mm/src/kstack.rs: flush_pending, on the task create path
 kheap-ceiling-canary	hot	crates/core/mm/src/kheap.rs: take, on every slab page and large heap request
 kmem-cache-cross-type-canary	hot	crates/core/mm/src/cache.rs: try_free, on every typed object free
+cap-table-cross-type-canary	hot	crates/core/ipc/src/cap_store.rs: cell_source, on the first claim of a table slot (task create path)
 kmem-preload-canary	const	crates/core/mm/src/cache.rs: PRELOAD, a boot-time constant
 buddy-rotate-hot-canary	hot	crates/core/mm/src/buddy.rs: Buddy::observe, on every frame allocation and release that meets a new seed
 pmm-inflight-canary	host-shared	crates/core/mm/src/pmm.rs: mm-tests and syscall-tests build the same source

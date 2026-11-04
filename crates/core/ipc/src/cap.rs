@@ -3723,6 +3723,25 @@ mod tests {
     use super::targets::{Port, Socket};
     use super::*;
 
+    /// `cap_store` makes a table from zeroed memory and writes nothing else:
+    /// every field of the empty table reads zero.
+    #[test]
+    fn empty_table_is_all_zero() {
+        use core::sync::atomic::Ordering::Relaxed;
+        let t = CapTable::empty();
+        assert!(t.slots.iter().all(|c| c.0.load(Relaxed) == 0));
+        assert!(t.cache.iter().all(|c| c.load(Relaxed) == 0));
+        assert!(t.ext.iter().all(|c| c.load(Relaxed) == 0));
+        assert!(t.warrant.iter().all(|w| w.parent.load(Relaxed) == 0 && w.expiry.load(Relaxed) == 0 && w.meta.load(Relaxed) == 0));
+        assert!(t.caveats.iter().all(|c| c.owner.load(Relaxed) == 0 && c.meta.load(Relaxed) == 0 && c.arg.iter().all(|a| a.load(Relaxed) == 0)));
+        let small = [t.used.load(Relaxed) as u64, t.free_from.load(Relaxed) as u64, t.parked.load(Relaxed) as u64,
+            t.no_slot.load(Relaxed) as u64, t.restarts.load(Relaxed) as u64, t.senders.load(Relaxed) as u64,
+            t.derived.load(Relaxed) as u64, t.kids.load(Relaxed) as u64, t.notices.load(Relaxed) as u64,
+            t.weak_tid.load(Relaxed) as u64, t.shadow_refused.load(Relaxed) as u64, t.owner.load(Relaxed) as u64,
+            t.receipt_refused.load(Relaxed) as u64, t.opless_refused.load(Relaxed) as u64];
+        assert!(small.iter().all(|&x| x == 0));
+    }
+
     /// Serialises every test that touches the process-global degrade level.
     ///
     /// `DEGRADE_LEVEL` is one static and `cargo test` runs test functions in

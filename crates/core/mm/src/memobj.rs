@@ -148,6 +148,7 @@
 //! address spaces for zero-copy data sharing (e.g., camera frames, LiDAR scans).
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use azos_sync::once_obj::{ArrPtr, OnceObj};
 use azos_sync::{SpinLock, SpinLockGuard};
 
 use azos_abi::cap::CapError;
@@ -560,7 +561,7 @@ const EMPTY_MEMOBJ: MemObj = MemObj::empty();
 /// `regions.iter()` accessor below is unchanged; only `create_core` reads
 /// `next_gen`.
 struct MemObjTable {
-    regions: [MemObj; MAX_MEMOBJS],
+    regions: ArrPtr<MemObjArray>,
     /// Entry `i` is the generation index `i`'s *next* create will stamp.
     /// Starts at 1 (`0` doubles as the mid-sweep marker), never reset by an
     /// ordinary release — only by that slot's own targeted wrap sweep. See
@@ -627,7 +628,7 @@ impl ResolveEntry {
 const _: () = assert!(MAX_MEMOBJS <= u16::MAX as usize && MAX_MEMOBJ_HOLDERS <= u8::MAX as usize);
 
 impl core::ops::Deref for MemObjTable {
-    type Target = [MemObj; MAX_MEMOBJS];
+    type Target = MemObjArray;
     fn deref(&self) -> &Self::Target {
         &self.regions
     }
@@ -639,12 +640,94 @@ impl core::ops::DerefMut for MemObjTable {
     }
 }
 
-static MEMOBJS: SpinLock<MemObjTable> = SpinLock::new(MemObjTable {
-    regions: [EMPTY_MEMOBJ; MAX_MEMOBJS],
+type MemObjArray = [MemObj; MAX_MEMOBJS];
+
+/// The object headers are made on first use, outside the lock, from a cache
+/// whose pages are never returned (a stale object pointer can only meet
+/// another header). The kernel makes them at boot ([`provision`]) and halts
+/// when the memory is not there, so every `0..MAX_MEMOBJS` loop indexes a
+/// table that exists.
+static MEMOBJ_ARRAY: OnceObj<MemObjArray> = OnceObj::new();
+
+#[cfg(target_os = "none")]
+static MEMOBJ_CACHE: crate::cache::Cache<MemObjArray> = crate::cache::Cache::retained();
+
+#[cfg(target_os = "none")]
+fn memobj_source() -> *mut MemObjArray { MEMOBJ_CACHE.alloc() }
+
+#[cfg(not(target_os = "none"))]
+fn memobj_source() -> *mut MemObjArray {
+    struct Host(core::cell::UnsafeCell<core::mem::MaybeUninit<MemObjArray>>);
+    // SAFETY: handed out once, by `OnceObj`.
+    unsafe impl Sync for Host {}
+    static HOST: Host = Host(core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()));
+    HOST.0.get().cast()
+}
+
+fn memobj_init(a: *mut MemObjArray) {
+    for i in 0..MAX_MEMOBJS {
+        // SAFETY: `a` is a whole, unused array; one element at a time keeps the stack small.
+        unsafe { core::ptr::addr_of_mut!((*a)[i]).write(EMPTY_MEMOBJ) };
+    }
+}
+
+struct MemObjCell(SpinLock<MemObjTable>);
+
+impl MemObjCell {
+    #[inline]
+    #[track_caller]
+    fn attach<G: core::ops::DerefMut<Target = MemObjTable>>(&self, mut g: G) -> G {
+        if g.regions.is_null() {
+            let p = MEMOBJ_ARRAY.peek();
+            assert!(!p.is_null(), "memobj table: not provisioned");
+            g.regions.set(p);
+        }
+        g
+    }
+
+    #[inline]
+    #[track_caller]
+    fn lock(&self) -> SpinLockGuard<'_, MemObjTable> {
+        MEMOBJ_ARRAY.get_with(memobj_source, memobj_init);
+        self.attach(self.0.lock())
+    }
+
+    #[cfg(test)]
+    #[inline]
+    #[track_caller]
+    fn lock_irqsave(&self) -> azos_sync::IrqSaveGuard<'_, MemObjTable> {
+        MEMOBJ_ARRAY.get_with(memobj_source, memobj_init);
+        self.attach(self.0.lock_irqsave())
+    }
+
+    #[inline]
+    #[track_caller]
+    fn try_lock(&self) -> Option<SpinLockGuard<'_, MemObjTable>> {
+        MEMOBJ_ARRAY.get_with(memobj_source, memobj_init);
+        self.0.try_lock().map(|g| self.attach(g))
+    }
+}
+
+static MEMOBJS: MemObjCell = MemObjCell(SpinLock::new(MemObjTable {
+    regions: ArrPtr::null(),
     next_gen: [1u32; MAX_MEMOBJS],
     resolved: [[ResolveEntry::EMPTY; 2]; RESOLVE_WAYS],
     map_epoch: 0,
-});
+}));
+
+/// Make the object headers now: the kernel calls it at boot and stops the
+/// boot when the memory is not there. With `MM_PRELOAD_CACHES` the cache is
+/// then sealed.
+pub fn provision() -> bool {
+    if MEMOBJ_ARRAY.get_with(memobj_source, memobj_init).is_null() { return false; }
+    #[cfg(target_os = "none")]
+    if crate::cache::PRELOAD { return MEMOBJ_CACHE.preload(1); }
+    true
+}
+
+/// The object headers' cache is filled and sealed.
+#[cfg(target_os = "none")]
+pub fn array_sealed() -> bool { MEMOBJ_CACHE.is_sealed() }
 
 // ---------------------------------------------------------------------------
 // The scheduler and the capability table, above this crate

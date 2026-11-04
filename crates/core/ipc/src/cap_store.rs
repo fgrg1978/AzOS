@@ -139,7 +139,7 @@
 //! never contend. The same task's syscall path is single-threaded
 //! per CPU, so contention on a single table is rare.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use azos_sched::task::MAX_TASKS;
 use azos_sync::spinlock::SpinLock;
@@ -157,7 +157,7 @@ use crate::cap::{
 /// are atomic words (`CapTable`'s docs), so a reader holding no lock
 /// ([`read_table`], Kconfig RCU_QSBR) and a writer holding this one never
 /// alias a `&mut`. Writers still exclude each other, as before.
-struct TableCell {
+pub struct TableCell {
     lock: SpinLock<()>,
     table: CapTable,
 }
@@ -184,9 +184,114 @@ impl TableCell {
     }
 }
 
-/// Static per-slot capability tables.
-const FRESH_TABLE: TableCell = TableCell { lock: SpinLock::new(()), table: CapTable::empty() };
-static CAP_TABLES: [TableCell; MAX_TASKS] = [FRESH_TABLE; MAX_TASKS];
+/// Per-slot capability tables, each made when its slot is first claimed. They
+/// are a security cache: a table is never freed or moved, so a stale reference
+/// to one can only meet another table (and `Locked`'s `'static` borrow holds).
+/// All-zero is the empty state of a `CapTable` (host test `empty_table_is_all_zero`).
+struct CapTables {
+    p: [AtomicPtr<TableCell>; MAX_TASKS],
+}
+
+static CAP_TABLES: CapTables = CapTables { p: [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_TASKS] };
+
+/// The cells' cache: its pages are never returned to the page allocator.
+/// Canary `cap-table-cross-type-canary`: cells come from a cache of another
+/// type.
+#[cfg(target_os = "none")]
+pub static CELL_CACHE: azos_mm::cache::Cache<TableCell> = azos_mm::cache::Cache::retained();
+
+#[cfg(all(target_os = "none", feature = "cap-table-cross-type-canary"))]
+static UNTYPED_CELLS: azos_mm::cache::Cache<[u64; core::mem::size_of::<TableCell>().div_ceil(8)]> =
+    azos_mm::cache::Cache::retained();
+
+#[cfg(all(target_os = "none", not(feature = "cap-table-cross-type-canary")))]
+fn cell_source() -> *mut TableCell { CELL_CACHE.alloc_zeroed() }
+
+#[cfg(all(target_os = "none", feature = "cap-table-cross-type-canary"))]
+fn cell_source() -> *mut TableCell { UNTYPED_CELLS.alloc_zeroed().cast() }
+
+/// Host: a pool as large as the static array was, plus room for the cells
+/// that lose a race to install.
+#[cfg(not(target_os = "none"))]
+fn cell_source() -> *mut TableCell {
+    use core::cell::UnsafeCell;
+    use core::mem::MaybeUninit;
+    use core::sync::atomic::AtomicUsize;
+    const POOL: usize = MAX_TASKS + 64;
+    struct Host([UnsafeCell<MaybeUninit<TableCell>>; POOL]);
+    // SAFETY: each cell is handed out once.
+    unsafe impl Sync for Host {}
+    static HOST: Host = Host([const { UnsafeCell::new(MaybeUninit::zeroed()) }; POOL]);
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let i = NEXT.fetch_add(1, Ordering::Relaxed);
+    if i >= POOL { return core::ptr::null_mut(); }
+    HOST.0[i].get().cast()
+}
+
+#[cfg(target_os = "none")]
+fn cell_return(c: *mut TableCell) {
+    #[cfg(not(feature = "cap-table-cross-type-canary"))]
+    // SAFETY: `c` came from `cell_source` and was never published.
+    unsafe { CELL_CACHE.free(c) };
+    #[cfg(feature = "cap-table-cross-type-canary")]
+    // SAFETY: as above.
+    unsafe { UNTYPED_CELLS.free(c.cast()) };
+}
+
+#[cfg(not(target_os = "none"))]
+fn cell_return(_: *mut TableCell) {}
+
+impl CapTables {
+    fn get(&self, i: usize) -> Option<&TableCell> {
+        let p = self.p.get(i)?.load(Ordering::Acquire);
+        // SAFETY: a published cell is never freed.
+        if p.is_null() { None } else { Some(unsafe { &*p }) }
+    }
+
+    /// Slot `i` has a table, made now if it had none. False when the memory
+    /// is refused: the claim then fails like one for a task with no Domain.
+    fn make(&self, i: usize) -> bool {
+        if self.get(i).is_some() { return true; }
+        let c = cell_source();
+        if c.is_null() { return false; }
+        // SAFETY: `c` is a whole, zeroed, unpublished cell; the lock gets its lockdep class here.
+        unsafe { core::ptr::addr_of_mut!((*c).lock).write(SpinLock::new(())) };
+        if self.p[i].compare_exchange(core::ptr::null_mut(), c, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            cell_return(c);
+        }
+        true
+    }
+
+    /// The tables made so far, with their slot.
+    fn made(&'static self) -> impl Iterator<Item = (usize, &'static TableCell)> {
+        (0..MAX_TASKS).filter_map(|i| self.get(i).map(|c| (i, c)))
+    }
+}
+
+/// A slot reached through its owner has its table (the claim that set the
+/// owner made it first); any other index is a kernel bug, as out of range was.
+impl core::ops::Index<usize> for CapTables {
+    type Output = TableCell;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &TableCell {
+        match self.get(i) {
+            Some(c) => c,
+            None => panic!("capability table: slot has no table"),
+        }
+    }
+}
+
+/// Fill the cell cache to `MAX_TASKS` and seal it (`MM_PRELOAD_CACHES`). Boot.
+#[cfg(target_os = "none")]
+pub fn preload_cells() -> bool {
+    if azos_mm::cache::PRELOAD { CELL_CACHE.preload(MAX_TASKS) } else { true }
+}
+
+/// The table `tid`'s domain owns, as an address (claims it). For the kernel tests.
+#[cfg(target_os = "none")]
+pub fn table_addr(tid: u32) -> Option<usize> {
+    slot_for(tid).map(|i| &CAP_TABLES[i] as *const TableCell as usize)
+}
 
 /// Domain key currently owning each table. `NO_OWNER` = never used or
 /// released.
@@ -580,6 +685,9 @@ fn slot_owner(tid: u32) -> Option<(usize, u32)> {
 fn claim_table(table: usize, key: u32) -> bool {
     let mut prev = OWNER[table].load(Ordering::Acquire);
     while prev != key {
+        if !CAP_TABLES.make(table) {
+            return false;
+        }
         if !kmem_charge(key, KMEM_CAP_TABLE, KMEM_TABLE_BYTES) {
             return false;
         }
@@ -776,7 +884,7 @@ pub fn sweep() {
     for pass in 0..=WARRANT_DEPTH_MAX {
         let mut changed = 0;
         let mut revoked = 0;
-        for (idx, cell) in CAP_TABLES.iter().enumerate() {
+        for (idx, cell) in CAP_TABLES.made() {
             if cell.table.derived() == 0 {
                 continue;
             }
@@ -808,7 +916,7 @@ pub fn sweep() {
             // A park since `parks` may have children this pass did not see
             // dead; it owes the next sweep, which restarts it.
             if crate::cap::parks_mark() == parks {
-                for cell in CAP_TABLES.iter().filter(|c| c.table.parked() != 0) {
+                for (_, cell) in CAP_TABLES.made().filter(|(_, c)| c.table.parked() != 0) {
                     cell.lock().unpark();
                 }
             }
@@ -1431,7 +1539,7 @@ pub fn delete_moved(tid: u32, handle: CapHandle) -> bool {
 /// of the whole kind, the cost the deleted pool-wide sweep paid.
 pub fn revoke_index_in_every_table(kind: crate::cap::CapType, idx: u32) -> usize {
     let mut revoked = 0;
-    for table in CAP_TABLES.iter() {
+    for (_, table) in CAP_TABLES.made() {
         revoked += table.lock().revoke_kind_at_index(kind, idx);
     }
     notices();
@@ -1560,7 +1668,7 @@ pub fn occupied(tid: u32) -> usize {
 /// instead to read the table's true content, independent of whether the TID
 /// that used to own it still resolves.
 pub fn occupied_at_slot(idx: usize) -> usize {
-    CAP_TABLES[idx].lock().occupied()
+    CAP_TABLES.get(idx).map_or(0, |c| c.lock().occupied())
 }
 
 // ── Wave 15 N11: the capabilities of one message, all or nothing ────────────

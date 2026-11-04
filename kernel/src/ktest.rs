@@ -2387,6 +2387,33 @@ azos_ktest::ktest_late! {
     }
 }
 
+// The capability tables are a security cache: a table comes from the retained
+// cell cache, a freed cell is never reissued as another type and another
+// type's object is refused. Canary `cap-table-cross-type-canary`: tables come
+// from a cache of another type.
+azos_ktest::ktest_late! {
+    fn cap_table_cache_is_type_stable() {
+        use azos_ipc::cap_store::{table_addr, TableCell, CELL_CACHE};
+        let Some(t) = table_addr(azos_sched::current_task_tid()) else { return Err("the running task has no capability table") };
+        // SAFETY: `t` is a table, which lies in a cache block.
+        if !unsafe { CELL_CACHE.owns(t) } { return Err("a capability table is not from the cell cache"); }
+        let held = CELL_CACHE.held_pages();
+        let a = CELL_CACHE.alloc();
+        if a.is_null() { return Err("no spare cell"); }
+        // SAFETY: `a` is the cell cache's and unused.
+        if !unsafe { CELL_CACHE.try_free(a) } { return Err("the cell cache refused its own cell"); }
+        if CELL_CACHE.held_pages() != held { return Err("the cell cache gave a block back"); }
+        let u = CACHE_U.alloc();
+        if u.is_null() { return Err("no U"); }
+        if u as usize == a as usize { return Err("a freed capability table was reissued as another type"); }
+        // SAFETY: `u` is CACHE_U's; the cell cache must refuse it, leaving it unchanged.
+        let refused = unsafe { !CELL_CACHE.try_free(u.cast::<TableCell>()) };
+        // SAFETY: `u` is CACHE_U's and unused.
+        unsafe { CACHE_U.free(u) };
+        if refused { Ok(()) } else { Err("the cell cache accepted another type's object") }
+    }
+}
+
 azos_ktest::ktest_late! {
     fn kmem_cache_gives_back_only_blocks_that_are_not_retained() {
         let t = CACHE_T.alloc();

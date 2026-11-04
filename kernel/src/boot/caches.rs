@@ -19,10 +19,19 @@ pub(crate) fn init() {
         azos_drv_sys::kerr!("[MM] FAILED: no memory for the TCP connection table");
         super::early::halt();
     }
+    if !azos_ipc::endpoint::provision() {
+        azos_drv_sys::kerr!("[MM] FAILED: no memory for the endpoint table");
+        super::early::halt();
+    }
+    if !azos_mm::memobj::provision() {
+        azos_drv_sys::kerr!("[MM] FAILED: no memory for the MemObj headers");
+        super::early::halt();
+    }
     if PRELOAD {
         let ok = TCP_CONNS.preload(1)
             & azos_fs::fat32::preload_boot_cache()
-            & azos_syscall::handlers::preload_exec_bounce();
+            & azos_syscall::handlers::preload_exec_bounce()
+            & azos_ipc::cap_store::preload_cells();
         if !ok {
             azos_drv_sys::kprintln!("[MM] preload: a boot cache could not be filled");
         }
@@ -36,4 +45,7 @@ pub(crate) fn all_sealed() -> bool {
         && TCP_CONNS.is_sealed()
         && azos_fs::fat32::boot_cache_sealed()
         && azos_syscall::handlers::exec_bounce_sealed()
+        && azos_ipc::endpoint::array_sealed()
+        && azos_mm::memobj::array_sealed()
+        && azos_ipc::cap_store::CELL_CACHE.is_sealed()
 }

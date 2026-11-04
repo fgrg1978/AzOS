@@ -48,6 +48,7 @@
 //! and 20 was retired once nothing issued it. Landing the object first keeps
 //! the gate meaningful at each step.
 
+use azos_sync::once_obj::{ArrPtr, OnceObj};
 use azos_sync::SpinLock;
 
 use crate::cap::objref;
@@ -216,7 +217,7 @@ const EMPTY_ENDPOINT: Endpoint = Endpoint::empty();
 /// `DerefMut` to the endpoint array so every existing `eps[i]` / `eps.iter()`
 /// accessor below is unchanged; only `create_core` reads `next_gen`.
 struct EndpointTable {
-    eps: [Endpoint; MAX_ENDPOINTS],
+    eps: ArrPtr<EndpointArray>,
     /// Entry `i` is the generation index `i`'s *next* create will stamp.
     /// Starts at 1 (`0` doubles as the mid-sweep marker), never reset by an
     /// ordinary release — only by that slot's own targeted wrap sweep. See
@@ -225,7 +226,7 @@ struct EndpointTable {
 }
 
 impl core::ops::Deref for EndpointTable {
-    type Target = [Endpoint; MAX_ENDPOINTS];
+    type Target = EndpointArray;
     fn deref(&self) -> &Self::Target {
         &self.eps
     }
@@ -237,10 +238,76 @@ impl core::ops::DerefMut for EndpointTable {
     }
 }
 
-static ENDPOINTS: SpinLock<EndpointTable> = SpinLock::new(EndpointTable {
-    eps: [EMPTY_ENDPOINT; MAX_ENDPOINTS],
+type EndpointArray = [Endpoint; MAX_ENDPOINTS];
+
+/// The endpoint array is made on first use, outside the lock, from a cache
+/// whose pages are never returned (a stale endpoint pointer can only meet
+/// another endpoint). The kernel makes it at boot ([`provision`]) and halts
+/// when the memory is not there, so every `0..MAX_ENDPOINTS` loop below
+/// indexes a table that exists.
+static EP_ARRAY: OnceObj<EndpointArray> = OnceObj::new();
+
+#[cfg(target_os = "none")]
+static EP_CACHE: azos_mm::cache::Cache<EndpointArray> = azos_mm::cache::Cache::retained();
+
+#[cfg(target_os = "none")]
+fn ep_source() -> *mut EndpointArray { EP_CACHE.alloc() }
+
+#[cfg(not(target_os = "none"))]
+fn ep_source() -> *mut EndpointArray {
+    struct Host(core::cell::UnsafeCell<core::mem::MaybeUninit<EndpointArray>>);
+    // SAFETY: handed out once, by `OnceObj`.
+    unsafe impl Sync for Host {}
+    static HOST: Host = Host(core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()));
+    HOST.0.get().cast()
+}
+
+fn ep_init(a: *mut EndpointArray) {
+    for i in 0..MAX_ENDPOINTS {
+        // SAFETY: `a` is a whole, unused array; one element at a time keeps the stack small.
+        unsafe { core::ptr::addr_of_mut!((*a)[i]).write(EMPTY_ENDPOINT) };
+    }
+}
+
+struct EndpointCell(SpinLock<EndpointTable>);
+
+impl EndpointCell {
+    #[inline]
+    #[track_caller]
+    fn attach<G: core::ops::DerefMut<Target = EndpointTable>>(&self, mut g: G, p: *mut EndpointArray) -> G {
+        if g.eps.is_null() {
+            assert!(!p.is_null(), "endpoint table: not provisioned");
+            g.eps.set(p);
+        }
+        g
+    }
+
+    #[inline]
+    #[track_caller]
+    fn lock_irqsave(&self) -> azos_sync::IrqSaveGuard<'_, EndpointTable> {
+        let p = EP_ARRAY.get_with(ep_source, ep_init);
+        self.attach(self.0.lock_irqsave(), p)
+    }
+}
+
+static ENDPOINTS: EndpointCell = EndpointCell(SpinLock::new(EndpointTable {
+    eps: ArrPtr::null(),
     next_gen: [1u32; MAX_ENDPOINTS],
-});
+}));
+
+/// Make the endpoint array now: the kernel calls it at boot and stops the
+/// boot when the memory is not there. With `MM_PRELOAD_CACHES` the cache is
+/// then sealed.
+pub fn provision() -> bool {
+    if EP_ARRAY.get_with(ep_source, ep_init).is_null() { return false; }
+    #[cfg(target_os = "none")]
+    if azos_mm::cache::PRELOAD { return EP_CACHE.preload(1); }
+    true
+}
+
+/// The endpoint array's cache is filled and sealed.
+#[cfg(target_os = "none")]
+pub fn array_sealed() -> bool { EP_CACHE.is_sealed() }
 
 /// Per slot, the endpoint's identity in one word for a lookup that takes no
 /// lock (wave 15 N5): `generation << 32 | owner_tid` while the slot is
