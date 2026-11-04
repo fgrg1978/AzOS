@@ -29,6 +29,17 @@ CHECK_TABLE_x86_64  := $(OUT_BUILD)/image_hashes_x86_64.rs $(THIRDPARTY_HASHES_X
 # CHECK_SELECT is a selection on the cell (`make check CHECK_SELECT=ktest`,
 # tools/build/kconfig_to_cargo.py --select): a ktest-only file is otherwise never compiled.
 CHECK_SELECT ?=
+# The profile of the type-check: release (the default) or validate
+# (.cargo/config.toml: release's code, 16 codegen units, incremental), which
+# `make check0 COMPILE_ONLY=1` and `make check-compile` use. Neither emits code.
+CHECK_PROFILE ?= release
+CHECK_PROFILE_FLAG = $(if $(filter release,$(CHECK_PROFILE)),--release,--profile $(CHECK_PROFILE))
+# The target dir of the type-check: the output root's, or one per ISA under
+# AZOS_SHARED_TARGET (tools/gate/validate_env.sh) so that build-std and the
+# crates.io dependencies are built once for every checkout.
+CHECK_TARGET_DIR ?= $(if $(AZOS_SHARED_TARGET),$(AZOS_SHARED_TARGET)/check-$(ARCH),$(OUT_TARGET))
+# With a shared target dir the units of this checkout's packages are tagged, so no two checkouts share one.
+CHECK_CARGO_CONFIG = $(if $(and $(AZOS_SHARED_TARGET),$(filter validate,$(CHECK_PROFILE))),-Zprofile-rustflags --config 'profile.validate.rustflags=["--cfg"$(comma)"azos_wt=\"$(AZOS_WT_TAG)\""]' --config 'profile.validate.package."*".rustflags=[]')
 check: | $(CHECK_TABLE_$(ARCH))
 	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
 	@mkdir -p $(OUT_BUILD)
@@ -37,8 +48,8 @@ check: | $(CHECK_TABLE_$(ARCH))
 	$(call kernel_select,$(CHECK_KCONFIG),$(CHECK_SELECT),$(CHECK_KCONFIG:.config=-sel.config)); \
 	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags "$(CHECK_KCONFIG)")"; \
 	if [ -n "$$rf" ]; then export RUSTFLAGS="$$rf"; else unset RUSTFLAGS; fi; \
-	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CHECK_KCONFIG:.config=-sel.config)" \
-	    $(CARGO) check --release -p azos_kernel $$args
+	env -u CARGO_BUILD_RUSTFLAGS CARGO_TARGET_DIR="$(CHECK_TARGET_DIR)" KCONFIG_CONFIG="$(CHECK_KCONFIG:.config=-sel.config)" \
+	    $(CARGO) check $(CHECK_PROFILE_FLAG) $(CHECK_CARGO_CONFIG) -p azos_kernel $$args
 
 # ── CI: build all feature combinations (0 errors, 0 warnings). ───────────────
 ci:
@@ -52,6 +63,19 @@ ci:
 # into the checkout.
 check0:
 	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh n0
+
+# The fastest check of a front: `cargo check` (no codegen, `validate` profile) of the
+# kernel cells the diff reaches (ISAs and presets from the paths,
+# tools/gate/compile_plan.py) and of the host suites it reaches; no lints, no
+# budgets, nothing boots. `make check0 COMPILE_ONLY=1` is the batch form: check0's
+# lints and host suites with the type-checks and the suites' builds in the validate
+# profile. AZOS_SHARED_TARGET=<dir> shares build-std and the dependencies between
+# checkouts, AZOS_SCCACHE=1 wraps rustc in sccache (tools/gate/validate_env.sh).
+# Both profiles are for validation only: the size budget, vsbench and every
+# measurement row stay on `release`.
+.PHONY: check-compile
+check-compile:
+	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh compile
 
 # Every lint of the tree and nothing else, no build (the lint role's one entry
 # point; check0 runs the same list after its per-ISA checks).
@@ -113,7 +137,7 @@ size-kernel: $(SIZE_KCONFIG)
 	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(SIZE_KCONFIG))"; \
 	isa=""; [ -z "$$rf" ] || isa="target.$(RISCV64_TARGET).rustflags=[$$rf]"; \
 	env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(SIZE_KCONFIG)" \
-	    $(CARGO) build --release --target-dir $(SIZE_TARGET_DIR) -p azos_kernel \
+	    $(BUILDQ_BIN) $(CARGO) build --release --target-dir $(SIZE_TARGET_DIR) -p azos_kernel \
 	    $${isa:+--config "$$isa"} $$(python3 tools/build/kconfig_to_cargo.py $(SIZE_KCONFIG))
 	@$(MAKE) --no-print-directory prune
 

@@ -12,12 +12,21 @@
 #   tools/gate/gate_tier.sh n1   n0's host suites, then tools/gate/ci_check.sh under
 #                           CI_TIER=rows with the per-ISA smoke boots and the
 #                           n1 rows the diff maps to (`make check1`)
+#   tools/gate/gate_tier.sh compile  the fast per-front check (`make check-compile`): `cargo check`
+#                           (validate profile, no codegen) of the kernel cells the diff reaches
+#                           (tools/gate/compile_plan.py: ISAs and presets) and `cargo check --tests` of
+#                           the host suites it reaches; no lints, no budgets, nothing boots
 #   tools/gate/gate_tier.sh lints  n0's lints alone, no build and no host suite: the
 #                           full gate's "n0 lints" row, so `make ci` runs the
 #                           same lints as `make check0`
 #
 # The diff is the working tree against GATE_BASE (default HEAD); see
 # tools/gate/rows_for_diff.py for how paths map to rows and suites.
+# COMPILE_ONLY=1 (n0, n1): the cheap form. The kernel cells are type-checked in the
+# `validate` profile (incremental, 16 codegen units) and the host suites are built in it;
+# the size budget still builds the one full release kernel, and the lints run. AZOS_SHARED_TARGET
+# and AZOS_SCCACHE (tools/gate/validate_env.sh) apply to those type-checks.
+# n0 and n1 queue for a host-wide build slot (tools/dev/buildq; BUILDQ=0 skips it).
 # GATE_DRY=1 prints what would run and runs nothing.
 set -uo pipefail
 # qgrep: grep -q at the end of a pipe, safe under pipefail (see tools/gate/ci_check.sh).
@@ -25,8 +34,12 @@ qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
 cd "$(dirname "$0")/../.." || exit 2
 tier="${1:-}"
 base="${GATE_BASE:-HEAD}"
-case "$tier" in n0|n1|lints) ;; *) echo "usage: tools/gate/gate_tier.sh n0|n1|lints"; exit 2 ;; esac
+case "$tier" in n0|n1|lints|compile) ;; *) echo "usage: tools/gate/gate_tier.sh n0|n1|lints|compile"; exit 2 ;; esac
+case "$tier" in n0|n1) [ -n "${BUILDQ_HELD:-}" ] || [ "${BUILDQ:-1}" = 0 ] || exec bash tools/dev/buildq bash "$PWD/tools/gate/gate_tier.sh" "$@" ;; esac
 lints=0; case "$tier" in n0|lints) lints=1 ;; esac
+compile_only=0; { [ "${COMPILE_ONLY:-0}" = 1 ] || [ "$tier" = compile ]; } && compile_only=1
+[ "$compile_only" = 1 ] && . tools/gate/validate_env.sh
+cprofile=release; [ "$compile_only" = 1 ] && cprofile=validate
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
 AZOS_OUT="${AZOS_OUT:-$(python3 tools/lib/out_dir.py)}"; export AZOS_OUT
 export TOPOLOGY_PUBKEY_PATH="${TOPOLOGY_PUBKEY_PATH:-$PWD/tools/keys/test_pub.bin}"
@@ -39,11 +52,19 @@ if [ -z "${KCONFIG_CONFIG:-}" ] && [ ! -f .config ]; then
     cp config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config "$KCONFIG_CONFIG" && python3 -m olddefconfig >/dev/null 2>&1 || exit 2
 fi
 suites=""
-[ "$tier" = lints ] || { suites="$(python3 tools/gate/rows_for_diff.py --base "$base" --host)" || exit 2; }
+cells="riscv64 aarch64 x86_64 riscv64:robot aarch64:robot x86_64:robot"
+if [ "$tier" = compile ]; then
+    plan="$(python3 tools/gate/compile_plan.py --base "$base")" || exit 2
+    cells="$(printf '%s\n' "$plan" | awk '$1 == "cell" { print ($3 == "robot") ? $2 ":robot" : $2 }' | tr '\n' ' ')"
+    suites="$(printf '%s\n' "$plan" | awk '$1 == "host" { print $2 }')"
+elif [ "$tier" != lints ]; then
+    suites="$(python3 tools/gate/rows_for_diff.py --base "$base" --host)" || exit 2
+fi
 fail=0
 t0=$SECONDS
 
 if [ "${GATE_DRY:-0}" = 1 ]; then
+    [ "$tier" = compile ] && { echo "cells: ${cells:-none}" | tr '\n' ' '; echo; }
     echo "host suites: ${suites:-none}" | tr '\n' ' '; echo
     [ "$tier" = n1 ] && { echo "rows:"; python3 tools/gate/rows_for_diff.py --base "$base" --rows --explain | sed 's/^/  /'; }
     exit 0
@@ -55,12 +76,12 @@ fi
 noise='^warning: [A-Za-z0-9_-]+@[0-9]|prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0'
 # Each ISA twice: the generic gate cell and the robot one (the robot crates
 # under crates/domains/robot/ and the kernel's `use-robot` code).
-if [ "$tier" = n0 ]; then
-    for arch in riscv64 aarch64 x86_64 riscv64:robot aarch64:robot x86_64:robot; do
+if [ "$tier" = n0 ] || [ "$tier" = compile ]; then
+    for arch in $cells; do
         preset=generic
         case "$arch" in *:robot) preset=robot; arch="${arch%:robot}" ;; esac
         printf "  %-26s" "check ${arch}$([ "$preset" = robot ] && echo ' robot')..."
-        if out="$(make ARCH="$arch" CHECK_PRESET="$preset" check 2>&1)" \
+        if out="$(make ARCH="$arch" CHECK_PRESET="$preset" CHECK_PROFILE="$cprofile" check 2>&1)" \
            && { [ "$arch" = x86_64 ] || ! printf '%s\n' "$out" | grep -E '^warning:' | qgrep -qvE "$noise"; }; then
             echo ok
         else
@@ -409,7 +430,13 @@ case " $suites " in *lx-loader-tests*) make -s lx-modules </dev/null >/dev/null 
 for s in $suites; do
     printf "  %-26s" "host ${s#tests/host/}..."
     kc=""; case "$s" in *micro-tests) kc="$AZOS_OUT/build/micro.config" ;; esac
-    if out="$(cd "$s" && env CARGO_TARGET_DIR="$AZOS_OUT/tgt/$s" ${kc:+KCONFIG_CONFIG=$kc} cargo test --release 2>&1)" \
+    # compile: `cargo check --tests` (nothing runs); COMPILE_ONLY: the tests run, built in the validate profile.
+    case "$tier:$compile_only" in
+        compile:*) hcmd="cargo check --tests --profile validate" ;;
+        *:1) hcmd="cargo test --profile validate" ;;
+        *) hcmd="cargo test --release" ;;
+    esac
+    if out="$(cd "$s" && env CARGO_TARGET_DIR="$AZOS_OUT/tgt/$s" ${kc:+KCONFIG_CONFIG=$kc} $hcmd 2>&1)" \
        && ! printf '%s\n' "$out" | qgrep -q 'test result: FAILED' \
        && ! printf '%s\n' "$out" | qgrep -qE '^warning: .*generated'; then
         echo ok

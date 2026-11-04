@@ -27,7 +27,7 @@ build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG) $(TEST_PRIV_KEY) $(TEST_PUB_KEY)
 # configuration.
 riscv64: $(IMAGE_HASHES) $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),$(RISCV64_SELECT),$(QEMU_DEV_KCONFIG:.config=-sel.config)); \
-	$(QEMU_DEV_ISA) KCONFIG_CONFIG="$(QEMU_DEV_KCONFIG:.config=-sel.config)" $(call secboot_key_env,$(QEMU_DEV_KCONFIG)) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
+	$(QEMU_DEV_ISA) KCONFIG_CONFIG="$(QEMU_DEV_KCONFIG:.config=-sel.config)" $(call secboot_key_env,$(QEMU_DEV_KCONFIG)) $(BUILDQ_BIN) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
 		$${isa:+--config "$$isa"} \
 		$$args
 
@@ -44,7 +44,7 @@ prune:
 # the development configuration with the vector extension probed (RV_V_PROBE).
 build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),CONFIG_RV_V_PROBE=y,$(OUT_BUILD)/qemu-dev-rvv.config); \
-	$(QEMU_DEV_ISA) KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-rvv.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $${isa:+--config "$$isa"} $$args
+	$(QEMU_DEV_ISA) KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-rvv.config" $(BUILDQ_BIN) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $${isa:+--config "$$isa"} $$args
 	@$(MAKE) --no-print-directory prune
 
 # Build kernel with the fleet defconfig (HWCLASS_SERVER) and the fleet linker script
@@ -59,7 +59,7 @@ build-fleet: $(IMAGE_HASHES_BOARD) $(OUT_BUILD)/disk-board-fleet.img
 	$(call kernel_select,.config,board-image,$(OUT_BUILD)/fleet-image.config); \
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" KCONFIG_CONFIG="$(OUT_BUILD)/fleet-image.config" \
 	RUSTFLAGS="$(FLEET_RUSTFLAGS) $$(python3 tools/build/kconfig_to_cargo.py --rustflags .config)" \
-	$(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
+	$(BUILDQ_BIN) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 	@echo "[FLEET] kernel built, volume $(OUT_BUILD)/disk-board-fleet.img (signed topology) — use a gateway board with >= 1 GiB RAM"
 	@$(MAKE) --no-print-directory prune
 
@@ -128,7 +128,7 @@ vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG) $(VF2_DISK)
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
 	KCONFIG_CONFIG="$(VF2_KCONFIG:.config=-image.config)" \
 	RUSTFLAGS="$(VF2_RUSTFLAGS) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(VF2_KCONFIG))" \
-	$(CARGO) build --release --target-dir $(VF2_TARGET_DIR) -p azos_kernel $$args \
+	$(BUILDQ_BIN) $(CARGO) build --release --target-dir $(VF2_TARGET_DIR) -p azos_kernel $$args \
 		--config "build.rustflags=['-C','link-arg=-T$(VF2_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
 	riscv64-unknown-elf-objcopy -O binary \
@@ -206,7 +206,7 @@ k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG) $(OUT_BUILD)/disk-board-k1.img
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
 	KCONFIG_CONFIG="$(K1_KCONFIG:.config=-image.config)" \
 	RUSTFLAGS="$(K1_RUSTFLAGS) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(K1_KCONFIG))" \
-	$(CARGO) build --release -p azos_kernel $$args \
+	$(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel $$args \
 		--config "build.rustflags=['-C','link-arg=-T$(K1_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
 	riscv64-unknown-elf-objcopy -O binary \
@@ -365,7 +365,7 @@ x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 	$(call kernel_select,$(X86_64_KCONFIG),$(X86_64_SELECT),$(X86_64_KCONFIG:.config=-sel.config)); \
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(X86_64_KCONFIG:.config=-sel.config)" CARGO_TARGET_DIR="$(X86_64_TARGET_DIR)" $(call secboot_key_env,$(X86_64_KCONFIG)) \
 	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
-	    $(CARGO) build --release -p azos_kernel $$args
+	    $(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel $$args
 	@mkdir -p $(OUT_BUILD)
 	cp $(X86_64_ELF) $(X86_64_IMG)
 	@echo "[X86_64] Built $(X86_64_IMG)"
@@ -399,7 +399,7 @@ aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	$(call kernel_select,$(AARCH64_KCONFIG),$(AARCH64_SELECT),$(AARCH64_KCONFIG:.config=-sel.config)); \
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(AARCH64_KCONFIG:.config=-sel.config)" $(AARCH64_KTARGET_ENV) $(call secboot_key_env,$(AARCH64_KCONFIG)) \
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(AARCH64_KCONFIG))" \
-	    $(CARGO) build --release -p azos_kernel $$args
+	    $(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel $$args
 	@mkdir -p $(OUT_BUILD)
 	"$(AARCH64_OBJCOPY)" -O binary $(AARCH64_ELF) $(AARCH64_IMG)
 	@echo "[AARCH64] Built $(AARCH64_IMG)"
@@ -446,7 +446,7 @@ rpi5-key:
 rpi5: rpi5-key $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(RPI5_KCONFIG)" $(AARCH64_KTARGET_ENV) \
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(RPI5_KCONFIG))" \
-	    $(CARGO) build --release -p azos_kernel \
+	    $(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel \
 	    $$(python3 tools/build/kconfig_to_cargo.py $(RPI5_KCONFIG) | tr -s ' ')
 	@mkdir -p $(dir $(RPI5_IMG))
 	"$(AARCH64_OBJCOPY)" -O binary $(AARCH64_ELF) $(RPI5_IMG)
@@ -503,7 +503,7 @@ micro-check: $(MICRO_CONFIG) $(MICRO_TOPO_DIR)/CAPS.SIG
 
 micro: $(MICRO_ELF)
 $(MICRO_ELF): $(MICRO_CONFIG) $(MICRO_TOPO_DIR)/CAPS.SIG $(MICRO_SRC)
-	cd micro && CARGO_TARGET_DIR="$(OUT_TGT)/micro" $(MICRO_ENV) $(CARGO) build --release --features "$(MICRO_FEATURES)" --bin azos_micro
+	cd micro && CARGO_TARGET_DIR="$(OUT_TGT)/micro" $(MICRO_ENV) $(BUILDQ_BIN) $(CARGO) build --release --features "$(MICRO_FEATURES)" --bin azos_micro
 	@mkdir -p $(@D)
 	cp $(OUT_TGT)/micro/riscv32imac-unknown-none-elf/release/azos_micro $@
 	@echo "[MICRO] $@ ($$(wc -c < $@) bytes)"

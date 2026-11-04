@@ -76,7 +76,7 @@ ROLES = {
         "check_fast.py", "check_fast.sh", "ci_cargo.py", "ci_check.sh", "ci_full.sh",
         "reclaim_row.py", "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "core_check.py", "coverage.sh", "debug_row.py", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
-        "asym_dtb.sh", "hyp_refusal_row.py", "image_header.py", "ipv6_tcp_row.sh",
+        "asym_dtb.sh", "compile_plan.py", "validate_env.sh", "hyp_refusal_row.py", "image_header.py", "ipv6_tcp_row.sh",
         "kaslr_boot_row.sh", "ktest_registry.py", "land_bisect.sh", "link_peer.py",
         "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_sendkeys.py", "qemu_tap.py", "repro_check.sh", "rows_for_diff.py",
@@ -108,7 +108,7 @@ ROLES = {
         "vsbench_tcp_pcap.py", "vsbench_tcp_peer.py", "vsbench_x86_64.sh",
     ],
     "dev": [
-        "debug_script.py", "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
+        "buildq", "debug_script.py", "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
         "merge_generated.py", "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh",
         "rr_qemu.py", "rr_replay.sh", "rr_row.sh", "run_guest.sh", "stall_attach.py",
         "symbolize_bt.py", "test_debug.py", "test_farm.py", "test_rr.py", "test_stall_attach.py",

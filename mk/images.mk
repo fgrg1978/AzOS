@@ -1233,7 +1233,7 @@ KCONFIG_CONFIG=$(AZOS_GUEST_DIR)/$(2).config $(PYTHON) -m olddefconfig
 rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(AZOS_GUEST_DIR)/$(2).config)"; \
 	isa=""; [ -z "$$rf" ] || isa="target.$(RISCV64_TARGET).rustflags=[$$rf]"; \
 	env KCONFIG_CONFIG=$(AZOS_GUEST_DIR)/$(2).config CARGO_TARGET_DIR=$(OUT_TARGET)/azos-guest-$(ARCH)-$(2) \
-	    $(CARGO) build --release -p azos_kernel $${isa:+--config "$$isa"} \
+	    $(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel $${isa:+--config "$$isa"} \
 	    $$(python3 tools/build/kconfig_to_cargo.py $(AZOS_GUEST_DIR)/$(2).config | tr -s ' ')
 cp $(OUT_TARGET)/azos-guest-$(ARCH)-$(2)/$(RISCV64_TARGET)/release/kernel $(AZOS_GUEST_DIR)/$(2).kernel
 endef

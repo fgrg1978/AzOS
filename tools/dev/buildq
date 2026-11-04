@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# The host-wide build queue: run a heavy build only when a slot is free.
+#
+#   tools/dev/buildq <cmd> [args...]     wait for a slot, run the command, release it
+#   tools/dev/buildq --self-test         canaries for the queue
+#
+# At most BUILDQ_SLOTS (default 2) heavy builds run at once on the host, from
+# any checkout. A slot is a directory $BUILDQ_DIR/slot.<n> (default
+# $HOME/azos-out/buildq), taken with mkdir (atomic) and holding the owner's PID
+# in `pid`; a slot whose PID is dead is reclaimed. No daemon: the waiters poll.
+# The command runs with CARGO_BUILD_JOBS = host cores / slots (BUILDQ_JOBS
+# overrides it), so two builds together fill the host and no more. The slot is
+# released when the command exits and on INT, TERM and HUP.
+#
+# Used by: `make check0|check1` (tools/gate/gate_tier.sh), `make build`-class kernel
+# builds and image builds when BUILDQ is not 0. The fast per-front check
+# (tools/gate/check_compile.sh) is `cargo check` and does not queue.
+# A command already running inside a slot (BUILDQ_HELD set) runs directly:
+# the queue does not wait on itself.
+set -uo pipefail
+
+SLOTS="${BUILDQ_SLOTS:-2}"
+DIR="${BUILDQ_DIR:-$HOME/azos-out/buildq}"
+
+alive() { kill -0 "$1" 2>/dev/null; }
+
+# take: print the slot dir taken, or nothing when all are busy.
+take() {
+    local n s p
+    for n in $(seq 1 "$SLOTS"); do
+        s="$DIR/slot.$n"
+        if mkdir "$s" 2>/dev/null; then
+            echo $$ >"$s/pid"; echo "$s"; return 0
+        fi
+        p="$(cat "$s/pid" 2>/dev/null)"
+        # No pid yet: its owner is between mkdir and the write; give it a pass.
+        if [ -n "$p" ] && ! alive "$p"; then
+            # Two reclaimers must not both win: rename is atomic, the loser's fails.
+            if mv "$s" "$s.dead.$$" 2>/dev/null; then
+                rm -rf "$s.dead.$$"
+                if mkdir "$s" 2>/dev/null; then echo $$ >"$s/pid"; echo "$s"; return 0; fi
+            fi
+        fi
+    done
+    return 1
+}
+
+if [ "${1:-}" = --self-test ]; then
+    t="$(mktemp -d)"; bad=0
+    me="$0"
+    export BUILDQ_DIR="$t/q" BUILDQ_SLOTS=2 BUILDQ_QUIET=1
+    unset BUILDQ_HELD
+    # Two long jobs fill the slots; a third must wait for one of them.
+    bash "$me" sleep 3 & a=$!
+    bash "$me" sleep 3 & b=$!
+    sleep 1
+    t0=$SECONDS; bash "$me" true; w=$((SECONDS - t0))
+    [ "$w" -ge 1 ] || { echo "buildq self-test: FAIL third job did not wait ($w s)"; bad=1; }
+    wait "$a" "$b"
+    # A dead owner's slot is reclaimed.
+    mkdir -p "$t/q/slot.1" "$t/q/slot.2"; echo 999999 >"$t/q/slot.1/pid"; echo 999999 >"$t/q/slot.2/pid"
+    t0=$SECONDS; bash "$me" true; [ $((SECONDS - t0)) -le 2 ] || { echo "buildq self-test: FAIL stale slot kept"; bad=1; }
+    # The slot is released on a signal.
+    rm -rf "$t/q"
+    bash "$me" sleep 30 & a=$!
+    sleep 1; kill -TERM "$a"; wait "$a" 2>/dev/null; sleep 1
+    n="$(ls "$t/q" | grep -c '^slot\.[0-9]*$')"
+    [ "$n" = 0 ] || { echo "buildq self-test: FAIL $n slot(s) left after TERM"; bad=1; }
+    # The exit status is the command's, and the jobs count is cores / slots.
+    bash "$me" sh -c 'exit 7'; [ $? = 7 ] || { echo "buildq self-test: FAIL exit status"; bad=1; }
+    j="$(bash "$me" sh -c 'echo $CARGO_BUILD_JOBS')"
+    want=$(( $(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN) / 2 )); [ "$want" -ge 1 ] || want=1
+    [ "$j" = "$want" ] || { echo "buildq self-test: FAIL jobs $j, want $want"; bad=1; }
+    rm -rf "$t"
+    [ "$bad" = 0 ] && echo "buildq self-test: ok"
+    exit "$bad"
+fi
+
+[ $# -gt 0 ] || { echo "usage: tools/dev/buildq <cmd> [args...] | --self-test"; exit 2; }
+if [ -n "${BUILDQ_HELD:-}" ]; then exec "$@"; fi
+
+mkdir -p "$DIR" || exit 2
+cores="$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+jobs="${BUILDQ_JOBS:-$((cores / SLOTS))}"; [ "$jobs" -ge 1 ] || jobs=1
+
+slot=""
+release() { [ -n "$slot" ] && rm -rf "$slot"; slot=""; }
+trap 'release; exit 143' TERM
+trap 'release; exit 130' INT
+trap 'release; exit 129' HUP
+trap release EXIT
+
+w0=$SECONDS; said=0
+until slot="$(take)"; do
+    slot=""
+    if [ "$said" = 0 ] && [ -z "${BUILDQ_QUIET:-}" ]; then echo "buildq: all $SLOTS slots busy, waiting" >&2; said=1; fi
+    sleep 2
+done
+[ -z "${BUILDQ_QUIET:-}" ] && echo "buildq: slot $(basename "$slot") after $((SECONDS - w0)) s, CARGO_BUILD_JOBS=$jobs" >&2
+
+# Not exec: the shell stays to release the slot. A signal reaches the child
+# through the foreground process group; the trap runs when it ends.
+BUILDQ_HELD=1 CARGO_BUILD_JOBS="$jobs" "$@" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; release; exit 143' TERM
+trap 'kill -INT "$child" 2>/dev/null; wait "$child" 2>/dev/null; release; exit 130' INT
+trap 'kill -HUP "$child" 2>/dev/null; wait "$child" 2>/dev/null; release; exit 129' HUP
+wait "$child"; rc=$?
+release
+exit "$rc"

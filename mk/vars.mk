@@ -38,6 +38,12 @@ ARCH ?= $(KCONFIG_ISA)
 QEMU  := qemu-system-riscv64
 QEMU_FLAGS := -machine virt -nographic -bios default
 CARGO := $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
+# The heavy builds (kernels, images, ring-3 ELFs) wait for a host-wide build slot
+# (tools/dev/buildq: at most 2 at once, CARGO_BUILD_JOBS = cores / 2); a build already
+# inside a slot (the gate's tiers) runs directly. `make BUILDQ=0 ...` skips the queue.
+# The type-checks (`make check`, check-compile) are not queued.
+BUILDQ ?= 1
+BUILDQ_BIN := $(if $(filter 0,$(BUILDQ)),,"$(CURDIR)/tools/dev/buildq")
 
 # The riscv64 kernel's cargo output (the `riscv64` build, the boards,
 # size-kernel): its triple, its profile's directory and its ELF.
@@ -517,7 +523,7 @@ RV_USER_ISA = $(if $(shell grep -qs '^CONFIG_ARCH_RISCV64=y$$' '$(RV_USER_KCONFI
 # Cargo hashes the target spec's contents into every artifact's fingerprint,
 # so an edit of sdk/targets/*.json relinks every image; a crate's build.rs (the
 # stack an image asks for, `-z stack-size`) is tracked by cargo itself.
-USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(CARGO) +nightly build --release -Zjson-target-spec
+USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(BUILDQ_BIN) $(CARGO) +nightly build --release -Zjson-target-spec
 # Each ISA's target and rustflags: the wrapper's digest (above) and the Kconfig
 # codegen flags. A recipe adds exactly one of RV_UFLAGS, AARCH64_UFLAGS and
 # X86_64_UFLAGS after $(USPACE_BUILD).

@@ -43,7 +43,7 @@ $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img:
 # would boot but never print a `[PCI]` line.
 build-pci: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),pci,$(OUT_BUILD)/qemu-dev-pci.config); \
-	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-pci.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-pci.config" $(BUILDQ_BIN) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 
 qemu-pci: build-pci $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_PCI_ARGS) -kernel $(RISCV64_KERNEL_ELF)
@@ -53,7 +53,7 @@ qemu-pci: build-pci $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
 # too, polled). The disk is the repo's `build/disk.img`.
 build-nvme: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),pci$(comma)nvme,$(OUT_BUILD)/qemu-dev-nvme.config); \
-	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-nvme.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-nvme.config" $(BUILDQ_BIN) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 
 qemu-nvme: build-nvme $(OUT_BUILD)/disk.img
 	$(QEMU) -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel $(RISCV64_KERNEL_ELF) \
@@ -109,7 +109,7 @@ qemu-systest: build userspace $(OUT_BUILD)/disk-systest.img
 # returned. Prints `[DHCPSMOKE] PASS ...` or `FAIL <reason>`.
 qemu-dhcp-smoke: $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),dhcp-smoke,$(OUT_BUILD)/qemu-dev-dhcp-smoke.config); \
-	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-dhcp-smoke.config" $(CARGO) build --release -p azos_kernel $$args
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-dhcp-smoke.config" $(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel $$args
 	$(QEMU) $(QEMU_FLAGS) -kernel $(RISCV64_KERNEL_ELF) \
 		-netdev user,id=net0 -device virtio-net-device,netdev=net0
 
@@ -165,7 +165,7 @@ stall: build
 # Fails the build on FAIL, panic, or timeout.
 qemu-net-pair: $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),net-smoke,$(OUT_BUILD)/qemu-dev-net-smoke.config); \
-	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-net-smoke.config" $(CARGO) build --release -p azos_kernel $$args
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-net-smoke.config" $(BUILDQ_BIN) $(CARGO) build --release -p azos_kernel $$args
 	QEMU=$(QEMU) bash tools/gate/net_pair_smoke.sh
 
 # The signed microcode image as the PVH boot module of an x86_64 `make qemu`

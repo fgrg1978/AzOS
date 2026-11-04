@@ -68,6 +68,8 @@ Boards
 
 Test & gate
   check0                 Quick check after an edit: type-check riscv64, aarch64 and x86_64, run the host tests the diff reaches.
+  check-compile          Fastest front check: cargo check (validate profile) of the kernel cells and host suites the diff reaches.
+                         make check0 COMPILE_ONLY=1 is check0 with validate-profile builds; AZOS_SHARED_TARGET=<dir>, AZOS_SCCACHE=1 opt in.
   lint                   Every lint of the tree (tools/ layout, Kconfig, docs, unsafe budget, ...); builds nothing.
   check-presets          Every preset expands on riscv64, aarch64 and x86_64 and the cargo bridge accepts it (no build).
   sdk                    The native SDK of the .config ISA, into $AZOS_OUT/sdk/<isa>: std for <isa>-unknown-azos, rebuilt only when the toolchain, the port layer or a Kconfig value it is built with changes. `make build` runs it first.

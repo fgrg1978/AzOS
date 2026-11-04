@@ -16,3 +16,13 @@ rustflags = [
 [unstable]
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
+# The profile of validation builds only (`make check-compile`, `make check0
+# COMPILE_ONLY=1`, tools/gate/validate_env.sh): release's code with the default
+# 16 codegen units and incremental builds, no debug info. Never the profile of the
+# size budget, the unsafe budget, vsbench or any measurement row: those stay
+# on `release` (Cargo.toml), whose codegen-units = 1 pins the code.
+[profile.validate]
+inherits = "release"
+codegen-units = 16
+incremental = true
+debug = false

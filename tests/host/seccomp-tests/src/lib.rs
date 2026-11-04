@@ -3333,7 +3333,7 @@ mod image_profiles {
             .find(|l| l.starts_with("USPACE_BUILD :="))
             .expect("the Makefile defines no USPACE_BUILD");
         assert!(
-            def.contains("RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(CARGO) +nightly build --release"),
+            def.contains("RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(BUILDQ_BIN) $(CARGO) +nightly build --release"),
             "{def}",
         );
         // Cargo does not rebuild when only RUSTC_WRAPPER changes, so the flags
