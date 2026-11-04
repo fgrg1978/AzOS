@@ -103,7 +103,8 @@ config RCU_QSBR
 
 config RCU_NOCBS_FROM_CLUSTER
     bool "RCU: the real-time cluster's CPUs are RCU no-callback CPUs"
-    default y
+    default y if RT_HARD || RT_MIXED
+    default n
     help
       The real-time CPUs are the first TASK_RT_CLUSTER_CPUS CPUs (cut so
       that one of the NR_CPUS stays outside), RCU_NOCBS_CPUS and, at boot,
@@ -112,6 +113,10 @@ config RCU_NOCBS_FROM_CLUSTER
       state with or without a tick (rule F5). The build-time part is a
       constant: no instruction on the trap path beyond a test of it.
       n: only RCU_NOCBS_CPUS and `isolcpus` name them.
+      Default y on the hard and mixed real-time presets only: with any
+      no-callback CPU the trap path keeps the RT CPU's quiescent boundary
+      per entry, so the IPC fast path leaves no resume point
+      (IPC_FASTPATH_RESUME), which costs every IPC round trip.
       A boot with as many CPUs as the cluster has none left outside: the
       callback task runs on CPU 0 and the boot records `rcu-callback-cpu`.
 

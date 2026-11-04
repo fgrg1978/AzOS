@@ -15981,7 +15981,7 @@ CPU 5 lacks hwcap bits"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         cfg="$(cd "$CI_LOG_DIR" && pwd)/${tag}.config"
         { grep -v '^CONFIG_TASK_RT_CLUSTER_CPUS=' "${REPO_ROOT}/config/defconfigs/${defc}.config"
-          echo 'CONFIG_TASK_RT_CLUSTER_CPUS=1'; } >"$cfg"
+          echo 'CONFIG_TASK_RT_CLUSTER_CPUS=1'; echo 'CONFIG_RCU_NOCBS_FROM_CLUSTER=y'; } >"$cfg"
         if ! { (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
                 && grep -q '^CONFIG_TASK_RT_CLUSTER_CPUS=1$' "$cfg" && grep -q '^CONFIG_RCU_NOCBS_FROM_CLUSTER=y$' "$cfg"; }; then
             printf "  %-26s" "${label}..."; bad
@@ -17620,7 +17620,7 @@ CPU 5 lacks hwcap bits"
         mkdir -p "$CI_LOG_DIR"
         def="$CI_LOG_DIR/x86-ktest-rtc.defconfig"
         { grep -v '^CONFIG_TASK_RT_CLUSTER_CPUS=' "config/defconfigs/${GATE_ROBOT_DEFC_X86}.config"
-          echo 'CONFIG_TASK_RT_CLUSTER_CPUS=1'; } >"$def"
+          echo 'CONFIG_TASK_RT_CLUSTER_CPUS=1'; echo 'CONFIG_RCU_NOCBS_FROM_CLUSTER=y'; } >"$def"
         X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-rtc.elf
         X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-rtc.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-rtc X86_64_IMG=$X86_KBUILD_OUT"
         KTEST_SMP=4 x86_ktest_row "$label" "" "$2" "${3:-}" "" "${4:-}"
