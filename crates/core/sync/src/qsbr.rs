@@ -626,6 +626,12 @@ pub fn callback_cpu() -> Option<usize> {
 
 /// The callback task's body: wait for queued callbacks, take every CPU's
 /// list, wait a grace period, run them. Never returns.
+/// The CPU the callback task is pinned to, and whether it is inside
+/// RCU_NOCBS_CPUS because every CPU is.
+pub fn callback_placement() -> (usize, bool) {
+    core_::callback_placement(azos_percpu::nr_cpu_ids(), NOCBS_CPUS, azos_percpu::cpu_possible)
+}
+
 pub fn callback_task() -> ! {
     loop {
         // No deadline (`wait_if`, not `wait_if_for`): the wake cannot be lost.

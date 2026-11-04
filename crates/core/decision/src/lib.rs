@@ -363,6 +363,10 @@ pub enum Rule {
     CapSlotRestart = 82,
     /// A grant found no slot in the domain's capability table.
     CapTableFull = 83,
+    /// Every CPU is in the real-time set (RCU_NOCBS_CPUS), so the RCU callback
+    /// task runs on CPU 0, inside it: the one place QSBR callbacks reach a
+    /// real-time CPU (`azos_sync::qsbr::callback_placement`).
+    RcuCallbackCpu = 84,
 }
 
 impl Rule {
@@ -1234,6 +1238,13 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["live", "parked", "refusals"],
         rejected_if_yes: "-",
         rejected_if_no: "grant a slot: every one is live, or waits for the sweep that restarts it",
+    },
+    RuleInfo {
+        name: "rcu-callback-cpu",
+        subject: "cpus",
+        fields: ["nocbs_mask", "callback_cpu", "-"],
+        rejected_if_yes: "refuse a boot with no CPU outside the real-time set, or run callbacks on the last real-time CPU only while it is idle",
+        rejected_if_no: "-",
     },
 ];
 

@@ -545,6 +545,23 @@ mod qsbr_tests {
         assert_eq!(callback_cpu(4, 0b0001, |c| c != 1), Some(2));
     }
 
+    /// D9: with every CPU in the mask the callback task still has a place,
+    /// CPU 0, and the placement says it is inside the mask (the boot then
+    /// writes the `rcu-callback-cpu` record); otherwise it is the callback CPU.
+    ///
+    /// Canary (run 2026-11-04): `callback_placement` answering `false`
+    /// for the fallback: the first line red.
+    #[test]
+    fn a_full_mask_places_the_callback_task_on_cpu_0_and_says_so() {
+        let all = |_c: usize| true;
+        assert_eq!(callback_placement(2, 0b11, all), (0, true));
+        assert_eq!(callback_placement(4, 0b1111, all), (0, true));
+        assert_eq!(callback_placement(2, 0b10, all), (0, false));
+        assert_eq!(callback_placement(4, 0b0011, all), (2, false));
+        assert_eq!(callback_placement(4, 0, |c| c != 0), (1, false));
+        assert_eq!(callback_placement(2, 0b01, |c| c == 0), (0, true), "the only possible CPU is in the mask");
+    }
+
     /// The mask is read by logical CPU id. A machine whose boot hart is 4 and
     /// whose harts are 4, 1, 7 has CPUs 0, 1, 2: the RT test of the CPU the
     /// reclaim task runs on asks with the CPU id, not the hart id.

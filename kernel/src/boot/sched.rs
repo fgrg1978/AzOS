@@ -1046,14 +1046,13 @@ pub(crate) fn create_rcu_callback_task() {
         azos_sync::qsbr::canary_free_without_grace();
     }
     azos_sync::qsbr::set_hooks(rcu_now_ms, rcu_sleep_ms);
-    let cpu = match azos_sync::qsbr::callback_cpu() {
-        Some(c) => c,
-        None => {
-            azos_drv_sys::kwarn!("[RCU] RCU_NOCBS_CPUS {:#x} names every CPU: callbacks run on CPU 0",
-                azos_sync::qsbr::NOCBS_CPUS);
-            0
-        }
-    };
+    let (cpu, inside_rt_set) = azos_sync::qsbr::callback_placement();
+    if inside_rt_set {
+        azos_drv_sys::kwarn!("[RCU] RCU_NOCBS_CPUS {:#x} names every CPU: callbacks run on CPU 0",
+            azos_sync::qsbr::NOCBS_CPUS);
+        azos_decision::record(azos_decision::Rule::RcuCallbackCpu, azos_decision::Verdict::Place,
+            azos_percpu::nr_cpu_ids() as u32, [azos_sync::qsbr::NOCBS_CPUS as u64, cpu as u64, 0]);
+    }
     azos_sched::task_create_affinity("rcu-cb", rcu_callback_task, 0,
         azos_limits::RCU_CALLBACK_PRIORITY as u32, cpu as i8);
     kprintln!("[SCHED] Created rcu-cb task (prio {}, CPU {}, nocbs {:#x})",

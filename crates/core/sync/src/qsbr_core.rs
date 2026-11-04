@@ -78,3 +78,13 @@ pub const fn cpu_in_mask(mask: usize, cpu: usize) -> bool {
 pub fn callback_cpu(n: usize, nocbs: usize, possible: impl Fn(usize) -> bool) -> Option<usize> {
     (0..n.min(usize::BITS as usize)).find(|&c| possible(c) && nocbs & (1 << c) == 0)
 }
+
+/// Where the callback task runs, and whether it had to run inside the
+/// real-time set: [`callback_cpu`], else CPU 0 with `true` (no CPU is left
+/// outside `nocbs`; the boot records that as `Rule::RcuCallbackCpu`).
+pub fn callback_placement(n: usize, nocbs: usize, possible: impl Fn(usize) -> bool) -> (usize, bool) {
+    match callback_cpu(n, nocbs, possible) {
+        Some(c) => (c, false),
+        None => (0, true),
+    }
+}
