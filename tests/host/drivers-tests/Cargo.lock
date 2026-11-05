@@ -98,6 +98,9 @@ dependencies = [
 [[package]]
 name = "azos_drvkit"
 version = "0.1.0"
+dependencies = [
+ "azos_arch_api",
+]
 
 [[package]]
 name = "azos_idl"

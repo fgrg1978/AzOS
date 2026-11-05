@@ -294,6 +294,7 @@ dependencies = [
  "azos_drv_base",
  "azos_drv_sys",
  "azos_drv_virtio",
+ "azos_drvkit",
  "azos_limits",
  "azos_mm",
  "azos_nvme",
@@ -364,6 +365,7 @@ dependencies = [
  "azos_drv_base",
  "azos_drv_sys",
  "azos_drv_virtio",
+ "azos_drvkit",
  "azos_limits",
  "azos_mm",
  "azos_pci",
@@ -596,6 +598,7 @@ name = "azos_iommu"
 version = "0.1.0"
 dependencies = [
  "azos_dma",
+ "azos_drvkit",
 ]
 
 [[package]]
