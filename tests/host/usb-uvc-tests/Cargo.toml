@@ -10,7 +10,7 @@ description = "Host-side tests for the USB video class driver (crates/drivers/us
 # Canaries: `cargo test --release --target aarch64-apple-darwin --features canary-<name>` must FAIL.
 
 [dependencies]
-azos_usb = { path = "../../../crates/drivers/usb", features = ["inspect"] }
+azos_usb = { path = "../../../crates/drivers/usb", features = ["inspect", "uvc"] }
 azos_usb_tests = { path = "../usb-tests" }
 azos_cam_ring = { path = "../../../crates/drivers/cam-ring" }
 azos_rings = { path = "../../../crates/core/rings" }

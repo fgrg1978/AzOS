@@ -13,7 +13,6 @@ use azos_abi::cap::{ty, CapType};
 #[cfg(not(feature = "use-robot"))]
 use crate::no_robot::{robot as azos_robot, imu as azos_imu, gps as azos_gps};
 use crate::file_ops::{cstr_to_bytes, file_ops};
-use azos_sync::kmutex::Mutex;
 use azos_net::{
     socket_create_owned,
     socket_recv, socket_close,
@@ -3861,11 +3860,16 @@ impl SampleMeta {
 const SYNTHETIC: u16 = azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
 
 /// The IMU, odometry, encoder and GPS exist only with the Robot domain
-/// (`crate::no_robot` stands in for it without): a read refuses them like a
-/// sensor that is not ready, and so does a bind to the vDSO page.
+/// (`crate::no_robot` stands in for it without), and the rangefinders, battery
+/// converter, LiDAR, power monitor and camera only with the board's I/O
+/// (`board-io`): a read refuses them like a sensor that is not ready, and so
+/// does a bind to the vDSO page.
 pub(crate) fn robot_sensor_absent(sensor_type: u64) -> bool {
-    cfg!(not(feature = "use-robot"))
-        && matches!(sensor_type, SENSOR_TYPE_IMU | SENSOR_TYPE_ODOM | SENSOR_TYPE_ENCODER | SENSOR_TYPE_GPS)
+    (cfg!(not(feature = "use-robot"))
+        && matches!(sensor_type, SENSOR_TYPE_IMU | SENSOR_TYPE_ODOM | SENSOR_TYPE_ENCODER | SENSOR_TYPE_GPS))
+        || (cfg!(not(feature = "board-io"))
+            && matches!(sensor_type,
+                SENSOR_TYPE_RANGE | SENSOR_TYPE_BATTERY | SENSOR_TYPE_LIDAR | SENSOR_TYPE_POWER | SENSOR_TYPE_CAMERA))
 }
 
 /// The sensor read with its destination left to the caller: the arm for
@@ -3924,6 +3928,7 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             tmp[8..16].copy_from_slice(&enc_r.to_le_bytes());
             sink(&tmp, SampleMeta::at_ticks(acq, 0))
         }
+        #[cfg(feature = "board-io")]
         SENSOR_TYPE_RANGE => {
             const RANGE_DATA_SIZE: usize = 4; // 2 × u16
             if (buf_len as usize) < RANGE_DATA_SIZE { return -1; }
@@ -3940,6 +3945,7 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             // the read is the measurement, and it is not a device's.
             sink(&tmp, SampleMeta::at_ticks(acq, SYNTHETIC))
         }
+        #[cfg(feature = "board-io")]
         SENSOR_TYPE_BATTERY => {
             const BATT_DATA_SIZE: usize = 2; // u16
             if (buf_len as usize) < BATT_DATA_SIZE { return -1; }
@@ -3978,6 +3984,7 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             }
             sink(&tmp, meta)
         }
+        #[cfg(feature = "board-io")]
         SENSOR_TYPE_LIDAR => {
             // Read latest LiDAR scan into user buffer
             // Data format: N × [angle_cdeg(u16 LE) + distance_mm(u16 LE)]
@@ -4007,6 +4014,7 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             }
             sink(&flags.to_le_bytes(), SampleMeta::at_ticks(acq, 0))
         }
+        #[cfg(feature = "board-io")]
         SENSOR_TYPE_POWER => {
             const PWR_SIZE: usize = azos_drv_sensor::ina219::POWER_DATA_SIZE;
             if (buf_len as usize) < PWR_SIZE { return -1; }
@@ -4017,6 +4025,7 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             if n == 0 { return 0; }
             sink(&tmp[..n], SampleMeta { acq_ns, flags: 0 })
         }
+        #[cfg(feature = "board-io")]
         SENSOR_TYPE_CAMERA => {
             // The JPEG frame lives in a static, not on the kernel stack.
             //
@@ -4040,8 +4049,8 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             // still land here, and a second caller contending for the
             // buffer is boosted-and-yields instead of spinning blind for
             // the encode's duration.
-            static CAM_BUF: Mutex<[u8; azos_drv_sensor::csi::JPEG_MAX_SIZE]> =
-                Mutex::new([0u8; azos_drv_sensor::csi::JPEG_MAX_SIZE]);
+            static CAM_BUF: azos_sync::kmutex::Mutex<[u8; azos_drv_sensor::csi::JPEG_MAX_SIZE]> =
+                azos_sync::kmutex::Mutex::new([0u8; azos_drv_sensor::csi::JPEG_MAX_SIZE]);
             let mut jpeg_buf = CAM_BUF.lock();
             let (jpeg_len, acq) = azos_drv_sensor::csi::csi_capture_jpeg_stamped(&mut jpeg_buf[..]);
             if jpeg_len == 0 { return 0; }

@@ -12,8 +12,11 @@ description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded
 # The syscall sources pulled in below name the robot crates through the shims
 # in `shims/` (robot, imu, gps); `use-robot` is what makes them do so
 # instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).
-default = ["use-robot", "virtio-snd", "linux-abi"]
+default = ["use-robot", "virtio-snd", "linux-abi", "board-io"]
 use-robot = []
+# Mirrors azos_syscall's `board-io`: the pulled-in khost.rs serves the `adc` key
+# (`adc_host.rs`) and handlers.rs reads the board's sensor types.
+board-io = []
 # Mirrors azos_syscall's `virtio-snd`: the pulled-in khost.rs serves the `sound` key.
 virtio-snd = []
 # Mirrors azos_syscall's `linux-abi` (the pulled-in handlers.rs): on, because

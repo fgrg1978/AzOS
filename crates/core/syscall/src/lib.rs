@@ -53,6 +53,9 @@ pub mod display;
 /// memory-object periods.
 #[cfg(feature = "virtio-snd")]
 pub mod sound_host;
+/// The `Adc` interface the kernel hosts: the board's converter channels.
+#[cfg(feature = "board-io")]
+pub mod adc_host;
 /// Volatile memory objects: the `MemCtl` interface the kernel hosts.
 pub mod memctl;
 /// Keys held for their users, used by handle: the `Keys` interface the kernel hosts.

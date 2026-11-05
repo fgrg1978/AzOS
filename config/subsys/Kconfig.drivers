@@ -626,8 +626,24 @@ config DRV_RING3_DEFAULT
       (written in its help). Drivers with no placement choice are not
       affected (see the closed rule above).
 
+config BOARD_IO
+    # cargo-feature: board-io
+    bool "Board sensors: converter, rangefinders, LiDAR, power monitor, camera" if !USE_ROBOT
+    default y if USE_ROBOT || USE_IOT_HMI || USE_INDUSTRIAL || USE_AUTOMOTIVE || USE_WEARABLE
+    help
+      Kernel feature `board-io`: links crates/drivers/sensor (the ADS1115
+      converter, ultrasonic and ToF rangefinders, the LiDAR, the INA219 power
+      monitor, the CSI camera) and the kernel side that serves them: the
+      `Adc` interface (crates/core/syscall/src/adc_host.rs) and the range,
+      battery, LiDAR, power and camera types of the `Sensor` interface.
+      Off, those sensor types read as not ready, no `Adc` interface is
+      served and none of that code is in the image (tools/lint/
+      profile_cut_lint.py checks the dependency set). The Robot domain
+      needs it, so with USE_ROBOT it is on and not shown.
+
 choice DRV_INA219_PLACEMENT
     prompt "INA219 power monitor: placement"
+    depends on BOARD_IO
     # A placement choice whose own default is not ring 3 carries
     # `default <ring3 member> if DRV_RING3_DEFAULT` first
     # (STRUCTURE_RING3_DRIVERS starts it in ring 3). This one needs none:

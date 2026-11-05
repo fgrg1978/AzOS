@@ -22,7 +22,7 @@ azos_rings  = { workspace = true }
 azos_idl    = { workspace = true }
 azos_devif  = { workspace = true }
 azos_scsi   = { workspace = true }
-azos_cam_ring = { workspace = true }
+azos_cam_ring = { workspace = true, optional = true }
 azos_inspect = { workspace = true, optional = true }
 # The device timeout policy a command that goes unanswered follows.
 azos_drv_api = { workspace = true }
@@ -127,18 +127,20 @@ canary-smsc-zlp = []
 # A receive status word is not checked against the end of its transfer.
 canary-smsc-rx-bounds = []
 
-# The USB video class driver (tests/host/usb-uvc-tests).
+# The USB video class driver (`class::uvc`, kernel feature `usb-uvc`;
+# tests/host/usb-uvc-tests). Its frames go to a camera frame ring.
+uvc = ["dep:azos_cam_ring"]
 #
 # A payload the camera flags with the error bit is appended to its frame anyway.
-canary-uvc-err = []
+canary-uvc-err = ["uvc"]
 # The first frame is taken as it comes, though the stream started in the middle
 # of it.
-canary-uvc-sync = []
+canary-uvc-sync = ["uvc"]
 # FID toggles do not end a frame (only EOF does), so a camera that never sets
 # EOF delivers nothing.
-canary-uvc-fid = []
+canary-uvc-fid = ["uvc"]
 # The probe/commit block is the 26 bytes of UVC 1.0 whatever the camera is.
-canary-uvc-probe-len = []
+canary-uvc-probe-len = ["uvc"]
 # The first isochronous setting is selected whatever bandwidth the camera asked
 # for.
-canary-uvc-alt = []
+canary-uvc-alt = ["uvc"]

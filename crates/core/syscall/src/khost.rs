@@ -206,7 +206,7 @@ pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
         _ => crate::handlers::seccomp_deny_iface_kill(key),
     }
     use azos_devif::{
-        BehaviorIdl, ClockIdl, ConfigIdl, EntropyIdl, FlightIdl, AdcIdl, BlockIdl, CanIdl, GpioIdl, I2cIdl, KeysIdl, LinkKeyIdl, MemCtlIdl, MotorIdl, NetIdl, OtaIdl, PowerIdl, PwmIdl, SensorIdl, SpiIdl, UartIdl,
+        BehaviorIdl, ClockIdl, ConfigIdl, EntropyIdl, FlightIdl, BlockIdl, CanIdl, GpioIdl, I2cIdl, KeysIdl, LinkKeyIdl, MemCtlIdl, MotorIdl, NetIdl, OtaIdl, PowerIdl, PwmIdl, SensorIdl, SpiIdl, UartIdl,
     };
     let me = *who;
     let _ = match key {
@@ -228,7 +228,8 @@ pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
         k::SPI => SpiIdl::dispatch(&mut crate::devices::SpiServer(me), req, rep),
         k::CAN => CanIdl::dispatch(&mut crate::devices::CanServer(me), req, rep),
         k::UART => UartIdl::dispatch(&mut crate::devices::UartServer(me), req, rep),
-        k::ADC => AdcIdl::dispatch(&mut crate::devices::AdcServer(me), req, rep),
+        #[cfg(feature = "board-io")]
+        k::ADC => azos_devif::AdcIdl::dispatch(&mut crate::adc_host::AdcServer(me), req, rep),
         k::NET => NetIdl::dispatch(&mut crate::net_host::Server(me), req, rep),
         k::DISPLAY => azos_devif::DisplayIdl::dispatch(&mut crate::display::Server(me), req, rep),
         k::MEMCTL => MemCtlIdl::dispatch(&mut crate::memctl::Server(me), req, rep),

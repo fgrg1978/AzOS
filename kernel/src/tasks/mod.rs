@@ -33,6 +33,7 @@ pub(crate) use decision_console::*;
 mod reclaim;
 #[cfg(feature = "mm-reclaim")]
 pub(crate) use reclaim::*;
+#[cfg(feature = "board-io")]
 mod ina219_host;
 mod buzzer_host;
 #[cfg(feature = "ina219-kernel")]

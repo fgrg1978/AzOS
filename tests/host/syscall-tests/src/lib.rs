@@ -153,6 +153,10 @@ pub mod display;
 // of the device in `shims/drivers`.
 #[path = "../../../../crates/core/syscall/src/sound_host.rs"]
 pub mod sound_host;
+// The `Adc` interface (the board's converter), over the ADS1115 stand-in in
+// `shims/drivers`.
+#[path = "../../../../crates/core/syscall/src/adc_host.rs"]
+pub mod adc_host;
 // The `MemCtl` interface (volatile memory objects).
 #[path = "../../../../crates/core/syscall/src/memctl.rs"]
 pub mod memctl;

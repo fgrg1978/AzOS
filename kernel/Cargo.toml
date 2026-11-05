@@ -37,9 +37,12 @@ use-robot = [
     "dep:azos_flight", "dep:azos_nav", "dep:azos_gps",
     "dep:azos_imu", "dep:azos_baro", "dep:azos_ahrs",
     "dep:azos_telemetry", "dep:azos_bench", "dep:azos_multi_stream",
-    "dep:azos_camera", "dep:azos_robot_drivers",
-    "azos_recovery/use-robot", "azos_syscall/use-robot",
+    "dep:azos_camera", "dep:azos_robot_drivers", "dep:azos_cam_ring",
+    "azos_recovery/use-robot", "azos_syscall/use-robot", "board-io",
 ]
+# Kconfig BOARD_IO: the board's sensors (crates/drivers/sensor) and the kernel
+# side that serves them (`azos_syscall/board-io`, `tasks/ina219_host.rs`).
+board-io = ["dep:azos_drv_sensor", "azos_syscall/board-io"]
 # Wave 15 (config/subsys/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
 # domain default y, off = compiled out). `rc-input`: the RC receiver feeds the
 # safety path (link loss / kill switch latch the e-stop, the sticks drive
@@ -91,7 +94,7 @@ ps2 = []
 vf2 = [
     "azos_drv_base/vf2", "azos_arch/vf2", "azos_drv_sys/vf2",
     "azos_drv_gpio/vf2", "azos_drv_bus/vf2", "azos_drv_virtio/vf2",
-    "azos_drv_block/vf2", "azos_drv_net/vf2", "azos_drv_sensor/vf2",
+    "azos_drv_block/vf2", "azos_drv_net/vf2", "azos_drv_sensor?/vf2",
     "azos_drv_actuator/vf2",
     "azos_robot_drivers?/vf2", "azos_ota/vf2", "azos_crypto/no-bitmanip",
     "i2c-dw",
@@ -115,7 +118,7 @@ vf2 = [
 k1 = [
     "rvv", "azos_drv_base/k1", "azos_arch/k1", "azos_drv_sys/k1",
     "azos_drv_gpio/k1", "azos_drv_bus/k1", "azos_drv_virtio/k1",
-    "azos_drv_block/k1", "azos_drv_sensor/k1", "azos_drv_actuator/k1",
+    "azos_drv_block/k1", "azos_drv_sensor?/k1", "azos_drv_actuator/k1",
     "azos_robot_drivers?/k1", "azos_ota/k1",
 ]
 # Raspberry Pi 5 (BOARD_RPI5): `make rpi5`, kernel8.img for the Pi firmware.
@@ -519,7 +522,7 @@ usb-cdc-console = ["usb-cdc", "azos_drv_sys/console-mirror"]
 # Kconfig USB_UVC: the USB video class driver (crates/drivers/usb/src/class/uvc.rs)
 # as a producer of the camera frame ring of the camera pipeline
 # (kernel/src/tasks/cam_capture.rs, which `use-robot` compiles).
-usb-uvc = ["usb-hc", "use-robot"]
+usb-uvc = ["usb-hc", "use-robot", "azos_usb/uvc"]
 # An IOMMU in front of the PCI functions, one feature per
 # flavour (Kconfig IOMMU_*): the RISC-V IOMMU (QEMU riscv64 `virt` with
 # `-device riscv-iommu-pci`), Arm SMMUv3 (aarch64 `virt` with
@@ -763,14 +766,14 @@ pkg-launch-grant-canary = []
 # and the kernel API reads its state directly; the topology declares no
 # INADRV.ELF row. Without it (the default, `ring3`) the same chip logic runs
 # in ring 3 (`userspace/drivers/ina_drv`) behind the proxy.
-ina219-kernel = ["azos_drv_sensor/ina219-kernel", "azos_topology/ina219-kernel"]
+ina219-kernel = ["board-io", "azos_drv_sensor/ina219-kernel", "azos_topology/ina219-kernel"]
 # Gate canary (row bucket): the kernel placement with the INADRV.ELF row kept
 # and the link-time placement check skipped. The INA219 rows must fail on
 # `[DRV1] ina219 FAIL: placement is kernel but the topology declares`.
 ina219-placement-canary = ["ina219-kernel", "azos_topology/ina219-placement-canary"]
 # Gate canary (build bucket): the drivers crate told "kernel", the topology
 # not; the kernel must not compile (`tasks/ina219_host.rs`).
-ina219-placement-build-canary = ["azos_drv_sensor/ina219-kernel"]
+ina219-placement-build-canary = ["board-io", "azos_drv_sensor/ina219-kernel"]
 # Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel: the buzzer starts
 # in the kernel (the built-in topology's BUZZDRV.ELF row says `place =
 # "kernel"`): a call plays through the kernel's PWM driver directly and a
@@ -789,7 +792,7 @@ placement-norecord-canary = ["azos_topology/placement-norecord-canary"]
 # space (buzzer, INA219), run from a kernel task through the same kernel API
 # the syscall handlers call (`ring3_drv_smoke` in kernel/src/smokes/ring3_drv_smoke.rs). Booted
 # by the `drivers: buzzer` and `drivers: INA219 power monitor` rows.
-ring3-drv-smoke = ["qemu"]
+ring3-drv-smoke = ["qemu", "board-io"]
 # Its canary: the buzzer row has no `start = true`, so nothing starts the
 # buzzer driver and `drivers: buzzer` must fail on "no ring-3 driver
 # registered" (the INA219 still starts and passes).
@@ -1355,8 +1358,8 @@ azos_input_wire    = { workspace = true }
 azos_drv_virtio    = { workspace = true }
 azos_drv_block     = { workspace = true }
 azos_drv_net       = { workspace = true }
-azos_drv_sensor    = { workspace = true }
-azos_cam_ring      = { workspace = true }
+azos_drv_sensor    = { workspace = true, optional = true }
+azos_cam_ring      = { workspace = true, optional = true }
 azos_drv_actuator  = { workspace = true }
 azos_drv_power     = { workspace = true }
 azos_robot_drivers = { workspace = true, optional = true }

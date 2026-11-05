@@ -25,7 +25,7 @@ azos_drv_gpio     = { workspace = true }
 azos_drv_bus      = { workspace = true }
 azos_drv_virtio   = { workspace = true }
 azos_drv_block    = { workspace = true }
-azos_drv_sensor   = { workspace = true }
+azos_drv_sensor   = { workspace = true, optional = true }
 azos_drv_actuator = { workspace = true }
 azos_drv_power    = { workspace = true }
 azos_drv_api      = { workspace = true }
@@ -238,4 +238,9 @@ actuation-smoke = []
 # reach the real robot crates. Off, they reach `src/no_robot.rs` (no motor,
 # no IMU/GPS) and the robot crates are not linked. The kernel's own
 # `use-robot` feature turns this on.
-use-robot = ["dep:azos_robot", "dep:azos_imu", "dep:azos_gps"]
+use-robot = ["dep:azos_robot", "dep:azos_imu", "dep:azos_gps", "board-io"]
+# The board's sensors (kernel feature `board-io`, Kconfig BOARD_IO): the
+# converter, rangefinders, LiDAR, power monitor and camera behind the `Sensor`
+# and `Adc` interfaces. Off, their sensor types read as not ready and no `Adc`
+# interface is served.
+board-io = ["dep:azos_drv_sensor"]

@@ -33,8 +33,9 @@ use azos_ipc::cap::targets::Shm;
 use azos_ipc::memobj::{memobj_create_cap, memobj_page_phys_ref, memobj_release_cap, MemPerms, MemSpec};
 use azos_rings::region::{RingStep, SpscSlots, RING_CONS_WAIT};
 use azos_sched::futex::{shim_take_calls, Call, Key};
+use crate::adc_host::AdcServer;
 use crate::devices::{
-    attach_client, plug_line, unplug_line, AdcServer, CanServer, PortClient, SerialLine, SpiServer, UartServer,
+    attach_client, plug_line, unplug_line, CanServer, PortClient, SerialLine, SpiServer, UartServer,
     LINE_PORT_BASE,
 };
 use crate::khost::Caller;
