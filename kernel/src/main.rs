@@ -140,16 +140,17 @@ use azos_arch::trap::{
 use azos_arch::cpu;
 
 /// Chain E cut 7: whether each ISA's lean native syscall entry branches the
-/// two IPC fast calls straight to the frame that runs the fast path. Only
-/// where the fast path is compiled in (Kconfig IPC_FASTPATH; off, the two
-/// numbers take the ordinary entry and nothing is tested).
+/// two calls the IPC fast path takes (`SYS_IPC_REPLY_ACCEPT`, `SYS_IPC_CALL`)
+/// straight to the frame that runs it. Only where the fast path is compiled in
+/// (Kconfig IPC_FASTPATH; off, the two numbers take the ordinary entry and
+/// nothing is tested).
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
 const IPC_FAST_ENTRY: bool = azos_syscall::fastpath::ENABLED;
-/// The lower of the two numbers the branch tests; the other is two above it
-/// (the test is `(num - IPC_FAST_LO) & !2 == 0`).
+/// The lower of the two numbers the branch tests; the other is four above it
+/// (the test is `(num - IPC_FAST_LO) & !4 == 0`).
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
-const IPC_FAST_LO: u64 = azos_abi::syscall_nr::SYS_IPC_FAST_REPLY_ACCEPT;
-const _: () = assert!(azos_abi::syscall_nr::SYS_IPC_FAST_CALL_EP == azos_abi::syscall_nr::SYS_IPC_FAST_REPLY_ACCEPT + 2);
+const IPC_FAST_LO: u64 = azos_abi::syscall_nr::SYS_IPC_REPLY_ACCEPT;
+const _: () = assert!(azos_abi::syscall_nr::SYS_IPC_CALL == azos_abi::syscall_nr::SYS_IPC_REPLY_ACCEPT + 4);
 
 /// Kconfig X86_64_LEVEL: the baseline x86_64's `boot.S` checks by CPUID before
 /// any code compiled for it runs (`x86_level`, entry/x86_64/asm.rs), and the

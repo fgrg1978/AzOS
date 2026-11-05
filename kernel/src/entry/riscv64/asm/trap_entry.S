@@ -73,8 +73,8 @@
 # Canary `syscall-abi-canary`: the native exit flips bit 0 of s3 when the
 # call's a1 was SYSCALL_ABI_CANARY_A1 (abitest's callee-saved check sets it).
 # Chain E cut 7 (Kconfig IPC_FASTPATH): the native path's branch for the two
-# IPC fast calls, SYS_IPC_FAST_REPLY_ACCEPT (IPC_FAST_LO) and
-# SYS_IPC_FAST_CALL_EP (IPC_FAST_LO + 2, asserted where these are bound).
+# calls the IPC fast path takes, SYS_IPC_REPLY_ACCEPT (IPC_FAST_LO) and
+# SYS_IPC_CALL (IPC_FAST_LO + 4, asserted where these are bound).
 .equ IPC_FAST_ENTRY,   {ipc_fast_entry}
 .equ IPC_FAST_LO,      {ipc_fast_lo}
 
@@ -619,12 +619,12 @@ trap_from_user:
     # decode: the syscall's own entry, with the trap handler's guards.
     mv   a0, sp
 .if IPC_FAST_ENTRY
-    # Chain E cut 7: a7 = IPC_FAST_LO or IPC_FAST_LO + 2 exactly when
-    # (a7 - IPC_FAST_LO) & ~2 is 0. Those two go straight to the frame that
+    # Chain E cut 7: a7 = IPC_FAST_LO or IPC_FAST_LO + 4 exactly when
+    # (a7 - IPC_FAST_LO) & ~4 is 0. Those two go straight to the frame that
     # runs the fast path (`riscv64_fast_ipc_syscall`); three instructions
     # on every other native syscall.
     addi t0, a7, -IPC_FAST_LO
-    andi t0, t0, -3
+    andi t0, t0, -5
     beqz t0, .Lnative_fast_ipc
 .endif
     call riscv64_native_syscall      # a0 = the SATP to switch to, or 0

@@ -11,7 +11,7 @@
 //!
 //! The server loop lives in `serve.rs` beside this, and only `VSSRV.ELF`
 //! compiles it: the client never serves, so carrying the loop would leave
-//! `SYS_IPC_FAST_ACCEPT`/`_REPLY`/`_REPLY_ACCEPT` in `VSBENCH.ELF`'s seccomp
+//! `SYS_IPC_ACCEPT`/`_REPLY`/`_REPLY_ACCEPT` in `VSBENCH.ELF`'s seccomp
 //! profile as authority nothing needs.
 
 /// First word of the request that tells the server to stop.

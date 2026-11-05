@@ -7,7 +7,7 @@
 /// Extra return registers a syscall arm may hand back to ring 3, on top of
 /// the `i64` that lands in `a0`.
 ///
-/// **WHY this exists (CARRIL 4).** `SYS_IPC_FAST_ACCEPT` has to give the
+/// **WHY this exists (CARRIL 4).** `SYS_IPC_ACCEPT` has to give the
 /// server a caller TID *and* four request words. One `i64` cannot carry
 /// forty bytes, and fast IPC exists precisely so that ≤32 bytes travel in
 /// registers without the kernel touching user memory — routing them through
@@ -46,7 +46,7 @@ pub const NO_CAP_MOVED: u64 = 0;
 
 /// How many extra return registers [`SyscallOut`] carries: `a1`..`a6`.
 ///
-/// **Was 5 until the capability MOVE landed (2026-09-20).** `SYS_IPC_FAST_ACCEPT`
+/// **Was 5 until the capability MOVE landed (2026-09-20).** `SYS_IPC_ACCEPT`
 /// already filled all five with `[caller_tid, w0, w1, w2, w3]` and returned the
 /// exchange handle in `a0`, so a capability moved along with the message had
 /// **nowhere to come back**. The sixth register is where the receiver learns

@@ -295,15 +295,15 @@ config IPC_MSG_INLINE_WORDS
     default 8
     help
       Words a v2 call and its reply carry inline in the message descriptor
-      (azos_abi::ipc_msg::MsgDesc, read by SYS_IPC_CALL_V2, SYS_IPC_ACCEPT_V2
-      and SYS_IPC_REPLY_V2); more data goes as a MemObj. 8 on every ISA: the
+      (azos_abi::ipc_msg::MsgDesc, read by SYS_IPC_CALL, SYS_IPC_ACCEPT
+      and SYS_IPC_REPLY); more data goes as a MemObj. 8 on every ISA: the
       interfaces that declare `words = 8` (Terminal, whose read_event reply is
       a status word plus a seven-word event; Decisions) are ONE contract on
       all three ISAs, and a kernel that carries fewer words refuses their
       reply with -EINVAL (x86_64 at 6 left the user shell's read_event
       unanswered after the first timed wait: the call was accepted, the reply
       refused, the shell never saw it). The v1 fast call
-      (SYS_IPC_FAST_CALL_EP) keeps its four.
+      (SYS_IPC_CALL) keeps its four.
 
       Cost: 8 B per word in the descriptor a v2 call copies in and out; a
       word past the registers is a memory copy on every v2 call.

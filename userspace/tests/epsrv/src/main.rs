@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The SERVER half of `endpoint.demo`.
 //!
-//! `abitest` spawns this image, calls it with `SYS_IPC_FAST_CALL_EP` —
+//! `abitest` spawns this image, calls it with `SYS_IPC_CALL` —
 //! fast IPC addressed by a **capability** rather than by a raw TID — and
 //! checks the answer. This program is the thing on the other end.
 //!
@@ -21,7 +21,7 @@
 //! not depending on how it was started; that does not work, for a reason worth
 //! writing down because it is not visible in the syscall's signature:
 //!
-//! **`SYS_IPC_FAST_ACCEPT` blocks, and there is no non-blocking form.**
+//! **`SYS_IPC_ACCEPT` blocks, and there is no non-blocking form.**
 //! Its `None` arm calls `task_block(WaitReason::FastIpcServer(tid))`, and the
 //! only thing that releases that waiter is a client calling THIS server. A
 //! task that accepts when nobody will ever call it is wedged for good. Run as

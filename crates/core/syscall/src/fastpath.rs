@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The IPC fast path (Kconfig `IPC_FASTPATH`, Chain E stage a).
 //!
-//! A fast call (`SYS_IPC_FAST_CALL_EP`) or reply-and-accept
-//! (`SYS_IPC_FAST_REPLY_ACCEPT`) whose peer is parked in the matching
+//! A register-form call (`SYS_IPC_CALL` with `a1 == 0`) or reply-and-accept
+//! (`SYS_IPC_REPLY_ACCEPT`) whose peer is parked in the matching
 //! wait is finished here, from the trap entry, after the syscall filter and
 //! before the syscall table. The kernel's shared trap layer
 //! (`kernel/src/trap/kernel.rs`: the lean entry's IPC branch and `dispatch`)
@@ -131,7 +131,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use azos_abi::syscall_nr::{SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY_ACCEPT};
+use azos_abi::syscall_nr::{SYS_IPC_CALL, SYS_IPC_REPLY_ACCEPT};
 use azos_arch::Interrupts as _;
 use azos_ipc::fastcall::{self, Collected};
 pub use azos_sched::scheduler::FastResume;
@@ -266,7 +266,7 @@ fn hit(counter: &[core::sync::atomic::AtomicU32; azos_limits::MAX_TASKS], slot: 
 #[inline(always)]
 pub fn wants(num: u64) -> bool {
     ENABLED
-        && (num == SYS_IPC_FAST_CALL_EP || num == SYS_IPC_FAST_REPLY_ACCEPT)
+        && (num == SYS_IPC_CALL || num == SYS_IPC_REPLY_ACCEPT)
         && ON.load(Ordering::Relaxed)
 }
 
@@ -276,7 +276,7 @@ pub fn wants(num: u64) -> bool {
 /// has passed the call (or audited and recorded it), and the task is native.
 #[inline(never)]
 pub fn entry<R: IpcRegs>(num: u64, regs: &mut R) -> Option<i64> {
-    if num == SYS_IPC_FAST_CALL_EP {
+    if num == SYS_IPC_CALL {
         call(regs)
     } else {
         reply_accept(regs)
@@ -406,15 +406,16 @@ fn census_turn() {
 #[inline(always)]
 fn census_turn() {}
 
-/// `SYS_IPC_FAST_CALL_EP`: `a0` the endpoint capability, `a1..a4` the words,
-/// `a5` a capability to move (the fast path takes none). Once the
+/// `SYS_IPC_CALL` in the register form: `a0` the endpoint capability, `a1 == 0`,
+/// `a2..a5` the words (the descriptor form, `a1 != 0`, takes the ordinary
+/// path from the start). Once the
 /// destination is resolved the call is always finished here: by the fast
 /// path, or by the arm's own code from the resolved destination on
 /// ([`call_ordinary`]), so a miss does not resolve it (nor record a denial)
 /// twice.
 #[inline(always)]
 fn call<R: IpcRegs>(regs: &mut R) -> Option<i64> {
-    if regs.arg(5) != 0 {
+    if regs.arg(1) != 0 {
         return None;
     }
     let (caller_idx, caller_tid) = current()?;
@@ -422,7 +423,7 @@ fn call<R: IpcRegs>(regs: &mut R) -> Option<i64> {
     let Some((dest, hint)) = crate::dispatch::resolve_endpoint_dest_slot(caller_idx, caller_tid, regs.arg(0)) else {
         return Some(crate::dispatch::E_PERM);
     };
-    let words = [regs.arg(1), regs.arg(2), regs.arg(3), regs.arg(4)];
+    let words = [regs.arg(2), regs.arg(3), regs.arg(4), regs.arg(5)];
     // An interface the kernel hosts has no server task to hand off to: it is
     // answered from the registers on this stack (`khost`).
     if let Some(key) = azos_ipc::endpoint::host_key(dest.owner) {
@@ -532,7 +533,7 @@ fn call_ordinary<R: IpcRegs>(
     caller_idx: usize, caller_tid: u32, dest: azos_ipc::endpoint::Dest, words: [u64; 4], regs: &mut R,
 ) -> i64 {
     let mut out = SyscallOut::new();
-    let r = crate::dispatch::fast_ipc_call_to(caller_idx, caller_tid, dest, words, 0, &mut out);
+    let r = crate::dispatch::fast_ipc_call_to(caller_idx, caller_tid, dest, words, &mut out);
     copy_out(&out, regs);
     r
 }
@@ -542,12 +543,12 @@ fn call_ordinary<R: IpcRegs>(
 #[inline(never)]
 fn call_wait<R: IpcRegs>(handle: u64, caller_tid: u32, server: u32, regs: &mut R) -> i64 {
     let mut out = SyscallOut::new();
-    let r = crate::dispatch::fast_ipc_call_wait(handle, caller_tid, server, 0, false, &mut out, true);
+    let r = crate::dispatch::fast_ipc_call_wait(handle, caller_tid, server, &mut out, true);
     copy_out(&out, regs);
     r
 }
 
-/// `SYS_IPC_FAST_REPLY_ACCEPT`: `a0` the handle answered, `a2..a5` the
+/// `SYS_IPC_REPLY_ACCEPT`: `a0` the handle answered, `a2..a5` the
 /// answer's words (`a1` unused, as in the arm).
 #[inline(always)]
 fn reply_accept<R: IpcRegs>(regs: &mut R) -> Option<i64> {

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Per-endpoint call queues (wave 15 N5).
 //!
-//! The fast call (`SYS_IPC_FAST_CALL_EP`) is queued on the endpoint it names,
+//! The fast call (`SYS_IPC_CALL`) is queued on the endpoint it names,
 //! not in one machine-wide table:
 //!
 //! * **One call record per task slot** (`MAX_TASKS` of them). A caller
@@ -786,19 +786,19 @@ pub const REVOKED: i32 = -(azos_abi_errno::EREVOKED as i32);
 mod azos_abi_errno {
     pub const EPEERDIED: i64 = azos_abi::error::Errno::EPEERDIED as i64;
     pub const EREVOKED: i64 = azos_abi::error::Errno::EREVOKED as i64;
-    pub const EV1ACCEPT: i64 = azos_abi::error::Errno::EV1ACCEPT as i64;
+    pub const EMSGFORM: i64 = azos_abi::error::Errno::EMSGFORM as i64;
 }
 #[cfg(not(target_os = "none"))]
 mod azos_abi_errno {
     pub const EPEERDIED: i64 = 211;
     pub const EREVOKED: i64 = 212;
-    pub const EV1ACCEPT: i64 = 215;
+    pub const EMSGFORM: i64 = 215;
 }
 
-/// `-EV1ACCEPT`: a v2 call taken by the v1 accept, refused there (owner
+/// `-EMSGFORM`: a v2 call taken by the v1 accept, refused there (owner
 /// decision 10-10): the server never sees it, and the caller gives every
 /// capability it moved back to itself (`azos_syscall::ipc_v2`).
-pub const V1_ACCEPT: i32 = -(azos_abi_errno::EV1ACCEPT as i32);
+pub const V1_ACCEPT: i32 = -(azos_abi_errno::EMSGFORM as i32);
 
 // ── The call ────────────────────────────────────────────────────────────────
 
@@ -854,13 +854,18 @@ pub fn call(
 /// A request a server took: `(handle, caller, words, moved_cap)`.
 pub type Accepted = (u64, u32, [u64; WORDS], u32);
 
-/// Record `i` (tag `t`, under its endpoint's lock) holds a v2 call that the
-/// v1 accept must refuse: [`stamp_badge`] wrote its generation before
-/// [`call`] published it, and every free advances the generation, so a v1
-/// call never matches. The canary is read only for a v2 record.
+/// Record `i` (tag `t`, under its endpoint's lock) holds a descriptor-form
+/// call that a register-form accept must refuse: [`stamp_badge`] wrote its
+/// generation before [`call`] published it, and every free advances the
+/// generation, so a register-form call never matches; and its message does
+/// not fit the registers ([`stamp_msg`]). The canary is read only for a v2
+/// record.
 #[inline(always)]
 fn v1_refuses(i: usize, t: u64) -> bool {
     BADGES.get(i).is_some_and(|b| b.gen.load(Ordering::Relaxed) == tag_gen(t))
+        && !V2MSGS.get(i).is_some_and(|m| {
+            m.gen.load(Ordering::Relaxed) == tag_gen(t) && m.counts.load(Ordering::Relaxed) & FITS_REGS != 0
+        })
         && !CANARY_V1_TAKES_V2.load(Ordering::Relaxed)
 }
 
@@ -1589,6 +1594,10 @@ static V2MSGS: [V2Msg; RECS] = [const {
 /// Marks a [`V2Msg`] that holds an answer, not a request.
 const REPLY_MARK: u64 = 1 << 63;
 
+/// [`V2Msg::counts`] bit: a register-form accept may take this request (it
+/// fits the registers: see [`stamp_msg`]).
+const FITS_REGS: u32 = 1 << 16;
+
 fn put_msg(m: &V2Msg, p: &Payload, gen: u64) {
     let nw = (p.n_words as usize).min(V2_WORDS);
     let nc = (p.n_caps as usize).min(V2_CAPS);
@@ -1624,10 +1633,16 @@ fn get_msg(m: &V2Msg) -> Payload {
 
 /// Before a v2 call by the task in slot `caller_idx`: its message, beside
 /// the badge [`stamp_badge`] writes (same rule: written while the record is
-/// free, published by [`call`]'s hold of the queue lock).
-pub fn stamp_msg(caller_idx: usize, p: &Payload) {
+/// free, published by [`call`]'s hold of the queue lock). `fits_regs`: the
+/// registers of a register-form accept can hold the whole request (at most
+/// four words, at most one capability, no deadline, no label of its own), so
+/// such an accept takes it instead of refusing it.
+pub fn stamp_msg(caller_idx: usize, p: &Payload, fits_regs: bool) {
     let (Some(r), Some(m)) = (RECORDS.get(caller_idx), V2MSGS.get(caller_idx)) else { return };
     put_msg(m, p, tag_gen(r.tag.load(Ordering::Relaxed)));
+    if fits_regs {
+        m.counts.fetch_or(FITS_REGS, Ordering::Relaxed);
+    }
 }
 
 /// A v2 call stamped with [`stamp_msg`] was refused: unstamp.
@@ -2222,7 +2237,7 @@ mod tests {
         let (idx, tid) = client(0);
         let mut req = payload(0x10);
         req.label = 0b1010;
-        stamp_msg(idx, &req);
+        stamp_msg(idx, &req, false);
         let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
         let _ = accept_v2(SERVER_IDX, SERVER).unwrap();
         assert_eq!(accept_msg(h, SERVER).unwrap().label, 0b1010, "the server reads the label of the request");
@@ -2235,7 +2250,7 @@ mod tests {
         // The next call of the record carries its own label, none left over.
         let mut next = payload(0x20);
         next.label = 0;
-        stamp_msg(idx, &next);
+        stamp_msg(idx, &next, false);
         let h2 = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
         let _ = accept_v2(SERVER_IDX, SERVER).unwrap();
         assert_eq!(accept_msg(h2, SERVER).unwrap().label, 0, "no label stays none");
@@ -2246,7 +2261,7 @@ mod tests {
         let _e = env();
         let (idx, tid) = client(0);
         let req = payload(0x10);
-        stamp_msg(idx, &req);
+        stamp_msg(idx, &req, false);
         let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
         let _ = accept_v2(SERVER_IDX, SERVER).unwrap();
         let got = accept_msg(h, SERVER).unwrap();
@@ -2265,7 +2280,7 @@ mod tests {
         let mut next = payload(0x20);
         next.deadline = 0;
         next.clock_id = 0;
-        stamp_msg(idx, &next);
+        stamp_msg(idx, &next, false);
         let h2 = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
         let _ = accept_v2(SERVER_IDX, SERVER).unwrap();
         let got2 = accept_msg(h2, SERVER).unwrap();
@@ -2278,7 +2293,7 @@ mod tests {
         let (idx, tid) = client(0);
         let req = payload(0x10);
         stamp_badge(idx, 5);
-        stamp_msg(idx, &req);
+        stamp_msg(idx, &req, false);
         let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
         let _ = accept_v2(SERVER_IDX, SERVER).unwrap();
         assert_eq!(accept_msg(h, WORKER), None, "only the holder reads it");
@@ -2310,7 +2325,7 @@ mod tests {
     fn call_v2_from(i: usize, cap: u32) -> u64 {
         let (idx, tid) = client(i);
         stamp_badge(idx, 0);
-        stamp_msg(idx, &payload(0x40));
+        stamp_msg(idx, &payload(0x40), false);
         call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, cap, NO_DONEE).unwrap()
     }
 
@@ -2341,6 +2356,31 @@ mod tests {
         let a = accept_v2(SERVER_IDX, SERVER).unwrap();
         assert_eq!((a.0, a.3), (h, 0x21));
         assert_eq!(accept_badge(h, SERVER), Some(0));
+    }
+
+    /// A descriptor-form call that fits the registers (`stamp_msg`'s
+    /// `fits_regs`: at most four words, one capability, no deadline, no label
+    /// of its own) is taken by the register-form accept, with its first
+    /// capability in the record's slot, not refused. Canary: drop the
+    /// `FITS_REGS` term of `v1_refuses` and it is refused.
+    #[test]
+    fn the_register_accept_takes_a_descriptor_call_that_fits_its_registers() {
+        let _e = env();
+        let (idx, tid) = client(0);
+        stamp_badge(idx, 0);
+        stamp_msg(idx, &payload(0x40), true);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0x21, NO_DONEE).unwrap();
+        let a = super::accept::<true>(SERVER_IDX, SERVER, |_| panic!("a call that fits is not refused"));
+        assert_eq!(a.map(|a| (a.0, a.1, a.3)), Some((h, tid, 0x21)));
+        // The record's next descriptor call that does not fit is refused again:
+        // the mark does not outlive its call.
+        let _ = reply(h, SERVER, false, RSP);
+        let _ = collect(h, tid);
+        let h2 = call_v2_from(0, 0x22);
+        let mut seen = 0;
+        assert_eq!(super::accept::<true>(SERVER_IDX, SERVER, |_| seen += 1), None);
+        assert_eq!(seen, 1, "refused");
+        let _ = collect(h2, tid);
     }
 
     #[test]

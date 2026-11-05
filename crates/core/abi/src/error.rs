@@ -145,12 +145,14 @@ pub enum Errno {
     /// Reserved: an endpoint with no sender capability left (Mach's
     /// no-senders notice). Not returned yet.
     ENOSENDERS = 213,
-    /// A v2 call (`SYS_IPC_CALL_V2`) refused because its server took it with
-    /// the v1 accept (110, or the accept half of 580), which can name only
-    /// four words and one capability (wave 15 N11c). The server never saw
-    /// the call, and every capability it carried went back to the caller.
-    /// Linux has no equivalent (its IPC has no message version).
-    EV1ACCEPT = 215,
+    /// A descriptor-form call (`SYS_IPC_CALL` with a `MsgDesc`) refused because
+    /// its server took it with a register-form accept (`SYS_IPC_ACCEPT` with
+    /// `a0 == 0`, or the accept half of `SYS_IPC_REPLY_ACCEPT`), which names
+    /// only four words and one capability, and the call carried more (or a
+    /// deadline, or a label of its own). The server never saw the call, and
+    /// every capability it carried went back to the caller. Linux has no equivalent (its IPC has
+    /// no message form).
+    EMSGFORM = 215,
     /// A v2 call's deadline (`MsgDesc::deadline`) had already passed when the
     /// kernel read it: the call was refused before it was queued, nothing
     /// moved. Linux has no equivalent (`ETIMEDOUT` is a wait that ran out;
@@ -245,7 +247,7 @@ impl Errno {
             211 => Some(Errno::EPEERDIED),
             212 => Some(Errno::EREVOKED),
             213 => Some(Errno::ENOSENDERS),
-            215 => Some(Errno::EV1ACCEPT),
+            215 => Some(Errno::EMSGFORM),
             216 => Some(Errno::EDEADLINE),
             217 => Some(Errno::ERTPROXY),
             218 => Some(Errno::EEOF),
@@ -300,7 +302,7 @@ impl fmt::Display for Errno {
             Errno::EPEERDIED => "the serving task died during the call",
             Errno::EREVOKED => "the endpoint was destroyed during the call",
             Errno::ENOSENDERS => "no sender left on the endpoint",
-            Errno::EV1ACCEPT => "v2 call refused by a v1 accept",
+            Errno::EMSGFORM => "descriptor-form call refused by a register-form accept",
             Errno::EDEADLINE => "deadline already passed",
             Errno::ERTPROXY => "a real-time task may not call a remote endpoint",
             Errno::EEOF => "end of stream",
@@ -333,7 +335,7 @@ mod tests {
             Errno::EPEERDIED,
             Errno::EREVOKED,
             Errno::ENOSENDERS,
-            Errno::EV1ACCEPT,
+            Errno::EMSGFORM,
             Errno::EDEADLINE,
             Errno::ERTPROXY,
             Errno::EEOF,

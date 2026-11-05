@@ -75,7 +75,7 @@ fn the_prologue_counts_each_call_under_its_case() {
     let k = running_domain();
     let mut f = x86_call(SYS_CAP_INFO, [0, 0]);
     enter::<_, false>(&mut f);
-    for (num, fast) in [(SYS_INVOKE, false), (SYS_YIELD, false), (SYS_IPC_FAST_CALL_EP, true), (500, false)] {
+    for (num, fast) in [(SYS_INVOKE, false), (SYS_YIELD, false), (SYS_IPC_CALL, true), (500, false)] {
         let mut f = x86_call(num, [0, 0]);
         if fast { enter::<_, true>(&mut f) } else { enter::<_, false>(&mut f) };
     }
@@ -136,13 +136,13 @@ fn a_task_with_no_domain_counts_nothing() {
 #[test]
 fn the_lean_ipc_entry_skips_the_shortcut_and_takes_the_fast_branch() {
     reset();
-    let mut f = rv_call(SYS_IPC_FAST_CALL_EP, [0, 0]);
+    let mut f = rv_call(SYS_IPC_CALL, [0, 0]);
     enter::<_, true>(&mut f);
     assert!(!saw("shortcut"), "{:?}", logged());
     let mut g = rv_call(SYS_CAP_INFO, [0, 0]);
     enter::<_, false>(&mut g);
     assert!(saw("shortcut 1"));
-    assert_eq!(with(|s| s.dispatches.clone()), vec![(SYS_IPC_FAST_CALL_EP, true), (SYS_CAP_INFO, false)]);
+    assert_eq!(with(|s| s.dispatches.clone()), vec![(SYS_IPC_CALL, true), (SYS_CAP_INFO, false)]);
 }
 
 /// The reserved probe number (`irq-in-syscall-probe`) answers before interrupts

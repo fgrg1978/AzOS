@@ -945,10 +945,14 @@ impl<'t> Kernel<'t> {
             SYS_INVOKE => Some(self.sys_invoke(hw, s, a, now)),
             SYS_CAP_INFO => Some(self.sys_cap_info(s, a[0], a[1], a[2], a[3])),
             SYS_CAP_CLOSE => Some(self.sys_close_typed(s, a[0])),
-            SYS_IPC_FAST_CALL_EP => self.ipc_call(s, a),
-            SYS_IPC_FAST_ACCEPT => self.ipc_accept(s),
-            SYS_IPC_FAST_REPLY => Some(self.ipc_reply(s, a[0], [a[1], a[2], a[3], a[4]]).map_or_else(|e| e, |()| 0)),
-            SYS_IPC_FAST_REPLY_ACCEPT => match self.ipc_reply(s, a[0], [a[2], a[3], a[4], a[5]]) {
+            // The register form only (`a1 == 0`; the accept's `a0 == 0`): this
+            // kernel has no descriptor form.
+            SYS_IPC_CALL | SYS_IPC_REPLY if a[1] != 0 => Some(-(Errno::ENOSYS as isize)),
+            SYS_IPC_ACCEPT if a[0] != 0 => Some(-(Errno::ENOSYS as isize)),
+            SYS_IPC_CALL => self.ipc_call(s, a),
+            SYS_IPC_ACCEPT => self.ipc_accept(s),
+            SYS_IPC_REPLY => Some(self.ipc_reply(s, a[0], [a[2], a[3], a[4], a[5]]).map_or_else(|e| e, |()| 0)),
+            SYS_IPC_REPLY_ACCEPT => match self.ipc_reply(s, a[0], [a[2], a[3], a[4], a[5]]) {
                 Ok(()) => self.ipc_accept(s),
                 // -2 stale, -3 any other refusal: nothing was accepted.
                 Err(-2) => Some(-2),
@@ -1074,11 +1078,10 @@ impl<'t> Kernel<'t> {
         }
     }
 
-    /// `SYS_IPC_FAST_CALL_EP`: a0 = endpoint capability (`WRITE`), a1..a4 =
-    /// four words, a5 = a capability to move with the request (0: none; it
-    /// must carry `TRANSFER`). Blocks until the reply; the result is in a0..a3.
-    /// On a 32-bit word the main kernel's SHARE flag (bit 32 of a5) has no
-    /// room: a handle fills the register, so only a move exists here.
+    /// `SYS_IPC_CALL`, register form: a0 = endpoint capability (`WRITE`),
+    /// a1 = 0, a2..a5 = four words. Blocks until the reply; the result is in
+    /// a0..a3. No capability moves: that is the descriptor form, which this
+    /// kernel does not have.
     fn ipc_call(&mut self, s: usize, a: [usize; 6]) -> Option<isize> {
         let h = CapHandle::from_raw(a[0] as u32);
         let Ok(ep) = self.caps(s).resolve(h, ty::ENDPOINT, CapPerms::WRITE) else { return Some(-1) };
@@ -1088,12 +1091,6 @@ impl<'t> Kernel<'t> {
         // a server that is the caller: it blocks forever.
         if srv == s {
             return Some(-1);
-        }
-        if a[5] != 0 {
-            match self.caps(s).resolve_any(CapHandle::from_raw(a[5] as u32)) {
-                Ok((_, perms, _)) if perms.contains(CapPerms::TRANSFER) => {}
-                _ => return Some(-1),
-            }
         }
         self.tasks[s].call_gen = self.tasks[s].call_gen.wrapping_add(1);
         let gen = self.tasks[s].call_gen;
@@ -1108,10 +1105,8 @@ impl<'t> Kernel<'t> {
 
     /// Hand the oldest queued request of an endpoint `srv` serves to it,
     /// writing its registers: a0 = the exchange handle, a1 = the caller's
-    /// TID, a2..a5 = the four words, a6 = the handle of the moved capability
-    /// in the server's table (0: none). A request whose capability the
-    /// server cannot take (its table is full) fails for the caller with -1
-    /// and the next is tried. `false`: nothing was queued.
+    /// TID, a2..a5 = the four words, a6 = 0 (no capability moves in the
+    /// register form). `false`: nothing was queued.
     fn deliver(&mut self, srv: usize) -> bool {
         loop {
             let mut found = None;
@@ -1126,27 +1121,7 @@ impl<'t> Kernel<'t> {
             let Some((e, c)) = found else { return false };
             debug_assert!(c != srv, "a call to an endpoint its own caller serves is refused");
             let State::Calling { gen, .. } = self.tasks[c].state else { continue };
-            let words = [self.tasks[c].frame.x[A0 + 1], self.tasks[c].frame.x[A0 + 2], self.tasks[c].frame.x[A0 + 3], self.tasks[c].frame.x[A0 + 4]];
-            let moved = self.tasks[c].frame.x[A0 + 5];
-            let mut moved_handle = 0usize;
-            if moved != 0 {
-                let closed = self.caps(c).close(CapHandle::from_raw(moved as u32));
-                match closed {
-                    Ok((kind, perms, res)) => match self.caps(srv).install(kind, perms, res) {
-                        Some(h) => moved_handle = h.as_raw() as usize,
-                        None => {
-                            // Put it back and refuse the call.
-                            self.caps(c).install(kind, perms, res);
-                            self.complete(c, -1);
-                            continue;
-                        }
-                    },
-                    Err(_) => {
-                        self.complete(c, -1);
-                        continue;
-                    }
-                }
-            }
+            let words = [self.tasks[c].frame.x[A0 + 2], self.tasks[c].frame.x[A0 + 3], self.tasks[c].frame.x[A0 + 4], self.tasks[c].frame.x[A0 + 5]];
             self.tasks[c].state = State::Calling { ep: e as u8, gen, accepted: true };
             let f = &mut self.tasks[srv].frame;
             f.x[A0] = ((gen as usize) << 8) | c;
@@ -1155,7 +1130,7 @@ impl<'t> Kernel<'t> {
             f.x[A0 + 3] = words[1];
             f.x[A0 + 4] = words[2];
             f.x[A0 + 5] = words[3];
-            f.x[A0 + 6] = moved_handle;
+            f.x[A0 + 6] = 0;
             self.tasks[srv].state = State::Ready;
             self.ents[srv].wake();
             self.refresh_boost(srv);
@@ -1163,7 +1138,7 @@ impl<'t> Kernel<'t> {
         }
     }
 
-    /// `SYS_IPC_FAST_ACCEPT`: the next request, or wait for one.
+    /// `SYS_IPC_ACCEPT`, register form: the next request, or wait for one.
     fn ipc_accept(&mut self, s: usize) -> Option<isize> {
         if !self.deliver(s) {
             // A task that serves no live endpoint (it holds no `READ`, or it
@@ -1178,7 +1153,7 @@ impl<'t> Kernel<'t> {
         None
     }
 
-    /// `SYS_IPC_FAST_REPLY`: answer the exchange `handle` names with four
+    /// `SYS_IPC_REPLY`, register form: answer the exchange `handle` names with four
     /// words. `Err(-2)`: the exchange is gone (stale handle); `Err(-1)`: any
     /// other refusal (not yours, not accepted).
     fn ipc_reply(&mut self, s: usize, handle: usize, words: [usize; 4]) -> Result<(), isize> {

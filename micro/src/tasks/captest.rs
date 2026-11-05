@@ -7,7 +7,7 @@
 //! and the contiguous block its capabilities map, a spawn under a launch
 //! capability, and a task refused by the PMP.
 
-use azos_abi::syscall_nr::{CAP_INFO_LOOKUP, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY, SYS_SPAWN_EX};
+use azos_abi::syscall_nr::{CAP_INFO_LOOKUP, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_CALL, SYS_IPC_REPLY, SYS_SPAWN_EX};
 use azos_abi::invoke::{DOMAIN_SELF, DOMAIN_UPTIME};
 use azos_micro::kernel::{StartInfo, REGION_CONTIG, REGION_PHYS};
 
@@ -32,11 +32,11 @@ impl abi_cases::Env for Run {
     }
 
     fn fast_call(&mut self, endpoint: usize, w: [usize; 4]) -> isize {
-        sys::syscall(SYS_IPC_FAST_CALL_EP, [endpoint, w[0], w[1], w[2], w[3], 0])
+        sys::syscall(SYS_IPC_CALL, [endpoint, 0, w[0], w[1], w[2], w[3]])
     }
 
     fn fast_reply(&mut self, handle: usize, w: [usize; 4]) -> isize {
-        sys::syscall(SYS_IPC_FAST_REPLY, [handle, w[0], w[1], w[2], w[3], 0])
+        sys::syscall(SYS_IPC_REPLY, [handle, 0, w[0], w[1], w[2], w[3]])
     }
 
     fn uptime(&mut self) -> usize {

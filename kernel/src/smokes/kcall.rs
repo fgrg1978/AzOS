@@ -19,7 +19,7 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 
 use azos_abi::error::Errno;
 use azos_abi::ipc_msg::MsgDesc;
-use azos_abi::syscall_nr::{SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2};
+use azos_abi::syscall_nr::{SYS_IPC_ACCEPT, SYS_IPC_REPLY};
 use azos_devif::{outcome, Buzzer, BuzzerCall, BuzzerClient, BuzzerDirect, BuzzerIdl, BuzzerPlaced, Out};
 use azos_ipc::cap::CapPerms;
 use azos_syscall::kcall::{self, KernelEndpoint};
@@ -68,13 +68,13 @@ fn server(_: usize) {
     let mut out = SyscallOut::new();
     while SERVER_SERVED.load(Ordering::Acquire) < CALLS {
         let mut req = MsgDesc::default();
-        let h = dispatch(SYS_IPC_ACCEPT_V2, [&mut req as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
+        let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
         if h < 0 {
             continue;
         }
         let mut rep = MsgDesc::default();
         let _ = BuzzerIdl::dispatch(&mut drv, &req, &mut rep);
-        let _ = dispatch(SYS_IPC_REPLY_V2, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
+        let _ = dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
         SERVER_SERVED.fetch_add(1, Ordering::AcqRel);
     }
 }

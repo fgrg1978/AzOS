@@ -191,7 +191,7 @@ mod tests {
         // The Linux build compiles exactly these files. `ipc_proto` joined on
         // 2026-09-21: the server LOOP moved to `userspace/bench/vssrv` and only the
         // protocol constant stayed shared, so the client stopped compiling
-        // `SYS_IPC_FAST_ACCEPT`/`_REPLY`/`_REPLY_ACCEPT` at all.
+        // `SYS_IPC_ACCEPT`/`_REPLY`/`_REPLY_ACCEPT` at all.
         for m in MAIN_RS.lines().map(str::trim).filter(|l| l.starts_with("mod ")) {
             assert!(
                 ["mod bench_core;", "mod abi_linux;", "mod abi_azos;", "mod ipc_proto;"]

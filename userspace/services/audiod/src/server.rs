@@ -67,7 +67,7 @@
 //! The kernel hears from one caller, this server's capture thread, and the
 //! server is the messenger of whoever asks: it never asks on its own account.
 //! So the client's authority is lent with the open, as the **warrant of the
-//! call being served**: the handle `SYS_IPC_ACCEPT_V2` returned for the
+//! call being served**: the handle `SYS_IPC_ACCEPT` returned for the
 //! client's `open`, which the kernel gave this thread alone, which exists only
 //! until the reply and which names the task that made the call. The server
 //! passes it as `Sound::open`'s `on_behalf`; the kernel resolves it to that
@@ -391,7 +391,7 @@ pub struct Server<E: Env> {
     /// before each dispatch.
     pub caller: u32,
     /// The warrant of the call being served (0: none), the handle
-    /// `SYS_IPC_ACCEPT_V2` returned. Set by the loop with `caller`; it is the
+    /// `SYS_IPC_ACCEPT` returned. Set by the loop with `caller`; it is the
     /// client's authority for a capture open.
     pub call: u64,
     streams: [Option<Stream>; STREAMS_MAX],

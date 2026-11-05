@@ -4,8 +4,8 @@
 //!
 //! A task that holds a capability to a kernel-hosted endpoint
 //! (`azos_ipc::endpoint::kernel_endpoint_cap`) calls it like any endpoint:
-//! `SYS_IPC_CALL_V2` with a `MsgDesc` request, or the register form
-//! `SYS_IPC_FAST_CALL_EP` (the request's four words in `a1..a4`, the reply's in
+//! `SYS_IPC_CALL` with a `MsgDesc` request, or the register form
+//! `SYS_IPC_CALL` (the request's four words in `a1..a4`, the reply's in
 //! `a0..a3`). The kernel does not queue the call or switch to another task: it
 //! decodes the request, runs the interface's implementation on the caller's
 //! own stack and writes the reply (bounded, allocation-free: real-time safe).
@@ -201,7 +201,7 @@ pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
     match azos_sched::scheduler::current_iface_verdict(key) {
         azos_sched::filter::FilterVerdict::Allow => {}
         azos_sched::filter::FilterVerdict::Audit => {
-            crate::handlers::record_seccomp_audit(azos_abi::syscall_nr::SYS_IPC_CALL_V2 as u16)
+            crate::handlers::record_seccomp_audit(azos_abi::syscall_nr::SYS_IPC_CALL as u16)
         }
         _ => crate::handlers::seccomp_deny_iface_kill(key),
     }

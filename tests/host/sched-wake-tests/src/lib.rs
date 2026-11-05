@@ -1564,7 +1564,7 @@ mod tests {
 //   * Parent registers as a fast-IPC server and `fork()`s N ≥ 8 children.
 //   * Each child immediately issues SYS_IPC_FAST_CALL(parent_tid, [seq,0,0,0])
 //     in a loop of M ≥ 200 iterations.
-//   * The parent loops SYS_IPC_FAST_ACCEPT → SYS_IPC_FAST_REPLY(slot,
+//   * The parent loops SYS_IPC_ACCEPT → SYS_IPC_REPLY(slot,
 //     [seq ^ MAGIC, ...]) with NO delay between accept and reply. The tight
 //     accept/reply loop is what makes the reply land inside the client's
 //     window between wake_fast_ipc_server() and task_block(); adding a sleep

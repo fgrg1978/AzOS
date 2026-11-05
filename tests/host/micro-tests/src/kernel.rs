@@ -204,7 +204,7 @@ fn dispatch_loads_the_code_window_then_the_tasks_domain_and_switches_the_rest_of
     assert_eq!(t[3], PmpEntry { cfg: 0x08 | R | W, addr: (r.base + r.size) as usize >> 2 });
     assert!(t[4..].iter().all(|e| *e == PmpEntry::OFF), "everything else off");
     // The captest task's domain adds the two windows it holds.
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let n: Vec<_> = s.hw.pmp.iter().filter(|e| e.cfg != 0 || e.addr != 0).collect();
     assert!(n.len() >= 6, "code pair, own part pair, UART, block: {n:?}");
@@ -221,7 +221,7 @@ fn a_task_cannot_reach_the_kernel_or_the_grants_but_reaches_what_it_was_given() 
     // Syscalls that take a pointer are the only way the kernel touches task
     // memory: the console's WRITE op is checked against the domain.
     let echo = s.k.current();
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let msg = b"hello";
     // SAFETY: inside the task's own part.
@@ -330,10 +330,10 @@ impl shared::Env for HostEnv<'_> {
         self.call(SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, kind, resource, 0, 0])
     }
     fn fast_call(&mut self, endpoint: usize, w: [usize; 4]) -> isize {
-        self.call(SYS_IPC_FAST_CALL_EP, [endpoint, w[0], w[1], w[2], w[3], 0])
+        self.call(SYS_IPC_CALL, [endpoint, 0, w[0], w[1], w[2], w[3]])
     }
     fn fast_reply(&mut self, handle: usize, w: [usize; 4]) -> isize {
-        self.call(SYS_IPC_FAST_REPLY, [handle, w[0], w[1], w[2], w[3], 0])
+        self.call(SYS_IPC_REPLY, [handle, 0, w[0], w[1], w[2], w[3]])
     }
     fn uptime(&mut self) -> usize {
         self.call(SYS_INVOKE, UPTIME_CALL) as usize
@@ -347,7 +347,7 @@ impl shared::Env for HostEnv<'_> {
 fn the_abi_cases_shared_with_the_main_kernels_captest_pass_here() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let mut env = HostEnv { sim: &mut s, slot: cap, results: vec![] };
     shared::run(&mut env);
@@ -363,7 +363,7 @@ fn canary_the_shared_cases_catch_a_kernel_that_answers_differently() {
     // say so. Proves the cases discriminate rather than pass on anything.
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let h = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap();
     assert!(h > 0, "the row grants the endpoint");
@@ -374,18 +374,18 @@ fn canary_the_shared_cases_catch_a_kernel_that_answers_differently() {
         "and is stale at once"
     );
     // Without the capability a call reaches no one.
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [h as usize, 1, 2, 3, 4, 0]), Some(-1));
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [h as usize, 0, 1, 2, 3, 4]), Some(-1));
 }
 
 #[test]
 fn a_call_is_served_and_the_reply_comes_back_in_the_callers_registers() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]), None, "no request yet: the server waits");
+    assert_eq!(s.sys(echo, SYS_IPC_ACCEPT, [0; 6]), None, "no request yet: the server waits");
     assert_eq!(s.k.state(echo), State::Accepting);
     let cap = s.run("CAPTEST.ELF");
     let ep = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap() as usize;
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 10, 20, 30, 40, 0]), None, "the caller waits for the reply");
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [ep, 0, 10, 20, 30, 40]), None, "the caller waits for the reply");
     // The server was woken with the request in its registers.
     assert_eq!(s.k.state(echo), State::Ready);
     let echo = s.run("ECHO.ELF");
@@ -394,9 +394,9 @@ fn a_call_is_served_and_the_reply_comes_back_in_the_callers_registers() {
     assert_eq!(s.reg(echo, 1), cap + 1, "the caller's TID");
     assert_eq!(s.reg(echo, 6), 0, "no capability moved");
     // A stranger cannot answer it, and a wrong generation is stale.
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_REPLY, [handle ^ 0x100, 1, 1, 1, 1, 0]), Some(-2));
+    assert_eq!(s.sys(echo, SYS_IPC_REPLY, [handle ^ 0x100, 0, 1, 1, 1, 1]), Some(-2));
     // The reply: the server answers and waits again; the caller runs with it.
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_REPLY_ACCEPT, [handle, 0, 11, 20, 30, 40]), None);
+    assert_eq!(s.sys(echo, SYS_IPC_REPLY_ACCEPT, [handle, 0, 11, 20, 30, 40]), None);
     assert_eq!(s.k.state(echo), State::Accepting);
     let cap = s.run("CAPTEST.ELF");
     assert_eq!([s.reg(cap, 0), s.reg(cap, 1), s.reg(cap, 2), s.reg(cap, 3)], [11, 20, 30, 40]);
@@ -406,50 +406,50 @@ fn a_call_is_served_and_the_reply_comes_back_in_the_callers_registers() {
 fn a_reply_needs_the_server_the_exchange_and_a_live_handle() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let ep = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap() as usize;
-    s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, 0]);
+    s.sys(cap, SYS_IPC_CALL, [ep, 0, 1, 2, 3, 4]);
     let echo = s.run("ECHO.ELF");
     let handle = s.reg(echo, 0);
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_REPLY, [handle, 5, 6, 7, 8, 0]), Some(0));
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_REPLY, [handle, 5, 6, 7, 8, 0]), Some(-2), "once");
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_REPLY, [0x7f00, 5, 6, 7, 8, 0]), Some(-2), "an exchange that never was");
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_REPLY, [0x7f00 | 200, 5, 6, 7, 8, 0]), Some(-1), "a caller that is no task");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    assert_eq!(s.sys(echo, SYS_IPC_REPLY, [handle, 0, 5, 6, 7, 8]), Some(0));
+    assert_eq!(s.sys(echo, SYS_IPC_REPLY, [handle, 0, 5, 6, 7, 8]), Some(-2), "once");
+    assert_eq!(s.sys(echo, SYS_IPC_REPLY, [0x7f00, 0, 5, 6, 7, 8]), Some(-2), "an exchange that never was");
+    assert_eq!(s.sys(echo, SYS_IPC_REPLY, [0x7f00 | 200, 0, 5, 6, 7, 8]), Some(-1), "a caller that is no task");
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     // The caller cannot answer its own call either: it does not serve.
     let cap = s.run("CAPTEST.ELF");
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_REPLY, [handle, 1, 1, 1, 1, 0]), Some(-2), "the call is over");
+    assert_eq!(s.sys(cap, SYS_IPC_REPLY, [handle, 0, 1, 1, 1, 1]), Some(-2), "the call is over");
 }
 
 #[test]
 fn a_task_that_is_not_the_server_cannot_answer_an_exchange() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let ep = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap() as usize;
-    s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, 0]);
+    s.sys(cap, SYS_IPC_CALL, [ep, 0, 1, 2, 3, 4]);
     let echo = s.run("ECHO.ELF");
     let handle = s.reg(echo, 0);
     // The server sleeps with the request in hand; the idle task runs and
     // tries to answer it.
     s.sys(echo, SYS_SLEEP_UNTIL, [1000000000, SLEEP_RELATIVE as usize, 0, 0, 0, 0]);
     let idle = s.run("IDLE.ELF");
-    assert_eq!(s.sys(idle, SYS_IPC_FAST_REPLY, [handle, 6, 6, 6, 6, 0]), Some(-1), "not the server of this exchange");
+    assert_eq!(s.sys(idle, SYS_IPC_REPLY, [handle, 0, 6, 6, 6, 6]), Some(-1), "not the server of this exchange");
     assert_eq!(s.k.state(cap), State::Calling { ep: 0, gen: (handle >> 8) as u16, accepted: true }, "the call is still waiting");
     // An exchange that is not yet accepted cannot be answered by anyone.
-    assert_eq!(s.sys(idle, SYS_IPC_FAST_REPLY_ACCEPT, [handle, 0, 6, 6, 6, 6]), Some(-3));
+    assert_eq!(s.sys(idle, SYS_IPC_REPLY_ACCEPT, [handle, 0, 6, 6, 6, 6]), Some(-3));
 }
 
 #[test]
 fn a_server_that_ends_tells_the_callers_waiting_on_it() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let ep = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap() as usize;
-    s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, 0]);
+    s.sys(cap, SYS_IPC_CALL, [ep, 0, 1, 2, 3, 4]);
     let echo = s.run("ECHO.ELF");
     // The server takes the request and exits without answering.
     assert_eq!(s.sys(echo, SYS_EXIT, [9, 0, 0, 0, 0, 0]), None);
@@ -458,7 +458,7 @@ fn a_server_that_ends_tells_the_callers_waiting_on_it() {
     let cap = s.run("CAPTEST.ELF");
     assert_eq!(s.reg(cap, 0) as isize, -(Errno::EPEERDIED as isize));
     // A later call finds no server.
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, 0]), Some(-1));
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [ep, 0, 1, 2, 3, 4]), Some(-1));
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn a_task_that_faults_ends_and_is_named() {
 fn sleep_blocks_until_the_tick_after_the_deadline_and_uptime_is_the_timebase() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     assert_eq!(s.sys(cap, SYS_INVOKE, UPTIME_CALL), Some(s.hw.now as isize));
     assert_eq!(s.reg(cap, 1), 0, "nothing above a 64-bit word");
@@ -496,7 +496,7 @@ fn sleep_blocks_until_the_tick_after_the_deadline_and_uptime_is_the_timebase() {
 fn spawn_ex_starts_a_row_under_a_launch_capability_and_only_then() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let info = s.info(cap);
     let at = info.regions[0].base as usize;
@@ -547,7 +547,7 @@ fn spawn_ex_takes_the_longest_image_name_and_refuses_one_byte_more() {
 fn a_spawned_task_has_the_capabilities_of_its_row_and_a_dead_slot_starts_again() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let at = s.info(cap).regions[0].base as usize;
     // SAFETY: inside the task's own part.
@@ -599,11 +599,11 @@ fn only_the_server_holds_read_on_an_endpoint_and_closing_it_tells_the_callers() 
     let ep = s.sys(echo, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap();
     assert!(ep > 0);
     // The server has no WRITE: it cannot call its own endpoint.
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_CALL_EP, [ep as usize, 1, 2, 3, 4, 0]), Some(-1));
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    assert_eq!(s.sys(echo, SYS_IPC_CALL, [ep as usize, 0, 1, 2, 3, 4]), Some(-1));
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let h = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap() as usize;
-    s.sys(cap, SYS_IPC_FAST_CALL_EP, [h, 1, 2, 3, 4, 0]);
+    s.sys(cap, SYS_IPC_CALL, [h, 0, 1, 2, 3, 4]);
     let echo = s.run("ECHO.ELF");
     // The server closes its endpoint instead of answering.
     assert_eq!(s.sys(echo, SYS_CAP_CLOSE, [ep as usize, 0, 0, 0, 0, 0]), Some(0));
@@ -631,13 +631,13 @@ fn a_server_runs_at_the_endpoints_ceiling_while_it_works_and_not_before_or_after
     s.run("SPAWNEE.ELF");
     s.sys(mid, SYS_SLEEP_UNTIL, [1000000000, SLEEP_RELATIVE as usize, 0, 0, 0, 0]);
     s.run("ECHO.ELF");
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]), None);
+    assert_eq!(s.sys(echo, SYS_IPC_ACCEPT, [0; 6]), None);
     // Wake the client and the middle task together.
     s.hw.now += TIMEBASE_HZ as u64 * 2;
     s.k.on_tick(&mut s.hw);
     s.run("CAPTEST.ELF");
     let ep = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap() as usize;
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, 0]), None);
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [ep, 0, 1, 2, 3, 4]), None);
     // Both the middle task (15) and the server (20) are runnable. Without a
     // ceiling the middle task would run: the server's request would wait for
     // it. With the ceiling of the endpoint (its most urgent client, 12) the
@@ -645,7 +645,7 @@ fn a_server_runs_at_the_endpoints_ceiling_while_it_works_and_not_before_or_after
     assert_eq!(s.k.state(mid), State::Ready);
     assert_eq!(s.k.schedule(&mut s.hw), echo, "the server works at the ceiling");
     let handle = s.reg(echo, 0);
-    s.sys(echo, SYS_IPC_FAST_REPLY, [handle, 9, 9, 9, 9, 0]).unwrap();
+    s.sys(echo, SYS_IPC_REPLY, [handle, 0, 9, 9, 9, 9]).unwrap();
     // The reply ends the service: the server is back at its own level, behind
     // the client (12, now runnable with its answer) and the middle task.
     assert_eq!(s.k.schedule(&mut s.hw), cap);
@@ -693,51 +693,26 @@ fn a_profile_the_cbs_cannot_take_is_refused() {
     assert!(r.is_err() || t.deadline_admission(1, azos_topology::deadline::LevelOrder::Edf).is_err(), "the topology refuses runtime > period");
 }
 
-// ── a capability moves with a call ──────────────────────────────────────
+// ── the descriptor form is the main kernel's only ──────────────────────
 
+/// A capability moves with a call only in the descriptor form, which this
+/// kernel does not have: a call, a reply or an accept that names a descriptor
+/// (`a1`, the accept's `a0`) is refused with `-ENOSYS`, nothing queued, and
+/// the register form still works after it.
 #[test]
-fn a_capability_with_transfer_moves_to_the_server_and_leaves_the_caller() {
-    let caps = "[task.IDLE.ELF]\nclass = \"idle\"\npriority = 31\nmem_pages = 1\nstart = true\ncaps = []\n\
-[task.ECHO.ELF]\nclass = \"rt\"\npriority = 8\nmem_pages = 2\nstart = true\ncaps = [ { kind = \"endpoint\", target = \"endpoint.echo\", perm = \"r\" } ]\n\
-[task.CAPTEST.ELF]\nclass = \"rt\"\npriority = 12\nmem_pages = 2\nstart = true\ncaps = [\n\
-  { kind = \"endpoint\", target = \"endpoint.echo\", perm = \"w\" },\n\
-  { kind = \"node\", target = \"SPAWNEE.ELF\", perm = \"xt\" },\n\
-  { kind = \"node\", target = \"FAULTER.ELF\", perm = \"x\" },\n]\n\
-[task.SPAWNEE.ELF]\nclass = \"rt\"\npriority = 14\nmem_pages = 1\nstart = false\ncaps = []\n\
-[task.FAULTER.ELF]\nclass = \"rt\"\npriority = 14\nmem_pages = 1\nstart = false\ncaps = []\n";
-    let mut s = Sim::boot(SCHED, with_header(Box::leak(caps.to_string().into_boxed_str()))).unwrap();
+fn the_descriptor_form_is_refused_and_the_register_form_still_works() {
+    let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     let ep = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::ENDPOINT.raw() as usize, 0, 0, 0]).unwrap() as usize;
-    let spawnee_row = 3;
-    let launch = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::LAUNCH.raw() as usize, spawnee_row, 0, 0]).unwrap() as usize;
-    let no_transfer = s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::LAUNCH.raw() as usize, 4, 0, 0]).unwrap() as usize;
-    // Without TRANSFER the move is refused before anything is queued.
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, no_transfer]), Some(-1));
-    // A handle that is not live is refused too.
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, launch + 0x1000]), Some(-1));
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, launch]), None);
+    let enosys = Some(-(Errno::ENOSYS as isize));
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [ep, 0x1000, 0, 0, 0, 0]), enosys, "a descriptor call");
+    assert_eq!(s.sys(cap, SYS_IPC_REPLY, [0, 0x1000, 0, 0, 0, 0]), enosys, "a descriptor reply");
+    assert_eq!(s.sys(cap, SYS_IPC_ACCEPT, [0x1000, 0, 0, 0, 0, 0]), enosys, "a descriptor accept");
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [ep, 0, 1, 2, 3, 4]), None, "the register form waits for its reply");
     let echo = s.run("ECHO.ELF");
-    let moved = s.reg(echo, 6);
-    let handle = s.reg(echo, 0);
-    assert_ne!(moved, 0, "the server is told the handle in its own table");
-    assert_eq!(
-        s.sys(echo, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::LAUNCH.raw() as usize, spawnee_row, 0, 0]),
-        Some(moved as isize),
-        "the server holds it"
-    );
-    // The caller no longer does: the handle is stale, the lookup finds nothing.
-    let h = CapHandle::from_raw(launch as u32);
-    assert_eq!(h.kind(), ty::LAUNCH.raw());
-    s.sys(echo, SYS_IPC_FAST_REPLY, [handle, 1, 1, 1, 1, 0]).unwrap();
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
-    let cap = s.run("CAPTEST.ELF");
-    assert_eq!(
-        s.sys(cap, SYS_CAP_INFO, [0, CAP_INFO_LOOKUP as usize, ty::LAUNCH.raw() as usize, spawnee_row, 0, 0]),
-        Some(-(Errno::ENOENT as isize))
-    );
-    assert_eq!(s.sys(cap, SYS_CAP_CLOSE, [launch, 0, 0, 0, 0, 0]), Some(-(Errno::ECAPSTALE as isize)));
+    assert_eq!(s.reg(echo, 2), 1, "the server got the register-form words");
 }
 
 #[test]
@@ -768,7 +743,7 @@ fn the_cap_lookup_of_a_handle_fits_a_positive_32_bit_result() {
     let cap = s.slot("CAPTEST.ELF");
     s.run("ECHO.ELF");
     let echo = s.k.current();
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let _ = cap;
     let cap = s.run("CAPTEST.ELF");
     for (kind, res) in [(ty::ENDPOINT, 0), (ty::MMIO, 0), (ty::SHM, 0), (ty::LAUNCH, 3)] {
@@ -786,15 +761,15 @@ fn a_server_that_closed_its_endpoint_serves_no_more() {
     let ep = s.ep(echo);
     assert_eq!(s.sys(echo, SYS_CAP_CLOSE, [ep, 0, 0, 0, 0, 0]), Some(0));
     // Nothing left to serve: accept does not wait for a request nobody can send.
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]), Some(-1));
+    assert_eq!(s.sys(echo, SYS_IPC_ACCEPT, [0; 6]), Some(-1));
     assert_eq!(s.k.state(echo), State::Ready);
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_REPLY_ACCEPT, [0x7f00, 0, 1, 1, 1, 1]), Some(-2), "a stale reply is told so, nothing is accepted");
+    assert_eq!(s.sys(echo, SYS_IPC_REPLY_ACCEPT, [0x7f00, 0, 1, 1, 1, 1]), Some(-2), "a stale reply is told so, nothing is accepted");
     s.sys(echo, SYS_SLEEP_UNTIL, [1000000000, SLEEP_RELATIVE as usize, 0, 0, 0, 0]);
     // The client still holds its capability, and the call is refused rather
     // than queued behind a server that will never accept.
     let cap = s.run("CAPTEST.ELF");
     let h = s.ep(cap);
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [h, 1, 2, 3, 4, 0]), Some(-1));
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [h, 0, 1, 2, 3, 4]), Some(-1));
     assert_eq!(s.k.state(cap), State::Ready, "it did not block");
 }
 
@@ -813,21 +788,21 @@ fn a_server_started_again_serves_again() {
     // SAFETY: the first bytes of the task's own part.
     unsafe { core::ptr::copy_nonoverlapping(b"ECHO.ELF\0".as_ptr(), name as *mut u8, 9) };
     let h = s.ep(cap);
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [h, 1, 2, 3, 4, 0]), Some(-1), "nobody serves it before the launch");
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [h, 0, 1, 2, 3, 4]), Some(-1), "nobody serves it before the launch");
     assert_eq!(s.sys(cap, SYS_SPAWN_EX, [name, 0, 0, 0, 0, 0]), Some(echo as isize + 1));
     s.run("ECHO.ELF");
     let ep = s.ep(echo);
     assert_eq!(s.sys(echo, SYS_CAP_CLOSE, [ep, 0, 0, 0, 0, 0]), Some(0));
     assert_eq!(s.sys(echo, SYS_EXIT, [0; 6]), None);
     s.run("CAPTEST.ELF");
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [h, 1, 2, 3, 4, 0]), Some(-1), "its server ended");
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [h, 0, 1, 2, 3, 4]), Some(-1), "its server ended");
     assert_eq!(s.sys(cap, SYS_SPAWN_EX, [name, 0, 0, 0, 0, 0]), Some(echo as isize + 1));
     s.run("ECHO.ELF");
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]), None, "it serves again, so it waits");
+    assert_eq!(s.sys(echo, SYS_IPC_ACCEPT, [0; 6]), None, "it serves again, so it waits");
     let cap_ = s.run("CAPTEST.ELF");
     assert_eq!(cap_, cap);
     // The caller's old handle is still its own capability of the endpoint.
-    assert_eq!(s.sys(cap, SYS_IPC_FAST_CALL_EP, [h, 1, 2, 3, 4, 0]), None, "the call is taken");
+    assert_eq!(s.sys(cap, SYS_IPC_CALL, [h, 0, 1, 2, 3, 4]), None, "the call is taken");
     assert_eq!(s.k.state(echo), State::Ready);
 }
 
@@ -838,10 +813,10 @@ fn a_row_that_holds_both_ends_of_an_endpoint_cannot_call_itself() {
     let echo = s.run("ECHO.ELF");
     let ep = s.ep(echo);
     // Calling would queue the server behind itself: refused, and it keeps running.
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_CALL_EP, [ep, 1, 2, 3, 4, 0]), Some(-1));
+    assert_eq!(s.sys(echo, SYS_IPC_CALL, [ep, 0, 1, 2, 3, 4]), Some(-1));
     assert_eq!(s.k.state(echo), State::Ready);
     // It can still serve.
-    assert_eq!(s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]), None);
+    assert_eq!(s.sys(echo, SYS_IPC_ACCEPT, [0; 6]), None);
     assert_eq!(s.k.state(echo), State::Accepting);
 }
 
@@ -912,14 +887,14 @@ fn a_server_in_the_idle_class_with_a_client_above_it_is_refused() {
 fn the_idle_floor_never_blocks_and_never_ends() {
     let mut s = Sim::shipped();
     let echo = s.run("ECHO.ELF");
-    s.sys(echo, SYS_IPC_FAST_ACCEPT, [0; 6]);
+    s.sys(echo, SYS_IPC_ACCEPT, [0; 6]);
     let cap = s.run("CAPTEST.ELF");
     s.sys(cap, SYS_SLEEP_UNTIL, [1000000000, SLEEP_RELATIVE as usize, 0, 0, 0, 0]);
     let idle = s.run("IDLE.ELF");
     // Nothing else is runnable: the floor must stay so.
     assert_eq!(s.sys(idle, SYS_SLEEP_UNTIL, [50000000, SLEEP_RELATIVE as usize, 0, 0, 0, 0]), Some(0));
     assert_eq!(s.k.state(idle), State::Ready, "a sleep that would leave the hart with nothing to run");
-    assert_eq!(s.sys(idle, SYS_IPC_FAST_ACCEPT, [0; 6]), Some(-1), "it serves nothing, so it does not wait");
+    assert_eq!(s.sys(idle, SYS_IPC_ACCEPT, [0; 6]), Some(-1), "it serves nothing, so it does not wait");
     assert_eq!(s.k.schedule(&mut s.hw), idle);
     // An exit and a fault start it again instead of leaving no task to run.
     let f = s.k.frame(idle);

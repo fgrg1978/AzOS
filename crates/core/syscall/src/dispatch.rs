@@ -24,7 +24,7 @@ pub use crate::syscall_out::{SyscallOut, NO_CAP_MOVED, SYSCALL_OUT_REGS};
 /// return registers.
 ///
 /// **Callers that keep using this see no request payload from
-/// `SYS_IPC_FAST_ACCEPT`.** The delivery added in CARRIL 4 is inert until the
+/// `SYS_IPC_ACCEPT`.** The delivery added in CARRIL 4 is inert until the
 /// trap handler switches to [`syscall_dispatch_out`] and copies
 /// [`SyscallOut::regs`] into the live `TrapFrame` — see the doc on
 /// `SyscallOut`. This shim exists so a kernel-context caller (a boot-time
@@ -38,7 +38,7 @@ pub fn syscall_dispatch(
     syscall_dispatch_out(num, a0, a1, a2, a3, a4, a5, sepc, user_sp, regs, &mut out)
 }
 
-/// Exit-path counters for `SYS_IPC_FAST_CALL`.
+/// Exit-path counters for `SYS_IPC_CALL`.
 ///
 /// **WHY counters and not traces.** A traced run prints through the UART, which
 /// costs ~160 us per 64 bytes under QEMU — enough to change the very timing
@@ -120,11 +120,11 @@ macro_rules! ipc_trace {
 /// a concurrent syscall on another hart could clobber first.
 ///
 /// `out` is the write-back channel for arms that must return more than one
-/// register — today `SYS_IPC_FAST_ACCEPT` and `SYS_IPC_FAST_REPLY_ACCEPT`.
+/// register — today `SYS_IPC_ACCEPT` and `SYS_IPC_REPLY_ACCEPT`.
 /// See [`SyscallOut`]. The trap
 /// handler must copy `out.regs` into `frame.regs[11..16]` when `out.written`
 /// is set, and must not touch them otherwise.
-/// The destination of a `SYS_IPC_FAST_CALL_EP`, or `None` if the caller may
+/// The destination of a `SYS_IPC_CALL`, or `None` if the caller may
 /// not send to it.
 ///
 /// A thin shell over `azos_ipc::endpoint::endpoint_dest_for`, which is
@@ -160,14 +160,11 @@ pub(crate) fn resolve_endpoint_dest_slot(
 /// donates, so `pifast-smoke`'s loaded phase must fail its bound.
 const FAST_CALL_DONATES: bool = !cfg!(feature = "pifast-donation-canary");
 
-/// Body of the fast-IPC CALL arm, `SYS_IPC_FAST_CALL_EP`: `a0` names
-/// the destination by a capability the caller holds. The raw-TID form (108)
-/// is retired (wave 15 N5).
-#[allow(clippy::too_many_arguments)]
-fn fast_ipc_call_arm(
-    a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64,
-    out: &mut SyscallOut,
-) -> i64 {
+/// Body of the register-form `SYS_IPC_CALL` arm: `a0` names the destination
+/// by a capability the caller holds, `words` are `a2..a5`. The raw-TID form
+/// (108) is retired (wave 15 N5). The register form moves no capability: a
+/// call that moves one is a descriptor-form call (`crate::ipc_v2`).
+fn fast_ipc_call_arm(a0: u64, words: [u64; 4], out: &mut SyscallOut) -> i64 {
 
             // The caller's task slot and TID in one read: the slot names its
             // call record.
@@ -183,7 +180,7 @@ fn fast_ipc_call_arm(
             // An interface the kernel hosts answers here, in the registers:
             // the request's four words in, the reply's four words out.
             if let Some(key) = azos_ipc::endpoint::host_key(dest.owner) {
-                return fast_ipc_call_kernel_hosted(key, caller_tid, a0, [a1, a2, a3, a4], a5, out);
+                return fast_ipc_call_kernel_hosted(key, caller_tid, a0, words, out);
             }
             // A service on another node: refused to a real-time caller (the v2
             // call and the lean entry apply the same rule).
@@ -194,21 +191,17 @@ fn fast_ipc_call_arm(
             ) {
                 return e;
             }
-            fast_ipc_call_to(caller_idx, caller_tid, dest, [a1, a2, a3, a4], a5, out)
+            fast_ipc_call_to(caller_idx, caller_tid, dest, words, out)
 }
 
 /// The register form of a call to an endpoint the kernel hosts
-/// (`crate::khost::serve_regs`). It moves no capability (`a5` must be 0:
-/// `E_PERM`, as for any refused destination). The reply's four words come
+/// (`crate::khost::serve_regs`). The reply's four words come
 /// back in `a0..a3`; word 0 is the interface's status, small and
 /// non-negative, so it cannot be mistaken for the call's own failure.
 #[inline(always)]
 fn fast_ipc_call_kernel_hosted(
-    key: u16, caller_tid: u32, ep_raw: u64, words: [u64; 4], a5: u64, out: &mut SyscallOut,
+    key: u16, caller_tid: u32, ep_raw: u64, words: [u64; 4], out: &mut SyscallOut,
 ) -> i64 {
-    if a5 != 0 {
-        return E_PERM;
-    }
     let Some(who) = u32::try_from(ep_raw).ok().and_then(|h| crate::khost::admit(caller_tid, h, words[0])) else {
         return E_PERM;
     };
@@ -218,76 +211,17 @@ fn fast_ipc_call_kernel_hosted(
 }
 
 /// [`fast_ipc_call_arm`] from the resolved destination on: the call of the
-/// task in slot `caller_idx` (`caller_tid`) to `dest` with `words`, moving the
-/// capability `a5` (0: none). Also the IPC fast path's ordinary half, for a
-/// call it resolved and then could not take (`crate::fastpath`): the
+/// task in slot `caller_idx` (`caller_tid`) to `dest` with `words`. Also the
+/// IPC fast path's ordinary half, for a call it resolved and then could not
+/// take (`crate::fastpath`): the
 /// destination is not resolved (nor a denial recorded) twice.
 #[inline(always)]
 pub(crate) fn fast_ipc_call_to(
-    caller_idx: usize, caller_tid: u32, dest: azos_ipc::endpoint::Dest, words: [u64; 4], a5: u64,
-    out: &mut SyscallOut,
+    caller_idx: usize, caller_tid: u32, dest: azos_ipc::endpoint::Dest, words: [u64; 4], out: &mut SyscallOut,
 ) -> i64 {
             let server_tid = dest.owner;
 
-            // The capability MOVE.
-            //
-            // **`a5` is the handle to move, `0` for none.** It was a
-            // `lateout`-only register until this change, which is the
-            // `drv_heartbeat` shape; it is safe here only because every ring-3
-            // image is rebuilt in one pass and `$AZOS_OUT/build/image_hashes.rs` binds
-            // each profile to its bytes, so a caller built before this cannot
-            // exec at all.
-            //
-            // **Why the move runs BEFORE `fast_ipc_call` and not after.** The
-            // slot becomes `Pending` inside that call, and a server woken on it
-            // can accept immediately — on another hart, before this one gets
-            // its next instruction. A move done afterwards would race an accept
-            // that already reported `moved_cap = 0`. So the capability is moved
-            // first and the resulting handle is handed to `alloc_slot`, which
-            // publishes the two together.
-            //
-            // **`FAST_CALL_CAP_SHARE` (bit 32 of `a5`) shares instead:** the
-            // receiver gets a derived copy and the caller keeps its handle (and,
-            // for a `Cap<Shm>`, its mapping). Undone on a refused call by
-            // revoking the copy, not by moving it back.
-            let share = a5 & azos_abi::syscall_nr::FAST_CALL_CAP_SHARE != 0;
-            let a5 = a5 & !azos_abi::syscall_nr::FAST_CALL_CAP_SHARE;
-            let moving = a5 != 0;
-            let moved_cap = if moving {
-                let raw = match u32::try_from(a5) {
-                    Ok(r) => r,
-                    // A wider `a5` is refused, never truncated onto a
-                    // capability the caller does hold — same rule as `a0`.
-                    Err(_) => return E_PERM,
-                };
-                let handle = azos_abi::cap::CapHandle(raw);
-                // Rights are KEPT. Lowering needs a second field this ABI has
-                // no register for.
-                let moved = if share {
-                    let mut out = [azos_abi::cap::CapHandle(0); 1];
-                    azos_ipc::cap_store::move_caps(
-                        caller_tid, server_tid, &[azos_ipc::cap_store::CapXfer::new(handle, true)], false, &mut out,
-                    )
-                    .map(|_| out[0])
-                } else {
-                    azos_ipc::cap_store::move_cap(caller_tid, server_tid, handle, None)
-                };
-                match moved {
-                    Ok(h) => {
-                        crate::ipc_handlers::reap_moved_windows();
-                        h.0
-                    }
-                    // One code, as `resolve_endpoint_dest` gives one: which of
-                    // stale / no-rights / receiver-full it was would report on
-                    // the server's table to a caller that does not hold it.
-                    Err(_) => return E_PERM,
-                }
-            } else {
-                0
-            };
-
-            ipc_trace!("[IPC] CALL  tid={} -> srv={} w0={:#x} cap={:#x}",
-                caller_tid, server_tid, words[0], moved_cap);
+            ipc_trace!("[IPC] CALL  tid={} -> srv={} w0={:#x}", caller_tid, server_tid, words[0]);
             // Wave 11 PIFAST: the caller lends the server its
             // priority for the span of the call, before the slot is published
             // and recorded in it (`fast_ipc_call_donating`). Without it a
@@ -300,7 +234,7 @@ pub(crate) fn fast_ipc_call_to(
             // leaves without a reply, or by the exit sweep when it dies
             // blocked. A call refused for want of a slot returns it inside.
             match azos_ipc::fastcall::call(
-                caller_idx, caller_tid, dest, words, moved_cap, FAST_CALL_DONATES,
+                caller_idx, caller_tid, dest, words, 0, FAST_CALL_DONATES,
             ) {
                 // `handle`, not a slot index: the generation-tagged exchange
                 // id (same encoding as the server's FAST_ACCEPT handle). The
@@ -308,27 +242,9 @@ pub(crate) fn fast_ipc_call_to(
                 // exchange — the client-side ABA closure.
                 Some(handle) => {
                     ipc_trace!("[IPC] CALL  tid={} handle={:#x} claimed", caller_tid, handle);
-                    fast_ipc_call_wait(handle, caller_tid, server_tid, moved_cap, share, out, false)
+                    fast_ipc_call_wait(handle, caller_tid, server_tid, out, false)
                 }
                 None => {
-                    // The exchange never happened, but the capability already
-                    // moved — it was moved first on purpose, so that no accept
-                    // could ever see the slot without it. Give it back, or the
-                    // server keeps authority for a message it will never
-                    // receive.
-                    //
-                    // This move back cannot fail for space: the caller is in
-                    // its own trap and has granted nothing since, so the slot
-                    // it just gave up is still free. It can fail if the SERVER
-                    // died in between and its table was wiped, and then the
-                    // capability is gone — which is the same outcome as the
-                    // server having received and dropped it, and strictly
-                    // better than leaving it live in a dead task's table.
-                    if moved_cap != 0 && !undo_cap(share, server_tid, caller_tid, moved_cap) {
-                        azos_drv_sys::kerr!(
-                            "[SAFETY_CAP_STRANDED] tid={} srv={} cap={:#x} lost on a refused call",
-                            caller_tid, server_tid, moved_cap);
-                    }
                     ipc_trace!("[IPC] CALL  tid={} -> srv={} NO SLOT (or bad tid)",
                         caller_tid, server_tid);
                     fc_stat!(NO_SLOT);
@@ -345,18 +261,6 @@ pub(crate) fn fast_ipc_call_to(
         
 }
 
-/// Take back the capability a refused fast call moved (or shared) to the
-/// server: a MOVE goes back to the caller, a SHARE's copy is destroyed (the
-/// caller kept its own). `false` when it could not be.
-fn undo_cap(share: bool, server_tid: u32, caller_tid: u32, moved_cap: u32) -> bool {
-    let h = azos_abi::cap::CapHandle(moved_cap);
-    if share {
-        azos_ipc::cap_store::delete_moved(server_tid, h)
-    } else {
-        azos_ipc::cap_store::move_cap(server_tid, caller_tid, h, None).is_ok()
-    }
-}
-
 /// The fast call's wait for its answer, from the hand-off that wakes the
 /// server to the collect, with the bounded retry over spurious wakes and the
 /// withdrawal when no answer comes. `blocked`: turn 0's hand-off was already
@@ -364,7 +268,7 @@ fn undo_cap(share: bool, server_tid: u32, caller_tid: u32, moved_cap: u32) -> bo
 /// answer it found on waking was not there yet.
 #[inline(always)]
 pub(crate) fn fast_ipc_call_wait(
-    handle: u64, caller_tid: u32, server_tid: u32, moved_cap: u32, share: bool, out: &mut SyscallOut, blocked: bool,
+    handle: u64, caller_tid: u32, server_tid: u32, out: &mut SyscallOut, blocked: bool,
 ) -> i64 {
     // The server is woken on turn 0 of the loop below, by
     // `fast_ipc_call_handoff`, which wakes it and blocks this
@@ -513,24 +417,8 @@ pub(crate) fn fast_ipc_call_wait(
         // donation back if it still carries it. A reply that
         // landed first already returned it, and the exit
         // sweep of a dead server leaves nothing to take.
-        let a = azos_ipc::fastcall::abandon(handle, caller_tid);
+        let _ = azos_ipc::fastcall::abandon(handle, caller_tid);
         fc_stat!(EXHAUSTED);
-        // U04-3: a capability moved to the server at the top
-        // of this call is stranded there if the retry loop
-        // exhausts with the request unanswered — nobody is
-        // left to give it back otherwise (contrast the `None`
-        // arm below, which does this for the "never happened"
-        // case). With the per-endpoint queues `was_queued` is
-        // exact: the request was withdrawn before any server
-        // took it. The old table can only say "not answered",
-        // which includes a server that has just accepted and
-        // is about to act on the capability: the residual it
-        // leaves.
-        if moved_cap != 0 && a.was_queued && !undo_cap(share, server_tid, caller_tid, moved_cap) {
-            azos_drv_sys::kerr!(
-                "[SAFETY_CAP_STRANDED] tid={} srv={} cap={:#x} lost on exhaustion",
-                caller_tid, server_tid, moved_cap);
-        }
         #[cfg(feature = "ipc-census")]
         {
             let (t, r, w, g, e, ns, w0) = fast_call_stats::read();
@@ -612,7 +500,7 @@ pub fn syscall_entry_fast(num: u64) -> SyscallEntry {
 /// `LINUX_ABI`); a denied call never returns (`seccomp_deny_kill`). Never
 /// `Done`. Alone for an entry that knows `num` is none of the three
 /// register-only calls: the lean native entries' IPC branch (Chain E cut 7,
-/// `SYS_IPC_FAST_CALL_EP` / `SYS_IPC_FAST_REPLY_ACCEPT`).
+/// `SYS_IPC_CALL` / `SYS_IPC_REPLY_ACCEPT`).
 #[inline(always)]
 pub fn syscall_verdict(num: u64) -> SyscallEntry {
     // AQ11: Syscall filter. Checked on the task slot in place
@@ -748,8 +636,8 @@ pub(crate) fn dispatch_native_checked(
     dispatch_slow(num, a0, a1, a2, a3, a4, a5, sepc, user_sp, regs, out)
 }
 
-/// Body of the `SYS_IPC_FAST_ACCEPT` arm, shared with
-/// `SYS_IPC_FAST_REPLY_ACCEPT`. The ABI, and why the request travels in
+/// Body of the `SYS_IPC_ACCEPT` arm, shared with
+/// `SYS_IPC_REPLY_ACCEPT`. The ABI, and why the request travels in
 /// registers, are at the arm.
 fn fast_ipc_accept_into(out: &mut SyscallOut) -> i64 {
     let (server_idx, server_tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
@@ -760,7 +648,7 @@ fn fast_ipc_accept_into(out: &mut SyscallOut) -> i64 {
 type AcceptedReq = (u64, u32, [u64; 4], u32);
 
 /// [`fast_ipc_accept_into`] with a client wake still owed: `Some((caller_tid,
-/// handle))` when `SYS_IPC_FAST_REPLY_ACCEPT` delivered a reply and deferred
+/// handle))` when `SYS_IPC_REPLY_ACCEPT` delivered a reply and deferred
 /// its wake to here. The wake happens on EVERY path out, exactly once — at
 /// once when a request is already waiting (nothing to hand off to), or folded
 /// into turn 0's block through `fast_ipc_reply_handoff` so the server can
@@ -782,7 +670,7 @@ pub(crate) fn fast_ipc_accept_into_waking(
 }
 
 /// One accept attempt: the v1 accept (`V1`, which refuses a v2 call; wave
-/// 15 N11c) or the v2 one (`SYS_IPC_ACCEPT_V2`, which takes every call).
+/// 15 N11c) or the v2 one (`SYS_IPC_ACCEPT`, which takes every call).
 #[inline(always)]
 fn accept_as<const V1: bool>(server_idx: usize, server_tid: u32) -> Option<AcceptedReq> {
     if V1 {
@@ -793,7 +681,7 @@ fn accept_as<const V1: bool>(server_idx: usize, server_tid: u32) -> Option<Accep
 }
 
 /// [`fast_ipc_accept_into_waking`] for the v1 accept (`V1`) or the v2 one
-/// (`SYS_IPC_ACCEPT_V2`, `polled` and `wake` always `None`).
+/// (`SYS_IPC_ACCEPT`, `polled` and `wake` always `None`).
 pub(crate) fn fast_ipc_accept_into_waking_as<const V1: bool>(
     out: &mut SyscallOut,
     server_idx: usize,
@@ -929,8 +817,8 @@ fn label_answer(handle: u64, replier: u32) {
     }
 }
 
-/// Body of the `SYS_IPC_FAST_REPLY` arm, shared with
-/// `SYS_IPC_FAST_REPLY_ACCEPT`: 0 delivered, -2 stale, -1 refused. Why the
+/// Body of the `SYS_IPC_REPLY` arm, shared with
+/// `SYS_IPC_REPLY_ACCEPT`: 0 delivered, -2 stale, -1 refused. Why the
 /// replier's identity comes from the scheduler is at the arm.
 fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
     // `handle` is the opaque handle from FAST_ACCEPT, **not** a slot index.
@@ -950,7 +838,7 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
             // **WHY the wake is addressed by TID (K-C10).** A
             // sweep-keyed wake would match on
             // `WaitReason::FastIpcClient(handle)`, which only exists
-            // once the client is already `Blocked`. `SYS_IPC_FAST_CALL`
+            // once the client is already `Blocked`. `SYS_IPC_CALL`
             // claims its slot, wakes the server and only *then* blocks,
             // so on SMP this reply can land in the gap — `try_wake_task`
             // sees a task that is not `Blocked` yet, returns early, and
@@ -996,7 +884,7 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
     }
 }
 
-/// Body of the `SYS_IPC_FAST_REPLY_ACCEPT` arm: 0-or-handle as the accept
+/// Body of the `SYS_IPC_REPLY_ACCEPT` arm: 0-or-handle as the accept
 /// answers, -2 stale, -3 any other refusal of the reply. The ABI and the
 /// fail-fast rule are at the arm.
 ///
@@ -1058,11 +946,6 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         SYS_ALERT    => crate::ushell::sys_task_kill(a0, a1, a2, a3),
         // D6: the operations on a handle (`crate::invoke`).
         SYS_INVOKE => crate::invoke::sys_invoke(a0, a1, a2, a3, a4, a5, out),
-        // Wave 15 N11b: ABI v2 of the call (`crate::ipc_v2`). The v1 arms
-        // above are untouched.
-        SYS_IPC_CALL_V2 => crate::ipc_v2::sys_ipc_call_v2(a0, a1),
-        SYS_IPC_ACCEPT_V2 => crate::ipc_v2::sys_ipc_accept_v2(a0),
-        SYS_IPC_REPLY_V2 => crate::ipc_v2::sys_ipc_reply_v2(a0, a1),
         SYS_IPC_REPLY_DELEGATE => crate::ipc_v2::sys_ipc_reply_delegate(a0, a1),
         SYS_CAP_INFO => crate::caps::sys_cap_info(a0, a1, a2, a3, out),
         SYS_CAP_CLOSE => crate::caps::sys_cap_close(a0),
@@ -1084,19 +967,24 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         // through them — they are simply not reachable from ring 3 by a number
         // any more. There is no `sys_open`: an open names a directory.
 
-        // M02: Fast-path IPC — register-passing, ≤32 bytes, zero-copy.
+        // M02: the register form of the IPC call family — register-passing,
+        // ≤32 bytes, zero-copy.
 
-        // SYS_IPC_FAST_CALL_EP: client side. a0 = a `Cap<Endpoint>`, a1..a4 =
-        // data words (up to 4 × u64 = 32 bytes), a5 = a capability to move.
-        // Blocks until the server replies. The raw-TID form (108) is retired
-        // (wave 15 N5): the endpoint is the only address.
-        SYS_IPC_FAST_CALL_EP =>
-            fast_ipc_call_arm(a0, a1, a2, a3, a4, a5, out),
+        // SYS_IPC_CALL, register form: client side. a0 = a `Cap<Endpoint>`,
+        // a1 = 0, a2..a5 = data words (up to 4 × u64 = 32 bytes). Blocks until
+        // the server replies. The raw-TID form (108) is retired (wave 15 N5):
+        // the endpoint is the only address.
+        // The descriptor form (`a1` a `MsgDesc`) is `crate::ipc_v2`'s.
+        SYS_IPC_CALL => if a1 == 0 {
+            fast_ipc_call_arm(a0, [a2, a3, a4, a5], out)
+        } else {
+            crate::ipc_v2::sys_ipc_call_v2(a0, a1)
+        },
 
-        // SYS_IPC_FAST_ACCEPT: server side.
-        // Blocks until a client calls FAST_CALL targeting this TID.
+        // SYS_IPC_ACCEPT, register form (a0 = 0): server side.
+        // Blocks until a client calls an endpoint this task serves.
         //
-        // ABI: a0 = slot index (the handle for the subsequent FAST_REPLY), or
+        // ABI: a0 = the handle for the subsequent reply, or
         // -1 if nothing pending. On success ONLY, a1 = caller TID and
         // a2..a5 = the four request words, delivered through `SyscallOut`.
         //
@@ -1123,11 +1011,12 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         // has not migrated to `syscall_dispatch_out` still sees exactly the
         // old, payload-less behaviour. `libsys::fast_ipc_accept_req` detects
         // that case explicitly instead of reporting stale registers as data.
-        SYS_IPC_FAST_ACCEPT => fast_ipc_accept_into(out),
+        // The descriptor form (`a0` a `MsgDesc`) is `crate::ipc_v2`'s.
+        SYS_IPC_ACCEPT => if a0 == 0 { fast_ipc_accept_into(out) } else { crate::ipc_v2::sys_ipc_accept_v2(a0) },
 
-        // SYS_IPC_FAST_REPLY: server side.
-        // a0 = slot_idx (from FAST_ACCEPT return value).
-        // a1..a4 = reply data words.
+        // SYS_IPC_REPLY, register form: server side.
+        // a0 = the handle (from the accept's return value), a1 = 0,
+        // a2..a5 = reply data words.
         // Wakes the client. Returns 0 on success.
         //
         // **WHY the replier's identity is taken from the scheduler and never
@@ -1140,9 +1029,14 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         // hand every blocked client a reply of its choosing, impersonating any
         // IPC server on the board. Passing `current_task_tid()` here — never an
         // argument register — is what makes the check unforgeable.
-        SYS_IPC_FAST_REPLY => fast_ipc_reply_words(a0, [a1, a2, a3, a4]),
+        // The descriptor form (`a1` a `MsgDesc`) is `crate::ipc_v2`'s.
+        SYS_IPC_REPLY => if a1 == 0 {
+            fast_ipc_reply_words(a0, [a2, a3, a4, a5])
+        } else {
+            crate::ipc_v2::sys_ipc_reply_v2(a0, a1)
+        },
 
-        // SYS_IPC_FAST_REPLY_ACCEPT: the reply above and the
+        // SYS_IPC_REPLY_ACCEPT: the reply above and the
         // accept above it, in one trap. a0 = handle, a2..a5 = reply words. a1
         // is not read: libsys preloads the accept's not-written sentinel there,
         // so `FastRequest::delivered` keeps its meaning on this path.
@@ -1156,7 +1050,7 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         // a dead exchange reaches. The reply's own -1 cannot pass through,
         // because -1 already means what the accept means by it: the reply was
         // delivered and nothing arrived within the eight wakes.
-        SYS_IPC_FAST_REPLY_ACCEPT => fast_ipc_reply_accept(a0, [a2, a3, a4, a5], out),
+        SYS_IPC_REPLY_ACCEPT => fast_ipc_reply_accept(a0, [a2, a3, a4, a5], out),
 
         // ── F06: Driver server syscalls ─────────────────────────────────────
         // 302 (SYS_DRV_MMAP) is retired: ring 3 maps MMIO only

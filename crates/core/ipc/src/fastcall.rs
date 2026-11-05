@@ -25,7 +25,7 @@ pub const FAST_IPC_MAX_WORDS: usize = 4;
 /// Words in a fast-call message.
 pub const WORDS: usize = FAST_IPC_MAX_WORDS;
 
-/// What a reply did (SYS_IPC_FAST_REPLY and its relatives).
+/// What a reply did (SYS_IPC_REPLY and its relatives).
 ///
 /// `Refused` must not be read as "try again": the handle named no call this
 /// replier may answer (never accepted, already answered, not its warrant),
@@ -371,14 +371,14 @@ pub fn handle_slot(handle: u64) -> Option<usize> {
 
 /// The current task, `server_tid` in task slot `server_idx`, takes its next
 /// call (the v1 accept). A v2 call it finds is refused, not taken: its
-/// caller is completed `-EV1ACCEPT` and woken here (owner decision 10-10,
+/// caller is completed `-EMSGFORM` and woken here (owner decision 10-10,
 /// wave 15 N11c; see `ep_queue::take_locked`).
 #[inline]
 pub fn accept(server_idx: usize, server_tid: u32) -> Option<AcceptedReq> {
     ep_queue::accept::<true>(server_idx, server_tid, complete_one)
 }
 
-/// [`accept`] for the v2 accept (`SYS_IPC_ACCEPT_V2`): every call is taken.
+/// [`accept`] for the v2 accept (`SYS_IPC_ACCEPT`): every call is taken.
 #[inline]
 pub fn accept_v2(server_idx: usize, server_tid: u32) -> Option<AcceptedReq> {
     ep_queue::accept::<false>(server_idx, server_tid, complete_one)
@@ -532,7 +532,7 @@ pub fn drain_endpoint(i: usize, code: i32, server: u32) {
 }
 
 /// One call a dead warrant holder strands, completed `-EPEERDIED`, or one
-/// the v1 accept refused, completed `-EV1ACCEPT`: the caller is woken and
+/// the v1 accept refused, completed `-EMSGFORM`: the caller is woken and
 /// the donation (lent to the endpoint's server, alive) goes back. Nothing
 /// is revoked: an accepted request's capabilities are delivered, and a
 /// refused v2 call's are taken back by its caller (`azos_syscall::ipc_v2`),
@@ -599,14 +599,15 @@ pub use crate::ep_queue::{Payload, V2_CAPS, V2_WORDS};
 
 /// [`call_v2`] carrying the whole v2 message `msg` (wave 15 N11b): its
 /// first four words and first capability also fill the v1 record, which
-/// the exit and drain paths read (a v1 accept refuses the call, N11c).
+/// the exit and drain paths read, and which a register-form accept delivers
+/// when `fits_regs` (else it refuses the call, N11c).
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn call_v2_msg(
     caller_idx: usize, caller_tid: u32, dest: Dest, words: [u64; WORDS], moved_cap: u32, donate: bool, badge: u32,
-    msg: &Payload,
+    msg: &Payload, fits_regs: bool,
 ) -> Option<u64> {
-    ep_queue::stamp_msg(caller_idx, msg);
+    ep_queue::stamp_msg(caller_idx, msg, fits_regs);
     let h = call_v2(caller_idx, caller_tid, dest, words, moved_cap, donate, badge);
     if h.is_none() {
         ep_queue::unstamp_msg(caller_idx);

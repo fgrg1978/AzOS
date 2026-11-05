@@ -30,7 +30,7 @@
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
 use azos_abi::error::Errno;
-use azos_abi::syscall_nr::{SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY};
+use azos_abi::syscall_nr::{SYS_IPC_ACCEPT, SYS_IPC_CALL, SYS_IPC_REPLY};
 use azos_ipc::cap::CapPerms;
 use azos_syscall::SyscallOut;
 
@@ -75,7 +75,7 @@ fn die_server(_: usize) {
     let mut out = SyscallOut::new();
     // Take the call, then return without answering: the task exits with
     // the call in service.
-    let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+    let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
     DIE_ACCEPTED.store(h >= 0, Ordering::Release);
 }
 
@@ -85,7 +85,7 @@ fn die_client(_: usize) {
         return;
     };
     let mut out = SyscallOut::new();
-    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, 0xD1E, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_CALL, [cap, 0, 0xD1E, 0, 0, 0], &mut out);
     DIE_RC.store(rc, Ordering::Release);
 }
 
@@ -123,7 +123,7 @@ fn rev_server(_: usize) {
     }
     REV_READY.store(true, Ordering::Release);
     let mut out = SyscallOut::new();
-    let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+    let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
     REV_ACCEPTED.store(h >= 0, Ordering::Release);
     // Wait for the second call to be queued, then destroy the endpoint with
     // one call in service and one queued.
@@ -136,7 +136,7 @@ fn rev_server(_: usize) {
         REV_DESTROYED.store(azos_ipc::endpoint::destroy_ref_as(r, me).is_ok(), Ordering::Release);
     }
     // The in-service call is over: answering it is refused.
-    let late = dispatch(SYS_IPC_FAST_REPLY, [h as u64, 1, 0, 0, 0, 0], &mut out);
+    let late = dispatch(SYS_IPC_REPLY, [h as u64, 0, 1, 0, 0, 0], &mut out);
     if late == 0 {
         REV_DESTROYED.store(false, Ordering::Release);
     }
@@ -152,7 +152,7 @@ fn rev_client(k: usize) {
         REV_GO.store(true, Ordering::Release);
     }
     let mut out = SyscallOut::new();
-    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, 0x5EF + k as u64, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_CALL, [cap, 0, 0x5EF + k as u64, 0, 0, 0], &mut out);
     REV_RC[k].store(rc, Ordering::Release);
 }
 
@@ -199,12 +199,12 @@ fn many_server(_: usize) {
     MANY_SEEN_QUEUED.store(azos_ipc::fastcall::census().0, Ordering::Release);
     let mut out = SyscallOut::new();
     for _ in 0..MANY {
-        let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+        let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
         if h < 0 {
             return;
         }
         let w0 = out.regs[1];
-        dispatch(SYS_IPC_FAST_REPLY, [h as u64, w0 + 1, 0, 0, 0, 0], &mut out);
+        dispatch(SYS_IPC_REPLY, [h as u64, 0, w0 + 1, 0, 0, 0], &mut out);
     }
 }
 
@@ -212,7 +212,7 @@ fn many_client(k: usize) {
     let Some(cap) = client_cap(MANY_EP) else { return };
     let mut out = SyscallOut::new();
     let w = 0x1000 + k as u64;
-    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, w, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_CALL, [cap, 0, w, 0, 0, 0], &mut out);
     if rc == (w + 1) as i64 {
         MANY_OK.fetch_add(1, Ordering::AcqRel);
     }
@@ -620,7 +620,7 @@ fn war_server(_: usize) {
     WAR_READY.store(true, Ordering::Release);
     let me = azos_sched::current_task_tid();
     let mut out = SyscallOut::new();
-    let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+    let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
     if h < 0 {
         WAR_SERVER.store(-2, Ordering::Release);
         return;
@@ -683,7 +683,7 @@ fn war_client(_: usize) {
         return;
     };
     let mut out = SyscallOut::new();
-    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, 0x11, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_CALL, [cap, 0, 0x11, 0, 0, 0], &mut out);
     WAR_RC.store(rc, Ordering::Release);
 }
 
@@ -717,16 +717,16 @@ azos_ktest::ktest_late! {
 //
 // * `ipc_v2_call_carries_caps_words_and_badge`: a caller mints a badged copy
 //   of its endpoint capability (`SYS_CAP_DERIVE`) and makes a v2 call
-//   (`SYS_IPC_CALL_V2`) through it with every inline word the kernel allows
+//   (`SYS_IPC_CALL`) through it with every inline word the kernel allows
 //   (Kconfig `IPC_MSG_INLINE_WORDS`) and two capabilities (or
-//   `IPC_MSG_MAX_CAPS`, if fewer); the server's `SYS_IPC_ACCEPT_V2` sees the
+//   `IPC_MSG_MAX_CAPS`, if fewer); the server's `SYS_IPC_ACCEPT` sees the
 //   badge, every word and the capabilities in its own table, and its
-//   `SYS_IPC_REPLY_V2` returns words and one capability to the caller.
-//   Canary `canary=ipc-v2-as-v1`: the accept reads every call as v1 (four
+//   `SYS_IPC_REPLY` returns words and one capability to the caller.
+//   Canary `canary=ipc-desc-as-regs`: the accept reads every call in the register form (four
 //   words, no badge, one capability), `not ok`.
 
 use azos_abi::ipc_msg::{CapDesc, MsgDesc, CAP_MODE_DUP, CAP_MODE_MOVE, MSG_BADGED, MSG_VERSION};
-use azos_abi::syscall_nr::{SYS_CAP_DERIVE, SYS_IPC_ACCEPT_V2, SYS_IPC_CALL_V2, SYS_IPC_REPLY_V2};
+use azos_abi::syscall_nr::SYS_CAP_DERIVE;
 use azos_ipc::cap::targets::Shm;
 
 const V2_EP: &[u8] = b"n11b.v2";
@@ -756,7 +756,7 @@ fn v2_server(_: usize) {
     let me = azos_sched::current_task_tid();
     let mut m = MsgDesc::default();
     let mut out = SyscallOut::new();
-    let h = dispatch(SYS_IPC_ACCEPT_V2, [&mut m as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
+    let h = dispatch(SYS_IPC_ACCEPT, [&mut m as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
     if h < 0 {
         V2_SERVER.store(-2, Ordering::Release);
         return;
@@ -788,7 +788,7 @@ fn v2_server(_: usize) {
             r.caps[0] = CapDesc { handle: c.raw().0, mode: CAP_MODE_MOVE, _pad: 0, rights: 0, expiry_ns: 0 };
         }
     }
-    let rc = dispatch(SYS_IPC_REPLY_V2, [h as u64, &r as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_REPLY, [h as u64, &r as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
     V2_SERVER.store(if rc != 0 { -6 } else { step }, Ordering::Release);
 }
 
@@ -816,7 +816,7 @@ fn v2_client(_: usize) {
         };
         *c = CapDesc { handle: cap.raw().0, mode: CAP_MODE_MOVE, _pad: 0, rights: 0, expiry_ns: 0 };
     }
-    let rc = dispatch(SYS_IPC_CALL_V2, [badged as u64, &mut m as *mut MsgDesc as u64, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_CALL, [badged as u64, &mut m as *mut MsgDesc as u64, 0, 0, 0, 0], &mut out);
     let step = if rc != 0 {
         -4
     } else if m.n_words as usize != v2_words()
@@ -867,11 +867,12 @@ azos_ktest::ktest_late! {
 
 // ── A v2 call taken by a v1 accept (wave 15 N11c) ──────────────────────────
 //
-// * `ipc_v2_call_refused_by_v1_accept`: a caller makes a v2 call with two
-//   capabilities (the first MOVE, the second DUP, no `MSG_KEEP`; or
-//   `IPC_MSG_MAX_CAPS`, if fewer) to a server that accepts with the v1
-//   accept (110). Owner decision 10-10: the accept refuses it, the call
-//   returns `-EV1ACCEPT`, the caller holds exactly what it held before (the
+// * `ipc_v2_call_refused_by_v1_accept`: a caller makes a descriptor-form
+//   call with every inline word the build allows and two capabilities (the
+//   first MOVE, the second DUP, no `MSG_KEEP`; or `IPC_MSG_MAX_CAPS`, if
+//   fewer), more than the registers name, to a server that accepts with the
+//   register form. Owner decision 10-10: the accept refuses it, the call
+//   returns `-EMSGFORM`, the caller holds exactly what it held before (the
 //   MOVE one back, the DUP one once: FX3) and the server neither saw the
 //   call nor holds any of them. Counted by table occupancy: the Shm
 //   kind is packed, so a by-resource presence test always answers no.
@@ -886,7 +887,7 @@ static V1A_READY: AtomicBool = AtomicBool::new(false);
 /// 1 = the server saw only the v1 call and holds none of the caller's
 /// capabilities; a negative step where it did not.
 static V1A_SERVER: AtomicI64 = AtomicI64::new(NOT_YET);
-/// 1 = refused with `-EV1ACCEPT` and both capabilities back; else a step.
+/// 1 = refused with `-EMSGFORM` and both capabilities back; else a step.
 static V1A_CLIENT: AtomicI64 = AtomicI64::new(NOT_YET);
 
 fn v1a_server(_: usize) {
@@ -901,14 +902,14 @@ fn v1a_server(_: usize) {
     let mut step = 1;
     // At most two calls: the v2 one (only under the canary) and the release.
     for _ in 0..2 {
-        let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+        let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
         if h < 0 {
             V1A_SERVER.store(-2, Ordering::Release);
             return;
         }
         let w0 = out.regs[1];
         // Answer either way, so its caller returns.
-        dispatch(SYS_IPC_FAST_REPLY, [h as u64, w0, 0, 0, 0, 0], &mut out);
+        dispatch(SYS_IPC_REPLY, [h as u64, 0, w0, 0, 0, 0], &mut out);
         if w0 == V1A_RELEASE {
             break;
         }
@@ -926,9 +927,12 @@ fn v1a_client(_: usize) {
         V1A_CLIENT.store(-1, Ordering::Release);
         return;
     };
+    // More words than a register-form accept names (and two capabilities
+    // where the build allows them): a call it must refuse.
     let n = v2_caps();
-    let mut m = MsgDesc { version: MSG_VERSION, n_words: 4, n_caps: n as u8, ..MsgDesc::default() };
-    for (k, w) in m.words.iter_mut().take(4).enumerate() {
+    let nw = azos_limits::IPC_MSG_INLINE_WORDS as usize;
+    let mut m = MsgDesc { version: MSG_VERSION, n_words: nw as u8, n_caps: n as u8, ..MsgDesc::default() };
+    for (k, w) in m.words.iter_mut().take(nw).enumerate() {
         *w = 0x100 + k as u64;
     }
     for (k, (c, res)) in m.caps.iter_mut().zip(V1A_RES).take(n).enumerate() {
@@ -941,8 +945,8 @@ fn v1a_client(_: usize) {
     }
     let before = azos_ipc::cap_store::occupied(me);
     let mut out = SyscallOut::new();
-    let rc = dispatch(SYS_IPC_CALL_V2, [ep, &mut m as *mut MsgDesc as u64, 0, 0, 0, 0], &mut out);
-    let step = if rc != Errno::EV1ACCEPT.to_syscall_ret() {
+    let rc = dispatch(SYS_IPC_CALL, [ep, &mut m as *mut MsgDesc as u64, 0, 0, 0, 0], &mut out);
+    let step = if rc != Errno::EMSGFORM.to_syscall_ret() {
         -3
     } else if azos_ipc::cap_store::occupied(me) != before {
         -4
@@ -950,7 +954,7 @@ fn v1a_client(_: usize) {
         1
     };
     // Release the server with a v1 call, whatever happened above.
-    let _ = dispatch(SYS_IPC_FAST_CALL_EP, [ep, V1A_RELEASE, 0, 0, 0, 0], &mut out);
+    let _ = dispatch(SYS_IPC_CALL, [ep, 0, V1A_RELEASE, 0, 0, 0], &mut out);
     V1A_CLIENT.store(step, Ordering::Release);
 }
 
@@ -965,7 +969,7 @@ azos_ktest::ktest_late! {
             1 => {}
             -1 => return Err("the caller got no endpoint capability"),
             -2 => return Err("the caller could not grant itself the capabilities to send"),
-            -3 => return Err("the v2 call was not refused with -EV1ACCEPT"),
+            -3 => return Err("the v2 call was not refused with -EMSGFORM"),
             _ => return Err("the caller does not hold exactly its capabilities again (a MOVE lost, or a DUP twice)"),
         }
         match V1A_SERVER.load(Ordering::Acquire) {
@@ -1011,13 +1015,13 @@ fn v1x_server(_: usize) {
     V1X_SERVER_TID.store(me, Ordering::Release);
     V1X_READY.store(true, Ordering::Release);
     let mut out = SyscallOut::new();
-    let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+    let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
     if h < 0 {
         V1X_SERVER.store(-2, Ordering::Release);
         return;
     }
     let w0 = out.regs[1];
-    dispatch(SYS_IPC_FAST_REPLY, [h as u64, w0, 0, 0, 0, 0], &mut out);
+    dispatch(SYS_IPC_REPLY, [h as u64, 0, w0, 0, 0, 0], &mut out);
     V1X_SERVER.store(if w0 == V1X_RELEASE { 1 } else { -3 }, Ordering::Release);
 }
 
@@ -1054,7 +1058,7 @@ fn v1x_client(_: usize) {
     }
     let words = [0xF30, 0, 0, 0];
     let moved = got[0].0;
-    let Some(h) = fastcall::call_v2_msg(idx, me, dest, words, moved, false, 0, &p) else {
+    let Some(h) = fastcall::call_v2_msg(idx, me, dest, words, moved, false, 0, &p, false) else {
         V1X_CLIENT.store(-4, Ordering::Release);
         return;
     };
@@ -1073,7 +1077,7 @@ fn v1x_client(_: usize) {
 fn v1x_release(_: usize) {
     let Some(ep) = client_cap(V1X_EP) else { return };
     let mut out = SyscallOut::new();
-    let _ = dispatch(SYS_IPC_FAST_CALL_EP, [ep, V1X_RELEASE, 0, 0, 0, 0], &mut out);
+    let _ = dispatch(SYS_IPC_CALL, [ep, 0, V1X_RELEASE, 0, 0, 0], &mut out);
 }
 
 azos_ktest::ktest_late! {
@@ -1125,14 +1129,14 @@ fn wg_server(_: usize) {
     WG_READY.store(true, Ordering::Release);
     let me = azos_sched::current_task_tid();
     let mut out = SyscallOut::new();
-    let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+    let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
     if h < 0 {
         return;
     }
     // Serving: the client's edge holds the boost.
     WG_SERVING.store(azos_sched::task_priority(me).unwrap_or(u32::MAX), Ordering::Release);
     let w0 = out.regs[1];
-    dispatch(SYS_IPC_FAST_REPLY, [h as u64, w0 + 1, 0, 0, 0, 0], &mut out);
+    dispatch(SYS_IPC_REPLY, [h as u64, 0, w0 + 1, 0, 0, 0], &mut out);
     WG_AFTER.store(azos_sched::task_priority(me).unwrap_or(u32::MAX), Ordering::Release);
 }
 
@@ -1142,7 +1146,7 @@ fn wg_client(_: usize) {
         return;
     };
     let mut out = SyscallOut::new();
-    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, 0x7A, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_CALL, [cap, 0, 0x7A, 0, 0, 0], &mut out);
     WG_RC.store(rc, Ordering::Release);
 }
 

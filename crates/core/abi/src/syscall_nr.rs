@@ -22,7 +22,7 @@
 //! | domain      | [`SYS_SPAWN_EX`], [`SYS_THREAD_CREATE`], [`SYS_THREAD_EXIT`], [`SYS_EXIT`], [`SYS_ALERT`], [`SYS_GETPID`] |
 //! | time, sched | [`SYS_YIELD`], [`SYS_SLEEP_UNTIL`], [`SYS_SCHEDCTL`] |
 //! | memory      | [`SYS_MO_CREATE`], [`SYS_MO_MAP`], [`SYS_MO_UNMAP`] |
-//! | IPC         | [`SYS_IPC_FAST_CALL_EP`], [`SYS_IPC_FAST_REPLY`], [`SYS_IPC_FAST_ACCEPT`], [`SYS_IPC_FAST_REPLY_ACCEPT`], [`SYS_IPC_CALL_V2`], [`SYS_IPC_ACCEPT_V2`], [`SYS_IPC_REPLY_V2`], [`SYS_IPC_REPLY_DELEGATE`], [`SYS_RING_SETUP`], [`SYS_RING_ENTER`], [`SYS_PORT_WAIT`] |
+//! | IPC         | [`SYS_IPC_CALL`], [`SYS_IPC_ACCEPT`], [`SYS_IPC_REPLY`], [`SYS_IPC_REPLY_ACCEPT`], [`SYS_IPC_REPLY_DELEGATE`], [`SYS_RING_SETUP`], [`SYS_RING_ENTER`], [`SYS_PORT_WAIT`] |
 //! | futex       | [`SYS_FUTEX_WAIT`], [`SYS_FUTEX_WAKE`] |
 //! | foreign ABI | [`SYS_FOREIGN_ENTRY`], [`SYS_FOREIGN_RESUME`], [`SYS_FOREIGN_FORK`] |
 //! | generic     | [`SYS_INVOKE`] |
@@ -52,8 +52,8 @@
 //! | Primary result (`isize`, negative=error) | `a0`          |
 //! | Fast-IPC extra outputs (up to 6)         | `a1..=a6`     |
 //!
-//! Trap instruction: `ecall`. The fast-IPC family (`SYS_IPC_FAST_CALL_EP` and
-//! kin, and `SYS_INVOKE`'s register-form replies) is the only one that uses `a6` — every other syscall's kernel-written
+//! Trap instruction: `ecall`. The register form of the IPC family
+//! (`SYS_IPC_CALL` and kin), and `SYS_INVOKE`'s register-form replies) is the only one that uses `a6` — every other syscall's kernel-written
 //! output is `a0` alone, and a wrapper that does not declare every register
 //! the kernel writes as `lateout`/`inlateout` invites the exact class of bug
 //! `crates/core/libsys/src/lib.rs` documents on `trace_dump` and the fast-IPC
@@ -629,147 +629,139 @@ pub const SHM_MAP_PROT_WRITE: u64 = 1;
 
 // ── IPC ───────────────────────────────────────────────────────────────
 
-/// `SYS_IPC_FAST_CALL_EP` — the fast call, addressed by a **capability**.
-/// `a0` = a `Cap<Endpoint>` handle, `a1..a4` = the four
-/// message words, `a5` = a capability to move with the request (0 for none).
-/// With [`FAST_CALL_CAP_SHARE`] set in `a5` the capability is SHARED instead:
-/// the receiver gets a derived copy (the sender's rights, a child of its
-/// warrant) and the sender keeps its own handle — and, for a `Cap<Shm>`, its
-/// mapping. A MOVE of a `Cap<Shm>` takes the sender's mapping with it.
-///
-/// `a0` is resolved through the caller's own capability table, demanding
-/// `WRITE` on a `Cap<Endpoint>`; the request is queued on that endpoint and
-/// the task serving it is woken. A caller holding no endpoint capability can
-/// reach nothing. The raw-TID form is retired (wave 15 N5): the
-/// endpoint is the only address.
-///
-/// The resolution is `cap_store::get`, so it is also refused while
-/// degraded mode is armed: a contained task may still report on the console,
-/// but it may not open new service requests.
-///
-/// Returns reply word 0 in `a0` (words 1..3 in `a1..a3`), or a negative code:
-/// `-1` when the capability does not resolve, carries no `WRITE`, names an
-/// endpoint no task serves yet (one code on purpose: which of them it was
-/// tells a caller about capabilities it does not hold), or the call was given
-/// up without an answer; and the completion codes of `error::Errno`
-/// `EPEERDIED` (the serving task died with the call queued or in service),
-/// `EREVOKED` (the endpoint was destroyed while the call was queued or in
-/// service). A proxy endpoint (a service on another node) reports a lost link in
-/// the reply, `azos_idl::IdlError::NoConnection`, not as a code here.
-///
-/// **`SYS_IPC_FAST_REPLY_ACCEPT` is not a TID call**: it answers the
-/// exchange in hand and then blocks for the next request on the caller's own
-/// endpoints. It is the server side of the loop `vsbench` runs on the hot
-/// path.
-///
-/// Foundational case 2 (block/wake: the caller sleeps until the server replies).
-pub const SYS_IPC_FAST_CALL_EP: u64 = 19;
+/// The call family has two forms. In the **register form** (`a1 == 0` for the
+/// call and the reply, `a0 == 0` for the accept) a message is up to four words
+/// in registers and carries no capability and no deadline; the fast path
+/// (Kconfig `IPC_FASTPATH`) takes only this form. In the **descriptor form**
+/// `a1` (`a0` for the accept) points at a `MsgDesc` in user memory: up to
+/// Kconfig `IPC_MSG_INLINE_WORDS` words, `IPC_MSG_MAX_CAPS` capability
+/// entries, a deadline and a label. Both forms queue on the same endpoint. A
+/// register-form accept names four words and one capability (`a6`): it takes
+/// a descriptor-form call that fits them (at most four words, at most one
+/// capability, no deadline, no label bit of its own; the badge is not
+/// reported, as for a register-form call) and refuses any other: that call
+/// ends `-EMSGFORM`, the server sees nothing and every capability it carried
+/// is back in the caller's table (owner decision 10-10: what the registers
+/// cannot name would sit unnamed in the server's table). A descriptor-form
+/// accept takes every call.
 
-/// `SYS_IPC_FAST_REPLY` — a server answers an exchange in hand: `a0` = the
-/// handle from the accept, `a1..a4` = the four reply words. Returns 0
-/// delivered, `-2` for a stale handle, `-1` for any other refusal.
+/// `SYS_IPC_CALL` — `a0 = Cap<Endpoint>` (`WRITE`), `a1` = the form.
 ///
-/// Foundational case 2 (block/wake: wakes the caller of the exchange).
-pub const SYS_IPC_FAST_REPLY: u64 = 18;
+/// **Register form** (`a1 == 0`): `a2..a5` = the four message words. Returns
+/// reply word 0 in `a0` (words 1..3 in `a1..a3`), or a negative code.
+///
+/// **Descriptor form** (`a1 = *mut MsgDesc`): the call's words and capability
+/// entries, moved to the serving task all or nothing (`MSG_KEEP` keeps the
+/// MOVE entries on a refusal), with the badge of the capability in `a0`
+/// recorded for the server. The answer is written over `*a1` (its words, the
+/// receiver's handles of the capabilities the reply moved, `n_words`,
+/// `n_caps`). Returns 0 when answered. `-EINVAL` for a descriptor the kernel
+/// refuses (version, counts above its limits, a mode other than MOVE/DUP,
+/// non-zero `flags` bits other than `MSG_KEEP`, a `label` with a reserved
+/// bit, or a `clock_id` other than `ClockId::MONO`, the one clock served);
+/// `-EDEADLINE` when the descriptor's `deadline` (absolute ns on `MONO`, 0 =
+/// none) is at or before now: refused before the call is queued, nothing
+/// moved, one `deadline-expired` decision record; the server reads the same
+/// `deadline` and `clock_id` in the descriptor it accepts; `-EADMIT` when the
+/// deadline is one the server's scheduling context cannot meet (its
+/// reservation's relative deadline is longer than the time left, or its
+/// per-call budget does not fit the time or the budget the caller's own
+/// reservation has left): refused before the call is queued, nothing moved,
+/// one `call-admission` record, and `*a1` holds the counter-offer
+/// (`words[0]` the record's id, the receipt; `words[1]` 1 for a deadline, 2
+/// for a budget; `words[2]` the offered deadline in ns or budget in us;
+/// `deadline` the offered deadline); a call with a deadline lends the caller
+/// to its server (a passive server runs on the caller's reservation);
+/// `-ERTPROXY` when the caller is a real-time task and the endpoint a proxy
+/// (the topology names it `endpoint.rpc-<service>`: a service on another
+/// node), refused before the call is queued, one `cap-denial` record;
+/// `-EMSGFORM` (see above); `-EFAULT`.
+///
+/// Both forms: `a0` is resolved through the caller's own capability table,
+/// demanding `WRITE` on a `Cap<Endpoint>`; the request is queued on that
+/// endpoint and the task serving it is woken. The resolution is
+/// `cap_store::get`, so it is also refused while degraded mode is armed: a
+/// contained task may still report on the console, but it may not open new
+/// service requests. `-1` when the capability does not resolve, carries no
+/// `WRITE`, names an endpoint no task serves yet (one code on purpose: which
+/// of them it was tells a caller about capabilities it does not hold), the
+/// call was given up without an answer, or a transfer was refused; the
+/// completion codes of `error::Errno` `EPEERDIED` (the serving task died with
+/// the call queued or in service) and `EREVOKED` (the endpoint was destroyed
+/// while the call was queued or in service). A proxy endpoint (a service on
+/// another node) reports a lost link in the reply,
+/// `azos_idl::IdlError::NoConnection`, not as a code here.
+///
+/// Foundational case 2 (block/wake: the caller sleeps until the server
+/// replies), and 1 when the message moves capabilities.
+pub const SYS_IPC_CALL: u64 = 21;
 
-/// `SYS_IPC_FAST_ACCEPT` — a server takes the next request on an endpoint it
-/// serves, blocking (up to eight wakes). `a0` = the handle of the exchange
-/// (the reply warrant's name), `a1` = the caller's task id, `a2..a5` = the
-/// four request words (and `a6` the server's handle of the capability the
-/// request moved, or a sentinel when it moved none); `-1` when nothing arrived.
+/// `SYS_IPC_ACCEPT` — a server takes the next request on an endpoint it
+/// serves, blocking (up to eight wakes).
+///
+/// **Register form** (`a0 == 0`): `a0` = the handle of the exchange (the reply
+/// warrant's name), `a1` = the caller's task id, `a2..a5` = the four request
+/// words, `a6` = the server's handle of the capability the call moved, or a
+/// sentinel; `-1` when nothing arrived. A descriptor-form call that does not
+/// fit the registers (see above) is refused (`-EMSGFORM` to its caller) and
+/// the accept goes on to the next.
+///
+/// **Descriptor form** (`a0 = *mut MsgDesc`): the request is written into
+/// `*a0`: its words, the server's handles of the moved capabilities, and for
+/// a descriptor-form call the badge and `MSG_BADGED`. Returns the call's
+/// handle (`>= 0`), -1 when nothing arrived, `-EFAULT` (the call stays
+/// accepted: answer or delegate it by the returned handle). Writes no
+/// register but `a0`.
 ///
 /// Foundational case 2 (block/wake: the server sleeps until a call arrives).
-pub const SYS_IPC_FAST_ACCEPT: u64 = 20;
+pub const SYS_IPC_ACCEPT: u64 = 22;
 
-/// `SYS_IPC_FAST_REPLY_ACCEPT` — a server's reply and its next accept in one
-/// trap. `a0` = the handle from the previous accept, `a2..a5` =
-/// the four reply words. `a1` is not read: libsys preloads the accept's
-/// not-written sentinel there.
+/// `SYS_IPC_REPLY` — answer, as the holder of the call's reply warrant, once.
+/// `a0` = the call handle from the accept.
+///
+/// **Register form** (`a1 == 0`): `a2..a5` = the four reply words. Returns 0
+/// delivered, `-2` for a stale handle, `-1` for any other refusal.
+///
+/// **Descriptor form** (`a1 = *const MsgDesc`): the reply's words go to the
+/// caller and its capability entries move to the caller's table all or
+/// nothing, before the answer is published. To a register-form call only the
+/// first four words travel and no capability may (`-EINVAL`). Returns 0; -3
+/// when the caller does not hold the warrant of an unanswered call (checked
+/// first, so a call already over also reads -3 here); -2 when the call ended
+/// between that check and the answer (the moved capabilities go back);
+/// `-EINVAL`, `-EFAULT`, -1 for a refused transfer.
+///
+/// Foundational case 2 (block/wake: wakes the caller of the exchange), and 1
+/// when the reply moves capabilities.
+pub const SYS_IPC_REPLY: u64 = 23;
+
+/// `SYS_IPC_REPLY_ACCEPT` — a server's register-form reply and its next
+/// register-form accept in one trap. `a0` = the handle from the previous
+/// accept, `a2..a5` = the four reply words. `a1` is not read: libsys preloads
+/// the accept's not-written sentinel there. It answers the exchange in hand
+/// and then blocks for the next request on the caller's own endpoints: the
+/// server side of the loop `vsbench` runs on the hot path.
 ///
 /// Fail-fast (owner decision 2026-09-15). A reply that is not delivered
 /// accepts nothing and returns at once: `-2` for a stale handle, `-3` for any
-/// other refusal. A delivered reply continues exactly as `SYS_IPC_FAST_ACCEPT`:
-/// `a0` = the next handle with `a1` = caller TID and `a2..a5` = its words, or
-/// `-1` when nothing arrived within the accept's eight wakes.
+/// other refusal. A delivered reply continues exactly as the register-form
+/// [`SYS_IPC_ACCEPT`]: `a0` = the next handle with `a1` = caller TID and
+/// `a2..a5` = its words, or `-1` when nothing arrived within the accept's
+/// eight wakes.
 ///
 /// Foundational case 2 (block/wake: reply, then sleep for the next call).
-pub const SYS_IPC_FAST_REPLY_ACCEPT: u64 = 17;
-
-/// `SYS_IPC_CALL_V2` — `a0 = Cap<Endpoint>` (`WRITE`), `a1 = *mut MsgDesc`.
-/// The v2 call: up to the kernel's Kconfig `IPC_MSG_INLINE_WORDS` inline
-/// words and `IPC_MSG_MAX_CAPS` capability entries, moved to the serving
-/// task all or nothing (`MSG_KEEP` keeps the MOVE entries on a refusal),
-/// with the badge of the capability in `a0` recorded for the server. Blocks
-/// until the call is answered; the answer is written over `*a1` (its words,
-/// the receiver's handles of the capabilities the reply moved, `n_words`,
-/// `n_caps`). Returns 0 when answered; `-EPEERDIED` / `-EREVOKED` when the
-/// call completed without an answer; `-EV1ACCEPT` when the server took it
-/// with the v1 accept (`SYS_IPC_FAST_ACCEPT` or
-/// `SYS_IPC_FAST_REPLY_ACCEPT`): the kernel refuses the call there, the
-/// server sees nothing, and every capability the call carried is back in
-/// the caller's table (owner decision 10-10; a v1 accept names only four
-/// words and one capability, so the rest would sit unnamed in the server's
-/// table); `-EINVAL` for a descriptor the kernel
-/// refuses (version, counts above its limits, a mode other than MOVE/DUP,
-/// non-zero `flags` bits other than `MSG_KEEP`, a `label` with a reserved bit, or a
-/// `clock_id` other than `ClockId::MONO`, the one clock served);
-/// `-EDEADLINE` when the descriptor's `deadline`
-/// (absolute ns on `MONO`, 0 = none) is at or before now: refused before the
-/// call is queued, nothing moved, one `deadline-expired` decision record; the
-/// server reads the same `deadline` and `clock_id` in the descriptor it
-/// accepts; `-EADMIT` when the deadline is one the server's scheduling context
-/// cannot meet (its reservation's relative deadline is longer than the time
-/// left, or its per-call budget does not fit the time or the budget the
-/// caller's own reservation has left): refused before the call is queued,
-/// nothing moved, one `call-admission` record, and `*a1` holds the
-/// counter-offer (`words[0]` the record's id, the receipt; `words[1]` 1 for a
-/// deadline, 2 for a budget; `words[2]` the offered deadline in ns or budget
-/// in us; `deadline` the offered deadline); a call with a deadline lends the
-/// caller to its server (a passive server runs on the caller's reservation);
-/// `-ERTPROXY` when the caller is a real-time task and the endpoint a
-/// proxy (the topology names it `endpoint.rpc-<service>`: a service on another
-/// node), refused before the call is queued, one `cap-denial` record;
-/// `-EFAULT`; -1 (`E_PERM`)
-/// for the capability or a refused transfer, one code as for `SYS_IPC_FAST_CALL_EP`; -1 also
-/// when the wait ran out (the call is withdrawn).
-///
-/// Foundational case 2 (block/wake), and 1 when the message moves capabilities.
-pub const SYS_IPC_CALL_V2: u64 = 21;
-
-/// `SYS_IPC_ACCEPT_V2` — `a0 = *mut MsgDesc`. The accept of
-/// `SYS_IPC_FAST_ACCEPT` (same queue, same blocking), writing the request into `*a0`: for a v2 call its
-/// words, the server's handles of the moved capabilities, the badge, and
-/// `MSG_BADGED`; for a v1 call (`SYS_IPC_FAST_CALL_EP`) its four words, its moved capability
-/// (if any) as one entry, and no `MSG_BADGED`. Returns the call's handle
-/// (the reply warrant's name, `>= 0`), -1 when nothing arrived, `-EFAULT`
-/// (the call stays accepted: answer or delegate it by the returned handle).
-/// Writes no register but `a0`.
-///
-/// Foundational case 2 (block/wake: the server sleeps until a call arrives).
-pub const SYS_IPC_ACCEPT_V2: u64 = 22;
-
-/// `SYS_IPC_REPLY_V2` — `a0` = call handle, `a1 = *const MsgDesc`. Answer
-/// as the holder of the call's reply warrant, once. The reply's words go to
-/// the caller and its capability entries move to the caller's table all or
-/// nothing, before the answer is published. To a v1 call only the first
-/// four words travel and no capability may (`-EINVAL`). Returns 0; -3 when
-/// the caller does not hold the warrant of an unanswered call (checked
-/// first, so a call already over also reads -3 here); -2 when the call
-/// ended between that check and the answer (the moved capabilities go
-/// back); `-EINVAL`, `-EFAULT`, -1 for a refused transfer.
-///
-/// Foundational case 2 (block/wake), and 1 when the reply moves capabilities.
-pub const SYS_IPC_REPLY_V2: u64 = 23;
+pub const SYS_IPC_REPLY_ACCEPT: u64 = 17;
 
 /// `SYS_IPC_REPLY_DELEGATE` — `a0` = call handle, `a1` = TID of a thread of
 /// the caller's own process. Move the reply warrant: from then on only that
-/// thread may answer (`SYS_IPC_FAST_REPLY`, `SYS_IPC_FAST_REPLY_ACCEPT` or
-/// `SYS_IPC_REPLY_V2`), once. Returns 0, -2 when the call is
-/// over, -3 when the caller does not hold the warrant, `-EPERM` when `a1`
-/// is not a live thread of the caller's process (a warrant addressed to
-/// another process is the warrant foundation's, not this call's).
+/// thread may answer (`SYS_IPC_REPLY` or `SYS_IPC_REPLY_ACCEPT`), once.
+/// Returns 0, -2 when the call is over, -3 when the caller does not hold the
+/// warrant, `-EPERM` when `a1` is not a live thread of the caller's process
+/// (a warrant addressed to another process is the warrant foundation's, not
+/// this call's).
 ///
-/// Foundational case 2 (block/wake: hands the pending caller to another server), and 1 (authority over the exchange).
+/// Foundational case 2 (block/wake: hands the pending caller to another
+/// server), and 1 (authority over the exchange).
 pub const SYS_IPC_REPLY_DELEGATE: u64 = 24;
 
 /// `SYS_RING_SETUP` — allocates an io_ring and mints a
@@ -815,10 +807,6 @@ pub const SYS_RING_ENTER: u64 = 26;
 ///
 /// Foundational case 2 (block/wake: sleeps until a port event).
 pub const SYS_PORT_WAIT: u64 = 27;
-
-/// [`SYS_IPC_FAST_CALL_EP`] `a5` flag (bit 32): share the capability in the low
-/// 32 bits instead of moving it.
-pub const FAST_CALL_CAP_SHARE: u64 = 1 << 32;
 
 /// `CqEntry.flags` bit: the kernel refused the entry, and `result` holds
 /// `-Errno`. Mirrors `azos_ipc::io_ring::CQE_F_REFUSED`.
@@ -955,7 +943,7 @@ pub const fn futex_op(a1: u64) -> (u64, u32) {
 /// Kconfig `LINUX_ABI`, whose per-CPU syscall word the mode bit shares).
 ///
 /// Foundational case 1 (authority: registers a trap reflection for the thread).
-pub const SYS_FOREIGN_ENTRY: u64 = 30;
+pub const SYS_FOREIGN_ENTRY: u64 = 18;
 
 /// `SYS_FOREIGN_RESUME` — D6 "foreign ABI" family. `a0` = the user address of a
 /// `crate::foreign::ForeignFrame`. Restores every register in it (the flags
@@ -966,7 +954,7 @@ pub const SYS_FOREIGN_ENTRY: u64 = 30;
 /// space) leave the thread in runtime mode.
 ///
 /// Foundational case 1 (protection: only the kernel installs a full register frame).
-pub const SYS_FOREIGN_RESUME: u64 = 31;
+pub const SYS_FOREIGN_RESUME: u64 = 19;
 
 
 // ── Generic ───────────────────────────────────────────────────────────
@@ -977,7 +965,7 @@ pub const SYS_FOREIGN_RESUME: u64 = 31;
 /// `crate::invoke`.
 ///
 /// Foundational case 1 (authority: every op is checked against the held handle); device and cross-space ops are counted under it too.
-pub const SYS_INVOKE: u64 = 32;
+pub const SYS_INVOKE: u64 = 20;
 
 /// `SYS_FOREIGN_FORK` — the foreign-ABI family's process copy: a copy-on-write
 /// copy of the calling process for a ring-3 runtime that hosts a foreign
@@ -991,7 +979,7 @@ pub const SYS_INVOKE: u64 = 32;
 /// made, `-ENOSYS` in a kernel built without Kconfig `LINUX_ABI`.
 ///
 /// Foundational case 1 (protection: copies an address space).
-pub const SYS_FOREIGN_FORK: u64 = 33;
+pub const SYS_FOREIGN_FORK: u64 = 30;
 
 /// Bytes the stat op of the domain (`DOMAIN_STAT`) writes to its buffer: all little-endian,
 /// at these offsets. The caller's buffer must be at least this long.
@@ -1100,15 +1088,14 @@ pub const CAP_TYPED_SYSCALLS: &[u64] = &[
     SYS_RING_SETUP,
     SYS_RING_ENTER,
     SYS_MO_MAP,
-    SYS_IPC_FAST_CALL_EP,
-    SYS_IPC_CALL_V2,
+    SYS_IPC_CALL,
     SYS_SCHEDCTL,
 ];
 
 /// Reserved upper bound: the table's length. Numbers `>=` this are unassigned
 /// and answer `-1`. A call added to the table is added at the end and moves
 /// this.
-pub const SYS_NR_RESERVED_UPPER: u64 = 34;
+pub const SYS_NR_RESERVED_UPPER: u64 = 31;
 
 // ── The foundational case of each call ──────────────────────────────────────
 //
@@ -1156,13 +1143,10 @@ pub const SYSCALL_CASE: [u8; SYS_NR_RESERVED_UPPER as usize] = {
     t[SYS_MO_CREATE as usize] = CASE_AUTHORITY;
     t[SYS_MO_MAP as usize] = CASE_AUTHORITY;
     t[SYS_MO_UNMAP as usize] = CASE_AUTHORITY;
-    t[SYS_IPC_FAST_REPLY_ACCEPT as usize] = CASE_BLOCK_WAKE;
-    t[SYS_IPC_FAST_REPLY as usize] = CASE_BLOCK_WAKE;
-    t[SYS_IPC_FAST_CALL_EP as usize] = CASE_BLOCK_WAKE;
-    t[SYS_IPC_FAST_ACCEPT as usize] = CASE_BLOCK_WAKE;
-    t[SYS_IPC_CALL_V2 as usize] = CASE_BLOCK_WAKE;
-    t[SYS_IPC_ACCEPT_V2 as usize] = CASE_BLOCK_WAKE;
-    t[SYS_IPC_REPLY_V2 as usize] = CASE_BLOCK_WAKE;
+    t[SYS_IPC_REPLY_ACCEPT as usize] = CASE_BLOCK_WAKE;
+    t[SYS_IPC_CALL as usize] = CASE_BLOCK_WAKE;
+    t[SYS_IPC_ACCEPT as usize] = CASE_BLOCK_WAKE;
+    t[SYS_IPC_REPLY as usize] = CASE_BLOCK_WAKE;
     t[SYS_IPC_REPLY_DELEGATE as usize] = CASE_BLOCK_WAKE;
     t[SYS_RING_SETUP as usize] = CASE_AUTHORITY;
     t[SYS_RING_ENTER as usize] = CASE_BLOCK_WAKE;

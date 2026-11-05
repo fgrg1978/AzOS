@@ -190,7 +190,7 @@ pub struct Refused {
     pub alt: Alt,
 }
 
-/// Where a refusal's counter-offer is in the descriptor `SYS_IPC_CALL_V2`
+/// Where a refusal's counter-offer is in the descriptor `SYS_IPC_CALL`
 /// writes back with `-EADMIT`: `words[0]` the receipt, `words[1]` the kind
 /// ([`ALT_DEADLINE`], [`ALT_BUDGET`]), `words[2]` the value; `deadline` is
 /// the offered deadline (the call's own for a budget offer): a caller that

@@ -98,8 +98,8 @@
 .equ TASK_REAP_OFFSET, {task_reap_off}  // Task::reap_on_resume (Chain E commit 9)
 .equ RESUME_EXIT_CALL, {resume_exit_call}  // azos_sched::scheduler::IPC_FAST_EXIT_CALL
 // Chain E cut 7 (Kconfig IPC_FASTPATH): the native path's branch for the two
-// IPC fast calls, SYS_IPC_FAST_REPLY_ACCEPT (IPC_FAST_LO) and
-// SYS_IPC_FAST_CALL_EP (IPC_FAST_LO + 2, asserted where these are bound).
+// calls the IPC fast path takes, SYS_IPC_REPLY_ACCEPT (IPC_FAST_LO) and
+// SYS_IPC_CALL (IPC_FAST_LO + 4, asserted where these are bound).
 .equ IPC_FAST_ENTRY,  {ipc_fast_entry}
 .equ IPC_FAST_LO,     {ipc_fast_lo}
 .equ SYSCALL_ABI_CANARY, {syscall_abi_canary}
@@ -407,13 +407,13 @@ syscall_entry:
     // Only a `syscall` reaches here, so no `x86_64_trap_entry` decode: the
     // syscall's own entry, with the trap entry's guards.
 .if IPC_FAST_ENTRY
-    // Chain E cut 7: rax = IPC_FAST_LO or IPC_FAST_LO + 2 exactly when
-    // (rax - IPC_FAST_LO) & ~2 is 0. Those two go straight to the frame
+    // Chain E cut 7: rax = IPC_FAST_LO or IPC_FAST_LO + 4 exactly when
+    // (rax - IPC_FAST_LO) & ~4 is 0. Those two go straight to the frame
     // that runs the fast path (`x86_64_fast_ipc_syscall`); three
     // instructions on every other syscall. rcx is free (the return RIP is
     // in the frame already, and the contract clobbers rcx).
     leaq -IPC_FAST_LO(%rax), %rcx
-    testq $-3, %rcx
+    testq $-5, %rcx
     jz .Lsyscall_fast_ipc
 .endif
     call x86_64_native_syscall

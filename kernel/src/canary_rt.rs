@@ -375,7 +375,7 @@ pub(crate) const NAMES: &[&str] = &[
     // crates/core/syscall/src/ipc_v2.rs `sys_ipc_accept_v2`: every call is
     // read as v1 (no badge, four words, one capability) (ktest
     // `ipc_v2_call_carries_caps_words_and_badge`).
-    "ipc-v2-as-v1",
+    "ipc-desc-as-regs",
     // crates/core/ipc/src/ep_queue.rs `take_locked`: the v1 accept takes a
     // v2 call (four words, first capability) instead of refusing it (ktest
     // `ipc_v2_call_refused_by_v1_accept`).

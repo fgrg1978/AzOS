@@ -253,8 +253,8 @@ pub(crate) fn install_sched_hooks() {
         azos_ipc::ep_queue::canary_reply_twice();
     }
     // Wave 15 N11b runtime canary: the v2 accept reads every call as v1.
-    if canary!("ipc-v2-as-v1") {
-        azos_syscall::ipc_v2::canary_as_v1();
+    if canary!("ipc-desc-as-regs") {
+        azos_syscall::ipc_v2::canary_desc_as_regs();
     }
     // Wave 15 N11c runtime canary: the v1 accept takes a v2 call.
     if canary!("ipc-v1-takes-v2") {

@@ -10,7 +10,7 @@
 //!
 //! THE REFUSAL CHECK. The kernel installs `UHELLO.ELF`'s profile at exec
 //! (`crates/core/sched/src/seccomp.rs`, `IMAGE_PROFILES`): putchar, exit and
-//! write. The call outside it is `SYS_IPC_FAST_CALL_EP`, with a null
+//! write. The call outside it is `SYS_IPC_CALL`, with a null
 //! capability. Filtered, the call never returns: the kernel records the
 //! denial and kills the task (exit 159, `seccomp_deny_kill`). Unfiltered, the
 //! null capability is refused with a negative value and this program prints

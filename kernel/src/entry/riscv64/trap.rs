@@ -329,7 +329,7 @@ pub(crate) fn handle_ecall(frame: &mut TrapFrame) -> usize {
 
 /// [`handle_ecall`]'s body. `FAST`: the lean native entry's IPC branch (Chain E
 /// cut 7, `riscv64_fast_ipc_syscall`), entered only for `a7` =
-/// `SYS_IPC_FAST_CALL_EP` or `SYS_IPC_FAST_REPLY_ACCEPT`.
+/// `SYS_IPC_CALL` or `SYS_IPC_REPLY_ACCEPT`.
 #[inline(always)]
 pub(crate) fn handle_ecall_as<const FAST: bool>(frame: &mut TrapFrame) -> usize {
     crate::trap::syscall::enter::<Kernel, TrapFrame, FAST>(frame) as usize

@@ -170,7 +170,7 @@ impl Ipc for AzosAbi {
     /// that reason as well.
     ///
     /// The returned `u64` is a capability HANDLE, not a TID. `round_trip`
-    /// below is the only reader and passes it to `SYS_IPC_FAST_CALL_EP`.
+    /// below is the only reader and passes it to `SYS_IPC_CALL`.
     fn spawn_peer(&self) -> Option<Role> {
         if sys::spawn_ex(sys::cstr!(b"/fat/VSSRV.ELF"), None) <= 0 {
             return None;
@@ -187,7 +187,7 @@ impl Ipc for AzosAbi {
         }
     }
 
-    /// One `SYS_IPC_FAST_CALL_EP`: request, block, and collect the reply in a
+    /// One `SYS_IPC_CALL`: request, block, and collect the reply in a
     /// single ring crossing. That this is *one* syscall where the Linux side
     /// needs two is the thing being measured.
     ///
@@ -205,7 +205,7 @@ impl Ipc for AzosAbi {
         }
     }
 
-    /// The server half, written the way a real server is: `SYS_IPC_FAST_REPLY_ACCEPT`
+    /// The server half, written the way a real server is: `SYS_IPC_REPLY_ACCEPT`
     /// answers one request and takes the next in a single ring crossing, so a
     /// round trip is TWO traps (the client's call, the server's reply-and-accept)
     /// rather than three. That is seL4's `Call` + `ReplyRecv` pair, which is the
@@ -221,7 +221,7 @@ impl Ipc for AzosAbi {
     /// `Role::Server` and nothing calls this.
     ///
     /// It exits rather than serving, and that is the point: carrying the loop
-    /// here would put `SYS_IPC_FAST_ACCEPT`, `_REPLY` and `_REPLY_ACCEPT` in
+    /// here would put `SYS_IPC_ACCEPT`, `_REPLY` and `_REPLY_ACCEPT` in
     /// `VSBENCH.ELF`'s seccomp profile — authority the client does not need,
     /// which `tests/host/seccomp-tests` correctly refuses to let a row grant.
     fn serve(&self, _bound: u64) -> ! {

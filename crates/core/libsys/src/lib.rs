@@ -142,16 +142,15 @@ use azos_abi::syscall_nr::{
     SYS_GETPID, SYS_YIELD,
     SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
     SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_DERIVE, SYS_CAP_REVOKE,
-    SYS_IPC_FAST_CALL_EP,
-    SYS_IPC_FAST_REPLY, SYS_IPC_FAST_ACCEPT,
+    SYS_IPC_CALL, SYS_IPC_ACCEPT, SYS_IPC_REPLY,
     SYS_MO_CREATE, SYS_MO_UNMAP,
     SYS_RING_SETUP, SYS_RING_ENTER,
     SYS_MO_MAP,
-    SYS_IPC_FAST_REPLY_ACCEPT,
+    SYS_IPC_REPLY_ACCEPT,
     SYS_SLEEP_UNTIL, SLEEP_RELATIVE,
     SYS_PORT_WAIT,
     SYS_SPAWN_EX, SYS_ALERT,
-    SYS_IPC_CALL_V2, SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_REPLY_DELEGATE,
+    SYS_IPC_REPLY_DELEGATE,
     SYS_SCHEDCTL,
     SYS_FOREIGN_ENTRY, SYS_FOREIGN_RESUME, SYS_FOREIGN_FORK,
 };
@@ -2637,16 +2636,15 @@ pub const PORT_BIND_F_REMOVE: u64 = azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
 /// Maximum number of 64-bit words in a fast IPC message.
 pub const FAST_IPC_MAX_WORDS: usize = 4;
 
-/// Send a fast IPC request through a `Cap<Endpoint>` (`SYS_IPC_FAST_CALL_EP`)
-/// and block until the reply arrives, receiving the FULL
+/// Send a fast IPC request through a `Cap<Endpoint>` (the register form of
+/// `SYS_IPC_CALL`) and block until the reply arrives, receiving the FULL
 /// four-word reply.
 ///
-/// ABI: a0 = the endpoint capability, a1..a4 = up to 4 × u64 of request data
-/// (≤ 32 bytes), a5 = a capability to move (0 for none). On success a0 =
-/// reply\[0\] and a1..a3 = reply\[1..3\], delivered through `SyscallOut`
-/// exactly like FAST_ACCEPT's request delivery. On failure a0 is negative
-/// and a1..a5 are untouched. The kernel touches no user memory — data
-/// travels in registers both ways.
+/// ABI: a0 = the endpoint capability, a1 = 0 (the register form), a2..a5 = up
+/// to 4 × u64 of request data (≤ 32 bytes). On success a0 = reply\[0\] and
+/// a1..a3 = reply\[1..3\], delivered through `SyscallOut` exactly like the
+/// accept's request delivery. On failure a0 is negative. The kernel touches
+/// no user memory — data travels in registers both ways.
 ///
 /// **WHY this cannot go through the shared `syscallN` helpers.** Results
 /// land in argument registers, so they must be declared `lateout` in a
@@ -2683,16 +2681,12 @@ pub const NO_CAP_TO_MOVE: u32 = 0;
 /// Under owner decision 38: a move, never a copy. The
 /// sender's entry is removed in the same step the server's is installed, so
 /// this handle stops resolving for the caller the instant the call returns
-/// successfully. The server learns its own handle from `a6` of its accept.
+/// successfully. A call that moves a capability is a descriptor-form call
+/// (one `CAP_MODE_MOVE` entry): the server takes it with a descriptor-form
+/// accept, which names its own handle.
 ///
-/// `moving` is a handle the caller holds, or [`NO_CAP_TO_MOVE`]. Rights are
-/// kept; there is no register left in this ABI to lower them.
-///
-/// **`a5` must be passed, never left to the compiler.** It was `lateout`-only
-/// before this change, and the kernel now reads it: an `asm!` that does not
-/// write it hands the kernel whatever rustc happened to leave there, which is
-/// the `drv_heartbeat` bug (see that wrapper) with a capability move as the
-/// consequence instead of a stray watchdog refresh.
+/// `moving` is a handle the caller holds, or [`NO_CAP_TO_MOVE`] (then the
+/// register form). Rights are kept.
 pub fn fast_ipc_call_ep_moving(
     endpoint: u32,
     words: [u64; FAST_IPC_MAX_WORDS],
@@ -2711,27 +2705,49 @@ pub fn fast_ipc_call_ep_status(
     words: [u64; FAST_IPC_MAX_WORDS],
     moving: u32,
 ) -> Result<[u64; FAST_IPC_MAX_WORDS], isize> {
-    fast_ipc_call_ep_a5(endpoint, words, moving as u64)
+    if moving == NO_CAP_TO_MOVE {
+        fast_ipc_call_regs(endpoint, words)
+    } else {
+        fast_ipc_call_carrying(endpoint, words, moving, azos_abi::ipc_msg::CAP_MODE_MOVE)
+    }
 }
 
 /// [`fast_ipc_call_ep_moving`], sharing the capability instead of moving it
-/// (`azos_abi::syscall_nr::FAST_CALL_CAP_SHARE`): the server gets a derived copy
-/// and the caller keeps its own handle and, for a `Cap<Shm>`, its mapping. A
-/// MOVE of a `Cap<Shm>` takes the caller's mapping with it.
+/// (a `CAP_MODE_DUP` entry): the server gets a derived copy and the caller
+/// keeps its own handle and, for a `Cap<Shm>`, its mapping. A MOVE of a
+/// `Cap<Shm>` takes the caller's mapping with it.
 pub fn fast_ipc_call_ep_sharing(
     endpoint: u32,
     words: [u64; FAST_IPC_MAX_WORDS],
     sharing: u32,
 ) -> Option<[u64; FAST_IPC_MAX_WORDS]> {
-    fast_ipc_call_ep_a5(endpoint, words, sharing as u64 | azos_abi::syscall_nr::FAST_CALL_CAP_SHARE).ok()
+    fast_ipc_call_carrying(endpoint, words, sharing, azos_abi::ipc_msg::CAP_MODE_DUP).ok()
 }
 
-/// The fast call with `a5` as the kernel reads it: the capability handle in
-/// the low 32 bits, `FAST_CALL_CAP_SHARE` in bit 32.
-fn fast_ipc_call_ep_a5(
+/// The descriptor-form call of four words and one capability entry in `mode`;
+/// the reply's first four words.
+fn fast_ipc_call_carrying(
     endpoint: u32,
     words: [u64; FAST_IPC_MAX_WORDS],
-    a5: u64,
+    cap: u32,
+    mode: u8,
+) -> Result<[u64; FAST_IPC_MAX_WORDS], isize> {
+    let mut d = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: 4, n_caps: 1, ..MsgDesc::default() };
+    d.words[..FAST_IPC_MAX_WORDS].copy_from_slice(&words);
+    d.caps[0] = CapDesc { handle: cap, mode, _pad: 0, rights: 0, expiry_ns: 0 };
+    let r = ipc_call_v2(endpoint, &mut d);
+    if r < 0 {
+        return Err(r);
+    }
+    let mut out = [0u64; FAST_IPC_MAX_WORDS];
+    out.copy_from_slice(&d.words[..FAST_IPC_MAX_WORDS]);
+    Ok(out)
+}
+
+/// The register-form call (`SYS_IPC_CALL`, `a1 = 0`): `a2..a5` the words.
+fn fast_ipc_call_regs(
+    endpoint: u32,
+    words: [u64; FAST_IPC_MAX_WORDS],
 ) -> Result<[u64; FAST_IPC_MAX_WORDS], isize> {
     let ret: isize;
     let r1: u64;
@@ -2741,13 +2757,13 @@ fn fast_ipc_call_ep_a5(
         #[cfg(target_arch = "riscv64")]
         asm!(
             "ecall",
-            in("a7") SYS_IPC_FAST_CALL_EP,
+            in("a7") SYS_IPC_CALL,
             inlateout("a0") endpoint as u64 => ret,
-            inlateout("a1") words[0] => r1,
-            inlateout("a2") words[1] => r2,
-            inlateout("a3") words[2] => r3,
-            inlateout("a4") words[3] => _,
-            inlateout("a5") a5 => _,
+            inlateout("a1") 0u64 => r1,
+            inlateout("a2") words[0] => r2,
+            inlateout("a3") words[1] => r3,
+            inlateout("a4") words[2] => _,
+            inlateout("a5") words[3] => _,
             // The kernel writes `a6` on every arm that opts into `SyscallOut`.
             // Undeclared, rustc is entitled to keep a
             // live value here and the kernel would silently destroy it.
@@ -2760,13 +2776,13 @@ fn fast_ipc_call_ep_a5(
         #[cfg(target_arch = "aarch64")]
         asm!(
             "svc #0",
-            in("x8") SYS_IPC_FAST_CALL_EP,
+            in("x8") SYS_IPC_CALL,
             inlateout("x0") endpoint as u64 => ret,
-            inlateout("x1") words[0] => r1,
-            inlateout("x2") words[1] => r2,
-            inlateout("x3") words[2] => r3,
-            inlateout("x4") words[3] => _,
-            inlateout("x5") a5 => _,
+            inlateout("x1") 0u64 => r1,
+            inlateout("x2") words[0] => r2,
+            inlateout("x3") words[1] => r3,
+            inlateout("x4") words[2] => _,
+            inlateout("x5") words[3] => _,
             lateout("x6") _,
             lateout("x7") _, lateout("x8") _, lateout("x9") _, lateout("x10") _,
             lateout("x11") _, lateout("x12") _, lateout("x13") _, lateout("x14") _,
@@ -2780,13 +2796,13 @@ fn fast_ipc_call_ep_a5(
         #[cfg(target_arch = "x86_64")]
         asm!(
             "syscall",
-            inlateout("rax") SYS_IPC_FAST_CALL_EP as isize => ret,
+            inlateout("rax") SYS_IPC_CALL as isize => ret,
             inlateout("rdi") endpoint as u64 => r3,
-            inlateout("rsi") words[0] => r2,
-            inlateout("rdx") words[1] => r1,
-            inlateout("r10") words[2] => _,
-            inlateout("r8") words[3] => _,
-            inlateout("r9") a5 => _,
+            inlateout("rsi") 0u64 => r2,
+            inlateout("rdx") words[0] => r1,
+            inlateout("r10") words[1] => _,
+            inlateout("r8") words[2] => _,
+            inlateout("r9") words[3] => _,
             lateout("rcx") _,
             lateout("r11") _,
             options(nostack),
@@ -2827,7 +2843,7 @@ pub struct FastRequest {
     /// for the caller's own bookkeeping. **Never** hand this to
     /// [`fast_ipc_reply`].
     pub slot: usize,
-    /// TID of the task that issued `SYS_IPC_FAST_CALL`.
+    /// TID of the task that issued the call.
     pub caller_tid: u32,
     /// The four request words, exactly as the client passed them.
     pub words: [u64; FAST_IPC_MAX_WORDS],
@@ -2863,8 +2879,8 @@ const FAST_ACCEPT_SENTINEL: u64 = u64::MAX;
 /// Server: block until a client sends a fast IPC call to this TID, and
 /// receive the request.
 ///
-/// ABI (`SYS_IPC_FAST_ACCEPT`): takes no argument. On success a0 = slot
-/// index, a1 = caller TID, a2..a5 = the four request words. On failure
+/// ABI (the register form of `SYS_IPC_ACCEPT`): a0 = 0. On success a0 = the
+/// handle, a1 = caller TID, a2..a5 = the four request words. On failure
 /// a0 = -1 and a1..a5 are untouched.
 ///
 /// **WHY this cannot go through the shared `syscallN` helpers.** Those pass
@@ -2877,7 +2893,7 @@ const FAST_ACCEPT_SENTINEL: u64 = u64::MAX;
 ///
 /// Returns `None` when nothing was pending (the kernel's bounded
 /// spurious-wake retry ran out, which is indistinguishable from an empty
-/// queue from ring 3 — see the `SYS_IPC_FAST_ACCEPT` arm).
+/// queue from ring 3 — see the `SYS_IPC_ACCEPT` arm).
 pub fn fast_ipc_accept_req() -> Option<FastRequest> {
     let ret: isize;
     let caller: u64;
@@ -2890,8 +2906,8 @@ pub fn fast_ipc_accept_req() -> Option<FastRequest> {
         #[cfg(target_arch = "riscv64")]
         asm!(
             "ecall",
-            in("a7") SYS_IPC_FAST_ACCEPT,
-            lateout("a0") ret,
+            in("a7") SYS_IPC_ACCEPT,
+            inlateout("a0") 0u64 => ret,
             inlateout("a1") FAST_ACCEPT_SENTINEL => caller,
             lateout("a2") w0,
             lateout("a3") w1,
@@ -2908,8 +2924,8 @@ pub fn fast_ipc_accept_req() -> Option<FastRequest> {
         #[cfg(target_arch = "aarch64")]
         asm!(
             "svc #0",
-            in("x8") SYS_IPC_FAST_ACCEPT,
-            lateout("x0") ret,
+            in("x8") SYS_IPC_ACCEPT,
+            inlateout("x0") 0u64 => ret,
             inlateout("x1") FAST_ACCEPT_SENTINEL => caller,
             lateout("x2") w0,
             lateout("x3") w1,
@@ -2928,10 +2944,10 @@ pub fn fast_ipc_accept_req() -> Option<FastRequest> {
         #[cfg(target_arch = "x86_64")]
         asm!(
             "syscall",
-            inlateout("rax") SYS_IPC_FAST_ACCEPT as isize => ret,
+            inlateout("rax") SYS_IPC_ACCEPT as isize => ret,
             inlateout("rsi") FAST_ACCEPT_SENTINEL => w0,
             lateout("rdx") caller,
-            lateout("rdi") w1,
+            inlateout("rdi") 0u64 => w1,
             lateout("r8") w2,
             lateout("r9") w3,
             lateout("r10") moved,
@@ -2985,8 +3001,8 @@ pub fn fast_ipc_accept() -> Option<u64> {
 
 /// Server: reply to a fast IPC call (non-blocking).
 ///
-/// ABI (`SYS_IPC_FAST_REPLY`): a0 = the **handle** [`fast_ipc_accept`]
-/// returned, a1..a4 = reply words. Only `words[0]` reaches the client — see
+/// ABI (the register form of `SYS_IPC_REPLY`): a0 = the **handle**
+/// [`fast_ipc_accept`] returned, a1 = 0, a2..a5 = reply words. Only `words[0]` reaches the client — see
 /// [`fast_ipc_call_ep`].
 ///
 /// Returns `0` on success, `-2` if the handle is **stale** (its exchange is
@@ -3005,8 +3021,8 @@ pub fn fast_ipc_accept() -> Option<u64> {
 /// rebuilding it from `FastRequest::slot`.
 pub fn fast_ipc_reply(handle: u64, words: [u64; FAST_IPC_MAX_WORDS]) -> isize {
     unsafe {
-        syscall5(SYS_IPC_FAST_REPLY,
-            handle,
+        syscall6(SYS_IPC_REPLY,
+            handle, 0,
             words[0], words[1], words[2], words[3])
     }
 }
@@ -3014,11 +3030,10 @@ pub fn fast_ipc_reply(handle: u64, words: [u64; FAST_IPC_MAX_WORDS]) -> isize {
 /// Server: reply to the exchange `handle` names and accept the next request,
 /// in one trap.
 ///
-/// ABI (`SYS_IPC_FAST_REPLY_ACCEPT`): a0 = the handle, a1 =
+/// ABI (`SYS_IPC_REPLY_ACCEPT`): a0 = the handle, a1 =
 /// `FAST_ACCEPT_SENTINEL` (the kernel does not read it), a2..a5 = the reply
-/// words. The results are [`fast_ipc_accept_req`]'s. The words ride a2..a5
-/// rather than [`fast_ipc_reply`]'s a1..a4 so that a1 can carry the sentinel,
-/// which keeps `FastRequest::delivered` meaningful here too.
+/// words, as in [`fast_ipc_reply`]. The results are [`fast_ipc_accept_req`]'s;
+/// the sentinel in a1 keeps `FastRequest::delivered` meaningful here too.
 ///
 ///  * `Ok(Some(req))` — the reply was delivered; `req` is the next request.
 ///  * `Ok(None)` — the reply was delivered; nothing arrived within the
@@ -3049,7 +3064,7 @@ pub fn fast_ipc_reply_accept(
         #[cfg(target_arch = "riscv64")]
         asm!(
             "ecall",
-            in("a7") SYS_IPC_FAST_REPLY_ACCEPT,
+            in("a7") SYS_IPC_REPLY_ACCEPT,
             inlateout("a0") handle => ret,
             inlateout("a1") FAST_ACCEPT_SENTINEL => caller,
             inlateout("a2") words[0] => w0,
@@ -3071,7 +3086,7 @@ pub fn fast_ipc_reply_accept(
         #[cfg(target_arch = "aarch64")]
         asm!(
             "svc #0",
-            in("x8") SYS_IPC_FAST_REPLY_ACCEPT,
+            in("x8") SYS_IPC_REPLY_ACCEPT,
             inlateout("x0") handle => ret,
             inlateout("x1") FAST_ACCEPT_SENTINEL => caller,
             inlateout("x2") words[0] => w0,
@@ -3091,7 +3106,7 @@ pub fn fast_ipc_reply_accept(
         #[cfg(target_arch = "x86_64")]
         asm!(
             "syscall",
-            inlateout("rax") SYS_IPC_FAST_REPLY_ACCEPT => ret,
+            inlateout("rax") SYS_IPC_REPLY_ACCEPT => ret,
             inlateout("rdi") handle => w1,
             inlateout("rsi") FAST_ACCEPT_SENTINEL => w0,
             inlateout("rdx") words[0] => caller,
@@ -3641,29 +3656,29 @@ pub fn trace_ctl(cap: u32, op: u16, arg: u64) -> isize {
     invoke(cap, op, [arg, 0, 0, 0]).0
 }
 
-/// ABI v2 of the call's message descriptor (wave 15 N11).
+/// The descriptor of the call family's descriptor form (wave 15 N11).
 pub use azos_abi::ipc_msg::{self as ipc_msg_abi, CapDesc, MsgDesc};
 
-/// The v2 call (`SYS_IPC_CALL_V2`, wave 15 N11b): call through the endpoint
+/// The descriptor-form call (`SYS_IPC_CALL`, wave 15 N11b): call through the endpoint
 /// capability `ep` with the request in `*msg`; blocks until it is answered
 /// and writes the answer over `*msg`. 0 when answered, else a negative
 /// code (`-EPEERDIED`, `-EREVOKED`, `-EINVAL`, `-EFAULT`, -1 refused).
 pub fn ipc_call_v2(ep: u32, msg: &mut MsgDesc) -> isize {
-    unsafe { syscall2(SYS_IPC_CALL_V2, ep as u64, msg as *mut MsgDesc as u64) }
+    unsafe { syscall2(SYS_IPC_CALL, ep as u64, msg as *mut MsgDesc as u64) }
 }
 
-/// The v2 accept (`SYS_IPC_ACCEPT_V2`): the next call on an endpoint this
+/// The descriptor-form accept (`SYS_IPC_ACCEPT`): the next call on an endpoint this
 /// task serves, written into `*msg` (with the badge for a v2 call). The
 /// call's handle (`>= 0`), -1 when nothing arrived, or `-EFAULT`.
 pub fn ipc_accept_v2(msg: &mut MsgDesc) -> isize {
-    unsafe { syscall1(SYS_IPC_ACCEPT_V2, msg as *mut MsgDesc as u64) }
+    unsafe { syscall1(SYS_IPC_ACCEPT, msg as *mut MsgDesc as u64) }
 }
 
-/// The v2 reply (`SYS_IPC_REPLY_V2`): answer call `handle`, as the holder of
+/// The descriptor-form reply (`SYS_IPC_REPLY`): answer call `handle`, as the holder of
 /// its reply warrant, with `*msg`. 0, -2 over, -3 not the holder, else a
 /// negative code.
 pub fn ipc_reply_v2(handle: u64, msg: &MsgDesc) -> isize {
-    unsafe { syscall2(SYS_IPC_REPLY_V2, handle, msg as *const MsgDesc as u64) }
+    unsafe { syscall2(SYS_IPC_REPLY, handle, msg as *const MsgDesc as u64) }
 }
 
 /// Hand the reply warrant of call `handle` to thread `to` of this process

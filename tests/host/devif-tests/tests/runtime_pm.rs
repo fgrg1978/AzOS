@@ -349,7 +349,7 @@ impl Transport for Loop<'_> {
         let mut h = self.0.borrow_mut();
         let Host { pm, dev, now_ns, badge } = &mut *h;
         if let Some(b) = *badge {
-            // What `SYS_IPC_ACCEPT_V2` writes for a call through a badged capability.
+            // What `SYS_IPC_ACCEPT` writes for a call through a badged capability.
             req.flags |= azos_abi::ipc_msg::MSG_BADGED;
             req.badge = b;
         }

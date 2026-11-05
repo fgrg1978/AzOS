@@ -365,7 +365,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "GPIODRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_THREAD_CREATE,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_THREAD_CREATE,
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_DRIVER_REGISTER],
@@ -381,7 +381,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // (`SYS_MO_MAP`, `SYS_MO_UNMAP`); the verdict log is one it makes itself
     // (`SYS_MO_CREATE`) and lends, and so is the blob arena, a volatile object
     // it marks droppable between calls and held during one with the kernel's
-    // `memctl` interface (`SYS_IPC_CALL_V2`, the one interface of its row). One
+    // `memctl` interface (`SYS_IPC_CALL`, the one interface of its row). One
     // port, made at start (`DOMAIN_CREATE_PORT`) and bound to the Domain's
     // memory pressure (`PORT_BIND`), is drained (`PORT_POLL`) where a call ends;
     // it is never destroyed, so no `PORT_DESTROY`. `DOMAIN_STAT` is the clock the
@@ -390,7 +390,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "MLSRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_YIELD, SYS_INVOKE, SYS_CAP_CLOSE, SYS_CAP_INFO,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
         ],
         audit: false,
@@ -400,7 +400,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         ifaces: &[azos_devif::key::MEMCTL],
     },
-    // Differs from its derivation: it also issues `SYS_IPC_FAST_CALL_EP`,
+    // Differs from its derivation: it also issues `SYS_IPC_CALL`,
     // outside this list on purpose, and requires the kill. That is the
     // runtime proof the `userspace: minimal Rust ELF` scenario and abitest's
     // `check_spawn` assert, through the native entries' IPC branch (Chain E
@@ -422,7 +422,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // row looked up by image name — so one image has one role, and an image
     // that is sometimes a server cannot exist. The first draft of this stage
     // gave `uhello` the serve loop and let it decide at runtime; it hung as
-    // autorun, because `SYS_IPC_FAST_ACCEPT` blocks and no client was ever
+    // autorun, because `SYS_IPC_ACCEPT` blocks and no client was ever
     // going to wake it. See `userspace/tests/epsrv/src/main.rs`.
     //
     // No `SYS_YIELD` and no handle lookup in a loop: this image accepts
@@ -433,7 +433,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "EPSRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO,
-            SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_REPLY,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY,
             // This image CLOSES the `Cap<Socket>` the
             // client moved to it. That close is the positive proof the
             // capability really crossed — it answers `-ECAPSTALE` for a handle
@@ -479,7 +479,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "VSSRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_YIELD,
-            SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_REPLY, SYS_IPC_FAST_REPLY_ACCEPT,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_REPLY_ACCEPT,
             // The ring lanes: map the page whose capability the client moved
             // here, sleep and wake on its index words (`SYS_FUTEX_*`), and
             // report the hart it ran on (`DOMAIN_TASKINFO` reads, through
@@ -504,7 +504,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "REFLEX.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO,
-            SYS_IPC_CALL_V2, SYS_IPC_FAST_CALL_EP,
+            SYS_IPC_CALL,
         ],
         audit: false,
         ops: CONSOLE_OPS,
@@ -521,16 +521,16 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "BRAINCLI.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_FAST_CALL_EP,
+            SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             SYS_CAP_CLOSE,
             SYS_RING_SETUP, SYS_RING_ENTER,
             SYS_MO_CREATE, SYS_MO_MAP,
-            // `SYS_IPC_CALL_V2` on two kernel-hosted endpoints: `link_key_init`
+            // `SYS_IPC_CALL` on two kernel-hosted endpoints: `link_key_init`
             // reads the brain-link PSK from `linkkey` (U06-9), and each
             // Handshake draws the randomness for its ephemeral key and
             // record nonce seed from `entropy` (wave 9, P3/P9). Without it the
             // encrypted link cannot start and the client refuses to run.
-            SYS_IPC_CALL_V2,
+            SYS_IPC_CALL,
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_SOCKET, NODE_READ, NODE_SEND, DOMAIN_STAT, MEMOBJ_ACQUIRE],
@@ -545,7 +545,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "CAPTEST.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_MO_UNMAP,
-            SYS_IPC_CALL_V2, SYS_IPC_FAST_CALL_EP,
+            SYS_IPC_CALL,
             SYS_CAP_INFO, SYS_CAP_CLOSE,
             // The ring-3 IRQ section, both ISAs since wave 9 (RTC alarm bound
             // to a port, polled with a sleep between tries, then ACKed; then
@@ -557,7 +557,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // The ABI cases shared with the micro kernel's captest
             // (`abi_cases.rs`): a fast call through a forged endpoint and a
             // reply to no exchange, both expected to be refused.
-            SYS_IPC_FAST_REPLY,
+            SYS_IPC_REPLY,
         ],
         audit: true,
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_CREATE_ENDPOINT, PORT_POLL, DOMAIN_STAT, NODE_OPENAT, DOMAIN_MKDIR, NODE_READ, NODE_WRITE, DOMAIN_MMIO_MAP, DEVICE_IRQ_BIND],
@@ -573,7 +573,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "LATBENCH.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_GETPID, SYS_INVOKE, SYS_CAP_INFO,
-            SYS_IPC_CALL_V2, SYS_IPC_FAST_CALL_EP,
+            SYS_IPC_CALL,
         ],
         audit: false,
         // `DOMAIN_UPTIME`: the clock on x86_64 (libsys `uptime`), where the
@@ -595,15 +595,11 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         syscalls: sys_nrs![
             SYS_EXIT, SYS_GETPID, SYS_YIELD, SYS_INVOKE, SYS_SLEEP_UNTIL,
             SYS_CAP_INFO, SYS_CAP_CLOSE,
-            // The CALL half only. `abitest` addresses
-            // `endpoint.demo` by capability and never by TID, so
-            // `SYS_IPC_FAST_CALL_EP` is here and the TID form deliberately is
-            // not — a profile that granted both would let the test pass
-            // without the capability path ever being exercised.
-            SYS_IPC_FAST_CALL_EP,
-            // `check_entropy_read` (wave 9, P9): the call on the kernel-hosted
-            // `entropy` endpoint.
-            SYS_IPC_CALL_V2,
+            // The CALL half only: `abitest` addresses `endpoint.demo` by
+            // capability, both forms (the register form, and the descriptor
+            // form of `check_entropy_read`, wave 9, P9, on the kernel-hosted
+            // `entropy` endpoint).
+            SYS_IPC_CALL,
             // `check_threads` and the FP-state checks (wave 13, THREADS).
             SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             // `check_mmap_prot` (wave 13, security).
@@ -626,10 +622,10 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // SERVER creates it (`DOMAIN_CREATE_ENDPOINT`, making itself
             // `owner_tid`) before forking the client, so the client inherits a
             // capability to something its own parent owns; the CLIENT calls
-            // through it (`SYS_IPC_FAST_CALL_EP`).
-            SYS_IPC_FAST_CALL_EP,
-            SYS_IPC_FAST_REPLY, SYS_IPC_FAST_ACCEPT,
-            SYS_IPC_FAST_REPLY_ACCEPT,
+            // through it (`SYS_IPC_CALL`).
+            SYS_IPC_CALL,
+            SYS_IPC_REPLY, SYS_IPC_ACCEPT,
+            SYS_IPC_REPLY_ACCEPT,
             SYS_PORT_WAIT,
             SYS_MO_CREATE, SYS_MO_MAP,
             SYS_MO_UNMAP,
@@ -643,7 +639,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // entry: the sender's capability needs `DUP` and `TRANSFER`) while
             // the sender keeps its mapping; a MOVE (it needs `TRANSFER`) through
             // the v1 call (phase H) takes the mapping with it.
-            SYS_IPC_CALL_V2, SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
+            SYS_IPC_CALL, SYS_IPC_ACCEPT, SYS_IPC_REPLY,
             // Phases K and R: sleep and wake on a word of a shared region.
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             // Its children are copies of it: it registers a foreign entry to be
@@ -660,7 +656,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "MEMPRESS.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO,
-            SYS_IPC_CALL_V2, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
+            SYS_IPC_CALL, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_MEMINFO, DOMAIN_CREATE_PORT, PORT_BIND, PORT_POLL],
@@ -673,15 +669,15 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_EXIT, SYS_GETPID, SYS_YIELD, SYS_INVOKE,
             // The lane addresses its peer
             // (`VSSRV.ELF`, started with `SYS_SPAWN_EX`) by CAPABILITY
-            // (`SYS_IPC_FAST_CALL_EP`), which it finds with `SYS_CAP_INFO`. The
+            // (`SYS_IPC_CALL`), which it finds with `SYS_CAP_INFO`. The
             // client never serves, so the accept and reply calls are
             // `VSSRV.ELF`'s.
-            SYS_IPC_FAST_CALL_EP, SYS_CAP_INFO,
+            SYS_IPC_CALL, SYS_CAP_INFO,
             SYS_MO_UNMAP,
             // `sensor-read-vdso` maps the task's own page, binds the encoder
             // it holds a `sensor` endpoint for, and reads the same sensor
             // through the v2 call for the comparison.
-            SYS_IPC_CALL_V2,
+            SYS_IPC_CALL,
             // The ring lanes: one shm page, its capability MOVED to
             // `VSSRV.ELF` with the setup call, and futex sleep/wake on its index
             // words.
@@ -717,8 +713,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_YIELD,
             SYS_CAP_INFO, SYS_CAP_CLOSE,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
-            SYS_IPC_FAST_CALL_EP,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY,
+            SYS_IPC_CALL,
             SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
         ],
         audit: false,
@@ -735,7 +731,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_YIELD,
             SYS_CAP_INFO,
-            SYS_IPC_CALL_V2, SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
+            SYS_IPC_CALL, SYS_IPC_ACCEPT, SYS_IPC_REPLY,
             SYS_THREAD_CREATE,
         ],
         audit: false,
@@ -765,7 +761,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // stop processes (`tests/host/seccomp-tests` holds the list). Since the
     // Terminal object it does NOT list the console `WAIT` op: console input is
     // the terminal server's (`TERMD.ELF`), and the shell asks it for lines and
-    // typed events through `SYS_IPC_CALL_V2` on the `endpoint.term` capability
+    // typed events through `SYS_IPC_CALL` on the `endpoint.term` capability
     // the name server lends it (it asks the name server, through the
     // `endpoint.names` capability its `imports` become, for `term`;
     // `SYS_CAP_INFO` finds that one; `SYS_SLEEP_UNTIL` is the pause while the
@@ -779,7 +775,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_YIELD,
             SYS_CAP_CLOSE,
             SYS_CAP_INFO,
-            SYS_SPAWN_EX, SYS_ALERT, SYS_IPC_CALL_V2,
+            SYS_SPAWN_EX, SYS_ALERT, SYS_IPC_CALL,
             // A pipe is a byte ring in a shared region (`azos_bytepipe`): the
             // shell makes the region and maps it, shares it with the stages
             // in the move list, and gives its own ends up (`MEMOBJ_END_DROP`,
@@ -802,7 +798,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // (the double-click time and the wait deadlines).
     //
     // Behind a console login (Kconfig CONSOLE_LOGIN) it also calls the login
-    // service (`SYS_IPC_CALL_V2` through the `endpoint.login` capability its
+    // service (`SYS_IPC_CALL` through the `endpoint.login` capability its
     // row grants, found by `SYS_CAP_INFO`): the secure-attention prompt's
     // credential goes to it, and the end of the session is asked of it. It
     // starts and stops nothing itself.
@@ -810,7 +806,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "TERMD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2, SYS_MO_MAP,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL, SYS_MO_MAP,
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, LOG_CONSOLE_WAIT, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
@@ -823,13 +819,13 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // kernel writes it where it changes, so there is no wait) and writes the
     // console for its refusal record. No spawn, kill, device, network or console-input
     // call: it lends what its row holds and nothing it is not asked for. The
-    // lent capability itself travels in the reply of `SYS_IPC_REPLY_V2`;
+    // lent capability itself travels in the reply of `SYS_IPC_REPLY`;
     // there is no call that creates authority.
     ImageProfile {
         image: "NAMESD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_YIELD,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_CAP_INFO,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_CAP_INFO,
                     ],
         audit: false,
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT],
@@ -844,14 +840,14 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // read-only (its row grants `READ|MAP`). `host` and `ntp` call the kernel's
     // `net` interface (and `ntp` the `clock` one, for the discipline's state)
     // through the endpoints its row grants with `READ`: `SYS_CAP_INFO` finds
-    // them, `SYS_IPC_CALL_V2` calls them; `fsck` calls the `volume` one the
+    // them, `SYS_IPC_CALL` calls them; `fsck` calls the `volume` one the
     // same way (`WRITE`). `vm` (Kconfig HV) asks the name
-    // server for the monitor's endpoint and calls it (`SYS_IPC_CALL_V2`), then
+    // server for the monitor's endpoint and calls it (`SYS_IPC_CALL`), then
     // maps the console ring the monitor lends (`SYS_MO_MAP`) and sleeps
     // between looks at it. `beep` (Kconfig DRV_VIRTIO_SND) makes the three
     // memory objects of a playback stream (`SYS_MO_CREATE`: two queues and a
     // contiguous arena), maps them, opens the stream on the kernel's `sound`
-    // interface (`SYS_IPC_CALL_V2`, the endpoint its row grants with
+    // interface (`SYS_IPC_CALL`, the endpoint its row grants with
     // `READ|WRITE`) and sleeps on the `done` queue's doorbell (the futex pair
     // below). `input` (Kconfig INPUTD) is the same shape: it finds the call
     // right its row grants on the input server (`SYS_CAP_INFO`), calls it, maps
@@ -862,7 +858,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "TOOLBOX.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_SLEEP_UNTIL,
-            SYS_CAP_CLOSE, SYS_MO_CREATE, SYS_MO_MAP, SYS_IPC_CALL_V2,
+            SYS_CAP_CLOSE, SYS_MO_CREATE, SYS_MO_MAP, SYS_IPC_CALL,
             // `beep` derives the badged copy of the audio server's endpoint
             // that tells its stream from another's (the row holds `DUP`).
             SYS_CAP_DERIVE,
@@ -877,7 +873,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     },
     // The shell's power tool, the first privileged family with a
     // ring-3 form. The ONLY profile whose interfaces list `power`;
-    // `SYS_CAP_INFO` finds the endpoint its row grants and `SYS_IPC_CALL_V2`
+    // `SYS_CAP_INFO` finds the endpoint its row grants and `SYS_IPC_CALL`
     // calls it (every refusal is recorded by the op). `NODE_WRITE` is libsys
     // `write` on an fd the shell moved to it (a redirected stdout).
     // `sensor`: the serve loop reads the power monitor (`sensor.9`) for the
@@ -889,7 +885,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "POWER.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             SYS_SLEEP_UNTIL, SYS_SCHEDCTL,
             // A pipe on its stdout is a byte ring in a shared region
             // (`azos_bytepipe`): mapped, slept on and woken, its lock named by
@@ -902,12 +898,12 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     },
     // Wave 12: the other privileged families' tools, the POWER.ELF shape:
     // each the ONLY profile whose interfaces list its family's endpoint,
-    // `SYS_CAP_INFO` for the capability its row grants, `SYS_IPC_CALL_V2` to
+    // `SYS_CAP_INFO` for the capability its row grants, `SYS_IPC_CALL` to
     // call it, and `NODE_WRITE` for a redirected stdout.
     ImageProfile {
         image: "FLIGHT.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             // The pipe on its stdout (see POWER.ELF).
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
@@ -918,7 +914,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "BEHAVIOR.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             // The pipe on its stdout (see POWER.ELF).
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
@@ -929,7 +925,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "CONFIG.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             // The pipe on its stdout (see POWER.ELF).
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
@@ -940,7 +936,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "OTA.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             // The pipe on its stdout (see POWER.ELF).
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
@@ -977,7 +973,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "DECISD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_CAP_INFO, SYS_YIELD,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY,
                     ],
         audit: false,
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE],
@@ -1002,7 +998,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "INPUTD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_REVOKE, SYS_YIELD,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_THREAD_CREATE, SYS_SLEEP_UNTIL, SYS_FUTEX_WAIT,
         ],
         audit: false,
@@ -1014,7 +1010,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // the Secure Attention Key. Three threads: the main one accepts and answers
     // the `Compositor` object on its endpoint (v2 accept and reply), the painter
     // claims the screen and presents, calling the kernel's Display and the input
-    // server (`SYS_IPC_CALL_V2`), and the why thread asks the decision server.
+    // server (`SYS_IPC_CALL`), and the why thread asks the decision server.
     // Bands and clients' windows are memory objects: made (`SYS_MO_CREATE`), sized
     // (`MEMOBJ_ACQUIRE`), mapped and given back (`SYS_MO_MAP`, `SYS_MO_UNMAP`);
     // a window's call right is derived from its endpoint (`ENDPOINT_DERIVE`) and
@@ -1025,7 +1021,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "COMPSRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_REVOKE, SYS_YIELD,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_THREAD_CREATE, SYS_SLEEP_UNTIL,
         ],
         audit: false,
@@ -1063,7 +1059,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "WHY.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_CALL,
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL, SYS_YIELD,
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
         ],
@@ -1098,7 +1094,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "PKGD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL,
             SYS_CAP_CLOSE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL,
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
         ],
@@ -1121,7 +1117,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "PKG.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             SYS_CAP_CLOSE, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
             // A pipe on its stdin or stdout (see POWER.ELF; the region
             // calls above serve it too).
@@ -1134,14 +1130,14 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // The RPC server (transparent RPC, Phase 9 step 1). Serves the proxy
     // endpoints (accept, reply), calls the endpoints it exports through the
     // warrants it derives for a peer, with the caveats of the peer's token
-    // (`SYS_IPC_CALL_V2`, the `ENDPOINT_DERIVE` op),
+    // (`SYS_IPC_CALL`, the `ENDPOINT_DERIVE` op),
     // closes what it minted (`SYS_CAP_CLOSE`: a warrant, a re-minted object),
     // finds its handles (`SYS_CAP_INFO`) and moves MemObj pages across
     // (`SYS_MO_CREATE`, `SYS_MO_MAP`, the acquire op for a size; a region goes
     // back with `SYS_CAP_CLOSE`). `SYS_GETPID`: a boot epoch for its Hellos.
     // The Noise handshake draws its ephemeral keys from the `entropy` interface
     // and derives the node's static key from the `linkkey` one (both calls are
-    // `SYS_IPC_CALL_V2` on the endpoints its row grants).
+    // `SYS_IPC_CALL` on the endpoints its row grants).
     // Two threads (`SYS_THREAD_CREATE`: the local calls and the link). The link
     // is one UDP socket (create, bind, sendto, recvfrom) at the stack's
     // address; its view region is mapped (`MEMOBJ_ACQUIRE`, `SYS_MO_MAP`) and
@@ -1153,7 +1149,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "RPCSRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_YIELD, SYS_SLEEP_UNTIL,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL,
             SYS_CAP_INFO, SYS_CAP_CLOSE,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_GETPID,
             SYS_THREAD_CREATE,
@@ -1172,7 +1168,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // router (create, connect, send, receive) and the console written; no
     // file is opened (its configuration is Kconfig). Each query is one warrant it asks the
     // kernel for (`SYS_CAP_DERIVE`) and one call through it
-    // (`SYS_IPC_CALL_V2`), dropped after (`SYS_CAP_CLOSE`); the same call
+    // (`SYS_IPC_CALL`), dropped after (`SYS_CAP_CLOSE`); the same call
     // reaches the `Decisions` endpoint for the receipts and the topics.
     // `SYS_CAP_INFO` finds its handles, `SYS_GETPID` the subject its decisions
     // are written under, `SYS_SLEEP_UNTIL` is the idle wait and the redial
@@ -1186,7 +1182,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "ZENOHD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
-            SYS_IPC_CALL_V2, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_DERIVE,
+            SYS_IPC_CALL, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_DERIVE,
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID,
         ],
         audit: false,
@@ -1203,7 +1199,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // the two ring regions it makes (`SYS_MO_CREATE`, `SYS_MO_MAP`, and
     // `SYS_MO_UNMAP` for one it could not map), the attach, the transmit kick
     // and the wait on the receive ring (`SYS_FUTEX_WAIT`). Each measurement is one call on the kernel's
-    // `clock` interface (`SYS_IPC_CALL_V2` through the endpoint `SYS_CAP_INFO`
+    // `clock` interface (`SYS_IPC_CALL` through the endpoint `SYS_CAP_INFO`
     // finds), `SYS_SLEEP_UNTIL` the idle wait, the clock read `DOMAIN_UPTIME`
     // where the vDSO has no counter. No heap, no spawn, no thread, no file
     // write: it holds the right to move time and passes none of it on.
@@ -1211,7 +1207,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "PTPD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_SLEEP_UNTIL, SYS_FUTEX_WAIT,
-            SYS_IPC_CALL_V2, SYS_CAP_INFO, SYS_CAP_CLOSE,
+            SYS_IPC_CALL, SYS_CAP_INFO, SYS_CAP_CLOSE,
         ],
         audit: false,
         ops: inv_ops![MEMOBJ_ACQUIRE, 
@@ -1238,7 +1234,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
             SYS_CAP_INFO,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
             SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_SCHEDCTL,
         ],
@@ -1266,7 +1262,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "RPCQUIC.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_IPC_CALL,
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL, SYS_YIELD,
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
         ],
@@ -1284,7 +1280,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // the console written, with the operator's warrant and its refusals. Each
     // tool call is one warrant it asks the kernel for (`ENDPOINT_DERIVE`: a
     // one-use copy of the endpoint with the caveats the bridge sets) and one
-    // call through it (`SYS_IPC_CALL_V2`), dropped after (`SYS_CAP_CLOSE`); the
+    // call through it (`SYS_IPC_CALL`), dropped after (`SYS_CAP_CLOSE`); the
     // same call reaches the `Decisions` endpoint for the receipts.
     // `SYS_CAP_INFO` finds its handles, `SYS_GETPID` the subject its decisions
     // are written under, `SYS_SLEEP_UNTIL` is the idle wait and the redial
@@ -1297,7 +1293,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "MCPD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
-            SYS_IPC_CALL_V2, SYS_CAP_INFO, SYS_CAP_CLOSE,
+            SYS_IPC_CALL, SYS_CAP_INFO, SYS_CAP_CLOSE,
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID,
         ],
         audit: false,
@@ -1320,7 +1316,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // `SYS_MO_UNMAP`, its ends given up with `MEMOBJ_END_DROP`, the doorbell
     // `SYS_FUTEX_WAKE`/`SYS_FUTEX_WAIT`), reaped with `DOMAIN_WAIT` and stopped
     // with `SYS_ALERT`. `SYS_CAP_INFO` finds the entropy endpoint and
-    // `SYS_IPC_CALL_V2` draws from it (the ephemeral keys, the allocator's
+    // `SYS_IPC_CALL` draws from it (the ephemeral keys, the allocator's
     // seed) and the same call asks the `keys` endpoint to open the host key
     // and for its public part, and to sign each key exchange's hash: the
     // message goes in a one-page memory object made for the call
@@ -1336,7 +1332,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "SSHD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
-            SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_IPC_CALL_V2,
+            SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_IPC_CALL,
             SYS_SPAWN_EX, SYS_ALERT,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
@@ -1351,8 +1347,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::KEYS],
     },
     // The login service (Kconfig CONSOLE_LOGIN). Serves `endpoint.login`
-    // (`SYS_IPC_ACCEPT_V2`, `SYS_IPC_REPLY_V2`); asks the kernel's `keys`
-    // interface to verify a credential (`SYS_IPC_CALL_V2`, the one interface in
+    // (`SYS_IPC_ACCEPT`, `SYS_IPC_REPLY`); asks the kernel's `keys`
+    // interface to verify a credential (`SYS_IPC_CALL`, the one interface in
     // its row, found by `SYS_CAP_INFO`); starts the user's shell
     // (`SYS_SPAWN_EX`) and stops it with its jobs (`SYS_ALERT`), reaping it
     // (`DOMAIN_WAIT`) between sleeps (`SYS_SLEEP_UNTIL`, and `DOMAIN_UPTIME` for the
@@ -1365,7 +1361,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "LOGIND.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_CAP_INFO, SYS_YIELD, SYS_SLEEP_UNTIL,
-            SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_IPC_CALL_V2,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL,
             SYS_SPAWN_EX, SYS_ALERT,
         ],
         audit: false,
@@ -1373,7 +1369,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ifaces: &[azos_devif::key::KEYS],
     },
     // Hypervisor H1: the virtual-machine monitor. It calls the kernel's `vm`
-    // and `vcpu` interfaces (`SYS_IPC_CALL_V2`: create the VM, attach its RAM,
+    // and `vcpu` interfaces (`SYS_IPC_CALL`: create the VM, attach its RAM,
     // trap page and NIC ring, register its device windows, start the vCPU,
     // wake and interrupt it), finds its handles (`SYS_CAP_INFO`), makes the
     // guest's RAM (a memory object at a time), the page of the trap rings, the
@@ -1386,8 +1382,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // directory and reads and writes through the tree its row grants
     // (`NODE_*`, `SYS_CAP_CLOSE`); its console is the task's own.
     //
-    // It serves `VmCtl` on `endpoint.vmctl` (`SYS_IPC_ACCEPT_V2`,
-    // `SYS_IPC_REPLY_V2`) from ONE extra thread (`SYS_THREAD_CREATE`) that
+    // It serves `VmCtl` on `endpoint.vmctl` (`SYS_IPC_ACCEPT`,
+    // `SYS_IPC_REPLY`) from ONE extra thread (`SYS_THREAD_CREATE`) that
     // does nothing but accept a call, hand it to the loop through a mailbox
     // and reply (`SYS_FUTEX_WAIT`/`SYS_FUTEX_WAKE` between the two threads,
     // `SYS_SLEEP_UNTIL` when an accept returns with nothing, and a timer
@@ -1397,7 +1393,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "VMMD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_IPC_CALL_V2, SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2, SYS_CAP_INFO, SYS_CAP_CLOSE,
+            SYS_EXIT, SYS_INVOKE, SYS_IPC_CALL, SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_CAP_INFO, SYS_CAP_CLOSE,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_PORT_WAIT, SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             SYS_SLEEP_UNTIL,
         ],
@@ -1416,7 +1412,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // `SYS_SLEEP_UNTIL`. Its one capability is READ on the entropy pool (the
     // hardened allocator, `azos_ualloc`, keys and randomizes itself from it):
     // `SYS_CAP_INFO` finds the handle in the task's own table,
-    // `SYS_IPC_CALL_V2` draws from the kernel-hosted `entropy` interface, and
+    // `SYS_IPC_CALL` draws from the kernel-hosted `entropy` interface, and
     // the allocator frees its large allocations with `SYS_MO_UNMAP`. In
     // particular no actuator. The two module ops exist only in a kernel built
     // with `lx-loader`; elsewhere they are -ENOSYS and the row is simply never
@@ -1425,7 +1421,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "LXSRV.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_SLEEP_UNTIL, SYS_MO_MAP, SYS_MO_UNMAP,
-            SYS_IPC_CALL_V2,
+            SYS_IPC_CALL,
             SYS_CAP_CLOSE,
         ],
         audit: false,
@@ -1472,7 +1468,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "SDKTEST.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD, SYS_IPC_CALL_V2,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD, SYS_IPC_CALL,
             SYS_CAP_CLOSE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL,
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
         ],
@@ -1790,8 +1786,8 @@ pub fn image_for_digest(digest: &[u8; 32]) -> Option<&'static ImageProfile> {
 const PACKAGE_SYSCALLS: &[u16] = sys_nrs![
     SYS_EXIT, SYS_GETPID, SYS_YIELD, SYS_SLEEP_UNTIL, SYS_INVOKE,
     SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
-    SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY, SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_REPLY_ACCEPT,
-    SYS_IPC_CALL_V2, SYS_IPC_ACCEPT_V2, SYS_IPC_REPLY_V2,
+    SYS_IPC_CALL, SYS_IPC_REPLY, SYS_IPC_ACCEPT, SYS_IPC_REPLY_ACCEPT,
+    SYS_IPC_CALL, SYS_IPC_ACCEPT, SYS_IPC_REPLY,
     SYS_RING_SETUP, SYS_RING_ENTER, SYS_PORT_WAIT,
     SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
     SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_DERIVE, SYS_CAP_REVOKE,

@@ -25,8 +25,8 @@ fn the_cases_are_the_ones_the_docs_name() {
         assert_eq!(syscall_case(nr), CASE_AUTHORITY, "syscall {nr}");
     }
     for nr in [
-        SYS_YIELD, SYS_SLEEP_UNTIL, SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY, SYS_IPC_FAST_ACCEPT,
-        SYS_IPC_FAST_REPLY_ACCEPT, SYS_IPC_CALL_V2, SYS_RING_ENTER, SYS_PORT_WAIT, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
+        SYS_YIELD, SYS_SLEEP_UNTIL, SYS_IPC_CALL, SYS_IPC_REPLY, SYS_IPC_ACCEPT,
+        SYS_IPC_REPLY_ACCEPT, SYS_IPC_CALL, SYS_RING_ENTER, SYS_PORT_WAIT, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
     ] {
         assert_eq!(syscall_case(nr), CASE_BLOCK_WAKE, "syscall {nr}");
     }
@@ -36,7 +36,7 @@ fn the_cases_are_the_ones_the_docs_name() {
 /// pair; a case table must not split them.
 #[test]
 fn the_two_lean_ipc_calls_share_a_case() {
-    assert_eq!(syscall_case(SYS_IPC_FAST_CALL_EP), syscall_case(SYS_IPC_FAST_REPLY_ACCEPT));
+    assert_eq!(syscall_case(SYS_IPC_CALL), syscall_case(SYS_IPC_REPLY_ACCEPT));
 }
 
 #[test]

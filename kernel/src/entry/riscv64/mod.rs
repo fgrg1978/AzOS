@@ -85,7 +85,7 @@ pub extern "C" fn riscv64_native_syscall(frame: &mut TrapFrame) -> usize {
 }
 
 /// The lean native entry's IPC branch (trap_entry.S, Chain E cut 7): `a7` is
-/// `SYS_IPC_FAST_CALL_EP` or `SYS_IPC_FAST_REPLY_ACCEPT`. As
+/// `SYS_IPC_CALL` or `SYS_IPC_REPLY_ACCEPT`. As
 /// [`riscv64_native_syscall`], but the filter verdict alone and the fast path
 /// in this frame (`handle_ecall_as::<true>`): no `riscv64_trap_handler`,
 /// `handle_ecall` or `kernel::dispatch` frame on the way to

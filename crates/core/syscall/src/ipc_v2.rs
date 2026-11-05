@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! ABI v2 of the call (wave 15 N11b): `SYS_IPC_CALL_V2`,
-//! `SYS_IPC_ACCEPT_V2`, `SYS_IPC_REPLY_V2`,
+//! The descriptor form of the call family (wave 15 N11b): `SYS_IPC_CALL`,
+//! `SYS_IPC_ACCEPT` and `SYS_IPC_REPLY` with a `MsgDesc`, and
 //! `SYS_IPC_REPLY_DELEGATE` and `SYS_CAP_DERIVE`.
 //!
-//! The v1 arms in `dispatch.rs` (`SYS_IPC_CALL`, `SYS_IPC_ACCEPT`,
-//! `SYS_IPC_REPLY`, `SYS_IPC_FAST_ACCEPT`) are not touched: these
-//! arms sit in the slow match beside them and share only the call queue
-//! (`azos_ipc::fastcall`), so a v2 server may accept a v1 call (no
-//! `MSG_BADGED`). A v1 server may not accept a v2 call (owner decision
-//! 10-10, N11c): its accept refuses it, the call ends `-EV1ACCEPT`, and the
-//! caller takes back every capability it moved. The descriptor also
+//! The register form is in `dispatch.rs` (`a1 == 0`; the accept's `a0 == 0`).
+//! Both share the call queue (`azos_ipc::fastcall`), so a descriptor-form
+//! server may accept a register-form call (no `MSG_BADGED`). A register-form
+//! accept takes a descriptor-form call only when the registers can hold it
+//! (owner decision 10-10, N11c: `fits_regs` below); any other it refuses, the
+//! call ends `-EMSGFORM`, and the caller takes back every capability it moved. The descriptor also
 //! carries the caller's deadline (see `ipc_deadline`): a call whose deadline has
 //! passed is refused before it is queued, and the server reads the deadline in
 //! what it accepts. Each capability entry carries its own `expiry_ns`, the
@@ -26,11 +25,11 @@ use azos_ipc::cap_store::{self, CapXfer};
 use azos_ipc::fastcall::{self, Collected, Delegated, Payload, V2_CAPS, V2_WORDS, WORDS};
 
 /// One code for every refusal that would otherwise report on a table the
-/// caller does not hold (same rule as the v1 call arm).
+/// caller does not hold (same rule as the register-form call).
 const E_PERM: i64 = -1;
-/// The call is over (same value as the v1 reply's).
+/// The call is over (same value as the register-form reply's).
 const E_OVER: i64 = -2;
-/// Not the holder of an unanswered call's warrant (same value as the v1
+/// Not the holder of an unanswered call's warrant (same value as the
 /// reply-accept's "any other refusal").
 const E_NOT_HOLDER: i64 = -3;
 
@@ -42,14 +41,15 @@ fn efault() -> i64 {
     Errno::EFAULT.to_syscall_ret()
 }
 
-/// Runtime canary `ipc-v2-as-v1` (boot flag): the v2 accept reads every
-/// call as a v1 call (four words, no badge, one capability), so the ktest
+/// Runtime canary `ipc-desc-as-regs` (boot flag): the descriptor-form accept
+/// reads every call as a register-form call (four words, no badge, one
+/// capability), so the ktest
 /// `ipc_v2_call_carries_caps_words_and_badge` must fail.
-static CANARY_AS_V1: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CANARY_DESC_AS_REGS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// Arm the `ipc-v2-as-v1` canary (boot only).
-pub fn canary_as_v1() {
-    CANARY_AS_V1.store(true, core::sync::atomic::Ordering::Relaxed);
+/// Arm the `ipc-desc-as-regs` canary (boot only).
+pub fn canary_desc_as_regs() {
+    CANARY_DESC_AS_REGS.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 
@@ -179,7 +179,7 @@ fn give_back(from: u32, to: u32, xs: &[CapXfer], hs: &[CapHandle]) {
     }
 }
 
-/// `SYS_IPC_CALL_V2` — `a0 = Cap<Endpoint>`, `a1 = *mut MsgDesc`. See the
+/// `SYS_IPC_CALL` — `a0 = Cap<Endpoint>`, `a1 = *mut MsgDesc`. See the
 /// number's doc in `azos_abi::syscall_nr`.
 pub fn sys_ipc_call_v2(ep_raw: u64, msg_ptr: u64) -> i64 {
     let Some(d) = read_desc(msg_ptr) else { return efault() };
@@ -196,7 +196,7 @@ pub fn sys_ipc_call_v2(ep_raw: u64, msg_ptr: u64) -> i64 {
 /// rule 4); the descriptor holds the counter-offer.
 const EADMIT: i64 = Errno::EADMIT.to_syscall_ret();
 
-/// The call of `SYS_IPC_CALL_V2` on a request in kernel memory: the middle of
+/// The call of `SYS_IPC_CALL` on a request in kernel memory: the middle of
 /// the syscall, which only reads `d` from and writes `out` to the caller's
 /// memory around it (`sys_ipc_call_v2`), and the one body the kernel's own
 /// calls to a task-served endpoint use (`crate::kcall`). 0 when answered, with
@@ -278,15 +278,20 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
     p.deadline = d.deadline;
     p.clock_id = d.clock_id;
     // The first capability fills the v1 record's `moved_cap`, which the exit
-    // and drain paths revoke; a v1 accept refuses the call (N11c).
+    // and drain paths revoke, and which a register-form accept delivers in
+    // `a6` when the whole request fits its registers: at most four words, at
+    // most one capability, no deadline and no label bit of its own (the
+    // accept enters the caller's scope, `label::accepted`, which is the rest
+    // of the label). Any other call it refuses (N11c).
     let moved_cap = got.first().map_or(0, |h| h.0);
+    let fits_regs = usize::from(d.n_words) <= WORDS && d.n_caps <= 1 && d.deadline == 0 && d.label & label_mask() == 0;
     // A call with a deadline lends the caller to its server (the wait-graph
     // call edge): the server runs at the caller's urgency and, as a passive
     // server, on the caller's reservation (`azos_sched::rt` proxy execution).
     // One without a deadline lends nothing, as before.
     let lend = d.deadline != 0;
     let Some(handle) =
-        fastcall::call_v2_msg(caller_idx, caller_tid, dest, first_words(&p), moved_cap, lend, badge, &p)
+        fastcall::call_v2_msg(caller_idx, caller_tid, dest, first_words(&p), moved_cap, lend, badge, &p, fits_regs)
     else {
         give_back(server, caller_tid, &xs[..nx], got);
         return E_PERM;
@@ -391,7 +396,7 @@ fn call_kernel_hosted(key: u16, caller_tid: u32, ep_raw: u64, d: &MsgDesc, label
     0
 }
 
-/// `SYS_IPC_ACCEPT_V2` — `a0 = *mut MsgDesc`. See the number's doc.
+/// `SYS_IPC_ACCEPT` — `a0 = *mut MsgDesc`. See the number's doc.
 pub fn sys_ipc_accept_v2(msg_ptr: u64) -> i64 {
     // The buffer is checked before a call is taken, so an unwritable one
     // never strands an accepted call.
@@ -405,7 +410,7 @@ pub fn sys_ipc_accept_v2(msg_ptr: u64) -> i64 {
         return h;
     }
     let handle = h as u64;
-    let v2 = if CANARY_AS_V1.load(core::sync::atomic::Ordering::Relaxed) {
+    let v2 = if CANARY_DESC_AS_REGS.load(core::sync::atomic::Ordering::Relaxed) {
         None
     } else {
         fastcall::accept_msg(handle, tid)
@@ -424,7 +429,7 @@ pub fn sys_ipc_accept_v2(msg_ptr: u64) -> i64 {
     if write_desc(msg_ptr, &d) { h } else { efault() }
 }
 
-/// `SYS_IPC_REPLY_V2` — `a0` = call handle, `a1 = *const MsgDesc`. See the
+/// `SYS_IPC_REPLY` — `a0` = call handle, `a1 = *const MsgDesc`. See the
 /// number's doc.
 pub fn sys_ipc_reply_v2(handle: u64, msg_ptr: u64) -> i64 {
     let Some(d) = read_desc(msg_ptr) else { return efault() };

@@ -7,7 +7,7 @@ config IPC_FASTPATH
     default y
     help
       Chain E stage (a), crates/core/syscall/src/fastpath.rs. A fast call
-      (SYS_IPC_FAST_CALL_EP) or reply-and-accept (SYS_IPC_FAST_REPLY_ACCEPT)
+      (SYS_IPC_CALL) or reply-and-accept (SYS_IPC_REPLY_ACCEPT)
       whose peer is parked in the matching wait is finished from the trap
       entry, after the syscall filter, without the syscall table: the call
       writes its record as already ACCEPTED and leaves its handle in the
@@ -64,8 +64,8 @@ config IPC_RESOLVE_CACHE
     default y
     help
       Chain E commit 5, crates/core/ipc/src/endpoint.rs (resolve_cache).
-      SYS_IPC_FAST_CALL_EP (the fast path and the ordinary arm) and
-      SYS_IPC_CALL_V2 resolve their endpoint capability through a per-task
+      SYS_IPC_CALL (the fast path and the ordinary arm) and
+      SYS_IPC_CALL resolve their endpoint capability through a per-task
       slot entry: the capability handle, the capability slot word and the
       endpoint's identity word a full resolution accepted. A call hits when
       both words are unchanged (so a revoke, a re-grant, a rights change, an

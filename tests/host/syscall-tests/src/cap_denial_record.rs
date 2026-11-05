@@ -281,8 +281,8 @@ fn containment_is_not_recorded_as_a_capability_denial() {
 
 /// **A call through a revoked endpoint capability, after the resolve cache
 /// (Kconfig IPC_RESOLVE_CACHE) held it, is refused and recorded once.**
-/// `endpoint_dest_at` is what `SYS_IPC_FAST_CALL_EP` (the fast path and the
-/// arm) and `SYS_IPC_CALL_V2` resolve through: two calls, a miss that keeps
+/// `endpoint_dest_at` is what `SYS_IPC_CALL` (the fast path and the
+/// arm) and `SYS_IPC_CALL` resolve through: two calls, a miss that keeps
 /// the destination and a hit, record nothing; after the revoke the hit
 /// misses, and the full resolution refuses the call and records the one
 /// `Endpoint` denial.

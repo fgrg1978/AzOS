@@ -13,8 +13,8 @@ pub use azos_devif::*;
 
 use crate::{cap_lookup_host, fast_ipc_call_ep_status, ipc_call_v2};
 
-/// The v2 call (`SYS_IPC_CALL_V2`) on the endpoint capability `.0`: any
-/// interface.
+/// The descriptor-form call (`SYS_IPC_CALL`) on the endpoint capability
+/// `.0`: any interface.
 #[derive(Clone, Copy, Debug)]
 pub struct Ep(pub u32);
 
@@ -27,7 +27,7 @@ impl Transport for Ep {
     }
 }
 
-/// The register form (`SYS_IPC_FAST_CALL_EP`) on the endpoint capability
+/// The register form (`SYS_IPC_CALL`) on the endpoint capability
 /// `.0`: four words each way, no capability. Only for an interface declared
 /// `words = 4` (a request is the header and up to three arguments; a reply
 /// the status and up to three words): the hot paths of the actuators and the

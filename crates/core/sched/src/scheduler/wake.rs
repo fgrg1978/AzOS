@@ -759,7 +759,7 @@ pub fn wq_wake_by_tid(tid: u32) {
 /// sweep-keyed client wake would find the client not yet `Blocked`,
 /// `try_wake_task` would return early, and the client would block on a wake
 /// that never comes again — sleeping forever while pinning the slot.
-/// `SYS_IPC_FAST_ACCEPT` is symmetric.
+/// `SYS_IPC_ACCEPT` is symmetric.
 ///
 /// # Why this cannot be fixed inside `try_wake_task`
 ///

@@ -14587,7 +14587,7 @@ PY
     make_disk $AZOS_OUT/build/disk-abitest.img
     # The `endpoint.demo` check rides in this row rather than in one of its own.
     # `abitest` spawns `EPSRV.ELF`, calls `endpoint.demo` by CAPABILITY
-    # (SYS_IPC_FAST_CALL_EP, 582 — never by TID), checks the reply carries
+    # (SYS_IPC_CALL, 582 — never by TID), checks the reply carries
     # `w0 + 1` so it cannot have come from zeroed registers or a stale slot,
     # and reaps the server to read its own verdict. Five checks, and
     # `ALL PASSED` is false if any of them fails, so the marker covers them.
@@ -16007,7 +16007,7 @@ CPU 5 lacks hwcap bits"
     # port_source_gone_wakes_the_waiter times out). N11: `ipc-reply-twice`
     # (a second reply on one warrant is delivered:
     # ipc_reply_warrant_moves_to_worker_and_is_send_once). N11b:
-    # `canary=ipc-v2-as-v1`
+    # `canary=ipc-desc-as-regs`
     # (the v2 accept reads every call as v1, no badge:
     # ipc_v2_call_carries_caps_words_and_badge). N11c:
     # `canary=ipc-v1-takes-v2` (the v1 accept takes a v2 call instead of
@@ -16020,7 +16020,7 @@ CPU 5 lacks hwcap bits"
     # find no task parked with one) and `canary=ipc-resume-stale` (a task
     # resumed where it blocked keeps its point: ipc_fastpath_resume_point_*);
     # `ipc-force-slow` alone turns those four red as well.
-    KTEST_IPC_CANARIES="canary=ipc-no-peer-died,ipc-no-senders-wipe,port-no-vanish,ipc-reply-twice,ipc-v2-as-v1,ipc-v1-takes-v2,ipc-force-slow,ipc-resume-off,ipc-resume-stale"
+    KTEST_IPC_CANARIES="canary=ipc-no-peer-died,ipc-no-senders-wipe,port-no-vanish,ipc-reply-twice,ipc-desc-as-regs,ipc-v1-takes-v2,ipc-force-slow,ipc-resume-off,ipc-resume-stale"
     KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died ipc_no_senders_once_after_staggered_exits port_source_gone_wakes_the_waiter ipc_reply_warrant_moves_to_worker_and_is_send_once ipc_v2_call_carries_caps_words_and_badge ipc_v2_call_refused_by_v1_accept ipc_v2_refused_call_caps_revoked_on_caller_exit ipc_fastpath_taken_when_parked ipc_fastpath_resumes_at_the_point ipc_fastpath_resume_point_kill ipc_fastpath_resume_point_drain ipc_fastpath_resume_point_ordinary_call ipc_fastpath_call_edge_is_in_the_graph"
     par "ktest ipc canary (rv)" ktest_row "ktest ipc canary (rv)" rv "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     par "ktest ipc canary (arm)" ktest_row "ktest ipc canary (arm)" arm "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
@@ -21554,7 +21554,7 @@ PYEOF
     # It is also the runtime proof that a call OUTSIDE a binary's seccomp
     # profile is refused. The kernel installs UHELLO.ELF's profile at exec
     # (`IMAGE_PROFILES` in crates/core/sched/src/seccomp.rs: putchar, exit, write),
-    # and uhello then issues SYS_IPC_FAST_CALL_EP, which the native
+    # and uhello then issues SYS_IPC_CALL, which the native
     # entries send through their IPC branch (Chain E cut 7): filtered, the
     # kernel records the denial and kills it; unfiltered, its null capability
     # is refused and it prints `FAILED:`, which QEMU_FAIL_RE reports. The
@@ -21564,8 +21564,8 @@ PYEOF
     # source issues, everything else is refused — is `tests/host/seccomp-tests`.
     rm -f $AZOS_OUT/build/disk-uhello.img
     make_disk $AZOS_OUT/build/disk-uhello.img
-    uhello_nr="$(sed -n 's/^pub const SYS_IPC_FAST_CALL_EP: u64 = \([0-9][0-9]*\);.*/\1/p' "${REPO_ROOT}/crates/core/abi/src/syscall_nr.rs")"
-    par_row qemu_run "userspace: minimal Rust ELF" "killed: syscall ${uhello_nr:-SYS_IPC_FAST_CALL_EP-not-found} not in its profile" 120 \
+    uhello_nr="$(sed -n 's/^pub const SYS_IPC_CALL: u64 = \([0-9][0-9]*\);.*/\1/p' "${REPO_ROOT}/crates/core/abi/src/syscall_nr.rs")"
+    par_row qemu_run "userspace: minimal Rust ELF" "killed: syscall ${uhello_nr:-SYS_IPC_CALL-not-found} not in its profile" 120 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
@@ -23445,7 +23445,7 @@ PYEOF
     # ── Priority inversion through fast IPC (wave 11 PIFAST) ──
     #
     # `kernel/src/smokes/pifast_smoke.rs`: a priority-13 kernel client calls a
-    # priority-24 server through SYS_IPC_FAST_CALL_EP (582, the real dispatch
+    # priority-24 server through SYS_IPC_CALL (582, the real dispatch
     # arms) once per 1.3 ms while a priority-18 hog computes in 2 ms bursts on
     # the same hart, and times every call. `-smp 1 -icount shift=0,sleep=off`,
     # the LAT rows' setup. The kernel prints the verdict: `[PIFAST] PASS` when

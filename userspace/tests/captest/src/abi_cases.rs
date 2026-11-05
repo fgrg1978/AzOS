@@ -24,9 +24,9 @@ pub trait Env {
     fn close_typed(&mut self, handle: usize) -> isize;
     /// `SYS_CAP_INFO(kind, resource)`.
     fn cap_lookup(&mut self, kind: usize, resource: usize) -> isize;
-    /// `SYS_IPC_FAST_CALL_EP(endpoint, words)`: reply word 0, or the error.
+    /// `SYS_IPC_CALL(endpoint, words)`: reply word 0, or the error.
     fn fast_call(&mut self, endpoint: usize, words: [usize; 4]) -> isize;
-    /// `SYS_IPC_FAST_REPLY(handle, words)`.
+    /// `SYS_IPC_REPLY(handle, words)`.
     fn fast_reply(&mut self, handle: usize, words: [usize; 4]) -> isize;
     /// `DOMAIN_UPTIME`: the timebase counter, in a word.
     fn uptime(&mut self) -> usize;

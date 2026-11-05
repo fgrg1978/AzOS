@@ -33,7 +33,7 @@
 //!      Progress is printed every 32 iterations so a hang reads as "child 3
 //!      wedged at seq=137", not as "never started".
 //!
-//!      The server replies through `SYS_IPC_FAST_REPLY_ACCEPT`:
+//!      The server replies through `SYS_IPC_REPLY_ACCEPT`:
 //!      every answer but the last shares its trap with the next accept, so
 //!      the same 1600 calls are the combined call's round trip.
 //!
@@ -76,7 +76,7 @@
 //!   E. **Fast IPC actually carries the request.** Phases A and B prove an
 //!      exchange completes and that an impostor cannot answer it; neither
 //!      proves the server was told *what* was asked, because both reply a
-//!      constant. `SYS_IPC_FAST_ACCEPT` returned only the slot index and
+//!      constant. `SYS_IPC_ACCEPT` returned only the slot index and
 //!      threw away the caller TID and the four request words, so a ring-3
 //!      server could answer but not answer *anything in particular* — a
 //!      wake primitive wearing an RPC's documentation. This phase forks a
@@ -85,7 +85,7 @@
 //!      the parent recomputes that function independently. A kernel that
 //!      delivers nothing, zeros, or a stale payload fails it.
 //!
-//!   G. **Reply+accept on a stale handle.** `SYS_IPC_FAST_REPLY_ACCEPT` must
+//!   G. **Reply+accept on a stale handle.** `SYS_IPC_REPLY_ACCEPT` must
 //!      answer -2 for a stale handle, distinct from phase B's -3, and accept
 //!      nothing. The parent replies to one heartbeat call, holds the next one
 //!      on the same slot, and replies+accepts with the first call's handle;
@@ -94,7 +94,7 @@
 //!   H. **One `Cap<Shm>` region mapped in two tasks.** A forked client
 //!      creates and maps a region, writes a word into it, and MOVES the
 //!      capability to its parent's endpoint with the call
-//!      (`SYS_IPC_FAST_CALL_EP`, `a5`). The server maps the capability that
+//!      (`SYS_IPC_CALL`, `a5`). The server maps the capability that
 //!      arrived and must read the client's word; it writes one of its own
 //!      before replying, and the client must read that through its own
 //!      mapping. Both directions, or a kernel that gave the server a copy of
@@ -402,7 +402,7 @@ fn post(tag: u8, v: u32) {
 /// mailbox. A non-mailbox call is not expected outside phase A; it is answered
 /// `0` so its sender does not wedge.
 ///
-/// One request, not a drain. `SYS_IPC_FAST_ACCEPT` has no non-blocking form:
+/// One request, not a drain. `SYS_IPC_ACCEPT` has no non-blocking form:
 /// with nothing pending it blocks on `FastIpcServer(tid)` for up to eight
 /// wakes, and the only waker is a `SYS_IPC_FAST_CALL` addressed to this TID.
 /// A loop that accepts until the queue is empty therefore never returns once
@@ -858,7 +858,7 @@ fn fork_reg_canary() {
 // the QEMU command line in `tools/gate/ci_check.sh`. Naming the gap is the honest
 // option; asserting something ring 3 cannot observe is not.
 //
-// The server reads the request now (`SYS_IPC_FAST_ACCEPT` delivers the caller
+// The server reads the request now (`SYS_IPC_ACCEPT` delivers the caller
 // TID and the four words), but this phase does not depend on it: it replies
 // `REPLY_MAGIC + slot_idx`, and each client asserts the word it collects lies
 // in the reply range and is **not** its own request word. That still catches
@@ -1441,7 +1441,7 @@ fn phase_b() {
 
 // ── Phase G: reply+accept on a stale handle ─────────────────────────────────
 //
-// `SYS_IPC_FAST_REPLY_ACCEPT` answers -2 for a stale handle, apart from the -3
+// `SYS_IPC_REPLY_ACCEPT` answers -2 for a stale handle, apart from the -3
 // phase B sees, and accepts nothing either way. An old handle is
 // not enough to reach -2: `fast_ipc_reply` checks state and ownership before
 // the generation, so a handle to a FREED slot is only refused. This task must
@@ -1906,7 +1906,7 @@ fn phase_d() {
 // impostor cannot answer it. It does **not** prove the exchange transports
 // anything: its server replies a constant, so it would pass unchanged on a
 // kernel that told the server nothing but "someone called you". That is
-// exactly what `SYS_IPC_FAST_ACCEPT` did until CARRIL 4 — it read
+// exactly what `SYS_IPC_ACCEPT` did until CARRIL 4 — it read
 // `(slot, caller_tid, words)` from `fast_ipc_accept` and returned only the
 // slot, while its own comment claimed the words were written into the
 // server's trap frame by a waker that does not exist.

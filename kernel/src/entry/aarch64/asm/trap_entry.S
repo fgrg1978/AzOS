@@ -51,8 +51,8 @@
 .equ TASK_REAP_OFFSET, {task_reap_off}  // Task::reap_on_resume (Chain E commit 9)
 .equ RESUME_EXIT_CALL, {resume_exit_call}  // azos_sched::scheduler::IPC_FAST_EXIT_CALL
 // Chain E cut 7 (Kconfig IPC_FASTPATH): the native path's branch for the two
-// IPC fast calls, SYS_IPC_FAST_REPLY_ACCEPT (IPC_FAST_LO) and
-// SYS_IPC_FAST_CALL_EP (IPC_FAST_LO + 2, asserted where these are bound).
+// calls the IPC fast path takes, SYS_IPC_REPLY_ACCEPT (IPC_FAST_LO) and
+// SYS_IPC_CALL (IPC_FAST_LO + 4, asserted where these are bound).
 .equ IPC_FAST_ENTRY,   {ipc_fast_entry}
 .equ IPC_FAST_LO,      {ipc_fast_lo}
 // Kconfig A64_PAUTH_PROC_KEYS: per-process pointer-authentication keys, swapped
@@ -651,12 +651,12 @@ _svc_native:
     // the trap entry's guards.
     mov     x0, sp
 .if IPC_FAST_ENTRY
-    // Chain E cut 7: x8 = IPC_FAST_LO or IPC_FAST_LO + 2 exactly when
-    // (x8 - IPC_FAST_LO) & ~2 is 0. Those two go straight to the frame that
+    // Chain E cut 7: x8 = IPC_FAST_LO or IPC_FAST_LO + 4 exactly when
+    // (x8 - IPC_FAST_LO) & ~4 is 0. Those two go straight to the frame that
     // runs the fast path (`aarch64_fast_ipc_svc`); three instructions on
     // every other native syscall.
     sub     x10, x8, #IPC_FAST_LO
-    tst     x10, #0xfffffffffffffffd
+    tst     x10, #0xfffffffffffffffb
     b.eq    .Lsvc_fast_ipc
 .endif
     bl      aarch64_native_svc              // x0 = the TTBR0_EL1 to install, or 0

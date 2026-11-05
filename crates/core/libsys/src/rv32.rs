@@ -26,8 +26,8 @@ use core::arch::asm;
 use azos_abi::cap::ty;
 use azos_abi::invoke::{join_words, DOMAIN_SELF, DOMAIN_UPTIME, INVOKE_REGS, LOG_CONSOLE_WRITE};
 use azos_abi::syscall_nr::{
-    CAP_INFO_LOOKUP, SLEEP_RELATIVE, SYS_CAP_INFO, SYS_EXIT, SYS_INVOKE, SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_CALL_EP,
-    SYS_IPC_FAST_REPLY_ACCEPT, SYS_SLEEP_UNTIL,
+    CAP_INFO_LOOKUP, SLEEP_RELATIVE, SYS_CAP_INFO, SYS_EXIT, SYS_INVOKE, SYS_IPC_ACCEPT, SYS_IPC_CALL,
+    SYS_IPC_REPLY_ACCEPT, SYS_SLEEP_UNTIL,
 };
 
 /// Issue syscall `nr` with arguments `a` and return a0.
@@ -150,7 +150,7 @@ pub fn fast_ipc_accept_req() -> Option<FastRequest> {
     unsafe {
         asm!(
             "ecall",
-            in("a7") SYS_IPC_FAST_ACCEPT as usize,
+            in("a7") SYS_IPC_ACCEPT as usize,
             inlateout("a0") 0usize => r0,
             inlateout("a1") 0usize => _,
             inlateout("a2") 0usize => r2,
@@ -178,7 +178,7 @@ pub fn fast_ipc_reply_accept(
     unsafe {
         asm!(
             "ecall",
-            in("a7") SYS_IPC_FAST_REPLY_ACCEPT as usize,
+            in("a7") SYS_IPC_REPLY_ACCEPT as usize,
             inlateout("a0") handle => r0,
             inlateout("a1") 0usize => _,
             inlateout("a2") words[0] => r2,
@@ -213,13 +213,13 @@ pub fn fast_ipc_call_ep_status(
     unsafe {
         asm!(
             "ecall",
-            in("a7") SYS_IPC_FAST_CALL_EP as usize,
+            in("a7") SYS_IPC_CALL as usize,
             inlateout("a0") endpoint as usize => r0,
-            inlateout("a1") words[0] => r1,
-            inlateout("a2") words[1] => r2,
-            inlateout("a3") words[2] => r3,
-            inlateout("a4") words[3] => _,
-            inlateout("a5") 0usize => _,
+            inlateout("a1") 0usize => r1,
+            inlateout("a2") words[0] => r2,
+            inlateout("a3") words[1] => r3,
+            inlateout("a4") words[2] => _,
+            inlateout("a5") words[3] => _,
             lateout("a6") _,
             options(nostack),
         );

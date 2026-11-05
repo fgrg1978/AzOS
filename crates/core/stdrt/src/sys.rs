@@ -16,7 +16,7 @@ compile_error!("stdrt sys: no trap sequence for this ISA: a new ISA names its `s
 use core::arch::asm;
 
 pub use azos_abi::ipc_msg::MsgDesc;
-use azos_abi::syscall_nr::{SYS_INVOKE, SYS_IPC_CALL_V2};
+use azos_abi::syscall_nr::{SYS_INVOKE, SYS_IPC_CALL};
 
 /// A trap with up to six argument words (`a0..a5`; the unused ones are 0).
 /// Returns the first reply register as the signed result.
@@ -133,10 +133,10 @@ pub fn invoke(handle: u32, op: u16, w: [u64; 4]) -> (isize, [u64; 4]) {
     (ret, [r1, r2, r3, r4])
 }
 
-/// The v2 endpoint call (`SYS_IPC_CALL_V2`): the request in `*msg`, the reply
+/// The v2 endpoint call (`SYS_IPC_CALL`): the request in `*msg`, the reply
 /// written over it. 0 when answered, else a negative code.
 pub fn ipc_call(ep: u32, msg: &mut MsgDesc) -> isize {
-    unsafe { syscall6(SYS_IPC_CALL_V2, ep as u64, msg as *mut MsgDesc as u64, 0, 0, 0, 0) }
+    unsafe { syscall6(SYS_IPC_CALL, ep as u64, msg as *mut MsgDesc as u64, 0, 0, 0, 0) }
 }
 
 /// A trap instruction: the kernel ends the task with a fault status.

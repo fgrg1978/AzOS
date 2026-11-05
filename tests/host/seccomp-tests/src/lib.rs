@@ -627,7 +627,7 @@ mod profiles {
     /// the Linux server's profile holds no actuator, device, fork/exec
     /// or untyped power call: a Linux server never holds an
     /// actuator), by profile as well as by topology row. It lists
-    /// `SYS_CAP_INFO` and `SYS_IPC_CALL_V2` for one reason, the entropy
+    /// `SYS_CAP_INFO` and `SYS_IPC_CALL` for one reason, the entropy
     /// endpoint its allocator reads (`azos_ualloc`); the lookup reads the
     /// task's own table, and the row holds that one capability
     /// (topology-tests).
@@ -877,7 +877,7 @@ mod activation {
             "getpid is outside UHELLO.ELF's profile",
         );
         assert_eq!(
-            f.verdict(real::SYS_IPC_FAST_CALL_EP as u16),
+            f.verdict(real::SYS_IPC_CALL as u16),
             FilterVerdict::Deny,
             "the fast IPC call is outside UHELLO.ELF's profile: uhello issues it to see it refused",
         );
@@ -1029,18 +1029,18 @@ mod image_profiles {
         ("succeeded", &[]),
         ("value", &[]),
         // The draws go over the v2 call (`dev::Ep`).
-        ("entropy_read", &["SYS_IPC_CALL_V2"]),
+        ("entropy_read", &["SYS_IPC_CALL"]),
         // So is the brain-link key's.
-        ("link_key_read", &["SYS_IPC_CALL_V2"]),
+        ("link_key_read", &["SYS_IPC_CALL"]),
         // And the brain's pinned key, from the same endpoint.
-        ("brain_pk_read", &["SYS_IPC_CALL_V2"]),
+        ("brain_pk_read", &["SYS_IPC_CALL"]),
         // A signature by a kernel-held key: the call, and the one-page memory
         // object the message and the signature travel in (made, mapped, given back).
-        ("keys_sign", &["SYS_IPC_CALL_V2", "SYS_MO_CREATE", "SYS_MO_MAP", "SYS_MO_UNMAP"]),
+        ("keys_sign", &["SYS_IPC_CALL", "SYS_MO_CREATE", "SYS_MO_MAP", "SYS_MO_UNMAP"]),
         // A sensor reading and the vDSO bind go over the v2 call too (the
         // reply is a five-word sample, past the register form).
-        ("sensor_read", &["SYS_IPC_CALL_V2"]),
-        ("sensor_bind_vdso", &["SYS_IPC_CALL_V2"]),
+        ("sensor_read", &["SYS_IPC_CALL"]),
+        ("sensor_bind_vdso", &["SYS_IPC_CALL"]),
     ];
 
     /// The POSIX pipe of a process (`sys::pipe::NAME(..)`): the bodies reach the
@@ -1510,7 +1510,7 @@ mod image_profiles {
     /// Calls a binary issues ON PURPOSE to see the FILTER refuse them. Named in
     /// its source, left out of its profile, and asserted refused.
     const REFUSAL_PROBES: &[(&str, &str, &str)] = &[
-        ("UHELLO.ELF", "SYS_IPC_FAST_CALL_EP",
+        ("UHELLO.ELF", "SYS_IPC_CALL",
          "the runtime proof that a call outside a profile is refused, through the native \
           entries' IPC branch (Chain E cut 7): killed (exit 159) filtered, a negative answer \
           and `FAILED:` unfiltered; `userspace: minimal Rust ELF` and abitest assert it"),
@@ -2139,9 +2139,8 @@ mod image_profiles {
                     }));
                 }
             }
-            for t in &dev_transports {
-                let call = if *t == "Ep" { "SYS_IPC_CALL_V2" } else { "SYS_IPC_FAST_CALL_EP" };
-                out.insert(*nrs.get(call).unwrap_or_else(|| panic!("{call} is not defined")));
+            if !dev_transports.is_empty() {
+                out.insert(*nrs.get("SYS_IPC_CALL").unwrap_or_else(|| panic!("SYS_IPC_CALL is not defined")));
             }
             let a7 = "in(\"a7\")";
             let sites: Vec<usize> = with_strings.match_indices(a7).map(|(i, _)| i).collect();
@@ -2331,7 +2330,7 @@ mod image_profiles {
         // IPC call is the refusal probe.
         assert_eq!(
             derive("UHELLO.ELF"),
-            set(&[nr::SYS_EXIT, nr::SYS_IPC_FAST_CALL_EP, nr::SYS_INVOKE, nr::SYS_CAP_INFO]),
+            set(&[nr::SYS_EXIT, nr::SYS_IPC_CALL, nr::SYS_INVOKE, nr::SYS_CAP_INFO]),
         );
         // The two raw probes resolve through a fn parameter and a literal.
         assert!(derive("CAPTEST.ELF").contains(&116));
@@ -3202,7 +3201,7 @@ mod image_profiles {
     #[test]
     fn a_renamed_binary_keeps_its_own_profile() {
         use azos_abi::syscall_nr as nr;
-        let probe = nr::SYS_IPC_FAST_CALL_EP as u16;
+        let probe = nr::SYS_IPC_CALL as u16;
         let p = image_for_digest(&image_digest(&shipped_elf("UHELLO.ELF"))).expect("uhello's bytes are bound");
         assert_eq!(p.image, "UHELLO.ELF");
         assert_eq!(image_filter(p).verdict(probe), FilterVerdict::Deny);
@@ -3964,7 +3963,7 @@ mod package_images {
         assert_eq!(plan.topology_key, "PKGAPP.ELF", "the capabilities are those of the package's own row");
         let f = plan.filter;
         assert!(f.enabled && !f.audit, "the package runs confined, never in audit mode");
-        for n in [nr::SYS_EXIT, nr::SYS_INVOKE, nr::SYS_MO_MAP, nr::SYS_IPC_CALL_V2, nr::SYS_RING_ENTER, nr::SYS_FUTEX_WAIT] {
+        for n in [nr::SYS_EXIT, nr::SYS_INVOKE, nr::SYS_MO_MAP, nr::SYS_IPC_CALL, nr::SYS_RING_ENTER, nr::SYS_FUTEX_WAIT] {
             assert_eq!(f.verdict(n as u16), FilterVerdict::Allow, "a service's call {n}");
         }
         for n in [nr::SYS_SPAWN_EX, nr::SYS_ALERT, nr::SYS_SCHEDCTL, nr::SYS_FOREIGN_FORK, nr::SYS_FOREIGN_ENTRY] {

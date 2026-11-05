@@ -266,7 +266,7 @@ mod error_tests {
             Errno::EPEERDIED,
             Errno::EREVOKED,
             Errno::ENOSENDERS,
-            Errno::EV1ACCEPT,
+            Errno::EMSGFORM,
             Errno::EDEADLINE,
             Errno::ERTPROXY,
             Errno::EEOF,
@@ -572,12 +572,12 @@ mod syscall_table {
     }
 
     /// The table is dense from 1 and `SYS_NR_RESERVED_UPPER` is its length plus
-    /// one: thirty-three calls, no hole, nothing past the bound. A call added
+    /// one: thirty calls, no hole, nothing past the bound. A call added
     /// takes the next number and moves the bound; one removed renumbers.
     ///
     /// **Canary.** Leave a gap (give a call number 40): red.
     #[test]
-    fn the_table_is_dense_from_one_and_has_thirty_three_calls() {
+    fn the_table_is_dense_from_one_and_has_thirty_calls() {
         let names = names();
         let mut nrs: Vec<u64> = names
             .iter()
@@ -585,7 +585,7 @@ mod syscall_table {
             .map(|(_, v)| *v)
             .collect();
         nrs.sort_unstable();
-        assert_eq!(nrs.len(), 33, "the native table is 33 calls");
+        assert_eq!(nrs.len(), 30, "the native table is 30 calls");
         for (i, nr) in nrs.iter().enumerate() {
             assert_eq!(*nr, i as u64 + 1, "the table has a hole at {}", i + 1);
         }

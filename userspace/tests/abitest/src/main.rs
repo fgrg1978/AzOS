@@ -2808,7 +2808,7 @@ const E_ACCES: isize = -13;
 /// nothing and this capability could not have existed.
 ///
 /// **What this deliberately does NOT assert, and why.** It does not call
-/// `SYS_IPC_FAST_CALL_EP`. The authority refusal and a failed exchange
+/// `SYS_IPC_CALL`. The authority refusal and a failed exchange
 /// are the SAME value at the ABI — `E_PERM` is `-1` (`dispatch.rs:14`) and the
 /// fast-IPC failure path also answers `-1` — so a call with a forged handle
 /// and a call with a real one whose server never replies are indistinguishable

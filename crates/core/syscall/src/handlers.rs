@@ -738,10 +738,10 @@ pub(crate) fn seccomp_deny_kill(num: u64) -> ! {
 /// [`seccomp_deny_kill`] for a call to a kernel-hosted endpoint whose interface
 /// (host key `key`, `azos_devif::key`) is not in the image's profile
 /// (`ImageProfile::ifaces`): the same breach, the same exit code, a line that
-/// names the interface because the call number (`SYS_IPC_CALL_V2`) is listed.
+/// names the interface because the call number (`SYS_IPC_CALL`) is listed.
 #[inline(never)]
 pub(crate) fn seccomp_deny_iface_kill(key: u16) -> ! {
-    let num = azos_abi::syscall_nr::SYS_IPC_CALL_V2;
+    let num = azos_abi::syscall_nr::SYS_IPC_CALL;
     if let Some(code) = azos_sched::scheduler::take_current_forced_exit() {
         forced_stop_exit(num, code)
     }
@@ -1310,7 +1310,7 @@ const fn file_perms_for_flags(flags: u64) -> Option<azos_abi::cap::CapPerms> {
     }
 }
 
-/// Resolve a `SYS_IPC_FAST_CALL_EP` destination, recording a capability
+/// Resolve a `SYS_IPC_CALL` destination, recording a capability
 /// denial the way every other typed family records one.
 ///
 /// The resolution itself lives in `azos_ipc::endpoint::endpoint_dest_for`,

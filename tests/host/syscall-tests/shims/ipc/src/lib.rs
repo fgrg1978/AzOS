@@ -58,7 +58,7 @@ pub mod port;
 pub mod port_link;
 
 // Endpoints. The real module, like every other name here: the authority
-// check `SYS_IPC_FAST_CALL_EP` delegates to lives in it, and `unit6_contain`
+// check `SYS_IPC_CALL` delegates to lives in it, and `unit6_contain`
 // asserts that a forged endpoint handle records exactly one denial under
 // `ty::ENDPOINT`. A stand-in would assert the stand-in.
 #[path = "../../../../../../crates/core/ipc/src/endpoint.rs"]

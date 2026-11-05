@@ -315,7 +315,7 @@ pub extern "C" fn x86_64_native_syscall(frame: &mut TrapFrame) -> u64 {
 }
 
 /// The lean `syscall` entry's IPC branch (trap_entry.S, Chain E cut 7): `rax`
-/// is `SYS_IPC_FAST_CALL_EP` or `SYS_IPC_FAST_REPLY_ACCEPT`. As
+/// is `SYS_IPC_CALL` or `SYS_IPC_REPLY_ACCEPT`. As
 /// [`x86_64_native_syscall`], but the filter verdict alone and the fast path in
 /// this frame. A miss (a Linux task's number among them: the verdict says so)
 /// takes the ordinary dispatch from here.

@@ -952,24 +952,19 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
         ("recv", ty::SOCKET, || sys_recv_typed(0, S, 4)),
         ("mcast_join", ty::SOCKET, || sys_mcast_join_typed(0, 0xE000_0001)),
         ("mcast_leave", ty::SOCKET, || sys_mcast_leave_typed(0, 0xE000_0001)),
-        // `SYS_IPC_FAST_CALL_EP` (582). Its dispatch arm is in
-        // `crates/core/syscall/src/dispatch.rs`, which this crate does not compile,
-        // so the line calls the authority check the arm delegates to — which
-        // is where the capability is resolved and therefore where the denial
-        // is recorded. Testing the arm's `u32::try_from` shell instead would
-        // prove nothing about the kind a denial lands under.
-        ("ipc_fast_call_ep", ty::ENDPOINT, || {
+        // `SYS_IPC_CALL`, both forms. Its dispatch arm is in
+        // `crates/core/syscall/src/dispatch.rs` (the descriptor form in
+        // `crate::ipc_v2`), which this crate does not compile, so the line
+        // calls the authority check both delegate to — which is where the
+        // capability is resolved and therefore where the denial is recorded.
+        // Testing the arm's `u32::try_from` shell instead would prove nothing
+        // about the kind a denial lands under.
+        ("ipc_call", ty::ENDPOINT, || {
             let t = azos_sched::current_task_tid();
             crate::handlers::endpoint_dest_recording(t, 0).map_or(-1, |v| v.owner as i64)
         }),
         // 604, wave 11 (PORTWAIT).
         ("port_wait", ty::PORT, || sys_port_wait(0, S, 0)),
-        // 633, wave 15 N11b: `SYS_IPC_CALL_V2` resolves its endpoint through
-        // the same check as 582 (`crate::ipc_v2`, not compiled here).
-        ("ipc_call_v2", ty::ENDPOINT, || {
-            let t = azos_sched::current_task_tid();
-            crate::handlers::endpoint_dest_recording(t, 0).map_or(-1, |v| v.owner as i64)
-        }),
         // 637, wave 15 N11b: the badged mint consumes the endpoint
         // capability it copies; its arm delegates the step to this.
         ("cap_mint_badged", ty::ENDPOINT, || {

@@ -4,10 +4,10 @@
 //!
 //! Three kernel tasks pinned to [`HART`]:
 //!   * `pifast-cli` at [`CLIENT_PRIO`] (13) calls the server through
-//!     `SYS_IPC_FAST_CALL_EP` once per [`PERIOD_US`], on an absolute
+//!     `SYS_IPC_CALL` once per [`PERIOD_US`], on an absolute
 //!     deadline, and times each call with `timebase::now()`;
 //!   * `pifast-srv` at [`SERVER_PRIO`] (24) serves the named endpoint through
-//!     `SYS_IPC_FAST_ACCEPT` / `SYS_IPC_FAST_REPLY_ACCEPT`, doing
+//!     `SYS_IPC_ACCEPT` / `SYS_IPC_REPLY_ACCEPT`, doing
 //!     [`SERVER_WORK`] rounds of arithmetic per request;
 //!   * `pifast-hog` at [`HOG_PRIO`] (18), between the two, computes for
 //!     [`HOG_BURST_US`] and sleeps for [`HOG_REST_US`], over and over.
@@ -35,7 +35,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use alloc::vec::Vec;
-use azos_abi::syscall_nr::{SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY_ACCEPT};
+use azos_abi::syscall_nr::{SYS_IPC_ACCEPT, SYS_IPC_CALL, SYS_IPC_REPLY_ACCEPT};
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
 use azos_ipc::cap::CapPerms;
@@ -133,14 +133,14 @@ fn server_task(_: usize) {
     SERVER_TID.store(me, Ordering::Release);
     SERVING.store(true, Ordering::Release);
     let mut out = SyscallOut::new();
-    let mut h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+    let mut h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
     let mut x = 0x2545_F491u32;
     loop {
         if h < 0 {
             if DONE.load(Ordering::Acquire) {
                 return;
             }
-            h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+            h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
             continue;
         }
         let w0 = out.regs[1];
@@ -155,7 +155,7 @@ fn server_task(_: usize) {
         }
         SERVED.fetch_add(1, Ordering::Relaxed);
         // a0 = handle, a1 unread, a2..a5 = reply words (the arm's convention).
-        h = dispatch(SYS_IPC_FAST_REPLY_ACCEPT, [h as u64, 0, w0 ^ 0x5A5A, 0, 0, 0], &mut out);
+        h = dispatch(SYS_IPC_REPLY_ACCEPT, [h as u64, 0, w0 ^ 0x5A5A, 0, 0, 0], &mut out);
     }
 }
 
@@ -190,7 +190,7 @@ fn run_phase(cap: u64, calls: usize, seq0: u64) -> Option<Vec<u64>> {
         block_until(deadline);
         let seq = seq0 + i as u64;
         let t0 = now();
-        let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, seq, 0, 0, 0, 0], &mut out);
+        let rc = dispatch(SYS_IPC_CALL, [cap, 0, seq, 0, 0, 0], &mut out);
         let t1 = now();
         if rc as u64 != seq ^ 0x5A5A {
             kprintln!("[PIFAST] FAIL reply: call {} answered {} (expected {})", seq, rc, seq ^ 0x5A5A);

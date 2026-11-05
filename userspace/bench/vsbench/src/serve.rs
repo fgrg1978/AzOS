@@ -20,7 +20,7 @@ use crate::ipc_proto::{drv, frame, ring, IPC_SENTINEL};
 
 /// Serve round trips until the sentinel arrives or `bound` are served.
 ///
-/// Written the way a real server is: `SYS_IPC_FAST_REPLY_ACCEPT` answers one
+/// Written the way a real server is: `SYS_IPC_REPLY_ACCEPT` answers one
 /// request and takes the next in a single ring crossing, so a round trip is
 /// TWO traps (the client's call, the server's reply-and-accept) rather than
 /// three. That is seL4's `Call` + `ReplyRecv` pair, which is the figure its

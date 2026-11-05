@@ -5,7 +5,7 @@
 //! A kernel component that needs a driver which may run in ring 3 calls it
 //! with the same generated stub a ring-3 client uses: `<Name>Client` over
 //! [`KernelEndpoint`], the [`azos_idl::Transport`] of a kernel task. The call
-//! is `SYS_IPC_CALL_V2`'s own body (`crate::ipc_v2::call_v2`) on a request in
+//! is `SYS_IPC_CALL`'s own body (`crate::ipc_v2::call_v2`) on a request in
 //! kernel memory, so the capability check, the deadline refusal, the call
 //! queue, the priority donation and the wait are the syscall's, not a second
 //! path. When the driver is placed in the kernel the caller holds the direct
@@ -61,7 +61,7 @@ fn may_call() -> bool {
 /// Call through the endpoint capability `ep` (a handle in the running task's
 /// table) with the request in `*msg`; the answer replaces it. `Err` is the
 /// call's negative code (`-EBUSY` when the context may not block, else
-/// `SYS_IPC_CALL_V2`'s).
+/// `SYS_IPC_CALL`'s).
 pub fn call(ep: u32, msg: &mut MsgDesc) -> Result<(), i64> {
     if !may_call() {
         ATOMIC_REFUSED.fetch_add(1, Ordering::Relaxed);

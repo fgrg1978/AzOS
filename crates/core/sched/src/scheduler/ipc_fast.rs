@@ -87,7 +87,7 @@ pub fn fast_ipc_call_handoff(server_tid: u32, handle: u64) {
     );
 }
 
-/// `SYS_IPC_FAST_REPLY_ACCEPT`'s hand-off: wake the client whose exchange
+/// `SYS_IPC_REPLY_ACCEPT`'s hand-off: wake the client whose exchange
 /// `handle` was just answered, then sleep as `server_tid` waiting for the next
 /// call. The predicates are `wait::wake_fast_ipc_client_tid`'s and the
 /// accept's own `task_block`.

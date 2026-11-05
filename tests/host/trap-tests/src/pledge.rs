@@ -124,7 +124,7 @@ fn a_call_outside_the_mask_is_refused_with_a_record() {
     let mut g = rv_call(SYS_GETPID, [0, 0]);
     enter::<_, false>(&mut g);
     assert_eq!(g.regs[10], eacces(), "getpid is authority, and its answer comes from the number: still refused");
-    let mut ipc = x86_call(SYS_IPC_FAST_CALL_EP, [0, 0]);
+    let mut ipc = x86_call(SYS_IPC_CALL, [0, 0]);
     enter::<_, true>(&mut ipc);
     assert_eq!(ipc.rax, 1000, "block/wake is inside the mask");
     let mut y = rv_call(SYS_YIELD, [0, 0]);

@@ -40,7 +40,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
-use azos_abi::syscall_nr::{SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY, SYS_IPC_FAST_REPLY_ACCEPT};
+use azos_abi::syscall_nr::{SYS_IPC_ACCEPT, SYS_IPC_CALL, SYS_IPC_REPLY, SYS_IPC_REPLY_ACCEPT};
 use azos_ipc::cap::CapPerms;
 use azos_syscall::fastpath::{self, FastResume, IpcRegs};
 use azos_syscall::SyscallOut;
@@ -159,15 +159,15 @@ fn hit_server(_: usize) {
     HIT_READY.store(true, Ordering::Release);
     // The first call through the ordinary accept (parked in it, the fast
     // call deposits), every next one through the fast reply-and-accept.
-    let (mut h, mut r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
+    let (mut h, mut r) = call(SYS_IPC_ACCEPT, [0; 6]);
     for _ in 1..ROUNDS {
         if h < 0 {
             break;
         }
-        (h, r) = call(SYS_IPC_FAST_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0]);
+        (h, r) = call(SYS_IPC_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0]);
     }
     if h >= 0 {
-        call(SYS_IPC_FAST_REPLY, [h as u64, r[2] + 1, 0, 0, 0, 0]);
+        call(SYS_IPC_REPLY, [h as u64, 0, r[2] + 1, 0, 0, 0]);
     }
     HIT_REPLIES.store(fastpath::hits_of(my_slot()).1.wrapping_sub(before), Ordering::Release);
     HIT_SERVED.store(true, Ordering::Release);
@@ -182,7 +182,7 @@ fn hit_client(_: usize) {
     until_parked(HIT_SRV_TID.load(Ordering::Acquire));
     for k in 0..ROUNDS {
         let w = 0x500 + k;
-        let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, w, 0, 0, 0, 0]);
+        let (rc, _) = call(SYS_IPC_CALL, [cap, 0, w, 0, 0, 0]);
         if rc == (w + 1) as i64 {
             HIT_RIGHT.fetch_add(1, Ordering::AcqRel);
         }
@@ -235,12 +235,12 @@ fn q_server(_: usize) {
     Q_READY.store(true, Ordering::Release);
     // Asleep, not in the accept: the calls cannot find it parked and queue.
     crate::ktest::until(|| Q_QUEUED.load(Ordering::Acquire) >= 2 && azos_ipc::fastcall::census().0 >= 2);
-    let (h, r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
+    let (h, r) = call(SYS_IPC_ACCEPT, [0; 6]);
     if h >= 0 {
         // The second call is queued: the fast reply must not jump it.
-        let (h2, r2) = call(SYS_IPC_FAST_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0]);
+        let (h2, r2) = call(SYS_IPC_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0]);
         if h2 >= 0 {
-            call(SYS_IPC_FAST_REPLY, [h2 as u64, r2[2] + 1, 0, 0, 0, 0]);
+            call(SYS_IPC_REPLY, [h2 as u64, 0, r2[2] + 1, 0, 0, 0]);
         }
     }
     Q_REPLY_HITS.store(i64::from(fastpath::hits_of(my_slot()).1.wrapping_sub(before)), Ordering::Release);
@@ -255,7 +255,7 @@ fn q_client(k: usize) {
     let before = fastpath::hits_of(my_slot()).0;
     Q_QUEUED.fetch_add(1, Ordering::AcqRel);
     let w = 0x700 + k as u64;
-    let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, w, 0, 0, 0, 0]);
+    let (rc, _) = call(SYS_IPC_CALL, [cap, 0, w, 0, 0, 0]);
     if rc == (w + 1) as i64 {
         Q_RIGHT.fetch_add(1, Ordering::AcqRel);
     }
@@ -329,13 +329,13 @@ const RC_WHY: [&str; 10] = [
 
 /// Serve `RC_EP` (claimed), answering `w + add`, until `RC_STOP`.
 fn rc_serve(add: u64) {
-    let (mut h, mut r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
+    let (mut h, mut r) = call(SYS_IPC_ACCEPT, [0; 6]);
     while h >= 0 {
         if r[2] == RC_STOP {
-            call(SYS_IPC_FAST_REPLY, [h as u64, RC_STOP, 0, 0, 0, 0]);
+            call(SYS_IPC_REPLY, [h as u64, 0, RC_STOP, 0, 0, 0]);
             return;
         }
-        (h, r) = call(SYS_IPC_FAST_REPLY_ACCEPT, [h as u64, 0, r[2] + add, 0, 0, 0]);
+        (h, r) = call(SYS_IPC_REPLY_ACCEPT, [h as u64, 0, r[2] + add, 0, 0, 0]);
     }
 }
 
@@ -361,7 +361,7 @@ fn rc_server_b(_: usize) {
 
 /// `w` to `cap` answered `w + add`?
 fn rc_calls(cap: u64, base: u64, add: u64) -> bool {
-    (0..2).all(|k| call(SYS_IPC_FAST_CALL_EP, [cap, base + k, 0, 0, 0, 0]).0 == (base + k + add) as i64)
+    (0..2).all(|k| call(SYS_IPC_CALL, [cap, 0, base + k, 0, 0, 0]).0 == (base + k + add) as i64)
 }
 
 /// The client's steps; `Err(k)` names the one that failed.
@@ -377,7 +377,7 @@ fn rc_steps() -> Result<(), usize> {
     if !kept() {
         return Err(3);
     }
-    if call(SYS_IPC_FAST_CALL_EP, [cap, RC_STOP, 0, 0, 0, 0]).0 != RC_STOP as i64 {
+    if call(SYS_IPC_CALL, [cap, 0, RC_STOP, 0, 0, 0]).0 != RC_STOP as i64 {
         return Err(4);
     }
     // The test body starts B once A is gone.
@@ -391,11 +391,11 @@ fn rc_steps() -> Result<(), usize> {
     let held: azos_ipc::cap::Cap<azos_ipc::cap::targets::Endpoint> =
         azos_ipc::cap::Cap::from_raw(azos_abi::cap::CapHandle(cap as u32));
     azos_ipc::cap_store::revoke(me, held);
-    if call(SYS_IPC_FAST_CALL_EP, [cap, 0xB00, 0, 0, 0, 0]).0 != -1 {
+    if call(SYS_IPC_CALL, [cap, 0, 0xB00, 0, 0, 0]).0 != -1 {
         return Err(7);
     }
     let stop = client_cap(RC_EP).ok_or(8usize)?;
-    if call(SYS_IPC_FAST_CALL_EP, [stop, RC_STOP, 0, 0, 0, 0]).0 != RC_STOP as i64 {
+    if call(SYS_IPC_CALL, [stop, 0, RC_STOP, 0, 0, 0]).0 != RC_STOP as i64 {
         return Err(9);
     }
     Ok(())
@@ -577,13 +577,13 @@ fn rp_server(_: usize) {
     RP_SRV_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     RP_READY.store(true, Ordering::Release);
     // The first call through the ordinary accept, parked.
-    let (h, r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
+    let (h, r) = call(SYS_IPC_ACCEPT, [0; 6]);
     if h < 0 {
         RP_SRV_DONE.store(true, Ordering::Release);
         return;
     }
     // Its answer and the wait for the next one, leaving a point.
-    rcall(SYS_IPC_FAST_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0], rp_server_next, 0);
+    rcall(SYS_IPC_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0], rp_server_next, 0);
 }
 
 fn rp_server_next(_: usize, h: i64, r: [u64; 7], at: bool) {
@@ -594,7 +594,7 @@ fn rp_server_next(_: usize, h: i64, r: [u64; 7], at: bool) {
     if h >= 0 {
         // An ordinary reply: the caller, parked without a point, resumes
         // where it blocked.
-        call(SYS_IPC_FAST_REPLY, [h as u64, r[2] + 1, 0, 0, 0, 0]);
+        call(SYS_IPC_REPLY, [h as u64, 0, r[2] + 1, 0, 0, 0]);
     }
     RP_SRV_DONE.store(true, Ordering::Release);
 }
@@ -625,7 +625,7 @@ fn rp_client(_: usize) {
     if !rp_server_parks() {
         return;
     }
-    rcall(SYS_IPC_FAST_CALL_EP, [cap, 0x600, 0, 0, 0, 0], rp_client_next, 0);
+    rcall(SYS_IPC_CALL, [cap, 0, 0x600, 0, 0, 0], rp_client_next, 0);
 }
 
 fn rp_client_next(_: usize, rc: i64, _: [u64; 7], at: bool) {
@@ -640,7 +640,7 @@ fn rp_client_next(_: usize, rc: i64, _: [u64; 7], at: bool) {
         return;
     }
     let cap = RP_CAP.load(Ordering::Acquire) as u64;
-    if call(SYS_IPC_FAST_CALL_EP, [cap, 0x602, 0, 0, 0, 0]).0 == 0x603 {
+    if call(SYS_IPC_CALL, [cap, 0, 0x602, 0, 0, 0]).0 == 0x603 {
         RP_RIGHT.fetch_add(1, Ordering::AcqRel);
     }
     RP_CLI_DONE.store(true, Ordering::Release);
@@ -742,7 +742,7 @@ const PK_EP: [&[u8]; 3] = [b"fp.rp.kill", b"fp.rp.drain", b"fp.rp.call"];
 fn pk_back(k: usize, rc: i64, r: [u64; 7], at: bool) {
     let p = &PK[k];
     if k != DRAIN && rc >= 0 && !p.armed.load(Ordering::Acquire) {
-        rcall(SYS_IPC_FAST_REPLY_ACCEPT, [rc as u64, 0, r[2] + 1, 0, 0, 0], pk_back, k);
+        rcall(SYS_IPC_REPLY_ACCEPT, [rc as u64, 0, r[2] + 1, 0, 0, 0], pk_back, k);
         return;
     }
     p.at.store(at, Ordering::Release);
@@ -750,7 +750,7 @@ fn pk_back(k: usize, rc: i64, r: [u64; 7], at: bool) {
     p.word.store(r[2] as usize, Ordering::Release);
     p.held.store(held(my_slot()), Ordering::Release);
     if k == ORDINARY && rc >= 0 {
-        call(SYS_IPC_FAST_REPLY, [rc as u64, r[2] + 1, 0, 0, 0, 0]);
+        call(SYS_IPC_REPLY, [rc as u64, 0, r[2] + 1, 0, 0, 0]);
     }
     p.done.store(true, Ordering::Release);
 }
@@ -766,7 +766,7 @@ fn pk_server(k: usize) {
     p.srv_slot.store(my_slot(), Ordering::Release);
     p.srv_tid.store(azos_sched::current_task_tid(), Ordering::Release);
     p.ready.store(true, Ordering::Release);
-    let (h, r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
+    let (h, r) = call(SYS_IPC_ACCEPT, [0; 6]);
     if h < 0 {
         p.done.store(true, Ordering::Release);
         return;
@@ -780,7 +780,7 @@ fn pk_server(k: usize) {
         p.srv_done.store(true, Ordering::Release);
         return;
     }
-    rcall(SYS_IPC_FAST_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0], pk_back, k);
+    rcall(SYS_IPC_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0], pk_back, k);
 }
 
 /// The first caller: one call, leaving a point only for DRAIN.
@@ -797,9 +797,9 @@ fn pk_client(k: usize) {
         azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
     });
     if k == DRAIN {
-        rcall(SYS_IPC_FAST_CALL_EP, [cap, 0x800, 0, 0, 0, 0], pk_back, k);
+        rcall(SYS_IPC_CALL, [cap, 0, 0x800, 0, 0, 0], pk_back, k);
     } else {
-        p.cli_rc.store(call(SYS_IPC_FAST_CALL_EP, [cap, 0x800, 0, 0, 0, 0]).0, Ordering::Release);
+        p.cli_rc.store(call(SYS_IPC_CALL, [cap, 0, 0x800, 0, 0, 0]).0, Ordering::Release);
     }
     p.cli_done.store(true, Ordering::Release);
 }
@@ -813,7 +813,7 @@ fn pk_ordinary_client(k: usize) {
     };
     let regs = azos_sched::UserRegs::default();
     let mut out = SyscallOut::new();
-    let rc = azos_syscall::syscall_dispatch_out(SYS_IPC_FAST_CALL_EP, cap, 0x900, 0, 0, 0, 0, 0, 0, &regs, &mut out);
+    let rc = azos_syscall::syscall_dispatch_out(SYS_IPC_CALL, cap, 0, 0x900, 0, 0, 0, 0, 0, &regs, &mut out);
     p.cli_rc.store(rc, Ordering::Release);
 }
 
@@ -974,7 +974,7 @@ fn wb_server(_: usize) {
     WB_SRV_TID.store(me, Ordering::Release);
     let before = fastpath::hits_of(my_slot()).1;
     WB_READY.store(true, Ordering::Release);
-    let (mut h, mut r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
+    let (mut h, mut r) = call(SYS_IPC_ACCEPT, [0; 6]);
     let mut first = true;
     while h >= 0 {
         if first {
@@ -983,10 +983,10 @@ fn wb_server(_: usize) {
             first = false;
         }
         if r[2] == WB_STOP {
-            call(SYS_IPC_FAST_REPLY, [h as u64, WB_STOP, 0, 0, 0, 0]);
+            call(SYS_IPC_REPLY, [h as u64, 0, WB_STOP, 0, 0, 0]);
             break;
         }
-        (h, r) = call(SYS_IPC_FAST_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0]);
+        (h, r) = call(SYS_IPC_REPLY_ACCEPT, [h as u64, 0, r[2] + 1, 0, 0, 0]);
     }
     WB_REPLY_HITS.store(i64::from(fastpath::hits_of(my_slot()).1.wrapping_sub(before)), Ordering::Release);
     WB_SRV_DONE.store(true, Ordering::Release);
@@ -999,13 +999,13 @@ fn wb_client(_: usize) {
     };
     until_parked(WB_SRV_TID.load(Ordering::Acquire));
     let before = fastpath::hits_of(my_slot()).0;
-    let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, 0x7A, 0, 0, 0, 0]);
+    let (rc, _) = call(SYS_IPC_CALL, [cap, 0, 0x7A, 0, 0, 0]);
     WB_CALL_HITS.store(i64::from(fastpath::hits_of(my_slot()).0.wrapping_sub(before)), Ordering::Release);
     WB_RC.store(rc, Ordering::Release);
     // Parked again after its reply: its boost has ended.
     until_parked(WB_SRV_TID.load(Ordering::Acquire));
     WB_AFTER.store(azos_sched::task_priority(WB_SRV_TID.load(Ordering::Acquire)).unwrap_or(u32::MAX), Ordering::Release);
-    call(SYS_IPC_FAST_CALL_EP, [cap, WB_STOP, 0, 0, 0, 0]);
+    call(SYS_IPC_CALL, [cap, 0, WB_STOP, 0, 0, 0]);
     WB_CLI_DONE.store(true, Ordering::Release);
 }
 
@@ -1059,7 +1059,7 @@ fn we_server(_: usize) {
     }
     WE_SRV_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     WE_READY.store(true, Ordering::Release);
-    let (h, r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
+    let (h, r) = call(SYS_IPC_ACCEPT, [0; 6]);
     if h >= 0 {
         let me = my_slot() as waitgraph::TaskId;
         let cli = WE_CLI_SLOT.load(Ordering::Acquire) as waitgraph::TaskId;
@@ -1078,7 +1078,7 @@ fn we_server(_: usize) {
             }
         };
         WE_SEEN.store(seen, Ordering::Release);
-        call(SYS_IPC_FAST_REPLY, [h as u64, r[2] + 1, 0, 0, 0, 0]);
+        call(SYS_IPC_REPLY, [h as u64, 0, r[2] + 1, 0, 0, 0]);
     }
     WE_SRV_DONE.store(true, Ordering::Release);
 }
@@ -1094,7 +1094,7 @@ fn we_client(_: usize) {
     until_parked(WE_SRV_TID.load(Ordering::Acquire));
     WE_OBJ.set_owner(Some(slot as waitgraph::TaskId));
     let before = fastpath::hits_of(slot).0;
-    let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, 0x7C, 0, 0, 0, 0]);
+    let (rc, _) = call(SYS_IPC_CALL, [cap, 0, 0x7C, 0, 0, 0]);
     WE_HITS.store(i64::from(fastpath::hits_of(slot).0.wrapping_sub(before)), Ordering::Release);
     WE_OBJ.set_owner(None);
     WE_RC.store(rc, Ordering::Release);

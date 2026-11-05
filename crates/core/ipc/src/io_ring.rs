@@ -1787,7 +1787,7 @@ pub fn io_ring_submit(ring_id: u32) -> i32 {
 /// capability MOVE can hand a live `Cap<IoRing>` to a task that never created
 /// the ring and holds no device capability of its own. `cap_store::move_cap`
 /// is kind-erased — nothing about it is specific to `Cap<Socket>`, the kind
-/// the gap-2 ring-3 exercise happened to use — and `SYS_IPC_FAST_CALL_EP`
+/// the gap-2 ring-3 exercise happened to use — and `SYS_IPC_CALL`
 /// (582) is the one live syscall that reaches it. Without this check, a task
 /// that received a moved `Cap<IoRing>` this way could submit I2C, GPIO, PWM
 /// or motor operations that `ring_dev_ok` would authorize against the
@@ -2467,10 +2467,10 @@ impl OpGate {
     /// judged by its case; a syscall by its case.
     pub const fn pledge(self) -> (u64, u8) {
         use azos_abi::invoke::pledge_bit;
-        use azos_abi::syscall_nr::{SYS_INVOKE, SYS_IPC_CALL_V2};
+        use azos_abi::syscall_nr::{SYS_INVOKE, SYS_IPC_CALL};
         match self {
             OpGate::Syscall(nr) => (nr, pledge_bit(nr, 0, false)),
-            OpGate::Iface(_) => (SYS_IPC_CALL_V2, pledge_bit(SYS_IPC_CALL_V2, 0, false)),
+            OpGate::Iface(_) => (SYS_IPC_CALL, pledge_bit(SYS_IPC_CALL, 0, false)),
             OpGate::Op(op) => (SYS_INVOKE, pledge_bit(SYS_INVOKE, op as u64, false)),
         }
     }

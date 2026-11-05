@@ -24,7 +24,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-use azos_abi::syscall_nr::{SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY};
+use azos_abi::syscall_nr::{SYS_IPC_ACCEPT, SYS_IPC_CALL, SYS_IPC_REPLY};
 use azos_ipc::cap::CapPerms;
 use azos_syscall::SyscallOut;
 
@@ -42,7 +42,7 @@ static TID_B: AtomicU32 = AtomicU32::new(0);
 static A_READY: AtomicBool = AtomicBool::new(false);
 static B_READY: AtomicBool = AtomicBool::new(false);
 static STOP: AtomicBool = AtomicBool::new(false);
-/// Replies each server delivered (`SYS_IPC_FAST_REPLY` returned 0).
+/// Replies each server delivered (`SYS_IPC_REPLY` returned 0).
 static SERVED_A: AtomicUsize = AtomicUsize::new(0);
 static SERVED_B: AtomicUsize = AtomicUsize::new(0);
 static OK: AtomicUsize = AtomicUsize::new(0);
@@ -66,7 +66,7 @@ fn sleep_ms(ms: u64) {
 fn serve_loop(served: &AtomicUsize, work_ms: u64) {
     let mut out = SyscallOut::new();
     while !STOP.load(Ordering::Acquire) {
-        let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+        let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
         if h < 0 {
             continue; // nothing delivered (a handover, or the accept's turns ran out)
         }
@@ -74,7 +74,7 @@ fn serve_loop(served: &AtomicUsize, work_ms: u64) {
         if work_ms != 0 {
             sleep_ms(work_ms);
         }
-        if dispatch(SYS_IPC_FAST_REPLY, [h as u64, w0 + 1, 0, 0, 0, 0], &mut out) == 0 {
+        if dispatch(SYS_IPC_REPLY, [h as u64, 0, w0 + 1, 0, 0, 0], &mut out) == 0 {
             served.fetch_add(1, Ordering::AcqRel);
         }
     }
@@ -112,7 +112,7 @@ fn client(k: usize) {
         let w = 0x1000 + (k * CALLS + n) as u64;
         let mut done = false;
         for t in 0..TRIES {
-            let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, w, 0, 0, 0, 0], &mut out);
+            let rc = dispatch(SYS_IPC_CALL, [cap, 0, w, 0, 0, 0], &mut out);
             if rc == (w + 1) as i64 {
                 OK.fetch_add(1, Ordering::AcqRel);
                 done = true;
@@ -232,9 +232,9 @@ fn ab_old_server(_: usize) {
     AB_OLD.store(me, Ordering::Release);
     let mut out = SyscallOut::new();
     while !AB_STOP.load(Ordering::Acquire) {
-        let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+        let h = dispatch(SYS_IPC_ACCEPT, [0; 6], &mut out);
         if h >= 0 {
-            let _ = dispatch(SYS_IPC_FAST_REPLY, [h as u64, out.regs[1] + 1, 0, 0, 0, 0], &mut out);
+            let _ = dispatch(SYS_IPC_REPLY, [h as u64, 0, out.regs[1] + 1, 0, 0, 0], &mut out);
         }
     }
 }
@@ -253,7 +253,7 @@ fn ab_client(_: usize) {
         return;
     };
     let mut out = SyscallOut::new();
-    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, 0x77, 0, 0, 0, 0], &mut out);
+    let rc = dispatch(SYS_IPC_CALL, [cap, 0, 0x77, 0, 0, 0], &mut out);
     AB_ANSWER.store(rc as usize, Ordering::Release);
 }
 

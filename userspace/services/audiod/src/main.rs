@@ -16,7 +16,7 @@
 //!
 //! Two threads, because a call can arrive while a period is due: the main
 //! thread accepts calls (the endpoint's `READ` grant is stamped with the main
-//! thread, `SYS_IPC_ACCEPT_V2` waits for nothing but a call), the pump thread
+//! thread, `SYS_IPC_ACCEPT` waits for nothing but a call), the pump thread
 //! calls [`Server::tick`] every few milliseconds while a stream runs and parks
 //! on a futex word when none does. The server's state is behind one lock they
 //! share, a futex word a thread that finds it held sleeps on (never spins: the

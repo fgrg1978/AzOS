@@ -36,7 +36,7 @@
 //! of an `OP_MASK` argument is the op numbered `n` of the interface the token
 //! is for. The bridge checks it itself, before any call: the kernel's own
 //! `OP_MASK` caveat is evaluated against the class of an `invoke` op, and a
-//! call to an endpoint a task serves (`SYS_IPC_CALL_V2`) names none, so the
+//! call to an endpoint a task serves (`SYS_IPC_CALL`) names none, so the
 //! kernel refuses every call through a capability that carries one (a
 //! kernel-hosted interface holds the call to the mask's IDL op bits itself,
 //! `khost::admit`, but the bridge does not rely on that). The warrant the bridge derives

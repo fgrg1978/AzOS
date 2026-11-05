@@ -164,7 +164,7 @@ fn iface_allowed(owner_tid: u32, key: u16) -> bool {
     match verdict {
         FilterVerdict::Allow => true,
         FilterVerdict::Audit => {
-            crate::handlers::record_seccomp_audit_for(owner_tid, azos_abi::syscall_nr::SYS_IPC_CALL_V2 as u16);
+            crate::handlers::record_seccomp_audit_for(owner_tid, azos_abi::syscall_nr::SYS_IPC_CALL as u16);
             true
         }
         FilterVerdict::Deny | FilterVerdict::Linux => false,

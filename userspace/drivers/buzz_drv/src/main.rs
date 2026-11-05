@@ -34,7 +34,7 @@
 //! for a melody. A new request replaces whatever is playing.
 //!
 //! Two threads, because a call can arrive while a step is due: the main
-//! thread accepts calls (`SYS_IPC_ACCEPT_V2` waits for nothing but a call),
+//! thread accepts calls (`SYS_IPC_ACCEPT` waits for nothing but a call),
 //! the timer thread advances the steps, parked on a futex until the current
 //! one is due or a call has changed the sound. The chip logic is behind one
 //! lock they share; the lock is held across a handful of register-form PWM

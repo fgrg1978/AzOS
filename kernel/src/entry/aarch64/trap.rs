@@ -474,7 +474,7 @@ pub extern "C" fn aarch64_native_svc(frame: &mut TrapFrame) -> u64 {
 }
 
 /// The lean native entry's IPC branch (trap_entry.S, Chain E cut 7): `x8` is
-/// `SYS_IPC_FAST_CALL_EP` or `SYS_IPC_FAST_REPLY_ACCEPT`. As
+/// `SYS_IPC_CALL` or `SYS_IPC_REPLY_ACCEPT`. As
 /// [`aarch64_native_svc`], but the filter verdict alone and the fast path in
 /// this frame. A miss takes the ordinary dispatch from here.
 #[unsafe(no_mangle)]

@@ -1259,7 +1259,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // role.** An image gets one row, so an image that serves only sometimes
     // cannot be expressed — and must not be attempted: the draft that gave
     // `uhello` a serve loop and let it decide at runtime hung as autorun,
-    // where it held `WRITE` and accepted anyway. `SYS_IPC_FAST_ACCEPT` blocks
+    // where it held `WRITE` and accepted anyway. `SYS_IPC_ACCEPT` blocks
     // and nothing wakes a server nobody calls.
     //
     // At [`AUTORUN_SERVER_PRIORITY`], one above its client `autorun`: every
