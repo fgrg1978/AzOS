@@ -17,9 +17,11 @@
 //! board's first power-up left the chip stopped.
 
 use crate::civil::{bcd_to_bin, bin_to_bcd, DateTime};
-use crate::{Error, I2c, Rtc};
+use crate::{Error, Rtc};
+use azos_devif::i2c::{read_regs, write_bytes};
+use azos_devif::I2cCall;
 
-/// The chip's 7-bit address.
+/// The chip's 7-bit address, for whoever binds the bus to the chip.
 pub const ADDR: u8 = 0x51;
 
 const CONTROL1: u8 = 0x00;
@@ -29,24 +31,24 @@ const VL: u8 = 0x80;
 /// Control 1: `TEST1` (7), `STOP` (5) and `TESTC` (3) must all be 0 in normal operation.
 const CONTROL1_ABNORMAL: u8 = 0xa8;
 
-pub struct Pcf8563<B: I2c> {
+pub struct Pcf8563<B: I2cCall> {
     bus: B,
 }
 
-impl<B: I2c> Pcf8563<B> {
+impl<B: I2cCall> Pcf8563<B> {
     pub fn new(bus: B) -> Self {
         Pcf8563 { bus }
     }
 }
 
-impl<B: I2c> Rtc for Pcf8563<B> {
+impl<B: I2cCall> Rtc for Pcf8563<B> {
     fn name(&self) -> &'static str {
         "pcf8563"
     }
 
     fn read(&mut self) -> Result<u64, Error> {
         let mut r = [0u8; 7];
-        self.bus.read_regs(ADDR, SECONDS, &mut r)?;
+        read_regs(&mut self.bus, SECONDS, &mut r).map_err(|_| Error::Bus)?;
         if r[0] & VL != 0 {
             return Err(Error::Lost);
         }
@@ -68,12 +70,12 @@ impl<B: I2c> Rtc for Pcf8563<B> {
             return Err(Error::Range);
         }
         let mut c1 = [0u8; 1];
-        self.bus.read_regs(ADDR, CONTROL1, &mut c1)?;
+        read_regs(&mut self.bus, CONTROL1, &mut c1).map_err(|_| Error::Bus)?;
         if c1[0] & CONTROL1_ABNORMAL != 0 {
-            self.bus.write_regs(ADDR, &[CONTROL1, c1[0] & !CONTROL1_ABNORMAL])?;
+            write_bytes(&mut self.bus, &[CONTROL1, c1[0] & !CONTROL1_ABNORMAL]).map_err(|_| Error::Bus)?;
         }
-        self.bus.write_regs(
-            ADDR,
+        write_bytes(
+            &mut self.bus,
             &[
                 SECONDS,
                 bin_to_bcd(t.sec),
@@ -85,5 +87,6 @@ impl<B: I2c> Rtc for Pcf8563<B> {
                 bin_to_bcd((t.year % 100) as u8),
             ],
         )
+        .map_err(|_| Error::Bus)
     }
 }

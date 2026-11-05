@@ -20,7 +20,7 @@
 //! environment hands each chip what it reaches the hardware through: an
 //! [`Mmio`](azos_drvkit::Mmio) window (goldfish, PL031), the
 //! [`PortIo`](azos_drvkit::PortIo) of a PC (MC146818) or an
-//! [`I2c`] bus (PCF8563). The kernel's adapters are `kernel/src/boot/rtc.rs`;
+//! [`azos_devif::I2cCall`] bound to the chip (PCF8563). The kernel's adapters are `kernel/src/boot/rtc.rs`;
 //! `tests/host/drivers-tests` runs each chip against a model that behaves like
 //! it.
 //!
@@ -62,14 +62,6 @@ pub trait Rtc {
     /// Set the chip to `unix_secs`. The chip counts on from the instant of the
     /// write.
     fn set(&mut self, unix_secs: u64) -> Result<(), Error>;
-}
-
-/// An I2C bus, seen as register reads and writes of one device.
-pub trait I2c {
-    /// Read `buf.len()` bytes from `addr` starting at register `reg`.
-    fn read_regs(&mut self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<(), Error>;
-    /// Write `data` to `addr`: the first byte is the register.
-    fn write_regs(&mut self, addr: u8, data: &[u8]) -> Result<(), Error>;
 }
 
 /// Nanoseconds in a second.

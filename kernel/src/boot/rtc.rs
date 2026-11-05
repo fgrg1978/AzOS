@@ -76,23 +76,9 @@ impl azos_drvkit::PortIo for PcPorts {
     }
 }
 
-/// One I2C bus, through the controller driver's register transfers.
+/// The PCF8563 over the kernel's I2C master.
 #[cfg(feature = "rtc-pcf8563")]
-struct KernelI2c(u8);
-
-#[cfg(feature = "rtc-pcf8563")]
-impl azos_rtc::I2c for KernelI2c {
-    fn read_regs(&mut self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<(), Error> {
-        if azos_drv_bus::i2c::i2c_read(self.0, addr, reg, buf) as isize == buf.len() as isize {
-            Ok(())
-        } else {
-            Err(Error::Bus)
-        }
-    }
-    fn write_regs(&mut self, addr: u8, data: &[u8]) -> Result<(), Error> {
-        if azos_drv_bus::i2c::i2c_write(self.0, addr, data) >= 0 { Ok(()) } else { Err(Error::Bus) }
-    }
-}
+type KernelI2c = azos_devif::i2c::I2cDirect<azos_drv_bus::i2c_port::I2cPort>;
 
 // ── The one chip ─────────────────────────────────────────────────────────────
 
@@ -297,6 +283,6 @@ pub(crate) fn install_i2c() {
         kprintln!("[RTC] nothing answers i2c.{}.{:#x}: the wall clock starts unset", bus, azos_rtc::pcf8563::ADDR);
         return;
     }
-    let chip = Chip::Pcf8563(azos_rtc::pcf8563::Pcf8563::new(KernelI2c(bus)));
+    let chip = Chip::Pcf8563(azos_rtc::pcf8563::Pcf8563::new(azos_devif::i2c::I2cDirect(azos_drv_bus::i2c_port::I2cPort::new(bus, azos_rtc::pcf8563::ADDR))));
     bring_up(chip, "i2c");
 }

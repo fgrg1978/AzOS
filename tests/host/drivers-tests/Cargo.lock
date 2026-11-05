@@ -161,6 +161,7 @@ version = "0.1.0"
 name = "azos_rtc"
 version = "0.1.0"
 dependencies = [
+ "azos_devif",
  "azos_drvkit",
 ]
 

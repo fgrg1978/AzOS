@@ -14,11 +14,13 @@
 use azos_rtc::civil::{bcd_to_bin, bin_to_bcd, year_start, DateTime};
 use azos_rtc::goldfish::{Goldfish, TIME_HIGH, TIME_LOW};
 use azos_rtc::mc146818::{Mc146818, PORT_DATA, PORT_INDEX};
-use azos_rtc::pcf8563::{Pcf8563, ADDR};
+use azos_rtc::pcf8563::Pcf8563;
 use azos_rtc::pl031::{Pl031, RTCCR, RTCDR, RTCLR};
 use azos_drvkit::fake::{FakeMmio, FakePorts, PortAccess};
 use azos_drvkit::PortIo;
-use azos_rtc::{Error, I2c, Rtc};
+use azos_devif::i2c::{Bytes, I2cDirect};
+use azos_devif::{outcome, I2c, I2cCall, IdlError, Out};
+use azos_rtc::{Error, Rtc};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -571,39 +573,54 @@ struct PcfModel {
     reads: Vec<(u8, usize)>,
     writes: Vec<Vec<u8>>,
     nack: bool,
+    /// Writes accepted before every write is refused.
+    nack_after: Option<u32>,
 }
 
 #[derive(Clone)]
 struct Bus(Rc<RefCell<PcfModel>>);
 
+/// The chip as the I2C interface serves it: the address is the badge's, so
+/// the model sees registers only.
 impl I2c for Bus {
-    fn read_regs(&mut self, addr: u8, reg: u8, buf: &mut [u8]) -> Result<(), Error> {
+    fn read(&mut self, reg: u32, len: u32) -> Out<Bytes> {
         let mut m = self.0.borrow_mut();
-        if addr != ADDR || m.nack {
-            return Err(Error::Bus);
+        if m.nack {
+            return Out::err(outcome::FAULT);
         }
-        m.reads.push((reg, buf.len()));
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = m.regs[(reg as usize + i) & 15];
-        }
-        Ok(())
+        m.reads.push((reg as u8, len as usize));
+        let bytes: Vec<u8> = (0..len as usize).map(|i| m.regs[(reg as usize + i) & 15]).collect();
+        Out::ok(Bytes::from_slice(&bytes))
     }
-    fn write_regs(&mut self, addr: u8, data: &[u8]) -> Result<(), Error> {
+    fn write(&mut self, data: Bytes) -> Out<()> {
         let mut m = self.0.borrow_mut();
-        if addr != ADDR || m.nack {
-            return Err(Error::Bus);
+        let mut d = [0u8; 32];
+        let n = data.copy_to(&mut d);
+        let refuse = match m.nack_after {
+            Some(0) => true,
+            Some(left) => {
+                m.nack_after = Some(left - 1);
+                false
+            }
+            None => m.nack,
+        };
+        if refuse {
+            return Out::err(outcome::FAULT);
         }
-        m.writes.push(data.to_vec());
-        for (i, b) in data[1..].iter().enumerate() {
-            let r = (data[0] as usize + i) & 15;
+        m.writes.push(d[..n].to_vec());
+        for (i, b) in d[1..n].iter().enumerate() {
+            let r = (d[0] as usize + i) & 15;
             m.regs[r] = *b;
         }
-        Ok(())
+        Out::ok(())
+    }
+    fn detect(&mut self) -> Out<u32> {
+        Out::ok(1)
     }
 }
 
 /// A chip just powered on: `VL` set, stopped (`STOP`).
-fn pcf() -> (Pcf8563<Bus>, Rc<RefCell<PcfModel>>) {
+fn pcf() -> (Pcf8563<I2cDirect<Bus>>, Rc<RefCell<PcfModel>>) {
     let mut regs = [0u8; 16];
     regs[0] = 0x20; // STOP
     regs[2] = 0x80; // VL
@@ -611,8 +628,8 @@ fn pcf() -> (Pcf8563<Bus>, Rc<RefCell<PcfModel>>) {
     regs[4] = 0x00;
     regs[5] = 0x01;
     regs[7] = 0x01;
-    let m = Rc::new(RefCell::new(PcfModel { regs, reads: Vec::new(), writes: Vec::new(), nack: false }));
-    (Pcf8563::new(Bus(m.clone())), m)
+    let m = Rc::new(RefCell::new(PcfModel { regs, reads: Vec::new(), writes: Vec::new(), nack: false, nack_after: None }));
+    (Pcf8563::new(I2cDirect(Bus(m.clone()))), m)
 }
 
 /// **A chip whose clock integrity is not guaranteed has no time**: `VL` is
@@ -688,4 +705,35 @@ fn pcf8563_bus_failure_is_bus() {
     assert_eq!(p.read(), Err(Error::Bus));
     assert_eq!(p.set(T2026), Err(Error::Bus));
     assert!(m.borrow().writes.is_empty());
+}
+
+/// A set whose control write goes through and whose time write does not is
+/// `Bus`, and the time registers are untouched: the error is not a value.
+#[test]
+fn pcf8563_nak_on_the_time_write_is_bus() {
+    let (mut p, m) = pcf();
+    m.borrow_mut().nack_after = Some(1);
+    assert_eq!(p.set(T2026), Err(Error::Bus));
+    assert_eq!(m.borrow().writes.len(), 1, "only the control write landed");
+    assert_eq!(m.borrow().regs[2], 0x80, "VL still set: no time was written");
+}
+
+/// A call that never reached the interface is `Bus` too.
+#[test]
+fn pcf8563_a_call_that_reaches_no_server_is_bus() {
+    struct Dead;
+    impl I2cCall for Dead {
+        fn read(&mut self, _: u32, _: u32) -> Result<Out<Bytes>, IdlError> {
+            Err(IdlError::NoConnection)
+        }
+        fn write(&mut self, _: Bytes) -> Result<Out<()>, IdlError> {
+            Err(IdlError::NoConnection)
+        }
+        fn detect(&mut self) -> Result<Out<u32>, IdlError> {
+            Err(IdlError::NoConnection)
+        }
+    }
+    let mut p = Pcf8563::new(Dead);
+    assert_eq!(p.read(), Err(Error::Bus));
+    assert_eq!(p.set(T2026), Err(Error::Bus));
 }
