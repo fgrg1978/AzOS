@@ -191,7 +191,8 @@ it or when the extra crossings buy no isolation.
   queue (`crates/drivers/driver_server`).
 - **Supervision.** The component manager (`userspace/services/compmgr`) is the
   first ring-3 component: it starts every `start = true` row of the topology
-  and restarts it by the row's `restart` key. The kernel supervises only what
+  (but a fixed driver placed in the kernel, whose host is a kernel task) and
+  restarts it by the row's `restart` key. The kernel supervises only what
   no ring-3 supervisor can keep up, the component manager itself and the ML
   service, up to a burst limit, and records each restart
   (`kernel/src/drv_supervisor.rs`).

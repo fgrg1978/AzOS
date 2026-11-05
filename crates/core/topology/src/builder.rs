@@ -134,8 +134,9 @@ const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 // Wave 9 (DRV1): the ring-3 buzzer and INA219 drivers.
 // Unlike the three rows above, these rows DO carry capabilities, and they are
 // read: every row with `start = true` is started with `SYS_SPAWN_EX`'s
-// machinery by the component manager, which seeds a child from the row named
-// after its IMAGE. `start` is set only under `ring3-driver-start`
+// machinery by the component manager (`manager_starts`: not a fixed driver
+// placed in the kernel), which seeds a child from the row named after its
+// IMAGE. `start` is set only under `ring3-driver-start`
 // (QEMU; see `crates/core/topology/Cargo.toml`). Each holds exactly what its
 // device needs: the right to register as that one driver kind, and the one
 // PWM channel or I2C slave behind it.
@@ -2994,13 +2995,17 @@ pub const TASK_COMPMGR_IMAGE: &[u8] = b"COMPMGR.ELF";
 pub const COMPMGR_ROW: bool = azos_limits::USERSPACE_COMPMGR;
 /// Does a `start = true` row belong to the component manager? Every one but
 /// the manager itself, the one image the kernel starts and supervises
-/// (nothing in ring 3 could restart the manager). A row whose driver moves
-/// between hosts at run time (`place.stateless`) is the manager's like any
-/// other: its ring-3 host is always up, and the placement controller in the
-/// kernel moves only the kernel's calls between the hosts, so no move ends
-/// or starts a task.
+/// (nothing in ring 3 could restart the manager), and but a fixed driver
+/// placed in the kernel. A row whose driver moves between hosts at run time
+/// (`place.stateless`) is the manager's whichever host it starts in: its
+/// ring-3 host is always up (the standby of a kernel placement), and the
+/// placement controller in the kernel moves only the kernel's calls between
+/// the hosts, so no move ends or starts a task. A driver that does not move
+/// and is placed in the kernel (`place = "kernel"`, the INA219) has one host,
+/// the kernel's task: a ring-3 one started beside it would drive the same
+/// device with nobody calling it.
 pub fn manager_starts(r: &crate::types::TaskSpec<'_>) -> bool {
-    r.start && r.name.as_bytes() != TASK_COMPMGR_IMAGE
+    r.start && r.name.as_bytes() != TASK_COMPMGR_IMAGE && !(r.place.host == Host::Kernel && !r.place.elastic())
 }
 
 /// The two endpoint columns of a row's line in the manager's view
