@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""A kernel with no personality links no Linux code.
+"""A profile cut leaves its crates out of the kernel.
 
-For each ISA the gate's defconfig is taken with Kconfig LINUX_ABI turned off
-(LINUX_RUNTIME depends on it), and the kernel's dependency set for that cell
-(`make check-deps`, a `cargo tree`, nothing is built) must not name
-`azos_linux_abi`. `--self-test` runs the gate's defconfig as is, where the
-crate must appear: the lint can see what it forbids.
+Each cut is a Kconfig symbol and the crates it alone brings in. For each ISA
+the cut's defconfig is taken with the symbol turned off, and the kernel's
+dependency set for that cell (`make check-deps`, a `cargo tree`, nothing is
+built) must name none of those crates. `--self-test` runs the cut's on
+defconfig as is, where every crate must appear: the lint can see what it
+forbids.
+
+  linux     LINUX_ABI (LINUX_RUNTIME depends on it): azos_linux_abi
+  board-io  BOARD_IO: the board's sensors and the camera frame ring
 """
 
 import argparse
@@ -21,17 +25,23 @@ import azos_tools  # noqa: E402
 
 ROOT = azos_tools.ROOT
 ARCHES = ("riscv64", "aarch64", "x86_64")
-FORBIDDEN = "azos_linux_abi"
+
+# name: (preset of the defconfig with the symbol on, symbol, lines dropped, crates)
+CUTS = {
+    "linux": ("generic", "LINUX_ABI", ("CONFIG_LINUX_ABI", "CONFIG_LINUX_RUNTIME"), ("azos_linux_abi",)),
+    "board-io": ("robot", "BOARD_IO", ("CONFIG_BOARD_IO", "CONFIG_USE_ROBOT", "CONFIG_PRESET_"),
+                 ("azos_drv_sensor", "azos_cam_ring")),
+}
 
 
-def defconfig(arch):
-    return os.path.join(ROOT, "config", "defconfigs", f"generic-sbc-{arch}-dev+qemu+linux+gui.config")
+def defconfig(preset, arch):
+    return os.path.join(ROOT, "config", "defconfigs", f"{preset}-sbc-{arch}-dev+qemu+linux+gui.config")
 
 
-def without_linux(path, out):
+def without(path, drop, symbol, out):
     with open(path, encoding="utf-8") as fh:
-        lines = [l for l in fh if "CONFIG_LINUX_ABI" not in l and "CONFIG_LINUX_RUNTIME" not in l]
-    lines.append("# CONFIG_LINUX_ABI is not set\n")
+        lines = [l for l in fh if not any(d in l for d in drop)]
+    lines.append(f"# CONFIG_{symbol} is not set\n")
     with open(out, "w", encoding="utf-8") as fh:
         fh.writelines(lines)
 
@@ -43,26 +53,32 @@ def deps(arch, cfg, work):
         cwd=ROOT, capture_output=True, text=True,
     )
     if r.returncode != 0:
-        sys.exit(f"no-personality lint: make check-deps ARCH={arch} failed:\n{r.stderr[-2000:]}")
+        sys.exit(f"profile-cut lint: make check-deps ARCH={arch} failed:\n{r.stderr[-2000:]}")
     return {l.split()[0] for l in r.stdout.splitlines() if l.strip()}
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--cut", choices=sorted(CUTS), action="append")
     args = ap.parse_args()
     out_root = os.environ.get("AZOS_OUT") or tempfile.gettempdir()
-    work = tempfile.mkdtemp(prefix="nolx-", dir=out_root)
+    work = tempfile.mkdtemp(prefix="cut-", dir=out_root)
     bad = []
-    for arch in ARCHES:
-        if args.self_test:
-            if FORBIDDEN not in deps(arch, defconfig(arch), work):
-                bad.append(f"{arch}: the gate's defconfig does not link {FORBIDDEN}: the lint cannot see it")
-            continue
-        cfg = os.path.join(work, f"nolx-{arch}.defconfig")
-        without_linux(defconfig(arch), cfg)
-        if FORBIDDEN in deps(arch, cfg, work):
-            bad.append(f"{arch}: a kernel without LINUX_ABI still depends on {FORBIDDEN}")
+    for name in args.cut or sorted(CUTS):
+        preset, symbol, drop, crates = CUTS[name]
+        for arch in ARCHES:
+            on = defconfig(preset, arch)
+            if args.self_test:
+                missing = [c for c in crates if c not in deps(arch, on, work)]
+                if missing:
+                    bad.append(f"{name} {arch}: {preset}'s defconfig does not link {', '.join(missing)}: the lint cannot see it")
+                continue
+            cfg = os.path.join(work, f"{name}-{arch}.defconfig")
+            without(on, drop, symbol, cfg)
+            found = [c for c in crates if c in deps(arch, cfg, work)]
+            if found:
+                bad.append(f"{name} {arch}: a kernel without {symbol} still depends on {', '.join(found)}")
     for b in bad:
         print(b)
     return 1 if bad else 0

@@ -53,7 +53,7 @@ check: | $(CHECK_TABLE_$(ARCH))
 
 .PHONY: check-deps
 # The kernel's dependency set for the type-check's cell (`cargo tree`, no
-# build): one package name a line. tools/lint/no_personality_lint.py reads it.
+# build): one package name a line. tools/lint/profile_cut_lint.py reads it.
 check-deps: | $(CHECK_TABLE_$(ARCH))
 	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
 	@mkdir -p $(OUT_BUILD)
