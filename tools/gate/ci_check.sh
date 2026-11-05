@@ -6221,7 +6221,7 @@ supall_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <exp
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
-            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+            -device virtio-blk-device,drive=hd0 ${canary_arg:+-append "$canary_arg"} >"$log" 2>&1 &
     fi
     local pid=$! i=0
     while [ "$i" -lt 480 ]; do
@@ -6381,11 +6381,12 @@ a64_kbuild "qemu" || true
 #                the same simulated readings (7400 mV, 1500 mA) as the ring-3
 #                row, and `(kernel tid=`: the kernel host answered, the
 #                topology declared no INADRV.ELF and no ring-3 task owned
-#                DRV_KIND_POWER_MON (`placement_check`).
-#   ina-canary   `ina219-placement-canary`: the kernel placement with the
-#                INADRV.ELF row kept and the link-time check skipped. Must
-#                fail on `placement is kernel but the topology declares`,
-#                which only the boot check prints.
+#                `endpoint.powermon` (`placement_check`).
+#   ina-wrong    the ring-3 placement with `canary=ina219-wrong-value`: the
+#                reply of the ring-3 host carries a voltage one mV off
+#                (`kernel/src/powermon.rs`). Must fail on `bus voltage is not
+#                the simulated 7400 mV`: the readings of the two placements
+#                are compared against the same constants.
 #   restart      `restart-smoke`: BUZZDRV.ELF `restart = no` (CAPS.TOML format
 #                2), read by the component manager (its reading of the key,
 #                `always` included, is host-tested in
@@ -6405,16 +6406,15 @@ a64_kbuild "qemu" || true
 #                gpio_drv.elf -> "carries no marker"; the chip source edited
 #                after the build -> "carries marker <old>"; buzz_drv without
 #                its marker print -> `make build/buzz_drv.elf` fails.
-# The build bucket is `drvplace_build_canary_row`: the drivers crate told
-# "kernel" and the topology not must not compile.
 drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
     local label="$1" isa="$2" feats="$3" kind="$4"
     printf "  %-26s" "${label}..."
     local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
     local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
     mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img"
-    local until="DRV1\] ina219 (PASS|FAIL)"
+    local until="DRV1\] ina219 (PASS|FAIL)" canary_arg=""
     case "$kind" in
+        ina-wrong) canary_arg="canary=ina219-wrong-value" ;;
         restart) until="\[RESTART\] (PASS|FAIL)" ;;
         restart-canary) until="\[RESTART\] (PASS|FAIL)" ;;
     esac
@@ -6432,7 +6432,7 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
         "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
-            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+            -device virtio-blk-device,drive=hd0 ${canary_arg:+-append "$canary_arg"} >"$log" 2>&1 &
     else
         if ! a64_kbuild "$feats"; then
             bad; echo "      aarch64 kernel ($feats) did not build"; return
@@ -6477,9 +6477,9 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
                 || why="no '[DRV1] ina219 PASS 7400 mV 1500 mA .. (kernel tid=' line"
             grep -aqF "[DRV1] ina219 FAIL" "$log" && why="an ina219 FAIL line"
             ;;
-        ina-canary)
-            grep -aqF "[DRV1] ina219 FAIL: placement is kernel but the topology declares" "$log" \
-                || why="the canary did not fail on the placement check"
+        ina-wrong)
+            grep -aqF "[DRV1] ina219 FAIL: bus voltage is not the simulated 7400 mV" "$log" \
+                || why="the canary did not fail on the wrong voltage"
             ;;
         restart)
             grep -aqF "[RESTART] PASS" "$log" || why="no [RESTART] PASS"
@@ -6511,40 +6511,10 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
     fi
 }
 
-# The build bucket: the drivers crate told "kernel" (`azos_drv_sensor/
-# ina219-kernel`) while the topology still declares INADRV.ELF must not link
-# (`kernel/src/tasks/ina219_host.rs`); green only on that assertion's text.
-drvplace_build_canary_row() { # <label> <isa: rv|arm|x86>
-    local label="$1" isa="$2" out
-    local feat="ina219-placement-build-canary"
-    local text="DRV_INA219_PLACEMENT: the drivers crate and the topology disagree"
-    printf "  %-26s" "${label}..."
-    if [ "$isa" = "rv" ]; then
-        out="$("$CARGO" build --release --select "$feat" 2>&1)"
-    elif [ "$isa" = "x86" ]; then
-        # The x86_64 kernel's own build (`make x86_64`): its features come
-        # from the Kconfig expansion, the canary's on top.
-        out="$(make x86_64 X86_64_SELECT="$feat" 2>&1)"
-    else
-        out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build \
-            --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --select "$feat" \
-            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)"
-    fi
-    if printf '%s\n' "$out" | qgrep -qF "$text"; then
-        ok
-    else
-        bad; echo "      the mismatched placement built, or failed on something else:"
-        printf '%s\n' "$out" | grep -E "^error" | head -3 | sed 's|^|        |'
-    fi
-    if [ "$isa" = "arm" ]; then a64_kbuild "qemu" || true; fi
-}
-
 par "aarch64 INA219 placed in kernel" drvplace_row "aarch64 INA219 placed in kernel" arm "qemu,ring3-drv-smoke,ina219-kernel" ina-kernel
 a64_kbuild "qemu" || true
-par "aarch64 INA219 placement canary" drvplace_row "aarch64 INA219 placement canary" arm "qemu,ring3-drv-smoke,ina219-placement-canary" ina-canary
+par "aarch64 INA219 wrong-value canary" drvplace_row "aarch64 INA219 wrong-value canary" arm "qemu,ring3-drv-smoke" ina-wrong
 a64_kbuild "qemu" || true
-ci_row "aarch64 INA219 placement build canary" drvplace_build_canary_row "aarch64 INA219 placement build canary" arm
 par "aarch64 restart = no" drvplace_row "aarch64 restart = no" arm "qemu,restart-smoke" restart
 a64_kbuild "qemu" || true
 par "aarch64 restart key canary" drvplace_row "aarch64 restart key canary" arm "qemu,restart-canary" restart-canary
@@ -17797,20 +17767,19 @@ CPU 5 lacks hwcap bits"
         bad; echo "      $why"; echo "      log kept: $log"
     }
     par "x86_64: first user task" x86_user_shell_row
-    # Wave 11 (DRVPLACE) on x86_64: the INA219 placement rows of riscv64
-    # (`drivers: INA219 placed in kernel`, `... placement canary`, `... build
-    # canary`) and aarch64. x86_64, like them, reads the QEMU simulation of
+    # The INA219 placement rows of riscv64 (`drivers: INA219 placed in kernel`,
+    # `... wrong-value canary`) and aarch64, on x86_64. x86_64, like them, reads the QEMU simulation of
     # the INA219 (crates/drivers/bus/src/i2c.rs: no controller driver is
     # compiled for QEMU). `ring3-drv-smoke` boots build/disk-x86_64.img, which
     # carries INADRV.ELF and the component manager; the kinds and their
     # verdicts are `drvplace_row`'s:
     #   ina-kernel  `[DRV1] ina219 PASS 7400 mV 1500 mA .. (kernel tid=`: the
     #               kernel host answered, no ring-3 owner of the power monitor
-    #   ina-canary  `ina219-placement-canary`: must fail on `placement is
-    #               kernel but the topology declares` (the boot check)
-    # The build bucket is `drvplace_build_canary_row ... x86`.
-    x86_drvplace_row() { # x86_drvplace_row <label> <features> <ina-kernel|ina-canary>
-        local label="$1" feats="$2" kind="$3" why=""
+    #   ina-wrong   `canary=ina219-wrong-value` on the ring-3 placement: must
+    #               fail on `bus voltage is not the simulated 7400 mV`
+    x86_drvplace_row() { # x86_drvplace_row <label> <features> <ina-kernel|ina-wrong>
+        local label="$1" feats="$2" kind="$3" why="" canary=""
+        [ "$kind" = ina-wrong ] && canary="canary=ina219-wrong-value"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -17819,6 +17788,7 @@ CPU 5 lacks hwcap bits"
         par_ready
         x86_qemu "$kimg" "$log" 240 "DRV1\] ina219 (PASS|FAIL)|KERNEL PANIC|\[X86-TRAP\]" -smp 4 \
             -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+            ${canary:+-append "$canary"} \
             || { rm -f "$kimg" "$kimg.features" "$disk"; return; }
         rm -f "$kimg" "$kimg.features" "$disk"
         case "$kind" in
@@ -17827,9 +17797,9 @@ CPU 5 lacks hwcap bits"
                     || why="no '[DRV1] ina219 PASS 7400 mV 1500 mA .. (kernel tid=' line"
                 grep -aqF "[DRV1] ina219 FAIL" "$log" && why="an ina219 FAIL line"
                 ;;
-            ina-canary)
-                grep -aqF "[DRV1] ina219 FAIL: placement is kernel but the topology declares" "$log" \
-                    || why="the canary did not fail on the placement check"
+            ina-wrong)
+                grep -aqF "[DRV1] ina219 FAIL: bus voltage is not the simulated 7400 mV" "$log" \
+                    || why="the canary did not fail on the wrong voltage"
                 ;;
         esac
         grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
@@ -17843,8 +17813,7 @@ CPU 5 lacks hwcap bits"
         echo "      log kept: $log"
     }
     par "x86_64 INA219 placed in kernel" x86_drvplace_row "x86_64 INA219 placed in kernel" "ring3-drv-smoke,ina219-kernel" ina-kernel
-    par "x86_64 INA219 placement canary" x86_drvplace_row "x86_64 INA219 placement canary" "ring3-drv-smoke,ina219-placement-canary" ina-canary
-    ci_row "x86_64 INA219 placement build canary" drvplace_build_canary_row "x86_64 INA219 placement build canary" x86
+    par "x86_64 INA219 wrong-value canary" x86_drvplace_row "x86_64 INA219 wrong-value canary" "ring3-drv-smoke" ina-wrong
     # D6 on x86_64 (Kconfig LINUX_RUNTIME): the ring-3 runtime hosts a static
     # Linux x86-64 binary. `lxhello rt` (userspace/tests/lxhello/lxhello_x86_64.c)
     # issues the calls a static musl binary issues, in Linux's x86-64 numbers
@@ -21800,15 +21769,14 @@ PYEOF
     # Both drivers now run in ring 3 (`userspace/drivers/buzz_drv`, `userspace/drivers/ina_drv`),
     # started by the kernel because their topology rows say `start = true`
     # (`ring3-driver-start`, on under `qemu`), with the capabilities of those
-    # rows; the kernel API is their `UserDriverProxy` client. Only
+    # rows; the kernel API of each is an endpoint call (`Buzzer` on
+    # `endpoint.buzzer`, `PowerMon` on `endpoint.powermon`). Only
     # `build/disk-drv.img` carries the two images.
     #
-    # Wave 10 (DRV2): each verdict also requires the driver to stay parked
-    # while nobody calls it (idle serve-loop passes over 3 s: at most 5/s for
-    # the silent buzzer, 15/s for the INA219, which samples at 10 Hz), and
-    # the INA219's integrated charge over a 3 s window to be 1500 mA times the
-    # measured window within 50..=150% (it is weighted by the driver's clock,
-    # not by a nominal cadence). Both fail as `[DRV1] <driver> FAIL:`.
+    # Wave 10 (DRV2): the INA219's integrated charge over a 3 s window must be
+    # 1500 mA times the measured window within 50..=150% (it is weighted by the
+    # driver's clock, not by a nominal cadence). Both fail as
+    # `[DRV1] <driver> FAIL:`.
     #
     # One boot per row, one verdict per driver: `[DRV1] <driver> FAIL:` is
     # added to each row's own pattern only, so one driver's failure does not
@@ -21855,8 +21823,7 @@ PYEOF
     # row key `restart` as the component manager reads it (`drvplace_row`,
     # defined beside the aarch64 rows).
     par_row drvplace_row "drivers: INA219 placed in kernel" rv "qemu,ring3-drv-smoke,ina219-kernel" ina-kernel
-    par_row drvplace_row "drivers: INA219 placement canary" rv "qemu,ring3-drv-smoke,ina219-placement-canary" ina-canary
-    ci_row "drivers: INA219 placement build canary" drvplace_build_canary_row "drivers: INA219 placement build canary" rv
+    par_row drvplace_row "drivers: INA219 wrong-value canary" rv "qemu,ring3-drv-smoke" ina-wrong
     par_row drvplace_row "drivers: restart = no" rv "qemu,restart-smoke" restart
     par_row drvplace_row "drivers: restart key canary" rv "qemu,restart-canary" restart-canary
     par_row drvplace_row "drivers: buzzer placed in kernel" rv "qemu,ring3-drv-smoke,buzzer-kernel" buzz-kernel

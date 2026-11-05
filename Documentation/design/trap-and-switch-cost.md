@@ -256,8 +256,8 @@ A ring-3 driver's loop has the same shape and the same fold.
   queue is empty, for at most a bounded time. A driver on the polling form is
   runnable for as long as it lives and its hart never idles; the parking form
   lets a service that answers a few requests a second sleep the rest of the
-  time. `gpio_drv` and `ina_drv` in `userspace/drivers/` serve on it
-  (`buzz_drv` serves its interface over IPC v2 instead). A client that
+  time. `gpio_drv` in `userspace/drivers/` serves on it
+  (`buzz_drv` and `ina_drv` serve their interfaces over IPC v2 instead). A client that
   waits on the reply donates its priority to the driver after the wake.
 - Replies are delivered into a row owned by the request's waiter
   (`ReplyWaiters` in `crates/drivers/driver_server/src/reply_wait.rs`), so a
