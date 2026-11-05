@@ -171,6 +171,8 @@ pub(crate) use seams::*;
 pub(crate) mod chaos;
 #[cfg(feature = "ktest")]
 mod asym_ktests;
+#[cfg(all(feature = "ktest", feature = "use-robot"))]
+mod ext_ktests;
 mod robot;
 pub(crate) use robot::*;
 mod ota;
