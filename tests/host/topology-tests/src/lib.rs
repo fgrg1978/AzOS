@@ -797,6 +797,7 @@ mod compmgr_contracts {
                 b"endpoint.login" => azos_topology::builder::LOGIND_ROW,
                 b"endpoint.compositor" => azos_topology::builder::COMPOSITOR_ROW,
                 b"endpoint.pm-ina" | b"endpoint.powermon" => azos_topology::builder::INADRV_ROW,
+                b"endpoint.buzzer" => azos_topology::builder::BUZZDRV_ROW,
                 b"endpoint.audio" => azos_topology::builder::AUDIOD_ROW,
                 _ => true,
             };
@@ -1073,7 +1074,10 @@ mod manager_authority {
         assert!(wanted.len() < MANAGER_CAPS_MAX, "{} startable rows past the manager's table", wanted.len());
         // The elastic row is the manager's like any other: started, it is in
         // the list, and its launch grant is minted (the list above).
-        let buzz = topo.find_task(&azos_topology::MaybeStr::from_bytes(b"BUZZDRV.ELF")).unwrap();
+        let Some(buzz) = topo.find_task(&azos_topology::MaybeStr::from_bytes(b"BUZZDRV.ELF")) else {
+            assert!(!azos_topology::builder::BUZZDRV_ROW);
+            return;
+        };
         assert!(buzz.place.elastic());
         assert_eq!(wanted.iter().any(|n| n == "BUZZDRV.ELF"), buzz.start);
         // Nor is the manager its own component.
@@ -1321,7 +1325,7 @@ mod start_flag_tests {
             // The buzzer's ring-3 host is started at boot whichever host the
             // driver starts in: it is the standby of a driver placed in the
             // kernel, and the component manager's like any other row.
-            want.push("BUZZDRV.ELF");
+            if azos_topology::builder::BUZZDRV_ROW { want.push("BUZZDRV.ELF"); }
             if azos_topology::builder::INADRV_ROW { want.push("INADRV.ELF"); }
             want.extend_from_slice(shell);
             want.extend_from_slice(decisions);
@@ -1454,7 +1458,7 @@ mod restart_tests {
         let has = topo.tasks().iter().any(|t| t.name.as_bytes() == b"INADRV.ELF");
         assert_eq!(has, azos_topology::builder::INADRV_ROW);
         #[cfg(not(feature = "ina219-kernel"))]
-        assert!(has, "ring-3 placement without its row");
+        assert_eq!(has, azos_limits::USERSPACE_INADRV, "ring-3 placement without its row");
         #[cfg(feature = "ina219-kernel")]
         assert!(!has, "kernel placement still declares INADRV.ELF");
     }
@@ -1469,8 +1473,11 @@ mod restart_tests {
     #[test]
     fn the_buzzdrv_row_declares_where_the_driver_starts_and_that_it_may_move() {
         use azos_topology::placement::Host;
+        if !azos_topology::builder::BUZZDRV_ROW {
+            return; // no board I/O, no buzzer
+        }
         let topo = default_minimal();
-        let task = topo.find_task(&azos_topology::MaybeStr::from_bytes(b"BUZZDRV.ELF")).expect("the row is always there");
+        let task = topo.find_task(&azos_topology::MaybeStr::from_bytes(b"BUZZDRV.ELF")).expect("the row is there with board I/O");
         assert_eq!(task.place.host, azos_topology::builder::BUZZER_START_HOST);
         #[cfg(not(feature = "buzzer-kernel"))]
         assert_eq!(task.place.host, Host::Ring3);
@@ -1866,6 +1873,7 @@ mod builder_tests {
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 27 } else { 25 }
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
+            - !azos_topology::builder::BUZZDRV_ROW as usize
             + cfg!(feature = "lx-server") as usize
             + azos_topology::builder::LXHELLO_ROW as usize
             + azos_topology::builder::BUSYBOX_ROW as usize
@@ -2232,6 +2240,9 @@ mod builder_tests {
     #[test]
     fn ring3_driver_rows_grant_one_service_and_one_device() {
         use azos_abi::cap::{CapKind, CapPerms};
+        if !azos_topology::builder::BUZZDRV_ROW {
+            return; // no board I/O, no driver rows
+        }
         let t = default_minimal();
         // The buzzer: the endpoint it serves, then its channel.
         let task = t.find_task(&MaybeStr::from_bytes(b"BUZZDRV.ELF")).expect("driver row present");
@@ -2312,6 +2323,7 @@ mod state_tests {
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 27 } else { 25 }
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
+            - !azos_topology::builder::BUZZDRV_ROW as usize
             + cfg!(feature = "lx-server") as usize
             + azos_topology::builder::LXHELLO_ROW as usize
             + azos_topology::builder::BUSYBOX_ROW as usize
@@ -2359,6 +2371,7 @@ mod state_tests {
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 27 } else { 25 }
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
+            - !azos_topology::builder::BUZZDRV_ROW as usize
             + cfg!(feature = "lx-server") as usize
             + azos_topology::builder::LXHELLO_ROW as usize
             + azos_topology::builder::BUSYBOX_ROW as usize
@@ -3683,7 +3696,9 @@ mod row_sched_tests {
         assert_eq!(applied(&t, b"MLSRV.ELF"), ("soft_rt".into(), 16, 16));
         // The buzzer's ring-3 host (wave 9): best_effort 24, like GPIODRV.ELF
         // (owner decision 2026-09-28; it was soft_rt 16), above the shell.
-        assert_eq!(applied(&t, b"BUZZDRV.ELF"), ("best_effort".into(), 24, 24));
+        if azos_topology::builder::BUZZDRV_ROW {
+            assert_eq!(applied(&t, b"BUZZDRV.ELF"), ("best_effort".into(), 24, 24));
+        }
         // The INA219's: hard_rt 15 with its reservation
         // (`ring3_priority_order`). Placed in the kernel (DRVPLACE): no row.
         if azos_topology::builder::INADRV_ROW {

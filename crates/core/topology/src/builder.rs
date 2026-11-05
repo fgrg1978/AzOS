@@ -141,9 +141,12 @@ const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 // PWM channel or I2C slave behind it.
 /// The buzzer ring-3 host's image, the name of its row.
 pub const TASK_BUZZDRV_IMAGE: &[u8] = b"BUZZDRV.ELF";
+/// Does this topology declare the buzzer's ring-3 host? Whenever the volume
+/// carries `BUZZDRV.ELF` (Kconfig `USERSPACE_BUZZDRV`, which needs `BOARD_IO`).
+pub const BUZZDRV_ROW: bool = azos_limits::USERSPACE_BUZZDRV;
 /// The host the buzzer starts in: Kconfig `DRV_BUZZER_PLACEMENT`, which the
 /// kernel feature `buzzer-kernel` forwards (the kernel host). The row of
-/// `BUZZDRV.ELF` exists either way, and so does its `start = true`: the
+/// `BUZZDRV.ELF` (with board I/O) exists for either host, and so does its `start = true`: the
 /// component manager keeps the ring-3 host up whichever host the driver
 /// starts in, so a driver that is moved (or demoted after a fault of the
 /// kernel host) finds a ring-3 host already serving; the placement controller
@@ -173,8 +176,9 @@ const RESOURCE_ENDPOINT_POWERMON: &[u8] = b"endpoint.powermon";
 /// default; feature `ina219-kernel` (the kernel placement) drops the row, and
 /// the kernel, finding none, places the driver in the kernel
 /// (`kernel/src/powermon.rs`). A signed topology that keeps the row says its
-/// own `place`.
-pub const INADRV_ROW: bool = !cfg!(feature = "ina219-kernel");
+/// own `place`. No row either when the volume does not carry the image
+/// (Kconfig `USERSPACE_INADRV`, which needs `BOARD_IO`).
+pub const INADRV_ROW: bool = !cfg!(feature = "ina219-kernel") && azos_limits::USERSPACE_INADRV;
 /// `INADRV.ELF`'s priority: `hard_rt`'s least urgent number, outside the band.
 pub const INADRV_PRIORITY: u8 = 15;
 /// `INADRV.ELF`'s EDF + CBS reservation. The period is the chip's sample
@@ -1412,7 +1416,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // keeps nothing a restart cannot rebuild, so it may move between its two
     // hosts at run time (`placement`); `call_budget_us` is the deadline a
     // call to it is held to.
-    if azos_limits::USERSPACE_BUZZDRV {
+    if BUZZDRV_ROW {
         topo.push_task(
             MaybeStr::from_bytes(TASK_BUZZDRV_IMAGE),
             MaybeStr::from_bytes(NAME_BEST_EFFORT),
@@ -1474,7 +1478,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // reservation on a CPU (`cpu_mask` 0: any) and the task is pinned there
     // (`topo_sched::row_reservation`); the hard CBS caps what a runaway or a
     // flood of calls can take to the reservation's share.
-    if INADRV_ROW && azos_limits::USERSPACE_INADRV {
+    if INADRV_ROW {
         topo.push_task_profiled(
             MaybeStr::from_bytes(TASK_INADRV_IMAGE),
             MaybeStr::from_bytes(NAME_HARD_RT),

@@ -68,9 +68,9 @@ Options and choices: 833. Defconfigs: 24.
 
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-aarch64-dev+qemu+reclaim | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+reclaim | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-sbc-x86_64-dev+qemu+reclaim | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `USERSPACE_BUZZDRV` | BUZZDRV.ELF (userspace/drivers/buzz_drv) | n | n | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
+| `USERSPACE_BUZZDRV` | BUZZDRV.ELF (userspace/drivers/buzz_drv) | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_GPIODRV` | GPIODRV.ELF (userspace/drivers/gpio_drv) | n | n | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
-| `USERSPACE_INADRV` | INADRV.ELF (userspace/drivers/ina_drv) | n | n | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
+| `USERSPACE_INADRV` | INADRV.ELF (userspace/drivers/ina_drv) | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 
 ### Userspace programs / services
 
