@@ -16,6 +16,8 @@
 //!   operation, so they need `WRITE` on BOTH wheels' endpoints and a contained
 //!   system refuses them (disabling the loop included: it leaves the wheels as
 //!   they were and lets `rt_motor_task` apply the open-loop command).
+//!   The loop is the actuator driver's (`board-io`): without it these ops, once
+//!   authorised, read as not ready.
 //! * `estop` needs `WRITE` on any wheel and is never refused for containment.
 //!
 //! * **Write-ahead receipts** (innovation B1): the three per-wheel ops reach the
@@ -445,47 +447,93 @@ impl azos_devif::Motor for MotorServer {
         let (Ok(l), Ok(r)) = (i16::try_from(left), i16::try_from(right)) else {
             return Out::err(outcome::BAD_ARGUMENT);
         };
-        azos_drv_actuator::motor_pid::motor_pid_set_target(l, r);
-        Out::ok(())
+        #[cfg(feature = "board-io")]
+        {
+            azos_drv_actuator::motor_pid::motor_pid_set_target(l, r);
+            Out::ok(())
+        }
+        #[cfg(not(feature = "board-io"))]
+        {
+            let _ = (l, r);
+            Out::err(outcome::NOT_READY)
+        }
     }
 
     fn pid_tick(&mut self, ticks_left: i64, ticks_right: i64, now: u64) -> Out<[i32; 2]> {
         if let Err(o) = self.pair::<[i32; 2]>() {
             return o;
         }
-        let (l, r) = azos_drv_actuator::motor_pid::motor_pid_tick(ticks_left, ticks_right, now);
-        Out::ok([l, r])
+        #[cfg(feature = "board-io")]
+        {
+            let (l, r) = azos_drv_actuator::motor_pid::motor_pid_tick(ticks_left, ticks_right, now);
+            Out::ok([l, r])
+        }
+        #[cfg(not(feature = "board-io"))]
+        {
+            let _ = (ticks_left, ticks_right, now);
+            Out::err(outcome::NOT_READY)
+        }
     }
 
     fn pid_enable(&mut self, on: bool) -> Out<()> {
         if let Err(o) = self.pair::<()>() {
             return o;
         }
-        azos_drv_actuator::motor_pid::motor_pid_enable(on);
-        Out::ok(())
+        #[cfg(feature = "board-io")]
+        {
+            azos_drv_actuator::motor_pid::motor_pid_enable(on);
+            Out::ok(())
+        }
+        #[cfg(not(feature = "board-io"))]
+        {
+            let _ = on;
+            Out::err(outcome::NOT_READY)
+        }
     }
 
     fn pid_enabled(&self) -> Out<bool> {
         if let Err(o) = self.0.gate::<bool>(CapPerms::READ) {
             return o;
         }
-        Out::ok(azos_drv_actuator::motor_pid::motor_pid_enabled())
+        #[cfg(feature = "board-io")]
+        {
+            Out::ok(azos_drv_actuator::motor_pid::motor_pid_enabled())
+        }
+        #[cfg(not(feature = "board-io"))]
+        {
+            Out::err(outcome::NOT_READY)
+        }
     }
 
     fn pid_gains(&mut self, kp: i32, ki: i32, kd: i32) -> Out<()> {
         if let Err(o) = self.pair::<()>() {
             return o;
         }
-        azos_drv_actuator::motor_pid::motor_pid_set_gains(kp, ki, kd);
-        Out::ok(())
+        #[cfg(feature = "board-io")]
+        {
+            azos_drv_actuator::motor_pid::motor_pid_set_gains(kp, ki, kd);
+            Out::ok(())
+        }
+        #[cfg(not(feature = "board-io"))]
+        {
+            let _ = (kp, ki, kd);
+            Out::err(outcome::NOT_READY)
+        }
     }
 
     fn pid_reset(&mut self) -> Out<()> {
         if let Err(o) = self.pair::<()>() {
             return o;
         }
-        azos_drv_actuator::motor_pid::motor_pid_reset();
-        Out::ok(())
+        #[cfg(feature = "board-io")]
+        {
+            azos_drv_actuator::motor_pid::motor_pid_reset();
+            Out::ok(())
+        }
+        #[cfg(not(feature = "board-io"))]
+        {
+            Out::err(outcome::NOT_READY)
+        }
     }
 
     fn estop(&mut self) -> Out<()> {

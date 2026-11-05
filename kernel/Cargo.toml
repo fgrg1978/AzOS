@@ -40,9 +40,11 @@ use-robot = [
     "dep:azos_camera", "dep:azos_robot_drivers", "dep:azos_cam_ring",
     "azos_recovery/use-robot", "azos_syscall/use-robot", "board-io",
 ]
-# Kconfig BOARD_IO: the board's sensors (crates/drivers/sensor) and the kernel
-# side that serves them (`azos_syscall/board-io`, `tasks/ina219_host.rs`).
-board-io = ["dep:azos_drv_sensor", "azos_syscall/board-io"]
+# Kconfig BOARD_IO: the board's sensors (crates/drivers/sensor), its actuators
+# (crates/drivers/actuator: PWM, the motor PID loop, the buzzer) and the kernel
+# side that serves them (`azos_syscall/board-io`, `tasks/ina219_host.rs`,
+# `buzzer.rs`).
+board-io = ["dep:azos_drv_sensor", "dep:azos_drv_actuator", "azos_syscall/board-io"]
 # Wave 15 (config/subsys/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
 # domain default y, off = compiled out). `rc-input`: the RC receiver feeds the
 # safety path (link loss / kill switch latch the e-stop, the sticks drive
@@ -95,7 +97,7 @@ vf2 = [
     "azos_drv_base/vf2", "azos_arch/vf2", "azos_drv_sys/vf2",
     "azos_drv_gpio/vf2", "azos_drv_bus/vf2", "azos_drv_virtio/vf2",
     "azos_drv_block/vf2", "azos_drv_net/vf2", "azos_drv_sensor?/vf2",
-    "azos_drv_actuator/vf2",
+    "azos_drv_actuator?/vf2",
     "azos_robot_drivers?/vf2", "azos_ota/vf2", "azos_crypto/no-bitmanip",
     "i2c-dw",
 ]
@@ -118,7 +120,7 @@ vf2 = [
 k1 = [
     "rvv", "azos_drv_base/k1", "azos_arch/k1", "azos_drv_sys/k1",
     "azos_drv_gpio/k1", "azos_drv_bus/k1", "azos_drv_virtio/k1",
-    "azos_drv_block/k1", "azos_drv_sensor?/k1", "azos_drv_actuator/k1",
+    "azos_drv_block/k1", "azos_drv_sensor?/k1", "azos_drv_actuator?/k1",
     "azos_robot_drivers?/k1", "azos_ota/k1",
 ]
 # Raspberry Pi 5 (BOARD_RPI5): `make rpi5`, kernel8.img for the Pi firmware.
@@ -711,15 +713,15 @@ sup-window-smoke = ["sup-smoke"]
 # manager like any other (`drv_supervisor::supall`): killed and restarted by
 # the manager. Boots `$AZOS_OUT/build/disk-drv.img` /
 # `$AZOS_OUT/build/disk-aarch64-drv.img`, the images carrying the drivers.
-supall-smoke = ["qemu"]
+supall-smoke = ["qemu", "board-io"]
 # The hung-task detector's action end to end (`drv_supervisor::hung_act`), built by
 # the `hung: ...` rows with HUNG_ACTION as the row sets it. Boots the drv disk.
-hung-smoke = ["qemu"]
+hung-smoke = ["qemu", "board-io"]
 
 # Wave 11 (DRVPLACE): the topology row key `restart` honoured by the
 # component manager (`drv_supervisor::restart`). The drv disk's BUZZDRV.ELF row
 # says `restart = no`: the buzzer killed must stay down.
-restart-smoke = ["qemu", "azos_topology/restart-smoke"]
+restart-smoke = ["qemu", "board-io", "azos_topology/restart-smoke"]
 # Its canary: the manager is shown every row as `on-failure`
 # (`boot::inspect_views::view_restart`), so the row must fail on `[RESTART] FAIL buzzer restarted under
 # restart = no`.
@@ -783,7 +785,7 @@ ina219-placement-build-canary = ["board-io", "azos_drv_sensor/ina219-kernel"]
 # default, `ring3`) the same chip logic starts in `userspace/drivers/buzz_drv`.
 # Both hosts are built either way: the row is `stateless`, and the driver moves
 # between them while the system runs (`crate::buzzer`).
-buzzer-kernel = ["azos_topology/buzzer-kernel"]
+buzzer-kernel = ["board-io", "azos_topology/buzzer-kernel"]
 # Gate canary, never in a real build: a move between the buzzer's hosts is
 # made and its `Rule::Placement` decision record is not written
 # (`azos_topology::placement::Elastic::commit`). The placement smoke must fail
@@ -1323,7 +1325,7 @@ rtwd-record-canary = ["use-robot", "azos_safety_core?/rtwd-record-canary"]
 # refusal leaves a placement decision record the smoke reads. Boots the drivers
 # disk; the starting host is the build's (Kconfig DRV_BUZZER_PLACEMENT,
 # feature `buzzer-kernel`).
-drv-contain-smoke = ["qemu"]
+drv-contain-smoke = ["qemu", "board-io"]
 # Timer sleepers on every hart raced by early TID wakes (the interleavings
 # that lost rt-motor's wake with the heap, gate 185); a stuck sleeper or a
 # census `lost` count fails it: kernel/src/smokes/timer_heap_smoke.rs (wave 13).
@@ -1368,7 +1370,7 @@ azos_drv_block     = { workspace = true }
 azos_drv_net       = { workspace = true }
 azos_drv_sensor    = { workspace = true, optional = true }
 azos_cam_ring      = { workspace = true, optional = true }
-azos_drv_actuator  = { workspace = true }
+azos_drv_actuator  = { workspace = true, optional = true }
 azos_drv_power     = { workspace = true }
 azos_robot_drivers = { workspace = true, optional = true }
 azos_drv_api       = { workspace = true }

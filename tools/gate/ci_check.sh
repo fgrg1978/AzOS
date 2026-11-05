@@ -649,8 +649,10 @@ gate_defc() { # gate_defc rv|a64|x86 <features>: the defconfig a kernel with the
 # and the robot cells (gate_config) take it too.
 # The gate's scenario volumes boot programs no product configuration enables (the
 # test and bench programs, the optional services), and the kernel binds only the
-# images the configuration enables (Kconfig USERSPACE_<NAME>): the gate asks for all.
+# images the configuration enables (Kconfig USERSPACE_<NAME>): the gate asks for all,
+# the board's I/O (BOARD_IO) included: the drivers rows read the buzzer and the INA219.
 GATE_KCONFIG_EXTRA="CONFIG_BOOT_SELFTESTS=y
+CONFIG_BOARD_IO=y
 $(python3 "$REPO_ROOT/tools/build/gen_userspace_kconfig.py" --all-on)"
 PRIMARY_DIR="${PRIMARY_DIR:-$AZOS_OUT/target/primary}"
 PRIMARY_CONFIG="${PRIMARY_DIR}/qemu.config"
@@ -10696,7 +10698,7 @@ drvcontain_row() { # drvcontain_row <label> <isa: rv|arm> [features] [PASS|FAIL-
         # three PWM calls), in microseconds on the guest's clock.
         printf 'CONFIG_DRV_BUZZER_CALL_BUDGET_US=30\n' >>"$cfg"
     else
-        printf '# CONFIG_DRV_BUZZER_PLACEMENT_RING3 is not set\nCONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y\n' >>"$cfg"
+        printf 'CONFIG_BOARD_IO=y\n# CONFIG_DRV_BUZZER_PLACEMENT_RING3 is not set\nCONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y\n' >>"$cfg"
     fi
     (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
         || { bad; echo "      olddefconfig failed on $cfg"; return; }

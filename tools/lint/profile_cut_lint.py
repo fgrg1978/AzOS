@@ -11,7 +11,7 @@ defconfig as is, where every crate must appear: the lint can see what it
 forbids.
 
   linux     LINUX_ABI (LINUX_RUNTIME depends on it): azos_linux_abi
-  board-io  BOARD_IO: the board's sensors and the camera frame ring
+  board-io  BOARD_IO: the board's sensors, actuators and the camera frame ring
   robot     USE_ROBOT: the robot extension's crates (core and kernel name none)
 """
 
@@ -31,7 +31,7 @@ ARCHES = ("riscv64", "aarch64", "x86_64")
 CUTS = {
     "linux": ("generic", "LINUX_ABI", ("CONFIG_LINUX_ABI", "CONFIG_LINUX_RUNTIME"), ("azos_linux_abi",)),
     "board-io": ("robot", "BOARD_IO", ("CONFIG_BOARD_IO", "CONFIG_USE_ROBOT", "CONFIG_PRESET_"),
-                 ("azos_drv_sensor", "azos_cam_ring")),
+                 ("azos_drv_sensor", "azos_cam_ring", "azos_drv_actuator")),
     "robot": ("robot", "USE_ROBOT", ("CONFIG_USE_ROBOT", "CONFIG_PRESET_"),
               ("azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers")),
 }

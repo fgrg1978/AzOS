@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The driver registry smoke `kernel_main` runs on every boot, after the
-//! secondaries are woken: five drivers registered (UART, GPIO, I2C, PWM, the
-//! motor PID), and a write through `dyn Driver` found by kind.
+//! secondaries are woken: the drivers registered (UART, GPIO, I2C and, with
+//! `board-io`, PWM and the motor PID), and a write through `dyn Driver` found
+//! by kind.
 
 use crate::*;
 
@@ -66,6 +67,14 @@ pub(crate) fn driver_registry_smoke() {
         Err(e) => azos_drv_sys::kerr!("[REG]  I2C  register FAILED: {:?}", e),
     }
 
+    #[cfg(feature = "board-io")]
+    register_actuators();
+}
+
+/// The two drivers of the board's actuators (`board-io`).
+#[cfg(feature = "board-io")]
+#[inline(always)]
+fn register_actuators() {
     // A3a.4 — fourth: multi-parameter actuator (PWM).
     static PWM_DRV: azos_drv_actuator::pwm_driver::PwmDriver =
         azos_drv_actuator::pwm_driver::PwmDriver::new();

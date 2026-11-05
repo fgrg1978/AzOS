@@ -93,7 +93,9 @@ use azos_rings::region::{RingStep, SpscSlots, RING_SLOTS};
 use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::handlers::{gpio_pin_is_motor_bound, pwm_channel_is_motor_bound, pwm_control_reaches_a_motor};
+use crate::handlers::gpio_pin_is_motor_bound;
+#[cfg(feature = "board-io")]
+use crate::handlers::{pwm_channel_is_motor_bound, pwm_control_reaches_a_motor};
 use crate::khost::Caller;
 
 /// The `Gpio` interface served for one caller.
@@ -220,6 +222,7 @@ impl azos_devif::I2c for I2cServer {
 
 /// What a PWM op reaches, declared by the op: the same declaration the typed
 /// calls made, for the same reason (only the op knows).
+#[cfg(feature = "board-io")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reach {
     /// Writes the control register, which on a part with a shared one reaches
@@ -232,6 +235,7 @@ enum Reach {
 /// The `Pwm` interface served for one caller.
 pub struct PwmServer(pub Caller);
 
+#[cfg(feature = "board-io")]
 impl PwmServer {
     fn run(&self, reach: Reach, op: impl FnOnce(u32) -> i32) -> Out<()> {
         if let Err(o) = self.0.gate::<()>(CapPerms::WRITE) {
@@ -270,6 +274,7 @@ impl PwmServer {
     }
 }
 
+#[cfg(feature = "board-io")]
 impl azos_devif::Pwm for PwmServer {
     fn enable(&mut self) -> Out<()> {
         self.run(Reach::Control, azos_drv_actuator::pwm::pwm_enable)
@@ -285,6 +290,37 @@ impl azos_devif::Pwm for PwmServer {
     }
     fn set_duty_pct(&mut self, pct: u32) -> Out<()> {
         self.run(Reach::DutyOnly, |ch| azos_drv_actuator::pwm::pwm_set_duty_pct(ch, pct))
+    }
+}
+
+/// Without `board-io` there is no PWM driver: after the capability gate every
+/// op answers as a sensor that is not there does.
+#[cfg(not(feature = "board-io"))]
+impl PwmServer {
+    fn absent(&self) -> Out<()> {
+        if let Err(o) = self.0.gate::<()>(CapPerms::WRITE) {
+            return o;
+        }
+        Out::err(outcome::NOT_READY)
+    }
+}
+
+#[cfg(not(feature = "board-io"))]
+impl azos_devif::Pwm for PwmServer {
+    fn enable(&mut self) -> Out<()> {
+        self.absent()
+    }
+    fn disable(&mut self) -> Out<()> {
+        self.absent()
+    }
+    fn set_period(&mut self, _ns: u32) -> Out<()> {
+        self.absent()
+    }
+    fn set_duty(&mut self, _ns: u32) -> Out<()> {
+        self.absent()
+    }
+    fn set_duty_pct(&mut self, _pct: u32) -> Out<()> {
+        self.absent()
     }
 }
 

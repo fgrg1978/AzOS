@@ -628,17 +628,20 @@ config DRV_RING3_DEFAULT
 
 config BOARD_IO
     # cargo-feature: board-io
-    bool "Board sensors: converter, rangefinders, LiDAR, power monitor, camera" if !USE_ROBOT
+    bool "Board I/O: sensors, PWM, motor PID loop, buzzer" if !USE_ROBOT
     default y if USE_IOT_HMI || USE_INDUSTRIAL || USE_AUTOMOTIVE || USE_WEARABLE
     help
       Kernel feature `board-io`: links crates/drivers/sensor (the ADS1115
       converter, ultrasonic and ToF rangefinders, the LiDAR, the INA219 power
-      monitor, the CSI camera) and the kernel side that serves them: the
-      `Adc` interface (crates/core/syscall/src/adc_host.rs) and the range,
-      battery, LiDAR, power and camera types of the `Sensor` interface.
-      Off, those sensor types read as not ready, no `Adc` interface is
-      served and none of that code is in the image (tools/lint/
-      profile_cut_lint.py checks the dependency set). The robot extension
+      monitor, the CSI camera) and crates/drivers/actuator (PWM, the motor
+      PID loop, the buzzer), and the kernel side that serves them: the
+      `Adc` interface (crates/core/syscall/src/adc_host.rs), the range,
+      battery, LiDAR, power and camera types of the `Sensor` interface, the
+      `Pwm` interface, the PID ops of `Motor` and the buzzer's placement
+      (kernel/src/buzzer.rs). Off, those sensor types and the PWM and PID
+      ops read as not ready, no `Adc` interface is served and none of that
+      code is in the image (tools/lint/profile_cut_lint.py checks the
+      dependency set). The robot extension
       needs it (EXT_ROBOT implies it), so with USE_ROBOT it is on and not
       shown.
 
@@ -680,6 +683,7 @@ endchoice
 
 choice DRV_BUZZER_PLACEMENT
     prompt "Piezo buzzer: starting placement"
+    depends on BOARD_IO
     # Its own default is ring 3 (no safety decision reads it), the same as
     # a build with no cargo feature, so no DRV_RING3_DEFAULT line.
     default DRV_BUZZER_PLACEMENT_RING3

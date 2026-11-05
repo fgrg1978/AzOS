@@ -303,8 +303,18 @@ fn pwm_set(channel: u32, duty_pct: u32) -> OpResult {
     if crate::handlers::pwm_channel_is_motor_bound(channel) {
         return Err(crate::handlers::E_PERM as i32);
     }
-    let rc = azos_drv_actuator::pwm::pwm_set_duty_pct(channel, duty_pct);
-    Ok(if rc == 0 { 0 } else { errno(Errno::EIO) })
+    // Without `board-io` there is no PWM driver: the op answers as a read of a
+    // sensor that is not there (`sensor_read_into`).
+    #[cfg(not(feature = "board-io"))]
+    {
+        let _ = duty_pct;
+        Ok(-1)
+    }
+    #[cfg(feature = "board-io")]
+    {
+        let rc = azos_drv_actuator::pwm::pwm_set_duty_pct(channel, duty_pct);
+        Ok(if rc == 0 { 0 } else { errno(Errno::EIO) })
+    }
 }
 
 /// One wheel, as `motor.speed` commands it, for the ring's owner: the same

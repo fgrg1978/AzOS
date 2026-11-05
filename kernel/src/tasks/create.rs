@@ -603,6 +603,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // in the kernel, its host task is created here. The ring-3 host is the
     // component manager's whichever host the driver starts in (the standby
     // of a kernel placement); the controller only routes calls.
+    #[cfg(feature = "board-io")]
     if buzzer::init() == Some(azos_topology::placement::Host::Kernel) {
         // Supervised (wave 13): a contained panic in the host is the
         // controller's fault to decide on (demote), or a restart.

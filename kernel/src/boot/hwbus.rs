@@ -607,7 +607,7 @@ impl Drivers for KernelDrivers<'_> {
             // call costs no MAX_MMIO_REGIONS slot (`vmm::map_mmio_region`).
             #[cfg(any(feature = "vf2", feature = "k1"))]
             "gpio" => attach_gpio(dev),
-            #[cfg(any(feature = "vf2", feature = "k1"))]
+            #[cfg(all(any(feature = "vf2", feature = "k1"), feature = "board-io"))]
             "pwm" => azos_drv_actuator::pwm::pwm_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
             // The watchdogs: a device-tree node here, the AMD FCH's SMBus
             // function through the PCI bring-up (it reads the revision).

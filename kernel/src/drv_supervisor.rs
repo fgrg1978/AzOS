@@ -161,6 +161,7 @@ pub(crate) fn start() {
 /// creation: a death in the host's first instructions, before this returns,
 /// would go unsupervised. Without a table entry (table full) the host runs
 /// unsupervised, as every kernel host did before wave 13.
+#[cfg(feature = "board-io")]
 pub(crate) fn start_kernel_host(name: &'static str, entry: fn(usize), priority: u32) -> Option<u32> {
     start();
     let idx = azos_sched::task_create(name, entry, 0, priority);
@@ -258,6 +259,7 @@ pub(crate) fn exit_verdict(tid: u32) -> Exit {
     // restarted in the kernel: its death is a fault the placement controller
     // decides on, and the supervisor task starts the other host
     // (`crate::buzzer`).
+    #[cfg(feature = "board-io")]
     if let Some((_, e)) = sup_find_image(crate::buzzer::HOST_NAME.as_bytes()) {
         if e.tid == tid && e.origin == SupOrigin::KernelHost && crate::buzzer::host_died() {
             let _ = azos_sched::supervisor::sup_retire(tid);
@@ -403,6 +405,7 @@ fn supervisor_task(_: usize) {
         }
         // A driver's move between hosts, asked for by a fault in its kernel
         // host or by its measured cost.
+        #[cfg(feature = "board-io")]
         if crate::buzzer::work_pending() {
             crate::buzzer::run_work();
             continue;

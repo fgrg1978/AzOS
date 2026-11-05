@@ -2514,6 +2514,7 @@ pub(crate) fn pwm_channel_is_motor_bound(ch: u32) -> bool {
 /// boot. Naming the domain lets a host test state both, which is the only way
 /// this fix is anything more than an assertion about code nobody ran.
 /// `pwm_control_allowed` already takes its domain the same way.
+#[cfg(feature = "board-io")]
 pub(crate) fn pwm_control_reaches_a_motor(
     domain: azos_drv_actuator::pwm_domain::PwmDomain,
     ch: u32,

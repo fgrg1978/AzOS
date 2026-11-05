@@ -34,9 +34,10 @@ mod reserved_tail;
 
 // The cold-restart supervisor for ring-3 drivers.
 mod drv_supervisor;
-// The buzzer's placement machinery is built for every image that has the
-// driver row; the plays only the robot domain makes (behavior, sensors) are
-// `use-robot`.
+// The buzzer's placement machinery is built with the board's I/O (`board-io`,
+// the PWM driver it plays through); the plays only the robot domain makes
+// (behavior, sensors) are `use-robot`.
+#[cfg(feature = "board-io")]
 mod buzzer;
 
 // Who has the console, the ring-3 user shell or the recovery console.
