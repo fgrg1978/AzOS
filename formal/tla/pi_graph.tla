@@ -18,9 +18,12 @@ applies it as the attribute the pick ranks. The invariants:
                      DL task whose deadline is later than that waiter's
   NoOverBoost        P8b: a task boosted by a DL waiter does not out-rank a
                      DL task whose deadline is earlier than that waiter's
+  FairInheritance    a fair owner runs at least at the level of a fair
+                     waiter behind it (its EEVDF weight is its level's)
 
 The attribute order is Dl (earlier deadline first) > Rt (smaller level first)
-> Fair; Fair does not boost (stage 1, no weight inheritance). `Mapping` is how
+> Fair (smaller level first: the heavier EEVDF weight; owner 2026-11-05, the
+graph inherits fair weight, which the counted donation did before). `Mapping` is how
 the class applies a boost: "inherit" (owner decision D4: a DL-boosted owner
 enters DL with the donor's deadline), "today" (classes.rs `pi_prio`: Stop and
 Dl become band level 0, below every reservation), "top" (a DL boost placed
@@ -42,15 +45,17 @@ EXTENDS Integers, FiniteSets
 
 CONSTANTS NumOps, Mapping, Mutant
 
-Mutants == {"none", "cycle-allowed", "unboost-skipped", "walk-stops-early", "death-wakes-all"}
+Mutants == {"none", "cycle-allowed", "unboost-skipped", "walk-stops-early", "death-wakes-all",
+            "no-fair-inheritance"}
 
-Tasks   == 1..4
+Tasks   == 1..5
 Objects == {1, 2}
 NONE    == 0
 
-\* Base attributes: a fair task, an RT task, two reservations.
+\* Base attributes: two fair tasks (5 heavier), an RT task, two reservations.
 Base == [t \in Tasks |->
-           CASE t = 1 -> [k |-> "fair", p |-> 0]
+           CASE t = 5 -> [k |-> "fair", p |-> 12]
+             [] t = 1 -> [k |-> "fair", p |-> 20]
              [] t = 2 -> [k |-> "rt",   p |-> 5]
              [] t = 3 -> [k |-> "dl",   p |-> 2]
              [] t = 4 -> [k |-> "dl",   p |-> 5]]
@@ -63,7 +68,7 @@ KindRank(k) == CASE k = "stop" -> 0 [] k = "dl" -> 1 [] k = "rt" -> 2 [] k = "fa
 
 \* a ranks strictly above b.
 Higher(a, b) == KindRank(a.k) < KindRank(b.k)
-                \/ (a.k = b.k /\ a.k \in {"dl", "rt"} /\ a.p < b.p)
+                \/ (a.k = b.k /\ a.k \in {"dl", "rt", "fair"} /\ a.p < b.p)
 
 Best(S, dflt) == IF S = {} THEN dflt
                  ELSE CHOOSE a \in S \cup {dflt} : \A b \in S \cup {dflt} : ~Higher(b, a)
@@ -97,7 +102,7 @@ EffG(t, d, own, wt) ==
 \* The class's form of t's effective attribute.
 ApplyG(t, own, wt) ==
     LET e == EffG(t, D, own, wt) IN
-    IF e = Base[t] THEN Base[t]
+    IF e = Base[t] \/ (Mutant = "no-fair-inheritance" /\ e.k = "fair") THEN Base[t]
     ELSE CASE Mapping = "inherit" -> e
            [] Mapping = "today" -> IF e.k = "dl" THEN [k |-> "rt", p |-> 0] ELSE e
            [] Mapping = "top" -> IF e.k = "dl" THEN [k |-> "stop", p |-> 0] ELSE e
@@ -234,5 +239,10 @@ NoOverBoost ==
          /\ Base[r].k = "dl" /\ Base[r].p < Base[w].p /\ applied[r] = Base[r]
          /\ \A v \in Tasks : BoostedBy(o, v) => Base[v].p >= Base[w].p)
         => ~Higher(applied[o], applied[r])
+
+FairInheritance ==
+    \A o, w \in Tasks :
+        (waiting[w] # NONE /\ owner[waiting[w]] = o /\ Base[w].k = "fair" /\ Base[o].k = "fair")
+        => ~Higher(Base[w], applied[o])
 
 =============================================================================
