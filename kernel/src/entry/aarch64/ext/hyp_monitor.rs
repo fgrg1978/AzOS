@@ -182,6 +182,7 @@ extern "C" {
     static __ro_after_init_start: u8;
     static __ro_after_init_end: u8;
     fn _aarch64_secondary_entry();
+    fn _hyp_blob_start();
 }
 
 /// The descriptor the monitor reads by physical address: a static, since a
@@ -350,7 +351,8 @@ pub(crate) fn lock_image() {
         let (ram_pa, ram_len) = azos_mm::pmm::managed_range();
         let d = &mut *core::ptr::addr_of_mut!(LOCK_DESC);
         d.text = span(&_text_start, &_text_end);
-        d.rodata = span(&_rodata_start, &_rodata_end);
+        // The monitor's extent ends the rodata range (`.hyp`), and is the monitor's: rodata stops where it starts.
+        d.rodata = [down(pa_of(&_rodata_start as *const u8 as usize)), down(pa_of(_hyp_blob_start as *const () as usize))];
         d.ro_after_init = span(&__ro_after_init_start, &__ro_after_init_end);
         d.ram[0] = [down(ram_pa as u64), up((ram_pa + ram_len) as u64)];
         d.nram = 1;
