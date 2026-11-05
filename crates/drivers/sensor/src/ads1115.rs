@@ -8,7 +8,9 @@
 /// QEMU: uses simulated I2C bus (register-level emulation).
 /// VF2:  real I2C hardware via DesignWare APB I2C.
 
-use azos_drv_bus::i2c::{i2c_read, i2c_write};
+use azos_devif::i2c::{read_regs, write_bytes, I2cDirect};
+use azos_devif::I2cCall;
+use azos_drv_bus::i2c_port::I2cPort;
 use azos_sync::SpinLock;
 use azos_sync::waitqueue::WaitQueue;
 use azos_sync::waitstat::Site;
@@ -224,20 +226,19 @@ fn checked(channel: u8, cfg_readback: u16, v: Option<u16>) -> Option<i16> {
 }
 
 /// Run one unit against `st`, a copy of the device state (its turn in the
-/// queue taken).
-fn run_unit(st: &mut Ads1115State, unit: Unit) -> Option<i16> {
-    let (bus, addr) = (st.bus, st.addr);
+/// queue taken), over `bus`, the call bound to the chip.
+fn run_unit<B: I2cCall>(st: &mut Ads1115State, bus: &mut B, unit: Unit) -> Option<i16> {
     match unit {
         Unit::Blocking(ch) => {
             // This conversion replaces any one a pipelined unit started.
             st.inflight = None;
-            if !write_reg(bus, addr, REG_CONFIG, st.config_word(ch)) {
+            if !write_reg(bus, REG_CONFIG, st.config_word(ch)) {
                 return None;
             }
             for _ in 0..CONVERSION_POLL_ITERS {
-                if let Some(cfg) = read_reg(bus, addr, REG_CONFIG) {
+                if let Some(cfg) = read_reg(bus, REG_CONFIG) {
                     if cfg & CONFIG_OS_START != 0 {
-                        return checked(ch, cfg, read_reg(bus, addr, REG_CONVERSION));
+                        return checked(ch, cfg, read_reg(bus, REG_CONVERSION));
                     }
                 }
             }
@@ -246,13 +247,13 @@ fn run_unit(st: &mut Ads1115State, unit: Unit) -> Option<i16> {
         Unit::Pipelined(ch) => {
             let mut out = None;
             if st.inflight.take() == Some(ch) {
-                if let Some(cfg) = read_reg(bus, addr, REG_CONFIG) {
+                if let Some(cfg) = read_reg(bus, REG_CONFIG) {
                     if cfg & CONFIG_OS_START != 0 {
-                        out = checked(ch, cfg, read_reg(bus, addr, REG_CONVERSION));
+                        out = checked(ch, cfg, read_reg(bus, REG_CONVERSION));
                     }
                 }
             }
-            if write_reg(bus, addr, REG_CONFIG, st.config_word(ch)) {
+            if write_reg(bus, REG_CONFIG, st.config_word(ch)) {
                 st.inflight = Some(ch);
             }
             out
@@ -272,7 +273,8 @@ fn submit(unit: Unit) -> Option<i16> {
     }
     let mut st = { let g = ADC.lock(); Ads1115State { ..*g } };
     let out = if st.initialized {
-        let out = run_unit(&mut st, unit);
+        let mut bus = I2cDirect(I2cPort::new(st.bus, st.addr));
+        let out = run_unit(&mut st, &mut bus, unit);
         ADC.lock().inflight = st.inflight;
         out
     } else {
@@ -287,19 +289,16 @@ fn submit(unit: Unit) -> Option<i16> {
 // ── I2C helpers ────────────────────────────────────────────────────────────
 
 /// Write a 16-bit value to an ADS1115 register.
-fn write_reg(bus: u8, addr: u8, reg: u8, val: u16) -> bool {
+fn write_reg<B: I2cCall>(bus: &mut B, reg: u8, val: u16) -> bool {
     let data: [u8; 3] = [reg, (val >> 8) as u8, val as u8];
-    i2c_write(bus, addr, &data) == 0
+    write_bytes(bus, &data).is_ok()
 }
 
 /// Read a 16-bit value from an ADS1115 register.
-fn read_reg(bus: u8, addr: u8, reg: u8) -> Option<u16> {
+fn read_reg<B: I2cCall>(bus: &mut B, reg: u8) -> Option<u16> {
     let mut buf = [0u8; 2];
-    if i2c_read(bus, addr, reg, &mut buf) == 2 {
-        Some(((buf[0] as u16) << 8) | buf[1] as u16)
-    } else {
-        None
-    }
+    read_regs(bus, reg, &mut buf).ok()?;
+    Some(((buf[0] as u16) << 8) | buf[1] as u16)
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────

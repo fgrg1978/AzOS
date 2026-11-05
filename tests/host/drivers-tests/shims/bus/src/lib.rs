@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host stand-in for `azos_drv_bus`, reduced to `i2c::{i2c_read, i2c_write}`
-//! over one scripted ADS1115 (S2's tests): a config write with OS set starts
+//! Host stand-in for `azos_drv_bus`, reduced to the `I2cPort` the chip drivers
+//! are given (`i2c_port`), over one scripted ADS1115 (S2's tests): a config write with OS set starts
 //! a conversion of the written MUX, which reads "busy" for `busy_polls`
 //! config reads and then latches that channel's result; the config readback
 //! carries the written MUX, as the chip's does. Every transaction is counted,
@@ -13,6 +13,8 @@ pub mod i2c {
 
     #[derive(Default, Clone, Debug)]
     pub struct Ads {
+        /// No transaction is acknowledged.
+        pub nak: bool,
         /// Config-register reads that see a new conversion busy.
         pub busy_polls: u32,
         /// Busy reads left for the running conversion.
@@ -30,7 +32,7 @@ pub mod i2c {
     }
 
     pub static ADS: Mutex<Ads> = Mutex::new(Ads {
-        busy_polls: 0, left: 0, cfg: 0, running: false, result: [0; 4], latched: 0, txns: 0,
+        nak: false, busy_polls: 0, left: 0, cfg: 0, running: false, result: [0; 4], latched: 0, txns: 0,
     });
     /// Called after every transaction, outside the chip's lock.
     pub static HOOK: Mutex<Option<fn()>> = Mutex::new(None);
@@ -46,6 +48,11 @@ pub mod i2c {
         {
             let mut a = ADS.lock().unwrap();
             a.txns += 1;
+            if a.nak {
+                drop(a);
+                after();
+                return -1;
+            }
             if data.len() == 3 && data[0] == 0x01 {
                 let v = (data[1] as u16) << 8 | data[2] as u16;
                 a.cfg = v & 0x7FFF;
@@ -63,6 +70,11 @@ pub mod i2c {
         let v = {
             let mut a = ADS.lock().unwrap();
             a.txns += 1;
+            if a.nak {
+                drop(a);
+                after();
+                return -1;
+            }
             match reg {
                 0x01 => {
                     if a.running && a.left > 0 {
@@ -84,5 +96,38 @@ pub mod i2c {
         buf[1] = v as u8;
         after();
         2
+    }
+}
+
+pub mod i2c_port {
+    use azos_devif::i2c::Bytes;
+    use azos_devif::{outcome, Out};
+
+    /// The chip's one device on one bus; the scripted chip answers whatever
+    /// the bus and address.
+    pub struct I2cPort;
+
+    impl I2cPort {
+        pub fn new(_bus: u8, _addr: u8) -> Self {
+            I2cPort
+        }
+    }
+
+    impl azos_devif::I2c for I2cPort {
+        fn read(&mut self, reg: u32, len: u32) -> Out<Bytes> {
+            let mut buf = [0u8; 2];
+            if len as usize != buf.len() || super::i2c::i2c_read(0, 0, reg as u8, &mut buf) != 2 {
+                return Out::err(outcome::FAULT);
+            }
+            Out::ok(Bytes::from_slice(&buf))
+        }
+        fn write(&mut self, data: Bytes) -> Out<()> {
+            let mut buf = [0u8; 32];
+            let n = data.copy_to(&mut buf);
+            if super::i2c::i2c_write(0, 0, &buf[..n]) == 0 { Out::ok(()) } else { Out::err(outcome::FAULT) }
+        }
+        fn detect(&mut self) -> Out<u32> {
+            Out::ok(1)
+        }
     }
 }

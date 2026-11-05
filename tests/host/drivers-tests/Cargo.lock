@@ -233,6 +233,9 @@ dependencies = [
 [[package]]
 name = "drv_test_bus"
 version = "0.1.0"
+dependencies = [
+ "azos_devif",
+]
 
 [[package]]
 name = "drv_test_mm"

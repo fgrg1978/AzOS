@@ -4046,6 +4046,34 @@ mod ads1115_pipeline {
         }
     }
 
+    /// **A NAK is no reading, never a value.** A bus that does not
+    /// acknowledge the start gives `None` from both reads; one that stops
+    /// acknowledging between the start and the result does not give the
+    /// result the chip holds; and the unit queue is left usable.
+    /// **Canary:** the NAK check in `azos_devif::i2c::{read_regs, write_bytes}`
+    /// returns `Ok` whatever the code: this goes red.
+    #[test]
+    fn a_nak_is_no_reading() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset(0);
+        ADS.lock().unwrap().nak = true;
+        assert_eq!(ads1115_read_raw(0), None);
+        assert_eq!(ads1115_read_raw_pipelined(0), None);
+
+        reset(0);
+        *HOOK.lock().unwrap() = Some(|| {
+            let mut a = ADS.lock().unwrap();
+            if a.txns == 1 {
+                a.nak = true;
+            }
+        });
+        assert_eq!(ads1115_read_raw(0), None, "the start was acknowledged, the result never is");
+        *HOOK.lock().unwrap() = None;
+
+        reset(0);
+        assert_eq!(ads1115_read_raw(0), Some(1000), "the next unit runs");
+    }
+
     /// A ring that takes `cap` records.
     struct Ring {
         cap: usize,
