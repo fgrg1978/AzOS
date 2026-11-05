@@ -187,12 +187,24 @@ fn names_and_paths_have_bounds() {
     let long = "n".repeat(tmpfs::TMPFS_NAME_LEN);
     assert_eq!(vfs::vfs_mkdir(format!("/tmp/{ok}").as_bytes()), Ok(()));
     assert_eq!(vfs::vfs_mkdir(format!("/tmp/{long}").as_bytes()), Err(FsErr::NameTooLong));
+    // A directory call and an open agree on how long a path may be.
+    assert_eq!(vfs::vfs_mkdir(format!("/tmp/{ok}/x").as_bytes()), Err(FsErr::NameTooLong));
     // The key (the path inside the mount) is the file's name in the VFS.
     assert_eq!(vfs::vfs_mkdir(b"/tmp/dd"), Ok(()));
     let deep = format!("/tmp/dd/{}", "m".repeat(vfs::INODE_KEY_LEN - 3));
     assert!(put(deep.as_bytes(), b"fits"), "a path of exactly INODE_KEY_LEN bytes");
     assert!(!put(format!("{deep}m").as_bytes(), b"over"), "one byte more is refused");
     tmpfs_h::clear();
+}
+
+#[test]
+fn the_root_lists_the_other_mount_points() {
+    let _g = serial();
+    setup();
+    let root = names(b"/");
+    assert!(root.contains(&("dev".to_string(), true)), "{root:?}");
+    assert!(root.contains(&("tmp".to_string(), true)), "{root:?}");
+    assert_eq!(names(b"/dev").len(), 3, "the /dev mount shadows the entry");
 }
 
 #[test]

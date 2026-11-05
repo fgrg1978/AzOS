@@ -57,7 +57,7 @@ fn tree(dir: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
-azos_ktest::ktest! {
+azos_ktest::ktest_late! {
     fn ram_fs_mkdir_unlink_rename() {
         tree(b"/ktest-ram")?;
         tree(b"/tmp/ktest-ram")
@@ -73,7 +73,7 @@ fn numbered(buf: &mut [u8; 64], dir: &[u8], i: usize) -> usize {
     n + 3
 }
 
-azos_ktest::ktest! {
+azos_ktest::ktest_late! {
     fn ram_fs_bound_refuses() {
         const DIR: &[u8] = b"/tmp/ktest-full";
         if azos_fs::vfs_mkdir(DIR) != Ok(()) { return Err("mkdir of the test directory"); }

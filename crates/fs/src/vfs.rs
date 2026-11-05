@@ -3268,11 +3268,13 @@ fn cache_write(b: &'static dyn FileSystem, key: &InodeKey, offset: u64, src: &[u
 /// Mount the RAM file systems: tmpfs at `/` and at `/tmp`, devfs at `/dev`.
 /// Must be called after the heap is initialised.
 pub fn init() {
-    for (path, fs) in [
-        (&b"/"[..], &crate::tmpfs::TMPFS_ROOT as &'static dyn FileSystem),
-        (b"/tmp", &crate::tmpfs::TMPFS_TMP),
-        (b"/dev", &crate::devfs::DEV_FS),
-    ] {
-        vfs_mount_fs(path, fs).expect("[FS] mount table full at boot");
+    const FULL: &str = "[FS] mount table or root tmpfs full at boot";
+    vfs_mount_fs(b"/", &crate::tmpfs::TMPFS_ROOT).expect(FULL);
+    // The other mount points are entries of `/`, so a listing of it shows
+    // them; each mount shadows its entry.
+    for dir in [&b"/dev"[..], b"/tmp"] {
+        vfs_mkdir(dir).expect(FULL);
     }
+    vfs_mount_fs(b"/tmp", &crate::tmpfs::TMPFS_TMP).expect(FULL);
+    vfs_mount_fs(b"/dev", &crate::devfs::DEV_FS).expect(FULL);
 }

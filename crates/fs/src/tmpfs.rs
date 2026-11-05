@@ -95,7 +95,10 @@ impl State {
     }
 
     /// The directory holding the last component of `path`, and that component.
+    /// A path longer than a key (`key_for`) names nothing, whatever the call.
     fn split<'a>(&self, path: &'a [u8]) -> Result<(u16, &'a [u8]), FsErr> {
+        let len = components(path).map(|c| c.len() + 1).sum::<usize>().saturating_sub(1);
+        if len > INODE_KEY_LEN { return Err(FsErr::NameTooLong); }
         let mut dir = MOUNT_DIR;
         let mut parts = components(path).peekable();
         loop {
@@ -198,22 +201,15 @@ impl State {
 
         let mut grown = None;
         if new_size > capacity {
-            // Growth doubles, so a file appended to a page at a time is not
-            // copied whole on every page.
-            let want = if existing.is_some() {
-                new_size.max(capacity.saturating_mul(2).min(TMPFS_MAX_BYTES))
-            } else {
-                new_size
-            };
-            // SAFETY: `want >= new_size > capacity >= 0`, so it is not zero.
-            let fresh = unsafe { alloc(Layout::from_size_align_unchecked(want, 1)) };
+            // SAFETY: `new_size > capacity >= 0`, so it is not zero.
+            let fresh = unsafe { alloc(Layout::from_size_align_unchecked(new_size, 1)) };
             if fresh.is_null() { return Err(FsErr::NoSpace); }
-            // SAFETY: `fresh` holds `want` bytes; the old data holds `old_size`.
+            // SAFETY: `fresh` holds `new_size` bytes; the old data holds `old_size`.
             unsafe {
-                ptr::write_bytes(fresh, 0, want);
+                ptr::write_bytes(fresh, 0, new_size);
                 if old_size > 0 { ptr::copy_nonoverlapping(self.entries[slot].data, fresh, old_size); }
             }
-            grown = Some((fresh, want));
+            grown = Some((fresh, new_size));
         } else if offset > old_size {
             // SAFETY: `offset <= new_size <= capacity`; the bytes past the old
             // size may be left over from a truncate.
@@ -231,13 +227,13 @@ impl State {
         self.used_bytes = self.used_bytes - old_size + new_size;
         let e = &mut self.entries[slot];
         e.seq = seq;
-        if let Some((fresh, want)) = grown {
+        if let Some((fresh, cap)) = grown {
             if !e.data.is_null() {
                 // SAFETY: allocated with `e.capacity` by an earlier `put`.
                 unsafe { dealloc(e.data, Layout::from_size_align_unchecked(e.capacity, 1)); }
             }
             e.data = fresh;
-            e.capacity = want;
+            e.capacity = cap;
         }
         if !data.is_empty() {
             // SAFETY: `end <= new_size <= e.capacity`.
