@@ -21,7 +21,7 @@ use core::sync::atomic::Ordering::Relaxed;
 use crate::ceiling;
 use crate::pi_attr::PiAttr;
 use crate::rt_core::{edf_before, Cbs};
-use crate::sc::{Class, SchedContext};
+use crate::sc::{walk, Class, ClassStep, SchedContext, Step, WalkCtx};
 
 /// One schedulable task.
 pub struct Entity {
@@ -80,53 +80,98 @@ impl Entity {
 
 /// The task to run next, or `None` when nothing is runnable (the idle row
 /// is missing). `cur` is the task that was running: it keeps the processor
-/// against a peer of its own level until its slice is spent.
+/// against a peer of its own level until its slice is spent. The class order
+/// is the main kernel's walk (`sc::walk`); each class step below picks inside
+/// its class.
 pub fn pick(ents: &mut [Entity], cur: Option<usize>, now: u64) -> Option<usize> {
-    // Deadline class. First the reservations' own bookkeeping (a woken one
-    // is released, a throttled one whose deadline came is refilled), then
-    // the earliest deadline among the eligible.
-    for e in ents.iter_mut() {
-        if e.runnable && e.sc.class() == Class::Dl && e.cbs.active() {
-            if e.cbs.release_due {
-                e.cbs.release(now);
+    match walk::<Pick<'_>, (DlStep, (RtStep, (IdleStep, ())))>(&mut Pick { ents, cur, now }) {
+        Step::Run { idx, .. } => Some(idx),
+        Step::Keep | Step::Pass => None,
+    }
+}
+
+/// One pick's state. The running task is one of `ents`, so it competes inside
+/// its class's step, not through the walk's running-task rule.
+struct Pick<'a> {
+    ents: &'a mut [Entity],
+    cur: Option<usize>,
+    now: u64,
+}
+
+impl WalkCtx for Pick<'_> {
+    fn prev_class(&self) -> Option<Class> {
+        None
+    }
+}
+
+/// Deadline: first the reservations' own bookkeeping (a woken one is
+/// released, a throttled one whose deadline came is refilled), then the
+/// earliest deadline among the eligible.
+struct DlStep;
+/// Real time: the lowest level; inside it, the task that ran longest ago
+/// unless the running task still has slice.
+struct RtStep;
+/// Idle: the first idle row.
+struct IdleStep;
+
+impl ClassStep<Pick<'_>> for DlStep {
+    const CLASS: Class = Class::Dl;
+    fn pick_next(p: &mut Pick<'_>) -> Step {
+        for e in p.ents.iter_mut() {
+            if e.runnable && e.sc.class() == Class::Dl && e.cbs.active() {
+                if e.cbs.release_due {
+                    e.cbs.release(p.now);
+                }
+                e.cbs.replenish_if_due(p.now);
             }
-            e.cbs.replenish_if_due(now);
         }
-    }
-    let mut best: Option<usize> = None;
-    for (i, e) in ents.iter().enumerate() {
-        if !e.runnable || e.sc.class() != Class::Dl || !e.cbs.active() || !e.cbs.eligible() {
-            continue;
+        let ents = &*p.ents;
+        let mut best: Option<usize> = None;
+        for (i, e) in ents.iter().enumerate() {
+            if !e.runnable || e.sc.class() != Class::Dl || !e.cbs.active() || !e.cbs.eligible() {
+                continue;
+            }
+            if best.map_or(true, |b| edf_before(0, e.cbs.deadline, 0, ents[b].cbs.deadline)) {
+                best = Some(i);
+            }
         }
-        if best.map_or(true, |b| edf_before(0, e.cbs.deadline, 0, ents[b].cbs.deadline)) {
-            best = Some(i);
+        best.map_or(Step::Pass, |idx| Step::Run { idx, force: false })
+    }
+}
+
+impl ClassStep<Pick<'_>> for RtStep {
+    const CLASS: Class = Class::Rt;
+    fn pick_next(p: &mut Pick<'_>) -> Step {
+        let ents = &*p.ents;
+        let mut best: Option<usize> = None;
+        for (i, e) in ents.iter().enumerate() {
+            if !e.runnable || e.sc.class() != Class::Rt {
+                continue;
+            }
+            best = match best {
+                Some(b) if (ents[b].level(), ents[b].last_run) <= (e.level(), e.last_run) => Some(b),
+                _ => Some(i),
+            };
         }
-    }
-    if best.is_some() {
-        return best;
-    }
-    // Real time: the lowest level; inside it, the task that ran longest ago
-    // unless the running task still has slice.
-    let mut best: Option<usize> = None;
-    for (i, e) in ents.iter().enumerate() {
-        if !e.runnable || e.sc.class() != Class::Rt {
-            continue;
+        let Some(b) = best else { return Step::Pass };
+        if let Some(c) = p.cur {
+            let ce = &ents[c];
+            if c != b && ce.runnable && ce.sc.class() == Class::Rt && ce.level() == ents[b].level() && ce.slice_left > 0 {
+                return Step::Run { idx: c, force: false };
+            }
         }
-        best = match best {
-            Some(b) if (ents[b].level(), ents[b].last_run) <= (e.level(), e.last_run) => Some(b),
-            _ => Some(i),
-        };
+        Step::Run { idx: b, force: false }
     }
-    if let (Some(b), Some(c)) = (best, cur) {
-        let ce = &ents[c];
-        if c != b && ce.runnable && ce.sc.class() == Class::Rt && ce.level() == ents[b].level() && ce.slice_left > 0 {
-            return Some(c);
-        }
+}
+
+impl ClassStep<Pick<'_>> for IdleStep {
+    const CLASS: Class = Class::Idle;
+    fn pick_next(p: &mut Pick<'_>) -> Step {
+        p.ents
+            .iter()
+            .position(|e| e.runnable && e.sc.class() == Class::Idle)
+            .map_or(Step::Pass, |idx| Step::Run { idx, force: false })
     }
-    if best.is_some() {
-        return best;
-    }
-    ents.iter().position(|e| e.runnable && e.sc.class() == Class::Idle)
 }
 
 /// One scheduler tick passed with `e` running: spend a tick of its slice.
