@@ -543,7 +543,7 @@ pub(super) fn pi_floor(idx: usize) -> u32 {
 /// priority being installed. A writer that changes it on a live task
 /// reports it with [`pi_attr_changed`] after this store, whose fence orders
 /// it against a lazy call. The initial value is the class [`SC`] starts in.
-static QUIET_KEY: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(PiAttr::Fair.quiet_key()) }; MAX_TASKS];
+static QUIET_KEY: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(PiAttr::Fair { prio: u8::MAX }.quiet_key()) }; MAX_TASKS];
 
 /// The quiet key of a task in `class` at base priority `base`: exactly
 /// [`ClassPiInline::base_attr`]'s value as a key, a DL task's being
@@ -554,7 +554,7 @@ pub const fn quiet_key_of(class: Class, base: u32) -> u32 {
         Class::Stop => PiAttr::Stop.quiet_key(),
         Class::Dl => waitgraph::QUIET_DL,
         Class::Rt => PiAttr::Rt { prio: if base > u8::MAX as u32 { u8::MAX } else { base as u8 } }.quiet_key(),
-        Class::Fair => PiAttr::Fair.quiet_key(),
+        Class::Fair => PiAttr::Fair { prio: if base > u8::MAX as u32 { u8::MAX } else { base as u8 } }.quiet_key(),
         Class::Idle => PiAttr::Idle.quiet_key(),
     }
 }
@@ -591,13 +591,14 @@ fn store_class(sc: &SchedContext, idx: usize, class: Class, prio: Option<u32>, b
 /// the donor's budget. Where it cannot (the server placed on another hart,
 /// or a kernel mutex or PI futex edge, whose object the pick cannot follow
 /// lock-free), the owner runs at the top level and competes in the DL step by
-/// the donor's deadline (D4). RT is its own
-/// number. Fair and idle do not boost (stage 1: no weight inheritance).
+/// the donor's deadline (D4). RT and fair are their own number: a fair
+/// waiter lends its level, and so its EEVDF weight. Idle does not boost.
 pub const fn pi_prio(a: PiAttr) -> u32 {
     match a {
         PiAttr::Stop | PiAttr::Dl { .. } => 0,
         PiAttr::Rt { prio } => prio as u32,
-        PiAttr::Fair | PiAttr::Idle => u32::MAX,
+        PiAttr::Fair { prio } => prio as u32,
+        PiAttr::Idle => u32::MAX,
     }
 }
 
@@ -687,7 +688,7 @@ impl SchedPi for ClassPi {
             }
             Some(Class::Rt) => rt,
             Some(Class::Idle) => PiAttr::Idle,
-            Some(Class::Fair) | None => PiAttr::Fair,
+            Some(Class::Fair) | None => PiAttr::Fair { prio: base.min(u8::MAX as u32) as u8 },
         }
     }
 
@@ -732,7 +733,10 @@ impl SchedPi for ClassPiInline {
     fn base_attr(&self, t: TaskId) -> PiAttr {
         let idx = t as usize;
         match class_of(idx) {
-            Some(Class::Fair) => PiAttr::Fair,
+            Some(Class::Fair) => {
+                let base = unsafe { task_ref(idx) }.base_priority.load(Ordering::Relaxed);
+                PiAttr::Fair { prio: base.min(u8::MAX as u32) as u8 }
+            }
             Some(Class::Rt) => {
                 let base = unsafe { task_ref(idx) }.base_priority.load(Ordering::Relaxed);
                 PiAttr::Rt { prio: base.min(u8::MAX as u32) as u8 }

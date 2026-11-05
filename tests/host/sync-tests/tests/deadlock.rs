@@ -20,7 +20,7 @@ struct Sched {
 }
 
 impl SchedPi for Sched {
-    fn base_attr(&self, _t: TaskId) -> PiAttr { PiAttr::Fair }
+    fn base_attr(&self, _t: TaskId) -> PiAttr { PiAttr::Fair { prio: 20 } }
     fn boost(&self, _t: TaskId, _to: PiAttr) {}
     fn unboost(&self, _t: TaskId, _to: PiAttr) {}
     fn set_blocked_on(&self, t: TaskId, on: Option<WaitObj>) {

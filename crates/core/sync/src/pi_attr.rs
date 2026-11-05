@@ -12,13 +12,14 @@
 ///
 /// Order (most urgent first, the fixed class precedence of N6):
 /// `Stop > Dl > Rt > Fair > Idle`; inside `Dl` the earlier absolute deadline
-/// wins; inside `Rt` the lower priority number wins. `Fair` and `Idle` carry
-/// nothing: a fair donor does not boost a fair owner (no weight
-/// inheritance in stage 1).
+/// wins; inside `Rt` and `Fair` the lower priority number wins (for `Fair`
+/// the heavier EEVDF weight: a fair waiter lends its weight to a fair
+/// owner). `Idle` carries nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PiAttr {
     Idle,
-    Fair,
+    /// Fair (EEVDF) priority level, lower number heavier weight.
+    Fair { prio: u8 },
     /// Real-time priority, lower number more urgent.
     Rt { prio: u8 },
     /// Deadline class, absolute deadline in nanoseconds of the monotonic
@@ -31,7 +32,7 @@ impl PiAttr {
     const fn rank(self) -> u8 {
         match self {
             PiAttr::Idle => 0,
-            PiAttr::Fair => 1,
+            PiAttr::Fair { .. } => 1,
             PiAttr::Rt { .. } => 2,
             PiAttr::Dl { .. } => 3,
             PiAttr::Stop => 4,
@@ -45,7 +46,7 @@ impl PiAttr {
     }
 
     /// `self` as one integer for the lock-free quiet test ([`quiet_le`]):
-    /// `rank << 8`, plus `255 - prio` inside `Rt`, so that for two attributes
+    /// `rank << 8`, plus `255 - prio` inside `Rt` and `Fair`, so that for two attributes
     /// that are not `Dl` the integer order IS [`Ord`] (host test
     /// `quiet_key_matches_ord` enumerates every pair). `Dl` cannot be encoded
     /// (its order is the deadline, which the scheduler reads on the
@@ -55,7 +56,7 @@ impl PiAttr {
     pub const fn quiet_key(self) -> u32 {
         match self {
             PiAttr::Dl { .. } => QUIET_DL,
-            PiAttr::Rt { prio } => ((self.rank() as u32) << 8) | (255 - prio as u32),
+            PiAttr::Rt { prio } | PiAttr::Fair { prio } => ((self.rank() as u32) << 8) | (255 - prio as u32),
             _ => (self.rank() as u32) << 8,
         }
     }
@@ -81,6 +82,7 @@ impl Ord for PiAttr {
         match self.rank().cmp(&o.rank()) {
             Ordering::Equal => match (*self, *o) {
                 (PiAttr::Rt { prio: a }, PiAttr::Rt { prio: b }) => b.cmp(&a),
+                (PiAttr::Fair { prio: a }, PiAttr::Fair { prio: b }) => b.cmp(&a),
                 (PiAttr::Dl { deadline_ns: a }, PiAttr::Dl { deadline_ns: b }) => b.cmp(&a),
                 _ => Ordering::Equal,
             },

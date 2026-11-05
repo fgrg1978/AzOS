@@ -290,7 +290,7 @@ mod graph {
     }
 
     fn attr(raw: usize) -> PiAttr {
-        if raw == 0 { PiAttr::Fair } else { PiAttr::Rt { prio: (raw - 1) as u8 } }
+        if raw == 0 { PiAttr::Fair { prio: 20 } } else { PiAttr::Rt { prio: (raw - 1) as u8 } }
     }
 
     impl SchedPi for Sched {

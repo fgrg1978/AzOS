@@ -2590,8 +2590,8 @@ mod waitgraph_ktests {
     }
 
     static S: Rec = Rec {
-        base: SpinLock::new([PiAttr::Fair; N]),
-        cur: SpinLock::new([PiAttr::Fair; N]),
+        base: SpinLock::new([PiAttr::Fair { prio: 20 }; N]),
+        cur: SpinLock::new([PiAttr::Fair { prio: 20 }; N]),
         on: [const { AtomicUsize::new(0) }; N],
     };
     static G: Graph<N> = Graph::new();
@@ -2612,7 +2612,7 @@ mod waitgraph_ktests {
     azos_ktest::ktest! {
         fn waitgraph_transitive_chain() {
             let g = g();
-            S.set_base(1, PiAttr::Fair);
+            S.set_base(1, PiAttr::Fair { prio: 20 });
             S.set_base(2, rt(20));
             S.set_base(3, rt(5));
             g.set_owner(&O[0], Some(1));
@@ -2625,7 +2625,7 @@ mod waitgraph_ktests {
             if S.cur(1) != rt(5) {
                 return Err("A was not boosted to C through B (transitive inversion)");
             }
-            if g.release(1, &O[0]) != Some(2) || S.cur(1) != PiAttr::Fair {
+            if g.release(1, &O[0]) != Some(2) || S.cur(1) != (PiAttr::Fair { prio: 20 }) {
                 return Err("A's release did not unboost it or name B");
             }
             g.set_owner(&O[0], Some(2));
@@ -2672,7 +2672,7 @@ mod waitgraph_ktests {
             if S.cur(8) != (PiAttr::Dl { deadline_ns: 1_000 }) {
                 return Err("the owner did not inherit the DL donor's deadline");
             }
-            S.set_base(11, PiAttr::Fair);
+            S.set_base(11, PiAttr::Fair { prio: 20 });
             S.set_base(12, rt(40));
             g.set_owner(&O[7], Some(11));
             g.block_on(12, &O[7]).map_err(|_| "the RT waiter could not block")?;
@@ -2683,7 +2683,7 @@ mod waitgraph_ktests {
             }
             g.unblock(9, &O[6], UnblockReason::Timeout);
             g.unblock(12, &O[7], UnblockReason::Timeout);
-            if S.cur(8) != rt(30) || S.cur(11) != PiAttr::Fair {
+            if S.cur(8) != rt(30) || S.cur(11) != (PiAttr::Fair { prio: 20 }) {
                 return Err("leaving waiters left their owners boosted");
             }
             Ok(())
@@ -2700,7 +2700,7 @@ mod waitgraph_ktests {
                 return Err("the ktest's graph is too small for PI_MAX_DEPTH");
             }
             for k in 0..=links as u32 {
-                S.set_base(first + k, PiAttr::Fair);
+                S.set_base(first + k, PiAttr::Fair { prio: 20 });
             }
             for k in 0..links {
                 g.set_owner(&O[obj0 + k], Some(first + k as u32));
@@ -2714,7 +2714,7 @@ mod waitgraph_ktests {
             if g.stats().depth_capped != capped + 1 {
                 return Err("a walk past PI_MAX_DEPTH was not counted");
             }
-            if S.cur(first) != PiAttr::Fair || S.cur(first + 1) != rt(1) {
+            if S.cur(first) != (PiAttr::Fair { prio: 20 }) || S.cur(first + 1) != rt(1) {
                 return Err("the walk did not stop boosting exactly at PI_MAX_DEPTH");
             }
             Ok(())
@@ -2735,7 +2735,7 @@ mod waitgraph_ktests {
             let base = azos_sched::scheduler::current_task_base_priority();
             let want = match azos_sched::classes::class_of(cur) {
                 Some(azos_sched::sc::Class::Rt) => PiAttr::Rt { prio: base as u8 },
-                Some(azos_sched::sc::Class::Fair) => PiAttr::Fair,
+                Some(azos_sched::sc::Class::Fair) => PiAttr::Fair { prio: base as u8 },
                 _ => return Ok(()),
             };
             if pi.base_attr(t) != want {

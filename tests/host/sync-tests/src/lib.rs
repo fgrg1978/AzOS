@@ -144,7 +144,7 @@ mod interface_tests {
     fn pi_attr_order_is_the_class_precedence() {
         let order = [
             PiAttr::Idle,
-            PiAttr::Fair,
+            PiAttr::Fair { prio: 20 },
             PiAttr::Rt { prio: 50 },
             PiAttr::Rt { prio: 10 },
             PiAttr::Dl { deadline_ns: 2_000 },
@@ -162,7 +162,7 @@ mod interface_tests {
         let donor = PiAttr::Dl { deadline_ns: 5 };
         assert_eq!(owner.max_urgent(donor), donor);
         assert_eq!(donor.max_urgent(owner), donor);
-        assert_eq!(PiAttr::Fair.max_urgent(PiAttr::Fair), PiAttr::Fair);
+        assert_eq!(PiAttr::Fair { prio: 20 }.max_urgent(PiAttr::Fair { prio: 20 }), PiAttr::Fair { prio: 20 });
     }
 
     /// Chain E cut 6: the lock-free quiet test (`quiet_le` over two
@@ -174,7 +174,7 @@ mod interface_tests {
     #[test]
     fn quiet_key_matches_ord() {
         use super::waitgraph::{quiet_le, QUIET_DL};
-        let mut all: Vec<PiAttr> = vec![PiAttr::Idle, PiAttr::Fair, PiAttr::Stop];
+        let mut all: Vec<PiAttr> = vec![PiAttr::Idle, PiAttr::Fair { prio: 20 }, PiAttr::Stop];
         all.extend((0..=255u8).map(|prio| PiAttr::Rt { prio }));
         for &w in &all {
             for &o in &all {
@@ -945,16 +945,16 @@ mod kmutex_tests {
         use super::waitgraph::PiAttr;
         let rt = |p| Some(PiAttr::Rt { prio: p });
         // Nobody queued: anyone takes it.
-        assert!(may_take(Some(PiAttr::Fair), None, false));
+        assert!(may_take(Some(PiAttr::Fair { prio: 20 }), None, false));
         assert!(may_take(None, None, false));
         // The top waiter always takes it, whatever the comparison says.
-        assert!(may_take(Some(PiAttr::Fair), rt(4), true));
+        assert!(may_take(Some(PiAttr::Fair { prio: 20 }), rt(4), true));
         // Strictly more urgent overtakes; equal or less waits.
         assert!(may_take(rt(2), rt(4), false));
         assert!(!may_take(rt(4), rt(4), false), "equal urgency stole the lock");
         assert!(!may_take(rt(6), rt(4), false));
-        assert!(!may_take(Some(PiAttr::Fair), Some(PiAttr::Fair), false), "fair stole from fair");
-        assert!(!may_take(Some(PiAttr::Fair), rt(10), false));
+        assert!(!may_take(Some(PiAttr::Fair { prio: 20 }), Some(PiAttr::Fair { prio: 20 }), false), "fair stole from fair");
+        assert!(!may_take(Some(PiAttr::Fair { prio: 20 }), rt(10), false));
         assert!(may_take(Some(PiAttr::Dl { deadline_ns: 1_000 }), rt(0), false));
         assert!(may_take(Some(PiAttr::Dl { deadline_ns: 1_000 }), Some(PiAttr::Dl { deadline_ns: 2_000 }), false));
         assert!(!may_take(Some(PiAttr::Dl { deadline_ns: 2_000 }), Some(PiAttr::Dl { deadline_ns: 1_000 }), false));

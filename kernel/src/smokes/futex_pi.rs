@@ -137,7 +137,7 @@ azos_ktest::ktest_late! {
             finish()?;
             return Err("LOCK_PI on a free word did not write the owner's TID");
         }
-        if base_of(o) != PiAttr::Fair {
+        if !matches!(base_of(o), PiAttr::Fair { .. }) {
             WAITER_DONE.store(true, Ordering::Release);
             finish()?;
             return Err("the owner is not in the fair class (OWNER_PRIO)");

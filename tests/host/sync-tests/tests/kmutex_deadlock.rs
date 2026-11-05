@@ -23,7 +23,7 @@ struct Sched {
 }
 
 impl SchedPi for Sched {
-    fn base_attr(&self, _t: TaskId) -> PiAttr { PiAttr::Fair }
+    fn base_attr(&self, _t: TaskId) -> PiAttr { PiAttr::Fair { prio: 20 } }
     fn boost(&self, _t: TaskId, _to: PiAttr) {}
     fn unboost(&self, _t: TaskId, _to: PiAttr) {}
     fn set_blocked_on(&self, t: TaskId, on: Option<WaitObj>) {
@@ -53,7 +53,7 @@ fn block() {
 fn wake(t: u32) { WOKEN[t as usize].store(true, Ordering::Release); }
 
 fn graph_id(t: u32) -> Option<TaskId> { (t < N as u32).then_some(t as TaskId) }
-fn attr(_t: u32) -> Option<PiAttr> { Some(PiAttr::Fair) }
+fn attr(_t: u32) -> Option<PiAttr> { Some(PiAttr::Fair { prio: 20 }) }
 fn on_cpu(_w: u32) -> bool { false }
 static PROBES: Probes = Probes { on_cpu, graph_id, attr };
 

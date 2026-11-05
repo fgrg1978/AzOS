@@ -20,8 +20,8 @@ struct Rec {
 impl Rec {
     const fn new() -> Self {
         Rec {
-            base: Mutex::new([PiAttr::Fair; N]),
-            cur: Mutex::new([PiAttr::Fair; N]),
+            base: Mutex::new([PiAttr::Fair { prio: 20 }; N]),
+            cur: Mutex::new([PiAttr::Fair { prio: 20 }; N]),
             on: [const { AtomicUsize::new(0) }; N],
         }
     }
@@ -58,7 +58,7 @@ const RT: fn(u8) -> PiAttr = |p| PiAttr::Rt { prio: p };
 
 /// A (1) owns O0, B (2) owns O1 and waits on O0, C (3) waits on O1.
 fn chain() {
-    S.set_base(1, PiAttr::Fair);
+    S.set_base(1, PiAttr::Fair { prio: 20 });
     S.set_base(2, RT(20));
     S.set_base(3, RT(5));
     G.set_owner(&O[0], Some(1));
@@ -78,7 +78,7 @@ fn exit_and_ownerless() {
     G2.register_sched(&S2);
     // A newcomer queued on a released (ownerless) object: no NoOwner, no
     // boost yet; the taker inherits at `set_owner`.
-    S2.set_base(1, PiAttr::Fair);
+    S2.set_base(1, PiAttr::Fair { prio: 20 });
     S2.set_base(2, RT(3));
     assert_eq!(G2.block_on(2, &P[0]), Err(WaitError::NoOwner), "block_on must still refuse an ownerless object");
     G2.block_commit(G2.block_prepare_ownerless(2, &P[0]).unwrap()).unwrap();
@@ -95,7 +95,7 @@ fn exit_and_ownerless() {
     assert_eq!(G2.effective(1), None, "the dead owner's effective attribute survived");
     assert_eq!(G2.stats().orphaned, orphaned + 1);
     // The next taker re-links and inherits.
-    S2.set_base(4, PiAttr::Fair);
+    S2.set_base(4, PiAttr::Fair { prio: 20 });
     G2.set_owner(&P[0], Some(4));
     assert_eq!(S2.cur(4), RT(3));
 
@@ -103,7 +103,7 @@ fn exit_and_ownerless() {
     // back to base.
     G2.task_exit(2);
     assert!(!P[0].has_waiters() && S2.blocked_on(2).is_none(), "a dead waiter is still queued");
-    assert_eq!(S2.cur(4), PiAttr::Fair, "the owner kept a dead waiter's boost");
+    assert_eq!(S2.cur(4), PiAttr::Fair { prio: 20 }, "the owner kept a dead waiter's boost");
     assert_eq!(G2.effective(2), None);
     G2.task_exit(2); // idempotent
 }
@@ -137,7 +137,7 @@ static DIED: DiedRec = DiedRec { calls: Mutex::new(Vec::new()) };
 fn owner_died_hook() {
     G3.register_sched(&S3);
     G3.register_owner_died(EdgeKind::Mutex, &DIED);
-    S3.set_base(1, PiAttr::Fair);
+    S3.set_base(1, PiAttr::Fair { prio: 20 });
     S3.set_base(2, RT(3));
     S3.set_base(3, RT(9));
     G3.set_owner(&Q[0], Some(1));
@@ -209,7 +209,7 @@ fn lazy() {
     assert_eq!(st().lazy_edges, s0.lazy_edges + 2, "a boosting call was lazy");
     assert_eq!(S4.cur(2), RT(5), "the RT caller did not boost the server");
     G4.unblock_lazy(&S4, 3, &OL[0], UnblockReason::Acquired);
-    assert_eq!(S4.cur(2), PiAttr::Fair);
+    assert_eq!(S4.cur(2), PiAttr::Fair { prio: 20 });
 
     // The caller raised after its lazy call (a waiter on an object it owns):
     // the walk materializes the edge and reaches the server.
@@ -226,7 +226,7 @@ fn lazy() {
     let m0 = st().materialized;
     assert_eq!(canary_hole_a(), (RT(3), RT(3)), "a raised lazy caller did not boost its server");
     assert_eq!(st().materialized, m0 + 1);
-    assert_eq!((S4.cur(4), S4.cur(2)), (PiAttr::Fair, PiAttr::Fair), "a boost outlived its edge");
+    assert_eq!((S4.cur(4), S4.cur(2)), (PiAttr::Fair { prio: 20 }, PiAttr::Fair { prio: 20 }), "a boost outlived its edge");
 
     // attr_changed of a lazy caller.
     G4.block_on_lazy(&S4, 6, &OL[0]).unwrap();
@@ -234,8 +234,8 @@ fn lazy() {
     G4.attr_changed(6);
     assert_eq!(S4.cur(2), RT(4), "attr_changed of a lazy caller did not boost its server");
     G4.unblock_lazy(&S4, 6, &OL[0], UnblockReason::Acquired);
-    assert_eq!(S4.cur(2), PiAttr::Fair);
-    S4.set_base(6, PiAttr::Fair);
+    assert_eq!(S4.cur(2), PiAttr::Fair { prio: 20 });
+    S4.set_base(6, PiAttr::Fair { prio: 20 });
 
     // attr_changed of the server under a lazy caller: lowered below it.
     S4.set_base(7, RT(10));
@@ -244,16 +244,16 @@ fn lazy() {
     let l = st().lazy_edges;
     G4.block_on_lazy(&S4, 8, &OL[2]).unwrap();
     assert_eq!(st().lazy_edges, l + 1, "RT 20 calling RT 10 was not lazy");
-    S4.set_base(7, PiAttr::Fair);
+    S4.set_base(7, PiAttr::Fair { prio: 20 });
     G4.attr_changed(7);
     assert_eq!(S4.cur(7), RT(20), "a lowered server lost its lazy caller's priority");
     G4.unblock_lazy(&S4, 8, &OL[2], UnblockReason::Acquired);
-    assert_eq!(S4.cur(7), PiAttr::Fair);
+    assert_eq!(S4.cur(7), PiAttr::Fair { prio: 20 });
 
     // A new owner under a lazy waiter (a server slot reused): the waiter
     // joins the list and boosts the new owner.
     S4.set_base(13, RT(10));
-    S4.set_base(14, PiAttr::Fair);
+    S4.set_base(14, PiAttr::Fair { prio: 20 });
     S4.set_base(15, RT(20));
     G4.set_owner(&OL[7], Some(13));
     let l = st().lazy_edges;
@@ -262,12 +262,12 @@ fn lazy() {
     G4.set_owner(&OL[7], Some(14));
     assert_eq!(S4.cur(14), RT(20), "a new owner missed its lazy waiter");
     G4.unblock_lazy(&S4, 15, &OL[7], UnblockReason::Acquired);
-    assert_eq!(S4.cur(14), PiAttr::Fair);
+    assert_eq!(S4.cur(14), PiAttr::Fair { prio: 20 });
 
     // The server exits under a lazy caller: the node is detached from the
     // dead slot as a listed one is (the caller's blocked_on still names it).
-    S4.set_base(17, PiAttr::Fair);
-    S4.set_base(18, PiAttr::Fair);
+    S4.set_base(17, PiAttr::Fair { prio: 20 });
+    S4.set_base(18, PiAttr::Fair { prio: 20 });
     G4.set_owner(&OL[1], Some(17));
     G4.block_on_lazy(&S4, 18, &OL[1]).unwrap();
     G4.task_exit(17);
@@ -302,7 +302,7 @@ fn lazy() {
     // unboosted. Bucket "fails when broken".
     canary_lazy_no_materialize(true);
     S4.set_base(5, RT(3));
-    assert_eq!(canary_hole_a(), (RT(3), PiAttr::Fair), "the canary still materialized");
+    assert_eq!(canary_hole_a(), (RT(3), PiAttr::Fair { prio: 20 }), "the canary still materialized");
     canary_lazy_no_materialize(false);
     G4.task_exit(4);
 }
@@ -317,7 +317,7 @@ static OQ: [PiWaiters; 3] = [const { PiWaiters::new(EdgeKind::IpcCall) }; 3];
 fn quiet() {
     let st = || G4.stats();
     for t in 20..=24 {
-        S4.set_base(t, PiAttr::Fair);
+        S4.set_base(t, PiAttr::Fair { prio: 20 });
     }
     G4.set_owner(&OQ[0], Some(21));
     let s0 = st();
@@ -333,13 +333,13 @@ fn quiet() {
     S4.set_base(22, RT(5));
     assert!(!G4.block_on_quiet(&S4, 22, &OQ[0]), "a boosting call was quiet");
     assert!(S4.blocked_on(22).is_none(), "a refused quiet call kept its edge");
-    assert_eq!(S4.cur(21), PiAttr::Fair);
+    assert_eq!(S4.cur(21), PiAttr::Fair { prio: 20 });
     assert_eq!((st().lazy_edges, st().walks), (s0.lazy_edges + 1, s0.walks), "a refused quiet call walked");
     // The same call through block_on_lazy is listed: not quiet any more.
     G4.block_on_lazy(&S4, 22, &OQ[0]).unwrap();
     assert!(!G4.edge_is_quiet(&S4, 22), "a listed edge read as quiet");
     G4.unblock_lazy(&S4, 22, &OQ[0], UnblockReason::Acquired);
-    assert_eq!(S4.cur(21), PiAttr::Fair);
+    assert_eq!(S4.cur(21), PiAttr::Fair { prio: 20 });
 
     // A server blocked on something (a chain to carry, a cycle to check).
     G4.set_owner(&OQ[1], Some(23));
@@ -370,7 +370,7 @@ fn wait_graph_stage1() {
     assert_eq!(S.cur(2), RT(5), "B not boosted to C");
     assert_eq!(S.cur(1), RT(5), "A not boosted transitively to C");
     assert_eq!(G.release(1, &O[0]), Some(2));
-    assert_eq!(S.cur(1), PiAttr::Fair, "A kept a boost after its release");
+    assert_eq!(S.cur(1), PiAttr::Fair { prio: 20 }, "A kept a boost after its release");
     G.set_owner(&O[0], Some(2));
     G.unblock(2, &O[0], UnblockReason::Acquired);
     assert_eq!(S.cur(2), RT(5), "B lost C's boost on acquiring O0");
@@ -381,13 +381,13 @@ fn wait_graph_stage1() {
     assert_eq!(G.release(2, &O[0]), None);
 
     // A waiter leaving early (timeout) unboosts the chain.
-    S.set_base(4, PiAttr::Fair);
+    S.set_base(4, PiAttr::Fair { prio: 20 });
     S.set_base(5, RT(7));
     G.set_owner(&O[2], Some(4));
     G.block_on(5, &O[2]).unwrap();
     assert_eq!(S.cur(4), RT(7));
     G.unblock(5, &O[2], UnblockReason::Timeout);
-    assert_eq!(S.cur(4), PiAttr::Fair, "timeout left the owner boosted");
+    assert_eq!(S.cur(4), PiAttr::Fair { prio: 20 }, "timeout left the owner boosted");
 
     // Cycle: D waits on E's object; E waiting on D's is EDEADLK and both
     // tasks are as they were.
@@ -421,7 +421,7 @@ fn wait_graph_stage1() {
     assert_eq!(S.cur(8), PiAttr::Dl { deadline_ns: 500 });
 
     // attr_changed of a waiter re-boosts the owner (and re-sorts it).
-    S.set_base(11, PiAttr::Fair);
+    S.set_base(11, PiAttr::Fair { prio: 20 });
     S.set_base(12, RT(40));
     G.set_owner(&O[7], Some(11));
     G.block_on(12, &O[7]).unwrap();
@@ -433,7 +433,7 @@ fn wait_graph_stage1() {
     G.attr_changed(12);
     assert_eq!(S.cur(11), RT(60), "a waiter's lowered attribute left the owner over-boosted");
     // The scheduler writes a new base over a live boost: put back.
-    S.set_base(11, PiAttr::Fair);
+    S.set_base(11, PiAttr::Fair { prio: 20 });
     G.attr_changed(11);
     assert_eq!(S.cur(11), RT(60), "attr_changed of a boosted owner dropped its boost");
 
@@ -441,7 +441,7 @@ fn wait_graph_stage1() {
     // one more link stops boosting there and is counted.
     let depth = |links: usize, first: u32, obj0: usize| {
         for k in 0..=links as u32 {
-            S.set_base(first + k, PiAttr::Fair);
+            S.set_base(first + k, PiAttr::Fair { prio: 20 });
         }
         for k in 0..links {
             G.set_owner(&O[obj0 + k], Some(first + k as u32));
@@ -460,20 +460,41 @@ fn wait_graph_stage1() {
     assert!((t0 as usize) + PI_MAX_DEPTH + 2 <= 60 && 8 + 2 * PI_MAX_DEPTH + 1 <= 46, "raise N and O for this PI_MAX_DEPTH");
     depth(PI_MAX_DEPTH + 1, t0, 8 + PI_MAX_DEPTH);
     assert_eq!(G.stats().depth_capped, capped + 1, "the depth cap was not counted");
-    assert_eq!(S.cur(t0), PiAttr::Fair, "a walk boosted past PI_MAX_DEPTH");
+    assert_eq!(S.cur(t0), PiAttr::Fair { prio: 20 }, "a walk boosted past PI_MAX_DEPTH");
     assert_eq!(S.cur(t0 + 1), RT(1));
 
     // Canary (canary=pi-depth-1): one step per walk, the chain's root is
     // not boosted. Bucket "fails when broken" for the first scenario.
     canary_cap_depth(1);
-    S.set_base(60, PiAttr::Fair);
-    S.set_base(61, PiAttr::Fair);
+    S.set_base(60, PiAttr::Fair { prio: 20 });
+    S.set_base(61, PiAttr::Fair { prio: 20 });
     S.set_base(62, RT(2));
     G.set_owner(&O[46], Some(60));
     G.set_owner(&O[47], Some(61));
     G.block_on(61, &O[46]).unwrap();
     G.block_on(62, &O[47]).unwrap();
     assert_eq!(S.cur(61), RT(2));
-    assert_eq!(S.cur(60), PiAttr::Fair, "the depth-1 canary still boosted transitively");
+    assert_eq!(S.cur(60), PiAttr::Fair { prio: 20 }, "the depth-1 canary still boosted transitively");
     canary_cap_depth(0);
+}
+
+/// A fair waiter lends its level (its EEVDF weight) to a fair owner, and the
+/// release gives it back; an equal or lighter waiter lends nothing.
+#[test]
+fn fair_weight_is_inherited() {
+    static S2: Rec = Rec::new();
+    static G2: Graph<N> = Graph::new();
+    static O2: [PiWaiters; 2] = [const { PiWaiters::new(EdgeKind::Mutex) }; 2];
+    let fair = |prio| PiAttr::Fair { prio };
+    G2.register_sched(&S2);
+    S2.set_base(1, fair(20));
+    S2.set_base(2, fair(12));
+    S2.set_base(3, fair(25));
+    G2.set_owner(&O2[0], Some(1));
+    G2.block_on(3, &O2[0]).unwrap();
+    assert_eq!(S2.cur(1), fair(20), "a lighter fair waiter boosted the owner");
+    G2.block_on(2, &O2[0]).unwrap();
+    assert_eq!(S2.cur(1), fair(12), "the heavier fair waiter's weight was not inherited");
+    assert_eq!(G2.release(1, &O2[0]), Some(2));
+    assert_eq!(S2.cur(1), fair(20), "the owner kept the weight after its release");
 }
