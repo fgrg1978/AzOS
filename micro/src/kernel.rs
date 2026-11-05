@@ -26,7 +26,7 @@ use core::fmt::Write;
 
 use azos_abi::cap::{launch_name, ty, CapHandle, CapKind, CapPerms, CapType};
 use azos_abi::error::Errno;
-use azos_abi::invoke::{is_domain_self, op_of, DOMAIN_UPTIME, LOG_CONSOLE_WRITE, INVOKE_FLAGS_KNOWN, INVOKE_OP_MASK, INVOKE_REGS};
+use azos_abi::invoke::{is_domain_self, op_of, uptime_words, DOMAIN_UPTIME, LOG_CONSOLE_WRITE, INVOKE_FLAGS_KNOWN, INVOKE_OP_MASK, INVOKE_REGS};
 use azos_abi::syscall_nr::*;
 use azos_topology::types::{CapSpec, TaskSpec};
 use azos_topology::{RowSched, Topology};
@@ -1254,35 +1254,6 @@ impl<'t> Kernel<'t> {
             return -1;
         }
         slot as isize + 1
-    }
-}
-
-/// `mtime` as the two words `DOMAIN_UPTIME` returns it in: the low machine word
-/// in a0 and what is above it in a1 (always 0 on a 64-bit word). A 32-bit
-/// word alone wraps in minutes at the timebase (214 s to read as negative at
-/// 10 MHz, 7 min to wrap), so the counter is not returned truncated: a
-/// reader joins the pair ([`join_words`]); one that wants only a short
-/// interval subtracts the a0 words, which is right across the wrap.
-pub fn uptime_words(now: u64) -> (usize, usize) {
-    let (lo, hi) = split_words(now, usize::BITS);
-    (lo as usize, hi as usize)
-}
-
-/// [`uptime_words`] for a word of `bits` bits.
-pub const fn split_words(now: u64, bits: u32) -> (u64, u64) {
-    if bits >= 64 {
-        (now, 0)
-    } else {
-        (now & ((1 << bits) - 1), now >> bits)
-    }
-}
-
-/// The counter back from the two words of a `bits`-bit machine.
-pub const fn join_words(lo: u64, hi: u64, bits: u32) -> u64 {
-    if bits >= 64 {
-        lo
-    } else {
-        (hi << bits) | lo
     }
 }
 

@@ -113,11 +113,6 @@ impl<'a> CapTable<'a> {
         })
     }
 
-    /// Slots in use.
-    pub fn live(&self) -> usize {
-        self.slots.iter().filter(|s| slot_word::occupied(s.hot)).count()
-    }
-
     /// Free every slot: a task that ends. Generations are kept, so a handle
     /// of the old task can never resolve against a new one's grant.
     pub fn clear_all(&mut self) {

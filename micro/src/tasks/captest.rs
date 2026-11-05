@@ -9,7 +9,7 @@
 
 use azos_abi::syscall_nr::{CAP_INFO_LOOKUP, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY, SYS_SPAWN_EX};
 use azos_abi::invoke::{DOMAIN_SELF, DOMAIN_UPTIME};
-use azos_micro::kernel::{join_words, StartInfo, REGION_CONTIG, REGION_PHYS};
+use azos_micro::kernel::{StartInfo, REGION_CONTIG, REGION_PHYS};
 
 use azos_libsys as sys;
 
@@ -66,10 +66,7 @@ pub extern "C" fn main(_region: usize, info: usize) -> ! {
     let mut check = |name: &[u8], ok: bool, rc: isize| abi_cases::Env::report(run, name, ok, rc);
 
     // The timebase counter is 64 bits wide on every word size: a0 and a1.
-    let uptime = || {
-        let (lo, hi) = sys::uptime_words();
-        join_words(lo as u64, hi as u64, usize::BITS)
-    };
+    let uptime = sys::uptime_counter;
     let (t0, t1) = (uptime(), uptime());
     check(b"micro: uptime (a0, a1) is a 64-bit counter that does not run backwards", t1 >= t0 && t0 > 0, t1.wrapping_sub(t0) as isize);
 

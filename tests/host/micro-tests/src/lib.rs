@@ -230,6 +230,10 @@ mod captable {
         vec![CapSlot::EMPTY; n]
     }
 
+    fn live(slots: &[CapSlot]) -> usize {
+        slots.iter().filter(|s| azos_abi::cap::slot_word::occupied(s.hot)).count()
+    }
+
     #[test]
     fn install_resolve_and_the_order_of_the_checks() {
         let mut s = table(4);
@@ -293,7 +297,7 @@ mod captable {
         assert_eq!(t.lookup(ty::SHM, 1), None);
         t.close(a).unwrap();
         assert_eq!(t.lookup(ty::ENDPOINT, 1), None);
-        assert_eq!(t.live(), 1);
+        assert_eq!(live(&s), 1);
     }
 
     #[test]
@@ -304,7 +308,8 @@ mod captable {
         t.install(ty::MMIO, CapPerms::READ, 1).unwrap();
         assert!(t.install(ty::MMIO, CapPerms::READ, 2).is_none());
         t.clear_all();
-        assert_eq!(t.live(), 0);
+        assert_eq!(live(&s), 0);
+        let mut t = CapTable::new(&mut s);
         assert_eq!(t.resolve(h0, ty::MMIO, CapPerms::NONE), Err(CapError::Stale));
         let again = t.install(ty::MMIO, CapPerms::READ, 0).unwrap();
         assert_eq!(again.generation(), h0.generation() + 1);

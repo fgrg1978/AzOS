@@ -19,12 +19,12 @@
 //! **No statics, no vDSO.** A task of AzOS-micro reaches only its own region,
 //! so nothing here keeps state: the console handle is looked up on every
 //! [`print`] (the 64-bit `console_write` caches it in a static) and the clock
-//! is always the trap ([`uptime_words`]); there is no vDSO page to read.
+//! is always the trap ([`uptime_counter`]); there is no vDSO page to read.
 
 use core::arch::asm;
 
 use azos_abi::cap::ty;
-use azos_abi::invoke::{DOMAIN_SELF, DOMAIN_UPTIME, INVOKE_REGS, LOG_CONSOLE_WRITE};
+use azos_abi::invoke::{join_words, DOMAIN_SELF, DOMAIN_UPTIME, INVOKE_REGS, LOG_CONSOLE_WRITE};
 use azos_abi::syscall_nr::{
     CAP_INFO_LOOKUP, SLEEP_RELATIVE, SYS_CAP_INFO, SYS_EXIT, SYS_INVOKE, SYS_IPC_FAST_ACCEPT, SYS_IPC_FAST_CALL_EP,
     SYS_IPC_FAST_REPLY_ACCEPT, SYS_SLEEP_UNTIL,
@@ -106,16 +106,14 @@ pub fn invoke(handle: u32, op: u16, w: [usize; 4]) -> (isize, [usize; 4]) {
     (ret, [r1, r2, r3, r4])
 }
 
-/// The timebase counter as the two words the uptime op of the task's own
-/// domain answers: the low word (a0) and what is above it (a1). One word
-/// alone wraps in minutes at the timebase, so the counter is not truncated;
-/// the caller joins the pair at its word size (`join_words` in
-/// `micro/src/kernel.rs`, the inverse of the kernel's split), or subtracts the
-/// low words for a short interval, which is right across the wrap. Always the
-/// trap: the 64-bit `uptime` reads the vDSO page, which this kernel has not.
-pub fn uptime_words() -> (usize, usize) {
+/// The timebase counter: the two words the uptime op of the task's own domain
+/// answers, joined at this word size (`azos_abi::invoke::join_words`). Always
+/// the trap: the 64-bit `uptime` reads the vDSO page, which this kernel has
+/// not. A caller that wants only a short interval can subtract the low words
+/// instead, which is right across the wrap.
+pub fn uptime_counter() -> u64 {
     let (lo, w) = invoke(DOMAIN_SELF.as_raw(), DOMAIN_UPTIME, [0; 4]);
-    (lo as usize, w[0])
+    join_words(lo as u64, w[0] as u64, usize::BITS)
 }
 
 /// Write `s` to the console: this task's console handle is looked up, then

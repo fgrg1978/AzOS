@@ -6,7 +6,7 @@
 
 use azos_abi::cap::{ty, CapHandle};
 use azos_abi::error::Errno;
-use azos_abi::invoke::{DOMAIN_SELF, DOMAIN_UPTIME, INVOKE_REGS, LOG_CONSOLE_WRITE};
+use azos_abi::invoke::{join_words, split_words, uptime_words, DOMAIN_SELF, DOMAIN_UPTIME, INVOKE_REGS, LOG_CONSOLE_WRITE};
 use azos_abi::syscall_nr::*;
 use azos_micro::config::*;
 use azos_micro::kernel::*;
@@ -24,12 +24,13 @@ extern "C" fn nop(_: usize, _: usize) -> ! {
     loop {}
 }
 
-static IMAGES: [Image; 5] = [
+static IMAGES: [Image; 6] = [
     Image { name: "IDLE.ELF", entry: nop },
     Image { name: "ECHO.ELF", entry: nop },
     Image { name: "CAPTEST.ELF", entry: nop },
     Image { name: "SPAWNEE.ELF", entry: nop },
     Image { name: "FAULTER.ELF", entry: nop },
+    Image { name: "ABCDEFGH.ELF", entry: nop },
 ];
 
 struct FakeHw {
@@ -519,6 +520,27 @@ fn spawn_ex_starts_a_row_under_a_launch_capability_and_only_then() {
     assert_eq!(s.sys(cap, SYS_SPAWN_EX, [at, at, 0, 0, 0, 0]), Some(-(Errno::EINVAL as isize)));
     // A path outside the caller's memory.
     assert_eq!(s.sys(cap, SYS_SPAWN_EX, [0x10, 0, 0, 0, 0, 0]), Some(-(Errno::EFAULT as isize)));
+}
+
+#[test]
+fn spawn_ex_takes_the_longest_image_name_and_refuses_one_byte_more() {
+    let caps = "[task.IDLE.ELF]\nclass = \"idle\"\npriority = 31\nmem_pages = 1\nstart = true\ncaps = []\n\
+[task.CAPTEST.ELF]\nclass = \"rt\"\npriority = 12\nmem_pages = 2\nstart = true\ncaps = [ { kind = \"node\", target = \"ABCDEFGH.ELF\", perm = \"x\" } ]\n\
+[task.ABCDEFGH.ELF]\nclass = \"rt\"\npriority = 14\nmem_pages = 1\nstart = false\ncaps = []\n";
+    let mut s = Sim::boot(SCHED, with_header(caps)).unwrap();
+    let cap = s.run("CAPTEST.ELF");
+    let at = s.info(cap).regions[0].base as usize;
+    let put = |name: &[u8]| {
+        // SAFETY: inside the task's own part.
+        unsafe { core::ptr::copy_nonoverlapping(name.as_ptr(), at as *mut u8, name.len()) };
+    };
+    put(b"ABCDEFGHI.ELF\0");
+    assert_eq!(s.sys(cap, SYS_SPAWN_EX, [at, 0, 0, 0, 0, 0]), Some(-(Errno::EINVAL as isize)));
+    put(b"ABCDEFGH.ELF\0");
+    assert_eq!(b"ABCDEFGH.ELF".len(), azos_abi::cap::launch_name::MAX);
+    let tid = s.sys(cap, SYS_SPAWN_EX, [at, 0, 0, 0, 0, 0]).unwrap();
+    assert_eq!(tid, s.slot("ABCDEFGH.ELF") as isize + 1);
+    assert_eq!(s.k.state(s.slot("ABCDEFGH.ELF")), State::Ready);
 }
 
 #[test]
