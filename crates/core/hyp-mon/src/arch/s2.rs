@@ -458,7 +458,7 @@ pub unsafe fn build_and_enable(hole_pa: u64, hole_len: u64, ram_top: u64) {
 /// Stage-2 abort from EL1: record it and reflect a synchronous data/instruction
 /// abort into EL1, so the kernel's own abort handler reports the refusal
 /// (the attack never takes effect — the write never reached memory).
-pub fn fault(_regs: *mut u64, esr: u64, is_instr: bool) {
+pub fn fault(regs: *mut u64, esr: u64, is_instr: bool) {
     let far: u64;
     let hpfar: u64;
     let elr: u64;
@@ -473,7 +473,7 @@ pub fn fault(_regs: *mut u64, esr: u64, is_instr: bool) {
     // of FAR.
     let ipa = ((hpfar & !0xf) << 8) | (far & 0xfff);
     if transient(esr, ipa) { return; }
-    if !is_instr && super::its::rd_write(_regs, esr, ipa) { return; }
+    if !is_instr && super::its::rd_write(regs, esr, ipa) { return; }
     let pe = {
         let mpidr: u64;
         unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) mpidr) };

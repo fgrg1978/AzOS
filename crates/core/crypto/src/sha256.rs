@@ -10,6 +10,7 @@ mod core_impl;
 
 pub use core_impl::{blocks_dup64, blocks_wide, sha256, Digest, Sha256};
 use core_impl::blocks_generic;
+// arch-only: the riscv64 Zbb / Zknh block functions; every other ISA takes the portable code.
 #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
 use core_impl::rv;
 

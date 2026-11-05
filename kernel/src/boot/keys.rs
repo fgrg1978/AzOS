@@ -26,6 +26,7 @@ use crate::kprintln;
 /// boot draws both secrets from the pool).
 pub(crate) fn install_keystore_roots() {
     // VIRT_SPLIT (Kconfig HYP_MONITOR): the roots go to the monitor, not here.
+    // arch-only: the resident monitor exists on aarch64 alone (ARCH_HAS_HYP_MONITOR).
     #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
     crate::entry::aarch64::ext::hyp_monitor::install_vault();
     #[cfg(feature = "tpm")]
@@ -45,6 +46,7 @@ pub(crate) fn install_keystore_roots() {
     kprintln!("[KEYS] roots: boot {}, tpm_nv {}, volume {}; {} handles, {} per owner",
               yn(Backend::Boot), yn(Backend::TpmNv), yn(Backend::Volume),
               azos_limits::KEYSTORE_KEYS, azos_limits::KEYSTORE_KEYS_PER_OWNER);
+    // arch-only: as above.
     #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
     crate::entry::aarch64::ext::hyp_monitor::report_roots(azos_syscall::keys::roots_in_kernel());
 }

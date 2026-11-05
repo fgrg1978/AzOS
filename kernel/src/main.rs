@@ -508,10 +508,12 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Runtime gate canary `canary=ro-seal-skip`: the hooks stay open and writable.
     // VIRT_SPLIT (Kconfig HYP_MONITOR): the monitor locks text and rodata,
     // then `ro_after_init` with the seal.
+    // arch-only: the resident monitor exists on aarch64 alone (ARCH_HAS_HYP_MONITOR).
     #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
     crate::entry::aarch64::ext::hyp_monitor::lock_image();
     if !canary!("ro-seal-skip") {
         boot::seal_ro_after_init();
+        // arch-only: as above.
         #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
         crate::entry::aarch64::ext::hyp_monitor::lock_ro_data();
     }

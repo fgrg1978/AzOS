@@ -276,7 +276,7 @@ pub fn rd_frames() -> (u64, u64, u64) {
 
 /// The lock protected the GIC.
 pub fn locked() {
-    if UP.load(Ordering::Acquire) != 0 && !cfg!(feature = "hyp-its-window-canary") {
+    if UP.load(Ordering::Acquire) != 0 && !cfg!(feature = "hyp-its-window-canary") && !cfg!(feature = "hyp-rd-open-canary") {
         HYP.set_invariant(INV_ITS);
     }
 }

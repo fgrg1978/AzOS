@@ -4563,7 +4563,7 @@ const DMA_MASTERS: &[(DmaMaster, &[&str])] = &[
     (DmaMaster::VirtioMmio, &["virtio,mmio"]),
     (
         DmaMaster::Ethernet,
-        &["brcm,bcm2711-genet-v5", "brcm,genet-v5", "cdns,macb", "cdns,gem", "cdns,zynqmp-gem", "snps,dwmac*", "st,stm32-dwmac", "fsl,imx*-fec", "xlnx,axi-ethernet*", "intel,igb"],
+        &["brcm,bcm2711-genet-v5", "brcm,genet-v5", "cdns,macb", "cdns,gem", "cdns,zynqmp-gem", "snps,dwmac*", "st,stm32-dwmac", "fsl,imx*-fec", "xlnx,axi-ethernet*"],
     ),
     (
         DmaMaster::Usb,
