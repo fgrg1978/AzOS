@@ -17,9 +17,10 @@
 # changed by hand (wave 11).
 #
 # What each domain does:
-#   Only Robot links the robot crates under crates/domains/robot/ (behavior and the
-#   brain link, safety-core, flight, the ESC and RC receiver drivers) plus the
-#   IMU / barometer / GPS drivers. Every domain links the shared actuation
+#   Only the robot extension (EXT_ROBOT, config/extensions/Kconfig) links the
+#   robot crates under crates/domains/robot/ (behavior and the brain link,
+#   safety-core, flight, the ESC and RC receiver drivers) plus the IMU /
+#   barometer / GPS drivers; USE_ROBOT follows it. Every domain links the shared actuation
 #   authority (crates/core/actuation: e-stop latch, signed release, flight
 #   recorder, system watchdog). The other domains change defaults only, with
 #   `imply` or a conditional default, never `select`.
@@ -36,9 +37,11 @@ config USE_GENERIC
 
 config USE_ROBOT
     # cargo-feature: use-robot
-    def_bool PRESET_ROBOT
+    def_bool EXT_ROBOT
     help
-      Links the robot crates (kernel feature `use-robot`):
+      The robot extension is on (EXT_ROBOT, config/extensions/Kconfig, which
+      the robot preset picks by default). Links the robot crates (kernel
+      feature `use-robot`):
       behavior and the brain link, the motor control loop and the
       per-robot-type safety envelope (safety-core), IMU / barometer /
       GPS / AHRS, flight, navigation, telemetry, the in-kernel benches, and starts their tasks.

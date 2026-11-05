@@ -24,6 +24,7 @@ endmenu # Preset and profile axes
 # comes next: it decides which domain menus are shown (the Robot menu, with
 # the brain link inside it, is visible only for USE_ROBOT).
 source "config/axes/Kconfig.use"
+source "config/extensions/Kconfig"
 
 menu "Robot"
     visible if USE_ROBOT

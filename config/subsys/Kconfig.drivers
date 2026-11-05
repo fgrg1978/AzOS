@@ -629,7 +629,7 @@ config DRV_RING3_DEFAULT
 config BOARD_IO
     # cargo-feature: board-io
     bool "Board sensors: converter, rangefinders, LiDAR, power monitor, camera" if !USE_ROBOT
-    default y if USE_ROBOT || USE_IOT_HMI || USE_INDUSTRIAL || USE_AUTOMOTIVE || USE_WEARABLE
+    default y if USE_IOT_HMI || USE_INDUSTRIAL || USE_AUTOMOTIVE || USE_WEARABLE
     help
       Kernel feature `board-io`: links crates/drivers/sensor (the ADS1115
       converter, ultrasonic and ToF rangefinders, the LiDAR, the INA219 power
@@ -638,8 +638,9 @@ config BOARD_IO
       battery, LiDAR, power and camera types of the `Sensor` interface.
       Off, those sensor types read as not ready, no `Adc` interface is
       served and none of that code is in the image (tools/lint/
-      profile_cut_lint.py checks the dependency set). The Robot domain
-      needs it, so with USE_ROBOT it is on and not shown.
+      profile_cut_lint.py checks the dependency set). The robot extension
+      needs it (EXT_ROBOT implies it), so with USE_ROBOT it is on and not
+      shown.
 
 choice DRV_INA219_PLACEMENT
     prompt "INA219 power monitor: placement"

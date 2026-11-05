@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/extensions/Kconfig — Extensions: what a use adds to the common base
+#
+# An extension adds to the base kernel and never changes it. Its kernel side is
+# the crates it links and the effect providers it installs through the contract
+# in crates/core/ext-api (its Manifest); its user side is its ring-3 services.
+# A preset picks extensions by default; a manual choice wins. An extension
+# pulls what it needs with `imply`, never `select`.
+
+menu "Extensions"
+
+config EXT_ROBOT
+    bool "Robot: motors, sensors, safety envelope and the brain link"
+    default y if PRESET_ROBOT
+    imply BOARD_IO
+    help
+      The robot extension (USE_ROBOT, kernel feature `use-robot`): the
+      crates under crates/domains/robot (behavior and the brain link, the
+      motor control loop and its per-robot-type envelope, IMU / barometer /
+      GPS / AHRS, flight, navigation, telemetry, the ESC and RC drivers),
+      the board's sensors (BOARD_IO) and the camera frame ring. Its effect
+      provider (`azos_safety_core::actuation::ROBOT`) stops the wheels, the
+      ESC and the payload whenever the e-stop latches. Off, none of it is
+      linked (tools/lint/profile_cut_lint.py, the `robot` cut).
+
+endmenu # Extensions
