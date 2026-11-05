@@ -270,31 +270,108 @@ pub fn futex_precheck(uaddr: u64, expected: u32) -> Result<(), i64> {
 /// word did not hold `expected` (nothing blocked); `-ETIMEDOUT`; `-EINTR` a
 /// stop, or the scheduler refused to block (preemption disabled);
 /// `-EINVAL` misaligned; `-EFAULT` unreadable.
-pub fn sys_futex_wait(uaddr: u64, expected: u64, timeout_ns: u64) -> i64 {
+pub fn sys_futex_wait(uaddr: u64, a1: u64, timeout_ns: u64) -> i64 {
+    use azos_abi::syscall_nr::{futex_op, FUTEX_OP_PI_LOCK, FUTEX_OP_PI_TRYLOCK};
+    use azos_sync::pi_futex::PiCmd;
     if uaddr & 3 != 0 {
         return Errno::EINVAL.to_syscall_ret();
     }
-    if let Err(e) = futex_precheck(uaddr, expected as u32) {
+    let (op, expected) = futex_op(a1);
+    match op {
+        0 => {}
+        FUTEX_OP_PI_LOCK => return futex_pi(uaddr, true, PiCmd::Lock { deadline: deadline_after(timeout_ns) }),
+        FUTEX_OP_PI_TRYLOCK => return futex_pi(uaddr, true, PiCmd::TryLock),
+        _ => return Errno::EINVAL.to_syscall_ret(),
+    }
+    if let Err(e) = futex_precheck(uaddr, expected) {
         return e;
     }
-    let deadline = (timeout_ns != 0).then(|| {
-        azos_drv_sys::timebase::now().saturating_add(azos_abi::time::ns_to_ticks_ceil(
-            timeout_ns,
-            azos_drv_sys::timebase::TIMER_FREQ,
-        ))
-    });
+    let deadline = deadline_after(timeout_ns);
     // Canary `futex-key-outside-canary`: the key from a lookup before the
     // table's section (the shape before front futex-single-section), the
     // value from the look inside it.
     let early = if cfg!(feature = "futex-key-outside-canary") { futex_word(uaddr).ok().map(|w| w.0) } else { None };
     let look = || futex_look(uaddr, true).map(|(k, v)| (early.unwrap_or(k), v));
-    azos_sched::futex::wait(&look, &|| futex_settle(uaddr), expected as u32, deadline)
+    azos_sched::futex::wait(&look, &|| futex_settle(uaddr), expected, deadline)
+}
+
+/// The absolute deadline `timeout_ns` from now, in timer ticks (0: none).
+fn deadline_after(timeout_ns: u64) -> Option<u64> {
+    (timeout_ns != 0).then(|| {
+        azos_drv_sys::timebase::now().saturating_add(azos_abi::time::ns_to_ticks_ceil(
+            timeout_ns,
+            azos_drv_sys::timebase::TIMER_FREQ,
+        ))
+    })
+}
+
+/// A priority-inheritance call on the PI word at `uaddr` (aligned): the
+/// native `FUTEX_OP_PI_*` operations and the Linux personality's
+/// `FUTEX_*_PI`. `shared`: a word of a shm region the caller maps is keyed
+/// by the region (N10b), so two processes sharing it share one pi_state;
+/// any other word by the process.
+pub(crate) fn futex_pi(uaddr: u64, shared: bool, cmd: azos_sync::pi_futex::PiCmd) -> i64 {
+    if shared && azos_sched::futex_table::SHARED {
+        let tid = azos_sched::current_proc_tid();
+        if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
+            let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
+            return azos_sched::futex::pi_call_key(key, &ShmPiWord { tid, uaddr, key: (region, off) }, cmd);
+        }
+    }
+    azos_sync::pi_futex::sys_futex_pi(uaddr, cmd)
+}
+
+/// A PI word of a shm region, resolved through the caller's process mapping
+/// on every access (N10b): a relock after the sleep never trusts a page
+/// taken before it, and an unmapped region answers `EFAULT`. Each access runs
+/// with the region table held (`vdso_notify::with_keyed_shm_word`), so the
+/// frame cannot change owner under it, and only while the mapping still names
+/// the word of `key` (the region and offset the call is keyed by): a region
+/// mapped at `uaddr` since answers `EFAULT`, so the PI state of one key never
+/// reads or swaps another key's word. The swap also needs the mapping writable
+/// now, a writable object and a page no clone shares, else `EFAULT`. Its only
+/// fault-in is waiting for the region table: only the owner's `SYS_MO_MAP`
+/// protect changes a shm mapping's access (no kernel path write-protects one
+/// for a while), and a writable mapping has no clone-shared page (the map and
+/// the protect break them).
+pub(crate) struct ShmPiWord {
+    pub(crate) tid: u32,
+    pub(crate) uaddr: u64,
+    /// `(region, offset)`: the word's identity when the call was keyed.
+    pub(crate) key: (u32, usize),
+}
+
+impl azos_sched::futex::PiWord for ShmPiWord {
+    fn read(&self) -> Result<u32, azos_sync::pi_futex::UserFault> {
+        use core::sync::atomic::Ordering::Acquire;
+        with_keyed_shm_word(self.tid, self.uaddr, self.key, false, |w| w.load(Acquire))
+            .ok_or(azos_sync::pi_futex::UserFault)
+    }
+    fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, azos_sync::pi_futex::UserFault> {
+        use core::sync::atomic::Ordering::{AcqRel, Acquire};
+        with_keyed_shm_word(self.tid, self.uaddr, self.key, true, |w| {
+            match w.compare_exchange(expected, new, AcqRel, Acquire) {
+                Ok(v) | Err(v) => v,
+            }
+        })
+        .ok_or(azos_sync::pi_futex::UserFault)
+    }
+    fn fault_in(&self) -> bool {
+        keyed_shm_word_settle(self.tid, self.uaddr, self.key, true)
+    }
 }
 
 /// `SYS_FUTEX_WAKE`: `a0 = uaddr`, `a1 = n`. Wakes up to `n` waiters on the
 /// word and returns how many; `-EINVAL`/`-EFAULT` as [`sys_futex_wait`] (a
 /// word nobody can read is no futex).
-pub fn sys_futex_wake(uaddr: u64, n: u64) -> i64 {
+pub fn sys_futex_wake(uaddr: u64, a1: u64) -> i64 {
+    use azos_abi::syscall_nr::{futex_op, FUTEX_OP_PI_UNLOCK};
+    let (op, n) = futex_op(a1);
+    match op {
+        0 => {}
+        FUTEX_OP_PI_UNLOCK if uaddr & 3 == 0 => return futex_pi(uaddr, true, azos_sync::pi_futex::PiCmd::Unlock),
+        _ => return Errno::EINVAL.to_syscall_ret(),
+    }
     let (key, shm) = match futex_word(uaddr) {
         Ok(w) => w,
         Err(e) => return e,
@@ -302,5 +379,5 @@ pub fn sys_futex_wake(uaddr: u64, n: u64) -> i64 {
     if !shm && azos_sched::UserPtr::<u32>::new(uaddr).read().is_err() {
         return Errno::EFAULT.to_syscall_ret();
     }
-    azos_sched::futex::wake_key(key, n.min(u32::MAX as u64) as u32)
+    azos_sched::futex::wake_key(key, n)
 }

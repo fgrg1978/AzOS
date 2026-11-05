@@ -159,6 +159,16 @@ impl Native for Sys {
     fn futex_wake(&self, addr: u64, n: u32) -> i64 {
         sys::futex_wake_addr(addr as usize, n) as i64
     }
+    fn futex_lock_pi(&self, addr: u64, timeout_ns: u64, try_only: bool) -> i64 {
+        if try_only {
+            sys::futex_trylock_pi_addr(addr as usize) as i64
+        } else {
+            sys::futex_lock_pi_addr(addr as usize, timeout_ns) as i64
+        }
+    }
+    fn futex_unlock_pi(&self, addr: u64) -> i64 {
+        sys::futex_unlock_pi_addr(addr as usize) as i64
+    }
     fn alert(&self, tid: u32, signo: u32) -> i64 {
         sys::task_kill(tid, azos_abi::ushell::KILL_REQUEST | azos_abi::ushell::KILL_FORCE, u64::from(signo), 0) as i64
     }

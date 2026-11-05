@@ -908,15 +908,40 @@ pub const PORT_EVENT_CPU_OFFSET: usize = 9;
 /// (the word differs), `-ETIMEDOUT` (110), `-EINTR`, `-EFAULT`, `-EINVAL`
 /// (misaligned).
 ///
+/// The high 32 bits of `a1` select a priority-inheritance operation on a word
+/// that holds its owner's TID (the Linux PI word protocol: TID |
+/// `FUTEX_WAITERS` | `FUTEX_OWNER_DIED`): [`FUTEX_OP_PI_LOCK`] (blocks until
+/// owned, the owner running at least at the waiter's attribute; `a2` as
+/// above) and [`FUTEX_OP_PI_TRYLOCK`]; the low 32 bits are then ignored. 0 is
+/// the plain wait. Any other operation: `-EINVAL`. A dead owner's word is
+/// handed to its top waiter with `FUTEX_OWNER_DIED` set.
+///
 /// Foundational case 2 (block/wake: sleeps on a word).
 pub const SYS_FUTEX_WAIT: u64 = 28;
 
 /// `SYS_FUTEX_WAKE` — wave 13: wake at most `a1` waiters on the word at `a0`,
 /// keyed as [`SYS_FUTEX_WAIT`] keys it. Returns how many were woken;
-/// `-EFAULT` for a word the caller cannot read, `-EINVAL` misaligned.
+/// `-EFAULT` for a word the caller cannot read, `-EINVAL` misaligned. With
+/// [`FUTEX_OP_PI_UNLOCK`] in the high 32 bits of `a1`, the owner releases a
+/// PI word to its top waiter (`-EPERM` from a task that does not own it).
 ///
 /// Foundational case 2 (block/wake: wakes the sleepers of a word).
 pub const SYS_FUTEX_WAKE: u64 = 29;
+
+/// Where a futex call's operation sits in `a1` (the value or count below it).
+pub const FUTEX_OP_SHIFT: u32 = 32;
+/// [`SYS_FUTEX_WAIT`]: take a PI word, blocking.
+pub const FUTEX_OP_PI_LOCK: u64 = 1;
+/// [`SYS_FUTEX_WAIT`]: take a PI word if it is free.
+pub const FUTEX_OP_PI_TRYLOCK: u64 = 2;
+/// [`SYS_FUTEX_WAKE`]: release a PI word.
+pub const FUTEX_OP_PI_UNLOCK: u64 = 1;
+
+/// `a1` of a futex call: its operation and the low word (value or count).
+#[inline]
+pub const fn futex_op(a1: u64) -> (u64, u32) {
+    (a1 >> FUTEX_OP_SHIFT, a1 as u32)
+}
 
 
 // ── Foreign ABI ───────────────────────────────────────────────────────

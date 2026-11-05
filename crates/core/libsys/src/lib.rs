@@ -703,6 +703,24 @@ pub fn futex_wake_addr(addr: usize, n: u32) -> isize {
     unsafe { syscall2(SYS_FUTEX_WAKE, addr as u64, n as u64) }
 }
 
+/// Take the PI word at `addr` (`SYS_FUTEX_WAIT`, `FUTEX_OP_PI_LOCK`): it holds
+/// the owner's TID; blocks until this task owns it, the owner running at least
+/// at this task's attribute meanwhile. `timeout_ns` relative, 0: none.
+pub fn futex_lock_pi_addr(addr: usize, timeout_ns: u64) -> isize {
+    unsafe { syscall3(SYS_FUTEX_WAIT, addr as u64, azos_abi::syscall_nr::FUTEX_OP_PI_LOCK << azos_abi::syscall_nr::FUTEX_OP_SHIFT, timeout_ns) }
+}
+
+/// Take the PI word at `addr` if it is free (`FUTEX_OP_PI_TRYLOCK`).
+pub fn futex_trylock_pi_addr(addr: usize) -> isize {
+    unsafe { syscall3(SYS_FUTEX_WAIT, addr as u64, azos_abi::syscall_nr::FUTEX_OP_PI_TRYLOCK << azos_abi::syscall_nr::FUTEX_OP_SHIFT, 0) }
+}
+
+/// Release the PI word at `addr` to its top waiter (`SYS_FUTEX_WAKE`,
+/// `FUTEX_OP_PI_UNLOCK`).
+pub fn futex_unlock_pi_addr(addr: usize) -> isize {
+    unsafe { syscall2(SYS_FUTEX_WAKE, addr as u64, azos_abi::syscall_nr::FUTEX_OP_PI_UNLOCK << azos_abi::syscall_nr::FUTEX_OP_SHIFT) }
+}
+
 /// `-ETIMEDOUT`: what a futex wait answers when its timeout passes.
 pub const FUTEX_ETIMEDOUT: isize = -110;
 

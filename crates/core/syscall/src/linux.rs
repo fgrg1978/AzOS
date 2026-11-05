@@ -1648,7 +1648,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
         }
         // Wave 15 N10, Kconfig FUTEX_PI: n answers ENOSYS (below) as before.
         FUTEX_LOCK_PI | FUTEX_LOCK_PI2 | FUTEX_TRYLOCK_PI | FUTEX_UNLOCK_PI if azos_sync::pi_futex::ENABLED => {
-            use azos_sync::pi_futex::{sys_futex_pi, PiCmd};
+            use azos_sync::pi_futex::PiCmd;
             if uaddr & 3 != 0 {
                 return neg(le::EINVAL);
             }
@@ -1672,16 +1672,8 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             // The native calls these stand for: a lock waits, an unlock wakes.
             reach(if pcmd_is_unlock { k::SYS_FUTEX_WAKE } else { k::SYS_FUTEX_WAIT });
             // Without FUTEX_PRIVATE_FLAG a word of a shm region is keyed by
-            // the region (N10b), so two processes sharing it share one
-            // pi_state, as N9 keys plain shared futexes.
-            if !private && azos_sched::futex_table::SHARED {
-                let tid = azos_sched::current_proc_tid();
-                if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
-                    let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
-                    return azos_sched::futex::pi_call_key(key, &ShmPiWord { tid, uaddr, key: (region, off) }, pcmd);
-                }
-            }
-            sys_futex_pi(uaddr, pcmd)
+            // the region (N10b), as N9 keys plain shared futexes.
+            crate::vdso_notify::futex_pi(uaddr, !private, pcmd)
         }
         _ => unanswered(nr::FUTEX),
     }
@@ -1719,7 +1711,7 @@ fn pi_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, LxPiWor
         let tid = azos_sched::current_proc_tid();
         if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
             let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
-            return Ok((key, LxPiWord::Shm(ShmPiWord { tid, uaddr, key: (region, off) })));
+            return Ok((key, LxPiWord::Shm(crate::vdso_notify::ShmPiWord { tid, uaddr, key: (region, off) })));
         }
     }
     let key = azos_sched::futex::private_key(uaddr).ok_or(neg(le::EFAULT))?;
@@ -1728,7 +1720,7 @@ fn pi_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, LxPiWor
 
 /// A PI word of either kind ([`pi_word`]).
 enum LxPiWord {
-    Shm(ShmPiWord),
+    Shm(crate::vdso_notify::ShmPiWord),
     User(azos_sched::futex::UserWord),
 }
 
@@ -1750,46 +1742,6 @@ impl azos_sched::futex::PiWord for LxPiWord {
             LxPiWord::Shm(w) => w.fault_in(),
             LxPiWord::User(w) => w.fault_in(),
         }
-    }
-}
-
-/// A PI word of a shm region, resolved through the caller's process mapping
-/// on every access (N10b): a relock after the sleep never trusts a page
-/// taken before it, and an unmapped region answers `EFAULT`. Each access runs
-/// with the region table held (`vdso_notify::with_keyed_shm_word`), so the
-/// frame cannot change owner under it, and only while the mapping still names
-/// the word of `key` (the region and offset the call is keyed by): a region
-/// mapped at `uaddr` since answers `EFAULT`, so the PI state of one key never
-/// reads or swaps another key's word. The swap also needs the mapping writable
-/// now, a writable object and a page no clone shares, else `EFAULT`. Its only
-/// fault-in is waiting for the region table: only the owner's `SYS_MO_MAP`
-/// protect changes a shm mapping's access (no kernel path write-protects one
-/// for a while), and a writable mapping has no clone-shared page (the map and
-/// the protect break them).
-struct ShmPiWord {
-    tid: u32,
-    uaddr: u64,
-    /// `(region, offset)`: the word's identity when the call was keyed.
-    key: (u32, usize),
-}
-
-impl azos_sched::futex::PiWord for ShmPiWord {
-    fn read(&self) -> Result<u32, azos_sync::pi_futex::UserFault> {
-        use core::sync::atomic::Ordering::Acquire;
-        crate::vdso_notify::with_keyed_shm_word(self.tid, self.uaddr, self.key, false, |w| w.load(Acquire))
-            .ok_or(azos_sync::pi_futex::UserFault)
-    }
-    fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, azos_sync::pi_futex::UserFault> {
-        use core::sync::atomic::Ordering::{AcqRel, Acquire};
-        crate::vdso_notify::with_keyed_shm_word(self.tid, self.uaddr, self.key, true, |w| {
-            match w.compare_exchange(expected, new, AcqRel, Acquire) {
-                Ok(v) | Err(v) => v,
-            }
-        })
-        .ok_or(azos_sync::pi_futex::UserFault)
-    }
-    fn fault_in(&self) -> bool {
-        crate::vdso_notify::keyed_shm_word_settle(self.tid, self.uaddr, self.key, true)
     }
 }
 

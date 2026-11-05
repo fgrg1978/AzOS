@@ -59,6 +59,9 @@ mod tests {
         futex_waits: Vec<(u64, u32, u64)>,
         futex_answer: i64,
         futex_wakes: Vec<(u64, u32)>,
+        /// PI word calls: (addr, relative ns, trylock) for a take, addr for a release.
+        pi_locks: Vec<(u64, u64, bool)>,
+        pi_unlocks: Vec<u64>,
         /// `mprotect` calls (addr, len, prot).
         protects: Vec<(u64, u64, u64)>,
         /// `thread_create` calls: (newsp, clear_tid, tls, settid, result register, sp register).
@@ -315,6 +318,14 @@ mod tests {
         fn futex_wake(&self, addr: u64, n: u32) -> i64 {
             self.0.borrow_mut().futex_wakes.push((addr, n));
             1
+        }
+        fn futex_lock_pi(&self, addr: u64, timeout_ns: u64, try_only: bool) -> i64 {
+            self.0.borrow_mut().pi_locks.push((addr, timeout_ns, try_only));
+            0
+        }
+        fn futex_unlock_pi(&self, addr: u64) -> i64 {
+            self.0.borrow_mut().pi_unlocks.push(addr);
+            0
         }
         fn alert(&self, tid: u32, signo: u32) -> i64 {
             let mut m = self.0.borrow_mut();
@@ -801,10 +812,24 @@ mod tests {
     }
 
     #[test]
+    fn pi_futexes_are_the_native_pi_word_operations() {
+        use lx::futex::*;
+        let r = rt();
+        assert_eq!(call(&r, nr::FUTEX, [0x1000, FUTEX_LOCK_PI | FUTEX_PRIVATE_FLAG, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::FUTEX, [0x1000, FUTEX_TRYLOCK_PI, 0, 0, 0, 0]), 0);
+        assert_eq!(call(&r, nr::FUTEX, [0x1000, FUTEX_UNLOCK_PI, 0, 0, 0, 0]), 0);
+        // A misaligned word is refused before the kernel is asked.
+        assert_eq!(call(&r, nr::FUTEX, [0x1002, FUTEX_LOCK_PI, 0, 0, 0, 0]), -le::EINVAL);
+        let m = r.native().0.borrow();
+        assert_eq!(m.pi_locks, vec![(0x1000, 0, false), (0x1000, 0, true)]);
+        assert_eq!(m.pi_unlocks, vec![0x1000]);
+    }
+
+    #[test]
     fn what_has_no_native_primitive_yet_answers_enosys_and_is_reported_once_per_call() {
         let r = rt();
         assert_eq!(call(&r, nr::SET_ROBUST_LIST, [0, 24, 0, 0, 0, 0]), -le::ENOSYS);
-        // Requeue and priority inheritance are the native PI wait's job (D5).
+        // Requeue has no native primitive yet.
         assert_eq!(call(&r, nr::FUTEX, [0x1000, 3, 1, 1, 0x2000, 0]), -le::ENOSYS);
         let console = String::from_utf8(r.native().0.borrow().console.clone()).unwrap();
         assert_eq!(console.matches("not answered by the personality: -ENOSYS").count(), 2);

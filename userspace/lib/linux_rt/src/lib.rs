@@ -49,11 +49,12 @@
 //!
 //! # What it does not answer yet
 //!
-//! requeue and priority-inheritance futexes (D5), `set_robust_list`, and
-//! console input. Each answers `-ENOSYS` (or end
-//! of file, for the console) and is reported once per call number, never
-//! silently. `lseek`, `mprotect` and `futex` wait and wake are answered over
-//! `NODE_SEEK`, `DOMAIN_MPROTECT` and `SYS_FUTEX_WAIT/WAKE`.
+//! requeue futexes, `set_robust_list`, and console input. Each answers
+//! `-ENOSYS` (or end of file, for the console) and is reported once per call
+//! number, never silently. `lseek`, `mprotect`, `futex` wait and wake and the
+//! priority-inheritance futexes are answered over `NODE_SEEK`,
+//! `DOMAIN_MPROTECT` and `SYS_FUTEX_WAIT/WAKE` (the PI ones through its
+//! `FUTEX_OP_PI_*` operations, the same word protocol).
 //!
 //! # Threads and `execve`
 //!
@@ -274,6 +275,10 @@ pub trait Native {
     fn futex_wait(&self, addr: u64, expected: u32, timeout_ns: u64) -> i64;
     /// `SYS_FUTEX_WAKE`: how many waiters were woken.
     fn futex_wake(&self, addr: u64, n: u32) -> i64;
+    /// The native PI word operations (`FUTEX_OP_PI_*`): take (`timeout_ns`
+    /// relative, 0: none; `try_only`: do not block) and release the word at `addr`.
+    fn futex_lock_pi(&self, addr: u64, timeout_ns: u64, try_only: bool) -> i64;
+    fn futex_unlock_pi(&self, addr: u64) -> i64;
     /// `SYS_THREAD_CREATE` for a Linux thread: it resumes `start` (the
     /// creator's registers, result 0, stack pointer `newsp`) with the thread
     /// pointer `tls`, after storing its own id at every non-zero address in
@@ -1824,9 +1829,11 @@ impl<N: Native> Runtime<N> {
         lx::errno_from_native(self.native.mprotect(addr, len, prot), le::ENOMEM)
     }
 
-    /// `futex` wait and wake on the plain or `_BITSET(MATCH_ANY)` form. The
-    /// kernel keys the word by the process, so `FUTEX_PRIVATE_FLAG` changes
-    /// nothing. Requeue and priority inheritance are not answered.
+    /// `futex` wait and wake on the plain or `_BITSET(MATCH_ANY)` form, and the
+    /// priority-inheritance lock, trylock and unlock on the native PI word
+    /// operations (same word protocol). The kernel keys the word by the
+    /// process, so `FUTEX_PRIVATE_FLAG` changes nothing. Requeue is not
+    /// answered.
     fn sys_futex(&self, uaddr: u64, op: u64, val: u64, timeout: u64, val3: u64) -> i64 {
         use lx::futex::*;
         let cmd = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
@@ -1875,6 +1882,45 @@ impl<N: Native> Runtime<N> {
                     return neg(le::EINVAL);
                 }
                 lx::errno_from_native(self.native.futex_wake(uaddr, val as u32), le::EINVAL)
+            }
+            FUTEX_LOCK_PI | FUTEX_LOCK_PI2 | FUTEX_TRYLOCK_PI => {
+                if uaddr == 0 {
+                    return neg(le::EFAULT);
+                }
+                if uaddr & 3 != 0 {
+                    return neg(le::EINVAL);
+                }
+                // Absolute: on CLOCK_REALTIME for FUTEX_LOCK_PI, and for
+                // FUTEX_LOCK_PI2 when the flag says so; else the monotonic one.
+                let rel = if cmd == FUTEX_TRYLOCK_PI || timeout == 0 {
+                    0
+                } else {
+                    let mut b = [0u8; 16];
+                    if get_user(timeout, &mut b) != 0 {
+                        return neg(le::EFAULT);
+                    }
+                    let Some(ns) = lx::timespec_ns(&b) else { return neg(le::EINVAL) };
+                    let realtime = cmd == FUTEX_LOCK_PI || op & FUTEX_CLOCK_REALTIME != 0;
+                    let clock = if realtime { ClockId::REAL } else { ClockId::MONO };
+                    let Ok(now) = self.native.clock_ns(clock) else { return neg(le::EINVAL) };
+                    match ns.checked_sub(now) {
+                        Some(d) if d > 0 => d,
+                        _ => return neg(le::ETIMEDOUT),
+                    }
+                };
+                match self.native.futex_lock_pi(uaddr, rel, cmd == FUTEX_TRYLOCK_PI) {
+                    -110 => neg(le::ETIMEDOUT),
+                    r => lx::errno_from_native(r, le::EINVAL),
+                }
+            }
+            FUTEX_UNLOCK_PI => {
+                if uaddr == 0 {
+                    return neg(le::EFAULT);
+                }
+                if uaddr & 3 != 0 {
+                    return neg(le::EINVAL);
+                }
+                lx::errno_from_native(self.native.futex_unlock_pi(uaddr), le::EINVAL)
             }
             _ => self.unanswered(nr::FUTEX),
         }

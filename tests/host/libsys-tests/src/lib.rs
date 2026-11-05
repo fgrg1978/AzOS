@@ -1134,3 +1134,25 @@ mod shared_fds_tests {
         }
     }
 }
+
+/// The futex calls carry their operation in the high 32 bits of `a1`: the
+/// plain wait and wake keep 0 there (the value or count is 32 bits), the PI
+/// operations sit above it, and the kernel's decode returns both halves.
+#[cfg(test)]
+mod futex_op_word {
+    use azos_abi::syscall_nr::{futex_op, FUTEX_OP_PI_LOCK, FUTEX_OP_PI_TRYLOCK, FUTEX_OP_PI_UNLOCK, FUTEX_OP_SHIFT};
+
+    #[test]
+    fn a_plain_value_is_operation_zero() {
+        assert_eq!(futex_op(u32::MAX as u64), (0, u32::MAX));
+        assert_eq!(futex_op(7), (0, 7));
+    }
+
+    #[test]
+    fn the_pi_operations_sit_above_the_value() {
+        assert_eq!(futex_op(FUTEX_OP_PI_LOCK << FUTEX_OP_SHIFT), (FUTEX_OP_PI_LOCK, 0));
+        assert_eq!(futex_op(FUTEX_OP_PI_TRYLOCK << FUTEX_OP_SHIFT | 5), (FUTEX_OP_PI_TRYLOCK, 5));
+        assert_eq!(futex_op(FUTEX_OP_PI_UNLOCK << FUTEX_OP_SHIFT), (FUTEX_OP_PI_UNLOCK, 0));
+        assert_ne!(FUTEX_OP_PI_LOCK, FUTEX_OP_PI_TRYLOCK);
+    }
+}
