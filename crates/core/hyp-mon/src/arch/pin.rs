@@ -31,21 +31,32 @@ fn pe() -> u32 {
     (mpidr & 0xff) as u32
 }
 
-/// Per PE, before EL1 runs: no fine-grained trap armed. Their reset value is
-/// unknown, and a trap bit set by chance would reach `trap` with a register it
-/// does not know. Registers named by encoding: `HFGRTR`, `HFGWTR`, `HFGITR`,
-/// `HDFGRTR`, `HDFGWTR`.
+/// Per PE, before EL1 runs: no fine-grained trap armed (`fgt_open`). Registers
+/// named by encoding: `HFGRTR`, `HFGWTR`, `HFGITR`, `HDFGRTR`, `HDFGWTR`.
 pub fn init_pe() {
     if !has_fgt(mmfr0()) {
         return;
     }
+    let (dfr0, pfr1, mmfr3): (u64, u64, u64);
+    // SAFETY: ID registers.
     unsafe {
         core::arch::asm!(
-            "msr S3_4_C1_C1_4, xzr",
-            "msr S3_4_C1_C1_5, xzr",
-            "msr S3_4_C1_C1_6, xzr",
-            "msr S3_4_C3_C1_4, xzr",
-            "msr S3_4_C3_C1_5, xzr",
+            "mrs {a}, ID_AA64DFR0_EL1",
+            "mrs {b}, ID_AA64PFR1_EL1",
+            "mrs {c}, S3_0_C0_C7_3", // ID_AA64MMFR3_EL1
+            a = out(reg) dfr0, b = out(reg) pfr1, c = out(reg) mmfr3,
+        );
+    }
+    let f = fgt_open(&IdRegs { dfr0, pfr1, mmfr3 });
+    // SAFETY: FEAT_FGT is implemented (checked above).
+    unsafe {
+        core::arch::asm!(
+            "msr S3_4_C1_C1_4, {r}",
+            "msr S3_4_C1_C1_5, {w}",
+            "msr S3_4_C1_C1_6, {i}",
+            "msr S3_4_C3_C1_4, {dr}",
+            "msr S3_4_C3_C1_5, {dw}",
+            r = in(reg) f.hfgrtr, w = in(reg) f.hfgwtr, i = in(reg) f.hfgitr, dr = in(reg) f.hdfgrtr, dw = in(reg) f.hdfgwtr,
         );
     }
 }

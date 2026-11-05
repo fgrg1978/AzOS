@@ -108,3 +108,49 @@ fn the_vectors_constant_is_a_ttbr0_write_with_any_source_register() {
         assert_ne!(other & !RT_MASK, TTBR0_WRITE_ESR, "{other:#x}");
     }
 }
+
+fn open_for(dfr0: u64, pfr1: u64, mmfr3: u64) -> Fgt {
+    fgt_open(&IdRegs { dfr0, pfr1, mmfr3 })
+}
+
+#[test]
+fn a_core_with_none_of_the_features_traps_nothing_that_is_not_there() {
+    let f = open_for(0, 0, 0);
+    assert_eq!((f.hfgrtr, f.hfgwtr, f.hfgitr, f.hdfgrtr, f.hdfgwtr), (0, 0, 0, 0, 0));
+}
+
+#[test]
+fn each_feature_opens_the_registers_it_adds_and_only_those() {
+    // Positions: Linux arch/arm64/tools/sysreg, HFGxTR_EL2 / HFGITR_EL2 / HDFGxTR_EL2.
+    let sme = open_for(0, 1 << 24, 0);
+    assert_eq!(sme.hfgrtr, 1 << 55 | 1 << 54, "nTPIDR2_EL0, nSMPRI_EL1");
+    assert_eq!(sme.hfgwtr, sme.hfgrtr, "reads and writes take the same bits");
+    let pie = open_for(0, 0, 1 << 8);
+    assert_eq!(pie.hfgrtr, 1 << 58 | 1 << 57, "nPIR_EL1, nPIRE0_EL1");
+    let poe = open_for(0, 0, 1 << 16);
+    assert_eq!(poe.hfgrtr, 1 << 59, "nPOR_EL0");
+    let gcs = open_for(0, 1 << 44, 0);
+    assert_eq!(gcs.hfgrtr, 1 << 53 | 1 << 52, "nGCS_EL1, nGCS_EL0");
+    for f in [sme, pie, poe, gcs] {
+        assert_eq!((f.hfgitr, f.hdfgrtr, f.hdfgwtr), (0, 0, 0));
+    }
+    let brbe = open_for(1 << 52, 0, 0);
+    assert_eq!(brbe.hfgitr, 1 << 56 | 1 << 55, "nBRBIALL, nBRBINJ");
+    assert_eq!(brbe.hdfgrtr, 1 << 61 | 1 << 60 | 1 << 59, "nBRBDATA, nBRBCTL, nBRBIDR");
+    assert_eq!(brbe.hdfgwtr, 1 << 61 | 1 << 60, "nBRBDATA, nBRBCTL: BRBIDR has no write");
+    assert_eq!(brbe.hfgrtr, 0);
+}
+
+#[test]
+fn spe_opens_pmsnevfr_from_version_1p2_up() {
+    assert_eq!(open_for(2 << 32, 0, 0).hdfgrtr, 0, "v1p1");
+    assert_eq!(open_for(3 << 32, 0, 0).hdfgrtr, 1 << 62, "v1p2");
+    assert_eq!(open_for(3 << 32, 0, 0).hdfgwtr, 1 << 62);
+    assert_eq!(open_for(6 << 32, 0, 0).hdfgrtr, 1 << 62, "later versions keep it");
+}
+
+#[test]
+fn a_neighbouring_field_opens_nothing() {
+    // PMUVer (bits 11:8) of DFR0, MTE (11:8) of PFR1, S1POE's neighbour in MMFR3.
+    assert_eq!(open_for(0xf << 8, 0xf << 8, 0xf << 20), open_for(0, 0, 0));
+}

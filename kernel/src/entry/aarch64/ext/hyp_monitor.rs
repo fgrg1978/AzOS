@@ -376,6 +376,7 @@ fn pin_probe() {
     let before = ring_count(Kind::SysregRefused);
     if before != 0 {
         kprintln!("[HYP] PROBE FAILED: boot wrote a pinned register after the pin ({} refused)", before);
+        return;
     }
     // TCR_EL1.TBI0 and SCTLR_EL1.UCT: nothing the kernel runs on depends on either.
     let (tcr, sctlr) = (read_tcr_el1(), read_sctlr_el1());

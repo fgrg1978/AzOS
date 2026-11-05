@@ -63,6 +63,56 @@ pub const HFGWTR_TCR_EL1: u64 = 1 << 32;
 pub const HFGWTR_TTBR1_EL1: u64 = 1 << 37;
 pub const HFGWTR_PIN: u64 = HFGWTR_SCTLR_EL1 | HFGWTR_TCR_EL1 | HFGWTR_TTBR1_EL1;
 
+/// The fine-grained trap registers a PE starts with: every bit of the five
+/// that traps nothing the kernel uses. Their reset value is unknown, and most
+/// bits trap when set; the `n*` bits (an `nXXX` register in the architecture's
+/// names) trap when clear, and exist only for the feature that adds the
+/// register, so they are set exactly where the ID registers say it is there.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Fgt {
+    pub hfgrtr: u64,
+    pub hfgwtr: u64,
+    pub hfgitr: u64,
+    pub hdfgrtr: u64,
+    pub hdfgwtr: u64,
+}
+
+/// `ID_AA64DFR0_EL1`, `ID_AA64PFR1_EL1` and `ID_AA64MMFR3_EL1`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct IdRegs {
+    pub dfr0: u64,
+    pub pfr1: u64,
+    pub mmfr3: u64,
+}
+
+const fn field(v: u64, lsb: u32) -> u64 {
+    (v >> lsb) & 0xf
+}
+
+const fn set_if(on: bool, bits: u64) -> u64 {
+    if on { bits } else { 0 }
+}
+
+pub const fn fgt_open(id: &IdRegs) -> Fgt {
+    let spe_v1p2 = field(id.dfr0, 32) >= 3;
+    let brbe = field(id.dfr0, 52) != 0;
+    let sme = field(id.pfr1, 24) != 0;
+    let gcs = field(id.pfr1, 44) != 0;
+    let pie = field(id.mmfr3, 8) != 0;
+    let poe = field(id.mmfr3, 16) != 0;
+    let rw = set_if(sme, 1 << 55 | 1 << 54)  // nTPIDR2_EL0, nSMPRI_EL1
+        | set_if(pie, 1 << 58 | 1 << 57)     // nPIR_EL1, nPIRE0_EL1
+        | set_if(poe, 1 << 59)               // nPOR_EL0
+        | set_if(gcs, 1 << 53 | 1 << 52);    // nGCS_EL1, nGCS_EL0
+    Fgt {
+        hfgrtr: rw,
+        hfgwtr: rw,
+        hfgitr: set_if(brbe, 1 << 56 | 1 << 55), // nBRBIALL, nBRBINJ
+        hdfgrtr: set_if(spe_v1p2, 1 << 62) | set_if(brbe, 1 << 61 | 1 << 60 | 1 << 59), // nPMSNEVFR_EL1; nBRBDATA, nBRBCTL, nBRBIDR
+        hdfgwtr: set_if(spe_v1p2, 1 << 62) | set_if(brbe, 1 << 61 | 1 << 60),
+    }
+}
+
 /// `HCR_EL2.TVM`: writes to the virtual-memory registers trap.
 pub const HCR_TVM: u64 = 1 << 26;
 
