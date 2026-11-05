@@ -15,9 +15,9 @@
 use crate::endpoint::Dest;
 use crate::ep_queue::{self, Collected as QCollected, Reply as QReply};
 
-/// "No donation rides on this exchange" in a call record's `donee` field and
-/// in [`FastIpcReply::Woke`]. `u32::MAX` is never a TID (`NEXT_TID` skips it).
-pub const NO_DONEE: u32 = u32::MAX;
+/// "No donation rides on this exchange" in a call record's `donee` field (the
+/// call edge's retire token). `u32::MAX` is never a TID (`NEXT_TID` skips it).
+pub(crate) const NO_DONEE: u32 = u32::MAX;
 
 /// Maximum number of 64-bit words in a fast IPC message.
 pub const FAST_IPC_MAX_WORDS: usize = 4;
@@ -41,11 +41,9 @@ pub enum FastIpcReply {
     ///
     /// `slot_idx` is the caller's call record, returned rather than left for
     /// the caller to decode out of the handle, so the wait reason is keyed on
-    /// one derivation only.
-    ///
-    /// `donee` is always [`NO_DONEE`] here: the call's wait-graph edge is
-    /// retired inside this crate.
-    Woke { caller_tid: u32, slot_idx: usize, donee: u32 },
+    /// one derivation only. The call's wait-graph edge is retired inside this
+    /// crate.
+    Woke { caller_tid: u32, slot_idx: usize },
     /// The handle names an exchange that ended. **Nothing was written.**
     Stale,
     /// Rejected for any other reason.
@@ -72,11 +70,11 @@ pub type AcceptedReq = (u64, u32, [u64; WORDS], u32);
 /// What a caller finds when it collects.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Collected {
-    /// The reply, and a donation the caller owes back (or [`NO_DONEE`]).
-    Reply([u64; WORDS], u32),
+    /// The reply.
+    Reply([u64; WORDS]),
     /// The call was completed without an answer: `code` is `-EPEERDIED` or
-    /// `-EREVOKED`; and a donation owed back.
-    Done(i64, u32),
+    /// `-EREVOKED`.
+    Done(i64),
     /// Nothing yet, or not this caller's.
     Nothing,
 }
@@ -84,8 +82,6 @@ pub enum Collected {
 /// What [`abandon`] took back.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Abandoned {
-    /// The donation the caller owes back, or [`NO_DONEE`].
-    pub donee: u32,
     /// No server took the request: a capability moved with it may go back.
     pub was_queued: bool,
 }
@@ -102,8 +98,8 @@ pub struct Abandoned {
 // retires the call: whoever takes it unblocks instead of returning. The
 // caller also leaves its own edge when it collects or abandons (the replier's
 // unblock runs after the answer is published, so the caller may already be
-// past it); every donee that leaves this file is then NO_DONEE, and
-// `syscall::dispatch` and `ipc_v2` return nothing.
+// past it), so no donee leaves this file: `collect`, `abandon` and `reply`
+// answer without one.
 
 use azos_sync::waitgraph::{self, EdgeKind, PiWaiters, UnblockReason, WaitError};
 
@@ -393,7 +389,7 @@ fn map_reply(r: QReply, replier: u32) -> FastIpcReply {
     let out = match r {
         QReply::Woke { caller, rec, donee } => {
             Edge::retire(rec, donee);
-            FastIpcReply::Woke { caller_tid: caller, slot_idx: rec, donee: NO_DONEE }
+            FastIpcReply::Woke { caller_tid: caller, slot_idx: rec }
         }
         QReply::Stale => FastIpcReply::Stale,
         QReply::Refused => FastIpcReply::Refused,
@@ -435,11 +431,11 @@ pub fn reply_then_accept(
 #[inline]
 pub fn collect(handle: u64, caller_tid: u32) -> Collected {
     let out = match ep_queue::collect(handle, caller_tid) {
-        QCollected::Reply(w, _) => Collected::Reply(w, NO_DONEE),
-        QCollected::Done(code, _) => Collected::Done(i64::from(code), NO_DONEE),
+        QCollected::Reply(w, _) => Collected::Reply(w),
+        QCollected::Done(code, _) => Collected::Done(i64::from(code)),
         QCollected::Nothing => return Collected::Nothing,
     };
-    // The caller leaves its call edge and owes nothing back.
+    // The caller leaves its call edge.
     if let Some(idx) = azos_sched::idx_for_tid(caller_tid) {
         Edge::leave(idx);
     }
@@ -471,7 +467,7 @@ pub fn abandon(handle: u64, caller_tid: u32) -> Abandoned {
     if let Some(idx) = azos_sched::idx_for_tid(caller_tid) {
         Edge::leave(idx);
     }
-    Abandoned { donee: NO_DONEE, was_queued: a.was_queued }
+    Abandoned { was_queued: a.was_queued }
 }
 
 /// The task-exit hook's caller half: withdraw `tid`'s own call. (Its server

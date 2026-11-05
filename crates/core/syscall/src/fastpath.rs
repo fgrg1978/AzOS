@@ -505,7 +505,7 @@ fn call_parked<R: IpcRegs>(
     ipc_fast_handoff(cpu, server_idx, WaitReason::FastIpcClient(handle), irq);
     // Running again: the answer is normally in the record.
     match fastcall::collect(handle, caller_tid) {
-        Collected::Reply(reply, _) => {
+        Collected::Reply(reply) => {
             regs.set_out(0, reply[1]);
             regs.set_out(1, reply[2]);
             regs.set_out(2, reply[3]);
@@ -516,7 +516,7 @@ fn call_parked<R: IpcRegs>(
         }
         // Completed without an answer (the server died, the endpoint was
         // destroyed): the code is the call's answer, as in the arm.
-        Collected::Done(code, _) => {
+        Collected::Done(code) => {
             Some(code)
         }
         // Woken without an answer: the arm's retry loop, from turn 0's

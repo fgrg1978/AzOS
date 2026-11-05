@@ -304,11 +304,11 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
             azos_sched::task_block_unless_killed(azos_sched::WaitReason::FastIpcClient(handle));
         }
         match fastcall::collect(handle, caller_tid) {
-            Collected::Reply(w, _) => {
+            Collected::Reply(w) => {
                 answer = Some(w);
                 break;
             }
-            Collected::Done(code, _) => {
+            Collected::Done(code) => {
                 // Refused by a v1 accept: the server never saw the call, so
                 // every capability it carried comes back, on the path of a
                 // call withdrawn before it was taken (a caller that exits

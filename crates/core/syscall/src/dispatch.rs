@@ -452,7 +452,7 @@ pub(crate) fn fast_ipc_call_wait(
             // a previous exchange's payload. libsys's wrapper
             // declares a1..a5 `lateout` — the shared syscallN
             // helpers (in("aN")) must never carry this call.
-            azos_ipc::fastcall::Collected::Reply(reply, _) => {
+            azos_ipc::fastcall::Collected::Reply(reply) => {
                 // A reply that handed off to us left the
                 // donation for us to return (the server is
                 // asleep by now): see
@@ -466,7 +466,7 @@ pub(crate) fn fast_ipc_call_wait(
             // server died (-EPEERDIED) or the endpoint was
             // destroyed (-EREVOKED) with this call queued or
             // in service. The code is the call's answer.
-            azos_ipc::fastcall::Collected::Done(code, _) => {
+            azos_ipc::fastcall::Collected::Done(code) => {
                 result = code;
                 completed = true;
                 break;
@@ -946,7 +946,7 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
     match azos_ipc::fastcall::reply(handle, replier_tid, privileged, words) {
         // `_slot_idx`: only the ipc-trace build reads it, and the
         // warning gate compiles without that feature.
-        azos_ipc::FastIpcReply::Woke { caller_tid, slot_idx: _slot_idx, .. } => {
+        azos_ipc::FastIpcReply::Woke { caller_tid, slot_idx: _slot_idx } => {
             // **WHY the wake is addressed by TID (K-C10).** A
             // sweep-keyed wake would match on
             // `WaitReason::FastIpcClient(handle)`, which only exists
