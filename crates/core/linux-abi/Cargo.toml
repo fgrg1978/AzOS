@@ -8,6 +8,7 @@ description = "The Linux personality's pure half: Linux syscall numbers, errno m
 
 [dependencies]
 azos_abi = { path = "../abi" }
+azos_image = { path = "../image" }
 
 [features]
 # Gate canary (K2): writev makes one write per iovec again, so another

@@ -551,6 +551,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_image"
+version = "0.1.0"
+
+[[package]]
 name = "azos_imu"
 version = "0.1.0"
 dependencies = [
@@ -729,6 +733,7 @@ name = "azos_linux_abi"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_image",
 ]
 
 [[package]]
@@ -929,6 +934,7 @@ dependencies = [
  "azos_drv_base",
  "azos_drv_sys",
  "azos_energy",
+ "azos_image",
  "azos_limits",
  "azos_linux_abi",
  "azos_mm",

@@ -373,7 +373,7 @@ threads-late-start-canary = ["azos_sched/threads-late-start-canary"]
 exec-no-dethread-canary = ["azos_sched/exec-no-dethread-canary"]
 # Wave 15 (K2) gate canary: a Linux writev makes one write per iovec again,
 # so another writer lands between two segments (the LXTHR writev check FAILs).
-writev-per-segment-canary = ["azos_linux_abi/writev-per-segment-canary"]
+writev-per-segment-canary = ["linux-abi", "azos_linux_abi/writev-per-segment-canary"]
 thread-objects-canary = ["azos_syscall/thread-objects-canary"]
 exec-no-pid-swap-canary = ["azos_sched/exec-no-pid-swap-canary"]
 exec-bounce-pi-canary = []
@@ -400,7 +400,7 @@ natfork-template-tamper-canary = ["azos_syscall/natfork-template-tamper-canary"]
 natfork-template-noseal-canary = ["azos_syscall/natfork-template-noseal-canary"]
 # Kconfig LINUX_ABI: the Linux personality (`azos_syscall::linux`) and everything that
 # calls into it is compiled; without it none of that is in the image.
-linux-abi = ["azos_syscall/linux-abi"]
+linux-abi = ["azos_syscall/linux-abi", "azos_sched/linux-abi", "dep:azos_linux_abi"]
 # Kconfig LINUX_RUNTIME: the ring-3 runtime that hosts the Linux personality
 # (`userspace/lib/linux_rt`, built to $AZOS_OUT/build/linux_rt.elf) is embedded in the
 # kernel image and mapped into every Linux process at spawn.
@@ -1421,7 +1421,7 @@ azos_pkg       = { workspace = true }
 azos_limits    = { workspace = true }
 # The Linux personality's numbers (the aarch64 trap snapshots a
 # Linux `clone` like a native fork).
-azos_linux_abi = { workspace = true }
+azos_linux_abi = { workspace = true, optional = true }
 # The safety path (crates/domains/robot/safety-core). The kernel creates its
 # tasks, calls its ISR-side functions and installs its OTA boot-good hook.
 azos_safety_core = { path = "../crates/domains/robot/safety-core", optional = true }

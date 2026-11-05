@@ -230,6 +230,7 @@ pub fn set_current_robust_list(head: u64) {
 }
 
 /// Take the robust list head of the task in slot `idx` (0 for none).
+#[cfg(feature = "linux-abi")]
 pub(crate) fn take_robust_list(idx: usize) -> u64 {
     if idx < MAX_TASKS { ROBUST_HEAD[idx].swap(0, Ordering::AcqRel) } else { 0 }
 }

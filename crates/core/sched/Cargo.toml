@@ -178,6 +178,8 @@ threads-private-table-canary = []
 # Canary: a Linux task's filter word never carries the Linux bit, so
 # its Linux numbers are read against the native table. The gate's `linux:` rows
 # must fail with it. Never in a real build.
+# Kconfig LINUX_ABI: the Linux rows can be spawned and their robust list walked.
+linux-abi = ["dep:azos_linux_abi"]
 linux-abi-tag-canary = []
 # Canary: a Linux task's riscv64 FP file and aarch64
 # TPIDR_EL0 are not switched with it. The FP and BusyBox fork rows must fail.
@@ -350,8 +352,11 @@ azos_decision = { workspace = true }
 # Wave 15: the tracer's sched and proc tracepoints (depends on abi, rings and
 # limits only, so this closes no cycle).
 azos_trace = { workspace = true }
-# The Linux personality's numbers and layouts (pure, no state).
-azos_linux_abi = { workspace = true }
+# The image loader's facts and initial stack (native and Linux images).
+azos_image = { workspace = true }
+# The Linux personality's numbers and layouts (pure, no state), with Kconfig
+# LINUX_ABI only.
+azos_linux_abi = { workspace = true, optional = true }
 azos_drv_base = { workspace = true }
 azos_drv_sys  = { workspace = true }
 # `seccomp.rs` hashes each image at exec with the one SHA-256 the kernel links.

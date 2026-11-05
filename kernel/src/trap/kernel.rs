@@ -212,10 +212,7 @@ fn dispatch<F: ArchFrame, const TRY_FAST: bool>(frame: &mut F, num: u64, entry: 
     // forks through the same snapshot): any new reader must be added here or
     // it reads zeroes.
     let wants = F::SNAPSHOT_REGS
-        && (azos_syscall::foreign::needs_user_regs(num)
-            || (azos_limits::LINUX_ABI
-                && num == azos_linux_abi::nr::CLONE
-                && azos_sched::scheduler::current_is_linux()));
+        && (azos_syscall::foreign::needs_user_regs(num) || linux_clone(num));
     let [a0, a1, a2, a3, a4, a5] = frame.syscall_args();
     let (pc, sp) = (frame.pc(), frame.user_sp());
     let mut out = azos_syscall::SyscallOut::new();
@@ -532,4 +529,16 @@ impl Kernel {
             && azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
         (true, woke)
     }
+}
+
+/// A Linux task's `clone`, which needs the caller's registers for the child.
+#[inline(always)]
+fn linux_clone(num: u64) -> bool {
+    #[cfg(feature = "linux-abi")]
+    return num == azos_linux_abi::nr::CLONE && azos_sched::scheduler::current_is_linux();
+    #[cfg(not(feature = "linux-abi"))]
+    return {
+        let _ = num;
+        false
+    };
 }

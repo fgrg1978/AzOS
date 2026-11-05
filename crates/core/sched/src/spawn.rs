@@ -46,7 +46,7 @@ pub struct SpawnPrepared {
     startup: u64,
     /// What the auxiliary vector of a Linux image reports, read
     /// from the image's headers by [`spawn_prepare`].
-    aux: azos_linux_abi::ImageAux,
+    aux: azos_image::ImageAux,
     /// The initial break [`spawn_prepare`]'s load set (wave 14, SPAWNCACHE:
     /// kept with the image's frames for its next spawn).
     brk: u64,
@@ -139,7 +139,7 @@ impl SpawnPrepared {
     }
 
     /// Lay out the initial stack a static Linux binary's `_start`
-    /// reads (`azos_linux_abi::layout_initial_stack`: argc, argv, envp,
+    /// reads (`azos_image::layout_initial_stack`: argc, argv, envp,
     /// the auxiliary vector, `AT_RANDOM`'s 16 bytes) at the top of the
     /// child's stack, and start the child with `sp` at `argc`, `a0` zero and
     /// `a1` zero (or the startup block `write_startup` wrote first).
@@ -179,7 +179,7 @@ impl SpawnPrepared {
 #[allow(clippy::too_many_arguments)]
 pub fn write_linux_stack_into(
     user_pt: usize,
-    aux: &azos_linux_abi::ImageAux,
+    aux: &azos_image::ImageAux,
     top: u64,
     argv: &[u8],
     argc: usize,
@@ -193,7 +193,7 @@ pub fn write_linux_stack_into(
     const MAX: usize = 2048 + 1024;
     let mut buf = [0u8; MAX];
     let base = (top - 16 - MAX as u64) & !15;
-    let sp = azos_linux_abi::layout_initial_stack(&mut buf, base, argv, argc, env, envc, random, aux)?;
+    let sp = azos_image::layout_initial_stack(&mut buf, base, argv, argc, env, envc, random, aux)?;
     let mut done = (sp - base) as usize;
     while done < MAX {
         let va = base as usize + done;
@@ -243,9 +243,9 @@ pub enum ElfImage<'a> {
 pub use azos_mm::image_frames::KeptImage;
 
 /// The auxiliary values a [`KeptImage`] carries, as the loader reports them.
-pub(crate) fn kept_aux(kept: &KeptImage) -> azos_linux_abi::ImageAux {
+pub(crate) fn kept_aux(kept: &KeptImage) -> azos_image::ImageAux {
     let a = kept.aux;
-    azos_linux_abi::ImageAux { phdr: a[0], phent: a[1], phnum: a[2], entry: a[3], pagesz: a[4] }
+    azos_image::ImageAux { phdr: a[0], phent: a[1], phnum: a[2], entry: a[3], pagesz: a[4] }
 }
 
 /// Wave 14 (SPAWNCACHE): keep the image `child` was just loaded from — its
@@ -307,11 +307,17 @@ pub fn spawn_prepare(
     // whose Linux ABI the in-kernel table cannot translate (x86_64) unless
     // the ring-3 runtime hosts it: refused, never run under another ISA's
     // numbers.
-    let lx_native = azos_linux_abi::Arch::native();
-    if linux && !azos_linux_abi::linux_task_runs(azos_limits::LINUX_ABI, azos_limits::LINUX_RUNTIME, lx_native) {
+    #[cfg(feature = "linux-abi")]
+    let (lx_runs, lx_native) = {
+        let n = azos_linux_abi::Arch::native();
+        (azos_linux_abi::linux_task_runs(azos_limits::LINUX_ABI, azos_limits::LINUX_RUNTIME, n), n.is_some())
+    };
+    #[cfg(not(feature = "linux-abi"))]
+    let (lx_runs, lx_native) = (false, false);
+    if linux && !lx_runs {
         azos_drv_sys::kwarn!(
             "[SPAWN] REFUSED: {} -- a Linux row this kernel cannot run (LINUX_ABI={}, LINUX_RUNTIME={}, in-kernel table: {})",
-            name, azos_limits::LINUX_ABI as u8, azos_limits::LINUX_RUNTIME as u8, lx_native.is_some() as u8,
+            name, azos_limits::LINUX_ABI as u8, azos_limits::LINUX_RUNTIME as u8, lx_native as u8,
         );
         return Err(SpawnError::BadImage);
     }
@@ -332,7 +338,7 @@ pub fn spawn_prepare(
         if !azos_limits::LINUX_ABI {
             return Default::default();
         }
-        azos_linux_abi::image_aux(hdr, azos_arch::PAGE_SIZE as u64).unwrap_or_default()
+        azos_image::image_aux(hdr, azos_arch::PAGE_SIZE as u64).unwrap_or_default()
     };
     let (mut ctx, aux) = match elf {
         ElfImage::Bytes(b) => (load_elf(b).ok_or(SpawnError::BadImage)?, aux_of(b)),

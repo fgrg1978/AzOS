@@ -46,7 +46,7 @@ azos_hv = { workspace = true, optional = true }
 azos_devif = { workspace = true }
 azos_idl = { workspace = true }
 # The Linux personality's numbers and layouts (pure, no state).
-azos_linux_abi = { workspace = true }
+azos_linux_abi = { workspace = true, optional = true }
 # SHA-256 of a module for `DOMAIN_MODULE_VERIFY` (stage L0b, `lx-loader`) and the
 # node identity `LinkKey::node_key` derives (DICE-ID, `azos_crypto::dice`).
 azos_crypto = { workspace = true }
@@ -66,7 +66,7 @@ energy = ["azos_sched/energy"]
 ktest = []
 # Kernel feature `linux-abi` (Kconfig LINUX_ABI): `src/linux.rs`, the Linux personality's
 # translation, and the spawn paths that start a Linux task.
-linux-abi = []
+linux-abi = ["dep:azos_linux_abi", "azos_sched/linux-abi"]
 # Canary: a forked Linux child is also granted `/fat` read-write,
 # which its row does not declare. The gate's fork row must fail with it.
 linux-abi-fork-canary = []

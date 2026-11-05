@@ -1,0 +1,9 @@
+[package]
+name = "azos_image"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The image loader's pure facts: where a static ELF image's program headers land and the System V initial stack (argc, argv, envp, auxv) its _start reads, for native and Linux images alike."
+
+[dependencies]

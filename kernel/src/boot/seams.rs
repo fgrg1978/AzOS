@@ -45,9 +45,8 @@ pub(crate) fn install_vdso(timebase_hz: u64, counter_scale: Option<(u64, u64, u6
         azos_sched::foreign::set_runtime_image(LINUX_RUNTIME_ELF);
         // Wave 13: the riscv64 sigreturn trampoline Linux handlers return to
         // (a no-op on aarch64 and without the personality).
-        if azos_limits::LINUX_ABI {
-            azos_mm::vdso::sigtramp_init(&azos_linux_abi::signal::RV_SIGRETURN_CODE);
-        }
+        #[cfg(feature = "linux-abi")]
+        azos_mm::vdso::sigtramp_init(&azos_linux_abi::signal::RV_SIGRETURN_CODE);
         azos_mm::vdso::vdso_set_timebase(timebase_hz);
         // riscv64: ring 3 reads `time` itself when the boot hart's read of it
         // did not trap into S-mode (`cpu::time_readable` says why that is the

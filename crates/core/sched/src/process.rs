@@ -305,7 +305,7 @@ pub fn exec_user_mem(elf: &[u8], mem: Option<MemSpec>) -> i64 {
 pub fn exec_user_image(
     img: crate::spawn::ElfImage<'_>,
     mem: Option<MemSpec>,
-    stack: &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>,
+    stack: &mut dyn FnMut(usize, &azos_image::ImageAux) -> Option<u64>,
 ) -> i64 {
     let (ctx, aux) = load_image(img);
     exec_install(ctx, mem, Some((&aux, stack)))
@@ -313,8 +313,8 @@ pub fn exec_user_image(
 
 /// Load `img` into a new address space: its context and its auxiliary
 /// vector, or `None` (nothing left behind) when it does not load.
-fn load_image(img: crate::spawn::ElfImage<'_>) -> (Option<ExecContext>, azos_linux_abi::ImageAux) {
-    let aux_of = |hdr: &[u8]| azos_linux_abi::image_aux(hdr, PAGE_SIZE as u64).unwrap_or_default();
+fn load_image(img: crate::spawn::ElfImage<'_>) -> (Option<ExecContext>, azos_image::ImageAux) {
+    let aux_of = |hdr: &[u8]| azos_image::image_aux(hdr, PAGE_SIZE as u64).unwrap_or_default();
     match img {
         crate::spawn::ElfImage::Bytes(b) => (load_elf(b), aux_of(b)),
         crate::spawn::ElfImage::Streamed { hdr, len, fill } => {
@@ -345,7 +345,7 @@ fn load_image(img: crate::spawn::ElfImage<'_>) -> (Option<ExecContext>, azos_lin
 fn exec_install(
     ctx: Option<ExecContext>,
     mem: Option<MemSpec>,
-    stack: Option<(&azos_linux_abi::ImageAux, &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>)>,
+    stack: Option<(&azos_image::ImageAux, &mut dyn FnMut(usize, &azos_image::ImageAux) -> Option<u64>)>,
 ) -> i64 {
     match exec_admit(ctx, mem, stack) {
         Some(p) => exec_commit(p),
@@ -379,7 +379,7 @@ pub fn exec_prepare_mem(elf: &[u8], mem: Option<MemSpec>) -> Option<PreparedExec
 pub fn exec_prepare_image(
     img: crate::spawn::ElfImage<'_>,
     mem: Option<MemSpec>,
-    stack: &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>,
+    stack: &mut dyn FnMut(usize, &azos_image::ImageAux) -> Option<u64>,
 ) -> Option<PreparedExec> {
     let (ctx, aux) = load_image(img);
     exec_admit(ctx, mem, Some((&aux, stack)))
@@ -392,7 +392,7 @@ pub fn exec_prepare_image(
 fn exec_admit(
     ctx: Option<ExecContext>,
     mem: Option<MemSpec>,
-    stack: Option<(&azos_linux_abi::ImageAux, &mut dyn FnMut(usize, &azos_linux_abi::ImageAux) -> Option<u64>)>,
+    stack: Option<(&azos_image::ImageAux, &mut dyn FnMut(usize, &azos_image::ImageAux) -> Option<u64>)>,
 ) -> Option<PreparedExec> {
     let mut ctx = ctx?;
     let (cur_limit, cur_locked) = crate::scheduler::current_mem_policy();

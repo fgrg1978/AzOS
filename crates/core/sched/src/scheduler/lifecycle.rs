@@ -1566,10 +1566,11 @@ unsafe fn clear_tid_word(idx: usize, proc_id: u32) {
 /// `LINUX_ROBUST_LIST_LIMIT`. Run before the clear-tid wake: a joiner may
 /// free the thread's stack, where musl keeps the list head, once that word
 /// is cleared.
+#[cfg(not(feature = "linux-abi"))]
+fn robust_list_exit(_idx: usize, _tid: u32, _proc_id: u32) {}
+
+#[cfg(feature = "linux-abi")]
 fn robust_list_exit(idx: usize, tid: u32, proc_id: u32) {
-    if !azos_limits::LINUX_ABI {
-        return;
-    }
     let head = crate::group::take_robust_list(idx);
     // Gate canary only: the list is never walked (a lock its owner died
     // holding stays held; the next locker sleeps).
