@@ -129,6 +129,11 @@ mod motor_pid;
 #[cfg(test)]
 mod discipline;
 
+// Device models with 32-bit register files, as the kit's `Mmio`.
+#[cfg(test)]
+#[macro_use]
+mod mmio32;
+
 // The real-time clock drivers (Kconfig DRV_RTC) against a model of each chip.
 #[cfg(test)]
 mod rtc;

@@ -868,7 +868,7 @@ impl Inner {
     }
 }
 
-impl Regs for Mock {
+impl Mock {
     fn rd32(&self, off: usize) -> u32 {
         self.0.lock().unwrap().rd(off)
     }
@@ -876,6 +876,8 @@ impl Regs for Mock {
         self.0.lock().unwrap().wr(off, val)
     }
 }
+
+registers32!(Mock, rd32, wr32);
 
 impl Mock {
     /// An HBA with `ports` ports, the disk on `disk_port`, `sectors` sectors

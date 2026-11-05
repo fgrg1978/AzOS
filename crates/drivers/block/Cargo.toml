@@ -42,6 +42,7 @@ usb-msc = ["dep:azos_usb", "dep:azos_arch"]
 
 [dependencies]
 azos_arch_api = { workspace = true }
+azos_drvkit = { workspace = true, features = ["window"] }
 azos_common = { workspace = true }
 azos_sync       = { workspace = true }
 azos_drv_api    = { workspace = true }

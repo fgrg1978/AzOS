@@ -17,27 +17,10 @@ use azos_rtc::mc146818::{Mc146818, PORT_DATA, PORT_INDEX};
 use azos_rtc::pcf8563::{Pcf8563, ADDR};
 use azos_rtc::pl031::{Pl031, RTCCR, RTCDR, RTCLR};
 use azos_drvkit::fake::FakeMmio;
-use azos_drvkit::{Mmio, PortIo, Width};
+use azos_drvkit::PortIo;
 use azos_rtc::{Error, I2c, Rtc};
 use std::cell::RefCell;
 use std::rc::Rc;
-
-/// A chip model whose registers are all 32 bits wide: `Mmio` over its `read32`
-/// and `write32`, and a panic on any other width (the driver would be wrong).
-macro_rules! registers32 {
-    ($m:ty) => {
-        impl Mmio for $m {
-            fn load(&self, off: usize, w: Width) -> u64 {
-                assert_eq!(w, Width::W32, "the model's registers are 32-bit");
-                self.read32(off) as u64
-            }
-            fn store(&self, off: usize, w: Width, v: u64) {
-                assert_eq!(w, Width::W32, "the model's registers are 32-bit");
-                self.write32(off, v as u32)
-            }
-        }
-    };
-}
 
 /// 2026-10-17T12:34:56Z (a Saturday).
 const T2026: u64 = 1_792_240_496;
@@ -147,7 +130,7 @@ impl Gf {
     }
 }
 
-registers32!(Gf);
+registers32!(Gf, read32, write32);
 
 fn goldfish(ns: u64) -> (Goldfish<Gf>, Rc<RefCell<GoldfishModel>>) {
     let m = Rc::new(RefCell::new(GoldfishModel::new(ns)));
@@ -229,7 +212,7 @@ impl Pl {
     }
 }
 
-registers32!(Pl);
+registers32!(Pl, read32, write32);
 
 fn pl031(secs: u32) -> (Pl031<Pl>, Rc<RefCell<Pl031Model>>) {
     let m = Rc::new(RefCell::new(Pl031Model { secs, cr: 0, id: PL031_ID, writes: Vec::new() }));

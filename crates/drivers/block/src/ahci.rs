@@ -4,7 +4,7 @@
 //! as the boot block device, for the PCs whose disk is not NVMe.
 //!
 //! The file has two halves. The first is the driver: [`Ahci`] over a register
-//! window ([`Regs`]), which brings the HBA and one port up and implements
+//! window ([`Mmio`]), which brings the HBA and one port up and implements
 //! [`HwQueue`] for the block request layer (`queue.rs`). It names no PCI
 //! type and no kernel static, so `tests/host/drivers-tests` runs the very
 //! functions the kernel runs over a model of the HBA and a disk (the way
@@ -103,6 +103,7 @@
 //! DMA coherence is assumed (the PCs this driver is for), as for NVMe.
 
 use crate::queue::{Claim, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, HW_TAGS_MAX};
+use azos_drvkit::Mmio;
 use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US, STALL_SAY_EVERY_US};
 use azos_drv_api::recovery::{Class, Recovery, Verdict};
 use azos_sync::kmutex::Mutex;
@@ -475,45 +476,23 @@ pub fn queue_depth(cap: u32, id: &Ident) -> usize {
 
 // ---- Register access ----
 
-/// An HBA's register file. [`Hw`] is the MMIO window (BAR 5); the host test
-/// implements it over a model of the HBA and a disk.
-pub trait Regs {
-    fn rd32(&self, off: usize) -> u32;
-    fn wr32(&self, off: usize, val: u32);
-}
-
-/// The HBA's mapped register window at this address.
-pub struct Hw(pub usize);
-
-impl Regs for Hw {
-    #[inline(always)]
-    fn rd32(&self, off: usize) -> u32 {
-        // SAFETY: `self.0` is the HBA's ABAR, mapped by the kernel's PCI
-        // bring-up, and `off` a register offset inside the 4 KiB-or-larger
-        // window.
-        unsafe { azos_arch_api::mmio::read32(self.0 + off) }
-    }
-    #[inline(always)]
-    fn wr32(&self, off: usize, val: u32) {
-        // SAFETY: as `rd32`.
-        unsafe { azos_arch_api::mmio::write32(self.0 + off, val) }
-    }
-}
+// The HBA's register file is a `Mmio`: the MMIO window over BAR 5 in the
+// kernel, a model of the HBA and a disk in the host test.
 
 /// One port's registers.
-struct Port<'a, R: Regs> {
+struct Port<'a, R: Mmio> {
     r: &'a R,
     base: usize,
 }
 
-impl<R: Regs> Port<'_, R> {
+impl<R: Mmio> Port<'_, R> {
     #[inline(always)]
     fn rd(&self, off: usize) -> u32 {
-        self.r.rd32(self.base + off)
+        self.r.read32(self.base + off)
     }
     #[inline(always)]
     fn wr(&self, off: usize, val: u32) {
-        self.r.wr32(self.base + off, val)
+        self.r.write32(self.base + off, val)
     }
 
     /// Stop the command engine and the FIS receiver (section 10.1.2) and wait
@@ -792,7 +771,7 @@ fn older(a: u32, b: u32) -> bool {
 }
 
 /// One HBA with one ATA disk behind one of its ports.
-pub struct Ahci<R: Regs> {
+pub struct Ahci<R: Mmio> {
     r: R,
     /// Register offset of the chosen port, and its number.
     pbase: usize,
@@ -848,7 +827,7 @@ pub struct Ahci<R: Regs> {
     trims: AtomicU32,
 }
 
-impl<R: Regs> Ahci<R> {
+impl<R: Mmio> Ahci<R> {
     fn port_regs(&self) -> Port<'_, R> {
         Port { r: &self.r, base: self.pbase }
     }
@@ -858,15 +837,15 @@ impl<R: Regs> Ahci<R> {
     /// limit); `irq`: its MSI is routed, so interrupts are enabled in the HBA.
     pub fn attach(r: R, dma_mask: u64, irq: bool, b: Budgets) -> Result<Self, AhciError> {
         // The HBA speaks AHCI, not the legacy register set.
-        r.wr32(REG_GHC, r.rd32(REG_GHC) | GHC_AE);
+        r.write32(REG_GHC, r.read32(REG_GHC) | GHC_AE);
         bios_handoff(&r, &b)?;
-        r.wr32(REG_GHC, GHC_AE | GHC_HR);
-        if !wait_for(b.reset_us, || r.rd32(REG_GHC) & GHC_HR == 0) {
+        r.write32(REG_GHC, GHC_AE | GHC_HR);
+        if !wait_for(b.reset_us, || r.read32(REG_GHC) & GHC_HR == 0) {
             return Err(AhciError::Reset);
         }
-        r.wr32(REG_GHC, GHC_AE);
-        let cap = r.rd32(REG_CAP);
-        let pi = r.rd32(REG_PI);
+        r.write32(REG_GHC, GHC_AE);
+        let cap = r.read32(REG_CAP);
+        let pi = r.read32(REG_PI);
         // No 64-bit addressing: every address the HBA is given fits 32 bits.
         let mask = if cap & CAP_S64A != 0 { dma_mask } else { dma_mask.min(0xFFFF_FFFF) };
 
@@ -981,7 +960,7 @@ impl<R: Regs> Ahci<R> {
         let p = self.port_regs();
         p.wr(P_SERR, 0xFFFF_FFFF);
         p.wr(P_IS, 0xFFFF_FFFF);
-        self.r.wr32(REG_IS, 1 << self.port);
+        self.r.write32(REG_IS, 1 << self.port);
         if !p.start(self.cap, &self.b) {
             return Err(AhciError::Port("start"));
         }
@@ -1020,10 +999,10 @@ impl<R: Regs> Ahci<R> {
         // Interrupts last: nothing was left pending by the polled commands.
         let p = self.port_regs();
         p.wr(P_IS, 0xFFFF_FFFF);
-        self.r.wr32(REG_IS, 1 << self.port);
+        self.r.write32(REG_IS, 1 << self.port);
         if self.irq {
             p.wr(P_IE, IE_MASK);
-            self.r.wr32(REG_GHC, GHC_AE | GHC_IE);
+            self.r.write32(REG_GHC, GHC_AE | GHC_IE);
         }
         Ok(id)
     }
@@ -1073,8 +1052,8 @@ impl<R: Regs> Ahci<R> {
     fn teardown(&mut self) {
         let p = self.port_regs();
         let _ = p.stop(&self.b);
-        self.r.wr32(REG_GHC, GHC_AE | GHC_HR);
-        let _ = wait_for(self.b.reset_us, || self.r.rd32(REG_GHC) & GHC_HR == 0);
+        self.r.write32(REG_GHC, GHC_AE | GHC_HR);
+        let _ = wait_for(self.b.reset_us, || self.r.read32(REG_GHC) & GHC_HR == 0);
         free_page(self.cl_pa);
         for &pa in &self.ct_page_pa[..ct_pages(self.slots)] {
             free_page(pa);
@@ -1170,7 +1149,7 @@ impl<R: Regs> Ahci<R> {
         let is = p.rd(P_IS);
         if is != 0 {
             p.wr(P_IS, is);
-            self.r.wr32(REG_IS, 1 << self.port);
+            self.r.write32(REG_IS, 1 << self.port);
             self.events.fetch_or(is, Ordering::AcqRel);
         }
         is
@@ -1286,8 +1265,8 @@ impl<R: Regs> Ahci<R> {
     fn reset_hba(&self) -> bool {
         let p = self.port_regs();
         p.wr(P_CMD, p.rd(P_CMD) & !(CMD_ST | CMD_FRE));
-        self.r.wr32(REG_GHC, GHC_AE | GHC_HR);
-        wait_for(self.b.reset_us, || self.r.rd32(REG_GHC) & GHC_HR == 0)
+        self.r.write32(REG_GHC, GHC_AE | GHC_HR);
+        wait_for(self.b.reset_us, || self.r.read32(REG_GHC) & GHC_HR == 0)
     }
 
     /// Reset the HBA and latch the driver dead: every later claim answers
@@ -1316,7 +1295,7 @@ impl<R: Regs> Ahci<R> {
             azos_drv_sys::kerr!("[AHCI] the HBA reset did not complete");
             return false;
         }
-        self.r.wr32(REG_GHC, GHC_AE);
+        self.r.write32(REG_GHC, GHC_AE);
         if !probe_port(&self.port_regs(), self.cl_pa, &self.b) {
             azos_drv_sys::kerr!("[AHCI] port {}: no disk after the reset", self.port);
             return false;
@@ -1412,7 +1391,7 @@ impl<R: Regs> Ahci<R> {
         }
         p.wr(P_SERR, 0xFFFF_FFFF);
         p.wr(P_IS, 0xFFFF_FFFF);
-        self.r.wr32(REG_IS, 1 << self.port);
+        self.r.write32(REG_IS, 1 << self.port);
         self.events.store(0, Ordering::Release);
         p.start(self.cap, &self.b)
     }
@@ -1632,12 +1611,12 @@ impl<R: Regs> Ahci<R> {
 
 /// The firmware may still own the HBA (BIOS/OS Handoff, section 10.6.3):
 /// ask for it and wait for the firmware to let go.
-fn bios_handoff<R: Regs>(r: &R, b: &Budgets) -> Result<(), AhciError> {
-    if r.rd32(REG_CAP2) & CAP2_BOH == 0 || r.rd32(REG_BOHC) & BOHC_BOS == 0 {
+fn bios_handoff<R: Mmio>(r: &R, b: &Budgets) -> Result<(), AhciError> {
+    if r.read32(REG_CAP2) & CAP2_BOH == 0 || r.read32(REG_BOHC) & BOHC_BOS == 0 {
         return Ok(());
     }
-    r.wr32(REG_BOHC, r.rd32(REG_BOHC) | BOHC_OOS);
-    if wait_for(b.handoff_us, || r.rd32(REG_BOHC) & (BOHC_BOS | BOHC_BB) == 0) {
+    r.write32(REG_BOHC, r.read32(REG_BOHC) | BOHC_OOS);
+    if wait_for(b.handoff_us, || r.read32(REG_BOHC) & (BOHC_BOS | BOHC_BB) == 0) {
         Ok(())
     } else {
         Err(AhciError::Handoff)
@@ -1651,7 +1630,7 @@ fn bios_handoff<R: Regs>(r: &R, b: &Budgets) -> Result<(), AhciError> {
 /// `absent_us` has nothing) and for the device to leave BSY and send its
 /// signature. Leaves the port stopped, with the FIS receiver on when it
 /// found a disk.
-fn probe_port<R: Regs>(p: &Port<'_, R>, cl_pa: u64, b: &Budgets) -> bool {
+fn probe_port<R: Mmio>(p: &Port<'_, R>, cl_pa: u64, b: &Budgets) -> bool {
     if !p.stop(b) {
         return false;
     }
@@ -1663,7 +1642,7 @@ fn probe_port<R: Regs>(p: &Port<'_, R>, cl_pa: u64, b: &Budgets) -> bool {
     found
 }
 
-fn probe_stopped_port<R: Regs>(p: &Port<'_, R>, cl_pa: u64, b: &Budgets) -> bool {
+fn probe_stopped_port<R: Mmio>(p: &Port<'_, R>, cl_pa: u64, b: &Budgets) -> bool {
     let clb = cl_pa + CL_OFF as u64;
     let fb = cl_pa + FB_OFF as u64;
     p.wr(P_CLB, clb as u32);
@@ -1694,7 +1673,7 @@ fn probe_stopped_port<R: Regs>(p: &Port<'_, R>, cl_pa: u64, b: &Budgets) -> bool
         && p.rd(P_SIG) == SIG_ATA
 }
 
-impl<R: Regs + Sync> HwQueue for Ahci<R> {
+impl<R: Mmio + Sync> HwQueue for Ahci<R> {
     fn caps(&self) -> HwCaps {
         HwCaps {
             sectors: self.sectors,
@@ -1900,7 +1879,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
     }
 }
 
-impl<R: Regs> Ahci<R> {
+impl<R: Mmio> Ahci<R> {
     /// Copy `src` into slot `k`'s staging pages from byte `off`.
     fn stage_in(&self, k: usize, mut off: usize, src: &[u8]) {
         let mut done = 0;
@@ -1926,7 +1905,7 @@ impl<R: Regs> Ahci<R> {
 
 /// The one controller: written once by [`attach`], read by the interrupt arm.
 #[cfg(feature = "ahci")]
-static mut CONTROLLER: core::mem::MaybeUninit<Ahci<Hw>> = core::mem::MaybeUninit::uninit();
+static mut CONTROLLER: core::mem::MaybeUninit<Ahci<azos_drvkit::Window>> = core::mem::MaybeUninit::uninit();
 #[cfg(feature = "ahci")]
 static CLAIMED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "ahci")]
@@ -1949,11 +1928,14 @@ pub fn attach(abar: usize, dma_mask: u64, msi_token: Option<u32>) -> Result<(), 
     }
     // Before the HBA can interrupt: the arm that recognises its token.
     TOKEN.store(msi_token.unwrap_or(u32::MAX), Ordering::Release);
-    match Ahci::attach(Hw(abar), dma_mask, msi_token.is_some(), Budgets::DEFAULT) {
+    // SAFETY: `abar` is the HBA's ABAR, mapped by the kernel's PCI bring-up;
+    // every register offset the driver names is inside the window.
+    let window = unsafe { azos_drvkit::Window::new(abar) };
+    match Ahci::attach(window, dma_mask, msi_token.is_some(), Budgets::DEFAULT) {
         Ok(a) => {
             // SAFETY: `CLAIMED` makes this the only write, and `UP` is
             // published after it; every reader checks `UP` first.
-            let c: &'static Ahci<Hw> = unsafe { (*(&raw mut CONTROLLER)).write(a) };
+            let c: &'static Ahci<azos_drvkit::Window> = unsafe { (*(&raw mut CONTROLLER)).write(a) };
             UP.store(true, Ordering::Release);
             // From here `blkdev` reads, writes and flushes are requests on this disk.
             crate::queue::bind(c);
@@ -1968,7 +1950,7 @@ pub fn attach(abar: usize, dma_mask: u64, msi_token: Option<u32>) -> Result<(), 
 }
 
 #[cfg(feature = "ahci")]
-fn controller() -> Option<&'static Ahci<Hw>> {
+fn controller() -> Option<&'static Ahci<azos_drvkit::Window>> {
     if !UP.load(Ordering::Acquire) {
         return None;
     }
