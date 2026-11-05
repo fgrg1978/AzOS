@@ -73,6 +73,9 @@ pub trait Mmio {
     fn load(&self, off: usize, w: Width) -> u64;
     /// One write of the low `w` bytes of `v` at `off`.
     fn store(&self, off: usize, w: Width, v: u64);
+    /// The address the block is mapped at: what the DMA registry names the
+    /// device by. A fake has the address its test gives it.
+    fn base(&self) -> usize;
 
     typed_accessors! {
         u8,  read8,  write8,  W8;
@@ -90,6 +93,10 @@ impl<T: Mmio + ?Sized> Mmio for &T {
     #[inline(always)]
     fn store(&self, off: usize, w: Width, v: u64) {
         (**self).store(off, w, v)
+    }
+    #[inline(always)]
+    fn base(&self) -> usize {
+        (**self).base()
     }
 }
 

@@ -23,10 +23,6 @@ impl Window {
         Window { base }
     }
 
-    #[inline(always)]
-    pub const fn base(&self) -> usize {
-        self.base
-    }
 }
 
 impl Mmio for Window {
@@ -42,6 +38,11 @@ impl Mmio for Window {
                 Width::W64 => mmio::read64(a),
             }
         }
+    }
+
+    #[inline(always)]
+    fn base(&self) -> usize {
+        self.base
     }
 
     #[inline(always)]

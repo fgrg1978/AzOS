@@ -20,13 +20,19 @@ pub enum Access {
 /// width, offset or byte order sees it. `poke*` and `peek*` are the test's
 /// side: they do not log.
 pub struct FakeMmio<const N: usize> {
+    base: usize,
     bytes: [Cell<u8>; N],
     log: RefCell<Vec<Access>>,
 }
 
 impl<const N: usize> FakeMmio<N> {
     pub fn new() -> Self {
-        FakeMmio { bytes: [const { Cell::new(0) }; N], log: RefCell::new(Vec::new()) }
+        Self::at(0)
+    }
+
+    /// The block as mapped at `base`.
+    pub fn at(base: usize) -> Self {
+        FakeMmio { base, bytes: [const { Cell::new(0) }; N], log: RefCell::new(Vec::new()) }
     }
 
     fn get(&self, off: usize, width: usize) -> u64 {
@@ -82,6 +88,10 @@ impl<const N: usize> Mmio for FakeMmio<N> {
         let val = self.get(off, n);
         self.log.borrow_mut().push(Access::Read { off, width: n as u8, val });
         val
+    }
+
+    fn base(&self) -> usize {
+        self.base
     }
 
     fn store(&self, off: usize, w: Width, v: u64) {
