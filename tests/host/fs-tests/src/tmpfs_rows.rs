@@ -15,7 +15,8 @@
 
 #![cfg(test)]
 
-use super::{serial, tmpfs, tmpfs_h, vfs};
+use super::{pagecache::FsPageBacking, serial, tmpfs, tmpfs_h, vfs};
+use azos_mm::pager::{PageBacking, PageKey};
 use vfs::{DirEnt, FsErr, ScratchFds, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SEEK_SET};
 
 fn put(path: &[u8], data: &[u8]) -> bool {
@@ -362,6 +363,48 @@ fn a_doubled_slash_routes_to_the_same_mount() {
     use vfs::FileSystem as _;
     let mut e = DirEnt::new();
     assert_eq!(tmpfs::TMPFS_ROOT.readdir(b"tmp", 0, &mut e), Ok(None));
+    tmpfs_h::clear();
+}
+
+/// A file mapped (pinned on its backing by the first file region) is kept like
+/// an open file: an unlink leaves it alive and writable through the mapping, an
+/// eviction passes it by, and the last region's end destroys it.
+///
+/// **Canary.** `FsPageBacking::pin` doing nothing: the unlink destroys the file
+/// under the mapping.
+#[test]
+fn a_mapping_keeps_a_tmpfs_file_like_an_open_does() {
+    use vfs::FileSystem as _;
+    let _g = serial();
+    setup();
+    let back = FsPageBacking::new(&tmpfs::TMPFS_TMP);
+    let k = tmpfs_h::make(b"pin");
+    tmpfs::TMPFS_TMP.write_at(&k, 0, b"hello").unwrap();
+    let pk = PageKey(k.bytes);
+    back.pin(&pk);
+    assert_eq!(vfs::vfs_unlink(b"/tmp/pin"), Ok(()));
+    assert!(vfs::vfs_stat(b"/tmp/pin").is_none());
+    assert!(!back.gone(&pk), "the mapping keeps the file");
+    let mut b = [0u8; 8];
+    assert_eq!(back.read_page(&pk, 0, &mut b), Ok(5));
+    back.write_page(&pk, 1, b"E").unwrap();
+    assert_eq!(back.read_page(&pk, 0, &mut b), Ok(5));
+    assert_eq!(&b[..5], b"hEllo", "a page the mapping dirtied still reaches the file");
+
+    // A named, mapped file is not evicted for room.
+    let k2 = tmpfs_h::make(b"pin2");
+    tmpfs::TMPFS_TMP.write_at(&k2, 0, b"x").unwrap();
+    let pk2 = PageKey(k2.bytes);
+    back.pin(&pk2);
+    assert!(!put(b"/tmp/big", &vec![0u8; tmpfs::TMPFS_MAX_BYTES]), "only mapped files stand in the way");
+    assert_eq!(vfs::vfs_stat(b"/tmp/pin2").map(|s| s.size), Some(1));
+
+    back.unpin(&pk);
+    assert!(back.gone(&pk), "the last region's end destroys the unlinked file");
+    assert_eq!(back.read_page(&pk, 0, &mut b), Ok(0));
+    back.unpin(&pk2);
+    assert!(!back.gone(&pk2), "a named file stays");
+    assert!(put(b"/tmp/big", &vec![0u8; tmpfs::TMPFS_MAX_BYTES]), "unmapped, it is evictable again");
     tmpfs_h::clear();
 }
 

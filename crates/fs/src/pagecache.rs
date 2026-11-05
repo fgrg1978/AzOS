@@ -43,6 +43,18 @@ impl PageBacking for FsPageBacking {
             _ => Err(PageIoError::Io),
         }
     }
+
+    fn pin(&self, key: &PageKey) {
+        self.0.opened(&InodeKey { bytes: key.0 });
+    }
+
+    fn unpin(&self, key: &PageKey) {
+        self.0.released(&InodeKey { bytes: key.0 });
+    }
+
+    fn gone(&self, key: &PageKey) -> bool {
+        self.0.keys_follow_file() && self.0.stat(&InodeKey { bytes: key.0 }).is_none()
+    }
 }
 
 // ── Mapping an open file ─────────────────────────────────────────────────────
