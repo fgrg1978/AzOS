@@ -742,7 +742,7 @@ config TOPOLOGY_NAME_MAX
 
 config TOPOLOGY_TARGET_MAX
     int "Longest grant target in a topology (bytes)"
-    range 16 255
+    range 68 255
     default 80
     help
       MAX_TARGET_LEN: the longest `target = "..."` of a grant (a channel
