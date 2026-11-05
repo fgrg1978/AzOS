@@ -237,10 +237,21 @@ $(BUZZ_DRV_ELF): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/
 	cp $(BUZZ_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(INA_DRV_ELF): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
-               $(LIBSYS_SRC)
+# Extra ina_drv cargo features: its gate canary, by hand
+# (`INA_DRV_FEATURES=accept-spin-canary`, kernel/src/smokes/ring3_drv_smoke.rs).
+# The stamp holds the set the ELFs were built with, as vsbench's does, so a
+# canary ELF is never reused by a later default build.
+INA_DRV_FEATURES ?=
+INA_DRV_FEATURES_ARG := $(if $(strip $(INA_DRV_FEATURES)),--features $(strip $(INA_DRV_FEATURES)))
+$(OUT_BUILD)/ina_drv.features: FORCE
 	@mkdir -p $(OUT_BUILD)
-	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	@printf '%s\n' '$(strip $(INA_DRV_FEATURES))' | cmp -s - $@ \
+	    || printf '%s\n' '$(strip $(INA_DRV_FEATURES))' >$@
+
+$(INA_DRV_ELF): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
+               $(LIBSYS_SRC) $(OUT_BUILD)/ina_drv.features
+	@mkdir -p $(OUT_BUILD)
+	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS) $(INA_DRV_FEATURES_ARG)
 	python3 tools/lint/chip_source_check.py ina219 $(INA_DRV_BUILT)
 	cp $(INA_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
@@ -857,9 +868,9 @@ $(BUZZ_DRV_ELF_AARCH64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_D
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(INA_DRV_ELF_AARCH64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
-               $(LIBSYS_SRC)
+               $(LIBSYS_SRC) $(OUT_BUILD)/ina_drv.features
 	@mkdir -p $(AARCH64_DIR)
-	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) $(INA_DRV_FEATURES_ARG)
 	python3 tools/lint/chip_source_check.py ina219 $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/ina_drv
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/ina_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
@@ -1224,9 +1235,9 @@ $(BUZZ_DRV_ELF_X86_64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DR
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/buzz_drv $@
 
 $(INA_DRV_ELF_X86_64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
-               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+               $(LIBSYS_SRC) $(X86_64_KCONFIG) $(OUT_BUILD)/ina_drv.features
 	@mkdir -p $(X86_64_DIR)
-	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS) $(INA_DRV_FEATURES_ARG)
 	python3 tools/lint/chip_source_check.py ina219 $(UTGT_X86_64)/$(X86_64_UBUILT)/ina_drv
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/ina_drv $@
 

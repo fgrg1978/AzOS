@@ -6464,7 +6464,10 @@ a64_kbuild "qemu" || true
 #   ina-idle     the ring-3 placement with `canary=ina219-idle-busy`: the
 #                smoke calls the host through the window it measures the
 #                host's idle wakes over. Must fail on `idle, the ring-3 host
-#                woke more than`: the bound sees a host that does not sleep.
+#                woke more than`: the wake bound sees calls in its window.
+#                (The entry bound's canary, a spinning accept loop, is
+#                ina_drv's `accept-spin-canary`, built by hand with
+#                `INA_DRV_FEATURES`; see ring3_drv_smoke.rs `ring3_idle`.)
 #   restart      `restart-smoke`: BUZZDRV.ELF `restart = no` (CAPS.TOML format
 #                2), read by the component manager (its reading of the key,
 #                `always` included, is host-tested in

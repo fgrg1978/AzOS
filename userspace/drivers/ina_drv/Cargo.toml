@@ -12,6 +12,11 @@ azos_devif = { path = "../../../crates/core/devif" }
 azos_ina219 = { path = "../../../crates/drivers/ina219" }
 azos_limits = { path = "../../../crates/core/limits" }
 
+[features]
+# Gate canary: the accept thread turns without blocking (ring3_drv_smoke's
+# idle entry bound must fail). Built with `make INA_DRV_FEATURES=accept-spin-canary`.
+accept-spin-canary = []
+
 [profile.release]
 opt-level = "s"
 lto = true

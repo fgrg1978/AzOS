@@ -248,6 +248,14 @@ static mut PM_STACK: Stack = Stack([0; 8192]);
 extern "C" fn serve_thread(_: u64, _: u64, _: u64) -> ! {
     loop {
         let mut req = MsgDesc::default();
+        // Gate canary `accept-spin-canary` (never in a real build): every turn
+        // is a failed accept and the back-off is gone, so the thread turns
+        // without blocking, one syscall a turn; ring3_drv_smoke's idle entry
+        // bound must see it.
+        if cfg!(feature = "accept-spin-canary") {
+            sys::yield_now();
+            continue;
+        }
         let call = sys::ipc_accept_v2(&mut req);
         if call < 0 {
             // No endpoint granted (a topology without the row), or a spurious wake: look again later.

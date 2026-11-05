@@ -291,25 +291,41 @@ fn placement_str() -> &'static str {
 /// per one-second park, with headroom for stamped wakes). The accept thread
 /// waits in `SYS_IPC_ACCEPT` for a call and adds nothing.
 const INA_IDLE_MAX_PER_S: u64 = azos_drv_sensor::ina219::INA219_POLL_HZ as u64 + 5;
-/// The quiet window [`ring3_idle_wakes_per_s`] measures over.
+/// Most kernel entries a second the idle host may make: a sample is two
+/// register reads (one I2C call each) and one park, so 8 a sample leaves
+/// room for a contended lock's yield and a reconfiguration, plus 20 for the
+/// power service's period (a few `DevicePower` calls, each an accept and a
+/// reply) and the like. A loop that turns without blocking makes a syscall a
+/// turn: thousands a second.
+const INA_IDLE_ENTRIES_MAX_PER_S: u64 = azos_drv_sensor::ina219::INA219_POLL_HZ as u64 * 8 + 20;
+/// The quiet window [`ring3_idle`] measures over.
 const IDLE_WINDOW_MS: u64 = 3_000;
 
-/// The wakes a second of the ring-3 INA219 host over [`IDLE_WINDOW_MS`] in
-/// which this task calls nothing: every wake of every thread of the driver
-/// (both are in its Domain, `azos_sched::domain::wakes`), so an accept loop
-/// that turns without blocking (an accept failing fast with no back-off) or
-/// a sampling loop that does not park shows here. `None` when the host is not
-/// in ring 3, or the build counts no wakes (Kconfig `WAKE_RING_ENTRIES` 0).
+/// What the ring-3 INA219 host did over [`IDLE_WINDOW_MS`] in which this task
+/// calls nothing, a second: `wakes` of its threads (a blocked thread made
+/// ready: a sampling loop that parks too often) and kernel `entries` (every
+/// syscall of every thread: a loop that turns without blocking, which is
+/// never woken, shows only here). Both are counted per Domain, and both
+/// threads of the driver are in its Domain. `None` when the host is not in
+/// ring 3; a count the build does not keep (Kconfig `WAKE_RING_ENTRIES` 0,
+/// `DOMAIN_ENTRY_COUNTERS` off) is `None` on its own.
+struct Idle {
+    wakes: Option<u64>,
+    entries: Option<u64>,
+}
+
+/// Measure [`Idle`].
 ///
-/// Runtime canary `ina219-idle-busy`: the window is not quiet (the smoke
-/// calls the host back to back), so the bound must fail.
-fn ring3_idle_wakes_per_s() -> Option<u64> {
-    if azos_limits::WAKE_RING_ENTRIES == 0 {
-        return None;
-    }
+/// Canaries: runtime `ina219-idle-busy`, the window is not quiet (the smoke
+/// calls the host back to back), so the wake bound must fail; ina_drv's
+/// cargo feature `accept-spin-canary` (built with `INA_DRV_FEATURES`, by
+/// hand), its accept thread turns without blocking, so the entry bound must
+/// fail while the wake count stays at the sampling rate.
+fn ring3_idle() -> Option<Idle> {
     let tid = crate::powermon::ring3_host_tid()?;
     let key = azos_sched::task_domain(azos_sched::idx_for_tid(tid)?);
-    let a = azos_sched::domain::wakes(key)?;
+    let entries = || azos_sched::domain::entries(key).iter().sum::<u64>();
+    let (w0, e0) = (azos_sched::domain::wakes(key)?, entries());
     let t0 = now();
     if canary!("ina219-idle-busy") {
         while now() < t0 + IDLE_WINDOW_MS * MS {
@@ -318,9 +334,28 @@ fn ring3_idle_wakes_per_s() -> Option<u64> {
     } else {
         sleep_ms(IDLE_WINDOW_MS);
     }
-    let b = azos_sched::domain::wakes(key)?;
+    let (w1, e1) = (azos_sched::domain::wakes(key)?, entries());
     let ms = ((now() - t0) / MS).max(1);
-    Some(b.wrapping_sub(a) * 1000 / ms)
+    let rate = |d: u64| d * 1000 / ms;
+    let idle = Idle {
+        wakes: (azos_limits::WAKE_RING_ENTRIES != 0).then(|| rate(w1.wrapping_sub(w0))),
+        entries: azos_limits::DOMAIN_ENTRY_COUNTERS.then(|| rate(e1.wrapping_sub(e0))),
+    };
+    kprintln!("[DRV1] ina219 idle over {} ms: {:?} wakes/s (bound {}), {:?} kernel entries/s (bound {})",
+        ms, idle.wakes, INA_IDLE_MAX_PER_S, idle.entries, INA_IDLE_ENTRIES_MAX_PER_S);
+    Some(idle)
+}
+
+/// The idle verdict: `Err` names the bound the host broke.
+fn idle_check() -> Result<(), &'static str> {
+    let Some(i) = ring3_idle() else { return Ok(()) };
+    if i.wakes.is_some_and(|r| r > INA_IDLE_MAX_PER_S) {
+        return Err("idle, the ring-3 host woke more than its bound with no call");
+    }
+    if i.entries.is_some_and(|r| r > INA_IDLE_ENTRIES_MAX_PER_S) {
+        return Err("idle, the ring-3 host entered the kernel more than its bound with no call");
+    }
+    Ok(())
 }
 
 /// Reads timed by [`read_path_cost`].
@@ -387,10 +422,7 @@ pub fn task(_: usize) {
     match ina {
         None => kprintln!("[DRV1] ina219 FAIL: no {} host of the PowerMon interface in {} ms",
             placement, REGISTER_WAIT_MS),
-        Some(tid) => match ina219() {
-            Ok(_) if ring3_idle_wakes_per_s().is_some_and(|r| r > INA_IDLE_MAX_PER_S) =>
-                kprintln!("[DRV1] ina219 FAIL: idle, the ring-3 host woke more than {}/s with no call",
-                    INA_IDLE_MAX_PER_S),
+        Some(tid) => match ina219().and_then(|v| idle_check().map(|()| v)) {
             Ok((mv, ma, pct, call_us, reads, charge_pct, window_ms, window_samples)) => {
                 let st = azos_drv_sensor::ina219::ina219_stats().unwrap_or_default();
                 kprintln!("[DRV1] ina219 PASS {} mV {} mA {}% ({} tid={} prio={} samples={} failures={} call={} us reads={} charge={}% of {} mA x {} ms over {} samples)",
