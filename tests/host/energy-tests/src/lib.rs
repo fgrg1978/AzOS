@@ -1397,6 +1397,8 @@ mod ext {
 mod cpuid;
 #[cfg(test)]
 mod firmware;
+#[cfg(test)]
+mod power_ring3;
 
 #[test]
 fn a_misfit_follows_wake_placement_the_mode_and_the_heat() {

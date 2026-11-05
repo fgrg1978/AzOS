@@ -12393,13 +12393,18 @@ fi; ci_row_end
 # OPP), I3 (the idle choice ignores the RT slack). The policy canaries (owner
 # plan Energy section 8) remove one limit of `azos_energy::policy` each: the
 # OPP-range setter's floors (pl-floor), the evaluation-time clamp's floors
-# (pl-clamp), the refusal record (pl-record). Same three buckets.
-for en_c in "i1:governor::deadline_floor_covers_admitted_density_with_margin governor::i1_and_i6_hold_everywhere policy::a_cap_the_floors_override_is_counted policy::opp_cap_respects_the_deadline_floor " \
-            "i6:governor::i1_and_i6_hold_everywhere governor::safety_floor_is_the_first_opp_at_the_wcet_reference policy::a_refusal_is_recorded policy::opp_cap_respects_the_safety_floor " \
+# (pl-clamp), the refusal record (pl-record), the ring-3 service's setter
+# checks (pl-limit), its battery reserve (pl-reserve) and the report timeout
+# (pl-stale). Same three buckets.
+for en_c in "i1:governor::deadline_floor_covers_admitted_density_with_margin governor::i1_and_i6_hold_everywhere policy::a_cap_the_floors_override_is_counted policy::opp_cap_respects_the_deadline_floor power_ring3::limits_a_power_cap_below_the_deadline_floor_is_refused power_ring3::reserve_takes_every_domain_to_its_lowest_legal_opp_whatever_the_policy_asked power_ring3::the_power_cap_bounds_the_governor_and_the_floors_win_again " \
+            "i6:governor::i1_and_i6_hold_everywhere governor::safety_floor_is_the_first_opp_at_the_wcet_reference policy::a_refusal_is_recorded policy::opp_cap_respects_the_safety_floor power_ring3::limits_a_power_cap_below_the_safety_floor_is_refused power_ring3::reserve_takes_every_domain_to_its_lowest_legal_opp_whatever_the_policy_asked power_ring3::stale_a_report_older_than_the_timeout_holds_the_reserve " \
             "i3:dt::teo_picks_the_deepest_dt_state_that_fits_the_timer idle::i3_holds_for_any_history idle::rt_slack_caps_the_exit_latency " \
             "pl-floor:policy::a_refusal_is_recorded policy::opp_cap_respects_the_deadline_floor policy::opp_cap_respects_the_safety_floor " \
-            "pl-clamp:policy::a_cap_the_floors_override_is_counted policy::clamp_never_lowers_a_floor " \
-            "pl-record:policy::a_refusal_is_recorded "; do
+            "pl-clamp:policy::a_cap_the_floors_override_is_counted policy::clamp_never_lowers_a_floor power_ring3::reserve_takes_every_domain_to_its_lowest_legal_opp_whatever_the_policy_asked power_ring3::stale_a_report_older_than_the_timeout_holds_the_reserve power_ring3::the_power_cap_bounds_the_governor_and_the_floors_win_again " \
+            "pl-record:policy::a_refusal_is_recorded power_ring3::a_new_refusal_is_recorded " \
+            "pl-limit:power_ring3::limits_a_level_lighter_than_the_rows_require_is_refused power_ring3::limits_a_power_cap_below_the_deadline_floor_is_refused power_ring3::limits_a_power_cap_below_the_safety_floor_is_refused power_ring3::limits_parking_a_cpu_with_admitted_real_time_work_is_refused power_ring3::limits_the_default_and_latency_classes_keep_the_fastest_domain " \
+            "pl-reserve:power_ring3::reserve_a_service_that_died_in_it_does_not_leave_by_itself_but_can power_ring3::reserve_follows_the_configured_percent_not_a_constant power_ring3::reserve_is_held_at_and_below_the_floor_and_lifted_above_it power_ring3::reserve_takes_every_domain_to_its_lowest_legal_opp_whatever_the_policy_asked " \
+            "pl-stale:power_ring3::reserve_a_service_that_died_in_it_does_not_leave_by_itself_but_can power_ring3::stale_a_refused_report_is_not_a_sign_of_life power_ring3::stale_a_report_older_than_the_timeout_holds_the_reserve power_ring3::stale_shows_in_the_state_and_stats_words power_ring3::stale_the_age_runs_from_boot_when_the_service_never_reports power_ring3::stale_the_next_accepted_report_ends_the_hold power_ring3::stale_the_timeout_is_the_configured_one "; do
     en_f="${en_c%%:*}"; en_want="${en_c#*:}"
     ci_row_begin "energy(${en_f}-canary)" || { ci_row_end; continue; }
     printf "  %-26s" "energy(${en_f}-canary)..."
