@@ -43,9 +43,10 @@ and directories) per instance, with file data on the kernel heap. The bounds
 * A write that would pass `TMPFS_MAX_KB` is refused with `NoSpace` on `/`:
   the system does not drop a file it was asked to keep. `/tmp` is scratch
   space (the bound and the eviction are tmpfs's original design): there the
-  write first evicts the oldest named files, never a directory and never the
-  file being written, and is refused only when none is left. One file cannot
-  be larger than the bound on either.
+  write first evicts the oldest files, never a directory, never the file
+  being written and never a file that is open (a descriptor follows its file),
+  and is refused when none is left. One file cannot be larger than the bound
+  on either.
 * A name is at most 63 bytes (`NameTooLong`). A path inside the mount is
   limited only by the VFS (`MAX_PATH`, 512 bytes with its NUL).
 
@@ -55,8 +56,7 @@ gone. A file that is not there yet is named by its directory's key plus the
 leaf name. A descriptor therefore follows the file, not the name: a file
 unlinked or renamed over while open stays alive, unnamed, until the last
 close (`FileSystem::opened` / `released`), and a write through the descriptor
-never makes the old name again. A file evicted from `/tmp` while open is gone:
-the descriptor's writes fail. The page cache keys a file by the same bytes, so
+never makes the old name again. The page cache keys a file by the same bytes, so
 a rename leaves its cached pages valid.
 
 A directory is never the target of a rename, cannot move into itself, and is

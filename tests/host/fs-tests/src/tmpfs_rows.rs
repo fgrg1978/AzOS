@@ -271,13 +271,15 @@ fn a_descriptor_follows_the_file_not_the_name() {
     assert!(vfs::vfs_stat(b"/tmp/b").is_none(), "a write after a rename does not make the old name");
     assert_eq!(get(b"/tmp/c").as_deref(), Some(&b"ZAA"[..]), "it reached the renamed file");
 
-    // Evicted while open: the descriptor's write fails, the name stays gone.
+    // An open file is not evicted to make room: the write that needs its room
+    // is refused, and the descriptor goes on. Closed, it can be.
     let fd = vfs::vfs_open(&mut t, b"/tmp/c", O_RDWR);
-    assert!(put(b"/tmp/big", &vec![0u8; tmpfs::TMPFS_MAX_BYTES]), "evicts /tmp/c");
-    assert!(vfs::vfs_stat(b"/tmp/c").is_none());
-    assert_eq!(vfs::vfs_write(&mut t, fd, b"x".as_ptr(), 1), -1);
-    assert!(vfs::vfs_stat(b"/tmp/c").is_none(), "nothing made it again");
+    assert!(!put(b"/tmp/big", &vec![0u8; tmpfs::TMPFS_MAX_BYTES]), "only an open file stands in the way");
+    assert_eq!(vfs::vfs_stat(b"/tmp/c").map(|s| s.size), Some(3));
+    assert_eq!(vfs::vfs_write(&mut t, fd, b"x".as_ptr(), 1), 1);
     vfs::vfs_close(&mut t, fd);
+    assert!(put(b"/tmp/big", &vec![0u8; tmpfs::TMPFS_MAX_BYTES]), "closed, it is evicted");
+    assert!(vfs::vfs_stat(b"/tmp/c").is_none());
     tmpfs_h::clear();
 }
 

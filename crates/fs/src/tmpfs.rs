@@ -12,11 +12,11 @@
 //! |--------------------|-------------------------------------------------|
 //! | `TMPFS_MAX_FILES`  | Entries, files and directories together         |
 //! | `TMPFS_MAX_BYTES`  | Data bytes; a write past it is refused, and     |
-//! |                    | on `/tmp` first evicts the oldest file          |
+//! |                    | on `/tmp` first evicts the oldest closed file   |
 //! | `TMPFS_NAME_LEN`   | One name, NUL included (63 bytes)               |
 //!
-//! `/tmp` is scratch space and evicts (FIFO, files only, never one with
-//! nothing older left); `/` never does: a full `/` refuses the write. A full
+//! `/tmp` is scratch space and evicts (FIFO, files that nobody has open; a
+//! write that only open files stand in the way of is refused); `/` never does: a full `/` refuses the write. A full
 //! entry table is refused (`NoSpace`) on both, never evicted for.
 //!
 //! ## Keys
@@ -279,13 +279,14 @@ impl State {
         *e = EMPTY_ENTRY;
     }
 
-    /// Free the oldest named file other than `keep`; `false` when there is
-    /// none. Directories are never evicted.
+    /// Free the oldest named file that nothing has open and is not `keep`;
+    /// `false` when there is none. Directories are never evicted, nor a file a
+    /// descriptor follows.
     fn evict_oldest(&mut self, keep: Option<usize>) -> bool {
         let victim = (0..TMPFS_MAX_FILES)
             .filter(|&i| {
                 let e = &self.entries[i];
-                e.active && !e.is_dir && e.parent != ORPHAN && Some(i) != keep
+                e.active && !e.is_dir && e.parent != ORPHAN && e.refs == 0 && Some(i) != keep
             })
             .min_by_key(|&i| self.entries[i].seq);
         match victim {

@@ -1926,8 +1926,8 @@ config TMPFS_MAX_KB
     help
       crates/fs/src/tmpfs.rs, TMPFS_MAX_BYTES, for each of / and /tmp. A write
       that would pass it is refused (ENOSPC) on /; on /tmp, which is scratch
-      space, it first evicts the oldest files (FIFO) and is refused only when
-      none is left to evict.  A file is never evicted from /.
+      space, it first evicts the oldest files nobody has open (FIFO) and is
+      refused when none is left to evict.  A file is never evicted from /.
 
       Cost: no static RAM (+0 B measured, both ISAs).  File data is allocated
       from the kernel heap when a file is written, so the worst case is
