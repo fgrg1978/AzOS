@@ -17,12 +17,16 @@
 #![cfg(test)]
 #![allow(clippy::needless_range_loop)]
 
+// The monitor's `kdf.rs` names `crate::hkdf`: the kernel's, as the monitor's own is its source.
+pub(crate) use azos_crypto::hkdf;
+
 mod admission;
 mod arm_enter;
 mod exits;
 mod fakes;
 mod glue;
 mod hyp_api;
+mod hyp_kdf;
 mod hyp_pin;
 mod iface;
 mod monitor;

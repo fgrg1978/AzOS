@@ -22,6 +22,19 @@ use core::sync::atomic::{AtomicU32, Ordering};
 mod arch;
 mod state;
 
+// The kernel's own crypto, by source: SHA-256, HMAC and HKDF are
+// `azos_crypto`'s, so the monitor and the kernel derive the same bytes by the
+// same code. The monitor answers the SHA-256 block-function choice with the
+// portable one.
+#[allow(dead_code)] // reason: the parts of azos_crypto's files the monitor does not call
+#[path = "../../crypto/src/ct.rs"]
+mod ct;
+#[allow(dead_code)] // reason: the parts of azos_crypto's files the monitor does not call
+#[path = "../../crypto/src/hkdf.rs"]
+mod hkdf;
+#[allow(dead_code)] // reason: the parts of azos_crypto's files the monitor does not call
+mod sha256;
+
 use state::HYP;
 
 /// A monitor panic parks every PE: it fails closed.

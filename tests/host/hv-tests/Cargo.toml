@@ -18,6 +18,8 @@ azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"]
 azos_devif = { path = "../../../crates/core/devif" }
 # `on`: the ring is read back to see the refusals the monitor wrote.
 azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+# The monitor's derive (crates/core/hyp-mon/src/arch/kdf.rs) is pulled in by path and runs on the kernel's own HKDF.
+azos_crypto = { path = "../../../crates/core/crypto" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_limits = { path = "../../../crates/core/limits" }
 # The x86_64 glue is the crate's own module (it builds on the PTE builder of
@@ -43,6 +45,8 @@ canary-ppi-not-silenced = []
 # `arch/aarch64/src/ext/hv` (pulled in by path) gates the resident EL2 stub
 # and the guest entry on it, and both are bare-metal aarch64 only: never set here.
 hv = []
+# `crates/core/hyp-mon/src/arch/kdf.rs` (pulled in by path): the salt left out of the derive.
+hyp-kdf-salt-canary = []
 
 [profile.release]
 overflow-checks = true

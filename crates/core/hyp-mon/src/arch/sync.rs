@@ -84,6 +84,23 @@ fn hvc(regs: *mut u64) {
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_TEXT_PATCH, reg(regs, 1), reg(regs, 2)); }
             set(regs, 0, r as u64)
         }
+        azos_hyp_api::CALL_KEY_ROOT_SET => {
+            let r = super::keys::root_set(reg(regs, 1), reg(regs, 2));
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_KEY_ROOT_SET, reg(regs, 1), reg(regs, 2)); }
+            set(regs, 0, r as u64)
+        }
+        azos_hyp_api::CALL_KEY_DERIVE => match super::keys::derive(reg(regs, 1), reg(regs, 2)) {
+            Ok(out) => {
+                set(regs, 0, OK as u64);
+                for (i, w) in azos_hyp_api::out_to_words(&out).iter().enumerate() {
+                    set(regs, 1 + i, *w);
+                }
+            }
+            Err(r) => {
+                crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_KEY_DERIVE, reg(regs, 1), reg(regs, 2));
+                set(regs, 0, r as u64)
+            }
+        },
         azos_hyp_api::CALL_PIN => {
             let (r, mode, pinned) = super::pin::pin();
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_PIN, 0, 0); }

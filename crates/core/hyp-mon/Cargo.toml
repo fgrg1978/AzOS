@@ -35,6 +35,9 @@ hyp-text-rw-canary = []
 hyp-text-site-skip-canary = []
 hyp-guard-skip-canary = []
 hyp-pin-off-canary = []
+hyp-kdf-salt-canary = []
+# Read by the riscv64 arms of the shared SHA-256 source (azos_crypto); the monitor is aarch64 only, so never set.
+no-bitmanip = []
 
 [profile.release]
 panic = "abort"

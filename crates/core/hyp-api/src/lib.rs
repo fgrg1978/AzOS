@@ -40,6 +40,16 @@ pub const CALL_GUARD_PAGES: u64 = CALL_BASE + 5;
 /// and again after a power-down. `mode` is [`PIN_FGT`] or [`PIN_TVM`].
 pub const CALL_PIN: u64 = CALL_BASE + 6;
 
+/// `key_root_set(slot, pa) -> status`: root `slot` is the 32 bytes at `pa`,
+/// inside a page the caller already donated with `guard_pages`. One-shot per
+/// slot. The monitor reads the root from there when it derives, and nobody
+/// else can.
+pub const CALL_KEY_ROOT_SET: u64 = CALL_BASE + 7;
+/// `key_derive(slot, req_pa) -> (status, out[0..4])`: `HKDF-SHA256(salt, ikm =
+/// the root of slot, info)` for the [`DeriveReq`] at `req_pa`, 32 bytes back in
+/// four little-endian words. The request lies in memory the kernel still owns.
+pub const CALL_KEY_DERIVE: u64 = CALL_BASE + 8;
+
 /// The pin is armed by `HFGWTR_EL2` (FEAT_FGT): `TTBR0_EL1` is not trapped.
 pub const PIN_FGT: u64 = 1;
 /// The pin is armed by `HCR_EL2.TVM`: every virtual-memory register write
@@ -75,8 +85,10 @@ pub const INV_RO_DATA: u64 = 1 << 5;
 pub const INV_GUARDED: u64 = 1 << 6;
 /// I3: a PE that called `pin` cannot write `SCTLR_EL1`, `TCR_EL1` or `TTBR1_EL1`.
 pub const INV_PINNED: u64 = 1 << 7;
+/// At least one keystore root is held in guarded memory and derives there.
+pub const INV_KEY_ROOTS: u64 = 1 << 8;
 
-pub const INVARIANT_NAMES: [(u64, &str); 8] = [
+pub const INVARIANT_NAMES: [(u64, &str); 9] = [
     (INV_EL2_MMU, "el2-mmu"),
     (INV_HOST_S2, "host-s2"),
     (INV_PSCI, "psci"),
@@ -85,6 +97,7 @@ pub const INVARIANT_NAMES: [(u64, &str); 8] = [
     (INV_RO_DATA, "ro-data"),
     (INV_GUARDED, "guarded"),
     (INV_PINNED, "pinned"),
+    (INV_KEY_ROOTS, "key-roots"),
 ];
 
 /// What a violation record describes.
@@ -323,4 +336,88 @@ pub fn guard_error(
     if guarded.overlaps(pa, end) { return Some("already guarded"); }
     if !ram.is_empty() && !ram.iter().any(|m| m[0] <= pa && end <= m[1]) { return Some("outside RAM"); }
     None
+}
+
+/// Keystore roots the monitor can hold (`azos_crypto::keystore::ROOTS`; the
+/// kernel asserts they agree) and the length of one root and of one output.
+pub const KEY_ROOTS: usize = 3;
+pub const KEY_LEN: usize = 32;
+/// Longest salt and info a derive request may carry. The keystore's are 26 and
+/// 54 bytes at most.
+pub const DERIVE_SALT_MAX: usize = 64;
+pub const DERIVE_INFO_MAX: usize = 96;
+
+/// What `key_derive` is asked, in the kernel's memory at an 8-aligned address.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(C, align(8))]
+pub struct DeriveReq {
+    pub salt_len: u32,
+    pub info_len: u32,
+    pub salt: [u8; DERIVE_SALT_MAX],
+    pub info: [u8; DERIVE_INFO_MAX],
+}
+
+impl DeriveReq {
+    pub const ZERO: DeriveReq = DeriveReq { salt_len: 0, info_len: 0, salt: [0; DERIVE_SALT_MAX], info: [0; DERIVE_INFO_MAX] };
+
+    /// A request for `salt` and `info`; `None` when either is too long.
+    pub fn new(salt: &[u8], info: &[u8]) -> Option<DeriveReq> {
+        if salt.len() > DERIVE_SALT_MAX || info.len() > DERIVE_INFO_MAX {
+            return None;
+        }
+        let mut r = DeriveReq::ZERO;
+        r.salt_len = salt.len() as u32;
+        r.info_len = info.len() as u32;
+        r.salt[..salt.len()].copy_from_slice(salt);
+        r.info[..info.len()].copy_from_slice(info);
+        Some(r)
+    }
+
+    pub fn salt(&self) -> &[u8] {
+        &self.salt[..self.salt_len as usize]
+    }
+
+    pub fn info(&self) -> &[u8] {
+        &self.info[..self.info_len as usize]
+    }
+}
+
+/// Why a request the monitor read is refused; the lengths are the kernel's.
+pub fn derive_req_error(r: &DeriveReq) -> Option<&'static str> {
+    if r.salt_len as usize > DERIVE_SALT_MAX { return Some("salt too long"); }
+    if r.info_len as usize > DERIVE_INFO_MAX { return Some("info too long"); }
+    None
+}
+
+/// Why the memory a request is read from is refused: it must be 8-aligned, not
+/// wrap, and touch neither the monitor nor a guarded page (the monitor would
+/// read the kernel's secrets back to it as key material).
+pub fn derive_req_addr_error(pa: u64, hole: u64, hole_end: u64, guarded: &Guarded) -> Option<&'static str> {
+    if pa % 8 != 0 { return Some("request not 8-aligned"); }
+    let Some(end) = pa.checked_add(core::mem::size_of::<DeriveReq>() as u64) else { return Some("wraps") };
+    if pa < hole_end && hole < end { return Some("request over the monitor"); }
+    if guarded.overlaps(pa, end) { return Some("request over a guarded page"); }
+    None
+}
+
+/// Why `key_root_set(slot, pa)` is refused: a slot there is, and 32 bytes
+/// wholly inside one guarded range.
+pub fn key_root_error(slot: u64, pa: u64, guarded: &Guarded) -> Option<&'static str> {
+    if slot >= KEY_ROOTS as u64 { return Some("no such root"); }
+    let Some(end) = pa.checked_add(KEY_LEN as u64) else { return Some("wraps") };
+    if !guarded.as_slice().iter().any(|g| g[0] <= pa && end <= g[1]) { return Some("root not in guarded memory"); }
+    None
+}
+
+/// An output as the four register words `key_derive` returns, and back.
+pub fn out_to_words(out: &[u8; KEY_LEN]) -> [u64; 4] {
+    core::array::from_fn(|i| u64::from_le_bytes(out[i * 8..i * 8 + 8].try_into().unwrap()))
+}
+
+pub fn words_to_out(w: [u64; 4]) -> [u8; KEY_LEN] {
+    let mut out = [0u8; KEY_LEN];
+    for (i, x) in w.iter().enumerate() {
+        out[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
+    }
+    out
 }

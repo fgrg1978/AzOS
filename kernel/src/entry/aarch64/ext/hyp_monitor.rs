@@ -11,8 +11,9 @@
 
 use azos_drv_sys::kprintln;
 use azos_hyp_api::{
-    is_monitor_call, LockDesc, TextSite, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PIN, CALL_PROBE,
-    CALL_TEXT_PATCH, INVARIANT_NAMES, LOCK_RAM_MAX, OK, PIN_FGT, TEXT_SITES_MAX,
+    is_monitor_call, words_to_out, DeriveReq, LockDesc, TextSite, CALL_GUARD_PAGES, CALL_KEY_DERIVE,
+    CALL_KEY_ROOT_SET, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PIN, CALL_PROBE, CALL_TEXT_PATCH,
+    INVARIANT_NAMES, KEY_LEN, KEY_ROOTS, LOCK_RAM_MAX, OK, PIN_FGT, TEXT_SITES_MAX,
 };
 
 // The blob, placed in `.hyp` (a non-exec `alloc` section the linker keeps out
@@ -43,7 +44,8 @@ macro_rules! hyp_blob {
     feature = "hyp-text-rw-canary",
     feature = "hyp-text-site-skip-canary",
     feature = "hyp-guard-skip-canary",
-    feature = "hyp-pin-off-canary"
+    feature = "hyp-pin-off-canary",
+    feature = "hyp-kdf-salt-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -62,9 +64,11 @@ hyp_blob!("/build/aarch64/hyp-mon-text-site-skip.bin");
 hyp_blob!("/build/aarch64/hyp-mon-guard-skip.bin");
 #[cfg(feature = "hyp-pin-off-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-pin-off.bin");
+#[cfg(feature = "hyp-kdf-salt-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-kdf-salt.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
-/// x0..x3). An HVC, which the monitor traps at EL2.
+/// x0..x4). An HVC, which the monitor traps at EL2.
 #[inline]
 fn monitor_call(id: u64, a1: u64) -> [u64; 4] {
     monitor_call2(id, a1, 0)
@@ -72,7 +76,13 @@ fn monitor_call(id: u64, a1: u64) -> [u64; 4] {
 
 #[inline]
 fn monitor_call2(id: u64, a1: u64, a2: u64) -> [u64; 4] {
-    let (mut x0, mut x1, mut x2, mut x3) = (id, a1, a2, 0u64);
+    let r = monitor_call5(id, a1, a2);
+    [r[0], r[1], r[2], r[3]]
+}
+
+#[inline]
+fn monitor_call5(id: u64, a1: u64, a2: u64) -> [u64; 5] {
+    let (mut x0, mut x1, mut x2, mut x3, mut x4) = (id, a1, a2, 0u64, 0u64);
     // SAFETY: the monitor is resident (HYP_MONITOR built it in and the
     // trampoline started it) before this runs.
     unsafe {
@@ -82,9 +92,10 @@ fn monitor_call2(id: u64, a1: u64, a2: u64) -> [u64; 4] {
             inout("x1") x1,
             inout("x2") x2,
             inout("x3") x3,
+            inout("x4") x4,
         );
     }
-    [x0, x1, x2, x3]
+    [x0, x1, x2, x3, x4]
 }
 
 /// The EL2 line of the boot banner for a split image: probe the monitor and
@@ -205,6 +216,60 @@ fn ttbr0_ticks() -> u64 {
 #[cfg(feature = "hyp-pin-probe")]
 static UNPINNED_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+const _: () = assert!(KEY_ROOTS == azos_crypto::keystore::ROOTS && KEY_LEN == azos_crypto::keystore::KEY_LEN);
+
+/// A page each root is written into before it is donated: nothing else lives
+/// in it, and the kernel never touches it again.
+#[repr(C, align(4096))]
+struct RootPage([u8; 4096]);
+static mut ROOT_PAGES: [RootPage; KEY_ROOTS] = [const { RootPage([0; 4096]) }; KEY_ROOTS];
+
+/// The request of `key_derive`, in the kernel's memory (a stack has no
+/// physical address), one at a time.
+static DERIVE_REQ: azos_sync::SpinLock<DeriveReqBuf> = azos_sync::SpinLock::new(DeriveReqBuf(DeriveReq::ZERO));
+struct DeriveReqBuf(DeriveReq);
+
+fn root_page_pa(slot: usize) -> u64 {
+    pa_of(core::ptr::addr_of!(ROOT_PAGES) as usize + slot * 4096)
+}
+
+/// Keep root `slot` in the monitor: write it to its page, donate the page,
+/// name the root. The caller wipes its own copy. A refusal leaves no root.
+fn vault_store(slot: usize, root: &[u8; KEY_LEN]) -> bool {
+    if slot >= KEY_ROOTS {
+        return false;
+    }
+    let pa = root_page_pa(slot);
+    let page = (core::ptr::addr_of_mut!(ROOT_PAGES) as *mut u8).wrapping_add(slot * 4096);
+    // SAFETY: the page is this slot's alone, written once before it is donated.
+    unsafe { core::ptr::copy_nonoverlapping(root.as_ptr(), page, KEY_LEN) };
+    if monitor_call2(CALL_GUARD_PAGES, pa, 1)[0] as i64 != OK {
+        // SAFETY: still the kernel's page.
+        unsafe { core::ptr::write_bytes(page, 0, KEY_LEN) };
+        return false;
+    }
+    monitor_call2(CALL_KEY_ROOT_SET, slot as u64, pa)[0] as i64 == OK
+}
+
+/// `HKDF-SHA256(salt, ikm = root slot, info)` by the monitor.
+fn vault_kdf(slot: usize, salt: &[u8], info: &[u8], out: &mut [u8; KEY_LEN]) -> bool {
+    let Some(req) = DeriveReq::new(salt, info) else { return false };
+    let mut buf = DERIVE_REQ.lock();
+    buf.0 = req;
+    let r = monitor_call5(CALL_KEY_DERIVE, slot as u64, pa_of(&buf.0 as *const DeriveReq as usize));
+    if r[0] as i64 != OK {
+        return false;
+    }
+    *out = words_to_out([r[1], r[2], r[3], r[4]]);
+    true
+}
+
+/// From here every keystore root goes to the monitor the moment it is
+/// installed, and key derivation asks the monitor. Before the first root.
+pub(crate) fn install_vault() {
+    azos_syscall::keys::set_root_vault(vault_store, vault_kdf);
+}
+
 /// Lock the kernel image at stage 2: text read-only and the only memory EL1
 /// executes, rodata read-only, the secondary entry fixed (I1, I2). Called
 /// with one PE up, after the boot-once text rewrites and the livepatch rows,
@@ -268,10 +333,12 @@ pub(crate) fn lock_ro_data() {
     guard_probe();
     #[cfg(feature = "hyp-pin-probe")]
     pin_probe();
+    #[cfg(feature = "hyp-key-root-probe")]
+    key_root_probe();
 }
 
 /// How many records of `kind` the ring holds.
-#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe"))]
+#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe", feature = "hyp-key-root-probe"))]
 fn ring_count(kind: azos_hyp_api::Kind) -> u32 {
     let (mut cursor, mut n) = (0, 0);
     loop {
@@ -414,4 +481,49 @@ fn pin_probe() {
     if pinned > unpinned + unpinned / 2 {
         kprintln!("[HYP] cost: the TTBR0 trap is visible");
     }
+}
+
+/// Feature `hyp-key-root-probe` (the `hyp: R8` keystore rows): install a root
+/// through the keystore, which the monitor takes; have the monitor derive from
+/// it and compare with the same HKDF run here on the root the probe kept; ask
+/// for a derive over the root's own page, which must be refused and recorded;
+/// then read the root's page, which must fault. Never in a real build.
+#[cfg(feature = "hyp-key-root-probe")]
+fn key_root_probe() {
+    use azos_crypto::keystore::Backend;
+    use azos_hyp_api::{Kind, INV_KEY_ROOTS};
+    let root: [u8; KEY_LEN] = core::array::from_fn(|i| 0xC3 ^ i as u8);
+    // A root nothing installed at boot.
+    let Some((backend, slot)) =
+        [(Backend::Volume, 2usize), (Backend::TpmNv, 1)].into_iter().find(|(b, _)| !azos_syscall::keys::has_root(*b))
+    else {
+        kprintln!("[HYP] PROBE FAILED: every root slot is taken");
+        return;
+    };
+    if !azos_syscall::keys::install_root(backend, &root) {
+        kprintln!("[HYP] PROBE FAILED: the monitor did not take the root");
+        return;
+    }
+    if monitor_call(CALL_PROBE, 0)[2] & INV_KEY_ROOTS == 0 {
+        kprintln!("[HYP] PROBE FAILED: probe does not report key-roots");
+    }
+    let (salt, info): ([u8; 20], [u8; 54]) = (*b"azos keystore key v1", core::array::from_fn(|i| i as u8));
+    let (mut got, mut want) = ([0u8; KEY_LEN], [0u8; KEY_LEN]);
+    let derived = vault_kdf(slot, &salt, &info, &mut got);
+    if derived && azos_crypto::hkdf::hkdf(&salt, &root, &info, &mut want) && got == want {
+        kprintln!("[HYP] keys: the monitor derives the key the kernel would");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: the monitor derived another key ({})", derived);
+    }
+    let before = ring_count(Kind::CallRefused);
+    let r = monitor_call5(CALL_KEY_DERIVE, slot as u64, root_page_pa(slot));
+    if r[0] as i64 != OK && ring_count(Kind::CallRefused) == before + 1 {
+        kprintln!("[HYP] keys: a request over the root's own page is refused and recorded");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: a request over the root's page gave {}", r[0] as i64);
+    }
+    kprintln!("[HYP] keys: reading the vaulted root (must fault)");
+    // SAFETY: the probe's purpose is this read; it must not return.
+    let b = unsafe { core::ptr::read_volatile((core::ptr::addr_of!(ROOT_PAGES) as usize + slot * 4096) as *const u8) };
+    kprintln!("[HYP] PROBE FAILED: the vaulted root read {:#x}", b);
 }

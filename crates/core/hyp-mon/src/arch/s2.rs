@@ -228,6 +228,16 @@ pub fn lock_ro_data() -> i64 {
     OK
 }
 
+/// Run `f` on what was donated and the monitor's own range, with `guard_pages`
+/// held off.
+pub fn with_guard<R>(f: impl FnOnce(&Guarded, u64, u64) -> R) -> R {
+    GUARD_LOCK.lock();
+    // SAFETY: under `GUARD_LOCK`.
+    let r = f(unsafe { &*core::ptr::addr_of!(GUARDED) }, HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed));
+    GUARD_LOCK.unlock();
+    r
+}
+
 /// Has `lock_kernel_image` built the locked map?
 pub fn locked() -> bool {
     LOCKED_ROOT.load(Ordering::Acquire) != 0

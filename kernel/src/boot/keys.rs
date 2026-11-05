@@ -25,6 +25,9 @@ use crate::kprintln;
 /// After the mounts (the volume root is a file) and the entropy step (a first
 /// boot draws both secrets from the pool).
 pub(crate) fn install_keystore_roots() {
+    // VIRT_SPLIT (Kconfig HYP_MONITOR): the roots go to the monitor, not here.
+    #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
+    crate::entry::aarch64::ext::hyp_monitor::install_vault();
     #[cfg(feature = "tpm")]
     super::tpm::install_keystore_root();
     match install_volume_root() {

@@ -159,7 +159,7 @@ fn the_lock_keeps_what_was_guarded_before_it_out_of_the_image() {
 fn the_call_ids_are_distinct_and_in_the_monitor_range() {
     let ids = [
         CALL_PROBE, CALL_VIOLATION_READ, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_TEXT_PATCH, CALL_GUARD_PAGES,
-        CALL_PIN,
+        CALL_PIN, CALL_KEY_ROOT_SET, CALL_KEY_DERIVE,
     ];
     for (i, a) in ids.iter().enumerate() {
         assert!(is_monitor_call(*a));
@@ -175,7 +175,7 @@ fn every_invariant_has_its_own_bit_and_a_name() {
         assert_eq!(seen & bit, 0, "{name} shares a bit");
         seen |= bit;
     }
-    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED);
+    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED | INV_KEY_ROOTS);
     assert_eq!(Kind::from_u32(5), Some(Kind::SysregRefused));
     assert_eq!(Kind::from_u32(6), None);
 }

@@ -3766,6 +3766,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-text-site-skip-canary)    name=hyp-mon-text-site-skip ;;
         hyp-guard-skip-canary)        name=hyp-mon-guard-skip ;;
         hyp-pin-off-canary)           name=hyp-mon-pin-off ;;
+        hyp-kdf-salt-canary)          name=hyp-mon-kdf-salt ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3788,6 +3789,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *text-site-skip*) hyp_mon_blob hyp-text-site-skip-canary ;;
         *guard-skip*) hyp_mon_blob hyp-guard-skip-canary ;;
         *pin-off*) hyp_mon_blob hyp-pin-off-canary ;;
+        *kdf-salt*) hyp_mon_blob hyp-kdf-salt-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     if ! a64_kbuild "$sel"; then
@@ -3868,6 +3870,22 @@ par "hyp: R8 guarded page (arm)" hyp_monitor_row "hyp: R8 guarded page (arm)" "h
     "[HYP] guard: reading the donated page (must fault)" "[FATAL] aarch64 kernel page fault"
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
 par "hyp: R8 guard-skip canary (arm)" hyp_monitor_row "hyp: R8 guard-skip canary (arm)" "hyp-guard-skip-canary,hyp-guard-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
+# R8, the keystore root: a root installed through the keystore is handed to the
+# monitor, which derives from it and returns what it derived; the kernel's HKDF
+# on the same bytes agrees; a derive request over the root's own page is
+# refused and recorded; and reading the root's page faults. Canaries: the
+# monitor leaves the salt out (the keys differ), and the monitor does not unmap
+# the donated page (the read succeeds).
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R8 keystore root vaulted (arm)" hyp_monitor_row "hyp: R8 keystore root vaulted (arm)" "hyp-key-root-probe" pass \
+    "[HYP] keys: the monitor derives the key the kernel would" "[HYP] keys: a request over the root's own page is refused and recorded" \
+    "[HYP] keys: reading the vaulted root (must fault)" "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R8 keystore salt canary (arm)" hyp_monitor_row "hyp: R8 keystore salt canary (arm)" "hyp-kdf-salt-canary,hyp-key-root-probe" canary \
+    "[HYP] keys: the monitor derives the key the kernel would"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R8 keystore root readable canary (arm)" hyp_monitor_row "hyp: R8 keystore root readable canary (arm)" "hyp-guard-skip-canary,hyp-key-root-probe" canary \
     "[FATAL] aarch64 kernel page fault"
 # R9: after the lock each PE pins itself: with FEAT_FGT (`-cpu max`) the
 # write traps of SCTLR_EL1, TCR_EL1 and TTBR1_EL1; without it (`-cpu

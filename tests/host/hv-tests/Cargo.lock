@@ -74,6 +74,7 @@ version = "0.1.0"
 dependencies = [
  "azos_arch_api",
  "azos_arch_x86_64",
+ "azos_crypto",
  "azos_decision",
  "azos_devif",
  "azos_hv",
