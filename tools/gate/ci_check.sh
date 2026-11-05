@@ -25368,10 +25368,10 @@ echo after-x \$?" 180 \
 echo after-x \$?"
                 USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|lx: hello" par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                     "$exec_refused_script" 150 \
-                    "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
+                    "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (exec-grant record)" "LXHELLO.ELF: Permission denied"
                 USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" USH_QEMU_EXTRA="-append canary=exec-grant-skip" par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" FAIL \
                     "$exec_refused_script" 150 \
-                    "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
+                    "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (exec-grant record)"
             fi
             # Wave 13: the BusyBox row is a deployment's, not only the gate's.
             # A kernel built from a `.config` with USERSPACE_GPL + BUSYBOX
@@ -25474,8 +25474,8 @@ pm suspend
 power sched_hz 200
 power suspend" 150 \
             "[CONSOLE] lockdown: no kernel console task" "locked-ok" \
-            "holds no launch grant for FLIGHT.ELF (recorded)" "sh: pm: command not found" \
-            "holds no launch grant for POWER.ELF (recorded)" "not permitted"
+            "holds no launch grant for FLIGHT.ELF (exec-grant record)" "sh: pm: command not found" \
+            "holds no launch grant for POWER.ELF (exec-grant record)" "not permitted"
     done
 
     # ── prof: PMU overflow sampling (Kconfig PROFILER_PMU) ─────────────────

@@ -354,17 +354,15 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
         &mut |image: &str, digest: &[u8; 32]| {
             // The launch grant is checked against the image the BYTES are,
             // not the path typed.
-            if crate::exec_grant::decide(me, crate::exec_grant::Site::SpawnEx, image, digest).is_ok() {
-                return true;
-            }
-            // Recorded as every typed refusal is (under the
-            // console lockdown this is how a privileged tool is refused).
-            let recorded = crate::handlers::note_typed_denial_recorded(
-                me, ty::LAUNCH, azos_ipc::cap::CapError::MissingPerms,
-            );
+            // The refusal is the `exec-grant` record (under the console
+            // lockdown this is how a privileged tool is refused).
+            let receipt = match crate::exec_grant::decide(me, crate::exec_grant::Site::SpawnEx, image, digest) {
+                Ok(_) => return true,
+                Err(r) => r,
+            };
             azos_drv_sys::kwarn!(
                 "[SPAWN] REFUSED: tid={} holds no launch grant for {}{}", me, image,
-                if recorded { " (recorded)" } else { "" },
+                if receipt != 0 { " (exec-grant record)" } else { "" },
             );
             refusal.set(err(Errno::EACCES));
             false

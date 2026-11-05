@@ -2705,15 +2705,12 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
         return Err(neg(le::EACCES));
     }
     if cross {
-        if crate::exec_grant::decide(me, crate::exec_grant::Site::Execve, profile.image, &img.digest).is_err() {
-            let recorded = crate::handlers::note_typed_denial_recorded(
-                me, ty::LAUNCH, azos_ipc::cap::CapError::MissingPerms,
-            );
+        if let Err(receipt) = crate::exec_grant::decide(me, crate::exec_grant::Site::Execve, profile.image, &img.digest) {
             let head = u32::from_be_bytes([img.digest[0], img.digest[1], img.digest[2], img.digest[3]]);
             crate::handlers::record_exec_refused(crate::ushell::SPAWN_REFUSED_ACTION_NO_LAUNCH, head);
             azos_drv_sys::kwarn!(
                 "[LINUX] tid={} execve REFUSED: row {} holds no launch grant for {}{}",
-                me, own, profile.image, if recorded { " (recorded)" } else { "" },
+                me, own, profile.image, if receipt != 0 { " (exec-grant record)" } else { "" },
             );
             return Err(neg(le::EACCES));
         }

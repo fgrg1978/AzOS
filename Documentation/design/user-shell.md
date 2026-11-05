@@ -172,10 +172,9 @@ caps = [ { kind = "node", target = "TOOLBOX.ELF", perm = "x" },
 `SYS_SPAWN_EX`) resolve the file's digest to an image name, and for an image
 of an applied package to the package's id, and check the caller holds `EXEC`
 on the image or on the package (`exec_grant::decide`). The check is against
-what the bytes are, not what the path says. A refusal is `-EACCES`, is
-recorded like other typed capability denials and is logged as a refused spawn
+what the bytes are, not what the path says. A refusal is `-EACCES` and is logged as a refused spawn
 with a distinct action code. Admitted or refused, the exec is one `exec-grant`
-decision record: the digest prefix, the basis (an image grant, a package
+decision record (a refusal is no `cap-denial` record as well): the digest prefix, the basis (an image grant, a package
 grant, the caller's own row; no grant, bytes bound to no image, a native row,
 no topology row) and the site. A shell that starts many programs of one
 package (a BusyBox-like set) holds one grant, not one per program. The package
