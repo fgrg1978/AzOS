@@ -5630,6 +5630,7 @@ mod ps2_stream {
 #[cfg(test)]
 mod ps2_i8042 {
     use super::i8042::*;
+    use azos_drvkit::fake::{FakePorts, PortAccess};
     use azos_drvkit::PortIo;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -5658,7 +5659,6 @@ mod ps2_i8042 {
     /// A scripted i8042 with a keyboard and a mouse, enough of the command
     /// set for the bring-up, and a log of every command and device byte.
     struct Fake {
-        floating: bool,
         dual: bool,
         selftest: u8,
         /// A self-test resets the configuration byte to this.
@@ -5687,7 +5687,7 @@ mod ps2_i8042 {
 
     impl Fake {
         fn pc() -> Self {
-            Fake { floating: false, dual: true, selftest: 0x55, cfg_after_selftest: None,
+            Fake { dual: true, selftest: 0x55, cfg_after_selftest: None,
                    port_test: [0, 0], kbd_dev: true, aux_dev: true,
                    // BIOS leaves translation and the keyboard IRQ on.
                    cfg: 0x45, out: VecDeque::new(), pending: Pending::None, kbd_param: false,
@@ -5733,7 +5733,6 @@ mod ps2_i8042 {
 
     impl Model for Fake {
         fn inb(&mut self, port: u16) -> u8 {
-            if self.floating { return 0xFF; }
             if port == PORT_CMD {
                 let mut st = 0;
                 if let Some(&(_, aux)) = self.out.front() {
@@ -5828,10 +5827,13 @@ mod ps2_i8042 {
 
     #[test]
     fn a_floating_bus_is_no_controller_and_costs_one_read() {
-        let mut f = Fake::pc();
-        f.floating = true;
-        assert_eq!(init(&io(&mut f), SPINS), Err(Fail::Floating));
-        assert!(f.cmds.is_empty(), "nothing was written to a bus that floats");
+        let bus = FakePorts::new();
+        assert_eq!(init(&bus, SPINS), Err(Fail::Floating));
+        assert_eq!(
+            bus.take_log(),
+            [PortAccess::In { port: PORT_CMD, val: 0xFF }],
+            "one status read, nothing written to a bus that floats"
+        );
     }
 
     #[test]

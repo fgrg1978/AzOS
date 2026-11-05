@@ -6,9 +6,11 @@
 //!
 //! The traits are pure and always present. An implementation exists only where
 //! the machine has the thing: [`Window`] (feature `window`) is the one
-//! [`Mmio`] of the kernel and of a ring-3 driver, over
-//! `azos_arch_api::mmio`; a port space has an implementer on x86_64 only, the
-//! kernel's and the ring-3 host's own adapters over the grants they hold.
+//! [`Mmio`] over `azos_arch_api::mmio`, for the kernel's identity map and for a
+//! ring-3 mapping alike (the kernel's drivers use it today; the one ring-3 user
+//! of the kit, `buzz_drv`, uses [`PortIo`]); a port space has an implementer on
+//! x86_64 only, the kernel's and the ring-3 host's own adapters over the grants
+//! they hold.
 //! A driver generic over the traits compiles and is host-tested on every ISA;
 //! with the implementation inlined it is the same code as one that spelled
 //! the access out.

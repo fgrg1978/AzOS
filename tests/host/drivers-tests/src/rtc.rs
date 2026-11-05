@@ -16,7 +16,7 @@ use azos_rtc::goldfish::{Goldfish, TIME_HIGH, TIME_LOW};
 use azos_rtc::mc146818::{Mc146818, PORT_DATA, PORT_INDEX};
 use azos_rtc::pcf8563::{Pcf8563, ADDR};
 use azos_rtc::pl031::{Pl031, RTCCR, RTCDR, RTCLR};
-use azos_drvkit::fake::FakeMmio;
+use azos_drvkit::fake::{FakeMmio, FakePorts, PortAccess};
 use azos_drvkit::PortIo;
 use azos_rtc::{Error, I2c, Rtc};
 use std::cell::RefCell;
@@ -449,12 +449,13 @@ fn cmos_dead_battery_is_lost() {
 /// status D included: not a chip.
 #[test]
 fn cmos_floating_bus_is_no_device() {
-    struct Floating;
-    impl PortIo for Floating {
-        fn inb(&self, _: u16) -> u8 { 0xff }
-        fn outb(&self, _: u16, _: u8) {}
-    }
-    assert_eq!(Mc146818::new(Floating, Some(CENTURY), 1000).read(), Err(Error::NoDevice));
+    let bus = FakePorts::new();
+    assert_eq!(Mc146818::new(&bus, Some(CENTURY), 1000).read(), Err(Error::NoDevice));
+    assert_eq!(
+        bus.take_log(),
+        [PortAccess::Out { port: PORT_INDEX, val: 0x0d }, PortAccess::In { port: PORT_DATA, val: 0xff }],
+        "one status-D read decides it"
+    );
 }
 
 /// Only `VRT` counts in status D: bits 5..0 are the date alarm on the PC
