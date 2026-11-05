@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2780398
-riscv64-qemu	.rodata	471560
+riscv64-qemu	.text	2786662
+riscv64-qemu	.rodata	475728
 riscv64-qemu	.data	799784
 riscv64-qemu	.bss	2293480
-riscv64-qemu	reason	the kernel-only endpoint call and the powermon-call task with its bounded wait (review R2-1, R2-4)
+riscv64-qemu	reason	a mapping pins its tmpfs file; a sync and the idle reaper forget a destroyed file's pages (review R1, FU-5, FU-6)

@@ -83,6 +83,16 @@ const KEY: PageKey = PageKey([0x5A; PAGE_KEY_LEN]);
 /// Every granule the translation code can be built with.
 const PAGES: [usize; 3] = [4096, 16384, 65536];
 
+/// A backing whose file goes with its name keeps nothing alive: by default a
+/// region's pin and unpin do nothing and no file is gone.
+#[test]
+fn the_default_backing_pins_nothing_and_loses_no_file() {
+    let f = File::new(8);
+    f.pin(&KEY);
+    f.unpin(&KEY);
+    assert!(!f.gone(&KEY));
+}
+
 #[test]
 fn valid_len_is_the_part_of_a_page_inside_the_file() {
     for p in PAGES {
