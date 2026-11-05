@@ -77,56 +77,8 @@ mod estop;
 #[path = "../../../../crates/core/actuation/src/providers.rs"]
 mod providers;
 
-/// The effect-provider table: providers run in installation order, a second
-/// install of the same manifest takes no slot (a repeated install cannot run a
-/// stop twice), a provider that is not ready closes the gate, and a manifest
-/// built against another contract level is refused.
 #[cfg(test)]
-mod provider_table {
-    use super::providers;
-    use azos_ext_api::{Manifest, Provider, API_LEVEL};
-    use std::sync::Mutex;
-
-    static RAN: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-    static SERIAL: Mutex<()> = Mutex::new(());
-    fn a() { RAN.lock().unwrap().push(b'a'); }
-    fn b() { RAN.lock().unwrap().push(b'b'); }
-    fn latch() { RAN.lock().unwrap().push(b'l'); }
-    fn no() -> bool { false }
-
-    static TWO: Manifest = Manifest {
-        name: "two",
-        api_level: API_LEVEL,
-        providers: &[
-            Provider { name: "a", stop: a, panic_stop: a, on_latch: Some(latch), ready: None },
-            Provider { name: "b", stop: b, panic_stop: b, on_latch: None, ready: Some(no) },
-        ],
-    };
-
-    #[test]
-    fn providers_run_once_each_in_installation_order() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        providers::clear_for_tests();
-        RAN.lock().unwrap().clear();
-        providers::install(&TWO);
-        providers::install(&TWO);
-        assert_eq!(providers::count(), 2, "the same provider took a second slot");
-        providers::stop_all();
-        providers::on_latch_all();
-        providers::panic_stop_all();
-        assert_eq!(*RAN.lock().unwrap(), b"ablab");
-        assert!(!providers::all_ready(), "a provider whose gate is not in place left the gate open");
-        providers::clear_for_tests();
-        assert!(providers::all_ready());
-    }
-
-    #[test]
-    #[should_panic(expected = "contract level")]
-    fn a_manifest_of_another_contract_level_is_refused() {
-        static OLD: Manifest = Manifest { name: "old", api_level: API_LEVEL + 1, providers: &[] };
-        providers::install(&OLD);
-    }
-}
+mod ext_conformance;
 
 /// A host medium with a volatile write cache: `write` lands in the cache,
 /// `fsync` makes it durable, and a power cut loses the cache. It can also be

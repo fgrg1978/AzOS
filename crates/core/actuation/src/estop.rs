@@ -68,6 +68,51 @@ pub fn estop_activate() {
     ESTOP_CLEARED_AT.store(0, Ordering::Release);
 }
 
+/// Latch the envelope and stop everything that can move. **The one copy.**
+///
+/// Every emergency stop in this kernel ends in these four calls, in this
+/// order. There were four hand-written copies of them until 2026-09-18 —
+/// ring 3 (`actuation::ring3_estop`), the GPIO kill switch
+/// (`sys_wdt`), and the two `PKT_ESTOP` handlers in `kernel/src/tasks/behavior.rs`
+/// (TCP and UART) — and the cost of that is on the record: the GPIO copy
+/// *"used to stop the motors and nothing else — it never called
+/// `estop_activate()`"*, so the physical kill switch stopped the wheels once
+/// and let the next command move them again, while a remote e-stop held. One
+/// copy of four silently lost the most important line, on the control a
+/// person reaches for when the machine is already doing something wrong.
+///
+/// **The order is load-bearing, not stylistic.** The latch goes first because
+/// the actuation gate opens with `if estop_is_active()`: from that
+/// instruction on, every motor write from every path — this task,
+/// `rt_motor_task`, another ring-3 program — is clamped to 0. Stopping the
+/// wheels first would leave a window in which the control loop's next tick
+/// re-applies `CH_MOTOR_CMD`.
+///
+/// **Motors 0 and 1 are every motor that exists**: `robot_init` calls
+/// `motor_init` exactly twice, and `motor_stop` on an uninitialised id
+/// returns -1 without touching anything. Said out loud because `MAX_MOTORS`
+/// is 4 and the gap invites a second look.
+///
+/// What this deliberately does NOT do is record. Each caller writes its own
+/// `SAFETY_ESTOP` record with its own source code — which of the sources
+/// fired is the first question after an incident — and `ring3_estop` must
+/// additionally read `estop_cleared_at()` *before* calling this, because
+/// arming spends that stamp.
+///
+/// The latch lives here; the stop work belongs to the extension that owns the
+/// actuators and is its effect provider (`crate::providers`; the robot's stops
+/// motors 0 and 1, the ESC and the payload, in that order). An image with no
+/// provider latches and stops nothing else.
+pub fn latch_and_stop() {
+    crate::estop::estop_activate();
+    // Pairs with the fence of a motion command that read no latch before its
+    // writes (`azos_robot::motor_set_reporting`): either it sees the latch
+    // after them and writes the coast again, or the stops below land after
+    // its writes.
+    core::sync::atomic::fence(Ordering::SeqCst);
+    crate::providers::stop_all();
+}
+
 /// Refused e-stop clears since the latch last armed — see
 /// [`note_refused_estop_clear`].
 static ESTOP_REFUSED_CLEARS: core::sync::atomic::AtomicU32 =
