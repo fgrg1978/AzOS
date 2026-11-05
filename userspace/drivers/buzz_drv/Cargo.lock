@@ -30,6 +30,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_drvkit"
+version = "0.1.0"
+
+[[package]]
 name = "azos_idl"
 version = "0.1.0"
 dependencies = [
@@ -77,6 +81,7 @@ name = "azos_pcspk"
 version = "0.1.0"
 dependencies = [
  "azos_buzzer",
+ "azos_drvkit",
 ]
 
 [[package]]
@@ -89,6 +94,7 @@ version = "0.1.0"
 dependencies = [
  "azos_buzzer",
  "azos_devif",
+ "azos_drvkit",
  "azos_libsys",
  "azos_pcspk",
 ]

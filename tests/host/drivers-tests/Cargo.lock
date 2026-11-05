@@ -82,6 +82,7 @@ dependencies = [
  "azos_devif",
  "azos_dma",
  "azos_drv_api",
+ "azos_drvkit",
  "azos_ina219",
  "azos_input_wire",
  "azos_limits",
@@ -93,6 +94,10 @@ dependencies = [
  "drv_test_bus",
  "drv_test_mm",
 ]
+
+[[package]]
+name = "azos_drvkit"
+version = "0.1.0"
 
 [[package]]
 name = "azos_idl"
@@ -135,6 +140,7 @@ name = "azos_pcspk"
 version = "0.1.0"
 dependencies = [
  "azos_buzzer",
+ "azos_drvkit",
 ]
 
 [[package]]
@@ -151,6 +157,9 @@ version = "0.1.0"
 [[package]]
 name = "azos_rtc"
 version = "0.1.0"
+dependencies = [
+ "azos_drvkit",
+]
 
 [[package]]
 name = "bitflags"

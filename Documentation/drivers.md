@@ -10,6 +10,7 @@ This page describes how hardware reaches drivers: how devices are found and matc
 | Driver base | `crates/drivers/base` (`azos_drv_base`) | The board description (`platform::hw`) and the in-kernel driver registry static. No MMIO of its own. |
 | Hardware bus | `crates/drivers/hwbus` (`azos_hwbus`), instance in `crates/drivers/bus/src/hwbus.rs` | Device objects, match tables, bind policy. |
 | Enumerators | `crates/drivers/pci`, `crates/drivers/dtb`, `crates/drivers/virtio`, `kernel/src/boot/hwbus.rs` | Find PCI/PCIe functions, device-tree nodes and virtio-mmio windows. |
+| Driver environment | `crates/drivers/kit` (`azos_drvkit`) | `Mmio` (a register block), `PortIo` (x86 port space) and `Ticks` (the clock a bounded wait uses), the traits a driver is written over, with the kernel and ring-3 `Window` and the host fakes. |
 | Ring-3 driver framework | `crates/drivers/driver_server` | Registry and request queue for drivers that run as user processes. |
 | Device interfaces | `crates/core/idl`, `crates/core/devif` | Typed interfaces a driver serves, from one definition. |
 | SoC frameworks | `crates/drivers/soc` | Clock, reset, regulator, pin control, power domains. |
@@ -19,6 +20,14 @@ This page describes how hardware reaches drivers: how devices are found and matc
 `Driver` methods all take `&self`: the registry hands out `&'static dyn Driver`, so a driver manages its own interior mutability. `DriverIsolation` names where a driver's code runs: `InKernel`, `UserProcess { tid }`, or `Hypervisor` (reserved). `Registry` holds at most `REGISTRY_MAX_DRIVERS` entries and refuses a second driver of the same `kind`.
 
 Source: `crates/drivers/api/src/lib.rs`, `crates/drivers/base/src/lib.rs`.
+
+### The driver environment
+
+A driver reaches the machine through three traits of `azos_drvkit`, so the same driver code runs in the kernel, in ring 3 and in a host test. `Mmio` is a block of device registers: two required methods (`load`, `store`, one access of a `Width`) and `read8..read64` / `write8..write64` on top, each exactly one access of its width, never composed from narrower ones. `PortIo` is the x86 port space (`inb`, `outb`); other ISAs have no implementer. `Ticks` is a monotonic count with its frequency and `wait_us`, a poll bounded in microseconds that tests the condition once more after the deadline. All three take `&self`: a register access is a shared operation of the device, and the drivers hold their windows by value or by reference.
+
+`Window` (feature `window`) is the one `Mmio` of the tree: a base address, every access through `azos_arch_api::mmio`, in the kernel (identity map) and in ring 3 (the address `DOMAIN_MMIO_MAP` returned). It checks nothing per access: `Window::new` is `unsafe` and carries the contract (the block is mapped and every offset the driver names lies inside it), and the traits inline, so a driver over `Window` is the code a hand-written `mmio::read32(base + off)` gives. The fakes (feature `fake`, host tests only) are `FakeMmio<N>` (a little-endian byte array that logs every access and refuses a misaligned or out-of-block one), `FakePorts` (a port holds its last write or replays a queue) and `FakeTicks` (a clock that moves a fixed step per read). Migrated so far: the RTCs (goldfish, PL031, MC146818), the i8042, the PC speaker and AHCI; a device model with state that takes `&mut self` stays a plain struct in the test and is lent to the driver through a small `RefCell` adapter.
+
+Source: `crates/drivers/kit/`, `tests/host/drivers-tests/src/drvkit_tests.rs`.
 
 ## Discovery: the hardware bus
 
@@ -399,6 +408,7 @@ All crates are `no_std`. "Chip logic" crates contain no host-specific code and a
 | `crates/drivers/thermal` | `azos_thermal` | Thermal runtime: zones from the device tree, sensor and clock seams, per-board objects (the K1's carries the rail with the clock) |
 | `crates/drivers/power` | `azos_drv_power` | System suspend, power management, the Raspberry Pi's PM block (watchdog, reboot and power-off without PSCI) |
 | `crates/drivers/tpm` | `azos_tpm` | TPM 2.0 TIS/FIFO (MMIO or SPI) and CRB (MMIO) interfaces and the commands; the ACPI `TPM2` table reader that picks the driver |
+| `crates/drivers/kit` | `azos_drvkit` | The driver environment: `Mmio`, `PortIo`, `Ticks`, the `Window` over `azos_arch_api::mmio`, the host fakes |
 | `crates/drivers/rtc` | `azos_rtc` | Real-time clocks (goldfish, PL031, MC146818, PCF8563); seeds the wall clock at boot (`kernel/src/boot/rtc.rs`, see [time.md](time.md#real-time-clock)) |
 | `crates/drivers/scsi` | `azos_scsi` | SCSI over USB Bulk-Only Transport, both ends: CBW/CSW, the target (device-side) command set, the initiator (host) CDB builders and parsers |
 | `crates/drivers/firmware` | `azos_firmware` | Firmware mailbox client (`rpi_mailbox.rs`) used by the thermal runtime |

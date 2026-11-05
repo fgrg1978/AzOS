@@ -338,6 +338,7 @@ name = "azos_drv_input"
 version = "0.1.0"
 dependencies = [
  "azos_drv_sys",
+ "azos_drvkit",
  "azos_input_wire",
  "azos_limits",
  "azos_rings",
@@ -432,6 +433,13 @@ dependencies = [
  "azos_mm",
  "azos_pci",
  "azos_sync",
+]
+
+[[package]]
+name = "azos_drvkit"
+version = "0.1.0"
+dependencies = [
+ "azos_arch_api",
 ]
 
 [[package]]
@@ -652,6 +660,7 @@ dependencies = [
  "azos_drv_sensor",
  "azos_drv_sys",
  "azos_drv_virtio",
+ "azos_drvkit",
  "azos_dtb",
  "azos_energy",
  "azos_fb",
@@ -818,6 +827,7 @@ name = "azos_pcspk"
 version = "0.1.0"
 dependencies = [
  "azos_buzzer",
+ "azos_drvkit",
 ]
 
 [[package]]
@@ -897,6 +907,9 @@ dependencies = [
 [[package]]
 name = "azos_rtc"
 version = "0.1.0"
+dependencies = [
+ "azos_drvkit",
+]
 
 [[package]]
 name = "azos_safety_core"
