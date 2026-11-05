@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2791670
+riscv64-qemu	.text	2795714
 riscv64-qemu	.rodata	471912
-riscv64-qemu	.data	791720
-riscv64-qemu	.bss	2383592
-riscv64-qemu	reason	C2-10/11/13: runtime ops and RT CPU set tables
+riscv64-qemu	.data	792360
+riscv64-qemu	.bss	2289384
+riscv64-qemu	reason	K8: the task control blocks are made on use, not in .bss
