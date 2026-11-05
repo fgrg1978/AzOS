@@ -526,7 +526,9 @@ mod k1 {
     use azos_soc::k1::p1::sel_to_uv;
     use azos_soc::k1::P1Buck;
     use azos_soc::regulator::Reg;
-    use azos_soc::{I2cBus, Result};
+    use azos_devif::i2c::Bytes;
+    use azos_devif::{I2cCall, IdlError, Out};
+    use azos_soc::I2cMasters;
     use azos_thermal::k1::{K1Opp, K1Table};
     use azos_thermal::k1_soc::{K1Clocks, K1Wires, SocK1Hw};
     use azos_soc::Error;
@@ -554,17 +556,29 @@ mod k1 {
     }
     const I2C_TAG: u64 = 1 << 40;
 
-    impl I2cBus for Chip {
+    impl I2cMasters for Chip {
         fn present(&self, ctrl: u64) -> bool {
             ctrl == I2C
         }
-        fn read_reg(&mut self, _: u64, _: u8, reg: u8) -> Result<u8> {
-            Ok(self.regs[reg as usize])
+        fn device(&mut self, ctrl: u64, _: u8) -> Option<&mut dyn I2cCall> {
+            if self.present(ctrl) { Some(self) } else { None }
         }
-        fn write_reg(&mut self, _: u64, _: u8, reg: u8, val: u8) -> Result<()> {
-            self.log.0.borrow_mut().push(Ev::W(I2C_TAG | reg as u64, val as u32));
-            self.regs[reg as usize] = val;
-            Ok(())
+    }
+
+    impl I2cCall for Chip {
+        fn read(&mut self, reg: u32, len: u32) -> core::result::Result<Out<Bytes>, IdlError> {
+            let r = reg as usize;
+            Ok(Out::ok(Bytes::from_slice(&self.regs[r..r + len as usize])))
+        }
+        fn write(&mut self, data: Bytes) -> core::result::Result<Out<()>, IdlError> {
+            let mut d = [0u8; 2];
+            data.copy_to(&mut d);
+            self.log.0.borrow_mut().push(Ev::W(I2C_TAG | d[0] as u64, d[1] as u32));
+            self.regs[d[0] as usize] = d[1];
+            Ok(Out::ok(()))
+        }
+        fn detect(&mut self) -> core::result::Result<Out<u32>, IdlError> {
+            Ok(Out::ok(1))
         }
     }
 

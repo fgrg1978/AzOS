@@ -12,6 +12,8 @@ description = "Host-side tests for crates/drivers/soc (device-tree reader, consu
 
 [dependencies]
 azos_soc = { path = "../../../crates/drivers/soc" }
+# The PMIC models are served as I2cCall.
+azos_devif = { path = "../../../crates/core/devif" }
 azos_hwbus = { path = "../../../crates/drivers/hwbus" }
 azos_dtb = { path = "../../../crates/drivers/dtb" }
 azos_thermal = { path = "../../../crates/drivers/thermal" }

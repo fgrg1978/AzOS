@@ -467,24 +467,28 @@ fn i2c_bus_at(base: u64) -> Option<u8> {
 /// controller is named by its window, as the device tree names it.
 ///
 /// The driver answers failure as -1 for a NACK and for a timeout alike, so
-/// both are [`azos_soc::Error::Hardware`] here; a controller that is not
-/// attached is `Unsupported` (and `present` says so before a rail is tried).
+/// both are a refused call (`azos_soc::Error::Hardware` in the provider); a
+/// controller that is not attached has no device (`Unsupported`, and
+/// `present` says so before a rail is tried).
 #[cfg(all(feature = "k1", feature = "soc"))]
-pub(crate) struct PmicI2c;
+pub(crate) struct PmicI2c(Option<azos_devif::i2c::I2cDirect<azos_drv_bus::i2c_port::I2cPort>>);
 
 #[cfg(all(feature = "k1", feature = "soc"))]
-impl azos_soc::I2cBus for PmicI2c {
+impl PmicI2c {
+    pub(crate) const fn new() -> Self {
+        PmicI2c(None)
+    }
+}
+
+#[cfg(all(feature = "k1", feature = "soc"))]
+impl azos_soc::I2cMasters for PmicI2c {
     fn present(&self, ctrl: u64) -> bool {
         i2c_bus_at(ctrl).is_some()
     }
-    fn read_reg(&mut self, ctrl: u64, addr: u8, reg: u8) -> azos_soc::Result<u8> {
-        let bus = i2c_bus_at(ctrl).ok_or(azos_soc::Error::Unsupported)?;
-        let mut v = [0u8; 1];
-        if azos_drv_bus::i2c::i2c_read(bus, addr, reg, &mut v) == 1 { Ok(v[0]) } else { Err(azos_soc::Error::Hardware) }
-    }
-    fn write_reg(&mut self, ctrl: u64, addr: u8, reg: u8, val: u8) -> azos_soc::Result<()> {
-        let bus = i2c_bus_at(ctrl).ok_or(azos_soc::Error::Unsupported)?;
-        if azos_drv_bus::i2c::i2c_write(bus, addr, &[reg, val]) == 0 { Ok(()) } else { Err(azos_soc::Error::Hardware) }
+    fn device(&mut self, ctrl: u64, addr: u8) -> Option<&mut dyn azos_devif::I2cCall> {
+        let bus = i2c_bus_at(ctrl)?;
+        let dev = self.0.insert(azos_devif::i2c::I2cDirect(azos_drv_bus::i2c_port::I2cPort::new(bus, addr)));
+        Some(dev)
     }
 }
 

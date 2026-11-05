@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The buck converters of the SpacemiT P1 PMIC (`spacemit,p1`, I2C address
 //! 0x41 on the Jupiter and BPI-F3 trees, `regulators { buck1 ... buck6 }`),
-//! as regulator-framework providers over [`crate::I2cBus`].
+//! as regulator-framework providers over [`crate::I2cMasters`].
 //!
 //! Registers, all from Linux v7.3 `drivers/regulator/spacemit-p1.c`
 //! (`P1_BUCK_DESC`, `P1_ENABLE_REG`, `p1_buck_ranges`):
@@ -32,7 +32,9 @@
 
 use crate::fdt::{Fdt, NodeId};
 use crate::regulator::{Io, RegulatorOps};
-use crate::{Error, I2cBus, Result};
+use crate::{Error, I2cMasters, Result};
+use azos_devif::i2c::{read_regs, write_bytes};
+use azos_devif::I2cCall;
 
 /// The PMIC node's `compatible`.
 pub const P1_COMPATIBLE: &str = "spacemit,p1";
@@ -138,8 +140,8 @@ impl P1Buck {
     /// and records the effect with [`crate::effect::issue`]. The caller then
     /// owns the ordering the manager would have kept: the record first, and no
     /// one else writing this rail's selector meanwhile.
-    pub fn read_uv(&self, i2c: &mut dyn I2cBus) -> Result<u32> {
-        let sel = i2c.read_reg(self.ctrl, self.addr, self.vsel_reg())?;
+    pub fn read_uv(&self, i2c: &mut dyn I2cMasters) -> Result<u32> {
+        let sel = read_reg(self.device(i2c)?, self.vsel_reg())?;
         sel_to_uv(sel).ok_or(Error::Hardware)
     }
 
@@ -147,18 +149,36 @@ impl P1Buck {
     /// ([`Error::Constraint`] for a voltage off the grid, [`Error::Hardware`]
     /// for a selector that did not hold). The read-back proves the register
     /// keeps the write, not that the output has moved.
-    pub fn write_uv(&self, i2c: &mut dyn I2cBus, uv: u32) -> Result<()> {
+    pub fn write_uv(&self, i2c: &mut dyn I2cMasters, uv: u32) -> Result<()> {
         let sel = uv_to_sel(uv).ok_or(Error::Constraint)?;
         let reg = self.vsel_reg();
-        i2c.write_reg(self.ctrl, self.addr, reg, sel)?;
-        if i2c.read_reg(self.ctrl, self.addr, reg)? != sel {
+        let dev = self.device(i2c)?;
+        write_reg(dev, reg, sel)?;
+        if read_reg(dev, reg)? != sel {
             return Err(Error::Hardware);
         }
         Ok(())
     }
+
+    /// The call bound to this PMIC; [`Error::Unsupported`] when its master is
+    /// not there.
+    fn device<'m>(&self, i2c: &'m mut dyn I2cMasters) -> Result<&'m mut dyn I2cCall> {
+        i2c.device(self.ctrl, self.addr).ok_or(Error::Unsupported)
+    }
 }
 
-fn i2c<'a, 'b>(io: &'b mut Io<'a>) -> Result<&'b mut (dyn I2cBus + 'a)> {
+/// One register; a refused transfer is [`Error::Hardware`].
+fn read_reg(dev: &mut dyn I2cCall, reg: u8) -> Result<u8> {
+    let mut v = [0u8; 1];
+    read_regs(dev, reg, &mut v).map_err(|_| Error::Hardware)?;
+    Ok(v[0])
+}
+
+fn write_reg(dev: &mut dyn I2cCall, reg: u8, val: u8) -> Result<()> {
+    write_bytes(dev, &[reg, val]).map_err(|_| Error::Hardware)
+}
+
+fn i2c<'a, 'b>(io: &'b mut Io<'a>) -> Result<&'b mut (dyn I2cMasters + 'a)> {
     io.i2c.as_deref_mut().ok_or(Error::Unsupported)
 }
 
@@ -172,29 +192,29 @@ impl RegulatorOps for P1Buck {
     }
 
     fn enable(&mut self, io: &mut Io<'_>) -> Result<()> {
-        let (ctrl, addr, reg) = (self.ctrl, self.addr, self.enable_reg());
-        let i2c = i2c(io)?;
-        let v = i2c.read_reg(ctrl, addr, reg)?;
+        let reg = self.enable_reg();
+        let dev = self.device(i2c(io)?)?;
+        let v = read_reg(dev, reg)?;
         // Already on (the firmware left it so): no write.
         if v & ENABLE_BIT == 0 {
-            i2c.write_reg(ctrl, addr, reg, v | ENABLE_BIT)?;
+            write_reg(dev, reg, v | ENABLE_BIT)?;
         }
         Ok(())
     }
 
     fn disable(&mut self, io: &mut Io<'_>) -> Result<()> {
-        let (ctrl, addr, reg) = (self.ctrl, self.addr, self.enable_reg());
-        let i2c = i2c(io)?;
-        let v = i2c.read_reg(ctrl, addr, reg)?;
+        let reg = self.enable_reg();
+        let dev = self.device(i2c(io)?)?;
+        let v = read_reg(dev, reg)?;
         if v & ENABLE_BIT != 0 {
-            i2c.write_reg(ctrl, addr, reg, v & !ENABLE_BIT)?;
+            write_reg(dev, reg, v & !ENABLE_BIT)?;
         }
         Ok(())
     }
 
     fn is_enabled(&mut self, io: &mut Io<'_>) -> Result<bool> {
-        let (ctrl, addr, reg) = (self.ctrl, self.addr, self.enable_reg());
-        Ok(i2c(io)?.read_reg(ctrl, addr, reg)? & ENABLE_BIT != 0)
+        let reg = self.enable_reg();
+        Ok(read_reg(self.device(i2c(io)?)?, reg)? & ENABLE_BIT != 0)
     }
 
     fn voltage(&mut self, io: &mut Io<'_>) -> Result<u32> {

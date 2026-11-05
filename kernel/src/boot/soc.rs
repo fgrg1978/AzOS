@@ -139,11 +139,11 @@ pub(crate) fn install(dtb_ptr: usize) {
     // the pass would read the PMIC under the lock). Other boards have no rail
     // behind a bus.
     #[cfg(all(feature = "k1", feature = "soc-k1"))]
-    let mut pmic = super::hwbus::PmicI2c;
+    let mut pmic = super::hwbus::PmicI2c::new();
     #[cfg(all(feature = "k1", feature = "soc-k1"))]
-    let i2c: Option<&mut dyn azos_soc::I2cBus> = Some(&mut pmic);
+    let i2c: Option<&mut dyn azos_soc::I2cMasters> = Some(&mut pmic);
     #[cfg(not(all(feature = "k1", feature = "soc-k1")))]
-    let i2c: Option<&mut dyn azos_soc::I2cBus> = None;
+    let i2c: Option<&mut dyn azos_soc::I2cMasters> = None;
     let soc = Soc::build(storage, &fdt, &mut Io { bus: &mut Mmio, i2c }, &mut GateSink);
     let r = soc.report;
     match r.always_on {
@@ -169,7 +169,7 @@ pub(crate) fn install(dtb_ptr: usize) {
 pub(crate) fn pin_pmic_always_on() {
     let Some(mut st) = SOC.lock().take() else { return };
     if st.soc.report.always_on_pending != 0 {
-        let mut pmic = super::hwbus::PmicI2c;
+        let mut pmic = super::hwbus::PmicI2c::new();
         st.soc.retry_always_on(&mut Io { bus: &mut Mmio, i2c: Some(&mut pmic) }, &mut GateSink);
         let r = st.soc.report;
         match r.always_on {

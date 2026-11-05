@@ -17,6 +17,7 @@ register access through one `Bus` trait, host-tested via tests/host/soc-tests.
 """
 
 [dependencies]
+azos_devif = { workspace = true }
 
 [features]
 # Gate canary only: every manager does the register write first and commits

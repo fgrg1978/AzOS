@@ -13,7 +13,7 @@
 
 use crate::effect::{self, issue, Class, Effect, EffectSink, Op};
 use crate::fdt::{Fdt, NodeId};
-use crate::{consumer, Bus, Error, I2cBus, Result};
+use crate::{consumer, Bus, Error, I2cMasters, Result};
 
 pub const MAX_REGULATORS: usize = 16;
 
@@ -39,7 +39,7 @@ pub struct Io<'a> {
     /// Register access in the SoC's address space.
     pub bus: &'a mut dyn Bus,
     /// The I2C master PMIC rails go through; `None` when the image has none.
-    pub i2c: Option<&'a mut dyn I2cBus>,
+    pub i2c: Option<&'a mut dyn I2cMasters>,
 }
 
 /// One rail.

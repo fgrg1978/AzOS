@@ -712,7 +712,7 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
             // No lock is held here: each clock access takes the frameworks'
             // lock for the one operation (`LockedClocks`), and the rail's I2C
             // transfers, hundreds of microseconds, run with none.
-            let mut pmic = super::hwbus::PmicI2c;
+            let mut pmic = super::hwbus::PmicI2c::new();
             let mut gate = super::soc::GateSink;
             let hw = azos_thermal::k1_soc::SocK1Hw {
                 clocks: LockedClocks,

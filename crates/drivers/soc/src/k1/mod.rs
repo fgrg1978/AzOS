@@ -9,7 +9,7 @@
 //!   clock are not DT `clocks` (Linux wires them by pointer), so they are
 //!   local clocks of the one provider.
 //! * [`p1`]: the buck converters of the SpacemiT P1 PMIC
-//!   (`spacemit,p1` on I2C, `regulators/buckN`), over [`crate::I2cBus`].
+//!   (`spacemit,p1` on I2C, `regulators/buckN`), over [`crate::I2cMasters`].
 //!
 //! Reference (read for facts, no code copied): Linux v7.3,
 //! `drivers/clk/spacemit/{ccu-k1.c,ccu_pll.c,ccu_mix.c,ccu_common.c}`,

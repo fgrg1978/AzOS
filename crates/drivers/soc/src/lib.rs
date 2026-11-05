@@ -24,7 +24,7 @@
 //!
 //! Register access is one trait, [`Bus`], over physical addresses; the
 //! kernel implements it with volatile accesses, the tests with a trace. A
-//! rail behind a PMIC is reached over [`I2cBus`] instead, through the
+//! rail behind a PMIC is reached over [`I2cMasters`] instead, through the
 //! regulator framework's [`regulator::Io`].
 //!
 //! No allocator, no locks, no statics: the caller owns the providers and the
@@ -56,29 +56,29 @@ pub trait Bus {
     fn write32(&mut self, addr: u64, val: u32);
 }
 
-/// Register access to a device on an I2C bus whose registers are one byte
-/// wide and addressed by one byte (a PMIC). The transport of the providers
-/// that are not memory-mapped: the frameworks do not fake it as a [`Bus`]
-/// word at some address, because a transfer can fail (no acknowledge, a
-/// wedged bus, a timeout) and takes time.
+/// The I2C devices the providers that are not memory-mapped (a PMIC) reach:
+/// a device is found by its master and its address, and the chip logic talks
+/// to the [`azos_devif::I2cCall`] it gets, one-byte registers at one-byte
+/// addresses. The frameworks do not fake it as a [`Bus`] word at some address,
+/// because a transfer can fail (no acknowledge, a wedged bus, a timeout) and
+/// takes time.
 ///
 /// `ctrl` names the master by the physical base of its register window (the
 /// `reg` of its device-tree node), which is how the node is identified in the
 /// tree; the implementation maps it to its own controller. A transfer that
-/// the device did not acknowledge is [`Error::Hardware`], one that did not
-/// finish is [`Error::Timeout`], a master the image does not have is
-/// [`Error::Unsupported`].
-pub trait I2cBus {
+/// the device did not acknowledge or that did not finish is
+/// [`Error::Hardware`] (the call's refusal), a master the image does not have
+/// or has not attached is [`Error::Unsupported`] (no device).
+pub trait I2cMasters {
     /// Is there a master for `ctrl` now? `false` before the kernel has
     /// attached it (a rail behind it is deferred, not failed, see
     /// [`regulator::Regulators::enable_always_on`], pinned later by
     /// `boot::Soc::retry_always_on`) and for a master the image
     /// does not have.
     fn present(&self, ctrl: u64) -> bool;
-    /// Read register `reg` of the device at 7-bit address `addr`.
-    fn read_reg(&mut self, ctrl: u64, addr: u8, reg: u8) -> Result<u8>;
-    /// Write `val` to register `reg` of the device at 7-bit address `addr`.
-    fn write_reg(&mut self, ctrl: u64, addr: u8, reg: u8, val: u8) -> Result<()>;
+    /// The call bound to the device at 7-bit address `addr` behind `ctrl`;
+    /// `None` when [`I2cMasters::present`] is false.
+    fn device(&mut self, ctrl: u64, addr: u8) -> Option<&mut dyn azos_devif::I2cCall>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

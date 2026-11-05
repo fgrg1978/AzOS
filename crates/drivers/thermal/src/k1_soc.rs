@@ -38,7 +38,7 @@ use azos_soc::consumer::{self, Sel};
 use azos_soc::effect::{self, issue, Class, Effect, Op};
 use azos_soc::k1::P1Buck;
 use azos_soc::regulator::{Reg, Regulators};
-use azos_soc::{EffectSink, Error, Fdt, I2cBus, NodeId};
+use azos_soc::{EffectSink, Error, Fdt, I2cMasters, NodeId};
 
 use crate::k1::{K1Hw, K1Table, MAX_K1_DOMAINS};
 
@@ -94,7 +94,7 @@ pub struct SocK1Hw<'a, C: K1Clocks> {
     /// The clock framework.
     pub clocks: C,
     /// The I2C master the PMIC is reached through.
-    pub i2c: &'a mut dyn I2cBus,
+    pub i2c: &'a mut dyn I2cMasters,
     /// Where the rail's effects are recorded.
     pub fx: &'a mut dyn EffectSink,
     /// The clock and rail of each cluster; `None`: the cluster is not there.

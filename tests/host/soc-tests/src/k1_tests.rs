@@ -27,7 +27,9 @@ use azos_soc::effect::{KIND_CLOCK, KIND_REGULATOR};
 use azos_soc::fdt::Fdt;
 use azos_soc::k1::p1::{sel_to_uv, uv_to_sel};
 use azos_soc::regulator::Io;
-use azos_soc::{Error, I2cBus, Result};
+use azos_devif::i2c::Bytes;
+use azos_devif::{outcome, I2cCall, IdlError, Out};
+use azos_soc::{Error, I2cMasters};
 use azos_thermal::k1::{K1Opp, MAX_K1_DOMAINS};
 use azos_thermal::k1_soc::{k1_plan, K1Clocks, SocK1Hw};
 use std::cell::Cell;
@@ -92,6 +94,8 @@ struct P1Chip {
     /// The master is not attached yet (the kernel attaches it after the
     /// frameworks come up).
     unattached: bool,
+    /// The address the master was last asked for a device at.
+    bound: u8,
     transfers: Rc<Cell<u32>>,
 }
 
@@ -106,40 +110,60 @@ impl P1Chip {
         }
         regs[0x48] = 110; // 1_050_000
         regs[0x4b] = 90; // 950_000
-        P1Chip { regs, log: log.clone(), nak: false, deaf: false, unattached: false, transfers: Rc::new(Cell::new(0)) }
+        P1Chip { regs, log: log.clone(), nak: false, deaf: false, unattached: false, bound: PMIC, transfers: Rc::new(Cell::new(0)) }
     }
     fn at(&self, reg: u8) -> u64 {
         I2C_TAG | (PMIC as u64) << 8 | reg as u64
     }
-    fn check(&self, ctrl: u64, addr: u8) -> Result<()> {
-        if self.unattached {
-            return Err(Error::Unsupported);
-        }
-        if ctrl != I2C8 || addr != PMIC || self.nak {
-            return Err(Error::Hardware);
+    /// The device answers: the call is bound to the PMIC's address and the
+    /// device acknowledges.
+    fn check(&self) -> core::result::Result<(), u32> {
+        if self.bound != PMIC || self.nak {
+            return Err(outcome::FAULT);
         }
         Ok(())
     }
 }
 
-impl I2cBus for P1Chip {
+impl I2cMasters for P1Chip {
     fn present(&self, ctrl: u64) -> bool {
         ctrl == I2C8 && !self.unattached
     }
-    fn read_reg(&mut self, ctrl: u64, addr: u8, reg: u8) -> Result<u8> {
-        self.check(ctrl, addr)?;
-        self.transfers.set(self.transfers.get() + 1);
-        self.log.0.borrow_mut().push(Ev::R(self.at(reg)));
-        Ok(self.regs[reg as usize])
-    }
-    fn write_reg(&mut self, ctrl: u64, addr: u8, reg: u8, val: u8) -> Result<()> {
-        self.check(ctrl, addr)?;
-        self.transfers.set(self.transfers.get() + 1);
-        self.log.0.borrow_mut().push(Ev::W(self.at(reg), val as u32));
-        if !self.deaf {
-            self.regs[reg as usize] = val;
+    fn device(&mut self, ctrl: u64, addr: u8) -> Option<&mut dyn I2cCall> {
+        if !self.present(ctrl) {
+            return None;
         }
-        Ok(())
+        self.bound = addr;
+        Some(self)
+    }
+}
+
+/// The device the master hands out, as the `I2c` interface's caller trait.
+impl I2cCall for P1Chip {
+    fn read(&mut self, reg: u32, len: u32) -> core::result::Result<Out<Bytes>, IdlError> {
+        if let Err(c) = self.check() {
+            return Ok(Out::err(c));
+        }
+        self.transfers.set(self.transfers.get() + 1);
+        self.log.0.borrow_mut().push(Ev::R(self.at(reg as u8)));
+        let r = reg as usize;
+        Ok(Out::ok(Bytes::from_slice(&self.regs[r..r + len as usize])))
+    }
+    fn write(&mut self, data: Bytes) -> core::result::Result<Out<()>, IdlError> {
+        if let Err(c) = self.check() {
+            return Ok(Out::err(c));
+        }
+        let mut d = [0u8; 2];
+        assert_eq!(data.copy_to(&mut d), 2, "the P1 takes a register and a byte");
+        self.transfers.set(self.transfers.get() + 1);
+        self.log.0.borrow_mut().push(Ev::W(self.at(d[0]), d[1] as u32));
+        if !self.deaf {
+            self.regs[d[0] as usize] = d[1];
+        }
+        Ok(Out::ok(()))
+    }
+    fn detect(&mut self) -> core::result::Result<Out<u32>, IdlError> {
+        Ok(Out::ok(u32::from(self.check().is_ok())))
     }
 }
 
@@ -442,7 +466,8 @@ fn a_buck_reads_its_selector_and_its_ramp_comes_from_the_node() {
     assert_eq!(soc.regulators.voltage(&mut io, rail), Ok(1_050_000));
     assert_eq!(log.all(), [Ev::R(I2C_TAG | 0x41 << 8 | 0x48)], "one register read at 0x48");
     // The selector 255 is not a voltage.
-    io.i2c.as_mut().unwrap().write_reg(I2C8, PMIC, 0x48, 255).unwrap();
+    let pmic = io.i2c.as_mut().unwrap().device(I2C8, PMIC).unwrap();
+    assert!(pmic.write(Bytes::from_slice(&[0x48, 255])).unwrap().is_ok());
     assert_eq!(soc.regulators.voltage(&mut io, rail), Err(Error::Hardware));
     let _ = &mut fx;
 }
@@ -896,4 +921,42 @@ fn the_gpio_and_pwm_nodes_bind_with_their_apbc_resources_left_to_the_firmware() 
         bind::unbind(&mut soc, &fdt, &mut bus, &mut fx, node).unwrap();
         assert!(log.all().is_empty(), "{path} unbind: {:?}", log.all());
     }
+}
+
+/// A PMIC call that never reaches the interface, a NAK, and a master that is
+/// not there are three different answers for a rail's voltage: never a value.
+/// **Canary:** the NAK check in `azos_devif::i2c::{read_regs, write_bytes}`
+/// returns `Ok` whatever the code: the first two go red.
+#[test]
+fn a_rail_read_through_a_dead_call_a_nak_or_no_master_is_no_voltage() {
+    struct Dead;
+    impl I2cMasters for Dead {
+        fn present(&self, _: u64) -> bool {
+            true
+        }
+        fn device(&mut self, _: u64, _: u8) -> Option<&mut dyn I2cCall> {
+            Some(self)
+        }
+    }
+    impl I2cCall for Dead {
+        fn read(&mut self, _: u32, _: u32) -> core::result::Result<Out<Bytes>, IdlError> {
+            Err(IdlError::NoConnection)
+        }
+        fn write(&mut self, _: Bytes) -> core::result::Result<Out<()>, IdlError> {
+            Err(IdlError::NoConnection)
+        }
+        fn detect(&mut self) -> core::result::Result<Out<u32>, IdlError> {
+            Err(IdlError::NoConnection)
+        }
+    }
+    let buck = azos_soc::k1::P1Buck::new(I2C8, PMIC, 1).unwrap();
+    assert_eq!(buck.read_uv(&mut Dead), Err(Error::Hardware));
+    assert_eq!(buck.write_uv(&mut Dead, 900_000), Err(Error::Hardware));
+    let log = Log::new();
+    let mut chip = P1Chip::booted(&log);
+    chip.nak = true;
+    assert_eq!(buck.read_uv(&mut chip), Err(Error::Hardware));
+    chip.nak = false;
+    chip.unattached = true;
+    assert_eq!(buck.read_uv(&mut chip), Err(Error::Unsupported));
 }
