@@ -22,7 +22,7 @@ crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
-crates/core/common	4	0	0	0	0	37
+crates/core/common	4	0	0	0	0	36
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	16	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	61
@@ -106,14 +106,14 @@ crates/drivers/usb	19	1	1	0	0	34
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	145	42	8	0	0	90
 crates/drivers/virtio-proto	0	0	0	0	1	0
-crates/fs	48	8	5	0	0	58
+crates/fs	29	3	5	0	0	57
 crates/lib/control/ahrs	0	0	0	0	1	0
 crates/lib/control/flight-math	0	0	0	0	1	0
 crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	391	15	13	52	0	62
+kernel	391	15	13	52	0	61
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	506
+@unsafe-share	505
