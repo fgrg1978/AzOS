@@ -76,7 +76,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use azos_abi::cap::{CapKind, CapPerms};
+use azos_abi::cap::{launch_name, CapKind, CapPerms};
 use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use super::engine::{BlockDev, DirEntry, Error, Kind, SnapView, Volume};
 use azos_pkg::apply::{
@@ -141,6 +141,8 @@ pub struct AppliedImage {
     pub name: Vec<u8>,
     /// Its SHA-256.
     pub sha256: [u8; 32],
+    /// The id of the package that carries it.
+    pub package: [u8; 32],
 }
 
 // ─── The volume, through the engine ──────────────────────────────────────────
@@ -483,7 +485,9 @@ fn grant_launches(topo: &mut Topology<'static>, first_row: usize, images: &[Appl
     let mut slot = topo.tasks()[..first_row].iter().filter(|t| manager_starts(t)).count();
     let mut names: Vec<&[u8]> = Vec::new();
     for t in topo.tasks() {
-        for c in topo.caps_of(t).iter().filter(|c| c.kind == CapKind::Node && !c.target.as_bytes().starts_with(b"/")) {
+        for c in topo.caps_of(t).iter().filter(|c| {
+            c.kind == CapKind::Node && matches!(launch_name::parse(c.target.as_bytes()), Some(launch_name::Target::Image(_)))
+        }) {
             if !names.contains(&c.target.as_bytes()) {
                 names.push(c.target.as_bytes());
             }
@@ -648,7 +652,7 @@ pub fn apply<D: BlockDev>(
                 out.packages += 1;
                 for im in v.meta.images() {
                     kept_images.push(im.name.as_bytes().to_vec());
-                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256 });
+                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256, package: v.id });
                 }
             }
             Err(r) => sink.record(&receipt::refused(&id, v.signer_index as u64 + 1, &r, boot.now_ns)),
@@ -725,7 +729,7 @@ pub fn apply<D: BlockDev>(
                             out.packages += admitted.len();
                             for (pv, _) in &admitted {
                                 for im in pv.meta.images() {
-                                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256 });
+                                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256, package: pv.id });
                                 }
                             }
                             out.fresh = ids;

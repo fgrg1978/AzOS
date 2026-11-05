@@ -1807,12 +1807,16 @@ pub fn package_profile(image: &'static str, ifaces: &'static [u16]) -> ImageProf
     ImageProfile { image, syscalls: PACKAGE_SYSCALLS, audit: false, ifaces, ops: PACKAGE_OPS }
 }
 
-/// One image an applied package carries: the SHA-256 of its bytes and the
-/// profile (`package_profile`) its row gives it.
+/// One image an applied package carries: the SHA-256 of its bytes, the
+/// package that carries it and the profile (`package_profile`) its row gives
+/// it.
 #[derive(Clone, Copy)]
 pub struct PackageImage {
     /// The SHA-256 of the program, as the package's signed metadata states it.
     pub digest: [u8; 32],
+    /// The id of the package that carries it (`azos_pkg::Package::id`): what a
+    /// launch grant on the package names.
+    pub package: [u8; 32],
     /// The row it runs under.
     pub profile: ImageProfile,
 }
@@ -1836,7 +1840,7 @@ pub fn register_package_images(images: &'static [PackageImage]) -> bool {
     true
 }
 
-fn package_image(digest: &[u8; 32]) -> Option<&'static ImageProfile> {
+fn package_entry(digest: &[u8; 32]) -> Option<&'static PackageImage> {
     use core::sync::atomic::Ordering;
     let len = PACKAGE_IMAGES_LEN.load(Ordering::Acquire);
     if len == 0 {
@@ -1845,7 +1849,20 @@ fn package_image(digest: &[u8; 32]) -> Option<&'static ImageProfile> {
     // SAFETY: `len != 0` was stored after the pointer, from a `'static` slice of
     // that length that is never written again.
     let all = unsafe { core::slice::from_raw_parts(PACKAGE_IMAGES.load(Ordering::Acquire), len) };
-    all.iter().find(|p| p.digest == *digest).map(|p| &p.profile)
+    all.iter().find(|p| p.digest == *digest)
+}
+
+fn package_image(digest: &[u8; 32]) -> Option<&'static ImageProfile> {
+    package_entry(digest).map(|p| &p.profile)
+}
+
+/// The id of the applied package that carries the program whose bytes hash to
+/// `digest`; `None` for a shipped program or one no package carries.
+pub fn package_of_digest(digest: &[u8; 32]) -> Option<[u8; 32]> {
+    if IMAGE_SHA256.iter().chain(THIRDPARTY_SHA256.iter()).any(|(_, d)| d == digest) {
+        return None;
+    }
+    package_entry(digest).map(|p| p.package)
 }
 
 /// The SHA-256 of the shipped image the build copied under `name` (ASCII case

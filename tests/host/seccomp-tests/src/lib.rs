@@ -3937,6 +3937,10 @@ mod package_images {
     use crate::spawn_policy::plan_spawn;
     use azos_abi::syscall_nr as nr;
 
+    const PACKAGE_ID: [u8; 32] = [0x5A; 32];
+
+    /// **Canary.** Make `package_of_digest` answer for a shipped digest: the
+    /// last assertion goes red; make it answer `None`: the first does.
     #[test]
     fn a_registered_package_program_is_planned_under_its_own_row() {
         let digest = image_digest(b"a package's program");
@@ -3949,9 +3953,9 @@ mod package_images {
         let shipped = IMAGE_SHA256[0].1;
         let table: &'static [PackageImage] = Box::leak(
             vec![
-                PackageImage { digest, profile: package_profile("PKGAPP.ELF", ifaces) },
+                PackageImage { digest, package: PACKAGE_ID, profile: package_profile("PKGAPP.ELF", ifaces) },
                 // Bytes the build already binds: the shipped binding stands.
-                PackageImage { digest: shipped, profile: package_profile("SHIPPED.ELF", &[]) },
+                PackageImage { digest: shipped, package: PACKAGE_ID, profile: package_profile("SHIPPED.ELF", &[]) },
             ]
             .into_boxed_slice(),
         );
@@ -3982,5 +3986,11 @@ mod package_images {
         // The shipped table is asked first: a package cannot take a shipped image's name.
         let p = image_for_digest(&shipped).expect("a shipped image");
         assert_ne!(p.image, "SHIPPED.ELF");
+
+        // The package that carries a program is the one that registered it; a
+        // shipped program and unknown bytes belong to none.
+        assert_eq!(package_of_digest(&digest), Some(PACKAGE_ID));
+        assert_eq!(package_of_digest(&swapped), None);
+        assert_eq!(package_of_digest(&shipped), None, "a shipped program is no package's");
     }
 }

@@ -1106,6 +1106,7 @@ mod manager_authority {
         for r in topo.tasks() {
             for c in topo.caps_of(r) {
                 if c.kind == CapKind::Node && c.perms == CapPerms::EXEC && !c.target.as_str().starts_with('/')
+                    && !c.target.as_str().starts_with("pkg.")
                     && !names.contains(&c.target.as_str())
                 {
                     names.push(c.target.as_str());

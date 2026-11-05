@@ -105,3 +105,48 @@ fn the_built_in_launch_grants_parse() {
     }
     assert!(seen > 0, "the built-in topology holds no launch grant");
 }
+
+/// **A package grant mints EXEC on the package's own resource.** The
+/// resource carries `PACKAGE_RESOURCE`, so no image name collides with it; the
+/// same id is the same resource however many rows name it; the table holds
+/// `MAX_LAUNCH_PACKAGES` and refuses the next, whose grant is not minted.
+///
+/// **Canary.** Make `launch_grant_cap` intern a package id as an image name's
+/// slot (drop `PACKAGE_RESOURCE`): the bit assertion goes red.
+#[test]
+fn a_package_grant_mints_on_the_packages_own_resource() {
+    use crate::cap::targets;
+    use crate::cap_seed::{seed_one_cap_outcome, SeedOutcome};
+    use crate::launch_cap::{launch_resource_of, package_resource_of, MAX_LAUNCH_PACKAGES, PACKAGE_RESOURCE};
+    use azos_abi::cap::CapKind;
+
+    let tid = crate::cap_seed_bridge_tests::fresh_tid();
+    let id_of = |n: u8| {
+        let mut id = [0u8; 32];
+        id[0] = 0xAC;
+        id[1] = n;
+        id
+    };
+    let target = |n: u8| format!("pkg.{}", id_of(n).iter().map(|b| format!("{b:02x}")).collect::<String>());
+    assert_eq!(package_resource_of(&id_of(0)), None, "a package no row names has no resource");
+
+    let mint = |n: u8| match seed_one_cap_outcome(tid, CapKind::Node, CapPerms::EXEC, &target(n)) {
+        SeedOutcome::Minted(h) => Some(crate::cap::Cap::<targets::Launch>::from_raw(h)),
+        SeedOutcome::Refused => None,
+        o => panic!("{o:?}"),
+    };
+    let first = mint(0).expect("a package grant is minted");
+    let r = crate::cap_store::get(tid, first, CapPerms::EXEC).expect("it resolves with EXEC");
+    assert_ne!(r & PACKAGE_RESOURCE, 0, "a package resource is told from an image's");
+    assert_eq!(package_resource_of(&id_of(0)), Some(r));
+    assert_eq!(launch_resource_of(target(0).as_bytes()), None, "and it is no image name");
+
+    let again = mint(0).expect("the same id again");
+    assert_eq!(crate::cap_store::get(tid, again, CapPerms::EXEC), Ok(r), "one id, one resource");
+
+    for n in 1..MAX_LAUNCH_PACKAGES as u8 {
+        assert!(mint(n).is_some(), "package {n} fits the table");
+    }
+    assert!(mint(MAX_LAUNCH_PACKAGES as u8).is_none(), "past the table the grant is not minted");
+    assert_eq!(package_resource_of(&id_of(MAX_LAUNCH_PACKAGES as u8)), None);
+}

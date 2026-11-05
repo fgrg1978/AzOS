@@ -205,7 +205,7 @@ fn bind(images: &[AppliedImage]) -> usize {
         // Held for the life of the boot, as the topology's own text is.
         let image: &'static str = Box::leak(alloc::string::String::from(name).into_boxed_str());
         let ifaces: &'static [u16] = Box::leak(ifaces.into_boxed_slice());
-        table.push(PackageImage { digest: im.sha256, profile: azos_sched::seccomp::package_profile(image, ifaces) });
+        table.push(PackageImage { digest: im.sha256, package: im.package, profile: azos_sched::seccomp::package_profile(image, ifaces) });
     }
     let n = table.len();
     if n != 0 && !azos_sched::seccomp::register_package_images(Box::leak(table.into_boxed_slice())) {

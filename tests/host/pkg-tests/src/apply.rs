@@ -319,6 +319,7 @@ fn a_staged_package_is_applied_after_a_snapshot_and_begins_a_trial() {
     assert_eq!(a.images.len(), 1);
     assert_eq!(a.images[0].name, b"ACME.ELF");
     assert_eq!(a.images[0].sha256, azos_crypto::sha256::sha256(&on_volume), "the signed digest is that of the written program");
+    assert_eq!(a.images[0].package, Package::parse(&acme()).unwrap().id(), "and the program names the package that carries it");
     // The decision is on the volume too, with the package id.
     let j = journal(&mut v);
     assert_eq!(j.len(), 1);
@@ -343,6 +344,7 @@ fn the_next_boot_merges_the_same_rows_and_confirms_the_trial() {
     assert_eq!(t.tasks().last().unwrap().name.as_bytes(), b"ACME.ELF");
     assert_eq!(a2.images.len(), 1, "a program already on the volume is bound at every boot, not only at its first");
     assert_eq!(a2.images[0].sha256, a.images[0].sha256);
+    assert_eq!(a2.images[0].package, a.images[0].package, "the same package at the next boot");
     assert_eq!(table(&mut v), vec![(id, SnapState::Kept)], "the snapshot is a restore point now");
     assert_eq!(v.snapshots().len(), 1);
     assert_eq!(log.verdicts(), vec![(Verdict::Admit as u8, 0)]);
@@ -879,6 +881,48 @@ fn a_row_whose_name_the_launch_table_cannot_intern_is_denied() {
     assert_eq!(manager_caps(&t), before);
     let g = grant_records(&log);
     assert_eq!((g.len(), g[0].verdict, g[0].n[2]), (1, Verdict::Deny as u8, pkg_apply::LAUNCH_GRANT | pkg_apply::GrantDenied::NamesFull as u64));
+}
+
+/// A package grant takes no slot of the table of image names: a topology that
+/// grants `MAX_LAUNCH_PACKAGES` packages and one name short of the table still
+/// gives the started row its launch grant.
+///
+/// **Canary.** Count every non-tree `node` target in `grant_launches`: the
+/// grant is denied (`NamesFull`).
+#[test]
+fn package_grants_do_not_count_against_the_image_names() {
+    let d = signed_device();
+    let mut v = volume();
+    stage(&mut v, &starting());
+    let mut t = topo(d);
+    let names = |t: &Topology<'static>| {
+        let mut n: Vec<Vec<u8>> = Vec::new();
+        for r in t.tasks() {
+            for c in t.caps_of(r).iter().filter(|c| c.kind == CapKind::Node && !c.target.as_bytes().starts_with(b"/") && !c.target.as_bytes().starts_with(b"pkg.")) {
+                if !n.contains(&c.target.as_bytes().to_vec()) {
+                    n.push(c.target.as_bytes().to_vec());
+                }
+            }
+        }
+        n.len()
+    };
+    let mut i = 0;
+    while names(&t) < pkg_apply::LAUNCH_NAMES_MAX - 1 {
+        let name: &'static str = Box::leak(format!("NAME{i}.ELF").into_boxed_str());
+        let grant = azos_topology::CapSpec { kind: CapKind::Node, perms: CapPerms::EXEC, target: MaybeStr::from_bytes(name.as_bytes()), transfer: false, ops: 0 };
+        t.push_task(MaybeStr::from_bytes(format!("HOLD{i}.ELF").leak().as_bytes()), MaybeStr::from_bytes(b"best_effort"), 20, &[grant]).unwrap();
+        i += 1;
+    }
+    for i in 0..8 {
+        let target: &'static str = Box::leak(format!("pkg.{:064x}", i + 1).into_boxed_str());
+        let grant = azos_topology::CapSpec { kind: CapKind::Node, perms: CapPerms::EXEC, target: MaybeStr::from_bytes(target.as_bytes()), transfer: false, ops: 0 };
+        t.push_task(MaybeStr::from_bytes(format!("PKGH{i}.ELF").leak().as_bytes()), MaybeStr::from_bytes(b"best_effort"), 20, &[grant]).unwrap();
+    }
+    let mut log = Log::default();
+    apply(&mut v, &mut t, &boot(0), &mut log);
+    assert_eq!(launch_grants(&t, "START.ELF"), 1);
+    let g = grant_records(&log);
+    assert_eq!((g.len(), g[0].verdict), (1, Verdict::Admit as u8));
 }
 
 /// `Topology::extend_task_caps`: a row that is not the last keeps its grants
