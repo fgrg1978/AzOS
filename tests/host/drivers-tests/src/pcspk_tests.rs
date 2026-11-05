@@ -7,7 +7,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use azos_buzzer::{Driver, Pwm, DUTY_PCT};
-use azos_pcspk::{divisor, PcSpeaker, Ports, PIT_HZ, PORT_CH2, PORT_GATE, PORT_MODE};
+use azos_drvkit::PortIo;
+use azos_pcspk::{divisor, PcSpeaker, PIT_HZ, PORT_CH2, PORT_GATE, PORT_MODE};
 
 /// Port 0x61 as firmware leaves it: the NMI enables (bits 2, 3) and the
 /// refresh toggle (bit 4) set, which no write may lose.
@@ -31,11 +32,11 @@ struct Pit {
 #[derive(Clone)]
 struct Bus(Rc<RefCell<Pit>>);
 
-impl Ports for Bus {
-    fn inb(&mut self, port: u16) -> u8 {
+impl PortIo for Bus {
+    fn inb(&self, port: u16) -> u8 {
         self.0.borrow_mut().inb(port)
     }
-    fn outb(&mut self, port: u16, v: u8) {
+    fn outb(&self, port: u16, v: u8) {
         self.0.borrow_mut().outb(port, v)
     }
 }

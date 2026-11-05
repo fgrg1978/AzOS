@@ -49,7 +49,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use azos_buzzer::{Driver, Pwm, BUZZER_PWM_CHANNEL, SOURCE_MARKER};
 use azos_devif::{BuzzerIdl, MsgDesc};
 use azos_libsys as sys;
-use azos_pcspk::{PcSpeaker, Ports, PORT_GATE, RANGE_GATE, RANGE_PIT};
+use azos_drvkit::PortIo;
+use azos_pcspk::{PcSpeaker, PORT_GATE, RANGE_GATE, RANGE_PIT};
 use sys::dev::{PwmCall, PwmClient, Regs};
 
 /// The monotonic clock in milliseconds (vDSO), or `None` when the kernel
@@ -105,11 +106,11 @@ impl SpeakerPorts {
     }
 }
 
-impl Ports for SpeakerPorts {
-    fn inb(&mut self, port: u16) -> u8 {
+impl PortIo for SpeakerPorts {
+    fn inb(&self, port: u16) -> u8 {
         self.range(port).inb(port)
     }
-    fn outb(&mut self, port: u16, v: u8) {
+    fn outb(&self, port: u16, v: u8) {
         self.range(port).outb(port, v)
     }
 }

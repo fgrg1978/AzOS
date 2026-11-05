@@ -10,7 +10,7 @@
 //! proves the channel ticks without a sound (gate on, speaker off). Linux's
 //! `pcspkr` driver and its `pit_*` helpers drive the same three ports.
 //!
-//! Pure over [`Ports`] (the two port accessors), so a host test drives it
+//! Pure over [`PortIo`] (the two port accessors), so a host test drives it
 //! against a scripted 8254; the ring-3 host (`userspace/drivers/buzz_drv`)
 //! hands it the ports its topology row grants (`ioport.66.2`, PIT channel 2
 //! and the mode register; `ioport.97.1`, port 0x61).
@@ -23,12 +23,7 @@
 #![no_std]
 
 use azos_buzzer::{Pwm, DUTY_PCT};
-
-/// The two port accessors the chip logic needs.
-pub trait Ports {
-    fn inb(&mut self, port: u16) -> u8;
-    fn outb(&mut self, port: u16, v: u8);
-}
+use azos_drvkit::PortIo;
 
 /// PIT channel 2's counter (lobyte, then hibyte).
 pub const PORT_CH2: u16 = 0x42;
@@ -59,11 +54,11 @@ pub fn divisor(period_ns: u32) -> Option<u16> {
 }
 
 /// The speaker over `P`.
-pub struct PcSpeaker<P: Ports> {
+pub struct PcSpeaker<P: PortIo> {
     ports: P,
 }
 
-impl<P: Ports> PcSpeaker<P> {
+impl<P: PortIo> PcSpeaker<P> {
     pub const fn new(ports: P) -> Self {
         PcSpeaker { ports }
     }
@@ -111,7 +106,7 @@ impl<P: Ports> PcSpeaker<P> {
     }
 }
 
-impl<P: Ports> Pwm for PcSpeaker<P> {
+impl<P: PortIo> Pwm for PcSpeaker<P> {
     fn set_period_ns(&mut self, period_ns: u32) -> bool {
         match divisor(period_ns) {
             Some(d) => {
