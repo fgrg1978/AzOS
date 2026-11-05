@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The RAM file systems through the VFS router: tmpfs at `/` and at `/tmp`,
 //! devfs at `/dev`. Directories, rename, the bounds and what a bound refuses.
 //!

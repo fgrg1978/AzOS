@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The `/tmp` instance by flat name, for the rows that set files up or look
 //! behind the VFS: the trait calls with a name where a key goes.
 
