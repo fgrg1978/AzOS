@@ -17,6 +17,7 @@
 
 use super::dwmac::*;
 use azos_dma::Direction;
+use azos_drvkit::Ticks;
 use azos_drv_api::net::NetError;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -217,7 +218,7 @@ impl Sim {
     }
 }
 
-impl Hw for &'static Sim {
+impl Sim {
     fn rd(&self, off: usize) -> u32 {
         if off == reg::MAC_MDIO_ADDRESS {
             if self.mdio_stuck.get() {
@@ -270,9 +271,18 @@ impl Hw for &'static Sim {
         }
     }
 
-    fn now_us(&self) -> u64 {
+}
+
+registers32!(Sim, rd, wr);
+
+/// Microseconds: every read of the clock is 10 us on.
+impl Ticks for Sim {
+    fn now(&self) -> u64 {
         self.t.set(self.t.get() + 10);
         self.t.get()
+    }
+    fn freq_hz(&self) -> u64 {
+        1_000_000
     }
 }
 
@@ -299,14 +309,14 @@ fn mem() -> *mut DmaMem {
     Box::leak(Box::new(DmaMem::new()))
 }
 
-type Nic = Dwmac<&'static Sim, &'static Sim>;
+type Nic = Dwmac<&'static Sim, &'static Sim, &'static Sim>;
 
 fn bring_up(partner: Option<Partner>) -> (Nic, &'static Sim) {
     let s = Sim::new(partner);
     // The firmware left a station address behind.
     s.set(reg::MAC_ADDRESS0_HIGH, 0x8000_0000 | 0x5544);
     s.set(reg::MAC_ADDRESS0_LOW, 0x2211_00AA);
-    (Nic::init(s, s, cfg(), mem()).expect("bring-up"), s)
+    (Nic::init(s, s, s, cfg(), mem()).expect("bring-up"), s)
 }
 
 fn frame(tag: u8, len: usize) -> Vec<u8> {
@@ -422,7 +432,7 @@ mod bring_up_sequence {
     fn a_foreign_core_is_refused_untouched() {
         let s = Sim::new(Some(GIGABIT));
         s.set(reg::MAC_VERSION, 0x0000_0716);
-        assert_eq!(Nic::init(s, s, cfg(), mem()).err(), Some(Error::UnsupportedCore(0x716)));
+        assert_eq!(Nic::init(s, s, s, cfg(), mem()).err(), Some(Error::UnsupportedCore(0x716)));
         assert!(s.log.borrow().is_empty(), "wrote to a window that is not this IP");
     }
 
@@ -430,7 +440,7 @@ mod bring_up_sequence {
     fn a_reset_that_never_finishes_is_an_error() {
         let s = Sim::new(Some(GIGABIT));
         s.reset_stuck.set(true);
-        assert_eq!(Nic::init(s, s, cfg(), mem()).err(), Some(Error::ResetTimeout));
+        assert_eq!(Nic::init(s, s, s, cfg(), mem()).err(), Some(Error::ResetTimeout));
     }
 
     /// **Discriminates.** The programmed values: ring bases and lengths are the
@@ -494,12 +504,12 @@ mod bring_up_sequence {
         assert_eq!(s.reg(reg::MAC_ADDRESS0_HIGH), 0x8000_5544);
 
         let s = Sim::new(Some(GIGABIT));
-        let nic = Nic::init(s, s, cfg(), mem()).unwrap();
+        let nic = Nic::init(s, s, s, cfg(), mem()).unwrap();
         assert_eq!(nic.mac(), Config::JH7110_GMAC0.fallback_mac);
         // A multicast address in the registers is no station address either.
         let s = Sim::new(Some(GIGABIT));
         s.set(reg::MAC_ADDRESS0_LOW, 0x0000_0001);
-        let nic = Nic::init(s, s, cfg(), mem()).unwrap();
+        let nic = Nic::init(s, s, s, cfg(), mem()).unwrap();
         assert_eq!(nic.mac(), Config::JH7110_GMAC0.fallback_mac);
     }
 
@@ -563,7 +573,7 @@ mod mdio_and_phy {
     fn a_stuck_mdio_bus_is_a_timeout_not_a_hang() {
         let s = Sim::new(Some(GIGABIT));
         s.mdio_stuck.set(true);
-        assert_eq!(Nic::init(s, s, cfg(), mem()).err(), Some(Error::MdioTimeout));
+        assert_eq!(Nic::init(s, s, s, cfg(), mem()).err(), Some(Error::MdioTimeout));
     }
 
     /// **Discriminates.** Nothing at the PHY address reads all ones; a PHY
@@ -572,7 +582,7 @@ mod mdio_and_phy {
     fn the_phy_is_identified_before_it_is_touched() {
         let s = Sim::new(Some(GIGABIT));
         s.phy.borrow_mut()[phy::PHYSID1 as usize] = 0xFFFF;
-        assert_eq!(Nic::init(s, s, cfg(), mem()).err(), Some(Error::NoPhy));
+        assert_eq!(Nic::init(s, s, s, cfg(), mem()).err(), Some(Error::NoPhy));
 
         let s = Sim::new(Some(GIGABIT));
         {
@@ -580,7 +590,7 @@ mod mdio_and_phy {
             p[phy::PHYSID1 as usize] = 0x0022;
             p[phy::PHYSID2 as usize] = 0x1622;
         }
-        assert_eq!(Nic::init(s, s, cfg(), mem()).err(), Some(Error::UnknownPhy(0x0022_1622)));
+        assert_eq!(Nic::init(s, s, s, cfg(), mem()).err(), Some(Error::UnknownPhy(0x0022_1622)));
         assert!(s.phy.borrow()[phy::BMCR as usize] == 0, "an unknown PHY was written to");
     }
 
@@ -588,7 +598,7 @@ mod mdio_and_phy {
     fn a_phy_that_never_leaves_reset_is_an_error() {
         let s = Sim::new(Some(GIGABIT));
         s.phy_reset_stuck.set(true);
-        assert_eq!(Nic::init(s, s, cfg(), mem()).err(), Some(Error::PhyResetTimeout));
+        assert_eq!(Nic::init(s, s, s, cfg(), mem()).err(), Some(Error::PhyResetTimeout));
     }
 
     /// **Discriminates.** A cable pulled turns transmit and receive off and

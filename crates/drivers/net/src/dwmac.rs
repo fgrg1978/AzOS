@@ -8,7 +8,7 @@
 //! `snps,dwmac-5.20`, `jh7110.dtsi` `ethernet@16030000`), wired to a Motorcomm
 //! YT8531 RGMII PHY at MDIO address 0 (`jh7110-common.dtsi`, `phy0`), the
 //! brain link without the ESP32 bridge. The driver is generic over the
-//! register window ([`Hw`]) and the DMA domain ([`DmaOps`]), so the whole
+//! register window ([`Mmio`]), the clock ([`Ticks`]) and the DMA domain ([`DmaOps`]), so the whole
 //! bring-up sequence, the descriptor rings and the MDIO/PHY state machine run
 //! on the host against a model of the device (`tests/host/drivers-tests`,
 //! `dwmac_tests.rs`); [`board`] (feature `vf2`) is the statics, the interrupt
@@ -55,6 +55,7 @@
 //! on what the boot firmware left running and on the PHY's strapped defaults.
 
 use azos_dma::Direction;
+use azos_drvkit::{Mmio, Ticks};
 use azos_drv_api::net::{NetError, ETH_FRAME_MAX};
 
 // ── Register map ────────────────────────────────────────────────────────
@@ -398,14 +399,6 @@ pub const fn config_bits(speed: Speed, full_duplex: bool) -> u32 {
 
 // ── Environment ─────────────────────────────────────────────────────────
 
-/// The register window and a monotonic clock.
-pub trait Hw {
-    fn rd(&self, off: usize) -> u32;
-    fn wr(&self, off: usize, val: u32);
-    /// Monotonic microseconds.
-    fn now_us(&self) -> u64;
-}
-
 /// The DMA domain the NIC sits in: mapping and the cache maintenance of a
 /// non-coherent master (a no-op behind a coherent one).
 pub trait DmaOps: Copy {
@@ -433,36 +426,6 @@ impl DmaOps for azos_drv_virtio::virtio::Dma {
     }
     unsafe fn sync_for_cpu(&self, ptr: *const u8, len: usize, dir: Direction) {
         unsafe { azos_drv_virtio::virtio::Dma::sync_for_cpu(self, ptr, len, dir) }
-    }
-}
-
-/// Volatile access to the window at `base`.
-#[derive(Clone, Copy)]
-pub struct Mmio {
-    base: usize,
-}
-
-impl Mmio {
-    pub const fn new(base: usize) -> Self {
-        Mmio { base }
-    }
-}
-
-impl Hw for Mmio {
-    #[inline(always)]
-    fn rd(&self, off: usize) -> u32 {
-        // SAFETY: the board maps `[base, base + reg::WINDOW)` (board_map.rs).
-        unsafe { azos_arch_api::mmio::read32(self.base + off) }
-    }
-    #[inline(always)]
-    fn wr(&self, off: usize, val: u32) {
-        // SAFETY: as `rd`.
-        unsafe { azos_arch_api::mmio::write32(self.base + off, val) }
-    }
-    fn now_us(&self) -> u64 {
-        let t = azos_drv_sys::timebase::now();
-        let f = azos_drv_sys::timebase::TIMER_FREQ;
-        (t / f) * 1_000_000 + (t % f) * 1_000_000 / f
     }
 }
 
@@ -554,11 +517,11 @@ pub struct IrqCause {
 /// Acknowledge the channel-0 interrupt: read the status, write the handled
 /// bits back (write-1-to-clear), say what it was. Touches only `DMA_CH0_STATUS`,
 /// so it needs no lock against the thread driving the rings.
-pub fn irq_ack<H: Hw>(hw: &H) -> IrqCause {
-    let st = hw.rd(reg::DMA_CH0_STATUS);
+pub fn irq_ack<M: Mmio>(hw: &M) -> IrqCause {
+    let st = hw.read32(reg::DMA_CH0_STATUS);
     let handled = st & dma::INT_ENABLED;
     if handled != 0 {
-        hw.wr(reg::DMA_CH0_STATUS, handled);
+        hw.write32(reg::DMA_CH0_STATUS, handled);
     }
     IrqCause {
         rx: st & (dma::INT_RI | dma::INT_RBU) != 0,
@@ -570,8 +533,9 @@ pub fn irq_ack<H: Hw>(hw: &H) -> IrqCause {
 
 /// One MAC with its rings. Not internally locked: the kernel wraps it in a
 /// lock ([`board`]) and calls [`irq_ack`] without it.
-pub struct Dwmac<H: Hw, D: DmaOps> {
-    hw: H,
+pub struct Dwmac<M: Mmio, T: Ticks, D: DmaOps> {
+    hw: M,
+    clock: T,
     dma: D,
     cfg: Config,
     mem: *mut DmaMem,
@@ -605,7 +569,7 @@ pub struct Dwmac<H: Hw, D: DmaOps> {
 
 // SAFETY: `mem` points at the `DmaMem` the owner of the `Dwmac` was given
 // exclusively for its lifetime.
-unsafe impl<H: Hw + Send, D: DmaOps + Send> Send for Dwmac<H, D> {}
+unsafe impl<M: Mmio + Send, T: Ticks + Send, D: DmaOps + Send> Send for Dwmac<M, T, D> {}
 
 /// MDC is idle between frames; give a transaction this long.
 const MDIO_TIMEOUT_US: u64 = 10_000;
@@ -614,11 +578,11 @@ const PHY_RESET_TIMEOUT_US: u64 = 500_000;
 /// How often a quiet receive path looks at the PHY.
 pub const LINK_POLL_US: u64 = 500_000;
 
-impl<H: Hw, D: DmaOps> Dwmac<H, D> {
+impl<M: Mmio, T: Ticks, D: DmaOps> Dwmac<M, T, D> {
     /// Bring the MAC, its DMA channel and the PHY up and start receiving.
     /// `mem` must stay valid and unaliased for the life of the driver.
-    pub fn init(hw: H, dma: D, cfg: Config, mem: *mut DmaMem) -> Result<Self, Error> {
-        let version = hw.rd(reg::MAC_VERSION);
+    pub fn init(hw: M, clock: T, dma: D, cfg: Config, mem: *mut DmaMem) -> Result<Self, Error> {
+        let version = hw.read32(reg::MAC_VERSION);
         if version & mac::VERSION_SNPS_MASK < mac::VERSION_MIN {
             return Err(Error::UnsupportedCore(version));
         }
@@ -647,6 +611,7 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
 
         let mut d = Dwmac {
             hw,
+            clock,
             dma,
             cfg,
             mem,
@@ -679,26 +644,18 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
         Ok(d)
     }
 
-    fn read_mac(hw: &H) -> [u8; 6] {
-        let hi = hw.rd(reg::MAC_ADDRESS0_HIGH);
-        let lo = hw.rd(reg::MAC_ADDRESS0_LOW);
+    fn read_mac(hw: &M) -> [u8; 6] {
+        let hi = hw.read32(reg::MAC_ADDRESS0_HIGH);
+        let lo = hw.read32(reg::MAC_ADDRESS0_LOW);
         [lo as u8, (lo >> 8) as u8, (lo >> 16) as u8, (lo >> 24) as u8, hi as u8, (hi >> 8) as u8]
     }
 
     fn wait_clear(&self, off: usize, mask: u32, timeout_us: u64) -> bool {
-        let t0 = self.hw.now_us();
-        loop {
-            if self.hw.rd(off) & mask == 0 {
-                return true;
-            }
-            if self.hw.now_us().wrapping_sub(t0) > timeout_us {
-                return false;
-            }
-        }
+        self.clock.wait_us(timeout_us, || self.hw.read32(off) & mask == 0)
     }
 
     fn soft_reset(&mut self) -> Result<(), Error> {
-        self.hw.wr(reg::DMA_MODE, dma::MODE_SWR);
+        self.hw.write32(reg::DMA_MODE, dma::MODE_SWR);
         if self.wait_clear(reg::DMA_MODE, dma::MODE_SWR, SOFT_RESET_TIMEOUT_US) {
             Ok(())
         } else {
@@ -710,32 +667,32 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
     /// receive stay disabled until the link is up.
     fn program_mac(&mut self) {
         let m = self.mac;
-        self.hw.wr(reg::MAC_ADDRESS0_HIGH, (1 << 31) | (m[4] as u32) | (m[5] as u32) << 8);
-        self.hw.wr(
+        self.hw.write32(reg::MAC_ADDRESS0_HIGH, (1 << 31) | (m[4] as u32) | (m[5] as u32) << 8);
+        self.hw.write32(
             reg::MAC_ADDRESS0_LOW,
             (m[0] as u32) | (m[1] as u32) << 8 | (m[2] as u32) << 16 | (m[3] as u32) << 24,
         );
-        self.hw.wr(reg::MAC_PACKET_FILTER, mac::FILTER_PM);
-        self.hw.wr(reg::MAC_Q0_TX_FLOW_CTRL, 0);
-        self.hw.wr(reg::MAC_RX_FLOW_CTRL, 0);
-        self.hw.wr(reg::MAC_RXQ_CTRL0, mac::RXQ0_DCB);
-        self.hw.wr(reg::MAC_INTERRUPT_ENABLE, 0);
-        self.hw.wr(reg::MAC_CONFIGURATION, mac::CFG_CST | mac::CFG_ACS);
+        self.hw.write32(reg::MAC_PACKET_FILTER, mac::FILTER_PM);
+        self.hw.write32(reg::MAC_Q0_TX_FLOW_CTRL, 0);
+        self.hw.write32(reg::MAC_RX_FLOW_CTRL, 0);
+        self.hw.write32(reg::MAC_RXQ_CTRL0, mac::RXQ0_DCB);
+        self.hw.write32(reg::MAC_INTERRUPT_ENABLE, 0);
+        self.hw.write32(reg::MAC_CONFIGURATION, mac::CFG_CST | mac::CFG_ACS);
     }
 
     /// One transmit queue, one receive queue, threshold mode at 64 bytes
     /// (`snps,force_thresh_dma_mode`), FIFOs sized from the DTS depths.
     fn program_mtl(&mut self) {
-        self.hw.wr(reg::MTL_OPERATION_MODE, 0);
+        self.hw.write32(reg::MTL_OPERATION_MODE, 0);
         let tqs = (self.cfg.tx_fifo / 256).saturating_sub(1);
         let rqs = (self.cfg.rx_fifo / 256).saturating_sub(1);
-        self.hw.wr(reg::MTL_TXQ0_OPERATION_MODE, dma::MTL_TXQEN | (tqs << dma::MTL_TQS_SHIFT));
-        self.hw.wr(reg::MTL_RXQ0_OPERATION_MODE, rqs << dma::MTL_RQS_SHIFT);
+        self.hw.write32(reg::MTL_TXQ0_OPERATION_MODE, dma::MTL_TXQEN | (tqs << dma::MTL_TQS_SHIFT));
+        self.hw.write32(reg::MTL_RXQ0_OPERATION_MODE, rqs << dma::MTL_RQS_SHIFT);
     }
 
     fn program_dma(&mut self, dsl: u32) {
         let c = &self.cfg;
-        self.hw.wr(
+        self.hw.write32(
             reg::DMA_SYSBUS_MODE,
             dma::SYSBUS_FB
                 | dma::SYSBUS_BLEN_256
@@ -745,29 +702,29 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
                 | (c.axi_rd_osr << dma::SYSBUS_RD_OSR_SHIFT)
                 | (c.axi_wr_osr << dma::SYSBUS_WR_OSR_SHIFT),
         );
-        self.hw.wr(reg::DMA_CH0_CONTROL, dsl << dma::CTRL_DSL_SHIFT);
-        self.hw.wr(reg::DMA_CH0_TX_CONTROL, dma::TX_CTRL_OSF | (c.txpbl << dma::TX_CTRL_PBL_SHIFT));
-        self.hw.wr(
+        self.hw.write32(reg::DMA_CH0_CONTROL, dsl << dma::CTRL_DSL_SHIFT);
+        self.hw.write32(reg::DMA_CH0_TX_CONTROL, dma::TX_CTRL_OSF | (c.txpbl << dma::TX_CTRL_PBL_SHIFT));
+        self.hw.write32(
             reg::DMA_CH0_RX_CONTROL,
             ((BUF_SIZE as u32) << dma::RX_CTRL_RBSZ_SHIFT & dma::RX_CTRL_RBSZ_MASK)
                 | (c.rxpbl << dma::RX_CTRL_PBL_SHIFT),
         );
-        self.hw.wr(reg::DMA_CH0_TXDESC_HADDR, (self.tx_desc_bus >> 32) as u32);
-        self.hw.wr(reg::DMA_CH0_TXDESC_LADDR, self.tx_desc_bus as u32);
-        self.hw.wr(reg::DMA_CH0_RXDESC_HADDR, (self.rx_desc_bus >> 32) as u32);
-        self.hw.wr(reg::DMA_CH0_RXDESC_LADDR, self.rx_desc_bus as u32);
-        self.hw.wr(reg::DMA_CH0_TXDESC_LEN, TX_N as u32 - 1);
-        self.hw.wr(reg::DMA_CH0_RXDESC_LEN, RX_N as u32 - 1);
-        self.hw.wr(reg::DMA_CH0_TXDESC_TAIL, self.tx_desc_bus as u32);
+        self.hw.write32(reg::DMA_CH0_TXDESC_HADDR, (self.tx_desc_bus >> 32) as u32);
+        self.hw.write32(reg::DMA_CH0_TXDESC_LADDR, self.tx_desc_bus as u32);
+        self.hw.write32(reg::DMA_CH0_RXDESC_HADDR, (self.rx_desc_bus >> 32) as u32);
+        self.hw.write32(reg::DMA_CH0_RXDESC_LADDR, self.rx_desc_bus as u32);
+        self.hw.write32(reg::DMA_CH0_TXDESC_LEN, TX_N as u32 - 1);
+        self.hw.write32(reg::DMA_CH0_RXDESC_LEN, RX_N as u32 - 1);
+        self.hw.write32(reg::DMA_CH0_TXDESC_TAIL, self.tx_desc_bus as u32);
     }
 
     fn start_dma(&mut self) {
-        let tx = self.hw.rd(reg::DMA_CH0_TX_CONTROL);
-        self.hw.wr(reg::DMA_CH0_TX_CONTROL, tx | dma::TX_CTRL_ST);
-        let rx = self.hw.rd(reg::DMA_CH0_RX_CONTROL);
-        self.hw.wr(reg::DMA_CH0_RX_CONTROL, rx | dma::RX_CTRL_SR);
-        self.hw.wr(reg::DMA_CH0_STATUS, !0);
-        self.hw.wr(reg::DMA_CH0_INTR_ENA, dma::INT_ENABLED);
+        let tx = self.hw.read32(reg::DMA_CH0_TX_CONTROL);
+        self.hw.write32(reg::DMA_CH0_TX_CONTROL, tx | dma::TX_CTRL_ST);
+        let rx = self.hw.read32(reg::DMA_CH0_RX_CONTROL);
+        self.hw.write32(reg::DMA_CH0_RX_CONTROL, rx | dma::RX_CTRL_SR);
+        self.hw.write32(reg::DMA_CH0_STATUS, !0);
+        self.hw.write32(reg::DMA_CH0_INTR_ENA, dma::INT_ENABLED);
     }
 
     // ── descriptor access ──────────────────────────────────────────────
@@ -845,7 +802,7 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
     fn announce_rx(&self) {
         azos_dma::order::io_wmb();
         let tail = self.rx_desc_bus + (self.rx_post * DESC_STRIDE) as u64;
-        self.hw.wr(reg::DMA_CH0_RXDESC_TAIL, tail as u32);
+        self.hw.write32(reg::DMA_CH0_RXDESC_TAIL, tail as u32);
     }
 
     /// Take up to `out.len()` received frames off the ring, in arrival order.
@@ -984,7 +941,7 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
     fn announce_tx(&mut self) {
         azos_dma::order::io_wmb();
         let tail = self.tx_desc_bus + (self.tx_head * DESC_STRIDE) as u64;
-        self.hw.wr(reg::DMA_CH0_TXDESC_TAIL, tail as u32);
+        self.hw.write32(reg::DMA_CH0_TXDESC_TAIL, tail as u32);
         self.tx_unannounced = false;
     }
 
@@ -1008,9 +965,9 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
             return Err(Error::MdioTimeout);
         }
         if let Some(v) = data {
-            self.hw.wr(reg::MAC_MDIO_DATA, v as u32);
+            self.hw.write32(reg::MAC_MDIO_DATA, v as u32);
         }
-        self.hw.wr(
+        self.hw.write32(
             reg::MAC_MDIO_ADDRESS,
             (self.cfg.phy_addr as u32) << mac::MDIO_PA_SHIFT
                 | (reg as u32) << mac::MDIO_RDA_SHIFT
@@ -1021,7 +978,7 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
         if !self.wait_clear(reg::MAC_MDIO_ADDRESS, mac::MDIO_GB, MDIO_TIMEOUT_US) {
             return Err(Error::MdioTimeout);
         }
-        Ok(self.hw.rd(reg::MAC_MDIO_DATA))
+        Ok(self.hw.read32(reg::MAC_MDIO_DATA))
     }
 
     /// Clause 22 read of PHY register `r`.
@@ -1047,9 +1004,9 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
             return Err(Error::UnknownPhy(id));
         }
         self.mdio_write(phy::BMCR, phy::BMCR_RESET)?;
-        let t0 = self.hw.now_us();
+        let t0 = self.clock.now_us();
         while self.mdio_read(phy::BMCR)? & phy::BMCR_RESET != 0 {
-            if self.hw.now_us().wrapping_sub(t0) > PHY_RESET_TIMEOUT_US {
+            if self.clock.now_us().wrapping_sub(t0) > PHY_RESET_TIMEOUT_US {
                 return Err(Error::PhyResetTimeout);
             }
         }
@@ -1089,30 +1046,30 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
     }
 
     fn apply_link(&mut self, l: Link) {
-        let mut c = self.hw.rd(reg::MAC_CONFIGURATION);
+        let mut c = self.hw.read32(reg::MAC_CONFIGURATION);
         c &= !(mac::CFG_PS | mac::CFG_FES | mac::CFG_DM | mac::CFG_TE | mac::CFG_RE);
         c |= config_bits(l.speed, l.full_duplex);
-        self.hw.wr(reg::MAC_CONFIGURATION, c);
+        self.hw.write32(reg::MAC_CONFIGURATION, c);
         if l.up {
-            self.hw.wr(reg::MAC_CONFIGURATION, c | mac::CFG_TE | mac::CFG_RE);
+            self.hw.write32(reg::MAC_CONFIGURATION, c | mac::CFG_TE | mac::CFG_RE);
         }
     }
 
     fn wait_link(&mut self, budget_us: u64) {
-        let t0 = self.hw.now_us();
+        let t0 = self.clock.now_us();
         loop {
             self.link_update();
-            if self.link.up || self.hw.now_us().wrapping_sub(t0) >= budget_us {
+            if self.link.up || self.clock.now_us().wrapping_sub(t0) >= budget_us {
                 break;
             }
         }
-        self.last_link_us = self.hw.now_us();
+        self.last_link_us = self.clock.now_us();
     }
 
     /// For the receive path to call when it finds the ring empty: looks at the
     /// PHY at most every [`LINK_POLL_US`]. Returns the link when it changed.
     pub fn link_poll(&mut self) -> Option<Link> {
-        let now = self.hw.now_us();
+        let now = self.clock.now_us();
         if now.wrapping_sub(self.last_link_us) < LINK_POLL_US {
             return None;
         }
@@ -1143,18 +1100,37 @@ pub mod board {
     use super::*;
     use azos_drv_api::net::NetDevice;
     use azos_drv_virtio::virtio::Dma;
+    use azos_drvkit::Window;
     use azos_sync::SpinLock;
     use core::cell::UnsafeCell;
     use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
     const BASE: usize = azos_drv_base::platform::hw::ETH0_BASE;
 
+    /// The `gmac0` window.
+    fn registers() -> Window {
+        // SAFETY: the board maps `[BASE, BASE + reg::WINDOW)` (board_map.rs).
+        unsafe { Window::new(BASE) }
+    }
+
+    /// The platform timer.
+    struct Clock;
+
+    impl Ticks for Clock {
+        fn now(&self) -> u64 {
+            azos_drv_sys::timebase::now()
+        }
+        fn freq_hz(&self) -> u64 {
+            azos_drv_sys::timebase::TIMER_FREQ
+        }
+    }
+
     struct Mem(UnsafeCell<DmaMem>);
     // SAFETY: handed to exactly one `Dwmac` by `init`, under `STATE`'s lock.
     unsafe impl Sync for Mem {}
     static MEM: Mem = Mem(UnsafeCell::new(DmaMem::new()));
 
-    static STATE: SpinLock<Option<Dwmac<Mmio, Dma>>> = SpinLock::new(None);
+    static STATE: SpinLock<Option<Dwmac<Window, Clock, Dma>>> = SpinLock::new(None);
     static READY: AtomicBool = AtomicBool::new(false);
     /// The PLIC source `enable_irq` armed; `u32::MAX` while polled.
     static IRQ_LINE: AtomicU32 = AtomicU32::new(u32::MAX);
@@ -1172,7 +1148,7 @@ pub mod board {
         if st.is_some() {
             return Ok(());
         }
-        let dev = Dwmac::init(Mmio::new(BASE), Dma::mmio(BASE), cfg, MEM.0.get())?;
+        let dev = Dwmac::init(registers(), Clock, Dma::mmio(BASE), cfg, MEM.0.get())?;
         let (mac, link) = (dev.mac(), dev.link());
         *st = Some(dev);
         READY.store(true, Ordering::Release);
@@ -1220,7 +1196,7 @@ pub mod board {
         if line != IRQ_LINE.load(Ordering::Acquire) {
             return false;
         }
-        let cause = irq_ack(&Mmio::new(BASE));
+        let cause = irq_ack(&registers());
         if cause.rx {
             RX_PENDING.store(true, Ordering::Release);
         }
@@ -1236,7 +1212,7 @@ pub mod board {
 
     /// The receive path found nothing to do; look at the PHY if it is time.
     fn poll_link_if_due() {
-        let now = Mmio::new(BASE).now_us();
+        let now = Clock.now_us();
         if now < NEXT_LINK_US.load(Ordering::Relaxed) {
             return;
         }
