@@ -31,7 +31,8 @@ pub(crate) fn init() {
         let ok = TCP_CONNS.preload(1)
             & azos_fs::fat32::preload_boot_cache()
             & azos_syscall::handlers::preload_exec_bounce()
-            & azos_ipc::cap_store::preload_cells();
+            & azos_ipc::cap_store::preload_cells()
+            & azos_sched::scheduler::preload_tasks();
         if !ok {
             azos_drv_sys::kprintln!("[MM] preload: a boot cache could not be filled");
         }
@@ -48,4 +49,5 @@ pub(crate) fn all_sealed() -> bool {
         && azos_ipc::endpoint::array_sealed()
         && azos_mm::memobj::array_sealed()
         && azos_ipc::cap_store::CELL_CACHE.is_sealed()
+        && azos_sched::scheduler::tasks_sealed()
 }

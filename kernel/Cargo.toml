@@ -262,6 +262,9 @@ kheap-ceiling-canary = ["azos_mm/kheap-ceiling-canary"]
 kmem-cache-cross-type-canary = ["azos_mm/kmem-cache-cross-type-canary"]
 # Capability tables come from a cache of another type: the `cap table cache` ktest goes red.
 cap-table-cross-type-canary = ["azos_ipc/cap-table-cross-type-canary"]
+# Gate canary: the tasks come from a cache of another type, so the ktest
+# `task_slots_hold_tasks_from_the_task_cache` must fail.
+task-cross-type-canary = ["azos_sched/task-cross-type-canary"]
 kmem-preload-canary = ["azos_mm/kmem-preload-canary"]
 kstack-reuse-no-shootdown-canary = ["azos_mm/kstack-reuse-no-shootdown-canary"]
 # Gate canary of the admin task list (`kernel/src/boot/inspect_tasks.rs`): a

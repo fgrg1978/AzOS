@@ -34,7 +34,7 @@
 ///   exact window): it still goes through the same locked wrappers as
 ///   everything else above, it just runs before any task has been dispatched.
 
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 // The cross-ISA interrupt contract. In scope for the method calls on
 // `azos_arch::ARCH`, which replaced 37 hand-written reads and writes of
 // `sstatus.SIE` in this file on 2026-09-21 — see `arch/api`.
@@ -369,8 +369,120 @@ pub fn stack_guard_pages_active() -> bool {
 
 // ---- Global task pool (shared across all CPUs) ----
 
-/// Task descriptors — valid slots tracked by TASK_VALID.
-static mut TASKS: [Task; MAX_TASKS] = unsafe { core::mem::zeroed() };
+/// Task descriptors — valid slots tracked by TASK_VALID. A slot's `Task` is
+/// made on the slot's first use ([`alloc_slot`]) from a retained cache and kept
+/// for the boot: a lock-free reader that still holds the index of a reaped slot
+/// reads a `Task`, never memory reissued as another type. A slot never used
+/// reads the zeroed [`EMPTY_TASK`], which is what the whole array held before.
+static TASKS: TaskSlots = TaskSlots { p: [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_TASKS] };
+
+struct TaskSlots {
+    p: [AtomicPtr<Task>; MAX_TASKS],
+}
+
+struct EmptyTask(Task);
+// SAFETY: never written; every field of a zeroed `Task` is a valid value.
+unsafe impl Sync for EmptyTask {}
+static EMPTY_TASK: EmptyTask = EmptyTask(unsafe { core::mem::zeroed() });
+
+/// The cache the tasks come from: its pages are never returned to the page
+/// allocator. Canary `task-cross-type-canary`: tasks come from a cache of
+/// another type.
+#[cfg(not(feature = "task-cross-type-canary"))]
+static TASK_CACHE: azos_mm::cache::Cache<Task> = azos_mm::cache::Cache::retained();
+#[cfg(feature = "task-cross-type-canary")]
+static UNTYPED_TASKS: azos_mm::cache::Cache<[u64; core::mem::size_of::<Task>().div_ceil(8)]> =
+    azos_mm::cache::Cache::retained();
+
+#[cfg(not(feature = "task-cross-type-canary"))]
+fn task_source() -> *mut Task { TASK_CACHE.alloc_zeroed() }
+#[cfg(feature = "task-cross-type-canary")]
+fn task_source() -> *mut Task { UNTYPED_TASKS.alloc_zeroed().cast() }
+
+/// Fill the task cache to `MAX_TASKS` and seal it, when the caches preload
+/// (`azos_mm::cache::PRELOAD`). Boot, once, before the first task.
+pub fn preload_tasks() -> bool {
+    #[cfg(not(feature = "task-cross-type-canary"))]
+    {
+        if azos_mm::cache::PRELOAD { TASK_CACHE.preload(MAX_TASKS) } else { true }
+    }
+    #[cfg(feature = "task-cross-type-canary")]
+    {
+        true
+    }
+}
+
+/// Is the task cache filled and sealed? For the kernel tests.
+pub fn tasks_sealed() -> bool {
+    #[cfg(not(feature = "task-cross-type-canary"))]
+    {
+        TASK_CACHE.is_sealed()
+    }
+    #[cfg(feature = "task-cross-type-canary")]
+    {
+        UNTYPED_TASKS.is_sealed()
+    }
+}
+
+/// The address of slot `idx`'s task, `None` for a slot never used. For the
+/// kernel tests: a slot keeps its task across exit and reuse.
+pub fn task_addr(idx: usize) -> Option<usize> {
+    let p = TASKS.p.get(idx)?.load(Ordering::Acquire);
+    (!p.is_null()).then_some(p as usize)
+}
+
+/// Is `addr` (a task's, from [`task_addr`]) an object of the task cache? For
+/// the kernel tests (the cross-type canary makes it false).
+pub fn task_from_task_cache(addr: usize) -> bool {
+    #[cfg(not(feature = "task-cross-type-canary"))]
+    {
+        // SAFETY: `addr` is a task's (`task_addr`), which lies in a cache block.
+        unsafe { TASK_CACHE.owns(addr) }
+    }
+    #[cfg(feature = "task-cross-type-canary")]
+    {
+        let _ = addr;
+        false
+    }
+}
+
+impl TaskSlots {
+    /// Slot `idx`'s task, made now if the slot was never used; `None` when
+    /// the cache has nothing left.
+    fn ensure(&self, idx: usize) -> Option<*mut Task> {
+        let slot = &self.p[idx];
+        let cur = slot.load(Ordering::Acquire);
+        if !cur.is_null() {
+            return Some(cur);
+        }
+        let new = task_source();
+        if new.is_null() {
+            return None;
+        }
+        // Two makers race only through a writer outside `POOL_LOCK`; the loser's
+        // task stays in the retained cache, unused.
+        match slot.compare_exchange(core::ptr::null_mut(), new, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Some(new),
+            Err(won) => Some(won),
+        }
+    }
+
+    /// Slot `idx`'s task for a writer: a valid slot always has one.
+    fn get_mut(&self, idx: usize) -> *mut Task {
+        self.ensure(idx).unwrap_or_else(|| panic!("task slot {} has no task and the cache is empty", idx))
+    }
+
+}
+
+impl core::ops::Index<usize> for TaskSlots {
+    type Output = Task;
+    #[inline(always)]
+    fn index(&self, idx: usize) -> &Task {
+        let p = self.p[idx].load(Ordering::Acquire);
+        // SAFETY: a made task is never freed (retained cache, kept per slot).
+        if p.is_null() { &EMPTY_TASK.0 } else { unsafe { &*p } }
+    }
+}
 
 /// Which slots in TASKS[] are in use.
 ///
@@ -801,9 +913,9 @@ fn publish_filter_word(idx: usize) {
     signal::clear_slot_signalled(idx);
     // A new occupant has registered no foreign entry and has nothing pending.
     crate::foreign::clear_slot(idx);
-    // SAFETY: the slot is being filled under POOL_LOCK (or restored before
-    // it is published); only its address and one byte are read.
-    let (word, slow) = unsafe {
+    // The slot is being filled under POOL_LOCK (or restored before it is
+    // published); only its address and one byte are read.
+    let (word, slow) = {
         let abi = TASKS[idx].abi;
         let w = if abi == crate::task::ABI_LINUX && !cfg!(feature = "linux-abi-tag-canary") {
             0
@@ -837,7 +949,7 @@ pub(crate) fn set_current_foreign_mode(foreign: bool) {
         let word = if foreign {
             0
         } else {
-            unsafe { core::ptr::addr_of!(TASKS[idx].syscall_filter) as usize }
+            core::ptr::addr_of!(TASKS[idx].syscall_filter) as usize
         };
         FILTER_WORD[idx].store(word, Ordering::Relaxed);
         // SAFETY: this CPU's own entry, interrupts off.
@@ -1979,7 +2091,10 @@ pub fn ring_claim_audit() -> (u32, u32, u32, u32) {
 unsafe fn alloc_slot() -> Option<usize> {
     for i in 0..MAX_TASKS {
         if !TASK_VALID[i].load(Ordering::Relaxed) {
-            TASKS[i].tid = 0;
+            if TASKS.ensure(i).is_none() {
+                return None;
+            }
+            task_mut(i).tid = 0;
             // U04-2 route (b): clear the previous occupant's "exiting"
             // publication before this slot is handed to a brand-new task
             // — see `TASK_EXITING`'s doc. Ordered by the same Release
@@ -2000,7 +2115,7 @@ unsafe fn alloc_slot() -> Option<usize> {
 
 /// Get a mutable reference to TASKS[idx].
 unsafe fn task_mut(idx: usize) -> &'static mut Task {
-    &mut TASKS[idx]
+    unsafe { &mut *TASKS.get_mut(idx) }
 }
 
 /// K-C12 · Pick the CPU on which a task of priority `prio` will actually be
@@ -2905,10 +3020,10 @@ unsafe fn do_schedule(why: SwitchReason) {
 pub(crate) fn set_task_thread_info(idx: usize, task_satp: u64, user_pt: u64) {
     unsafe {
         if idx < MAX_TASKS && TASK_VALID[idx].load(Ordering::Relaxed) {
-            TASKS[idx].task_satp = task_satp;
-            TASKS[idx].user_pt = user_pt;
-            TASKS[idx].user_brk = 0;
-            TASKS[idx].user_mmap_low = 0;
+            (*TASKS.get_mut(idx)).task_satp = task_satp;
+            (*TASKS.get_mut(idx)).user_pt = user_pt;
+            (*TASKS.get_mut(idx)).user_brk = 0;
+            (*TASKS.get_mut(idx)).user_mmap_low = 0;
         }
     }
 }
@@ -2919,7 +3034,7 @@ pub(crate) fn set_current_task_satp(task_satp: u64) {
     let idx = my_idx();
     unsafe {
         if idx != usize::MAX {
-            TASKS[idx].task_satp = task_satp;
+            (*TASKS.get_mut(idx)).task_satp = task_satp;
         }
     }
 }
@@ -2931,10 +3046,10 @@ pub fn set_current_user_info(task_satp: u64, user_pt: u64, brk: u64) {
     let idx = my_idx();
     unsafe {
         if idx != usize::MAX {
-            TASKS[idx].task_satp = task_satp;
-            TASKS[idx].user_pt   = user_pt;
-            TASKS[idx].user_brk  = brk;
-            TASKS[idx].user_mmap_low = 0;
+            (*TASKS.get_mut(idx)).task_satp = task_satp;
+            (*TASKS.get_mut(idx)).user_pt   = user_pt;
+            (*TASKS.get_mut(idx)).user_brk  = brk;
+            (*TASKS.get_mut(idx)).user_mmap_low = 0;
             // A new image starts from nothing: new PAC keys (installed by
             // `take_current_task_exec_slots` when the hand-off is consumed).
             crate::pac::draw(idx);
@@ -3097,10 +3212,10 @@ pub fn release_user_window_of(tid: u32, base: usize, span: usize) -> bool {
 pub fn set_task_user_info(idx: usize, task_satp: u64, user_pt: u64, brk: u64, mmap_low: u64) {
     unsafe {
         if idx < MAX_TASKS && TASK_VALID[idx].load(Ordering::Relaxed) {
-            TASKS[idx].task_satp = task_satp;
-            TASKS[idx].user_pt   = user_pt;
-            TASKS[idx].user_brk  = brk;
-            TASKS[idx].user_mmap_low = mmap_low;
+            (*TASKS.get_mut(idx)).task_satp = task_satp;
+            (*TASKS.get_mut(idx)).user_pt   = user_pt;
+            (*TASKS.get_mut(idx)).user_brk  = brk;
+            (*TASKS.get_mut(idx)).user_mmap_low = mmap_low;
             // Owner decision 102 — a new address space starts from zero. Both
             // writers of this budget are "this task now has that page
             // table", so both reset here (see `set_current_user_info` above
@@ -3872,7 +3987,7 @@ pub mod timer_sleepers;
 /// Caller must not hold a mutable reference to the same slot simultaneously.
 #[inline(always)]
 unsafe fn task_ref(idx: usize) -> &'static Task {
-    unsafe { &*(core::ptr::addr_of!(TASKS[idx])) }
+    &TASKS[idx]
 }
 
 // ── Preemption control (K-C29) ───────────────────────────────────────────────

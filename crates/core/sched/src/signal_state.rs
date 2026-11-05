@@ -348,7 +348,7 @@ pub fn current_deliverable() -> bool {
 /// mode.
 pub fn take_current() -> Option<(u32, u32)> {
     let idx = current_slot()?;
-    let tid = unsafe { super::TASKS[idx].tid };
+    let tid = super::TASKS[idx].tid;
     if TID[idx].load(Ordering::Acquire) != tid {
         return None;
     }

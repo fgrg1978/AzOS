@@ -15,26 +15,27 @@ config MAX_TASKS
     int "Maximum schedulable tasks"
     range 8 16384
     default 32   if HWCLASS_EMBEDDED
-    default 64   if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 1024 if HWCLASS_DESKTOP
+    default 64   if HWCLASS_SBC
     default 4096 if HWCLASS_SERVER
     help
       Number of task slots: processes and threads share this one table.
-      The kernel stack (the stack window, crates/core/mm/src/kstack.rs) and
-      the capability table (a retained cache) of a slot are taken from the
-      page allocator when the slot is first used; the rest below is still
-      allocated at build time for all MAX_TASKS slots.  Scheduler
+      The kernel stack (the stack window, crates/core/mm/src/kstack.rs), the
+      capability table and the task control block (both retained caches) of a
+      slot are taken from the page allocator when the slot is first used; the
+      rest below is still allocated at build time for all MAX_TASKS slots.  Scheduler
       walks (per-tick WCET) and the page-table tracker (PT_META) scan linearly
       in MAX_TASKS.
 
       Cost: ~38,573 B of RAM per task slot (riscv64), 39,757 B (aarch64), at
       the edge values of KERNEL_STACK_SIZE_KB = 32 and MAX_CAPS_PER_TASK = 256.
       Of that, taken on use: 32,768 B kernel stack (KERNEL_STACK_SIZE_KB);
-      2,052 B capability table (8 B x MAX_CAPS_PER_TASK + 4, CAP_TABLES).
+      2,052 B capability table (8 B x MAX_CAPS_PER_TASK + 4, CAP_TABLES);
+      the task control block (TASKS), 1,216 B riscv64 / 1,856 B aarch64.
       Static:
       2,048 B run queues (MAX_CPUS 8 x NUM_PRIORITIES 32 x one 8-byte slot;
       wave 15: now a 4 B ready-queue link, RQ_NEXT, the queues being lists
       -- 2,044 B less per slot than the figures here, which predate it);
-      the task control block (TASKS), 1,216 B riscv64 / 1,856 B aarch64, and
       on aarch64 544 B of lazy FP save area; 268 B signal state; 80 B topology
       slot; 24 B each of notify waiter and vDSO slot; 16 B each of port waiter
       and page-table tracker slot; 12 B of exit notice

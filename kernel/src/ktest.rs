@@ -2414,6 +2414,21 @@ azos_ktest::ktest_late! {
     }
 }
 
+// The tasks are a security cache too: a slot's task is made from the retained
+// task cache on the slot's first use and kept for the boot, so a reader that
+// still holds a reaped slot's index reads a task. Canary
+// `task-cross-type-canary`: tasks come from a cache of another type.
+azos_ktest::ktest_late! {
+    fn task_slots_hold_tasks_from_the_task_cache() {
+        use azos_sched::scheduler::{task_addr, task_from_task_cache};
+        let Some((idx, _)) = azos_sched::current_task_slot() else { return Err("the running task has no slot") };
+        let Some(a) = task_addr(idx) else { return Err("the running task's slot has no task") };
+        if !task_from_task_cache(a) { return Err("a task is not from the task cache"); }
+        if task_addr(idx) != Some(a) { return Err("a slot's task moved"); }
+        Ok(())
+    }
+}
+
 azos_ktest::ktest_late! {
     fn kmem_cache_gives_back_only_blocks_that_are_not_retained() {
         let t = CACHE_T.alloc();

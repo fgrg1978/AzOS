@@ -112,7 +112,7 @@ fn run_tick_sweep_probe(on_timer: bool) {
                 timer_sleepers::cancel(i);
                 TASK_VALID[i].store(false, Ordering::Relaxed);
                 TASKS[i].wait_reason.store(WaitReason::None);
-                TASKS[i].tid = 0;
+                (*TASKS.get_mut(i)).tid = 0;
             }
         }
         core::sync::atomic::fence(Ordering::Release);
@@ -204,7 +204,7 @@ fn run_placement_probe(fill: usize) {
             if filled[i] {
                 TASK_VALID[i].store(false, Ordering::Relaxed);
                 hist_reaccount(i);
-                TASKS[i].tid = 0;
+                (*TASKS.get_mut(i)).tid = 0;
                 TASKS[i].set_affinity(-1);
             }
         }
@@ -810,7 +810,7 @@ pub fn try_task_create_init(
                         // can ever again match this task's TID against the
                         // slot's next life.
                         core::sync::atomic::fence(Ordering::Release);
-                        TASKS[idx].tid = 0;
+                        (*TASKS.get_mut(idx)).tid = 0;
                     }
                     // K-C22(B): the claim already zeroed the slot's `user_pt`
                     // — the captured stale address spaces must be destroyed
@@ -1352,7 +1352,7 @@ pub fn exec_end_other_threads() -> Result<u32, ExecDethreadError> {
     if lead == 0 {
         return Ok(0);
     }
-    let me = unsafe { TASKS[idx].tid };
+    let me = TASKS[idx].tid;
     // Gate canaries only: a thread that is not the leader is refused, as
     // before the PID hand-over; or the other threads keep running across
     // the exec.
@@ -3016,7 +3016,7 @@ fn record_stop_locked(idx: usize, tid: u32, new: stop_policy::Stop) {
 /// answers `-EINTR`.
 pub fn current_stop_request() -> Option<stop_policy::Stop> {
     let idx = current_slot()?;
-    let tid = unsafe { TASKS[idx].tid };
+    let tid = TASKS[idx].tid;
     if STOP_TID[idx].load(Ordering::Acquire) != tid {
         return None;
     }

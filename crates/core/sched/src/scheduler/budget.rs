@@ -14,7 +14,7 @@ use super::*;
 /// Returns the name of the currently running task on this CPU.
 pub fn current_task_name() -> &'static str {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX {
             return "<none>";
         }
@@ -31,7 +31,7 @@ pub fn current_task_name() -> &'static str {
 /// better to run is not in either number. See `Task::switches_voluntary`.
 pub fn current_task_switches() -> (u64, u64) {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { return (0, 0); }
         (
             TASKS[idx].switches_voluntary.load(Ordering::Relaxed),
@@ -61,7 +61,7 @@ pub struct VdsoFacts {
 
 pub fn current_task_vdso_facts() -> Option<VdsoFacts> {
     let (cpu, idx) = here();
-    unsafe {
+    {
         if idx == usize::MAX { return None; }
         let t = &TASKS[idx];
         Some(VdsoFacts {
@@ -104,7 +104,7 @@ pub fn task_running_on_other_hart(tid: u32) -> bool {
 
 pub fn current_task_tid() -> u32 {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { 0 } else { TASKS[idx].tid }
     }
 }
@@ -116,7 +116,7 @@ pub fn current_task_tid() -> u32 {
 #[inline]
 pub fn current_task_slot() -> Option<(usize, u32)> {
     let idx = my_idx();
-    unsafe {
+    {
         if idx < MAX_TASKS { Some((idx, TASKS[idx].tid)) } else { None }
     }
 }
@@ -127,7 +127,7 @@ pub fn current_task_slot() -> Option<(usize, u32)> {
 /// (`RT_BLOCK_IO_CHECK`). Per CPU like [`current_task_tid`].
 pub fn current_task_base_priority() -> u32 {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX {
             crate::task::IDLE_PRIORITY
         } else {
@@ -174,7 +174,7 @@ pub fn current_task_stack_top() -> usize {
 /// Returns total runtime ticks of the currently running task.
 pub fn current_runtime() -> u64 {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { 0 } else { TASKS[idx].total_runtime }
     }
 }
@@ -195,7 +195,7 @@ pub fn current_runtime() -> u64 {
 /// is what keeps that at 0.
 pub fn current_user_pt() -> usize {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { 0 } else { TASKS[idx].user_pt as usize }
     }
 }
@@ -204,7 +204,7 @@ pub fn current_user_pt() -> usize {
 /// what a new member of its thread group runs on (wave 13).
 pub fn current_task_satp() -> u64 {
     match current_slot() {
-        Some(idx) => unsafe { TASKS[idx].task_satp },
+        Some(idx) => TASKS[idx].task_satp,
         None => 0,
     }
 }
@@ -228,7 +228,7 @@ pub(crate) fn proc_slot(idx: usize) -> usize {
 pub fn task_domain(idx: usize) -> crate::domain::Key {
     if idx < MAX_TASKS {
         // SAFETY: only reads the task table, as `idx_for_tid` does.
-        unsafe { TASKS[idx].domain() }
+        TASKS[idx].domain()
     } else {
         crate::domain::NONE
     }
@@ -258,7 +258,7 @@ pub fn task_adopt_domain(tid: u32, of: u32) -> bool {
         return false;
     }
     // SAFETY: `idx` names a live task (`idx_for_tid`); the key is an atomic.
-    let old = unsafe { TASKS[idx].domain.swap(key, Ordering::Relaxed) };
+    let old = TASKS[idx].domain.swap(key, Ordering::Relaxed);
     let (used, _) = crate::domain::used_limit(old);
     if used != 0 {
         let _ = crate::domain::charge(key, used);
@@ -278,7 +278,7 @@ pub fn task_adopt_domain(tid: u32, of: u32) -> bool {
 pub fn current_proc_tid() -> u32 {
     let idx = my_idx();
     if idx < MAX_TASKS {
-        crate::group::proc_of(idx, unsafe { TASKS[idx].tid })
+        crate::group::proc_of(idx, TASKS[idx].tid)
     } else {
         0
     }
@@ -312,7 +312,7 @@ pub fn mm_charge(pages: u32) -> bool {
     // is unreachable here because of this early return, exactly as before.
     if pages == 0 { return true; }
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { return true; }
         // D2: the budget is the domain's, whichever of its threads charges.
         // `domain::charge` runs `PageBudget::charge`
@@ -350,7 +350,7 @@ pub fn mm_charge(pages: u32) -> bool {
 pub fn mm_discharge(pages: u32) {
     if pages == 0 { return; }
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { return; }
         crate::domain::discharge(TASKS[idx].domain(), pages);
     }
@@ -371,7 +371,7 @@ pub fn mm_discharge_tid(tid: u32, pages: u32) {
     let slot = TaskDonation::new(idx, tid);
     crate::donation::DonationCell::lock(&slot);
     // SAFETY: `idx` comes from `idx_for_tid`; the domain word is atomic.
-    let dom = crate::donation::DonationCell::holds(&slot).then(|| unsafe { TASKS[idx].domain() });
+    let dom = crate::donation::DonationCell::holds(&slot).then(|| TASKS[idx].domain());
     crate::donation::DonationCell::unlock(&slot);
     if let Some(d) = dom {
         crate::domain::discharge(d, pages);
@@ -433,7 +433,7 @@ fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
             crate::domain::kmem_discharge(d, crate::domain::KmemClass::PageTable, page);
             return true;
         }
-        let b = &mut TASKS[idx].mem.pt_build;
+        let b = &mut (*TASKS.get_mut(idx)).mem.pt_build;
         *b = if what != TableCharge::Return { b.saturating_add(1) } else { b.saturating_sub(1) };
         true
     }
@@ -445,7 +445,7 @@ fn fault_hook() {
     let idx = my_idx();
     unsafe {
         if idx < MAX_TASKS {
-            TASKS[idx].mem.faults = TASKS[idx].mem.faults.saturating_add(1);
+            (*TASKS.get_mut(idx)).mem.faults = TASKS[idx].mem.faults.saturating_add(1);
         }
     }
 }
@@ -463,14 +463,14 @@ pub fn take_current_pt_build() -> u32 {
     let idx = my_idx();
     unsafe {
         if idx >= MAX_TASKS { return 0; }
-        core::mem::take(&mut TASKS[idx].mem.pt_build)
+        core::mem::take(&mut (*TASKS.get_mut(idx)).mem.pt_build)
     }
 }
 
 /// The current task's `(limit, locked)`.
 pub fn current_mem_policy() -> (u32, bool) {
     let idx = my_idx();
-    unsafe {
+    {
         if idx >= MAX_TASKS { return (0, false); }
         let d = TASKS[idx].domain();
         (crate::domain::used_limit(d).1, crate::domain::mem_locked(d))
@@ -485,7 +485,7 @@ pub fn current_mem_locked() -> bool {
 /// `(faults, peak, locked)` of the current task, for the exit report.
 pub fn current_mem_report() -> (u32, u32, bool) {
     let idx = my_idx();
-    unsafe {
+    {
         if idx >= MAX_TASKS { return (0, 0, false); }
         let d = TASKS[idx].domain();
         (TASKS[proc_slot(idx)].mem.faults, crate::domain::peak(d), crate::domain::mem_locked(d))
@@ -499,7 +499,7 @@ pub fn current_mem_report() -> (u32, u32, bool) {
 /// not fit), so this charge cannot be refused.
 pub fn mm_install_frames(limit: u32, locked: bool, frames: u32) {
     let idx = my_idx();
-    unsafe {
+    {
         if idx >= MAX_TASKS { return; }
         install_domain_mem(TASKS[idx].domain(), limit, locked, frames);
     }
@@ -519,7 +519,7 @@ fn install_domain_mem(d: crate::domain::Key, limit: u32, locked: bool, frames: u
 /// Domain.
 pub fn current_kmem_kib() -> u32 {
     let idx = my_idx();
-    unsafe {
+    {
         if idx >= MAX_TASKS { return 0; }
         crate::domain::kmem_limit_kib(TASKS[idx].domain())
     }
@@ -529,7 +529,7 @@ pub fn current_kmem_kib() -> u32 {
 /// CURRENT task's Domain: an exec installing its row's `kmem_kib`.
 pub fn set_current_kmem_kib(kib: u32) {
     let idx = my_idx();
-    unsafe {
+    {
         if idx < MAX_TASKS { crate::domain::set_kmem_limit_kib(TASKS[idx].domain(), kib); }
     }
 }
@@ -677,7 +677,7 @@ pub fn row_live(row: u16) -> u32 {
 /// The row whose count the current task holds ([`crate::task::TaskMem::row`]).
 pub fn current_mem_row() -> u16 {
     let idx = my_idx();
-    unsafe {
+    {
         if idx >= MAX_TASKS { return 0; }
         TASKS[idx].mem.row
     }
@@ -688,7 +688,7 @@ pub fn current_mem_row() -> u16 {
 /// any thread compares its image's row with.
 pub fn current_proc_mem_row() -> u16 {
     let idx = my_idx();
-    unsafe {
+    {
         if idx >= MAX_TASKS { return 0; }
         TASKS[proc_slot(idx)].mem.row
     }
@@ -699,7 +699,7 @@ pub fn set_current_mem_row(row: u16) {
     let idx = my_idx();
     unsafe {
         if idx >= MAX_TASKS { return; }
-        TASKS[idx].mem.row = row;
+        (*TASKS.get_mut(idx)).mem.row = row;
     }
 }
 
@@ -708,7 +708,7 @@ pub fn set_current_mem_row(row: u16) {
 pub fn set_task_mem_row(idx: usize, row: u16) {
     unsafe {
         if idx >= MAX_TASKS || !TASK_VALID[idx].load(Ordering::Relaxed) { return; }
-        TASKS[idx].mem.row = row;
+        (*TASKS.get_mut(idx)).mem.row = row;
     }
 }
 
@@ -737,7 +737,7 @@ pub fn mm_instance_refusals() -> u32 {
 /// scheduler this size is an owner call.
 pub fn mm_reset_charge() {
     let idx = my_idx();
-    unsafe {
+    {
         if idx != usize::MAX { crate::domain::reset_budget(TASKS[idx].domain()); }
     }
 }
@@ -749,7 +749,7 @@ pub fn mm_reset_charge() {
 /// would go over its budget; nothing is charged then.
 pub fn mm_charge_tid(tid: u32, pages: u32) -> bool {
     if pages == 0 { return true; }
-    unsafe {
+    {
         let Some(idx) = idx_for_tid(tid) else { return false };
         if let Some(used) = crate::domain::charge(TASKS[idx].domain(), pages) {
             MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
@@ -788,7 +788,7 @@ pub fn mm_discharge_domain(key: crate::domain::Key, pages: u32) {
 /// Declare the current task's budget, in 4 KiB pages. `0` = no limit.
 pub fn set_current_user_page_limit(limit: u32) {
     let idx = my_idx();
-    unsafe {
+    {
         if idx != usize::MAX { crate::domain::set_limit(TASKS[idx].domain(), limit); }
     }
 }
@@ -797,7 +797,7 @@ pub fn set_current_user_page_limit(limit: u32) {
 #[must_use]
 pub fn current_user_pages() -> (u32, u32) {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { return (0, 0); }
         crate::domain::used_limit(TASKS[idx].domain())
     }
@@ -1218,7 +1218,7 @@ pub fn task_iface_verdict(tid: u32, key: u16) -> Option<crate::filter::FilterVer
     let idx = idx_for_tid(tid)?;
     // SAFETY: `idx` is a valid slot index from `idx_for_tid`; the copy is
     // validated by the re-check below before it is used.
-    let filter = unsafe { TASKS[idx].syscall_filter };
+    let filter = TASKS[idx].syscall_filter;
     core::sync::atomic::fence(Ordering::Acquire);
     if tid_for_idx(idx) != Some(tid) {
         return None;
@@ -1232,7 +1232,7 @@ pub fn task_op_verdict(tid: u32, kind: u8, class: u8) -> Option<crate::filter::F
     let idx = idx_for_tid(tid)?;
     // SAFETY: `idx` is a valid slot index from `idx_for_tid`; the copy is
     // validated by the re-check below before it is used.
-    let filter = unsafe { TASKS[idx].syscall_filter };
+    let filter = TASKS[idx].syscall_filter;
     core::sync::atomic::fence(Ordering::Acquire);
     if tid_for_idx(idx) != Some(tid) {
         return None;
@@ -1270,7 +1270,7 @@ pub fn current_native_verdict(num: u64) -> crate::filter::FilterVerdict {
 pub(crate) fn slot_is_linux(idx: usize) -> bool {
     // SAFETY: a byte of a slot, written only at slot creation under
     // POOL_LOCK; a stale read names a task that is not switching here.
-    !cfg!(feature = "linux-abi-tag-canary") && unsafe { TASKS[idx].abi } == crate::task::ABI_LINUX
+    !cfg!(feature = "linux-abi-tag-canary") && TASKS[idx].abi == crate::task::ABI_LINUX
 }
 
 /// Is the current task a Linux task?
@@ -1284,7 +1284,7 @@ pub fn current_is_linux() -> bool {
 /// by a ring-3 runtime (`task::ABI_HOSTED`), whichever mode it is in.
 pub(crate) fn slot_is_foreign(idx: usize) -> bool {
     // SAFETY: as `slot_is_linux`.
-    !cfg!(feature = "linux-abi-tag-canary") && unsafe { TASKS[idx].abi } != crate::task::ABI_NATIVE
+    !cfg!(feature = "linux-abi-tag-canary") && TASKS[idx].abi != crate::task::ABI_NATIVE
 }
 
 /// Is the current task foreign in that sense (see [`slot_is_foreign`])?
@@ -1297,7 +1297,7 @@ pub fn current_is_foreign() -> bool {
 pub(crate) fn current_abi() -> u8 {
     match current_slot() {
         // SAFETY: as `slot_is_linux`.
-        Some(idx) if azos_limits::LINUX_ABI => unsafe { TASKS[idx].abi },
+        Some(idx) if azos_limits::LINUX_ABI => TASKS[idx].abi,
         _ => crate::task::ABI_NATIVE,
     }
 }
@@ -1317,7 +1317,7 @@ pub fn task_syscall_verdict(tid: u32, num: u64) -> Option<crate::filter::FilterV
     let idx = idx_for_tid(tid)?;
     // SAFETY: `idx` is a valid slot index from `idx_for_tid`; the copy is
     // validated by the re-check below before it is used.
-    let filter = unsafe { TASKS[idx].syscall_filter };
+    let filter = TASKS[idx].syscall_filter;
     core::sync::atomic::fence(Ordering::Acquire);
     if tid_for_idx(idx) != Some(tid) {
         return None;
@@ -1330,7 +1330,7 @@ pub fn task_syscall_verdict(tid: u32, num: u64) -> Option<crate::filter::FilterV
 /// [`current_syscall_verdict`] instead.
 pub fn current_syscall_filter_enabled() -> bool {
     let idx = my_idx();
-    unsafe {
+    {
         if idx >= MAX_TASKS { return false; }
         TASKS[idx].syscall_filter.enabled
     }
@@ -1338,7 +1338,7 @@ pub fn current_syscall_filter_enabled() -> bool {
 
 pub fn current_syscall_filter() -> SyscallFilter {
     let idx = my_idx();
-    unsafe {
+    {
         if idx == usize::MAX { return SyscallFilter::disabled(); }
         TASKS[idx].syscall_filter
     }
@@ -1349,7 +1349,7 @@ pub fn set_current_syscall_filter(filter: SyscallFilter) {
     let idx = my_idx();
     unsafe {
         if idx != usize::MAX {
-            TASKS[idx].syscall_filter = filter;
+            (*TASKS.get_mut(idx)).syscall_filter = filter;
         }
     }
 }
@@ -1358,7 +1358,7 @@ pub fn set_current_syscall_filter(filter: SyscallFilter) {
 pub fn set_task_syscall_filter(idx: usize, filter: SyscallFilter) {
     unsafe {
         if idx < MAX_TASKS && TASK_VALID[idx].load(Ordering::Relaxed) {
-            TASKS[idx].syscall_filter = filter;
+            (*TASKS.get_mut(idx)).syscall_filter = filter;
         }
     }
 }

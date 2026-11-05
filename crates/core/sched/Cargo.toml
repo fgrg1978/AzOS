@@ -6,6 +6,9 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
+# Gate canary: the tasks come from a cache of another type, so the ktest that a
+# reused slot keeps a Task must fail. Never in a shipped build.
+task-cross-type-canary = []
 # Wave 13: print per-phase means of fork, exit and wait (`prof.rs`); for
 # QEMU `-icount` profiling only. Never in a real build.
 fork-profile = []
