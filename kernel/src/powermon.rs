@@ -208,7 +208,16 @@ pub(crate) fn endpoint_call(msg: &mut MsgDesc) -> IdlResult {
 pub(crate) fn init() -> Option<Host> {
     let row = azos_topology::get().and_then(|t| t.row_place(azos_topology::builder::TASK_INADRV_IMAGE));
     let host = match row {
-        Some(p) => p.host,
+        // The INA219 does not move between hosts (it has no placement
+        // controller: `azos_topology::builder::MOVABLE_DRIVERS`), so a
+        // `stateless` row runs where its `place` says, and the component
+        // manager agrees (`manager_starts`).
+        Some(p) => {
+            if p.stateless {
+                kprintln!("[INA219] stateless ignored: the driver runs where its row's place says");
+            }
+            p.host
+        }
         None if cfg!(feature = "ina219-kernel") => Host::Kernel,
         None => return None,
     };

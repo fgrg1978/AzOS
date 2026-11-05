@@ -2993,19 +2993,32 @@ pub const TASK_COMPMGR_IMAGE: &[u8] = b"COMPMGR.ELF";
 /// default on every preset): without the image nothing could start it, and a
 /// `start = true` row would be launched on every boot to fail.
 pub const COMPMGR_ROW: bool = azos_limits::USERSPACE_COMPMGR;
+/// The drivers the kernel moves between hosts while the system runs: those
+/// with a placement controller (`kernel/src/buzzer.rs`). A row's `stateless`
+/// means something only for one of these; any other driver runs where its
+/// `place` says, `stateless` or not (the INA219 integrates charge and has no
+/// controller: `kernel/src/powermon.rs` reads only `place`).
+pub const MOVABLE_DRIVERS: &[&[u8]] = &[TASK_BUZZDRV_IMAGE];
+
+/// Does the kernel move the driver of row `r` between its hosts? Its row is
+/// `stateless` and the driver is one of [`MOVABLE_DRIVERS`].
+pub fn moves_at_run_time(r: &crate::types::TaskSpec<'_>) -> bool {
+    r.place.elastic() && MOVABLE_DRIVERS.contains(&r.name.as_bytes())
+}
+
 /// Does a `start = true` row belong to the component manager? Every one but
 /// the manager itself, the one image the kernel starts and supervises
-/// (nothing in ring 3 could restart the manager), and but a fixed driver
-/// placed in the kernel. A row whose driver moves between hosts at run time
-/// (`place.stateless`) is the manager's whichever host it starts in: its
-/// ring-3 host is always up (the standby of a kernel placement), and the
+/// (nothing in ring 3 could restart the manager), and but a driver placed in
+/// the kernel that does not move. A driver that moves between hosts at run
+/// time ([`moves_at_run_time`]) is the manager's whichever host it starts in:
+/// its ring-3 host is always up (the standby of a kernel placement), and the
 /// placement controller in the kernel moves only the kernel's calls between
 /// the hosts, so no move ends or starts a task. A driver that does not move
-/// and is placed in the kernel (`place = "kernel"`, the INA219) has one host,
-/// the kernel's task: a ring-3 one started beside it would drive the same
-/// device with nobody calling it.
+/// and is placed in the kernel (`place = "kernel"`, the INA219, `stateless`
+/// or not) has one host, the kernel's task: a ring-3 one started beside it
+/// would drive the same device with nobody calling it.
 pub fn manager_starts(r: &crate::types::TaskSpec<'_>) -> bool {
-    r.start && r.name.as_bytes() != TASK_COMPMGR_IMAGE && !(r.place.host == Host::Kernel && !r.place.elastic())
+    r.start && r.name.as_bytes() != TASK_COMPMGR_IMAGE && !(r.place.host == Host::Kernel && !moves_at_run_time(r))
 }
 
 /// The two endpoint columns of a row's line in the manager's view

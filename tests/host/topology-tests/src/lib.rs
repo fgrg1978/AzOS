@@ -1090,17 +1090,22 @@ mod manager_authority {
 
     /// A fixed driver placed in the kernel has one host, the kernel's task:
     /// the manager does not start its ring-3 image beside it, so two hosts
-    /// never drive the same device (review R2-2). A driver that moves keeps
-    /// its ring-3 standby wherever it starts, and a fixed ring-3 one starts.
+    /// never drive the same device (review R2-2). `stateless` does not make a
+    /// driver move: only one with a placement controller (`MOVABLE_DRIVERS`,
+    /// the buzzer) does, and keeps its ring-3 standby wherever it starts
+    /// (review F3). A fixed ring-3 driver starts.
     ///
-    /// **Canary.** Drop the `!(host == Kernel && !elastic())` clause from
-    /// `manager_starts`: `INA.ELF` is started and the first assertion fails.
+    /// **Canary.** Drop the `!(host == Kernel && !moves_at_run_time())` clause
+    /// from `manager_starts`: `INA.ELF` is started and the first assertion
+    /// fails. Make `moves_at_run_time` read `stateless` alone: `INAS.ELF` is
+    /// started and the second fails.
     #[test]
     fn the_manager_does_not_start_a_fixed_driver_placed_in_the_kernel() {
         let mut topo = azos_topology::Topology::empty();
         azos_topology::parse_caps(
             b"format = 6\n[task.INA.ELF]\nplace = \"kernel\"\nstart = true\ncaps = []\n\
-              [task.BUZZ.ELF]\nplace = \"kernel\"\nstateless = true\nstart = true\ncaps = []\n\
+              [task.INAS.ELF]\nplace = \"kernel\"\nstateless = true\nstart = true\ncaps = []\n\
+              [task.BUZZDRV.ELF]\nplace = \"kernel\"\nstateless = true\nstart = true\ncaps = []\n\
               [task.R3.ELF]\nstart = true\ncaps = []\n\
               [task.OFF.ELF]\nplace = \"ring3\"\ncaps = []\n",
             &mut topo,
@@ -1108,7 +1113,8 @@ mod manager_authority {
         .unwrap();
         let starts = |n: &[u8]| manager_starts(topo.find_task(&azos_topology::MaybeStr::from_bytes(n)).unwrap());
         assert!(!starts(b"INA.ELF"), "a fixed driver placed in the kernel got a ring-3 host too");
-        assert!(starts(b"BUZZ.ELF"), "the standby ring-3 host of a driver that moves was not started");
+        assert!(!starts(b"INAS.ELF"), "a stateless row of a driver the kernel does not move got a ring-3 host too");
+        assert!(starts(b"BUZZDRV.ELF"), "the standby ring-3 host of a driver that moves was not started");
         assert!(starts(b"R3.ELF"));
         assert!(!starts(b"OFF.ELF"));
     }
