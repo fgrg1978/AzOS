@@ -138,12 +138,12 @@ fn client(hart: usize) {
 // ── Wave 9: a donation to a ring-3 driver stops at the ring-3 floor ────
 //
 // A kernel client in the hard-RT band (8) calls the same driver, on the
-// same hart, past the same hog. The donation must lift the driver to 12
+// same hart, past the same hog. The boost must lift the driver to 12
 // (`RT_PRIORITY_THRESHOLD`, the floor the topology gives every ring-3
-// row), not to 8. The verdict reads the priority the donation applied to
-// the driver (`azos_sched::LAST_DONATION`, written by
-// `donate_priority`) and the floored-donation counter across the call.
-// `donation-floor-canary` removes the floor: the donation is then 8 and
+// row), not to 8. The verdict reads the priority the wait graph's boost
+// applied to the driver (`azos_sched::LAST_PI_BOOST`) and the floored-boost
+// counter across the call. `canary=pi-ring3-unclamped` removes the floor:
+// the boost is then 8 and
 // the verdict is `FAIL floor: ... below the ring-3 floor`, a line only
 // that path prints.
 const FLOOR_CLIENT_PRIO: u32 = 8;
@@ -160,8 +160,8 @@ fn floor_client(hart: usize) {
     ));
     let driver = DRIVER_TID.load(Ordering::Acquire);
     let base = DRIVER_BASE.load(Ordering::Acquire);
-    let floored_before = azos_sched::DONATIONS_FLOORED.load(Ordering::Relaxed);
-    azos_sched::LAST_DONATION.store(0, Ordering::Relaxed);
+    let floored_before = azos_sched::PI_FLOORED.load(Ordering::Relaxed);
+    azos_sched::LAST_PI_BOOST.store(0, Ordering::Relaxed);
     let mut out = [0u8; 8];
     let mut answered = false;
     for _ in 0..ATTEMPTS {
@@ -170,9 +170,9 @@ fn floor_client(hart: usize) {
             break;
         }
     }
-    let floored = azos_sched::DONATIONS_FLOORED.load(Ordering::Relaxed)
+    let floored = azos_sched::PI_FLOORED.load(Ordering::Relaxed)
         .wrapping_sub(floored_before);
-    let last = azos_sched::LAST_DONATION.load(Ordering::Relaxed);
+    let last = azos_sched::LAST_PI_BOOST.load(Ordering::Relaxed);
     let (to, lent) = ((last >> 32) as u32, last as u32);
     let after = azos_sched::task_priority(driver).unwrap_or(u32::MAX);
     if !answered {

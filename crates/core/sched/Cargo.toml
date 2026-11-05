@@ -222,12 +222,6 @@ mem-locked-canary = []
 # maps the default, so `MLSRV.ELF` and `ps` die on a write fault below their
 # stack and the gate rows that run them must fail. Never in a real build.
 user-stack-request-canary = []
-# Wave 9 canary: `donate_priority` applies no ring-3 floor, so the proxy smoke's
-# client at 8 lends its ring-3 driver 8 and the floor check must fail.
-donation-floor-canary = []
-# Board images (`make vf2`/`k1`/`build-fleet`): bind `$AZOS_OUT/build/board/image_hashes.rs`,
-# the table of the board volume's own ML service, instead of the QEMU disks'
-# `$AZOS_OUT/build/image_hashes.rs`. Wave 11 BOARDIMG; see the Makefile's IMAGE_ELFS_BOARD.
 board-image = []
 # Minimal boot for vsbench: `idle` and `autorun` only. See task_create_affinity.
 bench-minimal = []

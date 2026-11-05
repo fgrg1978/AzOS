@@ -1,32 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Priority donation: the rule every waiting donor applies, and the counted
-//! return that lets several donors share one target.
-//!
-//! The user-driver proxy (`crates/drivers/sys/src/user_driver_proxy.rs`) uses
-//! it through `scheduler::donate_priority` / `scheduler::return_donation`: a
-//! kernel client blocked on a ring-3 driver's reply donates to the driver.
-//!
-//! A second donor, fast IPC (wave 11 PIFAST), enters through
-//! `scheduler::donate_priority_for_call` with the rule [`donation_for_call`]
-//! and shares the same counted return.
+//! The counted boost cell under the wait graph: where the graph's floor lands
+//! on a task's live priority (`classes::ClassPi::write_floor`), the ring-3
+//! floor, and the boost and return steps the ktests drive.
 //!
 //! Pure: no scheduler state and no locks, so the host suite
 //! (`tests/host/sched-wake-tests`) runs the tests at the bottom of this file
 //! against the same code the kernel compiles.
-//!
-//! # One edge, made once, never walked
-//!
-//! A donation is one write: the donor's live priority onto one target, made
-//! when the donor starts to wait and undone once when the wait ends (reply,
-//! return, expiry or timeout). Nothing follows the target's own waits to pass
-//! the boost further, so there is no chain to walk and no cycle to loop on. If
-//! A waits on B and B then waits on A, B's donation finds A already at least
-//! as urgent (it is A's own priority B was boosted to) and is not made.
-//!
-//! The cost of that choice: donation is not transitive. A target that is
-//! itself blocked on a third task passes the boost on only by donating when
-//! it starts that wait, with the priority it has then.
 //!
 //! Lower number = more urgent, as everywhere in the scheduler.
 
@@ -35,77 +15,9 @@
 /// (`tid_alloc::next_after`), so it is never a target either.
 pub const NO_TID: u32 = u32::MAX;
 
-/// The priority `donor` gives `target`, or `None` when no donation is due.
-///
-/// `donor_prio`/`target_prio` are the LIVE priorities (`task_priority`), so
-/// a donor that is itself boosted passes on what it currently runs at.
-/// `None` for a priority means that task no longer exists.
-///
-/// `target_floor` is the most urgent priority the target may be given: `0`
-/// for a kernel task, `RT_PRIORITY_THRESHOLD` (12) for a ring-3 task — the
-/// same floor the topology applies to a ring-3 row (wave 9, owner default):
-/// below it the tick never preempts, so a donation must not put a ring-3
-/// driver or lessee where a topology row may not. The donated priority is
-/// raised to the floor first, and the returned `bool` says it was.
-///
-/// Refused: a donor donating to itself; a sentinel target; a target already
-/// as urgent as the (floored) donation (strictly less urgent only — equal
-/// priority gains nothing, and it is what stops the A→B→A case in the module
-/// doc).
-#[inline]
-pub const fn donation_for(
-    donor_tid: u32,
-    donor_prio: Option<u32>,
-    target_tid: u32,
-    target_prio: Option<u32>,
-    target_floor: u32,
-) -> Option<(u32, bool)> {
-    if donor_tid == target_tid || target_tid == NO_TID || target_tid == 0 {
-        return None;
-    }
-    match (donor_prio, target_prio) {
-        (Some(d), Some(t)) => {
-            let (d, floored) = if d < target_floor { (target_floor, true) } else { (d, false) };
-            if d < t { Some((d, floored)) } else { None }
-        }
-        _ => None,
-    }
-}
-
-/// The fast-IPC call's rule (wave 11 PIFAST): [`donation_for`] judged against
-/// the target's BASE priority, not its live one.
-///
-/// Why base: a server already boosted by a more urgent caller A must still
-/// count caller B's donation. Judged against the live priority, B's is refused
-/// ("already as urgent"), A's reply then brings the base back — the count was
-/// A's alone — and B waits behind whatever sits between B and the base: the
-/// inversion the donation exists to remove, re-opened by the second client.
-/// Judged against the base, B's donation is counted ([`boost_step`] moves the
-/// priority only towards more urgent), so the base returns only after B's
-/// return too. The cost is an over-boost: between A's return and B's, the
-/// server keeps A's priority.
-///
-/// The proxy donor keeps [`donation_for`]: it has one donor per target at a
-/// time.
-///
-/// `#[inline]` (both): the call runs on every fast call from
-/// `azos_ipc`, another crate, and without it the decision was an
-/// out-of-line call there (seen in the riscv64 disassembly).
-#[inline]
-pub const fn donation_for_call(
-    donor_tid: u32,
-    donor_prio: Option<u32>,
-    target_tid: u32,
-    target_base: Option<u32>,
-    target_floor: u32,
-) -> Option<(u32, bool)> {
-    donation_for(donor_tid, donor_prio, target_tid, target_base, target_floor)
-}
-
 /// A priority `p` held at `floor` (0: none): never more urgent (a lower
 /// number) than the floor. `u32::MAX` (no boost) stays. The wait graph's
-/// ring-3 floor (`classes::graph_floored`, owner decision 10-10), the same
-/// floor [`donation_for`] applies to a legacy donation.
+/// ring-3 floor (`classes::graph_floored`, owner decision 10-10).
 pub const fn floored(p: u32, floor: u32) -> u32 {
     if p < floor { floor } else { p }
 }
@@ -225,42 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn a_more_urgent_donor_donates_its_live_priority() {
-        assert_eq!(donation_for(10, Some(14), 20, Some(24), 0), Some((14, false)));
-    }
-
-    #[test]
-    fn no_donation_to_an_equal_or_more_urgent_target() {
-        assert_eq!(donation_for(10, Some(24), 20, Some(24), 0), None);
-        assert_eq!(donation_for(10, Some(24), 20, Some(14), 0), None);
-    }
-
-    #[test]
-    fn no_donation_to_self_a_sentinel_or_a_task_that_is_gone() {
-        assert_eq!(donation_for(7, Some(1), 7, Some(24), 0), None);
-        assert_eq!(donation_for(7, Some(1), NO_TID, Some(24), 0), None);
-        assert_eq!(donation_for(7, Some(1), 0, Some(24), 0), None);
-        assert_eq!(donation_for(7, Some(1), 9, None, 0), None);
-        assert_eq!(donation_for(7, None, 9, Some(24), 0), None);
-    }
-
-    /// Wave 9: a donation to a ring-3 target stops at the ring-3 floor (12).
-    #[test]
-    fn a_donation_to_a_ring3_target_is_raised_to_the_floor() {
-        const FLOOR: u32 = 12;
-        // A kernel RT client at 8 onto a ring-3 driver at 24: the driver runs
-        // at 12, and the clamp is reported.
-        assert_eq!(donation_for(3, Some(8), 9, Some(24), FLOOR), Some((12, true)));
-        // At or above the floor nothing moves.
-        assert_eq!(donation_for(3, Some(12), 9, Some(24), FLOOR), Some((12, false)));
-        assert_eq!(donation_for(3, Some(14), 9, Some(24), FLOOR), Some((14, false)));
-        // A kernel target has no floor.
-        assert_eq!(donation_for(3, Some(8), 9, Some(24), 0), Some((8, false)));
-        // Floored to a priority the target already has: no donation at all.
-        assert_eq!(donation_for(3, Some(4), 9, Some(12), FLOOR), None);
-    }
-
-    #[test]
     fn a_graph_boost_of_a_ring3_target_is_held_at_the_floor() {
         const FLOOR: u32 = 12;
         // A kernel RT waiter at 4 (or a DL / stop donor, 0) onto a ring-3
@@ -326,65 +202,5 @@ mod tests {
         t.boost(14);
         t.ret();
         assert_eq!((t.prio, t.count), (24, 0));
-    }
-
-    /// A waits on B (A donates), then B waits on A: B's donation is refused,
-    /// because A is exactly as urgent as the priority B was boosted to. No
-    /// cycle, and each wait's return leaves both at base.
-    #[test]
-    fn a_wait_cycle_makes_one_donation_not_a_loop() {
-        let (a_tid, b_tid) = (3u32, 4u32);
-        let mut a = Target::new(10);
-        let mut b = Target::new(20);
-        let d1 = donation_for(a_tid, Some(a.prio), b_tid, Some(b.prio), 0);
-        assert_eq!(d1, Some((10, false)));
-        b.boost(10);
-        let d2 = donation_for(b_tid, Some(b.prio), a_tid, Some(a.prio), 0);
-        assert_eq!(d2, None, "the reverse edge must not be made");
-        b.ret();
-        assert_eq!((a.prio, a.count, b.prio, b.count), (10, 0, 20, 0));
-        a.ret(); // an unmatched return on A is harmless
-        assert_eq!(a.prio, 10);
-    }
-
-
-    /// Wave 11 PIFAST: two fast-IPC callers on one server of base 24, A at 10
-    /// then B at 14, A answered first. The live-priority rule refuses B
-    /// (the server already runs at 10) and A's return brings back 24 while B
-    /// still waits; the base rule counts B, and the server stays at least as
-    /// urgent as 14 until B's return.
-    #[test]
-    fn a_second_caller_judged_against_the_base_keeps_the_server_boosted() {
-        const BASE: u32 = 24;
-        // The live rule, for contrast: B's donation is refused...
-        let mut live = Target::new(BASE);
-        if let Some((p, _)) = donation_for(1, Some(10), 9, Some(live.prio), 0) { live.boost(p); }
-        assert_eq!(donation_for(2, Some(14), 9, Some(live.prio), 0), None);
-        // ...and A's return re-opens the inversion for B.
-        live.ret();
-        assert_eq!(live.prio, BASE);
-
-        let mut t = Target::new(BASE);
-        if let Some((p, _)) = donation_for_call(1, Some(10), 9, Some(t.base), 0) { t.boost(p); }
-        let b = donation_for_call(2, Some(14), 9, Some(t.base), 0);
-        assert_eq!(b, Some((14, false)));
-        if let Some((p, _)) = b { t.boost(p); }
-        assert_eq!((t.prio, t.count), (10, 2));
-        t.ret(); // A answered
-        assert!(t.prio <= 14, "B still waiting, the server fell to {}", t.prio);
-        t.ret(); // B answered
-        assert_eq!((t.prio, t.count), (BASE, 0));
-    }
-
-    /// The base rule keeps the other refusals of `donation_for`: no donation
-    /// to a server whose base is as urgent as the caller, to self, to a gone
-    /// task, and the ring-3 floor.
-    #[test]
-    fn the_call_rule_keeps_the_refusals_and_the_floor() {
-        assert_eq!(donation_for_call(1, Some(14), 9, Some(14), 0), None);
-        assert_eq!(donation_for_call(1, Some(14), 9, Some(10), 0), None);
-        assert_eq!(donation_for_call(9, Some(1), 9, Some(24), 0), None);
-        assert_eq!(donation_for_call(1, Some(1), 9, None, 0), None);
-        assert_eq!(donation_for_call(1, Some(8), 9, Some(24), 12), Some((12, true)));
     }
 }

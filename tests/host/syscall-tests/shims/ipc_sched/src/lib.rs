@@ -166,13 +166,6 @@ pub fn restore_ready_task(_tid: u32) {
     todo!("not reached by any test in this crate")
 }
 
-pub fn donate_priority(_donor: u32, _target: u32) -> bool {
-    todo!("not reached by any test in this crate")
-}
-
-pub fn return_donation(_target: u32) {
-    todo!("not reached by any test in this crate")
-}
 
 /// `(tid, port_ref)` pairs passed to `wait::wake_port_waiter`, in order.
 pub fn shim_port_waiter_wakes() -> Vec<(u32, u32)> {

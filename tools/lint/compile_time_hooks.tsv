@@ -56,7 +56,6 @@ dhcp-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a 
 disk-part-row	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 dispatch-skip-class-canary	hot	crates/core/sched/src/classes.rs: the class set of the walk every context switch takes
 dma-contig-canary	pending	
-donation-floor-canary	pending	
 drv-contain-smoke	pending	
 el0-state-canary	pending	
 elf-mixed-page-canary	pending	

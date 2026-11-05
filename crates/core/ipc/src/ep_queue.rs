@@ -949,8 +949,8 @@ fn take_ep<const V1: bool>(ep: usize, server_idx: usize, server: u32, refused: &
 /// Outcome of a reply (same meaning as `fastcall::FastIpcReply`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reply {
-    /// Delivered: wake `caller` on the handle; `donee` is owed one
-    /// `return_donation` by the replier unless it is [`NO_DONEE`].
+    /// Delivered: wake `caller` on the handle; `donee` is the call edge's
+    /// token, which the replier retires unless it is [`NO_DONEE`].
     Woke { caller: u32, rec: usize, donee: u32 },
     /// The call this server accepted under that handle is over.
     Stale,

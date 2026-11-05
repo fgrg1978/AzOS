@@ -3074,9 +3074,6 @@ build       "sup-smoke"           --release --select sup-smoke
 # hand (the restart row must fail on `[SUP] FAIL not restarted after kill 1`).
 build       "sup-canary"          --release --select sup-canary
 
-# Wave 9: the ring-3 donation floor's canary, booted by hand (it must fail on
-# `[PROXYPI] FAIL floor: gpio_drv was lent 8, below the ring-3 floor 12`).
-build       "donation-floor-canary" --release --select donation-floor-canary
 # ipc-census is load-bearing diagnostics: the userspace-IPC scenario's
 # comment prescribes it as the wedge-reproduction recipe (K-C25), so it must
 # stay inside the cold-cache warnings gate or it rots silently.
@@ -21612,8 +21609,8 @@ PYEOF
     # `UserDriverProxy` used to wait for a ring-3 driver's reply with a
     # million-iteration spin: a client more urgent than the driver on the
     # driver's hart spun the whole bound and the driver never ran. It now
-    # blocks (wake by TID on the reply), and for the span of the wait donates
-    # its priority to the driver — the priority-donation mechanism. Blocking alone is
+    # blocks (wake by TID on the reply), and for the span of the wait takes a
+    # wait-graph edge to the driver, which runs at the client's priority. Blocking alone is
     # not enough: `proxy_pi_smoke` puts a prio-20 task that only yields between
     # the client (14) and gpio_drv (24) on gpio_drv's hart, so without the
     # donation the hart goes to that task and every attempt ends at the proxy's
@@ -21623,10 +21620,10 @@ PYEOF
     # (never donates) fails here on `FAIL TIMEOUT`.
     #
     # Wave 9: then a client at 8 (hard-RT band) calls the same driver; the
-    # donation must lend gpio_drv 12, the ring-3 floor, not 8. The marker is
-    # that second verdict, printed only after the first passed. Canary:
-    # `donation-floor-canary` (no floor) fails on `FAIL floor: gpio_drv was
-    # lent 8, below the ring-3 floor 12`.
+    # wait-graph boost must lift gpio_drv to 12, the ring-3 floor, not 8. The
+    # marker is that second verdict, printed only after the first passed.
+    # Canary: `canary=pi-ring3-unclamped` (no floor) fails on `FAIL floor:
+    # gpio_drv was lent 8, below the ring-3 floor 12`.
     #
     # Placed after the bench row and before the seccomp block, whose first act
     # is `kbuild "qemu"`: no later row inherits this kernel. Reuses the gpio_drv

@@ -43,10 +43,8 @@ pub enum FastIpcReply {
     /// the caller to decode out of the handle, so the wait reason is keyed on
     /// one derivation only.
     ///
-    /// `donee` is the task the caller's priority was donated to for this
-    /// exchange, or [`NO_DONEE`]: the replier owes exactly one
-    /// `return_donation(donee)`, after the queue lock is dropped. It is the
-    /// TID recorded at the call, not the replier.
+    /// `donee` is always [`NO_DONEE`] here: the call's wait-graph edge is
+    /// retired inside this crate.
     Woke { caller_tid: u32, slot_idx: usize, donee: u32 },
     /// The handle names an exchange that ended. **Nothing was written.**
     Stale,

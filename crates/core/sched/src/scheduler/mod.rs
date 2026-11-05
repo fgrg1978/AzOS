@@ -3603,25 +3603,25 @@ pub fn ktest_tree_refused() -> u32 {
 #[cfg(feature = "ktest")]
 static KTEST_RING3_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// The last donation [`donate_priority`] made: `target_tid << 32 | priority`.
+/// The last wait-graph boost applied to a task: `target_tid << 32 | priority`.
 /// Telemetry for the `proxy-pi-smoke` floor check, which reads the priority
-/// the donation actually applied rather than sampling for it.
-pub static LAST_DONATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// the boost actually applied rather than sampling for it.
+pub static LAST_PI_BOOST: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// Donations raised to the ring-3 floor, since boot. Telemetry; the
+/// Wait-graph boosts the ring-3 floor bound, since boot. Telemetry; the
 /// `proxy-pi-smoke` floor check reads it across one call.
-pub static DONATIONS_FLOORED: AtomicU32 = AtomicU32::new(0);
+pub static PI_FLOORED: AtomicU32 = AtomicU32::new(0);
 
 azos_common::ro_hook! {
-    /// Where a floored donation is recorded (the kernel installs a flight-recorder
+    /// Where a floored boost is recorded (the kernel installs a flight-recorder
     /// writer: `SAFETY_TOPO_CLASS_REFUSED`, site `SITE_DONATION_FLOOR`). This
     /// crate does not depend on the recorder, the arrangement `topo_sched` uses.
-    static DONATION_FLOOR_RECORDER: fn(u32);
+    static PI_FLOOR_RECORDER: fn(u32);
 }
 
-/// The TID whose floored donation slot `i` last recorded: one record per
-/// target task, not per donation — a kernel RT client calling a ring-3 driver
-/// in a loop would otherwise write the recorder on every call.
+/// The TID whose floored boost slot `i` last recorded: one record per target
+/// task, not per boost — a kernel RT client calling a ring-3 driver in a loop
+/// would otherwise write the recorder on every call.
 static FLOOR_RECORDED_TID: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
 
 /// Whether guard pages have been set up (after vmm paging is enabled).

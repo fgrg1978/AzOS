@@ -35,15 +35,13 @@
 //! spin): a driver already executing usually answers in less time than the
 //! block, the wake IPI and the switch back cost.
 //!
-//! # Priority donation
+//! # Priority inheritance
 //!
 //! Blocking alone does not make the driver run: a task between the client's
 //! priority and the driver's, on the driver's hart, still starves it. So for
-//! the span of the wait the client donates its live priority to the driver
-//! (`azos_sched::donate_priority`, the same mechanism the
-//! priority donations of fast IPC use), and returns it when the wait ends, reply or timeout. One
-//! edge, made once and undone once — see `crates/core/sched/src/donation.rs` for why
-//! that cannot loop.
+//! the span of the wait the client takes a wait-graph edge to the driver (the
+//! kernel's `DriverProxy` nodes, the mechanism the IPC call and the kernel
+//! mutex use), and leaves it when the wait ends, reply or timeout.
 //!
 //! # Caller identity
 //!

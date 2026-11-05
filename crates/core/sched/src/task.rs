@@ -1170,8 +1170,7 @@ pub struct Task {
     // Number of priority donations currently active on this task. Incremented by
     // every `boost_ready_task`, decremented by the matching
     // `restore_ready_task` — that pair is strictly balanced (one boost, one
-    // restore, per donor: a user-driver proxy client or a mutex waiter, through
-    // `donate_priority`/`return_donation`). `priority`
+    // restore, per donor). `priority`
     // returns to `base_priority` only when this reaches 0.
     //
     // Without it, restores clobber each other. Two donors boosting the same

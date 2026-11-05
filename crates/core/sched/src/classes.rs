@@ -629,7 +629,11 @@ impl ClassPi {
         if idx >= MAX_TASKS {
             return;
         }
-        let p = graph_floored(idx, p);
+        let floored = graph_floored(idx, p);
+        if floored != u32::MAX {
+            super::note_pi_boost(idx, floored, floored != p);
+        }
+        let p = floored;
         PI_PRIO[idx].store(p, Ordering::Relaxed);
         let c = super::TaskDonation::new(idx, 0);
         c.lock();
@@ -643,8 +647,8 @@ impl ClassPi {
 }
 
 /// The ring-3 floor on a graph boost (owner decision 10-10): `p`, the
-/// floor the graph asks for `idx`, never goes more urgent than the floor
-/// legacy `donate_priority` applies ([`super::ring3_floor_at`]:
+/// floor the graph asks for `idx`, never goes more urgent than the ring-3
+/// floor ([`super::ring3_floor_at`]:
 /// `RT_PRIORITY_THRESHOLD` for a ring-3 task, none for a kernel task), so
 /// no kmutex or PI futex waiter lifts a ring-3 owner into the band the tick
 /// no longer preempts. The graph's own effective attribute stays exact; only

@@ -226,16 +226,15 @@ pub fn install() {
         );
     }
     azos_syscall::topo_sched::set_refusal_recorder(record_topo_class_refused);
-    // Wave 9: a priority donation to a ring-3 task raised to the ring-3 floor
-    // (`azos_sched::donate_priority`), under the topology floor's code
-    // with its own site. Once per target task.
+    // Wave 9: a wait-graph boost of a ring-3 task held at the ring-3 floor,
+    // under the topology floor's code with its own site. Once per target task.
     fn record_donation_floored(tid: u32) {
         azos_syscall::topo_sched::record_refusal(
             azos_syscall::topo_sched::SITE_DONATION_FLOOR,
             tid,
         );
     }
-    azos_sched::set_donation_floor_recorder(record_donation_floored);
+    azos_sched::set_pi_floor_recorder(record_donation_floored);
     kprintln!("[SAFETY] capability denials recorded to the flight recorder");
 
     // And the emergency stop ring 3 never actually had.

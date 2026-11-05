@@ -758,7 +758,6 @@ pkg-launch-grant-canary = []
 
 # Wave 9 canary: no ring-3 floor on donations. `proxy-pi-smoke`'s floor check
 # (a client at 8 onto gpio_drv) must fail on `[PROXYPI] FAIL floor`.
-donation-floor-canary = ["proxy-pi-smoke", "azos_sched/donation-floor-canary"]
 # Wave 11 (DRVPLACE): Kconfig DRV_INA219_PLACEMENT = kernel. The INA219's
 # chip logic (crates/drivers/ina219) runs in a kernel task (`ina219_host_task`)
 # and the kernel API reads its state directly; the topology declares no

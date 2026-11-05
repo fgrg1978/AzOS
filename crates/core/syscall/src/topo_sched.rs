@@ -292,10 +292,10 @@ pub const SITE_SPAWN_FLOOR: u8 = 3;
 /// A `sqpoll` topology permit refused because the machine has one online
 /// hart: the poller would only take turns with its owner (`ioring_sqpoll.rs`).
 pub const SITE_SQPOLL_SHARED_HART: u8 = 4;
-/// A priority donation to a ring-3 task (a user-driver proxy client onto its
-/// driver, a lessor onto its lessee) was raised to [`MIN_TASK_PRIORITY`]:
-/// the donor was more urgent than a ring-3 task may run. `detail` is the
-/// target's TID; recorded once per target task (`azos_sched::donate_priority`).
+/// A wait-graph boost of a ring-3 task (a user-driver proxy client onto its
+/// driver, a mutex waiter onto its owner) was held at [`MIN_TASK_PRIORITY`]:
+/// the waiter was more urgent than a ring-3 task may run. `detail` is the
+/// target's TID; recorded once per target task (`azos_sched::set_pi_floor_recorder`).
 pub const SITE_DONATION_FLOOR: u8 = 5;
 /// Wave 11 SCHED-RT: a row's real-time reservation was refused by run-time
 /// admission (`detail` = the task's TID, 0 when no task was created). The

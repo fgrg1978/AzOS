@@ -1946,7 +1946,7 @@ mod pi_boost_ktests {
         let irq = azos_arch::ARCH.disable_all();
         let good = azos_sched::scheduler::ktest_boost_during_wake(tid, BOOST);
         azos_arch::ARCH.restore(irq);
-        azos_sched::scheduler::return_donation(tid);
+        azos_sched::scheduler::restore_ready_task(tid);
         ANSWER.store(if good { PASSED } else { STALE }, Ordering::Release);
     }
 
