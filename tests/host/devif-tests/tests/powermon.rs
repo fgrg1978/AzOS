@@ -142,3 +142,21 @@ fn the_pool_name_is_the_topology_name_without_its_prefix() {
     assert_eq!(ENDPOINT.strip_prefix("endpoint."), Some(ENDPOINT_NAME));
     assert!(ENDPOINT_NAME.len() <= 24, "ENDPOINT_NAME_MAX");
 }
+
+/// Each op says whether it only reads: `read` and `stats` do, and any other
+/// request (another op number, another interface, a new op) is taken to act,
+/// so the kernel's call by name refuses it under containment (review FU-1).
+///
+/// **Canary.** Make `request_observes` answer `true` for any op of the
+/// interface: the unknown op is taken to read and the last two assertions fail.
+#[test]
+fn only_the_reading_ops_are_observing() {
+    use azos_devif::powermon::{request_observes, OBSERVING_OPS};
+    for o in PowerMonIdl::OPS.iter() {
+        assert_eq!(request_observes(header(POWERMON_ID, 1, o.op)), OBSERVING_OPS.contains(&o.name), "{}", o.name);
+        assert!(OBSERVING_OPS.contains(&o.name), "{} is a PowerMon op that acts: say so in the test", o.name);
+    }
+    let unknown = PowerMonIdl::OPS.iter().map(|o| o.op).max().unwrap() + 1;
+    assert!(!request_observes(header(POWERMON_ID, 1, unknown)), "an op the interface does not declare was taken to read");
+    assert!(!request_observes(header(POWERMON_ID ^ 1, 1, 1)), "another interface's op 1 was taken to read");
+}

@@ -36,7 +36,11 @@ pub(crate) fn call_host(msg: &mut MsgDesc) -> IdlResult {
         let h = kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()).ok_or(IdlError::Transport(-1))?;
         KernelEndpoint(h).call(msg)?;
     } else {
-        KernelNamed(ENDPOINT_NAME.as_bytes(), Purpose::Observe).call(msg)?;
+        // Each op says whether it acts (`azos_devif::powermon::OBSERVING_OPS`);
+        // under containment only one that reads is made.
+        let observes = msg.n_words > 0 && azos_devif::powermon::request_observes(msg.words[0]);
+        let purpose = if observes { Purpose::Observe } else { Purpose::Act };
+        KernelNamed(ENDPOINT_NAME.as_bytes(), purpose).call(msg)?;
     }
     // Word 5 is the first word of a `read` record: voltage_mv in its low bytes.
     if canary!("ina219-wrong-value") && msg.n_words > 5 {

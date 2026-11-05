@@ -74,3 +74,17 @@ pub trait PowerMon {
     #[idempotent]
     fn stats(&mut self) -> Out<PowerStats>;
 }
+
+/// The ops of [`PowerMon`] that only read, by name: what a caller that must
+/// say whether a call acts (the kernel's call by name under containment,
+/// `azos_syscall::kcall::Purpose`) declares for each. Every op not named
+/// here, a new one included, acts.
+pub const OBSERVING_OPS: &[&str] = &["read", "stats"];
+
+/// Does the request whose header word is `h` only read? Its interface is
+/// [`POWERMON_ID`] and its op is one of [`OBSERVING_OPS`]; anything else,
+/// an unknown op included, is taken to act.
+pub fn request_observes(h: u64) -> bool {
+    azos_idl::header_id(h) == POWERMON_ID
+        && PowerMonIdl::OPS.iter().any(|o| o.op == azos_idl::header_op(h) && OBSERVING_OPS.contains(&o.name))
+}
