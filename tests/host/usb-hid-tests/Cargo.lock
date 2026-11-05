@@ -11,10 +11,6 @@ name = "azos_abi"
 version = "1.0.0"
 
 [[package]]
-name = "azos_cam_ring"
-version = "0.1.0"
-
-[[package]]
 name = "azos_chaos"
 version = "0.1.0"
 dependencies = [
@@ -110,7 +106,6 @@ version = "0.1.0"
 name = "azos_usb"
 version = "0.1.0"
 dependencies = [
- "azos_cam_ring",
  "azos_chaos",
  "azos_devif",
  "azos_dma",
