@@ -959,6 +959,11 @@ def feature_deps(features):
     hooks_of = _cached("hooks", count_hooks)
     out, seen = {}, set()
 
+    def dep_globs(d, why):
+        """The crate a feature turns on and every path dependency below it."""
+        for g in _closure_globs(d):
+            out.setdefault(g, why)
+
     def hook_files(crate, f, why):
         if TEST_HOOK_RE.search(f):
             for x in sorted(feat_files.get((crate, f), ())):
@@ -975,7 +980,7 @@ def feature_deps(features):
         for e in feats[f]:
             if e.startswith("dep:"):
                 if e[4:] in deps:
-                    out.setdefault(deps[e[4:]] + "/**", "feature %s turns on %s" % (f, e[4:]))
+                    dep_globs(deps[e[4:]], "feature %s turns on %s" % (f, e[4:]))
             elif "/" in e:
                 name, sub = e.split("/", 1)
                 weak = name.endswith("?")
@@ -983,13 +988,13 @@ def feature_deps(features):
                 if name not in deps:
                     continue
                 if name in optional and not weak:
-                    out.setdefault(deps[name] + "/**", "feature %s turns on %s" % (f, name))
+                    dep_globs(deps[name], "feature %s turns on %s" % (f, name))
                 hook_files(deps[name], sub, "feature %s (%s)" % (f, e))
             elif e in feats:
                 if e not in base:
                     todo.append(e)
             elif e in optional:  # an optional dependency's implicit feature
-                out.setdefault(deps[e] + "/**", "feature %s turns on %s" % (f, e))
+                dep_globs(deps[e], "feature %s turns on %s" % (f, e))
     return out
 
 
@@ -1453,6 +1458,7 @@ def self_test():
          "userspace/lib/tls/**"),
         ("image", dict(syn, body="fresh_disk $AZOS_OUT/build/disk-uhello.img"), "userspace/tests/uhello/**"),
         ("feature dep", dict(syn, body='kbuild "qemu,use-robot"'), "crates/domains/robot/bench/**"),
+        ("feature dep closure", dict(syn, body='kbuild "qemu,use-robot"'), "crates/core/ipc/**"),
         ("marker", dict(syn, call='par_row qemu_run "syn" "run_all done emitted=49" 180'),
          "crates/domains/robot/bench/src/lib.rs"),
     ]
