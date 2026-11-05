@@ -762,6 +762,16 @@ pub fn cache_writeback(backing: &'static dyn PageBacking, key: Option<&PageKey>)
     let (mut from, mut failed) = (0, false);
     while let Some((obj, next)) = next_entry(id, key, from) {
         from = next;
+        // The file is destroyed (evicted, or unlinked and closed): its pages
+        // have nowhere to go, so they are discarded and are not a failure. A
+        // mapped file is never destroyed (a mapping keeps it).
+        let dead = REG.lock_irqsave().get(next - 1).filter(|e| e.used).map(|e| e.key);
+        if dead.is_some_and(|k| backing.gone(&k)) {
+            if retry_busy(|| memobj::memobj_paged_forget_ref(obj, 0)).is_ok() {
+                close_idle(next - 1);
+            }
+            continue;
+        }
         failed |= settle(obj).is_err();
     }
     if failed { Err(()) } else { Ok(()) }

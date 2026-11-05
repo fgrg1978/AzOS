@@ -75,6 +75,8 @@ const EMPTY_FILE: TFile =
 /// shares file 0's key under the other backing).
 static FILES: [TFile; 4] = [EMPTY_FILE; 4];
 static FAIL_WRITES: AtomicBool = AtomicBool::new(false);
+/// Bit `i`: file `i` is destroyed ([`PageBacking::gone`]).
+static GONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn pattern(i: usize) -> u8 {
     (i % 251 + 1) as u8
@@ -131,6 +133,10 @@ impl PageBacking for Backing {
         d[off..off + src.len()].copy_from_slice(src);
         Ok(())
     }
+
+    fn gone(&self, key: &PageKey) -> bool {
+        GONE.load(Ordering::SeqCst) & (1 << key.0[0]) != 0
+    }
 }
 
 static FS_A: Backing = Backing(1);
@@ -145,6 +151,7 @@ fn key(idx: usize) -> PageKey {
 fn clean() {
     crate::file_map::__reset_for_tests();
     FAIL_WRITES.store(false, Ordering::SeqCst);
+    GONE.store(0, Ordering::SeqCst);
 }
 
 fn read(b: &'static Backing, idx: usize, size: usize, off: usize, len: usize) -> Option<Vec<u8>> {
@@ -208,6 +215,32 @@ fn writes_stay_dirty_until_written_back_and_count_their_pages() {
     assert!(data(0)[off..off + 300].iter().all(|&b| b == 0xA5), "the file has it now");
     assert_eq!(crate::file_map::cache_writeback(&FS_A, Some(&key(0))), Ok(()));
     assert_eq!(writes(0).len(), 3, "a clean cache writes nothing");
+    clean();
+}
+
+/// **The dirty pages of a destroyed file are discarded, not written and not a
+/// failure**: a sync of the filesystem writes the live file and answers `Ok`
+/// though the dead file's pages (which a mapping dirtied without the file layer
+/// knowing) have nowhere to go.
+///
+/// **Canary.** `cache_writeback` without its `gone` test: the dead file is
+/// written (and, with the medium refusing it, the sync answers `Err`).
+#[test]
+fn a_destroyed_files_pages_are_discarded_by_a_sync() {
+    let _g = serial();
+    clean();
+    fill_file(0, 3 * PAGE_SIZE);
+    fill_file(1, 3 * PAGE_SIZE);
+    let size = 3 * PAGE_SIZE as u64;
+    assert!(crate::file_map::cache_write(&FS_A, &key(0), size, 0, &[1; 8]).is_some());
+    assert!(crate::file_map::cache_write(&FS_A, &key(1), size, 0, &[2; 8]).is_some());
+    GONE.store(1 << 1, Ordering::SeqCst);
+    assert_eq!(crate::file_map::cache_writeback(&FS_A, None), Ok(()));
+    assert_eq!((writes(0).len(), writes(1).len()), (1, 0), "the live file is written, the dead one is not");
+    // Nothing of the dead file is left to fail a later sync.
+    FAIL_WRITES.store(true, Ordering::SeqCst);
+    assert_eq!(crate::file_map::cache_writeback(&FS_A, None), Ok(()));
+    assert_eq!(read(&FS_A, 1, size as usize, 0, 8).map(|v| v[0]), Some(pattern(0)), "its pages are gone from the cache");
     clean();
 }
 
