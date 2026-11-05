@@ -230,6 +230,19 @@ impl ArchFrame for TrapFrame {
     }
 }
 
+/// Closes a non-interrupt trap's masked window on every return path of
+/// [`x86_64_trap_entry`], when the interrupted context (`RFLAGS` at entry)
+/// runs with interrupts enabled. Masked-window tracer only.
+#[cfg(feature = "lat-trace")]
+struct LatTrapExit(u64, &'static core::panic::Location<'static>);
+
+#[cfg(feature = "lat-trace")]
+impl Drop for LatTrapExit {
+    fn drop(&mut self) {
+        azos_arch::lat_hook::trap_exit(self.0, self.1);
+    }
+}
+
 // ── The dispatcher ──────────────────────────────────────────────────────────
 
 /// What `trap_entry.S` calls with the saved frame (interrupts masked: every
@@ -248,6 +261,20 @@ pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
     if frame.vector as usize == idt::MC {
         machine_check(frame);
     }
+    // Masked-window tracer (`lat-trace`): a trap from a context with `IF`
+    // set opens a window. The interrupt path closes it in
+    // `x86_64_trap_resched`; every other class on return, through
+    // `LatTrapExit` (a syscall usually closed it earlier, at `enable_all`).
+    #[cfg(feature = "lat-trace")]
+    let _lat_exit = {
+        let flags = frame.rflags;
+        azos_arch::lat_hook::trap_enter(flags, core::panic::Location::caller());
+        if matches!(frame.class(), TrapClass::Interrupt) {
+            None
+        } else {
+            Some(LatTrapExit(flags, core::panic::Location::caller()))
+        }
+    };
     // Lockdep (N1): no lock held when this returns to ring 3.
     // QSBR (Kconfig RCU_QSBR, N4): a syscall or exception does nothing
     // unless this is an RT CPU (RCU_NOCBS_CPUS); the interrupt arm has its
@@ -327,6 +354,12 @@ pub extern "C" fn x86_64_fast_ipc_syscall(frame: &mut TrapFrame) -> u64 {
 #[inline(always)]
 fn native_syscall<const FAST: bool>(frame: &mut TrapFrame) -> u64 {
     // As `x86_64_trap_entry`, in its order.
+    #[cfg(feature = "lat-trace")]
+    let _lat_exit = {
+        let flags = frame.rflags;
+        azos_arch::lat_hook::trap_enter(flags, core::panic::Location::caller());
+        LatTrapExit(flags, core::panic::Location::caller())
+    };
     let _rcu = azos_sync::qsbr::TrapBoundary::exception(|| frame.came_from_user());
     let _ld = azos_sync::lockdep::UserReturn::arm(|| frame.came_from_user());
     crate::trap::syscall::enter::<Kernel, TrapFrame, FAST>(frame)

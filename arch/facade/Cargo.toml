@@ -34,8 +34,8 @@ hv = ["azos_arch_aarch64/hv"]
 # Kconfig HYP_MONITOR: the boot trampoline keeps EL2 and starts the resident
 # monitor (aarch64 only; the dependency is target-specific).
 hyp-monitor = ["azos_arch_aarch64/hyp-monitor"]
-# Masked-window tracer (Kconfig `LAT_TRACE`): hooks in both ISA crates.
-lat-trace = ["azos_arch_riscv64/lat-trace", "azos_arch_aarch64/lat-trace"]
+# Masked-window tracer (Kconfig `LAT_TRACE`): hooks in every ISA crate.
+lat-trace = ["azos_arch_riscv64/lat-trace", "azos_arch_aarch64/lat-trace", "azos_arch_x86_64?/lat-trace"]
 irq-nomem-canary = ["azos_arch_riscv64/irq-nomem-canary", "azos_arch_aarch64/irq-nomem-canary", "azos_arch_x86_64?/irq-nomem-canary"]
 # The x86_64 crate as the host-side fake ISA (off x86_64 its contract
 # methods are todo!()): host checks only, never a kernel build. On a

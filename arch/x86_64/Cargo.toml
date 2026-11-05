@@ -10,6 +10,8 @@ description = "x86_64 port: the arch-api contract and the x86 platform. Off x86_
 name = "azos_arch_x86_64"
 
 [features]
+# Masked-window tracer hooks (`src/lat_hook.rs`); Kconfig `LAT_TRACE`.
+lat-trace = ["azos_arch_api/lat-trace"]
 # `irq order` canary: `cli`/`sti` get `nomem` back, so they stop being compiler
 # barriers. The `irq order` rows must go red.
 irq-nomem-canary = []

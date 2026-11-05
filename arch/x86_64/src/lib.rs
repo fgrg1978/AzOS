@@ -62,6 +62,9 @@ pub mod trap;
 pub mod spin;
 // RDSEED / RDRAND: the entropy pool's CPU seed source.
 pub mod seed;
+/// Masked-window tracer hooks (Kconfig `LAT_TRACE`).
+#[cfg(all(feature = "lat-trace", target_arch = "x86_64"))]
+pub mod lat_hook;
 
 // The platform (front X4): boot information, ACPI, LAPIC/IOAPIC, the clock
 // and timer, AP start. x86_64 only, so the host stub still exports just the
@@ -168,20 +171,39 @@ impl Cpu for X86_64 {
 
 impl Interrupts for X86_64 {
     /// `pushfq; cli`, returning RFLAGS.IF.
+    #[cfg_attr(feature = "lat-trace", track_caller)]
     fn disable_all(&self) -> InterruptState {
         on_x86!({
             let f = cpu::rflags();
             cpu::cli();
+            #[cfg(feature = "lat-trace")]
+            if f & cpu::RFLAGS_IF != 0 {
+                lat_hook::irq_off(core::panic::Location::caller());
+            }
             InterruptState(f & cpu::RFLAGS_IF)
         }, "x86_64: disable_all: pushfq; cli -> RFLAGS.IF")
     }
     /// Writes the saved RFLAGS.IF back: `sti` if it was set, `cli` if not.
+    #[cfg_attr(feature = "lat-trace", track_caller)]
     fn restore(&self, _prev: InterruptState) {
-        on_x86!(if _prev.0 & cpu::RFLAGS_IF != 0 { cpu::sti() } else { cpu::cli() }, "x86_64: restore: write the saved IF back")
+        on_x86!({
+            #[cfg(feature = "lat-trace")]
+            if _prev.0 & cpu::RFLAGS_IF != 0 && cpu::rflags() & cpu::RFLAGS_IF == 0 {
+                lat_hook::irq_on(core::panic::Location::caller());
+            }
+            if _prev.0 & cpu::RFLAGS_IF != 0 { cpu::sti() } else { cpu::cli() }
+        }, "x86_64: restore: write the saved IF back")
     }
     /// `sti`.
+    #[cfg_attr(feature = "lat-trace", track_caller)]
     fn enable_all(&self) {
-        on_x86!(cpu::sti(), "x86_64: enable_all: sti")
+        on_x86!({
+            #[cfg(feature = "lat-trace")]
+            if cpu::rflags() & cpu::RFLAGS_IF == 0 {
+                lat_hook::irq_on(core::panic::Location::caller());
+            }
+            cpu::sti()
+        }, "x86_64: enable_all: sti")
     }
     /// RFLAGS.IF.
     fn interrupts_enabled(&self) -> bool {

@@ -80,8 +80,6 @@ ALLOW_MISSING = {
         "the Cpu, Interrupts and Mmu impls are inline in lib.rs",
     ("arch", "x86_64", "cache"):
         "x86 DMA is cache-coherent: no maintenance operations to host",
-    ("arch", "x86_64", "lat_hook"):
-        "lat-trace is not implemented on x86_64",
     ("entry", "x86_64", "board_map"):
         "the memory map comes from Limine (entry/x86_64/ext/limine.rs) and ACPI, not a board table",
     ("entry", "riscv64", "fp"):

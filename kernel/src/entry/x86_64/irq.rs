@@ -87,6 +87,10 @@ fn interrupted(frame: &TrapFrame) -> crate::prof::Interrupted {
 /// (`crate::trap::irq::resched_exit`).
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_trap_resched(frame: &mut TrapFrame) {
+    // Masked-window tracer: the interrupt path's window ends when this
+    // returns towards the `iretq` (every path below).
+    #[cfg(feature = "lat-trace")]
+    let _lat_exit = crate::lat_trace::IrqExit(core::panic::Location::caller());
     crate::trap::irq::resched_exit::<Kernel, TrapFrame, { crate::MAX_HARTS }>(&crate::trap::RESCHED, frame);
 }
 

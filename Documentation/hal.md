@@ -179,7 +179,6 @@ A module name is the stem of `foo.rs` or `foo.S`, or a directory `foo/`.
 | aarch64 | ISA crate | `trap` | The `TrapFrame` lives in `kernel/src/entry/aarch64/mod.rs` |
 | x86_64 | ISA crate | `api_impl` | The `Cpu`, `Interrupts` and `Mmu` impls are inline in `lib.rs` |
 | x86_64 | ISA crate | `cache` | x86 DMA is cache-coherent; no maintenance operations to host |
-| x86_64 | ISA crate | `lat_hook` | The masked-window tracer (`lat-trace`) is not built on x86_64 |
 | x86_64 | kernel entry | `board_map` | The memory map comes from Limine (`entry/x86_64/ext/limine.rs`) and ACPI, not a board table |
 
 **Extra modules outside `ext/`** (`ALLOW_EXTRA`):
