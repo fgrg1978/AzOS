@@ -2020,6 +2020,9 @@ const SYS_PATH_MAX: usize = 512;
 fn copy_path_from_user<'a>(dst: &'a mut [u8], path_ptr: u64) -> Option<&'a [u8]> {
     if azos_sched::current_user_pt() != 0 {
         let len = azos_sched::UserCStr::new(path_ptr).read_into(dst).ok()?;
+        // One spelling for the tree check and the router: `//tmp/x` is
+        // `/tmp/x` to both.
+        let len = azos_common::path::collapse_slashes(&mut dst[..len]);
         Some(&dst[..len])
     } else {
         Some(unsafe { cstr_to_bytes(path_ptr as *const u8) })

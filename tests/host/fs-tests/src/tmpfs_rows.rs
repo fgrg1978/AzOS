@@ -317,6 +317,29 @@ fn names_have_a_bound_and_paths_are_the_vfs_limit() {
     tmpfs_h::clear();
 }
 
+/// A path spelled with `//` reaches the mount it names (the router and the
+/// capability check agree on "under"): `//tmp/x` is `/tmp/x`, not an entry of
+/// the hidden `tmp` directory of `/`.
+///
+/// **Canary.** Match mounts by bytes again (`path_starts_with` alone).
+#[test]
+fn a_doubled_slash_routes_to_the_same_mount() {
+    let _g = serial();
+    setup();
+    assert_eq!(vfs::vfs_mkdir(b"//tmp/dd"), Ok(()));
+    assert!(vfs::vfs_stat(b"/tmp/dd").is_some_and(|s| s.is_dir), "made in /tmp");
+    assert!(put(b"/tmp//dd///f", b"x"));
+    assert_eq!(get(b"///tmp/dd/f").as_deref(), Some(&b"x"[..]));
+    assert_eq!(vfs::vfs_rename(b"//tmp/dd/f", b"/tmp/dd/g"), Ok(()));
+    assert_eq!(vfs::vfs_unlink(b"/tmp//dd/g"), Ok(()));
+    assert_eq!(vfs::vfs_rmdir(b"//tmp//dd"), Ok(()));
+    // Nothing went into `/`'s own `tmp` directory (the one the mount shadows).
+    use vfs::FileSystem as _;
+    let mut e = DirEnt::new();
+    assert_eq!(tmpfs::TMPFS_ROOT.readdir(b"tmp", 0, &mut e), Ok(None));
+    tmpfs_h::clear();
+}
+
 #[test]
 fn the_root_lists_the_other_mount_points() {
     let _g = serial();

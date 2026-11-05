@@ -1293,7 +1293,7 @@ fn backend_for_path(path: &[u8]) -> Option<(&'static dyn FileSystem, &[u8])> {
     // The longest mount prefix wins; `/` matches every absolute path, so it
     // answers only when no other mount does.
     let fs = FS.lock();
-    let mut best: Option<(&'static dyn FileSystem, usize)> = None;
+    let mut best: Option<(&'static dyn FileSystem, usize, usize)> = None;
     for i in 0..fs.mount_count.min(MAX_MOUNTS) {
         let mp = &fs.mounts[i];
         if !mp.active { continue; }
@@ -1302,15 +1302,33 @@ fn backend_for_path(path: &[u8]) -> Option<(&'static dyn FileSystem, &[u8])> {
             None    => continue,
         };
         let mp_path = trim_nul(&mp.path);
-        let matches = if mp_path == b"/" { path.first() == Some(&b'/') } else { path_starts_with(path, mp_path) };
-        if matches && best.is_none_or(|(_, len)| mp_path.len() > len) {
-            best = Some((backend, mp_path.len()));
+        if let Some(end) = mount_end(path, mp_path) {
+            if best.is_none_or(|(_, _, len)| mp_path.len() > len) {
+                best = Some((backend, end, mp_path.len()));
+            }
         }
     }
-    best.map(|(backend, len)| {
-        let after = &path[len..];
-        (backend, after.strip_prefix(b"/").unwrap_or(after))
+    best.map(|(backend, end, _)| {
+        let mut after = &path[end..];
+        while let Some(rest) = after.strip_prefix(b"/") { after = rest; }
+        (backend, after)
     })
+}
+
+/// Where the mount `mp` ends in `path`, `None` when `path` is not under it.
+/// Compared component by component with empty ones skipped, as the tree
+/// check does (`azos_ipc::file_cap`): `//tmp/x` is under `/tmp`, `/tmpx` is
+/// not. `/` is under no component, so it ends at 0 for any absolute path.
+fn mount_end(path: &[u8], mp: &[u8]) -> Option<usize> {
+    if path.first() != Some(&b'/') { return None; }
+    let mut at = 0;
+    for m in mp.split(|&c| c == b'/').filter(|c| !c.is_empty()) {
+        while path.get(at) == Some(&b'/') { at += 1; }
+        if !path[at..].starts_with(m) { return None; }
+        at += m.len();
+        if !matches!(path.get(at), None | Some(&b'/')) { return None; }
+    }
+    Some(at)
 }
 
 /// Try to open a file from a mounted backend as a proxy inode.

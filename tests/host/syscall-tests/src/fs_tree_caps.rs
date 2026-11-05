@@ -166,6 +166,36 @@ fn a_write_tree_admits_its_entries_and_nothing_outside() {
     assert_eq!(calls(), vec!["truncate /fat"]);
 }
 
+/// **The tree check and the filesystem see one spelling.** The check skips
+/// empty components, so `//tmp/a` is under a `/tmp` tree; the filesystem must
+/// then be handed `/tmp/a`, or its router would take `//tmp/a` for an entry of
+/// `/` and a `/tmp` holder would change `/`. `.` and `..` are refused.
+///
+/// **Canary.** `copy_path_from_user` without `collapse_slashes`: the
+/// filesystem is handed `//tmp/a`.
+#[test]
+fn a_tree_holder_reaches_the_filesystem_by_the_spelling_the_check_judged() {
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_00A1;
+    let page = ring3(tid);
+    grant(tid, "/tmp", CapPerms::RW);
+
+    let (a, b) = paths(page, b"//tmp/a", b"/tmp///b");
+    assert_eq!(sys_mkdir(a), FS_ANSWER);
+    assert_eq!(sys_unlink(a), FS_ANSWER);
+    assert_eq!(sys_rename(a, b), FS_ANSWER);
+    assert_eq!(calls(), vec!["mkdir /tmp/a", "unlink /tmp/a", "rename /tmp/a /tmp/b"]);
+
+    let (x, _) = paths(page, b"/./tmp/a", b"");
+    assert_eq!(sys_mkdir(x), Errno::EINVAL.to_syscall_ret(), "a `.` component is not resolved");
+    let (x, _) = paths(page, b"/tmp/../a", b"");
+    assert_eq!(sys_mkdir(x), Errno::EINVAL.to_syscall_ret());
+    let (x, _) = paths(page, b"//fat/a", b"");
+    assert_eq!(sys_mkdir(x), eacces(), "and `//` does not widen the tree");
+    assert_eq!(calls(), Vec::<String>::new());
+}
+
 /// **READ is not enough, and `.`/`..` and relative paths are refused with
 /// `-EINVAL`** — the check does not resolve them, so it does not accept them.
 ///
