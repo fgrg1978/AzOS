@@ -90,15 +90,16 @@ pub trait I2c {
 }
 
 /// Fill `buf` from the registers of the device `bus` is bound to, starting at
-/// `reg`, in transfers of at most [`MAX_BYTES`]. A short answer is a failure.
+/// `reg`, in transfers of at most [`MAX_BYTES`]. A read past register 0xFF is
+/// refused before the first transfer; a short answer is a failure.
 pub fn read_regs<C: I2cCall + ?Sized>(bus: &mut C, reg: u8, buf: &mut [u8]) -> Result<(), u32> {
+    if reg as usize + buf.len() > 0x100 {
+        return Err(crate::outcome::BAD_ARGUMENT);
+    }
     let mut done = 0;
     while done < buf.len() {
         let n = (buf.len() - done).min(MAX_BYTES);
         let at = reg as usize + done;
-        if at > 0xFF {
-            return Err(crate::outcome::BAD_ARGUMENT);
-        }
         let got = crate::outcome::served(bus.read(at as u32, n as u32))?;
         if got.copy_to(&mut buf[done..done + n]) != n {
             return Err(crate::outcome::FAULT);

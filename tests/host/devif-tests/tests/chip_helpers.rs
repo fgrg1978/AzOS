@@ -59,7 +59,10 @@ fn a_long_register_read_is_chunked_and_the_register_advances() {
     // refused before it reaches the wire.
     let mut bus = regs();
     assert_eq!(read_regs(&mut bus, 0xF0, &mut [0u8; 40]), Err(outcome::BAD_ARGUMENT));
-    assert_eq!(bus.0.log, [(0xF0, 32)]);
+    assert!(bus.0.log.is_empty());
+    let mut bus = regs();
+    read_regs(&mut bus, 0xF0, &mut [0u8; 16]).unwrap();
+    assert_eq!(bus.0.log, [(0xF0, 16)]);
 }
 
 /// A device that answers fewer bytes than asked is a fault, and so is a
