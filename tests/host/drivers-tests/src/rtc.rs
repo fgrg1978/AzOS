@@ -16,9 +16,28 @@ use azos_rtc::goldfish::{Goldfish, TIME_HIGH, TIME_LOW};
 use azos_rtc::mc146818::{Mc146818, PORT_DATA, PORT_INDEX};
 use azos_rtc::pcf8563::{Pcf8563, ADDR};
 use azos_rtc::pl031::{Pl031, RTCCR, RTCDR, RTCLR};
-use azos_rtc::{Error, I2c, Mmio, Ports, Rtc};
+use azos_drvkit::fake::FakeMmio;
+use azos_drvkit::{Mmio, PortIo, Width};
+use azos_rtc::{Error, I2c, Rtc};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// A chip model whose registers are all 32 bits wide: `Mmio` over its `read32`
+/// and `write32`, and a panic on any other width (the driver would be wrong).
+macro_rules! registers32 {
+    ($m:ty) => {
+        impl Mmio for $m {
+            fn load(&self, off: usize, w: Width) -> u64 {
+                assert_eq!(w, Width::W32, "the model's registers are 32-bit");
+                self.read32(off) as u64
+            }
+            fn store(&self, off: usize, w: Width, v: u64) {
+                assert_eq!(w, Width::W32, "the model's registers are 32-bit");
+                self.write32(off, v as u32)
+            }
+        }
+    };
+}
 
 /// 2026-10-17T12:34:56Z (a Saturday).
 const T2026: u64 = 1_792_240_496;
@@ -91,7 +110,7 @@ struct GoldfishModel {
     staged_hi: u32,
     drift: u64,
     /// The order of the writes, for the test that wants it.
-    writes: Vec<u32>,
+    writes: Vec<usize>,
 }
 
 impl GoldfishModel {
@@ -103,8 +122,8 @@ impl GoldfishModel {
 #[derive(Clone)]
 struct Gf(Rc<RefCell<GoldfishModel>>);
 
-impl Mmio for Gf {
-    fn read32(&mut self, off: u32) -> u32 {
+impl Gf {
+    fn read32(&self, off: usize) -> u32 {
         let mut m = self.0.borrow_mut();
         let v = match off {
             TIME_LOW => {
@@ -117,7 +136,7 @@ impl Mmio for Gf {
         m.ns += m.drift;
         v
     }
-    fn write32(&mut self, off: u32, v: u32) {
+    fn write32(&self, off: usize, v: u32) {
         let mut m = self.0.borrow_mut();
         m.writes.push(off);
         match off {
@@ -127,6 +146,8 @@ impl Mmio for Gf {
         }
     }
 }
+
+registers32!(Gf);
 
 fn goldfish(ns: u64) -> (Goldfish<Gf>, Rc<RefCell<GoldfishModel>>) {
     let m = Rc::new(RefCell::new(GoldfishModel::new(ns)));
@@ -178,7 +199,7 @@ struct Pl031Model {
     secs: u32,
     cr: u32,
     id: [u32; 8],
-    writes: Vec<(u32, u32)>,
+    writes: Vec<(usize, u32)>,
 }
 
 #[derive(Clone)]
@@ -187,8 +208,8 @@ struct Pl(Rc<RefCell<Pl031Model>>);
 /// The IDs QEMU's PL031 returns: part 0x031, revision 1, PrimeCell 0xB105F00D.
 const PL031_ID: [u32; 8] = [0x31, 0x10, 0x14, 0x00, 0x0d, 0xf0, 0x05, 0xb1];
 
-impl Mmio for Pl {
-    fn read32(&mut self, off: u32) -> u32 {
+impl Pl {
+    fn read32(&self, off: usize) -> u32 {
         let m = self.0.borrow();
         match off {
             RTCDR => m.secs,
@@ -197,7 +218,7 @@ impl Mmio for Pl {
             _ => 0,
         }
     }
-    fn write32(&mut self, off: u32, v: u32) {
+    fn write32(&self, off: usize, v: u32) {
         let mut m = self.0.borrow_mut();
         m.writes.push((off, v));
         match off {
@@ -207,6 +228,8 @@ impl Mmio for Pl {
         }
     }
 }
+
+registers32!(Pl);
 
 fn pl031(secs: u32) -> (Pl031<Pl>, Rc<RefCell<Pl031Model>>) {
     let m = Rc::new(RefCell::new(Pl031Model { secs, cr: 0, id: PL031_ID, writes: Vec::new() }));
@@ -223,6 +246,29 @@ fn pl031_probe_checks_the_prime_cell_ids() {
         m.borrow_mut().id = bad;
         assert_eq!(Pl031::probe(Pl(m.clone())).err(), Some(Error::NoDevice), "{bad:x?}");
     }
+}
+
+/// The PL031 over the kit's byte-addressed register file: the PrimeCell ID
+/// bytes are seeded one byte per register as the silicon holds them, and the
+/// driver's 32-bit accesses must see them, load the counter and start it.
+/// **Canary:** a `FakeMmio` that swaps the byte order of a 32-bit access: the
+/// ID check reads another byte, the probe is `NoDevice`.
+#[test]
+fn pl031_over_the_register_file() {
+    let regs = FakeMmio::<0x1000>::new();
+    for (i, id) in PL031_ID.iter().enumerate() {
+        regs.poke32(0xfe0 + 4 * i, *id);
+    }
+    regs.poke32(RTCDR, T2026 as u32);
+    let mut p = Pl031::probe(&regs).unwrap();
+    assert_eq!(p.read(), Ok(T2026));
+    regs.take_log();
+    p.set(T2026 + 60).unwrap();
+    assert_eq!(regs.take_writes(), [(RTCLR, (T2026 + 60) as u64), (RTCCR, 1)], "load, then start");
+    assert_eq!(regs.peek32(RTCLR), (T2026 + 60) as u32);
+    assert_eq!(p.set(1 << 32), Err(Error::Range));
+    regs.poke32(0xff0 + 12, 0xb0);
+    assert_eq!(Pl031::probe(&regs).err(), Some(Error::NoDevice), "cell ID byte 3 wrong");
 }
 
 #[test]
@@ -331,8 +377,8 @@ impl CmosModel {
 #[derive(Clone)]
 struct Cmos(Rc<RefCell<CmosModel>>);
 
-impl Ports for Cmos {
-    fn inb(&mut self, port: u16) -> u8 {
+impl PortIo for Cmos {
+    fn inb(&self, port: u16) -> u8 {
         assert_eq!(port, PORT_DATA);
         let mut m = self.0.borrow_mut();
         let r = m.index;
@@ -352,7 +398,7 @@ impl Ports for Cmos {
         }
         m.reg(r)
     }
-    fn outb(&mut self, port: u16, v: u8) {
+    fn outb(&self, port: u16, v: u8) {
         let mut m = self.0.borrow_mut();
         if port == PORT_INDEX {
             assert_eq!(v & 0x80, 0, "the driver never disables NMI");
@@ -421,9 +467,9 @@ fn cmos_dead_battery_is_lost() {
 #[test]
 fn cmos_floating_bus_is_no_device() {
     struct Floating;
-    impl Ports for Floating {
-        fn inb(&mut self, _: u16) -> u8 { 0xff }
-        fn outb(&mut self, _: u16, _: u8) {}
+    impl PortIo for Floating {
+        fn inb(&self, _: u16) -> u8 { 0xff }
+        fn outb(&self, _: u16, _: u8) {}
     }
     assert_eq!(Mc146818::new(Floating, Some(CENTURY), 1000).read(), Err(Error::NoDevice));
 }
@@ -434,12 +480,12 @@ fn cmos_floating_bus_is_no_device() {
 #[test]
 fn cmos_status_d_date_alarm_bits_are_not_a_fault() {
     struct Alarm(Cmos);
-    impl Ports for Alarm {
-        fn inb(&mut self, p: u16) -> u8 {
+    impl PortIo for Alarm {
+        fn inb(&self, p: u16) -> u8 {
             let v = self.0.inb(p);
             if self.0 .0.borrow().index == 0x0d { v | 0x1f } else { v }
         }
-        fn outb(&mut self, p: u16, v: u8) {
+        fn outb(&self, p: u16, v: u8) {
             self.0.outb(p, v)
         }
     }
@@ -470,12 +516,12 @@ fn cmos_without_a_century_register_never_writes_one() {
 #[test]
 fn cmos_garbage_is_lost() {
     struct ZeroMonth(Cmos);
-    impl Ports for ZeroMonth {
-        fn inb(&mut self, p: u16) -> u8 {
+    impl PortIo for ZeroMonth {
+        fn inb(&self, p: u16) -> u8 {
             let v = self.0.inb(p);
             if self.0 .0.borrow().index == 0x08 { 0 } else { v }
         }
-        fn outb(&mut self, p: u16, v: u8) {
+        fn outb(&self, p: u16, v: u8) {
             self.0.outb(p, v)
         }
     }

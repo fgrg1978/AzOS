@@ -18,7 +18,8 @@
 //!
 //! The crate is pure: no unsafe, no statics, no allocation, no clock. The
 //! environment hands each chip what it reaches the hardware through: an
-//! [`Mmio`] window (goldfish, PL031), the [`Ports`] of a PC (MC146818) or an
+//! [`Mmio`](azos_drvkit::Mmio) window (goldfish, PL031), the
+//! [`PortIo`](azos_drvkit::PortIo) of a PC (MC146818) or an
 //! [`I2c`] bus (PCF8563). The kernel's adapters are `kernel/src/boot/rtc.rs`;
 //! `tests/host/drivers-tests` runs each chip against a model that behaves like
 //! it.
@@ -61,18 +62,6 @@ pub trait Rtc {
     /// Set the chip to `unix_secs`. The chip counts on from the instant of the
     /// write.
     fn set(&mut self, unix_secs: u64) -> Result<(), Error>;
-}
-
-/// A 32-bit register window: `off` is the byte offset from the window's base.
-pub trait Mmio {
-    fn read32(&mut self, off: u32) -> u32;
-    fn write32(&mut self, off: u32, v: u32);
-}
-
-/// The I/O ports of a PC.
-pub trait Ports {
-    fn inb(&mut self, port: u16) -> u8;
-    fn outb(&mut self, port: u16, v: u8);
 }
 
 /// An I2C bus, seen as register reads and writes of one device.

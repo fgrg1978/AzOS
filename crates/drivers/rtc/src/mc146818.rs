@@ -28,7 +28,8 @@
 //! [`Error::Range`].
 
 use crate::civil::{bcd_to_bin, bin_to_bcd, DateTime};
-use crate::{Error, Ports, Rtc};
+use crate::{Error, Rtc};
+use azos_drvkit::PortIo;
 
 /// Index port. Bit 7 of the index disables NMI on a PC; this driver never sets it.
 pub const PORT_INDEX: u16 = 0x70;
@@ -62,7 +63,7 @@ const D_VRT: u8 = 0x80;
 /// Snapshots tried before giving up on two that agree.
 const SNAPSHOTS: u32 = 4;
 
-pub struct Mc146818<P: Ports> {
+pub struct Mc146818<P: PortIo> {
     p: P,
     century: Option<u8>,
     /// Reads of status A spent waiting for `UIP` (Kconfig `RTC_UIP_POLLS`).
@@ -81,7 +82,7 @@ struct Snapshot {
     century: u8,
 }
 
-impl<P: Ports> Mc146818<P> {
+impl<P: PortIo> Mc146818<P> {
     /// The CMOS clock on the standard ports. `century` is the register the
     /// FADT names (`None`: 20xx assumed, and a set writes no century);
     /// `uip_polls` the reads of status A a wait for `UIP` to clear spends
@@ -122,7 +123,7 @@ impl<P: Ports> Mc146818<P> {
     }
 }
 
-impl<P: Ports> Rtc for Mc146818<P> {
+impl<P: PortIo> Rtc for Mc146818<P> {
     fn name(&self) -> &'static str {
         "mc146818"
     }

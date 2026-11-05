@@ -47,6 +47,8 @@
 
 use azos_rtc::civil::{year_start, DateTime};
 use azos_rtc::{Error, Rtc};
+#[cfg(not(target_arch = "x86_64"))]
+use azos_drvkit::Window;
 use azos_sync::SpinLock;
 use azos_syscall::clock::{RtcFault, RtcHost};
 
@@ -58,33 +60,16 @@ pub(crate) const SUBJECT_RTC: u16 = 0xff00;
 
 // ── The kernel's side of the drivers: the windows, the ports, the bus ────────
 
-/// Volatile 32-bit accesses to a window [`probe_mmio`] mapped (identity: VA = PA).
-#[cfg(not(target_arch = "x86_64"))]
-struct Window(usize);
-
-#[cfg(not(target_arch = "x86_64"))]
-impl azos_rtc::Mmio for Window {
-    fn read32(&mut self, off: u32) -> u32 {
-        // SAFETY: inside the 4 KiB window `probe_mmio` mapped; every register
-        // the drivers name is 4-aligned.
-        unsafe { azos_arch_api::mmio::read32(self.0 + off as usize) }
-    }
-    fn write32(&mut self, off: u32, v: u32) {
-        // SAFETY: as `read32`.
-        unsafe { azos_arch_api::mmio::write32(self.0 + off as usize, v) }
-    }
-}
-
 /// The PC's I/O ports.
 #[cfg(target_arch = "x86_64")]
 struct PcPorts;
 
 #[cfg(target_arch = "x86_64")]
-impl azos_rtc::Ports for PcPorts {
-    fn inb(&mut self, port: u16) -> u8 {
+impl azos_drvkit::PortIo for PcPorts {
+    fn inb(&self, port: u16) -> u8 {
         azos_arch::cpu::inb(port)
     }
-    fn outb(&mut self, port: u16, v: u8) {
+    fn outb(&self, port: u16, v: u8) {
         azos_arch::cpu::outb(port, v)
     }
 }
@@ -192,28 +177,30 @@ impl RtcHost for Host {
 // ── Finding it ───────────────────────────────────────────────────────────────
 
 /// The first hardware-bus device `selector` names, and its window mapped for
-/// the kernel: `(base, size)`.
+/// the kernel (identity: VA = PA).
 #[cfg(not(target_arch = "x86_64"))]
-fn probe_mmio(selector: &str) -> Option<usize> {
+fn probe_mmio(selector: &str) -> Option<Window> {
     use azos_drv_bus::hwbus::{self, Handle};
     let h = hwbus::resolve(selector)?;
     let (base, size) = hwbus::with(|b| b.get(Handle(h)).map(|s| (s.dev.base, s.dev.size)))?;
     if size == 0 || !crate::boot::map_mmio_region(base as usize, size as usize) {
         return None;
     }
-    Some(base as usize)
+    // SAFETY: the `size` bytes at `base` were just mapped; every register the
+    // drivers name is inside the 4 KiB window and 4-aligned.
+    Some(unsafe { Window::new(base as usize) })
 }
 
 /// The chip this machine has, if any, and how it was found.
 fn probe() -> Option<(Chip, &'static str)> {
     #[cfg(not(target_arch = "x86_64"))]
     {
-        if let Some(base) = probe_mmio("dt:google,goldfish-rtc") {
-            let c = azos_rtc::goldfish::Goldfish::new(Window(base));
+        if let Some(w) = probe_mmio("dt:google,goldfish-rtc") {
+            let c = azos_rtc::goldfish::Goldfish::new(w);
             return Some((Chip::Goldfish(c), "dt:google,goldfish-rtc"));
         }
-        if let Some(base) = probe_mmio("dt:arm,pl031") {
-            return match azos_rtc::pl031::Pl031::probe(Window(base)) {
+        if let Some(w) = probe_mmio("dt:arm,pl031") {
+            return match azos_rtc::pl031::Pl031::probe(w) {
                 Ok(c) => Some((Chip::Pl031(c), "dt:arm,pl031")),
                 Err(_) => {
                     azos_drv_sys::kwarn!("[RTC] the arm,pl031 window answers as no PL031: RTC not used");

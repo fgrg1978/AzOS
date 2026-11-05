@@ -1119,7 +1119,7 @@ tpm-crb-canary = ["tpm", "azos_tpm/canary-crb-start"]
 # at boot and hosts the `Clock` interface's RTC ops (kernel/src/boot/rtc.rs). A
 # `base` tag: emitted unless the symbol is n. The set is an effect of the
 # write-ahead gate when `effect-gate` is on.
-rtc = ["dep:azos_rtc"]
+rtc = ["dep:azos_rtc", "dep:azos_drvkit"]
 # Kconfig DRV_RTC_PCF8563: the PCF8563 on I2C, for a board without a
 # memory-mapped RTC.
 rtc-pcf8563 = ["rtc"]
@@ -1420,6 +1420,7 @@ azos_decision  = { workspace = true }
 azos_inspect   = { workspace = true, optional = true }
 azos_tpm       = { workspace = true, optional = true }
 azos_rtc       = { workspace = true, optional = true }
+azos_drvkit    = { workspace = true, optional = true, features = ["window"] }
 azos_hv        = { workspace = true, optional = true }
 azos_devif     = { workspace = true }
 # Wave 15: the trace ring layout (the cost probe reads its own ring).

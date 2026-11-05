@@ -10,12 +10,13 @@
 //! The alarm and interrupt registers (0x08..0x1c) are not touched: a window
 //! the kernel only reads and sets stays usable for them by whoever holds it.
 
-use crate::{Error, Mmio, Rtc, NS_PER_SEC};
+use crate::{Error, Rtc, NS_PER_SEC};
+use azos_drvkit::Mmio;
 
 /// Low word of the time in nanoseconds; a read latches `TIME_HIGH`.
-pub const TIME_LOW: u32 = 0x00;
+pub const TIME_LOW: usize = 0x00;
 /// High word of the time, as latched by the last `TIME_LOW` read.
-pub const TIME_HIGH: u32 = 0x04;
+pub const TIME_HIGH: usize = 0x04;
 
 pub struct Goldfish<M: Mmio> {
     m: M,
