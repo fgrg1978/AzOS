@@ -114,9 +114,21 @@ pub mod i2c_port {
     }
 
     impl azos_devif::I2c for I2cPort {
+        /// A refused read still carries what the chip would have said, so a
+        /// caller that takes the bytes without the outcome code reads a
+        /// plausible register.
         fn read(&mut self, reg: u32, len: u32) -> Out<Bytes> {
             let mut buf = [0u8; 2];
-            if len as usize != buf.len() || super::i2c::i2c_read(0, 0, reg as u8, &mut buf) != 2 {
+            if len as usize != buf.len() {
+                return Out::err(outcome::FAULT);
+            }
+            let nak = std::mem::take(&mut super::i2c::ADS.lock().unwrap().nak);
+            let rc = super::i2c::i2c_read(0, 0, reg as u8, &mut buf);
+            if nak {
+                super::i2c::ADS.lock().unwrap().nak = true;
+                return Out::new(outcome::FAULT, Bytes::from_slice(&buf));
+            }
+            if rc != 2 {
                 return Out::err(outcome::FAULT);
             }
             Out::ok(Bytes::from_slice(&buf))
