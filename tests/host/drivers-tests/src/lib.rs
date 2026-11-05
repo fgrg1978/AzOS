@@ -133,6 +133,10 @@ mod discipline;
 #[cfg(test)]
 mod rtc;
 
+// The driver environment's fakes (`crates/drivers/kit`).
+#[cfg(test)]
+mod drvkit_tests;
+
 // The PC speaker (`crates/drivers/pcspk`) against a model of PIT channel 2.
 #[cfg(test)]
 mod pcspk_tests;

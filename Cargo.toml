@@ -464,6 +464,8 @@ members = [
     "crates/drivers/ina219",
     "crates/drivers/buzzer",
     "crates/drivers/pcspk",
+    # The driver environment (register window, ports, ticks) and its host fakes.
+    "crates/drivers/kit",
     # RFC 1350 TFTP client: the package installer's development package source
     # (userspace/services/pkgd) and the host suites build it by path.
     "crates/net/tftp",
@@ -619,6 +621,7 @@ azos_dma    = { path = "crates/drivers/dma" }
 azos_iommu  = { path = "crates/drivers/iommu" }
 azos_tpm    = { path = "crates/drivers/tpm" }
 azos_rtc    = { path = "crates/drivers/rtc" }
+azos_drvkit = { path = "crates/drivers/kit" }
 azos_usb    = { path = "crates/drivers/usb" }
 azos_usb_hid = { path = "crates/drivers/usb-hid" }
 

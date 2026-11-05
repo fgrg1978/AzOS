@@ -1,0 +1,26 @@
+[package]
+name = "azos_drvkit"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = """
+The driver environment: the register window (`Mmio`), the x86 port space
+(`PortIo`) and the time a driver waits by (`Ticks`), as the traits a driver is
+written over, with the kernel and ring-3 window over `azos_arch_api::mmio`
+(feature `window`) and the fakes the host tests drive a driver through
+(feature `fake`).
+"""
+
+[lib]
+name = "azos_drvkit"
+
+[features]
+# `Window`: the register block at a mapped address, in the kernel or in ring 3.
+window = ["dep:azos_arch_api"]
+# `FakeMmio`, `FakePorts`, `FakeTicks`: host tests only.
+fake = []
+
+[dependencies]
+# Path, not `workspace = true`: userspace/drivers/buzz_drv builds standalone.
+azos_arch_api = { path = "../../../arch/api", optional = true }

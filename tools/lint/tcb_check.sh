@@ -115,6 +115,7 @@ percpu trace
 chaos decision
 hv
 hwbus input nvme bytepipe devif idl
+kit
 "
 # Wave 11 (DOMAIN): `actuation` (crates/core/actuation) is the authority
 # every domain shares — e-stop latch, signed release, flight recorder,

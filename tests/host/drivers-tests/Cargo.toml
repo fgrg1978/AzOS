@@ -32,6 +32,8 @@ azos_input_wire = { path = "../../../crates/drivers/input/wire" }
 azos_ina219 = { path = "../../../crates/drivers/ina219" }
 # The real-time clock drivers (Kconfig DRV_RTC), against a model of each chip.
 azos_rtc = { path = "../../../crates/drivers/rtc" }
+# The driver environment: the traits the drivers above are written over and their fakes.
+azos_drvkit = { path = "../../../crates/drivers/kit", features = ["fake"] }
 azos_buzzer = { path = "../../../crates/drivers/buzzer" }
 # The PC speaker as the buzzer's channel (buzz_drv on x86_64).
 azos_pcspk = { path = "../../../crates/drivers/pcspk" }
