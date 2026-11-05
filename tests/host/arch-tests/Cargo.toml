@@ -44,6 +44,12 @@ spin-service-canary = ["azos_arch_api/spin-service-canary"]
 # `arch/aarch64/src/sysregs.rs` and `arch/riscv/src/ext/senvcfg.rs`
 # (pulled in by path) read the kernel's gate canary; nothing here turns it on.
 el0-state-canary = []
+# `arch/aarch64/src/ext/hv/{psci,inject}.rs` (pulled in by path through
+# `src/hv_arm.rs`) read these; their canaries run in tests/host/hv-tests.
+canary-psci-forwarded = []
+canary-ppi-listed-twice = []
+canary-cntvoff-per-vcpu = []
+canary-ppi-not-silenced = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }

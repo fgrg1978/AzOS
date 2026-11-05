@@ -298,6 +298,8 @@ mod ext;
 // riscv64 H extension primitives (hypervisor plan step H1): G-stage tables,
 // CSR lists, frame layout, exit decode.
 mod hv_rv;
+// aarch64 EL2 (hypervisor step H1): stage-2 encoders, vGIC list registers, vtimer, HVC dispatch.
+mod hv_arm;
 // x86_64 deep idle: the mwait ladder per CPU model, its gates and the model's idle list.
 #[cfg(test)]
 mod idle_x86;
