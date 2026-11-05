@@ -9,6 +9,7 @@ the checkout (the checkout may sit in a synced folder):
     $AZOS_OUT/build/    generated configs, hash tables, ELFs, disk images, kernels
     $AZOS_OUT/target/   the root cargo workspace's target dir
     $AZOS_OUT/tgt/<d>/  the target dir of the standalone crate at <d>
+    $AZOS_OUT/tgt/user-<isa>/  the one target dir of the ring-3 images of an ISA (mk/vars.mk UTGT_*)
 
 The default is `$HOME/azos-out/<checkout dir name>-<8 hex of its realpath>`: one
 root per checkout, so two worktrees never share outputs, whatever they are named

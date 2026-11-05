@@ -12857,13 +12857,13 @@ else
     user_stack_images() { # user_stack_images <rv|arm|x86>: the images, built; prints their paths
         local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t="" tb
         case "$1" in
-            rv)  dir="$AZOS_OUT/build"; tb="riscv64imac-unknown-azos" ;;
-            arm) dir="$AZOS_OUT/build/aarch64"; tb="aarch64-unknown-azos" ;;
-            x86) dir="$AZOS_OUT/build/x86_64"; tb="x86_64-unknown-azos" ;;
+            rv)  dir="$AZOS_OUT/build"; tb="user-riscv64/riscv64imac-unknown-azos" ;;
+            arm) dir="$AZOS_OUT/build/aarch64"; tb="user-aarch64/aarch64-unknown-azos" ;;
+            x86) dir="$AZOS_OUT/build/x86_64"; tb="user-x86_64/x86_64-unknown-azos" ;;
         esac
         for n in $names; do t="$t $dir/$n.elf"; done
         make -s $t >/dev/null 2>&1 || return 1
-        printf '%s\n' $t | sed "s|^$dir/toolbox\.elf\$|$AZOS_OUT/tgt/userspace/services/toolbox/$tb/release/toolbox|"
+        printf '%s\n' $t | sed "s|^$dir/toolbox\.elf\$|$AZOS_OUT/tgt/$tb/release/toolbox|"
     }
     user_stacks_row() { # user_stacks_row <label> <rv|arm|x86>
         printf "  %-26s" "${1}..."

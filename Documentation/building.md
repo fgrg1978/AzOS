@@ -43,7 +43,8 @@ tools/lib/out_dir.py` prints it; the `AZOS_OUT` environment variable overrides i
 |---|---|
 | `$AZOS_OUT/build/` | Generated configs, hash tables, ELFs, disk images, kernel images |
 | `$AZOS_OUT/target/` | The cargo target directory of the root workspace (`CARGO_TARGET_DIR`) |
-| `$AZOS_OUT/tgt/<dir>/` | The cargo target directory of the standalone crate at `<dir>` (every crate under `userspace/` and every suite under `tests/host/`) |
+| `$AZOS_OUT/tgt/user-<isa>/` | The one cargo target directory of every ring-3 image of that ISA (`user-aarch64` carries the granule suffix, `-16k`, `-64k`): `core`, `alloc` and the shared crates are built once per ISA and profile, and each ELF is at `<triple>/release/<bin>` |
+| `$AZOS_OUT/tgt/<dir>/` | The cargo target directory of the standalone crate at `<dir>` (every suite under `tests/host/`) |
 
 Rust sources `include!` generated tables from `$AZOS_OUT/build`, so `AZOS_OUT` is exported
 to every command. To run a bare `cargo` command, export `AZOS_OUT` and point

@@ -14,7 +14,8 @@
 # `$AZOS_OUT/build` (env!("AZOS_OUT")), so it is exported to every command.
 #   OUT_BUILD   generated configs, hash tables, ELFs, disk images, kernel images
 #   OUT_TARGET  the root cargo workspace's target dir (also CARGO_TARGET_DIR)
-#   OUT_TGT     one target dir per standalone crate: $(OUT_TGT)/<repo-relative dir>
+#   OUT_TGT     one target dir per standalone crate: $(OUT_TGT)/<repo-relative dir>,
+#               except the ring-3 images: one shared dir per ISA (UTGT_*, below)
 # In comments below, `build/` and `target/` mean $(OUT_BUILD)/ and $(OUT_TARGET)/.
 AZOS_OUT ?= $(shell python3 "$(CURDIR)/tools/lib/out_dir.py")
 AZOS_OUT := $(AZOS_OUT)
@@ -23,6 +24,20 @@ OUT_BUILD  := $(AZOS_OUT)/build
 OUT_TARGET := $(AZOS_OUT)/target
 OUT_TGT    := $(AZOS_OUT)/tgt
 export CARGO_TARGET_DIR := $(OUT_TARGET)
+
+# The ring-3 images (userspace/services, drivers, tests, bench) share one cargo
+# target dir per ISA, so build-std's core/alloc/compiler_builtins and the common
+# crates (libsys, ...) are built once per (ISA, profile, rustflags) and every
+# image links the same units; cargo keeps differing feature sets and profiles
+# apart by hash. The image's ELF is at <dir>/<triple>/release/<bin>; a rule
+# copies it out in the same recipe that built it, because two crates (or one
+# crate with other features: MLSRV, LXRT_FEATURES, VSBENCH_FEATURES) must not
+# share a <bin>. No two images in these dirs have the same bin name. The std
+# programs (pkgd, rpcquic, why, sdktest) go through tools/build/sdk_cargo.py
+# and have their own dirs. aarch64's has the granule suffix: its link flag
+# changes every unit, and the 4k/16k/64k builds must not meet in one <bin>.
+UTGT_RV64   := $(OUT_TGT)/user-riscv64
+UTGT_X86_64 := $(OUT_TGT)/user-x86_64
 
 # The configuration (`make config` writes it) and the ISA it selects
 # (config/arch/Kconfig.isa, the ARCH choice): `make build` builds that ISA and
@@ -79,26 +94,26 @@ SYSTEST_DIR   := userspace/tests/syscall_test
 SYSTEST_ELF   := $(OUT_BUILD)/syscall_test.elf
 # E11.AQ3 — ring-3 GPIO driver (Rust no_std ELF, built standalone).
 GPIO_DRV_DIR  := userspace/drivers/gpio_drv
-GPIO_DRV_BUILT:= $(OUT_TGT)/$(GPIO_DRV_DIR)/$(TARGET_RISCV64_USER)/release/gpio_drv
+GPIO_DRV_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/gpio_drv
 GPIO_DRV_ELF  := $(OUT_BUILD)/gpio_drv.elf
 # Wave 9 — the ring-3 ML inference service the behavior task spawns
 # (`kernel/src/behavior_ml.rs`). Same standalone shape as gpio_drv.
 MLSRV_DIR     := userspace/services/infsrv
-MLSRV_BUILT   := $(OUT_TGT)/$(MLSRV_DIR)/$(TARGET_RISCV64_USER)/release/infsrv
+MLSRV_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/infsrv
 MLSRV_ELF     := $(OUT_BUILD)/mlsrv.elf
 
 # Wave 9 (DRV1) — the ring-3 buzzer and INA219 drivers.
 # Started by the kernel from their `start = true` topology rows, not by
 # autorun. Shipped only on the drivers disks below (and the board volume).
 BUZZ_DRV_DIR  := userspace/drivers/buzz_drv
-BUZZ_DRV_BUILT:= $(OUT_TGT)/$(BUZZ_DRV_DIR)/$(TARGET_RISCV64_USER)/release/buzz_drv
+BUZZ_DRV_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/buzz_drv
 BUZZ_DRV_ELF  := $(OUT_BUILD)/buzz_drv.elf
 INA_DRV_DIR   := userspace/drivers/ina_drv
-INA_DRV_BUILT := $(OUT_TGT)/$(INA_DRV_DIR)/$(TARGET_RISCV64_USER)/release/ina_drv
+INA_DRV_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/ina_drv
 INA_DRV_ELF   := $(OUT_BUILD)/ina_drv.elf
 # The user shell and its multicall tool image.
 SH_DIR        := userspace/services/sh
-SH_BUILT      := $(OUT_TGT)/$(SH_DIR)/$(TARGET_RISCV64_USER)/release/sh
+SH_BUILT      := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/sh
 SH_ELF        := $(OUT_BUILD)/sh.elf
 # The Terminal object (interface + codec) the shell and its server share, and
 # the terminal server (the console program of the native shell session).
@@ -111,31 +126,31 @@ LOGIN_LIB_SRC := userspace/lib/login/src/lib.rs userspace/lib/login/Cargo.toml
 SH_SRC        := $(SH_DIR)/src/main.rs $(SH_DIR)/src/parse.rs $(SH_DIR)/src/ident.rs \
                  $(SH_DIR)/src/path.rs $(SH_DIR)/src/req.rs $(SH_DIR)/Cargo.toml $(TERM_LIB_SRC) $(NAMES_LIB_SRC)
 TERMD_DIR     := userspace/services/termd
-TERMD_BUILT   := $(OUT_TGT)/$(TERMD_DIR)/$(TARGET_RISCV64_USER)/release/termd
+TERMD_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/termd
 TERMD_ELF     := $(OUT_BUILD)/termd.elf
 TERMD_SRC     := $(wildcard $(TERMD_DIR)/src/*.rs) $(TERMD_DIR)/Cargo.toml $(TERM_LIB_SRC) $(LOGIN_LIB_SRC)
 NAMESD_DIR     := userspace/services/namesd
-NAMESD_BUILT   := $(OUT_TGT)/$(NAMESD_DIR)/$(TARGET_RISCV64_USER)/release/namesd
+NAMESD_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/namesd
 NAMESD_ELF     := $(OUT_BUILD)/namesd.elf
 NAMESD_SRC     := $(NAMESD_DIR)/src/main.rs $(NAMESD_DIR)/src/service.rs $(NAMESD_DIR)/Cargo.toml $(NAMES_LIB_SRC)
 COMPMGR_DIR   := userspace/services/compmgr
-COMPMGR_BUILT := $(OUT_TGT)/$(COMPMGR_DIR)/$(TARGET_RISCV64_USER)/release/compmgr
+COMPMGR_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/compmgr
 COMPMGR_ELF   := $(OUT_BUILD)/compmgr.elf
 COMPMGR_SRC   := $(COMPMGR_DIR)/src/main.rs $(COMPMGR_DIR)/src/tree.rs $(COMPMGR_DIR)/src/contracts.rs $(COMPMGR_DIR)/Cargo.toml \
                  $(NAMES_LIB_SRC) $(TERM_LIB_SRC) $(LOGIN_LIB_SRC) $(DECISIONS_LIB_SRC) $(PACKAGES_LIB_SRC)
 TOOLBOX_DIR   := userspace/services/toolbox
-TOOLBOX_BUILT := $(OUT_TGT)/$(TOOLBOX_DIR)/$(TARGET_RISCV64_USER)/release/toolbox
+TOOLBOX_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/toolbox
 TOOLBOX_ELF   := $(OUT_BUILD)/toolbox.elf
 TOOLBOX_SRC   := $(wildcard $(TOOLBOX_DIR)/src/*.rs) $(TOOLBOX_DIR)/Cargo.toml $(TOOLBOX_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs
 # The power tool (the kernel-hosted `power` endpoint).
 POWER_DIR     := userspace/services/power
-POWER_BUILT   := $(OUT_TGT)/$(POWER_DIR)/$(TARGET_RISCV64_USER)/release/power
+POWER_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/power
 POWER_ELF     := $(OUT_BUILD)/power.elf
 POWER_LIB_SRC := userspace/lib/power/src/lib.rs userspace/lib/power/Cargo.toml
 POWER_SRC     := $(POWER_DIR)/src/main.rs $(POWER_DIR)/src/policy.rs $(POWER_DIR)/Cargo.toml $(POWER_LIB_SRC)
 # Wave 15 (TRACE): the kernel tracer's reader (`Cap<Trace>`, the tracer's ops).
 TRACECTL_DIR  := userspace/services/tracectl
-TRACECTL_BUILT:= $(OUT_TGT)/$(TRACECTL_DIR)/$(TARGET_RISCV64_USER)/release/tracectl
+TRACECTL_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/tracectl
 TRACECTL_ELF  := $(OUT_BUILD)/tracectl.elf
 TRACECTL_SRC  := $(TRACECTL_DIR)/src/main.rs $(TRACECTL_DIR)/src/profile.rs $(TRACECTL_DIR)/Cargo.toml $(TRACECTL_DIR)/build.rs crates/core/trace/src/prof.rs
 # The decision query: the server (`Decisions` on `endpoint.decisions`, from
@@ -143,24 +158,24 @@ TRACECTL_SRC  := $(TRACECTL_DIR)/src/main.rs $(TRACECTL_DIR)/src/profile.rs $(TR
 # `userspace/lib/decisions`.
 DECISIONS_LIB_SRC := userspace/lib/decisions/src/lib.rs userspace/lib/decisions/Cargo.toml
 DECISD_DIR := userspace/services/decisd
-DECISD_BUILT:= $(OUT_TGT)/$(DECISD_DIR)/$(TARGET_RISCV64_USER)/release/decisd
+DECISD_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/decisd
 DECISD_ELF := $(OUT_BUILD)/decisd.elf
 DECISD_SRC := $(DECISD_DIR)/src/main.rs $(DECISD_DIR)/src/bin.rs $(DECISD_DIR)/Cargo.toml $(DECISIONS_LIB_SRC)
 INPUTD_DIR := userspace/services/inputd
-INPUTD_BUILT:= $(OUT_TGT)/$(INPUTD_DIR)/$(TARGET_RISCV64_USER)/release/inputd
+INPUTD_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/inputd
 INPUTD_ELF := $(OUT_BUILD)/inputd.elf
 INPUTD_SRC := $(INPUTD_DIR)/src/main.rs $(INPUTD_DIR)/src/focus.rs $(INPUTD_DIR)/Cargo.toml crates/core/devif/src/input.rs crates/drivers/input/wire/src/event.rs
 # The compositor (Kconfig COMPOSITOR): the sole holder of the Display interface and
 # the Secure Attention Key's trusted surface. It links the pixel engine and the
 # protocol library, and includes the framebuffer console's font.
 COMPSRV_DIR := userspace/services/compositor
-COMPSRV_BUILT:= $(OUT_TGT)/$(COMPSRV_DIR)/$(TARGET_RISCV64_USER)/release/compositor
+COMPSRV_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/compositor
 COMPSRV_ELF := $(OUT_BUILD)/compsrv.elf
 COMPSRV_SRC := $(wildcard $(COMPSRV_DIR)/src/*.rs) $(COMPSRV_DIR)/Cargo.toml $(wildcard userspace/lib/compositor/src/*.rs userspace/lib/compose/src/*.rs) crates/core/devif/src/input.rs crates/core/devif/src/display.rs crates/drivers/fb/src/font.rs
 # The kernel log's sink (Kconfig KLOG): drains `MemObj klog.ring` into KLOGn.TXT;
 # it shares the ring's wire with the kernel and the toolbox's `log`.
 LOGD_DIR   := userspace/services/logd
-LOGD_BUILT := $(OUT_TGT)/$(LOGD_DIR)/$(TARGET_RISCV64_USER)/release/logd
+LOGD_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/logd
 LOGD_ELF   := $(OUT_BUILD)/logd.elf
 LOGD_SRC   := $(LOGD_DIR)/src/main.rs $(LOGD_DIR)/src/store.rs $(LOGD_DIR)/Cargo.toml $(LOGD_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs
 WHY_DIR       := userspace/services/why
@@ -178,57 +193,57 @@ PKGD_DIR      := userspace/services/pkgd
 TLS_LIB_SRC   := $(shell find userspace/lib/tls/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') userspace/lib/tls/Cargo.toml
 PKGD_ELF      := $(OUT_BUILD)/pkgd.elf
 PKG_DIR       := userspace/services/pkg
-PKG_BUILT     := $(OUT_TGT)/$(PKG_DIR)/$(TARGET_RISCV64_USER)/release/pkg
+PKG_BUILT     := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/pkg
 PKG_ELF       := $(OUT_BUILD)/pkg.elf
 PKG_SRC       := $(PKG_DIR)/src/main.rs $(PKG_DIR)/Cargo.toml $(PACKAGES_LIB_SRC)
 RPC_LIB_SRC   := $(wildcard userspace/lib/rpc/src/*.rs) userspace/lib/rpc/Cargo.toml
 RPCSRV_DIR    := userspace/services/rpcsrv
-RPCSRV_BUILT  := $(OUT_TGT)/$(RPCSRV_DIR)/$(TARGET_RISCV64_USER)/release/rpcsrv
+RPCSRV_BUILT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/rpcsrv
 RPCSRV_ELF    := $(OUT_BUILD)/rpcsrv.elf
 RPCSRV_SRC    := $(RPCSRV_DIR)/src/main.rs $(RPCSRV_DIR)/Cargo.toml $(RPC_LIB_SRC) $(DECISIONS_LIB_SRC)
 # The Zenoh gateway (Kconfig ZENOH_GW) over the in-tree Zenoh codec.
 ZENOH_LIB_SRC := $(wildcard userspace/lib/zenoh/src/*.rs) userspace/lib/zenoh/Cargo.toml
 ZENOHD_DIR    := userspace/services/zenohd
-ZENOHD_BUILT  := $(OUT_TGT)/$(ZENOHD_DIR)/$(TARGET_RISCV64_USER)/release/zenohd
+ZENOHD_BUILT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/zenohd
 ZENOHD_ELF    := $(OUT_BUILD)/zenohd.elf
 # The relay of the QUIC link (Kconfig RPC_QUIC): a std program (userspace/lib/quic), its recipes with the SDK's.
 RPCQUIC_ELF   := $(OUT_BUILD)/rpcquic.elf
 ZENOHD_SRC    := $(wildcard $(ZENOHD_DIR)/src/*.rs) $(ZENOHD_DIR)/Cargo.toml $(ZENOH_LIB_SRC) $(DECISIONS_LIB_SRC) $(UALLOC_SRC)
 # The PTP daemon (Kconfig PTPD).
 PTPD_DIR    := userspace/services/ptpd
-PTPD_BUILT  := $(OUT_TGT)/$(PTPD_DIR)/$(TARGET_RISCV64_USER)/release/ptpd
+PTPD_BUILT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/ptpd
 PTPD_ELF    := $(OUT_BUILD)/ptpd.elf
 PTPD_SRC     := $(wildcard $(PTPD_DIR)/src/*.rs) $(PTPD_DIR)/Cargo.toml $(PTPD_DIR)/build.rs
 
 # The audio server (Kconfig AUDIOD).
 AUDIOD_DIR   := userspace/services/audiod
-AUDIOD_BUILT := $(OUT_TGT)/$(AUDIOD_DIR)/$(TARGET_RISCV64_USER)/release/audiod
+AUDIOD_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/audiod
 AUDIOD_ELF   := $(OUT_BUILD)/audiod.elf
 AUDIOD_SRC   := $(wildcard $(AUDIOD_DIR)/src/*.rs) $(AUDIOD_DIR)/Cargo.toml
 # The MCP bridge (Kconfig MCP_BRIDGE) over the in-tree MCP codec and the RPC
 # transport's warrant token.
 MCP_LIB_SRC   := $(wildcard userspace/lib/mcp/src/*.rs) userspace/lib/mcp/Cargo.toml
 MCPD_DIR      := userspace/services/mcpd
-MCPD_BUILT    := $(OUT_TGT)/$(MCPD_DIR)/$(TARGET_RISCV64_USER)/release/mcpd
+MCPD_BUILT    := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/mcpd
 MCPD_ELF      := $(OUT_BUILD)/mcpd.elf
 MCPD_SRC      := $(wildcard $(MCPD_DIR)/src/*.rs) $(MCPD_DIR)/Cargo.toml $(MCP_LIB_SRC) $(RPC_LIB_SRC) $(DECISIONS_LIB_SRC) $(UALLOC_SRC)
 # The SSH server (Kconfig SSHD, default y; n on MICRO and a certifiable build). It pulls in the terminal
 # server's line discipline and the shell's path and spawn-request modules with
 # #[path], so their files are among its sources.
 SSHD_DIR      := userspace/services/sshd
-SSHD_BUILT    := $(OUT_TGT)/$(SSHD_DIR)/$(TARGET_RISCV64_USER)/release/sshd
+SSHD_BUILT    := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/sshd
 SSHD_ELF      := $(OUT_BUILD)/sshd.elf
 SSHD_SRC      := $(wildcard $(SSHD_DIR)/src/*.rs) $(SSHD_DIR)/Cargo.toml userspace/services/termd/src/disc.rs userspace/services/termd/src/edit.rs \
                  userspace/services/sh/src/path.rs userspace/services/sh/src/req.rs $(UALLOC_SRC)
 # The login service (Kconfig CONSOLE_LOGIN, default n): the Login object's
 # server. The interface (`LOGIN_LIB_SRC`, above) is a library of its own.
 LOGIND_DIR    := userspace/services/logind
-LOGIND_BUILT  := $(OUT_TGT)/$(LOGIND_DIR)/$(TARGET_RISCV64_USER)/release/logind
+LOGIND_BUILT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/logind
 LOGIND_ELF    := $(OUT_BUILD)/logind.elf
 LOGIND_SRC    := $(wildcard $(LOGIND_DIR)/src/*.rs) $(LOGIND_DIR)/Cargo.toml $(LOGIN_LIB_SRC)
 # Hypervisor H1: the ring-3 virtual-machine monitor (the device models of a guest).
 VMMD_DIR      := userspace/services/vmmd
-VMMD_BUILT    := $(OUT_TGT)/$(VMMD_DIR)/$(TARGET_RISCV64_USER)/release/vmmd
+VMMD_BUILT    := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/vmmd
 VMMD_ELF      := $(OUT_BUILD)/vmmd.elf
 VMMD_SRC      := $(wildcard $(VMMD_DIR)/src/*.rs) $(VMMD_DIR)/Cargo.toml $(VMMD_DIR)/build.rs
 # Kconfig LINUX_RUNTIME: the ring-3 half of the Linux personality
@@ -236,7 +251,7 @@ VMMD_SRC      := $(wildcard $(VMMD_DIR)/src/*.rs) $(VMMD_DIR)/Cargo.toml $(VMMD_
 # the kernel embeds it (`include_bytes!` in kernel/src/boot/seams.rs) and maps
 # it into every Linux process at spawn. Built only when the .config asks.
 LXRT_DIR      := userspace/services/lxrt
-LXRT_BUILT    := $(OUT_TGT)/$(LXRT_DIR)/$(TARGET_RISCV64_USER)/release/lxrt
+LXRT_BUILT    := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/lxrt
 LXRT_ELF      := $(OUT_BUILD)/linux_rt.elf
 LXRT_SRC      := $(LXRT_DIR)/src/main.rs $(LXRT_DIR)/Cargo.toml $(LXRT_DIR)/build.rs \
                  userspace/lib/linux_rt/src/lib.rs userspace/lib/linux_rt/Cargo.toml \
@@ -264,7 +279,7 @@ LXRT_NEED     = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(or $(KCONFIG_CONFIG
 # each (`FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`).
 FAMTOOLS_DIR  := userspace/services/famtools
 FAMTOOLS_SRC  := $(wildcard $(FAMTOOLS_DIR)/src/*.rs $(FAMTOOLS_DIR)/src/bin/*.rs) $(FAMTOOLS_DIR)/Cargo.toml
-FAMTOOLS_OUT  := $(OUT_TGT)/$(FAMTOOLS_DIR)/$(TARGET_RISCV64_USER)/release
+FAMTOOLS_OUT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release
 FLIGHT_ELF    := $(OUT_BUILD)/flight.elf
 BEHAVIOR_ELF  := $(OUT_BUILD)/behavior.elf
 CONFIG_ELF    := $(OUT_BUILD)/config.elf
@@ -282,7 +297,7 @@ UALLOC_SRC    := $(wildcard userspace/lib/ualloc/src/*.rs) userspace/lib/ualloc/
 # The Linux driver server skeleton. Links the module loader
 # (crates/core/lx-loader, no Linux code) and nothing from crates/drivers/lx/.
 LXSRV_DIR     := userspace/services/lxsrv
-LXSRV_BUILT   := $(OUT_TGT)/$(LXSRV_DIR)/$(TARGET_RISCV64_USER)/release/lxsrv
+LXSRV_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/lxsrv
 LXSRV_ELF     := $(OUT_BUILD)/lxsrv.elf
 LXSRV_SRC     := $(LXSRV_DIR)/src/main.rs $(LXSRV_DIR)/Cargo.toml \
                  $(wildcard crates/core/lx-loader/src/*.rs) crates/core/lx-loader/Cargo.toml \
@@ -292,54 +307,54 @@ LXSRV_SRC     := $(LXSRV_DIR)/src/main.rs $(LXSRV_DIR)/Cargo.toml \
 # below), so nothing copied them to a disk image and nothing could exec them.
 # Same shape of hole SYSTEST.ELF sat in for months.
 UHELLO_DIR    := userspace/tests/uhello
-UHELLO_BUILT  := $(OUT_TGT)/$(UHELLO_DIR)/$(TARGET_RISCV64_USER)/release/uhello
+UHELLO_BUILT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/uhello
 UHELLO_ELF    := $(OUT_BUILD)/uhello.elf
 # The server half of `endpoint.demo`. A separate
 # image from uhello because a ring-3 program's role on an endpoint is its
 # capability permission, and permissions come from the topology row looked up
 # by IMAGE NAME: one image, one row, one role. See userspace/tests/epsrv/src/main.rs.
 VSSRV_DIR     := userspace/bench/vssrv
-VSSRV_BUILT   := $(OUT_TGT)/$(VSSRV_DIR)/$(TARGET_RISCV64_USER)/release/vssrv
+VSSRV_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/vssrv
 VSSRV_ELF     := $(OUT_BUILD)/vssrv.elf
 EPSRV_DIR     := userspace/tests/epsrv
-EPSRV_BUILT   := $(OUT_TGT)/$(EPSRV_DIR)/$(TARGET_RISCV64_USER)/release/epsrv
+EPSRV_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/epsrv
 EPSRV_ELF     := $(OUT_BUILD)/epsrv.elf
 ABICHILD_DIR   := userspace/tests/abichild
-ABICHILD_BUILT := $(OUT_TGT)/$(ABICHILD_DIR)/$(TARGET_RISCV64_USER)/release/abichild
+ABICHILD_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/abichild
 ABICHILD_ELF   := $(OUT_BUILD)/abichild.elf
 REFLEX_DIR    := userspace/services/reflex
-REFLEX_BUILT  := $(OUT_TGT)/$(REFLEX_DIR)/$(TARGET_RISCV64_USER)/release/reflex
+REFLEX_BUILT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/reflex
 REFLEX_ELF    := $(OUT_BUILD)/reflex.elf
 BRAINCLI_DIR  := userspace/services/brain_client
-BRAINCLI_BUILT:= $(OUT_TGT)/$(BRAINCLI_DIR)/$(TARGET_RISCV64_USER)/release/brain_client
+BRAINCLI_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/brain_client
 BRAINCLI_ELF  := $(OUT_BUILD)/brain_client.elf
 # captest — ring-3 capability test (positive AND negative halves).
 CAPTEST_DIR   := userspace/tests/captest
-CAPTEST_BUILT := $(OUT_TGT)/$(CAPTEST_DIR)/$(TARGET_RISCV64_USER)/release/captest
+CAPTEST_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/captest
 CAPTEST_ELF   := $(OUT_BUILD)/captest.elf
 # latbench — ring-3 syscall latency microbenchmark.
 # vsbench - the same ring-3 work, measured on Azos and on Linux/riscv64.
 # The Linux side is NOT built here: it needs a different target and its own
 # toolchain.
 VSBENCH_DIR   := userspace/bench/vsbench
-VSBENCH_BUILT := $(OUT_TGT)/$(VSBENCH_DIR)/$(TARGET_RISCV64_USER)/release/vsbench
+VSBENCH_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/vsbench
 VSBENCH_ELF   := $(OUT_BUILD)/vsbench.elf
 
 LATBENCH_DIR  := userspace/bench/latbench
-LATBENCH_BUILT:= $(OUT_TGT)/$(LATBENCH_DIR)/$(TARGET_RISCV64_USER)/release/latbench
+LATBENCH_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/latbench
 LATBENCH_ELF  := $(OUT_BUILD)/latbench.elf
 # abitest - syscall ABI conformance from ring 3.
 ABITEST_DIR   := userspace/tests/abitest
-ABITEST_BUILT := $(OUT_TGT)/$(ABITEST_DIR)/$(TARGET_RISCV64_USER)/release/abitest
+ABITEST_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/abitest
 ABITEST_ELF   := $(OUT_BUILD)/abitest.elf
 # ipctest - ring-3 IPC probe: fast-path round trip, server impersonation, and
 # the shm/port/io_ring ownership gates.
 IPCTEST_DIR   := userspace/tests/ipctest
-IPCTEST_BUILT := $(OUT_TGT)/$(IPCTEST_DIR)/$(TARGET_RISCV64_USER)/release/ipctest
+IPCTEST_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/ipctest
 IPCTEST_ELF   := $(OUT_BUILD)/ipctest.elf
 # mempress - ring-3 memory pressure driver of the reclaim rows.
 MEMPRESS_DIR   := userspace/tests/mempress
-MEMPRESS_BUILT := $(OUT_TGT)/$(MEMPRESS_DIR)/$(TARGET_RISCV64_USER)/release/mempress
+MEMPRESS_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/mempress
 MEMPRESS_ELF   := $(OUT_BUILD)/mempress.elf
 SDKTEST_ELF    := $(OUT_BUILD)/sdktest.elf
 
@@ -404,6 +419,7 @@ endif
 AARCH64_PG_LINK   := $(comma)"-C","link-arg=-zmax-page-size=$(AARCH64_PAGE_SIZE)"
 endif
 AARCH64_PG_TABLE  := $(subst -,_,$(AARCH64_PG_SUFFIX))
+UTGT_AARCH64      := $(OUT_TGT)/user-aarch64$(AARCH64_PG_SUFFIX)
 AARCH64_UFLAGS     = --target $(USER_SPECS)/$(TARGET_AARCH64).json \
 	--config 'target.$(TARGET_AARCH64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"$(AARCH64_PG_LINK)$(if $(AARCH64_USER_ISA),$(comma)$(AARCH64_USER_ISA))]'
 AARCH64_DIR    := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX)
