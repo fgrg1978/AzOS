@@ -105,6 +105,9 @@ if [ "$tier" = n0 ] || [ "$tier" = compile ]; then
         printf '%s\n' "$out" | grep -iE 'error|FAIL' | sed -n 1,5p | sed 's/^/      /'
     fi
     printf "  %-26s" "aarch64 split kernel check..."
+    # One target dir per worktree: azos_limits' build script watches the Kconfig
+    # files by the path of the tree that built it, so a dir shared between
+    # worktrees misses a symbol another tree added.
     splitcfg="$AZOS_OUT/cfg/a64-split.config"
     mkdir -p "$(dirname "$splitcfg")"
     cp config/defconfigs/generic-sbc-aarch64-dev+qemu+linux+gui.config "$splitcfg.base"
@@ -116,7 +119,7 @@ if [ "$tier" = n0 ] || [ "$tier" = compile ]; then
                  cargo build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
                    --no-default-features --features "${sf##*--features }" \
                    --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' \
-                   --target-dir "$AZOS_OUT/target/a64-split" 2>&1)"; then
+                   --target-dir "$AZOS_OUT/target/a64-split-$(pwd -P | shasum | cut -c1-8)" 2>&1)"; then
         echo ok
     else
         echo FAIL; fail=1
