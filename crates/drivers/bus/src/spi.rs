@@ -438,6 +438,10 @@ pub struct SpiPort {
 }
 
 impl SpiPort {
+    pub const fn new(bus: u8, cs: u8) -> Self {
+        SpiPort { bus, cs }
+    }
+
     /// The port an endpoint badge names (`bus << 8 | cs`).
     pub const fn from_badge(badge: u32) -> Self {
         let (bus, cs) = spi::unbadge(badge);

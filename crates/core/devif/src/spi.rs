@@ -102,3 +102,20 @@ pub trait Spi {
     #[idempotent]
     fn hold_cs(&mut self, hold: bool) -> Out<()>;
 }
+
+/// Clock `tx` out and fill `rx` (the same length) with what comes in, in
+/// transfers of at most [`MAX_BYTES`]. The chip select is the caller's
+/// ([`SpiCall::hold_cs`]): without a hold the controller releases it between
+/// the transfers of a long buffer.
+pub fn transfer_all<C: SpiCall + ?Sized>(spi: &mut C, tx: &[u8], rx: &mut [u8]) -> Result<(), u32> {
+    if tx.len() != rx.len() {
+        return Err(crate::outcome::BAD_ARGUMENT);
+    }
+    for (t, r) in tx.chunks(MAX_BYTES).zip(rx.chunks_mut(MAX_BYTES)) {
+        let got = crate::outcome::served(spi.transfer(Bytes::from_slice(t)))?;
+        if got.copy_to(r) != r.len() {
+            return Err(crate::outcome::FAULT);
+        }
+    }
+    Ok(())
+}

@@ -88,3 +88,33 @@ pub trait I2c {
     /// 1 when the device answers its address, else 0. Needs `READ`.
     fn detect(&mut self) -> Out<u32>;
 }
+
+/// Fill `buf` from the registers of the device `bus` is bound to, starting at
+/// `reg`, in transfers of at most [`MAX_BYTES`]. A short answer is a failure.
+pub fn read_regs<C: I2cCall + ?Sized>(bus: &mut C, reg: u8, buf: &mut [u8]) -> Result<(), u32> {
+    let mut done = 0;
+    while done < buf.len() {
+        let n = (buf.len() - done).min(MAX_BYTES);
+        let at = reg as usize + done;
+        if at > 0xFF {
+            return Err(crate::outcome::BAD_ARGUMENT);
+        }
+        let got = crate::outcome::served(bus.read(at as u32, n as u32))?;
+        if got.copy_to(&mut buf[done..done + n]) != n {
+            return Err(crate::outcome::FAULT);
+        }
+        done += n;
+    }
+    Ok(())
+}
+
+/// Write `data` (register first, then its bytes) to the device `bus` is bound
+/// to, as one transfer: more than [`MAX_BYTES`] is `BAD_ARGUMENT`, because a
+/// second transfer would start with a data byte where the device expects a
+/// register.
+pub fn write_bytes<C: I2cCall + ?Sized>(bus: &mut C, data: &[u8]) -> Result<(), u32> {
+    if data.is_empty() || data.len() > MAX_BYTES {
+        return Err(crate::outcome::BAD_ARGUMENT);
+    }
+    crate::outcome::served(bus.write(Bytes::from_slice(data)))
+}

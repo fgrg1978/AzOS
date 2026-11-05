@@ -12,6 +12,7 @@
 pub mod i2c_driver;
 
 pub mod i2c;
+pub mod i2c_port;
 pub mod i2c_txn;
 
 // The DesignWare controller's identity check and bring-up (Kconfig

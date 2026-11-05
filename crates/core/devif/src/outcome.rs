@@ -56,6 +56,16 @@ impl<T> Out<T> {
     }
 }
 
+/// A call's two failure layers as one code: the call did not reach a server
+/// ([`NO_SERVER`]), or the server refused or failed the op (its code).
+pub fn served<T>(r: azos_idl::Result<Out<T>>) -> Result<T, u32> {
+    match r {
+        Ok(Out { code: OK, value }) => Ok(value),
+        Ok(Out { code, .. }) => Err(code),
+        Err(_) => Err(NO_SERVER),
+    }
+}
+
 impl<T: Default> Out<T> {
     /// Refused or failed with `code`, no value.
     pub fn err(code: u32) -> Self {
