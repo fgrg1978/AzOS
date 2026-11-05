@@ -233,18 +233,28 @@ impl State {
         self.find(slot, leaf)
     }
 
-    /// Set file `idx`'s size to `len`, which is at most its size. The
-    /// allocation is kept (freed when it empties) and counts by size.
+    /// Set file `idx`'s size to `len`, which is at most its size, and give
+    /// the allocation back down to it, so `TMPFS_MAX_BYTES` bounds the heap.
     fn cut(&mut self, idx: usize, len: usize) {
         let e = &mut self.entries[idx];
         self.used_bytes -= e.size - len;
         e.size = len;
-        if len == 0 && !e.data.is_null() {
-            // SAFETY: allocated with `e.capacity` in `put`.
-            unsafe { dealloc(e.data, Layout::from_size_align_unchecked(e.capacity, 1)); }
-            e.data = ptr::null_mut();
-            e.capacity = 0;
-        }
+        if e.data.is_null() || len == e.capacity { return; }
+        let fresh = if len == 0 {
+            ptr::null_mut()
+        } else {
+            // SAFETY: `len` is not zero.
+            let p = unsafe { alloc(Layout::from_size_align_unchecked(len, 1)) };
+            // Out of memory: the larger allocation stays, uncounted.
+            if p.is_null() { return; }
+            // SAFETY: `p` holds `len` bytes and the old data at least that.
+            unsafe { ptr::copy_nonoverlapping(e.data, p, len); }
+            p
+        };
+        // SAFETY: allocated with `e.capacity` in `put`.
+        unsafe { dealloc(e.data, Layout::from_size_align_unchecked(e.capacity, 1)); }
+        e.data = fresh;
+        e.capacity = len;
     }
 
     /// Take entry `idx` off its name. Open files keep it alive, unnamed, until
@@ -342,6 +352,12 @@ pub struct TmpFs {
 }
 
 impl TmpFs {
+    /// Bytes of heap the files hold (the allocations, not their sizes).
+    #[cfg(test)]
+    pub fn heap_bytes(&self) -> usize {
+        self.state.lock().entries.iter().filter(|e| e.active).map(|e| e.capacity).sum()
+    }
+
     /// `evicts`: a write past the byte bound frees the oldest file to fit
     /// (scratch space) instead of being refused.
     pub const fn new(evicts: bool) -> Self {

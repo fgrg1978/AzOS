@@ -281,6 +281,27 @@ fn a_descriptor_follows_the_file_not_the_name() {
     tmpfs_h::clear();
 }
 
+/// A truncate that shrinks a file gives the allocation back, so the byte bound
+/// is the heap a mount holds.
+///
+/// **Canary.** `State::cut` keeping the capacity: the heap stays at 100,000.
+#[test]
+fn a_shrinking_truncate_releases_the_heap() {
+    let _g = serial();
+    setup();
+    let heap = || tmpfs::TMPFS_TMP.heap_bytes();
+    assert!(put(b"/tmp/t", &vec![7u8; 100_000]));
+    assert_eq!(heap(), 100_000);
+    assert_eq!(vfs::vfs_truncate(b"/tmp/t", 10), Ok(()));
+    assert_eq!(heap(), 10, "the allocation follows the size down");
+    assert_eq!(get(b"/tmp/t").as_deref(), Some(&[7u8; 10][..]), "what is left is intact");
+    assert_eq!(vfs::vfs_truncate(b"/tmp/t", 1000), Ok(()));
+    assert_eq!(get(b"/tmp/t").map(|v| v.iter().filter(|&&b| b == 0).count()), Some(990), "growth is zeros");
+    assert_eq!(vfs::vfs_truncate(b"/tmp/t", 0), Ok(()));
+    assert_eq!(heap(), 0);
+    tmpfs_h::clear();
+}
+
 /// A name is at most 63 bytes; a path may be as long as the VFS's own limit
 /// (`MAX_PATH`, 512 with its NUL), however many directories it takes.
 ///
