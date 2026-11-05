@@ -57,6 +57,7 @@ const BASE: usize = END - WINDOW;
 
 const _: () = assert!(SIZE % PAGE_SIZE == 0, "KERNEL_STACK_SIZE_KB must be a whole number of pages");
 const _: () = assert!(BASE % WINDOW == 0, "the stack window must be aligned to its size");
+// arch-only: the 64-slot limit is Sv39's; the other ISAs' kernel halves are wider.
 #[cfg(all(target_os = "none", target_arch = "riscv64"))]
 const _: () = assert!(WINDOW <= 64 << 30, "the stack window must stay in the top 64 kernel-only slots of Sv39");
 

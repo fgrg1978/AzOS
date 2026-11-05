@@ -60,10 +60,12 @@ pub(crate) const SUBJECT_RTC: u16 = 0xff00;
 
 // ── The kernel's side of the drivers: the windows, the ports, the bus ────────
 
+// arch-only: port I/O exists only on x86_64.
 /// The PC's I/O ports.
 #[cfg(target_arch = "x86_64")]
 struct PcPorts;
 
+// arch-only: port I/O exists only on x86_64.
 #[cfg(target_arch = "x86_64")]
 impl azos_drvkit::PortIo for PcPorts {
     fn inb(&self, port: u16) -> u8 {

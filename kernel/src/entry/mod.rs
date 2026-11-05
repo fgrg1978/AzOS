@@ -13,6 +13,7 @@
 //! over the frame; `tools/lint/trap_lint.py` keeps it out of this directory.
 
 pub mod aarch64;
+// arch-only: x86_64 takes a stack overflow on its IST double-fault stack.
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 pub mod kstack_overflow;
 pub mod riscv64;
