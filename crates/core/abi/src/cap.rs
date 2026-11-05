@@ -780,9 +780,10 @@ pub mod slot_word {
     }
 }
 
-/// The image name a launch capability targets (`ty::LAUNCH`): an 8.3 name of
-/// upper-case letters, digits, `_` and `-`, ending in `.ELF`. Every kernel
-/// that grants or spawns on a launch capability checks it here.
+/// What a launch capability targets (`ty::LAUNCH`): an image name, an 8.3 name
+/// of upper-case letters, digits, `_` and `-`, ending in `.ELF`, or a signed
+/// package ([`launch_name::parse`]). Every kernel that grants or spawns on a
+/// launch capability checks it here.
 pub mod launch_name {
     /// Longest image name.
     pub const MAX: usize = 12;
@@ -794,6 +795,40 @@ pub mod launch_name {
         }
         let base = &name[..name.len() - 4];
         base.len() <= 8 && base.iter().all(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    }
+
+    /// Spelling of a package grant's target: `pkg.` and the 64 lower-case hex
+    /// digits of the package's id.
+    pub const PACKAGE_PREFIX: &[u8] = b"pkg.";
+
+    /// What a launch grant's target names: one image, or every image of one
+    /// signed package.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Target<'a> {
+        /// An image, by its name ([`is_valid`]).
+        Image(&'a [u8]),
+        /// A package, by its id (`azos_pkg`'s `Verified::id`).
+        Package([u8; 32]),
+    }
+
+    /// The grant `target` names, or `None` for a spelling that is neither.
+    pub fn parse(target: &[u8]) -> Option<Target<'_>> {
+        let Some(hex) = target.strip_prefix(PACKAGE_PREFIX) else {
+            return is_valid(target).then_some(Target::Image(target));
+        };
+        if hex.len() != 64 {
+            return None;
+        }
+        let mut id = [0u8; 32];
+        for (i, pair) in hex.chunks_exact(2).enumerate() {
+            let nibble = |b: u8| match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'a'..=b'f' => Some(b - b'a' + 10),
+                _ => None,
+            };
+            id[i] = nibble(pair[0])? << 4 | nibble(pair[1])?;
+        }
+        Some(Target::Package(id))
     }
 }
 

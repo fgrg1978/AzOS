@@ -743,11 +743,12 @@ config TOPOLOGY_NAME_MAX
 config TOPOLOGY_TARGET_MAX
     int "Longest grant target in a topology (bytes)"
     range 16 255
-    default 64
+    default 80
     help
       MAX_TARGET_LEN: the longest `target = "..."` of a grant (a channel
-      path, an image name, "disk.part.1"); longer is refused. No RAM cost
-      (targets borrow from the file buffer).
+      path, an image name, "disk.part.1", a package launch grant `pkg.`
+      and 64 hex digits); longer is refused. No RAM cost (targets borrow
+      from the file buffer).
 
 config TOPOLOGY_INLINE_FIELDS_MAX
     int "Fields in one grant's inline table"

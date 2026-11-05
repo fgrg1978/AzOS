@@ -4986,7 +4986,8 @@ mod signed_topology_tests {
         for raw in 0u8..64 {
             let Some(kind) = CapKind::from_raw(raw) else { continue };
             let Some(word) = cap_kind_word(kind) else { continue };
-            let text = format!("[task.x]\ncaps = [\n    {{ kind = \"{word}\", target = \"t\", perm = \"r\" }},\n]\n");
+            let (target, perm) = if kind == CapKind::Node { ("T.ELF", "x") } else { ("t", "r") };
+            let text = format!("[task.x]\ncaps = [\n    {{ kind = \"{word}\", target = \"{target}\", perm = \"{perm}\" }},\n]\n");
             let mut t = Box::new(Topology::empty());
             parse_sched(sched, &mut t).unwrap();
             parse_caps(text.as_bytes(), &mut t).unwrap_or_else(|e| panic!("{word}: {e:?}"));
@@ -6221,6 +6222,9 @@ mod ring3_priority_order;
 // Who may write the USB stick's volume (`/usb`, Kconfig `USB_STORAGE_VOLUME`).
 #[cfg(test)]
 mod usb_volume_grant;
+// A `node` row that names an image or a package: the spellings the parser admits.
+#[cfg(test)]
+mod launch_grants;
 
 /// A grant's `ops` becomes the op mask of the capability the task holds.
 #[cfg(test)]

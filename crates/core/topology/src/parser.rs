@@ -853,6 +853,14 @@ fn cap_spec_from_inline<'a>(
     if kind == CapKind::Endpoint && target.as_str().strip_prefix("motor").is_some_and(|r| r.is_empty() || r.starts_with('.')) {
         return Err(ParseError::UnknownEnumValue);
     }
+    // A node that is not a directory tree is a launch grant: EXEC on one image
+    // or on one package. Anything else would be seeded to nothing at boot.
+    if kind == CapKind::Node
+        && !target.as_bytes().starts_with(b"/")
+        && (perms != CapPerms::EXEC || azos_abi::cap::launch_name::parse(target.as_bytes()).is_none())
+    {
+        return Err(ParseError::BadValue);
+    }
     let transfer = transfer.unwrap_or(false);
     // A mask of ops names the ops of an interface the kernel hosts. A task's
     // endpoint (`endpoint.<name>`) has no op table the kernel could hold a
