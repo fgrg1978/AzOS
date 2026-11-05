@@ -111,8 +111,9 @@ fn stub() -> Option<Stub> {
 /// `(POWER_DATA_SIZE, acq_ns)`, or `(0, 0)` without a configured chip or an
 /// answering host.
 ///
-/// Blocks the caller for a ring-3 host's reply: never call from an interrupt
-/// handler or with a lock held.
+/// Blocks the caller for a ring-3 host's reply, at most the kernel's reply
+/// budget (`kernel/src/powermon.rs`): never call from an interrupt handler or
+/// with a lock held.
 pub fn ina219_read_power_stamped(buf: &mut [u8]) -> (usize, u64) {
     if buf.len() < POWER_DATA_SIZE {
         return (0, 0);

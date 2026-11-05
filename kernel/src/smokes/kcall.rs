@@ -18,10 +18,14 @@
 //!   kernel's call by name (`kcall::call_named`, the call a ring-3 task's
 //!   syscall makes on the kernel's authority) is served, and the calling
 //!   task's table holds no capability on the endpoint afterwards.
-//! * `a_power_read_leaves_no_capability_with_the_reader`: the call behind the
-//!   power sensor (`powermon::endpoint_call`) leaves the reader's table with no
-//!   capability on `endpoint.powermon`, whether or not a host serves it.
-//!   Runtime canary `powermon-mint`: the call mints one, `not ok`.
+//! * `a_power_read_leaves_no_capability_with_the_reader`: the call to the
+//!   ring-3 power monitor (`powermon::call_host`) leaves the calling task's
+//!   table with no capability on `endpoint.powermon`, whether or not a host
+//!   serves it. Runtime canary `powermon-mint`: the call mints one, `not ok`.
+//! * `a_power_read_of_a_hung_host_is_bounded`: a host that takes the call and
+//!   does not answer costs a power read the reply budget
+//!   (`PROXY_REPLY_TIMEOUT_MS`), then `DeadlineExpired`. Runtime canary
+//!   `powermon-unbounded`: the read waits for the answer, `not ok`.
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 
@@ -258,7 +262,7 @@ static POWER_RC: AtomicI64 = AtomicI64::new(NOT_YET);
 fn power_reader(_: usize) {
     let me = azos_sched::current_task_tid();
     let mut m = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: 1, ..MsgDesc::default() };
-    let _ = crate::powermon::endpoint_call(&mut m);
+    let _ = crate::powermon::call_host(&mut m);
     let name = azos_devif::powermon::ENDPOINT_NAME.as_bytes();
     POWER_RC.store(if holds_cap_on(me, name) { -1 } else { 1 }, Ordering::Release);
 }
@@ -270,6 +274,81 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("the reader never returned", || POWER_RC.load(Ordering::Acquire) != NOT_YET)?;
         if POWER_RC.load(Ordering::Acquire) != 1 {
             return Err("a power read left a capability on endpoint.powermon in the reader's table");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "board-io")]
+static HUNG_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "board-io")]
+static HUNG_TOOK: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "board-io")]
+static HUNG_READ_DONE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "board-io")]
+static HUNG_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+#[cfg(feature = "board-io")]
+static HUNG_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Serves `endpoint.powermon` and answers nothing until the read has ended
+/// (or 3 s, so a canary boot does not keep the call task stuck).
+#[cfg(feature = "board-io")]
+fn hung_host(_: usize) {
+    let me = azos_sched::current_task_tid();
+    let name = azos_devif::powermon::ENDPOINT_NAME.as_bytes();
+    if azos_ipc::endpoint::endpoint_named_cap(me, CapPerms::READ, name).is_none() {
+        return;
+    }
+    HUNG_READY.store(true, Ordering::Release);
+    let mut out = SyscallOut::new();
+    let h = loop {
+        let mut req = MsgDesc::default();
+        let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
+        if h >= 0 {
+            break h;
+        }
+    };
+    HUNG_TOOK.store(true, Ordering::Release);
+    let _ = crate::ktest::until_for(3_000, || HUNG_READ_DONE.load(Ordering::Acquire));
+    let rep = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, ..MsgDesc::default() };
+    let _ = dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
+}
+
+#[cfg(feature = "board-io")]
+fn hung_reader(_: usize) {
+    use azos_drv_sys::timebase::{freq, now};
+    let mut m = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: 1, ..MsgDesc::default() };
+    let t0 = now();
+    let r = crate::powermon::endpoint_call(&mut m);
+    HUNG_MS.store(((now() - t0) * 1000 / freq()) as u32, Ordering::Release);
+    HUNG_RC.store(if r == Err(azos_devif::IdlError::DeadlineExpired) { 1 } else { -1 }, Ordering::Release);
+    HUNG_READ_DONE.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "board-io")]
+azos_ktest::ktest_late! {
+    fn a_power_read_of_a_hung_host_is_bounded() {
+        let budget = azos_limits::PROXY_REPLY_TIMEOUT_MS;
+        crate::powermon::start_call_task();
+        azos_sched::task_create_affinity("kcall-hung", hung_host, 0, PRIO, -1);
+        crate::ktest::wait("the hung host never claimed endpoint.powermon", || HUNG_READY.load(Ordering::Acquire))?;
+        let timed_out = crate::powermon::timed_out();
+        azos_sched::task_create_affinity("kcall-hread", hung_reader, 0, PRIO, -1);
+        if !crate::ktest::until_for(budget * 10 + 1_000, || HUNG_READ_DONE.load(Ordering::Acquire)) {
+            return Err("a power read waited on a host that does not answer past ten reply budgets");
+        }
+        if !HUNG_TOOK.load(Ordering::Acquire) {
+            return Err("the read never reached the host");
+        }
+        if HUNG_RC.load(Ordering::Acquire) != 1 {
+            return Err("a power read of a host that does not answer did not end in DeadlineExpired");
+        }
+        let ms = u64::from(HUNG_MS.load(Ordering::Acquire));
+        if ms + 10 < budget {
+            return Err("a power read gave up before the reply budget");
+        }
+        if crate::powermon::timed_out() == timed_out {
+            return Err("the timed-out read was not counted");
         }
         Ok(())
     }

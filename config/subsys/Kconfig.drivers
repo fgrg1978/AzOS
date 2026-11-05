@@ -82,7 +82,9 @@ config PROXY_REPLY_TIMEOUT_MS
       How long an in-kernel client of a ring-3 driver waits, blocked, for
       the reply before the request fails with DriverError::Busy
       (crates/drivers/sys/src/user_driver_proxy.rs,
-      PROXY_REPLY_TIMEOUT_MS).
+      PROXY_REPLY_TIMEOUT_MS). Also how long a power read waits for the
+      ring-3 INA219 host on endpoint.powermon before it answers no data
+      (kernel/src/powermon.rs).
 
 # ---------------------------------------------------------------------------
 # Hardware bus

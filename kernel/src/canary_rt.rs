@@ -293,6 +293,9 @@ pub(crate) const NAMES: &[&str] = &[
     // into the reader's own table (ktest
     // `a_power_read_leaves_no_capability_with_the_reader`).
     "powermon-mint",
+    // powermon.rs `endpoint_call`: a power read waits for the ring-3 host's
+    // answer however long it takes (ktest `a_power_read_of_a_hung_host_is_bounded`).
+    "powermon-unbounded",
     // smokes/ring3_drv_smoke.rs `ring3_idle_wakes_per_s`: the smoke calls the
     // ring-3 INA219 host through its quiet window (rows `... INA219 idle
     // wake-up canary`).
