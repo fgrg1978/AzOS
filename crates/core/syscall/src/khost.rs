@@ -169,31 +169,107 @@ pub fn admit(tid: u32, ep_raw: u32, header: u64) -> Option<Caller> {
     caller(tid, ep_raw)
 }
 
+/// One hosted interface: its host key, whether its requests may carry
+/// capability entries (derived from the IDL: some op takes a `Cap` or a
+/// `Lent`), and the server dispatching a request for one caller.
+struct Hosted {
+    key: u16,
+    takes_caps: bool,
+    dispatch: fn(&Caller, &MsgDesc, &mut MsgDesc),
+}
+
+macro_rules! hosted {
+    ($key:expr, $idl:ty, $server:expr) => {
+        Hosted {
+            key: $key,
+            takes_caps: <$idl>::TAKES_CAPS,
+            dispatch: |who, req, rep| {
+                let _ = <$idl>::dispatch(&mut $server(*who), req, rep);
+            },
+        }
+    };
+}
+
+/// The interfaces this build hosts, one row per host key.
+const HOSTED: &[Hosted] = {
+    use azos_devif::key as k;
+    use azos_devif::*;
+    &[
+        hosted!(k::ENTROPY, EntropyIdl, crate::entropy::Server),
+        hosted!(k::LINK_KEY, LinkKeyIdl, crate::link_key::Server),
+        hosted!(k::POWER, PowerIdl, crate::power::Server),
+        hosted!(k::POWER_ASSERT, PowerAssertIdl, crate::power_assert::Server),
+        hosted!(k::FLIGHT, FlightIdl, crate::families::FlightServer),
+        hosted!(k::BEHAVIOR, BehaviorIdl, crate::families::BehaviorServer),
+        hosted!(k::CONFIG, ConfigIdl, crate::families::ConfigServer),
+        hosted!(k::OTA, OtaIdl, crate::families::OtaServer),
+        hosted!(k::GPIO, GpioIdl, crate::devices::GpioServer),
+        hosted!(k::I2C, I2cIdl, crate::devices::I2cServer),
+        hosted!(k::PWM, PwmIdl, crate::devices::PwmServer),
+        hosted!(k::MOTOR, MotorIdl, crate::motor_host::MotorServer),
+        hosted!(k::SENSOR, SensorIdl, crate::sensor_host::SensorServer),
+        hosted!(k::BLOCK, BlockIdl, crate::block_host::BlockServer),
+        hosted!(k::CLOCK, ClockIdl, crate::clock::Server),
+        hosted!(k::SPI, SpiIdl, crate::devices::SpiServer),
+        hosted!(k::CAN, CanIdl, crate::devices::CanServer),
+        hosted!(k::UART, UartIdl, crate::devices::UartServer),
+        #[cfg(feature = "board-io")]
+        hosted!(k::ADC, AdcIdl, crate::adc_host::AdcServer),
+        hosted!(k::NET, NetIdl, crate::net_host::Server),
+        hosted!(k::DISPLAY, DisplayIdl, crate::display::Server),
+        hosted!(k::MEMCTL, MemCtlIdl, crate::memctl::Server),
+        hosted!(k::KEYS, KeysIdl, crate::keys::Server),
+        hosted!(k::VOLUME, VolumeIdl, crate::volume_host::Server),
+        #[cfg(feature = "virtio-snd")]
+        hosted!(k::SOUND, SoundIdl, crate::sound_host::Server),
+        #[cfg(feature = "hv")]
+        hosted!(k::VM, VmIdl, crate::vm::VmServer),
+        #[cfg(feature = "hv")]
+        hosted!(k::VCPU, VcpuIdl, crate::vm::VcpuServer),
+    ]
+};
+
+/// Host key to the row's position plus one (0: no row), built at compile time;
+/// a key hosted twice or outside `azos_devif::IFACES` fails the build.
+static SLOT: [u8; azos_devif::IFACES.len() + 1] = {
+    let mut slot = [0u8; azos_devif::IFACES.len() + 1];
+    let mut i = 0;
+    while i < HOSTED.len() {
+        let key = HOSTED[i].key as usize;
+        assert!(key != 0 && key < slot.len(), "a hosted key is outside azos_devif::IFACES");
+        assert!(slot[key] == 0, "a host key is hosted twice");
+        slot[key] = i as u8 + 1;
+        i += 1;
+    }
+    slot
+};
+
+fn row(key: u16) -> Option<&'static Hosted> {
+    let i = *SLOT.get(key as usize)?;
+    HOSTED.get((i as usize).checked_sub(1)?)
+}
+
 /// May a request to the interface with host key `key` carry capability
-/// entries? Only the seven whose ops take a queue (`Uart::attach`,
-/// `Adc::start_batch`), a memory object and a port (`Vm::ram`, `Vm::traps`,
-/// `Vm::net`), a surface's memory object and a vsync port (`Display::surface`,
-/// `Display::vsync`), a memory object to mark volatile (`MemCtl::set_volatile`),
-/// the memory object a message is signed in (`Keys::sign`) or a stream's two
-/// queues and its arena (`Sound::open`):
+/// entries? Only the interfaces with an op that takes a queue, a memory
+/// object or a port (`Uart::attach`, `Adc::start_batch`, `Vm::ram`,
+/// `Display::surface`, `MemCtl::set_volatile`, `Keys::sign`, `Sound::open`):
 /// the entries stay in the caller's table and the server resolves them there
 /// (`devices.rs`, "Queues"; `vm.rs`, `resolve`; `memctl.rs`). Every other
-/// interface refuses a request that carries one.
+/// interface, and a key this build does not host, refuses a request that
+/// carries one.
 pub fn takes_caps(key: u16) -> bool {
-    key == azos_devif::key::UART
-        || key == azos_devif::key::ADC
-        || key == azos_devif::key::VM
-        || key == azos_devif::key::DISPLAY
-        || key == azos_devif::key::MEMCTL
-        || key == azos_devif::key::KEYS
-        || key == azos_devif::key::SOUND
+    row(key).is_some_and(|h| h.takes_caps)
+}
+
+/// The host keys this build serves, each with its `takes_caps`.
+pub fn hosted_keys() -> impl Iterator<Item = (u16, bool)> {
+    HOSTED.iter().map(|h| (h.key, h.takes_caps))
 }
 
 /// Serve `req` on the interface with host key `key`; the reply is in `rep`
 /// (always: an unknown interface or a malformed request answers with the
 /// IDL's error status, never with silence).
 pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
-    use azos_devif::key as k;
     // The image's profile lists the interfaces it may call
     // (`ImageProfile::ifaces`): the syscall list says "may call an endpoint",
     // this says which. An unlisted one kills the task, as an unlisted call does
@@ -205,47 +281,10 @@ pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
         }
         _ => crate::handlers::seccomp_deny_iface_kill(key),
     }
-    use azos_devif::{
-        BehaviorIdl, ClockIdl, ConfigIdl, EntropyIdl, FlightIdl, BlockIdl, CanIdl, GpioIdl, I2cIdl, KeysIdl, LinkKeyIdl, MemCtlIdl, MotorIdl, NetIdl, OtaIdl, PowerIdl, PwmIdl, SensorIdl, SpiIdl, UartIdl,
-    };
-    let me = *who;
-    let _ = match key {
-        k::ENTROPY => EntropyIdl::dispatch(&mut crate::entropy::Server(me), req, rep),
-        k::LINK_KEY => LinkKeyIdl::dispatch(&mut crate::link_key::Server(me), req, rep),
-        k::POWER => PowerIdl::dispatch(&mut crate::power::Server(me), req, rep),
-        k::POWER_ASSERT => azos_devif::PowerAssertIdl::dispatch(&mut crate::power_assert::Server(me), req, rep),
-        k::FLIGHT => FlightIdl::dispatch(&mut crate::families::FlightServer(me), req, rep),
-        k::BEHAVIOR => BehaviorIdl::dispatch(&mut crate::families::BehaviorServer(me), req, rep),
-        k::CONFIG => ConfigIdl::dispatch(&mut crate::families::ConfigServer(me), req, rep),
-        k::OTA => OtaIdl::dispatch(&mut crate::families::OtaServer(me), req, rep),
-        k::GPIO => GpioIdl::dispatch(&mut crate::devices::GpioServer(me), req, rep),
-        k::I2C => I2cIdl::dispatch(&mut crate::devices::I2cServer(me), req, rep),
-        k::PWM => PwmIdl::dispatch(&mut crate::devices::PwmServer(me), req, rep),
-        k::MOTOR => MotorIdl::dispatch(&mut crate::motor_host::MotorServer(me), req, rep),
-        k::SENSOR => SensorIdl::dispatch(&mut crate::sensor_host::SensorServer(me), req, rep),
-        k::BLOCK => BlockIdl::dispatch(&mut crate::block_host::BlockServer(me), req, rep),
-        k::CLOCK => ClockIdl::dispatch(&mut crate::clock::Server(me), req, rep),
-        k::SPI => SpiIdl::dispatch(&mut crate::devices::SpiServer(me), req, rep),
-        k::CAN => CanIdl::dispatch(&mut crate::devices::CanServer(me), req, rep),
-        k::UART => UartIdl::dispatch(&mut crate::devices::UartServer(me), req, rep),
-        #[cfg(feature = "board-io")]
-        k::ADC => azos_devif::AdcIdl::dispatch(&mut crate::adc_host::AdcServer(me), req, rep),
-        k::NET => NetIdl::dispatch(&mut crate::net_host::Server(me), req, rep),
-        k::DISPLAY => azos_devif::DisplayIdl::dispatch(&mut crate::display::Server(me), req, rep),
-        k::MEMCTL => MemCtlIdl::dispatch(&mut crate::memctl::Server(me), req, rep),
-        k::KEYS => KeysIdl::dispatch(&mut crate::keys::Server(me), req, rep),
-        k::VOLUME => azos_devif::VolumeIdl::dispatch(&mut crate::volume_host::Server(me), req, rep),
-        #[cfg(feature = "virtio-snd")]
-        k::SOUND => azos_devif::SoundIdl::dispatch(&mut crate::sound_host::Server(me), req, rep),
-        #[cfg(feature = "hv")]
-        k::VM => azos_devif::VmIdl::dispatch(&mut crate::vm::VmServer(me), req, rep),
-        #[cfg(feature = "hv")]
-        k::VCPU => azos_devif::VcpuIdl::dispatch(&mut crate::vm::VcpuServer(me), req, rep),
-        _ => {
-            azos_idl::__private::error_reply(rep, IdlError::BadInterface);
-            Err(IdlError::BadInterface)
-        }
-    };
+    match row(key) {
+        Some(h) => (h.dispatch)(who, req, rep),
+        None => azos_idl::__private::error_reply(rep, IdlError::BadInterface),
+    }
 }
 
 /// [`serve`] for the register form: the request is four words (padded with

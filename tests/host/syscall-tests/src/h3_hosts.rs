@@ -501,30 +501,6 @@ fn queue_scene() -> Scene {
     s
 }
 
-/// **Which interfaces may carry capability entries**: the two whose ops take a
-/// queue, the `Vm` interface, whose ops attach a memory object and a port, and
-/// `Display`, whose ops attach a band and a vsync port, `MemCtl`, whose ops
-/// name a memory object, `Keys`, whose `sign` works in one, and `Sound`, whose
-/// `open` takes a stream's two queues and its arena.
-/// The kernel-hosted call path refuses a request with capability entries for
-/// every other interface (`ipc_v2::call_kernel_hosted` asks this).
-///
-/// **Canary.** Return true for `key::GPIO`: the gpio line fails.
-#[test]
-fn only_uart_adc_vm_display_memctl_keys_and_sound_requests_may_carry_capability_entries() {
-    for iface in azos_devif::IFACES {
-        let want = iface.key == key::UART
-            || iface.key == key::ADC
-            || iface.key == key::VM
-            || iface.key == key::DISPLAY
-            || iface.key == key::MEMCTL
-            || iface.key == key::KEYS
-            || iface.key == key::SOUND;
-        assert_eq!(crate::khost::takes_caps(iface.key), want, "{}", iface.name);
-    }
-    assert!(!crate::khost::takes_caps(0));
-}
-
 const ADC_BADGE: u32 = 2;
 
 /// Every Uart op demands exactly its class; the allowed `attach` reaches the

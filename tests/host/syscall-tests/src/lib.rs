@@ -589,6 +589,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod khost_table {
+        use super::*;
+        include!("khost_table.rs");
+    }
+
+    #[cfg(test)]
     mod nicq_tests {
         use super::*;
         include!("nicq_tests.rs");

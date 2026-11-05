@@ -480,6 +480,16 @@ fn generate(args: &Args, tr: &ItemTrait, methods: &[Method]) -> TokenStream {
             #(#op_consts)*
             /// The op table: one row per method, in method order.
             pub const OPS: [::azos_idl::OpInfo; #n_ops] = [ #(#op_rows),* ];
+            /// Does any op carry capability entries in its request?
+            pub const TAKES_CAPS: bool = {
+                let mut i = 0;
+                let mut any = false;
+                while i < #n_ops {
+                    any |= Self::OPS[i].req_caps != 0;
+                    i += 1;
+                }
+                any
+            };
 
             /// The server dispatcher: decode the request in `req`, call the
             /// implementation, write the reply into `reply` (always a valid

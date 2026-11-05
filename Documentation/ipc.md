@@ -43,8 +43,9 @@ capability it already holds with `SYS_CAP_INFO` (`CAP_INFO_LOOKUP`; for a
 kernel-hosted endpoint the resource is `host_key << 32 | badge`). A request to
 a kernel-hosted endpoint may carry capability entries only for the interfaces
 whose ops take one (`Uart`, `Adc`, `Vm`, `Display`, `MemCtl`, `Keys`, `Sound`;
-`khost::takes_caps`); the entries stay in the caller's table and the kernel
-resolves them there. Every other kernel-hosted interface refuses such a
+`khost::takes_caps`, read from the interface's table row, which takes it from
+the IDL's `<Name>Idl::TAKES_CAPS`); the entries stay in the caller's table and
+the kernel resolves them there. Every other kernel-hosted interface refuses such a
 request. The image profile lists the kernel-hosted interfaces a program may
 call, and an unlisted one is handled like an unlisted syscall.
 
