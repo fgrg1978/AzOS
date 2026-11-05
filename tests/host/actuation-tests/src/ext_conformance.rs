@@ -38,11 +38,11 @@ static STOP_LOCK: Mutex<()> = Mutex::new(());
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn note(e: Ev) {
-    EVENTS.lock().unwrap().push(e);
+    EVENTS.lock().unwrap_or_else(|e| e.into_inner()).push(e);
 }
 
 fn take() -> Vec<Ev> {
-    std::mem::take(&mut *EVENTS.lock().unwrap())
+    std::mem::take(&mut *EVENTS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 macro_rules! provider {
@@ -52,9 +52,8 @@ macro_rules! provider {
             stop: {
                 fn stop() {
                     match STOP_LOCK.try_lock() {
-                        Ok(_) => note(Ev::Stop($name, estop::estop_is_active())),
+                        Ok(_) | Err(TryLockError::Poisoned(_)) => note(Ev::Stop($name, estop::estop_is_active())),
                         Err(TryLockError::WouldBlock) => note(Ev::Blocked($name)),
-                        Err(TryLockError::Poisoned(_)) => unreachable!(),
                     }
                 }
                 stop
@@ -142,7 +141,7 @@ fn check_latch_runs_the_providers_after_the_latch_store(m: &'static Manifest) {
 fn check_panic_stop_takes_no_stop_lock(m: &'static Manifest) {
     let _g = fresh();
     providers::install(m);
-    let _held = STOP_LOCK.lock().unwrap();
+    let _held = STOP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     providers::panic_stop_all();
     let want: Vec<Ev> = m.providers.iter().map(|p| Ev::PanicStop(p.name)).collect();
     assert_eq!(take(), want, "`{}`: the panic stop waited for, or ran, a stop that takes a lock", m.name);

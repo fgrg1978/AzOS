@@ -7,8 +7,8 @@ The contract is crates/core/ext-api (`Manifest`); an extension is installed by
 `azos_actuation::providers::install`. For every `EXT_<NAME>` symbol of
 config/extensions/Kconfig:
 
-  - exactly one `Manifest` static is named `<name>`, and it lives under
-    crates/domains/<name>/;
+  - exactly one `Manifest` static (`name:` its first field) is named
+    `<name>`, the symbol lowercased, and it lives under crates/domains/<name>/;
   - exactly one `providers::install(&<that static>)` registers it;
   - a `Manifest` static no symbol names, or an install of a static that is no
     manifest, is an error.

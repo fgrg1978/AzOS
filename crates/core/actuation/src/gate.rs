@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The actuation gate every domain shares: the one latch-and-stop sequence,
-//! the stop work domains register into it, and the seams the kernel installs
-//! at boot (capability-denial and audit recorders, the ring-3 e-stop).
+//! The actuation gate every domain shares: the panic-path stop, the gate flag
+//! the loader checks, and the seams the kernel installs at boot
+//! (capability-denial and audit recorders, the ring-3 e-stop). The one
+//! latch-and-stop sequence is `crate::estop::latch_and_stop`, re-exported here.
 //!
 //! Moved out of `crates/domains/robot/safety-core/src/actuation.rs` (wave 11,
 //! DOMAIN). What stays there is the robot's own part: the motor gate and
