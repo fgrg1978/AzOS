@@ -657,8 +657,10 @@ choice DRV_INA219_PLACEMENT
     help
       Where the INA219 chip logic (crates/drivers/ina219) runs. Both
       serve the PowerMon interface and answer a read of the `sensor.9`
-      endpoint (the power monitor) with the same record. It is the `place`
-      of the INADRV.ELF row (the kernel finds it from the topology).
+      endpoint (the power monitor) with the same record. A topology that
+      declares the INADRV.ELF row says its own `place`; the built-in one
+      declares the row for ring3 and none for kernel, which the kernel
+      reads as the kernel placement.
       Not read by any safety decision (the battery check reads the
       ADS1115), so both are allowed.
 
