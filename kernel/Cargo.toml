@@ -534,10 +534,10 @@ usb-uvc = ["usb-hc", "use-robot", "azos_usb/uvc"]
 # Gate canary only: the virtio-net TX buffers are left out of the NIC's
 # translating domain; its first transmitted frame must be refused and logged.
 iommu-tx-canary = ["azos_drv_virtio/iommu-tx-canary"]
-iommu-riscv = ["pci", "azos_iommu"]
-iommu-smmuv3 = ["pci", "azos_iommu"]
-iommu-vtd = ["pci", "azos_iommu"]
-iommu-amdvi = ["pci", "azos_iommu"]
+iommu-riscv = ["pci", "azos_iommu", "dep:azos_drvkit"]
+iommu-smmuv3 = ["pci", "azos_iommu", "dep:azos_drvkit"]
+iommu-vtd = ["pci", "azos_iommu", "dep:azos_drvkit"]
+iommu-amdvi = ["pci", "azos_iommu", "dep:azos_drvkit"]
 # Kconfig NET: network bring-up, the net-poll task and the network clients.
 net = []
 # Kconfig AUTORUN: the boot's `autorun` task (CONFIG.INI `autorun=<path>`).

@@ -282,35 +282,21 @@ mod hw {
 
     use azos_iommu::domain::IoDomain;
     use azos_iommu::{
-        DmaFault, DomainMode, Flavour, IommuError, IommuUnit, Mmio, PtFormat, Settled, TableMem, UnitHandle,
+        DmaFault, DomainMode, Flavour, IommuError, IommuUnit, PtFormat, Settled, TableMem, UnitHandle,
     };
+    #[cfg(feature = "iommu-vtd")]
+    use azos_drvkit::Mmio;
+    use azos_drvkit::Window;
     use azos_sync::SpinLock;
 
     use super::{Locked, COHERENT, ENTRIES};
     use crate::kprintln;
 
-    /// Volatile register access at a mapped base.
-    struct KMmio {
-        base: usize,
-    }
-
-    impl Mmio for KMmio {
-        fn read32(&self, off: usize) -> u32 {
-            // SAFETY: `base` is a mapped device window and `off` a register of it.
-            unsafe { azos_arch_api::mmio::read32(self.base + off) }
-        }
-        fn write32(&self, off: usize, val: u32) {
-            // SAFETY: as `read32`.
-            unsafe { azos_arch_api::mmio::write32(self.base + off, val) }
-        }
-        fn read64(&self, off: usize) -> u64 {
-            // SAFETY: as `read32`; the 64-bit registers are 8-byte aligned.
-            unsafe { azos_arch_api::mmio::read64(self.base + off) }
-        }
-        fn write64(&self, off: usize, val: u64) {
-            // SAFETY: as `read64`.
-            unsafe { azos_arch_api::mmio::write64(self.base + off, val) }
-        }
+    /// The unit's registers at a mapped base.
+    fn registers(base: usize) -> Window {
+        // SAFETY: `base` is a mapped device window and the units name only
+        // registers inside it (the span is mapped before the first use).
+        unsafe { Window::new(base) }
     }
 
     /// Table, queue and page-table memory from the page allocator.
@@ -395,13 +381,13 @@ mod hw {
     }
 
     #[cfg(feature = "iommu-riscv")]
-    static RISCV: Shared<azos_iommu::riscv::RiscvIommu<KMmio>> = Shared::empty();
+    static RISCV: Shared<azos_iommu::riscv::RiscvIommu<Window>> = Shared::empty();
     #[cfg(feature = "iommu-smmuv3")]
-    static SMMUV3: Shared<azos_iommu::smmuv3::Smmuv3<KMmio>> = Shared::empty();
+    static SMMUV3: Shared<azos_iommu::smmuv3::Smmuv3<Window>> = Shared::empty();
     #[cfg(feature = "iommu-vtd")]
-    static VTD: Shared<azos_iommu::vtd::Vtd<KMmio>> = Shared::empty();
+    static VTD: Shared<azos_iommu::vtd::Vtd<Window>> = Shared::empty();
     #[cfg(feature = "iommu-amdvi")]
-    static AMDVI: Shared<azos_iommu::amdvi::AmdVi<KMmio>> = Shared::empty();
+    static AMDVI: Shared<azos_iommu::amdvi::AmdVi<Window>> = Shared::empty();
 
     /// The translating domains, one per function whose driver maps its DMA
     /// (Kconfig `IOMMU_DOMAINS`).
@@ -511,7 +497,7 @@ mod hw {
             kprintln!("[IOMMU] riscv-iommu {}: no register BAR", info.bdf);
             return None;
         }
-        match azos_iommu::riscv::RiscvIommu::new(KMmio { base }, &MEM) {
+        match azos_iommu::riscv::RiscvIommu::new(registers(base), &MEM) {
             Ok(u) => Some(found(&RISCV, u, base, Some(info.bdf.requester_id()))),
             Err(e) => {
                 kprintln!("[IOMMU] riscv-iommu at {:#x} not used: {:?}", base, e);
@@ -541,7 +527,7 @@ mod hw {
         }
         // The highest requester id the stream table must hold (bus 0 only today).
         let max_dev = funcs.iter().flatten().map(|f| f.bdf.requester_id()).max().unwrap_or(0);
-        match azos_iommu::smmuv3::Smmuv3::new(KMmio { base }, &MEM, max_dev) {
+        match azos_iommu::smmuv3::Smmuv3::new(registers(base), &MEM, max_dev) {
             Ok(u) => Some(found(&SMMUV3, u, base, None)),
             Err(e) => {
                 kprintln!("[IOMMU] smmuv3 at {:#x} not used: {:?}", base, e);
@@ -567,7 +553,7 @@ mod hw {
                 azos_drv_sys::kerr!("[IOMMU] vt-d at {:#x} not used: registers not mapped", base);
                 return None;
             }
-            let mmio = KMmio { base };
+            let mmio = registers(base);
             let span = azos_iommu::vtd::register_span(mmio.read64(azos_iommu::vtd::REG_CAP), mmio.read64(azos_iommu::vtd::REG_ECAP));
             if !crate::boot::map_mmio_region(base, span) {
                 azos_drv_sys::kerr!("[IOMMU] vt-d at {:#x} not used: {:#x} bytes of registers not mapped", base, span);
@@ -587,7 +573,7 @@ mod hw {
                 return None;
             }
             let max_dev = funcs.iter().flatten().map(|f| f.bdf.requester_id()).max().unwrap_or(0);
-            return match azos_iommu::amdvi::AmdVi::new(KMmio { base }, &MEM, max_dev) {
+            return match azos_iommu::amdvi::AmdVi::new(registers(base), &MEM, max_dev) {
                 Ok(u) => Some(found(&AMDVI, u, base, None)),
                 Err(e) => {
                     kprintln!("[IOMMU] amd-vi at {:#x} not used: {:?}", base, e);

@@ -16,9 +16,10 @@
 
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
-    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, POLL,
+    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, TableMem, Tags, POLL,
     TAGS,
 };
+use azos_drvkit::Mmio;
 
 // ---- registers ----
 pub const REG_IDR0: usize = 0x00;

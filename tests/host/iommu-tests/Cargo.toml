@@ -11,6 +11,7 @@ description = "Host-side tests for crates/drivers/iommu: encoders against hand-c
 [dependencies]
 azos_iommu = { path = "../../../crates/drivers/iommu" }
 azos_dma = { path = "../../../crates/drivers/dma" }
+azos_drvkit = { path = "../../../crates/drivers/kit" }
 
 [features]
 vtd-window-canary = ["azos_iommu/vtd-window-canary"]

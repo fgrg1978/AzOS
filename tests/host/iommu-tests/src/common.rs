@@ -3,7 +3,8 @@
 //! Test doubles: host memory standing in for physical memory (the "physical
 //! address" is the host address), and a register file the unit models mutate.
 
-use azos_iommu::{Mmio, TableMem};
+use azos_drvkit::{Mmio, Width};
+use azos_iommu::TableMem;
 use std::alloc::{alloc_zeroed, Layout};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -139,17 +140,23 @@ impl FakeMmio {
     }
 }
 
+/// The units use 32 and 64-bit registers only; each offset holds one value.
 impl Mmio for FakeMmio {
-    fn read32(&self, off: usize) -> u32 {
-        self.get(off) as u32
+    fn load(&self, off: usize, w: Width) -> u64 {
+        match w {
+            Width::W32 => self.get(off) as u32 as u64,
+            Width::W64 => self.get(off),
+            _ => panic!("an IOMMU register is 32 or 64 bits wide"),
+        }
     }
-    fn write32(&self, off: usize, val: u32) {
-        self.put(off, val as u64)
+    fn store(&self, off: usize, w: Width, val: u64) {
+        match w {
+            Width::W32 => self.put(off, val as u32 as u64),
+            Width::W64 => self.put(off, val),
+            _ => panic!("an IOMMU register is 32 or 64 bits wide"),
+        }
     }
-    fn read64(&self, off: usize) -> u64 {
-        self.get(off)
-    }
-    fn write64(&self, off: usize, val: u64) {
-        self.put(off, val)
+    fn base(&self) -> usize {
+        0
     }
 }

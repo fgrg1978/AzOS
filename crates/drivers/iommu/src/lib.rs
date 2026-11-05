@@ -111,16 +111,6 @@ pub enum IommuError {
     Hardware(&'static str),
 }
 
-/// Register access to one unit. The kernel implements it with volatile
-/// loads and stores at the unit's mapped base; the tests with a model of
-/// the registers.
-pub trait Mmio {
-    fn read32(&self, off: usize) -> u32;
-    fn write32(&self, off: usize, val: u32);
-    fn read64(&self, off: usize) -> u64;
-    fn write64(&self, off: usize, val: u64);
-}
-
 /// Memory the units read: device tables, queues, page tables. All 4 KiB
 /// zeroed pages, addressed by physical address; the CPU reaches the same
 /// bytes through the implementor's mapping of them (the two addresses differ
