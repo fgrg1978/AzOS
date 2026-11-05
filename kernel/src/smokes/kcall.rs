@@ -14,6 +14,14 @@
 //!   is refused with `-EBUSY` before anything is queued, and counted; the
 //!   same call outside a lock is not refused for that reason.
 //!   Canary `kcall-atomic-canary`: the guard is skipped, `not ok`.
+//! * `kernel_named_call_reaches_a_task_server_without_a_capability`: the
+//!   kernel's call by name (`kcall::call_named`, the call a ring-3 task's
+//!   syscall makes on the kernel's authority) is served, and the calling
+//!   task's table holds no capability on the endpoint afterwards.
+//! * `a_power_read_leaves_no_capability_with_the_reader`: the call behind the
+//!   power sensor (`powermon::endpoint_call`) leaves the reader's table with no
+//!   capability on `endpoint.powermon`, whether or not a host serves it.
+//!   Runtime canary `powermon-mint`: the call mints one, `not ok`.
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 
@@ -177,6 +185,91 @@ azos_ktest::ktest_late! {
         }
         if GUARD_REFUSALS.load(Ordering::Acquire) != 2 {
             return Err("the refusals under the locks were not both counted");
+        }
+        Ok(())
+    }
+}
+
+/// Does task `tid` hold any capability on the endpoint called `name`?
+fn holds_cap_on(tid: u32, name: &[u8]) -> bool {
+    let Some(r) = azos_ipc::endpoint::endpoint_ref_by_name(name) else { return false };
+    azos_ipc::cap_store::read_table(tid, |t| t.lookup_where(azos_abi::cap::ty::ENDPOINT, |res, _, _| res == r))
+        .flatten()
+        .is_some()
+}
+
+const NAMED_EP: &[u8] = b"kcall.named";
+static NAMED_READY: AtomicBool = AtomicBool::new(false);
+static NAMED_SERVED: AtomicU32 = AtomicU32::new(0);
+static NAMED_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+
+fn named_server(_: usize) {
+    let me = azos_sched::current_task_tid();
+    if azos_ipc::endpoint::endpoint_named_cap(me, CapPerms::READ, NAMED_EP).is_none() {
+        return;
+    }
+    NAMED_READY.store(true, Ordering::Release);
+    let mut drv = Counting::default();
+    let mut out = SyscallOut::new();
+    while NAMED_SERVED.load(Ordering::Acquire) < 1 {
+        let mut req = MsgDesc::default();
+        let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
+        if h < 0 {
+            continue;
+        }
+        let mut rep = MsgDesc::default();
+        let _ = BuzzerIdl::dispatch(&mut drv, &req, &mut rep);
+        let _ = dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
+        NAMED_SERVED.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+fn named_client(_: usize) {
+    let me = azos_sched::current_task_tid();
+    let mut c = BuzzerClient::new(kcall::KernelNamed(NAMED_EP));
+    let rc = if c.tone(440, 50) != Ok(Out::ok(())) {
+        -1
+    } else if holds_cap_on(me, NAMED_EP) {
+        -2
+    } else {
+        1
+    };
+    NAMED_RC.store(rc, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn kernel_named_call_reaches_a_task_server_without_a_capability() {
+        azos_sched::task_create_affinity("kcall-nsrv", named_server, 0, PRIO, -1);
+        crate::ktest::wait("the server never claimed its endpoint", || NAMED_READY.load(Ordering::Acquire))?;
+        azos_sched::task_create_affinity("kcall-ncli", named_client, 0, PRIO, -1);
+        crate::ktest::wait("the caller never returned", || NAMED_RC.load(Ordering::Acquire) != NOT_YET)?;
+        match NAMED_RC.load(Ordering::Acquire) {
+            1 => Ok(()),
+            -1 => Err("a tone through the kernel's call by name was not served"),
+            _ => Err("the kernel's call by name left a capability on the endpoint in the caller's table"),
+        }
+    }
+}
+
+#[cfg(feature = "board-io")]
+static POWER_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+
+#[cfg(feature = "board-io")]
+fn power_reader(_: usize) {
+    let me = azos_sched::current_task_tid();
+    let mut m = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: 1, ..MsgDesc::default() };
+    let _ = crate::powermon::endpoint_call(&mut m);
+    let name = azos_devif::powermon::ENDPOINT_NAME.as_bytes();
+    POWER_RC.store(if holds_cap_on(me, name) { -1 } else { 1 }, Ordering::Release);
+}
+
+#[cfg(feature = "board-io")]
+azos_ktest::ktest_late! {
+    fn a_power_read_leaves_no_capability_with_the_reader() {
+        azos_sched::task_create_affinity("kcall-power", power_reader, 0, PRIO, -1);
+        crate::ktest::wait("the reader never returned", || POWER_RC.load(Ordering::Acquire) != NOT_YET)?;
+        if POWER_RC.load(Ordering::Acquire) != 1 {
+            return Err("a power read left a capability on endpoint.powermon in the reader's table");
         }
         Ok(())
     }

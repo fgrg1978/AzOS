@@ -15721,6 +15721,10 @@ CPU 5 lacks hwcap bits"
     par "ktest hotplug irq move canary (arm)" ktest_row_hotplug "ktest hotplug irq move canary (arm)" arm "" "hotplug_irq_line_moves_off_the_stopped_cpu" "canary=irq-move-skip"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
     par "ktest kcall atomic canary (arm)" ktest_row "ktest kcall atomic canary (arm)" arm ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
+    # powermon-mint: the power read's call to the ring-3 INA219 host goes
+    # through a capability minted into the reader's own table (review R2-1).
+    par "ktest powermon mint canary (rv)" ktest_row "ktest powermon mint canary (rv)" rv "" "a_power_read_leaves_no_capability_with_the_reader" "canary=powermon-mint"
+    par "ktest powermon mint canary (arm)" ktest_row "ktest powermon mint canary (arm)" arm "" "a_power_read_leaves_no_capability_with_the_reader" "canary=powermon-mint"
     # arm-tpidr-all-tasks: only a Linux task's TPIDR_EL0 is kept, not a
     # native task's, the old rule (aarch64 only; riscv64's `tp` is in the trap
     # frame, x86_64's FS base is not EL0-writable).

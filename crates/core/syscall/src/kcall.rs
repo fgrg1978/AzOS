@@ -27,9 +27,11 @@
 //!
 //! # Authority
 //!
-//! The calling task needs a `WRITE` capability on the endpoint in its own
-//! table, as any caller does. [`endpoint_handle`] gives the running kernel task
-//! one, minted by the kernel from the endpoint's name (the endpoint is
+//! [`call`] needs a `WRITE` capability on the endpoint in the running task's
+//! own table, as any caller does. [`endpoint_handle`] gives the running kernel
+//! task one (never call it on a ring-3 task's syscall path: the handle would
+//! stay in that task's table; [`call_named`] is the kernel's call with no
+//! capability of the running task), minted by the kernel from the endpoint's name (the endpoint is
 //! declared by the signed topology row that serves it); a kernel component's
 //! authority to call a driver it is compiled to use is not something a row can
 //! grant, but the capability is still the only way in, so containment
@@ -71,6 +73,39 @@ pub fn call(ep: u32, msg: &mut MsgDesc) -> Result<(), i64> {
     match crate::ipc_v2::call_v2(ep as u64, &req, msg) {
         0 => Ok(()),
         e => Err(e),
+    }
+}
+
+/// Call the task-served endpoint called `name` as the kernel, from whatever
+/// task is running, with no capability of that task: nothing is looked up in
+/// or minted into its table (`crate::ipc_v2::call_v2_kernel`). For a kernel
+/// component that calls a driver on behalf of a syscall a ring-3 task made
+/// (the power monitor behind the sensor syscall): the running task blocks for
+/// the answer, as in [`call`], but the authority to make the call is the
+/// kernel's, so the task gains no handle it could call the driver with
+/// directly. The call is unbadged and moves no capability. `-EPERM` when no
+/// task serves `name`; `-EBUSY` as in [`call`].
+pub fn call_named(name: &[u8], msg: &mut MsgDesc) -> Result<(), i64> {
+    if !may_call() {
+        ATOMIC_REFUSED.fetch_add(1, Ordering::Relaxed);
+        return Err(Errno::EBUSY.to_syscall_ret());
+    }
+    let r = azos_ipc::endpoint::endpoint_ref_by_name(name).ok_or(Errno::EPERM.to_syscall_ret())?;
+    let req = *msg;
+    match crate::ipc_v2::call_v2_kernel(r, &req, msg) {
+        0 => Ok(()),
+        e => Err(e),
+    }
+}
+
+/// The transport of [`call_named`]: the kernel's call to the endpoint of that
+/// name, whichever task runs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelNamed(pub &'static [u8]);
+
+impl Transport for KernelNamed {
+    fn call(&self, msg: &mut MsgDesc) -> IdlResult {
+        call_named(self.0, msg).map_err(|e| IdlError::Transport(e as isize))
     }
 }
 

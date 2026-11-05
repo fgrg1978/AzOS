@@ -17,12 +17,22 @@ use azos_devif::powermon::ENDPOINT_NAME;
 use azos_drv_sensor::ina219::{self, Placement};
 use azos_drv_sys::kprintln;
 use azos_devif::{IdlError, IdlResult, MsgDesc, Transport};
-use azos_syscall::kcall::{self, KernelEndpoint};
+use azos_syscall::kcall::{self, KernelEndpoint, KernelNamed};
 use azos_topology::placement::Host;
 
-fn endpoint_call(msg: &mut MsgDesc) -> IdlResult {
-    let h = kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()).ok_or(IdlError::Transport(-1))?;
-    KernelEndpoint(h).call(msg)?;
+/// A call to the ring-3 host. It is made on the syscall path of whatever task
+/// read the sensor, so it is the kernel's call (`kcall::call_named`): the
+/// reader gets no capability on `endpoint.powermon` it could call the driver
+/// with directly. Runtime canary `powermon-mint`: the call goes through a
+/// capability minted into the reader's table, and the ktest
+/// `a_power_read_leaves_no_capability_with_the_reader` goes red.
+pub(crate) fn endpoint_call(msg: &mut MsgDesc) -> IdlResult {
+    if canary!("powermon-mint") {
+        let h = kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()).ok_or(IdlError::Transport(-1))?;
+        KernelEndpoint(h).call(msg)?;
+    } else {
+        KernelNamed(ENDPOINT_NAME.as_bytes()).call(msg)?;
+    }
     // Word 5 is the first word of a `read` record: voltage_mv in its low bytes.
     if canary!("ina219-wrong-value") && msg.n_words > 5 {
         msg.words[5] = msg.words[5].wrapping_add(1);

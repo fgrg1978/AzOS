@@ -289,6 +289,10 @@ pub(crate) const NAMES: &[&str] = &[
     // powermon.rs `endpoint_call`: the ring-3 INA219 host answers a voltage one
     // mV off (rows `... INA219 wrong-value canary`).
     "ina219-wrong-value",
+    // powermon.rs `endpoint_call`: the call goes through a capability minted
+    // into the reader's own table (ktest
+    // `a_power_read_leaves_no_capability_with_the_reader`).
+    "powermon-mint",
     "hung-task-blind",
     "hung-cpu-blind",
     "rcu-idle-qs-skip",

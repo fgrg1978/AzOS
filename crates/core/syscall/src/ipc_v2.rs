@@ -260,6 +260,53 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
     if let Some(key) = azos_ipc::endpoint::host_key(dest.owner) {
         return call_kernel_hosted(key, caller_tid, ep_raw, d, label, nx, out);
     }
+    call_task_served(caller_idx, caller_tid, dest, &xs[..nx], badge, label, d, out)
+}
+
+/// The kernel's own call to the task-served endpoint `r` (a packed
+/// endpoint reference), made in the running task's context but with no
+/// capability of it: `crate::kcall::call_named`. The running task is still the
+/// one that blocks, lends and is answered, as in [`call_v2`]; what differs is
+/// the authority, which is the kernel's (badge 0, no capability moved, no
+/// declassify warrant spent), so nothing is looked up in, or minted into, the
+/// caller's table. `E_PERM` when `r` is stale, unserved, hosted by the
+/// kernel or a proxy to another node, or when the request carries a
+/// capability (the kernel lends none of the caller's).
+pub(crate) fn call_v2_kernel(r: u32, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
+    if d.n_caps != 0 {
+        return E_PERM;
+    }
+    let (caller_idx, caller_tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
+    let now = azos_abi::time::ticks_to_ns(azos_drv_sys::timebase::now(), azos_drv_sys::timebase::TIMER_FREQ);
+    if let Err(e) = crate::ipc_deadline::check(d, now, caller_tid) {
+        return e;
+    }
+    let owner = match azos_ipc::endpoint::endpoint_owner_ref(r) {
+        Ok(o) if o != azos_ipc::endpoint::UNCLAIMED && azos_ipc::endpoint::host_key(o).is_none() => o,
+        _ => return E_PERM,
+    };
+    let dest = azos_ipc::endpoint::Dest { r, owner };
+    if azos_ipc::endpoint::is_proxy(&dest) {
+        return E_PERM;
+    }
+    if d.deadline != 0 {
+        if let Err(rf) = admit_call(now, d.deadline, caller_idx, caller_tid, owner) {
+            *out = crate::ipc_deadline::refused_desc(d, rf);
+            return EADMIT;
+        }
+    }
+    let label = azos_ipc::endpoint::label::outgoing(caller_tid, d.label);
+    call_task_served(caller_idx, caller_tid, dest, &[], 0, label, d, out)
+}
+
+/// [`call_v2`] past the resolution: queue the call on the task serving
+/// `dest`, moving `xs`, and wait for the answer.
+#[allow(clippy::too_many_arguments)]
+fn call_task_served(
+    caller_idx: usize, caller_tid: u32, dest: azos_ipc::endpoint::Dest, xs: &[CapXfer], badge: u32, label: u32,
+    d: &MsgDesc, out: &mut MsgDesc,
+) -> i64 {
+    let nx = xs.len();
     let server = dest.owner;
     // The capabilities move BEFORE the call is published, for the reason the
     // v1 arm gives: a server woken on it may accept at once on another hart.
