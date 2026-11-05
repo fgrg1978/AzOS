@@ -31,7 +31,7 @@
 3	kernel/src/boot/stacks.rs	stack paint and magic words
 2	kernel/src/entry/aarch64/boot_hooks.rs	a static and the PAN probe's user page
 1	kernel/src/entry/aarch64/ext/pan_patch.rs	kernel text
-1	kernel/src/entry/aarch64/ext/hyp_monitor.rs	the image-lock probe's alias of a text page
+2	kernel/src/entry/aarch64/ext/hyp_monitor.rs	the image-lock probe's alias of a text page and the guard probe's read of its donated page
 2	kernel/src/entry/aarch64/mod.rs	the TTBR1 alias canary, a static
 14	kernel/src/ktest.rs	statics, heap blocks, a kernel stack word and their aliases
 1	kernel/src/prof.rs	a stack frame walk
