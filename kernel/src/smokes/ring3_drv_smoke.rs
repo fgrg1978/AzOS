@@ -318,9 +318,9 @@ struct Idle {
 ///
 /// Canaries: runtime `ina219-idle-busy`, the window is not quiet (the smoke
 /// calls the host back to back), so the wake bound must fail; ina_drv's
-/// cargo feature `accept-spin-canary` (built with `INA_DRV_FEATURES`, by
-/// hand), its accept thread turns without blocking, so the entry bound must
-/// fail while the wake count stays at the sampling rate.
+/// cargo feature `serve-spin-canary` (built with `INA_DRV_FEATURES`, by
+/// hand), its sampling loop turns without blocking while every call is still
+/// served, so the reads pass and only the entry bound fails.
 fn ring3_idle() -> Option<Idle> {
     let tid = crate::powermon::ring3_host_tid()?;
     let key = azos_sched::task_domain(azos_sched::idx_for_tid(tid)?);

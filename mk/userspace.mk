@@ -238,7 +238,7 @@ $(BUZZ_DRV_ELF): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # Extra ina_drv cargo features: its gate canary, by hand
-# (`INA_DRV_FEATURES=accept-spin-canary`, kernel/src/smokes/ring3_drv_smoke.rs).
+# (`INA_DRV_FEATURES=serve-spin-canary`, kernel/src/smokes/ring3_drv_smoke.rs).
 # The stamp holds the set the ELFs were built with, as vsbench's does, so a
 # canary ELF is never reused by a later default build.
 INA_DRV_FEATURES ?=

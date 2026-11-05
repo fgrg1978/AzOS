@@ -248,14 +248,6 @@ static mut PM_STACK: Stack = Stack([0; 8192]);
 extern "C" fn serve_thread(_: u64, _: u64, _: u64) -> ! {
     loop {
         let mut req = MsgDesc::default();
-        // Gate canary `accept-spin-canary` (never in a real build): every turn
-        // is a failed accept and the back-off is gone, so the thread turns
-        // without blocking, one syscall a turn; ring3_drv_smoke's idle entry
-        // bound must see it.
-        if cfg!(feature = "accept-spin-canary") {
-            sys::yield_now();
-            continue;
-        }
         let call = sys::ipc_accept_v2(&mut req);
         if call < 0 {
             // No endpoint granted (a topology without the row), or a spurious wake: look again later.
@@ -338,7 +330,7 @@ pub extern "C" fn _start() -> ! {
             st.step();
             st.park_ms()
         });
-        sys::sleep(park_ms as u64);
+        park(park_ms);
         // No clock: a park that ran to its end is one period.
         with(|st| {
             if !st.clocked && !st.pm.is_suspended() {
@@ -347,6 +339,24 @@ pub extern "C" fn _start() -> ! {
             }
         });
     }
+}
+
+/// Park the sampling loop for `ms`. Gate canary `serve-spin-canary` (never in
+/// a real build): the loop turns without blocking until the time has come
+/// (a yield a turn), while the endpoint thread still serves every call, so
+/// the driver answers as before and only ring3_drv_smoke's idle entry bound
+/// can see it. (There is no accept that does not block, so the spin is in
+/// this loop, not the accept loop.)
+fn park(ms: u32) {
+    if cfg!(feature = "serve-spin-canary") {
+        if let Some(t0) = clock_us() {
+            while clock_us().is_some_and(|t| t < t0 + ms as u64 * 1000) {
+                sys::yield_now();
+            }
+            return;
+        }
+    }
+    sys::sleep(ms as u64);
 }
 
 /// One sample at `t_us`, configuring a chip that has not accepted its
