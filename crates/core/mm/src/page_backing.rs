@@ -46,6 +46,17 @@ pub trait PageBacking: Sync {
 
     /// Write `src` at byte offset `off`. All of it or an error.
     fn write_page(&self, key: &PageKey, off: u64, src: &[u8]) -> Result<(), PageIoError>;
+
+    /// The first file region over the file `key` names began. A backing whose
+    /// file goes away with its name keeps it alive until [`unpin`](Self::unpin).
+    fn pin(&self, _key: &PageKey) {}
+
+    /// The last file region over the file ended.
+    fn unpin(&self, _key: &PageKey) {}
+
+    /// Is the file `key` named destroyed, so that its pages have nowhere to go
+    /// and are discarded, not written back?
+    fn gone(&self, _key: &PageKey) -> bool { false }
 }
 
 /// The bytes of the page at byte offset `off` that lie inside a file of

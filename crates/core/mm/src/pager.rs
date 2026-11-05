@@ -1398,7 +1398,7 @@ pub fn reserve(root: usize, start: usize, end: usize, write: bool) -> Result<(),
 /// `MAP_SHARED`. Commits nothing, and charges nothing (the caller charges a
 /// private region as it does `mmap`'s anonymous ones; a shared one is the
 /// cache's memory). The region counts as one user of `obj`
-/// ([`memobj::memobj_paged_users_add_ref`]) until it ends.
+/// ([`memobj::memobj_paged_region_add_ref`]) until it ends.
 ///
 /// `Overlap` as [`reserve`]; `Full` when the space's records are exhausted;
 /// `Invalid` before any page cache is installed.
@@ -1425,7 +1425,7 @@ pub fn reserve_file(
             return r;
         }
     }
-    memobj::memobj_paged_users_add_ref(obj);
+    memobj::memobj_paged_region_add_ref(obj);
     Ok(())
 }
 
@@ -1893,7 +1893,7 @@ pub fn release_range(root: usize, s: usize, e: usize) -> Result<usize, RegionErr
     // The regions are gone: their users in the page cache with them.
     for &(_, _, _, file) in &pieces[..np] {
         if let Some(obj) = file {
-            memobj::memobj_paged_users_drop_ref(obj);
+            memobj::memobj_paged_region_drop_ref(obj);
         }
     }
     Ok(paid - paid_committed)
@@ -1999,7 +1999,7 @@ pub fn fork_clone(parent: usize, child: usize) -> Result<usize, RegionError> {
     };
     if nf != 0 {
         for &obj in &files[..nf] {
-            memobj::memobj_paged_users_add_ref(obj);
+            memobj::memobj_paged_region_add_ref(obj);
         }
     }
     // The pages the parent has compressed are the child's too: a share of the
@@ -2081,7 +2081,7 @@ pub fn forget(root: usize) {
     // The regions are gone: their users in the page cache with them.
     if nf != 0 {
         for &obj in &files[..nf] {
-            memobj::memobj_paged_users_drop_ref(obj);
+            memobj::memobj_paged_region_drop_ref(obj);
         }
     }
 }

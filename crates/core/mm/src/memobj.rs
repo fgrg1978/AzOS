@@ -494,6 +494,9 @@ struct PagedState {
     /// File regions over the object, and the callers that hold one for the region
     /// they are about to make: the file cache closes an object nobody uses.
     users: u32,
+    /// The file regions among the users: the first pins the file on its
+    /// backing, the last lets it go ([`PageBacking::pin`]).
+    maps: u32,
 }
 
 impl MemObj {
@@ -3227,7 +3230,7 @@ pub fn memobj_create_paged(
         return Err(MemObjError::BadArg);
     }
     let spec = MemSpec { kind: MemKind::Paged, perms, attrs: 0, device_visible: false };
-    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0, installing: 0, users: 0 };
+    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0, installing: 0, users: 0, maps: 0 };
     claim_slot_cow(MEMOBJ_KERNEL_OWNER, &[0usize; MAX_MEMOBJ_PAGES][..pages], &spec, 0, 0, Some(st))
         .ok_or(MemObjError::NoMem)
 }
@@ -3309,6 +3312,39 @@ pub fn memobj_paged_users_add_ref(r: u32) {
         if let Some(st) = regions[i].paged.as_mut() {
             st.users = st.users.saturating_add(1);
         }
+    }
+}
+
+/// [`memobj_paged_users_add_ref`] for a file region: the first one pins the
+/// file on its backing, so a mapping keeps it alive as an open does.
+pub fn memobj_paged_region_add_ref(r: u32) {
+    let pin = {
+        let mut regions = MEMOBJS.lock();
+        paged_slot(&regions, r).ok().and_then(|i| regions[i].paged.as_mut()).and_then(|st| {
+            st.users = st.users.saturating_add(1);
+            st.maps = st.maps.saturating_add(1);
+            (st.maps == 1).then_some((st.backing, st.key))
+        })
+    };
+    if let Some((b, key)) = pin {
+        b.pin(&key);
+    }
+}
+
+/// [`memobj_paged_users_drop_ref`] for a file region: the last one lets the
+/// file go.
+pub fn memobj_paged_region_drop_ref(r: u32) {
+    let unpin = {
+        let mut regions = MEMOBJS.lock();
+        paged_slot(&regions, r).ok().and_then(|i| regions[i].paged.as_mut()).and_then(|st| {
+            st.users = st.users.saturating_sub(1);
+            let had = st.maps > 0;
+            st.maps = st.maps.saturating_sub(1);
+            (had && st.maps == 0).then_some((st.backing, st.key))
+        })
+    };
+    if let Some((b, key)) = unpin {
+        b.unpin(&key);
     }
 }
 
@@ -5641,7 +5677,7 @@ mod tests {
     // layer's side of it is `tests/host/fs-tests/src/page_cache.rs`.
 
     use core::sync::atomic::AtomicBool;
-    use azos_mm::pager::PageIoError;
+    use azos_mm::pager::{PageIoError, PAGE_KEY_LEN};
 
     struct FileBacking {
         data: StdMutex<Vec<u8>>,
@@ -5653,9 +5689,20 @@ mod tests {
         /// Run (with no lock of ours held) inside every write-back.
         in_write: StdMutex<Option<fn(u32)>>,
         cur: AtomicU32,
+        /// Pins and unpins the regions made (`PageBacking::pin`).
+        pins: AtomicU32,
+        unpins: AtomicU32,
     }
 
     impl PageBacking for FileBacking {
+        fn pin(&self, _k: &PageKey) {
+            self.pins.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn unpin(&self, _k: &PageKey) {
+            self.unpins.fetch_add(1, Ordering::SeqCst);
+        }
+
         fn read_page(&self, _k: &PageKey, off: u64, dst: &mut [u8]) -> Result<usize, PageIoError> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             if self.fail_reads.load(Ordering::SeqCst) {
@@ -5696,10 +5743,12 @@ mod tests {
             fail_writes: AtomicBool::new(false),
             in_write: StdMutex::new(None),
             cur: AtomicU32::new(0),
+            pins: AtomicU32::new(0),
+            unpins: AtomicU32::new(0),
         }))
     }
 
-    const FKEY: PageKey = PageKey([7; crate::pager::PAGE_KEY_LEN]);
+    const FKEY: PageKey = PageKey([7; PAGE_KEY_LEN]);
 
     /// The cache's frame of page `i`, which must be in the cache.
     fn cached(r: u32, i: usize) -> &'static mut [u8] {
@@ -5710,6 +5759,31 @@ mod tests {
 
     fn fbyte(p: usize) -> u8 {
         (p % 251 + 1) as u8
+    }
+
+    /// **A file region keeps its file pinned on the backing**: the first
+    /// region pins it, the last one's end unpins it, and the transient users a
+    /// read or write of the cache takes do neither.
+    ///
+    /// **Canary.** The pager taking its region users with
+    /// `memobj_paged_users_add_ref`: no pin, and the file can be destroyed
+    /// under a mapping.
+    #[test]
+    fn file_regions_pin_the_file_and_transient_users_do_not() {
+        let (f, r, _) = window();
+        let pins = || (f.pins.load(Ordering::SeqCst), f.unpins.load(Ordering::SeqCst));
+        memobj_paged_users_add_ref(r);
+        memobj_paged_users_drop_ref(r);
+        assert_eq!(pins(), (0, 0), "a cache read or write is not a mapping");
+        memobj_paged_region_add_ref(r);
+        memobj_paged_region_add_ref(r);
+        assert_eq!(pins(), (1, 0), "two regions, one pin");
+        assert_eq!(memobj_paged_users_ref(r), 2);
+        memobj_paged_region_drop_ref(r);
+        assert_eq!(pins(), (1, 0), "one region left");
+        memobj_paged_region_drop_ref(r);
+        assert_eq!(pins(), (1, 1), "the last region's end lets the file go");
+        assert_eq!(memobj_paged_users_ref(r), 0);
     }
 
     /// A 3-page window at file page 5 of a file that ends 100 bytes into the
