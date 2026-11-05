@@ -1587,4 +1587,45 @@ mod tests {
         let ts = lx::timespec_bytes(0);
         assert_eq!(xcall(&r, xnr::PPOLL, [fp, 1, ts.as_ptr() as u64, 0, 0, 0]), 1);
     }
+
+    /// A thread that finds the state lock held calls the native yield between
+    /// attempts (the lock's doc: it yields, it does not spin against a holder
+    /// that may be a lower priority). Canary: a lock that spins never calls
+    /// `wait`, so the holder is never released and the test fails on its
+    /// timeout assertion.
+    #[test]
+    fn a_contended_state_lock_yields_instead_of_spinning() {
+        use azos_linux_rt::Lock;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        let lock = Lock::new(0u32);
+        let holding = AtomicBool::new(false);
+        let release = AtomicBool::new(false);
+        let waits = AtomicU32::new(0);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                lock.with(|| {}, |v| {
+                    *v += 1;
+                    holding.store(true, Ordering::SeqCst);
+                    // The holder lets go only once the other thread has yielded.
+                    let t0 = std::time::Instant::now();
+                    while !release.load(Ordering::SeqCst) && t0.elapsed().as_secs() < 5 {
+                        std::thread::yield_now();
+                    }
+                });
+            });
+            while !holding.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            lock.with(
+                || {
+                    waits.fetch_add(1, Ordering::SeqCst);
+                    release.store(true, Ordering::SeqCst);
+                },
+                |v| *v += 1,
+            );
+        });
+        assert!(waits.load(Ordering::SeqCst) >= 1, "the contended thread never yielded");
+        assert!(release.load(Ordering::SeqCst), "the holder was never released by a yield");
+        assert_eq!(lock.with(|| {}, |v| *v), 2);
+    }
 }

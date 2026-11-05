@@ -312,8 +312,10 @@ pub trait Native {
 
 // ── A lock for the process's state ──────────────────────────────────────────
 
-/// A spin lock. The state is small and never held across a native call that
-/// can block; a thread that fails to take it yields.
+/// A lock whose waiters yield. The state is small and never held across a
+/// native call that can block; a thread that fails to take it calls the
+/// `yield_now` the caller passes to [`Lock::with`] (the native `SYS_YIELD`),
+/// so under strict priority the holder runs instead of being spun against.
 pub struct Lock<T> {
     held: AtomicBool,
     v: UnsafeCell<T>,
@@ -328,10 +330,11 @@ impl<T> Lock<T> {
         Self { held: AtomicBool::new(false), v: UnsafeCell::new(v) }
     }
 
-    /// Run `f` on the protected value.
-    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+    /// Run `f` on the protected value, calling `wait` between attempts while
+    /// another thread holds the lock.
+    pub fn with<R>(&self, wait: impl Fn(), f: impl FnOnce(&mut T) -> R) -> R {
         while self.held.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            core::hint::spin_loop();
+            wait();
         }
         // SAFETY: the flag is held.
         let r = f(unsafe { &mut *self.v.get() });
@@ -499,6 +502,12 @@ impl<N: Native> Runtime<N> {
         Self { native, st: Lock::new(STATE_INIT), pid: AtomicI64::new(0), ppid: AtomicI64::new(1), live: AtomicU32::new(1), threaded: AtomicBool::new(false) }
     }
 
+    /// Run `f` on the process's state, yielding through the native call while
+    /// another thread holds it.
+    fn locked<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
+        self.st.with(|| self.native.yield_now(), f)
+    }
+
     /// The native calls, for the image that wraps the runtime.
     pub fn native(&self) -> &N {
         &self.native
@@ -512,7 +521,7 @@ impl<N: Native> Runtime<N> {
         self.pid.store(self.native.getpid(), Ordering::Relaxed);
         self.live.store(1, Ordering::Relaxed);
         self.threaded.store(false, Ordering::Relaxed);
-        self.st.with(|s| {
+        self.locked(|s| {
             *s = STATE_INIT;
             s.cwd[0] = b'/';
             s.cwd_len = 1;
@@ -640,13 +649,13 @@ impl<N: Native> Runtime<N> {
         match code {
             SET_FS if addr >= FS_LIMIT => neg(le::EPERM),
             SET_FS => {
-                let old = self.st.with(|s| core::mem::replace(&mut s.fs_base, addr));
+                let old = self.locked(|s| core::mem::replace(&mut s.fs_base, addr));
                 f.gpr[lx::x86_64::REG_RESULT] = 0;
                 let r = self.native.resume_with_thread_pointer(f, addr);
-                self.st.with(|s| s.fs_base = old);
+                self.locked(|s| s.fs_base = old);
                 lx::errno_from_native(r, le::ENOMEM)
             }
-            GET_FS => put_user(addr, &self.st.with(|s| s.fs_base).to_le_bytes()),
+            GET_FS => put_user(addr, &self.locked(|s| s.fs_base).to_le_bytes()),
             _ => neg(le::EINVAL),
         }
     }
@@ -658,12 +667,12 @@ impl<N: Native> Runtime<N> {
             nr::GETPID => self.pid.load(Ordering::Relaxed),
             nr::GETTID => self.tid(),
             nr::SET_TID_ADDRESS if !cfg!(feature = "canary-no-threads") => {
-                self.st.with(|s| s.tid_addr = a0);
+                self.locked(|s| s.tid_addr = a0);
                 let r = self.native.set_clear_tid(a0);
                 if r < 0 { lx::errno_from_native(r, le::EINVAL) } else { self.tid() }
             }
             nr::SET_TID_ADDRESS => {
-                self.st.with(|s| s.tid_addr = a0);
+                self.locked(|s| s.tid_addr = a0);
                 self.pid.load(Ordering::Relaxed)
             }
             // No users on this kernel (POSIX subset rule 3): everyone is 0.
@@ -714,7 +723,7 @@ impl<N: Native> Runtime<N> {
                 let u = lx::utsname_bytes(arch(), b"azos");
                 put_user(a0, &u)
             }
-            nr::UMASK => self.st.with(|s| {
+            nr::UMASK => self.locked(|s| {
                 let old = s.umask;
                 s.umask = (a0 & 0o777) as u32;
                 old as i64
@@ -738,7 +747,7 @@ impl<N: Native> Runtime<N> {
     /// A Linux call the runtime does not answer: `-ENOSYS`, reported on the
     /// console the first few times.
     fn unanswered(&self, num: u64) -> i64 {
-        let first = self.st.with(|s| {
+        let first = self.locked(|s| {
             let f = s.reported < 16;
             s.reported = s.reported.saturating_add(1);
             f
@@ -786,13 +795,13 @@ impl<N: Native> Runtime<N> {
             self.ppid.store(parent, Ordering::Relaxed);
             self.live.store(1, Ordering::Relaxed);
             self.threaded.store(false, Ordering::Relaxed);
-            self.st.with(|s| {
+            self.locked(|s| {
                 s.children = [0; CHILDREN];
                 s.threads = [0; THREADS];
             });
             return 0;
         }
-        let kept = self.st.with(|s| match s.children.iter().position(|&c| c == 0) {
+        let kept = self.locked(|s| match s.children.iter().position(|&c| c == 0) {
             Some(i) => {
                 s.children[i] = r as u32;
                 true
@@ -820,7 +829,7 @@ impl<N: Native> Runtime<N> {
         let code = (code & 0xff) as i32;
         if self.live.fetch_sub(1, Ordering::AcqRel) > 1 {
             let me = self.native.getpid() as u32;
-            self.st.with(|s| {
+            self.locked(|s| {
                 if let Some(t) = s.threads.iter_mut().find(|t| **t == me) {
                     *t = 0;
                 }
@@ -849,7 +858,7 @@ impl<N: Native> Runtime<N> {
         } else {
             // The thread keeps its creator's thread pointer.
             match self.native.thread_pointer() {
-                0 => self.st.with(|s| s.fs_base),
+                0 => self.locked(|s| s.fs_base),
                 t => t,
             }
         };
@@ -864,7 +873,7 @@ impl<N: Native> Runtime<N> {
             self.live.fetch_sub(1, Ordering::AcqRel);
             return neg(le::EAGAIN);
         }
-        self.st.with(|s| {
+        self.locked(|s| {
             if let Some(t) = s.threads.iter_mut().find(|t| **t == 0) {
                 *t = r as u32;
             }
@@ -905,7 +914,7 @@ impl<N: Native> Runtime<N> {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let (fds, cwd, cwd_len) = self.st.with(|s| (s.fds, s.cwd, s.cwd_len as usize));
+        let (fds, cwd, cwd_len) = self.locked(|s| (s.fds, s.cwd, s.cwd_len as usize));
         let mut zc = [0u8; CWD_MAX + 1];
         zc[..cwd_len].copy_from_slice(&cwd[..cwd_len]);
         let mut carry = [ExecFd::Closed; 8];
@@ -984,7 +993,7 @@ impl<N: Native> Runtime<N> {
         }
         loop {
             // The children this process has not reaped.
-            let kids = self.st.with(|s| s.children);
+            let kids = self.locked(|s| s.children);
             let mut found: Option<(u32, i32)> = None;
             let mut any = false;
             for &k in kids.iter().filter(|&&k| k != 0) {
@@ -1002,7 +1011,7 @@ impl<N: Native> Runtime<N> {
                     -1 => any = true,
                     // Nobody's child any more (taken by another waiter):
                     // forget it, it will never answer.
-                    _ => self.st.with(|s| {
+                    _ => self.locked(|s| {
                         if let Some(c) = s.children.iter_mut().find(|c| **c == k) {
                             *c = 0;
                         }
@@ -1010,7 +1019,7 @@ impl<N: Native> Runtime<N> {
                 }
             }
             if let Some((tid, code)) = found {
-                self.st.with(|s| {
+                self.locked(|s| {
                     if let Some(c) = s.children.iter_mut().find(|c| **c == tid) {
                         *c = 0;
                     }
@@ -1032,7 +1041,7 @@ impl<N: Native> Runtime<N> {
             let target = if pid > 0 { pid as u32 } else { 0 };
             let r = self.native.wait_block(target, &mut code);
             if r > 0 {
-                self.st.with(|s| {
+                self.locked(|s| {
                     if let Some(c) = s.children.iter_mut().find(|c| **c == r as u32) {
                         *c = 0;
                     }
@@ -1054,26 +1063,25 @@ impl<N: Native> Runtime<N> {
         if fd >= FDS as u64 {
             return Err(neg(le::EBADF));
         }
-        let e = self.st.with(|s| s.fds[fd as usize]);
+        let e = self.locked(|s| s.fds[fd as usize]);
         if e.kind == Kind::Closed { Err(neg(le::EBADF)) } else { Ok(e) }
     }
 
     /// The lowest closed descriptor at or above `min`, claimed with `ent`
     /// (and `path` kept for a file).
     fn fd_alloc(&self, min: usize, ent: FdEnt, path: Option<&[u8]>) -> Result<usize, i64> {
-        self.st
-            .with(|s| {
-                let i = (min..FDS).find(|&i| s.fds[i].kind == Kind::Closed)?;
-                s.fds[i] = ent;
-                s.paths[i] = NO_PATH;
-                if let Some(p) = path {
-                    let n = p.len().min(KEEP_PATH_MAX);
-                    s.paths[i].path[..n].copy_from_slice(&p[..n]);
-                    s.paths[i].len = n as u8;
-                }
-                Some(i)
-            })
-            .ok_or(neg(le::EMFILE))
+        self.locked(|s| {
+            let i = (min..FDS).find(|&i| s.fds[i].kind == Kind::Closed)?;
+            s.fds[i] = ent;
+            s.paths[i] = NO_PATH;
+            if let Some(p) = path {
+                let n = p.len().min(KEEP_PATH_MAX);
+                s.paths[i].path[..n].copy_from_slice(&p[..n]);
+                s.paths[i].len = n as u8;
+            }
+            Some(i)
+        })
+        .ok_or(neg(le::EMFILE))
     }
 
     /// Resolve `path` against `dirfd` (`AT_FDCWD` or an open directory) into
@@ -1082,7 +1090,7 @@ impl<N: Native> Runtime<N> {
         // `/proc` is not mounted for a Linux task; its one name a static
         // program relies on is its own image.
         if path == b"/proc/self/exe" {
-            let (e, n) = self.st.with(|s| (s.exe, s.exe_len as usize));
+            let (e, n) = self.locked(|s| (s.exe, s.exe_len as usize));
             if n == 0 {
                 return Err(neg(le::ENOENT));
             }
@@ -1092,7 +1100,7 @@ impl<N: Native> Runtime<N> {
         let mut base = [0u8; KEEP_PATH_MAX];
         let base_len;
         if path.first() == Some(&b'/') || dirfd == lx::AT_FDCWD {
-            let (c, n) = self.st.with(|s| (s.cwd, s.cwd_len as usize));
+            let (c, n) = self.locked(|s| (s.cwd, s.cwd_len as usize));
             base[..n].copy_from_slice(&c[..n]);
             base_len = n;
         } else {
@@ -1100,7 +1108,7 @@ impl<N: Native> Runtime<N> {
             if e.kind != Kind::Dir {
                 return Err(neg(le::ENOTDIR));
             }
-            let d = self.st.with(|s| s.dirs[e.dir as usize]);
+            let d = self.locked(|s| s.dirs[e.dir as usize]);
             base[..d.len as usize].copy_from_slice(&d.path[..d.len as usize]);
             base_len = d.len as usize;
         }
@@ -1169,7 +1177,7 @@ impl<N: Native> Runtime<N> {
     /// with `EPIPE`.
     fn sigpipe(&self) {
         use lx::sig::SIGPIPE;
-        let (handler, masked) = self.st.with(|s| (s.act[SIGPIPE as usize - 1].handler, s.mask & (1 << (SIGPIPE - 1)) != 0));
+        let (handler, masked) = self.locked(|s| (s.act[SIGPIPE as usize - 1].handler, s.mask & (1 << (SIGPIPE - 1)) != 0));
         if handler == 0 && !masked {
             self.native.exit(128 + SIGPIPE as i32);
         }
@@ -1274,7 +1282,7 @@ impl<N: Native> Runtime<N> {
         if path.len() > KEEP_PATH_MAX {
             return neg(le::ENAMETOOLONG);
         }
-        let r = self.st.with(|s| {
+        let r = self.locked(|s| {
             let d = s.dirs.iter().position(|d| !d.used)?;
             let fd = (0..FDS).find(|&i| s.fds[i].kind == Kind::Closed)?;
             s.dirs[d] = DirEnt { used: true, len: path.len() as u8, next: 0, path: [0; KEEP_PATH_MAX] };
@@ -1296,7 +1304,7 @@ impl<N: Native> Runtime<N> {
         };
         // Mark it closed first, then release the handle if no other
         // descriptor names it (`dup3` aliases share one handle).
-        let still_named = self.st.with(|s| {
+        let still_named = self.locked(|s| {
             s.fds[fd as usize] = FD_CLOSED;
             s.paths[fd as usize] = NO_PATH;
             if e.kind == Kind::Dir {
@@ -1372,7 +1380,7 @@ impl<N: Native> Runtime<N> {
                 st.blksize = 4096;
             }
             Kind::File => {
-                let (p, n) = self.st.with(|s| (s.paths[fd as usize].path, s.paths[fd as usize].len as usize));
+                let (p, n) = self.locked(|s| (s.paths[fd as usize].path, s.paths[fd as usize].len as usize));
                 if n == 0 {
                     // A file the spawn handed over (`> f`): no path to ask
                     // the native `stat` about, so the size is unknown.
@@ -1382,7 +1390,7 @@ impl<N: Native> Runtime<N> {
                 }
             }
             Kind::Dir => {
-                let d = self.st.with(|s| s.dirs[e.dir as usize]);
+                let d = self.locked(|s| s.dirs[e.dir as usize]);
                 return self.stat_path(&d.path[..d.len as usize]);
             }
             Kind::Closed => return Err(neg(le::EBADF)),
@@ -1438,7 +1446,7 @@ impl<N: Native> Runtime<N> {
         if e.kind != Kind::Dir {
             return neg(le::ENOTDIR);
         }
-        let d = self.st.with(|s| s.dirs[e.dir as usize]);
+        let d = self.locked(|s| s.dirs[e.dir as usize]);
         let mut z = [0u8; KEEP_PATH_MAX + 1];
         z[..d.len as usize].copy_from_slice(&d.path[..d.len as usize]);
         let zp = &z[..d.len as usize + 1];
@@ -1470,7 +1478,7 @@ impl<N: Native> Runtime<N> {
         if used > 0 && put_user(buf, &out[..used]) != 0 {
             return neg(le::EFAULT);
         }
-        self.st.with(|s| s.dirs[e.dir as usize].next = idx);
+        self.locked(|s| s.dirs[e.dir as usize].next = idx);
         used as i64
     }
 
@@ -1500,7 +1508,7 @@ impl<N: Native> Runtime<N> {
             }
             (r1, _) => {
                 if let Ok(a) = r1 {
-                    self.st.with(|s| s.fds[a] = FD_CLOSED);
+                    self.locked(|s| s.fds[a] = FD_CLOSED);
                 }
                 let _ = self.native.handle_close(ends[0]);
                 let _ = self.native.handle_close(ends[1]);
@@ -1522,7 +1530,7 @@ impl<N: Native> Runtime<N> {
             // One directory cursor per descriptor; sharing it is not modelled.
             return neg(le::EINVAL);
         }
-        let kept = self.st.with(|s| s.paths[old as usize]);
+        let kept = self.locked(|s| s.paths[old as usize]);
         let kp = &kept.path[..kept.len as usize];
         if new == u64::MAX {
             return match self.fd_alloc(0, FdEnt { cloexec: false, ..e }, Some(kp)) {
@@ -1542,7 +1550,7 @@ impl<N: Native> Runtime<N> {
                 return r;
             }
         }
-        self.st.with(|s| {
+        self.locked(|s| {
             s.fds[new as usize] = FdEnt { cloexec: flags & lx::oflag::O_CLOEXEC != 0, ..e };
             s.paths[new as usize] = kept;
         });
@@ -1558,13 +1566,13 @@ impl<N: Native> Runtime<N> {
         match cmd {
             F_GETFD => e.cloexec as i64,
             F_SETFD => {
-                self.st.with(|s| s.fds[fd as usize].cloexec = arg & FD_CLOEXEC != 0);
+                self.locked(|s| s.fds[fd as usize].cloexec = arg & FD_CLOEXEC != 0);
                 0
             }
             F_GETFL => (e.accmode as u64 | if e.nonblock { lx::oflag::O_NONBLOCK } else { 0 }) as i64,
             F_SETFL => {
                 let on = arg & lx::oflag::O_NONBLOCK != 0;
-                self.st.with(|s| s.fds[fd as usize].nonblock = on);
+                self.locked(|s| s.fds[fd as usize].nonblock = on);
                 if e.kind == Kind::Pipe {
                     self.native.handle_set_nonblock(e.handle, on);
                 }
@@ -1574,7 +1582,7 @@ impl<N: Native> Runtime<N> {
                 if e.kind == Kind::Dir || arg >= FDS as u64 {
                     return neg(le::EINVAL);
                 }
-                let kept = self.st.with(|s| s.paths[fd as usize]);
+                let kept = self.locked(|s| s.paths[fd as usize]);
                 match self.fd_alloc(arg as usize, FdEnt { cloexec: cmd == F_DUPFD_CLOEXEC, ..e }, Some(&kept.path[..kept.len as usize])) {
                     Ok(n) => n as i64,
                     Err(r) => r,
@@ -1609,7 +1617,7 @@ impl<N: Native> Runtime<N> {
     // ── working directory ───────────────────────────────────────────────────
 
     fn sys_getcwd(&self, buf: u64, size: u64) -> i64 {
-        let (c, n) = self.st.with(|s| (s.cwd, s.cwd_len as usize));
+        let (c, n) = self.locked(|s| (s.cwd, s.cwd_len as usize));
         if (size as usize) < n + 1 {
             return neg(le::ERANGE);
         }
@@ -1637,7 +1645,7 @@ impl<N: Native> Runtime<N> {
         if plen > CWD_MAX {
             return neg(le::ENAMETOOLONG);
         }
-        self.st.with(|s| {
+        self.locked(|s| {
             s.cwd[..plen].copy_from_slice(&path[..plen]);
             s.cwd_len = plen as u8;
         });
@@ -1658,7 +1666,7 @@ impl<N: Native> Runtime<N> {
     fn sys_brk(&self, addr: u64) -> i64 {
         use lx::mman::*;
         let page = self.native.page_size();
-        self.st.with(|s| {
+        self.locked(|s| {
             if s.brk_end == 0 {
                 let first = self.native.mmap(0, page, PROT_READ | PROT_WRITE, 0);
                 if first <= 0 {
@@ -1828,7 +1836,7 @@ impl<N: Native> Runtime<N> {
         match e.kind {
             Kind::File => lx::errno_from_native(self.native.handle_seek(e.handle, off as i64, whence as u32), le::EINVAL),
             Kind::Dir if off == 0 && whence == 0 => {
-                self.st.with(|s| s.dirs[e.dir as usize].next = 0);
+                self.locked(|s| s.dirs[e.dir as usize].next = 0);
                 0
             }
             Kind::Dir => neg(le::EINVAL),
@@ -1964,7 +1972,7 @@ impl<N: Native> Runtime<N> {
         }
         let own_thread = tgid as i64 == self.pid.load(Ordering::Relaxed)
             && tid != 0
-            && self.st.with(|s| s.threads.contains(&(tid as u32)));
+            && self.locked(|s| s.threads.contains(&(tid as u32)));
         if tgid != tid && !own_thread {
             return neg(le::ESRCH);
         }
@@ -1979,11 +1987,11 @@ impl<N: Native> Runtime<N> {
         if sig == 0 {
             return 0;
         }
-        let handled = self.st.with(|s| s.act[sig as usize - 1].handler > lx::sig::SIG_IGN);
+        let handled = self.locked(|s| s.act[sig as usize - 1].handler > lx::sig::SIG_IGN);
         if handled && lx::Arch::native().is_none() {
             return self.unanswered(nr::KILL);
         }
-        self.st.with(|s| s.pending |= lx::signal::bit(sig));
+        self.locked(|s| s.pending |= lx::signal::bit(sig));
         0
     }
 
@@ -1991,7 +1999,7 @@ impl<N: Native> Runtime<N> {
     /// action does. A signal whose default action discards it, and signal 0,
     /// only check that the child exists.
     fn signal_child(&self, pid: u32, sig: u64) -> i64 {
-        let child = self.st.with(|s| s.children.contains(&pid));
+        let child = self.locked(|s| s.children.contains(&pid));
         if sig == 0 || lx::signal::default_action(sig) != lx::signal::DefaultAction::Terminate {
             return if child { 0 } else { neg(le::ESRCH) };
         }
@@ -2007,7 +2015,7 @@ impl<N: Native> Runtime<N> {
     /// The first pending signal the mask lets through, taken off the pending
     /// set: its action and the mask the interrupted code had.
     fn take_signal(&self) -> Option<(u64, lx::KSigaction, u64)> {
-        self.st.with(|s| {
+        self.locked(|s| {
             let ready = s.pending & !s.mask;
             if ready == 0 {
                 return None;
@@ -2105,7 +2113,7 @@ impl<N: Native> Runtime<N> {
         f.gpr = ctx.gpr;
         f.pc = ctx.pc;
         f.flags = ctx.pstate & azos_abi::foreign::FLAGS_USER_MASK;
-        self.st.with(|s| s.mask = mask);
+        self.locked(|s| s.mask = mask);
     }
 
     /// `rt_sigaction`, with the kernel `struct sigaction` of `a`'s layout.
@@ -2126,7 +2134,7 @@ impl<N: Native> Runtime<N> {
             }
             new = lx::KSigaction::from_bytes(&b[..size], a);
         }
-        let old = self.st.with(|st| {
+        let old = self.locked(|st| {
             let old = st.act[s as usize - 1];
             if let Some(n) = new {
                 st.act[s as usize - 1] = n;
@@ -2157,7 +2165,7 @@ impl<N: Native> Runtime<N> {
             return neg(le::EINVAL);
         }
         let unblockable = (1u64 << (SIGKILL - 1)) | (1u64 << (SIGSTOP - 1));
-        let old = self.st.with(|s| {
+        let old = self.locked(|s| {
             let old = s.mask;
             if let Some(v) = new {
                 s.mask = match how {
@@ -2179,7 +2187,7 @@ impl<N: Native> Runtime<N> {
         if size != 8 {
             return neg(le::EINVAL);
         }
-        let held = self.st.with(|s| s.pending & s.mask);
+        let held = self.locked(|s| s.pending & s.mask);
         put_user(set, &held.to_le_bytes())
     }
 
