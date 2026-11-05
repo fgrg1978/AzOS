@@ -1085,3 +1085,131 @@ fn the_login_op_needs_exec_and_its_mask_bit() {
     assert!(svc.client().generate(name(b"k"), host_policy()).is_err());
     tidy();
 }
+
+// ── The roots in the monitor's keeping ──────────────────────────────────────
+
+/// A stand-in for the resident monitor's vault: it keeps the roots where the
+/// kernel's `ROOTS` cannot see them and runs HKDF on request.
+static VAULT: std::sync::Mutex<[Option<[u8; 32]>; 3]> = std::sync::Mutex::new([None; 3]);
+static VAULT_ASKED: AtomicU32 = AtomicU32::new(0);
+static VAULT_REFUSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn vault_store(slot: usize, root: &[u8; 32]) -> bool {
+    let mut v = VAULT.lock().unwrap();
+    if VAULT_REFUSES.load(Ordering::SeqCst) || v[slot].is_some() {
+        return false;
+    }
+    v[slot] = Some(*root);
+    true
+}
+
+fn vault_kdf(slot: usize, salt: &[u8], info: &[u8], out: &mut [u8; 32]) -> bool {
+    VAULT_ASKED.fetch_add(1, Ordering::SeqCst);
+    match VAULT.lock().unwrap()[slot] {
+        Some(root) => azos_crypto::hkdf::hkdf(salt, &root, info, out),
+        None => false,
+    }
+}
+
+fn with_vault() {
+    *VAULT.lock().unwrap() = [None; 3];
+    VAULT_ASKED.store(0, Ordering::SeqCst);
+    VAULT_REFUSES.store(false, Ordering::SeqCst);
+    crate::keys::set_root_vault(vault_store, vault_kdf);
+}
+
+fn key_of(h: &Holder, backend: u8) -> [u64; 4] {
+    let k = h.client().generate(name(b"sshd.host"), Policy { backend, ..host_policy() }).unwrap();
+    assert!(k.is_ok(), "{k:?}");
+    h.public(k.value).value
+}
+
+/// **A root the monitor keeps is a root the kernel does not hold, and the key
+/// it derives is the key the bytes would.** The same name under the volume's
+/// root gives the public key `derive_persistent` gives for those bytes, the
+/// vault was asked, and the kernel's table has no byte of the root.
+///
+/// **Canary.** `install_root` keeps a copy in `ROOTS` as well as handing it over:
+/// the "no byte" assertion is red.
+#[test]
+fn a_vaulted_root_derives_the_key_the_bytes_would_and_the_kernel_holds_none() {
+    let _g = serial();
+    reset();
+    with_vault();
+    let root = [0x22u8; 32];
+    assert!(crate::keys::install_root(ks::Backend::Volume, &root));
+    assert_eq!(crate::keys::__root_bytes_in_kernel(ks::Backend::Volume), None, "the kernel holds no byte of it");
+    assert_eq!(VAULT.lock().unwrap()[2], Some(root));
+    assert!(crate::keys::has_root(ks::Backend::Volume));
+
+    let h = Holder::rw(7, IMAGE_X, 44);
+    let got = key_of(&h, wire::backend::VOLUME);
+    let who = ks::Principal { owner_root: 7, measurement: IMAGE_X };
+    let p = ks::Policy {
+        purpose: ks::purpose::SIGN,
+        envelope: ks::Envelope::Image,
+        backend: ks::Backend::Volume,
+        wrappable: false,
+        max_uses: 0,
+        ttl_s: 0,
+    };
+    let secret = ks::derive_persistent(&root, &who, &p, &name_bytes(b"sshd.host")).unwrap();
+    assert_eq!(got, words(&ks::public_key(&secret)));
+    assert!(VAULT_ASKED.load(Ordering::SeqCst) >= 1, "the monitor derived it");
+    tidy();
+}
+
+/// **The board's own root is vaulted too**: derived from the seed on the first
+/// ask, handed over, and the key under it is the in-kernel one.
+#[test]
+fn the_boot_root_is_vaulted_when_it_is_first_asked_for() {
+    let _g = serial();
+    reset();
+    with_vault();
+    assert!(crate::keys::has_root(ks::Backend::Boot));
+    assert_eq!(crate::keys::__root_bytes_in_kernel(ks::Backend::Boot), None);
+    assert_eq!(VAULT.lock().unwrap()[0], Some(boot_root()));
+    let h = Holder::rw(7, IMAGE_X, 44);
+    let got = key_of(&h, wire::backend::BOOT);
+    let who = ks::Principal { owner_root: 7, measurement: IMAGE_X };
+    let p = ks::Policy {
+        purpose: ks::purpose::SIGN,
+        envelope: ks::Envelope::Image,
+        backend: ks::Backend::Boot,
+        wrappable: false,
+        max_uses: 0,
+        ttl_s: 0,
+    };
+    let secret = ks::derive_persistent(&boot_root(), &who, &p, &name_bytes(b"sshd.host")).unwrap();
+    assert_eq!(got, words(&ks::public_key(&secret)));
+    tidy();
+}
+
+/// **A root the monitor refuses is no root, and not a root kept here instead.**
+///
+/// **Canary.** Fall back to `Slot::Mem` when the vault says no: the backend has a
+/// root and `__root_bytes_in_kernel` returns it.
+#[test]
+fn a_root_the_monitor_refuses_is_not_kept_in_the_kernel() {
+    let _g = serial();
+    reset();
+    with_vault();
+    VAULT_REFUSES.store(true, Ordering::SeqCst);
+    assert!(!crate::keys::install_root(ks::Backend::TpmNv, &[0x11; 32]));
+    assert!(!crate::keys::has_root(ks::Backend::TpmNv));
+    assert_eq!(crate::keys::__root_bytes_in_kernel(ks::Backend::TpmNv), None);
+    let h = Holder::rw(7, IMAGE_X, 44);
+    let p = Policy { backend: wire::backend::TPM_NV, ..host_policy() };
+    assert_eq!(h.client().generate(name(b"k"), p).unwrap(), Out::err(outcome::NOT_READY));
+    tidy();
+}
+
+/// Without a vault the root stays in the kernel, as it always did.
+#[test]
+fn without_a_vault_the_root_stays_where_it_was() {
+    let _g = serial();
+    reset();
+    assert!(crate::keys::install_root(ks::Backend::Volume, &[0x22; 32]));
+    assert_eq!(crate::keys::__root_bytes_in_kernel(ks::Backend::Volume), Some([0x22; 32]));
+    tidy();
+}

@@ -469,6 +469,27 @@ impl<const N: usize> Keystore<N> {
 const ROOT_INFO: &[u8] = b"azos keystore key v1";
 const CHILD_INFO: &[u8] = b"azos keystore derive v1";
 
+/// What a backend's root answers: `HKDF-SHA256` with the root as the input key
+/// material. A root in kernel memory (`[u8; KEY_LEN]`) computes it here; a root
+/// the resident monitor keeps out of the kernel's reach (VIRT_SPLIT) is asked
+/// to, and the kernel never holds its bytes.
+pub trait RootKdf {
+    /// Does the board hold a root (not the all-zero one)?
+    fn is_set(&self) -> bool;
+    /// `HKDF-SHA256(salt, ikm = root, info)` into `out`; false when refused.
+    fn kdf(&self, salt: &[u8], info: &[u8], out: &mut [u8; KEY_LEN]) -> bool;
+}
+
+impl RootKdf for [u8; KEY_LEN] {
+    fn is_set(&self) -> bool {
+        self.iter().any(|&b| b != 0)
+    }
+
+    fn kdf(&self, salt: &[u8], info: &[u8], out: &mut [u8; KEY_LEN]) -> bool {
+        hkdf::hkdf(salt, self, info, out)
+    }
+}
+
 /// The secret of the persistent key `name` of `who` under `policy`, from the
 /// backend's root: `HKDF-SHA256(salt = ROOT_INFO, ikm = root,
 /// info = owner || purpose || envelope || image || name)`. The image is the
@@ -476,13 +497,13 @@ const CHILD_INFO: &[u8] = b"azos keystore derive v1";
 /// one image is not the key of another, nor the key of one owner the key of
 /// another. `None` for a root of all zeros (the board holds none) and for a
 /// volatile policy.
-pub fn derive_persistent(
-    root: &[u8; KEY_LEN],
+pub fn derive_persistent<R: RootKdf + ?Sized>(
+    root: &R,
     who: &Principal,
     policy: &Policy,
     name: &[u8; NAME_LEN],
 ) -> Option<[u8; KEY_LEN]> {
-    if policy.backend == Backend::Volatile || root.iter().all(|&b| b == 0) {
+    if policy.backend == Backend::Volatile || !root.is_set() {
         return None;
     }
     let mut info = [0u8; 4 + 1 + 1 + 32 + NAME_LEN];
@@ -493,11 +514,8 @@ pub fn derive_persistent(
         info[6..38].copy_from_slice(&who.measurement);
     }
     info[38..].copy_from_slice(name);
-    let mut prk = hkdf::extract(ROOT_INFO, root);
     let mut out = [0u8; KEY_LEN];
-    let ok = hkdf::expand(&prk, &info, &mut out);
-    secure_zero(&mut prk);
-    ok.then_some(out)
+    root.kdf(ROOT_INFO, &info, &mut out).then_some(out)
 }
 
 /// The key a child `label` of `parent` is: `HKDF-SHA256(salt = label,
@@ -534,13 +552,13 @@ const LOGIN_SEED_LABEL: &[u8] = b"azos console login seed v1";
 /// `HKDF(salt = credential, ikm = record key, info = LOGIN_SEED_LABEL)`, and
 /// the public part of that seed is the verifier. Neither the record key nor
 /// the seed is kept or returned. `None` for a root of all zeros.
-pub fn login_public(
-    root: &[u8; KEY_LEN],
+pub fn login_public<R: RootKdf + ?Sized>(
+    root: &R,
     owner_root: u32,
     name: &[u8; NAME_LEN],
     credential: &[u8; KEY_LEN],
 ) -> Option<[u8; 32]> {
-    if root.iter().all(|&b| b == 0) {
+    if !root.is_set() {
         return None;
     }
     let mut info = [0u8; 4 + NAME_LEN];
@@ -548,10 +566,13 @@ pub fn login_public(
     info[4..].copy_from_slice(name);
     let mut record = [0u8; KEY_LEN];
     let mut seed = [0u8; KEY_LEN];
-    // 32 bytes is far below the HKDF limit: neither can fail.
-    let a = hkdf::hkdf(LOGIN_USER_LABEL, root, &info, &mut record);
+    // 32 bytes is far below the HKDF limit: only a root that refuses can fail.
+    if !root.kdf(LOGIN_USER_LABEL, &info, &mut record) {
+        secure_zero(&mut record);
+        return None;
+    }
     let b = hkdf::hkdf(credential, &record, LOGIN_SEED_LABEL, &mut seed);
-    debug_assert!(a && b);
+    debug_assert!(b);
     let public = public_key(&seed);
     secure_zero(&mut record);
     secure_zero(&mut seed);

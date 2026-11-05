@@ -20,6 +20,8 @@ mod sig_tests;
 
 #[cfg(test)]
 mod keystore_tests;
+#[cfg(test)]
+mod hkdf_kat;
 
 #[cfg(test)]
 mod link_key_tests;

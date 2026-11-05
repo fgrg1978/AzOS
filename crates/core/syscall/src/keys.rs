@@ -22,7 +22,11 @@
 //!   link-key seam (`link_key::read_key_via_hook`) once and kept as a derived
 //!   root; a secret in a TPM NV index and a secret in a file on a sealed
 //!   volume, which the boot installs ([`install_root`], [`install_volume_root`]).
-//!   A backend whose root the board does not hold is `NOT_READY`.
+//!   A backend whose root the board does not hold is `NOT_READY`. On a board
+//!   with the resident monitor (VIRT_SPLIT) every root goes to the monitor's
+//!   guarded memory the moment it is installed ([`set_root_vault`]) and
+//!   `derive` and `login` ask the monitor to run the HKDF: the kernel never
+//!   holds a root's bytes. Without a monitor the root stays here.
 //! * **The record.** Every use of a key is a `Rule::KeyUse` decision
 //!   (subject the calling task; the handle, the op, the reason): `Admit` when
 //!   it was served, `Refuse` when the policy turned it away. A refusal is a
@@ -101,8 +105,96 @@ const _: () = assert!(
 /// across a signature, an entropy draw or a block read.
 static STORE: SpinLock<Keystore<SLOTS>> = SpinLock::new(Keystore::new(PER_OWNER));
 
+/// Where a root is kept. `Vaulted`: in the resident monitor's guarded memory
+/// (VIRT_SPLIT), where the kernel holds no byte of it.
+#[derive(Clone, Copy)]
+enum Slot {
+    Mem([u8; ks::KEY_LEN]),
+    Vaulted,
+}
+
 /// The roots, by [`Backend::root_index`]; `None` while the board has none.
-static ROOTS: SpinLock<[Option<[u8; ks::KEY_LEN]>; ks::ROOTS]> = SpinLock::new([None; ks::ROOTS]);
+static ROOTS: SpinLock<[Option<Slot>; ks::ROOTS]> = SpinLock::new([None; ks::ROOTS]);
+
+azos_common::ro_hook! {
+    /// Hand a root to the monitor, which keeps it out of the kernel's reach:
+    /// `(root index, root) -> kept`. Set by the boot of a build that has a
+    /// monitor, before the first root is installed. With it set no root is
+    /// ever held in kernel memory, and a root the monitor refuses is no root.
+    static VAULT_STORE: fn(usize, &[u8; ks::KEY_LEN]) -> bool;
+}
+
+azos_common::ro_hook! {
+    /// `HKDF-SHA256(salt, ikm = the vaulted root, info)` by the monitor:
+    /// `(root index, salt, info, out) -> done`.
+    static VAULT_KDF: fn(usize, &[u8], &[u8], &mut [u8; ks::KEY_LEN]) -> bool;
+}
+
+/// Install the monitor's root vault. Called once at boot, before the roots.
+pub fn set_root_vault(
+    store: fn(usize, &[u8; ks::KEY_LEN]) -> bool,
+    kdf: fn(usize, &[u8], &[u8], &mut [u8; ks::KEY_LEN]) -> bool,
+) {
+    VAULT_STORE.set(store);
+    VAULT_KDF.set(kdf);
+}
+
+/// A root as the policy uses it: asked to run HKDF, never read.
+enum Root {
+    Mem([u8; ks::KEY_LEN]),
+    Vault(usize),
+}
+
+impl ks::RootKdf for Root {
+    fn is_set(&self) -> bool {
+        match self {
+            Root::Mem(r) => ks::RootKdf::is_set(r),
+            Root::Vault(_) => true,
+        }
+    }
+
+    fn kdf(&self, salt: &[u8], info: &[u8], out: &mut [u8; ks::KEY_LEN]) -> bool {
+        match self {
+            Root::Mem(r) => ks::RootKdf::kdf(r, salt, info, out),
+            Root::Vault(i) => VAULT_KDF.get().is_some_and(|f| f(*i, salt, info, out)),
+        }
+    }
+}
+
+impl Drop for Root {
+    fn drop(&mut self) {
+        if let Root::Mem(r) = self {
+            secure_zero(r);
+        }
+    }
+}
+
+impl Slot {
+    fn root(self, i: usize) -> Root {
+        match self {
+            Slot::Mem(r) => Root::Mem(r),
+            Slot::Vaulted => Root::Vault(i),
+        }
+    }
+}
+
+/// Keep `root` as root `i`: in the monitor when there is one (and then the
+/// caller's copy is the only one left to wipe), else in kernel memory. With
+/// `replace` false an existing root is returned and `root` is dropped.
+fn put_root(i: usize, root: &[u8; ks::KEY_LEN], replace: bool) -> Option<Slot> {
+    let mut roots = ROOTS.lock();
+    if !replace {
+        if let Some(have) = roots[i] {
+            return Some(have);
+        }
+    }
+    let slot = match VAULT_STORE.get() {
+        Some(store) => store(i, root).then_some(Slot::Vaulted)?,
+        None => Slot::Mem(*root),
+    };
+    roots[i] = Some(slot);
+    Some(slot)
+}
 
 /// Durable refusal receipts per second, and the window they are counted in.
 const DURABLE_PER_SEC: u32 = 8;
@@ -121,8 +213,7 @@ pub fn install_root(backend: Backend, root: &[u8; ks::KEY_LEN]) -> bool {
     if root.iter().all(|&b| b == 0) {
         return false;
     }
-    ROOTS.lock()[i] = Some(*root);
-    true
+    put_root(i, root, true).is_some()
 }
 
 /// Is the root of `backend` installed (or, for the board seed, readable)?
@@ -134,10 +225,11 @@ pub fn has_root(backend: Backend) -> bool {
 /// first time it is asked for and kept as a derived root, not as the seed
 /// (`HKDF(seed, label)`): the seed is the link key's and the DICE identity's, and
 /// a persistent key is not derived from it directly.
-fn root_for(backend: Backend) -> Option<[u8; ks::KEY_LEN]> {
+fn root_for(backend: Backend) -> Option<Root> {
     let i = backend.root_index()?;
-    if let Some(r) = ROOTS.lock()[i] {
-        return Some(r);
+    let have = *ROOTS.lock().get(i)?;
+    if let Some(slot) = have {
+        return Some(slot.root(i));
     }
     if backend != Backend::Boot {
         return None;
@@ -150,11 +242,9 @@ fn root_for(backend: Backend) -> Option<[u8; ks::KEY_LEN]> {
     let mut root = [0u8; ks::KEY_LEN];
     let ok = azos_crypto::hkdf::hkdf(ROOT_LABEL, &seed, b"boot", &mut root);
     secure_zero(&mut seed);
-    if !ok {
-        return None;
-    }
-    ROOTS.lock()[i] = Some(root);
-    Some(root)
+    let slot = if ok { put_root(i, &root, false) } else { None };
+    secure_zero(&mut root);
+    slot.map(|s| s.root(i))
 }
 
 /// What [`install_volume_root`] did.
@@ -499,9 +589,9 @@ impl azos_devif::Keys for Server {
         }
         let mut secret = [0u8; ks::KEY_LEN];
         if named {
-            let Some(mut root) = root_for(policy.backend) else { return Out::err(outcome::NOT_READY) };
+            let Some(root) = root_for(policy.backend) else { return Out::err(outcome::NOT_READY) };
             let derived = ks::derive_persistent(&root, &who, &policy, &name);
-            secure_zero(&mut root);
+            drop(root);
             match derived {
                 Some(s) => secret = s,
                 None => return Out::err(outcome::NOT_READY),
@@ -821,7 +911,7 @@ pub(crate) fn login_in(
             return Out::err(outcome::DENIED);
         }
     }
-    let Some(mut root) = root_for(Backend::Boot) else {
+    let Some(root) = root_for(Backend::Boot) else {
         record_login(Verdict::Refuse, 0, 0, LOGIN_NO_ROOT);
         return Out::err(outcome::NOT_READY);
     };
@@ -831,7 +921,7 @@ pub(crate) fn login_in(
     let none: &[[u8; 32]] = &[];
     let keys = found.map_or(none, |i| rows[i].keys());
     let public = ks::login_public(&root, owner, &name, cred);
-    secure_zero(&mut root);
+    drop(root);
     let mut good = false;
     if let Some(p) = &public {
         for k in keys {
@@ -858,12 +948,23 @@ pub(crate) fn login_in(
     Out::err(outcome::DENIED)
 }
 
+/// The root bytes the kernel holds for `backend`: none for a vaulted root.
+#[cfg(test)]
+pub fn __root_bytes_in_kernel(backend: Backend) -> Option<[u8; ks::KEY_LEN]> {
+    match (*ROOTS.lock())[backend.root_index()?] {
+        Some(Slot::Mem(r)) => Some(r),
+        _ => None,
+    }
+}
+
 /// Back to "no keys, no roots". Test-only: a host test that made keys must not
 /// leave them for the next.
 #[cfg(test)]
 pub fn __keys_clear_for_tests() {
     *STORE.lock() = Keystore::new(PER_OWNER);
     *ROOTS.lock() = [None; ks::ROOTS];
+    VAULT_STORE.clear_for_tests();
+    VAULT_KDF.clear_for_tests();
     WINDOW_S.store(u64::MAX, Ordering::Relaxed);
     WINDOW_N.store(0, Ordering::Relaxed);
     *TRIES.lock() = [NO_TRIES; UNKNOWN + 1];

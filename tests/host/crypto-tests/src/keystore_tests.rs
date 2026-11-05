@@ -439,3 +439,71 @@ fn hex32(s: &str) -> [u8; 32] {
     }
     o
 }
+
+// ── A root that only answers HKDF (the monitor's) ───────────────────────────
+
+/// A root the policy cannot read: it holds the bytes where the test can see
+/// them and answers `kdf` the way the resident monitor does, counting the asks.
+struct Asked {
+    root: [u8; 32],
+    calls: std::cell::Cell<u32>,
+    refuse: bool,
+}
+
+impl RootKdf for Asked {
+    fn is_set(&self) -> bool {
+        true
+    }
+
+    fn kdf(&self, salt: &[u8], info: &[u8], out: &mut [u8; 32]) -> bool {
+        self.calls.set(self.calls.get() + 1);
+        !self.refuse && self.root.kdf(salt, info, out)
+    }
+}
+
+fn asked(refuse: bool) -> Asked {
+    Asked { root: ROOT, calls: std::cell::Cell::new(0), refuse }
+}
+
+/// **A persistent key derives the same from a root that is asked as from the
+/// bytes**, and asks it once. Any backend, envelope and name.
+///
+/// **Canary.** Derive from a fixed array inside `derive_persistent` (ignore the
+/// seam): the call count is 0.
+#[test]
+fn a_root_that_is_asked_derives_the_key_the_bytes_would() {
+    for envelope in [Envelope::Owner, Envelope::Image] {
+        let p = named(purpose::SIGN, Backend::Volume, envelope);
+        let want = derive_persistent(&ROOT, &OWNER_A, &p, &name(b"sshd.host")).unwrap();
+        let root = asked(false);
+        assert_eq!(derive_persistent(&root, &OWNER_A, &p, &name(b"sshd.host")), Some(want));
+        assert_eq!(root.calls.get(), 1);
+    }
+}
+
+#[test]
+fn a_root_that_refuses_makes_no_key_and_no_login_verifier() {
+    let p = named(purpose::SIGN, Backend::Volume, Envelope::Owner);
+    assert_eq!(derive_persistent(&asked(true), &OWNER_A, &p, &name(b"k")), None);
+    assert_eq!(login_public(&asked(true), 1, &name(b"alice"), &[7; 32]), None);
+    // A volatile policy never asks the root.
+    let root = asked(false);
+    assert_eq!(derive_persistent(&root, &OWNER_A, &policy(purpose::SIGN), &name(b"k")), None);
+    assert_eq!(root.calls.get(), 0);
+}
+
+#[test]
+fn the_login_verifier_is_the_same_from_a_root_that_is_asked() {
+    let cred = [9u8; 32];
+    let want = login_public(&ROOT, 3, &name(b"alice"), &cred).unwrap();
+    let root = asked(false);
+    assert_eq!(login_public(&root, 3, &name(b"alice"), &cred), Some(want));
+    assert_eq!(root.calls.get(), 1, "only the record key comes from the root");
+}
+
+#[test]
+fn an_all_zero_array_is_no_root_and_any_other_is() {
+    assert!(!RootKdf::is_set(&[0u8; 32]));
+    assert!(RootKdf::is_set(&ROOT));
+    assert!(RootKdf::is_set(&{ let mut r = [0u8; 32]; r[31] = 1; r }));
+}
