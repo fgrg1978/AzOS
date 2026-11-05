@@ -440,6 +440,13 @@ pub trait FileSystem: Sync {
     /// was not there: ask `key_for` again for the key of the new file.
     fn create(&self, _key: &InodeKey) -> Result<(), FsErr> { Err(FsErr::Unsupported) }
 
+    /// `true` when a key names the file itself, not its path (tmpfs): the
+    /// cached pages under it belong to the file, so an unlink or a rename
+    /// leaves them be (a file kept open after its name goes still has them).
+    /// `false` (the default) for a key that is a path: the pages are
+    /// forgotten when the name changes hands.
+    fn keys_follow_file(&self) -> bool { false }
+
     /// A streamed open of the file `key` names has begun. A backend that keeps
     /// an unlinked file alive while it is open counts them here.
     fn opened(&self, _key: &InodeKey) {}
@@ -2410,9 +2417,9 @@ pub fn vfs_unlink(path: &[u8]) -> Result<(), FsErr> {
             delete_ok(b, DeleteOp::Unlink)?;
             // Before and after: a write that raced the first drop would leave
             // dirty pages whose write-back creates the file again.
-            page_cache_drop(b, Some(&key), 0);
+            forget_name(b, &key);
             let r = b.unlink(&key).map_err(|()| FsErr::Io);
-            page_cache_drop(b, Some(&key), 0);
+            forget_name(b, &key);
             r
         }
     }
@@ -2449,7 +2456,7 @@ pub fn vfs_rename(from: &[u8], to: &[u8]) -> Result<(), FsErr> {
     }
     let r = bf.rename(sf, st);
     for k in [&keys.0, &keys.1].into_iter().flatten() {
-        page_cache_drop(bf, Some(k), 0);
+        forget_name(bf, k);
     }
     r
 }
@@ -2511,7 +2518,7 @@ pub fn vfs_replace_file(path: &[u8], data: &[u8]) -> Result<(), FsErr> {
     let _one = REPLACE_LOCK.acquire();
     // The live name's cached pages are about to be the old file's: gone with
     // the rename (dropped again after it, for a write that raced this one).
-    page_cache_drop(b, Some(&key), 0);
+    forget_name(b, &key);
     if b.stat(&tkey).is_some() {
         b.unlink(&tkey).map_err(|()| FsErr::Io)?;
     }
@@ -2545,7 +2552,7 @@ pub fn vfs_replace_file(path: &[u8], data: &[u8]) -> Result<(), FsErr> {
         let _ = b.unlink(&tkey);
         return Err(e);
     }
-    page_cache_drop(b, Some(&key), 0);
+    forget_name(b, &key);
     b.fsync(&key)
 }
 
@@ -3135,6 +3142,15 @@ pub(crate) fn page_cache_flush_fs(b: &'static dyn FileSystem) -> Result<(), FsEr
     (h.flush_fs)(b)?;
     dirty_clear(b, None);
     wb_take_failed(b)
+}
+
+/// The name `key` stood for changed hands: forget its cached pages, unless
+/// the key names the file ([`FileSystem::keys_follow_file`]) and they go on
+/// being its own.
+fn forget_name(b: &'static dyn FileSystem, key: &InodeKey) {
+    if !b.keys_follow_file() {
+        page_cache_drop(b, Some(key), 0);
+    }
 }
 
 /// Forget the file's pages from byte `from` (`key: None`: every file of `b`),

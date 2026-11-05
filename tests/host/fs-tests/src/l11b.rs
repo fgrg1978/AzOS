@@ -1103,6 +1103,93 @@ fn a_tmpfs_file_goes_through_the_cache() {
     vfs_p2::clear_tmpfs();
 }
 
+/// A tmpfs file open through `fd`: its key, as the descriptor holds it.
+fn fd_key<const N: usize>(t: &vfs::FdTableN<N>, fd: i32) -> InodeKey {
+    vfs::fd_file_backing(t, fd).expect("a file descriptor").0.key
+}
+
+/// **A tmpfs file kept open after its name goes keeps its cached pages**: they
+/// are the file's, whatever the name does. A write inside the file, the file
+/// unlinked by another handle, and the descriptor reads the new bytes.
+///
+/// **Canary.** `vfs_unlink` without `forget_name`'s `keys_follow_file` test:
+/// the unlink drops the dirty page and the descriptor reads the old bytes.
+#[test]
+fn an_unlinked_open_file_keeps_its_dirty_pages() {
+    let _g = serial();
+    vfs_p2::tmp_once();
+    vfs_p2::clear_tmpfs();
+    let base = pat(3000, 41);
+    tmpfs_h::write(b"o", &base).unwrap();
+    let _c = install(1024, 64);
+    let mut t = vfs::ScratchFds::new();
+    let fd = vfs::vfs_open(&mut t, b"/tmp/o", O_RDWR);
+    assert!(fd >= 0);
+    assert_eq!(vfs_write_at(&mut t, fd, 10, b"new bytes"), 9);
+    assert_eq!(dirty_pages(), 1, "the write is dirty in the cache, not in tmpfs");
+    assert_eq!(vfs::vfs_unlink(b"/tmp/o"), Ok(()));
+    assert_eq!(dirty_pages(), 1, "the unlink left the file's pages be");
+    assert_eq!(vfs::vfs_lseek(&mut t, fd, 10, vfs::SEEK_SET), 10);
+    let mut b = [0u8; 9];
+    assert_eq!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 9), 9);
+    assert_eq!(&b, b"new bytes");
+    // The same for a file renamed over.
+    tmpfs_h::write(b"p", &base).unwrap();
+    tmpfs_h::write(b"q", b"replacement").unwrap();
+    let fd2 = vfs::vfs_open(&mut t, b"/tmp/p", O_RDWR);
+    assert_eq!(vfs_write_at(&mut t, fd2, 20, b"kept"), 4);
+    assert_eq!(vfs::vfs_rename(b"/tmp/q", b"/tmp/p"), Ok(()));
+    assert_eq!(vfs::vfs_lseek(&mut t, fd2, 20, vfs::SEEK_SET), 20);
+    let mut b = [0u8; 4];
+    assert_eq!(vfs::vfs_read(&mut t, fd2, b.as_mut_ptr(), 4), 4);
+    assert_eq!(&b, b"kept", "the replaced file's descriptor reads its own newest bytes");
+    vfs::vfs_close(&mut t, fd);
+    vfs::vfs_close(&mut t, fd2);
+    vfs_p2::clear_tmpfs();
+}
+
+/// **A mapped tmpfs file survives its unlink and its rename**: the page the
+/// mapping dirtied is still the file's, and the descriptor and a later fsync
+/// see it.
+///
+/// **Canary.** As above, with the rename's `forget_name` for the source.
+#[test]
+fn a_mapped_tmpfs_file_survives_unlink_and_rename() {
+    let _g = serial();
+    vfs_p2::tmp_once();
+    vfs_p2::clear_tmpfs();
+    let _c = install(1024, 64);
+    let fs: &'static dyn FileSystem = &tmpfs::TMPFS_TMP;
+    let mut t = vfs::ScratchFds::new();
+    let fd = vfs::vfs_open(&mut t, b"/tmp/m", O_RDWR | vfs::O_CREAT);
+    assert!(fd >= 0);
+    assert_eq!(vfs::vfs_write(&mut t, fd, pat(3000, 7).as_ptr(), 3000), 3000);
+    let k = fd_key(&t, fd);
+    let page = map_page(fs, &k, 3000, 1, true);
+    // SAFETY: the cache's page buffer, single-threaded.
+    unsafe { *page.add(10) = 0xEE; }
+    let at = 1024 + 10;
+    // The rename writes the mapped page into the file first, then keeps it.
+    assert_eq!(vfs::vfs_rename(b"/tmp/m", b"/tmp/n"), Ok(()));
+    let mut raw = vec![0u8; 3000];
+    assert_eq!(tmpfs_h::read(b"n", &mut raw), Ok(3000));
+    assert_eq!(raw[at as usize], 0xEE);
+    assert_eq!(vfs_read_at(b"/tmp/n", at, 1)[0], 0xEE);
+    // Mapped and dirtied again, the file unlinked: the page is still its own.
+    let page = map_page(fs, &k, 3000, 1, true);
+    // SAFETY: as above.
+    unsafe { *page.add(11) = 0xDD; }
+    assert_eq!(vfs::vfs_unlink(b"/tmp/n"), Ok(()));
+    assert_eq!(dirty_pages(), 1, "an unlink of the mapped file leaves its dirty page");
+    assert_eq!(vfs::vfs_lseek(&mut t, fd, at + 1, vfs::SEEK_SET), at + 1);
+    let mut b = [0u8; 1];
+    assert_eq!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 1), 1);
+    assert_eq!(b[0], 0xDD, "the descriptor still reads what the mapping wrote");
+    assert_eq!(vfs::vfs_fsync(&mut t, fd), Ok(()), "and the file can still be made durable");
+    vfs::vfs_close(&mut t, fd);
+    vfs_p2::clear_tmpfs();
+}
+
 /// **With the cache removed every path is the backend's again**: a write is on
 /// the volume at once, and what the cache held dirty was written before.
 #[test]

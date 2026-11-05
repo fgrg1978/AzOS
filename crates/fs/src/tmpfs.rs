@@ -440,6 +440,8 @@ impl FileSystem for TmpFs {
 
     fn streaming(&self) -> bool { true }
 
+    fn keys_follow_file(&self) -> bool { true }
+
     /// Its files are the page cache's too (storage L11): a file-backed `mmap`
     /// of a tmpfs file needs the cache's frames, and `read`/`write` through the
     /// same pages are what keeps a mapping and the file one.
