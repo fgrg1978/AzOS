@@ -18,6 +18,10 @@
 //!   kernel's call by name (`kcall::call_named`, the call a ring-3 task's
 //!   syscall makes on the kernel's authority) is served, and the calling
 //!   task's table holds no capability on the endpoint afterwards.
+//! * `kernel_named_act_call_is_refused_under_containment`: under containment
+//!   a call by name that acts is refused before it reaches the server, and
+//!   one that only reads (`Purpose::Observe`, the power read's) is served.
+//!   Runtime canary `kcall-contain-skip`: the act call is made, `not ok`.
 //! * `a_power_read_leaves_no_capability_with_the_reader`: the call to the
 //!   ring-3 power monitor (`powermon::call_host`) leaves the calling task's
 //!   table with no capability on `endpoint.powermon`, whether or not a host
@@ -230,7 +234,7 @@ fn named_server(_: usize) {
 
 fn named_client(_: usize) {
     let me = azos_sched::current_task_tid();
-    let mut c = BuzzerClient::new(kcall::KernelNamed(NAMED_EP));
+    let mut c = BuzzerClient::new(kcall::KernelNamed(NAMED_EP, kcall::Purpose::Act));
     let rc = if c.tone(440, 50) != Ok(Out::ok(())) {
         -1
     } else if holds_cap_on(me, NAMED_EP) {
@@ -357,5 +361,69 @@ azos_ktest::ktest_late! {
             return Err("the timed-out read was not counted");
         }
         Ok(())
+    }
+}
+
+const CONTAIN_EP: &[u8] = b"kcall.contain";
+static CONTAIN_READY: AtomicBool = AtomicBool::new(false);
+static CONTAIN_SERVED: AtomicU32 = AtomicU32::new(0);
+static CONTAIN_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+
+/// Serves `Buzzer` on [`CONTAIN_EP`] and counts what it took; one call is
+/// expected (the observing one), a second is the act call's.
+fn contain_server(_: usize) {
+    let me = azos_sched::current_task_tid();
+    if azos_ipc::endpoint::endpoint_named_cap(me, CapPerms::READ, CONTAIN_EP).is_none() {
+        return;
+    }
+    CONTAIN_READY.store(true, Ordering::Release);
+    let mut drv = Counting::default();
+    let mut out = SyscallOut::new();
+    loop {
+        let mut req = MsgDesc::default();
+        let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
+        if h < 0 {
+            continue;
+        }
+        let mut rep = MsgDesc::default();
+        let _ = BuzzerIdl::dispatch(&mut drv, &req, &mut rep);
+        let _ = dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
+        if CONTAIN_SERVED.fetch_add(1, Ordering::AcqRel) + 1 >= 2 {
+            return;
+        }
+    }
+}
+
+fn contain_client(_: usize) {
+    use kcall::{KernelNamed, Purpose};
+    let was = azos_ipc::cap::degrade_level();
+    azos_ipc::cap::degraded_set(true);
+    let act = BuzzerClient::new(KernelNamed(CONTAIN_EP, Purpose::Act)).tone(1, 1);
+    let served_after_act = CONTAIN_SERVED.load(Ordering::Acquire);
+    let observe = BuzzerClient::new(KernelNamed(CONTAIN_EP, Purpose::Observe)).tone(1, 1);
+    azos_ipc::cap::degrade_level_set(was);
+    let rc = if act.is_ok() || served_after_act != 0 {
+        -1
+    } else if observe != Ok(Out::ok(())) {
+        -2
+    } else {
+        1
+    };
+    CONTAIN_RC.store(rc, Ordering::Release);
+    // Let the server end: one more call, out of containment.
+    let _ = BuzzerClient::new(KernelNamed(CONTAIN_EP, Purpose::Act)).tone(1, 1);
+}
+
+azos_ktest::ktest_late! {
+    fn kernel_named_act_call_is_refused_under_containment() {
+        azos_sched::task_create_affinity("kcall-csrv", contain_server, 0, PRIO, -1);
+        crate::ktest::wait("the server never claimed its endpoint", || CONTAIN_READY.load(Ordering::Acquire))?;
+        azos_sched::task_create_affinity("kcall-ccli", contain_client, 0, PRIO, -1);
+        crate::ktest::wait("the caller never returned", || CONTAIN_RC.load(Ordering::Acquire) != NOT_YET)?;
+        match CONTAIN_RC.load(Ordering::Acquire) {
+            1 => Ok(()),
+            -1 => Err("a call by name that acts was made under containment"),
+            _ => Err("a call by name that only reads was refused under containment"),
+        }
     }
 }

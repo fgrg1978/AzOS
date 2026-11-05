@@ -272,8 +272,17 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
 /// caller's table. `E_PERM` when `r` is stale, unserved, hosted by the
 /// kernel or a proxy to another node, or when the request carries a
 /// capability (the kernel lends none of the caller's).
-pub(crate) fn call_v2_kernel(r: u32, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
+///
+/// Containment (`azos_ipc::cap::degraded_active`) refuses it, as it refuses
+/// a `WRITE` use of a capability, unless the call only reads (`observe`: the
+/// caller says so, as the power read does); a refusal is recorded like the
+/// capability's.
+pub(crate) fn call_v2_kernel(r: u32, observe: bool, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
     if d.n_caps != 0 {
+        return E_PERM;
+    }
+    if !kernel_call_admitted(observe, azos_ipc::cap::degraded_active()) {
+        crate::handlers::note_typed_denial(azos_abi::cap::ty::ENDPOINT, azos_ipc::cap::CapError::Contained);
         return E_PERM;
     }
     let (caller_idx, caller_tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
@@ -297,6 +306,21 @@ pub(crate) fn call_v2_kernel(r: u32, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
     }
     let label = azos_ipc::endpoint::label::outgoing(caller_tid, d.label);
     call_task_served(caller_idx, caller_tid, dest, &[], 0, label, d, out)
+}
+
+/// May the kernel make a call by name while containment is `contained`? Only
+/// one that only reads. Runtime canary `kcall-contain-skip`
+/// ([`canary_contain_skip`]): always, and the ktest
+/// `kernel_named_act_call_is_refused_under_containment` goes red.
+fn kernel_call_admitted(observe: bool, contained: bool) -> bool {
+    CANARY_CONTAIN_SKIP.load(core::sync::atomic::Ordering::Relaxed) || observe || !contained
+}
+
+static CANARY_CONTAIN_SKIP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm the `kcall-contain-skip` canary (boot only).
+pub fn canary_contain_skip() {
+    CANARY_CONTAIN_SKIP.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// [`call_v2`] past the resolution: queue the call on the task serving

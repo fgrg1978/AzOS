@@ -259,6 +259,10 @@ pub(crate) fn install_sched_hooks() {
     if canary!("ipc-desc-as-regs") {
         azos_syscall::ipc_v2::canary_desc_as_regs();
     }
+    // The kernel's call by name is made under containment whatever it does.
+    if canary!("kcall-contain-skip") {
+        azos_syscall::ipc_v2::canary_contain_skip();
+    }
     // Wave 15 N11c runtime canary: the v1 accept takes a v2 call.
     if canary!("ipc-v1-takes-v2") {
         azos_ipc::ep_queue::canary_v1_takes_v2();

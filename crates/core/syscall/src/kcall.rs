@@ -76,6 +76,17 @@ pub fn call(ep: u32, msg: &mut MsgDesc) -> Result<(), i64> {
     }
 }
 
+/// What a call by name does to the driver it reaches, as containment sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose {
+    /// It only reads (the power monitor's sample): served under containment,
+    /// as a read of a kernel-hosted interface is.
+    Observe,
+    /// Anything else: refused under containment, as a `WRITE` use of a
+    /// capability is.
+    Act,
+}
+
 /// Call the task-served endpoint called `name` as the kernel, from whatever
 /// task is running, with no capability of that task: nothing is looked up in
 /// or minted into its table (`crate::ipc_v2::call_v2_kernel`). For a kernel
@@ -83,29 +94,31 @@ pub fn call(ep: u32, msg: &mut MsgDesc) -> Result<(), i64> {
 /// (the power monitor behind the sensor syscall): the running task blocks for
 /// the answer, as in [`call`], but the authority to make the call is the
 /// kernel's, so the task gains no handle it could call the driver with
-/// directly. The call is unbadged and moves no capability. `-EPERM` when no
-/// task serves `name`; `-EBUSY` as in [`call`].
-pub fn call_named(name: &[u8], msg: &mut MsgDesc) -> Result<(), i64> {
+/// directly. The call is unbadged and moves no capability. Under containment
+/// only a [`Purpose::Observe`] call is made: name it only for an interface
+/// that changes nothing. `-EPERM` when no task serves `name` or containment
+/// refuses; `-EBUSY` as in [`call`].
+pub fn call_named(name: &[u8], purpose: Purpose, msg: &mut MsgDesc) -> Result<(), i64> {
     if !may_call() {
         ATOMIC_REFUSED.fetch_add(1, Ordering::Relaxed);
         return Err(Errno::EBUSY.to_syscall_ret());
     }
     let r = azos_ipc::endpoint::endpoint_ref_by_name(name).ok_or(Errno::EPERM.to_syscall_ret())?;
     let req = *msg;
-    match crate::ipc_v2::call_v2_kernel(r, &req, msg) {
+    match crate::ipc_v2::call_v2_kernel(r, purpose == Purpose::Observe, &req, msg) {
         0 => Ok(()),
         e => Err(e),
     }
 }
 
 /// The transport of [`call_named`]: the kernel's call to the endpoint of that
-/// name, whichever task runs it.
+/// name, for that purpose, whichever task runs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KernelNamed(pub &'static [u8]);
+pub struct KernelNamed(pub &'static [u8], pub Purpose);
 
 impl Transport for KernelNamed {
     fn call(&self, msg: &mut MsgDesc) -> IdlResult {
-        call_named(self.0, msg).map_err(|e| IdlError::Transport(e as isize))
+        call_named(self.0, self.1, msg).map_err(|e| IdlError::Transport(e as isize))
     }
 }
 

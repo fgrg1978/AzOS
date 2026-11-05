@@ -19,7 +19,7 @@ use azos_devif::powermon::ENDPOINT_NAME;
 use azos_drv_sensor::ina219::{self, Placement};
 use azos_drv_sys::kprintln;
 use azos_devif::{IdlError, IdlResult, MsgDesc, Transport};
-use azos_syscall::kcall::{self, KernelEndpoint, KernelNamed};
+use azos_syscall::kcall::{self, KernelEndpoint, KernelNamed, Purpose};
 use azos_sched::{BlockOutcome, WaitReason};
 use azos_sync::SpinLock;
 use azos_topology::placement::Host;
@@ -36,7 +36,7 @@ pub(crate) fn call_host(msg: &mut MsgDesc) -> IdlResult {
         let h = kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()).ok_or(IdlError::Transport(-1))?;
         KernelEndpoint(h).call(msg)?;
     } else {
-        KernelNamed(ENDPOINT_NAME.as_bytes()).call(msg)?;
+        KernelNamed(ENDPOINT_NAME.as_bytes(), Purpose::Observe).call(msg)?;
     }
     // Word 5 is the first word of a `read` record: voltage_mv in its low bytes.
     if canary!("ina219-wrong-value") && msg.n_words > 5 {

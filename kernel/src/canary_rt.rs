@@ -400,6 +400,9 @@ pub(crate) const NAMES: &[&str] = &[
     // read as v1 (no badge, four words, one capability) (ktest
     // `ipc_v2_call_carries_caps_words_and_badge`).
     "ipc-desc-as-regs",
+    // ipc_v2.rs `kernel_call_admitted`: a call by name that acts is made under
+    // containment (ktest `kernel_named_act_call_is_refused_under_containment`).
+    "kcall-contain-skip",
     // crates/core/ipc/src/ep_queue.rs `take_locked`: the v1 accept takes a
     // v2 call (four words, first capability) instead of refusing it (ktest
     // `ipc_v2_call_refused_by_v1_accept`).

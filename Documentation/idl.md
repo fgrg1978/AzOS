@@ -79,7 +79,7 @@ the transport, not of the interface. Transports in the tree:
 | `azos_libsys::dev::Ep(handle)` | `SYS_IPC_CALL` | any interface |
 | `azos_libsys::dev::Regs(handle)` | `SYS_IPC_CALL` | four words each way, no capability; only for an interface declared `words = 4` |
 | `azos_syscall::kcall::KernelEndpoint(handle)` | the v2 call from a kernel task | for a task-served endpoint; `kcall::endpoint_handle_badged` mints the handle with a badge for a server that tells its callers apart |
-| `azos_syscall::kcall::KernelNamed(name)` | the v2 call as the kernel, from any task | for a kernel component on a ring-3 task's syscall path (the power monitor behind the sensor syscall): unbadged, no capability moved, nothing looked up in or minted into the running task's table |
+| `azos_syscall::kcall::KernelNamed(name, purpose)` | the v2 call as the kernel, from any task | for a kernel component on a ring-3 task's syscall path (the power monitor behind the sensor syscall): unbadged, no capability moved, nothing looked up in or minted into the running task's table; under containment only a `Purpose::Observe` call (one that changes nothing) is made |
 
 The kernel's call has no wait bound of its own: it blocks until the server
 answers (the deadline in the message is checked before the call is queued and
