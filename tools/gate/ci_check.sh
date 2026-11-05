@@ -15745,6 +15745,9 @@ CPU 5 lacks hwcap bits"
     # answer for as long as it takes (review R2-4).
     par "ktest powermon unbounded canary (rv)" ktest_row "ktest powermon unbounded canary (rv)" rv "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-unbounded"
     par "ktest powermon unbounded canary (arm)" ktest_row "ktest powermon unbounded canary (arm)" arm "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-unbounded"
+    # powermon-no-lend: a waiting reader lends the call task no priority (review F5).
+    par "ktest powermon no lend canary (rv)" ktest_row "ktest powermon no lend canary (rv)" rv "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-no-lend"
+    par "ktest powermon no lend canary (arm)" ktest_row "ktest powermon no lend canary (arm)" arm "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-no-lend"
     # arm-tpidr-all-tasks: only a Linux task's TPIDR_EL0 is kept, not a
     # native task's, the old rule (aarch64 only; riscv64's `tp` is in the trap
     # frame, x86_64's FS base is not EL0-writable).

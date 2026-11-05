@@ -31,8 +31,10 @@
 //!   serves it. Runtime canary `powermon-mint`: the call mints one, `not ok`.
 //! * `a_power_read_of_a_hung_host_is_bounded`: a host that takes the call and
 //!   does not answer costs a power read the reply budget
-//!   (`PROXY_REPLY_TIMEOUT_MS`), then `DeadlineExpired`. Runtime canary
-//!   `powermon-unbounded`: the read waits for the answer, `not ok`.
+//!   (`PROXY_REPLY_TIMEOUT_MS`), then `DeadlineExpired`, and while it waits
+//!   the call task runs at the reader's priority, back to its own after.
+//!   Runtime canaries `powermon-unbounded` (the read waits for the answer)
+//!   and `powermon-no-lend` (the reader lends nothing): `not ok`.
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 
@@ -296,6 +298,9 @@ static HUNG_READ_DONE: AtomicBool = AtomicBool::new(false);
 static HUNG_RC: AtomicI64 = AtomicI64::new(NOT_YET);
 #[cfg(feature = "board-io")]
 static HUNG_MS: AtomicU32 = AtomicU32::new(0);
+/// The call task's priority while the read waits, and after it ended.
+#[cfg(feature = "board-io")]
+static HUNG_PRIO: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
 
 /// Serves `endpoint.powermon` and answers nothing until the read has ended
 /// (or 3 s, so a canary boot does not keep the call task stuck).
@@ -322,7 +327,12 @@ fn hung_host(_: usize) {
         }
     };
     HUNG_TOOK.store(true, Ordering::Release);
+    let prio = || azos_sched::task_priority(crate::powermon::call_task_tid()).unwrap_or(u32::MAX);
+    // Halfway through the reader's budget it has lent its priority.
+    let _ = crate::ktest::until_for(azos_limits::PROXY_REPLY_TIMEOUT_MS / 2, || false);
+    HUNG_PRIO[0].store(prio(), Ordering::Release);
     let _ = crate::ktest::until_for(3_000, || HUNG_READ_DONE.load(Ordering::Acquire));
+    HUNG_PRIO[1].store(prio(), Ordering::Release);
     let rep = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, ..MsgDesc::default() };
     let _ = dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
 }
@@ -362,6 +372,14 @@ azos_ktest::ktest_late! {
         }
         if crate::powermon::timed_out() == timed_out {
             return Err("the timed-out read was not counted");
+        }
+        // The host samples the call task's priority after the read ended.
+        crate::ktest::wait("the hung host never answered", || HUNG_PRIO[1].load(Ordering::Acquire) != 0)?;
+        if HUNG_PRIO[0].load(Ordering::Acquire) != PRIO {
+            return Err("the call task did not run at the waiting reader's priority");
+        }
+        if HUNG_PRIO[1].load(Ordering::Acquire) != azos_sched::DEFAULT_PRIORITY {
+            return Err("the call task kept the reader's priority after the read ended");
         }
         Ok(())
     }

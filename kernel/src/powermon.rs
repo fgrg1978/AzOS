@@ -143,6 +143,38 @@ fn call_task(_: usize) {
     }
 }
 
+/// A reader's priority lent to the call task (`azos_sched::boost_ready_task`,
+/// counted: the task's base priority comes back when the last lender leaves).
+/// Only a reader more urgent than the call task's own lends. Runtime canary
+/// `powermon-no-lend`: nobody lends, and the ktest
+/// `a_power_read_of_a_hung_host_is_bounded` goes red on the call task's
+/// priority.
+struct Lent(u32);
+
+impl Lent {
+    fn to_call_task(reader: u32) -> Option<Lent> {
+        let task = CALL_TASK_TID.load(Ordering::Acquire);
+        let prio = azos_sched::task_priority(reader)?;
+        if task == 0 || prio >= azos_sched::DEFAULT_PRIORITY || canary!("powermon-no-lend") {
+            return None;
+        }
+        azos_sched::boost_ready_task(task, prio);
+        Some(Lent(task))
+    }
+}
+
+impl Drop for Lent {
+    fn drop(&mut self) {
+        azos_sched::restore_ready_task(self.0);
+    }
+}
+
+/// The call task's TID, 0 before it ran.
+#[cfg(feature = "ktest")]
+pub(crate) fn call_task_tid() -> u32 {
+    CALL_TASK_TID.load(Ordering::Acquire)
+}
+
 /// The transport the drivers crate calls (`ina219::Ring3`): the request in
 /// `*msg` to the ring-3 host through the call task, answered within
 /// `REPLY_TIMEOUT_MS` or not at all (`IdlError::DeadlineExpired`). Blocks the
@@ -181,6 +213,10 @@ pub(crate) fn endpoint_call(msg: &mut MsgDesc) -> IdlResult {
         c.readers[slot] = Some(Reader { tid: me, deadline, seq, answer: None });
         (slot, post)
     };
+    // The call task runs at the most urgent waiting reader's priority while
+    // it waits (as `ml-infer` runs at its one waiter's): each reader lends
+    // its own and takes it back however it leaves.
+    let _lent = Lent::to_call_task(me);
     if post {
         wake(CALL_TASK_TID.load(Ordering::Acquire), PARK);
     }
