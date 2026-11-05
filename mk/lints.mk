@@ -51,6 +51,18 @@ check: | $(CHECK_TABLE_$(ARCH))
 	env -u CARGO_BUILD_RUSTFLAGS CARGO_TARGET_DIR="$(CHECK_TARGET_DIR)" KCONFIG_CONFIG="$(CHECK_KCONFIG:.config=-sel.config)" \
 	    $(CARGO) check $(CHECK_PROFILE_FLAG) $(CHECK_CARGO_CONFIG) -p azos_kernel $$args
 
+.PHONY: check-deps
+# The kernel's dependency set for the type-check's cell (`cargo tree`, no
+# build): one package name a line. tools/lint/no_personality_lint.py reads it.
+check-deps: | $(CHECK_TABLE_$(ARCH))
+	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
+	@mkdir -p $(OUT_BUILD)
+	@cp "$(CHECK_DEFCONFIG_$(ARCH))" "$(CHECK_KCONFIG)"
+	@KCONFIG_CONFIG="$(CHECK_KCONFIG)" $(PYTHON) -m olddefconfig >/dev/null
+	@$(call kernel_select,$(CHECK_KCONFIG),$(CHECK_SELECT),$(CHECK_KCONFIG:.config=-sel.config)); \
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CHECK_KCONFIG:.config=-sel.config)" \
+	    $(CARGO) tree -p azos_kernel $$args -e normal --prefix none --format '{p}'
+
 # ── CI: build all feature combinations (0 errors, 0 warnings). ───────────────
 ci:
 	@env -u CARGO_TARGET_DIR bash tools/gate/ci_check.sh
