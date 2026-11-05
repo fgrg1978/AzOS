@@ -597,7 +597,11 @@ Source: `crates/fs/src/fat32.rs`, `crates/fs/src/bcache.rs`,
 ## The page-cache path
 
 File data of a filesystem whose `FileSystem::page_cached()` is true goes
-through the unified page cache. FAT32 and tmpfs (`/` and `/tmp`) return true; azvol and devfs do not. A backend must also be `streaming()`.
+through the unified page cache. FAT32 and tmpfs (`/` and `/tmp`) return true; azvol and devfs do not. A file
+of a backend that does not has no page source, so `NODE_MMAP` of it answers
+`-ENODEV`: an azvol file cannot be mapped, on purpose, because azvol's `read`
+and `write` go to the volume and not through the cache, so a mapping would not
+see them. A backend must also be `streaming()`.
 
 The cache is the one `mmap` maps (see [memory.md](memory.md#page-cache-as-a-paged-memobj)):
 one `MemKind::Paged` MemObj per aligned 64-page window of a file, filled and

@@ -603,6 +603,25 @@ fn read_fd(t: &mut vfs::ScratchFds, fd: i32, n: usize) -> Vec<u8> {
     b
 }
 
+/// **An azvol file has no page source, so mmap of it answers `-ENODEV`**
+/// (`NODE_MMAP` maps a missing source to that): azvol's `read` and `write`
+/// bypass the page cache, and a mapping would not see them.
+///
+/// **Canary.** `page_source` without its `page_cached` test: the azvol file
+/// gets a source.
+#[test]
+fn an_azvol_file_has_no_page_source() {
+    let _g = super::serial();
+    let _ = vfs_vol();
+    as_task(1);
+    vput("/vol/nomap.bin", &pattern(5, 4096));
+    let mut t = vfs::ScratchFds::new();
+    let fd = vfs::vfs_open(&mut t, b"/vol/nomap.bin", O_RDONLY);
+    assert!(fd >= 0);
+    assert!(super::pagecache::page_source(&t, fd).is_none());
+    vfs::vfs_close(&mut t, fd);
+}
+
 #[test]
 fn files_made_through_the_vfs_are_durable_only_after_an_fsync() {
     let _g = super::serial();
