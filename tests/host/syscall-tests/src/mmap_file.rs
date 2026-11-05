@@ -117,9 +117,24 @@ impl PageBacking for Backing {
         d[off..off + src.len()].copy_from_slice(src);
         Ok(())
     }
+
+    fn pin(&self, key: &PageKey) {
+        PINNED[key.0[0] as usize].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn unpin(&self, key: &PageKey) {
+        PINNED[key.0[0] as usize].fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 static BACKING: Backing = Backing;
+
+/// Per file: pins less unpins the backing has seen (`PageBacking::pin`).
+static PINNED: [std::sync::atomic::AtomicI32; 4] = [const { std::sync::atomic::AtomicI32::new(0) }; 4];
+
+fn pinned(idx: usize) -> i32 {
+    PINNED[idx].load(std::sync::atomic::Ordering::SeqCst)
+}
 
 fn key_of(idx: usize) -> PageKey {
     let mut k = [0u8; PAGE_KEY_LEN];
@@ -278,6 +293,9 @@ fn obj_at(t: &Task, va: usize) -> u32 {
 /// cache's use counts with them.
 fn clean() {
     crate::file_map::__reset_for_tests();
+    for p in &PINNED {
+        p.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -579,6 +597,38 @@ fn the_exit_of_a_mapper_writes_back_only_its_own_windows() {
     assert_eq!(munmap_as(&b, vb, PAGE_SIZE), 0);
     assert_eq!(bytes_of(1)[1], 0xB1);
     drop((a, b));
+    clean();
+}
+
+/// **A mapping keeps its file pinned on the backing through the pager's real
+/// paths**: `reserve_file` pins, `release_range` (munmap) unpins, a fork's
+/// copy of a private region holds the pin after the parent unmaps, and the
+/// space's end (`forget`, the exit) lets it go.
+///
+/// **Canary** (one per site, by hand): in `pager.rs` take the region users with
+/// `memobj_paged_users_add_ref` / `_drop_ref` instead of the `_region_` pair
+/// at `reserve_file` (the first assert), `release_range` (the second), `fork_clone`
+/// (the fourth) or `forget` (the last): each turns this row red.
+#[test]
+fn a_mapping_pins_its_file_through_map_munmap_fork_and_exit() {
+    let _g = serial();
+    clean();
+    fill_file(0, 4 * PAGE_SIZE);
+    let (parent, child) = (task(7120, 62), task(7121, 63));
+    let fp = open_as(&parent, b'A', O_RDWR);
+    let shared = mmap_ok(&parent, fp, 2 * PAGE_SIZE, 0, RW, SHARED);
+    assert_eq!(pinned(0), 1, "mapping pins the file");
+    assert_eq!(munmap_as(&parent, shared, 2 * PAGE_SIZE), 0);
+    assert_eq!(pinned(0), 0, "the last unmap lets it go");
+
+    let private = mmap_ok(&parent, fp, 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW, PRIVATE);
+    assert_eq!(pinned(0), 1);
+    azos_mm::pager::fork_clone(parent.pt, child.pt).expect("fork_clone");
+    assert_eq!(munmap_as(&parent, private, 2 * PAGE_SIZE), 0);
+    assert_eq!(pinned(0), 1, "the child's copy of the region still pins it");
+    exit_of(&child);
+    assert_eq!(pinned(0), 0, "the child's exit lets it go");
+    drop((parent, child));
     clean();
 }
 
