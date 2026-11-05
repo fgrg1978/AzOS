@@ -215,8 +215,10 @@ run.
   filter already in force gets `SECCOMP_E_ALREADY`. The filter lives on the
   task slot, is copied to children by fork, and a Linux `execve` installs the
   executed image's own row, which must be a Linux row; a row other than the
-  caller's needs a `LAUNCH` grant (`EXEC`) for that image, and may be wider
-  than the caller's (`crates/core/syscall/src/linux.rs`, `sys_execve`).
+  caller's needs a `LAUNCH` grant (`EXEC`) for that image, or for the
+  signed package that carries it, and may be wider than the caller's
+  (`crates/core/syscall/src/linux.rs`, `sys_execve`; `exec_grant.rs`). Every exec,
+  admitted or refused, is one `exec-grant` decision record.
 - **A call outside the row kills the task** (`seccomp_deny_kill`,
   `seccomp_deny_op_kill`, exit code 159). In `audit` mode the call goes through
   and is recorded as `SAFETY_SECCOMP_AUDIT`, bounded per task; two test images

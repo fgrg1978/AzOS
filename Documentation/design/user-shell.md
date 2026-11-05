@@ -157,18 +157,29 @@ Source: `crates/core/abi/src/ushell.rs` (`SpawnReq`, `Move`, `StartupBlock`,
 ## 4. Launch grants
 
 A launch grant is a `Cap<Launch>` (`ty::LAUNCH`, a class of the `Node` kind):
-the right, with `EXEC`, to start one image. It is seeded from a `node` row
-whose target is an image name and whose permission is `x` (`EXEC`):
+the right, with `EXEC`, to start one image or every image of one signed
+package. It is seeded from a `node` row whose permission is `x` (`EXEC`) and
+whose target is an image name or `pkg.` and the 64 lower-case hex digits of a
+package id (`azos_pkg`'s `Package::id`); the parser refuses any other target
+and any other permission:
 
 ```toml
-caps = [ { kind = "node", target = "TOOLBOX.ELF", perm = "x" } ]
+caps = [ { kind = "node", target = "TOOLBOX.ELF", perm = "x" },
+         { kind = "node", target = "pkg.00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", perm = "x" } ]
 ```
 
-`SYS_SPAWN_EX` resolves the file's digest to an image name, interns the name
-and checks the caller holds `EXEC` on it. The check is against what the bytes
-are, not what the path says. A refusal is `-EACCES`, is recorded like other
-typed capability denials and is logged as a refused spawn with a distinct
-action code.
+`SYS_SPAWN_EX` and the Linux `execve` (the ring-3 runtime's goes through
+`SYS_SPAWN_EX`) resolve the file's digest to an image name, and for an image
+of an applied package to the package's id, and check the caller holds `EXEC`
+on the image or on the package (`exec_grant::decide`). The check is against
+what the bytes are, not what the path says. A refusal is `-EACCES`, is
+recorded like other typed capability denials and is logged as a refused spawn
+with a distinct action code. Admitted or refused, the exec is one `exec-grant`
+decision record: the digest prefix, the basis (an image grant, a package
+grant, the caller's own row; no grant, bytes bound to no image, a native row,
+no topology row) and the site. A shell that starts many programs of one
+package (a BusyBox-like set) holds one grant, not one per program. The package
+table holds `MAX_LAUNCH_PACKAGES` ids, apart from the table of image names.
 
 The grant is the lockdown mechanism (section 9). The default row of the shell
 lists the tool images; a production topology can omit the privileged ones, so
@@ -178,6 +189,7 @@ search path.
 Source: `crates/core/ipc/src/launch_cap.rs` (`launch_resource`,
 `launch_resource_of`), `crates/core/abi/src/cap.rs` (`ty::LAUNCH`),
 `crates/core/syscall/src/ushell.rs` (`SPAWN_REFUSED_ACTION_NO_LAUNCH`),
+`crates/core/syscall/src/exec_grant.rs`,
 `crates/core/topology/src/parser.rs` (the `node` row), `crates/core/topology/src/builder.rs`.
 
 ## 5. Pipes

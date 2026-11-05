@@ -627,7 +627,7 @@ receipt on the medium); the journal is written where the sink is called:
   kernel installs (`set_durable_sink`), which writes it to the flight recorder so
   it survives the reset. The rules a task can raise once per syscall
   (`Rule::caller_paced`: `cap-denial`, `deadline-expired`, `call-admission`,
-  `wait-cycle`) pass a token bucket per Domain and rule first (a `CapRevoke`
+  `wait-cycle`, `exec-grant`) pass a token bucket per Domain and rule first (a `CapRevoke`
   `Deny` stays in the ring) (`DECISION_DENY_DURABLE_PER_SEC`,
   `DECISION_DENY_DURABLE_BURST`); what the bucket drops is counted into
   `refusal-limited` records (Domain, rule, count), the first when the run

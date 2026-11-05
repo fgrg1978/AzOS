@@ -341,8 +341,9 @@ refusal returns an error and is recorded. Both must allow a use. A profile also
 withholds a topology grant of an endpoint the image does not list, and a
 filter, once installed, cannot be removed. The one call that replaces it is a
 Linux `execve`, which installs the executed image's own row (a Linux row); a
-row other than the caller's needs a `LAUNCH` grant for the image and may be
-wider than the caller's (`crates/core/syscall/src/linux.rs`, `sys_execve`).
+row other than the caller's needs a `LAUNCH` grant for the image, or for the
+package that carries it, and may be wider than the caller's
+(`crates/core/syscall/src/linux.rs`, `sys_execve`; `exec_grant.rs`).
 
 Source: `crates/core/sched/src/seccomp.rs` (`ImageProfile`, `IMAGE_PROFILES`),
 `crates/core/syscall/src/handlers.rs` (`SECCOMP_KILL_EXIT_CODE`),
