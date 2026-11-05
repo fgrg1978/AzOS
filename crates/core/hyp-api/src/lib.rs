@@ -30,6 +30,10 @@ pub const CALL_LOCK_RO_DATA: u64 = CALL_BASE + 3;
 /// `text_patch(pa, word)`: after the lock, write `word` at `pa` when `pa` is
 /// a site the lock listed and `word` is one of its two forms.
 pub const CALL_TEXT_PATCH: u64 = CALL_BASE + 4;
+/// `guard_pages(pa, n)`: donate `n` pages at `pa` to the monitor. The host
+/// stage-2 stops mapping them, for good: no EL1 or EL0 access reaches them
+/// and the monitor never gives them back (I4).
+pub const CALL_GUARD_PAGES: u64 = CALL_BASE + 5;
 
 pub const fn is_monitor_call(id: u64) -> bool {
     id & CALL_MASK == CALL_BASE
@@ -56,14 +60,17 @@ pub const INV_IMAGE_RO: u64 = 1 << 3;
 pub const INV_EL1_EXEC_TEXT_ONLY: u64 = 1 << 4;
 /// `ro_after_init` is read-only at stage 2.
 pub const INV_RO_DATA: u64 = 1 << 5;
+/// I4: at least one page is guarded: unmapped at stage 2 for every EL1 and EL0 access.
+pub const INV_GUARDED: u64 = 1 << 6;
 
-pub const INVARIANT_NAMES: [(u64, &str); 6] = [
+pub const INVARIANT_NAMES: [(u64, &str); 7] = [
     (INV_EL2_MMU, "el2-mmu"),
     (INV_HOST_S2, "host-s2"),
     (INV_PSCI, "psci"),
     (INV_IMAGE_RO, "image-ro"),
     (INV_EL1_EXEC_TEXT_ONLY, "el1-exec-text-only"),
     (INV_RO_DATA, "ro-data"),
+    (INV_GUARDED, "guarded"),
 ];
 
 /// What a violation record describes.
@@ -189,9 +196,15 @@ pub struct LockDesc {
     pub nsites: u64,
 }
 
+/// Ranges guarded before the lock that the locked map must keep unmapped.
+pub const GUARD_RANGES_MAX: usize = 16;
+/// Pages one `guard_pages` call may donate.
+pub const GUARD_PAGES_MAX: u64 = 512;
+
 /// Why a lock descriptor is refused; `None`: it is well formed against a
-/// monitor at `[hole, hole_end)`. Pure, so the host suite checks it.
-pub fn lock_desc_error(d: &LockDesc, hole: u64, hole_end: u64) -> Option<&'static str> {
+/// monitor at `[hole, hole_end)` and the `guarded` ranges. Pure, so the host
+/// suite checks it.
+pub fn lock_desc_error(d: &LockDesc, hole: u64, hole_end: u64, guarded: &[[u64; 2]]) -> Option<&'static str> {
     const P: u64 = 4096;
     let ranges = [d.text, d.rodata, d.ro_after_init];
     if d.nram == 0 || d.nram as usize > LOCK_RAM_MAX { return Some("ram count"); }
@@ -209,6 +222,10 @@ pub fn lock_desc_error(d: &LockDesc, hole: u64, hole_end: u64) -> Option<&'stati
     for m in d.ram[..d.nram as usize].iter() {
         if m[0] >= m[1] || m[0] % P != 0 || m[1] % P != 0 { return Some("ram range not page-aligned or empty"); }
     }
+    for g in guarded {
+        if !d.ram[..d.nram as usize].iter().any(|m| m[0] <= g[0] && g[1] <= m[1]) { return Some("guarded range outside RAM"); }
+        if ranges.iter().any(|r| g[0] < r[1] && r[0] < g[1]) { return Some("guarded range overlaps the image"); }
+    }
     if d.secondary_entry < d.text[0] || d.secondary_entry >= d.text[1] { return Some("secondary entry outside text"); }
     if d.nsites as usize > TEXT_SITES_MAX { return Some("too many text sites"); }
     None
@@ -219,5 +236,73 @@ pub fn lock_desc_error(d: &LockDesc, hole: u64, hole_end: u64) -> Option<&'stati
 pub fn text_site_error(s: &TextSite, text: [u64; 2]) -> Option<&'static str> {
     if s.pa % 4 != 0 { return Some("site not 4-aligned"); }
     if s.pa < text[0] || s.pa + 4 > text[1] { return Some("site outside text"); }
+    None
+}
+
+/// The pages donated so far, as `[lo, hi)` ranges. The monitor keeps one and
+/// the locked map is built around it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Guarded {
+    ranges: [[u64; 2]; GUARD_RANGES_MAX],
+    n: usize,
+}
+
+impl Guarded {
+    pub const fn new() -> Self {
+        Guarded { ranges: [[0; 2]; GUARD_RANGES_MAX], n: 0 }
+    }
+
+    pub fn as_slice(&self) -> &[[u64; 2]] {
+        &self.ranges[..self.n]
+    }
+
+    /// Does `[lo, hi)` touch a guarded page?
+    pub fn overlaps(&self, lo: u64, hi: u64) -> bool {
+        self.as_slice().iter().any(|g| lo < g[1] && g[0] < hi)
+    }
+
+    /// Record `[lo, hi)`; false when the table is full.
+    pub fn add(&mut self, lo: u64, hi: u64) -> bool {
+        if self.n == GUARD_RANGES_MAX {
+            return false;
+        }
+        self.ranges[self.n] = [lo, hi];
+        self.n += 1;
+        true
+    }
+
+    /// Take back the last range added (the call that added it failed).
+    pub fn pop(&mut self) {
+        self.n = self.n.saturating_sub(1);
+    }
+}
+
+impl Default for Guarded {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Why `guard_pages(pa, n)` is refused; `None`: `n` whole pages at `pa` lie in
+/// RAM, clear of the locked `image` ranges, the monitor `[hole, hole_end)` and
+/// everything guarded. `ram` and `image` are empty before the lock, when the
+/// kernel has not named them yet. Pure, so the host suite checks it.
+pub fn guard_error(
+    pa: u64,
+    n: u64,
+    ram: &[[u64; 2]],
+    image: &[[u64; 2]],
+    hole: u64,
+    hole_end: u64,
+    guarded: &Guarded,
+) -> Option<&'static str> {
+    const P: u64 = 4096;
+    if n == 0 || n > GUARD_PAGES_MAX { return Some("page count"); }
+    if pa % P != 0 { return Some("not page-aligned"); }
+    let Some(end) = pa.checked_add(n * P) else { return Some("wraps") };
+    if pa < hole_end && hole < end { return Some("overlaps the monitor"); }
+    if image.iter().any(|r| pa < r[1] && r[0] < end) { return Some("overlaps the image"); }
+    if guarded.overlaps(pa, end) { return Some("already guarded"); }
+    if !ram.is_empty() && !ram.iter().any(|m| m[0] <= pa && end <= m[1]) { return Some("outside RAM"); }
     None
 }

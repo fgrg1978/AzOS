@@ -41,7 +41,8 @@ macro_rules! hyp_blob {
     feature = "hyp-hole-mapped-canary",
     feature = "hyp-tsc-off-canary",
     feature = "hyp-text-rw-canary",
-    feature = "hyp-text-site-skip-canary"
+    feature = "hyp-text-site-skip-canary",
+    feature = "hyp-guard-skip-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -56,6 +57,8 @@ hyp_blob!("/build/aarch64/hyp-mon-tsc-off.bin");
 hyp_blob!("/build/aarch64/hyp-mon-text-rw.bin");
 #[cfg(feature = "hyp-text-site-skip-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-text-site-skip.bin");
+#[cfg(feature = "hyp-guard-skip-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-guard-skip.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
 /// x0..x3). An HVC, which the monitor traps at EL2.
@@ -212,6 +215,55 @@ pub(crate) fn lock_ro_data() {
     text_write_probe();
     #[cfg(feature = "hyp-key-flip-probe")]
     key_flip_probe();
+    #[cfg(feature = "hyp-guard-probe")]
+    guard_probe();
+}
+
+/// A page the guard probe donates: nothing else lives in it.
+#[cfg(feature = "hyp-guard-probe")]
+#[repr(C, align(4096))]
+struct ProbePage([u8; 4096]);
+#[cfg(feature = "hyp-guard-probe")]
+static mut PROBE_PAGE: ProbePage = ProbePage([0xA5; 4096]);
+
+/// Feature `hyp-guard-probe` (the `hyp: R8` rows): donate a page, then ask for
+/// the same page, and for a page of kernel text, which the monitor must
+/// refuse and record; then read the donated page, which must fault. Never in
+/// a real build.
+#[cfg(feature = "hyp-guard-probe")]
+fn guard_probe() {
+    use azos_hyp_api::{Kind, Violation, CALL_GUARD_PAGES, CALL_VIOLATION_READ, INV_GUARDED};
+    // SAFETY: only the address is taken.
+    let (page, text) = unsafe { (pa_of(core::ptr::addr_of!(PROBE_PAGE) as usize), down(pa_of(&_text_start as *const u8 as usize))) };
+    let r = monitor_call2(CALL_GUARD_PAGES, page, 1)[0] as i64;
+    let (again, over_text) = (monitor_call2(CALL_GUARD_PAGES, page, 1)[0] as i64, monitor_call2(CALL_GUARD_PAGES, text, 1)[0] as i64);
+    if r != OK || again == OK || over_text == OK {
+        kprintln!("[HYP] PROBE FAILED: guard_pages gave {} / {} / {}", r, again, over_text);
+        return;
+    }
+    kprintln!("[HYP] guard: the page is donated, a second donation and a page of text are refused");
+    let mut cursor = 0;
+    let mut refused = 0;
+    loop {
+        let w = monitor_call(CALL_VIOLATION_READ, cursor);
+        if w[0] as i64 != OK { break; }
+        cursor = w[1];
+        let v = Violation::from_words(w[2], 0, 0, 0);
+        if v.kind == Kind::CallRefused as u32 { refused += 1; }
+    }
+    if refused >= 2 {
+        kprintln!("[HYP] guard: the ring holds {} refusals", refused);
+    } else {
+        kprintln!("[HYP] PROBE FAILED: the ring holds {} refusals", refused);
+    }
+    if monitor_call(CALL_PROBE, 0)[2] & INV_GUARDED == 0 {
+        kprintln!("[HYP] PROBE FAILED: probe does not report guarded");
+        return;
+    }
+    kprintln!("[HYP] guard: reading the donated page (must fault)");
+    // SAFETY: the probe's purpose is this read; it must not return.
+    let b = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(PROBE_PAGE) as *const u8) };
+    kprintln!("[HYP] PROBE FAILED: the donated page read {:#x}", b);
 }
 
 /// Feature `hyp-key-flip-probe` (the `hyp: R7` rows): flip a trace class's

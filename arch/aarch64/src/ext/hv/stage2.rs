@@ -540,6 +540,45 @@ impl<'a, M: TableMem> Stage2<'a, M> {
         }
     }
 
+    /// Make the leaf that maps `ipa` a 4 KiB page, splitting the blocks above
+    /// it one level at a time with break-before-make: the block entry is
+    /// invalidated and `broke` runs (the caller's TLB invalidate and barrier)
+    /// before the table that replaces it is written. The children repeat the
+    /// block's attributes, so only the entry's validity changes while it is
+    /// split. A leaf this encoder did not produce is refused as `Overlap`.
+    pub fn split_to_page(&mut self, ipa: u64, broke: &mut dyn FnMut(u64)) -> Result<(), S2Error> {
+        self.check_ipa(ipa)?;
+        let mut table = self.root;
+        let mut lvl = self.cfg.start_level();
+        loop {
+            let e = self.entry_pa(table, lvl, ipa);
+            let d = self.mem.read(e);
+            if !desc_valid(d) {
+                return Err(S2Error::NotMapped);
+            }
+            if lvl == 3 {
+                return Ok(());
+            }
+            if desc_is_table(d, lvl) {
+                table = desc_pa(d);
+                lvl += 1;
+                continue;
+            }
+            let attrs = leaf_attrs(d).ok_or(S2Error::Overlap)?;
+            let child = lvl + 1;
+            let t = self.mem.alloc_tables(1).ok_or(S2Error::NoMemory)?;
+            let (base, step) = (desc_pa(d), level_size(child));
+            for i in 0..S2_ENTRIES {
+                self.mem.write(t + i * 8, leaf_desc(base + i * step, child, attrs)?);
+            }
+            self.mem.write(e, 0);
+            broke(ipa & !(level_size(lvl) - 1));
+            self.mem.write(e, table_desc(t)?);
+            table = t;
+            lvl = child;
+        }
+    }
+
     /// Software walk: the host address and attributes `ipa` resolves to.
     pub fn translate(&self, ipa: u64) -> Option<(u64, S2Attrs)> {
         if self.check_ipa(ipa).is_err() {

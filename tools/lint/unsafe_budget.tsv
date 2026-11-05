@@ -31,7 +31,7 @@ crates/core/energy	0	0	0	0	1	0
 crates/core/ext-api	0	0	0	0	1	0
 crates/core/hv	3	1	0	0	0	5
 crates/core/hyp-api	0	0	0	0	1	0
-crates/core/hyp-mon	34	3	1	0	0	-
+crates/core/hyp-mon	38	3	1	0	0	-
 crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
 crates/core/image	0	0	0	0	1	0
@@ -111,7 +111,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	386	15	13	52	0	61
+kernel	388	15	13	52	0	62
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-

@@ -82,6 +82,11 @@ fn hvc(regs: *mut u64) {
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_TEXT_PATCH, reg(regs, 1), reg(regs, 2)); }
             set(regs, 0, r as u64)
         }
+        azos_hyp_api::CALL_GUARD_PAGES => {
+            let r = super::s2::guard_pages(reg(regs, 1), reg(regs, 2));
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_GUARD_PAGES, reg(regs, 1), reg(regs, 2)); }
+            set(regs, 0, r as u64)
+        }
         _ => set(regs, 0, INVALID as u64),
     }
 }

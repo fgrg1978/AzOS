@@ -27,6 +27,7 @@ mod iface;
 mod monitor;
 mod pause;
 mod psci;
+mod s2_split;
 mod rv_enter;
 mod rv_plic;
 mod sbi;

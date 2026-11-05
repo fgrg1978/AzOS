@@ -3764,6 +3764,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-tsc-off-canary)           name=hyp-mon-tsc-off ;;
         hyp-text-rw-canary)           name=hyp-mon-text-rw ;;
         hyp-text-site-skip-canary)    name=hyp-mon-text-site-skip ;;
+        hyp-guard-skip-canary)        name=hyp-mon-guard-skip ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3784,6 +3785,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *tsc-off*) hyp_mon_blob hyp-tsc-off-canary ;;
         *text-rw*) hyp_mon_blob hyp-text-rw-canary ;;
         *text-site-skip*) hyp_mon_blob hyp-text-site-skip-canary ;;
+        *guard-skip*) hyp_mon_blob hyp-guard-skip-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     if ! a64_kbuild "$sel"; then
@@ -3853,6 +3855,17 @@ par "hyp: R7 key flip and site check (arm)" hyp_monitor_row "hyp: R7 key flip an
     "[HYP] key flip through the monitor: done" "[HYP] text_patch of a non-site refused"
 par "hyp: R7 site-skip canary (arm)" hyp_monitor_row "hyp: R7 site-skip canary (arm)" "hyp-text-site-skip-canary,hyp-key-flip-probe" canary \
     "[HYP] text_patch of a non-site refused"
+# R8: a donated page cannot be donated twice, the image cannot be donated,
+# both refusals are in the ring, `probe` reports `guarded`, and reading the
+# donated page faults.
+# Canary: the monitor does everything but the unmap, so the read succeeds.
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R8 guarded page (arm)" hyp_monitor_row "hyp: R8 guarded page (arm)" "hyp-guard-probe" pass \
+    "[HYP] guard: the page is donated, a second donation and a page of text are refused" "[HYP] guard: the ring holds" \
+    "[HYP] guard: reading the donated page (must fault)" "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R8 guard-skip canary (arm)" hyp_monitor_row "hyp: R8 guard-skip canary (arm)" "hyp-guard-skip-canary,hyp-guard-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
 # R14: the split image is a regression guard — the ordinary boot subset still
 # passes under the monitor (same verdicts as the EL2 rows).
 par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \

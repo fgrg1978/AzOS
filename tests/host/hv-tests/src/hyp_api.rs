@@ -54,7 +54,7 @@ fn desc() -> LockDesc {
 
 #[test]
 fn a_well_formed_lock_descriptor_is_taken() {
-    assert_eq!(lock_desc_error(&desc(), 0x4060_0000, 0x4080_0000), None);
+    assert_eq!(lock_desc_error(&desc(), 0x4060_0000, 0x4080_0000, &[]), None);
 }
 
 #[test]
@@ -62,22 +62,22 @@ fn a_lock_descriptor_that_could_unlock_anything_is_refused() {
     let hole = (0x4060_0000, 0x4080_0000);
     let mut d = desc();
     d.text[1] = 0x4061_0000;
-    assert!(lock_desc_error(&d, hole.0, hole.1).is_some(), "text over the monitor");
+    assert!(lock_desc_error(&d, hole.0, hole.1, &[]).is_some(), "text over the monitor");
     let mut d = desc();
     d.rodata = [0x4030_0000, 0x4050_0000];
-    assert!(lock_desc_error(&d, hole.0, hole.1).is_some(), "rodata over text");
+    assert!(lock_desc_error(&d, hole.0, hole.1, &[]).is_some(), "rodata over text");
     let mut d = desc();
     d.secondary_entry = 0x4048_0000;
-    assert!(lock_desc_error(&d, hole.0, hole.1).is_some(), "entry outside text");
+    assert!(lock_desc_error(&d, hole.0, hole.1, &[]).is_some(), "entry outside text");
     let mut d = desc();
     d.text[0] += 8;
-    assert!(lock_desc_error(&d, hole.0, hole.1).is_some(), "unaligned");
+    assert!(lock_desc_error(&d, hole.0, hole.1, &[]).is_some(), "unaligned");
     let mut d = desc();
     d.nram = 0;
-    assert!(lock_desc_error(&d, hole.0, hole.1).is_some(), "no RAM");
+    assert!(lock_desc_error(&d, hole.0, hole.1, &[]).is_some(), "no RAM");
     let mut d = desc();
     d.ram[0] = [0x4100_0000, 0x8000_0000];
-    assert!(lock_desc_error(&d, hole.0, hole.1).is_some(), "text outside RAM");
+    assert!(lock_desc_error(&d, hole.0, hole.1, &[]).is_some(), "text outside RAM");
 }
 
 #[test]
@@ -87,4 +87,70 @@ fn a_text_site_must_be_an_aligned_word_inside_text() {
     assert!(text_site_error(&TextSite { pa: 0x4020_1002, off: 1, on: 2 }, text).is_some());
     assert!(text_site_error(&TextSite { pa: 0x403f_fffe, off: 1, on: 2 }, text).is_some());
     assert!(text_site_error(&TextSite { pa: 0x4040_0000, off: 1, on: 2 }, text).is_some());
+}
+
+fn guarded_pages(ranges: &[[u64; 2]]) -> Guarded {
+    let mut g = Guarded::new();
+    for r in ranges {
+        assert!(g.add(r[0], r[1]));
+    }
+    g
+}
+
+const RAM: [[u64; 2]; 1] = [[0x4000_0000, 0x8000_0000]];
+const IMAGE: [[u64; 2]; 3] = [[0x4020_0000, 0x4040_0000], [0x4040_0000, 0x4050_0000], [0x4050_0000, 0x4050_4000]];
+const HOLE: (u64, u64) = (0x4060_0000, 0x4080_0000);
+
+#[test]
+fn a_guard_request_must_be_whole_free_ram_pages() {
+    let g = Guarded::new();
+    let e = |pa, n, ram: &[[u64; 2]], image: &[[u64; 2]], g: &Guarded| guard_error(pa, n, ram, image, HOLE.0, HOLE.1, g);
+    assert_eq!(e(0x4100_0000, 1, &RAM, &IMAGE, &g), None);
+    assert_eq!(e(0x4100_0000, GUARD_PAGES_MAX, &RAM, &IMAGE, &g), None);
+    assert!(e(0x4100_0000, GUARD_PAGES_MAX + 1, &RAM, &IMAGE, &g).is_some(), "too many pages");
+    assert!(e(0x4100_0000, 0, &RAM, &IMAGE, &g).is_some(), "no pages");
+    assert!(e(0x4100_0800, 1, &RAM, &IMAGE, &g).is_some(), "unaligned");
+    assert!(e(0x4060_0000, 1, &RAM, &IMAGE, &g).is_some(), "the monitor's own page");
+    assert!(e(0x405f_f000, 2, &RAM, &IMAGE, &g).is_some(), "straddling the monitor");
+    assert!(e(0x4020_0000, 1, &RAM, &IMAGE, &g).is_some(), "kernel text");
+    assert!(e(0x4050_0000, 1, &RAM, &IMAGE, &g).is_some(), "ro_after_init");
+    assert!(e(0x3fff_f000, 1, &RAM, &IMAGE, &g).is_some(), "below RAM");
+    assert!(e(0x7fff_f000, 2, &RAM, &IMAGE, &g).is_some(), "past RAM");
+    assert!(e(u64::MAX - 0xfff, 1, &RAM, &IMAGE, &g).is_some(), "wrapping");
+    // Before the lock the kernel has named neither RAM nor its image.
+    assert_eq!(e(0x4020_0000, 1, &[], &[], &g), None);
+    assert!(e(0x4060_0000, 1, &[], &[], &g).is_some(), "the monitor is known before the lock");
+}
+
+#[test]
+fn a_page_is_guarded_once() {
+    let g = guarded_pages(&[[0x4100_0000, 0x4100_1000], [0x4200_0000, 0x4200_2000]]);
+    let e = |pa, n| guard_error(pa, n, &RAM, &IMAGE, HOLE.0, HOLE.1, &g);
+    assert!(e(0x4100_0000, 1).is_some());
+    assert!(e(0x41ff_f000, 2).is_some(), "overlapping the front of a guarded range");
+    assert!(e(0x4200_1000, 1).is_some(), "inside a guarded range");
+    assert_eq!(e(0x4100_1000, 1), None, "adjacent is free");
+    assert_eq!(e(0x4200_2000, 4), None);
+}
+
+#[test]
+fn the_guard_table_fills_and_gives_back_the_last_range() {
+    let mut g = Guarded::new();
+    for i in 0..GUARD_RANGES_MAX as u64 {
+        assert!(g.add(i * 0x2000, i * 0x2000 + 0x1000));
+    }
+    assert!(!g.add(0x100_0000, 0x100_1000), "full");
+    g.pop();
+    assert!(g.add(0x100_0000, 0x100_1000));
+    assert!(g.overlaps(0x100_0800, 0x100_0900));
+    assert!(!g.overlaps(0x1000, 0x2000));
+}
+
+#[test]
+fn the_lock_keeps_what_was_guarded_before_it_out_of_the_image() {
+    let hole = (0x4060_0000, 0x4080_0000);
+    let clear = [[0x4100_0000, 0x4100_1000]];
+    assert_eq!(lock_desc_error(&desc(), hole.0, hole.1, &clear), None);
+    assert!(lock_desc_error(&desc(), hole.0, hole.1, &[[0x4020_0000, 0x4020_1000]]).is_some(), "guarded text");
+    assert!(lock_desc_error(&desc(), hole.0, hole.1, &[[0x9000_0000, 0x9000_1000]]).is_some(), "guarded device range");
 }
