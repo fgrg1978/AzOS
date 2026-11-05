@@ -5625,7 +5625,25 @@ mod ps2_stream {
 #[cfg(test)]
 mod ps2_i8042 {
     use super::i8042::*;
+    use azos_drvkit::PortIo;
+    use std::cell::RefCell;
     use std::collections::VecDeque;
+
+    /// A controller model with state: it takes `&mut self`, and `io` lends it
+    /// to the driver as the `&self` `PortIo` the driver is written over.
+    trait Model {
+        fn inb(&mut self, port: u16) -> u8;
+        fn outb(&mut self, port: u16, v: u8);
+    }
+
+    struct Io<'a, M>(RefCell<&'a mut M>);
+
+    impl<M: Model> PortIo for Io<'_, M> {
+        fn inb(&self, port: u16) -> u8 { self.0.borrow_mut().inb(port) }
+        fn outb(&self, port: u16, v: u8) { self.0.borrow_mut().outb(port, v) }
+    }
+
+    fn io<M: Model>(m: &mut M) -> Io<'_, M> { Io(RefCell::new(m)) }
 
     const SPINS: u32 = 16;
 
@@ -5708,7 +5726,7 @@ mod ps2_i8042 {
         }
     }
 
-    impl Ports for Fake {
+    impl Model for Fake {
         fn inb(&mut self, port: u16) -> u8 {
             if self.floating { return 0xFF; }
             if port == PORT_CMD {
@@ -5753,7 +5771,7 @@ mod ps2_i8042 {
     #[test]
     fn a_pc_comes_up_with_both_ports_on_set_2_and_streaming() {
         let mut f = Fake::pc();
-        let found = init(&mut f, SPINS).unwrap();
+        let found = init(&io(&mut f), SPINS).unwrap();
         assert!(found.kbd && found.aux);
         assert_eq!(f.scancode_set, 2, "the keyboard was told set 2");
         assert!(f.kbd_stream && f.aux_stream);
@@ -5768,13 +5786,13 @@ mod ps2_i8042 {
     fn a_wheel_mouse_is_found_by_the_knock_and_a_plain_one_is_not() {
         let mut f = Fake::pc();
         f.aux_wheel = true;
-        let found = init(&mut f, SPINS).unwrap();
+        let found = init(&io(&mut f), SPINS).unwrap();
         assert!(found.wheel && found.aux, "200, 100, 80, then id 3");
         assert!(f.aux_stream, "and it still streams");
         // The plain mouse answers a resend to the rate command: no wheel, but
         // it still comes up.
         let mut f = Fake::pc();
-        let found = init(&mut f, SPINS).unwrap();
+        let found = init(&io(&mut f), SPINS).unwrap();
         assert!(!found.wheel && found.aux && f.aux_stream);
         assert!(f.out.is_empty(), "the refused knock left nothing in the buffer");
     }
@@ -5782,8 +5800,8 @@ mod ps2_i8042 {
     #[test]
     fn interrupts_are_enabled_in_a_second_step_from_the_configuration_init_left() {
         let mut f = Fake::pc();
-        let found = init(&mut f, SPINS).unwrap();
-        enable_irqs(&mut f, SPINS, &found).unwrap();
+        let found = init(&io(&mut f), SPINS).unwrap();
+        enable_irqs(&io(&mut f), SPINS, &found).unwrap();
         assert_eq!(f.cfg & 0x03, 0x03);
         assert_eq!(f.cfg & 0x40, 0, "still no translation");
         // Only writes: no command read the configuration back.
@@ -5798,7 +5816,7 @@ mod ps2_i8042 {
     fn the_configuration_is_written_again_after_the_self_test() {
         let mut f = Fake::pc();
         f.cfg_after_selftest = Some(0x65);
-        init(&mut f, SPINS).unwrap();
+        init(&io(&mut f), SPINS).unwrap();
         assert_eq!(f.cfg & 0x40, 0);
         assert!(!f.irq_on_during_device_talk, "no interrupt bit while the devices are polled");
     }
@@ -5807,7 +5825,7 @@ mod ps2_i8042 {
     fn a_floating_bus_is_no_controller_and_costs_one_read() {
         let mut f = Fake::pc();
         f.floating = true;
-        assert_eq!(init(&mut f, SPINS), Err(Fail::Floating));
+        assert_eq!(init(&io(&mut f), SPINS), Err(Fail::Floating));
         assert!(f.cmds.is_empty(), "nothing was written to a bus that floats");
     }
 
@@ -5815,18 +5833,18 @@ mod ps2_i8042 {
     fn a_wrong_self_test_answer_is_a_failure_carrying_the_answer() {
         let mut f = Fake::pc();
         f.selftest = 0xFC;
-        assert_eq!(init(&mut f, SPINS), Err(Fail::SelfTest(0xFC)));
+        assert_eq!(init(&io(&mut f), SPINS), Err(Fail::SelfTest(0xFC)));
     }
 
     #[test]
     fn a_controller_that_never_answers_times_out_within_the_bound() {
         struct Dead(u32);
-        impl Ports for Dead {
+        impl Model for Dead {
             fn inb(&mut self, _p: u16) -> u8 { self.0 += 1; ST_IBF } // never takes a byte
             fn outb(&mut self, _p: u16, _v: u8) {}
         }
         let mut d = Dead(0);
-        assert!(matches!(init(&mut d, SPINS), Err(Fail::Timeout(_))));
+        assert!(matches!(init(&io(&mut d), SPINS), Err(Fail::Timeout(_))));
         assert!(d.0 <= SPINS + 2, "the wait is bounded by `spins` ({} reads)", d.0);
     }
 
@@ -5834,10 +5852,10 @@ mod ps2_i8042 {
     fn a_single_channel_controller_has_a_keyboard_and_no_mouse() {
         let mut f = Fake::pc();
         f.dual = false;
-        let found = init(&mut f, SPINS).unwrap();
+        let found = init(&io(&mut f), SPINS).unwrap();
         assert!(found.kbd && !found.aux);
         assert!(!f.aux_stream);
-        enable_irqs(&mut f, SPINS, &found).unwrap();
+        enable_irqs(&io(&mut f), SPINS, &found).unwrap();
         assert_eq!(f.cfg & 0x03, 0x01, "only the keyboard's interrupt");
     }
 
@@ -5845,11 +5863,11 @@ mod ps2_i8042 {
     fn a_missing_mouse_leaves_its_port_off_and_the_keyboard_works() {
         let mut f = Fake::pc();
         f.aux_dev = false;
-        let found = init(&mut f, SPINS).unwrap();
+        let found = init(&io(&mut f), SPINS).unwrap();
         assert!(found.kbd && !found.aux);
         assert!(!f.aux_on, "an unanswering port is disabled");
         assert_ne!(f.cfg & 0x20, 0);
-        enable_irqs(&mut f, SPINS, &found).unwrap();
+        enable_irqs(&io(&mut f), SPINS, &found).unwrap();
         assert_eq!(f.cfg & 0x03, 0x01);
     }
 
@@ -5857,7 +5875,7 @@ mod ps2_i8042 {
     fn a_missing_keyboard_leaves_the_mouse_alone() {
         let mut f = Fake::pc();
         f.kbd_dev = false;
-        let found = init(&mut f, SPINS).unwrap();
+        let found = init(&io(&mut f), SPINS).unwrap();
         assert!(!found.kbd && found.aux);
         assert!(!f.kbd_on);
     }
@@ -5867,17 +5885,17 @@ mod ps2_i8042 {
         let mut f = Fake::pc();
         f.kbd_dev = false;
         f.aux_dev = false;
-        assert_eq!(init(&mut f, SPINS), Err(Fail::NoDevice));
+        assert_eq!(init(&io(&mut f), SPINS), Err(Fail::NoDevice));
         let mut f = Fake::pc();
         f.port_test = [1, 1];
-        assert_eq!(init(&mut f, SPINS), Err(Fail::NoDevice), "both interface tests failed");
+        assert_eq!(init(&io(&mut f), SPINS), Err(Fail::NoDevice), "both interface tests failed");
     }
 
     #[test]
     fn a_device_that_asks_for_a_resend_is_sent_the_byte_again() {
         // The keyboard answers its first command with 0xFE once.
         struct Resend(Fake, bool);
-        impl Ports for Resend {
+        impl Model for Resend {
             fn inb(&mut self, p: u16) -> u8 { self.0.inb(p) }
             fn outb(&mut self, p: u16, v: u8) {
                 if p == PORT_DATA && v == 0xF4 && !self.1 && self.0.pending == Pending::None {
@@ -5889,7 +5907,7 @@ mod ps2_i8042 {
             }
         }
         let mut r = Resend(Fake::pc(), false);
-        let found = init(&mut r, SPINS).unwrap();
+        let found = init(&io(&mut r), SPINS).unwrap();
         assert!(found.kbd && r.0.kbd_stream, "the second try got through");
     }
 }

@@ -37,10 +37,11 @@
 //! alone, before any line is enabled.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use azos_drvkit::PortIo;
 use azos_sync::SpinLock;
 
 use super::events;
-use super::i8042::{self, Fail, Found, Ports, PORT_CMD, PORT_DATA, ST_AUX, ST_OBF};
+use super::i8042::{self, Fail, Found, PORT_CMD, PORT_DATA, ST_AUX, ST_OBF};
 use super::keymap::{pack, BTN_MOUSE, EV_KEY, EV_REL};
 use super::stream::{Out, Stream};
 
@@ -48,25 +49,25 @@ use super::stream::{Out, Stream};
 struct Hw;
 
 #[cfg(target_arch = "x86_64")]
-impl Ports for Hw {
+impl PortIo for Hw {
     #[inline(always)]
-    fn inb(&mut self, port: u16) -> u8 {
+    fn inb(&self, port: u16) -> u8 {
         let v: u8;
         // SAFETY: a read of the i8042's own ports (0x60/0x64).
         unsafe { core::arch::asm!("in al, dx", in("dx") port, out("al") v, options(nomem, nostack, preserves_flags)) };
         v
     }
     #[inline(always)]
-    fn outb(&mut self, port: u16, v: u8) {
+    fn outb(&self, port: u16, v: u8) {
         // SAFETY: a write to the i8042's own ports (0x60/0x64).
         unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") v, options(nomem, nostack, preserves_flags)) };
     }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-impl Ports for Hw {
-    fn inb(&mut self, _port: u16) -> u8 { 0xFF }
-    fn outb(&mut self, _port: u16, _v: u8) {}
+impl PortIo for Hw {
+    fn inb(&self, _port: u16) -> u8 { 0xFF }
+    fn outb(&self, _port: u16, _v: u8) {}
 }
 
 /// Bytes read per interrupt at most (the output buffer is a few deep; the
@@ -128,7 +129,7 @@ pub fn stats() -> Stats {
 /// Probe and bring up the controller (task context, before any line is
 /// enabled). `Ok((keyboard, mouse))`: which ports have a working device.
 pub fn init() -> Result<(bool, bool), Fail> {
-    let found = i8042::init(&mut Hw, azos_limits::PS2_WAIT_SPINS as u32)?;
+    let found = i8042::init(&Hw, azos_limits::PS2_WAIT_SPINS as u32)?;
     *FOUND.lock() = Some(found);
     STREAM.lock().set_wheel(found.wheel);
     READY.store(true, Ordering::Release);
@@ -145,7 +146,7 @@ pub fn set_irq_lines(kbd: u32, aux: u32) {
 /// Let the controller raise its interrupts, after the lines are routed.
 pub fn enable_irqs() -> Result<(), Fail> {
     let found = (*FOUND.lock()).ok_or(Fail::NoDevice)?;
-    i8042::enable_irqs(&mut Hw, azos_limits::PS2_WAIT_SPINS as u32, &found)
+    i8042::enable_irqs(&Hw, azos_limits::PS2_WAIT_SPINS as u32, &found)
 }
 
 /// Is `line` one of the wired lines?
@@ -187,7 +188,7 @@ pub fn irq(line: u32) -> Option<bool> {
     }
     IRQS.fetch_add(1, Ordering::Relaxed);
     let mut st = STREAM.lock();
-    let mut hw = Hw;
+    let hw = Hw;
     let mut wake = false;
     for _ in 0..IRQ_BATCH {
         let status = hw.inb(PORT_CMD);

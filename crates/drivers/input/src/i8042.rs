@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The i8042 PS/2 controller: presence, self-test and bring-up.
 //!
-//! Pure over [`Ports`] (the two I/O ports), so a host test drives it against a
+//! Pure over [`PortIo`] (the two I/O ports), so a host test drives it against a
 //! scripted controller. Every wait is a bounded count of status reads
 //! (`spins`, Kconfig `PS2_WAIT_SPINS`): a machine with no controller, or one
 //! that stops answering, fails the step instead of hanging the boot.
@@ -24,6 +24,8 @@
 //!
 //! The IRQ bits are NOT set here: the caller routes the lines first and then
 //! calls [`enable_irqs`], so an edge is never raised into a masked entry.
+
+use azos_drvkit::PortIo;
 
 pub const PORT_DATA: u16 = 0x60;
 pub const PORT_CMD: u16 = 0x64;
@@ -81,12 +83,6 @@ const DRAIN_MAX: u32 = 64;
 /// that far, it does not acknowledge the reset.
 const RESET_WAIT_FACTOR: u32 = 8;
 
-/// The controller's two I/O ports.
-pub trait Ports {
-    fn inb(&mut self, port: u16) -> u8;
-    fn outb(&mut self, port: u16, v: u8);
-}
-
 /// Why the controller was not brought up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fail {
@@ -122,7 +118,7 @@ pub struct Found {
     cfg: u8,
 }
 
-fn wait_write<P: Ports>(p: &mut P, spins: u32, what: &'static str) -> Result<(), Fail> {
+fn wait_write<P: PortIo>(p: &P, spins: u32, what: &'static str) -> Result<(), Fail> {
     for _ in 0..spins {
         if p.inb(PORT_CMD) & ST_IBF == 0 {
             return Ok(());
@@ -131,7 +127,7 @@ fn wait_write<P: Ports>(p: &mut P, spins: u32, what: &'static str) -> Result<(),
     Err(Fail::Timeout(what))
 }
 
-fn wait_read<P: Ports>(p: &mut P, spins: u32, what: &'static str) -> Result<u8, Fail> {
+fn wait_read<P: PortIo>(p: &P, spins: u32, what: &'static str) -> Result<u8, Fail> {
     for _ in 0..spins {
         if p.inb(PORT_CMD) & ST_OBF != 0 {
             return Ok(p.inb(PORT_DATA));
@@ -140,31 +136,31 @@ fn wait_read<P: Ports>(p: &mut P, spins: u32, what: &'static str) -> Result<u8, 
     Err(Fail::Timeout(what))
 }
 
-fn send_cmd<P: Ports>(p: &mut P, spins: u32, cmd: u8) -> Result<(), Fail> {
+fn send_cmd<P: PortIo>(p: &P, spins: u32, cmd: u8) -> Result<(), Fail> {
     wait_write(p, spins, "controller did not take a command")?;
     p.outb(PORT_CMD, cmd);
     Ok(())
 }
 
-fn send_data<P: Ports>(p: &mut P, spins: u32, v: u8) -> Result<(), Fail> {
+fn send_data<P: PortIo>(p: &P, spins: u32, v: u8) -> Result<(), Fail> {
     wait_write(p, spins, "controller did not take a data byte")?;
     p.outb(PORT_DATA, v);
     Ok(())
 }
 
 /// A command with a one-byte answer.
-fn query<P: Ports>(p: &mut P, spins: u32, cmd: u8, what: &'static str) -> Result<u8, Fail> {
+fn query<P: PortIo>(p: &P, spins: u32, cmd: u8, what: &'static str) -> Result<u8, Fail> {
     send_cmd(p, spins, cmd)?;
     wait_read(p, spins, what)
 }
 
-fn write_cfg<P: Ports>(p: &mut P, spins: u32, cfg: u8) -> Result<(), Fail> {
+fn write_cfg<P: PortIo>(p: &P, spins: u32, cfg: u8) -> Result<(), Fail> {
     send_cmd(p, spins, CMD_WRITE_CFG)?;
     send_data(p, spins, cfg)
 }
 
 /// Drop whatever the output buffer holds. `false`: it never emptied.
-fn drain<P: Ports>(p: &mut P) -> bool {
+fn drain<P: PortIo>(p: &P) -> bool {
     for _ in 0..DRAIN_MAX {
         if p.inb(PORT_CMD) & ST_OBF == 0 {
             return true;
@@ -176,7 +172,7 @@ fn drain<P: Ports>(p: &mut P) -> bool {
 
 /// One byte to a device (`aux`: the mouse, through `0xD4`), then its
 /// acknowledge, resent on `0xFE`. `false`: no acknowledge.
-fn dev_send<P: Ports>(p: &mut P, spins: u32, aux: bool, v: u8) -> bool {
+fn dev_send<P: PortIo>(p: &P, spins: u32, aux: bool, v: u8) -> bool {
     for _ in 0..=RESENDS {
         let sent = (!aux || send_cmd(p, spins, CMD_TO_AUX).is_ok()) && send_data(p, spins, v).is_ok();
         if !sent {
@@ -193,7 +189,7 @@ fn dev_send<P: Ports>(p: &mut P, spins: u32, aux: bool, v: u8) -> bool {
 
 /// Reset one device: ack, then the self-test result `0xAA`; a mouse then
 /// sends its id byte, which is read and dropped.
-fn dev_reset<P: Ports>(p: &mut P, spins: u32, aux: bool) -> bool {
+fn dev_reset<P: PortIo>(p: &P, spins: u32, aux: bool) -> bool {
     if !dev_send(p, spins, aux, DEV_RESET) {
         return false;
     }
@@ -210,7 +206,7 @@ fn dev_reset<P: Ports>(p: &mut P, spins: u32, aux: bool) -> bool {
 /// Ask a mouse for its wheel: the sample-rate knock, then its id. Best effort:
 /// a mouse that does not know the commands answers a resend, which
 /// [`dev_send`] gives up on, and stays a three-byte mouse.
-fn mouse_has_wheel<P: Ports>(p: &mut P, spins: u32) -> bool {
+fn mouse_has_wheel<P: PortIo>(p: &P, spins: u32) -> bool {
     for rate in WHEEL_KNOCK {
         if !(dev_send(p, spins, true, MOUSE_SET_RATE) && dev_send(p, spins, true, rate)) {
             return false;
@@ -220,7 +216,7 @@ fn mouse_has_wheel<P: Ports>(p: &mut P, spins: u32) -> bool {
 }
 
 /// Probe and bring up the controller. See the module doc for the sequence.
-pub fn init<P: Ports>(p: &mut P, spins: u32) -> Result<Found, Fail> {
+pub fn init<P: PortIo>(p: &P, spins: u32) -> Result<Found, Fail> {
     if p.inb(PORT_CMD) == 0xFF {
         return Err(Fail::Floating);
     }
@@ -293,7 +289,7 @@ pub fn init<P: Ports>(p: &mut P, spins: u32) -> Result<Found, Fail> {
 /// Turn the interrupts of the ports in `found` on (the lines are routed).
 /// Writes only: nothing is read back, so a byte arriving between the two
 /// accesses is left for the handler.
-pub fn enable_irqs<P: Ports>(p: &mut P, spins: u32, found: &Found) -> Result<(), Fail> {
+pub fn enable_irqs<P: PortIo>(p: &P, spins: u32, found: &Found) -> Result<(), Fail> {
     let mut cfg = found.cfg;
     if found.kbd {
         cfg |= CFG_KBD_IRQ;
