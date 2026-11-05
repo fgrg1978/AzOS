@@ -299,6 +299,12 @@ fn hung_host(_: usize) {
     if azos_ipc::endpoint::endpoint_named_cap(me, CapPerms::READ, name).is_none() {
         return;
     }
+    // A host that already serves the endpoint (a boot with INADRV.ELF) would
+    // answer the read: the test needs to be the one serving it.
+    let owner = azos_ipc::endpoint::endpoint_ref_by_name(name).map(azos_ipc::endpoint::endpoint_owner_ref);
+    if owner != Some(Ok(me)) {
+        return;
+    }
     HUNG_READY.store(true, Ordering::Release);
     let mut out = SyscallOut::new();
     let h = loop {
@@ -331,7 +337,7 @@ azos_ktest::ktest_late! {
         let budget = azos_limits::PROXY_REPLY_TIMEOUT_MS;
         crate::powermon::start_call_task();
         azos_sched::task_create_affinity("kcall-hung", hung_host, 0, PRIO, -1);
-        crate::ktest::wait("the hung host never claimed endpoint.powermon", || HUNG_READY.load(Ordering::Acquire))?;
+        crate::ktest::wait("the test could not serve endpoint.powermon itself", || HUNG_READY.load(Ordering::Acquire))?;
         let timed_out = crate::powermon::timed_out();
         azos_sched::task_create_affinity("kcall-hread", hung_reader, 0, PRIO, -1);
         if !crate::ktest::until_for(budget * 10 + 1_000, || HUNG_READ_DONE.load(Ordering::Acquire)) {
