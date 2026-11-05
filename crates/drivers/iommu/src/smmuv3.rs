@@ -406,6 +406,11 @@ impl<R: Remote> IommuUnit for Smmuv3Remote<R> {
     fn attach(&mut self, dev: u32, mode: DomainMode) -> Result<(), IommuError> {
         match mode {
             DomainMode::Translate { root_pa } => {
+                // A stream that translates already points at this descriptor
+                // (the ASID is kept): it is refused until the new one is written.
+                if self.tags.of(dev).is_some() && !self.remote.attach(dev, RemoteStream::Block) {
+                    return Err(self.refused());
+                }
                 let asid = self.tags.take(dev).ok_or(IommuError::Unsupported("smmuv3: out of ASIDs"))?;
                 let cd_pa = self.cd_of(asid);
                 // The monitor makes the entry that names this descriptor live

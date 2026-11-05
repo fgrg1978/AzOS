@@ -264,7 +264,12 @@ pub fn attach(sid: u64, mode: u64, cd_pa: u64) -> i64 {
         core::ptr::write_volatile(slot, ste[0]);
         clean(pa(slot), 8);
     }
-    ok = ok && command(u, cmd_cfgi_ste(sid as u32)) && command(u, cmd_tlbi_nh_all(0)) && sync(u);
+    // The unit may hold the stream's old descriptor and its old stage-1 translations.
+    ok = ok
+        && command(u, cmd_cfgi_ste(sid as u32))
+        && command(u, cmd_cfgi_cd_all(sid as u32))
+        && command(u, cmd_tlbi_nh_all(0))
+        && sync(u);
     LOCK.unlock();
     if ok { OK } else { DENIED }
 }

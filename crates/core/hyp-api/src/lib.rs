@@ -119,8 +119,9 @@ pub const INV_GUARDED: u64 = 1 << 6;
 pub const INV_PINNED: u64 = 1 << 7;
 /// At least one keystore root is held in guarded memory and derives there.
 pub const INV_KEY_ROOTS: u64 = 1 << 8;
-/// The SMMU's registers are the monitor's alone and every stream goes through
-/// the host stage-2 (I1 for DMA).
+/// The SMMU is the monitor's: its registers are unmapped from the host and every
+/// stream it serves goes through the host stage-2. Masters not behind it stay
+/// unconfined.
 pub const INV_SMMU: u64 = 1 << 9;
 
 pub const INVARIANT_NAMES: [(u64, &str); 10] = [

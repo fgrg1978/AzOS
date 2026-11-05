@@ -36,8 +36,10 @@ impl Remote for Model {
         let mut l = self.0.lock().unwrap();
         l.calls.push(format!("attach {sid} {stream:?}"));
         if let (RemoteStream::Nested(cd), Some(mem)) = (stream, l.mem) {
-            let w = rd64(mem, cd, 0);
-            l.cd_seen.push(w);
+            if cd != 0 {
+                let w = rd64(mem, cd, 0);
+                l.cd_seen.push(w);
+            }
         }
         !l.refuse
     }
@@ -69,6 +71,25 @@ fn a_translating_stream_is_nested_on_a_descriptor_written_before_the_monitor_hea
     // ASID 1, the first: its descriptor, as the stage-1-only driver writes it.
     assert_eq!(l.cd_seen, vec![encode_cd(0x8020_0000, 4, 5, 1)[0]]);
     assert!(mem.cleaned_all(cd_pa, CD_BYTES), "visible to a unit that does not snoop");
+}
+
+/// **A stream that translates already is refused before its descriptor is
+/// rewritten**, the way the register driver makes a live entry invalid first:
+/// the unit never fetches a descriptor half old, half new.
+///
+/// **Canary.** Skip the `Block` for a stream that holds an ASID: the call
+/// sequence has no `Block` between the two `Nested`.
+#[test]
+fn a_stream_that_translates_again_is_blocked_while_its_descriptor_is_rewritten() {
+    let (mut u, m, mem) = unit();
+    u.attach(3, DomainMode::Translate { root_pa: 0x8020_0000 }).unwrap();
+    u.attach(3, DomainMode::Translate { root_pa: 0x8030_0000 }).unwrap();
+    let l = m.0.lock().unwrap();
+    let cd = mem.page(0);
+    assert_eq!(&l.calls[1..], &[format!("attach 3 Nested({cd})"), "attach 3 Block".to_string(), format!("attach 3 Nested({cd})")]);
+    assert_eq!(l.cd_seen[0], encode_cd(0x8020_0000, 4, 5, 1)[0]);
+    assert_eq!(l.cd_seen[1], encode_cd(0x8030_0000, 4, 5, 1)[0]);
+    assert_eq!(rd64(mem, cd, 1), 0x8030_0000, "the descriptor the second entry names holds the new table");
 }
 
 #[test]
