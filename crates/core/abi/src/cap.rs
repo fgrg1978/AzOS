@@ -780,6 +780,23 @@ pub mod slot_word {
     }
 }
 
+/// The image name a launch capability targets (`ty::LAUNCH`): an 8.3 name of
+/// upper-case letters, digits, `_` and `-`, ending in `.ELF`. Every kernel
+/// that grants or spawns on a launch capability checks it here.
+pub mod launch_name {
+    /// Longest image name.
+    pub const MAX: usize = 12;
+
+    /// Is `name` an image name a launch grant may target?
+    pub fn is_valid(name: &[u8]) -> bool {
+        if name.len() <= 4 || name.len() > MAX || !name.ends_with(b".ELF") {
+            return false;
+        }
+        let base = &name[..name.len() - 4];
+        base.len() <= 8 && base.iter().all(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

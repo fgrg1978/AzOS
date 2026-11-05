@@ -110,7 +110,7 @@ crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
 kernel	386	15	13	52	0	62
-micro	20	4	0	0	0	68
+micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
 userspace/bench/latbench	3	0	0	0	0	-

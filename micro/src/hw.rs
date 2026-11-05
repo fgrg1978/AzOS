@@ -58,6 +58,17 @@ pub fn uart_write(bytes: &[u8]) {
     }
 }
 
+/// The UART as a `core::fmt::Write` sink, for the boot and the kernel-trap
+/// messages (the kernel proper writes through `Hw::console`).
+pub struct Console;
+
+impl core::fmt::Write for Console {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        uart_write(s.as_bytes());
+        Ok(())
+    }
+}
+
 fn uart_byte(b: u8) {
     // SAFETY: the 16550 at MICRO_UART_BASE: LSR (+5) bit 5 is "transmitter
     // holding register empty", THR is +0.

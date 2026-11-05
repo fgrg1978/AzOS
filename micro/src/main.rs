@@ -33,15 +33,6 @@ extern "C" {
     static __contig_end: u8;
 }
 
-struct Console;
-
-impl Write for Console {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        hw::uart_write(s.as_bytes());
-        Ok(())
-    }
-}
-
 fn halt() -> ! {
     loop {
         // SAFETY: M-mode; nothing is left to run.
@@ -52,7 +43,7 @@ fn halt() -> ! {
 /// Reached from the reset vector with the stack set and `.bss` cleared.
 #[no_mangle]
 pub extern "C" fn micro_main() -> ! {
-    let _ = writeln!(Console, "[MICRO] AzOS-micro, riscv32 M-mode, PMP");
+    let _ = writeln!(hw::Console, "[MICRO] AzOS-micro, riscv32 M-mode, PMP");
     // SAFETY: the one hart, before any task: nothing else touches the
     // topology, and the shared reference below is taken after the last write.
     let topo = unsafe { &mut *core::ptr::addr_of_mut!(TOPOLOGY) };
@@ -63,10 +54,10 @@ pub extern "C" fn micro_main() -> ! {
     let ctx = DeviceContext { device_id: None, floor: 0, bind_device: false, enforce_floor: false };
     let files = SignedFiles { caps: CAPS, caps_sig: CAPS_SIG, sched: SCHED };
     if let Err(e) = load_signed(topo, &files, &TRUSTED_PUBKEY, &ctx) {
-        let _ = writeln!(Console, "[MICRO] topology refused: {:?}", e);
+        let _ = writeln!(hw::Console, "[MICRO] topology refused: {:?}", e);
         halt();
     }
-    let _ = writeln!(Console, "[MICRO] topology verified: {} rows", topo.tasks_len());
+    let _ = writeln!(hw::Console, "[MICRO] topology verified: {} rows", topo.tasks_len());
     // SAFETY: `TOPOLOGY` is complete and never written again.
     let topo: &'static Topology<'static> = unsafe { &*core::ptr::addr_of!(TOPOLOGY) };
     let range = |a: &u8, b: &u8| (a as *const u8 as usize, b as *const u8 as usize);
@@ -84,7 +75,7 @@ pub extern "C" fn micro_main() -> ! {
     // SAFETY: before the first trap; the only reference to the kernel.
     let k = unsafe { trap::kernel() };
     if let Err(e) = k.boot(&mut Machine, topo, &tasks::IMAGES, info) {
-        let _ = writeln!(Console, "[MICRO] boot refused: {:?}", e);
+        let _ = writeln!(hw::Console, "[MICRO] boot refused: {:?}", e);
         halt();
     }
     // SAFETY: booted, M-mode, interrupts off.
@@ -95,6 +86,6 @@ pub extern "C" fn micro_main() -> ! {
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // In a task this first UART write is refused by the PMP and the kernel
     // ends the task; in the kernel it prints and stops.
-    let _ = writeln!(Console, "[MICRO] PANIC: {}", info);
+    let _ = writeln!(hw::Console, "[MICRO] PANIC: {}", info);
     halt()
 }

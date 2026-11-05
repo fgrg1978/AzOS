@@ -18,8 +18,7 @@ use azos_sync::SpinLock;
 /// shell starts and the rows the component manager starts
 /// (`tests/host/topology-tests` fails when a built-in topology names more).
 pub const MAX_LAUNCH_NAMES: usize = 32;
-/// Longest image name: an 8.3 name.
-pub const LAUNCH_NAME_MAX: usize = 12;
+pub use azos_abi::cap::launch_name::{is_valid as name_is_valid, MAX as LAUNCH_NAME_MAX};
 
 struct Names {
     names: [[u8; LAUNCH_NAME_MAX]; MAX_LAUNCH_NAMES],
@@ -32,17 +31,6 @@ static NAMES: SpinLock<Names> = SpinLock::new(Names {
     lens: [0; MAX_LAUNCH_NAMES],
     count: 0,
 });
-
-/// Is `name` an image name a launch grant may target: 1..=12 bytes of
-/// upper-case letters, digits, `_`, `-`, ending in `.ELF`?
-pub fn name_is_valid(name: &[u8]) -> bool {
-    if name.len() <= 4 || name.len() > LAUNCH_NAME_MAX || !name.ends_with(b".ELF") {
-        return false;
-    }
-    let base = &name[..name.len() - 4];
-    base.len() <= 8
-        && base.iter().all(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
-}
 
 /// The resource for image `name`, interning it; `None` for a name
 /// [`name_is_valid`] refuses or a full table.

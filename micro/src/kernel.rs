@@ -24,7 +24,7 @@
 
 use core::fmt::Write;
 
-use azos_abi::cap::{ty, CapHandle, CapKind, CapPerms, CapType};
+use azos_abi::cap::{launch_name, ty, CapHandle, CapKind, CapPerms, CapType};
 use azos_abi::error::Errno;
 use azos_abi::invoke::{is_domain_self, op_of, DOMAIN_UPTIME, LOG_CONSOLE_WRITE, INVOKE_FLAGS_KNOWN, INVOKE_OP_MASK, INVOKE_REGS};
 use azos_abi::syscall_nr::*;
@@ -277,6 +277,8 @@ struct EpQueue {
 }
 
 impl EpQueue {
+    const EMPTY: Self = Self { head: 0, len: 0, slots: [0; MAX_TASKS] };
+
     fn push(&mut self, c: usize) -> bool {
         if self.len as usize >= MAX_TASKS {
             return false;
@@ -696,7 +698,7 @@ impl<'t> Kernel<'t> {
         zero(abase, alen);
         for e in 0..self.n_eps {
             if self.eps[e].server == Some(s as u8) {
-                *self.queue(e) = EpQueue { head: 0, len: 0, slots: [0; MAX_TASKS] };
+                *self.queue(e) = EpQueue::EMPTY;
                 // The capability that serves it is minted again below.
                 self.eps[e].revoked = false;
             }
@@ -864,7 +866,7 @@ impl<'t> Kernel<'t> {
         }
         for e in 0..self.n_eps {
             if self.eps[e].server == Some(s as u8) {
-                *self.queue(e) = EpQueue { head: 0, len: 0, slots: [0; MAX_TASKS] };
+                *self.queue(e) = EpQueue::EMPTY;
             }
         }
         // Its own call, still queued or in service.
@@ -1051,7 +1053,7 @@ impl<'t> Kernel<'t> {
                         }
                     }
                 }
-                *self.queue(ep) = EpQueue { head: 0, len: 0, slots: [0; MAX_TASKS] };
+                *self.queue(ep) = EpQueue::EMPTY;
                 self.refresh_boost(s);
                 0
             }
@@ -1203,7 +1205,7 @@ impl<'t> Kernel<'t> {
     // ── spawn ───────────────────────────────────────────────────────────
 
     /// `SYS_SPAWN_EX` with no `SpawnReq` (a1 = 0): a0 = the image's name (a
-    /// NUL-terminated string, at most 12 bytes). The caller must hold a
+    /// NUL-terminated string, `launch_name::is_valid`). The caller must hold a
     /// launch capability with `EXEC` on the row; the first slot of the row
     /// that is not running starts with the row's capabilities. Returns its
     /// TID. -EACCES: no row, no capability, nothing free to start.
@@ -1211,7 +1213,7 @@ impl<'t> Kernel<'t> {
         if req != 0 {
             return -(Errno::EINVAL as isize);
         }
-        let mut name = [0u8; 12];
+        let mut name = [0u8; launch_name::MAX + 1];
         let mut n = 0;
         while n < name.len() {
             if !self.user_can_read(s, path.wrapping_add(n), 1) {
@@ -1225,10 +1227,14 @@ impl<'t> Kernel<'t> {
             name[n] = b[0];
             n += 1;
         }
-        if n == 0 || n == name.len() {
+        // No NUL within the longest name and its terminator.
+        if n == name.len() {
             return -(Errno::EINVAL as isize);
         }
         let name = &name[..n];
+        if !launch_name::is_valid(name) {
+            return -(Errno::EINVAL as isize);
+        }
         let topo = self.topo();
         let Some(row) = topo.tasks().iter().position(|t| t.name.as_bytes() == name) else {
             return -(Errno::EACCES as isize);

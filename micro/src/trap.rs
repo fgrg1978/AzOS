@@ -211,14 +211,7 @@ pub unsafe extern "C" fn micro_trap(frame: *mut Frame, cause: usize, tval: usize
 #[no_mangle]
 pub unsafe extern "C" fn micro_kernel_trap(cause: usize, epc: usize, tval: usize) -> ! {
     use core::fmt::Write;
-    struct Uart;
-    impl Write for Uart {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            hw::uart_write(s.as_bytes());
-            Ok(())
-        }
-    }
-    let _ = writeln!(Uart, "\n[MICRO] kernel trap: cause={:#x} epc={:#x} tval={:#x}: halting", cause, epc, tval);
+    let _ = writeln!(hw::Console, "\n[MICRO] kernel trap: cause={:#x} epc={:#x} tval={:#x}: halting", cause, epc, tval);
     loop {
         asm!("wfi");
     }
