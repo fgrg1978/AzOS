@@ -486,16 +486,16 @@ unsafe fn eas_wake_cpu(idx: usize, task: &Task, prio: u32) -> Option<usize> {
     if is_rt_priority(prio) || classes::class_of(idx) != Some(crate::sc::Class::Fair) {
         return None;
     }
-    // The model names at most 32 CPUs.
-    let online = NUM_ONLINE_CPUS.load(Ordering::Acquire).min(MAX_CPUS).min(ncpu()).min(32);
+    // The model names at most 64 CPUs.
+    let online = NUM_ONLINE_CPUS.load(Ordering::Acquire).min(MAX_CPUS).min(ncpu()).min(64);
     if online < 2 {
         return None;
     }
     let isolated = fairq::isolated_cpus();
-    let mut candidates = 0u32;
+    let mut candidates = 0u64;
     for c in 0..online {
         if isolated >> c & 1 == 0 && !fairq::rt_cpu(c) {
-            candidates |= 1 << c;
+            candidates |= 1u64 << c;
         }
     }
     let prev = (task.context.tp as usize).min(ncpu() - 1);

@@ -1003,7 +1003,7 @@ unsafe fn misfit_look(cpu: usize, cur: usize) -> bool {
         return false;
     };
     #[cfg(feature = "energy")]
-    let Some(to) = crate::energy::misfit_verdict(cur, cpu, to, eligible as u32) else {
+    let Some(to) = crate::energy::misfit_verdict(cur, cpu, to, eligible) else {
         return false;
     };
     MISFIT[cpu].to.store((cur as u64 + 1) << 32 | (to as u64 + 1), Relaxed);

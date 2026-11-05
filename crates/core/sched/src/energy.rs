@@ -323,7 +323,7 @@ pub fn eas_active() -> bool {
 
 /// The CPUs of the domains the QoS class of the task in slot `idx` is mapped
 /// to (`Policy::set_qos_domains`); every CPU until a mapping is set.
-fn qos_cpus(idx: usize) -> u32 {
+fn qos_cpus(idx: usize) -> u64 {
     let class = crate::classes::sc_of(idx).map_or(0, |sc| sc.qos() as usize);
     let allowed = POLICY.qos_domains(class);
     model()
@@ -348,17 +348,17 @@ fn cpu_capacity(cpu: usize) -> Option<u16> {
 
 /// [`azos_energy::model::misfit_policy`] for the task in slot `idx` running on
 /// `cpu`, with `to` the bigger idle CPU found, among `candidates`.
-pub fn misfit_verdict(idx: usize, cpu: usize, to: usize, candidates: u32) -> Option<usize> {
+pub fn misfit_verdict(idx: usize, cpu: usize, to: usize, candidates: u64) -> Option<usize> {
     let eas = (azos_limits::SCHED_EAS && eas_active()).then(|| eas_place(idx, cpu, candidates));
     azos_energy::model::misfit_policy(mode(), eas, cpu_capacity(cpu), cpu_capacity, to)
 }
 
 /// The CPU a fair task in pool slot `idx`, last run on `prev_cpu`, should be
-/// woken on, among `candidates` (bit n = CPU n; the model names at most 32 CPUs); `None` when the energy
+/// woken on, among `candidates` (bit n = CPU n); `None` when the energy
 /// comparison does not apply (the load balancer's placement then decides):
 /// the machine is overutilised, the task fits no candidate, or the model does
 /// not describe `prev_cpu`.
-pub fn eas_place(idx: usize, prev_cpu: usize, candidates: u32) -> Option<usize> {
+pub fn eas_place(idx: usize, prev_cpu: usize, candidates: u64) -> Option<usize> {
     // The policy's steering, within the kernel's limits: no parked CPU, and
     // the domains the task's QoS class is mapped to. This is the only reader
     // of either (`find_best_cpu` and the balancer place without them).
