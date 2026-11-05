@@ -321,11 +321,16 @@ struct Idle {
 /// cargo feature `serve-spin-canary` (built with `INA_DRV_FEATURES`, by
 /// hand), its sampling loop turns without blocking while every call is still
 /// served, so the reads pass and only the entry bound fails.
-fn ring3_idle() -> Option<Idle> {
-    let tid = crate::powermon::ring3_host_tid()?;
-    let key = azos_sched::task_domain(azos_sched::idx_for_tid(tid)?);
+///
+/// `Ok(None)` when the host is not in ring 3; `Err` when its Domain is gone
+/// at the start or ends during the window (a host that died is no idle host).
+fn ring3_idle() -> Result<Option<Idle>, &'static str> {
+    const GONE: &str = "idle, the ring-3 host's Domain is gone";
+    const ENDED: &str = "idle, the ring-3 host ended during the quiet window";
+    let Some(tid) = crate::powermon::ring3_host_tid() else { return Ok(None) };
+    let key = azos_sched::task_domain(azos_sched::idx_for_tid(tid).ok_or(GONE)?);
     let entries = || azos_sched::domain::entries(key).iter().sum::<u64>();
-    let (w0, e0) = (azos_sched::domain::wakes(key)?, entries());
+    let (w0, e0) = (azos_sched::domain::wakes(key).ok_or(GONE)?, entries());
     let t0 = now();
     if canary!("ina219-idle-busy") {
         while now() < t0 + IDLE_WINDOW_MS * MS {
@@ -334,7 +339,13 @@ fn ring3_idle() -> Option<Idle> {
     } else {
         sleep_ms(IDLE_WINDOW_MS);
     }
-    let (w1, e1) = (azos_sched::domain::wakes(key)?, entries());
+    // Read the entries first: a Domain that ends after them still fails the
+    // liveness test below, never a count read from a reused slot.
+    let e1 = entries();
+    let w1 = azos_sched::domain::wakes(key).ok_or(ENDED)?;
+    if crate::powermon::ring3_host_tid() != Some(tid) {
+        return Err(ENDED);
+    }
     let ms = ((now() - t0) / MS).max(1);
     let rate = |d: u64| d * 1000 / ms;
     let idle = Idle {
@@ -343,12 +354,12 @@ fn ring3_idle() -> Option<Idle> {
     };
     kprintln!("[DRV1] ina219 idle over {} ms: {:?} wakes/s (bound {}), {:?} kernel entries/s (bound {})",
         ms, idle.wakes, INA_IDLE_MAX_PER_S, idle.entries, INA_IDLE_ENTRIES_MAX_PER_S);
-    Some(idle)
+    Ok(Some(idle))
 }
 
 /// The idle verdict: `Err` names the bound the host broke.
 fn idle_check() -> Result<(), &'static str> {
-    let Some(i) = ring3_idle() else { return Ok(()) };
+    let Some(i) = ring3_idle()? else { return Ok(()) };
     if i.wakes.is_some_and(|r| r > INA_IDLE_MAX_PER_S) {
         return Err("idle, the ring-3 host woke more than its bound with no call");
     }
