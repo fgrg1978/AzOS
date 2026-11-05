@@ -27,6 +27,8 @@ in `[package.metadata.azos]`, a C program in `azos.toml` (`[azos]` table):
     topology = true         # the built-in topology has a row for it whenever
                             # the volume carries it (always, but on a small board)
     default  = "y"          # or a Kconfig expression; default n
+    depends  = "<expr>"     # the image exists only when this holds (its
+                            # hardware class compiled in, e.g. BOARD_IO)
     start    = "<expr>"     # the Kconfig condition under which the topology
                             # STARTS the image at boot (absent: never)
 
@@ -53,7 +55,8 @@ Output, in a menu "Userspace programs":
   * the derived strings the kernel and the topology read: CONSOLE_PATH and
     CONSOLE_ARGS.
 
-`--all-on` prints `CONFIG_USERSPACE_<STEM>=y` for every image and writes nothing:
+`--all-on` prints `CONFIG_USERSPACE_<STEM>=y` for every image, and `CONFIG_<SYM>=y` for
+each one-symbol `depends`, and writes nothing:
 the lines a configuration appends to ask for every program (the gate, whose
 scenario volumes boot test programs that no product configuration enables).
 
@@ -217,6 +220,11 @@ def render(root):
                     a(f'    bool "{img} (userspace/{cls}/{d})" if HWCLASS_EMBEDDED')
                 else:
                     a(f'    bool "{img} (userspace/{cls}/{d})"')
+                dep = meta.get("depends")
+                if dep is not None:
+                    if not (isinstance(dep, str) and dep.strip()):
+                        raise GenError(f"userspace/{cls}/{d}: depends must be a Kconfig expression")
+                    a(f"    depends on {dep}")
                 dflt = meta.get("default")
                 start = meta.get("start")
                 if start is not None and not (isinstance(start, str) and start.strip()):
@@ -357,9 +365,15 @@ def main(argv):
             return 2
     if all_on:
         try:
-            for _, _, images, _, _ in scan(root):
+            deps = set()
+            for _, _, images, meta, _ in scan(root):
                 for img in images:
                     print(f"CONFIG_USERSPACE_{stem_of(img)}=y")
+                dep = meta.get("depends")
+                if isinstance(dep, str) and re.fullmatch(r"[A-Z0-9_]+", dep.strip()):
+                    deps.add(dep.strip())
+            for dep in sorted(deps):
+                print(f"CONFIG_{dep}=y")
         except (GenError, OSError) as e:
             sys.stderr.write(f"gen_userspace_kconfig.py: {e}\n")
             return 1

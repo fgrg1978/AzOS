@@ -35,10 +35,12 @@ import azos_tools  # noqa: E402
 
 REPO = azos_tools.ROOT
 BOARD_DEFAULT = {
-    "BUZZDRV", "GPIODRV", "INADRV", "BRAINCLI", "FLIGHT", "BEHAVIOR", "CONFIG", "OTA",
+    "GPIODRV", "BRAINCLI", "FLIGHT", "BEHAVIOR", "CONFIG", "OTA",
     "MLSRV", "NAMESD", "POWER", "REFLEX", "SH", "TERMD", "TOOLBOX", "TRACECTL", "DECISD", "LOGD", "WHY", "PKGD", "PKG", "RPCSRV",
     "COMPMGR", "SSHD", "AUDIOD",
 }
+# BUZZDRV, INADRV: their hardware is board I/O (`depends = "BOARD_IO"`), which
+# this preset leaves out.
 # AUDIOD: the audio server's row is in the topology where Kconfig AUDIOD is y
 # (needs DRV_VIRTIO_SND; n on embedded, robot and industrial), and its image
 # default is that symbol (`default = "AUDIOD"` in its metadata).
@@ -213,8 +215,9 @@ def main():
                            capture_output=True, text=True)
         lines = r.stdout.split()
         check(r.returncode == 0 and "CONFIG_USERSPACE_SH=y" in lines and "CONFIG_USERSPACE_HELLO=y" in lines
-              and all(re.fullmatch(r"CONFIG_USERSPACE_[A-Z0-9_]+=y", ln) for ln in lines),
-              "--all-on: CONFIG_USERSPACE_<STEM>=y for every image, nothing else")
+              and all(re.fullmatch(r"CONFIG_USERSPACE_[A-Z0-9_]+=y", ln) or ln == "CONFIG_BOARD_IO=y" for ln in lines)
+              and "CONFIG_BOARD_IO=y" in lines,
+              "--all-on: CONFIG_USERSPACE_<STEM>=y for every image and the symbols they depend on, nothing else")
         rc, log, v = defconfig(tmp, "generic-sbc-riscv64-dev+qemu+linux+gui", cfg)
         with open(cfg, "a") as f:
             f.write(r.stdout)
