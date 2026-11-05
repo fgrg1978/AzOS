@@ -264,6 +264,11 @@ fn vault_kdf(slot: usize, salt: &[u8], info: &[u8], out: &mut [u8; KEY_LEN]) -> 
     true
 }
 
+/// The split image's line about the keystore: no root's bytes are the kernel's.
+pub(crate) fn report_roots(in_kernel: usize) {
+    kprintln!("[BOOT] EL2:        keystore roots held by the kernel: {}", in_kernel);
+}
+
 /// From here every keystore root goes to the monitor the moment it is
 /// installed, and key derivation asks the monitor. Before the first root.
 pub(crate) fn install_vault() {

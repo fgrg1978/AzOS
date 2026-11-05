@@ -18,7 +18,7 @@
 //! for it; the line this step prints says which have one.
 
 use azos_crypto::keystore::Backend;
-use azos_syscall::keys::{has_root, install_volume_root, VolumeRoot};
+use azos_syscall::keys::{has_root, install_volume_root, root_vaulted, VolumeRoot};
 
 use crate::kprintln;
 
@@ -37,8 +37,14 @@ pub(crate) fn install_keystore_roots() {
             "[KEYS] {} cannot be read or made (no file system, a file that is not 32 bytes, or an \
              unseeded entropy pool): the volume backend has no root", azos_limits::KEYSTORE_VOLUME_ROOT_PATH),
     }
-    let yn = |b: Backend| if has_root(b) { "yes" } else { "no" };
+    let yn = |b: Backend| match (has_root(b), root_vaulted(b)) {
+        (false, _) => "no",
+        (true, false) => "kernel",
+        (true, true) => "vaulted",
+    };
     kprintln!("[KEYS] roots: boot {}, tpm_nv {}, volume {}; {} handles, {} per owner",
               yn(Backend::Boot), yn(Backend::TpmNv), yn(Backend::Volume),
               azos_limits::KEYSTORE_KEYS, azos_limits::KEYSTORE_KEYS_PER_OWNER);
+    #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
+    crate::entry::aarch64::ext::hyp_monitor::report_roots(azos_syscall::keys::roots_in_kernel());
 }

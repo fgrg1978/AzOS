@@ -1141,6 +1141,8 @@ fn a_vaulted_root_derives_the_key_the_bytes_would_and_the_kernel_holds_none() {
     assert_eq!(crate::keys::__root_bytes_in_kernel(ks::Backend::Volume), None, "the kernel holds no byte of it");
     assert_eq!(VAULT.lock().unwrap()[2], Some(root));
     assert!(crate::keys::has_root(ks::Backend::Volume));
+    assert!(crate::keys::root_vaulted(ks::Backend::Volume));
+    assert_eq!(crate::keys::roots_in_kernel(), 0, "the boot's line about the roots");
 
     let h = Holder::rw(7, IMAGE_X, 44);
     let got = key_of(&h, wire::backend::VOLUME);
@@ -1211,5 +1213,7 @@ fn without_a_vault_the_root_stays_where_it_was() {
     reset();
     assert!(crate::keys::install_root(ks::Backend::Volume, &[0x22; 32]));
     assert_eq!(crate::keys::__root_bytes_in_kernel(ks::Backend::Volume), Some([0x22; 32]));
+    assert!(!crate::keys::root_vaulted(ks::Backend::Volume));
+    assert_eq!(crate::keys::roots_in_kernel(), 1);
     tidy();
 }

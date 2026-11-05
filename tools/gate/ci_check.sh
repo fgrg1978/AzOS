@@ -3919,7 +3919,7 @@ par "hyp: R9 TTBR0 cost canary (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost canary
 # R14: the split image is a regression guard — the ordinary boot subset still
 # passes under the monitor (same verdicts as the EL2 rows).
 par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \
-    "AzOS Rust kernel booted! (aarch64)" "[SCHED] Starting scheduler on boot CPU" "[SMP] hart 1 online"
+    "[BOOT] EL2:        keystore roots held by the kernel: 0" "AzOS Rust kernel booted! (aarch64)" "[SCHED] Starting scheduler on boot CPU" "[SMP] hart 1 online"
 
 # F3: a split image halts, naming the reason, instead of letting a secondary
 # bypass the monitor. QEMU `virt` has neither a spin table nor a missing

@@ -216,6 +216,16 @@ pub fn install_root(backend: Backend, root: &[u8; ks::KEY_LEN]) -> bool {
     put_root(i, root, true).is_some()
 }
 
+/// Is the root of `backend` in the monitor's keeping (the kernel holds no byte of it)?
+pub fn root_vaulted(backend: Backend) -> bool {
+    backend.root_index().is_some_and(|i| matches!(ROOTS.lock()[i], Some(Slot::Vaulted)))
+}
+
+/// How many roots the kernel holds the bytes of.
+pub fn roots_in_kernel() -> usize {
+    ROOTS.lock().iter().filter(|r| matches!(r, Some(Slot::Mem(_)))).count()
+}
+
 /// Is the root of `backend` installed (or, for the board seed, readable)?
 pub fn has_root(backend: Backend) -> bool {
     root_for(backend).is_some()
