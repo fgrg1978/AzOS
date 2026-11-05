@@ -33,8 +33,9 @@
 //! Robot-specific parts stay in `crates/domains/robot`: the motor gate and its
 //! per-robot-type envelope (`azos_safety_core::actuation`,
 //! `azos_behavior::safety::motor_envelope`), the control loop, flight.
-//! They plug in through [`hooks`] tables registered at boot, so this crate
-//! depends on no domain crate.
+//! Their stop work is the robot extension's effect provider ([`providers`],
+//! the contract in `azos_ext_api`), installed at boot, so this crate depends
+//! on no extension crate.
 
 pub mod boot_latch;
 #[cfg(feature = "effect-gate")]
@@ -45,29 +46,30 @@ mod envelope;
 pub use envelope::delete_gate;
 pub mod estop;
 pub mod gate;
-pub mod hooks;
 pub mod kill_switch;
+pub mod kind;
 pub mod logger;
+pub mod providers;
 #[cfg(feature = "effect-gate")]
 pub mod safe_state;
 pub mod sys_wdt;
 pub mod watchdog;
 
-/// Does the kernel hold wheel `wheel` in its safe state after a missed
-/// deadline (innovation B2: `safe_state::held` of the motor kind)? Only a
-/// warranted release lifts it, and no writer of the wheel may move it
-/// meanwhile, the kernel's own control loop (`azos_safety_core::rt_motor`)
-/// included: it asks this for each wheel every tick. Always `false` without
-/// Kconfig `EFFECT_WRITE_AHEAD`, which holds nothing.
+/// Does the kernel hold `subject` of effect kind `kind` in its safe state
+/// after a missed deadline (innovation B2: `safe_state::held`)? Only a
+/// warranted release lifts it, and no writer of the device may move it
+/// meanwhile, a provider's own control loop included (the robot's
+/// `azos_safety_core::rt_motor` asks for each wheel every tick). Always
+/// `false` without Kconfig `EFFECT_WRITE_AHEAD`, which holds nothing.
 #[inline]
-pub fn motor_wheel_held(wheel: u32) -> bool {
+pub fn held(kind: u8, subject: u32) -> bool {
     #[cfg(feature = "effect-gate")]
     {
-        u16::try_from(wheel).is_ok_and(|w| safe_state::held(effect_gate::KIND_MOTOR, w))
+        u16::try_from(subject).is_ok_and(|s| safe_state::held(kind, s))
     }
     #[cfg(not(feature = "effect-gate"))]
     {
-        let _ = wheel;
+        let _ = (kind, subject);
         false
     }
 }

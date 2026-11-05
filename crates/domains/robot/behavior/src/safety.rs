@@ -174,7 +174,8 @@ pub use crate::estop::*;
 /// Work the latch must do for the robot domain whenever it arms: the cached
 /// remote action becomes the stop. `estop_activate` used to do this inline;
 /// the latch now lives in `azos_actuation`, which cannot name
-/// `crate::remote`, so it runs this through `register_on_latch_hook`.
+/// `crate::remote`, so it runs this as the robot provider's latch work
+/// (`azos_ext_api::Provider::on_latch`).
 /// Registered once at boot by `azos_safety_core::actuation::install`,
 /// before anything can latch on a running system.
 pub fn on_estop_latched() {

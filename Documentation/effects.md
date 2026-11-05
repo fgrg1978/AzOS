@@ -82,15 +82,16 @@ shared by every domain with an actuator.
   and the stop.
 - `gate::latch_and_stop` is the sequence the e-stop sources end in (ring 3,
   the brain link's `PKT_ESTOP`, the RC link, the kill switch and the system
-  watchdog): it latches, then runs the stop hooks the domains registered
-  (`register_stop_hook`) in registration order. A geofence breach and the boot's
+  watchdog): it latches, then runs the stop of every effect provider the
+  extensions installed (`providers::install`, the contract in
+  `crates/core/ext-api`), in installation order. A geofence breach and the boot's
   lost-config-authority latch call `estop_activate` alone; the clamp stops the
-  wheels at their next write. There is a second table for the
-  panic path (`register_panic_stop_hook`), which is lock-free so it can run from
-  the panic handler and the timer interrupt.
-- `gate::gate_installed` is false until `install` has run and while the domain's
-  own readiness check says so. The loader and the driver supervisor refuse to
-  start ring-3 images while it is false.
+  wheels at their next write. Each provider also has a lock-free stop for the
+  panic path (`gate::run_panic_stops`), which the panic handler and the timer
+  interrupt run.
+- `gate::gate_installed` is false until `install` has run and while any
+  provider's readiness check says its own gate is not in place. The loader and
+  the driver supervisor refuse to start ring-3 images while it is false.
 - Releasing the latch needs the operator's signed release proof
   (`estop::verify_operator_release`): an Ed25519 signature over a message that
   includes a nonce, which must be strictly newer than the last accepted one. The
@@ -117,9 +118,10 @@ shared by every domain with an actuator.
 
 Source: `crates/core/actuation/src/effect_gate.rs` (`Effect`, `Class`,
 `KIND_*`, `record`, `issue`), `crates/core/actuation/src/gate.rs`
-(`latch_and_stop`, `register_stop_hook`, `gate_installed`, `install`),
+(`latch_and_stop`, `run_panic_stops`, `gate_installed`, `install`),
 `crates/core/actuation/src/estop.rs` (`estop_activate`,
-`verify_operator_release`), `crates/core/actuation/src/hooks.rs`,
+`verify_operator_release`), `crates/core/actuation/src/providers.rs`,
+`crates/core/ext-api/src/lib.rs`,
 `crates/core/syscall/src/motor_host.rs`, `crates/core/syscall/src/ioring_ops.rs`
 (`motor_wheel`), `crates/drivers/soc/src/effect.rs`,
 `config/subsys/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).

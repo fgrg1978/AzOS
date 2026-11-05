@@ -48,6 +48,7 @@ azos_sched    = { workspace = true }
 azos_ipc      = { workspace = true }
 azos_syscall  = { workspace = true }
 azos_actuation = { workspace = true }
+azos_ext_api = { workspace = true }
 azos_behavior = { workspace = true }
 azos_robot    = { workspace = true }
 azos_config   = { workspace = true }

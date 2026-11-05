@@ -20,6 +20,7 @@ dependencies = [
  "azos_decision",
  "azos_degrade_policy",
  "azos_devif",
+ "azos_ext_api",
  "azos_rings",
  "beh_test_drivers",
  "beh_test_ipc",
@@ -63,6 +64,10 @@ dependencies = [
  "azos_idl",
  "azos_rings",
 ]
+
+[[package]]
+name = "azos_ext_api"
+version = "0.1.0"
 
 [[package]]
 name = "azos_idl"

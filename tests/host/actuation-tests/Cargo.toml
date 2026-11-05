@@ -32,6 +32,7 @@ estop-unrecorded-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
+azos_ext_api = { path = "../../../crates/core/ext-api" }
 # The same host stand-ins behavior-tests pulls `logger.rs` in with: the clock
 # and kprintln, the generated limits (a 128-record ring), the sync primitives.
 beh_test_drivers = { path = "../behavior-tests/shims/drivers" }

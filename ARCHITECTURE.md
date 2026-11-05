@@ -343,11 +343,12 @@ Where the public surfaces are defined: `azos_abi` (kernel and ring-3 boundary),
 navigation, flight control, telemetry and the motor safety envelope; it also
 links the AHRS and flight math (`crates/lib/control/`) and the ESC and RC
 drivers (`crates/drivers/rc-esc`). It is linked only when the image selects `USE_ROBOT` (kernel feature
-`use-robot`) and plugs into the shared actuation authority through
-`azos_actuation::hooks`. Its ring-3 pieces are
+`use-robot`) and plugs into the shared actuation authority as an extension:
+its effect provider (`azos_safety_core::actuation::ROBOT`, the contract in
+`crates/core/ext-api`), installed at boot through `azos_actuation::providers`. Its ring-3 pieces are
 `userspace/services/{brain_client,reflex,infsrv}`.
 
-Source: `crates/domains/robot/`, `crates/lib/control/`, `crates/drivers/rc-esc/`, `config/axes/Kconfig.use`, `crates/core/actuation/src/hooks.rs`.
+Source: `crates/domains/robot/`, `crates/lib/control/`, `crates/drivers/rc-esc/`, `config/axes/Kconfig.use`, `crates/core/actuation/src/providers.rs`, `crates/core/ext-api/`.
 
 ## AzOS-micro
 

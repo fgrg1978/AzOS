@@ -42,6 +42,7 @@ estop-unrecorded-canary = []
 [dependencies]
 azos_arch     = { workspace = true }
 azos_common   = { workspace = true }
+azos_ext_api  = { workspace = true }
 azos_sync     = { workspace = true }
 azos_drv_sys  = { workspace = true }
 azos_drv_gpio = { workspace = true }

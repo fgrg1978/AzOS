@@ -12,35 +12,12 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use azos_drv_sys::kprintln;
 
-use crate::hooks::HookTable;
-
-/// Stop work run by [`latch_and_stop`] after the latch, in registration order.
-static STOP_HOOKS: HookTable = HookTable::new();
-/// Lock-free stop work run on the panic path ([`run_panic_stop_hooks`]).
-static PANIC_STOP_HOOKS: HookTable = HookTable::new();
-
-/// Register the work that stops a domain's actuators. [`latch_and_stop`] runs
-/// it after the latch is set, so from its first instruction every write from
-/// every path is already clamped. Panics when the table is full.
-pub fn register_stop_hook(hook: fn()) {
-    STOP_HOOKS.register(hook);
-}
-
-/// Register a domain's panic-path stop: lock-free, callable from the panic
-/// handler and the timer interrupt (`watchdog::halt_if_panicked`).
-pub fn register_panic_stop_hook(hook: fn()) {
-    PANIC_STOP_HOOKS.register(hook);
-}
-
-/// Run every registered panic-path stop. Lock-free.
+/// Run every effect provider's panic-path stop (`crate::providers`).
+/// Lock-free: the panic handler and the timer interrupt
+/// (`watchdog::halt_if_panicked`) call it.
 #[inline]
-pub fn run_panic_stop_hooks() {
-    PANIC_STOP_HOOKS.run();
-}
-
-/// How many stop hooks are registered (diagnostic; the boot banner prints it).
-pub fn stop_hooks_registered() -> usize {
-    STOP_HOOKS.len()
+pub fn run_panic_stops() {
+    crate::providers::panic_stop_all();
 }
 
 /// Latch the envelope and stop everything that can move. **The one copy.**
@@ -74,10 +51,10 @@ pub fn stop_hooks_registered() -> usize {
 /// additionally read `estop_cleared_at()` *before* calling this, because
 /// arming spends that stamp.
 ///
-/// The latch lives here; the stop work belongs to the domain that owns the
-/// actuators and is registered with [`register_stop_hook`] (the robot domain
-/// registers motors 0 and 1, the ESC and the payload, in that order). An
-/// image with no actuator domain latches and stops nothing else.
+/// The latch lives here; the stop work belongs to the extension that owns the
+/// actuators and is its effect provider (`crate::providers`; the robot's stops
+/// motors 0 and 1, the ESC and the payload, in that order). An image with no
+/// provider latches and stops nothing else.
 pub fn latch_and_stop() {
     crate::estop::estop_activate();
     // Pairs with the fence of a motion command that read no latch before its
@@ -85,38 +62,20 @@ pub fn latch_and_stop() {
     // after them and writes the coast again, or the stops below land after
     // its writes.
     core::sync::atomic::fence(Ordering::SeqCst);
-    STOP_HOOKS.run();
+    crate::providers::stop_all();
 }
 
 /// Set by [`install`]; read by [`gate_installed`].
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
-azos_common::ro_hook! {
-    /// The readiness check a domain adds to [`gate_installed`] (the robot domain:
-    /// its motor gate is installed). Unset until one registers. A hook, not a
-    /// lock: `gate_installed` is asked from the exit path's respawn
-    /// (`kernel/src/drv_supervisor.rs`), and the motor-gate query it replaces
-    /// was a plain atomic load.
-    static DOMAIN_GATE_CHECK: fn() -> bool;
-}
-
-/// Register the domain's own readiness check for [`gate_installed`].
-pub fn set_domain_gate_check(check: fn() -> bool) {
-    DOMAIN_GATE_CHECK.set(check);
-}
-
-/// Is the actuation gate in place? False until [`install`] has run, and,
-/// once a domain registered a check, false while that check says so. The
-/// loader and the driver supervisor refuse to start ring-3 images while this
-/// is false: fail closed, as the motor gate itself does.
+/// Is the actuation gate in place? False until [`install`] has run, and
+/// while any effect provider says its own gate is not
+/// (`azos_ext_api::Provider::ready`). The loader and the driver supervisor
+/// refuse to start ring-3 images while this is false: fail closed, as the
+/// motor gate itself does. Lock-free: the exit path's respawn
+/// (`kernel/src/drv_supervisor.rs`) asks it.
 pub fn gate_installed() -> bool {
-    if !INSTALLED.load(Ordering::Acquire) {
-        return false;
-    }
-    match DOMAIN_GATE_CHECK.get() {
-        Some(check) => check(),
-        None => true,
-    }
+    INSTALLED.load(Ordering::Acquire) && crate::providers::all_ready()
 }
 
 /// Install the seams every domain needs, in the order the kernel always

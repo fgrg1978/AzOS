@@ -61,7 +61,8 @@ unavoidable is the gate inside the motor layer:
   driving them at whatever was asked. The loader, the boot launcher and the
   driver supervisor refuse to start ring-3 code while
   `azos_actuation::gate::gate_installed` is false, which folds in
-  `motor_gate_installed` through `set_domain_gate_check`.
+  `motor_gate_installed` as the robot provider's `ready` check
+  (`azos_safety_core::actuation::ROBOT`).
 * The raw device interfaces cannot reach a wheel past the gate: a PWM channel
   or GPIO pin bound to a motor is refused by the kernel-hosted PWM and GPIO
   interfaces (`crates/core/syscall/src/devices.rs`) and the I/O ring

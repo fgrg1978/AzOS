@@ -115,7 +115,7 @@ fn admit_motor_record(id: u32, dir_code: u8, speed: u32, now: u64, window: u64) 
 /// The robot's half of the one latch-and-stop sequence
 /// (`azos_actuation::gate::latch_and_stop`, which holds the reasoning):
 /// motors 0 and 1, the ESC, then the payload, after the latch is set.
-/// Registered by [`install`].
+/// The robot provider's stop ([`ROBOT`]).
 ///
 /// **Motors 0 and 1 are every motor that exists**: `robot_init` calls
 /// `motor_init` exactly twice, and `motor_stop` on an uninitialised id
@@ -144,6 +144,22 @@ fn stop_robot_actuators_panic() {
 /// resolves for robot callers.
 pub use azos_actuation::gate::latch_and_stop;
 
+/// The robot extension, as the actuation core sees it: one effect provider
+/// for the wheels, the ESC and the payload. The latch work makes the brain's
+/// cached remote action the stop; ring-3 images start only once the motor
+/// gate is in place (the loader asks `azos_actuation::gate::gate_installed`).
+pub static ROBOT: azos_ext_api::Manifest = azos_ext_api::Manifest {
+    name: "robot",
+    api_level: azos_ext_api::API_LEVEL,
+    providers: &[azos_ext_api::Provider {
+        name: "robot actuators",
+        stop: stop_robot_actuators,
+        panic_stop: stop_robot_actuators_panic,
+        on_latch: Some(azos_behavior::safety::on_estop_latched),
+        ready: Some(azos_robot::motor::motor_gate_installed),
+    }],
+};
+
 /// Install the robot's seams, in the order the kernel always installed them.
 /// Called once from `kernel_main`, after the file-ops seam and right before
 /// `azos_actuation::gate::install`.
@@ -152,12 +168,7 @@ pub fn install() {
     // here on every latch (brain link, ring 3, kill switch, sys-wdt) stops
     // the wheels, the ESC and the payload, and makes the cached remote
     // action the stop.
-    azos_actuation::estop::register_on_latch_hook(azos_behavior::safety::on_estop_latched);
-    azos_actuation::gate::register_stop_hook(stop_robot_actuators);
-    azos_actuation::gate::register_panic_stop_hook(stop_robot_actuators_panic);
-    // Ring-3 images start only once the motor gate is in place (the loader
-    // asks `azos_actuation::gate::gate_installed`).
-    azos_actuation::gate::set_domain_gate_check(azos_robot::motor::motor_gate_installed);
+    azos_actuation::providers::install(&ROBOT);
 
     // `#[allow(dead_code)]`: unused only under `gate-skip-smoke`, which
     // skips the one call below that would otherwise use it.

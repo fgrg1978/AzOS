@@ -387,6 +387,7 @@ members = [
     "crates/core/abi",
     # The Linux personality's pure half (numbers, layouts).
     "crates/core/image",
+    "crates/core/ext-api",
     "crates/core/linux-abi",
     "crates/core/topology",
     "crates/core/common",
@@ -535,6 +536,7 @@ static_assertions = "1.1"
 # Internal crates
 azos_abi = { path = "crates/core/abi" }
 azos_image = { path = "crates/core/image" }
+azos_ext_api = { path = "crates/core/ext-api" }
 azos_linux_abi = { path = "crates/core/linux-abi" }
 azos_common = { path = "crates/core/common" }
 azos_arch = { path = "arch/facade" }

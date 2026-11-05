@@ -354,7 +354,7 @@ fn freeze() {
         azos_arch::ARCH.disable_all()
     };
     azos_common::set_panicked();
-    azos_actuation::gate::run_panic_stop_hooks();
+    azos_actuation::gate::run_panic_stops();
 }
 
 /// A panic inside this handler, or inside a `[FATAL]` halt's report: the

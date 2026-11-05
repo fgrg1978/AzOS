@@ -9,9 +9,9 @@
 //! replay of the flight recorder. `azos_behavior::safety` re-exports this
 //! module, so every robot caller still reaches it under its old path.
 //!
-//! What stays robot-specific is registered here at boot, not called by name:
-//! [`register_on_latch_hook`] lets the robot domain make the brain's cached
-//! remote action the stop when the latch arms (see [`estop_activate`]).
+//! What stays robot-specific is installed at boot, not called by name: the
+//! robot extension's effect provider (`crate::providers`) makes the brain's
+//! cached remote action the stop when the latch arms (see [`estop_activate`]).
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use azos_sync::SpinLock;
@@ -21,17 +21,6 @@ use crate::logger::OPERATOR_KEY_FP_BYTES;
 // Remote emergency stop (set by PKT_ESTOP, cleared by MODE_CMD)
 // ---------------------------------------------------------------------------
 static ESTOP_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Work that must happen whenever the latch arms, registered by the domain
-/// that owns it. Run by [`estop_activate`] after the latch store.
-static ON_LATCH_HOOKS: crate::hooks::HookTable = crate::hooks::HookTable::new();
-
-/// Register work [`estop_activate`] runs every time the latch arms, after the
-/// latch is set. Called once at boot by each domain that needs one; panics if
-/// the table is full (a boot that cannot register its stop work must not run).
-pub fn register_on_latch_hook(hook: fn()) {
-    ON_LATCH_HOOKS.register(hook);
-}
 
 // REQ-008
 /// Activate remote emergency stop.
@@ -60,11 +49,11 @@ pub fn estop_activate() {
     // already flush the logger and hold the console lock. Nothing calls this
     // from the panic handler or an ISR.
     //
-    // The cached action belongs to the robot domain, so it is replaced by the
-    // hook that domain registers (`azos_behavior::safety::
-    // install_estop_hooks`), run here, inside the one function every entry
-    // point calls. An image without the robot domain has no cached action.
-    crate::hooks::run(&ON_LATCH_HOOKS);
+    // The cached action belongs to the robot extension, so it is replaced by
+    // its provider's latch work (`azos_ext_api::Provider::on_latch`), run
+    // here, inside the one function every entry point calls. An image without
+    // the robot extension has no cached action.
+    crate::providers::on_latch_all();
     ESTOP_REFUSED_CLEARS.store(0, Ordering::Relaxed);
     // And the operator's clear is spent. The stamp exists so a ring-3 stop can
     // say it undid a clear that was still in effect (`ring3_estop_record`);

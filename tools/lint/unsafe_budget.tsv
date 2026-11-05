@@ -28,6 +28,7 @@ crates/core/crypto	16	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	61
 crates/core/devif	0	0	0	0	1	0
 crates/core/energy	0	0	0	0	1	0
+crates/core/ext-api	0	0	0	0	1	0
 crates/core/hv	3	1	0	0	0	5
 crates/core/hyp-api	0	0	0	0	1	0
 crates/core/hyp-mon	34	3	1	0	0	-

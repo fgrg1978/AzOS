@@ -1,0 +1,9 @@
+[package]
+name = "azos_ext_api"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The contract an extension implements against the base kernel: its manifest and API level, and the effect providers it registers with the actuation core."
+
+[dependencies]

@@ -14,6 +14,7 @@ dependencies = [
  "azos_crypto",
  "azos_decision",
  "azos_degrade_policy",
+ "azos_ext_api",
  "beh_test_drivers",
  "beh_test_limits",
  "cap_test_sync",
@@ -43,6 +44,10 @@ dependencies = [
 
 [[package]]
 name = "azos_degrade_policy"
+version = "0.1.0"
+
+[[package]]
+name = "azos_ext_api"
 version = "0.1.0"
 
 [[package]]

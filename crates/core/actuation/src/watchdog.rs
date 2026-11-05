@@ -78,10 +78,10 @@ pub fn halt_if_panicked() {
     // safe state and halt without kicking the WDT or scheduling, so
     // the board resets cleanly instead of limping on in a bad state.
     if azos_common::is_panicked() {
-        // The actuators belong to a domain (the robot's wheels and ESC):
-        // it registered their lock-free stop with `gate::
-        // register_panic_stop_hook` at boot. Run here, in the same order.
-        crate::gate::run_panic_stop_hooks();
+        // The actuators belong to an extension (the robot's wheels and ESC):
+        // its effect provider's lock-free stop, installed at boot. Run here,
+        // in the same order.
+        crate::gate::run_panic_stops();
         // The panicking CPU waits for this bit before it prints (Kconfig
         // PANIC_QUIESCE): from here on this CPU writes nothing.
         // percpu-hint: the watchdog tick runs in the timer interrupt: interrupts off

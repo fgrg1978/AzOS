@@ -187,14 +187,14 @@ mod safety;
 // The e-stop latch, its release authority and safe mode moved out of
 // `safety.rs` into `crates/core/actuation/src/estop.rs` (wave 11, DOMAIN);
 // `safety.rs` re-exports `crate::estop::*`, so the kernel and this crate both
-// reach the latch through the same file. `hooks` is the table the latch
-// runs the robot's on-latch work through.
+// reach the latch through the same file. `providers` is the table the latch
+// runs the robot provider's latch work through.
 #[allow(dead_code)]
 #[path = "../../../../crates/core/actuation/src/estop.rs"]
 mod estop;
 #[allow(dead_code)]
-#[path = "../../../../crates/core/actuation/src/hooks.rs"]
-mod hooks;
+#[path = "../../../../crates/core/actuation/src/providers.rs"]
+mod providers;
 
 // RED/GREEN tests for the 2026-09-25 owner decision (the brain may REQUEST an
 // e-stop release, it may never CLEAR the latch). A NEW file, not folded into
@@ -3268,10 +3268,21 @@ mod estop_replaces_the_standing_action {
         // the SAME lock `geofence`/`mode_reset`/`ring3_relatch_is_attributed`
         // already share for exactly this state.
         let _g = super::envelope::serial();
-        // The robot domain's on-latch work, registered as
-        // `azos_safety_core::actuation::install` registers it at boot
+        // The robot provider's latch work, installed as
+        // `azos_safety_core::actuation::install` installs it at boot
         // (wave 11: the latch moved to `azos_actuation`, which runs it).
-        super::estop::register_on_latch_hook(super::safety::on_estop_latched);
+        static ROBOT: azos_ext_api::Manifest = azos_ext_api::Manifest {
+            name: "robot",
+            api_level: azos_ext_api::API_LEVEL,
+            providers: &[azos_ext_api::Provider {
+                name: "robot actuators",
+                stop: || {},
+                panic_stop: || {},
+                on_latch: Some(super::safety::on_estop_latched),
+                ready: None,
+            }],
+        };
+        super::providers::install(&ROBOT);
         set_last_action(driving_at_full_speed(1_000));
 
         estop_activate();

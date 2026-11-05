@@ -42,12 +42,12 @@ fn control_apply_wheel(id: u32, dir: azos_robot::MotorDir, speed_pct: u32) {
 
 /// What the control loop writes to wheel `id` for the command it computed:
 /// that command, or a coast at duty 0 while the kernel holds the wheel in its
-/// safe state after a missed deadline (`azos_actuation::motor_wheel_held`).
+/// safe state after a missed deadline (`azos_actuation::held`).
 /// The hold outlasts every stop and lifts only with the operator's warranted
 /// release; a loop that rewrote `CH_MOTOR_CMD` onto a held wheel every tick
 /// would undo the kernel's safe-state drive within one tick.
 pub fn control_command(id: u32, dir: azos_robot::MotorDir, speed_pct: u32) -> (azos_robot::MotorDir, u32) {
-    if azos_actuation::motor_wheel_held(id) {
+    if azos_actuation::held(azos_actuation::kind::KIND_MOTOR, id) {
         (azos_robot::MotorDir::Coast, 0)
     } else {
         (dir, speed_pct)
@@ -218,10 +218,10 @@ pub fn rt_motor_task(_: usize) {
                 // (`control_command`): its encoder ticks and its PID target
                 // stay at 0, so the loop winds up no error to release in a
                 // burst when the operator lifts the hold.
-                if azos_actuation::motor_wheel_held(MOTOR_ID_LEFT) {
+                if azos_actuation::held(azos_actuation::kind::KIND_MOTOR, MOTOR_ID_LEFT) {
                     cmd.speed_l = 0;
                 }
-                if azos_actuation::motor_wheel_held(MOTOR_ID_RIGHT) {
+                if azos_actuation::held(azos_actuation::kind::KIND_MOTOR, MOTOR_ID_RIGHT) {
                     cmd.speed_r = 0;
                 }
 

@@ -24,6 +24,7 @@ dependencies = [
  "azos_decision",
  "azos_drv_gpio",
  "azos_drv_sys",
+ "azos_ext_api",
  "azos_ipc",
  "azos_limits",
  "azos_net",
@@ -450,6 +451,10 @@ dependencies = [
 
 [[package]]
 name = "azos_ethercat"
+version = "0.1.0"
+
+[[package]]
+name = "azos_ext_api"
 version = "0.1.0"
 
 [[package]]
@@ -906,6 +911,7 @@ dependencies = [
  "azos_config",
  "azos_drv_actuator",
  "azos_drv_sys",
+ "azos_ext_api",
  "azos_flight",
  "azos_ipc",
  "azos_limits",
