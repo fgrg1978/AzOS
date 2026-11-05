@@ -1402,6 +1402,26 @@ mod deny_receipts {
         assert_eq!(held + BURST + 1, calls + 1, "the reports and the records account for every call");
     }
 
+    /// A loop of refused execs is limited per Domain like a flood of denials:
+    /// the burst is durable, an admitted exec is never durable, and the
+    /// refusals the limit held back are reported.
+    ///
+    /// **Canary.** Leave `Rule::ExecGrant` out of `caller_paced`: every
+    /// refusal is durable and no report is written, red.
+    #[test]
+    fn a_flood_of_refused_execs_is_limited() {
+        let _g = scene();
+        let key = 0x7800_0020;
+        let calls = BURST * 3;
+        for i in 0..calls {
+            azos_decision::record_keyed(Rule::ExecGrant, Verdict::Refuse, 100 + i as u32 % 4, key, [0xD1, 4, 0]);
+        }
+        assert_eq!(refused_with(Rule::ExecGrant as u8) as u64, BURST, "the burst, whichever threads");
+        assert_eq!(reports(key), vec![[Rule::ExecGrant as u64, 1, 1]], "the start of the run is reported at once");
+        azos_decision::record_keyed(Rule::ExecGrant, Verdict::Admit, 100, key, [0xD1, 1, 0]);
+        assert_eq!(refused_with(Rule::ExecGrant as u8) as u64, BURST, "an admitted exec adds no durable record");
+    }
+
     /// A flood in one Domain leaves another Domain's one refusal durable, and
     /// the flooder's silence after it is reported by `flush_limited`.
     ///

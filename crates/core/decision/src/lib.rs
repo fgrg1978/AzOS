@@ -42,7 +42,7 @@
 //! for the log flusher instead of flushing in the caller (`logger_flush`'s
 //! rule). A `Refuse` goes to the sink, except for the rules a task can raise
 //! once per syscall ([`Rule::caller_paced`]: a capability denial, an expired
-//! deadline, a call refused at admission, a refused wait), which pass a token
+//! deadline, a call refused at admission, a refused wait, an exec refused), which pass a token
 //! bucket per (Domain, rule) first (Kconfig `DECISION_DENY_DURABLE_PER_SEC`,
 //! `DECISION_DENY_DURABLE_BURST`; the `deny` module). What the bucket drops is
 //! never silent: the first drop of a run writes a [`Rule::RefusalLimited`]
@@ -367,6 +367,10 @@ pub enum Rule {
     /// task runs on CPU 0, inside it: the one place QSBR callbacks reach a
     /// real-time CPU (`azos_sync::qsbr::callback_placement`).
     RcuCallbackCpu = 84,
+    /// A process exec (`SYS_SPAWN_EX`, the Linux `execve`) was admitted by a
+    /// launch grant on its image or on its package, or refused for the lack of
+    /// one (`azos_syscall::exec_grant`).
+    ExecGrant,
 }
 
 impl Rule {
@@ -376,7 +380,7 @@ impl Rule {
     /// reported by [`Rule::RefusalLimited`]. Every other rule's refusals are
     /// system events and are never limited.
     pub const fn caller_paced(self) -> bool {
-        matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle)
+        matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant)
     }
 }
 
@@ -1245,6 +1249,16 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["nocbs_mask", "callback_cpu", "-"],
         rejected_if_yes: "refuse a boot with no CPU outside the real-time set, or run callbacks on the last real-time CPU only while it is idle",
         rejected_if_no: "-",
+    },
+    RuleInfo {
+        // basis: 1 image grant, 2 package grant, 3 the caller's own row
+        // (admitted); 4 no grant, 5 bytes bound to no row, 6 not a Linux row,
+        // 7 no topology row (refused). site: 0 SYS_SPAWN_EX, 1 execve.
+        name: "exec-grant",
+        subject: "tid",
+        fields: ["digest_prefix", "basis", "site"],
+        rejected_if_yes: "judge the path the caller named: the grant is on the image the bytes are, or on the package that carries them",
+        rejected_if_no: "start the image: the caller holds no launch grant on it, on its package, or the bytes are bound to no row",
     },
 ];
 

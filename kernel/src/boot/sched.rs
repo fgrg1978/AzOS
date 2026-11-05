@@ -241,6 +241,9 @@ pub(crate) fn install_sched_hooks() {
     if canary!("cap-full-silent") {
         azos_ipc::cap::canary_full_silent(true);
     }
+    if canary!("exec-grant-skip") {
+        azos_syscall::exec_grant::SKIP_CHECK.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     if canary!("ipc-no-senders-wipe") {
         azos_ipc::cap::senders::canary_no_wipe();
     }

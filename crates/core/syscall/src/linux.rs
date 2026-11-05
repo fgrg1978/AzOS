@@ -2687,11 +2687,12 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
         Ok(i) => i,
         Err(e) => return Err(lx::errno_from_native(e, le::ENOENT)),
     };
+    let me = azos_sched::current_task_tid();
     let Some(profile) = azos_sched::seccomp::image_for_digest(&img.digest) else {
         let _ = crate::handlers::exec_image_is_bound_by_digest(&img.digest);
+        crate::exec_grant::record(me, crate::exec_grant::Site::Execve, crate::exec_grant::Basis::Unbound, &img.digest);
         return Err(neg(le::EACCES));
     };
-    let me = azos_sched::current_task_tid();
     let own = core::str::from_utf8(&row[..row_len as usize]).unwrap_or("?");
     let cross = profile.image.as_bytes() != &row[..row_len as usize];
     if !row_is_linux(profile.image) {
@@ -2700,17 +2701,11 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
         );
         let head = u32::from_be_bytes([img.digest[0], img.digest[1], img.digest[2], img.digest[3]]);
         crate::handlers::record_exec_refused(crate::ushell::SPAWN_REFUSED_ACTION_NO_LAUNCH, head);
+        crate::exec_grant::record(me, crate::exec_grant::Site::Execve, crate::exec_grant::Basis::NotLinuxRow, &img.digest);
         return Err(neg(le::EACCES));
     }
-    if cross && !cfg!(feature = "linux-exec-row-canary") {
-        use azos_abi::cap::{CapPerms};
-        let granted = azos_ipc::launch_cap::launch_resource_of(profile.image.as_bytes()).is_some_and(|r| {
-            azos_ipc::cap_store::with_table(me, |t| {
-                t.holds_kind_resource_uncontained(ty::LAUNCH, r, CapPerms::EXEC)
-            })
-            .unwrap_or(false)
-        });
-        if !granted {
+    if cross {
+        if crate::exec_grant::decide(me, crate::exec_grant::Site::Execve, profile.image, &img.digest).is_err() {
             let recorded = crate::handlers::note_typed_denial_recorded(
                 me, ty::LAUNCH, azos_ipc::cap::CapError::MissingPerms,
             );
@@ -2722,6 +2717,8 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
             );
             return Err(neg(le::EACCES));
         }
+    } else {
+        crate::exec_grant::record(me, crate::exec_grant::Site::Execve, crate::exec_grant::Basis::OwnRow, &img.digest);
     }
     let mem = if cross { Some(crate::topo_sched::resolve_mem(profile.image, None).0) } else { None };
     let (argv, env) = strs[..al + el].split_at(al);

@@ -91,12 +91,10 @@ thread-tls-zero-canary = []
 # Wave 13 gate canaries, never in a real build: no signal is ever delivered
 # (`linux-signal-canary`); a broken pipe raises no SIGPIPE
 # (`linux-sigpipe-canary`); a Linux console read is end of file again
-# (`linux-console-eof-canary`); `execve` into another row skips the launch
-# grant (`linux-exec-row-canary`).
+# (`linux-console-eof-canary`).
 linux-signal-canary = []
 linux-sigpipe-canary = []
 linux-console-eof-canary = []
-linux-exec-row-canary = []
 # Wave 13 canaries: a tkill/tgkill is posted as the process's signal (not to
 # its thread); a Linux wait4 reports a signalled child as exited 128 + n.
 linux-tkill-process-canary = []

@@ -62,7 +62,7 @@ pub fn spawn_path(path: &[u8]) -> i64 {
 /// can register anything, fault or exit. Not called when no child was
 /// created.
 pub fn spawn_path_hooked(path: &[u8], before_release: &mut dyn FnMut(u32)) -> i64 {
-    match spawn_path_ex(path, &mut |_| true, &mut |child| {
+    match spawn_path_ex(path, &mut |_, _| true, &mut |child| {
         before_release(child.tid());
         true
     }) {
@@ -241,13 +241,13 @@ pub enum SpawnEx {
 }
 
 /// [`spawn_path_hooked`] with two more hooks, for `SYS_SPAWN_EX`:
-/// `authorize(image)` after the digest and the topology row are known and
-/// before any address space exists (the launch grant), and a
+/// `authorize(image, digest)` after the digest and the topology row are known
+/// and before any address space exists (the launch grant), and a
 /// `before_release` that may write into the parked child (its startup block,
 /// its moved handles) and may refuse, which aborts it.
 pub fn spawn_path_ex(
     path: &[u8],
-    authorize: &mut dyn FnMut(&str) -> bool,
+    authorize: &mut dyn FnMut(&str, &[u8; 32]) -> bool,
     before_release: &mut dyn FnMut(&mut azos_sched::spawn::SpawnPrepared) -> bool,
 ) -> SpawnEx {
     if path.is_empty() { return SpawnEx::Failed(-1); }
@@ -289,6 +289,9 @@ pub fn spawn_path_ex(
                 // it answers no again and writes the record under the per-task
                 // bound. A refusal pays a second hash; a spawn pays one.
                 let _ = crate::handlers::exec_image_is_bound_by_digest(&digest);
+                crate::exec_grant::record(
+                    azos_sched::current_task_tid(), crate::exec_grant::Site::SpawnEx, crate::exec_grant::Basis::Unbound, &digest,
+                );
                 return SpawnEx::Failed(errno.to_syscall_ret());
             }
         };
@@ -302,11 +305,14 @@ pub fn spawn_path_ex(
                 plan.topology_key,
             );
             crate::handlers::record_exec_refused(SPAWN_REFUSED_ACTION_NO_ROW, head);
+            crate::exec_grant::record(
+                azos_sched::current_task_tid(), crate::exec_grant::Site::SpawnEx, crate::exec_grant::Basis::NoRow, &digest,
+            );
             return SpawnEx::Failed(azos_abi::error::Errno::EACCES.to_syscall_ret());
         }
         // The caller's authority over THIS image (`SYS_SPAWN_EX`'s
         // launch grant), on the image the bytes resolve to.
-        if !authorize(plan.profile.image) {
+        if !authorize(plan.profile.image, &digest) {
             return SpawnEx::Refused;
         }
         // Wave 7: the child is CREATED in its row's class and priority, so it

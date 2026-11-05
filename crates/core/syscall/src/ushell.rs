@@ -351,28 +351,23 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
     let refusal = core::cell::Cell::new(0i64);
     let rc = crate::spawn::spawn_path_ex(
         &path_buf[..path_len],
-        &mut |image: &str| {
+        &mut |image: &str, digest: &[u8; 32]| {
             // The launch grant is checked against the image the BYTES are,
             // not the path typed.
-            let ok = azos_ipc::launch_cap::launch_resource_of(image.as_bytes()).is_some_and(|r| {
-                azos_ipc::cap_store::with_table(me, |t| {
-                    t.holds_kind_resource_uncontained(ty::LAUNCH, r, CapPerms::EXEC)
-                })
-                .unwrap_or(false)
-            });
-            if !ok {
-                // Recorded as every typed refusal is (under the
-                // console lockdown this is how a privileged tool is refused).
-                let recorded = crate::handlers::note_typed_denial_recorded(
-                    me, ty::LAUNCH, azos_ipc::cap::CapError::MissingPerms,
-                );
-                azos_drv_sys::kwarn!(
-                    "[SPAWN] REFUSED: tid={} holds no launch grant for {}{}", me, image,
-                    if recorded { " (recorded)" } else { "" },
-                );
-                refusal.set(err(Errno::EACCES));
+            if crate::exec_grant::decide(me, crate::exec_grant::Site::SpawnEx, image, digest).is_ok() {
+                return true;
             }
-            ok
+            // Recorded as every typed refusal is (under the
+            // console lockdown this is how a privileged tool is refused).
+            let recorded = crate::handlers::note_typed_denial_recorded(
+                me, ty::LAUNCH, azos_ipc::cap::CapError::MissingPerms,
+            );
+            azos_drv_sys::kwarn!(
+                "[SPAWN] REFUSED: tid={} holds no launch grant for {}{}", me, image,
+                if recorded { " (recorded)" } else { "" },
+            );
+            refusal.set(err(Errno::EACCES));
+            false
         },
         &mut |child| {
             let ctid = child.tid();

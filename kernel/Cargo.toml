@@ -304,7 +304,6 @@ linux-sigpipe-canary = ["azos_syscall/linux-sigpipe-canary", "azos_topology/linu
 linux-sigchld-canary = ["azos_sched/linux-sigchld-canary", "azos_topology/linux-abi-test"]
 linux-console-eof-canary = ["azos_syscall/linux-console-eof-canary", "linux-busybox-test"]
 console-isig-canary = ["azos_drv_sys/console-isig-canary", "linux-busybox-test"]
-linux-exec-row-canary = ["azos_syscall/linux-exec-row-canary", "linux-busybox-test"]
 # Signals and threads (wave 13): canaries over the LXTHR row and LXHELLO.
 linux-sig-thread-canary = ["azos_sched/linux-sig-thread-canary", "linux-threads-test"]
 linux-tkill-process-canary = ["azos_syscall/linux-tkill-process-canary", "linux-threads-test"]

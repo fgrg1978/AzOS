@@ -310,6 +310,10 @@ mod module_table_tests {
 // sibling of `link_key` for the same reason; `#[path]`, not `include!`.
 #[path = "../../../../crates/core/syscall/src/vdso_notify.rs"]
 pub mod vdso_notify;
+// The launch check `SYS_SPAWN_EX` and the Linux `execve` share; names
+// `crate::handlers::durable_bucket`.
+#[path = "../../../../crates/core/syscall/src/exec_grant.rs"]
+pub mod exec_grant;
 
 // `DOMAIN_MMIO_MAP` (509). At the crate root, same reason as
 // `motor_cmd`: it names `crate::handlers::*` (`cap_check`). `#[path]`, not
@@ -642,6 +646,12 @@ mod handlers {
     mod image_binding {
         use super::*;
         include!("image_binding.rs");
+    }
+
+    #[cfg(test)]
+    mod exec_grant_tests {
+        use super::*;
+        include!("exec_grant_tests.rs");
     }
 
     #[cfg(test)]

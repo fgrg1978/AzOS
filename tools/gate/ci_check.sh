@@ -25354,8 +25354,8 @@ echo after-bb-int \$?"
                 # then execs LXHELLO, which runs under LXHELLO's row (its /fat
                 # create refused). Without the grant (the plain BusyBox row) the
                 # exec is refused and recorded, and LXHELLO never runs. Canary
-                # `linux-exec-row-canary`: the launch check compiled out, the
-                # exec goes through without the grant.
+                # `exec-grant-skip`: the launch check finds a grant on every
+                # image, the exec goes through without it.
                 USH_DISK=busybox USH_FAULTS=3 USH_FORBID="$RECOVERY_PROMPT_RE|lx: .* FAIL" par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
                     "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?" 180 \
@@ -25366,7 +25366,7 @@ echo after-x \$?"
                 USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|lx: hello" par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                     "$exec_refused_script" 150 \
                     "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
-                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" USH_QEMU_EXTRA="-append canary=exec-grant-skip" par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" FAIL \
                     "$exec_refused_script" 150 \
                     "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
             fi

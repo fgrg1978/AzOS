@@ -66,6 +66,7 @@ pub mod volume_host;
 pub mod khost;
 pub mod vdso_notify;
 pub mod ushell;
+pub mod exec_grant;
 // The Linux personality's translation (Kconfig `LINUX_ABI`).
 #[cfg(feature = "linux-abi")]
 pub mod linux;

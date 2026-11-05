@@ -158,7 +158,6 @@ linux-abi-test	pending	adds rows to the built-in topology (crates/core/topology/
 linux-busybox-fork-canary	pending	
 linux-busybox-test	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 linux-console-eof-canary	pending	
-linux-exec-row-canary	pending	
 linux-exec-row-test	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 linux-sig-thread-canary	pending	
 linux-sigchld-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)

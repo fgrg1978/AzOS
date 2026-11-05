@@ -145,6 +145,10 @@ pub(crate) const NAMES: &[&str] = &[
     // cap.rs `note_no_slot`: a grant into a full table is refused without a
     // record (ktest `cap_table_full_refuses_with_a_record`).
     "cap-full-silent",
+    // syscall/src/exec_grant.rs `grant_for`: every image counts as granted
+    // (ktest `exec_without_a_grant_is_refused_with_a_record`; gate rows
+    // `linux: execve launch canary`).
+    "exec-grant-skip",
     // drivers/sys/src/timebase.rs `record`: a CPU id from 16 up has no comparator
     // record (ktest `timer_record_on_the_last_cpu`; the row needs -smp 17).
     "timer-record-16",
