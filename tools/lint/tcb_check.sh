@@ -108,14 +108,14 @@ api base irqchip sys gpio bus virtio block net sensor actuator power
 driver_server ina219 buzzer rings pci dma iommu
 ipc sched syscall stack energy
 crypto
-actuation channel
+actuation channel ext-api
 config topology multi-stream dtb
 linux-abi
 percpu trace
 chaos decision
 hv
 hwbus input nvme bytepipe devif idl
-kit
+kit image hyp-api
 "
 # Wave 11 (DOMAIN): `actuation` (crates/core/actuation) is the authority
 # every domain shares — e-stop latch, signed release, flight recorder,
@@ -219,12 +219,15 @@ usb rtc usb-hid scsi pkg
 # a new crate cannot appear unclassified.
 # `ethercat` is the EtherCAT master's wire codec: its user is the ring-3
 # fieldbus master (`ecatd`), so it links into a userspace ELF, never the kernel.
+# `hyp-mon` is the EL2 monitor: its own binary, embedded in the kernel image as
+# a blob, never linked as a crate.
 # `pcspk` is the PC speaker's PIT/port logic: its user is the ring-3 buzzer
 # driver (BUZZDRV.ELF, through ring-3 port I/O), never the kernel.
 OFF_IMAGE_CRATES="
 libsys libsys-macros stdrt idl-macros azos-config wcet-macro
 ethercat
 pcspk
+hyp-mon
 "
 
 # ── Known violations ────────────────────────────────────────────────────────
