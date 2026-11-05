@@ -38,7 +38,7 @@ crates/core/image	0	0	0	0	1	0
 crates/core/inspect	1	1	0	0	0	3
 crates/core/ipc	36	9	6	0	0	53
 crates/core/ktest	3	0	0	0	0	66
-crates/core/libsys	92	10	2	0	0	93
+crates/core/libsys	91	10	2	0	0	93
 crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
