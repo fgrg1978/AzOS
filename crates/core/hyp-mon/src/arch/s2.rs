@@ -23,6 +23,11 @@ use stage2::{ExecOnly, MemType, S2Attrs, Stage2, TableMem, VtcrConfig};
 
 /// Stage-2 table pool, carved in `.bss`. Enough for an identity map of RAM
 /// with 1 GiB/2 MiB blocks and the sub-gigabyte split around the monitor hole.
+/// The boot map keeps blocks to 2 MiB over this span (two gigabytes from the one
+/// holding the monitor), the biggest block there.
+const SPLIT_WINDOW: u64 = 2 << 30;
+const SPLIT_BLOCK: u64 = 2 << 20;
+
 /// The boot map and the locked map, built side by side, and the tables the
 /// block splits of `guard_pages` take.
 const POOL_TABLES: usize = 80;
@@ -384,9 +389,16 @@ pub unsafe fn build_and_enable(hole_pa: u64, hole_len: u64, ram_top: u64) {
 
     // Permissive: everything RAM-attributed, read/write/execute. The hole is a
     // gap in the two runs, so a host access to the monitor aborts at stage 2.
+    // Around the monitor, which sits in the kernel image, no block bigger than
+    // 2 MiB: a `guard_pages` before the lock then breaks one 2 MiB block, not a
+    // gigabyte a stream with DMA in flight may be using.
     let hole_end = hole_pa + hole_len;
-    let _ = s2.map_run(0, 0, hole_pa, S2Attrs::RAM);
-    let _ = s2.map_run(hole_end, hole_end, ram_top.saturating_sub(hole_end), S2Attrs::RAM);
+    let win_lo = hole_pa & !(SPLIT_WINDOW / 2 - 1);
+    let win_hi = (win_lo + SPLIT_WINDOW).min(ram_top);
+    let _ = s2.map_run(0, 0, win_lo, S2Attrs::RAM);
+    let _ = s2.map_run_max(win_lo, win_lo, hole_pa - win_lo, S2Attrs::RAM, SPLIT_BLOCK);
+    let _ = s2.map_run_max(hole_end, hole_end, win_hi.saturating_sub(hole_end), S2Attrs::RAM, SPLIT_BLOCK);
+    let _ = s2.map_run(win_hi, win_hi, ram_top.saturating_sub(win_hi), S2Attrs::RAM);
     if cfg!(feature = "hyp-hole-mapped-canary") {
         // R2 red: map the hole too, so EL1 can reach monitor memory.
         let _ = s2.map_run(hole_pa, hole_pa, hole_len, S2Attrs::RAM);

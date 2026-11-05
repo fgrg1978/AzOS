@@ -469,6 +469,11 @@ impl<'a, M: TableMem> Stage2<'a, M> {
     /// Map a physically contiguous run, using 1 GiB and 2 MiB blocks wherever
     /// both addresses and the remaining length allow, pages elsewhere.
     pub fn map_run(&mut self, ipa: u64, pa: u64, len: u64, a: S2Attrs) -> Result<(), S2Error> {
+        self.map_run_max(ipa, pa, len, a, u64::MAX)
+    }
+
+    /// [`Stage2::map_run`] with no block larger than `max_block` bytes.
+    pub fn map_run_max(&mut self, ipa: u64, pa: u64, len: u64, a: S2Attrs, max_block: u64) -> Result<(), S2Error> {
         if len % S2_PAGE != 0 {
             return Err(S2Error::Misaligned);
         }
@@ -478,7 +483,7 @@ impl<'a, M: TableMem> Stage2<'a, M> {
             // Block levels are only usable where the walk can place them.
             for l in [1u8, 2] {
                 let sz = level_size(l);
-                if l >= self.cfg.start_level() && left >= sz && (i | p) & (sz - 1) == 0 {
+                if sz <= max_block && l >= self.cfg.start_level() && left >= sz && (i | p) & (sz - 1) == 0 {
                     level = l;
                     break;
                 }

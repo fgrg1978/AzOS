@@ -101,3 +101,27 @@ fn a_split_without_a_table_to_spare_leaves_the_block_alone() {
     assert_eq!(s2.split_to_page(0x4000_0000, &mut |_| panic!("no break without a table")), Err(S2Error::NoMemory));
     assert_eq!(s2.translate(0x4000_0000), Some((0x4000_0000, S2Attrs::RAM)));
 }
+
+/// **A run capped at 2 MiB blocks breaks one block, not a gigabyte, when a page
+/// of it is taken out.** The monitor builds the boot map this way around itself.
+///
+/// **Canary.** `map_run_max` ignores its cap: the first assertion sees a 1 GiB
+/// block and the break count is 2.
+#[test]
+fn a_run_capped_at_two_mib_breaks_one_two_mib_block_to_take_a_page_out() {
+    let mut m = Arena::new(32);
+    let mut s2 = Stage2::new(cfg(), &mut m).unwrap();
+    s2.map_run_max(0x4000_0000, 0x4000_0000, 0x4000_0000, user_ram(), 2 << 20).unwrap();
+    // Beyond the cap the run still uses a gigabyte block.
+    s2.map_run_max(0x8000_0000, 0x8000_0000, 0x4000_0000, user_ram(), u64::MAX).unwrap();
+    let mut breaks = Vec::new();
+    s2.split_to_page(0x4012_3000, &mut |ipa| breaks.push(ipa)).unwrap();
+    assert_eq!(breaks, vec![0x4000_0000], "one 2 MiB block");
+    let mut again = Vec::new();
+    s2.split_to_page(0x8012_3000, &mut |ipa| again.push(ipa)).unwrap();
+    assert_eq!(again.len(), 2, "the uncapped run breaks its gigabyte, then a 2 MiB block");
+    // Every page of both is still where it was.
+    for ipa in [0x4000_0000u64, 0x401f_f000, 0x7fff_f000, 0x8000_0000, 0xbfff_f000] {
+        assert_eq!(s2.translate(ipa), Some((ipa, user_ram())), "{ipa:#x}");
+    }
+}
