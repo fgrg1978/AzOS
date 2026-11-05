@@ -440,11 +440,11 @@ def test_fleet_ram_size_holds_the_heap() -> None:
 
 
 def test_limits_that_do_not_fit_the_ram_are_refused() -> None:
-    """The server preset's limits build with its RAM_SIZE and are refused with a smaller one.
+    """The server preset's limits build with its RAM_SIZE; each RAM check refuses on its own.
 
-    The heap and the per-task kernel stacks alone (256 MiB + 4096 x 32 KiB) need
-    384 MiB; a RAM_SIZE of 300 clears the heap-below-RAM check, so only the
-    limits-against-RAM check refuses it, with one message naming the limits.
+    The kernel heap (KERNEL_HEAP_SIZE, a ceiling the heap takes pages under on
+    demand) above RAM_SIZE is refused, and so are kernel stacks for MAX_TASKS
+    tasks (4096 x 32 KiB = 128 MiB) that reach RAM_SIZE, each with its message.
     """
     import tempfile
 
@@ -459,21 +459,28 @@ def test_limits_that_do_not_fit_the_ram_are_refused() -> None:
         base = server.read_text(encoding="utf-8").splitlines()
         assert "CONFIG_RAM_SIZE=1024" in base, "the server preset lost its RAM_SIZE"
 
-        def build_limits(lines: list[str], name: str) -> subprocess.CompletedProcess:
+        def build_limits(ram_mib: int, heap_kib: Optional[int], name: str) -> subprocess.CompletedProcess:
+            keep = [l for l in base if not l.startswith("CONFIG_RAM_SIZE=")
+                    and not (heap_kib is not None and l.startswith("CONFIG_KERNEL_HEAP_SIZE="))]
+            keep.append(f"CONFIG_RAM_SIZE={ram_mib}")
+            if heap_kib is not None:
+                keep.append(f"CONFIG_KERNEL_HEAP_SIZE={heap_kib}")
             cfg = Path(td) / name
-            cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            cfg.write_text("\n".join(keep) + "\n", encoding="utf-8")
             env = dict(os.environ, KCONFIG_CONFIG=str(cfg), CARGO_TARGET_DIR=str(Path(td) / "target"),
                        CARGO_NET_OFFLINE="true")
             return subprocess.run(["cargo", "build", "--release", "-p", "azos_limits"],
                                   cwd=REPO_ROOT, env=env, capture_output=True, text=True)
 
-        fits = build_limits(base, "fits.config")
+        fits = build_limits(1024, None, "fits.config")
         assert fits.returncode == 0, f"the server preset's limits do not build:\n{fits.stderr[-800:]}"
-        small = [l for l in base if not l.startswith("CONFIG_RAM_SIZE=")] + ["CONFIG_RAM_SIZE=300"]
-        refused = build_limits(small, "small.config")
-        assert refused.returncode != 0 and "the limits need at least 384 MiB of RAM" in refused.stderr, (
-            f"MAX_TASKS 4096 with RAM_SIZE 300 was not refused by the limits-against-RAM check:\n"
-            f"{refused.stderr[-800:]}"
+        heap = build_limits(200, None, "heap.config")
+        assert heap.returncode != 0 and "a heap ceiling above the RAM bounds nothing" in heap.stderr, (
+            f"a 256 MiB heap ceiling with RAM_SIZE 200 was not refused:\n{heap.stderr[-800:]}"
+        )
+        stacks = build_limits(120, 65536, "stacks.config")
+        assert stacks.returncode != 0 and "128 MiB of kernel stacks" in stacks.stderr, (
+            f"MAX_TASKS 4096 x 32 KiB of stacks with RAM_SIZE 120 was not refused:\n{stacks.stderr[-800:]}"
         )
 
 
@@ -501,7 +508,10 @@ def test_the_ota_crate_embeds_a_key_only_a_dev_build_may_trust() -> None:
         assert made.returncode == 0, f"make defconfig PRESET=server failed:\n{made.stderr[-500:]}"
         dev = server.read_text(encoding="utf-8")
         release = Path(td) / "release.config"
-        release.write_text(dev.replace("CONFIG_BUILD_TYPE_DEV=y", "CONFIG_BUILD_TYPE_RELEASE=y"), encoding="utf-8")
+        release.write_text(dev.replace("# CONFIG_BUILD_TYPE_RELEASE is not set\n", "")
+                           .replace("CONFIG_BUILD_TYPE_DEV=y",
+                                    "# CONFIG_BUILD_TYPE_DEV is not set\nCONFIG_BUILD_TYPE_RELEASE=y"),
+                           encoding="utf-8")
         other = Path(td) / "other_pub.bin"
         other.write_bytes(bytes(range(32)))
 

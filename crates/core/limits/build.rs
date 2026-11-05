@@ -466,11 +466,10 @@ fn run_validations(cfg: &ConfigMap) {
     // -----------------------------------------------------------------------
     // The per-task kernel stacks against RAM_SIZE
     //
-    // The stacks are a static arena of MAX_TASKS x KERNEL_STACK_SIZE_KB linked
-    // into the image, so they are exact. The image holds more (the capability,
-    // socket and task tables), so this is a floor: a configuration under it
-    // cannot link or boot, and the message says which limits to lower, where
-    // the linker would only name the bytes of one section.
+    // Each task's stack is mapped from page frames when the task is made, so
+    // MAX_TASKS live tasks need MAX_TASKS x KERNEL_STACK_SIZE_KB of RAM before
+    // anything else: a configuration whose stacks alone reach RAM_SIZE cannot
+    // reach its own task limit, and the message says which limits to lower.
     // -----------------------------------------------------------------------
     if let (Some(ram_mib), Some(stack_kib)) = (get_u64(cfg, "RAM_SIZE"), get_u64(cfg, "KERNEL_STACK_SIZE_KB")) {
         let stacks_mib = (max_tasks * stack_kib).div_ceil(1024);
