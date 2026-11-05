@@ -171,6 +171,8 @@ fat-hard-error-ignored-canary = []
 azvol-check-never-fails-canary = []
 azvol-unclean-unchecked-canary = []
 ro-open-canary = []
+# A full tmpfs entry table hands out slot 0 instead of refusing (tmpfs_rows).
+tmpfs-bound-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources

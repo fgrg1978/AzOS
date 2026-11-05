@@ -364,6 +364,8 @@ futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
 threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
 leader-cleartid-canary = ["azos_sched/leader-cleartid-canary"]
 commander-exit-nostop-canary = ["azos_syscall/commander-exit-nostop-canary"]
+# ktest `ram_fs_bound_refuses`: a full tmpfs entry table does not refuse (`crates/fs/Cargo.toml`).
+tmpfs-bound-canary = ["azos_fs/tmpfs-bound-canary"]
 threads-tls-canary = ["azos_sched/threads-tls-canary"]
 thread-tls-zero-canary = ["azos_syscall/thread-tls-zero-canary"]
 # Wave 15 canaries, see `crates/core/sched/Cargo.toml`.

@@ -216,7 +216,7 @@ pub trait FileOps: Sync {
     /// What the page cache needs to map the file open as `fd` (`NODE_MMAP`,
     /// `crate::file_map`): its name in the cache, the backing its pages come
     /// from and go back to, and its size now. `None` (the default) for a file
-    /// the cache cannot serve: nothing installed, a ramfs file, a backend that
+    /// the cache cannot serve: nothing installed, a device, a backend that
     /// does not stream. The descriptor is the caller's own: the capability that
     /// named it has been checked.
     fn map_source(&self, _fd: i32) -> Option<FileMapSource> { None }

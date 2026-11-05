@@ -423,7 +423,7 @@ fn print_hwcap(h: u64) {
 }
 
 /// Ring-3-facing seams every board installs once, at the same relative
-/// point in boot, on either ISA: the ramfs root, the `FileOps` seam behind
+/// point in boot, on either ISA: the RAM file systems, the `FileOps` seam behind
 /// `NODE_OPENAT`/`SYS_SPAWN_EX` (`crates/core/syscall`'s
 /// `file_ops` module), the actuation gate, and the io_ring motor/PWM ops.
 ///
@@ -454,7 +454,7 @@ pub(crate) static FD_TABLE_ADDR: core::sync::atomic::AtomicUsize =
 #[inline(always)]
 pub(crate) fn install_ring3_seams() {
     azos_fs::init();
-    kprintln!("[FS] ramfs initialized");
+    kprintln!("[FS] tmpfs mounted at / and /tmp, devfs at /dev");
 
     // The filesystem behind the file syscalls.
     //
@@ -465,7 +465,7 @@ pub(crate) fn install_ring3_seams() {
     // one closed the last of the TCB violations.
     //
     // Installed HERE, above the FAT32 block and not inside it: `/fat` is one
-    // filesystem among several, and ramfs and tmpfs both answer file
+    // filesystem among several, and the RAM file systems answer file
     // syscalls on a board with no disk at all. Installing on mount success
     // would have made `open` return -1 in every scenario that boots without a
     // drive.
@@ -583,7 +583,7 @@ pub(crate) fn install_ring3_seams() {
         /// `read` (`write` false) or `write` of `fd`, checked by the caller
         /// under `t`: a device-backed streaming file transfers with the
         /// table released, under its description's position lock (owner
-        /// rule F1; `azos_fs::fd_stream_transfer`); ramfs, tmpfs, proxy and
+        /// rule F1; `azos_fs::fd_stream_transfer`); tmpfs, devfs, proxy and
         /// device files (a copy, or the console: no device wait) under the
         /// lock as before. Takes the guard and releases it.
         fn fd_transfer(
@@ -755,52 +755,14 @@ pub(crate) fn install_ring3_seams() {
                 new_fd as i64
             }
             fn mkdir(&self, path: &[u8]) -> i64 {
-                // A path on a mounted filesystem (`/fat`) belongs to that
-                // backend, which answers with its own errno; the ramfs tree
-                // below only ever knew the directories it holds itself.
-                if azos_fs::vfs_on_mount(path) {
-                    return match azos_fs::vfs_mkdir(path) {
-                        Ok(()) => 0,
-                        Err(e) => fs_errno(e),
-                    };
-                }
-                let (parent_idx, name) = azos_fs::path_parent(path);
-                if parent_idx == azos_fs::NO_IDX || name.is_empty() { return -1; }
-                let dir_idx = azos_fs::inode_alloc(
-                    azos_fs::INODE_DIR,
-                    azos_fs::PERM_READ | azos_fs::PERM_WRITE | azos_fs::PERM_EXEC,
-                );
-                if dir_idx == azos_fs::NO_IDX { return -1; }
-                match azos_fs::dir_add_entry(parent_idx, name, dir_idx) {
-                    Ok(())  => 0,
-                    Err(()) => { azos_fs::inode_free(dir_idx); -1 }
-                }
+                match azos_fs::vfs_mkdir(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn unlink(&self, path: &[u8]) -> i64 {
-                // As `mkdir`: a mounted path is the backend's (FAT32 removes
-                // the file and frees its chain; a directory is `-EISDIR`).
-                if azos_fs::vfs_on_mount(path) {
-                    return match azos_fs::vfs_unlink(path) {
-                        Ok(()) => 0,
-                        Err(e) => fs_errno(e),
-                    };
-                }
-                let (parent_idx, name) = azos_fs::path_parent(path);
-                if parent_idx == azos_fs::NO_IDX || name.is_empty() { return -1; }
-                match azos_fs::dir_remove_entry(parent_idx, name) {
-                    Ok(())  => 0,
-                    Err(()) => -1,
-                }
+                match azos_fs::vfs_unlink(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; 64], u32, bool)> {
-                let dir_idx = azos_fs::path_lookup(path);
-                if dir_idx != azos_fs::NO_IDX {
-                    return azos_fs::dir_entry_at(dir_idx, index);
-                }
-                // A directory under a mount (`/fat`), through the
-                // backend's cookie walk, so ring 3 (`ls` in the user shell)
-                // lists the volume too. The cookie is opaque, so the `index`-th
-                // entry is reached by walking from the start.
+                // The cookie is opaque, so the `index`-th entry is reached by
+                // walking from the start.
                 let mut ent = azos_fs::DirEnt::new();
                 let mut cookie = 0u64;
                 for _ in 0..index {
@@ -888,8 +850,8 @@ pub(crate) fn install_ring3_seams() {
                 })
             }
 
-            /// The VFS's `vfs_stat` (ramfs, or the backend mounted
-            /// under the path), laid out by the syscall layer.
+            /// The VFS's `vfs_stat` (the backend mounted under the path),
+            /// laid out by the syscall layer.
             fn stat(&self, path: &[u8]) -> Result<azos_syscall::file_ops::StatOut, i64> {
                 use azos_abi::error::Errno;
                 match azos_fs::vfs_stat(path) {
@@ -906,35 +868,8 @@ pub(crate) fn install_ring3_seams() {
             // Straight onto the VFS's P2 entry points; `fs_errno` is the one
             // `FsErr` -> errno table.
 
-            /// A backend directory (`vfs_rmdir`), or else an empty ramfs
-            /// directory: `DOMAIN_MKDIR` makes ramfs directories, so the call
-            /// that removes one must reach them too.
             fn rmdir(&self, path: &[u8]) -> i64 {
-                use azos_abi::error::Errno;
-                // The mount table first, so a path under a mount never
-                // reaches the ramfs; `NotFound` is also what a path under no
-                // mount answers.
-                match azos_fs::vfs_rmdir(path) {
-                    Err(azos_fs::FsErr::NotFound) => {}
-                    Ok(()) => return 0,
-                    Err(e) => return fs_errno(e),
-                }
-                if azos_fs::path_lookup(path) == azos_fs::NO_IDX {
-                    return Errno::ENOENT.to_syscall_ret();
-                }
-                match azos_fs::vfs_stat(path) {
-                    Some(st) if !st.is_dir => return Errno::ENOTDIR.to_syscall_ret(),
-                    Some(st) if st.size != 0 => return Errno::ENOTEMPTY.to_syscall_ret(),
-                    _ => {}
-                }
-                let (parent_idx, name) = azos_fs::path_parent(path);
-                if parent_idx == azos_fs::NO_IDX || name.is_empty() {
-                    return Errno::EINVAL.to_syscall_ret();
-                }
-                match azos_fs::dir_remove_entry(parent_idx, name) {
-                    Ok(()) => 0,
-                    Err(()) => Errno::EBUSY.to_syscall_ret(),
-                }
+                match azos_fs::vfs_rmdir(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn rename(&self, from: &[u8], to: &[u8]) -> i64 {
                 match azos_fs::vfs_rename(from, to) { Ok(()) => 0, Err(e) => fs_errno(e) }

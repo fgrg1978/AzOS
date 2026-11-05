@@ -2,10 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! VFS — Virtual Filesystem
 //!
-//! Direct port of kernel/fs/fs.c + kernel/include/fs.h.
-//! Implements a simple in-memory ramfs with VFS abstraction.
-//! Inode data and directory entries are heap-allocated; the inode pool is a
-//! fixed static array protected by a global spinlock.
+//! A mount table and a router: a path goes to the longest mount prefix that
+//! matches it, and the [`FileSystem`] mounted there does the work. `/` and
+//! `/tmp` are RAM file systems (`tmpfs`), `/dev` is `devfs`, `/fat` and the
+//! volumes are the disks'.
+//!
+//! The inode pool is the open-file table: one inode per file opened (a backend
+//! file streamed in place, or a whole-file proxy of a backend that does not
+//! stream), in a fixed static array protected by a global spinlock.
 
 use alloc::alloc::{alloc, dealloc, Layout};
 use core::ptr;
@@ -21,13 +25,6 @@ pub const MAX_FILES:    usize = azos_limits::VFS_MAX_FILES;
 /// ([`DirEnt`], the path given to `key_for`/`mkdir`/`rename`), in bytes:
 /// 255, ext4's `EXT4_NAME_LEN` and POSIX's usual `NAME_MAX`.
 pub const NAME_MAX:     usize = 255;
-/// A RAMFS directory entry's name buffer, NUL included: names up to 63
-/// bytes. Deliberately not `NAME_MAX + 1`: the ramfs is what `DOMAIN_READDIR`
-/// lists, and that ABI hands out exactly `READDIR_NAME_BYTES` (64) bytes
-/// and refuses rather than truncates; a longer ramfs name would be a file
-/// the listing could not name. It would also quadruple every dentry on the
-/// kernel heap for names the kernel's own directories never use.
-pub const MAX_FILENAME: usize = 64;
 /// Longest path, NUL included. 512 so that a `NAME_MAX` name still fits
 /// under a mount point and a few directories (was 256, which a single
 /// 255-byte name under `/fat/` already overflowed).
@@ -60,14 +57,6 @@ pub const MAX_MOUNTS:   usize = azos_limits::VFS_MAX_MOUNTS;
 /// with its own clamp and is not bounded by this.
 pub const MAX_FAT32_PROXY_BYTES: usize = 8 * 1024 * 1024;
 
-pub const INODE_FILE:   u8 = 1;
-pub const INODE_DIR:    u8 = 2;
-pub const INODE_DEVICE: u8 = 3;
-
-pub const PERM_READ:  u32 = 0x4;
-pub const PERM_WRITE: u32 = 0x2;
-pub const PERM_EXEC:  u32 = 0x1;
-
 pub const O_RDONLY: u32 = 0x0;
 pub const O_WRONLY: u32 = 0x1;
 pub const O_RDWR:   u32 = 0x2;
@@ -79,11 +68,10 @@ pub const SEEK_SET: i32 = 0;
 pub const SEEK_CUR: i32 = 1;
 pub const SEEK_END: i32 = 2;
 
-pub const FS_TYPE_RAMFS: u32 = 0;
 pub const FS_TYPE_FAT32: u32 = 1;
 /// The native volume (`azvol`): mounted from a topology `[volume.NAME]` row by
 /// `kernel/src/boot/azvol.rs`, served by `azvol::mount::AzvolFs`. 2 is tmpfs
-/// (its own file names it); 3 is unassigned.
+/// (its own file names it); 3 is devfs.
 pub const FS_TYPE_AZVOL: u32 = 4;
 /// The FAT32 volume of a USB stick (`usbvol`, Kconfig `USB_STORAGE_VOLUME`):
 /// the same format as `/fat`, a second, separate backend. Its `statfs` still
@@ -528,10 +516,7 @@ pub trait FileSystem: Sync {
     // `dyn` keeps the whole vtable alive, so an uncalled method drags its
     // implementations in with it — `fat32`'s cost 2,356 of the 2,516 `.text`
     // bytes this abstraction added, for a second monomorphisation of
-    // `fat32_ls_root` that nothing ever entered. The free functions
-    // (`fat32_ls_root`, `tmpfs_ls`) are still there for whoever
-    // needs enumeration; put it back on the trait when something calls it,
-    // and pay the bytes then.
+    // `fat32_ls_root` that nothing ever entered.
 }
 
 /// What the generic inode knows about the filesystem underneath it: that there
@@ -541,7 +526,8 @@ pub trait FileSystem: Sync {
 /// `fat32_backed: bool`, `fat32_dirty: bool`, `fat32_name: [u8; 11]`.
 #[derive(Copy, Clone)]
 pub struct InodeBacking {
-    /// The filesystem this inode proxies, or `None` for a plain ramfs inode.
+    /// The filesystem this inode belongs to; `None` only for a free slot's
+    /// zeroed value.
     pub fs:    Option<&'static dyn FileSystem>,
     /// Set by `vfs_write` / `O_TRUNC`, cleared by a SUCCESSFUL flush in
     /// `vfs_close`. A flush that failed leaves it set, so another descriptor
@@ -555,7 +541,7 @@ pub struct InodeBacking {
     pub streaming: bool,
     /// For a streaming inode, the file's size as last learned from the
     /// backend or grown by a write through this inode (`u64`: the inode's
-    /// own `size` is the ramfs buffer's and stays `u32`).
+    /// own `size` is the proxy buffer's and stays `u32`).
     pub size:  u64,
     /// A read-only stream over a backend that is NOT [`FileSystem::streaming`]
     /// ([`FileSystem::stream_reads`], wave 14): the descriptor reads in
@@ -567,7 +553,7 @@ pub struct InodeBacking {
     pub handle: u64,
 }
 
-/// An inode that lives only in the ramfs.
+/// A free slot's backing.
 pub const NO_BACKING: InodeBacking = InodeBacking {
     fs: None, dirty: false, key: ZEROED_KEY, streaming: false, size: 0,
     ro_stream: false, handle: 0,
@@ -575,64 +561,31 @@ pub const NO_BACKING: InodeBacking = InodeBacking {
 
 // ─── Inode ────────────────────────────────────────────────────────────────────
 
-/// In-kernel inode — direct port of `inode_t` in kernel/include/fs.h.
+/// An open file in the pool: a streamed backend file (no data held) or the
+/// whole-file proxy of one that does not stream (`data` holds its bytes).
 ///
 /// Uses raw pointers so it can live in a `static` array and be `Copy`.
 /// All access is protected by `FS` spinlock.
 #[derive(Copy, Clone)]
 pub struct Inode {
     pub ino:         u32,
-    pub itype:       u8,       // INODE_FILE / INODE_DIR / INODE_DEVICE
     pub size:        u32,
-    pub permissions: u32,
-    // File data (heap-allocated; INODE_FILE only)
+    // Proxy data (heap-allocated)
     pub data:        *mut u8,
     pub capacity:    u32,
-    // Directory entries (heap-allocated; INODE_DIR only)
-    pub entries:     *mut DentryEntry,
-    pub entry_count: u32,
-    // Device callbacks (INODE_DEVICE only)
-    pub dev_read:    Option<unsafe fn(*mut u8, usize) -> i32>,
-    pub dev_write:   Option<unsafe fn(*const u8, usize) -> i32>,
-    // Metadata
     pub ref_count:   u32,
-    pub link_count:  u32,
-    /// Which filesystem, if any, this inode is a proxy for — and that
-    /// filesystem's own name for the file. Flushed on close when dirty.
-    ///
-    /// Was three fields called `fat32_backed`, `fat32_dirty` and
-    /// `fat32_name`, so the generic inode named one concrete filesystem's
-    /// internals (an 8.3 name) and no other filesystem could be proxied at
-    /// all. Nothing outside this file ever read them.
+    /// The filesystem this inode belongs to, and its own name for the file.
+    /// Flushed on close when dirty.
     pub backing:     InodeBacking,
 }
 
 const ZEROED_INODE: Inode = Inode {
-    ino: 0, itype: 0, size: 0, permissions: 0,
-    data: ptr::null_mut(), capacity: 0,
-    entries: ptr::null_mut(), entry_count: 0,
-    dev_read: None, dev_write: None,
-    ref_count: 0, link_count: 0,
+    ino: 0, size: 0, data: ptr::null_mut(), capacity: 0, ref_count: 0,
     backing: NO_BACKING,
 };
 
 // Safety: all Inode access is serialised by the FS spinlock.
 unsafe impl Send for Inode {}
-
-// ─── DentryEntry ──────────────────────────────────────────────────────────────
-
-/// Directory entry — port of `dentry_t`, but stores a pool index instead of a
-/// raw pointer (avoids dangling-pointer UB after inode pool compaction).
-#[derive(Copy, Clone)]
-pub struct DentryEntry {
-    pub name:      [u8; MAX_FILENAME],
-    pub inode_idx: u32,   // Index into FsGlobal::inodes
-}
-
-const ZEROED_DENTRY: DentryEntry = DentryEntry {
-    name: [0u8; MAX_FILENAME],
-    inode_idx: NO_IDX,
-};
 
 // ─── FileDesc ─────────────────────────────────────────────────────────────────
 
@@ -854,12 +807,11 @@ pub struct MountPoint {
     pub fs_type: u32,
     pub active:  bool,
     pub fs_idx:  u32,   // Backend-defined sub-volume index; always 0 today.
-    /// The backend serving this mount, or `None` for a mount the VFS serves
-    /// out of its own ramfs.
+    /// The backend serving this mount, or `None` for a tag no backend is
+    /// registered for ([`vfs_mount`]): nothing is served through it.
     ///
     /// This is the field that makes "which filesystem" a value rather than a
-    /// branch: `path_lookup` and the proxy-open path used to test
-    /// `fs_type == FS_TYPE_FAT32` and then call `fat32_*` directly.
+    /// branch.
     pub fs:      Option<&'static dyn FileSystem>,
 }
 
@@ -887,7 +839,6 @@ fn backend_for_type(fs_type: u32) -> Option<&'static dyn FileSystem> {
 
 struct FsGlobal {
     inodes:      [Inode; MAX_FILES],
-    root_idx:    u32,
     next_ino:    u32,
     mounts:      [MountPoint; MAX_MOUNTS],
     mount_count: usize,
@@ -895,7 +846,6 @@ struct FsGlobal {
 
 const ZEROED_FS: FsGlobal = FsGlobal {
     inodes:      [ZEROED_INODE; MAX_FILES],
-    root_idx:    NO_IDX,
     next_ino:    1,
     mounts:      [ZEROED_MOUNT; MAX_MOUNTS],
     mount_count: 0,
@@ -935,19 +885,6 @@ pub fn with_fs_lock_held<R>(f: impl FnOnce() -> R) -> R {
 
 // ─── String / path helpers ────────────────────────────────────────────────────
 
-/// Compare a byte slice with a fixed-size null-terminated name array.
-fn name_eq(a: &[u8], b: &[u8; MAX_FILENAME]) -> bool {
-    let b_len = b.iter().position(|&c| c == 0).unwrap_or(MAX_FILENAME);
-    a.len() == b_len && &a[..] == &b[..b_len]
-}
-
-/// Copy a byte slice into a null-terminated fixed-size name array.
-fn name_copy(dst: &mut [u8; MAX_FILENAME], src: &[u8]) {
-    let n = src.len().min(MAX_FILENAME - 1);
-    dst[..n].copy_from_slice(&src[..n]);
-    dst[n] = 0;
-}
-
 /// Trim a byte slice at the first NUL byte.
 fn trim_nul(s: &[u8]) -> &[u8] {
     if let Some(n) = s.iter().position(|&c| c == 0) { &s[..n] } else { s }
@@ -971,37 +908,6 @@ fn path_starts_with(path: &[u8], prefix: &[u8]) -> bool {
     matches!(path.get(prefix.len()), None | Some(&b'/') | Some(&0))
 }
 
-/// Iterate path components split by '/'.
-struct PathComponents<'a> {
-    rest: &'a [u8],
-}
-
-impl<'a> PathComponents<'a> {
-    fn new(path: &'a [u8]) -> Self {
-        // Skip leading '/' and trim NUL
-        let rest = path.strip_prefix(b"/").unwrap_or(path);
-        PathComponents { rest: trim_nul(rest) }
-    }
-}
-
-impl<'a> Iterator for PathComponents<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<&'a [u8]> {
-        while self.rest.first() == Some(&b'/') {
-            self.rest = &self.rest[1..];
-        }
-        if self.rest.is_empty() { return None; }
-
-        let end = self.rest.iter()
-            .position(|&c| c == b'/')
-            .unwrap_or(self.rest.len());
-        let component = &self.rest[..end];
-        self.rest = if end < self.rest.len() { &self.rest[end + 1..] } else { &[] };
-        Some(component)
-    }
-}
-
 // ─── Allocator helpers ────────────────────────────────────────────────────────
 
 /// Allocate `size` bytes with alignment 1.  Returns null on failure or size==0.
@@ -1017,99 +923,47 @@ unsafe fn dealloc_raw(ptr: *mut u8, size: usize) {
     }
 }
 
-/// Allocate an array of `count` `DentryEntry` values.
-unsafe fn alloc_dentries(count: usize) -> *mut DentryEntry {
-    if count == 0 { return ptr::null_mut(); }
-    let layout = Layout::array::<DentryEntry>(count).unwrap();
-    alloc(layout) as *mut DentryEntry
-}
+// ─── The inode pool ───────────────────────────────────────────────────────────
 
-/// Deallocate a `DentryEntry` array allocated with `alloc_dentries`.
-unsafe fn dealloc_dentries(ptr: *mut DentryEntry, count: usize) {
-    if !ptr.is_null() && count > 0 {
-        dealloc(ptr as *mut u8, Layout::array::<DentryEntry>(count).unwrap());
-    }
-}
-
-// ─── Inode operations — port of `inode_alloc / inode_free / inode_resize` ─────
-
-/// Allocate a new inode from the pool.
-/// Returns index into the pool, or `NO_IDX` on failure.
-///
-/// `link_count` starts at 0, not 1. A freshly allocated inode has no
-/// directory entry yet — the one and only source of a link is
-/// [`dir_add_entry`], which adds it. Pre-counting a link here (as the
-/// previous version did) double-counted the dentry the caller was about
-/// to add: `alloc` -> 1, then `dir_add_entry` -> 2, so `dir_remove_entry`'s
-/// single decrement on unlink could only ever bring it back to 1, and
-/// `fd_free`'s `rc == 0 && lc == 0` test never fired — every `unlink` leaked
-/// the inode (U09-1). A caller with no directory entry at all (the FAT32
-/// proxy paths, `try_backend_open`/`try_backend_create`) already zeroes
-/// `link_count` itself right after alloc for exactly this reason; that
-/// explicit zero is now redundant but harmless. The root inode, which also
-/// has no parent dentry but must never be auto-freed, pins its own count
-/// explicitly in [`init`] instead of relying on this default.
-/// [`inode_alloc`] with `backing` installed under the same lock hold.
-fn inode_alloc_backed(itype: u8, permissions: u32, backing: InodeBacking) -> u32 {
+/// Take a free inode from the pool and install `backing` under the same lock
+/// hold. Returns its index, or `NO_IDX` when the pool is full. It is freed
+/// when its last descriptor closes.
+fn inode_alloc(backing: InodeBacking) -> u32 {
     let mut fs = FS.lock();
     for i in 0..MAX_FILES {
         if fs.inodes[i].ino == 0 {
             let ino = fs.next_ino;
             fs.next_ino += 1;
             fs.inodes[i] = ZEROED_INODE;
-            fs.inodes[i].ino         = ino;
-            fs.inodes[i].itype       = itype;
-            fs.inodes[i].permissions = permissions;
-            fs.inodes[i].link_count  = 0;
-            fs.inodes[i].backing     = backing;
+            fs.inodes[i].ino     = ino;
+            fs.inodes[i].backing = backing;
             return i as u32;
         }
     }
     NO_IDX
 }
 
-pub fn inode_alloc(itype: u8, permissions: u32) -> u32 {
-    let mut fs = FS.lock();
-    for i in 0..MAX_FILES {
-        if fs.inodes[i].ino == 0 {
-            let ino = fs.next_ino;
-            fs.next_ino += 1;
-            fs.inodes[i] = ZEROED_INODE;
-            fs.inodes[i].ino         = ino;
-            fs.inodes[i].itype       = itype;
-            fs.inodes[i].permissions = permissions;
-            fs.inodes[i].link_count  = 0;
-            return i as u32;
-        }
-    }
-    NO_IDX
-}
-
-/// Free an inode and release its heap memory.
-pub fn inode_free(idx: u32) {
+/// Free an inode and release its proxy buffer.
+fn inode_free(idx: u32) {
     if idx == NO_IDX || idx as usize >= MAX_FILES { return; }
 
-    // Atomically zero the inode slot and capture the pointers to free.
-    let (data, cap, entries, entry_count) = {
+    // Atomically zero the inode slot and capture the pointer to free.
+    let (data, cap) = {
         let mut fs = FS.lock();
         let n = &mut fs.inodes[idx as usize];
         if n.ino == 0 { return; }   // Already free
-        let ptrs = (n.data, n.capacity, n.entries, n.entry_count);
+        let ptrs = (n.data, n.capacity);
         *n = ZEROED_INODE;
         ptrs
     };
 
     // Free heap memory after releasing the lock.
-    unsafe {
-        dealloc_raw(data, cap as usize);
-        dealloc_dentries(entries, entry_count as usize);
-    }
+    unsafe { dealloc_raw(data, cap as usize); }
 }
 
-/// Resize a file inode's data buffer.
+/// Resize a proxy inode's data buffer.
 /// Only grows the allocation; shrinking is only done when `new_size == 0`.
-/// Port of `inode_resize()` in fs.c.
-pub fn inode_resize(idx: u32, new_size: u32) -> Result<(), ()> {
+fn inode_resize(idx: u32, new_size: u32) -> Result<(), ()> {
     if idx == NO_IDX || idx as usize >= MAX_FILES { return Err(()); }
 
     let (old_data, old_cap, old_size) = {
@@ -1162,214 +1016,6 @@ pub fn inode_resize(idx: u32, new_size: u32) -> Result<(), ()> {
     Ok(())
 }
 
-// ─── Directory operations — port of `dir_add/lookup/remove_entry` in fs.c ─────
-
-/// Add a directory entry.  Mirrors `dir_add_entry()` in fs.c.
-pub fn dir_add_entry(dir_idx: u32, name: &[u8], inode_idx: u32) -> Result<(), ()> {
-    if dir_idx == NO_IDX || inode_idx == NO_IDX { return Err(()); }
-    if name.is_empty() || name.len() >= MAX_FILENAME { return Err(()); }
-
-    // Validate and snapshot the current entry list under the lock.
-    let (old_entries, old_count) = {
-        let fs = FS.lock();
-        let dir = &fs.inodes[dir_idx as usize];
-        if dir.itype != INODE_DIR { return Err(()); }
-        // Duplicate check
-        for i in 0..dir.entry_count as usize {
-            let ent = unsafe { &*dir.entries.add(i) };
-            if name_eq(name, &ent.name) { return Err(()); }
-        }
-        (dir.entries, dir.entry_count)
-    };
-
-    let new_count = old_count + 1;
-
-    // Allocate the new (larger) entry array outside the lock.
-    let new_entries = unsafe { alloc_dentries(new_count as usize) };
-    if new_entries.is_null() { return Err(()); }
-
-    unsafe {
-        // Copy existing entries.
-        if !old_entries.is_null() && old_count > 0 {
-            ptr::copy_nonoverlapping(old_entries, new_entries, old_count as usize);
-        }
-        // Append the new entry.
-        let slot = &mut *new_entries.add(old_count as usize);
-        *slot = ZEROED_DENTRY;
-        name_copy(&mut slot.name, name);
-        slot.inode_idx = inode_idx;
-    }
-
-    // Update the directory inode and bump link count under the lock.
-    let old_to_free = {
-        let mut fs = FS.lock();
-        let dir = &mut fs.inodes[dir_idx as usize];
-        // Guard against a concurrent modification (should not happen in Phase 6).
-        if dir.entry_count != old_count {
-            unsafe { dealloc_dentries(new_entries, new_count as usize); }
-            return Err(());
-        }
-        let old = dir.entries;
-        dir.entries     = new_entries;
-        dir.entry_count = new_count;
-        if (inode_idx as usize) < MAX_FILES {
-            fs.inodes[inode_idx as usize].link_count += 1;
-        }
-        old
-    };
-
-    unsafe { dealloc_dentries(old_to_free, old_count as usize); }
-    Ok(())
-}
-
-/// Find a directory entry by name.  Returns inode index or `NO_IDX`.
-pub fn dir_lookup(dir_idx: u32, name: &[u8]) -> u32 {
-    if dir_idx == NO_IDX || dir_idx as usize >= MAX_FILES { return NO_IDX; }
-
-    let fs = FS.lock();
-    let dir = &fs.inodes[dir_idx as usize];
-    if dir.itype != INODE_DIR || dir.entries.is_null() { return NO_IDX; }
-
-    for i in 0..dir.entry_count as usize {
-        let ent = unsafe { &*dir.entries.add(i) };
-        if name_eq(name, &ent.name) {
-            return ent.inode_idx;
-        }
-    }
-    NO_IDX
-}
-
-/// Remove a directory entry.  Port of `dir_remove_entry()` in fs.c.
-pub fn dir_remove_entry(dir_idx: u32, name: &[u8]) -> Result<(), ()> {
-    if dir_idx == NO_IDX || dir_idx as usize >= MAX_FILES { return Err(()); }
-
-    // Find the entry and snapshot list info.
-    let (target_idx, old_entries, old_count) = {
-        let fs = FS.lock();
-        let dir = &fs.inodes[dir_idx as usize];
-        if dir.itype != INODE_DIR { return Err(()); }
-        let mut found = NO_IDX;
-        for i in 0..dir.entry_count as usize {
-            let ent = unsafe { &*dir.entries.add(i) };
-            if name_eq(name, &ent.name) { found = ent.inode_idx; break; }
-        }
-        if found == NO_IDX { return Err(()); }
-        (found, dir.entries, dir.entry_count)
-    };
-
-    let new_count = old_count - 1;
-    let new_entries = if new_count > 0 {
-        let p = unsafe { alloc_dentries(new_count as usize) };
-        if p.is_null() { return Err(()); }
-        // Copy all entries except the removed one.
-        unsafe {
-            let mut out = 0usize;
-            for i in 0..old_count as usize {
-                let ent = &*old_entries.add(i);
-                if !name_eq(name, &ent.name) {
-                    *p.add(out) = *ent;
-                    out += 1;
-                }
-            }
-        }
-        p
-    } else {
-        ptr::null_mut()
-    };
-
-    // Swap entries and update link count.
-    let old_to_free = {
-        let mut fs = FS.lock();
-        let dir = &mut fs.inodes[dir_idx as usize];
-        // Guard against a concurrent modification, exactly as `dir_add_entry`
-        // does. It was missing here, so a `dir_add_entry` that completed while
-        // this call was copying (the lock is dropped for the copy) had its new
-        // entry silently dropped: `new_entries` was built from a snapshot that
-        // predates it, and installing it threw the addition away.
-        //
-        // **What this does NOT close, stated rather than implied.** The copy
-        // loop above reads `old_entries` with the lock released, and a
-        // concurrent add frees that buffer when it installs its own. This
-        // guard refuses to INSTALL a stale result; it cannot un-read a freed
-        // one. Closing that needs the copy to hold the lock, or the buffers to
-        // be reference-counted, and both are bigger than this fix — so the
-        // window is recorded here rather than papered over.
-        if dir.entry_count != old_count {
-            unsafe { dealloc_dentries(new_entries, new_count as usize); }
-            return Err(());
-        }
-        let old = dir.entries;
-        dir.entries     = new_entries;
-        dir.entry_count = new_count;
-        if (target_idx as usize) < MAX_FILES {
-            let t = &mut fs.inodes[target_idx as usize];
-            if t.link_count > 0 { t.link_count -= 1; }
-        }
-        old
-    };
-
-    unsafe { dealloc_dentries(old_to_free, old_count as usize); }
-
-    // Free the inode here if this was its last link and nobody has it open.
-    // Relying on a future `fd_free` to notice `lc == 0` is not enough: a file
-    // unlinked after every fd on it was already closed (`rc == 0` at this
-    // point) gets no further `fd_free` call, so nothing would ever observe
-    // `lc == 0` and free it — the other half of the U09-1 fix (see
-    // `inode_alloc`'s doc comment for the first half: why `lc` could not
-    // reach 0 at all before this).
-    if (target_idx as usize) < MAX_FILES {
-        let (lc, rc) = {
-            let fs = FS.lock();
-            let t = &fs.inodes[target_idx as usize];
-            (t.link_count, t.ref_count)
-        };
-        if lc == 0 && rc == 0 {
-            inode_free(target_idx);
-        }
-    }
-
-    Ok(())
-}
-
-// ─── Path resolution — port of `path_lookup / path_parent` in fs.c ───────────
-
-/// Resolve an absolute path to an inode index.
-/// Returns `NO_IDX` if the path does not exist.
-pub fn path_lookup(path: &[u8]) -> u32 {
-    let path = trim_nul(path);
-    if path.is_empty() || path[0] != b'/' { return NO_IDX; }
-
-    // Root.
-    if path == b"/" {
-        return FS.lock().root_idx;
-    }
-
-    // Check mount points first, in place under the lock (wave 14: the table
-    // used to be copied out whole for this compare-only loop).
-    {
-        let fs = FS.lock();
-        for i in 0..fs.mount_count.min(MAX_MOUNTS) {
-            let mp = &fs.mounts[i];
-            if !mp.active { continue; }
-            if mp.fs.is_some() && path_starts_with(path, trim_nul(&mp.path)) {
-                // A mounted backend's files are opened via `try_backend_open`
-                // in `vfs_open`. `path_lookup` does not create proxy inodes;
-                // return NO_IDX.
-                return NO_IDX;
-            }
-        }
-    }
-
-    // Walk ramfs.
-    let root_idx = FS.lock().root_idx;
-    let mut current = root_idx;
-    for component in PathComponents::new(path) {
-        current = dir_lookup(current, component);
-        if current == NO_IDX { return NO_IDX; }
-    }
-    current
-}
-
 /// Register a filesystem mount point by type tag.
 ///
 /// Unchanged in behaviour: an unknown `fs_type` still registers an active
@@ -1386,8 +1032,7 @@ pub fn vfs_mount(path: &[u8], fs_type: u32) -> Result<(), ()> {
 /// block driver would be mounted through this call and nothing else in this
 /// file would change.
 ///
-/// The azvol mount (`azvol::mount`) and the tests mount with it; `tmpfs`
-/// implements [`FileSystem`] too and stays unmounted here.
+/// [`init`], the azvol mount (`azvol::mount`) and the tests mount with it.
 pub fn vfs_mount_fs(path: &[u8], fs: &'static dyn FileSystem) -> Result<(), ()> {
     let fs_type = fs.fs_type();
     vfs_mount_inner(path, fs_type, Some(fs))
@@ -1494,51 +1139,8 @@ fn same_backend(a: &dyn FileSystem, b: &dyn FileSystem) -> bool {
     core::ptr::addr_eq(a as *const dyn FileSystem, b as *const dyn FileSystem) && a.fs_type() == b.fs_type()
 }
 
-/// Get a single directory entry by index.
-///
-/// Returns `Some((name_bytes, size, is_dir))` for the entry at `index`,
-/// or `None` if the index is out of range or the inode is not a directory.
-pub fn dir_entry_at(dir_idx: u32, index: u32) -> Option<([u8; MAX_FILENAME], u32, bool)> {
-    if dir_idx == NO_IDX || dir_idx as usize >= MAX_FILES { return None; }
-    let fs = FS.lock();
-    let dir = &fs.inodes[dir_idx as usize];
-    if dir.itype != INODE_DIR || dir.entries.is_null() { return None; }
-    if index >= dir.entry_count { return None; }
-    // `index` is DOMAIN_READDIR's a1: masked after the check (Spectre v1).
-    let index = azos_limits::nospec::array_index_nospec(index as usize, dir.entry_count as usize);
-    let ent = unsafe { &*dir.entries.add(index) };
-    let (size, is_dir) = if (ent.inode_idx as usize) < MAX_FILES {
-        let child = &fs.inodes[ent.inode_idx as usize];
-        (child.size, child.itype == INODE_DIR)
-    } else {
-        (0, false)
-    };
-    Some((ent.name, size, is_dir))
-}
-
-/// Iterate all entries in a directory inode, calling `cb(name, inode_type)`.
-///
-/// # Note
-/// Holds the FS lock during iteration. The callback must not acquire
-/// the FS lock itself to avoid deadlock.
-pub fn dir_list(dir_idx: u32, mut cb: impl FnMut(&[u8], u8)) {
-    if dir_idx == NO_IDX || dir_idx as usize >= MAX_FILES { return; }
-    let fs = FS.lock();
-    let dir = &fs.inodes[dir_idx as usize];
-    if dir.itype != INODE_DIR || dir.entries.is_null() { return; }
-    for i in 0..dir.entry_count as usize {
-        let ent   = unsafe { &*dir.entries.add(i) };
-        let itype = if (ent.inode_idx as usize) < MAX_FILES {
-            fs.inodes[ent.inode_idx as usize].itype
-        } else { 0 };
-        let name_len = ent.name.iter().position(|&b| b == 0).unwrap_or(MAX_FILENAME);
-        cb(&ent.name[..name_len], itype);
-    }
-}
-
 /// [`FileSystem::content_stamp`] of the file at `path`, through the same
-/// mount match an open uses (a backend path is never in the ramfs tree).
-/// `None` for a ramfs path or a backend with no stamps.
+/// mount match an open uses. `None` for a backend with no stamps.
 pub fn vfs_content_stamp(path: &[u8]) -> Option<ContentStamp> {
     if cfg!(feature = "content-stamp-off-canary") { return None; }
     let mut moved = [0u8; OVERLAY_PATH_MAX];
@@ -1658,7 +1260,11 @@ fn backend_for_path(path: &[u8]) -> Option<(&'static dyn FileSystem, &[u8])> {
     // paths and never calls into a backend, and copying the whole mount
     // table out first was most of what matching a mount cost. The result
     // borrows `path` and a `'static` backend, never the table.
+    //
+    // The longest mount prefix wins; `/` matches every absolute path, so it
+    // answers only when no other mount does.
     let fs = FS.lock();
+    let mut best: Option<(&'static dyn FileSystem, usize)> = None;
     for i in 0..fs.mount_count.min(MAX_MOUNTS) {
         let mp = &fs.mounts[i];
         if !mp.active { continue; }
@@ -1667,19 +1273,21 @@ fn backend_for_path(path: &[u8]) -> Option<(&'static dyn FileSystem, &[u8])> {
             None    => continue,
         };
         let mp_path = trim_nul(&mp.path);
-        if path_starts_with(path, mp_path) {
-            let after = &path[mp_path.len()..];
-            return Some((backend, after.strip_prefix(b"/").unwrap_or(after)));
+        let matches = if mp_path == b"/" { path.first() == Some(&b'/') } else { path_starts_with(path, mp_path) };
+        if matches && best.is_none_or(|(_, len)| mp_path.len() > len) {
+            best = Some((backend, mp_path.len()));
         }
     }
-    None
+    best.map(|(backend, len)| {
+        let after = &path[len..];
+        (backend, after.strip_prefix(b"/").unwrap_or(after))
+    })
 }
 
 /// Try to open a file from a mounted backend as a proxy inode.
 ///
-/// Creates a temporary INODE_FILE with the file content loaded from the
-/// backend. link_count is set to 0 so the inode is freed automatically when
-/// closed.
+/// Creates a temporary inode with the file content loaded from the backend;
+/// it is freed when its last descriptor closes.
 fn try_backend_open(path: &[u8]) -> u32 {
     let (backend, sub) = match backend_for_path(path) {
         Some(v) => v,
@@ -1720,8 +1328,11 @@ fn try_backend_open(path: &[u8]) -> u32 {
     // Fits: the ceiling is 8 MiB.
     let file_size = file_size as u32;
 
-    // Allocate proxy inode.
-    let inode_idx = inode_alloc(INODE_FILE, PERM_READ);
+    // Tagged with the backing filesystem so writes are flushed to it on close.
+    let inode_idx = inode_alloc(InodeBacking {
+        fs: Some(backend), dirty: false, key, streaming: false, size: 0,
+        ro_stream: false, handle: 0,
+    });
     if inode_idx == NO_IDX { return NO_IDX; }
 
     if file_size > 0 {
@@ -1736,18 +1347,6 @@ fn try_backend_open(path: &[u8]) -> u32 {
         crate::census::add(crate::census::ALLOC, t_alloc, t_fill);
         let _ = backend.read_all(&key, &st, buf);
         crate::census::add(crate::census::FILL, t_fill, crate::census::now());
-    }
-
-    // link_count = 0: freed when last FD releases it (rc==0 && lc==0).
-    // Tag with the backing filesystem so writes are flushed to it on close.
-    {
-        let mut fs = FS.lock();
-        let inode = &mut fs.inodes[inode_idx as usize];
-        inode.link_count = 0;
-        inode.backing    = InodeBacking {
-            fs: Some(backend), dirty: false, key, streaming: false, size: 0,
-            ro_stream: false, handle: 0,
-        };
     }
     inode_idx
 }
@@ -1792,18 +1391,11 @@ fn try_backend_create(path: &[u8]) -> Option<u32> {
     let (backend, sub) = backend_for_path(path)?;
     let key = backend.key_for(sub)?;
 
-    let inode_idx = inode_alloc(INODE_FILE, PERM_READ | PERM_WRITE);
+    let inode_idx = inode_alloc(InodeBacking {
+        fs: Some(backend), dirty: false, key, streaming: false, size: 0,
+        ro_stream: false, handle: 0,
+    });
     if inode_idx == NO_IDX { return None; }
-
-    {
-        let mut fs = FS.lock();
-        let inode = &mut fs.inodes[inode_idx as usize];
-        inode.link_count = 0;   // auto-freed when last FD closes
-        inode.backing    = InodeBacking {
-            fs: Some(backend), dirty: false, key, streaming: false, size: 0,
-            ro_stream: false, handle: 0,
-        };
-    }
     Some(inode_idx)
 }
 
@@ -1846,16 +1438,9 @@ fn try_backend_stream_open_at(
     } else {
         size
     };
-    let perms = if flags & (O_WRONLY | O_RDWR) != 0 { PERM_READ | PERM_WRITE } else { PERM_READ };
-    let inode_idx = inode_alloc(INODE_FILE, perms);
-    if inode_idx == NO_IDX { return Some(NO_IDX); }
-    let mut fs = FS.lock();
-    let inode = &mut fs.inodes[inode_idx as usize];
-    inode.link_count = 0;   // auto-freed when last FD closes
-    inode.backing = InodeBacking {
+    Some(inode_alloc(InodeBacking {
         fs: Some(backend), dirty: false, key, streaming: true, size, ro_stream: false, handle: 0,
-    };
-    Some(inode_idx)
+    }))
 }
 
 /// A read-only open on a [`FileSystem::stream_reads`] backend (wave 14): an
@@ -1877,62 +1462,24 @@ fn try_backend_ro_stream_open(backend: &'static dyn FileSystem, sub: &[u8], flag
     if is_dir { return None; }
     let handle = backend.read_handle(cookie);
     let t_inode = crate::census::now();
-    // `inode_alloc` and the backing in one hold of `FS` (link_count 0: freed
-    // when the last descriptor closes).
     let backing = InodeBacking {
         fs: Some(backend), dirty: false, key, streaming: true, size, ro_stream: true, handle,
     };
-    let inode_idx = inode_alloc_backed(INODE_FILE, PERM_READ, backing);
+    let inode_idx = inode_alloc(backing);
     crate::census::add(crate::census::INODE, t_inode, crate::census::now());
     Some(inode_idx)
-}
-
-/// Return the parent directory index and filename for an absolute path.
-/// Equivalent to `path_parent()` in fs.c.
-pub fn path_parent(path: &[u8]) -> (u32, &[u8]) {
-    let path = trim_nul(path);
-    if path.is_empty() || path[0] != b'/' { return (NO_IDX, &[]); }
-
-    // Find the last '/'.
-    let last_slash = match path.iter().rposition(|&c| c == b'/') {
-        Some(i) => i,
-        None    => return (NO_IDX, &[]),
-    };
-    let filename = &path[last_slash + 1..];
-    if filename.is_empty() { return (NO_IDX, &[]); }
-
-    let parent_idx = if last_slash == 0 {
-        FS.lock().root_idx          // "/filename" → parent is "/"
-    } else {
-        path_lookup(&path[..last_slash])
-    };
-    (parent_idx, filename)
 }
 
 // ─── FD table operations — port of `fd_table_init / fd_alloc / fd_free / fd_get` ──
 
 /// Allocate a file descriptor in a table. Returns the fd, or -1 on failure.
 ///
-/// **Descriptors 0, 1 and 2 are skipped, and the reason is not the one the
-/// old comment gave.** It said "std streams", implying this table holds them.
-/// It does not, and never did: `fd_table_init` — the function that opened
-/// `/dev/stdin`, `/dev/stdout` and `/dev/stderr` into slots 0-2 — had zero
-/// callers anywhere in the tree, and those three files are not created
-/// anywhere either. It has been deleted along with this comment's claim.
-///
-/// The real reason is one level up. `sys_write` intercepts fd 1 and 2 before
-/// it consults the filesystem at all and writes them straight to the UART,
-/// because that path is `libsys::print` and every restricted profile grants it (`COMMON`). So a
-/// real file handed out on fd 1 would have its writes silently go to the
-/// console instead of to the file — a data-loss bug with no error anywhere.
-/// The reservation is load-bearing; only its justification was wrong.
-///
-/// fd 0 has no such interception — `sys_read` has no stdin case, so `read(0)`
-/// simply fails — and is skipped only to keep the three consecutive, which
-/// costs one slot of `MAX_FDS` for the whole machine. Unifying descriptors
-/// under `Cap<T>` removes the question entirely, since a
-/// typed handle carries its kind in its top bits and can never collide with a
-/// console number.
+/// **Descriptors 0, 1 and 2 are skipped.** `sys_write` intercepts fd 1 and 2
+/// before it consults the filesystem at all and writes them straight to the
+/// UART (that path is `libsys::print` and every restricted profile grants it),
+/// so a real file handed out on fd 1 would have its writes silently go to the
+/// console instead of to the file. fd 0 has no such interception and is skipped
+/// only to keep the three consecutive.
 pub fn fd_alloc<const N: usize>(table: &mut FdTableN<N>, inode_idx: u32, flags: u32) -> i32 {
     for fd in 3..N {
         if !table.fds[fd].in_use {
@@ -1965,13 +1512,13 @@ pub fn fd_free<const N: usize>(table: &mut FdTableN<N>, fd: i32) {
     }
 
     if inode_idx != NO_IDX && (inode_idx as usize) < MAX_FILES {
-        let (rc, lc) = {
+        let rc = {
             let mut fs = FS.lock();
             let n = &mut fs.inodes[inode_idx as usize];
             if n.ref_count > 0 { n.ref_count -= 1; }
-            (n.ref_count, n.link_count)
+            n.ref_count
         };
-        if rc == 0 && lc == 0 {
+        if rc == 0 {
             inode_free(inode_idx);
         }
     }
@@ -1981,7 +1528,7 @@ pub fn fd_free<const N: usize>(table: &mut FdTableN<N>, fd: i32) {
 // ─── Descriptor I/O without the table's lock (owner rule F1, wave 15) ───────
 //
 // The machine-wide table is a `Mutex` (kernel/src/boot/seams.rs
-// `KERNEL_FD_TABLE`): real-time tasks use it for ramfs and device files, so
+// `KERNEL_FD_TABLE`): real-time tasks use it for RAM-resident and device files, so
 // it keeps priority inheritance, and so it must not be held across a device
 // wait. The helpers below let its owner do the device part of an operation
 // on a copy of ONE descriptor, outside the lock, and publish the result
@@ -2015,21 +1562,19 @@ pub fn fd_streams<const N: usize>(table: &FdTableN<N>, fd: i32) -> bool {
     if !e.in_use || e.inode_idx == NO_IDX || e.inode_idx as usize >= MAX_FILES { return false; }
     let fs = FS.lock();
     let n = &fs.inodes[e.inode_idx as usize];
-    n.itype == INODE_FILE && n.backing.streaming
-        && n.backing.fs.map_or(false, |b| b.device_backed())
+    n.backing.streaming && n.backing.fs.map_or(false, |b| b.device_backed())
 }
 
 /// What the page cache needs to map the file open descriptor `fd` names: the
 /// inode's backing and whether the descriptor was opened for writing. `None`
-/// for a descriptor that is closed, a directory, a device or a pipe.
+/// for a descriptor that is closed or a pipe.
 pub fn fd_file_backing<const N: usize>(table: &FdTableN<N>, fd: i32) -> Option<(InodeBacking, bool)> {
     if fd < 0 || fd as usize >= N { return None; }
     let fd = azos_limits::nospec::array_index_nospec(fd as usize, N);
     let e = &table.fds[fd];
     if !e.in_use || e.inode_idx == NO_IDX || e.inode_idx as usize >= MAX_FILES { return None; }
-    let fs = FS.lock();
-    let n = &fs.inodes[e.inode_idx as usize];
-    (n.itype == INODE_FILE).then_some((n.backing, n.permissions & PERM_WRITE != 0))
+    let writes = e.flags & (O_WRONLY | O_RDWR) != 0;
+    Some((FS.lock().inodes[e.inode_idx as usize].backing, writes))
 }
 
 /// A copy of open descriptor `fd` as slot 0 of a [`LoneFd`], with its
@@ -2379,114 +1924,81 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
     let mut moved = [0u8; OVERLAY_PATH_MAX];
     let path = if writes { path } else { overlaid(path, &mut moved) };
     let t_path = crate::census::now();
-    // A path under a backend mount is never in the ramfs tree (`path_lookup`
-    // answers NO_IDX for it after the same mount scan), so the mount is
-    // resolved once and the ramfs walk skipped (wave 14).
-    let mounted = backend_for_path(path);
+    let Some(mounted) = backend_for_path(path) else { return -1 };
     // The swap file is the kernel's: no descriptor names it.
-    if let Some((b, sub)) = mounted {
-        if swapfile_guard_path(b, sub, false).is_err() { return -1; }
-        if writes && b.read_only() && !cfg!(feature = "ro-open-canary") { return -1; }
-    }
-    let mut inode_idx = if mounted.is_some() { NO_IDX } else { path_lookup(path) };
+    if swapfile_guard_path(mounted.0, mounted.1, false).is_err() { return -1; }
+    if writes && mounted.0.read_only() && !cfg!(feature = "ro-open-canary") { return -1; }
     crate::census::add(crate::census::PATH, t_path, crate::census::now());
 
-    if inode_idx == NO_IDX {
-        // A streaming backend is opened in place, whatever the flags: no
-        // proxy load, and `O_CREAT`/`O_TRUNC` are the backend's own
-        // `create`/`truncate`, so none of the proxy-path hazards below apply.
-        if let Some(idx) = mounted.and_then(|m| try_backend_stream_open_at(m, flags)) {
-            if idx == NO_IDX { return -1; }
-            let t_fd = crate::census::now();
-            let fd = fd_alloc(table, idx, flags);
-            crate::census::add(crate::census::FD, t_fd, crate::census::now());
-            if fd < 0 { inode_free(idx); }
-            return fd;
+    // A streaming backend is opened in place, whatever the flags: no
+    // proxy load, and `O_CREAT`/`O_TRUNC` are the backend's own
+    // `create`/`truncate`, so none of the proxy-path hazards below apply.
+    if let Some(idx) = try_backend_stream_open_at(mounted, flags) {
+        if idx == NO_IDX { return -1; }
+        let t_fd = crate::census::now();
+        let fd = fd_alloc(table, idx, flags);
+        crate::census::add(crate::census::FD, t_fd, crate::census::now());
+        if fd < 0 { inode_free(idx); }
+        return fd;
+    }
+    let inode_idx;
+    if flags & O_CREAT == 0 {
+        // The proxy of a backend that does not stream.
+        inode_idx = try_backend_open(path);
+        if inode_idx == NO_IDX { return -1; }
+    } else {
+        // **`O_CREAT` on a backend path must not destroy an existing
+        // file.**
+        //
+        // Taking the create branch unconditionally built an EMPTY proxy for a
+        // file that was already there, and `vfs_close` wrote that proxy over
+        // the whole file. Every `O_CREAT` open of an existing backend-mounted
+        // file lost its contents.
+        //
+        // For `O_APPEND` that is not a corner case, it is the entire
+        // point of the flag: `kernel/src/panic.rs` opens
+        // `/fat/CRASH.LOG` with `O_WRONLY|O_CREAT|O_APPEND` on every
+        // panic, so the log held exactly one record — the most recent —
+        // and the one that explains a cascade is the first.
+        //
+        // `O_TRUNC` still wins: a caller asking for a truncation gets
+        // one. Only a non-truncating append reuses the existing file,
+        // which is why the shell's redirect, `cp` and the OTA writer (all
+        // `O_WRONLY|O_CREAT|O_TRUNC`) are untouched.
+        // The proxy `try_backend_open` returns carries the file's bytes
+        // and its real size, and `vfs_write`'s own `O_APPEND` case seeks
+        // to that size — so the write lands at the end rather than at 0.
+        if flags & O_APPEND != 0 && flags & O_TRUNC == 0 {
+            let existing = try_backend_open(path);
+            if existing != NO_IDX {
+                return fd_alloc(table, existing, flags);
+            }
+            // `try_backend_open` answers `NO_IDX` for three different
+            // reasons, and only ONE of them may fall through to the
+            // create path: the file is not there. The other two — the
+            // file is larger than `MAX_FAT32_PROXY_BYTES`, or the heap
+            // could not hold it — describe a file that EXISTS, and
+            // creating an empty proxy for it is the same destruction
+            // this branch exists to prevent, on the path where the
+            // history is worth most. Refuse the open instead: a panic
+            // that is not recorded is recoverable, a panic log that is
+            // erased is not.
+            if backend_file_exists(path) { return -1; }
         }
-        if flags & O_CREAT == 0 {
-            // Try a mounted backend's proxy before giving up.
-            inode_idx = try_backend_open(path);
-            if inode_idx == NO_IDX { return -1; }
-        } else {
-            // **`O_CREAT` on a backend path must not destroy an existing
-            // file.**
-            //
-            // `path_lookup` returns `NO_IDX` for EVERY path under a mounted
-            // backend — it does not create proxy inodes — so "not found"
-            // above says nothing about whether the file exists. Taking the
-            // create branch unconditionally therefore built an EMPTY proxy
-            // for a file that was already there, and `vfs_close` wrote that
-            // proxy over the whole file. Every `O_CREAT` open of an existing
-            // backend-mounted file lost its contents.
-            //
-            // For `O_APPEND` that is not a corner case, it is the entire
-            // point of the flag: `kernel/src/panic.rs` opens
-            // `/fat/CRASH.LOG` with `O_WRONLY|O_CREAT|O_APPEND` on every
-            // panic, so the log held exactly one record — the most recent —
-            // and the one that explains a cascade is the first.
-            //
-            // `O_TRUNC` still wins: a caller asking for a truncation gets
-            // one. Only a non-truncating append reuses the existing file,
-            // which is why the shell's redirect, `cp` and the OTA writer (all
-            // `O_WRONLY|O_CREAT|O_TRUNC`) are untouched.
-            // The proxy `try_backend_open` returns carries the file's bytes
-            // and its real size, and `vfs_write`'s own `O_APPEND` case seeks
-            // to that size — so the write lands at the end rather than at 0.
-            if flags & O_APPEND != 0 && flags & O_TRUNC == 0 {
-                let existing = try_backend_open(path);
-                if existing != NO_IDX {
-                    return fd_alloc(table, existing, flags);
-                }
-                // `try_backend_open` answers `NO_IDX` for three different
-                // reasons, and only ONE of them may fall through to the
-                // create path: the file is not there. The other two — the
-                // file is larger than `MAX_FAT32_PROXY_BYTES`, or the heap
-                // could not hold it — describe a file that EXISTS, and
-                // creating an empty proxy for it is the same destruction
-                // this branch exists to prevent, on the path where the
-                // history is worth most. Refuse the open instead: a panic
-                // that is not recorded is recoverable, a panic log that is
-                // erased is not.
-                if backend_file_exists(path) { return -1; }
-            }
 
-            // Try backend-backed creation first (path under a mount).
-            if let Some(proxy_idx) = try_backend_create(path) {
-                // O_TRUNC on a freshly created inode is a no-op (size==0),
-                // but mark it dirty so vfs_close flushes an explicit truncate.
-                if flags & O_TRUNC != 0 {
-                    FS.lock().inodes[proxy_idx as usize].backing.dirty = true;
-                }
-                return fd_alloc(table, proxy_idx, flags);
-            }
-
-            // Fallback: create the file in ramfs.
-            let (parent_idx, filename) = path_parent(path);
-            if parent_idx == NO_IDX || filename.is_empty() { return -1; }
-
-            inode_idx = inode_alloc(INODE_FILE, PERM_READ | PERM_WRITE);
-            if inode_idx == NO_IDX { return -1; }
-
-            if dir_add_entry(parent_idx, filename, inode_idx).is_err() {
-                inode_free(inode_idx);
-                return -1;
-            }
+        let Some(proxy_idx) = try_backend_create(path) else { return -1 };
+        // O_TRUNC on a freshly created inode is a no-op (size==0),
+        // but mark it dirty so vfs_close flushes an explicit truncate.
+        if flags & O_TRUNC != 0 {
+            FS.lock().inodes[proxy_idx as usize].backing.dirty = true;
         }
+        return fd_alloc(table, proxy_idx, flags);
     }
 
-    // Truncate on O_TRUNC.
+    // Truncate an existing proxy on O_TRUNC; its close writes the cut back.
     if flags & O_TRUNC != 0 {
-        let itype = FS.lock().inodes[inode_idx as usize].itype;
-        if itype == INODE_FILE {
-            let _ = inode_resize(inode_idx, 0);
-            // Mark dirty if this is an existing backend-backed inode.
-            {
-                let mut fs = FS.lock();
-                if fs.inodes[inode_idx as usize].backing.fs.is_some() {
-                    fs.inodes[inode_idx as usize].backing.dirty = true;
-                }
-            }
-        }
+        let _ = inode_resize(inode_idx, 0);
+        FS.lock().inodes[inode_idx as usize].backing.dirty = true;
     }
 
     fd_alloc(table, inode_idx, flags)
@@ -2518,7 +2030,7 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
 /// holds the same inode its own close retries the write rather than assuming
 /// the first one succeeded.
 ///
-/// A close with nothing to flush — a read-only descriptor, a ramfs file, a
+/// A close with nothing to flush — a read-only descriptor, a streamed file, a
 /// clean inode — still returns 0.
 pub fn vfs_close<const N: usize>(table: &mut FdTableN<N>, fd: i32) -> i32 {
     if !cfg!(feature = "file-census") || !census_backend_fd(table, fd) {
@@ -2593,22 +2105,6 @@ fn vfs_read_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *mut u8
     let inode_idx = fd_ent.inode_idx;
     if inode_idx == NO_IDX { return -1; }
 
-    // Extract inode type and device callback while lock is held.
-    let (itype, dev_read_fn) = {
-        let fs = FS.lock();
-        let n  = &fs.inodes[inode_idx as usize];
-        (n.itype, n.dev_read)
-    };
-
-    if itype == INODE_DEVICE {
-        return if let Some(f) = dev_read_fn {
-            unsafe { f(buf, count) }
-        } else {
-            -1
-        };
-    }
-    if itype != INODE_FILE { return -1; }
-
     let (data_ptr, size, backing) = {
         let fs = FS.lock();
         let n  = &fs.inodes[inode_idx as usize];
@@ -2624,7 +2120,7 @@ fn vfs_read_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *mut u8
         if is_gone(backend) { return -1; }
         let want = count.min(i32::MAX as usize);
         // Safety: the caller hands a buffer of `count` writable bytes, the
-        // same contract the ramfs copy below relies on.
+        // same contract the proxy copy below relies on.
         let dst = unsafe { core::slice::from_raw_parts_mut(buf, want) };
         let n = match cache_read(backend, &backing.key, backing.ro_stream.then_some(backing.handle), offset, dst) {
             Some(n) => n,
@@ -2670,21 +2166,6 @@ fn vfs_write_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *const
     let inode_idx = fd_ent.inode_idx;
     if inode_idx == NO_IDX { return -1; }
 
-    let (itype, dev_write_fn) = {
-        let fs = FS.lock();
-        let n  = &fs.inodes[inode_idx as usize];
-        (n.itype, n.dev_write)
-    };
-
-    if itype == INODE_DEVICE {
-        return if let Some(f) = dev_write_fn {
-            unsafe { f(buf, count) }
-        } else {
-            -1
-        };
-    }
-    if itype != INODE_FILE { return -1; }
-
     // Streaming backend: write in place; nothing is marked dirty because
     // nothing is held back.
     let backing = FS.lock().inodes[inode_idx as usize].backing;
@@ -2722,7 +2203,7 @@ fn vfs_write_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *const
         table.set_off(fd, size as u64);
     }
 
-    // The ramfs/proxy buffer is `u32`-sized; an offset past it (reachable
+    // The proxy buffer is `u32`-sized; an offset past it (reachable
     // only by seeking a streaming file, which does not come here) is refused.
     let offset = match u32::try_from(table.off(fd)) {
         Ok(o) => o,
@@ -2791,7 +2272,7 @@ fn vfs_write_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *const
 
 /// Seek within a file. Returns the new offset, or -1 on error.
 ///
-/// `i64` offsets. A ramfs/proxy file cannot be seeked past
+/// `i64` offsets. A proxy file cannot be seeked past
 /// its end; a streaming file can (a later write there grows it, as POSIX
 /// allows), up to `i64::MAX`.
 pub fn vfs_lseek<const N: usize>(table: &mut FdTableN<N>, fd: i32, offset: i64, whence: i32) -> i64 {
@@ -2828,39 +2309,18 @@ pub fn vfs_lseek<const N: usize>(table: &mut FdTableN<N>, fd: i32, offset: i64, 
 
 // ─── Path operations over the trait ──────────────────────────
 //
-// Each routes a path to the backend mounted under it, or to the ramfs. They
+// Each routes a path to the backend mounted under it. They
 // are the VFS half of the trait methods above: `DOMAIN_STAT` reaches
 // `vfs_stat`; the rest have no syscall number in the ABI yet and are the
 // entry points a future one (or an in-kernel caller) uses.
 
-/// `S_IFCHR`, for the ramfs device inodes.
+/// `S_IFCHR`, for the character devices of `/dev`.
 pub const S_IFCHR: u32 = 0o020000;
-
-/// A ramfs inode's `PERM_*` bits as a POSIX mode for owner, group and other.
-const fn perm_mode(p: u32) -> u32 {
-    let p = p & 0o7;
-    p | (p << 3) | (p << 6)
-}
 
 /// Size, type and metadata of the file or directory at `path`.
 pub fn vfs_stat(path: &[u8]) -> Option<FileStat> {
     let mut moved = [0u8; OVERLAY_PATH_MAX];
     let path = overlaid(path, &mut moved);
-    let idx = path_lookup(path);
-    if idx != NO_IDX {
-        let fs = FS.lock();
-        let n = &fs.inodes[idx as usize];
-        let (ty, is_dir, size) = match n.itype {
-            INODE_DIR    => (S_IFDIR, true, n.entry_count as u64),
-            INODE_DEVICE => (S_IFCHR, false, 0),
-            _            => (S_IFREG, false, n.size as u64),
-        };
-        return Some(FileStat {
-            size, is_dir, cookie: 0, mode: ty | perm_mode(n.permissions),
-            uid: 0, gid: 0, nlink: n.link_count.max(1),
-            atime: 0, mtime: 0, ctime: 0,
-        });
-    }
     let (backend, sub) = backend_for_path(path)?;
     if sub.is_empty() {
         // The mount point itself: the backend's root directory.
@@ -2869,19 +2329,9 @@ pub fn vfs_stat(path: &[u8]) -> Option<FileStat> {
     backend.stat(&backend.key_for(sub)?)
 }
 
-/// Capacity and free space of the filesystem `path` is on. The ramfs
-/// answers in inodes (`MAX_FILES`) and has no block count.
+/// Capacity and free space of the filesystem `path` is on.
 pub fn vfs_statfs(path: &[u8]) -> Result<StatFs, FsErr> {
-    if let Some((backend, _)) = backend_for_path(path) {
-        return backend.statfs();
-    }
-    let fs = FS.lock();
-    let used = fs.inodes.iter().filter(|n| n.itype != 0).count() as u64;
-    Ok(StatFs {
-        fs_type: FS_TYPE_RAMFS, block_size: 1, blocks: 0, blocks_free: 0,
-        files: MAX_FILES as u64, files_free: (MAX_FILES as u64).saturating_sub(used),
-        name_max: NAME_MAX as u32,
-    })
+    backend_for_path(path).ok_or(FsErr::NotFound)?.0.statfs()
 }
 
 /// Check the volume mounted at `path` ([`FileSystem::check`]). `path` names
@@ -2895,33 +2345,14 @@ pub fn vfs_check(path: &[u8], scrub: bool) -> Result<FsCheck, FsErr> {
 }
 
 /// The entry of directory `path` at or after `cookie`; see
-/// [`FileSystem::readdir`]. For a ramfs directory the cookie is the entry
-/// index.
+/// [`FileSystem::readdir`].
 pub fn vfs_readdir(path: &[u8], cookie: u64, out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
-    let idx = path_lookup(path);
-    if idx == NO_IDX {
-        let (backend, sub) = backend_for_path(path).ok_or(FsErr::NotFound)?;
-        return backend.readdir(sub, cookie, out);
-    }
-    let index = match u32::try_from(cookie) {
-        Ok(i) => i,
-        Err(_) => return Ok(None),
-    };
-    match dir_entry_at(idx, index) {
-        Some((name, size, is_dir)) => {
-            let len = name.iter().position(|&b| b == 0).unwrap_or(MAX_FILENAME);
-            if !out.set(&name[..len], is_dir, size as u64) { return Err(FsErr::NameTooLong); }
-            Ok(Some(cookie + 1))
-        }
-        None => {
-            let fs = FS.lock();
-            if fs.inodes[idx as usize].itype != INODE_DIR { Err(FsErr::NotDir) } else { Ok(None) }
-        }
-    }
+    let (backend, sub) = backend_for_path(path).ok_or(FsErr::NotFound)?;
+    backend.readdir(sub, cookie, out)
 }
 
-/// The backend and in-mount path for `path`, or `NotFound` for a ramfs path
-/// (the ramfs has no rename/truncate of its own).
+/// The backend and in-mount path for `path`; `Invalid` for a mount point
+/// itself, `NotFound` for a path no mount serves.
 fn backend_or_not_found(path: &[u8]) -> Result<(&'static dyn FileSystem, &[u8]), FsErr> {
     match backend_for_path(path) {
         Some((b, sub)) if !sub.is_empty() => Ok((b, sub)),
@@ -2930,30 +2361,15 @@ fn backend_or_not_found(path: &[u8]) -> Result<(&'static dyn FileSystem, &[u8]),
     }
 }
 
-/// Create a directory. Under a mount, the backend's `mkdir`; elsewhere a
-/// ramfs directory, as `DOMAIN_MKDIR` has always made.
+/// Create a directory: the backend's `mkdir`.
 pub fn vfs_mkdir(path: &[u8]) -> Result<(), FsErr> {
-    if let Some((b, sub)) = backend_for_path(path) {
-        // The mount point itself already exists.
-        if sub.is_empty() { return Err(FsErr::Exists); }
-        return b.mkdir(sub);
-    }
-    let (parent, name) = path_parent(path);
-    if parent == NO_IDX || name.is_empty() { return Err(FsErr::NotFound); }
-    if name.len() >= MAX_FILENAME { return Err(FsErr::NameTooLong); }
-    let d = inode_alloc(INODE_DIR, PERM_READ | PERM_WRITE | PERM_EXEC);
-    if d == NO_IDX { return Err(FsErr::NoSpace); }
-    dir_add_entry(parent, name, d).map_err(|()| { inode_free(d); FsErr::Exists })
+    let (b, sub) = backend_for_path(path).ok_or(FsErr::NotFound)?;
+    // The mount point itself already exists.
+    if sub.is_empty() { return Err(FsErr::Exists); }
+    b.mkdir(sub)
 }
 
-/// Whether `path` is on a mounted filesystem (the mount point itself
-/// included). `DOMAIN_MKDIR`/`DOMAIN_UNLINK` use it to choose between the backend
-/// (`vfs_mkdir`, `vfs_unlink`) and the ramfs tree.
-pub fn vfs_on_mount(path: &[u8]) -> bool {
-    backend_for_path(path).is_some()
-}
-
-/// Remove the file at `path` under a mount: the backend's `unlink`, after a
+/// Remove the file at `path`: the backend's `unlink`, after a
 /// stat so a missing entry answers `NotFound` and a directory `IsDir` (the
 /// backend's `unlink` takes either; FAT32's would free a directory's chain
 /// with its contents still listed). `Invalid` for a path no backend can name,
@@ -2977,7 +2393,7 @@ pub fn vfs_unlink(path: &[u8]) -> Result<(), FsErr> {
     }
 }
 
-/// Remove an empty directory under a mount.
+/// Remove an empty directory.
 pub fn vfs_rmdir(path: &[u8]) -> Result<(), FsErr> {
     let (b, sub) = backend_or_not_found(path)?;
     swapfile_guard_path(b, sub, true)?;
@@ -3003,12 +2419,22 @@ pub fn vfs_rename(from: &[u8], to: &[u8]) -> Result<(), FsErr> {
             delete_ok(bf, DeleteOp::Replace)?;
         }
     }
+    // A directory takes its files' keys with it (they are paths): everything
+    // cached reaches the backend first and none of it is kept.
+    let moves_dir = bf.page_cached()
+        && keys.0.as_ref().and_then(|k| bf.stat(k)).is_some_and(|s| s.is_dir);
+    if moves_dir {
+        page_cache_flush_fs(bf)?;
+    }
     if let Some(k) = &keys.0 {
         page_cache_flush_file(bf, k)?;
     }
     let r = bf.rename(sf, st);
     for k in [&keys.0, &keys.1].into_iter().flatten() {
         page_cache_drop(bf, Some(k), 0);
+    }
+    if moves_dir {
+        page_cache_drop(bf, None, 0);
     }
     r
 }
@@ -3242,7 +2668,6 @@ pub fn vfs_truncate(path: &[u8], len: u64) -> Result<(), FsErr> {
 
 /// Make the writes through descriptor `fd` durable. A proxy inode's dirty
 /// buffer is written first (as a close would), then the backend's `fsync`.
-/// A ramfs file has nothing to make durable: `Ok`.
 pub fn vfs_fsync<const N: usize>(table: &mut FdTableN<N>, fd: i32) -> Result<(), FsErr> {
     if fd < 0 || fd as usize >= N { return Err(FsErr::Invalid); }
     // Masked after the check (Spectre v1, `azos_limits::nospec`).
@@ -3838,68 +3263,16 @@ fn cache_write(b: &'static dyn FileSystem, key: &InodeKey, offset: u64, src: &[u
     Some(Ok(n))
 }
 
-// ─── Device callbacks ─────────────────────────────────────────────────────────
+// ─── Filesystem initialisation ────────────────────────────────────────────────
 
-unsafe fn device_stdin_read(_buf: *mut u8, _count: usize) -> i32 {
-    0   // No keyboard input in Phase 6
-}
-
-/// `/dev/stdout` and `/dev/stderr`: the same console path as `sys_write`
-/// to fd 1/2 (one write is one piece on the wire, never spliced), not the
-/// lock-free byte loop it used to be. Reached from `vfs_write` with the
-/// caller's FD table locked (task context), so the ring-3 writer's
-/// preemptible line lock is fine here.
-unsafe fn device_stdout_write(buf: *const u8, count: usize) -> i32 {
-    if count > 0 {
-        azos_drv_sys::uart::console_write_ring3(core::slice::from_raw_parts(buf, count));
-    }
-    count as i32
-}
-
-// ─── Filesystem initialisation — port of `fs_init()` in fs.c ─────────────────
-
-/// Initialise the ramfs.  Creates root "/", "/dev", the three std device
-/// files, and "/tmp".  Must be called after the heap is initialised.
+/// Mount the RAM file systems: tmpfs at `/` and at `/tmp`, devfs at `/dev`.
+/// Must be called after the heap is initialised.
 pub fn init() {
-    // Root inode "/". It has no parent directory entry to hold a link for
-    // it (there is nothing to `dir_add_entry` it into), so unlike every
-    // other inode its link_count is not earned through a dentry — it is
-    // pinned here explicitly so a stray open("/")+close() can never run it
-    // through fd_free's `rc == 0 && lc == 0` auto-free.
-    let root_idx = inode_alloc(INODE_DIR, PERM_READ | PERM_WRITE | PERM_EXEC);
-    assert!(root_idx != NO_IDX, "[FS] inode pool exhausted for root");
-    FS.lock().inodes[root_idx as usize].link_count = 1;
-    FS.lock().root_idx = root_idx;
-
-    // /dev
-    let dev_idx = inode_alloc(INODE_DIR, PERM_READ | PERM_EXEC);
-    dir_add_entry(root_idx, b"dev", dev_idx)
-        .expect("[FS] Failed to create /dev");
-
-    // /dev/stdin
-    let stdin_idx = inode_alloc(INODE_DEVICE, PERM_READ);
-    FS.lock().inodes[stdin_idx as usize].dev_read = Some(device_stdin_read);
-    dir_add_entry(dev_idx, b"stdin", stdin_idx)
-        .expect("[FS] Failed to create /dev/stdin");
-
-    // /dev/stdout
-    let stdout_idx = inode_alloc(INODE_DEVICE, PERM_WRITE);
-    FS.lock().inodes[stdout_idx as usize].dev_write = Some(device_stdout_write);
-    dir_add_entry(dev_idx, b"stdout", stdout_idx)
-        .expect("[FS] Failed to create /dev/stdout");
-
-    // /dev/stderr (same write callback as stdout)
-    let stderr_idx = inode_alloc(INODE_DEVICE, PERM_WRITE);
-    FS.lock().inodes[stderr_idx as usize].dev_write = Some(device_stdout_write);
-    dir_add_entry(dev_idx, b"stderr", stderr_idx)
-        .expect("[FS] Failed to create /dev/stderr");
-
-    // /tmp — a ramfs directory a topology can grant ring 3 a tree on (wave
-    // 10: creating and removing entries needs a `Cap<File>` naming a tree
-    // that covers the entry's directory, and `/` is the only other writable
-    // ramfs directory). A tmpfs mounted at `/tmp` shadows it, as any mount
-    // shadows what is under its path.
-    let tmp_idx = inode_alloc(INODE_DIR, PERM_READ | PERM_WRITE | PERM_EXEC);
-    dir_add_entry(root_idx, b"tmp", tmp_idx)
-        .expect("[FS] Failed to create /tmp");
+    for (path, fs) in [
+        (&b"/"[..], &crate::tmpfs::TMPFS_ROOT as &'static dyn FileSystem),
+        (b"/tmp", &crate::tmpfs::TMPFS_TMP),
+        (b"/dev", &crate::devfs::DEV_FS),
+    ] {
+        vfs_mount_fs(path, fs).expect("[FS] mount table full at boot");
+    }
 }

@@ -11,7 +11,7 @@
 //! path), inside it `stat` (key + directory lookup), `alloc` (proxy inode and
 //! its buffer), `fill` (`read_all` into the proxy); `read` and `close` (all
 //! of `vfs_read`/`vfs_close` on a backend inode); for a read-only stream
-//! also `path` (`path_lookup`'s miss), `key` (mount match + backend key),
+//! also `path` (the mount match), `key` (mount match + backend key),
 //! `inode` (inode slot) and `fd` (descriptor). Counters (per open): FAT32
 //! sector-cache hits and misses and device read requests.
 //!

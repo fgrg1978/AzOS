@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// One file. `epoch` stands for the volume's write epoch; `stamps` off is a
-/// backend with no stamps (the ramfs).
+/// backend with no stamps (tmpfs).
 struct Medium {
     bytes: Mutex<Vec<u8>>,
     epoch: AtomicU64,
@@ -187,7 +187,7 @@ fn a_write_during_a_miss_is_not_remembered() {
     assert_eq!(w.digest, sha(&new));
 }
 
-/// **A file system with no stamps is never cached.** (The ramfs, tmpfs.)
+/// **A file system with no stamps is never cached.** (tmpfs.)
 #[test]
 fn no_stamp_no_cache() {
     let img = image(8, 3000);

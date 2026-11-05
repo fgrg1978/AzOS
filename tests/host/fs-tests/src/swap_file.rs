@@ -221,7 +221,7 @@ fn a_fat32_swap_file_that_cannot_grow_is_refused_and_can_still_shrink() {
 
 #[test]
 fn a_filesystem_that_cannot_map_its_files_says_so() {
-    let k = super::tmpfs::TMPFS_FS.key_for(b"x").unwrap();
-    assert_eq!(super::tmpfs::TMPFS_FS.swap_runs(&k, 0, &mut []), Err(FsErr::Unsupported));
-    assert_eq!(super::tmpfs::TMPFS_FS.swap_resize(&k, 0), Err(FsErr::Unsupported));
+    let k = super::tmpfs::TMPFS_TMP.key_for(b"x").unwrap();
+    assert_eq!(super::tmpfs::TMPFS_TMP.swap_runs(&k, 0, &mut []), Err(FsErr::Unsupported));
+    assert_eq!(super::tmpfs::TMPFS_TMP.swap_resize(&k, 0), Err(FsErr::Unsupported));
 }

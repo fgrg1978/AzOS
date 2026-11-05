@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! system/{version, platform}
-//! fs/tmpfs/{files, used_bytes, max_bytes}
+//! fs/tmpfs/{files, used_bytes, max_bytes}             the /tmp mount
 //! drivers/<slot>/{kind, name, isolation, perms}       name "" = free slot
 //! chaos/{seed, <point>/{rate, checked, fired}}         Kconfig CHAOS
 //! ```
@@ -197,9 +197,11 @@ pub(crate) fn refresh(w: &Writer<'_>) -> u32 {
         let g = IDS.lock();
         if let Some(ids) = g.as_ref() {
             let mut ok = |r: Result<(), Error>| bad += r.is_err() as u32;
-            let (files, used, max) = azos_fs::tmpfs_stats();
-            for (id, v) in ids.tmpfs.iter().zip([files, used, max]) {
-                ok(w.set_u64(*id, v as u64));
+            if let Ok(sf) = azos_fs::vfs_statfs(b"/tmp") {
+                let v = [sf.files - sf.files_free, sf.blocks - sf.blocks_free, sf.blocks];
+                for (id, v) in ids.tmpfs.iter().zip(v) {
+                    ok(w.set_u64(*id, v));
+                }
             }
             #[cfg(feature = "chaos")]
             for ((rate, checked, fired), p) in ids.chaos.iter().zip(azos_chaos::POINTS) {

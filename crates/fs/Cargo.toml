@@ -14,6 +14,9 @@ usb-volume = []
 # a descriptor opened on one USB stick reads the next stick's file of the
 # same name. The fs-tests `usb_volume` row must turn red. Never in a real build.
 usb-volume-stale-fd-canary = []
+# Gate canary (ktest `ram_fs_bound_refuses`, fs-tests `tmpfs_rows`): a full
+# tmpfs entry table hands out slot 0 instead of refusing. Never in a real build.
+tmpfs-bound-canary = []
 # ktest `fat_claim_waiter_donates_to_owner` (kernel/src/ktest.rs, FX12):
 # `fat32_ktest_with_wb_claim` holds the write-back claim around a closure.
 # Enabled through the kernel's `ktest` feature.
@@ -30,7 +33,7 @@ crash-log-smoke = []
 # of the offset (the behaviour before shared open file descriptions). The
 # shared-offset rows must turn red with it. Never in a real build.
 fd-private-offset-canary = []
-# U09-1 QEMU/board proof: `MAX_FILES + 1` ramfs create+unlink cycles,
+# U09-1 QEMU/board proof: `MAX_FILES + 1` create+unlink cycles on `/`,
 # printed as `[FS] inode probe: ...`. See `crates/fs/src/probe.rs`. The one
 # caller is a one-line hook in `kernel/src/main.rs`'s boot path (delivered
 # as a diff — outside this front's file ownership).

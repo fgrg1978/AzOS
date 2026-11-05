@@ -502,7 +502,7 @@ const RESOURCE_DISK_PART1: &[u8] = b"block.part.1";
 const RESOURCE_DISK_PART0: &[u8] = b"block.part.0";
 // Directory trees ring 3 may change (wave 10: mkdir, unlink, rmdir, rename and
 // truncate need a `Cap<File>` WRITE tree covering the path). QEMU only, for
-// `userspace/tests/captest`: `/fat`, the FAT32 volume, and `/tmp`, the ramfs
+// `userspace/tests/captest`: `/fat`, the FAT32 volume, and `/tmp`, the tmpfs
 // directory its positive mkdir/rmdir use. A board topology grants no tree:
 // nothing in ring 3 there changes the tree, and a grant is authority. (Every
 // row does hold the read-only root directory, `ROOT_RO`: it names, it changes

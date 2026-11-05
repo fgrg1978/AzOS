@@ -49,7 +49,7 @@
 
 #![cfg(test)]
 
-use super::{fat32, image::*, pagecache::FsPageBacking, serial, tmpfs, vfs, vfs_open_close, vfs_p2};
+use super::{fat32, image::*, pagecache::FsPageBacking, serial, tmpfs, tmpfs_h, vfs, vfs_open_close, vfs_p2};
 use azos_mm::pager::{fill_page, write_back_page, PageKey};
 use fs_test_drivers::{disk_durable_image, disk_stats, disk_take_log, disk_write_fail_after, disk_write_fail_clear,
                       disk_writeback, LogEntry};
@@ -1050,21 +1050,21 @@ fn a_tmpfs_file_goes_through_the_cache() {
     vfs_p2::tmp_once();
     vfs_p2::clear_tmpfs();
     let base = pat(3000, 23);
-    tmpfs::tmpfs_write(b"cached", &base).unwrap();
+    tmpfs_h::write(b"cached", &base).unwrap();
     let _c = install(1024, 64);
     let mut t = vfs::ScratchFds::new();
     let fd = vfs::vfs_open(&mut t, b"/tmp/cached", O_RDWR);
     assert!(fd >= 0);
     assert_eq!(vfs_write_at(&mut t, fd, 1100, b"in the cache"), 12);
     let mut raw = vec![0u8; 3000];
-    assert_eq!(tmpfs::tmpfs_read(b"cached", &mut raw), Ok(3000));
+    assert_eq!(tmpfs_h::read(b"cached", &mut raw), Ok(3000));
     assert_eq!(raw, base, "tmpfs still has the old bytes");
     let mut want = base.clone();
     want[1100..1112].copy_from_slice(b"in the cache");
     assert_eq!(vfs_read_at(b"/tmp/cached", 0, 3000), want);
     // The mapping and read() share the page.
-    let fs: &'static dyn FileSystem = &tmpfs::TMPFS_FS;
-    let k = tmpfs::TmpFs.key_for(b"cached").unwrap();
+    let fs: &'static dyn FileSystem = &tmpfs::TMPFS_TMP;
+    let k = tmpfs::TMPFS_TMP.key_for(b"cached").unwrap();
     let page = map_page(fs, &k, 3000, 1, true);
     // SAFETY: the cache's page buffer, single-threaded.
     let view = unsafe { core::slice::from_raw_parts_mut(page, 1024) };
@@ -1072,7 +1072,7 @@ fn a_tmpfs_file_goes_through_the_cache() {
     view[500] = 0xEE;
     assert_eq!(vfs_read_at(b"/tmp/cached", 1524, 1)[0], 0xEE);
     assert_eq!(vfs::vfs_fsync(&mut t, fd), Ok(()));
-    assert_eq!(tmpfs::tmpfs_read(b"cached", &mut raw), Ok(3000));
+    assert_eq!(tmpfs_h::read(b"cached", &mut raw), Ok(3000));
     want[1524] = 0xEE;
     assert_eq!(raw, want, "fsync wrote the pages into tmpfs");
     // The split fsync reaches tmpfs's pages too.
@@ -1080,19 +1080,19 @@ fn a_tmpfs_file_goes_through_the_cache() {
     want[2900..2905].copy_from_slice(b"split");
     let work = vfs::fd_fsync_begin(&t, fd).expect("lend");
     assert_eq!(vfs::fd_fsync_finish(work), Ok(()));
-    assert_eq!(tmpfs::tmpfs_read(b"cached", &mut raw), Ok(3000));
+    assert_eq!(tmpfs_h::read(b"cached", &mut raw), Ok(3000));
     assert_eq!(raw, want, "the split fsync wrote them too");
     // unlink: gone for good, whatever the flusher does after.
     assert_eq!(vfs_write_at(&mut t, fd, 5, b"late"), 4);
     assert_eq!(vfs::vfs_unlink(b"/tmp/cached"), Ok(()));
     fat32::fat32_writeback_tick(NOW.load(Ordering::SeqCst) + 100_000);
-    assert_eq!(tmpfs::tmpfs_size(b"cached"), None, "a write-back must not create the file again");
-    tmpfs::tmpfs_write(b"cached", &want).unwrap();
+    assert_eq!(tmpfs_h::size(b"cached"), None, "a write-back must not create the file again");
+    tmpfs_h::write(b"cached", &want).unwrap();
     // An append is tmpfs's own.
     let end = vfs::vfs_lseek(&mut t, fd, 0, vfs::SEEK_END);
     assert_eq!(end, 3000);
     assert_eq!(vfs::vfs_write(&mut t, fd, b"++".as_ptr(), 2), 2);
-    assert_eq!(tmpfs::tmpfs_size(b"cached"), Some(3002));
+    assert_eq!(tmpfs_h::size(b"cached"), Some(3002));
     assert_eq!(vfs_read_at(b"/tmp/cached", 2998, 10), [&want[2998..], b"++".as_slice()].concat());
     vfs::vfs_close(&mut t, fd);
     vfs_p2::clear_tmpfs();
@@ -1376,7 +1376,7 @@ fn a_write_back_failure_is_reported_by_its_own_filesystem() {
     volume_with(&[(b"OWN     BIN", &pat(2048, 4))]);
     vfs_p2::tmp_once();
     vfs_p2::clear_tmpfs();
-    tmpfs::tmpfs_write(b"other", &pat(2048, 5)).unwrap();
+    tmpfs_h::write(b"other", &pat(2048, 5)).unwrap();
     let _c = install(1024, 64);
     let mut t = vfs::ScratchFds::new();
     let a = vfs::vfs_open(&mut t, &path("OWN.BIN"), O_RDWR);

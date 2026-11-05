@@ -653,7 +653,7 @@ pub extern "C" fn _start() -> ! {
     // Non-destructive on `/fat`: every image the gate builds is shared by
     // other rows, so the mutating FAT32 paths are covered by `tests/host/fs-tests`
     // on an in-memory volume, and here only what cannot change the image runs
-    // against it. The positive mkdir/rmdir work on the ramfs `/tmp` instead.
+    // against it. The positive mkdir/rmdir work on the tmpfs `/tmp` instead.
     {
         const E_NOTEMPTY: isize = -39;
         const E_INVAL: isize = -22;
@@ -682,7 +682,7 @@ pub extern "C" fn _start() -> ! {
         expect_errno(b"fsync_typed(0) [forged cap]", sys::fsync_typed(0), -22);
 
         // Wave 10: these five need a `Cap<File>` WRITE tree covering the
-        // path. The QEMU topology grants autorun `/fat` and `/tmp` (a ramfs
+        // path. The QEMU topology grants autorun `/fat` and `/tmp` (a tmpfs
         // directory); everything else is refused with -EACCES before the
         // filesystem is asked, so the refusal says nothing about existence.
         const E_ACCES: isize = -13;

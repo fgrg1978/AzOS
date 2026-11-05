@@ -148,6 +148,13 @@ mod swap_file;
 #[allow(dead_code)]
 #[path = "../../../../crates/fs/src/tmpfs.rs"]
 mod tmpfs;
+#[allow(dead_code)]
+#[path = "../../../../crates/fs/src/devfs.rs"]
+mod devfs;
+#[cfg(test)]
+mod tmpfs_h;
+#[cfg(test)]
+mod tmpfs_rows;
 
 // The on-disk names of the signed topology pair (`crates/core/topology/src/
 // paths.rs`), pulled the same way so `topology_paths_on_a_real_volume` below
@@ -325,8 +332,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// `vfs::init()`, exactly once per test binary, shared across every test
-/// module that needs the ramfs root ("/", "/dev", the three std device
-/// files) to exist.
+/// module that needs the RAM mounts (`/`, `/tmp`, `/dev`) to exist.
 ///
 /// It has to be ONE `Once` for the whole crate, not one per module: `FS` is
 /// a static, so `vfs::init()` runs against the same pool no matter which
@@ -1623,10 +1629,9 @@ mod vfs_open_close {
     /// `vfs::init()` and the mount happen ONCE per test binary.
     ///
     /// Both are one-shot by construction: `init()` `.expect()`s on adding
-    /// `/dev` to the root and would panic the second time, and `vfs_mount`
-    /// appends to a table of `MAX_MOUNTS = 6`. The ramfs inode pool is a
-    /// static, like everything else in this suite, so `serial()` still
-    /// orders the tests.
+    /// the RAM file systems and would panic the second time, and `vfs_mount`
+    /// appends to the table of `MAX_MOUNTS`. The inode pool is a static, like
+    /// everything else in this suite, so `serial()` still orders the tests.
     pub(super) fn vfs_once() {
         super::vfs_root_once();
         static ONCE: std::sync::Once = std::sync::Once::new();
@@ -2400,7 +2405,7 @@ mod fsync_tickets {
     #[test]
     fn only_a_backend_with_a_ticketed_flush_answers_a_ticket() {
         let _g = serial();
-        assert_eq!(tmpfs::TmpFs.flush_request(), None, "tmpfs has no ticketed flush");
+        assert_eq!(tmpfs::TMPFS_TMP.flush_request(), None, "tmpfs has no ticketed flush");
         let t = vfs::FAT32_FS.flush_request().expect("FAT32 answers its volume flush ticket");
         assert!(t >= 1);
         // No flusher task on the host: the flush ran inline.
@@ -2418,101 +2423,85 @@ mod fsync_tickets {
 /// `#[path]` like `fat32`/`vfs` above.
 #[cfg(test)]
 mod tmpfs_streaming {
-    use super::{serial, tmpfs, vfs};
+    use super::{serial, tmpfs, tmpfs_h, vfs};
     use vfs::FileSystem as _;
 
     fn key(name: &[u8]) -> vfs::InodeKey {
-        tmpfs::TmpFs.key_for(name).expect("name fits INODE_KEY_LEN")
+        tmpfs::TMPFS_TMP.key_for(name).expect("name fits INODE_KEY_LEN")
     }
 
     #[test]
     fn write_at_then_read_at_round_trips() {
         let _g = serial();
         let k = key(b"a");
-        assert_eq!(tmpfs::TmpFs.write_at(&k, 0, b"hello"), Ok(5));
+        assert_eq!(tmpfs::TMPFS_TMP.write_at(&k, 0, b"hello"), Ok(5));
         let mut buf = [0u8; 8];
-        let n = tmpfs::TmpFs.read_at(&k, 0, &mut buf);
+        let n = tmpfs::TMPFS_TMP.read_at(&k, 0, &mut buf);
         assert_eq!(&buf[..n], b"hello");
-        let _ = tmpfs::tmpfs_unlink(b"a");
+        let _ = tmpfs_h::unlink(b"a");
     }
 
     #[test]
     fn read_at_offset_skips_leading_bytes() {
         let _g = serial();
         let k = key(b"b");
-        tmpfs::TmpFs.write_at(&k, 0, b"0123456789").unwrap();
+        tmpfs::TMPFS_TMP.write_at(&k, 0, b"0123456789").unwrap();
         let mut buf = [0u8; 4];
-        let n = tmpfs::TmpFs.read_at(&k, 6, &mut buf);
+        let n = tmpfs::TMPFS_TMP.read_at(&k, 6, &mut buf);
         assert_eq!(&buf[..n], b"6789");
-        let _ = tmpfs::tmpfs_unlink(b"b");
+        let _ = tmpfs_h::unlink(b"b");
     }
 
     #[test]
     fn write_at_past_eof_leaves_a_zero_hole() {
         let _g = serial();
         let k = key(b"c");
-        tmpfs::TmpFs.write_at(&k, 0, b"AB").unwrap();
-        tmpfs::TmpFs.write_at(&k, 10, b"Z").unwrap();
+        tmpfs::TMPFS_TMP.write_at(&k, 0, b"AB").unwrap();
+        tmpfs::TMPFS_TMP.write_at(&k, 10, b"Z").unwrap();
         let mut buf = [0u8; 11];
-        let n = tmpfs::TmpFs.read_at(&k, 0, &mut buf);
+        let n = tmpfs::TMPFS_TMP.read_at(&k, 0, &mut buf);
         assert_eq!(n, 11);
         assert_eq!(&buf[..2], b"AB");
         assert_eq!(&buf[2..10], &[0u8; 8], "the hole must read as zero");
         assert_eq!(&buf[10..11], b"Z");
-        let _ = tmpfs::tmpfs_unlink(b"c");
+        let _ = tmpfs_h::unlink(b"c");
     }
 
     #[test]
     fn write_at_inside_existing_bounds_overwrites_without_disturbing_the_rest() {
         let _g = serial();
         let k = key(b"d");
-        tmpfs::TmpFs.write_at(&k, 0, b"AAAAAAAAAA").unwrap();
-        tmpfs::TmpFs.write_at(&k, 3, b"XX").unwrap();
+        tmpfs::TMPFS_TMP.write_at(&k, 0, b"AAAAAAAAAA").unwrap();
+        tmpfs::TMPFS_TMP.write_at(&k, 3, b"XX").unwrap();
         let mut buf = [0u8; 10];
-        let n = tmpfs::TmpFs.read_at(&k, 0, &mut buf);
+        let n = tmpfs::TMPFS_TMP.read_at(&k, 0, &mut buf);
         assert_eq!(&buf[..n], b"AAAXXAAAAA");
-        let _ = tmpfs::tmpfs_unlink(b"d");
+        let _ = tmpfs_h::unlink(b"d");
     }
 
     #[test]
     fn read_at_past_eof_returns_zero() {
         let _g = serial();
         let k = key(b"e");
-        tmpfs::TmpFs.write_at(&k, 0, b"hi").unwrap();
+        tmpfs::TMPFS_TMP.write_at(&k, 0, b"hi").unwrap();
         let mut buf = [0u8; 8];
-        assert_eq!(tmpfs::TmpFs.read_at(&k, 100, &mut buf), 0);
-        let _ = tmpfs::tmpfs_unlink(b"e");
+        assert_eq!(tmpfs::TMPFS_TMP.read_at(&k, 100, &mut buf), 0);
+        let _ = tmpfs_h::unlink(b"e");
     }
 }
 
-/// U09-1 — every ramfs `create + unlink` cycle leaked one inode slot.
+/// U09-1 — every `create + unlink` cycle on `/` must give its inode back.
 ///
-/// `inode_alloc` used to set `link_count = 1` on allocation, pre-counting the
-/// directory entry a caller was about to add. `dir_add_entry` then added its
-/// own `+1` (`link_count == 2`), so `dir_remove_entry`'s single `-1` on unlink
-/// could only ever bring it back to 1 — never 0 — and `fd_free`'s
-/// `rc == 0 && lc == 0` auto-free test never fired. `MAX_FILES = 128` is
-/// machine-wide (`vfs::MAX_FILES`), and ring 3 reaches this ramfs fallback
-/// through `sys_open(O_CREAT)` on any path outside `/fat` (`vfs_open`'s
-/// create branch, `vfs.rs`) plus `sys_unlink` (`path_parent` +
-/// `dir_remove_entry`, the same composition `kernel/src/boot/seams.rs`'s `unlink()`
-/// uses) — so `MAX_FILES + 1` cycles of it either exhaust the pool (the bug)
-/// or all succeed (fixed).
+/// `MAX_FILES = 128` is machine-wide (`vfs::MAX_FILES`), and ring 3 reaches
+/// this path through `sys_open(O_CREAT)` on any name outside `/fat` plus
+/// `sys_unlink` — so `MAX_FILES + 1` cycles of it either exhaust the pool
+/// (a leak) or all succeed.
 #[cfg(test)]
 mod inode_leak {
     use super::vfs;
 
-    /// `kernel/src/boot/seams.rs`'s `unlink()` is exactly `path_parent` +
-    /// `dir_remove_entry`; `vfs.rs` has no `vfs_unlink` of its own, so the
-    /// test composes the same two exported primitives rather than adding a
-    /// third copy of the logic.
     fn unlink(path: &[u8]) -> i64 {
-        let (parent_idx, name) = vfs::path_parent(path);
-        if parent_idx == vfs::NO_IDX || name.is_empty() { return -1; }
-        match vfs::dir_remove_entry(parent_idx, name) {
-            Ok(())  => 0,
-            Err(()) => -1,
-        }
+        match vfs::vfs_unlink(path) { Ok(()) => 0, Err(_) => -1 }
     }
 
     #[test]
@@ -2535,12 +2524,8 @@ mod inode_leak {
         }
     }
 
-    /// Same defect, the other ordering: unlink while an fd from BEFORE the
-    /// unlink is still open, close it after. `dir_remove_entry` alone cannot
-    /// free the inode here (`rc == 1`, something still has it open) — the
-    /// free has to come from the LATER `fd_free`, exercising the half of the
-    /// fix that stayed in `fd_free`'s existing `rc == 0 && lc == 0` check
-    /// rather than the new one added to `dir_remove_entry`.
+    /// The other ordering: unlink while an fd from BEFORE the unlink is still
+    /// open, close it after. The inode is freed by the later `fd_free`.
     #[test]
     fn unlink_before_close_still_frees_on_close() {
         let _g = super::serial();
@@ -5697,22 +5682,16 @@ mod records_partition_tests {
 // static); `serial()` orders the tests.
 #[cfg(test)]
 mod vfs_p2 {
-    use super::{fat32, serial, tmpfs, vfs};
+    use super::{fat32, serial, tmpfs, tmpfs_h, vfs};
     use vfs::{DirEnt, FileSystem as _, FsErr, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC,
               O_WRONLY, SEEK_CUR, SEEK_END, SEEK_SET};
 
     pub(super) fn tmp_once() {
         super::vfs_open_close::vfs_once();
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            vfs::vfs_mount_fs(b"/tmp", &tmpfs::TMPFS_FS).expect("room for /tmp");
-        });
     }
 
     pub(super) fn clear_tmpfs() {
-        let mut names = Vec::new();
-        tmpfs::tmpfs_ls(|n, _| names.push(n.to_vec()));
-        for n in names { tmpfs::tmpfs_unlink(&n).unwrap(); }
+        tmpfs_h::clear();
     }
 
     fn read_fd(t: &mut vfs::ScratchFds, fd: i32, n: usize) -> Vec<u8> {
@@ -5736,18 +5715,18 @@ mod vfs_p2 {
         let _g = serial();
         tmp_once();
         clear_tmpfs();
-        tmpfs::tmpfs_write(b"live", b"old!").unwrap();
+        tmpfs_h::write(b"live", b"old!").unwrap();
         let mut t = vfs::ScratchFds::new();
         let fd = vfs::vfs_open(&mut t, b"/tmp/live", O_RDWR);
         assert!(fd >= 0);
-        tmpfs::tmpfs_write_at(b"live", 0, b"new!").unwrap();
+        tmpfs_h::write_at(b"live", 0, b"new!").unwrap();
         assert_eq!(read_fd(&mut t, fd, 16), b"new!", "the open took a snapshot");
         assert_eq!(vfs::vfs_write(&mut t, fd, b"++".as_ptr(), 2), 2);
         let mut direct = [0u8; 8];
-        let n = tmpfs::tmpfs_read(b"live", &mut direct).unwrap();
+        let n = tmpfs_h::read(b"live", &mut direct).unwrap();
         assert_eq!(&direct[..n], b"new!++", "the write waited for the close");
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
-        assert_eq!(tmpfs::tmpfs_size(b"live"), Some(6));
+        assert_eq!(tmpfs_h::size(b"live"), Some(6));
     }
 
     /// **`O_CREAT`, `O_TRUNC` and `O_APPEND` are the backend's**: create
@@ -5762,28 +5741,27 @@ mod vfs_p2 {
         assert_eq!(vfs::vfs_open(&mut t, b"/tmp/nofile", O_RDONLY), -1, "opened a missing file");
         let fd = vfs::vfs_open(&mut t, b"/tmp/made", O_WRONLY | O_CREAT);
         assert!(fd >= 0);
-        assert_eq!(tmpfs::tmpfs_size(b"made"), Some(0), "O_CREAT made nothing");
+        assert_eq!(tmpfs_h::size(b"made"), Some(0), "O_CREAT made nothing");
         vfs::vfs_close(&mut t, fd);
 
-        tmpfs::tmpfs_write(b"trunc", b"0123456789").unwrap();
+        tmpfs_h::write(b"trunc", b"0123456789").unwrap();
         let fd = vfs::vfs_open(&mut t, b"/tmp/trunc", O_WRONLY | O_TRUNC);
-        assert_eq!(tmpfs::tmpfs_size(b"trunc"), Some(0), "O_TRUNC left the bytes");
+        assert_eq!(tmpfs_h::size(b"trunc"), Some(0), "O_TRUNC left the bytes");
         vfs::vfs_close(&mut t, fd);
 
-        tmpfs::tmpfs_write(b"log", b"a").unwrap();
+        tmpfs_h::write(b"log", b"a").unwrap();
         let fd = vfs::vfs_open(&mut t, b"/tmp/log", O_WRONLY | O_APPEND);
-        tmpfs::tmpfs_write_at(b"log", 1, b"b").unwrap();
+        tmpfs_h::write_at(b"log", 1, b"b").unwrap();
         assert_eq!(vfs::vfs_write(&mut t, fd, b"c".as_ptr(), 1), 1);
         vfs::vfs_close(&mut t, fd);
         let mut b = [0u8; 4];
-        let n = tmpfs::tmpfs_read(b"log", &mut b).unwrap();
+        let n = tmpfs_h::read(b"log", &mut b).unwrap();
         assert_eq!(&b[..n], b"abc", "the append overwrote another writer's byte");
     }
 
     /// **Offsets are 64-bit.** A streaming file can be seeked past 4 GiB (the
     /// backend then refuses the write: tmpfs holds 2 MiB); negative and
-    /// overflowing seeks are refused; a ramfs file still cannot be seeked
-    /// past its end.
+    /// overflowing seeks are refused.
     ///
     /// **Canary.** Truncate the offset to `u32` in `vfs_lseek`
     /// (`new_offset as u32 as u64`): the 5 GiB seek answers 1 GiB.
@@ -5792,7 +5770,7 @@ mod vfs_p2 {
         let _g = serial();
         tmp_once();
         clear_tmpfs();
-        tmpfs::tmpfs_write(b"big", b"xyz").unwrap();
+        tmpfs_h::write(b"big", b"xyz").unwrap();
         let mut t = vfs::ScratchFds::new();
         let fd = vfs::vfs_open(&mut t, b"/tmp/big", O_RDWR);
         let five_gib = 5i64 << 30;
@@ -5805,15 +5783,16 @@ mod vfs_p2 {
         assert_eq!(read_fd(&mut t, fd, 8), b"z");
         vfs::vfs_close(&mut t, fd);
 
-        let fd = vfs::vfs_open(&mut t, b"/ramfile", O_RDWR | O_CREAT);
+        let fd = vfs::vfs_open(&mut t, b"/rootfile", O_RDWR | O_CREAT);
         assert!(fd >= 0);
         assert_eq!(vfs::vfs_write(&mut t, fd, b"12".as_ptr(), 2), 2);
-        assert_eq!(vfs::vfs_lseek(&mut t, fd, 3, SEEK_SET), -1, "a ramfs seek past the end");
+        assert_eq!(vfs::vfs_lseek(&mut t, fd, 3, SEEK_SET), 3, "a streamed file seeks past its end");
         vfs::vfs_close(&mut t, fd);
+        vfs::vfs_unlink(b"/rootfile").unwrap();
     }
 
-    /// **stat reports type, size and mode** for the ramfs, a streaming
-    /// backend, a proxy backend and a mount root.
+    /// **stat reports type, size and mode** for the root file system, a
+    /// device, a proxy backend and a mount root.
     #[test]
     fn stat_reports_type_size_and_mode() {
         let _g = serial();
@@ -5824,7 +5803,7 @@ mod vfs_p2 {
         assert_eq!(d.mode & 0o170000, vfs::S_IFDIR);
         let c = vfs::vfs_stat(b"/dev/stdout").expect("/dev/stdout");
         assert_eq!(c.mode & 0o170000, vfs::S_IFCHR);
-        tmpfs::tmpfs_write(b"sz", &[7u8; 300]).unwrap();
+        tmpfs_h::write(b"sz", &[7u8; 300]).unwrap();
         let st = vfs::vfs_stat(b"/tmp/sz").expect("/tmp/sz");
         assert_eq!((st.size, st.is_dir, st.mode, st.nlink), (300, false, vfs::S_IFREG | 0o644, 1));
         assert!(vfs::vfs_stat(b"/tmp").expect("mount root").is_dir);
@@ -5854,8 +5833,8 @@ mod vfs_p2 {
     /// order, and ends with `None`.
     ///
     /// **Canary.** Return `Some(cookie)` instead of `Some(cookie + 1)` from
-    /// the ramfs arm of `vfs_readdir`: the walk never ends (bounded here) and
-    /// repeats `stdin`.
+    /// `DevFs::readdir`: the walk never ends (bounded here) and repeats
+    /// `stdin`.
     #[test]
     fn readdir_walks_with_a_cookie() {
         let _g = serial();
@@ -5878,8 +5857,8 @@ mod vfs_p2 {
         }
         let dev: Vec<_> = walk(b"/dev").into_iter().map(|e| e.0).collect();
         assert_eq!(dev, ["stdin", "stdout", "stderr"]);
-        tmpfs::tmpfs_write(b"a", b"1").unwrap();
-        tmpfs::tmpfs_write(b"bb", b"22").unwrap();
+        tmpfs_h::write(b"a", b"1").unwrap();
+        tmpfs_h::write(b"bb", b"22").unwrap();
         let tmp = walk(b"/tmp");
         assert_eq!(tmp, vec![("a".into(), false, 1), ("bb".into(), false, 2)]);
         let mut e = DirEnt::new();
@@ -5947,20 +5926,22 @@ mod vfs_p2 {
         let _g = serial();
         tmp_once();
         clear_tmpfs();
-        tmpfs::tmpfs_write(b"src", b"payload").unwrap();
-        tmpfs::tmpfs_write(b"dst", b"old").unwrap();
+        tmpfs_h::write(b"src", b"payload").unwrap();
+        tmpfs_h::write(b"dst", b"old").unwrap();
         assert_eq!(vfs::vfs_rename(b"/tmp/src", b"/tmp/dst"), Ok(()));
-        assert_eq!(tmpfs::tmpfs_size(b"src"), None);
-        assert_eq!(tmpfs::tmpfs_size(b"dst"), Some(7), "rename did not replace");
+        assert_eq!(tmpfs_h::size(b"src"), None);
+        assert_eq!(tmpfs_h::size(b"dst"), Some(7), "rename did not replace");
         assert_eq!(vfs::vfs_truncate(b"/tmp/dst", 3), Ok(()));
         assert_eq!(vfs::vfs_truncate(b"/tmp/dst", 6), Ok(()));
         let mut b = [0xFFu8; 8];
-        let n = tmpfs::tmpfs_read(b"dst", &mut b).unwrap();
+        let n = tmpfs_h::read(b"dst", &mut b).unwrap();
         assert_eq!(&b[..n], b"pay\0\0\0", "grow must zero-fill");
         let sf = vfs::vfs_statfs(b"/tmp").unwrap();
         assert_eq!((sf.blocks - sf.blocks_free, sf.files - sf.files_free), (6, 1));
         assert_eq!(vfs::vfs_rename(b"/tmp/none", b"/tmp/x"), Err(FsErr::NotFound));
-        assert_eq!(vfs::vfs_mkdir(b"/tmp/d"), Err(FsErr::Unsupported), "tmpfs is flat");
+        assert_eq!(vfs::vfs_mkdir(b"/tmp/d"), Ok(()));
+        assert_eq!(vfs::vfs_rename(b"/tmp/dst", b"/tmp/d/dst"), Ok(()), "a file moves into a directory");
+        assert_eq!(vfs::vfs_stat(b"/tmp/d/dst").map(|s| s.size), Some(6));
     }
 
     /// **A mount path is not truncated into another, and not mounted twice.**
@@ -5968,11 +5949,11 @@ mod vfs_p2 {
     fn mount_paths_are_refused_not_truncated() {
         let _g = serial();
         tmp_once();
-        assert!(vfs::vfs_mount_fs(b"/tmp", &tmpfs::TMPFS_FS).is_err(), "mounted /tmp twice");
+        assert!(vfs::vfs_mount_fs(b"/tmp", &tmpfs::TMPFS_TMP).is_err(), "mounted /tmp twice");
         let long = [b'a'; 70];
         let mut p = vec![b'/'];
         p.extend_from_slice(&long);
-        assert!(vfs::vfs_mount_fs(&p, &tmpfs::TMPFS_FS).is_err(), "a 71-byte mount path");
+        assert!(vfs::vfs_mount_fs(&p, &tmpfs::TMPFS_TMP).is_err(), "a 71-byte mount path");
     }
 }
 
@@ -6708,20 +6689,20 @@ mod inode_key_64 {
         let a: &[u8] = b"a-forty-byte-tmpfs-name-0000000000000001";
         let b: &[u8] = b"a-forty-byte-tmpfs-name-0000000000000002";
         assert_eq!(a.len(), 40);
-        let ka = tmpfs::TmpFs.key_for(a).expect("a 40-byte tmpfs name must fit the key");
-        let kb = tmpfs::TmpFs.key_for(b).expect("a 40-byte tmpfs name must fit the key");
+        let ka = tmpfs::TMPFS_TMP.key_for(a).expect("a 40-byte tmpfs name must fit the key");
+        let kb = tmpfs::TMPFS_TMP.key_for(b).expect("a 40-byte tmpfs name must fit the key");
         assert!(ka != kb, "two names sharing a prefix made one key");
-        assert_eq!(tmpfs::TmpFs.write_at(&ka, 0, b"AAAA"), Ok(4));
-        assert_eq!(tmpfs::TmpFs.write_at(&kb, 0, b"BB"), Ok(2));
+        assert_eq!(tmpfs::TMPFS_TMP.write_at(&ka, 0, b"AAAA"), Ok(4));
+        assert_eq!(tmpfs::TMPFS_TMP.write_at(&kb, 0, b"BB"), Ok(2));
         let mut out = [0u8; 8];
-        assert_eq!(tmpfs::TmpFs.read_at(&ka, 0, &mut out), 4);
+        assert_eq!(tmpfs::TMPFS_TMP.read_at(&ka, 0, &mut out), 4);
         assert_eq!(&out[..4], b"AAAA");
-        assert_eq!(tmpfs::TmpFs.read_at(&kb, 0, &mut out), 2);
+        assert_eq!(tmpfs::TMPFS_TMP.read_at(&kb, 0, &mut out), 2);
         assert_eq!(&out[..2], b"BB");
-        let _ = tmpfs::TmpFs.unlink(&ka);
-        let _ = tmpfs::TmpFs.unlink(&kb);
+        let _ = tmpfs::TMPFS_TMP.unlink(&ka);
+        let _ = tmpfs::TMPFS_TMP.unlink(&kb);
         // A name over the key is still refused, not truncated into another.
-        assert!(tmpfs::TmpFs.key_for(&[b'x'; vfs::INODE_KEY_LEN + 1]).is_none());
+        assert!(tmpfs::TMPFS_TMP.key_for(&[b'x'; vfs::INODE_KEY_LEN + 1]).is_none());
     }
 
     /// **FAT32's key is the canonical path**: the bytes of `NAME.EXT`, the
@@ -6896,8 +6877,6 @@ mod herm_wave11 {
     fn mkdir_and_unlink_reach_fat32_under_the_mount() {
         let _g = serial();
         fresh_volume();
-        assert!(vfs::vfs_on_mount(b"/fat/X"));
-        assert!(!vfs::vfs_on_mount(b"/tmp/x"));
 
         // mkdir: created, listed as a directory, then EEXIST, then ENOENT for
         // a missing parent.
@@ -8521,7 +8500,7 @@ mod content_stamp {
 
     /// **A stamp holds while nothing writes, and names the file.** Two
     /// lookups agree; the stamp carries the start cluster and the size; a
-    /// ramfs path and a missing name have none.
+    /// tmpfs path and a missing name have none.
     ///
     /// **Canary.** `content-stamp-off-canary`: no stamp at all (red here;
     /// in the kernel nothing would then be cached).
@@ -9391,7 +9370,7 @@ mod chain_walk_guards {
 /// serves the target.
 #[cfg(test)]
 mod root_overlay {
-    use super::{serial, tmpfs, vfs, vfs_open_close::fresh_volume, vfs_p2::{clear_tmpfs, tmp_once}};
+    use super::{serial, tmpfs_h, vfs, vfs_open_close::fresh_volume, vfs_p2::{clear_tmpfs, tmp_once}};
 
     fn put(t: &mut vfs::ScratchFds, path: &[u8], bytes: &[u8]) {
         let fd = vfs::vfs_open(t, path, vfs::O_WRONLY | vfs::O_CREAT | vfs::O_TRUNC);
@@ -9427,8 +9406,8 @@ mod root_overlay {
         put(&mut t, b"/fat/CONFIG.INI", b"old config");
         put(&mut t, b"/fat/SH.ELF", b"old shell");
         put(&mut t, b"/fat/KEEP.DAT", b"not in a set");
-        tmpfs::tmpfs_write(b"CONFIG.INI", b"new config").unwrap();
-        tmpfs::tmpfs_write(b"SH.ELF", b"new shell!").unwrap();
+        tmpfs_h::write(b"CONFIG.INI", b"new config").unwrap();
+        tmpfs_h::write(b"SH.ELF", b"new shell!").unwrap();
 
         assert_eq!(get(&mut t, b"/fat/CONFIG.INI").as_deref(), Some(&b"old config"[..]), "no overlay yet");
 
@@ -9449,7 +9428,7 @@ mod root_overlay {
         put(&mut t, b"/fat/CONFIG.INI", b"saved at the root");
         assert_eq!(get(&mut t, b"/fat/CONFIG.INI").as_deref(), Some(&b"new config"[..]));
         let mut b = [0u8; 32];
-        let n = tmpfs::tmpfs_read(b"CONFIG.INI", &mut b).unwrap();
+        let n = tmpfs_h::read(b"CONFIG.INI", &mut b).unwrap();
         assert_eq!(&b[..n], b"new config", "the set's file is untouched");
         assert_eq!(super::vfs_open_close::on_disk(b"config.ini"), b"saved at the root");
 

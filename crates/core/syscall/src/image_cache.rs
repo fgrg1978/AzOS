@@ -12,7 +12,7 @@
 //! tail, `SYS_DISK_WRITE`), every mount and every unmount, and never repeats,
 //! so an equal stamp means no byte of the volume changed since the digest
 //! was taken. A path alone is never a key; a backend without stamps (the
-//! ramfs, tmpfs) is never cached.
+//! tmpfs) is never cached.
 //!
 //! [`read_verified`] is the one reader. On a miss it hashes each run of the
 //! image as it lands in the buffer (no second pass) and remembers the digest

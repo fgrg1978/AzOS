@@ -8,7 +8,7 @@
 //! What the rows pin: two opens of one file name ONE cache source (same key,
 //! same backing value: the cache registry finds one object for both), two files
 //! name two; a descriptor opened for writing is writable for a shared mapping
-//! and a read-only one is not; a file that is not a backend's (a ramfs file),
+//! and a read-only one is not; a file the cache does not serve (a device),
 //! a closed descriptor and an out-of-range one have no source; the size is the
 //! file's now; and the source drives the real `fill_page` / `write_back_page`
 //! over the real backends, a private copy never writing (the cache only writes
@@ -24,9 +24,9 @@
 //! * Do not discriminate: the `streaming` test in `page_source` (every backend
 //!   this tree mounts streams, so no host row reaches the refusal); `!b.ro_stream`
 //!   (a read-only stream has no write permission anyway); the inode-type and
-//!   in-use tests of `fd_file_backing` (a ramfs file, a directory and a closed
-//!   descriptor are all refused by `b.fs?` or an empty slot first: the
-//!   refusal rows below pin the answer, not the line); the pool's ninth
+//!   in-use tests of `fd_file_backing` (a device and a closed descriptor are
+//!   refused by `backing_of` or an empty slot first: the refusal rows below
+//!   pin the answer, not the line); the pool's ninth
 //!   filesystem (`MAX_MOUNTS` is 4: unreachable).
 //!
 //! Wired into the suite by `mod mmap_file;` in `src/lib.rs`.
@@ -36,7 +36,7 @@
 use super::pagecache::PageSource;
 use super::{serial, vfs};
 use azos_mm::pager::{fill_page, write_back_page};
-use vfs::{O_CREAT, O_RDONLY, O_RDWR};
+use vfs::{O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
 
 fn bytes(len: usize) -> Vec<u8> {
     (0..len).map(|p| (p % 251 + 1) as u8).collect()
@@ -143,18 +143,17 @@ fn what_is_not_a_backend_file_has_no_source() {
     let _g = serial();
     volume();
     let mut t = vfs::ScratchFds::new();
-    // A ramfs file holds its own bytes: nothing for the cache to read. It sits
-    // in the root, not under `tmp`: the tmpfs mounted there by other rows is
-    // page-cached now (storage L11 part B), so a file beneath it has a source.
-    let ram = vfs::vfs_open_at(&mut t, b"/", b"mmap_ram", O_CREAT | O_RDWR);
+    // A device is not a file the cache can serve; a tmpfs file is.
+    let ram = vfs::vfs_open_at(&mut t, b"/", b"dev/stdout", O_WRONLY);
     assert!(ram >= 0);
     assert!(page_source_of(&t, ram).is_none());
-    // A directory, a closed descriptor, and the ends of the table.
-    let dir = vfs::vfs_open_at(&mut t, b"/", b"tmp", O_RDONLY);
-    if dir >= 0 {
-        assert!(page_source_of(&t, dir).is_none(), "a directory has no pages");
-        vfs::vfs_close(&mut t, dir);
-    }
+    let file = vfs::vfs_open_at(&mut t, b"/", b"mmap_root", O_CREAT | O_RDWR);
+    assert!(file >= 0);
+    assert!(page_source_of(&t, file).is_some(), "a root file is page-cached");
+    vfs::vfs_close(&mut t, file);
+    vfs::vfs_unlink(b"/mmap_root").unwrap();
+    // A directory cannot be opened, a closed descriptor, and the ends of the table.
+    assert!(vfs::vfs_open_at(&mut t, b"/", b"tmp", O_RDONLY) < 0);
     assert!(page_source_of(&t, -1).is_none());
     assert!(page_source_of(&t, 1_000_000).is_none());
     let gone = ram;

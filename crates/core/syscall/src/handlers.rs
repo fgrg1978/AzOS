@@ -2115,15 +2115,8 @@ pub fn sys_readdir(
 
     let ops = match file_ops() { Some(o) => o, None => return -1 };
 
-    // Path resolution and entry lookup are one operation behind the seam. The
-    // old code split them — `path_lookup` here, `dir_entry_at` below — which
-    // is what put the filesystem's inode indices in this crate's vocabulary.
-    //
-    // The path passed on is trimmed at its NUL, where before this branch
-    // handed over the whole 256-byte NUL-padded buffer. No behaviour changes:
-    // `path_lookup` trims its own argument first. It was still worth
-    // normalising, because it was the one place where the file syscalls
-    // disagreed with each other about what a path is.
+    // Path resolution and entry lookup are one operation behind the seam; the
+    // path passed on is trimmed at its NUL.
     let mut path_buf = [0u8; 256];
     let path: &[u8] = if azos_sched::current_user_pt() != 0 {
         match azos_sched::UserCStr::new(path_ptr).read_into(&mut path_buf) {

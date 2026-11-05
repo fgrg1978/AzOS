@@ -1347,33 +1347,33 @@ config IORING_MAX_REGBUFS
       this), the same on every 64-bit ISA.
 
 config VFS_MAX_FILES
-    int "Maximum inodes in the in-kernel RAM filesystem"
+    int "Maximum open files (VFS inode pool)"
     range 64 4096
     default 128
     help
-      Size of the VFS inode pool (crates/fs/src/vfs.rs, MAX_FILES):
-      every file and directory of the RAM filesystem, plus the inodes a
-      mounted filesystem's open files take.
+      Size of the VFS inode pool (crates/fs/src/vfs.rs, MAX_FILES): one
+      inode per file opened, on any mounted filesystem.  Files and directories
+      themselves live in the file systems (TMPFS_MAX_FILES for / and /tmp).
 
-      Cost: 160 B of RAM per inode (FS, .data), the same on riscv64 and
-      aarch64: 20,480 B of the 20,888-byte filesystem table at the default 128
-      (the mount table and a few counters are the rest).  No code ceiling below the
+      Cost: 128 B of RAM per inode (FS, .data), the same on riscv64 and
+      aarch64: 16,384 B of the filesystem table at the default 128 (the mount
+      table and a few counters are the rest).  No code ceiling below the
       range.
 
 config VFS_MAX_MOUNTS
     int "Maximum mounted filesystems"
-    range 4 16
-    default 7 if USB_STORAGE_VOLUME
-    default 6
+    range 8 19
+    default 10 if USB_STORAGE_VOLUME
+    default 9
     help
       crates/fs/src/vfs.rs, MAX_MOUNTS.
 
-      The kernel mounts /fat, then one mount per `[volume.NAME]` row of the
-      topology (kernel/src/boot/azvol.rs): the default 6 holds it and five
-      volumes.  A row that finds the table full is not mounted and the boot
-      prints why.  With USB_STORAGE_VOLUME a plugged stick takes one more
-      (/usb), so the default is 7; unplugging gives the slot back to the next
-      stick.
+      The kernel mounts /, /tmp and /dev, then /fat, then one mount per
+      `[volume.NAME]` row of the topology (kernel/src/boot/azvol.rs): the
+      default 9 holds them and five volumes.  A row that finds the table full
+      is not mounted and the boot prints why.  With USB_STORAGE_VOLUME a
+      plugged stick takes one more (/usb), so the default is 10; unplugging
+      gives the slot back to the next stick.
 
       Cost: 96 B of RAM per mount slot (FS, .data), the same on riscv64 and
       aarch64: 576 B at the default 6.
@@ -1905,28 +1905,32 @@ config EXEC_IMAGE_CACHE_KB
       if it had loaded it.
 
 config TMPFS_MAX_FILES
-    int "Maximum files in tmpfs"
+    int "Maximum entries in each tmpfs mount"
     range 8 1024
     default 64
     help
-      crates/fs/src/tmpfs.rs, TMPFS_MAX_FILES.
+      crates/fs/src/tmpfs.rs, TMPFS_MAX_FILES.  Files and directories both take
+      an entry; a full table refuses the next create with ENOSPC.  / and /tmp
+      are two tmpfs instances and each has this many.
 
-      Cost: 96 B of RAM per entry (TMPFS, .data), the same on riscv64 and
-      aarch64: 6,168 B at the default 64.  File data is not in this table (see
-      TMPFS_MAX_KB).
+      Cost: 96 B of RAM per entry and instance (.bss), the same on riscv64 and
+      aarch64: 12,288 B for the two at the default 64.  File data is not in
+      this table (see TMPFS_MAX_KB).
 
 config TMPFS_MAX_KB
-    int "tmpfs data capacity (KiB)"
+    int "tmpfs data capacity per mount (KiB)"
     range 64 65536
     default 2048
     help
-      crates/fs/src/tmpfs.rs, TMPFS_MAX_BYTES. A write that would pass
-      it evicts the oldest file first (FIFO).
+      crates/fs/src/tmpfs.rs, TMPFS_MAX_BYTES, for each of / and /tmp. A write
+      that would pass it evicts the oldest file first (FIFO) and is refused
+      when there is none to evict.
 
       Cost: no static RAM (+0 B measured, both ISAs).  File data is allocated
       from the kernel heap when a file is written, so the worst case is
-      TMPFS_MAX_KB of KERNEL_HEAP_SIZE (2 MiB of edge's 32 MiB heap) plus a
-      transient second copy of the file being rewritten.  Embedded's heap is
+      TMPFS_MAX_KB of KERNEL_HEAP_SIZE per mount (2 MiB of edge's 32 MiB heap
+      each for / and /tmp) plus a transient second copy of the file being
+      grown.  Embedded's heap is
       512 KiB, so there the heap fills before this ceiling does and a write
       fails with an allocation error.
 

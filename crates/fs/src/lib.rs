@@ -22,6 +22,7 @@ mod fat32_dev {
     pub(crate) const TICKETED: bool = true;
 }
 pub mod tmpfs;
+pub mod devfs;
 pub mod crash_log;
 pub mod pstore;
 pub mod pagecache;
@@ -70,33 +71,27 @@ pub use fat32::{
 };
 
 pub use tmpfs::{
-    tmpfs_write, tmpfs_read, tmpfs_size, tmpfs_unlink, tmpfs_ls, tmpfs_stats,
-    tmpfs_truncate, tmpfs_rename,
-    TmpfsError, TMPFS_MAX_FILES, TMPFS_MAX_BYTES, TMPFS_NAME_LEN,
-    // The `vfs::FileSystem` backend. Not mounted by `init()`.
-    TmpFs, TMPFS_FS, FS_TYPE_TMPFS,
+    TMPFS_MAX_FILES, TMPFS_MAX_BYTES, TMPFS_NAME_LEN,
+    // The RAM file systems `init()` mounts at `/` and `/tmp`.
+    TmpFs, TMPFS_ROOT, TMPFS_TMP, FS_TYPE_TMPFS,
 };
+pub use devfs::{DevFs, DEV_FS, FS_TYPE_DEVFS};
 
 pub use vfs::{
-    FdTable, FdTableN, ScratchFds, SCRATCH_FDS, FileDesc, Inode, DentryEntry,
-    MAX_FILES, MAX_FDS, MAX_FILENAME, MAX_PATH,
-    INODE_FILE, INODE_DIR, INODE_DEVICE,
-    PERM_READ, PERM_WRITE, PERM_EXEC,
+    FdTable, FdTableN, ScratchFds, SCRATCH_FDS, FileDesc, Inode,
+    MAX_FILES, MAX_FDS, MAX_PATH,
     O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND,
     SEEK_SET, SEEK_CUR, SEEK_END,
     FS_TYPE_FAT32,
-    NO_IDX,
     cstr_to_bytes,
-    init, inode_alloc, inode_free, inode_resize,
-    dir_add_entry, dir_lookup, dir_remove_entry, dir_list, dir_entry_at,
-    path_lookup, path_parent,
+    init,
     vfs_mount_fs,
     // The filesystem abstraction: one interface for the three filesystems
     // this crate ships, and the opaque backing the generic inode now carries
     // in place of three FAT32-named fields.
     FileSystem, InodeKey, InodeBacking, FileStat, StatFs, DirEnt, FsErr,
     NAME_MAX, S_IFREG, S_IFDIR, S_IFCHR,
-    vfs_stat, vfs_statfs, vfs_readdir, vfs_mkdir, vfs_rmdir, vfs_rename, vfs_unlink, vfs_on_mount,
+    vfs_stat, vfs_statfs, vfs_readdir, vfs_mkdir, vfs_rmdir, vfs_rename, vfs_unlink,
     // A removable volume's retirement (`usbvol`).
     vfs_unmount,
     vfs_truncate, vfs_fsync,

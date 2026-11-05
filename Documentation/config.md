@@ -1198,8 +1198,8 @@ The index lists every declared option: 1240.
 | `TLB_SPACE_MASK` | `config/kernel/Kconfig.mm` | Per-address-space hart mask: a shootdown marks stale only the harts that ran the space |
 | `TLB_SPACE_PROBE` | `config/kernel/Kconfig.mm` | Per-address-space hart mask: probes before the table counts as full |
 | `TLB_SPACE_SLOTS_BITS` | `config/kernel/Kconfig.mm` | Per-address-space hart mask: table size (log2 slots) |
-| `TMPFS_MAX_FILES` | `config/limits/Kconfig.limits` | Maximum files in tmpfs |
-| `TMPFS_MAX_KB` | `config/limits/Kconfig.limits` | tmpfs data capacity (KiB) |
+| `TMPFS_MAX_FILES` | `config/limits/Kconfig.limits` | Maximum entries in each tmpfs mount |
+| `TMPFS_MAX_KB` | `config/limits/Kconfig.limits` | tmpfs data capacity per mount (KiB) |
 | `TOOLBOX_INSTANCES` | `config/limits/Kconfig.limits` | Live TOOLBOX.ELF processes the shell can run at once |
 | `TOPOLOGY_BIND_DEVICE` | `config/subsys/Kconfig.topology` | The signed topology must name this device |
 | `TOPOLOGY_CAPS_MAX_KB` | `config/subsys/Kconfig.topology` | Largest CAPS.TOM the boot reads (KiB) |
@@ -1358,7 +1358,7 @@ The index lists every declared option: 1240.
 | `USE_SERVER` | `config/axes/Kconfig.use` | (no prompt — internal/derived) |
 | `USE_WEARABLE` | `config/axes/Kconfig.use` | (no prompt — internal/derived) |
 | `VDSO_FORCE_SYSCALL` | `config/axes/Kconfig.build` | Gate kernel: the vDSO clock is never readable from user mode |
-| `VFS_MAX_FILES` | `config/limits/Kconfig.limits` | Maximum inodes in the in-kernel RAM filesystem |
+| `VFS_MAX_FILES` | `config/limits/Kconfig.limits` | Maximum open files (VFS inode pool) |
 | `VFS_MAX_MOUNTS` | `config/limits/Kconfig.limits` | Maximum mounted filesystems |
 | `VIRTIO_BLK_INFLIGHT` | `config/limits/Kconfig.limits` | virtio-blk requests in flight at once (1-8) |
 | `VIRTIO_BLK_IRQ_SLICE_US` | `config/subsys/Kconfig.storage` | virtio-blk: longest sleep of a waiter between completion checks (us) |

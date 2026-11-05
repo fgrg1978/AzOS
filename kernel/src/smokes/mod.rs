@@ -105,6 +105,9 @@ pub(crate) mod asid_one_per_space;
 // N12f: the kernel half every user root shares (Kconfig RV_KERNEL_GLOBAL).
 #[cfg(all(feature = "qemu", feature = "ktest"))]
 pub(crate) mod kernel_half_shared;
+// The RAM file systems through the VFS: directories at `/` and `/tmp`, the bounds.
+#[cfg(feature = "ktest")]
+pub(crate) mod ram_fs;
 // A user device window as a copy buffer is EFAULT (front uaccess-mmio-buffer).
 #[cfg(feature = "ktest")]
 pub(crate) mod uaccess_mmio;

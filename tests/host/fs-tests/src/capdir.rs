@@ -9,7 +9,7 @@
 //! sees a name, an escape creates nothing, and the kernel's own root-relative
 //! open is the same call.
 
-use super::{serial, tmpfs, vfs};
+use super::{serial, tmpfs, tmpfs_h, vfs};
 use vfs::{FsErr, MAX_PATH, O_CREAT, O_RDONLY, O_RDWR, O_WRONLY};
 
 fn join(root: &[u8], rel: &[u8]) -> Result<Vec<u8>, FsErr> {
@@ -89,14 +89,12 @@ fn mount_tmp() {
     super::vfs_open_close::vfs_once();
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        vfs::vfs_mount_fs(b"/cd", &tmpfs::TMPFS_FS).expect("room for /cd");
+        vfs::vfs_mount_fs(b"/cd", &tmpfs::TMPFS_TMP).expect("room for /cd");
     });
 }
 
 fn clear_tmp() {
-    let mut names = Vec::new();
-    tmpfs::tmpfs_ls(|n, _| names.push(n.to_vec()));
-    for n in names { tmpfs::tmpfs_unlink(&n).unwrap(); }
+    tmpfs_h::clear();
 }
 
 /// **An open relative to a directory opens the file beneath it; the same file
@@ -112,7 +110,7 @@ fn an_open_at_a_directory_stays_beneath_it() {
     let _g = serial();
     mount_tmp();
     clear_tmp();
-    tmpfs::tmpfs_write(b"live", b"data").unwrap();
+    tmpfs_h::write(b"live", b"data").unwrap();
     let mut t = vfs::ScratchFds::new();
     let fd = vfs::vfs_open_at(&mut t, b"/cd", b"live", O_RDONLY);
     assert!(fd >= 0, "a relative open under /cd");
@@ -143,11 +141,11 @@ fn an_escaping_create_leaves_no_file() {
     clear_tmp();
     let mut t = vfs::ScratchFds::new();
     assert_eq!(vfs::vfs_open_at(&mut t, b"/fat", b"../cd/made", O_WRONLY | O_CREAT), -1);
-    assert_eq!(tmpfs::tmpfs_size(b"made"), None, "the escaping create reached the filesystem");
+    assert_eq!(tmpfs_h::size(b"made"), None, "the escaping create reached the filesystem");
     let fd = vfs::vfs_open_at(&mut t, b"/cd", b"made", O_WRONLY | O_CREAT);
     assert!(fd >= 0, "a create beneath its directory");
     vfs::vfs_close(&mut t, fd);
-    assert_eq!(tmpfs::tmpfs_size(b"made"), Some(0));
+    assert_eq!(tmpfs_h::size(b"made"), Some(0));
 }
 
 /// **The kernel's own open is the open at the root.** `vfs_open(path)` and
@@ -159,7 +157,7 @@ fn the_kernel_open_is_the_open_at_the_root() {
     let _g = serial();
     mount_tmp();
     clear_tmp();
-    tmpfs::tmpfs_write(b"live", b"x").unwrap();
+    tmpfs_h::write(b"live", b"x").unwrap();
     let mut t = vfs::ScratchFds::new();
     for path in [&b"/cd/live"[..], b"/cd/nofile", b"/nodir/x"] {
         let a = vfs::vfs_open(&mut t, path, O_RDWR) >= 0;

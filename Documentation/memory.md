@@ -404,7 +404,7 @@ and topology row. The digest cache (`crates/core/syscall/src/image_cache.rs`,
 16 entries, always on) remembers the digest of bytes it hashed, keyed by a
 content stamp (the backend, its write epoch, the file's start cluster and
 size). FAT32's epoch moves on every write of the volume, mount and unmount, so
-an equal stamp means no byte changed; a backend without stamps (ramfs, tmpfs)
+an equal stamp means no byte changed; a backend without stamps (tmpfs)
 is never cached.
 
 With Kconfig `EXEC_IMAGE_CACHE_KB` nonzero (64 KiB embedded, 512 KiB edge,

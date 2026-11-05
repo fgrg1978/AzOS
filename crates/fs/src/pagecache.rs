@@ -91,13 +91,14 @@ pub fn backing_of(fs: &'static dyn FileSystem) -> Option<&'static FsPageBacking>
 
 /// The page-cache source of open descriptor `fd` of `table`, or `None` when
 /// the descriptor is not a file the cache can serve: not a file, no
-/// filesystem behind it (a ramfs inode holds its own bytes), or a backend that
-/// does not stream (its inode is a whole-file proxy, rewritten on close, which
-/// a cache beside it would corrupt).
+/// filesystem behind it, a backend whose files the cache does not address
+/// ([`FileSystem::page_cached`]: a device), or one that does not stream (its
+/// inode is a whole-file proxy, rewritten on close, which a cache beside it
+/// would corrupt).
 pub fn page_source<const N: usize>(table: &FdTableN<N>, fd: i32) -> Option<PageSource> {
     let (b, opened_for_write) = vfs::fd_file_backing(table, fd)?;
     let fs = b.fs?;
-    if !b.streaming {
+    if !b.streaming || !fs.page_cached() {
         return None;
     }
     Some(PageSource {

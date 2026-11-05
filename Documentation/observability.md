@@ -262,7 +262,7 @@ memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
         quota_refusals, domains}
 decisions/{recorded, deny_dropped}
 system/{version, platform}
-fs/tmpfs/{files, used_bytes, max_bytes}
+fs/tmpfs/{files, used_bytes, max_bytes}                    (the /tmp mount)
 drivers/<slot>/{kind, name, isolation, perms}
 devices/<handle>/{name, identity, state, driver, base, size, irq}
 chaos/{seed, <point>/{rate, checked, fired}}                (CHAOS)

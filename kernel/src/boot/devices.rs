@@ -114,12 +114,12 @@ pub(crate) fn bring_up_devices(early: &EarlyBoot, dtb_ptr: usize, num_cpus: usiz
     kprintln!("[WCET] CPU clock measured: {} cycles/us",
               azos_drv_sys::wcet::cycles_per_us());
 
-    // Ramfs root, the `FileOps` seam behind `SYS_OPEN`/`SYS_SPAWN_EX`, the
+    // The RAM mounts, the `FileOps` seam behind `SYS_OPEN`/`SYS_SPAWN_EX`, the
     // actuation gate and io_ring — see `install_ring3_seams`'s own doc.
     install_ring3_seams();
 
-    // F20: TmpFS — bounded in-RAM temporary filesystem.
-    kprintln!("[FS] tmpfs ready — max {} files, {} KiB cap",
+    // The bounds of each tmpfs mount (`/` and `/tmp`).
+    kprintln!("[FS] tmpfs ready — per mount max {} entries, {} KiB cap",
         azos_fs::TMPFS_MAX_FILES,
         azos_fs::TMPFS_MAX_BYTES / 1024);
 

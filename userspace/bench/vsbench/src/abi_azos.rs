@@ -499,9 +499,9 @@ impl Shell for AzosAbi {
     }
 }
 
-/// `tmp-ord`'s file: ramfs, under the autorun row's `/tmp` tree grant.
+/// `tmp-ord`'s file: tmpfs, under the autorun row's `/tmp` tree grant.
 const TMP_PATH: &[u8] = b"/tmp/VSB.TMP\0";
-/// `uaccess-read-*`'s file: ramfs, under the same grant.
+/// `uaccess-read-*`'s file: tmpfs, under the same grant.
 const UA_PATH: &[u8] = b"/tmp/VSBUA.TMP\0";
 /// Bytes per native `read`/`write` call: the ABI's clamp.
 const UA_CALL_MAX: usize = 4096;

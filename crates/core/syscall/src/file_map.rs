@@ -315,7 +315,7 @@ fn drop_shared(tid: u32, obj: u32, base: usize, span: usize) {
 ///
 /// `READ` on the handle maps it; a shared writable mapping needs `WRITE` too,
 /// and a file opened for writing on a backend that takes the write-back.
-/// `-ENODEV` for a file the cache cannot serve (a ramfs file, a backend that
+/// `-ENODEV` for a file the cache cannot serve (a device, a backend that
 /// does not stream), `-EINVAL` for bad arguments or an `off` past the end,
 /// `-EBUSY` when the task already maps a window the call needs (shared),
 /// `-ENOMEM` when no object, address or record is left.

@@ -28,7 +28,7 @@ pub mod nospec;
 /// The shipped defaults, so the tests that fill a table fill the same one.
 pub const VFS_MAX_FILES: usize = 128;
 /// 7: the default with `USB_STORAGE_VOLUME` (`/usb`, the `usb_volume` rows).
-pub const VFS_MAX_MOUNTS: usize = 7;
+pub const VFS_MAX_MOUNTS: usize = 10;
 pub const TMPFS_MAX_FILES: usize = 64;
 pub const TMPFS_MAX_KB: usize = 2048;
 /// Kconfig `FS_BLOCK_CACHE_KB` (fat32.rs's sector cache): embedded's 64,

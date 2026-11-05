@@ -27,7 +27,7 @@
 #![cfg(test)]
 
 use super::pagecache::FsPageBacking;
-use super::{fat32, image::*, serial, tmpfs, vfs};
+use super::{fat32, image::*, serial, tmpfs, tmpfs_h, vfs};
 use azos_mm::pager::{fill_page, write_back_page, PageBacking, PageIoError, PageKey, PAGE_KEY_LEN};
 use vfs::FileSystem;
 
@@ -52,12 +52,12 @@ fn the_cache_key_is_exactly_the_inode_key() {
 fn the_page_key_is_the_inode_key_bytes() {
     let _g = serial();
     let (a, b) = (b"pgkeya", b"pgkeyb");
-    let ka = tmpfs::TmpFs.key_for(a).unwrap();
-    let kb = tmpfs::TmpFs.key_for(b).unwrap();
-    tmpfs::TmpFs.write_at(&ka, 0, b"AAAA").unwrap();
-    tmpfs::TmpFs.write_at(&kb, 0, b"BBBBBB").unwrap();
+    let ka = tmpfs::TMPFS_TMP.key_for(a).unwrap();
+    let kb = tmpfs::TMPFS_TMP.key_for(b).unwrap();
+    tmpfs::TMPFS_TMP.write_at(&ka, 0, b"AAAA").unwrap();
+    tmpfs::TMPFS_TMP.write_at(&kb, 0, b"BBBBBB").unwrap();
     assert_eq!(FsPageBacking::page_key(&ka).0, ka.bytes);
-    let back = FsPageBacking::new(&tmpfs::TMPFS_FS);
+    let back = FsPageBacking::new(&tmpfs::TMPFS_TMP);
     let mut dst = [0u8; 8];
     assert_eq!(back.read_page(&FsPageBacking::page_key(&ka), 0, &mut dst), Ok(4));
     assert_eq!(&dst[..4], b"AAAA");
@@ -67,7 +67,7 @@ fn the_page_key_is_the_inode_key_bytes() {
     back.write_page(&FsPageBacking::page_key(&kb), 2, b"xy").unwrap();
     assert_eq!(back.read_page(&FsPageBacking::page_key(&kb), 0, &mut dst), Ok(6));
     assert_eq!(&dst[..6], b"BBxyBB");
-    let _ = (tmpfs::tmpfs_unlink(a), tmpfs::tmpfs_unlink(b));
+    let _ = (tmpfs_h::unlink(a), tmpfs_h::unlink(b));
 }
 
 /// Run the fill and write-back rows against the file `key` names on `fs`,
@@ -125,10 +125,10 @@ fn a_tmpfs_file_fills_and_writes_back_by_page_and_does_not_lengthen_the_file() {
     for g in GRANULES {
         assert!(3 * g + 100 <= tmpfs::TMPFS_MAX_BYTES, "TMPFS_MAX_KB is too small for the {g} row");
         let name = format!("pgc{g}");
-        let key = tmpfs::TmpFs.key_for(name.as_bytes()).expect("a legal tmpfs name");
-        assert_eq!(tmpfs::TmpFs.write_at(&key, 0, &bytes(2 * g + 100)), Ok(2 * g + 100));
-        rows(&tmpfs::TMPFS_FS, &key, g, &|| tmpfs::tmpfs_size(name.as_bytes()).unwrap() as u64);
-        let _ = tmpfs::tmpfs_unlink(name.as_bytes());
+        let key = tmpfs::TMPFS_TMP.key_for(name.as_bytes()).expect("a legal tmpfs name");
+        assert_eq!(tmpfs::TMPFS_TMP.write_at(&key, 0, &bytes(2 * g + 100)), Ok(2 * g + 100));
+        rows(&tmpfs::TMPFS_TMP, &key, g, &|| tmpfs_h::size(name.as_bytes()).unwrap() as u64);
+        let _ = tmpfs_h::unlink(name.as_bytes());
     }
 }
 
@@ -151,13 +151,13 @@ fn a_fat32_file_fills_and_writes_back_by_page_and_does_not_lengthen_the_file() {
 fn a_refused_write_is_an_error() {
     let _g = serial();
     let name = b"pgcshort";
-    let key = tmpfs::TmpFs.key_for(name).unwrap();
-    tmpfs::TmpFs.write_at(&key, 0, &bytes(16)).unwrap();
-    let b = FsPageBacking::new(&tmpfs::TMPFS_FS);
+    let key = tmpfs::TMPFS_TMP.key_for(name).unwrap();
+    tmpfs::TMPFS_TMP.write_at(&key, 0, &bytes(16)).unwrap();
+    let b = FsPageBacking::new(&tmpfs::TMPFS_TMP);
     // A write the filesystem refuses outright: past the tmpfs ceiling.
     let past = tmpfs::TMPFS_MAX_BYTES as u64;
     assert_eq!(b.write_page(&PageKey(key.bytes), past, &[1u8; 64]), Err(PageIoError::Io));
-    let _ = tmpfs::tmpfs_unlink(name);
+    let _ = tmpfs_h::unlink(name);
 }
 
 /// A filesystem that takes half of what it is given: `write_page` is "all of

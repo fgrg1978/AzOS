@@ -265,9 +265,8 @@ fn cmd_ls(args: &[&[u8]; MAX_ARGS], argc: usize) {
         return;
     }
 
-    // ramfs path
-    let idx = azos_fs::path_lookup(path);
-    if idx == azos_fs::NO_IDX {
+    let mut ent = azos_fs::DirEnt::new();
+    if azos_fs::vfs_readdir(path, 0, &mut ent).is_err() {
         azos_drv_sys::kconsole!("[FS] Not found: ");
         azos_drv_sys::uart::write_locked(path);
         azos_drv_sys::kconsoleln!();
@@ -276,16 +275,13 @@ fn cmd_ls(args: &[&[u8]; MAX_ARGS], argc: usize) {
     azos_drv_sys::kconsole!("[FS] ls ");
     azos_drv_sys::uart::write_locked(path);
     azos_drv_sys::kconsoleln!(":");
-    azos_fs::dir_list(idx, |name, itype| {
-        let kind = match itype {
-            azos_fs::INODE_DIR    => "[DIR] ",
-            azos_fs::INODE_DEVICE => "[DEV] ",
-            _                         => "[FILE]",
-        };
-        azos_drv_sys::kconsole!("  {} ", kind);
-        azos_drv_sys::uart::write_locked(name);
+    let mut cookie = 0u64;
+    while let Ok(Some(next)) = azos_fs::vfs_readdir(path, cookie, &mut ent) {
+        azos_drv_sys::kconsole!("  {} ", if ent.is_dir { "[DIR] " } else { "[FILE]" });
+        azos_drv_sys::uart::write_locked(ent.name());
         azos_drv_sys::kconsoleln!();
-    });
+        cookie = next;
+    }
 }
 
 fn cmd_cat(args: &[&[u8]; MAX_ARGS], argc: usize) {

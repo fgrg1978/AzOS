@@ -129,7 +129,7 @@ fn key_of(idx: usize) -> PageKey {
 
 // ── The stand-in filesystem ───────────────────────────────────────────────
 
-/// Open descriptors: `(fd, file, opened for writing)`; file 9 is a ramfs file
+/// Open descriptors: `(fd, file, opened for writing)`; file 9 is a device
 /// the cache cannot serve.
 static OPEN: Mutex<Vec<(i32, usize, bool)>> = Mutex::new(Vec::new());
 

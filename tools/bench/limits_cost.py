@@ -86,7 +86,7 @@ STEPS = {
     "IORING_MAX_REGBUFS":      (5, 8),
     "MAX_MEMOBJS":             (17, 32),
     "VFS_MAX_FILES":           (129, 256),
-    "VFS_MAX_MOUNTS":          (7, 10),
+    "VFS_MAX_MOUNTS":          (10, 13),
     "FS_BLOCK_CACHE_KB":       (1024, 2048),
     "TMPFS_MAX_FILES":         (65, 128),
     "TMPFS_MAX_KB":            (2049, 4096),

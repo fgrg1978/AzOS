@@ -11874,6 +11874,12 @@ host_job host_canary_row "usb-msc: no reset recovery canary" usb-tests canary-ms
     a_phase_error_is_recovered_and_the_command_runs_again
 host_job host_canary_row "usb volume: stale descriptor canary" fs-tests usb-volume-stale-fd-canary \
     a_pulled_stick_fails_its_open_files_and_the_next_stick_is_its_own
+# The RAM file systems (`/` and `/tmp` tmpfs, `/dev` devfs) through the VFS
+# router: a full entry table hands out slot 0 instead of refusing the next
+# create (tests/host/fs-tests `tmpfs_rows`; the QEMU twin is the ktest
+# `ram_fs_bound_refuses` under `ktest canaries (rv|arm)`).
+host_job host_canary_row "tmpfs: full table canary" fs-tests tmpfs-bound-canary \
+    a_full_entry_table_refuses_and_the_other_mount_is_unaffected
 # USB video class (azos_usb::class::uvc) and the isochronous pipes under it:
 # each canary puts one bug back (an isochronous endpoint halting on a bus error,
 # the packets of a burst not counted, a payload's error flag ignored, the frame
@@ -15410,10 +15416,12 @@ PY
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" $AZOS_OUT/build/disk.img
     par "ktest disk RT-inline canary (arm)" ktest_row "ktest disk RT-inline canary (arm)" arm "" \
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" $AZOS_OUT/build/disk-aarch64.img
-    KTEST_CANARIES=",percpu-oor-canary,commander-exit-nostop-canary"
+    # `ram_fs_bound_refuses` (the RAM file systems' entry bound) rides on the
+    # same boot: `tmpfs-bound-canary` makes a full table hand out slot 0.
+    KTEST_CANARIES=",percpu-oor-canary,commander-exit-nostop-canary,tmpfs-bound-canary"
     # F6: the boot-time ones are runtime canaries, armed in the same boot.
     KTEST_BOOT_CANARIES="canary=wx-skip,nx-skip,ro-seal-skip"
-    KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels"
+    KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels ram_fs_bound_refuses"
     # Both ISAs (N2b): `wx-skip` leaves the kernel text writable, so
     # the one text-write path (`text_poke`, W^X kept) refuses NotRx and the
     # SpinWait probe sites stay linked to their fallback

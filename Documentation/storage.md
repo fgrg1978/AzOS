@@ -9,12 +9,50 @@ built from the Linux tree. The memory side of the page cache
 
 Contents:
 
-1. [Block layer and queues](#block-layer-and-queues)
-2. [FAT32: journal, write ordering and the dirty bit](#fat32-journal-write-ordering-and-the-dirty-bit)
-3. [The page-cache path](#the-page-cache-path)
-4. [azvol](#azvol)
-5. [Directory capabilities and `Cap<Dir>` namespaces](#directory-capabilities-and-capdir-namespaces)
-6. [ext4 and the Linux module set](#ext4-and-the-linux-module-set)
+1. [The VFS and the RAM file systems](#the-vfs-and-the-ram-file-systems)
+2. [Block layer and queues](#block-layer-and-queues)
+3. [FAT32: journal, write ordering and the dirty bit](#fat32-journal-write-ordering-and-the-dirty-bit)
+4. [The page-cache path](#the-page-cache-path)
+5. [azvol](#azvol)
+6. [Directory capabilities and `Cap<Dir>` namespaces](#directory-capabilities-and-capdir-namespaces)
+7. [ext4 and the Linux module set](#ext4-and-the-linux-module-set)
+
+## The VFS and the RAM file systems
+
+`crates/fs/src/vfs.rs` is a mount table and a router. A path goes to the
+mount with the longest matching prefix (`/` matches every absolute path, so it
+answers only when no other mount does), and the `FileSystem` mounted there
+does the work: `stat`, `readdir`, `mkdir`, `rmdir`, `rename`, `truncate`,
+`unlink` and the reads and writes of an open file. The inode pool is the
+open-file table (one inode per open file); it holds no directory tree.
+`vfs::init()` mounts three RAM file systems; the table size is Kconfig
+`VFS_MAX_MOUNTS` (default 9, which leaves room for `/fat` and five volumes).
+
+| Mount | File system | Notes |
+|-------|-------------|-------|
+| `/` | tmpfs (`TMPFS_ROOT`) | files and directories |
+| `/tmp` | tmpfs (`TMPFS_TMP`) | a second instance with its own bounds |
+| `/dev` | devfs (`DEV_FS`) | `stdin` (reads end-of-file), `stdout`, `stderr` (write to the console) |
+
+`crates/fs/src/tmpfs.rs` is one fixed table of `TMPFS_MAX_FILES` entries (files
+and directories) per instance, with file data on the kernel heap. The bounds
+(Kconfig `TMPFS_MAX_FILES`, `TMPFS_MAX_KB`) apply to each instance:
+
+* A full entry table refuses the next create or `mkdir` with `NoSpace`
+  (`ENOSPC`); nothing is evicted for a slot.
+* A write that would pass `TMPFS_MAX_KB` evicts the oldest file (never a
+  directory, never the file being written) until it fits, and is refused with
+  `NoSpace` when nothing is left to evict: one file cannot be larger than the
+  bound.
+* A name is at most 63 bytes (`NameTooLong`), and the path inside the mount
+  (the file's key) at most `INODE_KEY_LEN` (64) bytes.
+
+An open descriptor follows the file's name, not the file: a file is named by
+its canonical path inside the mount, so after a rename or an unlink a write
+through the old descriptor lands at the old name and creates the file there.
+The VFS flushes and drops the cached pages of a renamed file or directory.
+A directory is never the target of a rename, cannot move into itself, and is
+removed only by `rmdir` when empty. An open of a directory fails, as on FAT32.
 
 ## Block layer and queues
 
@@ -549,8 +587,7 @@ Source: `crates/fs/src/fat32.rs`, `crates/fs/src/bcache.rs`,
 ## The page-cache path
 
 File data of a filesystem whose `FileSystem::page_cached()` is true goes
-through the unified page cache. FAT32 and tmpfs return true (the kernel does
-not mount tmpfs: `/tmp` is a ramfs directory); azvol does not. A backend must also be `streaming()`.
+through the unified page cache. FAT32 and tmpfs (`/` and `/tmp`) return true; azvol and devfs do not. A backend must also be `streaming()`.
 
 The cache is the one `mmap` maps (see [memory.md](memory.md#page-cache-as-a-paged-memobj)):
 one `MemKind::Paged` MemObj per aligned 64-page window of a file, filled and

@@ -937,7 +937,7 @@ pub trait Shell {
     fn file_hold(&self) -> Result<u64, i64>;
     fn file_release(&self, fd: u64);
     /// Wave 13: create the side's RAM-backed 64-byte file for `tmp-ord`
-    /// (AzOS `/tmp/VSB.TMP`, ramfs, through the autorun row's `/tmp` tree
+    /// (AzOS `/tmp/VSB.TMP`, tmpfs, through the autorun row's `/tmp` tree
     /// grant; Linux `/vsb.tmp` in its initramfs root). Once, untimed.
     fn tmp_setup(&self) -> Result<(), i64>;
     /// Wave 13: open that file read-only, read its 64 bytes, close it — the
