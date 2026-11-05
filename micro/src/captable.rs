@@ -8,10 +8,11 @@
 //! kernels). Handles are `azos_abi::cap::CapHandle`, the same 32-bit
 //! packing.
 //!
-//! The rules are the main kernel's (`crates/core/ipc/src/cap.rs`): a handle
-//! is checked for occupancy, generation, kind and rights in that order; a
-//! freed slot keeps its generation and the next grant takes the next one;
-//! a slot past the field's maximum restarts.
+//! The rules are the main kernel's, from one place (`slot_word::check`,
+//! `slot_word::next_generation`): a handle is checked for occupancy,
+//! generation, kind and rights in that order; a freed slot keeps its
+//! generation and the next grant takes the next one. A slot parked at the last
+//! generation restarts at once here: no warrant names another table's slot.
 
 use azos_abi::cap::{slot_word, CapHandle, CapPerms, CapType};
 
@@ -56,54 +57,46 @@ impl<'a> CapTable<'a> {
     }
 
     /// Mint a capability into a free slot; its handle, or `None` when the
-    /// table is full. No warrant names a slot here, so a slot at the top
-    /// generation restarts at once; a stale handle recurs after 65,535 grants.
+    /// table is full.
     pub fn install(&mut self, kind: CapType, perms: CapPerms, resource: u32) -> Option<CapHandle> {
         let idx = self.slots.iter().position(|s| !slot_word::occupied(s.hot))?;
-        let generation = match slot_word::generation(self.slots[idx].hot).checked_add(1) {
-            Some(g) => g,
-            None => 1,
-        };
+        let generation = slot_word::next_generation(self.slots[idx].hot).unwrap_or(1);
         self.slots[idx].hot = slot_word::encode(kind, perms, generation, resource);
         Some(CapHandle::pack(kind, generation, idx as u16))
     }
 
-    fn slot_of(&self, h: CapHandle) -> Result<usize, CapError> {
+    /// The slot `h` names and its word, checked for `kind` (`None`: any) and
+    /// the rights `need`.
+    fn checked(&self, h: CapHandle, kind: Option<CapType>, need: CapPerms) -> Result<(usize, u64), CapError> {
         if h.is_null() {
             return Err(CapError::Stale);
         }
         let idx = h.slot() as usize;
         let w = self.slots.get(idx).ok_or(CapError::Stale)?.hot;
-        if !slot_word::occupied(w) || slot_word::generation(w) != h.generation() {
-            return Err(CapError::Stale);
+        match slot_word::check(w, h.generation(), kind, need) {
+            Ok(()) => Ok((idx, w)),
+            Err(slot_word::Refusal::Stale) => Err(CapError::Stale),
+            Err(slot_word::Refusal::WrongKind) => Err(CapError::WrongKind),
+            Err(slot_word::Refusal::MissingPerms) => Err(CapError::MissingPerms),
         }
-        Ok(idx)
     }
 
     /// The resource `h` names, if it is live, of kind `kind`, with the rights
     /// `need`.
     pub fn resolve(&self, h: CapHandle, kind: CapType, need: CapPerms) -> Result<u32, CapError> {
-        let w = self.slots[self.slot_of(h)?].hot;
-        if !slot_word::ty_is(w, kind) {
-            return Err(CapError::WrongKind);
-        }
-        if !slot_word::perms(w).contains(need) {
-            return Err(CapError::MissingPerms);
-        }
-        Ok(slot_word::resource(w))
+        Ok(slot_word::resource(self.checked(h, Some(kind), need)?.1))
     }
 
     /// What `h` names, if it is live: any kind, any rights.
     pub fn resolve_any(&self, h: CapHandle) -> Result<(CapType, CapPerms, u32), CapError> {
-        let w = self.slots[self.slot_of(h)?].hot;
+        let (_, w) = self.checked(h, None, CapPerms::NONE)?;
         Ok((slot_word::ty(w), slot_word::perms(w), slot_word::resource(w)))
     }
 
     /// Free the slot `h` names (any kind, any rights): the handle and every
     /// copy of it go stale. What it named, for the caller to tear down.
     pub fn close(&mut self, h: CapHandle) -> Result<(CapType, CapPerms, u32), CapError> {
-        let idx = self.slot_of(h)?;
-        let w = self.slots[idx].hot;
+        let (idx, w) = self.checked(h, None, CapPerms::NONE)?;
         self.slots[idx].hot = slot_word::cleared(w);
         self.slots[idx].ext = 0;
         Ok((slot_word::ty(w), slot_word::perms(w), slot_word::resource(w)))

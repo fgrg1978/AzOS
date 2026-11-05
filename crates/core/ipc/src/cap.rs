@@ -2402,20 +2402,16 @@ impl CapTable {
         };
         // One load: the checks below see one version of the slot.
         let w = cell.word();
-        if !CapSlotCell::w_occupied(w) {
-            return Err(self.stale());
-        }
-        if CapSlotCell::w_generation(w) != raw.generation() {
-            return Err(self.stale());
-        }
-        if !CapSlotCell::w_ty_is(w, T::TYPE) {
-            return Err(CapError::WrongKind);
-        }
-        if !CapSlotCell::w_perms(w).contains(need) {
-            if CapSlotCell::w_weak(w) {
-                self.shadow_refusal(raw, w, need);
+        match slot_word::check(w, raw.generation(), Some(T::TYPE), need) {
+            Ok(()) => {}
+            Err(slot_word::Refusal::Stale) => return Err(self.stale()),
+            Err(slot_word::Refusal::WrongKind) => return Err(CapError::WrongKind),
+            Err(slot_word::Refusal::MissingPerms) => {
+                if CapSlotCell::w_weak(w) {
+                    self.shadow_refusal(raw, w, need);
+                }
+                return Err(CapError::MissingPerms);
             }
-            return Err(CapError::MissingPerms);
         }
         // A capability derived from one that was revoked fails the same way
         // before the sweep frees it. Two loads while no revocation is in
@@ -2972,7 +2968,7 @@ impl CapTable {
             .iter()
             .filter(|s| {
                 let w = s.word();
-                !CapSlotCell::w_occupied(w) && CapSlotCell::w_generation(w) < CapHandle::MAX_GENERATION
+                slot_word::grantable(w)
             })
             .count()
     }
@@ -3503,7 +3499,7 @@ impl CapTable {
         let from = (self.free_from.load(core::sync::atomic::Ordering::Relaxed) as usize).min(MAX_CAPS_PER_TASK);
         for (i, cell) in self.slots.iter().enumerate().skip(from) {
             let w = cell.word();
-            if !CapSlotCell::w_occupied(w) && CapSlotCell::w_generation(w) < CapHandle::MAX_GENERATION {
+            if slot_word::grantable(w) {
                 return Some(i as u16);
             }
         }
@@ -3571,7 +3567,7 @@ impl CapTable {
     // The slot's next generation, or `None` at the top: `allocate_slot` never
     // picks a parked slot, so this is defence in depth against a second caller.
     fn bump_generation(&self, slot_idx: usize) -> Option<u16> {
-        CapSlotCell::w_generation(self.slots[slot_idx].word()).checked_add(1)
+        slot_word::next_generation(self.slots[slot_idx].word())
     }
 }
 

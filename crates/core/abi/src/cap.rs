@@ -734,6 +734,50 @@ pub mod slot_word {
     pub const fn cleared(w: u64) -> u64 {
         w & (0xffff << 16)
     }
+
+    /// Why a slot's word refuses a handle.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Refusal {
+        /// The slot is free, or holds another generation.
+        Stale,
+        /// The slot holds another kind.
+        WrongKind,
+        /// The slot lacks a right asked for.
+        MissingPerms,
+    }
+
+    /// The checks every capability table makes of a handle of `generation`
+    /// against its slot's word `w`, in this order: occupied and of that
+    /// generation, of `kind` (`None`: any kind), with the rights `need`.
+    #[inline(always)]
+    pub const fn check(w: u64, generation: u16, kind: Option<CapType>, need: CapPerms) -> Result<(), Refusal> {
+        if !occupied(w) || self::generation(w) != generation {
+            return Err(Refusal::Stale);
+        }
+        if let Some(k) = kind {
+            if !ty_is(w, k) {
+                return Err(Refusal::WrongKind);
+            }
+        }
+        if !perms(w).contains(need) {
+            return Err(Refusal::MissingPerms);
+        }
+        Ok(())
+    }
+
+    /// The generation the next grant of the free slot `w` takes; `None` when
+    /// the slot is parked at the last one, which restarts (at 0, so the next
+    /// grant takes 1) only when nothing names its old generations.
+    #[inline(always)]
+    pub const fn next_generation(w: u64) -> Option<u16> {
+        self::generation(w).checked_add(1)
+    }
+
+    /// May a grant take the slot whose word is `w`: free and not parked.
+    #[inline(always)]
+    pub const fn grantable(w: u64) -> bool {
+        !occupied(w) && next_generation(w).is_some()
+    }
 }
 
 #[cfg(test)]
