@@ -280,6 +280,9 @@ pub(crate) const NAMES: &[&str] = &[
     // drv_supervisor.rs `hung_act`: the detector reports and the action is not run
     // (`hung: restart ...`, `hung: safe stop ...` rows).
     "hung-action-skip",
+    // powermon.rs `endpoint_call`: the ring-3 INA219 host answers a voltage one
+    // mV off (rows `... INA219 wrong-value canary`).
+    "ina219-wrong-value",
     "hung-task-blind",
     "hung-cpu-blind",
     "rcu-idle-qs-skip",

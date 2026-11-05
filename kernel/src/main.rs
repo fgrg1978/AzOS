@@ -39,6 +39,9 @@ mod drv_supervisor;
 // (behavior, sensors) are `use-robot`.
 #[cfg(feature = "board-io")]
 mod buzzer;
+// Where the INA219 power monitor runs, read from its topology row.
+#[cfg(feature = "board-io")]
+mod powermon;
 
 // Who has the console, the ring-3 user shell or the recovery console.
 mod console_mode;

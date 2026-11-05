@@ -19,7 +19,7 @@ pub mod lidar;
 
 // INA219 power monitor: the kernel API over either host of
 // `crates/drivers/ina219` (Kconfig DRV_INA219_PLACEMENT: the ring-3 driver
-// `userspace/drivers/ina_drv` through the proxy, or the in-kernel host).
+// `userspace/drivers/ina_drv` on its endpoint, or the in-kernel host).
 pub mod ina219;
 
 // Optical flow sensor driver (F26): PMW3901 / PAA5100JE via SPI — DELETED

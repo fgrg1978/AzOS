@@ -63,7 +63,7 @@ impl Sample {
 }
 
 impl Wire for Sample {
-    const WORDS: usize = 2 + SAMPLE_WORDS;
+    const WORDS: usize = 3 + SAMPLE_WORDS;
     const CAPS: usize = 0;
     fn put(&self, w: &mut Writer<'_>) {
         self.len.put(w);

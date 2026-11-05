@@ -587,12 +587,11 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
         }
     }
 
-    // Wave 11 (DRVPLACE): the INA219 placed in the kernel (Kconfig
-    // DRV_INA219_PLACEMENT = kernel) is sampled by a kernel task; its
-    // ring-3 host has no topology row then (`builder::INADRV_ROW`).
-    #[cfg(feature = "ina219-kernel")]
-    {
-        // Supervised (wave 13): a contained panic in the host restarts it.
+    // The INA219: its topology row says where it runs. Placed in the kernel
+    // it is sampled by a kernel task, restarted by the supervisor if a
+    // contained panic ends it.
+    #[cfg(feature = "board-io")]
+    if crate::powermon::init() == Some(azos_topology::placement::Host::Kernel) {
         let _ = drv_supervisor::start_kernel_host("ina219", ina219_host_task,
                                                   azos_sched::DEFAULT_PRIORITY);
         kprintln!("[INA219] placement: kernel (host task created)");

@@ -69,10 +69,10 @@ pub(crate) use safety::*;
 mod rc_fence;
 #[cfg(any(feature = "rc-failsafe-smoke", feature = "rc-stick-smoke", feature = "fence-refuse-smoke"))]
 pub(crate) use rc_fence::*;
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", feature = "estop-gpio-smoke",
+#[cfg(any(feature = "gpio-aq3-smoke", feature = "estop-gpio-smoke",
           all(feature = "qemu", feature = "boot-selftests")))]
 mod drivers;
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", feature = "estop-gpio-smoke",
+#[cfg(any(feature = "gpio-aq3-smoke", feature = "estop-gpio-smoke",
           all(feature = "qemu", feature = "boot-selftests")))]
 pub(crate) use drivers::*;
 #[cfg(feature = "console-splice-smoke")]

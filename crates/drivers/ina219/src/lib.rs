@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! INA219 power monitor, one source for both placements (wave 11
-//! DRVPLACE).
+//! INA219 power monitor, one source for both placements.
 //!
-//! [`chip`] is the chip logic over a [`Bus`]; [`serve`] answers the
-//! `power_op` requests from a chip's state. A host supplies the bus, the
-//! clock and the loop: ring 3 (`userspace/drivers/ina_drv`, a
-//! `DriverRequest` per request through the kernel's proxy) or the kernel
-//! (`crates/drivers/sensor`, feature `ina219-kernel`, a direct call).
-//! Kconfig `DRV_INA219_PLACEMENT` picks the host per board.
+//! [`chip`] is the chip logic over a [`Bus`]; [`Monitor`] serves the
+//! `PowerMon` interface (`azos_devif::powermon`) from a chip's state. A host
+//! supplies the bus, the clock and the loop: ring 3
+//! (`userspace/drivers/ina_drv`, on `endpoint.powermon`) or the kernel
+//! (`crates/drivers/sensor`, a direct call). The topology row's `place` picks
+//! the host.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -22,38 +21,34 @@ pub use chip::{Bus, Ina219, INA219_ADDR, INA219_BUS, INA219_POLL_HZ, POWER_DATA_
 // `tools/lint/chip_source_check.py`).
 include!(concat!(env!("OUT_DIR"), "/chip_source.rs"));
 
-use azos_abi::drv_kind::power_op;
+use azos_devif::powermon::{PowerMon, PowerStats};
+use azos_devif::{outcome, Out, Sample};
 
-/// Answer `power_op` request `op` from `chip`'s published state into `out`.
-/// `acq_ns` is the acquisition stamp of that state (the host's clock read
-/// right after the first register read behind it). `Some(bytes written)`,
-/// `None` for an op this driver does not know.
-///
-/// `READ` and `READ_TS` write 0 bytes while the chip is unconfigured: "no
-/// data", never a fabricated battery. `out` must hold [`power_op::STATS_BYTES`]
-/// and [`power_op::POWER_TS_BYTES`]; a shorter buffer gets 0 bytes.
-pub fn serve(chip: &Ina219, op: u32, acq_ns: u64, out: &mut [u8]) -> Option<usize> {
-    match op {
-        power_op::READ => Some(chip.read_power(out)),
-        power_op::READ_TS => {
-            if out.len() < power_op::POWER_TS_BYTES
-                || chip.read_power(&mut out[..POWER_DATA_SIZE]) != POWER_DATA_SIZE
-            {
-                return Some(0);
-            }
-            out[POWER_DATA_SIZE..power_op::POWER_TS_BYTES].copy_from_slice(&acq_ns.to_le_bytes());
-            Some(power_op::POWER_TS_BYTES)
+/// A chip's published state as the `PowerMon` interface serves it. `acq_ns`
+/// is the acquisition stamp of that state (the host's clock read right after
+/// the first register read behind it).
+pub struct Monitor<'a> {
+    pub chip: &'a Ina219,
+    pub acq_ns: u64,
+}
+
+impl PowerMon for Monitor<'_> {
+    /// `NOT_READY` while the chip is unconfigured: "no data", never a
+    /// fabricated battery.
+    fn read(&mut self) -> Out<Sample> {
+        let mut rec = [0u8; POWER_DATA_SIZE];
+        if self.chip.read_power(&mut rec) != POWER_DATA_SIZE {
+            return Out::err(outcome::NOT_READY);
         }
-        power_op::STATS => {
-            if out.len() < power_op::STATS_BYTES {
-                return Some(0);
-            }
-            out[0..4].copy_from_slice(&chip.sample_count().to_le_bytes());
-            out[4..8].copy_from_slice(&chip.read_failures().to_le_bytes());
-            out[8] = chip.is_initialized() as u8;
-            out[9..17].copy_from_slice(&chip.charge_ma_us().to_le_bytes());
-            Some(power_op::STATS_BYTES)
-        }
-        _ => None,
+        Out::ok(Sample::new(&rec, 0, self.acq_ns))
+    }
+
+    fn stats(&mut self) -> Out<PowerStats> {
+        Out::ok(PowerStats {
+            samples: self.chip.sample_count(),
+            failures: self.chip.read_failures(),
+            configured: self.chip.is_initialized(),
+            charge_ma_us: self.chip.charge_ma_us(),
+        })
     }
 }

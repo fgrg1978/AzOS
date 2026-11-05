@@ -97,7 +97,7 @@ crates/drivers/power	0	0	0	0	1	0
 crates/drivers/rc-esc	0	0	0	0	1	0
 crates/drivers/rtc	0	0	0	0	1	0
 crates/drivers/scsi	0	0	0	0	1	0
-crates/drivers/sensor	2	2	0	0	0	15
+crates/drivers/sensor	2	2	0	0	0	16
 crates/drivers/soc	0	0	0	0	1	0
 crates/drivers/sys	62	9	4	0	0	56
 crates/drivers/thermal	0	0	0	0	1	0

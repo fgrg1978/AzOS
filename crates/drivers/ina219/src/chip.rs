@@ -4,8 +4,8 @@
 //!
 //! No syscalls and no statics: the bus is a trait and the time is an
 //! argument. The ring-3 host (`userspace/drivers/ina_drv`) implements [`Bus`]
-//! over the `i2c` endpoint; the in-kernel host (`crates/drivers/sensor/src/ina219/`,
-//! feature `ina219-kernel`) over `azos_drv_bus::i2c` directly.
+//! over the `i2c` endpoint; the in-kernel host (`crates/drivers/sensor/src/ina219/`)
+//! over `azos_drv_bus::i2c` directly.
 //! `tests/host/drivers-tests` drives it with a fake bus. Each host owns the
 //! one instance.
 //!
@@ -51,7 +51,7 @@ pub const FAILSAFE_KILL_PCT: u8 = 5;
 
 /// Bytes [`Ina219::read_power`] writes: voltage_mv u16, current_ma u16,
 /// mah_used u32, capacity_pct u8, sag u8, failsafe u8, pad u8 (all LE).
-pub const POWER_DATA_SIZE: usize = azos_abi::drv_kind::power_op::POWER_DATA_SIZE;
+pub const POWER_DATA_SIZE: usize = 12;
 
 /// The two transfers the chip needs.
 pub trait Bus {

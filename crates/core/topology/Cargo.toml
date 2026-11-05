@@ -115,9 +115,6 @@ ring3-driver-start-canary = ["ring3-driver-start"]
 # kernel's `ina219-kernel`. The INADRV.ELF row (the ring-3 host's grants) is
 # not declared (`builder::INADRV_ROW`).
 ina219-kernel = []
-# Its gate canary: the row is kept under the kernel placement, as if the
-# ring-3 host were still part of the image; the INA219 rows must fail.
-ina219-placement-canary = []
 # Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel, forwarded by the
 # kernel's `buzzer-kernel`. The built-in BUZZDRV.ELF row says `place =
 # "kernel"` (`builder::BUZZER_START_HOST`); its ring-3 host is started at boot

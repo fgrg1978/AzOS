@@ -47,7 +47,7 @@ dependencies = [
 name = "azos_ina219"
 version = "0.1.0"
 dependencies = [
- "azos_abi",
+ "azos_devif",
 ]
 
 [[package]]
@@ -146,7 +146,7 @@ dependencies = [
 name = "ina_drv"
 version = "0.1.0"
 dependencies = [
- "azos_abi",
+ "azos_devif",
  "azos_ina219",
  "azos_libsys",
  "azos_limits",

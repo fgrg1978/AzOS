@@ -165,15 +165,16 @@ const RESOURCE_ENDPOINT_PM_GPIO: &[u8] = b"endpoint.pm-gpio";
 const RESOURCE_ENDPOINT_PM_INA: &[u8] = b"endpoint.pm-ina";
 /// The INA219 ring-3 host's image, the name of its row.
 pub const TASK_INADRV_IMAGE: &[u8] = b"INADRV.ELF";
-/// Wave 11 (DRVPLACE): does this topology declare the INA219's ring-3 host
-/// (`INADRV.ELF`)? Only when the driver is placed in ring 3, Kconfig
-/// `DRV_INA219_PLACEMENT`'s default; feature `ina219-kernel` (the kernel
-/// placement) drops the row. The kernel asserts this against the drivers
-/// crate's placement, so the two cannot disagree in a build that links.
-/// `ina219-placement-canary` keeps the row under the kernel placement (and
-/// the kernel skips its assertion): the gate row must then fail.
-pub const INADRV_ROW: bool =
-    cfg!(any(not(feature = "ina219-kernel"), feature = "ina219-placement-canary"));
+/// The endpoint `INADRV.ELF` serves the `PowerMon` interface on, and the
+/// kernel calls it through (`azos_devif::powermon::ENDPOINT`).
+const RESOURCE_ENDPOINT_POWERMON: &[u8] = b"endpoint.powermon";
+/// Does this topology declare the INA219's ring-3 host (`INADRV.ELF`)? Only
+/// when the driver is placed in ring 3, Kconfig `DRV_INA219_PLACEMENT`'s
+/// default; feature `ina219-kernel` (the kernel placement) drops the row, and
+/// the kernel, finding none, places the driver in the kernel
+/// (`kernel/src/powermon.rs`). A signed topology that keeps the row says its
+/// own `place`.
+pub const INADRV_ROW: bool = !cfg!(feature = "ina219-kernel");
 /// `INADRV.ELF`'s priority: `hard_rt`'s least urgent number, outside the band.
 pub const INADRV_PRIORITY: u8 = 15;
 /// `INADRV.ELF`'s EDF + CBS reservation. The period is the chip's sample
@@ -184,8 +185,6 @@ pub const INADRV_PRIORITY: u8 = 15;
 /// period serves; the deadline is the period.
 pub const INADRV_RT: crate::deadline::SchedProfile =
     crate::deadline::SchedProfile { period_us: 100_000, runtime_us: 5_000, deadline_us: 0, cpu_mask: 0, core_class: None };
-/// `DRV_KIND_POWER_MON` (0x0011) in decimal.
-const RESOURCE_DRV_POWER_MON: &[u8] = b"drv.17";
 /// Frame budget of one `ABICHILD.ELF` process, in topology pages (4 KiB,
 /// `memory::TOPOLOGY_PAGE`): 128, i.e. its image, a stack, the pages a mode
 /// touches (at most eight of break) and the tables, at 4 KiB frames. Under a
@@ -1306,18 +1305,6 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::READ,
                 target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_BENCH), transfer: false, ops: 0,
             },
-            // Wave 11 (SHMRING): `vsbench`'s `drv-call` lane measures the
-            // path a ring-3 client has to a ring-3 driver today, and this
-            // image is the driver for its span. The power-monitor kind
-            // because a `Sensor` read of `sensor.9` (a capability the
-            // autorun row already holds) is a ring-3 call that reaches a
-            // `UserDriverProxy`; on a boot where `INADRV.ELF` owns the kind
-            // the registration is refused and the lane reports that.
-            CapSpec {
-                kind: CapKind::Device,
-                perms: CapPerms::RW,
-                target: MaybeStr::from_bytes(RESOURCE_DRV_POWER_MON), transfer: false, ops: 0,
-            },
         ],
     )
     .expect("default_minimal_topology: VSSRV.ELF push failed");
@@ -1471,10 +1458,10 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         #[cfg(feature = "restart-smoke")]
         topo.set_last_task_restart(crate::types::RestartPolicy::No);
     }
-    // Wave 11 (DRVPLACE): the INA219's ring-3 host has a row only when the
-    // driver is placed in ring 3 ([`INADRV_ROW`]). Placed in the kernel, the
-    // row would be a dormant grant of the `i2c` endpoint on its chip to an image the
-    // kernel does not run.
+    // The INA219's ring-3 host has a row only when the driver is placed in
+    // ring 3 ([`INADRV_ROW`]). Placed in the kernel, the row would be a
+    // dormant grant of the `i2c` endpoint on its chip to an image the kernel
+    // does not run.
     //
     // **The one ring-3 row with a real-time reservation** ([`INADRV_RT`]): the
     // driver's main thread is a periodic sampler (one sample of the chip per
@@ -1486,7 +1473,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // least urgent a `hard_rt` task can be. Boot admission places the
     // reservation on a CPU (`cpu_mask` 0: any) and the task is pinned there
     // (`topo_sched::row_reservation`); the hard CBS caps what a runaway or a
-    // flood of proxied reads can take to the reservation's share.
+    // flood of calls can take to the reservation's share.
     if INADRV_ROW && azos_limits::USERSPACE_INADRV {
         topo.push_task_profiled(
             MaybeStr::from_bytes(TASK_INADRV_IMAGE),
@@ -1494,14 +1481,14 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             INADRV_PRIORITY,
             &[
                 CapSpec {
-                    kind: CapKind::Device,
-                    perms: CapPerms::RW,
-                    target: MaybeStr::from_bytes(RESOURCE_DRV_POWER_MON), transfer: false, ops: 0,
-                },
-                CapSpec {
                     kind: CapKind::Endpoint,
                     perms: CapPerms::RW,
                     target: MaybeStr::from_bytes(RESOURCE_I2C_INA219), transfer: false, ops: 0,
+                },
+                CapSpec {
+                    kind: CapKind::Endpoint,
+                    perms: CapPerms::READ,
+                    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_POWERMON), transfer: false, ops: 0,
                 },
                 // It serves `DevicePower` for the power service (runtime PM).
                 CapSpec {

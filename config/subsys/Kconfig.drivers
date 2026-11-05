@@ -656,8 +656,9 @@ choice DRV_INA219_PLACEMENT
     default DRV_INA219_PLACEMENT_RING3
     help
       Where the INA219 chip logic (crates/drivers/ina219) runs. Both
-      answer a read of the `sensor.9` endpoint (the power monitor) with the same
-      record.
+      serve the PowerMon interface and answer a read of the `sensor.9`
+      endpoint (the power monitor) with the same record. It is the `place`
+      of the INADRV.ELF row (the kernel finds it from the topology).
       Not read by any safety decision (the battery check reads the
       ADS1115), so both are allowed.
 
@@ -667,8 +668,8 @@ choice DRV_INA219_PLACEMENT
         help
           Kernel feature `ina219-kernel`: a kernel task samples the chip
           at 10 Hz and the kernel API reads its last sample directly (no
-          request to a driver process, no wake-up). The topology declares
-          no INADRV.ELF row. A chip fault is a kernel fault.
+          call to a driver process, no wake-up). The built-in topology
+          declares no INADRV.ELF row. A chip fault is a kernel fault.
 
     config DRV_INA219_PLACEMENT_RING3
         bool "ring3"
@@ -676,7 +677,7 @@ choice DRV_INA219_PLACEMENT
           The ring-3 driver INADRV.ELF (userspace/drivers/ina_drv), started
           from its topology row, supervised and restarted as the row's
           `restart` key says (on failure by default); the kernel reaches
-          it through the driver proxy (PROXY_SPIN_US, PROXY_REPLY_TIMEOUT_MS). Only images that carry INADRV.ELF and
+          it by an endpoint call (`endpoint.powermon`). Only images that carry INADRV.ELF and
           start its row have the driver (today: the QEMU drivers disks).
 
 endchoice

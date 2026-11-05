@@ -33,6 +33,9 @@ pub const SERVED: &[(&[u8], &[OpInfo])] = &[
     // between them (`kernel/src/buzzer.rs`). Its ops declare no failure
     // contract (they are idempotent: a caller whose call was lost asks again).
     (b"endpoint.buzzer", &azos_devif::BuzzerIdl::OPS),
+    // The INA219's ring-3 host (`kernel/src/powermon.rs`): reads are
+    // idempotent and declare no failure contract.
+    (b"endpoint.powermon", &azos_devif::PowerMonIdl::OPS),
     // The drivers' runtime power (`DevicePower`), served for the power service.
     (b"endpoint.pm-gpio", &azos_devif::power::DevicePowerIdl::OPS),
     (b"endpoint.pm-ina", &azos_devif::power::DevicePowerIdl::OPS),

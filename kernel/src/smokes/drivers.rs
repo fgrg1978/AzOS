@@ -192,13 +192,13 @@ fn proxy_round_trip_report(proxy: &azos_drv_sys::user_driver_proxy::UserDriverPr
               n, s[0], s[n / 2], s[n - 1], failed, spun);
 }
 /// Quiet window [`driver_idle_fetches`] measures over.
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", all(feature = "qemu", feature = "boot-selftests")))]
+#[cfg(any(feature = "gpio-aq3-smoke", all(feature = "qemu", feature = "boot-selftests")))]
 const DRIVER_IDLE_WINDOW_MS: u64 = 3_000;
 
 /// Most empty fetches per second a parked ring-3 driver with nothing timed
 /// may show: one per kernel park bound (`DRIVER_PARK_DEFAULT_MS`, 1 s), plus
 /// headroom for stamped wakes.
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", all(feature = "qemu", feature = "boot-selftests")))]
+#[cfg(any(feature = "gpio-aq3-smoke", all(feature = "qemu", feature = "boot-selftests")))]
 pub(crate) const DRIVER_IDLE_MAX_PER_S: u64 = 5;
 
 /// Empty-queue fetches (`azos_driver_server::driver_empty_fetches`) of
@@ -206,7 +206,7 @@ pub(crate) const DRIVER_IDLE_MAX_PER_S: u64 = 5;
 /// in which the caller sends the driver nothing: `(count, window ms)`. Each is
 /// one pass of the driver's serve loop that found no request — its poll, or
 /// its park ending with nothing queued. `None` without a registered driver.
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", all(feature = "qemu", feature = "boot-selftests")))]
+#[cfg(any(feature = "gpio-aq3-smoke", all(feature = "qemu", feature = "boot-selftests")))]
 fn driver_idle_fetches(kind: u32) -> Option<(u32, u64)> {
     use azos_drv_sys::timebase::{now, TIMER_FREQ};
     let a = azos_driver_server::driver_empty_fetches(kind)?;
@@ -221,7 +221,7 @@ fn driver_idle_fetches(kind: u32) -> Option<(u32, u64)> {
 
 /// Print [`driver_idle_fetches`] for `kind` as `<who> idle: N empty fetches
 /// in T ms (R/s)`. Informational.
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "ring3-drv-smoke", all(feature = "qemu", feature = "boot-selftests")))]
+#[cfg(any(feature = "gpio-aq3-smoke", all(feature = "qemu", feature = "boot-selftests")))]
 pub(crate) fn driver_idle_report(who: &str, kind: u32) -> Option<u64> {
     match driver_idle_fetches(kind) {
         Some((n, ms)) => {

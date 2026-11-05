@@ -81,6 +81,9 @@ pub use vmctl::{VmCtl, VmCtlCall, VmCtlClient, VmCtlIdl, VMCTL_ID};
 pub mod buzzer;
 pub use buzzer::{Buzzer, BuzzerCall, BuzzerClient, BuzzerDirect, BuzzerIdl, BuzzerPlaced, BUZZER_ID};
 
+pub mod powermon;
+pub use powermon::{PowerMon, PowerMonCall, PowerMonClient, PowerMonDirect, PowerMonIdl, PowerMonPlaced, PowerStats, POWERMON_ID};
+
 pub mod infer;
 pub use infer::{Infer, InferCall, InferClient, InferIdl, INFER_ID};
 

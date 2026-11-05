@@ -765,19 +765,13 @@ pkg-launch-grant-canary = []
 
 # Wave 9 canary: no ring-3 floor on donations. `proxy-pi-smoke`'s floor check
 # (a client at 8 onto gpio_drv) must fail on `[PROXYPI] FAIL floor`.
-# Wave 11 (DRVPLACE): Kconfig DRV_INA219_PLACEMENT = kernel. The INA219's
-# chip logic (crates/drivers/ina219) runs in a kernel task (`ina219_host_task`)
-# and the kernel API reads its state directly; the topology declares no
-# INADRV.ELF row. Without it (the default, `ring3`) the same chip logic runs
-# in ring 3 (`userspace/drivers/ina_drv`) behind the proxy.
-ina219-kernel = ["board-io", "azos_drv_sensor/ina219-kernel", "azos_topology/ina219-kernel"]
-# Gate canary (row bucket): the kernel placement with the INADRV.ELF row kept
-# and the link-time placement check skipped. The INA219 rows must fail on
-# `[DRV1] ina219 FAIL: placement is kernel but the topology declares`.
-ina219-placement-canary = ["ina219-kernel", "azos_topology/ina219-placement-canary"]
-# Gate canary (build bucket): the drivers crate told "kernel", the topology
-# not; the kernel must not compile (`tasks/ina219_host.rs`).
-ina219-placement-build-canary = ["board-io", "azos_drv_sensor/ina219-kernel"]
+# Kconfig DRV_INA219_PLACEMENT = kernel. The built-in topology declares no
+# INADRV.ELF row and the kernel places the INA219 in the kernel (`powermon.rs`):
+# its chip logic (crates/drivers/ina219) runs in a kernel task
+# (`ina219_host_task`) and the kernel API reads its state directly. Without it
+# (the default, `ring3`) the same chip logic runs in ring 3
+# (`userspace/drivers/ina_drv`) on `endpoint.powermon`.
+ina219-kernel = ["board-io", "azos_topology/ina219-kernel"]
 # Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel: the buzzer starts
 # in the kernel (the built-in topology's BUZZDRV.ELF row says `place =
 # "kernel"`): a call plays through the kernel's PWM driver directly and a

@@ -721,11 +721,11 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DEVICE_IOPORT_ENABLE],
         ifaces: &[azos_devif::key::PWM],
     },
-    // Wave 9 (DRV1): the ring-3 INA219 driver. The same loop (its park timed
-    // to the next sample), and the v2 calls on its one `i2c` endpoint. Runtime
-    // PM: a second thread accepts and answers the `DevicePower` interface it
-    // serves on its own endpoint, and the two threads share one lock they
-    // take by yielding (as `BUZZDRV.ELF`).
+    // The ring-3 INA219 driver. The main thread samples, sleeping to the next
+    // sample, with the v2 calls on its one `i2c` endpoint. A second thread
+    // accepts and answers the `PowerMon` and `DevicePower` interfaces it serves
+    // on its own endpoints, and the two threads share one lock they take by
+    // yielding (as `BUZZDRV.ELF`).
     ImageProfile {
         image: "INADRV.ELF",
         syscalls: sys_nrs![
@@ -735,7 +735,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_THREAD_CREATE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_DRIVER_REGISTER],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT],
         ifaces: &[azos_devif::key::I2C],
     },
     // The component manager. Reads its plan from its view region of the

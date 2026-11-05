@@ -4,10 +4,9 @@
 //!
 //! Wave 9: both drivers run in ring 3 (`userspace/drivers/buzz_drv`,
 //! `userspace/drivers/ina_drv`), started from their `start = true` rows; the
-//! INA219's kernel API is its proxy client, the buzzer's is the `Buzzer`
-//! interface on its endpoint (`crate::buzzer`, which calls whichever host the
-//! driver is in). The assertions are the ones the in-kernel drivers passed
-//! before the move.
+//! kernel API of each is its interface on an endpoint (`crate::buzzer`,
+//! `azos_drv_sensor::ina219`), which calls whichever host the driver is in.
+//! The assertions are the ones the in-kernel drivers passed before the move.
 //!
 //! Driven through the kernel API its callers use (`crate::buzzer::*`,
 //! `azos_drv_sensor::ina219::ina219_read_power` behind
@@ -120,11 +119,6 @@ fn buzzer() -> Result<(u64, u64), &'static str> {
     Ok((call_us, us(now() - t0) / 1000))
 }
 
-/// Most empty fetches per second the INA219 driver may show while no
-/// client calls it: it wakes to sample its chip at 10 Hz
-/// (`INA219_POLL_HZ`, userspace), plus [`super::DRIVER_IDLE_MAX_PER_S`].
-const INA_IDLE_MAX_PER_S: u64 = 10 + super::DRIVER_IDLE_MAX_PER_S;
-
 /// Window the integrated charge is compared with the clock over.
 const CHARGE_WINDOW_MS: u64 = 3_000;
 
@@ -185,14 +179,15 @@ fn ina219() -> Result<(u16, u16, u8, u64, u32, u64, u64, u32), &'static str> {
     // or take one sample period at each end (the driver samples at
     // 10 Hz; a late sample moves charge between windows, never loses it).
     // The +-50% bound is for those ends and host load, not for the rate.
-    use azos_drv_sensor::ina219::ina219_charge_ma_us;
     use azos_drv_sensor::ina219::ina219_stats;
-    let s0 = ina219_stats().map_or(0, |s| s.0);
-    let q0 = ina219_charge_ma_us().ok_or("no STATS reply with the integrated charge")?;
+    const NO_STATS: &str = "no stats reply with the integrated charge";
+    let p0 = ina219_stats().ok_or(NO_STATS)?;
+    let (s0, q0) = (p0.samples, p0.charge_ma_us);
     let t0 = now();
     sleep_ms(CHARGE_WINDOW_MS);
-    let q1 = ina219_charge_ma_us().ok_or("no STATS reply with the integrated charge")?;
-    let samples = ina219_stats().map_or(0, |s| s.0).wrapping_sub(s0);
+    let p1 = ina219_stats().ok_or(NO_STATS)?;
+    let q1 = p1.charge_ma_us;
+    let samples = p1.samples.wrapping_sub(s0);
     let window_us = us(now() - t0);
     let expect = ma as u64 * window_us;
     let charge_pct = q1.saturating_sub(q0).saturating_mul(100) / expect.max(1);
@@ -231,45 +226,39 @@ fn latency(who: &str, op: impl Fn() -> bool) {
     // A kernel-placed driver is a direct call, not a proxied one; the buzzer
     // in ring 3 is an endpoint call.
     let buzzer_in_kernel = crate::buzzer::host() == Some(azos_topology::placement::Host::Kernel);
-    let what = if (who.ends_with("ina219") && azos_drv_sensor::ina219::IN_KERNEL)
-        || (who.ends_with("buzzer") && buzzer_in_kernel)
-    {
+    let ina_in_kernel = azos_drv_sensor::ina219::placement() == Some(azos_drv_sensor::ina219::Placement::Kernel);
+    let what = if (who.ends_with("ina219") && ina_in_kernel) || (who.ends_with("buzzer") && buzzer_in_kernel) {
         "direct call"
-    } else if who.ends_with("buzzer") {
-        "endpoint round trip"
     } else {
-        "proxy round trip"
+        "endpoint round trip"
     };
     kprintln!("{} {} over {} calls: min={}us p50={}us p90={}us max={}us failed={}",
         who, what, n, s[0], s[n / 2], s[(n * 9) / 10], s[n - 1], failed);
 }
 
-/// Wave 11 (DRVPLACE): what the placement itself promises.
-///
-/// Kernel placement: the topology declares no ring-3 host (`INADRV.ELF`,
-/// whose row grants the `i2c` endpoint on the chip) and no ring-3 task owns
-/// `DRV_KIND_POWER_MON`. Ring-3 placement: no kernel host task answers
-/// (`IN_KERNEL` is false, so the API is the proxy) and the row is declared.
-/// The kernel build refuses the first mismatch at link time
-/// (`tasks/ina219_host.rs`); this is the boot-time check of the same thing,
-/// which `ina219-placement-canary` reaches by skipping the link-time one.
+/// What the placement itself promises. The INA219 is where its row says
+/// (`kernel/src/powermon.rs` reads it and tells the drivers crate): placed in
+/// the kernel, the kernel host task answers and no ring-3 task owns
+/// `endpoint.powermon`; placed in ring 3, a task owns it.
 fn placement_check() -> Result<(), &'static str> {
-    use azos_drv_sensor::ina219::IN_KERNEL;
-    let declared = azos_topology::get().is_some_and(|t| t.tasks().iter()
-        .any(|r| r.name.as_bytes() == azos_topology::builder::TASK_INADRV_IMAGE));
-    if IN_KERNEL && declared {
-        return Err("placement is kernel but the topology declares the ring-3 host INADRV.ELF");
+    use azos_drv_sensor::ina219::{placement, Placement};
+    let row = azos_topology::get().and_then(|t| t.row_place(azos_topology::builder::TASK_INADRV_IMAGE));
+    match (placement(), row.map(|r| r.host)) {
+        (None, _) => Err("the INA219 is in no host"),
+        (Some(Placement::Kernel), Some(azos_topology::placement::Host::Ring3)) =>
+            Err("the row places the INA219 in ring 3 and it runs in the kernel"),
+        (Some(Placement::Ring3), Some(azos_topology::placement::Host::Kernel)) =>
+            Err("the row places the INA219 in the kernel and it runs in ring 3"),
+        (Some(Placement::Ring3), None) => Err("placement is ring-3 but the topology declares no INADRV.ELF row"),
+        (Some(Placement::Kernel), _) => match crate::powermon::ring3_host_tid() {
+            Some(t) => {
+                kprintln!("[DRV1] ina219 ring-3 owner tid={} under the kernel placement", t);
+                Err("placement is kernel but a ring-3 task owns endpoint.powermon")
+            }
+            None => Ok(()),
+        },
+        _ => Ok(()),
     }
-    if !IN_KERNEL && !declared {
-        return Err("placement is ring-3 but the topology declares no INADRV.ELF row");
-    }
-    if IN_KERNEL {
-        if let Some(t) = azos_driver_server::driver_owner_tid(azos_abi::drv_kind::DRV_KIND_POWER_MON) {
-            kprintln!("[DRV1] ina219 ring-3 owner tid={} under the kernel placement", t);
-            return Err("placement is kernel but a ring-3 task owns DRV_KIND_POWER_MON");
-        }
-    }
-    Ok(())
 }
 
 /// [`placement_check`] for the buzzer. Its row is declared in every build,
@@ -291,6 +280,11 @@ fn buzzer_placement_check() -> Result<(), &'static str> {
     }
 }
 
+/// Where the INA219 runs, for the log.
+fn placement_str() -> &'static str {
+    azos_drv_sensor::ina219::placement().map_or("none", |p| p.as_str())
+}
+
 /// Reads timed by [`read_path_cost`].
 const READ_PATH_CALLS: u64 = 256;
 
@@ -298,8 +292,8 @@ const READ_PATH_CALLS: u64 = 256;
 /// makes), in clock ns per read over [`READ_PATH_CALLS`] back-to-back
 /// reads. Under `-icount shift=0` one ns is one guest instruction, so the
 /// line is the read path's instruction count in this placement: a direct
-/// copy of the published state (kernel) against a proxy round trip to the
-/// parked driver (ring 3). Informational; the gate's placement-parity row
+/// copy of the published state (kernel) against an endpoint round trip to the
+/// ring-3 driver. Informational; the gate's placement-parity row
 /// compares the two boots.
 fn read_path_cost() {
     use azos_drv_sensor::ina219::{ina219_read_power, POWER_DATA_SIZE};
@@ -312,22 +306,16 @@ fn read_path_cost() {
     }
     let total = ns(now() - t0);
     kprintln!("[DRV1] ina219 read path ({}): {} reads ({} answered) in {} ns, {} ns/read",
-        azos_drv_sensor::ina219::PLACEMENT, READ_PATH_CALLS, ok, total, total / READ_PATH_CALLS);
+        placement_str(), READ_PATH_CALLS, ok, total, total / READ_PATH_CALLS);
 }
 
 /// Each driver is waited for, then tested, independently: a missing
 /// buzzer driver does not stop the INA219 verdict.
 pub fn task(_: usize) {
-    // Wave 10 (DRV2): both drivers' idle serve-loop passes, measured
-    // before either is called (the INA219 still samples its chip).
     let buzz = wait_for_driver(crate::buzzer::driver_tid);
-    let ina = wait_for_driver(azos_drv_sensor::ina219::ina219_driver_tid);
-    // Ring-3 placement only: the kernel host has no serve loop to idle in
-    // (it samples on its own clock and is never woken by a caller).
-    let ina_idle = ina.filter(|_| !azos_drv_sensor::ina219::IN_KERNEL).and_then(|_|
-        super::driver_idle_report("[DRV1] ina219", azos_abi::drv_kind::DRV_KIND_POWER_MON));
-    // The proxied call's spread, request to copied-out reply, for each
-    // driver: the wait a client pays for the driver to notice a request.
+    let ina = wait_for_driver(crate::powermon::driver_tid);
+    // The call's spread, request to copied-out reply, for each driver: the
+    // wait a client pays for the driver to notice a request.
     if buzz.is_some() {
         latency("[DRV1] buzzer", crate::buzzer::buzzer_off);
     }
@@ -350,7 +338,7 @@ pub fn task(_: usize) {
     } }
     // Wave 11 (DRVPLACE): the same verdict in either placement, plus the
     // placement's own conditions and the read path's cost.
-    let placement = azos_drv_sensor::ina219::PLACEMENT;
+    let placement = placement_str();
     if let Err(e) = placement_check() {
         kprintln!("[DRV1] ina219 FAIL: {}", e);
         return;
@@ -359,18 +347,14 @@ pub fn task(_: usize) {
         read_path_cost();
     }
     match ina {
-        None => kprintln!("[DRV1] ina219 FAIL: no {} host of DRV_KIND_POWER_MON in {} ms",
+        None => kprintln!("[DRV1] ina219 FAIL: no {} host of the PowerMon interface in {} ms",
             placement, REGISTER_WAIT_MS),
-        Some(_) if ina_idle.is_some_and(|r| r > INA_IDLE_MAX_PER_S) =>
-            kprintln!("[DRV1] ina219 FAIL: idle, {}/s empty fetches (above {}/s)",
-                ina_idle.unwrap_or(0), INA_IDLE_MAX_PER_S),
         Some(tid) => match ina219() {
             Ok((mv, ma, pct, call_us, reads, charge_pct, window_ms, window_samples)) => {
-                let (samples, failures, _) = azos_drv_sensor::ina219::ina219_stats().unwrap_or((0, 0, false));
-                kprintln!("[DRV1] ina219 PASS {} mV {} mA {}% ({} tid={} prio={} samples={} failures={} call={} us reads={} proxy-timeouts={} charge={}% of {} mA x {} ms over {} samples)",
-                    mv, ma, pct, placement, tid, azos_sched::task_priority(tid).unwrap_or(u32::MAX), samples, failures, call_us,
-                    reads, azos_drv_sys::user_driver_proxy::PROXY_TIMEOUTS.load(core::sync::atomic::Ordering::Relaxed),
-                    charge_pct, ma, window_ms, window_samples)
+                let st = azos_drv_sensor::ina219::ina219_stats().unwrap_or_default();
+                kprintln!("[DRV1] ina219 PASS {} mV {} mA {}% ({} tid={} prio={} samples={} failures={} call={} us reads={} charge={}% of {} mA x {} ms over {} samples)",
+                    mv, ma, pct, placement, tid, azos_sched::task_priority(tid).unwrap_or(u32::MAX), st.samples, st.failures, call_us,
+                    reads, charge_pct, ma, window_ms, window_samples)
             }
             Err(e) => kprintln!("[DRV1] ina219 FAIL: {}", e),
         },

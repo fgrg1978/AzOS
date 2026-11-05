@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! INA219 power monitor, kernel placement: the in-kernel host of
-//! `crates/drivers/ina219` (Kconfig `DRV_INA219_PLACEMENT = kernel`, cargo
-//! feature `ina219-kernel`).
+//! `crates/drivers/ina219` (Kconfig `DRV_INA219_PLACEMENT = kernel`, which is
+//! the `place` of the topology row).
 //!
 //! The ring-3 host's loop, moved into a kernel task (`kernel/src/tasks/`,
 //! which owns the one [`KernelHost`]): sample the chip every
 //! 1 / `INA219_POLL_HZ` over [`azos_drv_bus::i2c`] (the same `i2c_read` /
 //! `i2c_write` the ring-3 host reaches through the `i2c` endpoint), retry its
 //! configuration until it is accepted, and publish the chip state in a
-//! [`Log`] of one slot. Every call below copies that state and answers through
-//! `azos_ina219::serve`: a direct call in the caller's context, no
+//! [`Log`] of one slot. [`KernelPowerMon`] copies that state and answers through
+//! `azos_ina219::Monitor`: a direct call in the caller's context, no
 //! device access and no lock held by the caller (the
 //! device is touched only by the host task, which holds no lock across it).
 //!
@@ -20,12 +20,12 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use azos_abi::drv_kind::power_op;
-use azos_ina219::{serve, Bus, Ina219, INA219_ADDR, INA219_BUS, INA219_POLL_HZ};
+use azos_devif::powermon::{PowerMon, PowerStats};
+use azos_devif::{outcome, Out, Sample};
+use azos_ina219::{Bus, Ina219, Monitor, INA219_ADDR, INA219_BUS, INA219_POLL_HZ};
 use azos_rings::{Log, Writer};
 use azos_sync::SpinLock;
 
-use super::POWER_DATA_SIZE;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
 
 /// Time between chip samples, in timebase ticks: 1 / `INA219_POLL_HZ`.
@@ -112,77 +112,38 @@ impl KernelHost {
     }
 }
 
-/// `serve(op)` against the published state, or `None` before the host's
-/// first sample (no host is "no driver", as an unregistered ring-3 kind).
-fn call(op: u32, out: &mut [u8]) -> Option<usize> {
-    if HOST_TID.load(Ordering::Acquire) == 0 {
-        return None;
-    }
-    let (_, p) = STATE.latest();
-    serve(&p.chip, op, p.acq_ns, out)
-}
-
-/// The host task, once it has sampled: the counterpart of a registered
-/// ring-3 driver's TID.
-pub fn ina219_driver_tid() -> Option<u32> {
+/// The host task, once it has sampled.
+pub fn host_tid() -> Option<u32> {
     match HOST_TID.load(Ordering::Acquire) {
         0 => None,
         t => Some(t),
     }
 }
 
-/// The last sample into `buf`; bytes written, `POWER_DATA_SIZE` or 0.
-pub fn ina219_read_power(buf: &mut [u8]) -> usize {
-    if buf.len() < POWER_DATA_SIZE {
-        return 0;
-    }
-    match call(power_op::READ, &mut buf[..POWER_DATA_SIZE]) {
-        Some(POWER_DATA_SIZE) => POWER_DATA_SIZE,
-        _ => 0,
-    }
-}
+/// The kernel host as an implementation of the interface: a read copies the
+/// published state and answers from it, in the caller's context. `NOT_READY`
+/// before the host's first sample.
+pub struct KernelPowerMon;
 
-/// [`ina219_read_power`] and the sample's acquisition time (clock ns).
-/// `(bytes, acq_ns)`, `(0, 0)` with no configured chip.
-pub fn ina219_read_power_stamped(buf: &mut [u8]) -> (usize, u64) {
-    if buf.len() < POWER_DATA_SIZE {
-        return (0, 0);
-    }
-    let mut out = [0u8; power_op::POWER_TS_BYTES];
-    match call(power_op::READ_TS, &mut out) {
-        Some(power_op::POWER_TS_BYTES) => {
-            buf[..POWER_DATA_SIZE].copy_from_slice(&out[..POWER_DATA_SIZE]);
-            let mut a = [0u8; 8];
-            a.copy_from_slice(&out[POWER_DATA_SIZE..]);
-            (POWER_DATA_SIZE, u64::from_le_bytes(a))
+impl PowerMon for KernelPowerMon {
+    fn read(&mut self) -> Out<Sample> {
+        match published() {
+            Some(p) => Monitor { chip: &p.chip, acq_ns: p.acq_ns }.read(),
+            None => Out::err(outcome::NOT_READY),
         }
-        _ => (0, 0),
+    }
+
+    fn stats(&mut self) -> Out<PowerStats> {
+        match published() {
+            Some(p) => Monitor { chip: &p.chip, acq_ns: p.acq_ns }.stats(),
+            None => Out::err(outcome::NOT_READY),
+        }
     }
 }
 
-/// `(samples published, failed register transfers, chip configured)`, or
-/// `None` before the host's first sample.
-pub fn ina219_stats() -> Option<(u32, u32, bool)> {
-    let out = stats_record()?;
-    Some((
-        u32::from_le_bytes([out[0], out[1], out[2], out[3]]),
-        u32::from_le_bytes([out[4], out[5], out[6], out[7]]),
-        out[8] != 0,
-    ))
-}
-
-/// The integrated charge, in mA x us. `None` before the host's first sample.
-pub fn ina219_charge_ma_us() -> Option<u64> {
-    let out = stats_record()?;
-    let mut b = [0u8; 8];
-    b.copy_from_slice(&out[9..17]);
-    Some(u64::from_le_bytes(b))
-}
-
-fn stats_record() -> Option<[u8; power_op::STATS_BYTES]> {
-    let mut out = [0u8; power_op::STATS_BYTES];
-    match call(power_op::STATS, &mut out) {
-        Some(power_op::STATS_BYTES) => Some(out),
-        _ => None,
+fn published() -> Option<Published> {
+    if HOST_TID.load(Ordering::Acquire) == 0 {
+        return None;
     }
+    Some(STATE.latest().1)
 }

@@ -34,10 +34,11 @@ mod reclaim;
 #[cfg(feature = "mm-reclaim")]
 pub(crate) use reclaim::*;
 #[cfg(feature = "board-io")]
+#[cfg(feature = "board-io")]
 mod ina219_host;
 #[cfg(feature = "board-io")]
 mod buzzer_host;
-#[cfg(feature = "ina219-kernel")]
+#[cfg(feature = "board-io")]
 pub(crate) use ina219_host::*;
 #[cfg(feature = "board-io")]
 pub(crate) use buzzer_host::*;
