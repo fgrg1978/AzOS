@@ -1913,9 +1913,11 @@ config TMPFS_MAX_FILES
       an entry; a full table refuses the next create with ENOSPC.  / and /tmp
       are two tmpfs instances and each has this many.
 
-      Cost: 96 B of RAM per entry and instance (.bss), the same on riscv64 and
-      aarch64: 12,288 B for the two at the default 64.  File data is not in
-      this table (see TMPFS_MAX_KB).
+      Cost: 104 B of RAM per entry and instance (.bss), the same on riscv64
+      and aarch64: 13,312 B for the two at the default 64.  A name is stored
+      in its entry (63 bytes at most); a path costs nothing, whatever its
+      depth, and is limited only by the VFS's own 512 bytes.  File data is not
+      in this table (see TMPFS_MAX_KB).
 
 config TMPFS_MAX_KB
     int "tmpfs data capacity per mount (KiB)"
@@ -1923,8 +1925,9 @@ config TMPFS_MAX_KB
     default 2048
     help
       crates/fs/src/tmpfs.rs, TMPFS_MAX_BYTES, for each of / and /tmp. A write
-      that would pass it evicts the oldest file first (FIFO) and is refused
-      when there is none to evict.
+      that would pass it is refused (ENOSPC) on /; on /tmp, which is scratch
+      space, it first evicts the oldest files (FIFO) and is refused only when
+      none is left to evict.  A file is never evicted from /.
 
       Cost: no static RAM (+0 B measured, both ISAs).  File data is allocated
       from the kernel heap when a file is written, so the worst case is

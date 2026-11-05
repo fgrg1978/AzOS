@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2795714
-riscv64-qemu	.rodata	471912
-riscv64-qemu	.data	792360
-riscv64-qemu	.bss	2289384
-riscv64-qemu	reason	K8: the task control blocks are made on use, not in .bss
+riscv64-qemu	.text	2772966
+riscv64-qemu	.rodata	471848
+riscv64-qemu	.data	796456
+riscv64-qemu	.bss	2293480
+riscv64-qemu	reason	F10: the ramfs tree is gone from the VFS (-23 KB text); tmpfs entries carry an id and an open count and the inode key is 72 bytes (+4 KB data)

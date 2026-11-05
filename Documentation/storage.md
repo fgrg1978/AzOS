@@ -40,19 +40,29 @@ and directories) per instance, with file data on the kernel heap. The bounds
 
 * A full entry table refuses the next create or `mkdir` with `NoSpace`
   (`ENOSPC`); nothing is evicted for a slot.
-* A write that would pass `TMPFS_MAX_KB` evicts the oldest file (never a
-  directory, never the file being written) until it fits, and is refused with
-  `NoSpace` when nothing is left to evict: one file cannot be larger than the
-  bound.
-* A name is at most 63 bytes (`NameTooLong`), and the path inside the mount
-  (the file's key) at most `INODE_KEY_LEN` (64) bytes.
+* A write that would pass `TMPFS_MAX_KB` is refused with `NoSpace` on `/`:
+  the system does not drop a file it was asked to keep. `/tmp` is scratch
+  space (the bound and the eviction are tmpfs's original design): there the
+  write first evicts the oldest named files, never a directory and never the
+  file being written, and is refused only when none is left. One file cannot
+  be larger than the bound on either.
+* A name is at most 63 bytes (`NameTooLong`). A path inside the mount is
+  limited only by the VFS (`MAX_PATH`, 512 bytes with its NUL).
 
-An open descriptor follows the file's name, not the file: a file is named by
-its canonical path inside the mount, so after a rename or an unlink a write
-through the old descriptor lands at the old name and creates the file there.
-The VFS flushes and drops the cached pages of a renamed file or directory.
+A file is named to the VFS by its entry: the key holds the entry's slot and
+id, so it follows the file through a rename and names nothing once the file is
+gone. A file that is not there yet is named by its directory's key plus the
+leaf name. A descriptor therefore follows the file, not the name: a file
+unlinked or renamed over while open stays alive, unnamed, until the last
+close (`FileSystem::opened` / `released`), and a write through the descriptor
+never makes the old name again. A file evicted from `/tmp` while open is gone:
+the descriptor's writes fail. The page cache keys a file by the same bytes, so
+a rename leaves its cached pages valid.
+
 A directory is never the target of a rename, cannot move into itself, and is
-removed only by `rmdir` when empty. An open of a directory fails, as on FAT32.
+removed only by `rmdir` when empty. `open` and `unlink` refuse a directory
+(`IsDir`), as on FAT32; the shell's `rm` falls back to `rmdir`, and relibc and
+the Linux personality list a directory through `readdir` and never open it.
 
 ## Block layer and queues
 
@@ -848,7 +858,7 @@ calls `azvol_mount::mount_rows`. For each row, in order:
 
 `AzvolFs` implements `FileSystem` as a streaming backend; its file key is the
 path beneath the mount point (no `.` or `..`, no empty component, at most
-`INODE_KEY_LEN` bytes). It is not page-cached. The volume sits behind a
+`PATH_KEY_LEN` (64) bytes). It is not page-cached. The volume sits behind a
 `Claim`, not a lock, because its owner waits on the device while holding it.
 
 **Only `fsync` and `sync` commit.** Nothing commits on its own: no timer, no

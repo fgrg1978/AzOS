@@ -160,9 +160,14 @@ fn the_kernel_open_is_the_open_at_the_root() {
     tmpfs_h::write(b"live", b"x").unwrap();
     let mut t = vfs::ScratchFds::new();
     for path in [&b"/cd/live"[..], b"/cd/nofile", b"/nodir/x"] {
-        let a = vfs::vfs_open(&mut t, path, O_RDWR) >= 0;
-        let b = vfs::vfs_open_at(&mut t, vfs::ROOT_DIR, &path[1..], O_RDWR) >= 0;
-        assert_eq!(a, b, "{:?}", String::from_utf8_lossy(path));
+        let (a, b) = (
+            vfs::vfs_open(&mut t, path, O_RDWR),
+            vfs::vfs_open_at(&mut t, vfs::ROOT_DIR, &path[1..], O_RDWR),
+        );
+        assert_eq!(a >= 0, b >= 0, "{:?}", String::from_utf8_lossy(path));
+        for fd in [a, b] {
+            vfs::vfs_close(&mut t, fd);
+        }
     }
     assert_eq!(vfs::vfs_open(&mut t, b"/../cd/live", O_RDONLY), -1, "even the kernel's root has nothing above it");
     assert_eq!(vfs::vfs_open(&mut t, b"/", O_RDONLY), -1, "no name");

@@ -15,7 +15,7 @@
 //! # What a file is here
 //!
 //! The backend's key for a file is its path beneath the mount point
-//! (`a/b/c`, at most [`INODE_KEY_LEN`] bytes, no `.` or `..`, no empty
+//! (`a/b/c`, at most [`PATH_KEY_LEN`] bytes, no `.` or `..`, no empty
 //! component): azvol has directories, so unlike tmpfs the key may hold `/`.
 //! Every call resolves the path under the volume's lock; the engine caches
 //! the inodes, so a repeat costs the directory lookups and no device read.
@@ -92,14 +92,14 @@ use super::azvol::verity::{Hash, OpenError, Record, Tamper, VerityDev};
 use super::azvol::{BlockDev, CheckReport, Error, Kind, MountReport, Volume, VolumeKey, BLOCK_SIZE};
 use super::probe::{probe_volume, VolumeKind};
 use crate::vfs::{
-    DirEnt, FileStat, FileSystem, FsCheck, FsErr, InodeKey, SectorRun, StatFs, FS_TYPE_AZVOL, INODE_KEY_LEN, NAME_MAX,
+    DirEnt, FileStat, FileSystem, FsCheck, FsErr, InodeKey, SectorRun, StatFs, FS_TYPE_AZVOL, INODE_KEY_LEN, NAME_MAX, PATH_KEY_LEN,
     S_IFDIR, S_IFREG,
 };
 
 /// Deepest directory a rename walks (the longest key is
-/// [`INODE_KEY_LEN`] bytes, so 32 one-letter components): the recursion is
+/// [`PATH_KEY_LEN`] bytes, so 32 one-letter components): the recursion is
 /// bounded, whatever the medium holds.
-const MAX_DEPTH: usize = INODE_KEY_LEN / 2;
+const MAX_DEPTH: usize = PATH_KEY_LEN / 2;
 /// Bytes copied per step by rename.
 const COPY_CHUNK: usize = 64 * 1024;
 
@@ -180,7 +180,7 @@ fn key_path(key: &InodeKey) -> &[u8] {
 /// (`dir::name_ok`) apply to each component when it is looked up or created.
 fn path_ok(p: &[u8]) -> bool {
     !p.is_empty()
-        && p.len() <= INODE_KEY_LEN
+        && p.len() <= PATH_KEY_LEN
         && p[0] != b'/'
         && p[p.len() - 1] != b'/'
         && p.split(|&c| c == b'/').all(|c| !c.is_empty() && c != b"." && c != b".." && !c.contains(&0))

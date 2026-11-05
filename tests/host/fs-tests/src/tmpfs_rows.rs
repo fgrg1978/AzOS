@@ -14,7 +14,7 @@
 #![cfg(test)]
 
 use super::{serial, tmpfs, tmpfs_h, vfs};
-use vfs::{DirEnt, FsErr, ScratchFds, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
+use vfs::{DirEnt, FsErr, ScratchFds, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SEEK_SET};
 
 fn put(path: &[u8], data: &[u8]) -> bool {
     let mut t = ScratchFds::new();
@@ -179,21 +179,141 @@ fn a_write_past_the_byte_bound_is_refused() {
     tmpfs_h::clear();
 }
 
+/// `/tmp` is scratch space and evicts the oldest file to fit a write; `/`
+/// refuses it with `NoSpace`, whatever is older.
+///
+/// **Canary.** `TMPFS_ROOT` built with `evicts` true: the second root write
+/// succeeds and the first file is gone.
 #[test]
-fn names_and_paths_have_bounds() {
+fn only_tmp_evicts_and_root_refuses() {
+    let _g = serial();
+    setup();
+    let max = tmpfs::TMPFS_MAX_BYTES;
+    for base in ["/tmp", ""] {
+        let (first, second) = (format!("{base}/older"), format!("{base}/newer"));
+        assert!(put(first.as_bytes(), &vec![1u8; max * 3 / 4]));
+        let wrote = put(second.as_bytes(), &vec![2u8; max / 2]);
+        if base.is_empty() {
+            assert!(!wrote, "/ refused the write that does not fit");
+            assert_eq!(vfs::vfs_stat(first.as_bytes()).map(|s| s.size), Some((max * 3 / 4) as u64),
+                "/ kept the older file whole");
+            // The refusal is the file system's own error.
+            let mut t = ScratchFds::new();
+            let fd = vfs::vfs_open(&mut t, second.as_bytes(), O_WRONLY | O_CREAT | O_TRUNC);
+            assert!(fd >= 0);
+            assert_eq!(vfs::vfs_write(&mut t, fd, vec![2u8; max / 2].as_ptr(), max / 2), -1);
+            vfs::vfs_close(&mut t, fd);
+            assert_eq!(vfs::vfs_unlink(second.as_bytes()), Ok(()));
+        } else {
+            assert!(wrote, "/tmp evicted to make room");
+            assert!(vfs::vfs_stat(first.as_bytes()).is_none(), "the oldest file was the one evicted");
+            assert_eq!(vfs::vfs_unlink(second.as_bytes()), Ok(()));
+        }
+        if base.is_empty() { assert_eq!(vfs::vfs_unlink(first.as_bytes()), Ok(())); }
+    }
+    let root = vfs::vfs_statfs(b"/").unwrap();
+    assert_eq!(root.blocks_free, root.blocks, "nothing is left on /");
+    tmpfs_h::clear();
+}
+
+/// An open descriptor follows the file, not its name: it outlives an unlink
+/// and a rename-over, follows a rename, and a write through it never makes the
+/// name again. The file is destroyed by the last close.
+///
+/// **Canary.** `State::remove` freeing a file that is still open: the
+/// descriptor's write after the unlink fails and its bytes are gone.
+#[test]
+fn a_descriptor_follows_the_file_not_the_name() {
+    let _g = serial();
+    setup();
+    let mut t = ScratchFds::new();
+    let used = || {
+        let sf = vfs::vfs_statfs(b"/tmp").unwrap();
+        (sf.blocks - sf.blocks_free, sf.files - sf.files_free)
+    };
+
+    // Unlinked while open.
+    assert!(put(b"/tmp/o", b"hello"));
+    let fd = vfs::vfs_open(&mut t, b"/tmp/o", O_RDWR);
+    assert!(fd >= 0);
+    assert_eq!(vfs::vfs_unlink(b"/tmp/o"), Ok(()));
+    assert!(vfs::vfs_stat(b"/tmp/o").is_none());
+    assert!(vfs::vfs_open(&mut t, b"/tmp/o", O_RDONLY) < 0, "the name is gone");
+    assert_eq!(used(), (5, 1), "the open file still holds its bytes");
+    assert_eq!(vfs::vfs_lseek(&mut t, fd, 0, vfs::SEEK_END), 5);
+    assert_eq!(vfs::vfs_write(&mut t, fd, b"!".as_ptr(), 1), 1, "a write through the descriptor works");
+    assert!(vfs::vfs_stat(b"/tmp/o").is_none(), "and does not make the name again");
+    assert!(put(b"/tmp/o", b"new"), "the name is free for another file");
+    assert_eq!(vfs::vfs_lseek(&mut t, fd, 0, SEEK_SET), 0);
+    let mut b = [0u8; 16];
+    assert_eq!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 16), 6);
+    assert_eq!(&b[..6], b"hello!", "the descriptor still reads its own file");
+    assert_eq!(get(b"/tmp/o").as_deref(), Some(&b"new"[..]));
+    assert_eq!(used(), (9, 2));
+    vfs::vfs_close(&mut t, fd);
+    assert_eq!(used(), (3, 1), "the last close destroys the unlinked file");
+    assert_eq!(get(b"/tmp/o").as_deref(), Some(&b"new"[..]));
+    assert_eq!(vfs::vfs_unlink(b"/tmp/o"), Ok(()));
+
+    // Renamed over while open; renamed while open.
+    assert!(put(b"/tmp/a", b"AAA") && put(b"/tmp/b", b"BBB"));
+    let fd = vfs::vfs_open(&mut t, b"/tmp/b", O_RDONLY);
+    assert_eq!(vfs::vfs_rename(b"/tmp/a", b"/tmp/b"), Ok(()));
+    assert_eq!(get(b"/tmp/b").as_deref(), Some(&b"AAA"[..]));
+    assert_eq!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 16), 3);
+    assert_eq!(&b[..3], b"BBB", "the replaced file is still the descriptor's");
+    vfs::vfs_close(&mut t, fd);
+    assert_eq!(used(), (3, 1));
+    let fd = vfs::vfs_open(&mut t, b"/tmp/b", O_RDWR);
+    assert_eq!(vfs::vfs_rename(b"/tmp/b", b"/tmp/c"), Ok(()));
+    assert_eq!(vfs::vfs_write(&mut t, fd, b"Z".as_ptr(), 1), 1);
+    vfs::vfs_close(&mut t, fd);
+    assert!(vfs::vfs_stat(b"/tmp/b").is_none(), "a write after a rename does not make the old name");
+    assert_eq!(get(b"/tmp/c").as_deref(), Some(&b"ZAA"[..]), "it reached the renamed file");
+
+    // Evicted while open: the descriptor's write fails, the name stays gone.
+    let fd = vfs::vfs_open(&mut t, b"/tmp/c", O_RDWR);
+    assert!(put(b"/tmp/big", &vec![0u8; tmpfs::TMPFS_MAX_BYTES]), "evicts /tmp/c");
+    assert!(vfs::vfs_stat(b"/tmp/c").is_none());
+    assert_eq!(vfs::vfs_write(&mut t, fd, b"x".as_ptr(), 1), -1);
+    assert!(vfs::vfs_stat(b"/tmp/c").is_none(), "nothing made it again");
+    vfs::vfs_close(&mut t, fd);
+    tmpfs_h::clear();
+}
+
+/// A name is at most 63 bytes; a path may be as long as the VFS's own limit
+/// (`MAX_PATH`, 512 with its NUL), however many directories it takes.
+///
+/// **Canary.** `State::split` bounding the path by the key length (64): the
+/// deep file is refused.
+#[test]
+fn names_have_a_bound_and_paths_are_the_vfs_limit() {
     let _g = serial();
     setup();
     let ok = "n".repeat(tmpfs::TMPFS_NAME_LEN - 1);
     let long = "n".repeat(tmpfs::TMPFS_NAME_LEN);
     assert_eq!(vfs::vfs_mkdir(format!("/tmp/{ok}").as_bytes()), Ok(()));
     assert_eq!(vfs::vfs_mkdir(format!("/tmp/{long}").as_bytes()), Err(FsErr::NameTooLong));
-    // A directory call and an open agree on how long a path may be.
-    assert_eq!(vfs::vfs_mkdir(format!("/tmp/{ok}/x").as_bytes()), Err(FsErr::NameTooLong));
-    // The key (the path inside the mount) is the file's name in the VFS.
-    assert_eq!(vfs::vfs_mkdir(b"/tmp/dd"), Ok(()));
-    let deep = format!("/tmp/dd/{}", "m".repeat(vfs::INODE_KEY_LEN - 3));
-    assert!(put(deep.as_bytes(), b"fits"), "a path of exactly INODE_KEY_LEN bytes");
-    assert!(!put(format!("{deep}m").as_bytes(), b"over"), "one byte more is refused");
+    assert_eq!(vfs::vfs_mkdir(format!("/tmp/{ok}/{ok}").as_bytes()), Ok(()), "two long names in a path");
+
+    let comp = "d".repeat(60);
+    let mut dir = String::from("/tmp");
+    for _ in 0..8 {
+        dir.push('/');
+        dir.push_str(&comp);
+        assert_eq!(vfs::vfs_mkdir(dir.as_bytes()), Ok(()), "{} bytes", dir.len());
+    }
+    let file = format!("{dir}/f");
+    assert!(file.len() - "/tmp".len() > 64 * 7, "{} bytes in the mount", file.len() - 4);
+    assert!(put(file.as_bytes(), b"deep"), "a file 8 directories down");
+    assert_eq!(get(file.as_bytes()).as_deref(), Some(&b"deep"[..]));
+    assert_eq!(vfs::vfs_stat(file.as_bytes()).map(|s| s.size), Some(4));
+    // One more directory passes MAX_PATH: refused by every call alike.
+    let over = format!("{dir}/{comp}");
+    assert!(over.len() - "/tmp".len() >= vfs::MAX_PATH);
+    assert_eq!(vfs::vfs_mkdir(over.as_bytes()), Err(FsErr::NameTooLong));
+    assert!(!put(format!("{over}/f").as_bytes(), b"x"));
+    assert_eq!(vfs::vfs_rename(file.as_bytes(), over.as_bytes()), Err(FsErr::NameTooLong));
     tmpfs_h::clear();
 }
 

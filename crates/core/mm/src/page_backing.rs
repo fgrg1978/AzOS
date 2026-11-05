@@ -24,7 +24,7 @@
 /// Bytes of the backend's own name for a file: what the cache stores and hands
 /// back on every call. The file layer's `InodeKey` is exactly this long (the
 /// file layer asserts it), so naming a file costs no table and no handle.
-pub const PAGE_KEY_LEN: usize = 64;
+pub const PAGE_KEY_LEN: usize = 72;
 
 /// A file, as its backend names it. Opaque to the cache.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

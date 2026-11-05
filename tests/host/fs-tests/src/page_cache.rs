@@ -52,8 +52,8 @@ fn the_cache_key_is_exactly_the_inode_key() {
 fn the_page_key_is_the_inode_key_bytes() {
     let _g = serial();
     let (a, b) = (b"pgkeya", b"pgkeyb");
-    let ka = tmpfs::TMPFS_TMP.key_for(a).unwrap();
-    let kb = tmpfs::TMPFS_TMP.key_for(b).unwrap();
+    let ka = tmpfs_h::make(a);
+    let kb = tmpfs_h::make(b);
     tmpfs::TMPFS_TMP.write_at(&ka, 0, b"AAAA").unwrap();
     tmpfs::TMPFS_TMP.write_at(&kb, 0, b"BBBBBB").unwrap();
     assert_eq!(FsPageBacking::page_key(&ka).0, ka.bytes);
@@ -125,7 +125,7 @@ fn a_tmpfs_file_fills_and_writes_back_by_page_and_does_not_lengthen_the_file() {
     for g in GRANULES {
         assert!(3 * g + 100 <= tmpfs::TMPFS_MAX_BYTES, "TMPFS_MAX_KB is too small for the {g} row");
         let name = format!("pgc{g}");
-        let key = tmpfs::TMPFS_TMP.key_for(name.as_bytes()).expect("a legal tmpfs name");
+        let key = tmpfs_h::make(name.as_bytes());
         assert_eq!(tmpfs::TMPFS_TMP.write_at(&key, 0, &bytes(2 * g + 100)), Ok(2 * g + 100));
         rows(&tmpfs::TMPFS_TMP, &key, g, &|| tmpfs_h::size(name.as_bytes()).unwrap() as u64);
         let _ = tmpfs_h::unlink(name.as_bytes());
@@ -151,7 +151,7 @@ fn a_fat32_file_fills_and_writes_back_by_page_and_does_not_lengthen_the_file() {
 fn a_refused_write_is_an_error() {
     let _g = serial();
     let name = b"pgcshort";
-    let key = tmpfs::TMPFS_TMP.key_for(name).unwrap();
+    let key = tmpfs_h::make(name);
     tmpfs::TMPFS_TMP.write_at(&key, 0, &bytes(16)).unwrap();
     let b = FsPageBacking::new(&tmpfs::TMPFS_TMP);
     // A write the filesystem refuses outright: past the tmpfs ceiling.

@@ -7,6 +7,13 @@ fn key(name: &[u8]) -> Option<super::vfs::InodeKey> {
     TMPFS_TMP.key_for(name)
 }
 
+/// The key of the file `name`, which is made empty if it is not there.
+pub fn make(name: &[u8]) -> super::vfs::InodeKey {
+    let k = key(name).expect("a legal tmpfs name");
+    TMPFS_TMP.create(&k).expect("room for the file");
+    key(name).expect("the file's own key")
+}
+
 /// Create or replace the whole file.
 pub fn write(name: &[u8], data: &[u8]) -> Result<(), ()> {
     TMPFS_TMP.write_all(&key(name).ok_or(())?, data)
@@ -52,4 +59,6 @@ pub fn clear() {
         }
     }
     walk("");
+    let sf = TMPFS_TMP.statfs().unwrap();
+    assert_eq!(sf.files_free, sf.files, "{:?}: an open file outlived its test", std::thread::current().name());
 }

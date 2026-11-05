@@ -3572,7 +3572,7 @@ fn key_of_path(path: &[u8]) -> Option<crate::vfs::InodeKey> {
         // `name83_to_path` leads with the separator: the key's first
         // component has none.
         let part = if i == 0 { &text[1..len] } else { &text[..len] };
-        if at + part.len() >= crate::vfs::INODE_KEY_LEN { return None; }
+        if at + part.len() >= crate::vfs::PATH_KEY_LEN { return None; }
         key.bytes[at..at + part.len()].copy_from_slice(part);
         at += part.len();
     }
@@ -7097,7 +7097,7 @@ impl Fat32Fs {
 /// asserted in `vfs.rs`, where the number would be a FAT32 constant wearing a
 /// generic name. (A deeper path needs more; `key_of_path` refuses what does
 /// not fit.)
-const _: () = assert!(12 < crate::vfs::INODE_KEY_LEN);
+const _: () = assert!(12 < crate::vfs::PATH_KEY_LEN);
 
 /// The file a key names, as the `FileSystem` methods that cannot report why
 /// (`Option`, `()`) see it.

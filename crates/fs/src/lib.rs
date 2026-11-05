@@ -101,7 +101,7 @@ pub use vfs::{
     FsCheck, vfs_check,
     // `storage_delete` of the effect gate: asked before a delete takes effect.
     DeleteGate, DeleteOp, set_delete_gate, delete_admitted,
-    INODE_KEY_LEN, ZEROED_KEY, NO_BACKING, FAT32_FS,
+    INODE_KEY_LEN, PATH_KEY_LEN, ZEROED_KEY, NO_BACKING, FAT32_FS,
     fd_alloc, fd_free, fd_get, fd_dup,
     // Wave 15 (PI), owner rule F1: descriptor I/O without the table's lock.
     LoneFd, fd_streams, fd_lend, fd_settle, fd_adopt, fd_detach, fd_stream_transfer,

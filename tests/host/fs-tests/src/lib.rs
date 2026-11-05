@@ -2427,7 +2427,7 @@ mod tmpfs_streaming {
     use vfs::FileSystem as _;
 
     fn key(name: &[u8]) -> vfs::InodeKey {
-        tmpfs::TMPFS_TMP.key_for(name).expect("name fits INODE_KEY_LEN")
+        tmpfs_h::make(name)
     }
 
     #[test]
@@ -6673,7 +6673,7 @@ mod fat32_round23 {
 /// holds every tmpfs name and FAT32 still uses its first 11 bytes.
 #[cfg(test)]
 mod inode_key_64 {
-    use super::{fat32, serial, tmpfs, vfs};
+    use super::{fat32, serial, tmpfs, tmpfs_h, vfs};
     use vfs::FileSystem as _;
 
     /// **A tmpfs name longer than 11 bytes is reachable through the key.**
@@ -6689,8 +6689,8 @@ mod inode_key_64 {
         let a: &[u8] = b"a-forty-byte-tmpfs-name-0000000000000001";
         let b: &[u8] = b"a-forty-byte-tmpfs-name-0000000000000002";
         assert_eq!(a.len(), 40);
-        let ka = tmpfs::TMPFS_TMP.key_for(a).expect("a 40-byte tmpfs name must fit the key");
-        let kb = tmpfs::TMPFS_TMP.key_for(b).expect("a 40-byte tmpfs name must fit the key");
+        let ka = tmpfs_h::make(a);
+        let kb = tmpfs_h::make(b);
         assert!(ka != kb, "two names sharing a prefix made one key");
         assert_eq!(tmpfs::TMPFS_TMP.write_at(&ka, 0, b"AAAA"), Ok(4));
         assert_eq!(tmpfs::TMPFS_TMP.write_at(&kb, 0, b"BB"), Ok(2));
@@ -6701,8 +6701,8 @@ mod inode_key_64 {
         assert_eq!(&out[..2], b"BB");
         let _ = tmpfs::TMPFS_TMP.unlink(&ka);
         let _ = tmpfs::TMPFS_TMP.unlink(&kb);
-        // A name over the key is still refused, not truncated into another.
-        assert!(tmpfs::TMPFS_TMP.key_for(&[b'x'; vfs::INODE_KEY_LEN + 1]).is_none());
+        // A name over the limit is refused, not truncated into another.
+        assert!(tmpfs::TMPFS_TMP.key_for(&[b'x'; tmpfs::TMPFS_NAME_LEN]).is_none());
     }
 
     /// **FAT32's key is the canonical path**: the bytes of `NAME.EXT`, the

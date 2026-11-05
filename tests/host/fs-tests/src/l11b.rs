@@ -1087,7 +1087,12 @@ fn a_tmpfs_file_goes_through_the_cache() {
     assert_eq!(vfs::vfs_unlink(b"/tmp/cached"), Ok(()));
     fat32::fat32_writeback_tick(NOW.load(Ordering::SeqCst) + 100_000);
     assert_eq!(tmpfs_h::size(b"cached"), None, "a write-back must not create the file again");
+    // The descriptor held the file open: it ends with it, and the name made
+    // again is another file.
+    vfs::vfs_close(&mut t, fd);
     tmpfs_h::write(b"cached", &want).unwrap();
+    let fd = vfs::vfs_open(&mut t, b"/tmp/cached", O_RDWR);
+    assert!(fd >= 0);
     // An append is tmpfs's own.
     let end = vfs::vfs_lseek(&mut t, fd, 0, vfs::SEEK_END);
     assert_eq!(end, 3000);

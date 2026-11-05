@@ -105,13 +105,19 @@ pub const NO_IDX: u32 = u32::MAX;
 /// file that lives on a mounted filesystem.
 ///
 /// The VFS never looks inside: it is produced by [`FileSystem::key_for`] and
-/// handed back to `stat` / `write_all` / `unlink` unchanged. 64 bytes is
-/// tmpfs's `TMPFS_NAME_LEN`, the longest name any backend compiled into this
-/// crate stores (owner decision, wave 10; was 11, FAT32's 8.3 name, which
-/// made every tmpfs name longer than 11 bytes unreachable through a mount).
-/// FAT32's key is the canonical path of the file (`PKG/SYS_B/KERN.BIN`) and
-/// refuses a path that does not fit (`key_of_path` in `fat32.rs`).
-pub const INODE_KEY_LEN: usize = 64;
+/// handed back to `stat` / `write_all` / `unlink` unchanged. 72 bytes holds
+/// tmpfs's key, an entry's slot and id (6 bytes) plus a leaf name of up to
+/// `TMPFS_NAME_LEN - 1` bytes (owner decision, wave 10; was 11, FAT32's 8.3
+/// name, which made every tmpfs name longer than 11 bytes unreachable through
+/// a mount). FAT32's key is the canonical path of the file
+/// (`PKG/SYS_B/KERN.BIN`) and refuses a path that does not fit
+/// (`key_of_path` in `fat32.rs`).
+pub const INODE_KEY_LEN: usize = 72;
+
+/// The longest canonical path FAT32 and azvol put in a key (the path-keyed
+/// backends), in bytes: what a path may be to be named at all on them.
+pub const PATH_KEY_LEN: usize = 64;
+const _: () = assert!(PATH_KEY_LEN <= INODE_KEY_LEN);
 
 /// A backend's private name for a file, carried by the generic inode.
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -430,8 +436,17 @@ pub trait FileSystem: Sync {
     }
 
     /// Create an empty file named by `key` if none exists; an existing file
-    /// is left as it is.
+    /// is left as it is. The key may be one `key_for` made for a file that
+    /// was not there: ask `key_for` again for the key of the new file.
     fn create(&self, _key: &InodeKey) -> Result<(), FsErr> { Err(FsErr::Unsupported) }
+
+    /// A streamed open of the file `key` names has begun. A backend that keeps
+    /// an unlinked file alive while it is open counts them here.
+    fn opened(&self, _key: &InodeKey) {}
+
+    /// The open that [`opened`](Self::opened) counted ended; the file, if it
+    /// was unlinked meanwhile and this was its last open, is destroyed.
+    fn released(&self, _key: &InodeKey) {}
 
     /// Set the file's size to `len`, dropping or zero-filling the tail.
     fn truncate(&self, _key: &InodeKey, _len: u64) -> Result<(), FsErr> { Err(FsErr::Unsupported) }
@@ -947,18 +962,21 @@ fn inode_alloc(backing: InodeBacking) -> u32 {
 fn inode_free(idx: u32) {
     if idx == NO_IDX || idx as usize >= MAX_FILES { return; }
 
-    // Atomically zero the inode slot and capture the pointer to free.
-    let (data, cap) = {
+    // Atomically zero the inode slot and capture what to free.
+    let (data, cap, backing) = {
         let mut fs = FS.lock();
         let n = &mut fs.inodes[idx as usize];
         if n.ino == 0 { return; }   // Already free
-        let ptrs = (n.data, n.capacity);
+        let taken = (n.data, n.capacity, n.backing);
         *n = ZEROED_INODE;
-        ptrs
+        taken
     };
 
     // Free heap memory after releasing the lock.
     unsafe { dealloc_raw(data, cap as usize); }
+    if let (Some(fs), true) = (backing.fs, backing.streaming && !backing.ro_stream) {
+        fs.released(&backing.key);
+    }
 }
 
 /// Resize a proxy inode's data buffer.
@@ -1414,7 +1432,7 @@ fn try_backend_stream_open_at(
     if !backend.streaming() || (!writes && backend.ro_handles()) {
         return try_backend_ro_stream_open(backend, sub, flags);
     }
-    let key = match backend.key_for(sub) {
+    let mut key = match backend.key_for(sub) {
         Some(k) => k,
         None => return Some(NO_IDX),
     };
@@ -1424,6 +1442,11 @@ fn try_backend_stream_open_at(
         None => {
             if flags & O_CREAT == 0 { return Some(NO_IDX); }
             if backend.create(&key).is_err() { return Some(NO_IDX); }
+            // The file is there now, under the key it keeps.
+            key = match backend.key_for(sub) {
+                Some(k) => k,
+                None => return Some(NO_IDX),
+            };
             0
         }
     };
@@ -1438,9 +1461,11 @@ fn try_backend_stream_open_at(
     } else {
         size
     };
-    Some(inode_alloc(InodeBacking {
+    let idx = inode_alloc(InodeBacking {
         fs: Some(backend), dirty: false, key, streaming: true, size, ro_stream: false, handle: 0,
-    }))
+    });
+    if idx != NO_IDX { backend.opened(&key); }
+    Some(idx)
 }
 
 /// A read-only open on a [`FileSystem::stream_reads`] backend (wave 14): an
@@ -2419,22 +2444,12 @@ pub fn vfs_rename(from: &[u8], to: &[u8]) -> Result<(), FsErr> {
             delete_ok(bf, DeleteOp::Replace)?;
         }
     }
-    // A directory takes its files' keys with it (they are paths): everything
-    // cached reaches the backend first and none of it is kept.
-    let moves_dir = bf.page_cached()
-        && keys.0.as_ref().and_then(|k| bf.stat(k)).is_some_and(|s| s.is_dir);
-    if moves_dir {
-        page_cache_flush_fs(bf)?;
-    }
     if let Some(k) = &keys.0 {
         page_cache_flush_file(bf, k)?;
     }
     let r = bf.rename(sf, st);
     for k in [&keys.0, &keys.1].into_iter().flatten() {
         page_cache_drop(bf, Some(k), 0);
-    }
-    if moves_dir {
-        page_cache_drop(bf, None, 0);
     }
     r
 }

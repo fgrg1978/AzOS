@@ -801,7 +801,12 @@ impl Shell {
                     let r = if &name[..nl] == b"mkdir" {
                         sys::mkdir(&abs[..n + 1])
                     } else {
-                        sys::unlink(&abs[..n + 1])
+                        // `unlink` refuses a directory (-EISDIR); `rm` removes
+                        // an empty one, as `rmdir` does.
+                        match sys::unlink(&abs[..n + 1]) {
+                            -21 => sys::rmdir(&abs[..n + 1]),
+                            r => r,
+                        }
                     };
                     if r < 0 {
                         err_line(&abs[..n], if r == -13 { b"permission denied" } else { b"failed" });

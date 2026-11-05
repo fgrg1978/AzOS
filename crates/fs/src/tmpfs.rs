@@ -11,22 +11,31 @@
 //! | Constant           | Meaning                                         |
 //! |--------------------|-------------------------------------------------|
 //! | `TMPFS_MAX_FILES`  | Entries, files and directories together         |
-//! | `TMPFS_MAX_BYTES`  | Data bytes; a write past it evicts the oldest   |
-//! |                    | file, and is refused when nothing is left to    |
-//! |                    | evict (a single file cannot exceed it)          |
+//! | `TMPFS_MAX_BYTES`  | Data bytes; a write past it is refused, and     |
+//! |                    | on `/tmp` first evicts the oldest file          |
 //! | `TMPFS_NAME_LEN`   | One name, NUL included (63 bytes)               |
 //!
-//! A full entry table is refused (`NoSpace`), never evicted for.
+//! `/tmp` is scratch space and evicts (FIFO, files only, never one with
+//! nothing older left); `/` never does: a full `/` refuses the write. A full
+//! entry table is refused (`NoSpace`) on both, never evicted for.
 //!
-//! The key a file carries through the VFS is its canonical path inside the
-//! mount (`dir/sub/name`), at most `INODE_KEY_LEN` bytes.
+//! ## Keys
+//! A file is named to the VFS by its entry, not by its path: the key holds
+//! the entry's slot and id, so it follows the file through a rename and
+//! names nothing once the file is gone (a write through it never recreates
+//! it). A file that is not there yet is named by its directory's slot and id
+//! plus the leaf name, which is what `create` needs. Neither form depends on
+//! the length of the path, which only the caller's buffers bound.
+//!
+//! A file unlinked or renamed over while open stays alive, unnamed, until its
+//! last close (`opened` / `released`).
 
 extern crate alloc;
 
 use alloc::alloc::{alloc, dealloc, Layout};
 use core::ptr;
 use azos_sync::SpinLock;
-use crate::vfs::{DirEnt, FileStat, FileSystem, FsErr, InodeKey, StatFs, INODE_KEY_LEN};
+use crate::vfs::{DirEnt, FileStat, FileSystem, FsErr, InodeKey, StatFs, INODE_KEY_LEN, MAX_PATH};
 
 /// Kconfig `TMPFS_MAX_FILES` (default 64).
 pub const TMPFS_MAX_FILES: usize = azos_limits::TMPFS_MAX_FILES;
@@ -39,9 +48,14 @@ pub const FS_TYPE_TMPFS: u32 = 2;
 
 /// `parent` of an entry directly under the mount point.
 const MOUNT_DIR: u16 = u16::MAX;
+/// `parent` of an unlinked file that is still open.
+const ORPHAN: u16 = u16::MAX - 1;
 
-const _: () = assert!(TMPFS_NAME_LEN <= INODE_KEY_LEN);
-const _: () = assert!(TMPFS_MAX_FILES < MOUNT_DIR as usize);
+/// Bytes of a key before the leaf name: slot (`u16`) and id (`u32`).
+const KEY_HEAD: usize = 6;
+
+const _: () = assert!(KEY_HEAD + TMPFS_NAME_LEN - 1 <= INODE_KEY_LEN);
+const _: () = assert!(TMPFS_MAX_FILES < ORPHAN as usize);
 
 struct Entry {
     /// NUL-padded; not NUL-terminated at exactly `TMPFS_NAME_LEN`.
@@ -52,6 +66,11 @@ struct Entry {
     size:     usize,
     /// Lower is older; refreshed by every write.
     seq:      u32,
+    /// Never repeats on an instance (wraps past 2^32 entries made): a key
+    /// holding the id of a freed entry names nothing.
+    id:       u32,
+    /// Open files on it (`opened` / `released`).
+    refs:     u16,
     parent:   u16,
     is_dir:   bool,
     active:   bool,
@@ -62,13 +81,16 @@ unsafe impl Send for Entry {}
 
 const EMPTY_ENTRY: Entry = Entry {
     name: [0; TMPFS_NAME_LEN], data: ptr::null_mut(), capacity: 0, size: 0,
-    seq: 0, parent: MOUNT_DIR, is_dir: false, active: false,
+    seq: 0, id: 0, refs: 0, parent: MOUNT_DIR, is_dir: false, active: false,
 };
 
 struct State {
     entries:    [Entry; TMPFS_MAX_FILES],
     used_bytes: usize,
     next_seq:   u32,
+    next_id:    u32,
+    /// A write past the byte bound evicts the oldest file first.
+    evicts:     bool,
 }
 
 /// The components of a path, empty ones (`a//b`, a trailing `/`) dropped.
@@ -86,8 +108,8 @@ fn name_of(e: &Entry) -> &[u8] {
 }
 
 impl State {
-    const fn new() -> Self {
-        State { entries: [EMPTY_ENTRY; TMPFS_MAX_FILES], used_bytes: 0, next_seq: 1 }
+    const fn new(evicts: bool) -> Self {
+        State { entries: [EMPTY_ENTRY; TMPFS_MAX_FILES], used_bytes: 0, next_seq: 1, next_id: 1, evicts }
     }
 
     fn find(&self, parent: u16, name: &[u8]) -> Option<usize> {
@@ -95,10 +117,10 @@ impl State {
     }
 
     /// The directory holding the last component of `path`, and that component.
-    /// A path longer than a key (`key_for`) names nothing, whatever the call.
+    /// A path longer than the VFS's own (`MAX_PATH`) names nothing.
     fn split<'a>(&self, path: &'a [u8]) -> Result<(u16, &'a [u8]), FsErr> {
         let len = components(path).map(|c| c.len() + 1).sum::<usize>().saturating_sub(1);
-        if len > INODE_KEY_LEN { return Err(FsErr::NameTooLong); }
+        if len >= MAX_PATH { return Err(FsErr::NameTooLong); }
         let mut dir = MOUNT_DIR;
         let mut parts = components(path).peekable();
         loop {
@@ -140,17 +162,94 @@ impl State {
         s
     }
 
+    fn new_id(&mut self) -> u32 {
+        let id = self.next_id;
+        self.next_id = id.checked_add(1).unwrap_or(1);
+        id
+    }
+
     fn insert(&mut self, parent: u16, name: &[u8], is_dir: bool) -> Result<usize, FsErr> {
         let slot = self.free_slot()?;
-        let seq = self.bump();
+        let (seq, id) = (self.bump(), self.new_id());
         let e = &mut self.entries[slot];
         *e = EMPTY_ENTRY;
         e.name[..name.len()].copy_from_slice(name);
         e.parent = parent;
         e.is_dir = is_dir;
         e.seq = seq;
+        e.id = id;
         e.active = true;
         Ok(slot)
+    }
+
+    /// The key naming entry `slot` itself.
+    fn key_of(&self, slot: usize) -> InodeKey {
+        let mut bytes = [0u8; INODE_KEY_LEN];
+        bytes[..2].copy_from_slice(&(slot as u16).to_le_bytes());
+        bytes[2..KEY_HEAD].copy_from_slice(&self.entries[slot].id.to_le_bytes());
+        InodeKey { bytes }
+    }
+
+    /// The key naming `leaf` in directory `dir`, whether or not it is there.
+    /// `dir` may be [`ORPHAN`]: a directory that is not there, so the key
+    /// names nothing.
+    fn key_in(&self, dir: u16, leaf: &[u8]) -> InodeKey {
+        let mut bytes = [0u8; INODE_KEY_LEN];
+        bytes[..2].copy_from_slice(&dir.to_le_bytes());
+        if dir < ORPHAN {
+            bytes[2..KEY_HEAD].copy_from_slice(&self.entries[dir as usize].id.to_le_bytes());
+        }
+        bytes[KEY_HEAD..KEY_HEAD + leaf.len()].copy_from_slice(leaf);
+        InodeKey { bytes }
+    }
+
+    /// The directory and leaf a key names, or the entry itself when it has no
+    /// leaf. `None` when the directory or the entry is gone.
+    fn target<'k>(&self, key: &'k InodeKey) -> Option<(u16, &'k [u8])> {
+        let slot = u16::from_le_bytes([key.bytes[0], key.bytes[1]]);
+        let id = u32::from_le_bytes([key.bytes[2], key.bytes[3], key.bytes[4], key.bytes[5]]);
+        let n = key.bytes[KEY_HEAD..].iter().position(|&b| b == 0).unwrap_or(INODE_KEY_LEN - KEY_HEAD);
+        let leaf = &key.bytes[KEY_HEAD..KEY_HEAD + n];
+        if slot != MOUNT_DIR {
+            let e = self.entries.get(slot as usize)?;
+            if !e.active || e.id != id || (!leaf.is_empty() && !e.is_dir) { return None; }
+        }
+        Some((slot, leaf))
+    }
+
+    /// The entry a key names now.
+    fn resolve(&self, key: &InodeKey) -> Option<usize> {
+        let (slot, leaf) = self.target(key)?;
+        if leaf.is_empty() {
+            return (slot != MOUNT_DIR).then_some(slot as usize);
+        }
+        self.find(slot, leaf)
+    }
+
+    /// Set file `idx`'s size to `len`, which is at most its size. The
+    /// allocation is kept (freed when it empties) and counts by size.
+    fn cut(&mut self, idx: usize, len: usize) {
+        let e = &mut self.entries[idx];
+        self.used_bytes -= e.size - len;
+        e.size = len;
+        if len == 0 && !e.data.is_null() {
+            // SAFETY: allocated with `e.capacity` in `put`.
+            unsafe { dealloc(e.data, Layout::from_size_align_unchecked(e.capacity, 1)); }
+            e.data = ptr::null_mut();
+            e.capacity = 0;
+        }
+    }
+
+    /// Take entry `idx` off its name. Open files keep it alive, unnamed, until
+    /// the last one closes ([`TmpFs::released`]).
+    fn remove(&mut self, idx: usize) {
+        let e = &mut self.entries[idx];
+        if e.refs > 0 {
+            e.parent = ORPHAN;
+            e.name = [0; TMPFS_NAME_LEN];
+        } else {
+            self.free(idx);
+        }
     }
 
     fn free(&mut self, idx: usize) {
@@ -163,11 +262,14 @@ impl State {
         *e = EMPTY_ENTRY;
     }
 
-    /// Free the oldest file other than `keep`; `false` when there is none.
-    /// Directories are never evicted.
+    /// Free the oldest named file other than `keep`; `false` when there is
+    /// none. Directories are never evicted.
     fn evict_oldest(&mut self, keep: Option<usize>) -> bool {
         let victim = (0..TMPFS_MAX_FILES)
-            .filter(|&i| self.entries[i].active && !self.entries[i].is_dir && Some(i) != keep)
+            .filter(|&i| {
+                let e = &self.entries[i];
+                e.active && !e.is_dir && e.parent != ORPHAN && Some(i) != keep
+            })
             .min_by_key(|&i| self.entries[i].seq);
         match victim {
             Some(v) => { self.free(v); true }
@@ -175,29 +277,19 @@ impl State {
         }
     }
 
-    /// Write `data` at `offset` of the file `existing`, or of a new file
-    /// `leaf` under `parent`. A gap before `offset` reads back as zeros.
-    fn put(
-        &mut self,
-        parent: u16,
-        leaf: &[u8],
-        existing: Option<usize>,
-        offset: usize,
-        data: &[u8],
-    ) -> Result<(), FsErr> {
+    /// Write `data` at `offset` of file `slot`, growing it. A gap before
+    /// `offset` reads back as zeros.
+    fn put(&mut self, slot: usize, offset: usize, data: &[u8]) -> Result<(), FsErr> {
         let end = offset.checked_add(data.len())
             .filter(|&e| e <= TMPFS_MAX_BYTES)
             .ok_or(FsErr::NoSpace)?;
-        let old_size = existing.map_or(0, |i| self.entries[i].size);
+        let existing = Some(slot);
+        let old_size = self.entries[slot].size;
         let new_size = end.max(old_size);
         while self.used_bytes + (new_size - old_size) > TMPFS_MAX_BYTES {
-            if !self.evict_oldest(existing) { return Err(FsErr::NoSpace); }
+            if !self.evicts || !self.evict_oldest(existing) { return Err(FsErr::NoSpace); }
         }
-        let slot = match existing {
-            Some(i) => i,
-            None => self.free_slot()?,
-        };
-        let capacity = if existing.is_some() { self.entries[slot].capacity } else { 0 };
+        let capacity = self.entries[slot].capacity;
 
         let mut grown = None;
         if new_size > capacity {
@@ -217,13 +309,6 @@ impl State {
         }
 
         let seq = self.bump();
-        if existing.is_none() {
-            self.entries[slot] = EMPTY_ENTRY;
-            let e = &mut self.entries[slot];
-            e.name[..leaf.len()].copy_from_slice(leaf);
-            e.parent = parent;
-            e.active = true;
-        }
         self.used_bytes = self.used_bytes - old_size + new_size;
         let e = &mut self.entries[slot];
         e.seq = seq;
@@ -250,21 +335,17 @@ pub struct TmpFs {
 }
 
 impl TmpFs {
-    pub const fn new() -> Self {
-        TmpFs { state: SpinLock::new(State::new()) }
+    /// `evicts`: a write past the byte bound frees the oldest file to fit
+    /// (scratch space) instead of being refused.
+    pub const fn new(evicts: bool) -> Self {
+        TmpFs { state: SpinLock::new(State::new(evicts)) }
     }
 }
 
-/// Mounted at `/`.
-pub static TMPFS_ROOT: TmpFs = TmpFs::new();
-/// Mounted at `/tmp`.
-pub static TMPFS_TMP: TmpFs = TmpFs::new();
-
-/// The key's bytes up to the first NUL: the canonical path.
-fn key_path(key: &InodeKey) -> &[u8] {
-    let n = key.bytes.iter().position(|&b| b == 0).unwrap_or(INODE_KEY_LEN);
-    &key.bytes[..n]
-}
+/// Mounted at `/`: refuses what does not fit.
+pub static TMPFS_ROOT: TmpFs = TmpFs::new(false);
+/// Mounted at `/tmp`: scratch space, evicts the oldest file to fit a write.
+pub static TMPFS_TMP: TmpFs = TmpFs::new(true);
 
 impl FileSystem for TmpFs {
     fn device_backed(&self) -> bool { false }
@@ -275,25 +356,29 @@ impl FileSystem for TmpFs {
 
     fn sync(&self) -> Result<(), ()> { Ok(()) }
 
-    /// The canonical path: components joined by `/`. Refused when empty, when
-    /// a component is not a legal name or the whole does not fit the key.
+    /// The entry's own key when `name` is there; else the key of the leaf in
+    /// its directory, which names nothing yet (and nothing at all when the
+    /// directory is not there either). `None` when `name` is not a legal path.
     fn key_for(&self, name: &[u8]) -> Option<InodeKey> {
-        let mut bytes = [0u8; INODE_KEY_LEN];
-        let mut n = 0;
-        for c in components(name) {
-            if c.len() >= TMPFS_NAME_LEN || c.contains(&0) { return None; }
-            let sep = (n > 0) as usize;
-            if n + sep + c.len() > INODE_KEY_LEN { return None; }
-            if sep == 1 { bytes[n] = b'/'; n += 1; }
-            bytes[n..n + c.len()].copy_from_slice(c);
-            n += c.len();
-        }
-        if n == 0 { None } else { Some(InodeKey { bytes }) }
+        if components(name).any(|c| c.contains(&0)) { return None; }
+        let st = self.state.lock();
+        let (dir, leaf) = match st.split(name) {
+            Ok(v) => v,
+            Err(FsErr::NotFound | FsErr::NotDir) => {
+                let leaf = components(name).last()?;
+                return (leaf.len() < TMPFS_NAME_LEN).then(|| st.key_in(ORPHAN, leaf));
+            }
+            Err(_) => return None,
+        };
+        Some(match st.find(dir, leaf) {
+            Some(i) => st.key_of(i),
+            None => st.key_in(dir, leaf),
+        })
     }
 
     fn stat(&self, key: &InodeKey) -> Option<FileStat> {
         let st = self.state.lock();
-        let i = st.lookup(key_path(key)).ok()??;
+        let i = st.resolve(key)?;
         let e = &st.entries[i];
         Some(if e.is_dir { FileStat::dir(st.children(i)) } else { FileStat::file(e.size as u64, 0) })
     }
@@ -302,26 +387,29 @@ impl FileSystem for TmpFs {
         self.read_at(key, 0, dst)
     }
 
+    /// Replace the whole file, creating it when the key names a leaf that is
+    /// not there yet.
     fn write_all(&self, key: &InodeKey, src: &[u8]) -> Result<(), ()> {
         let mut st = self.state.lock();
-        let (dir, leaf) = st.split(key_path(key)).map_err(|_| ())?;
-        match st.find(dir, leaf) {
+        let slot = match st.resolve(key) {
             Some(i) if st.entries[i].is_dir => return Err(()),
-            Some(i) => st.free(i),
-            None => {}
-        }
-        let slot = st.insert(dir, leaf, false).map_err(|_| ())?;
-        if st.put(dir, leaf, Some(slot), 0, src).is_err() {
-            st.free(slot);
-            return Err(());
-        }
-        Ok(())
+            Some(i) => i,
+            None => {
+                let (dir, leaf) = st.target(key).ok_or(())?;
+                if leaf.is_empty() || dir == ORPHAN { return Err(()); }
+                let mut name = [0u8; TMPFS_NAME_LEN];
+                name[..leaf.len()].copy_from_slice(leaf);
+                st.insert(dir, &name[..leaf.len()], false).map_err(|_| ())?
+            }
+        };
+        st.cut(slot, 0);
+        st.put(slot, 0, src).map_err(|_| ())
     }
 
     fn unlink(&self, key: &InodeKey) -> Result<(), ()> {
         let mut st = self.state.lock();
-        match st.lookup(key_path(key)) {
-            Ok(Some(i)) if !st.entries[i].is_dir => { st.free(i); Ok(()) }
+        match st.resolve(key) {
+            Some(i) if !st.entries[i].is_dir => { st.remove(i); Ok(()) }
             _ => Err(()),
         }
     }
@@ -329,7 +417,7 @@ impl FileSystem for TmpFs {
     fn read_at(&self, key: &InodeKey, offset: u64, dst: &mut [u8]) -> usize {
         let Ok(offset) = usize::try_from(offset) else { return 0 };
         let st = self.state.lock();
-        let Ok(Some(i)) = st.lookup(key_path(key)) else { return 0 };
+        let Some(i) = st.resolve(key) else { return 0 };
         let e = &st.entries[i];
         if e.is_dir || offset >= e.size { return 0; }
         let n = dst.len().min(e.size - offset);
@@ -338,15 +426,15 @@ impl FileSystem for TmpFs {
         n
     }
 
-    /// Creates the file when it is not there (its directory must exist).
+    /// Writes the file the key names; a file that is gone (unlinked and not
+    /// open, evicted) is not made again.
     fn write_at(&self, key: &InodeKey, offset: u64, src: &[u8]) -> Result<usize, ()> {
         let offset = usize::try_from(offset).map_err(|_| ())?;
         if src.is_empty() { return Ok(0); }
         let mut st = self.state.lock();
-        let (dir, leaf) = st.split(key_path(key)).map_err(|_| ())?;
-        let existing = st.find(dir, leaf);
-        if existing.is_some_and(|i| st.entries[i].is_dir) { return Err(()); }
-        st.put(dir, leaf, existing, offset, src).map_err(|_| ())?;
+        let i = st.resolve(key).ok_or(())?;
+        if st.entries[i].is_dir { return Err(()); }
+        st.put(i, offset, src).map_err(|_| ())?;
         Ok(src.len())
     }
 
@@ -357,32 +445,43 @@ impl FileSystem for TmpFs {
     /// same pages are what keeps a mapping and the file one.
     fn page_cached(&self) -> bool { true }
 
+    fn opened(&self, key: &InodeKey) {
+        let mut st = self.state.lock();
+        if let Some(i) = st.resolve(key) {
+            st.entries[i].refs = st.entries[i].refs.saturating_add(1);
+        }
+    }
+
+    fn released(&self, key: &InodeKey) {
+        let mut st = self.state.lock();
+        let Some(i) = st.resolve(key) else { return };
+        let e = &mut st.entries[i];
+        e.refs = e.refs.saturating_sub(1);
+        if e.refs == 0 && e.parent == ORPHAN {
+            st.free(i);
+        }
+    }
+
     fn create(&self, key: &InodeKey) -> Result<(), FsErr> {
         let mut st = self.state.lock();
-        let (dir, leaf) = st.split(key_path(key))?;
-        if st.find(dir, leaf).is_some() { return Ok(()); }
-        st.insert(dir, leaf, false).map(|_| ())
+        if st.resolve(key).is_some() { return Ok(()); }
+        let (dir, leaf) = st.target(key).ok_or(FsErr::NotFound)?;
+        if leaf.is_empty() || dir == ORPHAN { return Err(FsErr::NotFound); }
+        let mut name = [0u8; TMPFS_NAME_LEN];
+        name[..leaf.len()].copy_from_slice(leaf);
+        st.insert(dir, &name[..leaf.len()], false).map(|_| ())
     }
 
     fn truncate(&self, key: &InodeKey, len: u64) -> Result<(), FsErr> {
         let len = usize::try_from(len).map_err(|_| FsErr::NoSpace)?;
         if len > TMPFS_MAX_BYTES { return Err(FsErr::NoSpace); }
         let mut st = self.state.lock();
-        let i = st.existing(key_path(key))?;
+        let i = st.resolve(key).ok_or(FsErr::NotFound)?;
         if st.entries[i].is_dir { return Err(FsErr::IsDir); }
-        let size = st.entries[i].size;
-        if len > size {
-            return st.put(MOUNT_DIR, &[], Some(i), len - 1, &[0]);
+        if len > st.entries[i].size {
+            return st.put(i, len - 1, &[0]);
         }
-        st.used_bytes -= size - len;
-        let e = &mut st.entries[i];
-        e.size = len;
-        if len == 0 && !e.data.is_null() {
-            // SAFETY: allocated with `e.capacity` in `put`.
-            unsafe { dealloc(e.data, Layout::from_size_align_unchecked(e.capacity, 1)); }
-            e.data = ptr::null_mut();
-            e.capacity = 0;
-        }
+        st.cut(i, len);
         Ok(())
     }
 
@@ -402,8 +501,8 @@ impl FileSystem for TmpFs {
         Ok(())
     }
 
-    /// A file replaces a file; a directory is never a replacement target and
-    /// cannot move into itself.
+    /// A file replaces a file; a directory is never the target of a rename
+    /// and cannot move into itself.
     fn rename(&self, from: &[u8], to: &[u8]) -> Result<(), FsErr> {
         let mut st = self.state.lock();
         let src = st.existing(from)?;
@@ -421,7 +520,7 @@ impl FileSystem for TmpFs {
         if let Some(d) = dest {
             if st.entries[d].is_dir && !src_dir { return Err(FsErr::IsDir); }
             if src_dir || st.entries[d].is_dir { return Err(FsErr::Exists); }
-            st.free(d);
+            st.remove(d);
         }
         let e = &mut st.entries[src];
         e.name = [0; TMPFS_NAME_LEN];
