@@ -128,6 +128,9 @@ pub(crate) mod ipc_endpoint;
 // A capability slot past its last generation.
 #[cfg(feature = "ktest")]
 pub(crate) mod cap_generation;
+// The launch check of an exec: admitted and refused, each with a record.
+#[cfg(feature = "ktest")]
+pub(crate) mod exec_grant;
 // A copy helper called by a task with no user page table refuses a user-range
 // VA instead of storing through it (the `thread` page fault at 0x14fb8).
 #[cfg(feature = "ktest")]

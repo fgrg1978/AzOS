@@ -15545,11 +15545,13 @@ CPU 5 lacks hwcap bits"
     done
     par "ktest cap generation canary (rv)" ktest_row "ktest cap generation canary (rv)" rv "" "cap_slot_restarts_past_its_last_generation" "canary=cap-gen-retire"
     par "ktest cap full record canary (rv)" ktest_row "ktest cap full record canary (rv)" rv "" "cap_table_full_refuses_with_a_record" "canary=cap-full-silent"
+    par "ktest exec grant canary (rv)" ktest_row "ktest exec grant canary (rv)" rv "" "exec_without_a_launch_grant_is_refused_with_a_record" "canary=exec-grant-skip"
     par "ktest unswitched block canary (arm)" ktest_row "ktest unswitched block canary (arm)" arm "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest ttbr0 holders canary (arm)" ktest_row "ktest ttbr0 holders canary (arm)" arm "" "tlb_shootdown_cross_cpu" "canary=ttbr0-holders-self" "root_holders did not name exactly"
     par "ktest save gate redraw canary (arm)" ktest_row "ktest save gate redraw canary (arm)" arm "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest cap generation canary (arm)" ktest_row "ktest cap generation canary (arm)" arm "" "cap_slot_restarts_past_its_last_generation" "canary=cap-gen-retire"
     par "ktest cap full record canary (arm)" ktest_row "ktest cap full record canary (arm)" arm "" "cap_table_full_refuses_with_a_record" "canary=cap-full-silent"
+    par "ktest exec grant canary (arm)" ktest_row "ktest exec grant canary (arm)" arm "" "exec_without_a_launch_grant_is_refused_with_a_record" "canary=exec-grant-skip"
     par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
@@ -17386,6 +17388,7 @@ CPU 5 lacks hwcap bits"
     par "asym build canary (x86)" asym_build_row "asym build canary (x86)" x86 y
     par "ktest cap generation canary (x86)" x86_ktest_row "ktest cap generation canary (x86)" "" "cap_slot_restarts_past_its_last_generation" "canary=cap-gen-retire"
     par "ktest cap full record canary (x86)" x86_ktest_row "ktest cap full record canary (x86)" "" "cap_table_full_refuses_with_a_record" "canary=cap-full-silent"
+    par "ktest exec grant canary (x86)" x86_ktest_row "ktest exec grant canary (x86)" "" "exec_without_a_launch_grant_is_refused_with_a_record" "canary=exec-grant-skip"
     par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""
