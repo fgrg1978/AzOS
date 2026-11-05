@@ -1316,17 +1316,17 @@ def test_microkernel_implies_ring3_placement() -> None:
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         strip = lambda ls: [l for l in ls if "STRUCTURE_" not in l]
-        g = strip(_expand([], t, "g.config"))
-        m = strip(_expand(["CONFIG_STRUCTURE_RING3_DRIVERS=y"], t, "m.config"))
+        g = strip(_expand(["CONFIG_BOARD_IO=y"], t, "g.config"))
+        m = strip(_expand(["CONFIG_STRUCTURE_RING3_DRIVERS=y", "CONFIG_BOARD_IO=y"], t, "m.config"))
         assert "CONFIG_DRV_RING3_DEFAULT=y" in m and "CONFIG_DRV_INA219_PLACEMENT_RING3=y" in m, m
         assert "# CONFIG_DRV_RING3_DEFAULT is not set" in g, "Generic must not start in ring 3"
         diff = [l for l in m if l not in g] + [l for l in g if l not in m]
         assert sorted(diff) == sorted(["CONFIG_DRV_RING3_DEFAULT=y",
                                        "# CONFIG_DRV_RING3_DEFAULT is not set"]), diff
-        off = _expand(["CONFIG_STRUCTURE_RING3_DRIVERS=y", "# CONFIG_DRV_RING3_DEFAULT is not set"],
-                      t, "o.config")
+        off = _expand(["CONFIG_STRUCTURE_RING3_DRIVERS=y", "# CONFIG_DRV_RING3_DEFAULT is not set",
+                       "CONFIG_BOARD_IO=y"], t, "o.config")
         assert "# CONFIG_DRV_RING3_DEFAULT is not set" in off, "the imply forced DRV_RING3_DEFAULT"
-        k = _expand(["CONFIG_STRUCTURE_RING3_DRIVERS=y", "CONFIG_DRV_INA219_PLACEMENT_KERNEL=y"],
+        k = _expand(["CONFIG_STRUCTURE_RING3_DRIVERS=y", "CONFIG_BOARD_IO=y", "CONFIG_DRV_INA219_PLACEMENT_KERNEL=y"],
                     t, "k.config")
         assert "CONFIG_DRV_INA219_PLACEMENT_KERNEL=y" in k, "a hand-set placement lost to the domain"
         assert "CONFIG_DRV_BUZZER_PLACEMENT_RING3=y" in m, "the buzzer did not follow DRV_RING3_DEFAULT"
@@ -1374,20 +1374,23 @@ def test_driver_placement_reaches_the_build() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
-        d = _expand([], t, "d.config")
+        d = _expand(["CONFIG_BOARD_IO=y"], t, "d.config")
         assert "CONFIG_DRV_INA219_PLACEMENT_RING3=y" in d, "the default placement is not ring3"
         feats = _bridge_args(t / "d.config")
         assert "ina219-kernel" not in feats, feats
         for dom in ([], ["CONFIG_PRESET_ROBOT=y"]):
-            _expand(dom + ["CONFIG_DRV_INA219_PLACEMENT_KERNEL=y"], t, "k.config")
+            _expand(dom + ["CONFIG_BOARD_IO=y", "CONFIG_DRV_INA219_PLACEMENT_KERNEL=y"], t, "k.config")
             feats = _bridge_args(t / "k.config")
             assert "ina219-kernel" in feats, (dom, feats)
         # Wave 12: the buzzer's choice, the same way.
         assert "CONFIG_DRV_BUZZER_PLACEMENT_RING3=y" in d, "the buzzer's default is not ring3"
         assert "buzzer-kernel" not in feats or "CONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y" in d, feats
-        _expand(["CONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y"], t, "b.config")
+        _expand(["CONFIG_BOARD_IO=y", "CONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y"], t, "b.config")
         feats = _bridge_args(t / "b.config")
         assert "buzzer-kernel" in feats and "ina219-kernel" not in feats, feats
+        # The placements are the board I/O's: without BOARD_IO neither is offered.
+        n = _expand([], t, "n.config")
+        assert not [l for l in n if l.startswith("CONFIG_DRV_BUZZER_PLACEMENT_") or l.startswith("CONFIG_DRV_INA219_PLACEMENT_")], n
 
 
 def test_a_safety_read_driver_is_never_placed_in_ring3() -> None:
