@@ -1260,7 +1260,7 @@ pub fn pci_port_write32(bus: u8, device: u8, function: u8, offset: u16, val: u32
 /// `index_off`, data at `data_off`): the index written, the data read, both
 /// under the lock of the port pair so no other config access, and no other
 /// user of this function (every SMN access goes through here), interleaves.
-#[cfg(feature = "pci")]
+#[cfg(all(feature = "pci", feature = "thermal"))]
 pub fn pci_port_indirect_read32(bus: u8, device: u8, function: u8, index_off: u8, data_off: u8, index: u32) -> u32 {
     let _g = PCI_PORT.lock_irqsave();
     port_write32_locked(bus, device, function, index_off, index);
