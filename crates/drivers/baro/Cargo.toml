@@ -8,4 +8,5 @@ publish = false
 [dependencies]
 azos_drv_sys = { workspace = true }
 azos_drv_bus = { workspace = true }
+azos_devif   = { workspace = true }
 azos_sync    = { workspace = true }
