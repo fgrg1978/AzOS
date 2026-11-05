@@ -84,6 +84,7 @@ pub unsafe extern "C" fn hyp_el2_init(slot: u64) {
         );
         grant_el1();
     }
+    super::pin::init_pe();
 
     if primary {
         if !cfg!(feature = "hyp-mmu-off-canary") {

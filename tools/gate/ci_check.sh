@@ -3765,6 +3765,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-text-rw-canary)           name=hyp-mon-text-rw ;;
         hyp-text-site-skip-canary)    name=hyp-mon-text-site-skip ;;
         hyp-guard-skip-canary)        name=hyp-mon-guard-skip ;;
+        hyp-pin-off-canary)           name=hyp-mon-pin-off ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3786,6 +3787,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *text-rw*) hyp_mon_blob hyp-text-rw-canary ;;
         *text-site-skip*) hyp_mon_blob hyp-text-site-skip-canary ;;
         *guard-skip*) hyp_mon_blob hyp-guard-skip-canary ;;
+        *pin-off*) hyp_mon_blob hyp-pin-off-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     if ! a64_kbuild "$sel"; then
@@ -3794,9 +3796,10 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
     fi
     local img="$CI_LOG_DIR/kernel-hyp-$want.img"; cp "$A64_IMG" "$img"
     par_ready
-    # HYP_APPEND: the kernel command line (runtime canaries); HYP_WAIT: what ends the wait.
-    qemu-system-aarch64 -M virt,virtualization=on,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
-        -kernel "$img" ${HYP_APPEND:+-append "$HYP_APPEND"} >"$log" 2>&1 &
+    # HYP_APPEND: the kernel command line (runtime canaries); HYP_WAIT: what ends the wait;
+    # HYP_CPU: the -cpu model (cortex-a76 has no FEAT_FGT); HYP_QEMU: more QEMU options (-icount).
+    qemu-system-aarch64 -M virt,virtualization=on,gic-version=3 -cpu "${HYP_CPU:-max,pauth=on}" -smp 4 -nographic \
+        ${HYP_QEMU:-} -kernel "$img" ${HYP_APPEND:+-append "$HYP_APPEND"} >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ]; do
         grep -aqE "${HYP_WAIT:-\[BOOT\] EL2: +monitor up}|KERNEL PANIC|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
@@ -3866,6 +3869,35 @@ par "hyp: R8 guarded page (arm)" hyp_monitor_row "hyp: R8 guarded page (arm)" "h
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
 par "hyp: R8 guard-skip canary (arm)" hyp_monitor_row "hyp: R8 guard-skip canary (arm)" "hyp-guard-skip-canary,hyp-guard-probe" canary \
     "[FATAL] aarch64 kernel page fault"
+# R9: after the lock each PE pins itself: with FEAT_FGT (`-cpu max`) the
+# write traps of SCTLR_EL1, TCR_EL1 and TTBR1_EL1; without it (`-cpu
+# cortex-a76`) HCR_EL2.TVM, with the TTBR0_EL1 write still carried out. A
+# write to TCR_EL1 and to SCTLR_EL1 is refused and in the ring, a TTBR0_EL1
+# write works, and a secondary pins itself before it comes online. Canary: the
+# monitor arms nothing. The cost rows run under -icount: the same TTBR0_EL1
+# writes before and after the pin, in ticks. Under TVM the trap must show; the
+# FGT row only records the numbers (no write traps there, nothing to bite).
+R9_WAIT='\[SMP\] hart 3 online|PROBE FAILED'
+R9_MARKS=("[HYP] pin: TCR_EL1 write refused" "[HYP] pin: SCTLR_EL1 write refused" "[HYP] pin: the ring holds 2 sysreg refusals"
+          "[HYP] pin: TTBR0_EL1 write works" "[BOOT] EL2:        invariant pinned in force")
+HYP_WAIT="$R9_WAIT" \
+par "hyp: R9 pinned, FGT (arm)" hyp_monitor_row "hyp: R9 pinned, FGT (arm)" "hyp-pin-probe" pass \
+    "[BOOT] EL2:        pinned (fgt), 1 PE" "[HYP] pin: PE 1 pinned (fgt)" "${R9_MARKS[@]}"
+HYP_CPU=cortex-a76 HYP_WAIT="$R9_WAIT" \
+par "hyp: R9 pinned, TVM (arm)" hyp_monitor_row "hyp: R9 pinned, TVM (arm)" "hyp-pin-probe" pass \
+    "[BOOT] EL2:        pinned (tvm), 1 PE" "[HYP] pin: PE 1 pinned (tvm)" "${R9_MARKS[@]}"
+HYP_WAIT="$R9_WAIT" \
+par "hyp: R9 pin-off canary (arm)" hyp_monitor_row "hyp: R9 pin-off canary (arm)" "hyp-pin-off-canary,hyp-pin-probe" canary \
+    "[HYP] pin: TCR_EL1 write refused"
+HYP_QEMU="-icount shift=0,sleep=off" HYP_WAIT="$R9_WAIT" \
+par "hyp: R9 TTBR0 cost, FGT (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost, FGT (arm)" "hyp-pin-probe" pass \
+    "[HYP] cost: 256 TTBR0 writes took"
+HYP_CPU=cortex-a76 HYP_QEMU="-icount shift=0,sleep=off" HYP_WAIT="$R9_WAIT" \
+par "hyp: R9 TTBR0 cost, TVM (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost, TVM (arm)" "hyp-pin-probe" pass \
+    "[HYP] cost: the TTBR0 trap is visible"
+HYP_CPU=cortex-a76 HYP_QEMU="-icount shift=0,sleep=off" HYP_WAIT="$R9_WAIT" \
+par "hyp: R9 TTBR0 cost canary (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost canary (arm)" "hyp-pin-off-canary,hyp-pin-probe" canary \
+    "[HYP] cost: the TTBR0 trap is visible"
 # R14: the split image is a regression guard — the ordinary boot subset still
 # passes under the monitor (same verdicts as the EL2 rows).
 par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \

@@ -11,8 +11,8 @@
 
 use azos_drv_sys::kprintln;
 use azos_hyp_api::{
-    is_monitor_call, LockDesc, TextSite, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PROBE,
-    CALL_TEXT_PATCH, INVARIANT_NAMES, LOCK_RAM_MAX, OK, TEXT_SITES_MAX,
+    is_monitor_call, LockDesc, TextSite, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PIN, CALL_PROBE,
+    CALL_TEXT_PATCH, INVARIANT_NAMES, LOCK_RAM_MAX, OK, PIN_FGT, TEXT_SITES_MAX,
 };
 
 // The blob, placed in `.hyp` (a non-exec `alloc` section the linker keeps out
@@ -42,7 +42,8 @@ macro_rules! hyp_blob {
     feature = "hyp-tsc-off-canary",
     feature = "hyp-text-rw-canary",
     feature = "hyp-text-site-skip-canary",
-    feature = "hyp-guard-skip-canary"
+    feature = "hyp-guard-skip-canary",
+    feature = "hyp-pin-off-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -59,6 +60,8 @@ hyp_blob!("/build/aarch64/hyp-mon-text-rw.bin");
 hyp_blob!("/build/aarch64/hyp-mon-text-site-skip.bin");
 #[cfg(feature = "hyp-guard-skip-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-guard-skip.bin");
+#[cfg(feature = "hyp-pin-off-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-pin-off.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
 /// x0..x3). An HVC, which the monitor traps at EL2.
@@ -162,6 +165,46 @@ const S2_PAGE: u64 = 4096;
 fn down(a: u64) -> u64 { a & !(S2_PAGE - 1) }
 fn up(a: u64) -> u64 { (a + S2_PAGE - 1) & !(S2_PAGE - 1) }
 
+/// Arm this PE's pin (`CALL_PIN`): from here its writes to `SCTLR_EL1`,
+/// `TCR_EL1` and `TTBR1_EL1` are refused. Called once the PE has made its own
+/// last write to them, and after a power-down. `(mode, PEs pinned)`.
+fn pin_this_pe() -> Option<(u64, u64)> {
+    let r = monitor_call(CALL_PIN, 0);
+    (r[0] as i64 == OK).then_some((r[1], r[2]))
+}
+
+fn pin_mode(mode: u64) -> &'static str {
+    if mode == PIN_FGT { "fgt" } else { "tvm" }
+}
+
+/// A secondary or a resumed PE: pinned as it comes online.
+pub(crate) fn pin_secondary(cpu: usize) {
+    match pin_this_pe() {
+        #[cfg(feature = "hyp-pin-probe")]
+        Some((mode, _)) => kprintln!("[HYP] pin: PE {} pinned ({})", cpu, pin_mode(mode)),
+        #[cfg(not(feature = "hyp-pin-probe"))]
+        Some(_) => {}
+        None => kprintln!("[BOOT] EL2:        PE {} could not be pinned", cpu),
+    }
+}
+
+/// Ticks for `PIN_COST_WRITES` rewrites of this PE's `TTBR0_EL1` with the
+/// value it holds, each followed by a local TLB flush, as an address-space
+/// switch does.
+#[cfg(feature = "hyp-pin-probe")]
+const PIN_COST_WRITES: u64 = 256;
+#[cfg(feature = "hyp-pin-probe")]
+fn ttbr0_ticks() -> u64 {
+    let root = azos_arch::sysregs::read_ttbr0_el1() as usize;
+    let t0 = azos_drv_sys::timebase::now();
+    for _ in 0..PIN_COST_WRITES {
+        azos_arch::sysregs::install_ttbr0_flush_local(root);
+    }
+    azos_drv_sys::timebase::now() - t0
+}
+#[cfg(feature = "hyp-pin-probe")]
+static UNPINNED_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Lock the kernel image at stage 2: text read-only and the only memory EL1
 /// executes, rodata read-only, the secondary entry fixed (I1, I2). Called
 /// with one PE up, after the boot-once text rewrites and the livepatch rows,
@@ -197,6 +240,12 @@ pub(crate) fn lock_image() {
         // SAFETY: written once above, before the call.
         let n = unsafe { (*core::ptr::addr_of!(LOCK_DESC)).nsites };
         kprintln!("[BOOT] EL2:        kernel image locked (text, rodata; {} key sites)", n);
+        #[cfg(feature = "hyp-pin-probe")]
+        UNPINNED_TICKS.store(ttbr0_ticks(), core::sync::atomic::Ordering::Relaxed);
+        match pin_this_pe() {
+            Some((mode, n)) => kprintln!("[BOOT] EL2:        pinned ({}), {} PE", pin_mode(mode), n),
+            None => kprintln!("[BOOT] EL2:        pin refused"),
+        }
     } else {
         kprintln!("[BOOT] EL2:        kernel image lock refused ({})", r[0] as i64);
     }
@@ -217,6 +266,24 @@ pub(crate) fn lock_ro_data() {
     key_flip_probe();
     #[cfg(feature = "hyp-guard-probe")]
     guard_probe();
+    #[cfg(feature = "hyp-pin-probe")]
+    pin_probe();
+}
+
+/// How many records of `kind` the ring holds.
+#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe"))]
+fn ring_count(kind: azos_hyp_api::Kind) -> u32 {
+    let (mut cursor, mut n) = (0, 0);
+    loop {
+        let w = monitor_call(azos_hyp_api::CALL_VIOLATION_READ, cursor);
+        if w[0] as i64 != OK {
+            return n;
+        }
+        cursor = w[1];
+        if azos_hyp_api::Violation::from_words(w[2], 0, 0, 0).kind == kind as u32 {
+            n += 1;
+        }
+    }
 }
 
 /// A page the guard probe donates: nothing else lives in it.
@@ -232,7 +299,7 @@ static mut PROBE_PAGE: ProbePage = ProbePage([0xA5; 4096]);
 /// a real build.
 #[cfg(feature = "hyp-guard-probe")]
 fn guard_probe() {
-    use azos_hyp_api::{Kind, Violation, CALL_GUARD_PAGES, CALL_VIOLATION_READ, INV_GUARDED};
+    use azos_hyp_api::{Kind, CALL_GUARD_PAGES, INV_GUARDED};
     // SAFETY: only the address is taken.
     let (page, text) = unsafe { (pa_of(core::ptr::addr_of!(PROBE_PAGE) as usize), down(pa_of(&_text_start as *const u8 as usize))) };
     let r = monitor_call2(CALL_GUARD_PAGES, page, 1)[0] as i64;
@@ -242,15 +309,7 @@ fn guard_probe() {
         return;
     }
     kprintln!("[HYP] guard: the page is donated, a second donation and a page of text are refused");
-    let mut cursor = 0;
-    let mut refused = 0;
-    loop {
-        let w = monitor_call(CALL_VIOLATION_READ, cursor);
-        if w[0] as i64 != OK { break; }
-        cursor = w[1];
-        let v = Violation::from_words(w[2], 0, 0, 0);
-        if v.kind == Kind::CallRefused as u32 { refused += 1; }
-    }
+    let refused = ring_count(Kind::CallRefused);
     if refused >= 2 {
         kprintln!("[HYP] guard: the ring holds {} refusals", refused);
     } else {
@@ -300,4 +359,58 @@ fn text_write_probe() {
     // SAFETY: the probe's purpose is this write; it must not return.
     unsafe { core::ptr::write_volatile(va as *mut u8, 0) };
     kprintln!("[HYP] PROBE FAILED: kernel text written after the lock");
+}
+
+/// Feature `hyp-pin-probe` (the `hyp: R9` rows): write `TCR_EL1` and `SCTLR_EL1`
+/// (a harmless bit of each) and read them back, which the pin must have
+/// refused and put in the ring; write `TTBR0_EL1`, which must work; and time
+/// `PIN_COST_WRITES` of those against the same before the pin. Never in a real
+/// build.
+#[cfg(feature = "hyp-pin-probe")]
+fn pin_probe() {
+    use azos_arch::sysregs::{read_sctlr_el1, read_tcr_el1, read_ttbr0_el1, write_sctlr_el1, write_tcr_el1};
+    use azos_hyp_api::{Kind, INV_PINNED};
+    if monitor_call(CALL_PROBE, 0)[2] & INV_PINNED == 0 {
+        kprintln!("[HYP] PROBE FAILED: probe does not report pinned");
+    }
+    let before = ring_count(Kind::SysregRefused);
+    if before != 0 {
+        kprintln!("[HYP] PROBE FAILED: boot wrote a pinned register after the pin ({} refused)", before);
+    }
+    // TCR_EL1.TBI0 and SCTLR_EL1.UCT: nothing the kernel runs on depends on either.
+    let (tcr, sctlr) = (read_tcr_el1(), read_sctlr_el1());
+    write_tcr_el1(tcr ^ (1 << 37));
+    let tcr_kept = read_tcr_el1() == tcr;
+    write_sctlr_el1(sctlr ^ (1 << 15));
+    let sctlr_kept = read_sctlr_el1() == sctlr;
+    if !tcr_kept {
+        write_tcr_el1(tcr);
+        kprintln!("[HYP] PROBE FAILED: the TCR_EL1 write took effect");
+    } else {
+        kprintln!("[HYP] pin: TCR_EL1 write refused");
+    }
+    if !sctlr_kept {
+        write_sctlr_el1(sctlr);
+        kprintln!("[HYP] PROBE FAILED: the SCTLR_EL1 write took effect");
+    } else {
+        kprintln!("[HYP] pin: SCTLR_EL1 write refused");
+    }
+    let held = ring_count(Kind::SysregRefused) - before;
+    if tcr_kept && sctlr_kept && held == 2 {
+        kprintln!("[HYP] pin: the ring holds {} sysreg refusals", held);
+    } else if tcr_kept && sctlr_kept {
+        kprintln!("[HYP] PROBE FAILED: the ring holds {} sysreg refusals, not 2", held);
+    }
+    let ttbr0 = read_ttbr0_el1();
+    azos_arch::sysregs::install_ttbr0_flush_local(ttbr0 as usize);
+    if read_ttbr0_el1() == ttbr0 {
+        kprintln!("[HYP] pin: TTBR0_EL1 write works");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: the TTBR0_EL1 write was lost");
+    }
+    let (unpinned, pinned) = (UNPINNED_TICKS.load(core::sync::atomic::Ordering::Relaxed), ttbr0_ticks());
+    kprintln!("[HYP] cost: {} TTBR0 writes took {} ticks unpinned, {} pinned", PIN_COST_WRITES, unpinned, pinned);
+    if pinned > unpinned + unpinned / 2 {
+        kprintln!("[HYP] cost: the TTBR0 trap is visible");
+    }
 }

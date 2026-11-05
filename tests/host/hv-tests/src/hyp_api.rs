@@ -154,3 +154,28 @@ fn the_lock_keeps_what_was_guarded_before_it_out_of_the_image() {
     assert!(lock_desc_error(&desc(), hole.0, hole.1, &[[0x4020_0000, 0x4020_1000]]).is_some(), "guarded text");
     assert!(lock_desc_error(&desc(), hole.0, hole.1, &[[0x9000_0000, 0x9000_1000]]).is_some(), "guarded device range");
 }
+
+#[test]
+fn the_call_ids_are_distinct_and_in_the_monitor_range() {
+    let ids = [
+        CALL_PROBE, CALL_VIOLATION_READ, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_TEXT_PATCH, CALL_GUARD_PAGES,
+        CALL_PIN,
+    ];
+    for (i, a) in ids.iter().enumerate() {
+        assert!(is_monitor_call(*a));
+        assert!(ids[i + 1..].iter().all(|b| a != b), "{a:#x} twice");
+    }
+}
+
+#[test]
+fn every_invariant_has_its_own_bit_and_a_name() {
+    let mut seen = 0u64;
+    for (bit, name) in INVARIANT_NAMES {
+        assert_eq!(bit.count_ones(), 1, "{name}");
+        assert_eq!(seen & bit, 0, "{name} shares a bit");
+        seen |= bit;
+    }
+    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED);
+    assert_eq!(Kind::from_u32(5), Some(Kind::SysregRefused));
+    assert_eq!(Kind::from_u32(6), None);
+}

@@ -23,6 +23,7 @@ mod exits;
 mod fakes;
 mod glue;
 mod hyp_api;
+mod hyp_pin;
 mod iface;
 mod monitor;
 mod pause;

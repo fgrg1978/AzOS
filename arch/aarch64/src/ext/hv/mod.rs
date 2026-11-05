@@ -35,6 +35,7 @@ pub mod inject;
 pub mod psci;
 pub mod serve;
 pub mod stage2;
+pub mod sysreg;
 pub mod vgic;
 pub mod vtimer;
 pub mod world;

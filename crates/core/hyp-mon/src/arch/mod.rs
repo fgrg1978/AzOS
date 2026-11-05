@@ -5,8 +5,10 @@
 
 pub mod entry;
 pub mod mmu;
+pub mod pin;
 pub mod s2;
 pub mod sync;
+pub mod sysreg;
 
 pub mod psci;
 

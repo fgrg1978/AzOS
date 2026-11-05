@@ -173,7 +173,92 @@ _hyp_vectors:
     .balign 0x80
     b _hyp_el2_fault
 
+// A trapped `MSR TTBR0_EL1, Xt` (every context switch when `HCR_EL2.TVM` is
+// the pin) is carried out here, with two scratch registers on the stack, before
+// the frame of the general path is built; anything else falls through to it.
 _hyp_sync_lower:
+    stp     x0, x1, [sp, #-16]!
+    mrs     x0, ESR_EL2
+    bic     x1, x0, #{rt_mask}
+    movz    x0, #{ttbr0_lo}
+    movk    x0, #{ttbr0_hi}, lsl #16
+    cmp     x1, x0
+    b.ne    9f
+    mrs     x0, ESR_EL2
+    ubfx    x0, x0, #5, #5               // Rt
+    adr     x1, 1f
+    add     x1, x1, x0, lsl #3           // 8 bytes an entry
+    br      x1
+1:  ldr     x0, [sp]
+    b       2f
+    ldr     x0, [sp, #8]
+    b       2f
+    mov     x0, x2
+    b       2f
+    mov     x0, x3
+    b       2f
+    mov     x0, x4
+    b       2f
+    mov     x0, x5
+    b       2f
+    mov     x0, x6
+    b       2f
+    mov     x0, x7
+    b       2f
+    mov     x0, x8
+    b       2f
+    mov     x0, x9
+    b       2f
+    mov     x0, x10
+    b       2f
+    mov     x0, x11
+    b       2f
+    mov     x0, x12
+    b       2f
+    mov     x0, x13
+    b       2f
+    mov     x0, x14
+    b       2f
+    mov     x0, x15
+    b       2f
+    mov     x0, x16
+    b       2f
+    mov     x0, x17
+    b       2f
+    mov     x0, x18
+    b       2f
+    mov     x0, x19
+    b       2f
+    mov     x0, x20
+    b       2f
+    mov     x0, x21
+    b       2f
+    mov     x0, x22
+    b       2f
+    mov     x0, x23
+    b       2f
+    mov     x0, x24
+    b       2f
+    mov     x0, x25
+    b       2f
+    mov     x0, x26
+    b       2f
+    mov     x0, x27
+    b       2f
+    mov     x0, x28
+    b       2f
+    mov     x0, x29
+    b       2f
+    mov     x0, x30
+    b       2f
+    mov     x0, xzr
+2:  msr     TTBR0_EL1, x0
+    mrs     x1, ELR_EL2
+    add     x1, x1, #4
+    msr     ELR_EL2, x1
+    ldp     x0, x1, [sp], #16
+    eret
+9:  ldp     x0, x1, [sp], #16
     sub     sp, sp, #256
     stp     x0, x1,   [sp, #0]
     stp     x2, x3,   [sp, #16]
@@ -220,4 +305,7 @@ _hyp_el2_fault:
     stack_hi = const (STACK_SIZE >> 16),
     mmu = const (!cfg!(feature = "hyp-mmu-off-canary")) as u32,
     tcr = const super::mmu::TCR_EL2,
+    rt_mask = const super::sysreg::RT_MASK,
+    ttbr0_lo = const super::sysreg::TTBR0_WRITE_ESR & 0xffff,
+    ttbr0_hi = const super::sysreg::TTBR0_WRITE_ESR >> 16,
 );

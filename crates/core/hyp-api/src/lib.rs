@@ -34,6 +34,17 @@ pub const CALL_TEXT_PATCH: u64 = CALL_BASE + 4;
 /// stage-2 stops mapping them, for good: no EL1 or EL0 access reaches them
 /// and the monitor never gives them back (I4).
 pub const CALL_GUARD_PAGES: u64 = CALL_BASE + 5;
+/// `pin() -> (status, mode, pes_pinned)`: after the lock, on the calling PE
+/// only: its writes to `SCTLR_EL1`, `TCR_EL1` and `TTBR1_EL1` are refused from
+/// now on (I3). Each PE calls it once it has made its own last write to them,
+/// and again after a power-down. `mode` is [`PIN_FGT`] or [`PIN_TVM`].
+pub const CALL_PIN: u64 = CALL_BASE + 6;
+
+/// The pin is armed by `HFGWTR_EL2` (FEAT_FGT): `TTBR0_EL1` is not trapped.
+pub const PIN_FGT: u64 = 1;
+/// The pin is armed by `HCR_EL2.TVM`: every virtual-memory register write
+/// traps, and the ones that are not refused are carried out by the monitor.
+pub const PIN_TVM: u64 = 2;
 
 pub const fn is_monitor_call(id: u64) -> bool {
     id & CALL_MASK == CALL_BASE
@@ -62,8 +73,10 @@ pub const INV_EL1_EXEC_TEXT_ONLY: u64 = 1 << 4;
 pub const INV_RO_DATA: u64 = 1 << 5;
 /// I4: at least one page is guarded: unmapped at stage 2 for every EL1 and EL0 access.
 pub const INV_GUARDED: u64 = 1 << 6;
+/// I3: a PE that called `pin` cannot write `SCTLR_EL1`, `TCR_EL1` or `TTBR1_EL1`.
+pub const INV_PINNED: u64 = 1 << 7;
 
-pub const INVARIANT_NAMES: [(u64, &str); 7] = [
+pub const INVARIANT_NAMES: [(u64, &str); 8] = [
     (INV_EL2_MMU, "el2-mmu"),
     (INV_HOST_S2, "host-s2"),
     (INV_PSCI, "psci"),
@@ -71,6 +84,7 @@ pub const INVARIANT_NAMES: [(u64, &str); 7] = [
     (INV_EL1_EXEC_TEXT_ONLY, "el1-exec-text-only"),
     (INV_RO_DATA, "ro-data"),
     (INV_GUARDED, "guarded"),
+    (INV_PINNED, "pinned"),
 ];
 
 /// What a violation record describes.
@@ -86,6 +100,9 @@ pub enum Kind {
     EntryRefused = 3,
     /// A trap the monitor has no handler for: `addr` is the PC.
     UnexpectedTrap = 4,
+    /// A write to a pinned register: `addr` is the register's encoding as
+    /// `sys_reg(op0, op1, crn, crm, op2)` packs it, `aux` the value refused.
+    SysregRefused = 5,
 }
 
 impl Kind {
@@ -95,6 +112,7 @@ impl Kind {
             2 => Kind::CallRefused,
             3 => Kind::EntryRefused,
             4 => Kind::UnexpectedTrap,
+            5 => Kind::SysregRefused,
             _ => return None,
         })
     }

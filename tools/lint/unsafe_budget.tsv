@@ -11,7 +11,7 @@
 # its reason in the commit message.
 # crate	blocks	fns	impls	attrs	forbid	share
 .	5	10	1	0	0	-
-arch/aarch64	202	49	1	2	0	76
+arch/aarch64	202	49	1	2	0	75
 arch/api	32	10	0	0	0	40
 arch/facade	0	0	0	0	1	0
 arch/riscv	160	42	0	3	0	91
@@ -31,7 +31,7 @@ crates/core/energy	0	0	0	0	1	0
 crates/core/ext-api	0	0	0	0	1	0
 crates/core/hv	3	1	0	0	0	5
 crates/core/hyp-api	0	0	0	0	1	0
-crates/core/hyp-mon	38	3	1	0	0	-
+crates/core/hyp-mon	46	3	1	0	0	-
 crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
 crates/core/image	0	0	0	0	1	0
@@ -164,4 +164,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	509
+@unsafe-share	510

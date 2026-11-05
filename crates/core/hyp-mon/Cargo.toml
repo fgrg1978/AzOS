@@ -34,6 +34,7 @@ hyp-tsc-off-canary = []
 hyp-text-rw-canary = []
 hyp-text-site-skip-canary = []
 hyp-guard-skip-canary = []
+hyp-pin-off-canary = []
 
 [profile.release]
 panic = "abort"

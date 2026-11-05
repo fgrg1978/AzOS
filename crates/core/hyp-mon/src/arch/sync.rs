@@ -11,6 +11,7 @@ use azos_hyp_api::{
 
 const EC_HVC64: u64 = 0x16;
 const EC_SMC64: u64 = 0x17;
+const EC_SYSREG: u64 = 0x18;
 const EC_IABORT_LOWER: u64 = 0x20;
 const EC_DABORT_LOWER: u64 = 0x24;
 
@@ -37,6 +38,7 @@ pub fn handle(regs: *mut u64) {
     match ec {
         EC_HVC64 => hvc(regs),
         EC_SMC64 => super::psci::smc(regs, esr),
+        EC_SYSREG => super::pin::trap(regs, esr),
         EC_IABORT_LOWER | EC_DABORT_LOWER => super::s2::fault(regs, esr, ec == EC_IABORT_LOWER),
         _ => {
             let elr: u64;
@@ -81,6 +83,13 @@ fn hvc(regs: *mut u64) {
             let r = super::s2::text_patch(reg(regs, 1), reg(regs, 2));
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_TEXT_PATCH, reg(regs, 1), reg(regs, 2)); }
             set(regs, 0, r as u64)
+        }
+        azos_hyp_api::CALL_PIN => {
+            let (r, mode, pinned) = super::pin::pin();
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_PIN, 0, 0); }
+            set(regs, 0, r as u64);
+            set(regs, 1, mode);
+            set(regs, 2, pinned);
         }
         azos_hyp_api::CALL_GUARD_PAGES => {
             let r = super::s2::guard_pages(reg(regs, 1), reg(regs, 2));

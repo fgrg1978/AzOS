@@ -119,6 +119,8 @@ hyp-text-site-skip-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: whi
 hyp-key-flip-probe	pending	
 hyp-guard-skip-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-guard-probe	pending	
+hyp-pin-off-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
+hyp-pin-probe	pending	
 hyp-lock-probe	pending	
 ina219-placement-build-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 ina219-placement-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)

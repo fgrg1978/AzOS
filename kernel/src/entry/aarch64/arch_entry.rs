@@ -118,11 +118,18 @@ impl ArchEntry for Entry {
         crate::boot_hooks::arch_enter_scheduler(hart_id)
     }
 
-    /// Nothing: this ISA's shootdown is a broadcast `TLBI ...IS`, which
-    /// reaches every PE in the inner-shareable domain with no scan set to
-    /// join (riscv64's SBI remote fence needs the hart in its mask).
+    /// No scan set to join: this ISA's shootdown is a broadcast `TLBI ...IS`,
+    /// which reaches every PE in the inner-shareable domain (riscv64's SBI
+    /// remote fence needs the hart in its mask). Under the resident monitor
+    /// this is also where the PE is pinned, after its last write to the
+    /// translation controls.
     #[inline(always)]
-    fn secondary_tlb_online(&self, _cpu: usize) {}
+    fn secondary_tlb_online(&self, cpu: usize) {
+        #[cfg(feature = "hyp-monitor")]
+        crate::entry::aarch64::ext::hyp_monitor::pin_secondary(cpu);
+        #[cfg(not(feature = "hyp-monitor"))]
+        let _ = cpu;
+    }
 
     /// Per-PE GIC: find THIS PE's own redistributor by its own MPIDR affinity
     /// (never assume frame index == hart id — `gic::find_redistributor`),

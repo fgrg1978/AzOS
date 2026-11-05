@@ -1100,6 +1100,8 @@ hyp-key-flip-probe = ["hyp-monitor-row"]
 hyp-text-site-skip-canary = ["hyp-monitor-row"]
 hyp-guard-skip-canary = ["hyp-monitor-row"]
 hyp-guard-probe = ["hyp-monitor-row"]
+hyp-pin-off-canary = ["hyp-monitor-row"]
+hyp-pin-probe = ["hyp-monitor-row"]
 # Kconfig INSPECT: the introspection tree (crates/core/inspect), published
 # by kernel/src/boot/inspect.rs. A `base` tag: emitted unless the symbol is n.
 # With the USB host, its `usb/devN` listing joins the tree.

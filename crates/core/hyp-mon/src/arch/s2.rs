@@ -228,6 +228,11 @@ pub fn lock_ro_data() -> i64 {
     OK
 }
 
+/// Has `lock_kernel_image` built the locked map?
+pub fn locked() -> bool {
+    LOCKED_ROOT.load(Ordering::Acquire) != 0
+}
+
 /// The root the live stage-2 walks: the locked map once there is one.
 fn active_root() -> u64 {
     match LOCKED_ROOT.load(Ordering::Acquire) {
