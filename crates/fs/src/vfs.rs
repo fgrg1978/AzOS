@@ -923,14 +923,6 @@ pub unsafe fn cstr_to_bytes<'a>(ptr: *const u8) -> &'a [u8] {
     core::slice::from_raw_parts(ptr, len)
 }
 
-/// Return true if `path` starts with `prefix` followed by '/' or NUL.
-fn path_starts_with(path: &[u8], prefix: &[u8]) -> bool {
-    if path.len() < prefix.len() || &path[..prefix.len()] != prefix {
-        return false;
-    }
-    matches!(path.get(prefix.len()), None | Some(&b'/') | Some(&0))
-}
-
 // ─── Allocator helpers ────────────────────────────────────────────────────────
 
 /// Allocate `size` bytes with alignment 1.  Returns null on failure or size==0.
