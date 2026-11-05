@@ -33,6 +33,7 @@ crates/core/hyp-api	0	0	0	0	1	0
 crates/core/hyp-mon	34	3	1	0	0	-
 crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
+crates/core/image	0	0	0	0	1	0
 crates/core/inspect	1	1	0	0	0	3
 crates/core/ipc	36	9	6	0	0	53
 crates/core/ktest	3	0	0	0	0	66
