@@ -5,34 +5,25 @@
 
 //! IMU driver — MPU-6050 over I2C.
 //!
-//! Provides high-level access to a simulated (QEMU) or real MPU-6050 6-axis
-//! inertial measurement unit.  Uses the I2C driver from `azos_drv_bus`.
+//! The chip logic is [`chip`], written over an `I2cCall` and free of kernel
+//! functions; this file is the kernel's host of it: the one IMU's bus and
+//! address, the acquisition stamp, the calibration offsets and the queued
+//! read through the bus driver's transaction queue.
 //!
 //! Phase E2.
 
+pub mod chip;
+
 use core::sync::atomic::{AtomicU8, AtomicBool, Ordering};
+use azos_devif::i2c::I2cDirect;
 use azos_drv_bus::i2c;
+use azos_drv_bus::i2c_port::I2cPort;
+use chip::{InitError, Mpu6050, BURST_LEN, REG_ACCEL_XOUT_H};
 
-pub const MPU6050_ADDR: u8 = 0x68;
+pub use chip::{ImuData, MPU6050_ADDR};
 
-// MPU-6050 register map
-const REG_SMPLRT_DIV:   u8 = 0x19;
-const REG_CONFIG:       u8 = 0x1A;
-const REG_GYRO_CONFIG:  u8 = 0x1B;
-const REG_ACCEL_CONFIG: u8 = 0x1C;
-const REG_ACCEL_XOUT_H: u8 = 0x3B; // 14 bytes: accel(6)+temp(2)+gyro(6)
-const REG_PWR_MGMT_1:   u8 = 0x6B;
-const REG_WHO_AM_I:     u8 = 0x75;
-
-/// Scaled IMU reading.
-#[derive(Clone, Copy)]
-pub struct ImuData {
-    /// Accelerometer in milli-g (1 g = 1000).  [X, Y, Z].
-    pub accel_mg:  [i32; 3],
-    /// Gyroscope in milli-degrees/sec.  [X, Y, Z].
-    pub gyro_mdps: [i32; 3],
-    /// Temperature in centi-degrees Celsius (e.g. 3653 = 36.53 °C).
-    pub temp_cdeg: i32,
+fn imu(bus: u8, addr: u8) -> Mpu6050<I2cDirect<I2cPort>> {
+    Mpu6050::new(I2cDirect(I2cPort::new(bus, addr)))
 }
 
 static IMU_BUS:   AtomicU8   = AtomicU8::new(0);
@@ -46,45 +37,20 @@ static IMU_READY: AtomicBool = AtomicBool::new(false);
 ///
 /// Returns `true` if initialization succeeded.
 pub fn imu_init(bus: u8, addr: u8) -> bool {
-    // Check WHO_AM_I
-    let mut wai = [0u8; 1];
-    if i2c::i2c_read(bus, addr, REG_WHO_AM_I, &mut wai) < 1 {
-        azos_drv_sys::kwarn!("[IMU] MPU-6050 @ bus={} addr=0x{:02x} — not found", bus, addr);
-        return false;
-    }
-    if wai[0] != 0x68 {
-        azos_drv_sys::kwarn!("[IMU] WHO_AM_I mismatch: expected 0x68, got 0x{:02x}", wai[0]);
-        return false;
-    }
-
-    // Wake up: clear SLEEP bit (bit 6) in PWR_MGMT_1, select internal 8 MHz clock
-    if i2c::i2c_write(bus, addr, &[REG_PWR_MGMT_1, 0x00]) < 0 {
-        azos_drv_sys::kerr!("[IMU] Failed to write PWR_MGMT_1 register");
-        return false;
-    }
-
-    // Sample rate divider: 0 → 1 kHz / (1+0) = 1 kHz sample rate
-    if i2c::i2c_write(bus, addr, &[REG_SMPLRT_DIV, 0x00]) < 0 {
-        azos_drv_sys::kerr!("[IMU] Failed to write SMPLRT_DIV register");
-        return false;
-    }
-
-    // DLPF config: 3 → accel BW 44 Hz, gyro BW 42 Hz
-    if i2c::i2c_write(bus, addr, &[REG_CONFIG, 0x03]) < 0 {
-        azos_drv_sys::kerr!("[IMU] Failed to write CONFIG register");
-        return false;
-    }
-
-    // Gyro config: FS_SEL=0 → ±250 °/s
-    if i2c::i2c_write(bus, addr, &[REG_GYRO_CONFIG, 0x00]) < 0 {
-        azos_drv_sys::kerr!("[IMU] Failed to write GYRO_CONFIG register");
-        return false;
-    }
-
-    // Accel config: AFS_SEL=0 → ±2 g
-    if i2c::i2c_write(bus, addr, &[REG_ACCEL_CONFIG, 0x00]) < 0 {
-        azos_drv_sys::kerr!("[IMU] Failed to write ACCEL_CONFIG register");
-        return false;
+    match imu(bus, addr).init() {
+        Ok(()) => {}
+        Err(InitError::NotFound) => {
+            azos_drv_sys::kwarn!("[IMU] MPU-6050 @ bus={} addr=0x{:02x} — not found", bus, addr);
+            return false;
+        }
+        Err(InitError::WrongId(id)) => {
+            azos_drv_sys::kwarn!("[IMU] WHO_AM_I mismatch: expected 0x68, got 0x{:02x}", id);
+            return false;
+        }
+        Err(InitError::Write(reg)) => {
+            azos_drv_sys::kerr!("[IMU] Failed to write {} register", reg);
+            return false;
+        }
     }
 
     IMU_BUS.store(bus, Ordering::Relaxed);
@@ -96,7 +62,7 @@ pub fn imu_init(bus: u8, addr: u8) -> bool {
 }
 
 /// Burst-read 14 raw bytes: accel XYZ (6) + temp (2) + gyro XYZ (6).
-pub fn imu_read_raw() -> Option<[u8; 14]> {
+pub fn imu_read_raw() -> Option<[u8; BURST_LEN]> {
     imu_read_raw_stamped().map(|(raw, _)| raw)
 }
 
@@ -105,15 +71,13 @@ pub fn imu_read_raw() -> Option<[u8; 14]> {
 /// the first instant the kernel holds the value. Taken here, in the driver,
 /// so every consumer (the IMU task, the AHRS task, `SYS_SENSOR_READ_TS`)
 /// sees the time of the read and not the time the value reached it.
-pub fn imu_read_raw_stamped() -> Option<([u8; 14], u64)> {
+pub fn imu_read_raw_stamped() -> Option<([u8; BURST_LEN], u64)> {
     let (bus, addr, ready) = (IMU_BUS.load(Ordering::Relaxed), IMU_ADDR.load(Ordering::Relaxed), IMU_READY.load(Ordering::Acquire));
     if !ready { return None; }
 
-    let mut buf = [0u8; 14];
-    let n = i2c::i2c_read(bus, addr, REG_ACCEL_XOUT_H, &mut buf);
+    let burst = imu(bus, addr).read_raw();
     let acq = azos_drv_sys::timebase::now();
-    if n < 14 { return None; }
-    Some((buf, freeze::stamp(acq)))
+    Some((burst.ok()?, freeze::stamp(acq)))
 }
 
 /// The stale-sample canary (`freeze-acq-stamp`, kernel feature
@@ -160,7 +124,7 @@ pub fn imu_read_scaled_stamped() -> Option<(ImuData, u64)> {
 pub fn imu_submit(now: u64) -> Option<u32> {
     let (bus, addr, ready) = (IMU_BUS.load(Ordering::Relaxed), IMU_ADDR.load(Ordering::Relaxed), IMU_READY.load(Ordering::Acquire));
     if !ready { return None; }
-    i2c::i2c_submit_read(bus, addr, REG_ACCEL_XOUT_H, 14, now)
+    i2c::i2c_submit_read(bus, addr, REG_ACCEL_XOUT_H, BURST_LEN, now)
 }
 
 /// The queued read `ticket`: `None` while it is on the wire, `Some(None)`
@@ -170,45 +134,21 @@ pub fn imu_submit(now: u64) -> Option<u32> {
 /// right after its transfer returns.
 pub fn imu_take(ticket: u32) -> Option<Option<(ImuData, u64)>> {
     let c = i2c::i2c_take(IMU_BUS.load(Ordering::Relaxed), ticket)?;
-    if !c.ok || c.rd_len < 14 {
+    if !c.ok || (c.rd_len as usize) < BURST_LEN {
         return Some(None);
     }
-    let mut raw = [0u8; 14];
-    raw.copy_from_slice(&c.rd[..14]);
+    let mut raw = [0u8; BURST_LEN];
+    raw.copy_from_slice(&c.rd[..BURST_LEN]);
     Some(Some((scale(&raw), freeze::stamp(c.at))))
 }
 
-/// The MPU-6050 burst (accel, temp, gyro, big-endian) in physical units,
-/// calibration offsets applied.
-fn scale(raw: &[u8; 14]) -> ImuData {
-
-    // Helper: big-endian i16 from two bytes.
-    let i16be = |hi: u8, lo: u8| -> i16 {
-        ((hi as u16) << 8 | lo as u16) as i16
-    };
-
-    let ax = i16be(raw[0],  raw[1])  as i32;
-    let ay = i16be(raw[2],  raw[3])  as i32;
-    let az = i16be(raw[4],  raw[5])  as i32;
-    let tr = i16be(raw[6],  raw[7])  as i32;
-    let gx = i16be(raw[8],  raw[9])  as i32;
-    let gy = i16be(raw[10], raw[11]) as i32;
-    let gz = i16be(raw[12], raw[13]) as i32;
-
-    // Phase G2: subtract IMU calibration offsets (milli-g units, signed).
-    let off_ax = azos_config::CFG_IMU_OFFSET_AX.load(Ordering::Relaxed) as i32;
-    let off_ay = azos_config::CFG_IMU_OFFSET_AY.load(Ordering::Relaxed) as i32;
-    let off_az = azos_config::CFG_IMU_OFFSET_AZ.load(Ordering::Relaxed) as i32;
-
-    ImuData {
-        accel_mg:  [
-            ax * 1000 / 16384 - off_ax,
-            ay * 1000 / 16384 - off_ay,
-            az * 1000 / 16384 - off_az,
-        ],
-        gyro_mdps: [gx * 1000 / 131,   gy * 1000 / 131,   gz * 1000 / 131],
-        temp_cdeg: tr * 100 / 340 + 3653,
-    }
+/// The burst in physical units, calibration offsets applied.
+fn scale(raw: &[u8; BURST_LEN]) -> ImuData {
+    chip::scale(raw, [
+        azos_config::CFG_IMU_OFFSET_AX.load(Ordering::Relaxed) as i32,
+        azos_config::CFG_IMU_OFFSET_AY.load(Ordering::Relaxed) as i32,
+        azos_config::CFG_IMU_OFFSET_AZ.load(Ordering::Relaxed) as i32,
+    ])
 }
 
 /// Print IMU status info.

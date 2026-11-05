@@ -98,6 +98,7 @@ dependencies = [
 name = "azos_baro"
 version = "0.1.0"
 dependencies = [
+ "azos_devif",
  "azos_drv_bus",
  "azos_drv_sys",
  "azos_sync",
@@ -573,6 +574,7 @@ name = "azos_imu"
 version = "0.1.0"
 dependencies = [
  "azos_config",
+ "azos_devif",
  "azos_drv_bus",
  "azos_drv_sys",
 ]

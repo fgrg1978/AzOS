@@ -146,6 +146,13 @@ mod drvkit_tests;
 #[cfg(test)]
 mod pcspk_tests;
 
+// The chips written over `I2cCall` (the IMU) against a register file
+// served as the `I2c` interface.
+#[cfg(test)]
+mod i2c_fake;
+#[cfg(test)]
+mod imu_tests;
+
 #[cfg(test)]
 mod pid {
     use super::motor_pid::*;
