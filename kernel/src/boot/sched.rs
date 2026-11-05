@@ -508,13 +508,8 @@ pub(crate) fn install_sched_hooks() {
     azos_driver_server::reply_wait::set_proxy_hooks(&PROXY_HOOKS);
 }
 
-/// `azos_fs::ClaimPiHooks` (FX12): the scheduler's counted donation pair,
-/// with its `donation_for` rule and ring-3 floor, and the graph id.
-static FAT_CLAIM_PI_HOOKS: azos_fs::ClaimPiHooks = azos_fs::ClaimPiHooks {
-    donate: azos_sched::scheduler::donate_priority,
-    give_back: azos_sched::scheduler::return_donation,
-    graph_id: kmutex_graph_id,
-};
+/// `azos_fs::ClaimPiHooks` (FX12): the graph id of a claim's owner and waiters.
+static FAT_CLAIM_PI_HOOKS: azos_fs::ClaimPiHooks = azos_fs::ClaimPiHooks { graph_id: kmutex_graph_id };
 
 /// `azos_sync::kmutex::Probes` (wave 15 N8). All lock-free: the TID's
 /// published slot (`idx_for_tid`, O(1) on its hint) and the per-CPU current
@@ -587,22 +582,49 @@ fn mapping_unmap(root: usize, va: usize, pages: usize) {
 /// `azos_driver_server::reply_wait`'s view of the scheduler: the notify
 /// path's block and wake (`WaitReason::Timer(deadline)`, woken by TID with
 /// the matching deadline — the timer sweep ends a wait nobody answers), and
-/// the priority donation.
+/// the client's wait-graph edge to the driver ([`proxy_lend`]).
 static PROXY_HOOKS: azos_driver_server::reply_wait::ProxyHooks =
     azos_driver_server::reply_wait::ProxyHooks {
         block: proxy_block,
         wake: proxy_wake,
         current_tid: azos_sched::scheduler::current_task_tid,
         #[cfg(not(feature = "proxy-donation-canary"))]
-        donate: azos_sched::donate_priority,
+        donate: proxy_lend,
         #[cfg(feature = "proxy-donation-canary")]
         donate: proxy_never_donates,
-        undonate: azos_sched::return_donation,
+        undonate: proxy_unlend,
         peer_running: azos_sched::task_running_on_other_hart,
     };
 
-/// `proxy-donation-canary`: the proxy blocks and wakes as usual but never
-/// donates. `proxy-pi-smoke` must then time out on every attempt.
+/// One `DriverProxy` node per driver task slot: an in-kernel client waiting
+/// for a ring-3 driver's reply blocks on it behind the driver, so the driver
+/// runs at its most urgent waiting client's attribute, a fair client's
+/// weight included. The node's owner is the driver slot, set once and again
+/// after the slot is reused (as the IPC call's nodes).
+static PROXY_NODES: [azos_sync::waitgraph::PiWaiters; azos_limits::MAX_TASKS] =
+    [const { azos_sync::waitgraph::PiWaiters::new(azos_sync::waitgraph::EdgeKind::DriverProxy) }; azos_limits::MAX_TASKS];
+
+/// The client `client` waits for `driver`: its edge to the driver's node.
+/// `true` = one [`proxy_unlend`] is owed.
+fn proxy_lend(client: u32, driver: u32) -> bool {
+    let (Some(c), Some(d)) = (kmutex_graph_id(client), kmutex_graph_id(driver)) else { return false };
+    let Some(node) = PROXY_NODES.get(d as usize) else { return false };
+    if node.owner() != Some(d) {
+        node.set_owner(Some(d));
+    }
+    azos_sync::waitgraph::block_on(c, node).is_ok()
+}
+
+/// The current task, done waiting for `driver`, leaves its edge.
+fn proxy_unlend(driver: u32) {
+    let (Some(c), Some(d)) = (azos_sched::classes::current(), kmutex_graph_id(driver)) else { return };
+    if let Some(node) = PROXY_NODES.get(d as usize) {
+        azos_sync::waitgraph::unblock(c as u32, node, azos_sync::waitgraph::UnblockReason::Acquired);
+    }
+}
+
+/// `proxy-donation-canary`: the proxy blocks and wakes as usual but takes no
+/// edge. `proxy-pi-smoke` must then time out on every attempt.
 #[cfg(feature = "proxy-donation-canary")]
 fn proxy_never_donates(_donor: u32, _target: u32) -> bool {
     false

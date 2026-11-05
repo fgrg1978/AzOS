@@ -133,7 +133,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use azos_abi::syscall_nr::{SYS_IPC_FAST_CALL_EP, SYS_IPC_FAST_REPLY_ACCEPT};
 use azos_arch::Interrupts as _;
-use azos_ipc::fastcall::{self, Collected, NO_DONEE};
+use azos_ipc::fastcall::{self, Collected};
 pub use azos_sched::scheduler::FastResume;
 use azos_sched::scheduler::{
     ipc_fast_claim, ipc_fast_handoff, ipc_fast_parked, ipc_fast_start_at, ipc_fast_take_resume,
@@ -505,10 +505,7 @@ fn call_parked<R: IpcRegs>(
     ipc_fast_handoff(cpu, server_idx, WaitReason::FastIpcClient(handle), irq);
     // Running again: the answer is normally in the record.
     match fastcall::collect(handle, caller_tid) {
-        Collected::Reply(reply, donee) => {
-            if donee != NO_DONEE {
-                azos_sched::return_donation(donee);
-            }
+        Collected::Reply(reply, _) => {
             regs.set_out(0, reply[1]);
             regs.set_out(1, reply[2]);
             regs.set_out(2, reply[3]);
@@ -519,10 +516,7 @@ fn call_parked<R: IpcRegs>(
         }
         // Completed without an answer (the server died, the endpoint was
         // destroyed): the code is the call's answer, as in the arm.
-        Collected::Done(code, donee) => {
-            if donee != NO_DONEE {
-                azos_sched::return_donation(donee);
-            }
+        Collected::Done(code, _) => {
             Some(code)
         }
         // Woken without an answer: the arm's retry loop, from turn 0's
@@ -627,7 +621,7 @@ fn exit_is_plain() -> bool {
 #[inline(never)]
 fn accept_wait<R: IpcRegs>(server_idx: usize, server_tid: u32, regs: &mut R) -> i64 {
     let mut out = SyscallOut::new();
-    let r = crate::dispatch::fast_ipc_accept_into_waking(&mut out, server_idx, server_tid, None, None, NO_DONEE);
+    let r = crate::dispatch::fast_ipc_accept_into_waking(&mut out, server_idx, server_tid, None, None);
     copy_out(&out, regs);
     r
 }

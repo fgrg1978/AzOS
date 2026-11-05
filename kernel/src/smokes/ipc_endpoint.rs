@@ -662,14 +662,10 @@ fn war_worker(_: usize) {
         WAR_WORKER_RC.store(-1, Ordering::Release);
         return;
     }
-    // What the reply arm does on delivery: wake the caller, then give back
-    // the donation the caller lent to the server.
+    // What the reply arm does on delivery: wake the caller.
     match azos_ipc::fastcall::reply_warrant(h, me, [0x0A11, 0, 0, 0]) {
-        azos_ipc::FastIpcReply::Woke { caller_tid, donee, .. } => {
+        azos_ipc::FastIpcReply::Woke { caller_tid, .. } => {
             azos_sched::wait::wake_fast_ipc_client_tid(caller_tid, h);
-            if donee != azos_ipc::fastcall::NO_DONEE {
-                azos_sched::return_donation(donee);
-            }
         }
         _ => {
             WAR_WORKER_RC.store(-2, Ordering::Release);

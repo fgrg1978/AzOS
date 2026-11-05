@@ -52,10 +52,11 @@ pub struct ProxyHooks {
     pub wake: fn(u32, u64),
     /// The calling task's TID.
     pub current_tid: fn() -> u32,
-    /// Donate `donor`'s live priority to `target` when the donation rule allows
-    /// it (`azos_sched::donation`). `true` = one `undonate(target)` is owed.
+    /// The waiting client `donor` takes its wait-graph edge to the driver
+    /// `target`, which then runs at least at the client's attribute. `true` =
+    /// one `undonate(target)` is owed.
     pub donate: fn(u32, u32) -> bool,
-    /// Undo one donation to `target`.
+    /// The calling client leaves its edge to `target`.
     pub undonate: fn(u32),
     /// Is `tid` running on a hart other than the caller's right now? Gates
     /// the bounded spin in [`wait_for_reply`].

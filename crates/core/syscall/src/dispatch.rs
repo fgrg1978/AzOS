@@ -452,14 +452,11 @@ pub(crate) fn fast_ipc_call_wait(
             // a previous exchange's payload. libsys's wrapper
             // declares a1..a5 `lateout` — the shared syscallN
             // helpers (in("aN")) must never carry this call.
-            azos_ipc::fastcall::Collected::Reply(reply, donee) => {
+            azos_ipc::fastcall::Collected::Reply(reply, _) => {
                 // A reply that handed off to us left the
                 // donation for us to return (the server is
                 // asleep by now): see
                 // `fast_ipc_reply_then_accept`.
-                if donee != azos_ipc::fastcall::NO_DONEE {
-                    azos_sched::return_donation(donee);
-                }
                 out.set([reply[1], reply[2], reply[3], 0, 0,
                          NO_CAP_MOVED]);
                 result = reply[0] as i64;
@@ -469,10 +466,7 @@ pub(crate) fn fast_ipc_call_wait(
             // server died (-EPEERDIED) or the endpoint was
             // destroyed (-EREVOKED) with this call queued or
             // in service. The code is the call's answer.
-            azos_ipc::fastcall::Collected::Done(code, donee) => {
-                if donee != azos_ipc::fastcall::NO_DONEE {
-                    azos_sched::return_donation(donee);
-                }
+            azos_ipc::fastcall::Collected::Done(code, _) => {
                 result = code;
                 completed = true;
                 break;
@@ -520,9 +514,6 @@ pub(crate) fn fast_ipc_call_wait(
         // landed first already returned it, and the exit
         // sweep of a dead server leaves nothing to take.
         let a = azos_ipc::fastcall::abandon(handle, caller_tid);
-        if a.donee != azos_ipc::fastcall::NO_DONEE {
-            azos_sched::return_donation(a.donee);
-        }
         fc_stat!(EXHAUSTED);
         // U04-3: a capability moved to the server at the top
         // of this call is stranded there if the retry loop
@@ -762,9 +753,7 @@ pub(crate) fn dispatch_native_checked(
 /// registers, are at the arm.
 fn fast_ipc_accept_into(out: &mut SyscallOut) -> i64 {
     let (server_idx, server_tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
-    fast_ipc_accept_into_waking(
-        out, server_idx, server_tid, None, None, azos_ipc::fastcall::NO_DONEE,
-    )
+    fast_ipc_accept_into_waking(out, server_idx, server_tid, None, None)
 }
 
 /// A request `fast_ipc_accept` hands back: `(handle, caller_tid, words, moved_cap)`.
@@ -788,9 +777,8 @@ pub(crate) fn fast_ipc_accept_into_waking(
     server_tid: u32,
     polled: Option<Option<AcceptedReq>>,
     wake: Option<(u32, u64)>,
-    undonate: u32,
 ) -> i64 {
-    fast_ipc_accept_into_waking_as::<true>(out, server_idx, server_tid, polled, wake, undonate)
+    fast_ipc_accept_into_waking_as::<true>(out, server_idx, server_tid, polled, wake)
 }
 
 /// One accept attempt: the v1 accept (`V1`, which refuses a v2 call; wave
@@ -812,11 +800,6 @@ pub(crate) fn fast_ipc_accept_into_waking_as<const V1: bool>(
     server_tid: u32,
     polled: Option<Option<AcceptedReq>>,
     mut wake: Option<(u32, u64)>,
-    // A donation the reply took and the server owes (wave 11 PIFAST): set
-    // only together with a polled next request (`fast_ipc_reply_then_accept`
-    // leaves it in the slot for the client otherwise), so only the no-block
-    // arm below ever sees it.
-    undonate: u32,
 ) -> i64 {
     ipc_trace!("[IPC] ACCEPT srv={} polling", server_tid);
     // Check if a call is already waiting.
@@ -846,9 +829,6 @@ pub(crate) fn fast_ipc_accept_into_waking_as<const V1: bool>(
                 azos_sched::wait::wake_fast_ipc_client_tid(client, h);
             }
             // Wave 11 PIFAST: the reply's donation, returned after the wake.
-            if undonate != azos_ipc::fastcall::NO_DONEE {
-                azos_sched::return_donation(undonate);
-            }
             handle as i64
         }
         None => {
@@ -966,7 +946,7 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
     match azos_ipc::fastcall::reply(handle, replier_tid, privileged, words) {
         // `_slot_idx`: only the ipc-trace build reads it, and the
         // warning gate compiles without that feature.
-        azos_ipc::FastIpcReply::Woke { caller_tid, slot_idx: _slot_idx, donee } => {
+        azos_ipc::FastIpcReply::Woke { caller_tid, slot_idx: _slot_idx, .. } => {
             // **WHY the wake is addressed by TID (K-C10).** A
             // sweep-keyed wake would match on
             // `WaitReason::FastIpcClient(handle)`, which only exists
@@ -991,9 +971,6 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
             // a preemption in between leaves the reply deposited, the client
             // asleep and the server back at its own priority behind whatever
             // sits between them.
-            if donee != azos_ipc::fastcall::NO_DONEE {
-                azos_sched::return_donation(donee);
-            }
             ipc_trace!("[IPC] REPLY srv={} slot={} woke client tid={}",
                 replier_tid, _slot_idx, caller_tid);
             0
@@ -1041,13 +1018,10 @@ fn fast_ipc_reply_accept(handle: u64, words: [u64; 4], out: &mut SyscallOut) -> 
         handle, server_tid, privileged, words, server_idx,
     );
     match reply {
-        azos_ipc::FastIpcReply::Woke { caller_tid, donee, .. } => {
+        azos_ipc::FastIpcReply::Woke { caller_tid, .. } => {
             // Out of the answered request, whatever the next accept finds.
             azos_ipc::endpoint::label::enter(server_tid, 0);
-            // `donee` is set only when a next request was already taken (no
-            // hand-off; returned after the wake); otherwise the client returns
-            // it. See `fast_ipc_reply_then_accept`.
-            fast_ipc_accept_into_waking(out, server_idx, server_tid, Some(next), Some((caller_tid, handle)), donee)
+            fast_ipc_accept_into_waking(out, server_idx, server_tid, Some(next), Some((caller_tid, handle)))
         }
         azos_ipc::FastIpcReply::Stale => -2,
         azos_ipc::FastIpcReply::Refused => -3,

@@ -835,47 +835,32 @@ static FAT_MUTATE_CANARY: SpinLock<()> = SpinLock::new(());
 #[cfg(feature = "fat-mutate-pi-canary")]
 static FAT_MUTATE_CANARY: azos_sync::kmutex::Mutex<()> = azos_sync::kmutex::Mutex::new(());
 
-/// Priority donation from a claim waiter to the claim's owner (FX12), the
-/// counted protocol `Mutex` uses, through the scheduler's
-/// `donate_priority` / `return_donation` pair (its `donation_for` rule and
-/// ring-3 floor; one counter, `donation_count`, shared with every donor).
+/// Priority inheritance from a claim waiter to the claim's owner (FX12),
+/// through the wait graph: the claim is an `EdgeKind::Claim` object (`st`
+/// being its lock), and a waiter blocks on it behind the owner, so the owner
+/// runs at its most urgent waiter's attribute (a fair waiter lends its level,
+/// so `log-flush` lends its weight), with the graph's cycle check and
+/// owner-exit detach.
 ///
 /// * **Take:** the busy bit and the owner change together under `st`, so a
-///   waiter that sees the claim taken sees who took it (the `Mutex`
-///   `try_acquire` livelock: busy with no owner, nobody to donate to);
-///   `epoch` counts acquisitions and `donations` starts at 0.
-/// * **Wait:** before each sleep a waiter donates once per acquisition
-///   (`epoch`) it observes, under `st`; a donation the scheduler made is
-///   counted in `donations`.
-/// * **Release:** under `st` the owner is cleared, the claim freed and the
-///   count taken; the owner wakes its waiters and only then returns the
-///   donations (`return_donation` once each), so it never runs unboosted
-///   between the release and the wake.
+///   waiter that sees the claim taken sees who took it, and the node's owner
+///   is set in the same section; a waiter that takes it leaves its edge.
+/// * **Wait:** before its first sleep a waiter enters the graph behind the
+///   owner, once (the graph follows a change of owner itself).
+/// * **Release:** under `st` the owner is cleared, the graph's boost released
+///   and the claim freed.
 /// * **Owner exit:** a task cannot exit holding a claim: the claim is RAII,
 ///   and a task that panics holding one is not contained
-///   ([`fat32_claims_held_by`], the panic policy's check 4: reset). A slot
-///   reused by a new task starts with `donation_count` 0 (`task_create`),
-///   and `return_donation` to a TID that is gone is a no-op.
+///   ([`fat32_claims_held_by`], the panic policy's check 4: reset).
 ///
-/// Lock order: claim `st` -> the owner's donation lock -> `CPU_LOCKS`, the
-/// chain `Mutex::pi_state` takes. `st` is held for a few stores and the
-/// boost, never across a sleep or device I/O; claims are task context only,
-/// so it needs no interrupt masking. Without hooks (host tests, before
-/// boot) a waiter only sleeps. The counted donation does the boost: the
-/// graph's stage 1 does not boost a Fair donor (`classes::pi_prio`: no
-/// weight inheritance), and claim waiters are never RT, so an edge alone
-/// would lend `log-flush` (12, Fair) nothing. The waiter also takes an
-/// `EdgeKind::Claim` edge (`st` being the object's lock) for the graph's
-/// bookkeeping: its
-/// `blocked_on`, the cycle check, the owner-exit detach. The counted
-/// donation can go once the graph inherits Fair priorities (stage 2).
+/// `st` is held for a few stores and the graph calls, never across a sleep
+/// or device I/O; claims are task context only, so it needs no interrupt
+/// masking. Without hooks (host tests, before boot) a waiter only sleeps.
 ///
 /// Runtime canary `canary=claim-no-donate` ([`fat32_canary_claim_no_donate`]):
-/// no waiter donates (ktest `fat_claim_waiter_donates_to_owner` goes red).
+/// no waiter enters the graph (ktest `fat_claim_waiter_donates_to_owner` goes red).
 struct ClaimPi {
     st: SpinLock<()>,
-    epoch: core::sync::atomic::AtomicU32,
-    donations: core::sync::atomic::AtomicU32,
     /// The claim's wait-graph node.
     node: azos_sync::waitgraph::PiWaiters,
 }
@@ -883,11 +868,6 @@ struct ClaimPi {
 /// The scheduler side of [`ClaimPi`], registered by the kernel at boot
 /// ([`fat32_claim_pi_hooks`]). This crate does not depend on the scheduler.
 pub struct ClaimPiHooks {
-    /// `scheduler::donate_priority(donor, owner)`: `true` = one
-    /// `give_back(owner)` is owed.
-    pub donate: fn(donor: u32, owner: u32) -> bool,
-    /// `scheduler::return_donation(owner)`.
-    pub give_back: fn(owner: u32),
     /// The wait-graph id (the scheduler slot) of a TID.
     pub graph_id: fn(tid: u32) -> Option<azos_sync::waitgraph::TaskId>,
 }
@@ -896,8 +876,7 @@ azos_common::ro_hook! {
     static CLAIM_PI_HOOKS: &'static ClaimPiHooks;
 }
 
-/// Install the claim donation hooks (kernel boot, once, before any task
-/// takes a claim).
+/// Install the claim hooks (kernel boot, once, before any task takes a claim).
 pub fn fat32_claim_pi_hooks(h: &'static ClaimPiHooks) {
     CLAIM_PI_HOOKS.set(h);
 }
@@ -913,11 +892,10 @@ pub fn fat32_canary_claim_no_donate() {
     CANARY_CLAIM_NO_DONATE.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// What a waiter carries between its sleeps: the acquisition it donated to
-/// (counted path) and its graph id while it sits in the wait graph.
+/// What a waiter carries between its sleeps: its graph id while it sits in
+/// the wait graph.
 #[derive(Clone, Copy, Default)]
 struct ClaimWait {
-    donated: Option<u32>,
     graph: Option<azos_sync::waitgraph::TaskId>,
 }
 
@@ -925,15 +903,8 @@ impl ClaimPi {
     const fn new() -> Self {
         ClaimPi {
             st: SpinLock::new(()),
-            epoch: core::sync::atomic::AtomicU32::new(0),
-            donations: core::sync::atomic::AtomicU32::new(0),
             node: azos_sync::waitgraph::PiWaiters::new(azos_sync::waitgraph::EdgeKind::Claim),
         }
-    }
-
-    #[inline(always)]
-    fn pi(&self) -> &azos_sync::waitgraph::PiWaiters {
-        &self.node
     }
 
     /// Take the claim if `take()` succeeds, recording `me` as its owner in
@@ -945,84 +916,52 @@ impl ClaimPi {
             return false;
         }
         owner.store(me, SeqCst);
-        self.epoch.fetch_add(1, SeqCst);
-        self.donations.store(0, SeqCst);
-        let n = self.pi();
         if let Some(id) = w.graph.take() {
-            azos_sync::waitgraph::unblock(id, n, azos_sync::waitgraph::UnblockReason::Acquired);
+            azos_sync::waitgraph::unblock(id, &self.node, azos_sync::waitgraph::UnblockReason::Acquired);
         }
-        n.set_owner(claim_pi_hooks().and_then(|h| (h.graph_id)(me)));
+        self.node.set_owner(claim_pi_hooks().and_then(|h| (h.graph_id)(me)));
         true
     }
 
-    /// Before a sleep: lend `me`'s priority to the current owner, once per
-    /// acquisition. The waiter also enters the graph
-    /// behind the owner, once (the graph follows a change of owner itself).
-    fn donate(&self, owner: &core::sync::atomic::AtomicU32, me: u32, w: &mut ClaimWait) {
+    /// Before a sleep: enter the graph behind the current owner, once.
+    fn lend(&self, owner: &core::sync::atomic::AtomicU32, me: u32, w: &mut ClaimWait) {
         use core::sync::atomic::Ordering::SeqCst;
         if CANARY_CLAIM_NO_DONATE.load(core::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        if me == u32::MAX {
-            return; // no scheduler yet: nobody to lend a priority
+        if me == u32::MAX || w.graph.is_some() {
+            return; // no scheduler yet, or already behind the owner
         }
-        let Some(h) = claim_pi_hooks() else { return };
-        let n = self.pi();
-        if let (None, Some(id)) = (w.graph, (h.graph_id)(me)) {
-            let pending = {
-                let _g = self.st.lock();
-                let o = owner.load(SeqCst);
-                if o == 0 || o == u32::MAX || o == me || n.owner().is_none() {
-                    None
-                } else {
-                    azos_sync::waitgraph::block_prepare(id, n).ok()
-                }
-            };
-            if let Some(p) = pending {
-                if azos_sync::waitgraph::block_commit(p).is_ok() {
-                    w.graph = Some(id);
-                }
+        let Some(id) = claim_pi_hooks().and_then(|h| (h.graph_id)(me)) else { return };
+        let n = &self.node;
+        let pending = {
+            let _g = self.st.lock();
+            let o = owner.load(SeqCst);
+            if o == 0 || o == u32::MAX || o == me || n.owner().is_none() {
+                None
+            } else {
+                azos_sync::waitgraph::block_prepare(id, n).ok()
+            }
+        };
+        if let Some(p) = pending {
+            if azos_sync::waitgraph::block_commit(p).is_ok() {
+                w.graph = Some(id);
             }
         }
-        let _g = self.st.lock();
-        let o = owner.load(SeqCst);
-        let e = self.epoch.load(SeqCst);
-        if o == 0 || o == u32::MAX || o == me || w.donated == Some(e) {
-            return;
-        }
-        if (h.donate)(me, o) {
-            self.donations.fetch_add(1, SeqCst);
-        }
-        w.donated = Some(e);
     }
 
-    /// Release: clear the owner and run `free` (the busy bit) under `st`;
-    /// returns what [`ClaimPi::give_back`] owes, which the caller runs after
-    /// waking the waiters.
-    fn release(&self, owner: &core::sync::atomic::AtomicU32, free: impl FnOnce()) -> (u32, u32) {
+    /// Release: clear the owner, release the graph's boost and run `free`
+    /// (the busy bit) under `st`.
+    fn release(&self, owner: &core::sync::atomic::AtomicU32, free: impl FnOnce()) {
         use core::sync::atomic::Ordering::SeqCst;
         let _g = self.st.lock();
-        let o = owner.swap(0, SeqCst);
-        let n = self.pi();
+        owner.store(0, SeqCst);
+        let n = &self.node;
         if let Some(id) = n.owner() {
             let _ = azos_sync::waitgraph::release(id, n);
             n.set_owner(None);
         }
         free();
-        (o, self.donations.swap(0, SeqCst))
-    }
-
-    /// Return the donations [`ClaimPi::release`] took (`return_donation` once each).
-    fn give_back(owed: (u32, u32)) {
-        let (o, n) = owed;
-        if o == 0 || o == u32::MAX || n == 0 {
-            return;
-        }
-        if let Some(h) = claim_pi_hooks() {
-            for _ in 0..n {
-                (h.give_back)(o);
-            }
-        }
     }
 }
 
@@ -1081,7 +1020,7 @@ fn fat_sector_claim(v: &'static Vol, fat_sector_off: u32) -> FatSectorClaim {
         }
         #[cfg(feature = "fat-mutate-spin-canary")]
         drop(hold);
-        pi.donate(&v.fat_sector_owner[slot], me, &mut w);
+        pi.lend(&v.fat_sector_owner[slot], me, &mut w);
         v.fat_sector_wq.wait_if_for(azos_sync::waitstat::Site::FatSector, || v.fat_sector_gen.load(SeqCst) == gen);
     }
 }
@@ -1091,12 +1030,11 @@ impl Drop for FatSectorClaim {
         use core::sync::atomic::Ordering::SeqCst;
         let v = self.v;
         let bit = self.bit;
-        let owed = v.fat_sector_pi[self.slot].release(&v.fat_sector_owner[self.slot], || {
+        v.fat_sector_pi[self.slot].release(&v.fat_sector_owner[self.slot], || {
             v.fat_sector_busy.fetch_and(!bit, SeqCst);
         });
         v.fat_sector_gen.fetch_add(1, SeqCst);
         v.fat_sector_wq.wake_all();
-        ClaimPi::give_back(owed);
     }
 }
 
@@ -1741,7 +1679,7 @@ fn wb_claim(v: &'static Vol) -> WbClaim {
         }
         #[cfg(feature = "fat-mutate-spin-canary")]
         drop(hold);
-        v.wb_pi.donate(&v.wb_owner, me, &mut w);
+        v.wb_pi.lend(&v.wb_owner, me, &mut w);
         v.wb_wq.wait_if_for(azos_sync::waitstat::Site::FatWriteback, || v.wb_gen.load(SeqCst) == gen);
     }
 }
@@ -1750,10 +1688,9 @@ impl Drop for WbClaim {
     fn drop(&mut self) {
         use core::sync::atomic::Ordering::SeqCst;
         let v = self.v;
-        let owed = v.wb_pi.release(&v.wb_owner, || v.wb_busy.store(false, SeqCst));
+        v.wb_pi.release(&v.wb_owner, || v.wb_busy.store(false, SeqCst));
         v.wb_gen.fetch_add(1, SeqCst);
         v.wb_wq.wake_all();
-        ClaimPi::give_back(owed);
     }
 }
 

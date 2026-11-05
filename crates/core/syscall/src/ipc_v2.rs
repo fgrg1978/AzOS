@@ -24,7 +24,6 @@ use azos_abi::error::Errno;
 use azos_abi::ipc_msg::{CapDesc, MsgDesc, CAP_MODE_DUP, CAP_MODE_MOVE, LABEL_KNOWN, MSG_BADGED, MSG_KEEP, MSG_VERSION};
 use azos_ipc::cap_store::{self, CapXfer};
 use azos_ipc::fastcall::{self, Collected, Delegated, Payload, V2_CAPS, V2_WORDS, WORDS};
-use azos_ipc::fastcall::NO_DONEE;
 
 /// One code for every refusal that would otherwise report on a table the
 /// caller does not hold (same rule as the v1 call arm).
@@ -305,17 +304,11 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
             azos_sched::task_block_unless_killed(azos_sched::WaitReason::FastIpcClient(handle));
         }
         match fastcall::collect(handle, caller_tid) {
-            Collected::Reply(w, donee) => {
-                if donee != NO_DONEE {
-                    azos_sched::return_donation(donee);
-                }
+            Collected::Reply(w, _) => {
                 answer = Some(w);
                 break;
             }
-            Collected::Done(code, donee) => {
-                if donee != NO_DONEE {
-                    azos_sched::return_donation(donee);
-                }
+            Collected::Done(code, _) => {
                 // Refused by a v1 accept: the server never saw the call, so
                 // every capability it carried comes back, on the path of a
                 // call withdrawn before it was taken (a caller that exits
@@ -349,9 +342,6 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
     }
     if !completed {
         let a = fastcall::abandon(handle, caller_tid);
-        if a.donee != NO_DONEE {
-            azos_sched::return_donation(a.donee);
-        }
         if a.was_queued {
             give_back(server, caller_tid, &xs[..nx], got);
         }
@@ -410,7 +400,7 @@ pub fn sys_ipc_accept_v2(msg_ptr: u64) -> i64 {
     }
     let (idx, tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
     let mut o = crate::dispatch::SyscallOut::new();
-    let h = crate::dispatch::fast_ipc_accept_into_waking_as::<false>(&mut o, idx, tid, None, None, NO_DONEE);
+    let h = crate::dispatch::fast_ipc_accept_into_waking_as::<false>(&mut o, idx, tid, None, None);
     if h < 0 {
         return h;
     }
@@ -471,12 +461,9 @@ pub fn sys_ipc_reply_v2(handle: u64, msg_ptr: u64) -> i64 {
         return E_NOT_HOLDER;
     }
     match fastcall::reply_warrant(handle, tid, first_words(&p)) {
-        azos_ipc::FastIpcReply::Woke { caller_tid, donee, .. } => {
+        azos_ipc::FastIpcReply::Woke { caller_tid, .. } => {
             azos_ipc::endpoint::label::enter(tid, 0);
             azos_sched::wait::wake_fast_ipc_client_tid(caller_tid, handle);
-            if donee != NO_DONEE {
-                azos_sched::return_donation(donee);
-            }
             0
         }
         azos_ipc::FastIpcReply::Stale => {
