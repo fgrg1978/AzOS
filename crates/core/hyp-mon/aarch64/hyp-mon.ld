@@ -50,4 +50,4 @@ SECTIONS
     /DISCARD/ : { *(.comment) *(.note .note.*) *(.eh_frame .eh_frame_hdr) *(.rela .rela.*) }
 }
 
-ASSERT(_hyp_bss_end - _hyp_image_start < 0x100000, "monitor image over 1 MiB")
+ASSERT(_hyp_bss_end - _hyp_image_start < 0x140000, "monitor image over 1.25 MiB")

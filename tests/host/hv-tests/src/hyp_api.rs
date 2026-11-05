@@ -159,7 +159,7 @@ fn the_lock_keeps_what_was_guarded_before_it_out_of_the_image() {
 fn the_call_ids_are_distinct_and_in_the_monitor_range() {
     let ids = [
         CALL_PROBE, CALL_VIOLATION_READ, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_TEXT_PATCH, CALL_GUARD_PAGES,
-        CALL_PIN, CALL_KEY_ROOT_SET, CALL_KEY_DERIVE, CALL_SMMU_INIT, CALL_SMMU_ATTACH, CALL_SMMU_FLUSH, CALL_SMMU_EVENT,
+        CALL_PIN, CALL_KEY_ROOT_SET, CALL_KEY_DERIVE, CALL_SMMU_INIT, CALL_SMMU_ATTACH, CALL_SMMU_FLUSH, CALL_SMMU_EVENT, CALL_ITS_INIT, CALL_ITS_MAP_DEVICE, CALL_ITS_MAP_VECTOR,
     ];
     for (i, a) in ids.iter().enumerate() {
         assert!(is_monitor_call(*a));
@@ -175,10 +175,11 @@ fn every_invariant_has_its_own_bit_and_a_name() {
         assert_eq!(seen & bit, 0, "{name} shares a bit");
         seen |= bit;
     }
-    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED | INV_KEY_ROOTS | INV_SMMU);
+    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED | INV_KEY_ROOTS | INV_SMMU | INV_ITS);
     assert_eq!(Kind::from_u32(5), Some(Kind::SysregRefused));
     assert_eq!(Kind::from_u32(6), Some(Kind::DmaFault));
-    assert_eq!(Kind::from_u32(7), None);
+    assert_eq!(Kind::from_u32(7), Some(Kind::MmioRefused));
+    assert_eq!(Kind::from_u32(8), None);
 }
 
 #[test]
@@ -217,4 +218,56 @@ fn a_stream_attach_names_a_stream_a_mode_and_for_stage_one_a_descriptor_in_ordin
     assert!(e(3, SMMU_NESTED, u64::MAX - 63).is_some(), "wrapping");
     // Before the lock RAM is unnamed.
     assert_eq!(smmu_attach_error(16, 3, SMMU_NESTED, 0x9000_0000, &[], hole, hole_end, &g), None);
+}
+
+#[test]
+fn an_its_and_its_redistributors_are_frames_below_the_device_gigabyte_clear_of_the_monitor() {
+    let (hole, hole_end) = (0x4060_0000, 0x4080_0000);
+    let e = |its, rd, stride, n| its_init_error(its, rd, stride, n, hole, hole_end);
+    assert_eq!(e(0x0808_0000, 0x080a_0000, 0x2_0000, 4), None, "QEMU virt's");
+    assert_eq!(e(0x0808_0000, 0x080a_0000, 0x4_0000, 64), None, "a GICv4 stride");
+    assert!(e(0x0808_8000, 0x080a_0000, 0x2_0000, 4).is_some(), "ITS unaligned");
+    assert!(e(0x0808_0000, 0x080a_0000, 0x1_0000, 4).is_some(), "stride under an RD and an SGI frame");
+    assert!(e(0x0808_0000, 0x080a_0000, 0x2_8000, 4).is_some(), "stride not a frame multiple");
+    assert!(e(0x0808_0000, 0x080a_0000, 0x2_0000, 0).is_some(), "no redistributor");
+    assert!(e(0x0808_0000, 0x080a_0000, 0x2_0000, 65).is_some(), "too many");
+    assert!(e(0x0808_0000, 0x3ffe_0000, 0x2_0000, 4).is_some(), "past the Device gigabyte");
+    assert!(e(0x0808_0000, 0x0808_0000, 0x2_0000, 4).is_some(), "the ITS over the redistributors");
+    assert!(e(u64::MAX - 0xffff, 0x080a_0000, 0x2_0000, 4).is_some(), "wrapping");
+    assert!(its_init_error(0x0808_0000, 0x080a_0000, 0x2_0000, 4, 0x0809_0000, 0x080b_0000).is_some(), "over the monitor");
+}
+
+#[test]
+fn a_vector_names_a_mapped_device_an_event_its_itt_holds_and_an_lpi_the_table_covers() {
+    let e = |slot, event, lpi| its_vector_error(2, slot, event, lpi, 8192, 16384);
+    assert_eq!(e(1, 7, 8192), None);
+    assert_eq!(e(0, 0, 16383), None);
+    assert!(e(2, 0, 8192).is_some(), "a slot never mapped");
+    assert!(e(0, ITS_EVENTS_MAX, 8192).is_some(), "past the ITT");
+    assert!(e(0, 0, 8191).is_some(), "an SPI, not an LPI");
+    assert!(e(0, 0, 16384).is_some(), "past the table");
+}
+
+#[test]
+fn only_a_valid_write_fault_on_a_permission_is_a_store_the_monitor_emulates() {
+    // ISV 24, SAS 23:22 = 2 (4 bytes), SRT 20:16 = 5, WnR 6, DFSC 0b001111 (permission, level 3).
+    let esr = 0x24 << 26 | 1 << 25 | 1 << 24 | 2 << 22 | 5 << 16 | 1 << 6 | 0b001111;
+    assert_eq!(mmio_store(esr), Some((4, 5)));
+    assert_eq!(mmio_store(esr | 3 << 22), Some((8, 5)));
+    assert_eq!(mmio_store(esr & !(3 << 22)), Some((1, 5)));
+    assert_eq!(mmio_store((esr & !(0x1f << 16)) | 31 << 16), Some((4, 31)), "the zero register");
+    assert_eq!(mmio_store(esr & !(1 << 24)), None, "no syndrome");
+    assert_eq!(mmio_store(esr & !(1 << 6)), None, "a load");
+    assert_eq!(mmio_store((esr & !0x3f) | 0b000101), None, "a translation fault");
+}
+
+#[test]
+fn the_two_lpi_table_pointers_of_a_redistributor_are_not_the_hosts_to_write() {
+    for off in 0x70..0x80 {
+        assert!(rd_write_refused(off), "{off:#x}");
+    }
+    for off in [0x0, 0x14, 0x6c, 0x80, 0xffff] {
+        assert!(!rd_write_refused(off), "{off:#x}");
+    }
+    assert!(rd_write_refused(0x1_0070 & 0xffff), "the offset is within the 64 KiB frame");
 }

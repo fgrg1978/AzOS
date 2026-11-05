@@ -67,6 +67,26 @@ pub const CALL_SMMU_FLUSH: u64 = CALL_BASE + 11;
 /// and stream id in dword 0, the input address in dword 2), or [`EMPTY`].
 pub const CALL_SMMU_EVENT: u64 = CALL_BASE + 12;
 
+/// `its_init(its_base, rd_base, rd_stride | ncpu << 32)`: before the lock, once.
+/// The monitor brings up the GICv3 ITS at `its_base` and enables LPIs on the
+/// redistributor at `rd_base`, with its own command queue, device and
+/// collection tables, ITTs and LPI tables. From the lock the ITS control frame
+/// is unmapped from the host and the first 64 KiB of each of the `ncpu`
+/// redistributors (`rd_stride` apart) is read-only: a write there is carried
+/// out by the monitor unless it aims `GICR_PROPBASER` or `GICR_PENDBASER`.
+pub const CALL_ITS_INIT: u64 = CALL_BASE + 13;
+/// `its_map_device(dev) -> (status, slot)`: MAPD of device id `dev` onto a
+/// fresh ITT of the monitor's.
+pub const CALL_ITS_MAP_DEVICE: u64 = CALL_BASE + 14;
+/// `its_map_vector(slot | event << 32, lpi)`: enable `lpi` in the LPI
+/// configuration table, MAPTI the event of the slot's device to it, INV.
+pub const CALL_ITS_MAP_VECTOR: u64 = CALL_BASE + 15;
+
+/// Devices the monitor's ITS holds ITTs for, and events each (a bound, not a
+/// detected count; the kernel driver's own).
+pub const ITS_DEVICES_MAX: u64 = 4;
+pub const ITS_EVENTS_MAX: u64 = 8;
+
 /// Every access of the stream is refused.
 pub const SMMU_BLOCK: u64 = 0;
 /// Stage 1 bypassed: the stream's addresses are host physical addresses, under
@@ -123,8 +143,11 @@ pub const INV_KEY_ROOTS: u64 = 1 << 8;
 /// stream it serves goes through the host stage-2. Masters not behind it stay
 /// unconfined.
 pub const INV_SMMU: u64 = 1 << 9;
+/// The ITS is the monitor's: its control frame is unmapped from the host and the
+/// redistributors' LPI table pointers cannot be written by it.
+pub const INV_ITS: u64 = 1 << 10;
 
-pub const INVARIANT_NAMES: [(u64, &str); 10] = [
+pub const INVARIANT_NAMES: [(u64, &str); 11] = [
     (INV_EL2_MMU, "el2-mmu"),
     (INV_HOST_S2, "host-s2"),
     (INV_PSCI, "psci"),
@@ -135,6 +158,7 @@ pub const INVARIANT_NAMES: [(u64, &str); 10] = [
     (INV_PINNED, "pinned"),
     (INV_KEY_ROOTS, "key-roots"),
     (INV_SMMU, "smmu"),
+    (INV_ITS, "its"),
 ];
 
 /// What a violation record describes.
@@ -156,6 +180,9 @@ pub enum Kind {
     /// A fault record of the SMMU: `addr` is the input address, `aux` the
     /// stream id in the high word and the event type in the low.
     DmaFault = 6,
+    /// A write the host made to a protected device register, refused: `addr`
+    /// is the register's address, `aux` the value.
+    MmioRefused = 7,
 }
 
 impl Kind {
@@ -167,6 +194,7 @@ impl Kind {
             4 => Kind::UnexpectedTrap,
             5 => Kind::SysregRefused,
             6 => Kind::DmaFault,
+            7 => Kind::MmioRefused,
             _ => return None,
         })
     }
@@ -503,4 +531,50 @@ pub fn smmu_attach_error(
     if guarded.overlaps(cd_pa, end) { return Some("descriptor over a guarded page"); }
     if !ram.is_empty() && !ram.iter().any(|m| m[0] <= cd_pa && end <= m[1]) { return Some("descriptor outside RAM"); }
     None
+}
+
+/// Why `its_init(its_base, rd_base, rd_stride | ncpu << 32)` is refused: 64 KiB
+/// frames on 64 KiB boundaries, redistributors a whole number of frames apart
+/// (an RD frame and its SGI frame at least), a handful of them, all below
+/// the monitor's Device gigabyte and clear of the monitor.
+pub fn its_init_error(its_base: u64, rd_base: u64, rd_stride: u64, ncpu: u64, hole: u64, hole_end: u64) -> Option<&'static str> {
+    const FRAME: u64 = 0x1_0000;
+    if its_base % FRAME != 0 || rd_base % FRAME != 0 { return Some("frame not 64 KiB-aligned"); }
+    if rd_stride < 2 * FRAME || rd_stride % FRAME != 0 { return Some("redistributor stride"); }
+    if ncpu == 0 || ncpu > 64 { return Some("redistributor count"); }
+    let Some(rd_end) = ncpu.checked_mul(rd_stride).and_then(|n| rd_base.checked_add(n)) else { return Some("wraps") };
+    let Some(its_end) = its_base.checked_add(2 * FRAME) else { return Some("wraps") };
+    if rd_end > SMMU_DEVICE_TOP || its_end > SMMU_DEVICE_TOP { return Some("not in the monitor's Device map"); }
+    for (lo, hi) in [(its_base, its_end), (rd_base, rd_end)] {
+        if lo < hole_end && hole < hi { return Some("window over the monitor"); }
+    }
+    if its_base < rd_end && rd_base < its_end { return Some("the ITS and the redistributors overlap"); }
+    None
+}
+
+/// Why `its_map_vector(slot | event << 32, lpi)` is refused: a device the
+/// monitor mapped, an event its ITT holds, and an LPI the configuration table
+/// covers (`lpi_lo..lpi_hi`).
+pub fn its_vector_error(ndev: u64, slot: u64, event: u64, lpi: u64, lpi_lo: u64, lpi_hi: u64) -> Option<&'static str> {
+    if slot >= ndev { return Some("no such device slot"); }
+    if event >= ITS_EVENTS_MAX { return Some("event past the ITT"); }
+    if lpi < lpi_lo || lpi >= lpi_hi { return Some("LPI outside the configuration table"); }
+    None
+}
+
+/// The store a stage-2 data abort describes, from `ESR_EL2`: the width in bytes
+/// and the source register (31 is the zero register). `None` unless the
+/// syndrome is valid (ISV), a write, and a permission fault: the only aborts
+/// the monitor emulates.
+pub const fn mmio_store(esr: u64) -> Option<(u8, u8)> {
+    const ISV: u64 = 1 << 24;
+    const WNR: u64 = 1 << 6;
+    if esr & ISV == 0 || esr & WNR == 0 || esr & 0x3c != 0x0c { return None; }
+    Some((1 << ((esr >> 22) & 3), ((esr >> 16) & 0x1f) as u8))
+}
+
+/// `GICR_PROPBASER` and `GICR_PENDBASER` (offsets 0x70 and 0x78 of the
+/// redistributor frame, eight bytes each): the host does not write them.
+pub const fn rd_write_refused(offset: u64) -> bool {
+    matches!(offset & 0xffff, 0x70..=0x7f)
 }

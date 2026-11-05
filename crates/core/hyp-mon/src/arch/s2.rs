@@ -122,6 +122,8 @@ fn install(vttbr: u64, vtcr: u64) {
 const TEXT: S2Attrs = S2Attrs { read: true, write: cfg!(feature = "hyp-text-rw-canary"), exec: true, mem: MemType::NormalWb, only: ExecOnly::El1 };
 const RODATA: S2Attrs = S2Attrs { read: true, write: false, exec: false, mem: MemType::NormalWb, only: ExecOnly::Both };
 const USER_RAM: S2Attrs = S2Attrs { read: true, write: true, exec: true, mem: MemType::NormalWb, only: ExecOnly::El0 };
+/// A redistributor's first frame: readable, a write traps to `its::rd_write`.
+const RD_RO: S2Attrs = S2Attrs { read: true, write: false, exec: false, mem: MemType::DeviceNgnre, only: ExecOnly::Both };
 const RO_DATA_RW: S2Attrs = S2Attrs { read: true, write: true, exec: false, mem: MemType::NormalWb, only: ExecOnly::Both };
 
 /// `lock_kernel_image(desc_pa)`: build the locked map beside the boot one
@@ -205,6 +207,27 @@ fn lock_locked(desc_pa: u64) -> i64 {
             q += stage2::S2_PAGE;
         }
     }
+    // The ITS is the monitor's alone: its control frame goes, and each
+    // redistributor's first frame is read-only (`its::rd_write` carries out a
+    // write that is not an LPI table pointer).
+    let (ilo, ihi) = super::its::ctl_window();
+    let (rd, stride, ncpu) = super::its::rd_frames();
+    if !cfg!(feature = "hyp-its-window-canary") {
+        let mut q = ilo;
+        while q < ihi {
+            if s2.split_to_page(q, &mut |_| ()).is_err() || s2.unmap_page(q).is_err() { return INVALID; }
+            q += stage2::S2_PAGE;
+        }
+    }
+    if !cfg!(feature = "hyp-rd-open-canary") {
+        for cpu in 0..ncpu {
+            let mut q = rd + cpu * stride;
+            while q < rd + cpu * stride + 0x1_0000 {
+                if s2.split_to_page(q, &mut |_| ()).is_err() || s2.set_page_attrs(q, RD_RO).is_err() { return INVALID; }
+                q += stage2::S2_PAGE;
+            }
+        }
+    }
     let (vtcr, vttbr) = match s2.registers(0) { Ok(r) => r, Err(_) => return INVALID };
     LOCKED_ROOT.store(s2.root(), Ordering::Release);
     IPA_CFG.store(parange() as u64, Ordering::Relaxed);
@@ -221,6 +244,7 @@ fn lock_locked(desc_pa: u64) -> i64 {
     install(vttbr, vtcr);
     HYP.set_invariant(INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY);
     super::smmu::locked(vtcr, s2.root());
+    super::its::locked();
     OK
 }
 
@@ -449,6 +473,7 @@ pub fn fault(_regs: *mut u64, esr: u64, is_instr: bool) {
     // of FAR.
     let ipa = ((hpfar & !0xf) << 8) | (far & 0xfff);
     if transient(esr, ipa) { return; }
+    if !is_instr && super::its::rd_write(_regs, esr, ipa) { return; }
     let pe = {
         let mpidr: u64;
         unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) mpidr) };

@@ -1093,8 +1093,14 @@ pub fn arch_enter_scheduler(_hart_id: usize) -> ! {
 // `&'static mut`: two such references (a target lookup while a prepare holds
 // one, or two CPUs) were undefined behaviour that only the boot being
 // single-threaded kept from happening (K1 L7).
+#[cfg(not(feature = "hyp-monitor"))]
 static ITS: azos_sync::SpinLock<azos_arch::irq::its::ItsDriver> =
     azos_sync::SpinLock::new(azos_arch::irq::its::ItsDriver::new(azos_arch::irq::its::ITS_BASE));
+// VIRT_SPLIT: the monitor owns the ITS and the redistributors' LPI tables.
+#[cfg(feature = "hyp-monitor")]
+static ITS: azos_sync::SpinLock<azos_arch::irq::its::ItsDriver> = azos_sync::SpinLock::new(
+    azos_arch::irq::its::ItsDriver::with_remote(azos_arch::irq::its::ITS_BASE, &crate::entry::aarch64::ext::hyp_monitor::ItsCalls),
+);
 static ITS_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Run `f` on the boot ITS, its lock held. Callers: this file's boot hook

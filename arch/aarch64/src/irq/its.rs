@@ -45,6 +45,10 @@
 //!   for a hot path; irrelevant here, since device/vector mapping happens
 //!   a handful of times at boot, not per-packet.
 
+#[path = "gic_fmt.rs"]
+mod fmt;
+pub use fmt::*;
+
 #[cfg(any(target_arch = "aarch64", test))]
 use super::gic;
 
@@ -55,20 +59,6 @@ use super::gic;
 // true but EL1-only asm is not legal at EL0).
 // ──────────────────────────────────────────────────────────────────────────
 
-/// `GENMASK_ULL(hi, lo)` — inclusive bit range, same semantics as the
-/// Linux macro this module's encoders are checked against. `hi == 63` is
-/// handled separately because `1u64 << 64` is a shift-overflow panic in
-/// debug builds, not merely UB, and every 64-bit-wide field this module
-/// touches (`Valid`, `PTZ`) needs exactly that case.
-const fn genmask(hi: u32, lo: u32) -> u64 {
-    debug_assert!(hi < 64 && lo <= hi);
-    if hi == 63 {
-        !0u64 << lo
-    } else {
-        ((1u64 << (hi + 1)) - 1) & !((1u64 << lo) - 1)
-    }
-}
-
 /// PCI RequesterID convention used as the ITS `DeviceID`: `bus<<8 |
 /// device<<3 | function`. Matches `azos_pci::Bdf`'s own field masks
 /// (`device` 0..=31, `function` 0..=7) — callers on the PCI side should
@@ -78,148 +68,6 @@ const fn genmask(hi: u32, lo: u32) -> u64 {
 pub const fn device_id(bus: u8, device: u8, function: u8) -> u32 {
     ((bus as u32) << 8) | (((device & 0x1f) as u32) << 3) | ((function & 0x07) as u32)
 }
-
-// ---- GITS_TYPER decode --------------------------------------------------
-
-pub const fn typer_plpis(typer: u64) -> bool {
-    typer & 1 != 0
-}
-/// `GITS_TYPER.PTA` (bit 19) — 0: a collection's `target` field is a
-/// linear Processor Number (redistributor's own `GICR_TYPER` bits
-/// [23:8]); 1: `target` is the redistributor's physical base address.
-/// [`ItsDriver::init`] reads this once and picks the matching
-/// `collection_target_*` helper below — never assumed either way.
-pub const fn typer_pta(typer: u64) -> bool {
-    typer & (1 << 19) != 0
-}
-/// `GITS_TYPER.HCC` (bits [31:24]) — Hardware Collection Count, the
-/// number of collections usable WITHOUT a memory-backed Collections
-/// table. See this module's header doc for why stage 1a relies on this
-/// being `>= 1` instead of building that table.
-pub const fn typer_hcc(typer: u64) -> u8 {
-    ((typer >> 24) & 0xff) as u8
-}
-
-// ---- ITS command opcodes (GITS_CMD_*) -----------------------------------
-
-pub const GITS_CMD_MOVI: u8 = 0x01;
-pub const GITS_CMD_INT: u8 = 0x03;
-pub const GITS_CMD_CLEAR: u8 = 0x04;
-pub const GITS_CMD_SYNC: u8 = 0x05;
-pub const GITS_CMD_MAPD: u8 = 0x08;
-pub const GITS_CMD_MAPC: u8 = 0x09;
-pub const GITS_CMD_MAPTI: u8 = 0x0a;
-pub const GITS_CMD_MAPI: u8 = 0x0b;
-pub const GITS_CMD_INV: u8 = 0x0c;
-pub const GITS_CMD_INVALL: u8 = 0x0d;
-pub const GITS_CMD_MOVALL: u8 = 0x0e;
-pub const GITS_CMD_DISCARD: u8 = 0x0f;
-
-/// Every ITS command is 32 bytes: four 64-bit doublewords.
-pub type ItsCommand = [u64; 4];
-
-/// `MAPD` — bind `device_id` to an Interrupt Translation Table at
-/// `itt_addr` (must be 256-byte aligned — the architectural ITT address
-/// field is `[51:8]`, so any nonzero low byte is silently dropped by the
-/// hardware, not rejected). `id_bits_minus1` is the number of EventID
-/// bits this device's ITT covers, minus one (i.e. `log2(event_capacity)
-/// - 1`) — the same "Size" field Linux's `its_build_mapd_cmd` derives
-/// from `ilog2(nr_ites)`.
-pub const fn cmd_mapd(dev: u32, id_bits_minus1: u8, itt_addr: u64, valid: bool) -> ItsCommand {
-    let dw0 = (GITS_CMD_MAPD as u64 & genmask(7, 0)) | (((dev as u64) << 32) & genmask(63, 32));
-    let dw1 = (id_bits_minus1 as u64) & genmask(4, 0);
-    let dw2 = (itt_addr & genmask(51, 8)) | if valid { genmask(63, 63) } else { 0 };
-    [dw0, dw1, dw2, 0]
-}
-
-/// `MAPC` — bind collection `col` to `target` (pre-shifted by
-/// [`collection_target_cpu_number`] or [`collection_target_rdbase`] —
-/// its low 16 bits MUST already be zero, which both of those guarantee;
-/// see their docs for why masking here alone is not equivalent to
-/// Linux's `its_encode_target`'s explicit `>> 16` unless that holds).
-pub const fn cmd_mapc(col: u16, target: u64, valid: bool) -> ItsCommand {
-    let dw0 = GITS_CMD_MAPC as u64 & genmask(7, 0);
-    let dw2 = ((col as u64) & genmask(15, 0))
-        | (target & genmask(51, 16))
-        | if valid { genmask(63, 63) } else { 0 };
-    [dw0, 0, dw2, 0]
-}
-
-/// `MAPTI` — map `dev`'s `event_id` to physical INTID `phys_id`
-/// (>= [`crate::irq::gic::LPI_INTID_BASE`]) in collection `col`.
-pub const fn cmd_mapti(dev: u32, event_id: u32, phys_id: u32, col: u16) -> ItsCommand {
-    let dw0 = (GITS_CMD_MAPTI as u64 & genmask(7, 0)) | (((dev as u64) << 32) & genmask(63, 32));
-    let dw1 = ((event_id as u64) & genmask(31, 0)) | (((phys_id as u64) << 32) & genmask(63, 32));
-    let dw2 = (col as u64) & genmask(15, 0);
-    [dw0, dw1, dw2, 0]
-}
-
-/// `INVALL` — invalidate cached config for every LPI in collection `col`.
-pub const fn cmd_invall(col: u16) -> ItsCommand {
-    let dw0 = GITS_CMD_INVALL as u64 & genmask(7, 0);
-    let dw2 = (col as u64) & genmask(15, 0);
-    [dw0, 0, dw2, 0]
-}
-
-/// One shape shared by `INV`/`CLEAR`/`DISCARD`/`INT` — all four take just
-/// `(device_id, event_id)`, differing only in opcode.
-const fn cmd_dev_event(opcode: u8, dev: u32, event_id: u32) -> ItsCommand {
-    let dw0 = (opcode as u64 & genmask(7, 0)) | (((dev as u64) << 32) & genmask(63, 32));
-    let dw1 = (event_id as u64) & genmask(31, 0);
-    [dw0, dw1, 0, 0]
-}
-pub const fn cmd_inv(dev: u32, event_id: u32) -> ItsCommand {
-    cmd_dev_event(GITS_CMD_INV, dev, event_id)
-}
-pub const fn cmd_clear(dev: u32, event_id: u32) -> ItsCommand {
-    cmd_dev_event(GITS_CMD_CLEAR, dev, event_id)
-}
-pub const fn cmd_discard(dev: u32, event_id: u32) -> ItsCommand {
-    cmd_dev_event(GITS_CMD_DISCARD, dev, event_id)
-}
-
-/// `SYNC` — drain the ITS's internal pipeline for `target`'s redistributor
-/// before any command queued after this one is guaranteed visible there.
-/// [`ItsDriver`] issues one after every mapping command and polls
-/// `GITS_CREADR` past it — the only completion signal this driver uses.
-pub const fn cmd_sync(target: u64) -> ItsCommand {
-    let dw0 = GITS_CMD_SYNC as u64 & genmask(7, 0);
-    let dw2 = target & genmask(51, 16);
-    [dw0, 0, dw2, 0]
-}
-
-/// A collection `target` when `GITS_TYPER.PTA == 0`: the redistributor's
-/// own linear Processor Number ([`crate::irq::gic::typer_cpu_number`]),
-/// pre-shifted into the position [`cmd_mapc`]/[`cmd_sync`] expect (bits
-/// [51:16] of the raw command — Linux's `its_encode_target` gets there by
-/// right-shifting `target_addr` by 16 first; shifting `cpu_number` LEFT by
-/// 16 up front and masking `[51:16]` directly is the same result exactly
-/// because the low 16 bits are zero either way — see the module doc's
-/// verified-not-recalled note for where this equivalence was checked).
-pub const fn collection_target_cpu_number(cpu_number: u16) -> u64 {
-    (cpu_number as u64) << 16
-}
-
-/// A collection `target` when `GITS_TYPER.PTA == 1`: the redistributor's
-/// physical `RD_base` directly (already 64 KiB aligned, so its own low 16
-/// bits are zero — same masking argument as
-/// [`collection_target_cpu_number`]).
-pub const fn collection_target_rdbase(rd_phys_base: u64) -> u64 {
-    rd_phys_base
-}
-
-// ---- GITS_CBASER / GITS_BASERn ------------------------------------------
-
-/// `GIC_BASER_CACHE_RaWaWb` (architecture spec naming, value `0b111`) —
-/// Normal Read-allocate/Write-allocate Write-Back. Same choice as
-/// `gic.rs`'s `BASER_CACHE_RAWAWB` and the same reasoning (this module's
-/// doc's memory-attribute note); duplicated here as its own named
-/// constant because `GITS_CBASER`/`GITS_BASERn`'s cacheability field sits
-/// at a DIFFERENT bit shift (59) than `GICR_PROPBASER`/`PENDBASER`'s (7),
-/// so the two crates' constants are not interchangeable even though the
-/// 3-bit code is.
-const BASER_CACHE_RAWAWB: u64 = 0b111;
-const BASER_SHAREABILITY_INNER: u64 = 0b01;
 
 /// Physical address the ITS/redistributor must be given for a kernel
 /// static. The aarch64 kernel runs in the TTBR1 upper half
@@ -237,79 +85,6 @@ pub fn kva_to_pa(va: u64) -> u64 {
     crate::mmu::kaslr::kva_to_pa(va)
 }
 
-/// One LPI Configuration table entry (GICv3 §5.1.1): priority in bits
-/// [7:2], bit 1 RES1-as-0 here, bit 0 = Enable. The table is indexed from
-/// LPI 8192 (`byte[intid - LPI_INTID_BASE]`). An entry left at 0 (the
-/// static table's initial value) is a DISABLED LPI: the ITS still
-/// translates the device's write, and the redistributor drops it — which is
-/// how the first wave-4 boot read `tx used=1` with zero LPIs delivered.
-/// Priority 0xA0 matches the SPIs `init_distributor` programs; the CPU
-/// interface's PMR is 0xFF, so it is never masked.
-pub const LPI_DEFAULT_PRIORITY: u8 = 0xA0;
-pub const fn lpi_config_byte(priority: u8, enabled: bool) -> u8 {
-    (priority & 0xFC) | if enabled { 1 } else { 0 }
-}
-
-pub const BASER_TYPE_DEVICE: u8 = 1;
-pub const BASER_TYPE_COLLECTION: u8 = 4;
-
-/// `GITS_BASERn.Type` (bits [58:56]) — which table this slot describes.
-/// Software must probe all 8 `GITS_BASERn` registers and read each one's
-/// reset value to find out (the slot→type binding is hardware-fixed, NOT
-/// index 0 == Devices — a driver that assumed that would work on some
-/// implementations and silently misprogram others).
-pub const fn baser_type(reg: u64) -> u8 {
-    ((reg >> 56) & 0x7) as u8
-}
-/// `GITS_BASERn.EntrySize` (bits [52:48], value+1) — bytes per table
-/// entry, hardware-defined and read-only; software sizes the table from
-/// this, never assumes a fixed entry width.
-pub const fn baser_entry_size(reg: u64) -> u32 {
-    (((reg >> 48) & 0x1f) as u32) + 1
-}
-
-/// Rebuild a `GITS_BASERn` value from its own reset value `existing`
-/// (which supplies the hardware-fixed `Type`/`EntrySize`/`Indirect` bits
-/// this function must NOT clobber), pointing it at `phys_base`
-/// (4 KiB-aligned, `n_pages_minus1` 4 KiB pages) and setting `Valid`.
-pub const fn baser_value(existing: u64, phys_base: u64, n_pages_minus1: u8, valid: bool) -> u64 {
-    let preserved = existing & (genmask(62, 62) | genmask(58, 48)); // Indirect, Type, EntrySize
-    preserved
-        | (BASER_CACHE_RAWAWB << 59)
-        | (BASER_SHAREABILITY_INNER << 10)
-        | (phys_base & genmask(47, 12))
-        | (n_pages_minus1 as u64 & genmask(7, 0))
-        | if valid { genmask(63, 63) } else { 0 }
-}
-
-/// `GITS_CBASER` — the command queue's own base/size/valid.
-pub const fn cbaser_value(phys_base: u64, n_pages_minus1: u8, valid: bool) -> u64 {
-    (BASER_CACHE_RAWAWB << 59)
-        | (BASER_SHAREABILITY_INNER << 10)
-        | (phys_base & genmask(51, 12))
-        | (n_pages_minus1 as u64 & genmask(7, 0))
-        | if valid { genmask(63, 63) } else { 0 }
-}
-
-/// Absolute address of `GITS_TRANSLATER` — the ONE register a PCI
-/// function's MSI-X address points at. Frame layout (verified against
-/// Linux's `GITS_TRANSLATER == 0x10040` relative to the ITS control
-/// frame's own base): control frame `[GITS_BASE, +0x10000)`, translation
-/// frame `[GITS_BASE+0x10000, +0x20000)`, register at `+0x40` within
-/// that second frame.
-pub const fn translater_address(its_base: usize) -> usize {
-    its_base + 0x1_0000 + 0x0040
-}
-
-/// The MSI address/data pair for `event_id` on the ITS at `its_base` —
-/// exactly what a PCI MSI-X table entry needs (address = where to write,
-/// data = what to write). This is the "arch hook" `A2-pci.diff` wires
-/// `crates/drivers/virtio/src/virtio/pci.rs`'s `msix_vector` doc up to, in place
-/// of the `VIRTIO_PCI_NO_VECTOR` it programs today.
-pub const fn msi_target(its_base: usize, event_id: u32) -> (u64, u32) {
-    (translater_address(its_base) as u64, event_id)
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // Driver — target_arch-gated (see `gic.rs`'s header comment for why: the
 // host test target is `aarch64-apple-darwin`, `target_arch = "aarch64"`
@@ -324,17 +99,6 @@ pub const fn msi_target(its_base: usize, event_id: u32) -> (u64, u32) {
 #[cfg(target_arch = "aarch64")]
 pub const ITS_BASE: usize = 0x0808_0000;
 
-#[cfg(target_arch = "aarch64")]
-mod regs {
-    pub const GITS_CTLR: usize = 0x0000;
-    pub const GITS_TYPER: usize = 0x0008;
-    pub const GITS_CBASER: usize = 0x0080;
-    pub const GITS_CWRITER: usize = 0x0088;
-    pub const GITS_CREADR: usize = 0x0090;
-    pub const GITS_BASER0: usize = 0x0100;
-    pub const GITS_CTLR_ENABLE: u32 = 1 << 0;
-    pub const GITS_CTLR_QUIESCENT: u32 = 1 << 31;
-}
 
 /// Bounded spin count for command-queue drain and `GITS_CTLR.Quiescent`.
 /// Same rationale as `gic.rs`'s `GICR_WAKE_MAX_SPINS`: real hardware
@@ -441,6 +205,8 @@ pub enum ItsError {
     /// differently (count stays 0, not a timeout) but a genuinely wedged
     /// ITS surfaces here instead of hanging boot forever.
     CommandTimedOut,
+    /// The monitor that owns the ITS refused the call.
+    Refused,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -474,8 +240,23 @@ unsafe fn mmio_write64(addr: usize, val: u64) {
 /// (`GITS_CBASER`, `GITS_BASERn`, `GICR_PROPBASER`/`PENDBASER`, each ITT) is
 /// a kernel `'static`, passed through [`kva_to_pa`]: the kernel runs in the
 /// TTBR1 upper half, so a static's address is not its physical address.
+/// What the kernel asks of a resident monitor that owns the ITS (VIRT_SPLIT):
+/// it programs the ITS and the first redistributor with tables of its own and
+/// issues the two commands the kernel needs. The kernel implements it with the
+/// monitor's calls; the tests with a model.
+pub trait ItsRemote: Sync {
+    /// Bring the ITS at `its_base` up and enable LPIs on the redistributor at
+    /// `rd_base`; the redistributors are `rd_stride` apart, `ncpu` of them.
+    fn init(&self, its_base: usize, rd_base: usize, rd_stride: usize, ncpu: usize) -> bool;
+    /// MAPD of device id `dev`; its slot.
+    fn map_device(&self, dev: u32) -> Option<usize>;
+    /// Enable `lpi`, MAPTI `event_id` of the slot's device to it, INV.
+    fn map_vector(&self, slot: usize, event_id: u32, lpi: u32) -> bool;
+}
+
 #[cfg(target_arch = "aarch64")]
 pub struct ItsDriver {
+    remote: Option<&'static dyn ItsRemote>,
     its_base: usize,
     cmd_write_off: usize,
     target: u64,
@@ -486,7 +267,12 @@ pub struct ItsDriver {
 #[cfg(target_arch = "aarch64")]
 impl ItsDriver {
     pub const fn new(its_base: usize) -> Self {
-        ItsDriver { its_base, cmd_write_off: 0, target: 0, n_devices: 0, device_ids: [0; MAX_DEVICES] }
+        ItsDriver { remote: None, its_base, cmd_write_off: 0, target: 0, n_devices: 0, device_ids: [0; MAX_DEVICES] }
+    }
+
+    /// The ITS a monitor owns: no register of it is touched from here.
+    pub const fn with_remote(its_base: usize, remote: &'static dyn ItsRemote) -> Self {
+        ItsDriver { remote: Some(remote), its_base, cmd_write_off: 0, target: 0, n_devices: 0, device_ids: [0; MAX_DEVICES] }
     }
 
     fn ctlr_wait_quiescent(&self) {
@@ -505,6 +291,13 @@ impl ItsDriver {
     /// (the boot CPU's frame — this stage's one collection targets it
     /// exclusively; see module doc's Scope note).
     pub fn init(&mut self, rd_base: usize) -> Result<(), ItsError> {
+        if let Some(r) = self.remote {
+            return if r.init(self.its_base, rd_base, gic::GICR_STRIDE, gic::GICR_WALK_MAX_FRAMES) {
+                Ok(())
+            } else {
+                Err(ItsError::Refused)
+            };
+        }
         self.ctlr_wait_quiescent();
 
         let typer = unsafe { mmio_read64(self.its_base + regs::GITS_TYPER) };
@@ -599,6 +392,9 @@ impl ItsDriver {
     /// Register `dev` (build with [`device_id`]) and return its device
     /// slot index for [`map_vector`]. Allocates the next free ITT.
     pub fn map_device(&mut self, dev: u32) -> Result<usize, ItsError> {
+        if let Some(r) = self.remote {
+            return r.map_device(dev).ok_or(ItsError::Refused);
+        }
         if self.n_devices >= MAX_DEVICES {
             return Err(ItsError::TooManyDevices);
         }
@@ -618,6 +414,9 @@ impl ItsDriver {
     /// `[`crate::irq::gic::LPI_INTID_BASE`]``, and unique across every mapped
     /// vector — this driver does not allocate LPI numbers itself).
     pub fn map_vector(&mut self, slot: usize, event_id: u32, lpi_intid: u32) -> Result<(), ItsError> {
+        if let Some(r) = self.remote {
+            return if r.map_vector(slot, event_id, lpi_intid) { Ok(()) } else { Err(ItsError::Refused) };
+        }
         debug_assert!(slot < self.n_devices);
         debug_assert!(lpi_intid >= gic::LPI_INTID_BASE);
         // Wave-4 canary hook (the ITS acceptance test) — see this
@@ -706,6 +505,47 @@ impl ItsDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **With a monitor behind it the driver touches no register**, and what it
+    /// asks is what the monitor is told: the redistributor layout at init, a
+    /// device id, an event and an LPI. A refusal is an error, never a retry that
+    /// reaches the hardware (a touched register here would be a bus fault).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn an_its_a_monitor_owns_is_driven_by_calls_only() {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        struct Model {
+            refuse: AtomicU32,
+            calls: AtomicU32,
+        }
+        impl ItsRemote for Model {
+            fn init(&self, its_base: usize, rd_base: usize, rd_stride: usize, ncpu: usize) -> bool {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!((its_base, rd_base, rd_stride), (0x0808_0000, 0x080a_0000, gic::GICR_STRIDE));
+                assert_eq!(ncpu, gic::GICR_WALK_MAX_FRAMES);
+                self.refuse.load(Ordering::SeqCst) == 0
+            }
+            fn map_device(&self, dev: u32) -> Option<usize> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                (self.refuse.load(Ordering::SeqCst) == 0).then_some(dev as usize - 0x10)
+            }
+            fn map_vector(&self, slot: usize, event_id: u32, lpi: u32) -> bool {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!((slot, event_id, lpi), (1, 3, gic::LPI_INTID_BASE + 3));
+                self.refuse.load(Ordering::SeqCst) == 0
+            }
+        }
+        static MODEL: Model = Model { refuse: AtomicU32::new(0), calls: AtomicU32::new(0) };
+        let mut d = ItsDriver::with_remote(0x0808_0000, &MODEL);
+        d.init(0x080a_0000).unwrap();
+        assert_eq!(d.map_device(0x11), Ok(1));
+        d.map_vector(1, 3, gic::LPI_INTID_BASE + 3).unwrap();
+        assert_eq!(MODEL.calls.load(Ordering::SeqCst), 3);
+        MODEL.refuse.store(1, Ordering::SeqCst);
+        assert_eq!(d.map_device(0x11), Err(ItsError::Refused));
+        assert_eq!(d.map_vector(1, 3, gic::LPI_INTID_BASE + 3), Err(ItsError::Refused));
+        assert_eq!(d.init(0x080a_0000), Err(ItsError::Refused));
+    }
 
     #[test]
     fn genmask_matches_hand_computed_ranges() {

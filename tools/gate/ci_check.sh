@@ -3770,6 +3770,9 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-pin-off-canary)           name=hyp-mon-pin-off ;;
         hyp-kdf-salt-canary)          name=hyp-mon-kdf-salt ;;
         hyp-smmu-window-canary)       name=hyp-mon-smmu-window ;;
+        hyp-its-window-canary)        name=hyp-mon-its-window ;;
+        hyp-rd-open-canary)           name=hyp-mon-rd-open ;;
+        hyp-its-skip-mapti-canary)    name=hyp-mon-its-skip-mapti ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3794,6 +3797,9 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *pin-off*) hyp_mon_blob hyp-pin-off-canary ;;
         *kdf-salt*) hyp_mon_blob hyp-kdf-salt-canary ;;
         *smmu-window*) hyp_mon_blob hyp-smmu-window-canary ;;
+        *its-window*) hyp_mon_blob hyp-its-window-canary ;;
+        *rd-open*) hyp_mon_blob hyp-rd-open-canary ;;
+        *its-skip-mapti*) hyp_mon_blob hyp-its-skip-mapti-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     if ! a64_kbuild "$sel"; then
@@ -3964,6 +3970,35 @@ par "hyp: F3 no-conduit halts (arm)" hyp_halt_row "hyp: F3 no-conduit halts (arm
     "[BOOT] EL2:        refused: no PSCI conduit"
 par "hyp: F3 no-conduit halt canary (arm)" hyp_halt_row "hyp: F3 no-conduit halt canary (arm)" hyp-fake-no-conduit canary \
     "[BOOT] EL2:        refused: no PSCI conduit"
+
+# R10, the GIC: the monitor owns the ITS and the redistributors' LPI table
+# pointers. A write to GICR_PROPBASER from EL1 is dropped and recorded (the
+# redistributors' first frames are read-only and the monitor carries out the
+# other writes), a vector on a device the monitor never mapped and an LPI past
+# the table are refused, and a write to the ITS control frame faults.
+# Canaries: the control frame left mapped (the write goes through), the
+# redistributor frames left writable (the pointer changes), MAPTI skipped (the
+# MSI never becomes an LPI: the last row's canary).
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R10 its owned by the monitor (arm)" hyp_monitor_row "hyp: R10 its owned by the monitor (arm)" "hyp-its-probe" pass \
+    "[ITS] enabled: base=0x8080000" "[BOOT] EL2:        invariant its in force" \
+    "[HYP] its: a write to GICR_PROPBASER from EL1 is dropped and recorded" \
+    "[HYP] its: a vector on a device never mapped and an LPI outside the table are refused" \
+    "[HYP] its: writing GITS_CBASER from EL1 (must fault)" "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R10 its window canary (arm)" hyp_monitor_row "hyp: R10 its window canary (arm)" "hyp-its-window-canary,hyp-its-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R10 rd frame canary (arm)" hyp_monitor_row "hyp: R10 rd frame canary (arm)" "hyp-rd-open-canary,hyp-its-probe" canary \
+    "[HYP] its: a write to GICR_PROPBASER from EL1 is dropped and recorded"
+# An MSI through the monitor's ITS: the virtio-net function's vector 1 becomes LPI 8193.
+R10_NET='-netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on'
+HYP_QEMU="$R10_NET" HYP_WAIT='ITS\] LPI vector 1 delivered|AARCH64-TRAP\] unhandled' \
+par "hyp: R10 msi through the monitor's its (arm)" hyp_monitor_row "hyp: R10 msi through the monitor's its (arm)" "hyp-monitor-row,pci" pass \
+    "[ITS] enabled: base=0x8080000" "[ITS] LPI vector 1 delivered"
+HYP_QEMU="$R10_NET" HYP_WAIT='ITS\] LPI vector 1 delivered|AARCH64-TRAP\] unhandled|delivery FAILED' \
+par "hyp: R10 its skip-mapti canary (arm)" hyp_monitor_row "hyp: R10 its skip-mapti canary (arm)" "hyp-its-skip-mapti-canary,pci" canary \
+    "[ITS] LPI vector 1 delivered"
 
 # F9, the DMA the monitor cannot confine: the device tree's masters that name
 # no IOMMU are counted by kind on the boot line (QEMU `virt` has virtio-mmio

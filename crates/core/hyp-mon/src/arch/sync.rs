@@ -131,6 +131,28 @@ fn hvc(regs: *mut u64) {
             }
             None => set(regs, 0, azos_hyp_api::EMPTY as u64),
         },
+        azos_hyp_api::CALL_ITS_INIT => {
+            let (a1, a2, a3) = (reg(regs, 1), reg(regs, 2), reg(regs, 3));
+            let r = super::its::init(a1, a2, a3);
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_ITS_INIT, a1, a2); }
+            set(regs, 0, r as u64)
+        }
+        azos_hyp_api::CALL_ITS_MAP_DEVICE => match super::its::map_device(reg(regs, 1)) {
+            Ok(slot) => {
+                set(regs, 0, OK as u64);
+                set(regs, 1, slot);
+            }
+            Err(r) => {
+                crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_ITS_MAP_DEVICE, reg(regs, 1), 0);
+                set(regs, 0, r as u64)
+            }
+        },
+        azos_hyp_api::CALL_ITS_MAP_VECTOR => {
+            let (a1, a2) = (reg(regs, 1), reg(regs, 2));
+            let r = super::its::map_vector(a1, a2);
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_ITS_MAP_VECTOR, a1, a2); }
+            set(regs, 0, r as u64)
+        }
         azos_hyp_api::CALL_PIN => {
             let (r, mode, pinned) = super::pin::pin();
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_PIN, 0, 0); }

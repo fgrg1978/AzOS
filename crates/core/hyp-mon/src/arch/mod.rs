@@ -4,6 +4,7 @@
 //! stage-1 identity map, the host stage-2 (F2) and the PSCI/SMC filter (F3).
 
 pub mod entry;
+pub mod its;
 pub mod kdf;
 pub mod keys;
 pub mod mmu;

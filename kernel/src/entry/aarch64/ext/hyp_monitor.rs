@@ -23,7 +23,7 @@ macro_rules! hyp_blob {
         core::arch::global_asm!(
             concat!(
                 ".section .hyp, \"a\"\n",
-                ".balign 4096\n",
+                ".balign 65536\n",
                 ".globl _hyp_blob_start\n",
                 "_hyp_blob_start:\n",
                 ".incbin \"", env!("AZOS_OUT"), $file, "\"\n",
@@ -45,7 +45,10 @@ macro_rules! hyp_blob {
     feature = "hyp-guard-skip-canary",
     feature = "hyp-pin-off-canary",
     feature = "hyp-kdf-salt-canary",
-    feature = "hyp-smmu-window-canary"
+    feature = "hyp-smmu-window-canary",
+    feature = "hyp-its-window-canary",
+    feature = "hyp-rd-open-canary",
+    feature = "hyp-its-skip-mapti-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -68,6 +71,12 @@ hyp_blob!("/build/aarch64/hyp-mon-pin-off.bin");
 hyp_blob!("/build/aarch64/hyp-mon-kdf-salt.bin");
 #[cfg(feature = "hyp-smmu-window-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-smmu-window.bin");
+#[cfg(feature = "hyp-its-window-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-its-window.bin");
+#[cfg(feature = "hyp-rd-open-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-rd-open.bin");
+#[cfg(feature = "hyp-its-skip-mapti-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-its-skip-mapti.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
 /// x0..x4). An HVC, which the monitor traps at EL2.
@@ -84,7 +93,12 @@ fn monitor_call2(id: u64, a1: u64, a2: u64) -> [u64; 4] {
 
 #[inline]
 fn monitor_call5(id: u64, a1: u64, a2: u64) -> [u64; 5] {
-    let (mut x0, mut x1, mut x2, mut x3, mut x4) = (id, a1, a2, 0u64, 0u64);
+    monitor_call_n(id, a1, a2, 0)
+}
+
+#[inline]
+fn monitor_call_n(id: u64, a1: u64, a2: u64, a3: u64) -> [u64; 5] {
+    let (mut x0, mut x1, mut x2, mut x3, mut x4) = (id, a1, a2, a3, 0u64);
     // SAFETY: the monitor is resident (HYP_MONITOR built it in and the
     // trampoline started it) before this runs.
     unsafe {
@@ -327,6 +341,25 @@ impl azos_iommu::smmuv3::Remote for SmmuCalls {
     }
 }
 
+/// The ITS the monitor owns, as the kernel's `ItsDriver` asks for it.
+pub(crate) struct ItsCalls;
+
+impl azos_arch::irq::its::ItsRemote for ItsCalls {
+    fn init(&self, its_base: usize, rd_base: usize, rd_stride: usize, ncpu: usize) -> bool {
+        let r = monitor_call_n(azos_hyp_api::CALL_ITS_INIT, its_base as u64, rd_base as u64, rd_stride as u64 | (ncpu as u64) << 32);
+        r[0] as i64 == OK
+    }
+
+    fn map_device(&self, dev: u32) -> Option<usize> {
+        let r = monitor_call(azos_hyp_api::CALL_ITS_MAP_DEVICE, dev as u64);
+        (r[0] as i64 == OK).then_some(r[1] as usize)
+    }
+
+    fn map_vector(&self, slot: usize, event_id: u32, lpi: u32) -> bool {
+        monitor_call2(azos_hyp_api::CALL_ITS_MAP_VECTOR, slot as u64 | (event_id as u64) << 32, lpi as u64)[0] as i64 == OK
+    }
+}
+
 /// The split image's line about the keystore: no root's bytes are the kernel's.
 pub(crate) fn report_roots(in_kernel: usize) {
     kprintln!("[BOOT] EL2:        keystore roots held by the kernel: {}", in_kernel);
@@ -406,10 +439,12 @@ pub(crate) fn lock_ro_data() {
     key_root_probe();
     #[cfg(feature = "hyp-smmu-probe")]
     smmu_probe();
+    #[cfg(feature = "hyp-its-probe")]
+    its_probe();
 }
 
 /// How many records of `kind` the ring holds.
-#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe", feature = "hyp-key-root-probe", feature = "hyp-smmu-probe"))]
+#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe", feature = "hyp-key-root-probe", feature = "hyp-smmu-probe", feature = "hyp-its-probe"))]
 fn ring_count(kind: azos_hyp_api::Kind) -> u32 {
     let (mut cursor, mut n) = (0, 0);
     loop {
@@ -632,4 +667,48 @@ fn smmu_probe() {
     // register of the unit at `base`.
     unsafe { azos_arch_api::mmio::write32(base as usize + azos_iommu::smmuv3::REG_CR0, 0) };
     kprintln!("[HYP] PROBE FAILED: CR0 was written from EL1");
+}
+
+/// Feature `hyp-its-probe` (the `hyp: R10` GIC rows): write `GICR_PROPBASER` of
+/// the boot redistributor from EL1, which the monitor must drop and record
+/// (the register reads back as it was); a device the monitor's ITS has no ITT
+/// for, and an LPI outside the table, are refused; then the kernel maps the
+/// ITS control frame and writes `GITS_CBASER`, which must fault. Never in a
+/// real build.
+#[cfg(feature = "hyp-its-probe")]
+fn its_probe() {
+    use azos_arch::irq::{gic, its};
+    use azos_hyp_api::{Kind, INV_ITS};
+    if monitor_call(CALL_PROBE, 0)[2] & INV_ITS == 0 {
+        kprintln!("[HYP] PROBE FAILED: probe does not report its");
+    }
+    let rd = gic::GICR_BASE;
+    let before = ring_count(Kind::MmioRefused);
+    // SAFETY: the redistributor of cpu 0, mapped by the interrupt driver; the
+    // monitor's read-only mapping makes the write its to carry out or refuse.
+    let (kept, was) = unsafe {
+        let was = azos_arch_api::mmio::read64(rd + 0x70);
+        azos_arch_api::mmio::write64(rd + 0x70, 0xdead_0000);
+        (azos_arch_api::mmio::read64(rd + 0x70) == was, was)
+    };
+    if kept && ring_count(Kind::MmioRefused) == before + 1 {
+        kprintln!("[HYP] its: a write to GICR_PROPBASER from EL1 is dropped and recorded");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: GICR_PROPBASER kept={} (was {:#x}) or the write was not recorded", kept, was);
+    }
+    let bad_slot = monitor_call2(azos_hyp_api::CALL_ITS_MAP_VECTOR, 63, gic::LPI_INTID_BASE as u64)[0] as i64;
+    let bad_lpi = monitor_call2(azos_hyp_api::CALL_ITS_MAP_VECTOR, 0, 1 << 20)[0] as i64;
+    if bad_slot != OK && bad_lpi != OK {
+        kprintln!("[HYP] its: a vector on a device never mapped and an LPI outside the table are refused");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: its_map_vector gave {} / {}", bad_slot, bad_lpi);
+    }
+    if !crate::boot::map_mmio_region(its::ITS_BASE, 0x1_0000) {
+        kprintln!("[HYP] PROBE FAILED: the ITS window will not map");
+        return;
+    }
+    kprintln!("[HYP] its: writing GITS_CBASER from EL1 (must fault)");
+    // SAFETY: the probe's purpose is this write; it must not return.
+    unsafe { azos_arch_api::mmio::write64(its::ITS_BASE + 0x80, 0) };
+    kprintln!("[HYP] PROBE FAILED: GITS_CBASER was written from EL1");
 }

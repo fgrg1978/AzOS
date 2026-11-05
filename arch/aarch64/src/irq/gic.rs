@@ -35,6 +35,10 @@
 // ──────────────────────────────────────────────────────────────────────────
 
 /// GIC distributor base for `qemu-system-aarch64 -M virt`.
+#[path = "gic_fmt.rs"]
+mod fmt;
+pub use fmt::*;
+
 pub const GICD_BASE: usize = 0x0800_0000;
 
 /// GIC redistributor base for `qemu-system-aarch64 -M virt`.
@@ -927,35 +931,6 @@ pub fn eoir1(intid: u32) {
 // mis-sized table an ITS would refuse or read out of bounds. 13 is
 // therefore both the minimum and this driver's choice — using it is not
 // "assuming few LPIs", it is "as small as the architecture allows".
-pub const LPI_INTID_BASE: u32 = 8192;
-
-/// `GICR_PROPBASER.IDbits` this driver programs — see the module-section
-/// doc above for why 13 is a floor, not a policy knob.
-pub const LPI_ID_BITS: u8 = 13;
-
-/// Byte size of the LPI configuration table `LPI_ID_BITS` implies:
-/// `2^(id_bits+1)` one-byte entries. 16 KiB for `LPI_ID_BITS == 13`.
-pub const fn lpi_prop_table_size(id_bits: u8) -> usize {
-    1usize << (id_bits as u32 + 1)
-}
-
-const GICR_CTLR_ENABLE_LPIS: u32 = 1 << 0;
-/// GICR_CTLR.RWP (bit 3) — Register Write Pending. Same role as the
-/// distributor's own RWP ([`GICD_CTLR_RWP`]): a caller that pokes
-/// PROPBASER/PENDBASER and does not wait for this to clear has no
-/// guarantee the redistributor has latched either pointer yet.
-const GICR_CTLR_RWP: u32 = 1 << 3;
-
-const GICR_PROPBASER_OFF: usize = 0x0070;
-const GICR_PENDBASER_OFF: usize = 0x0078;
-
-/// `GIC_BASER_CACHE_RaWaWb` (architecture spec naming) — Normal,
-/// Read-allocate, Write-allocate, Write-Back. Shared by every BASER-shaped
-/// register this driver programs (GITS_CBASER/BASERn in `its.rs`,
-/// GICR_PROPBASER/PENDBASER here) — see the module-section doc for why.
-pub const BASER_CACHE_RAWAWB: u64 = 0b111;
-/// `GIC_BASER_InnerShareable`.
-pub const BASER_SHAREABILITY_INNER: u64 = 0b01;
 
 /// GICR_TYPER.PLPIS (bit 0) — this redistributor frame implements
 /// physical LPIs at all. A frame without it has no GICR_PROPBASER/
@@ -974,39 +949,6 @@ pub const fn typer_supports_plpis(typer: u64) -> bool {
 /// does that shift so no caller hand-rolls it twice.
 pub const fn typer_cpu_number(typer: u64) -> u16 {
     ((typer >> 8) & 0xffff) as u16
-}
-
-/// Encode `GICR_PROPBASER`: the LPI configuration table pointer, shared
-/// across every redistributor that enables LPIs (one physical table, one
-/// value, written identically everywhere — unlike PENDBASER below). Low
-/// 12 bits of `phys_base` are masked off (4 KiB alignment, architectural
-/// `[51:12]` address field); `id_bits` should be [`LPI_ID_BITS`].
-pub const fn propbaser_value(phys_base: u64, id_bits: u8) -> u64 {
-    (phys_base & 0x000f_ffff_ffff_f000)
-        | (BASER_CACHE_RAWAWB << 7)
-        | (BASER_SHAREABILITY_INNER << 10)
-        | (id_bits as u64 & 0x1f)
-}
-
-/// Encode `GICR_PENDBASER`: the LPI pending-state bitmap, ONE PER
-/// REDISTRIBUTOR (never shared — two redistributors sharing a pending
-/// table would each think the other's LPI delivery is its own). Low 16
-/// bits of `phys_base` are masked off: the architectural address field is
-/// `[51:16]`, i.e. **64 KiB alignment**, stricter than PROPBASER's 4 KiB —
-/// verified against `GICR_PENDBASER_ADDRESS`'s own mask
-/// (`GENMASK_ULL(51,16)` vs PROPBASER's `GENMASK_ULL(51,12)`) rather than
-/// assumed uniform with PROPBASER, which is exactly the kind of
-/// off-by-a-field-width mistake this project's own canary discipline
-/// exists to catch. `ptz`: true if the caller already zeroed the table
-/// (lets the redistributor skip its own zeroing pass) — this driver's
-/// caller always zeroes its `static` before calling, so always passes
-/// `true`.
-pub const fn pendbaser_value(phys_base: u64, ptz: bool) -> u64 {
-    const PTZ_BIT: u64 = 1 << 62;
-    (phys_base & 0x000f_ffff_ffff_0000)
-        | (BASER_CACHE_RAWAWB << 7)
-        | (BASER_SHAREABILITY_INNER << 10)
-        | if ptz { PTZ_BIT } else { 0 }
 }
 
 /// Enable LPIs on the redistributor frame at `rd_base`: program

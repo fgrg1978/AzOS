@@ -254,10 +254,11 @@ SECTIONS
      * (the kernel never runs it there; the boot trampoline branches to
      * `_hyp_blob_start` at EL2, and the monitor runs it on its own EL2 tables).
      * The host stage-2 unmaps this extent so EL1 cannot read it either (I1).
-     * Page-aligned so that unmap is exact; empty with HYP_MONITOR off.
+     * 64 KiB-aligned (the monitor's LPI pending table is, and its image is placed
+     * as it was linked); empty with HYP_MONITOR off.
      */
-    . = ALIGN(AZOS_PAGE_SIZE);
-    .hyp : ALIGN(AZOS_PAGE_SIZE)
+    . = ALIGN(0x10000);
+    .hyp : ALIGN(0x10000)
     {
         KEEP(*(.hyp))
         . = ALIGN(AZOS_PAGE_SIZE);
