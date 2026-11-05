@@ -7,6 +7,10 @@ name = "azos-config"
 version = "0.1.0"
 
 [[package]]
+name = "azos_abi"
+version = "1.0.0"
+
+[[package]]
 name = "azos_common"
 version = "0.1.0"
 
@@ -20,10 +24,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_devif"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl",
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_dtb"
 version = "0.1.0"
 dependencies = [
  "azos_limits",
+]
+
+[[package]]
+name = "azos_idl"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl_macros",
+]
+
+[[package]]
+name = "azos_idl_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -35,8 +65,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_rings"
+version = "0.1.0"
+
+[[package]]
 name = "azos_tpm"
 version = "0.1.0"
+dependencies = [
+ "azos_devif",
+]
 
 [[package]]
 name = "azos_tpm_tests"
@@ -44,6 +81,7 @@ version = "0.1.0"
 dependencies = [
  "azos_common",
  "azos_crypto",
+ "azos_devif",
  "azos_dtb",
  "azos_tpm",
 ]

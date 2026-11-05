@@ -16,6 +16,7 @@ SPI bus and the clock; tests/host/tpm-tests drives it against a scripted TPM.
 """
 
 [dependencies]
+azos_devif = { workspace = true }
 
 [features]
 # Gate/host canaries only. Each one puts a specific protocol bug back; the

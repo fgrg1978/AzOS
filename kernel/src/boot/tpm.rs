@@ -171,46 +171,13 @@ impl azos_tpm::Transport for Iface {
     }
 }
 
-/// The driver's SPI bus over the `Spi` device interface. The driver holds
-/// chip select across a whole transaction (header, wait states, data); the
-/// interface has `hold_cs` for that and carries at most `MAX_BYTES` a call,
-/// so a transfer longer than that is several calls under one hold.
+/// The driver's SPI bus: the `Spi` device interface of the TPM's chip select,
+/// called in this address space.
 #[cfg(not(target_arch = "x86_64"))]
-struct DevifSpi {
-    port: azos_drv_bus::spi::SpiPort,
-    /// `hold_cs(true)` was accepted: without it the controller would release
-    /// the chip select between calls and every transaction would be torn.
-    held: bool,
-}
+type TpmSpi = azos_devif::spi::SpiDirect<azos_drv_bus::spi::SpiPort>;
 
 #[cfg(not(target_arch = "x86_64"))]
-impl azos_tpm::spi::Spi for DevifSpi {
-    fn select(&mut self, on: bool) {
-        use azos_devif::Spi as _;
-        let ok = self.port.hold_cs(on).is_ok();
-        if on {
-            self.held = ok;
-        }
-    }
-
-    fn xfer(&mut self, tx: &[u8], rx: &mut [u8]) -> Result<(), azos_tpm::BusError> {
-        use azos_devif::Spi as _;
-        use azos_devif::i2c::{Bytes, MAX_BYTES};
-        if !self.held || tx.len() != rx.len() {
-            return Err(azos_tpm::BusError);
-        }
-        for (t, r) in tx.chunks(MAX_BYTES).zip(rx.chunks_mut(MAX_BYTES)) {
-            let out = self.port.transfer(Bytes::from_slice(t));
-            if !out.is_ok() || out.value.copy_to(r) != r.len() {
-                return Err(azos_tpm::BusError);
-            }
-        }
-        Ok(())
-    }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-type Iface = Tis<azos_tpm::spi::SpiTis<DevifSpi>, KClock>;
+type Iface = Tis<azos_tpm::spi::SpiTis<TpmSpi>, KClock>;
 
 /// The TPM, once [`init`] found and started it. A sleeping lock: a command is
 /// milliseconds, and the floor's raise runs from the watchdog task at run
@@ -312,7 +279,7 @@ fn probe(dtb_ptr: usize) -> Option<(Iface, &'static str)> {
                   node.cs, bus, cs);
         return None;
     }
-    let mut port = azos_drv_bus::spi::SpiPort { bus, cs };
+    let mut port = azos_drv_bus::spi::SpiPort::new(bus, cs);
     // The TPM's SPI is mode 0. A controller that cannot take the part's clock
     // keeps the one it has: slower, and the same bytes.
     if !port.set_mode(0).is_ok() {
@@ -323,7 +290,7 @@ fn probe(dtb_ptr: usize) -> Option<(Iface, &'static str)> {
         let hz = node.max_hz.clamp(azos_devif::spi::SPEED_MIN_HZ, azos_devif::spi::SPEED_MAX_HZ);
         let _ = port.set_speed(hz);
     }
-    let regs = azos_tpm::spi::SpiTis::new(DevifSpi { port, held: false });
+    let regs = azos_tpm::spi::SpiTis::new(azos_devif::spi::SpiDirect(port));
     Some((Tis::new(regs, KClock, 0), "device tree tcg,tpm_tis-spi"))
 }
 

@@ -1063,6 +1063,9 @@ dependencies = [
 [[package]]
 name = "azos_tpm"
 version = "0.1.0"
+dependencies = [
+ "azos_devif",
+]
 
 [[package]]
 name = "azos_trace"

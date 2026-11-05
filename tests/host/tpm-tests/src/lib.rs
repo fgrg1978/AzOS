@@ -55,7 +55,7 @@ pub fn rig(kind: Kind, loc: u8) -> (Tpm<Tis<Dyn, FakeClock>>, Rig) {
             let s = FakeSpi::new(dev.clone(), w);
             frames = s.frames.clone();
             bus_v = s.bus_violations.clone();
-            Box::new(SpiTis::new(s))
+            Box::new(SpiTis::new(on_bus(s)))
         }
     };
     let tpm = Tpm::new(Tis::new(Dyn(regs), clock.clone(), loc));

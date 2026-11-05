@@ -7,7 +7,9 @@
 //! can assert on the log.
 
 use azos_tpm::mmio::MmioAccess;
-use azos_tpm::spi::Spi;
+use azos_devif::i2c::Bytes;
+use azos_devif::spi::SpiDirect;
+use azos_devif::{outcome, Out, Spi};
 use azos_tpm::tis::{Clock, TisRegs, REG_ACCESS, REG_DATA_FIFO, REG_DID_VID, REG_RID, REG_STS};
 use azos_tpm::BusError;
 use std::cell::{Cell, RefCell};
@@ -519,7 +521,7 @@ impl FakeSpi {
     }
 }
 
-impl Spi for FakeSpi {
+impl SpiModel for FakeSpi {
     fn select(&mut self, on: bool) {
         if on {
             if self.selected {
@@ -553,4 +555,54 @@ impl Spi for FakeSpi {
         }
         Ok(())
     }
+}
+
+/// A SPI bus as a chip select and a full-duplex byte exchange.
+pub trait SpiModel {
+    fn select(&mut self, on: bool);
+    fn xfer(&mut self, tx: &[u8], rx: &mut [u8]) -> Result<(), BusError>;
+}
+
+/// A [`SpiModel`] served as the `Spi` interface: `hold_cs` is the select,
+/// `transfer` is the exchange, a refused exchange is `FAULT`.
+pub struct Served<M: SpiModel>(pub M);
+
+impl<M: SpiModel> Spi for Served<M> {
+    fn transfer(&mut self, data: Bytes) -> Out<Bytes> {
+        let mut tx = [0u8; azos_devif::spi::MAX_BYTES];
+        let n = data.copy_to(&mut tx);
+        let mut rx = [0u8; azos_devif::spi::MAX_BYTES];
+        match self.0.xfer(&tx[..n], &mut rx[..n]) {
+            Ok(()) => Out::ok(Bytes::from_slice(&rx[..n])),
+            Err(BusError) => Out::err(outcome::FAULT),
+        }
+    }
+    fn write(&mut self, _: Bytes) -> Out<()> {
+        Out::err(outcome::UNSUPPORTED)
+    }
+    fn read(&mut self, _: u32, _: u32) -> Out<Bytes> {
+        Out::err(outcome::UNSUPPORTED)
+    }
+    fn set_mode(&mut self, _: u32) -> Out<()> {
+        Out::err(outcome::UNSUPPORTED)
+    }
+    fn set_speed(&mut self, _: u32) -> Out<()> {
+        Out::err(outcome::UNSUPPORTED)
+    }
+    fn hold_cs(&mut self, hold: bool) -> Out<()> {
+        self.0.select(hold);
+        Out::ok(())
+    }
+}
+
+/// What the TPM driver is given in the kernel's place: the model behind the
+/// interface's direct-call stub.
+pub type OnBus<M> = SpiDirect<Served<M>>;
+
+pub fn on_bus<M: SpiModel>(model: M) -> OnBus<M> {
+    SpiDirect(Served(model))
+}
+
+pub fn model<M: SpiModel>(bus: OnBus<M>) -> M {
+    bus.0 .0
 }

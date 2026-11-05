@@ -12,6 +12,8 @@ description = "Host-side tests for crates/drivers/tpm: the TIS/FIFO protocol, lo
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
 azos_tpm = { path = "../../../crates/drivers/tpm" }
+# The SPI bus the chip is driven over is the interface's caller trait.
+azos_devif = { path = "../../../crates/core/devif" }
 # wire.rs: the kernel's session against the real entropy pool, the OTA floor
 # backend module (it hashes the NV password) and the device-tree walk.
 azos_crypto = { path = "../../../crates/core/crypto" }

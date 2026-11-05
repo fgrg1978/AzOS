@@ -7,12 +7,13 @@
 //! `0xD40000 | locality << 12 | reg`), an optional wait state in which the
 //! TPM answers `0x00` on the last header byte and then `0x00` bytes until one
 //! has bit 0 set, and the data. Chip select stays asserted from the header to
-//! the end of the data, so the bus is a small local trait with an explicit
-//! select. (The device-interface SPI trait is being added separately; its
-//! adapter is a few lines against this one.)
+//! the end of the data, so a transaction holds it (`hold_cs`) on the
+//! [`SpiCall`] the host binds to the chip select.
 
 use crate::tis::{TisRegs, REG_DATA_FIFO};
 use crate::BusError;
+use azos_devif::spi::transfer_all;
+use azos_devif::{outcome, SpiCall};
 
 /// Most data bytes in one transaction.
 pub const MAX_XFER: usize = 64;
@@ -21,19 +22,11 @@ pub const WAIT_RETRIES: usize = 50;
 /// Top byte of the 24-bit TPM address.
 const ADDR_HI: u8 = 0xD4;
 
-pub trait Spi {
-    /// Assert (`true`) or release chip select. Held across `xfer` calls.
-    fn select(&mut self, on: bool);
-    /// Clock `tx.len()` bytes out and the same number in (`tx` and `rx` have
-    /// equal length).
-    fn xfer(&mut self, tx: &[u8], rx: &mut [u8]) -> Result<(), BusError>;
-}
-
-pub struct SpiTis<S: Spi> {
+pub struct SpiTis<S: SpiCall> {
     spi: S,
 }
 
-impl<S: Spi> SpiTis<S> {
+impl<S: SpiCall> SpiTis<S> {
     pub fn new(spi: S) -> Self {
         SpiTis { spi }
     }
@@ -54,22 +47,28 @@ impl<S: Spi> SpiTis<S> {
             addr as u8,
         ];
         let mut hdr_rx = [0u8; 4];
-        self.spi.select(true);
+        // Without the hold the controller releases the chip select between
+        // calls and every transaction would be torn.
+        outcome::served(self.spi.hold_cs(true)).map_err(|_| BusError)?;
         let r = self.run(&hdr_tx, &mut hdr_rx, read, write, len);
-        self.spi.select(false);
+        let _ = self.spi.hold_cs(false);
         r
+    }
+
+    fn xfer(&mut self, tx: &[u8], rx: &mut [u8]) -> Result<(), BusError> {
+        transfer_all(&mut self.spi, tx, rx).map_err(|_| BusError)
     }
 
     fn run(
         &mut self, hdr_tx: &[u8; 4], hdr_rx: &mut [u8; 4], read: Option<&mut [u8]>,
         write: Option<&[u8]>, len: usize,
     ) -> Result<(), BusError> {
-        self.spi.xfer(hdr_tx, hdr_rx)?;
+        self.xfer(hdr_tx, hdr_rx)?;
         if !cfg!(feature = "canary-spi-wait") && hdr_rx[3] & 1 == 0 {
             let mut ready = false;
             for _ in 0..WAIT_RETRIES {
                 let mut b = [0u8; 1];
-                self.spi.xfer(&[0], &mut b)?;
+                self.xfer(&[0], &mut b)?;
                 if b[0] & 1 != 0 {
                     ready = true;
                     break;
@@ -81,11 +80,11 @@ impl<S: Spi> SpiTis<S> {
         }
         match (read, write) {
             (Some(buf), _) => {
-                self.spi.xfer(&[0u8; MAX_XFER][..len], buf)?;
+                self.xfer(&[0u8; MAX_XFER][..len], buf)?;
             }
             (None, Some(data)) => {
                 let mut sink = [0u8; MAX_XFER];
-                self.spi.xfer(data, &mut sink[..len])?;
+                self.xfer(data, &mut sink[..len])?;
             }
             (None, None) => {}
         }
@@ -93,7 +92,7 @@ impl<S: Spi> SpiTis<S> {
     }
 }
 
-impl<S: Spi> TisRegs for SpiTis<S> {
+impl<S: SpiCall> TisRegs for SpiTis<S> {
     fn read(&mut self, locality: u8, reg: u16, buf: &mut [u8]) -> Result<(), BusError> {
         if locality > 4 {
             return Err(BusError);
