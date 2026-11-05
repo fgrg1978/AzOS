@@ -2153,6 +2153,31 @@ mod tests {
         assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE), "the first answer, intact");
     }
 
+    /// **Once a warrant is delegated, the old holder neither answers it nor
+    /// delegates it again; only the new holder does.**
+    ///
+    /// **Canary.** Make `delegate` skip `r.server.store(to, ..)`: the
+    /// server still holds the warrant, so its reply wakes the caller and the
+    /// "refused" assertions are red.
+    #[test]
+    fn a_delegated_warrant_is_gone_from_the_old_holder() {
+        let _e = env();
+        const OTHER: u32 = 32;
+        let (idx, tid) = client(0);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, SERVER).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(delegate(h, SERVER, WORKER), Delegated::Moved);
+        assert_eq!(delegate(h, SERVER, OTHER), Delegated::Refused, "a second delegate by the old holder");
+        assert_eq!(reply_warrant(h, SERVER, [7; WORDS]), Reply::Refused, "the old holder cannot answer");
+        assert_eq!(wait_state(h, tid), 1, "the caller still waits: nobody answered");
+        assert_eq!(delegate(h, WORKER, OTHER), Delegated::Moved, "the new holder may pass it on");
+        assert_eq!(reply_warrant(h, WORKER, RSP), Reply::Refused, "and then it no longer answers");
+        assert!(matches!(reply_warrant(h, OTHER, RSP), Reply::Woke { .. }));
+        assert_eq!(delegate(h, OTHER, WORKER), Delegated::Refused, "an answered call takes no delegate");
+        assert_eq!(DELEGATED.load(Ordering::Relaxed), 0);
+        assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE));
+    }
+
     #[test]
     fn canary_reply_twice_delivers_a_second_reply() {
         let _e = env();
