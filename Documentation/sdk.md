@@ -163,10 +163,10 @@ programs enter at `_azos_entry`, which aligns the stack and calls `_start`.
 | Time | `vdso_now_ns`, `vdso_uptime_ms`, `clock_now`, `sleep`, `sleep_until_ns`; `SleepResult` |
 | vDSO and ABI | `vdso_hwcap`, `vdso_hwcap2`, `vdso_task_map`, `vdso_task_counters`, `vdso_sensor_read`, `abi_matches` |
 | Startup block | `startup_init`, `argc`, `arg`, `getenv`, `env_at`, `cwd`, `fd_get`, `dup`, `dup2`, `fd_install` |
-| Memory | `mmap`, `munmap`, `shm_create_typed`, `shm_map_typed`, `shm_protect_typed`, `shm_release_typed`, `shm_acquire_typed`, `shm_end_drop_typed` |
+| Memory | `mmap`, `munmap`, `shm_create_typed`, `shm_map_typed`, `shm_release_typed`, `shm_acquire_typed`, `shm_end_drop_typed` |
 | Capabilities | `cap_info`, `cap_lookup`, `cap_derive`, `endpoint_derive`, `cap_revoke`, `close_typed`; `CapInfo`, `ty` |
 | IPC | `invoke`, `invoke_desc`, `ipc_call_v2`, `ipc_accept_v2`, `ipc_reply_v2`, `ipc_reply_delegate`, `fast_ipc_call_ep`, `fast_ipc_accept`, `fast_ipc_reply`, `fast_ipc_reply_accept` |
-| Ports | `port_create_typed`, `endpoint_create_typed`, `port_bind_typed`, `port_bind_timer`, `port_bind_endpoint`, `port_bind_pressure`, `port_unbind_typed`, `port_wait_typed`, `port_wait_until_typed`, `port_poll_typed`, `port_destroy_typed` |
+| Ports | `port_create_typed`, `endpoint_create_typed`, `port_bind_typed`, `port_bind_timer`, `port_bind_pressure`, `port_unbind_typed`, `port_wait_typed`, `port_wait_until_typed`, `port_poll_typed`, `port_destroy_typed` |
 | Files | `root_dir`, `open_at`, `open_root`, `read`, `write`, `file_read_typed`, `file_write_typed`, `stat`, `statfs`, `readdir`, `mkdir`, `unlink`, `rmdir`, `rename`, `truncate`, `fsync_typed`, `close`, `console_write`, `print`, `println` |
 | Sockets | `socket_typed`, `connect_typed`, `send_typed`, `recv_typed`, `bind_typed`, `listen_typed`, `accept_typed`, `sendto_typed`, `recvfrom_typed`, `mcast_join_typed`, `mcast_leave_typed` |
 | Driver server | `drv_srv_register_typed`, `drv_srv_reply_wait`, `drv_srv_reply_fetch`, `drv_srv_fetch_request`, `drv_srv_reply`, `drv_srv_unregister_typed`, `mmio_map`, `irq_bind`, `irq_ack` |

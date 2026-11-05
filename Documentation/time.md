@@ -197,7 +197,7 @@ Source: `userspace/services/ptpd/src/main.rs`, `userspace/services/ptpd/src/port
 
 ## Sleeping and deadlines
 
-* **`SYS_SLEEP_UNTIL`** blocks the caller on the counter. `a0` is an absolute deadline in nanoseconds on the monotonic clock (converted with `ns_to_ticks_ceil`), or, with `SLEEP_RELATIVE` in `a1`, a duration from now. It returns 0 after blocking, 1 if the deadline had already passed at entry, and `-EINVAL` for an unknown flag. The caller waits on `WaitReason::Timer`; the timer interrupt wakes expired sleepers and programs the next interrupt for the nearest deadline. `azos_libsys::clock_nanosleep_abs` is the POSIX shape over it.
+* **`SYS_SLEEP_UNTIL`** blocks the caller on the counter. `a0` is an absolute deadline in nanoseconds on the monotonic clock (converted with `ns_to_ticks_ceil`), or, with `SLEEP_RELATIVE` in `a1`, a duration from now. It returns 0 after blocking, 1 if the deadline had already passed at entry, and `-EINVAL` for an unknown flag. The caller waits on `WaitReason::Timer`; the timer interrupt wakes expired sleepers and programs the next interrupt for the nearest deadline.
 * **Message deadlines.** A call carries `MsgDesc::deadline` and `MsgDesc::clock_id`. The kernel serves one clock there: any `clock_id` other than `ClockId::MONO`, or a label bit outside `LABEL_KNOWN`, is refused with `-EINVAL`. A non-zero deadline at or before now is refused with `-EDEADLINE` and a `Rule::DeadlineExpired` decision record, before the call is queued.
 * **Tick rate.** `timebase::sched_hz_get` is the scheduler tick rate (Kconfig `SCHED_HZ`); the comparator is programmed at the earlier of the next tick and the nearest timer deadline, so a sleeper wakes on time between ticks (see [scheduler.md](scheduler.md)).
 

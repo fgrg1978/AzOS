@@ -1373,18 +1373,6 @@ pub fn sleep_until_ns(deadline_ns: u64) -> SleepResult {
     }
 }
 
-/// `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline)`, the POSIX shape
-/// of [`sleep_until_ns`]: 0 once the deadline has passed, whether the caller
-/// blocked or the deadline was already behind it, and the kernel's negative
-/// code when the call is refused. A loop that wants to count its overruns
-/// calls [`sleep_until_ns`] instead.
-pub fn clock_nanosleep_abs(deadline_ns: u64) -> isize {
-    match sleep_until_ns(deadline_ns) {
-        SleepResult::Slept | SleepResult::Overrun => 0,
-        SleepResult::Refused(rc) => rc,
-    }
-}
-
 /// A thread's entry (wave 13, [`thread_create`]): it is called with
 /// `(0, stack, arg)` and must end with [`thread_exit`] (or [`exit`], which
 /// ends the whole process).
@@ -3219,7 +3207,7 @@ pub fn port_poll_typed(cap: u32, out: &mut [u8]) -> isize {
 /// [`PORT_BIND_F_REMOVE`] to remove), a2 = the source's capability (a
 /// `Cap<Channel>`, `Cap<IoRing>`, `Cap<Irq>` or `Cap<Endpoint>`, each with
 /// `READ`), a3 = key. A timer takes its deadline instead:
-/// [`port_bind_timer`]; an endpoint: [`port_bind_endpoint`].
+/// [`port_bind_timer`]; an endpoint: [`PORT_SRC_ENDPOINT`] as the source type.
 ///
 /// Returns 0, or `-Errno`, in order: `-ECAPSTALE` / `-ECAPKIND` /
 /// `-ECAPPERMS` for the port capability, or `-EAGAIN` while containment is
@@ -3242,17 +3230,6 @@ pub fn port_bind_typed(port: u32, source_type: u64, source_cap: u32, key: u64) -
 /// [`PORT_SRC_TIMER`].
 pub fn port_bind_timer(port: u32, deadline_ns: u64, key: u64) -> isize {
     invoke(port, invoke_abi::PORT_BIND, [PORT_SRC_TIMER, deadline_ns, key, 0]).0
-}
-
-/// Bind the notices of the endpoint behind `ep_cap` (a `Cap<Endpoint>` with
-/// `READ`, which the caller serves) to the port behind `port`, with `key`
-/// (`PORT_BIND` with [`PORT_SRC_ENDPOINT`]). The port then reports
-/// [`PORT_EVENT_NO_SENDERS`] (code `ENOSENDERS`) when no send capability to
-/// the endpoint is left, at once if there is none now, and
-/// [`PORT_EVENT_SOURCE_GONE`] when the endpoint is destroyed. 0, or `-Errno`
-/// ([`port_bind_typed`]'s, and `-EPERM` when the caller does not serve it).
-pub fn port_bind_endpoint(port: u32, ep_cap: u32, key: u64) -> isize {
-    port_bind_typed(port, PORT_SRC_ENDPOINT, ep_cap, key)
 }
 
 /// Have the port behind `port` report this Domain's memory pressure, with
@@ -3385,18 +3362,6 @@ pub fn inspect_map(key: u32) -> Result<(*const u8, usize), isize> {
         return Err(va);
     }
     Ok((va as *const u8, pages * PAGE_SIZE))
-}
-
-/// Change the access of this task's mapping of the region behind a `Cap<Shm>`
-/// (`SYS_MO_MAP`'s protect form): read-only, or with `write` writable
-/// again, never past what the map was allowed. 0, or `-Errno`:
-/// `-ECAPPERMS` past the map's rights,
-/// `-EBUSY` while the region has frames a clone shares, `-EBADF` with no
-/// mapping, `-ECAPSTALE` / `-ECAPKIND` for the capability.
-pub fn shm_protect_typed(cap: u32, write: bool) -> isize {
-    use azos_abi::syscall_nr::{SHM_MAP_OP_PROTECT, SHM_MAP_PROT_WRITE};
-    let op = SHM_MAP_OP_PROTECT | if write { SHM_MAP_PROT_WRITE } else { 0 };
-    unsafe { syscall2(SYS_MO_MAP, cap as u64, op) }
 }
 
 /// Give back the region behind a `Cap<Shm>`: this task's mapping is removed

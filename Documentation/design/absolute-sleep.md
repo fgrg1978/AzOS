@@ -86,9 +86,7 @@ Source: `crates/core/ipc/src/io_ring.rs` (`OP_TIMER`),
 `crates/core/sched/src/seccomp.rs`.
 
 - **libsys.** `sleep_until_ns(deadline_ns)` returns `SleepResult::Slept`,
-  `Overrun` or `Refused(errno)`. `clock_nanosleep_abs` is the POSIX-shaped
-  wrapper: 0 once the deadline has passed, the kernel's negative code if the
-  call was refused. `sleep(ms)` issues the relative form.
+  `Overrun` or `Refused(errno)`. `sleep(ms)` issues the relative form.
 - **I/O ring.** `OP_TIMER` is the same deadline as a ring completion: it
   completes with `1` when the deadline has already passed, otherwise it parks
   and completes with `0` in the first pass at or after the deadline. It is
