@@ -1868,7 +1868,7 @@ pub fn task_yield() {
 /// the CPU, so it counts as `Preempted`, as Linux counts a preemption taken
 /// on the way out of a syscall in `nivcsw`. Wave 13: it was `task_yield` and
 /// counted `Voluntary`, so `DOMAIN_TASKINFO`'s preempted count missed every tick
-/// that landed in a lock — vsbench's `drvring-batch8` saw an extra round
+/// that landed in a lock — vsbench's retired `drvring-batch8` saw an extra round
 /// (65+64 / 64+65) with "preempted 0" on both sides.
 pub fn task_preempt_deferred() {
     yield_as(SwitchReason::Preempted);

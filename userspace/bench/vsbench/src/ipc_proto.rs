@@ -53,64 +53,6 @@ pub mod ring {
     pub const fn ring_tag(tag: u64, v: u64) -> u64 { (tag << 56) | (v & ((1 << 56) - 1)) }
 }
 
-/// The driver-request A/B (wave 11, SHMRING): today's driver path against a
-/// shared-memory slot ring, same peer (`VSSRV.ELF`), same 64-byte request.
-///
-/// `allow(dead_code)`: the Linux build compiles this file and uses only the
-/// ring half (its server is a forked child, not `VSSRV.ELF`).
-#[allow(dead_code)]
-pub mod drv {
-    /// Fast call `[DRV_SETUP, n, 0, 0]`: the server registers as the
-    /// power-monitor driver (`DRV_KIND_POWER_MON`, its topology row's
-    /// `drv.17`), answers `DRV_SETUP + 1` (or the negative refusal), serves
-    /// exactly `n` driver requests from `DOMAIN_DRIVER_REPLY_WAIT`, and
-    /// goes back to fast calls. The client's requests are
-    /// a `Sensor` read of `sensor.9`, which the kernel turns into a
-    /// `UserDriverProxy` call: the path a ring-3 client has to a ring-3
-    /// driver today.
-    pub const DRV_SETUP: u64 = 0x4452_5600_0000_0001; // "DRV"
-    /// Fast call whose `a5` MOVES the slot ring's `Cap<Shm>` to the server,
-    /// which serves it until [`TAG_STOP`] (as `ring::RING_SETUP`).
-    pub const DRVRING_SETUP: u64 = 0x4452_5652_0000_0001; // "DRVR"
-    /// Words per slot: a driver request's 64-byte payload.
-    pub const DRV_WORDS: usize = 8;
-    /// Slots per ring; two rings share one page (256 + 16 x 64 bytes each).
-    pub const DRV_RING_CAP: u32 = 16;
-    /// The reply ring's offset in the page; the request ring is at 0.
-    pub const DRV_RESP_OFFSET: usize = 2048;
-    /// Word 0 of a request: the tag in the top byte, a sequence number below.
-    /// Answer: every word `+ 1` (so the whole slot is checked).
-    pub const TAG_CALL: u64 = 1;
-    /// Answer the server's `(waits, wakes, timeouts, hart)` in words 0..4:
-    /// its kernel entries since the previous `TAG_STATS` was answered, not
-    /// counting the wait for this request itself (the stats exchange is not
-    /// part of the lane it closes).
-    pub const TAG_STATS: u64 = 3;
-    /// Answer [`DRV_STOP_ACK`] in word 0 and go back to serving fast calls.
-    pub const TAG_STOP: u64 = 4;
-    pub const DRV_STOP_ACK: u64 = 0x5354_4F50; // "STOP"
-    /// Requests per `drvring-batch8` submission.
-    pub const DRV_BATCH: u64 = 8;
-    /// The request for sequence number `i`: tag in word 0, a pattern in the
-    /// rest, so a torn or misplaced slot shows in the answer. Built as a
-    /// literal and checked by a fold, not `[0; 8]` + `==`: those lower to
-    /// byte-wise `memset`/`memcmp` here, ~700 instructions per request that
-    /// would be charged to the ring (measured, first draft of this lane).
-    #[inline(always)]
-    pub fn drv_req(tag: u64, i: u64) -> [u64; DRV_WORDS] {
-        [(tag << 56) | (i & ((1 << 56) - 1)), i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7]
-    }
-    /// Is `a` the answer to [`drv_req`]`(TAG_CALL, i)` (every word `+ 1`)?
-    #[inline(always)]
-    pub fn drv_is_answer(a: &[u64; DRV_WORDS], i: u64) -> bool {
-        let q = drv_req(TAG_CALL, i);
-        let mut d = 0u64;
-        let mut k = 0;
-        while k < DRV_WORDS { d |= a[k] ^ q[k].wrapping_add(1); k += 1; }
-        d == 0
-    }
-}
-
 /// The frame-stream lane (wave 11, SHMRING): scan-sized frames one way, on
 /// the byte-slot ring a kernel stream uses (`azos_rings::region::SpscBytes`, the
 /// same `BytesProducer`).

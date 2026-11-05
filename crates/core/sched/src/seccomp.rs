@@ -485,13 +485,11 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // report the hart it ran on (`DOMAIN_TASKINFO` reads, through
             // `DOMAIN_STAT`'s class).
             SYS_MO_MAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
-            // The `drv-call` lane (SHMRING). For its span this image is the
-            // power-monitor driver (`drv.17` in its topology row): it finds
-            // its `DriverRegistry` handle and binds an interrupt line.
+            // The console capability's lookup.
             SYS_CAP_INFO,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_DRIVER_REGISTER],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT],
         ifaces: NO_IFACES,
     },
     // Reflex stops a wheel (`speed`, 0) and turns or backs up (`drive`) on the

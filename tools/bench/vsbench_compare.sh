@@ -289,8 +289,7 @@ VSBENCH_SMP="${VSBENCH_SMP:-4}"
 # daemons keep those vCPUs running.
 #
 # So the gate column's ring lanes (`ring-*`, the shared-memory SPSC ring,
-# `ioring-*`, the submission ring, the driver-request pair `drv-call` /
-# `drvring-*` and `frame-stream`, wave 11) are measured a second time, on a second
+# `ioring-*`, the submission ring, and `frame-stream`, wave 11) are measured a second time, on a second
 # boot of the SAME kernel-min kernel and the SAME Linux initramfs, both under
 # `-accel tcg,thread=single -icount shift=0,sleep=off` at the same `-smp`
 # (`-smp 1` would put client and server on one hart and change what the lane
@@ -304,7 +303,7 @@ VSBENCH_SMP="${VSBENCH_SMP:-4}"
 # skipped anyway when `VSBENCH_ICOUNT=1`, where every lane already runs so.
 VSBENCH_RING_DET="${VSBENCH_RING_DET:-1}"
 RING_DET_ARGS="-accel tcg,thread=single -icount shift=0,sleep=off"
-RING_LANES_RE='^(ring-|ioring-|drvring-|drv-call|frame-stream)'
+RING_LANES_RE='^(ring-|ioring-|frame-stream)'
 
 # ── VSBENCH_LAT: the Linux half of the gate's `lat:` and tail rows ─────────
 #
