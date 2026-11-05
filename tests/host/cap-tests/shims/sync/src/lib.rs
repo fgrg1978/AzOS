@@ -234,6 +234,23 @@ pub mod waitqueue {
 /// The real `waitgraph` surface FAT32's claim donation names (FX12). The host
 /// registers no claim hooks, so no graph call is reached: the items exist to
 /// type-check and answer as an empty graph.
+/// The PI futex entry the native futex calls reach (`vdso_notify::futex_pi`):
+/// no PI futexes on the host, so every call answers `-ENOSYS` as the kernel
+/// does with nothing registered.
+pub mod pi_futex {
+    /// What a PI call asks.
+    pub enum PiCmd {
+        Lock { deadline: Option<u64> },
+        TryLock,
+        Unlock,
+    }
+    /// A user word that cannot be read or written.
+    pub struct UserFault;
+    pub fn sys_futex_pi(_uaddr: u64, _cmd: PiCmd) -> i64 {
+        -38
+    }
+}
+
 pub mod waitgraph {
     pub type TaskId = u32;
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]

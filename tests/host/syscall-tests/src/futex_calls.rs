@@ -82,16 +82,20 @@ fn a_wait_on_a_word_that_differs_is_eagain_and_a_timeout_makes_a_deadline() {
     assert!(calls[1].deadline.is_some(), "a timeout made no deadline");
 }
 
-/// The wide `expected` of a 64-bit caller is the word's 32 bits, as Linux's
-/// `val` is.
+/// `expected` is the low 32 bits of `a1`; the high 32 bits are the operation
+/// (`FUTEX_OP_*`): 0 is the plain wait, an unknown one is refused before the
+/// word is read.
 #[test]
-fn expected_is_the_low_32_bits() {
+fn expected_is_the_low_32_bits_and_the_high_ones_are_the_operation() {
     let _g = serial();
     caller();
     let w = word(7);
     let a = w as *const AtomicU32 as u64;
-    assert_eq!(crate::vdso_notify::sys_futex_wait(a, (1u64 << 32) | 7, 0), 0);
+    assert_eq!(crate::vdso_notify::sys_futex_wait(a, 7, 0), 0);
     assert_eq!(shim_take_calls()[0].arg, 7);
+    assert_eq!(crate::vdso_notify::sys_futex_wait(a, (9u64 << 32) | 7, 0), -22);
+    assert_eq!(crate::vdso_notify::sys_futex_wake(a, 9u64 << 32), -22);
+    assert!(shim_take_calls().is_empty(), "an unknown operation reached the table");
 }
 
 /// The point of the whole surface: a word of a shm region is keyed by (region,

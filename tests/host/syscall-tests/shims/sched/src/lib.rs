@@ -1388,6 +1388,18 @@ pub mod futex {
     pub use crate::futex_table::Key;
     use std::sync::Mutex;
 
+    /// A PI word the PI calls read and swap (`vdso_notify::ShmPiWord`).
+    pub trait PiWord {
+        fn read(&self) -> Result<u32, azos_sync::pi_futex::UserFault>;
+        fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, azos_sync::pi_futex::UserFault>;
+        fn fault_in(&self) -> bool;
+    }
+
+    /// No PI futexes on the host: `-ENOSYS`, as the kernel answers with none registered.
+    pub fn pi_call_key(_key: Key, _word: &dyn PiWord, _cmd: azos_sync::pi_futex::PiCmd) -> i64 {
+        -38
+    }
+
     /// One call the edge made: `(key, expected or n, deadline)`; `is_wait`
     /// tells which.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
