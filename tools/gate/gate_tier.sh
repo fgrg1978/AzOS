@@ -209,6 +209,8 @@ fi
 # A kernel with no personality (Kconfig LINUX_ABI off) depends on no Linux crate
 # on any ISA (`cargo tree`, nothing built; the self-test sees it with the gate's cell).
 [ "$lints" = 1 ] && { printf "  %-26s" "profile-cut lint..."; if out="$(python3 tools/lint/profile_cut_lint.py --self-test 2>&1 && python3 tools/lint/profile_cut_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+# An extension is what its Kconfig symbol, its manifest and its install say, and the base names no extension crate outside a `use-robot` item.
+[ "$lints" = 1 ] && { printf "  %-26s" "extension lint..."; if out="$(python3 tools/lint/extension_lint.py --self-test 2>&1 && python3 tools/lint/extension_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 # No linker script and no per-crate cargo config under userspace/, one target spec per ISA (sdk/targets).
 [ "$lints" = 1 ] && { printf "  %-26s" "user image layout lint..."; if out="$(python3 tools/lint/user_entry_lint.py --self-test 2>&1 && python3 tools/lint/user_entry_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "doc lint..."; if out="$(python3 tools/lint/doc_lint.py --self-test 2>&1 && python3 tools/lint/doc_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
