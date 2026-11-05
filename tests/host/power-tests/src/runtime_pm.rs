@@ -8,8 +8,8 @@
 //!   behaviour is the real one: `azos_devif::power::runtime::RuntimePm` behind
 //!   `PmServer`, the same pair a ring-3 driver serves. The state machine's own
 //!   cases are `tests/host/devif-tests/tests/runtime_pm.rs`.
-//! * the INA219 driver's request path (`userspace/drivers/ina_drv/src/request.rs`,
-//!   pulled in by path too): a request is answered after the use, and a chip
+//! * the INA219 driver's call path (`userspace/drivers/ina_drv/src/request.rs`,
+//!   pulled in by path too): a call is answered after the use, and a chip
 //!   that cannot be resumed never answers with the sample from before its
 //!   pause.
 //! * `shutdown` and `reboot`: irreversible, so `once_only`, so no layer that
@@ -355,12 +355,6 @@ impl request::Unit for Monitor {
     fn woke(&mut self) {
         self.sample = self.next;
     }
-    fn serve(&self, req: &request::DriverRequest) -> request::DriverReply {
-        let mut r = request::DriverReply::empty(req, request::STATUS_OK);
-        r.output[..4].copy_from_slice(&self.sample.to_le_bytes());
-        r.out_len = 4;
-        r
-    }
     fn done(&mut self) {
         self.pm.idle(self.now_ns);
     }
@@ -381,40 +375,34 @@ fn monitor_at_rest() -> Monitor {
     m
 }
 
-fn req() -> request::DriverRequest {
-    request::DriverRequest { token: 7, client_tid: 1, op: 0, in_len: 0, out_cap: 64, input: [0; 64] }
+/// What a read of the monitor answers: the sample the logic holds after the use.
+fn read(m: &mut Monitor) -> Option<u32> {
+    request::serve_use(m, |m| m.sample)
 }
 
 /// A read after a pause answers the sample taken after the resume, not the one
-/// from before it. Canary: calling `serve` before `woke` in `request::answer`
-/// turns this red.
+/// from before it. Canary: reading `sample` before `woke` in
+/// `request::serve_use` turns this red.
 #[test]
 fn a_read_after_a_pause_answers_a_fresh_sample() {
     let mut m = monitor_at_rest();
-    let r = request::answer(&mut m, &req());
-    assert_eq!(r.status, request::STATUS_OK);
-    assert_eq!(&r.output[..4], &222u32.to_le_bytes(), "the sample of after the resume");
+    assert_eq!(read(&mut m), Some(222), "the sample of after the resume");
     assert!(!m.pm.is_suspended() && m.chip.on);
 }
 
-/// A chip that cannot be resumed answers the failure status and no data, never
-/// the stale pre-suspend sample, and stays suspended. Canary: answering from
-/// `serve` when `begin` returned `None` turns this red.
+/// A chip that cannot be resumed answers nothing, never the stale pre-suspend
+/// sample, and stays suspended. Canary: serving when `begin` returned `None`
+/// turns this red.
 #[test]
 fn a_chip_that_cannot_resume_answers_a_failure() {
     let mut m = monitor_at_rest();
     m.chip.fail_resume = true;
-    let r = request::answer(&mut m, &req());
-    assert_eq!(r.status, request::STATUS_BAD_OP);
-    assert_eq!(r.out_len, 0, "no data");
-    assert_eq!(r.token, 7, "the reply is still the request's");
-    assert_eq!(r.output, [0; 64], "the sample from before the pause is not served");
+    assert_eq!(read(&mut m), None, "the sample from before the pause is not served");
     assert!(m.pm.is_suspended(), "it stays suspended");
     assert_eq!(m.pm.counters.callback_fails, 1);
     // The next use tries again, and the chip is back.
     m.chip.fail_resume = false;
-    let r = request::answer(&mut m, &req());
-    assert_eq!((r.status, &r.output[..4]), (request::STATUS_OK, &222u32.to_le_bytes()[..]));
+    assert_eq!(read(&mut m), Some(222));
 }
 
 /// A running chip is answered from the sample it holds and its idle clock
@@ -425,8 +413,7 @@ fn a_running_chip_is_answered_from_its_sample() {
     m.pm.resume(&mut m.chip, m.now_ns).unwrap();
     m.sample = 333;
     m.now_ns = ms(550);
-    let r = request::answer(&mut m, &req());
-    assert_eq!(&r.output[..4], &333u32.to_le_bytes());
+    assert_eq!(read(&mut m), Some(333));
     m.now_ns = ms(620);
     m.pm.tick(&mut m.chip, m.now_ns);
     assert!(!m.pm.is_suspended(), "the use restarted the idle clock");

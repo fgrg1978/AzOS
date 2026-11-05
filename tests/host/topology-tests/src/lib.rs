@@ -796,7 +796,7 @@ mod compmgr_contracts {
                 b"endpoint.input" => azos_topology::builder::INPUTD_ROW,
                 b"endpoint.login" => azos_topology::builder::LOGIND_ROW,
                 b"endpoint.compositor" => azos_topology::builder::COMPOSITOR_ROW,
-                b"endpoint.pm-ina" => azos_topology::builder::INADRV_ROW,
+                b"endpoint.pm-ina" | b"endpoint.powermon" => azos_topology::builder::INADRV_ROW,
                 b"endpoint.audio" => azos_topology::builder::AUDIOD_ROW,
                 _ => true,
             };
@@ -2224,16 +2224,14 @@ mod builder_tests {
     }
 
     /// Wave 9 (DRV1): each ring-3 driver row holds exactly the authority its
-    /// device needs. The INA219 registers as its one driver kind and holds its
-    /// one I2C slave, read from `crates/core/abi` (the join `autorun`'s
-    /// `drv.1` has); the buzzer serves its one endpoint (`READ` on
+    /// device needs. The INA219 serves its one endpoint and holds its one I2C
+    /// slave; the buzzer serves its one endpoint (`READ` on
     /// `endpoint.buzzer`, which is how it claims it) and holds its one PWM
     /// channel, and, where the build has a port space that holds them (x86_64),
     /// the PC speaker's two port ranges, its channel there.
     #[test]
     fn ring3_driver_rows_grant_one_service_and_one_device() {
         use azos_abi::cap::{CapKind, CapPerms};
-        use azos_abi::drv_kind::DRV_KIND_POWER_MON;
         let t = default_minimal();
         // The buzzer: the endpoint it serves, then its channel.
         let task = t.find_task(&MaybeStr::from_bytes(b"BUZZDRV.ELF")).expect("driver row present");
@@ -2255,13 +2253,10 @@ mod builder_tests {
         let task = t.find_task(&MaybeStr::from_bytes(b"INADRV.ELF")).expect("driver row present");
         let caps = t.caps_of(task);
         assert_eq!(caps.len(), 3);
-        assert_eq!(caps[0].kind, CapKind::Device);
-        assert_eq!(caps[0].perms, CapPerms::RW);
-        assert_eq!(caps[0].target.as_str(), format!("drv.{DRV_KIND_POWER_MON}"));
-        assert_eq!(caps[1].kind, CapKind::Endpoint);
-        assert_eq!(caps[1].perms, CapPerms::RW);
-        assert_eq!(caps[1].target.as_str(), "i2c.1.0x40");
-        // The endpoint it serves `DevicePower` on, for the power service.
+        assert_eq!((caps[0].kind, caps[0].perms, caps[0].target.as_str()), (CapKind::Endpoint, CapPerms::RW, "i2c.1.0x40"));
+        // The endpoint it serves `PowerMon` on, and the one for `DevicePower`
+        // (the power service).
+        assert_eq!((caps[1].kind, caps[1].perms, caps[1].target.as_str()), (CapKind::Endpoint, CapPerms::READ, azos_devif::powermon::ENDPOINT));
         assert_eq!((caps[2].kind, caps[2].perms, caps[2].target.as_str()), (CapKind::Endpoint, CapPerms::READ, "endpoint.pm-ina"));
         assert_eq!(task.mem_pages, 64, "frame budget");
     }

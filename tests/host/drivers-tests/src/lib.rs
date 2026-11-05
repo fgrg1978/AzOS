@@ -2080,44 +2080,37 @@ mod ina219_no_fabricated_battery {
         assert!(buf.iter().all(|&b| b == 0xAA), "the buffer must be untouched");
     }
 
-    /// Wave 11 (DRVPLACE): `serve` is the request dispatch both hosts call
-    /// (ring 3 per `DriverRequest`, the kernel per direct call), so the two
-    /// placements answer from the same code. Its layouts are the
-    /// `power_op` ABI: READ = the record, READ_TS = record + acq_ns,
-    /// STATS = samples, failures, configured, charge.
+    /// `Monitor` is the `PowerMon` interface both hosts serve (ring 3 behind
+    /// an endpoint, the kernel per direct call), so the two placements answer
+    /// from the same code: `read` is the record and the acquisition stamp,
+    /// `stats` the counters.
     ///
-    /// **Canary.** Swap the `samples`/`failures` fields in `serve`'s STATS
-    /// arm, or drop the `acq_ns` copy from READ_TS: this goes red.
+    /// **Canary.** Swap the `samples`/`failures` fields in `Monitor::stats`, or
+    /// drop the `acq_ns` stamp from `read`: this goes red.
     #[test]
-    fn serve_answers_the_power_op_layouts_from_the_chip_state() {
-        use azos_abi::drv_kind::power_op;
-        use azos_ina219::serve;
+    fn monitor_answers_the_power_mon_interface_from_the_chip_state() {
+        use azos_devif::powermon::PowerMon;
+        use azos_devif::outcome;
+        use azos_ina219::Monitor;
         let mut bus = FakeBus::chip(7400, 1500);
         let mut chip = Ina219::new();
-        let mut out = [0xAAu8; 64];
-        assert_eq!(serve(&chip, power_op::READ, 7, &mut out), Some(0), "unconfigured: no data");
-        assert_eq!(serve(&chip, power_op::READ_TS, 7, &mut out), Some(0), "unconfigured: no data");
+        assert_eq!(Monitor { chip: &chip, acq_ns: 7 }.read().code, outcome::NOT_READY, "unconfigured: no data");
         assert!(chip.init(&mut bus));
         chip.poll(&mut bus, 1_000);
         chip.poll(&mut bus, 101_000);
         let mut direct = [0u8; POWER_DATA_SIZE];
         assert_eq!(chip.read_power(&mut direct), POWER_DATA_SIZE);
-        assert_eq!(serve(&chip, power_op::READ, 0, &mut out), Some(POWER_DATA_SIZE));
-        assert_eq!(&out[..POWER_DATA_SIZE], &direct);
-        assert_eq!(serve(&chip, power_op::READ_TS, 0x1122_3344_5566_7788, &mut out),
-                   Some(power_op::POWER_TS_BYTES));
-        assert_eq!(&out[..POWER_DATA_SIZE], &direct);
-        assert_eq!(u64::from_le_bytes(out[POWER_DATA_SIZE..power_op::POWER_TS_BYTES].try_into().unwrap()),
-                   0x1122_3344_5566_7788);
-        assert_eq!(serve(&chip, power_op::STATS, 0, &mut out), Some(power_op::STATS_BYTES));
-        assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 2, "two samples");
-        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 0, "no failures");
-        assert_eq!(out[8], 1, "configured");
-        assert_eq!(u64::from_le_bytes(out[9..17].try_into().unwrap()), 1500 * 100_000,
-                   "1500 mA over the 100 ms between the two samples");
-        assert_eq!(serve(&chip, 0x99, 0, &mut out), None, "an unknown op is refused");
-        let mut short = [0u8; power_op::STATS_BYTES - 1];
-        assert_eq!(serve(&chip, power_op::STATS, 0, &mut short), Some(0));
+        let r = Monitor { chip: &chip, acq_ns: 0x1122_3344_5566_7788 }.read();
+        assert!(r.is_ok());
+        let mut got = [0u8; POWER_DATA_SIZE];
+        assert_eq!(r.value.copy_to(&mut got), POWER_DATA_SIZE);
+        assert_eq!(got, direct);
+        assert_eq!(r.value.acq_ns, 0x1122_3344_5566_7788);
+        let st = Monitor { chip: &chip, acq_ns: 0 }.stats().value;
+        assert_eq!(st.samples, 2, "two samples");
+        assert_eq!(st.failures, 0, "no failures");
+        assert!(st.configured);
+        assert_eq!(st.charge_ma_us, 1500 * 100_000, "1500 mA over the 100 ms between the two samples");
     }
 
     /// A buffer too small is refused independently of initialisation.

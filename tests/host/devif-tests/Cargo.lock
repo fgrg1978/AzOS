@@ -22,6 +22,7 @@ dependencies = [
  "azos_abi",
  "azos_devif",
  "azos_idl",
+ "azos_ina219",
 ]
 
 [[package]]
@@ -39,6 +40,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "azos_ina219"
+version = "0.1.0"
+dependencies = [
+ "azos_devif",
 ]
 
 [[package]]

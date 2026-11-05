@@ -12,6 +12,7 @@ description = "Host-side tests for azos_devif: the registry of kernel-hosted int
 azos_abi = { path = "../../../crates/core/abi" }
 azos_devif = { path = "../../../crates/core/devif" }
 azos_idl = { path = "../../../crates/core/idl" }
+azos_ina219 = { path = "../../../crates/drivers/ina219" }
 
 [profile.release]
 overflow-checks = true
