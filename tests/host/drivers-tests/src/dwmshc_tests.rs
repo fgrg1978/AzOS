@@ -35,7 +35,7 @@
 //! runs a card that refuses the switch.
 
 use super::dev_queue::IrqHooks;
-use super::dwmshc::{self, AttachError, Node, Regs};
+use super::dwmshc::{self, AttachError, Node};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Once};
@@ -806,7 +806,7 @@ impl Mock {
     }
 }
 
-impl Regs for Mock {
+impl Mock {
     fn base(&self) -> usize {
         self.base.load(Ordering::SeqCst)
     }
@@ -884,6 +884,8 @@ impl Regs for Mock {
         })
     }
 }
+
+registers32!(Mock, rd32, wr32, base);
 
 // ---- Harness ----
 

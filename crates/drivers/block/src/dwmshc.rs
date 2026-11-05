@@ -57,13 +57,14 @@
 // and the handler wakes it by TID. Every wait is bounded by the request's
 // deadline.
 //
-// The register file is reached through [`Regs`]: the kernel's [`Hw`] is a
-// volatile MMIO window, the host test (`tests/host/drivers-tests`) drives the
+// The register file is reached through [`Mmio`]: the kernel's [`Window`] is the
+// node's MMIO window, the host test (`tests/host/drivers-tests`) drives the
 // very same functions over a register model of the controller and a card.
 
 use crate::dev_queue::{DevQueue, IrqHooks, Turn};
 use azos_dma::Direction;
 use azos_drv_api::block::{DeviceWait, FlushError};
+use azos_drvkit::{Mmio, Window};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 // ── Registers (U-Boot `include/dwmmc.h`, offsets and bits) ───────────────────
@@ -285,34 +286,15 @@ pub enum Fault {
 }
 
 // ── Register access ──────────────────────────────────────────────────────────
-/// The controller's register file, all 32-bit. [`Hw`] is the MMIO window; the
-/// host test implements it over a model of the controller and the card.
-pub trait Regs {
-    /// The window's address: names the controller to the DMA domain registry
-    /// (JH7110's is not coherent with the CPU).
-    fn base(&self) -> usize;
-    fn rd32(&self, off: usize) -> u32;
-    fn wr32(&self, off: usize, val: u32);
-}
+// The controller's register file is a `Mmio`, all 32-bit: the window of the
+// bound node in the kernel, a model of the controller and the card in the host
+// test.
 
-/// The controller's mapped register window at this address.
-pub struct Hw(pub usize);
-
-impl Regs for Hw {
-    fn base(&self) -> usize {
-        self.0
-    }
-    #[inline(always)]
-    fn rd32(&self, off: usize) -> u32 {
-        // SAFETY: `self.0` is the window the hardware bus mapped for the bound
-        // node (`attach`), and `off` a register inside its 64 KiB.
-        unsafe { azos_arch_api::mmio::read32(self.0 + off) }
-    }
-    #[inline(always)]
-    fn wr32(&self, off: usize, val: u32) {
-        // SAFETY: as `rd32`.
-        unsafe { azos_arch_api::mmio::write32(self.0 + off, val) }
-    }
+/// The controller's window at `base`, the node the hardware bus mapped (`attach`).
+fn hw(base: usize) -> Window {
+    // SAFETY: `base` is that mapped window, and every register offset the
+    // driver names is inside its 64 KiB.
+    unsafe { Window::new(base) }
 }
 
 /// The MMIO read that saw the controller finish ordered before the CPU's reads
@@ -468,14 +450,14 @@ fn idinten() -> usize {
 /// Move the controller's pending events into `EVENTS`: read RINTSTS and IDSTS,
 /// write back exactly the bits read (write-1-to-clear), OR them in.
 /// Idempotent across two callers racing on the same bits.
-fn harvest<R: Regs>(r: &R) -> u32 {
-    let ri = r.rd32(RINTSTS) & RI_MASK;
+fn harvest<R: Mmio>(r: &R) -> u32 {
+    let ri = r.read32(RINTSTS) & RI_MASK;
     if ri != 0 {
-        r.wr32(RINTSTS, ri);
+        r.write32(RINTSTS, ri);
     }
-    let id = r.rd32(idsts()) & ID_MASK;
+    let id = r.read32(idsts()) & ID_MASK;
     if id != 0 {
-        r.wr32(idsts(), id);
+        r.write32(idsts(), id);
     }
     let st = ri | (id << 16);
     if st != 0 {
@@ -485,9 +467,9 @@ fn harvest<R: Regs>(r: &R) -> u32 {
 }
 
 /// Forget everything pending, before a command is issued.
-fn clear_events<R: Regs>(r: &R) {
-    r.wr32(RINTSTS, 0xFFFF_FFFF);
-    r.wr32(idsts(), 0xFFFF_FFFF);
+fn clear_events<R: Mmio>(r: &R) {
+    r.write32(RINTSTS, 0xFFFF_FFFF);
+    r.write32(idsts(), 0xFFFF_FFFF);
     EVENTS.store(0, Ordering::Release);
 }
 
@@ -500,11 +482,11 @@ pub fn irq(line: u32) -> Option<bool> {
     if base == 0 || IRQ_LINE.load(Ordering::Acquire) != line {
         return None;
     }
-    Some(irq_on(&Hw(base)))
+    Some(irq_on(&hw(base)))
 }
 
 /// [`irq`] over `r`.
-pub fn irq_on<R: Regs>(r: &R) -> bool {
+pub fn irq_on<R: Mmio>(r: &R) -> bool {
     harvest(r);
     IRQ_TAKEN.fetch_add(1, Ordering::Relaxed);
     // After the event is visible in `EVENTS`: the fence inside `sleeper` pairs
@@ -524,7 +506,7 @@ pub fn irq_on<R: Regs>(r: &R) -> bool {
 /// CPU under `-icount ... sleep=off` jumps its clock to the next timer). `ready`
 /// is what the sleeper looks at after it is listed. `false` when the caller
 /// cannot sleep (polled mode, no scheduler): it then spins.
-fn sleep_until<R: Regs>(r: &R, deadline: u64, ready: impl FnOnce(&R) -> bool) -> bool {
+fn sleep_until<R: Mmio>(r: &R, deadline: u64, ready: impl FnOnce(&R) -> bool) -> bool {
     if !irq_mode() {
         return false;
     }
@@ -551,7 +533,7 @@ fn sleep_until<R: Regs>(r: &R, deadline: u64, ready: impl FnOnce(&R) -> bool) ->
 /// Wait for one of the events `want` (bits of `EV_MASK`), up to `timeout_us`.
 /// The error events win over `want`. On an error or the deadline the
 /// controller is reset so the next command starts clean.
-fn wait_events<R: Regs>(r: &R, want: u32, timeout_us: u64) -> Result<(), Fault> {
+fn wait_events<R: Mmio>(r: &R, want: u32, timeout_us: u64) -> Result<(), Fault> {
     let deadline = deadline_after_us(timeout_us);
     loop {
         harvest(r);
@@ -593,10 +575,10 @@ fn wait_events<R: Regs>(r: &R, want: u32, timeout_us: u64) -> Result<(), Fault> 
 /// Wait for the card to release DAT0 (STATUS.DATA_BUSY clear), up to
 /// `timeout_us`. Nothing raises an interrupt for it: the wait naps one slice at
 /// a time when it can sleep, and spins when it cannot.
-fn wait_not_busy<R: Regs>(r: &R, timeout_us: u64) -> bool {
+fn wait_not_busy<R: Mmio>(r: &R, timeout_us: u64) -> bool {
     let deadline = deadline_after_us(timeout_us);
     loop {
-        if r.rd32(STATUS) & STATUS_DATA_BUSY == 0 {
+        if r.read32(STATUS) & STATUS_DATA_BUSY == 0 {
             return true;
         }
         if now() >= deadline {
@@ -610,10 +592,10 @@ fn wait_not_busy<R: Regs>(r: &R, timeout_us: u64) -> bool {
 
 /// Spin until the bits in `mask` of register `off` are clear, up to
 /// `timeout_us`.
-fn wait_clear<R: Regs>(r: &R, off: usize, mask: u32, timeout_us: u64) -> bool {
+fn wait_clear<R: Mmio>(r: &R, off: usize, mask: u32, timeout_us: u64) -> bool {
     let deadline = deadline_after_us(timeout_us);
     loop {
-        if r.rd32(off) & mask == 0 {
+        if r.read32(off) & mask == 0 {
             return true;
         }
         if now() >= deadline {
@@ -627,10 +609,10 @@ fn wait_clear<R: Regs>(r: &R, off: usize, mask: u32, timeout_us: u64) -> bool {
 /// (CTRL, then BMOD.SWR), give the card interface its clock settings back (a
 /// reset needs an update-clock command), drop what is pending and restore the
 /// interrupt enables.
-fn recover<R: Regs>(r: &R) {
-    r.wr32(CTRL, r.rd32(CTRL) | CTRL_RESET_ALL);
+fn recover<R: Mmio>(r: &R) {
+    r.write32(CTRL, r.read32(CTRL) | CTRL_RESET_ALL);
     wait_clear(r, CTRL, CTRL_RESET_ALL, RESET_TIMEOUT_US);
-    r.wr32(BMOD, BMOD_SWR);
+    r.write32(BMOD, BMOD_SWR);
     wait_clear(r, BMOD, BMOD_SWR, RESET_TIMEOUT_US);
     update_clock(r);
     clear_events(r);
@@ -638,15 +620,15 @@ fn recover<R: Regs>(r: &R) {
 }
 
 /// The interrupt enables of the current mode: nothing when polled.
-fn enable_irqs<R: Regs>(r: &R) {
+fn enable_irqs<R: Mmio>(r: &R) {
     if irq_mode() {
-        r.wr32(INTMASK, RI_MASK);
-        r.wr32(idinten(), ID_MASK);
-        r.wr32(CTRL, r.rd32(CTRL) | CTRL_INT_ENABLE);
+        r.write32(INTMASK, RI_MASK);
+        r.write32(idinten(), ID_MASK);
+        r.write32(CTRL, r.read32(CTRL) | CTRL_INT_ENABLE);
     } else {
-        r.wr32(CTRL, r.rd32(CTRL) & !CTRL_INT_ENABLE);
-        r.wr32(INTMASK, 0);
-        r.wr32(idinten(), 0);
+        r.write32(CTRL, r.read32(CTRL) & !CTRL_INT_ENABLE);
+        r.write32(INTMASK, 0);
+        r.write32(idinten(), 0);
     }
 }
 
@@ -654,7 +636,7 @@ fn enable_irqs<R: Regs>(r: &R) {
 /// the kernel's sleep and wake `hooks`. Call BEFORE the interrupt controller
 /// enables `line` (the handler, [`irq`], must already recognise it). `false`
 /// where it cannot be (not initialised).
-pub fn set_irq_mode_on<R: Regs>(r: &R, line: u32, hooks: &'static IrqHooks) -> bool {
+pub fn set_irq_mode_on<R: Mmio>(r: &R, line: u32, hooks: &'static IrqHooks) -> bool {
     if !READY.load(Ordering::Acquire) {
         return false;
     }
@@ -670,11 +652,11 @@ pub fn set_irq_mode_on<R: Regs>(r: &R, line: u32, hooks: &'static IrqHooks) -> b
 /// [`set_irq_mode_on`] over the attached controller's window.
 pub fn set_irq_mode(line: u32, hooks: &'static IrqHooks) -> bool {
     let base = BASE.load(Ordering::Acquire);
-    base != 0 && set_irq_mode_on(&Hw(base), line, hooks)
+    base != 0 && set_irq_mode_on(&hw(base), line, hooks)
 }
 
 /// Back to polled completions (the line could not be routed).
-pub fn irq_off_on<R: Regs>(r: &R) {
+pub fn irq_off_on<R: Mmio>(r: &R) {
     IRQ_LINE.store(u32::MAX, Ordering::Release);
     enable_irqs(r);
 }
@@ -683,7 +665,7 @@ pub fn irq_off_on<R: Regs>(r: &R) {
 pub fn irq_off() {
     let base = BASE.load(Ordering::Acquire);
     if base != 0 {
-        irq_off_on(&Hw(base));
+        irq_off_on(&hw(base));
     }
 }
 
@@ -871,26 +853,26 @@ pub fn clock_divider(ciu_hz: u32, target_hz: u32) -> Option<u32> {
 /// Tell the card interface unit to take the clock registers (an update-clock
 /// command, no card command): START with UPD_CLK, then wait for START to clear
 /// (U-Boot `dwmci_control_clken`).
-fn update_clock<R: Regs>(r: &R) -> bool {
-    r.wr32(CMD, CMD_START | CMD_UPD_CLK | CMD_PRV_DAT_WAIT);
+fn update_clock<R: Mmio>(r: &R) -> bool {
+    r.write32(CMD, CMD_START | CMD_UPD_CLK | CMD_PRV_DAT_WAIT);
     wait_clear(r, CMD, CMD_START, START_TIMEOUT_US)
 }
 
 /// Run the card clock at the highest rate not above `target_hz`, with the
 /// clock stopped while the divider changes (U-Boot `dwmci_update_div`).
-fn set_clock<R: Regs>(r: &R, target_hz: u32) -> bool {
+fn set_clock<R: Mmio>(r: &R, target_hz: u32) -> bool {
     let Some(div) = clock_divider(CIU_HZ.load(Ordering::Acquire), target_hz) else {
         azos_drv_sys::kerr!("[SDMMC] card clock {} Hz is out of reach of the {} Hz CIU clock",
             target_hz, CIU_HZ.load(Ordering::Acquire));
         return false;
     };
-    r.wr32(CLKENA, 0);
+    r.write32(CLKENA, 0);
     if !update_clock(r) {
         return false;
     }
-    r.wr32(CLKDIV, div);
-    r.wr32(CLKSRC, 0);
-    r.wr32(CLKENA, CLKENA_ENABLE | CLKENA_LOW_PWR);
+    r.write32(CLKDIV, div);
+    r.write32(CLKSRC, 0);
+    r.write32(CLKENA, CLKENA_ENABLE | CLKENA_LOW_PWR);
     update_clock(r)
 }
 
@@ -938,11 +920,11 @@ fn waiting<T>(turn: Option<&Turn<'_>>, f: impl FnOnce() -> T) -> T {
 /// holds response bits 127:96 and CSD bit N is bit N of the 128-bit value
 /// (U-Boot `dwmci_send_cmd_common`, which reads RESP3..RESP0 into
 /// `response[0..4]`). A short response is word 0 only.
-fn read_response<R: Regs>(r: &R, long: bool) -> [u32; 4] {
+fn read_response<R: Mmio>(r: &R, long: bool) -> [u32; 4] {
     if long {
-        [r.rd32(RESP3), r.rd32(RESP2), r.rd32(RESP1), r.rd32(RESP0)]
+        [r.read32(RESP3), r.read32(RESP2), r.read32(RESP1), r.read32(RESP0)]
     } else {
-        [r.rd32(RESP0), 0, 0, 0]
+        [r.read32(RESP0), 0, 0, 0]
     }
 }
 
@@ -951,7 +933,7 @@ fn read_response<R: Regs>(r: &R, long: bool) -> [u32; 4] {
 /// response is R1b (CMD7, CMD12) leaves the card holding DAT0 low for a while;
 /// the busy is not waited for here but by the start of the next command, which
 /// is the only thing that could collide with it.
-fn send_cmd_on<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, resp: Resp) -> Result<[u32; 4], Fault> {
+fn send_cmd_on<R: Mmio>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, resp: Resp) -> Result<[u32; 4], Fault> {
     let abort = cmd == CMD_STOP;
     // A previous write's programming, or an R1b's busy: the controller waits on
     // its own for the data state machine (PRV_DAT_WAIT), but DAT0 is the card's.
@@ -966,8 +948,8 @@ fn send_cmd_on<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, resp
     }
     programming(turn, || {
         clear_events(r);
-        r.wr32(CMDARG, arg);
-        r.wr32(CMD, flags);
+        r.write32(CMDARG, arg);
+        r.write32(CMD, flags);
     });
     if !waiting(turn, || wait_clear(r, CMD, CMD_START, START_TIMEOUT_US)) {
         azos_drv_sys::kerr!("[SDMMC] CMD{}: the controller did not take the command", cmd);
@@ -979,7 +961,7 @@ fn send_cmd_on<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, resp
 }
 
 /// CMD55 then the application command `acmd`.
-fn send_acmd_on<R: Regs>(r: &R, turn: Option<&Turn<'_>>, rca: u32, acmd: u32, arg: u32, resp: Resp) -> Result<[u32; 4], Fault> {
+fn send_acmd_on<R: Mmio>(r: &R, turn: Option<&Turn<'_>>, rca: u32, acmd: u32, arg: u32, resp: Resp) -> Result<[u32; 4], Fault> {
     send_cmd_on(r, turn, CMD_APP_CMD, rca << 16, Resp::R1)?;
     send_cmd_on(r, turn, acmd, arg, resp)
 }
@@ -988,7 +970,7 @@ fn send_acmd_on<R: Regs>(r: &R, turn: Option<&Turn<'_>>, rca: u32, acmd: u32, ar
 /// over the bounce pages (a write's data is already there). Returns the
 /// command's R1. `Err` on any controller error, IDMAC error or timeout (the
 /// controller is reset).
-fn data_cmd<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, write: bool, bytes: usize, blksz: u32) -> Result<u32, Fault> {
+fn data_cmd<R: Mmio>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, write: bool, bytes: usize, blksz: u32) -> Result<u32, Fault> {
     debug_assert!(bytes >= 1 && bytes <= XFER_PAGES * PAGE);
     let pages = write_chain(bytes);
 
@@ -1012,7 +994,7 @@ fn data_cmd<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, write: 
     }
     // The FIFO is empty before a transfer (a reset bit, a few CIU clocks).
     waiting(turn, || {
-        r.wr32(CTRL, r.rd32(CTRL) | CTRL_FIFO_RESET);
+        r.write32(CTRL, r.read32(CTRL) | CTRL_FIFO_RESET);
         wait_clear(r, CTRL, CTRL_FIFO_RESET, RESET_TIMEOUT_US)
     });
 
@@ -1023,16 +1005,16 @@ fn data_cmd<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, write: 
     }
     programming(turn, || {
         clear_events(r);
-        r.wr32(DBADDR, table_pa as u32);
+        r.write32(DBADDR, table_pa as u32);
         if DMA64.load(Ordering::Acquire) {
-            r.wr32(DBADDRU64, (table_pa >> 32) as u32);
+            r.write32(DBADDRU64, (table_pa >> 32) as u32);
         }
-        r.wr32(CTRL, r.rd32(CTRL) | CTRL_IDMAC_EN | CTRL_DMA_EN);
-        r.wr32(BMOD, r.rd32(BMOD) | BMOD_FB | BMOD_DE);
-        r.wr32(BLKSIZ, blksz);
-        r.wr32(BYTCNT, bytes as u32);
-        r.wr32(CMDARG, arg);
-        r.wr32(CMD, flags);
+        r.write32(CTRL, r.read32(CTRL) | CTRL_IDMAC_EN | CTRL_DMA_EN);
+        r.write32(BMOD, r.read32(BMOD) | BMOD_FB | BMOD_DE);
+        r.write32(BLKSIZ, blksz);
+        r.write32(BYTCNT, bytes as u32);
+        r.write32(CMDARG, arg);
+        r.write32(CMD, flags);
     });
 
     let res = (|| {
@@ -1043,14 +1025,14 @@ fn data_cmd<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, write: 
         }
         waiting(turn, || wait_events(r, EV_CDONE, CMD_TIMEOUT_US))?;
         // The card's verdict on the command (address, write protect, ...).
-        let r1 = r.rd32(RESP0);
+        let r1 = r.read32(RESP0);
         waiting(turn, || wait_events(r, EV_DTO, XFER_TIMEOUT_US))?;
         // The IDMAC has also moved the last byte to or from memory.
         waiting(turn, || wait_events(r, EV_DMA_DONE, XFER_TIMEOUT_US))?;
         Ok(r1)
     })();
     // Whether it worked or not, the controller stops walking the chain.
-    programming(turn, || r.wr32(CTRL, r.rd32(CTRL) & !CTRL_DMA_EN));
+    programming(turn, || r.write32(CTRL, r.read32(CTRL) & !CTRL_DMA_EN));
     let r1 = res?;
 
     io_rmb();
@@ -1068,7 +1050,7 @@ fn data_cmd<R: Regs>(r: &R, turn: Option<&Turn<'_>>, cmd: u32, arg: u32, write: 
 /// One request chunk of `nblk` sectors (1..=`MAX_XFER_BLOCKS`) at card address
 /// `addr`: CMD17/24, or CMD18/25 followed by CMD12. Returns the data command's
 /// R1.
-fn xfer_chunk<R: Regs>(r: &R, turn: &Turn<'_>, write: bool, addr: u32, nblk: u32) -> Result<u32, Fault> {
+fn xfer_chunk<R: Mmio>(r: &R, turn: &Turn<'_>, write: bool, addr: u32, nblk: u32) -> Result<u32, Fault> {
     debug_assert!(nblk >= 1 && nblk <= MAX_XFER_BLOCKS);
     let multi = nblk > 1;
     let cmd = match (write, multi) {
@@ -1118,7 +1100,7 @@ pub fn csd_sectors(csd: &[u32; 4]) -> Option<u64> {
 /// Switch the card to high speed (CMD6 in two steps, the second one only when
 /// the first said the function is there) and run the clock at 50 MHz.
 /// `false` leaves the card at the default speed.
-fn enter_high_speed<R: Regs>(r: &R, csd: &[u32; 4]) -> bool {
+fn enter_high_speed<R: Mmio>(r: &R, csd: &[u32; 4]) -> bool {
     if csd_bits(csd, 95, 84) & CCC_SWITCH == 0 {
         return false;
     }
@@ -1153,11 +1135,11 @@ pub fn init() -> bool {
     if base == 0 {
         return false;
     }
-    init_on(&Hw(base))
+    init_on(&hw(base))
 }
 
 /// [`init`] over `r`.
-pub fn init_on<R: Regs>(r: &R) -> bool {
+pub fn init_on<R: Mmio>(r: &R) -> bool {
     READY.store(false, Ordering::Release);
     HIGH_SPEED.store(false, Ordering::Release);
     CAPACITY.store(0, Ordering::Release);
@@ -1168,8 +1150,8 @@ pub fn init_on<R: Regs>(r: &R) -> bool {
     }
 
     // ── 1. Reset the controller, its FIFO and the IDMAC ─────────────────────
-    r.wr32(PWREN, 1);
-    r.wr32(CTRL, CTRL_RESET_ALL);
+    r.write32(PWREN, 1);
+    r.write32(CTRL, CTRL_RESET_ALL);
     if !wait_clear(r, CTRL, CTRL_RESET_ALL, RESET_TIMEOUT_US) {
         azos_drv_sys::kerr!("[SDMMC] controller reset did not complete");
         return false;
@@ -1179,18 +1161,18 @@ pub fn init_on<R: Regs>(r: &R) -> bool {
     // MSIZE 0b010 (burst of 8), RX watermark thr - 1, TX watermark thr, with
     // thr half the FIFO (U-Boot `dwmci_init_fifo`).
     let thr = FIFO_DEPTH.load(Ordering::Acquire) / 2;
-    r.wr32(FIFOTH, (0x2 << 28) | ((thr - 1) << FIFOTH_RX_SHIFT) | thr);
-    r.wr32(BMOD, BMOD_SWR);
+    r.write32(FIFOTH, (0x2 << 28) | ((thr - 1) << FIFOTH_RX_SHIFT) | thr);
+    r.write32(BMOD, BMOD_SWR);
     wait_clear(r, BMOD, BMOD_SWR, RESET_TIMEOUT_US);
-    DMA64.store(r.rd32(HCON) & HCON_ADDR64 != 0, Ordering::Release);
+    DMA64.store(r.read32(HCON) & HCON_ADDR64 != 0, Ordering::Release);
     if !dma_prepare() {
         azos_drv_sys::kerr!("[SDMMC] no DMA-reachable memory for the IDMAC chain");
         return false;
     }
 
     // ── 3. Event reporting: status polled until the kernel routes the line ──
-    r.wr32(TMOUT, TMOUT_MAX);
-    r.wr32(CTYPE, 0);
+    r.write32(TMOUT, TMOUT_MAX);
+    r.write32(CTYPE, 0);
     clear_events(r);
     enable_irqs(r);
 
@@ -1273,7 +1255,7 @@ pub fn init_on<R: Regs>(r: &R) -> bool {
         azos_drv_sys::kerr!("[SDMMC] ACMD6 (bus width) failed");
         return false;
     }
-    r.wr32(CTYPE, CTYPE_4BIT);
+    r.write32(CTYPE, CTYPE_4BIT);
 
     // ── 10. 25 MHz, then high speed (50 MHz) when the card has it ───────────
     if !set_clock(r, CLK_DEFAULT_HZ) {
@@ -1311,11 +1293,11 @@ pub fn read(lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
     if base == 0 {
         return Err(());
     }
-    read_on(&Hw(base), lba, count, buf)
+    read_on(&hw(base), lba, count, buf)
 }
 
 /// [`read`] over `r`.
-pub fn read_on<R: Regs>(r: &R, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+pub fn read_on<R: Mmio>(r: &R, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
     if buf.len() < count as usize * 512 {
         return Err(());
     }
@@ -1343,11 +1325,11 @@ pub fn write(lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     if base == 0 {
         return Err(());
     }
-    write_on(&Hw(base), lba, count, buf)
+    write_on(&hw(base), lba, count, buf)
 }
 
 /// [`write`] over `r`.
-pub fn write_on<R: Regs>(r: &R, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+pub fn write_on<R: Mmio>(r: &R, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     if buf.len() < count as usize * 512 {
         return Err(());
     }
@@ -1359,7 +1341,7 @@ pub fn write_on<R: Regs>(r: &R, lba: u64, count: u32, buf: &[u8]) -> Result<(), 
     res
 }
 
-fn write_chunks<R: Regs>(r: &R, turn: &Turn<'_>, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+fn write_chunks<R: Mmio>(r: &R, turn: &Turn<'_>, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     if !READY.load(Ordering::Acquire) || !in_range(lba, count) {
         return Err(());
     }
@@ -1383,7 +1365,7 @@ fn write_chunks<R: Regs>(r: &R, turn: &Turn<'_>, lba: u64, count: u32, buf: &[u8
 /// a CMD13 the controller did not complete, any R1 error bit, a state other
 /// than `tran`/`prg`/`rcv` (the card is not selected, or is somewhere a write
 /// cannot leave it), or `FLUSH_TIMEOUT_US` without reaching `tran` + ready.
-fn wait_card_ready<R: Regs>(r: &R, turn: &Turn<'_>, rca: u32) -> Result<u32, FlushError> {
+fn wait_card_ready<R: Mmio>(r: &R, turn: &Turn<'_>, rca: u32) -> Result<u32, FlushError> {
     let deadline = deadline_after_us(FLUSH_TIMEOUT_US);
     loop {
         let Ok(resp) = send_cmd_on(r, Some(turn), CMD_SEND_STATUS, rca << 16, Resp::R1) else {
@@ -1423,11 +1405,11 @@ pub fn flush() -> Result<(), FlushError> {
     if base == 0 {
         return Err(FlushError::Io);
     }
-    flush_on(&Hw(base))
+    flush_on(&hw(base))
 }
 
 /// [`flush`] over `r`.
-pub fn flush_on<R: Regs>(r: &R) -> Result<(), FlushError> {
+pub fn flush_on<R: Mmio>(r: &R) -> Result<(), FlushError> {
     let turn = QUEUE.submit();
     if !READY.load(Ordering::Acquire) {
         return Err(FlushError::Io);
