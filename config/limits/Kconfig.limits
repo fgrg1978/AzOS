@@ -1913,8 +1913,8 @@ config TMPFS_MAX_FILES
       an entry; a full table refuses the next create with ENOSPC.  / and /tmp
       are two tmpfs instances and each has this many.
 
-      Cost: 104 B of RAM per entry and instance (.bss), the same on riscv64
-      and aarch64: 13,312 B for the two at the default 64.  A name is stored
+      Cost: 112 B of RAM per entry and instance (.bss), the same on riscv64
+      and aarch64: 14,336 B for the two at the default 64.  A name is stored
       in its entry (63 bytes at most); a path costs nothing, whatever its
       depth, and is limited only by the VFS's own 512 bytes.  File data is not
       in this table (see TMPFS_MAX_KB).

@@ -452,8 +452,9 @@ pub trait FileSystem: Sync {
     fn opened(&self, _key: &InodeKey) {}
 
     /// The open that [`opened`](Self::opened) counted ended; the file, if it
-    /// was unlinked meanwhile and this was its last open, is destroyed.
-    fn released(&self, _key: &InodeKey) {}
+    /// was unlinked meanwhile and this was its last open, is destroyed: `true`,
+    /// and nothing it had cached is worth keeping.
+    fn released(&self, _key: &InodeKey) -> bool { false }
 
     /// Set the file's size to `len`, dropping or zero-filling the tail.
     fn truncate(&self, _key: &InodeKey, _len: u64) -> Result<(), FsErr> { Err(FsErr::Unsupported) }
@@ -982,7 +983,10 @@ fn inode_free(idx: u32) {
     // Free heap memory after releasing the lock.
     unsafe { dealloc_raw(data, cap as usize); }
     if let (Some(fs), true) = (backing.fs, backing.streaming && !backing.ro_stream) {
-        fs.released(&backing.key);
+        if fs.released(&backing.key) {
+            // Nothing is left to write the pages back to.
+            page_cache_drop(fs, Some(&backing.key), 0);
+        }
     }
 }
 
@@ -3089,6 +3093,39 @@ fn over_watermark(dirty: usize, cap: usize) -> bool {
     cap != 0 && dirty as u64 * 100 >= cap as u64 * azos_limits::FS_WRITEBACK_WATERMARK_PCT as u64
 }
 
+/// Is the file a key of a [`FileSystem::keys_follow_file`] backend named
+/// destroyed? Its dirty pages have nowhere to go.
+fn file_is_gone(b: &'static dyn FileSystem, key: &InodeKey) -> bool {
+    b.keys_follow_file() && b.stat(key).is_none()
+}
+
+/// Drop the pages of every file of `b` the cache tracks as dirty whose file is
+/// destroyed ([`file_is_gone`]).
+fn drop_dead_files(b: &'static dyn FileSystem) {
+    if !b.keys_follow_file() { return; }
+    let mut from = 0;
+    while from < MAX_FILES {
+        let mut keys = [ZEROED_KEY; 8];
+        let mut n = 0;
+        {
+            let dirty = DIRTY.lock();
+            while from < MAX_FILES && n < keys.len() {
+                let e = &dirty[from];
+                from += 1;
+                if e.fs.is_some_and(|f| same_backend(f, b)) {
+                    keys[n] = e.key;
+                    n += 1;
+                }
+            }
+        }
+        for k in &keys[..n] {
+            if file_is_gone(b, k) {
+                page_cache_drop(b, Some(k), 0);
+            }
+        }
+    }
+}
+
 /// Write the cache's dirty pages of `v`'s file back (every Domain's: a
 /// write-back is per file); the file is clean in the tracking when it answers
 /// `Ok`, minus what each Domain dirtied since the rows were read.
@@ -3103,7 +3140,15 @@ fn dirty_flush(h: &PageCacheHooks, v: &DirtyFile, now: u64) -> Result<(), FsErr>
             n += 1;
         }
     }
-    (h.writeback)(fs, &v.key)?;
+    if let Err(e) = (h.writeback)(fs, &v.key) {
+        if !file_is_gone(fs, &v.key) {
+            return Err(e);
+        }
+        // Its file was destroyed with the pages dirty (evicted, or unlinked
+        // and closed): they are not worth writing, and not a failure.
+        page_cache_drop(fs, Some(&v.key), 0);
+        return Ok(());
+    }
     for e in DIRTY.lock().iter_mut() {
         if dirty_is(e, fs, Some(&v.key)) {
             let seen = rows[..n].iter().find(|r| r.0 == e.domain).map_or(u32::MAX, |r| r.1);
@@ -3139,6 +3184,7 @@ pub(crate) fn page_cache_fsync(b: &'static dyn FileSystem, key: &InodeKey) -> Re
 /// earlier write-back nobody waited for that failed is reported once.
 pub(crate) fn page_cache_flush_fs(b: &'static dyn FileSystem) -> Result<(), FsErr> {
     let Some(h) = cached(b) else { return Ok(()) };
+    drop_dead_files(b);
     (h.flush_fs)(b)?;
     dirty_clear(b, None);
     wb_take_failed(b)

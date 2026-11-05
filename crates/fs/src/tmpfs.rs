@@ -21,7 +21,7 @@
 //!
 //! ## Keys
 //! A file is named to the VFS by its entry, not by its path: the key holds
-//! the entry's slot and id, so it follows the file through a rename and
+//! the entry's slot and a 48-bit id, so it follows the file through a rename and
 //! names nothing once the file is gone (a write through it never recreates
 //! it). A file that is not there yet is named by its directory's slot and id
 //! plus the leaf name, which is what `create` needs. Neither form depends on
@@ -51,8 +51,11 @@ const MOUNT_DIR: u16 = u16::MAX;
 /// `parent` of an unlinked file that is still open.
 const ORPHAN: u16 = u16::MAX - 1;
 
-/// Bytes of a key before the leaf name: slot (`u16`) and id (`u32`).
-const KEY_HEAD: usize = 6;
+/// Bytes of a key before the leaf name: slot (`u16`) and id (48 bits).
+const KEY_HEAD: usize = 8;
+/// The last id an instance hands out: it makes no more entries after (2^48
+/// creates is not reachable), where a wrapped id could match a stale key.
+const ID_MAX: u64 = (1 << 48) - 1;
 
 const _: () = assert!(KEY_HEAD + TMPFS_NAME_LEN - 1 <= INODE_KEY_LEN);
 const _: () = assert!(TMPFS_MAX_FILES < ORPHAN as usize);
@@ -66,9 +69,9 @@ struct Entry {
     size:     usize,
     /// Lower is older; refreshed by every write.
     seq:      u32,
-    /// Never repeats on an instance (wraps past 2^32 entries made): a key
-    /// holding the id of a freed entry names nothing.
-    id:       u32,
+    /// Never repeats on an instance (see [`ID_MAX`]): a key holding the id of
+    /// a freed entry names nothing.
+    id:       u64,
     /// Open files on it (`opened` / `released`).
     refs:     u16,
     parent:   u16,
@@ -88,7 +91,7 @@ struct State {
     entries:    [Entry; TMPFS_MAX_FILES],
     used_bytes: usize,
     next_seq:   u32,
-    next_id:    u32,
+    next_id:    u64,
     /// A write past the byte bound evicts the oldest file first.
     evicts:     bool,
 }
@@ -162,15 +165,17 @@ impl State {
         s
     }
 
-    fn new_id(&mut self) -> u32 {
+    fn new_id(&mut self) -> Result<u64, FsErr> {
         let id = self.next_id;
-        self.next_id = id.checked_add(1).unwrap_or(1);
-        id
+        if id > ID_MAX { return Err(FsErr::NoSpace); }
+        self.next_id = id + 1;
+        Ok(id)
     }
 
     fn insert(&mut self, parent: u16, name: &[u8], is_dir: bool) -> Result<usize, FsErr> {
         let slot = self.free_slot()?;
-        let (seq, id) = (self.bump(), self.new_id());
+        let id = self.new_id()?;
+        let seq = self.bump();
         let e = &mut self.entries[slot];
         *e = EMPTY_ENTRY;
         e.name[..name.len()].copy_from_slice(name);
@@ -186,7 +191,7 @@ impl State {
     fn key_of(&self, slot: usize) -> InodeKey {
         let mut bytes = [0u8; INODE_KEY_LEN];
         bytes[..2].copy_from_slice(&(slot as u16).to_le_bytes());
-        bytes[2..KEY_HEAD].copy_from_slice(&self.entries[slot].id.to_le_bytes());
+        bytes[2..KEY_HEAD].copy_from_slice(&self.entries[slot].id.to_le_bytes()[..6]);
         InodeKey { bytes }
     }
 
@@ -197,7 +202,7 @@ impl State {
         let mut bytes = [0u8; INODE_KEY_LEN];
         bytes[..2].copy_from_slice(&dir.to_le_bytes());
         if dir < ORPHAN {
-            bytes[2..KEY_HEAD].copy_from_slice(&self.entries[dir as usize].id.to_le_bytes());
+            bytes[2..KEY_HEAD].copy_from_slice(&self.entries[dir as usize].id.to_le_bytes()[..6]);
         }
         bytes[KEY_HEAD..KEY_HEAD + leaf.len()].copy_from_slice(leaf);
         InodeKey { bytes }
@@ -207,7 +212,9 @@ impl State {
     /// leaf. `None` when the directory or the entry is gone.
     fn target<'k>(&self, key: &'k InodeKey) -> Option<(u16, &'k [u8])> {
         let slot = u16::from_le_bytes([key.bytes[0], key.bytes[1]]);
-        let id = u32::from_le_bytes([key.bytes[2], key.bytes[3], key.bytes[4], key.bytes[5]]);
+        let mut id = [0u8; 8];
+        id[..6].copy_from_slice(&key.bytes[2..KEY_HEAD]);
+        let id = u64::from_le_bytes(id);
         let n = key.bytes[KEY_HEAD..].iter().position(|&b| b == 0).unwrap_or(INODE_KEY_LEN - KEY_HEAD);
         let leaf = &key.bytes[KEY_HEAD..KEY_HEAD + n];
         if slot != MOUNT_DIR {
@@ -454,14 +461,16 @@ impl FileSystem for TmpFs {
         }
     }
 
-    fn released(&self, key: &InodeKey) {
+    fn released(&self, key: &InodeKey) -> bool {
         let mut st = self.state.lock();
-        let Some(i) = st.resolve(key) else { return };
+        let Some(i) = st.resolve(key) else { return false };
         let e = &mut st.entries[i];
         e.refs = e.refs.saturating_sub(1);
         if e.refs == 0 && e.parent == ORPHAN {
             st.free(i);
+            return true;
         }
+        false
     }
 
     fn create(&self, key: &InodeKey) -> Result<(), FsErr> {

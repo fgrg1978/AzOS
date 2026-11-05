@@ -1190,6 +1190,50 @@ fn a_mapped_tmpfs_file_survives_unlink_and_rename() {
     vfs_p2::clear_tmpfs();
 }
 
+/// **A destroyed tmpfs file leaves no dirty page behind**: the last close of an
+/// unlinked file, and the eviction of a closed one, discard its cached pages
+/// without a write-back, so no slot or frame is held for ever and no later
+/// fsync or sync reports an error that is not theirs.
+///
+/// **Canary.** `inode_free` without the drop of a destroyed file's pages (the
+/// first half), `dirty_flush` / `drop_dead_files` without the gone-file test
+/// (the second): a dirty page stays and the sync answers `Io`.
+#[test]
+fn a_destroyed_tmpfs_file_takes_its_dirty_pages_with_it() {
+    let _g = serial();
+    vfs_p2::tmp_once();
+    vfs_p2::clear_tmpfs();
+    let _c = install(1024, 64);
+    let fs: &'static dyn FileSystem = &tmpfs::TMPFS_TMP;
+    let mut t = vfs::ScratchFds::new();
+
+    // Unlinked, written inside its size, closed.
+    tmpfs_h::write(b"u", &pat(3000, 9)).unwrap();
+    let fd = vfs::vfs_open(&mut t, b"/tmp/u", O_RDWR);
+    assert_eq!(vfs_write_at(&mut t, fd, 0, b"dirty"), 5);
+    assert_eq!(vfs::vfs_unlink(b"/tmp/u"), Ok(()));
+    assert_eq!(dirty_pages(), 1);
+    vfs::vfs_close(&mut t, fd);
+    assert_eq!(dirty_pages(), 0, "the last close took the pages of the file it destroyed");
+    assert!(store().files.iter().all(|f| f.pages.is_empty()), "and its clean ones");
+
+    // Evicted: closed, overwritten inside, then a write that needs its room.
+    tmpfs_h::write(b"e", &pat(3000, 11)).unwrap();
+    let fd = vfs::vfs_open(&mut t, b"/tmp/e", O_RDWR);
+    assert_eq!(vfs_write_at(&mut t, fd, 0, b"dirty"), 5);
+    vfs::vfs_close(&mut t, fd);
+    assert_eq!(dirty_pages(), 1, "close does not flush");
+    tmpfs_h::write(b"big", &vec![1u8; tmpfs::TMPFS_MAX_BYTES - 2048]).unwrap();
+    assert_eq!(tmpfs_h::size(b"e"), None, "evicted for the room");
+    assert_eq!(vfs::page_cache_flush_fs(fs), Ok(()), "a sync is not failed by the dead file");
+    assert_eq!(dirty_pages(), 0);
+    tmpfs_h::write(b"keep", &pat(2048, 5)).unwrap();
+    let fd = vfs::vfs_open(&mut t, b"/tmp/keep", O_RDWR);
+    assert_eq!(vfs::vfs_fsync(&mut t, fd), Ok(()), "nor an fsync of another file");
+    vfs::vfs_close(&mut t, fd);
+    vfs_p2::clear_tmpfs();
+}
+
 /// **With the cache removed every path is the backend's again**: a write is on
 /// the volume at once, and what the cache held dirty was written before.
 #[test]
