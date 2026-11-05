@@ -102,6 +102,12 @@ fn wait_ends_at_the_bound_and_sees_a_late_event() {
     }));
     assert_eq!(n, 3);
     assert_eq!(t.ticks_for_us(5), 5);
+    assert_eq!(FakeTicks::new(24_000_000, 24_000_000).now_us(), 0);
+    let t24 = FakeTicks::new(24_000_000, 0);
+    t24.advance(24_000_000 * 3 + 12);
+    assert_eq!(t24.now_us(), 3_000_000, "12 ticks of 24 MHz are under a microsecond");
+    t24.advance(12);
+    assert_eq!(t24.now_us(), 3_000_001);
     assert_eq!(FakeTicks::new(24_000_000, 1).ticks_for_us(1), 24);
     assert_eq!(FakeTicks::new(32_768, 1).ticks_for_us(1), 1, "rounded up");
 }

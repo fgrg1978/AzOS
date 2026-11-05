@@ -124,6 +124,12 @@ pub trait Ticks {
     /// Ticks per second.
     fn freq_hz(&self) -> u64;
 
+    /// The count in microseconds.
+    fn now_us(&self) -> u64 {
+        let (t, f) = (self.now(), self.freq_hz());
+        (t / f) * 1_000_000 + (t % f) * 1_000_000 / f
+    }
+
     /// `us` microseconds in ticks, rounded up, saturating.
     fn ticks_for_us(&self, us: u64) -> u64 {
         (us as u128 * self.freq_hz() as u128).div_ceil(1_000_000).min(u64::MAX as u128) as u64
