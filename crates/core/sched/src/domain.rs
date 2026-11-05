@@ -1004,6 +1004,14 @@ pub fn wakes_total() -> u64 {
     slots + WAKES_UNOWNED.load(Ordering::Relaxed) + WAKES_ENDED.load(Ordering::Relaxed)
 }
 
+/// The wakes of the tasks of the Domain `key` names since it was made (counted
+/// only with wake attribution, Kconfig `WAKE_RING_ENTRIES`); `None` for a key
+/// that names none. For a reader that watches one component, as the ring-3
+/// driver smoke watches its driver idle.
+pub fn wakes(key: Key) -> Option<u64> {
+    get(key).map(|_| WAKES[key as usize & (WAKES_LEN - 1)].load(Ordering::Relaxed))
+}
+
 /// The Domain in table slot `slot` and the wakes of its tasks, if it is alive.
 /// For a walk of the table (the introspection tree), like [`slot_entries`].
 pub fn slot_wakes(slot: usize) -> Option<(Key, [u64; 1])> {

@@ -6461,6 +6461,10 @@ a64_kbuild "qemu" || true
 #                (`kernel/src/powermon.rs`). Must fail on `bus voltage is not
 #                the simulated 7400 mV`: the readings of the two placements
 #                are compared against the same constants.
+#   ina-idle     the ring-3 placement with `canary=ina219-idle-busy`: the
+#                smoke calls the host through the window it measures the
+#                host's idle wakes over. Must fail on `idle, the ring-3 host
+#                woke more than`: the bound sees a host that does not sleep.
 #   restart      `restart-smoke`: BUZZDRV.ELF `restart = no` (CAPS.TOML format
 #                2), read by the component manager (its reading of the key,
 #                `always` included, is host-tested in
@@ -6489,6 +6493,7 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
     local until="DRV1\] ina219 (PASS|FAIL)" canary_arg=""
     case "$kind" in
         ina-wrong) canary_arg="canary=ina219-wrong-value" ;;
+        ina-idle) canary_arg="canary=ina219-idle-busy" ;;
         restart) until="\[RESTART\] (PASS|FAIL)" ;;
         restart-canary) until="\[RESTART\] (PASS|FAIL)" ;;
     esac
@@ -6526,7 +6531,7 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
-            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+            -device virtio-blk-device,drive=hd0 ${canary_arg:+-append "$canary_arg"} >"$log" 2>&1 &
     fi
     local pid=$! i=0
     while [ "$i" -lt 480 ]; do
@@ -6554,6 +6559,10 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
         ina-wrong)
             grep -aqF "[DRV1] ina219 FAIL: bus voltage is not the simulated 7400 mV" "$log" \
                 || why="the canary did not fail on the wrong voltage"
+            ;;
+        ina-idle)
+            grep -aqF "[DRV1] ina219 FAIL: idle, the ring-3 host woke more than" "$log" \
+                || why="the canary did not fail on the idle wake-ups"
             ;;
         restart)
             grep -aqF "[RESTART] PASS" "$log" || why="no [RESTART] PASS"
@@ -6588,6 +6597,8 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
 par "aarch64 INA219 placed in kernel" drvplace_row "aarch64 INA219 placed in kernel" arm "qemu,ring3-drv-smoke,ina219-kernel" ina-kernel
 a64_kbuild "qemu" || true
 par "aarch64 INA219 wrong-value canary" drvplace_row "aarch64 INA219 wrong-value canary" arm "qemu,ring3-drv-smoke" ina-wrong
+a64_kbuild "qemu" || true
+par "aarch64 INA219 idle wake-up canary" drvplace_row "aarch64 INA219 idle wake-up canary" arm "qemu,ring3-drv-smoke" ina-idle
 a64_kbuild "qemu" || true
 par "aarch64 restart = no" drvplace_row "aarch64 restart = no" arm "qemu,restart-smoke" restart
 a64_kbuild "qemu" || true
@@ -17868,9 +17879,12 @@ CPU 5 lacks hwcap bits"
     #               kernel host answered, no ring-3 owner of the power monitor
     #   ina-wrong   `canary=ina219-wrong-value` on the ring-3 placement: must
     #               fail on `bus voltage is not the simulated 7400 mV`
-    x86_drvplace_row() { # x86_drvplace_row <label> <features> <ina-kernel|ina-wrong>
+    #   ina-idle    `canary=ina219-idle-busy` on the ring-3 placement: must
+    #               fail on `idle, the ring-3 host woke more than`
+    x86_drvplace_row() { # x86_drvplace_row <label> <features> <ina-kernel|ina-wrong|ina-idle>
         local label="$1" feats="$2" kind="$3" why="" canary=""
         [ "$kind" = ina-wrong ] && canary="canary=ina219-wrong-value"
+        [ "$kind" = ina-idle ] && canary="canary=ina219-idle-busy"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -17892,6 +17906,10 @@ CPU 5 lacks hwcap bits"
                 grep -aqF "[DRV1] ina219 FAIL: bus voltage is not the simulated 7400 mV" "$log" \
                     || why="the canary did not fail on the wrong voltage"
                 ;;
+            ina-idle)
+                grep -aqF "[DRV1] ina219 FAIL: idle, the ring-3 host woke more than" "$log" \
+                    || why="the canary did not fail on the idle wake-ups"
+                ;;
         esac
         grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
         if [ -z "$why" ]; then
@@ -17905,6 +17923,7 @@ CPU 5 lacks hwcap bits"
     }
     par "x86_64 INA219 placed in kernel" x86_drvplace_row "x86_64 INA219 placed in kernel" "ring3-drv-smoke,ina219-kernel" ina-kernel
     par "x86_64 INA219 wrong-value canary" x86_drvplace_row "x86_64 INA219 wrong-value canary" "ring3-drv-smoke" ina-wrong
+    par "x86_64 INA219 idle wake-up canary" x86_drvplace_row "x86_64 INA219 idle wake-up canary" "ring3-drv-smoke" ina-idle
     # D6 on x86_64 (Kconfig LINUX_RUNTIME): the ring-3 runtime hosts a static
     # Linux x86-64 binary. `lxhello rt` (userspace/tests/lxhello/lxhello_x86_64.c)
     # issues the calls a static musl binary issues, in Linux's x86-64 numbers
@@ -21915,6 +21934,7 @@ PYEOF
     # defined beside the aarch64 rows).
     par_row drvplace_row "drivers: INA219 placed in kernel" rv "qemu,ring3-drv-smoke,ina219-kernel" ina-kernel
     par_row drvplace_row "drivers: INA219 wrong-value canary" rv "qemu,ring3-drv-smoke" ina-wrong
+    par_row drvplace_row "drivers: INA219 idle wake-up canary" rv "qemu,ring3-drv-smoke" ina-idle
     par_row drvplace_row "drivers: restart = no" rv "qemu,restart-smoke" restart
     par_row drvplace_row "drivers: restart key canary" rv "qemu,restart-canary" restart-canary
     par_row drvplace_row "drivers: buzzer placed in kernel" rv "qemu,ring3-drv-smoke,buzzer-kernel" buzz-kernel

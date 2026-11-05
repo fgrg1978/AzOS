@@ -34,6 +34,9 @@ use kernel_host::KernelPowerMon;
 /// capacity_pct u8, sag u8, failsafe u8, pad u8 (all LE).
 pub const POWER_DATA_SIZE: usize = RECORD_BYTES;
 
+/// How often either host samples the chip.
+pub use azos_ina219::INA219_POLL_HZ;
+
 /// The chip-logic source (`AZOS-CHIP-SRC ina219 <hex>`), which the kernel
 /// host prints at start (`tools/lint/chip_source_check.py`).
 pub const SOURCE_MARKER: &[u8] = &azos_ina219::SOURCE_MARKER;

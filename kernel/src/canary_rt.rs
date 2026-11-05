@@ -293,6 +293,10 @@ pub(crate) const NAMES: &[&str] = &[
     // into the reader's own table (ktest
     // `a_power_read_leaves_no_capability_with_the_reader`).
     "powermon-mint",
+    // smokes/ring3_drv_smoke.rs `ring3_idle_wakes_per_s`: the smoke calls the
+    // ring-3 INA219 host through its quiet window (rows `... INA219 idle
+    // wake-up canary`).
+    "ina219-idle-busy",
     "hung-task-blind",
     "hung-cpu-blind",
     "rcu-idle-qs-skip",
