@@ -48,11 +48,12 @@
 // only) this same file drives QEMU's `sdhci-pci`, an SDHCI-v3 model, through
 // a BAR the kernel assigns; that is the one place any of it has run.
 //
-// The register file is reached through [`Regs`]: the kernel's [`Hw`] is a
-// volatile MMIO window, the host test (`tests/host/drivers-tests`) drives
+// The register file is reached through [`Mmio`]: the kernel's
+// [`Window`] is the slot's MMIO window, the host test (`tests/host/drivers-tests`) drives
 // the very same functions over a model of the controller and the card.
 
 use azos_drv_api::block::FlushError;
+use azos_drvkit::{Mmio, Window};
 use azos_dma::Direction;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use crate::dev_queue::{DevQueue, Turn};
@@ -266,55 +267,14 @@ pub fn mmc_flush_evidence() -> (u32, u32) {
 static MMC_QUEUES: [DevQueue; 2] = [DevQueue::new(), DevQueue::new()];
 
 // ── Register access ──────────────────────────────────────────────────────────
-/// A controller's SDHCI register file. [`Hw`] is the MMIO window; the host
-/// test implements it over a model of the controller and the card.
-pub trait Regs {
-    /// The window's address: names the controller to the DMA domain registry
-    /// (a platform device may differ from the default in cache coherence).
-    fn base(&self) -> usize;
-    fn rd8(&self, off: usize) -> u8;
-    fn rd16(&self, off: usize) -> u16;
-    fn rd32(&self, off: usize) -> u32;
-    fn wr8(&self, off: usize, val: u8);
-    fn wr16(&self, off: usize, val: u16);
-    fn wr32(&self, off: usize, val: u32);
-}
+// A controller's SDHCI register file is a `Mmio`: the window of a slot in the
+// kernel, a model of the controller and the card in the host test.
 
-/// The controller's mapped register window at this address.
-pub struct Hw(pub usize);
-
-impl Regs for Hw {
-    fn base(&self) -> usize { self.0 }
-    #[inline(always)]
-    fn rd8(&self, off: usize) -> u8 {
-        // SAFETY: `self.0` is a mapped SDHCI window (`slot_base`) and `off` a register inside it.
-        unsafe { azos_arch_api::mmio::read8(self.0 + off) }
-    }
-    #[inline(always)]
-    fn rd16(&self, off: usize) -> u16 {
-        // SAFETY: as `rd8`.
-        unsafe { azos_arch_api::mmio::read16(self.0 + off) }
-    }
-    #[inline(always)]
-    fn rd32(&self, off: usize) -> u32 {
-        // SAFETY: as `rd8`.
-        unsafe { azos_arch_api::mmio::read32(self.0 + off) }
-    }
-    #[inline(always)]
-    fn wr8(&self, off: usize, val: u8) {
-        // SAFETY: as `rd8`.
-        unsafe { azos_arch_api::mmio::write8(self.0 + off, val) }
-    }
-    #[inline(always)]
-    fn wr16(&self, off: usize, val: u16) {
-        // SAFETY: as `rd8`.
-        unsafe { azos_arch_api::mmio::write16(self.0 + off, val) }
-    }
-    #[inline(always)]
-    fn wr32(&self, off: usize, val: u32) {
-        // SAFETY: as `rd8`.
-        unsafe { azos_arch_api::mmio::write32(self.0 + off, val) }
-    }
+/// The SDHCI window at `base`, a slot's (`slot_base`).
+fn hw(base: usize) -> Window {
+    // SAFETY: `base` is a mapped SDHCI window and every register offset the
+    // driver names is inside it.
+    unsafe { Window::new(base) }
 }
 
 /// The MMIO read that saw the controller finish ordered before the CPU's
@@ -372,18 +332,18 @@ fn irq_mode(idx: usize) -> bool {
 /// write back exactly the bits read (write-1-to-clear: an event raised
 /// between the read and the write stays pending), OR them in. Idempotent
 /// across two callers racing on the same bits.
-fn harvest<R: Regs>(r: &R, idx: usize) -> u32 {
-    let st = r.rd32(SDHCI_INT_STATUS) & EV_MASK;
+fn harvest<R: Mmio>(r: &R, idx: usize) -> u32 {
+    let st = r.read32(SDHCI_INT_STATUS) & EV_MASK;
     if st != 0 {
-        r.wr32(SDHCI_INT_STATUS, st);
+        r.write32(SDHCI_INT_STATUS, st);
         EVENTS[idx].fetch_or(st, Ordering::AcqRel);
     }
     st
 }
 
 /// Forget everything pending, before a command is issued.
-fn clear_events<R: Regs>(r: &R, idx: usize) {
-    r.wr32(SDHCI_INT_STATUS, 0xFFFF_FFFF);
+fn clear_events<R: Mmio>(r: &R, idx: usize) {
+    r.write32(SDHCI_INT_STATUS, 0xFFFF_FFFF);
     EVENTS[idx].store(0, Ordering::Release);
 }
 
@@ -394,11 +354,11 @@ fn clear_events<R: Regs>(r: &R, idx: usize) {
 pub fn irq(line: u32) -> Option<bool> {
     let idx = (0..2).find(|&i| IRQ_LINE[i].load(Ordering::Acquire) == line)?;
     let base = slot_base(if idx == 0 { MmcSlot::Emmc } else { MmcSlot::Sd });
-    Some(irq_on(&Hw(base), idx))
+    Some(irq_on(&hw(base), idx))
 }
 
 /// [`irq`] for slot `idx` over `r`.
-pub fn irq_on<R: Regs>(r: &R, idx: usize) -> bool {
+pub fn irq_on<R: Mmio>(r: &R, idx: usize) -> bool {
     harvest(r, idx);
     IRQ_TAKEN[idx].fetch_add(1, Ordering::Relaxed);
     let tid = WAITER[idx].load(Ordering::Acquire);
@@ -417,7 +377,7 @@ pub fn irq_on<R: Regs>(r: &R, idx: usize) -> bool {
 /// timer and would declare the card dead before the host answered).
 /// `false` when the caller cannot sleep (polled mode, no scheduler): it then
 /// spins.
-fn sleep_for_event<R: Regs>(r: &R, idx: usize, deadline: u64) -> bool {
+fn sleep_for_event<R: Mmio>(r: &R, idx: usize, deadline: u64) -> bool {
     if !irq_mode(idx) {
         return false;
     }
@@ -449,13 +409,13 @@ fn sleep_for_event<R: Regs>(r: &R, idx: usize, deadline: u64) -> bool {
 /// Wait for the event `want` (one bit of `EV_MASK`) of slot `idx`, up to
 /// `timeout_us`. `Err` on any error bit (the lines are reset so the next
 /// command starts clean) and on the deadline.
-fn wait_events<R: Regs>(r: &R, idx: usize, want: u32, timeout_us: u64) -> Result<(), ()> {
+fn wait_events<R: Mmio>(r: &R, idx: usize, want: u32, timeout_us: u64) -> Result<(), ()> {
     let deadline = deadline_after_us(timeout_us);
     loop {
         harvest(r, idx);
         let ev = EVENTS[idx].load(Ordering::Acquire);
         if ev & INT_ERR_MASK != 0 {
-            let adma = if ev & INT_ADMA_ERROR != 0 { r.rd32(SDHCI_ADMA_ERROR) } else { 0 };
+            let adma = if ev & INT_ADMA_ERROR != 0 { r.read32(SDHCI_ADMA_ERROR) } else { 0 };
             azos_drv_sys::kerr!("[MMC] slot {}: error interrupt {:#010x} (ADMA error {:#x}) waiting for {:#x}",
                 idx, ev & INT_ERR_MASK, adma, want);
             recover(r, idx);
@@ -479,10 +439,10 @@ fn wait_events<R: Regs>(r: &R, idx: usize, want: u32, timeout_us: u64) -> Result
 /// After an error or a timeout: reset the command and data lines (SDHCI
 /// §3.7.1: the controller is not usable again until they are), drop what is
 /// pending.
-fn recover<R: Regs>(r: &R, idx: usize) {
-    r.wr8(SDHCI_SW_RESET, RESET_CMD | RESET_DAT);
+fn recover<R: Mmio>(r: &R, idx: usize) {
+    r.write8(SDHCI_SW_RESET, RESET_CMD | RESET_DAT);
     for _ in 0..200_000u32 {
-        if r.rd8(SDHCI_SW_RESET) & (RESET_CMD | RESET_DAT) == 0 { break; }
+        if r.read8(SDHCI_SW_RESET) & (RESET_CMD | RESET_DAT) == 0 { break; }
     }
     clear_events(r, idx);
 }
@@ -491,7 +451,7 @@ fn recover<R: Regs>(r: &R, idx: usize) {
 /// kernel's sleep and wake `hooks`. Call BEFORE the interrupt controller
 /// enables `line` (the handler, [`irq`], must already recognise it). `false`
 /// where it cannot be (slot not initialised, or `mmc-poll-canary`).
-pub fn set_irq_mode_on<R: Regs>(r: &R, slot: MmcSlot, line: u32, hooks: &'static IrqHooks) -> bool {
+pub fn set_irq_mode_on<R: Mmio>(r: &R, slot: MmcSlot, line: u32, hooks: &'static IrqHooks) -> bool {
     let idx = slot as usize;
     if cfg!(feature = "mmc-poll-canary") || !slot_state(idx).ready {
         return false;
@@ -501,14 +461,14 @@ pub fn set_irq_mode_on<R: Regs>(r: &R, slot: MmcSlot, line: u32, hooks: &'static
     // asserted the moment the controller enables it.
     clear_events(r, idx);
     IRQ_LINE[idx].store(line, Ordering::Release);
-    r.wr32(SDHCI_SIGNAL_ENABLE, EV_MASK);
+    r.write32(SDHCI_SIGNAL_ENABLE, EV_MASK);
     true
 }
 
 /// Back to polled completions (the line could not be routed).
-pub fn irq_off_on<R: Regs>(r: &R, slot: MmcSlot) {
+pub fn irq_off_on<R: Mmio>(r: &R, slot: MmcSlot) {
     let idx = slot as usize;
-    r.wr32(SDHCI_SIGNAL_ENABLE, 0);
+    r.write32(SDHCI_SIGNAL_ENABLE, 0);
     IRQ_LINE[idx].store(u32::MAX, Ordering::Release);
 }
 
@@ -651,13 +611,13 @@ fn bounce_out(idx: usize, dst: &mut [u8]) {
 /// Reads the base clock from CAPABILITIES[15:8] (MHz).
 /// Uses the SDHCI v3 10-bit divider: SDCLK = base / (2 × N), N = 0 → bypass.
 /// Returns `false` if the internal clock never becomes stable.
-fn mmc_set_clock<R: Regs>(r: &R, target_hz: u32) -> bool {
+fn mmc_set_clock<R: Mmio>(r: &R, target_hz: u32) -> bool {
     // Preserve timeout byte; disable SD clock first.
-    let timeout = r.rd8(SDHCI_TIMEOUT);
-    r.wr16(SDHCI_CLOCK_CONTROL, 0);
+    let timeout = r.read8(SDHCI_TIMEOUT);
+    r.write16(SDHCI_CLOCK_CONTROL, 0);
 
     // Base clock from capabilities [15:8] in MHz (8-bit field in SDHCI v3).
-    let caps     = r.rd32(SDHCI_CAPABILITIES);
+    let caps     = r.read32(SDHCI_CAPABILITIES);
     let base_mhz = ((caps >> 8) & 0xFF) as u32;
     let base_hz  = if base_mhz > 0 { base_mhz * 1_000_000 } else { 50_000_000 };
 
@@ -673,13 +633,13 @@ fn mmc_set_clock<R: Regs>(r: &R, target_hz: u32) -> bool {
     let n_hi = ((n >> 8) & 0x3) as u16;
     let clkctl: u16 = (n_lo << 8) | (n_hi << 6) | 0x01; // bit 0 = Internal Clock Enable
 
-    r.wr16(SDHCI_CLOCK_CONTROL, clkctl);
-    r.wr8(SDHCI_TIMEOUT, timeout);
+    r.write16(SDHCI_CLOCK_CONTROL, clkctl);
+    r.write8(SDHCI_TIMEOUT, timeout);
 
     // Wait for Internal Clock Stable (bit 1).
     for _ in 0..200_000u32 {
-        if r.rd16(SDHCI_CLOCK_CONTROL) & 0x02 != 0 {
-            r.wr16(SDHCI_CLOCK_CONTROL, clkctl | 0x04); // bit 2 = SD Clock Enable
+        if r.read16(SDHCI_CLOCK_CONTROL) & 0x02 != 0 {
+            r.write16(SDHCI_CLOCK_CONTROL, clkctl | 0x04); // bit 2 = SD Clock Enable
             return true;
         }
     }
@@ -698,11 +658,11 @@ fn waiting<T>(turn: Option<&Turn<'_>>, f: impl FnOnce() -> T) -> T {
 }
 
 /// Spin until CMD (and optionally DAT) inhibit clears.
-fn wait_inhibit<R: Regs>(r: &R, check_dat: bool) -> bool {
+fn wait_inhibit<R: Mmio>(r: &R, check_dat: bool) -> bool {
     let mask = STATE_CMD_INHIBIT | if check_dat { STATE_DAT_INHIBIT } else { 0 };
     let deadline = deadline_after_us(INHIBIT_TIMEOUT_US);
     loop {
-        if r.rd32(SDHCI_PRESENT_STATE) & mask == 0 { return true; }
+        if r.read32(SDHCI_PRESENT_STATE) & mask == 0 { return true; }
         if now() >= deadline { return false; }
         core::hint::spin_loop();
     }
@@ -711,24 +671,24 @@ fn wait_inhibit<R: Regs>(r: &R, check_dat: bool) -> bool {
 /// Issue one command without data and return the 4 response registers.
 /// `flags` = RESP_xxx constant. An R1b command (DAT0 busy) is complete when
 /// the controller reports Transfer Complete, i.e. when the busy ended.
-fn send_cmd_on<R: Regs>(r: &R, idx: usize, turn: Option<&Turn<'_>>, cmd: u16, arg: u32, flags: u16) -> Option<[u32; 4]> {
+fn send_cmd_on<R: Mmio>(r: &R, idx: usize, turn: Option<&Turn<'_>>, cmd: u16, arg: u32, flags: u16) -> Option<[u32; 4]> {
     let busy = flags & 0x3 == 0x3;
     if !waiting(turn, || wait_inhibit(r, busy)) { return None; }
 
     programming(turn, || {
         clear_events(r, idx);
-        r.wr32(SDHCI_ARGUMENT, arg);
-        r.wr16(SDHCI_TRANSFER_MODE, 0);
+        r.write32(SDHCI_ARGUMENT, arg);
+        r.write16(SDHCI_TRANSFER_MODE, 0);
         // [15:8] = command index, [5:0] = flags (Data Present / Index / CRC / RespType)
-        r.wr16(SDHCI_COMMAND, ((cmd & 0x3F) << 8) | (flags & 0x3F));
+        r.write16(SDHCI_COMMAND, ((cmd & 0x3F) << 8) | (flags & 0x3F));
     });
 
     waiting(turn, || wait_events(r, idx, INT_CMD_COMPLETE, CMD_TIMEOUT_US)).ok()?;
     let resp = [
-        r.rd32(SDHCI_RESPONSE0),
-        r.rd32(SDHCI_RESPONSE1),
-        r.rd32(SDHCI_RESPONSE2),
-        r.rd32(SDHCI_RESPONSE3),
+        r.read32(SDHCI_RESPONSE0),
+        r.read32(SDHCI_RESPONSE1),
+        r.read32(SDHCI_RESPONSE2),
+        r.read32(SDHCI_RESPONSE3),
     ];
     if busy {
         waiting(turn, || wait_events(r, idx, INT_TRANSFER_DONE, BUSY_TIMEOUT_US)).ok()?;
@@ -737,7 +697,7 @@ fn send_cmd_on<R: Regs>(r: &R, idx: usize, turn: Option<&Turn<'_>>, cmd: u16, ar
 }
 
 /// [`send_cmd_on`] outside a queued request (`mmc_init`).
-fn send_cmd<R: Regs>(r: &R, idx: usize, cmd: u16, arg: u32, flags: u16) -> Option<[u32; 4]> {
+fn send_cmd<R: Mmio>(r: &R, idx: usize, cmd: u16, arg: u32, flags: u16) -> Option<[u32; 4]> {
     send_cmd_on(r, idx, None, cmd, arg, flags)
 }
 
@@ -745,7 +705,7 @@ fn send_cmd<R: Regs>(r: &R, idx: usize, cmd: u16, arg: u32, flags: u16) -> Optio
 /// address `addr` through ADMA2 over the slot's bounce pages; for a write
 /// they already hold the data. Returns the command's R1 response. `Err` on
 /// any controller error, ADMA error or timeout (the lines are reset).
-fn xfer_chunk<R: Regs>(r: &R, idx: usize, turn: &Turn<'_>, write: bool, addr: u32, nblk: u32) -> Result<u32, ()> {
+fn xfer_chunk<R: Mmio>(r: &R, idx: usize, turn: &Turn<'_>, write: bool, addr: u32, nblk: u32) -> Result<u32, ()> {
     debug_assert!(nblk >= 1 && nblk <= MAX_XFER_BLOCKS);
     let d = &DMA[idx];
     let bytes = nblk as usize * 512;
@@ -775,20 +735,20 @@ fn xfer_chunk<R: Regs>(r: &R, idx: usize, turn: &Turn<'_>, write: bool, addr: u3
     let table_pa = d.table_pa.load(Ordering::Relaxed);
     turn.program(|| {
         clear_events(r, idx);
-        r.wr16(SDHCI_BLOCK_SIZE, 512);
-        r.wr16(SDHCI_BLOCK_COUNT, nblk as u16);
-        r.wr32(SDHCI_ADMA_ADDRESS, table_pa as u32);
-        r.wr32(SDHCI_ADMA_ADDRESS + 4, (table_pa >> 32) as u32);
-        r.wr32(SDHCI_ARGUMENT, addr);
+        r.write16(SDHCI_BLOCK_SIZE, 512);
+        r.write16(SDHCI_BLOCK_COUNT, nblk as u16);
+        r.write32(SDHCI_ADMA_ADDRESS, table_pa as u32);
+        r.write32(SDHCI_ADMA_ADDRESS + 4, (table_pa >> 32) as u32);
+        r.write32(SDHCI_ARGUMENT, addr);
         // Write TRANSFER_MODE then COMMAND (order matters for some controllers).
-        r.wr16(SDHCI_TRANSFER_MODE, tm);
+        r.write16(SDHCI_TRANSFER_MODE, tm);
         // R1 response + data present (bit 5)
-        r.wr16(SDHCI_COMMAND, (cmd << 8) | (RESP_R1 | RESP_DATA));
+        r.write16(SDHCI_COMMAND, (cmd << 8) | (RESP_R1 | RESP_DATA));
     });
 
     turn.wait(|| wait_events(r, idx, INT_CMD_COMPLETE, CMD_TIMEOUT_US))?;
     // The card's verdict on the command (address, write protect, ...).
-    let r1 = r.rd32(SDHCI_RESPONSE0);
+    let r1 = r.read32(SDHCI_RESPONSE0);
     turn.wait(|| wait_events(r, idx, INT_TRANSFER_DONE, XFER_TIMEOUT_US))?;
 
     io_rmb();
@@ -863,13 +823,13 @@ pub fn mmc_irq_line(slot: MmcSlot) -> Option<u32> {
 /// Take `slot`'s completions by interrupt on `line` ([`set_irq_mode_on`]).
 pub fn mmc_set_irq_mode(slot: MmcSlot, line: u32, hooks: &'static IrqHooks) -> bool {
     let base = slot_base(slot);
-    base != 0 && set_irq_mode_on(&Hw(base), slot, line, hooks)
+    base != 0 && set_irq_mode_on(&hw(base), slot, line, hooks)
 }
 
 /// Back to polled completions ([`irq_off_on`]).
 pub fn mmc_irq_off(slot: MmcSlot) {
     let base = slot_base(slot);
-    if base != 0 { irq_off_on(&Hw(base), slot); }
+    if base != 0 { irq_off_on(&hw(base), slot); }
 }
 
 /// Initialise an SD card in `slot`.
@@ -882,21 +842,21 @@ pub fn mmc_irq_off(slot: MmcSlot) {
 pub fn mmc_init(slot: MmcSlot) -> bool {
     let base = slot_base(slot);
     if base == 0 { return false; }
-    init_on(&Hw(base), slot)
+    init_on(&hw(base), slot)
 }
 
 /// [`mmc_init`] over `r`.
-pub fn init_on<R: Regs>(r: &R, slot: MmcSlot) -> bool {
+pub fn init_on<R: Mmio>(r: &R, slot: MmcSlot) -> bool {
     let idx  = slot as usize;
 
     // ── 1. Software reset (all lines) ─────────────────────────────────────────
-    r.wr8(SDHCI_SW_RESET, RESET_ALL);
+    r.write8(SDHCI_SW_RESET, RESET_ALL);
     for _ in 0..200_000u32 {
-        if r.rd8(SDHCI_SW_RESET) & RESET_ALL == 0 { break; }
+        if r.read8(SDHCI_SW_RESET) & RESET_ALL == 0 { break; }
     }
 
     // The data path is ADMA2: a host without it cannot run this driver.
-    if r.rd32(SDHCI_CAPABILITIES) & CAP_ADMA2 == 0 {
+    if r.read32(SDHCI_CAPABILITIES) & CAP_ADMA2 == 0 {
         azos_drv_sys::kerr!("[MMC] slot {}: controller does not advertise ADMA2", idx);
         return false;
     }
@@ -906,7 +866,7 @@ pub fn init_on<R: Regs>(r: &R, slot: MmcSlot) -> bool {
     }
 
     // ── 2. Power on at 3.3 V ──────────────────────────────────────────────────
-    r.wr8(SDHCI_POWER_CONTROL, PWR_33V_ON);
+    r.write8(SDHCI_POWER_CONTROL, PWR_33V_ON);
 
     // ── 3. SD clock at 400 kHz (card identification frequency) ───────────────
     if !mmc_set_clock(r, 400_000) {
@@ -916,13 +876,13 @@ pub fn init_on<R: Regs>(r: &R, slot: MmcSlot) -> bool {
 
     // ── 4. Event reporting: status bits on, the line only once the kernel ────
     // routes it (`mmc_set_irq_mode`); the reset above dropped both.
-    r.wr8(SDHCI_TIMEOUT, DATA_TIMEOUT_MAX);
-    r.wr32(SDHCI_INT_ENABLE,    EV_MASK);
-    r.wr32(SDHCI_SIGNAL_ENABLE, if irq_mode(idx) { EV_MASK } else { 0 });
+    r.write8(SDHCI_TIMEOUT, DATA_TIMEOUT_MAX);
+    r.write32(SDHCI_INT_ENABLE,    EV_MASK);
+    r.write32(SDHCI_SIGNAL_ENABLE, if irq_mode(idx) { EV_MASK } else { 0 });
     clear_events(r, idx);
 
     // ── 5. Card presence ──────────────────────────────────────────────────────
-    if r.rd32(SDHCI_PRESENT_STATE) & STATE_CARD_PRESENT == 0 {
+    if r.read32(SDHCI_PRESENT_STATE) & STATE_CARD_PRESENT == 0 {
         azos_drv_sys::kprintln!("[MMC] slot {}: no card present", idx);
         return false;
     }
@@ -983,7 +943,7 @@ pub fn init_on<R: Regs>(r: &R, slot: MmcSlot) -> bool {
     // ── 13. ACMD6 — SET_BUS_WIDTH 4-bit; the host's DMA is ADMA2 ─────────────
     send_cmd(r, idx, CMD_APP_CMD, rca << 16, RESP_R1);
     send_cmd(r, idx, ACMD_SET_BUS_WIDTH, 2, RESP_R1); // 2 = 4-bit
-    r.wr8(SDHCI_HOST_CONTROL, HC_4BIT_BUS | HC_DMA_ADMA2_32);
+    r.write8(SDHCI_HOST_CONTROL, HC_4BIT_BUS | HC_DMA_ADMA2_32);
 
     // ── 14. Raise clock to 25 MHz (data transfer frequency) ──────────────────
     mmc_set_clock(r, 25_000_000);
@@ -1031,11 +991,11 @@ fn card_addr(is_sdhc: bool, lba: u64) -> u32 {
 pub fn mmc_read(slot: MmcSlot, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
     let base = slot_base(slot);
     if base == 0 { return Err(()); }
-    read_on(&Hw(base), slot, lba, count, buf)
+    read_on(&hw(base), slot, lba, count, buf)
 }
 
 /// [`mmc_read`] over `r`.
-pub fn read_on<R: Regs>(r: &R, slot: MmcSlot, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+pub fn read_on<R: Mmio>(r: &R, slot: MmcSlot, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
     if buf.len() < count as usize * 512 { return Err(()); }
     let idx  = slot as usize;
     let turn = MMC_QUEUES[idx].submit();
@@ -1060,11 +1020,11 @@ pub fn read_on<R: Regs>(r: &R, slot: MmcSlot, lba: u64, count: u32, buf: &mut [u
 pub fn mmc_write(slot: MmcSlot, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     let base = slot_base(slot);
     if base == 0 { return Err(()); }
-    write_on(&Hw(base), slot, lba, count, buf)
+    write_on(&hw(base), slot, lba, count, buf)
 }
 
 /// [`mmc_write`] over `r`.
-pub fn write_on<R: Regs>(r: &R, slot: MmcSlot, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+pub fn write_on<R: Mmio>(r: &R, slot: MmcSlot, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     if buf.len() < count as usize * 512 { return Err(()); }
     let idx  = slot as usize;
     let turn = MMC_QUEUES[idx].submit();
@@ -1073,7 +1033,7 @@ pub fn write_on<R: Regs>(r: &R, slot: MmcSlot, lba: u64, count: u32, buf: &[u8])
     res
 }
 
-fn write_chunks<R: Regs>(r: &R, slot: MmcSlot, turn: &Turn<'_>, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+fn write_chunks<R: Mmio>(r: &R, slot: MmcSlot, turn: &Turn<'_>, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     let idx = slot as usize;
     let st  = slot_state(idx);
     if !st.ready { return Err(()); }
@@ -1104,7 +1064,7 @@ fn write_chunks<R: Regs>(r: &R, slot: MmcSlot, turn: &Turn<'_>, lba: u64, count:
 /// cannot leave it), or `FLUSH_TIMEOUT_US` without reaching `tran` + ready.
 /// `prg` (programming) and `rcv` are the states a card passes through after
 /// a write and are polled through.
-fn wait_card_ready<R: Regs>(r: &R, idx: usize, turn: &Turn<'_>, rca: u32, extra_errors: u32) -> Result<u32, FlushError> {
+fn wait_card_ready<R: Mmio>(r: &R, idx: usize, turn: &Turn<'_>, rca: u32, extra_errors: u32) -> Result<u32, FlushError> {
     let deadline = deadline_after_us(FLUSH_TIMEOUT_US);
     loop {
         let Some(resp) = send_cmd_on(r, idx, Some(turn), CMD_SEND_STATUS, rca << 16, RESP_R1) else {
@@ -1153,11 +1113,11 @@ fn wait_card_ready<R: Regs>(r: &R, idx: usize, turn: &Turn<'_>, rca: u32, extra_
 pub fn mmc_flush(slot: MmcSlot) -> Result<(), FlushError> {
     let base = slot_base(slot);
     if base == 0 { return Err(FlushError::Io); }
-    flush_on(&Hw(base), slot)
+    flush_on(&hw(base), slot)
 }
 
 /// [`mmc_flush`] over `r`.
-pub fn flush_on<R: Regs>(r: &R, slot: MmcSlot) -> Result<(), FlushError> {
+pub fn flush_on<R: Mmio>(r: &R, slot: MmcSlot) -> Result<(), FlushError> {
     let idx  = slot as usize;
     let turn = MMC_QUEUES[idx].submit();
     let st   = slot_state(idx);

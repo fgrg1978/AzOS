@@ -22,7 +22,7 @@
 //! wakes the sleeper. A driver that polled in interrupt mode would therefore
 //! never see its command complete.
 
-use super::mmc::{self, IrqHooks, MmcSlot, Regs};
+use super::mmc::{self, IrqHooks, MmcSlot};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -369,7 +369,7 @@ impl Mock {
     }
 }
 
-impl Regs for Mock {
+impl Mock {
     fn base(&self) -> usize { 0xBEEF_0000 }
 
     fn rd8(&self, off: usize) -> u8 {
@@ -430,6 +430,8 @@ impl Regs for Mock {
         })
     }
 }
+
+registers!(Mock, rd8, rd16, rd32, wr8, wr16, wr32, base);
 
 // ---- Harness ----
 
