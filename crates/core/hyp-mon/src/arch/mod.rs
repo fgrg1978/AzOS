@@ -9,6 +9,7 @@ pub mod keys;
 pub mod mmu;
 pub mod pin;
 pub mod s2;
+pub mod smmu;
 pub mod sync;
 pub mod sysreg;
 

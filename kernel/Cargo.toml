@@ -1099,6 +1099,8 @@ hyp-pin-off-canary = ["hyp-monitor-row"]
 hyp-pin-probe = ["hyp-monitor-row"]
 hyp-kdf-salt-canary = ["hyp-monitor-row"]
 hyp-key-root-probe = ["hyp-monitor-row"]
+hyp-smmu-window-canary = ["hyp-monitor-row"]
+hyp-smmu-probe = ["hyp-monitor-row", "iommu-smmuv3"]
 # Kconfig INSPECT: the introspection tree (crates/core/inspect), published
 # by kernel/src/boot/inspect.rs. A `base` tag: emitted unless the symbol is n.
 # With the USB host, its `usb/devN` listing joins the tree.

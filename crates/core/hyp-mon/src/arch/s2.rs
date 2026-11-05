@@ -191,6 +191,15 @@ fn lock_locked(desc_pa: u64) -> i64 {
         }
         if p < r[1] && s2.map_run(p, p, r[1] - p, USER_RAM).is_err() { return INVALID; }
     }
+    // The SMMU's registers are the monitor's alone from here.
+    let (wlo, whi) = super::smmu::window();
+    if !cfg!(feature = "hyp-smmu-window-canary") {
+        let mut q = wlo;
+        while q < whi {
+            if s2.split_to_page(q, &mut |_| ()).is_err() || s2.unmap_page(q).is_err() { return INVALID; }
+            q += stage2::S2_PAGE;
+        }
+    }
     let (vtcr, vttbr) = match s2.registers(0) { Ok(r) => r, Err(_) => return INVALID };
     LOCKED_ROOT.store(s2.root(), Ordering::Release);
     IPA_CFG.store(parange() as u64, Ordering::Relaxed);
@@ -206,6 +215,7 @@ fn lock_locked(desc_pa: u64) -> i64 {
     HYP.set_legal_entry(d.secondary_entry);
     install(vttbr, vtcr);
     HYP.set_invariant(INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY);
+    super::smmu::locked(vtcr, s2.root());
     OK
 }
 
@@ -238,6 +248,33 @@ pub fn with_guard<R>(f: impl FnOnce(&Guarded, u64, u64) -> R) -> R {
     r
 }
 
+/// Like [`with_guard`], with the RAM the lock named (empty before it).
+pub fn with_guard_ram<R>(f: impl FnOnce(&Guarded, &[[u64; 2]], u64, u64) -> R) -> R {
+    GUARD_LOCK.lock();
+    // SAFETY: under `GUARD_LOCK`.
+    let r = unsafe {
+        let ram = &*core::ptr::addr_of!(RAM);
+        f(&*core::ptr::addr_of!(GUARDED), &ram[..NRAM.load(Ordering::Acquire) as usize], HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed))
+    };
+    GUARD_LOCK.unlock();
+    r
+}
+
+/// The monitor's own range.
+pub fn monitor_range() -> (u64, u64) {
+    (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed))
+}
+
+/// The `VTCR_EL2` and the root of the stage 2 the host runs on now, which a
+/// stream's stage 2 shares.
+pub fn host_s2() -> Option<(u64, u64)> {
+    let cfg = s2_cfg()?;
+    match active_root() {
+        0 => None,
+        root => Some((cfg.value(), root)),
+    }
+}
+
 /// Has `lock_kernel_image` built the locked map?
 pub fn locked() -> bool {
     LOCKED_ROOT.load(Ordering::Acquire) != 0
@@ -259,6 +296,7 @@ fn s2_cfg() -> Option<VtcrConfig> {
 /// and wait for it.
 fn flush_host() {
     unsafe { core::arch::asm!("dsb ishst", "tlbi vmalls12e1is", "dsb ish", "isb") };
+    super::smmu::host_s2_changed();
 }
 
 /// `guard_pages(pa, n)`: unmap `n` pages from the host stage-2, for good. A

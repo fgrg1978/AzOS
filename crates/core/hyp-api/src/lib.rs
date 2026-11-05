@@ -50,6 +50,38 @@ pub const CALL_KEY_ROOT_SET: u64 = CALL_BASE + 7;
 /// four little-endian words. The request lies in memory the kernel still owns.
 pub const CALL_KEY_DERIVE: u64 = CALL_BASE + 8;
 
+/// `smmu_init(base, size | max_sid << 32) -> (status, oas)`: before the lock,
+/// once. The monitor brings up the SMMUv3 at `base` with a stream table for
+/// streams `0..=max_sid`, its own queues, every stream aborting; from the lock
+/// the register window is unmapped from the host, so the kernel never touches
+/// the unit again (I1 for DMA).
+pub const CALL_SMMU_INIT: u64 = CALL_BASE + 9;
+/// `smmu_attach(sid | mode << 32, cd_pa)`: put stream `sid` in `mode`. Stage 2
+/// is always the host's (shared with the CPUs), so no stream reaches memory the
+/// host stage-2 does not map. `cd_pa` is the kernel's stage-1 Context
+/// Descriptor for [`SMMU_NESTED`], 0 otherwise.
+pub const CALL_SMMU_ATTACH: u64 = CALL_BASE + 10;
+/// `smmu_flush(sid)`: drop what the unit cached about the kernel's stage 1.
+pub const CALL_SMMU_FLUSH: u64 = CALL_BASE + 11;
+/// `smmu_event() -> (status, dword0, dword2)`: the oldest fault record (type
+/// and stream id in dword 0, the input address in dword 2), or [`EMPTY`].
+pub const CALL_SMMU_EVENT: u64 = CALL_BASE + 12;
+
+/// Every access of the stream is refused.
+pub const SMMU_BLOCK: u64 = 0;
+/// Stage 1 bypassed: the stream's addresses are host physical addresses, under
+/// the host stage-2.
+pub const SMMU_S2_ONLY: u64 = 1;
+/// The kernel's stage 1 (a Context Descriptor) under the host stage-2.
+pub const SMMU_NESTED: u64 = 2;
+/// Streams the monitor's stream table holds (a bound, not a detected count).
+pub const SMMU_STREAMS_MAX: u64 = 256;
+/// Register window the unit needs (two 64 KiB pages) and the most the monitor
+/// maps; the unit lies below 1 GiB, where the monitor's own map is Device.
+pub const SMMU_WINDOW_MIN: u64 = 0x2_0000;
+pub const SMMU_WINDOW_MAX: u64 = 0x10_0000;
+pub const SMMU_DEVICE_TOP: u64 = 1 << 30;
+
 /// The pin is armed by `HFGWTR_EL2` (FEAT_FGT): `TTBR0_EL1` is not trapped.
 pub const PIN_FGT: u64 = 1;
 /// The pin is armed by `HCR_EL2.TVM`: every virtual-memory register write
@@ -87,8 +119,11 @@ pub const INV_GUARDED: u64 = 1 << 6;
 pub const INV_PINNED: u64 = 1 << 7;
 /// At least one keystore root is held in guarded memory and derives there.
 pub const INV_KEY_ROOTS: u64 = 1 << 8;
+/// The SMMU's registers are the monitor's alone and every stream goes through
+/// the host stage-2 (I1 for DMA).
+pub const INV_SMMU: u64 = 1 << 9;
 
-pub const INVARIANT_NAMES: [(u64, &str); 9] = [
+pub const INVARIANT_NAMES: [(u64, &str); 10] = [
     (INV_EL2_MMU, "el2-mmu"),
     (INV_HOST_S2, "host-s2"),
     (INV_PSCI, "psci"),
@@ -98,6 +133,7 @@ pub const INVARIANT_NAMES: [(u64, &str); 9] = [
     (INV_GUARDED, "guarded"),
     (INV_PINNED, "pinned"),
     (INV_KEY_ROOTS, "key-roots"),
+    (INV_SMMU, "smmu"),
 ];
 
 /// What a violation record describes.
@@ -116,6 +152,9 @@ pub enum Kind {
     /// A write to a pinned register: `addr` is the register's encoding as
     /// `sys_reg(op0, op1, crn, crm, op2)` packs it, `aux` the value refused.
     SysregRefused = 5,
+    /// A fault record of the SMMU: `addr` is the input address, `aux` the
+    /// stream id in the high word and the event type in the low.
+    DmaFault = 6,
 }
 
 impl Kind {
@@ -126,6 +165,7 @@ impl Kind {
             3 => Kind::EntryRefused,
             4 => Kind::UnexpectedTrap,
             5 => Kind::SysregRefused,
+            6 => Kind::DmaFault,
             _ => return None,
         })
     }
@@ -420,4 +460,46 @@ pub fn words_to_out(w: [u64; 4]) -> [u8; KEY_LEN] {
         out[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
     }
     out
+}
+
+/// Why `smmu_init(base, size, max_sid)` is refused: a window of whole pages,
+/// big enough for the unit and no bigger than the monitor maps, inside the
+/// Device gigabyte of the monitor's map, clear of the monitor itself; and
+/// streams the stream table holds.
+pub fn smmu_init_error(base: u64, size: u64, max_sid: u64, hole: u64, hole_end: u64) -> Option<&'static str> {
+    if base % 4096 != 0 || size % 4096 != 0 { return Some("window not page-aligned"); }
+    if !(SMMU_WINDOW_MIN..=SMMU_WINDOW_MAX).contains(&size) { return Some("window size"); }
+    let Some(end) = base.checked_add(size) else { return Some("wraps") };
+    if end > SMMU_DEVICE_TOP { return Some("window not in the monitor's Device map"); }
+    if base < hole_end && hole < end { return Some("window over the monitor"); }
+    if max_sid >= SMMU_STREAMS_MAX { return Some("too many streams"); }
+    None
+}
+
+/// Why `smmu_attach(sid | mode << 32, cd_pa)` is refused: a stream the table
+/// holds, a mode there is, and for a nested stream a 64-byte-aligned
+/// Context Descriptor in ordinary memory (not the monitor's, not guarded, in RAM
+/// once the kernel has named it); for the others no descriptor.
+pub fn smmu_attach_error(
+    nstreams: u64,
+    sid: u64,
+    mode: u64,
+    cd_pa: u64,
+    ram: &[[u64; 2]],
+    hole: u64,
+    hole_end: u64,
+    guarded: &Guarded,
+) -> Option<&'static str> {
+    if sid >= nstreams { return Some("no such stream"); }
+    match mode {
+        SMMU_BLOCK | SMMU_S2_ONLY => return if cd_pa != 0 { Some("descriptor for a stream with no stage 1") } else { None },
+        SMMU_NESTED => {}
+        _ => return Some("no such mode"),
+    }
+    if cd_pa % 64 != 0 { return Some("descriptor not 64-aligned"); }
+    let Some(end) = cd_pa.checked_add(64) else { return Some("wraps") };
+    if cd_pa < hole_end && hole < end { return Some("descriptor over the monitor"); }
+    if guarded.overlaps(cd_pa, end) { return Some("descriptor over a guarded page"); }
+    if !ram.is_empty() && !ram.iter().any(|m| m[0] <= cd_pa && end <= m[1]) { return Some("descriptor outside RAM"); }
+    None
 }

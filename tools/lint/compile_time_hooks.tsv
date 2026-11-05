@@ -123,6 +123,8 @@ hyp-pin-off-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which sepa
 hyp-pin-probe	pending	
 hyp-kdf-salt-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-key-root-probe	pending	
+hyp-smmu-window-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
+hyp-smmu-probe	pending	
 hyp-lock-probe	pending	
 infer-model-canary	pending	
 infer-refusal-canary	pending	

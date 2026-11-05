@@ -101,6 +101,36 @@ fn hvc(regs: *mut u64) {
                 set(regs, 0, r as u64)
             }
         },
+        azos_hyp_api::CALL_SMMU_INIT => match super::smmu::init(reg(regs, 1), reg(regs, 2) & 0xffff_ffff, reg(regs, 2) >> 32) {
+            Ok(oas) => {
+                set(regs, 0, OK as u64);
+                set(regs, 1, oas);
+            }
+            Err(r) => {
+                crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_SMMU_INIT, reg(regs, 1), reg(regs, 2));
+                set(regs, 0, r as u64)
+            }
+        },
+        azos_hyp_api::CALL_SMMU_ATTACH => {
+            let (a1, cd) = (reg(regs, 1), reg(regs, 2));
+            let r = super::smmu::attach(a1 & 0xffff_ffff, a1 >> 32, cd);
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_SMMU_ATTACH, a1, cd); }
+            set(regs, 0, r as u64)
+        }
+        azos_hyp_api::CALL_SMMU_FLUSH => {
+            let r = super::smmu::flush(reg(regs, 1));
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_SMMU_FLUSH, reg(regs, 1), 0); }
+            set(regs, 0, r as u64)
+        }
+        azos_hyp_api::CALL_SMMU_EVENT => match super::smmu::event() {
+            Some(w) => {
+                crate::record(Kind::DmaFault, this_pe(), 0, w[2], (w[0] >> 32) << 32 | (w[0] & 0xff));
+                set(regs, 0, OK as u64);
+                set(regs, 1, w[0]);
+                set(regs, 2, w[2]);
+            }
+            None => set(regs, 0, azos_hyp_api::EMPTY as u64),
+        },
         azos_hyp_api::CALL_PIN => {
             let (r, mode, pinned) = super::pin::pin();
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_PIN, 0, 0); }

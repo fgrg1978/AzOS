@@ -3769,6 +3769,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-guard-skip-canary)        name=hyp-mon-guard-skip ;;
         hyp-pin-off-canary)           name=hyp-mon-pin-off ;;
         hyp-kdf-salt-canary)          name=hyp-mon-kdf-salt ;;
+        hyp-smmu-window-canary)       name=hyp-mon-smmu-window ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3792,6 +3793,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *guard-skip*) hyp_mon_blob hyp-guard-skip-canary ;;
         *pin-off*) hyp_mon_blob hyp-pin-off-canary ;;
         *kdf-salt*) hyp_mon_blob hyp-kdf-salt-canary ;;
+        *smmu-window*) hyp_mon_blob hyp-smmu-window-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     if ! a64_kbuild "$sel"; then
@@ -3801,8 +3803,9 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
     local img="$CI_LOG_DIR/kernel-hyp-$want.img"; cp "$A64_IMG" "$img"
     par_ready
     # HYP_APPEND: the kernel command line (runtime canaries); HYP_WAIT: what ends the wait;
-    # HYP_CPU: the -cpu model (cortex-a76 has no FEAT_FGT); HYP_QEMU: more QEMU options (-icount).
-    qemu-system-aarch64 -M virt,virtualization=on,gic-version=3 -cpu "${HYP_CPU:-max,pauth=on}" -smp 4 -nographic \
+    # HYP_CPU: the -cpu model (cortex-a76 has no FEAT_FGT); HYP_MACHINE: the -M string (iommu=smmuv3);
+    # HYP_QEMU: more QEMU options (-icount, -global).
+    qemu-system-aarch64 -M "${HYP_MACHINE:-virt,virtualization=on,gic-version=3}" -cpu "${HYP_CPU:-max,pauth=on}" -smp 4 -nographic \
         ${HYP_QEMU:-} -kernel "$img" ${HYP_APPEND:+-append "$HYP_APPEND"} >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ]; do
@@ -3889,6 +3892,26 @@ par "hyp: R8 keystore salt canary (arm)" hyp_monitor_row "hyp: R8 keystore salt 
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
 par "hyp: R8 keystore root readable canary (arm)" hyp_monitor_row "hyp: R8 keystore root readable canary (arm)" "hyp-guard-skip-canary,hyp-key-root-probe" canary \
     "[FATAL] aarch64 kernel page fault"
+# R10, DMA through the SMMU: the monitor brings the unit up with its own stream
+# table and queues and gives every stream the host's stage 2 (nested under the
+# kernel's stage 1, `-global arm-smmuv3.stage=nested`); from the lock the unit's
+# registers are unmapped from the host. A stream outside the table and a mode
+# that is none are refused and recorded, and a write to CR0 from EL1 faults.
+# Canary: the window is left mapped, so the write goes through. The boot row is
+# the split image's PCI path under the monitor: the NIC's stream is set up
+# nested and the scheduler starts.
+R10_MACHINE='virt,virtualization=on,gic-version=3,iommu=smmuv3'
+HYP_MACHINE="$R10_MACHINE" HYP_QEMU='-global arm-smmuv3.stage=nested' HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R10 smmu owned by the monitor (arm)" hyp_monitor_row "hyp: R10 smmu owned by the monitor (arm)" "hyp-smmu-probe" pass \
+    "[IOMMU] smmuv3 at" "[BOOT] EL2:        invariant smmu in force" \
+    "[HYP] smmu: a stream outside the table and a mode there is not are refused and recorded" \
+    "[HYP] smmu: writing CR0 from EL1 (must fault)" "[FATAL] aarch64 kernel page fault"
+HYP_MACHINE="$R10_MACHINE" HYP_QEMU='-global arm-smmuv3.stage=nested' HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R10 smmu window canary (arm)" hyp_monitor_row "hyp: R10 smmu window canary (arm)" "hyp-smmu-window-canary,hyp-smmu-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
+HYP_MACHINE="$R10_MACHINE" HYP_QEMU='-global arm-smmuv3.stage=nested' HYP_WAIT='\[SCHED\] Starting scheduler on boot CPU|\[IOMMU\] fault' \
+par "hyp: R10 split boot behind the smmu (arm)" hyp_monitor_row "hyp: R10 split boot behind the smmu (arm)" "hyp-monitor-row,pci" pass \
+    "[IOMMU] smmuv3 at" "[SCHED] Starting scheduler on boot CPU"
 # R9: after the lock each PE pins itself: with FEAT_FGT (`-cpu max`) the
 # write traps of SCTLR_EL1, TCR_EL1 and TTBR1_EL1; without it (`-cpu
 # cortex-a76`) HCR_EL2.TVM, with the TTBR0_EL1 write still carried out. A

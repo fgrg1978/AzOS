@@ -12,8 +12,7 @@
 use azos_drv_sys::kprintln;
 use azos_hyp_api::{
     is_monitor_call, words_to_out, DeriveReq, LockDesc, TextSite, CALL_GUARD_PAGES, CALL_KEY_DERIVE,
-    CALL_KEY_ROOT_SET, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PIN, CALL_PROBE, CALL_TEXT_PATCH,
-    INVARIANT_NAMES, KEY_LEN, KEY_ROOTS, LOCK_RAM_MAX, OK, PIN_FGT, TEXT_SITES_MAX,
+    CALL_KEY_ROOT_SET, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PIN, CALL_PROBE, CALL_TEXT_PATCH, INVARIANT_NAMES, KEY_LEN, KEY_ROOTS, LOCK_RAM_MAX, OK, PIN_FGT, TEXT_SITES_MAX,
 };
 
 // The blob, placed in `.hyp` (a non-exec `alloc` section the linker keeps out
@@ -45,7 +44,8 @@ macro_rules! hyp_blob {
     feature = "hyp-text-site-skip-canary",
     feature = "hyp-guard-skip-canary",
     feature = "hyp-pin-off-canary",
-    feature = "hyp-kdf-salt-canary"
+    feature = "hyp-kdf-salt-canary",
+    feature = "hyp-smmu-window-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -66,6 +66,8 @@ hyp_blob!("/build/aarch64/hyp-mon-guard-skip.bin");
 hyp_blob!("/build/aarch64/hyp-mon-pin-off.bin");
 #[cfg(feature = "hyp-kdf-salt-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-kdf-salt.bin");
+#[cfg(feature = "hyp-smmu-window-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-smmu-window.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
 /// x0..x4). An HVC, which the monitor traps at EL2.
@@ -264,6 +266,39 @@ fn vault_kdf(slot: usize, salt: &[u8], info: &[u8], out: &mut [u8; KEY_LEN]) -> 
     true
 }
 
+/// The SMMU the monitor owns, as the kernel's `Smmuv3Remote` asks for it.
+#[cfg(feature = "iommu-smmuv3")]
+pub(crate) struct SmmuCalls;
+
+#[cfg(feature = "iommu-smmuv3")]
+impl azos_iommu::smmuv3::Remote for SmmuCalls {
+    fn init(&self, base: u64, size: u64, max_sid: u32) -> Option<u64> {
+        use azos_hyp_api::CALL_SMMU_INIT;
+        let r = monitor_call2(CALL_SMMU_INIT, base, size | (max_sid as u64) << 32);
+        (r[0] as i64 == OK).then_some(r[1])
+    }
+
+    fn attach(&self, sid: u32, stream: azos_iommu::smmuv3::RemoteStream) -> bool {
+        use azos_hyp_api::{CALL_SMMU_ATTACH, SMMU_BLOCK, SMMU_NESTED, SMMU_S2_ONLY};
+        use azos_iommu::smmuv3::RemoteStream::*;
+        let (mode, cd) = match stream {
+            Block => (SMMU_BLOCK, 0),
+            S2Only => (SMMU_S2_ONLY, 0),
+            Nested(cd) => (SMMU_NESTED, cd),
+        };
+        monitor_call2(CALL_SMMU_ATTACH, sid as u64 | mode << 32, cd)[0] as i64 == OK
+    }
+
+    fn flush(&self, sid: u32) -> bool {
+        monitor_call(azos_hyp_api::CALL_SMMU_FLUSH, sid as u64)[0] as i64 == OK
+    }
+
+    fn event(&self) -> Option<[u64; 2]> {
+        let r = monitor_call(azos_hyp_api::CALL_SMMU_EVENT, 0);
+        (r[0] as i64 == OK).then_some([r[1], r[2]])
+    }
+}
+
 /// The split image's line about the keystore: no root's bytes are the kernel's.
 pub(crate) fn report_roots(in_kernel: usize) {
     kprintln!("[BOOT] EL2:        keystore roots held by the kernel: {}", in_kernel);
@@ -340,10 +375,12 @@ pub(crate) fn lock_ro_data() {
     pin_probe();
     #[cfg(feature = "hyp-key-root-probe")]
     key_root_probe();
+    #[cfg(feature = "hyp-smmu-probe")]
+    smmu_probe();
 }
 
 /// How many records of `kind` the ring holds.
-#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe", feature = "hyp-key-root-probe"))]
+#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe", feature = "hyp-key-root-probe", feature = "hyp-smmu-probe"))]
 fn ring_count(kind: azos_hyp_api::Kind) -> u32 {
     let (mut cursor, mut n) = (0, 0);
     loop {
@@ -531,4 +568,39 @@ fn key_root_probe() {
     // SAFETY: the probe's purpose is this read; it must not return.
     let b = unsafe { core::ptr::read_volatile((core::ptr::addr_of!(ROOT_PAGES) as usize + slot * 4096) as *const u8) };
     kprintln!("[HYP] PROBE FAILED: the vaulted root read {:#x}", b);
+}
+
+/// Feature `hyp-smmu-probe` (the `hyp: R10` rows): a stream the monitor's
+/// table does not hold and a mode there is not are refused and recorded; then
+/// the kernel maps the unit's registers and writes `CR0` (SMMUEN off), which the
+/// host stage-2 must refuse. Never in a real build.
+#[cfg(feature = "hyp-smmu-probe")]
+fn smmu_probe() {
+    use azos_hyp_api::{Kind, INV_SMMU, SMMU_BLOCK};
+    let Some((base, size)) = crate::boot::hwbus::window_for("smmuv3") else {
+        kprintln!("[HYP] PROBE FAILED: no smmuv3 in the device tree");
+        return;
+    };
+    if monitor_call(CALL_PROBE, 0)[2] & INV_SMMU == 0 {
+        kprintln!("[HYP] PROBE FAILED: probe does not report smmu");
+    }
+    let before = ring_count(Kind::CallRefused);
+    let (far, no_mode) = (
+        monitor_call2(azos_hyp_api::CALL_SMMU_ATTACH, 0xffff_ffff | SMMU_BLOCK << 32, 0)[0] as i64,
+        monitor_call2(azos_hyp_api::CALL_SMMU_ATTACH, 1 | 7 << 32, 0)[0] as i64,
+    );
+    if far != OK && no_mode != OK && ring_count(Kind::CallRefused) == before + 2 {
+        kprintln!("[HYP] smmu: a stream outside the table and a mode there is not are refused and recorded");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: smmu_attach gave {} / {}", far, no_mode);
+    }
+    if !crate::boot::map_mmio_region(base as usize, size as usize) {
+        kprintln!("[HYP] PROBE FAILED: the unit's window will not map");
+        return;
+    }
+    kprintln!("[HYP] smmu: writing CR0 from EL1 (must fault)");
+    // SAFETY: the probe's purpose is this write; it must not return. CR0 is a
+    // register of the unit at `base`.
+    unsafe { azos_arch_api::mmio::write32(base as usize + azos_iommu::smmuv3::REG_CR0, 0) };
+    kprintln!("[HYP] PROBE FAILED: CR0 was written from EL1");
 }

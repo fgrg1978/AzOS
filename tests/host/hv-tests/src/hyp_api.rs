@@ -159,7 +159,7 @@ fn the_lock_keeps_what_was_guarded_before_it_out_of_the_image() {
 fn the_call_ids_are_distinct_and_in_the_monitor_range() {
     let ids = [
         CALL_PROBE, CALL_VIOLATION_READ, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_TEXT_PATCH, CALL_GUARD_PAGES,
-        CALL_PIN, CALL_KEY_ROOT_SET, CALL_KEY_DERIVE,
+        CALL_PIN, CALL_KEY_ROOT_SET, CALL_KEY_DERIVE, CALL_SMMU_INIT, CALL_SMMU_ATTACH, CALL_SMMU_FLUSH, CALL_SMMU_EVENT,
     ];
     for (i, a) in ids.iter().enumerate() {
         assert!(is_monitor_call(*a));
@@ -175,7 +175,46 @@ fn every_invariant_has_its_own_bit_and_a_name() {
         assert_eq!(seen & bit, 0, "{name} shares a bit");
         seen |= bit;
     }
-    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED | INV_KEY_ROOTS);
+    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED | INV_KEY_ROOTS | INV_SMMU);
     assert_eq!(Kind::from_u32(5), Some(Kind::SysregRefused));
-    assert_eq!(Kind::from_u32(6), None);
+    assert_eq!(Kind::from_u32(6), Some(Kind::DmaFault));
+    assert_eq!(Kind::from_u32(7), None);
+}
+
+#[test]
+fn an_smmu_window_is_whole_pages_in_the_monitors_device_map_clear_of_it() {
+    let (hole, hole_end) = (0x4060_0000, 0x4080_0000);
+    let e = |base, size, max_sid| smmu_init_error(base, size, max_sid, hole, hole_end);
+    assert_eq!(e(0x0905_0000, 0x2_0000, 255), None, "QEMU virt's unit");
+    assert_eq!(e(0x0905_0000, 0x10_0000, 0), None);
+    assert!(e(0x0905_0800, 0x2_0000, 1).is_some(), "unaligned");
+    assert!(e(0x0905_0000, 0x1_0000, 1).is_some(), "one page of registers is not the unit");
+    assert!(e(0x0905_0000, 0x10_1000, 1).is_some(), "more than the monitor maps");
+    assert!(e(0x3ffe_0000, 0x4_0000, 1).is_some(), "past the Device gigabyte");
+    assert!(e(u64::MAX - 0xfff, 0x2_0000, 1).is_some(), "wrapping");
+    assert!(e(0x0905_0000, 0x2_0000, SMMU_STREAMS_MAX).is_some(), "a stream the table cannot hold");
+    // Inside the Device gigabyte nothing of the monitor's can be: a hole there is refused.
+    assert!(smmu_init_error(0x0905_0000, 0x2_0000, 1, 0x0906_0000, 0x0907_0000).is_some());
+}
+
+#[test]
+fn a_stream_attach_names_a_stream_a_mode_and_for_stage_one_a_descriptor_in_ordinary_memory() {
+    let mut g = Guarded::new();
+    assert!(g.add(0x4100_0000, 0x4100_1000));
+    let ram = [[0x4000_0000u64, 0x8000_0000u64]];
+    let (hole, hole_end) = (0x4060_0000u64, 0x4080_0000u64);
+    let e = |sid, mode, cd| smmu_attach_error(16, sid, mode, cd, &ram, hole, hole_end, &g);
+    assert_eq!(e(3, SMMU_BLOCK, 0), None);
+    assert_eq!(e(3, SMMU_S2_ONLY, 0), None);
+    assert_eq!(e(3, SMMU_NESTED, 0x4200_0040), None);
+    assert!(e(16, SMMU_BLOCK, 0).is_some(), "no such stream");
+    assert!(e(3, 3, 0).is_some(), "no such mode");
+    assert!(e(3, SMMU_BLOCK, 0x4200_0000).is_some(), "a descriptor for a stream with no stage 1");
+    assert!(e(3, SMMU_NESTED, 0x4200_0020).is_some(), "unaligned");
+    assert!(e(3, SMMU_NESTED, 0x4060_0000).is_some(), "the monitor's own memory");
+    assert!(e(3, SMMU_NESTED, 0x4100_0000).is_some(), "guarded memory");
+    assert!(e(3, SMMU_NESTED, 0x9000_0000).is_some(), "outside RAM");
+    assert!(e(3, SMMU_NESTED, u64::MAX - 63).is_some(), "wrapping");
+    // Before the lock RAM is unnamed.
+    assert_eq!(smmu_attach_error(16, 3, SMMU_NESTED, 0x9000_0000, &[], hole, hole_end, &g), None);
 }

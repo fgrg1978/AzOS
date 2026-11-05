@@ -9,5 +9,6 @@
 mod common;
 mod domain;
 mod pgtable;
+mod remote;
 mod units;
 mod vectors;

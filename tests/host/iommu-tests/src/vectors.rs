@@ -196,6 +196,46 @@ fn smmu_ste_vectors() {
 }
 
 #[test]
+fn smmu_ste_with_stage_two_vectors() {
+    // The host's VTCR_EL2 for a 40-bit IPA, 4 KiB granule, start level 1 (SL0 =
+    // 1), write-back inner-shareable walks, PS = 40-bit: T0SZ 24, SL0 1<<6,
+    // IR0 1<<8, OR0 1<<10, SH0 3<<12, TG0 0, PS 2<<16 = 0x2_3558.
+    let vtcr = 24 | 1 << 6 | 1 << 8 | 1 << 10 | 3 << 12 | 2 << 16;
+    assert_eq!(vtcr, 0x2_3558);
+    // Stage 2 only (Config 6 -> 1 | 6<<1 = 0xd; SHCFG incoming 1<<44). Dword 2:
+    // VTCR at 50:32, S2AA64 bit 51, S2PTW bit 54, S2R bit 58; dword 3: S2TTB
+    // 51:4 = the root.
+    let s2 = smmuv3::encode_ste_s2(vtcr, 0x4010_0000, 0);
+    assert_eq!(s2[0], 0xd);
+    assert_eq!(s2[1], 1 << 44);
+    assert_eq!(s2[2], 0x2_3558u64 << 32 | 1 << 51 | 1 << 54 | 1 << 58);
+    assert_eq!(s2[3], 0x4010_0000);
+    assert!(s2[4..].iter().all(|w| *w == 0));
+    // Nested (Config 7 -> 1 | 7<<1 = 0xf), S1ContextPtr 51:6 the descriptor, the
+    // stage-1 half of dword 1 as the stage-1-only entry has it.
+    let n = smmuv3::encode_ste_s2(vtcr, 0x4010_0000, 0x8010_0000);
+    assert_eq!(n[0], 0x8010_000f);
+    assert_eq!(n[1], 0x0000_1000_0000_00d6);
+    assert_eq!(n[2..], s2[2..]);
+    // The root is a 4 KiB-aligned address inside 51:4; nothing else of it leaks in.
+    assert_eq!(smmuv3::encode_ste_s2(vtcr, !0, 0)[3], 0x000f_ffff_ffff_fff0);
+    // No stage-2 entry is a bypass (Config 4) or aborts (V clear).
+    for cd in [0, 0x8010_0000] {
+        let e = smmuv3::encode_ste_s2(vtcr, 0x4010_0000, cd);
+        assert_eq!(e[0] & 1, 1);
+        assert!(matches!((e[0] >> 1) & 7, 6 | 7));
+    }
+}
+
+#[test]
+fn smmu_stage_two_invalidation_commands() {
+    // TLBI_NH_ALL 0x10 and TLBI_S12_VMALL 0x28: opcode 7:0, VMID 47:32.
+    assert_eq!(smmuv3::cmd_tlbi_nh_all(0), [0x10, 0]);
+    assert_eq!(smmuv3::cmd_tlbi_s12_vmall(0), [0x28, 0]);
+    assert_eq!(smmuv3::cmd_tlbi_s12_vmall(0x1234), [0x28 | 0x1234 << 32, 0]);
+}
+
+#[test]
 fn smmu_cd_vector() {
     // 4 levels from a 48-bit input: T0SZ = 64 - 48 = 16 (0x10); IRGN0 = 1
     // (<<8 = 0x100); ORGN0 = 1 (<<10 = 0x400); SH0 = 3 (<<12 = 0x3000);

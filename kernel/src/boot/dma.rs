@@ -286,6 +286,7 @@ mod hw {
     };
     #[cfg(feature = "iommu-vtd")]
     use azos_drvkit::Mmio;
+    #[cfg(not(all(feature = "iommu-smmuv3", feature = "hyp-monitor")))]
     use azos_drvkit::Window;
     use azos_sync::SpinLock;
 
@@ -293,6 +294,7 @@ mod hw {
     use crate::kprintln;
 
     /// The unit's registers at a mapped base.
+    #[cfg(not(all(feature = "iommu-smmuv3", feature = "hyp-monitor")))]
     fn registers(base: usize) -> Window {
         // SAFETY: `base` is a mapped device window and the units name only
         // registers inside it (the span is mapped before the first use).
@@ -382,8 +384,11 @@ mod hw {
 
     #[cfg(feature = "iommu-riscv")]
     static RISCV: Shared<azos_iommu::riscv::RiscvIommu<Window>> = Shared::empty();
-    #[cfg(feature = "iommu-smmuv3")]
+    #[cfg(all(feature = "iommu-smmuv3", not(feature = "hyp-monitor")))]
     static SMMUV3: Shared<azos_iommu::smmuv3::Smmuv3<Window>> = Shared::empty();
+    // VIRT_SPLIT: the monitor owns the unit.
+    #[cfg(all(feature = "iommu-smmuv3", feature = "hyp-monitor"))]
+    static SMMUV3: Shared<azos_iommu::smmuv3::Smmuv3Remote<crate::entry::aarch64::ext::hyp_monitor::SmmuCalls>> = Shared::empty();
     #[cfg(feature = "iommu-vtd")]
     static VTD: Shared<azos_iommu::vtd::Vtd<Window>> = Shared::empty();
     #[cfg(feature = "iommu-amdvi")]
@@ -520,14 +525,20 @@ mod hw {
             return None;
         };
         let base = base as usize;
-        // Page 1 holds the event queue's index registers.
-        if (size as usize) < 0x2_0000 || !crate::boot::map_mmio_region(base, size as usize) {
+        // Page 1 holds the event queue's index registers. A split image never
+        // maps them: the monitor owns the unit.
+        if (size as usize) < 0x2_0000 || (!cfg!(feature = "hyp-monitor") && !crate::boot::map_mmio_region(base, size as usize)) {
             kprintln!("[IOMMU] smmuv3 at {:#x}: window {:#x} not usable", base, size);
             return None;
         }
         // The highest requester id the stream table must hold (bus 0 only today).
         let max_dev = funcs.iter().flatten().map(|f| f.bdf.requester_id()).max().unwrap_or(0);
-        match azos_iommu::smmuv3::Smmuv3::new(registers(base), &MEM, max_dev) {
+        #[cfg(not(feature = "hyp-monitor"))]
+        let unit = azos_iommu::smmuv3::Smmuv3::new(registers(base), &MEM, max_dev);
+        #[cfg(feature = "hyp-monitor")]
+        let unit = azos_iommu::smmuv3::Smmuv3Remote::new(
+            crate::entry::aarch64::ext::hyp_monitor::SmmuCalls, &MEM, base as u64, size as u64, max_dev);
+        match unit {
             Ok(u) => Some(found(&SMMUV3, u, base, None)),
             Err(e) => {
                 kprintln!("[IOMMU] smmuv3 at {:#x} not used: {:?}", base, e);
