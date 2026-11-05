@@ -60,15 +60,25 @@ fn may_call() -> bool {
     cfg!(feature = "kcall-atomic-canary") || azos_sync::preempt::may_block()
 }
 
+/// The refusal [`call`] makes where the running context may not block:
+/// `-EBUSY`, counted ([`atomic_refusals`]), before anything is queued. For a
+/// kernel component that hands its call to a task of its own and waits for
+/// it (`kernel/src/powermon.rs`): it refuses where the call itself would have.
+pub fn admit_blocking() -> Result<(), i64> {
+    if may_call() {
+        Ok(())
+    } else {
+        ATOMIC_REFUSED.fetch_add(1, Ordering::Relaxed);
+        Err(Errno::EBUSY.to_syscall_ret())
+    }
+}
+
 /// Call through the endpoint capability `ep` (a handle in the running task's
 /// table) with the request in `*msg`; the answer replaces it. `Err` is the
 /// call's negative code (`-EBUSY` when the context may not block, else
 /// `SYS_IPC_CALL`'s).
 pub fn call(ep: u32, msg: &mut MsgDesc) -> Result<(), i64> {
-    if !may_call() {
-        ATOMIC_REFUSED.fetch_add(1, Ordering::Relaxed);
-        return Err(Errno::EBUSY.to_syscall_ret());
-    }
+    admit_blocking()?;
     let req = *msg;
     match crate::ipc_v2::call_v2(ep as u64, &req, msg) {
         0 => Ok(()),
@@ -99,10 +109,7 @@ pub enum Purpose {
 /// that changes nothing. `-EPERM` when no task serves `name` or containment
 /// refuses; `-EBUSY` as in [`call`].
 pub fn call_named(name: &[u8], purpose: Purpose, msg: &mut MsgDesc) -> Result<(), i64> {
-    if !may_call() {
-        ATOMIC_REFUSED.fetch_add(1, Ordering::Relaxed);
-        return Err(Errno::EBUSY.to_syscall_ret());
-    }
+    admit_blocking()?;
     let r = azos_ipc::endpoint::endpoint_ref_by_name(name).ok_or(Errno::EPERM.to_syscall_ret())?;
     let req = *msg;
     match crate::ipc_v2::call_v2_kernel(r, purpose == Purpose::Observe, &req, msg) {

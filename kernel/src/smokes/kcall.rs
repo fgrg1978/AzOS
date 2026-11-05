@@ -14,6 +14,9 @@
 //!   is refused with `-EBUSY` before anything is queued, and counted; the
 //!   same call outside a lock is not refused for that reason.
 //!   Canary `kcall-atomic-canary`: the guard is skipped, `not ok`.
+//! * `a_power_read_under_a_spinlock_is_refused`: a power read made with a
+//!   spinlock held is refused the same way (`-EBUSY`, counted) before the
+//!   call task is given anything. The same canary skips the guard: `not ok`.
 //! * `kernel_named_call_reaches_a_task_server_without_a_capability`: the
 //!   kernel's call by name (`kcall::call_named`, the call a ring-3 task's
 //!   syscall makes on the kernel's authority) is served, and the calling
@@ -424,6 +427,43 @@ azos_ktest::ktest_late! {
             1 => Ok(()),
             -1 => Err("a call by name that acts was made under containment"),
             _ => Err("a call by name that only reads was refused under containment"),
+        }
+    }
+}
+
+#[cfg(feature = "board-io")]
+static ATOMIC_READ_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+
+#[cfg(feature = "board-io")]
+fn atomic_reader(_: usize) {
+    let mut m = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: 1, ..MsgDesc::default() };
+    let before = kcall::atomic_refusals();
+    let lock = azos_sync::SpinLock::new(());
+    let r = {
+        let _g = lock.lock();
+        crate::powermon::endpoint_call(&mut m)
+    };
+    let busy = azos_devif::IdlError::Transport(Errno::EBUSY.to_syscall_ret() as isize);
+    let rc = if r != Err(busy) {
+        -1
+    } else if kcall::atomic_refusals().wrapping_sub(before) != 1 {
+        -2
+    } else {
+        1
+    };
+    ATOMIC_READ_RC.store(rc, Ordering::Release);
+}
+
+#[cfg(feature = "board-io")]
+azos_ktest::ktest_late! {
+    fn a_power_read_under_a_spinlock_is_refused() {
+        crate::powermon::start_call_task();
+        azos_sched::task_create_affinity("kcall-aread", atomic_reader, 0, PRIO, -1);
+        crate::ktest::wait("the reader never returned", || ATOMIC_READ_RC.load(Ordering::Acquire) != NOT_YET)?;
+        match ATOMIC_READ_RC.load(Ordering::Acquire) {
+            1 => Ok(()),
+            -1 => Err("a power read made with a spinlock held was not refused with -EBUSY"),
+            _ => Err("the refused power read was not counted as an atomic refusal"),
         }
     }
 }

@@ -149,6 +149,9 @@ fn call_task(_: usize) {
 /// reader: never from an interrupt handler or with a lock held.
 pub(crate) fn endpoint_call(msg: &mut MsgDesc) -> IdlResult {
     const BUSY: IdlError = IdlError::Transport(-16);
+    // Where the reader may not block, refused before anything is posted, as
+    // `kcall::call` refuses (counted, `-EBUSY`): no host call nobody waits for.
+    kcall::admit_blocking().map_err(|e| IdlError::Transport(e as isize))?;
     if !CALL_TASK.load(Ordering::Acquire) {
         return Err(IdlError::Transport(-1));
     }
