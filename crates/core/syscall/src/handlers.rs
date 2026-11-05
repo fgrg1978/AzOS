@@ -1081,6 +1081,40 @@ pub fn sys_waitpid(child_tid: u64, status_ptr: u64) -> i64 {
     reaped as i64
 }
 
+/// `DOMAIN_WAIT`: `child` (0: any), `status_ptr`, and how long to wait
+/// (`timeout_ns`, 0: not at all). The task is marked as waiting for a child
+/// before each look, so an exit between the look and the sleep wakes it; the
+/// sleep is also bounded to 10 ms, the in-kernel personality's bound, against
+/// a wake that misses it.
+pub fn sys_domain_wait(child: u64, status_ptr: u64, timeout_ns: u64) -> i64 {
+    use azos_abi::error::Errno;
+    let deadline = azos_drv_sys::timebase::now().saturating_add(azos_abi::time::ns_to_ticks_ceil(
+        timeout_ns,
+        azos_drv_sys::timebase::TIMER_FREQ,
+    ));
+    let me = azos_sched::current_proc_tid();
+    loop {
+        if timeout_ns != 0 {
+            azos_sched::scheduler::set_current_waits_child(true);
+        }
+        let r = if child == 0 { sys_wait_status(status_ptr) } else { sys_waitpid(child, status_ptr) };
+        let now = azos_drv_sys::timebase::now();
+        let again = r == -1 && timeout_ns != 0 && now < deadline;
+        let r = if again && child == 0 && !azos_sched::scheduler::has_reapable_child(me) {
+            Errno::ECHILD.to_syscall_ret()
+        } else if again && crate::ushell::stop_requested() {
+            Errno::EINTR.to_syscall_ret()
+        } else {
+            r
+        };
+        if r != -1 || !again {
+            azos_sched::scheduler::set_current_waits_child(false);
+            return r;
+        }
+        crate::ushell::park_until(deadline.min(now.saturating_add(crate::ushell::ms_ticks(10))));
+    }
+}
+
 /// `DOMAIN_EXIT_STATS`: a0 = an `EXIT_STAT_*` selector. Returns that
 /// exit-path counter (`azos_sched::exit_stat`), or `-EINVAL`.
 pub fn sys_exit_stats(which: u64) -> i64 {

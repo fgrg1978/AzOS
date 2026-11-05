@@ -783,6 +783,12 @@ pub mod swcensus {
 }
 
 pub mod scheduler {
+    /// `DOMAIN_WAIT`'s sleeping form marks its waiter; nothing wakes it here.
+    pub fn set_current_waits_child(_on: bool) {}
+
+    /// A waiter for any child is told `ECHILD` when it has none.
+    pub fn has_reapable_child(_parent: u32) -> bool { true }
+
     use crate::filter::SyscallFilter;
     use std::sync::Mutex;
 

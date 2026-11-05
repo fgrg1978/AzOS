@@ -1480,6 +1480,14 @@ pub fn waitpid(child_tid: u32, status: *mut i32) -> isize {
     domain_op(invoke_abi::DOMAIN_WAIT, [child_tid as u64, status as u64, 0, 0])
 }
 
+/// [`waitpid`] that sleeps until the child ends, at most `timeout_ns`
+/// nanoseconds (`invoke_abi::WAIT_FOREVER`: no limit); `0` child: any child.
+/// `-1` when none ended in time, `-ECHILD` when none could, `-EINTR` when
+/// this task is asked to stop.
+pub fn wait_for(child_tid: u32, status: *mut i32, timeout_ns: u64) -> isize {
+    domain_op(invoke_abi::DOMAIN_WAIT, [child_tid as u64, status as u64, timeout_ns, 0])
+}
+
 /// Read one exit-path counter (the exit-stats op): `which` is a
 /// `azos_abi::syscall_nr::EXIT_STAT_*` selector. Returns the count, a
 /// total since boot over every task, or `-EINVAL` (-22) for an unknown

@@ -264,6 +264,9 @@ pub trait Native {
     /// has ended; a negative code while it has not (`-1`), or `-ECHILD`-like
     /// (any other negative) when it is nobody's child.
     fn waitpid(&self, tid: u32, code: &mut i32) -> i64;
+    /// The domain's `wait` op, sleeping: as [`waitpid`](Self::waitpid) (`tid`
+    /// 0: any child), until a child ends, `-ECHILD` when none can, `-EINTR`.
+    fn wait_block(&self, tid: u32, code: &mut i32) -> i64;
     /// `SYS_EXIT`.
     fn exit(&self, code: i32) -> !;
     /// `NODE_SEEK` on a `Cap<File>` handle: the new offset.
@@ -952,17 +955,12 @@ impl<N: Native> Runtime<N> {
                 _ => {}
             }
         }
-        // No blocking wait for a child's exit reaches a Linux row: the console's
-        // `WAIT` op is the terminal server's alone (seccomp-tests), and
-        // `DOMAIN_WAIT` does not block. The poll backs off, 5 ms doubling to 1 s.
-        let mut back = 5_000_000u64;
+        // The child's exit wakes this sleep (`DOMAIN_WAIT` with no time limit).
         loop {
             let mut code = 0i32;
-            if self.native.waitpid(child as u32, &mut code) > 0 {
+            if self.native.wait_block(child as u32, &mut code) > 0 {
                 self.native.exit(code & 0xff);
             }
-            self.native.sleep_until_ns(self.native.now_ns().saturating_add(back));
-            back = (back * 2).min(1_000_000_000);
         }
     }
 
@@ -1028,7 +1026,25 @@ impl<N: Native> Runtime<N> {
             if options & WNOHANG != 0 {
                 return 0;
             }
-            self.native.sleep_until_ns(self.native.now_ns().saturating_add(10_000_000));
+            // Sleep until the named child (or any child) ends, then take it
+            // in the scan above, which also forgets what the kernel reaped.
+            let mut code = 0i32;
+            let target = if pid > 0 { pid as u32 } else { 0 };
+            let r = self.native.wait_block(target, &mut code);
+            if r > 0 {
+                self.st.with(|s| {
+                    if let Some(c) = s.children.iter_mut().find(|c| **c == r as u32) {
+                        *c = 0;
+                    }
+                });
+                if status_ptr != 0 && put_user(status_ptr, &lx::wait_status(code).to_le_bytes()) != 0 {
+                    return neg(le::EFAULT);
+                }
+                return r;
+            }
+            if r == -4 {
+                return neg(le::EINTR);
+            }
         }
     }
 

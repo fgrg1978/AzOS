@@ -143,6 +143,9 @@ impl Native for Sys {
     fn waitpid(&self, tid: u32, code: &mut i32) -> i64 {
         sys::waitpid(tid, code as *mut i32) as i64
     }
+    fn wait_block(&self, tid: u32, code: &mut i32) -> i64 {
+        sys::wait_for(tid, code as *mut i32, azos_abi::invoke::WAIT_FOREVER) as i64
+    }
     fn exit(&self, code: i32) -> ! {
         sys::exit(code)
     }

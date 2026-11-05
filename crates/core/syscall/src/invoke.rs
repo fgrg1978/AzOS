@@ -237,8 +237,7 @@ fn domain_self_op(c: &mut Call) -> i64 {
         DOMAIN_TRUNCATE => crate::handlers::sys_truncate(w[0], w[1]),
         DOMAIN_SOCKET => crate::handlers::sys_socket_typed(w[0], w[1], w[2]),
         DOMAIN_UPTIME => crate::handlers::sys_uptime(),
-        DOMAIN_WAIT if w[0] == 0 => crate::handlers::sys_wait_status(w[1]),
-        DOMAIN_WAIT => crate::handlers::sys_waitpid(w[0], w[1]),
+        DOMAIN_WAIT => crate::handlers::sys_domain_wait(w[0], w[1], w[2]),
         DOMAIN_MPROTECT => crate::handlers::sys_mprotect(w[0], w[1], w[2]),
         DOMAIN_SET_CLEAR_TID if w[0] & 3 != 0 => azos_abi::error::Errno::EINVAL.to_syscall_ret(),
         DOMAIN_SET_CLEAR_TID => {

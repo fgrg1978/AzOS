@@ -350,11 +350,16 @@ pub const fn join_words(lo: u64, hi: u64, bits: u32) -> u64 {
         (hi << bits) | lo
     }
 }
-/// Reap a finished child of the process, without blocking: `w0` the child's
-/// task id (0: any), `w1` a `*mut i32` for its exit code (0: none). Returns the
-/// child's task id; `-1` when it (or every child) has not finished;
-/// `-ECHILD` for a task that is not a child of the caller or was reaped.
+/// Reap a finished child of the process: `w0` the child's task id (0: any),
+/// `w1` a `*mut i32` for its exit code (0: none), `w2` how long to wait for it
+/// in nanoseconds (0: do not block; [`WAIT_FOREVER`]: no limit). Returns the
+/// child's task id; `-1` when it (or every child) has not finished in time;
+/// `-ECHILD` for a task that is not a child of the caller or was reaped (and,
+/// waiting for any, when no child is left); `-EINTR` when the waiter is asked
+/// to stop. A waiting caller sleeps until a child's exit wakes it.
 pub const DOMAIN_WAIT: u16 = op(CapKind::Domain, CLASS_WAIT, 31);
+/// [`DOMAIN_WAIT`]'s `w2`: wait with no time limit.
+pub const WAIT_FOREVER: u64 = u64::MAX;
 /// Map the caller's per-task vDSO page read-only and return its address.
 pub const DOMAIN_VDSO_MAP: u16 = op(CapKind::Domain, CLASS_CTL, 33);
 /// Verify a signed module: `w0` the buffer, `w1` its length, `w2` the name,

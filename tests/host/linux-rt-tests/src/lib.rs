@@ -78,6 +78,8 @@ mod tests {
         spawn_code: i32,
         /// The spawned child ends after this many sleeps (0: it has ended at the spawn).
         late_after: usize,
+        /// Sleeping waits for a child (`wait_block`).
+        blocks: usize,
         /// `alert` calls (tid, signo).
         alerts: Vec<(u32, u32)>,
         /// The write ends of the model's pipes (a pipe's handles are otherwise alike).
@@ -268,6 +270,26 @@ mod tests {
                 m.pid = m.child_pid_after_fork;
             }
             r
+        }
+        fn wait_block(&self, tid: u32, code: &mut i32) -> i64 {
+            let any = {
+                let mut m = self.0.borrow_mut();
+                m.blocks += 1;
+                // The sleep ends when a child does: a late child ends now.
+                if m.late_after > 0 && m.kids.contains(&500) && !m.ended.contains_key(&500) {
+                    let c = m.spawn_code;
+                    m.ended.insert(500, c);
+                }
+                if m.kids.is_empty() {
+                    return -10;
+                }
+                m.ended.keys().next().copied()
+            };
+            match (tid, any) {
+                (0, Some(k)) => self.waitpid(k, code),
+                (0, None) => -1,
+                _ => self.waitpid(tid, code),
+            }
         }
         fn waitpid(&self, tid: u32, code: &mut i32) -> i64 {
             let mut m = self.0.borrow_mut();
@@ -1136,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn execve_polls_for_the_image_with_a_backoff_from_5ms_up_to_1s() {
+    fn execve_sleeps_in_one_wait_for_the_image_not_a_poll() {
         let r = rt();
         {
             let mut m = r.native().0.borrow_mut();
@@ -1148,9 +1170,8 @@ mod tests {
         caught(&r, || call(&r, nr::EXECVE, [p.as_ptr() as u64, argv.as_ptr() as u64, 0, 0, 0, 0]));
         let m = r.native().0.borrow();
         assert_eq!(m.exited, Some(2));
-        // The mock's clock does not move while it sleeps: a deadline is the interval.
-        let ms: Vec<u64> = m.sleeps.iter().map(|d| (d + 500_000) / 1_000_000).collect();
-        assert_eq!(ms, [5, 10, 20, 40, 80, 160, 320, 640, 1000, 1000, 1000, 1000]);
+        assert_eq!(m.blocks, 1, "one sleeping wait, woken by the image's end");
+        assert!(m.sleeps.is_empty(), "no polling sleep");
     }
 
     #[test]

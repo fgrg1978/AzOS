@@ -340,6 +340,10 @@ pub mod ushell {
     /// What every stub answers: a value no refusal produces.
     pub const REACHED: i64 = 777;
     pub fn sys_console_wait(_a: u64, _b: u64, _c: u64, _d: u64) -> i64 { REACHED }
+    /// The waits' helpers `handlers::sys_domain_wait` sleeps with.
+    pub fn ms_ticks(ms: u64) -> u64 { ms }
+    pub fn park_until(_deadline: u64) {}
+    pub fn stop_requested() -> bool { true }
 }
 #[path = "../../../../crates/core/syscall/src/invoke.rs"]
 #[allow(dead_code)]
