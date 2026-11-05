@@ -33,6 +33,7 @@ fn now() -> u64 {
 
 #[inline(always)]
 fn hart() -> usize {
+    // percpu-hint: every caller runs with IF clear (a window opening, closing, or a trap).
     crate::cpu::percpu_id()
 }
 

@@ -16,7 +16,7 @@
 
 use azos_libsys as sys;
 
-use crate::ipc_proto::{drv, frame, ring, IPC_SENTINEL};
+use crate::ipc_proto::{frame, ring, IPC_SENTINEL};
 
 /// Serve round trips until the sentinel arrives or `bound` are served.
 ///
@@ -158,13 +158,6 @@ fn frame_produce(mut p: sys::BytesProducer, n: u64) {
 }
 
 /// This task's hart, slot 4 of `DOMAIN_TASKINFO` (as `vsbench`'s `current_cpu`).
-/// Times this task was preempted (`DOMAIN_TASKINFO` field 3).
-fn preempted() -> u64 {
-    let mut buf = [0u8; sys::TASKINFO_BYTES];
-    if sys::taskinfo(&mut buf) != sys::TASKINFO_BYTES as isize { return 0; }
-    u64::from_le_bytes([buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31]])
-}
-
 fn hart() -> u64 {
     let mut buf = [0u8; sys::TASKINFO_BYTES];
     if sys::taskinfo(&mut buf) != sys::TASKINFO_BYTES as isize { return u64::MAX; }
