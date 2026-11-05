@@ -29,7 +29,7 @@ pub fn base_attr(class: Class, prio: u8) -> PiAttr {
         // deadlines (see `client_ceiling`), so a placeholder orders it.
         Class::Dl => PiAttr::Dl { deadline_ns: 0 },
         Class::Rt => PiAttr::Rt { prio },
-        Class::Fair => PiAttr::Fair,
+        Class::Fair => PiAttr::Fair { prio },
         Class::Idle => PiAttr::Idle,
     }
 }
