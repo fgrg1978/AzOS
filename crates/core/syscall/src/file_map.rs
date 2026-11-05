@@ -226,6 +226,11 @@ fn close_idle(i: usize) {
         e.closing = true;
         e.obj
     };
+    // A destroyed file's pages have nowhere to go: forgotten, not written back.
+    if memobj::memobj_paged_gone_ref(obj) && retry_busy(|| memobj::memobj_paged_forget_ref(obj, 0)).is_err() {
+        REG.lock_irqsave()[i].closing = false;
+        return;
+    }
     let closed = memobj::memobj_paged_close_ref(obj).is_ok();
     let mut reg = REG.lock_irqsave();
     if closed {
@@ -802,6 +807,18 @@ pub fn cache_forget(backing: &'static dyn PageBacking, key: Option<&PageKey>, fr
         }
     }
     all
+}
+
+/// Host tests: the cache objects the registry holds.
+#[cfg(test)]
+pub fn __entries_for_tests() -> usize {
+    REG.lock_irqsave().iter().filter(|e| e.used).count()
+}
+
+/// Host tests: close every idle entry, as a full registry does.
+#[cfg(test)]
+pub fn __reap_for_tests() {
+    reap_orphans();
 }
 
 /// Host tests: the packed reference of the cache object of window `window` of

@@ -49,7 +49,11 @@ impl PageBacking for FsPageBacking {
     }
 
     fn unpin(&self, key: &PageKey) {
-        self.0.released(&InodeKey { bytes: key.0 });
+        // The file went with its last holder: nothing is left to write the
+        // pages to, and the table slot of their object would be held for ever.
+        if self.0.released(&InodeKey { bytes: key.0 }) {
+            vfs::page_cache_drop(self.0, Some(&InodeKey { bytes: key.0 }), 0);
+        }
     }
 
     fn gone(&self, key: &PageKey) -> bool {

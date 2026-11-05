@@ -3358,6 +3358,16 @@ pub fn memobj_paged_users_drop_ref(r: u32) {
     }
 }
 
+/// Is the file the object `r` caches destroyed ([`PageBacking::gone`])?
+pub fn memobj_paged_gone_ref(r: u32) -> bool {
+    let (b, key) = {
+        let regions = MEMOBJS.lock();
+        let Some(st) = paged_slot(&regions, r).ok().and_then(|i| regions[i].paged.as_ref()) else { return false };
+        (st.backing, st.key)
+    };
+    b.gone(&key)
+}
+
 /// Users of the file object `r`; 0 for an object that is gone.
 pub fn memobj_paged_users_ref(r: u32) -> u32 {
     let regions = MEMOBJS.lock();

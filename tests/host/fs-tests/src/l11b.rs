@@ -1234,6 +1234,32 @@ fn a_destroyed_tmpfs_file_takes_its_dirty_pages_with_it() {
     vfs_p2::clear_tmpfs();
 }
 
+/// **The last unmap of an unlinked tmpfs file takes its cached pages**: a
+/// shared writable mapping dirtied one; the file goes with the last region and
+/// the page is dropped, not kept for a write-back that cannot happen.
+///
+/// **Canary.** `FsPageBacking::unpin` ignoring `released`'s answer.
+#[test]
+fn the_last_unmap_of_an_unlinked_file_drops_its_pages() {
+    use azos_mm::pager::PageBacking as _;
+    let _g = serial();
+    vfs_p2::tmp_once();
+    vfs_p2::clear_tmpfs();
+    let _c = install(1024, 64);
+    let fs: &'static dyn FileSystem = &tmpfs::TMPFS_TMP;
+    let k = tmpfs_h::make(b"um");
+    tmpfs::TMPFS_TMP.write_at(&k, 0, &pat(3000, 3)).unwrap();
+    let back = FsPageBacking::new(fs);
+    let pk = PageKey(k.bytes);
+    back.pin(&pk);
+    let _ = map_page(fs, &k, 3000, 1, true);
+    assert_eq!(vfs::vfs_unlink(b"/tmp/um"), Ok(()));
+    assert_eq!(dirty_pages(), 1, "the mapping's page is the orphan's");
+    back.unpin(&pk);
+    assert_eq!(dirty_pages(), 0, "the last unmap destroyed the file and its pages");
+    vfs_p2::clear_tmpfs();
+}
+
 /// **With the cache removed every path is the backend's again**: a write is on
 /// the volume at once, and what the cache held dirty was written before.
 #[test]

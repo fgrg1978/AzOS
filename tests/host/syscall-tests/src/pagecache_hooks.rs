@@ -244,6 +244,27 @@ fn a_destroyed_files_pages_are_discarded_by_a_sync() {
     clean();
 }
 
+/// **An idle object of a destroyed file is closed without a write-back**, so a
+/// medium that refuses the write does not keep its table slot for ever.
+///
+/// **Canary.** `close_idle` without its `memobj_paged_gone_ref` forget: the
+/// close writes back, fails, and the entry stays.
+#[test]
+fn an_idle_object_of_a_destroyed_file_is_reaped() {
+    let _g = serial();
+    clean();
+    fill_file(1, 3 * PAGE_SIZE);
+    let size = 3 * PAGE_SIZE as u64;
+    assert!(crate::file_map::cache_write(&FS_A, &key(1), size, 0, &[2; 8]).is_some());
+    assert_eq!(crate::file_map::__entries_for_tests(), 1);
+    GONE.store(1 << 1, Ordering::SeqCst);
+    FAIL_WRITES.store(true, Ordering::SeqCst);
+    crate::file_map::__reap_for_tests();
+    assert_eq!(crate::file_map::__entries_for_tests(), 0, "the slot is free");
+    assert!(writes(1).is_empty());
+    clean();
+}
+
 #[test]
 fn a_writeback_of_one_file_leaves_the_others_dirty() {
     let _g = serial();
