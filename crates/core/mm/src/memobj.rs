@@ -5699,7 +5699,7 @@ mod tests {
         }))
     }
 
-    const FKEY: PageKey = PageKey([7; 64]);
+    const FKEY: PageKey = PageKey([7; crate::pager::PAGE_KEY_LEN]);
 
     /// The cache's frame of page `i`, which must be in the cache.
     fn cached(r: u32, i: usize) -> &'static mut [u8] {
