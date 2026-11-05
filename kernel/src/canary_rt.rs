@@ -263,7 +263,13 @@ pub(crate) const NAMES: &[&str] = &[
     // runs on QEMU `virt` (gate rows `hyp: F3 ...`, aarch64 split only).
     "hyp-fake-spin-table",
     "hyp-fake-no-conduit",
-    // The same file: neither halt is taken (the rows' canary).
+    // The same file: a split image is taken to be the confidential posture, so
+    // a DMA master outside any IOMMU halts the boot on QEMU `virt` (rows
+    // `hyp: F9 ...`).
+    "hyp-fake-confidential",
+    // The same file: Kconfig HYP_ACCEPT_DMA_HOLE is taken to be y.
+    "hyp-fake-accept",
+    // The same file: no halt is taken (the rows' canary).
     "hyp-halt-skip",
     // kernel/src/ktest.rs `power_off`: the run's verdict is dropped, so a
     // failed run powers off with a clean run's QEMU exit status (riscv64 0,

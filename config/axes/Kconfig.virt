@@ -121,6 +121,23 @@ config HV_REQUIRE
       static partition is the case where a kernel that boots without its
       guests is a kernel that does not do its job.
 
+config HYP_ACCEPT_DMA_HOLE
+    bool "Boot a split image on a board with DMA masters outside any IOMMU"
+    depends on HYP_MONITOR
+    default n
+    help
+      Stage 2 binds the CPUs, not bus masters: a controller that masters memory
+      and sits behind no IOMMU can write the kernel's text whatever the monitor
+      does. The boot walks the device tree (crates/drivers/dtb, `dtb_dma_hole`)
+      for the controllers it lists (virtio-mmio, PCI host bridges with no
+      `iommu-map`, the known Ethernet, USB, SD, SATA and DMA-engine blocks) that
+      name no `iommus`, prints the count by kind, and says so on the boot line.
+      n: a confidential posture (SECURITY_CONFIDENTIAL) refuses to boot with
+      any. y: it boots, and the line says the hole was accepted. Any other
+      posture prints the line and boots either way. The list names the
+      controllers the supported boards carry; a master it does not name is a
+      hole this walk cannot see.
+
 config HV_MAX_VCPUS
     int "vCPUs over all guests"
     range 1 64

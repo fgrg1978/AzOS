@@ -267,6 +267,8 @@ fn spin_table_release(dtb_ptr: usize, cpus: &azos_percpu::CpuMap) {
     let found = unsafe { azos_dtb::dtb_spin_table(dtb_ptr as *const u8, &mut spin) };
     #[cfg(feature = "hyp-monitor")]
     crate::entry::aarch64::ext::hyp_monitor::refuse_spin_table(found.unwrap_or(0));
+    #[cfg(feature = "hyp-monitor")]
+    crate::entry::aarch64::ext::hyp_monitor::report_dma_hole(dtb_ptr);
     let Some(n) = found else { return };
     let pen = azos_mm::addr::virt_to_phys(_aarch64_spin_pen as *const () as usize) as u64;
     let mut released = 0;

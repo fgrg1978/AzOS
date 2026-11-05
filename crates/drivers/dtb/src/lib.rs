@@ -3070,6 +3070,12 @@ pub struct DtDevice<'a> {
     /// firmware declares its DMA cache-coherent with the CPU. `false` is
     /// "nothing declared", not "declared non-coherent".
     pub dma_coherent: bool,
+    /// The node names an IOMMU for its DMA: it has `iommus`, or (a PCI host
+    /// bridge) `iommu-map`.
+    pub has_iommu: bool,
+    /// `device_type` is `pci` or `pciex`: a host bridge whose functions do the
+    /// DMA the bridge's `iommu-map` covers.
+    pub pci_host: bool,
     /// The node's offset in the structure block (its `FDT_BEGIN_NODE` token):
     /// the number `azos_soc::NodeId` carries, so a driver finds the node's
     /// phandle properties (clocks, resets, supplies) from its `Device`.
@@ -3138,6 +3144,8 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
         dma_ranges: Option<&'a [u8]>,
         /// The node has the `dma-coherent` property.
         dma_coherent: bool,
+        /// The node has `iommus` or `iommu-map`.
+        has_iommu: bool,
         /// `device_type = "pci"` (or `"pciex"`): its children's addresses
         /// are PCI addresses, matched by space ([`ranges_to_cpu`]).
         pci_bus: bool,
@@ -3146,7 +3154,7 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
     }
     let blank = Node {
         name: &[], compatible: None, reg: None, reg2: None, irq: 0, enabled: true, cells: (2, 1), ranges: None,
-        dma_ranges: None, dma_coherent: false, pci_bus: false, at: 0,
+        dma_ranges: None, dma_coherent: false, has_iommu: false, pci_bus: false, at: 0,
     };
     /// An address of `cells` cells at `off` of `v`: a 3-cell one is its
     /// first cell (the PCI `phys.hi`, or a flags cell) and a 64-bit address;
@@ -3266,7 +3274,7 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                         // `dma-coherent` is inherited: a bus node that has it
                         // speaks for every device behind it.
                         let dma_coherent = stack[1..=depth].iter().any(|a| a.dma_coherent);
-                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, dt_node: n.at });
+                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, has_iommu: n.has_iommu, pci_host: n.pci_bus, dt_node: n.at });
                         count += 1;
                     }
                 }
@@ -3319,6 +3327,8 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                         stack[depth].dma_ranges = Some(val);
                     } else if is(b"dma-coherent") {
                         stack[depth].dma_coherent = true;
+                    } else if is(b"iommus") || is(b"iommu-map") {
+                        stack[depth].has_iommu = true;
                     } else if is(b"device_type") {
                         stack[depth].pci_bus = val.starts_with(b"pci\0") || val.starts_with(b"pciex\0");
                     } else if is(b"interrupts") {
@@ -4499,4 +4509,128 @@ pub unsafe fn dtb_cpu_topology(ptr: *const u8) -> Option<DtTopology> {
         }
     }
     Some(out)
+}
+
+
+// ---------------------------------------------------------------
+// DMA masters outside any IOMMU
+// ---------------------------------------------------------------
+
+/// Kinds of bus master the tree can name. A PCI host bridge stands for the
+/// functions behind it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DmaMaster {
+    VirtioMmio,
+    PciHost,
+    Ethernet,
+    Usb,
+    Sd,
+    Sata,
+    DmaEngine,
+}
+
+pub const DMA_MASTER_KINDS: usize = 7;
+
+impl DmaMaster {
+    pub const ALL: [DmaMaster; DMA_MASTER_KINDS] = [
+        DmaMaster::VirtioMmio,
+        DmaMaster::PciHost,
+        DmaMaster::Ethernet,
+        DmaMaster::Usb,
+        DmaMaster::Sd,
+        DmaMaster::Sata,
+        DmaMaster::DmaEngine,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            DmaMaster::VirtioMmio => "virtio-mmio",
+            DmaMaster::PciHost => "pci-host",
+            DmaMaster::Ethernet => "ethernet",
+            DmaMaster::Usb => "usb",
+            DmaMaster::Sd => "sd",
+            DmaMaster::Sata => "sata",
+            DmaMaster::DmaEngine => "dma-engine",
+        }
+    }
+}
+
+/// `compatible` strings of controllers that master memory, by kind. A trailing
+/// `*` matches any continuation. The list is the controllers a board this kernel
+/// runs on is known to carry; a master it does not name is a hole this walk
+/// cannot see.
+const DMA_MASTERS: &[(DmaMaster, &[&str])] = &[
+    (DmaMaster::VirtioMmio, &["virtio,mmio"]),
+    (
+        DmaMaster::Ethernet,
+        &["brcm,bcm2711-genet-v5", "brcm,genet-v5", "cdns,macb", "cdns,gem", "cdns,zynqmp-gem", "snps,dwmac*", "st,stm32-dwmac", "fsl,imx*-fec", "xlnx,axi-ethernet*", "intel,igb"],
+    ),
+    (
+        DmaMaster::Usb,
+        &["generic-ohci", "generic-ehci", "generic-xhci", "xhci-platform", "snps,dwc3", "snps,dwc2", "brcm,bcm2835-usb", "brcm,xhci-brcm-v2", "renesas,*xhci*", "fsl,imx*-usb"],
+    ),
+    (
+        DmaMaster::Sd,
+        &["arasan,sdhci*", "brcm,bcm2835-sdhci", "brcm,bcm2835-mmc", "brcm,bcm2711-emmc2", "snps,dw-mshc*", "fsl,imx*-usdhc", "sdhci*", "generic-sdhci"],
+    ),
+    (DmaMaster::Sata, &["generic-ahci", "snps,dwc-ahci", "snps,spear-ahci", "ahci-*"]),
+    (DmaMaster::DmaEngine, &["arm,pl330", "arm,pl080", "brcm,bcm2835-dma", "ti,edma3*", "snps,dma-spear1340", "xlnx,zynqmp-dma*"]),
+];
+
+fn compat_matches(pattern: &str, s: &[u8]) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => s.starts_with(prefix.as_bytes()),
+        None => s == pattern.as_bytes(),
+    }
+}
+
+/// The kind of master a node is, from its `compatible` (NUL-separated strings)
+/// and whether it is a PCI host bridge; `None` for a node that is none of the
+/// listed.
+pub fn dma_master_class(compatible: &[u8], pci_host: bool) -> Option<DmaMaster> {
+    if pci_host {
+        return Some(DmaMaster::PciHost);
+    }
+    for s in compatible.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+        for (kind, patterns) in DMA_MASTERS {
+            if patterns.iter().any(|p| compat_matches(p, s)) {
+                return Some(*kind);
+            }
+        }
+    }
+    None
+}
+
+/// Masters the tree lists that name no IOMMU, by kind ([`DmaMaster::ALL`]'s
+/// order).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DmaHole {
+    pub counts: [u16; DMA_MASTER_KINDS],
+}
+
+impl DmaHole {
+    pub fn total(&self) -> u32 {
+        self.counts.iter().map(|&c| c as u32).sum()
+    }
+}
+
+/// Walk the device nodes and count the DMA masters without `iommus` /
+/// `iommu-map`. `None` for a blob [`dtb_devices`] refuses.
+///
+/// # Safety
+/// Same precondition as [`dtb_parse`].
+pub unsafe fn dtb_dma_hole(ptr: *const u8) -> Option<DmaHole> {
+    let mut hole = DmaHole::default();
+    unsafe {
+        dtb_devices(ptr, &mut |d| {
+            if d.has_iommu {
+                return;
+            }
+            if let Some(kind) = dma_master_class(d.compatible, d.pci_host) {
+                let i = DmaMaster::ALL.iter().position(|&k| k == kind).unwrap_or(0);
+                hole.counts[i] = hole.counts[i].saturating_add(1);
+            }
+        })?;
+    }
+    Some(hole)
 }

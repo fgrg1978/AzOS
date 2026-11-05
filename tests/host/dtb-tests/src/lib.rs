@@ -2251,6 +2251,55 @@ mod device_nodes {
         assert_eq!(one.3, None, "one entry, no second");
     }
 
+    /// **A master with no IOMMU is a hole, and one that names an IOMMU is not.**
+    /// Two virtio windows (one behind `iommus`), a PCI host with `iommu-map` and
+    /// one without, a gigabit controller, a UART (no master) and a controller
+    /// whose `compatible` the list does not know.
+    ///
+    /// **Canary.** Count a node that has `iommus`: virtio-mmio is 2, not 1.
+    #[test]
+    fn a_dma_master_without_an_iommu_is_counted_in_its_kind() {
+        use azos_dtb::{dtb_dma_hole, DmaMaster};
+        let mut b = B::new();
+        b.begin("").prop("#address-cells", &be32(2)).prop("#size-cells", &be32(2));
+        b.begin("virtio_mmio@a000000").prop("compatible", &cstr("virtio,mmio"))
+            .prop("reg", &[be64(0xa00_0000), be64(0x200)].concat()).end();
+        b.begin("virtio_mmio@a000200").prop("compatible", &cstr("virtio,mmio"))
+            .prop("reg", &[be64(0xa00_0200), be64(0x200)].concat()).prop("iommus", &[be32(1), be32(2)].concat()).end();
+        b.begin("pcie@10000000").prop("compatible", &cstr("pci-host-ecam-generic")).prop("device_type", &cstr("pci"))
+            .prop("reg", &[be64(0x1000_0000), be64(0x1000_0000)].concat()).end();
+        b.begin("pcie@20000000").prop("compatible", &cstr("pci-host-ecam-generic")).prop("device_type", &cstr("pci"))
+            .prop("reg", &[be64(0x2000_0000), be64(0x1000_0000)].concat()).prop("iommu-map", &[be32(0), be32(7), be32(0), be32(0x10000)].concat()).end();
+        b.begin("ethernet@fe000000").prop("compatible", &[cstr("snps,dwmac-5.10a"), cstr("snps,dwmac")].concat())
+            .prop("reg", &[be64(0xfe00_0000), be64(0x1_0000)].concat()).end();
+        b.begin("serial@9000000").prop("compatible", &cstr("arm,pl011"))
+            .prop("reg", &[be64(0x900_0000), be64(0x1000)].concat()).end();
+        b.begin("mystery@fd000000").prop("compatible", &cstr("vendor,mystery-dma"))
+            .prop("reg", &[be64(0xfd00_0000), be64(0x1000)].concat()).end();
+        b.end();
+        let blob = b.blob();
+        let hole = unsafe { dtb_dma_hole(blob.as_ptr()) }.expect("walks");
+        let n = |k: DmaMaster| hole.counts[DmaMaster::ALL.iter().position(|&x| x == k).unwrap()];
+        assert_eq!(n(DmaMaster::VirtioMmio), 1, "the one behind iommus is not a hole");
+        assert_eq!(n(DmaMaster::PciHost), 1, "the host with iommu-map is not");
+        assert_eq!(n(DmaMaster::Ethernet), 1);
+        assert_eq!(hole.total(), 3, "the UART and the controller the list does not know are not counted");
+        assert!(unsafe { dtb_dma_hole(core::ptr::null()) }.is_none());
+    }
+
+    #[test]
+    fn the_master_list_matches_exact_strings_and_trailing_star_prefixes_in_any_position() {
+        use azos_dtb::{dma_master_class, DmaMaster};
+        let c = |s: &str| { let mut v = s.as_bytes().to_vec(); v.push(0); v };
+        assert_eq!(dma_master_class(&c("virtio,mmio"), false), Some(DmaMaster::VirtioMmio));
+        assert_eq!(dma_master_class(&c("virtio,mmio-v2"), false), None, "exact means exact");
+        assert_eq!(dma_master_class(&c("snps,dwmac-5.20"), false), Some(DmaMaster::Ethernet), "a prefix entry");
+        assert_eq!(dma_master_class(&[c("vendor,x"), c("generic-xhci")].concat(), false), Some(DmaMaster::Usb), "a later string");
+        assert_eq!(dma_master_class(&c("arm,pl011"), false), None);
+        assert_eq!(dma_master_class(b"", false), None);
+        assert_eq!(dma_master_class(&c("anything"), true), Some(DmaMaster::PciHost), "a host bridge is a master whatever it is called");
+    }
+
     /// A RISC-V `virt`-shaped tree: 2/2 cells at the root, a UART with one
     /// interrupt cell, a PLIC, a populated virtio window, and the nodes the
     /// walk must not report.

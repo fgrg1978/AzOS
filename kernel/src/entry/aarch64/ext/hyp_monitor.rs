@@ -147,6 +147,33 @@ pub(crate) fn refuse_no_conduit(no_conduit: bool, cpus: usize) {
     )
 }
 
+/// The line about DMA the monitor cannot confine: the device tree's bus
+/// masters that name no IOMMU, by kind. A confidential posture without
+/// Kconfig HYP_ACCEPT_DMA_HOLE halts on any; with it the line says the hole
+/// was accepted. Any other posture prints and boots.
+pub(crate) fn report_dma_hole(dtb_ptr: usize) {
+    // SAFETY: the firmware's tree, readable through the bootstrap map.
+    let Some(hole) = (unsafe { azos_dtb::dtb_dma_hole(dtb_ptr as *const u8) }) else { return };
+    if hole.total() == 0 {
+        kprintln!("[BOOT] EL2:        no DMA master outside an IOMMU in the device tree");
+        return;
+    }
+    kprintln!("[BOOT] EL2:        {} DMA master(s) outside any IOMMU: stage 2 does not confine them", hole.total());
+    for (kind, n) in azos_dtb::DmaMaster::ALL.iter().zip(hole.counts) {
+        if n != 0 {
+            kprintln!("[BOOT] EL2:        DMA hole: {} x {}", kind.name(), n);
+        }
+    }
+    let confidential = azos_limits::SECURITY_CONFIDENTIAL || canary!("hyp-fake-confidential");
+    if azos_limits::HYP_ACCEPT_DMA_HOLE || canary!("hyp-fake-accept") {
+        kprintln!("[BOOT] EL2:        DMA hole accepted (HYP_ACCEPT_DMA_HOLE)");
+    } else if confidential && !canary!("hyp-halt-skip") {
+        crate::boot::isa::refuse_text(
+            "[BOOT] EL2:        refused: DMA masters outside any IOMMU in a confidential image (HYP_ACCEPT_DMA_HOLE=y boots it anyway)",
+        )
+    }
+}
+
 extern "C" {
     static _text_start: u8;
     static _text_end: u8;

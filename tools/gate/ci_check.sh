@@ -3965,6 +3965,22 @@ par "hyp: F3 no-conduit halts (arm)" hyp_halt_row "hyp: F3 no-conduit halts (arm
 par "hyp: F3 no-conduit halt canary (arm)" hyp_halt_row "hyp: F3 no-conduit halt canary (arm)" hyp-fake-no-conduit canary \
     "[BOOT] EL2:        refused: no PSCI conduit"
 
+# F9, the DMA the monitor cannot confine: the device tree's masters that name
+# no IOMMU are counted by kind on the boot line (QEMU `virt` has virtio-mmio
+# windows, none behind an SMMU). A confidential image refuses to boot with any
+# unless HYP_ACCEPT_DMA_HOLE; the runtime canary `hyp-fake-confidential` makes
+# the split image one, `hyp-fake-accept` stands for the Kconfig symbol, and
+# `hyp-halt-skip` removes the halt.
+par "hyp: F9 DMA hole reported (arm)" hyp_monitor_row "hyp: F9 DMA hole reported (arm)" "hyp-monitor-row" pass \
+    "[BOOT] EL2:        DMA hole: virtio-mmio x"
+par "hyp: F9 confidential refuses a DMA hole (arm)" hyp_halt_row "hyp: F9 confidential refuses a DMA hole (arm)" hyp-fake-confidential pass \
+    "[BOOT] EL2:        refused: DMA masters outside any IOMMU"
+par "hyp: F9 confidential halt canary (arm)" hyp_halt_row "hyp: F9 confidential halt canary (arm)" hyp-fake-confidential canary \
+    "[BOOT] EL2:        refused: DMA masters outside any IOMMU"
+HYP_APPEND="canary=hyp-fake-confidential,hyp-fake-accept" HYP_WAIT='refused: |AzOS Rust kernel booted' \
+par "hyp: F9 accepted hole boots (arm)" hyp_monitor_row "hyp: F9 accepted hole boots (arm)" "hyp-monitor-row" pass \
+    "[BOOT] EL2:        DMA hole accepted (HYP_ACCEPT_DMA_HOLE)" "AzOS Rust kernel booted! (aarch64)"
+
 # Leave $A64_IMG on an ordinary qemu build for the rows below.
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
