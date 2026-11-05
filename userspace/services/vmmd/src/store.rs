@@ -20,7 +20,8 @@
 //! from there. A guest's seek is paid for over as many passes as it needs,
 //! and nothing else waits for more than one budget.
 
-use crate::blk::{BlockStore, IoError, SECTOR};
+use crate::blk::{BlockStore, IoError};
+use azos_virtio_proto::blk::SECTOR_SIZE;
 
 /// Bytes skipped per read when moving forward.
 const SKIP: usize = 4096;
@@ -56,7 +57,7 @@ impl<F: SeqFile> SeqStore<F> {
     /// A disk of `bytes` (a partial last sector is not part of it) over
     /// `file`, open at its start.
     pub fn new(file: F, bytes: u64, ro: bool) -> Self {
-        SeqStore { file, pos: Some(0), sectors: bytes / SECTOR as u64, ro, left: WORK_BYTES, rewinds: 0 }
+        SeqStore { file, pos: Some(0), sectors: bytes / SECTOR_SIZE as u64, ro, left: WORK_BYTES, rewinds: 0 }
     }
 
     /// The file, for the tests to look at.
@@ -124,7 +125,7 @@ impl<F: SeqFile> BlockStore for SeqStore<F> {
     }
 
     fn read(&mut self, sector: u64, buf: &mut [u8]) -> Result<(), IoError> {
-        let off = sector * SECTOR as u64;
+        let off = sector * SECTOR_SIZE as u64;
         self.seek(off)?;
         self.spend(buf.len())?;
         self.pos = None;
@@ -140,7 +141,7 @@ impl<F: SeqFile> BlockStore for SeqStore<F> {
     }
 
     fn write(&mut self, sector: u64, data: &[u8]) -> Result<(), IoError> {
-        let off = sector * SECTOR as u64;
+        let off = sector * SECTOR_SIZE as u64;
         self.seek(off)?;
         self.spend(data.len())?;
         self.pos = None;

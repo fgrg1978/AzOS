@@ -107,6 +107,7 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `block` | Block device backend selection, SD/eMMC driver, partition table parser. |
 | `nvme` | The NVMe wire protocol: encodings and arithmetic only. |
 | `virtio` | VirtIO transport (MMIO and PCI) and the block, network and entropy devices. |
+| `virtio-proto` | What VirtIO says on the wire, compiled by the `virtio` drivers and by `vmmd`'s device models: MMIO registers, status and feature bits, the split virtqueue layout, the block and network request formats (`no_std`, no `unsafe`). |
 | `net` | NIC backend selection and the Ethernet MAC driver. |
 | `scsi` | SCSI over USB Bulk-Only Transport, both ends: the CBW/CSW wrappers, the target command set (what a device answers) and the initiator side (the USB mass-storage host driver). |
 | `input` | Input devices and what keyboards share. |

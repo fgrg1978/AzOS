@@ -5,7 +5,7 @@
 
 use crate::harness::*;
 use crate::mmio::Transport;
-use crate::net::{Net, FRAME_MAX, HDR};
+use crate::net::{Net, FRAME_MAX};
 
 const MAC: [u8; 6] = [0x02, 0x41, 0x7A, 0x4F, 0x53, 0x01];
 const PEER: [u8; 6] = [0x02, 0, 0, 0, 0, 0x99];

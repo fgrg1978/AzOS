@@ -105,6 +105,7 @@ crates/drivers/tpm	0	0	0	0	1	0
 crates/drivers/usb	19	1	1	0	0	34
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	145	42	8	0	0	90
+crates/drivers/virtio-proto	0	0	0	0	1	0
 crates/fs	48	8	5	0	0	58
 crates/lib/control/ahrs	0	0	0	0	1	0
 crates/lib/control/flight-math	0	0	0	0	1	0
@@ -165,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	507
+@unsafe-share	506

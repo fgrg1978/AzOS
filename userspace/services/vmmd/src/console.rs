@@ -25,8 +25,9 @@
 //! shell and termd), and nothing lends it to a guest.
 
 use crate::guest::GuestMem;
-use crate::mmio::{Device, F_VERSION_1, MAX_QUEUES};
+use crate::mmio::{Device, MAX_QUEUES};
 use crate::virtq::{Virtq, VqError};
+use azos_virtio_proto::{feature, VIRTIO_DEV_CONSOLE};
 
 /// Bytes of a guest's write handed to the term at a time.
 const CHUNK: usize = 256;
@@ -249,11 +250,11 @@ impl<T: Term> Console<T> {
 
 impl<T: Term> Device for Console<T> {
     fn id(&self) -> u32 {
-        3
+        VIRTIO_DEV_CONSOLE
     }
 
     fn features(&self) -> u64 {
-        F_VERSION_1
+        feature::VERSION_1
     }
 
     fn queues(&self) -> usize {

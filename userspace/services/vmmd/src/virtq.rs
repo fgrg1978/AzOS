@@ -12,17 +12,19 @@
 //! chain is collected whole (at most [`MAX_CHAIN`] descriptors) before a
 //! device sees any of it.
 
+use azos_virtio_proto::{
+    virtq_avail_bytes, virtq_used_bytes, VIRTQ_AVAIL_ALIGN, VIRTQ_AVAIL_IDX_OFF, VIRTQ_AVAIL_RING_OFF, VIRTQ_DESC_ALIGN,
+    VIRTQ_DESC_BYTES, VIRTQ_DESC_FLAGS_OFF, VIRTQ_DESC_F_INDIRECT, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE,
+    VIRTQ_DESC_LEN_OFF, VIRTQ_DESC_NEXT_OFF, VIRTQ_USED_ALIGN, VIRTQ_USED_ELEM_BYTES, VIRTQ_USED_ELEM_LEN_OFF, VIRTQ_USED_IDX_OFF,
+    VIRTQ_USED_RING_OFF,
+};
+
 use crate::guest::{read_u16, read_u32, read_u64, write_u16, write_u32, GuestMem, OutOfRam};
 
 /// Most entries a queue may have (a power of two, spec 2.7: at most 32768).
 pub const QUEUE_MAX: u16 = 128;
 /// Most descriptors in one chain the models accept.
 pub const MAX_CHAIN: usize = 16;
-
-const DESC_BYTES: u64 = 16;
-const F_NEXT: u16 = 1;
-const F_WRITE: u16 = 2;
-const F_INDIRECT: u16 = 4;
 
 /// Why a queue cannot be served; the device is then flagged `NEEDS_RESET`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,12 +159,12 @@ impl Virtq {
         self.num != 0
             && self.num <= QUEUE_MAX
             && self.num.is_power_of_two()
-            && self.desc % 16 == 0
-            && self.avail % 2 == 0
-            && self.used % 4 == 0
-            && mem.contains(self.desc, DESC_BYTES * n)
-            && mem.contains(self.avail, 6 + 2 * n)
-            && mem.contains(self.used, 6 + 8 * n)
+            && self.desc % VIRTQ_DESC_ALIGN == 0
+            && self.avail % VIRTQ_AVAIL_ALIGN == 0
+            && self.used % VIRTQ_USED_ALIGN == 0
+            && mem.contains(self.desc, VIRTQ_DESC_BYTES * n)
+            && mem.contains(self.avail, virtq_avail_bytes(n))
+            && mem.contains(self.used, virtq_used_bytes(n))
     }
 
     /// Take the next chain the driver made available, if any.
@@ -170,7 +172,7 @@ impl Virtq {
         if !self.ready || self.num == 0 {
             return Ok(None);
         }
-        let idx = read_u16(mem, self.avail + 2)?;
+        let idx = read_u16(mem, self.avail + VIRTQ_AVAIL_IDX_OFF)?;
         if idx == self.last_avail {
             return Ok(None);
         }
@@ -180,7 +182,7 @@ impl Virtq {
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
         let slot = (self.last_avail % self.num) as u64;
-        let head = read_u16(mem, self.avail + 4 + 2 * slot)?;
+        let head = read_u16(mem, self.avail + VIRTQ_AVAIL_RING_OFF + 2 * slot)?;
         let chain = self.collect(mem, head)?;
         self.last_avail = self.last_avail.wrapping_add(1);
         Ok(Some(chain))
@@ -197,15 +199,15 @@ impl Virtq {
             if chain.n == MAX_CHAIN {
                 return Err(VqError::TooLong);
             }
-            let at = self.desc + DESC_BYTES * i as u64;
+            let at = self.desc + VIRTQ_DESC_BYTES * i as u64;
             let addr = read_u64(mem, at)?;
-            let len = read_u32(mem, at + 8)?;
-            let flags = read_u16(mem, at + 12)?;
-            let next = read_u16(mem, at + 14)?;
-            if flags & F_INDIRECT != 0 {
+            let len = read_u32(mem, at + VIRTQ_DESC_LEN_OFF)?;
+            let flags = read_u16(mem, at + VIRTQ_DESC_FLAGS_OFF)?;
+            let next = read_u16(mem, at + VIRTQ_DESC_NEXT_OFF)?;
+            if flags & VIRTQ_DESC_F_INDIRECT != 0 {
                 return Err(VqError::Indirect);
             }
-            let write = flags & F_WRITE != 0;
+            let write = flags & VIRTQ_DESC_F_WRITE != 0;
             if seen_write && !write {
                 return Err(VqError::Order);
             }
@@ -217,7 +219,7 @@ impl Virtq {
             }
             chain.descs[chain.n] = Desc { addr, len, write };
             chain.n += 1;
-            if flags & F_NEXT == 0 {
+            if flags & VIRTQ_DESC_F_NEXT == 0 {
                 return Ok(chain);
             }
             i = next;
@@ -231,13 +233,13 @@ impl Virtq {
             return Err(VqError::BadIndex);
         }
         let slot = (self.used_idx % self.num) as u64;
-        let e = self.used + 4 + 8 * slot;
+        let e = self.used + VIRTQ_USED_RING_OFF + VIRTQ_USED_ELEM_BYTES * slot;
         write_u32(mem, e, chain.head as u32)?;
-        write_u32(mem, e + 4, written)?;
+        write_u32(mem, e + VIRTQ_USED_ELEM_LEN_OFF, written)?;
         // The entry is visible before the index that publishes it.
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         self.used_idx = self.used_idx.wrapping_add(1);
-        write_u16(mem, self.used + 2, self.used_idx)?;
+        write_u16(mem, self.used + VIRTQ_USED_IDX_OFF, self.used_idx)?;
         Ok(())
     }
 }

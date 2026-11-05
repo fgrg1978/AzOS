@@ -39,6 +39,8 @@ azos_topology = { path = "../../../crates/core/topology", features = ["dev-key"]
 azos_dtb = { path = "../../../crates/drivers/dtb" }
 # The ring the guest's console output goes through while a tool drains it.
 azos_rings = { path = "../../../crates/core/rings" }
+# The wire constants the models under test compile.
+azos_virtio_proto = { path = "../../../crates/drivers/virtio-proto" }
 azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
 
 [profile.release]

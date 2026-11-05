@@ -435,6 +435,7 @@ dependencies = [
  "azos_mm",
  "azos_pci",
  "azos_sync",
+ "azos_virtio_proto",
 ]
 
 [[package]]
@@ -1110,6 +1111,10 @@ dependencies = [
  "azos_rings",
  "azos_usb",
 ]
+
+[[package]]
+name = "azos_virtio_proto"
+version = "0.1.0"
 
 [[package]]
 name = "bitflags"

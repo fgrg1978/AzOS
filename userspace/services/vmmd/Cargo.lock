@@ -70,6 +70,10 @@ name = "azos_rings"
 version = "0.1.0"
 
 [[package]]
+name = "azos_virtio_proto"
+version = "0.1.0"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -112,4 +116,5 @@ dependencies = [
  "azos_devif",
  "azos_libsys",
  "azos_rings",
+ "azos_virtio_proto",
 ]

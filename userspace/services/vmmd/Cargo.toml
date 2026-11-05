@@ -11,6 +11,7 @@ azos_libsys = { path = "../../../crates/core/libsys" }
 azos_abi = { path = "../../../crates/core/abi" }
 azos_devif = { path = "../../../crates/core/devif" }
 azos_rings = { path = "../../../crates/core/rings" }
+azos_virtio_proto = { path = "../../../crates/drivers/virtio-proto" }
 
 [features]
 # Host canaries (tests/host/vmmd-tests), never in a real build: each removes

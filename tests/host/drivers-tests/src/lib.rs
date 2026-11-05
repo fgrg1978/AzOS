@@ -311,6 +311,10 @@ mod block_queue_tests;
 #[cfg(test)]
 mod blk_proto_tests;
 
+// The virtio wire crate against the specification's values, and the guest driver against the crate.
+#[cfg(test)]
+mod virtio_proto_tests;
+
 // `beep`, the toolbox's sound tool: the length of the tone in periods, the tone
 // itself in integer arithmetic, the queue sizing the kernel's end agrees with.
 #[allow(dead_code)]

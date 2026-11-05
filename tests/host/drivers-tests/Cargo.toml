@@ -43,6 +43,8 @@ azos_drv_api = { path = "../../../crates/drivers/api" }
 # virtio/mod.rs maps every buffer through a DMA domain (the registry's fallback
 # identity domain on the host).
 azos_dma = { path = "../../../crates/drivers/dma" }
+# The wire constants virtio/mod.rs and virtio/pci.rs (pulled in by #[path]) compile.
+azos_virtio_proto = { path = "../../../crates/drivers/virtio-proto" }
 
 # **Reproduce the kernel's release profile, specifically `overflow-checks`.**
 # Without this the suite compiles arithmetic that silently wraps, so a test

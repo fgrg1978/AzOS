@@ -1,0 +1,9 @@
+[package]
+name = "azos_virtio_proto"
+version = "0.1.0"
+edition = "2021"
+description = "What virtio says on the wire, written once for both ends of it: the MMIO register file, the status bits, the split virtqueue layout, the feature bits, and the block and network request formats. The guest drivers (azos_drv_virtio) and the device models in ring 3 (vmmd) compile this."
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+
+[dependencies]

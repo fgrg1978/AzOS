@@ -10,6 +10,7 @@
 //! virtio 1.2, section 5.2.
 
 use azos_drv_api::block::HwStatus;
+use azos_virtio_proto::blk as wire;
 
 // ── Command budgets ─────────────────────────────────────────────────────
 
@@ -44,18 +45,11 @@ pub const fn budget_us(op: u8) -> u64 {
 
 // ── Request types and status ────────────────────────────────────────────
 
-/// Read from the device.
-pub const T_IN: u32 = 0;
-/// Write to the device.
-pub const T_OUT: u32 = 1;
-/// Commit the device's volatile write cache.
-pub const T_FLUSH: u32 = 4;
-/// Deallocate the sectors of the discard segments.
-pub const T_DISCARD: u32 = 11;
+pub use azos_virtio_proto::blk::{
+    discard_segment, CFG_MAX_DISCARD_SECTORS, CFG_MAX_DISCARD_SEG, CFG_NUM_QUEUES_WORD, DISCARD_SEG_BYTES, S_OK,
+    S_UNSUPP, T_DISCARD, T_FLUSH, T_IN, T_OUT,
+};
 
-pub const S_OK: u8 = 0;
-/// The device does not implement the request type.
-pub const S_UNSUPP: u8 = 2;
 /// The status byte before the device writes it.
 pub const S_PENDING: u8 = 0xFF;
 /// Driver-side only, never written by a device: the command's budget ran out
@@ -67,21 +61,16 @@ pub const S_RESET: u8 = 0xFD;
 
 // ── Feature bits (word 0) ───────────────────────────────────────────────
 
-pub const F_RO: u32 = 1 << 5;
-pub const F_FLUSH: u32 = 1 << 9;
+pub const F_RO: u32 = word0(wire::F_RO);
+pub const F_FLUSH: u32 = word0(wire::F_FLUSH);
 /// Several request queues; `num_queues` is valid.
-pub const F_MQ: u32 = 1 << 12;
+pub const F_MQ: u32 = word0(wire::F_MQ);
 /// `T_DISCARD` is implemented; the discard limits are valid.
-pub const F_DISCARD: u32 = 1 << 13;
+pub const F_DISCARD: u32 = word0(wire::F_DISCARD);
 
-// ── Device config (byte offsets from the start of the config space) ─────
-
-/// The 32-bit word holding `num_queues` in its upper half (`le16` at 34).
-pub const CFG_NUM_QUEUES_WORD: u32 = 32;
-/// `le32 max_discard_sectors`.
-pub const CFG_MAX_DISCARD_SECTORS: u32 = 36;
-/// `le32 max_discard_seg`.
-pub const CFG_MAX_DISCARD_SEG: u32 = 40;
+const fn word0(bits: u64) -> u32 {
+    azos_virtio_proto::feature::word(bits, 0)
+}
 
 /// `num_queues` out of the config word at [`CFG_NUM_QUEUES_WORD`].
 pub const fn num_queues_of(word: u32) -> u16 {
@@ -93,21 +82,6 @@ pub const fn num_queues_of(word: u32) -> u16 {
 /// Descriptors a request chain takes at most: header, data (or the discard
 /// segment), status.
 pub const DESCS_PER_REQUEST: usize = 3;
-
-/// Bytes of one discard segment.
-pub const DISCARD_SEG_BYTES: usize = 16;
-
-/// One discard segment (`virtio_blk_discard_write_zeroes`): the first sector,
-/// the sector count and the flags, little endian. The flags are 0: `unmap` is
-/// a WRITE_ZEROES flag, and virtio 1.2 section 5.2.6.2 makes the device answer
-/// `S_UNSUPP` to a DISCARD that sets it (QEMU does), which would switch the
-/// file system's discard off at its first use.
-pub fn discard_segment(sector: u64, sectors: u32) -> [u8; DISCARD_SEG_BYTES] {
-    let mut s = [0u8; DISCARD_SEG_BYTES];
-    s[0..8].copy_from_slice(&sector.to_le_bytes());
-    s[8..12].copy_from_slice(&sectors.to_le_bytes());
-    s
-}
 
 // ── Queues and slots ────────────────────────────────────────────────────
 

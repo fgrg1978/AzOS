@@ -122,6 +122,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_virtio_proto"
+version = "0.1.0"
+
+[[package]]
 name = "azos_vmmd_tests"
 version = "0.1.0"
 dependencies = [
@@ -133,6 +137,7 @@ dependencies = [
  "azos_hv",
  "azos_rings",
  "azos_topology",
+ "azos_virtio_proto",
 ]
 
 [[package]]

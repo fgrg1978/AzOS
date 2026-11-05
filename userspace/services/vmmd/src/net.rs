@@ -19,17 +19,13 @@
 //! fill, not vmmd's.
 
 use crate::guest::GuestMem;
-use crate::mmio::{Device, F_VERSION_1, MAX_QUEUES};
+use crate::mmio::{Device, MAX_QUEUES};
 use crate::virtq::{Virtq, VqError};
+use azos_virtio_proto::net::{F_MAC, F_STATUS, HDR_BYTES, S_LINK_UP};
+use azos_virtio_proto::{feature, VIRTIO_DEV_NET};
 
-/// Bytes of the per-buffer header.
-pub const HDR: usize = 12;
 /// Largest frame carried (Ethernet header and 1500-byte payload, with room for a tag).
 pub const FRAME_MAX: usize = 1536;
-
-const F_MAC: u64 = 1 << 5;
-const F_STATUS: u64 = 1 << 16;
-const LINK_UP: u16 = 1;
 
 /// The virtual interface a guest NIC is bridged to.
 pub trait Link {
@@ -60,15 +56,15 @@ impl<L: Link> Net<L> {
 
     fn transmit(&mut self, vqs: &mut [Virtq; MAX_QUEUES], mem: &mut dyn GuestMem) -> Result<bool, VqError> {
         let mut any = false;
-        let mut buf = [0u8; HDR + FRAME_MAX];
+        let mut buf = [0u8; HDR_BYTES + FRAME_MAX];
         while let Some(chain) = vqs[1].pop(mem)? {
             let total = chain.readable();
-            if total < (HDR + 14) as u64 || total > buf.len() as u64 {
+            if total < (HDR_BYTES + 14) as u64 || total > buf.len() as u64 {
                 self.dropped_tx += 1;
             } else {
                 let n = total as usize;
                 chain.read_at(mem, 0, &mut buf[..n])?;
-                let frame = &buf[HDR..n];
+                let frame = &buf[HDR_BYTES..n];
                 // Ethernet: destination 0..6, source 6..12.
                 if frame[6..12] != self.mac {
                     self.dropped_tx += 1;
@@ -94,13 +90,13 @@ impl<L: Link> Net<L> {
                 }
             }
             let Some(chain) = vqs[0].pop(mem)? else { break };
-            let need = (HDR + self.rx_len) as u64;
+            let need = (HDR_BYTES + self.rx_len) as u64;
             let mut written = 0;
             if chain.writable() >= need {
-                let mut hdr = [0u8; HDR];
+                let mut hdr = [0u8; HDR_BYTES];
                 hdr[10..12].copy_from_slice(&1u16.to_le_bytes()); // num_buffers
                 chain.write_at(mem, 0, &hdr)?;
-                chain.write_at(mem, HDR as u64, &self.rx[..self.rx_len])?;
+                chain.write_at(mem, HDR_BYTES as u64, &self.rx[..self.rx_len])?;
                 written = need as u32;
                 self.received += 1;
             } else {
@@ -116,11 +112,11 @@ impl<L: Link> Net<L> {
 
 impl<L: Link> Device for Net<L> {
     fn id(&self) -> u32 {
-        1
+        VIRTIO_DEV_NET
     }
 
     fn features(&self) -> u64 {
-        F_VERSION_1 | F_MAC | F_STATUS
+        feature::VERSION_1 | F_MAC | F_STATUS
     }
 
     fn queues(&self) -> usize {
@@ -131,7 +127,7 @@ impl<L: Link> Device for Net<L> {
     fn read_config(&self, off: usize, out: &mut [u8]) {
         let mut cfg = [0u8; 8];
         cfg[..6].copy_from_slice(&self.mac);
-        cfg[6..8].copy_from_slice(&LINK_UP.to_le_bytes());
+        cfg[6..8].copy_from_slice(&S_LINK_UP.to_le_bytes());
         for (i, b) in out.iter_mut().enumerate() {
             *b = cfg.get(off + i).copied().unwrap_or(0);
         }

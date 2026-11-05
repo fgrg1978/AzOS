@@ -67,8 +67,7 @@ use azos_sync::SpinLock;
 // `num_buffers` and every RX frame was parsed two bytes early: DHCP
 // DISCOVER "sent", never answered (gate 182e, 2026-09-26; the same image
 // got a lease the moment the flag was dropped).
-const NET_HDR_LEGACY: usize = 10;
-const NET_HDR_MODERN: usize = 12;
+use azos_virtio_proto::net::{HDR_BYTES as NET_HDR_MODERN, HDR_BYTES_LEGACY as NET_HDR_LEGACY};
 
 /// Header length on the wire for this device, decided by the transport
 /// `virtio_init_device` negotiated with (see the block comment above).
@@ -1418,7 +1417,7 @@ pub enum PciNetError {
 
 /// `VIRTIO_NET_F_MAC` (bit 5): the device config carries the MAC.
 #[cfg(all(feature = "pci", target_os = "none"))]
-const VIRTIO_NET_F_MAC: u32 = 1 << 5;
+const VIRTIO_NET_F_MAC: u32 = azos_virtio_proto::feature::word(azos_virtio_proto::net::F_MAC, 0);
 
 /// Bring up the virtio-net-pci function `info` as the kernel's NIC.
 ///

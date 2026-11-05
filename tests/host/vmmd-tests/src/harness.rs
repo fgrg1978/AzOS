@@ -5,10 +5,10 @@
 
 use std::collections::VecDeque;
 
-use crate::blk::{BlockStore, IoError, SECTOR};
+use crate::blk::{BlockStore, IoError};
 use crate::console::Term;
 use crate::guest::{GuestMem, OutOfRam};
-use crate::mmio::{status, Device, Transport, F_VERSION_1};
+use crate::mmio::{Device, Transport};
 use crate::net::Link;
 
 pub const RAM_BASE: u64 = 0x8000_0000;
@@ -178,6 +178,18 @@ pub mod r {
 
 pub const ACK: u32 = 1;
 pub const DRIVER: u32 = 2;
+
+/// What the driver side of these tests reads off the specification, apart from
+/// the constants the models compile (`azos_virtio_proto`): a model that drifted
+/// from the wire would otherwise agree with itself.
+pub mod status {
+    pub const DRIVER_OK: u32 = 4;
+    pub const FEATURES_OK: u32 = 8;
+    pub const NEEDS_RESET: u32 = 0x40;
+}
+pub const F_VERSION_1: u64 = 1 << 32;
+pub const SECTOR: usize = 512;
+pub const HDR: usize = 12;
 
 /// A 32-bit register write.
 pub fn w<D: Device>(t: &mut Transport<D>, ram: &mut Ram, off: u64, v: u32) {

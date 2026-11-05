@@ -23,4 +23,9 @@ version = "0.1.0"
 dependencies = [
  "azos_dma",
  "azos_pci",
+ "azos_virtio_proto",
 ]
+
+[[package]]
+name = "azos_virtio_proto"
+version = "0.1.0"

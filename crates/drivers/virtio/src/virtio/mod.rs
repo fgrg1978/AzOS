@@ -22,44 +22,26 @@ use core::sync::atomic::{fence, Ordering};
 
 use azos_dma::{Direction, DmaDomain};
 
-// ---- MMIO Register Offsets (from virtio.h) ----
+pub use azos_virtio_proto::{
+    VIRTIO_DEV_BLOCK, VIRTIO_DEV_GPU, VIRTIO_DEV_INPUT, VIRTIO_DEV_NET, VIRTIO_DEV_RNG, VIRTIO_DEV_SND,
+    VIRTIO_MAGIC, VIRTIO_MMIO_CONFIG, VIRTIO_MMIO_DEVICE_FEATURES, VIRTIO_MMIO_DEVICE_FEATURES_SEL,
+    VIRTIO_MMIO_DEVICE_ID, VIRTIO_MMIO_DRIVER_FEATURES, VIRTIO_MMIO_DRIVER_FEATURES_SEL,
+    VIRTIO_MMIO_GUEST_PAGE_SIZE, VIRTIO_MMIO_INTERRUPT_ACK, VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_MAGIC,
+    VIRTIO_MMIO_QUEUE_ALIGN, VIRTIO_MMIO_QUEUE_AVAIL_HIGH, VIRTIO_MMIO_QUEUE_AVAIL_LOW,
+    VIRTIO_MMIO_QUEUE_DESC_HIGH, VIRTIO_MMIO_QUEUE_DESC_LOW, VIRTIO_MMIO_QUEUE_NOTIFY, VIRTIO_MMIO_QUEUE_NUM,
+    VIRTIO_MMIO_QUEUE_NUM_MAX, VIRTIO_MMIO_QUEUE_PFN, VIRTIO_MMIO_QUEUE_READY, VIRTIO_MMIO_QUEUE_SEL,
+    VIRTIO_MMIO_QUEUE_USED_HIGH, VIRTIO_MMIO_QUEUE_USED_LOW, VIRTIO_MMIO_STATUS, VIRTIO_MMIO_VENDOR_ID,
+    VIRTIO_MMIO_VERSION, VIRTIO_STATUS_ACK, VIRTIO_STATUS_DRIVER, VIRTIO_STATUS_DRIVER_OK,
+    VIRTIO_STATUS_FAILED, VIRTIO_STATUS_FEATURES_OK, VIRTQ_AVAIL_F_NO_INTERRUPT, VIRTQ_DESC_F_NEXT,
+    VIRTQ_DESC_F_WRITE, VIRTQ_USED_F_NO_NOTIFY, vring_need_event, VirtqDesc, VirtqUsedElem,
+};
+use azos_virtio_proto::feature;
 
-pub const VIRTIO_MMIO_MAGIC:              u32 = 0x000;
-pub const VIRTIO_MMIO_VERSION:            u32 = 0x004;
-pub const VIRTIO_MMIO_DEVICE_ID:          u32 = 0x008;
-pub const VIRTIO_MMIO_VENDOR_ID:          u32 = 0x00c;
-pub const VIRTIO_MMIO_DEVICE_FEATURES:    u32 = 0x010;
-pub const VIRTIO_MMIO_DEVICE_FEATURES_SEL:u32 = 0x014;
-pub const VIRTIO_MMIO_DRIVER_FEATURES:    u32 = 0x020;
-pub const VIRTIO_MMIO_DRIVER_FEATURES_SEL:u32 = 0x024;
-pub const VIRTIO_MMIO_GUEST_PAGE_SIZE:    u32 = 0x028; // legacy only
-pub const VIRTIO_MMIO_QUEUE_SEL:          u32 = 0x030;
-pub const VIRTIO_MMIO_QUEUE_NUM_MAX:      u32 = 0x034;
-pub const VIRTIO_MMIO_QUEUE_NUM:          u32 = 0x038;
-pub const VIRTIO_MMIO_QUEUE_ALIGN:        u32 = 0x03c; // legacy only
-pub const VIRTIO_MMIO_QUEUE_PFN:          u32 = 0x040; // legacy only
-pub const VIRTIO_MMIO_QUEUE_READY:        u32 = 0x044; // modern only
-pub const VIRTIO_MMIO_QUEUE_NOTIFY:       u32 = 0x050;
-pub const VIRTIO_MMIO_INTERRUPT_STATUS:   u32 = 0x060;
-pub const VIRTIO_MMIO_INTERRUPT_ACK:      u32 = 0x064;
-pub const VIRTIO_MMIO_STATUS:             u32 = 0x070;
-pub const VIRTIO_MMIO_QUEUE_DESC_LOW:     u32 = 0x080;
-pub const VIRTIO_MMIO_QUEUE_DESC_HIGH:    u32 = 0x084;
-pub const VIRTIO_MMIO_QUEUE_AVAIL_LOW:    u32 = 0x090;
-pub const VIRTIO_MMIO_QUEUE_AVAIL_HIGH:   u32 = 0x094;
-pub const VIRTIO_MMIO_QUEUE_USED_LOW:     u32 = 0x0a0;
-pub const VIRTIO_MMIO_QUEUE_USED_HIGH:    u32 = 0x0a4;
-pub const VIRTIO_MMIO_CONFIG:             u32 = 0x100;
+/// VIRTIO_F_EVENT_IDX (feature bit 29, word 0): the driver and the device
+/// each publish the ring index at which they want to be told next, in place
+/// of the NO_INTERRUPT / NO_NOTIFY flags.
+pub const VIRTIO_F_EVENT_IDX: u32 = feature::word(feature::EVENT_IDX, 0);
 
-// ---- Constants ----
-
-pub const VIRTIO_MAGIC:      u32 = 0x7472_6976; // "virt"
-pub const VIRTIO_DEV_NET:    u32 = 1;
-pub const VIRTIO_DEV_BLOCK:  u32 = 2;
-pub const VIRTIO_DEV_RNG:    u32 = 4;
-pub const VIRTIO_DEV_INPUT:  u32 = 18;
-pub const VIRTIO_DEV_GPU:    u32 = 16;
-pub const VIRTIO_DEV_SND:    u32 = 25;
 pub const VIRTIO_QUEUE_SIZE: usize = 16;
 
 /// Capacity of the ring arrays every [`Virtq`] carries (`avail.ring`,
@@ -121,26 +103,7 @@ pub use azos_drv_base::platform::hw::{
     VIRTIO_MMIO_BASE, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_COUNT,
 };
 
-// Status bits
-pub const VIRTIO_STATUS_ACK:          u32 = 1;
-pub const VIRTIO_STATUS_DRIVER:       u32 = 2;
-pub const VIRTIO_STATUS_DRIVER_OK:    u32 = 4;
-pub const VIRTIO_STATUS_FEATURES_OK:  u32 = 8;
-pub const VIRTIO_STATUS_FAILED:       u32 = 128;
-
-// Descriptor flags
-pub const VIRTQ_DESC_F_NEXT:     u16 = 1;
-pub const VIRTQ_DESC_F_WRITE:    u16 = 2;
-
 // ---- VirtIO Ring Structures (repr(C, packed) matches C ABI) ----
-
-#[repr(C, packed)]
-pub struct VirtqDesc {
-    pub addr:  u64,
-    pub len:   u32,
-    pub flags: u16,
-    pub next:  u16,
-}
 
 /// The driver area. `used_event` (VIRTIO_F_EVENT_IDX) sits at
 /// `ring[num]`, after the queue's own entries, so it is not a field here:
@@ -152,12 +115,6 @@ pub struct VirtqAvail {
     pub ring:       [u16; VIRTQ_CAPACITY],
 }
 
-#[repr(C, packed)]
-pub struct VirtqUsedElem {
-    pub id:  u32,
-    pub len: u32,
-}
-
 /// The device area. `avail_event` (VIRTIO_F_EVENT_IDX) sits at
 /// `ring[num]`; not a field, for the reason [`VirtqAvail`] gives.
 #[repr(C, packed)]
@@ -166,6 +123,15 @@ pub struct VirtqUsed {
     pub idx:         u16,
     pub ring:        [VirtqUsedElem; VIRTQ_CAPACITY],
 }
+
+const _: () = {
+    use azos_virtio_proto as p;
+    use core::mem::offset_of;
+    assert!(offset_of!(VirtqAvail, idx) as u64 == p::VIRTQ_AVAIL_IDX_OFF);
+    assert!(offset_of!(VirtqAvail, ring) as u64 == p::VIRTQ_AVAIL_RING_OFF);
+    assert!(offset_of!(VirtqUsed, idx) as u64 == p::VIRTQ_USED_IDX_OFF);
+    assert!(offset_of!(VirtqUsed, ring) as u64 == p::VIRTQ_USED_RING_OFF);
+};
 
 // ---- VirtQueue state ----
 
@@ -461,11 +427,10 @@ pub unsafe fn init_with(dev: &mut VirtioDev, want_low: u32) -> Result<u32, ()> {
     mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, accepted);
 
     if dev.version != 1 {
-        const VIRTIO_F_VERSION_1_BIT0: u32 = 1 << 0; // bit 32 overall, bit 0 of word 1
         mmio_write(dev.base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 1);
         let hi_features = mmio_read(dev.base, VIRTIO_MMIO_DEVICE_FEATURES);
         mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1);
-        mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, hi_features & VIRTIO_F_VERSION_1_BIT0);
+        mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, hi_features & feature::word(feature::VERSION_1, 1));
     }
 
     // Step 5: FEATURES_OK
@@ -786,11 +751,6 @@ pub unsafe fn virtq_resize(vq: &mut Virtq, queue_size: u16) {
     vq.clean(vq.desc, azos_arch::PAGE_SIZE);
 }
 
-/// `avail.flags` bit 0 (virtio 1.x §2.7.7): the driver does not want an
-/// interrupt when the device consumes a buffer. Advisory — the device may
-/// still interrupt — so a driver never relies on its absence.
-pub const VIRTQ_AVAIL_F_NO_INTERRUPT: u16 = 1;
-
 /// Write `avail.flags`. Only [`VIRTQ_AVAIL_F_NO_INTERRUPT`] is defined.
 #[inline(always)]
 pub unsafe fn virtq_set_avail_flags(vq: &mut Virtq, flags: u16) {
@@ -800,12 +760,6 @@ pub unsafe fn virtq_set_avail_flags(vq: &mut Virtq, flags: u16) {
     core::ptr::write_volatile(core::ptr::addr_of_mut!((*vq.avail).flags), flags);
     vq.clean(core::ptr::addr_of!((*vq.avail).flags), 2);
 }
-
-/// `used.flags` bit 0 (virtio 1.x 2.7.10; `VRING_USED_F_NO_NOTIFY` on the
-/// legacy transport, same bit, same meaning): the device does not need a
-/// doorbell for buffers added now — it is already processing the queue
-/// and will look at `avail.idx` again before it stops.
-pub const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
 
 /// After publishing new avail entries: does the device want a doorbell?
 /// `false` while it reports [`VIRTQ_USED_F_NO_NOTIFY`]. Advisory in the
@@ -829,18 +783,6 @@ pub unsafe fn virtq_device_wants_kick(vq: &Virtq) -> bool {
     fence(Ordering::SeqCst);
     vq.refresh(core::ptr::addr_of!((*vq.used).flags), 2);
     core::ptr::read_volatile(core::ptr::addr_of!((*vq.used).flags)) & VIRTQ_USED_F_NO_NOTIFY == 0
-}
-
-/// VIRTIO_F_EVENT_IDX (feature bit 29, word 0): the driver and the device
-/// each publish the ring index at which they want to be told next, in place
-/// of the NO_INTERRUPT / NO_NOTIFY flags.
-pub const VIRTIO_F_EVENT_IDX: u32 = 1 << 29;
-
-/// The EVENT_IDX test (virtio 1.x 2.7.7.2, Linux `vring_need_event`): with
-/// the index moving `old -> new`, did it pass `event`? Wrapping u16 maths.
-#[inline(always)]
-pub const fn vring_need_event(event: u16, new: u16, old: u16) -> bool {
-    new.wrapping_sub(event).wrapping_sub(1) < new.wrapping_sub(old)
 }
 
 /// `used_event`: the driver area's word after `ring[num]`.

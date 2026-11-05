@@ -13,6 +13,8 @@ azos_pci = { path = "../../../crates/drivers/pci" }
 # virtio/pci.rs (pulled in by #[path]) orders the ring before the doorbell
 # with azos_dma::order::io_wmb.
 azos_dma = { path = "../../../crates/drivers/dma" }
+# The wire constants virtio/mod.rs and virtio/pci.rs (pulled in by #[path]) compile.
+azos_virtio_proto = { path = "../../../crates/drivers/virtio-proto" }
 
 [features]
 # Mirrors azos_pci's gate canary so the host tests can show it bites.

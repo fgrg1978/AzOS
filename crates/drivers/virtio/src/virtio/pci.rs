@@ -186,18 +186,18 @@ mod common_off {
 pub const VIRTIO_PCI_NO_VECTOR: u16 = 0xffff;
 
 // Device status bits (shared with the MMIO transport's numbering).
-pub const STATUS_ACKNOWLEDGE: u8 = 1;
-pub const STATUS_DRIVER: u8 = 2;
-pub const STATUS_DRIVER_OK: u8 = 4;
-pub const STATUS_FEATURES_OK: u8 = 8;
-pub const STATUS_FAILED: u8 = 128;
+pub const STATUS_ACKNOWLEDGE: u8 = azos_virtio_proto::VIRTIO_STATUS_ACK as u8;
+pub const STATUS_DRIVER: u8 = azos_virtio_proto::VIRTIO_STATUS_DRIVER as u8;
+pub const STATUS_DRIVER_OK: u8 = azos_virtio_proto::VIRTIO_STATUS_DRIVER_OK as u8;
+pub const STATUS_FEATURES_OK: u8 = azos_virtio_proto::VIRTIO_STATUS_FEATURES_OK as u8;
+pub const STATUS_FAILED: u8 = azos_virtio_proto::VIRTIO_STATUS_FAILED as u8;
 
 /// Bit 32 overall (bit 0 of the high feature word) — VIRTIO_F_VERSION_1.
 /// MANDATORY for this transport: a device that doesn't offer it is not
 /// actually a modern device and this module refuses it rather than limp
 /// along on a legacy-shaped negotiation (that is what U05-12 was about
 /// on the MMIO side).
-const VIRTIO_F_VERSION_1_HI_BIT: u32 = 1 << 0;
+const VIRTIO_F_VERSION_1_HI_BIT: u32 = azos_virtio_proto::feature::word(azos_virtio_proto::feature::VERSION_1, 1);
 
 /// Bit 33 overall (bit 1 of the high feature word) — VIRTIO_F_ACCESS_PLATFORM
 /// (`VIRTIO_F_IOMMU_PLATFORM`): the device's memory access is limited or
@@ -207,7 +207,8 @@ const VIRTIO_F_VERSION_1_HI_BIT: u32 = 1 << 0;
 /// it; a device with no IOMMU in front does not offer it, which the
 /// negotiation (masked to the offer) leaves out. Pass it as a wanted bit of
 /// word 1 to [`VirtioPciDevice::begin`].
-pub const VIRTIO_F_ACCESS_PLATFORM_HI_BIT: u32 = 1 << 1;
+pub const VIRTIO_F_ACCESS_PLATFORM_HI_BIT: u32 =
+    azos_virtio_proto::feature::word(azos_virtio_proto::feature::ACCESS_PLATFORM, 1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NegotiateError {

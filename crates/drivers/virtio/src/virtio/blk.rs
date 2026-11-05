@@ -77,7 +77,7 @@ use super::VIRTIO_MMIO_BASE;
 use super::VIRTIO_MMIO_STRIDE as VIRTIO_MMIO_STEP;
 use super::VIRTIO_MMIO_COUNT;
 
-pub const SECTOR_SIZE: usize = 512;
+pub use azos_virtio_proto::blk::SECTOR_SIZE;
 
 /// Request queues the driver has room for (Kconfig `VIRTIO_BLK_QUEUES`).
 const MAXQ: usize = azos_limits::VIRTIO_BLK_QUEUES as usize;
@@ -499,11 +499,10 @@ unsafe fn negotiate(dev: &mut VirtioDev) -> Result<(u32, u32), ()> {
     mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, accepted);
 
     if dev.version != 1 {
-        const VIRTIO_F_VERSION_1_BIT0: u32 = 1 << 0; // bit 32 overall
         mmio_write(dev.base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 1);
         let hi = mmio_read(dev.base, VIRTIO_MMIO_DEVICE_FEATURES);
         mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1);
-        mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, hi & VIRTIO_F_VERSION_1_BIT0);
+        mmio_write(dev.base, VIRTIO_MMIO_DRIVER_FEATURES, hi & azos_virtio_proto::feature::word(azos_virtio_proto::feature::VERSION_1, 1));
     }
 
     let s = mmio_read(dev.base, VIRTIO_MMIO_STATUS);

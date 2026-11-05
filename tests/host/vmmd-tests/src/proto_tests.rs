@@ -3,7 +3,7 @@
 //! The trap records and rings, the NIC ring pair, and the disk over a file
 //! that cannot seek.
 
-use crate::blk::{Blk, BlockStore, IoError, SECTOR};
+use crate::blk::{Blk, BlockStore, IoError};
 use crate::harness::*;
 use crate::mmio::Transport;
 use crate::net::{Link, FRAME_MAX};

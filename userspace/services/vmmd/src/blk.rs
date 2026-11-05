@@ -17,29 +17,19 @@
 //! sectors.
 
 use crate::guest::GuestMem;
-use crate::mmio::{Device, F_VERSION_1, MAX_QUEUES};
+use crate::mmio::{Device, MAX_QUEUES};
 use crate::virtq::{Chain, Virtq, VqError, MAX_CHAIN};
+use azos_virtio_proto::blk::{
+    F_FLUSH, F_RO, F_SEG_MAX, REQ_HDR_BYTES, SECTOR_SIZE, S_IOERR, S_OK, S_UNSUPP, T_FLUSH, T_GET_ID, T_IN, T_OUT,
+};
+use azos_virtio_proto::{feature, VIRTIO_DEV_BLOCK};
 
-/// Bytes of a sector.
-pub const SECTOR: usize = 512;
 /// Bytes moved between the store and guest memory at a time.
 const CHUNK: usize = 4096;
 
-const T_IN: u32 = 0;
-const T_OUT: u32 = 1;
-const T_FLUSH: u32 = 4;
-const T_GET_ID: u32 = 8;
-
-const S_OK: u8 = 0;
-const S_IOERR: u8 = 1;
-const S_UNSUPP: u8 = 2;
 /// Not on the wire: a request refused while degraded mode is armed, which the
 /// guest sees as `S_IOERR` and the device counts apart.
 const S_CONTAINED: u8 = 0xFE;
-
-const F_SEG_MAX: u64 = 1 << 2;
-const F_RO: u64 = 1 << 5;
-const F_FLUSH: u64 = 1 << 9;
 
 /// What the device reports for `GET_ID` (20 bytes, zero padded).
 const ID: &[u8] = b"azos-vmmd";
@@ -129,10 +119,10 @@ impl<S: BlockStore> Blk<S> {
         let mut buf = [0u8; CHUNK];
         while j.done < j.bytes {
             let n = (j.bytes - j.done).min(CHUNK as u64) as usize;
-            let at = j.sector + j.done / SECTOR as u64;
+            let at = j.sector + j.done / SECTOR_SIZE as u64;
             let r = if j.write {
                 // The data follows the 16-byte header in the readable run.
-                if j.chain.read_at(mem, HEADER as u64 + j.done, &mut buf[..n]).is_err() {
+                if j.chain.read_at(mem, REQ_HDR_BYTES as u64 + j.done, &mut buf[..n]).is_err() {
                     return Some(S_IOERR);
                 }
                 self.store.write(at, &buf[..n])
@@ -157,10 +147,10 @@ impl<S: BlockStore> Blk<S> {
 
     /// Check a read or write the guest asked for before the store sees it.
     fn start(&mut self, chain: Chain, write: bool, sector: u64, bytes: u64) -> Result<Job, u8> {
-        if bytes % SECTOR as u64 != 0 {
+        if bytes % SECTOR_SIZE as u64 != 0 {
             return Err(S_IOERR);
         }
-        let sectors = bytes / SECTOR as u64;
+        let sectors = bytes / SECTOR_SIZE as u64;
         #[cfg(not(feature = "canary-blk-no-capacity-check"))]
         if sector.checked_add(sectors).map_or(true, |end| end > self.store.capacity()) {
             return Err(S_IOERR);
@@ -196,15 +186,15 @@ impl<S: BlockStore> Blk<S> {
         if wlen == 0 {
             return Some(0);
         }
-        let mut h = [0u8; HEADER];
-        if c.readable() < HEADER as u64 || c.read_at(mem, 0, &mut h).is_err() {
+        let mut h = [0u8; REQ_HDR_BYTES];
+        if c.readable() < REQ_HDR_BYTES as u64 || c.read_at(mem, 0, &mut h).is_err() {
             return Some(self.finish(&c, mem, S_IOERR, 0));
         }
         let ty = u32::from_le_bytes([h[0], h[1], h[2], h[3]]);
         let sector = u64::from_le_bytes([h[8], h[9], h[10], h[11], h[12], h[13], h[14], h[15]]);
         let (write, bytes) = match ty {
             T_IN => (false, wlen - 1),
-            T_OUT => (true, c.readable() - HEADER as u64),
+            T_OUT => (true, c.readable() - REQ_HDR_BYTES as u64),
             T_FLUSH => {
                 let st = match self.store.flush() {
                     Ok(()) => S_OK,
@@ -274,17 +264,16 @@ impl<S: BlockStore> Blk<S> {
     }
 }
 
-const HEADER: usize = 16;
 // A request is the header, data in at most this many descriptors and a status.
 const _: () = assert!(MAX_CHAIN >= 3);
 
 impl<S: BlockStore> Device for Blk<S> {
     fn id(&self) -> u32 {
-        2
+        VIRTIO_DEV_BLOCK
     }
 
     fn features(&self) -> u64 {
-        F_VERSION_1 | F_SEG_MAX | F_FLUSH | if self.store.read_only() { F_RO } else { 0 }
+        feature::VERSION_1 | F_SEG_MAX | F_FLUSH | if self.store.read_only() { F_RO } else { 0 }
     }
 
     fn queues(&self) -> usize {

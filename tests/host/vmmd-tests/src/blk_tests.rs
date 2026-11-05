@@ -3,7 +3,7 @@
 //! The block backend, through the transport, driven the way a guest driver
 //! does: a header, data, a status byte.
 
-use crate::blk::{Blk, IoError, SECTOR};
+use crate::blk::{Blk, IoError};
 use crate::harness::*;
 use crate::mmio::Transport;
 

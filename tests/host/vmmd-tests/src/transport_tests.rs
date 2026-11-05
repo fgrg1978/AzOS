@@ -4,7 +4,7 @@
 
 use crate::blk::Blk;
 use crate::harness::*;
-use crate::mmio::{status, Transport, F_VERSION_1, WINDOW};
+use crate::mmio::{Transport, WINDOW};
 
 fn blk(sectors: usize) -> Transport<Blk<MemStore>> {
     Transport::new(Blk::new(MemStore::new(sectors)))

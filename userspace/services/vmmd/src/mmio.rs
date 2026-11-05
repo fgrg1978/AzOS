@@ -33,54 +33,22 @@
 
 use crate::guest::GuestMem;
 use crate::virtq::{Virtq, VqError, QUEUE_MAX};
+use azos_virtio_proto::{
+    feature, VIRTIO_MAGIC, VIRTIO_MMIO_CONFIG, VIRTIO_MMIO_CONFIG_GENERATION, VIRTIO_MMIO_DEVICE_FEATURES,
+    VIRTIO_MMIO_DEVICE_FEATURES_SEL, VIRTIO_MMIO_DEVICE_ID, VIRTIO_MMIO_DRIVER_FEATURES,
+    VIRTIO_MMIO_DRIVER_FEATURES_SEL, VIRTIO_MMIO_INTERRUPT_ACK, VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INT_CONFIG,
+    VIRTIO_MMIO_INT_VRING, VIRTIO_MMIO_MAGIC, VIRTIO_MMIO_QUEUE_AVAIL_HIGH, VIRTIO_MMIO_QUEUE_AVAIL_LOW,
+    VIRTIO_MMIO_QUEUE_DESC_HIGH, VIRTIO_MMIO_QUEUE_DESC_LOW, VIRTIO_MMIO_QUEUE_NOTIFY, VIRTIO_MMIO_QUEUE_NUM,
+    VIRTIO_MMIO_QUEUE_NUM_MAX, VIRTIO_MMIO_QUEUE_READY, VIRTIO_MMIO_QUEUE_SEL, VIRTIO_MMIO_QUEUE_USED_HIGH,
+    VIRTIO_MMIO_QUEUE_USED_LOW, VIRTIO_MMIO_STATUS, VIRTIO_MMIO_VENDOR_ID, VIRTIO_MMIO_VERSION,
+    VIRTIO_STATUS_DRIVER_OK, VIRTIO_STATUS_FAILED, VIRTIO_STATUS_FEATURES_OK, VIRTIO_STATUS_NEEDS_RESET,
+};
 
 /// Bytes a device's window spans.
 pub const WINDOW: u64 = 0x200;
-const CONFIG: u64 = 0x100;
+const CONFIG: u64 = VIRTIO_MMIO_CONFIG as u64;
 
-const MAGIC: u32 = 0x7472_6976; // "virt"
 const VENDOR: u32 = 0x534F_7A41; // "AzOS"
-
-mod reg {
-    pub const MAGIC: u64 = 0x000;
-    pub const VERSION: u64 = 0x004;
-    pub const DEVICE_ID: u64 = 0x008;
-    pub const VENDOR_ID: u64 = 0x00c;
-    pub const DEVICE_FEATURES: u64 = 0x010;
-    pub const DEVICE_FEATURES_SEL: u64 = 0x014;
-    pub const DRIVER_FEATURES: u64 = 0x020;
-    pub const DRIVER_FEATURES_SEL: u64 = 0x024;
-    pub const QUEUE_SEL: u64 = 0x030;
-    pub const QUEUE_NUM_MAX: u64 = 0x034;
-    pub const QUEUE_NUM: u64 = 0x038;
-    pub const QUEUE_READY: u64 = 0x044;
-    pub const QUEUE_NOTIFY: u64 = 0x050;
-    pub const INTERRUPT_STATUS: u64 = 0x060;
-    pub const INTERRUPT_ACK: u64 = 0x064;
-    pub const STATUS: u64 = 0x070;
-    pub const QUEUE_DESC_LOW: u64 = 0x080;
-    pub const QUEUE_DESC_HIGH: u64 = 0x084;
-    pub const QUEUE_DRIVER_LOW: u64 = 0x090;
-    pub const QUEUE_DRIVER_HIGH: u64 = 0x094;
-    pub const QUEUE_DEVICE_LOW: u64 = 0x0a0;
-    pub const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
-    pub const CONFIG_GENERATION: u64 = 0x0fc;
-}
-
-/// `Status` bits.
-pub mod status {
-    pub const DRIVER_OK: u32 = 4;
-    pub const FEATURES_OK: u32 = 8;
-    pub const NEEDS_RESET: u32 = 0x40;
-    pub const FAILED: u32 = 0x80;
-}
-
-/// `InterruptStatus` bits.
-const INT_USED: u32 = 1;
-const INT_CONFIG: u32 = 2;
-
-/// Feature bit 32: the modern interface.
-pub const F_VERSION_1: u64 = 1 << 32;
 
 /// Queues a device may have.
 pub const MAX_QUEUES: usize = 2;
@@ -89,7 +57,7 @@ pub const MAX_QUEUES: usize = 2;
 pub trait Device {
     /// The virtio device id (1 net, 2 block, 3 console).
     fn id(&self) -> u32;
-    /// The feature bits offered, [`F_VERSION_1`] among them.
+    /// The feature bits offered, [`feature::VERSION_1`] among them.
     fn features(&self) -> u64;
     /// Queues in use (at most [`MAX_QUEUES`]).
     fn queues(&self) -> usize;
@@ -147,7 +115,7 @@ impl<D: Device> Transport<D> {
     }
 
     fn running(&self) -> bool {
-        self.status & status::DRIVER_OK != 0 && self.status & (status::NEEDS_RESET | status::FAILED) == 0
+        self.status & VIRTIO_STATUS_DRIVER_OK != 0 && self.status & (VIRTIO_STATUS_NEEDS_RESET | VIRTIO_STATUS_FAILED) == 0
     }
 
     fn reset(&mut self) {
@@ -165,13 +133,13 @@ impl<D: Device> Transport<D> {
 
     /// A queue was found corrupt: stop serving and tell the driver.
     fn needs_reset(&mut self) {
-        self.status |= status::NEEDS_RESET;
-        self.int_status |= INT_CONFIG;
+        self.status |= VIRTIO_STATUS_NEEDS_RESET;
+        self.int_status |= VIRTIO_MMIO_INT_CONFIG;
     }
 
     fn served(&mut self, r: Result<bool, VqError>) {
         match r {
-            Ok(true) => self.int_status |= INT_USED,
+            Ok(true) => self.int_status |= VIRTIO_MMIO_INT_VRING,
             Ok(false) => {}
             Err(_) => self.needs_reset(),
         }
@@ -233,36 +201,36 @@ impl<D: Device> Transport<D> {
     }
 
     fn read_reg(&self, off: u64) -> u32 {
-        match off {
-            reg::MAGIC => MAGIC,
-            reg::VERSION => 2,
-            reg::DEVICE_ID => self.dev.id(),
-            reg::VENDOR_ID => VENDOR,
-            reg::DEVICE_FEATURES => (self.dev.features() >> (32 * (self.dev_feat_sel & 1))) as u32,
-            reg::QUEUE_NUM_MAX => self.q().map_or(0, |_| QUEUE_MAX as u32),
-            reg::QUEUE_READY => self.q().map_or(0, |q| q.ready as u32),
-            reg::INTERRUPT_STATUS => self.int_status,
-            reg::STATUS => self.status,
-            reg::CONFIG_GENERATION => 0,
+        match off as u32 {
+            VIRTIO_MMIO_MAGIC => VIRTIO_MAGIC,
+            VIRTIO_MMIO_VERSION => 2,
+            VIRTIO_MMIO_DEVICE_ID => self.dev.id(),
+            VIRTIO_MMIO_VENDOR_ID => VENDOR,
+            VIRTIO_MMIO_DEVICE_FEATURES => (self.dev.features() >> (32 * (self.dev_feat_sel & 1))) as u32,
+            VIRTIO_MMIO_QUEUE_NUM_MAX => self.q().map_or(0, |_| QUEUE_MAX as u32),
+            VIRTIO_MMIO_QUEUE_READY => self.q().map_or(0, |q| q.ready as u32),
+            VIRTIO_MMIO_INTERRUPT_STATUS => self.int_status,
+            VIRTIO_MMIO_STATUS => self.status,
+            VIRTIO_MMIO_CONFIG_GENERATION => 0,
             _ => 0,
         }
     }
 
     fn write_reg(&mut self, off: u64, v: u32, mem: &mut dyn GuestMem) {
-        match off {
-            reg::DEVICE_FEATURES_SEL => self.dev_feat_sel = v,
-            reg::DRIVER_FEATURES_SEL => self.drv_feat_sel = v,
-            reg::DRIVER_FEATURES if self.status & status::FEATURES_OK == 0 => {
+        match off as u32 {
+            VIRTIO_MMIO_DEVICE_FEATURES_SEL => self.dev_feat_sel = v,
+            VIRTIO_MMIO_DRIVER_FEATURES_SEL => self.drv_feat_sel = v,
+            VIRTIO_MMIO_DRIVER_FEATURES if self.status & VIRTIO_STATUS_FEATURES_OK == 0 => {
                 let sh = 32 * (self.drv_feat_sel & 1);
                 self.drv_feat = (self.drv_feat & !(0xFFFF_FFFFu64 << sh)) | (v as u64) << sh;
             }
-            reg::QUEUE_SEL => self.queue_sel = v,
-            reg::QUEUE_NUM => {
+            VIRTIO_MMIO_QUEUE_SEL => self.queue_sel = v,
+            VIRTIO_MMIO_QUEUE_NUM => {
                 if let Some(q) = self.q_mut().filter(|q| !q.ready) {
                     q.num = v.min(u16::MAX as u32) as u16;
                 }
             }
-            reg::QUEUE_READY => {
+            VIRTIO_MMIO_QUEUE_READY => {
                 let valid = self.q().is_some_and(|q| q.valid(mem));
                 if let Some(q) = self.q_mut() {
                     if v & 1 == 0 {
@@ -274,21 +242,21 @@ impl<D: Device> Transport<D> {
                     }
                 }
             }
-            reg::QUEUE_NOTIFY => {
+            VIRTIO_MMIO_QUEUE_NOTIFY => {
                 let q = v as usize;
                 if self.running() && q < self.dev.queues() && self.vqs[q].ready {
                     let r = self.dev.notify(q, &mut self.vqs, mem);
                     self.served(r);
                 }
             }
-            reg::INTERRUPT_ACK => self.int_status &= !v,
-            reg::STATUS => self.write_status(v),
-            reg::QUEUE_DESC_LOW => self.set_addr(v, false, |q| &mut q.desc),
-            reg::QUEUE_DESC_HIGH => self.set_addr(v, true, |q| &mut q.desc),
-            reg::QUEUE_DRIVER_LOW => self.set_addr(v, false, |q| &mut q.avail),
-            reg::QUEUE_DRIVER_HIGH => self.set_addr(v, true, |q| &mut q.avail),
-            reg::QUEUE_DEVICE_LOW => self.set_addr(v, false, |q| &mut q.used),
-            reg::QUEUE_DEVICE_HIGH => self.set_addr(v, true, |q| &mut q.used),
+            VIRTIO_MMIO_INTERRUPT_ACK => self.int_status &= !v,
+            VIRTIO_MMIO_STATUS => self.write_status(v),
+            VIRTIO_MMIO_QUEUE_DESC_LOW => self.set_addr(v, false, |q| &mut q.desc),
+            VIRTIO_MMIO_QUEUE_DESC_HIGH => self.set_addr(v, true, |q| &mut q.desc),
+            VIRTIO_MMIO_QUEUE_AVAIL_LOW => self.set_addr(v, false, |q| &mut q.avail),
+            VIRTIO_MMIO_QUEUE_AVAIL_HIGH => self.set_addr(v, true, |q| &mut q.avail),
+            VIRTIO_MMIO_QUEUE_USED_LOW => self.set_addr(v, false, |q| &mut q.used),
+            VIRTIO_MMIO_QUEUE_USED_HIGH => self.set_addr(v, true, |q| &mut q.used),
             _ => {}
         }
     }
@@ -308,17 +276,17 @@ impl<D: Device> Transport<D> {
         let mut s = v;
         // The device keeps what it has flagged, and what it granted; the
         // driver cannot clear either without a reset.
-        s |= self.status & (status::NEEDS_RESET | status::FAILED | status::FEATURES_OK);
-        if s & status::FEATURES_OK != 0 && self.status & status::FEATURES_OK == 0 {
+        s |= self.status & (VIRTIO_STATUS_NEEDS_RESET | VIRTIO_STATUS_FAILED | VIRTIO_STATUS_FEATURES_OK);
+        if s & VIRTIO_STATUS_FEATURES_OK != 0 && self.status & VIRTIO_STATUS_FEATURES_OK == 0 {
             let offered = self.dev.features();
-            if self.drv_feat & !offered != 0 || self.drv_feat & F_VERSION_1 == 0 {
-                s &= !status::FEATURES_OK;
+            if self.drv_feat & !offered != 0 || self.drv_feat & feature::VERSION_1 == 0 {
+                s &= !VIRTIO_STATUS_FEATURES_OK;
             }
         }
         // Queues are served only on features the device accepted.
         #[cfg(not(feature = "canary-driver-ok-unchecked"))]
-        if s & status::FEATURES_OK == 0 {
-            s &= !status::DRIVER_OK;
+        if s & VIRTIO_STATUS_FEATURES_OK == 0 {
+            s &= !VIRTIO_STATUS_DRIVER_OK;
         }
         self.status = s;
     }

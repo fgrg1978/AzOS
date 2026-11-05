@@ -7,7 +7,7 @@
 use crate::blk::Blk;
 use crate::console::Console;
 use crate::harness::*;
-use crate::mmio::{status, WINDOW};
+use crate::mmio::WINDOW;
 use crate::model::{irq_line, kinds_of, window_base, Kind, Machine, MMIO_BASE};
 use crate::net::Net;
 use crate::trap::{cpl, Completion, Rings, Trap, PAGE_BYTES, TRAPS};

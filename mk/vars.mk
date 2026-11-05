@@ -245,7 +245,7 @@ LOGIND_SRC    := $(wildcard $(LOGIND_DIR)/src/*.rs) $(LOGIND_DIR)/Cargo.toml $(L
 VMMD_DIR      := userspace/services/vmmd
 VMMD_BUILT    := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/vmmd
 VMMD_ELF      := $(OUT_BUILD)/vmmd.elf
-VMMD_SRC      := $(wildcard $(VMMD_DIR)/src/*.rs) $(VMMD_DIR)/Cargo.toml $(VMMD_DIR)/build.rs
+VMMD_SRC      := $(wildcard $(VMMD_DIR)/src/*.rs) $(VMMD_DIR)/Cargo.toml $(VMMD_DIR)/build.rs $(wildcard crates/drivers/virtio-proto/src/*.rs)
 # Kconfig LINUX_RUNTIME: the ring-3 half of the Linux personality
 # (userspace/lib/linux_rt behind userspace/services/lxrt). Not a disk image:
 # the kernel embeds it (`include_bytes!` in kernel/src/boot/seams.rs) and maps
