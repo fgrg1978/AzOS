@@ -412,7 +412,7 @@ prompt joins services other rows start; it does not become one.
 
 **The shell's seccomp profile** lists exactly the calls its source issues:
 `SYS_EXIT`, `SYS_INVOKE`, `SYS_SLEEP_UNTIL`, `SYS_CAP_CLOSE`, `SYS_CAP_INFO`,
-`SYS_SPAWN_EX`, `SYS_ALERT`, `SYS_IPC_CALL_V2`, `SYS_MO_CREATE`, `SYS_MO_MAP`,
+`SYS_SPAWN_EX`, `SYS_ALERT`, `SYS_IPC_CALL`, `SYS_MO_CREATE`, `SYS_MO_MAP`,
 `SYS_MO_UNMAP`, and the `SYS_INVOKE` ops for console write, the subreaper mark,
 stat, open beneath a directory, `mkdir`, file read and write, wait, and
 `MEMOBJ_END_DROP`. It has no fork, no hardware or network call, and no console

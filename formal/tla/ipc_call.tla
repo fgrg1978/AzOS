@@ -6,9 +6,10 @@ is Queued on the endpoint, Accepted by a server (or refused there), then
 Replied, or Cancelled (timeout, PEERDIED, REVOKED, kill). A call comes in one
 of two forms: the register form (up to four words, no capability, no deadline)
 or the descriptor form (a MsgDesc: more words, capabilities, a deadline). An
-accept has the same two forms; a register-form accept that meets a
-descriptor-form call refuses it (-EMSGFORM): the server sees nothing and every
-capability the call carried is back with the caller. A server may delegate the
+accept has the same two forms. A register-form accept names four words and
+one capability: it takes a descriptor-form call that fits them ("desc") and
+refuses one that does not ("big", -EMSGFORM): the server sees nothing and
+every capability the call carried is back with the caller. A server may delegate the
 call's reply warrant once (REPLY_DELEGATE): the new holder answers it, the old
 one no longer can. The invariants:
 
@@ -16,7 +17,8 @@ one no longer can. The invariants:
   EdgeOnce       the call's wait-graph edge is held while the call is live
                  and released exactly once on every terminal path
   ReplyOnce      a call is answered at most once, delegated or not
-  FormRespected  a register-form accept never holds a descriptor-form call
+  FormRespected  a register-form accept never holds a call its registers
+                 cannot name
   CapsHome       a call's capabilities are in flight while it is queued, back
                  with the caller after a refusal or a cancel of a queued call,
                  and with the server once it accepted
@@ -34,11 +36,12 @@ EXTENDS Integers
 
 CONSTANTS NumOps, Mutant
 
-Mutants == {"none", "reg-accepts-desc", "cancel-after-reply", "reply-after-cancel",
+Mutants == {"none", "reg-accepts-big", "cancel-after-reply", "reply-after-cancel",
             "old-holder-replies", "refusal-keeps-caps"}
 
 Callers == {1, 2}
-Forms   == {"reg", "desc"}
+Forms   == {"reg", "desc", "big"}
+Accepts == {"reg", "desc"}
 Live    == {"queued", "accepted"}
 Ended   == {"replied", "done"}
 
@@ -49,7 +52,7 @@ vars == <<st, form, af, holder, delegated, rel, term, rep, caps, why, ops>>
 TypeOK ==
     /\ st \in [Callers -> {"idle"} \cup Live \cup Ended]
     /\ form \in [Callers -> Forms]
-    /\ af \in [Callers -> {"none"} \cup Forms]
+    /\ af \in [Callers -> {"none"} \cup Accepts]
     /\ holder \in [Callers -> {"none", "server", "proxy"}]
     /\ delegated \in [Callers -> BOOLEAN]
     /\ rel \in [Callers -> 0..3]
@@ -87,7 +90,7 @@ Call(c, f) ==
     /\ st[c] = "idle"
     /\ st' = [st EXCEPT ![c] = "queued"]
     /\ form' = [form EXCEPT ![c] = f]
-    /\ caps' = [caps EXCEPT ![c] = IF f = "desc" THEN "flight" ELSE "none"]
+    /\ caps' = [caps EXCEPT ![c] = IF f = "reg" THEN "none" ELSE "flight"]
     /\ af' = [af EXCEPT ![c] = "none"]
     /\ holder' = [holder EXCEPT ![c] = "none"]
     /\ delegated' = [delegated EXCEPT ![c] = FALSE]
@@ -99,7 +102,7 @@ Call(c, f) ==
 \* The server takes a queued call with an accept of form `a`.
 Accept(c, a) ==
     /\ st[c] = "queued"
-    /\ IF a = "reg" /\ form[c] = "desc" /\ Mutant # "reg-accepts-desc"
+    /\ IF a = "reg" /\ form[c] = "big" /\ Mutant # "reg-accepts-big"
        THEN \* -EMSGFORM: the server sees nothing, the capabilities go back.
             /\ Finish(c, "done", "msgform")
             /\ caps' = [caps EXCEPT ![c] = IF Mutant = "refusal-keeps-caps" THEN "flight" ELSE "caller"]
@@ -107,7 +110,7 @@ Accept(c, a) ==
        ELSE /\ st' = [st EXCEPT ![c] = "accepted"]
             /\ af' = [af EXCEPT ![c] = a]
             /\ holder' = [holder EXCEPT ![c] = "server"]
-            /\ caps' = [caps EXCEPT ![c] = IF form[c] = "desc" THEN "server" ELSE "none"]
+            /\ caps' = [caps EXCEPT ![c] = IF form[c] = "reg" THEN "none" ELSE "server"]
             /\ UNCHANGED <<form, delegated, rel, term, rep, why>>
 
 \* The holder of the reply warrant moves it to the proxy, once.
@@ -137,7 +140,7 @@ Cancel(c) ==
     /\ \/ st[c] \in Live
        \/ Mutant = "cancel-after-reply" /\ st[c] = "replied"
     /\ Finish(c, "done", IF st[c] = "queued" THEN "cancel-queued" ELSE "cancel-accepted")
-    /\ caps' = [caps EXCEPT ![c] = IF st[c] = "queued" /\ form[c] = "desc" THEN "caller" ELSE @]
+    /\ caps' = [caps EXCEPT ![c] = IF st[c] = "queued" /\ form[c] # "reg" THEN "caller" ELSE @]
     /\ UNCHANGED <<form, af, holder, delegated, rep>>
 
 \* The caller takes the outcome; its record is free for the next call.
@@ -150,7 +153,7 @@ Next ==
     \E c \in Callers :
         /\ Step
         /\ \/ \E f \in Forms : Call(c, f)
-           \/ \E a \in Forms : Accept(c, a)
+           \/ \E a \in Accepts : Accept(c, a)
            \/ Delegate(c)
            \/ \E h \in {"server", "proxy"} : Reply(c, h)
            \/ Cancel(c)
@@ -170,12 +173,12 @@ EdgeOnce == \A c \in Callers :
 ReplyOnce == \A c \in Callers : rep[c] <= 1
 
 FormRespected == \A c \in Callers :
-    st[c] = "accepted" => ~(af[c] = "reg" /\ form[c] = "desc")
+    st[c] = "accepted" => ~(af[c] = "reg" /\ form[c] = "big")
 
 CapsHome == \A c \in Callers :
     /\ (form[c] = "reg" => caps[c] = "none")
-    /\ (form[c] = "desc" /\ st[c] = "queued" => caps[c] = "flight")
-    /\ (form[c] = "desc" /\ why[c] \in {"msgform", "cancel-queued"} => caps[c] = "caller")
-    /\ (form[c] = "desc" /\ st[c] = "accepted" => caps[c] = "server")
+    /\ (form[c] # "reg" /\ st[c] = "queued" => caps[c] = "flight")
+    /\ (form[c] # "reg" /\ why[c] \in {"msgform", "cancel-queued"} => caps[c] = "caller")
+    /\ (form[c] # "reg" /\ st[c] = "accepted" => caps[c] = "server")
 
 =============================================================================

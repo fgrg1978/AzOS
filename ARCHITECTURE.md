@@ -96,7 +96,7 @@ both import.
 ### IPC
 
 Calls go to endpoints. The fast path moves a request in registers
-(`SYS_IPC_FAST_CALL_EP` and its accept and reply partners); the V2 calls use a
+(`SYS_IPC_CALL` and its accept and reply partners); the V2 calls use a
 message descriptor. Each endpoint has its own call queue. Memory objects carry
 bulk data and `Queue` / `Log` rings carry streams. Ports deliver events, and
 `SYS_PORT_WAIT` waits on them.

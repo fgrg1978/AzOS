@@ -83,7 +83,7 @@ Next: [capabilities.md](capabilities.md), [security.md](security.md).
 
 ## Syscalls only for authority and sleep
 
-The native table has 33 calls, numbered densely from 1
+The native table has 30 calls, numbered densely from 1
 (`crates/core/abi/src/syscall_nr.rs`). Everything else is an op of one generic
 call, `SYS_INVOKE`, selected by the type of the handle it is invoked on. A call
 that merely moves data does not need the kernel at all.
@@ -94,7 +94,7 @@ that merely moves data does not need the kernel at all.
 | Domain and threads | `SYS_SPAWN_EX`, `SYS_THREAD_CREATE`, `SYS_THREAD_EXIT`, `SYS_EXIT`, `SYS_ALERT`, `SYS_GETPID` |
 | Time and scheduling | `SYS_YIELD`, `SYS_SLEEP_UNTIL`, `SYS_SCHEDCTL` |
 | Memory objects | `SYS_MO_CREATE`, `SYS_MO_MAP`, `SYS_MO_UNMAP` |
-| IPC | `SYS_IPC_FAST_CALL_EP`, `SYS_IPC_FAST_REPLY`, `SYS_IPC_FAST_ACCEPT`, `SYS_IPC_FAST_REPLY_ACCEPT`, `SYS_IPC_CALL_V2`, `SYS_IPC_ACCEPT_V2`, `SYS_IPC_REPLY_V2`, `SYS_IPC_REPLY_DELEGATE` |
+| IPC | `SYS_IPC_CALL`, `SYS_IPC_ACCEPT`, `SYS_IPC_REPLY`, `SYS_IPC_REPLY_ACCEPT`, `SYS_IPC_REPLY_DELEGATE` |
 | Rings and ports | `SYS_RING_SETUP`, `SYS_RING_ENTER`, `SYS_PORT_WAIT` |
 | Futex | `SYS_FUTEX_WAIT`, `SYS_FUTEX_WAKE` |
 | Foreign ABI | `SYS_FOREIGN_ENTRY`, `SYS_FOREIGN_RESUME`, `SYS_FOREIGN_FORK` |

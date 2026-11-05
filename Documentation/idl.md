@@ -76,8 +76,8 @@ the transport, not of the interface. Transports in the tree:
 
 | Transport | Over | Notes |
 |---|---|---|
-| `azos_libsys::dev::Ep(handle)` | `SYS_IPC_CALL_V2` | any interface |
-| `azos_libsys::dev::Regs(handle)` | `SYS_IPC_FAST_CALL_EP` | four words each way, no capability; only for an interface declared `words = 4` |
+| `azos_libsys::dev::Ep(handle)` | `SYS_IPC_CALL` | any interface |
+| `azos_libsys::dev::Regs(handle)` | `SYS_IPC_CALL` | four words each way, no capability; only for an interface declared `words = 4` |
 | `azos_syscall::kcall::KernelEndpoint(handle)` | the v2 call from a kernel task | for a task-served endpoint; `kcall::endpoint_handle_badged` mints the handle with a badge for a server that tells its callers apart |
 
 The kernel's call has no wait bound of its own: it blocks until the server
@@ -249,7 +249,7 @@ call is a message in the wire form above on that endpoint.
   call it, and the op class is checked per op inside the call. Code inside the
   kernel that holds the implementation uses `NameDirect`: no message.
 - **Ring-3.** A task serves the same trait from an endpoint it owns: it accepts
-  a request (`SYS_IPC_ACCEPT_V2`, or the register-form accept for a `words = 4`
+  a request (`SYS_IPC_ACCEPT`, or the register-form accept for a `words = 4`
   interface), runs `NameIdl::dispatch` on it and replies. Callers use
   `NameClient` over a transport.
 - **Either.** `NameCall` is implemented by both stubs, so code that calls through

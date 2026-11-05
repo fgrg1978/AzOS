@@ -350,8 +350,8 @@ Source: `crates/core/sched/src/seccomp.rs` (`ImageProfile`, `IMAGE_PROFILES`),
 
 ## 9. The syscall surface
 
-The native ABI is thirty-three calls, numbered 1 to 33 (the table's length,
-`SYS_NR_RESERVED_UPPER`, is 34). Nothing else is a syscall. Every operation on an
+The native ABI is thirty calls, numbered 1 to 30 (the table's length,
+`SYS_NR_RESERVED_UPPER`, is 31). Nothing else is a syscall. Every operation on an
 object the caller holds a handle to is an *op* of `SYS_INVOKE`, selected by the
 handle's type and an op word and gated by an operation class. An op number
 encodes the kind it acts on, its class and its index, so reading an op in a

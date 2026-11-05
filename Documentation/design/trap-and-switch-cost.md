@@ -111,8 +111,8 @@ every `syscall`, Linux tasks' included, takes the lean path.
 | x86_64 | `syscall_entry` | `rcx`, `r11` (which `sysret` loads) |
 
 **The IPC fast-path branch.** With Kconfig `IPC_FASTPATH`, the lean entry tests
-the syscall number against the pair `SYS_IPC_FAST_REPLY_ACCEPT` and
-`SYS_IPC_FAST_CALL_EP` (the ABI keeps them two apart, which the kernel asserts
+the syscall number against the pair `SYS_IPC_REPLY_ACCEPT` and
+`SYS_IPC_CALL` (the ABI keeps them two apart, which the kernel asserts
 in `kernel/src/main.rs`, so one subtract-and-mask tests both) and branches to a
 frame that runs `azos_syscall::fastpath::entry` directly. A call whose peer is
 parked in the matching wait is finished there without the syscall table; any
@@ -202,13 +202,13 @@ Source: `arch/riscv/src/irq/clint.rs`,
 ## 5. Reply and accept in one trap
 
 A server loop would otherwise take two traps per request: reply to the one just
-served, then accept the next. `SYS_IPC_FAST_REPLY_ACCEPT` does both.
+served, then accept the next. `SYS_IPC_REPLY_ACCEPT` does both.
 
 - **Registers.** `a0` is the handle from the previous accept; the four reply
   words are `a2..a5`. `a1` is not read: libsys preloads the accept's
   not-written sentinel there, so `FastRequest::delivered` keeps its meaning. The
-  reply words therefore sit one register later than in `SYS_IPC_FAST_REPLY`.
-  Results are those of `SYS_IPC_FAST_ACCEPT`, with `a6` carrying the handle of
+  reply words therefore sit one register later than in `SYS_IPC_REPLY`.
+  Results are those of `SYS_IPC_ACCEPT`, with `a6` carrying the handle of
   a capability that moved with the next request.
 - **Reply failure is fail-fast.** The accept writes every output register
   (`SYSCALL_OUT_REGS`), so no register is left to report the reply's outcome
@@ -221,12 +221,12 @@ served, then accept the next. `SYS_IPC_FAST_REPLY_ACCEPT` does both.
   the fast-IPC lock (`azos_ipc::fastcall::reply_then_accept`). The client's
   wake rides on the accept, either at once when a request is already waiting,
   or folded into the block so the server can switch straight to that client.
-- **Seccomp.** A profile row that lists `SYS_IPC_FAST_REPLY_ACCEPT` grants both
+- **Seccomp.** A profile row that lists `SYS_IPC_REPLY_ACCEPT` grants both
   halves. Rows are derived from the calls each binary issues
   (`tests/host/seccomp-tests`), so a rule requiring the plain reply and accept
   next to the combined call would force rows to list calls their binary never
   makes.
-- The client side of the same model is `SYS_IPC_FAST_CALL_EP`: a call and the
+- The client side of the same model is `SYS_IPC_CALL`: a call and the
   wait for its reply in one trap.
 
 Precedent: seL4 `ReplyRecv` and L4 `ReplyWait` on the server side; Zircon's

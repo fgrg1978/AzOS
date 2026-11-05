@@ -10,8 +10,7 @@ endpoints is in [idl.md](idl.md).
 Contents:
 
 - [Endpoints](#endpoints)
-- [Fast call](#fast-call)
-- [Descriptor call (v2)](#descriptor-call-v2)
+- [The call family](#the-call-family)
 - [Derived capabilities and caveats](#derived-capabilities-and-caveats)
 - [Memory objects](#memory-objects)
 - [Rings](#rings)
@@ -69,69 +68,60 @@ Source: `crates/core/ipc/src/endpoint.rs`, `crates/core/ipc/src/ep_queue.rs`,
 `crates/core/ipc/src/fastcall.rs`, `crates/core/devif/src/lib.rs`,
 `crates/core/syscall/src/khost.rs`.
 
-## Fast call
+## The call family
 
-The fast call moves four words through registers. `a0`..`a6` below name argument
-and output positions; the registers they map to on each ISA are in the table in
+One family of five calls. Each has two forms: the **register form** moves up to
+four words in registers and carries no capability of its own, no deadline and no
+label; the **descriptor form** carries a [`MsgDesc`](abi.md#the-message-descriptor):
+up to `IPC_MSG_INLINE_WORDS` inline words, `IPC_MSG_MAX_CAPS` capability
+entries, a deadline and a label. `a1 == 0` (the accept's `a0 == 0`) selects the
+register form. `a0`..`a6` below name argument and output positions; the
+registers they map to on each ISA are in the table in
 [abi.md](abi.md#entering-the-kernel).
 
-| Call | Inputs | Result |
+| Call | Register form | Descriptor form |
 |---|---|---|
-| `SYS_IPC_FAST_CALL_EP` | `a0` `Cap<Endpoint>` (`WRITE`); `a1`..`a4` request words; `a5` a capability to move with the request (0 none), with `FAST_CALL_CAP_SHARE` (bit 32) set to share it instead | `a0` reply word 0, `a1`..`a3` reply words 1 to 3; or a negative code |
-| `SYS_IPC_FAST_ACCEPT` | none | `a0` handle of the exchange, `a1` caller's task id, `a2`..`a5` request words, `a6` the server's handle of the capability the request moved (0 when it moved none); `-1` when nothing arrived |
-| `SYS_IPC_FAST_REPLY` | `a0` handle from the accept; `a1`..`a4` reply words | 0 delivered, `-2` stale handle, `-1` other refusal |
-| `SYS_IPC_FAST_REPLY_ACCEPT` | `a0` handle from the previous accept; `a2`..`a5` reply words; `a1` is not read | as the accept; `-2` stale, `-3` other refusal of the reply (nothing accepted) |
+| `SYS_IPC_CALL` | `a0` `Cap<Endpoint>` (`WRITE`), `a1 = 0`, `a2`..`a5` request words. Result: `a0` reply word 0, `a1`..`a3` reply words 1 to 3, or a negative code | `a0` `Cap<Endpoint>` (`WRITE`), `a1` `*mut MsgDesc`. Result: 0 when answered (the answer is written over `*a1`) |
+| `SYS_IPC_ACCEPT` | `a0 = 0`. Result: `a0` handle of the exchange, `a1` caller's task id, `a2`..`a5` request words, `a6` the server's handle of the capability the call moved (a sentinel when none); `-1` when nothing arrived | `a0` `*mut MsgDesc`. Result: the call's handle (the reply warrant's name, `>= 0`), `-1` when nothing arrived, `-EFAULT` (the call stays accepted: answer or delegate it by the returned handle) |
+| `SYS_IPC_REPLY` | `a0` handle, `a1 = 0`, `a2`..`a5` reply words. Result: 0 delivered, `-2` stale handle, `-1` other refusal | `a0` handle, `a1` `*const MsgDesc`. Result: 0 |
+| `SYS_IPC_REPLY_ACCEPT` | `a0` handle from the previous accept, `a2`..`a5` reply words; `a1` is not read. Result: as the register-form accept; `-2` stale, `-3` other refusal of the reply (nothing accepted) | none |
+| `SYS_IPC_REPLY_DELEGATE` | `a0` call handle, `a1` task id of a thread of the caller's own process. Result: 0 | the same |
 
-`SYS_IPC_FAST_REPLY_ACCEPT` is the server side of a request loop: it answers
+`SYS_IPC_REPLY_ACCEPT` is the server side of a request loop: it answers
 the exchange in hand and then blocks for the next request on the caller's own
 endpoints in one trap. The accept blocks for up to eight wakes before it
-returns `-1`. The fast path carries no deadline and no label. A capability in
-`a5` is moved (the sender's handle goes stale; for a `Cap<Shm>`, the sender's
-mapping goes with it) or, with `FAST_CALL_CAP_SHARE`, shared (the receiver gets
-a derived copy with the sender's rights and the sender keeps its handle and
-mapping).
+returns `-1`. The IPC fast path (Kconfig `IPC_FASTPATH`) takes only the
+register form of `SYS_IPC_CALL` and `SYS_IPC_REPLY_ACCEPT`.
+
+A call blocks until it is answered. Capability entries move to the other side
+all or nothing, before the answer is published. A descriptor-form server
+receives the words, its own handles for the moved capabilities, the badge of
+the capability the call came through (`MSG_BADGED` set), the deadline, the
+clock id and the label. A register-form accept names four words and one
+capability: it takes a descriptor-form call that fits them (at most four
+words, at most one capability, no deadline, no label bit of its own; the badge
+is not reported) and refuses any other with `-EMSGFORM`.
 
 While containment is armed, the capability resolve of a call on a task-hosted
 endpoint is refused, so a contained task cannot open new service requests; a
 call on a kernel-hosted endpoint still resolves, and the op class that acts is
 refused inside the call.
 
-Source: `crates/core/abi/src/syscall_nr.rs`, `crates/core/ipc/src/fastcall.rs`,
-`crates/core/ipc/src/ep_queue.rs`.
-
-## Descriptor call (v2)
-
-The v2 calls carry a [`MsgDesc`](abi.md#the-message-descriptor): up to
-`IPC_MSG_INLINE_WORDS` inline words and `IPC_MSG_MAX_CAPS` capability entries,
-a deadline and a label.
-
-| Call | Inputs | Result |
-|---|---|---|
-| `SYS_IPC_CALL_V2` | `a0` `Cap<Endpoint>` (`WRITE`); `a1` `*mut MsgDesc` | 0 when answered (the answer is written over `*a1`) |
-| `SYS_IPC_ACCEPT_V2` | `a0` `*mut MsgDesc` | the call's handle (the reply warrant's name, `>= 0`), `-1` when nothing arrived, `-EFAULT` (the call stays accepted: answer or delegate it by the returned handle) |
-| `SYS_IPC_REPLY_V2` | `a0` call handle; `a1` `*const MsgDesc` | 0 |
-| `SYS_IPC_REPLY_DELEGATE` | `a0` call handle; `a1` task id of a thread of the caller's own process | 0 |
-
-A call blocks until it is answered. Capability entries move to the other side
-all or nothing, before the answer is published. The server receives the words,
-its own handles for the moved capabilities, the badge of the capability the call
-came through (`MSG_BADGED` set), the deadline, the clock id and the label.
-
-Errors of `SYS_IPC_CALL_V2`:
+Errors of `SYS_IPC_CALL`:
 
 | Code | Meaning |
 |---|---|
 | `-EPEERDIED`, `-EREVOKED` | the call completed without an answer |
-| `-EV1ACCEPT` | the server took the call with the fast accept, which names only four words and one capability; the server sees nothing and every capability the call carried is back in the caller's table |
+| `-EMSGFORM` | the server took the call with a register-form accept and the call carried more than it names; the server sees nothing and every capability the call carried is back in the caller's table |
 | `-EINVAL` | a descriptor the kernel refuses: unknown version, counts above its limits, a mode other than MOVE/DUP, flag bits other than `MSG_KEEP`, a reserved label bit, or a `clock_id` other than `ClockId::MONO` |
 | `-EDEADLINE` | the descriptor's deadline is at or before now; refused before queueing, nothing moved |
 | `-ERTPROXY` | the caller is a real-time task and the endpoint is a proxy |
 | `-EFAULT` | the descriptor is unreadable |
 | `-1` | the capability or a transfer is refused (one code on purpose, so the refusal does not reveal which); also when the wait ran out and the call was withdrawn |
 
-`SYS_IPC_REPLY_V2` answers once, as the holder of the call's reply warrant.
-To a call that came through the fast path, only the first four words travel and
-no capability may (`-EINVAL`). It returns `-3` when the caller holds no warrant
+The descriptor-form `SYS_IPC_REPLY` answers once, as the holder of the call's
+reply warrant. To a register-form call only the first four words travel and no
+capability may (`-EINVAL`). It returns `-3` when the caller holds no warrant
 of an unanswered call, `-2` when the call ended between that check and the
 answer (the moved capabilities go back), and `-1` for a refused transfer.
 `SYS_IPC_REPLY_DELEGATE` moves the warrant so that only the named thread may
@@ -140,7 +130,8 @@ hold the warrant, and `-EPERM` when the target is not a live thread of the
 caller's process.
 
 Source: `crates/core/abi/src/syscall_nr.rs`, `crates/core/abi/src/ipc_msg.rs`,
-`crates/core/syscall/src/ipc_v2.rs`.
+`crates/core/syscall/src/dispatch.rs`, `crates/core/syscall/src/ipc_v2.rs`,
+`crates/core/ipc/src/fastcall.rs`, `crates/core/ipc/src/ep_queue.rs`.
 
 ## Derived capabilities and caveats
 
@@ -216,11 +207,10 @@ held.
 
 **Transferring.** A buffer travels to another task through an endpoint:
 
-- **MOVE.** A `CAP_MODE_MOVE` entry (or a fast-call capability without
-  `FAST_CALL_CAP_SHARE`) hands the sender's reference, its charge (when it
+- **MOVE.** A `CAP_MODE_MOVE` entry hands the sender's reference, its charge (when it
   holds the owning reference) and its ownership to the receiver and removes the
   sender's mapping. The receiver's Domain is charged first, all or nothing.
-- **SHARE.** A `CAP_MODE_DUP` entry (or `FAST_CALL_CAP_SHARE`) needs `DUP` and
+- **SHARE.** A `CAP_MODE_DUP` entry needs `DUP` and
   `TRANSFER` on the sender's capability and derives an attenuated child. The
   receiver takes its own reference; its map is bounded by the rights it got and
   the sender keeps its handle and mapping.

@@ -712,7 +712,7 @@ the **one** playback stream it holds on the device and returns each period on `d
   writes the `audio-capture` decision record for every attempt that reaches it, which ring 3
   cannot. The server asks for nobody but its clients, and uses none of its own for them. The client's authority travels
   with the open as the **warrant of the call the server is serving** (the handle
-  `SYS_IPC_ACCEPT_V2` returned), which `Sound::open` carries as `on_behalf`: the kernel gave it to
+  `SYS_IPC_ACCEPT` returned), which `Sound::open` carries as `on_behalf`: the kernel gave it to
   the server's main thread alone, it names the task that made the call, and it ends with the
   reply, so it cannot be kept or replayed. The kernel resolves it to that task, decides the
   effect on its class, records it as the subject and names it in the indicator

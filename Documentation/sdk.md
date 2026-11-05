@@ -177,7 +177,7 @@ Modules:
 
 | Module | What |
 |---|---|
-| `dev` | Clients of the interfaces the kernel hosts and of driver endpoints (`azos_devif`). `dev::lookup(key, badge)` finds the endpoint capability the task's row grants. `Ep` is the v2 call and `Regs` the register form (`SYS_IPC_FAST_CALL_EP`, four words each way) for an interface declared `words = 4`. Helpers such as `entropy_read`, `link_key_read` and `sensor_read` wrap one interface. |
+| `dev` | Clients of the interfaces the kernel hosts and of driver endpoints (`azos_devif`). `dev::lookup(key, badge)` finds the endpoint capability the task's row grants. `Ep` is the v2 call and `Regs` the register form (`SYS_IPC_CALL`, four words each way) for an interface declared `words = 4`. Helpers such as `entropy_read`, `link_key_read` and `sensor_read` wrap one interface. |
 | `ioring` | Ring-3 view of an io_ring page: SQEs, CQEs and the opcodes. It never enters the kernel, so every system call a program makes is a visible `sys::NAME(..)` call. |
 | `pipe` | The process's half of a POSIX-style pipe: a `Cap<Shm>` region with a byte ring (`azos_bytepipe`), with the futex as the doorbell. |
 | `utest` | The test harness of user code (above). |

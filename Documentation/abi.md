@@ -80,7 +80,7 @@ constants), `config/kernel/Kconfig.ipc` (`SYSCALL_LEAN_ENTRY`).
 
 ## The syscall table
 
-There are 33 native calls, numbered densely from 1. Everything else is an op
+There are 30 native calls, numbered densely from 1. Everything else is an op
 of `SYS_INVOKE`. A number at or above `SYS_NR_RESERVED_UPPER` (34) is
 unassigned and answers `-1`. A call added to the table takes the next number
 and raises that constant. The Linux personality and the ring-3 Linux runtime
@@ -108,23 +108,20 @@ hart to another task). See [Cases](#cases-entry-counters-and-the-pledge).
 | 14 | `SYS_MO_CREATE` | memory | A | Create a memory object of `a0` pages and mint a `Cap<Shm>`. `a1` is the creation word (access mode, kind, attributes, clone). |
 | 15 | `SYS_MO_MAP` | memory | A | Map a `Cap<Shm>` (or, with handle 0, anonymous memory) into the caller; or change the protection of a mapping (`SHM_MAP_OP_PROTECT`). Returns the address. |
 | 16 | `SYS_MO_UNMAP` | memory | A | Unmap a region and give back the caller's references (the capability is revoked), or unmap an anonymous range. |
-| 17 | `SYS_IPC_FAST_REPLY_ACCEPT` | IPC | B | Reply to the exchange in hand and accept the next request in one trap. |
-| 18 | `SYS_IPC_FAST_REPLY` | IPC | B | Answer an exchange in hand with four words. |
-| 19 | `SYS_IPC_FAST_CALL_EP` | IPC | B | Fast call on a `Cap<Endpoint>` with four message words and an optional capability. |
-| 20 | `SYS_IPC_FAST_ACCEPT` | IPC | B | A server takes the next request on an endpoint it serves. |
-| 21 | `SYS_IPC_CALL_V2` | IPC | B | Call with a `MsgDesc`: inline words, capability entries, deadline, label. |
-| 22 | `SYS_IPC_ACCEPT_V2` | IPC | B | Accept a request into a `MsgDesc`. |
-| 23 | `SYS_IPC_REPLY_V2` | IPC | B | Reply with a `MsgDesc`. |
+| 17 | `SYS_IPC_REPLY_ACCEPT` | IPC | B | Reply (register form) to the exchange in hand and accept the next request in one trap. |
+| 18 | `SYS_FOREIGN_ENTRY` | foreign ABI | A | Register (or with 0 withdraw) the ring-3 runtime's trap entry for reflected traps. |
+| 19 | `SYS_FOREIGN_RESUME` | foreign ABI | A | Restore a full register frame (`ForeignFrame`) and return to user mode in foreign mode. |
+| 20 | `SYS_INVOKE` | generic | A | Any operation on a handle: [SYS_INVOKE](#sys_invoke). |
+| 21 | `SYS_IPC_CALL` | IPC | B | Call on a `Cap<Endpoint>`: four words in registers (`a1 = 0`), or a `MsgDesc` with inline words, capability entries, deadline and label. |
+| 22 | `SYS_IPC_ACCEPT` | IPC | B | A server takes the next request on an endpoint it serves, into registers (`a0 = 0`) or a `MsgDesc`. |
+| 23 | `SYS_IPC_REPLY` | IPC | B | Answer an exchange in hand, with four words in registers (`a1 = 0`) or a `MsgDesc`. |
 | 24 | `SYS_IPC_REPLY_DELEGATE` | IPC | B | Move the reply warrant of an accepted call to another thread of the same process. |
 | 25 | `SYS_RING_SETUP` | IPC | A | Allocate an io_ring page and mint a `Cap<IoRing>`; the page address is written to `*a0`. |
 | 26 | `SYS_RING_ENTER` | IPC | B | Process the pending submission entries of an io_ring. |
 | 27 | `SYS_PORT_WAIT` | IPC | B | Wait on an event port with an absolute deadline; writes a 16-byte event. |
 | 28 | `SYS_FUTEX_WAIT` | futex | B | Block while a 32-bit word holds an expected value, with an optional relative timeout. |
 | 29 | `SYS_FUTEX_WAKE` | futex | B | Wake at most `n` waiters on a word. |
-| 30 | `SYS_FOREIGN_ENTRY` | foreign ABI | A | Register (or with 0 withdraw) the ring-3 runtime's trap entry for reflected traps. |
-| 31 | `SYS_FOREIGN_RESUME` | foreign ABI | A | Restore a full register frame (`ForeignFrame`) and return to user mode in foreign mode. |
-| 32 | `SYS_INVOKE` | generic | A | Any operation on a handle: [SYS_INVOKE](#sys_invoke). |
-| 33 | `SYS_FOREIGN_FORK` | foreign ABI | A | Copy-on-write copy of the calling process for a ring-3 runtime hosting a foreign program's `fork`. Refused with `-EPERM` unless a foreign entry is registered. |
+| 30 | `SYS_FOREIGN_FORK` | foreign ABI | A | Copy-on-write copy of the calling process for a ring-3 runtime hosting a foreign program's `fork`. Refused with `-EPERM` unless a foreign entry is registered. |
 
 Arguments and results of the IPC calls (17 to 24) are in [ipc.md](ipc.md);
 the foreign-ABI frame is defined in `crates/core/abi/src/foreign.rs`.
@@ -457,7 +454,7 @@ returns `None` for a non-negative value or a number it does not know.
 | Authorization | `ENOTOWNER` 99: not the object's owner, or not otherwise authorized, for checks that are not a capability-table lookup |
 | Capabilities | `ECAPKIND` 200 (wrong kind), `ECAPPERMS` 201 (missing right), `ECAPSTALE` 202 (generation stale: revoked or freed) |
 | Policy | `ETOPOLOGY` 203 (not allowed by the signed topology), `ESAFETY` 204 (safety policy), `EAUTH` 205, `EREPLAY` 206, `EOTASIG` 207, `EROLLBACK` 208, `EQUOTA` 209, `EABIVERSION` 210 |
-| IPC | `EPEERDIED` 211 (the serving task died with the call queued or in service), `EREVOKED` 212 (the endpoint was destroyed), `ENOSENDERS` 213 (no sender left on the endpoint), `EV1ACCEPT` 215 (a v2 call taken by the fast accept), `EDEADLINE` 216 (deadline already passed), `ERTPROXY` 217 (a real-time task called a proxy endpoint), `EEOF` 218 (end of a stream), `EADMIT` 220 (the server cannot meet the call's remaining deadline: the descriptor carries the counter-offer) |
+| IPC | `EPEERDIED` 211 (the serving task died with the call queued or in service), `EREVOKED` 212 (the endpoint was destroyed), `ENOSENDERS` 213 (no sender left on the endpoint), `EMSGFORM` 215 (a v2 call taken by the fast accept), `EDEADLINE` 216 (deadline already passed), `ERTPROXY` 217 (a real-time task called a proxy endpoint), `EEOF` 218 (end of a stream), `EADMIT` 220 (the server cannot meet the call's remaining deadline: the descriptor carries the counter-offer) |
 | Memory | `EPURGED` 219 (a volatile memory object lost its frames to memory pressure: the map or clone has nothing to use) |
 
 `EAGAIN` is also what a write-class op answers while containment is armed.
@@ -470,13 +467,13 @@ value as `-EPERM`; the contract of each call says which it means.
 
 | Call | Codes |
 |---|---|
-| `SYS_IPC_FAST_CALL_EP` | `-1`: capability does not resolve, lacks `WRITE`, names an endpoint nobody serves, or the call was given up. Also `-EPEERDIED`, `-EREVOKED`. |
-| `SYS_IPC_FAST_REPLY` | 0 delivered, `-2` stale handle, `-1` any other refusal |
-| `SYS_IPC_FAST_ACCEPT` | `-1` when nothing arrived |
-| `SYS_IPC_FAST_REPLY_ACCEPT` | `-2` stale handle, `-3` any other refusal of the reply (nothing accepted); then as accept |
-| `SYS_IPC_REPLY_V2` | `-3` the caller holds no warrant of an unanswered call, `-2` the call ended meanwhile, `-1` refused transfer |
+| `SYS_IPC_CALL` | `-1`: capability does not resolve, lacks `WRITE`, names an endpoint nobody serves, or the call was given up. Also `-EPEERDIED`, `-EREVOKED`. |
+| `SYS_IPC_REPLY` | 0 delivered, `-2` stale handle, `-1` any other refusal |
+| `SYS_IPC_ACCEPT` | `-1` when nothing arrived |
+| `SYS_IPC_REPLY_ACCEPT` | `-2` stale handle, `-3` any other refusal of the reply (nothing accepted); then as accept |
+| `SYS_IPC_REPLY` | `-3` the caller holds no warrant of an unanswered call, `-2` the call ended meanwhile, `-1` refused transfer |
 | `SYS_IPC_REPLY_DELEGATE` | `-2` call over, `-3` no warrant, `-EPERM` target is not a thread of the caller's process |
-| `SYS_IPC_CALL_V2`, `SYS_IPC_ACCEPT_V2` | `-1` for the capability, a refused transfer, an empty accept or a wait that ran out |
+| `SYS_IPC_CALL`, `SYS_IPC_ACCEPT` | `-1` for the capability, a refused transfer, an empty accept or a wait that ran out |
 
 Unassigned syscall numbers answer `-1`.
 
@@ -520,7 +517,7 @@ time source sets them they read like `MONO`. `ClockId::from_posix` maps a
 POSIX `clockid_t` to a served clock. All times are nanoseconds
 (`NS_PER_SEC`); `ns_to_ticks_ceil` and `ticks_to_ns` convert to and from the
 counter frequency the platform publishes, and kernel and user space use the same two
-functions. `SYS_IPC_CALL_V2` serves only `MONO`.
+functions. `SYS_IPC_CALL` serves only `MONO`.
 
 Source: `crates/core/abi/src/time.rs`.
 
