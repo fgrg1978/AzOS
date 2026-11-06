@@ -11,9 +11,10 @@
 //! `endpoints/`); which of those it may lend is what its own table holds. The
 //! decision and
 //! the refusal record are `service.rs`, pure and tested on the host
-//! (`tests/host/names-tests`); this file is the loop around them.
+//! (`tests/host/names-tests`); this file is the host they run in.
 //!
-//! Request-driven, like the terminal server: accept, dispatch, reply. The
+//! Request-driven: a calls-only server on `azos_srv` (it sleeps in the
+//! accept), whose one handler dispatches and replies. The
 //! caller is identified by the badge on its call, which the kernel stamped
 //! from its signed row and the caller cannot change.
 
@@ -24,6 +25,8 @@ mod service;
 
 use azos_libsys as sys;
 use azos_inspect_lib::{Inspector, Value};
+use azos_srv::sys::Calls;
+use azos_srv::{Answer, Handler, Server};
 use azos_names::{MsgDesc, NamesIdl, NAME_MAX};
 use service::{Host, Service};
 
@@ -120,19 +123,18 @@ fn main() -> ! {
     if svc.host.view.is_none() {
         let _ = sys::console_write(sys::STDOUT, b"[namesd] no introspection tree: every lookup is refused\n");
     }
-    loop {
-        let mut req = MsgDesc::default();
-        let call = sys::ipc_accept_v2(&mut req);
-        if call < 0 {
-            // Nothing arrived (a spurious wake): wait again.
-            sys::yield_now();
-            continue;
-        }
+    Server::calls_only(Calls).run(&mut Names(svc))
+}
+
+/// The server: one call, dispatched.
+struct Names(&'static mut Service<Kernel>);
+
+impl Handler<Calls> for Names {
+    fn call(&mut self, _k: &mut Calls, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
         // The badge of the capability the call came through, 0 when the call
         // was not badged: an unidentified caller, whom the service refuses.
-        svc.caller = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
-        let mut rep = MsgDesc::default();
-        let _ = NamesIdl::dispatch(svc, &req, &mut rep);
-        let _ = sys::ipc_reply_v2(call as u64, &rep);
+        self.0.caller = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
+        let _ = NamesIdl::dispatch(self.0, req, rep);
+        Answer::Reply
     }
 }

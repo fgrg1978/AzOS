@@ -1374,6 +1374,9 @@ mod image_profiles {
         ("NAMESD.ELF", Lang::Rust, &[
             src!("userspace/services/namesd/src/main.rs"),
             src!("userspace/services/namesd/src/service.rs"),
+            src!("userspace/lib/srv/src/lib.rs"),
+            src!("userspace/lib/srv/src/sys/mod.rs"),
+            src!("userspace/lib/srv/src/sys/calls.rs"),
         ]),
         // The RPC server: the loop and the host it runs the engine on (the
         // engine, `userspace/lib/rpc`, issues no call of its own).
