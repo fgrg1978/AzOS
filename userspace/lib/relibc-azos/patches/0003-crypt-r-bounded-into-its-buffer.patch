@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2018 Redox OS
+#
+# crypt_r writes the hash into the caller's crypt_data and returns that buffer: the
+# upstream code returned a leaked heap copy and copied it into the 256-byte buffer
+# without a bound. A hash that does not fit is a NULL return with ERANGE, never a
+# truncated string. crypt() keeps its result in a static crypt_data, as POSIX allows.
+#
+diff --git a/src/header/crypt/mod.rs b/src/header/crypt/mod.rs
+index 289d8ff..14aa578 100644
+--- a/src/header/crypt/mod.rs
++++ b/src/header/crypt/mod.rs
+@@ -3,16 +3,16 @@
+ //! Non-POSIX, see <https://www.man7.org/linux/man-pages/man3/crypt.3.html>.
+ 
+ use ::scrypt::password_hash::{Salt, SaltString};
+-use alloc::{
+-    ffi::CString,
+-    string::{String, ToString},
+-};
++use alloc::string::{String, ToString};
+ use core::ptr;
+ use rand::{Rng, SeedableRng, rngs::SmallRng};
+ 
+ use crate::{
+     c_str::CStr,
+-    header::{errno::EINVAL, stdlib::rand},
++    header::{
++        errno::{EINVAL, ERANGE},
++        stdlib::rand,
++    },
+     platform::{
+         self,
+         types::{c_char, c_int},
+@@ -47,7 +47,7 @@ pub struct crypt_data {
+ 
+ impl crypt_data {
+     #[expect(clippy::new_without_default)]
+-    pub fn new() -> Self {
++    pub const fn new() -> Self {
+         crypt_data {
+             initialized: 1,
+             buff: [0; 256],
+@@ -102,19 +102,18 @@ pub unsafe extern "C" fn crypt_r(
+         None
+     };
+ 
+-    if let Some(inner) = encoded {
+-        let len = inner.len();
+-        if let Ok(ret) = CString::new(inner) {
+-            let ret_ptr = ret.into_raw();
+-            unsafe {
+-                let dst = (*data).buff.as_mut_ptr();
+-                ptr::copy_nonoverlapping(ret_ptr, dst.cast(), len);
+-            }
+-            ret_ptr.cast()
+-        } else {
+-            ptr::null_mut()
+-        }
+-    } else {
+-        ptr::null_mut()
++    let Some(inner) = encoded else {
++        return ptr::null_mut();
++    };
++    let bytes = inner.as_bytes();
++    let buff = unsafe { &mut (*data).buff };
++    if bytes.len() >= buff.len() || bytes.contains(&0) {
++        platform::ERRNO.set(ERANGE);
++        return ptr::null_mut();
++    }
++    for (d, s) in buff.iter_mut().zip(bytes) {
++        *d = *s as c_char;
+     }
++    buff[bytes.len()] = 0;
++    buff.as_mut_ptr()
+ }
+diff --git a/src/header/unistd/mod.rs b/src/header/unistd/mod.rs
+index 3e2c66e..368ad9d 100644
+--- a/src/header/unistd/mod.rs
++++ b/src/header/unistd/mod.rs
+@@ -240,8 +240,8 @@ pub unsafe extern "C" fn confstr(name: c_int, buf: *mut c_char, len: size_t) ->
+ /// See <https://pubs.opengroup.org/onlinepubs/9799919799/functions/crypt.html>.
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn crypt(key: *const c_char, salt: *const c_char) -> *mut c_char {
+-    let mut data = crypt_data::new();
+-    unsafe { crypt_r(key, salt, &raw mut data) }
++    static mut CRYPT: crypt_data = crypt_data::new();
++    unsafe { crypt_r(key, salt, &raw mut CRYPT) }
+ }
+ 
+ /// Non-POSIX, see <https://www.man7.org/linux/man-pages/man3/daemon.3.html>.
