@@ -38,6 +38,9 @@ pub const DECISIONS: bool = azos_limits::DECISION_RECORDS_DEV;
 pub const KLOG_PAYLOAD: usize = 288;
 /// Payload bytes of a decision record (`azos_decision`'s layout).
 pub const DECISION_PAYLOAD: usize = 32;
+/// The decision ring's depth: Kconfig `DECISION_RECORDS_ENTRIES` rounded up
+/// to a power of two (the slot is index & (entries - 1)).
+pub const DECISION_ENTRIES: usize = (azos_limits::DECISION_RECORDS_ENTRIES as usize).next_power_of_two();
 
 const fn ring(source: u8, payload: usize, entries: usize) -> RingSpec {
     RingSpec { source, slot_bytes: (ENV_BYTES + payload) as u32, entries: entries as u32 }
@@ -54,7 +57,7 @@ const fn layout(early: bool) -> ([RingSpec; MAX], usize) {
         n += 1;
     }
     if DECISIONS {
-        r[n] = ring(SOURCE_DECISION, DECISION_PAYLOAD, azos_limits::DECISION_RECORDS_ENTRIES as usize);
+        r[n] = ring(SOURCE_DECISION, DECISION_PAYLOAD, DECISION_ENTRIES);
         n += 1;
     }
     (r, n)
@@ -70,7 +73,7 @@ pub const RINGS: &[RingSpec] = FULL_L.0.split_at(FULL_L.1).0;
 const _: () = {
     let mut i = 0;
     while i < RINGS.len() {
-        assert!(RINGS[i].entries.is_power_of_two(), "KLOG_ENTRIES, KLOG_EARLY_ENTRIES and DECISION_RECORDS_ENTRIES must be powers of two");
+        assert!(RINGS[i].entries.is_power_of_two(), "KLOG_ENTRIES must be a power of two");
         assert!(EARLY_RINGS[i].entries.is_power_of_two(), "KLOG_EARLY_ENTRIES must be a power of two");
         i += 1;
     }
@@ -113,31 +116,63 @@ const fn early_image() -> [u8; EARLY_BYTES] {
     img
 }
 
-/// The shared region once [`attach`]ed; null before (the producers write
-/// [`EARLY`]).
+/// The shared region once [`attach`]ed; null before.
 static CURRENT: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
-#[inline(always)]
-fn place(source: u8) -> Option<(*mut u8, RingSpec)> {
-    let p = CURRENT.load(Ordering::Acquire);
-    let (base, rings) = if p.is_null() { (EARLY.0.get() as *mut u8, EARLY_RINGS) } else { (p, RINGS) };
-    let i = index(rings, source)?;
-    // SAFETY: the ring's offset inside the region its layout describes.
-    Some((unsafe { base.add(rec::ring_offset(rings, i)) }, rings[i]))
+/// Source ids a ring can have (`SOURCE_*` are 1..).
+const SOURCES: usize = 4;
+
+/// Each source's writer: the early region's ring until [`attach`] points it
+/// at the shared region's. One read per record, no select.
+struct Writers(UnsafeCell<[Option<Writer>; SOURCES]>);
+
+// SAFETY: written only by `attach`, on the boot hart with interrupts masked
+// before any other hart starts; every reader on another hart starts after
+// the hart-start handshake (SBI HSM, PSCI CPU_ON, the INIT-SIPI with its
+// barriers), which orders the boot hart's stores before its first load.
+unsafe impl Sync for Writers {}
+
+const fn early_writers() -> [Option<Writer>; SOURCES] {
+    let mut w = [None; SOURCES];
+    let mut i = 0;
+    while i < EARLY_RINGS.len() {
+        let spec = EARLY_RINGS[i];
+        // SAFETY: the ring's offset inside the early region, by its layout.
+        w[spec.source as usize] =
+            Some(unsafe { Writer::at((EARLY.0.get() as *mut u8).add(rec::ring_offset(EARLY_RINGS, i)), spec) });
+        i += 1;
+    }
+    w
 }
+
+static WRITERS: Writers = Writers(UnsafeCell::new(early_writers()));
+
+const _: () = {
+    let mut i = 0;
+    while i < RINGS.len() {
+        assert!((RINGS[i].source as usize) < SOURCES);
+        assert!(RINGS[i].payload() <= rec::REPLAY_PAYLOAD_MAX, "a ring's payload must fit the handover's copy");
+        i += 1;
+    }
+};
 
 /// The ring of `source`, to write; `None` when the build keeps none.
 #[inline(always)]
 pub fn writer(source: u8) -> Option<Writer> {
-    // SAFETY: the kernel owns both regions; they live for the whole run.
-    place(source).map(|(r, spec)| unsafe { Writer::at(r, spec) })
+    // SAFETY: see `Writers`; the index is checked.
+    unsafe { (*WRITERS.0.get()).get(source as usize).copied().flatten() }
 }
 
 /// The ring of `source`, to read.
 #[inline]
 pub fn reader(source: u8) -> Option<Ring> {
-    // SAFETY: as `writer`.
-    place(source).map(|(r, spec)| unsafe { Ring::at(r, spec) })
+    writer(source).map(|w| w.ring())
+}
+
+/// Has the boot handed the records over to the shared region?
+pub fn attached() -> bool {
+    // Relaxed: see `Writers` for what orders it.
+    !CURRENT.load(Ordering::Relaxed).is_null()
 }
 
 /// What [`attach`] could not carry over: per source, the records the early
@@ -185,6 +220,13 @@ pub unsafe fn attach(base: *mut u8, bytes: usize, ts_hz: u64) -> Option<Handover
             _ => {}
         }
     }
+    let mut w = [None; SOURCES];
+    for (i, spec) in RINGS.iter().enumerate() {
+        // SAFETY: the ring's offset inside the region just formatted.
+        w[spec.source as usize] = Some(unsafe { Writer::at(base.add(rec::ring_offset(RINGS, i)), *spec) });
+    }
+    // SAFETY: see `Writers`: no other hart runs, interrupts are masked.
+    unsafe { *WRITERS.0.get() = w };
     CURRENT.store(base, Ordering::Release);
     Some(h)
 }

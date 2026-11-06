@@ -51,6 +51,8 @@ pub(crate) fn install() {
         "[KLOG] record region {} KiB, granted as MemObj klog.ring: kernel log {} records ({} lost before the handover), decisions {} lost",
         pages * azos_arch::PAGE_SIZE / 1024, ring_entries(azos_records::SOURCE_KLOG), h.klog_lost, h.decisions_lost
     );
+    // After the line above, which the read-back row looks for.
+    azos_drv_sys::klog::arm_stale_canary();
 }
 
 /// Held, with interrupts masked, across the handover.

@@ -22,11 +22,13 @@ config DECISION_RECORDS_DEV
       condition that the gate row `bench: receipts cost <= 1%`
       (tools/bench/vsbench_cost.sh: the ipc and shell vsbench lanes, this symbol
       off against on, -icount at one hart) holds. Off: every record site
-      compiles out. On: a migrating wake pays about 40 instructions and six
-      stores (the last is the clock stamp), the admission and denial paths
-      the same per record, and the ring costs DECISION_RECORDS_ENTRIES x 64
-      bytes (the record substrate's decision ring, crates/core/records: in
-      .bss until the boot hands it over to the region `logd` reads, KLOG). Maps to the kernel cargo feature `decisions`, a `base`
+      compiles out. On: a migrating wake pays one atomic add and nine stores
+      into the record's slot (two stamps, the sequence, the clock stamp, the
+      envelope word, four payload words), about 60 instructions with the
+      clock call, the admission and denial paths the same per record, and
+      the ring costs DECISION_RECORDS_ENTRIES x 64 bytes (the record
+      substrate's decision ring, crates/core/records: in the kernel image's
+      .data until the boot hands it over to the region `logd` reads, KLOG). Maps to the kernel cargo feature `decisions`, a `base`
       tag: emitted unless the symbol is n, so the gate's kernels carry what
       the presets ship.
 
@@ -124,8 +126,8 @@ config DECISION_RECORDS_ENTRIES
     default 64
     help
       Records kept; the oldest is overwritten. 64 bytes each (the record
-      envelope and a 32-byte payload). A power of two: the slot is
-      index & (entries - 1), and the build refuses anything else. At most
+      envelope and a 32-byte payload). Rounded up to a power of two (the
+      slot is index & (entries - 1)): 100 keeps 128. At most
       1024: the ring shares one memory object (64 pages) with the kernel
       log's (KLOG_ENTRIES). Raise it when migrating wakes evict the boot
       admission records you want to read; read only when

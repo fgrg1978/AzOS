@@ -98,8 +98,9 @@ pub const ON: bool = cfg!(feature = "on");
 /// The durable refusal sink is built in (Kconfig `DECISION_REFUSALS_DURABLE`).
 pub const DURABLE: bool = cfg!(feature = "durable");
 
-/// Ring depth (Kconfig `DECISION_RECORDS_ENTRIES`).
-pub const ENTRIES: usize = azos_limits::DECISION_RECORDS_ENTRIES as usize;
+/// Ring depth (Kconfig `DECISION_RECORDS_ENTRIES`, rounded up to a power of
+/// two, as `azos_records` lays the ring out).
+pub const ENTRIES: usize = (azos_limits::DECISION_RECORDS_ENTRIES as usize).next_power_of_two();
 const _: () = assert!(ENTRIES >= 8);
 
 /// Journal depth (Kconfig `DECISION_JOURNAL_ENTRIES`); read only with
@@ -1696,6 +1697,7 @@ fn write(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3]) -> u64 {
             clock: azos_records::CLOCK_TIMEBASE,
             kind: rule as u16 | (verdict as u16) << 8,
             len: azos_records::DECISION_PAYLOAD as u16,
+            // The crate has no CPU id: a decision's envelope says 0.
             cpu: 0,
             flags: 0,
         };

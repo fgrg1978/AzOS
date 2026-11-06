@@ -58,11 +58,21 @@ pub fn record(level: usize, module: &'static str, msg: &[u8], partial: bool, tru
     }
 }
 
-/// Gate canary `canary=record-stale`: the next line is written under a stale
-/// sequence, which every reader must drop (and `logd` counts).
+/// Gate canary `canary=record-stale`: the first line after the boot's
+/// handover to the shared region is written under a stale sequence, which
+/// every reader must drop (and `logd` counts). Armed after the handover, so
+/// how many lines the boot printed before it cannot push it out.
 static STALE_CANARY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static STALE_ASKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// Arm the `record-stale` canary (the kernel, at boot).
+/// Ask for the `record-stale` canary (the kernel, at boot, from the command line).
 pub fn set_stale_canary() {
-    STALE_CANARY.store(true, core::sync::atomic::Ordering::Relaxed);
+    STALE_ASKED.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The handover is done: arm the canary if it was asked for.
+pub fn arm_stale_canary() {
+    if STALE_ASKED.load(core::sync::atomic::Ordering::Relaxed) {
+        STALE_CANARY.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
 }
