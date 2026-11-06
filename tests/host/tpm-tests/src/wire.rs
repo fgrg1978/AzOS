@@ -229,6 +229,23 @@ fn clean() {
     RIG.with(|c| c.borrow().as_ref().unwrap().1.assert_clean());
 }
 
+/// A TPM floor nothing raises (no A/B slots, so no confirmed boot) is no floor
+/// a consumer may trust: an older signed blob would pass a floor that stays at
+/// its provisioned value. With the slots it is the lifted floor.
+#[test]
+fn a_backend_floor_without_slots_is_not_trusted() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    for k in ALL {
+        let (t, r) = rig(k, 0);
+        RIG.with(|c| *c.borrow_mut() = Some((t, r)));
+        floor::install(&BACKEND, 0x2A);
+        assert_eq!(floor::trusted(0x10, false), None);
+        assert_eq!(floor::trusted(0x10, true), Some(0x2A));
+        assert_eq!(floor::trusted(0x40, true), Some(0x40));
+        clean();
+    }
+}
+
 #[test]
 fn ota_floor_is_raised_only_upward_through_the_backend() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

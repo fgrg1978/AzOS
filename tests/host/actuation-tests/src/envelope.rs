@@ -391,7 +391,7 @@ fn the_config_store_and_the_updater_ask_the_gate_at_their_one_site() {
     assert!(ask < body.find("cfg_set(").expect("the store"), "asked after the store");
     assert_eq!(body.matches("config_write_admitted(").count(), 1);
 
-    let ota = include_str!("../../../../crates/core/ota/src/lib.rs");
+    let ota = include_str!("../../../../crates/core/ota/src/slots.rs");
     let body = &ota[ota.find("fn may_apply(").expect("the kernel store's may_apply")..];
     let body = &body[..body.find("\n    }\n").expect("end of may_apply")];
     assert!(body.contains("asked(Ask::Ota { op, slot })"), "{body}");
