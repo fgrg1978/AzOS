@@ -1851,16 +1851,25 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         if n.write != m.write || n.backing != m.backing || n.page_index(page) != idx {
             return false;
         }
-        // Storage only grows, so a slot that had it still has it.
+        // A slot with no storage now (its chunk freed by a `munmap` since
+        // the first look) is looked at again.
         let slot = match spare.as_mut() {
             None => o.slot(idx),
             Some(sp) => o.slot_fill(idx, sp),
         };
         let Some(slot) = slot else { return false };
-        // SAFETY: `pte_ptr` is an aligned level-0 entry of a live table page
-        // (the mapping still exists, so `munmap` has not swept it, and the
-        // block was not promoted since: promotion needs this page's slot to
-        // have become a frame, which the compare below refuses).
+        // The entry the walk found must still be the page's: a promotion
+        // (under this lock) takes the level-0 table away, and a split after it
+        // may put a new table at the same level, so the level alone does not
+        // tell. Walked again, without allocating, under the lock that
+        // serialises promotion. Canary `fault-entry-rewalk-canary`.
+        if !cfg!(feature = "fault-entry-rewalk-canary")
+            && !vmm::walk_level(root, page, false, false).is_ok_and(|(p, level)| p == pte_ptr.0 && level == 0)
+        {
+            return false;
+        }
+        // SAFETY: `pte_ptr` is the page's level-0 entry in its live table:
+        // found again just now, under the lock every promotion holds.
         let leaf_word = unsafe { &*(pte_ptr.0 as *const AtomicU64) };
         // Both words the decision was made on, or nothing: installs are
         // serialised by the space's lock, but the leaf is shared with walkers

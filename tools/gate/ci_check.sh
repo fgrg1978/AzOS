@@ -12188,6 +12188,10 @@ host_job thp_host_canary_row "thp: ranged flush before a table free canary" prom
 # leaf alone (pager::fault_once, the walk's level). fault-block-leaf-canary: the
 # block's word is taken for the page's 4 KiB leaf and one is written into it.
 host_job thp_host_canary_row "thp: fault over a promoted block canary" fault-block-leaf-canary a_fault_on_a_promoted_block_leaves_its_leaf_alone
+# The install walks again under the space's lock and writes only into the
+# entry it found (pager::fault_once). fault-entry-rewalk-canary: a table freed
+# by a promotion and taken again gets the leaf.
+host_job thp_host_canary_row "thp: install after a promotion canary" fault-entry-rewalk-canary an_install_whose_table_was_promoted_away_is_refused
 host_job host_canary_row "pi futex: exited owner set canary" sync-tests pi-exited-owner-canary \
     an_owner_exiting_after_the_look_is_refused_as_the_new_owner --test=pi_futex_graph
 host_job host_canary_row "pi futex: exited owner block canary" sync-tests pi-exited-owner-canary \

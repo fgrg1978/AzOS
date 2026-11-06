@@ -196,6 +196,47 @@ fn a_fault_on_a_promoted_block_leaves_its_leaf_alone() {
     assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (REGION_PAGES, PAGES), "nothing installed twice");
 }
 
+/// The space whose fault is held at its install.
+static HOOK_PT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn promote_at_install() {
+    let pt = HOOK_PT.load(std::sync::atomic::Ordering::SeqCst);
+    // The page's leaf comes back by another fault, the block's last page
+    // completes the run: the block is promoted and its level-0 table freed.
+    touch(pt, BLOCK_A + 5 * PAGE_SIZE);
+    touch(pt, BLOCK_A + (PAGES - 1) * PAGE_SIZE);
+    // The next block's first touch takes a level-0 table: the freed one.
+    touch(pt, BLOCK_B);
+}
+
+/// **An install whose table was promoted away is refused.** A fault walks to
+/// a page's level-0 entry, then, before it takes the lock, the block is
+/// promoted, its level-0 table freed and taken again as the next block's.
+/// The install walks again under the lock and finds the block's leaf, not the
+/// entry it had: it writes nothing, and the next look finds the page resident.
+/// (The fault is an install of a slot whose leaf was cleared: a fixture, no
+/// path makes one inside a live run.)
+/// **Canary** `fault-entry-rewalk-canary`: the install trusts its first walk
+/// and writes its leaf into the next block's table: that block's page maps a
+/// frame of the first block's run.
+#[test]
+fn an_install_whose_table_was_promoted_away_is_refused() {
+    let _g = serial();
+    let pt = space();
+    region(RW);
+    if !on() {
+        return;
+    }
+    fill(pt, BLOCK_A, PAGES - 1);
+    azos_mm::vmm::unmap(pt, BLOCK_A + 5 * PAGE_SIZE);
+    HOOK_PT.store(pt, std::sync::atomic::Ordering::SeqCst);
+    azos_mm::pager::shim_set_install_hook(Some(promote_at_install));
+    assert!(azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), BLOCK_A + 5 * PAGE_SIZE).is_ok());
+    azos_mm::pager::shim_set_install_hook(None);
+    assert_eq!(level(pt, BLOCK_A), Some(1), "the block was promoted");
+    assert_eq!(azos_mm::vmm::translate(pt, BLOCK_B + 5 * PAGE_SIZE), None, "a leaf went into a table the page no longer has");
+}
+
 #[test]
 fn filling_a_block_promotes_it_to_one_leaf_and_the_data_survives() {
     let _g = serial();

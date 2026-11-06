@@ -113,6 +113,11 @@ fork-hold-canary = []
 # misses the page: `syscall-tests` pte_truth.rs
 # `a_restore_begun_before_the_fork_does_not_install_during_it` fails.
 fork-install-recheck-canary = []
+# Host-suite canary: the install trusts the entry its walk found before the
+# lock, so a block promoted (and split) meanwhile gets a 4 KiB leaf in a table
+# that is not the page's: `syscall-tests` thp_vmm.rs
+# `an_install_whose_table_was_promoted_away_is_refused` fails.
+fault-entry-rewalk-canary = []
 # Host-suite canary: a demand reservation (`brk`) is written over a page of a
 # mapping, whose state is its object's slot: `syscall-tests` pte_truth.rs
 # `a_heap_reservation_skips_the_pages_of_a_mapping` fails.
