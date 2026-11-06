@@ -5,7 +5,7 @@
 // shims and builds only with `use-robot`; this file also builds without it, so
 // the generic image's answer is asserted by the real `SensorServer`:
 //
-//     cargo test --release --no-default-features --features virtio-snd,linux-abi a_vdso_bind
+//     cargo test --release --no-default-features --features virtio-snd,linux-abi,board-io a_vdso_bind
 
 use super::harness::serial;
 use crate::khost::Caller;
@@ -25,7 +25,8 @@ fn server(badge: u32, rights: CapPerms) -> SensorServer {
 /// only. Without the domain the four robot sensors are refused like a read
 /// of them (`NOT_READY`), so the interrupt never publishes a zero slot, and
 /// the battery still binds. Run both ways: the default features, and
-/// `--no-default-features` (the generic image).
+/// `--no-default-features` (the generic image; the battery is the board's
+/// sensor and is refused without `board-io`, like a read).
 ///
 /// **Canary** (`vdso-bind-canary`, a gate row, run without `use-robot`):
 /// `bind_vdso` skips `robot_sensor_absent`, so the generic build binds all
@@ -35,8 +36,6 @@ fn a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain() {
     let _g = serial();
     azos_mm::vdso::task_page_claim(0, TID).expect("a page for the slot");
     let bind = |ty: u64| server(ty as u32, CapPerms::READ).bind_vdso();
-    let battery = bind(SENSOR_TYPE_BATTERY);
-    assert!(battery.is_ok() && !battery.value, "a sensor no interrupt samples binds as read-only, code {}", battery.code);
     for ty in [SENSOR_TYPE_IMU, SENSOR_TYPE_ODOM, SENSOR_TYPE_ENCODER, SENSOR_TYPE_GPS] {
         let out = bind(ty);
         if cfg!(feature = "use-robot") {
@@ -45,5 +44,11 @@ fn a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain() {
         } else {
             assert_eq!(out.code, outcome::NOT_READY, "sensor {ty} without the Robot domain");
         }
+    }
+    let battery = bind(SENSOR_TYPE_BATTERY);
+    if cfg!(feature = "board-io") {
+        assert!(battery.is_ok() && !battery.value, "a sensor no interrupt samples binds as read-only, code {}", battery.code);
+    } else {
+        assert_eq!(battery.code, outcome::NOT_READY, "the board's sensor without the board's I/O");
     }
 }

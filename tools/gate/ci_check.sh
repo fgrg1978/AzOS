@@ -11518,7 +11518,8 @@ host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <featu
         echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
     fi
 }
-# The generic image (no `use-robot`): syscall-tests builds without the robot
+# The generic image (no `use-robot`, with the board's I/O: the battery is its
+# sensor): syscall-tests builds without the robot
 # shims' test controls, and `Sensor::bind_vdso` must refuse the four robot
 # sensors there, as `read` does, instead of letting the timer interrupt publish
 # a zero slot. The canary (`vdso-bind-canary`) skips the refusal.
@@ -11528,7 +11529,7 @@ host_generic_row() { # <label> <test fn>
     printf "  %-26s" "${label}..."
     CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-generic" \
         host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release --no-default-features \
-        --features virtio-snd,linux-abi -- "$test"
+        --features virtio-snd,linux-abi,board-io -- "$test"
     if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
     else
         bad; echo "      syscall-tests --no-default-features: $test did not pass alone"
@@ -11536,7 +11537,7 @@ host_generic_row() { # <label> <test fn>
     fi
 }
 host_job host_generic_row "sensor: vdso bind, no robot domain" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain
-host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,vdso-bind-canary \
+host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,board-io,vdso-bind-canary \
     a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
 host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mismatch_is_refused
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused

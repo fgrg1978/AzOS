@@ -701,6 +701,7 @@ const PERIOD_NS: u64 = 1_000_000_000 / 128;
 ///
 /// **Canary.** Pace on the pass's own time (`now + period`) instead of the
 /// batch's: the second sample's time column moves.
+#[cfg(feature = "board-io")]
 #[test]
 fn an_adc_batch_fills_its_ring_on_the_clock_and_ends_by_itself() {
     let _g = serial();
@@ -731,6 +732,7 @@ fn an_adc_batch_fills_its_ring_on_the_clock_and_ends_by_itself() {
 ///
 /// **Canary.** Make `RecordRing::push` answer `true` when the ring is full: the
 /// flag never appears.
+#[cfg(feature = "board-io")]
 #[test]
 fn a_full_sample_ring_drops_and_the_next_record_says_so() {
     let _g = serial();
@@ -757,6 +759,7 @@ fn a_full_sample_ring_drops_and_the_next_record_says_so() {
 
 /// A batch whose region goes away is stopped by the pass that finds out; the
 /// channel is free again.
+#[cfg(feature = "board-io")]
 #[test]
 fn a_batch_into_a_freed_region_stops() {
     let _g = serial();
@@ -772,6 +775,7 @@ fn a_batch_into_a_freed_region_stops() {
 
 /// The channel is the badge: another channel has its own batch, and a channel
 /// the interface cannot name is `NO_RESOURCE` before any queue is looked at.
+#[cfg(feature = "board-io")]
 #[test]
 fn each_adc_channel_has_its_own_batch_and_the_badge_is_bounded() {
     let _g = serial();
@@ -801,6 +805,7 @@ fn each_adc_channel_has_its_own_batch_and_the_badge_is_bounded() {
 ///
 /// **Canary.** Resolve the handle in the callee's table instead of the
 /// caller's (`who.tid`): `BAD_ARGUMENT`.
+#[cfg(feature = "board-io")]
 #[test]
 fn queue_ops_are_served_through_the_real_dispatch_with_capability_entries() {
     let _g = serial();
@@ -850,6 +855,7 @@ fn a_lost_attach_reply_is_not_retried() {
 ///
 /// **Canary.** Drop the `owner == tid` test (or the call in the kernel's exit
 /// hook is the half this host test cannot see): the other task's batch dies.
+#[cfg(feature = "board-io")]
 #[test]
 fn a_task_exit_ends_the_attachments_it_made_and_only_those() {
     let _g = serial();
@@ -929,6 +935,7 @@ fn a_detach_that_lands_during_a_bridge_pass_stands() {
 ///
 /// **Canary.** As above, for `ADC` and `port.pump`; or publish the copy
 /// without the `gen` test: channel 0's next `start_batch` answers `BUSY`.
+#[cfg(feature = "board-io")]
 #[test]
 fn a_stop_that_lands_during_an_adc_pass_stands() {
     let _g = serial();
@@ -957,6 +964,7 @@ fn a_stop_that_lands_during_an_adc_pass_stands() {
 ///
 /// **Canary.** Drop the `gen` bump from `end_bridge` or `end_batch`: the next
 /// attach answers `BUSY`.
+#[cfg(feature = "board-io")]
 #[test]
 fn a_task_exit_during_a_pass_ends_the_attachments() {
     let _g = serial();

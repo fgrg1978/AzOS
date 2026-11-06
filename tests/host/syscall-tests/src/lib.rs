@@ -155,6 +155,8 @@ pub mod display;
 pub mod sound_host;
 // The `Adc` interface (the board's converter), over the ADS1115 stand-in in
 // `shims/drivers`.
+// The batch pass is reached from `devices::pump` only with `board-io`.
+#[cfg_attr(not(feature = "board-io"), allow(dead_code))]
 #[path = "../../../../crates/core/syscall/src/adc_host.rs"]
 pub mod adc_host;
 // The `MemCtl` interface (volatile memory objects).
