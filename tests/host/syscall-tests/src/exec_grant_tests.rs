@@ -33,7 +33,9 @@ fn pkg_target(id: &[u8; 32]) -> String {
 
 const PKG_A: [u8; 32] = [0xA1; 32];
 const PKG_B: [u8; 32] = [0xB2; 32];
+const PKG_LOW: [u8; 32] = [0xC3; 32];
 const MEMBER: [u8; 32] = [0x11; 32];
+const LOW: [u8; 32] = [0x77; 32];
 const STRANGER: [u8; 32] = [0x22; 32];
 
 /// The applied package table is bound once per process: `PKG_A` carries
@@ -42,8 +44,11 @@ fn applied() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let table: &'static [PackageImage] = Box::leak(
-            vec![PackageImage { digest: MEMBER, package: PKG_A, profile: package_profile("MEMBER.ELF", &[]) }]
-                .into_boxed_slice(),
+            vec![
+                PackageImage { digest: MEMBER, package: PKG_A, below_floor: false, profile: package_profile("MEMBER.ELF", &[]) },
+                PackageImage { digest: LOW, package: PKG_LOW, below_floor: true, profile: package_profile("LOWPKG.ELF", &[]) },
+            ]
+            .into_boxed_slice(),
         );
         assert!(register_package_images(table));
     });
@@ -171,4 +176,37 @@ fn the_skip_switch_is_the_only_way_past_the_check() {
     SKIP_CHECK.store(false, Ordering::Relaxed);
     assert_eq!(skipped, Some(Basis::Image));
     assert_eq!(grant_for(tid, "XGRANT04.ELF", &[0x66; 32]), None);
+}
+
+/// **A program of a package below its security floor is refused whatever the
+/// caller holds**: a grant on the image and a grant on the package both admit
+/// every other program, and this one is refused with the basis that says why,
+/// at both sites. The grant check itself is untouched (`grant_for` still finds
+/// the grant): the floor is policy, written as its own record.
+///
+/// **Canary.** Remove the `package_below_floor` test from `decide`: the
+/// refusal assertions go red.
+#[test]
+fn a_package_below_its_security_floor_is_refused_whatever_the_grants() {
+    let _g = serial();
+    applied();
+    let tid = caller();
+    azos_ipc::launch_cap::launch_grant_cap(tid, &pkg_target(&PKG_LOW), CapPerms::EXEC).unwrap();
+    azos_ipc::launch_cap::launch_grant_cap(tid, "LOWPKG.ELF", CapPerms::EXEC).unwrap();
+    assert_eq!(grant_for(tid, "LOWPKG.ELF", &LOW), Some(Basis::Image), "the caller holds the grants");
+
+    for site in [Site::SpawnEx, Site::Execve] {
+        let since = azos_decision::total();
+        assert!(decide(tid, site, "LOWPKG.ELF", &LOW).is_err(), "{site:?}");
+        assert_eq!(
+            records(since),
+            vec![(Verdict::Refuse as u8, tid, [prefix(&LOW), Basis::BelowSecFloor as u64, site as u64])],
+            "one record, naming the floor"
+        );
+    }
+    assert!(!Basis::BelowSecFloor.admitted());
+
+    // The same caller launches a package program that is not below its floor.
+    azos_ipc::launch_cap::launch_grant_cap(tid, &pkg_target(&PKG_A), CapPerms::EXEC).unwrap();
+    assert_eq!(decide(tid, Site::SpawnEx, "MEMBER.ELF", &MEMBER), Ok(Basis::Package));
 }

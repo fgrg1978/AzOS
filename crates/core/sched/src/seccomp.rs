@@ -1816,6 +1816,10 @@ pub struct PackageImage {
     /// The id of the package that carries it (`azos_pkg::Package::id`): what a
     /// launch grant on the package names.
     pub package: [u8; 32],
+    /// The package is below its security floor (`azos_pkg::index`) and the
+    /// build enforces floors (Kconfig `PKG_SEC_FLOOR_ENFORCE`): the exec check
+    /// refuses to start the program.
+    pub below_floor: bool,
     /// The row it runs under.
     pub profile: ImageProfile,
 }
@@ -1862,6 +1866,12 @@ pub fn package_of_digest(digest: &[u8; 32]) -> Option<[u8; 32]> {
         return None;
     }
     package_entry(digest).map(|p| p.package)
+}
+
+/// Does the program whose bytes hash to `digest` belong to an applied package
+/// that is below its security floor? `false` for a shipped program.
+pub fn package_below_floor(digest: &[u8; 32]) -> bool {
+    package_of_digest(digest).is_some() && package_entry(digest).is_some_and(|p| p.below_floor)
 }
 
 /// The SHA-256 of the shipped image the build copied under `name` (ASCII case

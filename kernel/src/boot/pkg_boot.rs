@@ -25,6 +25,10 @@
 //! like a static row because the apply adds to the manager's row a launch grant
 //! on it (`pkg_apply`, *Launch grants*), before the candidate is checked.
 //!
+//! A program of a package below its security floor is bound like the others
+//! but marked (`PackageImage::below_floor`): the exec check refuses it
+//! (`azos_syscall::exec_grant`, basis `BelowSecFloor`).
+//!
 //! Applied programs start because [`Staged::finish`] binds the SHA-256 of each
 //! to its own row (`azos_sched::seccomp::register_package_images`): the exec
 //! sites start only an image whose digest is bound, and a program swapped into
@@ -103,6 +107,7 @@ fn judge<R>(floor: u32, f: impl FnOnce(&Boot<'_>) -> R) -> R {
         now_ns: clock_ns(),
         prior_unconfirmed: PRIOR_UNCONFIRMED.load(Ordering::Acquire),
         max_attempts: MAX_ATTEMPTS.load(Ordering::Acquire),
+        sec_floor_enforce: azos_limits::PKG_SEC_FLOOR_ENFORCE,
     };
     f(&boot)
 }
@@ -210,7 +215,12 @@ fn bind(images: &[AppliedImage]) -> usize {
         // Held for the life of the boot, as the topology's own text is.
         let image: &'static str = Box::leak(alloc::string::String::from(name).into_boxed_str());
         let ifaces: &'static [u16] = Box::leak(ifaces.into_boxed_slice());
-        table.push(PackageImage { digest: im.sha256, package: im.package, profile: azos_sched::seccomp::package_profile(image, ifaces) });
+        table.push(PackageImage {
+            digest: im.sha256,
+            package: im.package,
+            below_floor: im.below_floor,
+            profile: azos_sched::seccomp::package_profile(image, ifaces),
+        });
     }
     let n = table.len();
     if n != 0 && !azos_sched::seccomp::register_package_images(Box::leak(table.into_boxed_slice())) {

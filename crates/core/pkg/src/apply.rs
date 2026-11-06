@@ -12,6 +12,8 @@
 //!   requests SNAPDEL.REQ       ───────►     its images to APPS/NAME.ELF, after a
 //!                                           snapshot of the volume
 //!   lists    APPLY.TBL         ◄───────     records the snapshots (APPLY.TBL)
+//!   writes   INDEX.AZX         ───────►     security floors: a package below its
+//!                                           floor is applied but never launched
 //! ```
 //!
 //! The volume is the mailbox: the installer owns the staging, the kernel owns
@@ -45,6 +47,10 @@ pub const APPS_DIR: &[u8] = b"APPS";
 /// The install journal: `ProvenanceRecord` wire records, appended by the
 /// installer and, at boot, by the kernel.
 pub const JOURNAL: &[u8] = b"JOURNAL.BIN";
+/// The repository index the installer last verified and accepted
+/// ([`crate::index`]): the installer writes it, the kernel reads it (and
+/// verifies it again) for the security floors.
+pub const INDEX: &[u8] = b"INDEX.AZX";
 /// The snapshot table the kernel keeps ([`Table`]).
 pub const TABLE: &[u8] = b"APPLY.TBL";
 /// Snapshot deletions the installer asks for: 8-byte little-endian ids.

@@ -8,7 +8,10 @@
 //! image, or for the signed package that carries it. The path the caller typed
 //! is never consulted. Every answer, admitted or refused, is one
 //! [`Rule::ExecGrant`] record: the digest prefix, the [`Basis`] that decided
-//! and the [`Site`].
+//! and the [`Site`]. A program of a package below its security floor
+//! (`azos_sched::seccomp::package_below_floor`, set by the boot-time apply when
+//! Kconfig `PKG_SEC_FLOOR_ENFORCE` is on) is refused before any grant is looked
+//! at: [`Basis::BelowSecFloor`].
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,6 +46,10 @@ pub enum Basis {
     NotLinuxRow = 6,
     /// Refused: the image has no topology row.
     NoRow = 7,
+    /// Refused: the image belongs to a package installed below the security
+    /// floor the signed repository index names for it, whatever grant the
+    /// caller holds. `pkg upgrade` is the way out.
+    BelowSecFloor = 8,
 }
 
 impl Basis {
@@ -92,6 +99,9 @@ pub fn record(tid: u32, site: Site, basis: Basis, digest: &[u8; 32]) -> u64 {
 /// The check and the record: `Ok` with the basis that admits `tid`'s exec of
 /// `image`, `Err` with the id of the refusal's record.
 pub fn decide(tid: u32, site: Site, image: &str, digest: &[u8; 32]) -> Result<Basis, u64> {
+    if azos_sched::seccomp::package_below_floor(digest) {
+        return Err(record(tid, site, Basis::BelowSecFloor, digest));
+    }
     match grant_for(tid, image, digest) {
         Some(basis) => {
             record(tid, site, basis, digest);

@@ -3951,11 +3951,13 @@ mod package_images {
         let key = azos_devif::by_name("entropy").expect("an interface of the registry").key;
         let ifaces: &'static [u16] = Box::leak(vec![key].into_boxed_slice());
         let shipped = IMAGE_SHA256[0].1;
+        let low = image_digest(b"a program of a package below its floor");
         let table: &'static [PackageImage] = Box::leak(
             vec![
-                PackageImage { digest, package: PACKAGE_ID, profile: package_profile("PKGAPP.ELF", ifaces) },
+                PackageImage { digest, package: PACKAGE_ID, below_floor: false, profile: package_profile("PKGAPP.ELF", ifaces) },
                 // Bytes the build already binds: the shipped binding stands.
-                PackageImage { digest: shipped, package: PACKAGE_ID, profile: package_profile("SHIPPED.ELF", &[]) },
+                PackageImage { digest: shipped, package: PACKAGE_ID, below_floor: true, profile: package_profile("SHIPPED.ELF", &[]) },
+                PackageImage { digest: low, package: PACKAGE_ID, below_floor: true, profile: package_profile("PKGLOW.ELF", &[]) },
             ]
             .into_boxed_slice(),
         );
@@ -3992,5 +3994,11 @@ mod package_images {
         assert_eq!(package_of_digest(&digest), Some(PACKAGE_ID));
         assert_eq!(package_of_digest(&swapped), None);
         assert_eq!(package_of_digest(&shipped), None, "a shipped program is no package's");
+
+        // The floor mark is the package's, and only the package's.
+        assert!(!package_below_floor(&digest), "a package program not marked is not below its floor");
+        assert!(package_below_floor(&low), "a marked one is");
+        assert!(!package_below_floor(&swapped), "unknown bytes are not");
+        assert!(!package_below_floor(&shipped), "a shipped program is never below a floor, whatever a package says");
     }
 }

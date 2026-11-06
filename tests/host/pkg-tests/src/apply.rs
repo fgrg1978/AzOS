@@ -146,7 +146,7 @@ fn topo(d: &'static Device0) -> Box<Topology<'static>> {
 }
 
 pub(crate) fn boot(prior: u32) -> Boot<'static> {
-    Boot { device: device(), now_ns: 7_000, prior_unconfirmed: prior, max_attempts: 3 }
+    Boot { device: device(), now_ns: 7_000, prior_unconfirmed: prior, max_attempts: 3, sec_floor_enforce: false }
 }
 
 fn volume() -> Volume<MemDev> {
@@ -955,4 +955,85 @@ fn extending_the_grants_of_a_row_keeps_its_grants_and_the_others() {
     let null = azos_topology::CapSpec { kind: CapKind::Null, ..g(b"N.ELF") };
     assert!(!t.extend_task_caps(&a, &[null]) && !t.extend_task_caps(&MaybeStr::from_bytes(b"NONE.ELF"), &[g(b"P.ELF")]));
     assert_eq!(targets(&t, &a).len(), 5);
+}
+
+// ── security floors ───────────────────────────────────────────────
+
+/// What pkgd leaves beside the packages: the verified index, in the volume root.
+fn put_index(v: &mut Volume<MemDev>, bytes: &[u8]) {
+    let root = v.root();
+    let ino = v.create(root, proto::INDEX, Kind::File, 0o644).expect("create");
+    assert_eq!(v.write(ino, 0, bytes).expect("write"), bytes.len());
+    v.commit().expect("commit");
+}
+
+fn enforcing() -> Boot<'static> {
+    Boot { sec_floor_enforce: true, ..boot(0) }
+}
+
+fn floor_index(floor: Option<&str>, key: &SigningKey) -> Vec<u8> {
+    // The index lists a newer build of the package, with `floor` as its floor.
+    let mut s = Spec::acme();
+    s.version = "1.9.0".into();
+    build_index(&index_body(4, &[Offer::of(&build(&s, &author()), "ACME190.PKG", floor)]), key)
+}
+
+fn floors_of(a: &Applied) -> Vec<(String, bool)> {
+    a.images.iter().map(|i| (String::from_utf8(i.name.clone()).unwrap(), i.below_floor)).collect()
+}
+
+/// A package installed below the floor the stored, verified index names is
+/// applied (its rows join, its programs are written) and marked: the exec check
+/// does the refusing. At or above the floor, it is not marked.
+///
+/// **Canary** `pkg-floor-canary`: the package below the floor is not marked.
+#[test]
+fn a_package_below_its_floor_is_marked_when_the_policy_enforces_floors() {
+    let d = signed_device();
+    for (floor, marked) in [("1.3.0", true), ("1.2.0", false), ("1.1.9", false)] {
+        let mut v = volume();
+        stage(&mut v, &acme());
+        put_index(&mut v, &floor_index(Some(floor), &author()));
+        let mut t = topo(d);
+        let mut log = Log::default();
+        let a = apply(&mut v, &mut t, &enforcing(), &mut log);
+        assert_eq!((a.packages, a.rows), (1, 1), "{floor}: applied either way");
+        assert_eq!(floors_of(&a), [("ACME.ELF".to_string(), marked)], "floor {floor}");
+        assert_eq!(log.notes.iter().any(|n| n.contains("below its security floor")), marked, "{floor}: {:?}", log.notes);
+        // A boot that finds it applied already judges it the same way.
+        let mut t = topo(d);
+        let a = apply(&mut v, &mut t, &enforcing(), &mut Log::default());
+        assert_eq!(floors_of(&a), [("ACME.ELF".to_string(), marked)], "floor {floor}, second boot");
+    }
+}
+
+/// The policy is the build's: off, nothing is marked; and an index that is not
+/// there, or does not verify against the signed topology, names no floor.
+///
+/// **Canary** `pkg-verify-skip-canary` (the forged index) and
+/// `pkg-signer-canary` (the stranger's).
+#[test]
+fn floors_come_only_from_a_verified_index_and_only_when_enforced() {
+    let d = signed_device();
+    let below = floor_index(Some("1.3.0"), &author());
+    let mut forged = below.clone();
+    let at = forged.len() - 3;
+    forged[at] ^= 1;
+    let cases: Vec<(&str, Option<Vec<u8>>, Boot<'static>)> = vec![
+        ("enforcement off", Some(below.clone()), boot(0)),
+        ("no index", None, enforcing()),
+        ("forged index", Some(forged), enforcing()),
+        ("stranger's index", Some(floor_index(Some("1.3.0"), &stranger())), enforcing()),
+    ];
+    for (what, index, b) in cases {
+        let mut v = volume();
+        stage(&mut v, &acme());
+        if let Some(i) = index {
+            put_index(&mut v, &i);
+        }
+        let mut t = topo(d);
+        let a = apply(&mut v, &mut t, &b, &mut Log::default());
+        assert_eq!(a.packages, 1, "{what}: the package is applied");
+        assert_eq!(floors_of(&a), [("ACME.ELF".to_string(), false)], "{what}");
+    }
 }

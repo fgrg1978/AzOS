@@ -81,8 +81,9 @@ use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use super::engine::{BlockDev, DirEntry, Error, Kind, SnapView, Volume};
 use azos_pkg::apply::{
     encode_table, requested, staged_name, trial_next, BootWhy, Next, SnapRec, SnapState, Table, APPS_DIR,
-    DELETE_REQUESTS, JOURNAL, SNAPSHOT_LABEL, SNAP_MAX, TABLE, TABLE_MAX,
+    DELETE_REQUESTS, INDEX, JOURNAL, SNAPSHOT_LABEL, SNAP_MAX, TABLE, TABLE_MAX,
 };
+use azos_pkg::index::{self, assess, Installed};
 use azos_pkg::container::{HEADER_LEN, KEY_LEN_MAX, SIG_LEN_MAX};
 use azos_pkg::{admit, receipt, verify, Device, Package, Refusal};
 use azos_topology::builder::{manager_starts, MANAGER_CAPS_MAX, TASK_COMPMGR_IMAGE};
@@ -114,6 +115,10 @@ pub struct Boot<'d> {
     pub prior_unconfirmed: u32,
     /// `BootValidation::max_attempts`.
     pub max_attempts: u32,
+    /// Kconfig `PKG_SEC_FLOOR_ENFORCE`: read the stored repository index and
+    /// mark the programs of a package below its security floor
+    /// ([`AppliedImage::below_floor`]).
+    pub sec_floor_enforce: bool,
 }
 
 /// What an apply left in the candidate topology.
@@ -135,6 +140,26 @@ pub struct Applied {
     pub images: Vec<AppliedImage>,
 }
 
+/// The bytes of the stored repository index, if the policy asks for floors.
+/// An index that is missing or unreadable names no floor (and one that does
+/// not verify against the signed topology is dropped by the caller): the floors
+/// are an addition to the signed topology, never a way to lose a package.
+fn stored_index<D: BlockDev>(vol: &mut Volume<D>, enforce: bool) -> Option<Vec<u8>> {
+    if !enforce {
+        return None;
+    }
+    let root = vol.root();
+    let e = find(vol, root, INDEX).ok()??;
+    read_file(vol, e.ino, index::FILE_MAX, true).ok()
+}
+
+/// Is the verified package `v` below the floor `ix` names for it?
+fn below_floor(ix: &Option<index::Index<'_, 'static>>, v: &azos_pkg::Verified<'_, '_>) -> bool {
+    ix.as_ref().is_some_and(|ix| {
+        assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: v.signer_index, id: v.id }, ix).below_floor()
+    })
+}
+
 /// One program of an applied package.
 pub struct AppliedImage {
     /// Its file name in `APPS/`, which is also the name of its row.
@@ -143,6 +168,11 @@ pub struct AppliedImage {
     pub sha256: [u8; 32],
     /// The id of the package that carries it.
     pub package: [u8; 32],
+    /// The package is installed below the security floor the stored, verified
+    /// repository index names for it (or at a version that cannot be shown to
+    /// meet it), and the policy says to enforce it: the exec check refuses to
+    /// start the program.
+    pub below_floor: bool,
 }
 
 // ─── The volume, through the engine ──────────────────────────────────────────
@@ -620,6 +650,8 @@ pub fn apply<D: BlockDev>(
             return out;
         }
     };
+    let index_bytes = stored_index(vol, boot.sec_floor_enforce);
+    let ix = index_bytes.as_deref().and_then(|b| index::verify(b, topo).ok());
     let mut fresh: Vec<Vec<u8>> = Vec::new();
     let mut kept_images: Vec<Vec<u8>> = Vec::new();
     for name in &names {
@@ -650,9 +682,13 @@ pub fn apply<D: BlockDev>(
             Ok(a) => {
                 sink.record(&receipt::admitted(&v, &a, boot.now_ns));
                 out.packages += 1;
+                let low = below_floor(&ix, &v);
+                if low {
+                    sink.note(format_args!("[PKG] {} {} is below its security floor: its programs are not launched", v.meta.name, v.meta.version));
+                }
                 for im in v.meta.images() {
                     kept_images.push(im.name.as_bytes().to_vec());
-                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256, package: v.id });
+                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256, package: v.id, below_floor: low });
                 }
             }
             Err(r) => sink.record(&receipt::refused(&id, v.signer_index as u64 + 1, &r, boot.now_ns)),
@@ -728,8 +764,12 @@ pub fn apply<D: BlockDev>(
                             }
                             out.packages += admitted.len();
                             for (pv, _) in &admitted {
+                                let low = below_floor(&ix, pv);
+                                if low {
+                                    sink.note(format_args!("[PKG] {} {} is below its security floor: its programs are not launched", pv.meta.name, pv.meta.version));
+                                }
                                 for im in pv.meta.images() {
-                                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256, package: pv.id });
+                                    out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256, package: pv.id, below_floor: low });
                                 }
                             }
                             out.fresh = ids;
