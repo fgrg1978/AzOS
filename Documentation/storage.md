@@ -68,8 +68,16 @@ the Linux personality list a directory through `readdir` and never open it.
 
 Every filesystem and the swap area reach the medium through one module,
 `azos_drv_block::blkdev`. It forwards to a single backend chosen at build time
-through the `BlockDevice` trait (`crates/drivers/api/src/block.rs`):
-`init`, `capacity_sectors`, `read`, `write` and `flush`. Sectors are 512 bytes.
+as a `BlockDev` (`crates/drivers/api/src/block.rs`), the one block device type:
+`geometry()` and `submit(BlockReq)`, where a request is a read, write, flush or
+discard over sector runs with the ordering flags `FLAG_FUA` and `FLAG_PREFLUSH`,
+completed (with a typed `BlockError`) when `submit` returns. Sectors are 512
+bytes. A partition is a stacked device (`Part`: an offset and a bound, every
+request shifted and refused when it leaves the window). The consumers speak the
+same type: the FAT32 block cache (`bcache`), azvol (a thin block-unit helper,
+`Blocks`) and the SCSI target. `blkdev::Boot` is the boot disk behind this
+module's checks (real-time rule, observers, fault injection); the free functions
+below are its synchronous helpers.
 
 | Backend | Where | Notes |
 |---------|-------|-------|
@@ -80,9 +88,13 @@ through the `BlockDevice` trait (`crates/drivers/api/src/block.rs`):
 | `Mmc` | `crates/drivers/block/src/mmc.rs`, `blkdev::Mmc` | SDHCI SD/eMMC controller driver (the SpacemiT K1, feature `k1`; QEMU's `sdhci-pci` under `mmc-pci`). Data moves by ADMA2 (one descriptor per bounce page, up to 128 sectors per command) and completes by the controller's interrupt through the `irq-thread`; until the line is routed it polls. |
 | `DwMshc` | `crates/drivers/block/src/dwmshc.rs`, `blkdev::DwMshc` | Synopsys DesignWare MSHC SD driver (the VisionFive 2's microSD socket, `starfive,jh7110-mmc`, feature `vf2`), bound from the device-tree node by the hardware bus (`dw-mshc`). Data moves by the controller's IDMAC over a chain of descriptors (one per bounce page, up to 128 sectors per command; the bounce pages and the chain sit below 4 GiB and are bracketed with the DMA domain's cache maintenance); multi-block transfers are closed with an explicit CMD12. The card is identified at 400 kHz, takes 4-bit mode and 25 MHz, then high speed (50 MHz) when CMD6 says it has it; its capacity is read from the CSD. Completion is by the controller's interrupt (the waiter lists itself in a `DeviceWait`, looks again, then sleeps for at most one slice); until the line is routed it polls. Not driven: the eMMC (`non-removable`), UHS modes, tuning. |
 
-`BlockDevice::flush` makes every completed write durable. The default is
-`Err(FlushError::Unsupported)`, never `Ok`: a backend that cannot confirm
-durability must say so, and a caller that claims durability passes that on.
+A flush request makes every completed write durable. `BlockError::Unsupported`
+is the answer of a device that cannot confirm it, never `Ok`: a caller that
+claims durability passes that on. `FLAG_PREFLUSH` on a write makes every earlier
+completed write durable before it starts (the write-back cache's epoch rule);
+`FLAG_FUA` makes that write stable when it completes and orders nothing before
+it. `tests/host/fs-tests/src/block_order.rs` checks both per request against a
+device with a volatile cache.
 
 A USB mass-storage disk (Kconfig `USB_STORAGE`, `crates/drivers/block/src/usb_msc.rs`)
 is a hardware queue of the request layer too, but never a `blkdev` backend: it
@@ -102,7 +114,7 @@ The class driver is in [drivers.md](drivers.md).
 | `read_raw`, `write_raw` | Straight to the backend: no fault injection, no real-time check, no observers. For the ring-3 block entry, which calls `note_external_read` / `note_external_write` itself. |
 | `submit_raw`, `wait_raw`, `raw_max_sectors` | The queued form of a raw transfer, for the io_ring block entries (Kconfig `IORING_ASYNC`): `submit_raw` puts a request in the request layer and returns at once, `wait_raw` runs the device and collects it. `raw_max_sectors` is `None` on a board whose disk is not behind the layer (SD/eMMC), where the entry falls back to `read_raw` / `write_raw`. |
 | `write_run`, `fua_commit` | The write-back cache owner's write with `PREFLUSH` and/or `FUA` (below); `fua_commit` says whether a commit may use FUA: Kconfig `BLK_FUA` on and a bound device with a native FUA. |
-| `flush` | `BlockDevice::flush` after the real-time check. |
+| `flush` | `BlockDev::flush` after the real-time check. |
 | `set_read_observer`, `set_write_observer` | Install the single `fn(u64, u32)` observer of each kind (`write_observer.rs`). The FAT32 block cache registers both. |
 | `write_observer::set_account` | The write ledger: a `fn(u32, u64)` called once per write request the device completed (the request layer's completion, and the SD/eMMC backend's write), with the owner Domain and the bytes. The kernel registers `azos_sched::domain::add_written`; the per-Domain and total counters are published under `metrics/storage`. A failed write, a flush and a discard count nothing. |
 | `set_rt_io_check` | Kconfig `RT_BLOCK_IO_CHECK`: a hook run at every entry; the kernel's check panics, naming the task, when a real-time task reaches the block layer. |
@@ -668,7 +680,8 @@ Source: `crates/fs/src/vfs.rs`, `crates/fs/src/pagecache.rs`,
 
 `azvol` is the project's own volume format. The engine
 (`crates/fs/src/azvol/`) uses only `core` and `alloc`, talks to the medium
-through a `BlockDev` trait, and holds no global state; the same source runs in
+through the block device trait (`BlockDev`, addressed in azvol blocks by the
+`Blocks` helper), and holds no global state; the same source runs in
 the kernel and in the host tools. `tools/image/mkazvol.py` is a second implementation
 that builds plain (unsealed) images. `AzvolFs`
 (`crates/fs/src/azvol/mount.rs`) is the adapter that mounts it into the VFS.
@@ -728,8 +741,8 @@ used that nothing names; the next mount sees the bitmap's population count
 differ from the superblock's `used_blocks` and rebuilds the map from the trees
 (`MountReport::bitmap_rebuilt`). A failed commit poisons the handle
 (`Error::Poisoned`); remount to continue. The ordering argument rests on
-`BlockDev::flush` being a barrier; the kernel's `BlockDev`
-(`kernel/src/boot/azvol.rs`) maps every `blkdev::flush` error, `Unsupported`
+a flush request being a barrier (`Blocks::barrier`); the kernel's partition
+device (`kernel/src/boot/azvol.rs`) maps every flush error, `Unsupported`
 included, to a failed flush, so a device that cannot flush fails the commit.
 
 ### Change groups
@@ -837,8 +850,8 @@ tree is a wrapper device, `VerityDev`, between the engine and the partition.
 
 Each `[volume.NAME]` row of the topology (`VolumeSpec`: `name`, `partition`, `mount`,
 `read_only`, `aead`, `verity_root`) names a partition and a mount point.
-`kernel/src/boot/azvol.rs` supplies the partition as a `BlockDev` (azvol blocks
-mapped to sectors through `blkdev`, partition-relative) and the system around
+`kernel/src/boot/azvol.rs` supplies the partition as a `BlockDev` (a `Part` over
+`blkdev::Boot`, partition-relative) and the system around
 the mount (`Env`: the clock, the calling task, whether a task is alive), then
 calls `azvol_mount::mount_rows`. For each row, in order:
 
@@ -984,7 +997,7 @@ The tree contains:
 | The base of the compatibility layer a ring-3 server would run modules on (memory, locks, timers, workqueues, RCU, printk, device model, reference counts, exported-symbol table) | `crates/drivers/lx/emul` |
 | The list of imports of the ext4 module set that neither the host ABI (`crates/drivers/lx/HOST_ABI`) nor an earlier module exports | `crates/drivers/lx/FS_EXT4_UNRESOLVED` (the Linux VFS, page cache, buffer heads, bio, wait queues and per-CPU data are among the symbols listed) |
 
-Linux filesystems use the native `BlockDevice` rather than a Linux block
+Linux filesystems use the native `BlockDev` rather than a Linux block
 driver (`config/axes/Kconfig.personality`).
 
 Three details of the native side are shaped by ext4: `bcache.rs` accepts block
