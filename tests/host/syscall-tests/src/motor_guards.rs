@@ -181,6 +181,7 @@ impl Drop for Scene {
 /// motor layer under the test's halt query and gate, the probes armed and the
 /// logs empty of the initialisation.
 fn scene() -> Scene {
+    set_provider_check(served);
     let tid = fresh_tid();
     ipc_task_pool::shim_bind(tid, SLOT);
     azos_ipc::cap_store::reset(tid);
@@ -923,6 +924,24 @@ fn an_image_no_provider_gives_wheels_refuses_every_op_with_a_receipt() {
     set_provider_check(served);
     assert_eq!(w.speed(60), Out::ok(()), "the same op with the kind served");
     assert_eq!(gate_seen().len(), 1);
+}
+
+/// **No provider check, no wheel.** Before the kernel installs the check, a
+/// motor op is refused as no device: the seam fails closed.
+///
+/// **Canary.** Treat an unset check as served in `through_gate`: the op
+/// reaches the gate and the wheel.
+#[test]
+fn an_unset_provider_check_refuses_every_op() {
+    let _g = serial();
+    let s = scene();
+    install_recording_gate(false);
+    crate::motor_host::clear_provider_check_for_tests();
+    let mut w = who(&s, 0, CapPerms::RW);
+    assert_eq!(w.speed(60), Out::err(outcome::UNSUPPORTED), "speed");
+    assert_eq!(w.drive(DIR_FORWARD, 30), Out::err(outcome::UNSUPPORTED), "drive");
+    assert!(gate_seen().is_empty() && gpio_calls().is_empty() && pwm_calls().is_empty(),
+            "an op with no provider check reached the gate or the wheel");
 }
 
 /// **A halted machine commits no record for a motion op.** While an e-stop is

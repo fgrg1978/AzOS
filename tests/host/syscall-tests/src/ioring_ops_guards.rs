@@ -189,6 +189,7 @@ fn done(c: CqEntry) -> (i32, u32) {
 /// Both wheels initialised on the real motor layer, with the kernel's halt
 /// query and gate installed and the PWM log emptied of the initialisation.
 fn wheels() {
+    crate::motor_host::set_provider_check(served);
     azos_robot::motor::set_motor_halt(test_halt);
     azos_robot::motor::set_motor_gate(test_gate);
     set_gpio_probe(Some(gpio_probe));

@@ -122,14 +122,20 @@ pub fn set_effect_gate(gate: EffectGate) {
 pub type ProviderCheck = fn(&MotorEffect) -> bool;
 
 azos_common::ro_hook! {
-    /// The installed check, 0 until `azos_actuation::gate::install` runs
-    /// (before it the loader starts no ring-3 image).
+    /// The installed check, 0 until `azos_actuation::gate::install` runs,
+    /// which every image does. Unset reads as no provider: fail closed.
     static PROVIDER_CHECK: ProviderCheck;
 }
 
 /// Install the provider check (the kernel, at boot, once).
 pub fn set_provider_check(check: ProviderCheck) {
     PROVIDER_CHECK.set(check);
+}
+
+/// Forget the provider check: host-test hygiene (the hook is process-wide).
+#[cfg(not(target_os = "none"))]
+pub fn clear_provider_check_for_tests() {
+    PROVIDER_CHECK.clear_for_tests();
 }
 
 /// Why a motor op did not reach a wheel.
@@ -233,8 +239,9 @@ fn timing_of(toward_safe: bool, wheel: u32, op: u16) -> MotorTiming {
 /// `op` did not run. `op` returns its result and whether the wheel took the
 /// command.
 fn through_gate<R>(e: &MotorEffect, op: impl FnOnce() -> (R, bool)) -> Result<R, Unissued> {
-    if PROVIDER_CHECK.get().is_some_and(|served| !served(e)) {
-        return Err(Unissued::NoDevice);
+    match PROVIDER_CHECK.get() {
+        Some(served) if served(e) => {}
+        _ => return Err(Unissued::NoDevice),
     }
     let Some(gate) = EFFECT_GATE.get() else {
         return Ok(op().0);

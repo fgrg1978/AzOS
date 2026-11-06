@@ -57,3 +57,14 @@ azos_ktest::ktest! {
         Ok(())
     }
 }
+
+azos_ktest::ktest! {
+    fn ext_a_wheel_stop_reaches_the_motor_layer() {
+        // The provider check fails closed when unset: a robot image whose
+        // boot did not install it would refuse even this stop.
+        match azos_syscall::motor_host::wheel_speed(0, 0, 0) {
+            Ok(_) => Ok(()),
+            Err(_) => Err("a stop of wheel 0 was refused on the robot: the provider check is not installed or not served"),
+        }
+    }
+}
