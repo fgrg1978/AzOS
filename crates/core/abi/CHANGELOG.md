@@ -25,8 +25,25 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
   `DOMAIN_DRIVER_*` ops (`CLASS_DRIVER` 39, 40, 44-47, not reused; the
   dispatcher's default arm answers them). A ring-3 driver serves its class's
   IDL interface on an endpoint.
+- `DEVICE_IRQ_BIND` (0x7901, `CLASS_DRIVER` 1, in `RETIRED_OPS`, not reused):
+  an interrupt line is bound to a port by the port's `PORT_BIND` with
+  `PORT_SRC_IRQ` (below). `DEVICE_IRQ_ACK` stays.
 
 ### Added
+
+- `PORT_SRC_IRQ = 7`: `PORT_BIND` of a `ty::IRQ` handle (`w1`), its CPU in
+  `w3` (`DEVICE_IRQ_CPU_ANY`), an MSI slot's message replied in `a1..a3`; with
+  `PORT_BIND_F_REMOVE` the caller's binding goes and the port gets a
+  `PORT_EVENT_SOURCE_GONE` (`EREVOKED`). The bind needs the line's op class
+  (`DRIVER` of a `Device`) in the image's profile as well as the port's.
+- `DEVICE_DMA_MAP` (0x7903) and `DEVICE_DMA_UNMAP` (0x7904) on a `ty::MMIO`
+  handle, and their direction words `DMA_TO_DEVICE` 0, `DMA_FROM_DEVICE` 1,
+  `DMA_BIDIRECTIONAL` 2: a ring-3 `SHM_KIND_CONTIG` object given to a device
+  no kernel driver owns; replies bus address, length and coherence. Refused
+  for a device no IOMMU confines unless Kconfig `DMA_RING3_WITHOUT_IOMMU`.
+- The `Entropy` interface is at level 2: `feed` (`WRITE`) mixes what a
+  ring-3 entropy device read into the pool, credited only as Kconfig
+  `ENTROPY_RING3_FEED` says (mix-only by default).
 
 - The `*at` ops of a directory handle (`Cap<Dir>`): `NODE_STATAT` (0x6011),
   `NODE_READDIR` (0x6012; size, directory flag and name-cut flag as reply
