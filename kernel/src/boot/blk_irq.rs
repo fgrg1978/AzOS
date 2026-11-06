@@ -126,25 +126,25 @@ pub(crate) fn wire_virtio_blk_irq() {
     // acknowledged) before the controller enables it: a level line already
     // asserted would otherwise be taken, unrecognised, forever.
     azos_drv_virtio::virtio::blk::set_irq_mode(line, blk_block_until, blk_wake);
-    if !enable_line(line) {
+    let Some(target) = crate::boot_hooks::kernel_line_enable(line) else {
         // No interrupt will come: a wait that slept to its deadline would run
         // the disk at timeout speed.
         azos_drv_virtio::virtio::blk::irq_mode_off();
         kprintln!("[VIRTIO-BLK] line {} not routable: polled", line);
         return;
-    }
+    };
     kprintln!("[VIRTIO-BLK] completions by interrupt on line {} (slot {}){}", line, slot,
         if azos_drv_virtio::virtio::blk::irq_mode() { "" } else { " — NOT taken (polled)" });
     if azos_drv_virtio::virtio::blk::irq_mode() {
         crate::irq_thread::register(line);
     }
     if let Some(h) = super::driver_records::handle_at(base) {
-        super::driver_records::hold_line(h, line, line_target());
+        super::driver_records::hold_line(h, line, target);
     }
 }
 
-/// Give back a line [`enable_line`] enabled for `target` ([`line_target`] at
-/// the time): the IRQ thread lets go of it (a late event finds no binding,
+/// Give back a line enabled for `target` (what `boot_hooks::kernel_line_enable`
+/// returned): the IRQ thread lets go of it (a late event finds no binding,
 /// and its ACK unmasks nothing), the controller masks it on the context it
 /// was enabled on, whichever CPU this runs on, and it is no longer the
 /// kernel's, so ring 3 may be granted it. The driver stops naming the line
@@ -152,7 +152,7 @@ pub(crate) fn wire_virtio_blk_irq() {
 /// recognised meanwhile.
 pub(crate) fn unwire_line(line: u32, target: u32) {
     crate::irq_thread::unregister(line);
-    release_line(line, target);
+    crate::boot_hooks::kernel_line_release(line, target);
 }
 
 /// The SD/eMMC drivers' hooks (`mmc.rs`, `dwmshc.rs`): the caller's TID, the
@@ -217,65 +217,13 @@ fn line_of(slot: usize, base: usize) -> Option<u32> {
     crate::boot_hooks::virtio_mmio_line(slot, base)
 }
 
-#[cfg(target_arch = "riscv64")]
-pub(super) fn enable_line(irq: u32) -> bool {
-    let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32;
-    let _ = azos_drv_irqchip::irqchip::wire_aia_source(irq, hart);
-    azos_drv_irqchip::irqchip::enable_irq(hart, irq);
-    true
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(super) fn enable_line(intid: u32) -> bool {
-    let mpidr = azos_arch::cpu::read_mpidr().raw;
-    azos_arch::irq::gic::route_spi(intid, mpidr, false);
-    true
-}
-
-#[cfg(target_arch = "x86_64")]
-pub(super) fn enable_line(gsi: u32) -> bool {
-    azos_drv_irqchip::user_irq::mark_kernel(gsi);
-    azos_arch::irq::ioapic::set_masked(gsi, false)
-}
-
-/// The context [`enable_line`] enables a line on from here: the hart (its
-/// PLIC context, or its IMSIC file); the GIC distributor and the IOAPIC mask
-/// a line for every CPU, so they need none.
-#[cfg(target_arch = "riscv64")]
-fn line_target() -> u32 {
-    azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-fn line_target() -> u32 {
-    0
-}
-
-#[cfg(target_arch = "riscv64")]
-fn release_line(irq: u32, hart: u32) {
-    azos_drv_irqchip::irqchip::release_wired(hart, irq);
-}
-
-#[cfg(target_arch = "aarch64")]
-fn release_line(intid: u32, _: u32) {
-    azos_arch::irq::gic::release_spi(intid);
-}
-
-#[cfg(target_arch = "x86_64")]
-fn release_line(gsi: u32, _: u32) {
-    let _ = azos_arch::irq::ioapic::set_masked(gsi, true);
-    azos_drv_irqchip::user_irq::unmark_kernel(gsi);
-}
-
 #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
 fn line_of(_slot: usize, _base: usize) -> Option<u32> {
     None
 }
 
-#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
-pub(super) fn enable_line(_line: u32) -> bool {
-    false
+/// Enable a kernel driver's line on this CPU (`boot_hooks::kernel_line_enable`,
+/// each ISA's): `false` when the controller would not.
+pub(super) fn enable_line(line: u32) -> bool {
+    crate::boot_hooks::kernel_line_enable(line).is_some()
 }
-
-#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
-fn release_line(_line: u32, _: u32) {}

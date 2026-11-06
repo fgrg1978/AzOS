@@ -450,6 +450,22 @@ pub fn virtio_mmio_line(slot: usize, _base: usize) -> Option<u32> {
     { let _ = slot; None }
 }
 
+/// Enable a kernel driver's line (`boot::blk_irq`): routed to this hart and
+/// enabled in its context. The hart is returned: it is the context
+/// [`kernel_line_release`] masks the line on, whichever hart that runs on.
+pub fn kernel_line_enable(irq: u32) -> Option<u32> {
+    let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32;
+    let _ = azos_drv_irqchip::irqchip::wire_aia_source(irq, hart);
+    azos_drv_irqchip::irqchip::enable_irq(hart, irq);
+    Some(hart)
+}
+
+/// Give back a line [`kernel_line_enable`] enabled for `hart`: masked there
+/// (the APLIC source, or the PLIC context) and no longer the kernel's.
+pub fn kernel_line_release(irq: u32, hart: u32) {
+    azos_drv_irqchip::irqchip::release_wired(hart, irq);
+}
+
 /// Route (AIA: APLIC source -> this hart's IMSIC) and enable `line` for
 /// `hart`, as [`console_irq`] does for the UART.
 // Kconfig NET: the network bring-up (`boot::net`) is its only caller.

@@ -936,6 +936,22 @@ pub fn virtio_mmio_line(_slot: usize, base: usize) -> Option<u32> {
     platform().virtio_gsi(base as u64)
 }
 
+/// Enable a kernel driver's line (`boot::blk_irq`): the GSI the boot
+/// discovered, already routed to this CPU, unmasked. The IOAPIC masks a line
+/// for every CPU, so the context returned is 0; `None` when it would not
+/// unmask.
+pub fn kernel_line_enable(gsi: u32) -> Option<u32> {
+    azos_drv_irqchip::user_irq::mark_kernel(gsi);
+    azos_arch::irq::ioapic::set_masked(gsi, false).then_some(0)
+}
+
+/// Give back a line [`kernel_line_enable`] enabled: masked and no longer the
+/// kernel's.
+pub fn kernel_line_release(gsi: u32, _: u32) {
+    let _ = azos_arch::irq::ioapic::set_masked(gsi, true);
+    azos_drv_irqchip::user_irq::unmark_kernel(gsi);
+}
+
 /// Unmask `line` (redirected by [`irqchip_init`]); `irq::device` dispatches
 /// it to the NIC.
 // Kconfig NET: the network bring-up (`boot::net`) is its only caller.

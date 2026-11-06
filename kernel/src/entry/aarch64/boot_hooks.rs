@@ -778,6 +778,21 @@ pub fn virtio_mmio_line(slot: usize, _base: usize) -> Option<u32> {
     Some(hw::VIRTIO_IRQ_BASE + slot as u32)
 }
 
+/// Enable a kernel driver's line (`boot::blk_irq`): the SPI routed to this
+/// CPU. The distributor masks a line for every CPU, so the context returned
+/// is 0.
+pub fn kernel_line_enable(intid: u32) -> Option<u32> {
+    let mpidr = azos_arch::cpu::read_mpidr().raw;
+    gic::route_spi(intid, mpidr, false);
+    Some(0)
+}
+
+/// Give back a line [`kernel_line_enable`] enabled: masked at the
+/// distributor and no longer the kernel's.
+pub fn kernel_line_release(intid: u32, _: u32) {
+    gic::release_spi(intid);
+}
+
 /// Route `line` (an edge SPI on QEMU `virt`) to this PE and enable it.
 /// `entry::aarch64::trap::handle_irq` dispatches it to the NIC.
 // Kconfig NET: the network bring-up (`boot::net`) is its only caller.
