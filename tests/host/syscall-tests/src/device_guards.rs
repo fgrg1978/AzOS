@@ -381,6 +381,9 @@ impl azos_drv_gpio::chips::GpioChip for Expander {
         note("x.dir", pin, dir as u32);
         Ok(())
     }
+    fn may_sleep(&self) -> bool {
+        false
+    }
 }
 
 static EXPANDER: Expander = Expander;

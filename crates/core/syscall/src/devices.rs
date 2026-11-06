@@ -181,6 +181,36 @@ fn controller(ctrl: u8) -> Option<Lease<'static, dyn GpioChip>> {
     azos_drv_gpio::chips::chip(ctrl as u32).or_else(|| azos_drv_gpio::chips::chip(0))
 }
 
+/// May an io_ring pass serve a `Gpio` call on the pin `badge` names? Only on a
+/// controller that declares its ops never sleep (`GpioChip::may_sleep`); a
+/// badge that names no pin is refused by the server without a driver op.
+pub(crate) fn gpio_ring_served(badge: u32) -> bool {
+    GpioPin::of(badge).map_or(true, |p| !p.chip.may_sleep())
+}
+
+/// May an io_ring pass serve an `I2c` call? Only on a build whose buses
+/// complete a transfer without sleeping (`i2c::transfer_may_sleep`).
+pub(crate) fn i2c_ring_served(_badge: u32) -> bool {
+    !azos_drv_bus::i2c::transfer_may_sleep()
+}
+
+/// May an io_ring pass serve a `Pwm` call? Its backend says
+/// (`pwm::write_may_sleep`).
+pub(crate) fn pwm_ring_served(_badge: u32) -> bool {
+    !pwm_write_may_sleep()
+}
+
+#[cfg(feature = "board-io")]
+fn pwm_write_may_sleep() -> bool {
+    azos_drv_actuator::pwm::write_may_sleep()
+}
+
+/// Without `board-io` there is no driver: every op answers after the gate.
+#[cfg(not(feature = "board-io"))]
+fn pwm_write_may_sleep() -> bool {
+    false
+}
+
 /// The `Gpio` interface served for one caller: the pin the badge names, on
 /// the controller it names.
 pub struct GpioServer(pub Caller);
@@ -301,8 +331,10 @@ pub struct PwmServer(pub Caller);
 
 #[cfg(feature = "board-io")]
 impl PwmServer {
-    /// `fits`: the op's argument is in range for the channel (a duty past the
-    /// period is refused, not clamped to full duty).
+    /// `fits`: the op's argument is in range whatever the channel's state (a
+    /// percentage past 100). A period shorter than the duty and a duty past
+    /// the period are the driver's to refuse, under the channel's lock
+    /// (`pwm_range::OUT_OF_RANGE`): both answer `BAD_ARGUMENT`, not a clamp.
     fn run(&self, reach: Reach, fits: impl FnOnce(u32) -> bool, op: impl FnOnce(u32) -> i32) -> Out<()> {
         if let Err(o) = self.0.gate::<()>(CapPerms::WRITE) {
             return o;
@@ -332,10 +364,10 @@ impl PwmServer {
         } else {
             op(ch)
         };
-        if rc == 0 {
-            Out::ok(())
-        } else {
-            Out::err(outcome::FAULT)
+        match rc {
+            0 => Out::ok(()),
+            azos_drv_actuator::pwm_range::OUT_OF_RANGE => Out::err(outcome::BAD_ARGUMENT),
+            _ => Out::err(outcome::FAULT),
         }
     }
 }
@@ -352,8 +384,7 @@ impl azos_devif::Pwm for PwmServer {
         self.run(Reach::Control, |_| true, |ch| azos_drv_actuator::pwm::pwm_set_period(ch, ns))
     }
     fn set_duty(&mut self, ns: u32) -> Out<()> {
-        let fits = |ch| azos_drv_actuator::pwm::pwm_get(ch).is_some_and(|c| ns <= c.period_ns);
-        self.run(Reach::DutyOnly, fits, |ch| azos_drv_actuator::pwm::pwm_set_duty(ch, ns))
+        self.run(Reach::DutyOnly, |_| true, |ch| azos_drv_actuator::pwm::pwm_set_duty(ch, ns))
     }
     fn set_duty_pct(&mut self, pct: u32) -> Out<()> {
         self.run(Reach::DutyOnly, |_| pct <= 100, |ch| azos_drv_actuator::pwm::pwm_set_duty_pct(ch, pct))

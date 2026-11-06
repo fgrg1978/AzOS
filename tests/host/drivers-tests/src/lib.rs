@@ -2331,6 +2331,25 @@ mod ina219_no_fabricated_battery {
     }
 }
 
+// ── The PID's configuration lines are bounded ───────────────────────────
+//
+// `motor_pid_enable` and `motor_pid_set_gains` are ring 3's ops (the `Motor`
+// interface, also from an io_ring pass inline in a real-time submitter): their
+// console line is printed a bounded number of times a boot, then never.
+#[cfg(test)]
+mod motor_pid_notes {
+    use super::motor_pid::pid_note;
+
+    /// **Canary.** Answer `true` always from `pid_note`: the forty calls print
+    /// forty lines.
+    #[test]
+    fn the_pid_prints_a_bounded_number_of_configuration_lines() {
+        let printed = (0..40).filter(|_| pid_note()).count();
+        assert!(printed <= 8, "{printed} configuration lines printed");
+        assert!(!pid_note(), "a line printed past the bound");
+    }
+}
+
 // ── motor_pid_tick: the bounds that stop ring 3 resetting the board ──────
 //
 // `motor_pid_tick` had NO test of any kind — not here, not in the drivers
@@ -6347,6 +6366,9 @@ mod gpio_debounce_tests;
 
 #[cfg(test)]
 mod gpio_edge_path_tests;
+
+#[path = "../../../../crates/drivers/actuator/src/pwm_range.rs"]
+mod pwm_range;
 
 #[allow(dead_code)]
 #[path = "../../../../crates/drivers/actuator/src/pwm_k1.rs"]

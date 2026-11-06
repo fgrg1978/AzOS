@@ -314,6 +314,13 @@ pub fn ads1115_init(i2c_bus: u8, addr: u8) {
     state.inflight = None;
 }
 
+/// May a read sleep? Always: a read waits its turn in the converter's queue
+/// behind any other unit, then polls the conversion (up to 125 ms at 8 SPS).
+/// It is never served from an io_ring pass.
+pub const fn read_may_sleep() -> bool {
+    true
+}
+
 /// Read the raw 16-bit signed ADC value from a single-ended channel (0-3):
 /// one blocking unit on the device queue.
 pub fn ads1115_read_raw(channel: u8) -> Option<i16> {

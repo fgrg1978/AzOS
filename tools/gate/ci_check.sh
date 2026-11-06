@@ -12137,6 +12137,8 @@ host_job host_canary_row "gpio: freed number reuse canary" drivers-tests instanc
 host_job host_canary_row "gpio: unbind drain canary" drivers-tests instances-no-drain-canary an_unbind_waits_for_the_op_inside_the_controller
 host_job host_canary_row "gpio: unbound falls to board canary" syscall-tests gpio-unbound-falls-to-board-canary a_controller_not_bound_is_no_resource_and_a_pin_past_its_last_is_bad_argument
 host_job host_canary_row "gpio: safety line canary" syscall-tests gpio-safety-guard-canary the_kill_switch_line_is_refused_to_a_holder_of_its_endpoint
+# The same line through the io_ring: the SQ poller's `OP_CALL Gpio::set_dir`.
+host_job host_canary_row "gpio: safety line canary (ring)" syscall-tests gpio-safety-guard-canary a_poller_set_dir_on_the_kill_switch_line_is_refused_and_recorded_for_the_owner
 host_job host_canary_row "srv: call signal canary" srv-tests port-calls-canary a_call_and_an_irq_on_one_port_are_served_by_one_thread
 host_job host_canary_row "srv: batch canary" srv-tests batch-canary neither_calls_nor_interrupts_starve_the_other
 host_job host_canary_row "srv: owed calls canary" srv-tests owed-drop-canary a_refused_accept_keeps_the_calls_owed

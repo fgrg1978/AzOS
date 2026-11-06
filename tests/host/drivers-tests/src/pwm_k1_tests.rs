@@ -278,20 +278,29 @@ fn an_out_of_range_period_is_refused_and_changes_nothing() {
     assert_eq!((m.regs(), c.snapshot()), before);
 }
 
+/// **A period shorter than the duty is refused, not clamped** (the clamp made
+/// it full duty, `PWMDCR_FD`), and so is a duty past the period: nothing is
+/// written, the channel keeps its old values. A period at least the duty is
+/// taken, and the duty keeps its nanoseconds.
+///
+/// **Canary.** Drop the `period_fits` test from `ChanState::set_period`: the
+/// 2 ms period is taken over the 3 ms duty.
 #[test]
-fn shrinking_the_period_clamps_the_duty_and_keeps_it_in_nanoseconds() {
+fn a_period_shorter_than_the_duty_is_refused_not_clamped() {
     let (c, mut p, m) = chan(4_000_000);
     assert_eq!(c.enable(&mut p), 0);
     assert_eq!(c.set_duty(&mut p, 3_000_000), 0);
+    let before = (m.regs(), c.snapshot());
+    m.clear_log();
+    assert_eq!(c.set_period(&mut p, 2_000_000), crate::pwm_range::OUT_OF_RANGE);
+    assert_eq!(c.set_duty(&mut p, 4_000_001), crate::pwm_range::OUT_OF_RANGE);
+    assert_eq!(m.log(), vec![], "a refused period or duty wrote a register");
+    assert_eq!((m.regs(), c.snapshot()), before);
+    assert_eq!(c.set_period(&mut p, 3_000_000), 0, "a period equal to the duty");
     assert_eq!(c.snapshot().2, 3_000_000);
-    assert_eq!(c.set_period(&mut p, 2_000_000), 0);
-    assert_eq!(c.snapshot().2, 2_000_000, "clamped to the new period");
-    assert_eq!(m.regs().1, 1 << 10, "a full period is PWMDCR_FD");
-    // A longer period keeps the clamped duty, it does not scale it back.
     assert_eq!(c.set_period(&mut p, 4_000_000), 0);
-    assert_eq!(c.snapshot().2, 2_000_000);
     let o = m.out();
-    assert!(o.duty_ns.abs_diff(2_000_000) <= 2_100 && o.period_ns.abs_diff(4_000_000) <= 2_100, "{o:?}");
+    assert!(o.duty_ns.abs_diff(3_000_000) <= 2_100 && o.period_ns.abs_diff(4_000_000) <= 2_100, "{o:?}");
 }
 
 #[test]

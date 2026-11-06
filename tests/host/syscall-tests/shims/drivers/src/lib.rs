@@ -100,6 +100,10 @@ pub mod hold;
 #[path = "../../../../../../crates/drivers/actuator/src/pwm_hold.rs"]
 pub mod pwm_hold;
 
+/// The range a channel's period and duty keep -- the REAL file.
+#[path = "../../../../../../crates/drivers/actuator/src/pwm_range.rs"]
+pub mod pwm_range;
+
 /// The GPIO controllers by number and the class's registry -- the REAL
 /// files: controller 0 is the stand-in `gpio` below, a test registers more.
 #[path = "../../../../../../crates/drivers/base/src/instances.rs"]
@@ -228,6 +232,11 @@ pub mod gpio {
 }
 
 pub mod pwm {
+    /// As every real backend: a register write.
+    pub const fn write_may_sleep() -> bool {
+        false
+    }
+
     use crate::pwm_hold::ChanHold;
     use std::sync::Mutex;
 
@@ -278,22 +287,31 @@ pub mod pwm {
     pub fn pwm_disable(ch: u32) -> i32 {
         enter(PwmOp::Disable, ch, 0)
     }
+    /// The period and duty of each channel, nanoseconds, as the real
+    /// backends keep them: a period shorter than the duty, or a duty past the
+    /// period, is refused (`pwm_range`) before the probe sees it.
+    static RANGE: Mutex<[(u32, u32); PWM_MAX_CHANNELS]> = Mutex::new([(1_000_000, 0); PWM_MAX_CHANNELS]);
+
     pub fn pwm_set_period(ch: u32, period_ns: u32) -> i32 {
+        let mut r = RANGE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = r.get_mut(ch as usize) {
+            if !crate::pwm_range::period_fits(period_ns, c.1) {
+                return crate::pwm_range::OUT_OF_RANGE;
+            }
+            c.0 = period_ns;
+        }
+        drop(r);
         enter(PwmOp::SetPeriod, ch, period_ns)
     }
-    /// A channel's state, as the real backends' `pwm_get`: the stand-in's
-    /// period is the real default (1 ms), its duty and enable unknown.
-    pub fn pwm_get(ch: u32) -> Option<PwmChannel> {
-        ((ch as usize) < PWM_MAX_CHANNELS).then_some(PwmChannel { enabled: false, period_ns: 1_000_000, duty_ns: 0 })
-    }
-    /// The real backends' channel state.
-    #[derive(Clone, Copy, Debug)]
-    pub struct PwmChannel {
-        pub enabled: bool,
-        pub period_ns: u32,
-        pub duty_ns: u32,
-    }
     pub fn pwm_set_duty(ch: u32, duty_ns: u32) -> i32 {
+        let mut r = RANGE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = r.get_mut(ch as usize) {
+            if !crate::pwm_range::duty_fits(duty_ns, c.0) {
+                return crate::pwm_range::OUT_OF_RANGE;
+            }
+            c.1 = duty_ns;
+        }
+        drop(r);
         enter(PwmOp::SetDuty, ch, duty_ns)
     }
     pub fn pwm_set_duty_pct(ch: u32, pct: u32) -> i32 {
@@ -331,6 +349,19 @@ pub mod pwm {
 }
 
 pub mod i2c {
+    /// The stand-in bus completes at submit, as the simulation's does; a test
+    /// models a bus that sleeps (a DesignWare or K1 controller) with
+    /// [`shim_set_transfer_may_sleep`].
+    static MAY_SLEEP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    pub fn transfer_may_sleep() -> bool {
+        MAY_SLEEP.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn shim_set_transfer_may_sleep(on: bool) {
+        MAY_SLEEP.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// What an installed probe sees of an `i2c_read`: bus, address, register
     /// and the buffer to fill; the return value is the driver's (a byte
     /// count, or negative for a fault).
@@ -387,6 +418,11 @@ pub mod i2c {
 }
 
 pub mod ads1115 {
+    /// As the real driver: a read waits in the converter's queue.
+    pub const fn read_may_sleep() -> bool {
+        true
+    }
+
     pub use crate::h3_ports::AdcPort;
     pub fn ads1115_read_mv(_channel: u8) -> Option<i32> {
         todo!("MMIO stand-in: not reached by any test in this crate")

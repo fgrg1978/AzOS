@@ -309,6 +309,13 @@ pub fn wheel_speed(id: u32, tid: u32, pct: u32) -> Result<(i32, Option<u32>), Un
     Ok((rc, applied))
 }
 
+/// May an io_ring pass serve a `Motor` call? A wheel is a PWM duty and the
+/// board's direction pins, register writes on every backend
+/// (`pwm::write_may_sleep`; the board's GPIO controller does not sleep).
+pub(crate) fn ring_served(badge: u32) -> bool {
+    crate::devices::pwm_ring_served(badge)
+}
+
 /// The `Motor` interface served for one caller.
 pub struct MotorServer(pub Caller);
 

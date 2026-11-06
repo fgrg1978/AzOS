@@ -19,6 +19,14 @@ const _: () = assert!(
     "pwm_domain::PWM_DOMAIN_INDEPENDENT_8.channels must equal PWM_MAX_CHANNELS"
 );
 
+/// May a duty or configuration write sleep? Not on any backend: the
+/// simulation stores atomics, the VF2 and K1 modules write their registers
+/// (the K1's under a spinlock). An io_ring pass may serve the `Pwm` interface
+/// and the wheels it drives.
+pub const fn write_may_sleep() -> bool {
+    false
+}
+
 #[derive(Clone, Copy)]
 pub struct PwmChannel {
     pub enabled:    bool,
@@ -43,6 +51,8 @@ impl PwmChannel {
 mod sim {
     use super::*;
     use crate::pwm_hold::ChanHold;
+    use crate::pwm_range::{duty_fits, period_fits, OUT_OF_RANGE};
+    use azos_sync::SpinLock;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     // One set of atomics per channel: a duty write is one store, so the
@@ -64,6 +74,11 @@ mod sim {
     }
 
     static CHANNELS: [Chan; PWM_MAX_CHANNELS] = [const { Chan::new() }; PWM_MAX_CHANNELS];
+
+    /// A channel's period and duty change under its lock, so neither passes
+    /// its range check against the other's old value. The kernel's stop takes
+    /// none (its duty is a percentage of whatever period is there).
+    static CONFIG_LOCKS: [SpinLock<()>; PWM_MAX_CHANNELS] = [const { SpinLock::new(()) }; PWM_MAX_CHANNELS];
 
     /// The channels the kernel's stop holds.
     static HOLD: ChanHold = ChanHold::new();
@@ -88,10 +103,14 @@ mod sim {
         CHANNELS[ch as usize].enabled.store(false, Ordering::Release); 0
     }
 
-    /// A held channel keeps its duty percentage across the new period.
+    /// A held channel keeps its duty percentage across the new period; any
+    /// other refuses a period shorter than its duty (`OUT_OF_RANGE`).
     pub fn pwm_set_period(ch: u32, period_ns: u32) -> i32 {
         if ch as usize >= PWM_MAX_CHANNELS { return -1; }
         let c = &CHANNELS[ch as usize];
+        let _guard = CONFIG_LOCKS[ch as usize].lock();
+        let duty_ns = if HOLD.held(ch).is_some() { 0 } else { c.duty_ns.load(Ordering::Acquire) };
+        if !period_fits(period_ns, duty_ns) { return OUT_OF_RANGE; }
         c.period_ns.store(period_ns, Ordering::Release);
         if let Some(h) = HOLD.held_after(ch) {
             c.duty_ns.store(duty_of(c, h), Ordering::Release);
@@ -99,11 +118,13 @@ mod sim {
         0
     }
 
-    /// -1 on a held channel unless it is the duty the stop holds.
+    /// -1 on a held channel unless it is the duty the stop holds;
+    /// `OUT_OF_RANGE` for a duty past the period.
     pub fn pwm_set_duty(ch: u32, duty_ns: u32) -> i32 {
         if ch as usize >= PWM_MAX_CHANNELS { return -1; }
         let c = &CHANNELS[ch as usize];
-        let duty_ns = duty_ns.min(c.period_ns.load(Ordering::Acquire));
+        let _guard = CONFIG_LOCKS[ch as usize].lock();
+        if !duty_fits(duty_ns, c.period_ns.load(Ordering::Acquire)) { return OUT_OF_RANGE; }
         if matches!(HOLD.held(ch), Some(h) if duty_of(c, h) != duty_ns) { return -1; }
         c.duty_ns.store(duty_ns, Ordering::Release);
         match HOLD.held_after(ch) {
@@ -149,6 +170,7 @@ mod sim {
     fn write_pct(ch: u32, pct: u32) -> Option<(u32, bool)> {
         if ch as usize >= PWM_MAX_CHANNELS { return None; }
         let c = &CHANNELS[ch as usize];
+        let _guard = CONFIG_LOCKS[ch as usize].lock();
         if let Some(h) = HOLD.held(ch).filter(|&h| h != pct.min(100)) { return Some((h, false)); }
         let period_ns = c.period_ns.load(Ordering::Acquire);
         let duty_ns = (period_ns as u64 * pct.min(100) as u64 / 100) as u32;

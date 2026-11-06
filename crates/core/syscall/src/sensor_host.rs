@@ -19,8 +19,36 @@ use azos_abi::cap::CapPerms;
 use azos_devif::sensor::{Sample, SAMPLE_BYTES, TYPES};
 use azos_devif::{outcome, Out};
 
-use crate::handlers::{robot_sensor_absent, sensor_read_into, SENSOR_TYPE_CAMERA, SENSOR_TYPE_LIDAR};
+use crate::handlers::{
+    robot_sensor_absent, sensor_read_into, SENSOR_TYPE_BATTERY, SENSOR_TYPE_CAMERA, SENSOR_TYPE_IMU, SENSOR_TYPE_LIDAR,
+    SENSOR_TYPE_POWER,
+};
 use crate::khost::Caller;
+
+/// May an io_ring pass serve a `Sensor` call on the type `badge` names? Its
+/// backing driver says: the IMU and the power monitor are read over I2C
+/// (`i2c::transfer_may_sleep`), the battery through the ADS1115's queue
+/// (`ads1115::read_may_sleep`); the others read what a task or an interrupt
+/// left (odometry, encoders, rangefinders, GPS, GPIO lines). A type out of
+/// range is refused by the server without a driver op.
+pub(crate) fn ring_served(badge: u32) -> bool {
+    match badge as u64 {
+        SENSOR_TYPE_IMU | SENSOR_TYPE_POWER => !azos_drv_bus::i2c::transfer_may_sleep(),
+        SENSOR_TYPE_BATTERY => !battery_read_may_sleep(),
+        _ => true,
+    }
+}
+
+#[cfg(feature = "board-io")]
+fn battery_read_may_sleep() -> bool {
+    azos_drv_sensor::ads1115::read_may_sleep()
+}
+
+/// Without `board-io` there is no converter: the battery is absent.
+#[cfg(not(feature = "board-io"))]
+fn battery_read_may_sleep() -> bool {
+    false
+}
 
 /// The `Sensor` interface served for one caller.
 pub struct SensorServer(pub Caller);

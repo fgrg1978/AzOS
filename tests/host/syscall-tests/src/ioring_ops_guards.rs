@@ -325,9 +325,15 @@ impl azos_drv_gpio::chips::GpioChip for RingExpander {
     fn set_dir(&self, _pin: u32, _dir: azos_drv_gpio::gpio::GpioDir) -> Result<(), azos_drv_gpio::chips::Fault> {
         Ok(())
     }
+    fn may_sleep(&self) -> bool {
+        RING_EXPANDER_SLEEPS.load(Ordering::SeqCst)
+    }
 }
 
 static RING_EXPANDER: RingExpander = RingExpander;
+/// The expander models a part behind a bus that sleeps (an I2C one on a
+/// DesignWare controller).
+static RING_EXPANDER_SLEEPS: AtomicBool = AtomicBool::new(false);
 
 fn board_probe(op: GpioOp, pin: u32, arg: u32) -> i32 {
     BOARD_OPS.lock().unwrap_or_else(|e| e.into_inner()).push((op, pin, arg));
@@ -489,11 +495,9 @@ fn a_motor_entry_goes_through_the_effect_gate_and_names_its_owner_as_commander()
     assert_eq!(ring_gate_seen(), vec![(0, s.tid, 30, false), (1, s.tid, 40, false)],
                "the entry's commands did not reach the effect gate as the owner's");
     assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 30), (PwmOp::SetDutyPct, CH[1], 40)]);
-    if azos_limits::MOTOR_COMMANDER_EXIT_STOP {
-        for id in 0..2 {
-            assert_eq!(crate::motor_commander::commander(id), s.tid,
-                       "wheel {id} left turning names no commander: the owner's exit would not stop it");
-        }
+    for id in 0..2 {
+        assert_eq!(crate::motor_commander::commander(id), commander_of(s.tid),
+                   "wheel {id} left turning names no commander: the owner's exit would not stop it");
     }
 
     RING_GATE_REFUSES.store(true, Ordering::SeqCst);
@@ -1214,9 +1218,14 @@ fn a_poller_motor_entry_under_a_latched_estop_holds_both_wheels_at_duty_zero() {
     let c = unsafe { poll_call(ring, r, eps[0], &[motor_speed_hdr(), 50]) };
     assert_eq!(done(c), (0, 0));
     assert_eq!(ring_gate_seen(), vec![(0, owner, 50, false)], "the poller's entry was not the owner's command");
-    if azos_limits::MOTOR_COMMANDER_EXIT_STOP {
-        assert_eq!(crate::motor_commander::commander(0), owner, "the poller's command named another commander");
-    }
+    assert_eq!(crate::motor_commander::commander(0), commander_of(owner), "the poller's command named another commander");
+}
+
+/// The commander a wheel driven by `tid` names: `tid`, or nobody when the
+/// kernel keeps no commanders (Kconfig `MOTOR_COMMANDER_EXIT_STOP` off), so
+/// the assertion discriminates in either build.
+fn commander_of(tid: u32) -> u32 {
+    if azos_limits::MOTOR_COMMANDER_EXIT_STOP { tid } else { 0 }
 }
 
 /// [`poll_one`] for an `OP_CALL` of `words` on `ep`, in the window at 0.
@@ -1979,10 +1988,8 @@ fn two_idl_motor_entries_command_what_the_call_commands() {
     let ok = vec![0, azos_devif::outcome::OK as u64];
     assert_eq!(unsafe { (window(ring, 0)[..2].to_vec(), window(ring, 64)[..2].to_vec()) }, (ok.clone(), ok));
     assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 30), (PwmOp::SetDutyPct, CH[1], 40)]);
-    if azos_limits::MOTOR_COMMANDER_EXIT_STOP {
-        for id in 0..2 {
-            assert_eq!(crate::motor_commander::commander(id), s.tid, "wheel {id} names no commander");
-        }
+    for id in 0..2 {
+        assert_eq!(crate::motor_commander::commander(id), commander_of(s.tid), "wheel {id} names no commander");
     }
 
     ESTOP.store(true, Ordering::SeqCst);
@@ -2061,7 +2068,14 @@ fn an_actuator_argument_out_of_range_is_refused_not_clamped() {
     assert_eq!(call(l, &[motor(MotorIdl::OP_PID_TARGET), 0, (-101i64) as u64]), bad, "PID target -101");
     assert_eq!(call(pwm, &[pwm_op(PwmIdl::OP_SET_DUTY_PCT), 101]), bad, "duty 101 %");
     assert_eq!(call(pwm, &[pwm_op(PwmIdl::OP_SET_DUTY), u32::MAX as u64]), bad, "duty past the period");
+    assert_eq!(call(pwm, &[pwm_op(PwmIdl::OP_SET_DUTY), 600_000]), azos_devif::outcome::OK);
+    assert_eq!(call(pwm, &[pwm_op(PwmIdl::OP_SET_PERIOD), 200_000]), bad, "a period shorter than the duty");
+    assert_eq!(call(pwm, &[pwm_op(PwmIdl::OP_SET_DUTY), 0]), azos_devif::outcome::OK);
+    clear_pwm_calls();
+    BOARD_OPS.lock().unwrap().clear();
+    set_gpio_probe(Some(board_probe));
     assert_eq!(call(pin, &[gpio_hdr(azos_devif::GpioIdl::OP_WRITE), 2]), bad, "GPIO level 2");
+    assert_eq!(*BOARD_OPS.lock().unwrap(), vec![], "a refused GPIO level reached the driver");
     assert!(pwm_calls().is_empty(), "an out-of-range entry wrote {:?}", pwm_calls());
     assert!(matches!(azos_robot::motor_state(0), Some((_, 0))), "wheel 0 recorded a speed");
 
@@ -2102,9 +2116,71 @@ fn an_interface_that_may_wait_is_not_served_from_a_pass() {
     azos_sched::scheduler::shim_set_base_priority(prio);
     assert_eq!(done(c[0]), enosys, "an RT submitter's sync was served from a pass");
     assert_eq!(unsafe { window(ring, 64) }[0], sync, "a refused entry wrote its window");
-    for key in [azos_devif::key::SENSOR, azos_devif::key::MOTOR, azos_devif::key::GPIO, azos_devif::key::PWM, azos_devif::key::I2C] {
-        assert!(crate::khost::ring_served(key), "host key {key}");
+    use azos_devif::key;
+    for k in [key::ADC, key::ENTROPY, key::CLOCK, key::POWER, key::NET, key::VOLUME] {
+        assert!(!crate::khost::ring_served(k, 0), "host key {k} is served from a pass");
     }
+    // The device rows follow their drivers' declarations (the stand-ins': a
+    // bus that does not sleep, a converter that waits, register writes).
+    assert!(crate::khost::ring_served(key::SENSOR, SENSOR_TYPE_ENCODER as u32));
+    assert!(!crate::khost::ring_served(key::SENSOR, SENSOR_TYPE_BATTERY as u32), "the ADS1115 waits in its queue");
+    assert!(crate::khost::ring_served(key::MOTOR, 0) && crate::khost::ring_served(key::PWM, FREE_CH));
+    assert_eq!(crate::khost::ring_served(key::I2C, 0), !azos_drv_bus::i2c::transfer_may_sleep());
+}
+
+/// **A device whose bus may sleep is not served from a pass, and its typed
+/// call still is.** With the I2C bus modelled as one that sleeps (a DesignWare
+/// or K1 controller waiting for a transaction), an `I2c` entry and the IMU's
+/// `Sensor::read` (an I2C part) answer `-ENOSYS`, while the encoders (a value
+/// a task left) are served; a GPIO expander that declares `may_sleep` is
+/// refused the same way, and the board's pins are served. The call on the
+/// same endpoints is answered.
+///
+/// **Canary.** Answer `true` from `devices::i2c_ring_served`: the I2C entry is
+/// served on the sleeping bus.
+#[test]
+fn a_device_whose_bus_may_sleep_is_not_served_from_a_pass() {
+    struct Bus;
+    impl Drop for Bus {
+        fn drop(&mut self) {
+            azos_drv_bus::i2c::shim_set_transfer_may_sleep(false);
+            RING_EXPANDER_SLEEPS.store(false, Ordering::SeqCst);
+            let _ = azos_drv_gpio::chips::unregister(super::harness::GPIO_EXPANDER_DEV, &mut || false);
+            set_gpio_probe(None);
+        }
+    }
+    let _g = serial();
+    let (s, pt) = ring3();
+    let _bus = Bus;
+    azos_drv_bus::i2c::shim_set_transfer_may_sleep(true);
+    RING_EXPANDER_SLEEPS.store(true, Ordering::SeqCst);
+    EXPANDER_WRITES.lock().unwrap().clear();
+    set_gpio_probe(Some(board_probe));
+    assert_eq!(azos_drv_gpio::chips::register(super::harness::GPIO_EXPANDER_DEV, &RING_EXPANDER), Ok(1));
+    let i2c = grant_ep(s.tid, azos_devif::key::I2C, azos_devif::i2c::badge(1, 0x68), CapPerms::RW, 0);
+    let imu = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_IMU as u32, CapPerms::READ, 0);
+    let enc = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
+    let x = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(1, 3), CapPerms::RW, 0);
+    let board = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(0, 9), CapPerms::RW, 0);
+    let (cap, _va, ring) = create(pt);
+    let detect = {
+        use azos_devif::I2cIdl as I;
+        azos_idl::header(I::ID, I::LEVEL, I::OP_DETECT)
+    };
+    let gpio_write = gpio_hdr(azos_devif::GpioIdl::OP_WRITE);
+    let run = |ep: u32, words: &[u64]| unsafe {
+        queue_call(ring, ep, 0, words, 1);
+        done(submit_queued(cap, ring)[0])
+    };
+    let enosys = (Errno::ENOSYS.to_syscall_ret() as i32, CQE_F_REFUSED);
+    assert_eq!(run(i2c, &[detect]), enosys, "an I2C entry was served on a bus that sleeps");
+    assert_eq!(run(imu, &[sensor_read_hdr()]), enosys, "the IMU was read in a pass on a bus that sleeps");
+    assert_eq!(run(x, &[gpio_write, 1]), enosys, "a sleeping expander's pin was driven in a pass");
+    assert_eq!(run(enc, &[sensor_read_hdr()]), (0, 0), "the encoders are not on the bus");
+    assert_eq!(run(board, &[gpio_write, 1]), (0, 0), "the board's pins do not sleep");
+    assert_eq!(*EXPANDER_WRITES.lock().unwrap(), vec![], "the refused expander entry reached its driver");
+    // The typed call is the client's door to the same devices.
+    assert_eq!(served_reply(s.tid, x, azos_devif::key::GPIO, &[gpio_write, 1])[0], 0);
 }
 
 /// **The poller asks the OWNER's profile for the interface**, as for the

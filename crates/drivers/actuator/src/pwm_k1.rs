@@ -313,21 +313,29 @@ impl ChanState {
     }
 
     /// Set the period. -1, and nothing changes, when it is outside the clock's
-    /// range ([`timing_for`]). The duty keeps its nanoseconds, clamped to the
-    /// new period.
+    /// range ([`timing_for`]); `OUT_OF_RANGE` when it is shorter than the
+    /// duty (a clamp of the duty to it would be full duty). The duty keeps its
+    /// nanoseconds (a held one its percentage). The caller holds the channel's configuration lock.
     pub fn set_period<B: PxaPwmBus>(&self, pwm: &mut PxaPwm<B>, period_ns: u32) -> i32 {
         if timing_for(period_ns).is_none() {
             return -1;
         }
+        // A held channel's duty follows its percentage into the new period.
+        let duty_ns = if self.held().is_some() { 0 } else { self.duty_ns.load(Ordering::Acquire) };
+        if !crate::pwm_range::period_fits(period_ns, duty_ns) {
+            return crate::pwm_range::OUT_OF_RANGE;
+        }
         self.period_ns.store(period_ns, Ordering::Release);
-        self.duty_ns.store(self.duty_ns.load(Ordering::Acquire).min(period_ns), Ordering::Release);
         self.apply(pwm)
     }
 
-    /// Set the duty in nanoseconds (clamped to the period). -1 on a held
-    /// channel unless it is the duty the stop holds.
+    /// Set the duty in nanoseconds; `OUT_OF_RANGE` past the period. -1 on a
+    /// held channel unless it is the duty the stop holds. The caller holds the
+    /// channel's configuration lock.
     pub fn set_duty<B: PxaPwmBus>(&self, pwm: &mut PxaPwm<B>, duty_ns: u32) -> i32 {
-        let duty_ns = duty_ns.min(self.period_ns.load(Ordering::Acquire));
+        if !crate::pwm_range::duty_fits(duty_ns, self.period_ns.load(Ordering::Acquire)) {
+            return crate::pwm_range::OUT_OF_RANGE;
+        }
         let changes = |s: &Self| s.held().is_some() && duty_ns != s.duty_ns.load(Ordering::Acquire);
         if changes(self) {
             return -1;

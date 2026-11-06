@@ -34,6 +34,11 @@ pub trait GpioChip: Sync {
     fn write(&self, pin: u32, level: u32) -> Result<(), Fault>;
     /// Make `pin` an input or an output.
     fn set_dir(&self, pin: u32, dir: GpioDir) -> Result<(), Fault>;
+    /// May an op of this controller sleep (a transfer on a bus that waits for
+    /// its completion)? `false` only for a controller whose every op is a
+    /// bounded register access: an io_ring pass serves its pins
+    /// (`OP_CALL`), and a controller that may sleep is the typed call's.
+    fn may_sleep(&self) -> bool;
 }
 
 /// The board's controller, through the backend the board selects.
@@ -55,6 +60,9 @@ impl GpioChip for Board {
     }
     fn set_dir(&self, pin: u32, dir: GpioDir) -> Result<(), Fault> {
         done(gpio::gpio_set_direction(pin, dir))
+    }
+    fn may_sleep(&self) -> bool {
+        false
     }
 }
 

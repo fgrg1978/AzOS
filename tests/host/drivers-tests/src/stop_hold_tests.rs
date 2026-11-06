@@ -199,3 +199,23 @@ fn concurrent_pwm_writers_never_outlast_the_kernels_stop() {
     }
     assert_eq!(pwm::pwm_release(C), 0);
 }
+
+/// **The simulated PWM refuses a period shorter than its duty and a duty past
+/// its period**, `pwm_range::OUT_OF_RANGE`, and keeps both values: the old
+/// period store left the duty past the new period, full duty. A held channel
+/// still takes a new period (its duty follows the held percentage).
+///
+/// **Canary.** Drop the `period_fits` test from the simulation's
+/// `pwm_set_period`: the 200 us period is taken and the duty is past it.
+#[test]
+fn the_simulated_pwm_refuses_a_period_shorter_than_its_duty() {
+    const C: u32 = 5;
+    assert_eq!(pwm::pwm_set_period(C, 1_000_000), 0);
+    assert_eq!(pwm::pwm_set_duty(C, 600_000), 0);
+    assert_eq!(pwm::pwm_set_period(C, 200_000), crate::pwm_range::OUT_OF_RANGE);
+    assert_eq!(pwm::pwm_set_period(C, 0), crate::pwm_range::OUT_OF_RANGE);
+    assert_eq!(pwm::pwm_set_duty(C, 1_000_001), crate::pwm_range::OUT_OF_RANGE);
+    assert_eq!(pwm::pwm_get(C).map(|c| (c.period_ns, c.duty_ns)), Some((1_000_000, 600_000)));
+    assert_eq!(pwm::pwm_set_period(C, 600_000), 0, "a period equal to the duty");
+    assert_eq!(pwm::pwm_set_duty(C, 0), 0);
+}

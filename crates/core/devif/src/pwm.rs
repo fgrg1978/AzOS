@@ -27,7 +27,8 @@ pub trait Pwm {
     fn enable(&mut self) -> Out<()>;
     /// Stop the channel's output. Needs `WRITE`.
     fn disable(&mut self) -> Out<()>;
-    /// Set the period, nanoseconds. Needs `WRITE`.
+    /// Set the period, nanoseconds (0, or shorter than the duty, is
+    /// `BAD_ARGUMENT`). Needs `WRITE`.
     fn set_period(&mut self, ns: u32) -> Out<()>;
     /// Set the duty, nanoseconds of the period (more than the period is
     /// `BAD_ARGUMENT`). Needs `WRITE`.

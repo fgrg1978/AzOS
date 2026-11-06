@@ -19,6 +19,9 @@ pub mod pwm_k1;
 /// module docs.
 pub mod pwm_domain;
 
+/// The range a channel's period and duty keep (`pwm_range::OUT_OF_RANGE`).
+pub mod pwm_range;
+
 /// The channels the kernel's stop holds (the simulated and VF2 `pwm`).
 #[cfg(not(feature = "k1"))]
 pub mod pwm_hold;

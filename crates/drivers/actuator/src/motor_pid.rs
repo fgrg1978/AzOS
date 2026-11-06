@@ -19,7 +19,7 @@
 //!    `PID_DT_MS` ms. It returns `(pwm_l, pwm_r)` to apply to the motors.
 //! 4. Use `motor_pid_enable(false)` to bypass PID for direct PWM control.
 
-use core::sync::atomic::{AtomicBool, AtomicI16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU32, Ordering};
 use azos_sync::SpinLock;
 
 // ── PID Tuning Constants ─────────────────────────────────────────────────────
@@ -399,7 +399,25 @@ pub fn motor_pid_enable(en: bool) {
         ts.prev_time = 0;
     }
     PID_ENABLED.store(en, Ordering::Release);
-    azos_drv_sys::kprintln!("[MOTOR-PID] PID {}", if en { "ENABLED" } else { "DISABLED" });
+    if pid_note() {
+        azos_drv_sys::kprintln!("[MOTOR-PID] PID {}", if en { "ENABLED" } else { "DISABLED" });
+    }
+}
+
+/// The console lines of the PID's configuration, at most [`PID_NOTES_MAX`] a
+/// boot: its ops are ring 3's (the `Motor` interface, also from an io_ring
+/// pass, inline in a real-time submitter), and a console line is not bounded.
+static PID_NOTES: AtomicU32 = AtomicU32::new(0);
+const PID_NOTES_MAX: u32 = 8;
+
+/// May this configuration change print its line? The last allowed one says
+/// that the rest are not printed.
+pub(crate) fn pid_note() -> bool {
+    let n = PID_NOTES.fetch_add(1, Ordering::Relaxed);
+    if n + 1 == PID_NOTES_MAX {
+        azos_drv_sys::kprintln!("[MOTOR-PID] further configuration changes are not printed");
+    }
+    n < PID_NOTES_MAX
 }
 
 /// Update PID gains at runtime (e.g., from shell or config).
@@ -412,7 +430,9 @@ pub fn motor_pid_set_gains(kp: i32, ki: i32, kd: i32) {
     }
     // Printed after the hold: `motor_pid_tick` (the RT motor task) takes
     // PID_CONTROLLERS every period, and a console line is not bounded.
-    azos_drv_sys::kprintln!("[MOTOR-PID] Gains updated: Kp={} Ki={} Kd={}", kp, ki, kd);
+    if pid_note() {
+        azos_drv_sys::kprintln!("[MOTOR-PID] Gains updated: Kp={} Ki={} Kd={}", kp, ki, kd);
+    }
 }
 
 /// Reset both PID controllers (zero integral and derivative state).

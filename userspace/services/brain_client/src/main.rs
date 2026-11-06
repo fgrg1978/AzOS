@@ -193,19 +193,19 @@ impl Readings {
     fn through_ring(ring: &sys::ioring::Ring, caps: &[isize; SENSORS]) -> Option<Readings> {
         let hdr = sys::dev::header(SensorIdl::ID, SensorIdl::LEVEL, SensorIdl::OP_READ);
         let mut asked = 0;
-        let mut pushed = [false; SENSORS];
         for (i, &c) in caps.iter().enumerate() {
             if c >= 0 && ring.push_call(c as u32, sensor_window(i), &[hdr], TAG_SENSOR + i as u64) {
-                pushed[i] = true;
                 asked += 1;
             }
         }
         let mut out = [None; SENSORS];
         let mut served = 0;
+        let mut answered = [false; SENSORS];
         let ok = ring_drain(ring, |(tag, result, flags)| {
             let i = tag.wrapping_sub(TAG_SENSOR) as usize;
             if i < SENSORS && result == 0 && flags & sys::ioring::CQE_F_REFUSED == 0 {
                 out[i] = sys::dev::reply_value::<Sample>(&ring.reply(sensor_window(i))).ok();
+                answered[i] = true;
                 served += 1;
             }
         });
@@ -226,9 +226,10 @@ impl Readings {
         if !ok || served == 0 {
             return None;
         }
-        // A sensor the SQ had no room for is read by its typed call.
+        // A sensor the SQ had no room for, or the ring would not serve (one on
+        // a bus that sleeps), is read by its typed call.
         for (i, &c) in caps.iter().enumerate() {
-            if c >= 0 && !pushed[i] {
+            if c >= 0 && !answered[i] {
                 out[i] = sys::dev::sensor_read(c as u32, &mut []).ok();
             }
         }

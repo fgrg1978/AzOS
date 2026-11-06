@@ -415,6 +415,15 @@ mod sim {
 #[cfg(not(any(feature = "i2c-dw", feature = "k1")))]
 pub use sim::*;
 
+/// May a transfer on this build's buses sleep? The DesignWare and K1
+/// controllers wait for a transaction's completion between service steps
+/// (`i2c_sleep_us`, up to `I2C_XFER_TIMEOUT_US` per transaction); the
+/// simulation's register file completes at submit. A bus that may sleep is not
+/// served from an io_ring pass: its devices are the typed call's.
+pub const fn transfer_may_sleep() -> bool {
+    cfg!(any(feature = "i2c-dw", feature = "k1"))
+}
+
 // ── The controllers: DesignWare (VF2, Pi 5 RP1, Intel LPSS) and K1 (SpacemiT) ─
 //
 // The controllers bind through the hardware bus (`kernel/src/boot/hwbus.rs`:

@@ -66,6 +66,10 @@ impl GpioChip for SoftExpander {
         };
         Ok(())
     }
+
+    fn may_sleep(&self) -> bool {
+        false
+    }
 }
 
 /// The one expander a development kernel adds (`boot::hwbus`).
