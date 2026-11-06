@@ -319,6 +319,17 @@ ci_phase "setup, lints, image tables"
 # level of the QEMU section), and a bare `|| return` would be wrong in half of
 # them. It marks the gate failed and says why; the row that follows then fails
 # with its own message, now explained rather than mysterious.
+# A selection's test hook that turns on a feature a Kconfig symbol owns sets
+# that symbol (tools/build/kconfig_to_cargo.py `select`), so the constants
+# agree with the features; tools/lint/gate_select_lint.py checks every
+# selection here is one `select` accepts. Rows whose kernel moved when that
+# rule landed (to re-run in the arm phase): the energy and thermal rows
+# (ENERGY, THERMAL and CPU_IDLE_POWERDOWN now set), the mmc rows (DRV_PCI
+# now set, and with it IOMMU_RISCV), the lat masked-window, irq-off, FAT and
+# virtio-blk canaries (LAT_TRACE, KTRACE_CLASS_LAT, LAT_FAT_SMOKE), the
+# sched-rt-util canaries (SCHED_RT_UTIL_SMOKE) and the lx tamper and W^X
+# canaries (LX_SERVER_SKELETON). The robot hooks build from the robot cell,
+# where nothing moved.
 kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     local feats="$1"; shift
     # A robot kernel builds from the robot cell unless the row named its own.
