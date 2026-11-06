@@ -83,7 +83,7 @@ ROLES = {
         "sbom.sh", "text_equiv.py", "triage.py", "vmmd_withhold_row.sh", "volume_stale_selftest.sh",
     ],
     "lint": ["profile_cut_lint.py", 
-        "aarch64_fp_free_check.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
+        "aarch64_fp_free_check.sh", "advisories.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
         "arch_layout_lint.py", "boot_seq_lint.baseline", "boot_seq_lint.py",
         "check_livepatch_layout.py", "check_make_help.sh", "check_neverallow.py", "check_presets.py",
         "mmio_accessors.py", "mmio_accessors.tsv",

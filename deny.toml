@@ -7,12 +7,10 @@
 # wants every optional crate (rustc-std-workspace-core, pulled by two crates
 # only for -Zbuild-std) in the local registry, which an offline machine lacks.
 #
-# Advisories are NOT part of the offline run: the RustSec database is a git
-# download and the gate never fetches. With a network, once and by hand:
-#   cargo deny fetch && cargo deny check advisories
-# Only the workspace lockfile (the kernel's) is checked; the excluded crates
-# carry their own lockfiles with the same registry crates, and tests/ adds
-# host-only ones (no kernel image links them).
+# Advisories are a separate gate row, tools/lint/advisories.sh: it checks every lockfile
+# outside tests/ and third_party/ (kernel, userspace, sdk) against the dated RustSec snapshot
+# in third_party/advisory-db, which `make advisories-update` refreshes by hand with a network.
+# tests/ adds host-only lockfiles (no kernel image links them).
 #
 # The one exception is the userspace std programs' registry tree,
 # third_party/vendor (rustls, the rustls-rustcrypto provider, quinn-proto and
@@ -21,9 +19,8 @@
 # `python3 userspace/lib/tls-probe/vendor.py check` (a gate row). `ring` stays
 # banned: its wasm-only edge from quinn-proto puts the sources in the lockfile,
 # and the multi-target graph below does not include a wasm target.
-# The same run adds `advisories` whenever the RustSec database is on disk at
-# the db-path below (it is fetched once, by hand, as above), and the gate row
-# prints a note when it is not; a missing cargo-deny fails the row.
+# a missing cargo-deny fails the row. The db-path below is rewritten by advisories.sh
+# to the materialised snapshot; it is the path of a manual `cargo deny check advisories`.
 
 [graph]
 # Multi-target check so a dep that's only-Linux can't sneak in.

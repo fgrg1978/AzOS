@@ -403,8 +403,7 @@ if [ "$lints" = 1 ]; then
 fi
 
 # Supply chain (deny.toml): licences, bans and sources of the registry crates
-# the kernel links, offline (metadata from cargo; no advisory database, which
-# only a network run can fetch, see deny.toml).
+# the kernel links, offline (metadata from cargo; the advisories are the next row).
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "cargo deny..."
     mkdir -p "$AZOS_OUT/build"; dmd="$AZOS_OUT/build/deny-metadata.json"
@@ -414,6 +413,25 @@ if [ "$lints" = 1 ]; then
     else
         echo FAIL; fail=1
         printf '%s\n' "$out" | grep -E '^(error|warning)' | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
+# RustSec advisories for every registry crate any lockfile resolves, against the
+# dated snapshot in third_party/advisory-db (tools/lint/advisories.sh; `make advisories-update`
+# refreshes it by hand). A missing or old snapshot, or a lockfile that does not resolve, is a WARN line.
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "advisories..."
+    out="$(bash tools/lint/advisories.sh check 2>&1)"; rc=$?
+    if [ "$rc" = 0 ]; then
+        if printf '%s\n' "$out" | grep -q '^WARN'; then
+            echo WARN
+            printf '%s\n' "$out" | sed -n 1,4p | sed 's/^/      /'
+        else
+            echo ok
+        fi
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,14p | sed 's/^/      /'
     fi
 fi
 

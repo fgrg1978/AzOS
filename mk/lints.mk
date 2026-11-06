@@ -162,6 +162,14 @@ size-update: size-kernel
 	@$(PYTHON) tools/lint/size_budget.py --report $(SIZE_LABEL)=$(SIZE_ELF)
 	@$(PYTHON) tools/lint/size_budget.py --update --reason "$(REASON)" $(SIZE_LABEL)=$(SIZE_ELF)
 
+# RustSec advisories against the snapshot in third_party/advisory-db (tools/lint/advisories.sh).
+.PHONY: advisories advisories-update
+advisories:
+	@bash tools/lint/advisories.sh check
+
+advisories-update:
+	@bash tools/lint/advisories.sh update
+
 # The fronts' check (tools/gate/check_fast.sh): per ISA one ktest boot, one boot
 # of the same kernel with every composable runtime canary armed, one
 # userspace (abitest) boot, judged by tools/gate/check_fast.py. CI_JOBS ISAs at once.
