@@ -1037,3 +1037,39 @@ fn floors_come_only_from_a_verified_index_and_only_when_enforced() {
         assert_eq!(floors_of(&a), [("ACME.ELF".to_string(), false)], "{what}");
     }
 }
+
+/// The step after `pkg upgrade`: the staging directory holds the new version
+/// only (its programs have the old one's names), and the boot replaces `APPS/`'s
+/// copy under a snapshot, as a trial.
+#[test]
+fn a_staged_upgrade_replaces_the_applied_programs_of_the_old_version() {
+    let d = signed_device();
+    let mut v = volume();
+    let old = acme();
+    let old_name = stage(&mut v, &old);
+    let (_, a, _) = run(&mut v, d, 0);
+    assert_eq!((a.packages, a.rows), (1, 1));
+    let old_apps = apps(&mut v);
+    assert_eq!(old_apps.len(), 1);
+
+    // What pkgd leaves after the upgrade: the old file gone, the new one staged.
+    let mut s = Spec::acme();
+    s.version = "1.3.0".into();
+    s.images = vec![("ACME.ELF".into(), (0..300u32).map(|i| (i * 11) as u8).collect())];
+    let new = build(&s, &author());
+    let root = v.root();
+    v.unlink(root, old_name.as_bytes()).unwrap();
+    v.commit().unwrap();
+    let new_name = stage(&mut v, &new);
+    assert_ne!(old_name, new_name);
+
+    let (t, a, log) = run(&mut v, d, 0);
+    assert_eq!((a.packages, a.rows, a.fresh.len()), (1, 1, 1), "{:?}", log.notes);
+    assert!(a.trial.is_some(), "a new package is a trial, with a restore point");
+    let now = apps(&mut v);
+    assert_eq!(now.keys().collect::<Vec<_>>(), old_apps.keys().collect::<Vec<_>>());
+    assert_ne!(now["ACME.ELF"], old_apps["ACME.ELF"], "the program is the new version's");
+    assert_eq!(now["ACME.ELF"], s.images[0].1);
+    assert_eq!(t.tasks().iter().filter(|r| r.name.as_bytes() == b"ACME.ELF").count(), 1, "one row, the new one");
+    assert_eq!(staged(&mut v), vec![new_name]);
+}
