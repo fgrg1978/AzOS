@@ -281,6 +281,8 @@ pub enum SpawnError {
     /// Wave 9: the image's row already has `instances` live
     /// spawned instances.
     Instances,
+    /// No memory for the address space object.
+    NoMemory,
 }
 
 /// Load `elf` into a new address space and create its task, parked, under
@@ -406,7 +408,7 @@ pub fn spawn_prepare(
         azos_drv_sys::kwarn!("[SPAWN] REFUSED: {} -- no memory for its address space object", name);
         vmm::destroy_user_pagetable(user_pt);
         crate::scheduler::row_release(mem.row);
-        return Err(SpawnError::BadImage);
+        return Err(SpawnError::NoMemory);
     };
 
     let (priority, class_raw) = match sched {
