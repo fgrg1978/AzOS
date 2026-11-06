@@ -12279,6 +12279,14 @@ host_job zpool_host_canary_row "anon: fork hold, no restore canary" fork-hold-ca
 # alone decides, and a page in the pool would come back as zeros.
 host_job host_canary_row "anon: brk over a mapping canary" syscall-tests demand-over-mapping-canary \
     a_heap_reservation_skips_the_pages_of_a_mapping
+# The slot chunks of an anonymous object (anon_obj.rs) are charged within the
+# Domain's limit and freed by a munmap that leaves none of their pages mapped.
+# slot-chunk-promised-canary: charged past the limit; slot-chunk-kept-canary:
+# kept until the object ends.
+host_job host_canary_row "anon: slot chunk within the limit canary" syscall-tests slot-chunk-promised-canary \
+    a_touch_at_the_limit_gets_its_tables
+host_job host_canary_row "anon: slot chunk freed by munmap canary" syscall-tests slot-chunk-kept-canary \
+    a_munmap_frees_the_slot_chunks_of_the_pages_it_unmaps
 host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
     a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,

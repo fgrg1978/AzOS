@@ -334,3 +334,28 @@ fn a_heap_reservation_skips_the_pages_of_a_mapping() {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
+
+/// **A `munmap` frees the slot chunks of the pages it leaves unmapped.** A
+/// page past the object's inline slots takes a chunk of slot words on its
+/// first touch; once no mapping of the object covers any page of the chunk,
+/// the chunk goes back with the cut, though the object lives on.
+/// **Canary** `slot-chunk-kept-canary`: the chunk stays until the object ends.
+#[test]
+fn a_munmap_frees_the_slot_chunks_of_the_pages_it_unmaps() {
+    let _g = serial();
+    let pt = space();
+    let chunk = azos_mm::anon_obj::PER_CHUNK * PAGE_SIZE;
+    let base = map(3 * chunk / PAGE_SIZE);
+    let first_chunk = (base / chunk + 1) * chunk;
+    write(pt, base, 0x01);
+    let before = azos_mm::shim_pages_in_use();
+    let tables = azos_mm::vmm::table_frames(pt);
+    write(pt, first_chunk + PAGE_SIZE, 0x02);
+    let built = azos_mm::vmm::table_frames(pt) - tables;
+    assert_eq!(azos_mm::shim_pages_in_use(), before + built + 2, "the page, its chunk and its tables");
+    assert_eq!(sys_munmap(first_chunk as u64, chunk as u64), 0);
+    assert_eq!(azos_mm::shim_pages_in_use(), before + built, "the page and its chunk are back, the tables stay");
+    assert!(azos_mm::vmm::translate(pt, base).is_some(), "the object lives on");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}

@@ -84,7 +84,9 @@
 //! one frame per 2 MiB block the reservation touches, plus the upper levels
 //! (the next reservation is then refused), and the touch is never refused for
 //! a table. The kernel-memory ledger's own ceiling (`kmem_kib`) still applies
-//! to a table.
+//! to a table. The one charge a fault may be refused is a chunk of slot words
+//! an anonymous object takes past its inline slots (`crate::anon_obj`): kernel
+//! memory the reservation did not count, charged within the limit.
 //!
 //! **Superpage reservations** (Kconfig `MM_THP_RESV`, `crate::resv`). The first
 //! fault in a block-aligned part of an anonymous mapping that one record covers
@@ -1890,6 +1892,10 @@ pub fn contains(r: SpaceRef, va: usize) -> bool {
 
 /// Most sub-ranges one removal can produce: one per record.
 const MAX_PIECES: usize = MAPPINGS_PER_SPACE;
+/// Most slot chunks one removal frees: those of the largest `munmap`
+/// (`MAX_DEMAND_ALLOC_BYTES`) and one at each end; any past that stay with
+/// their object until it ends.
+const CHUNKS_FREED: usize = crate::demand::MAX_DEMAND_ALLOC_BYTES / (anon_obj::PER_CHUNK * PAGE_SIZE) + 2;
 
 /// Can any slot hold a page marker: the pool has pages, or a store is in
 /// flight? When not, a fork copies none.
@@ -1991,11 +1997,41 @@ pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError>
             paid_committed += here + out;
         }
     }
+    // The slot chunks of the pieces no mapping of their object covers any
+    // more, unhooked under the lock and freed after it.
+    let mut chunks = [0usize; CHUNKS_FREED];
+    let mut nc = 0;
     if let Some(mut sp) = r.lock().filter(|sp| sp.recorded) {
         sp.committed = sp.committed.saturating_sub(committed);
+        if !cfg!(feature = "slot-chunk-kept-canary") {
+            for &(a, b, _, backing, _) in &pieces[..np] {
+                let Backing::Anon { obj } = backing else { continue };
+                if dead[..nd].contains(&obj) {
+                    continue;
+                }
+                let span = anon_obj::PER_CHUNK * PAGE_SIZE;
+                let mut c = a / span;
+                while c * span < b && nc < CHUNKS_FREED {
+                    let (lo, hi) = (c * span, (c + 1) * span);
+                    let covered = sp.set.as_slice().iter().any(|m| m.anon_obj() == Some(obj) && m.start < hi && lo < m.end);
+                    if !covered {
+                        // SAFETY: a mapping of the set named it before the cut
+                        // and it is not dead: another mapping still names it.
+                        if let Some(p) = unsafe { anon_obj::get(obj) }.take_chunk(c) {
+                            chunks[nc] = p;
+                            nc += 1;
+                        }
+                    }
+                    c += 1;
+                }
+            }
+        }
         if sp.set.is_empty() {
             sp.close();
         }
+    }
+    for &p in &chunks[..nc] {
+        anon_obj::free_chunk(root, p);
     }
     for &obj in &dead[..nd] {
         // SAFETY: no mapping names it (above).

@@ -16,9 +16,11 @@
 //! chunks from the object's first one through pointers in the object, the rest
 //! of a window of [`PER_CHUNK`] chunks around it (half below, half above)
 //! through one directory page. Chunks and the directory are allocated on the
-//! first touch of a page they hold and charged to the space as its page tables
-//! are ([`crate::vmm::TableCharge::Promised`]: the reservation promised the
-//! page); an absent chunk is a run of `Empty` slots. A mapping that would
+//! first touch of a page they hold and charged to the space's Domain within
+//! its limit ([`crate::vmm::TableCharge::Take`]: kernel memory the
+//! reservation did not count, so a touch past the limit is refused for it);
+//! an absent chunk is a run of `Empty` slots. A `munmap` that leaves no
+//! mapping of the object over a chunk's pages frees the chunk. A mapping that would
 //! leave the window ([`AnonObj::holds`]) gets an object of its own.
 //!
 //! **Locking.** The object has one mapper, its space, so the space's lock is
@@ -154,6 +156,11 @@ pub unsafe fn destroy(h: usize, root: usize) {
     unsafe { OBJS.free(h as *mut AnonObj) };
 }
 
+/// Free a chunk [`AnonObj::take_chunk`] unhooked, its charge back to `root`.
+pub fn free_chunk(root: usize, va: usize) {
+    free_page(root, va);
+}
+
 fn free_page(root: usize, va: usize) {
     let _ = pmm::free_page(PhysAddr::new(virt_to_phys(va)));
     let _ = vmm::table_charge(root, TableCharge::Return);
@@ -168,8 +175,9 @@ pub struct Spare {
 }
 
 impl Spare {
-    /// `n` (at most 2) pages charged to `root`. `None` when the allocator has
-    /// none: nothing is held then.
+    /// `n` (at most 2) pages charged to `root` within its Domain's limit.
+    /// `None` when the limit refuses one or the allocator has none: nothing is
+    /// held then.
     #[inline]
     pub fn take(root: usize, n: usize) -> Option<Self> {
         let s = Spare { root, pages: [0; 2], n: 0 };
@@ -183,7 +191,12 @@ impl Spare {
     fn fill(mut self, n: usize) -> Option<Self> {
         let s = &mut self;
         while s.n < n.min(2) {
-            let _ = vmm::table_charge(s.root, TableCharge::Promised);
+            // Canary `slot-chunk-promised-canary`: charged whatever the
+            // Domain's limit says, as a table a first touch needs is.
+            let take = if cfg!(feature = "slot-chunk-promised-canary") { TableCharge::Promised } else { TableCharge::Take };
+            if !vmm::table_charge(s.root, take) {
+                return None;
+            }
             match pmm::alloc_page() {
                 Ok(p) => {
                     s.pages[s.n] = phys_to_virt(p.as_usize());
@@ -334,6 +347,23 @@ impl AnonObj {
                 f(i, s);
             }
         }
+    }
+
+    /// Unhook the chunk of page numbers `c * PER_CHUNK ..` (the slots of a range
+    /// no mapping of the object covers any more: all empty), for the caller to
+    /// free once the space's lock is dropped ([`free_chunk`]). Under that lock.
+    pub fn take_chunk(&self, c: usize) -> Option<usize> {
+        let r = c.wrapping_sub(self.cbase);
+        let p = if r < NEAR {
+            self.near[r].swap(0, Ordering::AcqRel)
+        } else {
+            let d = r.wrapping_add(BELOW);
+            if d >= PER_CHUNK {
+                return None;
+            }
+            self.dir()?[d].swap(0, Ordering::AcqRel)
+        };
+        (p != 0).then_some(p)
     }
 
     /// The twin a fork gave the object, 0 when none (`pager::fork_clone`).

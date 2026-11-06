@@ -110,6 +110,12 @@ fork-hold-canary = []
 # mapping, whose state is its object's slot: `syscall-tests` pte_truth.rs
 # `a_heap_reservation_skips_the_pages_of_a_mapping` fails.
 demand-over-mapping-canary = []
+# Host-suite canaries of the slot chunks (`anon_obj.rs`): charged past the
+# Domain's limit (`slot-chunk-promised-canary`), kept after a `munmap` of every
+# page they hold (`slot-chunk-kept-canary`): `syscall-tests` table_promised.rs
+# and pte_truth.rs fail.
+slot-chunk-promised-canary = []
+slot-chunk-kept-canary = []
 # Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
 # kept past its space's end reaches the next space made from the object:
 # `syscall-tests`' `aspace_life` fails.

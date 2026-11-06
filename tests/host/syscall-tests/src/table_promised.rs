@@ -6,6 +6,10 @@
 // `vmm.rs` and `pager.rs` on the shim arena, with the shim's table hook
 // charging the budget the way `scheduler/budget.rs` does.
 //
+// The slot chunk a page past the object's inline slots needs is charged within
+// the limit: canary `slot-chunk-promised-canary` charges it past the limit and
+// the refused touch goes through.
+//
 // Canary: `pager::fault_once` walking with `vmm::walk(.., true)` instead of
 // `vmm::walk_level(.., promised)` hands a table to the budget as refusable: the first
 // touch at the limit is refused and `a_touch_at_the_limit_gets_its_tables` fails.
@@ -53,17 +57,25 @@ fn a_touch_at_the_limit_gets_its_tables() {
     // the second a level-0 table of its own.
     let a = BRK as usize;
     let b = 2 * 1024 * 1024 + PAGE_SIZE;
-    let first = azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), a);
+    // The page in the next block is past the object's inline slots: it needs
+    // a chunk of slot words (`anon_obj.rs`), kernel memory the reservation did
+    // not count, which the limit refuses: the touch is refused before a table
+    // is built.
+    let refused = azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), b);
+    assert!(refused.is_err(), "a slot chunk was charged past the limit");
+    assert_eq!(azos_mm::shim_pages_in_use(), frames, "nothing taken for the refused touch");
+    // Room for the chunk (the limit again, the reservation charged again).
+    azos_sched::shim_set_page_limit(REGION_PAGES as u32 + 1);
+    assert!(azos_sched::mm_charge(REGION_PAGES as u32));
     let second = azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), b);
+    let first = azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), a);
     azos_sched::shim_charge_tables(false);
-    assert!(first.is_ok(), "the first touch at the limit was refused: {first:?}");
     assert!(second.is_ok(), "the touch in the next block was refused: {second:?}");
+    assert!(first.is_ok(), "the touch at the limit was refused: {first:?}");
 
-    // The second page is past the object's inline slots: one chunk of slot
-    // words (`anon_obj.rs`), kernel memory of the mapping charged as a table is.
     let built = azos_mm::shim_pages_in_use() - frames - 2;
     assert_eq!(built, 3 + 1, "three tables and a slot chunk for two touches");
-    assert_eq!(azos_sched::shim_user_pages() as usize, REGION_PAGES + built, "each table and the chunk are charged");
+    assert_eq!(azos_sched::shim_user_pages() as usize, REGION_PAGES + built, "each table and the chunk are charged, the tables past the limit");
     azos_sched::shim_set_page_limit(0);
 }
 

@@ -305,8 +305,10 @@ have their words inside the object. The others sit in 4 KiB chunks of 512 words:
 the first four chunks from the object's first through pointers in the object,
 the rest of a window of 512 chunks (1 GiB of address space, half below, half
 above) through one directory page. Chunks and the directory are allocated on the
-first touch of a page they hold and charged to the task as its page tables are;
-a mapping that would leave the window gets an object of its own. The lookup is a
+first touch of a page they hold, charged to the task within its limit (a
+touch past the limit that needs one is refused, the one exception to "a fault
+never refuses on quota"), and a `munmap` that leaves none of a chunk's pages
+mapped frees it; a mapping that would leave the window gets an object of its own. The lookup is a
 binary search over the space's mapping records and one or two loads into the
 object.
 
