@@ -1,0 +1,44 @@
+{
+  "trees": [
+    {
+      "name": "busybox",
+      "upstream": "https://git.busybox.net/busybox",
+      "tag": "1_36_1",
+      "version": "1.36.1",
+      "commit": "1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4",
+      "pinned": "2026-10-23"
+    },
+    {
+      "name": "limine",
+      "upstream": "https://github.com/limine-bootloader/limine.git",
+      "tag": "v10.8.5-binary",
+      "version": "10.8.5",
+      "commit": "7a9013f305de0bea1f6310e76e7baba30499fef0",
+      "pinned": "2026-10-23"
+    },
+    {
+      "name": "linux",
+      "upstream": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
+      "tag": "v7.2.9",
+      "version": "7.2.9",
+      "commit": "5fce161649b4d779d1b76d9fcd52dc77779774b8",
+      "pinned": "2026-10-21"
+    },
+    {
+      "name": "relibc",
+      "upstream": "https://gitlab.redox-os.org/redox-os/relibc.git",
+      "tag": null,
+      "version": null,
+      "commit": "da81004e74fdbd613704c1aaf2384749ac987ec1",
+      "pinned": "2026-10-23"
+    },
+    {
+      "name": "u-boot",
+      "upstream": "https://github.com/u-boot/u-boot.git",
+      "tag": "v2025.07",
+      "version": "2025.07",
+      "commit": "e37de002fac3895e8d0b60ae2015e17bb33e2b5b",
+      "pinned": "2026-10-23"
+    }
+  ]
+}

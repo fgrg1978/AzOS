@@ -416,6 +416,18 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# Third-party pins: third_party/MANIFEST.json against .gitmodules and the index, VENDOR_PIN well formed,
+# and no pin below a fixed_in version of third_party/known_cves.tsv (tools/lint/third_party_versions.py).
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "third_party versions..."
+    if out="$(python3 tools/lint/third_party_versions.py --self-test 2>&1 && python3 tools/lint/third_party_versions.py --quiet 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,6p | sed 's/^/      /'
+    fi
+fi
+
 # RustSec advisories for every registry crate any lockfile resolves, against the
 # dated snapshot in third_party/advisory-db (tools/lint/advisories.sh; `make advisories-update`
 # refreshes it by hand). A missing or old snapshot, or a lockfile that does not resolve, is a WARN line.

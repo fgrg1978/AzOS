@@ -1,0 +1,4 @@
+# Known CVEs per pinned component, kept by hand (no network is read anywhere).
+# component: a tree of third_party/MANIFEST.json, or crate:<name> for a crate of third_party/VENDOR_PIN.
+# fixed_in: first version without the flaw; a pin below it is reported (tools/lint/third_party_versions.py).
+# component<TAB>id<TAB>fixed_in<TAB>summary
