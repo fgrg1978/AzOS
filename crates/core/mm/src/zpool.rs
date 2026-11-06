@@ -10,9 +10,8 @@
 //!
 //! A page is named by `(obj, page)`: the container it belongs to and its page
 //! number there. The container is a MemObj once anonymous regions have one;
-//! until then the pager names it by the address space (the page-table root,
-//! the identity `pager.rs` already keys its region table on) and the page by
-//! its virtual page number. Three things can be stored for it:
+//! until then the pager names it by the address space (its object's address,
+//! `aspace::SpaceRef::key`) and the page by its virtual page number. Three things can be stored for it:
 //!
 //! * **same-filled**: the page is one 64-bit word repeated (zero is the
 //!   common case). One index entry, no bytes, no compression, no charge;

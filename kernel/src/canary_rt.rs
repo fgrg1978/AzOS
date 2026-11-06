@@ -386,6 +386,10 @@ pub(crate) const NAMES: &[&str] = &[
     // ASID record and takes a fresh ASID per thread, so one space carries
     // two ASIDs (ktest `asid_one_per_space_across_rollover`).
     "asid-per-thread",
+    // crates/core/mm/src/aspace.rs `destroy`: the end of an address space
+    // leaves its records in the object, so the next space made from it
+    // starts with them (ktest `aspace_made_again_starts_with_no_records`).
+    "as-stale-root",
     // crates/core/ipc/src/cap.rs `clear_all`: a table wipe (a task's exit)
     // does not count its endpoint send capabilities out, so no no-senders
     // notice follows a sender's exit (ktests

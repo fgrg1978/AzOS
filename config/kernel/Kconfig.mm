@@ -201,8 +201,8 @@ config MM_DEMAND_PAGING
 
       With this off every mmap commits every page at map time, the
       pre-wave-14 behaviour; the industrial and automotive domains start
-      with it off (static memory, a fault never lands in a control loop).  Cost: no static RAM beyond
-      MM_REGIONS_PER_SPACE's table.
+      with it off (static memory, a fault never lands in a control loop).  Cost: no static RAM; each
+      address space holds MM_REGIONS_PER_SPACE records.
 
 config MM_PRECOMMIT_RT
     bool "Pre-commit mmap for real-time-class tasks"

@@ -226,6 +226,10 @@ pub(crate) fn install_sched_hooks() {
     if canary!("asid-per-thread") {
         azos_sched::asid::CANARY_ASID_PER_THREAD.store(true, core::sync::atomic::Ordering::Relaxed);
     }
+    // Runtime canary: the end of an address space leaves its records.
+    if canary!("as-stale-root") {
+        azos_mm::aspace::CANARY_STALE_ROOT.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     // Wave 15 N5b (Kconfig IPC_PORT_NOTICES): every send capability to an
     // endpoint is counted where a table slot changes, and an endpoint left
     // with none tells the port its server bound it to. Before the first

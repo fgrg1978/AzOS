@@ -3,8 +3,8 @@
 //! Region records for demand-paged mappings (wave 14, DEMANDPAGE).
 //!
 //! An address space's reserved-but-not-yet-backed ranges, as plain data: no
-//! page table, no lock, no allocator. [`crate::pager`] owns the table of these
-//! sets (one per user page-table root) and the fault path that consults them;
+//! page table, no lock, no allocator. One set lives in each address space
+//! (`crate::aspace`), and [`crate::pager`] runs the fault path that consults it;
 //! everything here is arithmetic over sorted, non-overlapping ranges, so the
 //! host tests pull this file in with `#[path]` and exercise the real code.
 //!

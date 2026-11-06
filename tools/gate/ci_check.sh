@@ -12075,6 +12075,15 @@ host_job host_canary_row "pi futex: heir state leak canary" sync-tests pi-state-
     a_heir_with_no_waiter_behind_it_drops_the_state --test=pi_futex_graph
 host_job host_canary_row "pi futex: stale edge canary" sync-tests pi-keep-edge-canary \
     a_word_naming_its_waiter_ends_the_edge --test=pi_futex_graph
+# An address space that ends takes its records with it, and a reference kept
+# past the end reaches nothing of the next space made from the object
+# (azos_mm::aspace, syscall-tests aspace_life.rs). as-stale-root-canary: the
+# end leaves the records in the object; as-stale-ref-canary: a reference is not
+# checked against the object's root.
+host_job host_canary_row "aspace: reaped object records canary" syscall-tests as-stale-root-canary \
+    a_space_made_from_a_reaped_object_starts_with_no_records
+host_job host_canary_row "aspace: stale reference canary" syscall-tests as-stale-ref-canary \
+    a_reference_kept_past_its_space_reaches_nothing
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,
 # syscall-tests uaccess_race.rs). uaccess-race-canary: a user-leaf shootdown
 # returns without waiting for the access sections, as before the module.
@@ -15477,6 +15486,7 @@ PY
     par "ktest kstack reuse canary (rv)" ktest_row "ktest kstack reuse canary (rv)" rv ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
     par "ktest kheap ceiling canary (rv)" ktest_row "ktest kheap ceiling canary (rv)" rv ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest kmem cache cross type canary (rv)" ktest_row "ktest kmem cache cross type canary (rv)" rv ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
+    par "ktest aspace reaped records canary (rv)" ktest_row "ktest aspace reaped records canary (rv)" rv "" "aspace_made_again_starts_with_no_records" "canary=as-stale-root"
     par "ktest cap table cross type canary (rv)" ktest_row "ktest cap table cross type canary (rv)" rv ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (rv)" ktest_row "ktest task cross type canary (rv)" rv ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (rv)" ktest_row "ktest kmem preload canary (rv)" rv ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
@@ -15485,6 +15495,7 @@ PY
     par "ktest kstack reuse canary (arm)" ktest_row "ktest kstack reuse canary (arm)" arm ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
     par "ktest kheap ceiling canary (arm)" ktest_row "ktest kheap ceiling canary (arm)" arm ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest kmem cache cross type canary (arm)" ktest_row "ktest kmem cache cross type canary (arm)" arm ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
+    par "ktest aspace reaped records canary (arm)" ktest_row "ktest aspace reaped records canary (arm)" arm "" "aspace_made_again_starts_with_no_records" "canary=as-stale-root"
     par "ktest cap table cross type canary (arm)" ktest_row "ktest cap table cross type canary (arm)" arm ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (arm)" ktest_row "ktest task cross type canary (arm)" arm ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (arm)" ktest_row "ktest kmem preload canary (arm)" arm ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"

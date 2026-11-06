@@ -43,7 +43,7 @@ crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	297	45	13	0	0	82
+crates/core/mm	302	46	15	0	0	82
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	74
 crates/core/pkg	0	0	0	0	1	0
@@ -167,4 +167,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	504
+@unsafe-share	505

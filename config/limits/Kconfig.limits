@@ -800,7 +800,7 @@ config MM_REGIONS_PER_SPACE
       Wave 14 (DEMANDPAGE): an anonymous mmap reserves its range as a
       region record (crates/core/mm/src/region.rs) and commits each page
       on first touch.  Each user address space has this many records, in
-      a static table of MAX_TASKS slots (crates/core/mm/src/pager.rs).
+      its address space object (crates/core/mm/src/aspace.rs).
       Consecutive mmaps with the same permissions fold into one record,
       so a task that only grows its mappings uses one; mprotect and a
       munmap in the middle of a region cut records.  A mapping that finds
@@ -808,8 +808,9 @@ config MM_REGIONS_PER_SPACE
       behaviour); a munmap or mprotect whose cut needs a record answers
       ENOMEM, as Linux does past its map count.
 
-      Cost: (24 + 32 x this) B of .bss per MAX_TASKS slot, both ISAs:
-      280 B at 8, 17.5 KiB at edge's 64 tasks.
+      Cost: about (64 + 32 x this) B per live address space, both ISAs
+      (320 B at 8), taken from the kernel heap's ceiling when a space is
+      made; the object cache keeps the pages it took.
 
 config MM_ZPOOL_ENTRIES
     int "Compressed-pool index entries (pages it can hold)"

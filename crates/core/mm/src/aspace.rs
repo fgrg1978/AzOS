@@ -87,6 +87,10 @@ pub struct AddressSpace {
 
 static SPACES: Cache<AddressSpace> = Cache::retained();
 
+/// Runtime canary `as-stale-root` (`kernel/src/canary_rt.rs`): [`destroy`] leaves
+/// the records in the object (ktest `aspace_made_again_starts_with_no_records`).
+pub static CANARY_STALE_ROOT: AtomicBool = AtomicBool::new(false);
+
 azos_common::ro_hook! {
     /// `fn() -> Option<SpaceRef>`: the running task's address space. Installed
     /// by the scheduler, which this crate cannot see; unset, there is none.
@@ -245,12 +249,13 @@ pub fn create(root: usize) -> Option<SpaceRef> {
 /// ([`crate::vmm::destroy_user_pagetable_skip_range`]). Returns that call's
 /// answer: the mask of harts still on the root, the tables then leaked.
 ///
-/// Canary `as-stale-root-canary`: the records are not dropped, so the next
-/// space made from the object starts with them.
+/// Canary `as-stale-root-canary` (host suites), runtime canary `as-stale-root`
+/// ([`CANARY_STALE_ROOT`]): the records are not dropped, so the next space made
+/// from the object starts with them.
 ///
 /// The caller holds the only live reference: no task runs on the space.
 pub fn destroy(r: SpaceRef, skip_lo: usize, skip_hi: usize) -> usize {
-    if !cfg!(feature = "as-stale-root-canary") {
+    if !cfg!(feature = "as-stale-root-canary") && !CANARY_STALE_ROOT.load(Ordering::Relaxed) {
         crate::pager::forget(r);
     }
     let a = r.obj();

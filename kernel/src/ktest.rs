@@ -2387,6 +2387,44 @@ azos_ktest::ktest_late! {
     }
 }
 
+// An address space that ends takes its records with it: the kernel's retained
+// cache hands the object out again (the host rows run a stand-in), and the next
+// space made from it starts with none, while a reference kept past the end
+// reaches nothing. Runtime canary `as-stale-root`: the end leaves the records.
+azos_ktest::ktest_late! {
+    fn aspace_made_again_starts_with_no_records() {
+        use azos_mm::{aspace, pager, vmm};
+        const BASE: usize = 0x40_0000;
+        let pa = vmm::create_pagetable().map_err(|_| "no root for the first space")?;
+        let Some(a) = aspace::create(pa) else {
+            vmm::destroy_user_pagetable(pa);
+            return Err("no object for the first space");
+        };
+        let held = pager::reserve(a, BASE, BASE + 8 * azos_arch::PAGE_SIZE, true).is_ok() && pager::space_pages(a) == (8, 0);
+        if aspace::destroy(a, 0, 0) != 0 {
+            return Err("a hart is on a root no task ran on");
+        }
+        if !held {
+            return Err("the first space did not record its region");
+        }
+        let pb = vmm::create_pagetable().map_err(|_| "no root for the second space")?;
+        let Some(b) = aspace::create(pb) else {
+            vmm::destroy_user_pagetable(pb);
+            return Err("no object for the second space");
+        };
+        let clean = pager::space_pages(b) == (0, 0);
+        let stale = pager::space_pages(a) == (0, 0) && !pager::contains(a, BASE);
+        let _ = aspace::destroy(b, 0, 0);
+        if !clean {
+            return Err("the next space started with the dead one's records");
+        }
+        if !stale {
+            return Err("a reference kept past its space reached the next one");
+        }
+        Ok(())
+    }
+}
+
 // The capability tables are a security cache: a table comes from the retained
 // cell cache, a freed cell is never reissued as another type and another
 // type's object is refused. Canary `cap-table-cross-type-canary`: tables come
