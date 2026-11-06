@@ -203,6 +203,9 @@ irq-route-canary = []
 # phase P timer wait ends at its 5 s outer deadline and prints
 # `FAIL  P/the timer source fired`. Hand-run and gate canary.
 portwait-timer-canary = []
+# `ipc_handlers.rs` `doorbell_word`: the end of a doorbell word wraps, so an
+# offset near u64::MAX binds. Host canary (tests/host/syscall-tests).
+doorbell-wrap-canary = []
 ipc-trace = []
 # Periodic census of fast-IPC slot state. Independent of ipc-trace ON
 # PURPOSE: the per-exchange trace perturbs timing enough to hide the very

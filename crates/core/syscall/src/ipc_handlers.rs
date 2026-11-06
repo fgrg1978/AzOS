@@ -280,6 +280,19 @@ fn bind_object(
     Errno::EBUSY.to_syscall_ret()
 }
 
+/// The doorbell word a `PORT_BIND` offset names in a region of `bytes`: a
+/// 4-aligned word wholly inside it, whose offset fits the futex key's `u32`.
+/// `offset` is the caller's raw word, so the end is computed checked.
+/// Canary `doorbell-wrap-canary`: the end wraps, so an offset near `u64::MAX`
+/// passes (and is truncated).
+fn doorbell_word(offset: u64, bytes: u64) -> Option<u32> {
+    let end = if cfg!(feature = "doorbell-wrap-canary") { Some(offset.wrapping_add(4)) } else { offset.checked_add(4) };
+    if offset % 4 != 0 || !end.is_some_and(|e| e <= bytes) {
+        return None;
+    }
+    Some(offset as u32).filter(|_| cfg!(feature = "doorbell-wrap-canary") || offset <= u64::from(u32::MAX))
+}
+
 /// `PORT_BIND`: a0=port cap (`Cap<Port>`), a1=source type
 /// (0 channel, 1 ring, 2 IRQ, 3 timer, 4 endpoint) or-ed with `PORT_BIND_F_REMOVE`,
 /// a2=source, a3=key. Binds (or removes) a source and returns 0, or `-Errno`.
@@ -450,20 +463,23 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
             })
         }
         Source::Doorbell(obj) => {
-            let bytes = azos_ipc::memobj::memobj_describe_ref(obj).map(|d| (d.page_count * azos_arch::PAGE_SIZE) as u64);
-            match bytes {
-                Ok(bytes) if offset % 4 == 0 && offset + 4 <= bytes => {}
-                Ok(_) => return Errno::EINVAL.to_syscall_ret(),
+            let bytes = azos_ipc::memobj::memobj_describe_ref(obj)
+                .map(|d| (d.page_count as u64).saturating_mul(azos_arch::PAGE_SIZE as u64));
+            let offset = match bytes {
+                Ok(bytes) => match doorbell_word(offset, bytes) {
+                    Some(o) => o,
+                    None => return Errno::EINVAL.to_syscall_ret(),
+                },
                 Err(e) => return errno_for_memobj_err(e),
-            }
-            let r2 = port::port_bind_doorbell(r, obj, offset as u32, source as u32, key, binder);
+            };
+            let r2 = port::port_bind_doorbell(r, obj, offset, source as u32, key, binder);
             let held = azos_ipc::cap_store::with_table(tid, |t| {
                 t.get_op(Cap::<Shm>::from_raw(handle), CapPerms::READ, bind_op(ty::SHM)) == Ok(obj)
             }) == Some(true);
             match r2 {
                 Ok(()) if held => 0,
                 Ok(()) => {
-                    port::port_unbind_kind(r, PortSourceKind::Doorbell { obj, offset: offset as u32 });
+                    port::port_unbind_kind(r, PortSourceKind::Doorbell { obj, offset });
                     Errno::ECAPSTALE.to_syscall_ret()
                 }
                 Err(e) => errno_for_port_err(e),

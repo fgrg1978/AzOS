@@ -1680,3 +1680,26 @@ fn a_map_or_a_release_inside_a_map_is_refused() {
     }));
     assert!(sys_shm_map_typed(src, 0) > 0);
 }
+
+/// **A doorbell names a word of its region, checked against the caller's raw
+/// offset.** Misaligned, past the end, straddling it, and an offset whose end
+/// overflows (`u64::MAX & !3`) are `-EINVAL`, never a panic; the last aligned
+/// word binds. Canary `doorbell-wrap-canary`: the end wraps and the overflowing
+/// offset binds.
+#[test]
+fn a_doorbell_offset_outside_its_region_is_refused() {
+    if !azos_limits::FUTEX_SHARED {
+        return;
+    }
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    ring3(a, SLOT_A);
+    let port = handle(sys_port_create_typed());
+    let shm = handle(sys_shm_create_typed(1, 1));
+    let bytes = azos_arch::mmu::PAGE_SIZE as u64;
+    for (off, why) in [(2, "misaligned"), (bytes, "past the end"), (bytes - 2, "straddling the end"), (u64::MAX & !3, "an end that overflows")] {
+        assert_eq!(sys_port_bind_typed(port, PORT_SRC_DOORBELL, shm, 1, off), errno(Errno::EINVAL), "{why}");
+    }
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_DOORBELL, shm, 1, bytes - 4), 0, "the last word");
+}

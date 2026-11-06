@@ -35,6 +35,9 @@ exec-floor-canary = []
 # Mirrors azos_syscall's gate canary (wave 13): `cfg!(feature =
 # "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
 mmap-prot-canary = []
+# `ipc_handlers.rs` `doorbell_word`'s canary: the doorbell offset's end wraps
+# (`a_doorbell_offset_outside_its_region_is_refused` goes red).
+doorbell-wrap-canary = []
 # Mirror azos_syscall's mmap-hint canaries (the pulled-in handlers.rs): the
 # rows of src/mmap_hint.rs go red under each. Off: the real behaviour.
 mmap-hint-canary = []
