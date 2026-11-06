@@ -955,7 +955,7 @@ pub fn line_hooks() -> azos_arch_api::LineHooks {
 /// The ITS on hart 0's redistributor.
 #[inline(always)]
 pub fn irq_routing_init(hart_id: usize) {
-    // The boot CPU's affinity, for `DEVICE_IRQ_BIND`'s routing to a CPU by
+    // The boot CPU's affinity, for `PORT_SRC_IRQ`'s routing to a CPU by
     // its kernel index (the secondaries say theirs when they come up).
     azos_arch::cpu::note_cpu_mpidr(hart_id, azos_arch::cpu::read_mpidr().raw);
     // A GICv2 has no ITS: no LPIs, so no MSI-X through the PCI host (the

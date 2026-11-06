@@ -144,7 +144,7 @@ pub struct LineHooks {
     pub mask: fn(u32),
     /// The budget was replenished: the line is delivered again.
     pub unmask: fn(u32),
-    /// Message-signalled interrupts for ring 3 (`DEVICE_IRQ_BIND` on an
+    /// Message-signalled interrupts for ring 3 (`PORT_SRC_IRQ` on an
     /// `msi.<k>` slot): does this platform deliver them to ring 3?
     pub msi_supported: fn() -> bool,
     /// A vector (x86_64: a LAPIC vector; riscv64 with AIA: an IMSIC identity)

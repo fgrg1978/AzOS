@@ -423,7 +423,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
         return;
     }
 
-    // An SPI a ring-3 driver bound (`DEVICE_IRQ_BIND`), delivered
+    // An SPI a ring-3 driver bound (`PORT_SRC_IRQ`), delivered
     // mask-until-ACK — riscv64's `irq_dispatch`
     // (`kernel/src/entry/riscv64/irq.rs`'s `INT_EXTERNAL_S` arm), plus the mask
     // that a level line needs while ring 3 has not quietened its device yet:

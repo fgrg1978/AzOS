@@ -4371,7 +4371,7 @@ pub fn irq_move_hook(from: u32, to: u32, back: bool) -> (usize, usize, usize) {
 
 /// Route the binding of `irq` that `tid` just stored ([`arch_irq_bound`]);
 /// when the controller refuses the line, drop that binding again
-/// (`irq_bind::irq_unbind`) and answer `false`: `DEVICE_IRQ_BIND` then returns
+/// (`irq_bind::irq_unbind`) and answer `false`: the bind (`PORT_SRC_IRQ`) then returns
 /// `-ENODEV`. The store comes first and the route after it for the release
 /// ordering `irq_unbind_all` documents.
 pub(crate) fn route_stored_binding(irq: u32, tid: u32, cpu: u32) -> bool {
@@ -4392,7 +4392,18 @@ fn route_stored_binding_with(irq: u32, tid: u32, route: impl FnOnce(u32) -> bool
 
 // ── IRQ binding (L5) ─────────────────────────────────────────────────────────
 
-/// The CPU `DEVICE_IRQ_BIND` routes a line to when the caller does not say:
+/// `PORT_BIND_F_REMOVE` of an interrupt line: `tid`'s binding of `irq` (its
+/// capability was checked) goes, and the line is handed back masked. 0, or
+/// `-ENOENT` when `tid` binds none.
+pub fn sys_irq_unbind(tid: u32, irq: u32) -> i64 {
+    if azos_ipc::irq_bind::irq_unbind(irq, tid) {
+        0
+    } else {
+        azos_abi::error::Errno::ENOENT.to_syscall_ret()
+    }
+}
+
+/// The CPU a line bound to a port (`PORT_SRC_IRQ`) is routed to when the caller does not say:
 /// the task's pin, else the CPU it binds from.
 fn default_irq_cpu(tid: u32) -> u32 {
     match azos_sched::task_cpu_affinity(tid) {
@@ -4402,7 +4413,7 @@ fn default_irq_cpu(tid: u32) -> u32 {
     }
 }
 
-/// `DEVICE_IRQ_BIND`: the caller `tid` binds line `irq` (its capability was
+/// `PORT_BIND` of a line (`PORT_SRC_IRQ`): the caller `tid` binds line `irq` (its capability was
 /// checked) to the port the packed reference `port_ref` names (its
 /// capability was checked, `WRITE`), with event key `key`, routed to CPU
 /// `cpu_word` ([`DEVICE_IRQ_CPU_ANY`](azos_abi::invoke::DEVICE_IRQ_CPU_ANY):

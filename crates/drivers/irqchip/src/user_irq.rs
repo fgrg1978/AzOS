@@ -4,7 +4,7 @@
 //! half of mask-until-ACK (wave 9 IRQ4 item 2; aarch64's GIC half is
 //! `azos_arch_aarch64::irq::gic`'s ring-3 section).
 //!
-//! A line a ring-3 driver bound (`DEVICE_IRQ_BIND`) is
+//! A line a ring-3 driver bound (`PORT_SRC_IRQ`) is
 //! delivered like this: the external-interrupt handler claims it, MASKS it,
 //! completes it, then queues/wakes; the driver's `DEVICE_IRQ_ACK` unmasks
 //! it. Before this, the handler claimed, dispatched and completed at once and

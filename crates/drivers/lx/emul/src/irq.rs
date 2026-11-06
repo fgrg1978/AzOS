@@ -8,7 +8,7 @@
 //! # The kernel half
 //!
 //! The server binds each line it serves to its event port once
-//! (`DEVICE_IRQ_BIND` on the line's `Cap<Irq>`, with the Linux irq number as
+//! (`PORT_SRC_IRQ` on the line's `Cap<Irq>`, with the Linux irq number as
 //! the event key). Every interrupt on the line masks it in the kernel and
 //! queues one `PORT_EVENT_IRQ`; the line stays masked until the server's
 //! `DEVICE_IRQ_ACK` (`crates/core/ipc/src/irq_bind.rs`). The server's loop
@@ -90,7 +90,7 @@ pub type IrqHandler = fn(&mut Env, u32, usize) -> IrqReturn;
 #[derive(Clone, Copy, Debug)]
 pub struct IrqChip {
     /// Bind the line to the server's port with the irq number as the event
-    /// key (`DEVICE_IRQ_BIND`): 0, or a negative errno that the request
+    /// key (`PORT_SRC_IRQ`): 0, or a negative errno that the request
     /// returns. Called once per line for the life of the server.
     pub bind: fn(usize, u32) -> i32,
     /// Unmask the line (`DEVICE_IRQ_ACK`).

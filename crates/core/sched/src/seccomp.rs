@@ -566,7 +566,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_REPLY,
         ],
         audit: true,
-        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_CREATE_ENDPOINT, PORT_POLL, DOMAIN_UPTIME, NODE_OPENAT, NODE_MKDIRAT, NODE_READ, NODE_WRITE, DOMAIN_MMIO_MAP, DEVICE_IRQ_BIND],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_CREATE_ENDPOINT, PORT_POLL, DOMAIN_UPTIME, NODE_OPENAT, NODE_MKDIRAT, NODE_READ, NODE_WRITE, DOMAIN_MMIO_MAP, PORT_BIND, DEVICE_IRQ_ACK],
         ifaces: &[
             azos_devif::key::GPIO, azos_devif::key::I2C, azos_devif::key::PWM,
             azos_devif::key::MOTOR, azos_devif::key::SENSOR,
@@ -612,7 +612,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_MAP,
         ],
         audit: true,
-        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_EXIT_STATS, DOMAIN_SUBREAPER, PORT_POLL, PORT_BIND, NODE_OPENAT, NODE_MKDIRAT, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, DEVICE_IRQ_BIND, DOMAIN_CREATE_PORT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_EXIT_STATS, DOMAIN_SUBREAPER, PORT_POLL, PORT_BIND, NODE_OPENAT, NODE_MKDIRAT, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, DEVICE_IRQ_ACK, DOMAIN_CREATE_PORT],
         ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::MOTOR],
     },
     // `SYS_FOREIGN_FORK` is issued as raw asm (`spawn`, the register canary),

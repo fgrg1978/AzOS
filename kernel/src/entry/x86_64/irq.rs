@@ -198,7 +198,7 @@ fn msi(vector: u8) -> bool {
         apic::eoi();
         return woke;
     }
-    // A vector a ring-3 handler holds (`DEVICE_IRQ_BIND` on an `msi.<k>` slot)
+    // A vector a ring-3 handler holds (`PORT_SRC_IRQ` on an `msi.<k>` slot)
     // when no kernel driver claims it: the event is queued on its port, or
     // dropped while the handler is out of budget.
     // Kconfig DRV_E1000E / DRV_IGC: an Intel NIC's MSI.

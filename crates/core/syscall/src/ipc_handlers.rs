@@ -314,8 +314,9 @@ fn doorbell_word(offset: u64, bytes: u64) -> Option<u32> {
 ///   offset (4-aligned, inside the region; `port_bind_doorbell`). Every other
 ///   source takes `offset` 0.
 ///
-/// An interrupt line is bound to a port from the line's side
-/// (`DEVICE_IRQ_BIND`), not from the port's.
+/// - 7: an interrupt line (`PORT_SRC_IRQ`) is bound by the op's own arm
+///   (`invoke::port_bind_irq`), which replies the message of an MSI slot;
+///   it never reaches this function.
 ///
 /// With `PORT_BIND_F_REMOVE`, the ring or timer sources of that type bound
 /// with key `a3` are removed (`port_unbind_key`) and each ring's link cleared;

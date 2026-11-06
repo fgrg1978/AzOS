@@ -24,13 +24,13 @@ use azos_abi::invoke::{
     NODE_ACCEPT, NODE_BIND, NODE_CONNECT, NODE_FSYNC, NODE_LISTEN, NODE_MCAST_JOIN, NODE_MCAST_LEAVE, NODE_READ, NODE_RECV, NODE_RECVFROM, NODE_SEND,
     NODE_MMAP, NODE_OPENAT, NODE_SEEK, NODE_SENDTO, NODE_WRITE,
     DOMAIN_MMIO_MAP, DOMAIN_SUP_GIVE_UP,
-    DEVICE_IRQ_ACK, DEVICE_IRQ_BIND, ENDPOINT_DERIVE, EndpointDerive,
+    DEVICE_IRQ_ACK, ENDPOINT_DERIVE, EndpointDerive,
     DOMAIN_MPROTECT, DOMAIN_SET_CLEAR_TID, DOMAIN_UPTIME, DOMAIN_VDSO_MAP, DOMAIN_WAIT,
     MEMOBJ_ACQUIRE, MEMOBJ_END_DROP,
     PORT_BIND, PORT_DESTROY, PORT_POLL,
     DOMAIN_CREATE_ENDPOINT, DOMAIN_CREATE_PORT, DOMAIN_EXIT_STATS, DOMAIN_PLEDGE, DOMAIN_SET_FILTER,
     DOMAIN_SUBREAPER,
-    is_domain_self, op, op_class, op_kind, op_of, CLASS_CTL, LOG_CONSOLE_WAIT, LOG_CONSOLE_WRITE, INVOKE_FLAGS_KNOWN, INVOKE_OP_MASK, INVOKE_REGS, INVOKE_REG_WORDS,
+    is_domain_self, op, op_class, op_kind, op_of, LOG_CONSOLE_WAIT, LOG_CONSOLE_WRITE, INVOKE_FLAGS_KNOWN, INVOKE_OP_MASK, INVOKE_REGS, INVOKE_REG_WORDS,
 };
 #[cfg(feature = "lx-loader")]
 use azos_abi::invoke::{DOMAIN_MODULE_MAP_X, DOMAIN_MODULE_VERIFY};
@@ -265,6 +265,7 @@ fn port_op(c: &mut Call) -> i64 {
     let h = c.handle as u64;
     match c.op {
         PORT_POLL => crate::ipc_handlers::sys_port_poll_typed(h, c.w[0]),
+        PORT_BIND if c.w[0] & 0xFF == azos_abi::syscall_nr::PORT_SRC_IRQ => port_bind_irq(c),
         PORT_BIND => crate::ipc_handlers::sys_port_bind_typed(h, c.w[0], c.w[1], c.w[2], c.w[3]),
         PORT_DESTROY => crate::ipc_handlers::sys_port_destroy_typed(h),
         _ => Errno::EINVAL.to_syscall_ret(),
@@ -272,54 +273,65 @@ fn port_op(c: &mut Call) -> i64 {
 }
 
 /// Ops on an interrupt line the caller holds (`ty::IRQ`): the handle names the
-/// line, so no op carries a line number. A bind also resolves the port it
-/// reports to; each handle is checked for the right its op needs, in one hold
-/// of the caller's table.
+/// line, so no op carries a line number. The line is bound to a port from the
+/// port's side ([`port_bind_irq`]).
 fn irq_op(c: &mut Call) -> i64 {
-    use azos_ipc::port::PortCapError;
-    if c.op != DEVICE_IRQ_BIND && c.op != DEVICE_IRQ_ACK {
+    if c.op != DEVICE_IRQ_ACK {
         return Errno::EINVAL.to_syscall_ret();
     }
+    let line: Cap<targets::Irq> = Cap::from_raw(CapHandle::from_raw(c.handle));
+    // An ACK is not a write to anything outside: a contained program keeps
+    // its drivers' lines.
+    match azos_ipc::cap_store::with_table(c.tid, |t| t.get_op_uncontained(line, CapPerms::READ, c.op)) {
+        None => Errno::ECAPSTALE.to_syscall_ret(),
+        Some(Err(e)) => {
+            crate::handlers::note_typed_denial_for(c.tid, ty::IRQ, e);
+            errno_cap(e)
+        }
+        Some(Ok(irq)) => crate::handlers::sys_irq_ack(c.tid, irq),
+    }
+}
+
+/// [`PORT_BIND`] of an interrupt line (`PORT_SRC_IRQ`): `w1` the line's
+/// handle (`READ`), `w2` the key, `w3` the CPU word. The port (`WRITE`) and
+/// the line are resolved in one hold of the caller's table; a bind of a
+/// message-signalled slot replies the message its device writes.
+fn port_bind_irq(c: &mut Call) -> i64 {
+    use azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
+    use azos_ipc::port::PortCapError;
     enum Refusal {
         Line(CapError),
         Port(CapError),
     }
     let w = c.w;
-    let line: Cap<targets::Irq> = Cap::from_raw(CapHandle::from_raw(c.handle));
-    let op = c.op;
+    let flags = w[0] & !0xFF;
+    if flags & !PORT_BIND_F_REMOVE != 0 || w[1] > u32::MAX as u64 {
+        return Errno::EINVAL.to_syscall_ret();
+    }
+    let port: Cap<targets::Port> = Cap::from_raw(CapHandle::from_raw(c.handle));
+    let line: Cap<targets::Irq> = Cap::from_raw(CapHandle::from_raw(w[1] as u32));
     let resolved = azos_ipc::cap_store::with_table(c.tid, |t| {
-        // An ACK and a bind are not writes to anything outside: a contained
-        // program keeps its drivers' lines.
-        let irq = t.get_op_uncontained(line, CapPerms::READ, op).map_err(Refusal::Line)?;
-        if op == DEVICE_IRQ_ACK {
-            return Ok((irq, 0));
-        }
-        if w[0] > u32::MAX as u64 {
-            return Err(Refusal::Port(CapError::Stale));
-        }
-        let port: Cap<targets::Port> = Cap::from_raw(CapHandle::from_raw(w[0] as u32));
-        let r = t.get_op(port, CapPerms::WRITE, class_op(ty::PORT, CLASS_CTL)).map_err(Refusal::Port)?;
+        let r = t.get_op(port, CapPerms::WRITE, PORT_BIND).map_err(Refusal::Port)?;
+        let irq = t.get_op_uncontained(line, CapPerms::READ, class_op(ty::IRQ, azos_abi::invoke::CLASS_DRIVER)).map_err(Refusal::Line)?;
         Ok((irq, r))
     });
     match resolved {
         None => Errno::ECAPSTALE.to_syscall_ret(),
+        Some(Err(Refusal::Port(e))) => crate::ipc_handlers::errno_for_port_err(PortCapError::Cap(e)),
         Some(Err(Refusal::Line(e))) => {
             crate::handlers::note_typed_denial_for(c.tid, ty::IRQ, e);
             errno_cap(e)
         }
-        Some(Err(Refusal::Port(e))) => crate::ipc_handlers::errno_for_port_err(PortCapError::Cap(e)),
-        Some(Ok((irq, port))) if op == DEVICE_IRQ_BIND => {
+        Some(Ok((irq, _))) if flags != 0 => crate::handlers::sys_irq_unbind(c.tid, irq),
+        Some(Ok((irq, port))) => {
             let mut msg = None;
-            let rc = crate::handlers::sys_irq_bind(c.tid, irq, port, w[1], w[2], &mut msg);
-            // A message-signalled slot answers the message its device writes:
-            // address, data, and the vector it lands on.
+            let rc = crate::handlers::sys_irq_bind(c.tid, irq, port, w[2], w[3], &mut msg);
             if let (true, Some(m)) = (rc >= 0, msg) {
                 c.rep[..3].copy_from_slice(&[m.address, m.data as u64, m.id as u64]);
                 c.nrep = 3;
             }
             rc
         }
-        Some(Ok((irq, _))) => crate::handlers::sys_irq_ack(c.tid, irq),
     }
 }
 

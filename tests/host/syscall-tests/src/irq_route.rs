@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// The handler halves of an interrupt line's ops (`DEVICE_IRQ_BIND`,
+// The handler halves of an interrupt line's ops (`PORT_SRC_IRQ`,
 // `DEVICE_IRQ_ACK`) that sit behind the capability checks of `invoke.rs`
 // (those are driven through the entry in `typed_ipc.rs`): the controller's
 // refusal, and what an ACK answers for a line whose handler is out of budget.

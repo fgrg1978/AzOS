@@ -426,7 +426,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                         azos_drv_irqchip::irqchip::init(hart as u32);
                     } else if azos_drv_irqchip::irqchip::user_msi_owned(irq) {
                         // An IMSIC identity a ring-3 handler holds
-                        // (`DEVICE_IRQ_BIND` on an `msi.<k>` slot): nothing
+                        // (`PORT_SRC_IRQ` on an `msi.<k>` slot): nothing
                         // to mask or acknowledge; the event is queued on its
                         // port, or dropped while the handler is out of
                         // budget.

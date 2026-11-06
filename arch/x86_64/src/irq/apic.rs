@@ -232,7 +232,7 @@ pub fn msi_alloc(n: u8) -> Option<u8> {
 /// block (`vector - first`), for [`msi_alloc_one`] to hand out again.
 static MSI_FREED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
-/// One MSI vector for a ring-3 handler (`DEVICE_IRQ_BIND` on an MSI line): a
+/// One MSI vector for a ring-3 handler (`PORT_SRC_IRQ` on an MSI line): a
 /// vector given back by [`msi_free`] first, else a new one ([`msi_alloc`]).
 /// Unlike the kernel's, it is returned when the binding goes, so a driver that
 /// restarts does not spend the block. `None` once the block is spent.

@@ -191,7 +191,7 @@ fn a_sensor_driver_that_sleeps_probes_streams_and_unloads() {
         unsafe { env.add_stack(s.as_mut_ptr(), s.len()).unwrap() };
     }
     env.clock.set_source(now);
-    // The server's chip: DEVICE_IRQ_BIND and DEVICE_IRQ_ACK on the line.
+    // The server's chip: PORT_SRC_IRQ and DEVICE_IRQ_ACK on the line.
     env.set_irq_chip(IrqChip { bind: |_, _| 0, ack: |_, _| {} });
     env.kthread_run(module_init, 0).unwrap();
     let mut irq = Some(FRAME_IRQ_AT);

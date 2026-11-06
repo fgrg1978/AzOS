@@ -1150,7 +1150,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 
     // `CAPTEST.ELF`'s own row (feature `captest-row`): the shape of a ring-3
     // driver row that binds an interrupt line. With Kconfig `IRQ_THREADED` the
-    // bind (`DEVICE_IRQ_BIND`) is refused for a task without a hard
+    // bind (`PORT_SRC_IRQ`) is refused for a task without a hard
     // reservation, and the generic `autorun` row declares none, so captest's
     // IRQ section ran against a rule its row could never satisfy. This row
     // declares one, and the budget rule is exercised as in production: the bind

@@ -131,7 +131,7 @@ unsafe fn wake_preempt_check(cpu: usize, idx: usize) {
 fn wait_reason_tag(r: WaitReason) -> u8 {
     match r {
         WaitReason::None => 0,
-        // 1 was `Irq`, removed with the wake-task IRQ binding (`DEVICE_IRQ_BIND`
+        // 1 was `Irq`, removed with the wake-task IRQ binding (`PORT_SRC_IRQ`
         // reports through a port): not reused, so a recorded tag keeps its
         // meaning.
         // 2 was `Channel`, removed with the channel pool: not reused, so a

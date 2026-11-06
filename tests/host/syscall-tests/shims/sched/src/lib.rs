@@ -1161,7 +1161,7 @@ pub enum WaitReason {
     Timer(u64),
 }
 
-/// `azos_sched::smp`, for `DEVICE_IRQ_BIND`'s CPU argument: four CPUs online,
+/// `azos_sched::smp`, for `PORT_SRC_IRQ`'s CPU argument: four CPUs online,
 /// the caller on CPU 0.
 pub mod smp {
     pub static NUM_ONLINE_CPUS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(4);

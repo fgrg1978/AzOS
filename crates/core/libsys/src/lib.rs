@@ -2236,8 +2236,8 @@ pub fn println(s: &[u8]) {
 
 /// Bind the interrupt line the `ty::IRQ` handle `line` names to the event
 /// port `port` (a `ty::PORT` handle with `WRITE`), with event key `key`,
-/// routed to CPU `cpu` ([`DEVICE_IRQ_CPU_ANY`]: the kernel chooses).
-/// `DEVICE_IRQ_BIND`.
+/// routed to CPU `cpu` ([`DEVICE_IRQ_CPU_ANY`]: the kernel chooses):
+/// `PORT_BIND` with [`PORT_SRC_IRQ`].
 ///
 /// Every interrupt on the line masks it and queues one [`PORT_EVENT_IRQ`]
 /// event on the port; [`irq_ack`] unmasks it. The caller is the line's
@@ -2252,7 +2252,14 @@ pub fn println(s: &[u8]) {
 /// (another task binds the line), `-EMFILE` (binding table full), `-ENODEV`
 /// (nothing bound) when the interrupt controller cannot deliver the line.
 pub fn irq_bind(line: u32, port: u32, key: u64, cpu: u64) -> isize {
-    invoke(line, invoke_abi::DEVICE_IRQ_BIND, [port as u64, key, cpu, 0]).0
+    invoke(port, invoke_abi::PORT_BIND, [PORT_SRC_IRQ, line as u64, key, cpu]).0
+}
+
+/// Remove this task's binding of the line `line` from the port `port`
+/// (`PORT_BIND` with [`PORT_SRC_IRQ`] and [`PORT_BIND_F_REMOVE`]): the line is
+/// handed back masked. 0, or `-ENOENT` when the task binds none.
+pub fn irq_unbind(line: u32, port: u32) -> isize {
+    invoke(port, invoke_abi::PORT_BIND, [PORT_SRC_IRQ | PORT_BIND_F_REMOVE, line as u64, 0, 0]).0
 }
 
 pub use azos_abi::invoke::DEVICE_IRQ_CPU_ANY;
@@ -2542,7 +2549,8 @@ fn console_cap() -> isize {
 pub use azos_abi::syscall_nr::{
     PORT_EVENT_CALLS, PORT_EVENT_CALL_NOTICE, PORT_EVENT_CODE_OFFSET, PORT_EVENT_DOORBELL, PORT_EVENT_IRQ,
     PORT_EVENT_NO_SENDERS, PORT_EVENT_RING, PORT_EVENT_PRESSURE, PORT_EVENT_SOURCE_GONE, PORT_EVENT_TIMER,
-    PORT_SRC_CALLS, PORT_SRC_DOORBELL, PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER,
+    PORT_SRC_CALLS, PORT_SRC_DOORBELL, PORT_SRC_ENDPOINT, PORT_SRC_IRQ, PORT_SRC_PRESSURE, PORT_SRC_RING,
+    PORT_SRC_TIMER,
 };
 /// [`port_bind_typed`] flag, or-ed into the source type: remove the sources
 /// of that type bound with the key instead of binding one.

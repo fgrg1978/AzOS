@@ -253,8 +253,36 @@ pub const PORT_POLL: u16 = op(CapKind::Port, CLASS_READ, 1);
 /// Bind an event source to the port (a `PORT_SRC_*`, or-ed with
 /// `PORT_BIND_F_REMOVE` to remove): `w0` the source type, `w1` the source's
 /// capability (a timer: its deadline), `w2` the event key, `w3` the word's
-/// byte offset for a doorbell (`PORT_SRC_DOORBELL`), 0 for every other
-/// source. Needs `WRITE`.
+/// byte offset for a doorbell (`PORT_SRC_DOORBELL`), the CPU for an
+/// interrupt line (`PORT_SRC_IRQ`), 0 for every other source. Needs `WRITE`.
+///
+/// **An interrupt line** (`PORT_SRC_IRQ`, `w1` a `ty::IRQ` handle with
+/// `READ`): the line is routed to the CPU `w3` names ([`DEVICE_IRQ_CPU_ANY`]:
+/// the CPU of the caller's reservation, else the caller's pin, else the CPU
+/// it binds from), and each interrupt masks the line and queues one
+/// `PORT_EVENT_IRQ` event (`source_id` the line) on the port, waking its
+/// waiter; [`DEVICE_IRQ_ACK`] unmasks it. With Kconfig `IRQ_THREADED` the
+/// caller is the line's handler and must run on a hard reservation: the line
+/// goes to the reservation's CPU, and a handler that runs out of budget has
+/// its lines masked until it is replenished (a decision record,
+/// `Rule::IrqBudget`). Returns the CPU the line was routed to, or
+/// `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` (the line or the port),
+/// `-EBUSY` (another task binds the line), `-EPERM` (`IRQ_THREADED` and no
+/// hard reservation), `-EINVAL` (a CPU the reservation does not run on, or
+/// one that is not online), `-EMFILE` (the binding table is full),
+/// `-ENODEV` (the interrupt controller cannot deliver the line, or the
+/// platform has no MSI for ring 3; nothing stays bound). With
+/// `PORT_BIND_F_REMOVE` the caller's binding of the line is removed (0, or
+/// `-ENOENT` when it binds none).
+///
+/// A **message-signalled slot** (`msi.<k>` in a topology row: a handle whose
+/// line has `MSI_LINE` set) is bound the same way. The bind takes a vector
+/// (x86_64: a LAPIC vector; riscv64 with AIA: an IMSIC identity), enables it
+/// on the CPU, and the call replies, in the register form, `a1` the address,
+/// `a2` the data and `a3` the vector: the message a device writes (an MSI
+/// capability or an MSI-X table entry) to raise the event. The vector goes
+/// back with the binding. An MSI cannot be masked: while the handler is out of
+/// budget the kernel drops its deliveries instead of holding the line.
 pub const PORT_BIND: u16 = op(CapKind::Port, CLASS_CTL, 2);
 /// Free the port and revoke the handle. Needs `WRITE`.
 pub const PORT_DESTROY: u16 = op(CapKind::Port, CLASS_CTL, 3);
@@ -353,8 +381,9 @@ pub const DOMAIN_MODULE_MAP_X: u16 = op(CapKind::Domain, CLASS_MODULE, 35);
 /// `_REPLY`, `_REPLY_FETCH` and `_REPLY_WAIT`; the absolute-path ops of the
 /// domain `DOMAIN_STAT`, `_READDIR`, `_STATFS` (`READ` 13-15) and
 /// `DOMAIN_MKDIR`, `_UNLINK`, `_RMDIR`, `_RENAME`, `_TRUNCATE` (`FS_MUTATE`
-/// 20-24), whose names are now beneath a directory: the `NODE_*AT` ops).
-pub const RETIRED_OPS: [u16; 14] = [
+/// 20-24), whose names are now beneath a directory: the `NODE_*AT` ops; the
+/// line's `DEVICE_IRQ_BIND` (`DRIVER` 1), now the port's `PORT_SRC_IRQ`).
+pub const RETIRED_OPS: [u16; 15] = [
     op(CapKind::Domain, CLASS_DRIVER, 39),
     op(CapKind::Domain, CLASS_DRIVER, 40),
     op(CapKind::Domain, CLASS_DRIVER, 44),
@@ -369,6 +398,7 @@ pub const RETIRED_OPS: [u16; 14] = [
     op(CapKind::Domain, CLASS_FS_MUTATE, 22),
     op(CapKind::Domain, CLASS_FS_MUTATE, 23),
     op(CapKind::Domain, CLASS_FS_MUTATE, 24),
+    op(CapKind::Device, CLASS_DRIVER, 1),
 ];
 /// The component manager will not restart the row whose task `w0` was (a
 /// child it spawned that died with its named endpoints held): the kernel
@@ -515,37 +545,10 @@ pub const ROOT_DIR_RESOURCE: u32 = 0x4000_0000;
 
 // ── Device: an interrupt line the caller holds ──────────────────────────────
 
-/// `w2` of [`DEVICE_IRQ_BIND`]: let the kernel choose the CPU.
+/// `w3` of [`PORT_BIND`] with an interrupt line (`PORT_SRC_IRQ`): let the
+/// kernel choose the CPU.
 pub const DEVICE_IRQ_CPU_ANY: u64 = u64::MAX;
 
-/// Bind the interrupt line the `ty::IRQ` handle names to an event port (L5):
-/// `w0` the port's handle (needs `WRITE`), `w1` the key every event carries,
-/// `w2` the CPU the line is routed to ([`DEVICE_IRQ_CPU_ANY`]: the CPU of the
-/// caller's reservation, else the caller's pin, else the CPU it binds from).
-/// Needs `READ` on the line. Each interrupt masks the line and queues one
-/// `PORT_EVENT_IRQ` event (`source_id` the line) on the port, waking its
-/// waiter; [`DEVICE_IRQ_ACK`] unmasks the line.
-///
-/// With Kconfig `IRQ_THREADED` the caller is the line's handler and must run
-/// on a hard reservation: the line goes to the reservation's CPU, and a
-/// handler that runs out of budget has its lines masked until it is
-/// replenished (a decision record, `Rule::IrqBudget`). Returns the CPU the
-/// line was routed to, or `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` (the line
-/// or the port), `-EBUSY` (another task binds the line), `-EPERM`
-/// (`IRQ_THREADED` and no hard reservation), `-EINVAL` (a CPU the
-/// reservation does not run on, or one that is not online), `-EMFILE` (the
-/// binding table is full), `-ENODEV` (the interrupt controller cannot deliver
-/// the line, or the platform has no MSI for ring 3; nothing stays bound).
-///
-/// A **message-signalled slot** (`msi.<k>` in a topology row: a handle whose
-/// line has `MSI_LINE` set) is bound by the same op. The bind takes a vector
-/// (x86_64: a LAPIC vector; riscv64 with AIA: an IMSIC identity), enables it
-/// on the CPU, and the call replies, in the register form, `a1` the address,
-/// `a2` the data and `a3` the vector: the message a device writes (an MSI
-/// capability or an MSI-X table entry) to raise the event. The vector goes
-/// back with the binding. An MSI cannot be masked: while the handler is out of
-/// budget the kernel drops its deliveries instead of holding the line.
-pub const DEVICE_IRQ_BIND: u16 = op(CapKind::Device, CLASS_DRIVER, 1);
 /// Acknowledge the line after its device was quietened: unmask it. Needs
 /// `READ` on the line. Returns 0 when the line is live again, 1 when the
 /// handler's budget is spent and the line stays masked until the

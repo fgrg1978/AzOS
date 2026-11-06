@@ -5,7 +5,7 @@
 //! admission.
 //!
 //! A ring-3 driver binds a line with an op of its `Device` capability
-//! (`DEVICE_IRQ_BIND`): the line is routed to one CPU and every interrupt on
+//! (`PORT_SRC_IRQ`): the line is routed to one CPU and every interrupt on
 //! it queues a `PORT_EVENT_IRQ` event on the driver's port. The top half is
 //! as small as it gets: the external-interrupt handler masks the line,
 //! completes it, and calls [`irq_dispatch`], which queues the event and wakes
@@ -545,7 +545,7 @@ pub fn irq_unbind_all(owner_task: u32) {
 }
 
 /// Drop `owner_task`'s binding of `irq`: the undo of a bind whose line the
-/// interrupt controller refused (`DEVICE_IRQ_BIND` answers `-ENODEV`). The
+/// interrupt controller refused (`PORT_SRC_IRQ` answers `-ENODEV`). The
 /// line goes through the release hook, as in [`irq_unbind_all`]. `false` when
 /// there was no such binding.
 pub fn irq_unbind(irq: u32, owner_task: u32) -> bool {
@@ -742,7 +742,7 @@ fn msi_give_back(id: u32) {
 }
 
 /// Whether a `Cap<Irq>` may name interrupt line `irq` on this build's
-/// interrupt controller: the lines `DEVICE_IRQ_BIND` could ever accept, so no
+/// interrupt controller: the lines `PORT_SRC_IRQ` could ever accept, so no
 /// capability is minted for a line no bind takes.
 ///
 /// * riscv64: a PLIC/APLIC source, `1..MAX_IRQS` (source 0 means "none").
@@ -780,7 +780,7 @@ const _: () = {
 /// Mint a `Cap<Irq>` naming interrupt line `irq`. U03-2/U03-8: the first
 /// minter this kind has ever had, and the range check the audit asked for
 /// alongside it — an out-of-range line is refused here rather than accepted
-/// and left for `irq_bind`/`DEVICE_IRQ_BIND` to reject later against a
+/// and left for `irq_bind`/`PORT_SRC_IRQ` to reject later against a
 /// binding table that has nothing to do with whether the line exists.
 /// `Cap<Irq>` is not a packed kind (`objref::layout` has no arm for it): the
 /// resource is the bare line number, the same shape `motor_cap`

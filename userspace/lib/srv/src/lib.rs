@@ -3,7 +3,7 @@
 //! The ring-3 server runtime: one thread, one event port, one wait.
 //!
 //! A server binds everything it serves to one port: its endpoint's queued
-//! calls (`PORT_SRC_CALLS`), its interrupt lines (`DEVICE_IRQ_BIND`), its
+//! calls (`PORT_SRC_CALLS`), its interrupt lines (`PORT_SRC_IRQ`), its
 //! timers (`PORT_SRC_TIMER`, one-shot, re-armed by the handler) and the
 //! doorbell words of the shared rings it consumes (`PORT_SRC_DOORBELL`).
 //! [`Server::turn`] waits on the port once and hands what woke it to the

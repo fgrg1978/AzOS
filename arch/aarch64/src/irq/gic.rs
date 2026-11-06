@@ -523,7 +523,7 @@ pub fn disable_spi(intid: u32) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Ring-3 SPI ownership (`DEVICE_IRQ_BIND`, ACK 305)
+// Ring-3 SPI ownership (`PORT_SRC_IRQ`, ACK 305)
 //
 // A line a ring-3 driver bound is delivered mask-until-ACK: `handle_irq`
 // masks it (`GICD_ICENABLER`), EOIs it, then queues/wakes; the driver's

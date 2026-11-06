@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // Stage 3 of the move to typed calls: the calls that replace the untyped
 // shared-memory and port calls. 574 maps a region, 575 binds a source to a
-// port, `DEVICE_IRQ_BIND` binds an IRQ to one, 577 waits on a port; 535
+// port, `PORT_SRC_IRQ` binds an IRQ to one, 577 waits on a port; 535
 // unmaps before it releases. Each is driven through the pulled handler as a
 // ring-3 caller with its own capability table and a real page table.
 //
@@ -507,22 +507,32 @@ fn a_map_that_fails_part_way_keeps_its_reference_until_exit() {
 // 575
 // ═════════════════════════════════════════════════════════════════════════
 
-/// `DEVICE_IRQ_BIND` / `DEVICE_IRQ_ACK` through the entry, in the register
-/// form.
+/// An op through the entry, in the register form.
 fn irq_invoke(line: u64, op: u16, w0: u64, w1: u64, w2: u64) -> i64 {
     let mut out = crate::dispatch::SyscallOut::new();
     crate::invoke::sys_invoke(line, azos_abi::invoke::INVOKE_REGS | op as u64, w0, w1, w2, 0, &mut out)
 }
 
+/// `PORT_BIND` of the line `line` (`PORT_SRC_IRQ`) on `port`.
 fn irq_bind_op(line: u64, port: u64, key: u64, cpu: u64) -> i64 {
-    irq_invoke(line, azos_abi::invoke::DEVICE_IRQ_BIND, port, key, cpu)
+    let mut out = crate::dispatch::SyscallOut::new();
+    let opw = azos_abi::invoke::INVOKE_REGS | azos_abi::invoke::PORT_BIND as u64;
+    crate::invoke::sys_invoke(port, opw, azos_abi::syscall_nr::PORT_SRC_IRQ, line, key, cpu, &mut out)
+}
+
+/// `PORT_BIND_F_REMOVE` of the line `line` on `port`.
+fn irq_unbind_op(line: u64, port: u64) -> i64 {
+    let mut out = crate::dispatch::SyscallOut::new();
+    let opw = azos_abi::invoke::INVOKE_REGS | azos_abi::invoke::PORT_BIND as u64;
+    let ty = azos_abi::syscall_nr::PORT_SRC_IRQ | azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
+    crate::invoke::sys_invoke(port, opw, ty, line, 0, 0, &mut out)
 }
 
 fn irq_ack_op(line: u64) -> i64 {
     irq_invoke(line, azos_abi::invoke::DEVICE_IRQ_ACK, 0, 0, 0)
 }
 
-/// **`DEVICE_IRQ_BIND` binds the IRQ to the port its capability names, and the
+/// **`PORT_SRC_IRQ` binds the IRQ to the port its capability names, and the
 /// binding delivers to no other port, the one created next at that index
 /// included.**
 ///
@@ -589,11 +599,12 @@ fn an_irq_event_carries_its_cpu_on_the_wire() {
     assert_eq!(take16(BUF)[azos_abi::syscall_nr::PORT_EVENT_CPU_OFFSET], 0);
 }
 
-/// **`DEVICE_IRQ_BIND` refuses in its documented order.** The op first, then
-/// the line's capability (its right: `READ`), then the port's (`WRITE`; a
-/// bind adds a source, so containment refuses it), then the CPU; a line
+/// **`PORT_SRC_IRQ` refuses in its documented order.** The op first, then
+/// the port's capability (`WRITE`; a bind adds a source, so containment
+/// refuses it), then the line's (its right: `READ`), then the CPU; a line
 /// another task binds is `-EBUSY`. The ACK of a line nobody binds is
-/// `-ENOENT`, and containment leaves an ACK live.
+/// `-ENOENT`, and containment leaves an ACK live. The remove takes the
+/// caller's binding and only it.
 ///
 /// **Canaries.** Resolve the port with `get_uncontained`: the contained bind
 /// reads the CPU. Ask `NONE` of the line: the one without `READ` binds. Take
@@ -620,9 +631,11 @@ fn an_irq_bind_refuses_in_its_documented_order() {
     assert_eq!(irq_bind_op(wo_irq, port, 1, any), errno(Errno::ECAPPERMS), "a line without READ");
     assert_eq!(irq_ack_op(wo_irq), errno(Errno::ECAPPERMS), "a line without READ, ACK");
     assert_eq!(irq_bind_op(irq, forged_port, 1, any), errno(Errno::ECAPSTALE), "a forged port");
-    assert_eq!(irq_bind_op(irq, port | 1 << 32, 1, any), errno(Errno::ECAPSTALE), "a port handle past 32 bits");
+    assert_eq!(irq_bind_op(irq, port | 1 << 32, 1, any), errno(Errno::EINVAL), "a port handle past 32 bits");
+    assert_eq!(irq_bind_op(irq | 1 << 32, port, 1, any), errno(Errno::EINVAL), "a line handle past 32 bits");
     assert_eq!(irq_bind_op(irq, ro_port, 1, any), errno(Errno::ECAPPERMS), "a READ-only port");
-    assert_eq!(irq_bind_op(irq, irq, 1, any), errno(Errno::ECAPKIND), "a line as the port");
+    assert_eq!(irq_bind_op(irq, irq, 1, any), errno(Errno::EINVAL), "a line as the port");
+    assert_eq!(irq_bind_op(port, port, 1, any), errno(Errno::ECAPKIND), "a port as the line");
     assert_eq!(irq_bind_op(irq, port, 1, 9), errno(Errno::EINVAL), "a CPU that is not online");
     assert_eq!(irq_bind_op(irq, port, 1, u64::MAX - 1), errno(Errno::EINVAL));
     assert_eq!(irq_ack_op(irq), errno(Errno::ENOENT), "nobody binds the line yet");
@@ -641,10 +654,15 @@ fn an_irq_bind_refuses_in_its_documented_order() {
     let port_b = handle(sys_port_create_typed());
     let irq_b = held::<Irq>(b, CapPerms::READ, IRQ);
     assert_eq!(irq_bind_op(irq_b, port_b, 2, any), errno(Errno::EBUSY), "a line another task binds");
+    assert_eq!(irq_unbind_op(irq_b, port_b), errno(Errno::ENOENT), "a remove takes only the caller's binding");
+    assert_eq!(azos_ipc::irq_bind::irq_bindings_of(IRQ), 1);
     become_task(a, pt_a);
     azos_ipc::cap::degraded_set(true);
     assert_eq!(irq_ack_op(irq), 0, "an ACK is not contained");
     azos_ipc::cap::degraded_set(false);
+    assert_eq!(irq_unbind_op(irq, port), 0, "the remove");
+    assert_eq!(azos_ipc::irq_bind::irq_bindings_of(IRQ), 0, "the line is bound no more");
+    assert_eq!(irq_ack_op(irq), errno(Errno::ENOENT), "and its ACK finds no binding");
 }
 
 /// **A message-signalled slot (`MSI_LINE | k`) binds through the same op and
@@ -654,7 +672,7 @@ fn an_irq_bind_refuses_in_its_documented_order() {
 /// on the port with the slot as its source id; the ACK of an MSI is 0 and
 /// touches no controller. A platform without MSI answers `-ENODEV`.
 ///
-/// **Canary.** Leave `nrep` at 0 in `irq_op`: the replies read back as the
+/// **Canary.** Leave `nrep` at 0 in `port_bind_irq`: the replies read back as the
 /// words the call passed in.
 #[test]
 fn an_msi_slot_binds_and_answers_its_message() {
@@ -677,9 +695,9 @@ fn an_msi_slot_binds_and_answers_its_message() {
     ipc_sched_shim::rt::set_reservation_cpu(2);
     let mut out = crate::dispatch::SyscallOut::new();
     let rc = crate::invoke::sys_invoke(
-        slot,
-        azos_abi::invoke::INVOKE_REGS | azos_abi::invoke::DEVICE_IRQ_BIND as u64,
-        port, 0x51, 2, 0, &mut out,
+        port,
+        azos_abi::invoke::INVOKE_REGS | azos_abi::invoke::PORT_BIND as u64,
+        azos_abi::syscall_nr::PORT_SRC_IRQ, slot, 0x51, 2, &mut out,
     );
     ipc_sched_shim::rt::set_reservation_cpu(0);
     assert_eq!(rc, 2, "the CPU asked for");
@@ -1513,14 +1531,13 @@ fn an_op_mask_gates_the_memory_object_ops_by_their_class() {
     assert!(azos_mm::vmm::translate_user(pt, va, false).is_none(), "the release through the CTL copy unmapped");
 }
 
-/// **An interrupt line answers `DEVICE_IRQ_BIND` and `DEVICE_IRQ_ACK` through
+/// **An interrupt line answers `PORT_SRC_IRQ` and `DEVICE_IRQ_ACK` through
 /// a capability whose mask lists `DRIVER`, and the port a bind reports to is a
-/// second handle with its own mask: the bind steers it (`CTL`).** The line is
-/// checked first, then the port.
+/// the handle the bind is an op of: `PORT_BIND` steers it (`CTL`).** The port
+/// is checked first, then the line.
 ///
-/// **Canary.** Resolve the port with `get` in `irq_op`: the bind through a
-/// port copy whose mask lists `CTL` reads `-ECAPPERMS`. Resolve the line with
-/// `get`: the bind and the ACK through the `DRIVER` copy read `-ECAPPERMS`.
+/// **Canary.** Resolve the line with `class_op(ty::IRQ, CLASS_CTL)` in
+/// `port_bind_irq`: the bind through the `DRIVER` copy reads `-ECAPPERMS`.
 #[test]
 fn an_op_mask_gates_the_irq_ops_and_the_port_they_report_to() {
     let _g = serial();
@@ -1537,7 +1554,7 @@ fn an_op_mask_gates_the_irq_ops_and_the_port_they_report_to() {
     // The ACK of a line nobody binds is -ENOENT: the op ran.
     assert_eq!(irq_ack_op(rd), denied);
     assert_eq!(irq_ack_op(drv), errno(Errno::ENOENT));
-    // The bind: the line's mask first, then the port's.
+    // The bind: the port's mask first, then the line's.
     assert_eq!(irq_bind_op(rd, port_ctl, 1, any), denied, "the line's mask excludes DRIVER");
     assert_eq!(irq_bind_op(drv, port_rd, 1, any), denied, "the port's mask excludes CTL");
     assert_eq!(irq_bind_op(drv, port_ctl, 0xCD, any), 0);

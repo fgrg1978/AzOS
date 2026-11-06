@@ -862,10 +862,19 @@ pub const PORT_SRC_CALLS: u64 = 5;
 /// waits on the port. Coalesced: one event stands for at least one wake.
 pub const PORT_SRC_DOORBELL: u64 = 6;
 
+/// Port source: a device's interrupt line (`ty::IRQ` with `READ`; the
+/// `PORT_BIND` op's fourth word is the CPU the line is routed to,
+/// `azos_abi::invoke::DEVICE_IRQ_CPU_ANY` to let the kernel choose). Each
+/// interrupt masks the line and reports [`PORT_EVENT_IRQ`]; the line stays
+/// masked until the handler's `DEVICE_IRQ_ACK`. With `PORT_BIND_F_REMOVE` the
+/// caller's binding of the line the source word names is removed. The full
+/// contract is `azos_abi::invoke::PORT_BIND`'s.
+pub const PORT_SRC_IRQ: u64 = 7;
+
 /// Event source type: an io_ring has completions.
 pub const PORT_EVENT_RING: u8 = 2;
 
-/// Event source type: an IRQ was delivered (`DEVICE_IRQ_BIND`).
+/// Event source type: an IRQ was delivered ([`PORT_SRC_IRQ`]).
 pub const PORT_EVENT_IRQ: u8 = 3;
 
 /// Event source type: a timer fired.
