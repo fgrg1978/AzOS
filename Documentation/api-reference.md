@@ -174,7 +174,7 @@ target `<iface>[.<resource>]` to an interface and a badge (`parse_target`,
 | `Keys` | `keys` | none |
 | `Power` | `power` | none |
 | `Flight`, `Behavior`, `Config`, `Ota` | `families` | none |
-| `Gpio` | `gpio` | `gpio.<pin>` |
+| `Gpio` | `gpio` | `gpio.<controller>.<pin>`, `gpio.<pin>` (controller 0) |
 | `I2c` | `i2c` | `i2c.<bus>.<address>` |
 | `Spi` | `spi` | `spi.<bus>.<chip select>` |
 | `Can` | `can` | `can.<controller>` |

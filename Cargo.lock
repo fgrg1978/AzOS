@@ -353,6 +353,7 @@ dependencies = [
  "azos_drv_api",
  "azos_drv_base",
  "azos_drv_sys",
+ "azos_limits",
  "azos_sync",
 ]
 

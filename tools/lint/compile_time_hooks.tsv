@@ -37,6 +37,7 @@ captest-row	pending	adds rows to the built-in topology (crates/core/topology/src
 chaos-storm-canary	hot	crates/core/sched/src/scheduler/mod.rs: chaos_deadline, on the timer arm path of every tick, in a crate `canary!` does not reach
 cmdline-init-canary	secure-boot	kernel/src/console_mode.rs: the check it breaks exists only under secure-boot-enforced
 commander-exit-nostop-canary	host-shared	crates/core/syscall/src/motor_commander.rs, also built by tests/host/syscall-tests with this feature
+gpio-badge-canary	host-shared	crates/core/devif/src/gpio.rs (a const fn): devif-tests and syscall-tests build the same source with this feature
 tmpfs-bound-canary	host-shared	crates/fs/src/tmpfs.rs, also built by tests/host/fs-tests with this feature
 console-format-in-lock	pending	
 console-isig-canary	pending	

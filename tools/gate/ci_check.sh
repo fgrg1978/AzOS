@@ -11969,6 +11969,10 @@ host_job host_canary_row "port: doorbell leak canary" ipc-tests port-bell-leak-c
 host_job host_canary_row "port: shared doorbells canary" ipc-tests port-bells-shared-canary a_full_port_does_not_take_another_tasks_doorbell
 host_job host_canary_row "port: doorbell offset canary" syscall-tests doorbell-wrap-canary a_doorbell_offset_outside_its_region_is_refused
 host_job host_canary_row "port: calls binder canary" syscall-tests calls-any-binder-canary only_the_server_binds_an_endpoints_calls
+# A gpio badge stamped without its controller: the spelling test and the
+# Gpio server's cross-controller refusal go red.
+host_job host_canary_row "gpio: badge controller canary (devif)" devif-tests badge-without-controller-canary a_gpio_badge_names_its_controller
+host_job host_canary_row "gpio: badge controller canary (endpoint)" syscall-tests gpio-badge-canary a_capability_on_controller_1_never_reaches_controller_0
 host_job host_canary_row "srv: call signal canary" srv-tests port-calls-canary a_call_and_an_irq_on_one_port_are_served_by_one_thread
 host_job host_canary_row "srv: batch canary" srv-tests batch-canary neither_calls_nor_interrupts_starve_the_other
 host_job host_canary_row "srv: owed calls canary" srv-tests owed-drop-canary a_refused_accept_keeps_the_calls_owed
@@ -16178,12 +16182,24 @@ PY
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind irq canary (rv)" ktest_row "ktest driver unbind irq canary (rv)" rv "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce (rv)" ktest_row "ktest driver quiesce (rv)" rv "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them'
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce canary (rv)" ktest_row "ktest driver quiesce canary (rv)" rv "" "driver_records_quiesce_and_bring_back_every_kernel_device" "canary=suspend-leaves-disk-up"
+    # Two GPIO controllers behind one interface: the board's and the soft
+    # expander (Kconfig GPIO_SOFT_EXPANDER, on in development QEMU kernels).
+    # A capability on controller 1 drives its pin and not controller 0's;
+    # the canary stamps the badge without the controller.
+    par "ktest gpio two controllers (rv)" ktest_row "ktest gpio two controllers (rv)" rv "" "" "" '^\[KTEST\] gpio: two controllers, one interface'
+    par "ktest gpio badge canary (rv)" ktest_row "ktest gpio badge canary (rv)" rv ",gpio-badge-canary" "gpio_two_controllers_serve_one_interface"
     par "ktest driver disk in use refuses unbind (arm)" ktest_row "ktest driver disk in use refuses unbind (arm)" arm "" "" "" '^\[KTEST\] driver records: the disk in use refused its unbind' $AZOS_OUT/build/disk-aarch64.img
     par "ktest driver disk in use unbind canary (arm)" ktest_row "ktest driver disk in use unbind canary (arm)" arm "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-ignores-openers" "" $AZOS_OUT/build/disk-aarch64.img
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind rebind (arm)" ktest_row "ktest driver unbind rebind (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind irq canary (arm)" ktest_row "ktest driver unbind irq canary (arm)" arm "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce (arm)" ktest_row "ktest driver quiesce (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them'
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce canary (arm)" ktest_row "ktest driver quiesce canary (arm)" arm "" "driver_records_quiesce_and_bring_back_every_kernel_device" "canary=suspend-leaves-disk-up"
+    # Two GPIO controllers behind one interface: the board's and the soft
+    # expander (Kconfig GPIO_SOFT_EXPANDER, on in development QEMU kernels).
+    # A capability on controller 1 drives its pin and not controller 0's;
+    # the canary stamps the badge without the controller.
+    par "ktest gpio two controllers (arm)" ktest_row "ktest gpio two controllers (arm)" arm "" "" "" '^\[KTEST\] gpio: two controllers, one interface'
+    par "ktest gpio badge canary (arm)" ktest_row "ktest gpio badge canary (arm)" arm ",gpio-badge-canary" "gpio_two_controllers_serve_one_interface"
     par "ktest free_pages in flight canary (rv)" ktest_row "ktest free_pages in flight canary (rv)" rv ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest buddy rotate canary (rv)" ktest_row "ktest buddy rotate canary (rv)" rv ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
     par "ktest kstack reuse canary (rv)" ktest_row "ktest kstack reuse canary (rv)" rv ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
@@ -18223,6 +18239,12 @@ CPU 5 lacks hwcap bits"
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind rebind (x86)" x86_ktest_row "ktest driver unbind rebind (x86)" "" "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind irq canary (x86)" x86_ktest_row "ktest driver unbind irq canary (x86)" "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce (x86)" x86_ktest_row "ktest driver quiesce (x86)" "" "" "" "" '^\[KTEST\] driver records: ([1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them|quiesce refused by a driver without power ops)'
+    # Two GPIO controllers behind one interface: the board's and the soft
+    # expander (Kconfig GPIO_SOFT_EXPANDER, on in development QEMU kernels).
+    # A capability on controller 1 drives its pin and not controller 0's;
+    # the canary stamps the badge without the controller.
+    par "ktest gpio two controllers (x86)" x86_ktest_row "ktest gpio two controllers (x86)" "" "" "" "" '^\[KTEST\] gpio: two controllers, one interface'
+    par "ktest gpio badge canary (x86)" x86_ktest_row "ktest gpio badge canary (x86)" ",gpio-badge-canary" "gpio_two_controllers_serve_one_interface"
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (x86)" x86_ktest_row "ktest tid stamp canary (x86)" ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
 ^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"

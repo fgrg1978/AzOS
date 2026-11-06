@@ -79,7 +79,7 @@ crates/drivers/dma	22	12	2	0	0	54
 crates/drivers/dtb	97	42	0	0	0	100
 crates/drivers/fb	10	1	2	0	0	39
 crates/drivers/firmware	2	1	0	0	0	100
-crates/drivers/gpio	4	0	0	0	0	66
+crates/drivers/gpio	4	0	0	0	0	60
 crates/drivers/gps	0	0	0	0	1	0
 crates/drivers/hwbus	0	0	0	0	1	0
 crates/drivers/imu	0	0	0	0	1	0

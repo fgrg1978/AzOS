@@ -217,7 +217,7 @@ The macro enforces at compile time: shapes fit the inline words and the capabili
 | Interface (`name`) | Resource spelling |
 |---|---|
 | `entropy`, `linkkey`, `power`, `flight`, `behavior`, `config`, `ota`, `time`, `clock`, `net`, `memctl`, `keys` | none |
-| `gpio` | pin number |
+| `gpio` | `<controller>.<pin>`, or `<pin>` on controller 0 |
 | `i2c` | `<bus>.<address>` |
 | `spi` | `<bus>.<chip select>` |
 | `pwm` | channel |
@@ -230,6 +230,8 @@ The macro enforces at compile time: shapes fit the inline words and the capabili
 | `vm`, `vcpu` | `<n>`, `<n>.<k>` |
 | `display` | connector |
 | `sound` | device `<n>` |
+
+**Controllers by number.** A class whose interface serves several controllers keeps them in a registry (`azos_drv_base::instances`): instance 0 is the board's own controller, there from the start; every other one is registered by its driver record's `probe` and withdrawn by its `unbind`, and its number stays the device's for the boot, so a capability on instance 1 can never reach another device. The badge carries the instance (`gpio`: `controller << 8 | pin`), the class's Kconfig limit bounds the registry (`GPIO_CONTROLLERS`), and the controller says how many lines it has: a badge naming an instance that is not registered answers `NO_RESOURCE`, a line past its last `BAD_ARGUMENT`. GPIO is served this way (`crates/drivers/gpio/src/chips.rs`); the e-stop and the motors' pins stay on controller 0, driven lock-free outside the registry. Development QEMU kernels add a soft 16-line expander (`GPIO_SOFT_EXPANDER`, `expander.rs`) as controller 1. I2C and SPI already name their bus in the badge; PWM, ADC, CAN and UART have one controller each.
 
 The buzzer interface (`azos_devif::buzzer`) is outside this registry; the buzzer driver serves it from its kernel host (called directly) or from `BUZZDRV.ELF`.
 

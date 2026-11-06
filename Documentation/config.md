@@ -614,6 +614,8 @@ The index lists every declared option: 1251.
 | `GEOFENCE` | `config/subsys/Kconfig.robot` | On-board geofence armed at the home fix |
 | `GEOFENCE_MIN_SATELLITES` | `config/subsys/Kconfig.robot` | Geofence: minimum satellites for a trusted fix |
 | `GEOFENCE_RADIUS_M` | `config/subsys/Kconfig.robot` | Geofence radius (m) |
+| `GPIO_CONTROLLERS` | `config/subsys/Kconfig.drivers` | GPIO: most controllers the Gpio interface serves |
+| `GPIO_SOFT_EXPANDER` | `config/subsys/Kconfig.drivers` | GPIO: a soft 16-line expander as a second controller (test) |
 | `HAS_RVV` | `config/arch/Kconfig.isa-riscv64` | (no prompt — internal/derived) |
 | `HDMI_HEIGHT` | `config/arch/Kconfig.platform` | HDMI framebuffer height (pixels) |
 | `HDMI_WIDTH` | `config/arch/Kconfig.platform` | HDMI framebuffer width (pixels) |
