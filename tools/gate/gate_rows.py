@@ -476,6 +476,7 @@ def check_manifest():
 
 
 CARGO_TOML = os.path.join(ROOT, "kernel", "Cargo.toml")
+GATE_ROBOT = "use-robot"
 # A row that depends on the robot domain (its deps name these): the gate runs
 # it on the robot cell, so its kernel features must close over `use-robot`.
 ROBOT_DEPS = ("crates/domains/robot/", "crates/drivers/rc-esc/", "crates/lib/control/", "config/subsys/Kconfig.robot", "config/subsys/Kconfig.brain")
@@ -489,7 +490,7 @@ def cargo_features(path):
     try:
         import tomllib
         with open(path, "rb") as f:
-            return tomllib.load(f)["features"]
+            return tomllib.load(f).get("features", {})
     except ImportError:
         pass
     features, cur, buf, inside = {}, None, "", False
@@ -804,11 +805,18 @@ def crate_graph():
                 by_crate.setdefault(owning_crate(f), []).append(f)
         graph = {}
         for c in sorted(crates):
-            # An optional dependency on an extension's crate is turned on by
-            # `use-robot` alone (tools/lint/extension_lint.py), which names the
-            # crate itself: below a crate another feature turns on, it is off.
+            # An optional dependency of the kernel or a core crate on an
+            # extension's crate that the crate's own `use-robot` turns on (the
+            # only way tools/lint/extension_lint.py allows) is live only in a
+            # robot kernel, whose `use-robot` names the crate itself and which
+            # `feature_deps` follows: it is not in the plain closure.
+            robot_deps = set()
+            if c == "kernel" or c.startswith("crates/core/"):
+                robot_deps = {e[4:] for e in cargo_features(os.path.join(ROOT, c, "Cargo.toml")).get(GATE_ROBOT, [])
+                              if e.startswith("dep:")}
             deps = {d for d in (dep_dir(c, n, p, w) for n, p, w, o in toml_deps(c + "/Cargo.toml")
-                                if not (o and (dep_dir(c, n, p, w) or "").startswith("crates/domains/")))
+                                if not (o and n in robot_deps
+                                        and (dep_dir(c, n, p, w) or "").startswith("crates/domains/")))
                     if d}
             for f in by_crate.get(c, ()):
                 for m in INCLUDE_RE.finditer(_read(f)):
