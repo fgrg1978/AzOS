@@ -91,7 +91,10 @@ below are its synchronous helpers.
 A flush request makes every completed write durable. `BlockError::Unsupported`
 is the answer of a device that cannot confirm it, never `Ok`: a caller that
 claims durability passes that on. `FLAG_PREFLUSH` on a write makes every earlier
-completed write durable before it starts (the write-back cache's epoch rule);
+completed write durable before it starts (the write-back cache's epoch rule); if
+the flush ahead answers `Unsupported` (a device with no volatile cache) the write
+proceeds, and any other flush failure fails the request (`PreFlush`) with the
+write not made, unlike a plain flush request, whose `Unsupported` is an error;
 `FLAG_FUA` makes that write stable when it completes and orders nothing before
 it. `tests/host/fs-tests/src/block_order.rs` checks both per request against a
 device with a volatile cache.

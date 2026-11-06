@@ -25,7 +25,7 @@ mod tests {
 
     impl BlockDev for Disk {
         fn geometry(&self) -> Geometry {
-            Geometry { sectors: self.blocks as u64, fua: false, discard: false }
+            Geometry { sectors: self.blocks as u64, fua: false }
         }
         fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
             match req.op {

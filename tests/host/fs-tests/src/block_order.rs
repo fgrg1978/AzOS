@@ -35,17 +35,19 @@ enum Rq {
 struct Disk {
     img: Vec<u8>,
     log: Vec<Rq>,
+    /// What a flush answers instead of doing it (`Unsupported`: no volatile cache).
+    flush_fault: Option<BlockError>,
 }
 
 impl Disk {
     fn new(sectors: usize) -> Disk {
-        Disk { img: vec![0; sectors * SECTOR], log: Vec::new() }
+        Disk { img: vec![0; sectors * SECTOR], log: Vec::new(), flush_fault: None }
     }
 }
 
 impl BlockDev for Disk {
     fn geometry(&self) -> Geometry {
-        Geometry { sectors: (self.img.len() / SECTOR) as u64, fua: true, discard: false }
+        Geometry { sectors: (self.img.len() / SECTOR) as u64, fua: true }
     }
 
     fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
@@ -57,13 +59,21 @@ impl BlockDev for Disk {
             }
             (BlockOp::Write, BlockData::Write(buf)) => {
                 if req.flags & FLAG_PREFLUSH != 0 {
-                    self.log.push(Rq::Flush);
+                    match self.flush_fault {
+                        None => self.log.push(Rq::Flush),
+                        // The documented contract of `FLAG_PREFLUSH`.
+                        Some(BlockError::Unsupported) => {}
+                        Some(_) => return Err(BlockError::PreFlush),
+                    }
                 }
                 let o = req.sector as usize * SECTOR;
                 self.img[o..o + buf.len()].copy_from_slice(buf);
                 self.log.push(Rq::Write { sector: req.sector, data: buf.to_vec(), fua: req.flags & FLAG_FUA != 0 });
             }
-            (BlockOp::Flush, _) => self.log.push(Rq::Flush),
+            (BlockOp::Flush, _) => match self.flush_fault {
+                None => self.log.push(Rq::Flush),
+                Some(e) => return Err(e),
+            },
             (BlockOp::Discard, _) => {}
             _ => return Err(BlockError::Invalid),
         }
@@ -240,4 +250,31 @@ fn an_azvol_commit_is_old_or_new_at_every_cut_of_every_request() {
         assert!(r.is_clean(), "cut {cut} fate {fate}: {:?}", r.problems);
     });
     assert!(olds > 0 && news > 0, "the sweep sees both states");
+}
+
+/// **The `FLAG_PREFLUSH` contract on a device that cannot flush.** `Unsupported`
+/// (no volatile cache): the write goes, a plain flush request is an error. Any
+/// other failure: the write is not made and the cache gets `PreFlush`.
+///
+/// **Canary.** The device fails the preflush write on `Unsupported`, or writes
+/// despite an `Io` flush: one of the two halves goes red.
+#[test]
+fn a_preflush_write_on_a_device_that_cannot_flush_follows_the_contract() {
+    let epochs = |dev: &mut Disk| {
+        let mut c: BlockCache<2048, 4> = BlockCache::new(512, Mode::WriteBack);
+        c.write(dev, 2, &[0xA1; 512]).unwrap();
+        c.barrier();
+        c.write(dev, 3, &[0xB2; 512]).unwrap();
+        c.write_back_all(dev)
+    };
+    let mut no_cache = Disk::new(64);
+    no_cache.flush_fault = Some(BlockError::Unsupported);
+    assert_eq!(epochs(&mut no_cache), Ok(()));
+    assert_eq!(no_cache.log.len(), 2, "both blocks were written, no flush was possible");
+    assert_eq!(no_cache.flush(), Err(BlockError::Unsupported), "a flush request is not tolerated");
+
+    let mut broken = Disk::new(64);
+    broken.flush_fault = Some(BlockError::Io);
+    assert_eq!(epochs(&mut broken), Err(super::bcache::IoError::Flush(BlockError::PreFlush)));
+    assert_eq!(broken.log.len(), 1, "block 3 was not written behind a failed flush");
 }

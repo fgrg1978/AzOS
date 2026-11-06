@@ -332,7 +332,7 @@ impl<D: BlockDev, R: Record> VerityDev<D, R> {
 /// `Ok`), and nothing is discarded.
 impl<D: BlockDev, R: Record> BlockDev for VerityDev<D, R> {
     fn geometry(&self) -> Geometry {
-        Geometry { sectors: self.shape.data_blocks * (BLOCK_SIZE / SECTOR) as u64, fua: false, discard: false }
+        Geometry { sectors: self.shape.data_blocks * (BLOCK_SIZE / SECTOR) as u64, fua: false }
     }
 
     fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {

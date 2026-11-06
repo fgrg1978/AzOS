@@ -14,3 +14,4 @@ name = "azos_drv_api"
 azos_abi = { workspace = true }
 # `recovery`'s sink is an ro_after_init hook.
 azos_common = { workspace = true }
+azos_devif = { workspace = true }

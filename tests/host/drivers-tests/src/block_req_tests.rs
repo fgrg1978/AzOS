@@ -31,7 +31,7 @@ impl Rec {
 
 impl BlockDev for Rec {
     fn geometry(&self) -> Geometry {
-        Geometry { sectors: self.sectors, fua: true, discard: true }
+        Geometry { sectors: self.sectors, fua: true }
     }
     fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
         req.check(self.sectors)?;
@@ -100,4 +100,38 @@ fn partitions_stack_and_the_window_must_fit() {
     let buf = vec![0u8; SECTOR];
     inner.write(2, &buf).unwrap();
     assert_eq!(inner.write(10, &buf), Err(BlockError::Range));
+}
+
+/// **The SD backends' ordering** (`blkdev::ordered_write`): the flush ahead
+/// runs before the write; a device that cannot flush (`Unsupported`) still
+/// takes the write; any other flush failure means no write; FUA is refused
+/// (no native FUA) before anything runs.
+///
+/// **Canary.** Run the write before the flush, or let a failed flush through:
+/// the order or the `PreFlush` assertion goes red.
+#[test]
+fn the_sd_ordered_write_flushes_first_and_refuses_what_it_cannot_do() {
+    use crate::blkdev::ordered_write;
+    use std::cell::RefCell;
+    let run = |flags: u32, flush: Result<(), BlockError>| {
+        let log = RefCell::new(Vec::new());
+        let r = ordered_write(
+            flags,
+            || {
+                log.borrow_mut().push("flush");
+                flush
+            },
+            || {
+                log.borrow_mut().push("write");
+                Ok(())
+            },
+        );
+        (r, log.into_inner())
+    };
+    assert_eq!(run(0, Ok(())), (Ok(()), vec!["write"]));
+    assert_eq!(run(FLAG_PREFLUSH, Ok(())), (Ok(()), vec!["flush", "write"]));
+    assert_eq!(run(FLAG_PREFLUSH, Err(BlockError::Unsupported)), (Ok(()), vec!["flush", "write"]));
+    assert_eq!(run(FLAG_PREFLUSH, Err(BlockError::Io)), (Err(BlockError::PreFlush), vec!["flush"]));
+    assert_eq!(run(FLAG_FUA, Ok(())), (Err(BlockError::Unsupported), vec![]));
+    assert_eq!(run(FLAG_FUA | FLAG_PREFLUSH, Ok(())), (Err(BlockError::Unsupported), vec![]));
 }

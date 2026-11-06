@@ -4908,19 +4908,21 @@ mod bcache_tests {
         log: Vec<Ev>,
         fail_writes: bool,
         fail_flush: bool,
+        /// A device with no volatile cache: its flush is `Unsupported`.
+        flush_unsupported: bool,
     }
 
     impl Dev {
         fn new(sectors: usize) -> Self {
             let data = (0..sectors * 512).map(|i| (i / 512) as u8).collect();
-            Dev { data, log: Vec::new(), fail_writes: false, fail_flush: false }
+            Dev { data, log: Vec::new(), fail_writes: false, fail_flush: false, flush_unsupported: false }
         }
         fn take(&mut self) -> Vec<Ev> { core::mem::take(&mut self.log) }
     }
 
     impl BlockDev for Dev {
         fn geometry(&self) -> Geometry {
-            Geometry { sectors: (self.data.len() / SECTOR) as u64, fua: false, discard: false }
+            Geometry { sectors: (self.data.len() / SECTOR) as u64, fua: false }
         }
         fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
             let off = req.sector as usize * SECTOR;
@@ -4934,7 +4936,10 @@ mod bcache_tests {
                 }
                 (BlockOp::Write, BlockData::Write(buf)) => {
                     if req.flags & FLAG_PREFLUSH != 0 {
-                        self.flush().map_err(|_| BlockError::PreFlush)?;
+                        match self.flush() {
+                            Ok(()) | Err(BlockError::Unsupported) => {}
+                            Err(_) => return Err(BlockError::PreFlush),
+                        }
                     }
                     if self.fail_writes { return Err(BlockError::Io); }
                     if buf.len() != len || off + len > self.data.len() { return Err(BlockError::Io); }
@@ -4943,6 +4948,7 @@ mod bcache_tests {
                     Ok(())
                 }
                 (BlockOp::Flush, _) => {
+                    if self.flush_unsupported { return Err(BlockError::Unsupported); }
                     if self.fail_flush { return Err(BlockError::Io); }
                     self.log.push(Ev::F);
                     Ok(())
@@ -5099,6 +5105,24 @@ mod bcache_tests {
         assert_eq!(dev.take(), vec![Ev::W(4, 1, 0x0A), Ev::F, Ev::W(4, 1, 0x0B), Ev::F]);
     }
 
+    /// **A device with no volatile cache** (its flush is `Unsupported`) takes
+    /// the write that asked for a flush ahead of it: the contract of
+    /// `FLAG_PREFLUSH`.
+    ///
+    /// **Canary.** The mock fails the preflush write on `Unsupported`: the
+    /// write-back errors and block 3 never reaches the device.
+    #[test]
+    fn a_device_without_a_cache_takes_the_ordered_write() {
+        let mut dev = Dev::new(64);
+        dev.flush_unsupported = true;
+        let mut c: BlockCache<2048, 4> = BlockCache::new(512, Mode::WriteBack);
+        c.write(&mut dev, 2, &blk(512, 2)).unwrap();
+        c.barrier();
+        c.write(&mut dev, 3, &blk(512, 3)).unwrap();
+        c.write_back_all(&mut dev).unwrap();
+        assert_eq!(dev.take(), vec![Ev::W(2, 1, 2), Ev::W(3, 1, 3)]);
+    }
+
     /// **A failed write-back keeps the line dirty and stops**: no flush and
     /// nothing of a later epoch follows it.
     #[test]
@@ -5115,7 +5139,7 @@ mod bcache_tests {
         dev.fail_writes = false;
         dev.fail_flush = true;
         assert_eq!(c.sync(&mut dev), Err(IoError::Flush(BlockError::PreFlush)),
-                   "the device's own reason must come back");
+                   "a failed ordering flush comes back as PreFlush, the write not made");
         assert_eq!(dev.take(), vec![Ev::W(2, 1, 2)], "epoch 1 was written past a failed ordering flush");
         dev.fail_flush = false;
         c.sync(&mut dev).unwrap();
@@ -8061,7 +8085,7 @@ mod bcache_sets {
 
     impl BlockDev for Dev {
         fn geometry(&self) -> Geometry {
-            Geometry { sectors: (self.data.len() / SECTOR) as u64, fua: false, discard: false }
+            Geometry { sectors: (self.data.len() / SECTOR) as u64, fua: false }
         }
         fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
             let o = req.sector as usize * SECTOR;

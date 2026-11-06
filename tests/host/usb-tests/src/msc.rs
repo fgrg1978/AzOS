@@ -236,10 +236,14 @@ impl Stick {
 struct NoDisk;
 impl azos_drv_api::block::BlockDev for NoDisk {
     fn geometry(&self) -> azos_drv_api::block::Geometry {
-        azos_drv_api::block::Geometry { sectors: 0, fua: false, discard: false }
+        azos_drv_api::block::Geometry { sectors: 0, fua: false }
     }
-    fn submit(&mut self, _: azos_drv_api::block::BlockReq<'_>) -> Result<(), azos_drv_api::block::BlockError> {
-        Ok(())
+    fn submit(&mut self, req: azos_drv_api::block::BlockReq<'_>) -> Result<(), azos_drv_api::block::BlockError> {
+        use azos_drv_api::block::{BlockError, BlockOp};
+        match req.op {
+            BlockOp::Flush => Ok(()),
+            _ => Err(BlockError::Io),
+        }
     }
 }
 

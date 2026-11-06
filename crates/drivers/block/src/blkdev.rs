@@ -67,10 +67,10 @@ impl BlockDev for Queued {
     #[inline]
     fn geometry(&self) -> Geometry {
         match crate::queue::bound() {
-            None => Geometry { sectors: 0, fua: false, discard: false },
+            None => Geometry { sectors: 0, fua: false },
             Some(hw) => {
                 let c = hw.caps();
-                Geometry { sectors: c.sectors, fua: c.fua, discard: c.max_discard_sectors != 0 }
+                Geometry { sectors: c.sectors, fua: azos_limits::BLK_FUA && c.fua }
             }
         }
     }
@@ -80,7 +80,7 @@ impl BlockDev for Queued {
         let Some(hw) = crate::queue::bound() else {
             return Err(if req.op == BlockOp::Discard { BlockError::Unsupported } else { BlockError::Io });
         };
-        let owner = if req.owner == 0 { owner_now() } else { req.owner };
+        let owner = owner_now();
         let done = match (req.op, req.data) {
             (BlockOp::Read, BlockData::Read(buf)) => crate::queue::read(hw, owner, req.sector, req.count, buf),
             (BlockOp::Write, BlockData::Write(buf)) => {
@@ -129,7 +129,7 @@ impl DwMshc {
 impl BlockDev for DwMshc {
     #[inline]
     fn geometry(&self) -> Geometry {
-        Geometry { sectors: crate::dwmshc::capacity(), fua: false, discard: false }
+        Geometry { sectors: crate::dwmshc::capacity(), fua: false }
     }
 
     #[inline]
@@ -187,7 +187,7 @@ impl Mmc {
 impl BlockDev for Mmc {
     #[inline]
     fn geometry(&self) -> Geometry {
-        Geometry { sectors: crate::mmc::mmc_capacity(BOOT_SLOT), fua: false, discard: false }
+        Geometry { sectors: crate::mmc::mmc_capacity(BOOT_SLOT), fua: false }
     }
 
     #[inline]
@@ -230,9 +230,9 @@ type Backend = Mmc;
 /// own status poll, a device with nothing to flush has nothing to order, a
 /// flush that failed fails the write before it is made, and one that asks for
 /// FUA gets the refusal `fua_commit` says it would.
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "vf2", feature = "k1", test))]
 #[inline]
-fn ordered_write(
+pub(crate) fn ordered_write(
     flags: u32,
     flush: impl FnOnce() -> Result<(), BlockError>,
     write: impl FnOnce() -> Result<(), BlockError>,
@@ -249,7 +249,7 @@ fn ordered_write(
     write()
 }
 
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "vf2", feature = "k1", test))]
 #[inline]
 fn flush_state(r: Result<(), FlushError>) -> Result<(), BlockError> {
     r.map_err(|e| match e {
@@ -511,7 +511,7 @@ pub fn write_run(sector: u64, count: u32, buf: &[u8], preflush: bool, fua: bool)
 /// [`flush`] that follows the writes.
 #[inline]
 pub fn fua_commit() -> bool {
-    azos_limits::BLK_FUA && backend().geometry().fua
+    backend().geometry().fua
 }
 
 /// Discard is compiled in (Kconfig `BLK_DISCARD` is not `off`).

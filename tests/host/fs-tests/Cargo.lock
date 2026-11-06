@@ -39,11 +39,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_devif"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl",
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_drv_api"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_common",
+ "azos_devif",
 ]
 
 [[package]]
@@ -62,12 +72,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_idl"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl_macros",
+]
+
+[[package]]
+name = "azos_idl_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "azos_limits"
 version = "0.1.0"
 dependencies = [
  "azos-config",
  "sha2",
 ]
+
+[[package]]
+name = "azos_rings"
+version = "0.1.0"
 
 [[package]]
 name = "block-buffer"

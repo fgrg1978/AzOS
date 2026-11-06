@@ -27,7 +27,6 @@ macro_rules! block_dev_of_units {
                 azos_drv_api::block::Geometry {
                     sectors: crate::blk_units::BlkUnit::unit_count(self) * 8,
                     fua: false,
-                    discard: true,
                 }
             }
             fn submit(&mut self, req: azos_drv_api::block::BlockReq<'_>) -> Result<(), azos_drv_api::block::BlockError> {

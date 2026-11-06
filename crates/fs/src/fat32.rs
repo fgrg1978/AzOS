@@ -1548,7 +1548,7 @@ struct BlkDev(&'static Vol);
 impl crate::bcache::BlockDev for BlkDev {
     fn geometry(&self) -> azos_drv_api::block::Geometry {
         let d = &self.0.dev;
-        azos_drv_api::block::Geometry { sectors: d.capacity_sectors(), fua: d.fua_commit(), discard: d.discard_supported() }
+        azos_drv_api::block::Geometry { sectors: d.capacity_sectors(), fua: d.fua_commit() }
     }
 
     fn submit(&mut self, req: azos_drv_api::block::BlockReq<'_>) -> Result<(), crate::bcache::BlockError> {
