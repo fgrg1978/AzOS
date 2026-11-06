@@ -6614,8 +6614,11 @@ a64_kbuild "qemu" || true
 # the line was acknowledged and delivered again twice). ACK canary row:
 # `irq-ack-canary` (the ACK does not unmask): the second interrupt never
 # comes and the driver reports the device silent. Refusal row:
-# `canary=dma-ring3-refusal` (the acceptance withheld for the boot): the map is
-# refused, the driver says so and feeds nothing. Killed row (aarch64): the
+# `canary=dma-ring3-refusal` (the acceptance withheld for the boot): the
+# row's writable window on the virtio device (a bus master no IOMMU confines)
+# is refused and recorded, the driver says so and feeds nothing. Its canary
+# row adds `dma-ring3-window-anyway` (the window granted anyway): the map is
+# then refused instead, and the window refusal line must be absent. Killed row (aarch64): the
 # driver built to exit with its second request in the device; the kernel
 # resets the device at the exit and gives the pages back, and the restarted
 # driver feeds again; no page is kept.
@@ -6640,7 +6643,7 @@ rng3_verdict() {
         fed|silent|killed)
             grep -aqF '[DMA] ring 3 may master the bus without an IOMMU (DMA_RING3_WITHOUT_IOMMU)' "$log" \
                 || why="the boot never said ring 3 masters the bus without an IOMMU" ;;
-        refused)
+        refused|map-refused)
             grep -aqF '[DMA] ring 3 masters the bus only behind an IOMMU' "$log" \
                 || why="the boot never said ring 3 is refused an unconfined device" ;;
     esac
@@ -6659,6 +6662,13 @@ rng3_verdict() {
             [ -z "$why" ] && ! grep -aqF '[rngdrv] FAIL: no answer from the device' "$log" && why="no 'no answer from the device' verdict" ;;
         refused)
             grep -aqF '[rngdrv] fed the pool' "$log" && why="a refused driver fed the pool"
+            [ -z "$why" ] && ! grep -aqE '\[DMA\] device [0-9]+: a writable window refused to ring 3' "$log" \
+                && why="no refusal of the writable window on a bus master"
+            [ -z "$why" ] && ! grep -aqF '[rngdrv] FAIL: the row grants the device or its line not' "$log" \
+                && why="the driver held the device's registers" ;;
+        map-refused)
+            grep -aqF '[rngdrv] fed the pool' "$log" && why="a refused driver fed the pool"
+            [ -z "$why" ] && grep -aqF 'a writable window refused to ring 3' "$log" && why="the window canary did not grant the window"
             [ -z "$why" ] && ! grep -aqF '[rngdrv] FAIL: the device may not reach the queue memory' "$log" \
                 && why="no refusal of the map" ;;
         killed)
@@ -6679,6 +6689,7 @@ rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent|
     local cfg disk_target drvfeat="" append=""
     [ "$want" = killed ] && drvfeat=exit-mid-request
     [ "$want" = refused ] && append="canary=dma-ring3-refusal"
+    [ "$want" = map-refused ] && append="canary=dma-ring3-refusal,dma-ring3-window-anyway"
     rm -f "$log"
     case "$isa" in
         rv)  cfg="${PRIMARY_DIR}/rng3.config"; disk_target=$AZOS_OUT/build/disk-drv.img
@@ -6730,12 +6741,13 @@ rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent|
 par "aarch64 ring-3 virtio-rng" rng3_row a64 "aarch64 ring-3 virtio-rng" "" fed
 par "aarch64 ring-3 virtio-rng, ACK canary" rng3_row a64 "aarch64 ring-3 virtio-rng, ACK canary" irq-ack-canary silent
 par "aarch64 ring-3 virtio-rng, refused" rng3_row a64 "aarch64 ring-3 virtio-rng, refused" "" refused
+par "aarch64 ring-3 virtio-rng, refused, window canary" rng3_row a64 "aarch64 ring-3 virtio-rng, refused, window canary" "" map-refused
 par "aarch64 ring-3 virtio-rng, killed mid-request" rng3_row a64 "aarch64 ring-3 virtio-rng, killed mid-request" "" killed
 par "riscv64 ring-3 virtio-rng" rng3_row rv "riscv64 ring-3 virtio-rng" "" fed
 par "riscv64 ring-3 virtio-rng, ACK canary" rng3_row rv "riscv64 ring-3 virtio-rng, ACK canary" irq-ack-canary silent
 par "riscv64 ring-3 virtio-rng, refused" rng3_row rv "riscv64 ring-3 virtio-rng, refused" "" refused
+par "riscv64 ring-3 virtio-rng, refused, window canary" rng3_row rv "riscv64 ring-3 virtio-rng, refused, window canary" "" map-refused
 a64_kbuild "qemu" || true
-kbuild "qemu" || true
 kbuild "qemu" || true
 
 # ── Wave 11: what the kernel itself starts is supervised (both ISAs) ────────
@@ -18888,6 +18900,7 @@ CPU 5 lacks hwcap bits"
     x86_rng3_row() { # x86_rng3_row <label> <extra kernel features or ""> fed|silent|refused
         local label="$1" feats="$2" want="$3" why="" append=""
         [ "$want" = refused ] && append="canary=dma-ring3-refusal"
+        [ "$want" = map-refused ] && append="canary=dma-ring3-refusal,dma-ring3-window-anyway"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local slug; slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
@@ -18926,6 +18939,7 @@ CPU 5 lacks hwcap bits"
     par "x86_64 ring-3 virtio-rng" x86_rng3_row "x86_64 ring-3 virtio-rng" "" fed
     par "x86_64 ring-3 virtio-rng, ACK canary" x86_rng3_row "x86_64 ring-3 virtio-rng, ACK canary" irq-ack-canary silent
     par "x86_64 ring-3 virtio-rng, refused" x86_rng3_row "x86_64 ring-3 virtio-rng, refused" "" refused
+    par "x86_64 ring-3 virtio-rng, refused, window canary" x86_rng3_row "x86_64 ring-3 virtio-rng, refused, window canary" "" map-refused
     # The INA219 placement rows of riscv64 (`drivers: INA219 placed in kernel`,
     # `... wrong-value canary`) and aarch64, on x86_64. x86_64, like them, reads the QEMU simulation of
     # the INA219 (crates/drivers/bus/src/i2c.rs: no controller driver is
