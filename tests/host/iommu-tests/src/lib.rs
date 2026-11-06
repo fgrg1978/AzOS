@@ -10,5 +10,6 @@ mod common;
 mod domain;
 mod pgtable;
 mod remote;
+mod ring3_dma;
 mod units;
 mod vectors;

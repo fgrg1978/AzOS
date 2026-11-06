@@ -15,6 +15,9 @@ azos_drvkit = { path = "../../../crates/drivers/kit" }
 
 [features]
 vtd-window-canary = ["azos_iommu/vtd-window-canary"]
+# A ring-3 object recorded as bound without entering its domain
+# (`a_device_reaches_its_object_and_no_other_page` goes red).
+dma-bind-skip-map-canary = ["azos_dma/dma-bind-skip-map-canary"]
 
 [profile.release]
 overflow-checks = true

@@ -10,15 +10,15 @@ use azos_iommu::pgtable::{Perm, PtFormat, PtKind};
 use azos_iommu::{DomainMode, Flavour, IommuError, UnitHandle};
 use std::sync::Mutex;
 
-struct FakeUnit {
-    fmt: PtFormat,
-    attached: Mutex<Vec<(u32, DomainMode)>>,
-    flushes: Mutex<Vec<u32>>,
-    fail_flush: Mutex<bool>,
+pub(crate) struct FakeUnit {
+    pub(crate) fmt: PtFormat,
+    pub(crate) attached: Mutex<Vec<(u32, DomainMode)>>,
+    pub(crate) flushes: Mutex<Vec<u32>>,
+    pub(crate) fail_flush: Mutex<bool>,
 }
 
 impl FakeUnit {
-    fn leak(kind: PtKind, levels: u8) -> &'static FakeUnit {
+    pub(crate) fn leak(kind: PtKind, levels: u8) -> &'static FakeUnit {
         Box::leak(Box::new(FakeUnit {
             fmt: PtFormat::new(kind, levels),
             attached: Mutex::new(vec![]),
@@ -26,7 +26,7 @@ impl FakeUnit {
             fail_flush: Mutex::new(false),
         }))
     }
-    fn flushed(&self) -> usize {
+    pub(crate) fn flushed(&self) -> usize {
         self.flushes.lock().unwrap().len()
     }
 }
@@ -57,7 +57,7 @@ const WO_OR_RW: Perm = RW;
 /// What the page table of the domain (its root is the first page the memory
 /// handed out) lets the device do at `iova`, read through the format's public
 /// accessors and not through the crate's own table walker.
-fn walk(mem: &TestMem, fmt: PtFormat, iova: u64) -> Option<(u64, Perm)> {
+pub(crate) fn walk(mem: &TestMem, fmt: PtFormat, iova: u64) -> Option<(u64, Perm)> {
     let mut table = mem.page(0);
     for level in (0..fmt.levels).rev() {
         let e = read64(table, ((iova >> (12 + 9 * level as u32)) & 0x1ff) as usize);
