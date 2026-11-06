@@ -26,7 +26,7 @@ const FLAG_ONCE_ONLY: u8 = 4;
 
 /// The failure-contract attributes (besides the three delivery flags); all of
 /// them are removed from the emitted trait.
-const CONTRACT_ATTRS: &[&str] = &["idempotent", "at_most_once", "once_only", "on_failure", "deadline_ns", "budget_us"];
+const CONTRACT_ATTRS: &[&str] = &["idempotent", "at_most_once", "once_only", "on_failure", "deadline_ns", "budget_us", "op"];
 
 /// `#[on_failure(..)]`: what the system does when the op's service fails.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,6 +147,9 @@ struct Method {
     deadline_ns: u64,
     /// `#[budget_us = N]`, 0 = none declared.
     budget_us: u32,
+    /// `#[op = EXPR]`: the op number, a `u16` constant expression, when the
+    /// interface takes its numbers from another table (the kernel's).
+    op: Option<Expr>,
     attrs: Vec<syn::Attribute>,
 }
 
@@ -190,6 +193,7 @@ fn parse_method(tf: &syn::TraitItemFn, errs: &mut Vec<syn::Error>) -> Option<Met
     let mut on_failure: Option<OnFailure> = None;
     let mut deadline_ns = 0u64;
     let mut budget_us = 0u32;
+    let mut op: Option<Expr> = None;
     let mut seen_contract: Vec<String> = Vec::new();
     let mut attrs = Vec::new();
     for a in &tf.attrs {
@@ -198,6 +202,14 @@ fn parse_method(tf: &syn::TraitItemFn, errs: &mut Vec<syn::Error>) -> Option<Met
             Some("idempotent") => FLAG_IDEMPOTENT,
             Some("at_most_once") => FLAG_AT_MOST_ONCE,
             Some("once_only") => FLAG_ONCE_ONLY,
+            Some("op") => {
+                match &a.meta {
+                    Meta::NameValue(nv) if op.is_none() => op = Some(nv.value.clone()),
+                    Meta::NameValue(_) => errs.push(syn::Error::new_spanned(a, format!("azos_interface: method `{}` has `#[op]` twice", sig.ident))),
+                    _ => errs.push(syn::Error::new_spanned(a, "azos_interface: `#[op = N]` takes a `u16` constant expression")),
+                }
+                continue;
+            }
             Some(n @ ("on_failure" | "deadline_ns" | "budget_us")) => {
                 if seen_contract.iter().any(|c| c == n) {
                     errs.push(syn::Error::new_spanned(a, format!("azos_interface: method `{}` has `#[{n}]` twice", sig.ident)));
@@ -260,7 +272,7 @@ fn parse_method(tf: &syn::TraitItemFn, errs: &mut Vec<syn::Error>) -> Option<Met
     if errs.len() > start {
         return None;
     }
-    Some(Method { ident: sig.ident.clone(), mutable, params, ret, flags, on_failure, deadline_ns, budget_us, attrs })
+    Some(Method { ident: sig.ident.clone(), mutable, params, ret, flags, on_failure, deadline_ns, budget_us, op, attrs })
 }
 
 /// The whole expansion. `Err` carries every refusal, combined.
@@ -295,6 +307,12 @@ pub(crate) fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     }
     if tr.items.len() >= u16::MAX as usize {
         errs.push(syn::Error::new_spanned(&tr.ident, "azos_interface: op numbers are 16 bits; too many methods"));
+    }
+    // Explicit op numbers are all or nothing: a position-numbered method
+    // beside explicit ones could take a number the table already uses.
+    let explicit = methods.iter().filter(|m| m.op.is_some()).count();
+    if explicit != 0 && explicit != methods.len() {
+        errs.push(syn::Error::new_spanned(&tr.ident, "azos_interface: either every method declares `#[op = N]` or none does"));
     }
     // Duplicate names cannot happen (rustc refuses), but two methods whose
     // names differ only in case would collide as `OP_*` constants.
@@ -350,7 +368,11 @@ fn generate(args: &Args, tr: &ItemTrait, methods: &[Method]) -> TokenStream {
     let mut placed_fns = Vec::new();
 
     for (i, m) in methods.iter().enumerate() {
-        let op = (i + 1) as u16;
+        let pos = (i + 1) as u16;
+        let op = match &m.op {
+            Some(e) => quote!(#e),
+            None => quote!(#pos),
+        };
         let mname = &m.ident;
         let mname_s = mname.to_string();
         let op_const = format_ident!("OP_{}", mname_s.to_ascii_uppercase());
@@ -458,6 +480,8 @@ fn generate(args: &Args, tr: &ItemTrait, methods: &[Method]) -> TokenStream {
     }
 
     let n_ops = methods.len();
+    let zero_msg = format!("azos_interface {name_s}: op 0 is never valid (a zeroed message is refused)");
+    let dup_msg = format!("azos_interface {name_s}: two methods have the same op number");
     quote! {
         #clean
 
@@ -537,6 +561,16 @@ fn generate(args: &Args, tr: &ItemTrait, methods: &[Method]) -> TokenStream {
         const _: () = {
             assert!(#idl_ty::WORDS <= ::azos_idl::INLINE_WORDS_MAX, "azos_interface: `words` is above the ABI ceiling");
             #(#asserts)*
+            let mut i = 0;
+            while i < #n_ops {
+                assert!(#idl_ty::OPS[i].op != 0, #zero_msg);
+                let mut j = i + 1;
+                while j < #n_ops {
+                    assert!(#idl_ty::OPS[i].op != #idl_ty::OPS[j].op, #dup_msg);
+                    j += 1;
+                }
+                i += 1;
+            }
         };
 
         /// The caller's view of the interface: implemented by the client stub

@@ -48,7 +48,30 @@
 //! status; always small and non-negative, because the fast path shares reply
 //! word 0 with its error code), then the return value in the same form. The
 //! op number of a method is its position in the trait, counted from 1 (op 0 is
-//! never valid, so a zeroed message is refused).
+//! never valid, so a zeroed message is refused), unless every method names its
+//! number with `#[op = N]` (a `u16` constant expression): an interface the
+//! kernel also serves as a `SYS_INVOKE` fast form takes the kernel's op
+//! numbers, so the two forms share one table (`azos_devif::fs`). Two methods
+//! with one number, or op 0, do not compile:
+//!
+//! ```compile_fail
+//! use azos_idl::azos_interface;
+//! #[azos_interface(id = 13, level = 1)]
+//! pub trait Twice { #[op = 0x6001] fn a(&mut self); #[op = 0x6001] fn b(&mut self); }
+//! ```
+//!
+//! ```compile_fail
+//! use azos_idl::azos_interface;
+//! #[azos_interface(id = 13, level = 1)]
+//! pub trait Zero { #[op = 0] fn a(&mut self); }
+//! ```
+//!
+//! ```
+//! use azos_idl::azos_interface;
+//! #[azos_interface(id = 13, level = 1)]
+//! pub trait Named { #[op = 0x6001] fn a(&mut self); #[op = 0x6102] fn b(&mut self); }
+//! assert_eq!(NamedIdl::OPS[1].op, 0x6102);
+//! ```
 //!
 //! # Rules the macro enforces
 //!
@@ -291,7 +314,8 @@ pub const OP_ONCE_ONLY: u8 = 4;
 /// One row of an interface's op table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpInfo {
-    /// The op number: the method's position in the trait, from 1.
+    /// The op number: the method's position in the trait, from 1, or its
+    /// `#[op = N]`.
     pub op: u16,
     pub name: &'static str,
     /// `OP_IDEMPOTENT | OP_AT_MOST_ONCE | OP_ONCE_ONLY`, at most one.

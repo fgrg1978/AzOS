@@ -295,3 +295,21 @@ fn the_trait_shape_is_checked() {
     rejects("trait T { fn f(&mut self, (a, b): (u32, u32)); }", "plain name");
     assert!(expand(ts(ATTR), ts("struct S;")).is_err());
 }
+
+// ── explicit op numbers ────────────────────────────────────────────────
+
+/// An interface that shares its op numbers with another table names each one;
+/// a method that takes its position beside them, a repeated `#[op]` or a
+/// literal-free form is refused. The attribute leaves the emitted trait.
+#[test]
+fn explicit_op_numbers_are_all_or_nothing() {
+    let src = accepts("trait T { #[op = 0x6011] fn a(&mut self); #[op = K::B] fn b(&self); }");
+    assert!(src.contains("pub const OP_A : u16 = 0x6011"), "{src}");
+    assert!(src.contains("pub const OP_B : u16 = K :: B"), "{src}");
+    assert!(!src.contains("# [op"), "the attribute is left on the trait: {src}");
+    let pos = accepts("trait T { fn a(&mut self); fn b(&self); }");
+    assert!(pos.contains("pub const OP_B : u16 = 2u16"), "{pos}");
+    rejects("trait T { #[op = 3] fn a(&mut self); fn b(&self); }", "either every method declares `#[op = N]` or none does");
+    rejects("trait T { #[op = 3] #[op = 4] fn a(&mut self); }", "`#[op]` twice");
+    rejects("trait T { #[op(3)] fn a(&mut self); }", "`#[op = N]` takes a `u16` constant expression");
+}
