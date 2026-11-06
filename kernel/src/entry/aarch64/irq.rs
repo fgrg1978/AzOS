@@ -389,7 +389,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
         }
         // Kconfig DRV_E1000E / DRV_IGC: an Intel NIC's MSI (LPI slot 16 / 17,
         // `kernel_main`'s routes, after NVMe's 8-15).
-        if azos_drv_net::net_device::pci_msi_irq(slot as u32) {
+        if azos_drv_net::net_queue::pci_msi_irq(slot as u32) {
             if crate::net_msi_wake() {
                 request_resched();
             }

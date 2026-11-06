@@ -33,8 +33,9 @@ pub trait NetFunction: UsbClass {
     fn send(&mut self, frame: &[u8]) -> Result<(), SendError>;
     /// The next received frame into `out`; its length, 0 when none waits.
     fn recv(&mut self, out: &mut [u8]) -> usize;
-    /// Open and close a batch of sends (a function that packs frames into
-    /// blocks shares one between them; others send each frame alone).
-    fn tx_begin(&mut self);
-    fn tx_end(&mut self);
+    /// Hand the device what [`NetFunction::send`] queued: a function that
+    /// packs frames into blocks closes the open one and submits it (so
+    /// frames sent between two rings share a block); the others sent each
+    /// frame at once.
+    fn ring(&mut self);
 }

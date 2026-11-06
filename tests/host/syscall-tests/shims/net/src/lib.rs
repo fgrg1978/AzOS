@@ -51,6 +51,21 @@ pub use ip::{IfIndex, MAX_IFS};
 #[path = "../../../../../../crates/net/stack/src/nic_queue.rs"]
 pub mod nic_queue;
 
+/// What a kick asked of the NIC, in order: the shim's record of
+/// `crate::nic_queue_send`, `nic_queue_batch` and `nic_queue_flush`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NicqOp {
+    Send(IfIndex, Vec<u8>),
+    Batch(IfIndex, bool),
+    Flush(IfIndex),
+}
+
+static NICQ_LOG: std::sync::Mutex<Vec<NicqOp>> = std::sync::Mutex::new(Vec::new());
+
+fn nicq_log(op: NicqOp) {
+    NICQ_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(op);
+}
+
 /// `crate::nic_queue_send` (`lib.rs`), with the NIC replaced by a record of
 /// what was sent: the real refusal of a queue that is not taken, then the
 /// frame kept for the test.
@@ -58,15 +73,38 @@ pub fn nic_queue_send(ifindex: IfIndex, frame: &[u8]) -> bool {
     if !nic_queue::taken(ifindex) {
         return false;
     }
-    NICQ_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((ifindex, frame.to_vec()));
+    nicq_log(NicqOp::Send(ifindex, frame.to_vec()));
     true
 }
 
-static NICQ_SENT: std::sync::Mutex<Vec<(IfIndex, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+/// `crate::nic_queue_batch`.
+pub fn nic_queue_batch(ifindex: IfIndex, open: bool) {
+    if nic_queue::taken(ifindex) {
+        nicq_log(NicqOp::Batch(ifindex, open));
+    }
+}
+
+/// `crate::nic_queue_flush`.
+pub fn nic_queue_flush(ifindex: IfIndex) {
+    if nic_queue::taken(ifindex) {
+        nicq_log(NicqOp::Flush(ifindex));
+    }
+}
+
+/// Test-only: everything a kick asked of the NIC since the last call.
+pub fn shim_take_nicq_log() -> Vec<NicqOp> {
+    std::mem::take(&mut *NICQ_LOG.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 /// Test-only: the frames [`nic_queue_send`] put on a NIC since the last call.
 pub fn shim_take_nicq_sent() -> Vec<(IfIndex, Vec<u8>)> {
-    std::mem::take(&mut *NICQ_SENT.lock().unwrap_or_else(|e| e.into_inner()))
+    shim_take_nicq_log()
+        .into_iter()
+        .filter_map(|op| match op {
+            NicqOp::Send(i, f) => Some((i, f)),
+            _ => None,
+        })
+        .collect()
 }
 
 // `ip.rs` calls the packet-filter hooks.

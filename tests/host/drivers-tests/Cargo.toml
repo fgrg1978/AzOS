@@ -87,10 +87,10 @@ nvme = []
 # ahci.rs's kernel half (the one controller, its MSI entry) is behind `ahci`; the
 # host builds the driver without it: a known value, never enabled on the host.
 ahci = []
-# net_device.rs routes to the Intel NIC behind `e1000e` (e1000e.rs is pulled in
+# net_queue.rs routes to the Intel NIC behind `e1000e` (e1000e.rs is pulled in
 # without its device half): a known value, never enabled on the host.
 e1000e = []
-# net_device.rs routes to the Intel igc NIC behind `igc` (igc.rs is pulled in
+# net_queue.rs routes to the Intel igc NIC behind `igc` (igc.rs is pulled in
 # without its device half): a known value, never enabled on the host.
 igc = []
 input-rx-canary = []

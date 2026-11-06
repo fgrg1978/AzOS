@@ -8,7 +8,7 @@
 //! The protocol is the class driver's (descriptors or registers, setup, the
 //! bulk pipes; pure and host-tested against an xHCI mock); this file is what
 //! the kernel adds, as `block/src/usb_msc.rs` does for a stick: one lock
-//! around the protocol, the [`NetDevice`] it implements, and the class-driver
+//! around the protocol, the [`NetQueue`] it implements, and the class-driver
 //! handle the USB core is given.
 //!
 //! # Who runs it
@@ -23,10 +23,10 @@
 //! - the `usb` task runs the core's `service`, then [`UsbNic::drive`]: it
 //!   opens the pipes of the claims the core just handed over, advances the
 //!   setup, reaps completions, and reports when the NIC came up or went away
-//!   (the caller then [`register_usb`](crate::net_device::register_usb)s or
-//!   [`unregister_usb`](crate::net_device::unregister_usb)s it);
-//! - the network stack: [`NetDevice::send`] puts a frame (or a block of them)
-//!   into the bulk-OUT ring and [`NetDevice::recv`] takes frames out of the
+//!   (the caller then [`register_usb`](crate::net_queue::register_usb)s or
+//!   [`unregister_usb`](crate::net_queue::unregister_usb)s it);
+//! - the network stack: [`NetQueue::post`] puts a frame (or a block of them)
+//!   into the bulk-OUT ring and [`NetQueue::reap_rx`] takes frames out of the
 //!   buffers bulk-IN completed. Each time something went into a ring the `usb`
 //!   task is woken (the `kick` given at construction), so a frame costs the
 //!   controller's time, not `USB_POLL_MS`.
@@ -42,7 +42,7 @@
 //! function's one), through as many [`NicClass`] handles.
 
 use azos_devif::Out;
-use azos_drv_api::net::{NetDevice, NetError};
+use azos_drv_api::net::{NetError, NetQueue, ETH_FRAME_MAX};
 use azos_sync::kmutex::Mutex;
 use azos_usb::class::cdc::SendError;
 use azos_usb::class::net::NetFunction;
@@ -129,8 +129,8 @@ impl<F: NetFunction + Send> UsbNic<F> {
     }
 }
 
-impl<F: NetFunction + Send> NetDevice for UsbNic<F> {
-    fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
+impl<F: NetFunction + Send> NetQueue for UsbNic<F> {
+    fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
         self.with(|c| c.send(frame)).map(|()| frame.len()).map_err(|e| match e {
             SendError::NotReady => NetError::NotReady,
             SendError::BadLength => NetError::BadLength,
@@ -138,8 +138,24 @@ impl<F: NetFunction + Send> NetDevice for UsbNic<F> {
         })
     }
 
-    fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-        self.with(|c| if c.is_ready() { Ok(c.recv(buf)) } else { Err(NetError::NotReady) })
+    fn ring(&self) {
+        self.with(|c| c.ring());
+    }
+
+    /// One lock a frame, none while `f` runs (it may post): one copy into a
+    /// stack buffer each.
+    fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+        let mut buf = [0u8; ETH_FRAME_MAX];
+        let mut n = 0;
+        while n < max {
+            let len = self.with(|c| if c.is_ready() { c.recv(&mut buf) } else { 0 });
+            if len == 0 {
+                break;
+            }
+            f(&buf[..len.min(buf.len())]);
+            n += 1;
+        }
+        n
     }
 
     fn mac(&self) -> [u8; 6] {
@@ -148,14 +164,6 @@ impl<F: NetFunction + Send> NetDevice for UsbNic<F> {
 
     fn is_ready(&self) -> bool {
         self.func.lock().is_ready()
-    }
-
-    fn tx_batch_begin(&self) {
-        self.func.lock().tx_begin();
-    }
-
-    fn tx_batch_end(&self) {
-        self.with(|c| c.tx_end());
     }
 }
 

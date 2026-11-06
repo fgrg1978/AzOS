@@ -57,7 +57,7 @@ const NIC_POLL_MAX_S: u64 = 30;
 fn wait_for_network() {
     let mut pause = 1;
     let mut announced = false;
-    while !azos_drv_net::net_device::is_ready() {
+    while !azos_drv_net::net_queue::is_ready() {
         if !announced {
             kprintln!("[NET-CLIENTS] no network interface yet: the SNTP client waits for one");
             announced = true;

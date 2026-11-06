@@ -201,7 +201,7 @@ fn report(r: &Recovery, action: Action, detail: u64, waited_ms: u64) {
 /// Kept under the driver's transmit lock: [`published`](Self::published)
 /// after a frame is put on the ring, [`reclaimed`](Self::reclaimed) after
 /// the completed ones are taken back, [`expired`](Self::expired) when a send
-/// or the network poller looks (`NetDevice::tx_watch`). A ring that empties
+/// or the network poller looks (`NetQueue::reap_tx`). A ring that empties
 /// stops the clock; one that keeps moving restarts it at every reclaim that
 /// freed something.
 ///

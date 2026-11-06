@@ -99,7 +99,7 @@ fn show(name: &str, v: Option<u64>) {
 }
 
 pub(crate) fn nicq_cost_probe() {
-    if !azos_drv_net::net_device::is_ready() {
+    if !azos_drv_net::net_queue::is_ready() {
         kprintln!("[NICQ-COST] no NIC, no number");
         return;
     }
@@ -151,7 +151,7 @@ pub(crate) fn nicq_cost_probe() {
         prod.push(0, &item);
         let Ok(Some((info, _))) = tx.pop(&mut slot) else { return false };
         let Some(f) = tx_frame(&slot, info.len, mac).1 else { return false };
-        refused += azos_drv_net::net_device::send(nic, f).is_err() as u32;
+        refused += azos_drv_net::net_queue::submit(nic, f).is_err() as u32;
         true
     }));
     kprintln!("[NICQ-COST] tx ring: {} of {} sends refused by the NIC", refused, 3 * N);

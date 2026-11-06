@@ -176,7 +176,7 @@ pub(crate) fn install_net() -> bool {
     super::hwbus::bind(&["virtio-net"]);
     let virtio_up = azos_drv_virtio::virtio::net::is_ready();
     // Kconfig DRV_E1000E / DRV_IGC: an Intel NIC the PCI stage brought up is a NIC too.
-    let intel_up = azos_drv_net::net_device::pci_nic_ready();
+    let intel_up = azos_drv_net::net_queue::pci_nic_ready();
     let nic_present = virtio_up || intel_up;
     if virtio_up {
         kprintln!("[NET] VirtIO net OK");
@@ -184,7 +184,7 @@ pub(crate) fn install_net() -> bool {
         // device's NO_NOTIFY ignored), so the doorbell count can be seen to
         // move back to one per frame.
         if canary!("net-kick-per-frame") {
-            azos_drv_virtio::virtio::net::set_kick_every_frame(true);
+            azos_drv_net::net_queue::set_kick_every_frame(true);
             kprintln!("[CANARY] net-kick-per-frame: one doorbell per frame");
         }
         // Runtime canary: two receive passes may run at once again (N8).
@@ -224,7 +224,12 @@ pub(crate) fn install_net() -> bool {
 /// experimental EtherType 0x88B5, which every receiver drops.
 #[inline(never)]
 fn net_tx_batch_selfcheck() {
+    use azos_drv_net::net_queue;
     use azos_drv_virtio::virtio::net as vnet;
+    // The stack numbers the NICs in `net_init`, later; the table answers the
+    // same numbers when asked again.
+    net_queue::select();
+    let Some(nic) = net_queue::virtio_nic() else { return };
     const FRAMES: u64 = 3;
     let mut f = [0u8; 60];
     f[0..6].copy_from_slice(&[0xff; 6]);
@@ -232,13 +237,13 @@ fn net_tx_batch_selfcheck() {
     f[12..14].copy_from_slice(&0x88B5u16.to_be_bytes());
     let decisions = |q: vnet::NetQueueStats| q.tx_doorbells + q.tx_skipped;
     let s0 = vnet::queue_stats();
-    vnet::tx_batch_begin();
+    net_queue::batch_begin(nic);
     let mut sent = 0u64;
     for _ in 0..FRAMES {
-        if vnet::send(&f).is_ok() { sent += 1; }
+        if net_queue::submit(nic, &f).is_ok() { sent += 1; }
     }
     let s1 = vnet::queue_stats();
-    vnet::tx_batch_end();
+    net_queue::batch_end(nic);
     let s2 = vnet::queue_stats();
     let inside = decisions(s1) - decisions(s0);
     let at_end = decisions(s2) - decisions(s1);
@@ -265,7 +270,7 @@ pub(crate) fn install_dwmac() {
     if azos_limits::NET_RX_IRQ {
         let line = azos_drv_base::platform::hw::ETH0_IRQ;
         let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
-        if azos_drv_net::net_device::enable_irq(line) {
+        if azos_drv_net::net_queue::enable_irq(line) {
             crate::boot_hooks::net_mmio_unmask(hart, line);
             kprintln!("[NET] gmac0 RX interrupt: line {} -> hart {}", line, hart);
             crate::irq_thread::register(line);

@@ -207,6 +207,31 @@ fn a_kick_sends_the_interfaces_frames_and_refuses_the_others() {
     assert_eq!(rc, 0, "an empty ring sends nothing");
 }
 
+/// **Discriminates.** The frames of one kick share one doorbell, and a frame
+/// that asked for its departure stamp leaves at once, ahead of the rest: the
+/// NIC sees the batch open, the first frame, the stamped one and its flush,
+/// the last frame, the batch close. Canary: drop the batch calls from
+/// `kick` (a doorbell per frame), or the flush after a stamped frame (a
+/// stamp that names a time the frame did not leave at).
+#[test]
+fn a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once() {
+    let s = scene();
+    let a = attach(&s);
+    let tx = view(a.tx.1, PAGES);
+    if tx.cap < 4 {
+        return;
+    }
+    let mut prod = BytesProducer::new(tx);
+    let (f0, f1, f2) = (frame(MAC_B, 64, 1), frame(MAC_B, 64, 2), frame(MAC_B, 64, 3));
+    prod.push(0, &tx_item(0, &f0));
+    prod.push(0, &tx_item(nq::TX_STAMP, &f1));
+    prod.push(0, &tx_item(0, &f2));
+    let (rc, _) = invoke(a.q, QUEUE_NICQ_KICK, 0, 0);
+    assert_eq!(rc, 3);
+    use azos_net::NicqOp::{Batch, Flush, Send};
+    assert_eq!(azos_net::shim_take_nicq_log(), vec![Batch(2, true), Send(2, f0), Send(2, f1), Flush(2), Send(2, f2), Batch(2, false)]);
+}
+
 /// **Discriminates.** The refusals of the attach: the primary interface
 /// (`EPERM`), a queue the NIC does not have and an interface with no NIC
 /// (`ENODEV`), a second attach of a held queue (`EBUSY`), one region for both

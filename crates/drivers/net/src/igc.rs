@@ -6,7 +6,7 @@
 //! QEMU's `-device igb` (an 82576) for the gate.
 //!
 //! The ids the bus binds it to are in `crates/drivers/net/hwbus.ids`; it is
-//! one more backend of the NIC table of [`crate::net_device`].
+//! one more backend of the NIC table of [`crate::net_queue`].
 //!
 //! # Shape
 //!
@@ -378,7 +378,7 @@ mod device {
     use super::*;
     use crate::e1000e::{RCTL_RUN, REG_CTRL, REG_RCTL, REG_RXCSUM, REG_STATUS, REG_TCTL, TCTL_RUN};
     use crate::pci_nic::{wait_for, Chip, IrqRegs, Mem, Nic, NicError, Regs, Wire};
-    use azos_drv_api::net::{NetDevice, NetError};
+    use azos_drv_api::net::{NetError, NetQueue};
     use azos_drv_sys::kwarn;
     use azos_drv_virtio::virtio::pci::msix_selftest::MsiRoute;
     use azos_pci::{BarWindow, ConfigSpace, FunctionInfo};
@@ -521,17 +521,21 @@ mod device {
         NIC.rx_irq_count()
     }
 
-    /// `NetDevice` over the shared NIC, as `E1000eNetDevice` is.
-    pub struct IgcNetDevice;
+    /// `NetQueue` over the shared NIC.
+    pub struct IgcNetQueue;
 
-    impl NetDevice for IgcNetDevice {
+    impl NetQueue for IgcNetQueue {
         #[inline]
-        fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
-            NIC.send(frame)
+        fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
+            NIC.post(frame)
         }
         #[inline]
-        fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-            NIC.recv(buf)
+        fn ring(&self) {
+            NIC.ring()
+        }
+        #[inline]
+        fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+            NIC.reap_rx(max, f)
         }
         fn mac(&self) -> [u8; 6] {
             NIC.mac()
@@ -540,16 +544,8 @@ mod device {
             NIC.is_ready()
         }
         #[inline]
-        fn tx_batch_begin(&self) {
-            NIC.tx_batch_begin()
-        }
-        #[inline]
-        fn tx_batch_end(&self) {
-            NIC.tx_batch_end()
-        }
-        #[inline]
-        fn tx_watch(&self) -> Option<u64> {
-            NIC.tx_watch()
+        fn reap_tx(&self) -> Option<u64> {
+            NIC.reap_tx()
         }
     }
 }

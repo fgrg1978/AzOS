@@ -1762,7 +1762,7 @@ config E1000E_TX_DESCS
       crates/drivers/net/src/e1000e.rs: descriptors of the one transmit
       ring; one slot is always left empty, so one fewer frame is in flight.
       Each owns a 2 KiB staging buffer (the device is never handed caller
-      memory: a frame is copied in and `send` returns).
+      memory: a frame is copied in and `post` returns).
 
       Cost: 2 KiB + 16 B of .bss per entry.
 
@@ -1788,9 +1788,38 @@ config IGC_TX_DESCS
       crates/drivers/net/src/igc.rs: descriptors of the one transmit ring;
       one slot is always left empty, so one fewer frame is in flight. Each
       owns a 2 KiB staging buffer (the device is never handed caller
-      memory: a frame is copied in and `send` returns).
+      memory: a frame is copied in and `post` returns).
 
       Cost: 2 KiB + 16 B of .bss per entry.
+
+config DWMAC_RX_DESCS
+    int "Synopsys DesignWare MAC receive ring entries"
+    range 8 128
+    default 16 if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
+    default 32
+    help
+      crates/drivers/net/src/dwmac.rs (the VisionFive 2's gmac0): descriptors
+      of the one receive ring; one is always left unposted, so the device never
+      finds the ring full, and each posted one owns a 1,536 B buffer. The ring
+      is the burst the driver absorbs between two polls. At most 128 (the
+      driver indexes buffers by a byte).
+
+      Cost: 64 B of descriptor + 1,536 B of buffer per entry (.bss).
+
+config DWMAC_TX_DESCS
+    int "Synopsys DesignWare MAC transmit ring entries"
+    range 4 128
+    default 8 if HWCLASS_EMBEDDED
+    default 32 if HWCLASS_SERVER
+    default 16
+    help
+      crates/drivers/net/src/dwmac.rs: descriptors of the one transmit ring;
+      one slot is always left empty, so one fewer frame is in flight. Each
+      owns a 1,536 B staging buffer. Raise it with NET_TX_BATCH_MAX for bulk
+      senders: a batch larger than the ring is announced when the ring fills.
+
+      Cost: 64 B of descriptor + 1,536 B of buffer per entry (.bss).
 
 config USB_MAX_DEVICES
     int "USB devices tracked at once (hubs included)"

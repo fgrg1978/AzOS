@@ -12,7 +12,7 @@
 //! bring-up sequence, the descriptor rings and the MDIO/PHY state machine run
 //! on the host against a model of the device (`tests/host/drivers-tests`,
 //! `dwmac_tests.rs`); [`board`] (feature `vf2`) is the statics, the interrupt
-//! hook and the [`NetDevice`] face the kernel uses.
+//! hook and the [`NetQueue`] face the kernel uses.
 //!
 //! # What the DTS settles, and what it does not
 //!
@@ -212,13 +212,13 @@ pub const DESC_STRIDE: usize = 64;
 /// Receive buffer: a whole frame (1518 with FCS, 1522 tagged) in one buffer,
 /// a multiple of the cache line and of the AXI width.
 pub const BUF_SIZE: usize = 1536;
-/// Descriptors per RX ring. One is always left unposted, so the device never
+/// Descriptors per RX ring (Kconfig `DWMAC_RX_DESCS`). One is always left unposted, so the device never
 /// finds the ring full and the tail pointer never equals the head.
-pub const RX_N: usize = 32;
+pub const RX_N: usize = azos_limits::DWMAC_RX_DESCS as usize;
 /// Receive buffers: one per posted descriptor.
 pub const RX_BUFS: usize = RX_N - 1;
-/// Descriptors per TX ring.
-pub const TX_N: usize = 16;
+/// Descriptors per TX ring (Kconfig `DWMAC_TX_DESCS`).
+pub const TX_N: usize = azos_limits::DWMAC_TX_DESCS as usize;
 /// Frames one [`Dwmac::rx_harvest`] hands out.
 pub const RX_BATCH: usize = 16;
 
@@ -551,7 +551,6 @@ pub struct Dwmac<M: Mmio, T: Ticks, D: DmaOps> {
     tx_head: usize,
     tx_tail: usize,
     tx_inflight: usize,
-    tx_batch: bool,
     tx_unannounced: bool,
     /// Next RX descriptor the device fills, and the first one not posted
     /// (the tail pointer). The posted descriptors are `rx_next..rx_post`,
@@ -625,7 +624,6 @@ impl<M: Mmio, T: Ticks, D: DmaOps> Dwmac<M, T, D> {
             tx_head: 0,
             tx_tail: 0,
             tx_inflight: 0,
-            tx_batch: false,
             tx_unannounced: false,
             rx_next: 0,
             rx_post: 0,
@@ -900,7 +898,7 @@ impl<M: Mmio, T: Ticks, D: DmaOps> Dwmac<M, T, D> {
     }
 
     /// Queue `frame` (a whole Ethernet frame without FCS) for transmission.
-    pub fn send(&mut self, frame: &[u8]) -> Result<usize, NetError> {
+    pub fn post(&mut self, frame: &[u8]) -> Result<usize, NetError> {
         if !self.link.up {
             return Err(NetError::NotReady);
         }
@@ -929,32 +927,17 @@ impl<M: Mmio, T: Ticks, D: DmaOps> Dwmac<M, T, D> {
         self.tx_head = (i + 1) % TX_N;
         self.tx_inflight += 1;
         self.stats.tx_frames += 1;
-        if self.tx_batch {
-            self.tx_unannounced = true;
-        } else {
-            self.announce_tx();
-        }
+        self.tx_unannounced = true;
         Ok(frame.len())
     }
 
-    /// As [`Self::announce_rx`].
-    fn announce_tx(&mut self) {
-        azos_dma::order::io_wmb();
-        let tail = self.tx_desc_bus + (self.tx_head * DESC_STRIDE) as u64;
-        self.hw.write32(reg::DMA_CH0_TXDESC_TAIL, tail as u32);
-        self.tx_unannounced = false;
-    }
-
-    /// Until [`Self::tx_batch_end`], `send` queues without announcing.
-    pub fn tx_batch_begin(&mut self) {
-        self.tx_batch = true;
-    }
-
-    /// Announce everything the batch queued with one tail write.
-    pub fn tx_batch_end(&mut self) {
-        self.tx_batch = false;
+    /// Announce everything [`Self::post`] queued with one tail write.
+    pub fn ring(&mut self) {
         if self.tx_unannounced {
-            self.announce_tx();
+            azos_dma::order::io_wmb();
+            let tail = self.tx_desc_bus + (self.tx_head * DESC_STRIDE) as u64;
+            self.hw.write32(reg::DMA_CH0_TXDESC_TAIL, tail as u32);
+            self.tx_unannounced = false;
         }
     }
 
@@ -1092,13 +1075,13 @@ impl<M: Mmio, T: Ticks, D: DmaOps> Dwmac<M, T, D> {
 
 // ── Kernel instance ─────────────────────────────────────────────────────
 
-/// The statics, the interrupt hook and the [`NetDevice`] face of the VF2's
-/// `gmac0`: what `net_device` dispatches to. Compiled for the board only,
+/// The statics, the interrupt hook and the [`NetQueue`] face of the VF2's
+/// `gmac0`: what `net_queue` dispatches to. Compiled for the board only,
 /// because the rings are ~75 KiB of `.bss`.
 #[cfg(feature = "vf2")]
 pub mod board {
     use super::*;
-    use azos_drv_api::net::NetDevice;
+    use azos_drv_api::net::NetQueue;
     use azos_drv_virtio::virtio::Dma;
     use azos_drvkit::Window;
     use azos_sync::SpinLock;
@@ -1232,25 +1215,23 @@ pub mod board {
         );
     }
 
-    /// The `NetDevice` face; zero-sized, every method forwards to the static.
-    pub struct DwmacNetDevice;
+    /// The `NetQueue` face; zero-sized, every method forwards to the static.
+    pub struct DwmacNetQueue;
 
-    impl NetDevice for DwmacNetDevice {
+    impl NetQueue for DwmacNetQueue {
         #[inline]
-        fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
+        fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
             match STATE.lock().as_mut() {
-                Some(d) => d.send(frame),
+                Some(d) => d.post(frame),
                 None => Err(NetError::NotReady),
             }
         }
 
-        fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-            let mut n = 0;
-            self.recv_batch(1, &mut |f| {
-                n = f.len().min(buf.len());
-                buf[..n].copy_from_slice(&f[..n]);
-            });
-            Ok(n)
+        #[inline]
+        fn ring(&self) {
+            if let Some(d) = STATE.lock().as_mut() {
+                d.ring();
+            }
         }
 
         #[inline]
@@ -1263,25 +1244,11 @@ pub mod board {
             READY.load(Ordering::Acquire)
         }
 
-        #[inline]
-        fn tx_batch_begin(&self) {
-            if let Some(d) = STATE.lock().as_mut() {
-                d.tx_batch_begin();
-            }
-        }
-
-        #[inline]
-        fn tx_batch_end(&self) {
-            if let Some(d) = STATE.lock().as_mut() {
-                d.tx_batch_end();
-            }
-        }
-
         /// One lock to take the batch off the ring, none while `f` runs (it
         /// may send), one to hand the descriptors back. A single consumer
         /// (the net poll task) is assumed: two overlapping drains would
         /// release out of ring order.
-        fn recv_batch(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+        fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
             if irq_driven() && !RX_PENDING.load(Ordering::Acquire) {
                 poll_link_if_due();
                 return 0;

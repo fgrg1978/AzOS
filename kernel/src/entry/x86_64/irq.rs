@@ -202,7 +202,7 @@ fn msi(vector: u8) -> bool {
     // when no kernel driver claims it: the event is queued on its port, or
     // dropped while the handler is out of budget.
     // Kconfig DRV_E1000E / DRV_IGC: an Intel NIC's MSI.
-    let resched = if azos_drv_net::net_device::pci_msi_irq(token) || azos_drv_virtio::virtio::net::msi_irq(token) {
+    let resched = if azos_drv_net::net_queue::pci_msi_irq(token) || azos_drv_virtio::virtio::net::msi_irq(token) {
         crate::net_msi_wake()
     } else {
         azos_ipc::irq_msi_dispatch(token)

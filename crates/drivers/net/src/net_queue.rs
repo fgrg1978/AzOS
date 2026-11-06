@@ -293,6 +293,27 @@ pub fn batch_end(nic: usize) {
     }
 }
 
+/// [`batch_begin`] on every NIC that came up: the stack's receive pass and its
+/// bulk senders answer on whichever interface a frame names.
+#[inline]
+pub fn batch_begin_all() {
+    for nic in 0..MAX_NICS {
+        if backend(nic) != BACKEND_NONE {
+            batch_begin(nic);
+        }
+    }
+}
+
+/// [`batch_end`] on every NIC that came up.
+#[inline]
+pub fn batch_end_all() {
+    for nic in 0..MAX_NICS {
+        if backend(nic) != BACKEND_NONE {
+            batch_end(nic);
+        }
+    }
+}
+
 /// Hand up to `max` received frames of NIC `nic` to `f` (`NetQueue::reap_rx`):
 /// by reference on virtio-net, one copy each on board Ethernet. 0 when there
 /// is no such NIC or nothing is queued. Outside a batch the buffers it
@@ -444,12 +465,15 @@ pub fn msi_armed() -> bool {
     azos_drv_virtio::virtio::net::msi_armed()
 }
 
+/// The number of the virtio-net NIC, when it is one of the NICs.
+pub fn virtio_nic() -> Option<usize> {
+    (0..MAX_NICS).find(|&nic| backend(nic) == BACKEND_VIRTIO)
+}
+
 /// The virtio-net queue counters (frames, doorbells issued and skipped,
 /// drops, interrupts) when virtio-net is one of the NICs.
 pub fn virtio_queue_stats() -> Option<azos_drv_virtio::virtio::net::NetQueueStats> {
-    (0..MAX_NICS)
-        .any(|nic| backend(nic) == BACKEND_VIRTIO)
-        .then(azos_drv_virtio::virtio::net::queue_stats)
+    virtio_nic().map(|_| azos_drv_virtio::virtio::net::queue_stats())
 }
 
 #[cfg(test)]

@@ -884,6 +884,5 @@ impl<M: Memory, C: Clock> NetFunction for Smsc95xx<'_, M, C> {
     fn recv(&mut self, out: &mut [u8]) -> usize {
         self.recv_frame(out)
     }
-    fn tx_begin(&mut self) {}
-    fn tx_end(&mut self) {}
+    fn ring(&mut self) {}
 }

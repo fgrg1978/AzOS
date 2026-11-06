@@ -242,7 +242,7 @@ config DRV_E1000E
     help
       Kernel feature `e1000e` (crates/drivers/net/src/e1000e.rs). Binds by
       PCI id through the hardware bus (crates/drivers/net/hwbus.ids) and
-      serves the NIC table of net_device next to board Ethernet and
+      serves the NIC table of net_queue next to board Ethernet and
       virtio-net. One RX and one TX ring (E1000E_RX_DESCS, E1000E_TX_DESCS)
       in the kernel's own memory, 2 KiB buffers, the MAC read from RAL0/RAH0
       as the controller's NVM load left it, link read from STATUS. Receive
@@ -366,7 +366,7 @@ config DRV_IGC
       at 0xc0, not 0x1500, and are picked by device id) for the gate. QEMU
       has no I225 model. Binds by PCI id
       through the hardware bus (crates/drivers/net/hwbus.ids) and serves the
-      NIC table of net_device next to board Ethernet, e1000e and
+      NIC table of net_queue next to board Ethernet, e1000e and
       virtio-net. One RX and one TX ring (IGC_RX_DESCS, IGC_TX_DESCS) of
       advanced descriptors in the kernel's own memory, 2 KiB buffers, the
       MAC read from RAL0/RAH0 as the controller's NVM load left it, link

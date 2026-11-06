@@ -8,7 +8,7 @@
 //! the core opened for those claims. This file is the protocol and nothing
 //! else: no lock, no hardware. The kernel half wraps one function in a lock
 //! (`crates/drivers/net/src/usb_net.rs` for the NIC, which registers with the
-//! device table as `net_device::register_usb`) and turns the crank from the
+//! device table as `net_queue::register_usb`) and turns the crank from the
 //! `usb` task: [`CdcNet::session_wanted`] / [`CdcNet::open`] after each turn
 //! of the core, then [`CdcNet::service`] ([`CdcAcm::pump`] for a serial line).
 //!
@@ -57,9 +57,9 @@
 //! ([`ntb`]) per transfer, parsed lazily, datagram by datagram; a block that
 //! lies about itself ends at the first bad field and counts in
 //! [`NetStats::ntb_malformed`]. Transmit: one buffer per ECM frame; NCM packs
-//! frames into the open block while a batch is open ([`CdcNet::tx_begin`] /
-//! [`CdcNet::tx_end`], the shape of `NetDevice::tx_batch_*`), or sends each
-//! frame alone. The block honours the device's alignment, divisor, remainder,
+//! frames into the open block until [`CdcNet::flush`] (the doorbell of
+//! `NetQueue::ring`, which the table rings at once outside a batch, so a lone
+//! frame leaves alone). The block honours the device's alignment, divisor, remainder,
 //! size and datagram limits.
 //!
 //! **No zero-length packets.** The core queues no zero-length transfer, so a
@@ -1163,7 +1163,6 @@ pub struct CdcNet<'q, M: Memory, C: Clock> {
     tx16: Tx16,
     /// The buffer the block under construction is in.
     tx_open: Option<usize>,
-    batching: bool,
     halts: Halts,
     bad_run: u32,
     submitted: bool,
@@ -1198,7 +1197,6 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             tx_busy: [false; BUFS],
             tx16: Tx16::new(TxParams { max_size: 0, ndp_align: 4, divisor: 4, remainder: 0, max_datagrams: 0 }),
             tx_open: None,
-            batching: false,
             halts: Halts::default(),
             bad_run: 0,
             submitted: false,
@@ -1491,7 +1489,6 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
         self.rx = [RxBuf { slot: RxSlot::Free, cursor: Cursor::None }; BUFS];
         self.tx_busy = [false; BUFS];
         self.tx_open = None;
-        self.batching = false;
         self.halts = Halts::default();
         self.bad_run = 0;
         self.mac = [0; 6];
@@ -1741,9 +1738,6 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             self.tx_open = None;
             return Err(SendError::BadLength);
         }
-        if !self.batching {
-            self.flush()?;
-        }
         Ok(())
     }
 
@@ -1765,16 +1759,6 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
         self.submit_tx(i, n)
     }
 
-    /// Open a batch: frames sent until [`CdcNet::tx_end`] share blocks.
-    pub fn tx_begin(&mut self) {
-        self.batching = true;
-    }
-
-    /// Close the batch and queue what it built.
-    pub fn tx_end(&mut self) {
-        self.batching = false;
-        let _ = self.flush();
-    }
 }
 
 impl<M: Memory, C: Clock> super::net::NetFunction for CdcNet<'_, M, C> {
@@ -1807,11 +1791,8 @@ impl<M: Memory, C: Clock> super::net::NetFunction for CdcNet<'_, M, C> {
     fn recv(&mut self, out: &mut [u8]) -> usize {
         CdcNet::recv(self, out)
     }
-    fn tx_begin(&mut self) {
-        CdcNet::tx_begin(self)
-    }
-    fn tx_end(&mut self) {
-        CdcNet::tx_end(self)
+    fn ring(&mut self) {
+        let _ = CdcNet::flush(self);
     }
 }
 

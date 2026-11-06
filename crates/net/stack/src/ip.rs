@@ -592,7 +592,7 @@ pub struct Iface {
     pub gateway: [u8; 4],
     /// EUI-64 link-local address (RFC 4291 §2.5.1), from the MAC.
     pub ip6_link_local: [u8; 16],
-    /// The driver layer's NIC number (`net_device`), or [`NIC_NONE`].
+    /// The driver layer's NIC number (`net_queue`), or [`NIC_NONE`].
     pub nic:  u8,
 }
 

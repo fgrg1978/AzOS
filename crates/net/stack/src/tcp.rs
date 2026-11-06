@@ -5126,7 +5126,7 @@ fn conn_deadline(c: &TcpConn) -> Option<u64> {
 }
 
 /// When the NICs' transmit rings must next be looked at (the receive pass
-/// sets it from `net_device::tx_watch`); 0: no ring holds frames.
+/// sets it from `net_queue::reap_tx`); 0: no ring holds frames.
 static TX_WATCH_DUE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// The receive pass looked at the transmit rings: `due` is when they must be
@@ -5159,7 +5159,7 @@ pub fn next_deadline() -> Option<u64> {
 
 /// A frame was sent: its ring's budget clock may have started, and the poll
 /// task, if it sleeps more than `look` ticks from now, is kicked to look at
-/// the ring in time (`net_device::tx_watch`).
+/// the ring in time (`net_queue::reap_tx`).
 pub fn note_tx_sent(look: u64) {
     let w = POLL_WAKE_AT.load(core::sync::atomic::Ordering::SeqCst);
     if w != 0 && w > azos_drv_sys::timebase::now().saturating_add(look) {

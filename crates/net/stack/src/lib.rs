@@ -29,6 +29,8 @@ pub mod dhcp;
 pub mod dns;
 pub mod ntp;
 
+use azos_drv_net::net_queue;
+
 azos_common::ro_hook! {
     /// Where the stack's random bytes come from, installed by the kernel at boot.
     ///
@@ -100,12 +102,9 @@ pub const DEFAULT_MASK:    [u8; 4] = [255, 255, 255, 0];
 
 // ── Transport abstraction ─────────────────────────────────────────────────────
 //
-// On QEMU we use VirtIO net; on VF2 we use the Cadence MACB Ethernet driver.
-// `azos_drv_net::net_device` picks between them ONCE, in `net_init`
-// below (`net_device::select`) — these two functions used to each re-ask
-// `eth::eth_is_ready()` themselves, a real cross-crate call that on QEMU
-// (no `vf2` feature) always answers `false`, paid on every single frame of
-// the hot path. They now read a cached choice instead.
+// Every NIC is a queue pair (`azos_drv_net::net_queue`), numbered ONCE in
+// `net_init` below (`net_queue::select`); the hot path reads that cached
+// number, never re-probes a device per frame.
 
 /// The interface a frame leaves by: the one that owns its source MAC, which
 /// every frame builder in the stack writes. A frame whose source is no
@@ -124,33 +123,51 @@ pub fn net_raw_send(frame: &[u8]) -> i32 {
     if !nic_queue::stack_may_send(ifindex) {
         return -1;
     }
-    match azos_drv_net::net_device::send(link.nic as usize, frame) {
+    match net_queue::submit(link.nic as usize, frame) {
         Ok(n) => {
             // The frame may have started the ring's budget clock: the poller
-            // must look at the ring within its cadence (`tx_watch`).
-            tcp::note_tx_sent(azos_drv_net::net_device::tx_look_ticks());
+            // must look at the ring within its cadence (`reap_tx`).
+            tcp::note_tx_sent(net_queue::tx_look_ticks());
             n as i32
         }
         Err(_) => -1,
     }
 }
 
-/// Send `frame` by the NIC of `ifindex`, whose queue a ring-3 program took
+/// The NIC of `ifindex` when a ring-3 program holds its queue (`nic_queue`).
+fn taken_nic(ifindex: IfIndex) -> Option<usize> {
+    if !nic_queue::taken(ifindex) {
+        return None;
+    }
+    ip::iface_get(ifindex).filter(|i| i.attached()).map(|l| l.nic as usize)
+}
+
+/// Post `frame` on the NIC of `ifindex`, whose queue a ring-3 program took
 /// (`nic_queue`): the taker's own path, the one `net_raw_send` refuses the
 /// stack. `false` when the queue is not taken (any more), the interface has
 /// no NIC or the NIC refused the frame.
 pub fn nic_queue_send(ifindex: IfIndex, frame: &[u8]) -> bool {
-    if !nic_queue::taken(ifindex) {
-        return false;
-    }
-    let Some(link) = ip::iface_get(ifindex).filter(|i| i.attached()) else { return false };
-    azos_drv_net::net_device::send(link.nic as usize, frame).is_ok()
+    taken_nic(ifindex).is_some_and(|nic| net_queue::submit(nic, frame).is_ok())
 }
 
-/// Receive a raw Ethernet frame from NIC `nic`.
-/// Returns the number of bytes received, or 0 if none available.
-fn net_raw_recv(nic: usize, buf: &mut [u8]) -> usize {
-    azos_drv_net::net_device::recv(nic, buf).unwrap_or(0)
+/// Open (`true`) or close a batch on the NIC of a taken queue: the frames the
+/// taker posts in between share a doorbell, rung when it closes.
+pub fn nic_queue_batch(ifindex: IfIndex, open: bool) {
+    if let Some(nic) = taken_nic(ifindex) {
+        if open {
+            net_queue::batch_begin(nic);
+        } else {
+            net_queue::batch_end(nic);
+        }
+    }
+}
+
+/// Announce what was posted on the NIC of a taken queue now: a frame that
+/// asked for its departure stamp must not wait for its batch.
+pub fn nic_queue_flush(ifindex: IfIndex) {
+    if let Some(nic) = taken_nic(ifindex) {
+        net_queue::flush(nic);
+    }
 }
 
 /// Initialize the network stack.
@@ -169,10 +186,10 @@ pub fn net_init() {
     let seed = (boot_time as u32) ^ ((boot_time >> 32) as u32);
     tcp::isn_secret_seed(seed);
 
-    // Number the NICs once — everything after this point
-    // (`net_raw_send`/`net_raw_recv`) reads the cached table instead of
-    // re-probing either device per frame. See `net_device`'s module doc.
-    let nics = azos_drv_net::net_device::select();
+    // Number the NICs once — everything after this point (`net_raw_send`, the
+    // receive pass) reads the cached table instead of re-probing the devices
+    // per frame. See `net_queue`'s module doc.
+    let nics = net_queue::select();
 
     // Every NIC is an interface. The primary one keeps the address configured
     // for it before the probe (CONFIG.INI), or the QEMU-compatible default.
@@ -180,7 +197,7 @@ pub fn net_init() {
         ip::iface_configure(PRIMARY_IF, DEFAULT_IP, DEFAULT_MASK, DEFAULT_GATEWAY);
     }
     for nic in 0..nics {
-        let mac = azos_drv_net::net_device::mac(nic);
+        let mac = net_queue::mac(nic);
         let ll = ipv6::eui64_link_local(&mac);
         if ip::iface_attach(nic as u8, mac, ip::ETH_MTU as u16, ll).is_none() {
             azos_drv_sys::kprintln!("[NET] NIC {} left unused: NET_MAX_INTERFACES ({}) reached",
@@ -218,7 +235,7 @@ fn primary_up() {
 }
 
 /// NIC `nic` joined the device table after [`net_init`] numbered the others (a
-/// USB network function, `net_device::register_usb`): give it an interface. A
+/// USB network function, `net_queue::register_usb`): give it an interface. A
 /// NIC that was attached before (the same function plugged in again) keeps its
 /// interface and takes the MAC it states now. The first NIC of the machine
 /// becomes the primary interface and starts TCP and IPv6 as `net_init` does.
@@ -226,7 +243,7 @@ fn primary_up() {
 /// fail until the NIC is back. `None` when the interface table is full.
 pub fn net_nic_added(nic: usize) -> Option<IfIndex> {
     let primary_was_up = ip::iface_get(PRIMARY_IF).is_some_and(|i| i.attached());
-    let mac = azos_drv_net::net_device::mac(nic);
+    let mac = net_queue::mac(nic);
     let ifindex = ip::iface_attach(nic as u8, mac, ip::ETH_MTU as u16, ipv6::eui64_link_local(&mac));
     match ifindex {
         None => azos_drv_sys::kprintln!("[NET] NIC {} left unused: NET_MAX_INTERFACES ({}) reached", nic, MAX_IFS),
@@ -313,14 +330,14 @@ fn net_poll_pass() -> bool {
     let mut budget_hit = false;
     // The transmit rings' budget (Kconfig NET_TX_TIMEOUT_MS) is looked at
     // on every pass: a send alone looks too seldom (`TxWatch`).
-    tcp::set_tx_watch_due(azos_drv_net::net_device::tx_watch());
+    tcp::set_tx_watch_due(net_queue::reap_tx());
     net_tx_batch_begin();
     for ifindex in 1..=MAX_IFS as IfIndex {
         let Some(link) = ip::iface_get(ifindex).filter(|i| i.attached()) else { continue };
         let (mac, addr, nic) = (link.mac, link.ip, link.nic as usize);
         // A queue a ring-3 program took: its frames go to the program's ring,
         // stamped at the driver boundary, and the stack sees none of them.
-        let mut recv = |max: usize, f: &mut dyn FnMut(&[u8])| azos_drv_net::net_device::recv_batch(nic, max, f);
+        let mut recv = |max: usize, f: &mut dyn FnMut(&[u8])| net_queue::reap_rx(nic, max, f);
         if let Some(taken) = nic_queue::pass(ifindex, MAX_DRAIN_PER_CALL, &mut recv) {
             drained += taken;
             budget_hit |= taken == MAX_DRAIN_PER_CALL;
@@ -347,16 +364,20 @@ fn net_poll_pass() -> bool {
             // copy into a zeroed stack buffer per frame.
             let mut buf = [0u8; ethernet::ETH_FRAME_MAX];
             while taken < MAX_DRAIN_PER_CALL {
-                let n = net_raw_recv(nic, &mut buf);
+                let mut n = 0;
+                net_queue::reap_rx(nic, 1, &mut |frame| {
+                    n = frame.len().min(buf.len());
+                    buf[..n].copy_from_slice(&frame[..n]);
+                });
                 if n == 0 { break; }
                 taken += 1;
                 handle(&buf[..n]);
             }
         } else {
             // IO-QUEUES N2 step 2: frames come in batches, by reference into
-            // the NIC's own buffers (`NetDevice::recv_batch`).
+            // the NIC's own buffers (`NetQueue::reap_rx`).
             while taken < MAX_DRAIN_PER_CALL {
-                let n = azos_drv_net::net_device::recv_batch(nic, MAX_DRAIN_PER_CALL - taken, &mut handle);
+                let n = net_queue::reap_rx(nic, MAX_DRAIN_PER_CALL - taken, &mut handle);
                 if n == 0 { break; }
                 taken += n;
             }
@@ -388,13 +409,13 @@ fn net_poll_pass() -> bool {
 /// or other tasks' frames wait with it. Nests.
 #[inline]
 pub fn net_tx_batch_begin() {
-    azos_drv_net::net_device::tx_batch_begin();
+    net_queue::batch_begin_all();
 }
 
 /// Close the batch [`net_tx_batch_begin`] opened; announces its frames.
 #[inline]
 pub fn net_tx_batch_end() {
-    azos_drv_net::net_device::tx_batch_end();
+    net_queue::batch_end_all();
 }
 
 /// Send an ICMP ping to `dst_ip`, from the address of the interface its route
@@ -476,7 +497,7 @@ pub fn net_info() {
         azos_drv_sys::kconsoleln!("[NET]       packet sockets: {} frames delivered, {} dropped", pd, pdrop);
     }
     // IO-QUEUES N1/N2: frames per doorbell is tx_frames / tx_doorbells.
-    if let Some(q) = azos_drv_net::net_device::virtio_queue_stats() {
+    if let Some(q) = net_queue::virtio_queue_stats() {
         azos_drv_sys::kconsoleln!(
             "[NET]       queues: tx {} frames {} doorbells {} skipped {} dropped, \
              rx {} frames {} doorbells {} skipped, {} irqs",

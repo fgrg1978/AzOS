@@ -64,8 +64,11 @@ mod stub {
         -1
     }
 
-    /// Send an Ethernet frame.  Returns -1 (not available on QEMU).
-    pub fn eth_send(_data: &[u8]) -> i32 { -1 }
+    /// Post an Ethernet frame.  Returns -1 (not available on QEMU).
+    pub fn eth_post(_data: &[u8]) -> i32 { -1 }
+
+    /// Start the transmitter on what was posted.
+    pub fn eth_ring() {}
 
     /// Receive an Ethernet frame.  Returns -1 (not available on QEMU).
     pub fn eth_recv(_buf: &mut [u8]) -> i32 { -1 }
@@ -309,12 +312,13 @@ mod macb {
         0
     }
 
-    /// Send an Ethernet frame via DMA.
+    /// Post an Ethernet frame for DMA.
     ///
     /// Finds a free TX descriptor (word1 bit 31 = USED), copies `data` into
-    /// the corresponding DMA buffer, programs the descriptor, and triggers
-    /// transmission.  Returns number of bytes sent, or -1 on failure.
-    pub fn eth_send(data: &[u8]) -> i32 {
+    /// the corresponding DMA buffer and programs the descriptor;
+    /// [`eth_ring`] starts the transmitter.  Returns the number of bytes
+    /// posted, or -1 on failure.
+    pub fn eth_post(data: &[u8]) -> i32 {
         if !INIT_DONE.load(Ordering::Acquire) {
             return -1;
         }
@@ -350,10 +354,6 @@ mod macb {
 
             // Advance TX head (round-robin)
             TX_HEAD.store((idx + 1) % DESC_COUNT, Ordering::Relaxed);
-
-            // Trigger transmission by setting TX start bit in NCR
-            let ncr = rd(NCR);
-            wr(NCR, ncr | NCR_TX_GO);
         }
 
         // Update statistics
@@ -365,6 +365,11 @@ mod macb {
         }
 
         len as i32
+    }
+
+    /// Start the transmitter on every descriptor posted so far.
+    pub fn eth_ring() {
+        wr(NCR, rd(NCR) | NCR_TX_GO);
     }
 
     /// Receive an Ethernet frame into `buf`.
@@ -492,36 +497,46 @@ mod macb {
 #[cfg(feature = "vf2")]
 pub use macb::*;
 
-// ── NetDevice ────────────────────────────────────────────────────────────
+// ── NetQueue ─────────────────────────────────────────────────────────────
 //
-// A thin, zero-sized adapter over the free-function API above.
-// The stub/macb split stays exactly as it is; this just gives the two
-// backends (this one and `virtio::net`) one call shape `net_device::select`
-// can dispatch through.
-use azos_drv_api::net::{NetDevice, NetError};
+// A thin, zero-sized adapter over the free-function API above. The stub/macb
+// split stays as it is; this gives the two backends (this one and
+// `virtio::net`) one call shape `net_queue::select` can dispatch through.
+use azos_drv_api::net::{NetError, NetQueue, ETH_FRAME_MAX};
 
-pub struct EthNetDevice;
+pub struct EthNetQueue;
 
-impl NetDevice for EthNetDevice {
-    /// `eth_send` returns a negative sentinel for "not available" (always
-    /// the case on QEMU — see `stub` above) and the byte count otherwise.
-    /// It does not distinguish "not ready" from "frame rejected", so every
-    /// negative result maps to `NotReady`; a real per-cause split would mean
-    /// changing `eth_send`'s own return type, which every other caller of
-    /// this module (none today — see the crate's ownership note) would also
-    /// have to absorb.
+impl NetQueue for EthNetQueue {
+    /// `eth_post` returns a negative sentinel for "not available" (always
+    /// the case on QEMU: see `stub` above) and the byte count otherwise. It
+    /// does not distinguish "not ready" from "frame rejected" or "ring full",
+    /// so every negative result maps to `NotReady`.
     #[inline]
-    fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
-        let n = eth_send(frame);
+    fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
+        let n = eth_post(frame);
         if n < 0 { Err(NetError::NotReady) } else { Ok(n as usize) }
     }
 
-    /// Mirrors `net_raw_recv`'s old inline mapping exactly: negative or zero
-    /// both mean "nothing to report right now", not an error.
     #[inline]
-    fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-        let n = eth_recv(buf);
-        Ok(if n > 0 { n as usize } else { 0 })
+    fn ring(&self) {
+        eth_ring()
+    }
+
+    /// One copy per frame into a stack buffer: negative or zero from
+    /// `eth_recv` both mean "nothing to report right now".
+    #[inline]
+    fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+        let mut buf = [0u8; ETH_FRAME_MAX];
+        let mut n = 0;
+        while n < max {
+            let len = eth_recv(&mut buf);
+            if len <= 0 {
+                break;
+            }
+            f(&buf[..(len as usize).min(buf.len())]);
+            n += 1;
+        }
+        n
     }
 
     #[inline]

@@ -26,8 +26,8 @@ use crate::*;
 /// the counter's own rate (`timebase::freq()`: `CNTFRQ_EL0` on aarch64, not
 /// the board's Kconfig word for it).
 ///
-/// Three modes, chosen once at task start from `net_device::irq_driven()`
-/// and `net_device::is_ready()` (the NIC backend is selected once, by
+/// Three modes, chosen once at task start from `net_queue::irq_driven()`
+/// and `net_queue::is_ready()` (the NIC backend is selected once, by
 /// `net_init()`, before this task is created):
 /// In every mode the task sleeps until the nearest TCP deadline
 /// (`tcp::next_deadline`: delayed ACK, RTO, SYN/FIN retry, persist,
@@ -92,8 +92,8 @@ pub(crate) fn net_poll_task(_: usize) {
     // The wait hooks and the TCP timer kick are installed at boot
     // (`install_net_hooks`); this says the receive path has its consumer.
     azos_net::wait::note_poller_started();
-    let irq_mode = azos_drv_net::net_device::irq_driven();
-    let no_nic = !azos_drv_net::net_device::is_ready();
+    let irq_mode = azos_drv_net::net_queue::irq_driven();
+    let no_nic = !azos_drv_net::net_queue::is_ready();
     // Arm the timer only while `tcp_tick` has a deadline: in IRQ mode an RX
     // MSI brings frames, and with no NIC no frame can arrive at all. The
     // gate canary `netpoll-idle-timer-canary` keeps the poll period anyway.
@@ -108,8 +108,8 @@ pub(crate) fn net_poll_task(_: usize) {
     // wake took this task out of its timer sleep (`net_msi_wake`); `early`
     // says whether it then ran before that timer would have fired (it can
     // lose the CPU to other tasks for longer than that — informational).
-    let mut rx_seen = azos_drv_net::net_device::rx_irq_count();
-    let mut announced = !azos_drv_net::net_device::irq_driven();
+    let mut rx_seen = azos_drv_net::net_queue::rx_irq_count();
+    let mut announced = !azos_drv_net::net_queue::irq_driven();
 
     loop {
         // Running: TCP deadlines armed from here on are picked up by the
@@ -152,7 +152,7 @@ pub(crate) fn net_poll_task(_: usize) {
         NET_POLL_ITERS.fetch_add(1, Ordering::Relaxed);
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
         if !announced {
-            let rx = azos_drv_net::net_device::rx_irq_count();
+            let rx = azos_drv_net::net_queue::rx_irq_count();
             if rx != rx_seen {
                 announced = true;
                 let early = azos_drv_sys::timebase::now() < dl;
@@ -160,7 +160,7 @@ pub(crate) fn net_poll_task(_: usize) {
                 let other = NET_MSI_WAKES[0].load(Ordering::Relaxed);
                 // "RX MSI" on virtio-pci (a gate row reads that line), "RX
                 // interrupt" on the virtio-mmio line (Kconfig NET_RX_IRQ).
-                let what = if azos_drv_net::net_device::msi_armed() { "RX MSI" } else { "RX interrupt" };
+                let what = if azos_drv_net::net_queue::msi_armed() { "RX MSI" } else { "RX interrupt" };
                 if dispatched != 0 {
                     kprintln!("[NET-POLL] {} woke this task: rx {} -> {}, dispatched={} other={} early={}",
                         what, rx_seen, rx, dispatched, other, if early { "y" } else { "n" });
@@ -182,7 +182,7 @@ pub(crate) fn net_poll_task(_: usize) {
 #[cfg(feature = "net")]
 pub(crate) fn start_net_poll() {
     static STARTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-    if !azos_drv_net::net_device::is_ready() || STARTED.swap(true, Ordering::AcqRel) {
+    if !azos_drv_net::net_queue::is_ready() || STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
     let cpu = crate::tasks::place::pin(crate::tasks::place::NET_POLL);
@@ -198,7 +198,7 @@ pub(crate) fn start_net_poll() {
 static NET_POLL_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Interrupt path, every ISA: a PCI NIC took an MSI that
-/// `virtio::net::msi_irq` or `net_device::pci_msi_irq` (e1000e, igc) accepted. Wake `net_poll_task` out of its timer
+/// `virtio::net::msi_irq` or `net_queue::pci_msi_irq` (e1000e, igc) accepted. Wake `net_poll_task` out of its timer
 /// sleep; if it is not asleep yet, the wake is stamped (K-C9) and its next
 /// block returns at once, so an RX MSI landing while it drains is not lost.
 /// Returns whether a task was dispatched.

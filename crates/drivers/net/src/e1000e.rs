@@ -4,7 +4,7 @@
 //! the 82574L QEMU models and the PCH LAN controllers (I217, I218, I219).
 //!
 //! The ids the bus binds it to are in `crates/drivers/net/hwbus.ids`; it is
-//! one more backend of the NIC table of [`crate::net_device`].
+//! one more backend of the NIC table of [`crate::net_queue`].
 //!
 //! # Shape
 //!
@@ -17,7 +17,7 @@
 //!   so `tests/host/drivers-tests` runs every function against the e1000e
 //!   software developer's manual's layouts on the host.
 //! * **The device** (`feature = "e1000e"`): the reset, the queue set-up and
-//!   the [`E1000eNetDevice`] entry points `net_device` forwards to.
+//!   the [`E1000eNetQueue`] entry points `net_queue` forwards to.
 //! * **[`crate::pci_nic`]**, shared with igc: the rings and buffers, the
 //!   receive and transmit paths, the interrupt hook, the MSI wiring and the
 //!   order of the bring-up.
@@ -367,12 +367,6 @@ impl TxCursor {
     }
 }
 
-/// Whether a send must write `TDT` now: outside a batch, or when `pending`
-/// frames have piled up to `batch_max`.
-pub const fn tx_doorbell_due(depth: u16, pending: u16, batch_max: u16) -> bool {
-    depth == 0 || pending >= batch_max
-}
-
 // ---------------------------------------------------------------------
 // MAC, link
 // ---------------------------------------------------------------------
@@ -487,7 +481,7 @@ pub use device::*;
 mod device {
     use super::*;
     use crate::pci_nic::{Chip, IrqRegs, Mem, Nic, NicError, Regs, Wire};
-    use azos_drv_api::net::{NetDevice, NetError};
+    use azos_drv_api::net::{NetError, NetQueue};
     use azos_drv_virtio::virtio::pci::msix_selftest::MsiRoute;
     use azos_pci::{BarWindow, ConfigSpace, FunctionInfo};
 
@@ -583,18 +577,21 @@ mod device {
         NIC.rx_irq_count()
     }
 
-    /// `NetDevice` over the shared NIC, as `EthNetDevice` and
-    /// `VirtioNetDevice` are over theirs.
-    pub struct E1000eNetDevice;
+    /// `NetQueue` over the shared NIC.
+    pub struct E1000eNetQueue;
 
-    impl NetDevice for E1000eNetDevice {
+    impl NetQueue for E1000eNetQueue {
         #[inline]
-        fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
-            NIC.send(frame)
+        fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
+            NIC.post(frame)
         }
         #[inline]
-        fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-            NIC.recv(buf)
+        fn ring(&self) {
+            NIC.ring()
+        }
+        #[inline]
+        fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+            NIC.reap_rx(max, f)
         }
         fn mac(&self) -> [u8; 6] {
             NIC.mac()
@@ -603,16 +600,8 @@ mod device {
             NIC.is_ready()
         }
         #[inline]
-        fn tx_batch_begin(&self) {
-            NIC.tx_batch_begin()
-        }
-        #[inline]
-        fn tx_batch_end(&self) {
-            NIC.tx_batch_end()
-        }
-        #[inline]
-        fn tx_watch(&self) -> Option<u64> {
-            NIC.tx_watch()
+        fn reap_tx(&self) -> Option<u64> {
+            NIC.reap_tx()
         }
     }
 }
@@ -770,17 +759,6 @@ mod tests {
         // later one reads done.
         done = [false, true, true, false, true, true, true, true];
         assert_eq!(c.reclaim(n, |i| done[i as usize]), 0, "descriptor 3 is oldest and not done");
-    }
-
-    /// **Discriminates.** The doorbell: outside a batch every frame rings
-    /// it; inside one only the frame that reaches the bound does, and the
-    /// batch end flushes the rest.
-    #[test]
-    fn tx_doorbell_due_follows_the_batch() {
-        assert!(tx_doorbell_due(0, 1, 8));
-        assert!(!tx_doorbell_due(1, 1, 8));
-        assert!(!tx_doorbell_due(2, 7, 8));
-        assert!(tx_doorbell_due(1, 8, 8));
     }
 
     /// **Discriminates.** The receive tail: before any frame it is `n - 1`

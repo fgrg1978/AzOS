@@ -287,10 +287,10 @@ fn kernel_line(irq: u32) -> bool {
         woke
     } else if azos_drv_virtio::virtio::net::msi_irq(irq) {
         net_msi_wake()
-    } else if azos_drv_net::net_device::pci_msi_irq(irq) {
+    } else if azos_drv_net::net_queue::pci_msi_irq(irq) {
         // Kconfig DRV_E1000E / DRV_IGC: an Intel NIC's MSI.
         net_msi_wake()
-    } else if azos_drv_net::net_device::irq(irq) {
+    } else if azos_drv_net::net_queue::irq(irq) {
         // The NIC's PLIC/APLIC source (Kconfig NET_RX_IRQ): the virtio-mmio
         // NIC's, or the VisionFive 2's gmac0. Acknowledged at the device, RX
         // gate open; wake the poll task like an RX MSI.

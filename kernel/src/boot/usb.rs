@@ -975,7 +975,7 @@ mod host {
     /// `who` is the function's [`NIC_HOLDER`] value.
     #[cfg(feature = "usb-net")]
     fn nic_turn<F: NetFunction + Send>(nic: &'static UsbNic<F>, turn: NicEvent, who: u8) {
-        use azos_drv_api::net::NetDevice;
+        use azos_drv_api::net::NetQueue;
         use core::sync::atomic::Ordering;
         match turn {
             NicEvent::Up => {
@@ -984,7 +984,7 @@ mod host {
                     azos_drv_sys::kwarn!("[USB-NET] a network function is up, but another holds the USB NIC");
                     return;
                 }
-                let Some(n) = azos_drv_net::net_device::register_usb(nic) else {
+                let Some(n) = azos_drv_net::net_queue::register_usb(nic) else {
                     NIC_HOLDER.store(0, Ordering::Release);
                     azos_drv_sys::kwarn!("[USB-NET] a network function is up, but the NIC table has no number for it");
                     return;
@@ -1003,7 +1003,7 @@ mod host {
             }
             NicEvent::Down => {
                 if NIC_HOLDER.compare_exchange(who, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                    azos_drv_net::net_device::unregister_usb();
+                    azos_drv_net::net_queue::unregister_usb();
                     kprintln!("[USB-NET] network function removed");
                 }
             }

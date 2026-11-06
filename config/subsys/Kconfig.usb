@@ -259,7 +259,7 @@ config USB_CDC
       The communications class driver of the USB host. A network function:
       an Ethernet adapter, a phone or a board in USB-tethering or
       gadget-Ethernet mode (CDC-ECM, and CDC-NCM with NTB-16 blocks) becomes
-      a NIC of the network device table (net_device::register_usb) when its
+      a NIC of the network device table (net_queue::register_usb) when its
       function is ready and stops being one when it is unplugged. The
       network stack gets an interface for it (the primary one when it is the
       only NIC; DHCP runs for it when CONFIG.INI asks for it). One network
@@ -298,7 +298,7 @@ config USB_SMSC95XX
       the lite and PHY resets, the internal PHY autonegotiating 10/100 with
       pause, bulk-in bursts of several frames, one frame per bulk-out
       transfer. When the function is ready it becomes a NIC of the network
-      device table (net_device::register_usb, the one USB NIC: the first
+      device table (net_queue::register_usb, the one USB NIC: the first
       USB network function up holds it), with DHCP when CONFIG.INI asks for
       it, as a CDC function would. The MAC address is the device tree's
       `local-mac-address` of the `usb424,ec00` node (the Pi firmware fills it

@@ -36,11 +36,11 @@
 //! records.
 
 use crate::e1000e::{
-    icr_wakes_rx, rx_accept, rx_post, tx_done, tx_doorbell_due, Desc, Link, RxCursor, RxStatus, TxCursor, BUF_SIZE,
+    icr_wakes_rx, rx_accept, rx_post, tx_done, Desc, Link, RxCursor, RxStatus, TxCursor, BUF_SIZE,
     DESC_BYTES, ICR_LSC, IMS_RUN, REG_STATUS, RING_MULTIPLE, STATUS_LU, TX_FRAME_MAX,
 };
 use azos_dma::Direction;
-use azos_drv_api::net::NetError;
+use azos_drv_api::net::{NetError, ETH_FRAME_MAX};
 use azos_drv_api::recovery::{Class, Recovery, StallClock, TxWatch, Verdict, STALL_GAP_US, TX_LOOK_US};
 use azos_drv_virtio::virtio::Dma;
 use azos_sync::SpinLock;
@@ -275,9 +275,6 @@ struct TxState {
     dma: Dma,
     buf_bus: u64,
     cur: TxCursor,
-    /// Open TX batches ([`Nic::tx_batch_begin`]); 0 = every send rings at
-    /// once.
-    depth: u16,
     /// Frames published since the last doorbell.
     pending: u16,
     /// How long the announced frames have sat with no progress.
@@ -333,9 +330,6 @@ pub struct Nic<W: Wire, const RX_N: usize, const TX_N: usize> {
 }
 
 impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
-    /// Kconfig `NET_TX_BATCH_MAX`: inside a batch, frames published before
-    /// the doorbell is rung anyway.
-    const TX_BATCH_MAX: u16 = azos_limits::NET_TX_BATCH_MAX as u16;
     /// Consumed receive descriptors held back before `RDT` is written: an
     /// eighth of the ring, so the controller never runs short while a
     /// batch is being read, and one write covers many frames.
@@ -362,7 +356,6 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
                 dma: Dma::fallback(),
                 buf_bus: 0,
                 cur: TxCursor::new(),
-                depth: 0,
                 pending: 0,
                 watch: TxWatch::new(),
             }),
@@ -451,7 +444,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         }
         {
             let mut tx = self.tx.lock();
-            *tx = TxState { dma, buf_bus: tx_buf_bus, cur: TxCursor::new(), depth: 0, pending: 0, watch: TxWatch::new() };
+            *tx = TxState { dma, buf_bus: tx_buf_bus, cur: TxCursor::new(), pending: 0, watch: TxWatch::new() };
             self.tx_watched.store(false, Ordering::Relaxed);
         }
         azos_dma::order::io_wmb();
@@ -531,22 +524,24 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         rx.cur.flushed();
     }
 
-    /// Copy at most one received frame into `buf`; `Ok(0)` when none is
-    /// queued. A frame the stack must not see (errored, split, runt, too big
-    /// for `buf`) is dropped here, its descriptor re-posted, and the next one
-    /// looked at.
+    /// Hand up to `max` received frames to `f`, in place in their buffers, and
+    /// return how many. A frame the stack must not see (errored, split, runt,
+    /// longer than [`ETH_FRAME_MAX`]) is dropped here, its descriptor
+    /// re-posted, and the next one looked at. `RDT` is written once per eighth
+    /// of the ring and when the ring is found empty.
     #[inline]
-    pub fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
+    pub fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
         if !self.ready.load(Ordering::Acquire) {
-            return Err(NetError::NotReady);
+            return 0;
         }
         let mem = self.mem;
         let mut rx = self.rx.lock();
         if !self.ready.load(Ordering::Acquire) {
             // Being reset: the ring is the restart's until it is live again.
-            return Err(NetError::NotReady);
+            return 0;
         }
-        loop {
+        let mut got = 0;
+        while got < max {
             let i = rx.cur.clean as usize;
             // SAFETY: descriptor `i` is in the mapped ring; the controller
             // owns it until it writes DD, and reads of it are volatile.
@@ -560,19 +555,20 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
                     // Polled mode has no link-change interrupt.
                     self.link_up.store(self.regs().link_is_up(), Ordering::Relaxed);
                 }
-                return Ok(0);
+                break;
             }
             // The write-back is visible: the frame it describes is too.
             azos_dma::order::dma_rmb();
             let len = st.len as usize;
-            let accept = rx_accept(&st, rx.cur.discarding, buf.len().min(BUF_SIZE));
-            if accept {
+            if rx_accept(&st, rx.cur.discarding, ETH_FRAME_MAX.min(BUF_SIZE)) {
                 // SAFETY: buffer `i` holds `len <= BUF_SIZE` bytes the
-                // controller wrote; `buf` has room for them.
+                // controller wrote; the descriptor is not re-posted until
+                // `f` is done with them.
                 unsafe {
                     rx.dma.sync_for_cpu(mem.rx_buf(i) as *const u8, len, Direction::FromDevice);
-                    core::ptr::copy_nonoverlapping(mem.rx_buf(i) as *const u8, buf.as_mut_ptr(), len);
+                    f(core::slice::from_raw_parts(mem.rx_buf(i) as *const u8, len));
                 }
+                got += 1;
             }
             rx.cur.discarding = !st.eop;
             let taken = rx.cur.take(RX_N) as usize;
@@ -589,10 +585,8 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             if rx.cur.flush_due(Self::RX_RDT_BATCH) {
                 self.flush_tail(&mut rx);
             }
-            if accept {
-                return Ok(len);
-            }
         }
+        got
     }
 
     // ---- Transmit ----
@@ -637,9 +631,9 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         Some((held as u64, tx.watch.waited(t)))
     }
 
-    /// `NetDevice::tx_watch`: look at the transmit ring between sends, so its
+    /// `NetQueue::reap_tx`: look at the transmit ring between sends, so its
     /// budget runs out for a sender that sends seldom too (`TxWatch`).
-    pub fn tx_watch(&self) -> Option<u64> {
+    pub fn reap_tx(&self) -> Option<u64> {
         if !self.tx_watched.load(Ordering::Relaxed) || !self.ready.load(Ordering::Acquire) {
             return None;
         }
@@ -656,7 +650,8 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
     }
 
     /// Tell the controller about every frame published so far.
-    fn ring_doorbell(&self, tx: &mut TxState) {
+    pub fn ring(&self) {
+        let mut tx = self.tx.lock();
         if tx.pending == 0 {
             return;
         }
@@ -670,8 +665,8 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
 
     /// Frames sat in the transmit ring past the budget with the controller
     /// taking none (`held` of them, for `waited` ticks): the timeout policy
-    /// resets the controller once, then latches it dead. Called by `send`
-    /// or [`Nic::tx_watch`] with no lock held.
+    /// resets the controller once, then latches it dead. Called by `post`
+    /// or [`Nic::reap_tx`] with no lock held.
     #[cold]
     fn tx_timed_out(&self, held: u64, waited: u64) {
         let ms = waited.saturating_mul(1000) / azos_drv_sys::timebase::TIMER_FREQ.max(1);
@@ -715,10 +710,9 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
     }
 
     /// Queue `frame` for transmission: copied into the staging buffer of the
-    /// next descriptor, which is published, and announced at once or at the
-    /// end of the batch.
+    /// next descriptor, which is published. [`Nic::ring`] announces it.
     #[inline]
-    pub fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
+    pub fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
         if !self.ready.load(Ordering::Acquire) {
             return Err(NetError::NotReady);
         }
@@ -746,8 +740,6 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             return Err(NetError::NotReady);
         }
         let Some(i) = tx.cur.push(TX_N) else {
-            // Full: make sure what is queued is on its way, and say so.
-            self.ring_doorbell(&mut tx);
             return Err(NetError::QueueFull);
         };
         let i = i as usize;
@@ -761,29 +753,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             tx.dma.sync_for_device(mem.tx_desc(i) as *const u8, DESC_BYTES, Direction::Bidirectional);
         }
         tx.pending = tx.pending.saturating_add(1);
-        if tx_doorbell_due(tx.depth, tx.pending, Self::TX_BATCH_MAX) {
-            self.ring_doorbell(&mut tx);
-        }
         Ok(frame.len())
-    }
-
-    /// Open a TX batch: sends until [`Nic::tx_batch_end`] share one doorbell.
-    pub fn tx_batch_begin(&self) {
-        if self.ready.load(Ordering::Acquire) {
-            let mut tx = self.tx.lock();
-            tx.depth = tx.depth.saturating_add(1);
-        }
-    }
-
-    /// Close the batch and announce what it queued.
-    pub fn tx_batch_end(&self) {
-        if self.ready.load(Ordering::Acquire) {
-            let mut tx = self.tx.lock();
-            tx.depth = tx.depth.saturating_sub(1);
-            if tx.depth == 0 {
-                self.ring_doorbell(&mut tx);
-            }
-        }
     }
 }
 

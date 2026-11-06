@@ -16,7 +16,7 @@
 //!   `crate::nic_queue_send`. The interface keeps its address and its
 //!   routes: what the stack would send by it is refused, as by an interface
 //!   whose NIC went away.
-//! * **One queue per NIC.** Every backend of `azos_drv_net::net_device` runs
+//! * **One queue per NIC.** Every backend of `azos_drv_net::net_queue` runs
 //!   one receive and one transmit ring ([`QUEUES_PER_NIC`]), so taking queue 0
 //!   takes the whole NIC from the stack.
 //! * **Who may take one** ([`verdict`]): the interface must have a NIC and the

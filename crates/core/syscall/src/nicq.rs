@@ -24,8 +24,9 @@
 //!   producer never waits for ring 3). The reader is rung once per pass, at
 //!   [`rx_end`], when it said it may be asleep.
 //! * **Transmit** (program producer): [`QUEUE_NICQ_KICK`] pops every slot,
-//!   checks it and sends it; a slot that asked for it gets a `DESC_TX_DONE` on
-//!   the receive ring with the departure stamp.
+//!   checks it and posts it; the frames of one kick share a doorbell, rung when
+//!   the kick ends. A slot that asked for a stamp gets a `DESC_TX_DONE` on the
+//!   receive ring with the departure stamp, and its frame is announced at once.
 //!
 //! The region is the program's: every index and word in it is untrusted. The
 //! receive producer keeps its own head and reads only the tail, as a number;
@@ -365,6 +366,7 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
             _ => return Errno::ENOENT.to_syscall_ret(),
         }
     };
+    azos_net::nic_queue_batch(ifindex, true);
     let mut sent = 0i64;
     let mut wake_producer = None;
     let mut gone = false;
@@ -388,6 +390,9 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
         let ok = frame.is_some_and(|f| azos_net::nic_queue_send(ifindex, f));
         sent += ok as i64;
         if desc.flags & nq::TX_STAMP != 0 {
+            // A stamp is the departure time: the frame leaves now, not with
+            // the rest of the kick.
+            azos_net::nic_queue_flush(ifindex);
             let done = Desc {
                 kind: nq::DESC_TX_DONE,
                 flags: if ok { nq::STAMP_SW } else { nq::TX_REFUSED },
@@ -402,6 +407,7 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
             break;
         }
     }
+    azos_net::nic_queue_batch(ifindex, false);
     let rx_ring = {
         let mut t = ATTACHED.lock();
         t[i].0.as_mut().filter(|a| a.gen == gen).and_then(|a| {
