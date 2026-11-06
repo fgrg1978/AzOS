@@ -316,7 +316,10 @@ object.
 parent's leaves, then `pager::fork_clone` gives each parent object one child
 object whose `Frame` slots are the child's own leaves (not the parent's slots:
 a page a sibling thread committed after the walk is not the child's) and whose
-markers are the parent's, with a share of the pool's entries.
+markers are the parent's, with a share of the pool's entries. The fork holds
+the parent (`pager::ForkHold`) from before its walk until the clone is done:
+the reclaimer takes no page of it and its faults restore none meanwhile, so
+the child's copy sees each page as the walk did.
 
 Source: `crates/core/mm/src/anon_obj.rs`, `crates/core/mm/src/slot.rs`,
 `crates/core/mm/src/mapping.rs`, `crates/core/mm/src/pager.rs`.

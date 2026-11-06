@@ -57,8 +57,9 @@
 //! whatever ends the address range (`munmap`, `mprotect(PROT_NONE)`, the
 //! space's end) clears the markers and drops the entries; and a `fork` gives
 //! the child a marker, and a pool entry sharing the parent's blob, for each
-//! page the parent has out, and waits for the stores in flight first (a page
-//! in transit would be in neither). The pool's entries are keyed by the space
+//! page the parent has out: it waits for the stores in flight first (a page
+//! in transit would be in neither) and holds the parent until the child's
+//! mappings are cloned ([`ForkHold`]: no store, no restore meanwhile). The pool's entries are keyed by the space
 //! and the page's address, which a private object's single mapper makes
 //! unique. The pool's lock is a leaf: taken with
 //! neither a space's lock nor `RESVS` held, and over the page allocator, never the
