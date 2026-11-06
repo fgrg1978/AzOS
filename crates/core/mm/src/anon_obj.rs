@@ -241,6 +241,17 @@ impl Spare {
     }
 }
 
+/// Words `k..k + n` of the chunk page at `chunk` (none while there is none).
+#[inline(always)]
+fn chunk_run<'a>(chunk: usize, k: usize, n: usize) -> Option<&'a [AtomicU64]> {
+    if chunk == 0 {
+        return None;
+    }
+    // SAFETY: a chunk page of a live object, `PER_CHUNK` words.
+    let words: &[AtomicU64; PER_CHUNK] = unsafe { &*(chunk as *const [AtomicU64; PER_CHUNK]) };
+    words.get(k..k.checked_add(n)?)
+}
+
 /// The word `k` of the chunk page at `chunk`.
 ///
 /// # Safety
@@ -290,6 +301,20 @@ impl AnonObj {
         };
         // SAFETY: a chunk page of this object.
         (chunk.0 != 0).then(|| unsafe { word_in(chunk.0, chunk.1) })
+    }
+
+    /// The slots of pages `i..i + n` as one run, when all of them have storage
+    /// in one place: the inline slots, or one chunk. `None` otherwise (a run
+    /// that crosses from the inline slots into a chunk, or a chunk not there).
+    #[inline]
+    pub fn run(&self, i: usize, n: usize) -> Option<&[AtomicU64]> {
+        let last = i.checked_add(n.checked_sub(1)?)?;
+        match (self.place(i)?, self.place(last)?) {
+            (Place::Inline(a), Place::Inline(_)) => self.inline.get(a..a + n),
+            (Place::Near(r, k), Place::Near(q, _)) if r == q => chunk_run(self.near[r].load(Ordering::Acquire), k, n),
+            (Place::Dir(d, k), Place::Dir(e, _)) if d == e => chunk_run(self.dir()?[d].load(Ordering::Acquire), k, n),
+            _ => None,
+        }
     }
 
     /// The word of page `i`'s slot and the pages a [`Spare`] needs for

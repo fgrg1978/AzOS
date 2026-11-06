@@ -2369,6 +2369,11 @@ const CLONE_BATCH: usize = 64;
 /// so no marker changes, and none is in transit. On a refusal the references
 /// given to the child's leaves are its teardown's to give back; the others go
 /// back here.
+///
+/// A batch lies in one leaf table, so in one chunk of slots: both objects'
+/// words are read as runs ([`anon_obj::AnonObj::run`]) and both tables
+/// indexed in place; only a batch across the inline slots' end takes the slots
+/// one by one.
 fn clone_slots(
     parent: SpaceRef,
     croot: usize,
@@ -2388,18 +2393,20 @@ fn clone_slots(
         let mut at = va;
         while at < end {
             let n = ((end - at) / PAGE_SIZE).min(CLONE_BATCH);
-            read_batch(parent, m, po, at, &mut words[..n])?;
-            for k in 0..n {
-                let r = clone_page(proot, croot, m, co, at, k, words[k], &mut tables, c);
-                if r.is_err() {
-                    // The references of the batch's pages not given to the child.
-                    for &w in &words[k..n] {
-                        if let Some(f) = slot::frame_of(w) {
-                            let _ = crate::cow::page_decref(f);
-                        }
+            let first = m.page_index(at);
+            if !read_batch(parent, po, first, &mut words[..n])? {
+                at += n * PAGE_SIZE;
+                continue;
+            }
+            let r = clone_batch(proot, croot, m, co, at, first, &words[..n], &mut tables, c);
+            if let Err((k, e)) = r {
+                // The references of the batch's pages not given to the child.
+                for &w in &words[k..n] {
+                    if let Some(f) = slot::frame_of(w) {
+                        let _ = crate::cow::page_decref(f);
                     }
-                    return r;
                 }
+                return Err(e);
             }
             at += n * PAGE_SIZE;
         }
@@ -2408,12 +2415,18 @@ fn clone_slots(
     Ok(())
 }
 
-/// The parent's slot words of the `out.len()` pages of `m` from `at`, each
-/// frame's reference taken, under the parent's lock.
-fn read_batch(parent: SpaceRef, m: &Mapping, po: &anon_obj::AnonObj, at: usize, out: &mut [u64]) -> Result<(), MapError> {
+/// The parent's slot words of pages `first..` of `po` into `out`, each frame's
+/// reference taken, under the parent's lock. `false`: every one is empty.
+#[inline(never)]
+fn read_batch(parent: SpaceRef, po: &anon_obj::AnonObj, first: usize, out: &mut [u64]) -> Result<bool, MapError> {
     let Some(_sp) = parent.lock().filter(|sp| sp.recorded) else { return Err(MapError::Invalid) };
+    let run = po.run(first, out.len());
+    let mut any = slot::EMPTY;
     for k in 0..out.len() {
-        let w = po.slot(m.page_index(at + k * PAGE_SIZE)).map_or(slot::EMPTY, |s| s.load(Ordering::Relaxed));
+        let w = match run {
+            Some(r) => r[k].load(Ordering::Relaxed),
+            None => po.slot(first + k).map_or(slot::EMPTY, |s| s.load(Ordering::Relaxed)),
+        };
         if let Some(f) = slot::frame_of(w) {
             if crate::cow::page_addref(f).is_err() {
                 for &t in &out[..k] {
@@ -2425,55 +2438,75 @@ fn read_batch(parent: SpaceRef, m: &Mapping, po: &anon_obj::AnonObj, at: usize, 
             }
         }
         out[k] = w;
+        any |= w;
     }
-    Ok(())
+    Ok(any != slot::EMPTY)
 }
 
-/// Page `k` of the batch at `at` into the child: its slot word `word` (a
-/// frame's reference already taken), and for a frame both leaves. `tables`
-/// caches the span's leaf tables. On `Err` the page's reference is the
+/// The batch of `words` (the parent's slot words of pages `first..`, at `at`,
+/// each frame's reference taken) into the child: its slot words, and for a
+/// frame both leaves. `tables` caches the span's leaf tables. `Err((k, _))`:
+/// pages `k..` were not given to the child, and their references are the
 /// caller's to give back.
 #[allow(clippy::too_many_arguments)]
-#[inline]
-fn clone_page(
+#[inline(never)]
+fn clone_batch(
     proot: usize,
     croot: usize,
     m: &Mapping,
     co: &anon_obj::AnonObj,
     at: usize,
-    k: usize,
-    word: u64,
+    first: usize,
+    words: &[u64],
     tables: &mut Option<(Option<*mut u64>, *mut u64)>,
     c: &mut Cloned,
-) -> Result<(), MapError> {
-    let page = at + k * PAGE_SIZE;
-    let i = m.page_index(page);
-    let f = match slot::decode(word) {
-        Some(slot::Slot::Empty) => return Ok(()),
-        Some(slot::Slot::Frame(f)) => f,
-        // Canary `fork-marker-canary`: the child's slot stays empty.
-        Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) if cfg!(feature = "fork-marker-canary") => return Ok(()),
-        Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) => {
-            child_slot(croot, co, i)?.store(word, Ordering::Release);
-            c.marked += 1;
-            return Ok(());
+) -> Result<(), (usize, MapError)> {
+    let n = words.len();
+    let base = leaf_index(at);
+    // The child's slots of the batch, their chunk taken now if it has none.
+    let run = match co.run(first, n) {
+        Some(r) => Some(r),
+        None => {
+            let k = words.iter().position(|&w| w != slot::EMPTY).unwrap_or(0);
+            child_slot(croot, co, first + k).map_err(|e| (k, e))?;
+            co.run(first, n)
         }
-        // In transit: the hold waited every store out, and starts none.
-        _ => return Err(MapError::Invalid),
     };
-    let (pl, cl) = match *tables {
-        Some(t) => t,
-        None => *tables.insert(leaf_tables(proot, croot, page)?),
-    };
-    let cs = child_slot(croot, co, i)?;
-    let idx = leaf_index(page);
-    // SAFETY: entry `idx` of the parent's leaf table for this span.
-    let leaf = share_leaf(pl.map(|p| unsafe { &*(p.add(idx) as *const AtomicU64) }), f, m.write, c)?;
-    cs.store(slot::frame(f), Ordering::Release);
-    // SAFETY: entry `idx` of the child's leaf table for this span, a table of a
-    // root no CPU runs on yet.
-    unsafe { core::ptr::write_volatile(cl.add(idx), leaf) };
-    c.frames += 1;
+    for (k, &word) in words.iter().enumerate() {
+        let f = match slot::decode(word) {
+            Some(slot::Slot::Empty) => continue,
+            Some(slot::Slot::Frame(f)) => f,
+            // Canary `fork-marker-canary`: the child's slot stays empty.
+            Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) if cfg!(feature = "fork-marker-canary") => continue,
+            Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) => {
+                let cs = match run {
+                    Some(r) => &r[k],
+                    None => child_slot(croot, co, first + k).map_err(|e| (k, e))?,
+                };
+                cs.store(word, Ordering::Release);
+                c.marked += 1;
+                continue;
+            }
+            // In transit: the hold waited every store out, and starts none.
+            _ => return Err((k, MapError::Invalid)),
+        };
+        let (pl, cl) = match *tables {
+            Some(t) => t,
+            None => *tables.insert(leaf_tables(proot, croot, at).map_err(|e| (k, e))?),
+        };
+        let cs = match run {
+            Some(r) => &r[k],
+            None => child_slot(croot, co, first + k).map_err(|e| (k, e))?,
+        };
+        let idx = base.wrapping_add(k);
+        // SAFETY: entry `idx` of the parent's leaf table for this span.
+        let leaf = share_leaf(pl.map(|p| unsafe { &*(p.add(idx) as *const AtomicU64) }), f, m.write, c).map_err(|e| (k, e))?;
+        cs.store(slot::frame(f), Ordering::Release);
+        // SAFETY: entry `idx` of the child's leaf table for this span, a table
+        // of a root no CPU runs on yet.
+        unsafe { core::ptr::write_volatile(cl.add(idx), leaf) };
+        c.frames += 1;
+    }
     Ok(())
 }
 
