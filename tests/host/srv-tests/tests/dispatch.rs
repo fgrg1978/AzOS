@@ -91,6 +91,15 @@ impl Kernel for Fake {
         Ok(Some(h))
     }
 
+    /// The host cannot sleep: the accept that would, returns.
+    fn accept_blocking(&mut self, req: &mut MsgDesc) -> Result<Option<u64>, isize> {
+        let taken = self.accept(req);
+        if matches!(taken, Ok(None)) {
+            self.slept += 1;
+        }
+        taken
+    }
+
     fn reply(&mut self, handle: u64, rep: &MsgDesc) -> isize {
         match ep_queue::reply(handle, SERVER, false, [rep.words[0], 0, 0, 0]) {
             ep_queue::Reply::Woke { .. } => 0,
@@ -323,5 +332,27 @@ fn a_deadline_from_idle_bounds_the_wait_and_owed_calls_poll() {
     assert_eq!(s.srv.kernel.deadlines, [77, 77, 0], "a batch left calls owed: the third wait polls");
     for (i, h) in hs.into_iter().enumerate() {
         assert_eq!(s.answer(i, h), Some(i as u64 + 1));
+    }
+}
+
+/// A server with no source but its calls sleeps in the accept, never on a
+/// port, and still serves its queue in batches with `MSG_MORE`.
+#[test]
+fn a_calls_only_server_sleeps_in_the_accept() {
+    let mut s = Scene::unbound(110);
+    s.srv = Server::calls_only(Fake::default());
+    let n = CALL_BATCH + 1;
+    let hs: Vec<u64> = (0..n).map(|i| s.call(i, 10 * i as u64)).collect();
+    let t = s.srv.turn(&mut s.h);
+    assert_eq!((t.event, t.calls), (None, CALL_BATCH));
+    let t = s.srv.turn(&mut s.h);
+    assert_eq!(t.calls, 1);
+    assert_eq!(s.srv.kernel.accepts, n, "no empty accept after the last call (MSG_MORE clear)");
+    s.srv.turn(&mut s.h);
+    assert_eq!(s.srv.kernel.slept, 1, "an empty queue sleeps in the accept");
+    assert!(s.srv.kernel.deadlines.is_empty(), "and never on a port");
+    assert_eq!(s.h.announced, 3, "idle ran before every sleep");
+    for (i, h) in hs.into_iter().enumerate() {
+        assert_eq!(s.answer(i, h), Some(10 * i as u64 + 1));
     }
 }

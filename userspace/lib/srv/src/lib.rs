@@ -25,8 +25,13 @@
 //! doorbell. A push between the announcement and the wait is not lost: its
 //! wake marks the source pending and the wait returns at once.
 //!
-//! The kernel side is the [`Kernel`] trait: [`sys::Port`] over libsys (feature
-//! `libsys`), a fake in the host suite (`tests/host/srv-tests`).
+//! A server with no source but its calls runs the same loop sleeping in the
+//! accept instead ([`Server::calls_only`]), at the cost of the loop it
+//! replaces.
+//!
+//! The kernel side is the [`Kernel`] trait: [`sys::Port`] and [`sys::Calls`]
+//! over libsys (feature `libsys`), a fake in the host suite
+//! (`tests/host/srv-tests`).
 
 #![no_std]
 
@@ -52,6 +57,11 @@ pub trait Kernel {
     /// Take a queued call without blocking, writing it into `req`: its
     /// handle, `None` when no call is queued, or `Err(-errno)`.
     fn accept(&mut self, req: &mut MsgDesc) -> Result<Option<u64>, isize>;
+    /// Sleep in the accept until a call is queued and take it, as
+    /// [`Kernel::accept`] answers (`None`: woken with nothing). The wait of a
+    /// server with no source but its calls ([`Server::calls_only`]): the
+    /// IPC fast path hands a call straight to a server parked there.
+    fn accept_blocking(&mut self, req: &mut MsgDesc) -> Result<Option<u64>, isize>;
     /// Answer call `handle` with `rep`: 0 or a negative code.
     fn reply(&mut self, handle: u64, rep: &MsgDesc) -> isize;
     /// A wait failed: back off before the next one rather than spin.
@@ -114,11 +124,23 @@ pub struct Server<K: Kernel> {
     pub kernel: K,
     /// A calls event was taken and the calls it announced are not all served.
     owed: bool,
+    /// No source but the calls: the turn sleeps in the accept, not on a port.
+    calls_only: bool,
 }
 
 impl<K: Kernel> Server<K> {
+    /// A server whose calls and other sources are bound to one port.
     pub const fn new(kernel: K) -> Self {
-        Self { kernel, owed: false }
+        Self { kernel, owed: false, calls_only: false }
+    }
+
+    /// A server with no source but its calls: each turn sleeps in the accept
+    /// (the cost of the loop it replaces, the IPC fast path's hand-off
+    /// included) and serves up to [`CALL_BATCH`] calls. The handler's `idle`
+    /// still runs before each sleep; only its work is done, the sleep is the
+    /// accept's.
+    pub const fn calls_only(kernel: K) -> Self {
+        Self { kernel, owed: false, calls_only: true }
     }
 
     /// Wait once (only poll while calls are owed or the handler has work
@@ -126,6 +148,14 @@ impl<K: Kernel> Server<K> {
     /// the event, then serve up to [`CALL_BATCH`] calls.
     pub fn turn<H: Handler<K>>(&mut self, h: &mut H) -> Turn {
         let mut t = Turn::default();
+        if self.calls_only {
+            let _ = h.idle(&mut self.kernel);
+            t.calls = self.serve(h, true);
+            if t.calls == 0 {
+                self.kernel.pause();
+            }
+            return t;
+        }
         let deadline = match h.idle(&mut self.kernel) {
             _ if self.owed => 0,
             Idle::Busy => 0,
@@ -145,7 +175,7 @@ impl<K: Kernel> Server<K> {
             }
         }
         if self.owed {
-            t.calls = self.serve(h);
+            t.calls = self.serve(h, false);
         }
         t
     }
@@ -168,10 +198,13 @@ impl<K: Kernel> Server<K> {
         }
     }
 
-    fn serve<H: Handler<K>>(&mut self, h: &mut H) -> usize {
+    /// Take calls until none is queued behind the last (`MSG_MORE` clear),
+    /// at most [`CALL_BATCH`]; the first in the blocking accept when `sleep`.
+    fn serve<H: Handler<K>>(&mut self, h: &mut H, sleep: bool) -> usize {
         for n in 0..TAKE {
             let mut req = MsgDesc::default();
-            let Ok(Some(handle)) = self.kernel.accept(&mut req) else {
+            let taken = if sleep && n == 0 { self.kernel.accept_blocking(&mut req) } else { self.kernel.accept(&mut req) };
+            let Ok(Some(handle)) = taken else {
                 self.owed = false;
                 return n;
             };

@@ -1225,6 +1225,7 @@ mod image_profiles {
             src!("userspace/services/inputd/src/focus.rs"),
             src!("userspace/lib/srv/src/lib.rs"),
             src!("userspace/lib/srv/src/sys/mod.rs"),
+            src!("userspace/lib/srv/src/sys/port.rs"),
             src!("userspace/lib/srv/src/sys/doorbell.rs"),
         ]),
         // The compositor: the Compositor object's server (the windows, the
@@ -1401,6 +1402,7 @@ mod image_profiles {
             src!("userspace/services/audiod/src/server.rs"),
             src!("userspace/lib/srv/src/lib.rs"),
             src!("userspace/lib/srv/src/sys/mod.rs"),
+            src!("userspace/lib/srv/src/sys/port.rs"),
         ]),
         // The PTP daemon: its loop, its NIC queue (the rings, the attach, the
         // kick, the wait), and the engine, codec and helpers beside it (which
