@@ -2704,18 +2704,23 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
         crate::exec_grant::record(me, crate::exec_grant::Site::Execve, crate::exec_grant::Basis::NotLinuxRow, &img.digest);
         return Err(neg(le::EACCES));
     }
-    if cross {
-        if let Err(receipt) = crate::exec_grant::decide(me, crate::exec_grant::Site::Execve, profile.image, &img.digest) {
-            let head = u32::from_be_bytes([img.digest[0], img.digest[1], img.digest[2], img.digest[3]]);
-            crate::handlers::record_exec_refused(crate::ushell::SPAWN_REFUSED_ACTION_NO_LAUNCH, head);
-            azos_drv_sys::kwarn!(
-                "[LINUX] tid={} execve REFUSED: row {} holds no launch grant for {}{}",
-                me, own, profile.image, if receipt != 0 { " (exec-grant record)" } else { "" },
-            );
-            return Err(neg(le::EACCES));
-        }
+    let verdict = if cross {
+        crate::exec_grant::decide(me, crate::exec_grant::Site::Execve, profile.image, &img.digest).map(|_| ())
     } else {
-        crate::exec_grant::record(me, crate::exec_grant::Site::Execve, crate::exec_grant::Basis::OwnRow, &img.digest);
+        // An exec into the caller's own image needs no grant, and still not a
+        // program of a package below its security floor.
+        crate::exec_grant::floor_check(me, crate::exec_grant::Site::Execve, &img.digest).map(|()| {
+            crate::exec_grant::record(me, crate::exec_grant::Site::Execve, crate::exec_grant::Basis::OwnRow, &img.digest);
+        })
+    };
+    if let Err(refused) = verdict {
+        let head = u32::from_be_bytes([img.digest[0], img.digest[1], img.digest[2], img.digest[3]]);
+        crate::handlers::record_exec_refused(crate::ushell::SPAWN_REFUSED_ACTION_NO_LAUNCH, head);
+        azos_drv_sys::kwarn!(
+            "[LINUX] tid={} execve REFUSED: row {} for {}: {}{}",
+            me, own, profile.image, refused.why(), if refused.receipt != 0 { " (exec-grant record)" } else { "" },
+        );
+        return Err(neg(le::EACCES));
     }
     let mem = if cross { Some(crate::topo_sched::resolve_mem(profile.image, None).0) } else { None };
     let (argv, env) = strs[..al + el].split_at(al);

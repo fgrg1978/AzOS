@@ -6,7 +6,7 @@
 // not compiled here; what they ask is `decide`.
 
 use super::harness::serial;
-use crate::exec_grant::{decide, grant_for, record, Basis, Site, SKIP_CHECK};
+use crate::exec_grant::{decide, floor_check, grant_for, record, Basis, Site, SKIP_CHECK};
 use azos_abi::cap::CapPerms;
 use azos_decision::{Rule, Verdict};
 use azos_sched::seccomp::{package_profile, register_package_images, PackageImage};
@@ -186,6 +186,7 @@ fn the_skip_switch_is_the_only_way_past_the_check() {
 ///
 /// **Canary** `exec-floor-canary`: `decide` does not look at the floor and the
 /// refusal assertions go red.
+#[cfg(feature = "pkg-sec-floor")]
 #[test]
 fn a_package_below_its_security_floor_is_refused_whatever_the_grants() {
     let _g = serial();
@@ -197,7 +198,9 @@ fn a_package_below_its_security_floor_is_refused_whatever_the_grants() {
 
     for site in [Site::SpawnEx, Site::Execve] {
         let since = azos_decision::total();
-        assert!(decide(tid, site, "LOWPKG.ELF", &LOW).is_err(), "{site:?}");
+        let refused = decide(tid, site, "LOWPKG.ELF", &LOW).unwrap_err();
+        assert_eq!(refused.basis, Basis::BelowSecFloor, "{site:?}");
+        assert!(refused.why().contains("security floor"), "the log line names the floor, not a missing grant");
         assert_eq!(
             records(since),
             vec![(Verdict::Refuse as u8, tid, [prefix(&LOW), Basis::BelowSecFloor as u64, site as u64])],
@@ -209,4 +212,30 @@ fn a_package_below_its_security_floor_is_refused_whatever_the_grants() {
     // The same caller launches a package program that is not below its floor.
     azos_ipc::launch_cap::launch_grant_cap(tid, &pkg_target(&PKG_A), CapPerms::EXEC).unwrap();
     assert_eq!(decide(tid, Site::SpawnEx, "MEMBER.ELF", &MEMBER), Ok(Basis::Package));
+}
+
+/// **An exec into the caller's own image is judged by the floor too**: the
+/// Linux `execve` branch that needs no grant calls `floor_check`.
+#[cfg(feature = "pkg-sec-floor")]
+#[test]
+fn the_floor_is_checked_without_a_grant_too() {
+    let _g = serial();
+    applied();
+    let tid = caller();
+    let since = azos_decision::total();
+    assert_eq!(floor_check(tid, Site::Execve, &LOW).unwrap_err().basis, Basis::BelowSecFloor);
+    assert_eq!(floor_check(tid, Site::Execve, &MEMBER), Ok(()));
+    assert_eq!(records(since).len(), 1);
+}
+
+/// **A build without PKG_SEC_FLOOR_ENFORCE does not look**: the same program
+/// starts for a caller that holds its grant.
+#[cfg(not(feature = "pkg-sec-floor"))]
+#[test]
+fn without_the_policy_a_package_below_its_floor_starts() {
+    let _g = serial();
+    applied();
+    let tid = caller();
+    azos_ipc::launch_cap::launch_grant_cap(tid, &pkg_target(&PKG_LOW), CapPerms::EXEC).unwrap();
+    assert_eq!(decide(tid, Site::SpawnEx, "LOWPKG.ELF", &LOW), Ok(Basis::Package));
 }

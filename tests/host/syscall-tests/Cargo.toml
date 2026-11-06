@@ -12,7 +12,7 @@ description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded
 # The syscall sources pulled in below name the robot crates through the shims
 # in `shims/` (robot, imu, gps); `use-robot` is what makes them do so
 # instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).
-default = ["use-robot", "virtio-snd", "linux-abi", "board-io"]
+default = ["use-robot", "virtio-snd", "linux-abi", "board-io", "pkg-sec-floor"]
 use-robot = []
 # Mirrors azos_syscall's `board-io`: the pulled-in khost.rs serves the `adc` key
 # (`adc_host.rs`) and handlers.rs reads the board's sensor types.
@@ -28,9 +28,12 @@ energy = []
 # Mirrors azos_syscall's `hv` (the pulled-in khost.rs): off here, so the `vm` and
 # `vcpu` keys answer as an interface this build does not host.
 hv = []
+# Mirrors azos_syscall's `pkg-sec-floor` (Kconfig PKG_SEC_FLOOR_ENFORCE) and its
+# `exec-floor-canary`, for the pulled-in exec_grant.rs.
+pkg-sec-floor = []
+exec-floor-canary = []
 # Mirrors azos_syscall's gate canary (wave 13): `cfg!(feature =
 # "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
-exec-floor-canary = []
 mmap-prot-canary = []
 # Mirror azos_syscall's mmap-hint canaries (the pulled-in handlers.rs): the
 # rows of src/mmap_hint.rs go red under each. Off: the real behaviour.

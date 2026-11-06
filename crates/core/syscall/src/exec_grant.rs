@@ -96,17 +96,47 @@ pub fn record(tid: u32, site: Site, basis: Basis, digest: &[u8; 32]) -> u64 {
     )
 }
 
-/// The check and the record: `Ok` with the basis that admits `tid`'s exec of
-/// `image`, `Err` with the id of the refusal's record.
-pub fn decide(tid: u32, site: Site, image: &str, digest: &[u8; 32]) -> Result<Basis, u64> {
-    if !cfg!(feature = "exec-floor-canary") && azos_sched::seccomp::package_below_floor(digest) {
-        return Err(record(tid, site, Basis::BelowSecFloor, digest));
+/// An exec that was refused: the id of its record (0 when nothing kept it) and
+/// the basis that decided, so the caller can say why.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Refused {
+    /// The record's id.
+    pub receipt: u64,
+    /// What decided.
+    pub basis: Basis,
+}
+
+impl Refused {
+    /// What the caller prints after "REFUSED:".
+    pub const fn why(&self) -> &'static str {
+        match self.basis {
+            Basis::BelowSecFloor => "its package is below its security floor (pkg upgrade)",
+            _ => "no launch grant",
+        }
     }
+}
+
+/// The floor check alone: `Err` (and its record) for a program of a package
+/// below its security floor, whatever the caller holds. Compiled out of a
+/// build whose Kconfig `PKG_SEC_FLOOR_ENFORCE` is n: nothing is marked there.
+pub fn floor_check(tid: u32, site: Site, digest: &[u8; 32]) -> Result<(), Refused> {
+    #[cfg(feature = "pkg-sec-floor")]
+    if !cfg!(feature = "exec-floor-canary") && azos_sched::seccomp::package_below_floor(digest) {
+        return Err(Refused { receipt: record(tid, site, Basis::BelowSecFloor, digest), basis: Basis::BelowSecFloor });
+    }
+    let _ = (tid, site, digest);
+    Ok(())
+}
+
+/// The check and the record: `Ok` with the basis that admits `tid`'s exec of
+/// `image`, `Err` with the refusal.
+pub fn decide(tid: u32, site: Site, image: &str, digest: &[u8; 32]) -> Result<Basis, Refused> {
+    floor_check(tid, site, digest)?;
     match grant_for(tid, image, digest) {
         Some(basis) => {
             record(tid, site, basis, digest);
             Ok(basis)
         }
-        None => Err(record(tid, site, Basis::NoGrant, digest)),
+        None => Err(Refused { receipt: record(tid, site, Basis::NoGrant, digest), basis: Basis::NoGrant }),
     }
 }

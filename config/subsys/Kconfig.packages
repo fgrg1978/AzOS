@@ -165,6 +165,7 @@ config PKG_INDEX_MAX_ENTRIES
 config PKG_SEC_FLOOR_ENFORCE
     bool "Refuse to launch a program of a package installed below its security floor"
     depends on USERSPACE_PKGD
+    # cargo-feature: pkg-sec-floor
     default n if BUILD_TYPE_DEV
     default y
     help

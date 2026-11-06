@@ -107,7 +107,7 @@ fn judge<R>(floor: u32, f: impl FnOnce(&Boot<'_>) -> R) -> R {
         now_ns: clock_ns(),
         prior_unconfirmed: PRIOR_UNCONFIRMED.load(Ordering::Acquire),
         max_attempts: MAX_ATTEMPTS.load(Ordering::Acquire),
-        sec_floor_enforce: azos_limits::PKG_SEC_FLOOR_ENFORCE,
+        sec_floor_enforce: cfg!(feature = "pkg-sec-floor"),
     };
     f(&boot)
 }

@@ -378,13 +378,13 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             // not the path typed.
             // The refusal is the `exec-grant` record (under the console
             // lockdown this is how a privileged tool is refused).
-            let receipt = match crate::exec_grant::decide(me, crate::exec_grant::Site::SpawnEx, image, digest) {
+            let refused = match crate::exec_grant::decide(me, crate::exec_grant::Site::SpawnEx, image, digest) {
                 Ok(_) => return true,
                 Err(r) => r,
             };
             azos_drv_sys::kwarn!(
-                "[SPAWN] REFUSED: tid={} holds no launch grant for {}{}", me, image,
-                if receipt != 0 { " (exec-grant record)" } else { "" },
+                "[SPAWN] REFUSED: tid={} for {}: {}{}", me, image, refused.why(),
+                if refused.receipt != 0 { " (exec-grant record)" } else { "" },
             );
             refusal.set(err(Errno::EACCES));
             false

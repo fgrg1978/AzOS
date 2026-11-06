@@ -66,11 +66,15 @@ ktest = []
 # Kernel feature `linux-abi` (Kconfig LINUX_ABI): `src/linux.rs`, the Linux personality's
 # translation, and the spawn paths that start a Linux task.
 linux-abi = ["dep:azos_linux_abi", "azos_sched/linux-abi"]
-# Canary: a forked Linux child is also granted `/fat` read-write,
-# which its row does not declare. The gate's fork row must fail with it.
+# Kconfig PKG_SEC_FLOOR_ENFORCE: the exec check refuses a program of a package
+# installed below its security floor (`exec_grant::floor_check`). Off, the check
+# is not compiled.
+pkg-sec-floor = []
 # Host canary (syscall-tests exec_grant_tests), never in a real build: the exec
 # check does not look at the security floor of a package program.
 exec-floor-canary = []
+# Canary: a forked Linux child is also granted `/fat` read-write,
+# which its row does not declare. The gate's fork row must fail with it.
 linux-abi-fork-canary = []
 # D6 canary: a child the ring-3 runtime hosts gets no startup block, so the
 # runtime starts on its defaults (the console, `/`) and the descriptors and
