@@ -12635,6 +12635,18 @@ host_job zpool_host_canary_row "anon: fork hold, no restore canary" fork-hold-ca
 host_job zpool_host_row "anon: fork hold, restore begun before" a_restore_begun_before_the_fork_does_not_install_during_it
 host_job zpool_host_canary_row "anon: fork hold, restore begun before canary" fork-install-recheck-canary \
     a_restore_begun_before_the_fork_does_not_install_during_it
+# A first touch whose page munmap releases while it supplies is refused at its
+# install (pager::fault_once looks for the mapping again under the lock).
+# mm-install-after-release-canary: the install believes the lookup's mapping
+# and the released page gets a leaf.
+host_job host_canary_row "anon: install after release canary" syscall-tests mm-install-after-release-canary \
+    an_install_after_its_release_is_refused
+# The program break is an anonymous mapping (sys_brk over pager::reserve): a
+# heap page the reclaimer stores comes back through its slot.
+# mm-pte-truth-canary: the leaf is believed and the page comes back as zeros.
+host_job zpool_host_row "brk: heap page restored, pool on" a_heap_page_the_reclaimer_stores_comes_back_through_its_slot
+host_job zpool_host_canary_row "brk: heap page restored canary" mm-pte-truth-canary \
+    a_heap_page_the_reclaimer_stores_comes_back_through_its_slot
 # A fault's wait for a fork's hold is no try (pager::resolve_fault): a kernel
 # copy waits the fork out. fork-wait-counted-canary: it gives up (EFAULT).
 host_job zpool_host_row "anon: kernel copy waits out a fork" a_kernel_copy_waits_out_a_fork_hold

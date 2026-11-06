@@ -113,6 +113,11 @@ fork-hold-canary = []
 # misses the page: `syscall-tests` pte_truth.rs
 # `a_restore_begun_before_the_fork_does_not_install_during_it` fails.
 fork-install-recheck-canary = []
+# Host-suite canary: the install of a fault believes the mapping its lookup
+# found, so a page `munmap` released while the fault supplied it is installed
+# after the release: `syscall-tests` pte_truth.rs
+# `an_install_after_its_release_is_refused` fails.
+mm-install-after-release-canary = []
 # Host-suite canary: the install trusts the entry its walk found before the
 # lock, so a block promoted (and split) meanwhile gets a 4 KiB leaf in a table
 # that is not the page's: `syscall-tests` thp_vmm.rs

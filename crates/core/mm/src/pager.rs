@@ -1890,7 +1890,15 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         }
         // Unmapped or re-protected since the lookup: look again and let the
         // new layout answer (a removed mapping then kills, as any hole does).
-        let Some((n, o)) = t.anon_at(page) else { return false };
+        // Canary `mm-install-after-release-canary`: the mapping of the lookup
+        // is believed, so a page `munmap` released is installed after it.
+        let found = match t.anon_at(page) {
+            // SAFETY (canary only): the object of the lookup's mapping, which
+            // the row keeps alive through the pages it still maps.
+            None if cfg!(feature = "mm-install-after-release-canary") => Some((&m, unsafe { anon_obj::get(h) })),
+            f => f,
+        };
+        let Some((n, o)) = found else { return false };
         if n.write != m.write || n.backing != m.backing || n.page_index(page) != idx {
             return false;
         }
@@ -2483,4 +2491,10 @@ fn close_records(r: SpaceRef, files_counted: bool) {
 /// `(reserved, committed)` mapped pages of the space `r`, for tests and reports.
 pub fn space_pages(r: SpaceRef) -> (usize, usize) {
     r.lock().filter(|sp| sp.recorded).map_or((0, 0), |sp| (sp.set.reserved_pages(), sp.committed))
+}
+
+/// Host suites: the mapping records of `r`.
+#[cfg(not(target_os = "none"))]
+pub fn shim_mappings(r: SpaceRef) -> usize {
+    r.lock().filter(|sp| sp.recorded).map_or(0, |sp| sp.set.len())
 }

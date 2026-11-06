@@ -450,6 +450,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod brk_heap {
+        use super::*;
+        include!("brk_heap.rs");
+    }
+
+    #[cfg(test)]
     mod aspace_life {
         use super::*;
         include!("aspace_life.rs");

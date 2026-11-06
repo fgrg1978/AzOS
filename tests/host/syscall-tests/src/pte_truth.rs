@@ -518,3 +518,38 @@ fn a_fault_another_install_resolved_is_spurious() {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
+
+static HOOK_RELEASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn munmap_at_install() {
+    let va = HOOK_RELEASE.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(sys_munmap(va as u64, PAGE_SIZE as u64), 0, "the release");
+}
+
+/// **An install after its release is refused.** A first touch supplies its
+/// page with no lock held; a `munmap` of that page lands before the install.
+/// The install looks for the mapping again under the space's lock, finds none,
+/// and gives the frame back: no leaf maps the released page, nothing is
+/// committed for it, and the fault is the task's (a hole).
+/// **Canary** `mm-install-after-release-canary`: the install believes the
+/// mapping its lookup found, and the released page gets a leaf.
+#[test]
+fn an_install_after_its_release_is_refused() {
+    let _g = serial();
+    let pt = space();
+    let base = map(4);
+    let s = azos_sched::shim_space(pt);
+    // The tables the range needs are built by a first touch next to it.
+    assert!(azos_mm::vmm::handle_demand_fault(s, base + PAGE_SIZE).is_ok());
+    let frames = azos_mm::shim_pages_in_use();
+    HOOK_RELEASE.store(base, std::sync::atomic::Ordering::SeqCst);
+    azos_mm::pager::shim_set_install_hook(Some(munmap_at_install));
+    let r = azos_mm::vmm::handle_demand_fault(s, base);
+    azos_mm::pager::shim_set_install_hook(None);
+    assert!(azos_mm::vmm::translate(pt, base).is_none(), "no leaf maps the released page");
+    assert!(r.is_err(), "the page is a hole now: the fault is the task's");
+    assert_eq!(azos_mm::pager::space_pages(s), (3, 1), "nothing committed for it");
+    assert_eq!(azos_mm::shim_pages_in_use(), frames, "the supplied frame went back");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
