@@ -386,7 +386,7 @@ struct. Size 224 bytes, alignment 8, asserted at compile time.
 | 0 | 2 | `version` | `MSG_VERSION` (1); a version the kernel does not know is refused. |
 | 2 | 1 | `n_words` | Inline words used, at most `MSG_WORDS_MAX` (8) and the kernel's Kconfig `IPC_MSG_INLINE_WORDS` (4 to 8, default 8 on every ISA). |
 | 3 | 1 | `n_caps` | Capability entries used, at most `MSG_CAPS_MAX` (8) and Kconfig `IPC_MSG_MAX_CAPS` (default 4, 2 with `PROFILE_EMBEDDED`). |
-| 4 | 4 | `flags` | `MSG_KEEP` (bit 0) on send; `MSG_BADGED` (bit 31) set by the kernel on receive. |
+| 4 | 4 | `flags` | `MSG_KEEP` (bit 0) on send; `MSG_BADGED` (bit 31) set by the kernel on receive; `MSG_MORE` (bit 30) set by an accept when another call is queued for the server. |
 | 8 | 8 | `badge` | Set by the kernel on receive: the badge of the endpoint capability the call came through. Not written by a caller. |
 | 16 | 64 | `words` | Eight inline `u64` words. |
 | 80 | 128 | `caps` | Eight `CapDesc` entries. |

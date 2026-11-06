@@ -83,7 +83,7 @@ registers they map to on each ISA are in the table in
 | Call | Register form | Descriptor form |
 |---|---|---|
 | `SYS_IPC_CALL` | `a0` `Cap<Endpoint>` (`WRITE`), `a1 = 0`, `a2`..`a5` request words. Result: `a0` reply word 0, `a1`..`a3` reply words 1 to 3, or a negative code | `a0` `Cap<Endpoint>` (`WRITE`), `a1` `*mut MsgDesc`. Result: 0 when answered (the answer is written over `*a1`) |
-| `SYS_IPC_ACCEPT` | `a0 = 0`. Result: `a0` handle of the exchange, `a1` caller's task id, `a2`..`a5` request words, `a6` the server's handle of the capability the call moved (a sentinel when none); `-1` when nothing arrived | `a0` `*mut MsgDesc`. Result: the call's handle (the reply warrant's name, `>= 0`), `-1` when nothing arrived, `-EFAULT` (the call stays accepted: answer or delegate it by the returned handle) |
+| `SYS_IPC_ACCEPT` | `a0 = 0`. Result: `a0` handle of the exchange, `a1` caller's task id, `a2`..`a5` request words, `a6` the server's handle of the capability the call moved (a sentinel when none); `-1` when nothing arrived | `a0` `*mut MsgDesc`, `a1` flags (`IPC_ACCEPT_F_POLL`: never block, `-EAGAIN` when nothing is queued). `MSG_MORE` in the written flags: another call is queued for this server. Result: the call's handle (the reply warrant's name, `>= 0`), `-1` when nothing arrived, `-EFAULT` (the call stays accepted: answer or delegate it by the returned handle) |
 | `SYS_IPC_REPLY` | `a0` handle, `a1 = 0`, `a2`..`a5` reply words. Result: 0 delivered, `-2` stale handle, `-1` other refusal | `a0` handle, `a1` `*const MsgDesc`. Result: 0 |
 | `SYS_IPC_REPLY_ACCEPT` | `a0` handle from the previous accept, `a2`..`a5` reply words; `a1` is not read. Result: as the register-form accept; `-2` stale, `-3` other refusal of the reply (nothing accepted) | none |
 | `SYS_IPC_REPLY_DELEGATE` | `a0` call handle, `a1` task id of a thread of the caller's own process. Result: 0 | the same |
@@ -365,7 +365,8 @@ takes an event; `PORT_DESTROY` frees the port.
 
 `PORT_BIND` words: `w0` the source type, or-ed with `PORT_BIND_F_REMOVE`
 (`0x100`) to remove; `w1` the source's capability (for a timer, its deadline);
-`w2` the event key. The port handle needs `WRITE`.
+`w2` the event key; `w3` a doorbell's word offset (0 for every other source).
+The port handle needs `WRITE`.
 
 | Source | `PORT_SRC_*` | Bound with | Event type |
 |---|---:|---|---|
@@ -374,6 +375,8 @@ takes an event; `PORT_DESTROY` frees the port.
 | endpoint notices | 3 | a `Cap<Endpoint>` with `READ`, held by the serving task; only with Kconfig `IPC_PORT_NOTICES` (a bind is `-EINVAL` otherwise) | `PORT_EVENT_NO_SENDERS` (5), `PORT_EVENT_SOURCE_GONE` (6), `PORT_EVENT_CALL_NOTICE` (8) |
 | memory pressure | 4 | `DOMAIN_SELF` (the caller's own Domain); one port per Domain, a second bind replaces the first; remove takes the port and key | `PORT_EVENT_PRESSURE` (7) |
 | interrupt line | n/a | from the line's side: `DEVICE_IRQ_BIND` with the port handle | `PORT_EVENT_IRQ` (3) |
+| queued calls | 5 | a `Cap<Endpoint>` with `READ`, held by the serving task (`-EPERM` otherwise); one port per endpoint | `PORT_EVENT_CALLS` (9) |
+| doorbell | 6 | a `Cap<Shm>` with `READ`, `w3` the byte offset of a 4-aligned word in the region; only with Kconfig `FUTEX_SHARED` | `PORT_EVENT_DOORBELL` (10) |
 
 Events from rings are edge-triggered and coalesced: one event stands for at
 least one completion since the last event, so the receiver drains the
@@ -391,6 +394,20 @@ its caller: `source_id` the low 32 bits of the call's handle, code `ECANCELED`
 (the caller withdrew, was killed or exited) or `ETIMEDOUT` (the reservation the
 caller lent ran out while the server, running on it as a passive server, worked
 on the call). It rides the bounded queue, as an interrupt's event does.
+The calls source is reported by the call that finds the endpoint's queue
+empty (and at bind when one is queued already), once: the server takes calls
+with the poll accept until `MSG_MORE` is clear or the accept answers `-EAGAIN`
+(a caller withdrew), so a call queued behind the one announced is not lost and
+none is waited for. The doorbell is rung by every futex wake of its word
+(`SYS_FUTEX_WAKE`, a kernel producer's wake of a shared ring, a pipe's): a
+consumer announces its sleep on the ring's index word as for a futex wait, then
+waits on the port; a push between the two marks the source pending and the
+wait returns at once. One port wait therefore covers a server's calls, its
+interrupt lines, its timers and the shared rings it consumes: the ring-3
+server runtime, `userspace/lib/srv` (`azos_srv`), is that loop with a typed
+handler per kind of source. A server with no source but its calls runs the
+same handlers sleeping in the blocking accept instead (`Server::calls_only`),
+so the IPC fast path's hand-off still reaches it.
 The pressure source has no slot: the Domain keeps the port's reference, and the
 reclaim task queues one event per change of the Domain's frame-budget level
 (`source_id` 0 normal, 1 warning from the high watermark, 2 critical at the
