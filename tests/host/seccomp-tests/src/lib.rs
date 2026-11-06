@@ -1218,6 +1218,9 @@ mod image_profiles {
         ("DECISD.ELF", Lang::Rust, &[
             src!("userspace/services/decisd/src/main.rs"),
             src!("userspace/services/decisd/src/bin.rs"),
+            src!("userspace/lib/srv/src/lib.rs"),
+            src!("userspace/lib/srv/src/sys/mod.rs"),
+            src!("userspace/lib/srv/src/sys/calls.rs"),
         ]),
         // The Input object's server: the pure focus decisions and the loop.
         ("INPUTD.ELF", Lang::Rust, &[

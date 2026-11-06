@@ -12,6 +12,7 @@ azos_inspect_lib = { path = "../../lib/inspect" }
 azos_abi = { path = "../../../crates/core/abi" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_decisions = { path = "../../lib/decisions" }
+azos_srv = { path = "../../lib/srv", features = ["libsys"] }
 
 [profile.release]
 opt-level = "s"

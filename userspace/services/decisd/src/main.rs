@@ -13,11 +13,11 @@
 //! records). A record's subject may be a task, hence the
 //! admin region, and the task view its row holds to be granted it.
 //!
-//! Request-driven, like `termd`: accept, read the records again (the kernel
-//! writes a record into the region where it is recorded, so a request sees
-//! every decision made before it, with no wait), dispatch, reply. The records,
-//! their filter and the reply words are the library's; `bin.rs` is the
-//! decoder and is tested on the host (`tests/host/decisions-tests`).
+//! Request-driven, like `termd`: a calls-only server on `azos_srv` (it sleeps
+//! in the accept), which reads the records again for each call, dispatches and
+//! replies. The records, their filter and the reply words are the library's;
+//! `bin.rs` is the decoder and is tested on the host
+//! (`tests/host/decisions-tests`).
 
 #![no_std]
 #![no_main]
@@ -27,6 +27,8 @@ mod bin;
 use azos_decisions::{DecisionsIdl, MsgDesc, Service};
 use azos_inspect_lib::{Inspector, Source, Value};
 use azos_libsys as sys;
+use azos_srv::sys::Calls;
+use azos_srv::{Answer, Handler, Server};
 use bin::BinSource;
 
 /// The records read at once: the table's worth.
@@ -55,6 +57,24 @@ fn read_records(tree: &mut Inspector<'static>, buf: &mut [u8]) -> usize {
     .unwrap_or(0)
 }
 
+/// The server: the records are read again for every call (the kernel writes
+/// a record into the region where it is recorded, so a call sees every
+/// decision made before it, with no wait).
+struct Decisions<'a> {
+    svc: &'a mut Service<BinSource>,
+    tree: Option<Inspector<'static>>,
+    file: &'a mut [u8],
+}
+
+impl Handler<Calls> for Decisions<'_> {
+    fn call(&mut self, _k: &mut Calls, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
+        let n = self.tree.as_mut().map_or(0, |t| read_records(t, self.file));
+        self.svc.0.load(&self.file[..n]);
+        let _ = DecisionsIdl::dispatch(self.svc, req, rep);
+        Answer::Reply
+    }
+}
+
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
     // The one reference, for the life of the program.
@@ -65,23 +85,9 @@ fn main() -> ! {
     let admin = sys::inspect_map(azos_abi::cap::SHM_INSPECT_ADMIN).ok();
     // SAFETY: the mappings live as long as the task, read-only, and the kernel
     // writes them only with aligned 64-bit stores.
-    let mut tree = public.and_then(|p| unsafe { Inspector::from_mapped(p, admin) }.ok()).filter(|t| t.has_admin());
+    let tree = public.and_then(|p| unsafe { Inspector::from_mapped(p, admin) }.ok()).filter(|t| t.has_admin());
     if tree.is_none() {
         let _ = sys::console_write(sys::STDOUT, b"[decisd] no admin introspection region: it answers as if the kernel held no decision\n");
     }
-
-    loop {
-        let mut req = MsgDesc::default();
-        let call = sys::ipc_accept_v2(&mut req);
-        if call < 0 {
-            // Nothing arrived (a spurious wake): wait again.
-            sys::yield_now();
-            continue;
-        }
-        let n = tree.as_mut().map_or(0, |t| read_records(t, &mut file));
-        svc.0.load(&file[..n]);
-        let mut rep = MsgDesc::default();
-        let _ = DecisionsIdl::dispatch(svc, &req, &mut rep);
-        let _ = sys::ipc_reply_v2(call as u64, &rep);
-    }
+    Server::calls_only(Calls).run(&mut Decisions { svc, tree, file: &mut file })
 }
