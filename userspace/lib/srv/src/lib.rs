@@ -190,15 +190,34 @@ impl<K: Kernel> Server<K> {
         }
     }
 
-    /// Take calls until none is queued behind the last (`MSG_MORE` clear),
-    /// at most [`CALL_BATCH`]; the first in the blocking accept when `sleep`.
+    /// Take calls until none is queued behind the last (`MSG_MORE` clear) or
+    /// the accept finds none, at most [`CALL_BATCH`]; the first in the
+    /// blocking accept when `sleep`.
     fn serve<H: Handler<K>>(&mut self, h: &mut H, sleep: bool) -> usize {
         for n in 0..TAKE {
             let mut req = MsgDesc::default();
             let taken = if sleep && n == 0 { self.kernel.accept_blocking(&mut req) } else { self.kernel.accept(&mut req) };
-            let Ok(Some(handle)) = taken else {
-                self.owed = false;
-                return n;
+            let handle = match taken {
+                Ok(Some(handle)) => handle,
+                Ok(None) => {
+                    self.owed = false;
+                    return n;
+                }
+                // A refused accept says nothing of the queue: the calls stay
+                // owed, so the next turn polls and takes them, after a back-off
+                // (a calls-only turn backs off itself). Canary
+                // `owed-drop-canary` (host): the refusal clears them, and the
+                // server sleeps with calls queued that no event announces.
+                Err(_) if cfg!(feature = "owed-drop-canary") => {
+                    self.owed = false;
+                    return n;
+                }
+                Err(_) => {
+                    if !self.calls_only {
+                        self.kernel.pause();
+                    }
+                    return n;
+                }
             };
             let mut rep = MsgDesc::default();
             h.call(&mut self.kernel, handle, &req, &mut rep);

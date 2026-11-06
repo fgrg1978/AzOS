@@ -24,5 +24,7 @@ port-calls-canary = []
 # The runtime's canary: a turn serves every queued call, so
 # `neither_calls_nor_interrupts_starve_the_other` goes red.
 batch-canary = ["azos_srv/batch-canary"]
+# A refused accept clears the calls owed: a_refused_accept_keeps_the_calls_owed.
+owed-drop-canary = ["azos_srv/owed-drop-canary"]
 
 [workspace]

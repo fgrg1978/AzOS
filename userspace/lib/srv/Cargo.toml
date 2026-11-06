@@ -17,6 +17,9 @@ libsys = ["dep:azos_libsys", "dep:azos_limits"]
 # Host canary only (tests/host/srv-tests): a turn serves every queued call, so
 # a storm of calls starves the interrupts and the timers.
 batch-canary = []
+# Host canary only: a refused poll accept clears the calls owed, so they are
+# never taken (srv-tests' a_refused_accept_keeps_the_calls_owed goes red).
+owed-drop-canary = []
 
 # Standalone, like the userspace images (see Cargo.toml's exclude list).
 [workspace]

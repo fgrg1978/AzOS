@@ -36,6 +36,8 @@ struct Fake {
     accepts: usize,
     /// The deadline of every wait, in order.
     deadlines: Vec<u64>,
+    /// Accepts to refuse (`-EFAULT`) before the next one is served.
+    refuse: usize,
 }
 
 fn ev(source_type: u8, key: u64) -> Event {
@@ -80,6 +82,10 @@ impl Kernel for Fake {
 
     fn accept(&mut self, req: &mut MsgDesc) -> Result<Option<u64>, isize> {
         self.accepts += 1;
+        if self.refuse > 0 {
+            self.refuse -= 1;
+            return Err(-14);
+        }
         let Some((h, _caller, words, _cap)) = ep_queue::accept::<false>(SERVER_IDX, SERVER, |_| {}) else {
             return Ok(None);
         };
@@ -354,4 +360,20 @@ fn a_calls_only_server_sleeps_in_the_accept() {
     for (i, h) in hs.into_iter().enumerate() {
         assert_eq!(s.answer(i, h), Some(10 * i as u64 + 1));
     }
+}
+
+/// A refused accept (a fault writing the descriptor) says nothing of the
+/// queue: the calls stay owed and the next turn polls for them instead of
+/// sleeping. **Canary** `owed-drop-canary`: the refusal clears them, the
+/// queued call announces nothing more, and the server sleeps.
+#[test]
+fn a_refused_accept_keeps_the_calls_owed() {
+    let mut s = Scene::new(130);
+    let h = s.call(0, 20);
+    s.srv.kernel.refuse = 1;
+    let t = s.srv.turn(&mut s.h);
+    assert_eq!((t.event, t.calls), (Some(PORT_EVENT_CALLS), 0));
+    s.srv.turn(&mut s.h);
+    assert_eq!(s.srv.kernel.deadlines, [u64::MAX, 0], "the second wait only polls");
+    assert_eq!(s.answer(0, h), Some(21));
 }
