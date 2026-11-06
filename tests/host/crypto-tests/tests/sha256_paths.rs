@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Every portable SHA-256 block path against FIPS 180-4 vectors and the
-//! padding boundaries (wave 14): the generic path, then the riscv64 generic
-//! arithmetic (`blocks_dup64`: 64-bit duplicate sigmas, mask-shift word
-//! loads) and the Zbb/Zknh word loads (`blocks_wide`) installed through
-//! `select_hook`. One test, in its own binary: the selection is
-//! process-global.
+//! padding boundaries: the generic path (`sha2::compress256`), then the
+//! riscv64 Zbb/Zknh template with portable rotates (`blocks_wide`)
+//! installed through `select_hook`. One test, in its own binary: the
+//! selection is process-global.
 
-use azos_crypto::sha256::{backend, blocks_dup64, blocks_wide, select_hook, sha256, Sha256};
+use azos_crypto::sha256::{backend, blocks_wide, select_hook, sha256, Sha256};
 
 fn hex(s: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
@@ -91,8 +90,6 @@ fn vectors(path: &str) {
 fn every_portable_block_path_matches_fips_180_4() {
     assert_eq!(backend(), "generic");
     vectors("generic");
-    assert!(select_hook(blocks_dup64), "the dup64 path failed its own self-test");
-    vectors("dup64");
     assert!(select_hook(blocks_wide), "the wide-load path failed its own self-test");
     vectors("wide");
 }

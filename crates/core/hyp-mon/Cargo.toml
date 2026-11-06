@@ -5,7 +5,8 @@
 # workspace member. It is built by `mk/` (hyp-mon-<isa>), objcopy'd flat and
 # `.incbin`'d into the kernel's `.hyp` section. Its own `[workspace]` keeps it
 # out of the kernel's build graph, so a monitor reference to a kernel symbol is
-# a link error, not a review item. Its only dependency is the ISA-neutral ABI.
+# a link error, not a review item. Its dependencies are the ISA-neutral ABI and
+# the RustCrypto crates azos_crypto's SHA-256/HMAC/HKDF sources are built on.
 [package]
 name = "azos_hyp_mon"
 version = "0.1.0"
@@ -22,6 +23,8 @@ path = "src/main.rs"
 
 [dependencies]
 azos_hyp_api = { path = "../hyp-api" }
+digest = { version = "0.10", default-features = false, features = ["core-api"] }
+sha2 = { version = "0.10", default-features = false, features = ["compress", "force-soft"] }
 
 [features]
 # One variant per gate canary: each removes exactly one mechanism so its row
@@ -40,8 +43,6 @@ hyp-smmu-window-canary = []
 hyp-its-window-canary = []
 hyp-rd-open-canary = []
 hyp-its-skip-mapti-canary = []
-# Read by the riscv64 arms of the shared SHA-256 source (azos_crypto); the monitor is aarch64 only, so never set.
-no-bitmanip = []
 
 [profile.release]
 panic = "abort"

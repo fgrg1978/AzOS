@@ -2,17 +2,21 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! SHA-256 hash function (FIPS 180-4).
 //!
-//! The hash and the portable block function are `sha256_core.rs`; this file
-//! picks the block function that runs (below).
+//! The hash is `sha256_core.rs`; this file picks the block function that
+//! runs: RustCrypto's `sha2::compress256` (its portable backend on bare
+//! metal), or an arch backend the CPU has (below). No caller chooses.
 
 #[path = "sha256_core.rs"]
 mod core_impl;
+#[path = "sha256_blocks.rs"]
+mod blocks;
 
-pub use core_impl::{blocks_dup64, blocks_wide, sha256, Digest, Sha256};
-use core_impl::blocks_generic;
+pub use blocks::blocks_wide;
+pub use core_impl::{sha256, Digest, Sha256};
+use core_impl::Block;
 // arch-only: the riscv64 Zbb / Zknh block functions; every other ISA takes the portable code.
 #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
-use core_impl::rv;
+use blocks::rv;
 
 // ---------------------------------------------------------------------------
 // Block dispatch (wave 13): the CPU's SHA-2 instructions when it has them
@@ -49,23 +53,30 @@ pub fn backend() -> &'static str {
     }
 }
 
-fn compress_blocks(state: &mut [u32; 8], blocks: &[u8]) {
-    match MODE.load(Ordering::Relaxed) {
+fn compress_blocks(state: &mut [u32; 8], blocks: &[Block]) {
+    let mode = MODE.load(Ordering::Relaxed);
+    if mode == MODE_GENERIC {
+        return sha2::compress256(state, blocks);
+    }
+    // SAFETY: `GenericArray<u8, U64>` has the layout of `[u8; 64]`, so the
+    // blocks are `blocks.len() * 64` contiguous initialised bytes.
+    let bytes = unsafe { core::slice::from_raw_parts(blocks.as_ptr().cast::<u8>(), blocks.len() * 64) };
+    match mode {
         MODE_HOOK => {
             // `select_hook` stores the function before it publishes MODE_HOOK.
             match HOOK.get_relaxed() {
-                Some(f) => f(state, blocks),
-                None => blocks_generic(state, blocks),
+                Some(f) => f(state, bytes),
+                None => sha2::compress256(state, blocks),
             }
         }
         // arch-only: riscv64 extension arms; other ISAs fall to `_`.
         // SAFETY (both riscv arms): set only by `select_riscv`, after cpu@0
         // declared the extension and the path passed the self-test.
         #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
-        MODE_ZBB => unsafe { rv::blocks_zbb(state, blocks) },
+        MODE_ZBB => unsafe { rv::blocks_zbb(state, bytes) },
         #[cfg(all(target_arch = "riscv64", not(feature = "no-bitmanip")))]
-        MODE_ZKNH => unsafe { rv::blocks_zknh(state, blocks) },
-        _ => blocks_generic(state, blocks),
+        MODE_ZKNH => unsafe { rv::blocks_zknh(state, bytes) },
+        _ => sha2::compress256(state, blocks),
     }
 }
 

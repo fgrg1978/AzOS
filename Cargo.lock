@@ -218,6 +218,7 @@ dependencies = [
  "chacha20poly1305",
  "ctr",
  "curve25519-dalek",
+ "digest",
  "ed25519-dalek",
  "poly1305",
  "sha2",

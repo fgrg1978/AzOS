@@ -24,7 +24,7 @@ crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
 crates/core/common	4	0	0	0	0	36
 crates/core/config	8	0	0	0	0	75
-crates/core/crypto	16	2	1	0	0	26
+crates/core/crypto	5	0	1	0	0	18
 crates/core/decision	2	0	2	0	0	61
 crates/core/devif	0	0	0	0	1	0
 crates/core/energy	0	0	0	0	1	0
