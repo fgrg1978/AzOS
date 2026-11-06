@@ -16408,6 +16408,8 @@ PY
     # The ERE pins the test by name: the row is green only if it ran and passed.
     par "ktest anon released page (rv)" ktest_row "ktest anon released page (rv)" rv "" "" "" '^ok [0-9]+ - anon_released_page_is_a_hole_on_every_isa$'
     par "ktest anon released page (arm)" ktest_row "ktest anon released page (arm)" arm "" "" "" '^ok [0-9]+ - anon_released_page_is_a_hole_on_every_isa$'
+    par "ktest shared mapping space end (rv)" ktest_row "ktest shared mapping space end (rv)" rv "" "" "" '^ok [0-9]+ - shared_mapping_ends_with_its_space_on_every_isa$'
+    par "ktest shared mapping space end (arm)" ktest_row "ktest shared mapping space end (arm)" arm "" "" "" '^ok [0-9]+ - shared_mapping_ends_with_its_space_on_every_isa$'
     par "ktest fork clone shares read-only (rv)" ktest_row "ktest fork clone shares read-only (rv)" rv "" "" "" '^ok [0-9]+ - fork_clone_shares_each_frame_read_only$'
     par "ktest fork clone shares read-only (arm)" ktest_row "ktest fork clone shares read-only (arm)" arm "" "" "" '^ok [0-9]+ - fork_clone_shares_each_frame_read_only$'
     par "ktest blk reap once (rv)" ktest_row "ktest blk reap once (rv)" rv "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'

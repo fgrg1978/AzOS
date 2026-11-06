@@ -2535,6 +2535,46 @@ azos_ktest::ktest_late! {
     }
 }
 
+// A mapping of a shared object's frames ends with its space, on every ISA, and
+// the sweep that frees a space's own frames leaves the object's: the leaves of
+// shared mappings are cleared first (`pager::unmap_shared`). Its host twin is
+// syscall-tests typed_ipc.rs `a_space_that_ends_leaves_a_shared_object_to_its_other_mapper`.
+// Canary by hand: `unmap_shared` returning at once (the host feature
+// `mm-rmap-missing-canary`): the frame is free after the space's end.
+azos_ktest::ktest_late! {
+    fn shared_mapping_ends_with_its_space_on_every_isa() {
+        use azos_arch_api::PagePerms;
+        use azos_mm::{aspace, pager, pmm, vmm};
+        const BASE: usize = 0x40_0000;
+        let page = azos_arch::PAGE_SIZE;
+        let frame = pmm::alloc_page().map_err(|_| "no frame")?;
+        let pt = match vmm::create_pagetable() {
+            Ok(pt) => pt,
+            Err(_) => {
+                let _ = pmm::free_page(frame);
+                return Err("no root");
+            }
+        };
+        let Some(a) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            let _ = pmm::free_page(frame);
+            return Err("no address space");
+        };
+        let made = pager::reserve_obj(a, BASE, BASE + page, true, 0).is_ok()
+            && vmm::map(pt, BASE, frame.as_usize(), PagePerms::USER_RW).is_ok();
+        let _ = aspace::destroy(a, 0, 0);
+        let kept = !pmm::range_is_free(frame.as_usize(), page);
+        let _ = pmm::free_page(frame);
+        if !made {
+            return Err("the shared mapping was not made");
+        }
+        if !kept {
+            return Err("the end of a space freed the frame of a shared mapping");
+        }
+        Ok(())
+    }
+}
+
 // A private anonymous page's state is its object's slot, and its leaf a cache
 // of it: a fault on a page whose leaf was cleared while its slot still names
 // its frame installs that frame again, with its bytes. Canary
