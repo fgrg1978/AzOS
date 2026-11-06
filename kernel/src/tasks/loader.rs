@@ -134,6 +134,18 @@ fn refuse_image_room(path: &str, size: u64, why: Refusal) {
 /// The body of the autorun task, and of every successor the
 /// supervisor creates for a supervised driver: a restart re-reads and
 /// re-hashes the image and applies exactly the policy the first start did.
+/// The first task-hosted endpoint the topology row named after the image of
+/// `path` serves (`READ` on `endpoint.<name>`), if any.
+fn served_endpoint(path: &[u8]) -> Option<&'static [u8]> {
+    let name = path.rsplit(|&b| b == b'/').next().unwrap_or(path);
+    let t = azos_topology::get()?;
+    let row = t.tasks().iter().find(|r| r.name.as_bytes() == name)?;
+    t.caps_of(row)
+        .iter()
+        .filter(|c| c.kind == azos_abi::cap::CapKind::Endpoint && c.perms.contains(azos_abi::cap::CapPerms::READ))
+        .find_map(azos_topology::types::endpoint_target)
+}
+
 pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
     // Q1.4 (owner decision, 2026-09-25): defense-in-depth beside gate_speed's
     // own fail-closed default -- no ring-3 program starts until the actuation
@@ -149,6 +161,16 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
     if azos_actuation::estop::safe_mode_active() {
         azos_drv_sys::kwarn!("[AUTORUN] REFUSED: safe mode -- {} not started",
             core::str::from_utf8(path_slice).unwrap_or("?"));
+        return;
+    }
+
+    // A server is a `start = true` row of the component manager, which
+    // restarts it while the kernel holds its endpoints; nothing restarts an
+    // autorun image, and its endpoints would go with it.
+    if let Some(ep) = served_endpoint(path_slice) {
+        azos_drv_sys::kwarn!("[AUTORUN] REFUSED: {} serves endpoint.{}: a server is a start = true row \
+                   of the component manager", core::str::from_utf8(path_slice).unwrap_or("?"),
+            core::str::from_utf8(ep).unwrap_or("?"));
         return;
     }
 

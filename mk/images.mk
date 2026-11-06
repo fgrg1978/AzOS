@@ -89,7 +89,8 @@ $(IMAGE_HASHES_AARCH64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_AARCH64_ON)
 		BUSYBOX.ELF=$(BUSYBOX_ELF_AARCH64) LXTHR.ELF=$(LXTHR_ELF_AARCH64)
 
 # Two disk images from one recipe, differing only in which ELF `autorun` starts.
-# disk.img keeps GPIODRV (the ring-3 driver demo); disk-systest.img runs the
+# disk.img names GPIODRV, which the autorun loader refuses (it serves an
+# endpoint: a server is a component manager row); disk-systest.img runs the
 # syscall test, which was built and copied onto the disk for months without
 # anything ever invoking it.
 $(OUT_BUILD)/disk.img:         AUTORUN_ELF := /fat/GPIODRV.ELF

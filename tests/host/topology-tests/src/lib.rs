@@ -1348,6 +1348,9 @@ mod start_flag_tests {
         #[cfg(feature = "ring3-driver-start")]
         {
             let mut want = vec![];
+            // The GPIO device host serves `DevicePower`: a server is the
+            // component manager's row (the autorun loader refuses it).
+            if azos_limits::USERSPACE_GPIODRV { want.push("GPIODRV.ELF"); }
             // The buzzer's ring-3 host is started at boot whichever host the
             // driver starts in: it is the standby of a driver placed in the
             // kernel, and the component manager's like any other row.

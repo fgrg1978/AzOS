@@ -1320,6 +1320,10 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             }],
         )
             .expect("default_minimal_topology: GPIODRV.ELF push failed");
+        // A server: the component manager starts and restarts it, on a
+        // volume that carries both (the autorun loader refuses it).
+        #[cfg(feature = "ring3-driver-start")]
+        topo.set_last_task_start(true);
     }
     if azos_limits::USERSPACE_REFLEX {
         topo.push_task(MaybeStr::from_bytes(TASK_REFLEX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[])
