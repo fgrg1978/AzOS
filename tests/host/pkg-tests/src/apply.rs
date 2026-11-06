@@ -146,7 +146,7 @@ fn topo(d: &'static Device0) -> Box<Topology<'static>> {
 }
 
 pub(crate) fn boot(prior: u32) -> Boot<'static> {
-    Boot { device: device(), now_ns: 7_000, prior_unconfirmed: prior, max_attempts: 3, sec_floor_enforce: false }
+    Boot { device: device(), now_ns: 7_000, prior_unconfirmed: prior, max_attempts: 3, sec_floor_enforce: false, marks: &azos_pkg::index::NoMarks }
 }
 
 fn volume() -> Volume<MemDev> {
@@ -959,23 +959,58 @@ fn extending_the_grants_of_a_row_keeps_its_grants_and_the_others() {
 
 // ── security floors ───────────────────────────────────────────────
 
-/// What pkgd leaves beside the packages: the verified index, in the volume root.
+/// What pkgd leaves beside the packages: the verified index of the author, in its slot in the volume root.
 fn put_index(v: &mut Volume<MemDev>, bytes: &[u8]) {
     let root = v.root();
-    let ino = v.create(root, proto::INDEX, Kind::File, 0o644).expect("create");
+    let name = azos_pkg::index::slot_name(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
+    let ino = match v.lookup(root, &name) {
+        Ok(e) => {
+            v.truncate(e.ino, 0).unwrap();
+            e.ino
+        }
+        Err(_) => v.create(root, &name, Kind::File, 0o644).expect("create"),
+    };
     assert_eq!(v.write(ino, 0, bytes).expect("write"), bytes.len());
     v.commit().expect("commit");
+}
+
+fn drop_index(v: &mut Volume<MemDev>) {
+    let root = v.root();
+    let name = azos_pkg::index::slot_name(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
+    v.unlink(root, &name).unwrap();
+    v.commit().unwrap();
+}
+
+/// The device's memory of the indexes, in RAM.
+#[derive(Default)]
+struct MemMarks(std::cell::RefCell<azos_pkg::index::MarkTable>);
+
+impl azos_pkg::index::Marks for MemMarks {
+    fn get(&self, key: u32) -> Option<azos_pkg::index::Mark> {
+        self.0.borrow().get(key)
+    }
+    fn raise(&self, key: u32, mark: azos_pkg::index::Mark) -> bool {
+        self.0.borrow_mut().raise(key, mark)
+    }
 }
 
 fn enforcing() -> Boot<'static> {
     Boot { sec_floor_enforce: true, ..boot(0) }
 }
 
+fn enforcing_with(marks: &'static MemMarks) -> Boot<'static> {
+    Boot { sec_floor_enforce: true, marks, ..boot(0) }
+}
+
 fn floor_index(floor: Option<&str>, key: &SigningKey) -> Vec<u8> {
+    floor_index_at(4, floor, key)
+}
+
+fn floor_index_at(serial: u32, floor: Option<&str>, key: &SigningKey) -> Vec<u8> {
     // The index lists a newer build of the package, with `floor` as its floor.
     let mut s = Spec::acme();
     s.version = "1.9.0".into();
-    build_index(&index_body(4, &[Offer::of(&build(&s, &author()), "ACME190.PKG", floor)]), key)
+    build_index(&index_body(serial, &[Offer::of(&build(&s, &author()), "ACME190.PKG", floor)]), key)
 }
 
 fn floors_of(a: &Applied) -> Vec<(String, bool)> {
@@ -1072,4 +1107,196 @@ fn a_staged_upgrade_replaces_the_applied_programs_of_the_old_version() {
     assert_eq!(now["ACME.ELF"], s.images[0].1);
     assert_eq!(t.tasks().iter().filter(|r| r.name.as_bytes() == b"ACME.ELF").count(), 1, "one row, the new one");
     assert_eq!(staged(&mut v), vec![new_name]);
+}
+
+/// The device remembers the newest index it judged by: a signed index put back
+/// that is older, one that differs at the same serial, and no file at all leave
+/// the package's floors unknown, and an unknown floor is not met; a newer index
+/// takes over and raises the mark.
+///
+/// **Canary** `pkg-mark-canary`: the device remembers nothing and the replayed,
+/// diverging and deleted index each pass as the first one.
+#[test]
+fn a_replayed_or_deleted_index_cannot_lift_a_floor() {
+    use azos_pkg::index::{mark_key, Marks};
+    let d = signed_device();
+    let marks: &'static MemMarks = Box::leak(Box::default());
+    let key = mark_key(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
+    let mut v = volume();
+    stage(&mut v, &acme());
+    let judged = |v: &mut Volume<MemDev>| {
+        let mut t = topo(d);
+        let mut log = Log::default();
+        let a = apply(v, &mut t, &enforcing_with(marks), &mut log);
+        (floors_of(&a)[0].1, log)
+    };
+
+    // Serial 7 puts the package (1.2.0) below its floor (1.3.0); the device remembers it.
+    put_index(&mut v, &floor_index_at(7, Some("1.3.0"), &author()));
+    let (low, log) = judged(&mut v);
+    assert!(low);
+    assert_eq!(marks.get(key).map(|m| m.serial), Some(7));
+    assert!(log.records.iter().any(|p| p.rule == Rule::PackageIndex as u8 && p.verdict == Verdict::Admit as u8));
+
+    // Older, signed, with a lower floor: put back by a writer of the volume.
+    put_index(&mut v, &floor_index_at(6, Some("1.0.0"), &author()));
+    let (low, log) = judged(&mut v);
+    assert!(low, "an older signed index does not lift the floor");
+    assert!(log.records.iter().any(|p| p.rule == Rule::PackageIndex as u8 && p.verdict == Verdict::Refuse as u8));
+    // The same serial, another body.
+    put_index(&mut v, &floor_index_at(7, Some("1.0.0"), &author()));
+    assert!(judged(&mut v).0, "another body at the same serial does not lift it");
+    // No file.
+    drop_index(&mut v);
+    assert!(judged(&mut v).0, "a deleted index does not lift it");
+    assert_eq!(marks.get(key).map(|m| m.serial), Some(7), "and the mark did not move");
+
+    // A newer index, signed, is the one to go by.
+    put_index(&mut v, &floor_index_at(8, Some("1.2.0"), &author()));
+    assert!(!judged(&mut v).0);
+    assert_eq!(marks.get(key).map(|m| m.serial), Some(8));
+}
+
+/// A device that never saw an index has no floors to lose, and the policy off
+/// reads no slot at all.
+#[test]
+fn without_a_mark_or_an_index_there_is_no_floor() {
+    let d = signed_device();
+    let mut v = volume();
+    stage(&mut v, &acme());
+    let mut t = topo(d);
+    let a = apply(&mut v, &mut t, &enforcing_with(Box::leak(Box::default())), &mut Log::default());
+    assert_eq!(floors_of(&a), [("ACME.ELF".to_string(), false)]);
+}
+
+// ── upgrades in flight ────────────────────────────────────────────
+
+fn acme_at(version: &str, fill: u32) -> Vec<u8> {
+    let mut s = Spec::acme();
+    s.version = version.into();
+    s.images = vec![("ACME.ELF".into(), (0..300u32).map(|i| (i * fill) as u8).collect())];
+    build(&s, &author())
+}
+
+/// What pkgd leaves for an upgrade: the new version staged beside the old, and
+/// the pair in SUPERSEDE.REQ.
+fn stage_upgrade(v: &mut Volume<MemDev>, old: &[u8], new: &[u8]) -> String {
+    let name = stage(v, new);
+    let root = v.root();
+    let mut body = [0u8; proto::SUPERSEDE_REC];
+    let (o, n) = (Package::parse(old).unwrap().id(), Package::parse(new).unwrap().id());
+    let len = proto::supersede_push(&mut body, 0, &o, &n).unwrap();
+    let ino = v.create(root, proto::SUPERSEDE, Kind::File, 0o644).expect("create");
+    v.write(ino, 0, &body[..len]).unwrap();
+    v.commit().unwrap();
+    name
+}
+
+fn rows_named(t: &Topology<'_>, name: &[u8]) -> usize {
+    t.tasks().iter().filter(|r| r.name.as_bytes() == name).count()
+}
+
+/// **A failed upgrade does not delete the component.** The new version is
+/// applied on trial while the old one stays staged but out of the topology; the
+/// trial is rolled back (the boots never confirmed), the new version is dropped
+/// and the old one is applied again, from its still-staged file, with its own
+/// program back in `APPS/`.
+///
+/// **Canary** `pkg-supersede-canary`: the apply ignores the pair (and the
+/// installer removes the old version, as it did): the old version is gone.
+#[test]
+fn an_upgrade_whose_trial_rolls_back_leaves_the_old_version_applied() {
+    let d = signed_device();
+    let mut v = volume();
+    let (old, new) = (acme_at("1.0.0", 7), acme_at("1.3.0", 11));
+    let old_name = stage(&mut v, &old);
+    let (_, a, _) = run(&mut v, d, 0);
+    assert_eq!(a.packages, 1);
+    let old_apps = apps(&mut v);
+    assert_eq!(run(&mut v, d, 0).1.trial, None, "the first boot confirmed");
+
+    let new_name = stage_upgrade(&mut v, &old, &new);
+    if cfg!(feature = "pkg-supersede-canary") {
+        // The installer of before: the old file goes with the upgrade.
+        let root = v.root();
+        v.unlink(root, old_name.as_bytes()).unwrap();
+        v.commit().unwrap();
+    }
+    let (t, a, log) = run(&mut v, d, 0);
+    assert_eq!((a.packages, a.fresh.len()), (1, 1), "the new version is the one applied: {:?}", log.notes);
+    assert!(a.trial.is_some());
+    assert_eq!(rows_named(&t, b"ACME.ELF"), 1, "one row, not two: the old version is left out");
+    assert_eq!(apps(&mut v)["ACME.ELF"], (0..300u32).map(|i| (i * 11) as u8).collect::<Vec<_>>());
+    let mut both = staged(&mut v);
+    both.sort();
+    assert_eq!(both.len(), if cfg!(feature = "pkg-supersede-canary") { 1 } else { 2 }, "the old version stays staged");
+
+    // The trial is not confirmed in three boots: it rolls back.
+    let (t, a, log) = run(&mut v, d, 3);
+    assert_eq!(a.packages, 1, "{:?}", log.notes);
+    assert_eq!(rows_named(&t, b"ACME.ELF"), 1);
+    assert_eq!(a.images.len(), 1);
+    assert_eq!(a.images[0].sha256, azos_crypto::sha256::sha256(&old_apps["ACME.ELF"]), "the old version's program is the one bound");
+    assert_eq!(apps(&mut v), old_apps, "the old version's program is back");
+    assert_eq!(staged(&mut v), vec![old_name], "the new version is dropped, the old one is still staged");
+    assert!(!staged(&mut v).contains(&new_name));
+    assert!(log.records.iter().any(|p| p.verdict == Verdict::Refuse as u8), "the dropped version is on record");
+    // The pair is gone with the version it named, and the next boot is the plain old one.
+    let root = v.root();
+    assert!(v.lookup(root, proto::SUPERSEDE).is_err() || run(&mut v, d, 0).1.packages == 1);
+}
+
+/// When the new version's trial is confirmed, the old version's staged file goes
+/// with a `Deny` record that counts the OLD package's images.
+#[test]
+fn a_confirmed_upgrade_removes_the_old_version() {
+    let d = signed_device();
+    let mut v = volume();
+    let mut s = Spec::acme();
+    s.version = "1.0.0".into();
+    // The old version has two images, the new one has one.
+    s.images.push(("SECOND.ELF".into(), vec![5; 40]));
+    s.rows = format!("{}{}", s.rows, row("SECOND.ELF", "best_effort", 21, "{ kind = \"endpoint\", target = \"endpoint.acme\", perm = \"rw\" }"));
+    let old = build(&s, &author());
+    let new = acme_at("1.3.0", 11);
+    let old_name = stage(&mut v, &old);
+    run(&mut v, d, 0);
+    run(&mut v, d, 0);
+    let new_name = stage_upgrade(&mut v, &old, &new);
+    let (_, a, _) = run(&mut v, d, 0);
+    assert!(a.trial.is_some());
+    assert_eq!(staged(&mut v).len(), 2);
+
+    // The boot after the trial finds the counter at 0: confirmed.
+    let (t, a, log) = run(&mut v, d, 0);
+    assert_eq!(a.packages, 1);
+    assert_eq!(rows_named(&t, b"ACME.ELF"), 1);
+    assert_eq!(staged(&mut v), vec![new_name]);
+    assert!(!staged(&mut v).contains(&old_name));
+    let deny: Vec<_> = log.records.iter().filter(|p| p.verdict == Verdict::Deny as u8).collect();
+    assert_eq!(deny.len(), 1, "{:?}", log.records.len());
+    assert_eq!((deny[0].n[0], deny[0].image_hash_prefix), (2, azos_pkg::receipt::id_prefix(&Package::parse(&old).unwrap().id())), "the old package's two images");
+    let root = v.root();
+    assert!(v.lookup(root, proto::SUPERSEDE).is_err(), "nothing left to settle");
+    assert!(!apps(&mut v).contains_key("SECOND.ELF"), "the old version's other program is cleaned up as a stray");
+}
+
+/// A new version that has to wait (another trial is still running) does not
+/// take the old version away.
+#[test]
+fn the_old_version_keeps_running_while_the_new_one_waits() {
+    let d = signed_device();
+    let mut v = volume();
+    let (old, new) = (acme_at("1.0.0", 7), acme_at("1.3.0", 11));
+    stage(&mut v, &old);
+    run(&mut v, d, 0);
+    // Another package starts a trial and is not confirmed.
+    stage(&mut v, &other());
+    let (_, a, _) = run(&mut v, d, 0);
+    assert!(a.trial.is_some());
+    stage_upgrade(&mut v, &old, &new);
+    // Still unconfirmed: the upgrade waits, and the old version is applied.
+    let (t, a, log) = run(&mut v, d, 1);
+    assert_eq!(rows_named(&t, b"ACME.ELF"), 1, "{:?}", log.notes);
+    assert!(a.images.iter().any(|i| i.name == b"ACME.ELF" && i.sha256 == azos_crypto::sha256::sha256(&(0..300u32).map(|i| (i * 7) as u8).collect::<Vec<_>>())));
 }

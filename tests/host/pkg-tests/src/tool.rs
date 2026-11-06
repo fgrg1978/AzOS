@@ -251,7 +251,7 @@ fn the_tool_reports_what_is_outdated_and_upgrades_it() {
     let (r, out) = run(&["upgrade", "--all"], &mut files, &mut c);
     assert_eq!(r, Ok(0), "{out}");
     assert!(out.starts_with("upgraded acme-vision 1.0.0 -> 1.3.0 (package "), "{out}");
-    assert_eq!(vol.borrow().staged().len(), 2);
+    assert_eq!(vol.borrow().staged().len(), 3, "the old version stays staged beside the new one until the boot confirms it");
     let (r, out) = run(&["outdated"], &mut files, &mut c);
     assert_eq!(r, Ok(0));
     assert!(out.ends_with("0 behind, 0 below their security floor\n"), "{out}");

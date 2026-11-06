@@ -773,6 +773,9 @@ orderly-drain-smoke = ["qemu"]
 # Host-suite canary only (`tests/host/pkg-tests`, compiled over `boot/pkg_apply.rs`):
 # the apply leaves out the launch grants of the package rows that start.
 pkg-launch-grant-canary = []
+# The boot-time apply ignores SUPERSEDE.REQ: an upgrade is not parked, settled or
+# rolled back with its new version.
+pkg-supersede-canary = []
 
 # Kconfig DRV_INA219_PLACEMENT = kernel. The built-in topology declares no
 # INADRV.ELF row and the kernel places the INA219 in the kernel (`powermon.rs`):

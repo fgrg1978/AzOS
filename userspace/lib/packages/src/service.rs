@@ -26,6 +26,7 @@
 use azos_crypto::sig::KEY_LEN;
 use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use azos_idl::Cap;
+use azos_pkg::apply::{supersede_iter, supersede_push, SUPERSEDE_REC};
 use azos_pkg::container::{ParseError, HEADER_LEN, KEY_LEN_MAX, SIG_LEN_MAX};
 use azos_pkg::index::{assess, check_upgrade, upgrade_entry, Availability, Entry, Floor, IndexWhy, Installed, UpgradeWhy, Version};
 use azos_pkg::{admit, receipt, verify, verify_head, Device, Package, Refusal};
@@ -45,12 +46,28 @@ pub const JOURNAL: &[u8] = b"/fat/PKG/JOURNAL.BIN";
 /// to (`azos_tls::rows`). Absent, there is no source.
 pub const SOURCE: &[u8] = b"/fat/PKG/SOURCE.CFG";
 
-/// The repository index, as the installer keeps it: the last one it verified
-/// and accepted. The kernel's boot-time apply reads the security floors from it
-/// (and verifies it again).
-pub const INDEX: &[u8] = b"/fat/PKG/INDEX.AZX";
+/// Where the index of the signer whose key id is `key_id` is kept: the last one
+/// the installer verified and accepted from that signer, one slot per signer
+/// (`azos_pkg::index::slot_name`). The kernel's boot-time apply reads the
+/// security floors from the slots (and verifies each again).
+fn slot_path(key_id: &[u8; 32]) -> [u8; 21] {
+    let mut p = *b"/fat/PKG/I0000000.AZX";
+    p[9..].copy_from_slice(&azos_pkg::index::slot_name(key_id));
+    p
+}
+/// The upgrades in flight (`azos_pkg::apply::SUPERSEDE`).
+const SUPERSEDE_PATH: &[u8] = b"/fat/PKG/SUPERSEDE.REQ";
+/// Bytes of the buffer the file is read into: a record per staged package, and one more.
+const SUPERSEDE_BUF: usize = (azos_limits::PKG_MAX_STAGED as usize + 1) * SUPERSEDE_REC;
+// The staged-scan buffer is the largest thing the installer reads at a time.
+const _: () = assert!(SUPERSEDE_BUF <= HEAD_BUF);
+
 /// The index's file name beside the package the source rows name.
 pub const INDEX_FILE: &str = "INDEX.AZX";
+
+// A fetched index is read into the package buffer, a stored one into a buffer of
+// its own: an index that does not fit either would be silently ignored.
+const _: () = assert!(azos_pkg::index::FILE_MAX <= PKG_BUF, "PKG_MAX_KB is smaller than the largest index (PKG_INDEX_MAX_ENTRIES)");
 
 const META_MAX: usize = azos_limits::PKG_META_MAX_KB as usize * 1024;
 /// Packages staged at once (Kconfig `PKG_MAX_STAGED`).
@@ -334,6 +351,8 @@ pub struct Work {
     sig: [u8; azos_topology::SIDECAR_MAX],
     sched: [u8; SCHED_BUF],
     arena: [u8; MAX_STAGED * META_MAX],
+    kept: [u8; azos_pkg::index::FILE_MAX],
+    supersede: [u8; SUPERSEDE_BUF],
     upd: update::Work,
     io: [u8; UPDATE_IO],
     /// The running slot's manifest, for the base of a delta update.
@@ -349,6 +368,8 @@ struct Parts<'r> {
     sig: &'r mut [u8],
     sched: &'r mut [u8],
     arena: &'r mut [u8],
+    kept: &'r mut [u8],
+    supersede: &'r mut [u8],
     topo: &'r mut Topology<'r>,
     report: &'r mut Report,
 }
@@ -363,6 +384,8 @@ impl Work {
             sig: [0; azos_topology::SIDECAR_MAX],
             sched: [0; SCHED_BUF],
             arena: [0; MAX_STAGED * META_MAX],
+            kept: [0; azos_pkg::index::FILE_MAX],
+            supersede: [0; SUPERSEDE_BUF],
             upd: update::Work::new(),
             io: [0; UPDATE_IO],
             base_mb: [0; update::MANIFEST_MAX],
@@ -389,6 +412,8 @@ fn parts<'r>(w: &'r mut Work, topo: &'r mut Topology<'static>) -> Parts<'r> {
         sig: &mut w.sig,
         sched: &mut w.sched,
         arena: &mut w.arena,
+        kept: &mut w.kept,
+        supersede: &mut w.supersede,
         topo,
         report: &mut w.report,
     }
@@ -574,7 +599,7 @@ impl<V: Volume, R: Remote> Packages for Service<'_, V, R> {
             r.id = offer.id;
             r.availability = Availability::Current;
             r.floor = offer.sec_floor.map_or(Floor::NoFloor, Floor::Met);
-            r.blocked = Some(UpgradeWhy::NotNewer);
+            r.blocked = Some(UpgradeWhy::Pending);
         }
         reply
     }
@@ -762,7 +787,7 @@ fn load_topology<'r, V: Volume>(
 /// Verify the index in the first `n` bytes of the package buffer, keep it on
 /// the volume and work out where every staged package stands against it.
 fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: usize, now: u64) -> [u64; 4] {
-    let Parts { pkg, head, caps, sig, sched, arena, topo, report } = p;
+    let Parts { pkg, head, caps, sig, sched, kept, supersede, topo, report, .. } = p;
     if let Err(r) = load_topology(vol, caps, sig, sched, topo, key) {
         return r;
     }
@@ -773,21 +798,38 @@ fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: u
     };
     let signer = ix.signer_index as u64 + 1;
 
-    // The index the device accepted before, if it still verifies: the serial
-    // never goes backwards, and it is what a failed write puts back.
-    let stored_len = match vol.read_file(INDEX, arena) {
+    // The slot of this signer: the index it published before, if it still
+    // verifies. Its serial never goes backwards and its body never changes at
+    // the same serial; it is also what a failed write puts back. Another
+    // signer's slot is not touched.
+    let slot = slot_path(&ix.key_id());
+    let stored_len = match vol.read_file(&slot, kept) {
         Ok(Read { n, more: false }) => Some(n),
-        _ => None,
+        Err(VolErr::Missing) => None,
+        // A slot that is there and cannot be read whole cannot be put back.
+        _ => return [status(step::IO, io::INDEX_SLOT), 0, 0, 0],
     };
-    let stored = stored_len.and_then(|n| azos_pkg::index::verify(&arena[..n], topo).ok());
-    if let Err(why) = ix.check_serial(stored.map(|s| s.serial)) {
+    let stored = stored_len.and_then(|n| azos_pkg::index::verify(&kept[..n], topo).ok());
+    if stored.is_some_and(|s| s.key_id() != ix.key_id()) {
+        return refuse_index(vol, IndexWhy::SlotTaken, signer, now);
+    }
+    if let Err(why) = ix.check_against(stored.map(|s| s.mark())) {
         return refuse_index(vol, why, signer, now);
     }
 
+    // An old version whose upgrade is on trial is not a package of the device
+    // for now; the new one is not upgraded again until the trial is confirmed.
+    let sup_len = match read_supersede(vol, supersede) {
+        Ok(n) => n,
+        Err(()) => return [status(step::IO, io::SUPERSEDE), 0, 0, 0],
+    };
     report.n = 0;
     let mut i = 0;
     while report.n < MAX_STAGED {
         let Some((_, pk)) = staged_at(vol, head, &mut i) else { break };
+        if supersede_iter(&supersede[..sup_len]).any(|(old, _)| old == pk.id()) {
+            continue;
+        }
         let Ok(v) = verify_head(pk, topo) else { continue };
         let a = assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: v.signer_index, id: v.id }, &ix);
         let mut row = Row::EMPTY;
@@ -800,7 +842,11 @@ fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: u
         row.availability = a.availability;
         row.floor = a.floor;
         row.offer = a.entry.as_ref().map(Offer::of);
-        row.blocked = upgrade_entry(&a).err();
+        row.blocked = if supersede_iter(&supersede[..sup_len]).any(|(_, new)| new == v.id) {
+            Some(UpgradeWhy::Pending)
+        } else {
+            upgrade_entry(&a).err()
+        };
         report.rows[report.n] = row;
         report.n += 1;
     }
@@ -811,13 +857,13 @@ fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: u
     // The old index goes back if the new one cannot be written down.
     let undo = |vol: &mut V| match stored_len {
         Some(n) => {
-            let _ = vol.write_file(INDEX, &arena[..n]);
+            let _ = vol.write_file(&slot, &kept[..n]);
         }
         None => {
-            let _ = vol.remove(INDEX);
+            let _ = vol.remove(&slot);
         }
     };
-    if vol.write_file(INDEX, bytes).is_err() {
+    if vol.write_file(&slot, bytes).is_err() {
         undo(vol);
         return [status(step::IO, io::WRITE_PACKAGE), 0, 0, 0];
     }
@@ -827,6 +873,15 @@ fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: u
     }
     report.valid = true;
     [0, ix.serial as u64, report.n as u64, ix.entries as u64]
+}
+
+/// The supersede file into `buf`: how many bytes (0 when there is none).
+fn read_supersede<V: Volume>(vol: &mut V, buf: &mut [u8]) -> Result<usize, ()> {
+    match vol.read_file(SUPERSEDE_PATH, buf) {
+        Ok(Read { n, more: false }) => Ok(n - n % SUPERSEDE_REC),
+        Err(VolErr::Missing) => Ok(0),
+        _ => Err(()),
+    }
 }
 
 /// What an upgrade replaces: the staged package, as the report knew it, and
@@ -848,7 +903,7 @@ fn install_or_admit<'r, V: Volume>(
     now: u64,
     replace: Option<&Replace<'_>>,
 ) -> [u64; 4] {
-    let Parts { pkg: pkg_buf, head, caps: caps_buf, sig: sig_buf, sched: sched_buf, arena, topo, .. } = p;
+    let Parts { pkg: pkg_buf, head, caps: caps_buf, sig: sig_buf, sched: sched_buf, arena, supersede, topo, .. } = p;
     let none = [0u8; 32];
 
     // 1. The package, whole, copied out of the client's object. One larger
@@ -872,6 +927,10 @@ fn install_or_admit<'r, V: Volume>(
 
     // 3. What is staged already, merged in first: a package is admitted against
     // the device as it will be, not as it is.
+    let sup_len = match read_supersede(vol, supersede) {
+        Ok(n) => n,
+        Err(()) => return [status(step::IO, io::SUPERSEDE), 0, 0, 0],
+    };
     let mut ids = [[0u8; 32]; MAX_STAGED];
     let mut staged = 0usize;
     let mut arena: &'r mut [u8] = arena;
@@ -892,6 +951,11 @@ fn install_or_admit<'r, V: Volume>(
         // takes its slot but adds no rows.
         ids[staged] = pk.id();
         staged += 1;
+        // An old version whose upgrade is on trial is left out of the device,
+        // as the boot leaves it out.
+        if supersede_iter(&supersede[..sup_len]).any(|(old, _)| old == pk.id()) {
+            continue;
+        }
         let Ok(v) = verify_head(pk, topo) else { continue };
         let (slot, rest) = core::mem::take(&mut arena).split_at_mut(META_MAX);
         arena = rest;
@@ -950,26 +1014,32 @@ fn install_or_admit<'r, V: Volume>(
         let _ = vol.remove(&path.bytes());
         return [status(step::IO, io::WRITE_PACKAGE), receipt::id_prefix(&id), 0, 0];
     }
+    // An upgrade stays beside the version it replaces until the new one is
+    // confirmed: the pair goes in the same transaction as the new file and its
+    // journal record, and the boot-time apply leaves the old version out while
+    // the new one is on trial, removes it on confirmation, and applies it again
+    // when the trial is rolled back.
+    if let (Some(r), Some(_)) = (replace, old_path) {
+        let Some(len) = supersede_push(supersede, sup_len, &r.id, &id) else {
+            let _ = vol.remove(&path.bytes());
+            return [status(step::NO_ROOM, 0), receipt::id_prefix(&id), 0, 0];
+        };
+        if vol.write_file(SUPERSEDE_PATH, &supersede[..len]).is_err() {
+            let _ = vol.remove(&path.bytes());
+            return [status(step::IO, io::SUPERSEDE), receipt::id_prefix(&id), 0, 0];
+        }
+    }
     if vol.append(JOURNAL, &receipt::admitted(&v, &a, now).to_bytes()).is_err() {
+        // The pair, if one was written, names a package that is not there: the
+        // boot drops it.
         let _ = vol.remove(&path.bytes());
         return [status(step::IO, io::JOURNAL), receipt::id_prefix(&id), 0, 0];
     }
-    // An upgrade: the version it replaces goes, as `remove` takes a package
-    // away, once the new one is durable. Between the two commits a power cut
-    // leaves both staged; the boot-time apply keeps the applied one and refuses
-    // the other's rows, and `pkg remove` clears the old.
-    if let (Some(r), Some(old)) = (replace, old_path) {
-        let reply = [0, receipt::id_prefix(&id), a.rows as u64, a.first_row as u64];
-        if vol.remove(&old.bytes()).is_err() {
-            return [status(step::IO, io::REMOVE), receipt::id_prefix(&r.id), a.rows as u64, 0];
+    if cfg!(feature = "pkg-supersede-canary") {
+        // What the installer did before the pair existed: the old version goes now.
+        if let Some(old) = old_path {
+            let _ = vol.remove(&old.bytes());
         }
-        let mut gone = ProvenanceRecord::new(Rule::PackageInstall as u8, Verdict::Deny as u8, a.rows as u32, [a.rows as u64, 0, 0]);
-        gone.image_hash_prefix = receipt::id_prefix(&r.id);
-        gone.clock_ns = now;
-        if vol.append(JOURNAL, &gone.to_bytes()).is_err() {
-            return [status(step::IO, io::JOURNAL), receipt::id_prefix(&r.id), a.rows as u64, 0];
-        }
-        return reply;
     }
     [0, receipt::id_prefix(&id), a.rows as u64, a.first_row as u64]
 }

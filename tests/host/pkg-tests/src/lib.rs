@@ -52,6 +52,12 @@ pub fn owner() -> SigningKey {
     SigningKey::from_bytes(&[0x5a; 32])
 }
 
+/// The path, on the installer's volume, of the index slot of the signer holding `key`.
+pub fn slot_path(key: &SigningKey) -> Vec<u8> {
+    let id = key_id(SigAlg::Ed25519 as u16, key.verifying_key().as_bytes());
+    [&b"/fat/PKG/"[..], &azos_pkg::index::slot_name(&id)[..]].concat()
+}
+
 /// A `.SIG` sidecar (the `DSIG` of `azos_crypto::sig`) signing `msg` with `key`.
 pub fn dsig(key: &SigningKey, msg: &[u8]) -> Vec<u8> {
     let mut v = b"DSIG".to_vec();

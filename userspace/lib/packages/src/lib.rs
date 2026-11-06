@@ -59,7 +59,10 @@
 //!   package, through the same verification, admission, staging and journal
 //!   as `install`, in place of the version staged. The file fetched is pinned
 //!   by the index to one build (its id), must be signed by the signer of the
-//!   package it replaces, and may not be older than it or below its floor.
+//!   package it replaces, and may not be older than it or below its floor. The
+//!   old version stays staged beside the new one until the boot confirms it
+//!   (`SUPERSEDE.REQ`): a new version whose trial is rolled back leaves the old
+//!   one applied.
 //!
 //! **Staging is not installing.** Nothing applies a staged package yet: its
 //! rows join no topology and none of its images runs. The kernel's boot-time
@@ -250,6 +253,10 @@ pub mod io {
     pub const JOURNAL: u64 = 4;
     /// Removing the staged file.
     pub const REMOVE: u64 = 5;
+    /// A stored index slot that is there and cannot be read whole.
+    pub const INDEX_SLOT: u64 = 6;
+    /// The supersede file (`azos_pkg::apply::SUPERSEDE`) cannot be read or written.
+    pub const SUPERSEDE: u64 = 7;
 }
 
 /// The standing of a report row, the detail of a [`step::ROW`] status: bits 0..3
@@ -326,18 +333,20 @@ pub const DELTA_REASONS: [&str; 8] = [
 pub const FETCH_REASONS: [&str; 6] = ["no source rows", "source rows", "connect", "tls", "http status", "transfer"];
 
 /// Why an index was refused, by `IndexWhy` minus one.
-pub const INDEX_REASONS: [&str; 16] = [
+pub const INDEX_REASONS: [&str; 18] = [
     "index truncated", "index magic", "index format", "index length", "index algorithm", "index signer",
     "index signature", "index text", "index syntax", "index unknown key", "index repeated key", "index value",
     "index missing key", "index too many entries", "index body format", "index older than the stored one",
+    "index differs from the stored one at the same serial", "index slot belongs to another signer",
 ];
 
 /// Why an upgrade was refused, by `UpgradeWhy` minus one.
-pub const UPGRADE_REASONS: [&str; 11] = [
+pub const UPGRADE_REASONS: [&str; 12] = [
     "not installed", "not in the index", "index signed by another signer", "installed version has no order",
     "nothing newer on offer", "file is another package than listed", "file is not the build listed",
     "file carries another version than listed", "file signed by another signer than the installed package",
     "older than the installed version", "below the security floor",
+    "the previous upgrade is not confirmed yet",
 ];
 
 /// The names of the steps of a status word, by step number: 1..17 are

@@ -76,7 +76,7 @@ fn refresh_reports_what_is_behind_and_what_is_below_its_floor() {
     assert_eq!(r.service().outdated(0, 2)[0], status(step::BAD_ARG, 1));
 
     // The verified index is kept for the boot-time apply, and the acceptance is a decision.
-    let stored = r.vol.borrow().files[&b"/fat/PKG/INDEX.AZX"[..]].clone();
+    let stored = r.vol.borrow().files[&slot_path(&author())[..]].clone();
     let body = index_body(7, &[Offer::of(&offered, "ACMEV.PKG", Some("1.2.0"))]);
     assert_eq!(stored, build_index(&body, &author()));
     assert_eq!(journal_tail(&r, 1), vec![(Rule::PackageIndex as u8, Verdict::Admit as u8, [1, 7, 0])]);
@@ -103,7 +103,7 @@ fn a_refused_index_changes_nothing_and_is_a_decision() {
     let mut r = rig_with("1.0.0");
     let offered = pkg("1.3.0");
     assert_eq!(r.service_with(repo(7, &offered, Some("1.2.0"), &author())).refresh()[0], 0);
-    let kept = r.vol.borrow().files[&b"/fat/PKG/INDEX.AZX"[..]].clone();
+    let kept = r.vol.borrow().files[&slot_path(&author())[..]].clone();
 
     let body = index_body(9, &[Offer::of(&offered, "ACMEV.PKG", Some("99.0"))]);
     let mut tampered = build_index(&body, &author());
@@ -119,7 +119,7 @@ fn a_refused_index_changes_nothing_and_is_a_decision() {
         let reply = r.service_with(Fake::repository(&[("INDEX.AZX", bytes)])).refresh();
         assert_eq!(step_of(reply[0]), step_no, "{what}: {}", step_name(reply[0]));
         assert_eq!(reply[0] & 0xFF_FFFF, detail, "{what}");
-        assert_eq!(r.vol.borrow().files[&b"/fat/PKG/INDEX.AZX"[..]], kept, "{what}: the stored index is untouched");
+        assert_eq!(r.vol.borrow().files[&slot_path(&author())[..]], kept, "{what}: the stored index is untouched");
         assert_eq!(r.service().outdated(0, 1)[0], status(step::NO_REPORT, 0), "{what}: no report from a refused index");
         assert_eq!(journal_tail(&r, 1)[0].1, Verdict::Refuse as u8, "{what}");
     }
@@ -136,7 +136,7 @@ fn an_index_that_does_not_arrive_is_a_fetch_status_that_records_nothing() {
     r.vol.borrow_mut().files.remove(&b"/fat/PKG/SOURCE.CFG"[..]);
     assert_eq!(r.service_with(Fake::repository(&[])).refresh(), [status(step::FETCH, FetchErr::NoSource.code()), 0, 0, 0]);
     assert_eq!(r.vol.borrow().journal().len(), before);
-    assert!(r.vol.borrow().files.get(&b"/fat/PKG/INDEX.AZX"[..]).is_none());
+    assert!(r.vol.borrow().files.get(&slot_path(&author())[..]).is_none());
 }
 
 #[test]
@@ -153,20 +153,25 @@ fn upgrade_installs_the_newer_version_in_place_of_the_staged_one() {
     assert_eq!(reply[0], 0, "{}", step_name(reply[0]));
     assert_eq!(reply[1], azos_pkg::receipt::id_prefix(&new_id));
 
+    // The new version is staged beside the old one, and the pair is recorded in
+    // the same transaction: the boot leaves the old one out while the new is on
+    // trial, drops it on confirmation, applies it again on a rollback.
     let staged = r.vol.borrow().staged();
-    assert_eq!(staged.len(), 1, "{staged:?}: one version staged");
-    assert_eq!(r.vol.borrow().files[staged[0].as_bytes()], offered);
-    assert_eq!(r.service().installed(0), id_words(&new_id));
-    assert_eq!(r.service().installed(1), [0; 4]);
-    // The receipt: the new version admitted, the old one taken away.
+    assert_eq!(staged.len(), 2, "{staged:?}");
+    let files: Vec<Vec<u8>> = staged.iter().map(|p| r.vol.borrow().files[p.as_bytes()].clone()).collect();
+    assert!(files.contains(&old) && files.contains(&offered), "both versions are staged");
+    let sup = r.vol.borrow().files[&b"/fat/PKG/SUPERSEDE.REQ"[..]].clone();
+    assert_eq!(sup, [old_id, new_id].concat());
+    // The receipt: the new version admitted; the old one is taken away by the boot, with its own record.
     let j = r.vol.borrow().journal();
-    let tail: Vec<_> = j[j.len() - 2..].iter().map(|p| (p.verdict, p.image_hash_prefix)).collect();
+    let last = j.last().unwrap();
     let id8 = azos_pkg::receipt::id_prefix;
-    assert_eq!(tail, [(Verdict::Admit as u8, id8(&new_id)), (Verdict::Deny as u8, id8(&old_id))]);
+    assert_eq!((last.verdict, last.image_hash_prefix), (Verdict::Admit as u8, id8(&new_id)));
+    assert!(j.iter().all(|p| p.verdict != Verdict::Deny as u8), "nothing is removed by the installer");
     // And the report knows: nothing left to do.
     assert_eq!(row_facts(&mut r, 0), [status(step::ROW, standing::CURRENT | standing::FLOOR_MET | ALL), v("1.3.0"), v("1.3.0"), v("1.2.0")]);
     let again = r.service_with(repo(7, &offered, Some("1.2.0"), &author())).upgrade(name_words(NAME.as_bytes()).unwrap());
-    assert_eq!((step_of(again[0]), again[0] & 0xFF_FFFF), (23, 5), "{}", step_name(again[0]));
+    assert_eq!((step_of(again[0]), again[0] & 0xFF_FFFF), (23, 12), "the upgrade is not confirmed yet: {}", step_name(again[0]));
 }
 
 /// **Canary** `pkg-floor-canary` (the floor row); the others are refusals the
@@ -247,4 +252,72 @@ fn an_upgrade_the_journal_cannot_record_is_undone() {
     assert_eq!(step_of(reply[0]), step::IO as usize);
     assert_eq!(r.vol.borrow().staged(), before);
     assert_eq!(r.vol.borrow().files[before[0].as_bytes()], old, "the package that was staged is still the one staged");
+}
+
+/// One slot and one serial per signer: another signer's index neither replaces
+/// this signer's floors nor uses up its serial.
+///
+/// **Canary (manual):** make `slot_path` in the service ignore the key id; the
+/// first assertion after the second refresh goes red.
+#[test]
+fn each_signer_keeps_its_own_index_and_its_own_serial() {
+    let mut r = rig_with("1.0.0");
+    let offered = pkg("1.3.0");
+    assert_eq!(r.service_with(repo(7, &offered, Some("1.2.0"), &author())).refresh()[..2], [0, 7]);
+    let a_slot = r.vol.borrow().files[&slot_path(&author())[..]].clone();
+
+    // Another signer publishes the highest serial there is, for a package of its own.
+    let mut s = Spec::acme();
+    s.name = "other-pkg".into();
+    s.version = "1.0.0".into();
+    let theirs = build(&s, &other());
+    let body = index_body(u32::MAX, &[Offer::of(&theirs, "OTHER.PKG", None)]);
+    let fake = Fake::repository(&[("INDEX.AZX", build_index(&body, &other()))]);
+    assert_eq!(r.service_with(fake).refresh()[..2], [0, u32::MAX as u64]);
+    assert_eq!(r.vol.borrow().files[&slot_path(&author())[..]], a_slot, "the first signer's slot is untouched");
+    assert!(r.vol.borrow().files.contains_key(&slot_path(&other())[..]), "the second has its own");
+    assert_ne!(slot_path(&author()), slot_path(&other()));
+
+    // The first signer's next index is not stale because of the second's serial.
+    assert_eq!(r.service_with(repo(8, &offered, Some("1.2.0"), &author())).refresh()[..2], [0, 8]);
+    // And a lower one from the first signer still is.
+    let reply = r.service_with(repo(5, &offered, Some("1.2.0"), &author())).refresh();
+    assert_eq!((step_of(reply[0]), reply[0] & 0xFF_FFFF), (22, 16), "{}", step_name(reply[0]));
+}
+
+/// The same serial is the same index: a body that differs at a serial the signer
+/// already published is refused; the same body again is not.
+#[test]
+fn an_index_that_differs_at_the_same_serial_is_refused() {
+    let mut r = rig_with("1.0.0");
+    let offered = pkg("1.3.0");
+    assert_eq!(r.service_with(repo(7, &offered, Some("1.2.0"), &author())).refresh()[0], 0);
+    assert_eq!(r.service_with(repo(7, &offered, Some("1.2.0"), &author())).refresh()[0], 0, "the same index again");
+    let kept = r.vol.borrow().files[&slot_path(&author())[..]].clone();
+    let reply = r.service_with(repo(7, &offered, Some("1.1.0"), &author())).refresh();
+    assert_eq!((step_of(reply[0]), reply[0] & 0xFF_FFFF), (22, 17), "{}", step_name(reply[0]));
+    assert_eq!(r.vol.borrow().files[&slot_path(&author())[..]], kept);
+}
+
+/// The stored index is read whole whatever its size (up to the Kconfig bound),
+/// so the stale check is never skipped for a large one.
+#[test]
+fn a_full_size_index_is_stored_and_still_guards_the_serial() {
+    let mut r = rig_with("1.0.0");
+    let offers = |serial: u32| {
+        let o: Vec<Offer> = (0..azos_pkg::index::MAX_ENTRIES)
+            .map(|i| Offer { name: format!("p{i:04}-{}", "x".repeat(20)), version: "1.0.0".into(), sec_floor: Some("0.9.0".into()), id: [i as u8; 32], file: "F".repeat(30) })
+            .collect();
+        Fake::repository(&[("INDEX.AZX", build_index(&index_body(serial, &o), &author()))])
+    };
+    assert_eq!(r.service_with(offers(9)).refresh()[..2], [0, 9]);
+    let before = r.vol.borrow().files[&slot_path(&author())[..]].clone();
+    assert!(before.len() > 8000, "a large index: {}", before.len());
+    let reply = r.service_with(offers(8)).refresh();
+    assert_eq!((step_of(reply[0]), reply[0] & 0xFF_FFFF), (22, 16), "{}", step_name(reply[0]));
+    // A write that fails puts the old one back, it does not remove it.
+    r.vol.borrow_mut().fail_append = true;
+    let reply = r.service_with(offers(10)).refresh();
+    assert_eq!(step_of(reply[0]), step::IO as usize);
+    assert_eq!(r.vol.borrow().files[&slot_path(&author())[..]], before, "restored, not removed");
 }

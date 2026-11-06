@@ -25,6 +25,9 @@ service = ["dep:azos_pkg", "dep:azos_topology", "dep:azos_decision", "dep:azos_l
 # Canaries of the whole-system update, which this crate includes from the OTA
 # crate's sources (see `update`): the same names, the same effect. The host suite
 # of the update is `tests/host/ota-tests`; never in a shipped build.
+# The installer removes the old version at an upgrade, instead of leaving it staged beside
+# the new one until the boot confirms it (the host suite of the apply uses the same name).
+pkg-supersede-canary = []
 update-canary-sig = []
 update-canary-epoch = []
 update-canary-hash = []

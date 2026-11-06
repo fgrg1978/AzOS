@@ -202,7 +202,7 @@ fn the_index_is_fetched_over_tftp_from_the_directory_of_the_named_file() {
     let reply = r.service_with(TftpRemote::new()).refresh();
     server.thread.join().unwrap();
     assert_eq!(reply, [0, 3, 0, 1], "{}", step_name(reply[0]));
-    assert!(r.vol.borrow().files.contains_key(&b"/fat/PKG/INDEX.AZX"[..]));
+    assert!(r.vol.borrow().files.contains_key(&slot_path(&author())[..]));
 }
 
 /// **The gate is the signature, not the wire.** One bit of the signature

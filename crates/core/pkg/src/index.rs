@@ -184,6 +184,11 @@ pub enum IndexWhy {
     BodyFormat,
     /// The serial is below the one this device has already accepted.
     Stale,
+    /// The serial is the one this device accepted, and the body is another.
+    Diverged,
+    /// The file kept for this key's slot is another signer's (two keys share
+    /// a slot name).
+    SlotTaken,
 }
 
 impl From<AuthError> for IndexWhy {
@@ -414,13 +419,25 @@ impl<'p> Index<'p, '_> {
         found
     }
 
-    /// Is this index no older than the one the device already accepted?
-    /// `stored` is that index's serial, `None` when the device has none.
-    pub fn check_serial(&self, stored: Option<u32>) -> Result<(), IndexWhy> {
-        match stored {
-            Some(s) if self.serial < s => Err(IndexWhy::Stale),
+    /// This index as the mark that records it.
+    pub fn mark(&self) -> Mark {
+        Mark { serial: self.serial, digest: u64::from_be_bytes(self.digest[..8].try_into().unwrap_or([0; 8])) }
+    }
+
+    /// Is this index no older than the one the device already accepted, and
+    /// the same one when the serial is the same? `seen` is the mark of that
+    /// index, `None` when the device has none.
+    pub fn check_against(&self, seen: Option<Mark>) -> Result<(), IndexWhy> {
+        match seen {
+            Some(m) if self.serial < m.serial => Err(IndexWhy::Stale),
+            Some(m) if self.serial == m.serial && self.mark().digest != m.digest => Err(IndexWhy::Diverged),
             _ => Ok(()),
         }
+    }
+
+    /// The key id of the signer it was verified under.
+    pub fn key_id(&self) -> [u8; 32] {
+        self.signer.key_id
     }
 }
 
@@ -540,6 +557,8 @@ pub enum UpgradeWhy {
     Downgrade,
     /// The version offered is below the package's security floor.
     BelowFloor,
+    /// The staged version is itself an upgrade that has not been confirmed yet.
+    Pending,
 }
 
 /// The entry an upgrade would install, given where the package stands: the
@@ -590,4 +609,204 @@ pub fn check_upgrade(
         return Err(UpgradeWhy::BelowFloor);
     }
     Ok(())
+}
+
+// ── One index per signer, and the device's memory of it ──────────────────────
+
+/// The file name, in the staging volume's root, of the index signed by the key
+/// whose id is `key_id`: `I`, seven hex digits of the id, `.AZX`. One slot per
+/// signer, so one signer's index can neither replace another's nor use up its
+/// serial.
+pub fn slot_name(key_id: &[u8; 32]) -> [u8; 12] {
+    let mut n = *b"I0000000.AZX";
+    for (i, c) in n[1..8].iter_mut().enumerate() {
+        let nib = if i % 2 == 0 { key_id[i / 2] >> 4 } else { key_id[i / 2] & 15 };
+        *c = b"0123456789ABCDEF"[nib as usize];
+    }
+    n
+}
+
+/// Is `name` the file name of an index slot?
+pub fn slot_name_ok(name: &[u8]) -> bool {
+    name.len() == 12
+        && name[0] == b'I'
+        && name[8..] == *b".AZX"
+        && name[1..8].iter().all(|c| c.is_ascii_digit() || (b'A'..=b'F').contains(c))
+}
+
+/// The key a mark is filed under: the first four bytes of the key id.
+pub fn mark_key(key_id: &[u8; 32]) -> u32 {
+    u32::from_be_bytes([key_id[0], key_id[1], key_id[2], key_id[3]])
+}
+
+/// What the device remembers of the newest index it accepted from a signer:
+/// the serial and the first eight bytes of the body's SHA-256.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Mark {
+    /// The index's serial.
+    pub serial: u32,
+    /// The first eight bytes of the body's digest.
+    pub digest: u64,
+}
+
+/// Where marks are kept. The kernel keeps them where no writer of the staging
+/// volume reaches (the reserved tail, like the topology counter floor); a store
+/// that cannot be written says so, and the apply then has only the volume.
+pub trait Marks {
+    /// The mark of signer `key` ([`mark_key`]).
+    fn get(&self, key: u32) -> Option<Mark>;
+    /// Record `mark` for `key` if it is higher than the one held (by serial).
+    /// `false` when it could not be made durable.
+    fn raise(&self, key: u32, mark: Mark) -> bool;
+}
+
+/// A store that remembers nothing and records nothing: a device whose medium
+/// has no records store.
+pub struct NoMarks;
+
+impl Marks for NoMarks {
+    fn get(&self, _key: u32) -> Option<Mark> {
+        None
+    }
+    fn raise(&self, _key: u32, _mark: Mark) -> bool {
+        false
+    }
+}
+
+/// Most signers a [`MarkTable`] holds.
+pub const MARKS_MAX: usize = 16;
+const MARKS_MAGIC: [u8; 4] = *b"KPIX";
+const MARKS_VERSION: u8 = 1;
+const MARK_LEN: usize = 16;
+/// Bytes of an encoded table.
+pub const MARKS_LEN: usize = 6 + MARKS_MAX * MARK_LEN + 4;
+
+/// The marks as they go on the medium.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MarkTable {
+    entries: [(u32, Mark); MARKS_MAX],
+    n: usize,
+}
+
+impl MarkTable {
+    /// No marks.
+    pub const fn new() -> Self {
+        Self { entries: [(0, Mark { serial: 0, digest: 0 }); MARKS_MAX], n: 0 }
+    }
+
+    /// The mark of `key`.
+    pub fn get(&self, key: u32) -> Option<Mark> {
+        self.entries[..self.n].iter().find(|(k, _)| *k == key).map(|(_, m)| *m)
+    }
+
+    /// Hold `mark` for `key` if it is newer than the one held; `false` when
+    /// nothing changed (not newer, or the table is full).
+    pub fn raise(&mut self, key: u32, mark: Mark) -> bool {
+        if let Some(e) = self.entries[..self.n].iter_mut().find(|(k, _)| *k == key) {
+            if mark.serial <= e.1.serial {
+                return false;
+            }
+            e.1 = mark;
+            return true;
+        }
+        if self.n == MARKS_MAX {
+            return false;
+        }
+        self.entries[self.n] = (key, mark);
+        self.n += 1;
+        true
+    }
+
+    /// The table as one record: magic, version, count, the marks, and the first
+    /// four bytes of the SHA-256 of all of it.
+    pub fn encode(&self) -> [u8; MARKS_LEN] {
+        let mut out = [0u8; MARKS_LEN];
+        out[..4].copy_from_slice(&MARKS_MAGIC);
+        out[4] = MARKS_VERSION;
+        out[5] = self.n as u8;
+        for (i, (k, m)) in self.entries[..self.n].iter().enumerate() {
+            let at = 6 + i * MARK_LEN;
+            out[at..at + 4].copy_from_slice(&k.to_le_bytes());
+            out[at + 4..at + 8].copy_from_slice(&m.serial.to_le_bytes());
+            out[at + 8..at + 16].copy_from_slice(&m.digest.to_le_bytes());
+        }
+        let body = MARKS_LEN - 4;
+        let tag = sha256(&out[..body]);
+        out[body..].copy_from_slice(&tag[..4]);
+        out
+    }
+
+    /// A table from a sector: `None` for anything that is not a valid record (a
+    /// blank sector included), which reads as no marks.
+    pub fn decode(sector: &[u8]) -> Option<Self> {
+        let body = MARKS_LEN - 4;
+        if sector.len() < MARKS_LEN || sector[..4] != MARKS_MAGIC || sector[4] != MARKS_VERSION {
+            return None;
+        }
+        if sector[body..MARKS_LEN] != sha256(&sector[..body])[..4] {
+            return None;
+        }
+        let n = sector[5] as usize;
+        if n > MARKS_MAX {
+            return None;
+        }
+        let mut t = Self::new();
+        for i in 0..n {
+            let at = 6 + i * MARK_LEN;
+            let k = u32::from_le_bytes(sector[at..at + 4].try_into().ok()?);
+            let serial = u32::from_le_bytes(sector[at + 4..at + 8].try_into().ok()?);
+            let digest = u64::from_le_bytes(sector[at + 8..at + 16].try_into().ok()?);
+            t.entries[i] = (k, Mark { serial, digest });
+        }
+        t.n = n;
+        Some(t)
+    }
+}
+
+impl Default for MarkTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What a signer's floors are, as far as the device can tell.
+#[derive(Clone, Copy, Debug)]
+pub enum Floors<'p, 'a> {
+    /// The signer's newest index, at or above everything the device has seen
+    /// from it.
+    Known(Index<'p, 'a>),
+    /// The device has seen an index from this signer and cannot show one at or
+    /// above it (the file was deleted, replaced by an older signed one, or
+    /// differs at the same serial): the floors are unknown, and a floor that is
+    /// unknown is not met.
+    Unknown,
+    /// The device has never seen an index from this signer: no floors.
+    None,
+}
+
+/// The floors of signer `signer_index` of `topo`, from the bytes of its slot
+/// (`None` when the file is not there) and the mark the device holds for it.
+/// The second part is the mark to record when the index is newer than the one
+/// remembered.
+///
+/// **Canary** `pkg-mark-canary`: the device remembers nothing, so a replayed or
+/// deleted index passes as the first one.
+pub fn judge<'p, 'a>(
+    bytes: Option<&'p [u8]>,
+    topo: &Topology<'a>,
+    signer_index: usize,
+    seen: Option<Mark>,
+) -> (Floors<'p, 'a>, Option<Mark>) {
+    let seen = if cfg!(feature = "pkg-mark-canary") { None } else { seen };
+    let ix = bytes
+        .and_then(|b| verify(b, topo).ok())
+        .filter(|ix| ix.signer_index == signer_index && ix.check_against(seen).is_ok());
+    match (ix, seen) {
+        (Some(ix), seen) => {
+            let raise = seen.is_none_or(|m| ix.serial > m.serial).then(|| ix.mark());
+            (Floors::Known(ix), raise)
+        }
+        (None, Some(_)) => (Floors::Unknown, None),
+        (None, None) => (Floors::None, None),
+    }
 }

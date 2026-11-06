@@ -81,7 +81,7 @@ use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use super::engine::{BlockDev, DirEntry, Error, Kind, SnapView, Volume};
 use azos_pkg::apply::{
     encode_table, requested, staged_name, trial_next, BootWhy, Next, SnapRec, SnapState, Table, APPS_DIR,
-    DELETE_REQUESTS, INDEX, JOURNAL, SNAPSHOT_LABEL, SNAP_MAX, TABLE, TABLE_MAX,
+    supersede_iter, DELETE_REQUESTS, JOURNAL, SNAPSHOT_LABEL, SNAP_MAX, SUPERSEDE, SUPERSEDE_REC, TABLE, TABLE_MAX,
 };
 use azos_pkg::index::{self, assess, Installed};
 use azos_pkg::container::{HEADER_LEN, KEY_LEN_MAX, SIG_LEN_MAX};
@@ -115,10 +115,13 @@ pub struct Boot<'d> {
     pub prior_unconfirmed: u32,
     /// `BootValidation::max_attempts`.
     pub max_attempts: u32,
-    /// Kconfig `PKG_SEC_FLOOR_ENFORCE`: read the stored repository index and
-    /// mark the programs of a package below its security floor
+    /// Kconfig `PKG_SEC_FLOOR_ENFORCE`: read each signer's stored repository
+    /// index and mark the programs of a package below its security floor
     /// ([`AppliedImage::below_floor`]).
     pub sec_floor_enforce: bool,
+    /// What the device remembers of each signer's newest index, where the
+    /// volume's writers do not reach.
+    pub marks: &'d dyn index::Marks,
 }
 
 /// What an apply left in the candidate topology.
@@ -140,24 +143,194 @@ pub struct Applied {
     pub images: Vec<AppliedImage>,
 }
 
-/// The bytes of the stored repository index, if the policy asks for floors.
-/// An index that is missing or unreadable names no floor (and one that does
-/// not verify against the signed topology is dropped by the caller): the floors
-/// are an addition to the signed topology, never a way to lose a package.
-fn stored_index<D: BlockDev>(vol: &mut Volume<D>, enforce: bool) -> Option<Vec<u8>> {
-    if !enforce {
-        return None;
-    }
-    let root = vol.root();
-    let e = find(vol, root, INDEX).ok()??;
-    read_file(vol, e.ino, index::FILE_MAX, true).ok()
+/// What the apply knows of one signer's floors.
+enum SignerFloors {
+    /// The bytes of the signer's index, verified against the signed topology
+    /// and at or above the mark the device holds for it.
+    Known(Vec<u8>),
+    /// The device has seen an index from this signer and finds none at or above
+    /// it: the floors are unknown, and an unknown floor is not met.
+    Unknown,
+    /// No index from this signer was ever seen: no floors.
+    Nothing,
 }
 
-/// Is the verified package `v` below the floor `ix` names for it?
-fn below_floor(ix: &Option<index::Index<'_, 'static>>, v: &azos_pkg::Verified<'_, '_>) -> bool {
-    ix.as_ref().is_some_and(|ix| {
-        assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: v.signer_index, id: v.id }, ix).below_floor()
+/// Is the verified package `v` below its security floor? Reads the slot of
+/// `v`'s signer once per apply, judges it against the mark the device holds
+/// (`azos_pkg::index::judge`: an older, deleted or diverging index leaves the
+/// floors unknown), records a newer one's mark, and assesses the package against
+/// it. `false` when the policy does not ask for floors.
+fn below_floor<D: BlockDev>(
+    vol: &mut Volume<D>,
+    topo: &Topology<'static>,
+    boot: &Boot<'_>,
+    sink: &mut dyn Sink,
+    cache: &mut Vec<(usize, SignerFloors)>,
+    v: &azos_pkg::Verified<'_, '_>,
+) -> bool {
+    if !boot.sec_floor_enforce {
+        return false;
+    }
+    let signer = v.signer_index;
+    if !cache.iter().any(|(s, _)| *s == signer) {
+        let key_id = v.signer.key_id;
+        let key = index::mark_key(&key_id);
+        let root = vol.root();
+        let bytes = find(vol, root, &index::slot_name(&key_id))
+            .ok()
+            .flatten()
+            .and_then(|e| read_file(vol, e.ino, index::FILE_MAX, true).ok());
+        let (floors, raise) = index::judge(bytes.as_deref(), topo, signer, boot.marks.get(key));
+        let state = match floors {
+            index::Floors::Known(_) => SignerFloors::Known(bytes.unwrap_or_default()),
+            index::Floors::Unknown => {
+                sink.note(format_args!(
+                    "[PKG] signer {}: no repository index at or above the one the device recorded; its packages count as below their security floors",
+                    signer + 1
+                ));
+                let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer as u32 + 1, [0, 0, 0]);
+                p.clock_ns = boot.now_ns;
+                sink.record(&p);
+                SignerFloors::Unknown
+            }
+            index::Floors::None => SignerFloors::Nothing,
+        };
+        if let (Some(m), SignerFloors::Known(b)) = (raise, &state) {
+            if boot.marks.raise(key, m) {
+                if let Ok(ix) = index::verify(b, topo) {
+                    sink.record(&receipt::index_accepted(&ix, boot.now_ns));
+                }
+            } else {
+                sink.note(format_args!("[PKG] signer {}: the index mark could not be recorded; the volume alone holds the floors", signer + 1));
+            }
+        }
+        cache.push((signer, state));
+    }
+    match cache.iter().find(|(s, _)| *s == signer).map(|(_, f)| f) {
+        Some(SignerFloors::Known(b)) => index::verify(b, topo).ok().is_some_and(|ix| {
+            assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: signer, id: v.id }, &ix).below_floor()
+        }),
+        Some(SignerFloors::Unknown) => true,
+        _ => false,
+    }
+}
+
+/// A staged package as the supersede logic sees it: read from its head only.
+struct Staged {
+    /// Its file name in the staging directory.
+    name: Vec<u8>,
+    id: [u8; 32],
+    /// Images it carries (the rows a removal accounts for).
+    images: u32,
+    /// It verifies, and either its programs are in `APPS/` already or nothing
+    /// holds it back from being applied this boot.
+    active: bool,
+    /// It verifies and its programs are in `APPS/`.
+    applied: bool,
+}
+
+/// Do the programs in `APPS/` hash to what the package's signed metadata says?
+fn holds_signed_images<D: BlockDev>(vol: &mut Volume<D>, apps: Option<u64>, meta: &azos_pkg::Meta<'_>) -> bool {
+    let Some(apps) = apps else { return false };
+    meta.images().iter().all(|im| match find(vol, apps, im.name.as_bytes()) {
+        Ok(Some(e)) => read_file(vol, e.ino, im.size as usize, true).is_ok_and(|have| azos_crypto::sha256::sha256(&have) == im.sha256),
+        _ => false,
     })
+}
+
+fn staged_heads<D: BlockDev>(
+    vol: &mut Volume<D>,
+    root: u64,
+    apps: Option<u64>,
+    names: &[Vec<u8>],
+    topo: &Topology<'static>,
+    waiting: bool,
+) -> Vec<Staged> {
+    let mut out = Vec::new();
+    for name in names {
+        let Ok(Some(e)) = find(vol, root, name) else { continue };
+        let Ok(head) = read_file(vol, e.ino, HEAD_MAX, false) else { continue };
+        let Ok(pk) = Package::parse_head(&head) else { continue };
+        let id = pk.id();
+        let (images, ok, applied) = match azos_pkg::verify_head(pk, topo) {
+            Ok(v) => (v.meta.images().len() as u32, true, holds_signed_images(vol, apps, &v.meta)),
+            Err(_) => (azos_pkg::Meta::parse(pk.meta).map_or(0, |m| m.images().len() as u32), false, false),
+        };
+        out.push(Staged { name: name.clone(), id, images, active: ok && (applied || !waiting), applied: ok && applied });
+    }
+    out
+}
+
+/// The upgrades the installer recorded and the boot has not settled yet.
+fn read_supersede<D: BlockDev>(vol: &mut Volume<D>, root: u64) -> Vec<([u8; 32], [u8; 32])> {
+    match find(vol, root, SUPERSEDE) {
+        Ok(Some(e)) => read_file(vol, e.ino, 64 * SUPERSEDE_REC, true).map(|b| supersede_iter(&b).collect()).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Settle the upgrades whose new version is no longer on trial. The new
+/// version applied and confirmed: the old one's staged file goes (a `Deny`
+/// record, with the old package's own image count), and so does the pair. The
+/// new version gone (rolled back and quarantined, or removed): only the pair
+/// goes, and the old version, still staged, is applied again. Returns the pairs
+/// that stand and the names of the staged files removed.
+fn settle_supersede<D: BlockDev>(
+    vol: &mut Volume<D>,
+    root: u64,
+    sup: Vec<([u8; 32], [u8; 32])>,
+    staged: &[Staged],
+    on_trial: &[[u8; 32]],
+    boot: &Boot<'_>,
+    sink: &mut dyn Sink,
+) -> (Vec<([u8; 32], [u8; 32])>, Vec<Vec<u8>>) {
+    let mut keep = Vec::new();
+    let mut gone: Vec<&Staged> = Vec::new();
+    for &(old, new) in &sup {
+        match staged.iter().find(|s| s.id == new) {
+            None => {}
+            Some(n) if n.applied && !on_trial.contains(&new) => gone.extend(staged.iter().find(|s| s.id == old)),
+            Some(_) => keep.push((old, new)),
+        }
+    }
+    if keep.len() == sup.len() {
+        return (sup, Vec::new());
+    }
+    let records: Vec<ProvenanceRecord> = gone
+        .iter()
+        .map(|s| {
+            let mut p = ProvenanceRecord::new(Rule::PackageInstall as u8, Verdict::Deny as u8, s.images, [s.images as u64, 0, 0]);
+            p.image_hash_prefix = receipt::id_prefix(&s.id);
+            p.clock_ns = boot.now_ns;
+            p
+        })
+        .collect();
+    let body: Vec<u8> = keep.iter().flat_map(|(o, n)| o.iter().chain(n.iter()).copied()).collect();
+    let r = grouped(vol, |v| {
+        for s in &gone {
+            remove(v, root, &s.name)?;
+        }
+        for p in &records {
+            journal(v, p)?;
+        }
+        if body.is_empty() {
+            remove(v, root, SUPERSEDE)
+        } else {
+            put(v, root, SUPERSEDE, &body)
+        }
+    });
+    match r {
+        Ok(()) => {
+            for p in &records {
+                sink.record(p);
+            }
+            (keep, gone.iter().map(|s| s.name.clone()).collect())
+        }
+        Err(e) => {
+            sink.note(format_args!("[PKG] settling the upgrades failed ({:?}): they stand as they were", e));
+            (sup, Vec::new())
+        }
+    }
 }
 
 /// One program of an applied package.
@@ -650,8 +823,28 @@ pub fn apply<D: BlockDev>(
             return out;
         }
     };
-    let index_bytes = stored_index(vol, boot.sec_floor_enforce);
-    let ix = index_bytes.as_deref().and_then(|b| index::verify(b, topo).ok());
+    // 3a. Upgrades in flight (`SUPERSEDE.REQ`): an old version whose new one is
+    // staged and not held back is left out of the candidate; one whose new
+    // version has confirmed is removed; one whose new version is gone (rolled
+    // back) is applied as before.
+    let (names, parked) = if cfg!(feature = "pkg-supersede-canary") {
+        (names, Vec::new())
+    } else {
+        let sup = read_supersede(vol, root);
+        if sup.is_empty() {
+            (names, Vec::new())
+        } else {
+            let heads = staged_heads(vol, root, apps, &names, topo, waiting);
+            let (sup, removed) = settle_supersede(vol, root, sup, &heads, &st.ids, boot, sink);
+            let parked: Vec<[u8; 32]> = sup
+                .iter()
+                .filter(|(_, n)| heads.iter().any(|s| s.id == *n && s.active))
+                .map(|(o, _)| *o)
+                .collect();
+            (names.into_iter().filter(|n| !removed.contains(n)).collect(), parked)
+        }
+    };
+    let mut floors: Vec<(usize, SignerFloors)> = Vec::new();
     let mut fresh: Vec<Vec<u8>> = Vec::new();
     let mut kept_images: Vec<Vec<u8>> = Vec::new();
     for name in &names {
@@ -662,6 +855,10 @@ pub fn apply<D: BlockDev>(
         };
         let Ok(pkg) = Package::parse(&bytes) else { continue };
         let id = pkg.id();
+        if parked.contains(&id) {
+            sink.note(format_args!("[PKG] {} is superseded by a version on trial: left out until it is confirmed", core::str::from_utf8(name).unwrap_or("?")));
+            continue;
+        }
         let v = match verify(&bytes, topo) {
             Ok(v) => v,
             Err(r) => {
@@ -682,7 +879,7 @@ pub fn apply<D: BlockDev>(
             Ok(a) => {
                 sink.record(&receipt::admitted(&v, &a, boot.now_ns));
                 out.packages += 1;
-                let low = below_floor(&ix, &v);
+                let low = below_floor(vol, topo, boot, sink, &mut floors, &v);
                 if low {
                     sink.note(format_args!("[PKG] {} {} is below its security floor: its programs are not launched", v.meta.name, v.meta.version));
                 }
@@ -764,7 +961,7 @@ pub fn apply<D: BlockDev>(
                             }
                             out.packages += admitted.len();
                             for (pv, _) in &admitted {
-                                let low = below_floor(&ix, pv);
+                                let low = below_floor(vol, topo, boot, sink, &mut floors, pv);
                                 if low {
                                     sink.note(format_args!("[PKG] {} {} is below its security floor: its programs are not launched", pv.meta.name, pv.meta.version));
                                 }

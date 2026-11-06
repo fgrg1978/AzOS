@@ -51,6 +51,45 @@ pub const JOURNAL: &[u8] = b"JOURNAL.BIN";
 /// ([`crate::index`]): the installer writes it, the kernel reads it (and
 /// verifies it again) for the security floors.
 pub const INDEX: &[u8] = b"INDEX.AZX";
+/// Upgrades in flight: the installer stages the new version beside the old and
+/// records the pair here ([`SUPERSEDE_REC`]-byte records, old id then new id).
+/// The kernel leaves the old version out of the topology while the new one is
+/// on trial, removes it when the trial is confirmed, and applies it again when
+/// the trial is rolled back. The installer writes the file in the same
+/// transaction as the new version's file and its journal record.
+pub const SUPERSEDE: &[u8] = b"SUPERSEDE.REQ";
+/// Bytes of one supersede record: the old package's id and the new one's.
+pub const SUPERSEDE_REC: usize = 64;
+
+/// The (old, new) pairs of a supersede file; a partial record is ignored.
+pub fn supersede_iter(bytes: &[u8]) -> impl Iterator<Item = ([u8; 32], [u8; 32])> + '_ {
+    bytes.chunks_exact(SUPERSEDE_REC).map(|r| {
+        let (mut o, mut n) = ([0u8; 32], [0u8; 32]);
+        o.copy_from_slice(&r[..32]);
+        n.copy_from_slice(&r[32..]);
+        (o, n)
+    })
+}
+
+/// Add the pair `old -> new` to the supersede file in `buf[..len]` (replacing a
+/// pair with the same `old`); the new length, or `None` when `buf` is full.
+pub fn supersede_push(buf: &mut [u8], len: usize, old: &[u8; 32], new: &[u8; 32]) -> Option<usize> {
+    let len = len - len % SUPERSEDE_REC;
+    for at in (0..len).step_by(SUPERSEDE_REC) {
+        if buf[at..at + 32] == *old {
+            buf[at + 32..at + SUPERSEDE_REC].copy_from_slice(new);
+            return Some(len);
+        }
+    }
+    let end = len + SUPERSEDE_REC;
+    if end > buf.len() {
+        return None;
+    }
+    buf[len..len + 32].copy_from_slice(old);
+    buf[len + 32..end].copy_from_slice(new);
+    Some(end)
+}
+
 /// The snapshot table the kernel keeps ([`Table`]).
 pub const TABLE: &[u8] = b"APPLY.TBL";
 /// Snapshot deletions the installer asks for: 8-byte little-endian ids.

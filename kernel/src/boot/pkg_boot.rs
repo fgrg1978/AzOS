@@ -99,15 +99,60 @@ pub(super) struct Staged {
     floor: u32,
 }
 
+/// The marks of the repository indexes, in the reserved tail like the topology
+/// counter floor: where the writers of the staging volume do not reach. Read
+/// once when the apply begins; a raise writes the sector and flushes.
+struct TailMarks {
+    table: core::cell::RefCell<azos_pkg::index::MarkTable>,
+}
+
+impl TailMarks {
+    fn load() -> Self {
+        let mut table = azos_pkg::index::MarkTable::new();
+        if super::config_auth::tail_writable() {
+            let mut sector = [0u8; 512];
+            if crate::reserved_tail::read(azos_limits::PKG_INDEX_MARK_SECTOR as u32, &mut sector).is_ok() {
+                table = azos_pkg::index::MarkTable::decode(&sector).unwrap_or_default();
+            }
+        }
+        Self { table: core::cell::RefCell::new(table) }
+    }
+}
+
+impl azos_pkg::index::Marks for TailMarks {
+    fn get(&self, key: u32) -> Option<azos_pkg::index::Mark> {
+        self.table.borrow().get(key)
+    }
+
+    fn raise(&self, key: u32, mark: azos_pkg::index::Mark) -> bool {
+        if !super::config_auth::tail_writable() {
+            return false;
+        }
+        let mut next = *self.table.borrow();
+        if !next.raise(key, mark) {
+            return false;
+        }
+        let rec = next.encode();
+        let wrote = crate::reserved_tail::write(azos_limits::PKG_INDEX_MARK_SECTOR as u32, &rec).is_ok()
+            && azos_drv_block::blkdev::flush().is_ok();
+        if wrote {
+            *self.table.borrow_mut() = next;
+        }
+        wrote
+    }
+}
+
 /// The interface table and the epoch floor, built where the device is judged.
 fn judge<R>(floor: u32, f: impl FnOnce(&Boot<'_>) -> R) -> R {
     let api = azos_pkg::api::device_api();
+    let marks = TailMarks::load();
     let boot = Boot {
         device: Device::this(&api).with_epoch_floor(floor),
         now_ns: clock_ns(),
         prior_unconfirmed: PRIOR_UNCONFIRMED.load(Ordering::Acquire),
         max_attempts: MAX_ATTEMPTS.load(Ordering::Acquire),
         sec_floor_enforce: cfg!(feature = "pkg-sec-floor"),
+        marks: &marks,
     };
     f(&boot)
 }
