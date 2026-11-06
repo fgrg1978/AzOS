@@ -634,8 +634,12 @@ entries a sector, each signer keyed by the first 16 bytes of its key id, a floor
 signer and the package name. A write fills the bank that does NOT hold the newest copy and wins by
 generation when every sector of it verifies against the digest of the whole bank; a bank that fails
 its digest, has a sector that cannot be read, or mixes generations is ignored, never read as zeros,
-and the other bank stands. So no cut and no torn sector of a write loses a mark or a floor (host
-tests cut at every sector boundary and tear every sector). The topology refuses two signers whose
+and the other bank stands (a refusal record, event 5, names the bank). So no cut and no torn sector
+of a write loses a mark or a floor (host tests cut at every sector boundary and tear every sector,
+with the newest copy in either bank). A sector that cannot be READ is not damage: that boot judges
+by what reads and by the volume's indexes, records it (event 4, and event 1 with reason 3 for each
+index it could not remember) and writes nothing, so a newer copy that failed to read is never
+overwritten. A write or flush that fails is recorded the same way (reason 2). The topology refuses two signers whose
 key ids agree on the first 28 bits (the name of the index slot on the volume), so a signer cannot be
 ground to take another's slot or mark. An index put back that is older, one that differs at the same
 serial, and a deleted slot are not used: the floors the device remembered stand, and they stop only
@@ -643,7 +647,9 @@ the packages below them (a `package-index` refusal record and a console line say
 index takes over and replaces them. A signer the device has never seen an index from has no floors.
 If neither bank can be read whole although something was written (media damage), the marks are lost:
 each signer's stored index on the volume is used if it verifies, a refusal record "index marks lost"
-is written every boot until a valid bank is written again, and the next accepted index rebuilds it.
+(event 2) is written, and the indexes accepted in that boot rebuild the memory, at a generation above
+every sector on the medium that still verifies and in the bank with fewer of them, so a stale bank
+that reads again later does not undo it.
 A medium with no usable records store remembers nothing and the slot on the volume alone holds the
 floors; its signature is still verified. `pkg refresh` cannot read the tail, so it can report success
 for an index the next boot judges older than its mark. `tools/sign/device_provision.py

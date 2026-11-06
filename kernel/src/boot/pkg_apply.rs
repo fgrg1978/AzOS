@@ -907,11 +907,24 @@ pub fn apply<D: BlockDev>(
     // out for a failed upgrade.
     let canary_supersede = cfg!(feature = "pkg-supersede-canary");
     let pairs = if canary_supersede { Vec::new() } else { read_supersede(vol, root) };
-    if boot.sec_floor_enforce && boot.marks.lost() {
-        sink.note(format_args!(
-            "[PKG] index marks lost: no copy of the device's memory of the repository indexes can be read; each signer's stored index stands until it is written again"
-        ));
-        sink.record(&receipt::index_event(0, 0, 0, index::MarkEvent::Lost, boot.now_ns));
+    if boot.sec_floor_enforce {
+        let cond = boot.marks.condition();
+        if cond.unreadable {
+            sink.note(format_args!(
+                "[PKG] index marks: a sector of the device's memory of the repository indexes cannot be read; this boot judges by what reads and writes none"
+            ));
+            sink.record(&receipt::index_event(0, 0, 0, index::MarkEvent::Unreadable, boot.now_ns));
+        }
+        if let Some(b) = cond.ignored {
+            sink.note(format_args!("[PKG] index marks: bank {} does not read whole and is ignored; the other one stands", b));
+            sink.record(&receipt::index_event(0, b as u64, 0, index::MarkEvent::BankIgnored, boot.now_ns));
+        }
+        if cond.lost {
+            sink.note(format_args!(
+                "[PKG] index marks lost: no copy of the device's memory of the repository indexes can be read; each signer's stored index stands until it is written again"
+            ));
+            sink.record(&receipt::index_event(0, 0, 0, index::MarkEvent::Lost, boot.now_ns));
+        }
     }
     let heads = if pairs.is_empty() && !boot.sec_floor_enforce { Vec::new() } else { staged_heads(vol, root, &names, topo) };
     let new_verifies = |n: &[u8; 32]| heads.iter().any(|h| h.id == *n && h.verifies);

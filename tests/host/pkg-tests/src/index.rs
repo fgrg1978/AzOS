@@ -451,6 +451,20 @@ mod banks {
         t
     }
 
+    /// The same marks with the newest copy in bank 1: a write of the same table writes
+    /// nothing, so A's floor q moves twice and comes back in a third write.
+    fn populated_newest_in_bank_1() -> RamTail {
+        let t = populated();
+        let s = load(&t);
+        for q in ["2.1", "2.2", "2.0"] {
+            s.accept(&A, Mark { serial: 6, digest: 6 }, &floors(&A, &[("p", "1.5"), ("q", q)])).unwrap();
+        }
+        let mut gens = t.sectors.borrow().iter().map(|s| u32::from_le_bytes([s[5], s[6], s[7], s[8]])).collect::<Vec<_>>();
+        gens.dedup();
+        assert_eq!(gens, [5, 6], "bank 1 holds the newest copy");
+        t
+    }
+
     #[test]
     fn what_is_written_is_what_is_read_back_and_the_banks_alternate() {
         let t = RamTail::new(4);
@@ -481,6 +495,8 @@ mod banks {
             }
             let s = load(&t);
             assert!(!s.lost(), "damage {damage}: one bank is whole");
+            assert_eq!(s.condition().ignored, Some(0), "damage {damage}: and the other is said to be ignored");
+            assert_eq!(s.condition().unreadable, damage == 1);
             // Bank 1 holds the copy before the last write: A at serial 5, B at 3.
             assert_eq!(s.mark(&A).map(|m| m.serial), Some(5), "damage {damage}");
             assert_eq!(s.mark(&B).map(|m| m.serial), Some(3), "damage {damage}");
@@ -504,40 +520,132 @@ mod banks {
     /// **No cut and no torn sector of a write loses a mark or a floor** that was there:
     /// every signer's mark is at or above what it was, and a signer's floors are the old
     /// ones or the new ones, whole. The write goes to the bank that does not hold the
-    /// newest copy.
+    /// newest copy, whichever of the two that is, and leaves that one as it was. Two
+    /// writes: B raised to a newer serial, and B at the same serial keeping its
+    /// remembered floor beside a new one (what a boot that stages a package writes).
     ///
     /// **Canary** `pkg-bank-canary`: the write goes over the newest bank and the cut
     /// leaves the older copy (a lower serial) as the winner.
     #[test]
     fn no_cut_or_torn_sector_of_a_write_loses_a_mark_or_a_floor() {
-        let old_b = (Some(3), vec![Some(v("7.0"))]);
-        let new_b_floors = floors(&B, &[("r", "8.0")]);
+        let old_b = (Some(3), vec![Some(v("7.0")), None]);
+        let writes = [
+            (Mark { serial: 4, digest: 4 }, floors(&B, &[("r", "8.0")]), (Some(4), vec![Some(v("8.0")), None])),
+            (Mark { serial: 3, digest: 3 }, floors(&B, &[("r", "7.0"), ("s", "1.0")]), (Some(3), vec![Some(v("7.0")), Some(v("1.0"))])),
+        ];
         let mut cases = 0;
-        for tear in [None, Some(1), Some(37), Some(100), Some(300), Some(500), Some(511)] {
-            for budget in 0..=2usize {
-                let t = populated();
-                let s = load(&t);
-                let before = view(&s, &A, &["p", "q"]);
-                t.budget.set(Some(budget));
-                t.tear.set(tear);
-                let r = s.accept(&B, Mark { serial: 4, digest: 4 }, &new_b_floors);
-                assert_eq!(r.is_ok(), budget >= 2, "budget {budget}");
-                t.budget.set(None);
-                if r.is_err() {
-                    assert_eq!(view(&s, &B, &["r"]), old_b, "a failed write changes nothing in memory");
+        for (newest, medium) in [(0usize, populated as fn() -> RamTail), (1, populated_newest_in_bank_1)] {
+            for (mark, new_floors, new_b) in &writes {
+                for tear in [None, Some(1), Some(37), Some(100), Some(300), Some(500), Some(511)] {
+                    for budget in 0..=2usize {
+                        let t = medium();
+                        let s = load(&t);
+                        let before = view(&s, &A, &["p", "q"]);
+                        let kept: Vec<[u8; 512]> = t.sectors.borrow()[newest * 2..newest * 2 + 2].to_vec();
+                        t.budget.set(Some(budget));
+                        t.tear.set(tear);
+                        let r = s.accept(&B, *mark, new_floors);
+                        assert_eq!(r.is_ok(), budget >= 2, "budget {budget}");
+                        t.budget.set(None);
+                        let what = format!("newest in bank {newest}, B to {mark:?}, budget {budget} tear {tear:?}");
+                        assert_eq!(t.sectors.borrow()[newest * 2..newest * 2 + 2], kept[..], "{what}: the newest bank is not written");
+                        if r.is_err() {
+                            assert_eq!(view(&s, &B, &["r", "s"]), old_b, "a failed write changes nothing in memory");
+                        }
+                        let after = load(&t);
+                        assert!(!after.lost(), "{what}: the bank that was not written stands");
+                        assert_eq!(view(&after, &A, &["p", "q"]), before, "{what}: A is as it was");
+                        let b = view(&after, &B, &["r", "s"]);
+                        assert!(b == old_b || b == *new_b, "{what}: B is whole old or whole new, got {b:?}");
+                        // And the next write goes through.
+                        after.accept(&B, *mark, new_floors).unwrap();
+                        assert_eq!(view(&load(&t), &B, &["r", "s"]), *new_b);
+                        cases += 1;
+                    }
                 }
-                let after = load(&t);
-                assert!(!after.lost(), "budget {budget} tear {tear:?}: the bank that was not written stands");
-                assert_eq!(view(&after, &A, &["p", "q"]), before, "A is as it was (budget {budget} tear {tear:?})");
-                let b = view(&after, &B, &["r"]);
-                assert!(b == old_b || b == (Some(4), vec![Some(v("8.0"))]), "B is whole old or whole new, got {b:?}");
-                // And the next write goes through.
-                after.accept(&B, Mark { serial: 4, digest: 4 }, &new_b_floors).unwrap();
-                assert_eq!(view(&load(&t), &B, &["r"]), (Some(4), vec![Some(v("8.0"))]));
-                cases += 1;
             }
         }
-        assert_eq!(cases, 21);
+        assert_eq!(cases, 84);
+    }
+
+    /// **A sector that does not read is not damage.** Sectors 0 and 2 (one of each
+    /// bank) do not read: no bank reads whole and the boot judges by nothing, but it
+    /// writes nothing either, so the next boot that reads them has every mark. One
+    /// unreadable sector of the newest bank leaves the older copy to judge by, and
+    /// nothing is written over the newest one.
+    ///
+    /// Canary (by hand): `accept` writing past an unreadable sector turns this red (the
+    /// rebuilt bank 0 replaces the newer marks).
+    #[test]
+    fn a_boot_that_cannot_read_a_sector_writes_nothing() {
+        use azos_pkg::index::MarkErr;
+        for unread in [vec![0usize, 2], vec![0], vec![1]] {
+            let t = populated();
+            let before = t.sectors.borrow().clone();
+            *t.unreadable.borrow_mut() = unread.clone();
+            let s = load(&t);
+            let c = s.condition();
+            assert!(c.unreadable, "{unread:?}");
+            assert_eq!(c.lost, unread.len() == 2, "{unread:?}: lost only when no bank reads");
+            assert_eq!(s.accept(&A, Mark { serial: 7, digest: 7 }, &floors(&A, &[("p", "1.0")])), Err(MarkErr::Unreadable));
+            assert_eq!(s.accept(&B, Mark { serial: 4, digest: 4 }, &[]), Err(MarkErr::Unreadable));
+            assert_eq!(*t.sectors.borrow(), before, "{unread:?}: nothing written");
+            t.unreadable.borrow_mut().clear();
+            let again = load(&t);
+            assert_eq!(again.condition(), Default::default());
+            assert_eq!(view(&again, &A, &["p", "q"]), (Some(6), vec![Some(v("1.5")), Some(v("2.0"))]), "{unread:?}");
+            assert_eq!(again.mark(&B).map(|m| m.serial), Some(3));
+        }
+    }
+
+    /// A bank that was written and does not read whole is said to be ignored, and a
+    /// blank one is not.
+    #[test]
+    fn an_ignored_bank_is_said_to_be() {
+        let t = populated();
+        t.sectors.borrow_mut()[3][40] ^= 1;
+        let c = load(&t).condition();
+        assert_eq!((c.ignored, c.unreadable, c.lost), (Some(1), false, false));
+        let t = RamTail::new(4);
+        load(&t).accept(&A, Mark { serial: 1, digest: 1 }, &[]).unwrap();
+        assert_eq!(load(&t).condition(), Default::default(), "bank 1 is still blank");
+    }
+
+    /// **A rebuild after a loss starts above every generation on the medium** and fills
+    /// the bank with fewer valid sectors: a stale bank that reads again later does not
+    /// undo it. A cut of the rebuild leaves the medium lost, never a lower generation
+    /// that wins.
+    #[test]
+    fn a_rebuild_after_a_loss_outranks_every_bank_that_reads_again() {
+        // populated(): bank 0 holds generation 3, bank 1 generation 2.
+        for (spoiled, spare) in [(vec![1usize, 2], 0usize), (vec![1, 2, 3], 1)] {
+            for cut in [None, Some((0usize, None)), Some((1, Some(200)))] {
+                let t = populated();
+                let good = t.sectors.borrow().clone();
+                for &i in &spoiled {
+                    t.sectors.borrow_mut()[i][100] ^= 1;
+                }
+                let s = load(&t);
+                assert!(s.lost(), "{spoiled:?}");
+                if let Some((budget, tear)) = cut {
+                    t.budget.set(Some(budget));
+                    t.tear.set(tear);
+                    assert!(s.accept(&A, Mark { serial: 2, digest: 2 }, &[]).is_err());
+                    t.budget.set(None);
+                    assert!(load(&t).lost(), "{spoiled:?} {cut:?}: a cut rebuild is no bank");
+                    continue;
+                }
+                s.accept(&A, Mark { serial: 2, digest: 2 }, &[]).unwrap();
+                let gens: Vec<u32> = t.sectors.borrow()[spare * 2..spare * 2 + 2].iter().map(|x| u32::from_le_bytes([x[5], x[6], x[7], x[8]])).collect();
+                assert_eq!(gens, [4, 4], "{spoiled:?}: generation 4 into bank {spare}");
+                // The spoiled sectors of the other bank read again.
+                let other = 1 - spare;
+                t.sectors.borrow_mut()[other * 2..other * 2 + 2].copy_from_slice(&good[other * 2..other * 2 + 2]);
+                let again = load(&t);
+                assert_eq!(view(&again, &A, &["p"]), (Some(2), vec![None]), "{spoiled:?}: the rebuild stands");
+                assert!(again.mark(&B).is_none());
+            }
+        }
     }
 
     /// The first write of all, cut: nothing was there to lose. Nothing landed, and the

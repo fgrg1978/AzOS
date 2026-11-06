@@ -708,6 +708,9 @@ pub enum MarkErr {
     Write,
     /// The medium has no records store: there is nothing to remember in.
     NoStore,
+    /// A sector of the memory could not be read this boot: nothing is
+    /// written over what may be its newest copy.
+    Unreadable,
 }
 
 impl MarkErr {
@@ -717,6 +720,7 @@ impl MarkErr {
         match self {
             MarkErr::Full => Some(1),
             MarkErr::Write => Some(2),
+            MarkErr::Unreadable => Some(3),
             MarkErr::NoStore => None,
         }
     }
@@ -740,13 +744,20 @@ pub enum MarkEvent {
     /// above the one remembered; the remembered floors stand.
     Judged = 0,
     /// Refuse: the index was judged by and not remembered (the first number
-    /// says why, [`MarkErr::recorded`]: 1 the table is full, 2 the write failed).
+    /// says why, [`MarkErr::recorded`]: 1 the table is full, 2 the write
+    /// failed, 3 the memory did not read).
     NotRemembered = 1,
     /// Refuse: the memory was written before and no copy of it reads whole.
     Lost = 2,
     /// Refuse: the index was remembered without its last floors (the first
     /// number), past the signer's quota.
     OverQuota = 3,
+    /// Refuse: a sector of the memory could not be read; nothing is written
+    /// to it this boot.
+    Unreadable = 4,
+    /// Refuse: a bank written before does not read whole (the first number
+    /// says which) and is ignored; the other one stands.
+    BankIgnored = 5,
 }
 
 /// Where the newest accepted index of each signer is remembered, with the floors
@@ -765,11 +776,15 @@ pub trait Marks {
     /// [`name_hash`], from [`floors_to_remember`]) as its floors, in place of
     /// what was remembered for the signer. All or nothing.
     fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<Taken, MarkErr>;
+    /// What the reading of the memory found wrong.
+    fn condition(&self) -> Condition {
+        Condition::default()
+    }
     /// The memory was written before and no copy of it can be read now (media
     /// damage): what it held is gone. Nothing is remembered until the next
     /// [`accept`](Self::accept) writes it again.
     fn lost(&self) -> bool {
-        false
+        self.condition().lost
     }
 }
 
@@ -995,44 +1010,19 @@ impl MarkTable {
     }
 }
 
-/// What the medium holds of the marks.
-#[derive(Clone, Copy, Debug)]
-pub enum Loaded {
-    /// Nothing was ever written (every sector is zero): no marks.
-    Pristine(MarkTable),
-    /// The valid bank of the highest generation.
-    Bank {
-        /// Its table.
-        table: MarkTable,
-        /// Its generation.
-        gen: u32,
-        /// Which of the two banks it is.
-        bank: usize,
-    },
-    /// Something was written and no bank can be read whole now.
-    Lost(MarkTable),
-}
-
-/// Read the marks from `raw[bank][sector]`, the two banks of `sectors` sectors.
-/// A bank that fails its digest, or any sector of it, is ignored (never read as
-/// zeros); the other one stands. Two banks that both fail are [`Loaded::Lost`]
-/// unless every sector is zero, which is a medium nothing was written on.
-pub fn load_banks(raw: &[[[u8; SECTOR]; BANK_SECTORS_MAX]; 2], sectors: usize, quota: usize) -> Loaded {
-    let empty = MarkTable::new(sectors, quota);
-    let sectors = empty.sectors();
-    if raw.iter().all(|b| b[..sectors].iter().all(|s| s.iter().all(|&x| x == 0))) {
-        return Loaded::Pristine(empty);
-    }
-    let a = MarkTable::decode_bank(&raw[0], sectors, quota).map(|(t, g)| (t, g, 0));
-    let b = MarkTable::decode_bank(&raw[1], sectors, quota).map(|(t, g)| (t, g, 1));
-    match (a, b) {
-        (Some(x), Some(y)) => {
-            let (table, gen, bank) = if y.1 > x.1 { y } else { x };
-            Loaded::Bank { table, gen, bank }
-        }
-        (Some((table, gen, bank)), None) | (None, Some((table, gen, bank))) => Loaded::Bank { table, gen, bank },
-        (None, None) => Loaded::Lost(empty),
-    }
+/// What the reading of the marks found besides what it read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Condition {
+    /// A sector could not be read (not the same as one that reads and is
+    /// invalid): the boot judges by what did read, and nothing is written
+    /// to the memory until a boot reads it all.
+    pub unreadable: bool,
+    /// The bank that was written before and does not read whole, ignored
+    /// while the other one stands.
+    pub ignored: Option<usize>,
+    /// The memory was written before and no copy of it reads whole: what it
+    /// held is gone.
+    pub lost: bool,
 }
 
 /// The reserved tail as the marks need it.
@@ -1049,10 +1039,20 @@ pub trait Tail {
 
 struct State {
     table: MarkTable,
+    /// The highest generation on the medium: of the bank that holds `table`, or
+    /// of any sector whose own tag verifies, whichever is higher.
     gen: u32,
     /// The bank that holds `table` on the medium.
     bank: Option<usize>,
-    lost: bool,
+    /// The bank the next write fills.
+    spare: usize,
+    cond: Condition,
+}
+
+/// The generation of a sector whose own header and tag verify, whatever its bank.
+fn sector_gen(s: &[u8; SECTOR]) -> Option<u32> {
+    let ok = s[..4] == MARKS_MAGIC && s[4] == MARKS_VERSION && s[SECTOR - TAG..] == sha256(&s[..SECTOR - TAG])[..TAG];
+    ok.then(|| u32::from_le_bytes([s[5], s[6], s[7], s[8]]))
 }
 
 /// The marks over a [`Tail`]: two banks, written one after the other. The bank
@@ -1066,31 +1066,51 @@ pub struct MarkStore<T: Tail> {
 }
 
 impl<T: Tail> MarkStore<T> {
-    /// Read the marks from `tail`: banks of `sectors` sectors, `quota` floors per signer.
+    /// Read the marks from `tail`: banks of `sectors` sectors, `quota` floors
+    /// per signer. A bank that fails its digest, or any sector of it, is
+    /// ignored (never read as zeros) and the other one stands; two that fail
+    /// are lost unless every sector is zero, which is a medium nothing was
+    /// written on. A sector that cannot be read makes its bank fail, and the
+    /// boot write nothing.
     pub fn load(tail: T, sectors: usize, quota: usize) -> Self {
-        let mut raw = [[[0u8; SECTOR]; BANK_SECTORS_MAX]; 2];
-        let n = MarkTable::new(sectors, quota).sectors();
-        let usable = tail.writable();
-        if usable {
+        let empty = MarkTable::new(sectors, quota);
+        let n = empty.sectors();
+        let mut st = State { table: empty, gen: 0, bank: None, spare: 0, cond: Condition::default() };
+        if tail.writable() {
+            let mut raw = [[[0u8; SECTOR]; BANK_SECTORS_MAX]; 2];
             for (b, bank) in raw.iter_mut().enumerate() {
                 for (i, sec) in bank.iter_mut().enumerate().take(n) {
-                    // A sector that cannot be read is not zero: it makes its bank invalid.
                     if !tail.read(b * n + i, sec) {
+                        st.cond.unreadable = true;
                         *sec = [0xFF; SECTOR];
                     }
                 }
             }
-        }
-        let state = if !usable {
-            State { table: MarkTable::new(sectors, quota), gen: 0, bank: None, lost: false }
-        } else {
-            match load_banks(&raw, sectors, quota) {
-                Loaded::Pristine(table) => State { table, gen: 0, bank: None, lost: false },
-                Loaded::Bank { table, gen, bank } => State { table, gen, bank: Some(bank), lost: false },
-                Loaded::Lost(table) => State { table, gen: 0, bank: None, lost: true },
+            let blank = |b: usize| raw[b][..n].iter().all(|s| s.iter().all(|&x| x == 0));
+            let valid = |b: usize| raw[b][..n].iter().filter(|s| sector_gen(s).is_some()).count();
+            st.gen = raw.iter().flat_map(|b| b[..n].iter().filter_map(sector_gen)).max().unwrap_or(0);
+            let banks = [MarkTable::decode_bank(&raw[0], n, quota), MarkTable::decode_bank(&raw[1], n, quota)];
+            let newest = match banks {
+                [Some(x), Some(y)] => Some(if y.1 > x.1 { (y, 1) } else { (x, 0) }),
+                [Some(x), None] => Some((x, 0)),
+                [None, Some(y)] => Some((y, 1)),
+                [None, None] => None,
+            };
+            match newest {
+                Some(((table, gen), b)) => {
+                    st = State { table, gen: st.gen.max(gen), bank: Some(b), spare: 1 - b, ..st };
+                    if banks[1 - b].is_none() && !blank(1 - b) {
+                        st.cond.ignored = Some(1 - b);
+                    }
+                }
+                None if blank(0) && blank(1) => {}
+                None => {
+                    st.cond.lost = true;
+                    st.spare = usize::from(valid(1) < valid(0));
+                }
             }
-        };
-        Self { tail, sectors: MarkTable::new(sectors, quota).sectors(), state: core::cell::RefCell::new(state) }
+        }
+        Self { tail, sectors: n, state: core::cell::RefCell::new(st) }
     }
 }
 
@@ -1103,8 +1123,8 @@ impl<T: Tail> Marks for MarkStore<T> {
         self.state.borrow().table.floor_of(signer, hash)
     }
 
-    fn lost(&self) -> bool {
-        self.state.borrow().lost
+    fn condition(&self) -> Condition {
+        self.state.borrow().cond
     }
 
     fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<Taken, MarkErr> {
@@ -1114,12 +1134,16 @@ impl<T: Tail> Marks for MarkStore<T> {
         let mut st = self.state.borrow_mut();
         let mut next = st.table;
         let taken = next.accept(signer, mark, floors)?;
-        if next == st.table && !st.lost {
+        if next == st.table && !st.cond.lost {
             return Ok(taken);
+        }
+        // What did not read may be the newest copy: a write now could go over it.
+        if st.cond.unreadable {
+            return Err(MarkErr::Unreadable);
         }
         let gen = st.gen.checked_add(1).ok_or(MarkErr::Write)?;
         // **Canary** `pkg-bank-canary`: over the bank that holds the newest copy.
-        let target = if cfg!(feature = "pkg-bank-canary") { st.bank.unwrap_or(0) } else { st.bank.map_or(0, |b| 1 - b) };
+        let target = if cfg!(feature = "pkg-bank-canary") { st.bank.unwrap_or(st.spare) } else { st.spare };
         let bank = next.encode_bank(gen);
         for (i, sec) in bank.iter().enumerate().take(self.sectors) {
             if !self.tail.write(target * self.sectors + i, sec) {
@@ -1129,7 +1153,7 @@ impl<T: Tail> Marks for MarkStore<T> {
         if !self.tail.flush() {
             return Err(MarkErr::Write);
         }
-        *st = State { table: next, gen, bank: Some(target), lost: false };
+        *st = State { table: next, gen, bank: Some(target), spare: 1 - target, cond: Condition { lost: false, ..st.cond } };
         Ok(taken)
     }
 }

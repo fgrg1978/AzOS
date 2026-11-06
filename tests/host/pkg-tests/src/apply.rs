@@ -1301,6 +1301,49 @@ fn a_failed_write_of_the_marks_is_on_record_and_no_store_is_not() {
     assert_eq!(index_records(&mut v, &azos_pkg::index::NoMarks), []);
 }
 
+/// A boot that cannot read a sector of the memory says so (event 4, and event 5 for
+/// the bank it ignores), judges by what reads and by the volume's index, and writes
+/// nothing: the newer index is remembered by the next boot that reads it all.
+#[test]
+fn a_boot_that_cannot_read_the_marks_says_so_and_writes_none() {
+    use azos_pkg::index::{mark_key, MarkEvent, Marks};
+    let d = signed_device();
+    let key = mark_key(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
+    let tail: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+    let mut v = volume();
+    stage(&mut v, &acme());
+    let boot_with = |v: &mut Volume<MemDev>, marks: &'static MemMarks| {
+        let mut t = topo(d);
+        let mut log = Log::default();
+        let a = apply(v, &mut t, &enforcing_with(marks), &mut log);
+        let recs = log.records.iter().filter(|p| p.rule == Rule::PackageIndex as u8).map(|p| (p.subject, p.verdict, p.n)).collect::<Vec<_>>();
+        (floors_of(&a), recs)
+    };
+    for serial in [5, 6] {
+        put_index(&mut v, &floor_index_at(serial, Some("1.3.0"), &author()));
+        boot_with(&mut v, mem_marks_on(tail, 5));
+    }
+    put_index(&mut v, &floor_index_at(7, Some("1.3.0"), &author()));
+    let before = tail.sectors.borrow().clone();
+    // Bank 1 holds serial 6, bank 0 serial 5: a sector of bank 1 does not read.
+    tail.unreadable.borrow_mut().push(2);
+    let marks = mem_marks_on(tail, 5);
+    let (low, recs) = boot_with(&mut v, marks);
+    assert_eq!(low, [("ACME.ELF".to_string(), true)], "judged by the volume's index");
+    let refuse = Verdict::Refuse as u8;
+    assert_eq!(recs, [
+        (0, refuse, [0, 0, MarkEvent::Unreadable as u64]),
+        (0, refuse, [1, 0, MarkEvent::BankIgnored as u64]),
+        (1, refuse, [3, 7, MarkEvent::NotRemembered as u64]),
+    ]);
+    assert_eq!(*tail.sectors.borrow(), before, "nothing written");
+    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(5), "the older copy is what reads");
+    tail.unreadable.borrow_mut().clear();
+    let marks = mem_marks_on(tail, 5);
+    assert_eq!(boot_with(&mut v, marks).1, [(1, Verdict::Admit as u8, [1, 7, 0])]);
+    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
+}
+
 /// A device that never saw an index has no floors to lose, and the policy off
 /// reads no slot at all.
 #[test]
