@@ -22,6 +22,10 @@ link-provisioning-enforced = []
 # copy of a live cipher state reuses its nonces, so no kernel or ring-3 build
 # enables it.
 fuzz-clone = []
+# Canary of tests/host/crypto-tests' stack-scrub test: `ct::scrub_stack` does
+# nothing, so the key bytes hmac/hkdf leave on the stack survive the call.
+# No kernel or ring-3 build enables it.
+canary-no-stack-scrub = []
 
 [dependencies]
 azos_common = { path = "../common" }

@@ -45,6 +45,8 @@ hyp-smmu-window-canary = []
 hyp-its-window-canary = []
 hyp-rd-open-canary = []
 hyp-its-skip-mapti-canary = []
+# Read by the shared ct.rs (azos_crypto's stack-scrub canary); never set here.
+canary-no-stack-scrub = []
 
 [profile.release]
 panic = "abort"

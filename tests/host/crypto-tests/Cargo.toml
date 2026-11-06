@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side unit tests for azos_crypto. Excluded from workspace. Uses NIST FIPS / RFC test vectors for SHA-256, AES-128, X25519. Ed25519 path tests the current HMAC-SHA256 stub (real ed25519 verify is a known gap — see task #212)."
+description = "Host-side tests for azos_crypto: published known answers (FIPS 180-4, RFC 4231/5869/8439/3686/7748/8032, FIPS 197) for every primitive through its API, the SHA-256 backend paths, Noise, the keystore, the DRBG and the stack scrub after HMAC/HKDF. Excluded from workspace."
 
 # Run with:  cd tests/host/crypto-tests && cargo test
 # Same nightly-build-std workaround as the other *-tests crates —
@@ -12,6 +12,10 @@ description = "Host-side unit tests for azos_crypto. Excluded from workspace. Us
 
 [dependencies]
 azos_crypto = { path = "../../../crates/core/crypto" }
+
+[features]
+# The stack-scrub canary (tests/stack_scrub.rs).
+canary-no-stack-scrub = ["azos_crypto/canary-no-stack-scrub"]
 
 [dev-dependencies]
 # Signing side of the manifest-scheme tests (`sign_manifest` helper in

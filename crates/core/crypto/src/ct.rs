@@ -76,3 +76,29 @@ pub fn secure_zero<T: Copy + Default>(buf: &mut [T]) {
     }
     compiler_fence(Ordering::SeqCst);
 }
+
+/// Bytes [`scrub_stack`] overwrites below its caller's frame: at least the
+/// deepest stack an HMAC or HKDF call reaches under it, on every kernel image
+/// (`hkdf.rs`; measured with tools/lint/stack_chain.py, checked on the host by
+/// tests/host/crypto-tests).
+pub const STACK_SCRUB_BYTES: usize = 2048;
+
+/// Zero the stack just below the caller's frame, where a call that returned
+/// left its locals. The `hmac` and `hkdf` crates wipe nothing they put on the
+/// stack (the padded key `key ^ opad`, a PRK, the T(i) blocks): the entries
+/// in `hkdf.rs` call this after them, so no key byte outlives the call there.
+/// Must not be inlined: its frame has to sit where the callee's was.
+#[inline(never)]
+pub fn scrub_stack() {
+    if cfg!(feature = "canary-no-stack-scrub") {
+        return;
+    }
+    let mut area = core::mem::MaybeUninit::<[u64; STACK_SCRUB_BYTES / 8]>::uninit();
+    let p = area.as_mut_ptr() as *mut u64;
+    for i in 0..STACK_SCRUB_BYTES / 8 {
+        // SAFETY: `p.add(i)` is inside `area`, a live local, for i < len.
+        unsafe { p.add(i).write_volatile(0) };
+    }
+    compiler_fence(Ordering::SeqCst);
+    core::hint::black_box(&area);
+}
