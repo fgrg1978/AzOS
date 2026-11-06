@@ -11,7 +11,9 @@
 //! unmap or the driver's exit ([`release_all`], first in the exit's release
 //! order after the interrupt lines, so the frames are out of the domain
 //! before the task's own references go); at the exit the device is stopped
-//! first unless its domain is an IOMMU's, whose unmap alone confines it.
+//! first unless its domain is an IOMMU's, whose unmap alone confines it. A
+//! binding books its device with the bus as a mapped register window does
+//! (`hwbus::claim_user_window`), for as long as the device may reach it.
 
 use azos_dma::bind::{self, Binding, BindError, Table};
 pub use azos_dma::Direction;
@@ -67,11 +69,21 @@ pub enum DmaBindError {
 /// Map the object `obj` for device `dev` on behalf of `owner`, moving data
 /// `dir`: the bus address and length the device is given.
 pub fn map(owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<(DmaAddr, usize), DmaBindError> {
-    // A device a kernel driver owns, or may still take, keeps its domain.
-    if azos_drv_bus::hwbus::user_window(dev).is_none() {
+    let hooks = (*HOOKS.lock()).ok_or(DmaBindError::NoDomain)?;
+    // A device a kernel driver owns, or may still take, keeps its domain; one
+    // ring 3 gives memory to is booked like a mapped window, so no kernel
+    // driver binds it while the binding lives.
+    if azos_drv_bus::hwbus::claim_user_window(dev).is_none() {
         return Err(DmaBindError::NoDomain);
     }
-    let hooks = (*HOOKS.lock()).ok_or(DmaBindError::NoDomain)?;
+    let r = bind_claimed(hooks, owner, dev, obj, dir);
+    if r.is_err() {
+        azos_drv_bus::hwbus::unclaim_user_window(dev);
+    }
+    r
+}
+
+fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<(DmaAddr, usize), DmaBindError> {
     let domain = (hooks.domain)(dev).ok_or(DmaBindError::NoDomain)?;
     let mut t = TABLE.lock();
     t.can_insert(obj).map_err(|e| match e {
@@ -92,7 +104,9 @@ pub fn map(owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<(DmaAddr, u
     Ok((bus, len))
 }
 
-/// End `b`: out of its domain, then the kernel's reference.
+/// End `b`: out of its domain, then the kernel's reference, then the
+/// device's booking. A binding whose pages the device may still reach keeps
+/// the booking with them: no kernel driver takes that device.
 fn end(b: &Binding, domain: Option<&'static dyn DmaDomain>) -> Result<(), DmaBindError> {
     let Some(domain) = domain else {
         // The domain the map used answered then; one that is gone now
@@ -100,7 +114,9 @@ fn end(b: &Binding, domain: Option<&'static dyn DmaDomain>) -> Result<(), DmaBin
         azos_dma::note_leak(b.len);
         return Err(DmaBindError::Kept);
     };
-    bind::release(domain, b, crate::memobj::memobj_frames_unpin).map_err(|_| DmaBindError::Kept)
+    bind::release(domain, b, crate::memobj::memobj_frames_unpin).map_err(|_| DmaBindError::Kept)?;
+    azos_drv_bus::hwbus::unclaim_user_window(b.dev);
+    Ok(())
 }
 
 /// The driver's unmap of `obj` from `dev`: the device must already be

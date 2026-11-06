@@ -454,6 +454,44 @@ mod dma {
         assert!(!alive());
     }
 
+    /// **A device given memory is booked with the bus as a mapped window is: a
+    /// kernel driver is not asked to bind it while the binding lives, whether
+    /// or not ring 3 mapped its registers.**
+    ///
+    /// **Canary.** Check `user_window` instead of `claim_user_window` in
+    /// `dma_bind::map`: the driver binds a device whose pages it does not know
+    /// a ring-3 task still has in its domain.
+    #[test]
+    fn a_device_given_memory_is_not_handed_to_a_kernel_driver() {
+        let _g = serial();
+        setup();
+        let h = hwbus::with(|b| {
+            let mut q = Quiet;
+            let h = b.add(hwbus::Device::dt("dma@7200000", b"vendor,dmadev\0", 0x0720_0000, 0x1000, 0), &mut q).unwrap();
+            let none = hwbus::Rules { native: &[], linux: &[], rows: &[], policy: hwbus::Policy::Auto };
+            b.bind(h, &none, &mut Accepting, &mut q);
+            h
+        });
+        let dev = device(h.0, CapPerms::RW);
+        let (obj, idx, _) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
+        let rules = hwbus::Rules {
+            native: &[hwbus::NativeEntry { pattern: hwbus::Pattern::Dt("vendor,dmadev"), driver: "dmadrv", boot: false }],
+            linux: &[],
+            rows: &[],
+            policy: hwbus::Policy::Auto,
+        };
+        let state = hwbus::with(|b| {
+            b.bind(h, &rules, &mut Accepting, &mut Quiet);
+            b.get(h).unwrap().state
+        });
+        assert_eq!(state, hwbus::State::ProbeFailed, "a kernel driver took a device ring 3 gave memory to");
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, 0);
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
+        assert!(!alive());
+    }
+
     /// **At the exit, a device that cannot be shown stopped keeps the frames
     /// it was given out of the allocator, counted.**
     ///
