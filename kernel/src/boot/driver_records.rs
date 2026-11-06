@@ -204,6 +204,11 @@ fn virtio_blk_probe(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
 fn virtio_blk_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     use azos_drv_virtio::virtio::blk;
     blk::park(dev.base as usize).map_err(|()| ProbeError::Busy)?;
+    if canary!("unbind-leaves-irq") {
+        crate::kprintln!("[CANARY] unbind-leaves-irq: virtio-blk's unbind keeps its interrupt line");
+        book_live(h, false);
+        return Ok(());
+    }
     blk::irq_mode_off();
     if let Some(line) = booked(h).irq {
         super::unwire_line(line);
@@ -229,7 +234,15 @@ fn virtio_net_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
     use azos_drv_virtio::virtio::net;
     net::init_at(dev.base as usize).map_err(|_| refusal(net::is_ready()))
 }
-const VIRTIO_NET: Ops<Kernel> = bring_up(virtio_net_probe);
+/// The NIC is one device on either transport: its suspend and resume are the
+/// driver's.
+fn virtio_net_suspend(_: &mut KernelEnv<'_>, _: Handle, _: &Device) -> R {
+    azos_drv_virtio::virtio::net::suspend().map_err(|()| ProbeError::Busy)
+}
+fn virtio_net_resume(_: &mut KernelEnv<'_>, _: Handle, _: &Device) -> R {
+    azos_drv_virtio::virtio::net::resume().map_err(|()| ProbeError::Failed)
+}
+const VIRTIO_NET: Ops<Kernel> = Ops { power: power(virtio_net_suspend, virtio_net_resume), ..bring_up(virtio_net_probe) };
 
 /// Polled: the device has no line. Nothing sets it up until the first seed
 /// read.
@@ -285,7 +298,7 @@ fn virtio_net_pci_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
     super::pci::probe_virtio_net_pci(env.pci_fn(dev)?, dev)
 }
 #[cfg(feature = "pci")]
-const VIRTIO_NET_PCI: Ops<Kernel> = bring_up(virtio_net_pci_probe);
+const VIRTIO_NET_PCI: Ops<Kernel> = Ops { power: power(virtio_net_suspend, virtio_net_resume), ..bring_up(virtio_net_pci_probe) };
 
 #[cfg(all(feature = "fb-generic", feature = "pci"))]
 fn virtio_gpu_pci_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
@@ -470,3 +483,83 @@ fn dwc2_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
 }
 #[cfg(feature = "usb-dwc2")]
 const DWC2: Ops<Kernel> = bring_up(dwc2_probe);
+
+// ── In-kernel rows ──────────────────────────────────────────────────────
+
+// Each device bound to a driver whose record has an unbind is unbound and
+// bound again once, through the bus; the disk and the entropy device are
+// read after. The QEMU row attaches a disk and pins the count line, so a run
+// that bound nothing with an unbind is not a pass. Canary
+// `unbind-leaves-irq`: the disk's unbind keeps its line, the bus keeps the
+// device bound and this test fails.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn driver_records_unbind_and_rebind_each_bound_driver() {
+        use azos_drv_bus::hwbus::{Binding, State};
+        let mut n = 0;
+        for i in 0..hwbus::MAX_DEVICES as u32 {
+            let h = Handle(i);
+            let bound = hwbus::with(|b| match b.get(h) {
+                Some(s) if s.state == State::Bound => match s.binding {
+                    Binding::Native(name) => Some(name),
+                    _ => None,
+                },
+                _ => None,
+            });
+            let Some(name) = bound else { continue };
+            let Some(rec) = hwbus::record::find(&RECORDS, name.as_str()) else {
+                return Err("a bound driver has no record");
+            };
+            if !matches!(rec.ops.unbind, Unbind::Op(_)) {
+                continue;
+            }
+            if super::hwbus::unbind_rebind(h, rec.name()).is_err() {
+                return Err("a device did not unbind and bind again through its record");
+            }
+            if !hwbus::with(|b| b.get(h).is_some_and(|s| s.state == State::Bound)) {
+                return Err("a rebound device is not bound");
+            }
+            n += 1;
+        }
+        let mut sector = [0u8; 512];
+        if azos_drv_virtio::virtio::blk::init().is_ok() && azos_drv_block::blkdev::read_quiet(0, 1, &mut sector).is_err() {
+            return Err("the disk does not read after its rebind");
+        }
+        let mut seed = [0u8; 16];
+        if matches!(azos_drv_virtio::virtio::rng::read_seed(&mut seed), azos_drv_virtio::virtio::rng::SeedRead::Failed(_)) {
+            return Err("the entropy device does not read after its rebind");
+        }
+        crate::kprintln!("[KTEST] driver records: {} device(s) unbound and bound again", n);
+        Ok(())
+    }
+}
+
+// A system suspend's device step on the real bus: every device a kernel
+// driver is bound to goes down through its record and comes back, or the
+// first that cannot refuses and none is left down; the disk reads after.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn driver_records_quiesce_and_bring_back_every_kernel_device() {
+        let downed = super::hwbus::quiesce();
+        let left = hwbus::with(|b| b.iter().filter(|(h, _)| b.suspended(*h)).count());
+        match downed {
+            Ok(()) => {
+                let failed = super::hwbus::unquiesce();
+                if failed != 0 {
+                    return Err("a device did not come back after the quiesce");
+                }
+                crate::kprintln!("[KTEST] driver records: {} device(s) quiesced and brought back", left);
+            }
+            Err(_) if left != 0 => return Err("a refused quiesce left devices down"),
+            Err(_) => crate::kprintln!("[KTEST] driver records: quiesce refused by a driver without power ops"),
+        }
+        if hwbus::with(|b| b.iter().any(|(h, _)| b.suspended(h))) {
+            return Err("a device is still down after the resume");
+        }
+        let mut sector = [0u8; 512];
+        if azos_drv_virtio::virtio::blk::init().is_ok() && azos_drv_block::blkdev::read_quiet(0, 1, &mut sector).is_err() {
+            return Err("the disk does not read after the resume");
+        }
+        Ok(())
+    }
+}

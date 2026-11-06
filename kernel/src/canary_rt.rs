@@ -91,6 +91,9 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/blk_irq.rs: virtio-blk reapers check and set a slot's report with no
     // lock (ktest `blk_reap_reports_once`).
     "blk-reap-unlocked",
+    // boot/driver_records.rs: virtio-blk's unbind leaves its interrupt line
+    // bound (ktest `driver_records_unbind_and_rebind_each_bound_driver`).
+    "unbind-leaves-irq",
     // scheduler/wake.rs `wq_wake_by_tid`: a WaitQueue wake of the ktest's task
     // reads the reason before the state word (ktest
     // `wq_wake_in_the_block_window_is_kept`).

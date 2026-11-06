@@ -16007,6 +16007,19 @@ PY
     par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img
     par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk-aarch64.img
+    # Driver records: every device bound to a driver whose record has an
+    # unbind is unbound and bound again once through the bus, and the disk and
+    # the entropy device read after; a system suspend's quiesce takes every
+    # kernel device down through its record and brings it back. The disk is
+    # attached so virtio-blk is bound; the ERE pins the count line, so a run
+    # that exercised nothing is red. Canary: virtio-blk's unbind keeps its
+    # interrupt line, the bus keeps the device bound and the rebind fails.
+    par "ktest driver unbind rebind (rv)" ktest_row "ktest driver unbind rebind (rv)" rv "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again' $AZOS_OUT/build/disk.img
+    par "ktest driver unbind irq canary (rv)" ktest_row "ktest driver unbind irq canary (rv)" rv "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq" "" $AZOS_OUT/build/disk.img
+    par "ktest driver quiesce (rv)" ktest_row "ktest driver quiesce (rv)" rv "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back' $AZOS_OUT/build/disk.img
+    par "ktest driver unbind rebind (arm)" ktest_row "ktest driver unbind rebind (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again' $AZOS_OUT/build/disk-aarch64.img
+    par "ktest driver unbind irq canary (arm)" ktest_row "ktest driver unbind irq canary (arm)" arm "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq" "" $AZOS_OUT/build/disk-aarch64.img
+    par "ktest driver quiesce (arm)" ktest_row "ktest driver quiesce (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back' $AZOS_OUT/build/disk-aarch64.img
     par "ktest free_pages in flight canary (rv)" ktest_row "ktest free_pages in flight canary (rv)" rv ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest buddy rotate canary (rv)" ktest_row "ktest buddy rotate canary (rv)" rv ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
     par "ktest kstack reuse canary (rv)" ktest_row "ktest kstack reuse canary (rv)" rv ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
@@ -18005,6 +18018,9 @@ CPU 5 lacks hwcap bits"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest fork inherit against a clone canary (x86)" x86_ktest_row "ktest fork inherit against a clone canary (x86)" ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
+    par "ktest driver unbind rebind (x86)" x86_ktest_row "ktest driver unbind rebind (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again'
+    par "ktest driver unbind irq canary (x86)" x86_ktest_row "ktest driver unbind irq canary (x86)" "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq" $AZOS_OUT/build/disk-x86_64.img
+    par "ktest driver quiesce (x86)" x86_ktest_row "ktest driver quiesce (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back'
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (x86)" x86_ktest_row "ktest tid stamp canary (x86)" ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
 ^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"

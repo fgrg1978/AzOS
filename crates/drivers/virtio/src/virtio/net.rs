@@ -181,6 +181,9 @@ struct NetState {
     /// have stopped taking frames: it is not told of new ones and nothing is
     /// reclaimed until a reset.
     tx_wedged: bool,
+    /// Taken down by [`suspend`]: reset, its rings and buffers kept, and
+    /// brought back by [`resume`].
+    suspended: bool,
     /// Feature word 0 the MMIO transport accepted: a reset device must
     /// accept the same again.
     accepted: u32,
@@ -219,6 +222,7 @@ impl NetState {
             stats: NetQueueStats::zeroed(),
             watch: TxWatch::new(),
             tx_wedged: false,
+            suspended: false,
             accepted: 0,
             rx_lent: [0; RX_LENT_WORDS],
             #[cfg(all(feature = "pci", target_os = "none"))]
@@ -535,6 +539,57 @@ pub fn get_mac() -> [u8; 6] {
 /// Returns true if the VirtIO net device was successfully initialized.
 pub fn is_ready() -> bool {
     NET.lock().ready
+}
+
+/// Take the NIC down for a system suspend: reset, its stop confirmed (it no
+/// longer touches its rings or buffers), and no frame sent or received until
+/// [`resume`] (`ready` is clear; send and receive check it under `NET`). The
+/// rings, buffers and mappings stay the driver's. `Err` for a NIC that is not
+/// up, and for one that never confirmed its reset (then stopped for good).
+pub fn suspend() -> Result<(), ()> {
+    let mut net = NET.lock();
+    if !net.ready {
+        return Err(());
+    }
+    if !stop_confirmed(&mut net) {
+        stop_locked(&mut net);
+        return Err(());
+    }
+    net.ready = false;
+    net.suspended = true;
+    TX_WATCHED.store(false, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Bring the NIC back after [`suspend`]: both queues programmed over the
+/// memory they had and the RX ring filled again (the recovery reset's path);
+/// frames that sat in the transmit ring are dropped.
+pub fn resume() -> Result<(), ()> {
+    let mut net = NET.lock();
+    if !net.suspended {
+        return Err(());
+    }
+    net.suspended = false;
+    if !reset_locked(&mut net) {
+        stop_locked(&mut net);
+        return Err(());
+    }
+    net.ready = true;
+    Ok(())
+}
+
+/// Reset the device on its transport and wait for it to read back 0.
+fn stop_confirmed(net: &mut NetState) -> bool {
+    #[cfg(all(feature = "pci", target_os = "none"))]
+    if let Some(dev) = net.pci.as_mut() {
+        dev.reset();
+        return wait_us(RESET_WAIT_US, || dev.status() == 0);
+    }
+    if net.dev.base.is_null() {
+        return false;
+    }
+    // SAFETY: the MMIO transport the NIC was brought up on.
+    unsafe { super::reset_confirmed(net.dev.base) }
 }
 
 /// Free a completed TX chain (hdr -> data) starting at `head`.

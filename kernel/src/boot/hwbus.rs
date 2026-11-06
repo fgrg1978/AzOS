@@ -989,6 +989,31 @@ pub(crate) fn reconcile() {
     with_rules(|rules| hwbus::Locked.reconcile(rules, &mut kd, &mut Console));
 }
 
+/// Take every device a kernel driver is bound to down for a system suspend,
+/// newest bind first, through its record (`Access::quiesce`): all or nothing,
+/// `Err(n)` with the ones already down back up.
+#[cfg(any(feature = "system-suspend", feature = "ktest"))]
+pub(crate) fn quiesce() -> Result<(), u32> {
+    let mut env = KernelEnv::plain();
+    hwbus::Locked.quiesce(&mut Records { records: &RECORDS, env: &mut env }, &mut Console)
+}
+
+/// Bring them back, oldest bind first; how many did not come.
+#[cfg(any(feature = "system-suspend", feature = "ktest"))]
+pub(crate) fn unquiesce() -> u32 {
+    let mut env = KernelEnv::plain();
+    hwbus::Locked.unquiesce(&mut Records { records: &RECORDS, env: &mut env }, &mut Console)
+}
+
+/// Unbind the device `h`, then bind it to `driver` again, through the records.
+#[cfg(feature = "ktest")]
+pub(crate) fn unbind_rebind(h: hwbus::Handle, driver: &str) -> Result<(), hwbus::UnbindError> {
+    let mut env = KernelEnv::plain();
+    let mut kd = Records { records: &RECORDS, env: &mut env };
+    hwbus::Locked.unbind(h, &mut kd, &mut Console)?;
+    if hwbus::Locked.rebind(h, driver, &mut kd, &mut Console) { Ok(()) } else { Err(hwbus::UnbindError::NotBound) }
+}
+
 // ── The introspection tree: devices/ ────────────────────────────────────
 
 /// A device's `state` word.

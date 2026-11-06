@@ -222,9 +222,11 @@ fn install_model(
 ///   caller takes them off first (`power cpu N offline`, `Rule::CpuHotplug`);
 ///   a machine with a second CPU still online refuses.
 /// * `wake_sources`: the interrupt capabilities in the caller's table.
-/// * `quiesce`: no kernel-hosted driver implements runtime PM; the ring-3 half
+/// * `quiesce`: every device a kernel driver is bound to goes down through its
+///   driver record, newest bind first, all or nothing (`boot::hwbus::quiesce`);
+///   a bound driver without power ops refuses the suspend. The ring-3 half
 ///   (`DevicePower::suspend` of each driver) is the power service's, before it
-///   asks. So here there is nothing to take down and nothing to refuse.
+///   asks.
 /// * `save` / `restore`: interrupts off on this CPU, and back.
 /// * `enter`: the firmware call, which comes back only with an error until a
 ///   resume entry exists to hand the CPU back.
@@ -300,11 +302,11 @@ impl azos_drv_power::pm::suspend::Platform for KernelSuspend {
     fn thaw(&self) {}
 
     fn quiesce(&self) -> Result<(), u32> {
-        Ok(())
+        super::hwbus::quiesce()
     }
 
     fn unquiesce(&self) -> u32 {
-        0
+        super::hwbus::unquiesce()
     }
 
     fn save(&self) -> Result<(), ()> {
