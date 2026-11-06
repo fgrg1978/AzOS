@@ -180,6 +180,8 @@ mod blk_units;
 #[cfg(test)]
 mod azvol_format;
 #[cfg(test)]
+mod block_order;
+#[cfg(test)]
 mod azvol_aead;
 #[cfg(test)]
 mod azvol_cow;
