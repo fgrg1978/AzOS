@@ -130,6 +130,7 @@ pub struct RamTail {
     pub unreadable: std::cell::RefCell<Vec<usize>>,
     pub flush_fails: std::cell::Cell<bool>,
     pub no_store: std::cell::Cell<bool>,
+    pub provisioned: std::cell::Cell<bool>,
 }
 
 impl RamTail {
@@ -141,6 +142,7 @@ impl RamTail {
             unreadable: Default::default(),
             flush_fails: Default::default(),
             no_store: Default::default(),
+            provisioned: Default::default(),
         }
     }
 }
@@ -173,5 +175,8 @@ impl azos_pkg::index::Tail for &RamTail {
     }
     fn flush(&self) -> bool {
         !self.flush_fails.get()
+    }
+    fn provisioned(&self) -> bool {
+        self.provisioned.get()
     }
 }

@@ -30,7 +30,14 @@ Record format (one sector; see `crates/core/topology/src/device_record.rs`):
             accepted yet on this device)
     29  4   first 4 bytes of SHA-256(bytes 0..29)
 
-Provisioning writes floor 0. The kernel raises the floor each time it accepts
+Provisioning writes floor 0 and an empty, valid bank of the repository index
+marks (the "KPIX" records the kernel keeps in the last 2 x
+PKG_INDEX_MARK_SECTORS tail sectors, `crates/core/pkg/src/index.rs`
+`MarkTable::encode_bank`, generation 1, the other bank zero): a provisioned
+device whose marks then read all zero has had them erased, and the kernel says
+so instead of starting afresh. `--clear-index-marks` writes the same empty bank.
+
+The kernel raises the floor each time it accepts
 a CONFIG.INI whose signed counter is above it. Re-provisioning a device
 (a new record, floor 0) is the operator's way back from a lost config key; it
 needs the card, not the USB port.
@@ -78,6 +85,45 @@ def read_record(image: str):
         return decode(f.read(SECTOR))
 
 
+TAIL_SECTORS = 8
+MARKS_MAGIC = b"KPIX"
+MARKS_VERSION = 3
+MARKS_DIGEST = 8
+MARKS_TAG = 4
+
+
+def marks_bank(sectors: int, gen: int = 1) -> bytes:
+    """An empty bank of the repository index marks of `sectors` sectors at
+    generation `gen`: what `MarkTable::encode_bank` writes for no entries."""
+    digest = hashlib.sha256(struct.pack("<I", gen) + bytes([sectors, 0])).digest()[:MARKS_DIGEST]
+    out = b""
+    for i in range(sectors):
+        sec = bytearray(SECTOR)
+        sec[0:4] = MARKS_MAGIC
+        sec[4] = MARKS_VERSION
+        sec[5:9] = struct.pack("<I", gen)
+        sec[9], sec[10], sec[11] = i, sectors, 0
+        sec[SECTOR - MARKS_TAG - MARKS_DIGEST:SECTOR - MARKS_TAG] = digest
+        sec[SECTOR - MARKS_TAG:] = hashlib.sha256(bytes(sec[:SECTOR - MARKS_TAG])).digest()[:MARKS_TAG]
+        out += bytes(sec)
+    return out
+
+
+def marks_first(index_sectors: int, topo_sector: int):
+    """The first tail sector of the marks, or None when the banks would reach
+    the device record or the topology floor."""
+    first = TAIL_SECTORS - 2 * index_sectors
+    if not 1 <= index_sectors <= 2 or first <= max(DEVICE_SECTOR, topo_sector):
+        return None
+    return first
+
+
+def write_empty_marks(f, start: int, first: int, index_sectors: int) -> None:
+    """Bank 0 an empty valid bank, bank 1 zero."""
+    f.seek((start + first) * SECTOR)
+    f.write(marks_bank(index_sectors) + b"\0" * (SECTOR * index_sectors))
+
+
 TOPO_MAGIC = b"KTPF"
 TOPO_RECORD_BYTES = 4 + 1 + 8 + 4
 
@@ -105,25 +151,23 @@ def main() -> int:
     ap.add_argument("--topo-floor", action="store_true", help="with --show: the topology counter floor")
     ap.add_argument("--topo-sector", type=int, default=3, help="its tail sector (Kconfig TOPOLOGY_FLOOR_SECTOR)")
     ap.add_argument("--clear-index-marks", action="store_true",
-                    help="forget the repository index marks and floors the kernel keeps (both banks, the "
-                         "last 2 x PKG_INDEX_MARK_SECTORS tail sectors): the way back from an index the "
-                         "source can no longer serve")
+                    help="forget the repository index marks and floors the kernel keeps (an empty valid bank "
+                         "over the last 2 x PKG_INDEX_MARK_SECTORS tail sectors): the way back from an index "
+                         "the source can no longer serve")
     ap.add_argument("--index-sectors", type=int, default=2, help="Kconfig PKG_INDEX_MARK_SECTORS (sectors per bank, 1 or 2)")
     a = ap.parse_args()
 
+    # Never the link key, the entropy seed, the device record or the topology floor.
+    first = marks_first(a.index_sectors, a.topo_sector)
+    if first is None and not a.show:
+        print(f"--index-sectors {a.index_sectors} would reach tail sector {max(DEVICE_SECTOR, a.topo_sector)} "
+              f"(the device record or the topology floor): refused", file=sys.stderr)
+        return 2
     if a.clear_index_marks:
-        first = 8 - 2 * a.index_sectors
-        # Never the link key, the entropy seed, the device record or the topology floor.
-        if not 1 <= a.index_sectors <= 2 or first <= max(DEVICE_SECTOR, a.topo_sector):
-            print(f"--index-sectors {a.index_sectors} would reach tail sector {max(DEVICE_SECTOR, a.topo_sector)} "
-                  f"(the device record or the topology floor): refused", file=sys.stderr)
-            return 2
         start = records_start(a.image, check_fat=True)
         with open(a.image, "r+b") as f:
-            for i in range(first, 8):
-                f.seek((start + i) * SECTOR)
-                f.write(b"\0" * SECTOR)
-        print(f"{a.image}: repository index marks cleared (tail sectors {first}..7)")
+            write_empty_marks(f, start, first, a.index_sectors)
+        print(f"{a.image}: repository index marks cleared (tail sectors {first}..{TAIL_SECTORS - 1})")
         return 0
     if a.show and a.topo_floor:
         f = read_topo_floor(a.image, a.topo_sector)
@@ -149,11 +193,13 @@ def main() -> int:
         if len(dev) != ID_BYTES:
             print(f"--device-id must be {2 * ID_BYTES} hex digits", file=sys.stderr)
             return 2
-    lba = records_start(a.image, check_fat=True) + DEVICE_SECTOR
+    start = records_start(a.image, check_fat=True)
+    lba = start + DEVICE_SECTOR
     with open(a.image, "r+b") as f:
         f.seek(lba * SECTOR)
         f.write(record(dev, 0).ljust(SECTOR, b"\0"))
-    print(f"{a.image}: device {dev.hex()} provisioned at sector {lba} (floor 0)")
+        write_empty_marks(f, start, first, a.index_sectors)
+    print(f"{a.image}: device {dev.hex()} provisioned at sector {lba} (floor 0, empty index marks)")
     return 0
 
 

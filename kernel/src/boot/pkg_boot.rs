@@ -138,6 +138,9 @@ impl azos_pkg::index::Tail for KernelTail {
     fn flush(&self) -> bool {
         azos_drv_block::blkdev::flush().is_ok()
     }
+    fn provisioned(&self) -> bool {
+        super::config_auth::read_device_record().is_some()
+    }
 }
 
 /// The interface table and the epoch floor, built where the device is judged.

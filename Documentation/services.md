@@ -652,9 +652,13 @@ every sector on the medium that still verifies and in the bank with fewer of the
 that reads again later does not undo it.
 A medium with no usable records store remembers nothing and the slot on the volume alone holds the
 floors; its signature is still verified. `pkg refresh` cannot read the tail, so it can report success
-for an index the next boot judges older than its mark. `tools/sign/device_provision.py
---clear-index-marks` forgets the marks and floors of a device (both banks), the way back from an
-index the source can no longer serve.
+for an index the next boot judges older than its mark. Provisioning
+(`tools/sign/device_provision.py`) writes an empty, valid bank beside the device record, so a
+provisioned medium whose marks read all zero (an erase, a card cloned without its tail, a
+recreated records partition) is lost, on record (event 2, first number 1), and only a medium with
+no device record starts afresh. `tools/sign/device_provision.py --clear-index-marks` forgets the
+marks and floors of a device by writing that same empty bank, the way back from an index the source
+can no longer serve.
 
 Floors are read at the boot-time apply: a `pkg refresh` that raises a floor does not stop a
 program that is already running, it takes effect at the next boot. A floor can therefore make

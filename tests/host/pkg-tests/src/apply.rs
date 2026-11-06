@@ -1344,6 +1344,30 @@ fn a_boot_that_cannot_read_the_marks_says_so_and_writes_none() {
     assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
 }
 
+/// The boot says the memory is lost, and how (event 2: 0 damaged, 1 erased on a
+/// provisioned medium), and the indexes it accepts rebuild it.
+#[test]
+fn a_lost_memory_is_on_record_with_how_it_was_lost() {
+    use azos_pkg::index::MarkEvent;
+    let d = signed_device();
+    let mut v = volume();
+    stage(&mut v, &acme());
+    put_index(&mut v, &floor_index_at(6, Some("1.3.0"), &author()));
+    for erased in [false, true] {
+        let tail: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+        tail.provisioned.set(true);
+        if !erased {
+            tail.sectors.borrow_mut()[3] = [0x55; 512];
+        }
+        let mut t = topo(d);
+        let mut log = Log::default();
+        apply(&mut v, &mut t, &enforcing_with(mem_marks_on(tail, 5)), &mut log);
+        let recs: Vec<_> = log.records.iter().filter(|p| p.rule == Rule::PackageIndex as u8).map(|p| (p.verdict, p.n)).collect();
+        assert_eq!(recs[0], (Verdict::Refuse as u8, [erased as u64, 0, MarkEvent::Lost as u64]), "erased {erased}");
+        assert_eq!(recs[1].0, Verdict::Admit as u8, "erased {erased}: rebuilt");
+    }
+}
+
 /// A device that never saw an index has no floors to lose, and the policy off
 /// reads no slot at all.
 #[test]

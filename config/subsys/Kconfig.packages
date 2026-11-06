@@ -215,8 +215,10 @@ config PKG_INDEX_MARK_SECTORS
 
       0 is the link key, 1 the entropy seed, 2 the device record and
       TOPOLOGY_FLOOR_SECTOR (3 to 7) the topology counter floor: the build
-      refuses a value that reaches the topology floor's sector. Clear the marks
-      of a device with tools/sign/device_provision.py --clear-index-marks.
+      refuses a value that reaches the topology floor's sector. Provisioning
+      (tools/sign/device_provision.py) writes an empty bank, so marks that read
+      all zero on a provisioned device were erased and are reported lost;
+      --clear-index-marks writes the empty bank again.
 
 config PKG_INDEX_FLOORS_PER_SIGNER
     int "Floors remembered per signer"

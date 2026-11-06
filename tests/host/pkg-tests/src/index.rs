@@ -648,6 +648,56 @@ mod banks {
         }
     }
 
+    /// **Provisioning writes an empty bank the kernel reads whole**
+    /// (`tools/sign/device_provision.py`, also `--clear-index-marks`): byte for byte
+    /// what the store encodes for no entries at generation 1, and the next write goes
+    /// to the other bank above it.
+    #[test]
+    fn the_provisioning_tool_writes_an_empty_bank_the_kernel_reads() {
+        use azos_pkg::index::MarkTable;
+        let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/sign");
+        for sectors in [1usize, 2] {
+            let script = format!("import sys; sys.path.insert(0, sys.argv[1]); import device_provision as d; sys.stdout.write(d.marks_bank({sectors}).hex())");
+            let out = std::process::Command::new("python3").arg("-c").arg(script).arg(&tools).output().expect("python3");
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let hex = String::from_utf8(out.stdout).unwrap();
+            let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+            let want = MarkTable::new(sectors, 5).encode_bank(1);
+            assert_eq!(bytes, want[..sectors].concat(), "{sectors} sector(s) a bank");
+            let t = RamTail::new(2 * sectors);
+            t.provisioned.set(true);
+            for (i, sec) in bytes.chunks(512).enumerate() {
+                t.sectors.borrow_mut()[i].copy_from_slice(sec);
+            }
+            let s = MarkStore::load(&t, sectors, 5);
+            assert_eq!((s.condition(), s.mark(&A)), (Default::default(), None));
+            s.accept(&A, Mark { serial: 1, digest: 1 }, &[]).unwrap();
+            assert_eq!(t.sectors.borrow()[sectors][5], 2, "generation 2, in bank 1");
+            assert_eq!(MarkStore::load(&t, sectors, 5).mark(&A).map(|m| m.serial), Some(1));
+        }
+    }
+
+    /// **A provisioned medium whose marks read all zero was erased**, and that is a
+    /// loss on record (event 2, first number 1), not a fresh device; only a medium
+    /// with no device record is fresh.
+    ///
+    /// Canary (by hand): ignoring `provisioned` reads the erased medium as fresh.
+    #[test]
+    fn an_erased_medium_of_a_provisioned_device_is_lost_not_new() {
+        let t = RamTail::new(4);
+        assert_eq!(load(&t).condition(), Default::default(), "never provisioned: fresh");
+        t.provisioned.set(true);
+        let c = load(&t).condition();
+        assert!(c.lost && c.erased, "{c:?}");
+        let t = populated();
+        t.provisioned.set(true);
+        *t.sectors.borrow_mut() = vec![[0u8; 512]; 4];
+        let s = load(&t);
+        assert!(s.lost() && s.condition().erased && s.mark(&A).is_none());
+        s.accept(&A, Mark { serial: 6, digest: 6 }, &[]).unwrap();
+        assert_eq!(load(&t).condition(), Default::default(), "written again");
+    }
+
     /// The first write of all, cut: nothing was there to lose. Nothing landed, and the
     /// medium is still blank; or something landed, and it is not a whole bank and not
     /// zeros, so it reads as lost. Either way the next accept writes it.

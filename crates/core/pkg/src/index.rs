@@ -747,7 +747,9 @@ pub enum MarkEvent {
     /// says why, [`MarkErr::recorded`]: 1 the table is full, 2 the write
     /// failed, 3 the memory did not read).
     NotRemembered = 1,
-    /// Refuse: the memory was written before and no copy of it reads whole.
+    /// Refuse: the memory was written before and no copy of it reads whole
+    /// (the first number: 0 damaged, 1 erased, all zero on a provisioned
+    /// medium).
     Lost = 2,
     /// Refuse: the index was remembered without its last floors (the first
     /// number), past the signer's quota.
@@ -1023,6 +1025,10 @@ pub struct Condition {
     /// The memory was written before and no copy of it reads whole: what it
     /// held is gone.
     pub lost: bool,
+    /// Of a lost memory: every sector is zero on a provisioned medium, whose
+    /// provisioning wrote an empty bank (an erase, a card cloned without its
+    /// tail, a recreated records partition).
+    pub erased: bool,
 }
 
 /// The reserved tail as the marks need it.
@@ -1035,6 +1041,10 @@ pub trait Tail {
     fn write(&self, sector: usize, data: &[u8; 512]) -> bool;
     /// Make what was written durable.
     fn flush(&self) -> bool;
+    /// Whether the medium carries a device record: its provisioning wrote an
+    /// empty bank of marks, so marks that read all zero were erased, not never
+    /// written.
+    fn provisioned(&self) -> bool;
 }
 
 struct State {
@@ -1069,9 +1079,9 @@ impl<T: Tail> MarkStore<T> {
     /// Read the marks from `tail`: banks of `sectors` sectors, `quota` floors
     /// per signer. A bank that fails its digest, or any sector of it, is
     /// ignored (never read as zeros) and the other one stands; two that fail
-    /// are lost unless every sector is zero, which is a medium nothing was
-    /// written on. A sector that cannot be read makes its bank fail, and the
-    /// boot write nothing.
+    /// are lost unless every sector is zero on a medium that was never
+    /// provisioned, which nothing was written on. A sector that cannot be read
+    /// makes its bank fail, and the boot write nothing.
     pub fn load(tail: T, sectors: usize, quota: usize) -> Self {
         let empty = MarkTable::new(sectors, quota);
         let n = empty.sectors();
@@ -1103,9 +1113,10 @@ impl<T: Tail> MarkStore<T> {
                         st.cond.ignored = Some(1 - b);
                     }
                 }
-                None if blank(0) && blank(1) => {}
+                None if blank(0) && blank(1) && !tail.provisioned() => {}
                 None => {
                     st.cond.lost = true;
+                    st.cond.erased = blank(0) && blank(1);
                     st.spare = usize::from(valid(1) < valid(0));
                 }
             }
@@ -1153,7 +1164,7 @@ impl<T: Tail> Marks for MarkStore<T> {
         if !self.tail.flush() {
             return Err(MarkErr::Write);
         }
-        *st = State { table: next, gen, bank: Some(target), spare: 1 - target, cond: Condition { lost: false, ..st.cond } };
+        *st = State { table: next, gen, bank: Some(target), spare: 1 - target, cond: Condition { lost: false, erased: false, ..st.cond } };
         Ok(taken)
     }
 }

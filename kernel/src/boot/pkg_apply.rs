@@ -921,9 +921,10 @@ pub fn apply<D: BlockDev>(
         }
         if cond.lost {
             sink.note(format_args!(
-                "[PKG] index marks lost: no copy of the device's memory of the repository indexes can be read; each signer's stored index stands until it is written again"
+                "[PKG] index marks lost{}: no copy of the device's memory of the repository indexes can be read; each signer's stored index stands until it is written again",
+                if cond.erased { " (erased on a provisioned medium)" } else { "" }
             ));
-            sink.record(&receipt::index_event(0, 0, 0, index::MarkEvent::Lost, boot.now_ns));
+            sink.record(&receipt::index_event(0, cond.erased as u64, 0, index::MarkEvent::Lost, boot.now_ns));
         }
     }
     let heads = if pairs.is_empty() && !boot.sec_floor_enforce { Vec::new() } else { staged_heads(vol, root, &names, topo) };
