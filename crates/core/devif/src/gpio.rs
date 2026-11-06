@@ -62,7 +62,7 @@ pub trait Gpio {
     /// Needs `READ`.
     #[idempotent]
     fn read(&self) -> Out<u32>;
-    /// Drive the pin: `level` 0 or 1 (the low bit is used). `REFUSED` for a
+    /// Drive the pin: `level` 0 or 1, else `BAD_ARGUMENT`. `REFUSED` for a
     /// pin a motor uses. Needs `WRITE`.
     fn write(&mut self, level: u32) -> Out<()>;
     /// Set the pin's direction: [`DIR_INPUT`] or [`DIR_OUTPUT`], else

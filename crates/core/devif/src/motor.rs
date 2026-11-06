@@ -55,8 +55,9 @@ pub const DIR_COAST: u32 = 3;
 
 #[azos_interface(id = 0x4D4F_5452, level = 1, words = 4)]
 pub trait Motor {
-    /// Run the wheel forward at `pct` percent (clamped to 100); 0 stops it.
-    /// Needs `WRITE`. `REFUSED` for a nonzero speed while halted.
+    /// Run the wheel forward at `pct` percent; 0 stops it, more than 100 is
+    /// `BAD_ARGUMENT`. Needs `WRITE`. `REFUSED` for a nonzero speed while
+    /// halted.
     #[on_failure(safe_state)]
     #[deadline_ns = 2_000_000]
     #[budget_us = 200]
@@ -81,8 +82,8 @@ pub trait Motor {
     #[deadline_ns = 1_000_000]
     #[budget_us = 50]
     fn angle(&self) -> Out<i64>;
-    /// Set the PID loop's targets, percent of full speed per wheel. Needs
-    /// `WRITE` on both wheels.
+    /// Set the PID loop's targets, percent of full speed per wheel (-100 to
+    /// 100, else `BAD_ARGUMENT`). Needs `WRITE` on both wheels.
     #[on_failure(safe_state)]
     #[deadline_ns = 2_000_000]
     #[budget_us = 200]

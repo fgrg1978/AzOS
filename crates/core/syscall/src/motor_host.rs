@@ -384,6 +384,11 @@ impl azos_devif::Motor for MotorServer {
             Ok(id) => id,
             Err(o) => return o,
         };
+        // Refused, not clamped: the motor layer clamps to 100, so a reverse
+        // written as `u32` would drive forward at full speed.
+        if pct > 100 {
+            return Out::err(outcome::BAD_ARGUMENT);
+        }
         let (rc, applied) = match wheel_speed(id, self.0.tid, pct) {
             Ok(r) => r,
             Err(u) => return Out::err(u.outcome()),
@@ -491,11 +496,14 @@ impl azos_devif::Motor for MotorServer {
         if let Err(o) = self.pair::<()>() {
             return o;
         }
-        // Refused rather than truncated: a target past the loop's `i16` is a
-        // different speed than the one the caller asked for.
+        // Refused rather than truncated or clamped: a target is a percentage,
+        // and anything past it is a different speed than the one asked for.
         let (Ok(l), Ok(r)) = (i16::try_from(left), i16::try_from(right)) else {
             return Out::err(outcome::BAD_ARGUMENT);
         };
+        if l.unsigned_abs() > 100 || r.unsigned_abs() > 100 {
+            return Out::err(outcome::BAD_ARGUMENT);
+        }
         #[cfg(feature = "board-io")]
         {
             azos_drv_actuator::motor_pid::motor_pid_set_target(l, r);

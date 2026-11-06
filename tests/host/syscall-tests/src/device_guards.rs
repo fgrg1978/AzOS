@@ -227,16 +227,20 @@ fn a_gpio_endpoint_demands_the_op_class_in_both_directions() {
     assert_eq!(calls(), vec![("gpio.write", 6, 1), ("gpio.dir", 6, 1)]);
 }
 
-/// The driver is told the pin the badge names and the low bit of the level.
+/// The driver is told the pin the badge names and the level, 0 or 1; any
+/// other level is `BAD_ARGUMENT` and reaches no driver (a 2 is not a 0).
 ///
-/// **Canary.** Pass `level` unmasked: the driver sees 3.
+/// **Canary.** Drop the `level > 1` test from `GpioServer::write`: the driver
+/// sees the 2 and the 3.
 #[test]
-fn the_driver_gets_the_pin_from_the_badge_and_the_low_bit_of_the_level() {
+fn the_driver_gets_the_pin_from_the_badge_and_a_level_of_0_or_1() {
     let _g = serial();
     let s = scene(0);
     let mut g = GpioServer(caller(&s, 17, CapPerms::RW));
-    assert_eq!(g.write(3), Out::ok(()));
-    assert_eq!(g.write(2), Out::ok(()));
+    assert_eq!(g.write(3), Out::err(outcome::BAD_ARGUMENT));
+    assert_eq!(g.write(2), Out::err(outcome::BAD_ARGUMENT));
+    assert_eq!(g.write(1), Out::ok(()));
+    assert_eq!(g.write(0), Out::ok(()));
     assert_eq!(g.set_dir(gpio::DIR_INPUT), Out::ok(()));
     assert_eq!(calls(), vec![("gpio.write", 17, 1), ("gpio.write", 17, 0), ("gpio.dir", 17, 0)]);
 }

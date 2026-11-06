@@ -307,6 +307,24 @@ fn speed_gives_the_halt_rules_answer_while_halted() {
     }
 }
 
+/// **A speed past 100 is refused, not clamped**: the motor layer clamps to
+/// 100, so a reverse written as `u32` (-40 is 4294967256) would run the wheel
+/// forward at full speed. Nothing reaches the PWM.
+///
+/// **Canary.** Delete the `pct > 100` test from `MotorServer::speed`: the
+/// probe sees duty 100.
+#[test]
+fn a_speed_past_100_is_refused_not_clamped() {
+    let _g = serial();
+    let s = scene();
+    let mut w = who(&s, 0, CapPerms::RW);
+    for pct in [101, (-40i32) as u32, u32::MAX] {
+        assert_eq!(w.speed(pct), Out::err(outcome::BAD_ARGUMENT), "speed {pct}");
+    }
+    assert!(pwm_calls().is_empty(), "an out-of-range speed reached the PWM: {:?}", pwm_calls());
+    assert_eq!(w.speed(100), Out::ok(()));
+}
+
 /// **`direction` applies the halt rule.** After a brake while not halted, a
 /// forward and a reverse are refused without touching the pins, each writing
 /// duty 0, and the motor table still records the brake; a coast and a brake
@@ -545,17 +563,22 @@ fn the_pid_ops_stay_contained_disable_included() {
     assert_eq!(l.pid_enable(true), Out::ok(()), "the pair holder was refused once cleared");
 }
 
-/// A target past the loop's `i16` is refused, not truncated, and the
-/// controller keeps what it had.
+/// A target past 100 percent (and past the loop's `i16`) is refused, not
+/// truncated or clamped.
+///
+/// **Canary.** Drop the `> 100` test from `MotorServer::pid_target`: the
+/// 101 and the -32768 are taken.
 #[test]
-fn a_pid_target_past_i16_is_refused_not_truncated() {
+fn a_pid_target_past_100_percent_is_refused_not_clamped() {
     let _g = serial();
     let s = scene();
     let _r = holding(&s, 1, CapPerms::RW);
     let mut l = holding(&s, 0, CapPerms::RW);
     assert_eq!(l.pid_target(32768, 0), Out::err(outcome::BAD_ARGUMENT));
     assert_eq!(l.pid_target(0, -32769), Out::err(outcome::BAD_ARGUMENT));
-    assert_eq!(l.pid_target(32767, -32768), Out::ok(()));
+    assert_eq!(l.pid_target(101, 0), Out::err(outcome::BAD_ARGUMENT));
+    assert_eq!(l.pid_target(32767, -32768), Out::err(outcome::BAD_ARGUMENT));
+    assert_eq!(l.pid_target(100, -100), Out::ok(()));
     assert_eq!(l.pid_target(0, 0), Out::ok(()));
 }
 

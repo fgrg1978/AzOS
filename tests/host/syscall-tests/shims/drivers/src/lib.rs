@@ -281,6 +281,18 @@ pub mod pwm {
     pub fn pwm_set_period(ch: u32, period_ns: u32) -> i32 {
         enter(PwmOp::SetPeriod, ch, period_ns)
     }
+    /// A channel's state, as the real backends' `pwm_get`: the stand-in's
+    /// period is the real default (1 ms), its duty and enable unknown.
+    pub fn pwm_get(ch: u32) -> Option<PwmChannel> {
+        ((ch as usize) < PWM_MAX_CHANNELS).then_some(PwmChannel { enabled: false, period_ns: 1_000_000, duty_ns: 0 })
+    }
+    /// The real backends' channel state.
+    #[derive(Clone, Copy, Debug)]
+    pub struct PwmChannel {
+        pub enabled: bool,
+        pub period_ns: u32,
+        pub duty_ns: u32,
+    }
     pub fn pwm_set_duty(ch: u32, duty_ns: u32) -> i32 {
         enter(PwmOp::SetDuty, ch, duty_ns)
     }

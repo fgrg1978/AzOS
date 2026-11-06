@@ -215,6 +215,8 @@ impl azos_devif::Gpio for GpioServer {
 
     fn write(&mut self, level: u32) -> Out<()> {
         match self.pin(CapPerms::WRITE, GpioIdl::OP_WRITE as u32) {
+            // Refused, not masked: a level 2 is not a 0.
+            Ok(_) if level > 1 => Out::err(outcome::BAD_ARGUMENT),
             Ok(p) => served(p.write(level)),
             Err(o) => o,
         }
@@ -299,13 +301,15 @@ pub struct PwmServer(pub Caller);
 
 #[cfg(feature = "board-io")]
 impl PwmServer {
-    fn run(&self, reach: Reach, op: impl FnOnce(u32) -> i32) -> Out<()> {
+    /// `fits`: the op's argument is in range for the channel (a duty past the
+    /// period is refused, not clamped to full duty).
+    fn run(&self, reach: Reach, fits: impl FnOnce(u32) -> bool, op: impl FnOnce(u32) -> i32) -> Out<()> {
         if let Err(o) = self.0.gate::<()>(CapPerms::WRITE) {
             return o;
         }
         let domain = azos_drv_actuator::pwm_domain::PWM_DOMAIN;
         let ch = self.0.badge;
-        if ch >= domain.channels {
+        if ch >= domain.channels || !fits(ch) {
             return Out::err(outcome::BAD_ARGUMENT);
         }
         // Control ops are refused by REACH, duty by the named channel: a duty
@@ -339,19 +343,20 @@ impl PwmServer {
 #[cfg(feature = "board-io")]
 impl azos_devif::Pwm for PwmServer {
     fn enable(&mut self) -> Out<()> {
-        self.run(Reach::Control, azos_drv_actuator::pwm::pwm_enable)
+        self.run(Reach::Control, |_| true, azos_drv_actuator::pwm::pwm_enable)
     }
     fn disable(&mut self) -> Out<()> {
-        self.run(Reach::Control, azos_drv_actuator::pwm::pwm_disable)
+        self.run(Reach::Control, |_| true, azos_drv_actuator::pwm::pwm_disable)
     }
     fn set_period(&mut self, ns: u32) -> Out<()> {
-        self.run(Reach::Control, |ch| azos_drv_actuator::pwm::pwm_set_period(ch, ns))
+        self.run(Reach::Control, |_| true, |ch| azos_drv_actuator::pwm::pwm_set_period(ch, ns))
     }
     fn set_duty(&mut self, ns: u32) -> Out<()> {
-        self.run(Reach::DutyOnly, |ch| azos_drv_actuator::pwm::pwm_set_duty(ch, ns))
+        let fits = |ch| azos_drv_actuator::pwm::pwm_get(ch).is_some_and(|c| ns <= c.period_ns);
+        self.run(Reach::DutyOnly, fits, |ch| azos_drv_actuator::pwm::pwm_set_duty(ch, ns))
     }
     fn set_duty_pct(&mut self, pct: u32) -> Out<()> {
-        self.run(Reach::DutyOnly, |ch| azos_drv_actuator::pwm::pwm_set_duty_pct(ch, pct))
+        self.run(Reach::DutyOnly, |_| pct <= 100, |ch| azos_drv_actuator::pwm::pwm_set_duty_pct(ch, pct))
     }
 }
 

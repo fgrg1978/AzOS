@@ -29,9 +29,10 @@ pub trait Pwm {
     fn disable(&mut self) -> Out<()>;
     /// Set the period, nanoseconds. Needs `WRITE`.
     fn set_period(&mut self, ns: u32) -> Out<()>;
-    /// Set the duty, nanoseconds of the period. Needs `WRITE`.
+    /// Set the duty, nanoseconds of the period (more than the period is
+    /// `BAD_ARGUMENT`). Needs `WRITE`.
     fn set_duty(&mut self, ns: u32) -> Out<()>;
-    /// Set the duty as a percentage of the period (clamped to 100). Needs
-    /// `WRITE`.
+    /// Set the duty as a percentage of the period (more than 100 is
+    /// `BAD_ARGUMENT`). Needs `WRITE`.
     fn set_duty_pct(&mut self, pct: u32) -> Out<()>;
 }
