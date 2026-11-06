@@ -1570,7 +1570,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                 Err(e) => return e,
             };
             reach(k::SYS_FUTEX_WAKE);
-            azos_sched::futex::wake_key(key, val.min(u32::MAX as u64) as u32)
+            crate::vdso_notify::wake_word(key, val.min(u32::MAX as u64) as u32)
         }
         FUTEX_REQUEUE | FUTEX_CMP_REQUEUE if azos_sched::futex_table::REQUEUE => {
             // `timeout` carries `val2` (nr_requeue) for these ops.

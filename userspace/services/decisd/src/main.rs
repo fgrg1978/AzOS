@@ -28,7 +28,7 @@ use azos_decisions::{DecisionsIdl, MsgDesc, Service};
 use azos_inspect_lib::{Inspector, Source, Value};
 use azos_libsys as sys;
 use azos_srv::sys::Calls;
-use azos_srv::{Answer, Handler, Server};
+use azos_srv::{Handler, Server};
 use bin::BinSource;
 
 /// The records read at once: the table's worth.
@@ -67,11 +67,10 @@ struct Decisions<'a> {
 }
 
 impl Handler<Calls> for Decisions<'_> {
-    fn call(&mut self, _k: &mut Calls, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
+    fn call(&mut self, _k: &mut Calls, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) {
         let n = self.tree.as_mut().map_or(0, |t| read_records(t, self.file));
         self.svc.0.load(&self.file[..n]);
         let _ = DecisionsIdl::dispatch(self.svc, req, rep);
-        Answer::Reply
     }
 }
 

@@ -132,13 +132,7 @@ pub fn wake_key(key: Key, n: u32) -> i64 {
     }
     let woken = match key {
         Key::Private { .. } => ft::wake_key_checked(&KernelEnv, key, n),
-        Key::Shared { obj, offset } => {
-            let w = ft::wake_key_checked(&NotifyEnv, key, n);
-            if let Some(ring) = DOORBELL.get() {
-                ring(obj, offset);
-            }
-            w
-        }
+        Key::Shared { .. } => ft::wake_key_checked(&NotifyEnv, key, n),
     };
     match woken {
         Ok(k) => k as i64,
@@ -152,19 +146,6 @@ pub fn wake_key(key: Key, n: u32) -> i64 {
 /// [`robust_key`] runs here, before `wake_key` takes the table lock.
 pub fn wake_in(proc_id: u32, addr: u64, n: u32) -> i64 {
     wake_key(robust_key(proc_id, addr), n)
-}
-
-azos_common::ro_hook! {
-    /// The sched -> ipc doorbell (`azos_ipc::port::port_ring_doorbell`): a
-    /// wake of the word `(region, offset)` also reaches the port sources bound
-    /// to it. Runs after the futex table is released, from any context a
-    /// wake runs in. Boot registers it; unset = none.
-    static DOORBELL: fn(u32, u32);
-}
-
-/// Install the doorbell a shared word's wake rings. Boot, once.
-pub fn register_doorbell(f: fn(u32, u32)) {
-    DOORBELL.set(f);
 }
 
 azos_common::ro_hook! {

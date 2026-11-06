@@ -44,7 +44,7 @@ use azos_devif::{Lent, MsgDesc, SoundIdl};
 use azos_libsys as sys;
 use azos_rings::region::SpscSlots;
 use azos_srv::sys::Port;
-use azos_srv::{Answer, Handler, Idle, Server as Loop, State};
+use azos_srv::{Handler, Idle, Server as Loop, State};
 use server::{DevMem, Env, Limits, Mapped, Server};
 use sys::dev::{Ep, SoundCall, SoundClient};
 
@@ -283,7 +283,7 @@ impl Audio {
 }
 
 impl Handler<Port> for Audio {
-    fn call(&mut self, _port: &mut Port, handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
+    fn call(&mut self, _port: &mut Port, handle: u64, req: &MsgDesc, rep: &mut MsgDesc) {
         // The badge of the capability the call came through, 0 when the call
         // was not badged: an unidentified caller, whom the server refuses.
         let s = &mut self.s;
@@ -295,7 +295,6 @@ impl Handler<Port> for Audio {
         s.caller = 0;
         s.call = 0;
         self.changed = true;
-        Answer::Reply
     }
 
     fn timer(&mut self, port: &mut Port, key: u64) {

@@ -141,8 +141,19 @@ pub fn bind_sensor(tid: u32, t: u32) -> Result<bool, Errno> {
 /// [`SYS_FUTEX_WAIT`](azos_abi::syscall_nr::SYS_FUTEX_WAIT) files a word of
 /// that region under.
 pub fn notify_wake_kernel(region: u32, offset: u32, n: u32) -> u32 {
-    let key = azos_sched::futex::Key::Shared { obj: region, offset };
-    azos_sched::futex::wake_key(key, n).max(0) as u32
+    wake_word(azos_sched::futex::Key::Shared { obj: region, offset }, n).max(0) as u32
+}
+
+/// Wake up to `n` waiters on `key` (`azos_sched::futex::wake_key`), and, for
+/// a word of a shm region, the port sources bound to it as a doorbell
+/// (`PORT_SRC_DOORBELL`), after the futex table is released. Every futex wake
+/// of a shared word that ring 3 or a kernel producer makes comes here.
+pub fn wake_word(key: azos_sched::futex::Key, n: u32) -> i64 {
+    let woken = azos_sched::futex::wake_key(key, n);
+    if let azos_sched::futex::Key::Shared { obj, offset } = key {
+        azos_ipc::port::port_ring_doorbell(obj, offset);
+    }
+    woken
 }
 
 /// The futex key of the aligned word at `uaddr`, and whether the word lives
@@ -379,5 +390,5 @@ pub fn sys_futex_wake(uaddr: u64, a1: u64) -> i64 {
     if !shm && azos_sched::UserPtr::<u32>::new(uaddr).read().is_err() {
         return Errno::EFAULT.to_syscall_ret();
     }
-    azos_sched::futex::wake_key(key, n)
+    wake_word(key, n)
 }

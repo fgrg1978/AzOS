@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The kernel side over libsys: a server on a port ([`Port`]) or on its calls
 //! alone ([`Calls`]). Each source and each kind of server is a file of its
-//! own (`port.rs`, `calls.rs`, `doorbell.rs`, `irq.rs`), so a server's syscall
+//! own (`port.rs`, `calls.rs`, `doorbell.rs`), so a server's syscall
 //! profile, derived from the files its image lists
 //! (`tests/host/seccomp-tests`), names only what it uses.
 
@@ -11,7 +11,6 @@ use azos_libsys as sys;
 
 mod calls;
 mod doorbell;
-mod irq;
 mod port;
 
 pub use calls::Calls;

@@ -37,6 +37,7 @@ impl Host for Up {
     }
     fn wake_shared(&self, obj: u32, offset: u32) {
         let _ = azos_sched::futex::wake_key(azos_sched::futex::Key::Shared { obj, offset }, u32::MAX);
+        crate::port::port_ring_doorbell(obj, offset);
     }
     fn sweep_slot(&self, slot: u32) {
         objref::sweep_index(crate::cap::ty::SHM, slot);

@@ -26,7 +26,7 @@ mod service;
 use azos_libsys as sys;
 use azos_inspect_lib::{Inspector, Value};
 use azos_srv::sys::Calls;
-use azos_srv::{Answer, Handler, Server};
+use azos_srv::{Handler, Server};
 use azos_names::{MsgDesc, NamesIdl, NAME_MAX};
 use service::{Host, Service};
 
@@ -130,11 +130,10 @@ fn main() -> ! {
 struct Names(&'static mut Service<Kernel>);
 
 impl Handler<Calls> for Names {
-    fn call(&mut self, _k: &mut Calls, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
+    fn call(&mut self, _k: &mut Calls, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) {
         // The badge of the capability the call came through, 0 when the call
         // was not badged: an unidentified caller, whom the service refuses.
         self.0.caller = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
         let _ = NamesIdl::dispatch(self.0, req, rep);
-        Answer::Reply
     }
 }

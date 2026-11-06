@@ -61,7 +61,10 @@
 //! - **Doorbell** (`PORT_SRC_DOORBELL`): a slot with a `pending` bit named by
 //!   a shared-memory word (region, offset), indexed in the port table's bell
 //!   list. Every futex wake of that word sets it ([`port_ring_doorbell`],
-//!   hooked into `azos_sched::futex::wake_key`), interrupt context included.
+//!   called by the wakes' producers after the futex table is released:
+//!   `azos_syscall::vdso_notify::wake_word` and the pipe wakes of
+//!   `memobj_cap`), interrupt context included. The scheduler never calls
+//!   it, so no scheduler path takes `PORTS`.
 //! - **Pressure** (`PORT_SRC_PRESSURE`): no slot of its own. The Domain holds
 //!   the port's reference (`azos_sched::domain::set_pressure_port`) and the
 //!   reclaim task queues one event per change of the Domain's frame-budget
@@ -1112,7 +1115,7 @@ fn reap_bells_locked(t: &mut PortTable) {
 }
 
 /// The word `offset` of the shm region `obj` (its packed reference) was
-/// woken (`azos_sched::futex::wake_key`, after the futex table is
+/// woken (`azos_sched::futex::wake_key`; called after the futex table is
 /// released): mark every doorbell source bound to it pending and wake its
 /// port's waiters. Interrupt context included (a kernel producer's
 /// `notify_wake_kernel`). One atomic load when no doorbell is bound.

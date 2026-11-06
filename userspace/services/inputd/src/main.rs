@@ -41,7 +41,7 @@ use azos_input_wire::event::{FOCUS_BYTES, FOCUS_OFFSET, REGION_TOTAL, STREAM_CAP
 use azos_libsys as sys;
 use azos_rings::region::{RingSleep, RingStep, SpscRing, RING_HEAD};
 use azos_srv::sys::Port;
-use azos_srv::{Answer, Handler, Idle, Server, State};
+use azos_srv::{Handler, Idle, Server, State};
 use core::sync::atomic::{AtomicU32, Ordering};
 use focus::{Host, Ring, Service};
 
@@ -208,12 +208,11 @@ struct Input {
 }
 
 impl Handler<Port> for Input {
-    fn call(&mut self, _port: &mut Port, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
+    fn call(&mut self, _port: &mut Port, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) {
         // The badge of the capability the call came through: the row's, or a
         // warrant's (0 when the call carried none).
         self.svc.caller = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
         let _ = InputIdl::dispatch(&mut self.svc, req, rep);
-        Answer::Reply
     }
 
     /// Deliver what the stream holds; when it is empty, announce the sleep

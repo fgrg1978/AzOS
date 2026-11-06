@@ -8,7 +8,7 @@ use azos_srv_tests::ep_queue::{self, Collected, NO_DONEE};
 use azos_srv_tests::port_link::{LinkSet, PortLink};
 use azos_abi::ipc_msg::{MsgDesc, MSG_MORE};
 use azos_abi::syscall_nr::{PortEventInfo, PORT_EVENT_CALLS, PORT_EVENT_DOORBELL, PORT_EVENT_IRQ, PORT_EVENT_TIMER};
-use azos_srv::{Answer, Event, Handler, Idle, Kernel, Server, CALL_BATCH};
+use azos_srv::{Event, Handler, Idle, Kernel, Server, CALL_BATCH};
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
 
@@ -124,11 +124,10 @@ struct Echo {
 }
 
 impl Handler<Fake> for Echo {
-    fn call(&mut self, _k: &mut Fake, _h: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
+    fn call(&mut self, _k: &mut Fake, _h: u64, req: &MsgDesc, rep: &mut MsgDesc) {
         self.calls.push(req.words[0]);
         rep.words[0] = req.words[0] + 1;
         rep.n_words = 1;
-        Answer::Reply
     }
     fn irq(&mut self, _k: &mut Fake, key: u64, _cpu: u8) {
         self.irqs.push(key);

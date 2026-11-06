@@ -409,7 +409,6 @@ pub(crate) fn install_sched_hooks() {
     // by (region, offset), as the Linux personality keys a shared futex.
     if azos_sched::futex_table::SHARED {
         azos_sched::futex::register_shm_word_of(robust_shm_word_of);
-        azos_sched::futex::register_doorbell(azos_ipc::port::port_ring_doorbell);
     }
     // Wave 15 N10, Kconfig FUTEX_PI: the PI futex operations and the slot ->
     // TID map their words need, and the futex table's PiTable (N9) that runs

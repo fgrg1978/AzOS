@@ -68,19 +68,11 @@ pub trait Kernel {
     fn pause(&mut self) {}
 }
 
-/// What a call handler did with the call.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Answer {
-    /// The answer is in `rep`: the runtime replies.
-    Reply,
-    /// The handler keeps the handle and answers (or delegates) it later.
-    Held,
-}
-
 /// A server's entry points, one per kind of source.
 pub trait Handler<K: Kernel> {
-    /// Serve call `handle`: `req` as accepted, the answer into `rep`.
-    fn call(&mut self, k: &mut K, handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer;
+    /// Serve call `handle`: `req` as accepted, the answer into `rep`, which
+    /// the runtime replies with.
+    fn call(&mut self, k: &mut K, handle: u64, req: &MsgDesc, rep: &mut MsgDesc);
     /// An interrupt on the line bound with `key`, routed to `cpu`.
     fn irq(&mut self, _k: &mut K, _key: u64, _cpu: u8) {}
     /// The timer armed with `key` fired (it is one-shot: re-arm it here).
@@ -209,9 +201,8 @@ impl<K: Kernel> Server<K> {
                 return n;
             };
             let mut rep = MsgDesc::default();
-            if h.call(&mut self.kernel, handle, &req, &mut rep) == Answer::Reply {
-                let _ = self.kernel.reply(handle, &rep);
-            }
+            h.call(&mut self.kernel, handle, &req, &mut rep);
+            let _ = self.kernel.reply(handle, &rep);
             if req.flags & MSG_MORE == 0 {
                 self.owed = false;
                 return n + 1;
