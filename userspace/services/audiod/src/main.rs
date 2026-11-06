@@ -11,26 +11,35 @@
 //! Capture is lent, never mixed, and decided on the client's microphone effect,
 //! never the server's. The decisions are `server.rs`
 //! (pure, tested on the host in `tests/host/audiod-tests`) and `mixer.rs`; this
-//! file is the world they run in: the kernel calls behind [`Env`], and the
-//! loop.
+//! file is the world they run in: the kernel calls behind [`Env`], and the two
+//! threads.
 //!
-//! One thread, on one port (`azos_srv`): the calls on `endpoint.audio` and
-//! the mixer's timer wake the same wait, so a call that arrives while a period
-//! is due waits for one mix pass at most, and a pass for one batch of calls. The
-//! periods themselves move in queues in shared memory, never in calls; the
-//! calls are the ones that change what a stream may do, and the mixer passes
-//! after each of them.
+//! Two threads, because a call can arrive while a period is due: the main
+//! thread serves the calls (the endpoint's `READ` grant is stamped with the
+//! main thread; it is a calls-only server on `azos_srv`, asleep in the accept,
+//! so a caller's priority and reservation reach it and the IPC fast path
+//! hands it a call directly), the pump thread
+//! calls [`Server::tick`] every few milliseconds while a stream runs and parks
+//! on a futex word when none does. The server's state is behind one lock they
+//! share, a futex word a thread that finds it held sleeps on (never spins: the
+//! pump runs at a real-time level, so a spin would keep every task below it
+//! off that CPU until its budget ran out); the longest it is held is one mix
+//! pass or one kernel control call, never a wait. The periods themselves move
+//! in queues in shared memory, never in calls; the calls are the ones that
+//! change what a stream may do.
 //!
-//! **Who holds what time.** The thread asks for a deadline reservation first
-//! thing (`SYS_SCHEDCTL`, class DL, Kconfig `AUDIOD_PUMP_RUNTIME_US` every
-//! `AUDIOD_PUMP_PERIOD_US` at band level `AUDIOD_PUMP_LEVEL`, on the row's
-//! `time` warrant): a hard budget, so the server is throttled past it and can
-//! never take more of a CPU than that. The calls are served on the same
-//! budget: they are control calls, short beside a mix pass, and a call that
-//! finds the budget spent waits for the next period. When admission refuses
-//! (no room, the band cap, no warrant) the server says so on the console and
-//! serves no playback stream (`UNSUPPORTED`): it then stays a best-effort
-//! thread, and capture, which the kernel moves, is unaffected.
+//! **Who holds what time.** The topology row gives the process no profile, so
+//! the main thread is a best-effort service: it sleeps in `accept` and its
+//! work is the calls. The pump is the real-time work, and it asks for its own
+//! deadline reservation first thing (`SYS_SCHEDCTL`, class DL, Kconfig
+//! `AUDIOD_PUMP_RUNTIME_US` every `AUDIOD_PUMP_PERIOD_US` at band level
+//! `AUDIOD_PUMP_LEVEL`, on the row's `time` warrant): a hard budget, so the
+//! mixer is throttled past it and can never take more of a CPU than that. The
+//! main thread waits for the answer before it serves a call. When admission
+//! refuses (no room, the band cap, no warrant) the server says so on the
+//! console and serves no playback stream (`UNSUPPORTED`): the pump then stays
+//! a best-effort thread that sleeps, and capture, which the kernel moves, is
+//! unaffected.
 
 #![no_std]
 #![no_main]
@@ -38,14 +47,17 @@
 mod mixer;
 mod server;
 
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use azos_abi::cap::CapPerms;
 use azos_devif::sound::{self as snd, Info, Opened, Params, Status};
 use azos_devif::{Lent, MsgDesc, SoundIdl};
 use azos_libsys as sys;
 use azos_rings::region::SpscSlots;
-use azos_srv::sys::Port;
-use azos_srv::{Handler, Idle, Server as Loop, State};
 use server::{DevMem, Env, Limits, Mapped, Server};
+use azos_srv::sys::Calls;
+use azos_srv::{Handler, Server as Loop};
 use sys::dev::{Ep, SoundCall, SoundClient};
 
 /// A memory object this task made, and where it is mapped.
@@ -208,15 +220,48 @@ impl Env for Kernel {
     }
 }
 
-/// Time between two passes of the mixer while the device stream is open, ns.
+struct Shared {
+    /// 0 free, 1 held, 2 held with a thread asleep on it.
+    lock: AtomicU32,
+    state: UnsafeCell<Option<Server<Kernel>>>,
+}
+// SAFETY: `state` is touched only with `lock` held (`with`), and written once
+// before the second thread exists.
+unsafe impl Sync for Shared {}
+
+static SHARED: Shared = Shared { lock: AtomicU32::new(0), state: UnsafeCell::new(None) };
+
+/// Bumped by the main thread whenever a call may have changed a stream; the
+/// pump thread's futex word.
+static CHANGED: AtomicU32 = AtomicU32::new(0);
+
+/// Run `f` on the server. While the other thread has it, sleep on the lock
+/// word until it lets go.
+fn with<R>(f: impl FnOnce(&mut Server<Kernel>) -> R) -> R {
+    if SHARED.lock.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        // Mark it contended and sleep while it stays so; the holder's release
+        // wakes one sleeper.
+        while SHARED.lock.swap(2, Ordering::Acquire) != 0 {
+            let _ = sys::futex_wait(&SHARED.lock, 2, 0);
+        }
+    }
+    // SAFETY: the lock is held.
+    let r = unsafe { (*SHARED.state.get()).as_mut() }.map(f);
+    if SHARED.lock.swap(0, Ordering::Release) == 2 {
+        let _ = sys::futex_wake(&SHARED.lock, 1);
+    }
+    r.expect("audiod: state used before it was set up")
+}
+
+/// Time between two passes of the pump while the device stream is open, ns.
 const TICK_NS: u64 = 5_000_000;
-/// Longest the mixer waits with nothing to do, ns: the time to notice a
-/// client that stopped is at most this.
+/// Longest the pump parks with nothing to do, ns: a lost wake, and the time to
+/// notice a client that stopped, are at most this.
 const IDLE_PARK_NS: u64 = 500_000_000;
 
-/// The port's sources: the calls on `endpoint.audio`, the mixer's timer.
-const CALLS: u64 = 1;
-const TICK: u64 = 2;
+/// What the pump learned of its reservation, for the main thread: 0 not yet,
+/// 1 admitted, 2 refused. The main thread sleeps on it before it serves.
+static MIXER_TIME: AtomicU32 = AtomicU32::new(0);
 
 /// `v` in decimal, into `buf`; the digits.
 fn decimal(mut v: u64, buf: &mut [u8; 20]) -> &[u8] {
@@ -243,9 +288,9 @@ fn say(parts: &[&[u8]]) {
     let _ = sys::console_write(sys::STDOUT, &line[..=n]);
 }
 
-/// Bind the server's thread to its deadline reservation on the row's `time`
-/// warrant: 0, or the kernel's refusal (a negative errno; -1 when the row
-/// grants no warrant).
+/// Bind the calling thread (the pump) to its deadline reservation on the
+/// row's `time` warrant: 0, or the kernel's refusal (a negative errno; -1
+/// when the row grants no warrant).
 fn reserve_mixer_time() -> i64 {
     let Some(warrant) = sys::dev::lookup(sys::dev::key::TIME, 0) else { return -1 };
     sys::schedctl(
@@ -258,85 +303,15 @@ fn reserve_mixer_time() -> i64 {
     )
 }
 
-/// The server on its port: the calls, and the mixer's passes.
-struct Audio {
-    s: Server<Kernel>,
-    /// A call may have changed a stream: the mixer passes before the next wait.
-    changed: bool,
-    /// When the armed timer fires (`u64::MAX`: none armed).
-    due: u64,
-}
+/// The pump thread's stack.
+#[repr(C, align(16))]
+struct Stack([u8; 16384]);
+static mut PUMP_STACK: Stack = Stack([0; 16384]);
 
-impl Audio {
-    /// One mixer pass, and the timer of the next: a period away while a
-    /// stream runs, the idle park otherwise. A timer armed for no later than
-    /// that is kept (it re-arms when it fires), so a pass after a call costs
-    /// no bind.
-    fn pump(&mut self, port: &mut Port) {
-        self.s.tick();
-        let now = sys::vdso_now_ns();
-        let next = now + if self.s.busy() { TICK_NS } else { IDLE_PARK_NS };
-        if next < self.due && port.arm(TICK, next).is_ok() {
-            self.due = next;
-        }
-    }
-}
-
-impl Handler<Port> for Audio {
-    fn call(&mut self, _port: &mut Port, handle: u64, req: &MsgDesc, rep: &mut MsgDesc) {
-        // The badge of the capability the call came through, 0 when the call
-        // was not badged: an unidentified caller, whom the server refuses.
-        let s = &mut self.s;
-        s.caller = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
-        // The call's warrant is the client's authority for a capture open.
-        s.call = handle;
-        s.prepare();
-        let _ = SoundIdl::dispatch(s, req, rep);
-        s.caller = 0;
-        s.call = 0;
-        self.changed = true;
-    }
-
-    fn timer(&mut self, port: &mut Port, key: u64) {
-        if key == TICK {
-            self.due = u64::MAX;
-            self.pump(port);
-        }
-    }
-
-    fn idle(&mut self, port: &mut Port) -> Idle {
-        if core::mem::take(&mut self.changed) {
-            self.pump(port);
-        }
-        Idle::Sleep
-    }
-}
-
-/// The server's state: some 37 KiB, too big for the stack.
-static AUDIO: State<Audio> = State::new();
-
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    let Some(ep) = sys::dev::lookup(sys::dev::key::SOUND, snd::device_badge(0)) else {
-        sys::println(b"[audiod] FAILED: the row grants no sound.0");
-        sys::exit(1);
-    };
-    let limits = Limits {
-        max_streams: azos_limits::AUDIO_MAX_STREAMS as usize,
-        max_periods: azos_limits::AUDIO_MAX_PERIODS as u32,
-        arena_bytes_max: azos_limits::AUDIO_ARENA_KB_MAX as u64 * 1024,
-        capture: azos_limits::AUDIO_CAPTURE,
-    };
-    // SAFETY: once, on the only thread.
-    let audio = unsafe { AUDIO.install(Audio {
-        s: Server::new(Kernel { snd: SoundClient::new(Ep(ep)), dev: None }, limits),
-        changed: false,
-        due: u64::MAX,
-    }) };
-    // No call is served before the server knows whether it may mix.
+extern "C" fn pump_thread(_: u64, _: u64, _: u64) -> ! {
     let rc = reserve_mixer_time();
     let admitted = rc == 0;
-    audio.s.set_playback(admitted);
+    with(|s| s.set_playback(admitted));
     let (mut a, mut b, mut c) = ([0u8; 20], [0u8; 20], [0u8; 20]);
     if admitted {
         say(&[
@@ -350,17 +325,76 @@ pub extern "C" fn _start() -> ! {
     } else {
         say(&[b"[audiod] mixer: no deadline reservation (refused: -", decimal(rc.unsigned_abs(), &mut a), b"): no playback"]);
     }
-    let Ok(mut port) = Port::create() else {
-        sys::println(b"[audiod] FAILED: no event port");
+    MIXER_TIME.store(if admitted { 1 } else { 2 }, Ordering::Release);
+    let _ = sys::futex_wake(&MIXER_TIME, 1);
+    loop {
+        // Read the word BEFORE looking at the streams: a call that lands in
+        // between changes it and the wait returns at once.
+        let seen = CHANGED.load(Ordering::Acquire);
+        let busy = with(|s| {
+            s.tick();
+            s.busy()
+        });
+        if busy {
+            let _ = sys::sleep_until_ns(sys::vdso_now_ns() + TICK_NS);
+        } else {
+            let _ = sys::futex_wait(&CHANGED, seen, IDLE_PARK_NS);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    let Some(ep) = sys::dev::lookup(sys::dev::key::SOUND, snd::device_badge(0)) else {
+        sys::println(b"[audiod] FAILED: the row grants no sound.0");
         sys::exit(1);
     };
-    if port.bind_served(CALLS).is_err() {
-        sys::println(b"[audiod] FAILED: the calls on endpoint.audio reach no port");
+    let limits = Limits {
+        max_streams: azos_limits::AUDIO_MAX_STREAMS as usize,
+        max_periods: azos_limits::AUDIO_MAX_PERIODS as u32,
+        arena_bytes_max: azos_limits::AUDIO_ARENA_KB_MAX as u64 * 1024,
+        capture: azos_limits::AUDIO_CAPTURE,
+    };
+    // SAFETY: no other thread exists yet.
+    unsafe {
+        *SHARED.state.get() = Some(Server::new(Kernel { snd: SoundClient::new(Ep(ep)), dev: None }, limits));
+    }
+    // The stack is the pump thread's alone, and its top is 16-aligned.
+    let top = core::ptr::addr_of_mut!(PUMP_STACK) as usize + core::mem::size_of::<Stack>();
+    if sys::thread_create(pump_thread, top, 0, core::ptr::null_mut()) < 0 {
+        sys::println(b"[audiod] FAILED: no thread for the pump");
         sys::exit(1);
     }
-    audio.pump(&mut port);
+    // No call is served before the pump knows whether it may mix.
+    while MIXER_TIME.load(Ordering::Acquire) == 0 {
+        let _ = sys::futex_wait(&MIXER_TIME, 0, 0);
+    }
     sys::println(b"[audiod] AzOS audio server (Sound on endpoint.audio, mixing into sound.0)");
-    Loop::new(port).run(audio)
+
+    Loop::calls_only(Calls).run(&mut Audio)
+}
+
+/// The calls on `endpoint.audio`, served on the main thread.
+struct Audio;
+
+impl Handler<Calls> for Audio {
+    fn call(&mut self, _k: &mut Calls, handle: u64, req: &MsgDesc, rep: &mut MsgDesc) {
+        // The badge of the capability the call came through, 0 when the call
+        // was not badged: an unidentified caller, whom the server refuses.
+        let badge = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
+        with(|s| {
+            s.caller = badge;
+            // The call's warrant is the client's authority for a capture open.
+            s.call = handle;
+            s.prepare();
+            let _ = SoundIdl::dispatch(s, req, rep);
+            s.caller = 0;
+            s.call = 0;
+        });
+        // The pump re-reads its streams: a stream may have started.
+        CHANGED.fetch_add(1, Ordering::Release);
+        let _ = sys::futex_wake(&CHANGED, 1);
+    }
 }
 
 #[panic_handler]
