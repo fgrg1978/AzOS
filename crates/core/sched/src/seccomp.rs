@@ -358,7 +358,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // accept and reply) and takes the lock it shares with the idle clock by
     // yielding; the main thread sleeps until the clock is due. `DOMAIN_STAT`
     // is the clock the idle timeout and the wakelock deadlines run on (the
-    // vDSO's fallback).
+    // vDSO's fallback); `SYS_CAP_INFO` finds the console handle its lines are
+    // written through.
     ImageProfile {
         image: "GPIODRV.ELF",
         syscalls: sys_nrs![
