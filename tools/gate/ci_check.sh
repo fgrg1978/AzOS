@@ -12957,6 +12957,21 @@ host_job host_canary_row "fork: grown parent forks canary" syscall-tests fork-ch
     a_parent_that_grew_past_its_base_still_forks
 host_job host_canary_row "fork: invariant refusal reported canary" syscall-tests clone-invariant-silent-canary \
     a_frame_whose_parent_leaf_is_missing_refuses_the_fork
+# A shared mapping is a record of the address space (pager::Backing::Obj, and a
+# shared file piece), placed like any other mapping. The space's end clears its
+# leaves before the sweep can free a frame it does not own (pager::unmap_shared);
+# mm-rmap-missing-canary: it does not, and the sweep frees the object's frames
+# under the other mapper. shm-partial-map-kept-canary: a partial SYS_MO_MAP
+# keeps its pages and pins the reference. shm-release-record-kept-canary: the
+# release keeps the record and the leaves.
+host_job host_canary_row "shm: space end spares the object canary" syscall-tests mm-rmap-missing-canary \
+    a_space_that_ends_leaves_a_shared_object_to_its_other_mapper
+host_job host_canary_row "shm: file mapping space end canary" syscall-tests mm-rmap-missing-canary \
+    a_shared_file_mapping_outside_the_window_ends_with_its_space
+host_job host_canary_row "shm: partial map leaves nothing canary" syscall-tests shm-partial-map-kept-canary \
+    a_map_that_fails_part_way_leaves_nothing_behind
+host_job host_canary_row "shm: release gives the record back canary" syscall-tests shm-release-record-kept-canary \
+    a_released_mapping_gives_its_record_and_its_address_back
 host_job zpool_host_row "fork: compressed page shared, pool on" a_compressed_page_is_shared_with_the_child_not_restored
 host_job zpool_host_canary_row "fork: compressed page shared canary" fork-marker-canary \
     a_compressed_page_is_shared_with_the_child_not_restored

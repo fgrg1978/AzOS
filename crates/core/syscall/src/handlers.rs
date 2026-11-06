@@ -3494,7 +3494,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
 /// whose pages are never faulted in ([`mmap_precommit`]), or a space with no
 /// record left. All or nothing: on `false` every frame mapped here is unmapped
 /// and freed again. The caller charged the pages.
-fn commit_now(user_pt: usize, base: usize, pages: usize, writable: bool) -> bool {
+pub(crate) fn commit_now(user_pt: usize, base: usize, pages: usize, writable: bool) -> bool {
     let page_size = azos_arch::PAGE_SIZE;
     let flags = azos_arch_api::PagePerms {
         accessed: true, dirty: writable, write: writable,
@@ -3522,7 +3522,7 @@ fn commit_now(user_pt: usize, base: usize, pages: usize, writable: bool) -> bool
 /// and the physical page is exclusively ours to release.  `vmm::unmap` shoots
 /// the address down on every hart that may hold it before it returns, so no
 /// stale TLB entry survives the free.
-pub(crate) fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
+fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
     let page_size = azos_arch::PAGE_SIZE;
     let mut v = base;
     while v < end {

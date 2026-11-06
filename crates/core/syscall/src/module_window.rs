@@ -82,29 +82,12 @@ pub fn map_fixed(user_pt: usize, addr: u64, len: usize, prot: u64, allowed: bool
     if !azos_sched::mm_charge(pages as u32) {
         return Errno::ENOMEM.to_syscall_ret();
     }
+    // The committed form of an anonymous mapping, as `sys_mmap` makes one for a
+    // task that takes no page fault.
     let writable = prot & crate::handlers::MMAP_PROT_WRITE != 0;
-    let perms = azos_arch_api::PagePerms {
-        accessed: true, dirty: writable, write: writable,
-        ..azos_arch_api::PagePerms::USER_RW
-    };
-    let mut va = start;
-    while va < end {
-        let mapped = match azos_mm::pmm::alloc_page() {
-            Ok(frame) => {
-                let ok = azos_mm::vmm::map(user_pt, va, frame.as_usize(), perms).is_ok();
-                if !ok {
-                    let _ = azos_mm::pmm::free_page(frame);
-                }
-                ok
-            }
-            Err(_) => false,
-        };
-        if !mapped {
-            crate::handlers::mmap_unwind(user_pt, start, va);
-            azos_sched::mm_discharge(pages as u32);
-            return Errno::ENOMEM.to_syscall_ret();
-        }
-        va += page;
+    if !crate::handlers::commit_now(user_pt, start, pages, writable) {
+        azos_sched::mm_discharge(pages as u32);
+        return Errno::ENOMEM.to_syscall_ret();
     }
     start as i64
 }

@@ -243,10 +243,13 @@ it with the mapping's exact permissions.
   window); the file is identified by the filesystem's own key under that
   filesystem's backing, so every mapper of the same file reaches the same
   object and the same frames.
-* **`MAP_SHARED`** maps the cache's own frame into the task's shm/MMIO window:
-  every mapper sees every store. The task records the mapping in the object
-  (`memobj_note_mapping_ref`), so the cache can drop a page out of this address
-  space, and a writable mapping makes the page dirty. Pages go back to the file
+* **`MAP_SHARED`** maps the cache's own frame, in a mapping placed like an
+  anonymous one: every mapper sees every store. The task books the mapping in
+  the object (`memobj_note_mapping_at_ref`, which names the cache page the
+  mapping starts at), so the cache can drop a page out of this address space,
+  and a writable mapping makes the page dirty. The pager clears the mapping's
+  leaves when it ends, so the sweep that frees a space's own frames never meets
+  one of the cache's (`pager::unmap_shared`). Pages go back to the file
   at `munmap`, at the file's sync, at task exit (`exit_writeback`), or at the
   flusher's pass.
 * **`MAP_PRIVATE`** is a region of the task's own, placed and charged like an
@@ -460,8 +463,8 @@ it (`MLSRV.ELF`, whose image asks for 64 KiB: a small row's 64 pages plus 16,
 size with its entry and break.
 
 Below the stack lies nothing mapped up to `USER_MMIO_LIMIT`, which is
-`USER_STACK_TOP - USER_STACK_MAX_KB`: the window that shm and device mappings
-are placed in stops there, so a stack that outgrows its request faults instead
+`USER_STACK_TOP - USER_STACK_MAX_KB`: the window that device mappings, ring pages and
+the vDSO notify page are placed in stops there, so a stack that outgrows its request faults instead
 of running into a mapping. The fault report says so (`stack: below the stack
 this image asked for`). There is no demand growth on purpose: a `mem = "locked"`
 row must take no fault at run time, and a stack sized from the program is

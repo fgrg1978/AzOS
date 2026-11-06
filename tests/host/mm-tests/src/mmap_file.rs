@@ -27,6 +27,11 @@
 //! * `charged` always true: `a_shared_file_region_is_not_charged` red.
 //! * `charged_pages` counting every region: the same row red.
 //! * `has_whole` answering for regions outside the range: `has_whole_looks_only_at_the_range` red.
+//! * `joins` folding the neighbouring mappings of one shared object:
+//!   `a_shared_object_mapping_never_folds_or_joins_an_anonymous_one` red.
+//! * `is_whole` leaving out a shared object's mapping: the cut row and
+//!   `has_whole_looks_only_at_the_range` red. `charged` counting it: the charge
+//!   row and the fold row red.
 //! * Does not discriminate: `clip` dropping `shared`/`obj` (`remove_range`'s
 //!   remainders are only reached by a cut the pager refuses first; the row
 //!   `a_clip_keeps_the_object_page` pins `off`, which a clip computes).
