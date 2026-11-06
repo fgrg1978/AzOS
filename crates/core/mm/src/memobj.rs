@@ -5957,6 +5957,7 @@ mod tests {
     /// under a mapping.
     #[test]
     fn file_regions_pin_the_file_and_transient_users_do_not() {
+        let _g = setup();
         let (f, r, _) = window();
         let pins = || (f.pins.load(Ordering::SeqCst), f.unpins.load(Ordering::SeqCst));
         memobj_paged_users_add_ref(r);
