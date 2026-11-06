@@ -12084,6 +12084,43 @@ host_job host_canary_row "aspace: reaped object records canary" syscall-tests as
     a_space_made_from_a_reaped_object_starts_with_no_records
 host_job host_canary_row "aspace: stale reference canary" syscall-tests as-stale-ref-canary \
     a_reference_kept_past_its_space_reaches_nothing
+# The next space is usually the same object over the same root (both come back
+# last-in first-out): the generation tells a stale reference from it.
+# as-gen-unchecked-canary: only the root is compared, and the reclaimer takes a
+# page of the next space through the dead one's reference.
+host_job host_canary_row "aspace: same root generation canary" syscall-tests as-gen-unchecked-canary \
+    a_reference_kept_past_its_space_takes_nothing_from_a_space_on_the_same_root
+# A reclaimer store that outlives its space leaves the next space's pool entry
+# alone (its key carries the generation). Needs the compressed pool, so the
+# rows run under the robot preset with MM_RECLAIM_COMPRESS on.
+# as-key-no-gen-canary: the key is the object alone and the page is lost.
+zpool_host_cfg() { # zpool_host_cfg <file>
+    cp "${REPO_ROOT}/config/defconfigs/${GATE_ROBOT_DEFC_RV}.config" "$1"
+    printf 'CONFIG_MM_RECLAIM_COMPRESS=y\n# CONFIG_MM_RECLAIM_OFF is not set\n' >>"$1"
+    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$1" python3 -m olddefconfig >/dev/null 2>&1) && grep -q '^CONFIG_MM_RECLAIM_COMPRESS=y$' "$1"
+}
+zpool_host_row() { # <label> <test fn>
+    local out cfg="$AZOS_OUT/build/zpool-host.config"
+    ci_tier_skips "$1" && return 0
+    printf "  %-26s" "${1}..."
+    zpool_host_cfg "$cfg" || { bad; echo "      $cfg lost MM_RECLAIM_COMPRESS"; return; }
+    KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-zpool" \
+        host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release -- "$2"
+    if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
+    else
+        bad; echo "      syscall-tests (MM_RECLAIM_COMPRESS=y): $2 did not pass alone"
+        echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
+zpool_host_canary_row() { # <label> <feature> <test fn>
+    local cfg="$AZOS_OUT/build/zpool-host-canary.config"
+    ci_tier_skips "$1" && return 0
+    zpool_host_cfg "$cfg" || { printf "  %-26s" "${1}..."; bad; echo "      $cfg lost MM_RECLAIM_COMPRESS"; return; }
+    KCONFIG_CONFIG="$cfg" host_canary_row "$1" syscall-tests "$2" "$3"
+}
+host_job zpool_host_row "aspace: late store, pool on" a_store_that_outlives_its_space_leaves_the_next_space_page_alone
+host_job zpool_host_canary_row "aspace: late store key canary" as-key-no-gen-canary \
+    a_store_that_outlives_its_space_leaves_the_next_space_page_alone
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,
 # syscall-tests uaccess_race.rs). uaccess-race-canary: a user-leaf shootdown
 # returns without waiting for the access sections, as before the module.
@@ -15208,8 +15245,9 @@ PY
         [ "${STALL_VERDICT:-}" = stalled ] || return 0
         echo "      stalled: 20 s of console silence before the marker; state dumped twice: $STALL_PREFIX.stall-a.txt $STALL_PREFIX.stall-b.txt"
     }
-    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match] [disk image target]
-        local label="$1" isa="$2" extra="$3" want="$4" n_want rcfg
+    ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated; a leading + : these at least, others may fail too> [kernel command line] [ERE the log must match] [disk image target]
+        local label="$1" isa="$2" extra="$3" want="$4" n_want rcfg atleast=""
+        case "$want" in +*) atleast=1; want="${want#+}" ;; esac
         local -a app=(); [ -n "${5:-}" ] && app=(-append "$5")
         # A disk (K1): a private copy of a fresh image, so FAT32 mounts and
         # `fs-wb` runs (the `ktest disk` rows).
@@ -15277,6 +15315,10 @@ PY
         if [ -z "$plan" ]; then why="no TAP plan line (1..N)"
         elif [ "$plan" != "$n_want" ]; then
             why="plan 1..$plan, the source registers $n_want tests: $(python3 tools/gate/ktest_registry.py verify --isa "$isa" --select "$KTEST_FEATS$extra" --config "$rcfg" --log "$log" 2>&1)"
+        elif [ -n "$atleast" ]; then
+            for name in $want; do
+                case " $got " in *" $name "*) ;; *) why="not ok: [${got% }], expected at least [${want% }]" ;; esac
+            done
         elif [ "$got" != "$want" ]; then why="not ok: [${got% }], expected [${want% }]"
         elif grep -aq '^Bail out!' "$log"; then
             # Only a canary that panics may stop the run, and only in its test.
@@ -15486,7 +15528,7 @@ PY
     par "ktest kstack reuse canary (rv)" ktest_row "ktest kstack reuse canary (rv)" rv ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
     par "ktest kheap ceiling canary (rv)" ktest_row "ktest kheap ceiling canary (rv)" rv ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest kmem cache cross type canary (rv)" ktest_row "ktest kmem cache cross type canary (rv)" rv ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
-    par "ktest aspace reaped records canary (rv)" ktest_row "ktest aspace reaped records canary (rv)" rv "" "aspace_made_again_starts_with_no_records" "canary=as-stale-root"
+    par "ktest aspace reaped records canary (rv)" ktest_row "ktest aspace reaped records canary (rv)" rv "" "+aspace_made_again_starts_with_no_records" "canary=as-stale-root"
     par "ktest cap table cross type canary (rv)" ktest_row "ktest cap table cross type canary (rv)" rv ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (rv)" ktest_row "ktest task cross type canary (rv)" rv ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (rv)" ktest_row "ktest kmem preload canary (rv)" rv ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
@@ -15495,7 +15537,7 @@ PY
     par "ktest kstack reuse canary (arm)" ktest_row "ktest kstack reuse canary (arm)" arm ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
     par "ktest kheap ceiling canary (arm)" ktest_row "ktest kheap ceiling canary (arm)" arm ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest kmem cache cross type canary (arm)" ktest_row "ktest kmem cache cross type canary (arm)" arm ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
-    par "ktest aspace reaped records canary (arm)" ktest_row "ktest aspace reaped records canary (arm)" arm "" "aspace_made_again_starts_with_no_records" "canary=as-stale-root"
+    par "ktest aspace reaped records canary (arm)" ktest_row "ktest aspace reaped records canary (arm)" arm "" "+aspace_made_again_starts_with_no_records" "canary=as-stale-root"
     par "ktest cap table cross type canary (arm)" ktest_row "ktest cap table cross type canary (arm)" arm ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (arm)" ktest_row "ktest task cross type canary (arm)" arm ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (arm)" ktest_row "ktest kmem preload canary (arm)" arm ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
@@ -17344,6 +17386,10 @@ CPU 5 lacks hwcap bits"
         if [ -z "$plan" ]; then why="no TAP plan line (1..N)"
         elif [ "$plan" != "$n_want" ]; then
             why="plan 1..$plan, the source registers $n_want tests: $(python3 tools/gate/ktest_registry.py verify --isa x86 --select "use-robot,ktest,chaos,decisions$extra" --config "$rcfg" --log "$log" 2>&1)"
+        elif [ -n "$atleast" ]; then
+            for name in $want; do
+                case " $got " in *" $name "*) ;; *) why="not ok: [${got% }], expected at least [${want% }]" ;; esac
+            done
         elif [ "$got" != "$want" ]; then why="not ok: [${got% }], expected [${want% }]"
         elif grep -aq '^Bail out!' "$log"; then
             # Only a canary that panics may stop the run, and only in its test

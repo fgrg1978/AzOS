@@ -11,19 +11,23 @@
 //! **Stale references.** A task other than the group's reaches a space only
 //! through a reference read from a task slot (the reclaimer) or a pool entry
 //! (the swap retag), which the space may have outlived. Objects come from a
-//! retained cache, so that memory is an `AddressSpace` for good, and
-//! [`SpaceRef::lock`] answers `None` once the object no longer holds the
-//! reference's root (destroyed, or made again for another root). A made-again
+//! retained cache, so that memory is an `AddressSpace` for good. Each end of a
+//! space advances the object's generation, which a reference carries: both
+//! the object and the page-table frame come back last-in first-out, so the next
+//! space is often the same object over the same root, and only the generation
+//! tells it from the dead one. [`SpaceRef::lock`] answers `None` once the
+//! object no longer holds the reference's root and generation. A made-again
 //! object keeps the lock a stale reader may be holding: [`create`] writes the
 //! whole object only the first time, and [`destroy`] is what empties the
 //! records, so an object goes back to the cache clean.
 
 use core::num::NonZeroUsize;
 use core::ptr::addr_of_mut;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use azos_sync::{IrqSaveGuard, SpinLock};
 
+use crate::addr::KERNEL_PHYS_TO_VIRT_OFFSET;
 use crate::cache::Cache;
 use crate::pager::REGIONS_PER_SPACE;
 use crate::region::RegionSet;
@@ -80,12 +84,46 @@ pub struct AddressSpace {
     _link: usize,
     /// The object was written whole once: its lock is a live one from then on.
     born: AtomicBool,
+    /// Advanced by each [`destroy`], under the lock.
+    gen: AtomicU32,
     /// The page-table root, 0 while the object is no space.
     root: AtomicUsize,
     st: SpinLock<Space>,
 }
 
 static SPACES: Cache<AddressSpace> = Cache::retained();
+
+/// A reference's tag: the object's physical address in the low bits, the low
+/// bits of its generation above them. Objects lie in the RAM map, below 2^48
+/// on every machine the kernel runs on; [`create`] refuses one above.
+const TAG_ADDR_BITS: u32 = 48;
+const TAG_ADDR_MASK: usize = (1 << TAG_ADDR_BITS) - 1;
+
+#[inline(always)]
+fn tag_of(obj: usize, gen: u32) -> usize {
+    obj.wrapping_sub(KERNEL_PHYS_TO_VIRT_OFFSET) | ((gen as usize & 0xffff) << TAG_ADDR_BITS)
+}
+
+#[inline(always)]
+fn tag_gen(tag: usize) -> u32 {
+    (tag >> TAG_ADDR_BITS) as u32
+}
+
+#[inline(always)]
+fn tag_obj(tag: usize) -> &'static AddressSpace {
+    // SAFETY: a tag names an object of the retained cache (`SpaceRef` doc).
+    unsafe { &*((tag & TAG_ADDR_MASK).wrapping_add(KERNEL_PHYS_TO_VIRT_OFFSET) as *const AddressSpace) }
+}
+
+/// Does the object hold the space `root` of generation `gen` (the tag's)?
+/// Canary `as-stale-ref-canary`: nothing is compared; `as-gen-unchecked-canary`:
+/// the generation is not.
+#[inline(always)]
+fn holds(a: &AddressSpace, root: usize, gen: u32) -> bool {
+    cfg!(feature = "as-stale-ref-canary")
+        || (a.root.load(Ordering::Relaxed) == root
+            && (cfg!(feature = "as-gen-unchecked-canary") || a.gen.load(Ordering::Relaxed) & 0xffff == gen))
+}
 
 /// Runtime canary `as-stale-root` (`kernel/src/canary_rt.rs`): [`destroy`] leaves
 /// the records in the object (ktest `aspace_made_again_starts_with_no_records`).
@@ -110,20 +148,14 @@ pub fn current_with_root(root: usize) -> Option<SpaceRef> {
     CURRENT_HOOK.get().and_then(|f| f()).filter(|r| r.root() == root)
 }
 
-/// A reference to an address space: its root, with the object. `Copy`; the
-/// root is the object's for as long as the space lives, so the reference
-/// carries it and reading it costs what reading a bare root did.
+/// A reference to an address space: its root, and a tag naming the object and
+/// its generation. `Copy`; the root is the space's for as long as it lives, so
+/// the reference carries it and reading it costs what reading a bare root did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SpaceRef {
     root: NonZeroUsize,
-    obj: *const AddressSpace,
+    tag: usize,
 }
-
-// SAFETY: `obj` names an object of a retained cache, valid memory for the
-// life of the kernel; what it holds is reached under its lock.
-unsafe impl Send for SpaceRef {}
-// SAFETY: as above.
-unsafe impl Sync for SpaceRef {}
 
 impl SpaceRef {
     /// The space's page-table root.
@@ -133,101 +165,99 @@ impl SpaceRef {
     }
 
     /// The space's name where a root is not enough (the compressed pool:
-    /// [`Self::of_key`]): its object's address.
+    /// [`Self::of_key`]): its object and generation, so a space made again from
+    /// the object has another. Canary `as-key-no-gen-canary`: the object alone.
     #[inline(always)]
     pub fn key(self) -> usize {
-        self.obj as usize
-    }
-
-    #[inline(always)]
-    fn obj(self) -> &'static AddressSpace {
-        // SAFETY: a retained cache's object (type doc).
-        unsafe { &*self.obj }
+        if cfg!(feature = "as-key-no-gen-canary") { self.tag & TAG_ADDR_MASK } else { self.tag }
     }
 
     /// The space's records, or `None` when the object is no longer this space.
-    /// Canary `as-stale-ref-canary`: the root is not compared, so a stale
-    /// reference reaches the records of the next space made from the object.
     #[inline]
     pub(crate) fn lock(self) -> Option<IrqSaveGuard<'static, Space>> {
-        let a = self.obj();
+        let a = tag_obj(self.tag);
+        if !a.born.load(Ordering::Acquire) {
+            return None;
+        }
         let g = a.st.lock_irqsave();
-        (cfg!(feature = "as-stale-ref-canary") || a.root.load(Ordering::Relaxed) == self.root.get()).then_some(g)
+        holds(a, self.root.get(), tag_gen(self.tag)).then_some(g)
     }
 
-    /// The space a pool key names, with its records, if it is still a space.
+    /// The space a pool key names, with its records, if it is still that space.
     ///
     /// # Safety
     /// `key` is a [`Self::key`] of some reference.
     pub(crate) unsafe fn of_key(key: usize) -> Option<(SpaceRef, IrqSaveGuard<'static, Space>)> {
-        // SAFETY: per the contract, an object of the retained cache.
-        let a: &'static AddressSpace = unsafe { &*(key as *const AddressSpace) };
+        let a = tag_obj(key);
+        if !a.born.load(Ordering::Acquire) {
+            return None;
+        }
         let g = a.st.lock_irqsave();
         let root = NonZeroUsize::new(a.root.load(Ordering::Relaxed))?;
-        Some((SpaceRef { root, obj: a }, g))
+        let gen = a.gen.load(Ordering::Relaxed);
+        if !cfg!(feature = "as-key-no-gen-canary") && !holds(a, root.get(), tag_gen(key)) {
+            return None;
+        }
+        Some((SpaceRef { root, tag: tag_of(a as *const AddressSpace as usize, gen) }, g))
     }
 }
 
-/// Where a task keeps its [`SpaceRef`], or none: zero bytes are none (a task
+/// Where a task keeps its [`SpaceRef`], or none: zero words are none (a task
 /// starts zeroed), and the layout is plain words for the task struct the
-/// switch assembly is handed.
+/// switch assembly is handed. Atomic words: another hart may read a task's
+/// slot while it is written.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SpaceSlot {
-    root: usize,
-    obj: usize,
+    root: AtomicUsize,
+    tag: AtomicUsize,
 }
 
 impl SpaceSlot {
-    pub fn new(r: Option<SpaceRef>) -> Self {
-        match r {
-            Some(r) => SpaceSlot { root: r.root.get(), obj: r.obj as usize },
-            None => SpaceSlot { root: 0, obj: 0 },
-        }
-    }
-
     /// The reference the slot holds. Another task's slot may be read while it
     /// is written (the reclaimer reads them): a torn pair with either word zero
     /// reads as none, and a pair of an old and a new word is a reference that
-    /// [`SpaceRef::lock`] refuses (the object is type-stable, its root compared).
+    /// [`SpaceRef::lock`] refuses (the object is type-stable, its root and
+    /// generation compared).
     #[inline]
-    pub fn get(self) -> Option<SpaceRef> {
-        if self.obj == 0 {
-            return None;
-        }
-        self.get_own()
+    pub fn get(&self) -> Option<SpaceRef> {
+        let tag = self.tag.load(Ordering::Relaxed);
+        let root = NonZeroUsize::new(self.root.load(Ordering::Relaxed))?;
+        (tag != 0).then_some(SpaceRef { root, tag })
     }
 
     /// [`Self::get`] of the running task's own slot, which nothing writes while
     /// the task runs: no torn pair to refuse.
     #[inline(always)]
-    pub fn get_own(self) -> Option<SpaceRef> {
-        NonZeroUsize::new(self.root).map(|root| SpaceRef { root, obj: self.obj as *const AddressSpace })
+    pub fn get_own(&self) -> Option<SpaceRef> {
+        let root = NonZeroUsize::new(self.root.load(Ordering::Relaxed))?;
+        Some(SpaceRef { root, tag: self.tag.load(Ordering::Relaxed) })
     }
 
     /// The space's root, 0 when the slot holds none.
     #[inline(always)]
-    pub fn root(self) -> usize {
-        self.root
+    pub fn root(&self) -> usize {
+        self.root.load(Ordering::Relaxed)
     }
 
     #[inline(always)]
-    pub fn is_some(self) -> bool {
-        self.root != 0
+    pub fn is_some(&self) -> bool {
+        self.root() != 0
     }
 
     #[inline(always)]
-    pub fn is_none(self) -> bool {
-        self.root == 0
+    pub fn is_none(&self) -> bool {
+        self.root() == 0
     }
 
-    pub fn set(&mut self, r: Option<SpaceRef>) {
-        *self = SpaceSlot::new(r);
+    pub fn set(&self, r: Option<SpaceRef>) {
+        let (root, tag) = r.map_or((0, 0), |r| (r.root.get(), r.tag));
+        self.root.store(root, Ordering::Relaxed);
+        self.tag.store(tag, Ordering::Relaxed);
     }
 
-    pub fn take(&mut self) -> Option<SpaceRef> {
+    pub fn take(&self) -> Option<SpaceRef> {
         let r = self.get();
-        *self = SpaceSlot::new(None);
+        self.set(None);
         r
     }
 }
@@ -240,11 +270,17 @@ pub fn create(root: usize) -> Option<SpaceRef> {
     if p.is_null() {
         return None;
     }
+    if (p as usize).wrapping_sub(KERNEL_PHYS_TO_VIRT_OFFSET) & !TAG_ADDR_MASK != 0 {
+        // SAFETY: just taken from this cache, unused.
+        unsafe { SPACES.free(p) };
+        return None;
+    }
     // SAFETY: `p` is a whole object of the cache, ours until `destroy`. Its
     // bytes are a block's zeros or what `destroy` left; only `born` is read
     // before it is written.
-    unsafe {
+    let gen = unsafe {
         if !(*p).born.load(Ordering::Acquire) {
+            addr_of_mut!((*p).gen).write(AtomicU32::new(0));
             addr_of_mut!((*p).root).write(AtomicUsize::new(0));
             addr_of_mut!((*p).st).write(SpinLock::new(Space::new()));
             (*p).born.store(true, Ordering::Release);
@@ -253,8 +289,9 @@ pub fn create(root: usize) -> Option<SpaceRef> {
         // (0) or this one.
         let _g = (*p).st.lock_irqsave();
         (*p).root.store(root.get(), Ordering::Relaxed);
-    }
-    Some(SpaceRef { root, obj: p })
+        (*p).gen.load(Ordering::Relaxed)
+    };
+    Some(SpaceRef { root, tag: tag_of(p as usize, gen) })
 }
 
 /// End the space `r`: its records go (`pager::forget`: regions, reservations,
@@ -272,12 +309,13 @@ pub fn destroy(r: SpaceRef, skip_lo: usize, skip_hi: usize) -> usize {
     if !cfg!(feature = "as-stale-root-canary") && !CANARY_STALE_ROOT.load(Ordering::Relaxed) {
         crate::pager::forget(r);
     }
-    let a = r.obj();
+    let a = tag_obj(r.tag);
     {
         let _g = a.st.lock_irqsave();
         a.root.store(0, Ordering::Relaxed);
+        a.gen.store(a.gen.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
     }
     // SAFETY: the object came from this cache and is no space any more.
-    unsafe { SPACES.free(r.obj as *mut AddressSpace) };
+    unsafe { SPACES.free(a as *const AddressSpace as *mut AddressSpace) };
     crate::vmm::destroy_user_pagetable_skip_range(r.root(), skip_lo, skip_hi)
 }

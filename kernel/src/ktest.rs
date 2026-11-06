@@ -2388,9 +2388,11 @@ azos_ktest::ktest_late! {
 }
 
 // An address space that ends takes its records with it: the kernel's retained
-// cache hands the object out again (the host rows run a stand-in), and the next
-// space made from it starts with none, while a reference kept past the end
-// reaches nothing. Runtime canary `as-stale-root`: the end leaves the records.
+// cache hands the object out again (the host rows run a stand-in), and the
+// page-table allocator the root, so the next space is usually the same object
+// over the same root. It starts with no records, and a reference kept past the
+// end reaches none of the next space's. Runtime canary `as-stale-root`: the end
+// leaves the records.
 azos_ktest::ktest_late! {
     fn aspace_made_again_starts_with_no_records() {
         use azos_mm::{aspace, pager, vmm};
@@ -2413,10 +2415,14 @@ azos_ktest::ktest_late! {
             return Err("no object for the second space");
         };
         let clean = pager::space_pages(b) == (0, 0);
-        let stale = pager::space_pages(a) == (0, 0) && !pager::contains(a, BASE);
+        let mine = pager::reserve(b, BASE, BASE + 2 * azos_arch::PAGE_SIZE, true).is_ok() && pager::space_pages(b) == (2, 0);
+        let stale = a != b && pager::space_pages(a) == (0, 0) && !pager::contains(a, BASE);
         let _ = aspace::destroy(b, 0, 0);
         if !clean {
             return Err("the next space started with the dead one's records");
+        }
+        if !mine {
+            return Err("the next space did not record its region");
         }
         if !stale {
             return Err("a reference kept past its space reached the next one");

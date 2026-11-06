@@ -91,6 +91,14 @@ as-stale-root-canary = []
 # kept past its space's end reaches the next space made from the object:
 # `syscall-tests`' `aspace_life` fails.
 as-stale-ref-canary = []
+# Host-suite canary: `SpaceRef::lock` compares the root, not the generation, so
+# a reference kept past its space reaches the next space made from the same
+# object over the same root: `syscall-tests`' `aspace_life` fails.
+as-gen-unchecked-canary = []
+# Host-suite canary: a space's pool key is its object alone, so a store that
+# outlived its space lands on the next space's entry: `syscall-tests`'
+# `aspace_life` (compressed pool on) fails.
+as-key-no-gen-canary = []
 # Host-suite canary (front uaccess-pin): `uaccess::wait_readers` returns at
 # once, as before the access sections; `syscall-tests`' `uaccess_race` fails.
 uaccess-race-canary = []
