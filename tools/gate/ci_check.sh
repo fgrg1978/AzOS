@@ -12919,11 +12919,14 @@ else
         # its one call is kernel_main's, before the secondary harts and the
         # first task (kernel/src/boot/inspect.rs); the sp dataflow reads its
         # x86_64 generic frame at 9,000 B.
+        # LLVM inlines `mount_rows` and the opens into `install_azvol` (27 KB on
+        # riscv64), so that name carries the mount's frame when it does.
         if out="$(python3 "${REPO_ROOT}/tools/lint/stack_frames.py" "$2" --limit "$3" \
                 --boot-limit 65536 --boot kernel_main \
                 --boot azos_topology::parser::parse_caps \
                 --boot kernel::boot::topology::install_topology \
                 --boot kernel::boot::inspect::install_inspect \
+                --boot kernel::boot::azvol::install_azvol \
                 --boot 'azos_fs::azvol_mount::mount_rows::<kernel::boot::azvol::PartDev*' \
                 --boot '<azos_fs::azvol::volume::Volume<*kernel::boot::azvol::PartDev*>>::mount_inner*' 2>&1)"; then
             ok
