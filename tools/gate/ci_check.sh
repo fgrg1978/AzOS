@@ -27434,14 +27434,14 @@ PY
 }
 par_row lx_module_row "lx: module loads and runs"        rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        load   PASS
 par_row lx_module_row "lx: module tamper refused"        rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        tamper PASS
-par_row lx_module_row "lx: tamper canary (no digest)"    rv  "qemu,lx-verify-canary" tamper FAIL
-par_row lx_module_row "lx: W^X canary (text writable)"   rv  "qemu,lx-wx-canary"     load   FAIL
+par_row lx_module_row "lx: tamper canary (no digest)"    rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-verify-canary" tamper FAIL
+par_row lx_module_row "lx: W^X canary (text writable)"   rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-wx-canary"     load   FAIL
 par_row lx_module_row "lx: default kernel, no server"    rv  "qemu"                  off    PASS
 par_row lx_module_row "lx: default-off canary"           rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        off    FAIL
 par_row lx_module_row "aarch64 lx: module loads and runs"     arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        load   PASS
 par_row lx_module_row "aarch64 lx: module tamper refused"     arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        tamper PASS
-par_row lx_module_row "aarch64 lx: tamper canary"             arm "qemu,lx-verify-canary" tamper FAIL
-par_row lx_module_row "aarch64 lx: W^X canary"                arm "qemu,lx-wx-canary"     load   FAIL
+par_row lx_module_row "aarch64 lx: tamper canary"             arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-verify-canary" tamper FAIL
+par_row lx_module_row "aarch64 lx: W^X canary"                arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-wx-canary"     load   FAIL
 par_row lx_module_row "lx: Kbuild xz_dec.ko runs (rv)"         rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux        PASS
 par_row lx_module_row "lx: Kbuild module tamper refused (rv)"  rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-tamper PASS
 par_row lx_module_row "lx: Kbuild fixture canary (rv)"         rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-other  FAIL
