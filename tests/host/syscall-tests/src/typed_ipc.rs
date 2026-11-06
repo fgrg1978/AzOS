@@ -662,6 +662,11 @@ fn an_irq_bind_refuses_in_its_documented_order() {
     azos_ipc::cap::degraded_set(false);
     assert_eq!(irq_unbind_op(irq, port), 0, "the remove");
     assert_eq!(azos_ipc::irq_bind::irq_bindings_of(IRQ), 0, "the line is bound no more");
+    assert_eq!(sys_port_poll_typed(port, BUF as u64), 16, "the remove told the port");
+    let e = take16(BUF);
+    assert_eq!(e[8], azos_abi::syscall_nr::PORT_EVENT_SOURCE_GONE, "a source-gone event");
+    assert_eq!(u16::from_le_bytes([e[10], e[11]]), azos_abi::error::Errno::EREVOKED as u16);
+    assert_eq!(u32::from_le_bytes(e[12..16].try_into().unwrap()), IRQ, "naming the line");
     assert_eq!(irq_ack_op(irq), errno(Errno::ENOENT), "and its ACK finds no binding");
 }
 

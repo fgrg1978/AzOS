@@ -572,3 +572,31 @@ fn closing_a_port_capability_closes_its_ports() {
     assert_eq!(*azos_sched::ioport::REVOKED.lock().unwrap(), vec![(table, 0x80, 0x80)]);
     assert_eq!(second, Errno::ECAPSTALE.to_syscall_ret(), "the capability went with the close");
 }
+
+/// **Binding an interrupt line by `PORT_BIND` needs the line's class in the
+/// profile (`DRIVER` of a `Device`), not only the port's (`CTL`):** a profile
+/// that lists `PORT_BIND` for its rings or timers is killed when it binds a
+/// line, and one that also lists the line's class reaches the bind.
+///
+/// **Canary.** Drop the line-class verdict from `port_bind_irq`: the first
+/// bind is not killed.
+#[test]
+fn an_irq_bind_needs_the_lines_op_class() {
+    use azos_abi::invoke::{CLASS_CTL, CLASS_DRIVER, PORT_BIND};
+    let _g = serial();
+    ring3();
+    let port = crate::ipc_handlers::sys_port_create_typed();
+    assert!(port > 0);
+    let mut f = SyscallFilter::disabled();
+    f.enabled = true;
+    f.allow_op(op(CapKind::Port, CLASS_CTL, 1));
+    azos_sched::scheduler::set_current_syscall_filter(f);
+    let opw = INVOKE_REGS | PORT_BIND as u64;
+    let bind = || invoke(port as u64, opw, azos_abi::syscall_nr::PORT_SRC_IRQ, 0, 0, 0);
+    assert_eq!(killed(bind), Some(crate::handlers::SECCOMP_KILL_EXIT_CODE), "a ring-and-timer profile bound a line");
+    f.allow_op(op(CapKind::Device, CLASS_DRIVER, 1));
+    azos_sched::scheduler::set_current_syscall_filter(f);
+    assert_eq!(killed(bind), None, "a profile that lists the line's class reaches the bind");
+    assert_eq!(bind(), Errno::ECAPSTALE.to_syscall_ret(), "and the bind checks the line handle");
+    azos_sched::scheduler::set_current_syscall_filter(SyscallFilter::disabled());
+}

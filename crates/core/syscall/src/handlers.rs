@@ -4393,10 +4393,10 @@ fn route_stored_binding_with(irq: u32, tid: u32, route: impl FnOnce(u32) -> bool
 // ── IRQ binding (L5) ─────────────────────────────────────────────────────────
 
 /// `PORT_BIND_F_REMOVE` of an interrupt line: `tid`'s binding of `irq` (its
-/// capability was checked) goes, and the line is handed back masked. 0, or
-/// `-ENOENT` when `tid` binds none.
+/// capability was checked) goes, the line is handed back masked, and the port
+/// gets a `PORT_EVENT_SOURCE_GONE`. 0, or `-ENOENT` when `tid` binds none.
 pub fn sys_irq_unbind(tid: u32, irq: u32) -> i64 {
-    if azos_ipc::irq_bind::irq_unbind(irq, tid) {
+    if azos_ipc::irq_bind::irq_remove(irq, tid) {
         0
     } else {
         azos_abi::error::Errno::ENOENT.to_syscall_ret()

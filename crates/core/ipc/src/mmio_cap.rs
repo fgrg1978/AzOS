@@ -92,9 +92,12 @@ pub fn mmio_grant_cap(
 /// The interrupt line of the device `selector` names, for a topology row
 /// `"irq.<selector>"`: the line the bus found for it, so a row names the
 /// device and not the number a machine wired it to. `None` for a selector no
-/// device matches and a device with no line known.
+/// device matches, a device with no line known, and one ring 3 may not have
+/// (a kernel driver owns it or may still take it, as for its window).
 pub fn mmio_device_line(selector: &str) -> Option<u32> {
-    hwbus::line_of(hwbus::resolve(selector)?)
+    let h = hwbus::resolve(selector)?;
+    hwbus::user_window(h)?;
+    hwbus::line_of(h)
 }
 
 /// Check `DOMAIN_MMIO_MAP`'s arguments: `handle` (`a0`) and `access` (`a1`).

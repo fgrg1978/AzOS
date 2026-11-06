@@ -3060,21 +3060,22 @@ mod mmio_cap_tests {
 
     /// A topology `irq.<selector>` grant mints the line the bus found for the
     /// device the selector names, not a number the row wrote: the RTC's line
-    /// 11, a virtio slot's line 2. A selector no device matches, and a device
-    /// with no line known, mint nothing.
+    /// 11. A selector no device matches, and a device
+    /// with no line known, and a device a kernel driver owns, mint nothing.
     ///
-    /// **Canary.** Mint `hwbus::line_of` of the handle + 1 in
-    /// `mmio_device_line`: the RTC's grant names line 12.
+    /// **Canaries.** Mint `hwbus::line_of` of the handle + 1 in
+    /// `mmio_device_line`: the RTC's grant names line 12. Drop the
+    /// `user_window` test there: the kernel UART's line is minted.
     #[test]
     fn a_topology_irq_grant_by_selector_mints_the_devices_line() {
         machine();
         let tid = fresh_tid();
         let rtc = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:google,goldfish-rtc").expect("the RTC's line");
         assert_eq!(cap_store::get(tid, Cap::<targets::Irq>::from_raw(rtc), CapPerms::READ), Ok(11));
-        let disk = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.virtio:2").expect("the virtio slot's line");
-        assert_eq!(cap_store::get(tid, Cap::<targets::Irq>::from_raw(disk), CapPerms::READ), Ok(2));
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.virtio:2").is_none(), "the kernel's disk's line");
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:vendor,absent").is_none(), "no such device");
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:vendor,nowindow").is_none(), "a device with no line");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:ns16550a").is_none(), "the kernel's UART's line");
     }
 
     /// A topology `mmio.<selector>` grant mints a capability whose resource is

@@ -565,6 +565,26 @@ pub fn irq_unbind(irq: u32, owner_task: u32) -> bool {
     true
 }
 
+/// The holder's own remove of its binding of `irq` (`PORT_BIND_F_REMOVE` of
+/// `PORT_SRC_IRQ`): the binding goes as in [`irq_unbind`], and its port gets
+/// one `PORT_EVENT_SOURCE_GONE` (code `EREVOKED`, the binding's key, the
+/// line), so another thread waiting there for the line learns it is gone.
+/// `false` when there was no such binding.
+pub fn irq_remove(irq: u32, owner_task: u32) -> bool {
+    let found = IRQ_BINDINGS
+        .lock_irqsave()
+        .iter()
+        .find(|b| b.active && b.irq == irq && b.owner_task == owner_task)
+        .map(|b| (b.port, b.epoch, b.key));
+    let Some((port, epoch, key)) = found else { return false };
+    if !irq_unbind(irq, owner_task) {
+        return false;
+    }
+    let code = azos_abi::error::Errno::EREVOKED as u16;
+    let _ = crate::port::port_post_gone(port, epoch, crate::port::PortSourceKind::Irq(irq), key, irq, code);
+    true
+}
+
 /// A binding goes: a controller line is handed back (masked, ring-3 ownership
 /// forgotten); an MSI's vector returns to the pool.
 fn release_line(b: &IrqBinding) {

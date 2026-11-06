@@ -297,7 +297,22 @@ fn irq_op(c: &mut Call) -> i64 {
 /// handle (`READ`), `w2` the key, `w3` the CPU word. The port (`WRITE`) and
 /// the line are resolved in one hold of the caller's table; a bind of a
 /// message-signalled slot replies the message its device writes.
+///
+/// The image's profile is asked for the line's class too (`DRIVER` of a
+/// `Device`), as it is for `DEVICE_IRQ_ACK`: a profile that lists `PORT_BIND`
+/// for its rings or timers does not bind interrupt lines by it.
 fn port_bind_irq(c: &mut Call) -> i64 {
+    use azos_abi::invoke::CLASS_DRIVER;
+    let kind = azos_abi::cap::CapKind::Device as u8;
+    match azos_sched::scheduler::current_op_verdict(kind, CLASS_DRIVER) {
+        azos_sched::filter::FilterVerdict::Deny | azos_sched::filter::FilterVerdict::Linux => {
+            crate::handlers::seccomp_deny_op_kill(op(azos_abi::cap::CapKind::Device, CLASS_DRIVER, 0));
+        }
+        azos_sched::filter::FilterVerdict::Audit => {
+            crate::handlers::record_seccomp_audit(azos_abi::syscall_nr::SYS_INVOKE as u16)
+        }
+        azos_sched::filter::FilterVerdict::Allow => {}
+    }
     use azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
     use azos_ipc::port::PortCapError;
     enum Refusal {
