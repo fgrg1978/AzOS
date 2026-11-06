@@ -32,7 +32,9 @@
 //!
 //! **Frames.** A `Frame` slot and the page-table leaf of its page name the same
 //! frame: the leaf is written when the slot becomes `Frame` and cleared when
-//! it stops being one, and a copy-on-write break moves both. The leaf sweep of
+//! it stops being one, and a copy-on-write break moves both. A fork's clone
+//! (`pager::fork_clone`) gives the child's object the same `Frame` word and
+//! leaf, read-only on both sides, with one more reference on the frame. The leaf sweep of
 //! `munmap` and of the space's end frees the frame (`vmm::unmap_user_range_and_free`,
 //! `vmm::destroy_user_pagetable_skip_range`); the object never frees one, so a
 //! frame is freed once.

@@ -2578,6 +2578,87 @@ azos_ktest::ktest_late! {
     }
 }
 
+// A fork clones the parent's anonymous objects (`pager::fork_clone`): over a
+// 4 MiB heap touched whole, the child maps each of the parent's frames with one
+// more reference, both leaves read-only, and a store by either side breaks the
+// share for it alone. Canary `cow-shared-write-canary`: the clone keeps the
+// write permission, so the parent's store finds no copy-on-write leaf to break
+// and lands in the frame the child maps.
+azos_ktest::ktest_late! {
+    fn fork_clone_shares_each_frame_read_only() {
+        use azos_mm::{addr, aspace, cow, pager, vmm};
+        const BASE: usize = 0x40_0000;
+        const PAGES: usize = 1024;
+        let page = azos_arch::PAGE_SIZE;
+        let fill = |f: usize, b: u8| {
+            // SAFETY: a frame the test's spaces map, through the direct map.
+            unsafe { core::ptr::write_bytes(addr::phys_to_virt(f) as *mut u8, b, page) }
+        };
+        // SAFETY: as above.
+        let first = |f: usize| unsafe { *(addr::phys_to_virt(f) as *const u8) };
+        let pt = vmm::create_pagetable().map_err(|_| "no root")?;
+        let Some(a) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            return Err("no address space");
+        };
+        let made = pager::reserve(a, BASE, BASE + PAGES * page, true).is_ok()
+            && (0..PAGES).all(|i| pager::resolve_fault(a, BASE + i * page).is_ok());
+        let f0 = vmm::translate(pt, BASE);
+        if let Some(f) = f0 {
+            fill(f, 0x5A);
+        }
+        let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+        let Ok((cpt, hold)) = cow::fork_cow_shared_held(a, shm_lo, shm_hi, false) else {
+            let _ = aspace::destroy(a, 0, 0);
+            return Err("the fork's walk was refused");
+        };
+        let Some(c) = aspace::create(cpt) else {
+            drop(hold);
+            vmm::destroy_user_pagetable(cpt);
+            let _ = aspace::destroy(a, 0, 0);
+            return Err("no address space for the child");
+        };
+        let cloned = pager::fork_clone(a, c).is_ok_and(|uncommitted| uncommitted == 0);
+        drop(hold);
+        let shared = (0..PAGES).all(|i| {
+            let va = BASE + i * page;
+            let f = vmm::translate(pt, va);
+            f.is_some()
+                && vmm::translate(cpt, va) == f
+                && f.is_some_and(|f| cow::page_getref(f) == 2)
+                && vmm::translate_user_writable_nofault(pt, va).is_none()
+                && vmm::translate_user_writable_nofault(cpt, va).is_none()
+        });
+        // The parent's store: a copy of its own, the child keeps the frame.
+        let broke = cow::handle_cow_fault(pt, BASE).is_ok();
+        let mine = vmm::translate(pt, BASE);
+        if let Some(f) = mine {
+            fill(f, 0x6B);
+        }
+        let kept = vmm::translate(cpt, BASE) == f0 && f0.is_some_and(|f| first(f) == 0x5A);
+        let _ = aspace::destroy(c, 0, 0);
+        let alone = f0.is_some_and(|f| cow::page_getref(f) <= 1)
+            && vmm::translate(pt, BASE + page).is_some_and(|f| cow::page_getref(f) <= 1);
+        let _ = aspace::destroy(a, 0, 0);
+        if !made || f0.is_none() {
+            return Err("the heap was not committed");
+        }
+        if !cloned {
+            return Err("the clone was refused or left pages uncommitted");
+        }
+        if !shared {
+            return Err("a page is not shared read-only once on both sides");
+        }
+        if !broke || mine == f0 || !kept {
+            return Err("the parent's store reached the frame the child maps");
+        }
+        if !alone {
+            return Err("the child's exit left a reference on the parent's frames");
+        }
+        Ok(())
+    }
+}
+
 // The capability tables are a security cache: a table comes from the retained
 // cell cache, a freed cell is never reissued as another type and another
 // type's object is refused. Canary `cap-table-cross-type-canary`: tables come

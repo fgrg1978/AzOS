@@ -16179,6 +16179,8 @@ PY
     # The ERE pins the test by name: the row is green only if it ran and passed.
     par "ktest anon released page (rv)" ktest_row "ktest anon released page (rv)" rv "" "" "" '^ok [0-9]+ - anon_released_page_is_a_hole_on_every_isa$'
     par "ktest anon released page (arm)" ktest_row "ktest anon released page (arm)" arm "" "" "" '^ok [0-9]+ - anon_released_page_is_a_hole_on_every_isa$'
+    par "ktest fork clone shares read-only (rv)" ktest_row "ktest fork clone shares read-only (rv)" rv "" "" "" '^ok [0-9]+ - fork_clone_shares_each_frame_read_only$'
+    par "ktest fork clone shares read-only (arm)" ktest_row "ktest fork clone shares read-only (arm)" arm "" "" "" '^ok [0-9]+ - fork_clone_shares_each_frame_read_only$'
     par "ktest blk reap once (rv)" ktest_row "ktest blk reap once (rv)" rv "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img
@@ -16229,6 +16231,7 @@ PY
     par "ktest kmem cache cross type canary (rv)" ktest_row "ktest kmem cache cross type canary (rv)" rv ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
     par "ktest aspace reaped records canary (rv)" ktest_row "ktest aspace reaped records canary (rv)" rv "" "+aspace_made_again_starts_with_no_records" "canary=as-stale-root"
     par "ktest anon slot truth canary (rv)" ktest_row "ktest anon slot truth canary (rv)" rv ",mm-pte-truth-canary" "anon_fault_decides_from_the_slot_not_the_leaf"
+    par "ktest fork clone shared write canary (rv)" ktest_row "ktest fork clone shared write canary (rv)" rv ",cow-shared-write-canary" "fork_clone_shares_each_frame_read_only"
     par "ktest cap table cross type canary (rv)" ktest_row "ktest cap table cross type canary (rv)" rv ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (rv)" ktest_row "ktest task cross type canary (rv)" rv ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (rv)" ktest_row "ktest kmem preload canary (rv)" rv ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
@@ -16239,6 +16242,7 @@ PY
     par "ktest kmem cache cross type canary (arm)" ktest_row "ktest kmem cache cross type canary (arm)" arm ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
     par "ktest aspace reaped records canary (arm)" ktest_row "ktest aspace reaped records canary (arm)" arm "" "+aspace_made_again_starts_with_no_records" "canary=as-stale-root"
     par "ktest anon slot truth canary (arm)" ktest_row "ktest anon slot truth canary (arm)" arm ",mm-pte-truth-canary" "anon_fault_decides_from_the_slot_not_the_leaf"
+    par "ktest fork clone shared write canary (arm)" ktest_row "ktest fork clone shared write canary (arm)" arm ",cow-shared-write-canary" "fork_clone_shares_each_frame_read_only"
     par "ktest cap table cross type canary (arm)" ktest_row "ktest cap table cross type canary (arm)" arm ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (arm)" ktest_row "ktest task cross type canary (arm)" arm ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (arm)" ktest_row "ktest kmem preload canary (arm)" arm ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"

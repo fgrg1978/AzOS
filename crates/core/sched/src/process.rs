@@ -2251,8 +2251,9 @@ fn fork_hooked_inner(
     // copy-on-write: their breaks are observed, not charged (P3 -- the row's
     // admission paid for one full copy).
     crate::prof::add(1, t_ph);
-    // The pages its mappings reserve are charged when they are cloned
-    // (`fork_regions_to_child`), as the parent's were at reservation.
+    // The anonymous mappings' pages are shared, and what they reserve
+    // charged, when the mappings are cloned (`fork_regions_to_child`), as the
+    // parent's were at reservation; the walk passed them.
     let child_charge = 1u32.saturating_add(crate::scheduler::take_current_pt_build());
     let (parent_limit, _) = crate::scheduler::current_mem_policy();
     if parent_limit != 0 && child_charge > parent_limit {

@@ -173,7 +173,7 @@ object that holds it (the anonymous reclaimer walks page tables, the page
 cache's walks its objects).
 
 The same `refcount` field is the copy-on-write share count used by
-`cow::fork_cow`, `page_addref` and `page_decref` (`crates/core/mm/src/cow.rs`,
+`pager::fork_clone`, `cow::fork_cow`, `page_addref` and `page_decref` (`crates/core/mm/src/cow.rs`,
 `crates/core/mm/src/cow_table.rs`): a first `addref` takes an untracked page to
 2, a `decref` from 1 or 0 means "free it", and counts saturate rather than wrap
 (a saturated page leaks and is never freed).
@@ -323,14 +323,29 @@ kernel copy into the page answers `EFAULT`; a mapping that would leave the windo
 binary search over the space's mapping records and one or two loads into the
 object.
 
-**Fork** (until objects are cloned): the copy-on-write walk shares the
-parent's leaves, then `pager::fork_clone` gives each parent object one child
-object whose `Frame` slots are the child's own leaves (not the parent's slots:
-a page a sibling thread committed after the walk is not the child's) and whose
-markers are the parent's, with a share of the pool's entries. The fork holds
-the parent (`pager::ForkHold`) from before its walk until the clone is done:
-the reclaimer takes no page of it and its faults restore none meanwhile, so
-the child's copy sees each page as the walk did.
+**Fork** clones the objects (flat copy-on-write, no shadow chains):
+`pager::fork_clone` gives each parent object one child object and copies its
+slot words in one pass. A `Frame` slot takes one more reference on its frame
+(`FrameDesc::refcount`), taken before either leaf names it as shared; the
+parent's leaf is made read-only (copy-on-write in a writable mapping) by
+compare-and-swap, the child's leaf is the same word, and one shootdown of the
+parent follows. A `Compressed` or `Swapped` slot is its marker word over a
+share of the pool's entry (`Pool::dup_obj`): nothing is restored. The child's
+slot and leaf come from one read of the parent's slot, so a page a sibling
+thread commits during the fork is either shared (read after the commit) or a
+zero page of the child's own (read before). A store by either side then breaks
+the share through the slot (`cow::handle_cow_fault`, `pager::cow_swap`): a copy
+while another holder is left, the frame itself once the count is down to one.
+The copy-on-write walk of `cow.rs` passes every leaf table an anonymous mapping
+holds whole and every page one holds; it shares only the pages no anonymous
+mapping holds (the image, the stack, the vDSO and trampoline, eager commits,
+private file pages). The fork holds the parent (`pager::ForkHold`) from before
+its walk until the clone is done: the reclaimer takes no page of it and its
+faults restore none meanwhile, so no marker changes under the clone and none is
+in transit. The child is charged its uncommitted reservation and the leaf tables
+and slot chunks the clone built for it. A fork of a fully touched 64 MiB heap
+copies no frame: it takes 69 pages (host suite), the child's root, its 32 leaf
+tables and upper tables, and its 33 pages of slot words.
 
 Source: `crates/core/mm/src/anon_obj.rs`, `crates/core/mm/src/slot.rs`,
 `crates/core/mm/src/mapping.rs`, `crates/core/mm/src/pager.rs`.
