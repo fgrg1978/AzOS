@@ -493,7 +493,6 @@ config PS2_WAIT_SPINS
 config DRV_RTC
     # cargo-feature: rtc
     bool "Real-time clock (seeds the wall clock at boot, written back by a reference)"
-    default n if PRESET_MICROVM
     default n if HWCLASS_EMBEDDED
     default y
     help

@@ -24,7 +24,7 @@ toolchain pin). Then:
     (the cell that links the robot crates and the kernel's use-robot code);
     `microvm` too when a path is under config/, names `microvm`, or mentions a
     feature the microvm cell turns off that its default cells keep (the A/B
-    slots, the package apply, the TPM, the RTC, USB, the Linux personality,
+    slots, the package apply, the TPM, USB, the Linux personality,
     virtio-input and -sound, PS/2, the SBSA and BCM2835 watchdogs, the Raspberry
     Pi firmware).
 A diff outside the kernel's closure (userspace/, tests/, tools/, docs) plans no cell.
@@ -45,7 +45,7 @@ BUILD_WIDE = ["Cargo.toml", "Cargo.lock", "Kconfig", "config/**", ".cargo/**", "
               "kernel/Cargo.toml", "kernel/build.rs", "kernel/linker-common.ld", "tools/build/kconfig_to_cargo.py"]
 ROBOT_RE = re.compile(r"use[-_]robot|domains/robot")
 MICROVM_RE = re.compile(r'microvm|boot[-_]slots|pkg[-_]boot[-_]apply|'
-                        r'feature = "(tpm|rtc|usb-host|linux-abi|virtio-input|virtio-snd|ps2|wdt-sbsa|wdt-bcm2835-pm|rpi-firmware)"')
+                        r'feature = "(tpm|usb-host|linux-abi|virtio-input|virtio-snd|ps2|wdt-sbsa|wdt-bcm2835-pm|rpi-firmware)"')
 
 
 def isa_of(path):

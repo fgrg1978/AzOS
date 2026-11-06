@@ -82,7 +82,10 @@ config FW_DEVICE_TREE
       U-Boot on riscv64; QEMU virt, U-Boot and the Raspberry Pi firmware
       on aarch64), and the early boot parses it (crates/drivers/dtb) for
       the RAM, the console, the PCI host bridge, the interrupt triggers
-      and the kernel command line. x86_64 boots by PVH or Limine, whose
+      and the kernel command line. This gates the early boot's reads; the
+      later ones (the SMP topology, the per-CPU registers, the
+      framebuffer, hwbus, the TPM on SPI) are per-ISA code that x86_64
+      does not build. x86_64 boots by PVH or Limine, whose
       tables are not a device tree: there the parser is not called and not
       linked (about 14 KiB of text), and the PVH and ACPI readers give
       what a tree would. The crate's types stay: they are the boot

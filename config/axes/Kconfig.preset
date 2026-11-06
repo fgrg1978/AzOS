@@ -116,9 +116,14 @@ choice
           the A/B boot slots are off (BOOT_SLOTS), and with them the
           boot-time package apply and the slot image checks; no board
           I/O (BOARD_IO), no Linux personality. The drivers of physical
-          hardware a QEMU or board image starts by default (USB, TPM, the
-          RTC, PS/2, virtio-input and virtio-sound, the Raspberry Pi
-          firmware and watchdogs, the SBSA watchdog) start off; each can be
-          turned on by hand. There is no USE_* symbol: nothing reads one.
+          hardware a QEMU or board image starts by default (USB, TPM, PS/2,
+          virtio-input and virtio-sound, the Raspberry Pi firmware and
+          watchdogs, the SBSA watchdog) start off; each can be turned on by
+          hand. The RTC stays (DRV_RTC: the PL031, goldfish or CMOS clock a
+          host emulates is the guest's wall clock before the network). The
+          hang backstop is the host's: no hardware watchdog is driven, and
+          sys-wdt and the hung-task detector stay. On x86_64 the guest is
+          QEMU's `microvm` machine, its virtio devices on MMIO, as `make
+          qemu` boots it. There is no USE_* symbol: nothing reads one.
 
 endchoice

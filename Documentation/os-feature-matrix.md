@@ -1038,7 +1038,7 @@ Options and choices: 837. Defconfigs: 27.
 | `DRV_PCI` | PCI bus: ECAM enumeration, MSI-X, virtio-pci transport | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | y | n | n | n | n | y | n |
 | `DRV_PS2` | PS/2 keyboard and mouse (i8042 controller, PC) | n | n | n | n | n | n | n | n | n | y | y | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n |
 | `DRV_RING3_DEFAULT` | Place drivers that support it in ring 3 by default | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `DRV_RTC` | Real-time clock (seeds the wall clock at boot, written back by a reference) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
+| `DRV_RTC` | Real-time clock (seeds the wall clock at boot, written back by a reference) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
 | `DRV_RTC_PCF8563` | RTC: NXP PCF8563 on I2C (boards) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `DRV_VIRTIO_INPUT` | virtio-input keyboards and mice (QEMU) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `DRV_VIRTIO_SND` | virtio-sound audio device (QEMU) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |

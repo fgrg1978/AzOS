@@ -14,7 +14,7 @@ crate must appear: the lint can see what it forbids.
   board-io  BOARD_IO: the board's sensors, actuators, kill switch and the camera frame ring
   robot     USE_ROBOT: the robot extension's crates (core and kernel name none)
   microvm   PRESET_MICROVM: no Linux personality, no physical-hardware driver
-            (TPM, USB and its storage, the RTC), no board I/O, no extension
+            (TPM, USB and its storage), no board I/O, no extension
 """
 
 import argparse
@@ -40,7 +40,7 @@ CUTS = {
 # name: (the presets whose defconfigs have the crates between them, preset of the cut, crates)
 PRESET_CUTS = {
     "microvm": (("robot", "generic"), "microvm",
-                ("azos_linux_abi", "azos_tpm", "azos_usb", "azos_usb_hid", "azos_scsi", "azos_rtc",
+                ("azos_linux_abi", "azos_tpm", "azos_usb", "azos_usb_hid", "azos_scsi",
                  "azos_drv_sensor", "azos_cam_ring", "azos_drv_actuator", "azos_kill_switch",
                  "azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers")),
 }
