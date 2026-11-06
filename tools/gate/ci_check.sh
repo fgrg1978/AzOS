@@ -10122,7 +10122,7 @@ safe_mode_row() {
         "[OTA] Boot loop detected (max=3) with nothing to roll back to: slot A IS last_good. Count kept at 4" \
         "[RECOVERY] armed: BootLoop { crashes: 3 } (Exhausted, slot A boot_count=4) -- SAFE MODE" \
         "[SAFE-MODE] boot-good mark withheld" \
-        "[AUTORUN] REFUSED: safe mode -- /fat/GPIODRV.ELF not started" \
+        "[AUTORUN] REFUSED: safe mode -- /fat/REFLEX.ELF not started" \
         "[SAFE-MODE] probe: motor 0 forward 60% refused (rc=-2, applied 0%), spray refused" \
         "[SAFE-MODE] PASS probe: actuators held; 35 s up and BOOTMETA boot_count still 4"; do
         grep -aqF "$want" "$log" || missing="$missing
@@ -19772,8 +19772,8 @@ PY
             return
         fi
 
-        # A dedicated image: same GPIODRV autorun as build/disk.img (that is
-        # what exposed the starvation), but with a link key. With no key the
+        # A dedicated image: same REFLEX autorun as build/disk.img (a
+        # long-lived autorun is what exposed the starvation), but with a link key. With no key the
         # kernel connects and closes at once (the link is always a Noise
         # session) — correct, and it would stop every frame here from reaching
         # the dispatch. The peer runs the brain side of that session with the
@@ -20521,7 +20521,7 @@ PY
     # ── Setup: a disk image + a fresh operator keypair for this run ─────────────
     operator_key_scenario_setup() {
         # $1 = image to build (e.g. build/disk-estopauth.img), by copying the
-        # existing `disk-brainestop.img` recipe's output (GPIODRV autorun, the
+        # existing `disk-brainestop.img` recipe's output (REFLEX autorun, the
         # link key; the enforced-link build boots the same image in the
         # SEPARATE row below).
         local img="$1" keydir="$2"
@@ -20562,7 +20562,7 @@ PYEOF
     # Reuses `run_brain_peer_boot`'s boot sequence with `tools/gate/fake_brain.py
     # --kernel-estop-release` as the peer (the ONE new message this change adds
     # to that file — see its own doc for the six phases). Same image shape as
-    # `brain_estop_tcp_scenario` (link key, GPIODRV autorun), plus
+    # `brain_estop_tcp_scenario` (link key, REFLEX autorun), plus
     # `/fat/OPERATOR.PUB`.
     #
     # THE ASSERTION IS THE PAIR, on the kernel's OWN console lines, which are

@@ -328,7 +328,7 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
     `brain_client`; this one talks to the kernel's `behavior_task` brain link,
     which is the only thing that handles `PKT_ESTOP` over TCP. The two do not
     run in the same image: this mode's image has the link key and the
-    GPIODRV autorun, the ring-3 client's has BRAINCLI.
+    REFLEX autorun, the ring-3 client's has BRAINCLI.
 
     **The script is drive / stop / DRIVE AGAIN, and the third phase is the
     assertion.** `PKT_ESTOP` latches, so what follows it is the only way to see

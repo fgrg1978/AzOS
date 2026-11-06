@@ -89,11 +89,13 @@ $(IMAGE_HASHES_AARCH64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_AARCH64_ON)
 		BUSYBOX.ELF=$(BUSYBOX_ELF_AARCH64) LXTHR.ELF=$(LXTHR_ELF_AARCH64)
 
 # Two disk images from one recipe, differing only in which ELF `autorun` starts.
-# disk.img names GPIODRV, which the autorun loader refuses (it serves an
-# endpoint: a server is a component manager row); disk-systest.img runs the
+# disk.img runs REFLEX, a long-lived ring-3 program that serves no endpoint
+# (the autorun loader refuses an image whose row serves one: a server is a
+# component manager row; on a build without the drivetrain it exits at once,
+# refusing to run without its motor capabilities); disk-systest.img runs the
 # syscall test, which was built and copied onto the disk for months without
 # anything ever invoking it.
-$(OUT_BUILD)/disk.img:         AUTORUN_ELF := /fat/GPIODRV.ELF
+$(OUT_BUILD)/disk.img:         AUTORUN_ELF := /fat/REFLEX.ELF
 $(OUT_BUILD)/disk-systest.img: AUTORUN_ELF := /fat/SYSTEST.ELF
 $(OUT_BUILD)/disk-uhello.img:  AUTORUN_ELF := /fat/UHELLO.ELF
 $(OUT_BUILD)/disk-reflex.img:  AUTORUN_ELF := /fat/REFLEX.ELF
@@ -124,12 +126,13 @@ $(OUT_BUILD)/disk-vsbench.img: AUTORUN_ELF := /fat/VSBENCH.ELF
 $(OUT_BUILD)/disk-vsbench.img: DISK_EXTRA := $(TOOLBOX_ELF)=TOOLBOX.ELF
 $(OUT_BUILD)/disk-vsbench.img: $(TOOLBOX_ELF)
 
-# The "brain lies" scenario. Same autorun as disk.img ON PURPOSE: GPIODRV is
-# what exposed the net-poll starvation (a ring-3 program created inside the
-# real-time band never yielded hart 3 to the poller, so the RX ring was never
-# drained and the robot could not complete a single TCP handshake). Keeping it
-# here makes this scenario the regression test for that, on top of what it was
-# written for.
+# The "brain lies" scenario. Same autorun as disk.img ON PURPOSE: a long-lived
+# ring-3 autorun program on the autorun hart is what exposed the net-poll
+# starvation (one created inside the real-time band never yielded hart 3 to
+# the poller, so the RX ring was never drained and the robot could not
+# complete a single TCP handshake). REFLEX reads its sensors every period
+# and, with the simulated road clear, never moves a wheel. Keeping it here makes this scenario the regression test for that, on
+# top of what it was written for.
 #
 # What it does change is the link key: the kernel's brain link is always a
 # Noise session, and with no key on the image it connects and immediately
@@ -138,14 +141,14 @@ $(OUT_BUILD)/disk-vsbench.img: $(TOOLBOX_ELF)
 # ever reaching the dispatch this scenario exists to test. So the image is in
 # `KEYED_DISKS`, and the peer runs the brain side of the session with the key
 # it reads out of the image.
-$(OUT_BUILD)/disk-brainlies.img: AUTORUN_ELF := /fat/GPIODRV.ELF
+$(OUT_BUILD)/disk-brainlies.img: AUTORUN_ELF := /fat/REFLEX.ELF
 
 # Same recipe again for the RECORD half of that scenario, which boots a kernel
 # built with `brain-lies-smoke` and reads SAFETY_UNKNOWN_PKT back off the log.
 # Its own image rather than a reuse: the probe scans LOG00000.BIN, so a
 # previous run's records on a shared image would let it pass without this boot
 # writing anything.
-$(OUT_BUILD)/disk-brainrec.img: AUTORUN_ELF := /fat/GPIODRV.ELF
+$(OUT_BUILD)/disk-brainrec.img: AUTORUN_ELF := /fat/REFLEX.ELF
 
 # And again for the TCP e-stop, which needs the kernel's OWN brain link up:
 # `PKT_ESTOP` over TCP is handled in `behavior_task`, not by any ring-3
@@ -153,14 +156,14 @@ $(OUT_BUILD)/disk-brainrec.img: AUTORUN_ELF := /fat/GPIODRV.ELF
 # and the frame never reaches the branch under test.
 # Its own image name because the Makefile needs an explicit rule per name; a
 # missing one yields no image and a silent boot that reads as a kernel fault.
-$(OUT_BUILD)/disk-brainestop.img: AUTORUN_ELF := /fat/GPIODRV.ELF
+$(OUT_BUILD)/disk-brainestop.img: AUTORUN_ELF := /fat/REFLEX.ELF
 
 # The PHYSICAL kill switch. Same shape as the image above — the wheels have to
 # be turning before the switch is pressed, and the brain link is what turns
 # them. `estop_gpio_pin` is deliberately NOT set here: the pin has to be driven
 # high before the poll can see it, which a config line cannot promise. See
 # `estop_gpio_smoke_task`.
-$(OUT_BUILD)/disk-estopgpio.img: AUTORUN_ELF := /fat/GPIODRV.ELF
+$(OUT_BUILD)/disk-estopgpio.img: AUTORUN_ELF := /fat/REFLEX.ELF
 
 # Wave 9 (DRV1): the base of the ring-3 drivers disk (`build/disk-drv.img`,
 # after this recipe). No autorun: the drivers are the only ring-3 tasks.
@@ -419,7 +422,8 @@ $(BOARD_DIR)/policy.sig: $(OUT_BUILD)/policy.gguf tools/sign/gen_config_sig.py $
 $(VF2_DISK):                BOARD_VOL_KCONFIG := $(VF2_KCONFIG)
 $(OUT_BUILD)/disk-board-k1.img:    BOARD_VOL_KCONFIG := $(OUT_BUILD)/k1.config
 $(OUT_BUILD)/disk-board-fleet.img: BOARD_VOL_KCONFIG := $(OUT_BUILD)/fleet.config
-$(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: AUTORUN_ELF := /fat/GPIODRV.ELF
+# No autorun on a board: its programs are component manager rows.
+$(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: AUTORUN_ELF :=
 $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 		$(OUT_BUILD)/board_manifest.txt tools/image/check_board_disk.py \
 		tools/sign/check_board_keys.py $(IMAGE_HASHES_BOARD) $(BOARD_DIR)/behavior.mbl $(BOARD_DIR)/policy.sig \
