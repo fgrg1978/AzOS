@@ -431,8 +431,10 @@ fn teardown_frees_a_promoted_block_and_the_run_of_a_half_filled_one() {
     fill(pt, BLOCK_B, 10);
     assert!(used() - before_space >= 2 * PAGES);
     azos_sched::set_current_user_pt(0);
-    assert_eq!(azos_mm::vmm::destroy_user_pagetable_skip_range(pt, 0, 0), 0);
-    assert_eq!(used(), before_space, "every frame is back: the leaf's 512, the other run's 502 and 10, the tables, the root");
+    // As a task's end: the space's records (the half-filled run's reservation,
+    // the mapping's object and its slot chunks), then its tables.
+    azos_sched::shim_end_space(pt);
+    assert_eq!(used(), before_space, "every frame is back: the leaf's 512, the other run's 502 and 10, the slot chunks, the tables, the root");
 }
 
 #[test]
