@@ -30,6 +30,7 @@ budget-racy-charge-canary = []
 # The kernel feature the pulled-in trap code gates the boot self-tests on
 # (Kconfig BOOT_SELFTESTS); never enabled here.
 boot-selftests = []
-# The kernel feature the pulled-in `irq.rs` counts its ticks under (ktest); never
-# enabled here.
+# The kernel features the pulled-in `irq.rs` counts its ticks under (ktest with
+# chaos); never enabled here.
 ktest = []
+chaos = []
