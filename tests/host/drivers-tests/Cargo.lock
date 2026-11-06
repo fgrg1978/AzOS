@@ -91,6 +91,7 @@ dependencies = [
  "azos_rings",
  "azos_rtc",
  "azos_virtio_proto",
+ "azos_virtio_rng",
  "cap_test_sync",
  "drv_test_arch",
  "drv_test_bus",
@@ -178,6 +179,15 @@ dependencies = [
 [[package]]
 name = "azos_virtio_proto"
 version = "0.1.0"
+
+[[package]]
+name = "azos_virtio_rng"
+version = "0.1.0"
+dependencies = [
+ "azos_dma",
+ "azos_drvkit",
+ "azos_virtio_proto",
+]
 
 [[package]]
 name = "bitflags"

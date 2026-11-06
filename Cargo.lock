@@ -1165,6 +1165,15 @@ name = "azos_virtio_proto"
 version = "0.1.0"
 
 [[package]]
+name = "azos_virtio_rng"
+version = "0.1.0"
+dependencies = [
+ "azos_dma",
+ "azos_drvkit",
+ "azos_virtio_proto",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

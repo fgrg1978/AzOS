@@ -1,0 +1,17 @@
+[package]
+name = "azos_virtio_rng"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The virtio entropy device on the virtio-mmio transport (legacy and modern), written once for any host: no syscalls, no statics, generic over the register window and the CPU's view of the DMA region its request queue lives in. Hosted in ring 3 by userspace/drivers/rng_drv."
+
+[lib]
+name = "azos_virtio_rng"
+
+[dependencies]
+# Paths, not `workspace = true`: userspace/drivers/rng_drv builds standalone.
+azos_drvkit = { path = "../kit" }
+azos_virtio_proto = { path = "../virtio-proto" }
+# The ring writes' order before the doorbell (`order`).
+azos_dma = { path = "../dma" }

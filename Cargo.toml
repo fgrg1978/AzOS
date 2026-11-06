@@ -408,6 +408,8 @@ members = [
     "crates/drivers/input",
     "crates/drivers/virtio",
     "crates/drivers/virtio-proto",
+    # The virtio entropy device, for its ring-3 host (userspace/drivers/rng_drv).
+    "crates/drivers/virtio-rng",
     "crates/drivers/block",
     "crates/drivers/net",
     "crates/drivers/sensor",
@@ -557,6 +559,7 @@ azos_drv_input = { path = "crates/drivers/input" }
 azos_input_wire = { path = "crates/drivers/input/wire" }
 azos_drv_virtio = { path = "crates/drivers/virtio" }
 azos_virtio_proto = { path = "crates/drivers/virtio-proto" }
+azos_virtio_rng = { path = "crates/drivers/virtio-rng" }
 azos_drv_block = { path = "crates/drivers/block" }
 azos_drv_net = { path = "crates/drivers/net" }
 azos_drv_sensor = { path = "crates/drivers/sensor" }

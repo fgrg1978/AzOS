@@ -45,6 +45,7 @@ azos_drv_api = { path = "../../../crates/drivers/api" }
 azos_dma = { path = "../../../crates/drivers/dma" }
 # The wire constants virtio/mod.rs and virtio/pci.rs (pulled in by #[path]) compile.
 azos_virtio_proto = { path = "../../../crates/drivers/virtio-proto" }
+azos_virtio_rng = { path = "../../../crates/drivers/virtio-rng" }
 
 # **Reproduce the kernel's release profile, specifically `overflow-checks`.**
 # Without this the suite compiles arithmetic that silently wraps, so a test
