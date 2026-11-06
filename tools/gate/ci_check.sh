@@ -16117,6 +16117,8 @@ PY
     par "ktest inspect guard canary (rv)" ktest_row "ktest inspect guard canary (rv)" rv "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest inspect guard canary (arm)" ktest_row "ktest inspect guard canary (arm)" arm "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     # The ERE pins the test by name: the row is green only if it ran and passed.
+    par "ktest anon released page (rv)" ktest_row "ktest anon released page (rv)" rv "" "" "" '^ok [0-9]+ - anon_released_page_is_a_hole_on_every_isa$'
+    par "ktest anon released page (arm)" ktest_row "ktest anon released page (arm)" arm "" "" "" '^ok [0-9]+ - anon_released_page_is_a_hole_on_every_isa$'
     par "ktest blk reap once (rv)" ktest_row "ktest blk reap once (rv)" rv "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img

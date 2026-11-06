@@ -2454,7 +2454,9 @@ azos_ktest::ktest_late! {
         let mapped = pager::reserve(a, base, base + mega, true).is_ok()
             && vmm::map_mega(pt, base, run.as_usize(), azos_arch_api::PagePerms::USER_RW).is_ok();
         let before = (vmm::leaf_level(pt, base + page), vmm::translate(pt, base + page));
-        let resolved = mapped && pager::resolve_fault(a, base + page).is_ok();
+        // The block maps the page: nothing for the pager to install.
+        let resolved = mapped
+            && matches!(pager::resolve_fault(a, base + page), Ok(()) | Err(azos_common::error::KernelError::AlreadyMapped));
         let after = (vmm::leaf_level(pt, base + page), vmm::translate(pt, base + page));
         // Back to 4 KiB leaves, then cleared: the run is the test's to free.
         for i in 0..pages {
@@ -2470,6 +2472,59 @@ azos_ktest::ktest_late! {
         }
         if before.0 != Some(1) || after != before {
             return Err("the fault rewrote the block's level-1 leaf");
+        }
+        Ok(())
+    }
+}
+
+// A page of a mapping has an empty leaf until its first touch and again after
+// its release, on every ISA (no page-table word carries a reservation), and a
+// fault on a released page is a hole: nothing is installed, and the pages the
+// mapping still holds keep their bytes. Canary by hand: `pager::release_range`
+// keeping the mapping record, so the fault installs a zero page.
+azos_ktest::ktest_late! {
+    fn anon_released_page_is_a_hole_on_every_isa() {
+        use azos_mm::{addr, aspace, pager, vmm};
+        const BASE: usize = 0x40_0000;
+        let page = azos_arch::PAGE_SIZE;
+        let pt = vmm::create_pagetable().map_err(|_| "no root")?;
+        let Some(a) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            return Err("no address space");
+        };
+        // `Missing`: no table, or an empty word (an invalid word with anything
+        // in it is `Other`).
+        let empty = |va: usize| vmm::user_page(pt, va) == vmm::UserPage::Missing;
+        let made = pager::reserve(a, BASE, BASE + 4 * page, true).is_ok()
+            && pager::resolve_fault(a, BASE + page).is_ok()
+            && pager::resolve_fault(a, BASE).is_ok();
+        let untouched = empty(BASE + 2 * page);
+        let kept = vmm::translate(pt, BASE + page);
+        if let Some(f) = kept {
+            // SAFETY: the page's frame, through the direct map, while it is mapped.
+            unsafe { core::ptr::write_bytes(addr::phys_to_virt(f) as *mut u8, 0x6E, page) };
+        }
+        let released = pager::release_range(a, BASE, BASE + page).is_ok();
+        let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+        let _ = vmm::unmap_user_range_and_free(pt, BASE, BASE + page, shm_lo, shm_hi);
+        let hole = matches!(pager::resolve_fault(a, BASE), Err(azos_common::error::KernelError::NotMapped));
+        let cleared = empty(BASE);
+        // SAFETY: as above.
+        let bytes = kept.is_some_and(|f| unsafe {
+            core::slice::from_raw_parts(addr::phys_to_virt(f) as *const u8, page).iter().all(|&b| b == 0x6E)
+        }) && vmm::translate(pt, BASE + page) == kept;
+        let _ = aspace::destroy(a, 0, 0);
+        if !made || kept.is_none() {
+            return Err("the first touches were not resolved");
+        }
+        if !untouched {
+            return Err("an untouched page of a mapping has a word in its leaf");
+        }
+        if !released || !hole || !cleared {
+            return Err("a fault on a released page was resolved");
+        }
+        if !bytes {
+            return Err("the page the mapping still holds lost its bytes");
         }
         Ok(())
     }

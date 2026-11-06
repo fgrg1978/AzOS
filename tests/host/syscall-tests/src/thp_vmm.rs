@@ -187,8 +187,11 @@ fn a_fault_on_a_promoted_block_leaves_its_leaf_alone() {
     let block_word = |pt: usize| azos_mm::vmm::leaf_level(pt, BLOCK_A).zip(azos_mm::vmm::translate(pt, BLOCK_A));
     let before = block_word(pt);
     let p1 = pa(pt, BLOCK_A + PAGE_SIZE);
+    // Nothing for the pager to resolve: the block maps the page
+    // (`AlreadyMapped`, as for any page a leaf maps at the first look).
     for i in [1, PAGES / 2, PAGES - 1] {
-        assert!(azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), BLOCK_A + i * PAGE_SIZE).is_ok());
+        let r = azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), BLOCK_A + i * PAGE_SIZE);
+        assert!(r.as_ref().map_or_else(|e| format!("{e:?}") == "AlreadyMapped", |()| true), "{r:?}");
     }
     assert_eq!(block_word(pt), before, "the block's level-1 leaf is as it was");
     assert_eq!(level(pt, BLOCK_A + PAGE_SIZE), Some(1));
