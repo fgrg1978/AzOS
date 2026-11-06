@@ -12184,6 +12184,10 @@ thp_host_canary_row() { # <label> <feature> <test fn>
 }
 host_job thp_host_row "thp: host suite, reservations on"
 host_job thp_host_canary_row "thp: ranged flush before a table free canary" promote-ranged-flush-canary a_promotion_flushes_the_whole_space_before_its_table_goes
+# A fault that loses the race to a block's promotion leaves the block's level-1
+# leaf alone (pager::fault_once, the walk's level). fault-block-leaf-canary: the
+# block's word is taken for the page's 4 KiB leaf and one is written into it.
+host_job thp_host_canary_row "thp: fault over a promoted block canary" fault-block-leaf-canary a_fault_on_a_promoted_block_leaves_its_leaf_alone
 host_job host_canary_row "pi futex: exited owner set canary" sync-tests pi-exited-owner-canary \
     an_owner_exiting_after_the_look_is_refused_as_the_new_owner --test=pi_futex_graph
 host_job host_canary_row "pi futex: exited owner block canary" sync-tests pi-exited-owner-canary \
