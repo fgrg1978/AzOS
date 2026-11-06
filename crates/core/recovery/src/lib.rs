@@ -809,9 +809,12 @@ pub fn recovery_run() -> ! {
                 else if cmd == b"cat"      { cmd_cat(&args, argc); }
                 else if cmd == b"crash"    { cmd_crash(&args, argc); }
                 else if cmd == b"why"      { cmd_why(&args, argc); }
-                else if cfg!(feature = "boot-slots") && cmd == b"ota" {
+                else if cmd == b"ota" {
                     #[cfg(feature = "boot-slots")]
                     cmd_ota(&args, argc);
+                    #[cfg(not(feature = "boot-slots"))]
+                    azos_drv_sys::kconsoleln!(
+                        "[RECOVERY] 'ota' needs the A/B boot slots (BOOT_SLOTS); this image was built without them");
                 }
                 else if cmd == b"config"   { cmd_config(&args, argc); }
                 else if cmd == b"ifconfig" { cmd_ifconfig(); }
