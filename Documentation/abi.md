@@ -256,7 +256,7 @@ classes can be named.
 | 3 | `CLASS_CTL` | makes or ends an object, or steers its life |
 | 4 | `CLASS_ADMIN` | acts on others or on the system |
 | 5 | `CLASS_FS_OPEN` | (`Node`) opens a file beneath a directory the caller holds |
-| 6 | `CLASS_FS_MUTATE` | (`Domain`) changes the namespace; needs a directory tree the caller holds |
+| 6 | `CLASS_FS_MUTATE` | (`Node`) changes the namespace beneath a directory the caller holds; needs a held tree with `WRITE` covering the entry |
 | 7 | `CLASS_MODULE` | (`Domain`) loads code |
 | 8 | `CLASS_NET` | the network |
 | 9 | `CLASS_DRIVER` | (`Domain`, `Device`) serves a device from ring 3 |
@@ -278,7 +278,7 @@ where the source states them.
 | `LOG_TRACE_MAP` | 0x8306 | CTL | Map the trace region read-write; returns its address. Needs `READ` and `WRITE`. |
 | `LOG_TRACE_SET_MASK` | 0x8407 | ADMIN | Set the runtime class mask; returns the previous one. Needs `WRITE`. |
 
-**Domain**, on `DOMAIN_SELF` (kind 5): the caller's own process and namespace
+**Domain**, on `DOMAIN_SELF` (kind 5): the caller's own process (no op takes a path)
 
 | Op | Value | Class | Summary |
 |---|---|---|---|
@@ -288,17 +288,9 @@ where the source states them.
 | `DOMAIN_SUBREAPER` | 0x5407 | ADMIN | Child-subreaper mark: `SUBREAPER_GET`, `_SET`, `_CLEAR`. |
 | `DOMAIN_SET_FILTER` | 0x5408 | ADMIN | Confine the caller to a role profile, one way. |
 | `DOMAIN_PLEDGE` | 0x5409 | ADMIN | Narrow the pledge mask of the caller's Domain (cases and op classes the trap prologue and the io_ring still admit); it never widens. |
-| `DOMAIN_STAT` | 0x500D | READ | Stat a path into a `STAT_BYTES` (64) buffer. |
-| `DOMAIN_READDIR` | 0x500E | READ | One directory entry; the name buffer is `READDIR_NAME_BYTES` (64). Descriptor form. |
-| `DOMAIN_STATFS` | 0x500F | READ | Filesystem facts into a `STATFS_BYTES` (48) buffer. |
 | `DOMAIN_MEMINFO` | 0x5010 | READ | Free pages of memory. |
 | `DOMAIN_TASKINFO` | 0x5011 | READ | Task facts into a `TASKINFO_BYTES` (40) buffer. |
 | `DOMAIN_NET_GETIP` | 0x5012 | READ | The interface's IPv4 address. |
-| `DOMAIN_MKDIR` | 0x5614 | FS_MUTATE | Make a directory. |
-| `DOMAIN_UNLINK` | 0x5615 | FS_MUTATE | Remove a file. |
-| `DOMAIN_RMDIR` | 0x5616 | FS_MUTATE | Remove an empty directory (`-ENOTEMPTY`). |
-| `DOMAIN_RENAME` | 0x5617 | FS_MUTATE | Rename. |
-| `DOMAIN_TRUNCATE` | 0x5618 | FS_MUTATE | Truncate or extend a file. |
 | `DOMAIN_SOCKET` | 0x581C | NET | Create a socket; returns a `ty::SOCKET` handle with `READ\|WRITE\|DUP\|TRANSFER`. |
 | `DOMAIN_UPTIME` | 0x501E | READ | Milliseconds since boot. |
 | `DOMAIN_WAIT` | 0x521F | WAIT | Reap a finished child without blocking; `-ECHILD` for a task that is not a child. |
@@ -345,6 +337,22 @@ where the source states them.
 | `NODE_MMAP` | 0x630D | CTL | Map a file (shared or private) from the page cache; `PROT_EXEC` is never allowed. |
 | `DOMAIN_SET_CLEAR_TID` | 0x5332 | CTL | Name the 32-bit word (`w0`, 4-aligned, 0: none) the calling thread's end clears and futex-wakes, as `SYS_THREAD_CREATE`'s `ctid` does for a new thread. |
 | `NODE_SEEK` | 0x6010 | READ | Reposition the file's open description (`w0` offset, `w1` whence 0/1/2); returns the new offset. Any permission. |
+| `NODE_STATAT` | 0x6011 | READ | The record of a name beneath a directory handle into a `STAT_BYTES` (64) buffer. |
+| `NODE_READDIR` | 0x6012 | READ | Entry `w1` of the directory named `w0`: the name into a `READDIR_NAME_BYTES` (64) buffer, the size and is-directory flag as reply words; 1 an entry, 0 past the last. |
+| `NODE_STATFS` | 0x6013 | READ | Filesystem facts of the volume a name is on into a `STATFS_BYTES` (48) buffer. |
+| `NODE_MKDIRAT` | 0x6614 | FS_MUTATE | Make a directory beneath a directory handle. |
+| `NODE_UNLINKAT` | 0x6615 | FS_MUTATE | Remove a file; with `UNLINK_DIR`, an empty directory (`-ENOTEMPTY`). |
+| `NODE_RENAMEAT` | 0x6616 | FS_MUTATE | Rename, both names beneath one directory handle, within one filesystem. |
+| `NODE_TRUNCATEAT` | 0x6617 | FS_MUTATE | Truncate or extend a file. |
+
+Every name of an `*at` op (and of `NODE_OPENAT`) is relative to the directory
+handle and stays beneath it (`RESOLVE_BENEATH`): an absolute name, or a `..`
+that climbs above the directory, is `-EINVAL` before any filesystem is asked.
+There is no op by absolute path; a POSIX layer resolves its paths against the
+directories it holds in ring 3 (`libsys::beneath_root`). The `*at` ops that
+change the tree also need a held tree with `WRITE` that covers the entry. The
+same op numbers are the `Node` and `Dir` IDL interfaces
+(`azos_devif::fs`), the protocol a ring-3 file system would serve.
 
 `ROOT_DIR_RESOURCE` is the `ty::FILE` resource of the directory on `/`, which
 `SYS_CAP_INFO` looks up to find the task's root directory handle.

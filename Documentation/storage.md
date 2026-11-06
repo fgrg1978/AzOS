@@ -15,7 +15,8 @@ Contents:
 4. [The page-cache path](#the-page-cache-path)
 5. [azvol](#azvol)
 6. [Directory capabilities and `Cap<Dir>` namespaces](#directory-capabilities-and-capdir-namespaces)
-7. [ext4 and the Linux module set](#ext4-and-the-linux-module-set)
+7. [The file protocol](#the-file-protocol)
+8. [ext4 and the Linux module set](#ext4-and-the-linux-module-set)
 
 ## The VFS and the RAM file systems
 
@@ -936,11 +937,14 @@ into a descriptor refuses a tree resource as the wrong kind of object.
   (`O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`) needs a held tree
   with `WRITE` that covers the resulting path (`write_tree_covers_open`). A row
   that grants `/` read-only therefore reads anywhere and writes only under the
-  write trees it also holds. The calls that change the tree check the held
-  tree as well: create, remove and rename need the directory the entry is in to
-  lie strictly under a held tree's root, so a grant on `/fat` cannot remove
-  `/fat`; truncate is checked against the file, which may be the tree's root
-  itself or lie under it.
+  write trees it also holds. The ops that change the tree (`NODE_MKDIRAT`,
+  `NODE_UNLINKAT`, `NODE_RENAMEAT`, `NODE_TRUNCATEAT`) name an entry beneath a
+  directory handle too, and check the held tree on the path the name joins to:
+  create, remove and rename need the directory the entry is in to lie strictly
+  under a held tree's root, so a grant on `/fat` cannot remove `/fat`; truncate
+  is checked against the file, which may be the tree's root itself or lie under
+  it. Stat, readdir and statfs (`NODE_STATAT`, `NODE_READDIR`, `NODE_STATFS`)
+  need `READ` on the directory only. No op takes an absolute path.
 
 ### The join
 
@@ -982,6 +986,31 @@ Source: `crates/core/ipc/src/file_cap.rs`, `crates/core/common/src/path.rs`,
 `crates/fs/src/vfs.rs`, `crates/core/libsys/src/lib.rs`,
 `crates/core/abi/src/invoke.rs`, `crates/fs/src/crash_log.rs`,
 `kernel/src/trap/crash.rs`.
+
+## The file protocol
+
+A file and a directory are one protocol, defined once in the IDL
+(`crates/core/devif/src/fs.rs`): `Node` (read, write, fsync, seek) and `Dir`
+(openat, statat, readdir, statfs, mkdirat, unlinkat, renameat, truncateat), at
+API level 1. The kernel serves it itself as the `SYS_INVOKE` ops of a
+`Cap<File>` and a `Cap<Dir>`: each method of the two interfaces names its op
+number as the kernel's `NODE_*` constant (`#[op = ..]`), so the IDL table and
+the kernel's dispatch are one table, which `tests/host/syscall-tests`
+(`fs_protocol.rs`) checks in both directions. The socket ops of a `Node` and
+the mapping of a file (`NODE_MMAP`) are outside it.
+
+The two forms differ in where the bytes are. The kernel's form takes names and
+buffers at addresses of the caller's memory; the endpoint form takes an
+`Extent` (offset and length) in a region the server shares with its client,
+because no address crosses an IDL call. The outcome codes of the protocol and
+the errnos of the kernel's form are one mapping (`ERRNO_CODES`). A read moves
+`min(len, READ_MAX)` bytes unless the file ends, and says so; a client refuses
+a shorter answer that does not (`read_checked`, `SHORT_READ`).
+
+A mount served by a ring-3 server (a `FileSystem` that forwards to an endpoint)
+is not built: it lands with its first user, ext4 through `lxsrv`, which first
+needs the Linux VFS emulation in `lxsrv`
+([ext4 and the Linux module set](#ext4-and-the-linux-module-set)).
 
 ## ext4 and the Linux module set
 
