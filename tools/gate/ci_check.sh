@@ -16024,26 +16024,23 @@ PY
     # never park their mounted disk (the tests refuse or skip it there).
     # Canaries: the disk's unbind keeps its line (the bus keeps the device
     # bound); the disk's suspend does nothing.
-    ktest_scratch_row() { # ktest_scratch_row <ktest_row args...>
-        local img; img="$CI_LOG_DIR/scratch-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-').img"
-        mkdir -p "$CI_LOG_DIR"
-        dd if=/dev/zero of="$img" bs=1048576 count=16 2>/dev/null || { printf "  %-26s" "$1..."; bad; echo "      no scratch disk"; return; }
-        KTEST_QEMU_EXTRA="-nic none -drive file=$img,if=none,format=raw,id=scratch -device virtio-blk-device,drive=scratch -device virtio-rng-device -netdev user,id=sn -device virtio-net-device,netdev=sn" \
-            ktest_row "$@"
-        rm -f "$img"
-    }
+    # One blank scratch image for every scratch row; each boot writes to its
+    # own overlay (snapshot=on), so the rows share it.
+    mkdir -p "$CI_LOG_DIR"
+    dd if=/dev/zero of="$CI_LOG_DIR/scratch.img" bs=1048576 count=16 2>/dev/null
+    SCRATCH_QEMU="-nic none -drive file=$CI_LOG_DIR/scratch.img,if=none,format=raw,id=scratch,snapshot=on -device virtio-blk-device,drive=scratch -device virtio-rng-device -netdev user,id=sn -device virtio-net-device,netdev=sn"
     par "ktest driver disk in use refuses unbind (rv)" ktest_row "ktest driver disk in use refuses unbind (rv)" rv "" "" "" '^\[KTEST\] driver records: the disk in use refused its unbind' $AZOS_OUT/build/disk.img
     par "ktest driver disk in use unbind canary (rv)" ktest_row "ktest driver disk in use unbind canary (rv)" rv "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-ignores-openers" "" $AZOS_OUT/build/disk.img
-    par "ktest driver unbind rebind (rv)" ktest_scratch_row "ktest driver unbind rebind (rv)" rv "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
-    par "ktest driver unbind irq canary (rv)" ktest_scratch_row "ktest driver unbind irq canary (rv)" rv "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
-    par "ktest driver quiesce (rv)" ktest_scratch_row "ktest driver quiesce (rv)" rv "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them'
-    par "ktest driver quiesce canary (rv)" ktest_scratch_row "ktest driver quiesce canary (rv)" rv "" "driver_records_quiesce_and_bring_back_every_kernel_device" "canary=suspend-leaves-disk-up"
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind rebind (rv)" ktest_row "ktest driver unbind rebind (rv)" rv "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind irq canary (rv)" ktest_row "ktest driver unbind irq canary (rv)" rv "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce (rv)" ktest_row "ktest driver quiesce (rv)" rv "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them'
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce canary (rv)" ktest_row "ktest driver quiesce canary (rv)" rv "" "driver_records_quiesce_and_bring_back_every_kernel_device" "canary=suspend-leaves-disk-up"
     par "ktest driver disk in use refuses unbind (arm)" ktest_row "ktest driver disk in use refuses unbind (arm)" arm "" "" "" '^\[KTEST\] driver records: the disk in use refused its unbind' $AZOS_OUT/build/disk-aarch64.img
     par "ktest driver disk in use unbind canary (arm)" ktest_row "ktest driver disk in use unbind canary (arm)" arm "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-ignores-openers" "" $AZOS_OUT/build/disk-aarch64.img
-    par "ktest driver unbind rebind (arm)" ktest_scratch_row "ktest driver unbind rebind (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
-    par "ktest driver unbind irq canary (arm)" ktest_scratch_row "ktest driver unbind irq canary (arm)" arm "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
-    par "ktest driver quiesce (arm)" ktest_scratch_row "ktest driver quiesce (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them'
-    par "ktest driver quiesce canary (arm)" ktest_scratch_row "ktest driver quiesce canary (arm)" arm "" "driver_records_quiesce_and_bring_back_every_kernel_device" "canary=suspend-leaves-disk-up"
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind rebind (arm)" ktest_row "ktest driver unbind rebind (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind irq canary (arm)" ktest_row "ktest driver unbind irq canary (arm)" arm "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce (arm)" ktest_row "ktest driver quiesce (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them'
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce canary (arm)" ktest_row "ktest driver quiesce canary (arm)" arm "" "driver_records_quiesce_and_bring_back_every_kernel_device" "canary=suspend-leaves-disk-up"
     par "ktest free_pages in flight canary (rv)" ktest_row "ktest free_pages in flight canary (rv)" rv ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest buddy rotate canary (rv)" ktest_row "ktest buddy rotate canary (rv)" rv ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
     par "ktest kstack reuse canary (rv)" ktest_row "ktest kstack reuse canary (rv)" rv ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
@@ -18047,19 +18044,14 @@ CPU 5 lacks hwcap bits"
     # ops, so the quiesce row accepts a refusal by a driver without them as
     # well as the full quiesce, and has no canary row (a refusal may come
     # before the disk is asked).
-    x86_ktest_scratch_row() { # x86_ktest_scratch_row <x86_ktest_row args...>
-        local img; img="$CI_LOG_DIR/scratch-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-').img"
-        mkdir -p "$CI_LOG_DIR"
-        dd if=/dev/zero of="$img" bs=1048576 count=16 2>/dev/null || { printf "  %-26s" "$1..."; bad; echo "      no scratch disk"; return; }
-        KTEST_QEMU_EXTRA="-nic none -drive file=$img,if=none,format=raw,id=scratch -device virtio-blk-device,drive=scratch -device virtio-rng-device -netdev user,id=sn -device virtio-net-device,netdev=sn" \
-            x86_ktest_row "$@"
-        rm -f "$img"
-    }
+    mkdir -p "$CI_LOG_DIR"
+    [ -f "$CI_LOG_DIR/scratch.img" ] || dd if=/dev/zero of="$CI_LOG_DIR/scratch.img" bs=1048576 count=16 2>/dev/null
+    SCRATCH_QEMU="-nic none -drive file=$CI_LOG_DIR/scratch.img,if=none,format=raw,id=scratch,snapshot=on -device virtio-blk-device,drive=scratch -device virtio-rng-device -netdev user,id=sn -device virtio-net-device,netdev=sn"
     par "ktest driver disk in use refuses unbind (x86)" x86_ktest_row "ktest driver disk in use refuses unbind (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img '^\[KTEST\] driver records: the disk in use refused its unbind'
     par "ktest driver disk in use unbind canary (x86)" x86_ktest_row "ktest driver disk in use unbind canary (x86)" "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-ignores-openers" $AZOS_OUT/build/disk-x86_64.img
-    par "ktest driver unbind rebind (x86)" x86_ktest_scratch_row "ktest driver unbind rebind (x86)" "" "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
-    par "ktest driver unbind irq canary (x86)" x86_ktest_scratch_row "ktest driver unbind irq canary (x86)" "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
-    par "ktest driver quiesce (x86)" x86_ktest_scratch_row "ktest driver quiesce (x86)" "" "" "" "" '^\[KTEST\] driver records: ([1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them|quiesce refused by a driver without power ops)'
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind rebind (x86)" x86_ktest_row "ktest driver unbind rebind (x86)" "" "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind irq canary (x86)" x86_ktest_row "ktest driver unbind irq canary (x86)" "" "driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-leaves-irq"
+    KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver quiesce (x86)" x86_ktest_row "ktest driver quiesce (x86)" "" "" "" "" '^\[KTEST\] driver records: ([1-9][0-9]* device\(s\) quiesced and brought back, the disk and the NIC among them|quiesce refused by a driver without power ops)'
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (x86)" x86_ktest_row "ktest tid stamp canary (x86)" ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
 ^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"
