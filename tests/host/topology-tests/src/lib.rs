@@ -2896,6 +2896,7 @@ pub(crate) mod host_machine {
                 b.add(hwbus::Device::dt("twin@b", b"vendor,twin\0", 0x2000_1000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("nowindow@0", b"vendor,nowindow\0", 0x3000_0000, 0, 0), &mut q).unwrap();
                 b.add(hwbus::Device::virtio_mmio(0x1000_2000, 0x1000, 2, 2), &mut q).unwrap();
+                b.add(hwbus::Device::dt("dma@4000000", b"vendor,dmamaster\0", 0x400_0000, 0x1000, 0).with_dma_coherent(true), &mut q).unwrap();
                 // What the kernel drives is bound to its driver.
                 let rules = hwbus::Rules {
                     native: &[
@@ -3058,6 +3059,25 @@ mod mmio_cap_tests {
         assert_eq!(hwbus::user_window(handle("dt:vendor,nowindow")), None, "no window, nothing to map");
     }
 
+    /// **A writable window on a device that masters the bus is granted only
+    /// where the kernel's policy says (an IOMMU confines it, or the build
+    /// accepts a kernel-trust driver); a read-only one, and a writable one on a
+    /// device that does not master the bus, are not asked about.**
+    ///
+    /// **Canary.** `writable-master-canary`: the writable window is granted
+    /// with no policy installed.
+    #[test]
+    fn a_writable_window_on_a_bus_master_needs_the_policy() {
+        machine();
+        let tid = fresh_tid();
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:vendor,dmamaster").is_none(), "no policy: refused");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:vendor,dmamaster").is_some(), "read-only is granted");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:google,goldfish-rtc").is_some(), "no DMA: granted");
+        crate::mmio_cap::set_writable_master_policy(|_| true);
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:vendor,dmamaster").is_some(), "the policy admits it");
+        crate::mmio_cap::set_writable_master_policy(|_| false);
+    }
+
     /// A topology `irq.<selector>` grant mints the line the bus found for the
     /// device the selector names, not a number the row wrote: the RTC's line
     /// 11. A selector no device matches, and a device
@@ -3065,7 +3085,8 @@ mod mmio_cap_tests {
     ///
     /// **Canaries.** Mint `hwbus::line_of` of the handle + 1 in
     /// `mmio_device_line`: the RTC's grant names line 12. Drop the
-    /// `user_window` test there: the kernel UART's line is minted.
+    /// `user_window` test there: the kernel UART's line is minted. Drop the
+    /// `mmio_line_free` test in `cap_seed::device_seed`: `irq.10` is minted.
     #[test]
     fn a_topology_irq_grant_by_selector_mints_the_devices_line() {
         machine();
@@ -3076,6 +3097,8 @@ mod mmio_cap_tests {
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:vendor,absent").is_none(), "no such device");
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:vendor,nowindow").is_none(), "a device with no line");
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:ns16550a").is_none(), "the kernel's UART's line");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.10").is_none(), "the kernel's UART's line, by number");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.11").is_some(), "the RTC's line, by number");
     }
 
     /// A topology `mmio.<selector>` grant mints a capability whose resource is
