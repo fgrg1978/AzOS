@@ -47,12 +47,12 @@ crates/core/mm	302	46	13	0	0	82
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	74
 crates/core/pkg	0	0	0	0	1	0
-crates/core/recovery	5	0	0	0	0	56
+crates/core/recovery	5	0	0	0	0	55
 crates/core/rings	25	6	4	0	0	98
 crates/core/sched	425	160	14	3	0	67
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	47	9	20	0	0	82
-crates/core/syscall	43	2	1	0	0	39
+crates/core/syscall	41	2	1	0	0	38
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	26	0	1	0	0	30
 crates/core/wcet-macro	0	0	0	0	1	-
@@ -64,12 +64,12 @@ crates/domains/robot/nav	0	0	0	0	1	0
 crates/domains/robot/robot	1	0	0	0	0	47
 crates/domains/robot/safety-core	0	0	0	0	1	0
 crates/domains/robot/telemetry	0	0	0	0	1	0
-crates/drivers/actuator	5	0	0	0	0	40
+crates/drivers/actuator	5	0	0	0	0	49
 crates/drivers/api	0	0	0	0	1	0
 crates/drivers/baro	0	0	0	0	1	0
 crates/drivers/base	0	0	0	0	1	0
 crates/drivers/block	84	6	1	0	0	91
-crates/drivers/bus	11	1	1	0	0	58
+crates/drivers/bus	11	1	1	0	0	61
 crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
@@ -78,7 +78,7 @@ crates/drivers/dma	22	12	2	0	0	54
 crates/drivers/dtb	97	42	0	0	0	100
 crates/drivers/fb	10	1	2	0	0	39
 crates/drivers/firmware	2	1	0	0	0	100
-crates/drivers/gpio	4	0	0	0	0	59
+crates/drivers/gpio	4	0	0	0	0	66
 crates/drivers/gps	0	0	0	0	1	0
 crates/drivers/hwbus	0	0	0	0	1	0
 crates/drivers/imu	0	0	0	0	1	0
@@ -99,7 +99,7 @@ crates/drivers/rtc	0	0	0	0	1	0
 crates/drivers/scsi	0	0	0	0	1	0
 crates/drivers/sensor	2	2	0	0	0	16
 crates/drivers/soc	0	0	0	0	1	0
-crates/drivers/sys	62	9	4	0	0	56
+crates/drivers/sys	62	9	4	0	0	59
 crates/drivers/thermal	0	0	0	0	1	0
 crates/drivers/tpm	0	0	0	0	1	0
 crates/drivers/usb	19	1	1	0	0	34
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	508
