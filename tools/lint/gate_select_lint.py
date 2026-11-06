@@ -29,9 +29,9 @@ import azos_tools  # noqa: E402
 import kconfig_to_cargo as k2c  # noqa: E402
 
 ROOT = azos_tools.ROOT
-GATE = os.path.join(ROOT, "tools", "gate", "ci_check.sh")
+GATE = os.path.join(ROOT, "tools/gate/ci_check.sh")
 # The other gate scripts whose builds name a selection.
-OTHERS = [os.path.join(ROOT, "tools", "gate", f) for f in ("gate_tier.sh", "check_fast.sh")]
+OTHERS = [os.path.join(ROOT, f) for f in ("tools/gate/gate_tier.sh", "tools/gate/check_fast.sh")]
 ARCHES = ("riscv64", "aarch64", "x86_64")
 _QUOTED = re.compile(r'"([^"\n]*)"')
 _VAR = re.compile(r"\$(\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@])")
