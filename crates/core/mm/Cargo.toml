@@ -108,6 +108,11 @@ keep-leaf-first-canary = []
 # child's mappings are cloned, so a sibling's restore or the reclaimer's store
 # runs while the markers are copied: `syscall-tests` pte_truth.rs fork rows fail.
 fork-hold-canary = []
+# Host-suite canary: a restore that was supplying when a fork began holding
+# the space installs during the hold, so the child's copy of the markers
+# misses the page: `syscall-tests` pte_truth.rs
+# `a_restore_begun_before_the_fork_does_not_install_during_it` fails.
+fork-install-recheck-canary = []
 # Host-suite canary: a demand reservation (`brk`) is written over a page of a
 # mapping, whose state is its object's slot: `syscall-tests` pte_truth.rs
 # `a_heap_reservation_skips_the_pages_of_a_mapping` fails.

@@ -394,3 +394,82 @@ fn a_copy_on_write_break_through_another_tasks_root_moves_its_slot() {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
+
+/// The fork the install hook starts in `a_restore_begun_before_the_fork_*`:
+/// the parent's root, then the child's root and the fork's hold.
+static HOOK_PARENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOOK_FORK: std::sync::Mutex<Option<(usize, azos_mm::pager::ForkHold)>> = std::sync::Mutex::new(None);
+
+fn fork_at_install() {
+    let pt = HOOK_PARENT.load(std::sync::atomic::Ordering::SeqCst);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, _, hold) =
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    *HOOK_FORK.lock().unwrap() = Some((child, hold));
+}
+
+/// **A restore that was supplying when the fork began does not install during
+/// it.** A sibling decides to restore a compressed page and decompresses it;
+/// meanwhile the fork raises its hold and its walk passes the page (no leaf,
+/// so the child gets none). The install then finds the hold and is refused;
+/// it waits for the fork's end. The child's copy of the markers sees the page
+/// out, and the child reads it, not a zero page. Needs the compressed pool.
+/// **Canary** `fork-install-recheck-canary`: the install goes through during
+/// the hold, the parent's slot is a frame when the markers are copied, and the
+/// child reads zeros.
+#[test]
+fn a_restore_begun_before_the_fork_does_not_install_during_it() {
+    if !azos_mm::zpool::ENABLED {
+        return;
+    }
+    let _g = serial();
+    azos_crypto::entropy::mix(&[0x2d; 64], 512);
+    let pt = space();
+    let base = map(2);
+    write(pt, base, 0x5A);
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base };
+    assert!(reclaim.unmap(victim));
+    assert!(reclaim.store(victim).is_ok());
+    reclaim.free(victim);
+    HOOK_PARENT.store(pt, std::sync::atomic::Ordering::SeqCst);
+    azos_mm::pager::shim_set_install_hook(Some(fork_at_install));
+    let parent_space = azos_sched::shim_space(pt);
+    azos_sched::shim_serial_share(true);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let child = std::thread::scope(|sc| {
+        let sibling = sc.spawn(|| {
+            while azos_mm::vmm::translate(pt, base).is_none() {
+                azos_mm::vmm::handle_demand_fault(parent_space, base)?;
+                std::thread::yield_now();
+            }
+            Ok::<(), azos_common::error::KernelError>(())
+        });
+        // The fork began at the sibling's install; it clones and ends here.
+        let child = loop {
+            if let Some((child, _)) = HOOK_FORK.lock().unwrap().as_ref() {
+                break *child;
+            }
+            std::thread::yield_now();
+        };
+        azos_sched::shim_forget_space(child);
+        azos_sched::shim_set_other_task(2, child, 0);
+        assert!(fork_regions_to_child(2));
+        drop(HOOK_FORK.lock().unwrap().take());
+        assert!(sibling.join().unwrap().is_ok());
+        child
+    });
+    azos_sched::shim_serial_share(false);
+    azos_mm::pager::shim_set_install_hook(None);
+    let f = azos_mm::vmm::translate(pt, base).expect("restored in the parent");
+    assert!(bytes(f).iter().all(|&b| b == 0x5A));
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(child), base).is_ok());
+    let cf = azos_mm::vmm::translate(child, base).expect("restored in the child");
+    assert!(bytes(cf).iter().all(|&b| b == 0x5A), "the child reads the parent's page, not zeros");
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}

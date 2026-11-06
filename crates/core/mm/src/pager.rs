@@ -1158,9 +1158,10 @@ pub fn fork_end(r: SpaceRef) {
 
 /// A fork's hold on its parent's space ([`fork_begin`] to [`fork_end`]), from
 /// its walk until the child's mappings are cloned: while it lives the
-/// reclaimer takes no page of the parent and the parent's faults restore none,
-/// so the child's copy of the parent's markers ([`fork_clone`]) sees each page
-/// as the walk did. Dropping it is the fork's end.
+/// reclaimer takes no page of the parent and no restore of the parent installs
+/// (one decided before the hold is refused at its install and waits), so the
+/// child's copy of the parent's markers ([`fork_clone`]) sees each page as the
+/// walk did. Dropping it is the fork's end.
 pub struct ForkHold(Option<SpaceRef>);
 
 impl ForkHold {
@@ -1830,7 +1831,20 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         }
     };
 
+    #[cfg(not(target_os = "none"))]
+    {
+        let h = INSTALL_HOOK.lock().take();
+        if let Some(h) = h {
+            h();
+        }
+    }
     let installed = space.lock().filter(|sp| sp.recorded).is_some_and(|mut t| {
+        // A fork began holding the space while this restore supplied: its
+        // copy of the markers must see the page out. The next attempt waits
+        // for the fork's end. Canary `fork-install-recheck-canary`.
+        if stored.is_some() && t.forking != 0 && !cfg!(feature = "fork-install-recheck-canary") {
+            return false;
+        }
         // Unmapped or re-protected since the lookup: look again and let the
         // new layout answer (a removed mapping then kills, as any hole does).
         let Some((n, o)) = t.anon_at(page) else { return false };
@@ -2295,6 +2309,17 @@ fn fork_race_canary(parent: SpaceRef, child: SpaceRef, m: &Mapping, o: &anon_obj
     }
 }
 
+/// Host suites only: run once just before a fault's install takes the
+/// space's lock (`pte_truth.rs` starts a fork there).
+#[cfg(not(target_os = "none"))]
+static INSTALL_HOOK: SpinLock<Option<fn()>> = SpinLock::new(None);
+
+/// Host suites only: install or remove [`INSTALL_HOOK`].
+#[cfg(not(target_os = "none"))]
+pub fn shim_set_install_hook(hook: Option<fn()>) {
+    *INSTALL_HOOK.lock() = hook;
+}
+
 /// Records [`fork_clone`] copies at a time.
 const FORK_BATCH: usize = 8;
 
@@ -2315,7 +2340,8 @@ fn mappings_from(r: SpaceRef, at: usize, out: &mut [Mapping]) -> usize {
 /// refused). The fork's hold on the parent ([`ForkHold`], from before its walk
 /// until after this) keeps every marker as the walk saw it: no store was in
 /// flight when it began and the reclaimer starts none, so no marker is
-/// `InTransit`, and the parent's faults restore none.
+/// `InTransit`, and no restore of the parent installs meanwhile (one already
+/// supplying when the hold began is refused at its install).
 fn copy_markers(child: SpaceRef, maps: &[Mapping]) -> Option<usize> {
     let mut n = 0;
     let mut short = false;

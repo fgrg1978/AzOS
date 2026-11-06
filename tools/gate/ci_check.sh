@@ -12274,6 +12274,12 @@ host_job host_canary_row "anon: fork hold, no store canary" syscall-tests fork-h
 host_job zpool_host_row "anon: fork hold, no restore, pool on" a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it
 host_job zpool_host_canary_row "anon: fork hold, no restore canary" fork-hold-canary \
     a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it
+# A restore already supplying when the fork's hold began is refused at its
+# install and waits (pager::fault_once). fork-install-recheck-canary: it
+# installs during the hold and the child reads zeros.
+host_job zpool_host_row "anon: fork hold, restore begun before" a_restore_begun_before_the_fork_does_not_install_during_it
+host_job zpool_host_canary_row "anon: fork hold, restore begun before canary" fork-install-recheck-canary \
+    a_restore_begun_before_the_fork_does_not_install_during_it
 # A demand reservation (brk) skips the pages of a mapping, whose state is its
 # object's slot (demand::map_demand). demand-over-mapping-canary: the empty leaf
 # alone decides, and a page in the pool would come back as zeros.
