@@ -27,19 +27,23 @@ def main():
         open(child, "w").write(src.replace("os.path.dirname(os.path.abspath(__file__))", repr(d)))
         def go(mode, isa, path):
             return subprocess.run([sys.executable, "-I", child, mode, isa, path], capture_output=True).returncode
+
+        def skips(isa, path, lanes):
+            r = subprocess.run([sys.executable, "-I", child, "check", isa, path], capture_output=True, text=True)
+            return r.returncode == 0 and r.stdout.count("SKIP") == lanes
         base, same, over, gone = (os.path.join(d, n) for n in ("base", "same", "over", "gone"))
         log(base, 1000, 2000, 3000)
         log(same, 1020, 2000, 3000)
         log(over, 1000, 2000, 3200)
         log(gone, 1000, 2000, None)
         cases = [
-            ("no baseline yet fails", go("check", "rv", base), 1),
+            ("no baseline yet skips, and says so", 0 if skips("rv", base, 3) else 1, 0),
             ("record writes it", go("record", "rv", base), 0),
             ("the baseline itself passes", go("check", "rv", base), 0),
             ("2 per cent over is inside the tolerance", go("check", "rv", same), 0),
             ("6 per cent over fails", go("check", "rv", over), 1),
             ("a lane missing from the log fails", go("check", "rv", gone), 1),
-            ("another ISA has no baseline", go("check", "arm", base), 1),
+            ("another ISA has no baseline yet and skips", 0 if skips("arm", base, 3) else 1, 0),
             ("an ISA with no network lane is refused", go("check", "x86", base), 2),
         ]
         bad = 0

@@ -57,6 +57,12 @@
 # division in u128. This script's own aarch64 runs came back with a 268
 # syscall-floor, not 26,800 or 41,300 — the fix held.
 #
+# ## The TCP pass
+#
+# `tcp-bulk-tx` and `tcp-bulk-rx` run in a pass of their own, as in
+# `vsbench_compare.sh` (see "The TCP bulk pass" below): the product kernel with a
+# NIC, and Linux, against a host peer. `VSBENCH_TCP=0` skips it.
+#
 # ## What is asserted, and what is not
 #
 # Asserted: both sides reach their last lane (`switch-loaded` printed or
@@ -334,6 +340,97 @@ else
 (set VSBENCH_AARCH64_LINUX_IMAGE)" >&2
 fi
 
+# ── The TCP bulk pass: tcp-bulk-tx and tcp-bulk-rx, AzOS and Linux ──────
+#
+# The same pass vsbench_compare.sh runs on riscv64 (its header, "VSBENCH_TCP",
+# says why): 4 MiB each way to tools/bench/vsbench_tcp_peer.py on the host over
+# QEMU user networking, `-icount shift=0,sleep=off`, `-smp $VSBENCH_TCP_SMP`.
+# It boots the PRODUCT aarch64 kernel (no `bench-minimal`: AzOS's TCP needs its
+# `net-poll` task) with a virtio-net NIC and a `filter-dump` pcap for ACKs per
+# segment, and the Linux initramfs with `ip=` on the same QEMU line. Skipped by
+# `VSBENCH_TCP=0` and by a `VSBENCH_LANES` without `tcp`. The host side runs
+# beside the guest, so these lanes are not bit-exact.
+VSBENCH_TCP="${VSBENCH_TCP:-1}"
+VSBENCH_TCP_SMP="${VSBENCH_TCP_SMP:-1}"
+TCP_ICOUNT_ARGS="-icount shift=0,sleep=off"
+TCP_LINUX_IP="ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off"
+KT_LOG="$WORK/azos-aarch64-product-tcp.log"
+LT_LOG="$WORK/linux-aarch64-tcp.log"
+TCP_RAN=0
+TCP_PEER_PID=""
+tcp_peer_start() { # tcp_peer_start <tag>
+    rm -f "$WORK/tcp-$1.port"
+    python3 "$REPO_ROOT/tools/bench/vsbench_tcp_peer.py" --port-file "$WORK/tcp-$1.port" \
+        --log "$WORK/tcp-$1.peer.log" 2>"$WORK/tcp-$1.peer.err" &
+    TCP_PEER_PID=$!
+    for _ in $(seq 1 100); do [ -s "$WORK/tcp-$1.port" ] && break; sleep 0.1; done
+    TCP_PORT="$(tr -dc '0-9' <"$WORK/tcp-$1.port" 2>/dev/null)"
+}
+tcp_peer_stop() {
+    [ -n "$TCP_PEER_PID" ] && { kill "$TCP_PEER_PID" 2>/dev/null; wait "$TCP_PEER_PID" 2>/dev/null; }
+    TCP_PEER_PID=""
+}
+trap tcp_peer_stop EXIT
+tcp_net_args() { # tcp_net_args <pcap>
+    printf '%s' "-netdev user,id=tn0 -device virtio-net-device,netdev=tn0 -object filter-dump,id=tf0,netdev=tn0,file=$1,maxlen=128"
+}
+if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBENCH_LANES" | grep -q ',tcp,'; }; then
+    KP_ELF="$BENCH_TARGET/azos-aarch64-product/$A_TRIPLE/release/kernel"
+    KP_IMG="$BENCH_TARGET/azos-aarch64-product/kernel.img"
+    ( cd "$REPO_ROOT" && args="$(python3 tools/build/kconfig_to_cargo.py --out "$A_CONFIG.product.sel" "$A_CONFIG")" \
+        && env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
+        KCONFIG_CONFIG="$A_CONFIG.product.sel" \
+        CARGO_TARGET_DIR="$BENCH_TARGET/azos-aarch64-product" \
+        $CARGO build --release -p azos_kernel $args \
+        --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' \
+        >"$WORK/build-aarch64-product.log" 2>&1 ) \
+        || die "could not build the aarch64 product kernel — see $WORK/build-aarch64-product.log"
+    "$A64_OBJCOPY" -O binary "$KP_ELF" "$KP_IMG" 2>/dev/null
+    [ -f "$KP_IMG" ] || die "ELF -> Image conversion failed: $KP_IMG"
+    tcp_wait() { # tcp_wait <pid> <log> <marker regexp> <secs>
+        local i=0
+        while [ "$i" -lt "$4" ]; do
+            tr -d '\r' <"$2" 2>/dev/null | grep -qE "$3" && break
+            grep -aq 'AARCH64-TRAP\] unhandled' "$2" 2>/dev/null && break
+            kill -0 "$1" 2>/dev/null || break
+            i=$((i + 1)); sleep 1
+        done
+    }
+    tcp_peer_start azos
+    if [ -n "$TCP_PORT" ]; then
+        T_DISK="$WORK/disk-aarch64-tcp.img"
+        cp "$AZOS_OUT/build/disk-aarch64-vsbench.img" "$T_DISK"
+        printf 'tcp\n' >"$WORK/lanes-tcp.txt"; printf '%s\n' "$TCP_PORT" >"$WORK/tcp-azos.txt"
+        mcopy -o -i "$T_DISK" "$WORK/lanes-tcp.txt" ::VSBLANES.TXT \
+            && mcopy -o -i "$T_DISK" "$WORK/tcp-azos.txt" ::VSBTCP.TXT || die "could not prepare $T_DISK"
+        "$QEMU_AARCH64" -M virt,gic-version=3 -cpu max,pauth=on -smp "$VSBENCH_TCP_SMP" $TCP_ICOUNT_ARGS -nographic \
+            $(tcp_net_args "$WORK/tcp-azos.pcap") \
+            -kernel "$KP_IMG" -global virtio-mmio.force-legacy=false \
+            -drive "file=$T_DISK,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0 >"$KT_LOG" 2>&1 &
+        T_PID=$!
+        tcp_wait "$T_PID" "$KT_LOG" '\[VSBENCH\] side=azos done' "${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}"
+        kill -9 "$T_PID" 2>/dev/null; wait "$T_PID" 2>/dev/null
+    fi
+    tcp_peer_stop
+    if [ "$L_RAN" = 1 ]; then
+        tcp_peer_start linux
+        if [ -n "$TCP_PORT" ]; then
+            LT_DISK="$WORK/disk-linux-aarch64-tcp.img"
+            cp "$AZOS_OUT/build/disk-aarch64-vsbench.img" "$LT_DISK"
+            "$QEMU_AARCH64" -M virt,gic-version=3 -cpu "$LINUX_A_CPU" -smp "$VSBENCH_TCP_SMP" $TCP_ICOUNT_ARGS -nographic \
+                $(tcp_net_args "$WORK/tcp-linux.pcap") \
+                -kernel "$L_IMG" -initrd "$WORK/initramfs-aarch64.cpio" -global virtio-mmio.force-legacy=false \
+                -drive "file=$LT_DISK,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0 \
+                -append "rdinit=/init console=ttyAMA0 $TCP_LINUX_IP VSBENCH_LANES=tcp VSBENCH_TCP_PORT=$TCP_PORT" >"$LT_LOG" 2>&1 &
+            LT_PID=$!
+            tcp_wait "$LT_PID" "$LT_LOG" '\[VSBENCH\] side=linux done|Attempted to kill init' "${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}"
+            kill -9 "$LT_PID" 2>/dev/null; wait "$LT_PID" 2>/dev/null
+        fi
+        tcp_peer_stop
+    fi
+    TCP_RAN=1
+fi
+
 rc=0
 for pair in "riscv64:$R_LOG" "aarch64:$A_LOG"; do
     isa="${pair%%:*}" log="${pair#*:}"
@@ -407,6 +504,57 @@ while read -r lane; do
     printf "    %-18s %14s %14s %14s %8s\n" "$lane" "${a:--}" "${r:--}" "${l:--}" "$q"
 done <"$WORK/lanes"
 [ -n "$L_MISSING" ] && echo "  (not counted) aarch64 AzOS lanes with no Linux/aarch64 number:$L_MISSING"
+if [ "$TCP_RAN" = 1 ]; then
+    # Per lane and side: instructions per KiB of the whole guest (-icount), the
+    # guest and host bytes/s, and ACKs per data segment from the NIC's pcap
+    # (tools/bench/vsbench_tcp_pcap.py, the same code for both kernels).
+    tcp_field() {
+        awk -v l="$2" -v k="$3" '$1 == l { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == k) { print kv[2]; exit } } }' "$1" 2>/dev/null
+    }
+    tcp_guest_bps() {
+        tr -d '\r' <"$1" 2>/dev/null | grep -oE "\[VSBENCH\] $2: [0-9]+ bytes, [0-9]+ bytes/s" \
+            | sed -E 's/.* bytes, ([0-9]+) bytes\/s/\1/' | sed -n 1p
+    }
+    tcp_side() { # tcp_side <side> <log> <tag>
+        local lane
+        : >"$WORK/tcp-$3.rows"
+        [ -f "$WORK/tcp-$3.pcap" ] && python3 "$REPO_ROOT/tools/bench/vsbench_tcp_pcap.py" "$WORK/tcp-$3.pcap" >"$WORK/tcp-$3.acks" 2>/dev/null
+        rm -f "$WORK/tcp-$3.pcap"
+        lane_values "$2" "$1" | grep -E '^tcp-bulk-' >"$WORK/tcp-$3.tsv"
+        for lane in tcp-bulk-tx tcp-bulk-rx; do
+            local dir="${lane#tcp-bulk-}"
+            printf '%s side=%s instr_per_kib=%s guest_Bps=%s host_Bps=%s acks_per_seg=%s retx=%s\n' "$lane" "$1" \
+                "$(awk -F '\t' -v l="$lane" '$1 == l { print $2; exit }' "$WORK/tcp-$3.tsv")" \
+                "$(tcp_guest_bps "$2" "$lane")" \
+                "$(sed -nE "s/^dir=$dir bytes=.* bytes_per_s=([0-9]+)\$/\1/p" "$WORK/tcp-$3.peer.log" 2>/dev/null | sed -n 1p)" \
+                "$(tcp_field "$WORK/tcp-$3.acks" "$lane" acks_per_seg)" \
+                "$(tcp_field "$WORK/tcp-$3.acks" "$lane" retx)" >>"$WORK/tcp-$3.rows"
+        done
+    }
+    tr -d '\r' <"$KT_LOG" 2>/dev/null | grep -qE '\[VSBENCH\] side=azos done' \
+        || { echo "vsbench_aarch64: the aarch64 TCP pass did not reach its end ($KT_LOG)" >&2; rc=1; }
+    if grep -q "FAIL rc=" "$KT_LOG" 2>/dev/null; then
+        echo "vsbench_aarch64: an aarch64 TCP lane failed:" >&2; grep "FAIL rc=" "$KT_LOG" >&2; rc=1
+    fi
+    tcp_side azos "$KT_LOG" azos
+    [ -s "$WORK/tcp-azos.tsv" ] || { echo "vsbench_aarch64: parsed NO TCP lanes from $KT_LOG" >&2; rc=1; }
+    : >"$WORK/tcp-linux.rows"
+    if [ "$L_RAN" = 1 ]; then
+        linux_done "$LT_LOG" || echo "vsbench_aarch64: (not counted) the Linux/aarch64 TCP pass did not finish ($LT_LOG)" >&2
+        tcp_side linux "$LT_LOG" linux
+        missing="$(cut -f1 "$WORK/tcp-azos.tsv" | sort -u | comm -23 - <(cut -f1 "$WORK/tcp-linux.tsv" | sort -u))"
+        if [ -n "$missing" ]; then
+            echo "vsbench_aarch64: aarch64 TCP lanes with no Linux counterpart:" >&2
+            echo "$missing" | sed 's/^/           /' >&2
+            rc=1
+        fi
+    fi
+    echo "  vsbench TCP bulk, 4096 KiB each way to a host peer over -netdev user, the product kernel,"
+    echo "  under $TCP_ICOUNT_ARGS, -smp $VSBENCH_TCP_SMP. Not bit-exact (the host runs beside the guest)."
+    cat "$WORK/tcp-azos.rows" "$WORK/tcp-linux.rows" | sort -s -k1,1 | sed 's/^/    /'
+    sed 's/^/vsbench-tcp: /' "$WORK/tcp-azos.rows" "$WORK/tcp-linux.rows"
+    echo ""
+fi
 echo ""
 if [ "$L_RAN" = 1 ]; then echo "  Logs kept: $R_LOG , $A_LOG , $L_LOG"; else echo "  Logs kept: $R_LOG , $A_LOG"; fi
 

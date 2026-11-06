@@ -756,9 +756,11 @@ config NET_TX_BATCH_MAX
       draining the ring (used.flags NO_NOTIFY, virtio 1.x 2.7.10; the legacy
       transport defines it too).
 
-      1 = one doorbell per frame (the behaviour before wave 15).  At most
-      NET_VIRTIO_TXQ_SIZE / 2, the frames the ring holds (build.rs checks
-      it), or a batch could fill the ring before announcing it.
+      1 = one doorbell per frame.  At most the frames the smallest TX ring
+      of the NICs in the build holds (build.rs checks it): NET_VIRTIO_TXQ_SIZE
+      / 2 for virtio-net, E1000E_TX_DESCS - 1, IGC_TX_DESCS - 1,
+      DWMAC_TX_DESCS - 1 on the VisionFive 2; otherwise a batch could fill the ring before
+      announcing it.
 
       Cost: nothing in RAM.  A doorbell is an MMIO store that exits to the
       device model (QEMU) or crosses the bus (hardware); a larger batch

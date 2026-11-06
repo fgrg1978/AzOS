@@ -703,17 +703,39 @@ fn run_validations(cfg: &ConfigMap) {
             }
         }
     }
-    if let (Some(txq), Some(batch)) =
-        (get_u64(cfg, "NET_VIRTIO_TXQ_SIZE"), get_u64(cfg, "NET_TX_BATCH_MAX"))
-    {
-        if batch == 0 || batch > txq / 2 {
-            panic!(
-                "validation FAIL: NET_TX_BATCH_MAX ({batch}) must be in 1..=NET_VIRTIO_TXQ_SIZE/2 \
-                 ({}): the TX ring holds NET_VIRTIO_TXQ_SIZE/2 frames, and a batch larger than \
-                 that fills it before ringing the doorbell. Fix: lower NET_TX_BATCH_MAX or \
-                 raise NET_VIRTIO_TXQ_SIZE in .config.",
-                txq / 2
-            );
+    // A batch is announced when the ring fills, so a bound past the smallest
+    // TX ring among the NICs this build has only wastes the batch: frames in
+    // flight are half the virtio-net queue, one fewer than the descriptors of
+    // the Intel and DesignWare rings. A USB function is not counted: NCM packs
+    // a batch into one buffer and ECM announces a full pool on its own.
+    if let Some(batch) = get_u64(cfg, "NET_TX_BATCH_MAX") {
+        let mut smallest: Option<(u64, &str)> = None;
+        let mut consider = |frames: Option<u64>, who: &'static str| {
+            if let Some(f) = frames {
+                if smallest.map_or(true, |(m, _)| f < m) {
+                    smallest = Some((f, who));
+                }
+            }
+        };
+        consider(get_u64(cfg, "NET_VIRTIO_TXQ_SIZE").map(|q| q / 2), "NET_VIRTIO_TXQ_SIZE/2");
+        if get_bool(cfg, "DRV_E1000E") {
+            consider(get_u64(cfg, "E1000E_TX_DESCS").map(|d| d - 1), "E1000E_TX_DESCS-1");
+        }
+        if get_bool(cfg, "DRV_IGC") {
+            consider(get_u64(cfg, "IGC_TX_DESCS").map(|d| d - 1), "IGC_TX_DESCS-1");
+        }
+        if get_bool(cfg, "BOARD_VF2") {
+            consider(get_u64(cfg, "DWMAC_TX_DESCS").map(|d| d - 1), "DWMAC_TX_DESCS-1");
+        }
+        if let Some((frames, who)) = smallest {
+            if batch == 0 || batch > frames {
+                panic!(
+                    "validation FAIL: NET_TX_BATCH_MAX ({batch}) must be in 1..={who} ({frames}): \
+                     it is the smallest TX ring of the NICs in this build, and a batch larger \
+                     than that fills it before ringing the doorbell. Fix: lower \
+                     NET_TX_BATCH_MAX or raise {who}'s option in .config."
+                );
+            }
         }
     }
 

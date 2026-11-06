@@ -1811,13 +1811,13 @@ config DWMAC_TX_DESCS
     int "Synopsys DesignWare MAC transmit ring entries"
     range 4 128
     default 8 if HWCLASS_EMBEDDED
-    default 32 if HWCLASS_SERVER
-    default 16
+    default 128 if HWCLASS_SERVER
+    default 32
     help
       crates/drivers/net/src/dwmac.rs: descriptors of the one transmit ring;
       one slot is always left empty, so one fewer frame is in flight. Each
-      owns a 1,536 B staging buffer. Raise it with NET_TX_BATCH_MAX for bulk
-      senders: a batch larger than the ring is announced when the ring fills.
+      owns a 1,536 B staging buffer. NET_TX_BATCH_MAX may not exceed one fewer
+      than this on the VisionFive 2 (build.rs checks it).
 
       Cost: 64 B of descriptor + 1,536 B of buffer per entry (.bss).
 

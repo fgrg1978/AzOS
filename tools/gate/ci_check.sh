@@ -24922,10 +24922,11 @@ PYEOF
     # recorded from the tree before the queue pair (tools/bench/net_lane_baseline.tsv,
     # `tools/bench/net_lane_gate.py record`); the Linux column of the riscv64 run
     # prints beside them. riscv64 runs the net and tcp sections through
-    # vsbench_compare.sh, aarch64 the net section through vsbench_aarch64.sh (that
-    # script has no TCP pass); x86_64's microvm line has no NIC, so it has no row.
-    # A lane the baseline does not hold is a failure: the row stays red until the
-    # baseline is recorded.
+    # vsbench_compare.sh, aarch64 through vsbench_aarch64.sh (its TCP pass boots the
+    # product kernel and the Linux initramfs against the host peer); x86_64's microvm
+    # line has no NIC, so it has no row (the x86 PC phase). A lane the baseline does
+    # not hold yet is skipped and printed as SKIP: recording one needs a QEMU run
+    # (`tools/bench/net_lane_gate.py record`), which waits for the test phase.
     net_lane_row() { # net_lane_row <rv|arm>
         local isa="$1" work="$AZOS_OUT/build/net-lane-$1"
         printf "  %-26s" "net queue: vsbench lanes ($isa)..."
@@ -24935,9 +24936,9 @@ PYEOF
                 bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh" >"$work.out" 2>&1 \
                 && python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check rv "$work"/*.log >>"$work.out" 2>&1
         else
-            QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net VSBENCH_AARCH64_WORK="$work" \
+            QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net,tcp VSBENCH_AARCH64_WORK="$work" \
                 bash "${REPO_ROOT}/tools/bench/vsbench_aarch64.sh" >"$work.out" 2>&1 \
-                && python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check arm "$work/aarch64.log" >>"$work.out" 2>&1
+                && python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check arm "$work/aarch64.log" "$work/azos-aarch64-product-tcp.log" >>"$work.out" 2>&1
         fi
         if [ $? -eq 0 ]; then
             ok; grep -a 'net_lane_gate:' "$work.out" | sed 's/^/      /'

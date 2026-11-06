@@ -59,10 +59,9 @@ queue) is a later performance front.
 The vsbench network lanes (`udp-roundtrip`, `tcp-bulk-tx`, `tcp-bulk-rx`) have a
 gate row per ISA that holds them to a recorded baseline
 (`tools/bench/net_lane_gate.py`; the row skips while no baseline is recorded).
-riscv64 and aarch64 run the UDP and TCP lanes against Linux; x86_64 has no
+riscv64 (`vsbench_compare.sh`) and aarch64 (`vsbench_aarch64.sh`) run the UDP and TCP lanes against Linux; x86_64 has no
 network lane yet (its microvm line has no NIC), which belongs to the x86 PC
-phase. There is no PTP row in the gate: the NIC-queue PTP path is exercised
-only by `ptpd`'s own tests.
+phase. There is no PTP row in the gate for the NIC-queue path.
 
 ## Receive path
 
