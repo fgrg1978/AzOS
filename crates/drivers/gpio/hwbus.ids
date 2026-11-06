@@ -25,7 +25,8 @@ gpio             dt:spacemit,k1-gpio   boot   if=BOARD_K1
 
 # The soft expander of development kernels (Kconfig GPIO_SOFT_EXPANDER,
 # crates/drivers/gpio/src/expander.rs): a device the kernel adds to the bus
-# itself, the next GPIO controller. Not `boot`: it is an ordinary bound device,
-# probed, unbound and bound again through its record.
+# itself, the next GPIO controller, probed, unbound and bound again through its
+# record. `boot`: no topology row names it, and a topology-only build
+# (HWBUS_AUTOBIND_TOPOLOGY, the robot preset) would leave it unadmitted.
 
-gpio-soft        dt:azos,soft-gpio   if=GPIO_SOFT_EXPANDER
+gpio-soft        dt:azos,soft-gpio   boot   if=GPIO_SOFT_EXPANDER
