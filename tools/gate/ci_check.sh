@@ -12803,6 +12803,40 @@ zpool_host_canary_row() { # <label> <feature> <test fn>
     zpool_host_cfg "$cfg" || { printf "  %-26s" "${1}..."; bad; echo "      $cfg lost MM_RECLAIM_COMPRESS"; return; }
     KCONFIG_CONFIG="$cfg" host_canary_row "$1" syscall-tests "$2" "$3"
 }
+# The monitor's worst case: a hypervisor host's address space has the records
+# its Kconfig derives (MM_REGIONS_PER_SPACE, 140 under HV), the rows run under
+# that configuration. release-one-pass-canary: a range over more records than
+# one pass of release_range holds overruns it; mm-rmap-missing-canary: the
+# space's end frees the objects' frames.
+hv_host_cfg() { # hv_host_cfg <file>
+    cp "${REPO_ROOT}/config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest.config" "$1"
+    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$1" python3 -m olddefconfig >/dev/null 2>&1) && grep -q '^CONFIG_MM_REGIONS_PER_SPACE=140$' "$1"
+}
+hv_host_row() { # <label> <test fn>
+    local out cfg="$AZOS_OUT/build/hv-host.config"
+    ci_tier_skips "$1" && return 0
+    printf "  %-26s" "${1}..."
+    hv_host_cfg "$cfg" || { bad; echo "      $cfg lost MM_REGIONS_PER_SPACE=140"; return; }
+    KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-hv" \
+        host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release -- "$2"
+    if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
+    else
+        bad; echo "      syscall-tests (hv-host): $2 did not pass alone"
+        echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
+hv_host_canary_row() { # <label> <feature> <test fn>
+    local cfg="$AZOS_OUT/build/hv-host-canary.config"
+    ci_tier_skips "$1" && return 0
+    hv_host_cfg "$cfg" || { printf "  %-26s" "${1}..."; bad; echo "      $cfg lost MM_REGIONS_PER_SPACE=140"; return; }
+    KCONFIG_CONFIG="$cfg" host_canary_row "$1" syscall-tests "$2" "$3"
+}
+host_job hv_host_row "shm: monitor worst case, hv-host" a_space_maps_as_many_objects_as_it_has_records_and_ends_without_freeing_them
+host_job hv_host_canary_row "shm: monitor worst case canary" mm-rmap-missing-canary \
+    a_space_maps_as_many_objects_as_it_has_records_and_ends_without_freeing_them
+host_job hv_host_row "mmap: many records, hv-host" a_munmap_over_more_records_than_one_pass_cuts_takes_them_all
+host_job hv_host_canary_row "mmap: many records canary" release-one-pass-canary \
+    a_munmap_over_more_records_than_one_pass_cuts_takes_them_all
 host_job zpool_host_row "aspace: late store, pool on" a_store_that_outlives_its_space_leaves_the_next_space_page_alone
 host_job zpool_host_canary_row "aspace: late store key canary" as-key-no-gen-canary \
     a_store_that_outlives_its_space_leaves_the_next_space_page_alone
@@ -12968,6 +13002,12 @@ host_job host_canary_row "shm: space end spares the object canary" syscall-tests
     a_space_that_ends_leaves_a_shared_object_to_its_other_mapper
 host_job host_canary_row "shm: file mapping space end canary" syscall-tests mm-rmap-missing-canary \
     a_shared_file_mapping_outside_the_window_ends_with_its_space
+host_job host_canary_row "shm: mapping never executable canary" syscall-tests exec-shared-record-canary \
+    a_shared_mapping_is_placed_in_the_mmap_area_and_never_made_executable
+host_job host_canary_row "shm: file mapping never executable canary" syscall-tests exec-shared-record-canary \
+    a_shared_file_mapping_is_never_made_executable
+host_job host_canary_row "shm: moved record dropped canary" syscall-tests stale-record-kept-canary \
+    every_record_of_a_moved_mapping_is_dropped_by_the_senders_next_look
 host_job host_canary_row "shm: partial map leaves nothing canary" syscall-tests shm-partial-map-kept-canary \
     a_map_that_fails_part_way_leaves_nothing_behind
 host_job host_canary_row "shm: release gives the record back canary" syscall-tests shm-release-record-kept-canary \

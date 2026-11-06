@@ -2560,11 +2560,14 @@ azos_ktest::ktest_late! {
             let _ = pmm::free_page(frame);
             return Err("no address space");
         };
-        let made = pager::reserve_obj(a, BASE, BASE + page, true, 0).is_ok()
+        let made = pager::reserve_obj(a, BASE, BASE + page, 0).is_ok()
             && vmm::map(pt, BASE, frame.as_usize(), PagePerms::USER_RW).is_ok();
         let _ = aspace::destroy(a, 0, 0);
         let kept = !pmm::range_is_free(frame.as_usize(), page);
-        let _ = pmm::free_page(frame);
+        // Freed already when it was not kept: the end of the space did it.
+        if kept {
+            let _ = pmm::free_page(frame);
+        }
         if !made {
             return Err("the shared mapping was not made");
         }

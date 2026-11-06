@@ -838,14 +838,6 @@ impl<'a> AnonReclaim<'a> {
         victim_leaf(w) && pmm::desc_of(ARCH.pte_phys(w)).is_some()
     }
 
-    /// Copy out the mappings of `r` (empty when it has none).
-    fn mappings_of(r: SpaceRef, out: &mut [Mapping; MAPPINGS_PER_SPACE]) -> usize {
-        let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return 0 };
-        let rs = sp.set.as_slice();
-        out[..rs.len()].copy_from_slice(rs);
-        rs.len()
-    }
-
     /// End the flight: the space counts one store fewer, the waiters are woken.
     fn finish(f: Flight) {
         if let Some(mut sp) = f.space.lock().filter(|sp| sp.recorded) {
@@ -1058,12 +1050,27 @@ pub fn age_space(r: SpaceRef, owner: usize, ages: &mut Ages) -> bool {
     if aging::CHUNKS == 0 {
         return true;
     }
-    let root = r.root();
-    let mut maps = [Mapping::anon(0, 0, false, 0, 0); MAPPINGS_PER_SPACE];
-    let n = AnonReclaim::mappings_of(r, &mut maps);
+    let mut maps = [Mapping::anon(0, 0, false, 0, 0); FORK_BATCH];
     let span = aging::WINDOW * PAGE_SIZE;
     let mut fit = true;
-    for reg in maps[..n].iter().filter(|m| m.anon_obj().is_some()) {
+    let mut at = 0;
+    loop {
+        // A few records at a time; a record added or cut meanwhile only makes
+        // this look at a page twice or not at all, and aging is a hint.
+        let n = mappings_from(r, at, &mut maps);
+        if n == 0 {
+            return fit;
+        }
+        at += n;
+        fit &= age_mappings(r, owner, ages, &maps[..n], span);
+    }
+}
+
+/// [`age_space`] over `maps`: `false` when a chunk did not fit.
+fn age_mappings(r: SpaceRef, owner: usize, ages: &mut Ages, maps: &[Mapping], span: usize) -> bool {
+    let root = r.root();
+    let mut fit = true;
+    for reg in maps.iter().filter(|m| m.anon_obj().is_some()) {
         let mut base = reg.start & !(span - 1);
         while base < reg.end {
             // The pages of this window inside the mapping.
@@ -1493,21 +1500,53 @@ pub fn reserve_file(
 }
 
 /// Record `[start, end)` as a mapping of the shared object `obj` (a packed
-/// reference): pages `0..` of the object, readable and writable iff `write`.
-/// The caller placed the range, which its placement found vacant, and maps the
+/// reference): pages `0..` of the object. The caller placed the range, which its placement found vacant, and maps the
 /// object's frames in it (before or after this). Charges nothing: the frames
 /// are the object's.
 ///
 /// `Overlap` when a mapping holds part of the range; `Full` when the space's
 /// records are exhausted.
-pub fn reserve_obj(r: SpaceRef, start: usize, end: usize, write: bool, obj: u32) -> Result<(), MapError> {
+pub fn reserve_obj(r: SpaceRef, start: usize, end: usize, obj: u32) -> Result<(), MapError> {
     let mut sp = r.lock().ok_or(MapError::Full)?;
     sp.open();
-    let res = sp.set.insert(Mapping::obj(start, end, write, obj, 0));
+    let res = sp.set.insert(Mapping::obj(start, end, obj, 0));
     if res.is_err() && sp.set.is_empty() {
         sp.close();
     }
     res
+}
+
+/// Has a mapping of an object been taken from its holder since `r` last looked
+/// for stale records ([`reap_stale`])? One load.
+#[inline]
+pub fn stale_pending(r: SpaceRef) -> bool {
+    r.stale_seen().load(Ordering::Relaxed) != memobj::memobj_stale_epoch()
+}
+
+/// Drop the records of `r`'s shared-object mappings that their object no longer
+/// books: a MOVE, a revoke or a purge took the mapping's leaves away and left
+/// the record to its own space. Under the group's layout lock.
+pub fn reap_stale(r: SpaceRef) {
+    let epoch = memobj::memobj_stale_epoch();
+    r.stale_seen().store(epoch, Ordering::Relaxed);
+    let root = r.root();
+    let mut buf = [Mapping::anon(0, 0, false, 0, 0); FORK_BATCH];
+    let mut at = 0;
+    loop {
+        let n = mappings_from(r, at, &mut buf);
+        if n == 0 {
+            return;
+        }
+        let mut dropped = 0;
+        for m in &buf[..n] {
+            if let Backing::Obj { obj } = m.backing {
+                if !memobj::memobj_books_ref(obj, root, m.start) && release_range(r, m.start, m.end).is_ok() {
+                    dropped += 1;
+                }
+            }
+        }
+        at += n - dropped;
+    }
 }
 
 /// Does `[s, e)` touch a mapping of a shared object?
@@ -2026,7 +2065,9 @@ pub fn contains(r: SpaceRef, va: usize) -> bool {
 }
 
 /// Most sub-ranges one removal can produce: one per record.
-const MAX_PIECES: usize = MAPPINGS_PER_SPACE;
+/// Records one pass of [`release_range`] cuts out; a range over more is cut in
+/// passes, so the stack holds a few records, not a Kconfig's worth.
+const MAX_PIECES: usize = 8;
 /// Most slot chunks one removal frees: those of the largest `munmap`
 /// (`MAX_MAP_BYTES`) and one at each end; any past that stay with
 /// their object until it ends.
@@ -2058,6 +2099,23 @@ pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError>
         // cache's count of mappings would be wrong (`MapSet::whole_cut_ok`).
         if !sp.set.whole_cut_ok(s, e) {
             return Err(MapError::Invalid);
+        }
+        // Canary `release-one-pass-canary`: one pass whatever the count.
+        if sp.set.overlapping(s, e) > MAX_PIECES && !cfg!(feature = "release-one-pass-canary") {
+            // Cut at the end of the last record this pass takes. Only a record
+            // that holds the whole range needs a free record, and then it is
+            // the only one: the passes cannot be refused.
+            let mut ends = [0usize; MAX_PIECES];
+            let mut k = 0;
+            sp.set.for_each_overlap(s, e, |_, b, _| {
+                if k < MAX_PIECES {
+                    ends[k] = b;
+                    k += 1;
+                }
+            });
+            drop(sp);
+            let cut = ends[MAX_PIECES - 1];
+            return Ok(release_range(r, s, cut)? + release_range(r, cut, e)?);
         }
         sp.set.for_each_overlap(s, e, |a, b, m| {
             pieces[np] = (a, b, m.charged(), m.backing, m.page_index(a));
@@ -2338,8 +2396,8 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
             break;
         }
         // A shared file mapping is not inherited: its pages are the cache's
-        // frames in the parent's shm window, which the fork walk leaves out of
-        // the child, as it does every shared mapping.
+        // frames, which the fork walk leaves out of the child, as it does every
+        // shared mapping.
         for m in buf[..n].iter().filter(|m| m.charged()) {
             let mut cm = *m;
             let mut made = None;
@@ -2801,16 +2859,18 @@ pub fn shim_set_install_hook(hook: Option<fn()>) {
 
 /// The ranges of the mappings of `r` whose pages a fork's walk leaves alone,
 /// in address order, into `out`; how many (none for a space without records).
-/// An anonymous mapping's pages are [`fork_clone`]'s; a shared mapping's frames
-/// are another owner's, and the child does not inherit them with the walk.
-pub(crate) fn passed_ranges(r: SpaceRef, out: &mut [(usize, usize); MAPPINGS_PER_SPACE]) -> usize {
-    let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return 0 };
-    let mut n = 0;
-    for m in sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some() || m.maps_shared_frames()) {
-        out[n] = (m.start, m.end);
-        n += 1;
+/// An anonymous mapping's pages are [`fork_clone`]'s (`true`: the walk builds the
+/// child's leaf table for them); a shared mapping's frames are another owner's,
+/// and the child does not inherit them with the walk.
+pub(crate) fn passed_ranges(r: SpaceRef) -> Result<alloc::vec::Vec<(usize, usize, bool)>, MapError> {
+    let mut out = alloc::vec::Vec::new();
+    // The caller holds the group's layout lock: the set is the same twice.
+    let Some(n) = r.lock().filter(|sp| sp.recorded).map(|sp| sp.set.len()) else { return Ok(out) };
+    out.try_reserve_exact(n).map_err(|_| MapError::Full)?;
+    if let Some(sp) = r.lock().filter(|sp| sp.recorded) {
+        out.extend(sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some() || m.maps_shared_frames()).map(|m| (m.start, m.end, m.anon_obj().is_some())));
     }
-    n
+    Ok(out)
 }
 
 /// Records [`fork_clone`] copies at a time.
@@ -2839,51 +2899,41 @@ fn drop_records(r: SpaceRef) {
 }
 
 fn close_records(r: SpaceRef, files_counted: bool) {
-    let mut files = [0u32; MAPPINGS_PER_SPACE];
-    let mut nf = 0;
-    let mut objs = [0usize; MAPPINGS_PER_SPACE];
-    let mut no = 0;
-    let mut shared = [(0usize, 0usize); MAPPINGS_PER_SPACE];
-    let mut ns = 0;
-    if let Some(mut sp) = r.lock() {
-        if sp.recorded {
-            for m in sp.set.as_slice() {
-                if m.maps_shared_frames() {
-                    shared[ns] = (m.start, m.end);
-                    ns += 1;
+    // One record at a time, the last first, so the stack holds none of them.
+    loop {
+        let (m, last_of_object) = {
+            let Some(mut sp) = r.lock() else { break };
+            if !sp.recorded {
+                break;
+            }
+            let Some(m) = sp.set.pop_last() else {
+                sp.close();
+                break;
+            };
+            let last = m.anon_obj().is_some_and(|o| sp.set.naming(o) == 0);
+            (m, last)
+        };
+        match m.backing {
+            Backing::Anon { obj } if last_of_object => {
+                // SAFETY: no record names it any more.
+                unsafe { anon_obj::destroy(obj, r.root()) };
+            }
+            Backing::Anon { .. } => {}
+            // The shared mappings' leaves go before the table's sweep can free
+            // the frames they name; the cache's users with them.
+            Backing::File { obj, shared } => {
+                if shared {
+                    unmap_shared(r.root(), m.start, m.end);
                 }
-                match m.backing {
-                    Backing::File { obj, .. } => {
-                        files[nf] = obj;
-                        nf += 1;
-                    }
-                    Backing::Anon { obj } if !objs[..no].contains(&obj) => {
-                        objs[no] = obj;
-                        no += 1;
-                    }
-                    Backing::Anon { .. } | Backing::Obj { .. } => {}
+                if files_counted {
+                    memobj::memobj_paged_region_drop_ref(obj);
                 }
             }
+            Backing::Obj { .. } => unmap_shared(r.root(), m.start, m.end),
         }
-        sp.close();
     }
     break_root(r.root());
     zpool_forget(r.key());
-    for &obj in &objs[..no] {
-        // SAFETY: the set that named it is closed.
-        unsafe { anon_obj::destroy(obj, r.root()) };
-    }
-    // The shared mappings' leaves go before the table's sweep can free the
-    // frames they name.
-    for &(a, b) in &shared[..ns] {
-        unmap_shared(r.root(), a, b);
-    }
-    // The mappings are gone: their users in the page cache with them.
-    if files_counted {
-        for &obj in &files[..nf] {
-            memobj::memobj_paged_region_drop_ref(obj);
-        }
-    }
 }
 
 /// `(reserved, committed)` mapped pages of the space `r`, for tests and reports.

@@ -17,9 +17,9 @@
 //!   same on every open of it, so every mapper of the same file reaches the
 //!   same object, and so the same frames.
 //! * **`MAP_SHARED`** maps the cache's frames themselves (no second copy: a
-//!   store by one mapper is seen by the others at once), placed like an
-//!   anonymous `mmap`. The pager's record is a mapping of the cache object, and
-//!   the pager clears its leaves before any sweep can free a frame it does not
+//!   store by one mapper is seen by the others at once), placed in
+//!   the mmap area whatever the task is, so its break stays. The pager's record
+//!   is a mapping of the cache object, and the pager clears its leaves before any sweep can free a frame it does not
 //!   own. The task books the mapping in the object (`memobj_note_mapping_at_ref`:
 //!   from then on the cache can drop a page out of this address space, and a
 //!   writable mapping makes the page dirty), and the pages go back to the file
@@ -352,6 +352,7 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
     };
     let root = space.root();
     let _mm = azos_sched::group::mm_lock();
+    crate::ipc_handlers::reap_stale_mappings();
     let need = if shared && write { CapPerms::READ.union(CapPerms::WRITE) } else { CapPerms::READ };
     let fd = match crate::handlers::file_fd_for(cap_raw, need, azos_abi::invoke::NODE_MMAP) {
         Ok(fd) => fd as i32,
@@ -381,10 +382,8 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
     // Where the mapping goes: where an anonymous `mmap` goes
     // (`handlers::mmap_place`, no hint). A private mapping is charged like one.
     let Some(span) = pages.checked_mul(page) else { return enomem };
-    let base = match crate::handlers::mmap_place(root, 0, span, 0) {
-        Ok(b) => b,
-        Err(_) => return enomem,
-    };
+    let placed = if shared { crate::handlers::mmap_place_shared(root, span) } else { crate::handlers::mmap_place(root, 0, span, 0) };
+    let Ok(base) = placed else { return enomem };
     let end = base + span;
     let charged = if shared { 0 } else { pages };
     if charged != 0 && !azos_sched::mm_charge(charged as u32) {
@@ -429,7 +428,11 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
         unwind(space, tid, shared, &pieces[..done], charged);
         return failure;
     }
-    crate::handlers::mmap_placed(base, end);
+    if shared {
+        crate::handlers::mmap_area_placed(base);
+    } else {
+        crate::handlers::mmap_placed(base, end);
+    }
     base as i64
 }
 

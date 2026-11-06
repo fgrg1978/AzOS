@@ -185,12 +185,14 @@ config HV_EXAMPLE_GUEST_MEM_MIB
       MAX_MEMOBJ_PAGES pages and the guests may take half of MAX_MEMOBJS (the
       qemu-*-hv defconfigs set 256, see above).
 
-      VMMD.ELF maps every MemObj of the RAM into its own address space, and a
-      task maps as many as it may own (MAX_MEMOBJS / 2,
-      crates/core/sched/src/user_window.rs): 24 MiB is 96 objects at a 4 KiB
-      page (24 at aarch64's 16 KiB granule), so the qemu-*-hv defconfigs'
-      MAX_MEMOBJS of 256 holds it, and the build refuses a size that would
-      not fit (crates/core/mm/src/memobj.rs). The gate has no row that
+      VMMD.ELF maps every MemObj of the RAM into its own address space, one
+      mapping record each, and a task maps as many as it may own
+      (MAX_MEMOBJS / 2): 24 MiB is 96 objects at a 4 KiB page (24 at
+      aarch64's 16 KiB granule), so the qemu-*-hv defconfigs' MAX_MEMOBJS of
+      256 holds it, and so does MM_REGIONS_PER_SPACE (its default under HV
+      covers the objects, the monitor's other mappings and 8 of its own).
+      The build refuses a size that would not fit either
+      (crates/core/mm/src/memobj.rs). The gate has no row that
       boots the guest yet (tools/gate/ci_check.sh, hv_guest_judge, says why).
       x86_64 has no guest entry (mk/images.mk).
 

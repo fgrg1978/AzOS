@@ -795,6 +795,10 @@ config MEM_KERNEL_RESERVE_KB
 config MM_REGIONS_PER_SPACE
     int "Mapping records per address space"
     range 2 256
+    default 140 if HV
+    default 12  if HWCLASS_EMBEDDED
+    default 24  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 40  if HWCLASS_SERVER
     default 8
     help
       Each user address space keeps this many mapping records
@@ -811,6 +815,15 @@ config MM_REGIONS_PER_SPACE
       record is committed eagerly instead; a munmap or mprotect whose cut
       needs a record answers ENOMEM, as Linux does past its map count.  A
       shared object or file window that finds none is refused.
+
+      The default is what a task of the preset can have mapped: the
+      MemObjs it may own (half of MAX_MEMOBJS, one record each when it
+      maps them) plus 8 for its anonymous and file mappings. A hypervisor
+      host's monitor (VMMD.ELF) maps every MemObj of a guest's RAM, the
+      trap page and the rings of its backends: 140 holds a 32 MiB guest
+      at a 4 KiB granule (128 objects, 3 more, 8 of its own);
+      HV_EXAMPLE_GUEST_MEM_MIB is checked against it at build time
+      (crates/core/mm/src/memobj.rs).
 
       Cost: about (64 + 48 x this) B per live address space, both ISAs
       (448 B at 8), taken from the kernel heap's ceiling when a space is
@@ -1315,23 +1328,6 @@ config MAX_MEMOBJ_HOLDERS
       Cost: one MemHolder row per holder slot of each of MAX_MEMOBJS objects,
       in the static table (MEMOBJS). At most 255: the table indexes its rows
       with 8 bits (a compile-time assertion in memobj.rs).
-
-config MEMOBJ_MOVED_WINDOWS
-    int "MemObj: windows of mappings a MOVE removed, awaiting their owner"
-    range 1 64
-    default 4  if HWCLASS_EMBEDDED
-    default 8  if (HWCLASS_SBC || HWCLASS_DESKTOP)
-    default 32 if HWCLASS_SERVER
-    default 8
-    help
-      crates/core/mm/src/memobj.rs, MOVED_WINDOWS. A MOVE of a Cap<Shm> removes
-      the sender's mapping at once; the address window it held is the sender's
-      to give back, which only the sender's own next call can do, so the row
-      waits here. A full table drops the row: the window stays reserved until
-      the task exits (addresses wasted, nothing else).
-
-      Cost: 24 B of static RAM per row (MOVED_WINDOWS, .bss: 200 B at 8 rows with
-      its lock), the same on every 64-bit ISA.
 
 config IORING_MAX_PARKED
     int "io_ring: entries one ring holds parked (timers, waits, fsyncs)"

@@ -589,14 +589,18 @@ fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
 /// it, or its task exited and the pool slot is being reused) — as opposed to
 /// [`vmm::destroy_user_pagetable`], which the load/fork failure paths call on
 /// page tables that never left their builder. The difference: a live process
-/// may have had shm ([`shm_map_user`]) and MMIO ([`mmio_map_user`]) frames
-/// mapped USER into its PT, and those frames are NOT owned by the address
-/// space — shm pages belong to the shm registry (other processes may map
-/// them; freeing here is a cross-process use-after-free), MMIO frames belong
-/// to the hardware. Both only ever live in the [`USER_MMIO_BASE`,
-/// [`USER_MMIO_LIMIT`]) VA window ([`reserve_window_va`] is the single
-/// allocator), so the teardown spares every leaf frame in that window while
-/// still freeing the window's L0/L1 tables — those ARE this PT's own.
+/// may have had frames mapped USER into its PT that are NOT owned by the
+/// address space — a shared object's or a shared file's (other processes may
+/// map them; freeing here is a cross-process use-after-free), MMIO frames
+/// (they belong to the hardware), ring and vDSO-notify pages.
+///
+/// Two things keep them out of the sweep. The mappings of a shared object or
+/// file are records of the space, and `aspace::destroy` clears their leaves
+/// first (`pager::unmap_shared`). MMIO, ring and notify pages ([`mmio_map_user`],
+/// [`shm_map_user`]) live in the [`USER_MMIO_BASE`, [`USER_MMIO_LIMIT`]) VA
+/// window ([`reserve_window_va`] is the single allocator), and the teardown
+/// spares every leaf frame in that window while still freeing the window's
+/// L0/L1 tables — those ARE this PT's own.
 ///
 /// Refused, and the address space leaked, when a hart still translates
 /// through it (`vmm::destroy_user_pagetable_skip_range`). Printed, because
@@ -2161,10 +2165,18 @@ fn note_fork_refusal(site: ForkRefusalSite) -> i64 {
     -1
 }
 
-/// The fork's clone of the parent's mappings was refused because they disagree
-/// with each other. Every time, unlike the one-shot line of the first hit.
+/// Warnings of [`note_clone_invariant`] printed before it goes quiet; the
+/// counter keeps every refusal.
+const CLONE_INVARIANT_WARNINGS: u32 = 4;
+
+/// The fork's clone of the parent's mappings was refused because its records
+/// and leaves disagree (a resident page with no leaf that maps its frame, a
+/// page in transit, a block leaf, a frame the allocator does not manage).
 pub fn note_clone_invariant() {
-    azos_drv_sys::kwarn!("[FORK] refused: a resident page of the parent has no leaf that maps its frame");
+    let seen = FORK_REFUSAL_COUNTS[ForkRefusalSite::CloneInvariant as usize].load(core::sync::atomic::Ordering::Relaxed);
+    if seen < CLONE_INVARIANT_WARNINGS {
+        azos_drv_sys::kwarn!("[FORK] refused: the parent's records and leaves disagree");
+    }
     note_fork_refusal(ForkRefusalSite::CloneInvariant);
 }
 

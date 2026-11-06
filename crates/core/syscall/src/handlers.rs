@@ -3271,7 +3271,6 @@ fn request_may_grow() -> bool {
 ///     the range reaches the cursor. Above the cursor a `PROT_NONE` mapping
 ///     leaves no record to tell it from a hole, so it is never presumed free.
 pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> Result<usize, i64> {
-    use azos_abi::error::Errno;
     let page = azos_arch::PAGE_SIZE;
     if mmap_at_break() {
         // **WHY the brk itself has to be checked (null-guard follow-up).**
@@ -3304,6 +3303,28 @@ pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> 
             return Err(-1);
         }
     }
+    place_in_area(user_pt, addr, span, flags)
+}
+
+/// Where a shared mapping (a shared object, a shared file window) of `span`
+/// bytes goes: in the mmap area, top-down from the cursor, whatever the task
+/// is. The break stays where it is. [`mmap_area_placed`] records it.
+pub(crate) fn mmap_place_shared(user_pt: usize, span: usize) -> Result<usize, i64> {
+    place_in_area(user_pt, 0, span, 0)
+}
+
+/// Move the cursor of the mmap area down to a mapping [`mmap_place_shared`] placed.
+pub(crate) fn mmap_area_placed(start: usize) {
+    let low = azos_sched::update_user_mmap_low(0) as usize;
+    if low == 0 || start < low {
+        azos_sched::update_user_mmap_low(start as u64);
+    }
+}
+
+/// The mmap area's placement: the second half of [`mmap_place`].
+fn place_in_area(user_pt: usize, addr: u64, span: usize, flags: u64) -> Result<usize, i64> {
+    use azos_abi::error::Errno;
+    let page = azos_arch::PAGE_SIZE;
     let addr = if mmap_at_break() { 0 } else { addr };
     let (floor, ceiling) = azos_sched::user_mmap_area();
     let low = match azos_sched::update_user_mmap_low(0) as usize {
@@ -3412,7 +3433,7 @@ fn mmap_handed_out(va: usize) -> bool {
 pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset: u64) -> i64 {
     // Wave 13: one layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
-    crate::ipc_handlers::reap_moved_windows();
+    crate::ipc_handlers::reap_stale_mappings();
     // **No executable anonymous memory.** Every page below is mapped USER_RW
     // and never X, so a `PROT_EXEC` request could only be answered with a
     // mapping that does not do what was asked. Refused before anything else,
@@ -3685,7 +3706,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
 pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // Wave 13: one layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
-    crate::ipc_handlers::reap_moved_windows();
+    crate::ipc_handlers::reap_stale_mappings();
     let Some(space) = azos_sched::current_aspace() else { return -1 };
     let user_pt = space.root();
 

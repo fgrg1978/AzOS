@@ -340,7 +340,7 @@ fn call_task_served(
     }
     // A MemObj capability that moved took the caller's mapping of it along.
     if nx > 0 {
-        crate::ipc_handlers::reap_moved_windows();
+        crate::ipc_handlers::reap_stale_mappings();
     }
     let got = &got[..nx];
     let mut p = payload_of(d, got, label);
@@ -530,7 +530,7 @@ pub fn sys_ipc_reply_v2(handle: u64, msg_ptr: u64) -> i64 {
         return E_PERM;
     }
     if nx > 0 {
-        crate::ipc_handlers::reap_moved_windows();
+        crate::ipc_handlers::reap_stale_mappings();
     }
     let got = &got[..nx];
     let reply_label = azos_ipc::endpoint::label::outgoing(tid, d.label);

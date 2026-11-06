@@ -59,16 +59,17 @@ pub use crate::cow_table::shim_set_cow_breaks;
 ///
 /// Returns the new page table's physical address.
 ///
-/// Leaves inside `[skip_lo, skip_hi)` — the shm/MMIO window, the same range
-/// exec and exit pass to [`vmm::destroy_user_pagetable_skip_range`] — stay
-/// writable in the parent and are not mapped in the child. Their frames belong
-/// to a shm region or a device, not to the address space. Made COW, the
-/// parent's next store landed on a private copy while the region kept the
-/// original; once both tasks had written, the second copy's decref returned
-/// the region's frame to the allocator while the region still owned it; and
-/// a page nobody wrote kept its refcount entry for good, because teardown
-/// never decrefs the window. The child holds no capability or mapping record
-/// for the window in any case.
+/// Leaves inside `[skip_lo, skip_hi)` — the MMIO, ring and notify window, the
+/// same range exec and exit pass to [`vmm::destroy_user_pagetable_skip_range`]
+/// — stay writable in the parent and are not mapped in the child, and so are
+/// the pages of the parent's shared-object and shared-file mappings (its
+/// records say which). Their frames belong to a region, a cache or a device,
+/// not to the address space. Made COW, the parent's next store landed on a
+/// private copy while the owner kept the original; once both tasks had
+/// written, the second copy's decref returned the owner's frame to the
+/// allocator while it was still owned; and a page nobody wrote kept its
+/// refcount entry for good, because teardown never decrefs them. The child
+/// holds no capability or mapping record for them in any case.
 ///
 /// On any error the partially built `child_pt` is torn down here (see
 /// [`vmm::destroy_user_pagetable`]) before returning. It used to be the
@@ -87,11 +88,12 @@ pub fn fork_cow(parent_pt: usize, skip_lo: usize, skip_hi: usize) -> KResult<usi
 /// inherits the mapping **shared, not copy-on-write**. Its leaves are the
 /// parent's, entry for entry, so a store by either side lands in the region
 /// both see; no frame is counted (the region owns them, as it does for the
-/// parent), and the child's teardown spares them like every window leaf.
+/// parent), and the child's teardown spares them: the child's record of the
+/// mapping (`pager::reserve_obj`) clears its leaves first.
 ///
-/// `[va, va + pages * PAGE_SIZE)` lies in the shm/MMIO window `fork_cow` left
-/// out of the child, and names a mapping the parent holds; the caller has
-/// booked the child's reference and its window reservation. Every page must
+/// `[va, va + pages * PAGE_SIZE)` is a mapping of the parent's that `fork_cow`
+/// left out of the child; the caller has booked the child's reference and
+/// records the mapping once the leaves are copied. Every page must
 /// be a valid user leaf in the parent. On an error the pages done are
 /// unmapped again, so a refused fork leaves nothing of the range.
 pub fn fork_share_range(parent_pt: usize, child_pt: usize, va: usize, pages: usize) -> KResult<()> {
@@ -197,13 +199,15 @@ fn fork_cow_walk_held(
     let hold = crate::pager::ForkHold::new(parent);
     // The anonymous mappings' pages are the clone's, and a shared mapping's
     // frames are not the child's: the walk passes them.
-    let mut anon = [(0usize, 0usize); crate::pager::MAPPINGS_PER_SPACE];
-    let n = parent.map_or(0, |p| crate::pager::passed_ranges(p, &mut anon));
-    let pt = fork_cow_walk(parent_pt, skip_lo, skip_hi, &anon[..n], concurrent)?;
+    let anon = match parent {
+        Some(p) => crate::pager::passed_ranges(p).map_err(|_| KernelError::OutOfMemory)?,
+        None => alloc::vec::Vec::new(),
+    };
+    let pt = fork_cow_walk(parent_pt, skip_lo, skip_hi, &anon, concurrent)?;
     Ok((pt, hold))
 }
 
-fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, anon: &[(usize, usize)], concurrent: bool) -> KResult<usize> {
+fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, anon: &[(usize, usize, bool)], concurrent: bool) -> KResult<usize> {
     let child_pt = vmm::create_pagetable()?;
 
     let mut pruned = Pruned { tables: [0; PRUNE_MAX], n: 0 };
@@ -253,12 +257,13 @@ struct Pruned {
     n: usize,
 }
 
-/// What the walk passes: the shm/MMIO window `[lo, hi)`, and the anonymous
-/// mappings (sorted, disjoint), whose pages the clone shares.
+/// What the walk passes: the shm/MMIO window `[lo, hi)`, and the anonymous and
+/// shared mappings (sorted, disjoint; `true`: anonymous, whose pages the clone
+/// shares).
 struct Skip<'a> {
     lo: usize,
     hi: usize,
-    anon: &'a [(usize, usize)],
+    anon: &'a [(usize, usize, bool)],
 }
 
 /// How much of a leaf table's span the anonymous mappings hold.
@@ -273,19 +278,27 @@ impl Skip<'_> {
     /// The anonymous mappings' hold on `[lo, hi)`.
     #[inline]
     fn held(&self, lo: usize, hi: usize) -> Held {
-        let i = self.anon.partition_point(|&(_, e)| e <= lo);
+        let i = self.anon.partition_point(|&(_, e, _)| e <= lo);
         match self.anon.get(i) {
-            Some(&(s, e)) if s <= lo && e >= hi => Held::All,
-            Some(&(s, _)) if s < hi => Held::Part,
+            Some(&(s, e, _)) if s <= lo && e >= hi => Held::All,
+            Some(&(s, _, _)) if s < hi => Held::Part,
             _ => Held::None,
         }
+    }
+
+    /// Does an anonymous mapping hold a page of `[lo, hi)`? Its pages are the
+    /// clone's, which needs the child's leaf table.
+    #[inline]
+    fn anon_holds(&self, lo: usize, hi: usize) -> bool {
+        let i = self.anon.partition_point(|&(_, e, _)| e <= lo);
+        self.anon[i..].iter().take_while(|&&(s, _, _)| s < hi).any(|&(_, _, a)| a)
     }
 
     /// Does an anonymous mapping hold the page at `va`?
     #[inline]
     fn anon_at(&self, va: usize) -> bool {
-        let i = self.anon.partition_point(|&(_, e)| e <= va);
-        self.anon.get(i).is_some_and(|&(s, _)| s <= va)
+        let i = self.anon.partition_point(|&(_, e, _)| e <= va);
+        self.anon.get(i).is_some_and(|&(s, _, _)| s <= va)
     }
 }
 
@@ -404,7 +417,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 // The child's leaf table for the clone, made now, before the
                 // kernel's entries are merged into the child's root: the merge
                 // and its collision check then see the slot as the user's.
-                if held != Held::None && crate::vmm::next_valid(l0_pt, 0, entries) < entries {
+                if skip.anon_holds(lo, hi) && crate::vmm::next_valid(l0_pt, 0, entries) < entries {
                     vmm::walk(child_pt, lo, true)?;
                 }
                 match held {

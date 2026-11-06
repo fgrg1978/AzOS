@@ -128,6 +128,7 @@ clone-invariant-silent-canary = []
 # Host canaries of `ipc_handlers` (syscall-tests typed_ipc.rs).
 shm-partial-map-kept-canary = []
 shm-release-record-kept-canary = []
+stale-record-kept-canary = []
 # `vdso_notify.rs` `TICK_HARTS`: eight harts' previous-interrupt times are kept,
 # whatever the kernel's CPU count (host test `tick_interval_covers_every_cpu`).
 vdso-8cpu-canary = []

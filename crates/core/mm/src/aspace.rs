@@ -24,7 +24,7 @@
 
 use core::num::NonZeroUsize;
 use core::ptr::addr_of_mut;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use azos_sync::{IrqSaveGuard, SpinLock};
 
@@ -98,6 +98,8 @@ pub struct AddressSpace {
     born: AtomicBool,
     /// Advanced by each [`destroy`], under the lock.
     gen: AtomicU32,
+    /// The stale-mapping epoch this space last looked at (`pager::reap_stale`).
+    stale_seen: AtomicU64,
     /// The page-table root, 0 while the object is no space.
     root: AtomicUsize,
     st: SpinLock<Space>,
@@ -201,6 +203,14 @@ impl SpaceRef {
     #[inline(always)]
     pub fn key(self) -> usize {
         if cfg!(feature = "as-key-no-gen-canary") { self.tag & TAG_ADDR_MASK } else { self.tag }
+    }
+
+    /// The stale-mapping epoch the space last looked at. Read and written only
+    /// under the group's layout lock, so a stale reference reads a counter
+    /// that is a lower bound at worst.
+    #[inline(always)]
+    pub(crate) fn stale_seen(self) -> &'static AtomicU64 {
+        &tag_obj(self.tag).stale_seen
     }
 
     /// The space's records, or `None` when the object is no longer this space.
@@ -313,6 +323,7 @@ pub fn create(root: usize) -> Option<SpaceRef> {
         if !(*p).born.load(Ordering::Acquire) {
             addr_of_mut!((*p).gen).write(AtomicU32::new(0));
             addr_of_mut!((*p).root).write(AtomicUsize::new(0));
+            addr_of_mut!((*p).stale_seen).write(AtomicU64::new(0));
             addr_of_mut!((*p).st).write(SpinLock::new(Space::new()));
             (*p).born.store(true, Ordering::Release);
         }

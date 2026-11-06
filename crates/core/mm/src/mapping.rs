@@ -85,9 +85,11 @@ impl Mapping {
         Mapping { start, end, write, backing: Backing::File { obj, shared }, off }
     }
 
-    /// A mapping of a named shared object: pages `off..` of `obj`.
-    pub const fn obj(start: usize, end: usize, write: bool, obj: u32, off: usize) -> Self {
-        Mapping { start, end, write, backing: Backing::Obj { obj }, off }
+    /// A mapping of a named shared object: pages `off..` of `obj`. Its access
+    /// is the object's booking of it (`MemHolder::map_write`, which a protect
+    /// changes together with the leaves), so `write` is not kept here.
+    pub const fn obj(start: usize, end: usize, obj: u32, off: usize) -> Self {
+        Mapping { start, end, write: false, backing: Backing::Obj { obj }, off }
     }
 
     /// The anonymous object, if the mapping is one.
@@ -303,13 +305,7 @@ impl<const N: usize> MapSet<N> {
                 if self.n == N {
                     return Err(MapError::Full);
                 }
-                let mut j = self.n;
-                while j > i {
-                    self.r[j] = self.r[j - 1];
-                    j -= 1;
-                }
-                self.r[i] = m;
-                self.n += 1;
+                self.insert_at(i, m);
             }
         }
         Ok(())
@@ -339,28 +335,40 @@ impl<const N: usize> MapSet<N> {
         if straddles && self.n == N {
             return Err(MapError::Full);
         }
-        let mut out = [Mapping::EMPTY; N];
-        let mut m = 0;
         let mut dropped = 0;
-        for r in &self.r[..self.n] {
+        let mut i = 0;
+        while i < self.n {
+            let r = self.r[i];
             if r.end <= s || r.start >= e {
-                out[m] = *r;
-                m += 1;
+                i += 1;
                 continue;
             }
             dropped += r.clip(s, e).map_or(0, |c| c.pages());
-            if let Some(lo) = r.clip(r.start, s) {
-                out[m] = lo;
-                m += 1;
-            }
-            if let Some(hi) = r.clip(e, r.end) {
-                out[m] = hi;
-                m += 1;
+            match (r.clip(r.start, s), r.clip(e, r.end)) {
+                (Some(lo), Some(hi)) => {
+                    self.r[i] = lo;
+                    self.insert_at(i + 1, hi);
+                    i += 2;
+                }
+                (Some(piece), None) | (None, Some(piece)) => {
+                    self.r[i] = piece;
+                    i += 1;
+                }
+                (None, None) => self.remove_at(i),
             }
         }
-        self.r = out;
-        self.n = m;
         Ok(dropped)
+    }
+
+    /// Records that overlap `[s, e)`.
+    pub fn overlapping(&self, s: usize, e: usize) -> usize {
+        self.r[..self.n].iter().filter(|r| r.start < e && s < r.end).count()
+    }
+
+    /// The last record, taken out of the set.
+    pub fn pop_last(&mut self) -> Option<Mapping> {
+        self.n = self.n.checked_sub(1)?;
+        Some(self.r[self.n])
     }
 
     /// Give every mapped page in `[s, e)` write permission `write` (pages
@@ -375,23 +383,33 @@ impl<const N: usize> MapSet<N> {
         if self.n + extra > N {
             return Err(MapError::Full);
         }
-        let mut out = [Mapping::EMPTY; N];
-        let mut m = 0;
-        for r in &self.r[..self.n] {
-            for (a, b) in [(r.start, s.max(r.start)), (s.max(r.start), e.min(r.end)), (e.max(r.start), r.end)] {
-                if let Some(mut piece) = r.clip(a, b) {
-                    if piece.start >= s && piece.end <= e {
-                        piece.write = write;
-                    }
-                    out[m] = piece;
-                    m += 1;
-                }
-            }
+        self.split_at(s);
+        self.split_at(e);
+        for r in self.r[..self.n].iter_mut().filter(|r| r.start >= s && r.end <= e) {
+            r.write = write;
         }
-        self.r = out;
-        self.n = m;
         self.coalesce();
         Ok(())
+    }
+
+    /// Cut the mapping that strictly contains `addr` in two there.
+    fn split_at(&mut self, addr: usize) {
+        let Some(i) = self.r[..self.n].iter().position(|r| r.start < addr && addr < r.end) else { return };
+        let r = self.r[i];
+        if let (Some(lo), Some(hi)) = (r.clip(r.start, addr), r.clip(addr, r.end)) {
+            self.r[i] = lo;
+            self.insert_at(i + 1, hi);
+        }
+    }
+
+    fn insert_at(&mut self, i: usize, m: Mapping) {
+        let mut j = self.n;
+        while j > i {
+            self.r[j] = self.r[j - 1];
+            j -= 1;
+        }
+        self.r[i] = m;
+        self.n += 1;
     }
 
     fn coalesce(&mut self) {

@@ -82,7 +82,7 @@ fn a_cut_takes_file_regions_whole_or_not_at_all() {
     s.insert(anon(0, 4)).unwrap();
     s.insert(file(10, 14, true, true, 7, 0)).unwrap();
     s.insert(file(20, 24, true, false, 8, 3)).unwrap();
-    s.insert(Mapping::obj(30 * P, 34 * P, true, 9, 0)).unwrap();
+    s.insert(Mapping::obj(30 * P, 34 * P, 9, 0)).unwrap();
     let ok = |a: usize, b: usize| s.whole_cut_ok(a * P, b * P);
     assert!(ok(10, 14), "exactly the region");
     assert!(ok(9, 15), "with room around it");
@@ -106,7 +106,7 @@ fn a_shared_file_region_is_not_charged() {
     s.insert(anon(0, 4)).unwrap(); // 4 pages, charged
     s.insert(file(10, 18, true, true, 7, 0)).unwrap(); // 8, the cache's
     s.insert(file(20, 23, true, false, 8, 0)).unwrap(); // 3 private copies, charged
-    s.insert(Mapping::obj(30 * P, 32 * P, true, 9, 0)).unwrap(); // 2, the object's
+    s.insert(Mapping::obj(30 * P, 32 * P, 9, 0)).unwrap(); // 2, the object's
     assert_eq!(s.reserved_pages(), 17);
     assert_eq!(s.charged_pages(), 7);
     assert!(s.as_slice().iter().map(Mapping::charged).eq([true, false, true, false]));
@@ -125,7 +125,7 @@ fn has_whole_looks_only_at_the_range() {
     assert!(has(9, 11));
     assert!(has(0, 100));
     let mut o = MapSet::<8>::new();
-    o.insert(Mapping::obj(30 * P, 34 * P, true, 9, 0)).unwrap();
+    o.insert(Mapping::obj(30 * P, 34 * P, 9, 0)).unwrap();
     assert!(o.has_whole(33 * P, 40 * P), "a shared object's mapping counts");
     assert!(o.has_obj(33 * P, 40 * P) && !s.has_obj(0, 100), "and only that is an object's");
     assert!(!o.has_obj(34 * P, 40 * P));
@@ -134,8 +134,8 @@ fn has_whole_looks_only_at_the_range() {
 #[test]
 fn a_shared_object_mapping_never_folds_or_joins_an_anonymous_one() {
     let mut s = MapSet::<8>::new();
-    s.insert(Mapping::obj(10 * P, 12 * P, true, 9, 0)).unwrap();
-    s.insert(Mapping::obj(12 * P, 14 * P, true, 9, 2)).unwrap();
+    s.insert(Mapping::obj(10 * P, 12 * P, 9, 0)).unwrap();
+    s.insert(Mapping::obj(12 * P, 14 * P, 9, 2)).unwrap();
     s.insert(anon(14, 16)).unwrap();
     assert_eq!(s.len(), 3);
     assert_eq!(s.find(11 * P).and_then(|m| m.anon_obj()), None);

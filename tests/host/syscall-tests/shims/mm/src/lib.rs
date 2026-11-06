@@ -36,6 +36,8 @@
 //! missing TLB shootdown cannot make a wrong answer look right.
 
 #[allow(dead_code)]
+extern crate alloc;
+
 #[path = "../../../../../../crates/core/mm/src/addr.rs"]
 pub mod addr;
 

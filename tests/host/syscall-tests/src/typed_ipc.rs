@@ -495,6 +495,36 @@ fn a_space_that_ends_leaves_a_shared_object_to_its_other_mapper() {
     assert_eq!(&got, b"written by A", "B reads the frame A wrote");
 }
 
+/// **A shared object's mapping is placed in the mmap area and leaves the break
+/// where it was, and it cannot be made executable.** The flip to RX
+/// (`DOMAIN_MODULE_MAP_X`, `vmm::set_user_range_exec`) refuses any range a
+/// shared mapping touches: the object's frames carry no count, and only the
+/// space's record says that another writer reaches them. The range lies where
+/// the module window would (the mmap area reaches it), as an attacker with a
+/// token would place it.
+///
+/// **Canaries.** `exec-shared-record-canary`: the flip asks nothing and
+/// succeeds. `mmap-break-only-canary` is not this row's.
+#[test]
+fn a_shared_mapping_is_placed_in_the_mmap_area_and_never_made_executable() {
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let pt = ring3(a, SLOT_A);
+    let brk = azos_sched::update_user_brk(0);
+    let h = handle(sys_shm_create_typed(2, 1));
+    let va = sys_shm_map_typed(h, 0);
+    assert!(va > 0, "map returned {va}");
+    let va = va as usize;
+    let (floor, ceiling) = azos_sched::user_mmap_area();
+    assert!(va >= floor && va + 2 * azos_arch::mmu::PAGE_SIZE <= ceiling, "placed in the mmap area");
+    assert_eq!(azos_sched::update_user_brk(0), brk, "the break did not move");
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let end = va + 2 * azos_arch::mmu::PAGE_SIZE;
+    assert!(azos_mm::vmm::set_user_range_exec(pt, va, end, shm_lo, shm_hi).is_err(), "a shared object's frames were made executable");
+    assert!(azos_mm::vmm::translate_user(pt, va, true).is_some(), "and the refusal left the mapping writable");
+}
+
 /// **A 574 that fails part-way leaves nothing behind.** The pages already
 /// mapped go with the mapping's record, shot down, so the reference 574 took is
 /// given back with them, and the region can be mapped again.
@@ -514,7 +544,7 @@ fn a_map_that_fails_part_way_leaves_nothing_behind() {
 
     let h = handle(sys_shm_create_typed(2, 1));
     let idx = SHM.idx(resource_of::<Shm>(a, h));
-    let next = azos_sched::update_user_brk(0) as usize;
+    let next = azos_sched::user_mmap_area().1 - 2 * azos_arch::mmu::PAGE_SIZE;
     azos_sched::process::shim_fail_shm_map_after(Some(1));
     assert_eq!(sys_shm_map_typed(h, 0), errno(Errno::ENOMEM), "the second page could not be mapped");
     azos_sched::process::shim_fail_shm_map_after(None);
@@ -1369,10 +1399,65 @@ fn a_moved_capability_takes_the_senders_mapping_with_it() {
     assert!(translate_user(pt_a, va, false).is_none(), "MOVE left the sender's mapping");
     assert_eq!(azos_ipc::memobj::memobj_owner(azos_ipc::cap::objref::SHM.idx(r)), Some(b), "the receiver owns it");
     assert!(azos_ipc::memobj::memobj_has_mapping_ref(a, r) == Ok(false));
-    // The sender's next shm call gives the window back.
+    // The sender's record is stale; its next shm call, `mmap` or `munmap` drops it.
     become_task(a, pt_a);
-    crate::ipc_handlers::reap_moved_windows();
-    assert!(!azos_ipc::memobj::memobj_moved_windows_pending(), "the sender took its window back");
+    let space = azos_sched::shim_space(pt_a);
+    assert_eq!(azos_mm::pager::shim_mappings(space), 1, "the sender's record outlives the MOVE until it looks");
+    assert!(azos_mm::pager::stale_pending(space));
+    crate::ipc_handlers::reap_stale_mappings();
+    assert_eq!(azos_mm::pager::shim_mappings(space), 0, "the sender dropped it");
+    assert!(!azos_mm::pager::stale_pending(space), "and has looked");
+}
+
+/// **No record of a moved mapping outlives the sender's next look, however
+/// many moved.** As many MOVEs as the space has records (more than the old
+/// table of pending windows had rows): every record is stale, and one reap drops them all, so no address stays
+/// blocked.
+///
+/// **Canary.** `stale-record-kept-canary`: the reap drops nothing.
+#[test]
+fn every_record_of_a_moved_mapping_is_dropped_by_the_senders_next_look() {
+    let _g = serial();
+    let (a, b) = (fresh_tid(), fresh_tid());
+    let _s = Scene::new(&[a, b]);
+    let pt_a = ring3(a, SLOT_A);
+    let _pt_b = ring3(b, SLOT_B);
+    fn unmap(root: usize, va: usize, pages: usize) {
+        let end = va + pages * azos_arch::PAGE_SIZE;
+        let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
+    }
+    azos_ipc::memobj::set_unmap_hook(unmap);
+    azos_ipc::cap_store::set_move_hook(azos_ipc::memobj::memobj_moved);
+    struct Unhook;
+    impl Drop for Unhook {
+        fn drop(&mut self) {
+            azos_ipc::memobj::__clear_hooks_for_tests();
+            azos_ipc::cap_store::__clear_move_hook_for_tests();
+        }
+    }
+    let _u = Unhook;
+
+    become_task(a, pt_a);
+    let space = azos_sched::shim_space(pt_a);
+    let moves = azos_mm::pager::MAPPINGS_PER_SPACE;
+    let mut caps = Vec::new();
+    for k in 0..moves {
+        let cap = handle(sys_shm_create_typed(1, 1));
+        let va = sys_shm_map_typed(cap, 0);
+        assert!(va > 0, "map {k} returned {va}");
+        caps.push(cap);
+    }
+    for cap in caps {
+        let x = azos_ipc::cap_store::CapXfer::new(CapHandle::from_raw(cap as u32), false);
+        let mut out = [CapHandle::from_raw(0); 1];
+        azos_ipc::cap_store::move_caps(a, b, &[x], false, &mut out).expect("MOVE");
+    }
+    assert_eq!(azos_mm::pager::shim_mappings(space), moves, "every record is stale");
+    crate::ipc_handlers::reap_stale_mappings();
+    assert_eq!(azos_mm::pager::shim_mappings(space), 0, "the next look dropped them all");
+    let again = sys_shm_create_typed(1, 1);
+    let va = sys_shm_map_typed(handle(again), 0);
+    assert!(va > 0, "and the space maps again: {va}");
 }
 
 /// **A share outlives the sharer's close, and an explicit revoke takes it back
@@ -1769,4 +1854,76 @@ fn only_the_server_binds_an_endpoints_calls() {
     assert_eq!(sys_port_bind_typed(port_b, PORT_SRC_CALLS, theirs, 1, 0), errno(Errno::EPERM), "not its server");
     become_task(a, pt_a);
     assert_eq!(sys_port_bind_typed(port_a, PORT_SRC_CALLS, ep, 1, 0), 0, "its server");
+}
+
+/// **A space maps as many objects as it has records (the monitor's worst case:
+/// every MemObj of a guest's RAM, one mapping record each, and an anonymous
+/// mapping of its own), a fork's walk passes them all, and the space ends
+/// without freeing the objects' frames.** The record count is the build's
+/// (Kconfig `MM_REGIONS_PER_SPACE`; `hv-host`'s is 140, which the gate row
+/// `shm: monitor worst case, hv-host` runs this under).
+///
+/// **Canary.** `mm-rmap-missing-canary`: the end leaves the leaves of every
+/// object and the sweep frees their frames.
+#[test]
+fn a_space_maps_as_many_objects_as_it_has_records_and_ends_without_freeing_them() {
+    use azos_mm::vmm::translate;
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let pt = ring3(a, SLOT_A);
+    let space = azos_sched::shim_space(pt);
+    let objs = (azos_mm::pager::MAPPINGS_PER_SPACE - 1).min(azos_ipc::memobj::MAX_MEMOBJS_PER_TASK);
+    let mut vas = Vec::new();
+    for k in 0..objs {
+        let h = handle(sys_shm_create_typed(1, 1));
+        let va = sys_shm_map_typed(h, 0);
+        assert!(va > 0, "object {k} of {objs}: map returned {va}");
+        vas.push(va as usize);
+    }
+    assert!(sys_mmap(0, azos_arch::mmu::PAGE_SIZE as u64, 3, 0, u64::MAX, 0) > 0, "and an anonymous mapping");
+    assert_eq!(azos_mm::pager::shim_mappings(space), objs + 1);
+
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, hold) = azos_mm::vmm::fork_cow_shared_held(space, shm_lo, shm_hi, false).expect("the fork's walk");
+    for &va in &vas {
+        assert!(translate(child, va).is_none(), "the walk gave the child a shared page");
+    }
+    drop(hold);
+    azos_mm::vmm::destroy_user_pagetable(child);
+
+    let in_use = azos_mm::shim_pages_in_use();
+    azos_sched::set_current_user_pt(0);
+    azos_sched::shim_end_space(pt);
+    let released = in_use - azos_mm::shim_pages_in_use();
+    assert!(released < objs, "the end of the space freed {released} pages: the objects' frames among them");
+}
+
+/// **A `munmap` over more records than one pass of `release_range` cuts takes
+/// them all.** Alternating permissions keep neighbours from folding, so the
+/// space holds one record per page; one call unmaps them. Under the monitor's
+/// record count (140) that is many passes; under 8 it is one.
+///
+/// **Canary.** `release-one-pass-canary`: one pass of any size, which overruns
+/// its pieces when the range holds more than a pass (red under a Kconfig with
+/// more than 8 records, which is the hv-host row's).
+#[test]
+fn a_munmap_over_more_records_than_one_pass_cuts_takes_them_all() {
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let pt = ring3(a, SLOT_A);
+    let space = azos_sched::shim_space(pt);
+    let page = azos_arch::mmu::PAGE_SIZE;
+    let n = azos_mm::pager::MAPPINGS_PER_SPACE - 1;
+    let first = sys_mmap(0, page as u64, 3, 0, u64::MAX, 0);
+    assert!(first > 0);
+    for k in 1..n {
+        let prot = if k % 2 == 0 { 3 } else { 1 };
+        assert_eq!(sys_mmap(0, page as u64, prot, 0, u64::MAX, 0), first + (k * page) as i64, "mapping {k}");
+    }
+    assert_eq!(azos_mm::pager::shim_mappings(space), n, "one record per page");
+    assert_eq!(sys_munmap(first as u64, (n * page) as u64), 0);
+    assert_eq!(azos_mm::pager::shim_mappings(space), 0, "one call took them all");
+    assert!(azos_mm::vmm::user_range_vacant(pt, first as usize, first as usize + n * page));
 }

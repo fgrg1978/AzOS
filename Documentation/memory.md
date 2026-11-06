@@ -243,8 +243,8 @@ it with the mapping's exact permissions.
   window); the file is identified by the filesystem's own key under that
   filesystem's backing, so every mapper of the same file reaches the same
   object and the same frames.
-* **`MAP_SHARED`** maps the cache's own frame, in a mapping placed like an
-  anonymous one: every mapper sees every store. The task books the mapping in
+* **`MAP_SHARED`** maps the cache's own frame, in a mapping placed in the mmap
+  area: every mapper sees every store. The task books the mapping in
   the object (`memobj_note_mapping_at_ref`, which names the cache page the
   mapping starts at), so the cache can drop a page out of this address space,
   and a writable mapping makes the page dirty. The pager clears the mapping's

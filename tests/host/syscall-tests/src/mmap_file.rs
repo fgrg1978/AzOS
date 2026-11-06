@@ -499,6 +499,28 @@ fn a_shared_file_mapping_outside_the_window_ends_with_its_space() {
     clean();
 }
 
+/// A shared file mapping's cache frame cannot be made executable
+/// (`vmm::set_user_range_exec`, `DOMAIN_MODULE_MAP_X`): a `write(2)` to the file
+/// reaches it. Canary `exec-shared-record-canary`: the flip asks nothing.
+#[test]
+fn a_shared_file_mapping_is_never_made_executable() {
+    let _g = serial();
+    clean();
+    fill_file(0, 2 * PAGE_SIZE);
+    let a = task(7111, 61);
+    let fa = open_as(&a, b'A', O_RDWR);
+    let va = mmap_ok(&a, fa, PAGE_SIZE, 0, RW, SHARED);
+    fault(&a, va);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    assert!(
+        azos_mm::vmm::set_user_range_exec(a.pt, va, va + PAGE_SIZE, shm_lo, shm_hi).is_err(),
+        "the cache's frame was made executable"
+    );
+    assert_eq!(munmap_as(&a, va, PAGE_SIZE), 0);
+    drop(a);
+    clean();
+}
+
 #[test]
 fn mprotect_leaves_a_file_mapping_alone() {
     let _g = serial();

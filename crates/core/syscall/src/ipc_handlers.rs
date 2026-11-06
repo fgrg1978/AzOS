@@ -847,31 +847,19 @@ pub fn sys_shm_map_typed(cap_raw: u64, op: u64) -> i64 {
     }
 }
 
-/// Take the records of the calling task's mappings a MOVE or a purge removed
-/// (`memobj_moved`) out of its address space: the PTEs went with the
-/// transfer, the records are the task's to drop. Called after a transfer that
-/// may have moved a MemObj capability and before the next map, `mmap` or
-/// `munmap`; free when nothing is waiting.
-pub(crate) fn reap_moved_windows() {
-    if !azos_ipc::memobj::memobj_moved_windows_pending() {
+/// Drop the records of the calling space's mappings a MOVE, a revoke or a
+/// purge took from their object: the PTEs went with the transfer, the records
+/// are the space's to drop. Called after a transfer that may have moved a
+/// MemObj capability and before the next map, `mmap` or `munmap`; one load
+/// when nothing moved since the space last looked.
+pub(crate) fn reap_stale_mappings() {
+    let Some(space) = azos_sched::current_aspace() else { return };
+    // Canary `stale-record-kept-canary`: nothing is dropped.
+    if !azos_mm::pager::stale_pending(space) || cfg!(feature = "stale-record-kept-canary") {
         return;
     }
     let _mm = azos_sched::group::mm_lock();
-    let Some(space) = azos_sched::current_aspace() else { return };
-    let page = azos_arch::PAGE_SIZE;
-    let tid = azos_sched::current_proc_tid();
-    let mut w = [(0usize, 0usize); 8];
-    loop {
-        let n = azos_ipc::memobj::memobj_take_moved_windows(tid, &mut w);
-        for &(va, pages) in &w[..n] {
-            let end = va.saturating_add(pages.saturating_mul(page));
-            let _ = azos_mm::pager::release_range(space, va, end);
-            crate::handlers::mmap_unmapped(va, end);
-        }
-        if n < w.len() {
-            return;
-        }
-    }
+    azos_mm::pager::reap_stale(space);
 }
 
 /// The mapping half of [`sys_shm_map_typed`], once an authority has resolved
@@ -886,7 +874,7 @@ pub(crate) fn map_region_ref(tid: u32, r: u32, writable: bool, max_write: bool) 
     if azos_sched::current_user_pt() == 0 {
         return Errno::EINVAL.to_syscall_ret();
     }
-    reap_moved_windows();
+    reap_stale_mappings();
     let _mm = azos_sched::group::mm_lock();
     match memobj::memobj_has_mapping_ref(tid, r) {
         Ok(false) => {}
@@ -927,13 +915,15 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
         return errno_for_memobj_err(e);
     }
     let Some(space) = azos_sched::current_aspace() else {
-        memobj::memobj_map_abandon_ref(tid, r);
+        // No leaf was made: nothing the reference has to outlive.
+        memobj::memobj_unmap_end_ref(tid, r);
+        let _ = memobj::memobj_release_ref(tid, r);
         return Errno::EINVAL.to_syscall_ret();
     };
     let span = page_count * azos_arch::PAGE_SIZE;
-    let placed = crate::handlers::mmap_place(space.root(), 0, span, 0)
+    let placed = crate::handlers::mmap_place_shared(space.root(), span)
         .ok()
-        .filter(|&va| azos_mm::pager::reserve_obj(space, va, va + span, writable, r).is_ok());
+        .filter(|&va| azos_mm::pager::reserve_obj(space, va, va + span, r).is_ok());
     let Some(va) = placed else {
         // No leaf was made: nothing the reference has to outlive.
         memobj::memobj_unmap_end_ref(tid, r);
@@ -957,12 +947,15 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
     let access = MapAccess { write: writable, max_write: max_write && writable };
     match memobj::memobj_map_commit_ref(tid, r, space.root(), va, page_count, access) {
         Ok(true) => {
-            crate::handlers::mmap_placed(va, va + span);
+            crate::handlers::mmap_area_placed(va);
             va as i64
         }
         _ => {
+            // The holder lost its references while the leaves were installed:
+            // with the record they go, and nothing is left for a pin to guard.
             let _ = azos_mm::pager::release_range(space, va, va + span);
-            memobj::memobj_map_abandon_ref(tid, r);
+            memobj::memobj_unmap_end_ref(tid, r);
+            let _ = memobj::memobj_release_ref(tid, r);
             Errno::EBADF.to_syscall_ret()
         }
     }

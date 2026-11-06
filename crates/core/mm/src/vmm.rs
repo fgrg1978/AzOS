@@ -3722,9 +3722,14 @@ pub static LIVE_ROOT_REFUSALS: core::sync::atomic::AtomicU32 =
 ///   So the property holds, and it holds through two independent mechanisms
 ///   in different functions. A reader deleting one of them on the strength of
 ///   the other is the failure this note exists to prevent.
-/// * **Inside `skip_lo..skip_hi`** — the shared-memory and MMIO window.
-///   `shm_map_user` and `mmio_map_user` install real `USER` leaves there whose
+/// * **Inside `skip_lo..skip_hi`** — the MMIO, ring and notify window.
+///   `mmio_map_user` and `shm_map_user` install real `USER` leaves there whose
 ///   frames belong to a device or to another task.
+/// * **A shared mapping's leaf, anywhere else.** Nothing here tells it from a
+///   task's own: no count, no marker. The space's records do, and the callers
+///   clear those leaves first (`pager::unmap_shared`, from `release_range` and
+///   `aspace::destroy`). A reader who drops that call brings back a free of
+///   a frame another mapper holds.
 /// * **The vDSO page** — one frame, mapped into every address space.
 /// * **`cow::page_decref` says no** — a COW page another task still holds.
 ///
@@ -4062,7 +4067,10 @@ pub fn set_user_range_write(pt_phys: usize, start: usize, end: usize, write: boo
 ///   frame another address space still maps would become executable there
 ///   through a write here, or change under this task's code;
 /// * outside `[skip_lo, skip_hi)` (the shared-memory/MMIO window, whose
-///   frames other tasks or devices write) and not the vDSO page.
+///   frames other tasks or devices write) and not the vDSO page;
+/// * in no mapping of a shared object or of a file (`pager::has_whole`): their
+///   frames are another owner's and carry no count, so only the record says
+///   another writer reaches them.
 ///
 /// The write permission is removed in the same PTE update that adds execute,
 /// so no instant exists where the page is both (W^X). Instruction-cache
@@ -4090,6 +4098,12 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
     } else {
         crate::aspace::current_with_root(pt_phys).and_then(crate::pager::reclaim_pause)
     };
+    // Canary `exec-shared-record-canary`: the records are not asked.
+    if !cfg!(feature = "exec-shared-record-canary")
+        && crate::aspace::current_with_root(pt_phys).is_some_and(|r| crate::pager::has_whole(r, start, end))
+    {
+        return Err(KernelError::InvalidArg);
+    }
     let mut va = start;
     while va < end {
         if va < skip_hi && va.saturating_add(PAGE_SIZE) > skip_lo { return Err(KernelError::InvalidArg); }

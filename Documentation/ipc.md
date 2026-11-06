@@ -198,7 +198,7 @@ Any other bit is `-EINVAL`. It returns the new `Cap<Shm>` handle, or
 **Mapping.** `SYS_MO_MAP` with a handle maps the region with its own access
 mode and returns the base address. It needs `READ` and `MAP`, and `WRITE` for a
 writable region. The mapping is a record of the caller's address space (placed
-like an anonymous `mmap`, at the break or in the mmap area; its frames are
+in the mmap area, whatever the task, so its break stays; its frames are
 mapped at once) and is booked in the region, one per task and region
 (`-EBUSY` for a second); `munmap` refuses it (`-EINVAL`), and the caller's
 space ending takes it back without freeing a frame of the region. With `SHM_MAP_OP_PROTECT` in `a1` it instead changes

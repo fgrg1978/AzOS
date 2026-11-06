@@ -297,8 +297,8 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r:
         let _ = memobj::memobj_release_ref(child, r);
     };
     let mut leaves = azos_mm::cow::ForkLeaves { parent_pt, child_pt, va, pages };
-    let access = match memobj::memobj_inherit_ref(parent, child, r, child_pt, va, pages, &mut leaves) {
-        Ok(a) => a,
+    match memobj::memobj_inherit_ref(parent, child, r, child_pt, va, pages, &mut leaves) {
+        Ok(_) => {}
         Err(e) => {
             release_child();
             return Err(match e {
@@ -310,7 +310,7 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r:
     };
     // The record, then the capability; a failure takes them back in the other
     // order: the booking, the record with its leaves, the reference.
-    let recorded = azos_mm::pager::reserve_obj(child_space, va, end, access.write, r).is_ok();
+    let recorded = azos_mm::pager::reserve_obj(child_space, va, end, r).is_ok();
     if !recorded || azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, r, warrant)) != Some(true) {
         let _ = memobj::memobj_unmap_begin_ref(child, r);
         if recorded {

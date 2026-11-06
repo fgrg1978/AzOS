@@ -147,7 +147,7 @@
 //! Allows two or more processes to map the same physical pages into their
 //! address spaces for zero-copy data sharing (e.g., camera frames, LiDAR scans).
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use azos_sync::once_obj::{ArrPtr, OnceObj};
 use azos_sync::{SpinLock, SpinLockGuard};
 
@@ -870,7 +870,7 @@ pub const MAX_MEMOBJS_PER_TASK: usize = MAX_MEMOBJS / 2;
 
 /// MemObjs of the example guest's RAM (Kconfig `HV_EXAMPLE_GUEST_MEM_MIB`),
 /// all made and mapped by the monitor, one per `MAX_MEMOBJ_PAGES` pages (a
-/// task maps as many as it may own: `azos_sched::user_window`).
+/// task maps as many as it may own, one mapping record each).
 const EXAMPLE_GUEST_RAM_OBJS: usize =
     (azos_limits::HV_EXAMPLE_GUEST_MEM_MIB as usize * 1024 * 1024).div_ceil(MAX_MEMOBJ_PAGES * azos_arch::PAGE_SIZE);
 // The build refuses an example guest the monitor could not map whole: below
@@ -878,6 +878,13 @@ const EXAMPLE_GUEST_RAM_OBJS: usize =
 const _: () = assert!(
     !azos_limits::HV_EXAMPLE_GUEST || EXAMPLE_GUEST_RAM_OBJS < MAX_MEMOBJS_PER_TASK,
     "HV_EXAMPLE_GUEST_MEM_MIB needs more MemObjs than VMMD.ELF may own: raise MAX_MEMOBJS"
+);
+/// Mapping records the monitor needs besides the RAM objects: its trap page,
+/// the NIC ring and the console ring, and 8 of its own (anonymous and file).
+const VMMD_OTHER_RECORDS: usize = 3 + 8;
+const _: () = assert!(
+    !azos_limits::HV_EXAMPLE_GUEST || EXAMPLE_GUEST_RAM_OBJS + VMMD_OTHER_RECORDS <= azos_limits::MM_REGIONS_PER_SPACE as usize,
+    "HV_EXAMPLE_GUEST_MEM_MIB needs more mapping records than VMMD.ELF's address space has: raise MM_REGIONS_PER_SPACE"
 );
 
 /// An Anon object of `perms`, `page_count` pages; its index, or `None`.
@@ -2244,13 +2251,6 @@ pub fn memobj_release_all(tid: u32) {
     // file or `EPIPE` the moment it is gone, and the record of them lives in
     // the holder this function is about to clear.
     pipe_drop_all(tid);
-    {
-        let mut moved = MOVED_WINDOWS.lock_irqsave();
-        for row in moved.iter_mut().filter(|r| r.0 == tid) {
-            *row = (0, 0, 0);
-            MOVED_PENDING.fetch_sub(1, Ordering::Release);
-        }
-    }
     // One look under the lock for the regions that exist at all (wave 13): a
     // task with nothing to release used to take the lock twice per region,
     // ~2,800 instructions on every exit. A region created after the look is
@@ -2287,12 +2287,6 @@ pub fn memobj_exec(tid: u32) {
     let mut regions = MEMOBJS.lock();
     for region in regions.regions.iter_mut().filter(|r| r.active) {
         let _ = take_mapping_locked(region, tid);
-    }
-    drop(regions);
-    let mut moved = MOVED_WINDOWS.lock_irqsave();
-    for row in moved.iter_mut().filter(|r| r.0 == tid) {
-        *row = (0, 0, 0);
-        MOVED_PENDING.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -2672,7 +2666,7 @@ fn any_pinned(region: &MemObj) -> bool {
 /// peers must see end of file, not wait for a holder that cannot come back),
 /// then the mapping record and its PTEs, then the references. The window the
 /// mapping occupied is the holder's own address range to give back
-/// ([`memobj_take_moved_windows`]), as after a MOVE. A pinned holder
+/// (stale, as after a MOVE: [`memobj_books_ref`]). A pinned holder
 /// ([`MemHolder::pinned`]) may have PTEs the record does not name (a failed
 /// map): it keeps its pinned reference, so no frame goes back under them, and
 /// that reference ends with the holder's exit.
@@ -2691,7 +2685,7 @@ fn memobj_revoke_holder_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
     // while they exist.
     if let Some((root, va, pages)) = take_mapping_root_locked(region, tid) {
         unmap_range(root, va, pages);
-        note_moved_window(tid, va, pages);
+        note_stale();
     }
     region.holders[hi].strand_leaves_in_flight();
     let h = region.holders[hi];
@@ -2754,50 +2748,28 @@ fn unmap_frame_in(region: &MemObj, idx: usize) -> usize {
     spaces
 }
 
-/// Mappings a MOVE or a purge removed, until their holder drops the records:
-/// `(tid, va, pages)`, `tid == 0` a free row. Only the holder can drop a record
-/// of its own address space, and a MOVE can run on another task's behalf, so
-/// the row waits here for the holder's next shm call, `mmap` or `munmap`. A
-/// full table drops the row: the record then stays until the task exits, which
-/// wastes addresses and nothing else.
-static MOVED_WINDOWS: SpinLock<[(u32, usize, usize); MOVED_WINDOW_ROWS]> =
-    SpinLock::new([(0, 0, 0); MOVED_WINDOW_ROWS]);
+/// Moves on when a mapping of an object was removed without its holder's
+/// address space hearing of it (a MOVE, a revoke, a purge): the holder's record
+/// of the mapping is stale until it drops it. A space asks the epoch before
+/// each `mmap` and `munmap` and looks for stale records only when it moved
+/// since it last looked ([`memobj_books_ref`]).
+static STALE_EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// Rows of [`MOVED_WINDOWS`] (Kconfig `MEMOBJ_MOVED_WINDOWS`).
-const MOVED_WINDOW_ROWS: usize = azos_limits::MEMOBJ_MOVED_WINDOWS as usize;
-
-/// Rows of [`MOVED_WINDOWS`] in use: the transfer paths ask it before they
-/// take the lock, so a transfer that moved no mapping pays one load.
-static MOVED_PENDING: AtomicU32 = AtomicU32::new(0);
-
-fn note_moved_window(tid: u32, va: usize, pages: usize) {
-    let mut t = MOVED_WINDOWS.lock_irqsave();
-    if let Some(row) = t.iter_mut().find(|r| r.0 == 0) {
-        *row = (tid, va, pages);
-        MOVED_PENDING.fetch_add(1, Ordering::Release);
-    }
+fn note_stale() {
+    STALE_EPOCH.fetch_add(1, Ordering::Release);
 }
 
-/// Is any MOVE-removed window waiting for its task to release it?
-pub fn memobj_moved_windows_pending() -> bool {
-    MOVED_PENDING.load(Ordering::Acquire) != 0
+/// The stale-mapping epoch ([`STALE_EPOCH`]).
+pub fn memobj_stale_epoch() -> u64 {
+    STALE_EPOCH.load(Ordering::Acquire)
 }
 
-/// Take the mappings of `tid` a MOVE removed, into `out`; how many. The caller
-/// (`tid` itself) drops each record with `pager::release_range`.
-pub fn memobj_take_moved_windows(tid: u32, out: &mut [(usize, usize)]) -> usize {
-    let mut t = MOVED_WINDOWS.lock_irqsave();
-    let mut n = 0;
-    for row in t.iter_mut().filter(|r| r.0 == tid && tid != 0) {
-        if n == out.len() {
-            break;
-        }
-        out[n] = (row.1, row.2);
-        n += 1;
-        *row = (0, 0, 0);
-        MOVED_PENDING.fetch_sub(1, Ordering::Release);
-    }
-    n
+/// Does the object `r` names book a mapping at `va` of the address space
+/// rooted at `root`? `false` for an object that is gone.
+pub fn memobj_books_ref(r: u32, root: usize, va: usize) -> bool {
+    let regions = MEMOBJS.lock();
+    let Ok(i) = live_index(&regions, r) else { return false };
+    regions[i].holders.iter().any(|h| h.is_mapped() && h.map_root == root && h.map_va == va)
 }
 
 /// The object half of a capability MOVE for `Cap<Shm>`, registered at boot by
@@ -2817,7 +2789,7 @@ pub fn memobj_moved_shm(resource: u32, from_tid: u32, to_tid: u32) {
 pub struct Moved {
     /// The sender's recorded mapping `(va, pages)`: dropped from the record and
     /// removed from its page table. Its record is the sender's to drop
-    /// ([`memobj_take_moved_windows`]).
+    /// ([`memobj_books_ref`]).
     pub mapping: Option<(usize, usize)>,
     /// The references (and, for the owning reference, the ownership and the
     /// charge) are now the receiver's. `false`: the receiver could not take
@@ -2862,7 +2834,7 @@ pub fn memobj_move(from: u32, to: u32, r: u32) -> Result<Moved, MemObjError> {
     // it under this call, and no reference moves while they exist.
     let mapping = taken.map(|(root, va, pages)| {
         unmap_range(root, va, pages);
-        note_moved_window(from, va, pages);
+        note_stale();
         (va, pages)
     });
     let not_moved = Moved { mapping, transferred: false };
@@ -4018,12 +3990,12 @@ fn purge_locked(o: &mut MemObj) -> (u32, usize, Reclaim) {
     for hi in 0..MAX_MEMOBJ_HOLDERS {
         let h = &mut o.holders[hi];
         if h.is_mapped() {
-            let (tid, root, va, pages) = (h.tid, h.map_root, h.map_va, h.map_pages);
+            let (root, va, pages) = (h.map_root, h.map_va, h.map_pages);
             h.clear_mapping();
             // The PTEs go now, shot down on every hart, before a frame is
             // freed; the records are the holder's to drop, as after a MOVE.
             unmap_range(root, va, pages);
-            note_moved_window(tid, va, pages);
+            note_stale();
         }
     }
     let pages = o.page_count;
@@ -4118,11 +4090,8 @@ pub fn __memobj_reset_for_tests() {
     regions.resolved = [[ResolveEntry::EMPTY; 2]; RESOLVE_WAYS];
     regions.map_epoch = 0;
     drop(regions);
-    // The windows a MOVE, a revoke or a shrink left for their tasks belong to
-    // the table that was just emptied.
-    let mut moved = MOVED_WINDOWS.lock_irqsave();
-    moved.iter_mut().for_each(|row| *row = (0, 0, 0));
-    MOVED_PENDING.store(0, Ordering::Release);
+    // Every record of a mapping of the emptied table is stale.
+    note_stale();
 }
 
 /// Fast-forward slot `i`'s own generation source, so a host test reaches its
@@ -5459,6 +5428,8 @@ mod tests {
         assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, 4, MapAccess::RW), Ok(true));
         assert_eq!((azos_sched::shim_charged(A), azos_sched::shim_charged(B)), (4, 0));
 
+        let epoch = memobj_stale_epoch();
+        assert!(memobj_books_ref(r, ROOT_A, VA), "the mapping is booked before the MOVE");
         let cap_b = transfer(A, B, cap_a, false, None).expect("the capability moves");
         assert!(cap_store::get(A, cap_a, CapPerms::READ).is_err(), "the sender holds no capability");
         assert_eq!(UNMAPS.lock().unwrap().as_slice(), &[(ROOT_A, VA, 4)], "MOVE dropped the sender's mapping");
@@ -5469,7 +5440,8 @@ mod tests {
             (0, 4),
             "the charge follows the holder"
         );
-        assert!(memobj_take_moved_windows(A, &mut [(0, 0); 4]) == 1, "the window is the sender's to release");
+        assert!(memobj_stale_epoch() > epoch, "the sender's record is stale for its space to find");
+        assert!(!memobj_books_ref(r, ROOT_A, VA), "the object no longer books it");
         // The receiver is the holder: its release frees the object and
         // discharges ITS Domain.
         release(B, cap_b).expect("the receiver releases");
@@ -5711,16 +5683,18 @@ mod tests {
         let cap_c = shared_and_mapped(A, C, cap_a, ROOT_C, VA_C, 1);
         assert_eq!(refs(LAYOUT.idx(r)), Some(3), "A, B and C each hold one");
 
+        let epoch = memobj_stale_epoch();
         let kept = cap_store::revoke_derived(A, cap_a.raw()).expect("A revokes what it derived");
+        assert!(memobj_stale_epoch() > epoch, "the revoked mappings are stale for their spaces to find");
         assert_eq!(unmaps(), vec![(ROOT_B, VA_B, 2), (ROOT_C, VA_C, 1)], "B's and C's spaces, nothing of A's");
         for tid in [B, C] {
             assert_eq!(memobj_has_mapping_ref(tid, r), Ok(false), "the record of {tid} is gone");
-            assert_eq!(memobj_take_moved_windows(tid, &mut [(0, 0); 4]), 1, "{tid} gets its window to give back");
         }
         assert_eq!(refs(LAYOUT.idx(r)), Some(1), "only A's reference is left");
         assert!(cap_store::get(B, cap_b, CapPerms::READ).is_err() && cap_store::get(C, cap_c, CapPerms::READ).is_err());
         assert_eq!(memobj_has_mapping_ref(A, r), Ok(true), "the revoker keeps its mapping");
-        assert_eq!(memobj_take_moved_windows(A, &mut [(0, 0); 4]), 0);
+        assert!(memobj_books_ref(r, ROOT_A, VA), "the revoker's mapping is still booked");
+        assert!(!memobj_books_ref(r, ROOT_B, VA_B) && !memobj_books_ref(r, ROOT_C, VA_C));
         assert!(cap_store::get(A, Cap::<Shm>::from_raw(kept), CapPerms::READ).is_ok(), "and a capability that resolves");
 
         memobj_warrant_swept(r, cap_store::domain_key_of(B));
@@ -6662,15 +6636,14 @@ mod tests {
         assert_eq!(memobj_purge_volatile(0, nobody_is_locked), 0, "asked for nothing");
 
         let base = azos_decision::total();
+        let epoch = memobj_stale_epoch();
         assert_eq!(memobj_purge_volatile(2, nobody_is_locked), 4, "an object goes whole");
         assert_eq!(azos_mm::shim_pages_in_use(), in_use - 4, "the frames went back");
         assert_eq!(azos_sched::shim_charged(A), 1, "and the charge");
         assert_eq!(unmaps(), vec![(ROOT_A, VA, 4), (ROOT_B, VA + 0x10_0000, 4)], "every holder lost its mapping");
         assert_eq!(memobj_has_mapping_ref(A, r), Ok(false));
         assert_eq!(memobj_has_mapping_ref(B, r), Ok(false));
-        let mut w = [(0usize, 0usize); 4];
-        assert_eq!(memobj_take_moved_windows(A, &mut w), 1);
-        assert_eq!(w[0], (VA, 4), "the holder gets its window addresses back");
+        assert!(memobj_stale_epoch() > epoch, "the holders' records are stale for their spaces to find");
         assert_eq!(memobj_page_phys_ref(r, 0), Ok(None));
         if azos_decision::ON {
             assert_eq!(
