@@ -22,7 +22,6 @@ dependencies = [
  "azos_config",
  "azos_crypto",
  "azos_decision",
- "azos_drv_gpio",
  "azos_drv_sys",
  "azos_ext_api",
  "azos_ipc",
@@ -681,6 +680,7 @@ dependencies = [
  "azos_inspect",
  "azos_iommu",
  "azos_ipc",
+ "azos_kill_switch",
  "azos_ktest",
  "azos_limits",
  "azos_linux_abi",
@@ -709,6 +709,20 @@ dependencies = [
  "azos_trace",
  "azos_usb",
  "azos_usb_hid",
+]
+
+[[package]]
+name = "azos_kill_switch"
+version = "0.1.0"
+dependencies = [
+ "azos_actuation",
+ "azos_config",
+ "azos_drv_gpio",
+ "azos_drv_sys",
+ "azos_ext_api",
+ "azos_limits",
+ "azos_sched",
+ "azos_sync",
 ]
 
 [[package]]

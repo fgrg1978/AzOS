@@ -143,10 +143,11 @@ config LOG_FLUSHER_PRIORITY
 
 config KILL_SWITCH_PRIORITY
     int "Kill-switch task priority (real-time band: 1..11)"
+    depends on BOARD_IO
     range 1 11
     default 7
     help
-      crates/core/actuation/src/kill_switch.rs, `kill-sw`: the kernel task
+      crates/drivers/kill-switch (BOARD_IO), `kill-switch`: the kernel task
       the physical kill switch's GPIO edge interrupt wakes. It samples the
       line and, on a press, latches the e-stop and stops the actuators, so
       the edge-to-stop time is the interrupt handler plus this task's wake.
@@ -156,6 +157,7 @@ config KILL_SWITCH_PRIORITY
 
 config KILL_SWITCH_RECHECK_MS
     int "Kill-switch re-check period (ms)"
+    depends on BOARD_IO
     range 10 1000
     default 500
     help

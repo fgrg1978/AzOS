@@ -104,7 +104,7 @@ crate_dir() {
 
 CORE_CRATES="
 abi arch/facade arch/api arch/riscv arch/aarch64 arch/x86_64 common sync mm limits
-api base irqchip sys gpio bus virtio virtio-proto block net sensor actuator power
+api base irqchip sys gpio kill-switch bus virtio virtio-proto block net sensor actuator power
 driver_server ina219 buzzer rings pci dma iommu
 ipc sched syscall stack energy
 crypto

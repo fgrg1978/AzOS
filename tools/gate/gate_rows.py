@@ -804,7 +804,12 @@ def crate_graph():
                 by_crate.setdefault(owning_crate(f), []).append(f)
         graph = {}
         for c in sorted(crates):
-            deps = {d for d in (dep_dir(c, n, p, w) for n, p, w, _ in toml_deps(c + "/Cargo.toml")) if d}
+            # An optional dependency on an extension's crate is turned on by
+            # `use-robot` alone (tools/lint/extension_lint.py), which names the
+            # crate itself: below a crate another feature turns on, it is off.
+            deps = {d for d in (dep_dir(c, n, p, w) for n, p, w, o in toml_deps(c + "/Cargo.toml")
+                                if not (o and (dep_dir(c, n, p, w) or "").startswith("crates/domains/")))
+                    if d}
             for f in by_crate.get(c, ()):
                 for m in INCLUDE_RE.finditer(_read(f)):
                     q = os.path.normpath(os.path.join(os.path.dirname(f), m.group(1) or m.group(2)))

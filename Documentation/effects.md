@@ -92,6 +92,20 @@ shared by every domain with an actuator.
 - `gate::gate_installed` is false until `install` has run and while any
   provider's readiness check says its own gate is not in place. The loader and
   the driver supervisor refuse to start ring-3 images while it is false.
+- A provider names the effect kinds it owns (the robot's provider owns
+  `KIND_MOTOR`) and wires them itself, from a boot hook at the effects phase
+  of `gate::install` (the write-ahead gate and the safe-state drivers of the
+  wheels). An effect of a kind no installed provider owns is refused with a
+  `Rule::EffectUnserved` receipt (`effect::admit_kind`): on an image without
+  the robot extension a `Motor` op answers `UNSUPPORTED` and an io_ring motor
+  entry `-ENODEV`, before the effect gate or the motor layer is reached.
+- A manifest also declares boot hooks at named phases (`ext_api::BootHook`):
+  after CONFIG.INI is loaded, at the effects phase, and with the system
+  watchdog's task. The GPIO kill switch is a base provider of the board's I/O
+  (`crates/drivers/kill-switch`, Kconfig `BOARD_IO`, which the robot's kernel
+  feature turns on): its manifest has no effect of its own, a hook that
+  reports the configured pin and a hook that creates its task, whose press
+  ends in `gate::latch_and_stop`.
 - Releasing the latch needs the operator's signed release proof
   (`estop::verify_operator_release`): an Ed25519 signature over a message that
   includes a nonce, which must be strictly newer than the last accepted one. The
@@ -121,7 +135,8 @@ Source: `crates/core/actuation/src/effect_gate.rs` (`Effect`, `Class`,
 (`latch_and_stop`, `run_panic_stops`, `gate_installed`, `install`),
 `crates/core/actuation/src/estop.rs` (`estop_activate`,
 `verify_operator_release`), `crates/core/actuation/src/providers.rs`,
-`crates/core/ext-api/src/lib.rs`,
+`crates/core/actuation/src/effect.rs`, `crates/core/ext-api/src/lib.rs`,
+`crates/drivers/kill-switch/src/lib.rs`,
 `crates/core/syscall/src/motor_host.rs`, `crates/core/syscall/src/ioring_ops.rs`
 (`motor_wheel`), `crates/drivers/soc/src/effect.rs`,
 `config/subsys/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).

@@ -158,7 +158,7 @@ pub fn set_boot_good_hook(delay_s: u32, mark: fn()) {
 ///
 /// 3. (The GPIO kill switch was a sample of `estop_gpio_pin` here, once per
 ///    pass: up to 500 ms to the stop. It is its own task now, woken by the
-///    pin's edge interrupt: `kill_switch::kill_switch_task`.)
+///    pin's edge interrupt: the task of `azos_kill_switch`.)
 ///
 /// 3b. **Flush** — the pending capability-denial summary, then a flush
 ///    request to the `log-flush` task (this task is RT and never does block

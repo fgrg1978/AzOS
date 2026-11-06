@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The extension contract in a booted image (Kconfig `EXT_ROBOT`): what the
-//! robot extension's manifest declares is what the actuation core holds.
+//! robot extension's manifest, and the base providers beside it, declare is
+//! what the actuation core holds.
 
 use azos_actuation::{gate, providers};
 use azos_safety_core::actuation::ROBOT;
@@ -39,6 +40,19 @@ azos_ktest::ktest! {
         #[cfg(feature = "effect-gate")]
         if !azos_actuation::safe_state::can_drive(KIND_MOTOR) {
             return Err("the robot provider's effects hook did not register the wheel's safe-state drive");
+        }
+        Ok(())
+    }
+}
+
+azos_ktest::ktest! {
+    fn ext_the_kill_switch_is_installed_beside_the_robot() {
+        // The robot's kernel feature turns on the board's I/O, whose GPIO kill
+        // switch is a base provider: its report and its task run from the
+        // table's boot phases, so a robot image without it has no kill switch.
+        let want = 1 + cfg!(feature = "board-io") as usize;
+        if providers::manifests() != want {
+            return Err("the provider table does not hold the robot's and the kill switch's manifests");
         }
         Ok(())
     }

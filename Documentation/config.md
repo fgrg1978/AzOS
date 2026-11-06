@@ -450,7 +450,7 @@ The index lists every declared option: 1240.
 | `BLK_QUEUE_DEPTH` | `config/subsys/Kconfig.storage` | Block requests queued per hart (2-64) |
 | `BOARD_GENERIC` | `config/arch/Kconfig.platform` | Generic / custom (manually specify all addresses) |
 | `BOARD_IMAGE` | `config/arch/Kconfig.platform` | Board volume image table (the board's own seccomp image hashes) |
-| `BOARD_IO` | `config/subsys/Kconfig.drivers` | Board I/O: sensors, PWM, motor PID loop, buzzer |
+| `BOARD_IO` | `config/subsys/Kconfig.drivers` | Board I/O: sensors, PWM, motor PID loop, buzzer, kill switch |
 | `BOARD_K1` | `config/arch/Kconfig.platform` | SpacemiT K1 / BananaPi BPI-F3 (RISC-V + RVV 1.0) |
 | `BOARD_QEMU` | `config/arch/Kconfig.platform` | QEMU virt (riscv64/aarch64/x86_64 simulation) |
 | `BOARD_RPI5` | `config/arch/Kconfig.platform` | Raspberry Pi 5 (BCM2712, aarch64) |

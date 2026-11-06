@@ -223,7 +223,7 @@ fn kernel_line(irq: u32) -> bool {
     } else if let Some(woke) = azos_drv_gpio::gpio::gpio_edge_irq(irq) {
         // The physical kill switch's edge: acknowledged and masked at the
         // GPIO controller, its task woken to sample, latch and stop
-        // (`azos_actuation::kill_switch`). Never threaded: the IRQ thread
+        // (`azos_kill_switch`). Never threaded: the IRQ thread
         // would add a wake to the stop's latency.
         woke
     } else if let Some(woke) = azos_drv_virtio::virtio::blk::irq(irq) {

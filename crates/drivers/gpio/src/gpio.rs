@@ -8,7 +8,7 @@
 ///        [`crate::gpio_k1`].
 ///
 /// Every module also takes the edges of ONE input line by interrupt, the
-/// kill switch's (`azos_actuation::kill_switch`): [`gpio_edge_arm`] and
+/// kill switch's (`azos_kill_switch`): [`gpio_edge_arm`] and
 /// [`gpio_edge_rearm`] from its task, [`gpio_edge_irq`] from the interrupt
 /// handler. The handler acknowledges and masks the pin, stamps the edge and
 /// wakes the task ([`set_edge_waker`]); the task samples the level, debounces

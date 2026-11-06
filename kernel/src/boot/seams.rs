@@ -1062,6 +1062,10 @@ pub(crate) fn install_ring3_seams() {
     // one-shot stop plus a flag only the RT task reads. Nothing re-stopped it.
     #[cfg(feature = "use-robot")]
     azos_safety_core::actuation::install();
+    // The board's physical kill switch (Kconfig BOARD_IO): its report and
+    // its task run from the provider table's boot phases.
+    #[cfg(feature = "board-io")]
+    azos_actuation::providers::install(&azos_kill_switch::KILL_SWITCH);
     // The part every domain shares (wave 11): recorders, ring-3 e-stop, and
     // the `gate_installed` flag the loader checks. After the robot's install,
     // so a robot image prints the same lines in the same order as before.

@@ -398,6 +398,7 @@ members = [
     "crates/drivers/irqchip",
     "crates/drivers/sys",
     "crates/drivers/gpio",
+    "crates/drivers/kill-switch",
     "crates/drivers/bus",
     "crates/drivers/hwbus",
     # The native USB host: xHCI, the USB core, the class-driver interface.
@@ -549,6 +550,7 @@ azos_drv_base = { path = "crates/drivers/base" }
 azos_drv_irqchip = { path = "crates/drivers/irqchip" }
 azos_drv_sys = { path = "crates/drivers/sys" }
 azos_drv_gpio = { path = "crates/drivers/gpio" }
+azos_kill_switch = { path = "crates/drivers/kill-switch" }
 azos_drv_bus = { path = "crates/drivers/bus" }
 azos_hwbus = { path = "crates/drivers/hwbus" }
 azos_drv_input = { path = "crates/drivers/input" }

@@ -10,7 +10,7 @@
 //! read back — no signature, no authority check — and those bytes decide:
 //!
 //! - `estop_gpio_pin` — whether the physical kill switch is armed
-//!   (`crates/core/actuation/src/kill_switch.rs`).
+//!   (`crates/drivers/kill-switch`).
 //! - `ota_auto_recv_port` — whether an OTA listener spawns at boot with no
 //!   shell command needed.
 //! - `bench_boot` — whether the board halts into a synthetic-bench loop
@@ -72,7 +72,7 @@ use core::sync::atomic::Ordering;
 ///
 /// Still the historical "no switch configured" sentinel
 /// (`crate::CFG_ESTOP_GPIO_PIN`'s own default, and
-/// `crates/core/actuation/src/kill_switch.rs`'s "255 = disabled"): a `grep`
+/// `crates/drivers/kill-switch`'s "255 = disabled"): a `grep`
 /// across every `config/defconfigs/*.config` in this tree for a literal wired
 /// pin finds none, so there is no real hardware fact to fail closed
 /// TOWARDS yet. This constant is the seam, not a claim that some board

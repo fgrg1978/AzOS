@@ -257,7 +257,7 @@ pub(crate) fn load_signed_config() {
     }
     #[cfg(feature = "tpm")]
     super::tpm::measure_config(measured);
-    azos_actuation::kill_switch::report_config();
+    azos_actuation::providers::config_loaded();
 
     if ini_read == FileRead::Absent {
         // First boot: write factory defaults so the next boot finds a file.

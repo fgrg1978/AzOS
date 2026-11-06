@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#![no_std]
+#![forbid(unsafe_code)]
+
 //! The physical kill switch: its boot-time report, and the task that takes
-//! its edges and latches the e-stop.
+//! its edges and latches the e-stop. A base provider of the board's I/O
+//! (Kconfig `BOARD_IO`): [`KILL_SWITCH`] is installed through the extension
+//! contract (`azos_ext_api`), and its hooks report the pin once CONFIG.INI is
+//! loaded and create the task with the system watchdog, so the kernel never
+//! names it past its install.
 //!
 //! **Edge to stop.** The switch's GPIO raises the controller's interrupt on
 //! both edges (`azos_drv_gpio::gpio::gpio_edge_arm`). The handler acknowledges
 //! and masks the pin, stamps the edge and wakes [`kill_switch_task`]
 //! ([`edge_wake`]); the task samples the level and, on a new press
 //! (`azos_drv_gpio::debounce`: the first active sample, no wait), latches and
-//! stops (`gate::latch_and_stop`) and then records, exactly as the 500 ms
+//! stops (`azos_actuation::gate::latch_and_stop`) and then records, exactly as the 500 ms
 //! poll in `sys-wdt` it replaces did. The latch is not taken in the handler:
 //! `estop_activate` runs the domain's on-latch hooks and the stop hooks drive
 //! the motors, which take locks an interrupt must not wait on. So the stop's
@@ -35,13 +42,53 @@
 //! took is not taken twice.
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use azos_actuation::logger;
 use azos_drv_gpio::debounce::{Step, Switch};
 use azos_drv_gpio::gpio::{self, EdgeMode};
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
+use azos_ext_api::{BootHook, EnableLine, Manifest, API_LEVEL};
 
-/// Called by the kernel right after CONFIG.INI is loaded.
-pub fn report_config() {
+/// The kill switch, as the actuation core sees it: no effect of its own (a
+/// press latches the e-stop, which stops every provider), a report once the
+/// configuration is loaded, and its task.
+pub static KILL_SWITCH: Manifest = Manifest {
+    name: "kill-switch",
+    api_level: API_LEVEL,
+    providers: &[],
+    hooks: &[BootHook::ConfigLoaded(report_config), BootHook::Tasks(create_task)],
+};
+
+/// The task, with the GPIO controller's interrupt line routed to this CPU
+/// first: the controller masks every pin and clears what the firmware left
+/// latched, then the line is enabled, and the task is pinned here so the
+/// edge's wake is local. No routable line (no node, no `interrupts`, the
+/// simulation): the task is placed as any other and reads the line on its
+/// re-check period (the simulation delivers its edges itself,
+/// `gpio::gpio_inject`). Created with the watchdog, so every kernel that runs
+/// one runs the other.
+fn create_task(enable_line: EnableLine) {
+    gpio::set_edge_waker(edge_wake);
+    let line = gpio::gpio_irq_route(enable_line);
+    let hart = match line {
+        Some(_) => azos_sched::smp::current_cpu_id() as i8,
+        None => -1,
+    };
+    let idx = azos_sched::task_create_affinity(
+        "kill-switch", kill_switch_task, 0,
+        azos_limits::KILL_SWITCH_PRIORITY as u32, hart);
+    // In the safety path: exempt from the RT band budget, as the watchdog.
+    azos_sched::rt::exempt_from_band_cap(idx);
+    match line {
+        Some(l) => kprintln!("[SCHED] Created kill-switch task (prio {}, GPIO edges on line {}) [CPU {}]",
+            azos_limits::KILL_SWITCH_PRIORITY, l, hart),
+        None => kprintln!("[SCHED] Created kill-switch task (prio {}, no GPIO interrupt line)",
+            azos_limits::KILL_SWITCH_PRIORITY),
+    }
+}
+
+/// Run once CONFIG.INI is loaded ([`BootHook::ConfigLoaded`]).
+fn report_config() {
     // **Say out loud whether the physical kill switch is armed.**
     //
     // The task arms only `estop_gpio_pin < 64`, so an `estop_gpio_pin` that
@@ -62,8 +109,8 @@ pub fn report_config() {
         azos_drv_sys::kwarn!("[SAFETY] kill switch NOT armed — no estop_gpio_pin configured");
     } else {
         azos_drv_sys::kwarn!("[SAFETY] kill switch NOT armed — estop_gpio_pin={} is out of range (0-63)", p);
-        crate::logger::log_safety_violation(
-            crate::logger::SAFETY_ESTOP_PIN_INVALID,
+        logger::log_safety_violation(
+            logger::SAFETY_ESTOP_PIN_INVALID,
             0, p);
     }
 }
@@ -74,7 +121,7 @@ static TID: AtomicU32 = AtomicU32::new(0);
 /// The edge's wake (interrupt context; `gpio::set_edge_waker`): a TID wake of
 /// the task's timer sleep, stamped when it has not blocked yet, so an edge
 /// between its sample and its sleep is not lost.
-pub fn edge_wake() -> bool {
+fn edge_wake() -> bool {
     match TID.load(Ordering::Acquire) {
         0 => false,
         tid => azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_))),
@@ -120,7 +167,7 @@ fn arm(pin: u32) -> Option<Armed> {
 /// band). Sleeps until an edge, the end of a release window, or the re-check
 /// period; then samples the armed line, and on a new press latches, stops
 /// and records.
-pub fn kill_switch_task(_: usize) {
+fn kill_switch_task(_: usize) {
     TID.store(azos_sync::waitqueue::caller_tid(), Ordering::Release);
     let recheck = TIMER_FREQ * azos_limits::KILL_SWITCH_RECHECK_MS as u64 / 1000;
     let mut armed: Option<Armed> = None;
@@ -144,13 +191,13 @@ pub fn kill_switch_task(_: usize) {
             let t = now();
             if a.switch.sample(t, level) == Step::Press {
                 // Latch and stop, in the one place that sequence lives — see
-                // `gate::latch_and_stop` for why the latch precedes the
+                // `azos_actuation::gate::latch_and_stop` for why the latch precedes the
                 // wheels. This switch is the reason that function exists: a
                 // copy of the sequence here once missed `estop_activate()`,
                 // so the switch stopped the wheels and let the next command
                 // move them again. Not cleared when the pin is released: an
                 // operator decides when it is safe to resume.
-                crate::gate::latch_and_stop();
+                azos_actuation::gate::latch_and_stop();
                 let latched = now();
                 azos_drv_sys::kwarn!("[KILLSW] GPIO ESTOP (pin {}) — motors stopped, envelope latched", a.pin);
                 // The edge that woke this pass, if one did: the stop's latency
@@ -164,8 +211,8 @@ pub fn kill_switch_task(_: usize) {
                 // Source 2 = the physical switch: which of the sources fired is
                 // the first question after an incident. Durable, after the
                 // stop, as every e-stop source writes it.
-                let _ = crate::logger::log_safety_violation_durable(
-                    crate::logger::SAFETY_ESTOP, 2, a.pin);
+                let _ = logger::log_safety_violation_durable(
+                    logger::SAFETY_ESTOP, 2, a.pin);
             }
             edges_seen = gpio::gpio_edge_stamp().1;
             if let Some(d) = a.switch.deadline() {

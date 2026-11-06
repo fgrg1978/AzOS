@@ -1,0 +1,17 @@
+[package]
+name = "azos_kill_switch"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The physical kill switch on a GPIO line: its task latches the e-stop on a press. A base provider (Kconfig BOARD_IO) installed through the extension contract."
+
+[dependencies]
+azos_actuation = { workspace = true }
+azos_config    = { workspace = true }
+azos_drv_gpio  = { workspace = true }
+azos_drv_sys   = { workspace = true }
+azos_ext_api   = { workspace = true }
+azos_limits    = { workspace = true }
+azos_sched     = { workspace = true }
+azos_sync      = { workspace = true }

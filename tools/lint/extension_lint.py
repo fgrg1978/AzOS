@@ -11,7 +11,10 @@ config/extensions/Kconfig:
     `<name>`, the symbol lowercased, and it lives under crates/domains/<name>/;
   - exactly one `providers::install(&<that static>)` registers it;
   - a `Manifest` static no symbol names, or an install of a static that is no
-    manifest, is an error.
+    manifest, is an error, except a base provider's: a `Manifest` under
+    crates/drivers/ (the board's kill switch), whose crate is an optional
+    dependency of kernel/Cargo.toml (its Kconfig symbol turns it on) and which
+    is installed exactly once.
 
 And the base does not name an extension: no crate under crates/core and no
 file under kernel/src names a crate of crates/domains, except from an item
@@ -304,7 +307,10 @@ def check(root):
     for name, found in sorted(manifests.items()):
         if name not in wanted:
             for static, rel in found:
-                errs.append(f"{rel}: manifest `{static}` is named \"{name}\", which no EXT_ symbol of config/extensions/Kconfig names")
+                if rel.startswith(os.path.join("crates", "drivers") + os.sep):
+                    errs.extend(base_provider_errors(root, static, rel, installs))
+                else:
+                    errs.append(f"{rel}: manifest `{static}` is named \"{name}\", which no EXT_ symbol of config/extensions/Kconfig names")
     for static, rel in installs:
         if static not in all_statics:
             errs.append(f"{rel}: installs `{static}`, which is no `Manifest` static")
@@ -323,6 +329,28 @@ def check(root):
         if os.path.exists(cargo):
             errs.extend(cargo_errors(root, cargo, names))
     return sorted(set(errs))
+
+
+def package_of(root, rel):
+    """The package name of the crate that holds file `rel`."""
+    d = os.path.dirname(os.path.join(root, rel))
+    while d.startswith(root) and not os.path.exists(os.path.join(d, "Cargo.toml")):
+        d = os.path.dirname(d)
+    m = re.search(r'^name\s*=\s*"([^"]+)"', read(os.path.join(d, "Cargo.toml")), re.M)
+    return m.group(1) if m else None
+
+
+def base_provider_errors(root, static, rel, installs):
+    out = []
+    pkg = package_of(root, rel)
+    kernel = os.path.join(root, "kernel", "Cargo.toml")
+    dep = re.search(rf"^{re.escape(pkg or '')}\s*=\s*\{{([^}}]*)\}}", read(kernel), re.M) if pkg else None
+    if dep is None or "optional = true" not in dep.group(1):
+        out.append(f"{rel}: base provider `{static}`: `{pkg}` is not an optional dependency of kernel/Cargo.toml")
+    n = sum(1 for s, _ in installs if s == static)
+    if n != 1:
+        out.append(f"{rel}: base provider `{static}` is installed {n} times (want exactly 1)")
+    return out
 
 
 def cargo_errors(root, cargo, names):
@@ -359,6 +387,12 @@ def self_test():
             'pub static BAZ: Manifest = Manifest { name: "baz", api_level: 1, providers: &[] };\n'
             "pub fn install() { providers::install(&BAZ); providers::install(&NOPE); }\n"
             'pub static STRAY: Manifest = Manifest { name: "stray", api_level: 1, providers: &[] };\n',
+        "crates/drivers/sw/Cargo.toml": '[package]\nname = "azos_sw"\n',
+        "crates/drivers/sw/src/lib.rs":
+            'pub static SW: Manifest = Manifest { name: "sw", api_level: 1, providers: &[] };\n',
+        "crates/drivers/hard/Cargo.toml": '[package]\nname = "azos_hard"\n',
+        "crates/drivers/hard/src/lib.rs":
+            'pub static HARD: Manifest = Manifest { name: "hard", api_level: 1, providers: &[] };\n',
         "crates/core/c/Cargo.toml":
             '[features]\nuse-robot = ["dep:azos_foo"]\nsmoke = ["use-robot"]\n[dependencies]\nazos_foo = { path = "x", optional = true }\n',
         "crates/core/c/src/lib.rs":
@@ -369,8 +403,11 @@ def self_test():
             "fn open() { azos_foo::c(); }\n"
             '#[cfg(any(feature = "use-robot", feature = "other"))]\nfn any_of() { azos_foo::d(); }\n',
         "crates/core/c/src/gated_mod.rs": "fn g() { azos_foo::e(); }\n",
-        "kernel/Cargo.toml": '[features]\nuse-robot = []\n[dependencies]\nazos_foo = { path = "x" }\n',
-        "kernel/src/main.rs": "mod boot;\nfn k() { azos_foo::f(); }\n",
+        "kernel/Cargo.toml": '[features]\nuse-robot = []\n[dependencies]\nazos_foo = { path = "x" }\n'
+            'azos_sw = { path = "s", optional = true }\nazos_hard = { path = "h" }\n',
+        "kernel/src/main.rs": "mod boot;\nfn k() { azos_foo::f(); }\n"
+            "fn p() { providers::install(&azos_sw::SW); providers::install(&azos_hard::HARD); "
+            "providers::install(&azos_hard::HARD); }\n",
         "kernel/src/boot.rs": '#![cfg(feature = "use-robot")]\nfn b() { azos_foo::g(); }\n',
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -390,6 +427,8 @@ def self_test():
             f"crates/core/c/src/lib.rs:11: names `azos_foo` outside an item gated on `{GATE}`",
             f"kernel/src/main.rs:2: names `azos_foo` outside an item gated on `{GATE}`",
             "kernel/Cargo.toml: depends on `azos_foo` without `optional = true`",
+            "crates/drivers/hard/src/lib.rs: base provider `HARD`: `azos_hard` is not an optional dependency of kernel/Cargo.toml",
+            "crates/drivers/hard/src/lib.rs: base provider `HARD` is installed 2 times (want exactly 1)",
         ])
         if got != want:
             print("self-test FAIL")
@@ -406,8 +445,10 @@ def self_test():
             '#[cfg(feature = "smoke")]\nuse azos_foo::A;\n#[cfg(feature = "use-robot")]\nmod gated_mod;\n'
             '#[cfg(not(feature = "use-robot"))]\nuse crate::none::foo as azos_foo;\nfn alias() { azos_foo::x(); }\n'
             '#[cfg(feature = "use-robot")]\nfn e() { if a { azos_foo::y(); } else { azos_foo::z(); } }\n')
-        clean["kernel/Cargo.toml"] = '[features]\nuse-robot = ["dep:azos_foo"]\n[dependencies]\nazos_foo = { path = "x", optional = true }\n'
-        clean["kernel/src/main.rs"] = "mod boot;\n"
+        clean["kernel/Cargo.toml"] = ('[features]\nuse-robot = ["dep:azos_foo"]\n[dependencies]\nazos_foo = { path = "x", optional = true }\n'
+                                      'azos_sw = { path = "s", optional = true }\n')
+        clean["kernel/src/main.rs"] = "mod boot;\nfn p() { providers::install(&azos_sw::SW); }\n"
+        clean["crates/drivers/hard/src/lib.rs"] = ""
         for rel, body in clean.items():
             with open(os.path.join(tmp, rel), "w", encoding="utf-8") as fh:
                 fh.write(body)

@@ -973,6 +973,7 @@ mod rt_exemption {
     fn only_the_kernel_safety_loops_are_exempted() {
         const TASKS: &str = include_str!("../../../../kernel/src/tasks/create.rs");
         const BOOT_SCHED: &str = include_str!("../../../../kernel/src/boot/sched.rs");
+        const KILL_SWITCH: &str = include_str!("../../../../crates/drivers/kill-switch/src/lib.rs");
         let calls = |src: &str| src.matches("rt::exempt_from_band_cap(").count();
         assert_eq!(calls(TASKS), 3, "rt-motor, imu, flight-ctrl");
         for name in ["\"rt-motor\"", "\"imu\"", "\"flight-ctrl\""] {
@@ -981,9 +982,12 @@ mod rt_exemption {
             assert!(next.contains("rt::exempt_from_band_cap("), "{name} is not exempted right after creation");
         }
         // sys-wdt, and the kill switch (gpio-edge-irq: the e-stop's GPIO edge
-        // task, `actuation::kill_switch`).
-        assert_eq!(calls(BOOT_SCHED), 2, "sys-wdt, kill-switch");
-        assert!(BOOT_SCHED.contains("\"kill-switch\""), "the kill-switch task is created in boot/sched.rs");
+        // task), a base provider whose task hook runs beside sys-wdt's.
+        assert_eq!(calls(BOOT_SCHED), 1, "sys-wdt");
+        assert_eq!(calls(KILL_SWITCH), 1, "kill-switch");
+        let at = KILL_SWITCH.find("\"kill-switch\", kill_switch_task").expect("the kill-switch task is created by its provider");
+        assert!(KILL_SWITCH[at..(at + 400).min(KILL_SWITCH.len())].contains("rt::exempt_from_band_cap("),
+                "the kill switch is not exempted right after creation");
         for (path, src) in [
             ("syscall/src/topo_sched.rs", include_str!("../../../../crates/core/syscall/src/topo_sched.rs")),
             ("syscall/src/spawn.rs", include_str!("../../../../crates/core/syscall/src/spawn.rs")),

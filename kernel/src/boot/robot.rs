@@ -519,7 +519,7 @@ pub(crate) fn install_flight_recorder() {
     // something for the replay above to find. ISA-neutral and off by
     // default — see the `aarch64: flight recorder` / `flight recorder:
     // latch survives reboot` gate rows for the two-boot harness this
-    // feeds. Action 2 matches `kill_switch.rs`'s own latching write (a
+    // feeds. Action 2 matches `azos_kill_switch`'s own latching write (a
     // real GPIO kill switch is riscv64's `safety: latch survives reboot`
     // row's trigger; this is the same durable-write API, `crates/domains/robot/behavior`
     // is core and takes no ISA branch, called directly rather than through

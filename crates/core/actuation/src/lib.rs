@@ -28,9 +28,13 @@
 //!   signed warrant of the e-stop release, lifts it.
 //! - [`logger`]: the flight recorder (ring + durable FAT32 log) every safety
 //!   record goes to, and the boot replay of the latch.
-//! - [`boot_latch`], [`kill_switch`], [`sys_wdt`], [`watchdog`]: the boot
-//!   latch replay, the GPIO kill-switch check, the system watchdog task and
-//!   the timer-ISR tick / heartbeat / hardware-watchdog feed.
+//! - [`boot_latch`], [`sys_wdt`], [`watchdog`]: the boot latch replay, the
+//!   system watchdog task and the timer-ISR tick / heartbeat /
+//!   hardware-watchdog feed.
+//!
+//! What drives a board's pins is a provider, not this crate: the GPIO kill
+//! switch (`crates/drivers/kill-switch`, Kconfig `BOARD_IO`) is installed
+//! through the same contract as an extension.
 //!
 //! Robot-specific parts stay in `crates/domains/robot`: the motor gate and its
 //! per-robot-type envelope (`azos_safety_core::actuation`,
@@ -49,7 +53,6 @@ mod envelope;
 pub use envelope::delete_gate;
 pub mod estop;
 pub mod gate;
-pub mod kill_switch;
 pub mod kind;
 pub mod logger;
 pub mod providers;

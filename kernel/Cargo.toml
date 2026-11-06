@@ -44,7 +44,7 @@ use-robot = [
 # (crates/drivers/actuator: PWM, the motor PID loop, the buzzer) and the kernel
 # side that serves them (`azos_syscall/board-io`, `tasks/ina219_host.rs`,
 # `buzzer.rs`).
-board-io = ["dep:azos_drv_sensor", "dep:azos_drv_actuator", "azos_syscall/board-io"]
+board-io = ["dep:azos_drv_sensor", "dep:azos_drv_actuator", "dep:azos_kill_switch", "azos_syscall/board-io"]
 # Wave 15 (config/subsys/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
 # domain default y, off = compiled out). `rc-input`: the RC receiver feeds the
 # safety path (link loss / kill switch latch the e-stop, the sticks drive
@@ -1373,6 +1373,8 @@ azos_drv_net       = { workspace = true }
 azos_drv_sensor    = { workspace = true, optional = true }
 azos_cam_ring      = { workspace = true, optional = true }
 azos_drv_actuator  = { workspace = true, optional = true }
+# The physical kill switch, a base provider of the board's I/O (`board-io`).
+azos_kill_switch   = { workspace = true, optional = true }
 azos_drv_power     = { workspace = true }
 azos_robot_drivers = { workspace = true, optional = true }
 azos_drv_api       = { workspace = true }

@@ -21,4 +21,4 @@ pub mod txn_rule;
 // kill switch, the system watchdog task and the tick/heartbeat/WDT feed are
 // not robot-specific. Re-exported so `azos_safety_core::<module>` paths
 // keep resolving for robot code.
-pub use azos_actuation::{boot_latch, kill_switch, sys_wdt, watchdog};
+pub use azos_actuation::{boot_latch, sys_wdt, watchdog};

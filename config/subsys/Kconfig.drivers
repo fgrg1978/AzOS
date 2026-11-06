@@ -630,7 +630,7 @@ config DRV_RING3_DEFAULT
 
 config BOARD_IO
     # cargo-feature: board-io
-    bool "Board I/O: sensors, PWM, motor PID loop, buzzer" if !USE_ROBOT
+    bool "Board I/O: sensors, PWM, motor PID loop, buzzer, kill switch" if !USE_ROBOT
     default y if USE_IOT_HMI || USE_INDUSTRIAL || USE_AUTOMOTIVE || USE_WEARABLE
     help
       Kernel feature `board-io`: links crates/drivers/sensor (the ADS1115
@@ -640,10 +640,13 @@ config BOARD_IO
       `Adc` interface (crates/core/syscall/src/adc_host.rs), the range,
       battery, LiDAR, power and camera types of the `Sensor` interface, the
       `Pwm` interface, the PID ops of `Motor` and the buzzer's placement
-      (kernel/src/buzzer.rs). Off, those sensor types and the PWM and PID
-      ops read as not ready, no `Adc` interface is served and none of that
-      code is in the image (tools/lint/profile_cut_lint.py checks the
-      dependency set). The robot extension
+      (kernel/src/buzzer.rs), and the physical kill switch on a GPIO line
+      (crates/drivers/kill-switch: CONFIG.INI's `estop_gpio_pin`, whose
+      press latches the e-stop), installed as a provider through the
+      extension contract. Off, those sensor types and the PWM and PID
+      ops read as not ready, no `Adc` interface is served, no kill-switch
+      task runs and none of that code is in the image
+      (tools/lint/profile_cut_lint.py checks the dependency set). The robot extension
       needs it (EXT_ROBOT implies it), so with USE_ROBOT it is on and not
       shown.
 
