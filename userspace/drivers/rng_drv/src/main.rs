@@ -20,9 +20,9 @@
 //!    a request, the interrupt, the device's interrupt acknowledged, the line
 //!    acknowledged (`DEVICE_IRQ_ACK`), the bytes fed to the pool.
 //!
-//! A device that does not answer within a second ends the driver (exit 1):
-//! its row's supervisor restarts it, and the kernel, at the exit, resets the
-//! device before the object's pages leave its domain.
+//! A device whose interrupt does not come within a second ends the driver
+//! (exit 1): its row's supervisor restarts it, and the kernel, at the exit,
+//! resets the device before the object's pages leave its domain.
 
 #![no_std]
 #![no_main]
@@ -83,25 +83,28 @@ fn held(ty: azos_abi::cap::CapType, resource: u32) -> Option<u32> {
     (h >= 0).then_some(h as u32)
 }
 
-/// One read: the request, its interrupt, the bytes. `None`: no answer in time.
+/// One read: the request, then its interrupt (an event on the port: one
+/// taken before the wait is queued, not lost), then the bytes. `None`: no
+/// interrupt in time. The used ring is read only after an interrupt, so a
+/// line that does not deliver is a failure here, not a read that polls on.
 fn read(rng: &mut Rng<Window, Window>, port: u32, line: u32, out: &mut [u8; BUF_BYTES]) -> Option<usize> {
     rng.request(BUF_BYTES).ok()?;
     let deadline = sys::vdso_now_ns().saturating_add(ANSWER_NS);
     loop {
+        let mut ev = [0u8; sys::PORT_EVENT_BYTES];
+        if sys::port_wait_until_typed(port, &mut ev, deadline) <= 0 {
+            return None;
+        }
+        if ev[8] != sys::PORT_EVENT_IRQ || u64::from_le_bytes(ev[..8].try_into().unwrap_or([0; 8])) != IRQ_KEY {
+            continue;
+        }
+        // The device's cause first, so its line is low when the kernel's
+        // mask on it is lifted.
+        rng.ack_interrupt();
+        sys::irq_ack(line);
         if let Some(n) = rng.complete() {
             rng.copy_out(&mut out[..n]);
             return Some(n);
-        }
-        let mut ev = [0u8; sys::PORT_EVENT_BYTES];
-        if sys::port_wait_until_typed(port, &mut ev, deadline) <= 0 {
-            // A last look: the interrupt may have been taken before the wait.
-            let n = rng.complete()?;
-            rng.copy_out(&mut out[..n]);
-            return Some(n);
-        }
-        if ev[8] == sys::PORT_EVENT_IRQ && u64::from_le_bytes(ev[..8].try_into().unwrap_or([0; 8])) == IRQ_KEY {
-            rng.ack_interrupt();
-            sys::irq_ack(line);
         }
     }
 }
@@ -149,7 +152,7 @@ pub extern "C" fn _start() -> ! {
     sys::println(b"[rngdrv] virtio-rng up: queue in a DMA object, line on a port");
     let period_ns = azos_limits::DRV_VIRTIO_RNG_FEED_S as u64 * 1_000_000_000;
     let mut buf = [0u8; BUF_BYTES];
-    let mut first = true;
+    let mut feeds = 0u32;
     loop {
         let Some(n) = read(&mut rng, port, line, &mut buf) else {
             rng.stop();
@@ -162,9 +165,12 @@ pub extern "C" fn _start() -> ! {
         if fed.is_err() {
             fail(b"the entropy endpoint refused the feed");
         }
-        if first {
-            sys::println(b"[rngdrv] fed the pool from the device (DMA through the object, interrupt by port)");
-            first = false;
+        feeds = feeds.saturating_add(1);
+        match feeds {
+            1 => sys::println(b"[rngdrv] fed the pool from the device (DMA through the object, interrupt by port)"),
+            // The third: the line was acknowledged and delivered again twice.
+            3 => sys::println(b"[rngdrv] fed the pool 3 times"),
+            _ => {}
         }
         let _ = sys::sleep_until_ns(sys::vdso_now_ns().saturating_add(period_ns));
     }
