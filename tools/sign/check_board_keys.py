@@ -87,10 +87,22 @@ def check_pair(priv, pub, test_priv, test_pub):
     return None
 
 
+def load_tools():
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+    import azos_tools  # also puts device_provision's directory on sys.path
+    return azos_tools
+
+
+def helper_paths():
+    """(make_mbl.py, the topology-tests crate directory) of this checkout."""
+    t = load_tools()
+    return (os.path.join(t.TOOLS, "image", "make_mbl.py"),
+            os.path.join(t.ROOT, "tests", "host", "topology-tests"))
+
+
 def check_sigs(image, pub_path):
     """Run the kernel's verifier code over the image's signed files."""
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
-    import azos_tools  # noqa: F401  (device_provision's directory on sys.path)
+    make_mbl, topology_tests = helper_paths()
     import device_provision
     rec = device_provision.read_record(image)
     if rec is None:
@@ -106,7 +118,7 @@ def check_sigs(image, pub_path):
         # The model bundle carries its own signature (`tools/image/make_mbl.py`'s
         # format, the one `userspace/lib/ml/src/bundle.rs` reads).
         m = subprocess.run(
-            [sys.executable, os.path.join(here, "make_mbl.py"), "--check", paths["BEHAVIOR.MBL"], "--pub", pub_path],
+            [sys.executable, make_mbl, "--check", paths["BEHAVIOR.MBL"], "--pub", pub_path],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if m.returncode != 0:
             print(m.stdout.decode(errors="replace"), end="")
@@ -118,7 +130,7 @@ def check_sigs(image, pub_path):
              paths["CONFIG.INI"], paths["CONFIG.SIG"], rec[0].hex(),
              paths["POLICY.GGF"], paths["POLICY.SIG"],
              paths["CAPS.TOM"], paths["CAPS.SIG"], paths["SCHED.TOM"]],
-            cwd=os.path.join(here, "..", "tests", "host", "topology-tests"), env=env,
+            cwd=topology_tests, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         out = r.stdout.decode(errors="replace")
         print(out, end="")
