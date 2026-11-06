@@ -969,6 +969,7 @@ mod row {
 /// between the two delay the holder while the pump waits.
 ///
 /// **Canary.** `with` back on `futex_wait`/`futex_wake` on the word: red.
+#[cfg(test)]
 mod state_lock {
     fn with_body() -> String {
         let src = include_str!("../../../../userspace/services/audiod/src/main.rs");
