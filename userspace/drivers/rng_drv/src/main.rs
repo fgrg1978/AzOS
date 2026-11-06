@@ -154,6 +154,11 @@ pub extern "C" fn _start() -> ! {
     let mut buf = [0u8; BUF_BYTES];
     let mut feeds = 0u32;
     loop {
+        if cfg!(feature = "exit-mid-request") && feeds == 1 {
+            let _ = rng.request(BUF_BYTES);
+            sys::println(b"[rngdrv] exiting with a request in the device");
+            sys::exit(3);
+        }
         let Some(n) = read(&mut rng, port, line, &mut buf) else {
             rng.stop();
             fail(b"no answer from the device")

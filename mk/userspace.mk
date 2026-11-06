@@ -261,9 +261,18 @@ RNG_DRV_SRC := $(RNG_DRV_DIR)/src/main.rs $(RNG_DRV_DIR)/Cargo.toml \
                $(wildcard crates/drivers/virtio-rng/src/*.rs) crates/drivers/virtio-rng/Cargo.toml \
                $(wildcard crates/drivers/virtio-proto/src/*.rs) $(wildcard crates/drivers/kit/src/*.rs) \
                $(wildcard crates/drivers/dma/src/*.rs) $(wildcard userspace/lib/inspect/src/*.rs)
-$(RNG_DRV_ELF): $(RNG_DRV_SRC) $(LIBSYS_SRC)
+# Extra rng_drv cargo features: its gate mode, by hand
+# (`RNG_DRV_FEATURES=exit-mid-request`); the stamp as ina_drv's.
+RNG_DRV_FEATURES ?=
+RNG_DRV_FEATURES_ARG := $(if $(strip $(RNG_DRV_FEATURES)),--features $(strip $(RNG_DRV_FEATURES)))
+$(OUT_BUILD)/rng_drv.features: FORCE
 	@mkdir -p $(OUT_BUILD)
-	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	@printf '%s\n' '$(strip $(RNG_DRV_FEATURES))' | cmp -s - $@ \
+	    || printf '%s\n' '$(strip $(RNG_DRV_FEATURES))' >$@
+
+$(RNG_DRV_ELF): $(RNG_DRV_SRC) $(LIBSYS_SRC) $(OUT_BUILD)/rng_drv.features
+	@mkdir -p $(OUT_BUILD)
+	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS) $(RNG_DRV_FEATURES_ARG)
 	cp $(RNG_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -886,9 +895,9 @@ $(INA_DRV_ELF_AARCH64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/ina_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(RNG_DRV_ELF_AARCH64): $(RNG_DRV_SRC) $(LIBSYS_SRC)
+$(RNG_DRV_ELF_AARCH64): $(RNG_DRV_SRC) $(LIBSYS_SRC) $(OUT_BUILD)/rng_drv.features
 	@mkdir -p $(AARCH64_DIR)
-	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) $(RNG_DRV_FEATURES_ARG)
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/rng_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1258,9 +1267,9 @@ $(INA_DRV_ELF_X86_64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_D
 	python3 tools/lint/chip_source_check.py ina219 $(UTGT_X86_64)/$(X86_64_UBUILT)/ina_drv
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/ina_drv $@
 
-$(RNG_DRV_ELF_X86_64): $(RNG_DRV_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(RNG_DRV_ELF_X86_64): $(RNG_DRV_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG) $(OUT_BUILD)/rng_drv.features
 	@mkdir -p $(X86_64_DIR)
-	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS) $(RNG_DRV_FEATURES_ARG)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/rng_drv $@
 
 $(MLSRV_ELF_X86_64): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)

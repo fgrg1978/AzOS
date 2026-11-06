@@ -6601,30 +6601,84 @@ a64_kbuild "qemu" || true
 # are one DMA memory object bound to the device (`DEVICE_DMA_MAP`), its line
 # is a port source (`PORT_SRC_IRQ`), and what the device delivered is fed to
 # the kernel pool through the `entropy` endpoint. The row's configuration is
-# the gate's with the device placed in ring 3 and a feed every second; the
-# drivers disk carries the image and the component manager that starts it.
+# the gate's with the device placed in ring 3, a feed every second, and the
+# acceptance that placement needs: virtio-mmio is behind no IOMMU, so
+# `DMA_RING3_WITHOUT_IOMMU` (ring 3 masters the bus, kernel-trust; the boot
+# says so). The feed is mix-only (`ENTROPY_RING3_FEED`'s default), so the
+# pool needs another credited source: the CPU instruction (`-cpu max` on
+# aarch64 and x86_64, Zkr on riscv64), whose seed line the row reads too.
+# The drivers disk carries the image and the component manager that starts it.
 #
-# Pass: the kernel says it took a feed from ring 3 (the pool may have been
-# seeded before it, by the CPU instruction or the persisted seed) and the
-# driver fed it three times (every read waits for the device's interrupt, so the line was
-# acknowledged and delivered again twice). Canary row: `irq-ack-canary` (the
-# ACK does not unmask): the first read is served, the second interrupt never
-# comes, and the driver reports the device silent.
-rng3_config() { # rng3_config <base> <out>: the base, virtio-rng in ring 3, a feed a second
-    sed -e 's/^CONFIG_DRV_VIRTIO_RNG_PLACEMENT_KERNEL=y$/# CONFIG_DRV_VIRTIO_RNG_PLACEMENT_KERNEL is not set/' \
-        -e 's/^# CONFIG_DRV_VIRTIO_RNG_PLACEMENT_RING3 is not set$/CONFIG_DRV_VIRTIO_RNG_PLACEMENT_RING3=y/' \
-        -e 's/^CONFIG_DRV_VIRTIO_RNG_FEED_S=.*/CONFIG_DRV_VIRTIO_RNG_FEED_S=1/' "$1" >"$2" \
+# Pass: the acceptance line, the CPU's seed, the ring-3 feed mixed and not
+# credited, and three feeds (every read waits for the device's interrupt, so
+# the line was acknowledged and delivered again twice). ACK canary row:
+# `irq-ack-canary` (the ACK does not unmask): the second interrupt never
+# comes and the driver reports the device silent. Refusal row:
+# `canary=dma-ring3-refusal` (the acceptance withheld for the boot): the map is
+# refused, the driver says so and feeds nothing. Killed row (aarch64): the
+# driver built to exit with its second request in the device; the kernel
+# resets the device at the exit and gives the pages back, and the restarted
+# driver feeds again; no page is kept.
+rng3_config() { # rng3_config <base> <out>: virtio-rng in ring 3, the acceptance, a feed a second, Zkr probed
+    # Two passes: the image's symbol depends on the placement the first sets.
+    { grep -vE '^(# )?CONFIG_(DRV_VIRTIO_RNG_PLACEMENT_(KERNEL|RING3)|DMA_RING3_WITHOUT_IOMMU|RV_ZKR_(NEVER|PROBE|REQUIRE)|DRV_VIRTIO_RNG_FEED_S)[= ]' "$1"
+      printf '%s\n' CONFIG_DRV_VIRTIO_RNG_PLACEMENT_RING3=y CONFIG_DMA_RING3_WITHOUT_IOMMU=y CONFIG_DRV_VIRTIO_RNG_FEED_S=1
+      if grep -q '^CONFIG_ARCH_RISCV64=y$' "$1"; then printf '%s\n' CONFIG_RV_ZKR_PROBE=y; fi
+    } >"$2" \
         && KCONFIG_CONFIG="$2" python3 -m olddefconfig Kconfig >/dev/null 2>&1 \
+        && KCONFIG_CONFIG="$2" python3 -m olddefconfig Kconfig >/dev/null 2>&1 \
+        && grep -q '^CONFIG_DMA_RING3_WITHOUT_IOMMU=y$' "$2" \
         && grep -q '^CONFIG_DRV_VIRTIO_RNG_PLACEMENT_RING3=y$' "$2" \
+        && grep -q '^CONFIG_ENTROPY_RING3_FEED_MIX=y$' "$2" \
+        && grep -q '^CONFIG_ENTROPY_CPU_SOURCE_CREDIT=y$' "$2" \
         && grep -q '^CONFIG_USERSPACE_RNGDRV=y$' "$2"
 }
-rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent
+# rng3_verdict <log> fed|silent|refused|killed <x86?>: the row's reason to fail, "" for none.
+rng3_verdict() {
+    local log="$1" want="$2" why=""
+    case "$want" in
+        fed|silent|killed)
+            grep -aqF '[DMA] ring 3 may master the bus without an IOMMU (DMA_RING3_WITHOUT_IOMMU)' "$log" \
+                || why="the boot never said ring 3 masters the bus without an IOMMU" ;;
+        refused)
+            grep -aqF '[DMA] ring 3 masters the bus only behind an IOMMU' "$log" \
+                || why="the boot never said ring 3 is refused an unconfined device" ;;
+    esac
+    [ -n "$why" ] && { printf '%s' "$why"; return; }
+    case "$want" in
+        fed)
+            grep -aqF '[rngdrv] FAIL' "$log" && why="$(grep -aF '[rngdrv] FAIL' "$log" | tr -d '\r' | sed -n 1p)"
+            [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] pool seeded: [0-9]+ bytes from ' "$log" \
+                && why="no credited source seeded the pool before the ring-3 feed"
+            [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] [0-9]+ bytes fed from ring 3 \(tid [0-9]+\), mixed, not credited' "$log" \
+                && why="no mix-only feed from ring 3"
+            [ -z "$why" ] && ! grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="fewer than three feeds"
+            [ -z "$why" ] && grep -aqF 'from virtio-rng' "$log" && why="the kernel read the device itself" ;;
+        silent)
+            grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="three feeds with the ACK not unmasking: the line is not what the reads wait on"
+            [ -z "$why" ] && ! grep -aqF '[rngdrv] FAIL: no answer from the device' "$log" && why="no 'no answer from the device' verdict" ;;
+        refused)
+            grep -aqF '[rngdrv] fed the pool' "$log" && why="a refused driver fed the pool"
+            [ -z "$why" ] && ! grep -aqF '[rngdrv] FAIL: the device may not reach the queue memory' "$log" \
+                && why="no refusal of the map" ;;
+        killed)
+            grep -aqF 'bytes kept from the allocator' "$log" && why="$(grep -aF 'bytes kept from the allocator' "$log" | tr -d '\r' | sed -n 1p)"
+            [ -z "$why" ] && ! grep -aqE '\[DMA\] device [0-9]+: the exit of tid [0-9]+ ended its binding' "$log" \
+                && why="the exit did not end the binding"
+            [ -z "$why" ] && [ "$(grep -acF '[rngdrv] fed the pool from the device' "$log")" -lt 2 ] \
+                && why="the restarted driver did not feed again" ;;
+    esac
+    printf '%s' "$why"
+}
+rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent|refused|killed
     local isa="$1" label="$2" feats="qemu${3:+,$3}" want="$4" why=""
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
     local slug; slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
     local log="$CI_LOG_DIR/${slug}.log" kimg="$CI_LOG_DIR/kernel-${slug}" disk="$CI_LOG_DIR/disk-${slug}.img"
-    local cfg disk_target
+    local cfg disk_target drvfeat="" append=""
+    [ "$want" = killed ] && drvfeat=exit-mid-request
+    [ "$want" = refused ] && append="canary=dma-ring3-refusal"
     rm -f "$log"
     case "$isa" in
         rv)  cfg="${PRIMARY_DIR}/rng3.config"; disk_target=$AZOS_OUT/build/disk-drv.img
@@ -6637,23 +6691,28 @@ rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent
              cp "$A64_IMG" "$kimg" ;;
     esac
     rm -f "$disk_target"
-    KCONFIG_CONFIG="$cfg" make "$disk_target" >/dev/null 2>&1 || { bad; echo "      make $disk_target did not build"; rm -f "$kimg"; return; }
+    KCONFIG_CONFIG="$cfg" make "$disk_target" RNG_DRV_FEATURES="$drvfeat" >/dev/null 2>&1 \
+        || { bad; echo "      make $disk_target did not build"; rm -f "$kimg"; return; }
     cp "$disk_target" "$disk"
+    # The next drivers disk is built without the gate mode.
+    [ -n "$drvfeat" ] && rm -f "$disk_target"
     par_ready
     while [ "$(par_qemu_count)" -ge 4 ]; do sleep 2; done
     case "$isa" in
-        rv)  "$QEMU" -machine virt -nographic -bios default -smp 2 -kernel "$kimg" \
-                 -global virtio-mmio.force-legacy=false \
+        rv)  "$QEMU" -machine virt -nographic -bios default -cpu rv64,zkr=on -smp 2 -kernel "$kimg" \
+                 ${append:+-append "$append"} -global virtio-mmio.force-legacy=false \
                  -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
                  -device virtio-rng-device >"$log" 2>&1 & ;;
         a64) qemu-system-aarch64 -M virt,gic-version=3 -cpu max -smp 2 -nographic -kernel "$kimg" \
-                 -global virtio-mmio.force-legacy=false \
+                 ${append:+-append "$append"} -global virtio-mmio.force-legacy=false \
                  -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
                  -device virtio-rng-device >"$log" 2>&1 & ;;
     esac
-    local pid=$! i=0
+    local pid=$! i=0 stop='\[rngdrv\] (fed the pool 3 times|FAIL)'
+    [ "$want" = killed ] && stop='kept from the allocator|\[compmgr\] give-up RNGDRV'
     while [ "$i" -lt 180 ]; do
-        grep -aqE '\[rngdrv\] (fed the pool 3 times|FAIL)' "$log" 2>/dev/null && break
+        grep -aqE "$stop" "$log" 2>/dev/null && break
+        [ "$want" = killed ] && [ "$(grep -acF '[rngdrv] fed the pool from the device' "$log" 2>/dev/null)" -ge 2 ] && break
         grep -aqiE 'panic|\[FATAL\]|TRAP\] unhandled' "$log" 2>/dev/null && break
         kill -0 "$pid" 2>/dev/null || break
         i=$((i + 1)); sleep 1
@@ -6662,25 +6721,21 @@ rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent
     rm -f "$kimg" "$kimg.features" "$disk" "$cfg"
     if grep -aqiE 'panic|\[FATAL\]|TRAP\] unhandled' "$log"; then
         why="the kernel crashed"
-    elif [ "$want" = fed ]; then
-        grep -aqF '[rngdrv] FAIL' "$log" && why="$(grep -aF '[rngdrv] FAIL' "$log" | tr -d '\r' | sed -n 1p)"
-        [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] [0-9]+ bytes fed from ring 3' "$log" \
-            && why="the pool never took a feed from ring 3"
-        [ -z "$why" ] && ! grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="fewer than three feeds"
-        [ -z "$why" ] && grep -aqF '[ENTROPY] pool seeded: ' "$log" && grep -aqF 'from virtio-rng' "$log" \
-            && why="the kernel read the device itself"
     else
-        grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="three feeds with the ACK not unmasking: the line is not what the reads wait on"
-        [ -z "$why" ] && ! grep -aqF '[rngdrv] FAIL: no answer from the device' "$log" && why="no 'no answer from the device' verdict"
+        why="$(rng3_verdict "$log" "$want")"
     fi
     if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
     bad; echo "      $why"; echo "      log kept: $log"
 }
 par "aarch64 ring-3 virtio-rng" rng3_row a64 "aarch64 ring-3 virtio-rng" "" fed
 par "aarch64 ring-3 virtio-rng, ACK canary" rng3_row a64 "aarch64 ring-3 virtio-rng, ACK canary" irq-ack-canary silent
+par "aarch64 ring-3 virtio-rng, refused" rng3_row a64 "aarch64 ring-3 virtio-rng, refused" "" refused
+par "aarch64 ring-3 virtio-rng, killed mid-request" rng3_row a64 "aarch64 ring-3 virtio-rng, killed mid-request" "" killed
 par "riscv64 ring-3 virtio-rng" rng3_row rv "riscv64 ring-3 virtio-rng" "" fed
 par "riscv64 ring-3 virtio-rng, ACK canary" rng3_row rv "riscv64 ring-3 virtio-rng, ACK canary" irq-ack-canary silent
+par "riscv64 ring-3 virtio-rng, refused" rng3_row rv "riscv64 ring-3 virtio-rng, refused" "" refused
 a64_kbuild "qemu" || true
+kbuild "qemu" || true
 kbuild "qemu" || true
 
 # ── Wave 11: what the kernel itself starts is supervised (both ISAs) ────────
@@ -18830,8 +18885,9 @@ CPU 5 lacks hwcap bits"
     # ring-3 drivers row, says what it checks): `-M microvm`'s virtio-mmio
     # slot, the disk that carries every image, a configuration derived from
     # the gate's x86_64 cell.
-    x86_rng3_row() { # x86_rng3_row <label> <extra kernel features or ""> fed|silent
-        local label="$1" feats="$2" want="$3" why=""
+    x86_rng3_row() { # x86_rng3_row <label> <extra kernel features or ""> fed|silent|refused
+        local label="$1" feats="$2" want="$3" why="" append=""
+        [ "$want" = refused ] && append="canary=dma-ring3-refusal"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local slug; slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
@@ -18849,7 +18905,7 @@ CPU 5 lacks hwcap bits"
         while [ "$(par_qemu_count)" -ge 4 ]; do sleep 2; done
         qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot -smp 2 \
             -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
-            -device virtio-rng-device -kernel "$kimg" >"$log" 2>&1 &
+            -device virtio-rng-device -kernel "$kimg" ${append:+-append "$append"} >"$log" 2>&1 &
         local pid=$! i=0
         while [ "$i" -lt 180 ]; do
             grep -aqE '\[rngdrv\] (fed the pool 3 times|FAIL)' "$log" 2>/dev/null && break
@@ -18861,20 +18917,15 @@ CPU 5 lacks hwcap bits"
         rm -f "$kimg" "$kimg.features" "$disk" "$cfg"
         if grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log"; then
             why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
-        elif [ "$want" = fed ]; then
-            grep -aqF '[rngdrv] FAIL' "$log" && why="$(grep -aF '[rngdrv] FAIL' "$log" | tr -d '\r' | sed -n 1p)"
-            [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] [0-9]+ bytes fed from ring 3' "$log" \
-                && why="the pool never took a feed from ring 3"
-            [ -z "$why" ] && ! grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="fewer than three feeds"
         else
-            grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="three feeds with the ACK not unmasking"
-            [ -z "$why" ] && ! grep -aqF '[rngdrv] FAIL: no answer from the device' "$log" && why="no 'no answer from the device' verdict"
+            why="$(rng3_verdict "$log" "$want")"
         fi
         if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
         bad; echo "      $why"; echo "      log kept: $log"
     }
     par "x86_64 ring-3 virtio-rng" x86_rng3_row "x86_64 ring-3 virtio-rng" "" fed
     par "x86_64 ring-3 virtio-rng, ACK canary" x86_rng3_row "x86_64 ring-3 virtio-rng, ACK canary" irq-ack-canary silent
+    par "x86_64 ring-3 virtio-rng, refused" x86_rng3_row "x86_64 ring-3 virtio-rng, refused" "" refused
     # The INA219 placement rows of riscv64 (`drivers: INA219 placed in kernel`,
     # `... wrong-value canary`) and aarch64, on x86_64. x86_64, like them, reads the QEMU simulation of
     # the INA219 (crates/drivers/bus/src/i2c.rs: no controller driver is
