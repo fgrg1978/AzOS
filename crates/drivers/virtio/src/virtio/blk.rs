@@ -59,7 +59,7 @@ use super::{
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
     VIRTIO_QUEUE_SIZE,
 };
-use super::{mmio_read, mmio_write, probe, reset_confirmed, virtq_init, virtq_reprogram,
+use super::{mmio_read, mmio_write, probe, reset_confirmed, virtq_init, virtq_reprogram, RESET_WAIT_US,
             virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
             read_config32, read_config64};
 use azos_dma::Direction;
@@ -656,27 +656,77 @@ pub fn init_at(base: usize) -> Result<(), ()> {
     Ok(())
 }
 
-/// Take the device at `base` out of service: no command starts after this
-/// (`READY` is cleared, then every queue lock is taken once, so a `start`
-/// that passed its check has submitted), the device is reset and its stop
-/// confirmed (its DMA is over), and every command it held ends `Reset`, its
-/// waiter woken; a request the layer has not started waits (`claim` answers
-/// `Busy`). The rings and mappings stay the driver's ([`PARKED`]): the
-/// unbind and the system suspend of the hardware bus. `Err` for a device that
-/// is not this one or not up, and for one that never confirmed its reset (the
-/// driver latches dead: its memory is never reused).
-pub fn park(base: usize) -> Result<(), ()> {
-    let _guard = BLK_LOCK.lock();
-    // SAFETY: `READY` is checked under `BLK_LOCK`; bring-up wrote the state.
-    let dev = unsafe { &*(&raw const BLK_DEV) };
-    if !READY.load(Ordering::Acquire) || dev.vdev.base as usize != base {
-        return Err(());
+/// How long [`park`] waits for a tag the layer claimed before the device was
+/// parked to reach `start`.
+const PARK_CLAIM_WAIT_US: u64 = 10_000;
+
+/// Sleep about a millisecond (spin where the caller cannot block), not past
+/// `until` (timebase ticks).
+fn pause(until: u64) {
+    let step = azos_drv_sys::timebase::now()
+        .saturating_add((azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1))
+        .min(until);
+    if !BLOCK_FN.get().is_some_and(|f| f(step)) {
+        core::hint::spin_loop();
     }
-    // Parked before not ready: `claim` never reads the gap as a dead device.
-    PARKED.store(base, Ordering::Release);
-    READY.store(false, Ordering::Release);
+}
+
+/// Take the device at `base` out of service, letting the work already given
+/// to it finish: from here `claim` answers `Busy` (the layer keeps new
+/// requests), a tag already claimed is waited for until it is started, then
+/// READY is cleared (under `BLK_LOCK`, which orders it against a timeout's
+/// reset) and every queue lock is taken once, so no `start` is between its
+/// check and its submit. The commands in the device complete normally, within
+/// their own budgets; a timeout reset in progress finishes; then the device is
+/// reset and its stop confirmed (its DMA is over, no lock held while it
+/// confirms). Only a command still in the device past its budget ends `Reset`,
+/// under its queue's lock. The rings and mappings stay the driver's
+/// ([`PARKED`]): the system suspend and the first step of an unbind. `Err`
+/// for a device that is not this one or not up, and for one that never
+/// confirmed its reset (the driver latches dead: its memory is never reused).
+pub fn park(base: usize) -> Result<(), ()> {
+    // SAFETY: bring-up wrote the state before `READY`; it is only read here.
+    let dev = unsafe { &*(&raw const BLK_DEV) };
+    {
+        let _guard = BLK_LOCK.lock();
+        if !READY.load(Ordering::Acquire) || dev.vdev.base as usize != base || PARKED.load(Ordering::Acquire) != 0 {
+            return Err(());
+        }
+        PARKED.store(base, Ordering::Release);
+    }
+    let claimed_unstarted = || {
+        let busy = SLOT_BUSY.load(Ordering::Acquire);
+        (0..dev.slots).any(|t| busy & (1 << t) != 0 && !SLOT_INFLIGHT[t].load(Ordering::Acquire))
+    };
+    let until = deadline_after_us(PARK_CLAIM_WAIT_US);
+    while claimed_unstarted() && azos_drv_sys::timebase::now() < until {
+        pause(until);
+    }
+    {
+        let _guard = BLK_LOCK.lock();
+        READY.store(false, Ordering::Release);
+    }
     for q in 0..dev.queues {
         drop(QLOCK[q].lock());
+    }
+    let in_device = |t: usize| SLOT_INFLIGHT[t].load(Ordering::Acquire) && !SLOT_DONE[t].load(Ordering::Acquire);
+    let until = (0..dev.slots).filter(|&t| in_device(t)).map(|t| SLOT_DEADLINE[t].load(Ordering::Relaxed)).max();
+    if let Some(until) = until {
+        loop {
+            for q in 0..dev.queues {
+                let _g = QLOCK[q].lock();
+                // SAFETY: `QLOCK[q]` is held.
+                unsafe { drain(q) };
+            }
+            if !(0..dev.slots).any(in_device) || azos_drv_sys::timebase::now() >= until {
+                break;
+            }
+            pause(until);
+        }
+    }
+    let until = deadline_after_us(2 * RESET_WAIT_US);
+    while RECOVERY.resetting() && azos_drv_sys::timebase::now() < until {
+        pause(until);
     }
     // SAFETY: the transport is mapped; status 0 resets the device.
     if !unsafe { reset_confirmed(dev.vdev.base) } {
@@ -684,10 +734,15 @@ pub fn park(base: usize) -> Result<(), ()> {
         latch_dead("the device did not confirm its reset when taken out of service", false);
         return Err(());
     }
-    for t in 0..dev.slots {
-        if SLOT_INFLIGHT[t].load(Ordering::Acquire) && !SLOT_DONE[t].load(Ordering::Acquire) {
-            SLOT_STATUS[t].store(proto::S_RESET, Ordering::Relaxed);
-            SLOT_DONE[t].store(true, Ordering::Release);
+    let mut ended = 0;
+    for q in 0..dev.queues {
+        let _g = QLOCK[q].lock();
+        for t in (0..dev.slots).filter(|&t| proto::queue_of(t, dev.queues) == q) {
+            if in_device(t) {
+                SLOT_STATUS[t].store(proto::S_RESET, Ordering::Relaxed);
+                SLOT_DONE[t].store(true, Ordering::Release);
+                ended += 1;
+            }
         }
     }
     if let (Some(wake), tid) = (WAKE_FN.get(), WAITER.sleeper()) {
@@ -695,7 +750,7 @@ pub fn park(base: usize) -> Result<(), ()> {
             wake(tid);
         }
     }
-    kprintln!("[VIRTIO-BLK] device at {:#x} out of service: reset, its commands ended", base);
+    kprintln!("[VIRTIO-BLK] device at {:#x} out of service: reset ({} command(s) past their budget ended)", base, ended);
     Ok(())
 }
 
@@ -764,12 +819,12 @@ fn latch_dead(reason: &str, latched: bool) {
 /// their budget at tick `now`. The timeout policy decides: reset the device
 /// and program it again over the same rings, or, with the resets spent,
 /// latch it dead. The late commands end `Timeout`; a reset ends the others
-/// the device held `Reset`. Called by `reap` with no queue lock held. Under
-/// `BLK_LOCK`, so a [`park`] is either before it (the device is out of
-/// service: nothing to reset, and its commands are ended) or after it: a
-/// timeout never programs a parked device again.
+/// the device held `Reset`. Called by `reap` with no queue lock held. The
+/// READY check and the verdict are under `BLK_LOCK`, so a [`park`] either
+/// cleared READY first (nothing to reset here) or waits for this reset to
+/// finish before its own: a timeout never programs a parked device again.
 fn timed_out(late: u32, now: u64) {
-    let _guard = BLK_LOCK.lock();
+    let guard = BLK_LOCK.lock();
     if !READY.load(Ordering::Acquire) {
         return;
     }
@@ -782,7 +837,11 @@ fn timed_out(late: u32, now: u64) {
     let budget = proto::budget_us(SLOT_OP[first].load(Ordering::Relaxed));
     let waited_ms = budget / 1000 + now.saturating_sub(SLOT_DEADLINE[first].load(Ordering::Relaxed))
         * 1000 / azos_drv_sys::timebase::TIMER_FREQ;
-    match RECOVERY.timed_out(sector, waited_ms) {
+    let verdict = RECOVERY.timed_out(sector, waited_ms);
+    // The verdict is taken under the lock (a `park` clears READY under it and
+    // then waits for a reset in progress); the reset wait is not.
+    drop(guard);
+    match verdict {
         Verdict::Reset => {
             azos_drv_sys::kerr!("[VIRTIO-BLK] request timeout at sector {}: resetting the device", sector);
             // SAFETY: the transport base was set in bring-up.
