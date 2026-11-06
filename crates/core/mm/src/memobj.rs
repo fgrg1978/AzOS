@@ -4432,6 +4432,33 @@ mod tests {
         assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Err(MemObjError::Purged));
     }
 
+    /// **A write map does not start over frames a clone shares**, whatever the
+    /// caller saw before the hold: a clone that lands after the caller's break and
+    /// before its begin leaves the object shared, and the begin refuses it (`Busy`)
+    /// without marking the holder or handing out a frame. A read map still starts.
+    ///
+    /// **Canary (by hand).** Drop the `cow_shared` test in
+    /// `memobj_map_begin_ref`: the write map starts on the clone's frame.
+    #[test]
+    fn a_write_map_refuses_frames_a_clone_shares_at_its_begin() {
+        let _g = setup();
+        let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let first = memobj_clone(A, r, A, MemPerms::ReadOnly).expect("clone");
+        assert_eq!(memobj_cow_break_all(r), Ok(()));
+        assert_eq!(memobj_describe_ref(r).unwrap().cow_shared, 0, "precondition: the break gave frames of its own");
+        let second = memobj_clone(A, r, A, MemPerms::ReadOnly).expect("clone");
+        assert_ne!(memobj_describe_ref(r).unwrap().cow_shared, 0, "precondition: shared again");
+
+        let mut pages = [0usize; 1];
+        assert_eq!(memobj_map_begin_ref(A, r, true, &mut pages), Err(MemObjError::Busy), "a write map over shared frames");
+        assert_eq!(pages[0], 0, "a refused begin handed out a frame");
+        assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Ok(()), "the refusal left the holder marked");
+        assert_eq!(memobj_map_commit_ref(A, r, 0x1000, 0x4000_0000, 1, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((0x4000_0000, 1))));
+        assert_eq!(memobj_release_ref(A, first), Ok(()));
+        assert_eq!(memobj_release_ref(A, second), Ok(()));
+    }
+
     /// **An exit ends a map left in flight**: its references go back with the
     /// others, or the object would outlive the task.
     #[test]
