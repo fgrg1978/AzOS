@@ -163,6 +163,9 @@ enum SignerFloors {
 struct FloorCtx {
     cache: Vec<(usize, SignerFloors)>,
     staged: Vec<(usize, String)>,
+    /// The memory was lost when the boot began: every index accepted in it
+    /// rebuilds it from what the volume holds, and is recorded as such.
+    rebuild: bool,
 }
 
 /// Is the verified package `v` below its security floor? Reads the slot of
@@ -209,7 +212,13 @@ fn below_floor<D: BlockDev>(
                 let subject = signer as u32 + 1;
                 match boot.marks.accept(&key, ix.mark(), &floors) {
                     Ok(taken) => {
-                        if raise.is_some() {
+                        if raise.is_some() && cx.rebuild {
+                            sink.note(format_args!(
+                                "[PKG] signer {}: the index marks are rebuilt from the stored index (serial {}), whichever signed one the volume held",
+                                signer + 1, ix.serial
+                            ));
+                            sink.record(&receipt::index_rebuilt(&ix, boot.now_ns));
+                        } else if raise.is_some() {
                             sink.record(&receipt::index_accepted(&ix, boot.now_ns));
                         }
                         if taken.left_out != 0 {
@@ -933,6 +942,7 @@ pub fn apply<D: BlockDev>(
     let mut floors = FloorCtx {
         cache: Vec::new(),
         staged: heads.iter().filter_map(|h| h.pkg.as_ref().map(|(n, s)| (*s, n.clone()))).collect(),
+        rebuild: boot.marks.condition().lost,
     };
     let mut fresh: Vec<Vec<u8>> = Vec::new();
     let mut kept_images: Vec<Vec<u8>> = Vec::new();

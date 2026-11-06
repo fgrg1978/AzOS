@@ -645,8 +645,9 @@ pub fn slot_name_ok(name: &[u8]) -> bool {
 }
 
 /// A signer as the device's memory names it: the first sixteen bytes of its key
-/// id (the topology refuses two signers whose ids agree on the first four, so
-/// the name is unambiguous and cannot be ground against another signer's).
+/// id (the topology refuses two signers whose ids agree on the first 28 bits,
+/// the slot name, so the name is unambiguous and cannot be ground against
+/// another signer's).
 pub type SignerKey = [u8; 16];
 
 /// The memory key of the signer whose key id is `key_id`.
@@ -760,6 +761,10 @@ pub enum MarkEvent {
     /// Refuse: a bank written before does not read whole (the first number
     /// says which) and is ignored; the other one stands.
     BankIgnored = 5,
+    /// Admit: the index was remembered into a memory that was lost when the
+    /// boot began, so nothing held it against an older one: whichever signed
+    /// index the volume held rebuilt it. Once, in that boot.
+    Rebuilt = 6,
 }
 
 /// Where the newest accepted index of each signer is remembered, with the floors

@@ -649,7 +649,10 @@ If neither bank can be read whole although something was written (media damage),
 each signer's stored index on the volume is used if it verifies, a refusal record "index marks lost"
 (event 2) is written, and the indexes accepted in that boot rebuild the memory, at a generation above
 every sector on the medium that still verifies and in the bank with fewer of them, so a stale bank
-that reads again later does not undo it.
+that reads again later does not undo it. This happens once, in that boot: each index it accepts is
+recorded as a rebuild (event 6, with the serial it rebuilt from), not as an ordinary acceptance,
+because the device had nothing to hold it against and it is whichever signed index the volume held
+then, possibly an older one a writer of the volume chose.
 A medium with no usable records store remembers nothing and the slot on the volume alone holds the
 floors; its signature is still verified. `pkg refresh` cannot read the tail, so it can report success
 for an index the next boot judges older than its mark. Provisioning

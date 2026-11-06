@@ -1345,10 +1345,13 @@ fn a_boot_that_cannot_read_the_marks_says_so_and_writes_none() {
 }
 
 /// The boot says the memory is lost, and how (event 2: 0 damaged, 1 erased on a
-/// provisioned medium), and the indexes it accepts rebuild it.
+/// provisioned medium), and the indexes it accepts rebuild it, each on record as a
+/// rebuild (event 6) with the serial it rebuilt from: once, in that boot.
+///
+/// Canary (by hand): an ordinary acceptance record in the lost boot turns it red.
 #[test]
 fn a_lost_memory_is_on_record_with_how_it_was_lost() {
-    use azos_pkg::index::MarkEvent;
+    use azos_pkg::index::{MarkEvent, Marks};
     let d = signed_device();
     let mut v = volume();
     stage(&mut v, &acme());
@@ -1359,12 +1362,19 @@ fn a_lost_memory_is_on_record_with_how_it_was_lost() {
         if !erased {
             tail.sectors.borrow_mut()[3] = [0x55; 512];
         }
-        let mut t = topo(d);
-        let mut log = Log::default();
-        apply(&mut v, &mut t, &enforcing_with(mem_marks_on(tail, 5)), &mut log);
-        let recs: Vec<_> = log.records.iter().filter(|p| p.rule == Rule::PackageIndex as u8).map(|p| (p.verdict, p.n)).collect();
-        assert_eq!(recs[0], (Verdict::Refuse as u8, [erased as u64, 0, MarkEvent::Lost as u64]), "erased {erased}");
-        assert_eq!(recs[1].0, Verdict::Admit as u8, "erased {erased}: rebuilt");
+        let marks = mem_marks_on(tail, 5);
+        let recs = |v: &mut Volume<MemDev>| {
+            let mut t = topo(d);
+            let mut log = Log::default();
+            apply(v, &mut t, &enforcing_with(marks), &mut log);
+            log.records.iter().filter(|p| p.rule == Rule::PackageIndex as u8).map(|p| (p.verdict, p.n)).collect::<Vec<_>>()
+        };
+        assert_eq!(recs(&mut v), [
+            (Verdict::Refuse as u8, [erased as u64, 0, MarkEvent::Lost as u64]),
+            (Verdict::Admit as u8, [1, 6, MarkEvent::Rebuilt as u64]),
+        ], "erased {erased}: lost, and rebuilt from serial 6, not an ordinary acceptance");
+        assert_eq!(recs(&mut v), [], "erased {erased}: once");
+        assert!(!mem_marks_on(tail, 5).lost(), "erased {erased}: the next boot reads the rebuilt bank");
     }
 }
 
