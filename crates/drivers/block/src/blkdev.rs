@@ -417,6 +417,8 @@ impl BlockDev for Boot {
                 }
                 r
             }
+            // Kconfig `BLK_DISCARD=off` refuses a discard whatever the device offers.
+            BlockOp::Discard if !DISCARD => Err(BlockError::Unsupported),
             BlockOp::Flush | BlockOp::Discard => backend().submit(req),
         }
     }

@@ -1244,6 +1244,17 @@ fn blkdev_over_a_bound_device_is_the_synchronous_facade_of_the_queue() {
         assert_eq!(hw.medium(10, 4), vec![0u8; 4 * SECTOR], "the partition's sectors are discarded");
         assert_eq!(hw.medium(0, 4), pattern(0, 4, 3), "the disk's first sectors are not");
     }
+    // BLK_DISCARD=off refuses a discard for every device behind the facade,
+    // and none reaches the hardware queue.
+    if !crate::blkdev::DISCARD {
+        let before = hw.events().len();
+        let mut part = azos_drv_api::block::Part::new(crate::blkdev::Boot::observed(), 10, 20).unwrap();
+        assert_eq!(
+            azos_drv_api::block::BlockDev::discard(&mut part, &[(0, 4)]),
+            Err(azos_drv_api::block::BlockError::Unsupported)
+        );
+        assert_eq!(hw.events().len(), before, "no discard command was started");
+    }
     assert!(crate::blkdev::write(300, 1, &[0u8; SECTOR]).is_err(), "past the medium");
 
     // **Canary: an RT task submitting block I/O is still refused.** The
