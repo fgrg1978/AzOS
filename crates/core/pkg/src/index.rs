@@ -703,8 +703,23 @@ pub enum MarkErr {
     /// The table has no room for another signer (the entries of signers the
     /// topology no longer names take it): nothing was changed.
     Full,
-    /// The record could not be made durable.
+    /// A write or the flush of the medium failed, or the generations ran out:
+    /// the bank written may be torn, the other one stands.
     Write,
+    /// The medium has no records store: there is nothing to remember in.
+    NoStore,
+}
+
+impl MarkErr {
+    /// The first number of the [`MarkEvent::NotRemembered`] record, or `None`
+    /// for a device that has nowhere to remember (it would say so every boot).
+    pub const fn recorded(self) -> Option<u64> {
+        match self {
+            MarkErr::Full => Some(1),
+            MarkErr::Write => Some(2),
+            MarkErr::NoStore => None,
+        }
+    }
 }
 
 /// What the memory took of an index.
@@ -725,7 +740,7 @@ pub enum MarkEvent {
     /// above the one remembered; the remembered floors stand.
     Judged = 0,
     /// Refuse: the index was judged by and not remembered (the first number
-    /// says why: 1 the table is full).
+    /// says why, [`MarkErr::recorded`]: 1 the table is full, 2 the write failed).
     NotRemembered = 1,
     /// Refuse: the memory was written before and no copy of it reads whole.
     Lost = 2,
@@ -770,7 +785,7 @@ impl Marks for NoMarks {
         None
     }
     fn accept(&self, _: &SignerKey, _: Mark, _: &[(u64, Version)]) -> Result<Taken, MarkErr> {
-        Err(MarkErr::Write)
+        Err(MarkErr::NoStore)
     }
 }
 
@@ -1094,7 +1109,7 @@ impl<T: Tail> Marks for MarkStore<T> {
 
     fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<Taken, MarkErr> {
         if !self.tail.writable() {
-            return Err(MarkErr::Write);
+            return Err(MarkErr::NoStore);
         }
         let mut st = self.state.borrow_mut();
         let mut next = st.table;

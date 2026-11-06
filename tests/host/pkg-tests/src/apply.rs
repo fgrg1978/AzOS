@@ -989,7 +989,10 @@ fn mem_marks() -> &'static MemMarks {
 }
 
 fn mem_marks_with(quota: usize) -> &'static MemMarks {
-    let tail: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+    mem_marks_on(Box::leak(Box::new(RamTail::new(4))), quota)
+}
+
+fn mem_marks_on(tail: &'static RamTail, quota: usize) -> &'static MemMarks {
     Box::leak(Box::new(MemMarks::load(tail, 2, quota)))
 }
 
@@ -1253,6 +1256,49 @@ fn past_the_quota_the_mark_rises_and_the_excess_is_recorded() {
     assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7), "the mark rises past the quota");
     assert!(marks.floor(&key, "acme-vision").is_some() && marks.floor(&key, "acme-other").is_none(), "the remembered floor first");
     assert_eq!(judged(&mut v), [over], "and every boot says so");
+}
+
+/// **A memory that cannot be written says so.** A failed write, a failed flush and
+/// generations run out are each a record (event 1, the first number 2) at every
+/// boot it happens, while the boot judges by the volume's index; a device with no
+/// records store has nowhere to remember and records nothing.
+///
+/// Canary (by hand): recording only a full table leaves the three write failures
+/// silent.
+#[test]
+fn a_failed_write_of_the_marks_is_on_record_and_no_store_is_not() {
+    use azos_pkg::index::{MarkEvent, MarkTable};
+    let d = signed_device();
+    let index_records = |v: &mut Volume<MemDev>, marks: &'static dyn azos_pkg::index::Marks| {
+        let mut t = topo(d);
+        let mut log = Log::default();
+        let a = apply(v, &mut t, &Boot { sec_floor_enforce: true, marks, ..boot(0) }, &mut log);
+        assert_eq!(floors_of(&a), [("ACME.ELF".to_string(), true)], "judged by the volume's index");
+        log.records.iter().filter(|p| p.rule == Rule::PackageIndex as u8).map(|p| (p.verdict, p.n)).collect::<Vec<_>>()
+    };
+    let mut v = volume();
+    stage(&mut v, &acme());
+    put_index(&mut v, &floor_index_at(6, Some("1.3.0"), &author()));
+    let failed = [(Verdict::Refuse as u8, [2, 6, MarkEvent::NotRemembered as u64])];
+    let tail: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+    let marks = mem_marks_on(tail, 5);
+    tail.budget.set(Some(0));
+    assert_eq!(index_records(&mut v, marks), failed, "a write that fails");
+    tail.budget.set(None);
+    tail.flush_fails.set(true);
+    assert_eq!(index_records(&mut v, marks), failed, "a flush that fails");
+    tail.flush_fails.set(false);
+    assert_eq!(index_records(&mut v, marks), [(Verdict::Admit as u8, [1, 6, 0])]);
+    // A bank at the last generation: there is no next one.
+    let spent: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+    let bank = MarkTable::new(2, 5).encode_bank(u32::MAX);
+    spent.sectors.borrow_mut()[..2].copy_from_slice(&bank[..2]);
+    assert_eq!(index_records(&mut v, mem_marks_on(spent, 5)), failed, "the generations ran out");
+    // No records store: nothing to say, every boot.
+    let none: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+    none.no_store.set(true);
+    assert_eq!(index_records(&mut v, mem_marks_on(none, 5)), []);
+    assert_eq!(index_records(&mut v, &azos_pkg::index::NoMarks), []);
 }
 
 /// A device that never saw an index has no floors to lose, and the policy off

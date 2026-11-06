@@ -226,8 +226,8 @@ fn below_floor<D: BlockDev>(
                             "[PKG] signer {}: the index (serial {}) and its floors were not remembered ({:?}); the volume alone holds them",
                             signer + 1, ix.serial, e
                         ));
-                        if e == index::MarkErr::Full {
-                            sink.record(&receipt::index_event(subject, 1, ix.serial, index::MarkEvent::NotRemembered, boot.now_ns));
+                        if let Some(why) = e.recorded() {
+                            sink.record(&receipt::index_event(subject, why, ix.serial, index::MarkEvent::NotRemembered, boot.now_ns));
                         }
                     }
                 }

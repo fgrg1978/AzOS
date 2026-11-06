@@ -128,6 +128,8 @@ pub struct RamTail {
     pub budget: std::cell::Cell<Option<usize>>,
     pub tear: std::cell::Cell<Option<usize>>,
     pub unreadable: std::cell::RefCell<Vec<usize>>,
+    pub flush_fails: std::cell::Cell<bool>,
+    pub no_store: std::cell::Cell<bool>,
 }
 
 impl RamTail {
@@ -137,13 +139,15 @@ impl RamTail {
             budget: Default::default(),
             tear: Default::default(),
             unreadable: Default::default(),
+            flush_fails: Default::default(),
+            no_store: Default::default(),
         }
     }
 }
 
 impl azos_pkg::index::Tail for &RamTail {
     fn writable(&self) -> bool {
-        true
+        !self.no_store.get()
     }
     fn read(&self, sector: usize, out: &mut [u8; 512]) -> bool {
         if self.unreadable.borrow().contains(&sector) {
@@ -168,6 +172,6 @@ impl azos_pkg::index::Tail for &RamTail {
         }
     }
     fn flush(&self) -> bool {
-        true
+        !self.flush_fails.get()
     }
 }
