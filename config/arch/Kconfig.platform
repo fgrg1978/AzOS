@@ -74,6 +74,20 @@ choice
 
 endchoice
 
+config FW_DEVICE_TREE
+    # cargo-feature: fw-device-tree
+    def_bool !ARCH_X86_64
+    help
+      The firmware hands the kernel a flattened device tree (OpenSBI and
+      U-Boot on riscv64; QEMU virt, U-Boot and the Raspberry Pi firmware
+      on aarch64), and the early boot parses it (crates/drivers/dtb) for
+      the RAM, the console, the PCI host bridge, the interrupt triggers
+      and the kernel command line. x86_64 boots by PVH or Limine, whose
+      tables are not a device tree: there the parser is not called and not
+      linked (about 14 KiB of text), and the PVH and ACPI readers give
+      what a tree would. The crate's types stay: they are the boot
+      contract's (arch/api, `ArchEntry::DeviceTree`).
+
 # ---------------------------------------------------------------------------
 # Timer frequency
 # ---------------------------------------------------------------------------

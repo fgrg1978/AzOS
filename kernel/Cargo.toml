@@ -622,6 +622,9 @@ no-ml       = ["azos_recovery/no-ml", "azos_behavior?/no-ml"]
 # Off by default in every existing defconfig — dev/CI
 # builds keep today's warn-only behaviour unless this is explicitly set.
 secure-boot-enforced = ["azos_ota/secure-boot-enforced"]
+# Kconfig FW_DEVICE_TREE (every ISA but x86_64): the early boot parses the
+# firmware's device tree (`kernel/src/boot/early.rs`, `console_mode.rs`).
+fw-device-tree = []
 # Kconfig BOOT_SLOTS: A/B boot trust, `kernel/src/boot/ota.rs` and its calls
 # (the slot validation, the boot counter, safe mode, the boot-good mark), and
 # the recovery console's `ota` command and receive task.

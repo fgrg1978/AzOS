@@ -399,7 +399,7 @@ def test_embedded_ram_size_comes_through() -> None:
         # virtio-snd. A
         # board is a release build: secure boot is enforced by default.
         want = sorted([f for f in ALWAYS_BASE if f not in ("virtio-input", "virtio-snd", "rtc")]
-                      + ["secure-boot-enforced"])
+                      + ["secure-boot-enforced", "fw-device-tree"])
         assert sorted(features) == want, (
             f"expanded embedded config emitted features {features}; expected {want}"
         )

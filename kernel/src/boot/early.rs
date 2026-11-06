@@ -78,7 +78,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     // parses to `None`). Read before the console: it may say which device the
     // console is and what memory is RAM (aarch64's `pre_console`). The walk
     // takes no lock.
-    let dt = if fw_table != 0 {
+    let dt = if cfg!(feature = "fw-device-tree") && fw_table != 0 {
         unsafe { azos_dtb::dtb_parse(fw_table as *const u8) }
     } else {
         None
@@ -154,14 +154,14 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     // The PCI host bridge's ECAM and `ranges`, for `kernel_main`'s PCI block.
     // Read now, through the boot's own mapping of the blob: on aarch64 the low
     // half stops mapping it once it holds devices only.
-    let pci_host = if fw_table != 0 {
+    let pci_host = if cfg!(feature = "fw-device-tree") && fw_table != 0 {
         unsafe { azos_dtb::dtb_pci_host(fw_table as *const u8) }
     } else {
         None
     };
     // Trigger types (edge/level) for ring-3 lines (wave 9 IRQ4), read now for
     // the same reason, on every ISA.
-    if fw_table != 0 {
+    if cfg!(feature = "fw-device-tree") && fw_table != 0 {
         if let Some(ctl) = a.irq_trigger_controller() {
             a.irq_triggers(unsafe { azos_dtb::dtb_irq_triggers(fw_table as *const u8, ctl) });
         }
@@ -226,7 +226,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     // (OpenSBI near the top of RAM, QEMU's aarch64 `virt` past the image,
     // U-Boot at its `fdt_addr`). Runtime canary `fdt-reserve-skip`: nothing
     // is reserved (ktest `mm_fdt_reserved`).
-    let fw_range = if fw_is_fdt {
+    let fw_range = if cfg!(feature = "fw-device-tree") && fw_is_fdt {
         unsafe { azos_dtb::dtb_probe(fw_table as *const u8) }
             .map(|(_, total)| (fw_table, fw_table + total as usize))
     } else {

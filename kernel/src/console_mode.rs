@@ -149,7 +149,7 @@ pub(crate) fn console_path() -> Option<ConsolePath> {
 /// any ring-3 program starts, and honour `init=/fat/NAME.ELF` only with
 /// secure boot off and Kconfig `KERNEL_CMDLINE_INIT` (see its help).
 pub(crate) fn read_cmdline(dtb_ptr: usize) {
-    if dtb_ptr == 0 {
+    if !cfg!(feature = "fw-device-tree") || dtb_ptr == 0 {
         return;
     }
     let mut line = [0u8; azos_limits::KERNEL_CMDLINE_MAX as usize];
