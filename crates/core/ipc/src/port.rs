@@ -65,9 +65,10 @@
 //!   of a word no doorbell can name reads one atomic and takes no lock. Every
 //!   futex wake of that word sets it ([`port_ring_doorbell`],
 //!   called by the wakes' producers after the futex table is released:
-//!   `azos_syscall::vdso_notify::wake_word` and the pipe wakes of
-//!   `memobj_cap`), interrupt context included. The scheduler never calls
-//!   it, so no scheduler path takes `PORTS`.
+//!   `azos_syscall::vdso_notify::wake_word` and `ring_word`, the shm pipe
+//!   wakes of `memobj_cap` and the kernel pipe's `kpipe::Bell`), interrupt
+//!   context included. The exit's clear-tid and robust wakes, which the
+//!   scheduler makes, ring none.
 //! - **Pressure** (`PORT_SRC_PRESSURE`): no slot of its own. The Domain holds
 //!   the port's reference (`azos_sched::domain::set_pressure_port`) and the
 //!   reclaim task queues one event per change of the Domain's frame-budget

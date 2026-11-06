@@ -1603,8 +1603,16 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             };
             let settle = || crate::vdso_notify::futex_settle(uaddr);
             match azos_sched::futex::requeue(&look, &settle, to, nr_wake as u32, nr_requeue as u32, cmp) {
-                // Linux answers woken + requeued for both ops.
-                Ok((woken, moved)) => (woken + moved) as i64,
+                // Linux answers woken + requeued for both ops. The wake half
+                // rings the source word's doorbell, as a FUTEX_WAKE does.
+                Ok((woken, moved)) => {
+                    if nr_wake > 0 {
+                        if let Ok((key, _)) = futex_word(uaddr, private) {
+                            crate::vdso_notify::ring_word(key);
+                        }
+                    }
+                    (woken + moved) as i64
+                }
                 Err(e) => e,
             }
         }

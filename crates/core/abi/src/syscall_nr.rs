@@ -852,8 +852,12 @@ pub const PORT_SRC_CALLS: u64 = 5;
 
 /// Port source: a doorbell word of a shared-memory region (`Cap<Shm>` with
 /// `READ`; the `PORT_BIND` op's fourth word is the word's byte offset in
-/// the region, 4-aligned). Every futex wake of that word ([`SYS_FUTEX_WAKE`]
-/// or a kernel producer's) reports [`PORT_EVENT_DOORBELL`]: the consumer of a
+/// the region, 4-aligned). These wakes of that word report
+/// [`PORT_EVENT_DOORBELL`]: [`SYS_FUTEX_WAKE`], the Linux personality's
+/// `FUTEX_WAKE` and the wake half of its `FUTEX_REQUEUE`/`FUTEX_CMP_REQUEUE`,
+/// a kernel producer's wake of a shared ring, and the wakes of a shm pipe and
+/// of a kernel pipe; an exiting thread's clear-tid and robust-list wakes do
+/// not (they are the scheduler's, which takes no port lock). The consumer of a
 /// shared ring announces its sleep on the word as for a futex wait, then
 /// waits on the port. Coalesced: one event stands for at least one wake.
 pub const PORT_SRC_DOORBELL: u64 = 6;

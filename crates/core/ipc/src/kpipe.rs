@@ -91,6 +91,7 @@ impl Sys for Bell {
 
     fn wake(&self, addr: usize) {
         let _ = futex::wake_key(self.key(addr), u32::MAX);
+        crate::port::port_ring_doorbell(self.r, (addr - self.base) as u32);
     }
 
     fn me(&self) -> u32 {

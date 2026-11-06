@@ -398,8 +398,10 @@ The calls source is reported by the call that finds the endpoint's queue
 empty (and at bind when one is queued already), once: the server takes calls
 with the poll accept until `MSG_MORE` is clear or the accept answers `-EAGAIN`
 (a caller withdrew), so a call queued behind the one announced is not lost and
-none is waited for. The doorbell is rung by every futex wake of its word
-(`SYS_FUTEX_WAKE`, a kernel producer's wake of a shared ring, a pipe's): a
+none is waited for. The doorbell is rung by these wakes of its word:
+`SYS_FUTEX_WAKE`, the Linux `FUTEX_WAKE` and the wake half of its requeue, a
+kernel producer's wake of a shared ring, a shm pipe's and a kernel pipe's (an
+exiting thread's clear-tid and robust wakes ring none): a
 consumer announces its sleep on the ring's index word as for a futex wait, then
 waits on the port; a push between the two marks the source pending and the
 wait returns at once. One port wait therefore covers a server's calls, its

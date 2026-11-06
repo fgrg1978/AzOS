@@ -150,10 +150,16 @@ pub fn notify_wake_kernel(region: u32, offset: u32, n: u32) -> u32 {
 /// of a shared word that ring 3 or a kernel producer makes comes here.
 pub fn wake_word(key: azos_sched::futex::Key, n: u32) -> i64 {
     let woken = azos_sched::futex::wake_key(key, n);
+    ring_word(key);
+    woken
+}
+
+/// The doorbell half of a wake of `key` made some other way (a requeue's
+/// wake): the port sources bound to it, for a word of a shm region.
+pub fn ring_word(key: azos_sched::futex::Key) {
     if let azos_sched::futex::Key::Shared { obj, offset } = key {
         azos_ipc::port::port_ring_doorbell(obj, offset);
     }
-    woken
 }
 
 /// The futex key of the aligned word at `uaddr`, and whether the word lives
