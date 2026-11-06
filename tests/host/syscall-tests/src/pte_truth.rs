@@ -518,3 +518,27 @@ fn a_kernel_copy_waits_out_a_fork_hold() {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
+
+/// **A fault another install already resolved is spurious, not the task's.**
+/// Two threads touch one fresh page; one installs it, the other's fault is
+/// handled after: the page is mapped and allows the access, so that access
+/// retries instead of the thread dying. A store to a read-only page is still
+/// the task's fault.
+/// **Canary** `spurious-fault-canary`: the second faulter is killed.
+#[test]
+fn a_fault_another_install_resolved_is_spurious() {
+    use azos_mm::vmm::{handle_user_fault, UserFault};
+    let _g = serial();
+    let pt = space();
+    let base = map(2);
+    let s = azos_sched::shim_space(pt);
+    assert_eq!(handle_user_fault(s, base, true), UserFault::Resolved, "the first faulter installs");
+    assert_eq!(handle_user_fault(s, base, true), UserFault::Spurious, "the second one retries");
+    assert_eq!(handle_user_fault(s, base, false), UserFault::Spurious);
+    let ro = sys_mmap(0, PAGE_SIZE as u64, 1, 0, ANON, 0) as usize;
+    assert_eq!(handle_user_fault(s, ro, false), UserFault::Resolved);
+    assert_eq!(handle_user_fault(s, ro, true), UserFault::No, "a store to a read-only page is the task's");
+    assert_eq!(handle_user_fault(s, base + 64 * PAGE_SIZE, false), UserFault::No, "and so is a hole");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}

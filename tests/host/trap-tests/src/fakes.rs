@@ -218,7 +218,7 @@ impl<F: Frame> FaultServices<F> for Fake {
         log(format!("cow {pt:#x} {va:#x}"));
         with(|s| if s.cow.is_empty() { Cow::No } else { s.cow.remove(0) })
     }
-    fn demand(pt: usize, va: u64) -> bool {
+    fn demand(pt: usize, va: u64, _write: bool) -> bool {
         log(format!("demand {pt:#x} {va:#x}"));
         with(|s| s.demand_ok)
     }

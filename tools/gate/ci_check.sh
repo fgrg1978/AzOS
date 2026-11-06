@@ -12287,6 +12287,13 @@ host_job zpool_host_canary_row "anon: fork hold, restore begun before canary" fo
 # A fault's wait for a fork's hold is no try (pager::resolve_fault): a kernel
 # copy waits the fork out. fork-wait-counted-canary: it gives up (EFAULT).
 host_job zpool_host_row "anon: kernel copy waits out a fork" a_kernel_copy_waits_out_a_fork_hold
+# A ring-3 fault another install already resolved (the page is mapped and
+# allows the access) retries instead of killing (vmm::handle_user_fault).
+# spurious-fault-canary: the late faulter dies, on a fresh page and on a block
+# just promoted.
+host_job host_canary_row "fault: spurious after another install canary" syscall-tests spurious-fault-canary \
+    a_fault_another_install_resolved_is_spurious
+host_job thp_host_canary_row "fault: spurious over a promoted block canary" spurious-fault-canary a_fault_on_a_promoted_block_leaves_its_leaf_alone
 host_job zpool_host_canary_row "anon: kernel copy waits out a fork canary" fork-wait-counted-canary \
     a_kernel_copy_waits_out_a_fork_hold
 # A demand reservation (brk) skips the pages of a mapping, whose state is its

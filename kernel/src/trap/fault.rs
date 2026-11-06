@@ -126,7 +126,7 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
                     Cow::No => {}
                 }
             }
-            if S::demand(space, va) {
+            if S::demand(space, va, write) {
                 return;
             }
             // A page the aging scan cleared A on, touched again on a CPU that

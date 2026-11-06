@@ -282,12 +282,14 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
         }
     }
 
-    fn demand(space: Self::Space, va: u64) -> bool {
-        if azos_mm::vmm::handle_demand_fault(space, va as usize).is_ok() {
-            azos_mm::vmm::note_demand_resolved();
-            true
-        } else {
-            false
+    fn demand(space: Self::Space, va: u64, write: bool) -> bool {
+        match azos_mm::vmm::handle_user_fault(space, va as usize, write) {
+            azos_mm::vmm::UserFault::Resolved => {
+                azos_mm::vmm::note_demand_resolved();
+                true
+            }
+            azos_mm::vmm::UserFault::Spurious => true,
+            azos_mm::vmm::UserFault::No => false,
         }
     }
 

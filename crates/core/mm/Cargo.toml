@@ -122,6 +122,10 @@ fault-entry-rewalk-canary = []
 # tries, so a kernel copy into a page a long fork keeps out gives up (EFAULT):
 # `syscall-tests` pte_truth.rs `a_kernel_copy_waits_out_a_fork_hold` fails.
 fork-wait-counted-canary = []
+# Host-suite canary: a ring-3 fault that another install already resolved is
+# the task's and kills it: `syscall-tests` pte_truth.rs
+# `a_fault_another_install_resolved_is_spurious` fails.
+spurious-fault-canary = []
 # Host-suite canary: a demand reservation (`brk`) is written over a page of a
 # mapping, whose state is its object's slot: `syscall-tests` pte_truth.rs
 # `a_heap_reservation_skips_the_pages_of_a_mapping` fails.

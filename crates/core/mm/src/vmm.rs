@@ -2842,6 +2842,47 @@ pub fn handle_demand_fault(space: crate::aspace::SpaceRef, fault_addr: usize) ->
     demand_fault(space.root(), Some(space), fault_addr)
 }
 
+/// What a ring-3 page fault the demand path and the pagers were asked about
+/// came to ([`handle_user_fault`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UserFault {
+    /// Resolved here: the access retries.
+    Resolved,
+    /// Nothing to resolve: a leaf that allows the access maps the page now (a
+    /// sibling's install between the access and this, a block promoted
+    /// meanwhile). The access retries, as Linux's spurious fault does.
+    Spurious,
+    /// Not resolved: the task's own fault.
+    No,
+}
+
+/// [`handle_demand_fault`] for the trap, which also knows whether the access
+/// was a `write`: a fault that lost the race to another install finds the
+/// page mapped (`AlreadyMapped` from the demand path, or the pagers' answer)
+/// and is not the task's fault.
+///
+/// Canary `spurious-fault-canary`: such a fault is the task's, which dies.
+pub fn handle_user_fault(space: crate::aspace::SpaceRef, fault_addr: usize, write: bool) -> UserFault {
+    match handle_demand_fault(space, fault_addr) {
+        Ok(()) => UserFault::Resolved,
+        Err(_) if !cfg!(feature = "spurious-fault-canary") && access_allowed(space.root(), fault_addr, write) => {
+            UserFault::Spurious
+        }
+        Err(_) => UserFault::No,
+    }
+}
+
+/// Does the leaf that maps `va` in `pt_phys` now, at any level, allow a user
+/// access (`write` or a read) without faulting? Its Accessed bit (and Dirty for
+/// a write) must be set where the CPU does not set them itself, or the access
+/// faults again and is the aging path's to resolve.
+fn access_allowed(pt_phys: usize, va: usize, write: bool) -> bool {
+    let Some((w, _)) = user_leaf(pt_phys, va) else { return false };
+    let p = ARCH.pte_perms(w);
+    let hw = ARCH.accessed_in_hardware();
+    p.user && p.read && (!write || p.write) && (hw || p.accessed) && (hw || !write || p.dirty)
+}
+
 /// [`handle_demand_fault`] under `pt`, whose records are `space`'s (none: the
 /// root has no regions).
 fn demand_fault(pt: usize, space: Option<crate::aspace::SpaceRef>, fault_addr: usize) -> KResult<()> {

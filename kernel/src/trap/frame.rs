@@ -207,8 +207,10 @@ pub trait FaultServices<F: Frame> {
     fn user_space() -> Option<Self::Space>;
     /// Break copy-on-write at `va`; counts a resolved fault.
     fn cow(space: Self::Space, va: u64) -> Cow;
-    /// Demand-page `va`; counts a resolved fault.
-    fn demand(space: Self::Space, va: u64) -> bool;
+    /// Demand-page `va` (`write`: the access was a store); counts a resolved
+    /// fault. `true` also for a fault another install already resolved (the
+    /// page is mapped with the access allowed): the access retries.
+    fn demand(space: Self::Space, va: u64, write: bool) -> bool;
     /// Page aging's software half: set the Accessed bit the CPU did not set
     /// itself on the user leaf of `va`, so the access can be retried. Asked
     /// last, after COW and demand paging declined (a leaf this resolves is
