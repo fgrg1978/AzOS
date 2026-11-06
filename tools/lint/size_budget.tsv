@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2795658
-riscv64-qemu	.rodata	475208
+riscv64-qemu	.text	2811082
+riscv64-qemu	.rodata	475072
 riscv64-qemu	.data	799912
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	address space object: the pager table is gone (-16 KB .bss riscv64-qemu), over the actuation split
+riscv64-qemu	reason	crypto primitives from RustCrypto (AES fixslice, sha2 block fn, stack scrub): +15 KB .text riscv64-qemu
