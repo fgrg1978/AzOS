@@ -2308,19 +2308,19 @@ pub fn fork_refusal_counts() -> [u32; FORK_REFUSAL_SITES] {
 /// they're inherently hart-local: the value this specific `sys_fork_impl`
 /// call sees can never be another hart's concurrent syscall's sepc/user_sp.
 pub fn sys_fork_impl(sepc: u64, user_sp: u64, regs: &crate::task::UserRegs) -> i64 {
-    sys_fork_impl_hooked(sepc, user_sp, regs, &mut |_| true)
+    sys_fork_impl_hooked(sepc, user_sp, regs, &mut |_| Ok(()))
 }
 
 /// [`sys_fork_impl`] with `before_release(child_tid)` run after the child
 /// exists and before it can run its first instruction (a Linux
-/// child is reseeded from its row and given its descriptors there). `false`
-/// ends the child before its first instruction (it exits with code 137),
-/// and the fork answers -1. A Linux parent makes a Linux child.
+/// child is reseeded from its row and given its descriptors there). An
+/// `Err(rc)` ends the child before its first instruction, with no exit notice
+/// to the parent, and the fork answers `rc`. A Linux parent makes a Linux child.
 pub fn sys_fork_impl_hooked(
     sepc: u64,
     user_sp: u64,
     regs: &crate::task::UserRegs,
-    before_release: &mut dyn FnMut(u32) -> bool,
+    before_release: &mut dyn FnMut(u32) -> Result<(), i64>,
 ) -> i64 {
     let t_fork = crate::prof::t();
     let r = fork_hooked_inner(sepc, user_sp, regs, before_release);
@@ -2332,7 +2332,7 @@ fn fork_hooked_inner(
     sepc: u64,
     user_sp: u64,
     regs: &crate::task::UserRegs,
-    before_release: &mut dyn FnMut(u32) -> bool,
+    before_release: &mut dyn FnMut(u32) -> Result<(), i64>,
 ) -> i64 {
     // kernel task can't fork
     let Some(parent) = crate::scheduler::current_aspace() else {
@@ -2504,13 +2504,14 @@ fn fork_hooked_inner(
     // / wave 13: the caller's setup of the child (a Linux child's
     // descriptors and row, a native child's descriptors at the parent's
     // exact handles and its row); refused, the child ends at its first
-    // scheduling (the forced stop is checked before its `sret`). FIRST into
+    // scheduling (the forced stop is checked before its `sret`) and no
+    // `wait` of the parent sees it. FIRST into
     // the child's empty table: a native child's inherited descriptors must
     // land on the parent's slots, which a grant made before could take.
     let t_ph = crate::prof::t();
-    let refused = !before_release(child_tid);
-    if refused {
-        crate::scheduler::task_stop(child_tid, true, 9);
+    let refused = before_release(child_tid).err();
+    if refused.is_some() {
+        crate::scheduler::task_abandon_unstarted(child_tid);
     }
     crate::prof::add(5, t_ph);
     let t_ph = crate::prof::t();
@@ -2555,7 +2556,7 @@ fn fork_hooked_inner(
     }
 
     crate::prof::add(7, t_ph);
-    if refused { -1 } else { child_tid as i64 }
+    refused.unwrap_or(child_tid as i64)
 }
 
 /// Wave 13 (THREADS): create a thread of the calling task's process.

@@ -2923,6 +2923,16 @@ pub fn descendants_of(root: u32, out: &mut [u32]) -> usize {
     n
 }
 
+/// End a child its creator refused before it ran a user instruction (a fork
+/// whose setup failed): it is stopped, and it leaves no exit notice, so no
+/// `wait` of its parent presents it.
+pub fn task_abandon_unstarted(tid: u32) {
+    if let Some(idx) = idx_for_tid(tid) {
+        PARENT_TID[idx].store(0, Ordering::Relaxed);
+    }
+    let _ = task_stop(tid, true, 9);
+}
+
 /// Ask live task `tid` to stop (`force`: end it), with `signo`. Wakes any
 /// `Timer` wait it is parked in (the console, pipe and sleep waits), so a
 /// blocked target sees `-EINTR` or dies at the wake. A forced stop also

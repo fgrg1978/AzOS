@@ -366,7 +366,7 @@ pub mod nicq;
 // needs the topology and the cap store; the sched shim's
 // `sys_fork_impl_hooked` never runs its hook, so this is never reached.
 pub mod natfork {
-    pub(crate) fn native_child_setup(_parent: u32, _child: u32) -> bool {
+    pub(crate) fn native_child_setup(_parent: u32, _child: u32) -> Result<(), azos_abi::error::Errno> {
         todo!("not reached: the sched shim never runs a fork's before_release hook")
     }
 

@@ -2424,7 +2424,7 @@ fn sys_clone(
     let _mm = azos_sched::group::mm_lock();
     let parent = azos_sched::current_proc_tid();
     let r = azos_sched::process::sys_fork_impl_hooked(sepc, user_sp, regs, &mut |child| {
-        crate::handlers::fork_regions_to_child(child) && fork_child_setup(parent, child)
+        (crate::handlers::fork_regions_to_child(child) && fork_child_setup(parent, child)).then_some(()).ok_or(-1)
     });
     if r < 0 { neg(le::EAGAIN) } else { r }
 }

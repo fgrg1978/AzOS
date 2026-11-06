@@ -1400,15 +1400,54 @@ pub fn memobj_unmap_begin_ref(tid: u32, r: u32) -> Result<Option<(usize, usize)>
     Ok(taken)
 }
 
-/// Start `child`'s inheritance of `parent`'s mapping of the object `r` names,
-/// recorded at `va` for `pages` pages: mark `child`'s holder as building with
-/// writable leaves, so that from here a clone copies, a break waits and a
-/// release is refused while the caller copies the parent's leaves (which may be
-/// writable) into the child's table. `Closed` when the parent no longer has
-/// that mapping or the child holds no reference, `Busy` when the child already
-/// maps or builds. Ends with [`memobj_inherit_commit_ref`], or with
-/// [`memobj_unmap_end_ref`] once the copied leaves are removed.
-pub fn memobj_inherit_begin_ref(parent: u32, child: u32, r: u32, va: usize, pages: usize) -> Result<(), MemObjError> {
+/// A fork child's page table, as [`memobj_inherit_ref`] uses it: the parent's
+/// leaves for the mapping are copied in, read back and given their access
+/// there. `leaf` and `set_write` run under the object table's lock, as a
+/// protect's leaf rewrite does.
+pub trait ChildLeaves {
+    /// Copy the parent's leaves; `false` (none left behind) when they could not be.
+    fn copy(&mut self) -> bool;
+    /// The frame the leaf at `va` names and whether it is writable.
+    fn leaf(&self, va: usize) -> Option<(usize, bool)>;
+    /// Give every leaf of the mapping the write permission `write`, or take it away.
+    fn set_write(&mut self, write: bool);
+    /// Remove every leaf of the mapping.
+    fn remove(&mut self);
+}
+
+/// Give `child` `parent`'s mapping of the object `r` names, recorded at `va`
+/// for `pages` pages, in the table rooted at `root`: a fork's inheritance.
+/// The child's holder counts as building with writable leaves from before the
+/// copy to the booking, so a clone copies, a break waits and a release is
+/// refused meanwhile. The booking takes the parent's recorded access as it is
+/// then, and sets the child's leaves to it, so the record and the leaves agree;
+/// it checks that every leaf names the object's frame.
+///
+/// `Closed`: the parent no longer has that mapping, the child holds no
+/// reference, or a leaf is not the object's. `Busy`: the child already maps or
+/// builds, or the access is writable over frames a clone shares. `NoMem`: the
+/// copy failed. On an error nothing is booked and no leaf is left.
+pub fn memobj_inherit_ref(
+    parent: u32,
+    child: u32,
+    r: u32,
+    root: usize,
+    va: usize,
+    pages: usize,
+    leaves: &mut impl ChildLeaves,
+) -> Result<MapAccess, MemObjError> {
+    inherit_begin(parent, child, r, va, pages)?;
+    if !leaves.copy() {
+        memobj_unmap_end_ref(child, r);
+        return Err(MemObjError::NoMem);
+    }
+    inherit_commit(parent, child, r, root, va, pages, leaves).inspect_err(|_| {
+        leaves.remove();
+        memobj_unmap_end_ref(child, r);
+    })
+}
+
+fn inherit_begin(parent: u32, child: u32, r: u32, va: usize, pages: usize) -> Result<(), MemObjError> {
     let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let o = &mut regions[i];
@@ -1425,20 +1464,14 @@ pub fn memobj_inherit_begin_ref(parent: u32, child: u32, r: u32, va: usize, page
     Ok(())
 }
 
-/// The parent's leaves for `va`, `pages` are in `child`'s table at `root`: book
-/// the child's mapping with the parent's recorded access as it is now, and set
-/// the child's leaves to that access, so the record and the leaves agree.
-/// `Closed` when the parent no longer has that mapping or the child is no
-/// longer building; `Busy` for a writable access over frames a clone shares.
-/// On an error nothing is booked and the caller removes the leaves, then calls
-/// [`memobj_unmap_end_ref`].
-pub fn memobj_inherit_commit_ref(
+fn inherit_commit(
     parent: u32,
     child: u32,
     r: u32,
     root: usize,
     va: usize,
     pages: usize,
+    leaves: &mut impl ChildLeaves,
 ) -> Result<MapAccess, MemObjError> {
     let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
@@ -1446,7 +1479,7 @@ pub fn memobj_inherit_commit_ref(
     if !o.holders.iter().any(|h| h.refs > 0 && h.tid == child && h.building && h.map_va == 0) {
         return Err(MemObjError::Closed);
     }
-    let access = o
+    let mut access = o
         .holders
         .iter()
         .find(|h| h.is_mapped() && h.tid == parent && h.map_va == va && h.map_pages == pages)
@@ -1455,12 +1488,28 @@ pub fn memobj_inherit_commit_ref(
     if access.write && o.cow_shared != 0 {
         return Err(MemObjError::Busy);
     }
-    let _ = protect_range(root, va, pages, access.write);
-    if !note_mapping_locked(o, child, root, va, pages, access) {
+    let page = azos_arch::PAGE_SIZE;
+    let frames = o.phys_pages.get(..pages).filter(|_| pages <= o.page_count).ok_or(MemObjError::Closed)?;
+    if (0..pages).any(|k| leaves.leaf(va + k * page).map(|(f, _)| f) != Some(frames[k])) {
+        return Err(MemObjError::Closed);
+    }
+    leaves.set_write(access.write);
+    // A frame that refuses write (code, a frame the kernel shares) leaves the
+    // child read-only, as its record then says.
+    if access.write && !leaves_agree(leaves, va, pages, true) {
+        access.write = false;
+        leaves.set_write(false);
+    }
+    if !leaves_agree(leaves, va, pages, access.write) || !note_mapping_locked(o, child, root, va, pages, access) {
         return Err(MemObjError::Closed);
     }
     regions.map_epoch += u64::from(!cfg!(feature = "memobj-resolve-stale-canary"));
     Ok(access)
+}
+
+/// Is every leaf of the mapping at `va` present, with write permission `write`?
+fn leaves_agree(leaves: &impl ChildLeaves, va: usize, pages: usize, write: bool) -> bool {
+    (0..pages).all(|k| leaves.leaf(va + k * azos_arch::PAGE_SIZE).is_some_and(|(_, w)| w == write))
 }
 
 /// The leaves of [`memobj_unmap_begin_ref`] are gone, on every hart.
@@ -4522,16 +4571,64 @@ mod tests {
         assert_eq!(memobj_release_ref(A, second), Ok(()));
     }
 
+    /// A child's page table as the inheritance tests see it: one leaf per page,
+    /// named by the object's frames unless told otherwise, and what runs while
+    /// the copy is made (another hart).
+    struct ModelLeaves {
+        frames: Vec<usize>,
+        leaves: Vec<Option<(usize, bool)>>,
+        refuse_write: bool,
+        during_copy: Option<Box<dyn FnOnce()>>,
+        copied: u32,
+        removed: u32,
+    }
+
+    impl ModelLeaves {
+        fn of(r: u32, pages: usize) -> Self {
+            let frames = (0..pages).map(|k| memobj_page_phys_ref(r, k).unwrap().unwrap()).collect();
+            ModelLeaves { frames, leaves: vec![None; pages], refuse_write: false, during_copy: None, copied: 0, removed: 0 }
+        }
+        fn writable(&self) -> Option<bool> {
+            self.leaves.iter().map(|l| l.map(|(_, w)| w)).collect::<Option<Vec<_>>>().map(|w| w.iter().all(|&w| w))
+        }
+    }
+
+    impl ChildLeaves for ModelLeaves {
+        fn copy(&mut self) -> bool {
+            self.copied += 1;
+            self.leaves = self.frames.iter().map(|&f| Some((f, true))).collect();
+            if let Some(f) = self.during_copy.take() {
+                f();
+            }
+            true
+        }
+        fn leaf(&self, va: usize) -> Option<(usize, bool)> {
+            *self.leaves.get((va - 0x4000_0000) / azos_arch::PAGE_SIZE)?
+        }
+        fn set_write(&mut self, write: bool) {
+            let w = write && !self.refuse_write;
+            self.leaves.iter_mut().flatten().for_each(|l| l.1 = w);
+        }
+        fn remove(&mut self) {
+            self.removed += 1;
+            self.leaves.iter_mut().for_each(|l| *l = None);
+        }
+    }
+
     /// **A fork child's inherited mapping counts from before its leaves are
-    /// copied, and books the parent's access as it is at the booking.** A clone
-    /// taken while the child's copied leaves are not yet booked copies, even
-    /// after the parent's own mapping became read-only; the booking takes the
-    /// parent's record, never a writable one over frames a clone shares, and
-    /// only where the leaves were copied from.
+    /// copied, and books the parent's access as it is at the booking.** A
+    /// clone taken while the copy is made copies, even when the parent's own
+    /// mapping turns read-only meanwhile; the booking takes the parent's record,
+    /// never a writable one over frames a clone shares, only over the object's
+    /// frames and only where the leaves were copied from, and a leaf that
+    /// refuses write leaves the child read-only, as its record says. Every
+    /// refusal removes the copied leaves.
     ///
     /// Canary `memobj-inherit-unmarked-canary`: the clone shares the frame.
+    /// **Canary (by hand).** Copy before the mark in `memobj_inherit_ref`: the
+    /// clone shares the frame.
     #[test]
-    fn an_inherited_mapping_counts_before_its_booking_and_takes_the_parents_access() {
+    fn an_inherited_mapping_counts_from_before_its_copy_and_takes_the_parents_access() {
         let _g = setup();
         const VA: usize = 0x4000_0000;
         const CHILD_ROOT: usize = 0xB000;
@@ -4539,31 +4636,60 @@ mod tests {
         let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
         assert_eq!(memobj_note_mapping_ref(A, r, 0x1000, VA, 1, MapAccess::RW), Ok(true));
         assert!(memobj_acquire_ref(B, r).is_ok());
-        assert_eq!(memobj_inherit_begin_ref(A, B, r, VA + page, 1), Err(MemObjError::Closed), "not the parent's mapping");
-        assert_eq!(memobj_inherit_begin_ref(A, B, r, VA, 1), Ok(()));
-        assert_eq!(memobj_inherit_begin_ref(A, B, r, VA, 1), Err(MemObjError::Busy), "one at a time");
+        let mut leaves = ModelLeaves::of(r, 1);
+        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA + page, 1, &mut leaves), Err(MemObjError::Closed), "not the parent's mapping");
+        assert_eq!(leaves.copied, 0);
 
-        assert_eq!(memobj_protect_ref(A, r, false), Ok(()));
-        let c = memobj_clone(A, r, A, MemPerms::ReadOnly).expect("clone");
-        assert_eq!(memobj_describe_ref(r).unwrap().cow_shared, 0, "a clone shared frames under the child's leaves");
-        assert_ne!(memobj_page_phys_ref(c, 0), memobj_page_phys_ref(r, 0));
-        assert_eq!(memobj_release_ref(A, c), Ok(()));
+        let shared = std::rc::Rc::new(core::cell::Cell::new(None));
+        let seen = shared.clone();
+        leaves.during_copy = Some(Box::new(move || {
+            assert_eq!(memobj_protect_ref(A, r, false), Ok(()));
+            let c = memobj_clone(A, r, A, MemPerms::ReadOnly).expect("clone");
+            seen.set(Some(memobj_describe_ref(r).unwrap().cow_shared));
+            assert_eq!(memobj_release_ref(A, c), Ok(()));
+        }));
+        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
+        assert_eq!(shared.get(), Some(0), "a clone shared frames under the child's copied leaves");
+        assert_eq!(leaves.writable(), Some(false), "the child is booked read-only over a writable leaf");
+        assert_eq!(memobj_mapping_of_ref(B, r), Ok(Some((VA, 1))));
+        let unbook = |leaves: &mut ModelLeaves| {
+            assert_eq!(memobj_unmap_begin_ref(B, r), Ok(Some((VA, 1))));
+            leaves.remove();
+            memobj_unmap_end_ref(B, r);
+        };
+        unbook(&mut leaves);
 
         // A writable record over shared frames, forced: the table keeps it from arising.
         assert_eq!(memobj_protect_ref(A, r, true), Ok(()));
-        let shared = |bits| {
+        let set_shared = |bits| {
             let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r).unwrap();
             regions[i].cow_shared = bits;
         };
-        shared(1);
-        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA, 1), Err(MemObjError::Busy));
-        shared(0);
-        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA + page, 1), Err(MemObjError::Closed), "not where the leaves are");
-        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA, 1), Ok(MapAccess::RW), "the parent's access now");
-        assert_eq!(memobj_mapping_of_ref(B, r), Ok(Some((VA, 1))));
-        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA, 1), Err(MemObjError::Closed), "booked once");
-        assert_eq!(memobj_take_mapping_ref(B, r), Ok(Some((VA, 1))));
+        set_shared(1);
+        let removed = leaves.removed;
+        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Err(MemObjError::Busy));
+        assert_eq!(leaves.removed, removed + 1, "a refusal left the copied leaves");
+        set_shared(0);
+
+        // A leaf that names another frame.
+        leaves.frames[0] ^= page;
+        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Err(MemObjError::Closed), "a leaf not the object's");
+        leaves.frames[0] ^= page;
+
+        // A leaf that refuses write: the record says read-only, as the leaf does.
+        leaves.refuse_write = true;
+        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
+        assert_eq!(leaves.writable(), Some(false));
+        unbook(&mut leaves);
+        leaves.refuse_write = false;
+
+        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Ok(MapAccess::RW), "the parent's access now");
+        assert_eq!(leaves.writable(), Some(true));
+        let removed = leaves.removed;
+        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Err(MemObjError::Busy), "booked once");
+        assert_eq!(leaves.removed, removed, "a refused begin touched the leaves");
+        unbook(&mut leaves);
         assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((VA, 1))));
     }
 

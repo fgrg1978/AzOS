@@ -1190,9 +1190,35 @@ fn the_protect_form_of_574_stays_within_what_the_map_was_allowed() {
     assert_eq!(sys_shm_release_typed(cap), 0);
 }
 
+/// A fork child's real leaves ([`azos_mm::cow::ForkLeaves`]), with what another
+/// hart does while the copy is made.
+struct RacedLeaves {
+    leaves: azos_mm::cow::ForkLeaves,
+    during_copy: Option<Box<dyn FnOnce()>>,
+}
+
+impl azos_ipc::memobj::ChildLeaves for RacedLeaves {
+    fn copy(&mut self) -> bool {
+        let copied = self.leaves.copy();
+        if let Some(f) = self.during_copy.take() {
+            f();
+        }
+        copied
+    }
+    fn leaf(&self, va: usize) -> Option<(usize, bool)> {
+        self.leaves.leaf(va)
+    }
+    fn set_write(&mut self, write: bool) {
+        self.leaves.set_write(write)
+    }
+    fn remove(&mut self) {
+        self.leaves.remove()
+    }
+}
+
 /// **A fork child's inherited mapping: its record and its leaves agree, with
 /// the parent's access at the booking.** The child's leaves are the parent's,
-/// copied before the booking; the parent's mapping turns read-only in between
+/// copied before the booking; the parent's mapping turns read-only meanwhile
 /// and a clone is taken. The clone copies, and the child is booked read-only
 /// with read-only leaves. The other way, leaves copied read-only and the
 /// parent writable again by the booking: the child's leaves become writable
@@ -1202,8 +1228,9 @@ fn the_protect_form_of_574_stays_within_what_the_map_was_allowed() {
 /// under the child's writable leaf.
 #[test]
 fn a_fork_childs_inherited_record_and_leaves_agree_with_the_parent_at_the_booking() {
-    use azos_ipc::memobj::{self as mo, MapAccess, MemPerms};
+    use azos_ipc::memobj::{self as mo, ChildLeaves, MapAccess, MemPerms};
     use azos_mm::vmm::user_write_would_be_permitted as writable;
+    use std::sync::Arc;
     let _g = serial();
     let (a, b) = (fresh_tid(), fresh_tid());
     let _s = Scene::new(&[a, b]);
@@ -1215,27 +1242,33 @@ fn a_fork_childs_inherited_record_and_leaves_agree_with_the_parent_at_the_bookin
     let va = sys_shm_map_typed(cap, 0);
     assert!(va > 0, "map: {va}");
     let (uva, r) = (va as usize, resource_of::<Shm>(a, cap));
-
     assert!(mo::memobj_acquire_ref(b, r).is_ok());
-    assert_eq!(mo::memobj_inherit_begin_ref(a, b, r, uva, 1), Ok(()));
-    azos_mm::cow::fork_share_range(pt_a, pt_b, uva, 1).expect("the parent's leaf");
-    assert!(writable(pt_b, uva), "precondition: the copied leaf is writable");
-    assert_eq!(mo::memobj_protect_ref(a, r, false), Ok(()));
-    let c = mo::memobj_clone(a, r, a, MemPerms::ReadOnly).expect("clone");
-    assert_eq!(mo::memobj_describe_ref(r).unwrap().cow_shared, 0, "a clone shares a frame under a writable leaf");
-    assert_eq!(mo::memobj_inherit_commit_ref(a, b, r, pt_b, uva, 1), Ok(MapAccess { write: false, max_write: true }));
+
+    let shared = Arc::new(AtomicU32::new(u32::MAX));
+    let seen = shared.clone();
+    let mut leaves = RacedLeaves {
+        leaves: azos_mm::cow::ForkLeaves { parent_pt: pt_a, child_pt: pt_b, va: uva, pages: 1 },
+        during_copy: Some(Box::new(move || {
+            assert!(writable(pt_b, uva), "precondition: the copied leaf is writable");
+            assert_eq!(mo::memobj_protect_ref(a, r, false), Ok(()));
+            let c = mo::memobj_clone(a, r, a, MemPerms::ReadOnly).expect("clone");
+            seen.store(mo::memobj_describe_ref(r).unwrap().cow_shared as u32, Ordering::SeqCst);
+            assert_eq!(mo::memobj_release_ref(a, c), Ok(()));
+        })),
+    };
+    assert_eq!(mo::memobj_inherit_ref(a, b, r, pt_b, uva, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
+    assert_eq!(shared.load(Ordering::SeqCst), 0, "a clone shares a frame under a writable leaf");
     assert!(!writable(pt_b, uva), "the child is booked read-only over a writable leaf");
-    assert_eq!(mo::memobj_release_ref(a, c), Ok(()));
 
     // Read-only leaves copied, the parent writable again by the booking.
     assert_eq!(mo::memobj_unmap_begin_ref(b, r), Ok(Some((uva, 1))));
-    azos_mm::vmm::unmap(pt_b, uva);
+    leaves.remove();
     mo::memobj_unmap_end_ref(b, r);
-    assert_eq!(mo::memobj_inherit_begin_ref(a, b, r, uva, 1), Ok(()));
-    azos_mm::cow::fork_share_range(pt_a, pt_b, uva, 1).expect("the parent's leaf");
-    assert!(!writable(pt_b, uva), "precondition: the copied leaf is read-only");
-    assert_eq!(mo::memobj_protect_ref(a, r, true), Ok(()));
-    assert_eq!(mo::memobj_inherit_commit_ref(a, b, r, pt_b, uva, 1), Ok(MapAccess::RW));
+    leaves.during_copy = Some(Box::new(move || {
+        assert!(!writable(pt_b, uva), "precondition: the copied leaf is read-only");
+        assert_eq!(mo::memobj_protect_ref(a, r, true), Ok(()));
+    }));
+    assert_eq!(mo::memobj_inherit_ref(a, b, r, pt_b, uva, 1, &mut leaves), Ok(MapAccess::RW));
     assert!(writable(pt_b, uva), "the child is booked writable over a read-only leaf");
     assert_eq!(sys_shm_release_typed(cap), 0);
 }

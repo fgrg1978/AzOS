@@ -70,11 +70,15 @@
 //! Thread groups (wave 13 THREADS) share one table among siblings; a sibling
 //! closing a descriptor between two chunks of step 1 makes that descriptor
 //! absent in the child, which is the answer a fork racing a close may give.
+//! A close, unmap, MOVE or revoke of a mapped `Cap<Shm>` that lands while the
+//! fork copies its mapping fails the fork instead (`EAGAIN`): the child never
+//! runs and its parent sees no child.
 
 use azos_abi::cap::ty;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use azos_abi::cap::{CapHandle, CapPerms, CapType};
+use azos_abi::error::Errno;
 use azos_ipc::cap::{Warrant, MAX_CAPS_PER_TASK};
 use azos_sched::task::MAX_TASKS;
 
@@ -137,15 +141,15 @@ const CANDIDATES: usize = 64;
 const WORDS: usize = MAX_CAPS_PER_TASK.div_ceil(64);
 
 /// Build `child`'s capability table from `parent`'s descriptors and their
-/// shared row (see the module doc). `false` if a descriptor could not be
-/// duplicated; the fork then fails and the child never runs.
-pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
+/// shared row (see the module doc). An error if a descriptor could not be
+/// duplicated; the fork then fails with it and the child never runs.
+pub(crate) fn native_child_setup(parent: u32, child: u32) -> Result<(), Errno> {
     let row = row_of(parent);
     // The child of a `shadow = true` row is a shadow task too: its table is
     // weak before anything is copied in or minted (the fork fails closed).
     let shadow = row.is_some_and(|r| azos_topology::get().is_some_and(|t| t.tasks().get(r).is_some_and(|k| k.shadow)));
     if shadow && !azos_ipc::cap_store::mark_weak(child) {
-        return false;
+        return Err(Errno::ENOMEM);
     }
     let row_kinds = row.map_or(0u64, row_kind_mask);
     let mut placeholder = [0u64; WORDS];
@@ -160,7 +164,7 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
         let Some((n, next)) =
             azos_ipc::cap_store::with_table(parent, |t| t.scan(from, &mut chunk, |_| true))
         else {
-            return false;
+            return Err(Errno::ENOMEM);
         };
         // Descriptors one by one (each duplicate is made with no table lock
         // held), then this chunk's placeholders under one hold of the child's.
@@ -168,9 +172,7 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
         for (k, &(h, perms, res)) in chunk[..n].iter().enumerate() {
             let kind = CapType::from_raw(h.kind()).unwrap_or(CapType::NULL);
             if inherits(parent, kind, res) {
-                if !inherit_one(parent, child, h, perms, kind, res) {
-                    return false;
-                }
+                inherit_one(parent, child, h, perms, kind, res)?;
             } else {
                 keep[k] = true;
             }
@@ -179,7 +181,7 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
             chunk[..n].iter().zip(keep).all(|(&(h, perms, res), k)| !k || t.install_at(h, perms, res, &Warrant::ROOT))
         });
         if placed != Some(true) {
-            return false;
+            return Err(Errno::ENOMEM);
         }
         for (&(h, perms, res), k) in chunk[..n].iter().zip(keep) {
             if !k {
@@ -229,7 +231,7 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
         });
     }
     azos_sched::prof::add(10, t_ph);
-    true
+    Ok(())
 }
 
 /// Is `(kind, res)` a descriptor a fork child inherits?
@@ -258,13 +260,14 @@ fn inherits(parent: u32, kind: CapType, res: u32) -> bool {
 /// mapping: a reference of its own, the same capability at the same handle,
 /// the parent's page-table leaves for the mapping
 /// ([`azos_mm::cow::fork_share_range`]) and the mapping booked in the
-/// region's record, with the parent's recorded access, and in the child's
-/// window, so its own later maps cannot land on it. Everything done is undone
-/// if a step fails.
-fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> bool {
+/// region's record, with the parent's recorded access
+/// ([`azos_ipc::memobj::memobj_inherit_ref`]), and in the child's window, so
+/// its own later maps cannot land on it. Everything done is undone if a step
+/// fails.
+fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> Result<(), Errno> {
     // A volatile object is not purged while the child's leaves are copied and
     // booked (`memobj_pin_for_map`); a purged one is not inherited.
-    let Ok(pinned) = azos_ipc::memobj::memobj_pin_for_map(r) else { return false };
+    let pinned = azos_ipc::memobj::memobj_pin_for_map(r).map_err(|_| Errno::EAGAIN)?;
     let inherited = inherit_shm_pinned(parent, child, h, perms, r, warrant);
     if pinned {
         azos_ipc::memobj::memobj_frames_unpin(r);
@@ -272,23 +275,23 @@ fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, w
     inherited
 }
 
-fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> bool {
-    use azos_ipc::memobj;
-    let Ok(Some((va, pages))) = memobj::memobj_mapping_of_ref(parent, r) else { return false };
+fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> Result<(), Errno> {
+    use azos_ipc::memobj::{self, MemObjError};
+    let Ok(Some((va, pages))) = memobj::memobj_mapping_of_ref(parent, r) else { return Err(Errno::EAGAIN) };
     let (Some(parent_pt), Some(child_pt)) =
         (azos_sched::task_aspace(parent).map(|a| a.root()), azos_sched::task_aspace(child).map(|a| a.root()))
     else {
-        return false;
+        return Err(Errno::EAGAIN);
     };
     let span = pages * azos_arch_api::PAGE_SIZE;
     if memobj::memobj_acquire_ref(child, r).is_err() {
-        return false;
+        return Err(Errno::EAGAIN);
     }
     // A pipe's region: the child holds the ends the parent does, counted now,
     // with the reference (the kernel keeps the counts, `azos_bytepipe`).
     if memobj::memobj_pipe_inherit(parent, child, r).is_err() {
         let _ = memobj::memobj_release_ref(child, r);
-        return false;
+        return Err(Errno::ENOMEM);
     }
     let release_child = || {
         memobj::memobj_pipe_drop_all_ref(child, r);
@@ -296,71 +299,60 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r:
     };
     if !azos_sched::scheduler::reserve_user_window_at(child, va, span) {
         release_child();
-        return false;
+        return Err(Errno::ENOMEM);
     }
     let undo_window = || {
         let _ = azos_sched::scheduler::release_user_window_of(child, va, span);
         release_child();
     };
-    // The copied leaves may be writable before the child's record says so: the
-    // child's holder counts as writing from before the copy to the booking.
-    if memobj::memobj_inherit_begin_ref(parent, child, r, va, pages).is_err() {
+    let mut leaves = azos_mm::cow::ForkLeaves { parent_pt, child_pt, va, pages };
+    if let Err(e) = memobj::memobj_inherit_ref(parent, child, r, child_pt, va, pages, &mut leaves) {
         undo_window();
-        return false;
-    }
-    let undo_leaves = || {
-        for i in 0..pages {
-            azos_mm::vmm::unmap(child_pt, va + i * azos_arch_api::PAGE_SIZE);
-        }
-        memobj::memobj_unmap_end_ref(child, r);
-    };
-    if azos_mm::cow::fork_share_range(parent_pt, child_pt, va, pages).is_err() {
-        memobj::memobj_unmap_end_ref(child, r);
-        undo_window();
-        return false;
-    }
-    // The child's access is the parent's record as it is at the booking, and
-    // its leaves are set to it.
-    if memobj::memobj_inherit_commit_ref(parent, child, r, child_pt, va, pages).is_err() {
-        undo_leaves();
-        undo_window();
-        return false;
+        return Err(match e {
+            MemObjError::Busy => Errno::EBUSY,
+            MemObjError::NoMem => Errno::ENOMEM,
+            _ => Errno::EAGAIN,
+        });
     }
     if azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, r, warrant)) != Some(true) {
         let _ = memobj::memobj_unmap_begin_ref(child, r);
-        undo_leaves();
+        azos_ipc::memobj::ChildLeaves::remove(&mut leaves);
+        memobj::memobj_unmap_end_ref(child, r);
         undo_window();
-        return false;
+        return Err(Errno::ENOMEM);
     }
-    true
+    Ok(())
 }
 
 /// Give `child` its own reference to what `parent`'s `h` names, at `h`.
-fn inherit_one(parent: u32, child: u32, h: CapHandle, perms: CapPerms, kind: CapType, res: u32) -> bool {
+fn inherit_one(parent: u32, child: u32, h: CapHandle, perms: CapPerms, kind: CapType, res: u32) -> Result<(), Errno> {
     // The copy keeps the original's place in the warrant tree (a sibling, the
     // deadline and quota included): a fork neither sheds a revoke nor a
     // deadline. A handle revoked since the scan is not inherited.
-    let Some(warrant) = azos_ipc::cap_store::read_table(parent, |t| t.warrant_of(h)).flatten() else { return false };
-    match kind {
-        ty::SHM => inherit_shm(parent, child, h, perms, res, &warrant),
+    let Some(warrant) = azos_ipc::cap_store::read_table(parent, |t| t.warrant_of(h)).flatten() else {
+        return Err(Errno::EAGAIN);
+    };
+    let installed = match kind {
+        ty::SHM => return inherit_shm(parent, child, h, perms, res, &warrant),
         // The console is one object for the whole kernel: the child holds it at
         // the handle the parent does, with the parent's place in the warrant tree.
         ty::CONSOLE => azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, res, &warrant)) == Some(true),
         _ => {
-            let Some(ops) = crate::file_ops::file_ops() else { return false };
+            let Some(ops) = crate::file_ops::file_ops() else { return Err(Errno::ENOMEM) };
             let nfd = ops.dup(res as i32);
             if nfd < 0 {
-                return false;
+                return Err(Errno::ENOMEM);
             }
             if ops.set_owner(nfd as i32, parent, child) != 0 {
                 let _ = ops.close(nfd as i32);
-                return false;
+                return Err(Errno::ENOMEM);
             }
             // Owned by the child from here: its exit closes it if the
             // install fails.
             azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, nfd as u32, &warrant)) == Some(true)
         }
-    }
+    };
+    if installed { Ok(()) } else { Err(Errno::ENOMEM) }
 }
 
 /// The candidate holding exactly `(kind, perms, res)`, searched from

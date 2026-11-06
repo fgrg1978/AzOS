@@ -1032,7 +1032,10 @@ pub fn sys_fork(sepc: u64, user_sp: u64, regs: &azos_sched::UserRegs) -> i64 {
     let _mm = azos_sched::group::mm_lock();
     let parent = azos_sched::current_proc_tid();
     azos_sched::process::sys_fork_impl_hooked(sepc, user_sp, regs, &mut |child| {
-        fork_regions_to_child(child) && crate::natfork::native_child_setup(parent, child)
+        if !fork_regions_to_child(child) {
+            return Err(azos_abi::error::Errno::ENOMEM.to_syscall_ret());
+        }
+        crate::natfork::native_child_setup(parent, child).map_err(|e| e.to_syscall_ret())
     })
 }
 /// `DOMAIN_WAIT`: a0 = child TID, a1 = `*mut i32` for the exit code, or 0.

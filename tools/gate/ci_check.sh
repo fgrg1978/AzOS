@@ -12252,7 +12252,7 @@ host_job host_canary_row "memobj: move inside a map canary" syscall-tests memobj
 host_job host_canary_row "memobj: clone inside a fork inherit canary" syscall-tests memobj-inherit-unmarked-canary \
     a_fork_childs_inherited_record_and_leaves_agree_with_the_parent_at_the_booking
 host_job host_canary_row "memobj: clone inside a fork inherit canary (ipc)" ipc-tests memobj-inherit-unmarked-canary \
-    an_inherited_mapping_counts_before_its_booking_and_takes_the_parents_access
+    an_inherited_mapping_counts_from_before_its_copy_and_takes_the_parents_access
 # Hardware bus (crates/drivers/hwbus): `policy-canary` makes the topology-only
 # policy admit like auto; the four rows that pin the policy must fail, and
 # only they.

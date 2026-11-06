@@ -115,6 +115,35 @@ pub fn fork_share_range(parent_pt: usize, child_pt: usize, va: usize, pages: usi
     r
 }
 
+/// A fork child's leaves for one inherited shm mapping, as
+/// [`crate::memobj::memobj_inherit_ref`] drives them: copied with
+/// [`fork_share_range`], read back without faulting anything in, given their
+/// write permission with the shootdown a protect makes, removed one by one.
+pub struct ForkLeaves {
+    pub parent_pt: usize,
+    pub child_pt: usize,
+    pub va: usize,
+    pub pages: usize,
+}
+
+impl crate::memobj::ChildLeaves for ForkLeaves {
+    fn copy(&mut self) -> bool {
+        fork_share_range(self.parent_pt, self.child_pt, self.va, self.pages).is_ok()
+    }
+    fn leaf(&self, va: usize) -> Option<(usize, bool)> {
+        let phys = vmm::translate_user_readable_nofault(self.child_pt, va)?;
+        Some((phys, vmm::translate_user_writable_nofault(self.child_pt, va).is_some()))
+    }
+    fn set_write(&mut self, write: bool) {
+        let _ = vmm::set_user_range_write(self.child_pt, self.va, self.va + self.pages * PAGE_SIZE, write);
+    }
+    fn remove(&mut self) {
+        for i in 0..self.pages {
+            vmm::unmap(self.child_pt, self.va + i * PAGE_SIZE);
+        }
+    }
+}
+
 /// [`fork_cow`] of an address space other threads may be changing meanwhile
 /// (`concurrent`, wave 13: the parent is one thread of a group). Their
 /// faults (a copy-on-write break, a demand fault) rewrite parent entries

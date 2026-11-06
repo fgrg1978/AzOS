@@ -1231,7 +1231,7 @@ pub mod process {
         sepc: u64,
         user_sp: u64,
         regs: &super::UserRegs,
-        _before_release: &mut dyn FnMut(u32) -> bool,
+        _before_release: &mut dyn FnMut(u32) -> Result<(), i64>,
     ) -> i64 {
         sys_fork_impl(sepc, user_sp, regs)
     }

@@ -19,10 +19,10 @@
 //! under the child's writable leaf: `not ok`.
 
 use azos_ipc::memobj::{
-    memobj_acquire_ref, memobj_clone, memobj_cow_break_all, memobj_create_ref, memobj_describe_ref,
-    memobj_inherit_begin_ref, memobj_inherit_commit_ref, memobj_map_begin_ref, memobj_map_commit_ref,
-    memobj_note_mapping_ref, memobj_page_phys_ref, memobj_protect_ref, memobj_release_ref, memobj_take_mapping_ref,
-    memobj_unmap_begin_ref, memobj_unmap_end_ref, MapAccess, MemObjError, MemPerms,
+    memobj_acquire_ref, memobj_clone, memobj_cow_break_all, memobj_create_ref, memobj_describe_ref, memobj_inherit_ref,
+    memobj_map_begin_ref, memobj_map_commit_ref, memobj_note_mapping_ref, memobj_page_phys_ref, memobj_protect_ref,
+    memobj_release_ref, memobj_take_mapping_ref, memobj_unmap_begin_ref, memobj_unmap_end_ref, ChildLeaves, MapAccess,
+    MemObjError, MemPerms,
 };
 use azos_mm::vmm;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
@@ -155,24 +155,53 @@ fn parent_and_child(frame: usize) -> Option<(usize, usize)> {
     Some((parent, child))
 }
 
+/// The child's real leaves, and what another hart does while they are copied:
+/// the parent's access flips and a clone is taken.
+struct RacedLeaves {
+    leaves: azos_mm::cow::ForkLeaves,
+    parent: u32,
+    r: u32,
+    copied_write: bool,
+    clone_shared: bool,
+}
+
+impl ChildLeaves for RacedLeaves {
+    fn copy(&mut self) -> bool {
+        if !self.leaves.copy() {
+            return false;
+        }
+        self.copied_write = vmm::user_write_would_be_permitted(self.leaves.child_pt, VA);
+        let _ = memobj_protect_ref(self.parent, self.r, !self.copied_write);
+        if let Ok(c) = memobj_clone(self.parent, self.r, self.parent, MemPerms::ReadOnly) {
+            self.clone_shared = memobj_describe_ref(self.r).map_or(true, |d| d.cow_shared != 0);
+            let _ = memobj_release_ref(self.parent, c);
+        }
+        true
+    }
+    fn leaf(&self, va: usize) -> Option<(usize, bool)> {
+        self.leaves.leaf(va)
+    }
+    fn set_write(&mut self, write: bool) {
+        self.leaves.set_write(write)
+    }
+    fn remove(&mut self) {
+        self.leaves.remove()
+    }
+}
+
 fn inherit_once(parent: u32, r: u32, parent_pt: usize, child_pt: usize) -> Result<MapAccess, &'static str> {
-    if memobj_inherit_begin_ref(parent, CHILD, r, VA, 1).is_err() {
-        return Err("the inheritance did not start");
-    }
-    if azos_mm::cow::fork_share_range(parent_pt, child_pt, VA, 1).is_err() {
-        memobj_unmap_end_ref(CHILD, r);
-        return Err("the parent's leaf was not copied");
-    }
-    let copied_write = vmm::user_write_would_be_permitted(child_pt, VA);
-    let _ = memobj_protect_ref(parent, r, !copied_write);
-    let clone = memobj_clone(parent, r, parent, MemPerms::ReadOnly).map_err(|_| "a clone failed")?;
-    let shared = memobj_describe_ref(r).map_or(true, |d| d.cow_shared != 0);
-    let _ = memobj_release_ref(parent, clone);
-    if shared && copied_write {
+    let mut leaves = RacedLeaves {
+        leaves: azos_mm::cow::ForkLeaves { parent_pt, child_pt, va: VA, pages: 1 },
+        parent,
+        r,
+        copied_write: false,
+        clone_shared: false,
+    };
+    let access = memobj_inherit_ref(parent, CHILD, r, child_pt, VA, 1, &mut leaves).map_err(|_| "the child was not booked")?;
+    if leaves.clone_shared && leaves.copied_write {
         return Err("a clone shared the frame under the child's writable leaf");
     }
-    let access = memobj_inherit_commit_ref(parent, CHILD, r, child_pt, VA, 1).map_err(|_| "the child was not booked")?;
-    if access.write == copied_write {
+    if access.write == leaves.copied_write {
         return Err("the booking took the copied leaf's access, not the parent's");
     }
     if vmm::user_write_would_be_permitted(child_pt, VA) != access.write {
