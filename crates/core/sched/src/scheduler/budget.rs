@@ -207,6 +207,13 @@ pub fn current_aspace() -> Option<azos_mm::aspace::SpaceRef> {
     if idx == usize::MAX { None } else { TASKS[idx].aspace.get_own() }
 }
 
+/// The address space of any task whose root is `root`: a scan of the task
+/// table, for a kernel write into a task that is not the running one
+/// (`azos_mm::aspace::with_root`).
+pub fn aspace_of_root(root: usize) -> Option<azos_mm::aspace::SpaceRef> {
+    (0..MAX_TASKS).find_map(|i| TASKS[i].aspace.get().filter(|r| r.root() == root))
+}
+
 /// The current task's translation root word (`satp` / TTBR0 with its ASID):
 /// what a new member of its thread group runs on (wave 13).
 pub fn current_task_satp() -> u64 {
@@ -463,6 +470,7 @@ pub fn install_mm_hooks() {
     azos_mm::vmm::set_table_hook(table_hook);
     azos_mm::vmm::set_fault_hook(fault_hook);
     azos_mm::aspace::set_current_hook(current_aspace);
+    azos_mm::aspace::set_root_hook(aspace_of_root);
 }
 
 /// Take (and zero) the page-table frames the current task allocated for an

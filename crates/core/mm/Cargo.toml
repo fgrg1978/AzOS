@@ -116,6 +116,9 @@ demand-over-mapping-canary = []
 # and pte_truth.rs fail.
 slot-chunk-promised-canary = []
 slot-chunk-kept-canary = []
+# Host-suite canary: a copy-on-write break moves the leaf and not the slot:
+# `syscall-tests` pte_truth.rs copy-on-write rows fail.
+cow-slot-canary = []
 # Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
 # kept past its space's end reaches the next space made from the object:
 # `syscall-tests`' `aspace_life` fails.

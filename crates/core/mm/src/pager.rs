@@ -2068,16 +2068,19 @@ pub fn protect_range(r: SpaceRef, s: usize, e: usize, write: bool) -> Result<(),
 
 /// A copy-on-write break of the page at `va` under `root` swaps its leaf
 /// (`leaf`) from `old` to `new`, a leaf on another frame: the leaf and, for a
-/// page of an anonymous mapping of the running task's space, its slot move
-/// together, under the space's lock. `false`: the leaf is not `old` any more,
-/// nothing changed.
+/// page of an anonymous mapping of the space whose root it is (the running
+/// task's, or another task's a kernel write reaches), its slot move together,
+/// under the space's lock. `false`: the leaf is not `old` any more, nothing
+/// changed.
+///
+/// Canary `cow-slot-canary`: the slot stays on the old frame.
 pub(crate) fn cow_swap(root: usize, va: usize, leaf: &AtomicU64, old: u64, new: u64) -> bool {
-    let guard = crate::aspace::current_with_root(root).and_then(|r| r.lock());
+    let guard = crate::aspace::with_root(root).and_then(|r| r.lock());
     let slot = guard.as_ref().and_then(|sp| anon_slot(sp, va));
     if leaf.compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return false;
     }
-    if let Some(s) = slot {
+    if let Some(s) = slot.filter(|_| !cfg!(feature = "cow-slot-canary")) {
         let _ = s.compare_exchange(
             slot::frame(ARCH.pte_phys(old)),
             slot::frame(ARCH.pte_phys(new)),

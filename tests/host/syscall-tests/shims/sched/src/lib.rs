@@ -132,8 +132,14 @@ pub fn set_current_user_pt(pt: usize) {
     if pt != 0 {
         let _ = shim_space(pt);
         azos_mm::aspace::set_current_hook(current_aspace);
+        azos_mm::aspace::set_root_hook(aspace_of_root);
     }
     CURRENT_USER_PT.store(pt, Ordering::SeqCst);
+}
+
+/// The address space the tests' root `pt` stands for, if one was made.
+pub fn aspace_of_root(pt: usize) -> Option<azos_mm::aspace::SpaceRef> {
+    SPACES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|r| r.root() == pt).copied()
 }
 
 pub fn current_aspace() -> Option<azos_mm::aspace::SpaceRef> {

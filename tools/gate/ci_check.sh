@@ -12287,6 +12287,13 @@ host_job host_canary_row "anon: slot chunk within the limit canary" syscall-test
     a_touch_at_the_limit_gets_its_tables
 host_job host_canary_row "anon: slot chunk freed by munmap canary" syscall-tests slot-chunk-kept-canary \
     a_munmap_frees_the_slot_chunks_of_the_pages_it_unmaps
+# A copy-on-write break moves the page's slot with its leaf (pager::cow_swap),
+# found by root for another task's space too. cow-slot-canary: the slot stays
+# on the shared frame and the page is never the reclaimer's again.
+host_job host_canary_row "anon: COW break moves the slot canary" syscall-tests cow-slot-canary \
+    a_copy_on_write_break_moves_the_slot_with_the_leaf
+host_job host_canary_row "anon: COW break by root canary" syscall-tests cow-slot-canary \
+    a_copy_on_write_break_through_another_tasks_root_moves_its_slot
 host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
     a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,

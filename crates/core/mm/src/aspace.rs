@@ -152,6 +152,25 @@ pub fn set_current_hook(f: fn() -> Option<SpaceRef>) {
     CURRENT_HOOK.set(f);
 }
 
+azos_common::ro_hook! {
+    /// `fn(root) -> Option<SpaceRef>`: the address space of any task whose
+    /// root is `root`. Installed by the scheduler; unset, there is none.
+    static ROOT_HOOK: fn(usize) -> Option<SpaceRef>;
+}
+
+/// Install the lookup of an address space by its root. See [`ROOT_HOOK`].
+pub fn set_root_hook(f: fn(usize) -> Option<SpaceRef>) {
+    ROOT_HOOK.set(f);
+}
+
+/// The address space whose root is `root`, the running task's or another's:
+/// what a kernel write into a task's memory changes (a copy-on-write break,
+/// `pager::cow_swap`). The running task's is found at once, another's by the
+/// scheduler's lookup.
+pub fn with_root(root: usize) -> Option<SpaceRef> {
+    current_with_root(root).or_else(|| ROOT_HOOK.get().and_then(|f| f(root)))
+}
+
 /// The running task's address space when its root is `root`: what a user
 /// access through `root` (`vmm::translate_user`, the fault-in of a kernel copy)
 /// is made on behalf of. `None` for any other root, which has no records the

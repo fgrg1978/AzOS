@@ -14,8 +14,8 @@
 //   a zero page. Needs the compressed pool (Kconfig MM_RECLAIM_COMPRESS).
 // * `a_copy_on_write_break_moves_the_slot_with_the_leaf`: after a fork, the
 //   parent's write gives it a new frame and its slot follows, so the page is
-//   still the reclaimer's to take. Canary by hand: `pager::cow_swap` leaving
-//   the slot: the unmap is refused (the slot names the child's frame).
+//   still the reclaimer's to take. Canary `cow-slot-canary` (`pager::cow_swap`
+//   leaves the slot): the unmap is refused (the slot names the child's frame).
 // * `a_page_committed_during_the_fork_is_a_zero_page_in_the_child`: the child's
 //   slots are its own leaves, not the parent's slots. Canary by hand: the
 //   child's frame slots copied from the parent's: the child maps the parent's
@@ -356,6 +356,40 @@ fn a_munmap_frees_the_slot_chunks_of_the_pages_it_unmaps() {
     assert_eq!(sys_munmap(first_chunk as u64, chunk as u64), 0);
     assert_eq!(azos_mm::shim_pages_in_use(), before + built, "the page and its chunk are back, the tables stay");
     assert!(azos_mm::vmm::translate(pt, base).is_some(), "the object lives on");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+/// **A copy-on-write break through another task's root moves the slot too.**
+/// A kernel write into a task that is not the running one (through
+/// `translate_user` on its root) breaks the sharing there: the space is found
+/// by its root (`aspace::with_root`), and its slot follows the leaf, so the
+/// page is still the reclaimer's to take.
+/// **Canary** `cow-slot-canary`: the slot stays on the shared frame.
+#[test]
+fn a_copy_on_write_break_through_another_tasks_root_moves_its_slot() {
+    let _g = serial();
+    let pt = space();
+    let base = map(4);
+    let shared = write(pt, base, 0x11);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 0);
+    assert!(fork_regions_to_child(2));
+    // The child runs; the kernel writes into the parent.
+    azos_sched::set_current_user_pt(child);
+    let mine = write(pt, base, 0x22);
+    assert_ne!(mine, shared);
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base };
+    assert!(reclaim.unmap(victim), "the parent's slot names its new frame");
+    reclaim.keep(victim);
+    azos_sched::set_current_user_pt(pt);
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
