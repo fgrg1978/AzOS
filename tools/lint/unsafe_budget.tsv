@@ -24,7 +24,7 @@ crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
 crates/core/common	4	0	0	0	0	37
 crates/core/config	8	0	0	0	0	75
-crates/core/crypto	15	2	1	0	0	25
+crates/core/crypto	15	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	62
 crates/core/devif	0	0	0	0	1	0
 crates/core/energy	0	0	0	0	1	0
@@ -36,9 +36,9 @@ crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
 crates/core/image	0	0	0	0	1	0
 crates/core/inspect	1	1	0	0	0	3
-crates/core/ipc	36	9	6	0	0	53
+crates/core/ipc	36	9	6	0	0	52
 crates/core/ktest	3	0	0	0	0	66
-crates/core/libsys	92	10	2	0	0	93
+crates/core/libsys	93	10	2	0	0	93
 crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
@@ -75,7 +75,7 @@ crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	11	0	0	0	0	100
-crates/drivers/dma	22	12	2	0	0	54
+crates/drivers/dma	22	12	2	0	0	43
 crates/drivers/dtb	97	42	0	0	0	100
 crates/drivers/fb	10	1	2	0	0	39
 crates/drivers/firmware	2	1	0	0	0	100
@@ -107,6 +107,7 @@ crates/drivers/usb	19	1	1	0	0	34
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	157	45	8	0	0	91
 crates/drivers/virtio-proto	0	0	0	0	1	0
+crates/drivers/virtio-rng	0	0	0	0	1	-
 crates/fs	29	3	5	0	0	57
 crates/lib/control/ahrs	0	0	0	0	1	0
 crates/lib/control/flight-math	0	0	0	0	1	0
@@ -114,12 +115,13 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	397	15	13	52	0	60
+kernel	398	15	13	52	0	60
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
 userspace/bench/latbench	3	0	0	0	0	-
 userspace/bench/vsbench	199	12	7	3	0	-
+userspace/drivers/rng_drv	3	0	0	0	0	-
 userspace/lib/compose	0	0	0	0	1	-
 userspace/lib/compositor	1	0	0	0	0	-
 userspace/lib/decisions	0	0	0	0	1	-
@@ -168,4 +170,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	504

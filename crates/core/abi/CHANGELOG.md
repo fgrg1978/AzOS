@@ -40,7 +40,9 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
   handle, and their direction words `DMA_TO_DEVICE` 0, `DMA_FROM_DEVICE` 1,
   `DMA_BIDIRECTIONAL` 2: a ring-3 `SHM_KIND_CONTIG` object given to a device
   no kernel driver owns; replies bus address, length and coherence. Refused
-  for a device no IOMMU confines unless Kconfig `DMA_RING3_WITHOUT_IOMMU`.
+  for a device no IOMMU confines unless Kconfig `DMA_RING3_WITHOUT_IOMMU`; under
+  that rule a topology's writable window on a device that masters the bus is
+  not granted either.
 - The `Entropy` interface is at level 2: `feed` (`WRITE`) mixes what a
   ring-3 entropy device read into the pool, credited only as Kconfig
   `ENTROPY_RING3_FEED` says (mix-only by default).
