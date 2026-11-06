@@ -428,6 +428,32 @@ mod tests {
         assert_eq!(azos_decision::total(), id, "an admit claims no id: nothing stores it");
     }
 
+    /// With the ring built, a decision is a record of the substrate's
+    /// decision ring: its envelope names the source, its rule and verdict
+    /// (the kind `logd` decodes) and its index (the id less one), and its
+    /// payload the subject and the three numbers; `get` reads the same back.
+    /// **Canary.** Swap rule and verdict in `write`'s kind: the envelope
+    /// assertion goes red.
+    #[cfg(feature = "ring")]
+    #[test]
+    fn ring_a_decision_is_a_record_of_the_substrate() {
+        use azos_records::record::{Envelope, Read};
+        let _g = GUARD.lock().unwrap();
+        azos_decision::record(Rule::WaitCycle, Verdict::Refuse, 42, [7, 8, 9]);
+        let id = azos_decision::total();
+        let ring = azos_records::reader(azos_records::SOURCE_DECISION).expect("the dev cell keeps the ring");
+        let (mut c, mut env, mut p) = (id - 1, Envelope::default(), [0u8; azos_records::DECISION_PAYLOAD]);
+        assert_eq!(ring.read(&mut c, &mut env, &mut p), Read::Record);
+        assert_eq!(
+            (env.source, env.seq, env.kind, env.len as usize),
+            (azos_records::SOURCE_DECISION, id - 1, Rule::WaitCycle as u16 | (Verdict::Refuse as u16) << 8, azos_records::DECISION_PAYLOAD)
+        );
+        let w = |i: usize| u64::from_le_bytes(p[i * 8..i * 8 + 8].try_into().unwrap());
+        assert_eq!([w(0), w(1), w(2), w(3)], [42, 7, 8, 9]);
+        let r = azos_decision::get(id).expect("the ring holds it");
+        assert_eq!((r.rule, r.verdict, r.subject, r.n), (Rule::WaitCycle as u8, Verdict::Refuse as u8, 42, [7, 8, 9]));
+    }
+
     /// **The journal keeps the last N durable records, however many ids the
     /// ring's records claim in between.** With the ring built (the gate's dev
     /// cell; this suite's `ring` feature, its own gate row) every verdict

@@ -12972,11 +12972,12 @@ done
 # dev cell: DECISION_RECORDS_DEV and DECISION_REFUSALS_DURABLE both on). The
 # ring's records claim ids between the durable ones, so a journal keyed by id
 # lost a refusal to the next one N ids on; the `journal_` tests pin that the
-# last N durable records are held, by id and by query. The suite's own row
+# last N durable records are held, by id and by query; the `ring_` tests that
+# a decision is a record of the substrate's decision ring. The suite's own row
 # builds `durable` only, where the ids are dense and the keying cannot show.
 if ci_row_begin "decisions(ring)"; then
 printf "  %-26s" "decisions(ring)..."
-if dr_out=$( (cd "${REPO_ROOT}/tests/host/decisions-tests" && CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-tests" "$CARGO" test --release --features ring journal_ 2>&1) ) \
+if dr_out=$( (cd "${REPO_ROOT}/tests/host/decisions-tests" && CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-tests" "$CARGO" test --release --features ring -- journal_ ring_ 2>&1) ) \
    && echo "$dr_out" | qgrep -qE "^test result: ok\. [1-9][0-9]* passed"; then
     ok
 else

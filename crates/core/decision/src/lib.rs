@@ -12,19 +12,22 @@
 //! (`decisions/records/<n>`, `kernel/src/boot/inspect_views.rs`), and `why`
 //! prints them, one line per record.
 //!
-//! The ring holds `DECISION_RECORDS_ENTRIES` records; the oldest is
-//! overwritten. It is lock-free so the wake path, which runs with the
-//! scheduler's locks held and interrupts masked, can write to it: a writer
-//! claims a sequence number, clears the slot's sequence word, writes the
-//! fields and publishes the sequence with Release; a reader takes a slot
-//! only if its sequence reads the same before and after the fields. Records
-//! carry numbers only (no pointers), so a torn read is dropped, never
-//! misread.
+//! The ring is the record substrate's decision ring (`azos_records`, one
+//! envelope for every source, read by `logd` beside the kernel log): it holds
+//! `DECISION_RECORDS_ENTRIES` records and overwrites the oldest. It is
+//! lock-free so the wake path, which runs with the scheduler's locks held and
+//! interrupts masked, can write to it: a writer claims its index with one
+//! `fetch_add`, stores the record between the slot's two stamps and never
+//! waits; a reader takes a slot only if its stamp reads the same before and
+//! after the fields and the envelope names the index it asked for. A record's
+//! id is its index plus one, the same before and after the boot hands the
+//! ring over to the shared region. Records carry numbers only (no pointers),
+//! so a torn read is dropped, never misread.
 //!
 //! Off (feature `on` absent, every deployment profile): [`record`] is empty
-//! and the ring is not linked. On: about 40 instructions and six stores
-//! per record (the last is the clock stamp), `DECISION_RECORDS_ENTRIES` x
-//! 48 bytes of `.bss`.
+//! and the ring is not linked. On: `DECISION_RECORDS_ENTRIES` x 64 bytes
+//! (the envelope and a 32-byte payload: subject and the three numbers; rule
+//! and verdict are the envelope's kind).
 //!
 //! Refusals have a second, independent path. With the `durable` feature
 //! (Kconfig `DECISION_REFUSALS_DURABLE`, on in every preset) a record whose
@@ -85,7 +88,9 @@ pub use prov::{
 pub use query::{for_each_held, lookup, query, Filter};
 
 use crate::a64::AtomicU64;
-use core::sync::atomic::{fence, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "on")]
+use azos_records::record as rec_ring;
 
 /// Built in.
 pub const ON: bool = cfg!(feature = "on");
@@ -1318,20 +1323,7 @@ impl Record {
     }
 }
 
-struct Slot {
-    seq: AtomicU64,
-    head: AtomicU64,
-    n: [AtomicU64; 3],
-    ts: AtomicU64,
-}
-#[allow(clippy::declare_interior_mutable_const)]
-const SLOT: Slot = Slot {
-    seq: AtomicU64::new(0),
-    head: AtomicU64::new(0),
-    n: [const { AtomicU64::new(0) }; 3],
-    ts: AtomicU64::new(0),
-};
-static RING: [Slot; ENTRIES] = [SLOT; ENTRIES];
+/// Ids claimed when the ring is not built (the durable path's alone).
 static SEQ: AtomicU64 = AtomicU64::new(0);
 /// Gate canary `canary=decision-skip`: [`record`] writes nothing.
 static SKIP: AtomicBool = AtomicBool::new(false);
@@ -1644,12 +1636,10 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
             to_sink = true;
         }
     }
-    // The id: claimed by a record that is stored anywhere. `SKIP` (gate
-    // canary) claims none, so nothing is stored.
-    let seq = if ON || to_sink { claim() } else { 0 };
-    if ON {
-        write(seq, rule, verdict, subject, n);
-    }
+    // The id: claimed by a record that is stored anywhere (with the ring, the
+    // ring's index claims it). `SKIP` (gate canary) claims none, so nothing
+    // is stored.
+    let seq = if ON { write(rule, verdict, subject, n) } else if to_sink { claim() } else { 0 };
     if to_sink {
         durable(rule, verdict, subject, n, seq, origin);
     }
@@ -1682,7 +1672,7 @@ fn durable(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, or
     }
 }
 
-/// Claim the next id; 0 under the gate canary `decision-skip`.
+/// Claim the next id without the ring; 0 under the gate canary `decision-skip`.
 #[inline(never)]
 fn claim() -> u64 {
     if SKIP.load(Ordering::Relaxed) {
@@ -1691,24 +1681,42 @@ fn claim() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed) + 1
 }
 
+/// Store a record in the ring; its id (0 under `decision-skip`). A build
+/// whose Kconfig keeps no ring (the feature without the symbol) claims the
+/// id alone.
 #[inline(never)]
-fn write(seq: u64, rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3]) {
-    if seq == 0 {
-        return;
+fn write(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3]) -> u64 {
+    if SKIP.load(Ordering::Relaxed) {
+        return 0;
     }
-    let s = &RING[(seq % ENTRIES as u64) as usize];
-    s.seq.store(0, Ordering::Relaxed);
-    fence(Ordering::Release);
-    s.head.store(rule as u64 | (verdict as u64) << 8 | (subject as u64) << 32, Ordering::Relaxed);
-    for (d, v) in s.n.iter().zip(n) {
-        d.store(v, Ordering::Relaxed);
+    #[cfg(feature = "on")]
+    if let Some(w) = azos_records::writer(azos_records::SOURCE_DECISION) {
+        let h = azos_records::Head {
+            ts: clock_now(),
+            clock: azos_records::CLOCK_TIMEBASE,
+            kind: rule as u16 | (verdict as u16) << 8,
+            len: azos_records::DECISION_PAYLOAD as u16,
+            cpu: 0,
+            flags: 0,
+        };
+        let i = w.publish(&h, |p| {
+            p.word(0, subject as u64);
+            p.word(8, n[0]);
+            p.word(16, n[1]);
+            p.word(24, n[2]);
+        });
+        return i + 1;
     }
-    s.ts.store(clock_now(), Ordering::Relaxed);
-    s.seq.store(seq, Ordering::Release);
+    let _ = (rule, verdict, subject, n);
+    claim()
 }
 
 /// Ids claimed since boot (the newest record's id).
 pub fn total() -> u64 {
+    #[cfg(feature = "on")]
+    if let Some(r) = azos_records::reader(azos_records::SOURCE_DECISION) {
+        return r.head();
+    }
     SEQ.load(Ordering::Relaxed)
 }
 
@@ -1717,18 +1725,23 @@ pub fn get(seq: u64) -> Option<Record> {
     if seq == 0 {
         return None;
     }
-    let s = &RING[(seq % ENTRIES as u64) as usize];
-    if s.seq.load(Ordering::Acquire) != seq {
-        return None;
+    #[cfg(feature = "on")]
+    if let Some(r) = azos_records::reader(azos_records::SOURCE_DECISION) {
+        let (mut c, mut env, mut p) = (seq - 1, rec_ring::Envelope::default(), [0u8; azos_records::DECISION_PAYLOAD]);
+        if r.read(&mut c, &mut env, &mut p) != rec_ring::Read::Record {
+            return None;
+        }
+        let w = |i: usize| u64::from_le_bytes([p[i], p[i + 1], p[i + 2], p[i + 3], p[i + 4], p[i + 5], p[i + 6], p[i + 7]]);
+        return Some(Record {
+            seq,
+            rule: env.kind as u8,
+            verdict: (env.kind >> 8) as u8,
+            subject: w(0) as u32,
+            n: [w(8), w(16), w(24)],
+            ts: env.ts,
+        });
     }
-    let head = s.head.load(Ordering::Relaxed);
-    let n = [s.n[0].load(Ordering::Relaxed), s.n[1].load(Ordering::Relaxed), s.n[2].load(Ordering::Relaxed)];
-    let ts = s.ts.load(Ordering::Relaxed);
-    fence(Ordering::Acquire);
-    if s.seq.load(Ordering::Relaxed) != seq {
-        return None;
-    }
-    Some(Record { seq, rule: head as u8, verdict: (head >> 8) as u8, subject: (head >> 32) as u32, n, ts })
+    None
 }
 
 /// Every record still in the ring, oldest first.

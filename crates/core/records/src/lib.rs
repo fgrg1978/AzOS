@@ -26,7 +26,7 @@ use azos_rings::region::record::{self as rec, Ring, RingSpec, Writer, ENV_BYTES}
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-pub use azos_rings::region::record::{Head, Payload, CLOCK_TIMEBASE, SOURCE_DECISION, SOURCE_KLOG, SOURCE_TELEMETRY};
+pub use azos_rings::region::record::{self as record, Head, Payload, CLOCK_TIMEBASE, SOURCE_DECISION, SOURCE_KLOG, SOURCE_TELEMETRY};
 
 /// The kernel log keeps records (Kconfig `KLOG`); its sink, `logd`, reads
 /// the shared region, which exists exactly then.
