@@ -279,6 +279,12 @@ azos_ktest::ktest_late! {
 //   endpoint; destroying it wakes it with
 //   `PORT_EVENT_SOURCE_GONE` (code EREVOKED). Canary `canary=port-no-vanish`:
 //   the source stays bound and silent, the wait times out: `not ok`.
+// * `port_serves_a_call_and_an_irq_on_one_wait`: a server binds its
+//   endpoint's calls (`PORT_SRC_CALLS`) and an interrupt line to one port
+//   and only ever waits there; a client's call and a delivery on the line
+//   both wake it, the call is taken with the poll accept and answered.
+//   Canary `canary=port-calls-none`: the call signals no port, the server's
+//   wait times out and the caller is never answered: `not ok`.
 
 use azos_abi::syscall_nr::{
     PORT_EVENT_NO_SENDERS, PORT_EVENT_SOURCE_GONE, PORT_SRC_ENDPOINT, SYS_INVOKE, SYS_PORT_WAIT,
@@ -345,7 +351,7 @@ fn no_senders(e: Option<Ev>, key: u64) -> bool {
 
 /// Each scenario runs in its own kernel task (a task's table and port
 /// waits); its verdict comes back here.
-static VERDICT: [azos_sync::SpinLock<Option<Verdict>>; 4] = [const { azos_sync::SpinLock::new(None) }; 4];
+static VERDICT: [azos_sync::SpinLock<Option<Verdict>>; 5] = [const { azos_sync::SpinLock::new(None) }; 5];
 
 fn report(k: usize, v: Verdict) {
     *VERDICT[k].lock() = Some(v);
@@ -597,6 +603,112 @@ azos_ktest::ktest_late! {
         }
         crate::ktest::wait("the waiter never reported", || VERDICT[3].lock().is_some())?;
         VERDICT[3].lock().take().unwrap_or(Err("no verdict"))
+    }
+}
+
+// ── One wait for a call and an interrupt (azos_srv) ─────────────────────────
+
+const KEY_CALLS: u64 = 0xF1_4001;
+const KEY_IRQ: u64 = 0xF1_4002;
+/// A line no controller input has: `irq_bind`'s test line stands for it.
+const ONE_LINE: u32 = 0x7E0;
+const ONE_WORD: u64 = 0x5EED;
+/// The server's endpoint, for the client (0: not yet).
+static ONE_EP: AtomicU32 = AtomicU32::new(0);
+static ONE_RC: AtomicI64 = AtomicI64::new(NOT_YET);
+
+fn one_client(_: usize) {
+    let Some(c) = sender(ONE_EP.load(Ordering::Acquire)) else {
+        ONE_RC.store(-1, Ordering::Release);
+        return;
+    };
+    let mut out = SyscallOut::new();
+    let rc = dispatch(SYS_IPC_CALL, [c.raw().0 as u64, 0, ONE_WORD, 0, 0, 0], &mut out);
+    ONE_RC.store(rc, Ordering::Release);
+}
+
+fn sc_one_wait() -> Verdict {
+    use azos_abi::ipc_msg::{MsgDesc, MSG_VERSION};
+    use azos_abi::syscall_nr::{IPC_ACCEPT_F_POLL, PORT_EVENT_CALLS, PORT_EVENT_IRQ, PORT_SRC_CALLS};
+    use azos_ipc::irq_bind::{self, Route};
+    let me = azos_sched::current_task_tid();
+    let (r, srv) = new_endpoint()?;
+    let port = new_port()?;
+    if bind(port, PORT_SRC_CALLS, srv, KEY_CALLS) != 0 {
+        return Err("the server could not bind its endpoint's calls to its port");
+    }
+    let pref = azos_ipc::cap_store::get(me, azos_ipc::cap::Cap::<azos_ipc::cap::targets::Port>::from_raw(
+        azos_abi::cap::CapHandle(port as u32)), CapPerms::READ).map_err(|_| "the port capability does not resolve")?;
+    irq_bind::set_test_line(Some(ONE_LINE));
+    let cpu = azos_sched::smp::current_cpu_id() as u32;
+    if irq_bind::irq_bind_port(ONE_LINE, me, pref, KEY_IRQ, Route::Cpu(cpu)).is_err() {
+        irq_bind::set_test_line(None);
+        return Err("the test line could not be bound to the port");
+    }
+    ONE_EP.store(r, Ordering::Release);
+    azos_sched::task_create_affinity("f14-one-cli", one_client, 0, PRIO, -1);
+    // The device's top half: mask-until-ACK, then queue.
+    irq_bind::test_line_set_masked(true);
+    azos_ipc::irq_dispatch(ONE_LINE);
+    let (mut irq, mut call) = (false, false);
+    let mut verdict = Ok(());
+    while !(irq && call) {
+        match wait_event(port, 2000) {
+            Some((KEY_IRQ, PORT_EVENT_IRQ, _)) => {
+                irq = true;
+                let _ = irq_bind::irq_ack_unmask(ONE_LINE, me);
+            }
+            Some((KEY_CALLS, PORT_EVENT_CALLS, _)) => {
+                let mut req = MsgDesc::default();
+                let mut out = SyscallOut::new();
+                let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut MsgDesc as u64, IPC_ACCEPT_F_POLL, 0, 0, 0, 0], &mut out);
+                if h < 0 {
+                    // A wake ahead of the call's queueing reads empty: wait again.
+                    continue;
+                }
+                let rep = MsgDesc { version: MSG_VERSION, n_words: 1, words: [req.words[0] + 1, 0, 0, 0, 0, 0, 0, 0], ..MsgDesc::default() };
+                if dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out) != 0 {
+                    verdict = Err("the reply to the call taken with the poll accept was refused");
+                    break;
+                }
+                call = true;
+            }
+            Some(_) => {
+                verdict = Err("an event the port's two sources do not report");
+                break;
+            }
+            None if !call => {
+                verdict = Err("the call never reached the port (the server would sleep for ever)");
+                break;
+            }
+            None => {
+                verdict = Err("the interrupt never reached the port");
+                break;
+            }
+        }
+    }
+    irq_bind::irq_unbind_all(me);
+    irq_bind::set_test_line(None);
+    verdict?;
+    crate::ktest::wait("the caller was never answered", || ONE_RC.load(Ordering::Acquire) != NOT_YET)?;
+    if ONE_RC.load(Ordering::Acquire) != (ONE_WORD + 1) as i64 {
+        return Err("the caller's answer is not the server's");
+    }
+    Ok(())
+}
+
+fn one_wait_task(k: usize) {
+    report(k, sc_one_wait());
+}
+
+azos_ktest::ktest_late! {
+    fn port_serves_a_call_and_an_irq_on_one_wait() {
+        if azos_limits::IRQ_THREADED {
+            return azos_ktest::skip!("IRQ_THREADED: a bind needs a reservation, which this test does not make");
+        }
+        azos_sched::task_create_affinity("f14-one-srv", one_wait_task, 4, PRIO, -1);
+        crate::ktest::wait("the server never reported", || VERDICT[4].lock().is_some())?;
+        VERDICT[4].lock().take().unwrap_or(Err("no verdict"))
     }
 }
 

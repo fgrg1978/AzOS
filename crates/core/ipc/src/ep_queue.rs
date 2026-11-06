@@ -251,6 +251,15 @@ pub fn canary_no_peer_died() {
     CANARY_NO_PEER_DIED.store(true, Ordering::Relaxed);
 }
 
+/// Gate canary `port-calls-none`: a call that finds its queue empty hands
+/// back no port link, so a server waiting on its port never hears of it.
+static CANARY_CALLS_NONE: AtomicBool = AtomicBool::new(false);
+
+/// Arm the `port-calls-none` canary (runtime `canary=` flag, boot only).
+pub fn canary_port_calls_none() {
+    CANARY_CALLS_NONE.store(true, Ordering::Relaxed);
+}
+
 /// Gate canary `ipc-reply-twice` (wave 15 N11): a reply on a warrant whose
 /// call was already answered is delivered again instead of refused.
 static CANARY_REPLY_TWICE: AtomicBool = AtomicBool::new(false);
@@ -885,8 +894,9 @@ pub fn call(
 
 /// [`call`], also answering the port link to signal once the queue lock is
 /// released: the endpoint's call link when this call found its queue empty
-/// ([`set_call_link`]), [`PortLink::NONE`] otherwise. Canary
-/// `port-calls-canary` (host): never a link.
+/// ([`set_call_link`]), [`PortLink::NONE`] otherwise. Canaries
+/// `port-calls-canary` (host) and `canary=port-calls-none` (boot): never a
+/// link.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn call_linked(
@@ -925,7 +935,15 @@ pub fn call_linked(
     r.tag.store(tag(g, ep as u64, S_PENDING), Ordering::Relaxed);
     let was_empty = q.send_head == NIL;
     push_send(&mut q, caller_idx);
-    let link = if was_empty && !cfg!(feature = "port-calls-canary") { q.link } else { PortLink::NONE };
+    let link = if was_empty
+        && !q.link.is_none()
+        && !cfg!(feature = "port-calls-canary")
+        && !CANARY_CALLS_NONE.load(Ordering::Relaxed)
+    {
+        q.link
+    } else {
+        PortLink::NONE
+    };
     if was_empty {
         ready_set(owner_idx, ep);
     }

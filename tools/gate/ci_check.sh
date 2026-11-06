@@ -16700,9 +16700,11 @@ CPU 5 lacks hwcap bits"
     # ipc_fastpath_resumes_at_the_point, and the three ipc_fastpath_resume_point_*
     # find no task parked with one) and `canary=ipc-resume-stale` (a task
     # resumed where it blocked keeps its point: ipc_fastpath_resume_point_*);
-    # `ipc-force-slow` alone turns those four red as well.
-    KTEST_IPC_CANARIES="canary=ipc-no-peer-died,ipc-no-senders-wipe,port-no-vanish,ipc-reply-twice,ipc-desc-as-regs,ipc-v1-takes-v2,ipc-force-slow,ipc-resume-off,ipc-resume-stale"
-    KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died ipc_no_senders_once_after_staggered_exits port_source_gone_wakes_the_waiter ipc_reply_warrant_moves_to_worker_and_is_send_once ipc_v2_call_carries_caps_words_and_badge ipc_v2_call_refused_by_v1_accept ipc_v2_refused_call_caps_revoked_on_caller_exit ipc_fastpath_taken_when_parked ipc_fastpath_resumes_at_the_point ipc_fastpath_resume_point_kill ipc_fastpath_resume_point_drain ipc_fastpath_resume_point_ordinary_call ipc_fastpath_call_edge_is_in_the_graph"
+    # `ipc-force-slow` alone turns those four red as well. The server
+    # runtime's one wait: `canary=port-calls-none` (a call signals no port:
+    # port_serves_a_call_and_an_irq_on_one_wait times out).
+    KTEST_IPC_CANARIES="canary=ipc-no-peer-died,ipc-no-senders-wipe,port-no-vanish,ipc-reply-twice,ipc-desc-as-regs,ipc-v1-takes-v2,ipc-force-slow,ipc-resume-off,ipc-resume-stale,port-calls-none"
+    KTEST_IPC_CANARIED="ipc_server_death_completes_call_peer_died ipc_no_senders_once_after_staggered_exits port_source_gone_wakes_the_waiter port_serves_a_call_and_an_irq_on_one_wait ipc_reply_warrant_moves_to_worker_and_is_send_once ipc_v2_call_carries_caps_words_and_badge ipc_v2_call_refused_by_v1_accept ipc_v2_refused_call_caps_revoked_on_caller_exit ipc_fastpath_taken_when_parked ipc_fastpath_resumes_at_the_point ipc_fastpath_resume_point_kill ipc_fastpath_resume_point_drain ipc_fastpath_resume_point_ordinary_call ipc_fastpath_call_edge_is_in_the_graph"
     par "ktest ipc canary (rv)" ktest_row "ktest ipc canary (rv)" rv "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     par "ktest ipc canary (arm)" ktest_row "ktest ipc canary (arm)" arm "" "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
     # N9 (Kconfig FUTEX_REQUEUE, kernel/src/smokes/futex_requeue.rs), one boot

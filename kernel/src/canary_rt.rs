@@ -403,6 +403,10 @@ pub(crate) const NAMES: &[&str] = &[
     // stays bound and silent, so its waiter times out (ktest
     // `port_source_gone_wakes_the_waiter`).
     "port-no-vanish",
+    // crates/core/ipc/src/ep_queue.rs `call_linked`: a call that finds its
+    // queue empty signals no port (ktest
+    // `port_serves_a_call_and_an_irq_on_one_wait`).
+    "port-calls-none",
     // crates/core/ipc/src/ep_queue.rs `reply_warrant`: a reply on a warrant
     // whose call was already answered is delivered again
     // (ktest `ipc_reply_warrant_moves_to_worker_and_is_send_once`).

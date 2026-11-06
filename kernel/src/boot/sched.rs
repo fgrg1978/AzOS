@@ -174,6 +174,9 @@ pub(crate) fn install_sched_hooks() {
     if canary!("ipc-no-peer-died") {
         azos_ipc::ep_queue::canary_no_peer_died();
     }
+    if canary!("port-calls-none") {
+        azos_ipc::ep_queue::canary_port_calls_none();
+    }
     // Chain E stage a runtime canary: the IPC fast path (Kconfig
     // IPC_FASTPATH) is off, every call takes the ordinary path (ktest
     // `ipc_fastpath_taken_when_parked`; vsbench shows the ordinary cost).
