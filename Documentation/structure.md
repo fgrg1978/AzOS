@@ -92,7 +92,6 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 |---|---|
 | `api` | The stable driver-framework surface: the `Driver` trait, manifest and isolation types, a lockless registry. Host-compatible. |
 | `base` | The board description (`platform::hw`) and the in-kernel driver registry (`runtime`). |
-| `driver_server` | The framework for ring-3 drivers: the registry, the request queue, IRQ routing. |
 | `sys` | System devices every image needs: console UART and `kprint!`, the monotonic clock and timer programming, the hardware watchdog, WCET measurement. |
 | `soc` | SoC resource frameworks a driver asks of the SoC first: clock tree, reset lines, regulators, pin control, power domains. |
 | `dma` | The DMA mapping API (`DmaDomain`) and the domains that need no hardware. |

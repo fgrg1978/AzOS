@@ -44,7 +44,7 @@ mod cap_tests {
     ];
 
     /// Every named type (kind and class) the kernel's tables hold.
-    const ALL_TYPES: [CapType; 12] = [
+    const ALL_TYPES: [CapType; 11] = [
         ty::ENDPOINT,
         ty::PORT,
         ty::SHM,
@@ -55,7 +55,6 @@ mod cap_tests {
         ty::SOCKET,
         ty::IRQ,
         ty::MMIO,
-        ty::DRIVER_REGISTRY,
         ty::TRACE,
     ];
 

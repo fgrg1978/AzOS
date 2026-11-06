@@ -92,7 +92,7 @@ LXHELLO_DIR   := userspace/tests/lxhello
 LXHELLO_ELF   := $(OUT_BUILD)/lxhello.elf
 SYSTEST_DIR   := userspace/tests/syscall_test
 SYSTEST_ELF   := $(OUT_BUILD)/syscall_test.elf
-# E11.AQ3 — ring-3 GPIO driver (Rust no_std ELF, built standalone).
+# The ring-3 GPIO device host (Rust no_std ELF, built standalone).
 GPIO_DRV_DIR  := userspace/drivers/gpio_drv
 GPIO_DRV_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/gpio_drv
 GPIO_DRV_ELF  := $(OUT_BUILD)/gpio_drv.elf

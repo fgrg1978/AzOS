@@ -367,22 +367,6 @@ pub const DOMAIN_VDSO_MAP: u16 = op(CapKind::Domain, CLASS_CTL, 33);
 pub const DOMAIN_MODULE_VERIFY: u16 = op(CapKind::Domain, CLASS_MODULE, 34);
 /// Map the verified module `w0` executable at `w1` for `w2` bytes.
 pub const DOMAIN_MODULE_MAP_X: u16 = op(CapKind::Domain, CLASS_MODULE, 35);
-/// Register as the driver for the kind the `DriverRegistry` handle `w0`
-/// names: `w1` MMIO base, `w2` size, `w3` interrupt line.
-pub const DOMAIN_DRIVER_REGISTER: u16 = op(CapKind::Domain, CLASS_DRIVER, 39);
-/// Give up the driver slot of the `DriverRegistry` handle `w0`.
-pub const DOMAIN_DRIVER_UNREGISTER: u16 = op(CapKind::Domain, CLASS_DRIVER, 40);
-/// Driver loop, take one pending request for driver kind `w0` into the
-/// `DriverRequest` at `w1`, without blocking. 0 with a request, -1 with none.
-pub const DOMAIN_DRIVER_FETCH: u16 = op(CapKind::Domain, CLASS_DRIVER, 44);
-/// Driver loop, publish the reply at `w1` for the request of kind `w0`.
-pub const DOMAIN_DRIVER_REPLY: u16 = op(CapKind::Domain, CLASS_DRIVER, 45);
-/// Driver loop, publish the reply at `w1` (0: none) and take the next request
-/// into `w2` in one call.
-pub const DOMAIN_DRIVER_REPLY_FETCH: u16 = op(CapKind::Domain, CLASS_DRIVER, 46);
-/// [`DOMAIN_DRIVER_REPLY_FETCH`] that blocks while no request is queued: `w3`
-/// the longest park in milliseconds (0: the kernel's default, at most 1000).
-pub const DOMAIN_DRIVER_REPLY_WAIT: u16 = op(CapKind::Domain, CLASS_DRIVER, 47);
 /// Map device registers: `w0` the handle of a device of the hardware bus (not
 /// an address), `w1` the access (`CapPerms` bits: READ, or READ|WRITE). Maps
 /// exactly the device's register window read-only unless WRITE was asked and

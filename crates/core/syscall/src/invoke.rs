@@ -23,8 +23,7 @@ use azos_abi::invoke::{
     DOMAIN_SOCKET, DOMAIN_STAT, DOMAIN_STATFS, DOMAIN_TASKINFO, DOMAIN_TRUNCATE, DOMAIN_UNLINK,
     NODE_ACCEPT, NODE_BIND, NODE_CONNECT, NODE_FSYNC, NODE_LISTEN, NODE_MCAST_JOIN, NODE_MCAST_LEAVE, NODE_READ, NODE_RECV, NODE_RECVFROM, NODE_SEND,
     NODE_MMAP, NODE_OPENAT, NODE_SEEK, NODE_SENDTO, NODE_WRITE,
-    DOMAIN_MMIO_MAP, DOMAIN_DRIVER_FETCH, DOMAIN_DRIVER_REPLY, DOMAIN_DRIVER_REPLY_FETCH, DOMAIN_DRIVER_REPLY_WAIT,
-    DOMAIN_DRIVER_REGISTER, DOMAIN_DRIVER_UNREGISTER,
+    DOMAIN_MMIO_MAP,
     DEVICE_IRQ_ACK, DEVICE_IRQ_BIND, ENDPOINT_DERIVE, EndpointDerive,
     DOMAIN_MPROTECT, DOMAIN_SET_CLEAR_TID, DOMAIN_UPTIME, DOMAIN_VDSO_MAP, DOMAIN_WAIT,
     MEMOBJ_ACQUIRE, MEMOBJ_END_DROP,
@@ -249,13 +248,7 @@ fn domain_self_op(c: &mut Call) -> i64 {
         DOMAIN_MODULE_VERIFY => crate::module_ops::sys_module_verify(w[0], w[1], w[2], w[3]),
         #[cfg(feature = "lx-loader")]
         DOMAIN_MODULE_MAP_X => crate::module_ops::sys_module_map_x(w[0], w[1], w[2]),
-        DOMAIN_DRIVER_REGISTER => crate::handlers::sys_driver_register_typed(w[0], w[1], w[2], w[3]),
-        DOMAIN_DRIVER_UNREGISTER => crate::handlers::sys_driver_unregister_typed(w[0]),
         DOMAIN_MMIO_MAP => crate::mmio::sys_mmio_map(w[0], w[1]),
-        DOMAIN_DRIVER_FETCH => crate::handlers::sys_driver_fetch_request(w[0], w[1]),
-        DOMAIN_DRIVER_REPLY => crate::handlers::sys_driver_reply(w[0], w[1]),
-        DOMAIN_DRIVER_REPLY_FETCH => crate::handlers::sys_driver_reply_fetch(w[0], w[1], w[2]),
-        DOMAIN_DRIVER_REPLY_WAIT => crate::handlers::sys_driver_reply_wait(w[0], w[1], w[2], w[3]),
         _ => Errno::EINVAL.to_syscall_ret(),
     }
 }

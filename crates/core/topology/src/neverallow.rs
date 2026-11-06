@@ -152,16 +152,15 @@ fn desktop_grants_no_motor(env: &Env, _: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool
 
 fn names_import_and_service_export(_: &Env, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
     // Serving an endpoint (READ on a task-hosted `endpoint.<name>`, the half
-    // that listens) or registering as a driver: the row answers other tasks
+    // that listens): the row answers other tasks
     // and can also ask the name server for any name it was granted, which is
     // a way to turn a service into a confused deputy. READ on a kernel-hosted
     // interface (`net`, `clock`: a target without the `endpoint.` prefix) is
     // a client's grant, the kernel serves it, so it does not count.
     row.imports_count != 0
-        && ((c.kind == CapKind::Device && c.target.as_str().starts_with("drv."))
-            || (c.kind == CapKind::Endpoint
-                && crate::types::endpoint_target(c).is_some()
-                && c.perms.contains(CapPerms::READ)))
+        && c.kind == CapKind::Endpoint
+        && crate::types::endpoint_target(c).is_some()
+        && c.perms.contains(CapPerms::READ)
 }
 
 fn actuation_grant_not_transferable(_: &Env, _: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {

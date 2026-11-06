@@ -1072,16 +1072,6 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         SYS_RING_SETUP  => sys_ioring_create_typed(a0),
         SYS_RING_ENTER  => sys_ioring_submit_typed(a0),
 
-
-        // Cap<DriverRegistry> (556-557). The kind is read from the cap, so
-        // unlike SYS_DRIVER_REGISTER there is no kind argument to
-        // disagree with the capability.
-        // The read half of the capability model (558). Without it the typed
-        // arms above this line had no possible ring-3 caller.
-
-
-
-
         _ => -1,
     }
 );

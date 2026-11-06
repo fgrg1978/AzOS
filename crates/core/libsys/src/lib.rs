@@ -167,10 +167,6 @@ pub const SENSOR_TYPE_GPIO_FLAGS: u64 = 7;
 pub const SENSOR_TYPE_CAMERA: u64 = 8;
 pub const SENSOR_TYPE_POWER: u64 = 9;
 
-// Driver-server family (E11.AQ3) — a userspace process serves a
-// driver `kind` for the in-kernel UserDriverProxy. Distinct from the
-// SYS_DRV_* (300) MMIO-ownership family above.
-
 // Untyped shared memory (F00.4). `SYS_IPC_MAP` is gated to the region's
 // creator (`dispatch.rs`, SYS_IPC_MAP arm) — cross-task sharing is the
 // typed `Cap<Shm>` path's job, not this one.
@@ -2367,13 +2363,11 @@ pub fn nicq_kick(queue: u32) -> isize {
     invoke(queue, invoke_abi::QUEUE_NICQ_KICK, [0; 4]).0
 }
 
-// ---- Driver server: serve a driver `kind` from userspace (E11.AQ3) ----
-
 /// Find the handle of a capability this task already holds.
 ///
 /// `kind` is a [`CapType`] ([`ty`]`::SHM.raw()`: a kind and its class) and
-/// `resource` the object it names — an IRQ line, a
-/// `DRV_KIND_*`. Returns the handle as a non-negative value, `-ENOENT` if the
+/// `resource` the object it names — an IRQ line, a device of the hardware
+/// bus. Returns the handle as a non-negative value, `-ENOENT` if the
 /// task holds no such capability.
 ///
 /// **This is the call that makes every other `*_typed` usable.** A capability
@@ -2397,103 +2391,10 @@ pub fn cap_lookup_host(key: u16, badge: u32) -> isize {
 
 /// The [`CapType`] a [`cap_lookup`] asks about.
 ///
-/// Re-exported, NOT restated. The first draft of this declared
-/// `CAP_KIND_GPIO: u8 = 8` and friends as plain constants "so a ring-3
-/// program need not depend on the ABI crate for two numbers" — which is the
-/// exact reasoning that had five files carrying their own `DRV_KIND_*` until
-/// those moved into `crates/core/abi` earlier in this commit. `crates/core/libsys`
-/// already depends on `azos_abi`; there was never a second number to
-/// keep in sync, only a habit.
+/// Re-exported, not restated: one number, in `crates/core/abi`.
 ///
 /// Call it as `cap_lookup(ty::IRQ.raw(), line)`.
 pub use azos_abi::cap::{ty, CapKind, CapType};
-
-/// Register as the driver for the kind named by `cap` (a
-/// `Cap<DriverRegistry>` from [`cap_lookup`]).
-///
-/// There is no `kind` argument: the kind comes out of the capability, so
-/// registering as a device you do not hold is not a request this ABI can
-/// express. `mmio_base`/`mmio_size`/`irq` are advisory, as in the untyped
-/// form.
-pub fn drv_srv_register_typed(cap: u32, mmio_base: u64, mmio_size: u64, irq: u32) -> isize {
-    domain_op(invoke_abi::DOMAIN_DRIVER_REGISTER, [cap as u64, mmio_base, mmio_size, irq as u64])
-}
-
-/// Release the driver registration named by `cap`. Requires `WRITE`, so it is
-/// refused with `-EAGAIN` while degraded mode is contained.
-pub fn drv_srv_unregister_typed(cap: u32) -> isize {
-    domain_op(invoke_abi::DOMAIN_DRIVER_UNREGISTER, [cap as u64, 0, 0, 0])
-}
-
-/// Fetch one pending request for `kind` into the caller's `DriverRequest`
-/// buffer (pass `&mut req as *mut _ as *mut u8`).
-///
-/// ABI (`sys_driver_fetch_request`, `handlers.rs::sys_driver_fetch_request`): the kernel writes
-/// **exactly `size_of::<DriverRequest>()` bytes** to `req_ptr` and is never
-/// told how large the destination is. The struct is `#[repr(C)]` and lives
-/// in `crates/drivers/driver_server/src/lib.rs`:
-///
-/// ```text
-/// token: u64 | client_tid: u32 | op: u32 | in_len: u16 | out_cap: u16
-///            | input: [u8; 64]                      →  88 bytes on RV64
-/// ```
-///
-/// `req_ptr` must therefore address at least that many bytes, correctly
-/// aligned to 8. `userspace/drivers/gpio_drv` keeps a mirror of the struct; if
-/// either copy changes, both must. This stays a raw pointer rather than a
-/// typed reference so libsys need not depend on `driver_server`.
-///
-/// Returns 0 if a request was written, `-1` if the queue is empty.
-pub fn drv_srv_fetch_request(kind: u32, req_ptr: *mut u8) -> isize {
-    domain_op(invoke_abi::DOMAIN_DRIVER_FETCH, [kind as u64, req_ptr as u64, 0, 0])
-}
-
-/// Post a `DriverReply` (pass `&reply as *const _ as *const u8`) for `kind`.
-///
-/// ABI (`sys_driver_reply`, `handlers.rs::sys_driver_reply`): the kernel **reads
-/// `size_of::<DriverReply>()` bytes** from `reply_ptr` — the `#[repr(C)]`
-/// struct at `crates/drivers/driver_server/src/lib.rs`:
-///
-/// ```text
-/// token: u64 | status: i32 | out_len: u16 | _pad: u16
-///            | output: [u8; 64]                     →  80 bytes on RV64
-/// ```
-///
-/// Same mirroring rule as [`drv_srv_fetch_request`]. Returns 0 on success.
-pub fn drv_srv_reply(kind: u32, reply_ptr: *const u8) -> isize {
-    domain_op(invoke_abi::DOMAIN_DRIVER_REPLY, [kind as u64, reply_ptr as u64, 0, 0])
-}
-
-/// Post the reply owed for `kind` and fetch the next request, in one trap.
-/// A serve loop's whole round trip.
-///
-/// ABI (`DOMAIN_DRIVER_REPLY_FETCH`, `sys_driver_reply_fetch`): `reply_ptr` is a
-/// `DriverReply` as for [`drv_srv_reply`], or null when no reply is owed (the
-/// loop's first call, or after a turn that fetched nothing); `req_ptr` has room
-/// for a `DriverRequest` as for [`drv_srv_fetch_request`].
-///
-/// Returns `0` (reply posted if given, request written) or `-1` (reply posted
-/// if given, queue empty). Any other value means **nothing was done**, so the
-/// reply is still owed: `-99` not this kind's driver, `-3` the reply could not
-/// be read or published, `-4` `req_ptr` is null or not writable. A call this
-/// binary's seccomp row does not grant answers dispatch's `-1`, which reads as
-/// "posted"; `tests/host/seccomp-tests` derives every row from the binary's source
-/// so such a row cannot ship.
-pub fn drv_srv_reply_fetch(kind: u32, reply_ptr: *const u8, req_ptr: *mut u8) -> isize {
-    domain_op(invoke_abi::DOMAIN_DRIVER_REPLY_FETCH, [kind as u64, reply_ptr as u64, req_ptr as u64, 0])
-}
-
-/// [`drv_srv_reply_fetch`] that blocks while the queue is empty
-/// (`DOMAIN_DRIVER_REPLY_WAIT`): the reply owed is posted, then the call returns
-/// with the next request, or `-1` once `park_ms` (0 = the kernel's default,
-/// at most 1000) has passed with none. A request queued by the kernel's proxy
-/// wakes it, so a serve loop on this call never polls.
-///
-/// Same buffers and the same returns as [`drv_srv_reply_fetch`]: any value
-/// other than `0` and `-1` did nothing, and the reply is still owed.
-pub fn drv_srv_reply_wait(kind: u32, reply_ptr: *const u8, req_ptr: *mut u8, park_ms: u32) -> isize {
-    domain_op(invoke_abi::DOMAIN_DRIVER_REPLY_WAIT, [kind as u64, reply_ptr as u64, req_ptr as u64, park_ms as u64])
-}
 
 // ===========================================================================
 //  `SYS_INVOKE`: the operations on a handle

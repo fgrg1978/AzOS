@@ -75,7 +75,6 @@ crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	11	0	0	0	0	100
 crates/drivers/dma	22	12	2	0	0	54
-crates/drivers/driver_server	0	0	0	0	1	0
 crates/drivers/dtb	97	42	0	0	0	100
 crates/drivers/fb	10	1	2	0	0	39
 crates/drivers/firmware	2	1	0	0	0	100

@@ -196,7 +196,6 @@ dependencies = [
  "cap_test_sched",
  "cap_test_sync",
  "syscall_test_arch",
- "syscall_test_driver_server",
  "syscall_test_drivers",
  "syscall_test_gps",
  "syscall_test_imu",
@@ -532,15 +531,6 @@ version = "0.1.0"
 dependencies = [
  "azos_arch_api",
  "bitflags",
-]
-
-[[package]]
-name = "syscall_test_driver_server"
-version = "0.1.0"
-dependencies = [
- "azos_abi",
- "azos_common",
- "cap_test_sync",
 ]
 
 [[package]]

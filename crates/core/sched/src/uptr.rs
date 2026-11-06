@@ -28,7 +28,7 @@ pub struct Efault;
 /// build an invalid value (a `bool`, an enum, a reference), and a write
 /// cannot hand ring 3 the stale bytes of the kernel stack a padding byte holds.
 /// A struct of a crate that forbids `unsafe` crosses the boundary as a byte
-/// array it encodes and decodes itself (`azos_driver_server`'s requests).
+/// array it encodes and decodes itself.
 ///
 /// # Safety
 ///

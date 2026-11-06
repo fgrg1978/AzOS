@@ -33,7 +33,7 @@ fn pwm_channels() -> usize {
 
 /// PWM/I2C bring-up + the robot motor-binding table
 /// (the `pwm_channel_is_motor_bound`/`gpio_pin_is_motor_bound` guards,
-/// and the `gpio-aq3-smoke`/`reflex-smoke` tasks, all need this).
+/// and the `reflex-smoke` task, all need this).
 ///
 /// On a board (`vf2`, `k1`) the controllers are the device tree's: the hardware
 /// bus binds `i2c`, `pwm` and `sfctemp` (`vf2`) or `i2c` (`k1`: the

@@ -122,9 +122,6 @@ $(OUT_BUILD)/disk-vsbench.img: AUTORUN_ELF := /fat/VSBENCH.ELF
 # bench volume carries it; no other image of this recipe does.
 $(OUT_BUILD)/disk-vsbench.img: DISK_EXTRA := $(TOOLBOX_ELF)=TOOLBOX.ELF
 $(OUT_BUILD)/disk-vsbench.img: $(TOOLBOX_ELF)
-# gpio_drv was built into every image since E11.AQ3 and made the autorun of
-# none of them, so the ring-3 driver path had no scenario at all.
-$(OUT_BUILD)/disk-gpiodrv.img: AUTORUN_ELF := /fat/GPIODRV.ELF
 
 # The "brain lies" scenario. Same autorun as disk.img ON PURPOSE: GPIODRV is
 # what exposed the net-poll starvation (a ring-3 program created inside the
@@ -210,7 +207,7 @@ provision_and_sign_config = python3 tools/sign/device_provision.py $@ >/dev/null
 $(OUT_BUILD)/disk.img $(OUT_BUILD)/disk-systest.img $(OUT_BUILD)/disk-uhello.img \
 $(OUT_BUILD)/disk-reflex.img $(OUT_BUILD)/disk-braincli.img $(OUT_BUILD)/disk-captest.img \
 $(OUT_BUILD)/disk-latbench.img $(OUT_BUILD)/disk-abitest.img $(OUT_BUILD)/disk-ipctest.img $(OUT_BUILD)/disk-vsbench.img \
-$(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-gpiodrv.img $(OUT_BUILD)/disk-brainlies.img \
+$(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
 		$(OUT_BUILD)/disk-brainrec.img $(OUT_BUILD)/disk-brainestop.img \
 		$(OUT_BUILD)/disk-estopgpio.img $(OUT_BUILD)/disk-drvbase.img $(OUT_BUILD)/disk-sdktestbase.img $(OUT_BUILD)/disk-lxbench-base.img: \
 		$(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF) $(UHELLO_ELF) \
@@ -506,7 +503,6 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img: AUTORUN_ELF_AARCH64 :
 # Wave 12: see `build/disk-vsbench.img`'s DISK_EXTRA.
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img: DISK_EXTRA := $(TOOLBOX_ELF_AARCH64)=TOOLBOX.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img: $(TOOLBOX_ELF_AARCH64)
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-gpiodrv.img: AUTORUN_ELF_AARCH64 := /fat/GPIODRV.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img:  AUTORUN_ELF_AARCH64 := /fat/REFLEX.ELF
 # aarch64 parity (this task): the network round-trip scenario. Needs
 # `net_ip`/`net_gateway`/`net_mask`/`behavior_server_ip`/`behavior_server_port`
@@ -523,7 +519,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img: AUTORUN_ELF_AARCH64 :
 $(OUT_BUILD)/disk-aarch64-lxbench-base.img: AUTORUN_ELF_AARCH64 := /fat/LXSRV.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX).img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-systest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-abitest.img \
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-ipctest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-captest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img \
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-gpiodrv.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-braincli.img \
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-braincli.img \
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktestbase.img $(OUT_BUILD)/disk-aarch64-lxbench-base.img: \
 		$(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AARCH64) $(MLSRV_ELF_AARCH64) \
 		$(UHELLO_ELF_AARCH64) $(EPSRV_ELF_AARCH64) $(ABICHILD_ELF_AARCH64) $(VSSRV_ELF_AARCH64) \

@@ -64,7 +64,6 @@ azos_arch          = { workspace = true }
 azos_sync          = { workspace = true }
 azos_rings         = { workspace = true }
 azos_limits        = { workspace = true }
-azos_driver_server = { workspace = true }
 azos_drv_api       = { workspace = true }
 azos_drv_base      = { workspace = true }
 azos_drv_power     = { workspace = true, optional = true }

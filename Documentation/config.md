@@ -961,8 +961,7 @@ The index lists every declared option: 1240.
 | `PROFILER_PMU` | `config/axes/Kconfig.build` | Profiler: sample on a PMU cycle-counter overflow |
 | `PROFILER_PMU_PERIOD` | `config/axes/Kconfig.build` | Profiler: core cycles between PMU samples |
 | `PROFILER_TICK_DIV` | `config/kernel/Kconfig.trace` | Profiler: sample every Nth scheduler tick |
-| `PROXY_REPLY_TIMEOUT_MS` | `config/subsys/Kconfig.drivers` | Ring-3 driver proxy: reply timeout (ms) |
-| `PROXY_SPIN_US` | `config/subsys/Kconfig.drivers` | Ring-3 driver proxy: spin before blocking on a reply (us) |
+| `PROXY_REPLY_TIMEOUT_MS` | `config/subsys/Kconfig.drivers` | In-kernel client of a ring-3 driver: reply timeout (ms) |
 | `PS2_WAIT_SPINS` | `config/subsys/Kconfig.drivers` | PS/2: status reads a controller wait gives up after |
 | `PSTORE_SIZE_KB` | `config/arch/Kconfig.platform` | Panic record region in RAM (KiB, 0 = off) |
 | `PTPD` | `config/subsys/Kconfig.netsvc` | PTP daemon (PTPD.ELF): IEEE 1588 slave over UDP or Ethernet steering the wall clock |

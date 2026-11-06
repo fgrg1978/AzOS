@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Scheduler wiring: the hook table, the proxy-donation hooks, the task-exit
+//! Scheduler wiring: the hook table, the task-exit
 //! resource release, and the system watchdog task.
 
 use crate::*;
@@ -512,11 +512,6 @@ pub(crate) fn install_sched_hooks() {
     // The guards the CPU lacked at the `[ISA]` report leave their records now
     // that the sink and the clock exist.
     crate::boot::isa::record_fallbacks();
-    // The user-driver proxy's block/wake/donation. Without it an in-kernel
-    // client of a ring-3 driver refuses every call (`ProxyError::CannotBlock`)
-    // — deliberately not a fallback to spinning, which would keep every
-    // scenario green with the block path broken.
-    azos_driver_server::reply_wait::set_proxy_hooks(&PROXY_HOOKS);
 }
 
 /// `azos_fs::ClaimPiHooks` (FX12): the graph id of a claim's owner and waiters.
@@ -590,69 +585,6 @@ fn mapping_unmap(root: usize, va: usize, pages: usize) {
     let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
 }
 
-/// `azos_driver_server::reply_wait`'s view of the scheduler: the notify
-/// path's block and wake (`WaitReason::Timer(deadline)`, woken by TID with
-/// the matching deadline — the timer sweep ends a wait nobody answers), and
-/// the client's wait-graph edge to the driver ([`proxy_lend`]).
-static PROXY_HOOKS: azos_driver_server::reply_wait::ProxyHooks =
-    azos_driver_server::reply_wait::ProxyHooks {
-        block: proxy_block,
-        wake: proxy_wake,
-        current_tid: azos_sched::scheduler::current_task_tid,
-        #[cfg(not(feature = "proxy-donation-canary"))]
-        donate: proxy_lend,
-        #[cfg(feature = "proxy-donation-canary")]
-        donate: proxy_never_donates,
-        undonate: proxy_unlend,
-        peer_running: azos_sched::task_running_on_other_hart,
-    };
-
-/// One `DriverProxy` node per driver task slot: an in-kernel client waiting
-/// for a ring-3 driver's reply blocks on it behind the driver, so the driver
-/// runs at its most urgent waiting client's attribute, a fair client's
-/// weight included. The node's owner is the driver slot, set once and again
-/// after the slot is reused (as the IPC call's nodes).
-static PROXY_NODES: [azos_sync::waitgraph::PiWaiters; azos_limits::MAX_TASKS] =
-    [const { azos_sync::waitgraph::PiWaiters::new(azos_sync::waitgraph::EdgeKind::DriverProxy) }; azos_limits::MAX_TASKS];
-
-/// The client `client` waits for `driver`: its edge to the driver's node.
-/// `true` = one [`proxy_unlend`] is owed.
-fn proxy_lend(client: u32, driver: u32) -> bool {
-    let (Some(c), Some(d)) = (kmutex_graph_id(client), kmutex_graph_id(driver)) else { return false };
-    let Some(node) = PROXY_NODES.get(d as usize) else { return false };
-    if node.owner() != Some(d) {
-        node.set_owner(Some(d));
-    }
-    azos_sync::waitgraph::block_on(c, node).is_ok()
-}
-
-/// The current task, done waiting for `driver`, leaves its edge.
-fn proxy_unlend(driver: u32) {
-    let (Some(c), Some(d)) = (azos_sched::classes::current(), kmutex_graph_id(driver)) else { return };
-    if let Some(node) = PROXY_NODES.get(d as usize) {
-        azos_sync::waitgraph::unblock(c as u32, node, azos_sync::waitgraph::UnblockReason::Acquired);
-    }
-}
-
-/// `proxy-donation-canary`: the proxy blocks and wakes as usual but takes no
-/// edge. `proxy-pi-smoke` must then time out on every attempt.
-#[cfg(feature = "proxy-donation-canary")]
-fn proxy_never_donates(_donor: u32, _target: u32) -> bool {
-    false
-}
-
-fn proxy_block(deadline: u64) -> bool {
-    use azos_sched::{task_block_outcome, BlockOutcome, WaitReason};
-    task_block_outcome(WaitReason::Timer(deadline)) == BlockOutcome::Refused
-}
-
-fn proxy_wake(tid: u32, deadline: u64) {
-    azos_sched::scheduler::wake_task_by_tid(
-        tid,
-        &|r| matches!(r, azos_sched::WaitReason::Timer(d) if *d == deadline),
-    );
-}
-
 /// Wave 15 (plan 4a): the process's per-slot state outside `azos_sched`
 /// moves from the leader's slot `from` to the exec'ing thread's `to`, now
 /// named `tid` (`scheduler::exec_take_over`): the seed row a fork reseeds
@@ -703,9 +635,8 @@ fn commander_exit_stop(tid: u32) {
 ///
 /// Shared between both ISAs since `install_sched_hooks` registers this on
 /// both — nothing in the body below is riscv64-specific (every crate it
-/// calls, `azos_syscall`/`azos_ipc`/`azos_net`/
-/// `azos_driver_server`, is a plain `[dependencies]` entry in
-/// `kernel/Cargo.toml`, not ISA-gated). The `#[cfg(target_arch =
+/// calls, `azos_syscall`/`azos_ipc`/`azos_net`, is a plain `[dependencies]`
+/// entry in `kernel/Cargo.toml`, not ISA-gated). The `#[cfg(target_arch =
 /// "riscv64")]` this used to carry existed only because aarch64 had no
 /// caller, same as `install_robot_hw`'s former gate.
 fn task_release_all_resources(tid: u32) {
@@ -746,10 +677,9 @@ fn task_release_all_resources(tid: u32) {
     if stop_late {
         commander_exit_stop(tid);
     }
-    // Is this a supervised driver the kernel will restart? Then
-    // its driver-server slot, its named endpoints and its service names are
-    // HELD for the successor instead of released (everything else is released
-    // as for any task). Decided first; the supervisor is woken last, once
+    // Is this a task the kernel's supervisor will restart? Then its named
+    // endpoints and its service names are HELD for the successor instead of
+    // released (everything else is released as for any task). Decided first; the supervisor is woken last, once
     // everything it will hand over is held.
     let sup = drv_supervisor::exit_verdict(tid);
     let held = sup.holds();
@@ -789,7 +719,7 @@ fn task_release_all_resources(tid: u32) {
     }
     // A task killed mid-flood must not take its suppressed-denial count with it.
     azos_syscall::handlers::cap_denial_task_exit(tid);
-    // A supervised driver's endpoints are held for its successor.
+    // A restarted task's named endpoints are held for its successor.
     azos_sched::prof::add(22, t_ph);
     let t_ph = azos_sched::prof::t();
     if keep_endpoints {
@@ -828,26 +758,8 @@ fn task_release_all_resources(tid: u32) {
             kprintln!("[LX] dropped {} module token(s) of task {}", tokens, tid);
         }
     }
-    // Driver-server slots. Nothing released these either: a ring-3 driver that
-    // crashed left its slot `active` forever, and now that the traffic is
-    // owner-checked that would make the kind permanently unclaimable — every
-    // client paying the proxy's full reply timeout before giving up.
-    //
-    // A supervised driver's slot is orphaned instead: still registered, its
-    // queue kept, handed to the successor by the supervisor.
     azos_sched::prof::add(19, t_ph);
     let t_ph = azos_sched::prof::t();
-    if held {
-        let drv = azos_driver_server::driver_orphan_all(tid);
-        if drv > 0 {
-            kprintln!("[DRV] held {} driver slot(s) of task {} for its successor", drv, tid);
-        }
-    } else {
-        let drv = azos_driver_server::driver_release_all(tid);
-        if drv > 0 {
-            kprintln!("[DRV] released {} driver slot(s) from task {}", drv, tid);
-        }
-    }
     drv_supervisor::exit_done(tid, sup);
     azos_sched::prof::add(21, t_ph);
 }

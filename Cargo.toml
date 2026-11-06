@@ -460,7 +460,6 @@ members = [
     "crates/core/inspect",
     # The interfaces of what the kernel hosts and of what a driver endpoint serves (D6 A).
     "crates/core/devif",
-    "crates/drivers/driver_server",
     # Driver framework API surface (host-testable, no riscv deps).
     "crates/drivers/api",
     "crates/drivers/ina219",
@@ -604,7 +603,6 @@ azos_decision  = { path = "crates/core/decision" }
 azos_inspect   = { path = "crates/core/inspect" }
 azos_devif     = { path = "crates/core/devif" }
 azos_idl       = { path = "crates/core/idl" }
-azos_driver_server = { path = "crates/drivers/driver_server" }
 azos_crypto    = { path = "crates/core/crypto" }
 azos_topology  = { path = "crates/core/topology" }
 azos_pkg       = { path = "crates/core/pkg" }

@@ -81,9 +81,6 @@ use crate::cap::{CapHandle, CapKind, CapPerms};
 /// `target`'s syntax is kind-specific and matches the conventions already
 /// documented in `crates/core/topology/src/types.rs`:
 ///
-///   - `DriverRegistry`: `"drv.<DRV_KIND_* as decimal>"` (e.g. `"drv.1"` for
-///     `DRV_KIND_GPIO = 0x0001`) — decimal, not hex, because every other
-///     dotted target here is decimal and one exception would be a trap
 ///   - `Device` (MMIO): `"mmio.<selector>"` (e.g. `"mmio.dt:google,goldfish-rtc"`,
 ///     `"mmio.pci:1af4:1041"`, `"mmio.virtio:2#1"`) — the device of the
 ///     hardware bus (`azos_drv_bus::hwbus`) the selector names
@@ -296,8 +293,7 @@ pub fn seed_one_cap_ops(
 /// names; refused for a device that is not there, one a kernel driver owns
 /// and a permission no mapping could honour), `"ioport.<first>.<count>"`
 /// (a range of I/O ports; refused past the ISA's port space, so everywhere
-/// on riscv64 and aarch64, and for any permission but `READ|WRITE`),
-/// `"drv.<DRV_KIND_* as decimal>"` (the right to register as that driver) or
+/// on riscv64 and aarch64, and for any permission but `READ|WRITE`) or
 /// `"nicq.eth<N>.<queue>"` (a queue of a NIC the kernel drives,
 /// [`nicq_grant_cap`]). Anything else is refused.
 fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
@@ -312,9 +308,6 @@ fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     }
     if let Some(spec) = target.strip_prefix("ioport.") {
         return crate::ioport_cap::ioport_grant_cap(tid, spec, perms).map(|c| c.raw());
-    }
-    if let Some(k) = parse_dotted(target, "drv") {
-        return crate::drvreg_cap::drvreg_grant_cap(tid, k, perms).map(|c| c.raw());
     }
     if let Some(spec) = target.strip_prefix("nicq.") {
         return nicq_grant_cap(tid, spec, perms).map(|c| c.raw());
@@ -448,7 +441,7 @@ fn parse_endpoint_name(target: &str) -> Option<&[u8]> {
     Some(b)
 }
 
-/// Parse `"<prefix>.<u32>"`, e.g. `"motor.0"`, `"irq.3"`, `"drv.1"`.
+/// Parse `"<prefix>.<u32>"`, e.g. `"motor.0"`, `"irq.3"`.
 fn parse_dotted(s: &str, prefix: &str) -> Option<u32> {
     let rest = s.strip_prefix(prefix)?.strip_prefix('.')?;
     rest.parse::<u32>().ok()

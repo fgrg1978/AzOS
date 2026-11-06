@@ -69,7 +69,7 @@ behind it.
 | `Port` | An event port. | one |
 | `Domain` | The right to see every task (a view, not authority over one). | `TASK` |
 | `Node` | A node of the name space. | `FILE` (descriptor or directory tree), `LAUNCH` (start one image), `SOCKET` |
-| `Device` | A piece of hardware. | `IRQ`, `MMIO`, `DRIVER_REGISTRY` |
+| `Device` | A piece of hardware. | `IRQ`, `MMIO`, `IOPORT` |
 | `Log` | A log. | `TRACE`, `CONSOLE` |
 
 An unknown kind or class is not a type; unpacking a corrupt or future handle

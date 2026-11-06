@@ -169,7 +169,7 @@ programs enter at `_azos_entry`, which aligns the stack and calls `_start`.
 | Ports | `port_create_typed`, `endpoint_create_typed`, `port_bind_typed`, `port_bind_timer`, `port_bind_pressure`, `port_unbind_typed`, `port_wait_typed`, `port_wait_until_typed`, `port_poll_typed`, `port_destroy_typed` |
 | Files | `root_dir`, `open_at`, `open_root`, `read`, `write`, `file_read_typed`, `file_write_typed`, `stat`, `statfs`, `readdir`, `mkdir`, `unlink`, `rmdir`, `rename`, `truncate`, `fsync_typed`, `close`, `console_write`, `print`, `println` |
 | Sockets | `socket_typed`, `connect_typed`, `send_typed`, `recv_typed`, `bind_typed`, `listen_typed`, `accept_typed`, `sendto_typed`, `recvfrom_typed`, `mcast_join_typed`, `mcast_leave_typed` |
-| Driver server | `drv_srv_register_typed`, `drv_srv_reply_wait`, `drv_srv_reply_fetch`, `drv_srv_fetch_request`, `drv_srv_reply`, `drv_srv_unregister_typed`, `mmio_map`, `irq_bind`, `irq_ack` |
+| Devices | `mmio_map`, `irq_bind`, `irq_ack` |
 | Foreign ABI | `foreign_entry`, `foreign_resume`, `foreign_fork` (for a ring-3 runtime that hosts another system-call ABI) |
 | Rings | `ioring_create_typed`, `ioring_submit_typed`, `ioring_destroy_typed`; `ioring::Ring` is the ring-3 producer and consumer over the ring page |
 
@@ -293,33 +293,24 @@ topology starts it, in `[package.metadata.azos]` of its `Cargo.toml`
 
 ## A native driver
 
-Source: `userspace/drivers/gpio_drv/src/main.rs`, `userspace/drivers/buzz_drv/src/main.rs`,
-`userspace/drivers/ina_drv/src/main.rs`, `crates/core/abi/src/drv_kind.rs`,
-`crates/core/devif/src/power.rs`.
+Source: `userspace/drivers/buzz_drv/src/main.rs`, `userspace/drivers/ina_drv/src/main.rs`,
+`userspace/drivers/gpio_drv/src/main.rs`, `crates/core/devif/src/`.
 
-A ring-3 driver is an ordinary process that serves requests the kernel forwards. The
-reference is `userspace/drivers/gpio_drv`; `buzz_drv` and `ina_drv` serve typed
-interfaces on endpoints instead. The sequence in `gpio_drv`:
+A ring-3 driver is an ordinary process that serves its class's IDL interface on the
+endpoint its topology row grants (`READ` on `endpoint.<name>`, the right to serve):
+`buzz_drv` serves `Buzzer`, `ina_drv` serves `PowerMon`, `gpio_drv` serves the
+device-power interface. The sequence:
 
-1. **Find the registry capability.** `cap_lookup(ty::DRIVER_REGISTRY.raw(), DRV_KIND_GPIO)`
-   returns the handle of the `DriverRegistry` capability that the program's topology
-   row grants. The kind comes from `azos_abi::drv_kind`.
-2. **Register.** `drv_srv_register_typed(cap, 0, 0, 0)` takes only that handle. There is
-   no `kind` argument, so a driver cannot register for a device its row does not name.
-3. **Serve.** `drv_srv_reply_wait(kind, reply, request, park_ms)` posts the reply owed
-   for the previous request, if any, and fetches the next one in one call. With the
-   queue empty it parks the task until a request is queued, bounded by `park_ms`
-   (0 is the kernel's default bound). It returns 0 for a request, -1 when the park
-   ended with none, and another value when the kernel refused with nothing done.
-4. **Handle.** Requests and replies are `#[repr(C)]` records (`DriverRequest`,
-   `DriverReply`) whose layout must match the kernel's driver server; the reply carries
-   the request's `token`.
-5. **Power.** The driver is a device with a power state. `azos_libsys::dev::power::runtime`
+1. **Accept.** `ipc_accept_v2(&mut req)` blocks until a call arrives on the endpoint.
+2. **Dispatch.** The generated `<Name>Idl::dispatch(&mut server, &req, &mut rep)` decodes
+   the op, calls the driver's implementation of the interface and encodes the answer.
+   A server that answers only some op classes reads them from the call's badge.
+3. **Reply.** `ipc_reply_v2(call, &rep)` sends the answer.
+4. **Power.** The driver is a device with a power state. `azos_libsys::dev::power::runtime`
    holds the runtime power core (`RuntimePm`, `PmDevice`, `PmServer`); a second thread
-   made with `thread_create` accepts `DevicePower` calls with `ipc_accept_v2` and
-   answers with `ipc_reply_v2`.
+   made with `thread_create` accepts `DevicePower` calls on its own endpoint.
 
-The row of the program grants only what the device needs: the right to register as
-that one driver kind, and the MMIO window, PWM channel or I2C slave behind it. A
-driver that moves between kernel and ring 3 sits behind the same handle; the
-placement options are in [config.md](config.md).
+The row of the program grants only what the device needs: its endpoint, and the MMIO
+window, PWM channel or I2C slave behind it. A driver that moves between kernel and
+ring 3 sits behind the same interface (`<Name>Placed`); the placement options are in
+[config.md](config.md). The component manager starts and restarts it.

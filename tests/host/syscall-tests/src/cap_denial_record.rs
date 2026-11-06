@@ -154,7 +154,7 @@ fn a_denial_records_the_resource_the_table_stores_for_every_kind() {
     assert!(!cap_check(ty::IRQ, 9, false));
     assert!(!cap_check(ty::MMIO, 0x0001_0003, true));
     assert!(!cap_check(ty::MMIO, u32::MAX, false));
-    assert!(!cap_check(ty::DRIVER_REGISTRY, 1, true));
+    assert!(!cap_check(ty::IOPORT, 1, true));
     assert_eq!(
         seen(),
         vec![(7u8, 9u32), (7, 0x0001_0003 | 0x8000_0000), (7, u32::MAX), (7, 1 | 0x8000_0000)],
@@ -192,9 +192,9 @@ fn seen_typed() -> Vec<(u8, u32)> {
 /// A typed refusal reaches the recorder, tagged with the family it was for and
 /// why it failed.
 ///
-/// Driven through `errno_for_cap_err` — the shipping function, since this
-/// crate `include!`s `handlers.rs` — because that is the choke point the
-/// production path actually takes.
+/// Driven through `note_typed_denial` — the shipping function, since this
+/// crate `include!`s `handlers.rs` — because that is the choke point every
+/// typed family's mapper takes.
 #[test]
 fn a_typed_denial_is_recorded_with_its_kind_and_reason() {
     use azos_abi::cap::CapKind;
@@ -203,9 +203,9 @@ fn a_typed_denial_is_recorded_with_its_kind_and_reason() {
     let _g = serial();
     arm_typed();
 
-    let _ = errno_for_cap_err(ty::IRQ, CapError::Stale);
-    let _ = errno_for_cap_err(ty::IRQ, CapError::WrongKind);
-    let _ = errno_for_cap_err(ty::IRQ, CapError::MissingPerms);
+    note_typed_denial(ty::IRQ, CapError::Stale);
+    note_typed_denial(ty::IRQ, CapError::WrongKind);
+    note_typed_denial(ty::IRQ, CapError::MissingPerms);
 
     assert_eq!(
         seen_typed(),
@@ -224,7 +224,7 @@ fn a_typed_denial_is_recorded_with_its_kind_and_reason() {
 #[test]
 fn typed_and_untyped_agree_on_the_kind_code_for_every_shared_family() {
     assert_eq!(CapType::NULL.denial_code(), 0, "Null");
-    for kind in [ty::IRQ, ty::MMIO, ty::DRIVER_REGISTRY] {
+    for kind in [ty::IRQ, ty::MMIO, ty::IOPORT] {
         assert_eq!(kind.denial_code(), 7, "{kind:?} records under a code other than its kind's");
     }
 }
@@ -266,7 +266,7 @@ fn containment_is_not_recorded_as_a_capability_denial() {
     let _g = serial();
     arm_typed();
 
-    let _ = errno_for_cap_err(ty::IRQ, CapError::Contained);
+    note_typed_denial(ty::IRQ, CapError::Contained);
     assert_eq!(
         seen_typed(),
         vec![],
@@ -275,7 +275,7 @@ fn containment_is_not_recorded_as_a_capability_denial() {
 
     // Positive control on the same family and the same installed hook, so a
     // green above cannot mean "the hook was never armed".
-    let _ = errno_for_cap_err(ty::IRQ, CapError::MissingPerms);
+    note_typed_denial(ty::IRQ, CapError::MissingPerms);
     assert_eq!(seen_typed(), vec![(7, 3)], "the hook was not armed");
 }
 

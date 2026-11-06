@@ -27,7 +27,7 @@
 //! * **Within a window** (`StartLimitBurst` / `StartLimitIntervalSec`): at
 //!   most [`SupPolicy::burst`] restarts within [`SupPolicy::interval`]. The
 //!   failure after that is final ([`SupState::Down`]): everything is released
-//!   and the kind stays down until the machine restarts. A restart older than
+//!   and the image stays down until the machine restarts. A restart older than
 //!   the interval no longer counts, so a driver that fails rarely is always
 //!   restarted. The kernel takes both from Kconfig (`SUP_RESTART_BURST`,
 //!   `SUP_RESTART_INTERVAL_S`; defaults 3 and 300 s).
@@ -40,8 +40,7 @@
 //! a program that is not the driver. No syscall reaches this table: it is
 //! written only by the kernel's own spawn of a declared image
 //! ([`sup_note_started`]) or of a kernel host ([`sup_note_kernel_host`]), by
-//! the driver's own successful typed registration ([`sup_bind`]), by the exit
-//! hook ([`sup_on_exit`]) and by the supervisor task. It shares the AQ2
+//! the exit hook ([`sup_on_exit`]) and by the supervisor task. It shares the AQ2
 //! cooldown constant; its budget is the window above.
 //!
 //! # Identity
@@ -55,12 +54,10 @@
 //! # Origins
 //!
 //! * [`SupOrigin::Spawned`] — an image the kernel itself started through
-//!   `SYS_SPAWN_EX`'s machinery because the system declares it: the topology's
-//!   `start = true` rows and the ML service ([`sup_note_started`]). It is
-//!   supervised from its first instruction, whether or not it ever registers
-//!   a kind, so a driver that crashes before it registers is restarted and
-//!   given up on like one that crashes later. Its successor is spawned again
-//!   from the same path by the supervisor task.
+//!   `SYS_SPAWN_EX`'s machinery because the system declares it: the component
+//!   manager and the ML service ([`sup_note_started`]). It is supervised from
+//!   its first instruction. Its successor is spawned again from the same path
+//!   by the supervisor task.
 //!
 //! * [`SupOrigin::KernelHost`] — the host task of a driver placed
 //!   in the kernel ([`sup_note_kernel_host`]). Supervised from the start like
@@ -74,13 +71,12 @@
 //!
 //! # What counts against the budget
 //!
-//! Every failed death of the entry's current task, including a successor that
-//! dies before it registers (its image no longer matches its profile, the file
-//! is gone, the actuation gate is absent). So a restart that cannot succeed
-//! ends in `Down` after the same number of attempts as a driver that crashes,
-//! and never loops. A driver that has used its budget stays down until the
-//! machine restarts (the policy `driver_start` already documents for the AQ2
-//! table).
+//! Every failed death of the entry's current task, and every successor whose
+//! spawn is refused (its image no longer matches its profile, the file is
+//! gone, the actuation gate is absent). So a restart that cannot succeed ends
+//! in `Down` after the same number of attempts as a task that crashes, and
+//! never loops. An image that has used its budget stays down until the
+//! machine restarts.
 //!
 //! # Pacing
 //!
@@ -146,12 +142,10 @@ pub enum SupOrigin {
 pub enum SupState {
     /// Unused slot.
     Free,
-    /// Its task is alive and supervised, from its start (its `kind` is
-    /// [`SUP_NO_KIND`] until it registers one).
+    /// Its task is alive and supervised, from its start.
     Serving,
-    /// Its task died with budget left. `tid == 0`: the successor is not
-    /// created yet (due at `not_before`); `tid != 0`: the successor exists
-    /// and has not registered yet.
+    /// Its task died with budget left; the successor is not created yet
+    /// (due at `not_before`).
     Restarting,
     /// Budget spent (or the successor could not even be created). Final.
     Down,
@@ -184,8 +178,6 @@ pub struct SupEntry {
     /// The path the spawn opened, byte for byte.
     pub image: [u8; SUP_IMAGE_MAX],
     pub image_len: u8,
-    /// The driver-server kind its task registered first. `u32::MAX` until then.
-    pub kind: u32,
     /// The task currently standing for this image, 0 for none.
     pub tid: u32,
     /// The task that died last, for the report and the flight recorder.
@@ -202,15 +194,12 @@ pub struct SupEntry {
     pub died_at: u64,
     /// When the last successor was created.
     pub respawned_at: u64,
-    /// When the current task registered its kind.
-    pub bound_at: u64,
     /// The earliest a pending successor may be created.
     pub not_before: u64,
     /// The exit hook has finished holding what the successor takes over (the
-    /// driver-server slot, named endpoints, service names). Until then no
-    /// successor is due: created earlier, it would find nothing to adopt, its
-    /// own registration would be refused, and the slot would be left orphaned
-    /// under the wrong TID. Cleared by every death, set by [`SupTable::held`].
+    /// named endpoints, service names). Until then no successor is due:
+    /// created earlier, it would claim an endpoint its predecessor still
+    /// serves. Cleared by every death, set by [`SupTable::held`].
     pub held: bool,
     /// The supervisor task has recorded the entry's fall to `Down`, or its
     /// end under `restart = no` ([`SupTable::fall`]). Cleared by every death,
@@ -226,9 +215,6 @@ pub struct SupEntry {
     pub successor: u32,
 }
 
-/// Sentinel for "no kind registered yet".
-pub const SUP_NO_KIND: u32 = u32::MAX;
-
 impl SupEntry {
     pub const fn empty() -> Self {
         SupEntry {
@@ -237,7 +223,6 @@ impl SupEntry {
             origin: SupOrigin::Spawned,
             image: [0; SUP_IMAGE_MAX],
             image_len: 0,
-            kind: SUP_NO_KIND,
             tid: 0,
             dead_tid: 0,
             restarts: 0,
@@ -245,7 +230,6 @@ impl SupEntry {
             window_n: 0,
             died_at: 0,
             respawned_at: 0,
-            bound_at: 0,
             not_before: 0,
             held: false,
             recorded: false,
@@ -260,20 +244,6 @@ impl SupEntry {
     }
 }
 
-/// What registering a kind meant for the supervisor.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BindOutcome {
-    /// The task is not supervised.
-    NotSupervised,
-    /// First registration of a supervised image: from now on it is restarted.
-    First { slot: usize },
-    /// A successor registered: restart `attempt` is serving, `since_death`
-    /// after the death it replaces (caller's clock units).
-    Restored { slot: usize, attempt: u8, since_death: u64 },
-    /// The task registered a second kind; it is already supervised.
-    AlreadyServing { slot: usize },
-}
-
 /// What a task's death means for the supervisor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExitVerdict {
@@ -283,7 +253,7 @@ pub enum ExitVerdict {
     /// `attempt` of the policy's burst within its interval, due at
     /// `not_before`.
     Restart { slot: usize, attempt: u8, not_before: u64 },
-    /// Budget spent: release everything; the kind stays down. `restarts` is
+    /// Budget spent: release everything; the image stays down. `restarts` is
     /// the total granted before.
     GiveUp { slot: usize, restarts: u8 },
     /// It exited 0: release everything, no restart (`Restart=on-failure`).
@@ -331,7 +301,7 @@ impl SupTable {
     /// The kernel is about to release `tid`, a task it spawned from `image`
     /// because the system declares it (a topology `start = true` row, the ML
     /// service). Supervised from now on, before it runs a single instruction:
-    /// the entry is `Serving` with no kind. `None` when the table is full or
+    /// the entry is `Serving`. `None` when the table is full or
     /// the path does not fit: the program then runs unsupervised.
     pub fn note_started(&mut self, tid: u32, image: &[u8]) -> Option<usize> {
         self.note_supervised(tid, image, SupOrigin::Spawned)
@@ -371,36 +341,6 @@ impl SupTable {
                 true
             }
             _ => false,
-        }
-    }
-
-    /// Task `tid` has just registered driver-server kind `kind` at `now`.
-    pub fn bind(&mut self, kind: u32, tid: u32, now: u64) -> BindOutcome {
-        let Some(i) = self.slot_of_tid(tid) else {
-            return BindOutcome::NotSupervised;
-        };
-        let e = &mut self.entries[i];
-        match e.state {
-            SupState::Restarting => {
-                e.state = SupState::Serving;
-                if e.kind == SUP_NO_KIND {
-                    e.kind = kind;
-                }
-                e.bound_at = now;
-                BindOutcome::Restored {
-                    slot: i,
-                    attempt: e.window_n,
-                    since_death: now.saturating_sub(e.died_at),
-                }
-            }
-            // Its first kind: it was supervised already.
-            SupState::Serving if e.kind == SUP_NO_KIND => {
-                e.kind = kind;
-                e.bound_at = now;
-                BindOutcome::First { slot: i }
-            }
-            SupState::Serving => BindOutcome::AlreadyServing { slot: i },
-            SupState::Free | SupState::Down | SupState::Exited => BindOutcome::NotSupervised,
         }
     }
 
@@ -527,6 +467,7 @@ impl SupTable {
     pub fn respawned(&mut self, slot: usize, heir: u32, now: u64) -> bool {
         match self.entries.get_mut(slot) {
             Some(e) if e.state == SupState::Restarting && e.tid == 0 && heir != 0 => {
+                e.state = SupState::Serving;
                 e.tid = heir;
                 e.respawned_at = now;
                 true
@@ -659,7 +600,7 @@ impl SupTable {
 
     /// The handover is done: `successor` is the entry's task. The old one
     /// is returned for the kernel to retire; it is no longer supervised, so
-    /// its end is not a death and starts no restart. The kind, the budget and
+    /// its end is not a death and starts no restart. The budget and
     /// the window are the entry's own, unchanged. `None` unless a swap is
     /// under way.
     pub fn swap_commit(&mut self, slot: usize, now: u64) -> Option<(u32, u32)> {
@@ -670,7 +611,6 @@ impl SupTable {
         let (old, new) = (e.tid, e.successor);
         e.tid = new;
         e.successor = 0;
-        e.bound_at = now;
         e.respawned_at = now;
         Some((old, new))
     }
@@ -721,11 +661,6 @@ pub fn sup_respawn_refused(slot: usize, now: u64, policy: SupPolicy) -> ExitVerd
 /// [`SupTable::set_restart`] on the kernel's table.
 pub fn sup_set_restart(slot: usize, restart: SupRestart) -> bool {
     SUPERVISOR.lock().set_restart(slot, restart)
-}
-
-/// [`SupTable::bind`] on the kernel's table.
-pub fn sup_bind(kind: u32, tid: u32, now: u64) -> BindOutcome {
-    SUPERVISOR.lock().bind(kind, tid, now)
 }
 
 /// [`SupTable::on_exit`] on the kernel's table.

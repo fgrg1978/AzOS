@@ -186,9 +186,9 @@ it or when the extra crossings buy no isolation.
   a kernel-hosted driver to ring 3. A ring-3 driver whose calls exceed its
   budget is promoted into the kernel if the kernel host's measured cost fits.
   Each move writes a `Rule::Placement` decision record.
-- **Ring-3 driver framework.** A ring-3 task registers as the driver for a
-  hardware kind with a capability; in-kernel clients reach it through a request
-  queue (`crates/drivers/driver_server`).
+- **Ring-3 drivers.** A ring-3 driver serves its class's IDL interface on an
+  endpoint; in-kernel clients call it through `<Name>Placed`, the same value
+  whichever host runs.
 - **Supervision.** The component manager (`userspace/services/compmgr`) is the
   first ring-3 component: it starts every `start = true` row of the topology
   (but a fixed driver placed in the kernel, whose host is a kernel task) and
@@ -201,7 +201,7 @@ it or when the extra crossings buy no isolation.
   others are ring-3 programs whose topology row is their whole authority
   (`userspace/services/`).
 
-Source: `crates/core/topology/src/placement.rs`, `crates/drivers/driver_server/src/lib.rs`,
+Source: `crates/core/topology/src/placement.rs`, `kernel/src/powermon.rs`,
 `kernel/src/drv_supervisor.rs`, `userspace/services/compmgr/src/main.rs`, `crates/drivers/chip_source.rs`.
 Next: [drivers.md](drivers.md), [services.md](services.md).
 

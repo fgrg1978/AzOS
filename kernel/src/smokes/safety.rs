@@ -75,8 +75,7 @@ pub(crate) fn seccomp_audit_smoke_task(expected_nr: usize) {
     }
 }
 
-// ISA-neutral, same reasoning as `gpio_user_driver_smoke_task` above:
-// `rangefinder::us_set_distance`/`us_read_mm` simulate the sensor in
+// ISA-neutral: `rangefinder::us_set_distance`/`us_read_mm` simulate the sensor in
 // software (QEMU has no real rangefinder either way) and carry no
 // `target_arch` branch.
 #[cfg(feature = "reflex-smoke")]

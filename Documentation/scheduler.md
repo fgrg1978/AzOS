@@ -181,7 +181,6 @@ Two priority-inheritance mechanisms coexist. The wait graph is always built in; 
 | `Mutex` | `azos_sync::kmutex::Mutex` |
 | `FutexPi` | PI futexes (`pi_futex.rs`, `FUTEX_PI`) |
 | `IpcCall` | a fast-IPC call blocked on its server (`azos_ipc::fastcall`) |
-| `DriverProxy` | node type defined for driver proxy requests (the kernel's proxy uses counted donation, below) |
 | `Claim` | a FAT32 claim held by its owner during device I/O |
 
 **Walk.** A block, unblock, release or attribute change walks the chain from the affected owner: recompute its effective attribute; if it changed and the owner is itself blocked, re-sort it in that object's waiters and continue at that object's owner. The walk stops when nothing changes, at a task that is not blocked, or after `PI_MAX_DEPTH` steps (Kconfig, default 16); reaching the cap stops boosting there, the block succeeds, and the event is counted.
@@ -197,10 +196,9 @@ Two priority-inheritance mechanisms coexist. The wait graph is always built in; 
 | Client | Mechanism |
 |---|---|
 | fast IPC call | wait graph (`Edge::lend`) |
-| user-driver proxy | `donate_priority` / `return_donation` |
 | kernel mutex, PI futex | wait graph |
 
-Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `kernel/src/boot/sched.rs` (`register_sched`, `PROXY_HOOKS`), `crates/fs/src/fat32.rs`, `config/kernel/Kconfig.sync` (`PI_MAX_DEPTH`, `FUTEX_PI`).
+Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `kernel/src/boot/sched.rs` (`register_sched`), `crates/fs/src/fat32.rs`, `config/kernel/Kconfig.sync` (`PI_MAX_DEPTH`, `FUTEX_PI`).
 
 ## CPU topology
 

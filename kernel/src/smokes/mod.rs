@@ -69,11 +69,9 @@ pub(crate) use safety::*;
 mod rc_fence;
 #[cfg(any(feature = "rc-failsafe-smoke", feature = "rc-stick-smoke", feature = "fence-refuse-smoke"))]
 pub(crate) use rc_fence::*;
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "estop-gpio-smoke",
-          all(feature = "qemu", feature = "boot-selftests")))]
+#[cfg(feature = "estop-gpio-smoke")]
 mod drivers;
-#[cfg(any(feature = "gpio-aq3-smoke", feature = "estop-gpio-smoke",
-          all(feature = "qemu", feature = "boot-selftests")))]
+#[cfg(feature = "estop-gpio-smoke")]
 pub(crate) use drivers::*;
 #[cfg(feature = "console-splice-smoke")]
 mod console_splice;
@@ -83,8 +81,6 @@ pub(crate) use console_splice::*;
 // Former inline `mod name { ... }` blocks of main.rs, one file each.
 #[cfg(any(feature = "sched-hooks-smoke", feature = "ktest"))]
 pub(crate) mod sched_hooks_smoke;
-#[cfg(feature = "proxy-pi-smoke")]
-pub(crate) mod proxy_pi_smoke;
 #[cfg(feature = "ring3-drv-smoke")]
 pub(crate) mod ring3_drv_smoke;
 #[cfg(feature = "qemu")]
@@ -276,31 +272,6 @@ pub(crate) fn spawn_sched_smokes(num_cpus: usize) {
 /// Inlined, as every boot phase (see `boot`'s module doc).
 #[inline(always)]
 pub(crate) fn spawn_system_smokes() {
-    // E11.AQ3 validation smoke: if a userspace gpio_drv was autorun'd, exercise
-    // the ring-3 driver round-trip from a kernel task, on a hart other than the
-    // autorun hart (3): the cross-hart case. The same-hart case — a client more
-    // urgent than the driver, on the driver's hart — is `proxy-pi-smoke`,
-    // started by this task once the driver has answered. QEMU-only: a
-    // validation aid, not production. A boot self-test (Kconfig
-    // BOOT_SELFTESTS), and on its own in the smokes it starts (`gpio-aq3-smoke`):
-    // an image without gpio_drv used to wait out its whole retry budget.
-    //
-    // **Priority 16, not 13.** It was 13, which on hart 1 is ABOVE
-    // `sensor-ahrs` at 14, while the proxy still waited for the reply with a
-    // million-iteration `spin_loop()`: for the whole span of a wait
-    // `sensor-ahrs` got no CPU, and `flight-ctrl` on hart 0 ages the attitude
-    // it publishes for its failsafe. The proxy now blocks for the reply
-    // (wave 8), so the wait no longer costs hart 1 anything; the priority
-    // stays below the sensor loop because nothing needs it higher.
-    #[cfg(any(feature = "gpio-aq3-smoke", all(feature = "qemu", feature = "boot-selftests")))]
-    {
-        const GPIO_SMOKE_PRIORITY: u32 = azos_sched::DEFAULT_PRIORITY;
-        const GPIO_SMOKE_HART: i8 = 1;
-        azos_sched::task_create_affinity(
-            "gpio-aq3-smoke", gpio_user_driver_smoke_task, 0,
-            GPIO_SMOKE_PRIORITY, GPIO_SMOKE_HART,
-        );
-    }
     #[cfg(feature = "orderly-reboot-smoke")]
     azos_sched::task_create_affinity("orderly-smoke", orderly_reboot_smoke_task, 0,
                                          azos_sched::DEFAULT_PRIORITY, 1);
@@ -313,8 +284,8 @@ pub(crate) fn spawn_system_smokes() {
     #[cfg(feature = "orderly-drain-smoke")]
     azos_sched::task_create("drain-smoke", orderly_drain_smoke_task, 0, azos_sched::DEFAULT_PRIORITY);
 
-    // DRV1: the buzzer and INA219 functional test. Hart 1, default priority,
-    // like `gpio-aq3-smoke`: it only waits and reads.
+    // DRV1: the buzzer and INA219 functional test. Hart 1, default priority:
+    // it only waits and reads.
     #[cfg(feature = "ring3-drv-smoke")]
     azos_sched::task_create_affinity(
         "drv-smoke", ring3_drv_smoke::task, 0, azos_sched::DEFAULT_PRIORITY, 1,
@@ -341,7 +312,7 @@ pub(crate) fn spawn_system_smokes() {
     {
         // Hart 1, not hart 3 — that one is autorun's and net-poll's.
         //
-        // DEFAULT priority, for the reason `gpio-aq3-smoke` above spells out.
+        // DEFAULT priority: nothing here needs to outrank the sensor loop.
         // Its body is millions of `task_yield`s, and a yield re-selects the
         // highest-priority ready task on the hart — which at 13 was this task,
         // above `sensor-ahrs` (14). The smoke starved the attitude publisher

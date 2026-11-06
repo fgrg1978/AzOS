@@ -32,7 +32,7 @@
 //! rather than copy. `handlers.rs` is a single 2,947-line module with a
 //! dependency footprint spanning essentially every kernel subsystem (159
 //! distinct `azos_*::path` references across ipc, sched, drivers, fs,
-//! net, mm, arch, robot, imu, gps, driver_server, sync). Compiling
+//! net, mm, arch, robot, imu, gps, sync). Compiling
 //! it means every one of those names must resolve, whether or not a given
 //! test exercises it — Rust compiles the whole file as one unit, and nothing
 //! here modifies it.
@@ -43,8 +43,7 @@
 //! pulled in with `#[path]`, not stand-ins — see each shim's own doc comment
 //! for which and why. In short:
 //!
-//! - `shims/arch`, `shims/driver_server` are the real `arch-riscv64::mmu`
-//!   module and the real `crates/drivers/driver_server` crate (both pure, no
+//! - `shims/arch` is the real `arch-riscv64::mmu` module (pure, no
 //!   RISC-V-only dependencies).
 //! - `shims/net` pulls the real `ethernet`/`arp`/`checksum`/`ip`/`ipv6`/
 //!   `igmp`/`dns`/`ntp`/`seq`/`tcp`/`udp`/`socket` modules, the superset
@@ -525,18 +524,6 @@ mod handlers {
 
 
     #[cfg(test)]
-    mod driver_server_guards {
-        use super::*;
-        include!("driver_server_guards.rs");
-    }
-
-    #[cfg(test)]
-    mod driver_reply_wait {
-        use super::*;
-        include!("driver_reply_wait.rs");
-    }
-
-    #[cfg(test)]
     mod raw_input_guards {
         use super::*;
         include!("raw_input_guards.rs");
@@ -829,8 +816,7 @@ mod handlers {
         include!("irq_route.rs");
     }
 
-    // The cold-restart supervisor, and what the driver server
-    // holds for a restarted driver.
+    // The cold-restart supervisor.
     #[cfg(test)]
     mod driver_supervise {
         use super::*;

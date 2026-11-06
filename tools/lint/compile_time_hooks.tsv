@@ -102,7 +102,6 @@ fw-entry-per-write-canary	pending
 fw-free-one-held-canary	pending	
 gate-skip-smoke	pending	
 geofence-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
-gpio-aq3-smoke	pending	
 guard-fault-probe-null	pending	
 kstack-overflow-probe	pending	
 guard-fault-probe-stack	pending	
@@ -233,8 +232,6 @@ portwait-timer-canary	pending
 power-cap-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 power-off-durability-smoke	pending	
 preempt-account-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
-proxy-donation-canary	pending	
-proxy-pi-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 pstore-corrupt-smoke	pending	
 pstore-smoke	pending	
 qos-armed-at-canary	hot	crates/core/sched/src/timer_sleepers.rs: every timed sleep

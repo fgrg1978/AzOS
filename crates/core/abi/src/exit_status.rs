@@ -17,9 +17,8 @@ pub const KILLED_ILL: i32 = 128 + 4;
 pub const KILLED_BUS: i32 = 128 + 7;
 /// Breakpoint with no debugger attached (Linux: SIGTRAP = 5).
 pub const KILLED_TRAP: i32 = 128 + 5;
-/// Stopped by the kernel on request, not for anything the task did: a ring-3
-/// driver the kernel asked to stop
-/// (`azos_driver_server::driver_request_stop`). Linux: SIGKILL = 9.
+/// Stopped by force, not for anything the task did (`task_stop`). Linux:
+/// SIGKILL = 9.
 pub const KILLED_KILL: i32 = 128 + 9;
 
 #[cfg(test)]

@@ -36,11 +36,6 @@ pub mod console_rx;
 // unified API for client tasks via `runtime::REGISTRY`.
 pub mod uart_driver;
 
-// Kernel-side proxy that adapts a userspace driver (registered via
-// `azos_driver_server`) to the `Driver` trait. Together with
-// `uart_driver` this proves the same trait spans both
-// `DriverIsolation` variants.
-pub mod user_driver_proxy;
 
 /// The monotonic clock under an ISA-neutral name — see the module docs for
 /// why 129 call sites used to read it as `clint::get_time()`.

@@ -98,10 +98,8 @@ pub enum EdgeKind {
     FutexPi = 2,
     /// A call blocked on an endpoint's server (L9; today PIFAST donation).
     IpcCall = 3,
-    // 4 was `Lease`, removed: not reused, because the code is recorded in
-    // the `wait-cycle` decision (`kind`), so a recorded value keeps its meaning.
-    /// A user-mode driver serving a kernel proxy request (migrated by N7).
-    DriverProxy = 5,
+    // 4 and 5 are not reused: the code is recorded in the `wait-cycle`
+    // decision (`kind`), so a recorded value keeps its meaning.
     /// A FAT32 claim (FAT sector or write-back) held by its owner while the
     /// owner does the claim's device I/O (FX12).
     Claim = 6,

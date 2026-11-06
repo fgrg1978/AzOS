@@ -54,26 +54,14 @@
 //! of a frame's cost on it. It is polled (no interrupt reaches this table), so
 //! [`irq_driven`] is false while it is registered.
 //!
-//! # How close this is to a ring-3 swap
+//! # A ring-3 host
 //!
-//! [`NetDevice`] mirrors the shape `azos_drv_api::Driver` already
-//! uses for its userspace forwarder (`UserDriverProxy`): every method takes
-//! `&self`, operates on borrowed fixed-size byte slices (never an owned
-//! buffer or an unbounded `Vec`), returns a small `Copy` error enum instead
-//! of `Result<(),()>` or an `i32` sentinel, and never blocks — `recv` polls
-//! once and returns `Ok(0)` for "nothing queued" rather than spinning, which
-//! is exactly the "bounded poll" contract a ring-3 forwarder needs (it
-//! cannot afford to block the kernel-side caller on a user-mode process that
-//! may never respond). What is still missing for an actual
-//! `UserDriverProxy`-backed `NetDevice`: `Driver::handle_request` is a single
-//! `(op, input, output)` entry point, so a userspace NIC driver would need
-//! its own small `op` encoding (send=0, recv=1, mac=2, is_ready=3) and a
-//! `NetDevice` impl on top of `UserDriverProxy` translating one to the
-//! other — the same kind of thin adapter `EthNetDevice`/`VirtioNetDevice`
-//! already are over their free-function APIs below. Nothing here registers a
-//! NIC into `runtime::REGISTRY` (`crates/drivers/base/src/runtime.rs`) or
-//! `sys_drv_invoke` — that wiring is unbuilt, not merely hidden behind this
-//! trait.
+//! [`NetDevice`] takes `&self` on every method, borrows fixed-size byte
+//! slices (never an owned buffer), returns a small `Copy` error enum and
+//! never blocks — `recv` polls once and returns `Ok(0)` for "nothing queued"
+//! — which is the bounded contract a caller of a ring-3 host needs. A ring-3
+//! NIC driver would serve the same operations as an IDL interface on its
+//! endpoint, as the buzzer and the INA219 do; that host is not built.
 
 use azos_drv_api::net::{NetDevice, NetError};
 use azos_sync::SpinLock;

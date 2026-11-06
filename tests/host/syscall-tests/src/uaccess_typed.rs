@@ -88,24 +88,3 @@ fn a_string_is_copied_with_its_length() {
     assert_eq!(UserCStr::new(VA as u64 + 100).read_into(&mut small), Err(Efault), "no room for the NUL");
     azos_sched::set_current_user_pt(0);
 }
-
-#[test]
-fn the_request_image_has_no_stale_padding() {
-    use azos_driver_server::{DriverRequest, DRIVER_REQUEST_BYTES};
-    // A request whose bytes, padding included, start as 0xAB everywhere.
-    let mut req = core::mem::MaybeUninit::<DriverRequest>::uninit();
-    unsafe { core::ptr::write_bytes(req.as_mut_ptr() as *mut u8, 0xAB, DRIVER_REQUEST_BYTES) };
-    let mut req = unsafe { req.assume_init() };
-    req.token = 1;
-    req.client_tid = 2;
-    req.op = 3;
-    req.in_len = 4;
-    req.out_cap = 5;
-    req.input = [6; azos_driver_server::DRIVER_REQUEST_PAYLOAD_BYTES];
-    let b = req.to_bytes();
-    // The fields at their `repr(C)` offsets, as the userspace mirrors read them.
-    let raw = unsafe { core::slice::from_raw_parts(&req as *const DriverRequest as *const u8, DRIVER_REQUEST_BYTES) };
-    let fields = 20 + azos_driver_server::DRIVER_REQUEST_PAYLOAD_BYTES;
-    assert_eq!(&b[..fields], &raw[..fields]);
-    assert!(b[fields..].iter().all(|&x| x == 0), "the tail padding goes out as zero, not as the stack held it");
-}

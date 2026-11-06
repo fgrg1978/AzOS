@@ -353,14 +353,12 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: CONSOLE_OPS,
         ifaces: NO_IFACES,
     },
-    // The ring-3 GPIO driver: looks up its `DriverRegistry` handle (`cap_info`),
-    // registers through it (`DOMAIN_DRIVER_REGISTER`) and serves its requests,
-    // parked on a timed sleep while none is queued. Runtime PM: a second
-    // thread (`SYS_THREAD_CREATE`) accepts and answers the `DevicePower`
-    // interface it serves on its endpoint (v2 accept and reply), and takes the
-    // lock the serve loop shares with it by yielding. `DOMAIN_STAT` is the
-    // clock the idle timeout and the wakelock deadlines run on (the vDSO's
-    // fallback).
+    // The ring-3 GPIO device host: a thread (`SYS_THREAD_CREATE`) accepts and
+    // answers the `DevicePower` interface it serves on its endpoint (v2
+    // accept and reply) and takes the lock it shares with the idle clock by
+    // yielding; the main thread sleeps until the clock is due. `DOMAIN_STAT`
+    // is the clock the idle timeout and the wakelock deadlines run on (the
+    // vDSO's fallback).
     ImageProfile {
         image: "GPIODRV.ELF",
         syscalls: sys_nrs![
@@ -368,7 +366,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_THREAD_CREATE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_DRIVER_REGISTER],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT],
         ifaces: NO_IFACES,
     },
     // The ring-3 inference service (`userspace/services/infsrv`; the image keeps

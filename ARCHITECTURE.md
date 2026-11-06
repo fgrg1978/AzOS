@@ -199,10 +199,10 @@ register through the `Driver` trait of `azos_drv_api`, and some crates are pure
 protocol logic with no registration. A driver can run in the kernel or, when its
 source is written for both, in a ring-3 server that serves the same IDL
 interface on an endpoint. A topology row picks the host (`place`), and a
-`stateless` driver can move between hosts at run time. A supervisor restarts a
-ring-3 driver that dies.
+`stateless` driver can move between hosts at run time. The component manager
+restarts a ring-3 driver that dies.
 
-- Source: `crates/drivers/*`, `crates/drivers/driver_server`,
+- Source: `crates/drivers/*`,
   `crates/core/topology/src/placement.rs`, `kernel/src/drv_supervisor.rs`,
   `userspace/drivers/`.
 - Doc: [drivers.md](Documentation/drivers.md).

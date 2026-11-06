@@ -246,8 +246,6 @@ pub mod targets {
     target!(Task,       TASK,       "Process / task handle.");
     // A marker type is inert on its own — it is what a `Cap<T>` is
     // parameterised by, not a grant.
-    target!(DriverRegistry, DRIVER_REGISTRY,
-            "The right to register as the driver for one `DRV_KIND_*`.");
     // Seeded from the topology word `"nicq.eth<N>.<queue>"` (`cap_seed`); the
     // resource is `azos_abi::nic_queue::resource`.
     target!(NicQueue,   NIC_QUEUE,  "One queue of a NIC the kernel drives, to run from ring 3 on a pair of rings.");
@@ -2308,10 +2306,9 @@ impl CapTable {
     /// owner decision 2026-09-13:
     ///
     /// * releasing an object the caller holds — `io_ring_destroy_cap`, and
-    ///   `port_destroy_cap` and `drvreg_kind_for_release`, which name their op
-    ///   and so resolve through [`get_op_uncontained`](Self::get_op_uncontained).
-    ///   Destroying and unregistering stay live the way closing a socket does,
-    ///   and still need `WRITE`;
+    ///   `port_destroy_cap`, which names its op and so resolves through
+    ///   [`get_op_uncontained`](Self::get_op_uncontained). Destroying stays
+    ///   live the way closing a socket does, and still needs `WRITE`;
     /// * commanding a wheel — `motor_speed_cap_id`. The motor layer applies
     ///   the halt rule itself (`motor_set_reporting`: brake and coast
     ///   admitted, a direction change refused), so a stop is not refused one

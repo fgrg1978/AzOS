@@ -233,7 +233,7 @@ pub(crate) fn current_tid(path: &[u8]) -> Option<u32> {
 pub(crate) struct Exit(ExitVerdict);
 
 impl Exit {
-    /// Hold the driver-server slot and named endpoints for a successor,
+    /// Hold the named endpoints for a successor,
     /// instead of releasing them.
     pub(crate) fn holds(&self) -> bool {
         matches!(self.0, ExitVerdict::Restart { .. })
@@ -385,14 +385,14 @@ fn supervisor_task(_: usize) {
             let img = image_str(&e.image[..e.image_len as usize]);
             match fall {
                 SupFall::GaveUp => {
-                    record(SUP_ACTION_GAVE_UP, e.kind, e.restarts);
-                    azos_drv_sys::kerr!("[SUP] gave up on {} (kind {:#x}) after {} restarts: recorded",
-                              img, e.kind, e.restarts);
+                    record(SUP_ACTION_GAVE_UP, slot, e.restarts);
+                    azos_drv_sys::kerr!("[SUP] gave up on {} after {} restarts: recorded",
+                              img, e.restarts);
                 }
                 SupFall::NoRestart => {
-                    record(SUP_ACTION_NO_RESTART, e.kind, e.restarts);
-                    kprintln!("[SUP] {} (kind {:#x}) ended under restart = no after {} \
-                               restarts: recorded", img, e.kind, e.restarts);
+                    record(SUP_ACTION_NO_RESTART, slot, e.restarts);
+                    kprintln!("[SUP] {} ended under restart = no after {} restarts: recorded",
+                              img, e.restarts);
                 }
             }
             sup_mark_recorded(slot);
@@ -435,8 +435,7 @@ fn respawn(slot: usize) {
 }
 
 /// Step 3 for a kernel host: a new kernel task on the dead one's entry, on
-/// its hart. Nothing to hand over (a kernel host holds no driver-server slot);
-/// the host registers itself when it starts.
+/// its hart. Nothing to hand over; the host registers itself when it starts.
 fn respawn_kernel_host(slot: usize, e: &SupEntry) {
     let dead = e.dead_tid;
     let host = KERNEL_HOSTS.lock()[slot];
@@ -452,11 +451,11 @@ fn respawn_kernel_host(slot: usize, e: &SupEntry) {
             kprintln!("[SUP] restart {}/{} of kernel host {}: successor tid={} for tid={} created \
                        {} ms after the death", e.window_n, RESTART_BURST, image_str(e.image()),
                       heir, dead, t.saturating_sub(e.died_at) / ticks_per_ms());
-            record(SUP_ACTION_RESTART, e.kind, e.restarts);
+            record(SUP_ACTION_RESTART, slot, e.restarts);
         }
         None => {
             let _ = sup_respawn_failed(slot);
-            record(SUP_ACTION_RESPAWN_FAILED, e.kind, e.restarts);
+            record(SUP_ACTION_RESPAWN_FAILED, slot, e.restarts);
             sup_mark_recorded(slot);
             azos_drv_sys::kerr!("[SUP] restart {}/{} of kernel host {} REFUSED: no task; it stays down",
                       e.window_n, RESTART_BURST, image_str(e.image()));
@@ -479,12 +478,11 @@ fn respawn_spawned(slot: usize, e: &SupEntry) {
     } else {
         None
     };
-    let (mut slots, mut heir) = (0usize, 0u32);
+    let mut heir = 0u32;
     let rc = match refusal {
         Some(_) => -1,
         None => {
             let mut hook = |tid| {
-                slots = azos_driver_server::driver_adopt(dead, tid);
                 if sup_respawned(slot, tid, now()) {
                     heir = tid;
                 }
@@ -494,13 +492,13 @@ fn respawn_spawned(slot: usize, e: &SupEntry) {
     };
     if rc > 0 && heir as i64 == rc {
         kprintln!("[SUP] restart {}/{} of {}: successor tid={} for tid={} spawned {} ms after \
-                   the death ({} driver slot(s) handed over)",
+                   the death",
                   e.window_n, RESTART_BURST, image_str(e.image()), heir, dead,
-                  now().saturating_sub(e.died_at) / ticks_per_ms(), slots);
-        record(SUP_ACTION_RESTART, e.kind, e.restarts);
+                  now().saturating_sub(e.died_at) / ticks_per_ms());
+        record(SUP_ACTION_RESTART, slot, e.restarts);
         return;
     }
-    record(SUP_ACTION_RESPAWN_FAILED, e.kind, e.restarts);
+    record(SUP_ACTION_RESPAWN_FAILED, slot, e.restarts);
     match sup_respawn_refused(slot, now(), policy()) {
         ExitVerdict::Restart { attempt, not_before, .. } => {
             azos_drv_sys::kwarn!("[SUP] restart {}/{} of {} REFUSED ({}): attempt {}/{} due in {} ms",
@@ -509,9 +507,7 @@ fn respawn_spawned(slot: usize, e: &SupEntry) {
                       not_before.saturating_sub(now()) / ticks_per_ms());
         }
         ExitVerdict::GiveUp { .. } => {
-            // As the death after the burst would: nothing is held any more.
             // The give-up itself is recorded by the loop (`next_unrecorded`).
-            let _ = azos_driver_server::driver_release_orphans(dead);
             azos_drv_sys::kerr!("[SUP] restart {}/{} of {} REFUSED ({}): budget spent, released, it \
                        stays down", e.window_n, RESTART_BURST, image_str(e.image()),
                       refusal.unwrap_or("spawn refused"));
@@ -534,8 +530,7 @@ const SWAP_QUIESCE_MS: u64 = 2_000;
 /// 3) let the old server finish its calls in service, re-presenting them to
 /// the successor halfway; 4) move the capability table to the successor, flip
 /// every endpoint to it ([`azos_ipc::endpoint::endpoint_rebind_all`]: no
-/// drain, no new generation), move the driver-server slots,
-/// and make the successor the entry's task; 5) stop the old server, which is
+/// drain, no new generation) and make the successor the entry's task; 5) stop the old server, which is
 /// no longer supervised. Any step that fails before 4 cancels: the old server
 /// serves on, its queued calls delivered, the successor stopped.
 ///
@@ -551,11 +546,6 @@ fn swap(slot: usize) {
     let old = e.tid;
     let refusal = if old == 0 || e.origin != SupOrigin::Spawned {
         Some("not a serving spawned image")
-    } else if e.kind != azos_sched::supervisor::SUP_NO_KIND {
-        // A driver-server kind is held by its registrant: the successor's own
-        // registration at startup is refused until the slot is handed over,
-        // which is after the flip. Level 1 swaps a pure IPC server.
-        Some("a driver-server task needs Level 2 (its kind is registered by the old task)")
     } else if !azos_actuation::gate::gate_installed() {
         Some("the actuation gate is not installed")
     } else if azos_actuation::estop::safe_mode_active() {
@@ -637,13 +627,12 @@ fn swap(slot: usize) {
     azos_ipc::endpoint::resolve_cache::clear(ni);
     match endpoint_rebind_all(old, new) {
         Ok(n) => {
-            let slots = azos_driver_server::driver_adopt(old, new);
             // Calls queued during the handover wait for a server blocked in its
             // accept: the queue's wake went to the old one.
             azos_sched::wake_fast_ipc_server(new);
             if let Some((o, n2)) = sup_swap_commit(slot, now()) {
-                kprintln!("[SUP] swap of {}: tid={} replaced by tid={} ({} endpoint(s) rebound, {} driver \
-                           slot(s) handed over)", image_str(e.image()), o, n2, n, slots);
+                kprintln!("[SUP] swap of {}: tid={} replaced by tid={} ({} endpoint(s) rebound)",
+                          image_str(e.image()), o, n2, n);
             }
             // 5) The old server is nobody's: its end is not a death.
             azos_sched::scheduler::task_stop(old, true, 15);
@@ -777,9 +766,9 @@ pub(crate) fn register_block_sink() {
     azos_drv_api::recovery::set_sink(device_timeout_sink);
 }
 
-fn record(action: u8, kind: u32, count: u8) {
+fn record(action: u8, slot: usize, count: u8) {
     let _ = log_safety_violation_durable(
-        SAFETY_DRIVER_SUPERVISOR, action, sup_record_detail(kind, count));
+        SAFETY_DRIVER_SUPERVISOR, action, sup_record_detail(slot as u32, count));
 }
 
 fn image_str(b: &[u8]) -> &str {
@@ -1072,7 +1061,7 @@ mod hung_act {
     /// The report plus the action, with the watchdog's 500 ms pass and a loaded host.
     const ACT_WITHIN_MS: u64 = 20_000;
 
-    static OBJ: PiWaiters = PiWaiters::new(EdgeKind::DriverProxy);
+    static OBJ: PiWaiters = PiWaiters::new(EdgeKind::Mutex);
     static WQ: azos_sync::WaitQueue = azos_sync::WaitQueue::new();
     static BLOCKED: AtomicBool = AtomicBool::new(false);
     static FREE: AtomicBool = AtomicBool::new(false);

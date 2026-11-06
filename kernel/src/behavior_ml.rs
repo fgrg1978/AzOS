@@ -22,9 +22,8 @@
 //! alive and not answering. The behavior loop cannot be that caller: a service
 //! that hangs would hang the loop that arbitrates, publishes the motor command
 //! and feeds the brain link. So the `ml-infer` task makes the calls, one at a
-//! time, and the loop waits for it with a timer
-//! (`azos_driver_server::reply_wait::wait_for_reply`, the wait the
-//! user-driver proxy uses). A call that does not come back in time is `Late`,
+//! time, and the loop waits for it with a timer ([`wait_done`]). A call that
+//! does not come back in time is `Late`,
 //! and so is every cycle until it does (`Why::Pending`): at most one call is
 //! ever out. The helper runs at the loop's priority, which is what the call
 //! donates to the service while it is served.
@@ -40,7 +39,6 @@ use azos_behavior::ml_link::{MlAbsence, MlLinkStats, MlOutcome};
 use azos_behavior::types::MlpResult;
 use azos_devif::infer::Tensor;
 use azos_devif::Cap;
-use azos_driver_server::reply_wait::{wait_for_reply, ReplyWaitEnv, WaitOutcome};
 use azos_drv_sys::kprintln;
 use azos_ipc::memobj::{memobj_create_cap, memobj_with_span_ref, MemPerms, MemSpec};
 use azos_robot::ModelRecord;
@@ -307,15 +305,19 @@ fn infer_task(_: usize) {
 
 // ── The loop's side ──────────────────────────────────────────────────────
 
-/// The wait of the loop: a timer, ended by the helper's wake.
-struct LoopWait;
-
-impl ReplyWaitEnv for LoopWait {
-    fn now(&self) -> u64 {
-        azos_drv_sys::timebase::now()
-    }
-    fn block(&self, deadline: u64) -> bool {
-        azos_sched::task_block_outcome(WaitReason::Timer(deadline)) == BlockOutcome::Refused
+/// The wait of the loop for call `seq`: a timer, ended early by the
+/// helper's wake. `true` when the call is done by `deadline`; a refused block
+/// (the loop is asked to stop) ends the wait too.
+fn wait_done(seq: u32, deadline: u64) -> bool {
+    loop {
+        if DONE.load(Ordering::Acquire) == seq {
+            return true;
+        }
+        if azos_drv_sys::timebase::now() >= deadline
+            || azos_sched::task_block_outcome(WaitReason::Timer(deadline)) == BlockOutcome::Refused
+        {
+            return DONE.load(Ordering::Acquire) == seq;
+        }
     }
 }
 
@@ -346,14 +348,12 @@ fn call(front_mm: u16, right_mm: u16) -> Attempt {
     WAITER_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     REQUEST.store(seq, Ordering::Release);
     wake_helper();
-    match wait_for_reply(&LoopWait, deadline, || DONE.load(Ordering::Acquire) == seq, || {}) {
-        WaitOutcome::Replied => match *RESULT.lock() {
-            Some((n, a)) if n == seq => a,
-            _ => Attempt::missing(MlOutcome::Malformed, Why::NotReady),
-        },
-        WaitOutcome::TimedOut | WaitOutcome::Refused => {
-            Attempt::missing(MlOutcome::Late, Why::Transport(azos_devif::IdlError::DeadlineExpired))
-        }
+    if !wait_done(seq, deadline) {
+        return Attempt::missing(MlOutcome::Late, Why::Transport(azos_devif::IdlError::DeadlineExpired));
+    }
+    match *RESULT.lock() {
+        Some((n, a)) if n == seq => a,
+        _ => Attempt::missing(MlOutcome::Malformed, Why::NotReady),
     }
 }
 

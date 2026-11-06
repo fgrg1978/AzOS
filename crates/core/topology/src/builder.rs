@@ -138,8 +138,7 @@ const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 // placed in the kernel), which seeds a child from the row named after its
 // IMAGE. `start` is set only under `ring3-driver-start`
 // (QEMU; see `crates/core/topology/Cargo.toml`). Each holds exactly what its
-// device needs: the right to register as that one driver kind, and the one
-// PWM channel or I2C slave behind it.
+// device needs: the one PWM channel or I2C slave behind it.
 /// The buzzer ring-3 host's image, the name of its row.
 pub const TASK_BUZZDRV_IMAGE: &[u8] = b"BUZZDRV.ELF";
 /// Does this topology declare the buzzer's ring-3 host? Whenever the volume
@@ -342,15 +341,6 @@ const DRIVETRAIN_CAPS: [CapSpec<'static>; 2] = [
         target: MaybeStr::from_bytes(RESOURCE_MOTOR_1), transfer: false, ops: 0,
     },
 ];
-// Matches the legacy `HandleKind::DriverRegistry(DRV_KIND_GPIO)` RW grant the
-// autorun seed already makes. `1` is `azos_driver_server::DRV_KIND_GPIO`
-// (0x0001) written in decimal, per the `drv.<kind>` target convention in
-// `crates/core/ipc/src/cap_seed.rs`. This crate has no dependency on
-// `driver_server` — parsing static configuration must not pull in the
-// registry — so the number is a literal here and the two are held together by
-// `tests/host/topology-tests`, which asserts them equal.
-const RESOURCE_DRV_GPIO: &[u8] = b"drv.1";
-
 // ── The three hardware families, granted per RESOURCE ────────────────────
 //
 // Until 2026-09-10 no ring-3 task was granted a gpio, i2c or pwm endpoint at
@@ -777,8 +767,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     )
     .expect("default_minimal_topology: brain_link push failed");
 
-    // P1 migration seed for the autorun task: Motor(0)/Motor(1) RW, the GPIO
-    // driver registration, the free PWM channel and GPIO pin, the IMU READ,
+    // P1 migration seed for the autorun task: Motor(0)/Motor(1) RW, the free
+    // PWM channel and GPIO pin, the IMU READ,
     // and the ten `sensor.0`..`sensor.9` READ endpoints. Every kind
     // declared here has a typed minter in `crates/core/ipc/src/cap_seed.rs`
     // (`seed_one_cap`); a kind without one would document a capability the
@@ -795,17 +785,6 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // CAPTEST, IPCTEST, UHELLO…) runs under this one, so it states what they
     // have always run at: 16, the scheduler's default.
     let autorun_base: &[CapSpec] = &[
-            // The right to register as the GPIO driver, and only that one —
-            // the `userspace: ring-3 GPIO driver` scenario is a ring-3
-            // program that legitimately registers. Declared here so the typed
-            // mint comes from the topology rather than being hard-coded in
-            // the kernel a second time, which is the whole point of the P1
-            // bridge.
-            CapSpec {
-                kind: CapKind::Device,
-                perms: CapPerms::RW,
-                target: MaybeStr::from_bytes(RESOURCE_DRV_GPIO), transfer: false, ops: 0,
-        },
             // The three hardware families — see the resource constants above
             // for why each target was chosen, and why the two motor-bound ones
             // are declared only under `cap-refusal-canary`.
@@ -1402,7 +1381,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // `soft_rt` 16; the INA219's row below has a reservation instead): above the
     // interactive session ([`SH_PRIORITY`], 26), never equal to it. A client
     // more urgent than the driver donates its priority for the span of each
-    // request (`UserDriverProxy`), so a request is served at the client's
+    // call (the endpoint call lends it), so a request is served at the client's
     // priority (down to the ring-3 floor, 12): that donation, not the row, is
     // what keeps `autorun` (16) from waiting on a driver below it. What 24
     // gives up is the driver's own timing outside a request: a CPU-bound task
@@ -3883,7 +3862,7 @@ mod tests {
         // test reads grew, over several commits, to also carry the free
         // PWM channel, the free GPIO pin, the IMU (I2c, READ) and the ten
         // ten `sensor.N` READ endpoints (see the block comment above
-        // `push_task`, which already listed all of these) — 14 entries
+        // `push_task`, which already listed all of these) — 13 entries
         // unconditionally, not 1. This assertion was never executed until
         // `tests/host/topology-tests` made this file's `#[cfg(test)]` module
         // reachable from a host binary (see that crate's own comment), so
@@ -3896,12 +3875,12 @@ mod tests {
         // test fail for changes unrelated to what it is named for.
         let motor_count = caps.iter().filter(|c| c.kind == CapKind::Endpoint && c.target.as_str().starts_with("motor.")).count();
         let non_motor_count = caps.len() - motor_count;
-        // Present regardless of `profile-actuation`: DriverRegistry(drv.1),
-        // endpoint pwm.4, gpio.20, i2c.0.0x68, sensor.0..9 × 10 = 14 (plus whatever
+        // Present regardless of `profile-actuation`: endpoint pwm.4,
+        // gpio.20, i2c.0.0x68, sensor.0..9 × 10 = 13 (plus whatever
         // `cap-refusal-canary` adds, not exercised by this test — see
         // `tests/host/topology-tests`' cap-canary run for that half).
         assert_eq!(
-            non_motor_count, 14,
+            non_motor_count, 13,
             "non-motor grant count drifted — update this test AND check \
              whether the drift was intentional"
         );
@@ -3917,9 +3896,6 @@ mod tests {
         else {
             assert_eq!(motor_count, 0, "no motor capability without the drivetrain");
         }
-        assert!(caps.iter().any(|c| c.kind == CapKind::Device
-            && c.perms == CapPerms::RW
-            && c.target == MaybeStr::from_bytes(RESOURCE_DRV_GPIO)));
     }
 
     #[test]

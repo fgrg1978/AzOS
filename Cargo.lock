@@ -269,15 +269,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "azos_driver_server"
-version = "0.1.0"
-dependencies = [
- "azos_abi",
- "azos_common",
- "azos_sync",
-]
-
-[[package]]
 name = "azos_drv_actuator"
 version = "0.1.0"
 dependencies = [
@@ -359,7 +350,6 @@ dependencies = [
  "azos_abi",
  "azos_arch_api",
  "azos_common",
- "azos_driver_server",
  "azos_drv_api",
  "azos_drv_base",
  "azos_drv_sys",
@@ -438,7 +428,6 @@ dependencies = [
  "azos_arch",
  "azos_arch_api",
  "azos_common",
- "azos_driver_server",
  "azos_drv_api",
  "azos_drv_base",
  "azos_drv_power",
@@ -682,7 +671,6 @@ dependencies = [
  "azos_devif",
  "azos_display",
  "azos_dma",
- "azos_driver_server",
  "azos_drv_actuator",
  "azos_drv_api",
  "azos_drv_base",
@@ -1049,7 +1037,6 @@ dependencies = [
  "azos_crypto",
  "azos_decision",
  "azos_devif",
- "azos_driver_server",
  "azos_drv_actuator",
  "azos_drv_api",
  "azos_drv_base",

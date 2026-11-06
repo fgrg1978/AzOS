@@ -22,7 +22,6 @@
 // | CONNECT_TYPED 568                | sys_connect_syscall                 | contained       |
 // | GPIO/I2C/PWM writes              | none (200-213, 221 retired)         | device_guards.rs |
 // | CHAN_WRITE_TYPED 528             | none (101, 507 retired)             | typed_ipc.rs    |
-// | DRIVER_REGISTER_TYPED 556        | none (520 retired)                  | contained       |
 // | IORING_SUBMIT_TYPED 537          | none (504 retired)                  | —               |
 // | MOTOR_SET_TARGET/TICK/ENABLE/    | none — a disjoint surface           | —               |
 // |   SET_GAINS/RESET_TYPED 550-555  |                                     |                 |
@@ -38,7 +37,6 @@
 // |----------------------------------|-------------------------------------|-----------------|
 // | PORT_DESTROY_TYPED 532 (WRITE)   | none (514 retired)                  | live            |
 // | IORING_DESTROY_TYPED 538 (WRITE) | none                                | live            |
-// | DRIVER_UNREGISTER_TYPED 557 (W)  | none (521 retired)                  | live            |
 // | SHM_RELEASE_TYPED 535 (READ)     | none                                | live, unchanged |
 // | CLOSE_TYPED 564, MCAST_LEAVE 572 | sys_close, sys_sock_close           | live, unchanged |
 // | CLOSE_TYPED 566 on a Channel (W) | none (107 retired)                  | live            |
@@ -56,7 +54,7 @@
 // Both recorders reach only the in-memory ring, which overwrites its oldest
 // record. A ring-3 loop of forged handles pushed one record per syscall and
 // evicted the ring-only safety records next to it. The tests drive the real
-// `cap_check` and `errno_for_cap_err` against a hand-driven clock and read
+// `cap_check` and `note_typed_denial` against a hand-driven clock and read
 // back, in order, everything the three hooks saw.
 
 use super::harness::serial;
@@ -83,11 +81,6 @@ fn fresh_tid() -> u32 {
 const SCRATCH: usize = 0x0074_0000;
 /// A non-null address no test here ever maps: a copy from it fails.
 const UNMAPPED: u64 = 0x0078_0000;
-/// A driver kind clear of every real `DRV_KIND_*` and of
-/// `driver_server_guards.rs`'s `0x91xx` values.
-const DRV_KIND: u32 = 0x9130;
-/// The kind the typed registry calls below name, beside `DRV_KIND`.
-const DRV_KIND_TYPED: u32 = 0x9131;
 
 fn eagain() -> i64 {
     Errno::EAGAIN.to_syscall_ret()
@@ -104,11 +97,9 @@ impl Drop for Scene {
         __cap_deny_limiter_clear_for_tests();
         set_gpio_probe(None);
         set_pwm_probe(None);
-        let _ = azos_driver_server::driver_unregister(DRV_KIND_TYPED);
         azos_robot::motor::shim_clear_motor_pins();
         azos_robot::motor::shim_clear_motor_channels();
         crate::file_ops::__file_ops_clear_for_tests();
-        let _ = azos_driver_server::driver_unregister(DRV_KIND);
         for fd in 0..azos_net::MAX_SOCKETS as i32 {
             if azos_net::socket_owner(fd) == Some(self.tid) {
                 azos_net::socket_close(fd);
@@ -292,68 +283,6 @@ fn socket_writes_are_contained_and_receive_stays_live() {
 
 }
 
-/// Registering a driver is refused while contained; unregistering is a release
-/// and goes through, and still needs `WRITE`. Each step is read back through
-/// the registry: a register that succeeds proves the kind was free, so a
-/// contained register did not claim it and a contained unregister did release
-/// it.
-///
-/// **Canaries.** Resolve `sys_driver_unregister_typed` with `drvreg_kind_of`:
-/// the contained unregister reads `-EAGAIN`. Resolve
-/// `sys_driver_register_typed` with `drvreg_kind_for_release`: the contained
-/// register reads 0.
-#[test]
-fn driver_register_is_contained_and_unregister_is_live() {
-    use azos_abi::cap::CapPerms;
-    use azos_ipc::cap::targets::DriverRegistry;
-    let _g = serial();
-    let tid = fresh_tid();
-    let _s = ring3_with_table(tid);
-    let cap = held::<DriverRegistry>(tid, CapPerms::RW, DRV_KIND_TYPED);
-    let read_only = held::<DriverRegistry>(tid, CapPerms::READ, DRV_KIND_TYPED);
-
-    azos_ipc::cap::degraded_set(true);
-    assert_eq!(sys_driver_register_typed(cap, 0, 0, 0), eagain(), "typed register while contained");
-    azos_ipc::cap::degraded_set(false);
-    assert_eq!(sys_driver_register_typed(cap, 0, 0, 0), 0, "the contained typed register claimed the kind");
-    azos_ipc::cap::degraded_set(true);
-    assert_eq!(
-        sys_driver_unregister_typed(read_only),
-        Errno::ECAPPERMS.to_syscall_ret(),
-        "a READ-only capability unregistered while contained"
-    );
-    assert_eq!(sys_driver_unregister_typed(cap), 0, "typed unregister while contained");
-    azos_ipc::cap::degraded_set(false);
-    assert_eq!(sys_driver_register_typed(cap, 0, 0, 0), 0, "the contained typed unregister did not release the kind");
-}
-
-/// A driver-registry capability registers through a mask that lists `DRIVER`
-/// (`DOMAIN_DRIVER_REGISTER` and `DOMAIN_DRIVER_UNREGISTER` are ops of that
-/// class) and is refused by one that does not, and a refused call neither
-/// claims nor releases the kind.
-///
-/// **Canary.** Resolve `drvreg_kind_of` with `get` (no op): the `DRIVER` copy's
-/// register reads `-ECAPPERMS`.
-#[test]
-fn an_op_mask_gates_the_driver_registry_ops() {
-    use super::harness::{classes, op_masked};
-    use azos_abi::cap::CapPerms;
-    use azos_abi::invoke::{CLASS_DRIVER, CLASS_READ};
-    use azos_ipc::cap::targets::DriverRegistry;
-    let _g = serial();
-    let tid = fresh_tid();
-    let _s = ring3_with_table(tid);
-    let cap = held::<DriverRegistry>(tid, CapPerms::RW, DRV_KIND_TYPED);
-    let (drv, rd) = (op_masked(tid, cap, classes(&[CLASS_DRIVER])), op_masked(tid, cap, classes(&[CLASS_READ])));
-    let denied = Errno::ECAPPERMS.to_syscall_ret();
-
-    assert_eq!(sys_driver_register_typed(rd, 0, 0, 0), denied);
-    assert_eq!(sys_driver_register_typed(drv, 0, 0, 0), 0, "the DRIVER copy claims the kind");
-    assert_eq!(sys_driver_unregister_typed(rd), denied);
-    assert_eq!(sys_driver_unregister_typed(drv), 0);
-    assert_eq!(sys_driver_register_typed(cap, 0, 0, 0), 0, "the DRIVER copy's unregister released the kind");
-}
-
 /// **A caller that does not hold the object keeps its usual refusal.**
 /// Containment runs after the authority check, so it tells a stranger nothing.
 ///
@@ -506,7 +435,7 @@ fn gpio_denial(pin: u32) {
 }
 
 fn typed_gpio_denial() {
-    let _ = errno_for_cap_err(ty::ENDPOINT, CapError::Stale);
+    note_typed_denial(ty::ENDPOINT, CapError::Stale);
 }
 
 /// The recorder code of `ty::ENDPOINT`.
@@ -707,7 +636,7 @@ fn containment_refusals_do_not_spend_the_budget() {
 
     azos_ipc::cap::degraded_set(true);
     for _ in 0..10 {
-        assert_eq!(errno_for_cap_err(ty::ENDPOINT, CapError::Contained), eagain());
+        note_typed_denial(ty::ENDPOINT, CapError::Contained);
         assert_eq!(sys_write(7, SCRATCH as u64, 4), eagain());
     }
     assert!(writes().is_empty(), "the filesystem saw {:?} while contained", writes());
@@ -912,9 +841,9 @@ fn ring3_with_table(tid: u32) -> Scene {
 /// **Every typed call that resolves a capability, handed the forged handle 0,
 /// writes exactly one record, under its own family's kind.**
 ///
-/// The typed sensor read once recorded its denial and then went through
-/// `errno_for_cap_err`, which recorded it again as `DriverRegistry`: two
-/// records, one of them naming a device nobody asked for. The list is every
+/// The typed sensor read once recorded its denial and then went through a
+/// shared mapper that recorded it again under another kind: two records, one
+/// of them naming a device nobody asked for. The list is every
 /// non-minting entry of `CAP_TYPED_SYSCALLS`, and its length is pinned to that
 /// table, so a family added later without a line here fails the count.
 ///
@@ -940,8 +869,6 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
         ("shm_map", ty::SHM, || sys_shm_map_typed(0, 0)),
         ("ioring_submit", ty::IORING, || sys_ioring_submit_typed(0)),
         ("ioring_destroy", ty::IORING, || sys_ioring_destroy_typed(0)),
-        ("driver_register", ty::DRIVER_REGISTRY, || sys_driver_register_typed(0, 0, 0, 0)),
-        ("driver_unregister", ty::DRIVER_REGISTRY, || sys_driver_unregister_typed(0)),
         ("file_read", ty::FILE, || sys_file_read_typed(0, S, 4)),
         ("file_write", ty::FILE, || sys_file_write_typed(0, S, 4)),
         ("close", ty::FILE, || sys_close_typed(0)),
@@ -987,7 +914,7 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
     // table keep a line here though they are no member of the typed set: a
     // port's poll, bind and destroy; a memory object's acquire; a file's and a socket's node ops (read, write, fsync,
     // connect, send, recv, multicast); `SYS_CAP_CLOSE`; the derive.
-    const INVOKE_OPS_IN_THIS_LIST: usize = 19;
+    const INVOKE_OPS_IN_THIS_LIST: usize = 17;
     assert_eq!(
         calls.len(),
         azos_abi::syscall_nr::CAP_TYPED_SYSCALLS.len() - 4 + INVOKE_OPS_IN_THIS_LIST,

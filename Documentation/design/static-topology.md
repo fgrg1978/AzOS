@@ -387,7 +387,7 @@ How the kernel mints a grant from `(kind, target, perm)` is
 | Kind | Target spellings |
 |------|------------------|
 | `endpoint` | `endpoint.<name>` for a task-hosted endpoint, or `<iface>[.<resource>]` for an interface the kernel hosts (`gpio.17`, `i2c.0.0x68`, `pwm.4`, `entropy`, `power`). |
-| `device` | `irq.<N>`, `msi.<k>`, `mmio.<selector>` (a hardware-bus selector, see `[device.NAME]`), or `drv.<kind as decimal>` (the right to register as that driver). |
+| `device` | `irq.<N>`, `msi.<k>`, `mmio.<selector>` (a hardware-bus selector, see `[device.NAME]`), `ioport.<first>.<count>` or `nicq.eth<N>.<queue>`. |
 | `node` | An absolute directory path such as `/data`, or an image name such as `TOOLBOX.ELF` with `perm = "x"` (the right to start it). |
 | `memobj` | `inspect.<view>` (`public`, `admin`, and the per-service views such as `names`, `logins`, `clock`), or the terminal server's kernel regions `input.events` and `console.screen`. |
 | `domain` | `tasks`, with `perm = "r"`. |

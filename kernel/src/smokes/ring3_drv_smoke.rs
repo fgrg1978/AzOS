@@ -155,7 +155,7 @@ fn ina219() -> Result<(u16, u16, u8, u64, u32, u64, u64, u32), &'static str> {
     if !(90..=100).contains(&pct) { return Err("capacity outside 90..=100% after seconds of 1.5 A"); }
     if sag != 0 { return Err("sag reported on a constant voltage"); }
     if failsafe != 0 { return Err("failsafe level raised on a full battery"); }
-    // Wave 11 (SENSORTS): the record through `power_op::READ_TS` carries
+    // The record through `PowerMon::read` carries
     // when the driver's register reads behind it completed, on the vDSO
     // clock (the driver reads it in ring 3; the kernel converts its own
     // counter the same way). The driver samples at 10 Hz, so a stamp is
@@ -286,9 +286,8 @@ fn placement_str() -> &'static str {
 }
 
 /// Most wakes a second the ring-3 INA219 host may show while nobody calls
-/// it: its main thread's sampling (`INA219_POLL_HZ`, 10), plus the bound of a
-/// parked ring-3 driver with nothing timed (`DRIVER_IDLE_MAX_PER_S`, 5: one
-/// per one-second park, with headroom for stamped wakes). The accept thread
+/// it: its main thread's sampling (`INA219_POLL_HZ`, 10), plus 5 (one per
+/// one-second park, with headroom for stamped wakes). The accept thread
 /// waits in `SYS_IPC_ACCEPT` for a call and adds nothing.
 const INA_IDLE_MAX_PER_S: u64 = azos_drv_sensor::ina219::INA219_POLL_HZ as u64 + 5;
 /// Most kernel entries a second the idle host may make: a sample is two

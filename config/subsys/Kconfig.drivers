@@ -40,51 +40,18 @@ config IGC_LINK_WAIT_MS
       link-status interrupt, or the next poll).
 
 # ---------------------------------------------------------------------------
-# Ring-3 driver proxy
+# In-kernel calls to ring-3 drivers
 # ---------------------------------------------------------------------------
 
-config PROXY_SPIN_US
-    int "Ring-3 driver proxy: spin before blocking on a reply (us)"
-    range 0 1000
-    default 20
-    help
-      How long an in-kernel client of a ring-3 driver polls for the reply
-      before it blocks, and only while the driver is running on another
-      hart (crates/drivers/sys/src/user_driver_proxy.rs, PROXY_SPIN_US;
-      crates/drivers/driver_server/src/reply_wait.rs, wait_for_reply). 0 disables
-      the spin: every wait blocks at once.
-
-      The right value is board-specific: it should sit just above the time
-      a running driver takes to answer, and below what a block + cross-hart
-      wake + switch back costs on that board. Measure it on the board, not
-      under QEMU (-icount serialises the vCPUs, so the spin cannot help there
-      at all):
-        1. Boot the qemu-style image whose autorun is gpio_drv (the image the
-           "userspace: ring-3 GPIO driver" gate row builds) with -smp >= 2
-           and read the kernel line
-             [AQ3] proxy round trip over 32 pings: min=.. median=..us max=.. failed=0 spin=N
-           `spin=N` counts the replies the spin found before any block.
-        2. Rebuild with PROXY_SPIN_US=0 and repeat: that median is the cost
-           of the block path on this board.
-        3. Raise the value until `spin=` stops growing; keep the smallest
-           value that finds most replies while its median stays below the
-           step-2 median. Several boots per value: the numbers are wall
-           clock.
-      20 us is the value measured on QEMU TCG (MTTCG, 4 harts): round trip
-      medians 11-12 us with the spin vs 47-69 us without, 24-31 of 32
-      replies found by the spin (wave 9).
-
 config PROXY_REPLY_TIMEOUT_MS
-    int "Ring-3 driver proxy: reply timeout (ms)"
+    int "In-kernel client of a ring-3 driver: reply timeout (ms)"
     range 1 10000
     default 100
     help
       How long an in-kernel client of a ring-3 driver waits, blocked, for
-      the reply before the request fails with DriverError::Busy
-      (crates/drivers/sys/src/user_driver_proxy.rs,
-      PROXY_REPLY_TIMEOUT_MS). Also how long a power read waits for the
-      ring-3 INA219 host on endpoint.powermon before it answers no data
-      (kernel/src/powermon.rs).
+      the driver's answer before it gives up: a power read waits this long
+      for the ring-3 INA219 host on endpoint.powermon before it answers no
+      data (kernel/src/powermon.rs).
 
 # ---------------------------------------------------------------------------
 # Hardware bus

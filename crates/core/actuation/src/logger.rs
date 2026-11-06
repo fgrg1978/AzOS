@@ -558,8 +558,8 @@ pub const SAFETY_TOPO_CLASS_REFUSED: u8 = 0x16;
 
 /// The driver supervisor restarted a ring-3 driver, gave up on it, or
 /// saw it end under its topology row's `restart = no`. `action_code` is one
-/// of the `SUP_ACTION_*` below; `detail` packs the driver-server kind (high 16
-/// bits) and the restart count so far (low 16): the attempt number for a
+/// of the `SUP_ACTION_*` below; `detail` packs the supervisor slot of the
+/// image (high 16 bits) and the restart count so far (low 16): the attempt number for a
 /// restart, the spent budget for a give-up, the restarts before for an end.
 ///
 /// One code with four actions rather than four codes: the supervisor's
@@ -568,7 +568,7 @@ pub const SAFETY_DRIVER_SUPERVISOR: u8 = 0x17;
 /// A successor task was created for a supervised driver that died.
 pub const SUP_ACTION_RESTART: u8 = 1;
 /// The driver died with its restart budget spent: everything it held was
-/// released and its kind stays down.
+/// released and it stays down.
 pub const SUP_ACTION_GAVE_UP: u8 = 2;
 /// No successor could be created (task pool full): released and down, as a
 /// give-up.
@@ -580,8 +580,8 @@ pub const SUP_ACTION_RESPAWN_FAILED: u8 = 3;
 pub const SUP_ACTION_NO_RESTART: u8 = 4;
 
 /// The `detail` word of a [`SAFETY_DRIVER_SUPERVISOR`] record.
-pub const fn sup_record_detail(kind: u32, count: u8) -> u32 {
-    ((kind & 0xFFFF) << 16) | count as u32
+pub const fn sup_record_detail(slot: u32, count: u8) -> u32 {
+    ((slot & 0xFFFF) << 16) | count as u32
 }
 
 /// The behavior loop has held STOP through L1 for

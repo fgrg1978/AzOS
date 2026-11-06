@@ -316,10 +316,8 @@ pub enum CapKind {
     /// A node of the name space: a file or a directory tree (`FILE`), a socket
     /// (`SOCKET`) or the right to start one image (`LAUNCH`).
     Node = 6,
-    /// A piece of hardware or its driver slot: an interrupt line (`IRQ`), an
-    /// MMIO region of the board's table (`MMIO`), the right to register as
-    /// the driver for one `DRV_KIND_*` (`DRVSLOT`) or a range of I/O ports
-    /// (`IOPORT`).
+    /// A piece of hardware: an interrupt line (`IRQ`), an MMIO region of the
+    /// board's table (`MMIO`) or a range of I/O ports (`IOPORT`).
     Device = 7,
     /// A log: the kernel tracer (class `TRACE`) or the console (class `CONSOLE`).
     Log = 8,
@@ -469,8 +467,6 @@ pub mod ty {
     /// the handle. The topology grants it by what the device is
     /// (`mmio.dt:google,goldfish-rtc`), not by where a machine listed it.
     pub const MMIO: CapType = CapType::new(CapKind::Device, 1);
-    /// The right to register as the driver for one `DRV_KIND_*` (the resource).
-    pub const DRIVER_REGISTRY: CapType = CapType::new(CapKind::Device, 2);
     /// A range of I/O ports (x86_64's port space), opened to the calling
     /// thread by `DEVICE_IOPORT_ENABLE`. The resource is the range,
     /// [`super::ioport_range`] packs it. Granted by a topology row

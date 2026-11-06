@@ -104,7 +104,7 @@ fn fresh_user_pt() -> usize {
 }
 
 /// Map one arena page at `va`; the "physical" address doubles as a host
-/// pointer, the same trick `driver_server_guards.rs` uses.
+/// pointer.
 fn map_scratch(pt: usize, va: usize) -> *mut u8 {
     let phys = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     azos_mm::vmm::map(pt, va, phys, PagePerms::USER_RW).expect("map");

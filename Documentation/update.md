@@ -332,8 +332,7 @@ runs from its release but takes no calls before the flip, since the queue
 delivers to no one during a handover.
 
 Refused up front (`sup_swap_refused`): an image that is not a serving spawned
-image, a driver-server task (its kind is registered by the old task; a pure IPC
-server only), a missing actuation gate, and safe mode. The state
+image, a missing actuation gate, and safe mode. The state
 between servers is not transferred: the successor starts from its image.
 
 ## Application packages

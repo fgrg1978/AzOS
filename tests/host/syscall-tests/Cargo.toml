@@ -156,7 +156,6 @@ azos_arch_api = { path = "../../../arch/api" }
 azos_robot = { path = "shims/robot", package = "syscall_test_robot", features = ["test-util"] }
 azos_imu = { path = "shims/imu", package = "syscall_test_imu" }
 azos_gps = { path = "shims/gps", package = "syscall_test_gps" }
-azos_driver_server = { path = "shims/driver_server", package = "syscall_test_driver_server" }
 
 # The task pool the pulled-in `cap_store.rs` resolves TIDs against.
 #

@@ -641,7 +641,7 @@ gate_defc() { # gate_defc rv|a64|x86 <features>: the defconfig a kernel with the
 #
 # The gate's two expanded configurations also turn on Kconfig BOOT_SELFTESTS
 # (off in every defconfig): the boot self-tests (`ipc-demo`, the `worker`
-# stress, aarch64 phase 3, the RVV bench, the AQ3 GPIO round trip, the trap
+# stress, aarch64 phase 3, the RVV bench, the trap
 # and tick self-tests, Zicboz, MSI-X, the network conformance probe) are what
 # many rows read, and with it every row boots the kernel it booted before the
 # self-tests became optional. `boot: no self-tests by default` boots each ISA
@@ -2396,18 +2396,14 @@ ci_marker() { # ci_marker <marker>
 # the failure one, so a total conformance regression scrolled past in green.
 #
 # The rest are verdicts printed in their own shape. Two kinds:
-#   * a smoke with its own scenario (DHCPSMOKE, gpio_drv's
-#     registration): its failure used to surface only as "no marker within
-#     Ns", after the whole timeout;
+#   * a smoke with its own scenario (DHCPSMOKE): its failure used to
+#     surface only as "no marker within Ns", after the whole timeout;
 #   * a boot self-check no scenario asserts (IP and UDP loopback, the
 #     IPC pipe and service demo, the GGUF policy tests): it runs in every
 #     scenario, and its failure scrolled past whatever marker that scenario
 #     waits for.
 # Across 376 kernel logs kept from hand runs and canaries, the only hit is
 # "Pipe create FAILED", twice, from pipe slots that were never reclaimed.
-# The AQ3 GPIO round trip is NOT here: every qemu boot runs that smoke, and
-# one whose autorun is not gpio_drv prints "round-trip FAILED" when its
-# retries run out (80 of those logs). Its scenario adds it below.
 # `[FATAL]` is the kernel's last line before it shuts down on an exception
 # it cannot handle, a kernel page fault included. A scenario whose checks
 # all matched before that line still ran in a kernel that stopped: the
@@ -2429,7 +2425,7 @@ ci_marker() { # ci_marker <marker>
 # wait in while ring 3 owns the console (`uart::console_write_ring3`). A drop
 # can remove exactly the line a row asserts on — `mem quota refused=0` gone
 # would turn the census row falsely green — so any drop fails the row.
-QEMU_FAIL_RE="${QEMU_FAIL_RE:-FAILED:|PAGE FAULT\] OUT OF MEMORY|RFC [0-9/]+ FAIL|\[DHCPSMOKE\] FAIL|\[gpio_drv\] .*FAILED|\[infsrv\] .*FAILED|loopback FAIL|\[GGUF\] [0-2]/3 tests passed|Pipe create FAILED|\[FATAL\]|\[CONSOLE\] dropped}"
+QEMU_FAIL_RE="${QEMU_FAIL_RE:-FAILED:|PAGE FAULT\] OUT OF MEMORY|RFC [0-9/]+ FAIL|\[DHCPSMOKE\] FAIL|\[infsrv\] .*FAILED|loopback FAIL|\[GGUF\] [0-2]/3 tests passed|Pipe create FAILED|\[FATAL\]|\[CONSOLE\] dropped}"
 
 # ci_kernel_check: 0 when the riscv64 kernel on disk is the build the rows
 # being run need (`CI_EXPECT_RV`, set by a group around its rows; no
@@ -3067,10 +3063,6 @@ build       "tlb-local-only"      --release --select tlb-smoke,tlb-local-only
 build       "tlb-bound-canary"    --release --select tlb-smoke,tlb-bound-canary
 # The page-table free check's canary (see the "mm: canary" row).
 build       "exit-satp-canary"    --release --select exit-satp-canary
-build       "proxy-pi-smoke"      --release --select proxy-pi-smoke
-# The donation canary for the row that boots proxy-pi-smoke: built here so it
-# cannot rot; booted by hand (it must fail on `[PROXYPI] FAIL TIMEOUT`).
-build       "proxy-donation-canary" --release --select proxy-donation-canary
 build       "sup-smoke"           --release --select sup-smoke
 # The kernel supervisor's canary: built here so it cannot rot; booted by hand
 # (the `rt7: driver contained` row must fail with it).
@@ -11072,7 +11064,7 @@ SELFTESTS_OFF_SETTLE_S="${SELFTESTS_OFF_SETTLE_S:-3}"
 # of the mangled names (`11worker_task`, not `18ioring_worker_task`);
 # `phase3_yield_shim` is `no_mangle`. `idle_task` is linked by every kernel: the positive control.
 SELFTESTS_OFF_SYMS='(^|[0-9])(ipc_demo_task|worker_task|rvv_bench_task|phase3_task_a|aarch64_migrate_probe_task|gpio_user_driver_smoke_task|net_conformance)|phase3_yield_shim'
-SELFTESTS_OFF_MARKS='Created ipc-demo task|[IPC] |Created worker task|stress-test workers|[TASK] Worker|task A and task B created|smp-migrate-probe|Created rvv-bench|[AQ3]|Zicboz zero-fill|svc #0 self-test|[TIMER] ticks:|FP/SIMD survives interrupt|AARCH64-IRQSTACK] hart 0|int3 self-test|NMI self-test|tick self-test|[NET]  RFC|[NET]  loopback|UDP loopback|[PCI] msix'
+SELFTESTS_OFF_MARKS='Created ipc-demo task|[IPC] |Created worker task|stress-test workers|[TASK] Worker|task A and task B created|smp-migrate-probe|Created rvv-bench|Zicboz zero-fill|svc #0 self-test|[TIMER] ticks:|FP/SIMD survives interrupt|AARCH64-IRQSTACK] hart 0|int3 self-test|NMI self-test|tick self-test|[NET]  RFC|[NET]  loopback|UDP loopback|[PCI] msix'
 selftests_off_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
 selftests_off_check() { # selftests_off_check <boot log> <elf>; prints why, or nothing
     local log="$1" elf="$2" n m found=""
@@ -21847,42 +21839,7 @@ PYEOF
     #   * `brain_client` needed a live brain server on the host. It is booted
     #     now, against `tools/gate/fake_brain.py`, by `userspace: ring-3 drives
     #     motors`, `userspace: ring-3 reconnects` and `userspace: ring-3 e-stop`.
-    #
-    # **gpio_drv is the one that matters.** It is the ring-3 driver: userspace
-    # registers as the handler for DRV_KIND_GPIO and the kernel dispatches a
-    # real request to it. Nothing else in the gate crosses that boundary in
-    # that direction. It was built into every disk image since E11.AQ3 and made
-    # the autorun of none of them, so the whole path shipped untested.
-    #
-    # The marker is the kernel's own confirmation of the round trip, not the
-    # driver's "I started" line: a driver that registers and then answers
-    # nothing would satisfy the latter.
-    kbuild "qemu,use-robot"   # the bench (robot domain) and the GPIO driver row boot the robot cell
-    rm -f $AZOS_OUT/build/disk-gpiodrv.img
-    make_disk $AZOS_OUT/build/disk-gpiodrv.img
-    # The smoke's own verdict counts here, where gpio_drv is the autorun, and
-    # only here (see QEMU_FAIL_RE).
-    #
-    # Wave 10 (DRV2): before that line the smoke counts gpio_drv's idle
-    # serve-loop passes over 3 s with no client (`[AQ3] gpio_drv idle:`).
-    # Parked in DOMAIN_DRIVER_REPLY_WAIT it wakes about once a second (the
-    # kernel's park bound); `[AQ3] gpio_drv idle FAIL` (above 5/s) is a
-    # verdict. Canary: gpio_drv back on its 581 + yield poll measured
-    # ~155 000/s. `[AQ3] proxy round trip FAIL` (more than 16 of the 32 timed
-    # pings unanswered) is one too: it is what a submit that stops waking the
-    # parked driver prints.
-    #
-    # Wave 7: the marker is the line printed AFTER the round trip, with the
-    # answering driver's live priority and class read from the scheduler by
-    # its registered TID. 24/best_effort is what the `GPIODRV.ELF` topology
-    # row declares (`SERVICE_PRIORITY`, above the shell's 26); before the
-    # topology was applied it read 16. Any other value is a verdict line that
-    # only the failure prints, so it is matched as one rather than timing out.
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)|\[AQ3\] gpio_drv idle FAIL|\[AQ3\] proxy round trip FAIL|\[AQ3\] gpio_drv tid=[0-9]+ runs at priority=([^2]|2[^4]|24[0-9])|\[AQ3\] gpio_drv tid=[0-9]+ runs at priority=24 class=[^b]" \
-    par_row qemu_run "userspace: ring-3 GPIO driver" "gpio_drv tid=.* runs at priority=24 class=best_effort" 180 \
-        -smp 4 -global virtio-mmio.force-legacy=false \
-        -drive file=$AZOS_OUT/build/disk-gpiodrv.img,if=none,format=raw,id=hd0 \
-        -device virtio-blk-device,drive=hd0
+    kbuild "qemu,use-robot"   # the bench (robot domain) boots the robot cell
 
     # The minimal Rust ring-3 ELF (E11.AQ3 phase-1). Trivial by design, and
     # that is the point: it is the smallest thing that proves the loader, the
@@ -21940,38 +21897,6 @@ PYEOF
     par_row qemu_run "bench: all 41 measurements" "run_all done emitted=41 " 180 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
-        -device virtio-blk-device,drive=hd0
-
-    # ── The ring-3 driver serves a MORE urgent client on its own hart ─────
-    #
-    # `UserDriverProxy` used to wait for a ring-3 driver's reply with a
-    # million-iteration spin: a client more urgent than the driver on the
-    # driver's hart spun the whole bound and the driver never ran. It now
-    # blocks (wake by TID on the reply), and for the span of the wait takes a
-    # wait-graph edge to the driver, which runs at the client's priority. Blocking alone is
-    # not enough: `proxy_pi_smoke` puts a prio-20 task that only yields between
-    # the client (14) and gpio_drv (24) on gpio_drv's hart, so without the
-    # donation the hart goes to that task and every attempt ends at the proxy's
-    # 100 ms timeout. Marker: the answered call, with the driver back at its
-    # base priority after it. `[PROXYPI] FAIL` (incl. `FAIL TIMEOUT`, which only
-    # the timeout path prints) is a verdict. Canary: `proxy-donation-canary`
-    # (never donates) fails here on `FAIL TIMEOUT`.
-    #
-    # Wave 9: then a client at 8 (hard-RT band) calls the same driver; the
-    # wait-graph boost must lift gpio_drv to 12, the ring-3 floor, not 8. The
-    # marker is that second verdict, printed only after the first passed.
-    # Canary: `canary=pi-ring3-unclamped` (no floor) fails on `FAIL floor:
-    # gpio_drv was lent 8, below the ring-3 floor 12`.
-    #
-    # Placed after the bench row and before the seccomp block, whose first act
-    # is `kbuild "qemu"`: no later row inherits this kernel. Reuses the gpio_drv
-    # disk the `ring-3 GPIO driver` row built.
-    kbuild "qemu,proxy-pi-smoke"
-    fresh_disk $AZOS_OUT/build/disk-gpiodrv.img
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[PROXYPI\] FAIL|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)" \
-    par_row qemu_run "userspace: ring-3 driver serves a more urgent client on its hart" "PROXYPI] PASS floor" 180 \
-        -smp 4 -global virtio-mmio.force-legacy=false \
-        -drive file=$AZOS_OUT/build/disk-gpiodrv.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
     # ── A crashed ring-3 driver is restarted by the component manager ─────

@@ -57,11 +57,6 @@ pub mod cap;
 #[path = "../../../../crates/core/ipc/src/cap_store.rs"]
 pub mod cap_store;
 
-// `drvreg_cap.rs` needs no shim at all: unlike its four siblings above it
-// touches no driver, only `cap_store` (see that file's "Why the ops are not
-// here"). It is pulled in because `cap_seed`'s `DriverRegistry` arm calls it.
-#[path = "../../../../crates/core/ipc/src/drvreg_cap.rs"]
-pub mod drvreg_cap;
 
 
 // A channel bound to an event port stores this link (wave 11, PORTWAIT).
@@ -400,7 +395,7 @@ policy             = \"fair\"
     /// opaque string, so the convention needs nothing on the declaration side.
     ///
     /// **Canary.** Make `parse_caps` validate a device target against
-    /// `irq.`/`mmio.`/`drv.`: this row is refused.
+    /// `irq.`/`mmio.`: this row is refused.
     #[test]
     fn an_msi_slot_is_declared_by_a_device_row() {
         let caps = b"[task.nic_drv]\ncaps = [ { kind = \"device\", target = \"msi.0\", perm = \"r\" } ]\n";
@@ -2114,13 +2109,13 @@ mod builder_tests {
                     // `ipc-endpoint-canary`: the demo and bench endpoints,
                     // and (wave 12) `Cap<Launch>` on TOOLBOX.ELF for
                     // vsbench's `spawn+wait` lane.
-                    (true, true) => 25, (true, false) => 22,
-                    (false, true) => 20, (false, false) => 17,
+                    (true, true) => 24, (true, false) => 21,
+                    (false, true) => 19, (false, false) => 16,
                 }
                 // Kconfig INSPECT: the task view, the public region and (with an
                 // admin region) the admin one, last.
                 + if azos_limits::INSPECT { 2 + (azos_limits::INSPECT_ADMIN_PAGES != 0) as usize } else { 0 },
-            "drv.1 RW + sensor.0-9 READ + pwm.4 RW + gpio.20 RW + i2c.0.0x68 READ + linkkey READ \
+            "sensor.0-9 READ + pwm.4 RW + gpio.20 RW + i2c.0.0x68 READ + linkkey READ \
              + entropy READ, \
              plus pwm.0/gpio.0/mmio.dt:sifive,test1 and the /fat and /tmp trees under the canary, plus \
              motor.0/1 RW only under the actuation profile"
@@ -2215,50 +2210,9 @@ mod builder_tests {
              `detect` both need only READ, so WRITE buys a reader \
              nothing and buys an attacker `PWR_MGMT_1`"
         );
-        // The driver-registry grant names ONE kind. `drv.1` is
-        // `azos_abi::drv_kind::DRV_KIND_GPIO` (0x0001) in decimal, per
-        // the target convention in `crates/core/ipc/src/cap_seed.rs`; the number
-        // is asserted below against the constant itself, which this crate can
-        // reach and `crates/core/topology` deliberately cannot.
-        let drv: Vec<_> = caps
-            .iter()
-            .filter(|c| c.kind == CapKind::Device && c.target.as_str().starts_with("drv."))
-            .collect();
-        assert_eq!(drv.len(), 1, "exactly one driver-registry grant");
-        assert_eq!(drv[0].perms, CapPerms::RW);
-        assert_eq!(drv[0].target.as_str(), "drv.1");
-    }
-
-    /// The literal in `builder.rs` and the constant in `driver_server` are
-    /// held apart by a deliberate missing dependency (topology must not pull
-    /// in the driver registry to parse static configuration), so nothing in
-    /// either crate can catch them drifting. This test is the join.
-    ///
-    /// It fails loudly if `DRV_KIND_GPIO` is ever renumbered, which would
-    /// otherwise silently move the autorun grant onto whatever kind inherits
-    /// 0x0001 — i.e. hand the ring-3 GPIO driver a different device.
-    #[test]
-    fn autorun_driver_registry_target_names_drv_kind_gpio() {
-        use azos_abi::cap::CapKind;
-        let t = default_minimal();
-        let autorun = t.find_task(&MaybeStr::from_bytes(b"autorun")).unwrap();
-        let drv = t
-            .caps_of(autorun)
-            .iter()
-            .find(|c| c.kind == CapKind::Device && c.target.as_str().starts_with("drv."))
-            .copied()
-            .expect("driver-registry grant present");
-        let declared: u32 = drv
-            .target
-            .as_str()
-            .strip_prefix("drv.")
-            .expect("target uses the drv.<kind> convention")
-            .parse()
-            .expect("kind is decimal");
-        assert_eq!(
-            declared,
-            azos_abi::drv_kind::DRV_KIND_GPIO,
-            "builder.rs's `drv.N` literal has drifted from DRV_KIND_GPIO"
+        assert!(
+            !caps.iter().any(|c| c.kind == CapKind::Device && c.target.as_str().starts_with("drv.")),
+            "no driver-registry grant: the class is the interface, served on an endpoint"
         );
     }
 
@@ -2742,8 +2696,8 @@ mod cap_seed_bridge_tests {
                     // `ipc-endpoint-canary`: the demo and bench endpoints,
                     // and (wave 12) `Cap<Launch>` on TOOLBOX.ELF for
                     // vsbench's `spawn+wait` lane.
-                    (true, true) => 25, (true, false) => 22,
-                    (false, true) => 20, (false, false) => 17,
+                    (true, true) => 24, (true, false) => 21,
+                    (false, true) => 19, (false, false) => 16,
                 }
                 // Kconfig INSPECT: the task view mints; the regions have no
                 // minter on the host.
@@ -2809,100 +2763,6 @@ mod cap_seed_bridge_tests {
         };
         assert_eq!(pair(tids[0]), Some(true), "both wheels declared: the pair rule is satisfied");
         assert_eq!(pair(tids[1]), Some(false), "one wheel declared: driving the shared drivetrain must be refused");
-    }
-
-    /// The typed driver-registry cap the same bridge call mints, checked by
-    /// kind AND resource index — which is the property the whole migration
-    /// turns on.
-    ///
-    /// The untyped `sys_driver_register` (retired with the untyped port/channel calls) took the
-    /// kind in `a0` and gated on `DriverRegistry(a0)`; the typed one has no kind argument
-    /// and reads it out of the cap. Both refuse `DRV_KIND_MOTOR_PID` to a
-    /// holder of the GPIO cap, so the negative half below is not new — what
-    /// is new is that with the typed syscall, asking is not expressible.
-    ///
-    /// **Canary.** Weakening `holds_kind_resource_with` to ignore its
-    /// resource argument (i.e. degrading it to `holds_kind_with`) must turn
-    /// the `MOTOR_PID` assertion red. If it does not, this test is checking
-    /// the kind tag and nothing else.
-    #[test]
-    fn seeded_driver_registry_cap_names_gpio_and_not_the_motor_driver() {
-        let topo = azos_topology::default_minimal();
-        let task = topo
-            .find_task(&MaybeStr::from_bytes(b"autorun"))
-            .expect("autorun task declared in default_minimal()");
-        let tid = fresh_tid();
-        for cap in topo.caps_of(task) {
-            let _ = crate::cap_seed::seed_one_cap(tid, cap.kind, cap.perms, cap.target.as_str());
-        }
-
-        let held = cap_store::with_table(tid, |t| {
-            (
-                t.holds_kind_resource_with(
-                    crate::cap::ty::DRIVER_REGISTRY,
-                    azos_abi::drv_kind::DRV_KIND_GPIO,
-                    CapPerms::WRITE,
-                ),
-                t.holds_kind_resource_with(
-                    crate::cap::ty::DRIVER_REGISTRY,
-                    azos_abi::drv_kind::DRV_KIND_MOTOR_PID,
-                    CapPerms::WRITE,
-                ),
-            )
-        });
-        assert_eq!(
-            held,
-            Some((true, false)),
-            "the autorun seed must hold DriverRegistry(GPIO) and NOT \
-             DriverRegistry(MOTOR_PID)"
-        );
-    }
-
-    /// `drvreg_kind_of` — the dereference the typed syscalls use — returns
-    /// the kind the cap names, and refuses a cap minted without `WRITE`.
-    ///
-    /// A read-only registry capability would authorise neither register nor
-    /// unregister, so `drvreg_kind_of` demands `WRITE`. Asserted rather than
-    /// assumed, because a `READ`-only grant that silently dereferenced would
-    /// be a capability that reads as weaker than it is.
-    #[test]
-    fn drvreg_kind_of_returns_the_kind_and_requires_write() {
-        use crate::cap::targets;
-        let tid = fresh_tid();
-
-        let rw = crate::drvreg_cap::drvreg_grant_cap(
-            tid,
-            azos_abi::drv_kind::DRV_KIND_I2C,
-            CapPerms::RW,
-        )
-        .expect("grant with RW");
-        let ro = crate::drvreg_cap::drvreg_grant_cap(
-            tid,
-            azos_abi::drv_kind::DRV_KIND_UART,
-            CapPerms::READ,
-        )
-        .expect("grant with READ");
-
-        let got = cap_store::with_table(tid, |t| {
-            (
-                crate::drvreg_cap::drvreg_kind_of(t, rw, azos_abi::invoke::DOMAIN_DRIVER_REGISTER),
-                crate::drvreg_cap::drvreg_kind_of(t, ro, azos_abi::invoke::DOMAIN_DRIVER_REGISTER),
-            )
-        })
-        .expect("table exists");
-        assert_eq!(got.0, Ok(azos_abi::drv_kind::DRV_KIND_I2C));
-        assert_eq!(got.1, Err(CapError::MissingPerms));
-
-        // And a cap of a different kind must not dereference through it —
-        // `Cap<T>` is a compile-time type, but the RAW handle carries the
-        // kind tag and this is the runtime half of that guarantee.
-        let other = cap_store::grant::<targets::Socket>(tid, CapPerms::RW, 0).expect("grant");
-        let confused: Cap<targets::DriverRegistry> =
-            Cap::from_raw(other.raw());
-        let wrong = cap_store::with_table(tid, |t| {
-            crate::drvreg_cap::drvreg_kind_of(t, confused, azos_abi::invoke::DOMAIN_DRIVER_REGISTER)
-        });
-        assert_eq!(wrong, Some(Err(CapError::WrongKind)));
     }
 }
 
@@ -5541,7 +5401,6 @@ mod neverallow_tests {
         // names-import-and-service-export.
         for (kind, perms, target, refused) in [
             (CapKind::Endpoint, CapPerms::READ, &b"endpoint.svc"[..], true),
-            (CapKind::Device, CapPerms::RW, b"drv.20", true),
             (CapKind::Endpoint, CapPerms::WRITE, b"endpoint.svc", false),
             // READ on a kernel-hosted interface is a client's grant: the
             // kernel serves `net` and `clock`, the row only calls them.

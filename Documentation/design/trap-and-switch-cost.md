@@ -14,10 +14,9 @@ is; it does not say how fast any of it is.
 3. Time without a trap
 4. The timer
 5. Reply and accept in one trap
-6. The driver server loop
-7. A control period through `io_ring`
-8. Address-space switches that keep the TLB
-9. Limits
+6. A control period through `io_ring`
+7. Address-space switches that keep the TLB
+8. Limits
 
 ## 1. The generic trap layer
 
@@ -237,38 +236,7 @@ Source: `crates/core/abi/src/syscall_nr.rs`, `crates/core/syscall/src/dispatch.r
 (`fast_ipc_reply_accept`), `crates/core/sched/src/seccomp.rs`,
 `crates/core/ipc` (`fastcall`).
 
-## 6. The driver server loop
-
-A ring-3 driver's loop has the same shape and the same fold.
-
-- `DOMAIN_DRIVER_REPLY_FETCH` publishes the reply and fetches the next request
-  in one call. Arguments: the driver kind, a pointer to the reply (null when no
-  reply is owed), a pointer to the request buffer. It returns `0` (reply
-  published if given, request written) or `-1` (reply published if given, queue
-  empty). Any other return did nothing: a permission error for a task that is
-  not the kind's driver, `-4` for a request buffer that is null or not
-  writable, `-3` for a reply that cannot be read or published.
-- **Every refusal runs before the reply is published** (`sys_driver_reply_fetch`
-  in `crates/core/syscall/src/handlers.rs`). A driver told "failed" must be able
-  to send the reply again; a duplicate for a token whose polling client has not
-  read it would replace that token's entry.
-- `DOMAIN_DRIVER_REPLY_WAIT` is the same call that parks the driver while the
-  queue is empty, for at most a bounded time. A driver on the polling form is
-  runnable for as long as it lives and its hart never idles; the parking form
-  lets a service that answers a few requests a second sleep the rest of the
-  time. `gpio_drv` in `userspace/drivers/` serves on it
-  (`buzz_drv` and `ina_drv` serve their interfaces over IPC v2 instead). A client that
-  waits on the reply donates its priority to the driver after the wake.
-- Replies are delivered into a row owned by the request's waiter
-  (`ReplyWaiters` in `crates/drivers/driver_server/src/reply_wait.rs`), so a
-  second client's reply cannot overwrite the first's before it is taken. A
-  reply with no waiter goes to the kind's polling ring.
-
-Source: `crates/core/abi/src/invoke.rs`, `crates/core/syscall/src/handlers.rs`,
-`crates/core/syscall/src/invoke.rs`, `crates/core/libsys/src/lib.rs`
-(`drv_srv_reply_fetch`), `crates/drivers/driver_server/src/reply_wait.rs`.
-
-## 7. A control period through `io_ring`
+## 6. A control period through `io_ring`
 
 A period with N sensor reads and M actuator writes would take N+M traps. An
 `io_ring` carries them as entries in one shared page, and one `SYS_RING_ENTER`
@@ -317,7 +285,7 @@ Source: `crates/core/ipc/src/io_ring.rs`, `crates/core/syscall/src/ioring_ops.rs
 `kernel/src/boot/seams.rs`, `crates/core/abi/src/syscall_nr.rs`
 (`SYS_RING_SETUP`, `SYS_RING_ENTER`).
 
-## 8. Address-space switches that keep the TLB
+## 7. Address-space switches that keep the TLB
 
 With Kconfig `TLB_RETAIN` (default on), switching between user address spaces
 installs the incoming root with its address-space tag and does not flush the
@@ -400,7 +368,7 @@ Source: `crates/core/sched/src/asid.rs`, `arch/api/src/tlb_gen.rs`,
 `crates/core/mm/src/vmm.rs`, `config/kernel/Kconfig.mm` (`TLB_RETAIN`, `ASID_BITS`,
 `TLB_SPACE_MASK`, `TLB_ASID_SCOPED`, `RV_KERNEL_GLOBAL`).
 
-## 9. Limits
+## 8. Limits
 
 - The fast paths fall back to the ordinary path on any unmet precondition; they
   are an optimization of the common case, not a different contract.

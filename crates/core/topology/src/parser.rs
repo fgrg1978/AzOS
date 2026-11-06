@@ -877,7 +877,7 @@ pub(crate) fn parse_cap_kind(s: &[u8]) -> Result<CapKind, ParseError> {
     let s = core::str::from_utf8(s).map_err(|_| ParseError::Unsupported)?;
     // One word per generic kind. The class within a kind is spelled by the
     // target, which `crates/core/ipc/src/cap_seed.rs` reads: a `device` row
-    // names `irq.<N>`, `mmio.<index>` or `drv.<DRV_KIND_* as decimal>`; a
+    // names `irq.<N>`, `mmio.<index>`, `ioport.<first>.<count>` or `nicq.<...>`; a
     // `node` row an absolute directory tree (`/fat`) or an image name
     // (`TOOLBOX.ELF`, perm `exec`); a `memobj` row `stream.<name>`; a `domain`
     // row `tasks`; a `log` row `trace`; an

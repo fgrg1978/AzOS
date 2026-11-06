@@ -1376,7 +1376,7 @@ pub use scheduler::set_current_syscall_filter;
 pub mod driver;
 
 // The cold-restart supervisor table, real, beside the AQ2 table whose restart
-// budget it shares. `DOMAIN_DRIVER_REGISTER` binds a task to it.
+// budget it shares.
 #[path = "../../../../../../crates/core/sched/src/supervisor.rs"]
 pub mod supervisor;
 pub use driver::{driver_register, driver_start, driver_info};

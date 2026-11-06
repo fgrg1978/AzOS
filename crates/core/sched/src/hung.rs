@@ -85,7 +85,7 @@ pub struct Finding {
 pub const fn watched(reason: WaitReason, edge: Option<EdgeKind>) -> Option<Kind> {
     match (edge, reason) {
         (Some(EdgeKind::IpcCall), _) | (None, WaitReason::FastIpcClient(_)) => Some(Kind::Call),
-        (Some(EdgeKind::Mutex | EdgeKind::DriverProxy | EdgeKind::Claim), _) => Some(Kind::Owner),
+        (Some(EdgeKind::Mutex | EdgeKind::Claim), _) => Some(Kind::Owner),
         _ => None,
     }
 }

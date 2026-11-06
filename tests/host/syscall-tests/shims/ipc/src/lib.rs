@@ -82,12 +82,6 @@ pub mod inspect_region;
 #[path = "../../../../../../crates/core/ipc/src/kregion.rs"]
 pub mod kregion;
 
-// Real. Needs no driver shim at all — `drvreg_cap.rs` touches only
-// `cap_store`, which is why the registry calls live in `crates/core/syscall`
-// rather than beside it (see that file's "Why the ops are not here").
-#[path = "../../../../../../crates/core/ipc/src/drvreg_cap.rs"]
-pub mod drvreg_cap;
-
 #[allow(dead_code)]
 #[path = "../../../../../../crates/core/ipc/src/io_ring.rs"]
 pub mod io_ring;

@@ -139,7 +139,6 @@ dependencies = [
 name = "gpio_drv"
 version = "0.1.0"
 dependencies = [
- "azos_abi",
  "azos_libsys",
  "azos_limits",
 ]

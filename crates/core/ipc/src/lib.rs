@@ -38,7 +38,6 @@ pub mod endpoint;
 // W5 batch 5 — typed hardware caps. Live here (not in
 // crates/drivers/*) because `drivers → ipc` would create a Cargo
 // cycle; `ipc → drivers` already exists.
-pub mod drvreg_cap;
 pub mod mmio_cap;
 // `Cap<Device>` over a range of I/O ports (x86_64's port space).
 pub mod ioport_cap;

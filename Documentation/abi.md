@@ -191,7 +191,7 @@ table and refuses a generation that does not match (`-ECAPSTALE`).
 Kinds (`CapKind`): `Endpoint` 1, `MemObj` 2, `Queue` 3, `Port` 4, `Domain` 5,
 `Node` 6, `Device` 7, `Log` 8. Named types (`ty::*`): `ENDPOINT`, `PORT`,
 `SHM`, `IORING`, `TASK`, `FILE`, `LAUNCH`, `SOCKET`, `IRQ`, `MMIO`,
-`DRIVER_REGISTRY`, `IOPORT`, `NIC_QUEUE`, `TRACE`, `CONSOLE`.
+`IOPORT`, `NIC_QUEUE`, `TRACE`, `CONSOLE`.
 
 Permissions (`CapPerms`): `READ` 0x01, `WRITE` 0x02, `EXEC` 0x04, `DUP` 0x08
 (make a copy), `TRANSFER` 0x10 (move or send the capability to another
@@ -305,12 +305,6 @@ where the source states them.
 | `DOMAIN_VDSO_MAP` | 0x5321 | CTL | Map the per-task vDSO page read-only; returns its address. |
 | `DOMAIN_MODULE_VERIFY` | 0x5722 | MODULE | Verify a signed module (at most `MODULE_MAX_BYTES` = 4 MiB); returns a token. |
 | `DOMAIN_MODULE_MAP_X` | 0x5723 | MODULE | Map a verified module executable. |
-| `DOMAIN_DRIVER_REGISTER` | 0x5927 | DRIVER | Register as the driver for a kind named by a `DriverRegistry` handle. |
-| `DOMAIN_DRIVER_UNREGISTER` | 0x5928 | DRIVER | Give up the driver slot. |
-| `DOMAIN_DRIVER_FETCH` | 0x592C | DRIVER | Take one pending driver request without blocking. |
-| `DOMAIN_DRIVER_REPLY` | 0x592D | DRIVER | Publish the reply for a request. |
-| `DOMAIN_DRIVER_REPLY_FETCH` | 0x592E | DRIVER | Publish a reply and take the next request. |
-| `DOMAIN_DRIVER_REPLY_WAIT` | 0x592F | DRIVER | As reply-fetch, blocking up to `w3` ms (default and ceiling 1000). |
 | `DOMAIN_MMIO_MAP` | 0x5930 | DRIVER | Map a device's register window; needs the `Device` (`ty::MMIO`) capability. |
 | `DOMAIN_MPROTECT` | 0x5331 | CTL | Change the protection of the caller's own pages (`w0` address, `w1` length, `w2` read/write bits); `PROT_EXEC` is refused with `-EACCES`. |
 
