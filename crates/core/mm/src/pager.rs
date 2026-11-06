@@ -1850,64 +1850,73 @@ pub fn protect_range(r: SpaceRef, s: usize, e: usize, write: bool) -> Result<(),
 /// `mm_lock`), and nothing runs on the child's table yet, so the count is
 /// exact.
 pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, RegionError> {
-    let mut spans = [(0usize, 0usize); REGIONS_PER_SPACE];
-    let mut ns = 0;
-    // The private file regions the child now holds, for the page cache's count.
-    let mut files = [0u32; REGIONS_PER_SPACE];
-    let mut nf = 0;
-    // The child's records, made from the parent's outside its lock: no path
-    // holds two spaces' locks.
-    let mut set = RegionSet::<REGIONS_PER_SPACE>::new();
-    let reserved = {
-        let Some(sp) = parent.lock().filter(|sp| sp.recorded) else { return Ok(0) };
-        if sp.set.is_empty() {
-            return Ok(0);
+    // The records go a few at a time, each batch copied out under one space's
+    // lock and in under the other's: no path holds two spaces' locks, and the
+    // stack holds a batch, not a set. The parent's set cannot change
+    // meanwhile (the caller holds the group's `mm_lock`).
+    let mut buf = [Region::anon(0, 0, false); FORK_BATCH];
+    let mut reserved = 0;
+    let mut copied_any = false;
+    let mut at = 0;
+    loop {
+        let n = {
+            let Some(sp) = parent.lock().filter(|sp| sp.recorded) else { break };
+            if at == 0 {
+                reserved = sp.set.charged_pages();
+            }
+            let rs = &sp.set.as_slice()[at.min(sp.set.len())..];
+            let n = rs.len().min(FORK_BATCH);
+            buf[..n].copy_from_slice(&rs[..n]);
+            n
+        };
+        if n == 0 {
+            break;
         }
-        set.copy_from(&sp.set);
+        let mut c = child.lock().ok_or(RegionError::Full)?;
         // A shared file mapping is not inherited: its pages are the cache's
         // frames in the parent's shm window, which the fork walk leaves out of
         // the child, as it does every shared mapping.
-        for r in sp.set.as_slice() {
-            if r.pager == PagerKind::File && r.shared {
-                // Whole regions: cannot need a record.
-                let _ = set.remove_range(r.start, r.end);
+        for r in buf[..n].iter().filter(|r| r.charged()) {
+            if !copied_any {
+                c.open();
+                c.committed = 0;
+                copied_any = true;
+            }
+            // In order and never joining (the parent's set is folded): no
+            // record more than the parent's. Refused anyway, the child keeps
+            // none (no page-cache count was taken for them yet).
+            if let Err(e) = c.set.insert(*r) {
+                c.close();
+                return Err(e);
             }
         }
-        if set.is_empty() {
-            return Ok(0);
-        }
-        for r in sp.set.as_slice() {
-            if !r.charged() {
-                continue;
-            }
-            if ns < spans.len() {
-                spans[ns] = (r.start, r.end);
-                ns += 1;
-            }
-            if r.pager == PagerKind::File && nf < files.len() {
-                files[nf] = r.obj;
-                nf += 1;
-            }
-        }
-        sp.set.charged_pages()
-    };
-    {
-        let mut c = child.lock().ok_or(RegionError::Full)?;
-        c.open();
-        c.set.copy_from(&set);
-        c.committed = 0;
+        at += n;
+    }
+    if !copied_any {
+        return Ok(0);
     }
     // Outside the lock, as `release_range`'s sweep: a walk of the child's
-    // own leaf tables over the regions.
-    let committed: usize = if cfg!(feature = "fork-commit-race-canary") {
-        parent.lock().filter(|sp| sp.recorded).map_or(0, |sp| sp.committed)
-    } else {
-        spans[..ns].iter().map(|&(a, b)| vmm::user_leaves_in(child.root(), a, b)).sum()
-    };
-    if nf != 0 {
-        for &obj in &files[..nf] {
-            memobj::memobj_paged_region_add_ref(obj);
+    // own leaf tables over the regions. Every child region is a charged one.
+    let mut committed = 0usize;
+    let mut at = 0;
+    loop {
+        let n = regions_from(child, at, &mut buf);
+        if n == 0 {
+            break;
         }
+        for r in &buf[..n] {
+            if !cfg!(feature = "fork-commit-race-canary") {
+                committed += vmm::user_leaves_in(child.root(), r.start, r.end);
+            }
+            // The private file regions the child now holds, for the page cache's count.
+            if r.pager == PagerKind::File {
+                memobj::memobj_paged_region_add_ref(r.obj);
+            }
+        }
+        at += n;
+    }
+    if cfg!(feature = "fork-commit-race-canary") {
+        committed = parent.lock().filter(|sp| sp.recorded).map_or(0, |sp| sp.committed);
     }
     // The pages the parent has compressed are the child's too: a share of the
     // pool's entries, and a copy of the parent's marker for each.
@@ -1917,17 +1926,43 @@ pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, RegionErro
         forget(child);
         return Err(RegionError::Full);
     }
-    let copied = if marked { copy_markers(parent, child, &spans[..ns]) } else { Ok(0) };
-    let Ok(copied) = copied else {
-        forget(child);
-        return Err(RegionError::Full);
-    };
+    let mut copied = 0;
+    let mut at = 0;
+    while marked {
+        let n = regions_from(child, at, &mut buf);
+        if n == 0 {
+            break;
+        }
+        let mut spans = [(0usize, 0usize); FORK_BATCH];
+        for (s, r) in spans.iter_mut().zip(&buf[..n]) {
+            *s = (r.start, r.end);
+        }
+        let Ok(k) = copy_markers(parent, child, &spans[..n]) else {
+            forget(child);
+            return Err(RegionError::Full);
+        };
+        copied += k;
+        at += n;
+    }
     if let Some(mut c) = child.lock().filter(|sp| sp.recorded) {
         c.committed = committed;
     }
     // A page behind a marker is not charged (the reclaimer gave the charge
     // back), in the child as in the parent.
     Ok(reserved.saturating_sub(committed).saturating_sub(copied))
+}
+
+/// Records [`fork_clone`] copies at a time.
+const FORK_BATCH: usize = 8;
+
+/// Copy the regions of `r` from index `at` on into `out`; how many (0 when
+/// there are no more, or no records).
+fn regions_from(r: SpaceRef, at: usize, out: &mut [Region]) -> usize {
+    let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return 0 };
+    let rs = &sp.set.as_slice()[at.min(sp.set.len())..];
+    let n = rs.len().min(out.len());
+    out[..n].copy_from_slice(&rs[..n]);
+    n
 }
 
 /// Give the child's slots the parent's page markers over `spans`, word for
