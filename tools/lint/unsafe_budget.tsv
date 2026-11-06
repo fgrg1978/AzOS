@@ -22,7 +22,7 @@ crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
-crates/core/common	4	0	0	0	0	36
+crates/core/common	4	0	0	0	0	37
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	15	2	1	0	0	25
 crates/core/decision	2	0	2	0	0	61
@@ -167,4 +167,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	506
+@unsafe-share	505
