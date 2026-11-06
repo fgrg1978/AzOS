@@ -13,14 +13,9 @@ description = "Host-side regression tests for kernel bugs found and fixed. Exclu
 # new test here is the standard procedure when a bug is discovered: it
 # locks the regression so future refactors can't silently reintroduce it.
 
-[features]
-# Mirrors azos_crypto's `no-bitmanip` (wave 13, L1): `crypto_tests.rs`
-# pulls `crates/core/crypto/src/sha256.rs` by path, and its riscv64-only
-# Zbb/Zknh branches test this feature. Off: the real (bitmanip) build.
-no-bitmanip = []
-
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
+azos_crypto = { path = "../../../crates/core/crypto" }
 # `crates/drivers/dtb/src/lib.rs` (pulled in with `#[path]`) sizes its CPU
 # table by `azos_limits::NR_CPUS` (wave 15).
 azos_limits = { path = "../../../crates/core/limits" }

@@ -2,18 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Coverage for `crates/core/crypto/` — security-critical, was 0 tests before.
 //!
-//! Pulls each algo file in via #[path] and exercises against known
+//! Exercises each algorithm of `azos_crypto` against known
 //! published test vectors. If a future refactor breaks any of these,
 //! the kernel's signed-firmware verification breaks silently — so
 //! these tests are gating.
 
 #![allow(dead_code, unused_imports, clippy::all)]
 
-#[path = "../../../../crates/core/crypto/src/sha256.rs"]
-mod sha256_src;
-
-#[path = "../../../../crates/core/crypto/src/aes.rs"]
-mod aes_src;
+use azos_crypto::aes as aes_src;
+use azos_crypto::sha256 as sha256_src;
 
 // ed25519 + x25519 + secure_channel pull additional crate-internal
 // modules; they're best exercised end-to-end by host-side fuzzing
@@ -94,8 +91,8 @@ mod aes_vectors {
         // `encrypt_block` — "Specific assertion intentionally minimal"
         // meant zero assertions against the vector below, ever. The
         // module header calls this file "gating"; a gate that never
-        // encrypts anything gates nothing. `aes_src` is the real
-        // `crates/core/crypto/src/aes.rs`, pulled in via `#[path]` above.
+        // encrypts anything gates nothing. `aes_src` is
+        // `azos_crypto::aes`.
         let key: [u8; 16] = [
             0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
             0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
