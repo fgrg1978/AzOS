@@ -87,6 +87,16 @@ cow-shared-write-canary = []
 # Host-suite canary: a fork's clone leaves a compressed page's slot empty in
 # the child, so it reads a zero page: `syscall-tests` fork_clone.rs fails.
 fork-marker-canary = []
+# Host-suite canary: a fork's clone takes the page-cache counts of the
+# child's file mappings as it reaches them, after the pool's share, and a
+# refused clone gives back counts it never took: `syscall-tests` mmap_file.rs.
+fork-file-count-late-canary = []
+# Host-suite canary: a copy-on-write break goes through while a fork holds
+# the space (`pager::cow_swap`): `syscall-tests` fork_clone.rs.
+cow-break-during-fork-canary = []
+# Host-suite canary: the clone shares a frame whose parent leaf is missing,
+# the child's word made from the mapping: `syscall-tests` fork_clone.rs.
+fork-leafless-frame-canary = []
 # Host-suite canary: `aspace::destroy` leaves the space's records in the
 # object, so the next space made from it starts with them: `syscall-tests`'
 # `aspace_life` fails.

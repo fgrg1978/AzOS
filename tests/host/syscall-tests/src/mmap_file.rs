@@ -28,6 +28,7 @@
 // * `refusals`: the seam's `None`, a read-only descriptor, a bad range, flags.
 // * `the_exit_of_a_mapper_writes_its_stores_to_the_file`, `a_store_after_the_last_sync_still_reaches_the_file_at_exit`, `the_exit_of_a_mapper_writes_back_only_its_own_windows`.
 // * `a_fork_child_gets_the_private_regions_only`.
+// * `a_refused_fork_leaves_the_parents_file_counts` (canary `fork-file-count-late-canary`, a gate row).
 //
 // Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
 // * `exit_writeback` doing nothing: the three exit rows red.
@@ -655,6 +656,48 @@ fn a_fork_child_gets_the_private_regions_only() {
     assert_eq!(munmap_as(&parent, private, 2 * PAGE_SIZE), 0);
     fault(&child, private);
     assert_eq!(&page_bytes(frame(&child, private))[..4], &bytes_of(0)[2 * PAGE_SIZE..2 * PAGE_SIZE + 4]);
+    drop((parent, child));
+    clean();
+}
+
+/// **A refused fork gives back exactly the page-cache counts it took.** The
+/// parent maps anonymous memory below a private file mapping; the clone is
+/// refused where the pool shares the parent's entries and where the first
+/// batch of the anonymous slots is cloned (`pager::shim_inject`). Each
+/// refusal leaves the file's users and its pin as they were, and every frame
+/// reference and page the clone took goes back.
+/// **Canary** `fork-file-count-late-canary`: the counts are taken as the clone
+/// reaches each record, after the pool's share, and the refusal's `forget`
+/// drops counts that were never taken (the file is unpinned under the parent).
+#[test]
+fn a_refused_fork_leaves_the_parents_file_counts() {
+    use azos_mm::pager::{shim_inject, Inject};
+    let _g = serial();
+    clean();
+    fill_file(0, 4 * PAGE_SIZE);
+    let (parent, child) = (task(7130, 62), task(7131, 63));
+    let fp = open_as(&parent, b'A', O_RDWR);
+    enter(&parent);
+    let anon = super::sys_mmap(0, (4 * PAGE_SIZE) as u64, RW, 0, u64::MAX, 0);
+    assert!(anon > 0, "mmap failed: {anon}");
+    let anon = anon as usize;
+    let private = mmap_ok(&parent, fp, 2 * PAGE_SIZE, 0, RW, PRIVATE);
+    assert!(anon < private, "the anonymous mapping is cloned before the file one");
+    fault(&parent, anon);
+    let f = frame(&parent, anon);
+    let obj = obj_at(&parent, private);
+    let (users, pins) = (azos_ipc::memobj::memobj_paged_users_ref(obj), pinned(0));
+    for at in [Inject::PoolShare, Inject::Slots] {
+        let used = azos_mm::shim_pages_in_use();
+        shim_inject(Some(at));
+        let r = azos_mm::pager::fork_clone(azos_sched::shim_space(parent.pt), azos_sched::shim_space(child.pt));
+        shim_inject(None);
+        assert!(r.is_err(), "the clone was not refused");
+        assert_eq!(azos_ipc::memobj::memobj_paged_users_ref(obj), users, "the file's users moved");
+        assert_eq!(pinned(0), pins, "the file's pin moved");
+        assert!(azos_mm::cow::page_getref(f) <= 1, "a reference the refusal took stays on the frame");
+        assert_eq!(azos_mm::shim_pages_in_use(), used, "a page the refusal took stays out");
+    }
     drop((parent, child));
     clean();
 }

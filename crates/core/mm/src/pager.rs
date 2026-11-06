@@ -1890,11 +1890,13 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
             h();
         }
     }
+    let mut held = false;
     let installed = space.lock().filter(|sp| sp.recorded).is_some_and(|mut t| {
         // A fork began holding the space while this restore supplied: its
         // clone must see the page out. The next attempt waits
         // for the fork's end. Canary `fork-install-recheck-canary`.
         if stored.is_some() && t.forking != 0 && !cfg!(feature = "fork-install-recheck-canary") {
+            held = true;
             return false;
         }
         // Unmapped or re-protected since the lookup: look again and let the
@@ -1946,6 +1948,9 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         true
     });
     drop(spare);
+    if held {
+        held_hook();
+    }
     if !installed {
         src.give_back(root, block);
         return Ok(Step::Again);
@@ -2144,19 +2149,43 @@ pub fn protect_range(r: SpaceRef, s: usize, e: usize, write: bool) -> Result<(),
     res
 }
 
+/// How [`cow_swap`] ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Swap {
+    /// The leaf (and the slot) name the new frame.
+    Swapped,
+    /// The leaf is not the old word any more: nothing changed.
+    Lost,
+    /// A fork holds the space: nothing changed, and the break waits for the
+    /// fork's end with [`wait_fork_end`] (the counter read before the look).
+    Held(u32),
+}
+
 /// A copy-on-write break of the page at `va` under `root` swaps its leaf
 /// (`leaf`) from `old` to `new`, a leaf on another frame: the leaf and, for a
 /// page of an anonymous mapping of the space whose root it is (the running
 /// task's, or another task's a kernel write reaches), its slot move together,
-/// under the space's lock. `false`: the leaf is not `old` any more, nothing
-/// changed.
+/// under the space's lock.
+///
+/// Not while a fork holds the space: a sibling of the forking thread may still
+/// store through a writable translation of the old frame that the fork's
+/// shootdown has not reached, and that frame is the child's from the fork on;
+/// a break then would leave the store in the child and not in the parent's new
+/// frame. The break waits for the fork's end and the store faults again.
+/// Canary `cow-break-during-fork-canary`: it goes through.
 ///
 /// Canary `cow-slot-canary`: the slot stays on the old frame.
-pub(crate) fn cow_swap(root: usize, va: usize, leaf: &AtomicU64, old: u64, new: u64) -> bool {
+pub(crate) fn cow_swap(root: usize, va: usize, leaf: &AtomicU64, old: u64, new: u64) -> Swap {
+    let seq = MARKER_SEQ.load(Ordering::Acquire);
     let guard = crate::aspace::with_root(root).and_then(|r| r.lock());
+    if guard.as_ref().is_some_and(|sp| sp.recorded && sp.forking != 0) && !cfg!(feature = "cow-break-during-fork-canary") {
+        drop(guard);
+        held_hook();
+        return Swap::Held(seq);
+    }
     let slot = guard.as_ref().and_then(|sp| anon_slot(sp, va));
     if leaf.compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire).is_err() {
-        return false;
+        return Swap::Lost;
     }
     if let Some(s) = slot.filter(|_| !cfg!(feature = "cow-slot-canary")) {
         let _ = s.compare_exchange(
@@ -2166,8 +2195,37 @@ pub(crate) fn cow_swap(root: usize, va: usize, leaf: &AtomicU64, old: u64, new: 
             Ordering::Acquire,
         );
     }
-    true
+    Swap::Swapped
 }
+
+/// Sleep until the fork that held a space when the marker counter read `seq`
+/// has ended (its end bumps the counter and wakes the queue).
+pub(crate) fn wait_fork_end(seq: u32) {
+    MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
+}
+
+/// Host suites only: run when a fault or a copy-on-write break finds its space
+/// held by a fork and waits (a row tells "it waited" from "it was not looked at").
+#[cfg(not(target_os = "none"))]
+static HELD_HOOK: SpinLock<Option<fn()>> = SpinLock::new(None);
+
+/// Host suites only: install or remove [`HELD_HOOK`].
+#[cfg(not(target_os = "none"))]
+pub fn shim_set_held_hook(hook: Option<fn()>) {
+    *HELD_HOOK.lock() = hook;
+}
+
+#[cfg(not(target_os = "none"))]
+fn held_hook() {
+    let h = *HELD_HOOK.lock();
+    if let Some(h) = h {
+        h();
+    }
+}
+
+#[cfg(target_os = "none")]
+#[inline(always)]
+fn held_hook() {}
 
 /// The fork of the parent's (`parent`) mappings into its child (`child`): the
 /// same records, each anonymous object of the parent cloned into one of the
@@ -2274,9 +2332,15 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
     if !copied_any {
         return Ok(0);
     }
+    // The private file mappings the child now holds, for the page cache's
+    // count: every one before anything below can refuse, so that the
+    // `forget` of a refusal gives back exactly what was taken.
+    if !LATE_FILE_COUNTS {
+        count_files(child, &mut buf);
+    }
     // The pages the parent has compressed are the child's too: a share of the
     // pool's entries, whose generations the copied markers name.
-    if zpool_dup(parent.key(), child.key()).is_err() {
+    if injected(Inject::PoolShare) || zpool_dup(parent.key(), child.key()).is_err() {
         forget(child);
         return Err(MapError::Full);
     }
@@ -2298,6 +2362,59 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
     // A page behind a marker is not charged (the reclaimer gave the charge
     // back), in the child as in the parent.
     Ok(reserved.saturating_sub(c.frames).saturating_sub(c.marked))
+}
+
+/// Canary `fork-file-count-late-canary`: the file counts are taken as the
+/// clone reaches each record, after the pool's share, and a refusal's `forget`
+/// gives back counts that were never taken.
+const LATE_FILE_COUNTS: bool = cfg!(feature = "fork-file-count-late-canary");
+
+/// One page-cache count for every private file mapping of `child` (a fork's
+/// copy of the parent's records).
+fn count_files(child: SpaceRef, buf: &mut [Mapping; FORK_BATCH]) {
+    let mut at = 0;
+    loop {
+        let n = mappings_from(child, at, buf);
+        if n == 0 {
+            return;
+        }
+        for m in &buf[..n] {
+            if let Backing::File { obj, .. } = m.backing {
+                memobj::memobj_paged_region_add_ref(obj);
+            }
+        }
+        at += n;
+    }
+}
+
+/// A refusal the host suites inject into the clone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Inject {
+    /// The pool refuses to share the parent's entries.
+    PoolShare = 1,
+    /// The first batch of an anonymous mapping's slots is refused.
+    Slots = 2,
+}
+
+#[cfg(not(target_os = "none"))]
+static INJECT: AtomicU32 = AtomicU32::new(0);
+
+/// Host suites only: refuse the clone at `at` (none: never).
+#[cfg(not(target_os = "none"))]
+pub fn shim_inject(at: Option<Inject>) {
+    INJECT.store(at.map_or(0, |a| a as u32), Ordering::SeqCst);
+}
+
+#[cfg(not(target_os = "none"))]
+fn injected(at: Inject) -> bool {
+    INJECT.load(Ordering::SeqCst) == at as u32
+}
+
+#[cfg(target_os = "none")]
+#[inline(always)]
+fn injected(_: Inject) -> bool {
+    false
 }
 
 /// What [`clone_objects`] gave the child.
@@ -2329,12 +2446,13 @@ fn clone_objects(parent: SpaceRef, child: SpaceRef, buf: &mut [Mapping; FORK_BAT
                     // holds the group's `mm_lock`), so the object lives; its
                     // twin is the child's, which has not run.
                     let (po, co) = unsafe { (anon_obj::get(obj), anon_obj::get(anon_obj::get(obj).twin())) };
-                    clone_slots(parent, child.root(), m, po, co, c)?;
+                    clone_slots(parent, child, m, po, co, c)?;
                 }
                 Backing::File { obj, .. } => {
                     vmm::for_each_leaf_in(child.root(), m.start, m.end, |_, _| c.frames += 1);
-                    // The private file mappings the child now holds, for the page cache's count.
-                    memobj::memobj_paged_region_add_ref(obj);
+                    if LATE_FILE_COUNTS {
+                        memobj::memobj_paged_region_add_ref(obj);
+                    }
                 }
             }
         }
@@ -2376,13 +2494,13 @@ const CLONE_BATCH: usize = 64;
 /// one by one.
 fn clone_slots(
     parent: SpaceRef,
-    croot: usize,
+    child: SpaceRef,
     m: &Mapping,
     po: &anon_obj::AnonObj,
     co: &anon_obj::AnonObj,
     c: &mut Cloned,
 ) -> Result<(), MapError> {
-    let proot = parent.root();
+    let (proot, croot) = (parent.root(), child.root());
     let span = PAGE_SIZE * ARCH.entries_per_table();
     let mut words = [slot::EMPTY; CLONE_BATCH];
     let mut va = m.start;
@@ -2398,7 +2516,14 @@ fn clone_slots(
                 at += n * PAGE_SIZE;
                 continue;
             }
-            let r = clone_batch(proot, croot, m, co, at, first, &words[..n], &mut tables, c);
+            let r = if injected(Inject::Slots) {
+                Err((0, MapError::Full))
+            } else {
+                clone_batch(proot, croot, m, co, at, first, &words[..n], &mut tables, c)
+            };
+            if r.is_ok() && zpool::ENABLED && ZSTORED.load(Ordering::Relaxed) != 0 {
+                drop_stale_shares(child.key(), at, &words[..n]);
+            }
             if let Err((k, e)) = r {
                 // The references of the batch's pages not given to the child.
                 for &w in &words[k..n] {
@@ -2413,6 +2538,24 @@ fn clone_slots(
         va = end;
     }
     Ok(())
+}
+
+/// The child's share of a pool entry for a page the clone gave it as a frame
+/// (`words`, the batch at `at`): a sibling's restore installed the page before
+/// the fork's hold and dropped the parent's entry only after the pool was
+/// shared, so no slot of the child names the entry; it goes now, not at the
+/// child's end.
+fn drop_stale_shares(ckey: usize, at: usize, words: &[u64]) {
+    if !words.iter().any(|&w| matches!(slot::decode(w), Some(slot::Slot::Marker(..)))) {
+        zpool_discard(ckey, at, at + words.len() * PAGE_SIZE);
+        return;
+    }
+    for (k, &w) in words.iter().enumerate() {
+        if slot::frame_of(w).is_some() {
+            let va = at + k * PAGE_SIZE;
+            zpool_discard(ckey, va, va + PAGE_SIZE);
+        }
+    }
 }
 
 /// The parent's slot words of pages `first..` of `po` into `out`, each frame's
@@ -2501,10 +2644,15 @@ fn clone_batch(
         let idx = base.wrapping_add(k);
         // SAFETY: entry `idx` of the parent's leaf table for this span.
         let leaf = share_leaf(pl.map(|p| unsafe { &*(p.add(idx) as *const AtomicU64) }), f, m.write, c).map_err(|e| (k, e))?;
-        cs.store(slot::frame(f), Ordering::Release);
         // SAFETY: entry `idx` of the child's leaf table for this span, a table
         // of a root no CPU runs on yet.
-        unsafe { core::ptr::write_volatile(cl.add(idx), leaf) };
+        let cw = unsafe { &*(cl.add(idx) as *const AtomicU64) };
+        // From the empty word only (N12h, `crate::pte_install`): the child's
+        // root is in the merged roster, and a word there is nobody's to replace.
+        if crate::pte_install::install(cw, ARCH.pte_empty(), leaf).is_err() {
+            return Err((k, MapError::Invalid));
+        }
+        cs.store(slot::frame(f), Ordering::Release);
         c.frames += 1;
     }
     Ok(())
@@ -2546,9 +2694,13 @@ fn leaf_tables(proot: usize, croot: usize, va: usize) -> Result<(Option<*mut u64
 
 /// The parent's leaf `leaf` of a page whose frame `f` the child now shares,
 /// made read-only (copy-on-write in a writable mapping); the word the child's
-/// leaf gets. A leaf that names another frame or none is left as it is (a
-/// sibling broke or reused the page since the slot was read), and the child's
-/// word is made from the mapping's permission.
+/// leaf gets.
+///
+/// Under the fork's hold the leaf of a `Frame(f)` slot names `f`: a sibling's
+/// break waits for the fork ([`cow_swap`]), a reuse keeps the frame, and the
+/// reclaimer is held off. A leaf that names another frame or none is refused
+/// (`Invalid`): left as it is, the parent's next fault would install `f`
+/// writable from its slot under a child that maps it.
 fn share_leaf(leaf: Option<&AtomicU64>, f: usize, write: bool, c: &mut Cloned) -> Result<u64, MapError> {
     if let Some(a) = leaf {
         let mut cur = a.load(Ordering::Acquire);
@@ -2571,9 +2723,14 @@ fn share_leaf(leaf: Option<&AtomicU64>, f: usize, write: bool, c: &mut Cloned) -
             }
         }
     }
-    let perms = PagePerms { user: true, read: true, write, exec: false, accessed: true, dirty: write, ..PagePerms::USER_RW };
-    let w = ARCH.pte_make_leaf(f, perms, 0).map_err(|_| MapError::Invalid)?;
-    Ok(if write && SHARE_READ_ONLY { ARCH.pte_share_cow(w) } else { w })
+    // Canary `fork-leafless-frame-canary`: the child's word is made from the
+    // mapping, and the parent keeps a slot it may install writable.
+    if cfg!(feature = "fork-leafless-frame-canary") {
+        let perms = PagePerms { user: true, read: true, write, exec: false, accessed: true, dirty: write, ..PagePerms::USER_RW };
+        let w = ARCH.pte_make_leaf(f, perms, 0).map_err(|_| MapError::Invalid)?;
+        return Ok(if write { ARCH.pte_share_cow(w) } else { w });
+    }
+    Err(MapError::Invalid)
 }
 
 /// Host suites only: run once just before a fault's install takes the

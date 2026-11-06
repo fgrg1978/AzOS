@@ -399,7 +399,14 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 if lo >= skip.lo && hi <= skip.hi {
                     continue;
                 }
-                match skip.held(lo, hi) {
+                let held = skip.held(lo, hi);
+                // The child's leaf table for the clone, made now, before the
+                // kernel's entries are merged into the child's root: the merge
+                // and its collision check then see the slot as the user's.
+                if held != Held::None && crate::vmm::next_valid(l0_pt, 0, entries) < entries {
+                    vmm::walk(child_pt, lo, true)?;
+                }
+                match held {
                     Held::All => continue,
                     Held::Part => true,
                     Held::None => false,
@@ -548,7 +555,16 @@ fn leaf_vaddr(vpn2: usize, vpn1: usize, vpn0: usize) -> usize {
 /// the refcount on the old page (freeing it if it hit zero).
 ///
 /// Returns `Ok(())` on success, `NotMapped` if the fault isn't actually COW.
+/// A copy that finds the space held by a fork waits for the fork's end and
+/// tries again (`pager::cow_swap`).
 pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
+    while !cow_break_once(pt, fault_addr)? {}
+    Ok(())
+}
+
+/// One try of [`handle_cow_fault`]: `false` when a fork held the space and the
+/// try waited for its end, and the break is to be tried again.
+fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
     // Null guard, same rule as the demand-paging path (see
     // `vmm::USER_GUARD_LIMIT`). The hole here is narrower — a COW break needs
     // an already-VALID, COW-marked leaf at that VA, so page 0 has to have been
@@ -588,7 +604,7 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
             let p = ARCH.pte_perms(pte);
             if p.user && p.write && p.dirty && p.accessed {
                 ARCH.flush_tlb_page(aligned_addr);
-                return Ok(());
+                return Ok(true);
             }
         }
         return Err(KernelError::NotMapped);
@@ -617,7 +633,9 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
     // or finds the entry already writable (its swap fails and it retakes it),
     // or counts it between the read and the clear: `page_forget_if_sole`
     // fails, and the entry goes back to copy-on-write below, so no space ends
-    // up writing a frame the fork's child maps.
+    // up writing a frame the fork's child maps. Unlike a copy, this needs no
+    // wait for a fork that holds the space: the frame stays the parent's, so a
+    // store through a stale writable translation lands where the parent reads.
     // Same permissions as a copy (`pte_break_cow`), so W^X holds as above.
     if !cfg!(feature = "cow-reuse-canary") {
         if crate::cow_table::page_is_sole(old_phys) {
@@ -638,7 +656,7 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
                 let _ = slot.compare_exchange(new_pte, pte, core::sync::atomic::Ordering::AcqRel,
                                               core::sync::atomic::Ordering::Acquire);
                 crate::vmm::user_shootdown(pt, aligned_addr, PAGE_SIZE);
-                return Ok(());
+                return Ok(true);
             }
             if won {
                 // The read-only translation goes, as after a copy: a hart
@@ -647,7 +665,7 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
             }
             // Lost: another thread changed the entry; the access retries on
             // whatever it says now, as the copy path's loser does.
-            return Ok(());
+            return Ok(true);
         }
     }
 
@@ -702,9 +720,19 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
     // page's slot, if an anonymous object holds it, moves with the leaf.
     // SAFETY: `pte_ptr` is an aligned entry of a live table page.
     let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
-    if !crate::pager::cow_swap(pt, aligned_addr, slot, pte, new_pte) {
-        let _ = pmm::free_page(PhysAddr::new(new_phys));
-        return Ok(());
+    match crate::pager::cow_swap(pt, aligned_addr, slot, pte, new_pte) {
+        crate::pager::Swap::Swapped => {}
+        crate::pager::Swap::Lost => {
+            let _ = pmm::free_page(PhysAddr::new(new_phys));
+            return Ok(true);
+        }
+        // A fork holds the space (`pager::cow_swap`): the copy goes, the
+        // break waits for the fork's end, and the store faults again.
+        crate::pager::Swap::Held(seq) => {
+            let _ = pmm::free_page(PhysAddr::new(new_phys));
+            crate::pager::wait_fork_end(seq);
+            return Ok(false);
+        }
     }
 
     // The PTE now names a different frame: shoot the old translation down on
@@ -719,5 +747,5 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
         let _ = pmm::free_page(PhysAddr::new(old_phys));
     }
 
-    Ok(())
+    Ok(true)
 }

@@ -275,7 +275,11 @@ pub fn mm_discharge(pages: u32) {
 /// Memory admission: a discharge posted for `tid` from another task. The stand-in
 /// has one budget, the current task's; a posting for that TID lands on it.
 pub fn mm_discharge_tid(tid: u32, pages: u32) {
-    if tid == current_task_tid() { mm_discharge(pages); }
+    if tid == current_task_tid() {
+        mm_discharge(pages);
+    } else if task_aspace(tid).is_some() {
+        OTHER.discharge(pages);
+    }
 }
 
 // ── Wave 14 (DEMANDPAGE) ─────────────────────────────────────────────────

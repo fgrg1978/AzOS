@@ -12745,6 +12745,19 @@ host_job host_canary_row "fork: sibling commit shared canary" syscall-tests cow-
     a_page_committed_before_the_clone_is_shared_with_the_child
 host_job host_canary_row "fork: exit gives the share back canary" syscall-tests cow-reuse-canary \
     a_child_that_exits_gives_its_share_back_and_the_parent_keeps_its_frames
+# A refused clone gives back exactly the page-cache counts it took (pager::
+# fork_clone takes every file count before anything can refuse).
+# fork-file-count-late-canary: the counts are taken as the clone reaches each
+# record, and the refusal's forget unpins the parent's file. A sibling's
+# copy-on-write break waits while a fork holds the space (pager::cow_swap);
+# cow-break-during-fork-canary: it breaks at once. A frame whose parent leaf is
+# missing refuses the clone; fork-leafless-frame-canary: it is shared.
+host_job host_canary_row "fork: refused clone file counts canary" syscall-tests fork-file-count-late-canary \
+    a_refused_fork_leaves_the_parents_file_counts
+host_job host_canary_row "fork: COW break waits for the fork canary" syscall-tests cow-break-during-fork-canary \
+    a_copy_on_write_break_waits_for_the_fork_to_end
+host_job host_canary_row "fork: leafless frame refused canary" syscall-tests fork-leafless-frame-canary \
+    a_frame_whose_parent_leaf_is_missing_refuses_the_fork
 host_job zpool_host_row "fork: compressed page shared, pool on" a_compressed_page_is_shared_with_the_child_not_restored
 host_job zpool_host_canary_row "fork: compressed page shared canary" fork-marker-canary \
     a_compressed_page_is_shared_with_the_child_not_restored

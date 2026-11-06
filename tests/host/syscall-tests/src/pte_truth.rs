@@ -16,11 +16,11 @@
 //   parent's write gives it a new frame and its slot follows, so the page is
 //   still the reclaimer's to take. Canary `cow-slot-canary` (`pager::cow_swap`
 //   leaves the slot): the unmap is refused (the slot names the child's frame).
-// * `a_page_committed_before_the_clone_is_shared_with_the_child`: the child's
-//   slot and leaf come from one read of the parent's slot, so a sibling's
+// * `a_page_committed_before_the_clone_is_shared_with_the_child`: a sibling's
 //   commit after the fork's walk is the child's, shared copy-on-write and
 //   paid. Canary `cow-shared-write-canary` (the share keeps the write
-//   permission): the parent's later store reaches the child.
+//   permission): the parent's later store reaches the child. (That the
+//   child's slot and leaf come from one read is structural, not this row's.)
 //
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
 
@@ -382,6 +382,13 @@ fn a_copy_on_write_break_through_another_tasks_root_moves_its_slot() {
 static HOOK_PARENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static HOOK_FORK: std::sync::Mutex<Option<(usize, azos_mm::pager::ForkHold)>> = std::sync::Mutex::new(None);
 
+/// Set when the sibling of `a_restore_begun_before_the_fork_*` finds the hold.
+static RECHECK_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn recheck_held() {
+    RECHECK_HELD.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn fork_at_install() {
     let pt = HOOK_PARENT.load(std::sync::atomic::Ordering::SeqCst);
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
@@ -421,6 +428,8 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);
     HOOK_PARENT.store(pt, std::sync::atomic::Ordering::SeqCst);
+    RECHECK_HELD.store(false, std::sync::atomic::Ordering::SeqCst);
+    azos_mm::pager::shim_set_held_hook(Some(recheck_held));
     azos_mm::pager::shim_set_install_hook(Some(fork_at_install));
     let parent_space = azos_sched::shim_space(pt);
     azos_sched::shim_serial_share(true);
@@ -443,8 +452,11 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
         azos_sched::shim_forget_space(child);
         azos_sched::shim_set_other_task(2, child, 0);
         assert!(fork_regions_to_child(2));
-        // Time for a sibling the hold did not stop to install.
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        // The sibling's install is refused for the hold (the hook), or goes
+        // through: whichever comes first decides.
+        while !RECHECK_HELD.load(std::sync::atomic::Ordering::SeqCst) && azos_mm::vmm::translate(pt, base).is_none() {
+            std::thread::yield_now();
+        }
         let early = azos_mm::vmm::translate(pt, base).is_some();
         drop(HOOK_FORK.lock().unwrap().take());
         assert!(sibling.join().unwrap().is_ok());
@@ -453,6 +465,7 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     });
     azos_sched::shim_serial_share(false);
     azos_mm::pager::shim_set_install_hook(None);
+    azos_mm::pager::shim_set_held_hook(None);
     let f = azos_mm::vmm::translate(pt, base).expect("restored in the parent");
     assert!(bytes(f).iter().all(|&b| b == 0x5A));
     assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(child), base).is_ok());

@@ -27,6 +27,17 @@
 //   the other's page. Canary `fork-marker-canary` (the marker is not copied):
 //   the child reads zeros. Needs the compressed pool (Kconfig MM_RECLAIM_COMPRESS).
 //
+// * `a_copy_on_write_break_waits_for_the_fork_to_end`: a sibling's break of a
+//   page the clone shared waits while the fork holds the space, so a store
+//   through a writable translation the shootdown has not reached yet stays in
+//   the parent's frame. Canary `cow-break-during-fork-canary`: it breaks at once.
+// * `a_frame_whose_parent_leaf_is_missing_refuses_the_fork`: the clone does
+//   not share a frame the parent's leaf does not map (the parent's next fault
+//   would install it writable). Canary `fork-leafless-frame-canary`.
+//
+// The host has no TLB: no row here sees the parent's shootdown after the
+// clone; the QEMU fork rows run it.
+//
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
 
 use super::harness::serial;
@@ -274,5 +285,70 @@ fn a_compressed_page_is_shared_with_the_child_not_restored() {
     write(child, base, 0x7D);
     assert_eq!(read(pt, base), 0x6D);
     exit(child);
+    done(pt);
+}
+
+/// Set when a break finds its space held by a fork.
+static BREAK_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn break_held() {
+    BREAK_HELD.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn a_copy_on_write_break_waits_for_the_fork_to_end() {
+    let _g = serial();
+    let pt = space();
+    let base = map(2);
+    let f = write(pt, base, 0x31);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, hold) =
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 0);
+    assert!(fork_regions_to_child(2));
+    BREAK_HELD.store(false, std::sync::atomic::Ordering::SeqCst);
+    azos_mm::pager::shim_set_held_hook(Some(break_held));
+    azos_sched::shim_serial_share(true);
+    let (held, during, broke) = std::thread::scope(|sc| {
+        let sibling = sc.spawn(|| azos_mm::cow::handle_cow_fault(pt, base).is_ok());
+        while !BREAK_HELD.load(std::sync::atomic::Ordering::SeqCst) && !sibling.is_finished() {
+            std::thread::yield_now();
+        }
+        let held = BREAK_HELD.load(std::sync::atomic::Ordering::SeqCst);
+        let during = azos_mm::vmm::translate(pt, base);
+        drop(hold);
+        (held, during, sibling.join().unwrap())
+    });
+    azos_sched::shim_serial_share(false);
+    azos_mm::pager::shim_set_held_hook(None);
+    assert!(held, "the break went through while the fork held the space");
+    assert_eq!(during, Some(f), "the parent left the frame the child keeps during the fork");
+    assert!(broke, "the break after the fork's end");
+    assert_ne!(azos_mm::vmm::translate(pt, base), Some(f), "the parent has a frame of its own after the fork");
+    assert_eq!(azos_mm::vmm::translate(child, base), Some(f));
+    exit(child);
+    done(pt);
+}
+
+#[test]
+fn a_frame_whose_parent_leaf_is_missing_refuses_the_fork() {
+    let _g = serial();
+    let pt = space();
+    let base = map(2);
+    let f = write(pt, base, 0x41);
+    // The leaf goes, the slot keeps the frame.
+    azos_mm::vmm::unmap(pt, base);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, hold) =
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 0);
+    let cloned = fork_regions_to_child(2);
+    drop(hold);
+    assert!(!cloned, "the clone shared a frame its parent leaf does not map");
+    assert!(azos_mm::cow::page_getref(f) <= 1, "the refusal kept a reference");
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
     done(pt);
 }

@@ -2953,7 +2953,10 @@ pub fn handle_accessed_fault(pt: usize, fault_addr: usize) -> bool {
 /// `load_elf` memcpy's over the live `.text` of an already-running process.
 /// Mapping first means the user PT owns its own L1 tables and the merge
 /// path below — the branch that keeps kernel and user separate — is the one
-/// that actually runs.
+/// that actually runs. A fork's child gets its anonymous pages' leaves after
+/// this (`pager::fork_clone`), into leaf tables the fork's walk built before
+/// it (`cow::fork_cow_shared`); an allocating walk refuses a table the kernel
+/// shares in any case ([`walk_level`]).
 ///
 /// Because the copy grafts kernel-owned tables into `user_pt`, any teardown
 /// of that PT must go through [`destroy_user_pagetable`], which knows how to

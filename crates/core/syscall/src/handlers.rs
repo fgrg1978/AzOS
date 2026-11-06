@@ -3815,19 +3815,22 @@ pub(crate) fn fork_regions_to_child(child: u32) -> bool {
         return true;
     };
     let cloned = azos_mm::pager::fork_clone(parent, child_space);
-    let built = azos_sched::take_current_pt_build() as usize;
-    match cloned.map(|n| n + built) {
-        Ok(0) => true,
-        Ok(n) => {
-            if azos_sched::mm_charge_request_tid(child, n.min(u32::MAX as usize) as u32, request_may_grow()) {
-                true
-            } else {
-                azos_mm::pager::forget(child_space);
-                false
-            }
-        }
-        Err(_) => false,
+    let built = azos_sched::take_current_pt_build();
+    let Ok(owed) = cloned else { return false };
+    let owed = owed.min(u32::MAX as usize) as u32;
+    // The tables and slot chunks within the child's limit as it is, as every
+    // charge but a request's (`PageBudget::charge_request`); the reservation as
+    // a request, which may grow the limit.
+    if !azos_sched::mm_charge_request_tid(child, built, false) {
+        azos_mm::pager::forget(child_space);
+        return false;
     }
+    if !azos_sched::mm_charge_request_tid(child, owed, request_may_grow()) {
+        azos_sched::mm_discharge_tid(child, built);
+        azos_mm::pager::forget(child_space);
+        return false;
+    }
+    true
 }
 
 // ── Network utility syscalls ─────────────────────────────────────────────────
