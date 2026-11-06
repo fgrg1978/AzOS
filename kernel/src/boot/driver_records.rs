@@ -440,7 +440,8 @@ const GPIO: Ops<Kernel> = bring_up(gpio_probe);
 #[cfg(feature = "gpio-soft-expander")]
 fn gpio_soft_probe(_: &mut KernelEnv<'_>, h: Handle, _: &Device) -> R {
     let ctrl = azos_drv_gpio::chips::register(h.0, &azos_drv_gpio::expander::EXPANDER).map_err(|_| ProbeError::Busy)?;
-    crate::kprintln!("[GPIO] soft expander: controller {}, {} pins", ctrl, azos_drv_gpio::expander::PINS);
+    crate::kprintln!("[GPIO] soft expander: controller {}, {} pins ({} controllers registered)",
+        ctrl, azos_drv_gpio::expander::PINS, azos_drv_gpio::chips::count());
     Ok(())
 }
 #[cfg(feature = "gpio-soft-expander")]
