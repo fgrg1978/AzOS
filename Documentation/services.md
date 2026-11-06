@@ -451,15 +451,18 @@ serves and calls no endpoint.
 Every `LOGD_POLL_MS` it reads the records that arrived in every ring with one reader that
 hands them out oldest first, drops kernel log lines above `LOGD_MAX_LEVEL`, and appends the
 rest as text lines (`seq ts_us cpu L module message`, the message escaped so a record is one
-line; a decision record is module `@decision`, `rule=R verdict=V subject=S n=A,B,C`) to the
+line; a decision record is module `@decision`, `id=I rule=R verdict=V subject=S n=A,B,C`,
+`I` the id `why` takes; only refusals and denials unless `LOGD_DECISIONS_ALL`, and at most
+`LOGD_DECISIONS_PER_SEC` a second, the rest counted on one `records held back` line) to the
 open file of a ring of
 `KLOGn.TXT`: one append and one `fsync` per period, never one per line. A file that would
 pass `LOGD_FILE_KB` is followed by the next of `LOGD_FILES_KEEP`, which is truncated, so
 the log takes at most `LOGD_FILES_KEEP x LOGD_FILE_KB` of the volume. Each file opens
 with a line `file N`, N one more than the file before it: the sequence numbers start
 again at every boot, so the serial is what orders the files. After a restart it resumes
-every ring after its own last line when the kernel log's ring still holds the newest file's
-last kernel log record byte for byte, and from each ring's oldest record otherwise (a new
+every ring after its own last line (in the newest file, or the one before it when a source
+has none there yet) when the kernel log's ring still holds the newest file's last kernel log
+record byte for byte, and from each ring's oldest record otherwise (a new
 boot). A write the volume refuses leaves the reader where it was, so the next period offers
 the same records again; a burst that laps a ring between two polls is written as a
 `records lost: N` line, and a record whose envelope names a stale sequence is dropped and

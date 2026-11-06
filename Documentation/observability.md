@@ -670,7 +670,10 @@ handler that interrupts a producer gets a slot of its own, and a full ring overw
 oldest record. A reader writes nothing to the region and keeps a cursor per ring: it takes
 slot `c` when its stamp is `2c+2`, re-reads the stamp after the copy, counts as lost what the
 producer lapped, and drops (and counts) a whole slot whose envelope names another sequence
-than `c`. One reader, `Merge`, takes every ring at once and hands the records out oldest
+than `c`. A producer the ring laps while it is still storing finishes with a compare-and-swap
+of its own stamp, so it never writes the slot's stamp backward; it counts its record in the
+ring's `lapped` word, the bound on what a reader may have read torn (a claim that can refuse,
+as Linux's printk ring has, would close it). One reader, `Merge`, takes every ring at once and hands the records out oldest
 first; a ring with a producer mid-store holds it back. The region is a kernel-owned memory
 object a ring-3 task maps read-only (`MemObj klog.ring`, `READ|MAP`); the records written
 before the page allocator exists sit in a small region in `.bss` (the kernel log's ring of
@@ -690,7 +693,10 @@ longer than the console's 256-byte pre-format buffer is flagged as cut.
 `logd` (`userspace/services/logd`, see [services](services.md#logd)) drains every ring of the
 region with the one reader into a ring of files, `KLOGn.TXT`, under its `/fat` grant: the
 kernel log's lines as they are, a decision record as a line of module `@decision` with its
-rule, verdict, subject and numbers. `LOGD_FILE_KB`, `LOGD_FILES_KEEP`, `LOGD_MAX_LEVEL` and
+id, rule, verdict, subject and numbers: the refusals and denials only (a placement per
+migrating wake would push the kernel log out of the files in seconds), every rule with
+`LOGD_DECISIONS_ALL`, and at most `LOGD_DECISIONS_PER_SEC` a second, what the limit holds back
+counted on one line. `LOGD_FILE_KB`, `LOGD_FILES_KEEP`, `LOGD_MAX_LEVEL` and
 `LOGD_POLL_MS` are its retention. `log [-n N] [-l LEVEL] [-m MODULE]` (`TOOLBOX.ELF`) prints
 the last lines back. This is the durable kernel log for a running system; the pstore and
 `/fat/CRASH.LOG` stay what they were, the record of a panic, and the flight recorder below

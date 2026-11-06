@@ -37,8 +37,10 @@ use azos_libsys as sys;
 #[allow(dead_code)]
 #[path = "../../../../crates/drivers/sys/src/klog/wire.rs"]
 mod wire;
+mod keep;
 mod store;
 
+use keep::Keep;
 use store::{Store, Vol};
 // The record substrate's reader, named by path (the seccomp scanner reads
 // `use sys::` lists as function imports).
@@ -181,7 +183,7 @@ fn put(out: &mut [u8], n: &mut usize, b: &[u8]) {
 }
 
 /// `n` in decimal after `prefix`, as a message.
-fn msg_num(prefix: &[u8], n: u64, out: &mut [u8; 48]) -> usize {
+fn msg_num(prefix: &[u8], n: u64, out: &mut [u8; 96]) -> usize {
     let mut k = 0;
     put(out, &mut k, prefix);
     put_dec(out, &mut k, n);
@@ -199,7 +201,10 @@ fn word(p: &[u8], i: usize) -> u64 {
 fn other_msg(env: &Envelope, payload: &[u8], out: &mut [u8; 160]) -> usize {
     let mut n = 0;
     if env.source == SOURCE_DECISION {
-        put(out, &mut n, b"rule=");
+        // The id `why` and a receipt name: the ring index plus one.
+        put(out, &mut n, b"id=");
+        put_dec(out, &mut n, env.seq + 1);
+        put(out, &mut n, b" rule=");
         put_dec(out, &mut n, (env.kind & 0xff) as u64);
         put(out, &mut n, b" verdict=");
         put_dec(out, &mut n, (env.kind >> 8) as u64);
@@ -263,6 +268,11 @@ struct Sink {
     committed: Merge<PAYLOAD>,
     /// The ring and cursor the reader is stuck on, and for how many polls.
     stuck: (usize, u64, u32),
+    /// Which decision records reach the files.
+    keep: Keep,
+    /// Periods whose write the volume took, up to the two that print the
+    /// marker the gate's read-back row waits for.
+    written: u32,
     batch: [u8; BATCH],
     n: usize,
 }
@@ -292,10 +302,20 @@ impl Sink {
         }
     }
 
-    /// Add a notice: `prefix` and `count`, at ring `ring`'s cursor.
+    /// Add a notice: ring `ring`'s source, `prefix` and `count`, at that
+    /// ring's cursor.
     fn note(&mut self, ring: usize, prefix: &[u8], count: u64) {
-        let mut m = [0u8; 48];
-        let k = msg_num(prefix, count, &mut m);
+        let name: &[u8] = match self.rd.region().ring(ring).map(|r| r.source()) {
+            Some(SOURCE_KLOG) => b"klog: ",
+            Some(SOURCE_DECISION) => b"decision: ",
+            Some(SOURCE_TELEMETRY) => b"telemetry: ",
+            _ => b"",
+        };
+        let mut p = [0u8; 64];
+        p[..name.len()].copy_from_slice(name);
+        p[name.len()..name.len() + prefix.len()].copy_from_slice(prefix);
+        let mut m = [0u8; 96];
+        let k = msg_num(&p[..name.len() + prefix.len()], count, &mut m);
         let ts = self.ticks();
         let seq = self.rd.cursor(ring).saturating_sub(1);
         self.n += notice(&mut self.batch[self.n..], wire::LEVEL_WARN, seq, ts, self.hz, &m[..k]);
@@ -312,6 +332,9 @@ impl Sink {
             match self.rd.next(&mut env, &mut payload) {
                 Step::Record { .. } => {
                     self.stuck = (0, 0, 0);
+                    if env.source == SOURCE_DECISION && !self.keep.admit((env.kind >> 8) as u8) {
+                        continue;
+                    }
                     if let Some(k) = render(&env, &payload, self.hz, &mut self.batch[self.n..]) {
                         self.n += k;
                     }
@@ -334,7 +357,18 @@ impl Sink {
                 Step::Empty => break,
             }
         }
-        self.flush();
+        let held = self.keep.period();
+        if held > 0 {
+            if let Some(i) = ring_index(self.rd.region(), SOURCE_DECISION) {
+                self.note(i, b"records held back by LOGD_DECISIONS_PER_SEC: ", held);
+            }
+        }
+        if self.flush() && self.written < 2 {
+            self.written += 1;
+            if self.written == 2 {
+                say(b"[logd] two periods on the volume\n");
+            }
+        }
     }
 }
 
@@ -387,7 +421,9 @@ fn run() -> i32 {
         }
     }
     say(b"[logd] AzOS record sink (klog.ring to KLOGn.TXT)\n");
-    let mut sink = Sink { vol, store, hz, rd, committed: rd, stuck: (0, 0, 0), batch: [0; BATCH], n: 0 };
+    let mut sink = Sink { vol, store, hz, rd, committed: rd, stuck: (0, 0, 0),
+        keep: Keep::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64),
+        written: 0, batch: [0; BATCH], n: 0 };
     // The start line: where this run begins, so a reader of the files sees the
     // seam (a new boot, or a restart).
     {

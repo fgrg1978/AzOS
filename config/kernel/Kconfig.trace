@@ -605,7 +605,8 @@ config KLOG
 
       Cost: 256 + 320 x KLOG_ENTRIES bytes of kernel-owned pages from the
       page allocator for good (and the decision ring's, DECISION_RECORDS_DEV),
-      256 + 320 x KLOG_EARLY_ENTRIES bytes of .bss,
+      256 + 320 x KLOG_EARLY_ENTRIES bytes of the kernel image's .data (the
+      early region is built with its header, so the image carries it),
       and per line one 320-byte store (the line is formatted once, before
       the console lock, as it already was).
 
@@ -682,6 +683,30 @@ config LOGD_POLL_MS
       append and one `fsync`, never one per line. A burst of more than
       KLOG_ENTRIES lines inside a period loses its oldest lines (counted
       and written as a `lost` record).
+
+config LOGD_DECISIONS_ALL
+    bool "logd: write every decision record to the files, not only the refusals"
+    depends on KLOG && DECISION_RECORDS_DEV
+    default n
+    help
+      `logd` reads the decision ring beside the kernel log
+      (userspace/services/logd/src/keep.rs).
+      Off (the default): only the refusals and denials are written, the
+      records an operator reads back; the placements a migrating wake makes,
+      hundreds a second on a busy SMP system, stay in the ring (`why` reads
+      them there). On: every rule, for development; LOGD_DECISIONS_PER_SEC
+      still bounds the rate.
+
+config LOGD_DECISIONS_PER_SEC
+    int "logd: decision records written per second at most"
+    range 1 10000
+    default 20
+    help
+      Read only with KLOG and DECISION_RECORDS_DEV. A period of
+      LOGD_POLL_MS writes at most this many per second of decision records
+      (one at least); the rest are counted and written as one
+      `records held back` line, so a refusal storm cannot push the kernel
+      log out of the files.
 
 config WCET
     # cargo-feature: wcet

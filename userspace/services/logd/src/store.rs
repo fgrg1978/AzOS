@@ -116,10 +116,25 @@ impl Store {
                 best = Some((slot, serial, s));
             }
         }
-        match best {
-            Some((slot, serial, s)) => (Store { slot, serial, size: s.size, keep, limit }, s.tail),
-            None => (Store { slot: 0, serial: 0, size: 0, keep, limit }, None),
+        let Some((slot, serial, s)) = best else {
+            return (Store { slot: 0, serial: 0, size: 0, keep, limit }, None);
+        };
+        // A source with no line in the newest file (it was rotated in a
+        // moment ago) resumes by the file before it, not from its ring's
+        // oldest record, which would write its lines twice.
+        let mut tail = s.tail;
+        if tail.as_ref().map_or(true, |t| t.rec.is_none() || t.last_decision.is_none() || t.last_telemetry.is_none()) {
+            let prev = (0..keep).filter_map(|k| scan(vol, k)).find(|p| p.serial == Some(serial - 1)).and_then(|p| p.tail);
+            if let Some(p) = prev {
+                let t = tail.get_or_insert(Tail { rec: None, last_decision: None, last_telemetry: None });
+                if t.rec.is_none() {
+                    t.rec = p.rec;
+                }
+                t.last_decision = t.last_decision.or(p.last_decision);
+                t.last_telemetry = t.last_telemetry.or(p.last_telemetry);
+            }
         }
+        (Store { slot, serial, size: s.size, keep, limit }, tail)
     }
 
     /// Append `batch` (whole lines). Opens the next file first when it would

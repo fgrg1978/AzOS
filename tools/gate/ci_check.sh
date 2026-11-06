@@ -5299,26 +5299,58 @@ ota_update_row() { # ota_update_row <riscv64|aarch64> <good|forged>
 # check (`boot_count=2`, A never zeroes it), both ISAs.
 # ── The record substrate, read back from logd's files ────────────────────────
 #
-# The kernel log, the decision records and (later) the actuation telemetry are
-# rings of one region (azos_records), and logd reads them all with one reader
-# that hands them out oldest first (azos_rings::region::record::Merge) into
-# KLOGn.TXT. Booted with the volume, the row stops QEMU after logd's second
-# period and reads the files back with mtools: a kernel log line and a
-# `@decision` line are there, each source's sequence numbers only grow, and
-# where the lines change source the timestamp does not go back (one reader, in
-# time order; a producer stamps its time a few instructions before it claims
-# its slot, so a line could only come late by that much, across a period). `stale` boots with `canary=record-stale` (the
-# next kernel log line is written under a stale sequence): logd must drop it
-# and say so, one `records dropped (stale sequence): 1` line.
+# The kernel log and the decision records are rings of one region
+# (azos_records), and logd reads them with one reader that hands them out
+# oldest first (azos_rings::region::record::Merge) into KLOGn.TXT. Booted with
+# the volume, the row stops QEMU once logd says two periods are on the volume
+# (`[logd] two periods on the volume`, after its second fsync'd write) and
+# reads the files back with mtools: a kernel log line and a `@decision` line
+# (a boot refusal: logd writes refusals and denials only, LOGD_DECISIONS_ALL
+# off) are there, each source's sequence numbers only grow, and where the
+# lines change source the timestamp does not go back (one reader, in time
+# order). Flake mode, accepted: a producer stamps its time a few instructions
+# before it claims its slot, so a line can come late by that much, across a
+# period, under TCG with interrupts in that window. `stale` boots with
+# `canary=record-stale` (the first kernel log line after the handover is
+# written under a stale sequence): logd must drop it and say so, one
+# `records dropped (stale sequence): 1` line.
 # OTAE2E_APPEND carries the command line (otae2e_qemu).
+records_files_check() { # records_files_check <disk> <pass|stale> <boot log>: 0 and quiet when the files hold what the row wants
+    local disk="$1" mode="$2" log="$3" files="$1.klog.txt" n
+    : >"$files"
+    for n in 0 1 2 3 4 5 6 7 8 9 A B C D E F; do mtype -i "$disk" "::KLOG$n.TXT" >>"$files" 2>/dev/null; done
+    tr -d '\r' <"$files" >"$files.lf"
+    if ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ [EWID?]\+? [^ @]+ \[KLOG\] record region' "$files.lf" \
+       || ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @decision id=[0-9]+ rule=[0-9]+ verdict=[0-9]+ ' "$files.lf" \
+       || ! awk '$5 == "logd" || $2 !~ /^[0-9]+$/ { next }
+                 { src = ($5 ~ /^@/) ? $5 : "klog"
+                   if (src in seq && $1 + 0 <= seq[src]) bad = 1
+                   seq[src] = $1 + 0
+                   if (src != prev && $2 + 0 < last) bad = 1
+                   last = $2 + 0; prev = src }
+                 END { exit bad }' "$files.lf"; then
+        echo "      the files do not hold a kernel log line and a decision record in time order:"
+        grep -aE '\[KLOG\]|@decision|logd' "$files.lf" | sed -n '1,8p' | sed 's/^/        /'
+        echo "      log kept: $log (volume: $disk)"; return 1
+    fi
+    if [ "$mode" = stale ] && [ "$(grep -acF 'records dropped (stale sequence): 1' "$files.lf")" != 1 ]; then
+        echo "      logd did not drop and count the stale record exactly once:"
+        grep -a 'records dropped\|records lost' "$files.lf" | sed -n '1,4p' | sed 's/^/        /'
+        echo "      log kept: $log (volume: $disk)"; return 1
+    fi
+    if [ "$mode" = pass ] && grep -aqF 'records dropped (stale sequence)' "$files.lf"; then
+        echo "      a stale-sequence drop without the canary"; echo "      log kept: $log (volume: $disk)"; return 1
+    fi
+    return 0
+}
 records_logd_row() { # records_logd_row <riscv64|aarch64> <pass|stale>
     local isa="$1" mode="$2" label="$1: records read back from logd"
     [ "$mode" = stale ] && label="$isa: records logd drops a stale sequence"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
-    local work="$CI_LOG_DIR/records-$isa-$mode" kernel disk log files n
+    local work="$CI_LOG_DIR/records-$isa-$mode" kernel disk log
     rm -rf "$work"; mkdir -p "$work"
-    kernel="$work/kernel"; disk="$work/disk.img"; log="$work/boot.log"; files="$work/klog.txt"
+    kernel="$work/kernel"; disk="$work/disk.img"; log="$work/boot.log"
     if [ "$isa" = riscv64 ]; then
         if ! kbuild "qemu"; then bad; echo "      riscv64 kernel (--features qemu) did not build"; return; fi
         cp "$KERNEL" "$kernel"
@@ -5336,39 +5368,14 @@ records_logd_row() { # records_logd_row <riscv64|aarch64> <pass|stale>
     OTAE2E_APPEND=""; [ "$mode" = stale ] && OTAE2E_APPEND="canary=record-stale"
     if ! otae2e_qemu "$isa" "$kernel" "$disk" "$log"; then OTAE2E_APPEND=""; bad; echo "      QEMU did not start (log: $log)"; return; fi
     OTAE2E_APPEND=""
-    if ! otae2e_wait "$log" '\[logd\] AzOS record sink' 150; then
-        otae2e_stop; bad; echo "      logd never started:"
+    if ! otae2e_wait "$log" '\[logd\] two periods on the volume' 180; then
+        otae2e_stop; bad; echo "      logd never wrote two periods to the volume:"
         grep -a "KLOG\]\|logd\|PANIC" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'
         echo "      log kept: $log"; return
     fi
-    # Two of logd's periods (LOGD_POLL_MS), then the volume is read cold.
-    sleep 4
     otae2e_stop
-    : >"$files"
-    for n in 0 1 2 3 4 5 6 7 8 9 A B C D E F; do mtype -i "$disk" "::KLOG$n.TXT" >>"$files" 2>/dev/null; done
-    tr -d '\r' <"$files" >"$files.lf"
-    if otae2e_trap "$log" \
-       || ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ [EWID?]\+? [^ @]+ \[KLOG\] record region' "$files.lf" \
-       || ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @decision rule=[0-9]+ verdict=[0-9]+ ' "$files.lf" \
-       || ! awk '$5 == "logd" || $2 !~ /^[0-9]+$/ { next }
-                 { src = ($5 ~ /^@/) ? $5 : "klog"
-                   if (src in seq && $1 + 0 <= seq[src]) bad = 1
-                   seq[src] = $1 + 0
-                   if (src != prev && $2 + 0 < last) bad = 1
-                   last = $2 + 0; prev = src }
-                 END { exit bad }' "$files.lf"; then
-        bad; echo "      the files do not hold a kernel log line and a decision record in time order:"
-        grep -aE '\[KLOG\]|@decision|logd' "$files.lf" | sed -n '1,8p' | sed 's/^/        /'
-        echo "      log kept: $log (volume: $disk)"; return
-    fi
-    if [ "$mode" = stale ] && [ "$(grep -acF 'records dropped (stale sequence): 1' "$files.lf")" != 1 ]; then
-        bad; echo "      logd did not drop and count the stale record exactly once:"
-        grep -a 'records dropped\|records lost' "$files.lf" | sed -n '1,4p' | sed 's/^/        /'
-        echo "      log kept: $log (volume: $disk)"; return
-    fi
-    if [ "$mode" = pass ] && grep -aqF 'records dropped (stale sequence)' "$files.lf"; then
-        bad; echo "      a stale-sequence drop without the canary"; echo "      log kept: $log (volume: $disk)"; return
-    fi
+    if otae2e_trap "$log"; then bad; echo "      the boot trapped"; echo "      log kept: $log"; return; fi
+    local why; why="$(records_files_check "$disk" "$mode" "$log")" || { bad; echo "$why"; return; }
     ok; rm -rf "$work"
 }
 
@@ -11910,11 +11917,18 @@ host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mism
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused
 host_job host_canary_row "tls: rsa key canary" tls-tests canary-rsa-keys the_server_refuses_an_rsa_private_key
 # The record substrate's reader (azos_rings::region::record): a stale sequence
-# is dropped, the merge is in time order, a lap is counted.
+# is dropped, the merge is in time order, a lap is counted, a copy a producer
+# overwrote is re-checked, a producer mid-store holds the merge, the boot's
+# handover keeps sequence numbers (decision ids). `canary-no-fence` has no row:
+# a missing fence shows only as a probabilistic tear in the stress test, the
+# same as for `Log`.
 host_job host_canary_row "records: stale seq canary" rings-tests canary-record-stale a_record_with_a_stale_sequence_is_dropped_and_counted
 host_job host_canary_row "records: stale replay canary" rings-tests canary-record-stale replay_keeps_a_stale_record_stale
 host_job host_canary_row "records: merge order canary" rings-tests canary-record-unordered records_of_three_sources_come_out_in_time_order_with_one_reader
 host_job host_canary_row "records: overrun canary" rings-tests canary-no-overrun a_lapped_reader_is_told_how_many_records_it_lost
+host_job host_canary_row "records: recheck canary" rings-tests canary-no-recheck a_record_overwritten_during_the_copy_is_not_handed_on
+host_job host_canary_row "records: pending holds canary" rings-tests canary-record-pending-empty a_producer_mid_store_holds_the_merge_back
+host_job host_canary_row "records: replay renumber canary" rings-tests canary-record-renumber replay_keeps_every_sequence_number
 # The host dry boot (tools/gate/azos_sim, `make sim`): its suite, and its canary
 # (`sim-cpu-canary`: it admits on one CPU more than it was given), under which
 # the named test, alone, must go red. Its QEMU rows are "topology: dry boot on
@@ -17322,6 +17336,33 @@ CPU 5 lacks hwcap bits"
         if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
         bad; echo "      $why"; echo "      log kept: $log"
     }
+    # The record substrate read back from logd's files (records_files_check,
+    # the riscv64/aarch64 rows' check): the gate's x86_64 cell, its volume on
+    # virtio-blk, two harts.
+    x86_records_row() { # x86_records_row <label> <pass|stale>
+        local label="$1" mode="$2" why=""
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
+        local -a app=(); [ "$mode" = stale ] && app=(-append "canary=record-stale")
+        x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
+        fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
+            || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; return; }
+        par_ready
+        x86_qemu "$kimg" "$log" 180 '\[logd\] two periods on the volume|KERNEL PANIC|\[X86-TRAP\]' -smp 2 ${app[@]+"${app[@]}"} \
+            -drive "file=$dimg,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+            || { rm -f "$kimg" "$kimg.features" "$dimg"; return; }
+        rm -f "$kimg" "$kimg.features"
+        if grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log"; then why="the boot trapped"
+        elif ! grep -aqF '[logd] two periods on the volume' "$log"; then why="logd never wrote two periods to the volume"
+        fi
+        [ -z "$why" ] && { why="$(records_files_check "$dimg" "$mode" "$log")" && why=""; }
+        if [ -z "$why" ]; then ok; rm -f "$log" "$dimg" "$dimg".klog.*; return; fi
+        bad; echo "      $why"; echo "      log kept: $log (volume: $dimg)"
+    }
+    par "x86_64: records read back from logd" x86_records_row "x86_64: records read back from logd" pass
+    par "x86_64: records logd drops a stale sequence" x86_records_row "x86_64: records logd drops a stale sequence" stale
     par "x86_64: PCI NVMe mounts FAT (microvm pcie)" x86_pci_row "x86_64: PCI NVMe mounts FAT (microvm pcie)" "" PASS
     par "x86_64: PCI wrong ECAM canary" x86_pci_row "x86_64: PCI wrong ECAM canary" "0xF0000000" FAIL
     # A SATA disk behind an AHCI host (Kconfig DRV_AHCI, crates/drivers/block/src/ahci.rs)

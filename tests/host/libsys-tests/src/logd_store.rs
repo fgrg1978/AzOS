@@ -196,3 +196,31 @@ fn files_that_are_not_ours_are_ignored() {
     assert!(s.write(&mut v, &batch(0, 1), 0, 1_000_000));
     assert!(String::from_utf8_lossy(&v.files[&name(0)]).starts_with("0 0 0 I logd file 1"), "slot 0 is rewritten");
 }
+
+/// A decision line, as `logd` writes one.
+fn decision_line(seq: u64) -> Vec<u8> {
+    let r = Record::make(seq, 5, wire::LEVEL_INFO, 0, 0, core::str::from_utf8(wire::DECISION_MODULE).unwrap(), b"rule=4");
+    let mut b = [0u8; LINE_MAX];
+    let n = wire::line(&r, 1_000_000, &mut b);
+    b[..n].to_vec()
+}
+
+/// After a rotation the newest file may hold no decision line yet: the
+/// decisions resume by the file before it, not from the ring's oldest
+/// record. **Canary.** Drop the look at the previous file in `recover` and
+/// `last_decision` is `None` (red).
+#[test]
+fn a_source_missing_from_the_newest_file_resumes_by_the_one_before() {
+    let mut v = Mem::default();
+    // Files of 100 bytes: the second batch does not fit the first file.
+    let (mut s, _) = Store::recover(&mut v, 4, 100);
+    let mut b = batch(10, 11);
+    b.extend_from_slice(&decision_line(41));
+    assert!(s.write(&mut v, &b, 0, 1_000_000));
+    assert!(s.write(&mut v, &batch(11, 13), 0, 1_000_000));
+    assert!(v.files.contains_key(&name(1)), "rotated into the second file");
+    let (_, tail) = Store::recover(&mut v, 4, 100);
+    let tail: Tail = tail.unwrap();
+    assert_eq!(tail.rec_seq(), Some(12), "the kernel log by the newest file");
+    assert_eq!(tail.last_decision, Some(41), "the decisions by the file before it");
+}
