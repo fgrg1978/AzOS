@@ -52,6 +52,7 @@ mod envelope;
 #[cfg(feature = "effect-gate")]
 pub use envelope::delete_gate;
 pub mod estop;
+pub mod estop_pin;
 pub mod gate;
 pub mod kind;
 pub mod logger;

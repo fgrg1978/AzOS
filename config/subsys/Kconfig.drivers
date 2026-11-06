@@ -644,8 +644,9 @@ config BOARD_IO
       (crates/drivers/kill-switch: CONFIG.INI's `estop_gpio_pin`, whose
       press latches the e-stop), installed as a provider through the
       extension contract. Off, those sensor types and the PWM and PID
-      ops read as not ready, no `Adc` interface is served, no kill-switch
-      task runs and none of that code is in the image
+      ops read as not ready, no `Adc` interface is served, the image has
+      no physical kill switch (a CONFIG.INI `estop_gpio_pin` is reported
+      at boot as NOT armed and recorded) and none of that code is in the image
       (tools/lint/profile_cut_lint.py checks the dependency set). The robot extension
       needs it (EXT_ROBOT implies it), so with USE_ROBOT it is on and not
       shown.

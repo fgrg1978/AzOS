@@ -258,6 +258,11 @@ pub(crate) fn load_signed_config() {
     #[cfg(feature = "tpm")]
     super::tpm::measure_config(measured);
     azos_actuation::providers::config_loaded();
+    // The kill switch is the board's I/O: without it a configured pin is read
+    // by nothing, which the operator must hear.
+    #[cfg(not(feature = "board-io"))]
+    azos_actuation::estop_pin::report_without_kill_switch(
+        azos_config::CFG_ESTOP_GPIO_PIN.load(core::sync::atomic::Ordering::Relaxed));
 
     if ini_read == FileRead::Absent {
         // First boot: write factory defaults so the next boot finds a file.

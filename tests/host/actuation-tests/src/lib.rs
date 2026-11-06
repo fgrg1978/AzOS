@@ -79,6 +79,9 @@ mod providers;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/actuation/src/effect.rs"]
 mod effect;
+#[allow(dead_code)]
+#[path = "../../../../crates/core/actuation/src/estop_pin.rs"]
+mod estop_pin;
 #[cfg(test)]
 mod unserved;
 
@@ -435,6 +438,26 @@ pub(crate) mod tests {
             }
         }
         out
+    }
+
+    /// **An image without a kill switch tells of a configured pin.** A pin is
+    /// reported and recorded as not armed (`SAFETY_ESTOP_PIN_INVALID`, action
+    /// "no kill switch", the pin as detail); "no pin" says nothing.
+    ///
+    /// **Canary.** Return before the record in `report_without_kill_switch`:
+    /// the medium has no such record.
+    #[test]
+    fn a_configured_estop_pin_without_a_kill_switch_is_recorded() {
+        use crate::estop_pin::{report_without_kill_switch, NO_PIN, PIN_NO_KILL_SWITCH};
+        let _g = fresh();
+        assert!(!report_without_kill_switch(NO_PIN), "no pin was reported");
+        assert!(report_without_kill_switch(5));
+        logger_flusher_pass();
+        let got: Vec<(u8, u32)> = records_of(&medium::durable(), LOG_EVT_SAFETY_VIOLATION).iter()
+            .filter(|r| r.payload[0] == SAFETY_ESTOP_PIN_INVALID)
+            .map(|r| (r.payload[1], u32::from_le_bytes(r.payload[4..8].try_into().unwrap())))
+            .collect();
+        assert_eq!(got, vec![(PIN_NO_KILL_SWITCH, 5)], "one record, for the configured pin only");
     }
 
     /// `detail` of every `SAFETY_ESTOP` record in `files`, in order.
