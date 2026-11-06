@@ -5,7 +5,7 @@
 
 use super::*;
 use azos_pkg::index::{
-    assess, MarkTable, Mark, check_upgrade, upgrade_entry, Availability, Floor, IndexWhy, Installed, UpgradeWhy, Version, VersionError,
+    assess, Mark, MarkTable, SignerKey, check_upgrade, upgrade_entry, Availability, Floor, IndexWhy, Installed, UpgradeWhy, Version, VersionError,
 };
 use azos_pkg::{index, Meta, Package};
 
@@ -165,31 +165,46 @@ fn an_older_serial_is_stale_and_the_same_index_is_not_a_different_one() {
 }
 
 #[test]
-fn the_mark_table_goes_on_the_medium_and_only_up() {
-    let mut t = MarkTable::new();
-    assert!(t.raise(1, Mark { serial: 5, digest: 9 }));
-    assert!(!t.raise(1, Mark { serial: 5, digest: 10 }), "the same serial changes nothing");
-    assert!(!t.raise(1, Mark { serial: 4, digest: 9 }), "never down");
-    assert!(t.raise(1, Mark { serial: 6, digest: 10 }));
-    for k in 2..=azos_pkg::index::MARKS_MAX as u32 {
-        assert!(t.raise(k, Mark { serial: k, digest: 0 }));
+fn the_mark_table_goes_on_the_medium_and_replaces_a_signers_floors() {
+    use azos_pkg::index::{name_hash, MarkErr, SECTOR_ENTRIES};
+    let (a, b): (SignerKey, SignerKey) = ([1; 16], [2; 16]);
+    let v = |s: &str| Version::parse(s).unwrap();
+    let mut t = MarkTable::new(2);
+    let floors = [(name_hash(&a, "x"), v("1.2")), (name_hash(&a, "y"), v("3"))];
+    t.accept(&a, Mark { serial: 5, digest: 9 }, &floors).unwrap();
+    t.accept(&b, Mark { serial: 1, digest: 1 }, &[(name_hash(&b, "x"), v("9"))]).unwrap();
+    assert_eq!(t.mark(&a), Some(Mark { serial: 5, digest: 9 }));
+    assert_eq!(t.floor_of(&a, name_hash(&a, "x")), Some(v("1.2")));
+    assert_eq!(t.floor_of(&b, name_hash(&a, "x")), None, "a floor is a signer's own");
+    // A newer index of `a` replaces a's floors and leaves b's.
+    t.accept(&a, Mark { serial: 6, digest: 10 }, &[(name_hash(&a, "y"), v("4"))]).unwrap();
+    assert_eq!((t.floor_of(&a, name_hash(&a, "x")), t.floor_of(&a, name_hash(&a, "y"))), (None, Some(v("4"))));
+    assert_eq!(t.floor_of(&b, name_hash(&b, "x")), Some(v("9")));
+
+    // On the medium: sector by sector, each with its own tag.
+    let sectors: Vec<[u8; 512]> = (0..2).map(|i| t.encode(i)).collect();
+    assert_eq!(MarkTable::decode(&sectors), t);
+    assert_eq!(MarkTable::decode(&[[0u8; 512]; 2]).mark(&a), None, "blank sectors hold nothing");
+    for at in [0, 4, 5, 7, 20, 511] {
+        let mut s = sectors.clone();
+        s[0][at] ^= 1;
+        assert_ne!(MarkTable::decode(&s), t, "byte {at} of the first sector");
     }
-    assert!(!t.raise(99, Mark { serial: 1, digest: 0 }), "a full table takes no more");
-    let bytes = t.encode();
-    assert_eq!(MarkTable::decode(&bytes), Some(t));
-    assert_eq!(MarkTable::decode(&[0u8; 512]), None, "a blank sector holds no marks");
-    for at in [0, 4, 5, 7, 20, azos_pkg::index::MARKS_LEN - 1] {
-        let mut b = bytes;
-        b[at] ^= 1;
-        assert_eq!(MarkTable::decode(&b), None, "byte {at}");
-    }
+
+    // Full is a typed refusal and changes nothing.
+    let mut full = MarkTable::new(1);
+    let many: Vec<(u64, Version)> = (0..SECTOR_ENTRIES as u64).map(|i| (i, v("1"))).collect();
+    let before = full;
+    assert_eq!(full.accept(&a, Mark { serial: 1, digest: 0 }, &many), Err(MarkErr::Full));
+    assert_eq!(full, before);
+    assert!(full.accept(&a, Mark { serial: 1, digest: 0 }, &many[..SECTOR_ENTRIES - 1]).is_ok());
 }
 
 /// What a signer's floors are when the device remembers its index: the newest
 /// one it has seen, or unknown, and unknown is not met. **Canary**
 /// `pkg-mark-canary`: a replayed or deleted index passes as the first one.
 #[test]
-fn a_replayed_deleted_or_diverging_index_leaves_the_floors_unknown() {
+fn a_replayed_deleted_or_diverging_index_leaves_the_remembered_floors() {
     use azos_pkg::index::{judge, Floors};
     let d = two_signers();
     let topo = d.topology();
@@ -212,13 +227,13 @@ fn a_replayed_deleted_or_diverging_index_leaves_the_floors_unknown() {
     // An older signed index put back, another body at the same serial, no file at all.
     for (what, bytes) in [("older", Some(&v6[..])), ("diverging", Some(&v7b[..])), ("deleted", None)] {
         let (f, raise) = judge(bytes, &topo, 0, Some(mark(&v7)));
-        assert!(matches!(f, Floors::Unknown) && raise.is_none(), "{what}");
+        assert!(matches!(f, Floors::Remembered) && raise.is_none(), "{what}");
     }
     // A file that does not verify is no file; with no mark there is nothing to be unknown.
     let mut forged = v7.clone();
     let at = forged.len() - 3;
     forged[at] ^= 1;
-    assert!(matches!(judge(Some(&forged), &topo, 0, Some(mark(&v7))).0, Floors::Unknown));
+    assert!(matches!(judge(Some(&forged), &topo, 0, Some(mark(&v7))).0, Floors::Remembered));
     assert!(matches!(judge(Some(&forged), &topo, 0, None).0, Floors::None));
     assert!(matches!(judge(None, &topo, 0, None).0, Floors::None));
     // An index of one signer is no floor source for the other.

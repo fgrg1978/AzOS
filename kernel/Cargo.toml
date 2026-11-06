@@ -776,6 +776,9 @@ pkg-launch-grant-canary = []
 # The boot-time apply ignores SUPERSEDE.REQ: an upgrade is not parked, settled or
 # rolled back with its new version.
 pkg-supersede-canary = []
+# The boot-time apply parks the old version of an upgrade as soon as the new version's head
+# verifies and never applies it again: a new version that then fails leaves no component.
+pkg-park-canary = []
 
 # Kconfig DRV_INA219_PLACEMENT = kernel. The built-in topology declares no
 # INADRV.ELF row and the kernel places the INA219 in the kernel (`powermon.rs`):

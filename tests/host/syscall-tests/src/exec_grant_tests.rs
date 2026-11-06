@@ -201,6 +201,7 @@ fn a_package_below_its_security_floor_is_refused_whatever_the_grants() {
         let refused = decide(tid, site, "LOWPKG.ELF", &LOW).unwrap_err();
         assert_eq!(refused.basis, Basis::BelowSecFloor, "{site:?}");
         assert!(refused.why().contains("security floor"), "the log line names the floor, not a missing grant");
+        assert_eq!(refused.action(), crate::exec_grant::ACTION_BELOW_FLOOR, "and so does the counter");
         assert_eq!(
             records(since),
             vec![(Verdict::Refuse as u8, tid, [prefix(&LOW), Basis::BelowSecFloor as u64, site as u64])],

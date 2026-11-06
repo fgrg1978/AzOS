@@ -26,7 +26,7 @@
 use azos_crypto::sig::KEY_LEN;
 use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use azos_idl::Cap;
-use azos_pkg::apply::{supersede_iter, supersede_push, SUPERSEDE_REC};
+use azos_pkg::apply::{is_parked, supersede_iter, supersede_push, SUPERSEDE_FILE_MAX, SUPERSEDE_REC};
 use azos_pkg::container::{ParseError, HEADER_LEN, KEY_LEN_MAX, SIG_LEN_MAX};
 use azos_pkg::index::{assess, check_upgrade, upgrade_entry, Availability, Entry, Floor, IndexWhy, Installed, UpgradeWhy, Version};
 use azos_pkg::{admit, receipt, verify, verify_head, Device, Package, Refusal};
@@ -57,22 +57,8 @@ fn slot_path(key_id: &[u8; 32]) -> [u8; 21] {
 }
 /// The upgrades in flight (`azos_pkg::apply::SUPERSEDE`).
 const SUPERSEDE_PATH: &[u8] = b"/fat/PKG/SUPERSEDE.REQ";
-/// Bytes of the buffer the file is read into: a record per staged package, and one more.
-const SUPERSEDE_BUF: usize = (azos_limits::PKG_MAX_STAGED as usize + 1) * SUPERSEDE_REC;
-// The staged-scan buffer is the largest thing the installer reads at a time.
-const _: () = assert!(SUPERSEDE_BUF <= HEAD_BUF);
-
 /// The index's file name beside the package the source rows name.
 pub const INDEX_FILE: &str = "INDEX.AZX";
-
-// A fetched index is read into the package buffer, a stored one into the rows
-// arena (nothing else uses it while a refresh runs): an index that does not fit
-// either would be silently ignored.
-const _: () = assert!(azos_pkg::index::FILE_MAX <= PKG_BUF, "PKG_MAX_KB is smaller than the largest index (PKG_INDEX_MAX_ENTRIES)");
-const _: () = assert!(
-    azos_pkg::index::FILE_MAX <= azos_limits::PKG_MAX_STAGED as usize * azos_limits::PKG_META_MAX_KB as usize * 1024,
-    "PKG_MAX_STAGED x PKG_META_MAX_KB is smaller than the largest index (PKG_INDEX_MAX_ENTRIES)"
-);
 
 const META_MAX: usize = azos_limits::PKG_META_MAX_KB as usize * 1024;
 /// Packages staged at once (Kconfig `PKG_MAX_STAGED`).
@@ -356,7 +342,7 @@ pub struct Work {
     sig: [u8; azos_topology::SIDECAR_MAX],
     sched: [u8; SCHED_BUF],
     arena: [u8; MAX_STAGED * META_MAX],
-    supersede: [u8; SUPERSEDE_BUF],
+    supersede: [u8; SUPERSEDE_FILE_MAX],
     upd: update::Work,
     io: [u8; UPDATE_IO],
     /// The running slot's manifest, for the base of a delta update.
@@ -387,7 +373,7 @@ impl Work {
             sig: [0; azos_topology::SIDECAR_MAX],
             sched: [0; SCHED_BUF],
             arena: [0; MAX_STAGED * META_MAX],
-            supersede: [0; SUPERSEDE_BUF],
+            supersede: [0; SUPERSEDE_FILE_MAX],
             upd: update::Work::new(),
             io: [0; UPDATE_IO],
             base_mb: [0; update::MANIFEST_MAX],
@@ -474,6 +460,16 @@ impl<V: Volume, R: Remote> Packages for Service<'_, V, R> {
         let now = self.vol.now_ns();
         let want = words_id(&id);
         let head = &mut self.work.head[..];
+        // The old half of an upgrade on trial stays: if the new version is rolled
+        // back it is the package.
+        let sup_len = match read_supersede(&mut self.vol, &mut self.work.supersede) {
+            Ok(n) => n,
+            Err(()) => return [status(step::IO, io::SUPERSEDE), 0, 0, 0],
+        };
+        let (staged, staged_n) = staged_ids(&mut self.vol, head, None);
+        if supersede_iter(&self.work.supersede[..sup_len]).any(|(o, n)| o == want && staged[..staged_n].contains(&n)) {
+            return [Refusal::Upgrade(UpgradeWhy::Pending).code(), receipt::id_prefix(&want), 0, 0];
+        }
         let mut i = 0;
         while let Some((path, pk)) = staged_at(&mut self.vol, head, &mut i) {
             if pk.id() != want {
@@ -792,6 +788,11 @@ fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: u
     if let Err(r) = load_topology(vol, caps, sig, sched, topo, key) {
         return r;
     }
+    // What is stored is read back whole into the rows arena: an index that would
+    // not fit it is not taken (a typed refusal, whatever the Kconfig sizes).
+    if n > kept.len() {
+        return refuse_index(vol, IndexWhy::Length, 0, now);
+    }
     let bytes = &pkg[..n];
     let ix = match azos_pkg::index::verify(bytes, topo) {
         Ok(ix) => ix,
@@ -824,11 +825,12 @@ fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: u
         Ok(n) => n,
         Err(()) => return [status(step::IO, io::SUPERSEDE), 0, 0, 0],
     };
+    let (ok_ids, ok_n) = staged_ids(vol, head, Some(topo));
     report.n = 0;
     let mut i = 0;
     while report.n < MAX_STAGED {
         let Some((_, pk)) = staged_at(vol, head, &mut i) else { break };
-        if supersede_iter(&supersede[..sup_len]).any(|(old, _)| old == pk.id()) {
+        if is_parked(supersede_iter(&supersede[..sup_len]), &pk.id(), |n| ok_ids[..ok_n].contains(n)) {
             continue;
         }
         let Ok(v) = verify_head(pk, topo) else { continue };
@@ -874,6 +876,21 @@ fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: u
     }
     report.valid = true;
     [0, ix.serial as u64, report.n as u64, ix.entries as u64]
+}
+
+/// The ids of the staged packages whose signed head verifies against `topo`
+/// (`verified`) or that are merely staged: at most `MAX_STAGED`.
+fn staged_ids<V: Volume>(vol: &mut V, head: &mut [u8], topo: Option<&Topology<'_>>) -> ([[u8; 32]; MAX_STAGED], usize) {
+    let mut ids = [[0u8; 32]; MAX_STAGED];
+    let (mut n, mut i) = (0, 0);
+    while n < MAX_STAGED {
+        let Some((_, pk)) = staged_at(vol, head, &mut i) else { break };
+        if topo.is_none_or(|t| verify_head(pk, t).is_ok()) {
+            ids[n] = pk.id();
+            n += 1;
+        }
+    }
+    (ids, n)
 }
 
 /// The supersede file into `buf`: how many bytes (0 when there is none).
@@ -932,6 +949,7 @@ fn install_or_admit<'r, V: Volume>(
         Ok(n) => n,
         Err(()) => return [status(step::IO, io::SUPERSEDE), 0, 0, 0],
     };
+    let (ok_ids, ok_n) = staged_ids(vol, head, Some(topo));
     let mut ids = [[0u8; 32]; MAX_STAGED];
     let mut staged = 0usize;
     let mut arena: &'r mut [u8] = arena;
@@ -942,8 +960,8 @@ fn install_or_admit<'r, V: Volume>(
             break;
         }
         // The package an upgrade replaces is no part of the device it is judged
-        // against: its rows would collide with its successor's, and its slot is
-        // the successor's.
+        // against: its rows would collide with its successor's (the old version
+        // keeps its own staging slot until the boot confirms the new one).
         if replace.is_some_and(|r| r.id == pk.id()) {
             old_path = Some(path);
             continue;
@@ -954,7 +972,7 @@ fn install_or_admit<'r, V: Volume>(
         staged += 1;
         // An old version whose upgrade is on trial is left out of the device,
         // as the boot leaves it out.
-        if supersede_iter(&supersede[..sup_len]).any(|(old, _)| old == pk.id()) {
+        if is_parked(supersede_iter(&supersede[..sup_len]), &pk.id(), |n| ok_ids[..ok_n].contains(n)) {
             continue;
         }
         let Ok(v) = verify_head(pk, topo) else { continue };

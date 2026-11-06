@@ -104,8 +104,21 @@ def main() -> int:
     ap.add_argument("--device-id", help="32 hex digits (default: random)")
     ap.add_argument("--topo-floor", action="store_true", help="with --show: the topology counter floor")
     ap.add_argument("--topo-sector", type=int, default=3, help="its tail sector (Kconfig TOPOLOGY_FLOOR_SECTOR)")
+    ap.add_argument("--clear-index-marks", action="store_true",
+                    help="forget the repository index marks and floors the kernel keeps (the last "
+                         "PKG_INDEX_MARK_SECTORS tail sectors): the way back from an index the source "
+                         "can no longer serve")
+    ap.add_argument("--index-sectors", type=int, default=2, help="Kconfig PKG_INDEX_MARK_SECTORS")
     a = ap.parse_args()
 
+    if a.clear_index_marks:
+        start = records_start(a.image, check_fat=True)
+        with open(a.image, "r+b") as f:
+            for i in range(8 - a.index_sectors, 8):
+                f.seek((start + i) * SECTOR)
+                f.write(b"\0" * SECTOR)
+        print(f"{a.image}: repository index marks cleared (tail sectors {8 - a.index_sectors}..7)")
+        return 0
     if a.show and a.topo_floor:
         f = read_topo_floor(a.image, a.topo_sector)
         print("absent" if f is None else f"topo-floor {f}")

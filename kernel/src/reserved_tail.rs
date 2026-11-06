@@ -80,6 +80,9 @@ pub const ENTROPY_SEED: u32 = 1;
 /// (`boot::config_auth`). A USB host cannot address it; a card reader can
 /// (only a hardware counter closes that).
 pub const DEVICE: u32 = 2;
+/// The last `PKG_INDEX_MARK_SECTORS` sectors (the "KPIX" marks and floors of the
+/// repository indexes, `boot/pkg_boot.rs`), and `TOPOLOGY_FLOOR_SECTOR` (3 to 7)
+/// between: the build refuses a configuration where they meet.
 
 /// Where this boot's records start, once [`verdict`] found them usable:
 /// the first tail sector or the first sector of the records partition (0

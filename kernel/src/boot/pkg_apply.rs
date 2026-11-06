@@ -81,7 +81,7 @@ use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use super::engine::{BlockDev, DirEntry, Error, Kind, SnapView, Volume};
 use azos_pkg::apply::{
     encode_table, requested, staged_name, trial_next, BootWhy, Next, SnapRec, SnapState, Table, APPS_DIR,
-    supersede_iter, DELETE_REQUESTS, JOURNAL, SNAPSHOT_LABEL, SNAP_MAX, SUPERSEDE, SUPERSEDE_REC, TABLE, TABLE_MAX,
+    is_parked, supersede_iter, DELETE_REQUESTS, JOURNAL, SNAPSHOT_LABEL, SNAP_MAX, SUPERSEDE, SUPERSEDE_FILE_MAX, TABLE, TABLE_MAX,
 };
 use azos_pkg::index::{self, assess, Installed};
 use azos_pkg::container::{HEADER_LEN, KEY_LEN_MAX, SIG_LEN_MAX};
@@ -149,17 +149,19 @@ enum SignerFloors {
     /// and at or above the mark the device holds for it.
     Known(Vec<u8>),
     /// The device has seen an index from this signer and finds none at or above
-    /// it: the floors are unknown, and an unknown floor is not met.
-    Unknown,
+    /// it: the floors are the ones it remembered from the newest index it
+    /// accepted.
+    Remembered,
     /// No index from this signer was ever seen: no floors.
     Nothing,
 }
 
 /// Is the verified package `v` below its security floor? Reads the slot of
-/// `v`'s signer once per apply, judges it against the mark the device holds
-/// (`azos_pkg::index::judge`: an older, deleted or diverging index leaves the
-/// floors unknown), records a newer one's mark, and assesses the package against
-/// it. `false` when the policy does not ask for floors.
+/// `v`'s signer once per apply and judges it against the mark the device holds
+/// (`azos_pkg::index::judge`). A newer index replaces what the device remembers
+/// (its mark and its floors) and is assessed. An older, deleted or diverging one
+/// is not used: the floors are the remembered ones, which stop only the packages
+/// below them. `false` when the policy does not ask for floors.
 fn below_floor<D: BlockDev>(
     vol: &mut Volume<D>,
     topo: &Topology<'static>,
@@ -172,45 +174,54 @@ fn below_floor<D: BlockDev>(
         return false;
     }
     let signer = v.signer_index;
+    let key = index::mark_key(&v.signer.key_id);
     if !cache.iter().any(|(s, _)| *s == signer) {
-        let key_id = v.signer.key_id;
-        let key = index::mark_key(&key_id);
         let root = vol.root();
-        let bytes = find(vol, root, &index::slot_name(&key_id))
+        let bytes = find(vol, root, &index::slot_name(&v.signer.key_id))
             .ok()
             .flatten()
             .and_then(|e| read_file(vol, e.ino, index::FILE_MAX, true).ok());
-        let (floors, raise) = index::judge(bytes.as_deref(), topo, signer, boot.marks.get(key));
+        let (floors, raise) = index::judge(bytes.as_deref(), topo, signer, boot.marks.mark(&key));
         let state = match floors {
-            index::Floors::Known(_) => SignerFloors::Known(bytes.unwrap_or_default()),
-            index::Floors::Unknown => {
+            index::Floors::Known(ix) => {
+                if let Some(m) = raise {
+                    let floors: Vec<(u64, azos_pkg::index::Version)> = ix.floors(&key).collect();
+                    match boot.marks.accept(&key, m, &floors) {
+                        Ok(()) => sink.record(&receipt::index_accepted(&ix, boot.now_ns)),
+                        Err(e) => {
+                            sink.note(format_args!(
+                                "[PKG] signer {}: the index (serial {}) and its floors were not remembered ({:?}); the volume alone holds them",
+                                signer + 1, m.serial, e
+                            ));
+                            let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer as u32 + 1, [0, m.serial as u64, 1]);
+                            p.clock_ns = boot.now_ns;
+                            sink.record(&p);
+                        }
+                    }
+                }
+                SignerFloors::Known(bytes.unwrap_or_default())
+            }
+            index::Floors::Remembered => {
                 sink.note(format_args!(
-                    "[PKG] signer {}: no repository index at or above the one the device recorded; its packages count as below their security floors",
+                    "[PKG] signer {}: no repository index at or above the one the device recorded; the floors it remembered stand",
                     signer + 1
                 ));
                 let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer as u32 + 1, [0, 0, 0]);
                 p.clock_ns = boot.now_ns;
                 sink.record(&p);
-                SignerFloors::Unknown
+                SignerFloors::Remembered
             }
             index::Floors::None => SignerFloors::Nothing,
         };
-        if let (Some(m), SignerFloors::Known(b)) = (raise, &state) {
-            if boot.marks.raise(key, m) {
-                if let Ok(ix) = index::verify(b, topo) {
-                    sink.record(&receipt::index_accepted(&ix, boot.now_ns));
-                }
-            } else {
-                sink.note(format_args!("[PKG] signer {}: the index mark could not be recorded; the volume alone holds the floors", signer + 1));
-            }
-        }
         cache.push((signer, state));
     }
     match cache.iter().find(|(s, _)| *s == signer).map(|(_, f)| f) {
         Some(SignerFloors::Known(b)) => index::verify(b, topo).ok().is_some_and(|ix| {
             assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: signer, id: v.id }, &ix).below_floor()
         }),
-        Some(SignerFloors::Unknown) => true,
+        Some(SignerFloors::Remembered) => {
+            boot.marks.floor(&key, v.meta.name).is_some_and(|f| index::below_remembered(v.meta.version, f))
+        }
         _ => false,
     }
 }
@@ -222,41 +233,21 @@ struct Staged {
     id: [u8; 32],
     /// Images it carries (the rows a removal accounts for).
     images: u32,
-    /// It verifies, and either its programs are in `APPS/` already or nothing
-    /// holds it back from being applied this boot.
-    active: bool,
-    /// It verifies and its programs are in `APPS/`.
-    applied: bool,
+    /// Its signed head verifies.
+    verifies: bool,
 }
 
-/// Do the programs in `APPS/` hash to what the package's signed metadata says?
-fn holds_signed_images<D: BlockDev>(vol: &mut Volume<D>, apps: Option<u64>, meta: &azos_pkg::Meta<'_>) -> bool {
-    let Some(apps) = apps else { return false };
-    meta.images().iter().all(|im| match find(vol, apps, im.name.as_bytes()) {
-        Ok(Some(e)) => read_file(vol, e.ino, im.size as usize, true).is_ok_and(|have| azos_crypto::sha256::sha256(&have) == im.sha256),
-        _ => false,
-    })
-}
-
-fn staged_heads<D: BlockDev>(
-    vol: &mut Volume<D>,
-    root: u64,
-    apps: Option<u64>,
-    names: &[Vec<u8>],
-    topo: &Topology<'static>,
-    waiting: bool,
-) -> Vec<Staged> {
+fn staged_heads<D: BlockDev>(vol: &mut Volume<D>, root: u64, names: &[Vec<u8>], topo: &Topology<'static>) -> Vec<Staged> {
     let mut out = Vec::new();
     for name in names {
         let Ok(Some(e)) = find(vol, root, name) else { continue };
         let Ok(head) = read_file(vol, e.ino, HEAD_MAX, false) else { continue };
         let Ok(pk) = Package::parse_head(&head) else { continue };
-        let id = pk.id();
-        let (images, ok, applied) = match azos_pkg::verify_head(pk, topo) {
-            Ok(v) => (v.meta.images().len() as u32, true, holds_signed_images(vol, apps, &v.meta)),
-            Err(_) => (azos_pkg::Meta::parse(pk.meta).map_or(0, |m| m.images().len() as u32), false, false),
+        let (images, verifies) = match azos_pkg::verify_head(pk, topo) {
+            Ok(v) => (v.meta.images().len() as u32, true),
+            Err(_) => (azos_pkg::Meta::parse(pk.meta).map_or(0, |m| m.images().len() as u32), false),
         };
-        out.push(Staged { name: name.clone(), id, images, active: ok && (applied || !waiting), applied: ok && applied });
+        out.push(Staged { name: name.clone(), id: pk.id(), images, verifies });
     }
     out
 }
@@ -264,37 +255,40 @@ fn staged_heads<D: BlockDev>(
 /// The upgrades the installer recorded and the boot has not settled yet.
 fn read_supersede<D: BlockDev>(vol: &mut Volume<D>, root: u64) -> Vec<([u8; 32], [u8; 32])> {
     match find(vol, root, SUPERSEDE) {
-        Ok(Some(e)) => read_file(vol, e.ino, 64 * SUPERSEDE_REC, true).map(|b| supersede_iter(&b).collect()).unwrap_or_default(),
+        Ok(Some(e)) => read_file(vol, e.ino, SUPERSEDE_FILE_MAX, true).map(|b| supersede_iter(&b).collect()).unwrap_or_default(),
         _ => Vec::new(),
     }
 }
 
-/// Settle the upgrades whose new version is no longer on trial. The new
-/// version applied and confirmed: the old one's staged file goes (a `Deny`
-/// record, with the old package's own image count), and so does the pair. The
-/// new version gone (rolled back and quarantined, or removed): only the pair
-/// goes, and the old version, still staged, is applied again. Returns the pairs
-/// that stand and the names of the staged files removed.
+/// Settle the upgrades. The new version applied and is not on trial (it was
+/// applied by an earlier boot and confirmed): the old one's staged file goes (a
+/// `Deny` record, with the old package's own image count), and so does the
+/// pair. The new version gone (rolled back and quarantined, or removed): only
+/// the pair goes. Anything else stands. Returns the pairs that stand.
 fn settle_supersede<D: BlockDev>(
     vol: &mut Volume<D>,
     root: u64,
     sup: Vec<([u8; 32], [u8; 32])>,
     staged: &[Staged],
+    applied: &[[u8; 32]],
     on_trial: &[[u8; 32]],
     boot: &Boot<'_>,
     sink: &mut dyn Sink,
-) -> (Vec<([u8; 32], [u8; 32])>, Vec<Vec<u8>>) {
+) -> Vec<([u8; 32], [u8; 32])> {
     let mut keep = Vec::new();
     let mut gone: Vec<&Staged> = Vec::new();
     for &(old, new) in &sup {
-        match staged.iter().find(|s| s.id == new) {
-            None => {}
-            Some(n) if n.applied && !on_trial.contains(&new) => gone.extend(staged.iter().find(|s| s.id == old)),
-            Some(_) => keep.push((old, new)),
+        if !staged.iter().any(|s| s.id == new) {
+            continue;
+        }
+        if applied.contains(&new) && !on_trial.contains(&new) {
+            gone.extend(staged.iter().find(|s| s.id == old));
+        } else {
+            keep.push((old, new));
         }
     }
     if keep.len() == sup.len() {
-        return (sup, Vec::new());
+        return sup;
     }
     let records: Vec<ProvenanceRecord> = gone
         .iter()
@@ -324,13 +318,59 @@ fn settle_supersede<D: BlockDev>(
             for p in &records {
                 sink.record(p);
             }
-            (keep, gone.iter().map(|s| s.name.clone()).collect())
+            keep
         }
         Err(e) => {
             sink.note(format_args!("[PKG] settling the upgrades failed ({:?}): they stand as they were", e));
-            (sup, Vec::new())
+            sup
         }
     }
+}
+
+/// An old version applied again in the boot its upgrade could not be applied.
+struct Reinstated {
+    id: [u8; 32],
+    images: Vec<(Vec<u8>, [u8; 32])>,
+    low: bool,
+}
+
+/// Apply the parked old versions `olds` (staged file name and id) as the kept
+/// path does: their programs are in `APPS/` still, only their rows have to join.
+fn reinstate<D: BlockDev>(
+    vol: &mut Volume<D>,
+    root: u64,
+    apps: Option<u64>,
+    olds: &[(Vec<u8>, [u8; 32])],
+    topo: &mut Topology<'static>,
+    boot: &Boot<'_>,
+    sink: &mut dyn Sink,
+    floors: &mut Vec<(usize, SignerFloors)>,
+) -> Vec<Reinstated> {
+    let mut out = Vec::new();
+    for (name, id) in olds {
+        let Ok(Some(e)) = find(vol, root, name) else { continue };
+        let Ok(bytes) = read_file(vol, e.ino, PKG_MAX, true) else { continue };
+        let Ok(v) = verify(&bytes, topo) else { continue };
+        if !holds_images(vol, apps, &v) {
+            sink.note(format_args!("[PKG] {}: its upgrade cannot be applied and its own programs are not in place", core::str::from_utf8(name).unwrap_or("?")));
+            continue;
+        }
+        let rows: &'static [u8] = Box::leak(v.pkg.rows.to_vec().into_boxed_slice());
+        match admit(&v, rows, topo, &boot.device) {
+            Ok(a) => {
+                sink.record(&receipt::admitted(&v, &a, boot.now_ns));
+                sink.note(format_args!("[PKG] {} stays applied: the version that was to replace it could not be", v.meta.name));
+                let low = below_floor(vol, topo, boot, sink, floors, &v);
+                out.push(Reinstated {
+                    id: *id,
+                    images: v.meta.images().iter().map(|im| (im.name.as_bytes().to_vec(), im.sha256)).collect(),
+                    low,
+                });
+            }
+            Err(r) => sink.record(&receipt::refused(id, v.signer_index as u64 + 1, &r, boot.now_ns)),
+        }
+    }
+    out
 }
 
 /// One program of an applied package.
@@ -823,30 +863,23 @@ pub fn apply<D: BlockDev>(
             return out;
         }
     };
-    // 3a. Upgrades in flight (`SUPERSEDE.REQ`): an old version whose new one is
-    // staged and not held back is left out of the candidate; one whose new
-    // version has confirmed is removed; one whose new version is gone (rolled
-    // back) is applied as before.
-    let (names, parked) = if cfg!(feature = "pkg-supersede-canary") {
-        (names, Vec::new())
-    } else {
-        let sup = read_supersede(vol, root);
-        if sup.is_empty() {
-            (names, Vec::new())
-        } else {
-            let heads = staged_heads(vol, root, apps, &names, topo, waiting);
-            let (sup, removed) = settle_supersede(vol, root, sup, &heads, &st.ids, boot, sink);
-            let parked: Vec<[u8; 32]> = sup
-                .iter()
-                .filter(|(_, n)| heads.iter().any(|s| s.id == *n && s.active))
-                .map(|(o, _)| *o)
-                .collect();
-            (names.into_iter().filter(|n| !removed.contains(n)).collect(), parked)
-        }
-    };
+    // 3a. Upgrades in flight (`SUPERSEDE.REQ`). An old version whose new one is
+    // staged and verifies is left out of the candidate (their rows would
+    // collide) -- but only for as long as the new one is applied: whatever then
+    // keeps the new version from being applied (a refusal, the snapshot, the
+    // volume) applies the old one in this same boot, so the component is never
+    // out for a failed upgrade.
+    let canary_supersede = cfg!(feature = "pkg-supersede-canary");
+    let pairs = if canary_supersede { Vec::new() } else { read_supersede(vol, root) };
+    let heads = if pairs.is_empty() { Vec::new() } else { staged_heads(vol, root, &names, topo) };
+    let new_verifies = |n: &[u8; 32]| heads.iter().any(|h| h.id == *n && h.verifies);
+    let mut parked: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
     let mut floors: Vec<(usize, SignerFloors)> = Vec::new();
     let mut fresh: Vec<Vec<u8>> = Vec::new();
     let mut kept_images: Vec<Vec<u8>> = Vec::new();
+    let mut kept_ok: Vec<[u8; 32]> = Vec::new();
+    // Packages the apply refused for what they are (not for the volume's state).
+    let mut refused: Vec<[u8; 32]> = Vec::new();
     for name in &names {
         let Ok(Some(e)) = find(vol, root, name) else { continue };
         let bytes = match read_file(vol, e.ino, PKG_MAX, true) {
@@ -855,14 +888,16 @@ pub fn apply<D: BlockDev>(
         };
         let Ok(pkg) = Package::parse(&bytes) else { continue };
         let id = pkg.id();
-        if parked.contains(&id) {
-            sink.note(format_args!("[PKG] {} is superseded by a version on trial: left out until it is confirmed", core::str::from_utf8(name).unwrap_or("?")));
+        if is_parked(pairs.iter().copied(), &id, &new_verifies) {
+            sink.note(format_args!("[PKG] {} is superseded by a version on trial: left out while that one is applied", core::str::from_utf8(name).unwrap_or("?")));
+            parked.push((name.clone(), id));
             continue;
         }
         let v = match verify(&bytes, topo) {
             Ok(v) => v,
             Err(r) => {
                 sink.record(&receipt::refused(&id, signer_of(&pkg, topo), &r, boot.now_ns));
+                refused.push(id);
                 continue;
             }
         };
@@ -879,6 +914,7 @@ pub fn apply<D: BlockDev>(
             Ok(a) => {
                 sink.record(&receipt::admitted(&v, &a, boot.now_ns));
                 out.packages += 1;
+                kept_ok.push(id);
                 let low = below_floor(vol, topo, boot, sink, &mut floors, &v);
                 if low {
                     sink.note(format_args!("[PKG] {} {} is below its security floor: its programs are not launched", v.meta.name, v.meta.version));
@@ -888,26 +924,62 @@ pub fn apply<D: BlockDev>(
                     out.images.push(AppliedImage { name: im.name.as_bytes().to_vec(), sha256: im.sha256, package: v.id, below_floor: low });
                 }
             }
-            Err(r) => sink.record(&receipt::refused(&id, v.signer_index as u64 + 1, &r, boot.now_ns)),
+            Err(r) => {
+                sink.record(&receipt::refused(&id, v.signer_index as u64 + 1, &r, boot.now_ns));
+                refused.push(id);
+            }
         }
     }
+
+    // Settle: a new version applied and confirmed takes its old version's staged
+    // file away; a pair whose new version is gone is dropped.
+    let pairs = if pairs.is_empty() {
+        pairs
+    } else {
+        settle_supersede(vol, root, pairs, &heads, &kept_ok, &st.ids, boot, sink)
+    };
 
     // 4. The new ones: admitted into the candidate, then their programs written
     // after a snapshot, in one group.
     let mark = topo.checkpoint();
     let mut admitted: Vec<(azos_pkg::Verified<'_, 'static>, azos_pkg::Admitted)> = Vec::new();
     for bytes in &fresh {
-        let Ok(v) = verify(bytes, topo) else { continue };
+        let v = match verify(bytes, topo) {
+            Ok(v) => v,
+            Err(r) => {
+                if let Ok(p) = Package::parse(bytes) {
+                    sink.record(&receipt::refused(&p.id(), signer_of(&p, topo), &r, boot.now_ns));
+                    refused.push(p.id());
+                }
+                continue;
+            }
+        };
         let rows: &'static [u8] = Box::leak(v.pkg.rows.to_vec().into_boxed_slice());
         match admit(&v, rows, topo, &boot.device) {
             Ok(a) => admitted.push((v, a)),
-            Err(r) => sink.record(&receipt::refused(&v.id, v.signer_index as u64 + 1, &r, boot.now_ns)),
+            Err(r) => {
+                sink.record(&receipt::refused(&v.id, v.signer_index as u64 + 1, &r, boot.now_ns));
+                refused.push(v.id);
+            }
         }
     }
+    // The parked old versions whose new version is not going to be applied.
+    let olds_to_apply = |applied: &dyn Fn(&[u8; 32]) -> bool| -> Vec<(Vec<u8>, [u8; 32])> {
+        parked
+            .iter()
+            .filter(|(_, id)| pairs.iter().any(|(o, n)| o == id && !applied(n)))
+            .cloned()
+            .collect()
+    };
+    // Canary `pkg-park-canary`: the old version is out as soon as the new one's head verifies,
+    // whatever becomes of the new one (the behaviour before the old version was applied again).
+    let kept_or_admitted = |n: &[u8; 32]| cfg!(feature = "pkg-park-canary") || kept_ok.contains(n) || admitted.iter().any(|(v, _)| v.id == *n);
+    let mut reinstated = reinstate(vol, root, apps, &olds_to_apply(&kept_or_admitted), topo, boot, sink, &mut floors);
     let wanted: Vec<&[u8]> = kept_images
         .iter()
         .map(|n| n.as_slice())
         .chain(admitted.iter().flat_map(|(v, _)| v.meta.images().iter().map(|im| im.name.as_bytes())))
+        .chain(reinstated.iter().flat_map(|r| r.images.iter().map(|(n, _)| n.as_slice())))
         .collect();
     let stray = apps.is_some_and(|a| vol.readdir(a).is_ok_and(|es| es.iter().any(|e| !wanted.contains(&e.name.as_slice()))));
 
@@ -919,11 +991,16 @@ pub fn apply<D: BlockDev>(
                 sink.record(&receipt::refused(&v.id, v.signer_index as u64 + 1, &Refusal::Boot(BootWhy::Volume), boot.now_ns));
             }
         };
+        let mut failed = false;
         if st.recs.len() >= SNAP_MAX {
             fail(topo, sink, "the volume holds the most snapshots it may; prune the restore points", &admitted);
+            failed = true;
         } else {
             match vol.snapshot_create(SNAPSHOT_LABEL) {
-                Err(_) => fail(topo, sink, "the volume cannot take a snapshot", &admitted),
+                Err(_) => {
+                    fail(topo, sink, "the volume cannot take a snapshot", &admitted);
+                    failed = true;
+                }
                 Ok(snap_id) => {
                     let mut ids: Vec<[u8; 32]> = Vec::new();
                     let mut records = Vec::new();
@@ -976,10 +1053,16 @@ pub fn apply<D: BlockDev>(
                             let _ = vol.snapshot_delete(snap_id);
                             sink.note(format_args!("[PKG] writing the programs failed ({:?}): the volume is as it was", e));
                             fail(topo, sink, "the volume refused the programs", &admitted);
+                            failed = true;
                         }
                     }
                 }
             }
+        }
+        if failed {
+            // None of the new versions is applied: every parked old version is.
+            // The rollback took the rows of the ones reinstated above with it.
+            reinstated = reinstate(vol, root, apps, &olds_to_apply(&|n: &[u8; 32]| cfg!(feature = "pkg-park-canary") || kept_ok.contains(n)), topo, boot, sink, &mut floors);
         }
     } else if stray {
         // Programs of packages that are gone: removed, no snapshot (it only
@@ -991,6 +1074,25 @@ pub fn apply<D: BlockDev>(
                         v.unlink(dir.ino, &e.name)?;
                     }
                 }
+            }
+            Ok(())
+        });
+    }
+    out.packages += reinstated.len();
+    for r in &reinstated {
+        for (name, sha) in &r.images {
+            out.images.push(AppliedImage { name: name.clone(), sha256: *sha, package: r.id, below_floor: r.low });
+        }
+    }
+
+    // A new version refused for what it is (not applied this boot) is taken out
+    // of the staging directory with its refusal on record, so the pair ends and
+    // its old version is simply the package: the next boot does not try again.
+    let dead: Vec<[u8; 32]> = refused.iter().copied().filter(|r| pairs.iter().any(|(_, n)| n == r)).collect();
+    if !dead.is_empty() && !canary_supersede {
+        let _ = grouped(vol, |v| {
+            for id in &dead {
+                quarantine(v, id)?;
             }
             Ok(())
         });

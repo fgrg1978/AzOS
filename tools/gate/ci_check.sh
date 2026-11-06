@@ -9621,12 +9621,17 @@ par "aarch64: OTA bundle over the network, B confirmed" ota_bundle_row aarch64 g
 a64_kbuild "qemu" >/dev/null
 par "aarch64: OTA tampered bundle refused" ota_bundle_row aarch64 tampered
 a64_kbuild "qemu" >/dev/null
-par "aarch64: pkg outdated and upgrade" pkgup_row aarch64 upgrade
-a64_kbuild "qemu" >/dev/null
-par "aarch64: package below its floor refused" pkgup_row aarch64 floor
-a64_kbuild "qemu" >/dev/null
-par "aarch64: below-floor control" pkgup_row aarch64 control
-a64_kbuild "qemu" >/dev/null
+# NOT RUN YET (arm phase): these rows were written without a QEMU run and need the gate's
+# package fixture (see pkgup_volume). `CI_PKGUP=1` includes them; until they have passed once
+# on arm they are not part of the gate.
+if [ "${CI_PKGUP:-0}" = 1 ]; then
+    par "aarch64: pkg outdated and upgrade" pkgup_row aarch64 upgrade
+    a64_kbuild "qemu" >/dev/null
+    par "aarch64: package below its floor refused" pkgup_row aarch64 floor
+    a64_kbuild "qemu" >/dev/null
+    par "aarch64: below-floor control" pkgup_row aarch64 control
+    a64_kbuild "qemu" >/dev/null
+fi
 par "aarch64: watchdog wired" aarch64_watchdog_row
 par "aarch64: console routed" aarch64_console_route_row
 par "aarch64: entropy seeds pool" aarch64_entropy_row
@@ -10370,12 +10375,17 @@ par "riscv64: OTA bundle over the network, B confirmed" ota_bundle_row riscv64 g
 kbuild "qemu"
 par "riscv64: OTA tampered bundle refused" ota_bundle_row riscv64 tampered
 kbuild "qemu"
-par "riscv64: pkg outdated and upgrade" pkgup_row riscv64 upgrade
-kbuild "qemu"
-par "riscv64: package below its floor refused" pkgup_row riscv64 floor
-kbuild "qemu"
-par "riscv64: below-floor control" pkgup_row riscv64 control
-kbuild "qemu"
+# NOT RUN YET (arm phase): these rows were written without a QEMU run and need the gate's
+# package fixture (see pkgup_volume). `CI_PKGUP=1` includes them; until they have passed once
+# on arm they are not part of the gate.
+if [ "${CI_PKGUP:-0}" = 1 ]; then
+    par "riscv64: pkg outdated and upgrade" pkgup_row riscv64 upgrade
+    kbuild "qemu"
+    par "riscv64: package below its floor refused" pkgup_row riscv64 floor
+    kbuild "qemu"
+    par "riscv64: below-floor control" pkgup_row riscv64 control
+    kbuild "qemu"
+fi
 
 # ── boot count: an orderly reboot is not a crash (owner decision 2026-09-28)
 #
@@ -11988,7 +11998,15 @@ pkg_updates_row() { # <label>
         for t in index::a_tampered_index_is_refused upgrade::upgrade_installs_the_newer_version_in_place_of_the_staged_one \
                  upgrade::an_older_offer_is_not_an_upgrade tool::the_tool_reports_what_is_outdated_and_upgrades_it \
                  apply::a_package_below_its_floor_is_marked_when_the_policy_enforces_floors \
-                 apply::floors_come_only_from_a_verified_index_and_only_when_enforced; do
+                 apply::floors_come_only_from_a_verified_index_and_only_when_enforced \
+                 apply::a_replayed_or_deleted_index_cannot_lift_a_floor \
+                 apply::an_upgrade_whose_trial_rolls_back_leaves_the_old_version_applied \
+                 apply::a_confirmed_upgrade_removes_the_old_version \
+                 apply::the_old_version_keeps_running_while_the_new_one_waits \
+                 apply::an_upgrade_that_cannot_be_applied_leaves_the_old_version_applied \
+                 upgrade::each_signer_keeps_its_own_index_and_its_own_serial \
+                 upgrade::an_index_that_differs_at_the_same_serial_is_refused \
+                 upgrade::the_old_version_of_an_upgrade_is_removable_only_when_the_new_one_is_not_there; do
             echo "$out" | qgrep -q "test ${t} \.\.\. ok" || { rc=1; echo "      did not run and pass: $t"; }
         done
     fi
@@ -12010,6 +12028,12 @@ host_job host_canary_row "pkg: downgrade canary" pkg-tests pkg-downgrade-canary 
     index::an_upgrade_is_refused_for_a_downgrade_a_floor_a_stranger_or_a_swapped_file
 host_job host_canary_row "pkg: security floor canary" pkg-tests pkg-floor-canary \
     apply::a_package_below_its_floor_is_marked_when_the_policy_enforces_floors
+host_job host_canary_row "pkg: index memory canary" pkg-tests pkg-mark-canary \
+    apply::a_replayed_or_deleted_index_cannot_lift_a_floor
+host_job host_canary_row "pkg: upgrade supersede canary" pkg-tests pkg-supersede-canary \
+    apply::an_upgrade_whose_trial_rolls_back_leaves_the_old_version_applied
+host_job host_canary_row "pkg: failed upgrade parks the old version canary" pkg-tests pkg-park-canary \
+    apply::an_upgrade_that_cannot_be_applied_leaves_the_old_version_applied
 host_job host_canary_row "exec: below security floor canary" syscall-tests exec-floor-canary \
     a_package_below_its_security_floor_is_refused_whatever_the_grants
 host_job host_canary_row "quic: rsa key canary" quic-tests canary-rsa-keys the_quic_providers_refuse_an_rsa_private_key

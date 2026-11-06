@@ -99,46 +99,72 @@ pub(super) struct Staged {
     floor: u32,
 }
 
-/// The marks of the repository indexes, in the reserved tail like the topology
-/// counter floor: where the writers of the staging volume do not reach. Read
-/// once when the apply begins; a raise writes the sector and flushes.
+/// The first of the tail sectors the index marks and floors span: the last
+/// `PKG_INDEX_MARK_SECTORS` of the reserved tail.
+const MARK_FIRST: u32 = crate::reserved_tail::TAIL_SECTORS - azos_limits::PKG_INDEX_MARK_SECTORS as u32;
+// The marks must not share a sector with the topology counter floor, or each
+// write would clobber the other and the floor would silently read 0.
+const _: () = assert!(
+    azos_limits::TOPOLOGY_FLOOR_SECTOR as u32 >= crate::reserved_tail::DEVICE + 1
+        && (azos_limits::TOPOLOGY_FLOOR_SECTOR as u32) < MARK_FIRST,
+    "PKG_INDEX_MARK_SECTORS reaches TOPOLOGY_FLOOR_SECTOR: lower it or move the topology floor sector"
+);
+
+/// The marks of the repository indexes and the floors they named, in the
+/// reserved tail like the topology counter floor: where the writers of the
+/// staging volume do not reach. Read once when the apply begins; an accept
+/// writes the table's sectors and flushes.
 struct TailMarks {
     table: core::cell::RefCell<azos_pkg::index::MarkTable>,
 }
 
 impl TailMarks {
     fn load() -> Self {
-        let mut table = azos_pkg::index::MarkTable::new();
+        let n = azos_limits::PKG_INDEX_MARK_SECTORS as usize;
+        let mut sectors = [[0u8; 512]; azos_pkg::index::SECTORS_MAX];
         if super::config_auth::tail_writable() {
-            let mut sector = [0u8; 512];
-            if crate::reserved_tail::read(azos_limits::PKG_INDEX_MARK_SECTOR as u32, &mut sector).is_ok() {
-                table = azos_pkg::index::MarkTable::decode(&sector).unwrap_or_default();
+            for (i, s) in sectors[..n].iter_mut().enumerate() {
+                if crate::reserved_tail::read(MARK_FIRST + i as u32, s).is_err() {
+                    *s = [0; 512];
+                }
             }
         }
-        Self { table: core::cell::RefCell::new(table) }
+        Self { table: core::cell::RefCell::new(azos_pkg::index::MarkTable::decode(&sectors[..n])) }
     }
 }
 
 impl azos_pkg::index::Marks for TailMarks {
-    fn get(&self, key: u32) -> Option<azos_pkg::index::Mark> {
-        self.table.borrow().get(key)
+    fn mark(&self, signer: &azos_pkg::index::SignerKey) -> Option<azos_pkg::index::Mark> {
+        self.table.borrow().mark(signer)
     }
 
-    fn raise(&self, key: u32, mark: azos_pkg::index::Mark) -> bool {
+    fn floor(&self, signer: &azos_pkg::index::SignerKey, name: &str) -> Option<azos_pkg::index::Version> {
+        self.table.borrow().floor_of(signer, azos_pkg::index::name_hash(signer, name))
+    }
+
+    fn accept(
+        &self,
+        signer: &azos_pkg::index::SignerKey,
+        mark: azos_pkg::index::Mark,
+        floors: &[(u64, azos_pkg::index::Version)],
+    ) -> Result<(), azos_pkg::index::MarkErr> {
+        use azos_pkg::index::MarkErr;
         if !super::config_auth::tail_writable() {
-            return false;
+            return Err(MarkErr::Write);
         }
         let mut next = *self.table.borrow();
-        if !next.raise(key, mark) {
-            return false;
+        next.accept(signer, mark, floors)?;
+        // The sectors that hold the floors first, so a cut between sectors leaves
+        // the old mark beside newer floors: the same index is accepted again.
+        let mut ok = true;
+        for i in (0..next.sectors()).rev() {
+            ok &= crate::reserved_tail::write(MARK_FIRST + i as u32, &next.encode(i)).is_ok();
         }
-        let rec = next.encode();
-        let wrote = crate::reserved_tail::write(azos_limits::PKG_INDEX_MARK_SECTOR as u32, &rec).is_ok()
-            && azos_drv_block::blkdev::flush().is_ok();
-        if wrote {
-            *self.table.borrow_mut() = next;
+        if !ok || azos_drv_block::blkdev::flush().is_err() {
+            return Err(MarkErr::Write);
         }
-        wrote
+        *self.table.borrow_mut() = next;
+        Ok(())
     }
 }
 

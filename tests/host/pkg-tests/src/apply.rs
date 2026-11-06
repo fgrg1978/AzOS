@@ -982,15 +982,28 @@ fn drop_index(v: &mut Volume<MemDev>) {
 }
 
 /// The device's memory of the indexes, in RAM.
-#[derive(Default)]
 struct MemMarks(std::cell::RefCell<azos_pkg::index::MarkTable>);
 
-impl azos_pkg::index::Marks for MemMarks {
-    fn get(&self, key: u32) -> Option<azos_pkg::index::Mark> {
-        self.0.borrow().get(key)
+impl Default for MemMarks {
+    fn default() -> Self {
+        MemMarks(std::cell::RefCell::new(azos_pkg::index::MarkTable::new(2)))
     }
-    fn raise(&self, key: u32, mark: azos_pkg::index::Mark) -> bool {
-        self.0.borrow_mut().raise(key, mark)
+}
+
+impl azos_pkg::index::Marks for MemMarks {
+    fn mark(&self, signer: &azos_pkg::index::SignerKey) -> Option<azos_pkg::index::Mark> {
+        self.0.borrow().mark(signer)
+    }
+    fn floor(&self, signer: &azos_pkg::index::SignerKey, name: &str) -> Option<azos_pkg::index::Version> {
+        self.0.borrow().floor_of(signer, azos_pkg::index::name_hash(signer, name))
+    }
+    fn accept(
+        &self,
+        signer: &azos_pkg::index::SignerKey,
+        mark: azos_pkg::index::Mark,
+        floors: &[(u64, azos_pkg::index::Version)],
+    ) -> Result<(), azos_pkg::index::MarkErr> {
+        self.0.borrow_mut().accept(signer, mark, floors)
     }
 }
 
@@ -1109,10 +1122,10 @@ fn a_staged_upgrade_replaces_the_applied_programs_of_the_old_version() {
     assert_eq!(staged(&mut v), vec![new_name]);
 }
 
-/// The device remembers the newest index it judged by: a signed index put back
-/// that is older, one that differs at the same serial, and no file at all leave
-/// the package's floors unknown, and an unknown floor is not met; a newer index
-/// takes over and raises the mark.
+/// The device remembers the newest index it judged by, and the floors it named:
+/// a signed index put back that is older, one that differs at the same serial,
+/// and no file at all are not used, and the remembered floors stand, stopping
+/// only the packages below them; a newer index, signed, takes over.
 ///
 /// **Canary** `pkg-mark-canary`: the device remembers nothing and the replayed,
 /// diverging and deleted index each pass as the first one.
@@ -1124,37 +1137,48 @@ fn a_replayed_or_deleted_index_cannot_lift_a_floor() {
     let key = mark_key(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
     let mut v = volume();
     stage(&mut v, &acme());
+    stage(&mut v, &other());
     let judged = |v: &mut Volume<MemDev>| {
         let mut t = topo(d);
         let mut log = Log::default();
         let a = apply(v, &mut t, &enforcing_with(marks), &mut log);
-        (floors_of(&a)[0].1, log)
+        let low = |n: &str| a.images.iter().find(|i| i.name == n.as_bytes()).unwrap().below_floor;
+        ((low("ACME.ELF"), low("OTHER.ELF")), log)
+    };
+    let index = |serial: u32, floor: &str| {
+        // The index names a floor for `acme-vision` only.
+        let mut s = Spec::acme();
+        s.version = "1.9.0".into();
+        build_index(&index_body(serial, &[Offer::of(&build(&s, &author()), "ACME190.PKG", Some(floor))]), &author())
     };
 
-    // Serial 7 puts the package (1.2.0) below its floor (1.3.0); the device remembers it.
-    put_index(&mut v, &floor_index_at(7, Some("1.3.0"), &author()));
+    // Serial 7 puts the package (1.2.0) below its floor (1.3.0); the device remembers both.
+    put_index(&mut v, &index(7, "1.3.0"));
     let (low, log) = judged(&mut v);
-    assert!(low);
-    assert_eq!(marks.get(key).map(|m| m.serial), Some(7));
+    assert_eq!(low, (true, false), "only the package below its floor");
+    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
+    assert_eq!(marks.floor(&key, "acme-vision").map(|f| f.0), Some([1, 3, 0, 0]));
     assert!(log.records.iter().any(|p| p.rule == Rule::PackageIndex as u8 && p.verdict == Verdict::Admit as u8));
 
     // Older, signed, with a lower floor: put back by a writer of the volume.
-    put_index(&mut v, &floor_index_at(6, Some("1.0.0"), &author()));
+    put_index(&mut v, &index(6, "1.0.0"));
     let (low, log) = judged(&mut v);
-    assert!(low, "an older signed index does not lift the floor");
+    assert_eq!(low, (true, false), "an older signed index does not lift the floor");
     assert!(log.records.iter().any(|p| p.rule == Rule::PackageIndex as u8 && p.verdict == Verdict::Refuse as u8));
     // The same serial, another body.
-    put_index(&mut v, &floor_index_at(7, Some("1.0.0"), &author()));
-    assert!(judged(&mut v).0, "another body at the same serial does not lift it");
-    // No file.
+    put_index(&mut v, &index(7, "1.0.0"));
+    assert_eq!(judged(&mut v).0, (true, false), "another body at the same serial does not lift it");
+    // No file: the remembered floors stop the package below them, and no other.
     drop_index(&mut v);
-    assert!(judged(&mut v).0, "a deleted index does not lift it");
-    assert_eq!(marks.get(key).map(|m| m.serial), Some(7), "and the mark did not move");
+    assert_eq!(judged(&mut v).0, (true, false), "a deleted index does not lift it, and does not stop the rest");
+    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7), "and the mark did not move");
 
-    // A newer index, signed, is the one to go by.
-    put_index(&mut v, &floor_index_at(8, Some("1.2.0"), &author()));
-    assert!(!judged(&mut v).0);
-    assert_eq!(marks.get(key).map(|m| m.serial), Some(8));
+    // A newer index, signed, is the one to go by, and replaces the floors.
+    put_index(&mut v, &index(8, "1.2.0"));
+    assert_eq!(judged(&mut v).0, (false, false));
+    assert_eq!((marks.mark(&key).map(|m| m.serial), marks.floor(&key, "acme-vision").map(|f| f.0)), (Some(8), Some([1, 2, 0, 0])));
+    drop_index(&mut v);
+    assert_eq!(judged(&mut v).0, (false, false), "and the lower floor is the one remembered now");
 }
 
 /// A device that never saw an index has no floors to lose, and the policy off
@@ -1299,4 +1323,50 @@ fn the_old_version_keeps_running_while_the_new_one_waits() {
     let (t, a, log) = run(&mut v, d, 1);
     assert_eq!(rows_named(&t, b"ACME.ELF"), 1, "{:?}", log.notes);
     assert!(a.images.iter().any(|i| i.name == b"ACME.ELF" && i.sha256 == azos_crypto::sha256::sha256(&(0..300u32).map(|i| (i * 7) as u8).collect::<Vec<_>>())));
+}
+
+/// **A new version that is staged and verifies by its head, and then cannot be
+/// applied, does not take the component with it.** A row over the signer's
+/// ceiling is refused at admission, an image byte changed after signing at the
+/// full verification: either way the old version is applied in the same boot,
+/// with its programs in `APPS/` kept, and the new version is taken out of the
+/// staging directory with its refusal on record, so the next boot is the plain
+/// old one.
+///
+/// **Canary** `pkg-park-canary`: the old version is parked as soon as the new
+/// one's head verifies and never applied again; the component is gone.
+#[test]
+fn an_upgrade_that_cannot_be_applied_leaves_the_old_version_applied() {
+    let d = signed_device();
+    let old = acme_at("1.0.0", 7);
+    let new = acme_at("1.3.0", 11);
+    let over_ceiling = {
+        let mut s = Spec::acme();
+        s.version = "1.3.0".into();
+        s.rows = s.rows.replace("mem_pages = 32", "mem_pages = 500");
+        build(&s, &author())
+    };
+    let mut flipped = new.clone();
+    let last = flipped.len() - 1;
+    flipped[last] ^= 1;
+    for (what, bad) in [("a row over the signer's ceiling", over_ceiling), ("an image changed after signing", flipped)] {
+        let mut v = volume();
+        let old_name = stage(&mut v, &old);
+        run(&mut v, d, 0);
+        run(&mut v, d, 0);
+        let old_apps = apps(&mut v);
+        stage_upgrade(&mut v, &old, &bad);
+        for boot_no in 0..2 {
+            let (t, a, log) = run(&mut v, d, 0);
+            assert_eq!(a.packages, 1, "{what}, boot {boot_no}: {:?}", log.notes);
+            assert_eq!(rows_named(&t, b"ACME.ELF"), 1, "{what}, boot {boot_no}");
+            assert_eq!(a.images.len(), 1);
+            assert_eq!(a.images[0].sha256, azos_crypto::sha256::sha256(&old_apps["ACME.ELF"]), "{what}: the old version's program is the one bound");
+            assert_eq!(apps(&mut v), old_apps, "{what}, boot {boot_no}: its program is still in APPS/");
+            assert_eq!(staged(&mut v), vec![old_name.clone()], "{what}, boot {boot_no}: the new version is out of the staging directory");
+            if boot_no == 0 {
+                assert!(log.records.iter().any(|p| p.verdict == Verdict::Refuse as u8), "{what}: the refusal is on record");
+            }
+        }
+    }
 }

@@ -59,6 +59,25 @@ pub const SUPERSEDE: &[u8] = b"SUPERSEDE.REQ";
 /// Bytes of one supersede record: the old package's id and the new one's.
 pub const SUPERSEDE_REC: usize = 64;
 
+/// Bytes of the largest supersede file: a pair per staged package, and one more.
+/// The installer and the boot-time apply read it into a buffer of this size.
+pub const SUPERSEDE_FILE_MAX: usize = (azos_limits::PKG_MAX_STAGED as usize + 1) * SUPERSEDE_REC;
+
+/// Is package `old` out of the device for now, because an upgrade of it is
+/// staged? True when some pair names it as the old version and `new_verifies`
+/// says the new one is staged and its signed head verifies. The installer
+/// (judging the next package against the device as it will be) and the kernel
+/// (building the candidate topology) ask the same question here; the kernel then
+/// applies `old` anyway in the same boot when the new version turns out not to
+/// be applicable.
+pub fn is_parked(
+    pairs: impl IntoIterator<Item = ([u8; 32], [u8; 32])>,
+    old: &[u8; 32],
+    new_verifies: impl Fn(&[u8; 32]) -> bool,
+) -> bool {
+    pairs.into_iter().any(|(o, n)| o == *old && new_verifies(&n))
+}
+
 /// The (old, new) pairs of a supersede file; a partial record is ignored.
 pub fn supersede_iter(bytes: &[u8]) -> impl Iterator<Item = ([u8; 32], [u8; 32])> + '_ {
     bytes.chunks_exact(SUPERSEDE_REC).map(|r| {

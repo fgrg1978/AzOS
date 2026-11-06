@@ -22,6 +22,7 @@ description = "Host-side tests for signed application packages (crates/core/pkg)
 #   cargo test --offline --features neverallow-canary
 #   cargo test --offline --features pkg-launch-grant-canary
 #   cargo test --offline --features pkg-supersede-canary
+#   cargo test --offline --features pkg-park-canary
 #   cargo test --offline --features update-canary-sig
 #   cargo test --offline --features update-canary-hash
 
@@ -51,6 +52,7 @@ envelope-delete-canary = []
 pkg-launch-grant-canary = []
 # The apply ignores SUPERSEDE.REQ, and the installer removes the old version at the upgrade (as it did).
 pkg-supersede-canary = ["azos_packages/pkg-supersede-canary"]
+pkg-park-canary = []
 # The drivetrain exists: a motor grant parses and the rules refuse it.
 profile-actuation = ["azos_topology/profile-actuation"]
 

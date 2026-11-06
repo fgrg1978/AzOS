@@ -321,3 +321,31 @@ fn a_full_size_index_is_stored_and_still_guards_the_serial() {
     assert_eq!(step_of(reply[0]), step::IO as usize);
     assert_eq!(r.vol.borrow().files[&slot_path(&author())[..]], before, "restored, not removed");
 }
+
+/// While an upgrade stands, the old version is not removed by `pkg remove` (if the
+/// new one rolls back it is the package), and it counts as out of the device
+/// only for as long as the new version verifies: the rule the boot uses.
+#[test]
+fn the_old_version_of_an_upgrade_is_removable_only_when_the_new_one_is_not_there() {
+    let mut r = rig_with("1.0.0");
+    let (old, offered) = (pkg("1.0.0"), pkg("1.3.0"));
+    let (old_id, new_id) = (azos_pkg::Package::parse(&old).unwrap().id(), azos_pkg::Package::parse(&offered).unwrap().id());
+    r.service_with(repo(7, &offered, None, &author())).refresh();
+    assert_eq!(r.service_with(repo(7, &offered, None, &author())).upgrade(name_words(NAME.as_bytes()).unwrap())[0], 0);
+
+    let reply = r.service().remove(id_words(&old_id));
+    assert_eq!((step_of(reply[0]), reply[0] & 0xFF_FFFF), (23, 12), "{}", step_name(reply[0]));
+    assert_eq!(r.vol.borrow().staged().len(), 2);
+
+    // The new version stops verifying: the old one is the package again, in the report too.
+    let new_path = r.vol.borrow().staged().into_iter().find(|p| r.vol.borrow().files[p.as_bytes()] == offered).unwrap();
+    let mut broken = offered.clone();
+    broken[azos_pkg::container::HEADER_LEN + 32 + 3] ^= 1;
+    r.vol.borrow_mut().files.insert(new_path.into_bytes(), broken);
+    assert_eq!(r.service_with(repo(7, &offered, None, &author())).refresh()[2], 1, "one package in the report");
+    assert_eq!(r.service().outdated(0, 1)[1], v("1.0.0"), "and it is the old version");
+
+    // The new version taken away: the pair names nothing, and the old one may be removed.
+    assert_eq!(r.service().remove(id_words(&new_id))[0], 0);
+    assert_eq!(r.service().remove(id_words(&old_id))[0], 0);
+}

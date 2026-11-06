@@ -416,7 +416,9 @@ pub const SAFETY_SECCOMP_AUDIT: u8 = 0x0C;
 /// changed between the two reads. Action 7 is the autorun loader's refusal to
 /// stage an image (`kernel/src/tasks/loader.rs`): it needs more frames than the
 /// loading Domain's budget, than the allocator forms in one run, or than are
-/// free; `detail` is the frames it needed, not a digest.
+/// free; `detail` is the frames it needed, not a digest. Action 8 is a
+/// `SYS_SPAWN_EX` or `execve` of a program of a package installed below its
+/// security floor (Kconfig `PKG_SEC_FLOOR_ENFORCE`).
 ///
 /// The autorun loader and the shell write it durably: a refused autorun is a
 /// robot that did not start its program, and the likely next event is a person

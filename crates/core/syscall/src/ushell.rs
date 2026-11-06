@@ -33,7 +33,7 @@ use azos_sched::WaitReason;
 /// `SAFETY_EXEC_REFUSED` action code for a `SYS_SPAWN_EX` refused because the
 /// caller holds no `Cap<Launch>` for the image. 4 is "no topology row"
 /// (`crate::spawn::SPAWN_REFUSED_ACTION_NO_ROW`).
-pub const SPAWN_REFUSED_ACTION_NO_LAUNCH: u8 = 5;
+pub const SPAWN_REFUSED_ACTION_NO_LAUNCH: u8 = crate::exec_grant::ACTION_NO_LAUNCH;
 
 /// `StartupFd::kind` of a closed descriptor.
 const FD_CLOSED_KIND: u32 = azos_abi::ushell::FD_CLOSED;

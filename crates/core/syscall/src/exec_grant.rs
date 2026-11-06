@@ -96,6 +96,12 @@ pub fn record(tid: u32, site: Site, basis: Basis, digest: &[u8; 32]) -> u64 {
     )
 }
 
+/// `SAFETY_EXEC_REFUSED` action code of a `SYS_SPAWN_EX` or `execve` without the
+/// launch grant (`ushell::SPAWN_REFUSED_ACTION_NO_LAUNCH`).
+pub const ACTION_NO_LAUNCH: u8 = 5;
+/// The action code of one of a package installed below its security floor.
+pub const ACTION_BELOW_FLOOR: u8 = 8;
+
 /// An exec that was refused: the id of its record (0 when nothing kept it) and
 /// the basis that decided, so the caller can say why.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -107,6 +113,14 @@ pub struct Refused {
 }
 
 impl Refused {
+    /// The `SAFETY_EXEC_REFUSED` action code for this refusal.
+    pub const fn action(&self) -> u8 {
+        match self.basis {
+            Basis::BelowSecFloor => ACTION_BELOW_FLOOR,
+            _ => ACTION_NO_LAUNCH,
+        }
+    }
+
     /// What the caller prints after "REFUSED:".
     pub const fn why(&self) -> &'static str {
         match self.basis {

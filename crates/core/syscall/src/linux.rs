@@ -2715,7 +2715,7 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
     };
     if let Err(refused) = verdict {
         let head = u32::from_be_bytes([img.digest[0], img.digest[1], img.digest[2], img.digest[3]]);
-        crate::handlers::record_exec_refused(crate::ushell::SPAWN_REFUSED_ACTION_NO_LAUNCH, head);
+        crate::handlers::record_exec_refused(refused.action(), head);
         azos_drv_sys::kwarn!(
             "[LINUX] tid={} execve REFUSED: row {} for {}: {}{}",
             me, own, profile.image, refused.why(), if refused.receipt != 0 { " (exec-grant record)" } else { "" },

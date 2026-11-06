@@ -405,6 +405,16 @@ impl<'p> Index<'p, '_> {
         found
     }
 
+    /// Every floor the index names, as the device remembers them: the
+    /// [`name_hash`] of the package under `signer` and the floor.
+    pub fn floors(&self, signer: &SignerKey) -> impl Iterator<Item = (u64, Version)> + '_ {
+        let signer = *signer;
+        (0..self.entries).filter_map(move |i| {
+            let e = self.get(i)?;
+            e.sec_floor.map(|f| (name_hash(&signer, e.name), f))
+        })
+    }
+
     /// The `i`-th entry, in the order written.
     pub fn get(&self, i: usize) -> Option<Entry<'p>> {
         let mut found = None;
@@ -634,9 +644,26 @@ pub fn slot_name_ok(name: &[u8]) -> bool {
         && name[1..8].iter().all(|c| c.is_ascii_digit() || (b'A'..=b'F').contains(c))
 }
 
-/// The key a mark is filed under: the first four bytes of the key id.
-pub fn mark_key(key_id: &[u8; 32]) -> u32 {
-    u32::from_be_bytes([key_id[0], key_id[1], key_id[2], key_id[3]])
+/// A signer as the device's memory names it: the first sixteen bytes of its key
+/// id (the topology refuses two signers whose ids agree on the first four, so
+/// the name is unambiguous and cannot be ground against another signer's).
+pub type SignerKey = [u8; 16];
+
+/// The memory key of the signer whose key id is `key_id`.
+pub fn mark_key(key_id: &[u8; 32]) -> SignerKey {
+    let mut k = [0u8; 16];
+    k.copy_from_slice(&key_id[..16]);
+    k
+}
+
+/// A package name as a floor is filed under it: eight bytes of
+/// `sha256(signer || name)`.
+pub fn name_hash(signer: &SignerKey, name: &str) -> u64 {
+    let mut m = [0u8; 16 + 32];
+    m[..16].copy_from_slice(signer);
+    m[16..16 + name.len()].copy_from_slice(name.as_bytes());
+    let d = sha256(&m[..16 + name.len()]);
+    u64::from_be_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]])
 }
 
 /// What the device remembers of the newest index it accepted from a signer:
@@ -649,123 +676,202 @@ pub struct Mark {
     pub digest: u64,
 }
 
-/// Where marks are kept. The kernel keeps them where no writer of the staging
-/// volume reaches (the reserved tail, like the topology counter floor); a store
-/// that cannot be written says so, and the apply then has only the volume.
-pub trait Marks {
-    /// The mark of signer `key` ([`mark_key`]).
-    fn get(&self, key: u32) -> Option<Mark>;
-    /// Record `mark` for `key` if it is higher than the one held (by serial).
-    /// `false` when it could not be made durable.
-    fn raise(&self, key: u32, mark: Mark) -> bool;
+/// Why the memory could not take an index.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkErr {
+    /// The table has no room for another signer or another floor (raise the
+    /// Kconfig `PKG_INDEX_MARK_SECTORS`): nothing was changed.
+    Full,
+    /// The record could not be made durable.
+    Write,
 }
 
-/// A store that remembers nothing and records nothing: a device whose medium
-/// has no records store.
+/// Where the newest accepted index of each signer is remembered, with the floors
+/// it named. The kernel keeps them where no writer of the staging volume reaches
+/// (the reserved tail, like the topology counter floor).
+pub trait Marks {
+    /// The mark of `signer`.
+    fn mark(&self, signer: &SignerKey) -> Option<Mark>;
+    /// The floor `signer`'s newest accepted index named for package `name`.
+    fn floor(&self, signer: &SignerKey, name: &str) -> Option<Version>;
+    /// Remember `mark` as `signer`'s newest index and `floors` (by
+    /// [`name_hash`]) as the floors it names, replacing the floors remembered
+    /// from the signer's earlier index. All or nothing.
+    fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr>;
+}
+
+/// A memory that remembers nothing and takes nothing: a device whose medium has
+/// no records store.
 pub struct NoMarks;
 
 impl Marks for NoMarks {
-    fn get(&self, _key: u32) -> Option<Mark> {
+    fn mark(&self, _: &SignerKey) -> Option<Mark> {
         None
     }
-    fn raise(&self, _key: u32, _mark: Mark) -> bool {
-        false
+    fn floor(&self, _: &SignerKey, _: &str) -> Option<Version> {
+        None
+    }
+    fn accept(&self, _: &SignerKey, _: Mark, _: &[(u64, Version)]) -> Result<(), MarkErr> {
+        Err(MarkErr::Write)
     }
 }
 
-/// Most signers a [`MarkTable`] holds.
-pub const MARKS_MAX: usize = 16;
 const MARKS_MAGIC: [u8; 4] = *b"KPIX";
-const MARKS_VERSION: u8 = 1;
-const MARK_LEN: usize = 16;
-/// Bytes of an encoded table.
-pub const MARKS_LEN: usize = 6 + MARKS_MAX * MARK_LEN + 4;
+const MARKS_VERSION: u8 = 2;
+/// Bytes of one table entry on the medium.
+pub const ENTRY_LEN: usize = 36;
+const SECTOR: usize = 512;
+const HEAD: usize = 6;
+/// Entries one sector holds.
+pub const SECTOR_ENTRIES: usize = (SECTOR - HEAD - 4) / ENTRY_LEN;
+/// Most sectors a table spans (the Kconfig `PKG_INDEX_MARK_SECTORS` ceiling).
+pub const SECTORS_MAX: usize = 4;
+const ENTRIES_MAX: usize = SECTORS_MAX * SECTOR_ENTRIES;
+const KIND_MARK: u8 = 1;
+const KIND_FLOOR: u8 = 2;
 
-/// The marks as they go on the medium.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Slot {
+    kind: u8,
+    signer: SignerKey,
+    a: u64,
+    b: u64,
+}
+
+const NO_ENTRY: Slot = Slot { kind: 0, signer: [0; 16], a: 0, b: 0 };
+
+/// The marks and floors as they go on the medium: `sectors` records of
+/// [`SECTOR_ENTRIES`] entries, each with its own tag, so one sector is written
+/// atomically and a torn one loses only its own entries.
+#[derive(Clone, Copy)]
 pub struct MarkTable {
-    entries: [(u32, Mark); MARKS_MAX],
+    entries: [Slot; ENTRIES_MAX],
     n: usize,
+    cap: usize,
+}
+
+impl PartialEq for MarkTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.cap == other.cap && self.live() == other.live()
+    }
+}
+
+impl Eq for MarkTable {}
+
+impl core::fmt::Debug for MarkTable {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MarkTable").field("sectors", &self.sectors()).field("entries", &self.live()).finish()
+    }
 }
 
 impl MarkTable {
-    /// No marks.
-    pub const fn new() -> Self {
-        Self { entries: [(0, Mark { serial: 0, digest: 0 }); MARKS_MAX], n: 0 }
+    /// An empty table of `sectors` sectors (1 to [`SECTORS_MAX`]).
+    pub const fn new(sectors: usize) -> Self {
+        let s = if sectors == 0 { 1 } else if sectors > SECTORS_MAX { SECTORS_MAX } else { sectors };
+        Self { entries: [NO_ENTRY; ENTRIES_MAX], n: 0, cap: s * SECTOR_ENTRIES }
     }
 
-    /// The mark of `key`.
-    pub fn get(&self, key: u32) -> Option<Mark> {
-        self.entries[..self.n].iter().find(|(k, _)| *k == key).map(|(_, m)| *m)
+    /// Sectors the table spans.
+    pub const fn sectors(&self) -> usize {
+        self.cap / SECTOR_ENTRIES
     }
 
-    /// Hold `mark` for `key` if it is newer than the one held; `false` when
-    /// nothing changed (not newer, or the table is full).
-    pub fn raise(&mut self, key: u32, mark: Mark) -> bool {
-        if let Some(e) = self.entries[..self.n].iter_mut().find(|(k, _)| *k == key) {
-            if mark.serial <= e.1.serial {
-                return false;
+    fn live(&self) -> &[Slot] {
+        &self.entries[..self.n]
+    }
+
+    /// The mark of `signer`.
+    pub fn mark(&self, signer: &SignerKey) -> Option<Mark> {
+        self.live()
+            .iter()
+            .find(|e| e.kind == KIND_MARK && e.signer == *signer)
+            .map(|e| Mark { serial: e.a as u32, digest: e.b })
+    }
+
+    /// The floor remembered for the package whose [`name_hash`] is `hash`.
+    pub fn floor_of(&self, signer: &SignerKey, hash: u64) -> Option<Version> {
+        self.live().iter().find(|e| e.kind == KIND_FLOOR && e.signer == *signer && e.a == hash).map(|e| Version::from_packed(e.b))
+    }
+
+    /// Remember `mark` and `floors` for `signer` in place of what it had; the
+    /// table is unchanged when it would not fit.
+    pub fn accept(&mut self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr> {
+        let mut next = *self;
+        next.retain(|e| !(e.kind == KIND_FLOOR && e.signer == *signer) && !(e.kind == KIND_MARK && e.signer == *signer));
+        let need = 1 + floors.len();
+        if next.n + need > next.cap {
+            return Err(MarkErr::Full);
+        }
+        next.push(Slot { kind: KIND_MARK, signer: *signer, a: mark.serial as u64, b: mark.digest });
+        for (h, v) in floors {
+            next.push(Slot { kind: KIND_FLOOR, signer: *signer, a: *h, b: v.packed() });
+        }
+        *self = next;
+        Ok(())
+    }
+
+    fn retain(&mut self, keep: impl Fn(&Slot) -> bool) {
+        let mut w = 0;
+        for r in 0..self.n {
+            if keep(&self.entries[r]) {
+                self.entries[w] = self.entries[r];
+                w += 1;
             }
-            e.1 = mark;
-            return true;
         }
-        if self.n == MARKS_MAX {
-            return false;
-        }
-        self.entries[self.n] = (key, mark);
-        self.n += 1;
-        true
+        self.n = w;
     }
 
-    /// The table as one record: magic, version, count, the marks, and the first
-    /// four bytes of the SHA-256 of all of it.
-    pub fn encode(&self) -> [u8; MARKS_LEN] {
-        let mut out = [0u8; MARKS_LEN];
+    fn push(&mut self, e: Slot) {
+        self.entries[self.n] = e;
+        self.n += 1;
+    }
+
+    /// Sector `i` of the table as it goes on the medium: magic, version, count,
+    /// the entries, and the first four bytes of the SHA-256 of all of it.
+    pub fn encode(&self, i: usize) -> [u8; SECTOR] {
+        let mut out = [0u8; SECTOR];
         out[..4].copy_from_slice(&MARKS_MAGIC);
         out[4] = MARKS_VERSION;
-        out[5] = self.n as u8;
-        for (i, (k, m)) in self.entries[..self.n].iter().enumerate() {
-            let at = 6 + i * MARK_LEN;
-            out[at..at + 4].copy_from_slice(&k.to_le_bytes());
-            out[at + 4..at + 8].copy_from_slice(&m.serial.to_le_bytes());
-            out[at + 8..at + 16].copy_from_slice(&m.digest.to_le_bytes());
+        let from = (i * SECTOR_ENTRIES).min(self.n);
+        let es = &self.entries[from..(from + SECTOR_ENTRIES).min(self.n)];
+        out[5] = es.len() as u8;
+        for (k, e) in es.iter().enumerate() {
+            let at = HEAD + k * ENTRY_LEN;
+            out[at] = e.kind;
+            out[at + 1..at + 17].copy_from_slice(&e.signer);
+            out[at + 17..at + 25].copy_from_slice(&e.a.to_le_bytes());
+            out[at + 25..at + 33].copy_from_slice(&e.b.to_le_bytes());
         }
-        let body = MARKS_LEN - 4;
+        let body = SECTOR - 4;
         let tag = sha256(&out[..body]);
         out[body..].copy_from_slice(&tag[..4]);
         out
     }
 
-    /// A table from a sector: `None` for anything that is not a valid record (a
-    /// blank sector included), which reads as no marks.
-    pub fn decode(sector: &[u8]) -> Option<Self> {
-        let body = MARKS_LEN - 4;
-        if sector.len() < MARKS_LEN || sector[..4] != MARKS_MAGIC || sector[4] != MARKS_VERSION {
-            return None;
+    /// The table in `sectors` (the records of a table of `sectors.len()`
+    /// sectors, in order). A sector that is not a valid record (a blank one
+    /// included) holds no entries.
+    pub fn decode(sectors: &[[u8; SECTOR]]) -> Self {
+        let mut t = Self::new(sectors.len());
+        for s in sectors {
+            let body = SECTOR - 4;
+            if s[..4] != MARKS_MAGIC || s[4] != MARKS_VERSION || s[body..] != sha256(&s[..body])[..4] {
+                continue;
+            }
+            let n = (s[5] as usize).min(SECTOR_ENTRIES);
+            for k in 0..n {
+                let at = HEAD + k * ENTRY_LEN;
+                if t.n == t.cap || !matches!(s[at], KIND_MARK | KIND_FLOOR) {
+                    break;
+                }
+                let mut signer = [0u8; 16];
+                signer.copy_from_slice(&s[at + 1..at + 17]);
+                let a = u64::from_le_bytes(s[at + 17..at + 25].try_into().unwrap_or([0; 8]));
+                let b = u64::from_le_bytes(s[at + 25..at + 33].try_into().unwrap_or([0; 8]));
+                t.push(Slot { kind: s[at], signer, a, b });
+            }
         }
-        if sector[body..MARKS_LEN] != sha256(&sector[..body])[..4] {
-            return None;
-        }
-        let n = sector[5] as usize;
-        if n > MARKS_MAX {
-            return None;
-        }
-        let mut t = Self::new();
-        for i in 0..n {
-            let at = 6 + i * MARK_LEN;
-            let k = u32::from_le_bytes(sector[at..at + 4].try_into().ok()?);
-            let serial = u32::from_le_bytes(sector[at + 4..at + 8].try_into().ok()?);
-            let digest = u64::from_le_bytes(sector[at + 8..at + 16].try_into().ok()?);
-            t.entries[i] = (k, Mark { serial, digest });
-        }
-        t.n = n;
-        Some(t)
-    }
-}
-
-impl Default for MarkTable {
-    fn default() -> Self {
-        Self::new()
+        t
     }
 }
 
@@ -777,9 +883,10 @@ pub enum Floors<'p, 'a> {
     Known(Index<'p, 'a>),
     /// The device has seen an index from this signer and cannot show one at or
     /// above it (the file was deleted, replaced by an older signed one, or
-    /// differs at the same serial): the floors are unknown, and a floor that is
-    /// unknown is not met.
-    Unknown,
+    /// differs at the same serial): the floors are the ones remembered from the
+    /// newest index it accepted ([`Marks::floor`]), and a package without one
+    /// has none.
+    Remembered,
     /// The device has never seen an index from this signer: no floors.
     None,
 }
@@ -806,7 +913,16 @@ pub fn judge<'p, 'a>(
             let raise = seen.is_none_or(|m| ix.serial > m.serial).then(|| ix.mark());
             (Floors::Known(ix), raise)
         }
-        (None, Some(_)) => (Floors::Unknown, None),
+        (None, Some(_)) => (Floors::Remembered, None),
         (None, None) => (Floors::None, None),
+    }
+}
+
+/// Is a package at `installed` below the remembered `floor`? A version with no
+/// order cannot be shown to meet it.
+pub fn below_remembered(installed: &str, floor: Version) -> bool {
+    match Version::parse(installed) {
+        Ok(v) => !meets(v, floor),
+        Err(_) => true,
     }
 }

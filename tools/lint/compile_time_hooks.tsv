@@ -221,6 +221,7 @@ percpu-oor-canary	pending	kernel/src/boot/percpu.rs: needs a 256 KiB page-aligne
 pifast-donation-canary	hot	a site on crates/core/syscall/src/dispatch.rs, crates/core/syscall/src/fastpath.rs
 pifast-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 pkg-launch-grant-canary	pending	
+pkg-park-canary	host-shared	kernel/src/boot/pkg_apply.rs: tests/host/pkg-tests builds the same file with the same feature
 pkg-supersede-canary	host-shared	kernel/src/boot/pkg_apply.rs: tests/host/pkg-tests builds the same file with the same feature
 pl011-rx-irq-canary	pending	
 placement-norecord-canary	pending	

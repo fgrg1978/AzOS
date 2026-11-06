@@ -185,27 +185,31 @@ config PKG_SEC_FLOOR_ENFORCE
       With it off nothing is refused: the report still names the package.
 
       The slot of each signer's index is judged against what the device
-      remembers of it (PKG_INDEX_MARK_SECTOR): an index older than the newest
+      remembers of it (PKG_INDEX_MARK_SECTORS): an index older than the newest
       one seen, one that differs at the same serial, or none at all once one was
-      seen, leaves that signer's floors unknown, and the exec check then treats
-      its packages as below their floors until `pkg refresh` brings the index
-      back. A device whose medium has no records store remembers nothing and the
-      slot on the volume alone holds the floors.
+      seen is not used; the floors the device remembered from the newest index
+      it accepted stand instead, and stop only the packages below them. A device
+      whose medium has no records store remembers nothing and the slot on the
+      volume alone holds the floors.
 
       Cost: the exec check of a package image compares one flag; the apply
       reads and verifies one index (one signature) per signer and per package
       per boot, either ISA.
 
-config PKG_INDEX_MARK_SECTOR
-    int "Reserved tail sector of the repository index marks"
-    range 3 7
-    default 4
+config PKG_INDEX_MARK_SECTORS
+    int "Reserved tail sectors of the repository index marks and floors"
+    range 1 4
+    default 2
     help
-      Index in the reserved tail past the FAT32 volume
-      (kernel/src/reserved_tail.rs, 8 sectors) of the "KPIX" record
-      (crates/core/pkg/src/index.rs, MarkTable): per signer, the serial and
-      digest of the newest repository index the boot-time apply judged by. No
-      writer of the staging volume reaches it. 0 is the link key, 1 the entropy
-      seed, 2 the device record, TOPOLOGY_FLOOR_SECTOR the topology counter
-      floor; change it only to move it off a sector another feature of your
-      build claims.
+      The last this-many sectors of the reserved tail past the FAT32 volume
+      (kernel/src/reserved_tail.rs, 8 sectors) hold the "KPIX" records
+      (crates/core/pkg/src/index.rs, MarkTable), 13 entries a sector: per
+      signer, the serial and digest of the newest repository index the
+      boot-time apply judged by, and the security floors that index named. No
+      writer of the staging volume reaches them. An index that would not fit is
+      still used from the volume, and the apply says that it was not remembered.
+
+      0 is the link key, 1 the entropy seed, 2 the device record and
+      TOPOLOGY_FLOOR_SECTOR (3 to 7) the topology counter floor: the build
+      refuses a value that reaches the topology floor's sector. Clear the marks
+      of a device with tools/sign/device_provision.py --clear-index-marks.
