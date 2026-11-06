@@ -55,6 +55,12 @@ port-calls-canary = []
 # `port.rs`'s doorbell canary: no futex wake reaches a doorbell source, so
 # `a_doorbell_reaches_the_ports_bound_to_its_word` goes red. Host suite only.
 port-doorbell-canary = []
+# `port.rs`'s doorbell accounting canaries: a freed doorbell leaves its count
+# in the filter (`a_freed_doorbell_leaves_the_filter_with_nothing_to_look_up`),
+# and the machine shares one port's worth of doorbells
+# (`a_full_port_does_not_take_another_tasks_doorbell`).
+port-bell-leak-canary = []
+port-bells-shared-canary = []
 
 # MemObj host canaries (tests/host/ipc-tests, syscall-tests): the object table is in `azos_mm`.
 memobj-move-keeps-map-canary = ["azos_mm/memobj-move-keeps-map-canary"]

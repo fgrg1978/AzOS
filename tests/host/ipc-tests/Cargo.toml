@@ -72,6 +72,12 @@ port-revoke-canary = []
 # `crates/core/ipc/src/port.rs`'s doorbell canary: no wake reaches a doorbell
 # source (`a_doorbell_reaches_the_ports_bound_to_its_word` goes red).
 port-doorbell-canary = []
+# `port.rs`'s doorbell accounting canaries: a freed doorbell leaves its count
+# in the filter (`a_freed_doorbell_leaves_the_filter_with_nothing_to_look_up`),
+# and the machine shares one port's worth of doorbells
+# (`a_full_port_does_not_take_another_tasks_doorbell`).
+port-bell-leak-canary = []
+port-bells-shared-canary = []
 # MemObj host canaries (tests/host/ipc-tests, syscall-tests): each puts one
 # hole back so the test that guards it goes red. Never in a real build.
 memobj-move-keeps-map-canary = []

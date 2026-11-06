@@ -59,8 +59,11 @@
 //!   until none is left, so a call queued behind the one the event announced
 //!   is not lost.
 //! - **Doorbell** (`PORT_SRC_DOORBELL`): a slot with a `pending` bit named by
-//!   a shared-memory word (region, offset), indexed in the port table's bell
-//!   list. Every futex wake of that word sets it ([`port_ring_doorbell`],
+//!   a shared-memory word (region, offset), in the binding port's own table
+//!   (its capacity is the port's: no table is shared between tasks). A
+//!   lock-free filter counts the doorbells bound per region bucket, so a wake
+//!   of a word no doorbell can name reads one atomic and takes no lock. Every
+//!   futex wake of that word sets it ([`port_ring_doorbell`],
 //!   called by the wakes' producers after the futex table is released:
 //!   `azos_syscall::vdso_notify::wake_word` and the pipe wakes of
 //!   `memobj_cap`), interrupt context included. The scheduler never calls
@@ -245,6 +248,8 @@ pub struct Port {
     pub waiter_head: u16,
     /// Registrations on the list, at most [`PORT_MAX_WAITERS`].
     pub waiter_count: u8,
+    /// Doorbell sources in `sources` ([`count_bell_locked`]).
+    pub bells: u8,
 }
 
 /// A free source-table entry.
@@ -276,6 +281,10 @@ fn clear_port_locked(t: &mut PortTable, i: usize) {
     if n != 0 {
         CAP_BOUND.fetch_sub(n, Ordering::Relaxed);
     }
+    for s in 0..PORT_MAX_SOURCES {
+        let kind = t[i].sources[s].kind;
+        count_bell_locked(&mut t[i], kind, false);
+    }
     t[i] = Port::empty();
 }
 
@@ -295,6 +304,7 @@ impl Port {
             epoch: 0,
             waiter_head: NO_WAITER,
             waiter_count: 0,
+            bells: 0,
         }
     }
 }
@@ -374,29 +384,37 @@ struct PortTable {
     /// Per-slot wrap counter: entry `i` is bumped only when slot `i` itself
     /// wraps, stamped into `Port::epoch` at create. See `Port::epoch`.
     epoch: [u32; MAX_PORTS],
-    /// The doorbell sources, by the word they name: what a futex wake looks
-    /// up ([`port_ring_doorbell`]) instead of every port's table. An entry
-    /// whose link no longer names its source is dead and reaped by the next
-    /// ring or bind that meets it.
-    bells: [Bell; MAX_PORTS],
-    /// Entries of `bells` in use or dead are all below this.
-    bell_hw: usize,
 }
 
-/// One doorbell source in [`PortTable::bells`].
-#[derive(Clone, Copy)]
-struct Bell {
-    obj: u32,
-    offset: u32,
-    link: PortLink,
+/// Buckets of [`BELL_FILTER`].
+const BELL_BUCKETS: usize = 64;
+
+/// Doorbell sources bound, per bucket of the region they name
+/// ([`bell_bucket`]); changed only with `PORTS` held, read without it. A
+/// futex wake of a word whose region's bucket is 0 reads one atomic and
+/// takes no lock: the interrupt arm of a producer whose region no consumer
+/// bound as a doorbell never meets `PORTS`.
+static BELL_FILTER: [AtomicU32; BELL_BUCKETS] = [const { AtomicU32::new(0) }; BELL_BUCKETS];
+
+/// The [`BELL_FILTER`] bucket of the region `obj` (its packed reference).
+fn bell_bucket(obj: u32) -> usize {
+    (obj.wrapping_mul(0x9E37_79B9) >> 26) as usize % BELL_BUCKETS
 }
 
-const NO_BELL: Bell = Bell { obj: 0, offset: 0, link: PortLink::NONE };
-
-/// Entries of [`PortTable::bells`] not yet reaped, machine-wide; changed only
-/// with `PORTS` held. A futex wake of a shared word with none reads this
-/// one atomic and takes no lock.
-static BELLS: AtomicUsize = AtomicUsize::new(0);
+/// Account a doorbell source of `kind` added (`up`) or freed in `port`.
+/// `PORTS` held. Canary `port-bell-leak-canary` (host): a free leaves its
+/// count behind.
+fn count_bell_locked(port: &mut Port, kind: PortSourceKind, up: bool) {
+    let PortSourceKind::Doorbell { obj, .. } = kind else { return };
+    let f = &BELL_FILTER[bell_bucket(obj)];
+    if up {
+        port.bells += 1;
+        f.fetch_add(1, Ordering::SeqCst);
+    } else if !cfg!(feature = "port-bell-leak-canary") {
+        port.bells -= 1;
+        f.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 impl core::ops::Index<usize> for PortTable {
     type Output = Port;
@@ -470,8 +488,6 @@ static PORTS: SpinLock<PortTable> = SpinLock::new(PortTable {
     waiters: [EMPTY_WAITER; MAX_TASKS],
     next_gen: [1u32; MAX_PORTS],
     epoch: [0u32; MAX_PORTS],
-    bells: [NO_BELL; MAX_PORTS],
-    bell_hw: 0,
 });
 
 // ---------------------------------------------------------------------------
@@ -726,6 +742,7 @@ fn insert_source_locked(port: &mut Port, kind: PortSourceKind, user_key: u64, ha
     if binder != 0 {
         CAP_BOUND.fetch_add(1, Ordering::Relaxed);
     }
+    count_bell_locked(port, kind, true);
     Some(s)
 }
 
@@ -735,6 +752,8 @@ fn free_source_locked(port: &mut Port, s: usize) {
         if port.sources[s].binder != 0 {
             CAP_BOUND.fetch_sub(1, Ordering::Relaxed);
         }
+        let kind = port.sources[s].kind;
+        count_bell_locked(port, kind, false);
         port.sources[s] = EMPTY_SRC;
         port.source_count -= 1;
     }
@@ -1053,10 +1072,12 @@ pub fn port_arm_timer(r: u32, user_key: u64, deadline_ns: u64) -> Result<(), Por
 
 /// Bind the doorbell word `offset` of the shm region `obj` (its packed
 /// reference) to the port `r` names, with `user_key`, through the capability
-/// `handle` held in cap-table slot `binder`: the source slot and its bell
-/// entry in one `PORTS` hold. A word already bound to this port gets the
-/// new key and handle. `Stale` for another incarnation of the port, `Full`
-/// when the port's table or the bell list has no room.
+/// `handle` held in cap-table slot `binder`: a slot of the port's own table.
+/// A word already bound to this port gets the new key and handle. `Stale`
+/// for another incarnation of the port, `Full` when the port's table has no
+/// room (other tasks' doorbells never take it). Canary
+/// `port-bells-shared-canary` (host): a bind is refused once the machine
+/// holds a port's worth of doorbells, as one table shared by every task was.
 pub fn port_bind_doorbell(
     r: u32, obj: u32, offset: u32, handle: u32, user_key: u64, binder: Option<usize>,
 ) -> Result<(), PortCapError> {
@@ -1064,7 +1085,6 @@ pub fn port_bind_doorbell(
     let binder = binder.map_or(0u16, |b| (b as u16).wrapping_add(1));
     let mut t = PORTS.lock_irqsave();
     let i = live_index(&t, r)?;
-    let epoch = t[i].epoch;
     if let Some(s) = t[i].sources.iter().position(|src| src.kind == kind && src.gone == 0) {
         let old = t[i].sources[s].binder;
         if old != 0 && binder == 0 {
@@ -1078,13 +1098,19 @@ pub fn port_bind_doorbell(
         src.binder = binder;
         return Ok(());
     }
-    reap_bells_locked(&mut t);
-    let b = t.bells.iter().position(|b| b.link.is_none()).ok_or(PortCapError::Full)?;
-    let s = insert_source_locked(&mut t[i], kind, user_key, handle, binder).ok_or(PortCapError::Full)?;
-    t.bells[b] = Bell { obj, offset, link: PortLink { port: r, epoch, slot: s as u8 } };
-    t.bell_hw = t.bell_hw.max(b + 1);
-    BELLS.fetch_add(1, Ordering::Relaxed);
+    if cfg!(feature = "port-bells-shared-canary")
+        && BELL_FILTER.iter().map(|f| f.load(Ordering::Relaxed) as usize).sum::<usize>() >= PORT_MAX_SOURCES
+    {
+        return Err(PortCapError::Full);
+    }
+    insert_source_locked(&mut t[i], kind, user_key, handle, binder).ok_or(PortCapError::Full)?;
     Ok(())
+}
+
+/// Could a wake of a word of the region `obj` reach a doorbell? `false`: no
+/// doorbell names a region of its bucket, and a ring takes no lock.
+pub fn port_doorbell_bucket_live(obj: u32) -> bool {
+    BELL_FILTER[bell_bucket(obj)].load(Ordering::SeqCst) != 0
 }
 
 /// Free the source of the port `r` names that holds `kind` (the undo of a
@@ -1097,31 +1123,15 @@ pub fn port_unbind_kind(r: u32, kind: PortSourceKind) {
     }
 }
 
-/// Free every bell entry whose source is gone (unbound, its port
-/// destroyed). `PORTS` held.
-fn reap_bells_locked(t: &mut PortTable) {
-    for b in 0..t.bell_hw {
-        let bell = t.bells[b];
-        if !bell.link.is_none()
-            && link_slot_locked(t, bell.link, PortSourceKind::Doorbell { obj: bell.obj, offset: bell.offset }).is_none()
-        {
-            t.bells[b] = NO_BELL;
-            BELLS.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-    while t.bell_hw > 0 && t.bells[t.bell_hw - 1].link.is_none() {
-        t.bell_hw -= 1;
-    }
-}
-
 /// The word `offset` of the shm region `obj` (its packed reference) was
 /// woken (`azos_sched::futex::wake_key`; called after the futex table is
 /// released): mark every doorbell source bound to it pending and wake its
 /// port's waiters. Interrupt context included (a kernel producer's
-/// `notify_wake_kernel`). One atomic load when no doorbell is bound.
+/// `notify_wake_kernel`). One atomic load when no doorbell names a region of
+/// `obj`'s bucket; otherwise one `PORTS` hold per port it reaches.
 pub fn port_ring_doorbell(obj: u32, offset: u32) {
     // The host canary: no wake reaches a doorbell.
-    if cfg!(feature = "port-doorbell-canary") || BELLS.load(Ordering::Relaxed) == 0 {
+    if cfg!(feature = "port-doorbell-canary") || !port_doorbell_bucket_live(obj) {
         return;
     }
     let kind = PortSourceKind::Doorbell { obj, offset };
@@ -1129,27 +1139,16 @@ pub fn port_ring_doorbell(obj: u32, offset: u32) {
     loop {
         let (r, woken) = {
             let mut t = PORTS.lock_irqsave();
-            let mut hit = None;
-            while from < t.bell_hw {
-                let bell = t.bells[from];
-                from += 1;
-                if bell.link.is_none() || bell.obj != obj || bell.offset != offset {
-                    continue;
-                }
-                match link_slot_locked(&t, bell.link, kind) {
-                    Some(at) => {
-                        hit = Some((at, bell.link.port));
-                        break;
-                    }
-                    None => {
-                        t.bells[from - 1] = NO_BELL;
-                        BELLS.fetch_sub(1, Ordering::Relaxed);
-                    }
-                }
+            let Some(i) = (from..MAX_PORTS).find(|&i| {
+                t[i].active && t[i].bells != 0 && t[i].sources.iter().any(|src| src.kind == kind && src.gone == 0)
+            }) else {
+                return;
+            };
+            from = i + 1;
+            for src in t[i].sources.iter_mut().filter(|src| src.kind == kind && src.gone == 0) {
+                src.pending = true;
             }
-            let Some(((i, s), r)) = hit else { return };
-            t[i].sources[s].pending = true;
-            (r, detach_waiters_locked(&mut t, i, WaiterState::Woken))
+            (LAYOUT.pack(i as u32, t[i].generation), detach_waiters_locked(&mut t, i, WaiterState::Woken))
         };
         woken.wake(r);
     }
@@ -1800,9 +1799,9 @@ pub fn __port_reset_for_tests() {
     for w in ports.waiters.iter_mut() {
         *w = PortWaiter::empty();
     }
-    ports.bells = [NO_BELL; MAX_PORTS];
-    ports.bell_hw = 0;
-    BELLS.store(0, Ordering::Relaxed);
+    for f in BELL_FILTER.iter() {
+        f.store(0, Ordering::Relaxed);
+    }
 }
 
 /// Fast-forward slot `i`'s own generation source, so a host test reaches its
@@ -3028,11 +3027,42 @@ mod tests {
         assert_eq!(port_poll_ref(b).map(|e| e.key), Ok(0xB1));
         port_destroy_ref(b).unwrap();
         port_ring_doorbell(obj, off);
-        assert_eq!(BELLS.load(Ordering::Relaxed), 1, "the gone port's entry is reaped");
-        port_unbind_kind(a, PortSourceKind::Doorbell { obj, offset: off });
-        let c = port_create_ref(3).unwrap();
-        port_bind_doorbell(c, obj, 0, 5, 0, None).unwrap();
-        assert_eq!(BELLS.load(Ordering::Relaxed), 1, "a bind reaps the unbound entry");
+        assert_eq!(port_poll_ref(a).map(|e| e.key), Ok(0xB0), "the other port still hears it");
+    }
+
+    /// Every way a doorbell source goes (unbind, the port's destroy, its
+    /// capability's revoke) takes its count out of the filter, so a wake of
+    /// that region takes no lock again. **Canary** `port-bell-leak-canary`:
+    /// a freed source leaves its count, the filter stays live.
+    #[test]
+    fn a_freed_doorbell_leaves_the_filter_with_nothing_to_look_up() {
+        let _g = setup();
+        let obj = 0x0077;
+        let (a, b, c) = (port_create_ref(1).unwrap(), port_create_ref(2).unwrap(), port_create_ref(3).unwrap());
+        assert!(!port_doorbell_bucket_live(obj));
+        port_bind_doorbell(a, obj, 0, 1, 1, None).unwrap();
+        port_bind_doorbell(a, obj, 0, 1, 2, None).unwrap();
+        port_bind_doorbell(b, obj, 4, 1, 1, None).unwrap();
+        port_bind_doorbell(c, obj, 8, 1, 1, Some(6)).unwrap();
+        assert!(port_doorbell_bucket_live(obj));
+        port_unbind_kind(a, PortSourceKind::Doorbell { obj, offset: 0 });
+        port_destroy_ref(b).unwrap();
+        port_cap_event(crate::cap_store::CapEvent::Revoked { slot: 6, kind: ty::SHM, perms: CapPerms::READ, resource: obj });
+        assert!(!port_doorbell_bucket_live(obj), "a freed doorbell is still counted");
+    }
+
+    /// A port's doorbells are the port's: one task filling its own table does
+    /// not stop another from binding. **Canary** `port-bells-shared-canary`:
+    /// the machine shares a port's worth, and the second bind is refused.
+    #[test]
+    fn a_full_port_does_not_take_another_tasks_doorbell() {
+        let _g = setup();
+        let (hog, inputd) = (port_create_ref(1).unwrap(), port_create_ref(2).unwrap());
+        for k in 0..PORT_MAX_SOURCES as u32 {
+            port_bind_doorbell(hog, 0x0100 + k, 0, 1, 1, None).unwrap();
+        }
+        assert_eq!(port_bind_doorbell(hog, 0x0200, 0, 1, 1, None), Err(PortCapError::Full), "its own table is full");
+        assert_eq!(port_bind_doorbell(inputd, 0x0300, 0, 1, 1, None), Ok(()), "another port still binds");
     }
 
     /// A revoked region capability takes its doorbell with it.
