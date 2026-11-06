@@ -17,17 +17,15 @@
 //!   same on every open of it, so every mapper of the same file reaches the
 //!   same object, and so the same frames.
 //! * **`MAP_SHARED`** maps the cache's frames themselves (no second copy: a
-//!   store by one mapper is seen by the others at once) into the task's shm/MMIO
-//!   window, where the exit path and `munmap` never free a frame. The task
-//!   books the mapping in the object (`memobj_note_mapping_ref`: from then on
-//!   the cache can drop a page out of this address space, and a writable
-//!   mapping makes the page dirty), and the pages go back to the file when the
-//!   mapping is unmapped (`munmap`) or the file is synced (`NODE_FSYNC`, the
-//!   `msync` of this tree: a file's mapped pages are part of its sync).
-//!   A mapping reserves the window addresses from the start of the object's
-//!   first page, so the booked address is the address of object page 0, as the
-//!   object's mapping list needs; the pages before the piece are addresses and
-//!   nothing else.
+//!   store by one mapper is seen by the others at once), placed like an
+//!   anonymous `mmap`. The pager's record is a mapping of the cache object, and
+//!   the pager clears its leaves before any sweep can free a frame it does not
+//!   own. The task books the mapping in the object (`memobj_note_mapping_at_ref`:
+//!   from then on the cache can drop a page out of this address space, and a
+//!   writable mapping makes the page dirty), and the pages go back to the file
+//!   when the mapping is unmapped (`munmap`) or the file is synced
+//!   (`NODE_FSYNC`, the `msync` of this tree: a file's mapped pages are part
+//!   of its sync). The booking names the object page the mapping starts at.
 //! * **`MAP_PRIVATE`** is a region of the task's own, placed like an anonymous
 //!   `mmap` and charged like one; each page it touches is a copy of the cache
 //!   page taken at the first touch, so stores never reach the cache or the
@@ -298,19 +296,16 @@ fn writeback_current(obj: u32, wait: bool) -> Result<usize, PagedError> {
 #[derive(Clone, Copy)]
 struct Piece {
     obj: u32,
-    /// Address of object page 0 (the start of what a shared piece reserved).
-    base: usize,
-    /// Pages from `base` to the end of the piece.
-    span: usize,
+    start: usize,
+    end: usize,
 }
 
-/// Give back what a shared piece took: its booking in the object, its
-/// reference and its window addresses. The PTEs are the caller's (the sweep,
-/// or nothing made them yet).
-fn drop_shared(tid: u32, obj: u32, base: usize, span: usize) {
+/// Give back what a shared piece took: its booking in the object and its
+/// reference. The PTEs are the caller's (the pager's release of the record, or
+/// nothing made them yet).
+fn drop_shared(tid: u32, obj: u32) {
     let _ = memobj::memobj_take_mapping_ref(tid, obj);
     let _ = memobj::memobj_release_ref(tid, obj);
-    let _ = azos_sched::process::release_user_window(base, span);
 }
 
 /// `NODE_MMAP`: map `len` bytes of the file the handle names, from byte `off`
@@ -379,29 +374,25 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
     }
 
     let tid = azos_sched::current_proc_tid();
-    let mut pieces = [Piece { obj: 0, base: 0, span: 0 }; MAX_PIECES];
+    let mut pieces = [Piece { obj: 0, start: 0, end: 0 }; MAX_PIECES];
     let mut done = 0usize;
     let first_window = (first_page / WINDOW) as u64;
 
-    // Where a private mapping goes: where an anonymous `mmap` goes
-    // (`handlers::mmap_place`, no hint).
-    let (private_base, private_end) = if shared {
-        (0, 0)
-    } else {
-        let Some(span) = pages.checked_mul(page) else { return enomem };
-        let aligned = match crate::handlers::mmap_place(root, 0, span, 0) {
-            Ok(b) => b,
-            Err(_) => return enomem,
-        };
-        let end = aligned + span;
-        if !azos_sched::mm_charge(pages as u32) {
-            return enomem;
-        }
-        (aligned, end)
+    // Where the mapping goes: where an anonymous `mmap` goes
+    // (`handlers::mmap_place`, no hint). A private mapping is charged like one.
+    let Some(span) = pages.checked_mul(page) else { return enomem };
+    let base = match crate::handlers::mmap_place(root, 0, span, 0) {
+        Ok(b) => b,
+        Err(_) => return enomem,
     };
+    let end = base + span;
+    let charged = if shared { 0 } else { pages };
+    if charged != 0 && !azos_sched::mm_charge(charged as u32) {
+        return enomem;
+    }
 
     let mut remaining = pages;
-    let mut cursor = private_base;
+    let mut cursor = base;
     let mut failure = 0i64;
     for k in 0..npieces {
         let in_win = if k == 0 { in0 } else { 0 };
@@ -413,21 +404,19 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
                 break;
             }
         };
+        let piece = Piece { obj, start: cursor, end: cursor + n * page };
         let r = if shared {
-            map_shared_piece(space, tid, obj, in_win, n, write, pieces[..done].last().copied())
+            map_shared_piece(space, tid, piece, in_win, write)
         } else {
-            let start = cursor;
-            pager::reserve_file(space, start, start + n * page, write, false, obj, in_win)
-                .map(|()| Piece { obj, base: start, span: n })
-                .map_err(|_| enomem)
+            pager::reserve_file(space, piece.start, piece.end, write, false, obj, in_win).map_err(|_| enomem)
         };
         // The region (if any) has its own use of the object now.
         memobj::memobj_paged_users_drop_ref(obj);
         match r {
-            Ok(p) => {
-                pieces[done] = p;
+            Ok(()) => {
+                pieces[done] = piece;
                 done += 1;
-                cursor += n * page;
+                cursor = piece.end;
                 remaining -= n;
             }
             Err(e) => {
@@ -437,106 +426,73 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
         }
     }
     if done < npieces {
-        unwind(space, tid, shared, &pieces[..done], if shared { 0 } else { pages });
+        unwind(space, tid, shared, &pieces[..done], charged);
         return failure;
     }
-    if shared {
-        pieces[0].base as i64 + (in0 * page) as i64
-    } else {
-        crate::handlers::mmap_placed(private_base, private_end);
-        private_base as i64
-    }
+    crate::handlers::mmap_placed(base, end);
+    base as i64
 }
 
-/// Book and map one shared piece: `n` pages from page `in_win` of `obj`. The
-/// piece's window addresses start at the address of the object's page 0, right
-/// after the previous piece's when there is one (the mapping is contiguous).
-fn map_shared_piece(
-    space: azos_mm::aspace::SpaceRef,
-    tid: u32,
-    obj: u32,
-    in_win: usize,
-    n: usize,
-    write: bool,
-    prev: Option<Piece>,
-) -> Result<Piece, i64> {
+/// Book and map one shared piece: its pages `in_win..` of the cache object.
+/// The booking in the object, with the reference it needs, comes first and the
+/// record second, so the cache can drop a page out of this space from the
+/// moment the record can have one installed.
+fn map_shared_piece(space: azos_mm::aspace::SpaceRef, tid: u32, p: Piece, in_win: usize, write: bool) -> Result<(), i64> {
     let page = azos_arch::PAGE_SIZE;
-    let span = in_win + n;
-    match memobj::memobj_has_mapping_ref(tid, obj) {
+    match memobj::memobj_has_mapping_ref(tid, p.obj) {
         Ok(false) => {}
         Ok(true) => return Err(Errno::EBUSY.to_syscall_ret()),
         Err(_) => return Err(Errno::ENOMEM.to_syscall_ret()),
     }
-    let (lo, hi) = match prev {
-        // Exactly where the previous piece ends, or not at all.
-        Some(p) => {
-            let at = p.base + p.span * page;
-            (at, at + span * page)
-        }
-        None => azos_sched::user_shm_window(),
-    };
-    let base = azos_sched::scheduler::reserve_current_user_window(lo, hi, span * page)
-        .ok_or(Errno::ENOMEM.to_syscall_ret())?;
-    if memobj::memobj_acquire_ref(tid, obj).is_err() {
-        let _ = azos_sched::process::release_user_window(base, span);
+    if memobj::memobj_acquire_ref(tid, p.obj).is_err() {
         return Err(Errno::ENOMEM.to_syscall_ret());
     }
+    let n = (p.end - p.start) / page;
+    let access = MapAccess { write, max_write: write };
     let booked = matches!(
-        memobj::memobj_note_mapping_ref(tid, obj, space.root(), base, span, MapAccess { write, max_write: write }),
+        memobj::memobj_note_mapping_at_ref(tid, p.obj, space.root(), p.start, in_win, n, access),
         Ok(true)
     );
     if !booked {
-        let _ = memobj::memobj_release_ref(tid, obj);
-        let _ = azos_sched::process::release_user_window(base, span);
+        let _ = memobj::memobj_release_ref(tid, p.obj);
         return Err(Errno::EBUSY.to_syscall_ret());
     }
-    let start = base + in_win * page;
-    if pager::reserve_file(space, start, start + n * page, write, true, obj, in_win).is_err() {
-        drop_shared(tid, obj, base, span);
+    if pager::reserve_file(space, p.start, p.end, write, true, p.obj, in_win).is_err() {
+        drop_shared(tid, p.obj);
         return Err(Errno::ENOMEM.to_syscall_ret());
     }
-    Ok(Piece { obj, base, span })
+    Ok(())
 }
 
-/// Undo the `done` pieces of a mapping that failed part-way: the regions go
-/// (and their uses of the objects), then each shared piece's booking and window,
-/// or a private mapping's charge. Nothing was committed: the call has not
-/// returned an address.
+/// Undo the `done` pieces of a mapping that failed part-way: the records go
+/// (with their uses of the objects, and a shared piece's leaves), then each
+/// shared piece's booking, or a private mapping's charge. Nothing was
+/// committed: the call has not returned an address.
 fn unwind(space: azos_mm::aspace::SpaceRef, tid: u32, shared: bool, done: &[Piece], charged: usize) {
-    let page = azos_arch::PAGE_SIZE;
-    let (Some(first), Some(last)) = (done.first(), done.last()) else {
-        if charged != 0 {
-            azos_sched::mm_discharge(charged as u32);
-        }
-        return;
-    };
+    if let (Some(first), Some(last)) = (done.first(), done.last()) {
+        let _ = pager::release_range(space, first.start, last.end);
+    }
     if shared {
-        // Regions start `in_win` pages into the first piece's reservation.
-        let _ = pager::release_range(space, first.base, last.base + last.span * page);
         for p in done {
-            drop_shared(tid, p.obj, p.base, p.span);
+            drop_shared(tid, p.obj);
         }
-    } else {
-        let _ = pager::release_range(space, first.base, last.base + last.span * page);
+    } else if charged != 0 {
         azos_sched::mm_discharge(charged as u32);
     }
 }
 
 // ── munmap and fsync ─────────────────────────────────────────────────────────
 
-/// The shared pieces `munmap` took out of the address space, once its sweep has
-/// cleared their PTEs: the pages go back to the file, then the booking, the
-/// reference and the window addresses go. `files` is what
+/// The shared pieces `munmap` took out of the address space, once the pager has
+/// cleared their PTEs: the pages go back to the file, then the booking and the
+/// reference go. `files` is what
 /// `pager::file_regions_in` listed before the regions were removed.
 pub(crate) fn unmap_finish(files: &[FileRegion]) {
-    let page = azos_arch::PAGE_SIZE;
     let tid = azos_sched::current_proc_tid();
     for r in files.iter().filter(|r| r.shared) {
         // While the booking still makes every page of a writable mapping dirty.
         let _ = writeback_current(r.obj, false);
-        let base = r.start - r.off * page;
-        let span = r.off + (r.end - r.start) / page;
-        drop_shared(tid, r.obj, base, span);
+        drop_shared(tid, r.obj);
     }
 }
 

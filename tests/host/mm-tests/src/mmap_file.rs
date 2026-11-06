@@ -11,22 +11,22 @@
 //!   neighbour (the page cache counts regions), even when the neighbour is the
 //!   next pages of the same object with the same permission, where two
 //!   anonymous regions would fold.
-//! * `file_cut_ok` lets a range take file regions whole and nothing else: a cut
-//!   through one (start inside, end inside, or both ends inside) is refused,
-//!   anonymous regions in the same range do not matter, and a range clear of a
-//!   file region is fine.
-//! * A shared file region is not charged: `charged_pages` leaves its pages out
-//!   (the cache's frames are system memory) and counts a private file region's
+//! * `whole_cut_ok` lets a range take file regions and mappings of a shared
+//!   object whole and nothing else: a cut through one (start inside, end
+//!   inside, or both ends inside) is refused, anonymous regions in the same
+//!   range do not matter, and a range clear of one is fine.
+//! * A shared file region or a mapping of a shared object is not charged:
+//!   `charged_pages` leaves its pages out (the frames are system memory) and counts a private file region's
 //!   (task-owned copies) like an anonymous one's.
 //! * `page_index` of a file region is the object page: `off` plus the distance
 //!   from the start, kept by a clip.
 //!
 //! Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
 //! * `joins` folding file regions: `file_regions_never_fold` red.
-//! * `file_cut_ok` always true: `a_cut_takes_file_regions_whole_or_not_at_all` red.
+//! * `whole_cut_ok` always true: `a_cut_takes_file_regions_whole_or_not_at_all` red.
 //! * `charged` always true: `a_shared_file_region_is_not_charged` red.
 //! * `charged_pages` counting every region: the same row red.
-//! * `has_file` answering for regions outside the range: `has_file_looks_only_at_the_range` red.
+//! * `has_whole` answering for regions outside the range: `has_whole_looks_only_at_the_range` red.
 //! * Does not discriminate: `clip` dropping `shared`/`obj` (`remove_range`'s
 //!   remainders are only reached by a cut the pager refuses first; the row
 //!   `a_clip_keeps_the_object_page` pins `off`, which a clip computes).
@@ -77,7 +77,8 @@ fn a_cut_takes_file_regions_whole_or_not_at_all() {
     s.insert(anon(0, 4)).unwrap();
     s.insert(file(10, 14, true, true, 7, 0)).unwrap();
     s.insert(file(20, 24, true, false, 8, 3)).unwrap();
-    let ok = |a: usize, b: usize| s.file_cut_ok(a * P, b * P);
+    s.insert(Mapping::obj(30 * P, 34 * P, true, 9, 0)).unwrap();
+    let ok = |a: usize, b: usize| s.whole_cut_ok(a * P, b * P);
     assert!(ok(10, 14), "exactly the region");
     assert!(ok(9, 15), "with room around it");
     assert!(ok(10, 25), "two regions whole");
@@ -89,6 +90,9 @@ fn a_cut_takes_file_regions_whole_or_not_at_all() {
     assert!(!ok(11, 13), "both ends inside");
     assert!(!ok(12, 22), "one whole, one cut");
     assert!(!ok(0, 11), "anonymous whole, file cut");
+    assert!(ok(30, 34), "a shared object's mapping, whole");
+    assert!(!ok(31, 40), "a shared object's mapping, start inside");
+    assert!(!ok(25, 32), "a shared object's mapping, end inside");
 }
 
 #[test]
@@ -97,23 +101,44 @@ fn a_shared_file_region_is_not_charged() {
     s.insert(anon(0, 4)).unwrap(); // 4 pages, charged
     s.insert(file(10, 18, true, true, 7, 0)).unwrap(); // 8, the cache's
     s.insert(file(20, 23, true, false, 8, 0)).unwrap(); // 3 private copies, charged
-    assert_eq!(s.reserved_pages(), 15);
+    s.insert(Mapping::obj(30 * P, 32 * P, true, 9, 0)).unwrap(); // 2, the object's
+    assert_eq!(s.reserved_pages(), 17);
     assert_eq!(s.charged_pages(), 7);
-    assert!(s.as_slice().iter().map(Mapping::charged).eq([true, false, true]));
+    assert!(s.as_slice().iter().map(Mapping::charged).eq([true, false, true, false]));
 }
 
 #[test]
-fn has_file_looks_only_at_the_range() {
+fn has_whole_looks_only_at_the_range() {
     let mut s = MapSet::<8>::new();
     s.insert(anon(0, 4)).unwrap();
     s.insert(file(10, 14, true, true, 7, 0)).unwrap();
-    let has = |a: usize, b: usize| s.has_file(a * P, b * P);
+    let has = |a: usize, b: usize| s.has_whole(a * P, b * P);
     assert!(!has(0, 4));
     assert!(!has(14, 20), "the end is exclusive");
     assert!(!has(0, 10));
     assert!(has(13, 15));
     assert!(has(9, 11));
     assert!(has(0, 100));
+    let mut o = MapSet::<8>::new();
+    o.insert(Mapping::obj(30 * P, 34 * P, true, 9, 0)).unwrap();
+    assert!(o.has_whole(33 * P, 40 * P), "a shared object's mapping counts");
+    assert!(o.has_obj(33 * P, 40 * P) && !s.has_obj(0, 100), "and only that is an object's");
+    assert!(!o.has_obj(34 * P, 40 * P));
+}
+
+#[test]
+fn a_shared_object_mapping_never_folds_or_joins_an_anonymous_one() {
+    let mut s = MapSet::<8>::new();
+    s.insert(Mapping::obj(10 * P, 12 * P, true, 9, 0)).unwrap();
+    s.insert(Mapping::obj(12 * P, 14 * P, true, 9, 2)).unwrap();
+    s.insert(anon(14, 16)).unwrap();
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.find(11 * P).and_then(|m| m.anon_obj()), None);
+    assert!(s.find(11 * P).unwrap().maps_shared_frames());
+    assert!(!s.find(15 * P).unwrap().maps_shared_frames());
+    // A protect leaves them apart too.
+    s.protect_range(10 * P, 14 * P, false).unwrap();
+    assert_eq!(s.len(), 3);
 }
 
 #[test]

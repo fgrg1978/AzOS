@@ -2941,8 +2941,10 @@ pub fn release_user_window(va: usize, pages: usize) -> bool {
 /// - `rw`: true = read-write, false = read-only.
 ///
 /// Returns the virtual base address, or None on failure. The addresses come
-/// from the current task's window ([`reserve_window_va`]); the typed release
-/// gives them back with [`release_user_window`] after it unmaps.
+/// from the current task's window ([`reserve_window_va`]); the caller gives
+/// them back with [`release_user_window`] after it unmaps. `SYS_MO_MAP` places
+/// its mapping like any other and uses [`shm_map_at`]; what still comes here
+/// is a vDSO notify page and a ring page.
 pub fn shm_map_user(phys_pages: &[usize], rw: bool) -> Option<usize> {
     // Wave 13: one layout change at a time per thread group.
     let _mm = crate::group::mm_lock();
@@ -2955,20 +2957,34 @@ pub fn shm_map_user(phys_pages: &[usize], rw: bool) -> Option<usize> {
         return None;
     }
     let va_base = reserve_window_va(page_count)?;
+    // A partial mapping leaves its addresses reserved until the task exits:
+    // the PTEs already installed are still there, and nothing else may be
+    // mapped over them. The caller pins its reference.
+    shm_map_leaves(user_pt, va_base, phys_pages, rw).then_some(va_base)
+}
+
+/// Map a shared memory region's frames at `va` of the current task's page
+/// table, an address its caller placed and recorded (`pager::reserve_obj`).
+/// Nothing is reserved here. `false` for a kernel caller, no pages, or a leaf
+/// that could not be made; the pages done stay mapped, for the pager's release
+/// of the record to take back.
+pub fn shm_map_at(va: usize, phys_pages: &[usize], rw: bool) -> bool {
+    let user_pt = crate::scheduler::current_user_pt();
+    if user_pt == 0 || phys_pages.is_empty() {
+        return false;
+    }
+    shm_map_leaves(user_pt, va, phys_pages, rw)
+}
+
+fn shm_map_leaves(user_pt: usize, va: usize, phys_pages: &[usize], rw: bool) -> bool {
     let flags = if rw {
         PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW }
     } else {
         PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RO }
     };
-    // Contiguous runs where the frames and the window address allow one
+    // Contiguous runs where the frames and the address allow one
     // (`vmm::map_contig_range`); plain 4 KiB leaves elsewhere.
-    if vmm::map_contig_range(user_pt, va_base, phys_pages, flags).is_err() {
-        // Partial mapping; the caller pins its reference. The addresses
-        // stay reserved until the task exits: the PTEs already installed
-        // are still there, and nothing else may be mapped over them.
-        return None;
-    }
-    Some(va_base)
+    vmm::map_contig_range(user_pt, va, phys_pages, flags).is_ok()
 }
 
 /// Map the physical MMIO range `phys_base..phys_base + size` into the current

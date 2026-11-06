@@ -33,6 +33,11 @@
 //!   file); **`MAP_PRIVATE`** takes a copy of the cache page at the first touch
 //!   into a frame of the task's own, charged and freed like anonymous memory,
 //!   so its stores never reach the cache or the file. See [`resolve_file_fault`].
+//! * A named shared object (`SYS_MO_MAP`) is mapped as a [`Backing::Obj`]
+//!   mapping: its frames are mapped when the mapping is made, so no fault
+//!   supplies one, and the space's records are where the mapping is placed,
+//!   cut out whole and torn down ([`unmap_shared`]). The object's mapper list
+//!   ([`crate::memobj`]'s holders) is the reverse map.
 //! * An IPC pager (a ring-3 server answering page requests) is what
 //!   [`Supply::Pending`] and [`PageRequest`] are shaped for: a pager that cannot
 //!   answer at once returns `Pending`, the faulting task waits, and the
@@ -1487,6 +1492,43 @@ pub fn reserve_file(
     Ok(())
 }
 
+/// Record `[start, end)` as a mapping of the shared object `obj` (a packed
+/// reference): pages `0..` of the object, readable and writable iff `write`.
+/// The caller placed the range, which its placement found vacant, and maps the
+/// object's frames in it (before or after this). Charges nothing: the frames
+/// are the object's.
+///
+/// `Overlap` when a mapping holds part of the range; `Full` when the space's
+/// records are exhausted.
+pub fn reserve_obj(r: SpaceRef, start: usize, end: usize, write: bool, obj: u32) -> Result<(), MapError> {
+    let mut sp = r.lock().ok_or(MapError::Full)?;
+    sp.open();
+    let res = sp.set.insert(Mapping::obj(start, end, write, obj, 0));
+    if res.is_err() && sp.set.is_empty() {
+        sp.close();
+    }
+    res
+}
+
+/// Does `[s, e)` touch a mapping of a shared object?
+pub fn has_obj(r: SpaceRef, s: usize, e: usize) -> bool {
+    r.lock().is_some_and(|sp| sp.recorded && sp.set.has_obj(s, e))
+}
+
+/// Clear the leaves of a mapping of frames another owner holds: the shared
+/// file's cache frames, a shared object's. The space's sweeps free every user
+/// leaf they find outside the shm window, so these are cleared first, with the
+/// shootdown and without a free.
+///
+/// Canary `mm-rmap-missing-canary`: the leaves stay, and the sweep frees the
+/// object's frames under its other mappers.
+fn unmap_shared(root: usize, a: usize, b: usize) {
+    if cfg!(feature = "mm-rmap-missing-canary") {
+        return;
+    }
+    let _ = vmm::unmap_user_range_and_free(root, a, b, a, b);
+}
+
 /// A file mapping as [`file_regions_in`] reports it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileRegion {
@@ -1509,7 +1551,7 @@ impl FileRegion {
 pub fn file_regions_in(r: SpaceRef, s: usize, e: usize, out: &mut [FileRegion]) -> Result<usize, MapError> {
     let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return Ok(0) };
     let set = &sp.set;
-    if !set.file_cut_ok(s, e) {
+    if !set.whole_cut_ok(s, e) {
         return Err(MapError::Invalid);
     }
     let mut n = 0;
@@ -1527,9 +1569,9 @@ pub fn file_regions_in(r: SpaceRef, s: usize, e: usize, out: &mut [FileRegion]) 
     Ok(n)
 }
 
-/// Does `[s, e)` touch a file mapping?
-pub fn has_file(r: SpaceRef, s: usize, e: usize) -> bool {
-    r.lock().is_some_and(|sp| sp.recorded && sp.set.has_file(s, e))
+/// Does `[s, e)` touch a file piece or a shared object's mapping?
+pub fn has_whole(r: SpaceRef, s: usize, e: usize) -> bool {
+    r.lock().is_some_and(|sp| sp.recorded && sp.set.has_whole(s, e))
 }
 
 /// Resolve a fault in a file mapping (`r`, copied out of the set, of the
@@ -1773,6 +1815,10 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
             resolve_file_fault(space, page, &m, obj, shared)?;
             return Ok(Step::Done);
         }
+        // The object's frames were mapped with the mapping: a missing leaf is
+        // a page the object took back, and no fault supplies it.
+        Backing::Obj { .. } if ARCH.pte_is_valid(seen) => return Ok(Step::Mapped),
+        Backing::Obj { .. } => return Err(KernelError::NotMapped),
         Backing::Anon { obj } => obj,
     };
     let idx = m.page_index(page);
@@ -2008,9 +2054,9 @@ pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError>
     let mut nd = 0;
     {
         let Some(mut sp) = r.lock().filter(|sp| sp.recorded) else { return Ok(0) };
-        // A file mapping goes whole or not at all, or the page cache's count of
-        // mappings would be wrong (`MapSet::file_cut_ok`).
-        if !sp.set.file_cut_ok(s, e) {
+        // A file or shared-object mapping goes whole or not at all, or the page
+        // cache's count of mappings would be wrong (`MapSet::whole_cut_ok`).
+        if !sp.set.whole_cut_ok(s, e) {
             return Err(MapError::Invalid);
         }
         sp.set.for_each_overlap(s, e, |a, b, m| {
@@ -2064,14 +2110,21 @@ pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError>
                 });
                 (here, out)
             }
-            Backing::File { .. } => {
+            Backing::File { shared, .. } => {
                 let mut here = 0usize;
                 let mut va = a;
                 while va < b {
                     here += matches!(vmm::user_page(root, va), vmm::UserPage::Leaf { .. }) as usize;
                     va += PAGE_SIZE;
                 }
+                if shared {
+                    unmap_shared(root, a, b);
+                }
                 (here, 0)
+            }
+            Backing::Obj { .. } => {
+                unmap_shared(root, a, b);
+                (0, 0)
             }
         };
         committed += here;
@@ -2135,9 +2188,9 @@ pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError>
 /// cut needs records the space does not have.
 pub fn protect_range(r: SpaceRef, s: usize, e: usize, write: bool) -> Result<(), MapError> {
     let res = match r.lock().filter(|sp| sp.recorded) {
-        // A file mapping keeps the permission it was mapped with: a shared
-        // one's dirty record in the page cache is made from it.
-        Some(sp) if sp.set.has_file(s, e) => Err(MapError::Invalid),
+        // A file or shared-object mapping keeps the permission it was mapped
+        // with: a shared file's dirty record in the page cache is made from it.
+        Some(sp) if sp.set.has_whole(s, e) => Err(MapError::Invalid),
         Some(mut sp) => sp.set.protect_range(s, e, write),
         None => Ok(()),
     };
@@ -2454,6 +2507,8 @@ fn clone_objects(parent: SpaceRef, child: SpaceRef, buf: &mut [Mapping; FORK_BAT
                         memobj::memobj_paged_region_add_ref(obj);
                     }
                 }
+                // Shared mappings are not charged and not copied (the filter).
+                Backing::Obj { .. } => {}
             }
         }
         at += n;
@@ -2744,13 +2799,14 @@ pub fn shim_set_install_hook(hook: Option<fn()>) {
     *INSTALL_HOOK.lock() = hook;
 }
 
-/// The ranges of the anonymous mappings of `r`, in address order, into `out`;
-/// how many (none for a space without records). A fork's walk leaves their
-/// pages to [`fork_clone`].
-pub(crate) fn anon_ranges(r: SpaceRef, out: &mut [(usize, usize); MAPPINGS_PER_SPACE]) -> usize {
+/// The ranges of the mappings of `r` whose pages a fork's walk leaves alone,
+/// in address order, into `out`; how many (none for a space without records).
+/// An anonymous mapping's pages are [`fork_clone`]'s; a shared mapping's frames
+/// are another owner's, and the child does not inherit them with the walk.
+pub(crate) fn passed_ranges(r: SpaceRef, out: &mut [(usize, usize); MAPPINGS_PER_SPACE]) -> usize {
     let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return 0 };
     let mut n = 0;
-    for m in sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some()) {
+    for m in sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some() || m.maps_shared_frames()) {
         out[n] = (m.start, m.end);
         n += 1;
     }
@@ -2787,9 +2843,15 @@ fn close_records(r: SpaceRef, files_counted: bool) {
     let mut nf = 0;
     let mut objs = [0usize; MAPPINGS_PER_SPACE];
     let mut no = 0;
+    let mut shared = [(0usize, 0usize); MAPPINGS_PER_SPACE];
+    let mut ns = 0;
     if let Some(mut sp) = r.lock() {
         if sp.recorded {
             for m in sp.set.as_slice() {
+                if m.maps_shared_frames() {
+                    shared[ns] = (m.start, m.end);
+                    ns += 1;
+                }
                 match m.backing {
                     Backing::File { obj, .. } => {
                         files[nf] = obj;
@@ -2799,7 +2861,7 @@ fn close_records(r: SpaceRef, files_counted: bool) {
                         objs[no] = obj;
                         no += 1;
                     }
-                    Backing::Anon { .. } => {}
+                    Backing::Anon { .. } | Backing::Obj { .. } => {}
                 }
             }
         }
@@ -2810,6 +2872,11 @@ fn close_records(r: SpaceRef, files_counted: bool) {
     for &obj in &objs[..no] {
         // SAFETY: the set that named it is closed.
         unsafe { anon_obj::destroy(obj, r.root()) };
+    }
+    // The shared mappings' leaves go before the table's sweep can free the
+    // frames they name.
+    for &(a, b) in &shared[..ns] {
+        unmap_shared(r.root(), a, b);
     }
     // The mappings are gone: their users in the page cache with them.
     if files_counted {

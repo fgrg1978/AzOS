@@ -801,13 +801,16 @@ config MM_REGIONS_PER_SPACE
       (crates/core/mm/src/mapping.rs), in its address space object
       (crates/core/mm/src/aspace.rs): a private anonymous mmap is a
       mapping of an anonymous object of the space's own, a file mmap a
-      mapping of the file's page cache, and each page is installed on
-      first touch.  A mapping that continues the previous one with the
+      mapping of the file's page cache, a shared memory object
+      (SYS_MO_MAP) a mapping of that object whose frames are mapped when
+      the mapping is made, and each other page is installed on first
+      touch.  A mapping that continues the previous one with the
       same permissions grows that one's object instead, so a task that
       only grows its mappings uses one record; mprotect and a munmap in
       the middle of a mapping cut records.  A mapping that finds no free
       record is committed eagerly instead; a munmap or mprotect whose cut
-      needs a record answers ENOMEM, as Linux does past its map count.
+      needs a record answers ENOMEM, as Linux does past its map count.  A
+      shared object or file window that finds none is refused.
 
       Cost: about (64 + 48 x this) B per live address space, both ISAs
       (448 B at 8), taken from the kernel heap's ceiling when a space is

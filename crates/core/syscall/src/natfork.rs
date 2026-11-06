@@ -259,11 +259,11 @@ fn inherits(parent: u32, kind: CapType, res: u32) -> bool {
 /// Give `child` the parent's `Cap<Shm>` `h` (packed reference `r`) and its
 /// mapping: a reference of its own, the same capability at the same handle,
 /// the parent's page-table leaves for the mapping
-/// ([`azos_mm::cow::fork_share_range`]) and the mapping booked in the
-/// region's record, with the parent's recorded access
-/// ([`azos_ipc::memobj::memobj_inherit_ref`]), and in the child's window, so
-/// its own later maps cannot land on it. Everything done is undone if a step
-/// fails.
+/// ([`azos_mm::cow::fork_share_range`]), the mapping booked in the region's
+/// record, with the parent's recorded access
+/// ([`azos_ipc::memobj::memobj_inherit_ref`]), and recorded in the child's
+/// address space, so its own later maps cannot land on it and its teardown
+/// leaves the frames alone. Everything done is undone if a step fails.
 fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> Result<(), Errno> {
     // A volatile object is not purged while the child's leaves are copied and
     // booked (`memobj_pin_for_map`); a purged one is not inherited.
@@ -278,12 +278,11 @@ fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, w
 fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> Result<(), Errno> {
     use azos_ipc::memobj::{self, MemObjError};
     let Ok(Some((va, pages))) = memobj::memobj_mapping_of_ref(parent, r) else { return Err(Errno::EAGAIN) };
-    let (Some(parent_pt), Some(child_pt)) =
-        (azos_sched::task_aspace(parent).map(|a| a.root()), azos_sched::task_aspace(child).map(|a| a.root()))
-    else {
+    let (Some(parent_space), Some(child_space)) = (azos_sched::task_aspace(parent), azos_sched::task_aspace(child)) else {
         return Err(Errno::EAGAIN);
     };
-    let span = pages * azos_arch_api::PAGE_SIZE;
+    let (parent_pt, child_pt) = (parent_space.root(), child_space.root());
+    let end = va + pages * azos_arch_api::PAGE_SIZE;
     if memobj::memobj_acquire_ref(child, r).is_err() {
         return Err(Errno::EAGAIN);
     }
@@ -297,28 +296,30 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r:
         memobj::memobj_pipe_drop_all_ref(child, r);
         let _ = memobj::memobj_release_ref(child, r);
     };
-    if !azos_sched::scheduler::reserve_user_window_at(child, va, span) {
-        release_child();
-        return Err(Errno::ENOMEM);
-    }
-    let undo_window = || {
-        let _ = azos_sched::scheduler::release_user_window_of(child, va, span);
-        release_child();
-    };
     let mut leaves = azos_mm::cow::ForkLeaves { parent_pt, child_pt, va, pages };
-    if let Err(e) = memobj::memobj_inherit_ref(parent, child, r, child_pt, va, pages, &mut leaves) {
-        undo_window();
-        return Err(match e {
-            MemObjError::Busy => Errno::EBUSY,
-            MemObjError::NoMem => Errno::ENOMEM,
-            _ => Errno::EAGAIN,
-        });
-    }
-    if azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, r, warrant)) != Some(true) {
+    let access = match memobj::memobj_inherit_ref(parent, child, r, child_pt, va, pages, &mut leaves) {
+        Ok(a) => a,
+        Err(e) => {
+            release_child();
+            return Err(match e {
+                MemObjError::Busy => Errno::EBUSY,
+                MemObjError::NoMem => Errno::ENOMEM,
+                _ => Errno::EAGAIN,
+            });
+        }
+    };
+    // The record, then the capability; a failure takes them back in the other
+    // order: the booking, the record with its leaves, the reference.
+    let recorded = azos_mm::pager::reserve_obj(child_space, va, end, access.write, r).is_ok();
+    if !recorded || azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, r, warrant)) != Some(true) {
         let _ = memobj::memobj_unmap_begin_ref(child, r);
-        azos_ipc::memobj::ChildLeaves::remove(&mut leaves);
+        if recorded {
+            let _ = azos_mm::pager::release_range(child_space, va, end);
+        } else {
+            azos_ipc::memobj::ChildLeaves::remove(&mut leaves);
+        }
         memobj::memobj_unmap_end_ref(child, r);
-        undo_window();
+        release_child();
         return Err(Errno::ENOMEM);
     }
     Ok(())

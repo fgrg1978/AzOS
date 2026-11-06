@@ -108,6 +108,7 @@ fn ring3() -> (Scene, usize) {
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(tid);
+    azos_sched::shim_set_brk(0x10_0000);
     let scratch = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     azos_mm::vmm::map(pt, SCRATCH, scratch, PagePerms::USER_RW).expect("map");
     azos_sched::scheduler::set_current_syscall_filter(SyscallFilter::disabled());

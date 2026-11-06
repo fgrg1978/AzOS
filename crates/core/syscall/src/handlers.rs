@@ -3377,7 +3377,7 @@ pub(crate) fn mmap_placed(start: usize, end: usize) {
 /// it when the range began at or below the cursor, so the area below the
 /// cursor stays vacant and a range given back next to it is placed again
 /// (zig's allocator trims each slab's head, just below the cursor).
-fn mmap_unmapped(start: usize, end: usize) {
+pub(crate) fn mmap_unmapped(start: usize, end: usize) {
     let (_, ceiling) = azos_sched::user_mmap_area();
     let low = azos_sched::update_user_mmap_low(0) as usize;
     if low != 0 && start <= low && end > low {
@@ -3412,6 +3412,7 @@ fn mmap_handed_out(va: usize) -> bool {
 pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset: u64) -> i64 {
     // Wave 13: one layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
+    crate::ipc_handlers::reap_moved_windows();
     // **No executable anonymous memory.** Every page below is mapped USER_RW
     // and never X, so a `PROT_EXEC` request could only be answered with a
     // mapping that does not do what was asked. Refused before anything else,
@@ -3578,8 +3579,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
         return Errno::ENOMEM.to_syscall_ret();
     }
     // A file mapping keeps the permission it was made with: a shared one's
-    // dirty record in the page cache is made from it (`crate::file_map`).
-    if azos_mm::pager::has_file(space, start, end) {
+    // dirty record in the page cache is made from it (`crate::file_map`). A
+    // shared object's mapping changes it through `SYS_MO_MAP`'s protect form,
+    // which keeps the object's record and the leaves together.
+    if azos_mm::pager::has_whole(space, start, end) {
         return Errno::EINVAL.to_syscall_ret();
     }
     let none = prot & (MMAP_PROT_READ | MMAP_PROT_WRITE) == 0;
@@ -3682,6 +3685,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
 pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // Wave 13: one layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
+    crate::ipc_handlers::reap_moved_windows();
     let Some(space) = azos_sched::current_aspace() else { return -1 };
     let user_pt = space.root();
 
@@ -3787,6 +3791,11 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // The file mappings the range holds (a file region goes whole or not at
     // all), listed first: the sweep below clears their PTEs, and only then may
     // their pages go back to the file and their bookings be given up.
+    // A shared object's mapping ends with the object's release (`SYS_MO_UNMAP`),
+    // which gives back the booking and the references it holds.
+    if azos_mm::pager::has_obj(space, start, end) {
+        return azos_abi::error::Errno::EINVAL.to_syscall_ret();
+    }
     let mut files = [azos_mm::pager::FileRegion::NONE; crate::file_map::MUNMAP_FILES];
     let nfiles = match azos_mm::pager::file_regions_in(space, start, end, &mut files) {
         Ok(n) => n,

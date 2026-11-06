@@ -540,21 +540,6 @@ fn with_user_window<R>(f: impl FnOnce(&mut [[usize; 2]]) -> R) -> R {
     f(&mut all[i].1)
 }
 
-/// `azos_sched::scheduler::reserve_user_window_at`: reserve exactly
-/// `[base, base + span)` in the window of task `tid` (a fork child's inherited
-/// mapping), through the real allocator.
-pub fn reserve_user_window_at(tid: u32, base: usize, span: usize) -> bool {
-    let mut all = USER_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
-    let i = match all.iter().position(|(t, _)| *t == tid) {
-        Some(i) => i,
-        None => {
-            all.push((tid, [[0; 2]; user_window::USER_WINDOW_RANGES]));
-            all.len() - 1
-        }
-    };
-    user_window::reserve_at(&mut all[i].1, base, span)
-}
-
 /// Test-only control surface: forget every task's window reservations, what
 /// slot reuse does for one task.
 pub fn shim_reset_user_windows() {
@@ -1347,6 +1332,40 @@ pub mod process {
         }
         super::shim_run_once(&super::AFTER_SHM_MAP);
         Some(base)
+    }
+
+    /// Pages `shm_map_at` maps before it fails (`usize::MAX`: it does not).
+    static SHM_MAP_FAIL_AFTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+    /// Test-only control surface: `shm_map_at` fails after `n` pages (none:
+    /// never), as a leaf table the allocator could not give does.
+    pub fn shim_fail_shm_map_after(n: Option<usize>) {
+        super::shim_assert_serial("shim_fail_shm_map_after");
+        SHM_MAP_FAIL_AFTER.store(n.unwrap_or(usize::MAX), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Transcribed from `process.rs` (`shm_map_at`): the frames mapped at an
+    /// address the caller placed, by the real `azos_mm::vmm::map`.
+    pub fn shm_map_at(va: usize, phys_pages: &[usize], rw: bool) -> bool {
+        use azos_arch::mmu::PAGE_SIZE;
+        use azos_arch_api::PagePerms;
+        let user_pt = super::current_user_pt();
+        if user_pt == 0 || phys_pages.is_empty() {
+            return false;
+        }
+        let flags = if rw {
+            PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW }
+        } else {
+            PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RO }
+        };
+        let fail_after = SHM_MAP_FAIL_AFTER.load(std::sync::atomic::Ordering::SeqCst);
+        for (i, &phys) in phys_pages.iter().enumerate() {
+            if i >= fail_after || azos_mm::vmm::map(user_pt, va + i * PAGE_SIZE, phys, flags).is_err() {
+                return false;
+            }
+        }
+        super::shim_run_once(&super::AFTER_SHM_MAP);
+        true
     }
 
     /// `process.rs`'s bound on one user MMIO mapping (1 MiB).

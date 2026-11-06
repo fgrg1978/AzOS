@@ -3183,29 +3183,6 @@ pub fn release_current_user_window(base: usize, span: usize) -> bool {
     }
 }
 
-/// Reserve exactly `[base, base + span)` of the shm/MMIO window of the task
-/// `tid` (a fork child that inherits a shared-memory mapping at its parent's
-/// address, before it runs). `false` when the task is gone or the range is
-/// taken ([`crate::user_window::reserve_at`]).
-pub fn reserve_user_window_at(tid: u32, base: usize, span: usize) -> bool {
-    unsafe {
-        match idx_for_tid(tid) {
-            Some(i) => crate::user_window::reserve_at(&mut task_mut(proc_slot(i)).user_window, base, span),
-            None => false,
-        }
-    }
-}
-
-/// Give back what [`reserve_user_window_at`] reserved for `tid`.
-pub fn release_user_window_of(tid: u32, base: usize, span: usize) -> bool {
-    unsafe {
-        match idx_for_tid(tid) {
-            Some(i) => crate::user_window::release(&mut task_mut(proc_slot(i)).user_window, base, span),
-            None => false,
-        }
-    }
-}
-
 /// Set user info for a specific task by pool index (used by fork, whose child
 /// copies the parent's break and mmap cursor with its address space, and by
 /// spawn, whose new address space has handed nothing out: cursor 0).

@@ -2006,7 +2006,7 @@ pub mod user_window;
 
 #[cfg(test)]
 mod user_window_tests {
-    use super::user_window::{release, reserve, reserve_at, MMIO_RANGES, USER_WINDOW_RANGES};
+    use super::user_window::{release, reserve, MMIO_RANGES, USER_WINDOW_RANGES};
 
     const P: usize = 4096;
     const LO: usize = 0x6000_0000;
@@ -2061,29 +2061,6 @@ mod user_window_tests {
         assert!(release(&mut w, LO + P, P));
         assert_eq!(reserve(&mut w, LO, HI, 2 * P), Some(LO + 4 * P), "the hole is one page");
         assert_eq!(reserve(&mut w, LO, HI, P), Some(LO + P), "and a page fits it");
-    }
-
-    /// **A fork child's inherited mapping is reserved at its parent's address**
-    /// and later reservations go around it; an overlap, an empty span or a full
-    /// table is refused and changes nothing.
-    ///
-    /// **Canary.** `reserve_at` that skips the overlap test: the second call
-    /// succeeds over the first.
-    #[test]
-    fn an_inherited_mapping_is_reserved_where_it_is() {
-        let mut w = empty();
-        assert!(reserve_at(&mut w, LO + 2 * P, 2 * P));
-        assert_eq!(reserve(&mut w, LO, HI, P), Some(LO), "below it");
-        assert_eq!(reserve(&mut w, LO, HI, 2 * P), Some(LO + 4 * P), "the two pages that fit are taken: around it");
-        assert!(!reserve_at(&mut w, LO + 3 * P, P), "overlaps the inherited range");
-        assert!(!reserve_at(&mut w, LO + P, 2 * P), "overlaps its start");
-        assert!(!reserve_at(&mut w, LO, 0), "an empty span");
-        assert!(!reserve_at(&mut w, usize::MAX - P, 2 * P), "wrapping past the top");
-        assert!(release(&mut w, LO + 2 * P, 2 * P), "and it is released like any reservation");
-        assert!(reserve_at(&mut w, LO + 2 * P, 2 * P));
-        let mut full = [[LO, P]; USER_WINDOW_RANGES];
-        full[0] = [LO, P];
-        assert!(!reserve_at(&mut full, HI, P), "no free pair");
     }
 
     /// **A range may end exactly at the limit, never past it.** Past

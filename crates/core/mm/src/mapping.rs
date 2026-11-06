@@ -34,8 +34,15 @@
 //! per 64-page window of a file) and `off` is the page within it. One record is
 //! one piece of one `mmap` call, so the records never fold (a neighbour with
 //! the next pages of the same object is still another mapping) and a cut may
-//! only take whole ones ([`MapSet::file_cut_ok`]): the page cache counts
+//! only take whole ones ([`MapSet::whole_cut_ok`]): the page cache counts
 //! mappings, and one that split in two would be counted once.
+//!
+//! **Shared-object mappings.** A [`Backing::Obj`] mapping is a named shared
+//! object (`SYS_MO_MAP`) mapped by this space: the object's frames are mapped
+//! as they are, and the object's own list of mappers (its holder table) is the
+//! reverse map reclaim, revoke and teardown reach this space's leaves by. A
+//! shared file mapping is the same thing for a cache object. Like a file
+//! piece, one goes whole or not at all, and the space never owns the frames.
 
 use azos_arch_api::PAGE_SHIFT;
 
@@ -50,6 +57,9 @@ pub enum Backing {
     /// cache's own frames, written back to the file; a private one holds a
     /// copy of each page it touched, owned and charged like anonymous memory.
     File { obj: u32, shared: bool },
+    /// A named shared object (`SYS_MO_MAP`): its packed reference. The pages
+    /// are the object's own frames, mapped when the mapping was made.
+    Obj { obj: u32 },
 }
 
 /// One reserved range. `start`/`end` are page-aligned; `end` is exclusive.
@@ -75,21 +85,33 @@ impl Mapping {
         Mapping { start, end, write, backing: Backing::File { obj, shared }, off }
     }
 
+    /// A mapping of a named shared object: pages `off..` of `obj`.
+    pub const fn obj(start: usize, end: usize, write: bool, obj: u32, off: usize) -> Self {
+        Mapping { start, end, write, backing: Backing::Obj { obj }, off }
+    }
+
     /// The anonymous object, if the mapping is one.
     #[inline(always)]
     pub const fn anon_obj(&self) -> Option<usize> {
         match self.backing {
             Backing::Anon { obj } => Some(obj),
-            Backing::File { .. } => None,
+            Backing::File { .. } | Backing::Obj { .. } => None,
         }
     }
 
+    /// Are the pages the mapping maps another owner's frames, which this space
+    /// maps and never frees (a shared file's cache frames, a shared object's)?
+    #[inline(always)]
+    pub const fn maps_shared_frames(&self) -> bool {
+        matches!(self.backing, Backing::File { shared: true, .. } | Backing::Obj { .. })
+    }
+
     /// Does the task pay for this mapping's pages when it reserves them (and
-    /// get the charge back when they go)? A shared file mapping maps frames of
-    /// the page cache, system memory the task never owns: it is not charged,
-    /// and neither is anything of it discharged.
+    /// get the charge back when they go)? A shared mapping maps frames of the
+    /// page cache or of a shared object, memory the task never owns: it is not
+    /// charged, and neither is anything of it discharged.
     pub const fn charged(&self) -> bool {
-        !matches!(self.backing, Backing::File { shared: true, .. })
+        !self.maps_shared_frames()
     }
 
     const EMPTY: Mapping = Mapping::anon(0, 0, false, 0, 0);
@@ -125,8 +147,10 @@ impl Mapping {
         Some(Mapping { start: a, end: b, off: self.page_index(a), ..*self })
     }
 
-    fn is_file(&self) -> bool {
-        matches!(self.backing, Backing::File { .. })
+    /// Does the mapping go whole or not at all (a file piece or a shared
+    /// object's mapping)?
+    fn is_whole(&self) -> bool {
+        !matches!(self.backing, Backing::Anon { .. })
     }
 }
 
@@ -224,17 +248,23 @@ impl<const N: usize> MapSet<N> {
         self.r[..self.n].iter().filter(|r| r.charged()).map(Mapping::pages).sum()
     }
 
-    /// Does `[s, e)` touch a file mapping?
-    pub fn has_file(&self, s: usize, e: usize) -> bool {
-        self.r[..self.n].iter().any(|r| r.is_file() && r.start < e && s < r.end)
+    /// Does `[s, e)` touch a mapping of a shared object?
+    pub fn has_obj(&self, s: usize, e: usize) -> bool {
+        self.r[..self.n].iter().any(|r| matches!(r.backing, Backing::Obj { .. }) && r.start < e && s < r.end)
+    }
+
+    /// Does `[s, e)` touch a file piece or a shared object's mapping?
+    pub fn has_whole(&self, s: usize, e: usize) -> bool {
+        self.r[..self.n].iter().any(|r| r.is_whole() && r.start < e && s < r.end)
     }
 
     /// May `[s, e)` be cut out of the set without splitting or trimming a file
-    /// mapping? A file mapping is taken whole or not at all (module doc).
-    pub fn file_cut_ok(&self, s: usize, e: usize) -> bool {
+    /// or shared-object mapping? Those are taken whole or not at all (module
+    /// doc).
+    pub fn whole_cut_ok(&self, s: usize, e: usize) -> bool {
         self.r[..self.n]
             .iter()
-            .filter(|r| r.is_file() && r.start < e && s < r.end)
+            .filter(|r| r.is_whole() && r.start < e && s < r.end)
             .all(|r| s <= r.start && r.end <= e)
     }
 

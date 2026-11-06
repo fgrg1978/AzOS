@@ -56,23 +56,6 @@ pub fn reserve(ranges: &mut [[usize; 2]], lo: usize, hi: usize, span: usize) -> 
     Some(base)
 }
 
-/// Reserve exactly `[base, base + span)` (a mapping a fork child inherits at
-/// the parent's address). `false` when `span` is 0, no pair is free, or the
-/// range overlaps a reserved pair.
-pub fn reserve_at(ranges: &mut [[usize; 2]], base: usize, span: usize) -> bool {
-    let Some(end) = base.checked_add(span).filter(|_| span != 0) else { return false };
-    if ranges.iter().any(|r| r[1] != 0 && r[0] < end && base < r[0].saturating_add(r[1])) {
-        return false;
-    }
-    match ranges.iter_mut().find(|r| r[1] == 0) {
-        Some(slot) => {
-            *slot = [base, span];
-            true
-        }
-        None => false,
-    }
-}
-
 /// Give back the reservation `[base, base + span)`. Only the exact pair a
 /// [`reserve`] returned is released; for anything else nothing changes and
 /// the answer is `false`.

@@ -97,6 +97,9 @@ cow-break-during-fork-canary = []
 # Host-suite canary: the clone shares a frame whose parent leaf is missing,
 # the child's word made from the mapping: `syscall-tests` fork_clone.rs.
 fork-leafless-frame-canary = []
+# Host-suite canary: a space's end leaves the leaves of its shared mappings, and
+# the sweep frees the object's frames: `syscall-tests` shared_obj.rs.
+mm-rmap-missing-canary = []
 # Host-suite canary: `aspace::destroy` leaves the space's records in the
 # object, so the next space made from it starts with them: `syscall-tests`'
 # `aspace_life` fails.

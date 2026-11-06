@@ -458,6 +458,47 @@ fn a_mapping_across_windows_is_one_range_of_two_objects() {
     clean();
 }
 
+/// A shared file mapping is placed like an anonymous one, outside the shm
+/// window, one that starts inside its cache window books from its own page, and
+/// the space that ends takes its leaves back without freeing the cache's frame
+/// under the other mapper (`pager::unmap_shared`).
+///
+/// Canary `mm-rmap-missing-canary`: the end leaves the leaves and the sweep
+/// frees the cache's frame.
+#[test]
+fn a_shared_file_mapping_outside_the_window_ends_with_its_space() {
+    let _g = serial();
+    clean();
+    let pages = azos_ipc::memobj::MAX_MEMOBJ_PAGES;
+    fill_file(0, (pages + 4) * PAGE_SIZE);
+    let (a, b) = (task(7109, 59), task(7110, 60));
+    let (fa, fb) = (open_as(&a, b'A', O_RDWR), open_as(&b, b'A', O_RDWR));
+    // Pages 2..4 of the first window, in both spaces.
+    let (va, vb) = (mmap_ok(&a, fa, 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW, SHARED), mmap_ok(&b, fb, 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW, SHARED));
+    let (shm_lo, _) = azos_sched::user_shm_window();
+    assert!(va < shm_lo && vb < shm_lo, "placed like an anonymous mapping, not in the shm window");
+    fault(&a, va + PAGE_SIZE);
+    fault(&b, vb + PAGE_SIZE);
+    let fr = frame(&a, va + PAGE_SIZE);
+    assert_eq!(frame(&b, vb + PAGE_SIZE), fr, "page 3 of the object in both spaces");
+    let obj = obj_at(&a, va);
+    assert_eq!(azos_ipc::memobj::memobj_page_phys_ref(obj, 3), Ok(Some(fr)), "the mapping starts at the object's page 2");
+    assert_eq!(&page_bytes(fr)[..4], &bytes_of(0)[3 * PAGE_SIZE..3 * PAGE_SIZE + 4]);
+
+    azos_sched::set_current_user_pt(0);
+    azos_sched::shim_end_space(a.pt);
+    azos_sched::set_current_user_pt(b.pt);
+    assert_eq!(azos_ipc::memobj::memobj_page_phys_ref(obj, 3), Ok(Some(fr)), "the cache still holds the page");
+    assert_eq!(frame(&b, vb + PAGE_SIZE), fr, "the other mapper still maps it");
+    assert_eq!(&page_bytes(fr)[..4], &bytes_of(0)[3 * PAGE_SIZE..3 * PAGE_SIZE + 4], "and it was not freed under it");
+    let spare = azos_mm::pmm::alloc_page().expect("arena").as_usize();
+    assert_ne!(spare, fr, "the cache's frame went back to the allocator");
+    let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(spare));
+    assert_eq!(munmap_as(&b, vb, 2 * PAGE_SIZE), 0);
+    drop((a, b));
+    clean();
+}
+
 #[test]
 fn mprotect_leaves_a_file_mapping_alone() {
     let _g = serial();
@@ -468,8 +509,7 @@ fn mprotect_leaves_a_file_mapping_alone() {
     for flags in [SHARED, PRIVATE] {
         let va = mmap_ok(&a, fa, 2 * PAGE_SIZE, 0, RO, flags);
         enter(&a);
-        // A shared mapping lies in the shm window, which mprotect never touches.
-        let refused = if flags == SHARED { Errno::ENOMEM } else { Errno::EINVAL }.to_syscall_ret();
+        let refused = Errno::EINVAL.to_syscall_ret();
         assert_eq!(super::sys_mprotect(va as u64, PAGE_SIZE as u64, RW), refused);
         assert_eq!(super::sys_mprotect(va as u64, 2 * PAGE_SIZE as u64, 0), refused);
         assert_eq!(munmap_as(&a, va, 2 * PAGE_SIZE), 0);

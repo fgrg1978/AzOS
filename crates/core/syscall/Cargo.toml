@@ -125,6 +125,9 @@ mmap-prot-canary = []
 # Host canaries of `handlers::fork_regions_to_child` (syscall-tests fork_clone.rs).
 fork-chunks-within-base-canary = []
 clone-invariant-silent-canary = []
+# Host canaries of `ipc_handlers` (syscall-tests typed_ipc.rs).
+shm-partial-map-kept-canary = []
+shm-release-record-kept-canary = []
 # `vdso_notify.rs` `TICK_HARTS`: eight harts' previous-interrupt times are kept,
 # whatever the kernel's CPU count (host test `tick_interval_covers_every_cpu`).
 vdso-8cpu-canary = []

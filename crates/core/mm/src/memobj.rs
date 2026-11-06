@@ -300,6 +300,9 @@ pub struct MemHolder {
     pub map_va: usize,
     /// Number of pages mapped at `map_va` (0 when `map_va == 0`).
     pub map_pages: usize,
+    /// The object's page that `map_va` is: a window of a file maps from the
+    /// page its mapping starts at, a named object from page 0.
+    pub map_off: usize,
     /// This task may have PTEs into the region that `map_va` does not name:
     /// a `SYS_MO_MAP` failed after its reference was taken, and
     /// `shm_map_user` returns `None` from a partial mapping. Set by
@@ -335,7 +338,7 @@ pub struct MemHolder {
 
 impl MemHolder {
     pub const fn empty() -> Self {
-        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, pinned: false, map_root: 0, map_write: false, map_max_write: false, ends: 0, building: false, build_write: false }
+        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, map_off: 0, pinned: false, map_root: 0, map_write: false, map_max_write: false, ends: 0, building: false, build_write: false }
     }
 
     /// Are leaves of this holder in flight, which the record does not name?
@@ -389,11 +392,18 @@ impl MemHolder {
         self.refs > 0 && self.map_va != 0
     }
 
+    /// Does the recorded mapping map page `idx` of the object?
+    #[inline]
+    fn maps_page(&self, idx: usize) -> bool {
+        self.is_mapped() && idx >= self.map_off && idx - self.map_off < self.map_pages
+    }
+
     /// Forget the recorded mapping; the references stay.
     #[inline]
     fn clear_mapping(&mut self) {
         self.map_va = 0;
         self.map_pages = 0;
+        self.map_off = 0;
         self.map_root = 0;
         self.map_write = false;
         self.map_max_write = false;
@@ -1313,12 +1323,26 @@ pub fn memobj_note_mapping_ref(
     pages: usize,
     access: MapAccess,
 ) -> Result<bool, MemObjError> {
+    memobj_note_mapping_at_ref(tid, r, root, va, 0, pages, access)
+}
+
+/// [`memobj_note_mapping_ref`] for a mapping of pages `off..off + pages` of the
+/// object, at `va`: a piece of a file mapping starts inside its cache window.
+pub fn memobj_note_mapping_at_ref(
+    tid: u32,
+    r: u32,
+    root: usize,
+    va: usize,
+    off: usize,
+    pages: usize,
+    access: MapAccess,
+) -> Result<bool, MemObjError> {
     let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     if va == 0 || pages == 0 {
         return Ok(false);
     }
-    let noted = note_mapping_locked(&mut regions[i], tid, root, va, pages, access);
+    let noted = note_mapping_locked(&mut regions[i], tid, root, va, off, pages, access);
     // The new mapping may cover an address a cached "no mapping" answers for.
     // Canary `memobj-resolve-stale-canary`: it does not move the epoch.
     regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
@@ -1366,7 +1390,7 @@ pub fn memobj_map_commit_ref(tid: u32, r: u32, root: usize, va: usize, pages: us
     if !regions[i].holders.iter().any(|h| h.refs > 0 && h.tid == tid && h.building) {
         return Ok(false);
     }
-    let noted = note_mapping_locked(&mut regions[i], tid, root, va, pages, access);
+    let noted = note_mapping_locked(&mut regions[i], tid, root, va, 0, pages, access);
     regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
     Ok(noted)
 }
@@ -1500,7 +1524,7 @@ fn inherit_commit(
         access.write = false;
         leaves.set_write(false);
     }
-    if !leaves_agree(leaves, va, pages, access.write) || !note_mapping_locked(o, child, root, va, pages, access) {
+    if !leaves_agree(leaves, va, pages, access.write) || !note_mapping_locked(o, child, root, va, 0, pages, access) {
         return Err(MemObjError::Closed);
     }
     regions.map_epoch += u64::from(!cfg!(feature = "memobj-resolve-stale-canary"));
@@ -1537,7 +1561,7 @@ impl MapAccess {
     pub const RO: MapAccess = MapAccess { write: false, max_write: false };
 }
 
-fn note_mapping_locked(region: &mut MemObj, tid: u32, root: usize, va: usize, pages: usize, access: MapAccess) -> bool {
+fn note_mapping_locked(region: &mut MemObj, tid: u32, root: usize, va: usize, off: usize, pages: usize, access: MapAccess) -> bool {
     for i in 0..MAX_MEMOBJ_HOLDERS {
         let h = &mut region.holders[i];
         if h.refs > 0 && h.tid == tid {
@@ -1546,6 +1570,7 @@ fn note_mapping_locked(region: &mut MemObj, tid: u32, root: usize, va: usize, pa
             }
             h.map_va = va;
             h.map_pages = pages;
+            h.map_off = off;
             h.map_root = root;
             h.map_write = access.write;
             h.map_max_write = access.max_write;
@@ -1835,11 +1860,11 @@ fn mapped_word_locked(region: &MemObj, i: usize, h: usize, tid: u32, va: usize) 
     if !region.active || region.attrs & ATTR_NO_KERNEL_MAP != 0 || hd.refs == 0 || hd.tid != tid || hd.map_va == 0 {
         return Err(());
     }
-    let span = hd.map_pages.min(region.page_count) * page;
+    let span = (hd.map_off + hd.map_pages).min(region.page_count) * page;
     if va < hd.map_va || va - hd.map_va >= hd.map_pages * page {
         return Err(());
     }
-    let off = va - hd.map_va;
+    let off = hd.map_off * page + (va - hd.map_va);
     if off >= span {
         return Ok(None);
     }
@@ -2721,8 +2746,8 @@ pub fn memobj_warrant_swept(resource: u32, owner: u32) {
 fn unmap_frame_in(region: &MemObj, idx: usize) -> usize {
     let page = azos_arch::PAGE_SIZE;
     let mut spaces = 0;
-    for h in region.holders.iter().filter(|h| h.is_mapped() && idx < h.map_pages) {
-        unmap_range(h.map_root, h.map_va + idx * page, 1);
+    for h in region.holders.iter().filter(|h| h.maps_page(idx)) {
+        unmap_range(h.map_root, h.map_va + (idx - h.map_off) * page, 1);
         spaces += 1;
     }
     spaces
@@ -3275,7 +3300,7 @@ fn paged_file_off(st: &PagedState, idx: usize) -> u64 {
 /// Is a writable mapping of the object reaching page `idx`? Its writes leave no
 /// record yet (no PTE dirty bit is read), so such a page is taken to be dirty.
 fn writable_mapped(region: &MemObj, idx: usize) -> bool {
-    region.holders.iter().any(|h| h.is_mapped() && h.map_write && idx < h.map_pages)
+    region.holders.iter().any(|h| h.map_write && h.maps_page(idx))
 }
 
 /// Must page `idx` be written back before its frame can go: written since the
@@ -4321,6 +4346,41 @@ mod tests {
         assert_eq!(memobj_with_word_ref(r, PAGES * page, |w| w.load(Ordering::Acquire)), Ok(None));
         assert_eq!(memobj_resolve_mapped(A, VA + PAGES * page), None);
         assert_eq!(memobj_with_mapped_word(A, VA + PAGES * page, false, |_, _, w| w.load(Ordering::Acquire)), None);
+    }
+
+    /// **A mapping that starts inside the object is found from its own page.**
+    /// A piece of a file mapping starts at the page of its cache window it
+    /// begins at: the futex key is the byte offset in the object, the pages a
+    /// reclaim unmaps are the mapped ones at their own addresses, and a page
+    /// before or after the mapping is not reached.
+    ///
+    /// **Canary (by hand).** `map_off` ignored in `mapped_word_locked`, or in
+    /// `maps_page`: red.
+    #[test]
+    fn a_mapping_that_starts_inside_the_object_is_found_from_its_own_page() {
+        let _g = setup();
+        let _h = Hooks::install();
+        const VA: usize = 0x4000_0000;
+        const ROOT: usize = 0xA000;
+        let page = azos_arch::PAGE_SIZE;
+        let cap = memobj_create_cap(A, 4, &MemSpec::anon(MemPerms::ReadWrite)).expect("create");
+        let r = cap_store::get(A, cap, CapPerms::READ).expect("a fresh capability resolves");
+        assert_eq!(memobj_note_mapping_at_ref(A, r, ROOT, VA, 2, 2, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_resolve_mapped(A, VA), Some((r, 2 * page)));
+        assert_eq!(memobj_resolve_mapped(A, VA + page + 8), Some((r, 3 * page + 8)));
+        assert_eq!(memobj_resolve_mapped(A, VA + 2 * page), None, "past the mapping");
+        assert_eq!(memobj_resolve_mapped(A, VA - page), None, "before it");
+        assert_eq!(memobj_mapping_of_ref(A, r), Ok(Some((VA, 2))));
+
+        let regions = MEMOBJS.lock();
+        let region = &regions[LAYOUT.idx(r) as usize];
+        UNMAPS.lock().unwrap().clear();
+        assert_eq!(unmap_frame_in(region, 0), 0, "page 0 is not mapped");
+        assert_eq!(unmap_frame_in(region, 1), 0, "nor page 1");
+        assert_eq!(unmap_frame_in(region, 3), 1);
+        assert_eq!(UNMAPS.lock().unwrap().as_slice(), &[(ROOT, VA + page, 1)], "page 3 is the mapping's second");
+        assert!(writable_mapped(region, 2) && writable_mapped(region, 3));
+        assert!(!writable_mapped(region, 1) && !writable_mapped(region, 0));
     }
 
     /// The source half of the fix above: the two functions that split a

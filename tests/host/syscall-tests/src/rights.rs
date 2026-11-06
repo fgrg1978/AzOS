@@ -64,6 +64,8 @@ fn ring3(tid: u32, slot: usize) -> usize {
     let phys = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     azos_mm::vmm::map(pt, BUF, phys, PagePerms::USER_RW).expect("map");
     become_task(tid, pt);
+    // A mapping goes at the break, as a native task's does.
+    azos_sched::shim_set_brk(0x10_0000);
     pt
 }
 

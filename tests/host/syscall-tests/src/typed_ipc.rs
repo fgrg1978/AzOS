@@ -89,6 +89,8 @@ fn ring3(tid: u32, slot: usize) -> usize {
     let phys = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     azos_mm::vmm::map(pt, BUF, phys, PagePerms::USER_RW).expect("map");
     become_task(tid, pt);
+    // A mapping goes at the break, as a native task's does.
+    azos_sched::shim_set_brk(0x10_0000);
     pt
 }
 
@@ -238,39 +240,33 @@ fn a_release_unmaps_a_region_with_one_shootdown_per_batch() {
     assert_eq!(sys_shm_release_typed(h), 0, "the release after the unmap");
 }
 
-/// **A released mapping gives its window addresses back.** The addresses came
-/// from one cursor for the whole board that nothing lowered: about 2,000
-/// map/release cycles of the largest region used the window up, and every
-/// later shm and MMIO map on the board was refused. Every cycle here maps at
-/// the first cycle's address, for more cycles than the window holds without
-/// reuse, and the first takes the window's base: the task starts empty.
+/// **A released mapping gives its record and its address back.** The record
+/// of every cycle goes with the release (the space holds a few records), and
+/// the range is vacant again: more cycles than the space has records, of the
+/// largest region.
 ///
-/// **Canary.** Drop the `release_user_window` call in `sys_shm_release_typed`:
-/// the second cycle maps one region higher.
+/// **Canary.** `shm-release-record-kept-canary`: the release leaves the record
+/// and its leaves, and the space runs out of records.
 #[test]
-fn a_released_mapping_gives_its_window_addresses_back() {
+fn a_released_mapping_gives_its_record_and_its_address_back() {
     let _g = serial();
     let a = fresh_tid();
     let _s = Scene::new(&[a]);
     let pt = ring3(a, SLOT_A);
+    let space = azos_sched::shim_space(pt);
 
     let pages = azos_ipc::memobj::MAX_MEMOBJ_PAGES;
     let span = pages * azos_arch::mmu::PAGE_SIZE;
-    let (lo, hi) = azos_sched::user_shm_window();
-    let cycles = (hi - lo) / span + 2;
-    let mut first = 0usize;
-    for cycle in 0..cycles {
+    for cycle in 0..2 * azos_mm::pager::MAPPINGS_PER_SPACE + 2 {
         let h = handle(sys_shm_create_typed(pages as u64, 1));
         let va = sys_shm_map_typed(h, 0);
         assert!(va > 0, "cycle {cycle}: map returned {va}");
-        if cycle == 0 {
-            first = va as usize;
-        }
-        assert_eq!(va as usize, first, "cycle {cycle}: the release did not give the addresses back");
+        let va = va as usize;
+        assert_eq!(azos_mm::pager::shim_mappings(space), 1, "cycle {cycle}: the mapping is a record");
         assert_eq!(sys_shm_release_typed(h), 0, "cycle {cycle}: release");
+        assert_eq!(azos_mm::pager::shim_mappings(space), 0, "cycle {cycle}: the release kept the record");
+        assert!(azos_mm::vmm::user_range_vacant(pt, va, va + span), "cycle {cycle}: the range is not vacant");
     }
-    assert_eq!(first, lo, "the first mapping takes the window's base");
-    assert!(azos_mm::vmm::translate_user(pt, first, false).is_none());
 }
 
 /// **574 needs `READ`; a writable region maps writable only for a capability
@@ -457,50 +453,79 @@ fn another_tasks_references_keep_the_region_live_through_a_release() {
     assert_eq!(sys_shm_map_typed(h_b, 0), errno(Errno::ECAPSTALE), "B's release revoked B's capability");
 }
 
-/// **A 574 that fails part-way keeps its reference through 535 until the task
-/// exits.** `shm_map_user` returns `None` from a partial mapping and nothing
-/// records it, so the reference 574 took is all that keeps the mapped frame
-/// from the PMM: 574 pins it, 535 gives back the task's other references (the
-/// creation reference) and keeps that one, and the exit gives it back. The
-/// failure is provoked by mapping the VA of the region's second page first; the
-/// VA the map starts at is read off a one-page map just before, whose release
-/// gives that address back to the task for the next map.
+/// **A space that ends takes its mapping of a shared object back, and the
+/// object's frames stay with its other mapper.** Two tasks map one object; the
+/// first ends as a task's space does (its records, then its tables). The
+/// second still reads what the first wrote, and the end freed the first's
+/// tables and nothing of the object: the space's sweep frees every user leaf
+/// it finds, so the leaves of the shared mapping go first (`pager::unmap_shared`).
 ///
-/// **Canary.** Skip `memobj_pin_ref` in `sys_shm_map_typed`: the release frees the
-/// region under the live page-0 PTE and the count reads `None`.
+/// **Canary.** `mm-rmap-missing-canary`: the end leaves the leaves, and the
+/// sweep frees the object's frames under the second mapper.
 #[test]
-fn a_map_that_fails_part_way_keeps_its_reference_until_exit() {
-    use azos_arch::mmu::PAGE_SIZE;
+fn a_space_that_ends_leaves_a_shared_object_to_its_other_mapper() {
+    use azos_mm::vmm::translate_user;
+    let _g = serial();
+    let (a, b) = (fresh_tid(), fresh_tid());
+    let _s = Scene::new(&[a, b]);
+    let pt_b = ring3(b, SLOT_B);
+    let pt_a = ring3(a, SLOT_A);
+    let pages = 16;
+
+    let h_a = handle(sys_shm_create_typed(pages as u64, 1));
+    let r = resource_of::<Shm>(a, h_a);
+    let va_a = sys_shm_map_typed(h_a, 0);
+    assert!(va_a > 0, "A's map returned {va_a}");
+    put(va_a as usize, b"written by A");
+    let h_b = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
+    become_task(b, pt_b);
+    let va_b = sys_shm_map_typed(h_b, 0);
+    assert!(va_b > 0, "B's map returned {va_b}");
+    let va_b = va_b as usize;
+
+    let in_use = azos_mm::shim_pages_in_use();
+    azos_sched::set_current_user_pt(0);
+    azos_sched::shim_end_space(pt_a);
+    let released = in_use - azos_mm::shim_pages_in_use();
+    assert!(released < pages, "the end of A's space freed {released} pages: the object's frames among them");
+    azos_sched::set_current_user_pt(pt_b);
+    assert!(translate_user(pt_b, va_b, true).is_some(), "B's mapping survived A's end");
+    let mut got = [0u8; 12];
+    assert!(azos_sched::copy_from_user(got.as_mut_ptr(), va_b, got.len()));
+    assert_eq!(&got, b"written by A", "B reads the frame A wrote");
+}
+
+/// **A 574 that fails part-way leaves nothing behind.** The pages already
+/// mapped go with the mapping's record, shot down, so the reference 574 took is
+/// given back with them, and the region can be mapped again.
+///
+/// **Canary.** `shm-partial-map-kept-canary` keeps the pages and pins the
+/// reference, as a map did when nothing named a partial mapping: the page
+/// stays mapped and the record stays.
+#[test]
+fn a_map_that_fails_part_way_leaves_nothing_behind() {
     use azos_ipc::cap::objref::SHM;
     use azos_mm::vmm::translate_user;
     let _g = serial();
     let a = fresh_tid();
     let _s = Scene::new(&[a]);
     let pt = ring3(a, SLOT_A);
-
-    let probe = handle(sys_shm_create_typed(1, 1));
-    let probe_va = sys_shm_map_typed(probe, 0);
-    assert!(probe_va > 0, "the probe map returned {probe_va}");
-    assert_eq!(sys_shm_release_typed(probe), 0);
-    let next = probe_va as usize;
-    let blocker = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::vmm::map(pt, next + PAGE_SIZE, blocker, PagePerms::USER_RW).expect("the blocker");
+    let space = azos_sched::shim_space(pt);
 
     let h = handle(sys_shm_create_typed(2, 1));
     let idx = SHM.idx(resource_of::<Shm>(a, h));
-    assert_eq!(sys_shm_map_typed(h, 0), errno(Errno::ENOMEM), "the second page's VA is taken");
-    assert!(translate_user(pt, next, false).is_some(), "precondition: page 0 stayed mapped");
-    assert_eq!(shm_refs(idx), Some(2), "the creation reference and the failed map's");
+    let next = azos_sched::update_user_brk(0) as usize;
+    azos_sched::process::shim_fail_shm_map_after(Some(1));
+    assert_eq!(sys_shm_map_typed(h, 0), errno(Errno::ENOMEM), "the second page could not be mapped");
+    azos_sched::process::shim_fail_shm_map_after(None);
+    assert!(translate_user(pt, next, false).is_none(), "the first page went with the map");
+    assert_eq!(azos_mm::pager::shim_mappings(space), 0, "and the record");
+    assert_eq!(shm_refs(idx), Some(1), "the failed map's reference went back");
 
-    assert_eq!(sys_shm_release_typed(h), 0, "the release");
-    assert_eq!(shm_refs(idx), Some(1), "the pinned reference outlives the release");
-    assert_eq!(sys_shm_map_typed(h, 0), errno(Errno::ECAPSTALE), "and the capability was revoked");
-
-    // The exit: the address space goes, then the references.
-    azos_mm::vmm::unmap(pt, next);
-    azos_mm::vmm::unmap(pt, next + PAGE_SIZE);
-    azos_ipc::memobj::memobj_release_all(a);
-    assert_eq!(shm_refs(idx), None, "the exit gave it back");
+    let va = sys_shm_map_typed(h, 0);
+    assert!(va > 0, "the region maps again: {va}");
+    assert_eq!(sys_shm_release_typed(h), 0);
+    assert_eq!(shm_refs(idx), None, "and goes with its last reference");
 }
 
 // ═════════════════════════════════════════════════════════════════════════

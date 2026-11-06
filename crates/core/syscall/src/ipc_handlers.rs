@@ -847,20 +847,26 @@ pub fn sys_shm_map_typed(cap_raw: u64, op: u64) -> i64 {
     }
 }
 
-/// Give back the window addresses of the calling task's mappings a MOVE
-/// removed (`memobj_moved`): the PTEs went with the transfer, the addresses are
-/// the task's to release. Called after a transfer that may have moved a
-/// MemObj capability and before the next map; free when nothing is waiting.
+/// Take the records of the calling task's mappings a MOVE or a purge removed
+/// (`memobj_moved`) out of its address space: the PTEs went with the
+/// transfer, the records are the task's to drop. Called after a transfer that
+/// may have moved a MemObj capability and before the next map, `mmap` or
+/// `munmap`; free when nothing is waiting.
 pub(crate) fn reap_moved_windows() {
     if !azos_ipc::memobj::memobj_moved_windows_pending() {
         return;
     }
+    let _mm = azos_sched::group::mm_lock();
+    let Some(space) = azos_sched::current_aspace() else { return };
+    let page = azos_arch::PAGE_SIZE;
     let tid = azos_sched::current_proc_tid();
     let mut w = [(0usize, 0usize); 8];
     loop {
         let n = azos_ipc::memobj::memobj_take_moved_windows(tid, &mut w);
         for &(va, pages) in &w[..n] {
-            let _ = azos_sched::process::release_user_window(va, pages);
+            let end = va.saturating_add(pages.saturating_mul(page));
+            let _ = azos_mm::pager::release_range(space, va, end);
+            crate::handlers::mmap_unmapped(va, end);
         }
         if n < w.len() {
             return;
@@ -881,6 +887,7 @@ pub(crate) fn map_region_ref(tid: u32, r: u32, writable: bool, max_write: bool) 
         return Errno::EINVAL.to_syscall_ret();
     }
     reap_moved_windows();
+    let _mm = azos_sched::group::mm_lock();
     match memobj::memobj_has_mapping_ref(tid, r) {
         Ok(false) => {}
         Ok(true) => return Errno::EBUSY.to_syscall_ret(),
@@ -893,8 +900,9 @@ pub(crate) fn map_region_ref(tid: u32, r: u32, writable: bool, max_write: bool) 
     map_acquired(tid, r, page_count, writable, max_write)
 }
 
-/// [`map_region_ref`] once the caller holds its reference on `r`: build the
-/// mapping and book it.
+/// [`map_region_ref`] once the caller holds its reference on `r`: place the
+/// mapping, record it, map the object's frames and book it. The address
+/// space's layout lock is held.
 fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: bool) -> i64 {
     use azos_abi::error::Errno;
     use azos_ipc::memobj::{self, MapAccess, MAX_MEMOBJ_PAGES};
@@ -918,17 +926,42 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
         let _ = memobj::memobj_release_ref(tid, r);
         return errno_for_memobj_err(e);
     }
-    let Some(va) = azos_sched::process::shm_map_user(&pages[..page_count], writable) else {
-        // A partial mapping's leaves are not named by any address this call has.
+    let Some(space) = azos_sched::current_aspace() else {
         memobj::memobj_map_abandon_ref(tid, r);
+        return Errno::EINVAL.to_syscall_ret();
+    };
+    let span = page_count * azos_arch::PAGE_SIZE;
+    let placed = crate::handlers::mmap_place(space.root(), 0, span, 0)
+        .ok()
+        .filter(|&va| azos_mm::pager::reserve_obj(space, va, va + span, writable, r).is_ok());
+    let Some(va) = placed else {
+        // No leaf was made: nothing the reference has to outlive.
+        memobj::memobj_unmap_end_ref(tid, r);
+        let _ = memobj::memobj_release_ref(tid, r);
         return Errno::ENOMEM.to_syscall_ret();
     };
+    if !azos_sched::process::shm_map_at(va, &pages[..page_count], writable) {
+        // Canary `shm-partial-map-kept-canary`: the pages done stay, named by
+        // no booking, and the reference is pinned for them.
+        if cfg!(feature = "shm-partial-map-kept-canary") {
+            memobj::memobj_map_abandon_ref(tid, r);
+            return Errno::ENOMEM.to_syscall_ret();
+        }
+        // The pages done go with the record, shot down, so the reference need
+        // not be kept for them.
+        let _ = azos_mm::pager::release_range(space, va, va + span);
+        memobj::memobj_unmap_end_ref(tid, r);
+        let _ = memobj::memobj_release_ref(tid, r);
+        return Errno::ENOMEM.to_syscall_ret();
+    }
     let access = MapAccess { write: writable, max_write: max_write && writable };
-    match memobj::memobj_map_commit_ref(tid, r, azos_sched::current_user_pt(), va, page_count, access) {
-        Ok(true) => va as i64,
+    match memobj::memobj_map_commit_ref(tid, r, space.root(), va, page_count, access) {
+        Ok(true) => {
+            crate::handlers::mmap_placed(va, va + span);
+            va as i64
+        }
         _ => {
-            unmap_user_pages(va, page_count);
-            let _ = azos_sched::process::release_user_window(va, page_count);
+            let _ = azos_mm::pager::release_range(space, va, va + span);
             memobj::memobj_map_abandon_ref(tid, r);
             Errno::EBADF.to_syscall_ret()
         }
@@ -1004,10 +1037,16 @@ pub fn sys_shm_release_typed(cap_raw: u64) -> i64 {
     })
     .flatten();
     if let Some((r, (va, pages))) = mapping {
-        unmap_user_pages(va, pages);
+        // The record goes with its leaves, shot down on every hart; then the
+        // booking's marker ends.
+        let _mm = azos_sched::group::mm_lock();
+        let end = va.saturating_add(pages.saturating_mul(azos_arch::PAGE_SIZE));
+        // Canary `shm-release-record-kept-canary`: the record and the leaves stay.
+        if let Some(space) = azos_sched::current_aspace().filter(|_| !cfg!(feature = "shm-release-record-kept-canary")) {
+            let _ = azos_mm::pager::release_range(space, va, end);
+        }
         azos_ipc::memobj::memobj_unmap_end_ref(tid, r);
-        // With its PTEs gone, the addresses go back to the task's window.
-        let _ = azos_sched::process::release_user_window(va, pages);
+        crate::handlers::mmap_unmapped(va, end);
     }
     let result = azos_ipc::cap_store::with_table(tid, |table| {
         azos_ipc::memobj::memobj_release_cap_op(tid, table, cap, class_op(ty::SHM, CLASS_CTL))

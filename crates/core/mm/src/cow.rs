@@ -195,9 +195,10 @@ fn fork_cow_walk_held(
         }
     }
     let hold = crate::pager::ForkHold::new(parent);
-    // The anonymous mappings' pages are the clone's: the walk passes them.
+    // The anonymous mappings' pages are the clone's, and a shared mapping's
+    // frames are not the child's: the walk passes them.
     let mut anon = [(0usize, 0usize); crate::pager::MAPPINGS_PER_SPACE];
-    let n = parent.map_or(0, |p| crate::pager::anon_ranges(p, &mut anon));
+    let n = parent.map_or(0, |p| crate::pager::passed_ranges(p, &mut anon));
     let pt = fork_cow_walk(parent_pt, skip_lo, skip_hi, &anon[..n], concurrent)?;
     Ok((pt, hold))
 }
