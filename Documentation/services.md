@@ -438,26 +438,32 @@ rights by asking each one `status`; `input` does the same for the input server.
 
 Source: `userspace/services/logd/src/main.rs`, `userspace/services/logd/src/store.rs`,
 `crates/drivers/sys/src/klog.rs`, `crates/drivers/sys/src/klog/wire.rs`,
-`kernel/src/boot/klog_region.rs`, `userspace/services/toolbox/src/log_view.rs`.
+`kernel/src/boot/klog_region.rs`, `crates/core/records/src/lib.rs`,
+`crates/core/rings/src/region/record.rs`, `userspace/services/toolbox/src/log_view.rs`.
 
-The sink of the structured kernel log (Kconfig `KLOG`; the ring and its protocol are in
-[observability](observability.md#kernel-log)). Its row is its whole authority: `MemObj
-klog.ring` (`READ|MAP`, so it can neither write the ring nor hand it on), the `/fat` tree
+The sink of the kernel's records (Kconfig `KLOG`): the structured kernel log and the
+decision records, rings of one region behind one envelope (the substrate and its protocol
+are in [observability](observability.md#kernel-log)). Its row is its whole authority: `MemObj
+klog.ring` (`READ|MAP`, so it can neither write the region nor hand it on), the `/fat` tree
 its files are written in, and the read-only root directory they are opened beneath. It
 serves and calls no endpoint.
 
-Every `LOGD_POLL_MS` it reads the records that arrived, drops those above
-`LOGD_MAX_LEVEL`, and appends the rest as text lines (`seq ts_us cpu L module message`,
-the message escaped so a record is one line) to the open file of a ring of
+Every `LOGD_POLL_MS` it reads the records that arrived in every ring with one reader that
+hands them out oldest first, drops kernel log lines above `LOGD_MAX_LEVEL`, and appends the
+rest as text lines (`seq ts_us cpu L module message`, the message escaped so a record is one
+line; a decision record is module `@decision`, `rule=R verdict=V subject=S n=A,B,C`) to the
+open file of a ring of
 `KLOGn.TXT`: one append and one `fsync` per period, never one per line. A file that would
 pass `LOGD_FILE_KB` is followed by the next of `LOGD_FILES_KEEP`, which is truncated, so
 the log takes at most `LOGD_FILES_KEEP x LOGD_FILE_KB` of the volume. Each file opens
 with a line `file N`, N one more than the file before it: the sequence numbers start
 again at every boot, so the serial is what orders the files. After a restart it resumes
-after the newest file's last record when the ring still holds that record byte for byte,
-and from the ring's oldest record otherwise (a new boot). A write the volume refuses
-leaves the cursor where it was, so the next period offers the same records again; a burst
-that laps the ring between two polls is written as a `records lost: N` line. It runs at
+every ring after its own last line when the kernel log's ring still holds the newest file's
+last kernel log record byte for byte, and from each ring's oldest record otherwise (a new
+boot). A write the volume refuses leaves the reader where it was, so the next period offers
+the same records again; a burst that laps a ring between two polls is written as a
+`records lost: N` line, and a record whose envelope names a stale sequence is dropped and
+written as `records dropped (stale sequence): N`. It runs at
 the tools' priority: a real-time task never does block I/O.
 
 `log` (an applet of `TOOLBOX.ELF`) reads the files back, ordered by serial, with no

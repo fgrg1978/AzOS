@@ -583,13 +583,15 @@ config KLOG
     default y
     help
       Every kernel log line (`kerr!` .. `kdebug!`, `kprintln!`) is also a
-      record `{ts, level, module, msg}` in one ring of KLOG_ENTRIES slots
-      that the kernel owns and a ring-3 task maps read-only
-      (crates/drivers/sys/src/klog.rs). The UART mirror is unchanged: the
+      record `{ts, level, module, msg}` in a ring of KLOG_ENTRIES slots of
+      the record substrate (crates/core/records: one region the kernel owns
+      and a ring-3 task maps read-only, a ring per source, the decision
+      records' beside it, one envelope; crates/drivers/sys/src/klog.rs). The UART mirror is unchanged: the
       same bytes go out the same way. A producer claims a slot with one
       atomic add, never waits and never takes a lock, and a full ring
       overwrites its oldest record, so a slow sink loses old lines and never
       delays a new one. The sink is `logd` (userspace/services/logd), which
+      reads every ring of the region with one reader, oldest first, and
       appends the records to files under its own directory grant (LOGD_*),
       and the toolbox's `log` reads them; neither reads the console.
 
@@ -601,8 +603,9 @@ config KLOG
       compile time: a line compiled out is in neither the console nor the
       ring.
 
-      Cost: 128 + 320 x KLOG_ENTRIES bytes of kernel-owned pages from the
-      page allocator for good, 128 + 320 x KLOG_EARLY_ENTRIES bytes of .bss,
+      Cost: 256 + 320 x KLOG_ENTRIES bytes of kernel-owned pages from the
+      page allocator for good (and the decision ring's, DECISION_RECORDS_DEV),
+      256 + 320 x KLOG_EARLY_ENTRIES bytes of .bss,
       and per line one 320-byte store (the line is formatted once, before
       the console lock, as it already was).
 
@@ -612,11 +615,11 @@ config KLOG_ENTRIES
     default 256
     help
       Read only with KLOG. Records the ring holds before it overwrites its
-      oldest. One memory object holds at most 64 pages (MAX_SHM_PAGES),
-      about 800 records, so 512 is the largest value allowed. A power of
-      two: the slot is index & (entries - 1), and the build refuses anything
-      else. 80 KiB at the default of 256 (one record is 320 bytes: header,
-      24 bytes of module path, 256 of message).
+      oldest. One memory object holds at most 64 pages (MAX_MEMOBJ_PAGES),
+      shared with the decision ring, so 512 is the largest value allowed. A
+      power of two: the slot is index & (entries - 1), and the build refuses
+      anything else. 80 KiB at the default of 256 (one record is 320 bytes:
+      the 32-byte envelope, 25 of module path, 256 of message).
 
       Raise it when `logd` reports lost records (a line it never saw because
       the ring lapped it between two polls: a burst of more than this many

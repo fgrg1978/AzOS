@@ -24,8 +24,9 @@ config DECISION_RECORDS_DEV
       off against on, -icount at one hart) holds. Off: every record site
       compiles out. On: a migrating wake pays about 40 instructions and six
       stores (the last is the clock stamp), the admission and denial paths
-      the same per record, and the ring costs DECISION_RECORDS_ENTRIES x 48
-      bytes of .bss. Maps to the kernel cargo feature `decisions`, a `base`
+      the same per record, and the ring costs DECISION_RECORDS_ENTRIES x 64
+      bytes (the record substrate's decision ring, crates/core/records: in
+      .bss until the boot hands it over to the region `logd` reads, KLOG). Maps to the kernel cargo feature `decisions`, a `base`
       tag: emitted unless the symbol is n, so the gate's kernels carry what
       the presets ship.
 
@@ -117,14 +118,18 @@ config DECISION_RECORDS_CONSOLE
 
 config DECISION_RECORDS_ENTRIES
     int "Explainable decision records: ring depth"
-    range 8 4096
+    range 8 1024
     default 16 if HWCLASS_EMBEDDED
     default 256 if HWCLASS_SERVER
     default 64
     help
-      Records kept; the oldest is overwritten. 48 bytes each. Raise it when
-      migrating wakes evict the boot admission records you want to read;
-      read only when DECISION_RECORDS_DEV is on.
+      Records kept; the oldest is overwritten. 64 bytes each (the record
+      envelope and a 32-byte payload). A power of two: the slot is
+      index & (entries - 1), and the build refuses anything else. At most
+      1024: the ring shares one memory object (64 pages) with the kernel
+      log's (KLOG_ENTRIES). Raise it when migrating wakes evict the boot
+      admission records you want to read; read only when
+      DECISION_RECORDS_DEV is on.
 
 config DECISION_JOURNAL_ENTRIES
     int "Explainable decision records: durable journal depth"

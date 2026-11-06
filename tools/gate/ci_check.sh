@@ -4947,12 +4947,12 @@ otae2e_qemu() {
             "$QEMU" -machine virt -nographic -bios default -kernel "$kernel" -no-reboot -smp 4 \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
-                ${netargs[@]+"${netargs[@]}"} </dev/null >"$log" 2>&1 &
+                ${OTAE2E_APPEND:+-append "$OTAE2E_APPEND"} ${netargs[@]+"${netargs[@]}"} </dev/null >"$log" 2>&1 &
         else
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kernel" -no-reboot \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
-                ${netargs[@]+"${netargs[@]}"} </dev/null >"$log" 2>&1 &
+                ${OTAE2E_APPEND:+-append "$OTAE2E_APPEND"} ${netargs[@]+"${netargs[@]}"} </dev/null >"$log" 2>&1 &
         fi
         OTAE2E_PID=$!
         sleep 1
@@ -5297,6 +5297,81 @@ ota_update_row() { # ota_update_row <riscv64|aarch64> <good|forged>
 # "slot B boot 1 did not count itself 1 and crash before confirming"; the
 # `ota_write_boot_meta` of `ota_mark_boot_good` removed -> red at the last
 # check (`boot_count=2`, A never zeroes it), both ISAs.
+# ── The record substrate, read back from logd's files ────────────────────────
+#
+# The kernel log, the decision records and (later) the actuation telemetry are
+# rings of one region (azos_records), and logd reads them all with one reader
+# that hands them out oldest first (azos_rings::region::record::Merge) into
+# KLOGn.TXT. Booted with the volume, the row stops QEMU after logd's second
+# period and reads the files back with mtools: a kernel log line and a
+# `@decision` line are there, each source's sequence numbers only grow, and
+# where the lines change source the timestamp does not go back (one reader, in
+# time order; a producer stamps its time a few instructions before it claims
+# its slot, so a line could only come late by that much, across a period). `stale` boots with `canary=record-stale` (the
+# next kernel log line is written under a stale sequence): logd must drop it
+# and say so, one `records dropped (stale sequence): 1` line.
+# OTAE2E_APPEND carries the command line (otae2e_qemu).
+records_logd_row() { # records_logd_row <riscv64|aarch64> <pass|stale>
+    local isa="$1" mode="$2" label="$1: records read back from logd"
+    [ "$mode" = stale ] && label="$isa: records logd drops a stale sequence"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local work="$CI_LOG_DIR/records-$isa-$mode" kernel disk log files n
+    rm -rf "$work"; mkdir -p "$work"
+    kernel="$work/kernel"; disk="$work/disk.img"; log="$work/boot.log"; files="$work/klog.txt"
+    if [ "$isa" = riscv64 ]; then
+        if ! kbuild "qemu"; then bad; echo "      riscv64 kernel (--features qemu) did not build"; return; fi
+        cp "$KERNEL" "$kernel"
+        rm -f $AZOS_OUT/build/disk.img
+        make_disk $AZOS_OUT/build/disk.img
+        cp $AZOS_OUT/build/disk.img "$disk"
+    else
+        if ! a64_kbuild "qemu"; then bad; echo "      aarch64 kernel (--features qemu) did not build"; return; fi
+        cp "$A64_IMG" "$kernel"
+        rm -f $AZOS_OUT/build/disk-aarch64.img
+        make_disk $AZOS_OUT/build/disk-aarch64.img
+        cp $AZOS_OUT/build/disk-aarch64.img "$disk"
+    fi
+    par_ready
+    OTAE2E_APPEND=""; [ "$mode" = stale ] && OTAE2E_APPEND="canary=record-stale"
+    if ! otae2e_qemu "$isa" "$kernel" "$disk" "$log"; then OTAE2E_APPEND=""; bad; echo "      QEMU did not start (log: $log)"; return; fi
+    OTAE2E_APPEND=""
+    if ! otae2e_wait "$log" '\[logd\] AzOS record sink' 150; then
+        otae2e_stop; bad; echo "      logd never started:"
+        grep -a "KLOG\]\|logd\|PANIC" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    # Two of logd's periods (LOGD_POLL_MS), then the volume is read cold.
+    sleep 4
+    otae2e_stop
+    : >"$files"
+    for n in 0 1 2 3 4 5 6 7 8 9 A B C D E F; do mtype -i "$disk" "::KLOG$n.TXT" >>"$files" 2>/dev/null; done
+    tr -d '\r' <"$files" >"$files.lf"
+    if otae2e_trap "$log" \
+       || ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ [EWID?]\+? [^ @]+ \[KLOG\] record region' "$files.lf" \
+       || ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @decision rule=[0-9]+ verdict=[0-9]+ ' "$files.lf" \
+       || ! awk '$5 == "logd" || $2 !~ /^[0-9]+$/ { next }
+                 { src = ($5 ~ /^@/) ? $5 : "klog"
+                   if (src in seq && $1 + 0 <= seq[src]) bad = 1
+                   seq[src] = $1 + 0
+                   if (src != prev && $2 + 0 < last) bad = 1
+                   last = $2 + 0; prev = src }
+                 END { exit bad }' "$files.lf"; then
+        bad; echo "      the files do not hold a kernel log line and a decision record in time order:"
+        grep -aE '\[KLOG\]|@decision|logd' "$files.lf" | sed -n '1,8p' | sed 's/^/        /'
+        echo "      log kept: $log (volume: $disk)"; return
+    fi
+    if [ "$mode" = stale ] && [ "$(grep -acF 'records dropped (stale sequence): 1' "$files.lf")" != 1 ]; then
+        bad; echo "      logd did not drop and count the stale record exactly once:"
+        grep -a 'records dropped\|records lost' "$files.lf" | sed -n '1,4p' | sed 's/^/        /'
+        echo "      log kept: $log (volume: $disk)"; return
+    fi
+    if [ "$mode" = pass ] && grep -aqF 'records dropped (stale sequence)' "$files.lf"; then
+        bad; echo "      a stale-sequence drop without the canary"; echo "      log kept: $log (volume: $disk)"; return
+    fi
+    ok; rm -rf "$work"
+}
+
 ota_rollback_row() { # ota_rollback_row <riscv64|aarch64>
     local isa="$1" label="$1: OTA bad update rolls back"
     printf "  %-26s" "${label}..."
@@ -9616,6 +9691,8 @@ a64_kbuild "qemu" >/dev/null
 par "aarch64: OTA forged update refused" ota_update_row aarch64 forged
 a64_kbuild "qemu" >/dev/null
 par "aarch64: OTA bad update rolls back" ota_rollback_row aarch64
+par "aarch64: records read back from logd" records_logd_row aarch64 pass
+par "aarch64: records logd drops a stale sequence" records_logd_row aarch64 stale
 a64_kbuild "qemu" >/dev/null
 par "aarch64: OTA bundle over the network, B confirmed" ota_bundle_row aarch64 good
 a64_kbuild "qemu" >/dev/null
@@ -10370,6 +10447,8 @@ kbuild "qemu"
 par "riscv64: OTA forged update refused" ota_update_row riscv64 forged
 kbuild "qemu"
 par "riscv64: OTA bad update rolls back" ota_rollback_row riscv64
+par "riscv64: records read back from logd" records_logd_row riscv64 pass
+par "riscv64: records logd drops a stale sequence" records_logd_row riscv64 stale
 kbuild "qemu"
 par "riscv64: OTA bundle over the network, B confirmed" ota_bundle_row riscv64 good
 kbuild "qemu"

@@ -39,14 +39,16 @@ alternative the rule rejected for each verdict.
 **Storage.** There are two independent paths.
 
 - **The ring** (Kconfig `DECISION_RECORDS_DEV`, kernel feature `decisions`)
-  holds `DECISION_RECORDS_ENTRIES` records; the oldest is overwritten. It is
-  lock-free so the wake path, which runs with scheduler locks held and
-  interrupts masked, can write to it: a writer claims a sequence number, clears
-  the slot's sequence word, writes the fields and publishes the sequence with
-  release ordering; a reader keeps a slot only if the sequence reads the same
-  before and after the fields. Records are numbers only, so a torn read is
-  dropped, never misread. With the feature off, `record` is empty and the ring
-  is not linked.
+  is the record substrate's decision ring ([kernel log](#kernel-log)): it
+  holds `DECISION_RECORDS_ENTRIES` records and overwrites the oldest, and
+  `logd` reads it beside the kernel log. It is lock-free so the wake path,
+  which runs with scheduler locks held and interrupts masked, can write to it:
+  a writer claims its index with one atomic add and stores the record between
+  the slot's two stamps; a reader keeps a slot only if the stamp reads the
+  same before and after the fields and the envelope names the index it asked
+  for. A record's id is its index plus one. Records are numbers only, so a
+  torn read is dropped, never misread. With the feature off, `record` is empty
+  and the ring is not linked.
 - **The durable path** (Kconfig `DECISION_REFUSALS_DURABLE`, kernel feature
   `decisions-durable`). A record whose verdict is `refuse` is also handed to a
   sink the kernel installs (`set_durable_sink`), which writes it to the flight
@@ -658,31 +660,42 @@ code and call are not in the image and its arguments are not evaluated. Not
 affected by the level: the shell's and ring-3 programs' console output, the panic
 report, and the durable records (flight recorder, `/fat/CRASH.LOG`, pstore).
 
-**Structured log** (Kconfig `KLOG`; `crates/drivers/sys/src/klog.rs`, `klog/wire.rs`). Each
-line the macros above print is also a record `{ts, level, module, msg}` in one ring of
-`KLOG_ENTRIES` slots of 320 bytes (an 8-byte stamp, the timebase tick, the sequence number,
-level, flags, CPU, a 24-byte module path and a 256-byte message), a kernel-owned memory
-object that a ring-3 task maps read-only (`MemObj klog.ring`, `READ|MAP`). The console path
-is unchanged: the line is formatted once, before the console lock, as it already was, and
-the same bytes go out the same way. A producer claims a slot with one atomic add and stores
-the record between two stamps; it never waits and takes no lock, so an interrupt handler
-that interrupts a producer gets a slot of its own. A full ring overwrites its oldest record.
-A reader keeps its own cursor and writes nothing to the region: it takes slot `c` when its
-stamp is `2c+2`, re-reads the stamp after the copy, and counts as lost what the producer
-lapped; any number of readers can read at once.
+**Record substrate** (`crates/core/records`, layout and reader `azos_rings::region::record`).
+The kernel log and the decision records are rings of one region, every record behind one
+32-byte envelope: an 8-byte stamp, the sequence number (the record's index in its ring since
+boot), the timestamp and the clock it is on, the source, the source's own kind, the payload
+length, the CPU and flags. A producer claims a slot with one atomic add on its ring's head and
+stores the record between two stamps; it never waits and takes no lock, so an interrupt
+handler that interrupts a producer gets a slot of its own, and a full ring overwrites its
+oldest record. A reader writes nothing to the region and keeps a cursor per ring: it takes
+slot `c` when its stamp is `2c+2`, re-reads the stamp after the copy, counts as lost what the
+producer lapped, and drops (and counts) a whole slot whose envelope names another sequence
+than `c`. One reader, `Merge`, takes every ring at once and hands the records out oldest
+first; a ring with a producer mid-store holds it back. The region is a kernel-owned memory
+object a ring-3 task maps read-only (`MemObj klog.ring`, `READ|MAP`); the records written
+before the page allocator exists sit in a small region in `.bss` (the kernel log's ring of
+`KLOG_EARLY_ENTRIES`, the decision ring at its full depth) until `kernel_main` creates the
+object (`kernel/src/boot/klog_region.rs`) and the handover copies them under their own
+sequence numbers, so a decision's id names the same record before and after.
 
-The first lines are printed before the page allocator exists, so until `kernel_main`
-creates the object (`kernel/src/boot/klog_region.rs`) a small ring in `.bss`
-(`KLOG_EARLY_ENTRIES`) takes the records, and the handover copies them with their own
-timestamps; a line older than that ring's depth is only on the console. A `kprint!`
+**Structured log** (Kconfig `KLOG`; `crates/drivers/sys/src/klog.rs`, `klog/wire.rs`). Each
+line the macros above print is also a record of the substrate's kernel-log ring of
+`KLOG_ENTRIES` slots of 320 bytes: the envelope (its kind is the level) and a payload of a
+24-byte module path and a 256-byte message. The console path is unchanged: the line is
+formatted once, before the console lock, as it already was, and the same bytes go out the
+same way. A line older than the early ring's depth is only on the console. A `kprint!`
 fragment (a line with no newline) is flagged and the record after it continues it; a line
 longer than the console's 256-byte pre-format buffer is flagged as cut.
 
-`logd` (`userspace/services/logd`, see [services](services.md#logd)) drains the ring into a
-ring of files, `KLOGn.TXT`, under its `/fat` grant; `LOGD_FILE_KB`, `LOGD_FILES_KEEP`,
-`LOGD_MAX_LEVEL` and `LOGD_POLL_MS` are its retention. `log [-n N] [-l LEVEL] [-m MODULE]`
-(`TOOLBOX.ELF`) prints the last lines back. This is the durable kernel log for a running
-system; the pstore and `/fat/CRASH.LOG` stay what they were, the record of a panic.
+`logd` (`userspace/services/logd`, see [services](services.md#logd)) drains every ring of the
+region with the one reader into a ring of files, `KLOGn.TXT`, under its `/fat` grant: the
+kernel log's lines as they are, a decision record as a line of module `@decision` with its
+rule, verdict, subject and numbers. `LOGD_FILE_KB`, `LOGD_FILES_KEEP`, `LOGD_MAX_LEVEL` and
+`LOGD_POLL_MS` are its retention. `log [-n N] [-l LEVEL] [-m MODULE]` (`TOOLBOX.ELF`) prints
+the last lines back. This is the durable kernel log for a running system; the pstore and
+`/fat/CRASH.LOG` stay what they were, the record of a panic, and the flight recorder below
+keeps its own queue to its own files (its records must reach the medium before an effect is
+let through, which an overwrite ring cannot promise).
 
 **Console ownership** (`console_defer.rs`). Ring 3 can own the UART with
 interrupts on. A kernel line written meanwhile waits in a bounded buffer
