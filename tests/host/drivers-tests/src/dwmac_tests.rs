@@ -439,8 +439,8 @@ mod pure {
 mod bring_up_sequence {
     use super::*;
 
-    /// **Discriminates.** A window that is not a dwmac4/5 core (the Cadence
-    /// MACB `eth.rs` was written against reads something else here) is
+    /// **Discriminates.** A window that is not a dwmac4/5 core (a Cadence
+    /// MACB, which an earlier driver was written against, reads something else here) is
     /// refused before a single register is written.
     #[test]
     fn a_foreign_core_is_refused_untouched() {

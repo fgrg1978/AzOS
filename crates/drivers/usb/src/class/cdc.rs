@@ -1163,6 +1163,9 @@ pub struct CdcNet<'q, M: Memory, C: Clock> {
     tx16: Tx16,
     /// The buffer the block under construction is in.
     tx_open: Option<usize>,
+    /// A finished block whose submit the endpoint refused: buffer and length,
+    /// retried by the next `flush` or `send` before anything else is sent.
+    tx_stuck: Option<(usize, usize)>,
     halts: Halts,
     bad_run: u32,
     submitted: bool,
@@ -1197,6 +1200,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             tx_busy: [false; BUFS],
             tx16: Tx16::new(TxParams { max_size: 0, ndp_align: 4, divisor: 4, remainder: 0, max_datagrams: 0 }),
             tx_open: None,
+            tx_stuck: None,
             halts: Halts::default(),
             bad_run: 0,
             submitted: false,
@@ -1489,6 +1493,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
         self.rx = [RxBuf { slot: RxSlot::Free, cursor: Cursor::None }; BUFS];
         self.tx_busy = [false; BUFS];
         self.tx_open = None;
+        self.tx_stuck = None;
         self.halts = Halts::default();
         self.bad_run = 0;
         self.mac = [0; 6];
@@ -1718,6 +1723,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
 
     fn send_ncm(&mut self, frame: &[u8]) -> Result<(), SendError> {
         let Some(region) = self.region else { return Err(SendError::NotReady) };
+        self.retry_stuck()?;
         if self.tx_open.is_some() && !self.tx16.can_add(frame.len()) {
             self.flush()?;
         }
@@ -1743,6 +1749,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
 
     /// Close the block under construction and queue it.
     pub fn flush(&mut self) -> Result<(), SendError> {
+        self.retry_stuck()?;
         let (Some(region), Some(i)) = (self.region, self.tx_open) else { return Ok(()) };
         let base = self.tx_off(i);
         #[cfg_attr(feature = "canary-zlp-pad", allow(unused_mut))]
@@ -1756,9 +1763,25 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             n += 1;
         }
         self.mem.to_device(region.cpu().wrapping_add(base), n);
-        self.submit_tx(i, n)
+        self.submit_block(i, n)
     }
 
+    /// Submit a finished block; a refusal keeps it (and its buffer) for the next try.
+    fn submit_block(&mut self, i: usize, n: usize) -> Result<(), SendError> {
+        let r = self.submit_tx(i, n);
+        if r.is_err() {
+            self.tx_busy[i] = true;
+            self.tx_stuck = Some((i, n));
+        }
+        r
+    }
+
+    /// Retry the block the endpoint refused, if there is one.
+    fn retry_stuck(&mut self) -> Result<(), SendError> {
+        let Some((i, n)) = self.tx_stuck else { return Ok(()) };
+        self.tx_stuck = None;
+        self.submit_block(i, n)
+    }
 }
 
 impl<M: Memory, C: Clock> super::net::NetFunction for CdcNet<'_, M, C> {

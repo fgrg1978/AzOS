@@ -99,6 +99,11 @@ snd-no-reset-canary = []
 iommu-tx-canary = []
 # net_queue_tests.rs: the NIC loses every 100th frame it is given.
 net-queue-drop-canary = []
+# net_queue.rs's own canaries: a batch's end rings nothing; a full ring is not announced.
+net-queue-no-end-ring = []
+net-queue-no-full-ring = []
+net-queue-gated-end = []
+net-queue-no-slot-reset = []
 # mmc.rs's gate canaries (never enabled on the host; known values).
 mmc-flush-canary = []
 mmc-poll-canary = []

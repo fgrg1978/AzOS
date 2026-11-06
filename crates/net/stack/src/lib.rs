@@ -30,6 +30,7 @@ pub mod dns;
 pub mod ntp;
 
 use azos_drv_net::net_queue;
+pub use net_queue::TxBatch;
 
 azos_common::ro_hook! {
     /// Where the stack's random bytes come from, installed by the kernel at boot.
@@ -150,16 +151,19 @@ pub fn nic_queue_send(ifindex: IfIndex, frame: &[u8]) -> bool {
     taken_nic(ifindex).is_some_and(|nic| net_queue::submit(nic, frame).is_ok())
 }
 
-/// Open (`true`) or close a batch on the NIC of a taken queue: the frames the
-/// taker posts in between share a doorbell, rung when it closes.
-pub fn nic_queue_batch(ifindex: IfIndex, open: bool) {
-    if let Some(nic) = taken_nic(ifindex) {
-        if open {
-            net_queue::batch_begin(nic);
-        } else {
-            net_queue::batch_end(nic);
-        }
-    }
+/// Open a batch on the NIC of a taken queue and answer its number: the frames
+/// the taker posts until [`nic_queue_batch_end`] share a doorbell.
+pub fn nic_queue_batch_begin(ifindex: IfIndex) -> Option<usize> {
+    let nic = taken_nic(ifindex)?;
+    net_queue::batch_begin(nic);
+    Some(nic)
+}
+
+/// Close the batch [`nic_queue_batch_begin`] opened on NIC `nic`, by number:
+/// the queue may have gone back to the stack meanwhile (the taker's receive
+/// ring failed), and the batch must not stay open on the stack's NIC.
+pub fn nic_queue_batch_end(nic: usize) {
+    net_queue::batch_end(nic);
 }
 
 /// Announce what was posted on the NIC of a taken queue now: a frame that
@@ -331,7 +335,7 @@ fn net_poll_pass() -> bool {
     // The transmit rings' budget (Kconfig NET_TX_TIMEOUT_MS) is looked at
     // on every pass: a send alone looks too seldom (`TxWatch`).
     tcp::set_tx_watch_due(net_queue::reap_tx());
-    net_tx_batch_begin();
+    let batch = net_tx_batch_begin();
     for ifindex in 1..=MAX_IFS as IfIndex {
         let Some(link) = ip::iface_get(ifindex).filter(|i| i.attached()) else { continue };
         let (mac, addr, nic) = (link.mac, link.ip, link.nic as usize);
@@ -399,7 +403,7 @@ fn net_poll_pass() -> bool {
     if tcp::TCP_DELACK_PASS_FLUSH {
         tcp::flush_held_acks(false);
     }
-    net_tx_batch_end();
+    net_tx_batch_end(batch);
     budget_hit
 }
 
@@ -408,14 +412,15 @@ fn net_poll_pass() -> bool {
 /// frames wait). Never hold one across a block or a yield: close it first,
 /// or other tasks' frames wait with it. Nests.
 #[inline]
-pub fn net_tx_batch_begin() {
-    net_queue::batch_begin_all();
+pub fn net_tx_batch_begin() -> TxBatch {
+    net_queue::batch_begin_all()
 }
 
-/// Close the batch [`net_tx_batch_begin`] opened; announces its frames.
+/// Close the batch [`net_tx_batch_begin`] opened, on the NICs it opened it on;
+/// announces its frames.
 #[inline]
-pub fn net_tx_batch_end() {
-    net_queue::batch_end_all();
+pub fn net_tx_batch_end(batch: TxBatch) {
+    net_queue::batch_end_all(batch);
 }
 
 /// Send an ICMP ping to `dst_ip`, from the address of the interface its route

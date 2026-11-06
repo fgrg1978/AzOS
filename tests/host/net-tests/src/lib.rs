@@ -369,10 +369,12 @@ pub fn net_raw_send(frame: &[u8]) -> i32 {
 /// `crate::net_tx_batch_begin`/`_end` as `tcp.rs` sees them: the depth of
 /// open TX batches, so a test can check none is held across a wait.
 pub static TX_BATCH_DEPTH: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-pub fn net_tx_batch_begin() {
+pub struct TxBatch;
+pub fn net_tx_batch_begin() -> TxBatch {
     TX_BATCH_DEPTH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    TxBatch
 }
-pub fn net_tx_batch_end() {
+pub fn net_tx_batch_end(_: TxBatch) {
     TX_BATCH_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 }
 

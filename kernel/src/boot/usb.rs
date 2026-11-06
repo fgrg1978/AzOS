@@ -283,7 +283,7 @@ mod host {
     #[cfg(feature = "usb-storage")]
     static DISK: azos_sync::SpinLock<Option<&'static Disk>> = azos_sync::SpinLock::new(None);
     /// The USB network functions, once the scheduler exists: leaked, because
-    /// the device table holds one as a `&'static dyn NetDevice`. A CDC-ECM/NCM
+    /// the device table holds one as a `&'static dyn NetQueue`. A CDC-ECM/NCM
     /// function, and an SMSC LAN95xx one (the Raspberry Pi 3 B's Ethernet).
     #[cfg(feature = "usb-cdc")]
     type Nic = UsbNic<CdcNet<'static, KMem, KClock>>;

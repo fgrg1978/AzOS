@@ -345,6 +345,23 @@ fn tx_timeout_scenario<W: Wire>(nic: &'static Nic<W, N, N>, mem: &'static Mem<N,
     assert_eq!(r, vec![(Class::Net, W::NAME, Action::Reset), (Class::Net, W::NAME, Action::Latched)]);
 }
 
+/// **Discriminates.** A doorbell that arrives while the controller restarts
+/// writes nothing: frames posted inside a batch, then the reset quiesces the
+/// paths, then another hart's batch end rings. The stale tail must not reach
+/// the freshly started ring (the controller would fetch zeroed descriptors and
+/// the ring would be declared wedged again). Canary: drop the `ready` check
+/// from `Nic::ring` and the tail register moves.
+#[test]
+fn e1000e_a_ring_during_the_restart_writes_no_tail() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<E1000eWire, N, N> = Nic::new(&MEM);
+    let rig = bring_up(&NIC, &MEM, None, E1000eWire::IRQ);
+    assert_eq!(NIC.post(&[0u8; 60]), Ok(60));
+    NIC.quiesce_paths();
+    NIC.ring();
+    assert_eq!(rig.regs.get(E_TDT), 0, "the tail was written while the controller restarts");
+}
+
 #[test]
 fn e1000e_wedged_transmit_ring_is_reset_once_then_latched() {
     static MEM: Mem<N, N> = Mem::new();

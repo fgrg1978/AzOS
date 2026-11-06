@@ -366,9 +366,7 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
             _ => return Errno::ENOENT.to_syscall_ret(),
         }
     };
-    if !cfg!(feature = "nicq-no-batch-canary") {
-        azos_net::nic_queue_batch(ifindex, true);
-    }
+    let batch = if cfg!(feature = "nicq-no-batch-canary") { None } else { azos_net::nic_queue_batch_begin(ifindex) };
     let mut sent = 0i64;
     let mut wake_producer = None;
     let mut gone = false;
@@ -411,8 +409,8 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
             break;
         }
     }
-    if !cfg!(feature = "nicq-no-batch-canary") {
-        azos_net::nic_queue_batch(ifindex, false);
+    if let Some(nic) = batch.filter(|_| !cfg!(feature = "nicq-gated-close-canary") || taken::taken(ifindex)) {
+        azos_net::nic_queue_batch_end(nic);
     }
     let rx_ring = {
         let mut t = ATTACHED.lock();

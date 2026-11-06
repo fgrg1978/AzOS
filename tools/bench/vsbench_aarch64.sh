@@ -346,7 +346,8 @@ fi
 # says why): 4 MiB each way to tools/bench/vsbench_tcp_peer.py on the host over
 # QEMU user networking, `-icount shift=0,sleep=off`, `-smp $VSBENCH_TCP_SMP`.
 # It boots the PRODUCT aarch64 kernel (no `bench-minimal`: AzOS's TCP needs its
-# `net-poll` task) with a virtio-net NIC and a `filter-dump` pcap for ACKs per
+# `net-poll` task; and its `net` section too, whose `nic-egress` lane is the one that
+# reaches a driver) with a virtio-net NIC and a `filter-dump` pcap for ACKs per
 # segment, and the Linux initramfs with `ip=` on the same QEMU line. Skipped by
 # `VSBENCH_TCP=0` and by a `VSBENCH_LANES` without `tcp`. The host side runs
 # beside the guest, so these lanes are not bit-exact.
@@ -400,12 +401,12 @@ if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBE
     if [ -n "$TCP_PORT" ]; then
         T_DISK="$WORK/disk-aarch64-tcp.img"
         cp "$AZOS_OUT/build/disk-aarch64-vsbench.img" "$T_DISK"
-        printf 'tcp\n' >"$WORK/lanes-tcp.txt"; printf '%s\n' "$TCP_PORT" >"$WORK/tcp-azos.txt"
+        printf 'net,tcp\n' >"$WORK/lanes-tcp.txt"; printf '%s\n' "$TCP_PORT" >"$WORK/tcp-azos.txt"
         mcopy -o -i "$T_DISK" "$WORK/lanes-tcp.txt" ::VSBLANES.TXT \
             && mcopy -o -i "$T_DISK" "$WORK/tcp-azos.txt" ::VSBTCP.TXT || die "could not prepare $T_DISK"
         "$QEMU_AARCH64" -M virt,gic-version=3 -cpu max,pauth=on -smp "$VSBENCH_TCP_SMP" $TCP_ICOUNT_ARGS -nographic \
             $(tcp_net_args "$WORK/tcp-azos.pcap") \
-            -kernel "$KP_IMG" -global virtio-mmio.force-legacy=false \
+            -kernel "$KP_IMG" ${VSBENCH_TCP_AZOS_APPEND:+-append "$VSBENCH_TCP_AZOS_APPEND"} -global virtio-mmio.force-legacy=false \
             -drive "file=$T_DISK,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0 >"$KT_LOG" 2>&1 &
         T_PID=$!
         tcp_wait "$T_PID" "$KT_LOG" '\[VSBENCH\] side=azos done' "${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}"
@@ -421,7 +422,7 @@ if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBE
                 $(tcp_net_args "$WORK/tcp-linux.pcap") \
                 -kernel "$L_IMG" -initrd "$WORK/initramfs-aarch64.cpio" -global virtio-mmio.force-legacy=false \
                 -drive "file=$LT_DISK,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0 \
-                -append "rdinit=/init console=ttyAMA0 $TCP_LINUX_IP VSBENCH_LANES=tcp VSBENCH_TCP_PORT=$TCP_PORT" >"$LT_LOG" 2>&1 &
+                -append "rdinit=/init console=ttyAMA0 $TCP_LINUX_IP VSBENCH_LANES=net,tcp VSBENCH_TCP_PORT=$TCP_PORT" >"$LT_LOG" 2>&1 &
             LT_PID=$!
             tcp_wait "$LT_PID" "$LT_LOG" '\[VSBENCH\] side=linux done|Attempted to kill init' "${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}"
             kill -9 "$LT_PID" 2>/dev/null; wait "$LT_PID" 2>/dev/null

@@ -3,11 +3,20 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """The vsbench network lanes against their recorded baseline.
 
-vsbench's UDP lane (`udp-roundtrip`, section `net`) and its two TCP bulk lanes
-(`tcp-bulk-tx`, `tcp-bulk-rx`, section `tcp`) are booted under
-`-smp 1 -icount shift=0,sleep=off`, where a lane's ns/op is an instruction
-count: deterministic per binary, blind to host load. A change to the NIC path
-may not make them dearer. The lanes of an ISA are `LANES_BY_ISA`. `check` fails a lane that is missing from the log or that costs more than the
+`nic-egress` (section `net`) is the lane that crosses the NIC queue pair: a
+datagram per send through the stack to the driver (`udp-roundtrip` is loopback
+and never reaches one). With the two TCP bulk lanes (`tcp-bulk-tx`,
+`tcp-bulk-rx`, section `tcp`) it is booted under `-smp 1 -icount
+shift=0,sleep=off`, where a lane's ns/op is an instruction count. A change to
+the NIC path may not make them dearer. `nic-egress` is deterministic per
+binary, so it has the tight tolerance; the TCP lanes run against a host peer
+beside the guest and are not bit-exact, so their tolerance is wide
+(`TOLERANCE_PERMILLE`).
+
+The baseline is recorded from the tree before the queue pair (main at
+d316a8009, the bundle ~/azos-backup/main-2026-11-06-b68.bundle), at the start of
+the test phase; until then a lane without a baseline is skipped. A baseline
+recorded after the change would make whatever the change costs the reference. `check` fails a lane that is missing from the log or that costs more than the
 baseline by `tolerance_permille`, and skips (exit 0, "SKIP") a lane the
 baseline does not hold yet: recording one needs a QEMU run; `record` writes the baseline from a run of the tree that
 is to be the reference (run it on main before the change lands).
@@ -22,7 +31,8 @@ import os
 import re
 import sys
 
-LANES = ("udp-roundtrip", "tcp-bulk-tx", "tcp-bulk-rx")
+LANES = ("nic-egress", "tcp-bulk-tx", "tcp-bulk-rx")
+TOLERANCE_PERMILLE = {"nic-egress": 30, "tcp-bulk-tx": 150, "tcp-bulk-rx": 150}
 # riscv64 and aarch64 run the TCP pass (a host peer, a pcap) beside the UDP lane;
 # x86_64's microvm line has no NIC at all (the x86 PC phase).
 LANES_BY_ISA = {"rv": LANES, "arm": LANES}
@@ -43,17 +53,14 @@ def read_logs(paths):
 
 
 def read_baseline():
-    tol, rows = 30, {}
-    if not os.path.exists(BASELINE):
-        return tol, rows
-    for line in open(BASELINE):
-        line = line.rstrip("\n")
-        if line.startswith("# tolerance_permille"):
-            tol = int(line.split()[2])
-        elif line and not line.startswith("#"):
-            isa, lane, ns = line.split("\t")
-            rows[(isa, lane)] = int(ns)
-    return tol, rows
+    rows = {}
+    if os.path.exists(BASELINE):
+        for line in open(BASELINE):
+            line = line.rstrip("\n")
+            if line and not line.startswith("#"):
+                isa, lane, ns = line.split("\t")
+                rows[(isa, lane)] = int(ns)
+    return rows
 
 
 def main(argv):
@@ -70,12 +77,12 @@ def main(argv):
     if missing:
         print(f"net_lane_gate: no azos value for {', '.join(missing)} in {' '.join(logs)}", file=sys.stderr)
         return 1
-    tol, rows = read_baseline()
+    rows = read_baseline()
     if mode == "record":
         rows.update({(isa, l): seen["azos"][l] for l in lanes})
         with open(BASELINE, "w") as f:
             f.write("# vsbench network lanes, ns/op = instructions under -icount shift=0 (tools/bench/net_lane_gate.py)\n")
-            f.write(f"# tolerance_permille {tol}\n")
+            f.write("# Recorded from main d316a8009 (~/azos-backup/main-2026-11-06-b68.bundle), before the queue pair.\n")
             for (i, l), ns in sorted(rows.items()):
                 f.write(f"{i}\t{l}\t{ns}\n")
         return 0
@@ -86,8 +93,8 @@ def main(argv):
         tail = f"  linux {lx}" if lx else ""
         if base is None:
             print(f"net_lane_gate: SKIP {isa} {lane}: {now}, no baseline recorded{tail}")
-        elif now * 1000 > base * (1000 + tol):
-            print(f"net_lane_gate: {isa} {lane}: {now} against {base} (over by {(now - base) * 1000 // base} per mille, tolerance {tol}){tail}", file=sys.stderr)
+        elif now * 1000 > base * (1000 + TOLERANCE_PERMILLE[lane]):
+            print(f"net_lane_gate: {isa} {lane}: {now} against {base} (over by {(now - base) * 1000 // base} per mille, tolerance {TOLERANCE_PERMILLE[lane]}){tail}", file=sys.stderr)
             bad = 1
         else:
             print(f"net_lane_gate: {isa} {lane}: {now} against {base}{tail}")

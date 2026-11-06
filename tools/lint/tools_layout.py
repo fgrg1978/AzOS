@@ -86,7 +86,7 @@ ROLES = {
         "aarch64_fp_free_check.sh", "advisories.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
         "arch_layout_lint.py", "boot_seq_lint.baseline", "boot_seq_lint.py",
         "check_livepatch_layout.py", "check_make_help.sh", "check_neverallow.py", "check_presets.py",
-        "mmio_accessors.py", "mmio_accessors.tsv",
+        "mmio_accessors.py", "mmio_accessors.tsv", "net_batch_bound_check.py",
         "chip_source_check.py", "claims_check.sh", "doc_lint.py", "elf_page_perms.py", "extension_lint.py", "kconfig_lint.py",
         "host_paths_lint.py", "lx_license_lint.py", "out_dir_lint.py", "req_trace.py", "size_budget.py", "size_budget.tsv",
         "spdx_headers.py", "stack_chain.py", "stack_frames.py", "stack_scrub_check.py", "tcb_check.sh", "third_party_versions.py", "tools_layout.py",
@@ -104,7 +104,7 @@ ROLES = {
         "seed_provision.py", "sigalg.py", "sign_ota.py", "test_sign_ota_epoch.py",
     ],
     "bench": [
-        "lat_linux/", "limits_cost.py", "linux_seccomp_launch/",
+        "lat_linux/", "limits_cost.py", "linux_seccomp_launch/", "net_lane_baseline.tsv", "net_lane_gate.py", "net_lane_gate_selftest.py",
         "vsbench_aarch64.sh", "vsbench_compare.sh", "vsbench_cost.sh", "vsbench_linux.conf",
         "vsbench_tcp_pcap.py", "vsbench_tcp_peer.py", "vsbench_x86_64.sh",
     ],

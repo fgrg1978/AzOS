@@ -12122,6 +12122,11 @@ host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-ca
 # fail. The kick of a taken queue shares one doorbell and announces a stamped
 # frame at once; each canary takes one of the two away and the test, alone,
 # must go red.
+host_job host_canary_row "net queue: unplugged NIC batch canary" drivers-tests net-queue-gated-end a_pass_closes_the_batches_it_opened_on_a_nic_that_was_unplugged_meanwhile
+host_job host_canary_row "net queue: replugged NIC canary" drivers-tests net-queue-no-slot-reset a_replugged_usb_nic_does_not_inherit_the_batch_of_the_one_before
+host_job host_canary_row "net queue: batch end canary" drivers-tests net-queue-no-end-ring every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells
+host_job host_canary_row "net queue: full ring canary" drivers-tests net-queue-no-full-ring a_full_ring_is_announced_and_the_refused_frame_goes_in_afterwards
+host_job host_canary_row "nicq: kick close canary" syscall-tests nicq-gated-close-canary a_kick_closes_its_batch_when_the_queue_goes_back_to_the_stack_meanwhile
 host_job host_canary_row "net queue: NIC loss canary" drivers-tests net-queue-drop-canary every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells
 host_job host_canary_row "nicq: kick batch canary" syscall-tests nicq-no-batch-canary a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once
 host_job host_canary_row "nicq: stamp flush canary" syscall-tests nicq-no-stamp-flush-canary a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once
@@ -12133,6 +12138,15 @@ net_lane_selftest_row() { # <label>
     if python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate_selftest.py" >/dev/null 2>&1; then ok; else bad; fi
 }
 host_job net_lane_selftest_row "net queue: lane gate self-test"
+# NET_TX_BATCH_MAX's default fits the smallest TX ring of the NICs in the build
+# on every preset and on each preset switched to the server class with the
+# Intel NICs (tools/lint/net_batch_bound_check.py); the old class defaults fail it.
+net_batch_bound_row() { # <label>
+    ci_tier_skips "$1" && return 0
+    printf "  %-26s" "${1}..."
+    if out="$(python3 "${REPO_ROOT}/tools/lint/net_batch_bound_check.py" 2>&1)"; then ok; else bad; echo "$out" | sed -n '1,4p' | sed 's/^/      /'; fi
+}
+host_job net_batch_bound_row "net queue: batch bound fits every ring"
 # The port sources of the server runtime (crates/core/ipc/src/{ep_queue,port,endpoint}.rs,
 # crates/core/syscall/src/ipc_handlers.rs, userspace/lib/srv): each canary puts one hole
 # back and the named test, alone, must go red.
@@ -24917,37 +24931,53 @@ PYEOF
     par -s "bench: vsbench x86_64" vsbench_x86_row   # one QEMU at a time, two kernels
 
     # The NIC queue pair's lanes (Kconfig NET_*, crates/drivers/net/src/net_queue.rs):
-    # vsbench's UDP round trip and its two TCP bulk lanes, booted under -icount
-    # (where ns/op is an instruction count), may not cost more than the baseline
-    # recorded from the tree before the queue pair (tools/bench/net_lane_baseline.tsv,
-    # `tools/bench/net_lane_gate.py record`); the Linux column of the riscv64 run
-    # prints beside them. riscv64 runs the net and tcp sections through
-    # vsbench_compare.sh, aarch64 through vsbench_aarch64.sh (its TCP pass boots the
-    # product kernel and the Linux initramfs against the host peer); x86_64's microvm
-    # line has no NIC, so it has no row (the x86 PC phase). A lane the baseline does
-    # not hold yet is skipped and printed as SKIP: recording one needs a QEMU run
-    # (`tools/bench/net_lane_gate.py record`), which waits for the test phase.
-    net_lane_row() { # net_lane_row <rv|arm>
-        local isa="$1" work="$AZOS_OUT/build/net-lane-$1"
-        printf "  %-26s" "net queue: vsbench lanes ($isa)..."
+    # the vsbench lanes that reach a driver, `nic-egress` and the two TCP bulk lanes
+    # (`udp-roundtrip` is loopback), measured in the pass that has a NIC and booted
+    # under -icount (where ns/op is an instruction count), may not cost more than the
+    # baseline in tools/bench/net_lane_baseline.tsv (`tools/bench/net_lane_gate.py`);
+    # the Linux column prints beside them. The baseline is recorded from the tree
+    # before the queue pair, main at d316a8009 (the bundle
+    # ~/azos-backup/main-2026-11-06-b68.bundle), at the start of the test phase:
+    # recording needs QEMU, which waits for that phase, so until then a lane the
+    # baseline does not hold is skipped and printed as SKIP. riscv64 runs the net and
+    # tcp sections through vsbench_compare.sh, aarch64 through vsbench_aarch64.sh;
+    # x86_64's microvm line has no NIC, so it has no row (the x86 PC phase). The
+    # canary row boots the NIC pass with `canary=net-kick-per-frame` and the
+    # `nic-egress` check must then fail (it skips with the rest while there is no
+    # baseline).
+    net_lane_row() { # net_lane_row <rv|arm> <pass|canary>
+        local isa="$1" want="$2" work="$AZOS_OUT/build/net-lane-$1-$2" rc=0 label="net queue: vsbench lanes ($1)"
+        [ "$want" = canary ] && label="net queue: lane gate canary ($1)"
+        printf "  %-26s" "$label..."
         rm -rf "$work"
+        local app=""; [ "$want" = canary ] && app="canary=net-kick-per-frame"
         if [ "$isa" = rv ]; then
             KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net,tcp VSBENCH_WORK="$work" \
-                bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh" >"$work.out" 2>&1 \
-                && python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check rv "$work"/*.log >>"$work.out" 2>&1
+                VSBENCH_TCP_AZOS_APPEND="$app" bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh" >"$work.out" 2>&1 \
+                || rc=1
+            python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check rv "$work"/*.log >>"$work.out" 2>&1 || rc=$((rc | 2))
         else
-            QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net,tcp VSBENCH_AARCH64_WORK="$work" \
+            QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net,tcp VSBENCH_AARCH64_WORK="$work" VSBENCH_TCP_AZOS_APPEND="$app" \
                 bash "${REPO_ROOT}/tools/bench/vsbench_aarch64.sh" >"$work.out" 2>&1 \
-                && python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check arm "$work/aarch64.log" "$work/azos-aarch64-product-tcp.log" >>"$work.out" 2>&1
+                || rc=1
+            python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check arm "$work/aarch64.log" "$work/azos-aarch64-product-tcp.log" >>"$work.out" 2>&1 || rc=$((rc | 2))
         fi
-        if [ $? -eq 0 ]; then
+        local skipped=0
+        grep -aq 'net_lane_gate: SKIP .* nic-egress' "$work.out" && skipped=1
+        if [ "$want" = pass ] && [ "$rc" -eq 0 ]; then
             ok; grep -a 'net_lane_gate:' "$work.out" | sed 's/^/      /'
+        elif [ "$want" = canary ] && [ "$rc" -eq 0 ] && [ "$skipped" -eq 1 ]; then
+            ok; echo "      (skipped with the baseline: nothing to compare yet)"
+        elif [ "$want" = canary ] && [ "$rc" -eq 2 ] && grep -aq 'net_lane_gate: .* nic-egress: .*over by' "$work.out"; then
+            ok
         else
             bad; grep -a 'net_lane_gate:\|^vsbench' "$work.out" | sed -n '1,8p' | sed 's/^/      /'; echo "      logs in $work"
         fi
     }
-    par -s "net queue: vsbench lanes (rv)" net_lane_row rv
-    par -s "net queue: vsbench lanes (arm)" net_lane_row arm
+    par -s "net queue: vsbench lanes (rv)" net_lane_row rv pass
+    par -s "net queue: vsbench lanes (arm)" net_lane_row arm pass
+    par -s "net queue: lane gate canary (rv)" net_lane_row rv canary
+    par -s "net queue: lane gate canary (arm)" net_lane_row arm canary
 
     # Besides the round trip, the script requires both ends to report
     # `opts wscale=1/1 sack=1 ts=1 ecn=1`: this is the only boot where both SYNs come

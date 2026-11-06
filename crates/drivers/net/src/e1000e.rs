@@ -35,7 +35,7 @@
 //! The receive and transmit sides have a lock each, so a frame the stack
 //! answers from inside the receive path can be sent without waiting for the
 //! receive lock (`recv` copies out and drops nothing it holds across the
-//! caller: the default `recv_batch` calls it once per frame).
+//! caller: `reap_rx` takes it once per frame).
 //!
 //! # Descriptor formats (Kconfig `E1000E_EXT_DESC`)
 //!

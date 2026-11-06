@@ -183,7 +183,7 @@ pub fn stamp_now() -> u64 {
 }
 
 /// The receive pass's turn on `ifindex`: when its queue is taken, drain up to
-/// `budget` frames through `recv` (the NIC's `recv_batch`: at most `max`
+/// `budget` frames through `recv` (the NIC's `reap_rx`: at most `max`
 /// frames handed to the callback, the count returned) into the sink, each
 /// with its stamp, and return how many; `None` when the stack drains the
 /// interface itself. A frame of a taken queue never reaches the stack: not

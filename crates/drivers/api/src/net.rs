@@ -100,6 +100,13 @@ impl TxDoorbell {
         self.pending.store(0, Ordering::Release);
     }
 
+    /// Forget every open batch and unannounced frame: the queue pair behind
+    /// this doorbell is gone or replaced.
+    pub fn reset(&self) {
+        self.depth.store(0, Ordering::Release);
+        self.pending.store(0, Ordering::Release);
+    }
+
     /// Is a batch open?
     pub fn batching(&self) -> bool {
         self.depth.load(Ordering::Acquire) != 0 && !self.every_frame.load(Ordering::Relaxed)

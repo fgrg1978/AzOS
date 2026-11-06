@@ -126,6 +126,11 @@ pub fn register_usb(dev: &'static dyn NetQueue) -> Option<usize> {
     }
     let nic = NIC_BACKEND.iter().position(|b| b.load(Ordering::Acquire) == BACKEND_NONE)?;
     *slot = Some(dev);
+    // The number may have been another function's: its open batches are not
+    // this one's.
+    if !cfg!(feature = "net-queue-no-slot-reset") {
+        DOORBELL[nic].reset();
+    }
     NIC_BACKEND[nic].store(BACKEND_USB, Ordering::Release);
     Some(nic)
 }
@@ -134,8 +139,12 @@ pub fn register_usb(dev: &'static dyn NetQueue) -> Option<usize> {
 /// number stops naming anything.
 pub fn unregister_usb() {
     let mut slot = USB_NIC.lock();
-    for b in NIC_BACKEND.iter() {
-        let _ = b.compare_exchange(BACKEND_USB, BACKEND_NONE, Ordering::AcqRel, Ordering::Acquire);
+    for (b, db) in NIC_BACKEND.iter().zip(DOORBELL.iter()) {
+        if b.compare_exchange(BACKEND_USB, BACKEND_NONE, Ordering::AcqRel, Ordering::Acquire).is_ok()
+            && !cfg!(feature = "net-queue-no-slot-reset")
+        {
+            db.reset();
+        }
     }
     *slot = None;
 }
@@ -239,7 +248,7 @@ pub fn submit(nic: usize, frame: &[u8]) -> Result<usize, NetError> {
     if let Some(db) = DOORBELL.get(nic) {
         match r {
             Ok(_) if db.posted(TX_BATCH_MAX) => ring(nic),
-            Err(NetError::QueueFull) => {
+            Err(NetError::QueueFull) if !cfg!(feature = "net-queue-no-full-ring") => {
                 db.rang();
                 ring(nic);
             }
@@ -280,39 +289,56 @@ pub fn batch_begin(nic: usize) {
 pub fn batch_end(nic: usize) {
     if let Some(db) = DOORBELL.get(nic) {
         db.end();
-        ring(nic);
-    }
-}
-
-/// [`batch_begin`] on every NIC that came up: the stack's receive pass and its
-/// bulk senders answer on whichever interface a frame names.
-#[inline]
-pub fn batch_begin_all() {
-    for nic in 0..MAX_NICS {
-        if backend(nic) != BACKEND_NONE {
-            batch_begin(nic);
+        if !cfg!(feature = "net-queue-no-end-ring") {
+            ring(nic);
         }
     }
 }
 
-/// [`batch_end`] on every NIC that came up.
+/// The NICs a [`batch_begin_all`] opened a batch on.
+#[must_use = "the batch stays open until batch_end_all closes it"]
+pub struct TxBatch(u32);
+
+/// [`batch_begin`] on every NIC that came up: the stack's receive pass and its
+/// bulk senders answer on whichever interface a frame names.
 #[inline]
-pub fn batch_end_all() {
+pub fn batch_begin_all() -> TxBatch {
+    let mut opened = 0;
     for nic in 0..MAX_NICS {
         if backend(nic) != BACKEND_NONE {
+            batch_begin(nic);
+            opened |= 1 << nic;
+        }
+    }
+    TxBatch(opened)
+}
+
+/// [`batch_end`] on exactly the NICs `batch` opened, whatever the table says
+/// now: a USB NIC unplugged meanwhile must not keep a batch open.
+#[inline]
+pub fn batch_end_all(batch: TxBatch) {
+    for nic in 0..MAX_NICS {
+        if batch.0 & (1 << nic) != 0 && (!cfg!(feature = "net-queue-gated-end") || backend(nic) != BACKEND_NONE) {
             batch_end(nic);
         }
     }
 }
 
+/// Is a batch open on NIC number `nic`? (host tests)
+#[cfg(test)]
+pub(crate) fn batch_open(nic: usize) -> bool {
+    DOORBELL.get(nic).is_some_and(|db| db.batching())
+}
+
 /// Hand up to `max` received frames of NIC `nic` to `f` (`NetQueue::reap_rx`):
-/// by reference on virtio-net, one copy each where the driver cannot lend its buffers. 0 when there
-/// is no such NIC or nothing is queued. Outside a batch the buffers it
-/// re-posted are announced before it returns.
+/// by reference where the driver can lend its buffers (virtio-net, the
+/// DesignWare MAC), one copy each where it cannot. 0 when there is no such NIC
+/// or nothing is queued. Outside a batch the buffers it re-posted, a repaired
+/// descriptor included, are announced before it returns.
 #[inline]
 pub fn reap_rx(nic: usize, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
     let n = on_nic!(nic, d => d.reap_rx(max, f), else 0);
-    if n != 0 && DOORBELL.get(nic).is_some_and(|db| !db.batching()) {
+    if DOORBELL.get(nic).is_some_and(|db| !db.batching()) {
         ring(nic);
     }
     n
@@ -405,8 +431,8 @@ pub fn pci_nic_ready() -> bool {
 /// Whether the receive path is interrupt-driven: every NIC of the table
 /// raises an interrupt that wakes the poller (virtio-net over MSI or its
 /// MMIO line, the Synopsys MAC over its line, the Intel NIC over MSI), so the
-/// poller need not run on a timer. One polled NIC (the Cadence board
-/// Ethernet, or any of the others without a route) makes the poller run on
+/// poller need not run on a timer. One polled NIC (a USB one,
+/// or any of the others without a route) makes the poller run on
 /// its timer. `false` with no NIC.
 pub fn irq_driven() -> bool {
     let mut any = false;

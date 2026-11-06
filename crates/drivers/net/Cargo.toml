@@ -7,6 +7,13 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
+# net_queue.rs canaries (host, tests/host/drivers-tests): a batch's end does not
+# ring the doorbell; a full ring is not announced.
+net-queue-no-end-ring = []
+net-queue-no-full-ring = []
+# ...a batch is closed only on NICs still in the table; a USB slot keeps its doorbell state.
+net-queue-gated-end = []
+net-queue-no-slot-reset = []
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []

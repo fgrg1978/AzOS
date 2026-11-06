@@ -670,7 +670,9 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
     /// Tell the controller about every frame published so far.
     pub fn ring(&self) {
         let mut tx = self.tx.lock();
-        if tx.pending == 0 {
+        // Under the lock the reset and `stop` use: while the controller restarts
+        // or is down, the tail is not the ring's to write.
+        if !self.ready.load(Ordering::Acquire) || tx.pending == 0 {
             return;
         }
         azos_dma::order::io_wmb();
@@ -721,9 +723,9 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
 
     /// Wait out every send and receive already inside its lock, once
     /// `ready` is clear: the next one sees it and leaves the rings alone.
-    fn quiesce_paths(&self) {
+    pub(crate) fn quiesce_paths(&self) {
         self.ready.store(false, Ordering::Release);
-        drop(self.tx.lock());
+        self.tx.lock().pending = 0;
         drop(self.rx.lock());
     }
 

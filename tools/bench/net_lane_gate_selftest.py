@@ -14,13 +14,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def log(path, udp, tx, rx):
     with open(path, "w") as f:
-        for lane, ns in (("udp-roundtrip", udp), ("tcp-bulk-tx", tx), ("tcp-bulk-rx", rx)):
+        for lane, ns in (("nic-egress", udp), ("tcp-bulk-tx", tx), ("tcp-bulk-rx", rx)):
             if ns is not None:
                 f.write(f"[VSBENCH] azos {lane} = {ns} ns/op\n")
 
 
 def main():
-    with tempfile.TemporaryDirectory(dir=os.environ.get("AZOS_OUT")) as d:
+    if not os.environ.get("AZOS_OUT"):
+        print("net_lane_gate_selftest: AZOS_OUT is not set", file=sys.stderr)
+        return 2
+    with tempfile.TemporaryDirectory(dir=os.environ["AZOS_OUT"]) as d:
         # The script keeps its baseline beside itself: run a copy in the temp dir.
         child = os.path.join(d, "net_lane_gate.py")
         src = open(os.path.join(HERE, "net_lane_gate.py")).read()
@@ -31,17 +34,21 @@ def main():
         def skips(isa, path, lanes):
             r = subprocess.run([sys.executable, "-I", child, "check", isa, path], capture_output=True, text=True)
             return r.returncode == 0 and r.stdout.count("SKIP") == lanes
-        base, same, over, gone = (os.path.join(d, n) for n in ("base", "same", "over", "gone"))
+        base, same, over, gone, tcp_wide, tcp_far = (os.path.join(d, n) for n in ("base", "same", "over", "gone", "tcp_wide", "tcp_far"))
         log(base, 1000, 2000, 3000)
         log(same, 1020, 2000, 3000)
-        log(over, 1000, 2000, 3200)
+        log(over, 1060, 2000, 3000)
+        log(tcp_wide, 1000, 2200, 3200)
+        log(tcp_far, 1000, 2400, 3000)
         log(gone, 1000, 2000, None)
         cases = [
             ("no baseline yet skips, and says so", 0 if skips("rv", base, 3) else 1, 0),
             ("record writes it", go("record", "rv", base), 0),
             ("the baseline itself passes", go("check", "rv", base), 0),
             ("2 per cent over is inside the tolerance", go("check", "rv", same), 0),
-            ("6 per cent over fails", go("check", "rv", over), 1),
+            ("6 per cent over on nic-egress fails", go("check", "rv", over), 1),
+            ("10 per cent over on the TCP lanes is inside their tolerance", go("check", "rv", tcp_wide), 0),
+            ("20 per cent over on a TCP lane fails", go("check", "rv", tcp_far), 1),
             ("a lane missing from the log fails", go("check", "rv", gone), 1),
             ("another ISA has no baseline yet and skips", 0 if skips("arm", base, 3) else 1, 0),
             ("an ISA with no network lane is refused", go("check", "x86", base), 2),

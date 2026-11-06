@@ -218,9 +218,7 @@ fn a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once() {
     let s = scene();
     let a = attach(&s);
     let tx = view(a.tx.1, PAGES);
-    if tx.cap < 4 {
-        return;
-    }
+    assert!(tx.cap >= 4, "the transmit ring holds {} slots; the row needs 4", tx.cap);
     let mut prod = BytesProducer::new(tx);
     let (f0, f1, f2) = (frame(MAC_B, 64, 1), frame(MAC_B, 64, 2), frame(MAC_B, 64, 3));
     prod.push(0, &tx_item(0, &f0));
@@ -230,6 +228,46 @@ fn a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once() {
     assert_eq!(rc, 3);
     use azos_net::NicqOp::{Batch, Flush, Send};
     assert_eq!(azos_net::shim_take_nicq_log(), vec![Batch(2, true), Send(2, f0), Send(2, f1), Flush(2), Send(2, f2), Batch(2, false)]);
+}
+
+static HOOK_TID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static HOOK_RX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The taker's receive region goes away while its kick is sending, and the
+/// receive pass then finds the ring gone and ends the attachment.
+fn lose_the_receive_ring() {
+    let tid = HOOK_TID.load(SeqCst);
+    let rx_cap: azos_ipc::cap::Cap<azos_ipc::cap::targets::Shm> =
+        azos_ipc::cap::Cap::from_raw(CapHandle::from_raw(HOOK_RX.load(SeqCst) as u32));
+    azos_ipc::cap_store::with_table(tid, |t| memobj_release_cap(tid, t, rx_cap)).expect("table").expect("freed");
+    crate::nicq::rx_sink(2, &frame(MAC_A, 60, 7), 1);
+}
+
+/// **Discriminates.** A kick whose queue goes back to the stack in the middle
+/// of it (the receive pass found the taker's ring gone) still closes the batch
+/// it opened, on the NIC it opened it on: left open, the stack's frames on that
+/// NIC would wait for a flush point that is not coming. Canary:
+/// `nicq-gated-close-canary` closes only while the queue is taken, and the
+/// close is missing from the log.
+#[test]
+fn a_kick_closes_its_batch_when_the_queue_goes_back_to_the_stack_meanwhile() {
+    let s = scene();
+    let a = attach(&s);
+    let tx = view(a.tx.1, PAGES);
+    if tx.cap < 4 {
+        panic!("the transmit ring holds {} slots; the row needs 4", tx.cap);
+    }
+    let f0 = frame(MAC_B, 64, 1);
+    BytesProducer::new(tx).push(0, &tx_item(0, &f0));
+    HOOK_TID.store(s.tid, SeqCst);
+    HOOK_RX.store(a.rx.0, SeqCst);
+    azos_net::shim_on_nicq_send(Some(lose_the_receive_ring));
+    let (rc, _) = invoke(a.q, QUEUE_NICQ_KICK, 0, 0);
+    azos_net::shim_on_nicq_send(None);
+    assert_eq!(rc, 1);
+    assert!(!azos_net::nic_queue::taken(2), "the lost ring ended the attachment");
+    use azos_net::NicqOp::{Batch, Send};
+    assert_eq!(azos_net::shim_take_nicq_log(), vec![Batch(2, true), Send(2, f0), Batch(2, false)]);
 }
 
 /// **Discriminates.** The refusals of the attach: the primary interface

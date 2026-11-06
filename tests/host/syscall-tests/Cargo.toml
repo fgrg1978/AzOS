@@ -57,6 +57,9 @@ doorbell-wrap-canary = []
 # goes red).
 nicq-no-batch-canary = []
 nicq-no-stamp-flush-canary = []
+# The kick closes its batch only while the queue is still taken (the batch stays
+# open on the stack's NIC when the taker's receive ring fails mid-kick).
+nicq-gated-close-canary = []
 # `endpoint.rs` `calls_set_link`'s canary: any READ holder binds an endpoint's
 # calls (`only_the_server_binds_an_endpoints_calls` goes red).
 calls-any-binder-canary = ["azos_ipc/calls-any-binder-canary"]

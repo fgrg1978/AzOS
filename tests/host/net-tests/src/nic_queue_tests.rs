@@ -7,7 +7,7 @@
 //! **The real `nic_queue.rs` and `ip.rs` are in the loop.** The interfaces are
 //! the real registry's and the route to the link peer is the real route
 //! lookup; the receive pass's turn is `nic_queue::pass` driven with a scripted
-//! NIC (`recv_batch`'s shape). The kernel's own receive loop (`lib.rs`) that
+//! NIC (`reap_rx`'s shape). The kernel's own receive loop (`lib.rs`) that
 //! calls `pass` before its stack dispatch is not compiled here; it is the
 //! `nicq` QEMU row's.
 

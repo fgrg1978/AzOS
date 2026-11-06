@@ -122,7 +122,7 @@ pub mod hw {
 // | `SPI0_BASE` (new) | `spi0@10060000` | address only (register model: unverified, wrong IP — see `spi.rs`) |
 // | `WDT_BASE` | `watchdog@13070000` | address + register-level rewrite (`wdt.rs`, cited against `starfive-wdt.c`) |
 // | `USB0_BASE` (new) | `usb0@10100000`/`usb@0` (`cdns,usb3`) | address only (register model: unverified, no driver) |
-// | `ETH0_BASE` | `gmac0@16030000` (`starfive,jh7110-dwmac`) | compatible-string correction, then a driver for the right IP: `azos_drv_net::dwmac` (register map recalled from the stmmac headers, what only the databook says is marked in its module doc); `eth.rs`'s Cadence model is not called |
+// | `ETH0_BASE` | `gmac0@16030000` (`starfive,jh7110-dwmac`) | compatible-string correction, then a driver for the right IP: `azos_drv_net::dwmac` (register map recalled from the stmmac headers, what only the databook says is marked in its module doc) |
 // | `DMA_AXI_BASE`/`DMA_SDMA_BASE` (new) | `dma@16050000` / `sdma@16008000` | address+identity only — two distinct real controllers named, neither driven; see `dma.rs` |
 // | `PMU_COMPATIBLE`/`DC8200_NOC_BASE` (relabelled) | `pwrc@17030000` | identity correction only (was mislabeled a display NOC block) |
 // | `PWM_COMPATIBLE`/`PWM_BASE` | `pwm@120d0000` (`opencores,pwm-v1` fallback) | compatible-string correction only; register model: unverified, wrong IP (OpenCores PTC, not SiFive) — see `pwm.rs` |

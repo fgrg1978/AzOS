@@ -10,7 +10,7 @@
 //! A frame the rule forgets to announce is therefore a frame that never
 //! arrives, which is what the loss row counts.
 
-use crate::net_queue::{batch_begin, batch_end, flush, reap_rx, register_usb, submit, unregister_usb};
+use crate::net_queue::{batch_begin, batch_begin_all, batch_end, batch_end_all, batch_open, flush, reap_rx, register_usb, submit, unregister_usb};
 use azos_drv_api::net::{NetError, NetQueue, TxDoorbell};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -184,6 +184,47 @@ fn a_full_ring_is_announced_and_the_refused_frame_goes_in_afterwards() {
     assert_eq!(submit(nic, &tagged(3)), Ok(60));
     batch_end(nic);
     assert_eq!(drain(nic), vec![3]);
+}
+
+/// **Discriminates.** A pass that opened a batch on every NIC closes exactly
+/// those, whatever the table says by the time it ends: a USB NIC unplugged in
+/// between must not keep a batch open for the function plugged in next. Canary:
+/// `net-queue-gated-end` closes only the NICs still in the table, and the
+/// batch stays open.
+#[test]
+fn a_pass_closes_the_batches_it_opened_on_a_nic_that_was_unplugged_meanwhile() {
+    static WIRE: std::sync::OnceLock<Wire> = std::sync::OnceLock::new();
+    let _g = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let wire = WIRE.get_or_init(|| Wire::new(8));
+    let nic = register_usb(wire).expect("a free number");
+    let _slot = Registered;
+    let opened = batch_begin_all();
+    assert!(batch_open(nic));
+    unregister_usb();
+    batch_end_all(opened);
+    assert!(!batch_open(nic), "the batch of the unplugged NIC was left open");
+    assert_eq!(register_usb(wire), Some(nic));
+    submit(nic, &tagged(1)).unwrap();
+    assert_eq!(drain(nic), vec![1], "a lone frame on the replugged NIC is on its way at once");
+}
+
+/// **Discriminates.** A USB slot comes back with no batch open and no frame
+/// pending, whatever the function before it left behind (a pass that never got
+/// to close). Canary: `net-queue-no-slot-reset` leaves the state, and the lone
+/// frame waits for a batch end that is not coming.
+#[test]
+fn a_replugged_usb_nic_does_not_inherit_the_batch_of_the_one_before() {
+    static WIRE: std::sync::OnceLock<Wire> = std::sync::OnceLock::new();
+    let _g = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let wire = WIRE.get_or_init(|| Wire::new(8));
+    let nic = register_usb(wire).expect("a free number");
+    let _slot = Registered;
+    batch_begin(nic);
+    unregister_usb();
+    assert_eq!(register_usb(wire), Some(nic));
+    assert!(!batch_open(nic));
+    submit(nic, &tagged(1)).unwrap();
+    assert_eq!(drain(nic), vec![1]);
 }
 
 /// **Discriminates.** A registered USB NIC takes the first free number,

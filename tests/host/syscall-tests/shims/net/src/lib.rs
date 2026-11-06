@@ -74,14 +74,31 @@ pub fn nic_queue_send(ifindex: IfIndex, frame: &[u8]) -> bool {
         return false;
     }
     nicq_log(NicqOp::Send(ifindex, frame.to_vec()));
+    if let Some(hook) = *NICQ_ON_SEND.lock().unwrap_or_else(|e| e.into_inner()) {
+        hook();
+    }
     true
 }
 
-/// `crate::nic_queue_batch`.
-pub fn nic_queue_batch(ifindex: IfIndex, open: bool) {
-    if nic_queue::taken(ifindex) {
-        nicq_log(NicqOp::Batch(ifindex, open));
+static NICQ_ON_SEND: std::sync::Mutex<Option<fn()>> = std::sync::Mutex::new(None);
+
+/// Test-only: run `hook` after each frame [`nic_queue_send`] records (none: `None`).
+pub fn shim_on_nicq_send(hook: Option<fn()>) {
+    *NICQ_ON_SEND.lock().unwrap_or_else(|e| e.into_inner()) = hook;
+}
+
+/// `crate::nic_queue_batch_begin`: the NIC number of interface `i` is `i - 1`.
+pub fn nic_queue_batch_begin(ifindex: IfIndex) -> Option<usize> {
+    if !nic_queue::taken(ifindex) {
+        return None;
     }
+    nicq_log(NicqOp::Batch(ifindex, true));
+    Some(ifindex as usize - 1)
+}
+
+/// `crate::nic_queue_batch_end`: by NIC number, with no look at the queue.
+pub fn nic_queue_batch_end(nic: usize) {
+    nicq_log(NicqOp::Batch(nic as IfIndex + 1, false));
 }
 
 /// `crate::nic_queue_flush`.
@@ -201,8 +218,11 @@ pub fn net_get_ip() -> [u8; 4] {
 }
 /// `crate::net_tx_batch_begin`/`_end` as `tcp.rs` sees them (the virtio-net
 /// TX doorbell batch): nothing to batch here.
-pub fn net_tx_batch_begin() {}
-pub fn net_tx_batch_end() {}
+pub struct TxBatch;
+pub fn net_tx_batch_begin() -> TxBatch {
+    TxBatch
+}
+pub fn net_tx_batch_end(_: TxBatch) {}
 
 pub fn net_get_mac() -> [u8; 6] {
     shim_fwd::hit("net_get_mac".into(), |f| f.mac)

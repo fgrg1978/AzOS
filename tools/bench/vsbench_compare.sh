@@ -328,7 +328,10 @@ VSBENCH_LAT="${VSBENCH_LAT:-1}"
 # one would move `nic-egress` on both sides), so they run in a pass of their
 # own: one more boot of the PRODUCT kernel and of the Linux initramfs,
 # filtered to the `tcp` section, always under `-icount shift=0,sleep=off` at
-# `-smp $VSBENCH_TCP_SMP` (1 by default). Linux gets `ip=` on its command
+# `-smp $VSBENCH_TCP_SMP` (1 by default), with the `net` section too: its
+# `nic-egress` lane is the one that reaches a driver, and only a boot with a NIC
+# measures it. `VSBENCH_TCP_AZOS_APPEND` is the AzOS kernel command line of that
+# boot (a `canary=` for the lane gate's canary row). Linux gets `ip=` on its command
 # line; AzOS's compiled default address is already 10.0.2.15/24 gw 10.0.2.2.
 #
 # WHY THE PRODUCT KERNEL, not the gate's `bench-minimal` one: AzOS's TCP
@@ -661,7 +664,7 @@ boot_azos() { # boot_azos <kernel> <log> <disk copy>
     local tr=(); while IFS= read -r a; do tr[${#tr[@]}]="$a"; done < <(blk_trace_args "$2")
     "$QEMU" -machine virt -nographic -bios default -smp "${BOOT_SMP:-$VSBENCH_SMP}" ${BOOT_ICOUNT-$ICOUNT_ARGS} ${BOOT_EXTRA:-} \
         ${tr[@]+"${tr[@]}"} \
-        -kernel "$1" \
+        -kernel "$1" ${BOOT_AZOS_APPEND:+-append "$BOOT_AZOS_APPEND"} \
         -global virtio-mmio.force-legacy=false \
         -drive "file=$3,if=none,format=raw,id=hd0,cache=$VSBENCH_DISK_CACHE" \
         -device virtio-blk-device,drive=hd0 >"$2" 2>&1 &
@@ -826,8 +829,8 @@ tcp_net_args() { # tcp_net_args <pcap>
 if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBENCH_LANES" | grep -q ',tcp,'; }; then
     tcp_peer_start azos
     if [ -n "$TCP_PORT" ]; then
-        BOOT_LANES=tcp BOOT_SMP="$VSBENCH_TCP_SMP" BOOT_ICOUNT="$TCP_ICOUNT_ARGS" BOOT_TCP_PORT="$TCP_PORT" \
-            BOOT_CONFIG_SET="$VSBENCH_TCP_AZOS_CONFIG" \
+        BOOT_LANES=net,tcp BOOT_SMP="$VSBENCH_TCP_SMP" BOOT_ICOUNT="$TCP_ICOUNT_ARGS" BOOT_TCP_PORT="$TCP_PORT" \
+            BOOT_CONFIG_SET="$VSBENCH_TCP_AZOS_CONFIG" BOOT_AZOS_APPEND="${VSBENCH_TCP_AZOS_APPEND:-}" \
             BOOT_EXTRA="$(tcp_net_args "$WORK/tcp-azos.pcap")" BOOT_WAIT="${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}" \
             boot_azos "$KP_KERNEL" "$KT_LOG" "$WORK/k-product-tcp.img"
     fi
@@ -835,7 +838,7 @@ if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBE
     if [ -n "$L_LOG" ]; then
         tcp_peer_start linux
         if [ -n "$TCP_PORT" ]; then
-            BOOT_LANES=tcp BOOT_SMP="$VSBENCH_TCP_SMP" BOOT_ICOUNT="$TCP_ICOUNT_ARGS" BOOT_TCP_PORT="$TCP_PORT" \
+            BOOT_LANES=net,tcp BOOT_SMP="$VSBENCH_TCP_SMP" BOOT_ICOUNT="$TCP_ICOUNT_ARGS" BOOT_TCP_PORT="$TCP_PORT" \
                 BOOT_APPEND="$TCP_LINUX_IP" BOOT_EXTRA="$(tcp_net_args "$WORK/tcp-linux.pcap")" \
                 BOOT_WAIT="${WAIT_SECS_TCP:-$((WAIT_SECS * 4))}" \
                 boot_linux "$WORK/initramfs.cpio" "$LT_LOG"
@@ -1296,7 +1299,7 @@ if [ "$TCP_RAN" = "1" ]; then
                 "$(tcp_field "$WORK/tcp-$3.acks" "$lane" rst)" >>"$WORK/tcp-$3.rows"
         done
     }
-    BOOT_LANES=tcp completion_lane "$KT_LOG" azos \
+    BOOT_LANES=net,tcp completion_lane "$KT_LOG" azos \
         || { echo "vsbench: the azos-product TCP pass did not reach its end ($KT_LOG)" >&2; rc=1; }
     if grep -q "FAIL rc=" "$KT_LOG" 2>/dev/null; then
         echo "vsbench: a azos-product TCP lane failed:" >&2
@@ -1314,7 +1317,7 @@ if [ "$TCP_RAN" = "1" ]; then
     fi
     : >"$WORK/tcp-linux.rows"
     if [ -n "$L_LOG" ]; then
-        BOOT_LANES=tcp completion_lane "$LT_LOG" linux \
+        BOOT_LANES=net,tcp completion_lane "$LT_LOG" linux \
             || { echo "vsbench: the Linux TCP pass did not reach its end ($LT_LOG)" >&2; rc=1; }
         if grep -q "FAIL rc=" "$LT_LOG" 2>/dev/null; then
             echo "vsbench: a Linux TCP lane failed:" >&2

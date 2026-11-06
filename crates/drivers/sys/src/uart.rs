@@ -198,8 +198,8 @@ pub fn enable_smp_lock() {
 // `use ns16550a as hw` / `use pl011 as hw` at "Public API" further down.
 // `Console` gives the *output* half of that shape a name and each module a
 // matching zero-sized `impl`, and [`console_register`] lets boot pick which
-// one the ring-3 write path talks to — the same move `EthNetQueue`/
-// `VirtioNetQueue` make in `crates/drivers/net/src/net_queue.rs` for the NIC
+// one the ring-3 write path talks to — the same move `VirtioNetQueue`
+// and the other NIC queues make in `crates/drivers/net/src/net_queue.rs` for the NIC
 // side. It does NOT touch the 18 board-level `cfg`s inside `ns16550a`
 // itself (`vf2`/`k1` register stride, divisor, DLAB skip, the DW8250 LCR
 // erratum workaround): those are one ISA's *register model* varying by
@@ -500,7 +500,7 @@ mod ns16550a {
     }
 
     /// Zero-sized [`super::Console`] adapter over the free functions above —
-    /// same pattern as `EthNetQueue`/`VirtioNetQueue` in `net_queue.rs`.
+    /// same pattern as `VirtioNetQueue` in `virtio/net.rs`.
     pub struct Ns16550aConsole;
 
     impl super::Console for Ns16550aConsole {

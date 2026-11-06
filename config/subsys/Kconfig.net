@@ -738,12 +738,40 @@ config NET_VIRTIO_TXQ_SIZE
       only sends control traffic; raise it with NET_TX_BATCH_MAX for bulk
       TCP senders.
 
+# Whether every TX ring in the build holds at least N frames (virtio-net: half
+# its descriptors; the Intel and DesignWare rings: one fewer than their
+# descriptors). They let NET_TX_BATCH_MAX default to the smaller of its class
+# default and what the smallest ring holds, so a preset never fails the bound
+# build.rs checks on an explicit value.
+config NET_TXRING_GE_64
+    def_bool NET_VIRTIO_TXQ_SIZE >= 128 && (!DRV_E1000E || E1000E_TX_DESCS > 64) && (!DRV_IGC || IGC_TX_DESCS > 64) && (!BOARD_VF2 || DWMAC_TX_DESCS > 64)
+
+config NET_TXRING_GE_32
+    def_bool NET_VIRTIO_TXQ_SIZE >= 64 && (!DRV_E1000E || E1000E_TX_DESCS > 32) && (!DRV_IGC || IGC_TX_DESCS > 32) && (!BOARD_VF2 || DWMAC_TX_DESCS > 32)
+
+config NET_TXRING_GE_16
+    def_bool NET_VIRTIO_TXQ_SIZE >= 32 && (!DRV_E1000E || E1000E_TX_DESCS > 16) && (!DRV_IGC || IGC_TX_DESCS > 16) && (!BOARD_VF2 || DWMAC_TX_DESCS > 16)
+
+config NET_TXRING_GE_8
+    def_bool NET_VIRTIO_TXQ_SIZE >= 16 && (!DRV_E1000E || E1000E_TX_DESCS > 8) && (!DRV_IGC || IGC_TX_DESCS > 8) && (!BOARD_VF2 || DWMAC_TX_DESCS > 8)
+
+config NET_TXRING_GE_4
+    def_bool NET_VIRTIO_TXQ_SIZE >= 8 && (!DRV_E1000E || E1000E_TX_DESCS > 4) && (!DRV_IGC || IGC_TX_DESCS > 4) && (!BOARD_VF2 || DWMAC_TX_DESCS > 4)
+
+config NET_TXRING_GE_2
+    def_bool NET_VIRTIO_TXQ_SIZE >= 4 && (!DRV_E1000E || E1000E_TX_DESCS > 2) && (!DRV_IGC || IGC_TX_DESCS > 2) && (!BOARD_VF2 || DWMAC_TX_DESCS > 2)
+
 config NET_TX_BATCH_MAX
     int "NIC TX frames posted per doorbell inside a batch"
     range 1 128
-    default 4  if HWCLASS_EMBEDDED
-    default 64 if HWCLASS_SERVER
-    default 16
+    default 4  if HWCLASS_EMBEDDED && NET_TXRING_GE_4
+    default 64 if HWCLASS_SERVER && NET_TXRING_GE_64
+    default 32 if HWCLASS_SERVER && NET_TXRING_GE_32
+    default 16 if !HWCLASS_EMBEDDED && NET_TXRING_GE_16
+    default 8  if NET_TXRING_GE_8
+    default 4  if NET_TXRING_GE_4
+    default 2  if NET_TXRING_GE_2
+    default 1
     help
       crates/drivers/net/src/net_queue.rs, one rule for every NIC (virtio-net,
       the Intel NICs, the Synopsys MAC, USB): inside a TX batch (one net_poll
@@ -759,8 +787,10 @@ config NET_TX_BATCH_MAX
       1 = one doorbell per frame.  At most the frames the smallest TX ring
       of the NICs in the build holds (build.rs checks it): NET_VIRTIO_TXQ_SIZE
       / 2 for virtio-net, E1000E_TX_DESCS - 1, IGC_TX_DESCS - 1,
-      DWMAC_TX_DESCS - 1 on the VisionFive 2; otherwise a batch could fill the ring before
-      announcing it.
+      DWMAC_TX_DESCS - 1 on the VisionFive 2; otherwise a batch could fill the
+      ring before announcing it.  The default is the class's value (4, 16,
+      64), lowered to what the smallest of those rings holds, so only a value
+      set by hand can fail that check.
 
       Cost: nothing in RAM.  A doorbell is an MMIO store that exits to the
       device model (QEMU) or crosses the bus (hardware); a larger batch
@@ -796,7 +826,7 @@ config NET_RX_BATCH_MAX
     default 64 if HWCLASS_SERVER
     default 16
     help
-      crates/drivers/virtio/src/virtio/net.rs, recv_batch: one lock pops up
+      crates/drivers/virtio/src/virtio/net.rs, reap_rx: one lock pops up
       to this many received frames, the lock is dropped while the stack
       handles them in place (no copy out of the RX buffer), and one more
       lock re-posts the buffers. 1 = a lock pair per frame.
@@ -805,7 +835,7 @@ config NET_RX_BATCH_MAX
       buffers are off the ring until the batch has been handled, and the
       device needs the other half to keep receiving meanwhile.
 
-      Cost: 4 B of stack per entry in recv_batch; buffers out of the ring
+      Cost: 4 B of stack per entry in reap_rx; buffers out of the ring
       for one batch's protocol work. Same on every ISA.
 
 config NET_VIRTIO_EVENT_IDX

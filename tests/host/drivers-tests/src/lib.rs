@@ -731,7 +731,7 @@ mod virtq {
 }
 
 #[cfg(test)]
-mod virtio_net_device {
+mod virtio_net_queue {
     use azos_drv_api::net::{NetError, NetQueue};
     use super::virtio::net::VirtioNetQueue;
 
