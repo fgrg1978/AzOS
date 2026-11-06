@@ -900,8 +900,8 @@ fn next_entry<const ANY: bool>(table: usize, from: usize, n: usize) -> usize {
 
 /// Call `f(va, frame)` for each valid 4 KiB leaf in `[s, e)` of the table at
 /// `root`: one walk per leaf table, then its entries read in place. For a
-/// fork's child, whose mapped pages are exactly the leaves its copy-on-write
-/// walk gave it (`pager::fork_clone`).
+/// fork's child, whose private file pages are exactly the leaves its
+/// copy-on-write walk gave it (`pager::fork_clone`).
 pub fn for_each_leaf_in(root: usize, s: usize, e: usize, mut f: impl FnMut(usize, usize)) {
     let span = PAGE_SIZE * entries_per_table();
     let mut va = s & !(PAGE_SIZE - 1);

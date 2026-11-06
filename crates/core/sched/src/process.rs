@@ -2266,9 +2266,13 @@ fn fork_hooked_inner(
     //
     // Ordering here is already the correct one and must stay that way:
     // `fork_cow` has populated the child's own L1/L0 tables for every user
-    // page, so this merges into a PT that owns its tables (see the ordering
-    // invariant on `vmm::copy_kernel_entries_to_user` and the matching tail of
-    // `load_elf_into`). The collision check is a formality — the child's user
+    // page no anonymous mapping holds, so this merges into a PT that owns its
+    // tables (see the ordering invariant on `vmm::copy_kernel_entries_to_user`
+    // and the matching tail of `load_elf_into`). The anonymous mappings' tables
+    // are built after it, by their clone (`fork_regions_to_child`): an
+    // allocating walk refuses to descend into a table the kernel shares
+    // (`vmm::walk_level`), and the parent faulted the same addresses after its
+    // own merge. The collision check is a formality — the child's user
     // layout is a copy of the parent's, which passed the same check at exec —
     // but a dropped kernel entry would be just as fatal here, and refusing the
     // fork is recoverable where a child with no CLINT is not.

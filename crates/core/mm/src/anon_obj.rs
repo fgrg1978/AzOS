@@ -26,9 +26,11 @@
 //! **Locking.** The object has one mapper, its space, so the space's lock is
 //! its lock: every slot word is written under it, which is also what keeps the
 //! object alive (a mapping names it under that lock, and the object goes only
-//! when no mapping does). The one exception is `munmap`'s empty of the slots
-//! of a range no mapping names any more, which nothing else reaches. Chunks
-//! are allocated before the lock is taken and installed under it ([`Spare`]).
+//! when no mapping does). The two exceptions: `munmap`'s empty of the slots
+//! of a range no mapping names any more, which nothing else reaches, and a
+//! fork's clone writing the slots of the child's object, whose space no task
+//! runs on yet (under the group's layout lock). Chunks are allocated before the
+//! lock is taken and installed under it ([`Spare`]).
 //!
 //! **Frames.** A `Frame` slot and the page-table leaf of its page name the same
 //! frame: the leaf is written when the slot becomes `Frame` and cleared when
