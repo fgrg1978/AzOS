@@ -83,7 +83,7 @@ pub enum Errno {
     ENOSYS = 38,
     /// File name too long for the filesystem (Linux's value).
     ENAMETOOLONG = 36,
-    /// Directory not empty (`DOMAIN_RMDIR`; Linux's value).
+    /// Directory not empty (`NODE_UNLINKAT` with `UNLINK_DIR`; Linux's value).
     ENOTEMPTY = 39,
     /// A wait ran out (Linux's value): the futex wait, and the code of a
     /// `PORT_EVENT_CALL_NOTICE` whose caller's lent budget ran out.

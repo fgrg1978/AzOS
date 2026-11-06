@@ -869,8 +869,8 @@ fn check_paths_and_nul() {
         sys::E_INVAL,
     );
     expect_eq(
-        b"mkdir(unterminated) -> E_INVAL from libsys",
-        sys::mkdir(b"/nope"),
+        b"mkdir_at(unterminated) -> EINVAL from libsys",
+        sys::mkdir_at(sys::root_dir() as u32, b"nope").err().map_or(0, |e| e.to_syscall_ret() as isize),
         sys::E_INVAL,
     );
 
@@ -3560,11 +3560,13 @@ fn check_kernel_stubs() {
     //
     // `stat` is implemented (it was a `-1` stub asserted
     // here as one): the root is a directory.
-    let mut statbuf = [0u8; 64];
-    expect_eq(b"stat(/) -> 0", sys::stat(sys::cstr!(b"/"), &mut statbuf), 0);
+    let mut statbuf = [0u8; azos_abi::syscall_nr::STAT_BYTES];
+    let root = sys::root_dir() as u32;
+    let stat_rc = |r: Result<(), sys::Errno>| match r { Ok(()) => 0, Err(e) => e.to_syscall_ret() as isize };
+    expect_eq(b"stat_at(root, .) -> 0", stat_rc(sys::stat_at(root, sys::cstr!(b"."), &mut statbuf)), 0);
     let mode = u32::from_le_bytes([statbuf[8], statbuf[9], statbuf[10], statbuf[11]]);
-    expect_eq(b"stat(/) is a directory", (mode & 0o170000) as isize, 0o040000);
-    expect_err(b"stat(missing) -> negative", sys::stat(sys::cstr!(b"/no/such"), &mut statbuf));
+    expect_eq(b"stat_at(root, .) is a directory", (mode & 0o170000) as isize, 0o040000);
+    expect_err(b"stat_at(root, no/such) -> negative", stat_rc(sys::stat_at(root, sys::cstr!(b"no/such"), &mut statbuf)));
 
     // sys_taskinfo is `{ 0 }` too — it reports nothing but is not an error.
     // `taskinfo` was a stub returning 0 with an untouched buffer; it reports

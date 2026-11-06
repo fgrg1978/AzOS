@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Files, directories and paths over the domain's file ops and the node ops of a
-//! handle (`NODE_OPENAT` beneath the root directory, `DOMAIN_STAT`, `DOMAIN_READDIR`, `DOMAIN_MKDIR`, `NODE_READ`,
+//! Files, directories and paths over the node ops of a handle: the `*at` ops
+//! beneath the root directory (`NODE_OPENAT`, `NODE_STATAT`, `NODE_READDIR`,
+//! `NODE_MKDIRAT`, ...) and the ops of an open file (`NODE_READ`,
 //! `NODE_WRITE`, ...), through `azos_libsys`.
 //!
 //! This is the one module that knows how a file is reached. The native model
@@ -10,8 +11,9 @@
 //! local to it.
 //!
 //! **A descriptor acts on the object its handle names, or it does nothing.** The
-//! node ops of a file handle are read, write and fsync; everything else the
-//! domain offers (stat, truncate, statfs, readdir, rename ...) takes a path. A
+//! node ops of a file handle are read, write and fsync; everything else
+//! (stat, truncate, statfs, readdir, rename ...) takes a name beneath a
+//! directory. A
 //! POSIX call on a descriptor that would need one of those is refused with
 //! `ENOSYS`: this layer never turns a descriptor back into the name it was
 //! opened by and runs the path op on it, because the name may by then belong to
@@ -25,8 +27,9 @@
 //! the native open creates and truncates but cannot refuse an existing file, and
 //! a check made before it would race with it.
 //!
-//! The kernel keeps no working directory: this layer does, and makes every path
-//! absolute (and lexically normal) before the call.
+//! The kernel keeps no working directory and takes no absolute path: this layer
+//! keeps the working directory, makes every path absolute (and lexically
+//! normal), and names it beneath the task's root `Cap<Dir>` ([`beneath_root`]).
 
 use alloc::{boxed::Box, vec::Vec};
 use core::{
@@ -113,7 +116,18 @@ fn resolve(dirfd: c_int, path: &[u8]) -> Result<Vec<u8>> {
     nosys()
 }
 
-/// What the domain's stat op says of an absolute path.
+/// The task's root `Cap<Dir>` and the name of the absolute, NUL-terminated
+/// `abs` beneath it.
+fn beneath_root(abs: &[u8]) -> Result<(u32, &[u8])> {
+    azos_libsys::beneath_root(abs).map_err(|_| Errno(EACCES))
+}
+
+/// A native refusal as relibc's errno.
+fn native(r: core::result::Result<(), azos_libsys::Errno>) -> Result<()> {
+    r.map_err(|e| errno_of(e.to_syscall_ret() as isize))
+}
+
+/// What the native stat op says of an absolute path.
 struct Native {
     size: u64,
     mode: u32,
@@ -128,10 +142,8 @@ struct Native {
 fn native_stat(path: &[u8]) -> Result<Native> {
     use azos_abi::syscall_nr::*;
     let mut b = [0u8; STAT_BYTES];
-    let r = azos_libsys::stat(path, &mut b);
-    if r < 0 {
-        return Err(errno_of(r));
-    }
+    let (root, name) = beneath_root(path)?;
+    native(azos_libsys::stat_at(root, name, &mut b))?;
     let u32at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
     let u64at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
     Ok(Native {
@@ -389,7 +401,9 @@ pub(crate) fn fpath(fd: c_int, out: &mut [u8]) -> Result<usize> {
 }
 
 pub(crate) fn mkdirat(dirfd: c_int, path: CStr) -> Result<()> {
-    check(azos_libsys::mkdir(&resolve(dirfd, path.to_bytes())?)).map(|_| ())
+    let abs = resolve(dirfd, path.to_bytes())?;
+    let (root, name) = beneath_root(&abs)?;
+    native(azos_libsys::mkdir_at(root, name))
 }
 
 pub(crate) fn unlinkat(dirfd: c_int, path: CStr, flags: c_int) -> Result<()> {
@@ -399,19 +413,23 @@ pub(crate) fn unlinkat(dirfd: c_int, path: CStr, flags: c_int) -> Result<()> {
         if !dir {
             return Err(Errno(ENOTDIR));
         }
-        check(azos_libsys::rmdir(&abs)).map(|_| ())
+        let (root, name) = beneath_root(&abs)?;
+        native(azos_libsys::rmdir_at(root, name))
     } else if dir {
         // The native unlink takes a directory away too; POSIX unlink does not.
         Err(Errno(EISDIR))
     } else {
-        check(azos_libsys::unlink(&abs)).map(|_| ())
+        let (root, name) = beneath_root(&abs)?;
+        native(azos_libsys::unlink_at(root, name))
     }
 }
 
 pub(crate) fn renameat(old_dir: c_int, old: CStr, new_dir: c_int, new: CStr) -> Result<()> {
     let from = resolve(old_dir, old.to_bytes())?;
     let to = resolve(new_dir, new.to_bytes())?;
-    check(azos_libsys::rename(&from, &to)).map(|_| ())
+    let (root, from) = beneath_root(&from)?;
+    let (_, to) = beneath_root(&to)?;
+    native(azos_libsys::rename_at(root, from, to))
 }
 
 /// The native statfs takes a path and a file handle has no such op (relibc's
@@ -435,17 +453,14 @@ const _: () = {
 };
 
 /// The entries of the directory at `abs` as they are now, read once, when a
-/// descriptor is opened on it. 0 an entry, -1 past the end.
+/// descriptor is opened on it; a refusal ends the list where it stops.
 fn snapshot(abs: &[u8]) -> Box<[DirEntry]> {
     let mut entries = Vec::new();
-    loop {
-        let mut name = [0u8; azos_libsys::READDIR_NAME_BYTES];
-        let (mut size, mut dir) = (0u32, 0u32);
-        if azos_libsys::readdir(abs, entries.len() as u64, &mut name, &mut size, &mut dir) != 0 {
-            break;
-        }
+    let Ok((root, dir)) = beneath_root(abs) else { return entries.into() };
+    let mut name = [0u8; azos_libsys::READDIR_NAME_BYTES];
+    while let Ok(Some(e)) = azos_libsys::readdir_at(root, dir, entries.len() as u32, &mut name) {
         let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-        entries.push(DirEntry { name: name[..len].into(), is_dir: dir != 0 });
+        entries.push(DirEntry { name: name[..len].into(), is_dir: e.is_dir });
     }
     entries.into()
 }

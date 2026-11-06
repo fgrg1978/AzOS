@@ -485,18 +485,16 @@ fn ls() -> i32 {
     let target = if sys::argc() > 1 { sys::arg(1).unwrap_or(b".") } else { b"." };
     let mut p = [0u8; PATH_MAX + 1];
     let Some(n) = absolute(target, &mut p) else { return 1 };
-    let mut idx = 0u64;
+    let mut idx = 0u32;
+    let Ok((root, dir)) = sys::beneath_root(&p[..n + 1]) else { return 1 };
     loop {
         let mut nm = [0u8; sys::READDIR_NAME_BYTES];
-        let (mut size, mut isdir) = (0u32, 0u32);
-        if sys::readdir(&p[..n + 1], idx, &mut nm, &mut size, &mut isdir) != 0 {
-            break;
-        }
+        let Ok(Some(entry)) = sys::readdir_at(root, dir, idx, &mut nm) else { break };
         let l = nm.iter().position(|&b| b == 0).unwrap_or(nm.len());
         let mut line = [0u8; sys::READDIR_NAME_BYTES + 2];
         line[..l].copy_from_slice(&nm[..l]);
         let mut k = l;
-        if isdir != 0 {
+        if entry.is_dir {
             line[k] = b'/';
             k += 1;
         }

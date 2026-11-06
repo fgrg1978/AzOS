@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// `stat` reads its path like `open` does, so its argument handling is pinned
-// from ring 3 below, where a wild pointer is a refused copy, not a fault.
+// `statat` reads its name like `openat` does, so its argument handling is
+// pinned from ring 3 below, where a wild pointer is a refused copy, not a
+// fault. Every name is beneath a directory handle on `/` ([`root`]).
 
 use super::harness::serial;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Task `tid` current, bound to a fresh capability table that holds a tree on
+/// `/` with `WRITE`: the directory handle every name below is beneath.
+fn root(tid: u32) -> u64 {
+    ipc_task_pool::shim_bind(tid, 58);
+    azos_ipc::cap_store::reset(tid);
+    azos_sched::set_current_task_tid(tid);
+    azos_ipc::file_cap::file_tree_grant_cap(tid, "/", azos_abi::cap::CapPerms::RW)
+        .expect("tree grant")
+        .raw()
+        .as_raw() as u64
+}
 
 const WILD: [u64; 3] = [1, 0xDEAD_0000_0000, u64::MAX];
 
@@ -16,13 +29,14 @@ fn stat_from_ring_three_refuses_unmapped_pointers() {
     let _g = serial();
     // A real (empty) page table: the checked copy walks it and finds nothing
     // mapped. The `0xBAD0_0000` sentinel other tests use is never walked.
+    let d = root(0x7700_0002);
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     azos_sched::set_current_user_pt(pt);
-    azos_sched::set_current_task_tid(0x7700_0002);
     for p in WILD {
-        assert_eq!(super::sys_stat(p, p), Errno::EFAULT.to_syscall_ret(), "stat {p:#x}");
+        assert_eq!(super::sys_statat(d, p, p), Errno::EFAULT.to_syscall_ret(), "statat {p:#x}");
     }
-    assert_eq!(super::sys_stat(0, 0x1000), Errno::EFAULT.to_syscall_ret());
+    assert_eq!(super::sys_statat(d, 0, 0x1000), Errno::EFAULT.to_syscall_ret());
+    assert_eq!(super::sys_statat(d, 0x1000, 0), Errno::EFAULT.to_syscall_ret());
     azos_sched::set_current_user_pt(0);
 }
 
@@ -61,8 +75,8 @@ impl crate::file_ops::FileOps for Statter {
 
 static STATTER: Statter = Statter;
 
-/// **`DOMAIN_STAT` writes the documented layout** (`STAT_BYTES`'s table) with
-/// the path the caller named, and passes the filesystem's errno on.
+/// **`NODE_STATAT` writes the documented layout** (`STAT_BYTES`'s table) for
+/// the path the name joins to, and passes the filesystem's errno on.
 ///
 /// **Canary.** Swap `STAT_OFF_UID` and `STAT_OFF_GID` in `azos_abi`: the
 /// uid/gid assertions fail.
@@ -72,10 +86,11 @@ fn stat_writes_the_documented_layout() {
     let _g = serial();
     let _u = Uninstall;
     azos_sched::set_current_user_pt(0);
+    let d = root(0x7700_0003);
     crate::file_ops::set_file_ops(&STATTER);
-    let path = b"/x/y\0";
+    let name = b"x/y\0";
     let mut out = [0xEEu8; STAT_BYTES];
-    assert_eq!(super::sys_stat(path.as_ptr() as u64, out.as_mut_ptr() as u64), 0);
+    assert_eq!(super::sys_statat(d, name.as_ptr() as u64, out.as_mut_ptr() as u64), 0);
     let u64_at = |o: usize| u64::from_le_bytes(out[o..o + 8].try_into().unwrap());
     let u32_at = |o: usize| u32::from_le_bytes(out[o..o + 4].try_into().unwrap());
     assert_eq!(u64_at(0), 0x1_2345_6789, "size is the full 64 bits at offset 0");
@@ -85,8 +100,8 @@ fn stat_writes_the_documented_layout() {
     assert_eq!(u32_at(20), 8, "gid");
     assert_eq!((u64_at(24), u64_at(32), u64_at(40)), (0xA1, 0xB2, 0xC3));
     assert_eq!((u64_at(48), u64_at(56)), (0, 0), "reserved words are zero");
-    let other = b"/nope\0";
-    assert_eq!(super::sys_stat(other.as_ptr() as u64, out.as_mut_ptr() as u64), -2);
+    let other = b"nope\0";
+    assert_eq!(super::sys_statat(d, other.as_ptr() as u64, out.as_mut_ptr() as u64), -2);
 }
 
 // ── Owner round 23: rmdir, rename, truncate, fsync, statfs ───────────────────
@@ -145,46 +160,52 @@ impl crate::file_ops::FileOps for Round23 {
 
 static ROUND23: Round23 = Round23;
 
-/// **Nothing installed: each of the five answers `-1`**, as every file call
-/// does, and a null path is `-EFAULT` before the seam is consulted.
+/// **Nothing installed: each answers `-ENOSYS`**, and a null name is
+/// `-EFAULT` before the seam is consulted.
 #[test]
-fn the_round_23_calls_answer_minus_one_uninstalled_and_efault_for_null() {
+fn the_round_23_calls_answer_enosys_uninstalled_and_efault_for_null() {
     use azos_abi::error::Errno;
+    use azos_abi::invoke::UNLINK_DIR;
     let _g = serial();
     let _u = Uninstall;
     azos_sched::set_current_user_pt(0);
+    let d = root(0x7700_0004);
     crate::file_ops::__file_ops_clear_for_tests();
-    let p = b"/fat/X\0".as_ptr() as u64;
+    let p = b"fat/X\0".as_ptr() as u64;
     let mut out = [0u8; azos_abi::syscall_nr::STATFS_BYTES];
-    assert_eq!(super::sys_rmdir(p), -1);
-    assert_eq!(super::sys_rename(p, p), -1);
-    assert_eq!(super::sys_truncate(p, 0), -1);
-    assert_eq!(super::sys_statfs(p, out.as_mut_ptr() as u64, out.len() as u64), -1);
+    let enosys = Errno::ENOSYS.to_syscall_ret();
+    assert_eq!(super::sys_unlinkat(d, p, UNLINK_DIR), enosys);
+    assert_eq!(super::sys_renameat(d, p, p), enosys);
+    assert_eq!(super::sys_truncateat(d, p, 0), enosys);
+    assert_eq!(super::sys_statfsat(d, p, out.as_mut_ptr() as u64, out.len() as u64), enosys);
+    assert_eq!(super::sys_statat(d, p, out.as_mut_ptr() as u64), enosys);
     let efault = Errno::EFAULT.to_syscall_ret();
-    assert_eq!(super::sys_rmdir(0), efault);
-    assert_eq!(super::sys_rename(0, p), efault);
-    assert_eq!(super::sys_rename(p, 0), efault);
-    assert_eq!(super::sys_truncate(0, 1), efault);
-    assert_eq!(super::sys_statfs(0, out.as_mut_ptr() as u64, 48), efault);
-    assert_eq!(super::sys_statfs(p, 0, 48), efault);
+    assert_eq!(super::sys_unlinkat(d, 0, UNLINK_DIR), efault);
+    assert_eq!(super::sys_renameat(d, 0, p), efault);
+    assert_eq!(super::sys_renameat(d, p, 0), efault);
+    assert_eq!(super::sys_truncateat(d, 0, 1), efault);
+    assert_eq!(super::sys_statfsat(d, 0, out.as_mut_ptr() as u64, 48), efault);
+    assert_eq!(super::sys_statfsat(d, p, 0, 48), efault);
+    assert_eq!(super::sys_unlinkat(d, p, 2), Errno::EINVAL.to_syscall_ret(), "an unknown unlink flag");
 }
 
 /// **The paths and the length reach the filesystem as the caller wrote
 /// them**, in order and in full, and its errno comes back unchanged.
 ///
-/// **Canary.** Pass `(to, from)` to `o.rename` in `sys_rename`: the rename
+/// **Canary.** Pass `(to, from)` to `o.rename` in `sys_renameat`: the rename
 /// line reads `/b -> /a`. **Canary.** Truncate `len` to `u32` in
-/// `sys_truncate`: the length reads `0x1`.
+/// `sys_truncateat`: the length reads `0x1`.
 #[test]
 fn the_round_23_calls_pass_their_arguments_and_the_errno_through() {
     let _g = serial();
     let _u = Uninstall;
     azos_sched::set_current_user_pt(0);
+    let d = root(0x7700_0005);
     crate::file_ops::set_file_ops(&ROUND23);
     calls();
-    assert_eq!(super::sys_rmdir(b"/fat/D\0".as_ptr() as u64), -39);
-    assert_eq!(super::sys_rename(b"/a\0".as_ptr() as u64, b"/b\0".as_ptr() as u64), -22);
-    assert_eq!(super::sys_truncate(b"/fat/F\0".as_ptr() as u64, 0x1_0000_0001), -38);
+    assert_eq!(super::sys_unlinkat(d, b"fat/D\0".as_ptr() as u64, azos_abi::invoke::UNLINK_DIR), -39);
+    assert_eq!(super::sys_renameat(d, b"a\0".as_ptr() as u64, b"b\0".as_ptr() as u64), -22);
+    assert_eq!(super::sys_truncateat(d, b"fat/F\0".as_ptr() as u64, 0x1_0000_0001), -38);
     assert_eq!(calls(), vec![
         "rmdir /fat/D".to_string(),
         "rename /a -> /b".to_string(),
@@ -192,13 +213,13 @@ fn the_round_23_calls_pass_their_arguments_and_the_errno_through() {
     ]);
 }
 
-/// **`DOMAIN_STATFS` writes the documented layout**, refuses a buffer shorter
+/// **`NODE_STATFS` writes the documented layout**, refuses a buffer shorter
 /// than `STATFS_BYTES` without writing a byte (and without asking the
 /// filesystem), and passes the filesystem's errno on.
 ///
 /// **Canary.** Swap `STATFS_OFF_BLOCKS` and `STATFS_OFF_BFREE` in
 /// `azos_abi`: the block assertions fail. **Canary.** Delete the length
-/// check in `sys_statfs`: the short buffer answers `0`.
+/// check in `sys_statfsat`: the short buffer answers `0`.
 #[test]
 fn statfs_writes_the_documented_layout_and_refuses_a_short_buffer() {
     use azos_abi::error::Errno;
@@ -206,16 +227,17 @@ fn statfs_writes_the_documented_layout_and_refuses_a_short_buffer() {
     let _g = serial();
     let _u = Uninstall;
     azos_sched::set_current_user_pt(0);
+    let d = root(0x7700_0006);
     crate::file_ops::set_file_ops(&ROUND23);
     calls();
-    let path = b"/fat\0".as_ptr() as u64;
+    let path = b"fat\0".as_ptr() as u64;
     let mut out = [0xEEu8; STATFS_BYTES + 8];
-    assert_eq!(super::sys_statfs(path, out.as_mut_ptr() as u64, (STATFS_BYTES - 1) as u64),
+    assert_eq!(super::sys_statfsat(d, path, out.as_mut_ptr() as u64, (STATFS_BYTES - 1) as u64),
                Errno::EINVAL.to_syscall_ret(), "a short buffer was accepted");
     assert!(out.iter().all(|&b| b == 0xEE), "a refused call wrote to the buffer");
     assert!(calls().is_empty(), "a refused call asked the filesystem");
 
-    assert_eq!(super::sys_statfs(path, out.as_mut_ptr() as u64, out.len() as u64), 0);
+    assert_eq!(super::sys_statfsat(d, path, out.as_mut_ptr() as u64, out.len() as u64), 0);
     let u64_at = |o: usize| u64::from_le_bytes(out[o..o + 8].try_into().unwrap());
     let u32_at = |o: usize| u32::from_le_bytes(out[o..o + 4].try_into().unwrap());
     assert_eq!((u32_at(0), u32_at(4)), (1, 4096), "type and block size");
@@ -225,8 +247,8 @@ fn statfs_writes_the_documented_layout_and_refuses_a_short_buffer() {
     assert_eq!((u32_at(40), u32_at(44)), (12, 0), "name_max and the reserved word");
     assert!(out[STATFS_BYTES..].iter().all(|&b| b == 0xEE), "wrote past STATFS_BYTES");
 
-    let other = b"/nope\0".as_ptr() as u64;
-    assert_eq!(super::sys_statfs(other, out.as_mut_ptr() as u64, out.len() as u64), -2);
+    let other = b"nope\0".as_ptr() as u64;
+    assert_eq!(super::sys_statfsat(d, other, out.as_mut_ptr() as u64, out.len() as u64), -2);
 }
 
 /// **`NODE_FSYNC` syncs the descriptor its `Cap<File>` names**, with

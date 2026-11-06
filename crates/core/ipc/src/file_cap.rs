@@ -3,9 +3,10 @@
 //! `Cap<File>` naming a directory tree: the authority for the calls that
 //! change the tree (wave 10, owner decision).
 //!
-//! `DOMAIN_MKDIR`, `DOMAIN_UNLINK`, `DOMAIN_RMDIR`, `DOMAIN_RENAME` and `DOMAIN_TRUNCATE`
-//! needed no capability: a seccomp profile row was the only gate. A ring-3
-//! caller now needs a `Cap<File>` with `WRITE` whose tree covers the path:
+//! The ops that change the tree (`NODE_MKDIRAT`, `NODE_UNLINKAT`,
+//! `NODE_RENAMEAT`, `NODE_TRUNCATEAT`, and an open that creates or truncates)
+//! name an entry beneath a directory handle; a ring-3 caller also needs a
+//! `Cap<File>` with `WRITE` whose tree covers the path the name joins to:
 //!
 //! * create, remove, rename — the DIRECTORY the entry is in: the path must lie
 //!   strictly under the tree's root (the root itself is not an entry of the

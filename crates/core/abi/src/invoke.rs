@@ -73,8 +73,9 @@ pub const CLASS_ADMIN: u8 = 4;
 /// (`openat`); there is no open by absolute path. A write mode needs the
 /// directory's `WRITE`.
 pub const CLASS_FS_OPEN: u8 = 5;
-/// Class (`Domain`): changes the namespace (`mkdir`, `unlink`, `rmdir`,
-/// `rename`, `truncate`); needs a directory tree the caller holds.
+/// Class (`Node`): changes the namespace beneath a directory the caller holds
+/// (`mkdirat`, `unlinkat`, `renameat`, `truncateat`); needs a held tree with
+/// `WRITE` that covers the entry.
 pub const CLASS_FS_MUTATE: u8 = 6;
 /// Class (`Domain`): loads code (verify a signed module, map it executable).
 pub const CLASS_MODULE: u8 = 7;
@@ -280,40 +281,17 @@ pub const SHM_END_READ: u64 = 1;
 /// [`MEMOBJ_END_DROP`]'s write end.
 pub const SHM_END_WRITE: u64 = 2;
 
-// ── Domain: the namespace and the network, as the caller sees them ──────────
+// ── Domain: the system and the network, as the caller sees them ────────────
 //
-// Paths are resolved in the caller's namespace. A path that names something to
-// read is open to the caller whose image lists the class; one that changes the
-// namespace needs a directory tree the caller holds (`ty::FILE`, a tree) that
-// covers it: the check is the tree's, the handle the caller names is its own
-// domain.
+// No op of the domain takes a path: a name is resolved beneath a directory
+// the caller holds (the `*at` ops of a `Node`, below).
 
-/// Stat the NUL-terminated path `w0` into the buffer `w1`, at least
-/// [`STAT_BYTES`](crate::syscall_nr::STAT_BYTES) (64) long. 0, or -1.
-pub const DOMAIN_STAT: u16 = op(CapKind::Domain, CLASS_READ, 13);
-/// Entry `w1` of directory `w0` (NUL-terminated path): `w2` a name buffer,
-/// `w3` a `*mut u32` for the size, `w4` a `*mut u32` for the is-directory
-/// flag, `w5` the name buffer's length (at least `READDIR_NAME_BYTES`). 0, or
-/// -1 past the last entry. Descriptor form (six words).
-pub const DOMAIN_READDIR: u16 = op(CapKind::Domain, CLASS_READ, 14);
-/// Filesystem facts of path `w0` into the buffer `w1` of `w2` bytes.
-pub const DOMAIN_STATFS: u16 = op(CapKind::Domain, CLASS_READ, 15);
 /// Free pages of memory.
 pub const DOMAIN_MEMINFO: u16 = op(CapKind::Domain, CLASS_READ, 16);
 /// Task facts into the buffer `w0` of `w1` bytes (`TASKINFO_BYTES`).
 pub const DOMAIN_TASKINFO: u16 = op(CapKind::Domain, CLASS_READ, 17);
 /// The interface's IPv4 address, as `u32::from_be_bytes`.
 pub const DOMAIN_NET_GETIP: u16 = op(CapKind::Domain, CLASS_READ, 18);
-/// Make directory `w0`. 0, or a negative code.
-pub const DOMAIN_MKDIR: u16 = op(CapKind::Domain, CLASS_FS_MUTATE, 20);
-/// Remove file `w0`.
-pub const DOMAIN_UNLINK: u16 = op(CapKind::Domain, CLASS_FS_MUTATE, 21);
-/// Remove empty directory `w0`.
-pub const DOMAIN_RMDIR: u16 = op(CapKind::Domain, CLASS_FS_MUTATE, 22);
-/// Rename `w0` to `w1`.
-pub const DOMAIN_RENAME: u16 = op(CapKind::Domain, CLASS_FS_MUTATE, 23);
-/// Truncate or extend file `w0` to `w1` bytes.
-pub const DOMAIN_TRUNCATE: u16 = op(CapKind::Domain, CLASS_FS_MUTATE, 24);
 /// Create a socket: `w0` the domain, `w1` the type, `w2` the protocol; returns a
 /// `ty::SOCKET` handle with `READ|WRITE|DUP|TRANSFER`.
 pub const DOMAIN_SOCKET: u16 = op(CapKind::Domain, CLASS_NET, 28);
@@ -475,6 +453,45 @@ pub const NODE_MMAP: u16 = op(CapKind::Node, CLASS_CTL, 13);
 /// which every duplicate of the handle shares. Returns the new offset, or
 /// `-EINVAL` for a bad whence or a negative result.
 pub const NODE_SEEK: u16 = op(CapKind::Node, CLASS_READ, 16);
+// ── Node: names beneath a directory the caller holds (a `Cap<Dir>`) ─────────
+//
+// Every name is NUL-terminated and relative to the directory the handle
+// names, and stays beneath it (`RESOLVE_BENEATH`): an absolute name, or a
+// `..` that climbs above the directory, is `-EINVAL` and reaches no
+// filesystem; `.` names the directory itself. There is no op by absolute
+// path: a POSIX layer resolves its paths against the directories it holds
+// (its root, its working directory) in ring 3. `READ` on the directory names
+// beneath it. An op that changes the tree (class `FS_MUTATE`) also needs, as
+// an open that changes it, a held tree with `WRITE` that covers the entry
+// (the file itself for a truncate): `-EACCES` when none does, `-EAGAIN`
+// while containment is armed. `-ENOSYS` with no filesystem installed. The
+// same op numbers are the `Dir` interface's (`azos_devif::fs`).
+
+/// The record of the name `w0` into the buffer `w1`, at least
+/// [`STAT_BYTES`](crate::syscall_nr::STAT_BYTES) (64) long. 0, `-ENOENT`.
+pub const NODE_STATAT: u16 = op(CapKind::Node, CLASS_READ, 17);
+/// Entry `w1` of the directory named `w0`: its name into the buffer `w2` of
+/// `w3` bytes (at least [`READDIR_NAME_BYTES`](crate::syscall_nr::READDIR_NAME_BYTES),
+/// always exactly that many written, zero-padded), its size and is-directory
+/// flag (0 or 1) as the first two reply words. 1 for an entry, 0 past the
+/// last.
+pub const NODE_READDIR: u16 = op(CapKind::Node, CLASS_READ, 18);
+/// Capacity and free space of the filesystem the name `w0` is on, into the
+/// buffer `w1` of `w2` bytes (at least
+/// [`STATFS_BYTES`](crate::syscall_nr::STATFS_BYTES)). 0.
+pub const NODE_STATFS: u16 = op(CapKind::Node, CLASS_READ, 19);
+/// Make the directory `w0`. 0, `-EEXIST`.
+pub const NODE_MKDIRAT: u16 = op(CapKind::Node, CLASS_FS_MUTATE, 20);
+/// Remove the entry `w0`; with [`UNLINK_DIR`] in `w1`, the empty directory
+/// (`-ENOTEMPTY` otherwise). Any other flag is `-EINVAL`.
+pub const NODE_UNLINKAT: u16 = op(CapKind::Node, CLASS_FS_MUTATE, 21);
+/// `w1` of [`NODE_UNLINKAT`]: the entry is a directory (`rmdir`).
+pub const UNLINK_DIR: u64 = 1;
+/// Rename the entry `w0` to `w1`, both beneath the directory, within one
+/// mounted filesystem (`-EINVAL` across two).
+pub const NODE_RENAMEAT: u16 = op(CapKind::Node, CLASS_FS_MUTATE, 22);
+/// Set the size of the file `w0` to `w1` bytes.
+pub const NODE_TRUNCATEAT: u16 = op(CapKind::Node, CLASS_FS_MUTATE, 23);
 /// The `ty::FILE` resource of the directory on `/`, the task's root
 /// `Cap<Dir>`: what `SYS_CAP_INFO` looks up to find it. The kernel interns the
 /// tree on `/` first, so the value never depends on the order the topology

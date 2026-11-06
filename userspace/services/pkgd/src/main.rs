@@ -251,7 +251,7 @@ impl Files for SysFiles {
 
     fn unlink(&mut self, path: &[u8]) -> Unlinked {
         let Some((p, n)) = Self::cstr(path) else { return Unlinked::Failed };
-        if sys::unlink(&p[..n]) == 0 {
+        if sys::beneath_root(&p[..n]).and_then(|(d, name)| sys::unlink_at(d, name)).is_ok() {
             return Unlinked::Done;
         }
         // Say "missing" only when the file is not there.
@@ -261,20 +261,18 @@ impl Files for SysFiles {
     fn exists(&mut self, path: &[u8]) -> bool {
         let Some((p, n)) = Self::cstr(path) else { return false };
         let mut st = [0u8; azos_abi::syscall_nr::STAT_BYTES];
-        sys::stat(&p[..n], &mut st) == 0
+        sys::beneath_root(&p[..n]).and_then(|(d, name)| sys::stat_at(d, name, &mut st)).is_ok()
     }
 
     fn mkdir(&mut self, path: &[u8]) -> bool {
         let Some((p, n)) = Self::cstr(path) else { return false };
-        sys::mkdir(&p[..n]) == 0
+        sys::beneath_root(&p[..n]).and_then(|(d, name)| sys::mkdir_at(d, name)).is_ok()
     }
 
     fn entry(&mut self, dir: &[u8], index: usize, name: &mut [u8; NAME_BUF]) -> Option<usize> {
         let (p, n) = Self::cstr(dir)?;
-        let (mut size, mut is_dir) = (0u32, 0u32);
-        if sys::readdir(&p[..n], index as u64, name, &mut size, &mut is_dir) != 0 {
-            return None;
-        }
+        let (d, dir) = sys::beneath_root(&p[..n]).ok()?;
+        sys::readdir_at(d, dir, u32::try_from(index).ok()?, name).ok()??;
         Some(name.iter().position(|&b| b == 0).unwrap_or(name.len()))
     }
 }

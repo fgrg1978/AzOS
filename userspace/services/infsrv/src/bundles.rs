@@ -17,7 +17,7 @@ use infsrv::load::{self, Arena, Fate, LoadError};
 
 /// Directory entries looked at (a volume holds the images and a few data
 /// files, not thousands).
-const SCAN_MAX: u64 = 256;
+const SCAN_MAX: u32 = 256;
 
 fn is_bundle(name: &[u8]) -> bool {
     let n = name.iter().position(|&c| c == 0).unwrap_or(name.len());
@@ -39,13 +39,11 @@ fn fate_text(f: Fate) -> &'static [u8] {
 /// Load every bundle on the volume into `broker`.
 pub fn load_all(broker: &mut Broker, arena: &mut Arena<'_>) {
     let mut held = 0u32;
+    let Ok((root, fat)) = sys::beneath_root(b"/fat\0") else { return };
     for index in 0..SCAN_MAX {
         let mut name = [0u8; sys::READDIR_NAME_BYTES];
-        let (mut size, mut is_dir) = (0u32, 0u32);
-        if sys::readdir(b"/fat\0", index, &mut name, &mut size, &mut is_dir) != 0 {
-            break;
-        }
-        if is_dir != 0 || !is_bundle(&name) {
+        let Ok(Some(entry)) = sys::readdir_at(root, fat, index, &mut name) else { break };
+        if entry.is_dir || !is_bundle(&name) {
             continue;
         }
         let n = name.iter().position(|&c| c == 0).unwrap_or(name.len());

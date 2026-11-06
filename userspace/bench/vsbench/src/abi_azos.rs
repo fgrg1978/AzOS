@@ -511,12 +511,18 @@ impl super::bench_core::Uaccess for AzosAbi {
         sys::futex_wait(w, wrong, 0) as i64
     }
 
-    /// `DOMAIN_STAT` straight: `sys::stat` first scans the path for its NUL
-    /// in ring 3, which the Linux side does not do.
+    /// `NODE_STATAT` beneath the root directory, straight: `sys::stat_at`
+    /// first scans the name for its NUL in ring 3, which the Linux side
+    /// (`newfstatat(AT_FDCWD, ..)`) does not do. The kernel copies the whole
+    /// name before it resolves it.
     fn ua_cstr(&self, path: &[u8]) -> i64 {
         let mut st = [0u8; 64];
-        let a = sys::invoke_abi::DOMAIN_SELF.as_raw();
-        sys::invoke(a, sys::invoke_abi::DOMAIN_STAT, [path.as_ptr() as u64, st.as_mut_ptr() as u64, 0, 0]).0 as i64
+        let root = sys::root_dir();
+        if root < 0 {
+            return root as i64;
+        }
+        let name = sys::below_root(path);
+        sys::invoke(root as u32, sys::invoke_abi::NODE_STATAT, [name.as_ptr() as u64, st.as_mut_ptr() as u64, 0, 0]).0 as i64
     }
 
     fn ua_file_setup(&self) -> Result<(), i64> {

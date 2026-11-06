@@ -108,11 +108,16 @@ impl Native for Sys {
     fn pipe_ready(&self, h: u32) -> Option<PipeReady> {
         sys::pipe::ready(h).map(|r| PipeReady { write_end: r.end == sys::pipe::End::Write, ready: r.ready, hup: r.hup })
     }
-    fn stat(&self, path: &[u8], out: &mut [u8; azos_abi::syscall_nr::STAT_BYTES]) -> i64 {
-        sys::stat(path, out) as i64
+    fn stat(&self, path: &[u8], out: &mut [u8; azos_abi::syscall_nr::STAT_BYTES]) -> Result<(), i64> {
+        let (root, name) = sys::beneath_root(path).map_err(|e| e.to_syscall_ret())?;
+        sys::stat_at(root, name, out).map_err(|e| e.to_syscall_ret())
     }
-    fn readdir(&self, dir: &[u8], idx: u64, name: &mut [u8; NAME_BYTES], size: &mut u32, is_dir: &mut u32) -> i64 {
-        sys::readdir(dir, idx, name, size, is_dir) as i64
+    fn readdir(&self, dir: &[u8], idx: u32, name: &mut [u8; NAME_BYTES]) -> Result<Option<(u32, bool)>, i64> {
+        let (root, dir) = sys::beneath_root(dir).map_err(|e| e.to_syscall_ret())?;
+        match sys::readdir_at(root, dir, idx, name) {
+            Ok(e) => Ok(e.map(|e| (e.size, e.is_dir))),
+            Err(e) => Err(e.to_syscall_ret()),
+        }
     }
     fn page_size(&self) -> u64 {
         sys::PAGE_SIZE as u64

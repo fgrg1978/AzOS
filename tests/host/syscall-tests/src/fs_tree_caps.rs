@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// Wave 10 (owner decision): the calls that change the tree — mkdir, unlink,
-// rmdir, rename, truncate — need a `Cap<File>` with WRITE naming a directory
-// tree that covers the path (`azos_ipc::file_cap`, minted only by the
-// topology). Driven from ring 3 (a user page table installed, the paths in
+// The ops that change the tree — mkdirat, unlinkat (and its rmdir form),
+// renameat, truncateat — name an entry beneath a directory handle and need a
+// `Cap<File>` with WRITE naming a directory tree that covers the path the
+// name joins to (`azos_ipc::file_cap`, minted only by the topology). Driven from ring 3 (a user page table installed, the paths in
 // mapped user memory) against a recording `FileOps`: "admitted" is the call
 // reaching the filesystem, whose sentinel answer (-77) comes back; "refused"
 // is `-EACCES` with the filesystem never called and a `File` denial recorded.
@@ -105,8 +105,16 @@ fn grant(tid: u32, root: &str, perms: CapPerms) {
 
 fn eacces() -> i64 { Errno::EACCES.to_syscall_ret() }
 
-/// **No capability: all five are refused before the filesystem sees them**,
-/// each refusal recorded as a `File` denial with the write bit.
+/// The `*at` ops through the directory handle `d`.
+fn mkdirat(d: u64, n: u64) -> i64 { sys_mkdirat(d, n) }
+fn unlinkat(d: u64, n: u64) -> i64 { sys_unlinkat(d, n, 0) }
+fn rmdirat(d: u64, n: u64) -> i64 { sys_unlinkat(d, n, azos_abi::invoke::UNLINK_DIR) }
+fn renameat(d: u64, a: u64, b: u64) -> i64 { sys_renameat(d, a, b) }
+fn truncateat(d: u64, n: u64) -> i64 { sys_truncateat(d, n, 0) }
+
+/// **No write tree: all five are refused before the filesystem sees them**,
+/// each refusal recorded as a `File` denial with the write bit. The names
+/// are beneath a read-only root directory, which names but does not write.
 ///
 /// **Canary.** Make `fs_tree_gate` return `Ok(())` for ring 3: every call
 /// reaches the filesystem and answers -77.
@@ -114,112 +122,128 @@ fn eacces() -> i64 { Errno::EACCES.to_syscall_ret() }
 fn without_a_tree_capability_every_tree_call_is_refused_and_recorded() {
     let _g = serial();
     let _u = Uninstall;
-    let page = ring3(0x7A00_0001);
-    let (a, b) = paths(page, b"/fat/A.TXT", b"/fat/B.TXT");
-    assert_eq!(sys_mkdir(a), eacces());
-    assert_eq!(sys_unlink(a), eacces());
-    assert_eq!(sys_rmdir(a), eacces());
-    assert_eq!(sys_rename(a, b), eacces());
-    assert_eq!(sys_truncate(a, 0), eacces());
+    let tid = 0x7A00_0001;
+    let page = ring3(tid);
+    let root = dir(tid, "/", CapPerms::READ);
+    let (a, b) = paths(page, b"fat/A.TXT", b"fat/B.TXT");
+    assert_eq!(mkdirat(root, a), eacces());
+    assert_eq!(unlinkat(root, a), eacces());
+    assert_eq!(rmdirat(root, a), eacces());
+    assert_eq!(renameat(root, a, b), eacces());
+    assert_eq!(truncateat(root, a), eacces());
     assert_eq!(calls(), Vec::<String>::new(), "a refused call reached the filesystem");
     assert_eq!(seen(), vec![(FILE_CODE, 0, true); 5]);
 }
 
 /// **A WRITE tree on `/fat` admits entries under it and nothing else.**
-/// `/fat/A.TXT` reaches the filesystem for all five; `/fatx/A` (a byte
-/// prefix, not a component prefix), `/A.TXT` and `/fat` itself (not an entry
-/// of the tree) are refused for the entry calls; truncate may name the root.
+/// `fat/A.TXT` reaches the filesystem for all five, as `/fat/A.TXT`;
+/// `fatx/A` (a byte prefix, not a component prefix), `A.TXT` and `fat`
+/// itself (not an entry of the tree) are refused for the entry calls;
+/// truncate may name the root.
 ///
 /// **Canary.** Compare the tree with a byte `starts_with` instead of
-/// component-wise in `tree_covers_path`: `/fatx/A` is admitted.
+/// component-wise in `tree_covers_path`: `fatx/A` is admitted.
 #[test]
 fn a_write_tree_admits_its_entries_and_nothing_outside() {
     let _g = serial();
     let _u = Uninstall;
     let tid = 0x7A00_0002;
     let page = ring3(tid);
+    let root = dir(tid, "/", CapPerms::READ);
     grant(tid, "/fat", CapPerms::RW);
 
-    let (a, b) = paths(page, b"/fat/A.TXT", b"/fat/sub/B.TXT");
-    assert_eq!(sys_mkdir(a), FS_ANSWER);
-    assert_eq!(sys_unlink(a), FS_ANSWER);
-    assert_eq!(sys_rmdir(a), FS_ANSWER);
-    assert_eq!(sys_rename(a, b), FS_ANSWER);
-    assert_eq!(sys_truncate(b, 0), FS_ANSWER);
+    let (a, b) = paths(page, b"fat/A.TXT", b"fat/sub/B.TXT");
+    assert_eq!(mkdirat(root, a), FS_ANSWER);
+    assert_eq!(unlinkat(root, a), FS_ANSWER);
+    assert_eq!(rmdirat(root, a), FS_ANSWER);
+    assert_eq!(renameat(root, a, b), FS_ANSWER);
+    assert_eq!(truncateat(root, b), FS_ANSWER);
     assert_eq!(calls(), vec![
         "mkdir /fat/A.TXT", "unlink /fat/A.TXT", "rmdir /fat/A.TXT",
         "rename /fat/A.TXT /fat/sub/B.TXT", "truncate /fat/sub/B.TXT",
     ]);
     assert_eq!(seen(), vec![], "an admitted call was recorded");
 
-    let (x, _) = paths(page, b"/fatx/A", b"");
-    assert_eq!(sys_mkdir(x), eacces(), "/fatx is not under /fat");
-    let (x, _) = paths(page, b"/A.TXT", b"");
-    assert_eq!(sys_unlink(x), eacces());
-    let (x, _) = paths(page, b"/fat", b"");
-    assert_eq!(sys_rmdir(x), eacces(), "the tree's root is not an entry of it");
-    assert_eq!(sys_truncate(x, 0), FS_ANSWER, "truncate may name the root itself");
-    let (x, y) = paths(page, b"/fat/A.TXT", b"/nomount/X");
-    assert_eq!(sys_rename(x, y), eacces(), "one uncovered end refuses the rename");
-    let (x, y) = paths(page, b"/nomount/X", b"/fat/A.TXT");
-    assert_eq!(sys_rename(x, y), eacces());
+    let (x, _) = paths(page, b"fatx/A", b"");
+    assert_eq!(mkdirat(root, x), eacces(), "/fatx is not under /fat");
+    let (x, _) = paths(page, b"A.TXT", b"");
+    assert_eq!(unlinkat(root, x), eacces());
+    let (x, _) = paths(page, b"fat", b"");
+    assert_eq!(rmdirat(root, x), eacces(), "the tree's root is not an entry of it");
+    assert_eq!(truncateat(root, x), FS_ANSWER, "truncate may name the root itself");
+    let (x, y) = paths(page, b"fat/A.TXT", b"nomount/X");
+    assert_eq!(renameat(root, x, y), eacces(), "one uncovered end refuses the rename");
+    let (x, y) = paths(page, b"nomount/X", b"fat/A.TXT");
+    assert_eq!(renameat(root, x, y), eacces());
     assert_eq!(calls(), vec!["truncate /fat"]);
 }
 
-/// **The tree check and the filesystem see one spelling.** The check skips
-/// empty components, so `//tmp/a` is under a `/tmp` tree; the filesystem must
-/// then be handed `/tmp/a`, or its router would take `//tmp/a` for an entry of
-/// `/` and a `/tmp` holder would change `/`. `.` and `..` are refused.
+/// **The tree check and the filesystem see one spelling**: the name joined
+/// beneath the directory, `//` collapsed and `.` taken out, so `tmp//a` is
+/// handed to the filesystem as `/tmp/a`, the path the check judged. A `..`
+/// that stays beneath the directory is resolved there: `fat/../tmp/a` is
+/// `/tmp/a`, and `tmp/../fat/a` is judged as `/fat/a` (no tree).
 ///
-/// **Canary.** `copy_path_from_user` without `collapse_slashes`: the
-/// filesystem is handed `//tmp/a`.
+/// **Canary.** In `join_beneath`, push an empty component instead of
+/// skipping it: the filesystem is handed `/tmp//a`.
 #[test]
 fn a_tree_holder_reaches_the_filesystem_by_the_spelling_the_check_judged() {
     let _g = serial();
     let _u = Uninstall;
     let tid = 0x7A00_00A1;
     let page = ring3(tid);
+    let root = dir(tid, "/", CapPerms::READ);
     grant(tid, "/tmp", CapPerms::RW);
 
-    let (a, b) = paths(page, b"//tmp/a", b"/tmp///b");
-    assert_eq!(sys_mkdir(a), FS_ANSWER);
-    assert_eq!(sys_unlink(a), FS_ANSWER);
-    assert_eq!(sys_rename(a, b), FS_ANSWER);
-    assert_eq!(calls(), vec!["mkdir /tmp/a", "unlink /tmp/a", "rename /tmp/a /tmp/b"]);
+    let (a, b) = paths(page, b"tmp//a", b"./tmp///b");
+    assert_eq!(mkdirat(root, a), FS_ANSWER);
+    assert_eq!(unlinkat(root, a), FS_ANSWER);
+    assert_eq!(renameat(root, a, b), FS_ANSWER);
+    let (x, _) = paths(page, b"fat/../tmp/a", b"");
+    assert_eq!(mkdirat(root, x), FS_ANSWER);
+    assert_eq!(calls(), vec!["mkdir /tmp/a", "unlink /tmp/a", "rename /tmp/a /tmp/b", "mkdir /tmp/a"]);
 
-    let (x, _) = paths(page, b"/./tmp/a", b"");
-    assert_eq!(sys_mkdir(x), Errno::EINVAL.to_syscall_ret(), "a `.` component is not resolved");
-    let (x, _) = paths(page, b"/tmp/../a", b"");
-    assert_eq!(sys_mkdir(x), Errno::EINVAL.to_syscall_ret());
-    let (x, _) = paths(page, b"//fat/a", b"");
-    assert_eq!(sys_mkdir(x), eacces(), "and `//` does not widen the tree");
+    let (x, _) = paths(page, b"tmp/../fat/a", b"");
+    assert_eq!(mkdirat(root, x), eacces(), "a `..` does not carry the /tmp tree along");
     assert_eq!(calls(), Vec::<String>::new());
 }
 
-/// **READ is not enough, and `.`/`..` and relative paths are refused with
-/// `-EINVAL`** — the check does not resolve them, so it does not accept them.
+/// **A name stays beneath its directory** (`RESOLVE_BENEATH`). Through a
+/// directory on `/tmp/a`, with a WRITE tree on all of `/tmp`: a `..` that
+/// climbs above the directory and an absolute name are `-EINVAL`, and the
+/// filesystem is never asked, though `/tmp/b` would be covered; a `..` that
+/// stays beneath is resolved there. A READ tree is not a write tree.
 ///
-/// **Canary.** Drop the `path_is_plain` check in `fs_tree_gate`:
-/// `/fat/../x` answers `-EACCES` (the tree check refuses it too), not
-/// `-EINVAL` — the distinct errno is what the canary moves.
+/// **Canary.** In `azos_common::path::join_beneath`, let a `..` at the
+/// directory's floor climb into the root's own components (pop below
+/// `floor`): `../b` is handed to the filesystem as `/tmp/b`.
 #[test]
-fn a_read_tree_is_refused_and_dot_paths_are_invalid() {
+fn a_name_cannot_climb_above_its_directory() {
     let _g = serial();
     let _u = Uninstall;
     let tid = 0x7A00_0003;
     let page = ring3(tid);
-    grant(tid, "/fat", CapPerms::READ);
-    let (a, _) = paths(page, b"/fat/A.TXT", b"");
-    assert_eq!(sys_mkdir(a), eacces(), "a READ tree admitted a mkdir");
-    grant(tid, "/", CapPerms::RW);
+    let d = dir(tid, "/tmp/a", CapPerms::RW);
+    grant(tid, "/tmp", CapPerms::RW);
     let einval = Errno::EINVAL.to_syscall_ret();
-    for p in [&b"/fat/../x"[..], b"/fat/./x", b"fat/x", b"/fat/sub/.."] {
-        let (a, _) = paths(page, p, b"");
-        assert_eq!(sys_unlink(a), einval, "{}", s(p));
+    for p in [&b"../b"[..], b"x/../../b", b"/tmp/b", b"..", b"./../b"] {
+        let (n, _) = paths(page, p, b"");
+        assert_eq!(mkdirat(d, n), einval, "mkdirat {}", s(p));
+        assert_eq!(unlinkat(d, n), einval, "unlinkat {}", s(p));
     }
-    assert_eq!(calls(), Vec::<String>::new());
-    let (a, _) = paths(page, b"//fat//A.TXT", b"");
-    assert_eq!(sys_unlink(a), FS_ANSWER, "a `/` tree covers every plain path");
+    let (n, m) = paths(page, b"x", b"../b");
+    assert_eq!(renameat(d, n, m), einval, "a rename whose target climbs out");
+    assert_eq!(renameat(d, m, n), einval, "a rename whose source climbs out");
+    assert_eq!(calls(), Vec::<String>::new(), "an escape reached the filesystem");
+    assert_eq!(seen(), vec![], "an escape is malformed, not a denial");
+
+    let (n, _) = paths(page, b"x/../y", b"");
+    assert_eq!(mkdirat(d, n), FS_ANSWER);
+    assert_eq!(calls(), vec!["mkdir /tmp/a/y"]);
+
+    let r = dir(tid, "/fat", CapPerms::READ);
+    let (n, _) = paths(page, b"A.TXT", b"");
+    assert_eq!(mkdirat(r, n), eacces(), "a READ tree admitted a mkdir");
 }
 
 /// **A holder is contained while degraded mode is armed** (`-EAGAIN`, not
@@ -233,28 +257,33 @@ fn a_tree_holder_is_contained_while_degraded() {
     let _u = Uninstall;
     let tid = 0x7A00_0004;
     let page = ring3(tid);
+    let root = dir(tid, "/", CapPerms::READ);
     grant(tid, "/fat", CapPerms::RW);
-    let (a, b) = paths(page, b"/fat/A.TXT", b"/other/B");
+    let (a, b) = paths(page, b"fat/A.TXT", b"other/B");
     azos_ipc::cap::degraded_set(true);
-    let held = sys_mkdir(a);
-    let not_held = sys_mkdir(b);
+    let held = mkdirat(root, a);
+    let not_held = mkdirat(root, b);
     azos_ipc::cap::degraded_set(false);
     assert_eq!(held, Errno::EAGAIN.to_syscall_ret());
     assert_eq!(not_held, eacces());
     assert_eq!(seen(), vec![(FILE_CODE, 0, true)], "only the non-holder is recorded");
 }
 
-/// **Kernel tasks pass**, as they pass `cap_check`: the shell, OTA and the
-/// panic writer call these with no capability table.
+/// **Kernel tasks need no write tree**, as they pass `cap_check`: the
+/// directory still names where the name is (a kernel task acts beneath a
+/// directory it holds, as any other).
 #[test]
 fn kernel_tasks_need_no_tree_capability() {
     let _g = serial();
     let _u = Uninstall;
-    let _ = ring3(0x7A00_0005);
+    let tid = 0x7A00_0005;
+    let _ = ring3(tid);
+    let root = dir(tid, "/", CapPerms::READ);
     azos_sched::set_current_user_pt(0);
-    let p = b"/anywhere/X\0".as_ptr() as u64;
-    assert_eq!(sys_mkdir(p), FS_ANSWER);
-    assert_eq!(sys_truncate(p, 1), FS_ANSWER);
+    let p = b"anywhere/X\0".as_ptr() as u64;
+    assert_eq!(mkdirat(root, p), FS_ANSWER);
+    assert_eq!(sys_truncateat(root, p, 1), FS_ANSWER);
+    assert_eq!(calls(), vec!["mkdir /anywhere/X", "truncate /anywhere/X"]);
     assert_eq!(seen(), vec![]);
 }
 

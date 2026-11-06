@@ -1048,7 +1048,7 @@ pub const SYS_INVOKE: u64 = 20;
 /// Foundational case 1 (protection: copies an address space).
 pub const SYS_FOREIGN_FORK: u64 = 30;
 
-/// Bytes the stat op of the domain (`DOMAIN_STAT`) writes to its buffer: all little-endian,
+/// Bytes the stat op of a directory (`NODE_STATAT`) writes to its buffer: all little-endian,
 /// at these offsets. The caller's buffer must be at least this long.
 ///
 /// | off | type | field |
@@ -1088,7 +1088,12 @@ pub const STAT_S_IFDIR: u32 = 0o040000;
 
 pub const STAT_S_IFREG: u32 = 0o100000;
 
-/// Bytes the readdir op of the domain (`DOMAIN_READDIR`) writes into its name buffer — **always exactly this
+/// Bytes one file read or write moves at most (`NODE_READ`, `NODE_WRITE`): the
+/// kernel bounces through a buffer of this size and clamps a longer count, so
+/// a short count is normal, not an error.
+pub const IO_MAX_BYTES: usize = 4096;
+
+/// Bytes the readdir op of a directory (`NODE_READDIR`) writes into its name buffer — **always exactly this
 /// many**, zero-padding a short name.
 ///
 /// Lives here rather than in `libsys` so the kernel and userspace read ONE
@@ -1096,7 +1101,7 @@ pub const STAT_S_IFREG: u32 = 0o100000;
 /// kernel wrote 64 bytes because a constant it could not see said so.
 pub const READDIR_NAME_BYTES: usize = 64;
 
-/// Bytes the statfs op of the domain (`DOMAIN_STATFS`) writes: all little-endian, at these offsets. A shorter
+/// Bytes the statfs op of a directory (`NODE_STATFS`) writes: all little-endian, at these offsets. A shorter
 /// buffer is refused with `-EINVAL` and nothing is written.
 ///
 /// | off | type | field |

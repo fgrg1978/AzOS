@@ -263,9 +263,8 @@ impl SeqFile for DiskFile {
 /// Open the disk read-write, else read-only; `None` when there is no image.
 fn open_disk() -> Option<SeqStore<DiskFile>> {
     let mut st = [0u8; azos_abi::syscall_nr::STAT_BYTES];
-    if sys::stat(DISK, &mut st) != 0 {
-        return None;
-    }
+    let (root, disk) = sys::beneath_root(DISK).ok()?;
+    sys::stat_at(root, disk, &mut st).ok()?;
     let bytes = u64::from_le_bytes([st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]]);
     let (cap, ro) = match sys::open_root(DISK, O_RDWR) {
         h if h > 0 => (h as u32, false),

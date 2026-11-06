@@ -1556,10 +1556,9 @@ const fn parse_page_size(s: &[u8]) -> usize {
 //  File I/O
 // ---------------------------------------------------------------------------
 
-/// Largest single transfer honoured by [`read`] / [`write()`]. The kernel
-/// bounces through a 4 KiB stack buffer (`handlers.rs::sys_read`, `::sys_write`) and
-/// silently clamps anything longer — a short count is normal, not an error.
-pub const IO_MAX_BYTES: usize = 4096;
+/// Largest single transfer honoured by [`read`] / [`write()`]: the kernel
+/// clamps anything longer, so a short count is normal, not an error.
+pub use azos_abi::syscall_nr::IO_MAX_BYTES;
 
 /// The capability handle a POSIX-named call was given, or `None` for a value
 /// no handle can take. The kernel reads a handle as 32 bits, so a wider value
@@ -1639,6 +1638,21 @@ pub fn open_root(path: &[u8], flags: u64) -> isize {
         return root;
     }
     open_at(root as u32, below_root(path), flags)
+}
+
+/// This task's root directory ([`root_dir`]) and the name of the absolute,
+/// NUL-terminated `path` beneath it (`.` for `/` itself): what a program given
+/// an absolute path passes to the `*at` ops. The kernel takes no absolute
+/// path; this resolves nothing either, so a `..` that would climb above the
+/// root is still the kernel's to refuse. `ENOENT` when the task's row grants
+/// no root.
+pub fn beneath_root(path: &[u8]) -> Result<(u32, &[u8]), Errno> {
+    let root = root_dir();
+    if root < 0 {
+        return Err(errno_of(root));
+    }
+    let name = below_root(path);
+    Ok((root as u32, if name.first() == Some(&0) { b".\0" } else { name }))
 }
 
 /// Close what a handle names: a file from [`open_at`], a socket from
@@ -1784,113 +1798,118 @@ pub fn close_typed(cap: u32) -> isize {
 //  Filesystem
 // ---------------------------------------------------------------------------
 
-/// Stat a file: size, type and metadata of `path` (NUL-terminated), written
-/// to `buf` in the layout `azos_abi::syscall_nr::STAT_BYTES` documents.
-/// `0`, `-ENOENT` for no such file, `-EFAULT` for a bad
-/// pointer. `buf` shorter than `STAT_BYTES` is refused here with `E_INVAL`,
-/// since the kernel always writes the whole record.
-pub fn stat(path: &[u8], buf: &mut [u8]) -> isize {
-    if !has_nul(path) || buf.len() < azos_abi::syscall_nr::STAT_BYTES {
-        return E_INVAL;
-    }
-    invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_STAT, [path.as_ptr() as u64, buf.as_mut_ptr() as u64, 0, 0]).0
+// Every name below is NUL-terminated and relative to the directory `dir` (a
+// `Cap<Dir>`: [`root_dir`], or a directory the task holds), and cannot leave it:
+// the kernel refuses an absolute name and a `..` that climbs above `dir`
+// (`Errno::EINVAL`). `.` names `dir` itself. There is no op by absolute path;
+// a program given one resolves it against the directory it was given beneath
+// ([`below_root`] for the root). Each answers the kernel's refusal as an
+// [`Errno`].
+
+pub use azos_abi::error::Errno;
+
+/// The answer of an op that returns 0 or a negative errno, typed.
+fn fs_done(rc: isize) -> Result<(), Errno> {
+    if rc >= 0 { Ok(()) } else { Err(errno_of(rc)) }
 }
 
-/// Size of the name buffer [`readdir`] must be given. The kernel writes
+/// The [`Errno`] a negative answer names (`EIO` for a code the ABI does not
+/// define: the filesystem failed in a way it did not say).
+fn errno_of(rc: isize) -> Errno {
+    Errno::from_syscall_ret(rc as i64).unwrap_or(Errno::EIO)
+}
+
+/// The record of `name` beneath `dir` (`NODE_STATAT`): size, type and
+/// metadata in the layout `azos_abi::syscall_nr::STAT_BYTES` documents.
+/// `ENOENT` for no such entry.
+pub fn stat_at(dir: u32, name: &[u8], out: &mut [u8; azos_abi::syscall_nr::STAT_BYTES]) -> Result<(), Errno> {
+    if !has_nul(name) {
+        return Err(Errno::EINVAL);
+    }
+    fs_done(invoke(dir, invoke_abi::NODE_STATAT, [name.as_ptr() as u64, out.as_mut_ptr() as u64, 0, 0]).0)
+}
+
+/// Size of the name buffer [`readdir_at`] must be given. The kernel writes
 /// **exactly** this many bytes, always — including on a short name, where the
 /// tail is zero-padded.
-///
-/// Re-exported, NOT restated: this used to be declared here and nowhere else,
-/// so the kernel wrote 64 bytes because a constant it could not see said so.
-/// The syscall now takes the caller's length in `a5` and compares it against
-/// this same definition.
 pub use azos_abi::syscall_nr::READDIR_NAME_BYTES;
 
-/// Read one directory entry by index.
-///
-/// ABI (`sys_readdir`, `handlers.rs::sys_readdir`; dispatch `dispatch.rs`):
-///   a0 = **NUL-terminated directory path** (not an fd),
-///   a1 = entry index,
-///   a2 = name_out — a 64-byte buffer, always fully written,
-///   a3 = size_out — `*u32` (4 bytes), or 0 to skip,
-///   a4 = is_dir_out — `*u32` (4 bytes), or 0 to skip.
-///
-/// **The previous wrapper was `readdir(fd, buf, buf.len(), index,
-/// max_entries)` — five arguments in an entirely different order, opening
-/// with an fd where the kernel reads a path pointer.** Nothing called it.
-///
-/// The parameters are typed as fixed-size arrays deliberately: the kernel
-/// never learns a length for any of the three outputs, so the only place the
-/// 64/4/4 sizes can be enforced is here.
-///
-/// Returns 0 when an entry was written, `-1` when `index` is past the end or
-/// the path does not resolve.
-pub fn readdir(
-    dir_path: &[u8],
-    index: u64,
+/// One entry of a directory, as [`readdir_at`] answers it (the name is in the
+/// caller's buffer).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirEntry {
+    /// The file's size in bytes (0 for a directory).
+    pub size: u32,
+    pub is_dir: bool,
+}
+
+/// Entry `index` of the directory `name` beneath `dir` (`NODE_READDIR`): its
+/// name into `name_out` (NUL-padded), `None` past the last entry.
+pub fn readdir_at(
+    dir: u32,
+    name: &[u8],
+    index: u32,
     name_out: &mut [u8; READDIR_NAME_BYTES],
-    size_out: &mut u32,
-    is_dir_out: &mut u32,
-) -> isize {
-    if !has_nul(dir_path) {
-        return E_INVAL;
+) -> Result<Option<DirEntry>, Errno> {
+    if !has_nul(name) {
+        return Err(Errno::EINVAL);
     }
-    // Six words: past what the register form takes.
-    let mut d = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: 6, ..MsgDesc::default() };
-    d.words[..6].copy_from_slice(&[
-        dir_path.as_ptr() as u64,
-        index,
-        name_out.as_mut_ptr() as u64,
-        size_out as *mut u32 as u64,
-        is_dir_out as *mut u32 as u64,
-        // The length the kernel checks. The array type above is what makes
-        // this true rather than hopeful.
-        READDIR_NAME_BYTES as u64,
-    ]);
-    invoke_desc(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_READDIR, &mut d)
+    let (rc, rep) = invoke(
+        dir,
+        invoke_abi::NODE_READDIR,
+        [name.as_ptr() as u64, index as u64, name_out.as_mut_ptr() as u64, READDIR_NAME_BYTES as u64],
+    );
+    match rc {
+        0 => Ok(None),
+        1 => Ok(Some(DirEntry { size: rep[0] as u32, is_dir: rep[1] != 0 })),
+        _ => Err(errno_of(rc)),
+    }
 }
 
-/// Create a directory at `path` (**NUL-terminated** — see [`open_at`]).
-pub fn mkdir(path: &[u8]) -> isize {
-    if !has_nul(path) {
-        return E_INVAL;
+/// Create the directory `name` beneath `dir` (`NODE_MKDIRAT`). Needs a held
+/// tree with `WRITE` covering it (`EACCES` otherwise); `EEXIST`.
+pub fn mkdir_at(dir: u32, name: &[u8]) -> Result<(), Errno> {
+    if !has_nul(name) {
+        return Err(Errno::EINVAL);
     }
-    invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_MKDIR, [path.as_ptr() as u64, 0, 0, 0]).0
+    fs_done(invoke(dir, invoke_abi::NODE_MKDIRAT, [name.as_ptr() as u64, 0, 0, 0]).0)
 }
 
-/// Remove a file or directory at `path` (**NUL-terminated** — see [`open_at`]).
-pub fn unlink(path: &[u8]) -> isize {
-    if !has_nul(path) {
-        return E_INVAL;
+/// Remove the file `name` beneath `dir` (`NODE_UNLINKAT`); `EISDIR` for a
+/// directory ([`rmdir_at`]).
+pub fn unlink_at(dir: u32, name: &[u8]) -> Result<(), Errno> {
+    if !has_nul(name) {
+        return Err(Errno::EINVAL);
     }
-    invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_UNLINK, [path.as_ptr() as u64, 0, 0, 0]).0
+    fs_done(invoke(dir, invoke_abi::NODE_UNLINKAT, [name.as_ptr() as u64, 0, 0, 0]).0)
 }
 
-/// Remove the empty directory at `path` (**NUL-terminated**). `0`,
-/// `-ENOTEMPTY`, `-ENOTDIR`, `-ENOENT`, or `-ENOSYS` where the filesystem has
-/// no rmdir (owner round 23).
-pub fn rmdir(path: &[u8]) -> isize {
-    if !has_nul(path) {
-        return E_INVAL;
+/// Remove the empty directory `name` beneath `dir` (`NODE_UNLINKAT` with
+/// `UNLINK_DIR`): `ENOTEMPTY`, `ENOTDIR`, `ENOENT`, or `ENOSYS` where the
+/// filesystem has no rmdir.
+pub fn rmdir_at(dir: u32, name: &[u8]) -> Result<(), Errno> {
+    if !has_nul(name) {
+        return Err(Errno::EINVAL);
     }
-    invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_RMDIR, [path.as_ptr() as u64, 0, 0, 0]).0
+    fs_done(invoke(dir, invoke_abi::NODE_UNLINKAT, [name.as_ptr() as u64, invoke_abi::UNLINK_DIR, 0, 0]).0)
 }
 
-/// Rename `from` to `to` (both **NUL-terminated**) within one mounted
-/// filesystem; across two, `-EINVAL`.
-pub fn rename(from: &[u8], to: &[u8]) -> isize {
+/// Rename `from` to `to`, both beneath `dir` (`NODE_RENAMEAT`), within one
+/// mounted filesystem; across two, `EINVAL`.
+pub fn rename_at(dir: u32, from: &[u8], to: &[u8]) -> Result<(), Errno> {
     if !has_nul(from) || !has_nul(to) {
-        return E_INVAL;
+        return Err(Errno::EINVAL);
     }
-    invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_RENAME, [from.as_ptr() as u64, to.as_ptr() as u64, 0, 0]).0
+    fs_done(invoke(dir, invoke_abi::NODE_RENAMEAT, [from.as_ptr() as u64, to.as_ptr() as u64, 0, 0]).0)
 }
 
-/// Set the size of the file at `path` (**NUL-terminated**) to `len` bytes.
-pub fn truncate(path: &[u8], len: u64) -> isize {
-    if !has_nul(path) {
-        return E_INVAL;
+/// Set the size of the file `name` beneath `dir` to `len` bytes
+/// (`NODE_TRUNCATEAT`).
+pub fn truncate_at(dir: u32, name: &[u8], len: u64) -> Result<(), Errno> {
+    if !has_nul(name) {
+        return Err(Errno::EINVAL);
     }
-    invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_TRUNCATE, [path.as_ptr() as u64, len, 0, 0]).0
+    fs_done(invoke(dir, invoke_abi::NODE_TRUNCATEAT, [name.as_ptr() as u64, len, 0, 0]).0)
 }
 
 /// Make the writes through a `Cap<File>` durable (any permission).
@@ -1917,14 +1936,15 @@ pub fn set_clear_tid(addr: u64) -> isize {
     domain_op(invoke_abi::DOMAIN_SET_CLEAR_TID, [addr, 0, 0, 0])
 }
 
-/// Capacity and free space of the filesystem `path` (**NUL-terminated**) is
-/// on, written to `buf` in the layout `azos_abi::syscall_nr::STATFS_BYTES`
-/// documents. The kernel is told `buf.len()` and refuses a short one.
-pub fn statfs(path: &[u8], buf: &mut [u8]) -> isize {
-    if !has_nul(path) {
-        return E_INVAL;
+/// Capacity and free space of the filesystem `name` beneath `dir` is on
+/// (`NODE_STATFS`), written to `out` in the layout
+/// `azos_abi::syscall_nr::STATFS_BYTES` documents. The kernel is told
+/// `out.len()` and refuses a short one (`EINVAL`).
+pub fn statfs_at(dir: u32, name: &[u8], out: &mut [u8]) -> Result<(), Errno> {
+    if !has_nul(name) {
+        return Err(Errno::EINVAL);
     }
-    invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_STATFS, [path.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0]).0
+    fs_done(invoke(dir, invoke_abi::NODE_STATFS, [name.as_ptr() as u64, out.as_mut_ptr() as u64, out.len() as u64, 0]).0)
 }
 
 // ---------------------------------------------------------------------------

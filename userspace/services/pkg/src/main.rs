@@ -55,9 +55,8 @@ impl Opener for Files {
         p[..path.len()].copy_from_slice(path);
         let cpath = &p[..path.len() + 1];
         let mut st = [0u8; azos_abi::syscall_nr::STAT_BYTES];
-        if sys::stat(cpath, &mut st) != 0 {
-            return None;
-        }
+        let (root, name) = sys::beneath_root(cpath).ok()?;
+        sys::stat_at(root, name, &mut st).ok()?;
         let size = u64::from_le_bytes([st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]]);
         let len = u32::try_from(size).ok().filter(|&n| n != 0)?;
         let h = sys::open_root(cpath, 0);

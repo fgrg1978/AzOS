@@ -130,15 +130,25 @@ fn the_file_syscalls_route_through_the_seam() {
     // ring 3 already gets for a missing file, so no caller learns a new
     // failure mode. This is the property roadmap step 3 is after, and it is a
     // property of the linked binary rather than of `tcb_check.sh`.
-    let path = b"/fat/CONFIG.INI\0";
-    let p = path.as_ptr() as u64;
+    // The names are beneath a directory handle on `/fat` (a tree with
+    // `WRITE`, so it is also the write authority for the changing ops).
+    ipc_task_pool::shim_bind(1, 58);
+    azos_ipc::cap_store::reset(1);
+    azos_sched::set_current_task_tid(1);
+    let dir = azos_ipc::file_cap::file_tree_grant_cap(1, "/fat", azos_abi::cap::CapPerms::RW)
+        .expect("tree grant")
+        .raw()
+        .as_raw() as u64;
+    let name = b"CONFIG.INI\0";
+    let p = name.as_ptr() as u64;
     let mut buf = [0u8; 32];
+    let enosys = azos_abi::error::Errno::ENOSYS.to_syscall_ret();
 
     assert_eq!(super::sys_read(3, buf.as_mut_ptr() as u64, 8), -1, "read answered");
     assert_eq!(super::sys_write(3, buf.as_ptr() as u64, 8), -1, "write answered");
     assert_eq!(super::sys_lseek(3, 0, 0), -1, "lseek answered");
-    assert_eq!(super::sys_mkdir(p), -1, "mkdir answered");
-    assert_eq!(super::sys_unlink(p), -1, "unlink answered");
+    assert_eq!(super::sys_mkdirat(dir, p), enosys, "mkdirat answered");
+    assert_eq!(super::sys_unlinkat(dir, p, 0), enosys, "unlinkat answered");
     assert!(drain().is_empty(), "something was called with nothing installed");
 
     // ── Installed ──────────────────────────────────────────────────────────
@@ -183,82 +193,43 @@ fn the_file_syscalls_route_through_the_seam() {
     assert_eq!(super::sys_lseek(7, 5u64 << 30, 0), 4242);
     assert_eq!(drain(), vec![Call::Lseek { fd: 7, offset: 5 << 30, whence: 0 }]);
 
-    // Path-taking calls, all trimmed the same way.
-    assert_eq!(super::sys_mkdir(p), 0);
+    // Name-taking calls: the name joined beneath the directory, trimmed at
+    // its NUL.
+    assert_eq!(super::sys_mkdirat(dir, p), 0);
     assert_eq!(drain(), vec![Call::Mkdir { path: b"/fat/CONFIG.INI".to_vec() }]);
 
-    assert_eq!(super::sys_unlink(p), 0);
+    assert_eq!(super::sys_unlinkat(dir, p, 0), 0);
     assert_eq!(drain(), vec![Call::Unlink { path: b"/fat/CONFIG.INI".to_vec() }]);
 
-    // `readdir` writes three separate outputs and the name is NUL-padded to
-    // the full 64 bytes it promises. Before the seam this handler resolved the
-    // path itself and then asked for an entry by inode index, which is what
-    // put the filesystem's vocabulary in the syscall crate.
+    // `readdir` writes the name NUL-padded to the full 64 bytes it promises
+    // and answers the size and the directory flag.
     let mut name_out = [0xFFu8; 64];
-    let mut size_out = 0u32;
-    let mut dir_out  = 0u32;
-    let rc = super::sys_readdir(
-        p, 3,
-        name_out.as_mut_ptr() as u64,
-        &mut size_out as *mut u32 as u64,
-        &mut dir_out  as *mut u32 as u64,
-        // The declared name-buffer length (owner decision 100b). `name_out`
-        // is a 64-byte array, so this is the true size, not a placeholder.
-        azos_abi::syscall_nr::READDIR_NAME_BYTES as u64,
-    );
-    assert_eq!(rc, 0, "readdir failed");
+    let rc = super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64);
+    assert_eq!(rc, Ok(Some((1234, true))), "readdir failed");
 
-    // **The name-buffer length gate** (owner decision 100b). `DOMAIN_READDIR`
-    // writes `READDIR_NAME_BYTES` bytes ALWAYS, and until 2026-09-19 it
-    // received no length: the size was enforced only by `libsys::readdir`
-    // typing its parameter as `&mut [u8; 64]`, which holds for a Rust caller
-    // through libsys and for nothing else.
-    //
-    // Asserted HERE, inside the test that already has the recorder installed,
-    // and through the SEAM rather than the return code. Two earlier attempts
-    // were wrong and both are worth remembering: asserting only `-1` did not
-    // discriminate, because without the gate the call falls through to the
-    // path lookup which also answers -1; and putting it in a test of its own
-    // left the recorder installed for whatever ran next, which broke the
-    // "nothing was called with nothing installed" assertion above.
-    //
-    // What separates the two worlds is whether the filesystem was CALLED.
+    // **The name-buffer length gate** (owner decision 100b): the record is
+    // `READDIR_NAME_BYTES` bytes ALWAYS, so a shorter declared buffer is
+    // refused, and refused before the filesystem is CALLED (what separates
+    // the gate from a lookup that also fails).
     let _ = drain();
     for declared in [0u64, 1, 16, 63] {
         assert_eq!(
-            super::sys_readdir(
-                p, 3,
-                name_out.as_mut_ptr() as u64,
-                &mut size_out as *mut u32 as u64,
-                &mut dir_out as *mut u32 as u64,
-                declared,
-            ),
-            -1,
+            super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, declared),
+            Err(azos_abi::error::Errno::EINVAL.to_syscall_ret()),
             "a name buffer declared {declared} must be refused",
         );
-        assert!(
-            drain().is_empty(),
-            "declared {declared}: the refusal still reached the filesystem",
-        );
+        assert!(drain().is_empty(), "declared {declared}: the refusal still reached the filesystem");
     }
     // And at the full length it DOES reach the filesystem — without this the
-    // loop above would hold for a `sys_readdir` that refused everything.
+    // loop above would hold for a readdir that refused everything.
     assert_eq!(
-        super::sys_readdir(
-            p, 3,
-            name_out.as_mut_ptr() as u64,
-            &mut size_out as *mut u32 as u64,
-            &mut dir_out as *mut u32 as u64,
-            azos_abi::syscall_nr::READDIR_NAME_BYTES as u64,
-        ),
-        0,
+        super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64),
+        Ok(Some((1234, true))),
     );
     assert_eq!(drain(), vec![Call::Readdir { path: b"/fat/CONFIG.INI".to_vec(), index: 3 }]);
     assert_eq!(&name_out[..5], b"HELLO");
     assert!(name_out[5..].iter().all(|&b| b == 0),
         "readdir left the tail of the 64-byte name buffer unwritten");
-    assert_eq!(size_out, 1234);
-    assert_eq!(dir_out, 1);
 
     // ── User context: the path must be trimmed at its NUL ──────────────────
     //
@@ -272,23 +243,16 @@ fn the_file_syscalls_route_through_the_seam() {
     let up = map_scratch(pt, SCRATCH);
     unsafe {
         core::ptr::write_bytes(up, 0, 4096);
-        core::ptr::copy_nonoverlapping(b"/fat/CONFIG.INI\0".as_ptr(), up, 16);
+        core::ptr::copy_nonoverlapping(b"CONFIG.INI\0".as_ptr(), up, 11);
     }
     let _ = drain();
-
-    // From ring 3 a mkdir (wave 10) needs a tree capability covering the path,
-    // and an open is made beneath one (Storage L12).
-    ipc_task_pool::shim_bind(1, 58);
-    azos_ipc::cap_store::reset(1);
-    let dir = azos_ipc::file_cap::file_tree_grant_cap(1, "/fat", azos_abi::cap::CapPerms::RW)
-        .expect("tree grant");
 
     // `open`: the name must arrive trimmed at its NUL, without the terminator,
     // beneath the root of the directory capability, and the flags must arrive
     // unchanged. A handler that passed the whole 512-byte buffer, or kept the
     // NUL, would open a different file.
     unsafe { core::ptr::copy_nonoverlapping(b"CONFIG.INI\0".as_ptr(), up.add(64), 11); }
-    let h = super::sys_file_openat_typed(dir.raw().as_raw() as u64, SCRATCH as u64 + 64, 0x241);
+    let h = super::sys_file_openat_typed(dir, SCRATCH as u64 + 64, 0x241);
     assert!(h >= 0, "open through the directory failed: {h}");
     assert_eq!(
         drain(),
@@ -296,25 +260,15 @@ fn the_file_syscalls_route_through_the_seam() {
         "the ring-3 open path did not trim its buffer at the NUL"
     );
 
-    assert_eq!(super::sys_mkdir(SCRATCH as u64), 0);
+    assert_eq!(super::sys_mkdirat(dir, SCRATCH as u64), 0);
     assert_eq!(drain(), vec![Call::Mkdir { path: b"/fat/CONFIG.INI".to_vec() }]);
 
-    let mut name_out2 = [0u8; 64];
-    let mut size2 = 0u32;
-    let mut dir2 = 0u32;
-    // Point the outputs at mapped user memory: this branch writes them with
-    // `copy_to_user`, not a raw store.
+    // Point the name buffer at mapped user memory: this branch writes it
+    // with `copy_to_user`, not a raw store.
     let out = map_scratch(pt, SCRATCH + 0x1000);
-    let _ = (&mut name_out2, &mut size2, &mut dir2, out);
     assert_eq!(
-        super::sys_readdir(
-            SCRATCH as u64, 3,
-            (SCRATCH + 0x1000) as u64,
-            (SCRATCH + 0x1000 + 64) as u64,
-            (SCRATCH + 0x1000 + 68) as u64,
-    azos_abi::syscall_nr::READDIR_NAME_BYTES as u64,
-        ),
-        0,
+        super::sys_readdirat(dir, SCRATCH as u64, 3, (SCRATCH + 0x1000) as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64),
+        Ok(Some((1234, true))),
     );
     assert_eq!(
         drain(),
@@ -323,8 +277,6 @@ fn the_file_syscalls_route_through_the_seam() {
     );
     unsafe {
         assert_eq!(core::slice::from_raw_parts(out, 5), b"HELLO");
-        assert_eq!(*(out.add(64) as *const u32), 1234);
-        assert_eq!(*(out.add(68) as *const u32), 1);
     }
 }
 

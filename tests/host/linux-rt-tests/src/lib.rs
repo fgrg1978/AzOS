@@ -196,7 +196,7 @@ mod tests {
             let write_end = m.write_ends.contains(&h);
             Some(PipeReady { write_end, ready: write_end || !m.pipes[id].is_empty(), hup: m.peer_gone.contains(&id) })
         }
-        fn stat(&self, path: &[u8], out: &mut [u8; STAT_BYTES]) -> i64 {
+        fn stat(&self, path: &[u8], out: &mut [u8; STAT_BYTES]) -> Result<(), i64> {
             let m = self.0.borrow();
             let p = trim(path);
             *out = [0; STAT_BYTES];
@@ -204,15 +204,15 @@ mod tests {
                 out[STAT_OFF_SIZE..STAT_OFF_SIZE + 8].copy_from_slice(&(d.len() as u64).to_le_bytes());
                 out[STAT_OFF_MODE..STAT_OFF_MODE + 4].copy_from_slice(&(STAT_S_IFREG | 0o644).to_le_bytes());
                 out[STAT_OFF_NLINK..STAT_OFF_NLINK + 4].copy_from_slice(&1u32.to_le_bytes());
-                return 0;
+                return Ok(());
             }
             if p == b"/" || m.dirs.iter().any(|d| d == p) {
                 out[STAT_OFF_MODE..STAT_OFF_MODE + 4].copy_from_slice(&(STAT_S_IFDIR | 0o755).to_le_bytes());
-                return 0;
+                return Ok(());
             }
-            -1
+            Err(azos_abi::error::Errno::ENOENT.to_syscall_ret())
         }
-        fn readdir(&self, dir: &[u8], idx: u64, name: &mut [u8; NAME_BYTES], size: &mut u32, is_dir: &mut u32) -> i64 {
+        fn readdir(&self, dir: &[u8], idx: u32, name: &mut [u8; NAME_BYTES]) -> Result<Option<(u32, bool)>, i64> {
             let m = self.0.borrow();
             let d = trim(dir);
             let mut entries: Vec<(Vec<u8>, u32, u32)> = Vec::new();
@@ -228,11 +228,9 @@ mod tests {
                 Some((n, s, dd)) => {
                     *name = [0; NAME_BYTES];
                     name[..n.len()].copy_from_slice(n);
-                    *size = *s;
-                    *is_dir = *dd;
-                    0
+                    Ok(Some((*s, *dd != 0)))
                 }
-                None => -1,
+                None => Ok(None),
             }
         }
         fn page_size(&self) -> u64 {

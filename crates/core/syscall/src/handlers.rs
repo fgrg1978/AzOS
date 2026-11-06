@@ -1465,7 +1465,7 @@ pub fn sys_file_openat_typed(dir_raw: u64, rel_ptr: u64, flags: u64) -> i64 {
     };
     let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
     // `READ` names the directory: the right to look names up beneath it.
-    let root_len = match dir_root_for(dir_raw, azos_abi::cap::CapPerms::READ, &mut root) {
+    let root_len = match dir_root_for(dir_raw, azos_abi::cap::CapPerms::READ, azos_abi::invoke::NODE_OPENAT, &mut root) {
         Ok(n) => n,
         Err(e) => return e,
     };
@@ -1523,12 +1523,13 @@ fn held_tree_for(
 }
 
 /// The root path of the directory capability `cap_raw`, written to `root`:
-/// a tree `Cap<File>` holding `need`. A `Cap<File>` that names a descriptor
-/// is not a directory (`-ECAPKIND`), as a tree is not a descriptor
-/// ([`file_fd_for`]).
+/// a tree `Cap<File>` holding `need`, checked for `op` (its op mask names
+/// the op's class). A `Cap<File>` that names a descriptor is not a directory
+/// (`-ECAPKIND`), as a tree is not a descriptor ([`file_fd_for`]).
 fn dir_root_for(
     cap_raw: u64,
     need: azos_abi::cap::CapPerms,
+    op: u16,
     root: &mut [u8; azos_ipc::file_cap::TREE_PATH_MAX],
 ) -> Result<usize, i64> {
     use azos_abi::cap::CapHandle;
@@ -1537,7 +1538,7 @@ fn dir_root_for(
 
     let cap: Cap<File> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
-    match azos_ipc::cap_store::with_table(tid, |t| t.get_op(cap, need, azos_abi::invoke::NODE_OPENAT)) {
+    match azos_ipc::cap_store::with_table(tid, |t| t.get_op(cap, need, op)) {
         Some(Ok(res)) if azos_ipc::file_cap::is_tree_resource(res) => {
             azos_ipc::file_cap::tree_path(res, root).ok_or_else(|| Errno::ECAPSTALE.to_syscall_ret())
         }
@@ -1892,7 +1893,7 @@ pub fn sys_read(fd: u64, buf: u64, count: u64) -> i64 {
     let ops = match file_ops() { Some(o) => o, None => return -1 };
     if azos_sched::current_user_pt() != 0 {
         // Read into a kernel temp buffer, then copy_to_user.
-        const MAX: usize = 4096;
+        const MAX: usize = azos_abi::syscall_nr::IO_MAX_BYTES;
         let chunk = count.min(MAX);
         // U07-2 (audit unit-07): validate the destination BEFORE the
         // destructive `ops.read` — a read consumes from the file/socket
@@ -1976,7 +1977,7 @@ pub fn sys_write(fd: u64, buf: u64, count: u64) -> i64 {
             return console_write_user(buf, count as u64);
         }
         // Copy user buffer into kernel temp buffer.
-        const MAX: usize = 4096;
+        const MAX: usize = azos_abi::syscall_nr::IO_MAX_BYTES;
         let chunk = count.min(MAX);
         let mut tmp = core::mem::MaybeUninit::<[u8; MAX]>::uninit();
         let Some(tmp) = bounce_from_user(&mut tmp, buf, chunk) else {
@@ -2032,9 +2033,9 @@ fn copy_path_from_user<'a>(dst: &'a mut [u8], path_ptr: u64) -> Option<&'a [u8]>
     }
 }
 
-/// The authority for the calls that change the tree (wave 10, owner
-/// decision): `DOMAIN_MKDIR`, `DOMAIN_UNLINK`, `DOMAIN_RMDIR`, `DOMAIN_RENAME`,
-/// `DOMAIN_TRUNCATE`. A ring-3 caller must hold a `Cap<File>` with `WRITE`
+/// The authority for the ops that change the tree (`NODE_MKDIRAT`,
+/// `NODE_UNLINKAT`, `NODE_RENAMEAT`, `NODE_TRUNCATEAT`), asked of the path
+/// the name joins to beneath its directory. A ring-3 caller must hold a `Cap<File>` with `WRITE`
 /// naming a directory tree that covers `path` (`azos_ipc::file_cap`,
 /// minted only by the topology). `strict`: `path` is an ENTRY of the tree
 /// (create, remove, rename — the directory it is in is what changes);
@@ -2077,181 +2078,150 @@ fn fs_tree_gate(path: &[u8], strict: bool) -> Result<(), i64> {
     Ok(())
 }
 
-/// `DOMAIN_MKDIR`: a0 = path. Needs a tree capability covering the new
-/// directory's parent ([`fs_tree_gate`]).
-pub fn sys_mkdir(path_ptr: u64) -> i64 {
-    let mut buf = [0u8; SYS_PATH_MAX];
-    let path = match copy_path_from_user(&mut buf, path_ptr) { Some(p) => p, None => return -1 };
-    if let Err(e) = fs_tree_gate(path, true) { return e; }
-    match file_ops() { Some(o) => o.mkdir(path), None => -1 }
-}
-
-/// `DOMAIN_UNLINK`: a0 = path. Needs a tree capability covering the
-/// entry's directory ([`fs_tree_gate`]).
-pub fn sys_unlink(path_ptr: u64) -> i64 {
-    let mut buf = [0u8; SYS_PATH_MAX];
-    let path = match copy_path_from_user(&mut buf, path_ptr) { Some(p) => p, None => return -1 };
-    if let Err(e) = fs_tree_gate(path, true) { return e; }
-    match file_ops() { Some(o) => o.unlink(path), None => -1 }
-}
-
-/// DOMAIN_READDIR: read directory entry at `index`.
-/// a0=path_ptr, a1=index, a2=name_out (64-byte buf), a3=size_out (*u32), a4=is_dir_out (*u32).
-/// Returns 0 on success, -1 if out of range or error.
-pub fn sys_readdir(
-    path_ptr: u64, index: u64, name_out: u64, size_out: u64, is_dir_out: u64,
-    name_len: u64,
-) -> i64 {
-    if path_ptr == 0 || name_out == 0 { return -1; }
-
-    // **The caller declares its buffer** (owner decision 100b). This writes
-    // `READDIR_NAME_BYTES` bytes ALWAYS, zero-padding a short name, and until
-    // 2026-09-19 it learned no length at all: the size was enforced only by
-    // `libsys::readdir` typing the parameter as `&mut [u8; 64]`. That holds
-    // for a Rust caller going through libsys and for nothing else — a raw
-    // `ecall` with a 16-byte buffer got 64 bytes written into it, and
-    // `copy_to_user` would not object because it validates PAGES, not the
-    // length the caller had in mind.
-    //
-    // Refuses rather than writing fewer bytes: a name truncated in silence is
-    // a filename the caller then acts on, and it has no way to know.
-    if name_len < azos_abi::syscall_nr::READDIR_NAME_BYTES as u64 {
-        return -1;
+/// The name `name_ptr` beneath the directory the `Cap<Dir>` `dir_raw` names,
+/// joined into `out`: what every `*at` op acts on. `READ` on the directory
+/// (checked under `op`, so its op mask is the op's class) names beneath it.
+/// The name stays beneath (`join_beneath`, `RESOLVE_BENEATH`): an absolute
+/// name, or a `..` that climbs above the directory, is `-EINVAL` before the
+/// filesystem sees anything. `-EFAULT` for a name the caller cannot read.
+fn name_beneath(dir_raw: u64, op: u16, name_ptr: u64, out: &mut [u8; azos_common::path::MAX_PATH]) -> Result<usize, i64> {
+    use azos_abi::error::Errno;
+    let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
+    let root_len = dir_root_for(dir_raw, azos_abi::cap::CapPerms::READ, op, &mut root)?;
+    if name_ptr == 0 {
+        return Err(Errno::EFAULT.to_syscall_ret());
     }
-
-    let ops = match file_ops() { Some(o) => o, None => return -1 };
-
-    // Path resolution and entry lookup are one operation behind the seam; the
-    // path passed on is trimmed at its NUL.
-    let mut path_buf = [0u8; 256];
-    let path: &[u8] = if azos_sched::current_user_pt() != 0 {
-        match azos_sched::UserCStr::new(path_ptr).read_into(&mut path_buf) {
-            Ok(len) => &path_buf[..len],
-            Err(_) => return -1,
-        }
-    } else {
-        unsafe { cstr_to_bytes(path_ptr as *const u8) }
-    };
-
-    match ops.readdir(path, index as u32) {
-        Some((name, size, is_dir)) => {
-            let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-            let copy_len = name_len.min(63); // leave room for NUL
-            if azos_sched::current_user_pt() != 0 {
-                let mut tmp = [0u8; 64];
-                tmp[..copy_len].copy_from_slice(&name[..copy_len]);
-                if azos_sched::UserPtr::<[u8; 64]>::new(name_out).write(&tmp).is_err() {
-                    return -1;
-                }
-                // Checked like `name_out` above: returning 0 with these
-                // fields unwritten would be a silent partial success the
-                // caller cannot detect.
-                if size_out != 0 {
-                    if azos_sched::UserPtr::<u32>::new(size_out).write(&(size as u32).to_le()).is_err() {
-                        return -1;
-                    }
-                }
-                if is_dir_out != 0 {
-                    if azos_sched::UserPtr::<u32>::new(is_dir_out).write(&(is_dir as u32).to_le()).is_err() {
-                        return -1;
-                    }
-                }
-            } else {
-                unsafe {
-                    let out = name_out as *mut u8;
-                    core::ptr::write_bytes(out, 0, 64);
-                    core::ptr::copy_nonoverlapping(name.as_ptr(), out, copy_len);
-                    if size_out != 0 {
-                        *(size_out as *mut u32) = size;
-                    }
-                    if is_dir_out != 0 {
-                        *(is_dir_out as *mut u32) = is_dir as u32;
-                    }
-                }
-            }
-            0
-        }
-        None => -1,
+    let mut buf = [0u8; SYS_PATH_MAX];
+    let name = copy_path_from_user(&mut buf, name_ptr).ok_or_else(|| Errno::EFAULT.to_syscall_ret())?;
+    match azos_common::path::join_beneath(&root[..root_len], name, out) {
+        Ok(n) => Ok(n),
+        Err(azos_common::path::JoinError::TooLong) => Err(Errno::ENAMETOOLONG.to_syscall_ret()),
+        Err(azos_common::path::JoinError::Invalid) => Err(Errno::EINVAL.to_syscall_ret()),
     }
 }
 
-/// `DOMAIN_STAT`: a0 = path, a1 = buffer of at least `STAT_BYTES`
-/// (was `{ -1 }`). Writes the layout `STAT_BYTES` documents
-/// and returns `0`; `-ENOENT` for no such file, `-EFAULT` for an unreadable
-/// path or an unwritable buffer, `-1` with no filesystem installed.
+/// The filesystem behind the seam, or `-ENOSYS` when none is installed.
+fn fs_or_nosys() -> Result<&'static dyn crate::file_ops::FileOps, i64> {
+    file_ops().ok_or_else(|| azos_abi::error::Errno::ENOSYS.to_syscall_ret())
+}
+
+/// A `*at` op that changes the tree: the name beneath the directory, the
+/// write authority over the result ([`fs_tree_gate`]: `strict` for an entry
+/// of a tree, as an open that changes the tree), then `f` on the joined path.
+fn mutate_at(dir_raw: u64, op: u16, name_ptr: u64, strict: bool, f: impl FnOnce(&dyn crate::file_ops::FileOps, &[u8]) -> i64) -> i64 {
+    let mut path = [0u8; azos_common::path::MAX_PATH];
+    let n = match name_beneath(dir_raw, op, name_ptr, &mut path) { Ok(n) => n, Err(e) => return e };
+    if let Err(e) = fs_tree_gate(&path[..n], strict) { return e; }
+    match fs_or_nosys() { Ok(o) => f(o, &path[..n]), Err(e) => e }
+}
+
+/// `NODE_MKDIRAT`: make the directory `name` beneath `dir`.
+pub fn sys_mkdirat(dir_raw: u64, name_ptr: u64) -> i64 {
+    mutate_at(dir_raw, azos_abi::invoke::NODE_MKDIRAT, name_ptr, true, |o, p| o.mkdir(p))
+}
+
+/// `NODE_UNLINKAT`: remove the entry `name` beneath `dir`; with
+/// `UNLINK_DIR`, the empty directory (`-ENOTEMPTY` otherwise).
+pub fn sys_unlinkat(dir_raw: u64, name_ptr: u64, flags: u64) -> i64 {
+    use azos_abi::invoke::{NODE_UNLINKAT, UNLINK_DIR};
+    if flags & !UNLINK_DIR != 0 {
+        return azos_abi::error::Errno::EINVAL.to_syscall_ret();
+    }
+    mutate_at(dir_raw, NODE_UNLINKAT, name_ptr, true, |o, p| if flags & UNLINK_DIR != 0 { o.rmdir(p) } else { o.unlink(p) })
+}
+
+/// `NODE_RENAMEAT`: rename `from` to `to`, both beneath `dir`, within one
+/// mounted filesystem. Each end needs the write authority over its entry.
+pub fn sys_renameat(dir_raw: u64, from_ptr: u64, to_ptr: u64) -> i64 {
+    use azos_abi::invoke::NODE_RENAMEAT;
+    let mut from = [0u8; azos_common::path::MAX_PATH];
+    let mut to = [0u8; azos_common::path::MAX_PATH];
+    let nf = match name_beneath(dir_raw, NODE_RENAMEAT, from_ptr, &mut from) { Ok(n) => n, Err(e) => return e };
+    let nt = match name_beneath(dir_raw, NODE_RENAMEAT, to_ptr, &mut to) { Ok(n) => n, Err(e) => return e };
+    if let Err(e) = fs_tree_gate(&from[..nf], true) { return e; }
+    if let Err(e) = fs_tree_gate(&to[..nt], true) { return e; }
+    match fs_or_nosys() { Ok(o) => o.rename(&from[..nf], &to[..nt]), Err(e) => e }
+}
+
+/// `NODE_TRUNCATEAT`: set the size of the file `name` beneath `dir` to
+/// `len`. The write authority covers the file itself (a tree's root counts).
+pub fn sys_truncateat(dir_raw: u64, name_ptr: u64, len: u64) -> i64 {
+    mutate_at(dir_raw, azos_abi::invoke::NODE_TRUNCATEAT, name_ptr, false, |o, p| o.truncate(p, len))
+}
+
+/// `NODE_READDIR`: entry `index` of the directory `name` beneath `dir`. The
+/// name is written into `name_out` (`name_len`, at least
+/// `READDIR_NAME_BYTES`: exactly that many bytes, zero-padded, always), the
+/// size and the is-directory flag are the reply words. `None` past the last
+/// entry.
 ///
-/// No capability: it reports what `open` would find, and `open` needs none.
-pub fn sys_stat(path_ptr: u64, stat_ptr: u64) -> i64 {
+/// A buffer shorter than the record is refused rather than written short: a
+/// name truncated in silence is a filename the caller then acts on.
+pub fn sys_readdirat(dir_raw: u64, name_ptr: u64, index: u64, name_out: u64, name_len: u64) -> Result<Option<(u32, bool)>, i64> {
     use azos_abi::error::Errno;
-    use azos_abi::syscall_nr::STAT_BYTES;
-    if path_ptr == 0 || stat_ptr == 0 { return Errno::EFAULT.to_syscall_ret(); }
-    let mut buf = [0u8; SYS_PATH_MAX];
-    let path = match copy_path_from_user(&mut buf, path_ptr) {
-        Some(p) => p,
-        None => return Errno::EFAULT.to_syscall_ret(),
-    };
-    let ops = match file_ops() { Some(o) => o, None => return -1 };
-    let st = match ops.stat(path) { Ok(st) => st, Err(e) => return e };
-    let bytes = st.to_bytes();
-    if azos_sched::current_user_pt() != 0 {
-        if azos_sched::UserSlice::<u8>::new(stat_ptr, STAT_BYTES).write_from(&bytes[..STAT_BYTES]).is_err() {
-            return Errno::EFAULT.to_syscall_ret();
-        }
-    } else {
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), stat_ptr as *mut u8, STAT_BYTES); }
+    use azos_abi::syscall_nr::READDIR_NAME_BYTES;
+    if name_len < READDIR_NAME_BYTES as u64 || index > u32::MAX as u64 {
+        return Err(Errno::EINVAL.to_syscall_ret());
     }
-    0
+    if name_out == 0 {
+        return Err(Errno::EFAULT.to_syscall_ret());
+    }
+    let mut path = [0u8; azos_common::path::MAX_PATH];
+    let n = name_beneath(dir_raw, azos_abi::invoke::NODE_READDIR, name_ptr, &mut path)?;
+    let ops = fs_or_nosys()?;
+    let Some((name, size, is_dir)) = ops.readdir(&path[..n], index as u32) else { return Ok(None) };
+    let len = name.iter().position(|&b| b == 0).unwrap_or(name.len()).min(READDIR_NAME_BYTES - 1);
+    let mut rec = [0u8; READDIR_NAME_BYTES];
+    rec[..len].copy_from_slice(&name[..len]);
+    if azos_sched::current_user_pt() != 0 {
+        azos_sched::UserSlice::<u8>::new(name_out, READDIR_NAME_BYTES).write_from(&rec).map_err(|_| Errno::EFAULT.to_syscall_ret())?;
+    } else {
+        unsafe { core::ptr::copy_nonoverlapping(rec.as_ptr(), name_out as *mut u8, READDIR_NAME_BYTES); }
+    }
+    Ok(Some((size, is_dir)))
 }
 
-/// `DOMAIN_RMDIR`: a0 = path. Remove an empty directory; `0` or a
-/// negative errno (owner round 23). Needs a tree capability covering the
-/// directory's parent, as `DOMAIN_MKDIR` ([`fs_tree_gate`], wave 10).
-pub fn sys_rmdir(path_ptr: u64) -> i64 {
-    use azos_abi::error::Errno;
-    if path_ptr == 0 { return Errno::EFAULT.to_syscall_ret(); }
-    let mut buf = [0u8; SYS_PATH_MAX];
-    let path = match copy_path_from_user(&mut buf, path_ptr) {
-        Some(p) => p,
-        None => return Errno::EFAULT.to_syscall_ret(),
-    };
-    if let Err(e) = fs_tree_gate(path, true) { return e; }
-    match file_ops() { Some(o) => o.rmdir(path), None => -1 }
+/// Write `bytes` to the caller's `ptr` (a user pointer from ring 3, a kernel
+/// one from a kernel task).
+fn record_to_caller(ptr: u64, bytes: &[u8]) -> Result<(), i64> {
+    if azos_sched::current_user_pt() != 0 {
+        azos_sched::UserSlice::<u8>::new(ptr, bytes.len())
+            .write_from(bytes)
+            .map_err(|_| azos_abi::error::Errno::EFAULT.to_syscall_ret())
+    } else {
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len()); }
+        Ok(())
+    }
 }
 
-/// `DOMAIN_RENAME`: a0 = from, a1 = to. Within one mounted filesystem;
-/// `0` or a negative errno (owner round 23). Both ends need a tree
-/// capability covering their directory ([`fs_tree_gate`], wave 10).
-pub fn sys_rename(from_ptr: u64, to_ptr: u64) -> i64 {
-    use azos_abi::error::Errno;
-    if from_ptr == 0 || to_ptr == 0 { return Errno::EFAULT.to_syscall_ret(); }
-    let mut fb = [0u8; SYS_PATH_MAX];
-    let mut tb = [0u8; SYS_PATH_MAX];
-    let from = match copy_path_from_user(&mut fb, from_ptr) {
-        Some(p) => p,
-        None => return Errno::EFAULT.to_syscall_ret(),
-    };
-    let to = match copy_path_from_user(&mut tb, to_ptr) {
-        Some(p) => p,
-        None => return Errno::EFAULT.to_syscall_ret(),
-    };
-    if let Err(e) = fs_tree_gate(from, true) { return e; }
-    if let Err(e) = fs_tree_gate(to, true) { return e; }
-    match file_ops() { Some(o) => o.rename(from, to), None => -1 }
+/// `NODE_STATAT`: the record of `name` beneath `dir` (`.` the directory
+/// itself) into `out`, at least `STAT_BYTES` long: the layout `STAT_BYTES`
+/// documents. `0`, `-ENOENT` for no such entry, `-EFAULT` for a buffer the
+/// caller cannot write. No write authority: it reports what an open would
+/// find.
+pub fn sys_statat(dir_raw: u64, name_ptr: u64, out: u64) -> i64 {
+    use azos_abi::syscall_nr::STAT_BYTES;
+    if out == 0 { return azos_abi::error::Errno::EFAULT.to_syscall_ret(); }
+    let mut path = [0u8; azos_common::path::MAX_PATH];
+    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATAT, name_ptr, &mut path) { Ok(n) => n, Err(e) => return e };
+    let ops = match fs_or_nosys() { Ok(o) => o, Err(e) => return e };
+    let st = match ops.stat(&path[..n]) { Ok(st) => st, Err(e) => return e };
+    match record_to_caller(out, &st.to_bytes()[..STAT_BYTES]) { Ok(()) => 0, Err(e) => e }
 }
 
-/// `DOMAIN_TRUNCATE`: a0 = path, a1 = length (the whole register). `0` or
-/// a negative errno (owner round 23). Needs a tree capability covering the
-/// file itself ([`fs_tree_gate`], wave 10).
-pub fn sys_truncate(path_ptr: u64, len: u64) -> i64 {
+/// `NODE_STATFS`: capacity and free space of the filesystem `name` beneath
+/// `dir` is on, into `out` of `out_len` bytes (at least `STATFS_BYTES`; a
+/// shorter one is `-EINVAL` and nothing is written).
+pub fn sys_statfsat(dir_raw: u64, name_ptr: u64, out: u64, out_len: u64) -> i64 {
     use azos_abi::error::Errno;
-    if path_ptr == 0 { return Errno::EFAULT.to_syscall_ret(); }
-    let mut buf = [0u8; SYS_PATH_MAX];
-    let path = match copy_path_from_user(&mut buf, path_ptr) {
-        Some(p) => p,
-        None => return Errno::EFAULT.to_syscall_ret(),
-    };
-    if let Err(e) = fs_tree_gate(path, false) { return e; }
-    match file_ops() { Some(o) => o.truncate(path, len), None => -1 }
+    use azos_abi::syscall_nr::STATFS_BYTES;
+    if out_len < STATFS_BYTES as u64 { return Errno::EINVAL.to_syscall_ret(); }
+    if out == 0 { return Errno::EFAULT.to_syscall_ret(); }
+    let mut path = [0u8; azos_common::path::MAX_PATH];
+    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATFS, name_ptr, &mut path) { Ok(n) => n, Err(e) => return e };
+    let ops = match fs_or_nosys() { Ok(o) => o, Err(e) => return e };
+    let st = match ops.statfs(&path[..n]) { Ok(st) => st, Err(e) => return e };
+    match record_to_caller(out, &st.to_bytes()[..STATFS_BYTES]) { Ok(()) => 0, Err(e) => e }
 }
 
 /// `NODE_FSYNC`: a0 = `Cap<File>`, any permission (Linux's
@@ -2284,34 +2254,6 @@ pub fn sys_file_seek_typed(cap_raw: u64, offset: i64, whence: u64) -> i64 {
         },
         Err(e) => e,
     }
-}
-
-/// `DOMAIN_STATFS`: a0 = path, a1 = buffer, a2 = its length (at least
-/// `STATFS_BYTES`). Writes the layout `STATFS_BYTES` documents and returns
-/// `0`; `-EINVAL` for a short buffer (nothing written), `-EFAULT` for an
-/// unreadable path or an unwritable buffer, the filesystem's errno otherwise
-/// (owner round 23). No capability: it reports what `stat` would, per volume.
-pub fn sys_statfs(path_ptr: u64, buf_ptr: u64, buf_len: u64) -> i64 {
-    use azos_abi::error::Errno;
-    use azos_abi::syscall_nr::STATFS_BYTES;
-    if path_ptr == 0 || buf_ptr == 0 { return Errno::EFAULT.to_syscall_ret(); }
-    if buf_len < STATFS_BYTES as u64 { return Errno::EINVAL.to_syscall_ret(); }
-    let mut buf = [0u8; SYS_PATH_MAX];
-    let path = match copy_path_from_user(&mut buf, path_ptr) {
-        Some(p) => p,
-        None => return Errno::EFAULT.to_syscall_ret(),
-    };
-    let ops = match file_ops() { Some(o) => o, None => return -1 };
-    let st = match ops.statfs(path) { Ok(st) => st, Err(e) => return e };
-    let bytes = st.to_bytes();
-    if azos_sched::current_user_pt() != 0 {
-        if azos_sched::UserSlice::<u8>::new(buf_ptr, STATFS_BYTES).write_from(&bytes[..STATFS_BYTES]).is_err() {
-            return Errno::EFAULT.to_syscall_ret();
-        }
-    } else {
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf_ptr as *mut u8, STATFS_BYTES); }
-    }
-    0
 }
 
 // ── System info ───────────────────────────────────────────────────────────────

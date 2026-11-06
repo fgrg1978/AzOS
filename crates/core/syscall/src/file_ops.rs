@@ -105,7 +105,7 @@ pub trait FileOps: Sync {
 
     /// Entry `index` of the directory at `path`, as
     /// `(name, size, is_dir)`. The name is NUL-padded to 64 bytes because
-    /// that is the buffer `DOMAIN_READDIR` promises its caller.
+    /// that is the buffer `NODE_READDIR` promises its caller.
     fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; 64], u32, bool)>;
 
     /// Close every descriptor the task `tid` still holds, and report how many
@@ -149,7 +149,7 @@ pub trait FileOps: Sync {
     /// promise that; nothing is then cached.
     fn content_stamp(&self, _path: &[u8]) -> Option<ContentStamp> { None }
 
-    /// Size, type and metadata of `path` (`DOMAIN_STAT`), or a
+    /// Size, type and metadata of `path` (`NODE_STATAT`), or a
     /// negative errno. The default answers `-1`, as every entry point does
     /// with nothing installed.
     fn stat(&self, _path: &[u8]) -> Result<StatOut, i64> { Err(-1) }
@@ -167,13 +167,13 @@ pub trait FileOps: Sync {
     // Each answers `0` or a negative errno; the default, `-1`, is what an
     // implementation that has no such operation answers, as above.
 
-    /// `DOMAIN_RMDIR`: remove the empty directory at `path`.
+    /// `NODE_UNLINKAT` with `UNLINK_DIR`: remove the empty directory at `path`.
     fn rmdir(&self, _path: &[u8]) -> i64 { -1 }
 
-    /// `DOMAIN_RENAME`: rename `from` to `to`.
+    /// `NODE_RENAMEAT`: rename `from` to `to`.
     fn rename(&self, _from: &[u8], _to: &[u8]) -> i64 { -1 }
 
-    /// `DOMAIN_TRUNCATE`: set the size of the file at `path` to `len`.
+    /// `NODE_TRUNCATEAT`: set the size of the file at `path` to `len`.
     fn truncate(&self, _path: &[u8], _len: u64) -> i64 { -1 }
 
     /// `NODE_FSYNC`: make the writes through descriptor `fd` durable.
@@ -210,7 +210,7 @@ pub trait FileOps: Sync {
     /// `true` when the unmount completed. The default: no volume to unmount.
     fn clean_unmount(&self) -> bool { false }
 
-    /// `DOMAIN_STATFS`: capacity and free space of the filesystem `path` is on.
+    /// `NODE_STATFS`: capacity and free space of the filesystem `path` is on.
     fn statfs(&self, _path: &[u8]) -> Result<StatFsOut, i64> { Err(-1) }
 
     /// What the page cache needs to map the file open as `fd` (`NODE_MMAP`,
@@ -251,7 +251,7 @@ pub struct StatFsOut {
 }
 
 impl StatFsOut {
-    /// The `DOMAIN_STATFS` wire layout (see `STATFS_BYTES`'s table).
+    /// The `NODE_STATFS` wire layout (see `STATFS_BYTES`'s table).
     pub fn to_bytes(&self) -> [u8; azos_abi::syscall_nr::STATFS_BYTES] {
         use azos_abi::syscall_nr::*;
         let mut b = [0u8; STATFS_BYTES];
@@ -291,7 +291,7 @@ pub struct StatOut {
 }
 
 impl StatOut {
-    /// The `DOMAIN_STAT` wire layout (see `STAT_BYTES`'s table).
+    /// The `NODE_STATAT` wire layout (see `STAT_BYTES`'s table).
     pub fn to_bytes(&self) -> [u8; azos_abi::syscall_nr::STAT_BYTES] {
         use azos_abi::syscall_nr::*;
         let mut b = [0u8; STAT_BYTES];

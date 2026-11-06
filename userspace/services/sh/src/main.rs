@@ -742,16 +742,14 @@ impl Shell {
                 let Some(n) = self.absolute(target, &mut tmp) else { return 1 };
                 abs[..n].copy_from_slice(&tmp[..n]);
                 abs[n] = 0;
-                let mut idx = 0u64;
+                let mut idx = 0u32;
+                let Ok((root, dir)) = sys::beneath_root(&abs[..n + 1]) else { return 1 };
                 loop {
                     let mut nm = [0u8; sys::READDIR_NAME_BYTES];
-                    let (mut size, mut isdir) = (0u32, 0u32);
-                    if sys::readdir(&abs[..n + 1], idx, &mut nm, &mut size, &mut isdir) != 0 {
-                        break;
-                    }
+                    let Ok(Some(entry)) = sys::readdir_at(root, dir, idx, &mut nm) else { break };
                     let l = nm.iter().position(|&b| b == 0).unwrap_or(nm.len());
                     o.put(&nm[..l]);
-                    if isdir != 0 {
+                    if entry.is_dir {
                         o.put(b"/");
                     }
                     o.put(b"\n");
@@ -798,18 +796,20 @@ impl Shell {
                     let Some(n) = self.absolute(self.arg(i), &mut tmp) else { return 1 };
                     abs[..n].copy_from_slice(&tmp[..n]);
                     abs[n] = 0;
-                    let r = if &name[..nl] == b"mkdir" {
-                        sys::mkdir(&abs[..n + 1])
-                    } else {
-                        // `unlink` refuses a directory (-EISDIR); `rm` removes
-                        // an empty one, as `rmdir` does.
-                        match sys::unlink(&abs[..n + 1]) {
-                            -21 => sys::rmdir(&abs[..n + 1]),
-                            r => r,
+                    let r = sys::beneath_root(&abs[..n + 1]).and_then(|(root, entry)| {
+                        if &name[..nl] == b"mkdir" {
+                            sys::mkdir_at(root, entry)
+                        } else {
+                            // `unlink` refuses a directory; `rm` removes an
+                            // empty one, as `rmdir` does.
+                            match sys::unlink_at(root, entry) {
+                                Err(sys::Errno::EISDIR) => sys::rmdir_at(root, entry),
+                                r => r,
+                            }
                         }
-                    };
-                    if r < 0 {
-                        err_line(&abs[..n], if r == -13 { b"permission denied" } else { b"failed" });
+                    });
+                    if let Err(e) = r {
+                        err_line(&abs[..n], if e == sys::Errno::EACCES { b"permission denied" } else { b"failed" });
                         st = 1;
                     }
                 }
@@ -1235,9 +1235,8 @@ fn stat_mode(p: &[u8]) -> Option<u32> {
     let n = p.len().min(path::PATH_MAX);
     z[..n].copy_from_slice(&p[..n]);
     let mut st = [0u8; azos_abi::syscall_nr::STAT_BYTES];
-    if sys::stat(&z[..n + 1], &mut st) != 0 {
-        return None;
-    }
+    let (root, name) = sys::beneath_root(&z[..n + 1]).ok()?;
+    sys::stat_at(root, name, &mut st).ok()?;
     let o = azos_abi::syscall_nr::STAT_OFF_MODE;
     Some(u32::from_le_bytes([st[o], st[o + 1], st[o + 2], st[o + 3]]))
 }

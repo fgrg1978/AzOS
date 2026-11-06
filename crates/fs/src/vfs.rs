@@ -2356,9 +2356,8 @@ pub fn vfs_lseek<const N: usize>(table: &mut FdTableN<N>, fd: i32, offset: i64, 
 // ─── Path operations over the trait ──────────────────────────
 //
 // Each routes a path to the backend mounted under it. They
-// are the VFS half of the trait methods above: `DOMAIN_STAT` reaches
-// `vfs_stat`; the rest have no syscall number in the ABI yet and are the
-// entry points a future one (or an in-kernel caller) uses.
+// are the VFS half of the trait methods above: the `*at` node ops reach them
+// with the path their name joins to beneath a directory handle.
 
 /// `S_IFCHR`, for the character devices of `/dev`.
 pub const S_IFCHR: u32 = 0o020000;

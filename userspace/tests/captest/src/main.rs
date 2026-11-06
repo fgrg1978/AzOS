@@ -657,9 +657,13 @@ pub extern "C" fn _start() -> ! {
     {
         const E_NOTEMPTY: isize = -39;
         const E_INVAL: isize = -22;
+        // Every name is beneath the task's root `Cap<Dir>` (read-only): the
+        // write authority is the row's tree on `/fat` and `/tmp`.
+        let root = sys::root_dir() as u32;
+        let rc = |r: Result<(), sys::Errno>| match r { Ok(()) => 0, Err(e) => e.to_syscall_ret() as isize };
         let mut st = [0u8; 48];
-        let rc = sys::statfs(sys::cstr!(b"/fat"), &mut st);
-        report(b"statfs(/fat) -> 0", rc == 0, rc);
+        let r = rc(sys::statfs_at(root, sys::cstr!(b"fat"), &mut st));
+        report(b"statfs(/fat) -> 0", r == 0, r);
         let u32_at = |o: usize| u32::from_le_bytes([st[o], st[o + 1], st[o + 2], st[o + 3]]);
         let u64_at = |o: usize| {
             let mut b = [0u8; 8];
@@ -670,7 +674,7 @@ pub extern "C" fn _start() -> ! {
         report(b"statfs(/fat) has blocks, free <= total",
                u64_at(8) > 0 && u64_at(16) <= u64_at(8), u64_at(16) as isize);
         let mut short = [0u8; 47];
-        expect_errno(b"statfs(short buffer) -> -EINVAL", sys::statfs(sys::cstr!(b"/fat"), &mut short), E_INVAL);
+        expect_errno(b"statfs(short buffer) -> -EINVAL", rc(sys::statfs_at(root, sys::cstr!(b"fat"), &mut short)), E_INVAL);
 
         let f = sys::open_root(sys::cstr!(b"/fat/HELLO.TXT"), 0);
         if f >= 0 {
@@ -687,30 +691,39 @@ pub extern "C" fn _start() -> ! {
         // filesystem is asked, so the refusal says nothing about existence.
         const E_ACCES: isize = -13;
         expect_errno(b"truncate(/fat/NOSUCH.TXT) -> -ENOENT [tree /fat]",
-                     sys::truncate(sys::cstr!(b"/fat/NOSUCH.TXT"), 0), E_NOENT);
+                     rc(sys::truncate_at(root, sys::cstr!(b"fat/NOSUCH.TXT"), 0)), E_NOENT);
         // Admitted, and answered by FAT32 itself: the target is no 8.3 name.
         // (Not a missing source: that is -ENOENT now, asserted below, but
         // this one names the FAT32 name check itself.)
         expect_errno(b"rename(/fat/NOSUCH.TXT -> /fat/not-an-8.3-name) -> -EINVAL [tree /fat]",
-                     sys::rename(sys::cstr!(b"/fat/NOSUCH.TXT"), sys::cstr!(b"/fat/not-an-8.3-name")), E_INVAL);
+                     rc(sys::rename_at(root, sys::cstr!(b"fat/NOSUCH.TXT"), sys::cstr!(b"fat/not-an-8.3-name"))), E_INVAL);
         expect_errno(b"rename(/fat/HELLO.TXT -> /nomount/X) -> -EACCES [no tree on /nomount]",
-                     sys::rename(sys::cstr!(b"/fat/HELLO.TXT"), sys::cstr!(b"/nomount/X")), E_ACCES);
-        expect_errno(b"rmdir(/tmp/nosuchdir) -> -ENOENT", sys::rmdir(sys::cstr!(b"/tmp/nosuchdir")), E_NOENT);
-        expect_errno(b"rmdir(/dev) -> -EACCES [no tree on /]", sys::rmdir(sys::cstr!(b"/dev")), E_ACCES);
+                     rc(sys::rename_at(root, sys::cstr!(b"fat/HELLO.TXT"), sys::cstr!(b"nomount/X"))), E_ACCES);
+        expect_errno(b"rmdir(/tmp/nosuchdir) -> -ENOENT", rc(sys::rmdir_at(root, sys::cstr!(b"tmp/nosuchdir"))), E_NOENT);
+        expect_errno(b"rmdir(/dev) -> -EACCES [no tree on /]", rc(sys::rmdir_at(root, sys::cstr!(b"dev"))), E_ACCES);
         expect_errno(b"unlink(/dev/stdin) -> -EACCES [no tree on /dev]",
-                     sys::unlink(sys::cstr!(b"/dev/stdin")), E_ACCES);
+                     rc(sys::unlink_at(root, sys::cstr!(b"dev/stdin"))), E_ACCES);
         expect_errno(b"mkdir(/captest.d) -> -EACCES [no tree on /]",
-                     sys::mkdir(sys::cstr!(b"/captest.d")), E_ACCES);
-        expect_errno(b"rmdir(/tmp/../dev) -> -EINVAL [.. is not resolved]",
-                     sys::rmdir(sys::cstr!(b"/tmp/../dev")), E_INVAL);
-        expect_errno(b"mkdir(/tmp/captest.d)", sys::mkdir(sys::cstr!(b"/tmp/captest.d")), 0);
-        expect_errno(b"mkdir(/tmp/captest.d/x)", sys::mkdir(sys::cstr!(b"/tmp/captest.d/x")), 0);
+                     rc(sys::mkdir_at(root, sys::cstr!(b"captest.d"))), E_ACCES);
+        // RESOLVE_BENEATH: a `..` stays beneath the directory. `tmp/../dev` is
+        // `/dev` (no tree: refused as a name there); a `..` above the root
+        // and an absolute name are refused before any filesystem is asked.
+        expect_errno(b"rmdir_at(root, tmp/../dev) -> -EACCES [no tree on /dev]",
+                     rc(sys::rmdir_at(root, sys::cstr!(b"tmp/../dev"))), E_ACCES);
+        expect_errno(b"mkdir_at(root, ../tmp/x) -> -EINVAL [.. above the directory]",
+                     rc(sys::mkdir_at(root, sys::cstr!(b"../tmp/x"))), E_INVAL);
+        expect_errno(b"mkdir_at(root, tmp/../../tmp/x) -> -EINVAL [.. above the directory]",
+                     rc(sys::mkdir_at(root, sys::cstr!(b"tmp/../../tmp/x"))), E_INVAL);
+        expect_errno(b"mkdir_at(root, /tmp/x) -> -EINVAL [an absolute name]",
+                     rc(sys::mkdir_at(root, sys::cstr!(b"/tmp/x"))), E_INVAL);
+        expect_errno(b"mkdir(/tmp/captest.d)", rc(sys::mkdir_at(root, sys::cstr!(b"tmp/captest.d"))), 0);
+        expect_errno(b"mkdir(/tmp/captest.d/x)", rc(sys::mkdir_at(root, sys::cstr!(b"tmp/captest.d/x"))), 0);
         expect_errno(b"rmdir(/tmp/captest.d) [not empty] -> -ENOTEMPTY",
-                     sys::rmdir(sys::cstr!(b"/tmp/captest.d")), E_NOTEMPTY);
-        expect_errno(b"rmdir(/tmp/captest.d/x) -> 0", sys::rmdir(sys::cstr!(b"/tmp/captest.d/x")), 0);
-        expect_errno(b"rmdir(/tmp/captest.d) -> 0", sys::rmdir(sys::cstr!(b"/tmp/captest.d")), 0);
+                     rc(sys::rmdir_at(root, sys::cstr!(b"tmp/captest.d"))), E_NOTEMPTY);
+        expect_errno(b"rmdir(/tmp/captest.d/x) -> 0", rc(sys::rmdir_at(root, sys::cstr!(b"tmp/captest.d/x"))), 0);
+        expect_errno(b"rmdir(/tmp/captest.d) -> 0", rc(sys::rmdir_at(root, sys::cstr!(b"tmp/captest.d"))), 0);
         expect_errno(b"rmdir(/tmp/captest.d) again -> -ENOENT",
-                     sys::rmdir(sys::cstr!(b"/tmp/captest.d")), E_NOENT);
+                     rc(sys::rmdir_at(root, sys::cstr!(b"tmp/captest.d"))), E_NOENT);
 
         // Wave 11 (HERM): `mkdir` and `unlink` reach FAT32 under `/fat` (they
         // used to know only the ramfs, so `mkdir /fat/X` answered -1), and
@@ -719,15 +732,15 @@ pub extern "C" fn _start() -> ! {
         const E_EXIST: isize = -17;
         const E_ISDIR: isize = -21;
         expect_errno(b"mkdir(/fat/HERMD) -> 0 [FAT32]",
-                     sys::mkdir(sys::cstr!(b"/fat/HERMD")), 0);
+                     rc(sys::mkdir_at(root, sys::cstr!(b"fat/HERMD"))), 0);
         expect_errno(b"mkdir(/fat/HERMD) again -> -EEXIST",
-                     sys::mkdir(sys::cstr!(b"/fat/HERMD")), E_EXIST);
+                     rc(sys::mkdir_at(root, sys::cstr!(b"fat/HERMD"))), E_EXIST);
         expect_errno(b"unlink(/fat/HERMD) [a directory] -> -EISDIR",
-                     sys::unlink(sys::cstr!(b"/fat/HERMD")), E_ISDIR);
+                     rc(sys::unlink_at(root, sys::cstr!(b"fat/HERMD"))), E_ISDIR);
         expect_errno(b"unlink(/fat/NOSUCH.TXT) -> -ENOENT [FAT32]",
-                     sys::unlink(sys::cstr!(b"/fat/NOSUCH.TXT")), E_NOENT);
+                     rc(sys::unlink_at(root, sys::cstr!(b"fat/NOSUCH.TXT"))), E_NOENT);
         expect_errno(b"rename(/fat/NOSUCH.TXT -> /fat/NEWNAME.TXT) -> -ENOENT [real errno]",
-                     sys::rename(sys::cstr!(b"/fat/NOSUCH.TXT"), sys::cstr!(b"/fat/NEWNAME.TXT")), E_NOENT);
+                     rc(sys::rename_at(root, sys::cstr!(b"fat/NOSUCH.TXT"), sys::cstr!(b"fat/NEWNAME.TXT"))), E_NOENT);
         // O_WRONLY | O_CREAT = 0x41.
         let hf = sys::open_root(sys::cstr!(b"/fat/HERMF.TXT"), 0x41);
         report(b"file_open_typed(/fat/HERMF.TXT, O_CREAT) [tree /fat]", hf >= 0, hf);
@@ -736,11 +749,11 @@ pub extern "C" fn _start() -> ! {
             expect_errno(b"close_typed(HERMF.TXT)", sys::close_typed(hf as u32), 0);
         }
         expect_errno(b"unlink(/fat/HERMF.TXT) -> 0 [FAT32]",
-                     sys::unlink(sys::cstr!(b"/fat/HERMF.TXT")), 0);
+                     rc(sys::unlink_at(root, sys::cstr!(b"fat/HERMF.TXT"))), 0);
         expect_errno(b"unlink(/fat/HERMF.TXT) again -> -ENOENT",
-                     sys::unlink(sys::cstr!(b"/fat/HERMF.TXT")), E_NOENT);
+                     rc(sys::unlink_at(root, sys::cstr!(b"fat/HERMF.TXT"))), E_NOENT);
         expect_errno(b"rmdir(/fat/HERMD) -> 0 [FAT32]",
-                     sys::rmdir(sys::cstr!(b"/fat/HERMD")), 0);
+                     rc(sys::rmdir_at(root, sys::cstr!(b"fat/HERMD"))), 0);
     }
 
     // ── THE THREE HARDWARE FAMILIES, from ring 3 ────────────────────

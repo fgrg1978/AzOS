@@ -19,8 +19,8 @@
 use azos_abi::cap::{ty, CapHandle, CapPerms, CapType};
 use azos_abi::error::Errno;
 use azos_abi::invoke::{
-    DOMAIN_MEMINFO, DOMAIN_MKDIR, DOMAIN_NET_GETIP, DOMAIN_READDIR, DOMAIN_RENAME, DOMAIN_RMDIR,
-    DOMAIN_SOCKET, DOMAIN_STAT, DOMAIN_STATFS, DOMAIN_TASKINFO, DOMAIN_TRUNCATE, DOMAIN_UNLINK,
+    DOMAIN_MEMINFO, DOMAIN_NET_GETIP, DOMAIN_SOCKET, DOMAIN_TASKINFO,
+    NODE_MKDIRAT, NODE_READDIR, NODE_RENAMEAT, NODE_STATAT, NODE_STATFS, NODE_TRUNCATEAT, NODE_UNLINKAT,
     NODE_ACCEPT, NODE_BIND, NODE_CONNECT, NODE_FSYNC, NODE_LISTEN, NODE_MCAST_JOIN, NODE_MCAST_LEAVE, NODE_READ, NODE_RECV, NODE_RECVFROM, NODE_SEND,
     NODE_MMAP, NODE_OPENAT, NODE_SEEK, NODE_SENDTO, NODE_WRITE,
     DOMAIN_MMIO_MAP, DOMAIN_SUP_GIVE_UP,
@@ -223,17 +223,9 @@ fn domain_self_op(c: &mut Call) -> i64 {
         },
         DOMAIN_SET_FILTER => azos_sched::seccomp::activate_profile(w[0]),
         DOMAIN_PLEDGE => domain_pledge(c.tid, w[0]),
-        DOMAIN_STAT => crate::handlers::sys_stat(w[0], w[1]),
-        DOMAIN_READDIR => crate::handlers::sys_readdir(w[0], w[1], w[2], w[3], w[4], w[5]),
-        DOMAIN_STATFS => crate::handlers::sys_statfs(w[0], w[1], w[2]),
         DOMAIN_MEMINFO => crate::handlers::sys_meminfo(),
         DOMAIN_TASKINFO => crate::handlers::sys_taskinfo(w[0], w[1]),
         DOMAIN_NET_GETIP => crate::handlers::sys_net_getip(),
-        DOMAIN_MKDIR => crate::handlers::sys_mkdir(w[0]),
-        DOMAIN_UNLINK => crate::handlers::sys_unlink(w[0]),
-        DOMAIN_RMDIR => crate::handlers::sys_rmdir(w[0]),
-        DOMAIN_RENAME => crate::handlers::sys_rename(w[0], w[1]),
-        DOMAIN_TRUNCATE => crate::handlers::sys_truncate(w[0], w[1]),
         DOMAIN_SOCKET => crate::handlers::sys_socket_typed(w[0], w[1], w[2]),
         DOMAIN_UPTIME => crate::handlers::sys_uptime(),
         DOMAIN_WAIT => crate::handlers::sys_domain_wait(w[0], w[1], w[2]),
@@ -424,6 +416,21 @@ fn node_op(c: &mut Call) -> i64 {
         NODE_ACCEPT => h::sys_accept_typed(hd),
         NODE_OPENAT => h::sys_file_openat_typed(hd, w[0], w[1]),
         NODE_MMAP => crate::file_map::sys_file_mmap(hd, w[0], w[1], w[2], w[3]),
+        NODE_STATAT => h::sys_statat(hd, w[0], w[1]),
+        NODE_READDIR => match h::sys_readdirat(hd, w[0], w[1], w[2], w[3]) {
+            Ok(Some((size, is_dir))) => {
+                c.rep[..2].copy_from_slice(&[size as u64, is_dir as u64]);
+                c.nrep = 2;
+                1
+            }
+            Ok(None) => 0,
+            Err(e) => e,
+        },
+        NODE_STATFS => h::sys_statfsat(hd, w[0], w[1], w[2]),
+        NODE_MKDIRAT => h::sys_mkdirat(hd, w[0]),
+        NODE_UNLINKAT => h::sys_unlinkat(hd, w[0], w[1]),
+        NODE_RENAMEAT => h::sys_renameat(hd, w[0], w[1]),
+        NODE_TRUNCATEAT => h::sys_truncateat(hd, w[0], w[1]),
         _ => Errno::EINVAL.to_syscall_ret(),
     }
 }

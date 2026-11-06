@@ -326,7 +326,7 @@ const CONSOLE_OPS: &[u16] = inv_ops![LOG_CONSOLE_WRITE];
 /// (`azos_linux_rt::RUNTIME_OPS`): the runtime issues them for the program's
 /// Linux calls, in the program's address space, so every Linux row lists them.
 const LINUX_RT_OPS: &[u16] = inv_ops![
-    LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_STAT, DOMAIN_READDIR, DOMAIN_UPTIME,
+    LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_STATAT, NODE_READDIR, DOMAIN_UPTIME,
     DOMAIN_WAIT, MEMOBJ_ACQUIRE, MEMOBJ_END_DROP, NODE_SEEK, DOMAIN_MPROTECT,
     DOMAIN_SET_CLEAR_TID,
 ];
@@ -356,7 +356,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // The ring-3 GPIO device host: a thread (`SYS_THREAD_CREATE`) accepts and
     // answers the `DevicePower` interface it serves on its endpoint (v2
     // accept and reply) and takes the lock it shares with the idle clock by
-    // yielding; the main thread sleeps until the clock is due. `DOMAIN_STAT`
+    // yielding; the main thread sleeps until the clock is due. `DOMAIN_UPTIME`
     // is the clock the idle timeout and the wakelock deadlines run on (the
     // vDSO's fallback); `SYS_CAP_INFO` finds the console handle its lines are
     // written through.
@@ -367,13 +367,13 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_THREAD_CREATE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: NO_IFACES,
     },
     // The ring-3 inference service (`userspace/services/infsrv`; the image keeps
     // the name it had as the ML service). It reads its model files and bundles
     // through `Cap<File>` (`NODE_OPENAT`, `NODE_READ`, `SYS_CAP_CLOSE`, the
-    // directory scan `DOMAIN_READDIR`) and, on its one thread, accepts and
+    // directory scan `NODE_READDIR`) and, on its one thread, accepts and
     // answers the `Infer` interface on its endpoint (v2 accept and reply;
     // `SYS_YIELD` after a refused accept). A call's tensors are memory objects
     // lent to it: acquired (`MEMOBJ_ACQUIRE`), mapped for the run and released
@@ -383,7 +383,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // `memctl` interface (`SYS_IPC_CALL`, the one interface of its row). One
     // port, made at start (`DOMAIN_CREATE_PORT`) and bound to the Domain's
     // memory pressure (`PORT_BIND`), is drained (`PORT_POLL`) where a call ends;
-    // it is never destroyed, so no `PORT_DESTROY`. `DOMAIN_STAT` is the clock the
+    // it is never destroyed, so no `PORT_DESTROY`. `DOMAIN_UPTIME` is the clock the
     // run is timed on (the vDSO's fallback).
     ImageProfile {
         image: "MLSRV.ELF",
@@ -394,7 +394,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
         ops: inv_ops![
-            LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_READDIR, DOMAIN_STAT,
+            LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_READDIR, DOMAIN_UPTIME,
             MEMOBJ_ACQUIRE, DOMAIN_CREATE_PORT, PORT_BIND, PORT_POLL,
         ],
         ifaces: &[azos_devif::key::MEMCTL],
@@ -482,7 +482,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // The ring lanes: map the page whose capability the client moved
             // here, sleep and wake on its index words (`SYS_FUTEX_*`), and
             // report the hart it ran on (`DOMAIN_TASKINFO` reads, through
-            // `DOMAIN_STAT`'s class).
+            // `DOMAIN_UPTIME`'s class).
             SYS_MO_MAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             // The console capability's lookup, and the endpoint the port
             // lane binds.
@@ -492,7 +492,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_PORT_WAIT, SYS_SLEEP_UNTIL,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_CREATE_PORT, PORT_BIND, PORT_DESTROY],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME, DOMAIN_CREATE_PORT, PORT_BIND, PORT_DESTROY],
         ifaces: NO_IFACES,
     },
     // Reflex stops a wheel (`speed`, 0) and turns or backs up (`drive`) on the
@@ -534,7 +534,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_CALL,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_SOCKET, NODE_READ, NODE_SEND, DOMAIN_STAT, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_SOCKET, NODE_READ, NODE_SEND, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::LINK_KEY, azos_devif::key::MOTOR, azos_devif::key::SENSOR],
     },
     // AUDIT MODE. captest issues capability calls it expects the kernel to
@@ -561,7 +561,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_REPLY,
         ],
         audit: true,
-        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_CREATE_ENDPOINT, PORT_POLL, DOMAIN_STAT, NODE_OPENAT, DOMAIN_MKDIR, NODE_READ, NODE_WRITE, DOMAIN_MMIO_MAP, DEVICE_IRQ_BIND],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_CREATE_ENDPOINT, PORT_POLL, DOMAIN_UPTIME, NODE_OPENAT, NODE_MKDIRAT, NODE_READ, NODE_WRITE, DOMAIN_MMIO_MAP, DEVICE_IRQ_BIND],
         ifaces: &[
             azos_devif::key::GPIO, azos_devif::key::I2C, azos_devif::key::PWM,
             azos_devif::key::MOTOR, azos_devif::key::SENSOR,
@@ -607,7 +607,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_MAP,
         ],
         audit: true,
-        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_EXIT_STATS, DOMAIN_SUBREAPER, PORT_POLL, PORT_BIND, NODE_OPENAT, DOMAIN_MKDIR, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, DEVICE_IRQ_BIND, DOMAIN_CREATE_PORT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_EXIT_STATS, DOMAIN_SUBREAPER, PORT_POLL, PORT_BIND, NODE_OPENAT, NODE_MKDIRAT, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, DEVICE_IRQ_BIND, DOMAIN_CREATE_PORT],
         ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::MOTOR],
     },
     // `SYS_FOREIGN_FORK` is issued as raw asm (`spawn`, the register canary),
@@ -700,7 +700,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_FOREIGN_ENTRY, SYS_FOREIGN_FORK,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_CREATE_PORT, DOMAIN_STAT, NODE_OPENAT, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_CREATE_PORT, DOMAIN_UPTIME, NODE_OPENAT, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::SENSOR],
     },
     // The ring-3 buzzer driver: the v2 accept and reply of the `Buzzer`
@@ -719,7 +719,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DEVICE_IOPORT_ENABLE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME, DEVICE_IOPORT_ENABLE],
         ifaces: &[azos_devif::key::PWM],
     },
     // The ring-3 INA219 driver. The main thread samples, sleeping to the next
@@ -736,7 +736,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_THREAD_CREATE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::I2C],
     },
     // The component manager. Reads its plan from its view region of the
@@ -756,7 +756,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_SPAWN_EX, SYS_ALERT, SYS_YIELD,
         ],
         audit: false,
-        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_WAIT, DOMAIN_SUP_GIVE_UP],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_UPTIME, DOMAIN_WAIT, DOMAIN_SUP_GIVE_UP],
         ifaces: NO_IFACES,
     },
     // Wave 11: the user shell. The profile that lists
@@ -787,7 +787,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_SUBREAPER, DOMAIN_STAT, NODE_OPENAT, DOMAIN_MKDIR, NODE_READ, NODE_WRITE, DOMAIN_WAIT, MEMOBJ_END_DROP],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_SUBREAPER, NODE_OPENAT, NODE_MKDIRAT, NODE_READ, NODE_WRITE, DOMAIN_WAIT, MEMOBJ_END_DROP],
         ifaces: NO_IFACES,
     },
     // The Terminal object's server. The ONLY profile that lists the console
@@ -831,7 +831,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_CAP_INFO,
                     ],
         audit: false,
-        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: NO_IFACES,
     },
     // Wave 11: the shell's multicall tool image. Reads and writes
@@ -871,7 +871,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::NET, azos_devif::key::CLOCK, azos_devif::key::SOUND, azos_devif::key::VOLUME],
     },
     // The shell's power tool, the first privileged family with a
@@ -963,7 +963,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_MAP, SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, LOG_TRACE_INFO, LOG_TRACE_MAP, LOG_TRACE_SET_MASK, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_STAT, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, LOG_TRACE_INFO, LOG_TRACE_MAP, LOG_TRACE_SET_MASK, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         ifaces: NO_IFACES,
     },
     // The Decisions object's server. Serves `endpoint.decisions` (the v2
@@ -1102,7 +1102,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
         ops: inv_ops![
-            LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_STAT, DOMAIN_READDIR, DOMAIN_UNLINK, NODE_READ, NODE_WRITE, NODE_FSYNC,
+            LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_UPTIME, NODE_READDIR, NODE_UNLINKAT, NODE_READ, NODE_WRITE, NODE_FSYNC,
             MEMOBJ_ACQUIRE, DOMAIN_UPTIME,
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_CONNECT,
             NODE_SEND, NODE_SENDTO, NODE_RECV, NODE_RECVFROM, NODE_MCAST_JOIN, NODE_MCAST_LEAVE,
@@ -1126,7 +1126,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_STAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE],
         ifaces: NO_IFACES,
     },
     // The RPC server (transparent RPC, Phase 9 step 1). Serves the proxy
@@ -1242,7 +1242,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_SCHEDCTL,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         // `time` is never called (it serves no op): it is the warrant the
         // pump presents to `SYS_SCHEDCTL`, and a row's grant of an interface
         // the profile does not list is withheld.
@@ -1402,7 +1402,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
         ops: inv_ops![
-            LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_FSYNC, DOMAIN_STAT, DOMAIN_CREATE_PORT, PORT_BIND,
+            LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_FSYNC, DOMAIN_UPTIME, DOMAIN_CREATE_PORT, PORT_BIND,
         ],
         ifaces: &[azos_devif::key::VM, azos_devif::key::VCPU],
     },
@@ -1428,7 +1428,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_CAP_CLOSE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_STAT, DOMAIN_MODULE_VERIFY],
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_UPTIME, DOMAIN_MODULE_VERIFY],
         ifaces: &[azos_devif::key::ENTROPY],
     },
     // Wave 12: the Linux personality's test binary, a static

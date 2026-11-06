@@ -124,8 +124,8 @@ pub const RUNTIME_OPS: &[u16] = &[
     azos_abi::invoke::NODE_OPENAT,
     azos_abi::invoke::NODE_READ,
     azos_abi::invoke::NODE_WRITE,
-    azos_abi::invoke::DOMAIN_STAT,
-    azos_abi::invoke::DOMAIN_READDIR,
+    azos_abi::invoke::NODE_STATAT,
+    azos_abi::invoke::NODE_READDIR,
     azos_abi::invoke::DOMAIN_UPTIME,
     azos_abi::invoke::DOMAIN_WAIT,
     azos_abi::invoke::MEMOBJ_ACQUIRE,
@@ -240,10 +240,14 @@ pub trait Native {
     /// What a call on the pipe end `h` would find now, for `poll`; `None`
     /// when `h` names no open end.
     fn pipe_ready(&self, h: u32) -> Option<PipeReady>;
-    /// `DOMAIN_STAT`: the record `azos_abi::syscall_nr::STAT_BYTES` documents.
-    fn stat(&self, path: &[u8], out: &mut [u8; STAT_BYTES]) -> i64;
-    /// `DOMAIN_READDIR`: entry `idx` of the directory `dir` (NUL-terminated).
-    fn readdir(&self, dir: &[u8], idx: u64, name: &mut [u8; NAME_BYTES], size: &mut u32, is_dir: &mut u32) -> i64;
+    /// `NODE_STATAT` of the absolute, NUL-terminated `path` beneath the
+    /// image's root directory: the record `azos_abi::syscall_nr::STAT_BYTES`
+    /// documents, or the native refusal.
+    fn stat(&self, path: &[u8], out: &mut [u8; STAT_BYTES]) -> Result<(), i64>;
+    /// `NODE_READDIR`: entry `idx` of the absolute, NUL-terminated directory
+    /// `dir` beneath the root: its name into `name`, its size and whether it
+    /// is a directory; `None` past the last entry.
+    fn readdir(&self, dir: &[u8], idx: u32, name: &mut [u8; NAME_BYTES]) -> Result<Option<(u32, bool)>, i64>;
     /// The granule `SYS_MO_MAP` rounds a length up to (the build's page size).
     fn page_size(&self) -> u64;
     /// Anonymous private memory (`SYS_MO_MAP`); `flags` are Linux's
@@ -1122,10 +1126,10 @@ impl<N: Native> Runtime<N> {
         let zp = nul_terminated(path, &mut z)?;
         let mut st = [0u8; STAT_BYTES];
         match self.native.stat(zp, &mut st) {
-            r if r >= 0 => Ok(rd32(&st, STAT_OFF_MODE) & STAT_S_IFMT == STAT_S_IFDIR),
-            e => {
-                let (mut name, mut size, mut isd) = ([0u8; NAME_BYTES], 0u32, 0u32);
-                if self.native.readdir(zp, 0, &mut name, &mut size, &mut isd) == 0 {
+            Ok(()) => Ok(rd32(&st, STAT_OFF_MODE) & STAT_S_IFMT == STAT_S_IFDIR),
+            Err(e) => {
+                let mut name = [0u8; NAME_BYTES];
+                if let Ok(Some(_)) = self.native.readdir(zp, 0, &mut name) {
                     Ok(true)
                 } else {
                     Err(lx::errno_from_native(e, le::ENOENT))
@@ -1330,7 +1334,7 @@ impl<N: Native> Runtime<N> {
         let mut raw = [0u8; STAT_BYTES];
         let (size, mode, nlink, atime, mtime, ctime);
         match self.native.stat(zp, &mut raw) {
-            r if r >= 0 => {
+            Ok(()) => {
                 size = rd64(&raw, STAT_OFF_SIZE);
                 mode = rd32(&raw, STAT_OFF_MODE);
                 nlink = rd32(&raw, STAT_OFF_NLINK);
@@ -1338,10 +1342,10 @@ impl<N: Native> Runtime<N> {
                 mtime = rd64(&raw, STAT_OFF_MTIME);
                 ctime = rd64(&raw, STAT_OFF_CTIME);
             }
-            e => {
+            Err(e) => {
                 // A mount point the VFS cannot stat but can list is a directory.
-                let (mut name, mut sz, mut isd) = ([0u8; NAME_BYTES], 0u32, 0u32);
-                if self.native.readdir(zp, 0, &mut name, &mut sz, &mut isd) == 0 {
+                let mut name = [0u8; NAME_BYTES];
+                if let Ok(Some(_)) = self.native.readdir(zp, 0, &mut name) {
                     (size, mode, nlink, atime, mtime, ctime) = (0, lx::mode::S_IFDIR | 0o755, 1, 0, 0, 0);
                 } else {
                     return Err(lx::errno_from_native(e, le::ENOENT));
@@ -1455,13 +1459,11 @@ impl<N: Native> Runtime<N> {
         let mut used = 0usize;
         let mut idx = d.next;
         loop {
-            let (mut name, mut size, mut isd) = ([0u8; NAME_BYTES], 0u32, 0u32);
-            if self.native.readdir(zp, idx as u64, &mut name, &mut size, &mut isd) != 0 {
-                break;
-            }
+            let mut name = [0u8; NAME_BYTES];
+            let Ok(Some((_, isd))) = self.native.readdir(zp, idx, &mut name) else { break };
             let nlen = name.iter().position(|&b| b == 0).unwrap_or(name.len());
             let ino = (idx as u64) + 2;
-            let dt = if isd != 0 { lx::DT_DIR } else { lx::DT_REG };
+            let dt = if isd { lx::DT_DIR } else { lx::DT_REG };
             match lx::encode_dirent64(&mut out[used..cap], ino, idx as i64 + 1, dt, &name[..nlen]) {
                 Some(n) => used += n,
                 None => break,
@@ -1469,8 +1471,8 @@ impl<N: Native> Runtime<N> {
             idx += 1;
         }
         if used == 0 {
-            let (mut name, mut size, mut isd) = ([0u8; NAME_BYTES], 0u32, 0u32);
-            if self.native.readdir(zp, idx as u64, &mut name, &mut size, &mut isd) == 0 {
+            let mut name = [0u8; NAME_BYTES];
+            if let Ok(Some(_)) = self.native.readdir(zp, idx, &mut name) {
                 // The next entry does not fit the caller's buffer at all.
                 return neg(le::EINVAL);
             }
