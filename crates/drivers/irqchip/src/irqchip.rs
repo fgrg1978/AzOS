@@ -194,6 +194,18 @@ pub fn disable_irq(hart: u32, irq: u32) {
     }
 }
 
+/// Mask wired line `irq` that the kernel enabled for `hart`, from any hart,
+/// and give it back to ring 3's pool: on AIA the APLIC source (domain-global)
+/// and the identity in `hart`'s file, on the PLIC the enable bit of `hart`'s
+/// context (the enable registers are reachable from every hart).
+pub fn release_wired(hart: u32, irq: u32) {
+    if is_aia() {
+        aia_source_enable(irq, false);
+    }
+    disable_irq(hart, irq);
+    crate::user_irq::unmark_kernel(irq);
+}
+
 /// AIA only: route wired APLIC `source` to `hart`, with the source number
 /// as its IMSIC identity. Returns the `sourcecfg` read-back (see
 /// `Aplic::wire_source`); `None` on the PLIC path, where wired lines need

@@ -494,6 +494,14 @@ fn route_spi_raw(intid: u32, mpidr: u64, edge: bool) {
     enable_spi(intid);
 }
 
+/// Give back an SPI the kernel routed for itself ([`route_spi`]): masked at
+/// the distributor and no longer the kernel's, so ring 3 may be granted it.
+#[cfg(target_arch = "aarch64")]
+pub fn release_spi(intid: u32) {
+    disable_spi(intid);
+    spi_clear(&KERNEL_SPI, intid);
+}
+
 /// Disable (mask) SPI `intid` at the distributor and wait until the disable
 /// has taken effect (`GICD_CTLR.RWP` covers `GICD_ICENABLER` writes, §12.9.4):
 /// once this returns the line cannot be signalled to any PE again until

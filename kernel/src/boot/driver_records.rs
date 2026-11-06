@@ -63,6 +63,26 @@ pub(crate) fn hold(h: Handle, f: impl FnOnce(&mut Held)) {
     }
 }
 
+/// The context each device's booked line was enabled on (`blk_irq::line_target`).
+static LINE_TARGET: SpinLock<[u32; hwbus::MAX_DEVICES]> = SpinLock::new([0; hwbus::MAX_DEVICES]);
+
+/// Book `line`, enabled on context `target`, to device `h`.
+pub(crate) fn hold_line(h: Handle, line: u32, target: u32) {
+    hold(h, |held| held.irq = Some(line));
+    if let Some(t) = LINE_TARGET.lock().get_mut(h.index()) {
+        *t = target;
+    }
+}
+
+/// Does a device other than `h` bound to a kernel driver share `line`?
+fn line_shared(h: Handle, line: u32) -> bool {
+    hwbus::with(|b| {
+        b.iter().any(|(o, s)| {
+            o != h && s.dev.irq == line && s.state == hwbus::State::Bound && matches!(s.binding, hwbus::Binding::Native(_))
+        })
+    })
+}
+
 fn booked(h: Handle) -> Held {
     HELD.lock().get(h.index()).copied().unwrap_or(Held::NONE)
 }
@@ -209,7 +229,8 @@ fn disk_in_use() -> bool {
     medium && (azos_fs::vfs_block_mounts() != 0 || azos_mm::pager::swap_on())
 }
 
-/// `Busy` while the disk is in use ([`disk_in_use`]). Otherwise the device
+/// `Busy` while the disk is in use ([`disk_in_use`]), and while another kernel
+/// driver's device shares its line (masking it would take theirs). Otherwise the device
 /// out of service (what it was given finished, its reset confirmed), its line
 /// given back, and its memory taken out of its DMA domain (`blk::release`): a
 /// later `claim` finds it gone. A release the domain refuses leaves the DMA
@@ -222,17 +243,21 @@ fn virtio_blk_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
         }
         crate::kprintln!("[CANARY] unbind-ignores-openers: virtio-blk lets go of a disk in use");
     }
+    if booked(h).irq.is_some_and(|line| line_shared(h, line)) {
+        return Err(ProbeError::Busy);
+    }
     blk::park(dev.base as usize).map_err(|()| ProbeError::Busy)?;
     if canary!("unbind-leaves-irq") {
         crate::kprintln!("[CANARY] unbind-leaves-irq: virtio-blk's unbind keeps its interrupt line");
         book_live(h, false);
         return Ok(());
     }
-    blk::irq_mode_off();
     if let Some(line) = booked(h).irq {
-        super::unwire_line(line);
+        let target = LINE_TARGET.lock().get(h.index()).copied().unwrap_or(0);
+        super::unwire_line(line, target);
         hold(h, |held| held.irq = None);
     }
+    blk::irq_mode_off();
     if blk::release(dev.base as usize).is_err() {
         hold(h, |held| held.window = false);
         return Ok(());

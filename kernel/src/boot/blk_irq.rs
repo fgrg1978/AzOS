@@ -139,17 +139,20 @@ pub(crate) fn wire_virtio_blk_irq() {
         crate::irq_thread::register(line);
     }
     if let Some(h) = super::driver_records::handle_at(base) {
-        super::driver_records::hold(h, |held| held.irq = Some(line));
+        super::driver_records::hold_line(h, line, line_target());
     }
 }
 
-/// Give back the line [`wire_virtio_blk_irq`] took: the driver stops naming
-/// it (its handler no longer recognises it), the IRQ thread lets go of it (a
-/// late event finds no binding, and its ACK unmasks nothing), and the
-/// controller masks it.
-pub(crate) fn unwire_line(line: u32) {
+/// Give back a line [`enable_line`] enabled for `target` ([`line_target`] at
+/// the time): the IRQ thread lets go of it (a late event finds no binding,
+/// and its ACK unmasks nothing), the controller masks it on the context it
+/// was enabled on, whichever CPU this runs on, and it is no longer the
+/// kernel's, so ring 3 may be granted it. The driver stops naming the line
+/// after this (the caller's next step), so an event already latched is still
+/// recognised meanwhile.
+pub(crate) fn unwire_line(line: u32, target: u32) {
     crate::irq_thread::unregister(line);
-    disable_line(line);
+    release_line(line, target);
 }
 
 /// The SD/eMMC drivers' hooks (`mmc.rs`, `dwmshc.rs`): the caller's TID, the
@@ -235,19 +238,33 @@ pub(super) fn enable_line(gsi: u32) -> bool {
     azos_arch::irq::ioapic::set_masked(gsi, false)
 }
 
+/// The context [`enable_line`] enables a line on from here: the hart (its
+/// PLIC context, or its IMSIC file); the GIC distributor and the IOAPIC mask
+/// a line for every CPU, so they need none.
 #[cfg(target_arch = "riscv64")]
-fn disable_line(irq: u32) {
-    azos_drv_irqchip::irqchip::disable_irq(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32, irq);
+fn line_target() -> u32 {
+    azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn line_target() -> u32 {
+    0
+}
+
+#[cfg(target_arch = "riscv64")]
+fn release_line(irq: u32, hart: u32) {
+    azos_drv_irqchip::irqchip::release_wired(hart, irq);
 }
 
 #[cfg(target_arch = "aarch64")]
-fn disable_line(intid: u32) {
-    azos_arch::irq::gic::disable_spi(intid);
+fn release_line(intid: u32, _: u32) {
+    azos_arch::irq::gic::release_spi(intid);
 }
 
 #[cfg(target_arch = "x86_64")]
-fn disable_line(gsi: u32) {
+fn release_line(gsi: u32, _: u32) {
     let _ = azos_arch::irq::ioapic::set_masked(gsi, true);
+    azos_drv_irqchip::user_irq::unmark_kernel(gsi);
 }
 
 #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
@@ -261,4 +278,4 @@ pub(super) fn enable_line(_line: u32) -> bool {
 }
 
 #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
-fn disable_line(_line: u32) {}
+fn release_line(_line: u32, _: u32) {}

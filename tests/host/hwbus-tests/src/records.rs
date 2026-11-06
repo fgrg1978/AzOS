@@ -27,13 +27,23 @@ struct FakeEnv {
     window: Vec<u32>,
     /// Devices whose suspend fails.
     refuse_suspend: Vec<u32>,
+    /// Lines enabled on an interrupt-controller context (a hart), as
+    /// `(line, hart)`; each device's line is booked with the hart it was
+    /// enabled on.
+    enabled: Vec<(u32, u32)>,
+    booked_hart: BTreeMap<u32, u32>,
+    /// The hart the op runs on.
+    hart: u32,
     log: Vec<String>,
 }
 
 impl Env for FakeEnv {
-    fn held(&mut self, h: Handle, _dev: &Device) -> Held {
+    fn held(&mut self, h: Handle, dev: &Device) -> Held {
         Held {
-            irq: self.irq.iter().find(|(_, o)| **o == h.0).map(|(l, _)| *l),
+            irq: self.irq.iter().find(|(_, o)| **o == h.0).map(|(l, _)| *l).or_else(|| {
+                let line = dev.irq;
+                self.enabled.iter().any(|&(l, _)| l == line).then_some(line)
+            }),
             dma: self.dma.contains(&h.0),
             window: self.window.contains(&h.0),
         }
@@ -96,6 +106,28 @@ fn record_only(_env: &mut FakeEnv, _h: Handle, _dev: &Device) -> Result<(), Prob
     Ok(())
 }
 
+/// Enables its line on the hart it runs on and books that hart.
+fn probe_on_hart(env: &mut FakeEnv, h: Handle, dev: &Device) -> Result<(), ProbeError> {
+    probe(env, h, dev)?;
+    env.enabled.push((dev.irq, env.hart));
+    env.booked_hart.insert(h.0, env.hart);
+    Ok(())
+}
+
+/// Masks the line on the context it was enabled on.
+fn unbind_booked_hart(env: &mut FakeEnv, h: Handle, dev: &Device) -> Result<(), ProbeError> {
+    let hart = env.booked_hart[&h.0];
+    env.enabled.retain(|&e| e != (dev.irq, hart));
+    unbind(env, h, dev)
+}
+
+/// Masks the line on the hart the unbind runs on.
+fn unbind_this_hart(env: &mut FakeEnv, h: Handle, dev: &Device) -> Result<(), ProbeError> {
+    let hart = env.hart;
+    env.enabled.retain(|&e| e != (dev.irq, hart));
+    unbind(env, h, dev)
+}
+
 static CLEAN: Ops<Fake> = Ops {
     probe,
     unbind: Unbind::<Fake>::Op(unbind),
@@ -105,6 +137,8 @@ static LEAKY: Ops<Fake> = Ops { unbind: Unbind::<Fake>::Op(leaky_unbind), ..CLEA
 static NO_PM: Ops<Fake> = Ops { power: Power::Unsupported, ..CLEAN };
 static NET_B_OPS: Ops<Fake> = Ops { probe: probe_b, ..CLEAN };
 static NET_B: DriverIds = DriverIds { name: "other-net", ids: &[Pattern::pci(0x8086, 0x1234)], boot: false };
+static ON_HART: Ops<Fake> = Ops { probe: probe_on_hart, unbind: Unbind::<Fake>::Op(unbind_booked_hart), ..CLEAN };
+static THIS_HART: Ops<Fake> = Ops { probe: probe_on_hart, unbind: Unbind::<Fake>::Op(unbind_this_hart), ..CLEAN };
 static PINNED: Ops<Fake> = Ops { probe: record_only, unbind: Unbind::Pinned, power: Power::Stateless };
 
 static BLK: DriverIds = DriverIds { name: "virtio-blk", ids: &[Pattern::Virtio(2)], boot: false };
@@ -392,5 +426,23 @@ fn a_driver_without_power_ops_refuses_the_suspend() {
 fn the_fixture_drivers_are_the_fixture_table_s() {
     for r in table(&CLEAN).iter() {
         assert!(NATIVE_FIX.iter().any(|n| n.driver == r.name()), "{}", r.name());
+    }
+}
+
+/// A line enabled on one hart's context and given back from another: masked
+/// on the context it was enabled on, the unbind is clean; masked only on the
+/// hart the unbind runs on, the line is still live on the first and the bus
+/// keeps the device (the riscv PLIC / IMSIC case).
+#[test]
+fn a_line_is_given_back_on_the_context_it_was_enabled_on() {
+    for (ops, clean) in [(&ON_HART, true), (&THIS_HART, false)] {
+        let mut env = FakeEnv { hart: 1, ..FakeEnv::default() };
+        let recs = table(ops);
+        let (mut bus, hs) = bound(&recs, &mut env);
+        env.hart = 0;
+        let mut sink = Recorder::default();
+        let r = bus.unbind(hs[1], &mut Records { records: &recs, env: &mut env }, &mut sink);
+        assert_eq!(r.is_ok(), clean, "{r:?} {:?}", sink.lines);
+        assert_eq!(env.enabled.iter().any(|&(l, _)| l == 6), !clean);
     }
 }

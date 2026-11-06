@@ -139,6 +139,12 @@ pub fn mark_kernel(irq: u32) {
     set(&KERNEL, irq);
 }
 
+/// Undo [`mark_kernel`]: a driver gave the line back (an unbind), so ring 3
+/// may be granted it.
+pub fn unmark_kernel(irq: u32) {
+    clear(&KERNEL, irq);
+}
+
 /// Whether ring 3 may bind `irq`: a real source (not 0, below the
 /// controller's count) the kernel did not enable for itself.
 pub fn bindable(irq: u32) -> bool {
