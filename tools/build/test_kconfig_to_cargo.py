@@ -830,8 +830,8 @@ def test_isa_level_and_require_reach_the_codegen() -> None:
 
 
 RT = " -Z retpoline -Z retpoline-external-thunk"
-# The x86_64 kernel's portable poly1305 and aes backends (kernel only).
-SOFT = " --cfg poly1305_force_soft --cfg aes_force_soft"
+# The x86_64 kernel's portable chacha20, poly1305 and aes backends (kernel only).
+SOFT = " --cfg chacha20_force_soft --cfg poly1305_force_soft --cfg aes_force_soft"
 
 
 def test_cfi_pads_follow_each_isas_extension_choices() -> None:

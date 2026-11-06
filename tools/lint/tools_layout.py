@@ -91,6 +91,7 @@ ROLES = {
         "host_paths_lint.py", "lx_license_lint.py", "out_dir_lint.py", "req_trace.py", "size_budget.py", "size_budget.tsv",
         "spdx_headers.py", "stack_chain.py", "stack_frames.py", "tcb_check.sh", "third_party_versions.py", "tools_layout.py",
         "trap_lint.py", "unsafe_budget.py", "unsafe_budget.tsv", "user_entry_lint.py", "user_stacks.py",
+        "x86_64_simd_free_check.sh",
     ],
     "image": [
         "azpkg.py", "azpkg_licences.txt", "blklog_crash_image.py", "boot.cmd", "check_board_disk.py",

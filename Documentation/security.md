@@ -586,11 +586,15 @@ the crates' run-time CPU detection (`cpufeatures`) answers false for
 `target_os = "none"` unless a feature is enabled at build time, and no kernel
 build enables a SIMD target feature (the kernels are soft-float). Checked by
 disassembly: `azos_crypto` built for `x86_64-unknown-none` at `x86-64-v3` has
-no xmm/ymm instruction and no `cpuid`. The x86_64 kernel builds also pass
-`--cfg poly1305_force_soft --cfg aes_force_soft`
-(`tools/build/kconfig_to_cargo.py`): without them those two crates compile
-their AVX2 / AES-NI backends, and rustc aborts on them for the soft-float
-target.
+no xmm/ymm instruction and no `cpuid`. On top of that, as defence in depth:
+`sha2` takes its `force-soft` backend on every `target_os = "none"` build, the
+x86_64 kernel builds pass
+`--cfg chacha20_force_soft --cfg poly1305_force_soft --cfg aes_force_soft`
+(`tools/build/kconfig_to_cargo.py`; without the last two, rustc aborts on
+those crates' AVX2 / AES-NI backends for the soft-float target), and the gate
+disassembles the linked x86_64 kernel (`tools/lint/x86_64_simd_free_check.sh`):
+an xmm/ymm/zmm register outside the FP-state functions, or a `cpuid` outside
+the kernel's own CPU probes, fails it.
 
 | Module | Provides |
 |--------|----------|

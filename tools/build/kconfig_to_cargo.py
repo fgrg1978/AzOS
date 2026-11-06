@@ -240,15 +240,18 @@ def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool 
 
 
 def x86_soft_crypto_rustflags(cfg: dict[str, str]) -> list[str]:
-    """x86_64 kernel only: `poly1305` and `aes` (azos_crypto) compile their
-    AVX2 / AES-NI backends unless these cfgs are set, and rustc aborts (SIGTRAP)
-    building those for the soft-float `x86_64-unknown-none` target. A type-check
-    (`make check`) never reaches codegen, so only a build shows it. The portable
-    backends would run anyway: run-time detection answers false on
-    `target_os = "none"`."""
+    """x86_64 kernel only: the portable backends of the RustCrypto ciphers
+    azos_crypto links. `poly1305` and `aes` compile their AVX2 / AES-NI backends
+    unless their cfg is set, and rustc aborts (SIGTRAP) building those for the
+    soft-float `x86_64-unknown-none` target; a type-check (`make check`) never
+    reaches codegen, so only a build shows it. `chacha20`'s leaves today's image
+    as it is: its SSE2/AVX2 paths are dead only because run-time detection
+    answers false on `target_os = "none"`, and the cfg keeps them out should
+    that change (a target spec with another `os`, a SIMD target feature).
+    tools/lint/x86_64_simd_free_check.sh proves the linked kernel."""
     if cfg.get("CONFIG_ARCH_X86_64") != "y":
         return []
-    return ["--cfg", "poly1305_force_soft", "--cfg", "aes_force_soft"]
+    return ["--cfg", "chacha20_force_soft", "--cfg", "poly1305_force_soft", "--cfg", "aes_force_soft"]
 
 
 def kasan_rustflags(cfg: dict[str, str]) -> list[str]:

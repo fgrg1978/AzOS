@@ -813,6 +813,8 @@ x86_64: machine check, stop canary	n1	crates/core/actuation/** crates/domains/ro
 boot: no self-tests by default (x86)	n1	kernel/src/entry/** arch/x86_64/** arch/x86_64/boot/linker-x86_64.ld
 x86_64: microcode loader	n1	arch/x86_64/** crates/core/crypto/** crates/core/ota/** crates/core/decision/** arch/x86_64/boot/linker-x86_64.ld kernel/src/entry/x86_64/** config/axes/Kconfig.security mk/firmware.mk mk/qemu.mk tools/image/mk_ucode.py tools/sign/sigalg.py kernel/src/panic.rs kernel/src/entry/**
 x86_64: PMU probe, EPYC without the hypervisor bit	n1	arch/x86_64/** arch/facade/** crates/core/mm/** crates/core/sched/** crates/core/percpu/** crates/core/sync/** crates/drivers/irqchip/** crates/drivers/sys/** arch/x86_64/boot/linker-x86_64.ld kernel/src/entry/** kernel/src/boot/** kernel/src/main.rs config/*Kconfig* Makefile arch/api/** arch/api/src/pmu.rs
+x86_64 kernel SIMD-free	n1	kernel/** arch/** crates/** Cargo.toml Cargo.lock arch/x86_64/boot/linker-x86_64.ld tools/build/kconfig_to_cargo.py tools/lint/x86_64_simd_free_check.sh
+x86_64 kernel SIMD-free robot	n1	kernel/** arch/** crates/** Cargo.toml Cargo.lock arch/x86_64/boot/linker-x86_64.ld tools/build/kconfig_to_cargo.py tools/lint/x86_64_simd_free_check.sh
 stack frames: x86_64	n1	kernel/** arch/** crates/** arch/x86_64/boot/linker-x86_64.ld tools/lint/stack_frames.py tools/lint/stack_chain.py
 stack chain: x86_64	n1	kernel/** arch/** crates/** arch/x86_64/boot/linker-x86_64.ld tools/lint/stack_frames.py tools/lint/stack_chain.py
 stack frames: x86_64 robot	n1	kernel/** arch/** crates/** arch/x86_64/boot/linker-x86_64.ld tools/lint/stack_frames.py tools/lint/stack_chain.py

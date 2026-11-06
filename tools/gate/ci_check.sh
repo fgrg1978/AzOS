@@ -16538,6 +16538,28 @@ CPU 5 lacks hwcap bits"
         else chain_row "$1" "$kimg" "$AZOS_OUT/build/x86_64-$(gate_defc x86 "$3").config" 192; fi
         rm -f "$kimg" "$kimg.features"
     }
+    # No SIMD instruction and no library `cpuid` in the gate's two x86_64
+    # kernels (tools/lint/x86_64_simd_free_check.sh): the kernel keeps no SIMD
+    # state at CPL0, and the RustCrypto crates azos_crypto links carry
+    # CPUID-selected SSE/AVX code their pinned portable backends must keep out.
+    # Canary: the script's --self-test (one SSE instruction, a library cpuid).
+    x86_simd_row() { # x86_simd_row <label> <features or "">
+        local kimg="$CI_LOG_DIR/kernel-x86-simd-${2:-generic}" out
+        mkdir -p "$CI_LOG_DIR"
+        if ! x86_kbuild "$2" "$kimg"; then
+            printf "  %-26s" "${1}..."; bad; echo "      make x86_64 X86_64_SELECT=$2 did not build"; return
+        fi
+        par_ready
+        printf "  %-26s" "${1}..."
+        if out="$(bash tools/lint/x86_64_simd_free_check.sh --self-test 2>&1 && bash tools/lint/x86_64_simd_free_check.sh "$kimg" 2>&1)"; then
+            ok
+        else
+            bad; printf '%s\n' "$out" | sed -n 1,8p | sed 's|^|      |'
+        fi
+        rm -f "$kimg" "$kimg.features"
+    }
+    par "x86_64 kernel SIMD-free" x86_simd_row "x86_64 kernel SIMD-free" ""
+    par "x86_64 kernel SIMD-free robot" x86_simd_row "x86_64 kernel SIMD-free robot" use-robot
     par "stack frames: x86_64" x86_stack_row "stack frames: x86_64" frames ""
     par "stack chain: x86_64" x86_stack_row "stack chain: x86_64" chain ""
     par "stack frames: x86_64 robot" x86_stack_row "stack frames: x86_64 robot" frames use-robot

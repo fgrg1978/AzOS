@@ -24,7 +24,7 @@ path = "src/main.rs"
 [dependencies]
 azos_hyp_api = { path = "../hyp-api" }
 digest = { version = "0.10", default-features = false, features = ["core-api"] }
-sha2 = { version = "0.10", default-features = false, features = ["compress"] }
+sha2 = { version = "0.10", default-features = false, features = ["compress", "force-soft"] }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 
