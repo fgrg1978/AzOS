@@ -252,6 +252,39 @@ fn ipc_roundtrip(abi: &(impl Abi + Ipc), floor_ns: u64) -> Option<u64> {
     Some(peer)
 }
 
+/// `ipc-roundtrip-port`: the same round trip against a server that waits on
+/// one port for its calls (`ipc_proto::port`), quoted against the same floor
+/// as `ipc-roundtrip`. The difference between the two lanes is what a server
+/// pays per lone call for one wait over all its sources: on AzOS the port's
+/// wake, a poll accept and no fast-path hand-off; on Linux an `epoll_wait`
+/// before each `read`. A failed call suppresses the line, as there.
+fn port_roundtrip(abi: &(impl Abi + Ipc), peer: u64, floor_ns: u64) {
+    use ipc_proto::port::{PORT_END, PORT_SETUP};
+    let mut spurious = 0u64;
+    if rt_retry(abi, peer, PORT_SETUP, &mut spurious).is_err() {
+        abi.write(b"[VSBENCH] ipc-roundtrip-port: the server took no PORT_SETUP, no number\n");
+        return;
+    }
+    let mut gave_up = 0i64;
+    for i in 0..N_IPC_WARM {
+        if let Err(code) = rt_retry(abi, peer, i, &mut spurious) { gave_up = code; }
+    }
+    spurious = 0;
+    let ticks = batch(N_IPC, || {
+        if let Err(code) = rt_retry(abi, peer, 1, &mut spurious) { gave_up = code; }
+    });
+    if rt_retry(abi, peer, PORT_END, &mut spurious).is_err() {
+        abi.write(b"[VSBENCH] ipc-roundtrip-port: the server never left the port\n");
+    }
+    if gave_up != 0 {
+        abi.write(b"[VSBENCH] ipc-roundtrip-port: retry budget exhausted rc=");
+        put_i(abi, gave_up);
+        abi.write(b", no number\n");
+        return;
+    }
+    report(abi, b"ipc-roundtrip-port", ticks, N_IPC, floor_ns);
+}
+
 /// Stop the `ipc-roundtrip` server with the sentinel, so it exits cleanly
 /// rather than being left blocked when this process does.
 ///
@@ -3185,6 +3218,7 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
         abi_linux::ring_lanes(abi, floor_ns);
         #[cfg(feature = "linux")]
         abi_linux::frame_lanes(abi, floor_ns);
+        port_roundtrip(abi, peer, floor_ns);
         release_peer(abi, peer);
     }
 

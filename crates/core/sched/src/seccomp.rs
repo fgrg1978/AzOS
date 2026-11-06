@@ -484,11 +484,15 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // report the hart it ran on (`DOMAIN_TASKINFO` reads, through
             // `DOMAIN_STAT`'s class).
             SYS_MO_MAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
-            // The console capability's lookup.
+            // The console capability's lookup, and the endpoint the port
+            // lane binds.
             SYS_CAP_INFO,
+            // `ipc-roundtrip-port`: the runtime on a port (`DOMAIN_CREATE_PORT`,
+            // `PORT_BIND`, `PORT_DESTROY`), its wait and its back-off.
+            SYS_PORT_WAIT, SYS_SLEEP_UNTIL,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_CREATE_PORT, PORT_BIND, PORT_DESTROY],
         ifaces: NO_IFACES,
     },
     // Reflex stops a wheel (`speed`, 0) and turns or backs up (`drive`) on the

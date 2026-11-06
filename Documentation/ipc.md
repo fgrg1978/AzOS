@@ -407,7 +407,15 @@ interrupt lines, its timers and the shared rings it consumes: the ring-3
 server runtime, `userspace/lib/srv` (`azos_srv`), is that loop with a typed
 handler per kind of source. A server with no source but its calls runs the
 same handlers sleeping in the blocking accept instead (`Server::calls_only`),
-so the IPC fast path's hand-off still reaches it.
+so the IPC fast path's hand-off still reaches it. A server on a port is never
+parked in the accept, so that hand-off does not reach it: a lone call costs the
+port's wake, the poll accept and the reply (two kernel entries more than the
+parked server's reply-and-accept, and the port lock), while a burst costs the
+accept and the reply per call. vsbench prices it: `ipc-roundtrip-port` against
+`ipc-roundtrip` (Linux: `epoll_wait` before each `read` against the plain
+`read`). An accept that also wakes on port events would keep the hand-off, but
+the fast path resumes a parked server past the accept's own exit, where its
+port registration would be left behind, so it is not offered.
 The pressure source has no slot: the Domain keeps the port's reference, and the
 reclaim task queues one event per change of the Domain's frame-budget level
 (`source_id` 0 normal, 1 warning from the high watermark, 2 critical at the

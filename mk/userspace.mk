@@ -446,7 +446,7 @@ $(ABICHILD_ELF): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABI
 # Depends on vsbench's `serve.rs` as well as its own source: the loop is
 # pulled in with `#[path]` and cargo does not track that as a dependency.
 $(VSSRV_ELF): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml \
-               userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC)
+               userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC) $(SRV_SRC)
 	@mkdir -p $(OUT_BUILD)
 	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
 	cp $(VSSRV_BUILT) $@
@@ -1077,7 +1077,7 @@ $(ABICHILD_ELF_AARCH64): $(ABICHILD_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(VSSRV_ELF_AARCH64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml \
-               userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC)
+               userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC) $(SRV_SRC)
 	@mkdir -p $(AARCH64_DIR)
 	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/vssrv $@
@@ -1490,7 +1490,7 @@ $(OTA_ELF_X86_64): $(FAMTOOLS_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 # vsbench (wave 15): stripped, as on the other two ISAs (the autorun cap).
 # vsbench's ipc-roundtrip peer (spawned as /fat/VSSRV.ELF, endpoint.bench).
 $(VSSRV_ELF_X86_64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml \
-               userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC) $(X86_64_KCONFIG)
+               userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC) $(SRV_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(VSSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/vssrv $@

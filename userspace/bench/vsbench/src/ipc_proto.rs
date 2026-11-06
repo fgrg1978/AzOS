@@ -23,6 +23,18 @@
 /// sides infer.
 pub const IPC_SENTINEL: u64 = u64::MAX;
 
+/// The `ipc-roundtrip-port` lane's protocol: the server answers `PORT_SETUP`,
+/// then serves every call as a server that waits on one port for its calls
+/// and other sources does (AzOS: `azos_srv` on a port with only its calls
+/// bound, so a call is the port's wake, the poll accept and the reply;
+/// Linux: `epoll_wait` on the request pipe before each `read`), until it
+/// answers `PORT_END` and goes back to its ordinary loop. The lane against
+/// `ipc-roundtrip` is what a server pays for one wait over every source.
+pub mod port {
+    pub const PORT_SETUP: u64 = 0x504F_5254_0000_0001; // "PORT"
+    pub const PORT_END: u64 = 0x504F_5254_0000_0002;
+}
+
 /// The shm-ring lanes' protocol (wave 6), for the same reason as the
 /// sentinel: one definition, two binaries.
 ///

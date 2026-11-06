@@ -1295,6 +1295,10 @@ mod image_profiles {
             // and the loop, so the two halves cannot drift.
             src!("userspace/bench/vsbench/src/ipc_proto.rs"),
             src!("userspace/bench/vsbench/src/serve.rs"),
+            // `ipc-roundtrip-port`'s server: the runtime on a port.
+            src!("userspace/lib/srv/src/lib.rs"),
+            src!("userspace/lib/srv/src/sys/mod.rs"),
+            src!("userspace/lib/srv/src/sys/port.rs"),
         ]),
         ("REFLEX.ELF", Lang::Rust, &[src!("userspace/services/reflex/src/main.rs")]),
         ("BRAINCLI.ELF", Lang::Rust, &[

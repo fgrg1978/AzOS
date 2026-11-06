@@ -485,20 +485,46 @@ impl Ipc for LinuxAbi {
     fn serve(&self, bound: u64) -> ! {
         let f = fds();
         let mut served = 0u64;
+        // `ipc-roundtrip-port` (`ipc_proto::port`): an epoll set on the request
+        // pipe, waited on before each read, while it is open.
+        let mut ep = -1isize;
         while served < bound {
             let mut inp = [0u8; 8];
             unsafe {
+                if ep >= 0 {
+                    let mut ev = [0u64; 2];
+                    if syscall6(SYS_EPOLL_PWAIT, ep as usize, ev.as_mut_ptr() as usize, 1, usize::MAX, 0, 8) != 1 { break; }
+                }
                 if syscall3(SYS_READ, f[0] as usize, inp.as_mut_ptr() as usize, 8) != 8 { break; }
                 let v = u64::from_ne_bytes(inp);
                 let out = v.wrapping_add(1).to_ne_bytes();
                 if syscall3(SYS_WRITE, f[3] as usize, out.as_ptr() as usize, 8) != 8 { break; }
                 if v == IPC_SENTINEL { break; }
+                if v == super::ipc_proto::port::PORT_SETUP && ep < 0 {
+                    ep = syscall1(SYS_EPOLL_CREATE1, 0);
+                    // EPOLLIN, the data word unused.
+                    let ev = [1u64, 0u64];
+                    if ep >= 0 && syscall4(SYS_EPOLL_CTL, ep as usize, EPOLL_CTL_ADD, f[0] as usize, ev.as_ptr() as usize) < 0 {
+                        syscall1(SYS_CLOSE, ep as usize);
+                        ep = -1;
+                    }
+                } else if v == super::ipc_proto::port::PORT_END && ep >= 0 {
+                    syscall1(SYS_CLOSE, ep as usize);
+                    ep = -1;
+                }
             }
             served += 1;
         }
         exit(0)
     }
 }
+
+/// `ipc-roundtrip-port`'s server: `epoll_create1`, `epoll_ctl` and
+/// `epoll_pwait` (x86-64: 291, 233, 281).
+const SYS_EPOLL_CREATE1: usize = nr(20, 291);
+const SYS_EPOLL_CTL: usize = nr(21, 233);
+const SYS_EPOLL_PWAIT: usize = nr(22, 281);
+const EPOLL_CTL_ADD: usize = 1;
 
 // Generic-ABI numbers again -- `mmap` is 222 here, not the x86-64 9.
 pub const SYS_MUNMAP: usize = nr(215, 11);

@@ -9,6 +9,7 @@ description = "Ring-3 server for endpoint.bench — the vsbench ipc-roundtrip pe
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
 azos_abi = { path = "../../../crates/core/abi" }
+azos_srv = { path = "../../lib/srv", features = ["libsys"] }
 
 [profile.release]
 opt-level = "s"

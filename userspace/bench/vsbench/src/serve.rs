@@ -16,7 +16,7 @@
 
 use azos_libsys as sys;
 
-use crate::ipc_proto::{frame, ring, IPC_SENTINEL};
+use crate::ipc_proto::{frame, port, ring, IPC_SENTINEL};
 
 /// Serve round trips until the sentinel arrives or `bound` are served.
 ///
@@ -73,6 +73,11 @@ pub fn serve_loop(bound: u64) -> ! {
             if let Some(p) = p { frame_produce(p, req.words[1]); }
             continue;
         }
+        if w == port::PORT_SETUP {
+            sys::fast_ipc_reply(req.handle, [w.wrapping_add(1), 0, 0, 0]);
+            port_serve();
+            continue;
+        }
         let answer = [w.wrapping_add(1), 0, 0, 0];
         // Answer the sentinel before leaving, so the client's last call
         // completes instead of failing on a vanished peer. It takes the
@@ -93,6 +98,34 @@ pub fn serve_loop(bound: u64) -> ! {
     sys::exit(0);
     #[allow(unreachable_code)]
     loop {}
+}
+
+/// The server side of `ipc-roundtrip-port`: the runtime on a port with only
+/// this server's calls bound, answering `w + 1` until `PORT_END`. A port
+/// that cannot be made or bound serves nothing: the client's calls then
+/// reach the ordinary loop again and its lane reports what it measured.
+fn port_serve() {
+    use azos_srv::sys::Port;
+    struct Echo {
+        done: bool,
+    }
+    impl azos_srv::Handler<Port> for Echo {
+        fn call(&mut self, _k: &mut Port, _h: u64, req: &sys::MsgDesc, rep: &mut sys::MsgDesc) {
+            let w = req.words[0];
+            rep.n_words = 1;
+            rep.words[0] = w.wrapping_add(1);
+            self.done = w == port::PORT_END;
+        }
+    }
+    let Ok(p) = Port::create() else { return };
+    if p.bind_served(1).is_ok() {
+        let mut srv = azos_srv::Server::new(p);
+        let mut h = Echo { done: false };
+        while !h.done {
+            srv.turn(&mut h);
+        }
+    }
+    let _ = sys::port_destroy_typed(p.cap);
 }
 
 /// The server side of the ring lanes: pop requests, answer as the tag says.
