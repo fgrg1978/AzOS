@@ -166,6 +166,7 @@ fn a_large_heap_fork_copies_no_frame() {
     let _g = serial();
     let pt = space();
     let pages = azos_mm::pager::MAX_MAP_BYTES / PAGE_SIZE;
+    // Not block-aligned here: the clone's spans start inside a leaf table.
     let base = map(pages);
     for i in 0..pages {
         assert!(azos_mm::vmm::translate_user(pt, base + i * PAGE_SIZE, true).is_some(), "page {i}");

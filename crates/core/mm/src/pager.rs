@@ -2329,7 +2329,7 @@ fn clone_objects(parent: SpaceRef, child: SpaceRef, buf: &mut [Mapping; FORK_BAT
                     // holds the group's `mm_lock`), so the object lives; its
                     // twin is the child's, which has not run.
                     let (po, co) = unsafe { (anon_obj::get(obj), anon_obj::get(anon_obj::get(obj).twin())) };
-                    clone_slots(parent.root(), child.root(), m, po, co, c)?;
+                    clone_slots(parent, child.root(), m, po, co, c)?;
                 }
                 Backing::File { obj, .. } => {
                     vmm::for_each_leaf_in(child.root(), m.start, m.end, |_, _| c.frames += 1);
@@ -2347,6 +2347,9 @@ fn clone_objects(parent: SpaceRef, child: SpaceRef, buf: &mut [Mapping; FORK_BAT
 /// either reaches the other.
 const SHARE_READ_ONLY: bool = !cfg!(feature = "cow-shared-write-canary");
 
+/// Slots [`clone_slots`] reads under the parent's lock at a time.
+const CLONE_BATCH: usize = 64;
+
 /// The fork of one anonymous mapping `m`: the child's object `co` gets the
 /// parent's (`po`) slot words, and every page the parent holds in a frame is
 /// shared with it copy-on-write: one more reference on the frame (taken before
@@ -2354,75 +2357,123 @@ const SHARE_READ_ONLY: bool = !cfg!(feature = "cow-shared-write-canary");
 /// child's the same word. A compressed or swapped page is the marker word, its
 /// pool entry the child's share ([`zpool_dup`]); nothing is restored.
 ///
-/// The parent's slots are read without its lock: its sibling threads may
-/// install, break and reuse pages meanwhile, each a single slot and leaf
-/// change under that lock. The child gets the frame its slot word named at the
-/// read, and the parent's leaf is made read-only only while it still names that
-/// frame: a sibling's break since then gave the parent a private frame of its
-/// own, and a reuse that raced the reference takes it back
-/// (`cow::handle_cow_fault`). The fork's hold ([`ForkHold`]) keeps the
-/// reclaimer and restores off the parent, so no marker changes, and none is in
-/// transit. On a refusal the references taken so far are in the child's
-/// leaves, which its teardown gives back.
+/// The parent's slots are read, and their frames' references taken, under its
+/// lock, a batch at a time: a sibling thread's copy-on-write break swaps the
+/// slot under that lock and drops its reference on the old frame only after,
+/// so a frame read here is never one the break has freed. The rest runs without
+/// the lock. The child gets the frame its slot word named at the read, and the
+/// parent's leaf is made read-only only while it still names that frame: a
+/// sibling's break since then gave the parent a private frame of its own, and a
+/// reuse that raced the reference takes it back (`cow::handle_cow_fault`). The
+/// fork's hold ([`ForkHold`]) keeps the reclaimer and restores off the parent,
+/// so no marker changes, and none is in transit. On a refusal the references
+/// given to the child's leaves are its teardown's to give back; the others go
+/// back here.
 fn clone_slots(
-    proot: usize,
+    parent: SpaceRef,
     croot: usize,
     m: &Mapping,
     po: &anon_obj::AnonObj,
     co: &anon_obj::AnonObj,
     c: &mut Cloned,
 ) -> Result<(), MapError> {
+    let proot = parent.root();
     let span = PAGE_SIZE * ARCH.entries_per_table();
+    let mut words = [slot::EMPTY; CLONE_BATCH];
     let mut va = m.start;
     while va < m.end {
         let end = (va | (span - 1)).saturating_add(1).min(m.end);
         // The two leaf tables of this span, looked up at its first frame.
         let mut tables: Option<(Option<*mut u64>, *mut u64)> = None;
-        for k in 0..(end - va) / PAGE_SIZE {
-            let page = va + k * PAGE_SIZE;
-            let i = m.page_index(page);
-            let word = po.slot(i).map_or(slot::EMPTY, |s| s.load(Ordering::Acquire));
-            let f = match slot::decode(word) {
-                Some(slot::Slot::Empty) => continue,
-                Some(slot::Slot::Frame(f)) => f,
-                // Canary `fork-marker-canary`: the child's slot stays empty.
-                Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) if cfg!(feature = "fork-marker-canary") => continue,
-                Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) => {
-                    child_slot(croot, co, i)?.store(word, Ordering::Release);
-                    c.marked += 1;
-                    continue;
+        let mut at = va;
+        while at < end {
+            let n = ((end - at) / PAGE_SIZE).min(CLONE_BATCH);
+            read_batch(parent, m, po, at, &mut words[..n])?;
+            for k in 0..n {
+                let r = clone_page(proot, croot, m, co, at, k, words[k], &mut tables, c);
+                if r.is_err() {
+                    // The references of the batch's pages not given to the child.
+                    for &w in &words[k..n] {
+                        if let Some(f) = slot::frame_of(w) {
+                            let _ = crate::cow::page_decref(f);
+                        }
+                    }
+                    return r;
                 }
-                // In transit: the hold waited every store out, and starts none.
-                _ => return Err(MapError::Invalid),
-            };
-            let (pl, cl) = match tables {
-                Some(t) => t,
-                None => *tables.insert(leaf_tables(proot, croot, va)?),
-            };
-            crate::cow::page_addref(f).map_err(|_| MapError::Invalid)?;
-            let cs = match child_slot(croot, co, i) {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = crate::cow::page_decref(f);
-                    return Err(e);
-                }
-            };
-            // SAFETY: entry `k` of the parent's leaf table for this span.
-            let leaf = match share_leaf(pl.map(|p| unsafe { &*(p.add(k) as *const AtomicU64) }), f, m.write, c) {
-                Ok(w) => w,
-                Err(e) => {
-                    let _ = crate::cow::page_decref(f);
-                    return Err(e);
-                }
-            };
-            cs.store(slot::frame(f), Ordering::Release);
-            // SAFETY: entry `k` of the child's leaf table for this span, a
-            // table of a root no CPU runs on yet.
-            unsafe { core::ptr::write_volatile(cl.add(k), leaf) };
-            c.frames += 1;
+            }
+            at += n * PAGE_SIZE;
         }
         va = end;
     }
+    Ok(())
+}
+
+/// The parent's slot words of the `out.len()` pages of `m` from `at`, each
+/// frame's reference taken, under the parent's lock.
+fn read_batch(parent: SpaceRef, m: &Mapping, po: &anon_obj::AnonObj, at: usize, out: &mut [u64]) -> Result<(), MapError> {
+    let Some(_sp) = parent.lock().filter(|sp| sp.recorded) else { return Err(MapError::Invalid) };
+    for k in 0..out.len() {
+        let w = po.slot(m.page_index(at + k * PAGE_SIZE)).map_or(slot::EMPTY, |s| s.load(Ordering::Relaxed));
+        if let Some(f) = slot::frame_of(w) {
+            if crate::cow::page_addref(f).is_err() {
+                for &t in &out[..k] {
+                    if let Some(g) = slot::frame_of(t) {
+                        let _ = crate::cow::page_decref(g);
+                    }
+                }
+                return Err(MapError::Invalid);
+            }
+        }
+        out[k] = w;
+    }
+    Ok(())
+}
+
+/// Page `k` of the batch at `at` into the child: its slot word `word` (a
+/// frame's reference already taken), and for a frame both leaves. `tables`
+/// caches the span's leaf tables. On `Err` the page's reference is the
+/// caller's to give back.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn clone_page(
+    proot: usize,
+    croot: usize,
+    m: &Mapping,
+    co: &anon_obj::AnonObj,
+    at: usize,
+    k: usize,
+    word: u64,
+    tables: &mut Option<(Option<*mut u64>, *mut u64)>,
+    c: &mut Cloned,
+) -> Result<(), MapError> {
+    let page = at + k * PAGE_SIZE;
+    let i = m.page_index(page);
+    let f = match slot::decode(word) {
+        Some(slot::Slot::Empty) => return Ok(()),
+        Some(slot::Slot::Frame(f)) => f,
+        // Canary `fork-marker-canary`: the child's slot stays empty.
+        Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) if cfg!(feature = "fork-marker-canary") => return Ok(()),
+        Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _)) => {
+            child_slot(croot, co, i)?.store(word, Ordering::Release);
+            c.marked += 1;
+            return Ok(());
+        }
+        // In transit: the hold waited every store out, and starts none.
+        _ => return Err(MapError::Invalid),
+    };
+    let (pl, cl) = match *tables {
+        Some(t) => t,
+        None => *tables.insert(leaf_tables(proot, croot, page)?),
+    };
+    let cs = child_slot(croot, co, i)?;
+    let idx = leaf_index(page);
+    // SAFETY: entry `idx` of the parent's leaf table for this span.
+    let leaf = share_leaf(pl.map(|p| unsafe { &*(p.add(idx) as *const AtomicU64) }), f, m.write, c)?;
+    cs.store(slot::frame(f), Ordering::Release);
+    // SAFETY: entry `idx` of the child's leaf table for this span, a table of a
+    // root no CPU runs on yet.
+    unsafe { core::ptr::write_volatile(cl.add(idx), leaf) };
+    c.frames += 1;
     Ok(())
 }
 
@@ -2435,18 +2486,27 @@ fn child_slot<'o>(croot: usize, co: &'o anon_obj::AnonObj, i: usize) -> Result<&
     co.slot_fill(i, &mut spare).ok_or(MapError::Full)
 }
 
-/// The level-0 entries for `va` in the parent's table (none when it has no
-/// leaf table there) and in the child's (built now). A block leaf in the
-/// parent is refused: the fork split every block first and none is promoted
-/// while it runs.
+/// The entry of `va` in its leaf table (a page's index in the table that maps it).
+#[inline(always)]
+fn leaf_index(va: usize) -> usize {
+    (va / PAGE_SIZE) % ARCH.entries_per_table()
+}
+
+/// The leaf tables (their first entry) that map `va` in the parent's table
+/// (none when it has none there) and in the child's (built now). A block leaf
+/// in the parent is refused: the fork split every block first and none is
+/// promoted while it runs.
 fn leaf_tables(proot: usize, croot: usize, va: usize) -> Result<(Option<*mut u64>, *mut u64), MapError> {
+    let k = leaf_index(va);
     let pl = match vmm::walk_level(proot, va, false, false) {
-        Ok((p, 0)) => Some(p),
+        // SAFETY: entry `k` of a leaf table; its first entry is in the same page.
+        Ok((p, 0)) => Some(unsafe { p.sub(k) }),
         Ok(_) => return Err(MapError::Invalid),
         Err(_) => None,
     };
     match vmm::walk_level(croot, va, true, false) {
-        Ok((p, 0)) => Ok((pl, p)),
+        // SAFETY: as above.
+        Ok((p, 0)) => Ok((pl, unsafe { p.sub(k) })),
         _ => Err(MapError::Full),
     }
 }
