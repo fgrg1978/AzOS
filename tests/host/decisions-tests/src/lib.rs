@@ -572,6 +572,8 @@ mod tests {
             (Rule::CapSlotRestart, 82, "cap-slot-restart"),
             (Rule::CapTableFull, 83, "cap-table-full"),
             (Rule::RcuCallbackCpu, 84, "rcu-callback-cpu"),
+            (Rule::ExecGrant, 85, "exec-grant"),
+            (Rule::EffectUnserved, 86, "effect-unserved"),
         ];
         assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {

@@ -1426,6 +1426,24 @@ mod deny_receipts {
         assert_eq!(refused_with(Rule::ExecGrant as u8) as u64, BURST, "an admitted exec adds no durable record");
     }
 
+    /// A loop of motor ops on an image without wheels is limited per Domain
+    /// on the medium like a flood of denials: the burst is durable, the rest
+    /// is reported.
+    ///
+    /// **Canary.** Leave `Rule::EffectUnserved` out of `caller_paced`: every
+    /// refusal is durable and no report is written, red.
+    #[test]
+    fn a_flood_of_unserved_effects_is_limited() {
+        let _g = scene();
+        let key = 0x7800_0021;
+        let calls = BURST * 3;
+        for i in 0..calls {
+            azos_decision::record_receipt(Rule::EffectUnserved, Verdict::Refuse, key, [1 << 8 | 1, i as u64 % 2, 0]);
+        }
+        assert_eq!(refused_with(Rule::EffectUnserved as u8) as u64, BURST, "the burst");
+        assert_eq!(reports(key), vec![[Rule::EffectUnserved as u64, 1, 1]], "the start of the run is reported at once");
+    }
+
     /// A flood in one Domain leaves another Domain's one refusal durable, and
     /// the flooder's silence after it is reported by `flush_limited`.
     ///
