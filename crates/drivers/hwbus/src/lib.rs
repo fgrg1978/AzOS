@@ -21,6 +21,11 @@
 //!   [`Access::reconcile`] are what the signed topology, once installed, uses to
 //!   bring the devices bound under the built-in one to its rows.
 //!
+//! - **Records** ([`record`]): each driver's ids (generated, [`DRIVERS`]) and
+//!   its host's ops (probe, unbind, suspend/resume, reset); the host's record
+//!   table is built from [`native_drivers!`], so a driver with ids and no ops
+//!   does not compile, and the bus drives every driver through [`Records`].
+//!
 //! A driver whose ids matched no device starts nothing, and a Linux class
 //! server is launched only once one of its ids matched
 //! ([`Bus::linux_class_wanted`]).
@@ -34,13 +39,15 @@ pub mod bus;
 pub mod device;
 pub mod pattern;
 pub mod policy;
+pub mod record;
 pub mod tables;
 
 pub use bus::{
     Access, AddError, Binding, Bus, Drivers, Event, Handle, ProbeError, Rules, Sink, Slot, State, UnbindError,
     MAX_DEVICES,
 };
+pub use record::{Env, Held, Host, Op, Ops, Power, Record, Records, Unbind};
 pub use device::{BusKind, Device, Name, PciId, COMPAT_LEN, NAME_LEN};
 pub use pattern::{Pattern, ANY};
 pub use policy::{decide, natural, Choice, Policy, Row, Verdict};
-pub use tables::{first_conflict, LinuxEntry, NativeEntry, LINUX, NATIVE};
+pub use tables::{first_conflict, DriverIds, LinuxEntry, NativeEntry, DRIVERS, LINUX, NATIVE};

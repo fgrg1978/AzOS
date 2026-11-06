@@ -20,3 +20,7 @@ azos-config = { path = "../../core/azos-config" }
 # admits everything the tables match. The host rows that pin the policy must
 # fail with this on. Never enabled in a shipping build.
 policy-canary = []
+# Gate canary only: an unbind is taken on the driver's word, so a device
+# whose interrupt line, DMA or window is still held reads as released. The
+# host rows that pin the post-unbind check must fail with this on.
+unbind-canary = []

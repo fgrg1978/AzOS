@@ -7,7 +7,8 @@
 //! `.config` is left out (no `.config`: every line is kept). Linux:
 //! `tools/build/lx_device_table.py`. Then two checks, each a build failure that
 //! names the ids: no native pattern overlaps a Linux one, and no two native
-//! drivers claim overlapping patterns.
+//! drivers claim overlapping patterns. The native table is also emitted by
+//! driver (`DRIVERS`, `native_drivers!`): the ids half of each record.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -169,6 +170,38 @@ fn main() {
         let _ = writeln!(s, "    NativeEntry {{ pattern: {}, driver: {:?}, boot: {} }},", lit(&p), n.driver, n.boot);
     }
     s.push_str("];\n");
+
+    // One record's ids per driver name, in first-appearance order, and the
+    // macro a host builds its record table from.
+    let mut drivers: Vec<(&str, Vec<&Native>)> = Vec::new();
+    for n in &native {
+        match drivers.iter_mut().find(|(d, _)| *d == n.driver) {
+            Some((_, v)) => v.push(n),
+            None => drivers.push((&n.driver, vec![n])),
+        }
+    }
+    s.push_str("/// Every native driver's ids, one entry per driver.\npub const DRIVERS: &[DriverIds] = &[\n");
+    for (name, lines) in &drivers {
+        if let Some(odd) = lines.iter().find(|l| l.boot != lines[0].boot) {
+            panic!("azos_hwbus: driver {name:?}: {} and {} disagree on `boot`", lines[0].origin, odd.origin);
+        }
+        let ids: Vec<String> = lines.iter().map(|l| lit(&Pattern::parse(&l.pattern).unwrap())).collect();
+        let _ = writeln!(s, "    DriverIds {{ name: {:?}, ids: &[{}], boot: {} }},", name, ids.join(", "), lines[0].boot);
+    }
+    s.push_str("];\n");
+    s.push_str(
+        "/// Call `$m! { <index> <IDENT> ... }` with every entry of [`DRIVERS`]: its\n\
+         /// index and its name as an identifier (`virtio-blk`: `VIRTIO_BLK`).\n\
+         #[macro_export]\nmacro_rules! native_drivers {\n    ($m:ident) => {\n        $m! {",
+    );
+    for (i, (name, lines)) in drivers.iter().enumerate() {
+        let id = name.to_ascii_uppercase().replace('-', "_");
+        if !id.starts_with(|c: char| c.is_ascii_alphabetic()) || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            panic!("azos_hwbus: {}: driver name {name:?} is not an identifier once `-` reads `_`", lines[0].origin);
+        }
+        let _ = write!(s, " {i} {id}");
+    }
+    s.push_str(" }\n    };\n}\n");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     fs::write(out_dir.join("hwbus_native.rs"), s).unwrap();
 

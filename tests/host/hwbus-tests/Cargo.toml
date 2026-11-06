@@ -8,6 +8,8 @@ description = "Host-side tests for crates/drivers/hwbus (patterns, match tables,
 
 # Run with:  cd tests/host/hwbus-tests && cargo test
 #            cargo test --features policy-canary   (the policy rows must FAIL)
+#            cargo test --features leak-canary     (the unbind/rebind rows must FAIL)
+#            cargo test --features unbind-canary   (the leaked-unbind row must FAIL)
 
 [dependencies]
 azos_hwbus = { path = "../../../crates/drivers/hwbus" }
@@ -15,6 +17,10 @@ azos_hwbus = { path = "../../../crates/drivers/hwbus" }
 [features]
 # Mirrors azos_hwbus's gate canary so the host rows can show they bite.
 policy-canary = ["azos_hwbus/policy-canary"]
+unbind-canary = ["azos_hwbus/unbind-canary"]
+# The fake virtio-blk record's unbind leaves its interrupt line bound: the
+# unbind/rebind rows must FAIL.
+leak-canary = []
 
 [profile.release]
 overflow-checks = true

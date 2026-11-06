@@ -28,6 +28,7 @@
 use crate::device::{Device, Name};
 use crate::pattern::Pattern;
 use crate::policy::{decide, Choice, Policy, Row, Verdict};
+use crate::record::Held;
 use crate::tables::{LinuxEntry, NativeEntry};
 
 /// Slots of the bus (Kconfig `HWBUS_MAX_DEVICES`).
@@ -89,6 +90,11 @@ pub struct Slot {
     /// outlive any rule change, so a device with one is never given to a
     /// kernel driver.
     user_maps: u32,
+    /// When it was bound, in bind order: a suspend takes the devices down
+    /// newest first and brings them back oldest first.
+    seq: u32,
+    /// Taken down by [`Access::quiesce`], not yet brought back.
+    suspended: bool,
 }
 
 /// Why a native probe said no.
@@ -104,6 +110,10 @@ pub enum ProbeError {
     /// The device's clocks, resets, power domains or pin state could not be
     /// given ([`Drivers::resources`]); the driver was not asked.
     Resources,
+    /// The driver's record has no such op (`azos_hwbus::record`).
+    Unsupported,
+    /// Hardware the kernel drives outside the bus: it is not released.
+    Pinned,
 }
 
 /// The drivers a kernel links.
@@ -128,6 +138,19 @@ pub trait Drivers {
     /// device (a disk with a mounted volume, a controller with its queues
     /// set up); the binding stays.
     fn remove(&mut self, driver: &str, h: Handle, dev: &Device) -> Result<(), ProbeError>;
+    /// What the device still holds through the host (asked after a `remove`
+    /// that succeeded: anything left keeps the device bound).
+    fn held(&mut self, _h: Handle, _dev: &Device) -> Held {
+        Held::NONE
+    }
+    /// Take the device down for a system suspend; the default refuses.
+    fn suspend(&mut self, _driver: &str, _h: Handle, _dev: &Device) -> Result<(), ProbeError> {
+        Err(ProbeError::Unsupported)
+    }
+    /// Bring it back after one.
+    fn resume(&mut self, _driver: &str, _h: Handle, _dev: &Device) -> Result<(), ProbeError> {
+        Err(ProbeError::Unsupported)
+    }
 }
 
 /// What the bus did, in order.
@@ -142,6 +165,13 @@ pub enum Event<'a> {
     Unbound { h: Handle, dev: &'a Device, was: Binding },
     /// A request to release the device was refused by its driver: it stays bound.
     UnbindRefused { h: Handle, dev: &'a Device, driver: &'a str },
+    /// The driver said it let go, and the device still holds `held`: it
+    /// stays bound.
+    UnbindLeaked { h: Handle, dev: &'a Device, driver: &'a str, held: Held },
+    /// The driver would not take the device down for a suspend.
+    SuspendRefused { h: Handle, dev: &'a Device, driver: &'a str, err: ProbeError },
+    /// The driver did not bring the device back after one.
+    ResumeFailed { h: Handle, dev: &'a Device, driver: &'a str, err: ProbeError },
 }
 
 pub trait Sink {
@@ -164,6 +194,9 @@ pub enum UnbindError {
     NotBound,
     /// The driver cannot let go of it ([`Drivers::remove`]).
     Refused,
+    /// The driver let go and the device still holds something
+    /// ([`Drivers::held`]).
+    Leaked(Held),
 }
 
 /// Why [`Bus::add`] refused.
@@ -176,6 +209,8 @@ pub struct Bus {
     slots: [Slot; MAX_DEVICES],
     /// Devices refused because every slot was taken.
     refused: u32,
+    /// The next bind's [`Slot::seq`].
+    next_seq: u32,
 }
 
 const FREE: Slot = Slot {
@@ -183,11 +218,13 @@ const FREE: Slot = Slot {
     state: State::Free,
     binding: Binding::None,
     user_maps: 0,
+    seq: 0,
+    suspended: false,
 };
 
 impl Bus {
     pub const fn new() -> Self {
-        Bus { slots: [FREE; MAX_DEVICES], refused: 0 }
+        Bus { slots: [FREE; MAX_DEVICES], refused: 0, next_seq: 0 }
     }
 
     pub fn refused(&self) -> u32 {
@@ -206,6 +243,7 @@ impl Bus {
         s.state = State::Detected;
         s.binding = Binding::None;
         s.user_maps = 0;
+        s.suspended = false;
         Ok(Handle::new(i))
     }
 
@@ -286,6 +324,31 @@ impl Bus {
         })
     }
 
+    fn take_seq(&mut self) -> u32 {
+        let seq = self.next_seq;
+        self.next_seq = seq.wrapping_add(1);
+        seq
+    }
+
+    /// The devices bound to a native driver, newest bind first.
+    fn native_newest_first(&self) -> ([Option<(Handle, u32)>; MAX_DEVICES], usize) {
+        let mut out = [None; MAX_DEVICES];
+        let mut n = 0;
+        for (h, s) in self.iter() {
+            if s.state == State::Bound && matches!(s.binding, Binding::Native(_)) {
+                out[n] = Some((h, s.seq));
+                n += 1;
+            }
+        }
+        out[..n].sort_unstable_by(|a, b| b.map(|x| x.1).cmp(&a.map(|x| x.1)));
+        (out, n)
+    }
+
+    /// Is the device taken down by a suspend?
+    pub fn suspended(&self, h: Handle) -> bool {
+        self.get(h).is_some_and(|s| s.suspended)
+    }
+
     fn settle(&mut self, h: Handle, state: State) {
         if let Some(s) = self.slot_mut(h) {
             s.state = state;
@@ -336,9 +399,11 @@ impl Bus {
                 Plan::Probe { dev, name }
             }
             Choice::Linux { class, .. } => {
+                let seq = self.take_seq();
                 if let Some(s) = self.slot_mut(h) {
                     s.state = State::Bound;
                     s.binding = Binding::Linux { class: Name::new(class) };
+                    s.seq = seq;
                 }
                 Plan::Done(Outcome::Bound { dev, choice })
             }
@@ -350,9 +415,11 @@ impl Bus {
         let dev = self.get(h)?.dev;
         Some(match answer {
             Ok(()) => {
+                let seq = self.take_seq();
                 if let Some(s) = self.slot_mut(h) {
                     s.state = State::Bound;
                     s.binding = Binding::Native(Name::new(name));
+                    s.seq = seq;
                 }
                 Outcome::Bound { dev, choice: Choice::Native(name) }
             }
@@ -575,6 +642,11 @@ pub trait Access {
                     sink.event(&Event::UnbindRefused { h, dev: &dev, driver: n.as_str() });
                     return Err(UnbindError::Refused);
                 }
+                let held = drivers.held(h, &dev);
+                if !cfg!(feature = "unbind-canary") && !held.is_empty() {
+                    sink.event(&Event::UnbindLeaked { h, dev: &dev, driver: n.as_str(), held });
+                    return Err(UnbindError::Leaked(held));
+                }
                 drivers.release(n.as_str(), h, &dev);
             }
             // The class server is the launcher's: dropping the binding is
@@ -598,6 +670,57 @@ pub trait Access {
         let plan = self.with(|b| b.plan_choice(h, Choice::Native(driver)));
         run_plan(self, h, plan, drivers, sink);
         self.with(|b| matches!(b.get(h), Some(s) if s.state == State::Bound))
+    }
+
+    /// Take every device bound to a native driver down for a system suspend,
+    /// newest bind first (a device is down before what it was bound after).
+    /// All or nothing: the first refusal brings the ones already down back
+    /// up, oldest first, and answers `Err(1)`. A device bound to a Linux
+    /// class server is the ring-3 host's to take down (the power service,
+    /// over `DevicePower`).
+    fn quiesce(&mut self, drivers: &mut dyn Drivers, sink: &mut dyn Sink) -> Result<(), u32> {
+        let (order, n) = self.with(|b| b.native_newest_first());
+        for &(h, _) in order[..n].iter().flatten() {
+            let Some((dev, Binding::Native(name))) = self.with(|b| b.get(h).map(|s| (s.dev, s.binding))) else {
+                continue;
+            };
+            if let Err(err) = drivers.suspend(name.as_str(), h, &dev) {
+                sink.event(&Event::SuspendRefused { h, dev: &dev, driver: name.as_str(), err });
+                self.unquiesce(drivers, sink);
+                return Err(1);
+            }
+            self.with(|b| {
+                if let Some(s) = b.slot_mut(h) {
+                    s.suspended = true;
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// Bring back what [`quiesce`](Self::quiesce) took down, oldest bind
+    /// first. Returns how many did not come back (each reported).
+    fn unquiesce(&mut self, drivers: &mut dyn Drivers, sink: &mut dyn Sink) -> u32 {
+        let (order, n) = self.with(|b| b.native_newest_first());
+        let mut failed = 0;
+        for &(h, _) in order[..n].iter().rev().flatten() {
+            let Some((dev, Binding::Native(name), true)) =
+                self.with(|b| b.get(h).map(|s| (s.dev, s.binding, s.suspended)))
+            else {
+                continue;
+            };
+            let answer = drivers.resume(name.as_str(), h, &dev);
+            self.with(|b| {
+                if let Some(s) = b.slot_mut(h) {
+                    s.suspended = false;
+                }
+            });
+            if let Err(err) = answer {
+                sink.event(&Event::ResumeFailed { h, dev: &dev, driver: name.as_str(), err });
+                failed += 1;
+            }
+        }
+        failed
     }
 }
 

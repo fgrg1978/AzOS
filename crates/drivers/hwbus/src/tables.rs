@@ -7,6 +7,8 @@
 //!   [boot] [if=<KCONFIG_SYMBOL>]`). A line whose Kconfig symbol is off is left
 //!   out, so a driver the image does not compile has no entry and its
 //!   devices are not claimed on its behalf.
+//! - [`DRIVERS`]: [`NATIVE`] by driver, one [`DriverIds`] each, and the
+//!   `native_drivers!` macro that lists them for a host's record table.
 //! - [`LINUX`]: from `tools/build/lx_device_table.py`, which reads the
 //!   `MODULE_DEVICE_TABLE` of the Linux leaf drivers listed in
 //!   `crates/drivers/lx/DEVICE_SOURCES` out of the pinned Linux checkout. Empty while that tree
@@ -26,6 +28,17 @@ pub struct NativeEntry {
     /// PCI host) and brought it up before the bus existed: the device is
     /// bound to its driver whatever the policy and the topology say. A
     /// device the kernel is already driving must never read as unclaimed.
+    pub boot: bool,
+}
+
+/// Every id of one native driver: the ids half of its record
+/// (`crate::record`). [`DRIVERS`] has one per driver name, in the order the
+/// names first appear in the id files.
+#[derive(Clone, Copy, Debug)]
+pub struct DriverIds {
+    pub name: &'static str,
+    pub ids: &'static [Pattern<'static>],
+    /// As [`NativeEntry::boot`]; every id line of a driver says the same.
     pub boot: bool,
 }
 

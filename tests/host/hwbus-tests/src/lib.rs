@@ -6,16 +6,21 @@
 //! Canary discipline: the policy rows below FAIL when the crate is built with
 //! `--features policy-canary` (topology-only then admits like auto); the
 //! duplicate-id rows build the conflict `build.rs` refuses and assert the
-//! check finds it, so the check is shown to bite.
+//! check finds it, so the check is shown to bite. The driver-record rows
+//! (`records.rs`) fail with `--features leak-canary` (a record whose unbind
+//! leaves the interrupt line bound) and `--features unbind-canary` (the bus
+//! takes an unbind on the driver's word).
 
 #![cfg(test)]
 
 use azos_hwbus::pattern::first_overlap;
 use azos_hwbus::*;
 
+mod records;
+
 // ── Fixtures ────────────────────────────────────────────────────────────
 
-const NATIVE_FIX: &[NativeEntry] = &[
+pub(crate) const NATIVE_FIX: &[NativeEntry] = &[
     NativeEntry { pattern: Pattern::Virtio(2), driver: "virtio-blk", boot: false },
     NativeEntry { pattern: Pattern::Virtio(1), driver: "virtio-net", boot: false },
     NativeEntry { pattern: Pattern::pci(0x1af4, 0x1041), driver: "virtio-net-pci", boot: false },
@@ -23,7 +28,7 @@ const NATIVE_FIX: &[NativeEntry] = &[
     NativeEntry { pattern: Pattern::Dt("ns16550a"), driver: "uart", boot: true },
 ];
 
-const LINUX_FIX: &[LinuxEntry] = &[
+pub(crate) const LINUX_FIX: &[LinuxEntry] = &[
     LinuxEntry { pattern: Pattern::pci(0x8086, 0x1234), class: "net", module: "e1000x" },
     LinuxEntry { pattern: Pattern::pci_class(0x0c0330, 0xffffff), class: "usb", module: "xhci-pci" },
     LinuxEntry { pattern: Pattern::Dt("vendor,sensor-a"), class: "iio", module: "sensor-a" },
@@ -33,7 +38,7 @@ fn pci(vendor: u16, device: u16, class: u32, slot: u8) -> Device {
     Device::pci(PciId { bus: 0, device: slot, function: 0, vendor, device_id: device, class })
 }
 
-fn virtio(id: u32, base: u64) -> Device {
+pub(crate) fn virtio(id: u32, base: u64) -> Device {
     Device::virtio_mmio(base, 0x1000, 0, id)
 }
 
@@ -42,8 +47,8 @@ fn dt(compat: &[u8], name: &str) -> Device {
 }
 
 #[derive(Default)]
-struct Recorder {
-    lines: Vec<String>,
+pub(crate) struct Recorder {
+    pub(crate) lines: Vec<String>,
 }
 
 impl Sink for Recorder {
@@ -70,6 +75,15 @@ impl Sink for Recorder {
             Event::Unmatched { dev, .. } => format!("unmatched {}", dev.name.as_str()),
             Event::Unbound { dev, was, .. } => format!("unbound {} {:?}", dev.name.as_str(), was),
             Event::UnbindRefused { dev, driver, .. } => format!("unbind-refused {} {}", dev.name.as_str(), driver),
+            Event::UnbindLeaked { dev, driver, held, .. } => {
+                format!("unbind-leaked {} {} {:?}", dev.name.as_str(), driver, held)
+            }
+            Event::SuspendRefused { dev, driver, err, .. } => {
+                format!("suspend-refused {} {} {:?}", dev.name.as_str(), driver, err)
+            }
+            Event::ResumeFailed { dev, driver, err, .. } => {
+                format!("resume-failed {} {} {:?}", dev.name.as_str(), driver, err)
+            }
         });
     }
 }
@@ -113,7 +127,7 @@ impl Drivers for Fake {
     }
 }
 
-fn rules<'a>(rows: &'a [Row<'a>], policy: Policy) -> Rules<'a> {
+pub(crate) fn rules<'a>(rows: &'a [Row<'a>], policy: Policy) -> Rules<'a> {
     Rules { native: NATIVE_FIX, linux: LINUX_FIX, rows, policy }
 }
 

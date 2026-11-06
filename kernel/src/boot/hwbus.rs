@@ -783,6 +783,12 @@ impl Sink for Console {
                 "[HWBUS] {} {} unbound ({})", dev.name.as_str(), Ident(dev), binding_name(was)),
             Event::UnbindRefused { dev, driver, .. } => kprintln!(
                 "[HWBUS] {} {} stays bound: {} cannot release it", dev.name.as_str(), Ident(dev), driver),
+            Event::UnbindLeaked { dev, driver, held, .. } => azos_drv_sys::kerr!(
+                "[HWBUS] {} {} stays bound: {} let go and still holds {:?}", dev.name.as_str(), Ident(dev), driver, held),
+            Event::SuspendRefused { dev, driver, err, .. } => kprintln!(
+                "[HWBUS] {} {} not taken down: {} {:?}", dev.name.as_str(), Ident(dev), driver, err),
+            Event::ResumeFailed { dev, driver, err, .. } => azos_drv_sys::kerr!(
+                "[HWBUS] {} {} did not come back: {} {:?}", dev.name.as_str(), Ident(dev), driver, err),
         }
     }
 }
