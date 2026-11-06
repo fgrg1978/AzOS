@@ -19,6 +19,12 @@ canary-no-overrun = []
 canary-record-stale = []
 # The record merge hands out the first ring with a record, not the oldest.
 canary-record-unordered = []
-# Unlike the six above, a gate build enables this one: the kernel tracer's
+# The record merge treats a producer mid-store as an empty ring.
+canary-record-pending-empty = []
+# The record handover numbers the copies from 0.
+canary-record-renumber = []
+# A hook between a record reader's copy and its re-check (rings-tests only).
+test-hook = []
+# Unlike the canaries above, a gate build enables this one: the kernel tracer's
 # `azos_trace/producer-canary` row. The trace producer never advances its head.
 trace-producer-canary = []

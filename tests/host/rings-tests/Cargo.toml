@@ -10,7 +10,7 @@ description = "Host-side tests for azos_rings (Queue and Log). Excluded from the
 [workspace]
 
 [dependencies]
-azos_rings = { path = "../../../crates/core/rings" }
+azos_rings = { path = "../../../crates/core/rings", features = ["test-hook"] }
 
 [features]
 # Each forwards a canary of azos_rings; the guarded test must go red.
@@ -20,3 +20,5 @@ canary-queue-overwrites = ["azos_rings/canary-queue-overwrites"]
 canary-no-overrun = ["azos_rings/canary-no-overrun"]
 canary-record-stale = ["azos_rings/canary-record-stale"]
 canary-record-unordered = ["azos_rings/canary-record-unordered"]
+canary-record-pending-empty = ["azos_rings/canary-record-pending-empty"]
+canary-record-renumber = ["azos_rings/canary-record-renumber"]

@@ -20,6 +20,7 @@
 //! ring    [0..8)      head (u64): records claimed so far, alone on its line
 //!         [8..16)     base (u64): the first record the ring ever held (a
 //!                     ring that took over from another starts past 0)
+//!         [16..24)    lapped (u64): records whose producer the ring lapped mid-store
 //!         [64..)      entries x slot-bytes slots
 //! slot    [0..8)      stamp: 2s+1 while record s is being stored, 2s+2 once whole
 //!         [8..16)     seq    (u64)  s, the record's index in its ring since boot
@@ -50,6 +51,22 @@
 //! A whole slot whose envelope names another sequence than the stamp's is not
 //! the record `c` was: it is dropped and counted ([`Read::Stale`]), never
 //! handed on as `c`.
+//!
+//! **A lapped producer.** A producer stalled mid-store (a descheduled vCPU, a
+//! long interrupt) while the ring laps it shares its slot with the lapper.
+//! Its final stamp is a compare-and-swap from its own odd stamp, so it never
+//! lands over the lapper's: the slot's stamp never goes backward, and the
+//! producer counts its record lost in the ring's `lapped` word
+//! ([`Ring::lapped`]). What this does not close: if the lapper has already
+//! finished, the stalled producer's late payload stores land under the
+//! lapper's even stamp, and a reader copying in that window hands on mixed
+//! bytes. Every such record is one the `lapped` word counts, so a sink can
+//! say how many records may be torn; preventing it needs a claim that can
+//! refuse (per-slot descriptor states, as Linux's printk ring has).
+//!
+//! The payload copies race the producer's stores (a seqlock's copy): the
+//! stamp re-check discards a copy that raced, and on riscv64, aarch64 and
+//! x86_64 a racing byte copy only ever yields bytes some store wrote.
 //!
 //! # One reader
 //!
@@ -238,6 +255,11 @@ impl Geom {
         unsafe { word(self.ring, 8) }
     }
     #[inline]
+    fn lapped(&self) -> &'static AtomicU64 {
+        // SAFETY: the ring's third word, inside the region.
+        unsafe { word(self.ring, 16) }
+    }
+    #[inline]
     fn oldest(&self, head: u64) -> u64 {
         head.saturating_sub(self.entries).max(self.base().load(Ordering::Relaxed))
     }
@@ -386,6 +408,11 @@ impl Ring {
     pub fn oldest(&self) -> u64 {
         self.g.oldest(self.head())
     }
+    /// Records whose producer the ring lapped mid-store (lost, and possibly
+    /// read torn: see the module's protocol notes).
+    pub fn lapped(&self) -> u64 {
+        self.g.lapped().load(Ordering::Relaxed)
+    }
 
     /// The record at `*cursor`: its envelope into `env`, its payload into
     /// `payload` (cut at the slot's payload or at `payload.len()`).
@@ -409,7 +436,7 @@ impl Ring {
             return Read::Pending;
         }
         if s > want {
-            return self.lapped(cursor);
+            return self.overrun(cursor);
         }
         let n = payload.len().min(self.payload());
         // SAFETY: loads inside the slot; a torn copy is caught by the stamp.
@@ -421,9 +448,13 @@ impl Ring {
             (env.cpu, env.flags) = ((m >> 48) as u8, (m >> 56) as u8);
             core::ptr::copy_nonoverlapping(slot.add(ENV_BYTES), payload.as_mut_ptr(), n);
         }
+        #[cfg(feature = "test-hook")]
+        test_hook::between_copy_and_recheck();
+        #[cfg(not(feature = "canary-no-fence"))]
         fence(Ordering::Acquire);
+        #[cfg(not(feature = "canary-no-recheck"))]
         if stamp.load(Ordering::Relaxed) != want {
-            return self.lapped(cursor);
+            return self.overrun(cursor);
         }
         #[cfg(not(feature = "canary-record-stale"))]
         if env.seq != c || env.source != self.g.source {
@@ -434,7 +465,7 @@ impl Ring {
         Read::Record
     }
 
-    fn lapped(&self, cursor: &mut u64) -> Read {
+    fn overrun(&self, cursor: &mut u64) -> Read {
         let oldest = self.oldest().max(*cursor + 1);
         let lost = oldest - *cursor;
         *cursor = oldest;
@@ -530,6 +561,10 @@ impl Writer {
     pub fn source(&self) -> u8 {
         self.g.source
     }
+    /// The same ring, to read.
+    pub fn ring(&self) -> Ring {
+        Ring { g: self.g }
+    }
     /// Payload bytes a slot holds.
     pub fn payload(&self) -> usize {
         self.g.slot_bytes - ENV_BYTES
@@ -554,7 +589,9 @@ impl Writer {
         let slot = self.g.slot(s);
         // SAFETY: every store is inside the claimed slot.
         let stamp = unsafe { word(slot, S_STAMP) };
-        stamp.store(s.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
+        let odd = s.wrapping_mul(2).wrapping_add(1);
+        stamp.store(odd, Ordering::Relaxed);
+        #[cfg(not(feature = "canary-no-fence"))]
         fence(Ordering::Release);
         // The clock, source, kind, length, CPU and flags are one word: one store.
         let meta = h.clock as u64
@@ -570,7 +607,10 @@ impl Writer {
         }
         // SAFETY: the payload area of the claimed slot.
         fill(&mut Payload { at: unsafe { slot.add(ENV_BYTES) }, cap: self.payload() });
-        stamp.store(s.wrapping_mul(2).wrapping_add(2), Ordering::Release);
+        // A lapper owns the slot now: its stamp stays, this record is lost.
+        if stamp.compare_exchange(odd, odd + 1, Ordering::Release, Ordering::Relaxed).is_err() {
+            self.g.lapped().fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// [`publish`](Self::publish), its envelope naming the sequence before
@@ -594,15 +634,26 @@ impl Writer {
     /// This ring is empty and nobody else writes it, and nobody writes `from`,
     /// until this returns.
     pub unsafe fn replay(&self, from: &Ring) -> u64 {
+        #[cfg(not(feature = "canary-record-renumber"))]
         let first = from.oldest();
+        // Canary: the copy starts its numbers at 0, as a plain re-push would.
+        #[cfg(feature = "canary-record-renumber")]
+        let (first, from_first) = (0, from.oldest());
         self.g.base().store(first, Ordering::Relaxed);
         self.g.head().store(first, Ordering::Relaxed);
-        let mut buf = [0u8; 512];
+        let mut buf = [0u8; REPLAY_PAYLOAD_MAX];
         let mut env = Envelope::default();
+        #[cfg(not(feature = "canary-record-renumber"))]
         let mut c = first;
+        #[cfg(feature = "canary-record-renumber")]
+        let mut c = from_first;
         while c < from.head() {
+            #[cfg(not(feature = "canary-record-renumber"))]
             let at = c;
+            #[cfg(feature = "canary-record-renumber")]
+            let at = c - from_first;
             let got = from.read(&mut c, &mut env, &mut buf);
+            debug_assert!(got != Read::Pending, "nothing writes the ring being copied");
             if got == Read::Record || got == Read::Stale {
                 // A stale record stays stale: copied under the sequence it
                 // named, so the readers of this ring drop and count it too.
@@ -613,11 +664,34 @@ impl Writer {
                 self.store(at, seq, &h, |p| p.bytes(0, &buf[..n]));
             } else {
                 c = c.max(at + 1);
-                self.g.head().store(c, Ordering::Relaxed);
+                self.g.head().store(at + 1, Ordering::Relaxed);
             }
         }
         fence(Ordering::Release);
         first
+    }
+}
+
+/// Payload bytes [`Writer::replay`] carries over: a ring whose slots hold more
+/// cannot be handed over (its producer asserts it at build time).
+pub const REPLAY_PAYLOAD_MAX: usize = 512;
+
+/// A test's hook between a reader's copy and its stamp re-check, where a
+/// racing producer would land (`tests/host/rings-tests` only).
+#[cfg(feature = "test-hook")]
+pub mod test_hook {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static HOOK: AtomicUsize = AtomicUsize::new(0);
+    /// Call `f` (once) at the next read's window.
+    pub fn set(f: fn()) {
+        HOOK.store(f as usize, Ordering::SeqCst);
+    }
+    pub(super) fn between_copy_and_recheck() {
+        let f = HOOK.swap(0, Ordering::SeqCst);
+        if f != 0 {
+            // SAFETY: only `set` stores here, a `fn()`.
+            unsafe { core::mem::transmute::<usize, fn()>(f)() };
+        }
     }
 }
 
@@ -718,6 +792,10 @@ impl<const P: usize> Merge<P> {
             match r.read(&mut self.cursor[i], &mut self.env[i], &mut self.buf[i]) {
                 Read::Record => self.have[i] = true,
                 Read::Empty => {}
+                // Canary: a producer mid-store reads as an empty ring.
+                #[cfg(feature = "canary-record-pending-empty")]
+                Read::Pending => {}
+                #[cfg(not(feature = "canary-record-pending-empty"))]
                 Read::Pending => return Step::Pending { ring: i },
                 Read::Lost(n) => {
                     self.lost[i] += n;

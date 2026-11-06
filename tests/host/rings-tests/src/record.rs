@@ -218,6 +218,34 @@ fn a_region_of_another_layout_is_refused() {
     let _ = r;
 }
 
+/// A producer that laps the reader between its copy and its re-check (the
+/// test hook stands where the race lands): the re-check sees the stamp moved
+/// and reports the lap, the mixed copy is never handed on. **Canary**
+/// `canary-no-recheck`: the copy is handed on as record 0.
+#[test]
+fn a_record_overwritten_during_the_copy_is_not_handed_on() {
+    static R: std::sync::OnceLock<Region> = std::sync::OnceLock::new();
+    let (mem, r) = region(&three(4));
+    let _keep = mem;
+    let _ = R.set(r);
+    put(&r, 1, 0, 0, b"first");
+    azos_rings::region::record::test_hook::set(|| {
+        let r = R.get().unwrap();
+        for i in 1..=4u64 {
+            put(r, 1, i, 0, b"lapper");
+        }
+    });
+    let ring = r.ring(1).unwrap();
+    let (mut c, mut env, mut buf) = (0u64, Envelope::default(), [0u8; 32]);
+    assert_eq!(ring.read(&mut c, &mut env, &mut buf), Read::Lost(1), "the record under the copy was overwritten");
+    assert_eq!(c, 1);
+}
+
+/// Three producers, one reader, no lap of a producer mid-store expected but
+/// none ruled out on a loaded host: every torn or stale record the reader
+/// sees must be one the ring counted as lapped (the protocol's residual, see
+/// record.rs), and every record is read or counted lost, but for the lapped
+/// ones the ring counts.
 #[test]
 fn many_producers_one_reader_every_record_whole() {
     let (mem, r) = region(&three(64));
@@ -247,13 +275,14 @@ fn many_producers_one_reader_every_record_whole() {
         let stop = stop.clone();
         std::thread::spawn(move || {
             let (mut env, mut buf) = (Envelope::default(), [0u8; 288]);
-            let (mut read, mut skipped, mut pending_at) = (0u64, 0u64, (0u64, 0u32));
+            let (mut read, mut torn, mut skipped, mut pending_at) = (0u64, 0u64, 0u64, (0u64, 0u32));
             loop {
                 match m.next(&mut env, &mut buf) {
                     Step::Record { .. } => {
                         let v = u64::from_le_bytes(buf[..8].try_into().unwrap());
-                        assert!(buf[..280].chunks(8).all(|c| c == v.to_le_bytes()), "a torn record was handed on");
-                        assert_eq!(env.ts, v);
+                        if !buf[..280].chunks(8).all(|c| c == v.to_le_bytes()) || env.ts != v {
+                            torn += 1;
+                        }
                         read += 1;
                     }
                     Step::Pending { ring } => {
@@ -271,7 +300,7 @@ fn many_producers_one_reader_every_record_whole() {
                     Step::Lost { .. } | Step::Stale { .. } => {}
                     Step::Empty => {
                         if stop.load(Ordering::Acquire) && m.next(&mut env, &mut buf) == Step::Empty {
-                            return (read, m.lost(0) + skipped, m.stale(0));
+                            return (read, m.lost(0) + skipped, m.stale(0), torn);
                         }
                     }
                 }
@@ -282,8 +311,16 @@ fn many_producers_one_reader_every_record_whole() {
         p.join().unwrap();
     }
     stop.store(true, Ordering::Release);
-    let (read, lost, stale) = reader.join().unwrap();
-    assert_eq!(stale, 0, "no producer writes a stale sequence");
-    assert_eq!(read + lost, 3 * PER, "every record is read or counted lost");
+    let (read, lost, stale, torn) = reader.join().unwrap();
+    let lapped = r.ring(0).unwrap().lapped();
+    assert!(torn + stale <= lapped, "{torn} torn and {stale} stale records, but only {lapped} producers lapped");
+    // A record whose producer was lapped mid-store is counted by the ring
+    // (`lapped`); the reader may have counted it lost too, or not seen it at
+    // all: that is the whole tolerance.
+    let total = read + lost;
+    assert!(
+        total <= 3 * PER && total + lapped >= 3 * PER,
+        "every record is read or counted lost (read {read} lost {lost} torn {torn} lapped {lapped})"
+    );
     assert!(read > 0);
 }
