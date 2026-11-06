@@ -363,7 +363,10 @@ impl Bus {
     /// the lock released ([`Plan::Probe`]).
     fn plan_verdict<'a>(&mut self, h: Handle, verdict: Verdict<'a>) -> Plan<'a> {
         let Some(slot) = self.get(h) else { return Plan::Skip };
-        if slot.state == State::Probing {
+        // A device in a bind's hands, or still bound (an unbind that did not
+        // complete), is not decided again: nothing probes over a driver
+        // that has not let go.
+        if matches!(slot.state, State::Probing | State::Bound) {
             return Plan::Skip;
         }
         let dev = slot.dev;
@@ -383,7 +386,10 @@ impl Bus {
     /// [`plan_verdict`](Self::plan_verdict) for a verdict that binds `choice`.
     fn plan_choice<'a>(&mut self, h: Handle, choice: Choice<'a>) -> Plan<'a> {
         let Some(slot) = self.get(h) else { return Plan::Skip };
-        if slot.state == State::Probing {
+        // A device in a bind's hands, or still bound (an unbind that did not
+        // complete), is not decided again: nothing probes over a driver
+        // that has not let go.
+        if matches!(slot.state, State::Probing | State::Bound) {
             return Plan::Skip;
         }
         let dev = slot.dev;
@@ -619,7 +625,7 @@ pub trait Access {
                     self.rebind(h, n, drivers, sink);
                 }
                 Act::Replace => {
-                    if self.unbind(h, drivers, sink) != Err(UnbindError::Refused) {
+                    if matches!(self.unbind(h, drivers, sink), Ok(()) | Err(UnbindError::NotBound)) {
                         self.bind(h, rules, drivers, sink);
                     }
                 }
@@ -628,7 +634,9 @@ pub trait Access {
     }
 
     /// Release a bound device. A native driver's `remove` runs first and may
-    /// refuse. The device stays on the bus, `Unbound`.
+    /// refuse. The device stays on the bus, `Unbound`. A driver that let go and
+    /// still holds something ([`UnbindError::Leaked`]) is asked to bind the
+    /// device again and keeps it (`ProbeFailed` when that probe refuses).
     fn unbind(&mut self, h: Handle, drivers: &mut dyn Drivers, sink: &mut dyn Sink) -> Result<(), UnbindError> {
         let held = self.with(|b| {
             let s = b.get(h)?;
@@ -645,6 +653,13 @@ pub trait Access {
                 let held = drivers.held(h, &dev);
                 if !cfg!(feature = "unbind-canary") && !held.is_empty() {
                     sink.event(&Event::UnbindLeaked { h, dev: &dev, driver: n.as_str(), held });
+                    // The driver's unbind ran and may have taken the device
+                    // out of service: its own probe brings it back, so the
+                    // device stays bound and working.
+                    if let Err(err) = drivers.probe(n.as_str(), h, &dev) {
+                        self.with(|b| b.settle(h, State::ProbeFailed));
+                        sink.event(&Event::ProbeFailed { h, dev: &dev, driver: n.as_str(), err });
+                    }
                     return Err(UnbindError::Leaked(held));
                 }
                 drivers.release(n.as_str(), h, &dev);
@@ -664,7 +679,7 @@ pub trait Access {
         if self.with(|b| b.get(h).is_none()) {
             return false;
         }
-        if self.unbind(h, drivers, sink) == Err(UnbindError::Refused) {
+        if !matches!(self.unbind(h, drivers, sink), Ok(()) | Err(UnbindError::NotBound)) {
             return false;
         }
         let plan = self.with(|b| b.plan_choice(h, Choice::Native(driver)));

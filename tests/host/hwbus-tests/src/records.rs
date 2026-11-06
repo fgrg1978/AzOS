@@ -40,14 +40,24 @@ impl Env for FakeEnv {
     }
 }
 
+/// A line another device holds is refused; one this device still holds (a
+/// re-probe after a leaked unbind) is kept.
 fn probe(env: &mut FakeEnv, h: Handle, dev: &Device) -> Result<(), ProbeError> {
-    if env.irq.contains_key(&dev.irq) {
+    if env.irq.get(&dev.irq).is_some_and(|&o| o != h.0) {
         return Err(ProbeError::Busy);
     }
     env.irq.insert(dev.irq, h.0);
+    env.dma.retain(|&x| x != h.0);
+    env.window.retain(|&x| x != h.0);
     env.dma.push(h.0);
     env.window.push(h.0);
     env.log.push(format!("probe {}", h.0));
+    Ok(())
+}
+
+/// Another driver for the NIC: what a later topology may choose.
+fn probe_b(env: &mut FakeEnv, h: Handle, _dev: &Device) -> Result<(), ProbeError> {
+    env.log.push(format!("probe-b {}", h.0));
     Ok(())
 }
 
@@ -93,6 +103,8 @@ static CLEAN: Ops<Fake> = Ops {
 };
 static LEAKY: Ops<Fake> = Ops { unbind: Unbind::<Fake>::Op(leaky_unbind), ..CLEAN };
 static NO_PM: Ops<Fake> = Ops { power: Power::Unsupported, ..CLEAN };
+static NET_B_OPS: Ops<Fake> = Ops { probe: probe_b, ..CLEAN };
+static NET_B: DriverIds = DriverIds { name: "other-net", ids: &[Pattern::pci(0x8086, 0x1234)], boot: false };
 static PINNED: Ops<Fake> = Ops { probe: record_only, unbind: Unbind::Pinned, power: Power::Stateless };
 
 static BLK: DriverIds = DriverIds { name: "virtio-blk", ids: &[Pattern::Virtio(2)], boot: false };
@@ -229,6 +241,46 @@ fn a_record_whose_unbind_leaves_the_irq_bound_keeps_its_device_and_the_rebind_fa
     assert_eq!(bus.get(hs[1]).unwrap().state, State::Bound);
     assert!(sink.lines.iter().any(|l| l.starts_with("unbind-leaked virtio@10002000")), "{:?}", sink.lines);
     assert!(!bus.rebind(hs[1], "virtio-net", &mut d, &mut sink));
+}
+
+/// A rebind to another driver after a leaked unbind never probes the new
+/// driver over hardware the old one still drives: the old driver is asked to
+/// bind again and keeps the device, its binding intact. Red with the rebind
+/// continuing on `Leaked`, or with no bound-device guard in the bind plan.
+#[test]
+fn a_leaked_unbind_probes_the_old_driver_again_and_never_the_new_one() {
+    let mut env = FakeEnv::default();
+    let recs = [
+        Record { ids: &BLK, ops: &CLEAN },
+        Record { ids: &NET, ops: &LEAKY },
+        Record { ids: &NET_PCI, ops: &CLEAN },
+        Record { ids: &UART, ops: &PINNED },
+        Record { ids: &NET_B, ops: &NET_B_OPS },
+    ];
+    let (mut bus, hs) = bound(&recs, &mut env);
+    env.log.clear();
+    let mut sink = Recorder::default();
+    let mut d = Records { records: &recs, env: &mut env };
+    assert!(!bus.rebind(hs[1], "other-net", &mut d, &mut sink));
+    assert_eq!(bus.get(hs[1]).unwrap().binding, Binding::Native(Name::new("virtio-net")));
+    assert_eq!(bus.get(hs[1]).unwrap().state, State::Bound);
+    let n = hs[1].0;
+    assert_eq!(env.log, [format!("probe {n}")], "{:?}", sink.lines);
+}
+
+/// A bind decision is not made again for a device that is bound: no probe,
+/// no change of owner.
+#[test]
+fn a_bound_device_is_not_decided_again() {
+    let mut env = FakeEnv::default();
+    let recs = table(&CLEAN);
+    let (mut bus, hs) = bound(&recs, &mut env);
+    env.log.clear();
+    let mut sink = Recorder::default();
+    let rows = [Row { select: Pattern::Virtio(1), admit: false, driver: None }];
+    bus.bind(hs[1], &rules(&rows, Policy::Auto), &mut Records { records: &recs, env: &mut env }, &mut sink);
+    assert_eq!(bus.get(hs[1]).unwrap().state, State::Bound);
+    assert!(env.log.is_empty() && sink.lines.is_empty(), "{:?} {:?}", env.log, sink.lines);
 }
 
 /// Hardware the kernel drives outside the bus is never released.
