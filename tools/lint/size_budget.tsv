@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2740012
-aarch64-microvm	.rodata	334616
+aarch64-microvm	.text	2752844
+aarch64-microvm	.rodata	335288
 aarch64-microvm	.data	459200
 aarch64-microvm	.bss	947752
-aarch64-microvm	reason	over main's driver_server removal, with the RTC kept on and IMAGE_TRUST_LOADER (x86_64 -30 KB .text -57 KB .data, aarch64 -37 KB .text -56 KB .data)
-riscv64-qemu	.text	2778126
-riscv64-qemu	.rodata	470776
+aarch64-microvm	reason	anonymous memory as objects (slots)
+riscv64-qemu	.text	2794598
+riscv64-qemu	.rodata	471480
 riscv64-qemu	.data	743208
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	driver_server, proxy and Driver/Registry deleted; compmgr restarts every ring-3 driver (riscv64-qemu .text/.data down)
-x86_64-microvm	.text	2609769
-x86_64-microvm	.rodata	168192
-x86_64-microvm	.data	608376
+riscv64-qemu	reason	anonymous memory as objects (slots), over the C4 cut
+x86_64-microvm	.text	2621993
+x86_64-microvm	.rodata	168208
+x86_64-microvm	.data	608824
 x86_64-microvm	.bss	958544
-x86_64-microvm	reason	over main's driver_server removal, with the RTC kept on and IMAGE_TRUST_LOADER (x86_64 -30 KB .text -57 KB .data, aarch64 -37 KB .text -56 KB .data)
+x86_64-microvm	reason	anonymous memory as objects (slots)
