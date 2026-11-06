@@ -67,7 +67,8 @@ use alloc::vec::Vec;
 
 use azos_crypto::sha256::sha256;
 
-use super::dev::{BlockDev, DevError};
+use super::dev::{BlockDev, BlockError, Blocks, DevError};
+use azos_drv_api::block::{BlockData, BlockOp, BlockReq, Geometry, SECTOR};
 use super::layout::{rd32, rd64, sbo, BLOCK_SIZE, MAGIC, SB_SLOTS};
 
 pub const HEADER_MAGIC: [u8; 8] = *b"AZVERITY";
@@ -226,7 +227,7 @@ impl<D: BlockDev, R: Record> VerityDev<D, R> {
         let mut nhints = 0;
         let mut blk = vec![0u8; BLOCK_SIZE];
         for slot in SB_SLOTS {
-            if slot >= have || dev.read(slot, &mut blk).is_err() || blk[..8] != MAGIC {
+            if slot >= have || dev.read_blocks(slot, &mut blk).is_err() || blk[..8] != MAGIC {
                 continue;
             }
             let n = rd64(&blk, sbo::BLOCK_COUNT);
@@ -240,7 +241,7 @@ impl<D: BlockDev, R: Record> VerityDev<D, R> {
             return Err(OpenError::NoHeader);
         }
         for &n in &hints[..nhints] {
-            dev.read(n, &mut blk).map_err(|_| OpenError::Io)?;
+            dev.read_blocks(n, &mut blk).map_err(|_| OpenError::Io)?;
             if sha256(&blk) != *root {
                 continue;
             }
@@ -280,7 +281,7 @@ impl<D: BlockDev, R: Record> VerityDev<D, R> {
         }
         let dev_blk = self.shape.start[level] + idx;
         let mut blk = vec![0u8; BLOCK_SIZE];
-        self.dev.read(dev_blk, &mut blk).map_err(|_| Bad::Io)?;
+        self.dev.read_blocks(dev_blk, &mut blk).map_err(|_| Bad::Io)?;
         let want = if level + 1 == self.shape.levels { self.top } else { self.slot(level + 1, idx)? };
         if sha256(&blk) != want {
             return Err(Bad::Tamper(dev_blk, Fail::Hash(level as u8)));
@@ -303,18 +304,15 @@ impl<D: BlockDev, R: Record> VerityDev<D, R> {
     }
 }
 
-impl<D: BlockDev, R: Record> BlockDev for VerityDev<D, R> {
-    /// The volume's `N` blocks; the tree after them is not the engine's.
-    fn block_count(&self) -> u64 {
-        self.shape.data_blocks
-    }
-
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+impl<D: BlockDev, R: Record> VerityDev<D, R> {
+    /// Read the whole blocks from `first` into `buf`, each checked against
+    /// the tree; a block that does not hash into the root is never returned.
+    fn read_checked(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         let n = (buf.len() / BLOCK_SIZE) as u64;
         if n == 0 || buf.len() % BLOCK_SIZE != 0 || first.checked_add(n).map_or(true, |e| e > self.shape.data_blocks) {
             return Err(DevError);
         }
-        self.dev.read(first, buf)?;
+        self.dev.read_blocks(first, buf)?;
         match self.check(first, buf) {
             Ok(()) => Ok(()),
             Err(bad) => {
@@ -327,14 +325,28 @@ impl<D: BlockDev, R: Record> BlockDev for VerityDev<D, R> {
             }
         }
     }
+}
 
-    fn write(&mut self, _first: u64, _buf: &[u8]) -> Result<(), DevError> {
-        Err(DevError)
+/// The volume's `N` blocks as sectors; the tree after them is not the engine's.
+/// Read-only: a write is refused, nothing is ever pending (a flush answers
+/// `Ok`), and nothing is discarded.
+impl<D: BlockDev, R: Record> BlockDev for VerityDev<D, R> {
+    fn geometry(&self) -> Geometry {
+        Geometry { sectors: self.shape.data_blocks * (BLOCK_SIZE / SECTOR) as u64, fua: false, discard: false }
     }
 
-    /// Nothing is ever written, so nothing is pending.
-    fn flush(&mut self) -> Result<(), DevError> {
-        Ok(())
+    fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+        match (req.op, req.data) {
+            (BlockOp::Read, BlockData::Read(buf)) => {
+                if req.sector % (BLOCK_SIZE / SECTOR) as u64 != 0 {
+                    return Err(BlockError::Invalid);
+                }
+                self.read_checked(req.sector / (BLOCK_SIZE / SECTOR) as u64, buf).map_err(|_| BlockError::Io)
+            }
+            (BlockOp::Write, _) => Err(BlockError::Unsupported),
+            (BlockOp::Flush, _) | (BlockOp::Discard, _) => Ok(()),
+            _ => Err(BlockError::Invalid),
+        }
     }
 }
 

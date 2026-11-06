@@ -173,6 +173,10 @@ mod topology_paths;
 #[allow(dead_code)]
 mod infsrv_paths;
 
+// The test devices that think in azvol blocks.
+#[cfg(test)]
+#[macro_use]
+mod blk_units;
 #[cfg(test)]
 mod azvol_format;
 #[cfg(test)]
@@ -7953,9 +7957,11 @@ mod fatcache {
     ///   that lock may be faulting on a swapped page, waiting for the mutex;
     /// * `blkdev::discard(` (no notification: it moves no bytes anyone holds)
     ///   only in `fat32.rs`, which discards chains still allocated and
-    ///   unreachable by name, and `kernel/src/boot/swap.rs` and
-    ///   `kernel/src/boot/azvol.rs` (the blocks an azvol commit freed), whose
-    ///   partitions the cache never holds;
+    ///   unreachable by name, and `kernel/src/boot/swap.rs`, whose partition
+    ///   the cache never holds (azvol's freed blocks discard through
+    ///   `Boot::observed()`, which does not notify either: it moves no bytes);
+    /// * `Boot::quiet()` (the device that does not notify) only in
+    ///   `blkdev.rs`, behind `write_quiet` and `write_run`;
     /// * no direct `virtio::blk::write(`: virtio-blk is a hardware queue now,
     ///   written only through the request layer, and the block entry
     ///   (`block_host.rs`'s `block_io`) goes through `blkdev::write_raw`,
@@ -7975,6 +7981,7 @@ mod fatcache {
         }
         let mut quiet = Vec::new();
         let mut discard = Vec::new();
+        let mut boot_quiet = Vec::new();
         let mut virtio = Vec::new();
         let mut mmc = Vec::new();
         for f in &files {
@@ -7985,18 +7992,21 @@ mod fatcache {
                 if l.starts_with("//") || l.contains("fn ") { continue; }
                 if l.contains("blkdev::write_quiet(") { quiet.push(rel.clone()); }
                 if l.contains("blkdev::discard(") { discard.push(rel.clone()); }
+                if l.contains("Boot::quiet()") { boot_quiet.push(rel.clone()); }
                 if l.contains("virtio::blk::write(") { virtio.push(rel.clone()); }
                 if l.contains("mmc_write(") { mmc.push(rel.clone()); }
             }
         }
         quiet.dedup();
         discard.dedup();
+        boot_quiet.dedup();
         virtio.dedup();
         mmc.dedup();
         assert_eq!(quiet, ["crates/fs/src/fat32.rs", "kernel/src/boot/swap.rs"],
                    "write_quiet outside FAT32's write path and the swap area");
-        assert_eq!(discard, ["crates/fs/src/fat32.rs", "kernel/src/boot/azvol.rs", "kernel/src/boot/swap.rs"],
-                   "a discard outside FAT32's released chains, azvol's freed blocks and the swap area");
+        assert_eq!(discard, ["crates/fs/src/fat32.rs", "kernel/src/boot/swap.rs"],
+                   "a discard outside FAT32's released chains and the swap area");
+        assert_eq!(boot_quiet, ["crates/drivers/block/src/blkdev.rs"], "a quiet boot device outside blkdev.rs");
         // Both queued devices are driven through the request layer; nothing
         // writes virtio-blk directly any more.
         assert!(virtio.is_empty(), "a direct virtio-blk writer: {virtio:?}");

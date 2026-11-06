@@ -13,8 +13,9 @@
 #[path = "../../../../crates/fs/src/azvol/mod.rs"]
 mod azvol;
 
+use crate::blk_units::BlkUnit;
 use azvol::layout::{self, sbo, Kind, SB_SLOTS};
-use azvol::{BlockDev, DevError, Error, FormatOptions, Volume, BLOCK_SIZE};
+use azvol::{Blocks, DevError, Error, FormatOptions, Volume, BLOCK_SIZE};
 use std::collections::BTreeMap;
 
 const SECTOR: usize = 512;
@@ -47,12 +48,13 @@ impl MemDev {
     }
 }
 
-impl BlockDev for MemDev {
-    fn block_count(&self) -> u64 {
+impl BlkUnit for MemDev {
+    type Err = DevError;
+    fn unit_count(&self) -> u64 {
         (self.img.len() / BLOCK_SIZE) as u64
     }
 
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+    fn unit_read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > self.img.len() {
             return Err(DevError);
@@ -61,7 +63,7 @@ impl BlockDev for MemDev {
         Ok(())
     }
 
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
+    fn unit_write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > self.img.len() {
             return Err(DevError);
@@ -79,11 +81,13 @@ impl BlockDev for MemDev {
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), DevError> {
+    fn unit_flush(&mut self) -> Result<(), DevError> {
         self.log.push(Op::Flush);
         Ok(())
     }
 }
+
+block_dev_of_units!(MemDev);
 
 /// How a block written but not yet covered by a flush looks after the cut.
 #[derive(Clone, Copy)]
@@ -1460,21 +1464,24 @@ struct Counting {
     calls: Arc<Mutex<Vec<(u64, usize)>>>,
 }
 
-impl BlockDev for Counting {
-    fn block_count(&self) -> u64 {
-        self.inner.block_count()
+impl BlkUnit for Counting {
+    type Err = DevError;
+    fn unit_count(&self) -> u64 {
+        self.inner.unit_count()
     }
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+    fn unit_read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         self.calls.lock().unwrap().push((first, buf.len() / BLOCK_SIZE));
-        self.inner.read(first, buf)
+        self.inner.unit_read(first, buf)
     }
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
-        self.inner.write(first, buf)
+    fn unit_write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
+        self.inner.unit_write(first, buf)
     }
-    fn flush(&mut self) -> Result<(), DevError> {
-        self.inner.flush()
+    fn unit_flush(&mut self) -> Result<(), DevError> {
+        self.inner.unit_flush()
     }
 }
+
+block_dev_of_units!(Counting);
 
 fn hex(h: &Hash) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
@@ -1537,31 +1544,31 @@ fn a_three_level_tree_checks_every_level_and_names_the_one_that_failed() {
     let (mut d, rec) = open(None);
     assert_eq!(d.block_count(), N, "the engine sees the volume, not the tree");
     for b in [0, 5, 127, 128, 16383, 16384] {
-        d.read(b, &mut buf).unwrap_or_else(|_| panic!("block {b}"));
+        d.read_blocks(b, &mut buf).unwrap_or_else(|_| panic!("block {b}"));
         assert_eq!(buf, block_of(&img, b), "block {b}");
     }
     assert!(rec.all().is_empty());
     // a data block
     let (mut d, rec) = open(Some(16384));
-    assert!(d.read(16384, &mut buf).is_err());
+    assert!(d.read_blocks(16384, &mut buf).is_err());
     assert!(buf.iter().all(|&x| x == 0), "a failed read returns no byte");
     assert_eq!(rec.all(), vec![Tamper { block: 16384, what: Fail::Data, count: 1 }]);
-    assert!(d.read(16384, &mut buf).is_err());
+    assert!(d.read_blocks(16384, &mut buf).is_err());
     assert_eq!(rec.all()[1].count, 2, "failures are counted, a bad block is not trusted twice");
-    d.read(0, &mut buf).expect("a neighbour is untouched");
+    d.read_blocks(0, &mut buf).expect("a neighbour is untouched");
     // a level-0 hash block: only the blocks it covers
     let (mut d, rec) = open(Some(s.start[0] + 128));
-    assert!(d.read(16384, &mut buf).is_err());
+    assert!(d.read_blocks(16384, &mut buf).is_err());
     assert_eq!(rec.all(), vec![Tamper { block: s.start[0] + 128, what: Fail::Hash(0), count: 1 }]);
-    d.read(16383, &mut buf).expect("the blocks of other hash blocks read");
+    d.read_blocks(16383, &mut buf).expect("the blocks of other hash blocks read");
     // a level-1 hash block: the 128 hash blocks under it
     let (mut d, rec) = open(Some(s.start[1] + 1));
-    assert!(d.read(16384, &mut buf).is_err());
+    assert!(d.read_blocks(16384, &mut buf).is_err());
     assert_eq!(rec.all(), vec![Tamper { block: s.start[1] + 1, what: Fail::Hash(1), count: 1 }]);
-    d.read(5, &mut buf).expect("the other level-1 block's subtree reads");
+    d.read_blocks(5, &mut buf).expect("the other level-1 block's subtree reads");
     // the top: everything
     let (mut d, rec) = open(Some(s.start[2]));
-    assert!(d.read(5, &mut buf).is_err() && d.read(16384, &mut buf).is_err());
+    assert!(d.read_blocks(5, &mut buf).is_err() && d.read_blocks(16384, &mut buf).is_err());
     assert_eq!(rec.all()[0], Tamper { block: s.start[2], what: Fail::Hash(2), count: 1 });
     // and the header, at open
     let mut i = img.clone();
@@ -1580,26 +1587,26 @@ fn a_run_with_one_bad_block_fails_whole_and_a_verified_hash_block_is_kept() {
     let rec = Rec::default();
     let mut d = VerityDev::open(Counting { inner: MemDev::from_image(img), calls: calls.clone() }, &root, rec.clone()).unwrap();
     let mut run = vec![0xAAu8; 8 * BLOCK_SIZE];
-    assert!(d.read(696, &mut run).is_err());
+    assert!(d.read_blocks(696, &mut run).is_err());
     assert!(run.iter().all(|&x| x == 0), "the good blocks of a failed run are not returned either");
     assert_eq!(rec.all().len(), 1);
     assert_eq!(rec.all()[0].block, 700);
     // a repeat costs the data block alone: its hash block was checked before
     let mut one = vec![0u8; BLOCK_SIZE];
-    d.read(5, &mut one).unwrap();
+    d.read_blocks(5, &mut one).unwrap();
     calls.lock().unwrap().clear();
-    d.read(5, &mut one).unwrap();
-    d.read(6, &mut one).unwrap();
+    d.read_blocks(5, &mut one).unwrap();
+    d.read_blocks(6, &mut one).unwrap();
     assert_eq!(*calls.lock().unwrap(), vec![(5, 1), (6, 1)]);
     // out of range, empty, ragged, and write: refused, no record
     let before = rec.all().len();
-    assert!(d.read(N, &mut one).is_err(), "the header is not the engine's block");
-    assert!(d.read(N - 1, &mut run[..2 * BLOCK_SIZE]).is_err());
-    assert!(d.read(0, &mut []).is_err());
-    assert!(d.read(0, &mut one[..100]).is_err());
-    assert!(d.write(0, &one).is_err(), "a verity device is never written");
+    assert!(d.read_blocks(N, &mut one).is_err(), "the header is not the engine's block");
+    assert!(d.read_blocks(N - 1, &mut run[..2 * BLOCK_SIZE]).is_err());
+    assert!(d.read_blocks(0, &mut []).is_err());
+    assert!(d.read_blocks(0, &mut one[..100]).is_err());
+    assert!(d.write_blocks(0, &one).is_err(), "a verity device is never written");
     assert_eq!(rec.all().len(), before);
-    d.flush().unwrap();
+    d.barrier().unwrap();
 }
 
 #[test]

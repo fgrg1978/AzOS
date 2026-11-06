@@ -22,7 +22,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::crc32c::crc32c;
-use super::dev::BlockDev;
+use super::dev::{BlockDev, Blocks};
 use super::extent;
 use super::freemap::FreeMap;
 use super::seal::{self, Sealer};
@@ -202,7 +202,7 @@ impl<D: BlockDev> Core<D> {
     fn csum_block(&mut self, idx: u64) -> Result<&mut (Vec<u8>, bool), Error> {
         if !self.csum.contains_key(&idx) {
             let mut v = vec![0u8; BLOCK_SIZE];
-            self.dev.read(self.geo.csum_start + idx, &mut v).map_err(|_| Error::Io)?;
+            self.dev.read_blocks(self.geo.csum_start + idx, &mut v).map_err(|_| Error::Io)?;
             self.csum.insert(idx, (v, false));
         }
         Ok(self.csum.get_mut(&idx).unwrap())
@@ -250,7 +250,7 @@ impl<D: BlockDev> Core<D> {
             for k in &idxs[i..j] {
                 buf.extend_from_slice(&self.csum[k].0);
             }
-            self.dev.write(self.geo.csum_start + idxs[i], &buf).map_err(|_| Error::Io)?;
+            self.dev.write_blocks(self.geo.csum_start + idxs[i], &buf).map_err(|_| Error::Io)?;
             for k in &idxs[i..j] {
                 self.csum.get_mut(k).unwrap().1 = false;
             }
@@ -272,7 +272,7 @@ impl<D: BlockDev> Core<D> {
             for (n, k) in idxs[i..j].iter().enumerate() {
                 self.bitmap.encode_block(*k, &mut buf[n * BLOCK_SIZE..(n + 1) * BLOCK_SIZE]);
             }
-            if self.dev.write(self.geo.bitmap_start + idxs[i], &buf).is_err() {
+            if self.dev.write_blocks(self.geo.bitmap_start + idxs[i], &buf).is_err() {
                 self.bitmap.mark_all_dirty(&self.geo);
                 return Err(Error::Io);
             }
@@ -297,7 +297,7 @@ impl<D: BlockDev> Core<D> {
     pub fn read_run(&mut self, first: u64, out: &mut [u8]) -> Result<(), Error> {
         let n = (out.len() / BLOCK_SIZE) as u64;
         self.check_range(first, n)?;
-        self.dev.read(first, out).map_err(|_| Error::Io)?;
+        self.dev.read_blocks(first, out).map_err(|_| Error::Io)?;
         if self.geo.sealed {
             for i in 0..n {
                 let blk = first + i;
@@ -335,13 +335,13 @@ impl<D: BlockDev> Core<D> {
                 let seq = key.next_seq(txn)?;
                 tags.push((key.seal(blk, seq, &mut ct[i as usize * BLOCK_SIZE..(i as usize + 1) * BLOCK_SIZE]), seq));
             }
-            self.dev.write(first, &ct).map_err(|_| Error::Io)?;
+            self.dev.write_blocks(first, &ct).map_err(|_| Error::Io)?;
             for (i, (tag, seq)) in tags.iter().enumerate() {
                 self.entry_set(first + i as u64, tag, *seq)?;
             }
             return Ok(());
         }
-        self.dev.write(first, data).map_err(|_| Error::Io)?;
+        self.dev.write_blocks(first, data).map_err(|_| Error::Io)?;
         for i in 0..n {
             let c = crc32c(&data[i as usize * BLOCK_SIZE..(i as usize + 1) * BLOCK_SIZE]);
             self.csum_set(first + i, c)?;

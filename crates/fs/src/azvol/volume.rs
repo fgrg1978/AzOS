@@ -40,7 +40,7 @@ use super::engine::{Core, Inode};
 use super::group::GroupSaved;
 use super::seal::{self, VolumeKey};
 use super::snap;
-use super::dev::BlockDev;
+use super::dev::{BlockDev, Blocks};
 use super::dir;
 use super::freemap::FreeMap;
 use super::layout::{
@@ -135,7 +135,7 @@ fn zero_blocks<D: BlockDev>(dev: &mut D, first: u64, n: u64) -> Result<(), Error
     let mut at = 0;
     while at < n {
         let c = (n - at).min(chunk);
-        dev.write(first + at, &z[..c as usize * BLOCK_SIZE]).map_err(|_| Error::Io)?;
+        dev.write_blocks(first + at, &z[..c as usize * BLOCK_SIZE]).map_err(|_| Error::Io)?;
         at += c;
     }
     Ok(())
@@ -171,7 +171,7 @@ impl<D: BlockDev> Volume<D> {
         let mut buf = vec![0u8; BLOCK_SIZE];
         for i in 0..geo.bitmap_blocks {
             map.encode_block(i, &mut buf);
-            dev.write(geo.bitmap_start + i, &buf).map_err(|_| Error::Io)?;
+            dev.write_blocks(geo.bitmap_start + i, &buf).map_err(|_| Error::Io)?;
         }
         let mut label = [0u8; LABEL_LEN];
         let l = opts.label.len().min(LABEL_LEN);
@@ -196,9 +196,9 @@ impl<D: BlockDev> Volume<D> {
         };
         sb.encode(&mut buf);
         for s in SB_SLOTS {
-            dev.write(s, &buf).map_err(|_| Error::Io)?;
+            dev.write_blocks(s, &buf).map_err(|_| Error::Io)?;
         }
-        dev.flush().map_err(|_| Error::Io)?;
+        dev.barrier().map_err(|_| Error::Io)?;
         let mut v = Volume::mount_inner(dev, false, key)?;
         v.core.time_ns = opts.time_ns;
         let mut root = Inode::blank(ROOT_INO, Kind::Dir);
@@ -237,8 +237,8 @@ impl<D: BlockDev> Volume<D> {
         next.generation = txn;
         let mut buf = vec![0u8; BLOCK_SIZE];
         next.encode(&mut buf);
-        self.core.dev.write(SB_SLOTS[(txn & 1) as usize], &buf).map_err(|_| Error::Io)?;
-        self.core.dev.flush().map_err(|_| Error::Io)?;
+        self.core.dev.write_blocks(SB_SLOTS[(txn & 1) as usize], &buf).map_err(|_| Error::Io)?;
+        self.core.dev.barrier().map_err(|_| Error::Io)?;
         self.sb = next;
         self.core.gen = txn;
         Ok(())
@@ -250,7 +250,7 @@ impl<D: BlockDev> Volume<D> {
         let mut magic_seen = false;
         let mut buf = vec![0u8; BLOCK_SIZE];
         for (i, slot) in SB_SLOTS.iter().enumerate() {
-            if *slot >= dev_blocks || dev.read(*slot, &mut buf).is_err() {
+            if *slot >= dev_blocks || dev.read_blocks(*slot, &mut buf).is_err() {
                 continue;
             }
             match Superblock::decode(&buf) {
@@ -286,7 +286,7 @@ impl<D: BlockDev> Volume<D> {
         while i < geo.bitmap_blocks {
             let c = (geo.bitmap_blocks - i).min(64);
             let mut bb = vec![0u8; c as usize * BLOCK_SIZE];
-            if dev.read(geo.bitmap_start + i, &mut bb).is_err() {
+            if dev.read_blocks(geo.bitmap_start + i, &mut bb).is_err() {
                 damaged = true;
             } else {
                 for k in 0..c {
@@ -835,7 +835,7 @@ impl<D: BlockDev> Volume<D> {
         // 2. checksum table and bitmap (still a superset of the old tree)
         core.flush_csums()?;
         core.flush_bitmap()?;
-        core.dev.flush().map_err(|_| Error::Io)?;
+        core.dev.barrier().map_err(|_| Error::Io)?;
         // 3. the superblock, into the copy that is not the newest
         let mut new_sb = *sb;
         new_sb.generation = txn;
@@ -845,15 +845,15 @@ impl<D: BlockDev> Volume<D> {
         new_sb.deadlist = deadf.to_disk();
         let mut buf = vec![0u8; BLOCK_SIZE];
         new_sb.encode(&mut buf);
-        core.dev.write(SB_SLOTS[(txn & 1) as usize], &buf).map_err(|_| Error::Io)?;
-        core.dev.flush().map_err(|_| Error::Io)?;
+        core.dev.write_blocks(SB_SLOTS[(txn & 1) as usize], &buf).map_err(|_| Error::Io)?;
+        core.dev.barrier().map_err(|_| Error::Io)?;
         // 4. durable: the old tree's blocks may be reused, and the device may
         // deallocate them (nothing is allocated before this returns)
         *sb = new_sb;
         core.gen = txn;
         let freed = core.apply_pending();
         if !freed.is_empty() {
-            let _ = core.dev.discard(&freed);
+            let _ = core.dev.discard_blocks(&freed);
         }
         core.flush_bitmap()?;
         for inode in inodes.values_mut() {

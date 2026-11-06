@@ -50,11 +50,12 @@
 //! block layer's published table is 0-based (`partition::partition(0)`), and a
 //! `block` endpoint's badge is `n + 1`. The subtraction is in [`open`], once.
 
-use azos_drv_block::blkdev;
+use azos_drv_api::block::{BlockData, BlockDev, BlockError, BlockOp, BlockReq, Geometry, Part};
+use azos_drv_block::blkdev::Boot;
 use azos_drv_block::partition;
 use azos_drv_sys::{kprintln, kwarn};
 use azos_fs::azvol::verity::{Fail, Tamper};
-use azos_fs::azvol::{BlockDev, DevError, Error, Volume, VolumeKey, BLOCK_SIZE};
+use azos_fs::azvol::{Error, Volume, VolumeKey, BLOCK_SIZE};
 use azos_fs::azvol_mount::{mount_rows, Env, Outcome, Row, Why};
 use azos_fs::probe::VolumeKind;
 
@@ -66,83 +67,40 @@ const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / 512) as u64;
 /// driver needs, however long a run the volume asks for.
 const RUN_SECTORS: u64 = 256;
 
-/// A partition of the boot medium as a block device: whole azvol blocks at
-/// block-relative addresses, mapped to absolute sectors.
+/// A partition of the boot medium as a block device: the boot disk with its
+/// checks, windowed to the partition ([`Part`]), whole azvol blocks (a
+/// trailing partial block is not used).
 pub(super) struct PartDev {
-    /// First sector of the partition on the medium.
-    start: u64,
-    /// Size in azvol blocks (a trailing partial block is not used).
-    blocks: u64,
-}
-
-impl PartDev {
-    /// The absolute sector and sector count of `len` bytes at block `first`,
-    /// or `None` when the run leaves the partition.
-    fn run(&self, first: u64, len: usize) -> Option<(u64, u64)> {
-        if len == 0 || len % BLOCK_SIZE != 0 {
-            return None;
-        }
-        let n = (len / BLOCK_SIZE) as u64;
-        if first.checked_add(n)? > self.blocks {
-            return None;
-        }
-        Some((self.start + first * SECTORS_PER_BLOCK, n * SECTORS_PER_BLOCK))
-    }
+    part: Part<Boot>,
 }
 
 impl BlockDev for PartDev {
-    fn block_count(&self) -> u64 {
-        self.blocks
+    fn geometry(&self) -> Geometry {
+        self.part.geometry()
     }
 
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
-        let (mut sector, total) = self.run(first, buf.len()).ok_or(DevError)?;
-        let (mut at, mut left) = (0usize, total);
-        while left > 0 {
-            let n = left.min(RUN_SECTORS);
-            let bytes = n as usize * 512;
-            blkdev::read(sector, n as u32, &mut buf[at..at + bytes]).map_err(|()| DevError)?;
-            sector += n;
-            at += bytes;
-            left -= n;
+    fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+        // A long run goes down in pieces: the block layer stages at most this
+        // much per call, however long a run the volume asks for.
+        match (req.op, req.data) {
+            (BlockOp::Read, BlockData::Read(buf)) => {
+                for (i, piece) in buf.chunks_mut(RUN_SECTORS as usize * 512).enumerate() {
+                    self.part.read(req.sector + i as u64 * RUN_SECTORS, piece)?;
+                }
+                Ok(())
+            }
+            (BlockOp::Write, BlockData::Write(buf)) => {
+                for (i, piece) in buf.chunks(RUN_SECTORS as usize * 512).enumerate() {
+                    self.part.write_flagged(req.sector + i as u64 * RUN_SECTORS, piece, req.flags)?;
+                }
+                Ok(())
+            }
+            (op, data) => self.part.submit(BlockReq { op, data, ..req }),
         }
-        Ok(())
     }
 
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
-        let (mut sector, total) = self.run(first, buf.len()).ok_or(DevError)?;
-        let (mut at, mut left) = (0usize, total);
-        while left > 0 {
-            let n = left.min(RUN_SECTORS);
-            let bytes = n as usize * 512;
-            blkdev::write(sector, n as u32, &buf[at..at + bytes]).map_err(|()| DevError)?;
-            sector += n;
-            at += bytes;
-            left -= n;
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<(), DevError> {
-        blkdev::flush().map_err(|_| DevError)
-    }
-
-    fn raw_sector(&self, block: u64) -> Option<u64> {
-        if block >= self.blocks {
-            return None;
-        }
-        Some(self.start + block * SECTORS_PER_BLOCK)
-    }
-
-    /// One discard of all the runs (Kconfig `BLK_DISCARD`; `blkdev::discard`
-    /// answers at once where it is off or the disk has no discard).
-    fn discard(&mut self, runs: &[(u64, u32)]) -> Result<(), DevError> {
-        let mut sectors = alloc::vec::Vec::with_capacity(runs.len());
-        for &(first, n) in runs {
-            let (sector, count) = self.run(first, n as usize * BLOCK_SIZE).ok_or(DevError)?;
-            sectors.push((sector, u32::try_from(count).map_err(|_| DevError)?));
-        }
-        blkdev::discard(&sectors).map_err(|_| DevError)
+    fn medium_start(&self) -> Option<u64> {
+        self.part.medium_start()
     }
 }
 
@@ -151,7 +109,8 @@ impl BlockDev for PartDev {
 /// no such partition or it is smaller than a minimal volume.
 pub(super) fn open(partition_1based: u8) -> Option<PartDev> {
     let (start, sectors) = partition::partition(u32::from(partition_1based).checked_sub(1)?)?;
-    Some(PartDev { start, blocks: sectors / SECTORS_PER_BLOCK })
+    let sectors = sectors / SECTORS_PER_BLOCK * SECTORS_PER_BLOCK;
+    Some(PartDev { part: Part::new(Boot::observed(), start, sectors)? })
 }
 
 /// The system around a mounted volume.

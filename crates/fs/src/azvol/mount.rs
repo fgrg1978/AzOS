@@ -89,7 +89,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use azos_sync::claim::Claim;
 
 use super::azvol::verity::{Hash, OpenError, Record, Tamper, VerityDev};
-use super::azvol::{BlockDev, CheckReport, Error, Kind, MountReport, Volume, VolumeKey, BLOCK_SIZE};
+use super::azvol::{BlockDev, Blocks, CheckReport, Error, Kind, MountReport, Volume, VolumeKey, BLOCK_SIZE};
 use super::probe::{probe_volume, VolumeKind};
 use crate::vfs::{
     DirEnt, FileStat, FileSystem, FsCheck, FsErr, InodeKey, SectorRun, StatFs, FS_TYPE_AZVOL, INODE_KEY_LEN, NAME_MAX, PATH_KEY_LEN,
@@ -408,7 +408,7 @@ pub fn open_plain<D: BlockDev + Send>(
     key: Option<&VolumeKey>,
     on_damage: OnDamage,
 ) -> Result<AzvolFs<D>, Why> {
-    let kind = probe_volume(&mut |blk, buf| dev.read(blk, buf).is_ok());
+    let kind = probe_volume(&mut |blk, buf| dev.read_blocks(blk, buf).is_ok());
     if !matches!(kind, VolumeKind::Azvol { .. }) {
         return Err(Why::NotAzvol(kind));
     }

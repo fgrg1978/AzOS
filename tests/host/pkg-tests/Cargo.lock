@@ -49,6 +49,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_drv_api"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_common",
+]
+
+[[package]]
 name = "azos_hwbus"
 version = "0.1.0"
 dependencies = [
@@ -122,6 +130,7 @@ dependencies = [
  "azos_crypto",
  "azos_decision",
  "azos_decisions",
+ "azos_drv_api",
  "azos_idl",
  "azos_limits",
  "azos_names",

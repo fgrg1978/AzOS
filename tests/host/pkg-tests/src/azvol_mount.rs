@@ -23,6 +23,7 @@
 //!
 //! Wired into the suite by `mod azvol_mount;` in `src/lib.rs`.
 
+use crate::blk_units::BlkUnit;
 use super::service::NoRemote;
 use super::*;
 use azos_decision::{ProvenanceRecord, Rule, Verdict, PROVENANCE_SIZE};
@@ -47,7 +48,7 @@ mod stage;
 #[path = "../../../../userspace/services/pkgd/src/snap.rs"]
 mod snap;
 
-use azvol::{BlockDev, DevError, FormatOptions, Kind, Volume, BLOCK_SIZE};
+use azvol::{DevError, FormatOptions, Kind, Volume, BLOCK_SIZE};
 use stage::{Files, Paths, Platform, Stage, Unlinked, O_APPEND, O_CREAT, O_TRUNC, O_WRONLY, STAGE_MOUNT};
 
 const SECTOR: usize = 512;
@@ -88,11 +89,12 @@ impl Dev {
     }
 }
 
-impl BlockDev for Dev {
-    fn block_count(&self) -> u64 {
+impl BlkUnit for Dev {
+    type Err = DevError;
+    fn unit_count(&self) -> u64 {
         (self.0.lock().unwrap().img.len() / BLOCK_SIZE) as u64
     }
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+    fn unit_read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         let g = self.0.lock().unwrap();
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > g.img.len() {
@@ -101,7 +103,7 @@ impl BlockDev for Dev {
         buf.copy_from_slice(&g.img[o..o + buf.len()]);
         Ok(())
     }
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
+    fn unit_write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
         let mut g = self.0.lock().unwrap();
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > g.img.len() {
@@ -113,7 +115,7 @@ impl BlockDev for Dev {
         }
         Ok(())
     }
-    fn flush(&mut self) -> Result<(), DevError> {
+    fn unit_flush(&mut self) -> Result<(), DevError> {
         let mut g = self.0.lock().unwrap();
         if g.fail_flush {
             return Err(DevError);
@@ -122,6 +124,8 @@ impl BlockDev for Dev {
         Ok(())
     }
 }
+
+block_dev_of_units!(Dev);
 
 #[derive(Clone, Copy)]
 enum Fate {

@@ -34,6 +34,7 @@ mod probe;
 #[path = "../../../../crates/fs/src/azvol/mount.rs"]
 mod mount;
 
+use crate::blk_units::BlkUnit;
 use super::vfs::{self, FileSystem as _, FsErr, O_CREAT, O_RDONLY, O_WRONLY};
 use azvol::layout::SB_SLOTS;
 use azvol::verity::{self, Fail, Hash, OpenError, Tamper};
@@ -91,28 +92,32 @@ struct Spy {
     seen: Arc<Mutex<BTreeSet<u64>>>,
 }
 
-impl BlockDev for Spy {
-    fn block_count(&self) -> u64 {
-        self.inner.block_count()
+impl BlkUnit for Spy {
+    type Err = DevError;
+    fn unit_count(&self) -> u64 {
+        self.inner.unit_count()
     }
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+    fn unit_read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         let n = (buf.len() / BLOCK_SIZE) as u64;
         self.seen.lock().unwrap().extend(first..first + n);
-        self.inner.read(first, buf)
+        self.inner.unit_read(first, buf)
     }
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
-        self.inner.write(first, buf)
+    fn unit_write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
+        self.inner.unit_write(first, buf)
     }
-    fn flush(&mut self) -> Result<(), DevError> {
-        self.inner.flush()
+    fn unit_flush(&mut self) -> Result<(), DevError> {
+        self.inner.unit_flush()
     }
 }
 
-impl BlockDev for Dev {
-    fn block_count(&self) -> u64 {
+block_dev_of_units!(Spy);
+
+impl BlkUnit for Dev {
+    type Err = DevError;
+    fn unit_count(&self) -> u64 {
         (self.0.lock().unwrap().img.len() / BLOCK_SIZE) as u64
     }
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+    fn unit_read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         let g = self.0.lock().unwrap();
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > g.img.len() {
@@ -121,7 +126,7 @@ impl BlockDev for Dev {
         buf.copy_from_slice(&g.img[o..o + buf.len()]);
         Ok(())
     }
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
+    fn unit_write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
         let mut g = self.0.lock().unwrap();
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > g.img.len() {
@@ -133,15 +138,17 @@ impl BlockDev for Dev {
         }
         Ok(())
     }
-    fn flush(&mut self) -> Result<(), DevError> {
+    fn unit_flush(&mut self) -> Result<(), DevError> {
         self.0.lock().unwrap().log.push(DevOp::Flush);
         Ok(())
     }
     /// The device is a partition that starts at the medium's first sector.
-    fn raw_sector(&self, block: u64) -> Option<u64> {
+    fn unit_raw(&self, block: u64) -> Option<u64> {
         Some(block * (BLOCK_SIZE / SECTOR) as u64)
     }
 }
+
+block_dev_of_units!(Dev);
 
 #[derive(Clone, Copy)]
 enum Fate {

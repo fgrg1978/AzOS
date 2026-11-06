@@ -93,7 +93,7 @@ pub mod verity;
 pub mod volume;
 
 pub use check::{CheckReport, Problem};
-pub use dev::{BlockDev, DevError};
+pub use dev::{BlockDev, Blocks, DevError};
 pub use layout::{Kind, BLOCK_SIZE};
 pub use seal::VolumeKey;
 pub use snap::{SnapInfo, SnapView};

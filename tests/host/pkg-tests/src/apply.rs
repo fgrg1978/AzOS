@@ -15,12 +15,13 @@
 //!
 //! Wired into the suite by `mod apply;` in `src/lib.rs`.
 
+use crate::blk_units::BlkUnit;
 use super::*;
 use crate::azvol_mount::azvol as engine;
 use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use azos_pkg::apply::{self as proto, SnapState};
 use azos_pkg::Package;
-use engine::{BlockDev, DevError, FormatOptions, Kind, Volume, BLOCK_SIZE};
+use engine::{DevError, FormatOptions, Kind, Volume, BLOCK_SIZE};
 use std::collections::BTreeMap;
 
 #[allow(dead_code)]
@@ -52,11 +53,12 @@ impl MemDev {
     }
 }
 
-impl BlockDev for MemDev {
-    fn block_count(&self) -> u64 {
+impl BlkUnit for MemDev {
+    type Err = DevError;
+    fn unit_count(&self) -> u64 {
         (self.img.len() / BLOCK_SIZE) as u64
     }
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+    fn unit_read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > self.img.len() {
             return Err(DevError);
@@ -64,7 +66,7 @@ impl BlockDev for MemDev {
         buf.copy_from_slice(&self.img[o..o + buf.len()]);
         Ok(())
     }
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
+    fn unit_write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > self.img.len() {
             return Err(DevError);
@@ -75,11 +77,13 @@ impl BlockDev for MemDev {
         }
         Ok(())
     }
-    fn flush(&mut self) -> Result<(), DevError> {
+    fn unit_flush(&mut self) -> Result<(), DevError> {
         self.log.push(Op::Flush);
         Ok(())
     }
 }
+
+block_dev_of_units!(MemDev);
 
 #[derive(Clone, Copy)]
 enum Fate {

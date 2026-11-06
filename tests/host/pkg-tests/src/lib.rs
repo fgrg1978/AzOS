@@ -17,6 +17,9 @@ use ed25519_dalek::{Signer, SigningKey};
 extern crate alloc;
 
 mod api;
+#[macro_use]
+#[path = "../../fs-tests/src/blk_units.rs"]
+mod blk_units;
 mod apply;
 mod azvol_mount;
 mod build;

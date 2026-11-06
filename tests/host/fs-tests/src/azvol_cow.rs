@@ -28,8 +28,9 @@
 #[path = "../../../../crates/fs/src/azvol/mod.rs"]
 mod azvol;
 
+use crate::blk_units::BlkUnit;
 use azvol::layout::{self, sbo, Kind, SB_SLOTS};
-use azvol::{BlockDev, DevError, Error, FormatOptions, SnapView, Volume, BLOCK_SIZE};
+use azvol::{DevError, Error, FormatOptions, SnapView, Volume, BLOCK_SIZE};
 use std::collections::BTreeMap;
 
 const SECTOR: usize = 512;
@@ -58,11 +59,12 @@ impl MemDev {
     }
 }
 
-impl BlockDev for MemDev {
-    fn block_count(&self) -> u64 {
+impl BlkUnit for MemDev {
+    type Err = DevError;
+    fn unit_count(&self) -> u64 {
         (self.img.len() / BLOCK_SIZE) as u64
     }
-    fn read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
+    fn unit_read(&mut self, first: u64, buf: &mut [u8]) -> Result<(), DevError> {
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > self.img.len() {
             return Err(DevError);
@@ -70,7 +72,7 @@ impl BlockDev for MemDev {
         buf.copy_from_slice(&self.img[o..o + buf.len()]);
         Ok(())
     }
-    fn write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
+    fn unit_write(&mut self, first: u64, buf: &[u8]) -> Result<(), DevError> {
         let o = first as usize * BLOCK_SIZE;
         if buf.is_empty() || buf.len() % BLOCK_SIZE != 0 || o + buf.len() > self.img.len() {
             return Err(DevError);
@@ -81,11 +83,11 @@ impl BlockDev for MemDev {
         }
         Ok(())
     }
-    fn flush(&mut self) -> Result<(), DevError> {
+    fn unit_flush(&mut self) -> Result<(), DevError> {
         self.log.push(Op::Flush);
         Ok(())
     }
-    fn discard(&mut self, runs: &[(u64, u32)]) -> Result<(), DevError> {
+    fn unit_discard(&mut self, runs: &[(u64, u32)]) -> Result<(), DevError> {
         for &(first, n) in runs {
             let (a, b) = (first as usize * BLOCK_SIZE, (first + n as u64) as usize * BLOCK_SIZE);
             if n == 0 || b > self.img.len() {
@@ -97,6 +99,8 @@ impl BlockDev for MemDev {
         Ok(())
     }
 }
+
+block_dev_of_units!(MemDev);
 
 /// How a block written but not yet behind a flush looks after the cut.
 #[derive(Clone, Copy)]
