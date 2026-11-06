@@ -178,10 +178,30 @@ pub(crate) fn fresh() -> std::sync::MutexGuard<'static, ()> {
     g
 }
 
+/// Install `m`, which a fresh table must take.
+pub(crate) fn install(m: &'static Manifest) {
+    assert_eq!(providers::install(m), Ok(()), "`{}` was refused", m.name);
+}
+
+fn check_a_manifest_after_the_effects_phase_is_refused(m: &'static Manifest) {
+    let _g = fresh();
+    providers::effects();
+    take();
+    assert_eq!(providers::install(m), Err(providers::Refused::PhasePassed),
+               "`{}`: installed after its effect wiring had run", m.name);
+    assert_eq!((providers::count(), providers::manifests()), (0, 0), "`{}`: a refused manifest left something", m.name);
+    for kind in 0..=u8::MAX {
+        assert!(!providers::serves(kind), "`{}`: a refused manifest serves kind {}", m.name, kind);
+    }
+    providers::config_loaded();
+    providers::start_tasks(enable_line);
+    assert!(take().is_empty(), "`{}`: a hook of a refused manifest ran", m.name);
+}
+
 fn check_installs_each_provider_once(m: &'static Manifest) {
     let _g = fresh();
-    providers::install(m);
-    providers::install(m);
+    install(m);
+    install(m);
     assert_eq!(providers::count(), m.providers.len(), "`{}`: a repeated install took a second slot", m.name);
 }
 
@@ -189,8 +209,8 @@ fn check_other_level_is_refused(m: &'static Manifest) {
     let _g = fresh();
     let other: &'static Manifest =
         Box::leak(Box::new(Manifest { name: m.name, api_level: m.api_level + 1, providers: m.providers, hooks: m.hooks }));
-    let refused = std::panic::catch_unwind(|| providers::install(other)).is_err();
-    assert!(refused, "`{}`: a manifest of contract level {} was installed", m.name, other.api_level);
+    assert_eq!(providers::install(other), Err(providers::Refused::OtherLevel(other.api_level)),
+               "`{}`: a manifest of contract level {} was installed", m.name, other.api_level);
     assert_eq!(providers::count(), 0, "`{}`: a refused manifest left providers behind", m.name);
     assert_eq!(providers::manifests(), 0, "`{}`: a refused manifest left its hooks behind", m.name);
 }
@@ -200,14 +220,14 @@ fn check_hooks_run_once_at_their_phase(m: &'static Manifest) {
     let want_config = hooks_at(m, |h| matches!(h, BootHook::ConfigLoaded(_)));
     let want_effects = hooks_at(m, |h| matches!(h, BootHook::Effects(_)));
     let want_tasks = hooks_at(m, |h| matches!(h, BootHook::Tasks(_)));
-    providers::install(m);
-    providers::install(m);
+    install(m);
+    install(m);
     assert_eq!(providers::manifests(), 1, "`{}`: a repeated install kept the manifest twice", m.name);
     assert!(take().is_empty(), "`{}`: a hook ran at install", m.name);
-    providers::config_loaded();
-    assert_eq!(take(), want_config, "`{}`: the config phase ran other hooks, or these out of order", m.name);
     providers::effects();
     assert_eq!(take(), want_effects, "`{}`: the effects phase ran other hooks, or these out of order", m.name);
+    providers::config_loaded();
+    assert_eq!(take(), want_config, "`{}`: the config phase ran other hooks, or these out of order", m.name);
     providers::start_tasks(enable_line);
     assert_eq!(take(), want_tasks, "`{}`: the task phase ran other hooks, or without the line enable", m.name);
 }
@@ -215,7 +235,7 @@ fn check_hooks_run_once_at_their_phase(m: &'static Manifest) {
 fn check_serves_the_kinds_its_providers_own(m: &'static Manifest) {
     let _g = fresh();
     assert!(!providers::serves(KIND_MOTOR), "an empty table served the motor kind");
-    providers::install(m);
+    install(m);
     for kind in 0..=u8::MAX {
         let owned = m.providers.iter().any(|p| p.kinds.contains(&kind));
         assert_eq!(providers::serves(kind), owned, "`{}`: kind {} served = {}", m.name, kind, !owned);
@@ -224,7 +244,7 @@ fn check_serves_the_kinds_its_providers_own(m: &'static Manifest) {
 
 fn check_latch_runs_the_providers_after_the_latch_store(m: &'static Manifest) {
     let _g = fresh();
-    providers::install(m);
+    install(m);
     assert!(!estop::estop_is_active());
     estop::latch_and_stop();
     let mut want: Vec<Ev> = Vec::new();
@@ -235,7 +255,7 @@ fn check_latch_runs_the_providers_after_the_latch_store(m: &'static Manifest) {
 
 fn check_panic_stop_takes_no_stop_lock(m: &'static Manifest) {
     let _g = fresh();
-    providers::install(m);
+    install(m);
     let _held = STOP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     providers::panic_stop_all();
     let want: Vec<Ev> = m.providers.iter().map(|p| Ev::PanicStop(p.name)).collect();
@@ -256,7 +276,44 @@ conformance!(
     check_panic_stop_takes_no_stop_lock,
     check_hooks_run_once_at_their_phase,
     check_serves_the_kinds_its_providers_own,
+    check_a_manifest_after_the_effects_phase_is_refused,
 );
+
+/// Each phase runs once and in boot order; a later one may skip an earlier
+/// one (an image that loads no configuration). **Canary.** Make `enter`
+/// accept any phase: the repeated and the out-of-order runs do not panic.
+#[test]
+fn each_boot_phase_runs_once_and_in_order() {
+    let _g = fresh();
+    providers::effects();
+    providers::start_tasks(enable_line);
+    for (name, run) in [
+        ("effects twice", (|| providers::effects()) as fn()),
+        ("config after tasks", || providers::config_loaded()),
+        ("tasks twice", || providers::start_tasks(enable_line)),
+    ] {
+        assert!(std::panic::catch_unwind(run).is_err(), "{name} ran");
+    }
+}
+
+/// A full table refuses the whole manifest, leaving none of it.
+#[test]
+fn a_manifest_the_table_has_no_room_for_is_refused_whole() {
+    static BIG: Manifest = Manifest {
+        name: "big",
+        api_level: API_LEVEL,
+        providers: &[
+            provider!("p1", kinds: &[], latch: false, ready: None),
+            provider!("p2", kinds: &[], latch: false, ready: None),
+            provider!("p3", kinds: &[], latch: false, ready: None),
+        ],
+        hooks: &[],
+    };
+    let _g = fresh();
+    install(&MIXED);
+    assert_eq!(providers::install(&BIG), Err(providers::Refused::Full));
+    assert_eq!((providers::count(), providers::manifests()), (MIXED.providers.len(), 1));
+}
 
 /// The table's ordering and gate, over a manifest built by hand.
 #[test]
@@ -268,9 +325,9 @@ fn providers_run_in_installation_order_and_a_provider_not_ready_closes_the_gate(
         hooks: &[],
     };
     let _g = fresh();
-    providers::install(&MIXED);
+    install(&MIXED);
     assert!(providers::all_ready());
-    providers::install(&NO);
+    install(&NO);
     assert!(!providers::all_ready(), "a provider whose gate is not in place left the gate open");
     providers::stop_all();
     assert_eq!(

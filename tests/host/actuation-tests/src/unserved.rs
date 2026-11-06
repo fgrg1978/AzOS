@@ -7,7 +7,6 @@
 use crate::effect::admit_kind;
 use crate::ext_conformance::fresh;
 use crate::kind::{Class, KIND_CLOCK, KIND_MOTOR};
-use crate::providers;
 use azos_decision::{Record, Rule, Verdict};
 use azos_ext_api::{Manifest, Provider, API_LEVEL};
 
@@ -47,7 +46,7 @@ fn an_effect_of_a_kind_no_provider_owns_is_refused_with_a_receipt() {
 fn an_effect_of_a_kind_a_provider_owns_is_admitted_without_a_record() {
     let _g = fresh();
     const TID: u32 = 4_202;
-    providers::install(&WHEELS);
+    crate::ext_conformance::install(&WHEELS);
     assert_eq!(admit_kind(KIND_MOTOR, Class::Reversible, 0, TID), Ok(()));
     assert_eq!(admit_kind(KIND_MOTOR, Class::Safe, 1, TID), Ok(()));
     assert!(unserved_of(TID).is_empty(), "an admitted effect wrote a refusal");

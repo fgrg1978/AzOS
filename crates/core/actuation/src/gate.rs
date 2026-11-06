@@ -25,6 +25,8 @@ pub use crate::estop::latch_and_stop;
 
 /// Set by [`install`]; read by [`gate_installed`].
 static INSTALLED: AtomicBool = AtomicBool::new(false);
+/// Set when [`install`] starts: it runs once.
+static ENTERED: AtomicBool = AtomicBool::new(false);
 
 /// Is the actuation gate in place? False until [`install`] has run, and
 /// while any effect provider says its own gate is not
@@ -40,6 +42,7 @@ pub fn gate_installed() -> bool {
 /// installed them. Called once from `kernel_main`, after the domain's own
 /// install (`azos_safety_core::actuation::install` in a robot image).
 pub fn install() {
+    assert!(!ENTERED.swap(true, Ordering::AcqRel), "the actuation gate's install ran twice");
     // The capability layer's refusals reach the black box the same way the
     // motor gate reaches the safety layer: through a hook the kernel
     // installs, because `crates/core/syscall` cannot depend on

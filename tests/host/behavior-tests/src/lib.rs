@@ -3284,7 +3284,7 @@ mod estop_replaces_the_standing_action {
             }],
             hooks: &[],
         };
-        super::providers::install(&ROBOT);
+        super::providers::install(&ROBOT).expect("a fresh table takes the robot's manifest");
         set_last_action(driving_at_full_speed(1_000));
 
         estop_activate();

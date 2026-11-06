@@ -1065,7 +1065,9 @@ pub(crate) fn install_ring3_seams() {
     // The board's physical kill switch (Kconfig BOARD_IO): its report and
     // its task run from the provider table's boot phases.
     #[cfg(feature = "board-io")]
-    azos_actuation::providers::install(&azos_kill_switch::KILL_SWITCH);
+    if let Err(e) = azos_actuation::providers::install(&azos_kill_switch::KILL_SWITCH) {
+        panic!("the kill switch was refused by the provider table: {:?}", e);
+    }
     // The part every domain shares (wave 11): recorders, ring-3 e-stop, and
     // the `gate_installed` flag the loader checks. After the robot's install,
     // so a robot image prints the same lines in the same order as before.

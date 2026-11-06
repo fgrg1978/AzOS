@@ -223,7 +223,9 @@ pub fn install() {
     // here on every latch (brain link, ring 3, kill switch, sys-wdt) stops
     // the wheels, the ESC and the payload, and makes the cached remote
     // action the stop.
-    azos_actuation::providers::install(&ROBOT);
+    if let Err(e) = azos_actuation::providers::install(&ROBOT) {
+        panic!("the robot extension's providers were refused: {:?}", e);
+    }
 
     // `#[allow(dead_code)]`: unused only under `gate-skip-smoke`, which
     // skips the one call below that would otherwise use it.
