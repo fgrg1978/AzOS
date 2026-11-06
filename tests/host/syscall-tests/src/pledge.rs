@@ -328,3 +328,21 @@ fn ptpd_and_zenohd_list_the_pledge_op() {
         assert!(row.ops.contains(&DOMAIN_PLEDGE), "{image} cannot pledge");
     }
 }
+
+/// A retired op answers the dispatcher's default arm, `-EINVAL`, on the
+/// caller's own domain, and does nothing.
+///
+/// **Canary.** Give `DOMAIN_UPTIME` the retired number `(DRIVER, 39)`: that
+/// call answers the uptime here.
+#[test]
+fn a_retired_op_answers_einval() {
+    let _g = serial();
+    for &o in &azos_abi::invoke::RETIRED_OPS {
+        let mut out = SyscallOut::new();
+        assert_eq!(
+            sys_invoke(SELF, INVOKE_REGS | o as u64, 0, 0, 0, 0, &mut out),
+            azos_abi::error::Errno::EINVAL.to_syscall_ret(),
+            "retired op {o:#06x}"
+        );
+    }
+}

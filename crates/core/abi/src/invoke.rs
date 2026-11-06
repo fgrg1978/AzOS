@@ -367,6 +367,18 @@ pub const DOMAIN_VDSO_MAP: u16 = op(CapKind::Domain, CLASS_CTL, 33);
 pub const DOMAIN_MODULE_VERIFY: u16 = op(CapKind::Domain, CLASS_MODULE, 34);
 /// Map the verified module `w0` executable at `w1` for `w2` bytes.
 pub const DOMAIN_MODULE_MAP_X: u16 = op(CapKind::Domain, CLASS_MODULE, 35);
+/// Op numbers of retired ops: never given to another op, so a binary built
+/// against one gets the dispatcher's `-EINVAL`, not some other operation
+/// (the driver-server ops `DOMAIN_DRIVER_REGISTER`, `_UNREGISTER`, `_FETCH`,
+/// `_REPLY`, `_REPLY_FETCH` and `_REPLY_WAIT`).
+pub const RETIRED_OPS: [u16; 6] = [
+    op(CapKind::Domain, CLASS_DRIVER, 39),
+    op(CapKind::Domain, CLASS_DRIVER, 40),
+    op(CapKind::Domain, CLASS_DRIVER, 44),
+    op(CapKind::Domain, CLASS_DRIVER, 45),
+    op(CapKind::Domain, CLASS_DRIVER, 46),
+    op(CapKind::Domain, CLASS_DRIVER, 47),
+];
 /// The component manager will not restart the row whose task `w0` was (a
 /// child it spawned that died with its named endpoints held): the kernel
 /// releases them and records the give-up. 0, or `-ENOENT` when `w0` is not a

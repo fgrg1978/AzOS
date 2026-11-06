@@ -397,6 +397,36 @@ mod invoke_abi {
         assert!(!seen.is_empty());
     }
 
+    /// A retired op number is never given to another op: no `op(..)` line of
+    /// `invoke.rs` outside `RETIRED_OPS` names one.
+    ///
+    /// **Canary.** Give a live Domain op the index 39 in class `DRIVER`: red.
+    #[test]
+    fn retired_op_numbers_are_not_reused() {
+        const SRC: &str = include_str!("../../../../crates/core/abi/src/invoke.rs");
+        let class_of = |n: u8| {
+            SRC.lines()
+                .filter_map(|l| l.strip_prefix("pub const CLASS_"))
+                .find_map(|l| {
+                    let (name, v) = l.split_once(": u8 = ")?;
+                    (v.trim_end_matches(';').parse::<u8>().ok()? == n).then(|| format!("CLASS_{name}"))
+                })
+                .unwrap()
+        };
+        let live: Vec<_> = SRC.lines().filter(|l| l.starts_with("pub const ") && l.contains(": u16 = op(")).collect();
+        for &o in &RETIRED_OPS {
+            let kind = azos_abi::cap::CapKind::from_raw(op_kind(o)).unwrap();
+            let needle = format!("op(CapKind::{kind:?}, {}, {});", class_of(op_class(o)), o & 0xFF);
+            assert!(!live.iter().any(|l| l.contains(&needle)), "retired op {o:#06x} ({needle}) is live again");
+        }
+        let types = include_str!("../../../../crates/core/abi/src/cap.rs");
+        for t in ty::RETIRED {
+            let kind = t.kind();
+            let needle = format!("CapType = CapType::new(CapKind::{kind:?}, {});", t.class());
+            assert!(!types.contains(&needle), "retired type {needle} is live again");
+        }
+    }
+
     /// An op carries its kind and class, and both survive the round trip.
     #[test]
     fn an_op_carries_its_kind_and_class() {

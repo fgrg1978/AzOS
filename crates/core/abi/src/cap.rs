@@ -473,6 +473,9 @@ pub mod ty {
     /// `ioport.<first>.<count>` (decimal), `READ|WRITE` only: the CPU's
     /// permission bitmap cannot open a port for `in` and not for `out`.
     pub const IOPORT: CapType = CapType::new(CapKind::Device, 3);
+    /// Types of retired capabilities: never given to another type (`Device`
+    /// class 2 was the driver-server registry right).
+    pub const RETIRED: [CapType; 1] = [CapType::new(CapKind::Device, 2)];
     /// One receive/transmit queue of a NIC the kernel drives: the right to take
     /// it from the kernel's stack and run it from ring 3 over a pair of rings
     /// (the `QUEUE_NICQ_*` ops, [`crate::nic_queue`]). The resource is
