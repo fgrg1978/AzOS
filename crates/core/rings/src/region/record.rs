@@ -584,8 +584,11 @@ impl Writer {
 
     /// Copy every record `from` still holds into this ring under its own
     /// sequence number, so an id handed out before the copy names the same
-    /// record after it. The records `from` no longer holds are skipped
-    /// (this ring's head starts past them). Returns how many it skipped.
+    /// record after it; a record of a stale sequence is copied as it is. The
+    /// records `from` no longer holds are skipped (this ring's head starts
+    /// past them). A record still being stored would be a gap, which the
+    /// caller rules out (nothing writes `from` meanwhile). Returns how many it
+    /// skipped.
     ///
     /// # Safety
     /// This ring is empty and nobody else writes it, and nobody writes `from`,
@@ -599,11 +602,15 @@ impl Writer {
         let mut c = first;
         while c < from.head() {
             let at = c;
-            if from.read(&mut c, &mut env, &mut buf) == Read::Record {
+            let got = from.read(&mut c, &mut env, &mut buf);
+            if got == Read::Record || got == Read::Stale {
+                // A stale record stays stale: copied under the sequence it
+                // named, so the readers of this ring drop and count it too.
                 let h = Head { ts: env.ts, clock: env.clock, kind: env.kind, len: env.len, cpu: env.cpu, flags: env.flags };
                 let n = (env.len as usize).min(buf.len());
+                let seq = if got == Read::Record { at } else { env.seq };
                 self.g.head().store(at + 1, Ordering::Relaxed);
-                self.store(at, at, &h, |p| p.bytes(0, &buf[..n]));
+                self.store(at, seq, &h, |p| p.bytes(0, &buf[..n]));
             } else {
                 c = c.max(at + 1);
                 self.g.head().store(c, Ordering::Relaxed);

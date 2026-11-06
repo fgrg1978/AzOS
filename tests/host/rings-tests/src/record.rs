@@ -177,6 +177,29 @@ fn replay_keeps_every_sequence_number() {
 }
 
 #[test]
+fn replay_keeps_a_stale_record_stale() {
+    let (_e, early) = region(&three(4));
+    put(&early, 0, 1, 6, b"before");
+    // SAFETY: the test owns the region.
+    unsafe { early.writer(0).unwrap() }.publish_stale(&Head { ts: 2, len: 5, ..Head::default() }, |p| p.bytes(0, b"stale"));
+    put(&early, 0, 3, 6, b"after");
+    let (_m, big) = region(&three(16));
+    // SAFETY: both regions are the test's; nobody writes either meanwhile.
+    unsafe { big.writer(0).unwrap().replay(&early.ring(0).unwrap()) };
+    let mut m = Merge::<288>::oldest(big);
+    let (mut env, mut buf) = (Envelope::default(), [0u8; 288]);
+    let mut steps = Vec::new();
+    loop {
+        match m.next(&mut env, &mut buf) {
+            Step::Empty => break,
+            s => steps.push(s),
+        }
+    }
+    assert_eq!(steps, vec![Step::Record { ring: 0 }, Step::Stale { ring: 0 }, Step::Record { ring: 0 }], "dropped and counted after the handover, not a gap");
+    assert_eq!(m.stale(0), 1);
+}
+
+#[test]
 fn a_region_of_another_layout_is_refused() {
     let (mut m, r) = region(&three(8));
     let bytes = region_bytes(&three(8));
