@@ -4,9 +4,11 @@
 // it, on the real `handlers.rs`, `pager.rs`, `anon_obj.rs`, `slot.rs`, `cow.rs`
 // and `vmm.rs` over the shim arena.
 //
-// * `a_stale_leaf_over_an_empty_slot_is_not_believed`: the fault decides from
-//   the slot; a leaf no install made is replaced by a zero page. Canary
-//   `mm-pte-truth-canary` (the leaf believed): the stale bytes are read.
+// * `a_resident_slot_whose_leaf_was_cleared_is_installed_again`: the fault
+//   decides from the slot; a cleared leaf is a cache word, the slot's frame
+//   goes back in. Canary `mm-pte-truth-canary` (the leaf believed): a zero page.
+// * `a_leaf_the_slot_does_not_name_is_left_alone`: neither believed nor
+//   replaced, no frame taken or lost.
 // * `a_compressed_page_comes_back_from_its_slot`: a page the reclaimer stored
 //   is restored from the marker in its slot, its leaf being empty. Same canary:
 //   a zero page. Needs the compressed pool (Kconfig MM_RECLAIM_COMPRESS).
@@ -66,19 +68,38 @@ fn write(pt: usize, va: usize, b: u8) -> usize {
 }
 
 #[test]
-fn a_stale_leaf_over_an_empty_slot_is_not_believed() {
+fn a_resident_slot_whose_leaf_was_cleared_is_installed_again() {
+    let _g = serial();
+    let pt = space();
+    let base = map(4);
+    let f = write(pt, base, 0x3D);
+    // The leaf goes, the slot still names the frame (a cleared cache word).
+    azos_mm::vmm::unmap(pt, base);
+    assert!(azos_mm::vmm::translate(pt, base).is_none());
+    assert!(azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), base).is_ok());
+    assert_eq!(azos_mm::vmm::translate(pt, base), Some(f), "the slot's frame, installed again");
+    assert!(bytes(f).iter().all(|&b| b == 0x3D), "the page, not a zero one");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (4, 1), "committed once");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+#[test]
+fn a_leaf_the_slot_does_not_name_is_left_alone() {
     let _g = serial();
     let pt = space();
     let base = map(4);
     let stale = azos_mm::pmm::alloc_page().unwrap().as_usize();
     bytes(stale).fill(0xEE);
-    // A leaf no install of the object made: a clear that was missed.
+    // A leaf no install of the object made: the fault neither takes it for
+    // the page nor replaces it (its frame is nobody's it could free).
     azos_mm::vmm::map(pt, base, stale, azos_arch_api::PagePerms::USER_RW).unwrap();
+    let used = azos_mm::shim_pages_in_use();
     assert!(azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), base).is_ok());
-    let now = azos_mm::vmm::translate(pt, base).expect("mapped");
-    assert_ne!(now, stale, "the leaf was believed over the empty slot");
-    assert!(bytes(now).iter().all(|&b| b == 0), "a zero page, not the previous owner's bytes");
-    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (4, 1));
+    assert_eq!(azos_mm::vmm::translate(pt, base), Some(stale), "left as it was");
+    assert_eq!(azos_mm::shim_pages_in_use(), used, "no frame taken, none lost");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (4, 0), "nothing committed");
+    azos_mm::vmm::unmap(pt, base);
     let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(stale));
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);

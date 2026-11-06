@@ -35,7 +35,8 @@
 //! * Feature `keep-leaf-first-canary` (the put-back writes the leaf first):
 //!   `a_failed_store_writes_no_leaf_for_a_slot_that_is_not_its_own` red.
 //! * Feature `mm-pte-truth-canary` (the leaf believed over the slot):
-//!   `a_stale_leaf_over_an_empty_slot_is_not_believed` and
+//!   `a_leaf_the_slot_does_not_name_is_not_believed`,
+//!   `a_resident_slot_whose_leaf_is_gone_is_installed_again` and
 //!   `a_fault_on_a_compressed_marker_restores_the_page` red.
 //! * `reclaim_pass` swapping before compressing, or without a `full` round:
 //!   `the_pass_runs_purge_then_cache_then_compression_then_swap_only_when_full` red.
@@ -218,6 +219,8 @@ fn fault(pool: &Mutex<P>, pg: &Page, waits: &AtomicBool) -> Fate {
                 continue;
             }
             Resolve::Supply => (vec![0u8; PAGE_SIZE], None),
+            Resolve::Install(f) => (pg.bytes_of(f), Some(u32::MAX)),
+            Resolve::Foreign => return Fate::Present,
             Resolve::Restore(_, gen) => {
                 let mut scratch = vec![0u8; PAGE_SIZE];
                 let mut out = vec![0u8; PAGE_SIZE];
@@ -229,7 +232,6 @@ fn fault(pool: &Mutex<P>, pg: &Page, waits: &AtomicBool) -> Fate {
                 }
                 (out, Some(g))
             }
-            other => panic!("not a fault of this row: {other:?}"),
         };
         let f = pg.frame(bytes.clone());
         // Install over the words read; a changed one starts over.
@@ -238,6 +240,7 @@ fn fault(pool: &Mutex<P>, pg: &Page, waits: &AtomicBool) -> Fate {
         {
             pg.slot.store(slot::frame(f), Ordering::Release);
             return match gen {
+                Some(u32::MAX) => Fate::Restored(bytes),
                 Some(g) => {
                     pool.lock().unwrap().remove_if(OBJ, PG, g);
                     Fate::Restored(bytes)
@@ -266,28 +269,29 @@ fn a_fault_on_a_compressed_marker_restores_the_page() {
     assert!(pool.lock().unwrap().is_empty(), "the copy goes with the install");
 }
 
-/// **The slot decides.** A leaf over an `Empty` slot (a cache word no install
-/// of this object made: a clear that was missed) is no page of the object:
-/// the fault gives a zero page and the stale frame's bytes are never seen.
-/// Canary `mm-pte-truth-canary`: the leaf is believed, the stale bytes read.
+/// **The slot decides.** A leaf the slot does not name (over an `Empty` slot,
+/// or naming another frame than the slot's) is no page of the object: the
+/// fault does not take it as resident and does not replace it (its frame is
+/// nobody's the fault could free).
+/// Canary `mm-pte-truth-canary`: the leaf is believed (`Present`).
 #[test]
-fn a_stale_leaf_over_an_empty_slot_is_not_believed() {
-    let pool = pool();
-    let pg = Page::empty();
-    let stale = pg.frame(page(7));
-    pg.leaf.store(leaf_on(stale), Ordering::Release);
-    assert_eq!(fault(&pool, &pg, &AtomicBool::new(false)), Fate::Zero);
-    assert_eq!(pg.read(), Some(vec![0u8; PAGE_SIZE]), "a zero page, not the previous owner's bytes");
-    assert_eq!(slot::frame_of(pg.slot.load(Ordering::Acquire)), Some(Pte(pg.leaf.load(Ordering::Acquire)).phys_addr()));
+fn a_leaf_the_slot_does_not_name_is_not_believed() {
+    let stale = FRAME + 7 * PAGE_SIZE;
+    assert_eq!(resolve(slot::EMPTY, Some(stale)), Some(Resolve::Foreign));
+    assert_eq!(resolve(slot::frame(FRAME), Some(stale)), Some(Resolve::Foreign));
+    assert_eq!(resolve(slot::marker(PageMarker::Compressed, 3), Some(stale)), Some(Resolve::Foreign));
+    assert_eq!(resolve(slot::frame(FRAME), Some(FRAME)), Some(Resolve::Present));
 }
 
 #[test]
 fn a_resident_slot_whose_leaf_is_gone_is_installed_again() {
+    let pool = pool();
     let pg = Page::resident(page(2));
     pg.leaf.store(0, Ordering::Release);
     assert_eq!(resolve(pg.slot.load(Ordering::Acquire), None), Some(Resolve::Install(FRAME)));
-    assert_eq!(resolve(pg.slot.load(Ordering::Acquire), Some(FRAME)), Some(Resolve::Present));
-    assert_eq!(resolve(pg.slot.load(Ordering::Acquire), Some(FRAME + PAGE_SIZE)), Some(Resolve::Install(FRAME)), "the slot's frame, not the leaf's");
+    // The model installs a copy; the kernel installs the slot's own frame.
+    assert_eq!(fault(&pool, &pg, &AtomicBool::new(false)), Fate::Restored(page(2)));
+    assert_eq!(pg.read(), Some(page(2)), "the page, not a zero one");
 }
 
 #[test]

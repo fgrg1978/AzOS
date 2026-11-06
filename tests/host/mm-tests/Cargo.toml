@@ -71,7 +71,7 @@ swap-busy-rings-canary = []
 swap-plain-canary = []
 storm-ignore-locked-canary = []
 restore-flip-canary = []
-# The slot-over-leaf canary of the pulled-in `slot.rs`: `marker_pte.rs`' `a_stale_leaf_over_an_empty_slot_is_not_believed` and the restore rows fail.
+# The slot-over-leaf canary of the pulled-in `slot.rs`: `marker_pte.rs`' `a_leaf_the_slot_does_not_name_is_not_believed` and the restore rows fail.
 mm-pte-truth-canary = []
 # The reclaimer's put-back writing the leaf before it looks at the slot (`slot.rs`).
 keep-leaf-first-canary = []

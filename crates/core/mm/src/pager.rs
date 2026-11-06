@@ -1741,6 +1741,9 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let res = slot::resolve(word, leaf).ok_or(KernelError::InvalidArg)?;
     let stored = match res {
         Resolve::Present => return Ok(Step::Done),
+        // Looked at again: another thread's install reads as `Present` then,
+        // and a leaf no install made stays as it is (`slot::Resolve::Foreign`).
+        Resolve::Foreign => return Ok(Step::Again),
         Resolve::Wait => {
             MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
             return Ok(Step::Again);
@@ -1861,12 +1864,7 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         src.give_back(root, block);
         return Ok(Step::Again);
     }
-    // A leaf the slot did not back may sit in another hart's TLB.
-    if leaf.is_some() {
-        vmm::user_shootdown(root, page, PAGE_SIZE);
-    } else {
-        ARCH.flush_tlb_page(page);
-    }
+    ARCH.flush_tlb_page(page);
     if let Some((gen, owner)) = restored {
         zpool_release(space.key(), page, gen);
         restore_hook(owner);

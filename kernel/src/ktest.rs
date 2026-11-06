@@ -2476,12 +2476,13 @@ azos_ktest::ktest_late! {
 }
 
 // A private anonymous page's state is its object's slot, and its leaf a cache
-// of it: a fault on a page whose slot is empty supplies a zero page even when a
-// leaf is there (a cache word no install made), so a previous owner's bytes are
-// never seen. Canary `mm-pte-truth-canary`: the fault believes the leaf.
+// of it: a fault on a page whose leaf was cleared while its slot still names
+// its frame installs that frame again, with its bytes. Canary
+// `mm-pte-truth-canary`: the fault believes the empty leaf and supplies a zero
+// page.
 azos_ktest::ktest_late! {
     fn anon_fault_decides_from_the_slot_not_the_leaf() {
-        use azos_mm::{addr, aspace, pager, pmm, vmm};
+        use azos_mm::{addr, aspace, pager, vmm};
         const BASE: usize = 0x40_0000;
         let page = azos_arch::PAGE_SIZE;
         let pt = vmm::create_pagetable().map_err(|_| "no root")?;
@@ -2489,38 +2490,29 @@ azos_ktest::ktest_late! {
             vmm::destroy_user_pagetable(pt);
             return Err("no address space");
         };
-        let stale = match pmm::alloc_page() {
-            Ok(f) => f,
-            Err(_) => {
-                let _ = aspace::destroy(a, 0, 0);
-                return Err("no frame");
-            }
-        };
-        // SAFETY: a frame of ours, through the direct map.
-        unsafe { core::ptr::write_bytes(addr::phys_to_virt(stale.as_usize()) as *mut u8, 0xEE, page) };
-        let mapped = pager::reserve(a, BASE, BASE + 4 * page, true).is_ok()
-            && vmm::map(pt, BASE, stale.as_usize(), azos_arch_api::PagePerms::USER_RW).is_ok();
-        let resolved = mapped && pager::resolve_fault(a, BASE).is_ok();
+        let first = pager::reserve(a, BASE, BASE + 4 * page, true).is_ok() && pager::resolve_fault(a, BASE).is_ok();
+        let frame = vmm::translate(pt, BASE);
+        if let Some(f) = frame {
+            // SAFETY: the page's frame, through the direct map, while it is mapped.
+            unsafe { core::ptr::write_bytes(addr::phys_to_virt(f) as *mut u8, 0x3D, page) };
+            // The leaf goes; the slot keeps naming the frame.
+            vmm::unmap(pt, BASE);
+        }
+        let again = frame.is_some() && pager::resolve_fault(a, BASE).is_ok();
         let now = vmm::translate(pt, BASE);
-        // SAFETY: the frame the leaf maps, through the direct map, read before the space ends.
-        let zero = now.is_some_and(|f| unsafe {
-            core::slice::from_raw_parts(addr::phys_to_virt(f) as *const u8, page).iter().all(|&b| b == 0)
+        // SAFETY: as above.
+        let kept = now.is_some_and(|f| unsafe {
+            core::slice::from_raw_parts(addr::phys_to_virt(f) as *const u8, page).iter().all(|&b| b == 0x3D)
         });
-        let believed = now == Some(stale.as_usize());
         let _ = aspace::destroy(a, 0, 0);
-        // The space's end freed the leaf's frame; the stale one is the test's
-        // unless the leaf still named it.
-        if !believed {
-            let _ = pmm::free_page(stale);
+        if !first || frame.is_none() {
+            return Err("the first touch was not resolved");
         }
-        if !resolved {
-            return Err("the fault on the page was not resolved");
+        if !again {
+            return Err("the second fault was not resolved");
         }
-        if believed {
-            return Err("the leaf was believed over the empty slot: the stale bytes are seen");
-        }
-        if !zero {
-            return Err("the page is not a zero page");
+        if now != frame || !kept {
+            return Err("the slot's frame was not installed again: the leaf was believed");
         }
         Ok(())
     }

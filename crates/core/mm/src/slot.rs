@@ -82,10 +82,9 @@ pub const fn frame_of(w: u64) -> Option<usize> {
 /// What a fault on a page does, decided from its slot word.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Resolve {
-    /// The slot is empty: a zero page, whatever the entry holds (a leaf over an
-    /// empty slot is a stale cache word, and is replaced).
+    /// The slot is empty and no leaf maps the page: a zero page.
     Supply,
-    /// The slot names a frame the entry does not map: install it.
+    /// The slot names a frame no leaf maps: install it.
     Install(usize),
     /// Resident and mapped: another thread resolved it, the access retries.
     Present,
@@ -93,26 +92,31 @@ pub enum Resolve {
     Wait,
     /// The page is in the pool (or on swap): restore it.
     Restore(PageMarker, u32),
+    /// A leaf maps the page that the slot does not name (another thread's
+    /// install between the two reads, or a word no install made): never
+    /// replaced, and the frame it names never freed here; look again.
+    Foreign,
 }
 
 /// Decide a fault from the page's slot `word`; `leaf` is the frame its
-/// page-table entry maps, if the entry holds a leaf. `None` for a word no
-/// encoder made.
+/// page-table entry maps, if the entry holds a 4 KiB leaf. `None` for a word
+/// no encoder made.
 ///
 /// Canary `mm-pte-truth-canary`: the entry is believed over the slot (a leaf is
-/// present, no leaf is a zero page), so a stale leaf over an empty slot shows
-/// its bytes and a compressed page comes back as zeros.
+/// present, no leaf is a zero page), so a page whose leaf was cleared comes
+/// back as zeros and so does a compressed page.
 #[inline]
 pub fn resolve(word: u64, leaf: Option<usize>) -> Option<Resolve> {
     if cfg!(feature = "mm-pte-truth-canary") {
         return Some(if leaf.is_some() { Resolve::Present } else { Resolve::Supply });
     }
-    Some(match decode(word)? {
-        Slot::Empty => Resolve::Supply,
-        Slot::Frame(f) if leaf == Some(f) => Resolve::Present,
-        Slot::Frame(f) => Resolve::Install(f),
-        Slot::Marker(PageMarker::InTransit, _) => Resolve::Wait,
-        Slot::Marker(kind, payload) => Resolve::Restore(kind, payload),
+    Some(match (decode(word)?, leaf) {
+        (Slot::Frame(f), Some(l)) if l == f => Resolve::Present,
+        (_, Some(_)) => Resolve::Foreign,
+        (Slot::Empty, None) => Resolve::Supply,
+        (Slot::Frame(f), None) => Resolve::Install(f),
+        (Slot::Marker(PageMarker::InTransit, _), None) => Resolve::Wait,
+        (Slot::Marker(kind, payload), None) => Resolve::Restore(kind, payload),
     })
 }
 

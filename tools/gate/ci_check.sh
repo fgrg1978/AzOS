@@ -12250,13 +12250,12 @@ host_job zpool_host_canary_row "aspace: late store key canary" as-key-no-gen-can
     a_store_that_outlives_its_space_leaves_the_next_space_page_alone
 # A private anonymous page's state is its object's slot and its leaf a cache of
 # it (azos_mm::slot, anon_obj; syscall-tests pte_truth.rs, mm-tests
-# marker_pte.rs). mm-pte-truth-canary: the fault believes the leaf, so a stale
-# leaf over an empty slot shows its bytes and a compressed page comes back as
-# zeros (the restore row needs the pool, so it runs with MM_RECLAIM_COMPRESS).
-host_job host_canary_row "anon: stale leaf over empty slot canary" syscall-tests mm-pte-truth-canary \
-    a_stale_leaf_over_an_empty_slot_is_not_believed
+# marker_pte.rs). mm-pte-truth-canary: the fault believes the leaf, so a page
+# whose leaf was cleared and a compressed page come back as zeros (the restore row needs the pool, so it runs with MM_RECLAIM_COMPRESS).
+host_job host_canary_row "anon: cleared leaf, slot reinstalls canary" syscall-tests mm-pte-truth-canary \
+    a_resident_slot_whose_leaf_was_cleared_is_installed_again
 host_job host_canary_row "anon: slot decides (model) canary" mm-tests mm-pte-truth-canary \
-    a_stale_leaf_over_an_empty_slot_is_not_believed
+    a_leaf_the_slot_does_not_name_is_not_believed
 host_job zpool_host_row "anon: restore from the slot, pool on" a_compressed_page_comes_back_from_its_slot
 # A reclaimer store that fails puts its page back only into its own slot, and
 # looks at the slot before it writes the leaf (slot::put_back_page).
