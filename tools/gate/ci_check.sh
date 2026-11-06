@@ -21070,7 +21070,9 @@ PY
                          | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
         ring_refused_r=$(grep -an "\[brain_client\] ioring motor wheel=1 status=0 outcome=8 flags=0" "$log" 2>/dev/null \
                          | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_sensors=$(grep -acE "\[brain_client\] ioring sensors asked=([1-9][0-9]*) served=\1([^0-9]|$)" "$log" 2>/dev/null)
+        ring_sensors=$(grep -a "\[brain_client\] ioring sensors asked=" "$log" 2>/dev/null \
+                       | awk '{ for (i = 1; i <= NF; i++) { if ($i ~ /^asked=/) a = substr($i, 7) + 0; if ($i ~ /^served=/) s = substr($i, 8) + 0 }
+                                if (a > 0 && a == s) n++ } END { print n + 0 }')
 
         if [ "$ring_before_l" -lt 1 ] || [ "$ring_before_r" -lt 1 ]; then
             bad; echo "      the io_ring never drove the wheels before the e-stop"

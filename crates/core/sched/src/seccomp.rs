@@ -518,9 +518,10 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     },
     // brain_client: CONFIG.INI through a Cap<File>, the brain link on a
     // Cap<Socket>, sensors, motors, and the ring-3 e-stop (the `motor`
-    // endpoints, register form). A forward command is also submitted as one
-    // io_ring motor entry, which the kernel runs only while the
-    // row lists the `motor` interface; and the link is polled with one
+    // endpoints, register form). The sensors are read with one io_ring
+    // submit of `OP_CALL` entries and a forward command is also submitted as
+    // one `OP_CALL` per wheel, which the kernel runs only while the row lists
+    // `SYS_IPC_CALL` and the interface; and the link is polled with one
     // io_ring `OP_NET_RECV` entry into a registered buffer: the page it is
     // made of (`SYS_MO_CREATE`, `SYS_MO_MAP`) and the registration entry,
     // which the kernel runs only while the row lists `MEMOBJ_ACQUIRE`.
