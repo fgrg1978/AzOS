@@ -19,6 +19,15 @@ use std::sync::Mutex;
 /// One test at a time may hold the table's USB slot.
 static TABLE: Mutex<()> = Mutex::new(());
 
+/// The table's USB slot is given back when the test ends, red or not.
+struct Registered;
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        unregister_usb();
+    }
+}
+
 /// A queue pair with a submission ring of `depth` frames: `post` fills it,
 /// `ring` moves it to the receive side, `reap_rx` hands it up.
 struct Wire {
@@ -101,6 +110,7 @@ fn every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells() {
     let _g = TABLE.lock().unwrap_or_else(|e| e.into_inner());
     let wire = WIRE.get_or_init(|| Wire::new(azos_limits::NET_TX_BATCH_MAX as usize + 3));
     let nic = register_usb(wire).expect("a free number");
+    let _slot = Registered;
     let mut seen = Vec::new();
     for burst in 0..10 {
         batch_begin(nic);
@@ -117,7 +127,6 @@ fn every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells() {
         batch_end(nic);
         seen.extend(drain(nic));
     }
-    unregister_usb();
     assert_eq!(seen.len(), 1000, "the NIC lost {} of 1000 frames", 1000 - seen.len());
     assert!(seen.iter().copied().eq(0..1000), "every frame, once, in order");
     let rings = wire.rings.load(Ordering::SeqCst);
@@ -136,6 +145,7 @@ fn a_lone_frame_rings_at_once_a_batched_one_at_the_end_and_flush_does_not_wait()
     let _g = TABLE.lock().unwrap_or_else(|e| e.into_inner());
     let wire = WIRE.get_or_init(|| Wire::new(64));
     let nic = register_usb(wire).expect("a free number");
+    let _slot = Registered;
     submit(nic, &tagged(1)).unwrap();
     assert_eq!(drain(nic), vec![1], "outside a batch the frame is on its way at once");
     batch_begin(nic);
@@ -146,7 +156,6 @@ fn a_lone_frame_rings_at_once_a_batched_one_at_the_end_and_flush_does_not_wait()
     submit(nic, &tagged(3)).unwrap();
     batch_end(nic);
     assert_eq!(drain(nic), vec![3]);
-    unregister_usb();
 }
 
 /// **Discriminates.** A full submission ring is announced so the device can
@@ -159,6 +168,7 @@ fn a_full_ring_is_announced_and_the_refused_frame_goes_in_afterwards() {
     let _g = TABLE.lock().unwrap_or_else(|e| e.into_inner());
     let wire = WIRE.get_or_init(|| Wire::new(2));
     let nic = register_usb(wire).expect("a free number");
+    let _slot = Registered;
     batch_begin(nic);
     submit(nic, &tagged(1)).unwrap();
     submit(nic, &tagged(2)).unwrap();
@@ -167,7 +177,6 @@ fn a_full_ring_is_announced_and_the_refused_frame_goes_in_afterwards() {
     assert_eq!(submit(nic, &tagged(3)), Ok(60));
     batch_end(nic);
     assert_eq!(drain(nic), vec![3]);
-    unregister_usb();
 }
 
 /// **Discriminates.** A registered USB NIC takes the first free number,
