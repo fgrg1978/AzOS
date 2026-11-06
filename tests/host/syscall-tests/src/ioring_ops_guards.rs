@@ -27,6 +27,7 @@ use azos_abi::cap::{CapPerms, ty};
 use azos_abi::error::Errno;
 use azos_abi::syscall_nr as nr;
 use azos_arch_api::PagePerms;
+use azos_drv_base::sensors::board;
 use azos_drv_gpio::gpio::{set_gpio_probe, GpioOp};
 use azos_drv_actuator::pwm::{set_pwm_probe, PwmOp};
 use azos_ipc::cap::CapTarget;
@@ -527,7 +528,7 @@ fn containment_refuses_the_pwm_entry_and_keeps_reads_running() {
     let _g = serial();
     let (s, pt) = ring3();
     let pwm = grant_ep(s.tid, azos_devif::key::PWM, FREE_CH, CapPerms::RW, 0);
-    let enc = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
+    let enc = grant_ep(s.tid, azos_devif::key::SENSOR, board::ENCODER, CapPerms::READ, 0);
     set_pwm_probe(Some(pwm_probe));
     clear_pwm_calls();
     let (cap, _va, ring) = create(pt);
@@ -1875,7 +1876,7 @@ fn an_idl_entry_without_the_capability_is_refused_and_reads_nothing() {
     let (s, pt) = ring3();
     azos_robot::shim_set_encoder(21, -4);
     let (cap, _va, ring) = create(pt);
-    let enc = SENSOR_TYPE_ENCODER as u32;
+    let enc = board::ENCODER;
     let reads = azos_robot::shim_encoder_reads();
 
     unsafe { queue_call(ring, 0x77, 0, &[sensor_read_hdr()], 1) };
@@ -1917,7 +1918,7 @@ fn a_profile_without_the_sensor_interface_refuses_the_idl_entry() {
     let _g = serial();
     let (s, pt) = ring3();
     azos_robot::shim_set_encoder(5, 6);
-    let ep = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
+    let ep = grant_ep(s.tid, azos_devif::key::SENSOR, board::ENCODER, CapPerms::READ, 0);
     let (cap, _va, ring) = create(pt);
     let run = |f: SyscallFilter| {
         azos_sched::scheduler::set_current_syscall_filter(f);
@@ -1948,7 +1949,7 @@ fn the_idl_sensor_read_answers_what_the_call_answers() {
     let _g = serial();
     let (s, pt) = ring3();
     azos_robot::shim_set_encoder(1234, 5678);
-    let enc = SENSOR_TYPE_ENCODER as u32;
+    let enc = board::ENCODER;
     let ep = grant_ep(s.tid, azos_devif::key::SENSOR, enc, CapPerms::READ, 0);
     let (cap, _va, ring) = create(pt);
     unsafe { queue_call(ring, ep, 256, &[sensor_read_hdr()], 1) };
@@ -2121,19 +2122,21 @@ fn an_interface_that_may_wait_is_not_served_from_a_pass() {
     for k in [key::ADC, key::ENTROPY, key::CLOCK, key::POWER, key::NET, key::VOLUME] {
         assert!(!crate::khost::ring_served(k, 0), "host key {k} is served from a pass");
     }
-    // The device rows follow their drivers' declarations (the stand-ins': a
-    // bus that does not sleep, a converter that waits, register writes).
-    assert!(crate::khost::ring_served(key::SENSOR, SENSOR_TYPE_ENCODER as u32));
-    assert!(!crate::khost::ring_served(key::SENSOR, SENSOR_TYPE_BATTERY as u32), "the ADS1115 waits in its queue");
+    // The device rows follow their sources' declarations (the stand-ins': a
+    // value a task left, a bus read that waits when the bus does, register
+    // writes).
+    assert!(crate::khost::ring_served(key::SENSOR, board::ENCODER));
+    assert!(crate::khost::ring_served(key::SENSOR, board::BATTERY), "a stream is a copy of what a task published");
+    assert_eq!(crate::khost::ring_served(key::SENSOR, board::POWER), !azos_drv_bus::i2c::transfer_may_sleep());
     assert!(crate::khost::ring_served(key::MOTOR, 0) && crate::khost::ring_served(key::PWM, FREE_CH));
     assert_eq!(crate::khost::ring_served(key::I2C, 0), !azos_drv_bus::i2c::transfer_may_sleep());
 }
 
 /// **A device whose bus may sleep is not served from a pass, and its typed
 /// call still is.** With the I2C bus modelled as one that sleeps (a DesignWare
-/// or K1 controller waiting for a transaction), an `I2c` entry and the IMU's
-/// `Sensor::read` (an I2C part) answer `-ENOSYS`, while the encoders (a value
-/// a task left) are served; a GPIO expander that declares `may_sleep` is
+/// or K1 controller waiting for a transaction), an `I2c` entry and the power
+/// monitor's `Sensor::read` (an I2C part) answer `-ENOSYS`, while the encoders
+/// (a value a task left) are served; a GPIO expander that declares `may_sleep` is
 /// refused the same way, and the board's pins are served. The call on the
 /// same endpoints is answered.
 ///
@@ -2159,8 +2162,8 @@ fn a_device_whose_bus_may_sleep_is_not_served_from_a_pass() {
     set_gpio_probe(Some(board_probe));
     assert_eq!(azos_drv_gpio::chips::register(super::harness::GPIO_EXPANDER_DEV, &RING_EXPANDER), Ok(1));
     let i2c = grant_ep(s.tid, azos_devif::key::I2C, azos_devif::i2c::badge(1, 0x68), CapPerms::RW, 0);
-    let imu = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_IMU as u32, CapPerms::READ, 0);
-    let enc = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
+    let power = grant_ep(s.tid, azos_devif::key::SENSOR, board::POWER, CapPerms::READ, 0);
+    let enc = grant_ep(s.tid, azos_devif::key::SENSOR, board::ENCODER, CapPerms::READ, 0);
     let x = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(1, 3), CapPerms::RW, 0);
     let board = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(0, 9), CapPerms::RW, 0);
     let (cap, _va, ring) = create(pt);
@@ -2175,7 +2178,7 @@ fn a_device_whose_bus_may_sleep_is_not_served_from_a_pass() {
     };
     let enosys = (Errno::ENOSYS.to_syscall_ret() as i32, CQE_F_REFUSED);
     assert_eq!(run(i2c, &[detect]), enosys, "an I2C entry was served on a bus that sleeps");
-    assert_eq!(run(imu, &[sensor_read_hdr()]), enosys, "the IMU was read in a pass on a bus that sleeps");
+    assert_eq!(run(power, &[sensor_read_hdr()]), enosys, "the power monitor was read in a pass on a bus that sleeps");
     assert_eq!(run(x, &[gpio_write, 1]), enosys, "a sleeping expander's pin was driven in a pass");
     assert_eq!(run(enc, &[sensor_read_hdr()]), (0, 0), "the encoders are not on the bus");
     assert_eq!(run(board, &[gpio_write, 1]), (0, 0), "the board's pins do not sleep");
@@ -2195,7 +2198,7 @@ fn a_device_whose_bus_may_sleep_is_not_served_from_a_pass() {
 fn a_poller_pass_asks_the_owners_profile_for_the_interface() {
     let _g = serial();
     let (_s, _p, _f, owner, ring, r) = polled_ring();
-    let ep = grant_ep(owner, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
+    let ep = grant_ep(owner, azos_devif::key::SENSOR, board::ENCODER, CapPerms::READ, 0);
     let row = profile(&[nr::SYS_RING_ENTER, nr::SYS_IPC_CALL], false);
     azos_sched::scheduler::shim_set_task_filter(owner, Some(row.clone()));
     let c = unsafe { poll_call(ring, r, ep, &[sensor_read_hdr()]) };

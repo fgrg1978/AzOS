@@ -218,8 +218,6 @@ dependencies = [
  "cap_test_sync",
  "syscall_test_arch",
  "syscall_test_drivers",
- "syscall_test_gps",
- "syscall_test_imu",
  "syscall_test_ipc",
  "syscall_test_ipc_sched",
  "syscall_test_mm",
@@ -253,6 +251,13 @@ dependencies = [
 [[package]]
 name = "beh_test_drivers"
 version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_devif",
+ "azos_limits",
+ "azos_rings",
+ "cap_test_sync",
+]
 
 [[package]]
 name = "bitflags"
@@ -564,16 +569,9 @@ dependencies = [
  "azos_drv_api",
  "azos_hwbus",
  "azos_limits",
+ "azos_rings",
  "cap_test_sync",
 ]
-
-[[package]]
-name = "syscall_test_gps"
-version = "0.1.0"
-
-[[package]]
-name = "syscall_test_imu"
-version = "0.1.0"
 
 [[package]]
 name = "syscall_test_ipc"

@@ -180,3 +180,35 @@ fn the_board_registers_its_sensors_in_the_topologys_order() {
     assert_eq!(sensors::find(Quantity::Temperature, Unit::CentiDegC, 0), Some(board::IMU_TEMP));
     assert!(sensors::get(12).is_none());
 }
+
+/// **A rangefinder with no reading is no sample, never a zero that reads as
+/// "clear"; a reading is flagged synthetic, the driver only simulating.**
+///
+/// **Canary:** answer `front.unwrap_or(0)` for a missing front reading: the
+/// first assertion sees a sample.
+#[test]
+fn a_missing_range_is_no_sample_and_a_simulated_one_is_flagged() {
+    use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC as SYN;
+    assert_eq!(board::range_sample(None, Some(800), 5), None);
+    let s = board::range_sample(Some(1500), None, 5).unwrap();
+    assert_eq!(s.flags, SYN as u32);
+    assert_eq!(value(&board::RANGE_SENSOR.channels(), &s, 0), Some(1500));
+    assert_eq!(value(&board::RANGE_SENSOR.channels(), &s, 1), Some(0), "no right reading is 0");
+    assert_eq!(s.acq_ns, 5);
+}
+
+/// A converter with no reading publishes nothing, and the lines pack to the
+/// bits the brain's protocol names.
+///
+/// **Canary:** make `battery_sample` answer a fixed 3700 mV for `None`: the
+/// first assertion sees a sample.
+#[test]
+fn an_unread_battery_is_no_sample_and_the_lines_pack_to_their_bits() {
+    assert_eq!(board::battery_sample(None, 1), None);
+    let s = board::battery_sample(Some(7400), 1).unwrap();
+    assert_eq!(value(&board::BATTERY_SENSOR.channels(), &s, 0), Some(7400));
+    for (p, so, ir, bits) in [(true, false, false, 1), (false, true, false, 2), (false, false, true, 4), (true, true, true, 7)] {
+        let f = board::flags_sample(p, so, ir, 1);
+        assert_eq!(value(&board::FLAGS_SENSOR.channels(), &f, 0), Some(bits));
+    }
+}

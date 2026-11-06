@@ -25,6 +25,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use azos_devif::powermon::{PowerMonCall, PowerMonClient, PowerMonDirect, PowerMonPlaced, PowerStats, RECORD_BYTES};
 use azos_devif::{IdlError, IdlResult, MsgDesc, Transport};
+use azos_drv_base::sensors::board::POWER_CHANNELS;
+use azos_drv_base::sensors::{ReadError, Sample, Sensor, SensorChip, Source};
 use azos_sync::SpinLock;
 
 pub mod kernel_host;
@@ -129,6 +131,29 @@ pub fn ina219_read_power_stamped(buf: &mut [u8]) -> (usize, u64) {
 pub fn ina219_read_power(buf: &mut [u8]) -> usize {
     ina219_read_power_stamped(buf).0
 }
+
+/// The power monitor as a sensor instance: the last sample of whichever host
+/// runs, read when asked.
+struct PowerChip;
+
+impl SensorChip for PowerChip {
+    fn read(&self) -> Result<Sample, ReadError> {
+        let mut rec = [0u8; POWER_DATA_SIZE];
+        match ina219_read_power_stamped(&mut rec) {
+            (0, _) => Err(ReadError::NotReady),
+            (n, acq_ns) => Ok(Sample::new(&rec[..n], 0, acq_ns)),
+        }
+    }
+
+    /// A ring-3 host's reply is waited for, and the chip behind either host is
+    /// on a bus whose transfers may wait.
+    fn may_sleep(&self) -> bool {
+        placement() == Some(Placement::Ring3) || azos_drv_bus::i2c::transfer_may_sleep()
+    }
+}
+
+/// Instance 9 of the sensor class (`azos_drv_base::sensors::board::POWER`).
+pub static POWER_SENSOR: Sensor = Sensor::new(&POWER_CHANNELS, Source::Chip(&PowerChip));
 
 /// The monitor's counters, `None` without an answering host.
 pub fn ina219_stats() -> Option<PowerStats> {

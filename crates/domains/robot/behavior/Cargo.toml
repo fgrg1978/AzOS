@@ -26,6 +26,7 @@ geofence = []
 azos_sync         = { workspace = true }
 azos_rings        = { workspace = true }
 azos_drv_sys      = { workspace = true }
+azos_drv_base     = { workspace = true }
 azos_drv_gpio     = { workspace = true }
 azos_drv_actuator = { workspace = true }
 azos_crypto       = { path = "../../../../crates/core/crypto" }

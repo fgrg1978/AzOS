@@ -842,6 +842,9 @@ sensor-ts-smoke = ["qemu", "use-robot"]
 # Its canary: the IMU driver reports its FIRST reading's stamp forever, so
 # readings keep arriving and the bus must judge them stale (`[SENSORTS] STALE`).
 sensor-ts-freeze = ["sensor-ts-smoke", "azos_imu/freeze-acq-stamp"]
+# Canary of the sensor class's stream row (ktest `sensors_virtual_imu_stream_loses_no_sample`):
+# a producer drops every 10th sample.
+sensor-drop-canary = ["azos_drv_base/sensor-drop-canary"]
 # Reads SAFETY_UNKNOWN_PKT back off the flight recorder after `fake_brain.py`
 # sends a packet type this build does not act on. Its own feature, not folded
 # into the plain brain-lies scenario: that one exists to prove a SCHEDULING

@@ -20,6 +20,8 @@ azos_abi = { path = "../../../../../crates/core/abi" }
 # The `Spi`, `Can`, `Uart` and `Adc` traits the port stand-ins in `h3_ports.rs`
 # implement (real, pure, host-buildable).
 azos_devif = { path = "../../../../../crates/core/devif" }
+# The stream log of `sensors.rs` (pulled in verbatim).
+azos_rings = { path = "../../../../../crates/core/rings" }
 # The hardware bus's static instance (`hwbus.rs`, below) needs a SpinLock.
 # Reused from tests/host/cap-tests, same reasons as everywhere else in this
 # crate.
@@ -38,4 +40,4 @@ azos_hwbus = { path = "../../../../../crates/drivers/hwbus" }
 # the condition stays visible in the source. Same treatment, and the same
 # reason, as tests/host/drivers-tests/Cargo.toml.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "instances-reuse-canary", "instances-no-drain-canary"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "instances-reuse-canary", "instances-no-drain-canary", "sensor-drop-canary"))'] }

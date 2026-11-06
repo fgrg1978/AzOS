@@ -32,6 +32,8 @@ pub const GPIO_EXPANDER_DEV: azos_drv_gpio::chips::DeviceId =
 /// one, and every guard under test branches on exactly those registers.
 pub fn serial() -> SerialGuard {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(feature = "use-robot")]
+    sensor_rig::ready();
     azos_sched::shim_serial_enter();
     reset_state();
     SerialGuard(g)
@@ -174,4 +176,55 @@ pub fn op_masked(tid: u32, h: u64, mask: u64) -> u64 {
 /// The `OP_MASK` argument naming exactly the op classes in `classes`.
 pub fn classes(classes: &[u8]) -> u64 {
     classes.iter().fold(0, |m, &c| m | 1 << c)
+}
+
+/// The sensor class as the host tests meet it: the board's instances in the
+/// topology's order, the encoders a chip that reads the robot stand-in
+/// (so a test sets what they read and counts the reads) and the power monitor
+/// a chip whose read waits when the I2C stand-in's transfers do.
+#[cfg(feature = "use-robot")]
+pub mod sensor_rig {
+    use azos_drv_base::sensors::{self, board, ReadError, Sample, Sensor, SensorChip, Source};
+    use std::sync::Once;
+
+    struct Encoder;
+
+    impl SensorChip for Encoder {
+        fn read(&self) -> Result<Sample, ReadError> {
+            let ((l, r), acq) = azos_robot::encoder_read_stamped();
+            Ok(board::ENCODER_SENSOR.pack(&[l, r], 0, azos_drv_sys::timebase::vdso_ns(acq)))
+        }
+        fn may_sleep(&self) -> bool {
+            false
+        }
+    }
+
+    struct Power;
+
+    impl SensorChip for Power {
+        fn read(&self) -> Result<Sample, ReadError> {
+            Err(ReadError::NotReady)
+        }
+        fn may_sleep(&self) -> bool {
+            azos_drv_bus::i2c::transfer_may_sleep()
+        }
+    }
+
+    static ENCODER: Sensor = Sensor::new(board::ENCODER_SENSOR.channels(), Source::Chip(&Encoder));
+    static POWER: Sensor = Sensor::new(&board::POWER_CHANNELS, Source::Chip(&Power));
+
+    /// Register the instances once for the process.
+    pub fn ready() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let all: [&'static Sensor; 11] = [
+                &board::IMU_SENSOR, &board::ODOM_SENSOR, &ENCODER, &board::RANGE_SENSOR, &board::BATTERY_SENSOR,
+                &board::GPS_SENSOR, &board::LIDAR_SENSOR, &board::FLAGS_SENSOR, &board::CAMERA_SENSOR, &POWER,
+                &board::IMU_TEMP_SENSOR,
+            ];
+            for (n, s) in all.iter().enumerate() {
+                assert_eq!(sensors::register_board(s), Ok(n as u32));
+            }
+        });
+    }
 }

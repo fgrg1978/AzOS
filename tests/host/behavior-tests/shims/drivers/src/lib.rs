@@ -221,4 +221,15 @@ pub mod timebase {
     pub fn now() -> u64 {
         super::clint::get_time()
     }
+
+    /// Mirrors `azos_drv_sys::timebase::vdso_ns`.
+    pub const fn vdso_ns(ticks: u64) -> u64 {
+        if ticks == 0 { 0 } else { azos_abi::time::ticks_to_ns(ticks, TIMER_FREQ) }
+    }
 }
+
+/// `azos_drv_base`'s sensor class, verbatim: the sensor bus reads its streams.
+#[path = "../../../../../../crates/drivers/base/src/instances.rs"]
+pub mod instances;
+#[path = "../../../../../../crates/drivers/base/src/sensors.rs"]
+pub mod sensors;

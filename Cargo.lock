@@ -133,6 +133,7 @@ dependencies = [
  "azos_crypto",
  "azos_degrade_policy",
  "azos_drv_actuator",
+ "azos_drv_base",
  "azos_drv_gpio",
  "azos_drv_sys",
  "azos_ipc",
@@ -298,8 +299,10 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch",
+ "azos_devif",
  "azos_drv_api",
  "azos_limits",
+ "azos_rings",
  "azos_sync",
 ]
 
@@ -413,6 +416,7 @@ dependencies = [
  "azos_decision",
  "azos_devif",
  "azos_drv_api",
+ "azos_drv_base",
  "azos_drv_bus",
  "azos_drv_gpio",
  "azos_drv_sys",
@@ -1060,10 +1064,8 @@ dependencies = [
  "azos_drv_sensor",
  "azos_drv_sys",
  "azos_drv_virtio",
- "azos_gps",
  "azos_hv",
  "azos_idl",
- "azos_imu",
  "azos_ipc",
  "azos_limits",
  "azos_linux_abi",

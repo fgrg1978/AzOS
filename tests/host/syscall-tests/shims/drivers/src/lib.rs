@@ -108,6 +108,10 @@ pub mod pwm_range;
 /// files: controller 0 is the stand-in `gpio` below, a test registers more.
 #[path = "../../../../../../crates/drivers/base/src/instances.rs"]
 pub mod instances;
+
+/// The sensor class, verbatim: `sensor_host.rs` serves its instances.
+#[path = "../../../../../../crates/drivers/base/src/sensors.rs"]
+pub mod sensors;
 #[path = "../../../../../../crates/drivers/gpio/src/chips.rs"]
 pub mod chips;
 
@@ -418,21 +422,7 @@ pub mod i2c {
 }
 
 pub mod ads1115 {
-    /// As the real driver: a read waits in the converter's queue.
-    pub const fn read_may_sleep() -> bool {
-        true
-    }
-
     pub use crate::h3_ports::AdcPort;
-    pub fn ads1115_read_mv(_channel: u8) -> Option<i32> {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-    pub fn ads1115_read_battery_mv(_channel: u8, _divider_ratio: u32) -> Option<u32> {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-    pub fn ads1115_is_initialized() -> bool {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
 }
 
 pub mod spi {
@@ -494,53 +484,6 @@ pub mod clint {
     /// Set the counter `get_time` answers while `shim_fwd` is unarmed.
     pub fn set_time(t: u64) {
         NOW.store(t, core::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-pub mod csi {
-    pub const JPEG_MAX_SIZE: usize = 320 * 240 / 4;
-    pub fn csi_capture_jpeg(_jpeg_buf: &mut [u8]) -> usize {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-    pub fn csi_capture_jpeg_stamped(_jpeg_buf: &mut [u8]) -> (usize, u64) {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-}
-
-pub mod lidar {
-    pub const SCAN_POINT_SIZE: usize = 4;
-    pub const SCAN_DATA_MAX_BYTES: usize = 512 * SCAN_POINT_SIZE;
-    pub fn lidar_read_scan(_buf: &mut [u8]) -> usize {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-    pub fn lidar_read_scan_stamped(_buf: &mut [u8]) -> (usize, u64) {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-    pub fn lidar_scan_count() -> usize {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-}
-
-pub mod ina219 {
-    pub const POWER_DATA_SIZE: usize = 12;
-    pub fn ina219_read_power(_buf: &mut [u8]) -> usize {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-    pub fn ina219_read_power_stamped(_buf: &mut [u8]) -> (usize, u64) {
-        todo!("MMIO stand-in: not reached by any test in this crate")
-    }
-}
-
-pub mod rangefinder {
-    use std::sync::Mutex;
-    /// What the ultrasonic sensors read (index 0, 1); `None`: not ready, as on
-    /// a board with no rangefinder driver.
-    static READING: Mutex<[Option<u32>; 2]> = Mutex::new([None, None]);
-    pub fn shim_set_range(front: Option<u32>, right: Option<u32>) {
-        *READING.lock().unwrap() = [front, right];
-    }
-    pub fn us_read_mm(index: u8) -> Option<u32> {
-        READING.lock().unwrap().get(index as usize).copied().flatten()
     }
 }
 
@@ -894,6 +837,11 @@ pub mod timebase {
     #[inline(always)]
     pub fn now() -> u64 {
         super::clint::get_time()
+    }
+
+    /// Mirrors `azos_drv_sys::timebase::vdso_ns`.
+    pub const fn vdso_ns(ticks: u64) -> u64 {
+        if ticks == 0 { 0 } else { azos_abi::time::ticks_to_ns(ticks, TIMER_FREQ) }
     }
 
     /// `crate::power`: the scheduler rate, a plain cell here.

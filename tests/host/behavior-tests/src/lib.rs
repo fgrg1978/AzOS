@@ -17,6 +17,7 @@
 // The driver class crates the compiled sources name, all served by the
 // one host stand-in `beh_test_drivers`.
 extern crate beh_test_drivers as azos_drv_actuator;
+extern crate beh_test_drivers as azos_drv_base;
 extern crate beh_test_drivers as azos_drv_gpio;
 extern crate beh_test_drivers as azos_drv_irqchip;
 extern crate beh_test_drivers as azos_drv_sys;
@@ -236,8 +237,8 @@ mod offline;
 #[path = "../../../../crates/domains/robot/behavior/src/arbiter.rs"]
 mod arbiter;
 
-// The producer side of the geofence: `update_gps`, the unit conversion and the
-// staleness rule `snapshot` applies before `safety.rs` ever sees a fix.
+// The sensor bus: the streams it reads, the unit conversion and the staleness
+// rule `snapshot` applies before `safety.rs` ever sees a fix.
 #[allow(dead_code)]
 #[path = "../../../../crates/domains/robot/behavior/src/sensor_bus.rs"]
 mod sensor_bus;
@@ -792,7 +793,55 @@ mod geofence {
         }
     }
 
-    use super::sensor_bus::{deg7_to_udeg, sample_is_fresh, SensorBus};
+    use super::sensor_bus::{deg7_to_udeg, sample_is_fresh, SensorBus, Sources};
+    use azos_drv_base::sensors::{board, Producer, Sensor, Source};
+
+    /// A bus over streams of its own, and the producers of the ones the tests
+    /// feed. The board's streams are single-producer statics; a test gets its
+    /// own.
+    struct Rig {
+        bus: SensorBus,
+        imu: Producer<'static>,
+        gps: Producer<'static>,
+    }
+
+    fn stream(of: &Sensor) -> &'static Sensor {
+        Box::leak(Box::new(Sensor::new(of.channels(), Source::Stream)))
+    }
+
+    fn rig() -> Rig {
+        let (imu, gps) = (stream(&board::IMU_SENSOR), stream(&board::GPS_SENSOR));
+        Rig {
+            bus: SensorBus::new(Sources {
+                imu,
+                imu_temp: stream(&board::IMU_TEMP_SENSOR),
+                odom: stream(&board::ODOM_SENSOR),
+                encoder: stream(&board::ENCODER_SENSOR),
+                range: stream(&board::RANGE_SENSOR),
+                battery: stream(&board::BATTERY_SENSOR),
+                flags: stream(&board::FLAGS_SENSOR),
+                gps,
+            }),
+            imu: imu.producer().unwrap(),
+            gps: gps.producer().unwrap(),
+        }
+    }
+
+    impl Rig {
+        /// One IMU sample acquired at `acq_ns`.
+        fn imu(&mut self, accel: [i64; 3], gyro: [i64; 3], acq_ns: u64) {
+            let v = [accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2]];
+            self.imu.publish(board::IMU_SENSOR.pack(&v, 0, acq_ns));
+        }
+
+        /// One fix, in the driver's units, acquired at `acq_ns`.
+        fn gps(&mut self, lat_deg7: i32, lon_deg7: i32, fix: u8, sats: u8, acq_ns: u64) {
+            let v = [lat_deg7 as i64, lon_deg7 as i64, 0, fix as i64, sats as i64];
+            self.gps.publish(board::GPS_SENSOR.pack(&v, 0, acq_ns));
+        }
+    }
+
+    const MS: u64 = 1_000_000;
 
     /// The kernel's simulated fix (`crates/drivers/gps`, `gps_init`), in the driver's
     /// units: 48.1351000° N, 11.5820000° E, quality 1, 9 satellites.
@@ -805,15 +854,13 @@ mod geofence {
     /// 0.009° north of it, ~1 km, in the driver's units.
     const NORTH_1KM_LAT_DEG7: i32 = 481_441_000;
 
-    /// A fix published on the bus reaches the snapshot whole, in micro-degrees.
+    /// A fix published on its stream reaches the snapshot whole, in micro-degrees.
     #[test]
     fn a_published_fix_reaches_the_snapshot_in_micro_degrees() {
-        let bus = SensorBus::new();
-        bus.update_gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9);
-        let t = bus.gps_updated_at.load(std::sync::atomic::Ordering::Relaxed);
-        assert_ne!(t, 0, "an update must stamp the fix");
+        let mut r = rig();
+        r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, 5 * MS);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t);
+        r.bus.snapshot_at(&mut s, 5 * MS);
         assert_eq!((s.gps_lat_udeg, s.gps_lon_udeg), (SIM_LAT_UDEG, SIM_LON_UDEG),
             "the snapshot must carry the position in micro-degrees");
         assert_eq!((s.gps_fix, s.gps_satellites), (1, 9),
@@ -821,97 +868,146 @@ mod geofence {
         assert_eq!(deg7_to_udeg(-1_234_567_890), -123_456_789, "south and west too");
     }
 
-    /// **A stale fix is no fix.** Fresh one tick before the age limit, gone at
-    /// it: quality and satellites both zero, the fence `Unknown`.
+    /// **A stale fix is no fix.** Fresh one nanosecond before the age limit,
+    /// gone at it: quality and satellites both zero, the fence `Unknown`.
     #[test]
     fn a_fix_expires_exactly_at_its_age_limit() {
-        let bus = SensorBus::new();
-        bus.update_gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9);
-        let t = bus.gps_updated_at.load(std::sync::atomic::Ordering::Relaxed);
-        let max = SensorBus::GPS_MAX_AGE_TICKS;
-        assert_eq!(max, 20_000_000, "2 s at the suite's 10 MHz timebase");
+        let mut r = rig();
+        let t = 5 * MS;
+        r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, t);
+        let max = SensorBus::GPS_MAX_AGE_NS;
+        assert_eq!(max, 2_000_000_000, "2 s");
 
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t + max - 1);
+        r.bus.snapshot_at(&mut s, t + max - 1);
         assert_eq!((s.gps_fix, s.gps_satellites), (1, 9), "one tick short of the limit is fresh");
 
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t + max);
+        r.bus.snapshot_at(&mut s, t + max);
         assert_eq!((s.gps_fix, s.gps_satellites), (0, 0), "at the limit the fix has expired");
         assert_eq!(geofence_status(&s), GeofenceStatus::Unknown);
     }
 
-    /// The IMU's rule, which `snapshot_at` now judges at the `now` it is given:
+    /// The IMU's rule, which `snapshot_at` judges at the `now` it is given:
     /// valid one tick before 200 ms, invalid at it. The GPS age limit must not
     /// have been bought by loosening the IMU's.
     #[test]
     fn an_imu_sample_expires_at_200_ms() {
-        let bus = SensorBus::new();
-        bus.update_imu([0, 0, 1000], [0, 0, 0]);
-        let t = bus.imu_updated_at.load(std::sync::atomic::Ordering::Relaxed);
+        let mut r = rig();
+        let t = 5 * MS;
+        r.imu([0, 0, 1000], [0, 0, 0], t);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t + 2_000_000 - 1);
+        r.bus.snapshot_at(&mut s, t + 200 * MS - 1);
         assert!(s.imu_valid, "one tick short of 200 ms is fresh");
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t + 2_000_000);
+        r.bus.snapshot_at(&mut s, t + 200 * MS);
         assert!(!s.imu_valid, "at 200 ms the sample has expired");
     }
 
-    /// **Wave 11: the IMU ages from ACQUISITION, not delivery.** A sample the
-    /// driver read 200 ms ago and hands over now is already stale, however
-    /// recently it reached the bus: the stale-sample canary's property, on
-    /// the host. With `update_imu` (delivery time) the same sample reads
-    /// fresh, which is what the kernel's IMU task did before.
+    /// **The IMU ages from ACQUISITION, not delivery.** A sample the driver read
+    /// 200 ms ago and hands over now is already stale, however recently it
+    /// reached the stream: the stale-sample canary's property, on the host.
     ///
-    /// **Canary.** Make `update_imu_at` store `timebase::now()` instead of
-    /// `acq`: the frozen sample reads valid.
+    /// **Canary.** Judge `imu_valid` by the presence of a sample alone
+    /// (`imu.is_some()`), as a delivery-time check would: the re-delivered
+    /// frozen sample reads valid.
     #[test]
     fn an_imu_sample_ages_from_its_acquisition_stamp() {
-        let bus = SensorBus::new();
-        let acq = 50_000_000u64;
-        bus.update_imu_at([0, 0, 1000], [0, 0, 0], acq);
-        assert_eq!(bus.imu_updated_at.load(std::sync::atomic::Ordering::Relaxed), acq);
+        let mut r = rig();
+        let acq = 50 * MS;
+        r.imu([0, 0, 1000], [0, 0, 0], acq);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, acq + SensorBus::IMU_MAX_AGE_TICKS - 1);
+        r.bus.snapshot_at(&mut s, acq + SensorBus::IMU_MAX_AGE_NS - 1);
         assert!(s.imu_valid, "one tick short of the bound, by acquisition");
         // Re-delivered with the same (frozen) stamp: still the old sample.
-        bus.update_imu_at([0, 0, 1000], [0, 0, 0], acq);
+        r.imu([0, 0, 1000], [0, 0, 0], acq);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, acq + SensorBus::IMU_MAX_AGE_TICKS);
+        r.bus.snapshot_at(&mut s, acq + SensorBus::IMU_MAX_AGE_NS);
         assert!(!s.imu_valid, "a re-delivered old sample is stale");
     }
 
-    /// **Wave 11: a silent receiver's last fix goes stale.** The driver keeps
-    /// answering with the fix of its last sentence; published with that
-    /// sentence's stamp, it expires two seconds after the receiver went
-    /// quiet, however often it is re-published, and the fence reads
-    /// `Unknown`. A fix with no acquisition time (`acq == 0`, no sentence
-    /// ever parsed) is never fresh.
+    /// Before the first sample the snapshot reads what an idle machine means:
+    /// 1 g upright, nothing measured, no IMU, no fix.
     ///
-    /// **Canary.** Make `update_gps_at` stamp `timebase::now()`: the
+    /// **Canary.** Default `accel_mg[2]` to 0: the first assertion fails.
+    #[test]
+    fn a_stream_with_no_sample_reads_as_an_idle_machine() {
+        let r = rig();
+        let mut s = SensorState::new();
+        r.bus.snapshot_at(&mut s, 1_000 * MS);
+        assert_eq!(s.accel_mg, [0, 0, 1000]);
+        assert_eq!(s.gyro_mdps, [0; 3]);
+        assert!(!s.imu_valid);
+        assert_eq!((s.gps_fix, s.gps_satellites, s.battery_mv, s.cam_dist_front), (0, 0, 0, 0));
+    }
+
+    /// **A snapshot never mixes two IMU samples.** A producer publishes samples
+    /// whose six axes all equal the sample number while the reader snapshots as
+    /// fast as it can: every snapshot has six equal axes. (Six separate atomic
+    /// stores, the bus's old shape, were seen torn.)
+    ///
+    /// **Canary.** Build with the rings crate's `canary-no-recheck`: the copy is
+    /// not re-validated and a torn sample gets through.
+    #[test]
+    fn a_snapshot_never_mixes_two_imu_samples() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let r = rig();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let mut imu = r.imu;
+        let writer = std::thread::spawn(move || {
+            let mut n = 1i64;
+            while !stop2.load(Ordering::Relaxed) {
+                let v = [n; 6];
+                imu.publish(board::IMU_SENSOR.pack(&v, 0, n as u64 * MS));
+                n += 1;
+            }
+        });
+        let mut checked = 0u32;
+        for _ in 0..200_000 {
+            let mut s = SensorState::new();
+            r.bus.snapshot_at(&mut s, u64::MAX / 2);
+            if s.gyro_mdps[0] != 0 {
+                let a = s.accel_mg[0];
+                assert!(s.accel_mg.iter().chain(s.gyro_mdps.iter()).all(|&x| x == a), "{:?} {:?}", s.accel_mg, s.gyro_mdps);
+                checked += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert!(checked > 0, "the writer published nothing the reader could see");
+    }
+
+    /// **A silent receiver's last fix goes stale.** The driver keeps answering
+    /// with the fix of its last sentence; published with that sentence's stamp,
+    /// it expires two seconds after the receiver went quiet, however often it
+    /// is re-published, and the fence reads `Unknown`. A fix with no
+    /// acquisition time (`acq == 0`, no sentence ever parsed) is never fresh.
+    ///
+    /// **Canary.** Judge the GPS fix by the presence of a sample alone: the
     /// re-published fix stays fresh and the fence keeps reading `Inside`.
     #[test]
     fn a_republished_fix_ages_from_its_sentence() {
         let _g = serial();
         reset();
         geofence_set(SIM_LAT_UDEG, SIM_LON_UDEG, 100);
-        let bus = SensorBus::new();
-        let sentence = 30_000_000u64;
-        bus.update_gps_at(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, sentence);
+        let mut r = rig();
+        let sentence = 3_000 * MS;
+        r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, sentence);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, sentence + 1);
+        r.bus.snapshot_at(&mut s, sentence + 1);
         assert_eq!(geofence_status(&s), GeofenceStatus::Inside);
         // The AHRS task re-publishes the same driver fix 3 s later.
-        let later = sentence + SensorBus::GPS_MAX_AGE_TICKS + 10_000_000;
-        bus.update_gps_at(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, sentence);
+        let later = sentence + SensorBus::GPS_MAX_AGE_NS + 1_000 * MS;
+        r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, sentence);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, later);
+        r.bus.snapshot_at(&mut s, later);
         assert_eq!((s.gps_fix, s.gps_satellites), (0, 0), "the silent receiver's fix expired");
         assert_eq!(geofence_status(&s), GeofenceStatus::Unknown);
 
-        bus.update_gps_at(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, 0);
+        r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, 0);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, 1);
+        r.bus.snapshot_at(&mut s, 1);
         assert_eq!(s.gps_fix, 0, "a fix never acquired is never fresh");
         reset();
     }
@@ -928,35 +1024,35 @@ mod geofence {
     }
 
     /// **End to end from the bus: inside, then outside, then stale.** A fence
-    /// of 100 m around the simulated fix, given in micro-degrees; the bus fed
-    /// in the driver's units. Inside must be clean, 1 km north must be a
+    /// of 100 m around the simulated fix, given in micro-degrees; the stream
+    /// fed in the driver's units. Inside must be clean, 1 km north must be a
     /// violation, and the same far fix aged past the limit must stop acting.
     #[test]
     fn a_bus_fix_drives_the_fence_inside_outside_and_stale() {
         let _g = serial();
         reset();
         geofence_set(SIM_LAT_UDEG, SIM_LON_UDEG, 100);
-        let bus = SensorBus::new();
+        let mut r = rig();
 
-        bus.update_gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9);
-        let t = bus.gps_updated_at.load(std::sync::atomic::Ordering::Relaxed);
+        let t = 10 * MS;
+        r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, t);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t);
+        r.bus.snapshot_at(&mut s, t);
         assert_eq!(geofence_status(&s), GeofenceStatus::Inside,
             "the fence centre, published through the bus, must read inside");
         assert_eq!(safety_check(&s).violation, SafetyViolation::None);
 
-        bus.update_gps(NORTH_1KM_LAT_DEG7, SIM_LON_DEG7, 1, 4);
-        let t = bus.gps_updated_at.load(std::sync::atomic::Ordering::Relaxed);
+        let t = 20 * MS;
+        r.gps(NORTH_1KM_LAT_DEG7, SIM_LON_DEG7, 1, 4, t);
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t);
-        let r = safety_check(&s);
-        assert_eq!(r.violation, SafetyViolation::GeofenceViolation,
+        r.bus.snapshot_at(&mut s, t);
+        let rep = safety_check(&s);
+        assert_eq!(rep.violation, SafetyViolation::GeofenceViolation,
             "1 km outside a 100 m fence must be flagged");
-        assert_eq!(r.action, SafetyAction::EmergencyStop);
+        assert_eq!(rep.action, SafetyAction::EmergencyStop);
 
         let mut s = SensorState::new();
-        bus.snapshot_at(&mut s, t + SensorBus::GPS_MAX_AGE_TICKS);
+        r.bus.snapshot_at(&mut s, t + SensorBus::GPS_MAX_AGE_NS);
         assert_eq!(geofence_status(&s), GeofenceStatus::Unknown,
             "a stale fix must not keep reporting a position");
         assert_eq!(safety_check(&s).violation, SafetyViolation::None);

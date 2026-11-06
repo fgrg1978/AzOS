@@ -16489,6 +16489,12 @@ PY
     # the canary stamps the badge without the controller.
     par "ktest gpio two controllers (rv)" ktest_row "ktest gpio two controllers (rv)" rv "" "" "" '^\[KTEST\] gpio: two controllers, one interface'
     par "ktest gpio badge canary (rv)" ktest_row "ktest gpio badge canary (rv)" rv ",gpio-badge-canary" "gpio_two_controllers_serve_one_interface"
+    # The sensor class's stream: a virtual IMU published at SENSOR_IMU_HZ
+    # reaches its reader whole (every acquisition delivered, none skipped, overrun
+    # 0). The canary drops every 10th sample in the producer, which the log's own
+    # sequence cannot show: the delivered count falls short of the acquisitions.
+    par "ktest sensors virtual IMU stream (rv)" ktest_row "ktest sensors virtual IMU stream (rv)" rv "" "" "" '^\[KTEST\] sensors: virtual IMU stream, [0-9]+ acquisitions at [0-9]+ Hz, delivered [0-9]+, overrun 0, gaps 0$'
+    par "ktest sensors stream drop canary (rv)" ktest_row "ktest sensors stream drop canary (rv)" rv ",sensor-drop-canary" "sensors_virtual_imu_stream_loses_no_sample"
     par "ktest driver disk in use refuses unbind (arm)" ktest_row "ktest driver disk in use refuses unbind (arm)" arm "" "" "" '^\[KTEST\] driver records: the disk in use refused its unbind' $AZOS_OUT/build/disk-aarch64.img
     par "ktest driver disk in use unbind canary (arm)" ktest_row "ktest driver disk in use unbind canary (arm)" arm "" "+driver_records_unbind_and_rebind_each_bound_driver" "canary=unbind-ignores-openers" "" $AZOS_OUT/build/disk-aarch64.img
     KTEST_QEMU_EXTRA="$SCRATCH_QEMU" par "ktest driver unbind rebind (arm)" ktest_row "ktest driver unbind rebind (arm)" arm "" "" "" '^\[KTEST\] driver records: [1-9][0-9]* device\(s\) unbound and bound again, the disk among them'
@@ -16501,6 +16507,12 @@ PY
     # the canary stamps the badge without the controller.
     par "ktest gpio two controllers (arm)" ktest_row "ktest gpio two controllers (arm)" arm "" "" "" '^\[KTEST\] gpio: two controllers, one interface'
     par "ktest gpio badge canary (arm)" ktest_row "ktest gpio badge canary (arm)" arm ",gpio-badge-canary" "gpio_two_controllers_serve_one_interface"
+    # The sensor class's stream: a virtual IMU published at SENSOR_IMU_HZ
+    # reaches its reader whole (every acquisition delivered, none skipped, overrun
+    # 0). The canary drops every 10th sample in the producer, which the log's own
+    # sequence cannot show: the delivered count falls short of the acquisitions.
+    par "ktest sensors virtual IMU stream (arm)" ktest_row "ktest sensors virtual IMU stream (arm)" arm "" "" "" '^\[KTEST\] sensors: virtual IMU stream, [0-9]+ acquisitions at [0-9]+ Hz, delivered [0-9]+, overrun 0, gaps 0$'
+    par "ktest sensors stream drop canary (arm)" ktest_row "ktest sensors stream drop canary (arm)" arm ",sensor-drop-canary" "sensors_virtual_imu_stream_loses_no_sample"
     par "ktest free_pages in flight canary (rv)" ktest_row "ktest free_pages in flight canary (rv)" rv ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest buddy rotate canary (rv)" ktest_row "ktest buddy rotate canary (rv)" rv ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
     par "ktest kstack reuse canary (rv)" ktest_row "ktest kstack reuse canary (rv)" rv ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
@@ -18548,6 +18560,12 @@ CPU 5 lacks hwcap bits"
     # the canary stamps the badge without the controller.
     par "ktest gpio two controllers (x86)" x86_ktest_row "ktest gpio two controllers (x86)" "" "" "" "" '^\[KTEST\] gpio: two controllers, one interface'
     par "ktest gpio badge canary (x86)" x86_ktest_row "ktest gpio badge canary (x86)" ",gpio-badge-canary" "gpio_two_controllers_serve_one_interface"
+    # The sensor class's stream: a virtual IMU published at SENSOR_IMU_HZ
+    # reaches its reader whole (every acquisition delivered, none skipped, overrun
+    # 0). The canary drops every 10th sample in the producer, which the log's own
+    # sequence cannot show: the delivered count falls short of the acquisitions.
+    par "ktest sensors virtual IMU stream (x86)" x86_ktest_row "ktest sensors virtual IMU stream (x86)" "" "" "" "" '^\[KTEST\] sensors: virtual IMU stream, [0-9]+ acquisitions at [0-9]+ Hz, delivered [0-9]+, overrun 0, gaps 0$'
+    par "ktest sensors stream drop canary (x86)" x86_ktest_row "ktest sensors stream drop canary (x86)" ",sensor-drop-canary" "sensors_virtual_imu_stream_loses_no_sample"
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (x86)" x86_ktest_row "ktest tid stamp canary (x86)" ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
 ^not ok [0-9]+ - tid_wake_after_read_leaves_a_reused_slot_alone # .*stamped the slot's new task"

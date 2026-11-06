@@ -62,6 +62,7 @@ fn pwm_channels() -> usize {
 /// `install_ring3_seams`/`install_net_config` use it.
 #[inline(always)]
 pub(crate) fn install_robot_hw() {
+    register_sensors();
     // The DesignWare I2C controllers the tree enables (the VisionFive 2's, the
     // Raspberry Pi 5 RP1's); an Intel LPSS one bound in the PCI stage already.
     #[cfg(feature = "i2c-dw")]
@@ -270,6 +271,20 @@ pub(crate) fn install_robot_payload_and_sensors() {
     #[cfg(all(feature = "rc-input", any(feature = "vf2", feature = "k1", feature = "rpi5")))]
     azos_robot_drivers::rc::rc_init(azos_robot_drivers::rc::RcMode::Sbus);
     kprintln!();
+}
+
+/// The board's sensor instances, in the order the topology's `sensor.<n>`
+/// endpoints name them (`azos_drv_base::sensors::board`), before any task can
+/// read one. The power monitor is the INA219's, where the image has the
+/// board's I/O.
+fn register_sensors() {
+    #[cfg(feature = "board-io")]
+    let power = &azos_drv_sensor::ina219::POWER_SENSOR;
+    #[cfg(not(feature = "board-io"))]
+    let power = &azos_drv_base::sensors::board::NO_POWER_SENSOR;
+    if azos_drv_base::sensors::board::register(power).is_err() {
+        panic!("sensors: Kconfig SENSOR_INSTANCES is below the board's own sensors");
+    }
 }
 
 /// Parse the medium's partition table and publish it, so a topology can mint

@@ -24,6 +24,7 @@ rangefinder-record-canary = []
 azos_abi           = { workspace = true }
 azos_decision      = { workspace = true }
 azos_devif         = { workspace = true }
+azos_drv_base      = { workspace = true }
 azos_sync          = { workspace = true }
 azos_rings         = { workspace = true }
 azos_ina219        = { workspace = true }

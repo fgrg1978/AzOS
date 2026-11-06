@@ -15,7 +15,7 @@ use crate::no_robot::{robot as azos_robot};
 use core::sync::atomic::{AtomicU64, Ordering};
 use azos_abi::error::Errno;
 
-use crate::handlers::{SENSOR_TYPE_ENCODER, SENSOR_TYPE_ODOM};
+use azos_drv_base::sensors::board::{ENCODER, ODOM};
 
 // ── Per-task vDSO page ──────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ pub fn tick_interval(hart: usize, now: u64) -> u64 {
 /// Every other type is read over I2C/UART/CSI by its syscall and cannot be
 /// read from an interrupt; its slot is never published.
 fn isr_sampled(t: u32) -> bool {
-    matches!(t as u64, SENSOR_TYPE_ENCODER | SENSOR_TYPE_ODOM)
+    matches!(t, ENCODER | ODOM)
 }
 
 /// Fill `buf` with sensor type `t` in the `Sensor` interface's record format,
@@ -51,14 +51,14 @@ fn isr_sampled(t: u32) -> bool {
 /// read here, so their stamp is this read; odometry carries `odom_task`'s).
 /// `None` for a type [`isr_sampled`] refuses.
 fn sample_isr(t: u32, buf: &mut [u8; azos_mm::vdso::VDSO_SENSOR_DATA_MAX]) -> Option<(usize, u64)> {
-    let ((a, b), acq) = match t as u64 {
-        SENSOR_TYPE_ENCODER => azos_robot::encoder_read_stamped(),
-        SENSOR_TYPE_ODOM => azos_robot::odom_get_stamped(),
+    let ((a, b), acq) = match t {
+        ENCODER => azos_robot::encoder_read_stamped(),
+        ODOM => azos_robot::odom_get_stamped(),
         _ => return None,
     };
     buf[0..8].copy_from_slice(&a.to_le_bytes());
     buf[8..16].copy_from_slice(&b.to_le_bytes());
-    Some((16, crate::handlers::SampleMeta::at_ticks(acq, 0).acq_ns))
+    Some((16, azos_drv_sys::timebase::vdso_ns(acq)))
 }
 
 /// Refresh the per-task page of the task running on this hart, and give the

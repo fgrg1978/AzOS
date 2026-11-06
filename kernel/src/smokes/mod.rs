@@ -155,6 +155,9 @@ pub(crate) mod futex_pi;
 // the process (the Linux exit path's `signal::detach`).
 #[cfg(feature = "ktest")]
 pub(crate) mod sig_retarget;
+// The sensor class's streams: a virtual IMU loses no sample (ktest).
+#[cfg(feature = "ktest")]
+pub(crate) mod sensor_stream;
 #[cfg(any(feature = "sensor-ts-smoke", all(feature = "ktest", feature = "use-robot")))]
 pub(crate) mod sensor_ts;
 #[cfg(feature = "pifast-smoke")]

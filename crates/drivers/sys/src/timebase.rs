@@ -52,6 +52,13 @@ pub fn now() -> u64 {
     azos_arch::ARCH.now_ticks()
 }
 
+/// An acquisition stamp in [`now`] ticks as the vDSO clock's nanoseconds, the
+/// unit a sensor sample carries (`azos_abi::sensor_sample`); 0 stays 0,
+/// "unknown".
+pub const fn vdso_ns(ticks: u64) -> u64 {
+    if ticks == 0 { 0 } else { azos_abi::time::ticks_to_ns(ticks, TIMER_FREQ) }
+}
+
 /// Ticks per second of the counter [`now`] reads.
 ///
 /// A **per-board** number, not a per-ISA one: 10 MHz is QEMU's `virt`, and the

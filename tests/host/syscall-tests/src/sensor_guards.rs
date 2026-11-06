@@ -5,24 +5,25 @@
 // read's tests (the record, the acquisition stamp, the capability check) for
 // the endpoint op:
 //
-// * the reading is the arm's own record with the arm's acquisition stamp,
-//   converted to vDSO-clock nanoseconds;
+// * the reading is the sensor's own record with its acquisition stamp, in
+//   vDSO-clock nanoseconds;
 // * `READ` is the whole authority: a capability without it reads nothing, and
 //   containment (a write-class refusal) does not touch a read;
-// * the sensor type is the badge: a badge past the last type is refused, and
-//   the LiDAR and the camera, whose records do not fit a reply, answer
-//   `UNSUPPORTED` without reading the device.
+// * the sensor is the badge: a badge past the class's limit is refused, one
+//   no sensor holds is not ready, and the LiDAR and the camera, whose records
+//   do not fit a reply, answer `UNSUPPORTED` without reading a device.
 //
-// **What is real here.** `SensorServer`, the shared `sensor_read_into` arm
-// table and the sample the reply carries. **What is not.** The sensor is the
-// encoder pair `shims/robot` reports, with an acquisition stamp the test sets
-// (`shim_set_encoder_acq`): the encoder arm takes its stamp from
-// `encoder_read_stamped`, so the bytes asserted here are the arm's own,
-// converted with the frequency the shim's timebase carries.
+// **What is real here.** `SensorServer`, the class's registry and the sample
+// the reply carries. **What is not.** The encoders are a chip that reads the
+// pair `shims/robot` reports, with an acquisition stamp the test sets
+// (`shim_set_encoder_acq`) (`harness::sensor_rig`), so the bytes asserted here
+// are the chip's own, converted with the frequency the shim's timebase
+// carries.
 
 use super::harness::serial;
 use crate::khost::Caller;
 use crate::sensor_host::SensorServer;
+use azos_drv_base::sensors::board;
 use azos_abi::cap::CapPerms;
 use azos_devif::{outcome, Sensor};
 
@@ -33,23 +34,21 @@ fn server(badge: u32, rights: CapPerms) -> SensorServer {
 }
 
 fn encoder() -> SensorServer {
-    server(SENSOR_TYPE_ENCODER as u32, CapPerms::READ)
+    server(board::ENCODER, CapPerms::READ)
 }
 
-/// **The reading carries the arm's acquisition stamp, converted to vDSO-clock
-/// nanoseconds, and the record is the arm's bytes for the same read.**
+/// **The reading carries the sensor's acquisition stamp in vDSO-clock
+/// nanoseconds, and the record is its bytes for the same read.**
 ///
 /// 2_500_000 ticks at the shim's `TIMER_FREQ` is the ns value
 /// `azos_abi::time::ticks_to_ns` gives -- the conversion libsys's
 /// `vdso_now_ns` applies to its own counter, which is what makes the stamp
 /// comparable with a ring-3 clock read.
 ///
-/// **Canary.** Make the encoder arm pass `SampleMeta::at_ticks(0, 0)`: the
-/// sample reads `acq_ns == 0`. Build the sample with `flags: 0` from a fixed
-/// literal instead of `meta.flags`: the synthetic flag of the rangefinder arm
-/// is lost (see the next test's sibling in the drivers suite).
+/// **Canary.** Make the encoder chip pass an acquisition stamp of 0 to its
+/// sample: the sample reads `acq_ns == 0`.
 #[test]
-fn the_sample_carries_the_acquisition_stamp_and_the_arms_record() {
+fn the_sample_carries_the_acquisition_stamp_and_the_sensors_record() {
     let _g = serial();
     azos_robot::shim_set_encoder(1234, -5678);
     azos_robot::shim_set_encoder_acq(2_500_000);
@@ -94,7 +93,7 @@ fn a_read_needs_the_read_class_and_survives_containment() {
     azos_robot::shim_set_encoder_acq(7);
     let reads = azos_robot::shim_encoder_reads();
     for rights in [CapPerms::NONE, CapPerms::WRITE] {
-        let out = server(SENSOR_TYPE_ENCODER as u32, rights).read();
+        let out = server(board::ENCODER, rights).read();
         assert_eq!(out.code, outcome::DENIED, "rights {rights:?}");
     }
     assert_eq!(azos_robot::shim_encoder_reads(), reads, "a refused call read the encoders");
@@ -105,17 +104,43 @@ fn a_read_needs_the_read_class_and_survives_containment() {
     assert!(out.is_ok(), "containment refused a read: code {}", out.code);
 }
 
-/// **A badge past the last sensor type is `BAD_ARGUMENT`, and the LiDAR and
-/// the camera answer `UNSUPPORTED`; none of them reads a device.**
+/// **A badge past the class's limit is `BAD_ARGUMENT`, one no sensor holds is
+/// `NOT_READY`, a stream nothing has published into is `NOT_READY`, and the
+/// LiDAR and the camera answer `UNSUPPORTED`; none of them reads a device.**
+///
+/// **Canary.** Answer `BAD_ARGUMENT` for every badge no sensor holds: the
+/// second assertion fails.
 #[test]
-fn a_bad_type_is_refused_and_a_scan_or_a_frame_is_unsupported() {
+fn a_bad_badge_is_refused_and_a_scan_or_a_frame_is_unsupported() {
     let _g = serial();
     let reads = azos_robot::shim_encoder_reads();
-    assert_eq!(server(azos_devif::sensor::TYPES, CapPerms::READ).read().code, outcome::BAD_ARGUMENT);
+    let limit = azos_drv_base::sensors::INSTANCES as u32;
+    assert_eq!(server(limit, CapPerms::READ).read().code, outcome::BAD_ARGUMENT);
     assert_eq!(server(u32::MAX, CapPerms::READ).read().code, outcome::BAD_ARGUMENT);
-    assert_eq!(server(SENSOR_TYPE_LIDAR as u32, CapPerms::READ).read().code, outcome::UNSUPPORTED);
-    assert_eq!(server(SENSOR_TYPE_CAMERA as u32, CapPerms::READ).read().code, outcome::UNSUPPORTED);
+    assert_eq!(server(limit - 1, CapPerms::READ).read().code, outcome::NOT_READY, "no sensor holds it");
+    assert_eq!(server(board::LIDAR, CapPerms::READ).read().code, outcome::UNSUPPORTED);
+    assert_eq!(server(board::CAMERA, CapPerms::READ).read().code, outcome::UNSUPPORTED);
     assert_eq!(azos_robot::shim_encoder_reads(), reads);
+}
+
+/// **A stream answers with its newest sample, and with nothing before the
+/// first.** The IMU is a stream a task publishes into.
+///
+/// **Canary.** Answer the oldest retained sample instead of the newest: the
+/// second assertion reads the first sample.
+#[test]
+fn a_stream_reads_its_newest_sample_and_is_not_ready_before_the_first() {
+    let _g = serial();
+    let imu = || server(board::IMU, CapPerms::READ).read();
+    assert_eq!(imu().code, outcome::NOT_READY, "nothing published yet");
+    let mut tx = board::IMU_SENSOR.producer().expect("the test is the producer");
+    tx.publish(board::IMU_SENSOR.pack(&[1, 2, 3, 4, 5, 6], 0, 111));
+    tx.publish(board::IMU_SENSOR.pack(&[7, 8, 9, 10, 11, 12], 0, 222));
+    let s = imu().value;
+    assert_eq!((s.len, s.acq_ns), (24, 222));
+    let mut rec = [0u8; 24];
+    s.copy_to(&mut rec);
+    assert_eq!(rec[..4], 7i32.to_le_bytes());
 }
 
 /// **An unknown acquisition time stays 0**, the "never fresh" value, rather
@@ -134,33 +159,6 @@ fn an_unknown_stamp_is_reported_as_zero() {
 #[test]
 fn a_vdso_bind_is_gated_like_a_read() {
     let _g = serial();
-    assert_eq!(server(SENSOR_TYPE_ENCODER as u32, CapPerms::WRITE).bind_vdso().code, outcome::DENIED);
+    assert_eq!(server(board::ENCODER, CapPerms::WRITE).bind_vdso().code, outcome::DENIED);
     assert_eq!(server(azos_devif::sensor::TYPES, CapPerms::READ).bind_vdso().code, outcome::BAD_ARGUMENT);
-}
-
-
-/// **A board with no rangefinder reads NOT_READY, never a zero or a simulated
-/// distance; where one reports, its sample is flagged synthetic.** The
-/// ultrasonic driver is ready only under QEMU, so on a real board the
-/// obstacle reflex gets no data to act on, and the daemon declines to run
-/// instead of treating "0" as "clear".
-///
-/// **Canary.** Make the range arm answer `us_read_mm(0).unwrap_or(0)` again
-/// (the old reading): the first assertion goes red (a zero sample).
-#[test]
-fn a_board_with_no_rangefinder_reads_not_ready_and_a_simulated_one_is_flagged() {
-    use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
-    let _g = serial();
-    let range = || server(SENSOR_TYPE_RANGE as u32, CapPerms::READ).read();
-    azos_drv_sensor::rangefinder::shim_set_range(None, None);
-    let out = range();
-    assert_eq!(out.code, outcome::NOT_READY, "no rangefinder: not a sample (code {})", out.code);
-
-    azos_drv_sensor::rangefinder::shim_set_range(Some(1500), Some(800));
-    let out = range();
-    assert!(out.is_ok(), "code {}", out.code);
-    let s = out.value;
-    assert_eq!(s.len, 4);
-    assert_eq!(s.flags & SENSOR_SAMPLE_FLAG_SYNTHETIC as u32, SENSOR_SAMPLE_FLAG_SYNTHETIC as u32, "a simulated distance says so");
-    azos_drv_sensor::rangefinder::shim_set_range(None, None);
 }

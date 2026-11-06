@@ -8,7 +8,8 @@
 //! nothing publishes into it and a read answers `NOT_READY`, which is what the
 //! capability on it was granted for.
 
-use super::{Channel, Quantity as Q, RegisterError, Sensor, Source, Unit as U};
+use super::{Channel, Quantity as Q, RegisterError, Sample, Sensor, Source, Unit as U};
+use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
 
 pub const IMU: u32 = 0;
 pub const ODOM: u32 = 1;
@@ -86,9 +87,9 @@ pub static ENCODER_SENSOR: Sensor = Sensor::new(&ENCODER_CHANNELS, Source::Strea
 pub static RANGE_SENSOR: Sensor = Sensor::new(&RANGE_CHANNELS, Source::Stream);
 pub static BATTERY_SENSOR: Sensor = Sensor::new(&BATTERY_CHANNELS, Source::Stream);
 pub static GPS_SENSOR: Sensor = Sensor::new(&GPS_CHANNELS, Source::Stream);
-static LIDAR_SENSOR: Sensor = Sensor::new(&LIDAR_CHANNELS, Source::Unsupported);
+pub static LIDAR_SENSOR: Sensor = Sensor::new(&LIDAR_CHANNELS, Source::Unsupported);
 pub static FLAGS_SENSOR: Sensor = Sensor::new(&FLAGS_CHANNELS, Source::Stream);
-static CAMERA_SENSOR: Sensor = Sensor::new(&CAMERA_CHANNELS, Source::Unsupported);
+pub static CAMERA_SENSOR: Sensor = Sensor::new(&CAMERA_CHANNELS, Source::Unsupported);
 /// The power monitor of a machine that has none.
 pub static NO_POWER_SENSOR: Sensor = Sensor::new(&POWER_CHANNELS, Source::Stream);
 pub static IMU_TEMP_SENSOR: Sensor = Sensor::new(&IMU_TEMP_CHANNELS, Source::Stream);
@@ -105,4 +106,25 @@ pub fn register(power: &'static Sensor) -> Result<(), RegisterError> {
         debug_assert_eq!(n as usize, i);
     }
     Ok(())
+}
+
+/// The rangefinders' sample: `None` when the front one has no reading (a board
+/// without one: not a zero that reads as "clear"), the right one's absence a
+/// zero. The driver only simulates its sensors, so a distance is never
+/// presented as a device's measurement.
+pub fn range_sample(front: Option<u32>, right: Option<u32>, acq_ns: u64) -> Option<Sample> {
+    let front = front?;
+    Some(RANGE_SENSOR.pack(&[front as i64, right.unwrap_or(0) as i64], SENSOR_SAMPLE_FLAG_SYNTHETIC as u32, acq_ns))
+}
+
+/// The battery's sample: `None` when the converter gave no reading. A number
+/// nothing measured is never invented: the safety layer reads "no battery" as
+/// unknown, and a made-up voltage below its thresholds as a flat pack.
+pub fn battery_sample(mv: Option<u32>, acq_ns: u64) -> Option<Sample> {
+    Some(BATTERY_SENSOR.pack(&[mv? as i64], 0, acq_ns))
+}
+
+/// The digital lines' sample: PIR bit 0, sound bit 1, IR bit 2.
+pub fn flags_sample(pir: bool, sound: bool, ir: bool, acq_ns: u64) -> Sample {
+    FLAGS_SENSOR.pack(&[pir as i64 | (sound as i64) << 1 | (ir as i64) << 2], 0, acq_ns)
 }

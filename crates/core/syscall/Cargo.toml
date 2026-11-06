@@ -29,8 +29,6 @@ azos_drv_sensor   = { workspace = true, optional = true }
 azos_drv_actuator = { workspace = true, optional = true }
 azos_drv_power    = { workspace = true }
 azos_drv_api      = { workspace = true }
-azos_imu = { workspace = true, optional = true }
-azos_gps = { workspace = true, optional = true }
 azos_common = { workspace = true }
 # `SYS_SPAWN_EX` seeds the child's capabilities from the topology task named after
 # its image. Core to core (tools/lint/tcb_check.sh), and topology depends on no
@@ -269,7 +267,7 @@ actuation-smoke = []
 # reach the real robot crates. Off, they reach `src/no_robot.rs` (no motor,
 # no IMU/GPS) and the robot crates are not linked. The kernel's own
 # `use-robot` feature turns this on.
-use-robot = ["dep:azos_robot", "dep:azos_imu", "dep:azos_gps", "board-io"]
+use-robot = ["dep:azos_robot", "board-io"]
 # The board's sensors and actuators (kernel feature `board-io`, Kconfig
 # BOARD_IO): the converter, rangefinders, LiDAR, power monitor and camera behind
 # the `Sensor` and `Adc` interfaces, and PWM and the drivetrain's PID loop

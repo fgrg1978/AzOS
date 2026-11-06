@@ -8,9 +8,9 @@
 //!   1. **The driver stamps at the read.** Twenty `imu_read_scaled_stamped`
 //!      calls, 10 ms apart: each stamp lies between the timebase readings
 //!      taken just before and just after its call, and none goes backwards.
-//!   2. **The bus ages the sample from that stamp.** `SENSOR_BUS`, fed by the
-//!      kernel's `imu` task through `update_imu_at`, is snapshotted and its
-//!      IMU sample's age compared with `SensorBus::IMU_MAX_AGE_TICKS` — the
+//!   2. **The bus ages the sample from that stamp.** `SENSOR_BUS`, reading the
+//!      IMU stream the kernel's `imu` task publishes into, is snapshotted and
+//!      the newest sample's age compared with `SensorBus::IMU_MAX_AGE_NS` — the
 //!      check `SensorState::imu_valid` carries into L0 (`safety::check_common`).
 //!
 //! `[SENSORTS] PASS: ...` when both hold. `[SENSORTS] STALE: ...` is printed
@@ -41,18 +41,15 @@ fn sleep_ms(ms: u64) {
     azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
 }
 
-fn ticks_to_us(t: u64) -> u64 {
-    t.saturating_mul(1_000_000) / azos_drv_sys::timebase::TIMER_FREQ
-}
-
 pub(crate) fn sensor_ts_smoke_task(_: usize) {
     use azos_behavior::sensor_bus::{SensorBus, SENSOR_BUS};
     use azos_behavior::types::SensorState;
+    use azos_drv_base::sensors::board::IMU_SENSOR;
     use core::sync::atomic::Ordering as O;
 
     // The `imu` task's first publication, waited for on the clock (10 s).
     let give_up = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * 10;
-    while SENSOR_BUS.imu_updated_at.load(O::Relaxed) == 0 {
+    while IMU_SENSOR.published() == 0 {
         if azos_drv_sys::timebase::now() >= give_up {
             kprintln!("[SENSORTS] FAILED: no IMU sample reached the sensor bus in 10 s");
             return;
@@ -81,22 +78,22 @@ pub(crate) fn sensor_ts_smoke_task(_: usize) {
     }
 
     // 2. The bus, as the behaviour loop snapshots it.
-    let now = azos_drv_sys::timebase::now();
+    let now = azos_drv_sys::timebase::vdso_ns(azos_drv_sys::timebase::now());
     let mut s = SensorState::new();
     SENSOR_BUS.snapshot_at(&mut s, now);
-    let age = now.saturating_sub(SENSOR_BUS.imu_updated_at.load(O::Relaxed));
-    let bound = SensorBus::IMU_MAX_AGE_TICKS;
+    let age = now.saturating_sub(IMU_SENSOR.latest().map_or(0, |i| i.acq_ns));
+    let bound = SensorBus::IMU_MAX_AGE_NS;
     let mut verdict = azos_behavior::safety::safety_check(&s);
     // A stale bus sample: give L0 its grace (1 s) and up to half a second
     // more to act on it, judging fresh snapshots, as the behaviour loop does.
     if !s.imu_valid {
-        let until = now + azos_drv_sys::timebase::TIMER_FREQ * 3 / 2;
+        let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * 3 / 2;
         while verdict.violation == azos_behavior::safety::SafetyViolation::None
             && azos_drv_sys::timebase::now() < until
         {
             sleep_ms(100);
             let mut s2 = SensorState::new();
-            SENSOR_BUS.snapshot_at(&mut s2, azos_drv_sys::timebase::now());
+            SENSOR_BUS.snapshot(&mut s2);
             verdict = azos_behavior::safety::safety_check(&s2);
         }
     }
@@ -110,7 +107,7 @@ pub(crate) fn sensor_ts_smoke_task(_: usize) {
     }
     if !s.imu_valid {
         kprintln!("[SENSORTS] STALE: IMU readings still arriving ({}/{} answered) but the bus sample was acquired {} us ago >= {} us: imu_valid=false; L0 verdict {:?}",
-                  answered, READS, ticks_to_us(age), ticks_to_us(bound), verdict.violation);
+                  answered, READS, age / 1000, bound / 1000, verdict.violation);
     }
     if !(inside && monotonic) {
         // After STALE, a line the canary row does not read as a failure: the
@@ -126,7 +123,7 @@ pub(crate) fn sensor_ts_smoke_task(_: usize) {
     }
     if s.imu_valid {
         kprintln!("[SENSORTS] PASS: {} IMU reads stamped inside their read, monotonic; bus IMU sample acquired {} us ago < {} us: fresh (L0 verdict {:?})",
-                  READS, ticks_to_us(age), ticks_to_us(bound), verdict.violation);
+                  READS, age / 1000, bound / 1000, verdict.violation);
     }
 }
 

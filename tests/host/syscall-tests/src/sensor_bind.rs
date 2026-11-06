@@ -12,6 +12,7 @@ use crate::khost::Caller;
 use crate::sensor_host::SensorServer;
 use azos_abi::cap::CapPerms;
 use azos_devif::{outcome, Sensor};
+use azos_drv_base::sensors::board::{BATTERY, ENCODER, GPS, IMU, ODOM};
 
 const TID: u32 = 0x7e51_0002;
 
@@ -29,23 +30,23 @@ fn server(badge: u32, rights: CapPerms) -> SensorServer {
 /// sensor and is refused without `board-io`, like a read).
 ///
 /// **Canary** (`vdso-bind-canary`, a gate row, run without `use-robot`):
-/// `bind_vdso` skips `robot_sensor_absent`, so the generic build binds all
+/// `bind_vdso` skips `produced_in_this_image`, so the generic build binds all
 /// four and answers `Ok(true)` for the encoder and the odometry.
 #[test]
 fn a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain() {
     let _g = serial();
     azos_mm::vdso::task_page_claim(0, TID).expect("a page for the slot");
-    let bind = |ty: u64| server(ty as u32, CapPerms::READ).bind_vdso();
-    for ty in [SENSOR_TYPE_IMU, SENSOR_TYPE_ODOM, SENSOR_TYPE_ENCODER, SENSOR_TYPE_GPS] {
+    let bind = |ty: u32| server(ty, CapPerms::READ).bind_vdso();
+    for ty in [IMU, ODOM, ENCODER, GPS] {
         let out = bind(ty);
         if cfg!(feature = "use-robot") {
             assert!(out.is_ok(), "sensor {ty} with the Robot domain: code {}", out.code);
-            assert_eq!(out.value, matches!(ty, SENSOR_TYPE_ODOM | SENSOR_TYPE_ENCODER), "sensor {ty}");
+            assert_eq!(out.value, matches!(ty, ODOM | ENCODER), "sensor {ty}");
         } else {
             assert_eq!(out.code, outcome::NOT_READY, "sensor {ty} without the Robot domain");
         }
     }
-    let battery = bind(SENSOR_TYPE_BATTERY);
+    let battery = bind(BATTERY);
     if cfg!(feature = "board-io") {
         assert!(battery.is_ok() && !battery.value, "a sensor no interrupt samples binds as read-only, code {}", battery.code);
     } else {

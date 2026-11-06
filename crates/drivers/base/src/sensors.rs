@@ -122,6 +122,22 @@ pub fn value(chans: &[Channel], sample: &Sample, idx: usize) -> Option<i64> {
     })
 }
 
+/// A sample whose record holds `vals`, one per channel in order, each as many
+/// little-endian bytes as its channel is wide (the inverse of [`value`]).
+pub fn pack(chans: &[Channel], vals: &[i64], flags: u32, acq_ns: u64) -> Sample {
+    let mut rec = [0u8; azos_devif::sensor::SAMPLE_BYTES];
+    let mut off = 0;
+    for (c, v) in chans.iter().zip(vals) {
+        let w = c.width as usize;
+        if off + w > rec.len() {
+            break;
+        }
+        rec[off..off + w].copy_from_slice(&v.to_le_bytes()[..w]);
+        off += w;
+    }
+    Sample::new(&rec[..off], flags, acq_ns)
+}
+
 /// Why a read gave no sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadError {
@@ -164,8 +180,13 @@ impl Sensor {
         Sensor { channels, source, log: Log::new(Sample::EMPTY) }
     }
 
-    pub fn channels(&self) -> &'static [Channel] {
+    pub const fn channels(&self) -> &'static [Channel] {
         self.channels
+    }
+
+    /// A sample of this sensor holding `vals`, one per channel.
+    pub fn pack(&self, vals: &[i64], flags: u32, acq_ns: u64) -> Sample {
+        pack(self.channels, vals, flags, acq_ns)
     }
 
     pub fn source(&self) -> Source {

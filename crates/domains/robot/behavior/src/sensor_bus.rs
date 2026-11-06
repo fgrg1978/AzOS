@@ -1,24 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Sensor bus — shared sensor state between producer tasks and behavior consumer.
+//! Sensor bus — the behavior task's view of the sensor class's streams.
 //!
-//! Dedicated sensor tasks write to the bus at their own rate.
-//! The behavior task reads the latest snapshot atomically.
+//! Dedicated sensor tasks publish into the streams of the sensors they feed
+//! (`azos_drv_base::sensors`), each the one producer of its own, at its own
+//! rate; the behavior task reads the newest sample of each into a
+//! [`SensorState`](crate::types::SensorState). A stream's newest sample is
+//! one whole acquisition, so a snapshot never mixes the halves of two
+//! (an IMU's six axes, an odometry pair), and it carries when it was acquired,
+//! which is what the freshness rules below judge.
 //!
-//! This replaces the monolithic "read all sensors in behavior_task" pattern
-//! with priority-separated sensor tasks that use IO-wait.
+//! The read is direct and bounded: no syscall, no lock, no allocation, and a
+//! retry only while a producer is inside a store of a few words.
 //!
-//! Architecture:
-//!   imu_task (RT, 100Hz)     → sensor_bus.update_imu(accel, gyro)
-//!   odom_task (normal, 50Hz) → sensor_bus.update_odom(dist, heading, enc_l, enc_r)
-//!   range_task (normal, 20Hz)→ sensor_bus.update_range(front, right)
-//!   battery_task (low, 1Hz)  → sensor_bus.update_battery(mv)
-//!   gpio_task (normal, 20Hz) → sensor_bus.update_flags(flags)
-//!   sensor-ahrs (10Hz GPS)   → sensor_bus.update_gps(lat_deg7, lon_deg7, fix, sats)
+//!   imu_task (RT)        → IMU stream, IMU die temperature stream
+//!   odom_task            → odometry and encoder streams
+//!   sensor-slow          → rangefinder, battery and digital-line streams
+//!   sensor-ahrs          → GPS stream
 //!
-//!   behavior_task (normal)   → state = sensor_bus.snapshot()
+//!   behavior_task        → state = sensor_bus.snapshot()
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU16, AtomicU64, AtomicU8, Ordering};
+use azos_drv_base::sensors::{board, value, Sample, Sensor};
 
 /// Degrees × 10⁷ (the GPS driver's `lat_deg7`/`lon_deg7`) to micro-degrees
 /// (`SensorState::gps_lat_udeg`, the geofence's unit).
@@ -42,248 +44,134 @@ pub const fn sample_is_fresh(updated_at: u64, now: u64, max_age: u64) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Shared sensor bus (lock-free, atomic fields)
+// The bus
 // ---------------------------------------------------------------------------
 
-/// Atomic sensor bus — producers write individual fields, consumer reads snapshot.
-/// Uses relaxed ordering for sensor data (eventual consistency is fine for robotics).
-pub struct SensorBus {
-    // IMU
-    pub accel_x_mg: AtomicI32,
-    pub accel_y_mg: AtomicI32,
-    pub accel_z_mg: AtomicI32,
-    pub gyro_x_mdps: AtomicI32,
-    pub gyro_y_mdps: AtomicI32,
-    pub gyro_z_mdps: AtomicI32,
-    pub imu_valid: AtomicBool,
-    /// CLINT tick of the last `update_imu`. Zero means "never updated".
-    ///
-    /// `imu_valid` alone was a latch: set true on the first sample and never
-    /// set false anywhere in the tree. An IMU that stopped answering left the
-    /// tilt, fall and spin checks running against a frozen last-good
-    /// orientation, forever, and reporting it as valid. A robot lying on its
-    /// side reads level.
-    pub imu_updated_at: core::sync::atomic::AtomicU64,
+/// The streams a [`SensorBus`] reads.
+pub struct Sources {
+    pub imu: &'static Sensor,
+    pub imu_temp: &'static Sensor,
+    pub odom: &'static Sensor,
+    pub encoder: &'static Sensor,
+    pub range: &'static Sensor,
+    pub battery: &'static Sensor,
+    pub flags: &'static Sensor,
+    pub gps: &'static Sensor,
+}
 
-    // Odometry
-    pub odom_dist_mm: AtomicI64,
-    pub odom_heading_cdeg: AtomicI64,
-    pub enc_left: AtomicI64,
-    pub enc_right: AtomicI64,
+/// The behavior task's reader of the sensor streams.
+pub struct SensorBus(Sources);
 
-    // Rangefinder
-    pub range_front: AtomicU16,
-    pub range_right: AtomicU16,
+/// The newest sample of a stream, read once: every channel of a snapshot comes
+/// from the same acquisition.
+struct Latest {
+    sensor: &'static Sensor,
+    sample: Option<Sample>,
+}
 
-    // Battery
-    pub battery_mv: AtomicU16,
+impl Latest {
+    fn of(sensor: &'static Sensor) -> Self {
+        Self { sensor, sample: sensor.latest() }
+    }
 
-    // Temperature (centidegrees Celsius from IMU)
-    pub temp_cdeg: AtomicI32,
+    /// Channel `idx`, narrowed to the type `SensorState` holds; `None` before
+    /// the first sample.
+    fn channel<T: TryFrom<i64>>(&self, idx: usize) -> Option<T> {
+        T::try_from(value(self.sensor.channels(), self.sample.as_ref()?, idx)?).ok()
+    }
 
-    // GPIO sensor flags (PIR/sound/IR)
-    pub sensor_flags: AtomicU16,
-
-    // GPS, already in the geofence's unit (micro-degrees, see `deg7_to_udeg`)
-    pub gps_lat_udeg: AtomicI32,
-    pub gps_lon_udeg: AtomicI32,
-    /// GGA fix quality as the receiver reported it (0 = no fix).
-    pub gps_fix: AtomicU8,
-    pub gps_satellites: AtomicU8,
-    /// CLINT tick of the last `update_gps`. Zero means "never updated".
-    ///
-    /// The same latch `imu_updated_at` closes for the IMU: without it the last
-    /// fix a receiver produced before going silent would stay in every snapshot
-    /// with its quality intact, and a robot that has since driven out of its
-    /// fence would keep reading `Inside`.
-    pub gps_updated_at: AtomicU64,
-
-    // Timestamp of last update
-    pub timestamp: AtomicU64,
+    fn acq_ns(&self) -> Option<u64> {
+        self.sample.map(|s| s.acq_ns)
+    }
 }
 
 impl SensorBus {
-    pub const fn new() -> Self {
-        Self {
-            accel_x_mg: AtomicI32::new(0),
-            accel_y_mg: AtomicI32::new(0),
-            accel_z_mg: AtomicI32::new(1000), // 1g upright
-            gyro_x_mdps: AtomicI32::new(0),
-            gyro_y_mdps: AtomicI32::new(0),
-            gyro_z_mdps: AtomicI32::new(0),
-            imu_valid: AtomicBool::new(false),
-            imu_updated_at: core::sync::atomic::AtomicU64::new(0),
-            odom_dist_mm: AtomicI64::new(0),
-            odom_heading_cdeg: AtomicI64::new(0),
-            enc_left: AtomicI64::new(0),
-            enc_right: AtomicI64::new(0),
-            range_front: AtomicU16::new(0),
-            range_right: AtomicU16::new(0),
-            battery_mv: AtomicU16::new(0),
-            temp_cdeg: AtomicI32::new(0),
-            sensor_flags: AtomicU16::new(0),
-            gps_lat_udeg: AtomicI32::new(0),
-            gps_lon_udeg: AtomicI32::new(0),
-            gps_fix: AtomicU8::new(0),
-            gps_satellites: AtomicU8::new(0),
-            gps_updated_at: AtomicU64::new(0),
-            timestamp: AtomicU64::new(0),
-        }
+    pub const fn new(sources: Sources) -> Self {
+        Self(sources)
     }
 
-    // ── Producer methods (called by sensor tasks) ────────────────────────
-
-    pub fn update_temp(&self, cdeg: i32) {
-        self.temp_cdeg.store(cdeg, Ordering::Relaxed);
+    /// The board's sensors.
+    pub const fn board() -> Self {
+        Self::new(Sources {
+            imu: &board::IMU_SENSOR,
+            imu_temp: &board::IMU_TEMP_SENSOR,
+            odom: &board::ODOM_SENSOR,
+            encoder: &board::ENCODER_SENSOR,
+            range: &board::RANGE_SENSOR,
+            battery: &board::BATTERY_SENSOR,
+            flags: &board::FLAGS_SENSOR,
+            gps: &board::GPS_SENSOR,
+        })
     }
 
-    /// Publish one IMU sample, stamped with the time it reaches the bus.
-    /// A producer that knows when the sample was ACQUIRED calls
-    /// [`update_imu_at`](Self::update_imu_at) instead.
-    pub fn update_imu(&self, accel: [i32; 3], gyro: [i32; 3]) {
-        self.update_imu_at(accel, gyro, azos_drv_sys::timebase::now());
-    }
-
-    /// Publish one IMU sample acquired at timebase tick `acq` (the driver's
-    /// stamp, `azos_imu::imu_read_scaled_stamped`). The freshness check
-    /// in [`snapshot_at`](Self::snapshot_at) ages the sample from `acq`: a
-    /// driver that keeps handing over an old reading is stale, however often
-    /// it is delivered.
-    pub fn update_imu_at(&self, accel: [i32; 3], gyro: [i32; 3], acq: u64) {
-        self.accel_x_mg.store(accel[0], Ordering::Relaxed);
-        self.accel_y_mg.store(accel[1], Ordering::Relaxed);
-        self.accel_z_mg.store(accel[2], Ordering::Relaxed);
-        self.gyro_x_mdps.store(gyro[0], Ordering::Relaxed);
-        self.gyro_y_mdps.store(gyro[1], Ordering::Relaxed);
-        self.gyro_z_mdps.store(gyro[2], Ordering::Relaxed);
-        self.imu_updated_at.store(acq, Ordering::Relaxed);
-        self.imu_valid.store(true, Ordering::Release);
-    }
-
-    /// How long an IMU sample stays usable: 200 ms, from the board's timebase
-    /// rather than a tick count, so it is 200 ms on QEMU, the VF2 and the K1
-    /// alike.
+    /// How long an IMU sample stays usable, nanoseconds on the vDSO clock: 200
+    /// ms, so it is 200 ms on QEMU, the VF2 and the K1 alike.
     ///
-    /// Two orders of magnitude above the ~1 kHz the driver is polled at, so a
-    /// missed sample or a scheduling hiccup does not blind the safety layer;
-    /// two orders below the time a falling robot takes to matter.
-    pub const IMU_MAX_AGE_TICKS: u64 = azos_drv_sys::timebase::TIMER_FREQ / 5;
+    /// Two orders of magnitude above the IMU's period, so a missed sample or a
+    /// scheduling hiccup does not blind the safety layer; two orders below
+    /// the time a falling robot takes to matter.
+    pub const IMU_MAX_AGE_NS: u64 = 200_000_000;
 
-    pub fn update_odom(&self, dist_mm: i64, heading_cdeg: i64, enc_l: i64, enc_r: i64) {
-        self.odom_dist_mm.store(dist_mm, Ordering::Relaxed);
-        self.odom_heading_cdeg.store(heading_cdeg, Ordering::Relaxed);
-        self.enc_left.store(enc_l, Ordering::Relaxed);
-        self.enc_right.store(enc_r, Ordering::Relaxed);
-    }
-
-    pub fn update_range(&self, front: u16, right: u16) {
-        self.range_front.store(front, Ordering::Relaxed);
-        self.range_right.store(right, Ordering::Relaxed);
-    }
-
-    pub fn update_battery(&self, mv: u16) {
-        self.battery_mv.store(mv, Ordering::Relaxed);
-    }
-
-    pub fn update_flags(&self, flags: u16) {
-        self.sensor_flags.store(flags, Ordering::Relaxed);
-    }
-
-    /// Publish one GPS fix, in the driver's units (`GpsPosition::lat_deg7`,
-    /// `lon_deg7`, `fix`, `sats`). The conversion to micro-degrees happens here
-    /// and nowhere else.
+    /// How long a GPS fix stays usable: 2 s.
     ///
-    /// Five separate stores, like the IMU's six: a snapshot racing this can mix
-    /// two consecutive fixes field by field, both of them fixes the receiver
-    /// reported. The stamp is stored last, so the age a snapshot judges is
-    /// never newer than the fields it read.
-    pub fn update_gps(&self, lat_deg7: i32, lon_deg7: i32, fix: u8, sats: u8) {
-        // `max(1)`: zero is the "never updated" sentinel.
-        self.update_gps_at(lat_deg7, lon_deg7, fix, sats, azos_drv_sys::timebase::now().max(1));
-    }
-
-    /// [`update_gps`](Self::update_gps) for a fix acquired at timebase tick
-    /// `acq` (`azos_gps::gps_read_stamped`): the fix ages from the
-    /// receiver's sentence, not from this publication. A receiver that went
-    /// silent leaves its last fix in the driver, and a producer re-publishing
-    /// it every 100 ms used to keep it fresh forever. `acq == 0` (no sentence
-    /// ever parsed) is never fresh.
-    pub fn update_gps_at(&self, lat_deg7: i32, lon_deg7: i32, fix: u8, sats: u8, acq: u64) {
-        self.gps_lat_udeg.store(deg7_to_udeg(lat_deg7), Ordering::Relaxed);
-        self.gps_lon_udeg.store(deg7_to_udeg(lon_deg7), Ordering::Relaxed);
-        self.gps_satellites.store(sats, Ordering::Relaxed);
-        self.gps_fix.store(fix, Ordering::Relaxed);
-        // Zero stays the "never updated" sentinel: a fix with no acquisition
-        // time is not made fresh by being published.
-        self.gps_updated_at.store(acq, Ordering::Release);
-    }
-
-    /// How long a GPS fix stays usable: 2 s, from the board's timebase.
-    ///
-    /// Not the IMU's 200 ms. The kernel publishes GPS at 10 Hz and common
-    /// receivers produce 1-10 fixes a second, so 200 ms would be one or two
-    /// periods and a scheduling hiccup under TCG would flap the fence to
+    /// Not the IMU's 200 ms. The kernel publishes GPS at the slow rate and
+    /// common receivers produce 1-10 fixes a second, so 200 ms would be one or
+    /// two periods and a scheduling hiccup under TCG would flap the fence to
     /// `Unknown`. Two seconds is twenty publishes at the kernel's rate and two
     /// fixes from a 1 Hz receiver; a wheeled robot at 1 m/s covers 2 m in it,
     /// small against any fence radius worth configuring.
-    pub const GPS_MAX_AGE_TICKS: u64 = azos_drv_sys::timebase::TIMER_FREQ * 2;
+    pub const GPS_MAX_AGE_NS: u64 = 2_000_000_000;
 
-    pub fn update_timestamp(&self, ts: u64) {
-        self.timestamp.store(ts, Ordering::Release);
-    }
-
-    // ── Consumer method (called by behavior_task) ────────────────────────
-
-    /// Take an atomic snapshot of all sensor data into a SensorState.
+    /// Take the newest sample of every stream into `state`.
     pub fn snapshot(&self, state: &mut crate::types::SensorState) {
-        self.snapshot_at(state, azos_drv_sys::timebase::now());
+        self.snapshot_at(state, azos_drv_sys::timebase::vdso_ns(azos_drv_sys::timebase::now()));
     }
 
-    /// [`snapshot`](Self::snapshot), judging freshness at `now` rather than at
-    /// the clock's current reading.
-    pub fn snapshot_at(&self, state: &mut crate::types::SensorState, now: u64) {
-        state.accel_mg[0] = self.accel_x_mg.load(Ordering::Relaxed);
-        state.accel_mg[1] = self.accel_y_mg.load(Ordering::Relaxed);
-        state.accel_mg[2] = self.accel_z_mg.load(Ordering::Relaxed);
-        state.gyro_mdps[0] = self.gyro_x_mdps.load(Ordering::Relaxed);
-        state.gyro_mdps[1] = self.gyro_y_mdps.load(Ordering::Relaxed);
-        state.gyro_mdps[2] = self.gyro_z_mdps.load(Ordering::Relaxed);
-        // Valid AND fresh. `imu_valid` was a one-way latch, so a silent IMU
-        // left every tilt, fall and spin check evaluating a frozen reading and
-        // reporting it as good. Staleness is not a different kind of failure
-        // from "no IMU" — it is worse, because the stale value looks safe.
-        let imu_age = now
-            .saturating_sub(self.imu_updated_at.load(Ordering::Relaxed));
-        state.imu_valid = self.imu_valid.load(Ordering::Acquire)
-            && imu_age < Self::IMU_MAX_AGE_TICKS;
-
-        state.odom_dist_mm = self.odom_dist_mm.load(Ordering::Relaxed);
-        state.odom_heading_cdeg = self.odom_heading_cdeg.load(Ordering::Relaxed);
-        state.enc_left = self.enc_left.load(Ordering::Relaxed);
-        state.enc_right = self.enc_right.load(Ordering::Relaxed);
-
-        state.cam_dist_front = self.range_front.load(Ordering::Relaxed);
-        state.cam_dist_right = self.range_right.load(Ordering::Relaxed);
-
-        state.battery_mv = self.battery_mv.load(Ordering::Relaxed);
-        state.temp_cdeg = self.temp_cdeg.load(Ordering::Relaxed);
-        state.sensor_flags = self.sensor_flags.load(Ordering::Relaxed);
+    /// [`snapshot`](Self::snapshot), judging freshness at `now_ns` (the vDSO
+    /// clock) rather than at the clock's current reading.
+    pub fn snapshot_at(&self, state: &mut crate::types::SensorState, now_ns: u64) {
+        let s = &self.0;
+        // Valid AND fresh, by when the sample was ACQUIRED: a silent IMU
+        // leaves its last sample in the stream, and judging delivery would
+        // keep every tilt, fall and spin check evaluating a frozen reading
+        // and reporting it as good.
+        let imu = Latest::of(s.imu);
+        state.imu_valid = imu.acq_ns().is_some_and(|t| sample_is_fresh(t, now_ns, Self::IMU_MAX_AGE_NS));
+        for i in 0..3 {
+            // 1 g upright until the first sample.
+            state.accel_mg[i] = imu.channel(i).unwrap_or(if i == 2 { 1000 } else { 0 });
+            state.gyro_mdps[i] = imu.channel(3 + i).unwrap_or(0);
+        }
+        let odom = Latest::of(s.odom);
+        state.odom_dist_mm = odom.channel(0).unwrap_or(0);
+        state.odom_heading_cdeg = odom.channel(1).unwrap_or(0);
+        let enc = Latest::of(s.encoder);
+        state.enc_left = enc.channel(0).unwrap_or(0);
+        state.enc_right = enc.channel(1).unwrap_or(0);
+        // 0 is "no reading", and it has to be: the safety layer guards every
+        // battery check with `battery_mv > 0`, so a machine with no fuel gauge
+        // is not judged as empty.
+        let range = Latest::of(s.range);
+        state.cam_dist_front = range.channel(0).unwrap_or(0);
+        state.cam_dist_right = range.channel(1).unwrap_or(0);
+        state.battery_mv = Latest::of(s.battery).channel(0).unwrap_or(0);
+        state.temp_cdeg = Latest::of(s.imu_temp).channel(0).unwrap_or(0);
+        state.sensor_flags = Latest::of(s.flags).channel(0).unwrap_or(0);
 
         // A stale fix is no fix: quality and satellites both read zero, so
         // `safety::geofence_status` returns `Unknown` whatever threshold it
         // applies. The position is passed through; nothing trusts it without
-        // the quality.
-        let gps_fresh = sample_is_fresh(
-            self.gps_updated_at.load(Ordering::Acquire), now, Self::GPS_MAX_AGE_TICKS);
-        state.gps_lat_udeg = self.gps_lat_udeg.load(Ordering::Relaxed);
-        state.gps_lon_udeg = self.gps_lon_udeg.load(Ordering::Relaxed);
-        state.gps_fix = if gps_fresh { self.gps_fix.load(Ordering::Relaxed) } else { 0 };
-        state.gps_satellites =
-            if gps_fresh { self.gps_satellites.load(Ordering::Relaxed) } else { 0 };
-
-        state.timestamp = self.timestamp.load(Ordering::Acquire);
+        // the quality. The fix ages from the receiver's sentence (its
+        // acquisition stamp), not from the publication: a silent receiver's
+        // last fix, republished every period, goes stale all the same.
+        let gps = Latest::of(s.gps);
+        let gps_fresh = gps.acq_ns().is_some_and(|t| sample_is_fresh(t, now_ns, Self::GPS_MAX_AGE_NS));
+        state.gps_lat_udeg = deg7_to_udeg(gps.channel(0).unwrap_or(0));
+        state.gps_lon_udeg = deg7_to_udeg(gps.channel(1).unwrap_or(0));
+        state.gps_fix = if gps_fresh { gps.channel(3).unwrap_or(0) } else { 0 };
+        state.gps_satellites = if gps_fresh { gps.channel(4).unwrap_or(0) } else { 0 };
     }
 }
 
-/// Global sensor bus instance.
-pub static SENSOR_BUS: SensorBus = SensorBus::new();
+/// The board's sensor bus.
+pub static SENSOR_BUS: SensorBus = SensorBus::board();

@@ -4,47 +4,69 @@
 
 use crate::*;
 
-/// IMU sensor task — reads IMU at 100 Hz, writes to sensor bus.
+/// IMU sensor task — reads the IMU at Kconfig `SENSOR_IMU_HZ` and publishes
+/// into the IMU's streams (the sample, and the die temperature).
 /// RT priority: IMU data must be fresh for safety layer L0.
 ///
 /// Kconfig `IMU_SAMPLE_QUEUED` (default, wave 15 S1): an RT task only
 /// enqueues. Each tick collects the burst read queued earlier (if it has
 /// finished) and queues the next one; the bus's service step puts it on the
 /// wire. A read that fails or is not finished yet publishes nothing, so the
-/// bus sample ages and L0's staleness check sees it. `IMU_SAMPLE_POLLED`:
-/// the synchronous read in this task, as before.
+/// stream's newest sample ages and L0's staleness check sees it.
+/// `IMU_SAMPLE_POLLED`: the synchronous read in this task, as before.
 pub(crate) fn imu_task(_: usize) {
-    kprintln!("[IMU-TASK] Started (100 Hz, RT priority, {})",
+    kprintln!("[IMU-TASK] Started ({} Hz, RT priority, {})", azos_limits::SENSOR_IMU_HZ,
               if azos_limits::IMU_SAMPLE_QUEUED { "queued reads" } else { "polled reads" });
-    let imu_interval: u64 = azos_drv_sys::timebase::freq() / 100;
+    let imu_interval: u64 = azos_drv_sys::timebase::freq() / azos_limits::SENSOR_IMU_HZ as u64;
     let mut pending: Option<u32> = None;
+    let mut tx = ImuStreams::take();
     loop {
         if azos_limits::IMU_SAMPLE_QUEUED {
-            imu_queued_tick(&mut pending);
+            imu_queued_tick(&mut pending, &mut tx);
         } else if let Some((d, acq)) = azos_imu::imu_read_scaled_stamped() {
-            // Stamped by the driver at the read: the bus ages the sample
+            // Stamped by the driver at the read: the stream's sample ages
             // from its acquisition, not from this publication.
-            imu_publish(&d, acq);
+            tx.publish(&d, acq);
         }
         let dl = azos_drv_sys::timebase::now() + imu_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
     }
 }
 
-fn imu_publish(d: &azos_imu::ImuData, acq: u64) {
-    azos_behavior::sensor_bus::SENSOR_BUS.update_imu_at(d.accel_mg, d.gyro_mdps, acq);
-    azos_behavior::sensor_bus::SENSOR_BUS.update_temp(d.temp_cdeg);
+/// The `imu` task's two producers: the sample and the die temperature.
+struct ImuStreams {
+    imu: azos_drv_base::sensors::Producer<'static>,
+    temp: azos_drv_base::sensors::Producer<'static>,
+}
+
+impl ImuStreams {
+    fn take() -> Self {
+        use azos_drv_base::sensors::board;
+        Self {
+            imu: board::IMU_SENSOR.producer().expect("IMU stream: second producer"),
+            temp: board::IMU_TEMP_SENSOR.producer().expect("IMU temperature stream: second producer"),
+        }
+    }
+
+    fn publish(&mut self, d: &azos_imu::ImuData, acq: u64) {
+        use azos_drv_base::sensors::board;
+        let ns = azos_drv_sys::timebase::vdso_ns(acq);
+        let [ax, ay, az] = d.accel_mg.map(i64::from);
+        let [gx, gy, gz] = d.gyro_mdps.map(i64::from);
+        self.imu.publish(board::IMU_SENSOR.pack(&[ax, ay, az, gx, gy, gz], 0, ns));
+        self.temp.publish(board::IMU_TEMP_SENSOR.pack(&[d.temp_cdeg as i64], 0, ns));
+    }
 }
 
 /// One tick of the queued IMU path: collect the read in flight if it has
 /// finished, then queue the next one (and collect it at once if the bus
 /// finished it at submit: the QEMU simulation). Never waits.
-fn imu_queued_tick(pending: &mut Option<u32>) {
-    let collect = |t: u32, pending: &mut Option<u32>| {
+fn imu_queued_tick(pending: &mut Option<u32>, tx: &mut ImuStreams) {
+    let mut collect = |t: u32, pending: &mut Option<u32>| {
         if let Some(r) = azos_imu::imu_take(t) {
             *pending = None;
             if let Some((d, acq)) = r {
-                imu_publish(&d, acq);
+                tx.publish(&d, acq);
             }
         }
     };
@@ -102,59 +124,61 @@ fn i2c_service_kick() {
     }
 }
 
-/// Odometry + encoder task at 50 Hz.
+/// Odometry + encoder task at Kconfig `SENSOR_ODOM_HZ`.
 pub(crate) fn odom_task(_: usize) {
-    kprintln!("[ODOM-TASK] Started (50 Hz)");
-    let odom_interval: u64 = azos_drv_sys::timebase::freq() / 50;
+    use azos_drv_base::sensors::board;
+    kprintln!("[ODOM-TASK] Started ({} Hz)", azos_limits::SENSOR_ODOM_HZ);
+    let odom_interval: u64 = azos_drv_sys::timebase::freq() / azos_limits::SENSOR_ODOM_HZ as u64;
+    let mut odom_tx = board::ODOM_SENSOR.producer().expect("odometry stream: second producer");
+    let mut enc_tx = board::ENCODER_SENSOR.producer().expect("encoder stream: second producer");
     loop {
         let ((el, er), acq) = azos_robot::encoder_read_stamped();
         azos_robot::odom_update_at(el, er, acq);
         let (d, h) = azos_robot::odom_get();
-        azos_behavior::sensor_bus::SENSOR_BUS.update_odom(d, h, el, er);
+        let ns = azos_drv_sys::timebase::vdso_ns(acq);
+        odom_tx.publish(board::ODOM_SENSOR.pack(&[d, h], 0, ns));
+        enc_tx.publish(board::ENCODER_SENSOR.pack(&[el, er], 0, ns));
         let dl = azos_drv_sys::timebase::now() + odom_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
     }
 }
 
-/// Slow sensor task: rangefinder + battery + GPIO flags at 10 Hz.
+/// Slow sensor task: rangefinder + battery + digital lines at Kconfig
+/// `SENSOR_SLOW_HZ`.
 pub(crate) fn sensor_slow_task(_: usize) {
-    kprintln!("[SENSOR-SLOW] Started (10 Hz)");
-    let slow_interval: u64 = azos_drv_sys::timebase::freq() / 10;
-    use azos_behavior::sensor_bus::SENSOR_BUS;
+    use azos_drv_base::sensors::board;
+    use azos_drv_sys::timebase::{now, vdso_ns};
+    kprintln!("[SENSOR-SLOW] Started ({} Hz)", azos_limits::SENSOR_SLOW_HZ);
+    let slow_interval: u64 = azos_drv_sys::timebase::freq() / azos_limits::SENSOR_SLOW_HZ as u64;
+    let mut range_tx = board::RANGE_SENSOR.producer().expect("rangefinder stream: second producer");
+    let mut battery_tx = board::BATTERY_SENSOR.producer().expect("battery stream: second producer");
+    let mut flags_tx = board::FLAGS_SENSOR.producer().expect("digital-line stream: second producer");
+    let line = |pin: u8| azos_drv_gpio::gpio::gpio_read(pin as u32) == 1;
     loop {
-        let f = azos_drv_sensor::rangefinder::us_read_mm(0).unwrap_or(0) as u16;
-        let r = azos_drv_sensor::rangefinder::us_read_mm(1).unwrap_or(0) as u16;
-        SENSOR_BUS.update_range(f, r);
-        // **0 means "no reading", and it has to.** Both arms of this used to
-        // fabricate 3700 mV — one for "no ADC on this board", one for "the ADC
-        // did not answer" — and 3700 is below every pack threshold in
-        // `safety.rs` (wheeled/humanoid 6500, drone critical 6500). So under
-        // QEMU, where there is no ADS1115, `check_wheeled` saw a flat battery
-        // and L0 returned `EmergencyStop` on EVERY tick from boot: the whole
-        // L1/L2/L3 subsumption stack was permanently overridden and the
-        // kernel's own actuation path could not move a wheel in any scenario.
-        // Measured 2026-09-10 — `violation=LowBattery batt_mv=3700` with the
-        // brain commanding 60%, and the wheels at duty 0 for the entire run.
-        //
-        // The safety layer already handles "unknown" correctly: every battery
-        // check is guarded with `state.battery_mv > 0 &&`, deliberately, so a
-        // machine with no fuel gauge is not judged as empty. The fallback
-        // defeated that guard by inventing a number instead of admitting there
-        // was none — the same shape as the INA219 defect where an unpolled
-        // gauge read as a FULL battery, and the mirror image of its effect.
-        //
-        // The two lines above already use `.unwrap_or(0)` for the same reason.
-        let mv: u16 = if azos_drv_sensor::ads1115::ads1115_is_initialized() {
-            azos_drv_sensor::ads1115::ads1115_read_battery_mv(0, 2).unwrap_or(0) as u16
-        } else { 0 };
-        SENSOR_BUS.update_battery(mv);
-        let mut flags: u16 = 0;
-        if azos_drv_gpio::gpio::gpio_read(13) == 1 { flags |= 0x0001; }
-        if azos_drv_gpio::gpio::gpio_read(15) == 1 { flags |= 0x0002; }
-        if azos_drv_gpio::gpio::gpio_read(14) == 1 { flags |= 0x0004; }
-        SENSOR_BUS.update_flags(flags);
-        SENSOR_BUS.update_timestamp(azos_drv_sys::timebase::now());
-        if azos_behavior::offline::offline_is_active() && flags != 0 {
+        let front = azos_drv_sensor::rangefinder::us_read_mm(0);
+        let right = azos_drv_sensor::rangefinder::us_read_mm(1);
+        if let Some(s) = board::range_sample(front, right, vdso_ns(now())) {
+            range_tx.publish(s);
+        }
+        // No converter, or one that did not answer: nothing is published, and
+        // the bus reads 0, "no reading". A made-up voltage below the safety
+        // layer's thresholds read as a flat pack and held the e-stop on every
+        // tick from boot under QEMU, which has no ADS1115.
+        let mv = if azos_drv_sensor::ads1115::ads1115_is_initialized() {
+            azos_drv_sensor::ads1115::ads1115_read_battery_mv(0, 2)
+        } else {
+            None
+        };
+        if let Some(s) = board::battery_sample(mv, vdso_ns(now())) {
+            battery_tx.publish(s);
+        }
+        let (pir, sound, ir) = (
+            line(azos_limits::SENSOR_PIR_GPIO as u8),
+            line(azos_limits::SENSOR_SOUND_GPIO as u8),
+            line(azos_limits::SENSOR_IR_GPIO as u8),
+        );
+        flags_tx.publish(board::flags_sample(pir, sound, ir, vdso_ns(now())));
+        if azos_behavior::offline::offline_is_active() && (pir || sound || ir) {
             let _ = crate::buzzer::buzzer_beep();
         }
         let dl = azos_drv_sys::timebase::now() + slow_interval;
@@ -190,8 +214,12 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
     let mut gps_tx = CH_GPS.publisher().expect("CH_GPS: second publisher");
     let mut prox_tx = CH_PROXIMITY.publisher().expect("CH_PROXIMITY: second publisher");
 
-    // Fusion period: 100 Hz, the documented design rate.
-    let ahrs_interval: u64 = azos_drv_sys::timebase::freq() / 100;
+    let mut gps_stream = azos_drv_base::sensors::board::GPS_SENSOR.producer().expect("GPS stream: second producer");
+
+    // Fusion period: the IMU's rate (Kconfig `SENSOR_IMU_HZ`).
+    let ahrs_interval: u64 = azos_drv_sys::timebase::freq() / azos_limits::SENSOR_IMU_HZ as u64;
+    // The GPS is polled once per `SENSOR_SLOW_HZ` period.
+    let gps_every = (azos_limits::SENSOR_IMU_HZ / azos_limits::SENSOR_SLOW_HZ).max(1) as u32;
 
     let mut ahrs = AhrsState::new();
 
@@ -239,21 +267,26 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
             att_tx.publish(att, imu_acq);
         }
 
-        // Poll GPS at ~10 Hz (every 10 iterations of the 100 Hz loop).
+        // Poll GPS at `SENSOR_SLOW_HZ`.
         // Phase I3: GPS course-over-ground corrects AHRS yaw drift when moving.
         gps_counter += 1;
-        if gps_counter >= 10 {
+        if gps_counter >= gps_every {
             gps_counter = 0;
             if let Some(fix) = azos_gps::gps_read_stamped() {
                 let pos = fix.pos;
                 ahrs.update_gps(&pos);
                 gps_tx.publish(pos, fix.acq);
-                // The geofence's copy: converted to micro-degrees and aged by
-                // the bus from the receiver's sentence — see
-                // `SensorBus::update_gps_at`. A silent receiver's last fix
-                // goes stale here instead of being re-stamped every 100 ms.
-                azos_behavior::sensor_bus::SENSOR_BUS.update_gps_at(
-                    pos.lat_deg7, pos.lon_deg7, pos.fix, pos.sats, fix.acq);
+                // The GPS stream, aged from the receiver's sentence (the
+                // fix's acquisition stamp): a silent receiver's last fix
+                // goes stale in the geofence instead of being re-stamped at
+                // every poll.
+                use azos_drv_base::sensors::board::GPS_SENSOR;
+                let flags = if fix.synthetic { azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC as u32 } else { 0 };
+                gps_stream.publish(GPS_SENSOR.pack(
+                    &[pos.lat_deg7 as i64, pos.lon_deg7 as i64, pos.alt_mm as i64, pos.fix as i64, pos.sats as i64],
+                    flags,
+                    azos_drv_sys::timebase::vdso_ns(fix.acq),
+                ));
             }
         }
 
