@@ -74,6 +74,7 @@
 //! engine and cuts power at every device write.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use azos_abi::cap::{launch_name, CapKind, CapPerms};
@@ -156,6 +157,14 @@ enum SignerFloors {
     Nothing,
 }
 
+/// What the apply keeps while it judges floors: each signer's floors once read,
+/// and the packages staged under each signer (the only ones a floor is
+/// remembered for).
+struct FloorCtx {
+    cache: Vec<(usize, SignerFloors)>,
+    staged: Vec<(usize, String)>,
+}
+
 /// Is the verified package `v` below its security floor? Reads the slot of
 /// `v`'s signer once per apply and judges it against the mark the device holds
 /// (`azos_pkg::index::judge`). A newer index replaces what the device remembers
@@ -167,7 +176,7 @@ fn below_floor<D: BlockDev>(
     topo: &Topology<'static>,
     boot: &Boot<'_>,
     sink: &mut dyn Sink,
-    cache: &mut Vec<(usize, SignerFloors)>,
+    cx: &mut FloorCtx,
     v: &azos_pkg::Verified<'_, '_>,
 ) -> bool {
     if !boot.sec_floor_enforce {
@@ -175,7 +184,7 @@ fn below_floor<D: BlockDev>(
     }
     let signer = v.signer_index;
     let key = index::mark_key(&v.signer.key_id);
-    if !cache.iter().any(|(s, _)| *s == signer) {
+    if !cx.cache.iter().any(|(s, _)| *s == signer) {
         let root = vol.root();
         let bytes = find(vol, root, &index::slot_name(&v.signer.key_id))
             .ok()
@@ -184,16 +193,26 @@ fn below_floor<D: BlockDev>(
         let (floors, raise) = index::judge(bytes.as_deref(), topo, signer, boot.marks.mark(&key));
         let state = match floors {
             index::Floors::Known(ix) => {
-                if let Some(m) = raise {
-                    let floors: Vec<(u64, azos_pkg::index::Version)> = ix.floors(&key).collect();
-                    match boot.marks.accept(&key, m, &floors) {
-                        Ok(()) => sink.record(&receipt::index_accepted(&ix, boot.now_ns)),
-                        Err(e) => {
-                            sink.note(format_args!(
-                                "[PKG] signer {}: the index (serial {}) and its floors were not remembered ({:?}); the volume alone holds them",
-                                signer + 1, m.serial, e
-                            ));
-                            let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer as u32 + 1, [0, m.serial as u64, 1]);
+                // Remember the index (a newer one replaces what the device held) and
+                // the floors it names for the packages staged under this signer, and
+                // again whenever that set changes at the same serial.
+                let floors: Vec<(u64, azos_pkg::index::Version)> = (0..ix.entries)
+                    .filter_map(|i| ix.get(i))
+                    .filter_map(|e| {
+                        let f = e.sec_floor?;
+                        cx.staged.iter().any(|(s, n)| *s == signer && n == e.name).then(|| (index::name_hash(&key, e.name), f))
+                    })
+                    .collect();
+                match boot.marks.accept(&key, ix.mark(), &floors) {
+                    Ok(()) if raise.is_some() => sink.record(&receipt::index_accepted(&ix, boot.now_ns)),
+                    Ok(()) => {}
+                    Err(e) => {
+                        sink.note(format_args!(
+                            "[PKG] signer {}: the index (serial {}) and its floors were not remembered ({:?}); the volume alone holds them",
+                            signer + 1, ix.serial, e
+                        ));
+                        if e != index::MarkErr::Write {
+                            let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer as u32 + 1, [0, ix.serial as u64, 1]);
                             p.clock_ns = boot.now_ns;
                             sink.record(&p);
                         }
@@ -213,9 +232,9 @@ fn below_floor<D: BlockDev>(
             }
             index::Floors::None => SignerFloors::Nothing,
         };
-        cache.push((signer, state));
+        cx.cache.push((signer, state));
     }
-    match cache.iter().find(|(s, _)| *s == signer).map(|(_, f)| f) {
+    match cx.cache.iter().find(|(s, _)| *s == signer).map(|(_, f)| f) {
         Some(SignerFloors::Known(b)) => index::verify(b, topo).ok().is_some_and(|ix| {
             assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: signer, id: v.id }, &ix).below_floor()
         }),
@@ -235,6 +254,9 @@ struct Staged {
     images: u32,
     /// Its signed head verifies.
     verifies: bool,
+    /// The package's name and the topology index of its signer, when the head
+    /// verifies: what a floor is remembered for.
+    pkg: Option<(String, usize)>,
 }
 
 fn staged_heads<D: BlockDev>(vol: &mut Volume<D>, root: u64, names: &[Vec<u8>], topo: &Topology<'static>) -> Vec<Staged> {
@@ -243,11 +265,11 @@ fn staged_heads<D: BlockDev>(vol: &mut Volume<D>, root: u64, names: &[Vec<u8>], 
         let Ok(Some(e)) = find(vol, root, name) else { continue };
         let Ok(head) = read_file(vol, e.ino, HEAD_MAX, false) else { continue };
         let Ok(pk) = Package::parse_head(&head) else { continue };
-        let (images, verifies) = match azos_pkg::verify_head(pk, topo) {
-            Ok(v) => (v.meta.images().len() as u32, true),
-            Err(_) => (azos_pkg::Meta::parse(pk.meta).map_or(0, |m| m.images().len() as u32), false),
+        let (images, verifies, pkg) = match azos_pkg::verify_head(pk, topo) {
+            Ok(v) => (v.meta.images().len() as u32, true, Some((String::from(v.meta.name), v.signer_index))),
+            Err(_) => (azos_pkg::Meta::parse(pk.meta).map_or(0, |m| m.images().len() as u32), false, None),
         };
-        out.push(Staged { name: name.clone(), id: pk.id(), images, verifies });
+        out.push(Staged { name: name.clone(), id: pk.id(), images, verifies, pkg });
     }
     out
 }
@@ -330,6 +352,9 @@ fn settle_supersede<D: BlockDev>(
 /// An old version applied again in the boot its upgrade could not be applied.
 struct Reinstated {
     id: [u8; 32],
+    /// The package's name and its admit receipt, recorded once the final set is known.
+    name: String,
+    receipt: ProvenanceRecord,
     images: Vec<(Vec<u8>, [u8; 32])>,
     low: bool,
 }
@@ -344,7 +369,7 @@ fn reinstate<D: BlockDev>(
     topo: &mut Topology<'static>,
     boot: &Boot<'_>,
     sink: &mut dyn Sink,
-    floors: &mut Vec<(usize, SignerFloors)>,
+    floors: &mut FloorCtx,
 ) -> Vec<Reinstated> {
     let mut out = Vec::new();
     for (name, id) in olds {
@@ -358,11 +383,11 @@ fn reinstate<D: BlockDev>(
         let rows: &'static [u8] = Box::leak(v.pkg.rows.to_vec().into_boxed_slice());
         match admit(&v, rows, topo, &boot.device) {
             Ok(a) => {
-                sink.record(&receipt::admitted(&v, &a, boot.now_ns));
-                sink.note(format_args!("[PKG] {} stays applied: the version that was to replace it could not be", v.meta.name));
                 let low = below_floor(vol, topo, boot, sink, floors, &v);
                 out.push(Reinstated {
                     id: *id,
+                    name: String::from(v.meta.name),
+                    receipt: receipt::admitted(&v, &a, boot.now_ns),
                     images: v.meta.images().iter().map(|im| (im.name.as_bytes().to_vec(), im.sha256)).collect(),
                     low,
                 });
@@ -871,15 +896,26 @@ pub fn apply<D: BlockDev>(
     // out for a failed upgrade.
     let canary_supersede = cfg!(feature = "pkg-supersede-canary");
     let pairs = if canary_supersede { Vec::new() } else { read_supersede(vol, root) };
-    let heads = if pairs.is_empty() { Vec::new() } else { staged_heads(vol, root, &names, topo) };
+    if boot.sec_floor_enforce && boot.marks.lost() {
+        sink.note(format_args!(
+            "[PKG] index marks lost: no copy of the device's memory of the repository indexes can be read; each signer's stored index stands until it is written again"
+        ));
+        let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, 0, [0, 0, 2]);
+        p.clock_ns = boot.now_ns;
+        sink.record(&p);
+    }
+    let heads = if pairs.is_empty() && !boot.sec_floor_enforce { Vec::new() } else { staged_heads(vol, root, &names, topo) };
     let new_verifies = |n: &[u8; 32]| heads.iter().any(|h| h.id == *n && h.verifies);
     let mut parked: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
-    let mut floors: Vec<(usize, SignerFloors)> = Vec::new();
+    let mut floors = FloorCtx {
+        cache: Vec::new(),
+        staged: heads.iter().filter_map(|h| h.pkg.as_ref().map(|(n, s)| (*s, n.clone()))).collect(),
+    };
     let mut fresh: Vec<Vec<u8>> = Vec::new();
     let mut kept_images: Vec<Vec<u8>> = Vec::new();
     let mut kept_ok: Vec<[u8; 32]> = Vec::new();
     // Packages the apply refused for what they are (not for the volume's state).
-    let mut refused: Vec<[u8; 32]> = Vec::new();
+    let mut refused: Vec<([u8; 32], u64, Refusal)> = Vec::new();
     for name in &names {
         let Ok(Some(e)) = find(vol, root, name) else { continue };
         let bytes = match read_file(vol, e.ino, PKG_MAX, true) {
@@ -896,8 +932,9 @@ pub fn apply<D: BlockDev>(
         let v = match verify(&bytes, topo) {
             Ok(v) => v,
             Err(r) => {
-                sink.record(&receipt::refused(&id, signer_of(&pkg, topo), &r, boot.now_ns));
-                refused.push(id);
+                let signer = signer_of(&pkg, topo);
+                sink.record(&receipt::refused(&id, signer, &r, boot.now_ns));
+                refused.push((id, signer, r));
                 continue;
             }
         };
@@ -926,7 +963,7 @@ pub fn apply<D: BlockDev>(
             }
             Err(r) => {
                 sink.record(&receipt::refused(&id, v.signer_index as u64 + 1, &r, boot.now_ns));
-                refused.push(id);
+                refused.push((id, v.signer_index as u64 + 1, r));
             }
         }
     }
@@ -948,8 +985,9 @@ pub fn apply<D: BlockDev>(
             Ok(v) => v,
             Err(r) => {
                 if let Ok(p) = Package::parse(bytes) {
-                    sink.record(&receipt::refused(&p.id(), signer_of(&p, topo), &r, boot.now_ns));
-                    refused.push(p.id());
+                    let signer = signer_of(&p, topo);
+                    sink.record(&receipt::refused(&p.id(), signer, &r, boot.now_ns));
+                    refused.push((p.id(), signer, r));
                 }
                 continue;
             }
@@ -959,7 +997,7 @@ pub fn apply<D: BlockDev>(
             Ok(a) => admitted.push((v, a)),
             Err(r) => {
                 sink.record(&receipt::refused(&v.id, v.signer_index as u64 + 1, &r, boot.now_ns));
-                refused.push(v.id);
+                refused.push((v.id, v.signer_index as u64 + 1, r));
             }
         }
     }
@@ -1080,6 +1118,10 @@ pub fn apply<D: BlockDev>(
     }
     out.packages += reinstated.len();
     for r in &reinstated {
+        // Once, for the set that stands: a first attempt rolled back with the new
+        // versions' rows is not on record.
+        sink.record(&r.receipt);
+        sink.note(format_args!("[PKG] {} stays applied: the version that was to replace it could not be", r.name));
         for (name, sha) in &r.images {
             out.images.push(AppliedImage { name: name.clone(), sha256: *sha, package: r.id, below_floor: r.low });
         }
@@ -1088,11 +1130,14 @@ pub fn apply<D: BlockDev>(
     // A new version refused for what it is (not applied this boot) is taken out
     // of the staging directory with its refusal on record, so the pair ends and
     // its old version is simply the package: the next boot does not try again.
-    let dead: Vec<[u8; 32]> = refused.iter().copied().filter(|r| pairs.iter().any(|(_, n)| n == r)).collect();
+    let dead: Vec<&([u8; 32], u64, Refusal)> = refused.iter().filter(|(id, _, _)| pairs.iter().any(|(_, n)| n == id)).collect();
     if !dead.is_empty() && !canary_supersede {
+        // Journalled with the removal, as a rolled-back trial's packages are.
         let _ = grouped(vol, |v| {
-            for id in &dead {
-                quarantine(v, id)?;
+            for (id, signer, why) in &dead {
+                if quarantine(v, id)? {
+                    journal(v, &receipt::refused(id, *signer, why, boot.now_ns))?;
+                }
             }
             Ok(())
         });

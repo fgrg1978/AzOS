@@ -39,6 +39,9 @@ pkg-downgrade-canary = []
 # The device remembers no index: a replayed, deleted or diverging index passes as
 # the first one.
 pkg-mark-canary = []
+# A write of the marks goes over the bank that holds the newest copy instead of the
+# other one: a cut or a torn sector in it loses other signers' marks.
+pkg-bank-canary = []
 # The trial rule never rolls back: a package whose boots all failed stays applied.
 pkg-trial-canary = []
 

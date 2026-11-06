@@ -197,19 +197,37 @@ config PKG_SEC_FLOOR_ENFORCE
       per boot, either ISA.
 
 config PKG_INDEX_MARK_SECTORS
-    int "Reserved tail sectors of the repository index marks and floors"
-    range 1 4
+    int "Reserved tail sectors per bank of the repository index marks and floors"
+    range 1 2
     default 2
     help
-      The last this-many sectors of the reserved tail past the FAT32 volume
-      (kernel/src/reserved_tail.rs, 8 sectors) hold the "KPIX" records
-      (crates/core/pkg/src/index.rs, MarkTable), 13 entries a sector: per
-      signer, the serial and digest of the newest repository index the
-      boot-time apply judged by, and the security floors that index named. No
-      writer of the staging volume reaches them. An index that would not fit is
-      still used from the volume, and the apply says that it was not remembered.
+      The last twice this many sectors of the reserved tail past the FAT32
+      volume (kernel/src/reserved_tail.rs, 8 sectors) hold the "KPIX" records
+      (crates/core/pkg/src/index.rs, MarkTable) in two banks, 13 entries a
+      sector: per signer, the serial and digest of the newest repository index
+      the boot-time apply judged by, and the security floors that index named
+      for the packages staged under that signer. A write fills the bank that
+      does not hold the newest copy and wins by generation when every sector of
+      it verifies against the digest of the whole bank, so no cut or torn
+      sector loses what was remembered. No writer of the staging volume reaches
+      them. An index that would not fit is still used from the volume, and the
+      apply says that it was not remembered.
 
       0 is the link key, 1 the entropy seed, 2 the device record and
       TOPOLOGY_FLOOR_SECTOR (3 to 7) the topology counter floor: the build
       refuses a value that reaches the topology floor's sector. Clear the marks
       of a device with tools/sign/device_provision.py --clear-index-marks.
+
+config PKG_INDEX_FLOORS_PER_SIGNER
+    int "Floors remembered per signer"
+    range 1 12
+    default 6
+    help
+      The floors a signer's newest index names for the packages staged under that
+      signer are remembered (PKG_INDEX_MARK_SECTORS) up to this many; an index
+      that names more is not remembered (a refusal record says so), so no signer
+      can fill the table at another's expense. A signer takes one entry for its
+      mark and these for its floors: the table holds as many signers as its
+      entries (13 a sector) divide into, and one beyond that is not remembered
+      either.
+

@@ -83,7 +83,9 @@ impl Sink for Kernel {
         // The package (its id's prefix) and the first row it adds go with the
         // verdict: the receipt is what `why` explains an install by.
         let origin = azos_decision::Origin { topology_row_id: p.topology_row_id, image_hash_prefix: p.image_hash_prefix };
-        azos_decision::record_with(Rule::PackageInstall, verdict, p.subject, p.n, origin);
+        // An index record is filed as one: the ring and `why` read the rule.
+        let rule = if p.rule == Rule::PackageIndex as u8 { Rule::PackageIndex } else { Rule::PackageInstall };
+        azos_decision::record_with(rule, verdict, p.subject, p.n, origin);
     }
 
     fn note(&mut self, line: core::fmt::Arguments<'_>) {
@@ -99,9 +101,9 @@ pub(super) struct Staged {
     floor: u32,
 }
 
-/// The first of the tail sectors the index marks and floors span: the last
-/// `PKG_INDEX_MARK_SECTORS` of the reserved tail.
-const MARK_FIRST: u32 = crate::reserved_tail::TAIL_SECTORS - azos_limits::PKG_INDEX_MARK_SECTORS as u32;
+/// The first of the tail sectors the index marks and floors span: the last two
+/// banks of `PKG_INDEX_MARK_SECTORS` sectors of the reserved tail.
+const MARK_FIRST: u32 = crate::reserved_tail::TAIL_SECTORS - 2 * azos_limits::PKG_INDEX_MARK_SECTORS as u32;
 // The marks must not share a sector with the topology counter floor, or each
 // write would clobber the other and the floor would silently read 0.
 const _: () = assert!(
@@ -110,68 +112,33 @@ const _: () = assert!(
     "PKG_INDEX_MARK_SECTORS reaches TOPOLOGY_FLOOR_SECTOR: lower it or move the topology floor sector"
 );
 
-/// The marks of the repository indexes and the floors they named, in the
-/// reserved tail like the topology counter floor: where the writers of the
-/// staging volume do not reach. Read once when the apply begins; an accept
-/// writes the table's sectors and flushes.
-struct TailMarks {
-    table: core::cell::RefCell<azos_pkg::index::MarkTable>,
-}
+/// The reserved tail, as the marks read and write it (`azos_pkg::index::MarkStore`
+/// holds the logic: two banks, generations, digests).
+struct KernelTail;
 
-impl TailMarks {
-    fn load() -> Self {
-        let n = azos_limits::PKG_INDEX_MARK_SECTORS as usize;
-        let mut sectors = [[0u8; 512]; azos_pkg::index::SECTORS_MAX];
-        if super::config_auth::tail_writable() {
-            for (i, s) in sectors[..n].iter_mut().enumerate() {
-                if crate::reserved_tail::read(MARK_FIRST + i as u32, s).is_err() {
-                    *s = [0; 512];
-                }
-            }
-        }
-        Self { table: core::cell::RefCell::new(azos_pkg::index::MarkTable::decode(&sectors[..n])) }
+impl azos_pkg::index::Tail for KernelTail {
+    fn writable(&self) -> bool {
+        super::config_auth::tail_writable()
     }
-}
-
-impl azos_pkg::index::Marks for TailMarks {
-    fn mark(&self, signer: &azos_pkg::index::SignerKey) -> Option<azos_pkg::index::Mark> {
-        self.table.borrow().mark(signer)
+    fn read(&self, sector: usize, out: &mut [u8; 512]) -> bool {
+        crate::reserved_tail::read(MARK_FIRST + sector as u32, out).is_ok()
     }
-
-    fn floor(&self, signer: &azos_pkg::index::SignerKey, name: &str) -> Option<azos_pkg::index::Version> {
-        self.table.borrow().floor_of(signer, azos_pkg::index::name_hash(signer, name))
+    fn write(&self, sector: usize, data: &[u8; 512]) -> bool {
+        crate::reserved_tail::write(MARK_FIRST + sector as u32, data).is_ok()
     }
-
-    fn accept(
-        &self,
-        signer: &azos_pkg::index::SignerKey,
-        mark: azos_pkg::index::Mark,
-        floors: &[(u64, azos_pkg::index::Version)],
-    ) -> Result<(), azos_pkg::index::MarkErr> {
-        use azos_pkg::index::MarkErr;
-        if !super::config_auth::tail_writable() {
-            return Err(MarkErr::Write);
-        }
-        let mut next = *self.table.borrow();
-        next.accept(signer, mark, floors)?;
-        // The sectors that hold the floors first, so a cut between sectors leaves
-        // the old mark beside newer floors: the same index is accepted again.
-        let mut ok = true;
-        for i in (0..next.sectors()).rev() {
-            ok &= crate::reserved_tail::write(MARK_FIRST + i as u32, &next.encode(i)).is_ok();
-        }
-        if !ok || azos_drv_block::blkdev::flush().is_err() {
-            return Err(MarkErr::Write);
-        }
-        *self.table.borrow_mut() = next;
-        Ok(())
+    fn flush(&self) -> bool {
+        azos_drv_block::blkdev::flush().is_ok()
     }
 }
 
 /// The interface table and the epoch floor, built where the device is judged.
 fn judge<R>(floor: u32, f: impl FnOnce(&Boot<'_>) -> R) -> R {
     let api = azos_pkg::api::device_api();
-    let marks = TailMarks::load();
+    let marks = azos_pkg::index::MarkStore::load(
+        KernelTail,
+        azos_limits::PKG_INDEX_MARK_SECTORS as usize,
+        azos_limits::PKG_INDEX_FLOORS_PER_SIGNER as usize,
+    );
     let boot = Boot {
         device: Device::this(&api).with_epoch_floor(floor),
         now_ns: clock_ns(),

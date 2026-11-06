@@ -981,30 +981,12 @@ fn drop_index(v: &mut Volume<MemDev>) {
     v.commit().unwrap();
 }
 
-/// The device's memory of the indexes, in RAM.
-struct MemMarks(std::cell::RefCell<azos_pkg::index::MarkTable>);
+/// The device's memory of the indexes: the real store over a tail in RAM.
+type MemMarks = azos_pkg::index::MarkStore<&'static RamTail>;
 
-impl Default for MemMarks {
-    fn default() -> Self {
-        MemMarks(std::cell::RefCell::new(azos_pkg::index::MarkTable::new(2)))
-    }
-}
-
-impl azos_pkg::index::Marks for MemMarks {
-    fn mark(&self, signer: &azos_pkg::index::SignerKey) -> Option<azos_pkg::index::Mark> {
-        self.0.borrow().mark(signer)
-    }
-    fn floor(&self, signer: &azos_pkg::index::SignerKey, name: &str) -> Option<azos_pkg::index::Version> {
-        self.0.borrow().floor_of(signer, azos_pkg::index::name_hash(signer, name))
-    }
-    fn accept(
-        &self,
-        signer: &azos_pkg::index::SignerKey,
-        mark: azos_pkg::index::Mark,
-        floors: &[(u64, azos_pkg::index::Version)],
-    ) -> Result<(), azos_pkg::index::MarkErr> {
-        self.0.borrow_mut().accept(signer, mark, floors)
-    }
+fn mem_marks() -> &'static MemMarks {
+    let tail: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+    Box::leak(Box::new(MemMarks::load(tail, 2, 6)))
 }
 
 fn enforcing() -> Boot<'static> {
@@ -1133,7 +1115,7 @@ fn a_staged_upgrade_replaces_the_applied_programs_of_the_old_version() {
 fn a_replayed_or_deleted_index_cannot_lift_a_floor() {
     use azos_pkg::index::{mark_key, Marks};
     let d = signed_device();
-    let marks: &'static MemMarks = Box::leak(Box::default());
+    let marks = mem_marks();
     let key = mark_key(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
     let mut v = volume();
     stage(&mut v, &acme());
@@ -1189,7 +1171,7 @@ fn without_a_mark_or_an_index_there_is_no_floor() {
     let mut v = volume();
     stage(&mut v, &acme());
     let mut t = topo(d);
-    let a = apply(&mut v, &mut t, &enforcing_with(Box::leak(Box::default())), &mut Log::default());
+    let a = apply(&mut v, &mut t, &enforcing_with(mem_marks()), &mut Log::default());
     assert_eq!(floors_of(&a), [("ACME.ELF".to_string(), false)]);
 }
 
@@ -1366,7 +1348,54 @@ fn an_upgrade_that_cannot_be_applied_leaves_the_old_version_applied() {
             assert_eq!(staged(&mut v), vec![old_name.clone()], "{what}, boot {boot_no}: the new version is out of the staging directory");
             if boot_no == 0 {
                 assert!(log.records.iter().any(|p| p.verdict == Verdict::Refuse as u8), "{what}: the refusal is on record");
+                let bad_id = azos_pkg::receipt::id_prefix(&Package::parse(&bad).unwrap().id());
+                assert!(
+                    journal(&mut v).iter().any(|p| p.verdict == Verdict::Refuse as u8 && p.image_hash_prefix == bad_id),
+                    "{what}: and in the volume's journal, as a rolled-back package's is"
+                );
             }
         }
+    }
+}
+
+/// **The volume cannot take the new version's snapshot** (all the restore points are
+/// taken): the new version stays staged and is tried again, and the old one is applied in
+/// that boot, its programs where they were, with its admit receipt on record once. The
+/// first attempt at applying it is rolled back with the new version's rows and is not
+/// on record twice.
+///
+/// **Canary** `pkg-park-canary`: the old version is out, and the component with it.
+#[test]
+fn an_upgrade_the_volume_cannot_snapshot_leaves_the_old_version_applied() {
+    let d = signed_device();
+    let mut v = volume();
+    let (old, new) = (acme_at("1.0.0", 7), acme_at("1.3.0", 11));
+    let old_name = stage(&mut v, &old);
+    run(&mut v, d, 0);
+    run(&mut v, d, 0);
+    let old_apps = apps(&mut v);
+    while v.snapshots().len() < proto::SNAP_MAX {
+        v.snapshot_create(proto::SNAPSHOT_LABEL).unwrap();
+    }
+    let new_name = stage_upgrade(&mut v, &old, &new);
+    let old_id = Package::parse(&old).unwrap().id();
+    for boot_no in 0..2 {
+        let (t, a, log) = run(&mut v, d, 0);
+        assert_eq!((a.packages, a.trial), (1, None), "boot {boot_no}: {:?}", log.notes);
+        assert_eq!(rows_named(&t, b"ACME.ELF"), 1, "boot {boot_no}: the old version's row, and only it");
+        assert_eq!(a.images.len(), 1);
+        assert_eq!(a.images[0].sha256, azos_crypto::sha256::sha256(&old_apps["ACME.ELF"]));
+        assert_eq!(apps(&mut v), old_apps, "boot {boot_no}: its program is where it was");
+        let mut both = staged(&mut v);
+        both.sort();
+        let mut want = vec![old_name.clone(), new_name.clone()];
+        want.sort();
+        assert_eq!(both, want, "boot {boot_no}: the new version is kept to be tried again");
+        let admits = log
+            .records
+            .iter()
+            .filter(|p| p.rule == Rule::PackageInstall as u8 && p.verdict == Verdict::Admit as u8 && p.image_hash_prefix == azos_pkg::receipt::id_prefix(&old_id))
+            .count();
+        assert_eq!(admits, 1, "boot {boot_no}: the old version's receipt once");
     }
 }

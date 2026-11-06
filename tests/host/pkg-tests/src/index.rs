@@ -165,11 +165,11 @@ fn an_older_serial_is_stale_and_the_same_index_is_not_a_different_one() {
 }
 
 #[test]
-fn the_mark_table_goes_on_the_medium_and_replaces_a_signers_floors() {
+fn the_mark_table_replaces_a_signers_floors_and_holds_to_its_quota() {
     use azos_pkg::index::{name_hash, MarkErr, SECTOR_ENTRIES};
     let (a, b): (SignerKey, SignerKey) = ([1; 16], [2; 16]);
     let v = |s: &str| Version::parse(s).unwrap();
-    let mut t = MarkTable::new(2);
+    let mut t = MarkTable::new(2, 6);
     let floors = [(name_hash(&a, "x"), v("1.2")), (name_hash(&a, "y"), v("3"))];
     t.accept(&a, Mark { serial: 5, digest: 9 }, &floors).unwrap();
     t.accept(&b, Mark { serial: 1, digest: 1 }, &[(name_hash(&b, "x"), v("9"))]).unwrap();
@@ -181,23 +181,15 @@ fn the_mark_table_goes_on_the_medium_and_replaces_a_signers_floors() {
     assert_eq!((t.floor_of(&a, name_hash(&a, "x")), t.floor_of(&a, name_hash(&a, "y"))), (None, Some(v("4"))));
     assert_eq!(t.floor_of(&b, name_hash(&b, "x")), Some(v("9")));
 
-    // On the medium: sector by sector, each with its own tag.
-    let sectors: Vec<[u8; 512]> = (0..2).map(|i| t.encode(i)).collect();
-    assert_eq!(MarkTable::decode(&sectors), t);
-    assert_eq!(MarkTable::decode(&[[0u8; 512]; 2]).mark(&a), None, "blank sectors hold nothing");
-    for at in [0, 4, 5, 7, 20, 511] {
-        let mut s = sectors.clone();
-        s[0][at] ^= 1;
-        assert_ne!(MarkTable::decode(&s), t, "byte {at} of the first sector");
-    }
-
-    // Full is a typed refusal and changes nothing.
-    let mut full = MarkTable::new(1);
+    // One signer cannot take another's room: over its quota it gets a typed refusal and
+    // the table is as it was; signers past the capacity are refused (Full), none evicted.
+    let before = t;
+    let seven: Vec<(u64, Version)> = (0..7u64).map(|i| (i, v("1"))).collect();
+    assert_eq!(t.accept(&b, Mark { serial: 2, digest: 2 }, &seven), Err(MarkErr::Quota));
+    assert_eq!(t, before);
+    let mut full = MarkTable::new(1, 20);
     let many: Vec<(u64, Version)> = (0..SECTOR_ENTRIES as u64).map(|i| (i, v("1"))).collect();
-    let before = full;
     assert_eq!(full.accept(&a, Mark { serial: 1, digest: 0 }, &many), Err(MarkErr::Full));
-    assert_eq!(full, before);
-    assert!(full.accept(&a, Mark { serial: 1, digest: 0 }, &many[..SECTOR_ENTRIES - 1]).is_ok());
 }
 
 /// What a signer's floors are when the device remembers its index: the newest
@@ -353,4 +345,198 @@ fn only_a_newer_listed_version_under_the_same_signer_is_an_upgrade() {
     let mut gone = installed("1.5", 0);
     gone.name = "other-pkg";
     assert_eq!(upgrade_entry(&assess(&gone, &ix)), Err(UpgradeWhy::NotListed));
+}
+
+/// The slot file name and the topology's "same slot" rule are one rule: two key
+/// ids share a slot name exactly when the topology refuses them as signers.
+#[test]
+fn the_topology_refuses_exactly_the_key_ids_that_share_a_slot() {
+    let base = [0x5Au8; 32];
+    for (i, differ) in [(0usize, true), (1, true), (2, true), (3, true), (4, false), (31, false)] {
+        for bit in 0..8u8 {
+            let mut other = base;
+            other[i] ^= 1 << bit;
+            let same_slot = azos_pkg::index::slot_name(&base) == azos_pkg::index::slot_name(&other);
+            assert_eq!(azos_topology::types::same_index_slot(&base, &other), same_slot, "byte {i} bit {bit}");
+            if i == 3 && bit < 4 {
+                assert!(same_slot, "the low nibble of byte 3 is not in the name");
+            } else if differ {
+                assert!(!same_slot, "byte {i} bit {bit}");
+            } else {
+                assert!(same_slot || i > 3, "byte {i} is past the name");
+            }
+        }
+    }
+}
+
+// ── the marks on the medium: two banks ───────────────────────────────────────
+
+mod banks {
+    use super::*;
+    use azos_pkg::index::{name_hash, MarkStore, Marks};
+
+    const A: SignerKey = [0xA1; 16];
+    const B: SignerKey = [0xB2; 16];
+
+    fn v(s: &str) -> Version {
+        Version::parse(s).unwrap()
+    }
+
+    fn floors(who: &SignerKey, names: &[(&str, &str)]) -> Vec<(u64, Version)> {
+        names.iter().map(|(n, f)| (name_hash(who, n), v(f))).collect()
+    }
+
+    fn load(t: &RamTail) -> MarkStore<&RamTail> {
+        MarkStore::load(t, 2, 6)
+    }
+
+    /// What the store knows of a signer: its serial and its floors for `names`.
+    fn view(s: &MarkStore<&RamTail>, who: &SignerKey, names: &[&str]) -> (Option<u32>, Vec<Option<Version>>) {
+        (s.mark(who).map(|m| m.serial), names.iter().map(|n| s.floor(who, n)).collect())
+    }
+
+    /// A tail that holds A at serial 6 (floors p, q) and B at serial 3 (floor r), in
+    /// the order A, B, A: both banks hold a copy, the newest in bank 0.
+    fn populated() -> RamTail {
+        let t = RamTail::new(4);
+        let s = load(&t);
+        s.accept(&A, Mark { serial: 5, digest: 5 }, &floors(&A, &[("p", "1.0"), ("q", "2.0")])).unwrap();
+        s.accept(&B, Mark { serial: 3, digest: 3 }, &floors(&B, &[("r", "7.0")])).unwrap();
+        s.accept(&A, Mark { serial: 6, digest: 6 }, &floors(&A, &[("p", "1.5"), ("q", "2.0")])).unwrap();
+        t
+    }
+
+    #[test]
+    fn what_is_written_is_what_is_read_back_and_the_banks_alternate() {
+        let t = RamTail::new(4);
+        let s = load(&t);
+        assert!(!s.lost() && s.mark(&A).is_none(), "a medium nothing was written on remembers nothing, and lost nothing");
+        s.accept(&A, Mark { serial: 5, digest: 5 }, &floors(&A, &[("p", "1.0")])).unwrap();
+        assert!(t.sectors.borrow()[0] != [0u8; 512] && t.sectors.borrow()[2] == [0u8; 512], "the first copy is in bank 0");
+        s.accept(&B, Mark { serial: 3, digest: 3 }, &[]).unwrap();
+        assert!(t.sectors.borrow()[2] != [0u8; 512], "the next one in bank 1, bank 0 untouched");
+        let again = load(&t);
+        assert_eq!(view(&again, &A, &["p"]), (Some(5), vec![Some(v("1.0"))]));
+        assert_eq!(again.mark(&B).map(|m| m.serial), Some(3));
+        // The same thing again writes nothing.
+        let before = t.sectors.borrow().clone();
+        s.accept(&B, Mark { serial: 3, digest: 3 }, &[]).unwrap();
+        assert_eq!(*t.sectors.borrow(), before);
+    }
+
+    #[test]
+    fn a_bank_that_fails_is_ignored_never_read_as_zeros() {
+        // Torn, unreadable and altered banks: the other bank stands, with what it holds.
+        for damage in 0..3 {
+            let t = populated();
+            match damage {
+                0 => t.sectors.borrow_mut()[1][200] ^= 1, // the newest bank, second sector
+                1 => t.unreadable.borrow_mut().push(0),
+                _ => t.sectors.borrow_mut()[0] = [0u8; 512], // zeroed, but the other bank is not
+            }
+            let s = load(&t);
+            assert!(!s.lost(), "damage {damage}: one bank is whole");
+            // Bank 1 holds the copy before the last write: A at serial 5, B at 3.
+            assert_eq!(s.mark(&A).map(|m| m.serial), Some(5), "damage {damage}");
+            assert_eq!(s.mark(&B).map(|m| m.serial), Some(3), "damage {damage}");
+        }
+        // Both banks damaged: lost, not empty; the next accept writes it again.
+        let t = populated();
+        t.sectors.borrow_mut()[0][9] ^= 1;
+        t.sectors.borrow_mut()[3][9] ^= 1;
+        let s = load(&t);
+        assert!(s.lost() && s.mark(&A).is_none() && s.mark(&B).is_none());
+        s.accept(&A, Mark { serial: 6, digest: 6 }, &[]).unwrap();
+        assert!(!s.lost());
+        let again = load(&t);
+        assert!(!again.lost() && again.mark(&A).map(|m| m.serial) == Some(6));
+        // A sector of garbage on a medium that has been written is not pristine.
+        let t = RamTail::new(4);
+        t.sectors.borrow_mut()[3] = [0x55; 512];
+        assert!(load(&t).lost());
+    }
+
+    /// **No cut and no torn sector of a write loses a mark or a floor** that was there:
+    /// every signer's mark is at or above what it was, and a signer's floors are the old
+    /// ones or the new ones, whole. The write goes to the bank that does not hold the
+    /// newest copy.
+    ///
+    /// **Canary** `pkg-bank-canary`: the write goes over the newest bank and the cut
+    /// leaves the older copy (a lower serial) as the winner.
+    #[test]
+    fn no_cut_or_torn_sector_of_a_write_loses_a_mark_or_a_floor() {
+        let old_b = (Some(3), vec![Some(v("7.0"))]);
+        let new_b_floors = floors(&B, &[("r", "8.0")]);
+        let mut cases = 0;
+        for tear in [None, Some(1), Some(37), Some(100), Some(300), Some(500), Some(511)] {
+            for budget in 0..=2usize {
+                let t = populated();
+                let s = load(&t);
+                let before = view(&s, &A, &["p", "q"]);
+                t.budget.set(Some(budget));
+                t.tear.set(tear);
+                let r = s.accept(&B, Mark { serial: 4, digest: 4 }, &new_b_floors);
+                assert_eq!(r.is_ok(), budget >= 2, "budget {budget}");
+                t.budget.set(None);
+                if r.is_err() {
+                    assert_eq!(view(&s, &B, &["r"]), old_b, "a failed write changes nothing in memory");
+                }
+                let after = load(&t);
+                assert!(!after.lost(), "budget {budget} tear {tear:?}: the bank that was not written stands");
+                assert_eq!(view(&after, &A, &["p", "q"]), before, "A is as it was (budget {budget} tear {tear:?})");
+                let b = view(&after, &B, &["r"]);
+                assert!(b == old_b || b == (Some(4), vec![Some(v("8.0"))]), "B is whole old or whole new, got {b:?}");
+                // And the next write goes through.
+                after.accept(&B, Mark { serial: 4, digest: 4 }, &new_b_floors).unwrap();
+                assert_eq!(view(&load(&t), &B, &["r"]), (Some(4), vec![Some(v("8.0"))]));
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 21);
+    }
+
+    /// The first write of all, cut: nothing was there to lose. Nothing landed, and the
+    /// medium is still blank; or something landed, and it is not a whole bank and not
+    /// zeros, so it reads as lost. Either way the next accept writes it.
+    #[test]
+    fn a_cut_of_the_very_first_write_leaves_a_blank_or_lost_medium_and_is_rewritten() {
+        for (budget, tear, lost) in [(0, None, false), (0, Some(100), true), (1, None, true), (1, Some(300), true)] {
+            let t = RamTail::new(4);
+            let s = load(&t);
+            t.budget.set(Some(budget));
+            t.tear.set(tear);
+            assert!(s.accept(&A, Mark { serial: 1, digest: 1 }, &[]).is_err());
+            t.budget.set(None);
+            let after = load(&t);
+            assert_eq!((after.lost(), after.mark(&A).is_none()), (lost, true), "budget {budget} tear {tear:?}");
+            after.accept(&A, Mark { serial: 1, digest: 1 }, &[]).unwrap();
+            assert_eq!(load(&t).mark(&A).map(|m| m.serial), Some(1));
+        }
+    }
+
+    /// A third-party signer cannot push another's floors out: it holds to its quota, and
+    /// when the table is full it is the newcomer that is refused.
+    #[test]
+    fn a_signer_cannot_evict_another_signers_floors() {
+        use azos_pkg::index::MarkErr;
+        let t = populated();
+        let s = load(&t);
+        let c: SignerKey = [0xC3; 16];
+        let many: Vec<(u64, Version)> = (0..20u64).map(|i| (i, v("1"))).collect();
+        assert_eq!(s.accept(&c, Mark { serial: u32::MAX, digest: 0 }, &many), Err(MarkErr::Quota));
+        // Up to its quota it may, and then the table is what it is.
+        s.accept(&c, Mark { serial: u32::MAX, digest: 0 }, &many[..6]).unwrap();
+        let d: SignerKey = [0xD4; 16];
+        let e: SignerKey = [0xE5; 16];
+        let f: SignerKey = [0xF6; 16];
+        // 26 entries: A 3, B 2, C 7, D 7, E 7 -- the sixth signer is the one that is refused.
+        s.accept(&d, Mark { serial: 1, digest: 0 }, &many[..6]).unwrap();
+        s.accept(&e, Mark { serial: 1, digest: 0 }, &many[..6]).unwrap();
+        assert_eq!(s.accept(&f, Mark { serial: 1, digest: 0 }, &many[..6]), Err(MarkErr::Full));
+        // Nobody who was there lost anything.
+        let after = load(&t);
+        assert_eq!(view(&after, &A, &["p", "q"]), (Some(6), vec![Some(v("1.5")), Some(v("2.0"))]));
+        assert_eq!(view(&after, &B, &["r"]), (Some(3), vec![Some(v("7.0"))]));
+        assert_eq!(after.mark(&c).map(|m| m.serial), Some(u32::MAX));
+    }
 }

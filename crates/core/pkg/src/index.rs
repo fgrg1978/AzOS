@@ -56,7 +56,7 @@
 use core::fmt;
 use core::ops::ControlFlow;
 
-use azos_crypto::sha256::sha256;
+use azos_crypto::sha256::{sha256, Sha256};
 use azos_topology::{SignerSpec, Topology};
 
 use crate::container::{le16, le32, KEY_LEN_MAX, SIG_LEN_MAX};
@@ -682,6 +682,10 @@ pub enum MarkErr {
     /// The table has no room for another signer or another floor (raise the
     /// Kconfig `PKG_INDEX_MARK_SECTORS`): nothing was changed.
     Full,
+    /// The index names more floors for the signer's staged packages than the
+    /// per-signer quota (Kconfig `PKG_INDEX_FLOORS_PER_SIGNER`) holds: nothing
+    /// was changed, and no signer can take another's room.
+    Quota,
     /// The record could not be made durable.
     Write,
 }
@@ -698,6 +702,12 @@ pub trait Marks {
     /// [`name_hash`]) as the floors it names, replacing the floors remembered
     /// from the signer's earlier index. All or nothing.
     fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr>;
+    /// The memory was written before and no copy of it can be read now (media
+    /// damage): what it held is gone. Nothing is remembered until the next
+    /// [`accept`](Self::accept) writes it again.
+    fn lost(&self) -> bool {
+        false
+    }
 }
 
 /// A memory that remembers nothing and takes nothing: a device whose medium has
@@ -717,16 +727,19 @@ impl Marks for NoMarks {
 }
 
 const MARKS_MAGIC: [u8; 4] = *b"KPIX";
-const MARKS_VERSION: u8 = 2;
+const MARKS_VERSION: u8 = 3;
 /// Bytes of one table entry on the medium.
 pub const ENTRY_LEN: usize = 36;
 const SECTOR: usize = 512;
-const HEAD: usize = 6;
+/// magic, version, generation, sector index, sectors in the bank, entries here.
+const HEAD: usize = 12;
+const BANK_DIGEST: usize = 8;
+const TAG: usize = 4;
 /// Entries one sector holds.
-pub const SECTOR_ENTRIES: usize = (SECTOR - HEAD - 4) / ENTRY_LEN;
-/// Most sectors a table spans (the Kconfig `PKG_INDEX_MARK_SECTORS` ceiling).
-pub const SECTORS_MAX: usize = 4;
-const ENTRIES_MAX: usize = SECTORS_MAX * SECTOR_ENTRIES;
+pub const SECTOR_ENTRIES: usize = (SECTOR - HEAD - BANK_DIGEST - TAG) / ENTRY_LEN;
+/// Most sectors a bank spans (the Kconfig `PKG_INDEX_MARK_SECTORS` ceiling).
+pub const BANK_SECTORS_MAX: usize = 2;
+const ENTRIES_MAX: usize = BANK_SECTORS_MAX * SECTOR_ENTRIES;
 const KIND_MARK: u8 = 1;
 const KIND_FLOOR: u8 = 2;
 
@@ -740,14 +753,14 @@ struct Slot {
 
 const NO_ENTRY: Slot = Slot { kind: 0, signer: [0; 16], a: 0, b: 0 };
 
-/// The marks and floors as they go on the medium: `sectors` records of
-/// [`SECTOR_ENTRIES`] entries, each with its own tag, so one sector is written
-/// atomically and a torn one loses only its own entries.
+/// The marks and floors: per signer one mark entry and at most `quota` floor
+/// entries, so a signer takes room only up to its quota and never another's.
 #[derive(Clone, Copy)]
 pub struct MarkTable {
     entries: [Slot; ENTRIES_MAX],
     n: usize,
     cap: usize,
+    quota: usize,
 }
 
 impl PartialEq for MarkTable {
@@ -765,13 +778,14 @@ impl core::fmt::Debug for MarkTable {
 }
 
 impl MarkTable {
-    /// An empty table of `sectors` sectors (1 to [`SECTORS_MAX`]).
-    pub const fn new(sectors: usize) -> Self {
-        let s = if sectors == 0 { 1 } else if sectors > SECTORS_MAX { SECTORS_MAX } else { sectors };
-        Self { entries: [NO_ENTRY; ENTRIES_MAX], n: 0, cap: s * SECTOR_ENTRIES }
+    /// An empty table whose bank spans `sectors` sectors (1 to
+    /// [`BANK_SECTORS_MAX`]), holding at most `quota` floors per signer.
+    pub const fn new(sectors: usize, quota: usize) -> Self {
+        let s = if sectors == 0 { 1 } else if sectors > BANK_SECTORS_MAX { BANK_SECTORS_MAX } else { sectors };
+        Self { entries: [NO_ENTRY; ENTRIES_MAX], n: 0, cap: s * SECTOR_ENTRIES, quota }
     }
 
-    /// Sectors the table spans.
+    /// Sectors a bank of the table spans.
     pub const fn sectors(&self) -> usize {
         self.cap / SECTOR_ENTRIES
     }
@@ -793,13 +807,15 @@ impl MarkTable {
         self.live().iter().find(|e| e.kind == KIND_FLOOR && e.signer == *signer && e.a == hash).map(|e| Version::from_packed(e.b))
     }
 
-    /// Remember `mark` and `floors` for `signer` in place of what it had; the
-    /// table is unchanged when it would not fit.
+    /// Remember `mark` and `floors` for `signer` in place of what it had. The
+    /// table is unchanged when the floors are over the quota or would not fit.
     pub fn accept(&mut self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr> {
+        if floors.len() > self.quota {
+            return Err(MarkErr::Quota);
+        }
         let mut next = *self;
-        next.retain(|e| !(e.kind == KIND_FLOOR && e.signer == *signer) && !(e.kind == KIND_MARK && e.signer == *signer));
-        let need = 1 + floors.len();
-        if next.n + need > next.cap {
+        next.retain(|e| e.signer != *signer);
+        if next.n + 1 + floors.len() > next.cap {
             return Err(MarkErr::Full);
         }
         next.push(Slot { kind: KIND_MARK, signer: *signer, a: mark.serial as u64, b: mark.digest });
@@ -826,52 +842,234 @@ impl MarkTable {
         self.n += 1;
     }
 
-    /// Sector `i` of the table as it goes on the medium: magic, version, count,
-    /// the entries, and the first four bytes of the SHA-256 of all of it.
-    pub fn encode(&self, i: usize) -> [u8; SECTOR] {
-        let mut out = [0u8; SECTOR];
-        out[..4].copy_from_slice(&MARKS_MAGIC);
-        out[4] = MARKS_VERSION;
-        let from = (i * SECTOR_ENTRIES).min(self.n);
-        let es = &self.entries[from..(from + SECTOR_ENTRIES).min(self.n)];
-        out[5] = es.len() as u8;
-        for (k, e) in es.iter().enumerate() {
-            let at = HEAD + k * ENTRY_LEN;
-            out[at] = e.kind;
-            out[at + 1..at + 17].copy_from_slice(&e.signer);
-            out[at + 17..at + 25].copy_from_slice(&e.a.to_le_bytes());
-            out[at + 25..at + 33].copy_from_slice(&e.b.to_le_bytes());
+    fn entry_bytes(e: &Slot) -> [u8; ENTRY_LEN] {
+        let mut b = [0u8; ENTRY_LEN];
+        b[0] = e.kind;
+        b[1..17].copy_from_slice(&e.signer);
+        b[17..25].copy_from_slice(&e.a.to_le_bytes());
+        b[25..33].copy_from_slice(&e.b.to_le_bytes());
+        b
+    }
+
+    /// The digest of a whole bank: its generation, the sectors it spans and every
+    /// entry, in order.
+    fn bank_digest(&self, gen: u32) -> [u8; BANK_DIGEST] {
+        let mut h = Sha256::new();
+        h.update(&gen.to_le_bytes());
+        h.update(&[self.sectors() as u8, self.n as u8]);
+        for e in self.live() {
+            h.update(&Self::entry_bytes(e));
         }
-        let body = SECTOR - 4;
-        let tag = sha256(&out[..body]);
-        out[body..].copy_from_slice(&tag[..4]);
+        let d = h.finalize();
+        let mut out = [0u8; BANK_DIGEST];
+        out.copy_from_slice(&d[..BANK_DIGEST]);
         out
     }
 
-    /// The table in `sectors` (the records of a table of `sectors.len()`
-    /// sectors, in order). A sector that is not a valid record (a blank one
-    /// included) holds no entries.
-    pub fn decode(sectors: &[[u8; SECTOR]]) -> Self {
-        let mut t = Self::new(sectors.len());
-        for s in sectors {
-            let body = SECTOR - 4;
-            if s[..4] != MARKS_MAGIC || s[4] != MARKS_VERSION || s[body..] != sha256(&s[..body])[..4] {
-                continue;
+    /// The table as one bank of generation `gen`: [`sectors`](Self::sectors)
+    /// sectors, each with the generation, its place in the bank, the digest of the
+    /// WHOLE bank and its own tag, so a bank is whole only when every sector is
+    /// there, of one generation and agreeing with the digest.
+    pub fn encode_bank(&self, gen: u32) -> [[u8; SECTOR]; BANK_SECTORS_MAX] {
+        let mut out = [[0u8; SECTOR]; BANK_SECTORS_MAX];
+        let digest = self.bank_digest(gen);
+        for (i, sec) in out.iter_mut().enumerate().take(self.sectors()) {
+            sec[..4].copy_from_slice(&MARKS_MAGIC);
+            sec[4] = MARKS_VERSION;
+            sec[5..9].copy_from_slice(&gen.to_le_bytes());
+            sec[9] = i as u8;
+            sec[10] = self.sectors() as u8;
+            let from = (i * SECTOR_ENTRIES).min(self.n);
+            let es = &self.entries[from..(from + SECTOR_ENTRIES).min(self.n)];
+            sec[11] = es.len() as u8;
+            for (k, e) in es.iter().enumerate() {
+                let at = HEAD + k * ENTRY_LEN;
+                sec[at..at + ENTRY_LEN].copy_from_slice(&Self::entry_bytes(e));
             }
-            let n = (s[5] as usize).min(SECTOR_ENTRIES);
+            sec[SECTOR - TAG - BANK_DIGEST..SECTOR - TAG].copy_from_slice(&digest);
+            let tag = sha256(&sec[..SECTOR - TAG]);
+            sec[SECTOR - TAG..].copy_from_slice(&tag[..TAG]);
+        }
+        out
+    }
+
+    /// A bank read from `raw` (its first `sectors` sectors): the table and its
+    /// generation, or `None` when any sector is not a valid record, the sectors
+    /// disagree on generation or place, or the digest of the whole does not match.
+    fn decode_bank(raw: &[[u8; SECTOR]], sectors: usize, quota: usize) -> Option<(Self, u32)> {
+        let mut t = Self::new(sectors, quota);
+        let (mut gen, mut digest) = (None, [0u8; BANK_DIGEST]);
+        for (i, s) in raw.iter().enumerate().take(sectors) {
+            if s[..4] != MARKS_MAGIC || s[4] != MARKS_VERSION || s[SECTOR - TAG..] != sha256(&s[..SECTOR - TAG])[..TAG] {
+                return None;
+            }
+            let g = u32::from_le_bytes(s[5..9].try_into().ok()?);
+            if s[9] as usize != i || s[10] as usize != sectors || *gen.get_or_insert(g) != g {
+                return None;
+            }
+            let d = &s[SECTOR - TAG - BANK_DIGEST..SECTOR - TAG];
+            if i == 0 {
+                digest.copy_from_slice(d);
+            } else if digest != d {
+                return None;
+            }
+            let n = s[11] as usize;
+            if n > SECTOR_ENTRIES || t.n + n > t.cap {
+                return None;
+            }
             for k in 0..n {
                 let at = HEAD + k * ENTRY_LEN;
-                if t.n == t.cap || !matches!(s[at], KIND_MARK | KIND_FLOOR) {
-                    break;
+                if !matches!(s[at], KIND_MARK | KIND_FLOOR) {
+                    return None;
                 }
                 let mut signer = [0u8; 16];
                 signer.copy_from_slice(&s[at + 1..at + 17]);
-                let a = u64::from_le_bytes(s[at + 17..at + 25].try_into().unwrap_or([0; 8]));
-                let b = u64::from_le_bytes(s[at + 25..at + 33].try_into().unwrap_or([0; 8]));
+                let a = u64::from_le_bytes(s[at + 17..at + 25].try_into().ok()?);
+                let b = u64::from_le_bytes(s[at + 25..at + 33].try_into().ok()?);
                 t.push(Slot { kind: s[at], signer, a, b });
             }
         }
-        t
+        let gen = gen?;
+        (t.bank_digest(gen) == digest).then_some((t, gen))
+    }
+}
+
+/// What the medium holds of the marks.
+#[derive(Clone, Copy, Debug)]
+pub enum Loaded {
+    /// Nothing was ever written (every sector is zero): no marks.
+    Pristine(MarkTable),
+    /// The valid bank of the highest generation.
+    Bank {
+        /// Its table.
+        table: MarkTable,
+        /// Its generation.
+        gen: u32,
+        /// Which of the two banks it is.
+        bank: usize,
+    },
+    /// Something was written and no bank can be read whole now.
+    Lost(MarkTable),
+}
+
+/// Read the marks from `raw[bank][sector]`, the two banks of `sectors` sectors.
+/// A bank that fails its digest, or any sector of it, is ignored (never read as
+/// zeros); the other one stands. Two banks that both fail are [`Loaded::Lost`]
+/// unless every sector is zero, which is a medium nothing was written on.
+pub fn load_banks(raw: &[[[u8; SECTOR]; BANK_SECTORS_MAX]; 2], sectors: usize, quota: usize) -> Loaded {
+    let empty = MarkTable::new(sectors, quota);
+    let sectors = empty.sectors();
+    if raw.iter().all(|b| b[..sectors].iter().all(|s| s.iter().all(|&x| x == 0))) {
+        return Loaded::Pristine(empty);
+    }
+    let a = MarkTable::decode_bank(&raw[0], sectors, quota).map(|(t, g)| (t, g, 0));
+    let b = MarkTable::decode_bank(&raw[1], sectors, quota).map(|(t, g)| (t, g, 1));
+    match (a, b) {
+        (Some(x), Some(y)) => {
+            let (table, gen, bank) = if y.1 > x.1 { y } else { x };
+            Loaded::Bank { table, gen, bank }
+        }
+        (Some((table, gen, bank)), None) | (None, Some((table, gen, bank))) => Loaded::Bank { table, gen, bank },
+        (None, None) => Loaded::Lost(empty),
+    }
+}
+
+/// The reserved tail as the marks need it.
+pub trait Tail {
+    /// Whether the medium has a records store at all.
+    fn writable(&self) -> bool;
+    /// Read tail sector `sector` (counted from the first the marks use).
+    fn read(&self, sector: usize, out: &mut [u8; 512]) -> bool;
+    /// Write tail sector `sector`.
+    fn write(&self, sector: usize, data: &[u8; 512]) -> bool;
+    /// Make what was written durable.
+    fn flush(&self) -> bool;
+}
+
+struct State {
+    table: MarkTable,
+    gen: u32,
+    /// The bank that holds `table` on the medium.
+    bank: Option<usize>,
+    lost: bool,
+}
+
+/// The marks over a [`Tail`]: two banks, written one after the other. The bank
+/// that holds the newest valid copy is never written; the other one is written
+/// whole, and it wins the moment its last sector verifies, so no cut or tear of
+/// a write leaves fewer marks than before.
+pub struct MarkStore<T: Tail> {
+    tail: T,
+    sectors: usize,
+    state: core::cell::RefCell<State>,
+}
+
+impl<T: Tail> MarkStore<T> {
+    /// Read the marks from `tail`: banks of `sectors` sectors, `quota` floors per signer.
+    pub fn load(tail: T, sectors: usize, quota: usize) -> Self {
+        let mut raw = [[[0u8; SECTOR]; BANK_SECTORS_MAX]; 2];
+        let n = MarkTable::new(sectors, quota).sectors();
+        let usable = tail.writable();
+        if usable {
+            for (b, bank) in raw.iter_mut().enumerate() {
+                for (i, sec) in bank.iter_mut().enumerate().take(n) {
+                    // A sector that cannot be read is not zero: it makes its bank invalid.
+                    if !tail.read(b * n + i, sec) {
+                        *sec = [0xFF; SECTOR];
+                    }
+                }
+            }
+        }
+        let state = if !usable {
+            State { table: MarkTable::new(sectors, quota), gen: 0, bank: None, lost: false }
+        } else {
+            match load_banks(&raw, sectors, quota) {
+                Loaded::Pristine(table) => State { table, gen: 0, bank: None, lost: false },
+                Loaded::Bank { table, gen, bank } => State { table, gen, bank: Some(bank), lost: false },
+                Loaded::Lost(table) => State { table, gen: 0, bank: None, lost: true },
+            }
+        };
+        Self { tail, sectors: MarkTable::new(sectors, quota).sectors(), state: core::cell::RefCell::new(state) }
+    }
+}
+
+impl<T: Tail> Marks for MarkStore<T> {
+    fn mark(&self, signer: &SignerKey) -> Option<Mark> {
+        self.state.borrow().table.mark(signer)
+    }
+
+    fn floor(&self, signer: &SignerKey, name: &str) -> Option<Version> {
+        self.state.borrow().table.floor_of(signer, name_hash(signer, name))
+    }
+
+    fn lost(&self) -> bool {
+        self.state.borrow().lost
+    }
+
+    fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr> {
+        if !self.tail.writable() {
+            return Err(MarkErr::Write);
+        }
+        let mut st = self.state.borrow_mut();
+        let mut next = st.table;
+        next.accept(signer, mark, floors)?;
+        if next == st.table && !st.lost {
+            return Ok(());
+        }
+        let gen = st.gen.checked_add(1).ok_or(MarkErr::Write)?;
+        // **Canary** `pkg-bank-canary`: over the bank that holds the newest copy.
+        let target = if cfg!(feature = "pkg-bank-canary") { st.bank.unwrap_or(0) } else { st.bank.map_or(0, |b| 1 - b) };
+        let bank = next.encode_bank(gen);
+        for (i, sec) in bank.iter().enumerate().take(self.sectors) {
+            if !self.tail.write(target * self.sectors + i, sec) {
+                return Err(MarkErr::Write);
+            }
+        }
+        if !self.tail.flush() {
+            return Err(MarkErr::Write);
+        }
+        *st = State { table: next, gen, bank: Some(target), lost: false };
+        Ok(())
     }
 }
 

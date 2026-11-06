@@ -12006,7 +12006,12 @@ pkg_updates_row() { # <label>
                  apply::an_upgrade_that_cannot_be_applied_leaves_the_old_version_applied \
                  upgrade::each_signer_keeps_its_own_index_and_its_own_serial \
                  upgrade::an_index_that_differs_at_the_same_serial_is_refused \
-                 upgrade::the_old_version_of_an_upgrade_is_removable_only_when_the_new_one_is_not_there; do
+                 upgrade::the_old_version_of_an_upgrade_is_removable_only_when_the_new_one_is_not_there \
+                 apply::an_upgrade_the_volume_cannot_snapshot_leaves_the_old_version_applied \
+                 index::banks::no_cut_or_torn_sector_of_a_write_loses_a_mark_or_a_floor \
+                 index::banks::a_bank_that_fails_is_ignored_never_read_as_zeros \
+                 index::banks::a_signer_cannot_evict_another_signers_floors \
+                 index::the_topology_refuses_exactly_the_key_ids_that_share_a_slot; do
             echo "$out" | qgrep -q "test ${t} \.\.\. ok" || { rc=1; echo "      did not run and pass: $t"; }
         done
     fi
@@ -12030,6 +12035,8 @@ host_job host_canary_row "pkg: security floor canary" pkg-tests pkg-floor-canary
     apply::a_package_below_its_floor_is_marked_when_the_policy_enforces_floors
 host_job host_canary_row "pkg: index memory canary" pkg-tests pkg-mark-canary \
     apply::a_replayed_or_deleted_index_cannot_lift_a_floor
+host_job host_canary_row "pkg: index marks bank canary" pkg-tests pkg-bank-canary \
+    index::banks::no_cut_or_torn_sector_of_a_write_loses_a_mark_or_a_floor
 host_job host_canary_row "pkg: upgrade supersede canary" pkg-tests pkg-supersede-canary \
     apply::an_upgrade_whose_trial_rolls_back_leaves_the_old_version_applied
 host_job host_canary_row "pkg: failed upgrade parks the old version canary" pkg-tests pkg-park-canary \

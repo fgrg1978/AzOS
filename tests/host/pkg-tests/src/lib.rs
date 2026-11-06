@@ -120,3 +120,54 @@ pub fn install(bytes: &[u8], dev0: &Device0) -> Result<azos_pkg::Admitted, Refus
     let v = verify(bytes, &topo)?;
     admit(&v, v.pkg.rows, &mut topo, &device())
 }
+
+/// The reserved tail in RAM, with a write budget: after `budget` sector writes the
+/// next one fails (a power cut), landing only `tear` bytes of itself when set.
+pub struct RamTail {
+    pub sectors: std::cell::RefCell<Vec<[u8; 512]>>,
+    pub budget: std::cell::Cell<Option<usize>>,
+    pub tear: std::cell::Cell<Option<usize>>,
+    pub unreadable: std::cell::RefCell<Vec<usize>>,
+}
+
+impl RamTail {
+    pub fn new(sectors: usize) -> Self {
+        RamTail {
+            sectors: std::cell::RefCell::new(vec![[0u8; 512]; sectors]),
+            budget: Default::default(),
+            tear: Default::default(),
+            unreadable: Default::default(),
+        }
+    }
+}
+
+impl azos_pkg::index::Tail for &RamTail {
+    fn writable(&self) -> bool {
+        true
+    }
+    fn read(&self, sector: usize, out: &mut [u8; 512]) -> bool {
+        if self.unreadable.borrow().contains(&sector) {
+            return false;
+        }
+        *out = self.sectors.borrow()[sector];
+        true
+    }
+    fn write(&self, sector: usize, data: &[u8; 512]) -> bool {
+        match self.budget.get() {
+            Some(0) => {
+                if let Some(k) = self.tear.get() {
+                    self.sectors.borrow_mut()[sector][..k].copy_from_slice(&data[..k]);
+                }
+                false
+            }
+            b => {
+                self.budget.set(b.map(|n| n - 1));
+                self.sectors.borrow_mut()[sector] = *data;
+                true
+            }
+        }
+    }
+    fn flush(&self) -> bool {
+        true
+    }
+}

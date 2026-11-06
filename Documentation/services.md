@@ -599,7 +599,7 @@ entries. A malformed body is refused even when signed.
   in that same boot, and a new version refused for what it is is taken out of the staging
   directory with its refusal on record. The installer and the boot use one rule for "the old
   version is out" (`azos_pkg::apply::is_parked`). An upgrade whose programs are byte-identical to
-  the old version's needs no snapshot and so no trial: it is applied and confirmed at once.
+  the old version's needs no snapshot and so no trial: it is applied and confirmed at once. If the kernel's own check refuses the merged topology (the packages did not fit this device), the boot runs the signed topology with no package at all, the old version included, and the next boot applies the old one: the same one boot without packages every refused package set costs.
 
 **Security floors.** `sec_floor` is the lowest version of the package still considered
 secure; an index whose floor is above its own offered version is refused. `pkg outdated`
@@ -615,21 +615,30 @@ names the floor. The package is still applied, so `pkg upgrade` can replace it a
 boot starts the fixed version.
 
 **What the device remembers (`PKG_INDEX_MARK_SECTORS`).** The apply records, per signer, the
-serial and digest of the newest index it judged by, and the floors that index named, in the
-last tail sectors of the medium that no writer of the volume reaches (as the topology counter
-floor is kept; 13 entries a sector, each signer keyed by the first 16 bytes of its key id, a
-floor by the hash of the signer and the package name). The topology refuses two signers whose
-key ids agree on the first four bytes, so a signer cannot be ground to take another's slot or
-mark. An index put back that is older, one that differs at the same serial, and a deleted slot
-are not used: the floors the device remembered stand, and they stop only the packages below
-them (a `package-index` refusal record and a console line say so); a newer signed index takes
-over and replaces them. A signer the device has never seen an index from has no floors. A full
-table, or a medium with no usable records store, remembers nothing new (the apply says so) and the
-slot on the volume alone holds the floors; its signature is still verified. A torn sector loses
-its own entries only, as the topology floor's record does. `pkg refresh` cannot read the tail, so it
-can report success for an index the next boot judges older than its mark. `tools/sign/device_provision.py
---clear-index-marks` forgets the marks and floors of a device, the way back from an index the source
-can no longer serve.
+serial and digest of the newest index it judged by, and the floors that index named for the
+packages staged under that signer (at most `PKG_INDEX_FLOORS_PER_SIGNER`, so no signer fills the
+table at another's expense; one beyond what the table's entries divide into is refused, not
+evicted for), in the last tail sectors of the medium that no writer of the volume reaches (as the
+topology counter floor is kept). The table is two banks of `PKG_INDEX_MARK_SECTORS` sectors, 13
+entries a sector, each signer keyed by the first 16 bytes of its key id, a floor by the hash of the
+signer and the package name. A write fills the bank that does NOT hold the newest copy and wins by
+generation when every sector of it verifies against the digest of the whole bank; a bank that fails
+its digest, has a sector that cannot be read, or mixes generations is ignored, never read as zeros,
+and the other bank stands. So no cut and no torn sector of a write loses a mark or a floor (host
+tests cut at every sector boundary and tear every sector). The topology refuses two signers whose
+key ids agree on the first 28 bits (the name of the index slot on the volume), so a signer cannot be
+ground to take another's slot or mark. An index put back that is older, one that differs at the same
+serial, and a deleted slot are not used: the floors the device remembered stand, and they stop only
+the packages below them (a `package-index` refusal record and a console line say so); a newer signed
+index takes over and replaces them. A signer the device has never seen an index from has no floors.
+If neither bank can be read whole although something was written (media damage), the marks are lost:
+each signer's stored index on the volume is used if it verifies, a refusal record "index marks lost"
+is written every boot until a valid bank is written again, and the next accepted index rebuilds it.
+A medium with no usable records store remembers nothing and the slot on the volume alone holds the
+floors; its signature is still verified. `pkg refresh` cannot read the tail, so it can report success
+for an index the next boot judges older than its mark. `tools/sign/device_provision.py
+--clear-index-marks` forgets the marks and floors of a device (both banks), the way back from an
+index the source can no longer serve.
 
 Floors are read at the boot-time apply: a `pkg refresh` that raises a floor does not stop a
 program that is already running, it takes effect at the next boot. A floor can therefore make
