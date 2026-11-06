@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2752844
+aarch64-microvm	.text	2753004
 aarch64-microvm	.rodata	335288
 aarch64-microvm	.data	459200
 aarch64-microvm	.bss	947752
-aarch64-microvm	reason	anonymous memory as objects (slots)
-riscv64-qemu	.text	2794598
-riscv64-qemu	.rodata	471480
+aarch64-microvm	reason	pkg over the anonymous objects
+riscv64-qemu	.text	2834412
+riscv64-qemu	.rodata	475600
 riscv64-qemu	.data	743208
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	anonymous memory as objects (slots), over the C4 cut
-x86_64-microvm	.text	2621993
+riscv64-qemu	reason	pkg index, per-signer floors and marks, over the anonymous objects
+x86_64-microvm	.text	2622153
 x86_64-microvm	.rodata	168208
-x86_64-microvm	.data	608824
+x86_64-microvm	.data	609080
 x86_64-microvm	.bss	958544
-x86_64-microvm	reason	anonymous memory as objects (slots)
+x86_64-microvm	reason	pkg over the anonymous objects
