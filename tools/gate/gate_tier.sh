@@ -455,11 +455,7 @@ fi
 # whatever an earlier `make` (size-update, a row) left in $AZOS_OUT/build.
 case " $suites " in *seccomp-tests*|*syscall-tests*)
     printf "  %-26s" "image table (all on)..."
-    atc="$AZOS_OUT/target/gate-tier/all-on.config"; mkdir -p "$(dirname "$atc")"
-    if { cat config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config; python3 tools/build/gen_userspace_kconfig.py --all-on; } >"$atc.tmp" \
-       && KCONFIG_CONFIG="$atc.tmp" python3 -m olddefconfig >/dev/null 2>&1 \
-       && { cmp -s "$atc.tmp" "$atc" && rm -f "$atc.tmp" || mv -f "$atc.tmp" "$atc"; } \
-       && out="$(KCONFIG_CONFIG="$atc" make "$AZOS_OUT/build/image_hashes.rs" 2>&1)"; then
+    if out="$(make host-image-table 2>&1)"; then
         echo ok
     else
         echo FAIL; fail=1

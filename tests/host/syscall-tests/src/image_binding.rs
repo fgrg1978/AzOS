@@ -28,7 +28,8 @@ const NOT_SHIPPED: &[u8] = b"\x7fELF bytes that no image profile is bound to";
 /// table, and the shipped-image test failed as if the binding had refused a
 /// shipped image. Compiled in, both come from one instant, and cargo rebuilds
 /// the crate when either file changes. A missing file is a compile error, as a
-/// missing table already is.
+/// missing table already is. `make host-image-table` makes both from the
+/// configuration that enables every image, whatever KCONFIG_CONFIG the caller has.
 const SHIPPED_UHELLO: &[u8] =
     include_bytes!(concat!(env!("AZOS_OUT"), "/build/uhello.elf"));
 
@@ -107,8 +108,8 @@ fn a_shipped_image_is_bound_and_nothing_is_recorded() {
         azos_sched::seccomp::image_for_digest(&d).is_some(),
         "$AZOS_OUT/build/uhello.elf (sha256 {:02x}{:02x}{:02x}{:02x}..) is in no row of $AZOS_OUT/build/image_hashes.rs: \
          the two were compiled from different `make` runs ($AZOS_OUT/build/ was rewritten while this crate \
-         compiled). Run `make $AZOS_OUT/build/image_hashes.rs`, then the tests again; this is not a \
-         binding failure.",
+         compiled, or the table was made from a configuration that does not enable uhello). Run \
+         `make host-image-table`, then the tests again; this is not a binding failure.",
         d[0], d[1], d[2], d[3]
     );
     assert!(exec_image_is_bound(SHIPPED_UHELLO), "a shipped image was refused");

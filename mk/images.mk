@@ -20,6 +20,19 @@ $(IMAGE_HASHES): userspace/image_hashes.py $(IMAGE_ELF_PATHS_ON) $(USER_ON_STAMP
 	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing $(OUT_BUILD)/thirdparty_hashes.rs \
 		BUSYBOX.ELF=$(BUSYBOX_ELF_RISCV64) LXTHR.ELF=$(LXTHR_ELF_RISCV64)
 
+# The image table and uhello.elf the host suites that bind images compile in
+# (tests/host/syscall-tests image_binding, seccomp-tests): the table lists the
+# images the .config enables, so they are made from the gate's configuration,
+# which asks for all of them, whatever KCONFIG_CONFIG the caller has.
+HOST_TABLE_KCONFIG := $(OUT_BUILD)/host-image-table.config
+.PHONY: host-image-table
+host-image-table:
+	@mkdir -p $(OUT_BUILD)
+	@{ cat config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config; $(PYTHON) tools/build/gen_userspace_kconfig.py --all-on; } > $(HOST_TABLE_KCONFIG).tmp
+	@KCONFIG_CONFIG=$(HOST_TABLE_KCONFIG).tmp $(PYTHON) -m olddefconfig >/dev/null
+	@if cmp -s $(HOST_TABLE_KCONFIG).tmp $(HOST_TABLE_KCONFIG); then rm -f $(HOST_TABLE_KCONFIG).tmp; else mv -f $(HOST_TABLE_KCONFIG).tmp $(HOST_TABLE_KCONFIG); fi
+	KCONFIG_CONFIG=$(HOST_TABLE_KCONFIG) $(MAKE) --no-print-directory $(IMAGE_HASHES)
+
 $(OUT_BUILD)/disk-lxthr.img: $(OUT_BUILD)/disk-lxabi.img $(wildcard $(LXTHR_ELF_RISCV64))
 	@[ -f "$(LXTHR_ELF_RISCV64)" ] || { echo "no $(LXTHR_ELF_RISCV64): run make lxthreads"; exit 1; }
 	cp $(OUT_BUILD)/disk-lxabi.img $@
