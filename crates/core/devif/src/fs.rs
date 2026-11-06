@@ -8,8 +8,9 @@
 //! addresses of the caller's own memory. A file system served from ring 3
 //! answers the same interface on an endpoint, with names and data in a region
 //! it shares with its client ([`Extent`]: an offset and a length in that
-//! region, never an address), so a client cannot tell which one serves a
-//! mount. Every method names its op number with `#[op = ..]` as the kernel's
+//! region, never an address); a mount it serves is reached through the
+//! kernel's form (the VFS forwards to the endpoint), so a client of the mount
+//! cannot tell which one serves it. Every method names its op number with `#[op = ..]` as the kernel's
 //! constant: there is no second numbering, and `tests/host/syscall-tests`
 //! (`fs_protocol.rs`) checks that the kernel dispatches exactly the ops of
 //! these two tables on a file handle, besides the socket ops (their own
@@ -18,9 +19,18 @@
 //! to first).
 //!
 //! Every name is relative to the directory and stays beneath it
-//! (`RESOLVE_BENEATH`): an absolute name or a `..` above the directory is
-//! [`outcome::BAD_ARGUMENT`], and the directory capability is the only
-//! authority a call carries.
+//! (`RESOLVE_BENEATH`): an absolute name, a `..` above the directory, or an
+//! entry to change whose last component is `.` or `..`, is
+//! [`outcome::BAD_ARGUMENT`].
+//!
+//! # Authority
+//!
+//! On the kernel's form `READ` on the directory names beneath it, and an op
+//! that changes the tree also needs a held write tree that covers the entry
+//! and whose caveats admit the op (`azos_abi::invoke`); a ring-3 mount's
+//! clients are checked there, before the server is asked. A server reached
+//! directly on its endpoint takes the endpoint's rights as that authority:
+//! `READ` to name, `WRITE` to change the tree.
 //!
 //! # Outcomes
 //!
@@ -160,26 +170,30 @@ pub fn read_checked<C: NodeCall>(node: &mut C, buf: Extent) -> Result<u32, u32> 
 }
 
 /// One entry of a directory, as [`Dir::readdir`] answers it (its name is in
-/// the region); `present` is false past the last entry.
+/// the region); `present` is false past the last entry, `cut` true when the
+/// name did not fit `out` (what is there is a prefix, not the name).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     pub present: bool,
     pub size: u32,
     pub is_dir: bool,
+    pub cut: bool,
 }
 
 impl Wire for Entry {
-    const WORDS: usize = 3;
+    const WORDS: usize = 4;
     const CAPS: usize = 0;
     fn put(&self, w: &mut Writer<'_>) {
         self.present.put(w);
         self.size.put(w);
         self.is_dir.put(w);
+        self.cut.put(w);
     }
     fn get(r: &mut Reader<'_>) -> Self {
         let present = bool::get(r);
         let size = u32::get(r);
-        Entry { present, size, is_dir: bool::get(r) }
+        let is_dir = bool::get(r);
+        Entry { present, size, is_dir, cut: bool::get(r) }
     }
 }
 
@@ -231,20 +245,22 @@ pub trait Dir {
     #[op = NODE_STATFS]
     #[idempotent]
     fn statfs(&mut self, name: Extent, out: Extent) -> Out<()>;
-    /// Make the directory `name`.
+    /// Make the directory `name`. Needs write authority over it.
     #[op = NODE_MKDIRAT]
     #[at_most_once]
     fn mkdirat(&mut self, name: Extent) -> Out<()>;
     /// Remove the entry `name`; with `UNLINK_DIR` in `flags`, the empty
-    /// directory.
+    /// directory. Needs write authority over it.
     #[op = NODE_UNLINKAT]
     #[at_most_once]
     fn unlinkat(&mut self, name: Extent, flags: u32) -> Out<()>;
-    /// Rename `from` to `to`, both beneath this directory.
+    /// Rename `from` to `to`, both beneath this directory. Needs write
+    /// authority over both.
     #[op = NODE_RENAMEAT]
     #[at_most_once]
     fn renameat(&mut self, from: Extent, to: Extent) -> Out<()>;
-    /// Set the size of the file `name` to `len` bytes.
+    /// Set the size of the file `name` to `len` bytes. Needs write authority
+    /// over it.
     #[op = NODE_TRUNCATEAT]
     #[idempotent]
     fn truncateat(&mut self, name: Extent, len: u64) -> Out<()>;

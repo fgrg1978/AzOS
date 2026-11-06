@@ -119,7 +119,7 @@ fn resolve(dirfd: c_int, path: &[u8]) -> Result<Vec<u8>> {
 /// The task's root `Cap<Dir>` and the name of the absolute, NUL-terminated
 /// `abs` beneath it.
 fn beneath_root(abs: &[u8]) -> Result<(u32, &[u8])> {
-    azos_libsys::beneath_root(abs).map_err(|_| Errno(EACCES))
+    azos_libsys::beneath_root(abs).map_err(|e| errno_of(e.to_syscall_ret() as isize))
 }
 
 /// A native refusal as relibc's errno.
@@ -453,12 +453,19 @@ const _: () = {
 };
 
 /// The entries of the directory at `abs` as they are now, read once, when a
-/// descriptor is opened on it; a refusal ends the list where it stops.
+/// descriptor is opened on it; a refusal ends the list where it stops. An
+/// entry whose name the native buffer cut is left out: its prefix would name
+/// another file.
 fn snapshot(abs: &[u8]) -> Box<[DirEntry]> {
     let mut entries = Vec::new();
     let Ok((root, dir)) = beneath_root(abs) else { return entries.into() };
     let mut name = [0u8; azos_libsys::READDIR_NAME_BYTES];
-    while let Ok(Some(e)) = azos_libsys::readdir_at(root, dir, entries.len() as u32, &mut name) {
+    let mut index = 0u32;
+    while let Ok(Some(e)) = azos_libsys::readdir_at(root, dir, index, &mut name) {
+        index += 1;
+        if e.cut {
+            continue;
+        }
         let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
         entries.push(DirEntry { name: name[..len].into(), is_dir: e.is_dir });
     }

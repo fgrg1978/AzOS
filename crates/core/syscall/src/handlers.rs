@@ -1470,7 +1470,7 @@ pub fn sys_file_openat_typed(dir_raw: u64, rel_ptr: u64, flags: u64) -> i64 {
         Err(e) => return e,
     };
     let mut buf = [0u8; SYS_PATH_MAX];
-    let rel = match copy_path_from_user(&mut buf, rel_ptr) { Some(p) => p, None => return -1 };
+    let rel = match copy_path_from_user(&mut buf, rel_ptr) { Ok(p) => p, Err(e) => return e };
     if open_changes_tree(flags) {
         if let Err(e) = write_tree_covers_open(&root[..root_len], rel) {
             return e;
@@ -1492,32 +1492,44 @@ pub fn sys_file_openat_typed(dir_raw: u64, rel_ptr: u64, flags: u64) -> i64 {
 fn write_tree_covers_open(root: &[u8], rel: &[u8]) -> Result<(), i64> {
     let mut joined = [0u8; azos_common::path::MAX_PATH];
     let Ok(n) = azos_common::path::join_beneath(root, rel, &mut joined) else { return Ok(()) };
-    match held_tree_for(&joined[..n], azos_abi::cap::CapPerms::WRITE) {
+    match held_tree_for(&joined[..n], true, azos_abi::cap::CapPerms::WRITE, azos_abi::invoke::NODE_OPENAT) {
         Some(Ok(_)) => Ok(()),
         Some(Err(e)) => Err(errno_for_file_err(e)),
         None => Err(errno_for_file_err(azos_ipc::cap::CapError::MissingPerms)),
     }
 }
 
-/// The tree `Cap<File>` the caller holds that covers `path` (strictly: an
-/// entry of the tree) with `need`, checked as the typed calls check it, and
-/// the resource it names. `None`: no held tree covers the path with the right.
+/// A tree `Cap<File>` the caller holds that covers `path` (`strict`: `path`
+/// is an entry of the tree, not its root) and resolves for `op` with `need`
+/// (`get_op`: every caveat of the warrant, an op mask against `op`'s class,
+/// a quota, a receipt), and the resource it names. Every covering tree is
+/// tried in turn, so a masked one does not hide an unmasked one; `Some(Err)`
+/// is the refusal of the last that was tried. `None`: no held tree covers the
+/// path with the right.
 fn held_tree_for(
     path: &[u8],
+    strict: bool,
     need: azos_abi::cap::CapPerms,
+    op: u16,
 ) -> Option<Result<u32, azos_ipc::cap::CapError>> {
     use azos_abi::cap::ty;
     use azos_ipc::cap::{targets::File, Cap};
     // The covering trees first, under the tree table's lock alone; then the
     // caller's capability table, under its own. Never both at once.
-    let mask = azos_ipc::file_cap::trees_covering(path, true);
+    let mask = azos_ipc::file_cap::trees_covering(path, strict);
     if mask == 0 {
         return None;
     }
     let tid = azos_sched::current_task_tid();
     azos_ipc::cap_store::with_table(tid, |t| {
-        let h = t.lookup_where(ty::FILE, |r, _, p| azos_ipc::file_cap::tree_in(r, mask) && p.contains(need))?;
-        Some(t.get_op(Cap::<File>::from_raw(h), need, azos_abi::invoke::NODE_OPENAT))
+        let mut last = None;
+        for h in t.handles_where(ty::FILE, |r, _, p| azos_ipc::file_cap::tree_in(r, mask) && p.contains(need)) {
+            match t.get_op(Cap::<File>::from_raw(h), need, op) {
+                Ok(r) => return Some(Ok(r)),
+                Err(e) => last = Some(Err(e)),
+            }
+        }
+        last
     })
     .flatten()
 }
@@ -1602,7 +1614,7 @@ pub(crate) fn file_open_typed_kpath(path: &[u8], flags: u64) -> i64 {
         azos_abi::cap::CapPerms::READ
     };
     let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
-    let root_len = match held_tree_for(path, need) {
+    let root_len = match held_tree_for(path, true, need, azos_abi::invoke::NODE_OPENAT) {
         Some(Ok(res)) => azos_ipc::file_cap::tree_path(res, &mut root),
         // A holder while degraded mode is armed: a WRITE through a
         // capability is contained as the others are.
@@ -2018,18 +2030,24 @@ pub fn sys_lseek(fd: u64, offset: u64, whence: u64) -> i64 {
 /// [`sys_file_openat_typed`] uses it too.
 const SYS_PATH_MAX: usize = 512;
 
-/// Copy a NUL-terminated path from a user pointer into `dst`, returning the
-/// path slice, so a malformed/kernel pointer can't
-/// drive the FS code via raw `cstr_to_bytes`.
-fn copy_path_from_user<'a>(dst: &'a mut [u8], path_ptr: u64) -> Option<&'a [u8]> {
+/// Copy a NUL-terminated name from a user pointer into `dst`, returning the
+/// name slice, so a malformed/kernel pointer can't
+/// drive the FS code via raw `cstr_to_bytes`. `-ENAMETOOLONG` for readable
+/// bytes with no NUL within `dst`, `-EFAULT` for a name the caller cannot
+/// read. Every caller joins the name beneath a directory (`join_beneath`),
+/// which gives the check and the filesystem one spelling.
+fn copy_path_from_user<'a>(dst: &'a mut [u8], path_ptr: u64) -> Result<&'a [u8], i64> {
+    use azos_abi::error::Errno;
     if azos_sched::current_user_pt() != 0 {
-        let len = azos_sched::UserCStr::new(path_ptr).read_into(dst).ok()?;
-        // One spelling for the tree check and the router: `//tmp/x` is
-        // `/tmp/x` to both.
-        let len = azos_common::path::collapse_slashes(&mut dst[..len]);
-        Some(&dst[..len])
+        match azos_sched::UserCStr::new(path_ptr).read_into(dst) {
+            Ok(len) => Ok(&dst[..len]),
+            Err(_) if azos_sched::UserSlice::<u8>::new(path_ptr, dst.len()).read_into(dst).is_ok() => {
+                Err(Errno::ENAMETOOLONG.to_syscall_ret())
+            }
+            Err(_) => Err(Errno::EFAULT.to_syscall_ret()),
+        }
     } else {
-        Some(unsafe { cstr_to_bytes(path_ptr as *const u8) })
+        Ok(unsafe { cstr_to_bytes(path_ptr as *const u8) })
     }
 }
 
@@ -2037,19 +2055,22 @@ fn copy_path_from_user<'a>(dst: &'a mut [u8], path_ptr: u64) -> Option<&'a [u8]>
 /// `NODE_UNLINKAT`, `NODE_RENAMEAT`, `NODE_TRUNCATEAT`), asked of the path
 /// the name joins to beneath its directory. A ring-3 caller must hold a `Cap<File>` with `WRITE`
 /// naming a directory tree that covers `path` (`azos_ipc::file_cap`,
-/// minted only by the topology). `strict`: `path` is an ENTRY of the tree
-/// (create, remove, rename — the directory it is in is what changes);
-/// otherwise the tree's root counts too (truncate — the file itself).
+/// minted only by the topology) and resolves for `op`: the tree's own caveats
+/// (an op mask, a quota) hold against the op, as an open's do. `strict`:
+/// `path` is an ENTRY of the tree (create, remove, rename — the directory it
+/// is in is what changes); otherwise the tree's root counts too (truncate —
+/// the file itself).
 ///
 /// Asked after the path is copied and before the filesystem sees it, so a
 /// refusal says nothing about whether the path exists. `-EINVAL` for a path
 /// that is relative or has a `.`/`..` component (the check does not resolve
 /// them, so it does not accept them); `-EACCES` (recorded, as `cap_check`
-/// records) for no covering capability; `-EAGAIN` for a holder while
+/// records) for no covering capability; the capability refusal (recorded) for
+/// a covering tree whose caveats refuse `op`; `-EAGAIN` for a holder while
 /// degraded mode is armed — a WRITE through a capability, contained as the
 /// others are. Kernel tasks pass, as they pass `cap_check`.
-fn fs_tree_gate(path: &[u8], strict: bool) -> Result<(), i64> {
-    use azos_abi::cap::{CapPerms};
+fn fs_tree_gate(path: &[u8], strict: bool, op: u16) -> Result<(), i64> {
+    use azos_abi::cap::CapPerms;
     use azos_abi::error::Errno;
     if azos_sched::current_user_pt() == 0 {
         return Ok(());
@@ -2057,20 +2078,15 @@ fn fs_tree_gate(path: &[u8], strict: bool) -> Result<(), i64> {
     if !azos_ipc::file_cap::path_is_plain(path) {
         return Err(Errno::EINVAL.to_syscall_ret());
     }
-    // The covering trees first, under the tree table's lock alone; then the
-    // caller's capability table, under its own. Never both at once.
-    let mask = azos_ipc::file_cap::trees_covering(path, strict);
-    let tid = azos_sched::current_task_tid();
-    let held = mask != 0
-        && azos_ipc::cap_store::with_table(tid, |t| {
-            t.holds_kind_where(ty::FILE, CapPerms::WRITE, |r| {
-                azos_ipc::file_cap::tree_in(r, mask)
-            })
-        })
-        .unwrap_or(false);
-    if !held {
-        record_cap_denial(ty::FILE, 0, true);
-        return Err(Errno::EACCES.to_syscall_ret());
+    match held_tree_for(path, strict, CapPerms::WRITE, op) {
+        Some(Ok(_)) => {}
+        // A holder while degraded mode is armed is contained (`-EAGAIN`, not
+        // recorded); a caveat that refuses `op` is that refusal, recorded.
+        Some(Err(e)) => return Err(errno_for_file_err(e)),
+        None => {
+            record_cap_denial(ty::FILE, 0, true);
+            return Err(Errno::EACCES.to_syscall_ret());
+        }
     }
     if untyped_write_contained() {
         return Err(Errno::EAGAIN.to_syscall_ret());
@@ -2083,8 +2099,18 @@ fn fs_tree_gate(path: &[u8], strict: bool) -> Result<(), i64> {
 /// (checked under `op`, so its op mask is the op's class) names beneath it.
 /// The name stays beneath (`join_beneath`, `RESOLVE_BENEATH`): an absolute
 /// name, or a `..` that climbs above the directory, is `-EINVAL` before the
-/// filesystem sees anything. `-EFAULT` for a name the caller cannot read.
-fn name_beneath(dir_raw: u64, op: u16, name_ptr: u64, out: &mut [u8; azos_common::path::MAX_PATH]) -> Result<usize, i64> {
+/// filesystem sees anything. An `entry` (the name an op creates, removes,
+/// renames or truncates) whose last component is `.` or `..` is `-EINVAL`
+/// too: it names a directory by the way to it, not an entry of one.
+/// `-EFAULT` for a name the caller cannot read, `-ENAMETOOLONG` for one
+/// longer than the copy.
+fn name_beneath(
+    dir_raw: u64,
+    op: u16,
+    name_ptr: u64,
+    entry: bool,
+    out: &mut [u8; azos_common::path::MAX_PATH],
+) -> Result<usize, i64> {
     use azos_abi::error::Errno;
     let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
     let root_len = dir_root_for(dir_raw, azos_abi::cap::CapPerms::READ, op, &mut root)?;
@@ -2092,7 +2118,10 @@ fn name_beneath(dir_raw: u64, op: u16, name_ptr: u64, out: &mut [u8; azos_common
         return Err(Errno::EFAULT.to_syscall_ret());
     }
     let mut buf = [0u8; SYS_PATH_MAX];
-    let name = copy_path_from_user(&mut buf, name_ptr).ok_or_else(|| Errno::EFAULT.to_syscall_ret())?;
+    let name = copy_path_from_user(&mut buf, name_ptr)?;
+    if entry && matches!(name.split(|&b| b == b'/').filter(|c| !c.is_empty()).last(), Some(b".") | Some(b"..")) {
+        return Err(Errno::EINVAL.to_syscall_ret());
+    }
     match azos_common::path::join_beneath(&root[..root_len], name, out) {
         Ok(n) => Ok(n),
         Err(azos_common::path::JoinError::TooLong) => Err(Errno::ENAMETOOLONG.to_syscall_ret()),
@@ -2110,8 +2139,8 @@ fn fs_or_nosys() -> Result<&'static dyn crate::file_ops::FileOps, i64> {
 /// of a tree, as an open that changes the tree), then `f` on the joined path.
 fn mutate_at(dir_raw: u64, op: u16, name_ptr: u64, strict: bool, f: impl FnOnce(&dyn crate::file_ops::FileOps, &[u8]) -> i64) -> i64 {
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = match name_beneath(dir_raw, op, name_ptr, &mut path) { Ok(n) => n, Err(e) => return e };
-    if let Err(e) = fs_tree_gate(&path[..n], strict) { return e; }
+    let n = match name_beneath(dir_raw, op, name_ptr, true, &mut path) { Ok(n) => n, Err(e) => return e };
+    if let Err(e) = fs_tree_gate(&path[..n], strict, op) { return e; }
     match fs_or_nosys() { Ok(o) => f(o, &path[..n]), Err(e) => e }
 }
 
@@ -2136,10 +2165,10 @@ pub fn sys_renameat(dir_raw: u64, from_ptr: u64, to_ptr: u64) -> i64 {
     use azos_abi::invoke::NODE_RENAMEAT;
     let mut from = [0u8; azos_common::path::MAX_PATH];
     let mut to = [0u8; azos_common::path::MAX_PATH];
-    let nf = match name_beneath(dir_raw, NODE_RENAMEAT, from_ptr, &mut from) { Ok(n) => n, Err(e) => return e };
-    let nt = match name_beneath(dir_raw, NODE_RENAMEAT, to_ptr, &mut to) { Ok(n) => n, Err(e) => return e };
-    if let Err(e) = fs_tree_gate(&from[..nf], true) { return e; }
-    if let Err(e) = fs_tree_gate(&to[..nt], true) { return e; }
+    let nf = match name_beneath(dir_raw, NODE_RENAMEAT, from_ptr, true, &mut from) { Ok(n) => n, Err(e) => return e };
+    let nt = match name_beneath(dir_raw, NODE_RENAMEAT, to_ptr, true, &mut to) { Ok(n) => n, Err(e) => return e };
+    if let Err(e) = fs_tree_gate(&from[..nf], true, NODE_RENAMEAT) { return e; }
+    if let Err(e) = fs_tree_gate(&to[..nt], true, NODE_RENAMEAT) { return e; }
     match fs_or_nosys() { Ok(o) => o.rename(&from[..nf], &to[..nt]), Err(e) => e }
 }
 
@@ -2152,12 +2181,12 @@ pub fn sys_truncateat(dir_raw: u64, name_ptr: u64, len: u64) -> i64 {
 /// `NODE_READDIR`: entry `index` of the directory `name` beneath `dir`. The
 /// name is written into `name_out` (`name_len`, at least
 /// `READDIR_NAME_BYTES`: exactly that many bytes, zero-padded, always), the
-/// size and the is-directory flag are the reply words. `None` past the last
-/// entry.
+/// size, the is-directory flag and whether the name was cut to fit are the
+/// reply words. `None` past the last entry.
 ///
 /// A buffer shorter than the record is refused rather than written short: a
 /// name truncated in silence is a filename the caller then acts on.
-pub fn sys_readdirat(dir_raw: u64, name_ptr: u64, index: u64, name_out: u64, name_len: u64) -> Result<Option<(u32, bool)>, i64> {
+pub fn sys_readdirat(dir_raw: u64, name_ptr: u64, index: u64, name_out: u64, name_len: u64) -> Result<Option<(u32, bool, bool)>, i64> {
     use azos_abi::error::Errno;
     use azos_abi::syscall_nr::READDIR_NAME_BYTES;
     if name_len < READDIR_NAME_BYTES as u64 || index > u32::MAX as u64 {
@@ -2167,10 +2196,12 @@ pub fn sys_readdirat(dir_raw: u64, name_ptr: u64, index: u64, name_out: u64, nam
         return Err(Errno::EFAULT.to_syscall_ret());
     }
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = name_beneath(dir_raw, azos_abi::invoke::NODE_READDIR, name_ptr, &mut path)?;
+    let n = name_beneath(dir_raw, azos_abi::invoke::NODE_READDIR, name_ptr, false, &mut path)?;
     let ops = fs_or_nosys()?;
     let Some((name, size, is_dir)) = ops.readdir(&path[..n], index as u32) else { return Ok(None) };
-    let len = name.iter().position(|&b| b == 0).unwrap_or(name.len()).min(READDIR_NAME_BYTES - 1);
+    // The seam fills all of `name` with no NUL for a name that does not fit.
+    let full = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    let len = full.min(READDIR_NAME_BYTES - 1);
     let mut rec = [0u8; READDIR_NAME_BYTES];
     rec[..len].copy_from_slice(&name[..len]);
     if azos_sched::current_user_pt() != 0 {
@@ -2178,7 +2209,7 @@ pub fn sys_readdirat(dir_raw: u64, name_ptr: u64, index: u64, name_out: u64, nam
     } else {
         unsafe { core::ptr::copy_nonoverlapping(rec.as_ptr(), name_out as *mut u8, READDIR_NAME_BYTES); }
     }
-    Ok(Some((size, is_dir)))
+    Ok(Some((size, is_dir, full > len)))
 }
 
 /// Write `bytes` to the caller's `ptr` (a user pointer from ring 3, a kernel
@@ -2203,7 +2234,7 @@ pub fn sys_statat(dir_raw: u64, name_ptr: u64, out: u64) -> i64 {
     use azos_abi::syscall_nr::STAT_BYTES;
     if out == 0 { return azos_abi::error::Errno::EFAULT.to_syscall_ret(); }
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATAT, name_ptr, &mut path) { Ok(n) => n, Err(e) => return e };
+    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATAT, name_ptr, false, &mut path) { Ok(n) => n, Err(e) => return e };
     let ops = match fs_or_nosys() { Ok(o) => o, Err(e) => return e };
     let st = match ops.stat(&path[..n]) { Ok(st) => st, Err(e) => return e };
     match record_to_caller(out, &st.to_bytes()[..STAT_BYTES]) { Ok(()) => 0, Err(e) => e }
@@ -2218,7 +2249,7 @@ pub fn sys_statfsat(dir_raw: u64, name_ptr: u64, out: u64, out_len: u64) -> i64 
     if out_len < STATFS_BYTES as u64 { return Errno::EINVAL.to_syscall_ret(); }
     if out == 0 { return Errno::EFAULT.to_syscall_ret(); }
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATFS, name_ptr, &mut path) { Ok(n) => n, Err(e) => return e };
+    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATFS, name_ptr, false, &mut path) { Ok(n) => n, Err(e) => return e };
     let ops = match fs_or_nosys() { Ok(o) => o, Err(e) => return e };
     let st = match ops.statfs(&path[..n]) { Ok(st) => st, Err(e) => return e };
     match record_to_caller(out, &st.to_bytes()[..STATFS_BYTES]) { Ok(()) => 0, Err(e) => e }

@@ -2281,26 +2281,33 @@ impl CapTable {
     /// it belongs to and the resource its badge stands for are what a task
     /// asks by. Same rules as [`lookup`](Self::lookup): nothing is checked or
     /// minted, a freed object's handle is still returned.
-    pub fn lookup_where(&self, kind: CapType, mut pred: impl FnMut(u32, u32, CapPerms) -> bool) -> Option<CapHandle> {
-        if kind == CapType::NULL {
-            return None;
-        }
+    pub fn lookup_where(&self, kind: CapType, pred: impl FnMut(u32, u32, CapPerms) -> bool) -> Option<CapHandle> {
+        self.handles_where(kind, pred).next()
+    }
+
+    /// Every capability [`lookup_where`](Self::lookup_where) would match,
+    /// lowest slot first: for a caller that resolves each in turn, because a
+    /// match on the stored words says nothing of the caveats a use discharges
+    /// (a path several held trees cover, one of which carries an op mask).
+    pub fn handles_where<'a>(
+        &'a self,
+        kind: CapType,
+        mut pred: impl FnMut(u32, u32, CapPerms) -> bool + 'a,
+    ) -> impl Iterator<Item = CapHandle> + 'a {
         let k = kind.raw();
-        for (i, cell) in self.live().iter().enumerate() {
+        let cells = if kind == CapType::NULL { &[][..] } else { self.live() };
+        cells.iter().enumerate().filter_map(move |(i, cell)| {
             let w = cell.word();
             if w as u8 != k {
-                continue;
+                return None;
             }
             let slot = CapSlotCell::decode(w);
             let h = CapHandle::pack(slot.ty, slot.generation, i as u16);
             let badge = self.ext_of(h).map_or(0, |e| e.badge);
             // The predicate decides authority (a send needs WRITE): it sees
             // what a use resolves with.
-            if pred((w >> 32) as u32, badge, CapSlotCell::w_perms(w)) {
-                return Some(h);
-            }
-        }
-        None
+            pred((w >> 32) as u32, badge, CapSlotCell::w_perms(w)).then_some(h)
+        })
     }
 
     /// Look up a typed cap and verify kind + generation + permissions, then

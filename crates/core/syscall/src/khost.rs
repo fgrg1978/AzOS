@@ -153,7 +153,10 @@ pub fn caller(tid: u32, ep_raw: u32) -> Option<Caller> {
 /// the op (`CapTable::get_hosted_uncontained`); an unmasked one costs the load
 /// of its slot word. Every call to a hosted interface comes through here, so
 /// no interface has to know about masks. Op 0 and ops past bit 63 are in no
-/// mask.
+/// mask: an interface that names the kernel's op numbers (`#[op = ..]`, the
+/// file protocol's `NODE_*`, all above 63) cannot be attenuated by one, and a
+/// masked capability to it is refused whole. A mask by the op's class is the
+/// follow-up when such an interface is hosted.
 pub fn admit(tid: u32, ep_raw: u32, header: u64) -> Option<Caller> {
     let h = CapHandle(ep_raw);
     let ops = azos_ipc::cap_store::read_table(tid, |t| t.hosted_op_mask(h))?;

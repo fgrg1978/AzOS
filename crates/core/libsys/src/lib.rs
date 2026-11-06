@@ -1644,8 +1644,8 @@ pub fn open_root(path: &[u8], flags: u64) -> isize {
 /// NUL-terminated `path` beneath it (`.` for `/` itself): what a program given
 /// an absolute path passes to the `*at` ops. The kernel takes no absolute
 /// path; this resolves nothing either, so a `..` that would climb above the
-/// root is still the kernel's to refuse. `ENOENT` when the task's row grants
-/// no root.
+/// root is still the kernel's to refuse. The refusal of the root's lookup
+/// when there is none (`ENOENT`: the task's row grants no root).
 pub fn beneath_root(path: &[u8]) -> Result<(u32, &[u8]), Errno> {
     let root = root_dir();
     if root < 0 {
@@ -1841,6 +1841,9 @@ pub struct DirEntry {
     /// The file's size in bytes (0 for a directory).
     pub size: u32,
     pub is_dir: bool,
+    /// The name did not fit the buffer: what it holds is a prefix, which
+    /// names another file or none.
+    pub cut: bool,
 }
 
 /// Entry `index` of the directory `name` beneath `dir` (`NODE_READDIR`): its
@@ -1861,7 +1864,7 @@ pub fn readdir_at(
     );
     match rc {
         0 => Ok(None),
-        1 => Ok(Some(DirEntry { size: rep[0] as u32, is_dir: rep[1] != 0 })),
+        1 => Ok(Some(DirEntry { size: rep[0] as u32, is_dir: rep[1] != 0, cut: rep[2] != 0 })),
         _ => Err(errno_of(rc)),
     }
 }

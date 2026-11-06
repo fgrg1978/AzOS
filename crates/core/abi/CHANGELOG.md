@@ -14,6 +14,12 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ### Removed
 
+- The absolute-path ops of the domain: `DOMAIN_STAT` (0x500D), `DOMAIN_READDIR`
+  (0x500E), `DOMAIN_STATFS` (0x500F), `DOMAIN_MKDIR` (0x5614), `DOMAIN_UNLINK`
+  (0x5615), `DOMAIN_RMDIR` (0x5616), `DOMAIN_RENAME` (0x5617) and
+  `DOMAIN_TRUNCATE` (0x5618) (`CLASS_READ` 13-15 and `CLASS_FS_MUTATE` 20-24,
+  in `RETIRED_OPS`, not reused; the dispatcher's default arm answers them). A
+  name is beneath a directory handle: the `NODE_*AT` ops below.
 - The driver-server ABI: the `drv_kind` module (`DRV_KIND_*`, `power_op`), the
   `ty::DRIVER_REGISTRY` type (`Device` class 2, not reused) and the six
   `DOMAIN_DRIVER_*` ops (`CLASS_DRIVER` 39, 40, 44-47, not reused; the
@@ -21,6 +27,14 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
   IDL interface on an endpoint.
 
 ### Added
+
+- The `*at` ops of a directory handle (`Cap<Dir>`): `NODE_STATAT` (0x6011),
+  `NODE_READDIR` (0x6012; size, directory flag and name-cut flag as reply
+  words), `NODE_STATFS` (0x6013), `NODE_MKDIRAT` (0x6614), `NODE_UNLINKAT`
+  (0x6615, with `UNLINK_DIR` for an empty directory), `NODE_RENAMEAT` (0x6616)
+  and `NODE_TRUNCATEAT` (0x6617). `CLASS_FS_MUTATE` is a `Node` class. Their
+  numbers are the `Node` and `Dir` IDL interfaces' (`azos_devif::fs`).
+- `syscall_nr::IO_MAX_BYTES`: the most one file read or write moves.
 
 - Initial import of the crate. It holds everything that crosses the
   user/kernel boundary, as `no_std` code with no `unsafe`:

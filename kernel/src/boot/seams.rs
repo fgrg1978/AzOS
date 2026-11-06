@@ -769,8 +769,10 @@ pub(crate) fn install_ring3_seams() {
                     cookie = azos_fs::vfs_readdir(path, cookie, &mut ent).ok()??;
                 }
                 azos_fs::vfs_readdir(path, cookie, &mut ent).ok()??;
+                // A name that does not fit fills all 64 bytes with no NUL: the
+                // caller can tell it was cut.
                 let mut name = [0u8; 64];
-                let n = ent.name().len().min(63);
+                let n = ent.name().len().min(name.len());
                 name[..n].copy_from_slice(&ent.name()[..n]);
                 Some((name, ent.size.min(u32::MAX as u64) as u32, ent.is_dir))
             }

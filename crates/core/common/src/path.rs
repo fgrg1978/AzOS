@@ -16,19 +16,6 @@ pub const ROOT_DIR: &[u8] = b"/";
 /// Longest joined path, in bytes.
 pub const MAX_PATH: usize = 512;
 
-/// Collapse every run of `/` in `buf` to one, in place; the new length. The
-/// one spelling the capability check (`azos_ipc::file_cap`, which skips empty
-/// components) and the filesystem router both see.
-pub fn collapse_slashes(buf: &mut [u8]) -> usize {
-    let mut n = 0;
-    for i in 0..buf.len() {
-        if buf[i] == b'/' && n > 0 && buf[n - 1] == b'/' { continue; }
-        buf[n] = buf[i];
-        n += 1;
-    }
-    n
-}
-
 /// Why a join failed.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum JoinError {

@@ -305,6 +305,11 @@ pub struct ImageProfile {
     /// The ops of `SYS_INVOKE` the binary issues (`azos_abi::invoke`), listed
     /// by `inv_ops!`. Each op lists its CLASS on its kind: the filter answers
     /// per (kind, class), so a row naming one op of a class grants the class.
+    /// One such class is wider than it reads: (`Node`, `READ`) is a file's
+    /// read and seek and also stat, readdir and statfs beneath a directory the
+    /// row holds, so a row that may read an open file may also list the
+    /// directories it holds; the directory capability, not the profile, bounds
+    /// what it names.
     /// A Linux image lists none: the personality performs the op itself.
     pub ops: &'static [u16],
 }
@@ -771,7 +776,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // servers start). No hardware or network call, no way to replace its own
     // image: what it runs is authorised by the CHILD's row. The file ops serve
     // its builtins (`ls`, `cat`, `mkdir`, `rm`) and the redirections it opens
-    // and moves to a child; `DOMAIN_WAIT` reaps its jobs.
+    // and moves to a child; `DOMAIN_WAIT` reaps its jobs. No Domain `READ`
+    // op: its clock is the vDSO page's uptime, a read with no call, and its
+    // `stat`/`readdir` are `Node` ops beneath its root directory.
     ImageProfile {
         image: "SH.ELF",
         syscalls: sys_nrs![
@@ -871,7 +878,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::NET, azos_devif::key::CLOCK, azos_devif::key::SOUND, azos_devif::key::VOLUME],
     },
     // The shell's power tool, the first privileged family with a
@@ -1115,7 +1122,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // in the call, which releases it; one call into the endpoint its row grants
     // (`SYS_CAP_INFO` finds it), its answer on the console and, for a
     // redirected stdout, `NODE_WRITE`. No spawn, no console input: what it
-    // prints is what the installer answered.
+    // prints is what the installer answered. Its stat is a `Node` op beneath
+    // its root directory, so it lists no Domain `READ` op.
     ImageProfile {
         image: "PKG.ELF",
         syscalls: sys_nrs![

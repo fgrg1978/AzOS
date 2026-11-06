@@ -205,7 +205,7 @@ fn the_file_syscalls_route_through_the_seam() {
     // and answers the size and the directory flag.
     let mut name_out = [0xFFu8; 64];
     let rc = super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64);
-    assert_eq!(rc, Ok(Some((1234, true))), "readdir failed");
+    assert_eq!(rc, Ok(Some((1234, true, false))), "readdir failed");
 
     // **The name-buffer length gate** (owner decision 100b): the record is
     // `READDIR_NAME_BYTES` bytes ALWAYS, so a shorter declared buffer is
@@ -224,7 +224,7 @@ fn the_file_syscalls_route_through_the_seam() {
     // loop above would hold for a readdir that refused everything.
     assert_eq!(
         super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64),
-        Ok(Some((1234, true))),
+        Ok(Some((1234, true, false))),
     );
     assert_eq!(drain(), vec![Call::Readdir { path: b"/fat/CONFIG.INI".to_vec(), index: 3 }]);
     assert_eq!(&name_out[..5], b"HELLO");
@@ -268,7 +268,7 @@ fn the_file_syscalls_route_through_the_seam() {
     let out = map_scratch(pt, SCRATCH + 0x1000);
     assert_eq!(
         super::sys_readdirat(dir, SCRATCH as u64, 3, (SCRATCH + 0x1000) as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64),
-        Ok(Some((1234, true))),
+        Ok(Some((1234, true, false))),
     );
     assert_eq!(
         drain(),

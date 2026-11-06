@@ -105,7 +105,8 @@ pub trait FileOps: Sync {
 
     /// Entry `index` of the directory at `path`, as
     /// `(name, size, is_dir)`. The name is NUL-padded to 64 bytes because
-    /// that is the buffer `NODE_READDIR` promises its caller.
+    /// that is the buffer `NODE_READDIR` promises its caller; a name of 64
+    /// bytes or more fills all of it with no NUL, so the cut is seen.
     fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; 64], u32, bool)>;
 
     /// Close every descriptor the task `tid` still holds, and report how many

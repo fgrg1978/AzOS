@@ -350,14 +350,25 @@ pub const DOMAIN_MODULE_MAP_X: u16 = op(CapKind::Domain, CLASS_MODULE, 35);
 /// Op numbers of retired ops: never given to another op, so a binary built
 /// against one gets the dispatcher's `-EINVAL`, not some other operation
 /// (the driver-server ops `DOMAIN_DRIVER_REGISTER`, `_UNREGISTER`, `_FETCH`,
-/// `_REPLY`, `_REPLY_FETCH` and `_REPLY_WAIT`).
-pub const RETIRED_OPS: [u16; 6] = [
+/// `_REPLY`, `_REPLY_FETCH` and `_REPLY_WAIT`; the absolute-path ops of the
+/// domain `DOMAIN_STAT`, `_READDIR`, `_STATFS` (`READ` 13-15) and
+/// `DOMAIN_MKDIR`, `_UNLINK`, `_RMDIR`, `_RENAME`, `_TRUNCATE` (`FS_MUTATE`
+/// 20-24), whose names are now beneath a directory: the `NODE_*AT` ops).
+pub const RETIRED_OPS: [u16; 14] = [
     op(CapKind::Domain, CLASS_DRIVER, 39),
     op(CapKind::Domain, CLASS_DRIVER, 40),
     op(CapKind::Domain, CLASS_DRIVER, 44),
     op(CapKind::Domain, CLASS_DRIVER, 45),
     op(CapKind::Domain, CLASS_DRIVER, 46),
     op(CapKind::Domain, CLASS_DRIVER, 47),
+    op(CapKind::Domain, CLASS_READ, 13),
+    op(CapKind::Domain, CLASS_READ, 14),
+    op(CapKind::Domain, CLASS_READ, 15),
+    op(CapKind::Domain, CLASS_FS_MUTATE, 20),
+    op(CapKind::Domain, CLASS_FS_MUTATE, 21),
+    op(CapKind::Domain, CLASS_FS_MUTATE, 22),
+    op(CapKind::Domain, CLASS_FS_MUTATE, 23),
+    op(CapKind::Domain, CLASS_FS_MUTATE, 24),
 ];
 /// The component manager will not restart the row whose task `w0` was (a
 /// child it spawned that died with its named endpoints held): the kernel
@@ -458,12 +469,16 @@ pub const NODE_SEEK: u16 = op(CapKind::Node, CLASS_READ, 16);
 // Every name is NUL-terminated and relative to the directory the handle
 // names, and stays beneath it (`RESOLVE_BENEATH`): an absolute name, or a
 // `..` that climbs above the directory, is `-EINVAL` and reaches no
-// filesystem; `.` names the directory itself. There is no op by absolute
-// path: a POSIX layer resolves its paths against the directories it holds
+// filesystem; `.` names the directory itself, but not as the entry an op
+// creates, removes, renames or truncates (a last component `.` or `..` is
+// `-EINVAL` there). A name longer than the copy is `-ENAMETOOLONG`. There
+// is no op by absolute path: a POSIX layer resolves its paths against the directories it holds
 // (its root, its working directory) in ring 3. `READ` on the directory names
 // beneath it. An op that changes the tree (class `FS_MUTATE`) also needs, as
 // an open that changes it, a held tree with `WRITE` that covers the entry
-// (the file itself for a truncate): `-EACCES` when none does, `-EAGAIN`
+// (the file itself for a truncate) and whose caveats admit the op (an op
+// mask, a quota): `-EACCES` when none covers it, the capability refusal when
+// the covering trees' caveats refuse it, `-EAGAIN`
 // while containment is armed. `-ENOSYS` with no filesystem installed. The
 // same op numbers are the `Dir` interface's (`azos_devif::fs`).
 
@@ -472,9 +487,9 @@ pub const NODE_SEEK: u16 = op(CapKind::Node, CLASS_READ, 16);
 pub const NODE_STATAT: u16 = op(CapKind::Node, CLASS_READ, 17);
 /// Entry `w1` of the directory named `w0`: its name into the buffer `w2` of
 /// `w3` bytes (at least [`READDIR_NAME_BYTES`](crate::syscall_nr::READDIR_NAME_BYTES),
-/// always exactly that many written, zero-padded), its size and is-directory
-/// flag (0 or 1) as the first two reply words. 1 for an entry, 0 past the
-/// last.
+/// always exactly that many written, zero-padded), its size, its
+/// is-directory flag (0 or 1) and whether its name was cut to fit (0 or 1) as
+/// the first three reply words. 1 for an entry, 0 past the last.
 pub const NODE_READDIR: u16 = op(CapKind::Node, CLASS_READ, 18);
 /// Capacity and free space of the filesystem the name `w0` is on, into the
 /// buffer `w1` of `w2` bytes (at least

@@ -418,9 +418,9 @@ fn node_op(c: &mut Call) -> i64 {
         NODE_MMAP => crate::file_map::sys_file_mmap(hd, w[0], w[1], w[2], w[3]),
         NODE_STATAT => h::sys_statat(hd, w[0], w[1]),
         NODE_READDIR => match h::sys_readdirat(hd, w[0], w[1], w[2], w[3]) {
-            Ok(Some((size, is_dir))) => {
-                c.rep[..2].copy_from_slice(&[size as u64, is_dir as u64]);
-                c.nrep = 2;
+            Ok(Some((size, is_dir, cut))) => {
+                c.rep[..3].copy_from_slice(&[size as u64, is_dir as u64, cut as u64]);
+                c.nrep = 3;
                 1
             }
             Ok(None) => 0,

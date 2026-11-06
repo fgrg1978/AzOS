@@ -2531,7 +2531,8 @@ const UA_CSTR_LONG: usize = 256;
 ///   one 4-byte read of user memory and nothing else.
 /// * `uaccess-cstr-7` / `-256`: `stat` of a path whose first component does
 ///   not exist, 7 and 256 bytes with the NUL: the string copy in, then a
-///   lookup that stops at once. Their difference is 249 bytes of string copy.
+///   lookup that stops at once (`-ENOENT`, required). Their difference is
+///   249 bytes of string copy.
 /// * `uaccess-read-8` / `-4k` / `-64k`: open + read from the start + close of
 ///   a RAM file. Their differences are the copy out of 4,088 and 65,528 bytes
 ///   (on AzOS also the bounce through the kernel's 4 KiB buffer, and from
@@ -2555,7 +2556,9 @@ fn uaccess_lanes(abi: &(impl Abi + Uaccess), floor_ns: u64) {
     for (path, label) in [(&short[..], &b"uaccess-cstr-7"[..]), (&long[..], &b"uaccess-cstr-256"[..])] {
         let mut rc = 0i64;
         let t = batch(N_UA, || rc = abi.ua_cstr(path));
-        if rc >= 0 {
+        // `-ENOENT` (Linux's number on both sides) is the lookup after the
+        // copy; any other answer is a refusal that may have copied nothing.
+        if rc != -2 {
             fail_line(abi, label, rc);
         } else {
             report(abi, label, t, N_UA, floor_ns);

@@ -184,10 +184,8 @@ fn a_write_tree_admits_its_entries_and_nothing_outside() {
 /// that stays beneath the directory is resolved there: `fat/../tmp/a` is
 /// `/tmp/a`, and `tmp/../fat/a` is judged as `/fat/a` (no tree).
 ///
-/// **Canary.** Both spelling guards at once: `copy_path_from_user` without
-/// `collapse_slashes`, and `join_beneath` pushing an empty component instead
-/// of skipping it: the filesystem is handed `/tmp//a`. (Either guard alone
-/// keeps the test green.)
+/// **Canary.** In `join_beneath`, push an empty component instead of
+/// skipping it: the filesystem is handed `/tmp//a`.
 #[test]
 fn a_tree_holder_reaches_the_filesystem_by_the_spelling_the_check_judged() {
     let _g = serial();
@@ -246,6 +244,96 @@ fn a_name_cannot_climb_above_its_directory() {
     let r = dir(tid, "/fat", CapPerms::READ);
     let (n, _) = paths(page, b"A.TXT", b"");
     assert_eq!(mkdirat(r, n), eacces(), "a READ tree admitted a mkdir");
+}
+
+/// **A write tree's caveats hold against the op that changes the tree.** The
+/// only write tree on `/tmp` carries an op mask naming `FS_OPEN` alone: a
+/// creating open beneath it is admitted, mkdirat, unlinkat, renameat and
+/// truncateat are refused with the mask's refusal (`-ECAPPERMS`) and never
+/// reach the filesystem. An unmasked tree held beside it admits them again: every
+/// covering tree is tried, a masked one does not hide another.
+///
+/// **Canary.** Resolve the covering tree with the held probe again in
+/// `fs_tree_gate` (`holds_kind_where(ty::FILE, WRITE, ..)` instead of
+/// `held_tree_for`): the masked tree admits the unlink.
+#[test]
+fn a_write_trees_op_mask_holds_against_the_tree_ops() {
+    use super::harness::{classes, op_masked};
+    use azos_abi::invoke::CLASS_FS_OPEN;
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_0008;
+    let page = ring3(tid);
+    let root = dir(tid, "/", CapPerms::READ);
+    let full = dir(tid, "/tmp", CapPerms::RW);
+    op_masked(tid, full, classes(&[CLASS_FS_OPEN]));
+    let gone = azos_ipc::cap_store::with_table(tid, |t| t.revoke_raw(azos_abi::cap::CapHandle::from_raw(full as u32)));
+    assert_eq!(gone, Some(true), "the unmasked tree was not revoked");
+    let (a, b) = paths(page, b"tmp/A", b"tmp/B");
+    assert_eq!(super::sys_file_openat_typed(root, a, O_WRONLY | O_CREAT), FS_ANSWER, "the mask names FS_OPEN");
+    let refused = ecapperms();
+    assert_eq!(mkdirat(root, a), refused);
+    assert_eq!(unlinkat(root, a), refused);
+    assert_eq!(renameat(root, a, b), refused);
+    assert_eq!(truncateat(root, a), refused);
+    assert_eq!(calls(), vec!["open / tmp/A 0x41"], "a masked tree op reached the filesystem");
+
+    dir(tid, "/tmp", CapPerms::RW);
+    assert_eq!(unlinkat(root, a), FS_ANSWER, "an unmasked tree beside the masked one");
+    assert_eq!(calls(), vec!["unlink /tmp/A"]);
+}
+
+/// **An entry to change is never `.` or `..`.** `unlinkat(d, ".")` would
+/// remove the directory the handle names, and `x/..` resolves lexically
+/// whatever `x` is; both are `-EINVAL` for every op that creates, removes,
+/// renames or truncates, though a write tree covers the result, and the
+/// filesystem is never asked. A `..` inside the name stays legal.
+///
+/// **Canary.** Pass `entry: false` from `mutate_at` to `name_beneath`: the
+/// `.` unlink reaches the filesystem as `rmdir /tmp/a`.
+#[test]
+fn a_dot_or_dot_dot_entry_is_refused_for_the_tree_ops() {
+    use azos_abi::invoke::UNLINK_DIR;
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_0009;
+    let page = ring3(tid);
+    let d = dir(tid, "/tmp/a", CapPerms::RW);
+    grant(tid, "/", CapPerms::RW);
+    let einval = Errno::EINVAL.to_syscall_ret();
+    for p in [&b"."[..], b"..", b"x/..", b"x/.", b"./", b"x/../"] {
+        let (n, ok) = paths(page, p, b"y");
+        assert_eq!(sys_unlinkat(d, n, UNLINK_DIR), einval, "rmdir {}", s(p));
+        assert_eq!(unlinkat(d, n), einval, "unlink {}", s(p));
+        assert_eq!(mkdirat(d, n), einval, "mkdir {}", s(p));
+        assert_eq!(truncateat(d, n), einval, "truncate {}", s(p));
+        assert_eq!(renameat(d, n, ok), einval, "rename from {}", s(p));
+        assert_eq!(renameat(d, ok, n), einval, "rename to {}", s(p));
+    }
+    assert_eq!(calls(), Vec::<String>::new(), "a dot entry reached the filesystem");
+    let (n, _) = paths(page, b"x/../y", b"");
+    assert_eq!(unlinkat(d, n), FS_ANSWER);
+    assert_eq!(calls(), vec!["unlink /tmp/a/y"]);
+}
+
+/// **A name longer than the copy is `-ENAMETOOLONG`, not a fault**: a page of
+/// readable bytes with no NUL in the first `SYS_PATH_MAX`, for a name op and
+/// an open alike; nothing reaches the filesystem.
+///
+/// **Canary.** Answer `-EFAULT` for every failed copy in
+/// `copy_path_from_user`: the mkdirat reads -14.
+#[test]
+fn a_name_longer_than_the_copy_is_too_long() {
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_000A;
+    let page = ring3(tid);
+    let root = dir(tid, "/", CapPerms::RW);
+    unsafe { core::ptr::write_bytes(page, b'a', 4096) };
+    let toolong = Errno::ENAMETOOLONG.to_syscall_ret();
+    assert_eq!(mkdirat(root, SCRATCH as u64), toolong);
+    assert_eq!(super::sys_file_openat_typed(root, SCRATCH as u64, 0), toolong);
+    assert_eq!(calls(), Vec::<String>::new());
 }
 
 /// **A holder is contained while degraded mode is armed** (`-EAGAIN`, not

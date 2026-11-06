@@ -338,7 +338,7 @@ where the source states them.
 | `DOMAIN_SET_CLEAR_TID` | 0x5332 | CTL | Name the 32-bit word (`w0`, 4-aligned, 0: none) the calling thread's end clears and futex-wakes, as `SYS_THREAD_CREATE`'s `ctid` does for a new thread. |
 | `NODE_SEEK` | 0x6010 | READ | Reposition the file's open description (`w0` offset, `w1` whence 0/1/2); returns the new offset. Any permission. |
 | `NODE_STATAT` | 0x6011 | READ | The record of a name beneath a directory handle into a `STAT_BYTES` (64) buffer. |
-| `NODE_READDIR` | 0x6012 | READ | Entry `w1` of the directory named `w0`: the name into a `READDIR_NAME_BYTES` (64) buffer, the size and is-directory flag as reply words; 1 an entry, 0 past the last. |
+| `NODE_READDIR` | 0x6012 | READ | Entry `w1` of the directory named `w0`: the name into a `READDIR_NAME_BYTES` (64) buffer, the size, is-directory flag and name-cut flag as reply words; 1 an entry, 0 past the last. |
 | `NODE_STATFS` | 0x6013 | READ | Filesystem facts of the volume a name is on into a `STATFS_BYTES` (48) buffer. |
 | `NODE_MKDIRAT` | 0x6614 | FS_MUTATE | Make a directory beneath a directory handle. |
 | `NODE_UNLINKAT` | 0x6615 | FS_MUTATE | Remove a file; with `UNLINK_DIR`, an empty directory (`-ENOTEMPTY`). |
@@ -347,10 +347,15 @@ where the source states them.
 
 Every name of an `*at` op (and of `NODE_OPENAT`) is relative to the directory
 handle and stays beneath it (`RESOLVE_BENEATH`): an absolute name, or a `..`
-that climbs above the directory, is `-EINVAL` before any filesystem is asked.
+that climbs above the directory, is `-EINVAL` before any filesystem is asked,
+and so is an entry to create, remove, rename or truncate whose last component
+is `.` or `..`.
 There is no op by absolute path; a POSIX layer resolves its paths against the
 directories it holds in ring 3 (`libsys::beneath_root`). The `*at` ops that
-change the tree also need a held tree with `WRITE` that covers the entry. The
+change the tree also need a held tree with `WRITE` that covers the entry and
+whose caveats (an op mask, a quota) admit the op. The retired domain path ops
+(`DOMAIN_STAT` ... `DOMAIN_TRUNCATE`) are in `RETIRED_OPS` and answer
+`-EINVAL`. The
 same op numbers are the `Node` and `Dir` IDL interfaces
 (`azos_devif::fs`), the protocol a ring-3 file system would serve.
 
