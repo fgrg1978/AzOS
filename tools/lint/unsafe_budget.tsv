@@ -43,7 +43,7 @@ crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	313	49	13	0	0	81
+crates/core/mm	313	49	13	0	0	82
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	74
 crates/core/pkg	0	0	0	0	1	0
