@@ -266,6 +266,8 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
     }
     // The gate's refusal rows withhold the acceptance for one boot.
     let unconfined = azos_limits::DMA_RING3_WITHOUT_IOMMU && !canary!("dma-ring3-refusal");
+    RING3_UNCONFINED.store(unconfined, core::sync::atomic::Ordering::Release);
+    azos_ipc::mmio_cap::set_writable_master_policy(ring3_window_policy);
     azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks {
         domain: ring3_domain,
         quiesce: ring3_quiesce,
@@ -278,6 +280,37 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
     } else {
         kprintln!("[DMA] ring 3 masters the bus only behind an IOMMU: memory for any other device is refused");
     }
+}
+
+/// Ring 3 may give memory to, and hold writable, a device no IOMMU confines
+/// (Kconfig `DMA_RING3_WITHOUT_IOMMU`, unless withheld for the boot).
+static RING3_UNCONFINED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// May ring 3 hold the registers of device `dev`, which masters the bus,
+/// writable (a topology grant): only where an IOMMU will confine it, or the
+/// build accepts that its driver is kernel-trust. A refusal is said and
+/// recorded (`ring3-dma`, why 4).
+fn ring3_window_policy(dev: u32) -> bool {
+    if RING3_UNCONFINED.load(core::sync::atomic::Ordering::Acquire) || ring3_confinable(dev) || canary!("dma-ring3-window-anyway") {
+        return true;
+    }
+    azos_drv_sys::kwarn!("[DMA] device {}: a writable window refused to ring 3: it masters the bus and no IOMMU confines it", dev);
+    azos_decision::record(azos_decision::Rule::Ring3Dma, azos_decision::Verdict::Refuse, dev, [0, 0, 4]);
+    false
+}
+
+/// Will an IOMMU confine device `dev` for ring 3: a PCI function while one is
+/// up (`hw::ring3_domain` gives it a translating domain of its own).
+fn ring3_confinable(dev: u32) -> bool {
+    use azos_drv_bus::hwbus::{self, BusKind, Handle};
+    let Some(d) = hwbus::with(|b| b.get(Handle(dev)).map(|s| s.dev)) else { return false };
+    #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
+    if d.kind == BusKind::Pci {
+        let rid = azos_pci::Bdf::new(d.pci.bus, d.pci.device, d.pci.function).requester_id();
+        return hw::iommu_up() && hw::confinable(rid);
+    }
+    let _ = (d, BusKind::Pci);
+    false
 }
 
 /// The console line of a ring-3 binding's end.
@@ -299,9 +332,11 @@ fn ring3_report(e: azos_ipc::dma_bind::Ended) {
 /// device, as it would a kernel driver. `None`: an IOMMU is up and the
 /// function cannot have a domain of its own, so nothing it is given would
 /// reach it.
-fn ring3_domain(dev: u32) -> Option<&'static dyn DmaDomain> {
+fn ring3_domain(dev: u32, live: bool) -> Option<&'static dyn DmaDomain> {
     use azos_drv_bus::hwbus::{self, BusKind, Handle};
     let d = hwbus::with(|b| b.get(Handle(dev)).map(|s| s.dev))?;
+    // Read only by an IOMMU's domains.
+    let _ = live;
     match d.kind {
         // Without PCI support the bus holds no function.
         #[cfg(not(feature = "pci"))]
@@ -311,7 +346,7 @@ fn ring3_domain(dev: u32) -> Option<&'static dyn DmaDomain> {
             let rid = azos_pci::Bdf::new(d.pci.bus, d.pci.device, d.pci.function).requester_id();
             #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
             if hw::iommu_up() {
-                return hw::ring3_domain(rid);
+                return hw::ring3_domain(rid, live);
             }
             Some(azos_dma::registry::domain_for(Some(rid)))
         }
@@ -476,6 +511,8 @@ mod hw {
     /// (Kconfig `IOMMU_DOMAINS`).
     const DOMAINS: usize = azos_limits::IOMMU_DOMAINS as usize;
     static POOL: [Locked<IoDomain<ENTRIES>>; DOMAINS] = [const { Locked::empty() }; DOMAINS];
+    /// `POOL[i]` was handed to ring 3 (`ring3_domain`).
+    static RING3: [AtomicBool; DOMAINS] = [const { AtomicBool::new(false) }; DOMAINS];
 
     /// The drivers that map every DMA of their function through its domain
     /// (`azos_dma::registry::domain_for`) and call `enable` once their
@@ -530,7 +567,13 @@ mod hw {
     /// nothing until ring 3 maps memory in it). `None`: the IOMMU's own
     /// function, a function a kernel driver's domain is for, or no domain
     /// left (Kconfig `IOMMU_DOMAINS`).
-    pub(crate) fn ring3_domain(rid: u32) -> Option<&'static dyn azos_dma::DmaDomain> {
+    /// Can function `rid` have a ring-3 domain at all (not the unit's own, not
+    /// under IOMMU_BYPASS)?
+    pub(crate) fn confinable(rid: u32) -> bool {
+        UNIT.lock().is_some_and(|u| u.own != Some(rid)) && !azos_limits::IOMMU_BYPASS
+    }
+
+    pub(crate) fn ring3_domain(rid: u32, live: bool) -> Option<&'static dyn azos_dma::DmaDomain> {
         let u = (*UNIT.lock())?;
         if u.own == Some(rid) || azos_limits::IOMMU_BYPASS {
             return None;
@@ -538,19 +581,26 @@ mod hw {
         // One maker at a time: two first maps of one function make one domain.
         static MAKING: SpinLock<()> = SpinLock::new(());
         let _one = MAKING.lock();
-        if let Some(slot) = POOL.iter().find(|s| s.with(|d| d.dev() == rid) == Some(true)) {
-            // The function's domain from before (a kernel driver's, unbound,
-            // or ring 3's own from an earlier binding): handed out only
-            // translating and empty, so nothing it held stays reachable.
-            return (slot.with(|d| d.enabled() && d.is_empty()) == Some(true)).then_some(slot as &'static dyn azos_dma::DmaDomain);
+        if let Some(i) = POOL.iter().position(|s| s.with(|d| d.dev() == rid) == Some(true)) {
+            // The function's domain from before: ring 3's own (its bindings
+            // live in it), or a kernel driver's, unbound, handed out only
+            // translating and empty, so nothing that driver left is reachable.
+            let ring3_live = live && RING3[i].load(Ordering::Acquire);
+            let ok = POOL[i].with(|d| azos_dma::bind::reuse_for_ring3(d.enabled(), d.is_empty(), ring3_live)) == Some(true);
+            if ok {
+                RING3[i].store(true, Ordering::Release);
+            }
+            return ok.then_some(&POOL[i] as &'static dyn azos_dma::DmaDomain);
         }
-        let slot = POOL.iter().find(|s| s.with(|_| ()).is_none())?;
+        let i = POOL.iter().position(|s| s.with(|_| ()).is_none())?;
+        let slot = &POOL[i];
         let mut d = IoDomain::<ENTRIES>::new(rid, u.flavour, u.fmt, u.unit, &MEM, u.coherent).ok()?;
         if azos_dma::DomainOps::enable(&mut d).is_err() {
             azos_drv_sys::kerr!("[IOMMU] {:#06x}: ring-3 domain refused by the unit", rid);
             return None;
         }
         slot.set(d);
+        RING3[i].store(true, Ordering::Release);
         if azos_dma::registry::install_for(rid, slot).is_err() {
             azos_drv_sys::kerr!("[IOMMU] {:#06x}: ring-3 domain not recorded (registry full)", rid);
         }

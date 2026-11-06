@@ -69,13 +69,37 @@ const fn grant_fits(perms: CapPerms) -> bool {
     bits & !CapPerms::RW.bits() == 0 && bits & CapPerms::READ.bits() != 0
 }
 
+/// The kernel's answer to "may ring 3 hold device `handle`'s registers
+/// writable, though the device masters the bus": an IOMMU confines it, or
+/// Kconfig `DMA_RING3_WITHOUT_IOMMU` accepts that its driver is kernel-trust
+/// (the answer is the kernel's to print and record). Unset: no.
+static WRITABLE_MASTER: azos_sync::SpinLock<Option<fn(u32) -> bool>> = azos_sync::SpinLock::new(None);
+
+/// Install the kernel's answer ([`WRITABLE_MASTER`]). Boot.
+pub fn set_writable_master_policy(f: fn(u32) -> bool) {
+    *WRITABLE_MASTER.lock() = Some(f);
+}
+
+/// May a grant carrying `perms` be minted for device `handle`: one with
+/// `WRITE` on a device that masters the bus only where the kernel's policy
+/// says so (writing such a device's registers points it at any memory, and
+/// that is the DMA authority `DEVICE_DMA_MAP` refuses alone).
+fn writable_ok(handle: u32, perms: CapPerms) -> bool {
+    if !perms.contains(CapPerms::WRITE) || hwbus::may_master_bus(handle) != Some(true) || cfg!(feature = "writable-master-canary") {
+        return true;
+    }
+    let policy = *WRITABLE_MASTER.lock();
+    policy.is_some_and(|f| f(handle))
+}
+
 /// Topology-loader entry: grant `tid` a `Cap<Device>` over the device
 /// `selector` names.
 ///
 /// The capability's resource is the device's bus handle. `None` when the
 /// selector does not read, no device matches it, the device has no window
-/// ring 3 may map, `perms` is a grant no mapping could honour, or the
-/// cap-table is full.
+/// ring 3 may map, `perms` is a grant no mapping could honour, `perms`
+/// carries `WRITE` on a device that masters the bus and the kernel's policy
+/// refuses it ([`set_writable_master_policy`]), or the cap-table is full.
 pub fn mmio_grant_cap(
     tid: u32,
     selector: &str,
@@ -86,6 +110,9 @@ pub fn mmio_grant_cap(
     }
     let handle = hwbus::resolve(selector)?;
     hwbus::user_window(handle)?;
+    if !writable_ok(handle, perms) {
+        return None;
+    }
     crate::cap_store::grant::<targets::MmioRegion>(tid, perms, handle)
 }
 
@@ -98,6 +125,12 @@ pub fn mmio_device_line(selector: &str) -> Option<u32> {
     let h = hwbus::resolve(selector)?;
     hwbus::user_window(h)?;
     hwbus::line_of(h)
+}
+
+/// May a topology row `"irq.<N>"` mint line `line`: no device a kernel
+/// driver owns, or may still take, raises it.
+pub fn mmio_line_free(line: u32) -> bool {
+    hwbus::line_free_for_user(line)
 }
 
 /// Check `DOMAIN_MMIO_MAP`'s arguments: `handle` (`a0`) and `access` (`a1`).

@@ -21,19 +21,28 @@
 //! kernel's own buffers.
 //!
 //! [`Table`] is the bookkeeping, pure so a host test drives it: one binding
-//! per object, recorded with the task that made it, at most a share of the
-//! table per task. A binding whose device could not be shown stopped is
-//! *parked*: it keeps its pages and its record, ends for nobody, and no new
-//! binding is made for that device, so a driver that crashes and restarts
-//! keeps at most one object's worth of memory out of the allocator.
+//! per object, recorded with the thread that made it and the domain it was
+//! mapped through (its end unmaps from that domain, never from one looked up
+//! again), at most a share of the table per process. A binding whose device
+//! could not be shown stopped is *parked*: it keeps its pages and its record,
+//! ends for nobody, and no new binding is made for that device, so a driver
+//! that crashes and restarts keeps at most one object's worth of memory out
+//! of the allocator. A binding being ended keeps its record until it is
+//! freed or parked, so parking cannot fail.
+//!
+//! [`reuse_for_ring3`] is the rule the kernel hands an IOMMU domain out to
+//! ring 3 by.
 
 use crate::{Direction, DmaAddr, DmaDomain, DmaError};
 
-/// One live binding: `obj` mapped for device `dev` by task `owner`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One live binding: `obj` mapped for device `dev` by thread `owner` of
+/// process `group`, through `domain`.
+#[derive(Clone, Copy)]
 pub struct Binding {
-    /// The task that made the binding (its exit ends it).
+    /// The thread that made the binding (its exit ends it).
     pub owner: u32,
+    /// Its process: the table's share is counted per process.
+    pub group: u32,
     /// The device, as the hardware bus names it.
     pub dev: u32,
     /// The memory object (its packed reference).
@@ -43,20 +52,57 @@ pub struct Binding {
     pub len: usize,
     /// What the device was told.
     pub bus: DmaAddr,
+    /// The domain the object was mapped through.
+    pub domain: &'static dyn DmaDomain,
+}
+
+impl PartialEq for Binding {
+    fn eq(&self, o: &Self) -> bool {
+        (self.owner, self.group, self.dev, self.obj, self.pa, self.len, self.bus)
+            == (o.owner, o.group, o.dev, o.obj, o.pa, o.len, o.bus)
+            && core::ptr::addr_eq(self.domain as *const dyn DmaDomain, o.domain as *const dyn DmaDomain)
+    }
+}
+
+impl core::fmt::Debug for Binding {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Binding")
+            .field("owner", &self.owner)
+            .field("group", &self.group)
+            .field("dev", &self.dev)
+            .field("obj", &self.obj)
+            .field("pa", &self.pa)
+            .field("len", &self.len)
+            .field("bus", &self.bus)
+            .field("domain", &self.domain.kind())
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindError {
-    /// The object is bound already (to this device or another).
+    /// The object is bound already (to this device or another), or a binding
+    /// of the device is being ended.
     Busy,
     /// The table has no free record.
     Full,
-    /// The task holds its share of the table already.
+    /// The process holds its share of the table already.
     Quota,
     /// A binding of the device is parked: its pages are kept.
     Parked,
     /// The domain refused the mapping.
     Domain(DmaError),
+}
+
+/// May the kernel hand ring 3 a device's existing IOMMU domain: one ring 3
+/// was handed and still has live bindings in (`ring3_live`), or one that
+/// translates and maps nothing (a kernel driver's, after an unbind, with
+/// nothing it left behind; ring 3's own once its bindings ended).
+pub const fn reuse_for_ring3(enabled: bool, empty: bool, ring3_live: bool) -> bool {
+    if cfg!(feature = "ring3-reuse-canary") {
+        return enabled && empty;
+    }
+    (enabled && ring3_live) || (enabled && empty)
 }
 
 /// Runtime canary: [`map`] records the binding without putting the object in
@@ -75,12 +121,12 @@ pub fn map(domain: &dyn DmaDomain, pa: u64, len: usize, dir: Direction) -> Resul
     domain.map(pa, len, dir)
 }
 
-/// End binding `b`: take the object out of `domain`, then call `drop_ref`,
-/// which gives the kernel's reference back (the frames may go). A failed
-/// unmap keeps the reference: `drop_ref` is not called and the bytes are
-/// counted as leaked.
-pub fn release(domain: &dyn DmaDomain, b: &Binding, drop_ref: impl FnOnce(u32)) -> Result<(), DmaError> {
-    let r = if SKIP_MAP { Ok(()) } else { domain.unmap(b.bus, b.len) };
+/// End binding `b`: take the object out of the domain it was mapped through,
+/// then call `drop_ref`, which gives the kernel's reference back (the frames
+/// may go). A failed unmap keeps the reference: `drop_ref` is not called and
+/// the bytes are counted as leaked.
+pub fn release(b: &Binding, drop_ref: impl FnOnce(u32)) -> Result<(), DmaError> {
+    let r = if SKIP_MAP { Ok(()) } else { b.domain.unmap(b.bus, b.len) };
     if r.is_err() && !crate::alloc::free_anyway() {
         crate::note_leak(b.len);
         return r;
@@ -89,12 +135,29 @@ pub fn release(domain: &dyn DmaDomain, b: &Binding, drop_ref: impl FnOnce(u32)) 
     r
 }
 
-/// Up to `N` live bindings.
+/// Where a record stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum State {
+    Free = 0,
+    Live,
+    /// Taken by an end that has not said yet whether it frees or parks it.
+    Ending,
+    Parked,
+}
+
+/// A binding taken out for its end: [`Table::finish`] frees or parks its
+/// record.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Taken {
+    slot: usize,
+    pub binding: Binding,
+}
+
+/// Up to `N` bindings.
 pub struct Table<const N: usize> {
     slots: [Option<Binding>; N],
-    /// `slots[i]` is kept: its device may still reach the pages
-    /// ([`Table::park`]). Apart from the record so the table starts all zero.
-    parked: [bool; N],
+    state: [State; N],
 }
 
 impl<const N: usize> Default for Table<N> {
@@ -105,71 +168,82 @@ impl<const N: usize> Default for Table<N> {
 
 impl<const N: usize> Table<N> {
     pub const fn new() -> Self {
-        Table { slots: [None; N], parked: [false; N] }
+        Table { slots: [None; N], state: [State::Free; N] }
     }
 
-    /// Bindings one task may hold: a quarter of the table, so one driver
-    /// cannot take every record from the others.
-    pub const PER_OWNER: usize = if N >= 4 { N / 4 } else { 1 };
+    /// Bindings one process may hold: a quarter of the table, so one driver,
+    /// however many threads it has, cannot take every record from the others.
+    pub const PER_PROCESS: usize = if N >= 4 { N / 4 } else { 1 };
 
-    /// Record `b` (checked first with [`Self::can_insert`]).
-    pub fn insert(&mut self, b: Binding) -> Result<(), BindError> {
-        self.can_insert(b.owner, b.dev, b.obj)?;
-        let slot = self.slots.iter_mut().find(|s| s.is_none()).ok_or(BindError::Full)?;
-        *slot = Some(b);
-        Ok(())
+    fn with(&self, st: State) -> impl Iterator<Item = &Binding> + '_ {
+        (0..N).filter(move |&i| self.state[i] == st).filter_map(move |i| self.slots[i].as_ref())
     }
 
-    /// May `owner` bind `obj` to `dev`: the object is free, the device has no
-    /// parked binding, the owner is under its share and there is room.
-    pub fn can_insert(&self, owner: u32, dev: u32, obj: u32) -> Result<(), BindError> {
-        let live = || self.slots.iter().zip(self.parked.iter()).filter_map(|(s, &p)| s.map(|b| (b, p)));
-        if live().any(|(s, _)| s.obj == obj) {
+    /// May process `group` bind `obj` to `dev`: the object is free, the device
+    /// has no parked binding and none being ended, the process is under its
+    /// share and there is room.
+    pub fn can_insert(&self, group: u32, dev: u32, obj: u32) -> Result<(), BindError> {
+        if self.slots.iter().flatten().any(|s| s.obj == obj) || self.with(State::Ending).any(|s| s.dev == dev) {
             return Err(BindError::Busy);
         }
-        if live().any(|(s, parked)| s.dev == dev && parked) {
+        if self.with(State::Parked).any(|s| s.dev == dev) {
             return Err(BindError::Parked);
         }
-        if live().filter(|&(s, parked)| s.owner == owner && !parked).count() >= Self::PER_OWNER {
+        if self.with(State::Live).filter(|s| s.group == group).count() >= Self::PER_PROCESS {
             return Err(BindError::Quota);
         }
-        if self.slots.iter().all(Option::is_some) {
+        if self.state.iter().all(|s| *s != State::Free) {
             return Err(BindError::Full);
         }
         Ok(())
     }
 
-    /// Keep `b`, just taken, for good: its pages stay pinned and its device
-    /// takes no new binding. The slot `b` came from is free, so this cannot
-    /// fail; a table that was filled meanwhile drops the record, not the pin.
-    pub fn park(&mut self, b: Binding) {
-        if let Some(i) = self.slots.iter().position(Option::is_none) {
-            self.slots[i] = Some(b);
-            self.parked[i] = true;
-        }
+    /// Record `b` (checked first with [`Self::can_insert`]).
+    pub fn insert(&mut self, b: Binding) -> Result<(), BindError> {
+        self.can_insert(b.group, b.dev, b.obj)?;
+        let i = self.state.iter().position(|s| *s == State::Free).ok_or(BindError::Full)?;
+        self.slots[i] = Some(b);
+        self.state[i] = State::Live;
+        Ok(())
     }
 
-    /// The slot of the live, not parked, binding `f` picks.
-    fn live_slot(&self, f: impl Fn(&Binding) -> bool) -> Option<usize> {
-        (0..N).find(|&i| !self.parked[i] && self.slots[i].as_ref().is_some_and(&f))
+    fn take_where(&mut self, f: impl Fn(&Binding) -> bool) -> Option<Taken> {
+        let slot = (0..N).find(|&i| self.state[i] == State::Live && self.slots[i].as_ref().is_some_and(&f))?;
+        self.state[slot] = State::Ending;
+        Some(Taken { slot, binding: self.slots[slot]? })
     }
 
-    /// Take the binding `owner` made of `obj` for `dev`.
-    pub fn take(&mut self, owner: u32, dev: u32, obj: u32) -> Option<Binding> {
-        let i = self.live_slot(|b| b.owner == owner && b.dev == dev && b.obj == obj)?;
-        self.slots[i].take()
+    /// Take the binding `owner` made of `obj` for `dev` for its end; its
+    /// record stays until [`Self::finish`].
+    pub fn take(&mut self, owner: u32, dev: u32, obj: u32) -> Option<Taken> {
+        self.take_where(|b| b.owner == owner && b.dev == dev && b.obj == obj)
     }
 
     /// Take one binding `owner` made, any: the exit path takes them one at a
-    /// time and releases each outside the table's lock.
-    pub fn take_owned(&mut self, owner: u32) -> Option<Binding> {
-        let i = self.live_slot(|b| b.owner == owner)?;
-        self.slots[i].take()
+    /// time and ends each outside the table's lock.
+    pub fn take_owned(&mut self, owner: u32) -> Option<Taken> {
+        self.take_where(|b| b.owner == owner)
+    }
+
+    /// The end of `t` is over: its record goes, or, with `park`, stays for
+    /// good (its pages kept, its device given nothing new).
+    pub fn finish(&mut self, t: Taken, park: bool) {
+        if park && !cfg!(feature = "park-drop-canary") {
+            self.state[t.slot] = State::Parked;
+        } else {
+            self.slots[t.slot] = None;
+            self.state[t.slot] = State::Free;
+        }
+    }
+
+    /// Has `dev` a live binding?
+    pub fn has_live(&self, dev: u32) -> bool {
+        self.with(State::Live).any(|b| b.dev == dev)
     }
 
     /// Live bindings.
     pub fn len(&self) -> usize {
-        self.slots.iter().flatten().count()
+        self.with(State::Live).count()
     }
 
     pub fn is_empty(&self) -> bool {

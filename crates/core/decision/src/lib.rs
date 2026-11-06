@@ -1321,7 +1321,8 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // why: 0 admitted without an IOMMU (DMA_RING3_WITHOUT_IOMMU), 1 refused
         // without one, 2 refused: an earlier binding's pages are kept, 3 kept:
-        // the device could not be shown stopped.
+        // the device could not be shown stopped, 4 a writable window on it
+        // refused (it masters the bus).
         name: "ring3-dma",
         subject: "device",
         fields: ["tid", "bytes", "why"],

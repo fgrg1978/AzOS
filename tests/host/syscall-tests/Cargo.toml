@@ -9,6 +9,9 @@ description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded
 # Run with:  cd tests/host/syscall-tests && cargo test --release
 
 [features]
+# The kernel's ring-3 IOMMU reuse rule broken to empty-only
+# (`behind_an_iommu_a_binding_ends_freed_and_the_device_binds_again` goes red).
+ring3-reuse-canary = ["azos_dma/ring3-reuse-canary"]
 # `dma_bind.rs`'s canary: a device no IOMMU confines is given memory anyway
 # (`an_unconfined_device_is_refused_without_the_acceptance` goes red).
 dma-ring3-unconfined-canary = ["azos_ipc/dma-ring3-unconfined-canary"]

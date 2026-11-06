@@ -304,7 +304,7 @@ fn a_kernel_caller_gets_minus_one() {
 
 mod dma {
     use super::*;
-    use azos_abi::invoke::{DEVICE_DMA_MAP, DEVICE_DMA_UNMAP, DMA_BIDIRECTIONAL, DMA_TO_DEVICE, INVOKE_REGS};
+    use azos_abi::invoke::{DEVICE_DMA_MAP, DEVICE_DMA_UNMAP, DMA_BIDIRECTIONAL, DMA_FROM_DEVICE, DMA_TO_DEVICE, INVOKE_REGS};
     use azos_abi::syscall_nr::{SHM_CREATE_KIND_SHIFT, SHM_KIND_CONTIG};
     use azos_dma::{Direction, DmaAddr, DmaDomain, DmaError, DomainKind};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -348,7 +348,7 @@ mod dma {
     }
     static REC: Rec = Rec;
 
-    fn domain(_dev: u32) -> Option<&'static dyn DmaDomain> {
+    fn domain(_dev: u32, _live: bool) -> Option<&'static dyn DmaDomain> {
         Some(&REC)
     }
     fn quiesce(_dev: u32) -> bool {
@@ -364,6 +364,48 @@ mod dma {
 
     fn hooks(unconfined: bool) {
         azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain, quiesce, unconfined, report });
+    }
+
+    /// A translating domain as the kernel hands it out (`hw::ring3_domain`):
+    /// it counts what is mapped in it, and the hook below answers it only by
+    /// the kernel's reuse rule (`bind::reuse_for_ring3`): to a second map of
+    /// a device whose bindings live in it, else only empty.
+    struct Iommu(Mutex<usize>);
+    impl DmaDomain for Iommu {
+        fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
+            *self.0.lock().unwrap() += 1;
+            EVENTS.lock().unwrap().push(("map", alive()));
+            Ok(DmaAddr(pa))
+        }
+        fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
+            *self.0.lock().unwrap() -= 1;
+            EVENTS.lock().unwrap().push(("unmap", alive()));
+            Ok(())
+        }
+        fn coherent(&self) -> bool {
+            true
+        }
+        fn kind(&self) -> DomainKind {
+            DomainKind::Iommu("model")
+        }
+        fn enable(&self) -> Result<(), DmaError> {
+            Ok(())
+        }
+        fn allow_msi(&self, _: u64) -> Result<(), DmaError> {
+            Ok(())
+        }
+    }
+    static IOMMU: Iommu = Iommu(Mutex::new(0));
+    static HANDED: AtomicBool = AtomicBool::new(false);
+
+    fn iommu_domain(_dev: u32, live: bool) -> Option<&'static dyn DmaDomain> {
+        let empty = *IOMMU.0.lock().unwrap() == 0;
+        let ring3_live = live && HANDED.load(Ordering::SeqCst);
+        if !azos_dma::bind::reuse_for_ring3(true, empty, ring3_live) {
+            return None;
+        }
+        HANDED.store(true, Ordering::SeqCst);
+        Some(&IOMMU)
     }
 
     fn setup() -> usize {
@@ -587,6 +629,46 @@ mod dma {
         assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
         // The suite shares one object table: the kept reference goes here.
         azos_ipc::memobj::memobj_frames_unpin(r);
+    }
+
+    /// **Behind an IOMMU a binding ends through the domain it was mapped in:
+    /// the frames go back and nothing is parked (no quiesce asked), a second
+    /// map of the device while the first lives is admitted, and the driver
+    /// that comes after binds again.**
+    ///
+    /// **Canaries.** Look the domain up again in `dma_bind::end` (the hook
+    /// answers none while the binding's own mapping is in it): the end parks
+    /// and the next map is refused. `ring3-reuse-canary` (empty only): the
+    /// second map of the live device is refused.
+    #[test]
+    fn behind_an_iommu_a_binding_ends_freed_and_the_device_binds_again() {
+        let _g = serial();
+        setup();
+        azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain: iommu_domain, quiesce, unconfined: false, report });
+        HANDED.store(false, Ordering::SeqCst);
+        let dev = device(fresh_device("pci@7500000", b"vendor,iommudev\0", 0x0750_0000), CapPerms::RW);
+        let (ring, ring_idx, _) = object(1, SHM_KIND_CONTIG);
+        let (bufs, bufs_idx, _) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(ring_idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, ring, DMA_BIDIRECTIONAL).0, 0, "the first map");
+        assert_eq!(op(dev, DEVICE_DMA_MAP, bufs, DMA_FROM_DEVICE).0, 0, "a second map of the live device");
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, bufs, 0).0, 0, "an unmap under the IOMMU");
+        azos_ipc::dma_bind::release_all(TID);
+        let ends = ENDS.lock().unwrap().clone();
+        assert_eq!(ends.len(), 2);
+        assert!(ends.iter().all(|e| e.outcome == azos_ipc::dma_bind::Outcome::Released), "an end parked: {ends:?}");
+        assert!(!EVENTS.lock().unwrap().iter().any(|(e, _)| *e == "quiesce"), "the IOMMU confines it: no quiesce");
+        assert_eq!(*IOMMU.0.lock().unwrap(), 0, "the domain still maps something");
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(bufs), 0);
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(ring), 0);
+        assert!(azos_ipc::memobj::memobj_info(bufs_idx).is_none() && !alive(), "the frames stayed");
+        // The driver that comes after.
+        let (again, idx, _) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, again, DMA_TO_DEVICE).0, 0, "the restarted driver's map");
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, again, 0).0, 0);
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(again), 0);
+        hooks(true);
     }
 
     /// **At the exit, a device that cannot be shown stopped keeps the frames

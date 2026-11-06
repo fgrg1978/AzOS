@@ -119,6 +119,17 @@ impl Device {
     /// A free slot's content.
     pub const EMPTY: Device = Device::blank(BusKind::Dt);
 
+    /// May the device master the bus (DMA), so that writing its registers is
+    /// pointing it at memory: every PCI function and virtio transport, and a
+    /// device-tree node the firmware gave DMA properties (`dma-coherent`, a
+    /// `dma-ranges` that moves or limits it).
+    pub const fn may_master_bus(&self) -> bool {
+        match self.kind {
+            BusKind::Pci | BusKind::VirtioMmio => true,
+            BusKind::Dt => self.dma_coherent || self.dma_offset != 0 || self.dma_mask != u64::MAX,
+        }
+    }
+
     const fn blank(kind: BusKind) -> Self {
         Device {
             kind,

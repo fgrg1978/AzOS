@@ -20,3 +20,9 @@ azos_common = { path = "../../core/common" }
 # device's domain (`bind::map`), so behind an IOMMU the device's first access
 # faults and the host test of the binding sees the page missing.
 dma-bind-skip-map-canary = []
+# Host canaries (tests/host/iommu-tests, syscall-tests): the kernel reuses a
+# device's IOMMU domain for ring 3 only when it is empty, so ring 3's second
+# map of a live device is refused (`reuse_for_ring3`); a parked binding's
+# record is freed instead (`Table::finish`).
+ring3-reuse-canary = []
+park-drop-canary = []

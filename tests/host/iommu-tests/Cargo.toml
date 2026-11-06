@@ -21,6 +21,10 @@ dma-bind-skip-map-canary = ["azos_dma/dma-bind-skip-map-canary"]
 # A domain with a mapping left reads as empty
 # (`a_domain_with_a_mapping_left_is_not_handed_to_ring_3` goes red).
 domain-empty-canary = ["azos_iommu/domain-empty-canary"]
+domain-stale-canary = ["azos_iommu/domain-stale-canary"]
+# The kernel's reuse rule and the park, broken (see crates/drivers/dma/Cargo.toml).
+ring3-reuse-canary = ["azos_dma/ring3-reuse-canary"]
+park-drop-canary = ["azos_dma/park-drop-canary"]
 
 [profile.release]
 overflow-checks = true

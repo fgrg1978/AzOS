@@ -72,6 +72,19 @@ pub fn line_of(handle: u32) -> Option<u32> {
     with(|b| b.get(Handle(handle)).map(|s| s.dev.irq)).filter(|&l| l != 0)
 }
 
+/// May ring 3 be given interrupt line `line`: no device that raises it is
+/// one a kernel driver owns or may still take (a polled kernel driver has not
+/// enabled its line, and the line is still its device's).
+pub fn line_free_for_user(line: u32) -> bool {
+    with(|b| !b.iter().any(|(h, s)| s.dev.irq == line && b.user_window(h).is_none()))
+}
+
+/// Whether the device `handle` names may master the bus
+/// ([`Device::may_master_bus`]); `None` for a stale handle.
+pub fn may_master_bus(handle: u32) -> Option<bool> {
+    with(|b| b.get(Handle(handle)).map(|s| s.dev.may_master_bus()))
+}
+
 /// [`user_window`] and book the mapping about to be made ([`Bus::claim_user_window`]).
 pub fn claim_user_window(handle: u32) -> Option<(u64, u64)> {
     with(|b| b.claim_user_window(Handle(handle)))

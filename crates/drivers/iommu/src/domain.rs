@@ -49,6 +49,9 @@ pub struct IoDomain<const N: usize> {
     coherent: bool,
     /// The unit translates through this domain's table.
     enabled: bool,
+    /// A flush failed: the unit may still hold translations the table no
+    /// longer has. Never cleared.
+    stale: bool,
     entries: [Option<Entry>; N],
 }
 
@@ -74,7 +77,7 @@ impl<const N: usize> IoDomain<N> {
         coherent: bool,
     ) -> Result<Self, DmaError> {
         let pt = IoPageTable::new(fmt, mem).map_err(pt_err)?;
-        Ok(IoDomain { dev, flavour, unit, mem, pt, coherent, enabled: false, entries: [None; N] })
+        Ok(IoDomain { dev, flavour, unit, mem, pt, coherent, enabled: false, stale: false, entries: [None; N] })
     }
 
     /// The requester id this domain is for.
@@ -87,9 +90,11 @@ impl<const N: usize> IoDomain<N> {
         self.enabled
     }
 
-    /// Does the table map nothing (no mapping recorded)?
+    /// Does the domain reach nothing: no mapping recorded, and no flush that
+    /// failed (the unit may still hold what an unmap took out of the table)?
     pub fn is_empty(&self) -> bool {
-        cfg!(feature = "domain-empty-canary") || self.entries.iter().all(Option::is_none)
+        cfg!(feature = "domain-empty-canary")
+            || (!(self.stale && !cfg!(feature = "domain-stale-canary")) && self.entries.iter().all(Option::is_none))
     }
 
     /// Make the table agree with `entries` for pages `first..=last`: each
@@ -119,8 +124,12 @@ impl<const N: usize> IoDomain<N> {
         }
     }
 
-    fn flush(&self) -> Result<(), DmaError> {
-        self.unit.flush(self.dev).map_err(|_| DmaError::Iommu)
+    fn flush(&mut self) -> Result<(), DmaError> {
+        let r = self.unit.flush(self.dev).map_err(|_| DmaError::Iommu);
+        if r.is_err() {
+            self.stale = true;
+        }
+        r
     }
 }
 

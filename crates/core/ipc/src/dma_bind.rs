@@ -23,9 +23,13 @@
 //!   new binding, so a crash loop keeps one object's worth, not one per crash.
 //! * A binding books its device with the bus as a mapped register window does
 //!   (`hwbus::claim_user_window`), for as long as the device may reach it.
-//! * A binding is the thread's that made it, as an interrupt line's is.
+//! * A binding is the thread's that made it, as an interrupt line's is; a
+//!   process holds at most a quarter of the table, whatever its threads.
+//! * A binding keeps the domain it was mapped through and is unmapped from
+//!   it: the kernel hands an IOMMU domain out to ring 3 only empty or already
+//!   ring 3's, so looking it up again at the end would find none.
 
-use azos_dma::bind::{self, Binding, BindError, Table};
+use azos_dma::bind::{self, Binding, BindError, Table, Taken};
 pub use azos_dma::Direction;
 use azos_dma::{DmaAddr, DmaDomain, DomainKind};
 use azos_sync::SpinLock;
@@ -36,7 +40,10 @@ pub struct Hooks {
     /// The domain of device `dev`, ready for ring 3 to map into (an IOMMU
     /// domain exists and translates, so nothing unmapped is reachable);
     /// `None` for a device that has none.
-    pub domain: fn(dev: u32) -> Option<&'static dyn DmaDomain>,
+    /// `live`: ring 3 has a binding of `dev` now (an IOMMU domain that is
+    /// ring 3's and holds those bindings may be handed out again, any other
+    /// only empty).
+    pub domain: fn(dev: u32, live: bool) -> Option<&'static dyn DmaDomain>,
     /// Stop device `dev` issuing DMA; `false` when it cannot be shown
     /// stopped.
     pub quiesce: fn(dev: u32) -> bool,
@@ -148,14 +155,16 @@ pub fn map(owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<Mapped, Dma
 
 fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<Mapped, DmaBindError> {
     use azos_decision::Verdict;
-    let domain = (hooks.domain)(dev).ok_or(DmaBindError::NoDomain)?;
+    let live = TABLE.lock().has_live(dev);
+    let domain = (hooks.domain)(dev, live).ok_or(DmaBindError::NoDomain)?;
     let unconfined = !confined(domain);
     if unconfined && !(hooks.unconfined || cfg!(feature = "dma-ring3-unconfined-canary")) {
         record(Verdict::Refuse, dev, owner, 0, WHY_UNCONFINED);
         return Err(DmaBindError::NoDomain);
     }
+    let group = azos_sched::group::proc_tid(owner);
     let mut t = TABLE.lock();
-    if let Err(e) = t.can_insert(owner, dev, obj) {
+    if let Err(e) = t.can_insert(group, dev, obj) {
         return Err(match e {
             BindError::Busy => DmaBindError::Busy,
             BindError::Parked => {
@@ -176,7 +185,7 @@ fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) ->
         }
     };
     // Checked above, under the same hold.
-    let _ = t.insert(Binding { owner, dev, obj, pa, len, bus });
+    let _ = t.insert(Binding { owner, group, dev, obj, pa, len, bus, domain });
     drop(t);
     if unconfined {
         record(Verdict::Admit, dev, owner, len, WHY_ADMITTED);
@@ -184,19 +193,20 @@ fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) ->
     Ok(Mapped { bus, len, coherent: domain.coherent() })
 }
 
-/// End `b`, just taken from the table: an unconfined device is stopped
-/// first; then out of its domain, then the kernel's reference, then the
-/// device's booking. A device not shown stopped, or an unmap that failed,
-/// parks the binding instead (pages pinned, device booked), recorded.
-fn end(b: Binding, hooks: Hooks, exit: bool) -> Result<(), DmaBindError> {
-    let domain = (hooks.domain)(b.dev);
-    let stopped = domain.is_some_and(confined) || (hooks.quiesce)(b.dev);
-    let released = match domain {
-        Some(d) if stopped => bind::release(d, &b, crate::memobj::memobj_frames_unpin).is_ok(),
-        _ => false,
-    };
+/// End the binding `t` took out of the table: an unconfined device is
+/// stopped first; then out of the domain it was mapped through (never one
+/// looked up again: the kernel hands a domain out by rules its own bindings
+/// change), then the kernel's reference, then the device's booking. A device
+/// not shown stopped, or an unmap that failed, parks the binding instead
+/// (pages pinned, device booked), recorded. The record was kept through the
+/// end, so the park cannot fail.
+fn end(t: Taken, hooks: Hooks, exit: bool) -> Result<(), DmaBindError> {
+    let b = t.binding;
+    let stopped = confined(b.domain) || (hooks.quiesce)(b.dev);
+    let released = stopped && bind::release(&b, crate::memobj::memobj_frames_unpin).is_ok();
     let mut ended = Ended { dev: b.dev, tid: b.owner, bytes: b.len, exit, outcome: Outcome::Released };
     if released {
+        TABLE.lock().finish(t, false);
         azos_drv_bus::hwbus::unclaim_user_window(b.dev);
         (hooks.report)(ended);
         return Ok(());
@@ -207,7 +217,7 @@ fn end(b: Binding, hooks: Hooks, exit: bool) -> Result<(), DmaBindError> {
     }
     ended.outcome = if stopped { Outcome::UnmapFailed } else { Outcome::NotStopped };
     record(azos_decision::Verdict::Refuse, b.dev, b.owner, b.len, WHY_KEPT);
-    TABLE.lock().park(b);
+    TABLE.lock().finish(t, true);
     (hooks.report)(ended);
     Err(DmaBindError::Kept)
 }
@@ -216,8 +226,8 @@ fn end(b: Binding, hooks: Hooks, exit: bool) -> Result<(), DmaBindError> {
 /// by the kernel first, whatever the driver did.
 pub fn unmap(owner: u32, dev: u32, obj: u32) -> Result<(), DmaBindError> {
     let hooks = (*HOOKS.lock()).ok_or(DmaBindError::NotBound)?;
-    let b = TABLE.lock().take(owner, dev, obj).ok_or(DmaBindError::NotBound)?;
-    end(b, hooks, false)
+    let t = TABLE.lock().take(owner, dev, obj).ok_or(DmaBindError::NotBound)?;
+    end(t, hooks, false)
 }
 
 /// The thread `tid` is gone: every binding it made ends, as [`unmap`] ends
@@ -225,7 +235,7 @@ pub fn unmap(owner: u32, dev: u32, obj: u32) -> Result<(), DmaBindError> {
 pub fn release_all(tid: u32) {
     let Some(hooks) = *HOOKS.lock() else { return };
     loop {
-        let Some(b) = TABLE.lock().take_owned(tid) else { return };
-        let _ = end(b, hooks, true);
+        let Some(t) = TABLE.lock().take_owned(tid) else { return };
+        let _ = end(t, hooks, true);
     }
 }

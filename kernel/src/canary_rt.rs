@@ -34,6 +34,10 @@ pub(crate) const NAMES: &[&str] = &[
     // whatever DMA_RING3_WITHOUT_IOMMU accepts (the `ring-3 virtio-rng,
     // refused` rows).
     "dma-ring3-refusal",
+    // boot/dma.rs: a writable window on a device that masters the bus is
+    // granted to ring 3 whatever the policy (the `ring-3 virtio-rng,
+    // refused` rows' canary).
+    "dma-ring3-window-anyway",
     // boot/dma.rs `iommu_settle`: a function whose driver gave up stays as the
     // boot placed it (gate rows `... fail open canary`).
     "iommu-fail-open",
