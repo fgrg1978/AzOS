@@ -479,8 +479,15 @@ impl Detached {
 ///
 /// **Wakes run after `PORTS` is released** (`Detached::wake`), never under
 /// it: no path nests `PORTS` with the scheduler's `CPU_LOCKS`.
-/// `azos_sched` does not depend on `azos_ipc`
-/// (`crates/core/sched/Cargo.toml`), so no scheduler path can take `PORTS` either.
+/// One scheduler path does take `PORTS`, through a hook: a reservation that
+/// ran out under a passive server (`azos_sched::rt::flush_timeout`, from the
+/// pick and the tick of its CPU once its owner state is written and before a
+/// run-queue lock is taken) reaches `fastcall::proxy_timed_out` and
+/// `endpoint::post_call_notice`, which takes `ENDPOINTS`, then `PORTS`
+/// ([`port_post_notice`]), and wakes after both are released. No other
+/// does: `azos_sched` names no `azos_ipc` function
+/// (`crates/core/sched/Cargo.toml`), and a doorbell is rung by the wakes'
+/// producers, never from `futex::wake_key`.
 /// The waiter registry lives inside this lock ([`PortTable`]).
 const EMPTY_PORT: Port = Port::empty();
 const EMPTY_WAITER: PortWaiter = PortWaiter::empty();
