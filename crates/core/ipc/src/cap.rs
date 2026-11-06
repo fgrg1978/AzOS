@@ -1272,15 +1272,16 @@ pub fn sweep_owed() {
 /// sweep that ran to its confirming pass started from. They differ exactly
 /// while some revocation's subtree may not be fully freed. One cache line,
 /// read-mostly: a resolve pays two loads and a compare while they are equal.
+/// `swept` first: aarch64's acquire load takes no offset.
 #[repr(C, align(16))]
 struct Revocations {
-    cleared: core::sync::atomic::AtomicU64,
     swept: core::sync::atomic::AtomicU64,
+    cleared: core::sync::atomic::AtomicU64,
 }
 
 static REVOCATIONS: Revocations = Revocations {
-    cleared: core::sync::atomic::AtomicU64::new(0),
     swept: core::sync::atomic::AtomicU64::new(0),
+    cleared: core::sync::atomic::AtomicU64::new(0),
 };
 
 /// A revocation of a slot with descendants just completed (its clear is
@@ -1309,9 +1310,12 @@ pub fn sweep_confirmed(epoch: u64) {
 /// Is a revocation's subtree possibly not yet freed? The test a resolve makes
 /// before it trusts a derived slot ([`CapTable::get_uncontained`]) and a
 /// resolve cache before it trusts a word ([`CapTable::word_grants`]): two
-/// relaxed loads and a compare, no write to a shared line. Relaxed because a
-/// reader that must see a revocation (it learned of it through a lock, a
-/// syscall or a message) has already crossed the barrier that orders it.
+/// loads and a compare, no write to a shared line. A reader asks BEFORE it
+/// loads the slot word: `swept` is read with Acquire (it pairs with
+/// [`sweep_confirmed`]), so a word loaded after a "no" is never one the
+/// confirmed sweep had freed. `cleared` is Relaxed because a reader that must
+/// see a revocation (it learned of it through a lock, a syscall or a message)
+/// has already crossed the barrier that orders it.
 ///
 /// Canary `revoke-chain-canary`: never open, so no use is refused before the
 /// sweep frees the slot.
@@ -1320,8 +1324,8 @@ pub fn revocation_in_flight() -> bool {
     if cfg!(feature = "revoke-chain-canary") {
         return false;
     }
-    REVOCATIONS.cleared.load(core::sync::atomic::Ordering::Relaxed)
-        != REVOCATIONS.swept.load(core::sync::atomic::Ordering::Relaxed)
+    let swept = REVOCATIONS.swept.load(core::sync::atomic::Ordering::Acquire);
+    REVOCATIONS.cleared.load(core::sync::atomic::Ordering::Relaxed) != swept
 }
 
 // ── Delete is not revoke (owner decision 20-10) ─────────────────────────────
@@ -2397,6 +2401,8 @@ impl CapTable {
         let Some(cell) = azos_limits::nospec::get(&self.slots, slot_idx) else {
             return Err(CapError::Stale);
         };
+        // Before the word (`revocation_in_flight`).
+        let revoking = revocation_in_flight();
         // One load: the checks below see one version of the slot.
         let w = cell.word();
         match slot_word::check(w, raw.generation(), Some(T::TYPE), need) {
@@ -2413,7 +2419,7 @@ impl CapTable {
         // A capability derived from one that was revoked fails the same way
         // before the sweep frees it. Two loads while no revocation is in
         // flight; the walk of the parent chain only while one is.
-        if revocation_in_flight() && !self.chain_alive(slot_idx, w) {
+        if revoking && !self.chain_alive(slot_idx, w) {
             return Err(CapError::Revoked);
         }
         // Containment comes before the warrant: a use refused for it must not
