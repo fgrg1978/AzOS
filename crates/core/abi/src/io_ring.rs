@@ -29,8 +29,9 @@ pub const SQ_FLAGS: usize = 3600;
 /// the 4 bytes that were tail padding of the page.
 pub const VERSION: usize = 3604;
 /// The layout word the kernel writes at setup. Bump it with any change to
-/// an offset, to the SQE/CQE layout or to what an opcode means.
-pub const IO_RING_VERSION: u32 = 2;
+/// an offset, to the SQE/CQE layout or to what an opcode means. Ring 3
+/// refuses a page that carries another one (`libsys::ioring::Ring::open`).
+pub const IO_RING_VERSION: u32 = 3;
 /// SQ entries.
 pub const SQ_SIZE: u32 = 32;
 /// CQ entries.
@@ -62,6 +63,23 @@ pub const SQE_F_LINK: u16 = 1 << 0;
 
 /// No operation: completes with 0 (batching measurements).
 pub const OP_NOP: u16 = 0;
+/// An IDL call on an endpoint the kernel hosts, the ring twin of
+/// `SYS_IPC_CALL`: `param0` is the `Cap<Endpoint>` handle, `param1` the byte
+/// offset of the call's message window in the data buffer (a multiple of 8,
+/// [`CALL_WINDOW`] bytes that fit the buffer) and `param2` the request's word
+/// count (1 to [`CALL_WORDS`], the IDL header first). The kernel reads the
+/// request words once, answers through the interface's own dispatch with
+/// the checks of the call (the handle resolved in the ring owner's table, the
+/// owner's profile listing the interface, the capability's op mask, the op's
+/// class), and writes the reply over the window: status first, then the
+/// return value, zeros past it. Completes with the reply's status word
+/// (`azos_idl::STATUS_OK`, else the IDL error status); a refusal before the
+/// interface ran carries `CQE_F_REFUSED` and leaves the window as it was.
+pub const OP_CALL: u16 = 14;
+/// Words of an [`OP_CALL`] message: the message descriptor's inline words.
+pub const CALL_WORDS: usize = crate::ipc_msg::MSG_WORDS_MAX;
+/// Bytes of an [`OP_CALL`] message window.
+pub const CALL_WINDOW: usize = CALL_WORDS * 8;
 /// Read a sensor into the data buffer.
 pub const OP_READ_SENSOR: u16 = 1;
 /// Write a GPIO pin.

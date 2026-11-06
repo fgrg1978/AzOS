@@ -24,7 +24,7 @@ use azos_abi::cap::ty;
 #[cfg(not(feature = "use-robot"))]
 use crate::no_robot::{robot as azos_robot};
 use azos_abi::error::Errno;
-use azos_ipc::io_ring::{BlockStart, IoRingOps, OpResult, PinnedBuf, IO_ERR_INVALID_PARAM};
+use azos_ipc::io_ring::{BlockStart, IoRingOps, OpResult, PinnedBuf, CALL_WORDS, IO_ERR_INVALID_PARAM};
 use azos_robot::MOTOR_REFUSED_HALTED;
 
 /// The table `io_ring_register_ops` installs.
@@ -64,6 +64,7 @@ pub const KERNEL_IORING_OPS_TABLE: IoRingOps = IoRingOps {
     buf_pin,
     buf_unpin,
     buf_usable,
+    idl_call,
 };
 
 azos_common::ro_hook! {
@@ -352,6 +353,42 @@ fn motor_wheel(owner_tid: u32, id: u32, speed_pct: u32) -> OpResult {
     } else {
         Ok(rc)
     }
+}
+
+/// `OP_CALL`: `SYS_IPC_CALL` on an endpoint the kernel hosts, for the ring's
+/// owner and with the call's own functions in the call's order (the register
+/// form, `dispatch::fast_ipc_call_arm`): the handle resolved in the owner's
+/// table, a refusal recorded against the owner (the pass may be the SQ
+/// poller's, so neither the current task's resolve cache nor its denial
+/// bucket is the owner's), `khost::admit` (the capability's op mask), the
+/// owner's profile listing the interface, and the hosted row's IDL dispatch
+/// (`khost::serve_admitted`), which checks the op's class against the
+/// capability's rights. A task-hosted endpoint is not served from a pass:
+/// `-ENOSYS`.
+fn idl_call(owner_tid: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mut [u64; CALL_WORDS]) -> Result<(), i32> {
+    use azos_abi::ipc_msg::{MsgDesc, MSG_VERSION};
+    let dest = match azos_ipc::endpoint::endpoint_resolve(owner_tid, ep) {
+        Ok(d) => d,
+        Err(e) => {
+            if let azos_ipc::endpoint::EndpointCapError::Cap(e) = e {
+                crate::handlers::note_typed_denial_for(owner_tid, ty::ENDPOINT, e);
+            }
+            return Err(errno(Errno::ECAPPERMS));
+        }
+    };
+    let Some(key) = azos_ipc::endpoint::host_key(dest.owner) else { return Err(errno(Errno::ENOSYS)) };
+    let Some(who) = crate::khost::admit(owner_tid, ep, req[0]) else { return Err(errno(Errno::ECAPPERMS)) };
+    if !iface_allowed(owner_tid, key) {
+        return Err(errno(Errno::EPERM));
+    }
+    let mut d = MsgDesc { version: MSG_VERSION, n_words: n as u8, ..MsgDesc::default() };
+    d.words[..n].copy_from_slice(&req[..n]);
+    let mut out = MsgDesc::default();
+    crate::khost::serve_admitted(key, &who, &d, &mut out);
+    for (o, w) in rep.iter_mut().zip(out.words.iter()).take(out.n_words as usize) {
+        *o = *w;
+    }
+    Ok(())
 }
 
 /// `NODE_SEND` on a ring (K1): the `Cap<Socket>` handle resolved in the

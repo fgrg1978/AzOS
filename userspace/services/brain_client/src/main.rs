@@ -8,6 +8,7 @@
 //!
 //! Flow:
 //!   loop {
+//!     (1-5: one io_ring submit of `Sensor::read` calls, typed calls without a ring)
 //!     1. sensor read (IMU)         → accel/gyro
 //!     2. sensor read (ODOM)        → distance/heading
 //!     3. sensor read (ENC)         → encoder ticks
@@ -18,7 +19,7 @@
 //!     8. seal it (encrypted-link record, HMAC envelope inside), TCP send
 //!     9. TCP recv → open records → verify envelope → parse ActuatorCmd
 //!    10. the `motor` endpoints' speed / direction, per wheel; a forward
-//!        command also as one io_ring motor entry
+//!        command also as two io_ring `OP_CALL` entries, one per wheel
 //!    11. yield / sleep
 //!   }
 //!
@@ -30,7 +31,7 @@
 #![no_main]
 
 use azos_libsys as sys;
-use sys::dev::{MotorCall, MotorClient, Regs};
+use sys::dev::{MotorCall, MotorClient, MotorIdl, Regs, Sample, SensorIdl};
 
 // The brain link, client side: the same Noise session as the kernel's own link
 // (wave 9, owner decision P3; Noise since D9). Every frame this client sends
@@ -159,28 +160,105 @@ fn sensor_caps_init() {
     }
 }
 
-/// Read the sensor behind the `sensor` endpoint `cap`: the bytes of the
-/// record, or -1 for one never granted or not ready.
-fn read_sensor(cap: isize, buf: &mut [u8]) -> isize {
-    if cap < 0 {
-        return -1;
+/// The sensors `read_all` reads, in its order.
+const SENSORS: usize = 6;
+
+fn sensor_caps() -> [isize; SENSORS] {
+    // SAFETY: written once by `sensor_caps_init` before `run()` reaches its
+    // connect loop; read by value.
+    unsafe { [CAP_IMU, CAP_ODOM, CAP_ENC, CAP_RANGE, CAP_BATT, CAP_FLAGS] }
+}
+
+/// One reading of every granted sensor, `None` for one never granted or not
+/// ready. Through the ring: one `Sensor::read` `OP_CALL` entry per granted
+/// sensor, all in one submit. Without a ring, or when its submit is refused:
+/// one typed call each.
+struct Readings([Option<Sample>; SENSORS]);
+
+impl Readings {
+    fn take() -> Readings {
+        let caps = sensor_caps();
+        if let Some(r) = ring().and_then(|ring| Readings::through_ring(&ring, &caps)) {
+            return r;
+        }
+        let mut out = [None; SENSORS];
+        for (o, &c) in out.iter_mut().zip(caps.iter()) {
+            if c >= 0 {
+                *o = sys::dev::sensor_read(c as u32, &mut []).ok();
+            }
+        }
+        Readings(out)
     }
-    match sys::dev::sensor_read(cap as u32, buf) {
-        Ok(s) => s.len as isize,
-        Err(_) => -1,
+
+    fn through_ring(ring: &sys::ioring::Ring, caps: &[isize; SENSORS]) -> Option<Readings> {
+        let hdr = sys::dev::header(SensorIdl::ID, SensorIdl::LEVEL, SensorIdl::OP_READ);
+        let mut asked = 0;
+        for (i, &c) in caps.iter().enumerate() {
+            if c >= 0 && ring.push_call(c as u32, sensor_window(i), &[hdr], TAG_SENSOR + i as u64) {
+                asked += 1;
+            }
+        }
+        let mut out = [None; SENSORS];
+        let mut served = 0;
+        let ok = ring_drain(ring, |(tag, result, flags)| {
+            let i = tag.wrapping_sub(TAG_SENSOR) as usize;
+            if i < SENSORS && result == 0 && flags & sys::ioring::CQE_F_REFUSED == 0 {
+                out[i] = sys::dev::reply_value::<Sample>(&ring.reply(sensor_window(i))).ok();
+                served += 1;
+            }
+        });
+        // Once: what the ring answered for the sensors on its first submit.
+        // SAFETY: single-threaded ring-3 program.
+        if ok && unsafe { !SENSORS_REPORTED } {
+            unsafe { SENSORS_REPORTED = true };
+            let mut line = Line::new();
+            line.push(b"[brain_client] ioring sensors asked=");
+            line.push_i64(asked);
+            line.push(b" served=");
+            line.push_i64(served);
+            line.push(b"\n");
+            sys::print(line.bytes());
+        }
+        (ok && asked != 0).then_some(Readings(out))
+    }
+
+    /// The record of sensor `i` copied into `buf`: its byte count, or -1 for
+    /// none.
+    fn get(&self, i: usize, buf: &mut [u8]) -> isize {
+        match self.0[i] {
+            Some(s) => {
+                s.copy_to(buf);
+                s.len as isize
+            }
+            None => -1,
+        }
     }
 }
 
-// ── The io_ring: the motor entry and the receive poll ───────────────────────
+static mut SENSORS_REPORTED: bool = false;
+
+// ── The io_ring: the sensor reads, the motor entries and the receive poll ──
 //
-// One ring carries both. The ring page is `io_ring::IoRing` in
+// One ring carries them all. The ring page is `io_ring::IoRing` in
 // `crates/core/ipc/src/io_ring.rs`; `sys::ioring::Ring` is the ring-3 view of
 // it (it enters no syscall: every submit below is `sys::ioring_submit_typed`).
 
-/// `user_data` tags: a completion says which entry it is.
+/// `user_data` tags: a completion says which entry it is. A motor entry is
+/// `TAG_MOTOR + wheel`, a sensor read `TAG_SENSOR + its index in `SENSORS`.
 const TAG_MOTOR: u64 = 1;
-const TAG_RECV: u64 = 2;
-const TAG_REGISTER: u64 = 3;
+const TAG_RECV: u64 = 3;
+const TAG_REGISTER: u64 = 4;
+const TAG_SENSOR: u64 = 8;
+
+/// The message windows of the `OP_CALL` entries in the data buffer: one per
+/// entry in flight, the wheels first, then the sensors.
+fn motor_window(wheel: usize) -> u32 {
+    (wheel * sys::ioring::CALL_WINDOW) as u32
+}
+
+fn sensor_window(i: usize) -> u32 {
+    ((2 + i) * sys::ioring::CALL_WINDOW) as u32
+}
 
 /// The ring's `Cap<IoRing>` and the address of its page in this task, set once
 /// by `motor_ring_init`. `RING_VA == 0` means there is no ring.
@@ -234,6 +312,18 @@ fn motor_ring_init() {
 /// (`cq_tail - cq_head < 32`), so a client that never advanced `cq_head` would
 /// drive for 32 commands and then stop executing entries at all.
 fn ring_submit(ring: &sys::ioring::Ring, tag: u64) -> Option<sys::ioring::Cqe> {
+    let mut mine = None;
+    ring_drain(ring, |cqe| {
+        if cqe.0 == tag {
+            mine = Some(cqe);
+        }
+    });
+    mine
+}
+
+/// Submit what is pushed and hand every completion to `each`. `false` for a
+/// submit the kernel refused (printed).
+fn ring_drain(ring: &sys::ioring::Ring, mut each: impl FnMut(sys::ioring::Cqe)) -> bool {
     let rc = sys::ioring_submit_typed(ring.cap);
     if rc < 0 {
         let mut line = Line::new();
@@ -241,40 +331,50 @@ fn ring_submit(ring: &sys::ioring::Ring, tag: u64) -> Option<sys::ioring::Cqe> {
         line.push_i64(rc as i64);
         line.push(b"\n");
         sys::print(line.bytes());
-        return None;
+        return false;
     }
-    let mut mine = None;
     while let Some(cqe) = ring.pop() {
-        if cqe.0 == tag {
-            mine = Some(cqe);
-        }
+        each(cqe);
     }
-    mine
+    true
 }
 
-/// Submit one `OP_MOTOR_SPEED` entry for both wheels and print the
-/// completion as `[brain_client] ioring motor cqe result=<r> flags=<f>`.
+/// Submit the `Motor::speed` call of each wheel as an `OP_CALL` entry on its
+/// `motor` endpoint, both in one submit, and print each completion as
+/// `[brain_client] ioring motor wheel=<w> status=<s> outcome=<o> flags=<f>`.
 ///
-/// The kernel decides the entry the way it decides the typed call: this
-/// image's seccomp row must list the `motor.speed` op, this task must
-/// hold `motor.0` and `motor.1` with WRITE, and each wheel goes through the
-/// motor layer, so a latched e-stop refuses it (`-EAGAIN`, `CQE_F_REFUSED`).
+/// The kernel decides each entry the way it decides the typed call: this
+/// image's row must list the `motor` interface, the endpoint must carry WRITE,
+/// and the wheel goes through the effect gate and the motor layer, so a latched
+/// e-stop answers `REFUSED` (served: status 0, flags 0).
 fn motor_ring_submit(left: u32, right: u32) {
     let Some(ring) = ring() else { return };
-    // `param0` the left wheel's percentage, `param1` the right's, both driven
-    // forward, 0 coasts.
-    if !ring.push(sys::ioring::OP_MOTOR_SPEED, left, right, 0, TAG_MOTOR) {
-        return;
+    // SAFETY: written once by `motor_caps_init`; read by value.
+    let caps = unsafe { [CAP_LEFT, CAP_RIGHT] };
+    let hdr = sys::dev::header(MotorIdl::ID, MotorIdl::LEVEL, MotorIdl::OP_SPEED);
+    for (w, (&ep, pct)) in caps.iter().zip([left, right]).enumerate() {
+        if !ring.push_call(ep, motor_window(w), &[hdr, pct as u64], TAG_MOTOR + w as u64) {
+            return;
+        }
     }
-    if let Some((_, result, flags)) = ring_submit(&ring, TAG_MOTOR) {
+    ring_drain(&ring, |(tag, result, flags)| {
+        let w = tag.wrapping_sub(TAG_MOTOR) as usize;
+        if w >= 2 {
+            return;
+        }
+        let outcome = ring.reply(motor_window(w))[1];
         let mut line = Line::new();
-        line.push(b"[brain_client] ioring motor cqe result=");
+        line.push(b"[brain_client] ioring motor wheel=");
+        line.push_i64(w as i64);
+        line.push(b" status=");
         line.push_i64(result as i64);
+        line.push(b" outcome=");
+        line.push_i64(if flags & sys::ioring::CQE_F_REFUSED != 0 { -1 } else { outcome as i64 });
         line.push(b" flags=");
         line.push_i64(flags as i64);
         line.push(b"\n");
         sys::print(line.bytes());
-    }
+    });
 }
 
 // ── The receive buffer: registered once, named by slot ─────────────────────
@@ -511,9 +611,10 @@ impl SensorData {
     }
 
     fn read_all(&mut self) {
+        let readings = Readings::take();
         // IMU: 24 bytes = 6 × i32 LE
         let mut imu_buf = [0u8; 24];
-        if read_sensor(unsafe { CAP_IMU }, &mut imu_buf) >= 24 {
+        if readings.get(0, &mut imu_buf) >= 24 {
             for i in 0..3 {
                 self.accel_mg[i] = i32::from_le_bytes([
                     imu_buf[i * 4], imu_buf[i * 4 + 1],
@@ -528,7 +629,7 @@ impl SensorData {
 
         // Odometry: 16 bytes = dist_mm(i64) + heading_cdeg(i64)
         let mut odom_buf = [0u8; 16];
-        if read_sensor(unsafe { CAP_ODOM }, &mut odom_buf) >= 16 {
+        if readings.get(1, &mut odom_buf) >= 16 {
             let dist = i64::from_le_bytes([
                 odom_buf[0], odom_buf[1], odom_buf[2], odom_buf[3],
                 odom_buf[4], odom_buf[5], odom_buf[6], odom_buf[7],
@@ -543,7 +644,7 @@ impl SensorData {
 
         // Encoders: 16 bytes = enc_l(i64) + enc_r(i64)
         let mut enc_buf = [0u8; 16];
-        if read_sensor(unsafe { CAP_ENC }, &mut enc_buf) >= 16 {
+        if readings.get(2, &mut enc_buf) >= 16 {
             self.enc_left = i64::from_le_bytes([
                 enc_buf[0], enc_buf[1], enc_buf[2], enc_buf[3],
                 enc_buf[4], enc_buf[5], enc_buf[6], enc_buf[7],
@@ -556,20 +657,20 @@ impl SensorData {
 
         // Rangefinder: 4 bytes = front_mm(u16) + right_mm(u16)
         let mut range_buf = [0u8; 4];
-        if read_sensor(unsafe { CAP_RANGE }, &mut range_buf) >= 4 {
+        if readings.get(3, &mut range_buf) >= 4 {
             self.range_front = u16::from_le_bytes([range_buf[0], range_buf[1]]);
             self.range_right = u16::from_le_bytes([range_buf[2], range_buf[3]]);
         }
 
         // Battery: 2 bytes = mv(u16)
         let mut batt_buf = [0u8; 2];
-        if read_sensor(unsafe { CAP_BATT }, &mut batt_buf) >= 2 {
+        if readings.get(4, &mut batt_buf) >= 2 {
             self.battery_mv = u16::from_le_bytes([batt_buf[0], batt_buf[1]]);
         }
 
         // GPIO sensor flags (PIR/sound/IR)
         let mut flags_buf = [0u8; 2];
-        if read_sensor(unsafe { CAP_FLAGS }, &mut flags_buf) >= 2 {
+        if readings.get(5, &mut flags_buf) >= 2 {
             self.sensor_flags = u16::from_le_bytes([flags_buf[0], flags_buf[1]]);
         } else {
             self.sensor_flags = 0;
@@ -706,13 +807,12 @@ fn apply_actuator_cmd(payload: &[u8]) {
         apply_motor_cmd(cap_l, left);
         apply_motor_cmd(cap_r, right);
 
-        // The same command again, as one io_ring entry for both wheels, so the
-        // ring's motor path meets the same e-stop latch as the typed calls.
+        // The same command again, as one io_ring `OP_CALL` entry per wheel, so
+        // the ring meets the same e-stop latch as the typed calls.
         //
-        // Forward only. `OP_MOTOR_SPEED` has no direction and refuses a speed
-        // above 100 instead of clamping it, so `-40 as u32` would complete as
-        // `-EINVAL`: a refusal that says nothing about the latch, from the
-        // sign-extension described above. A reverse command has no ring twin.
+        // Forward only: `speed` has no direction, and a negative brain speed
+        // cast to `u32` would be clamped to 100 (the sign-extension described
+        // above). A reverse command has no ring twin.
         if left >= 0 && right >= 0 {
             motor_ring_submit(left as u32, right as u32);
         }

@@ -480,7 +480,13 @@ justified_azos_only() {
     printf '%s\t%s\t%s\n' \
         'sensor-read-call' vdso 'Linux has no sensor syscall: nothing reads a typed sensor through the kernel' \
         'sensor-read-vdso' vdso "Linux's vDSO publishes no sensor data: there is no page to read a sensor from" \
-        'taskinfo [vdso]' vdso "Linux's vDSO publishes no per-task counters; the call path is 'taskinfo [call]' (getrusage)"
+        'taskinfo [vdso]' vdso "Linux's vDSO publishes no per-task counters; the call path is 'taskinfo [call]' (getrusage)" \
+        'ioring-idl  x1' ioring 'Linux io_uring has no op that calls a typed sensor (IORING_OP_URING_CMD needs a driver that implements it; none reads a sensor)' \
+        'ioring-idl  x2' ioring 'Linux io_uring has no op that calls a typed sensor (IORING_OP_URING_CMD needs a driver that implements it; none reads a sensor)' \
+        'ioring-idl  x4' ioring 'Linux io_uring has no op that calls a typed sensor (IORING_OP_URING_CMD needs a driver that implements it; none reads a sensor)' \
+        'ioring-idl  x8' ioring 'Linux io_uring has no op that calls a typed sensor (IORING_OP_URING_CMD needs a driver that implements it; none reads a sensor)' \
+        'ioring-idl  x16' ioring 'Linux io_uring has no op that calls a typed sensor (IORING_OP_URING_CMD needs a driver that implements it; none reads a sensor)' \
+        'ioring-idl  x32' ioring 'Linux io_uring has no op that calls a typed sensor (IORING_OP_URING_CMD needs a driver that implements it; none reads a sensor)'
 }
 
 # The rows of `justified_azos_only` that apply to this run: all of them, or,

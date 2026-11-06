@@ -284,6 +284,13 @@ pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
         }
         _ => crate::handlers::seccomp_deny_iface_kill(key),
     }
+    serve_admitted(key, who, req, rep);
+}
+
+/// [`serve`] for a caller whose profile was already asked about `key`: the
+/// io_ring's `OP_CALL`, which asks the ring OWNER's profile and refuses the
+/// entry rather than killing the task that runs the pass.
+pub fn serve_admitted(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
     match row(key) {
         Some(h) => (h.dispatch)(who, req, rep),
         None => azos_idl::__private::error_reply(rep, IdlError::BadInterface),

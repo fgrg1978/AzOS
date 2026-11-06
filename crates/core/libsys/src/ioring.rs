@@ -16,8 +16,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 // The page layout, opcodes and flags: one definition in `crates/core/abi`, which the
 // kernel's `IoRing` is asserted against at compile time.
 pub use azos_abi::io_ring::{
-    CQ_ENTRIES, CQ_HEAD, CQ_SIZE, CQ_TAIL, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED, DATA, DATA_SIZE,
-    OP_BLOCK_READ, OP_BLOCK_WRITE, OP_BUF_REGISTER, OP_BUF_UNREGISTER, OP_FILE_READ, OP_FILE_WRITE, OP_FSYNC,
+    CALL_WINDOW, CALL_WORDS, CQ_ENTRIES, CQ_HEAD, CQ_SIZE, CQ_TAIL, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED,
+    DATA, DATA_SIZE, IO_RING_VERSION, VERSION,
+    OP_BLOCK_READ, OP_BLOCK_WRITE, OP_BUF_REGISTER, OP_BUF_UNREGISTER, OP_CALL, OP_FILE_READ, OP_FILE_WRITE, OP_FSYNC,
     OP_MOTOR_SPEED, OP_NET_RECV, OP_NET_SEND, OP_NOP, OP_NOTIFY_WAIT, OP_READ_GPIO,
     OP_READ_SENSOR, OP_SQPOLL_START, OP_TIMER, OP_WRITE_GPIO, SQ_ENTRIES, SQ_FLAGS,
     SQE_F_FIXED, SQE_F_LINK, SQ_F_NEED_WAKEUP, SQ_F_SQPOLL, SQ_HEAD, SQ_SIZE, SQ_TAIL,
@@ -32,6 +33,9 @@ pub enum RingError {
     /// `ioring_create_typed` answered no usable page (`va` is 0 or not
     /// page-aligned).
     NoPage,
+    /// The page's layout word is not the [`IO_RING_VERSION`] this program
+    /// was built against: its offsets or opcodes may mean something else.
+    Version(u32),
 }
 
 /// A ring this task created: its capability and the address its page is
@@ -45,15 +49,20 @@ impl Ring {
     /// The ring `ioring_create_typed` answered: its capability (a positive
     /// return) and the address it wrote into `addr_out`.
     ///
-    /// Refuses an address that is not a page ([`RingError::NoPage`]). Like
-    /// the rest of `Ring` it enters no syscall: on an error the caller still
-    /// owns `cap` and destroys it.
+    /// Refuses an address that is not a page ([`RingError::NoPage`]) and a
+    /// page of another layout ([`RingError::Version`]). Like the rest of
+    /// `Ring` it enters no syscall: on an error the caller still owns `cap`
+    /// and destroys it.
     pub fn open(cap: u32, addr_out: [u8; 8]) -> Result<Ring, RingError> {
         let va = u64::from_le_bytes(addr_out) as usize;
         if va == 0 || va % 4096 != 0 {
             return Err(RingError::NoPage);
         }
-        Ok(Ring { cap, va })
+        let ring = Ring { cap, va };
+        match ring.word(VERSION).load(Ordering::Acquire) {
+            IO_RING_VERSION => Ok(ring),
+            v => Err(RingError::Version(v)),
+        }
     }
 
     #[inline(always)]
@@ -97,6 +106,49 @@ impl Ring {
     #[inline(always)]
     pub fn push_register(&self, shm_cap: u32, off: u32, len: u32, slot: u16, user_data: u64) -> bool {
         self.push_with(OP_BUF_REGISTER, shm_cap, off, len, (slot as u32) << 16, user_data)
+    }
+
+    /// Queue an [`OP_CALL`]: the IDL request `words` (the header first) on the
+    /// kernel-hosted endpoint `ep`, in the message window at data-buffer offset
+    /// `off`, where [`Ring::reply`] reads the answer once the entry completes.
+    /// Each call in flight needs a window of its own. `false` for an SQ that is
+    /// full, a request of no word or more than [`CALL_WORDS`], or a window
+    /// that is misaligned or outside the buffer (nothing is written then).
+    #[inline(always)]
+    pub fn push_call(&self, ep: u32, off: u32, words: &[u64], user_data: u64) -> bool {
+        let at = off as usize;
+        if words.is_empty() || words.len() > CALL_WORDS || at % 8 != 0 || at > DATA_SIZE - CALL_WINDOW {
+            return false;
+        }
+        let tail = self.word(SQ_TAIL).load(Ordering::Relaxed);
+        if tail.wrapping_sub(self.word(SQ_HEAD).load(Ordering::Acquire)) >= SQ_SIZE {
+            return false;
+        }
+        let win = self.data() as usize + at;
+        for (i, w) in words.iter().enumerate() {
+            // SAFETY: inside the data buffer (checked above), 8-aligned (the page
+            // and `DATA` are, and so is `off`); the kernel reads it only after
+            // the `sq_tail` store `push_flagged` makes.
+            unsafe { core::ptr::write_volatile((win + i * 8) as *mut u64, *w) };
+        }
+        self.push_with(OP_CALL, ep, off, words.len() as u32, 0, user_data)
+    }
+
+    /// The message window at `off` once its [`OP_CALL`] completed: the reply,
+    /// status first, zeros past its last word.
+    #[inline(always)]
+    pub fn reply(&self, off: u32) -> [u64; CALL_WORDS] {
+        let mut out = [0u64; CALL_WORDS];
+        let at = off as usize;
+        if at % 8 != 0 || at > DATA_SIZE - CALL_WINDOW {
+            return out;
+        }
+        let win = self.data() as usize + at;
+        for (i, o) in out.iter_mut().enumerate() {
+            // SAFETY: as in `push_call`.
+            *o = unsafe { core::ptr::read_volatile((win + i * 8) as *const u64) };
+        }
+        out
     }
 
     /// Queue [`OP_BUF_UNREGISTER`] for `slot`.

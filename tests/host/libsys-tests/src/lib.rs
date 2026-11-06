@@ -124,7 +124,20 @@ mod capdir;
 
 #[cfg(test)]
 mod ioring_open {
-    use super::ioring::{Ring, RingError};
+    use super::ioring::{Ring, RingError, IO_RING_VERSION, VERSION};
+
+    #[repr(align(4096))]
+    struct Page([u8; 4096]);
+
+    fn page(version: u32) -> Box<Page> {
+        let mut p = Box::new(Page([0; 4096]));
+        p.0[VERSION..VERSION + 4].copy_from_slice(&version.to_ne_bytes());
+        p
+    }
+
+    fn addr(p: &Page) -> [u8; 8] {
+        (p.0.as_ptr() as u64).to_le_bytes()
+    }
 
     /// An address the create did not give is refused before any use.
     /// Canary: drop the alignment/zero test and these two cases go red.
@@ -134,11 +147,73 @@ mod ioring_open {
         assert_eq!(Ring::open(7, 4100u64.to_le_bytes()).err(), Some(RingError::NoPage));
     }
 
-    /// A page-aligned address opens and keeps the capability and address.
+    /// A page of this layout opens and keeps the capability and address.
     #[test]
-    fn a_page_aligned_address_opens() {
-        let r = Ring::open(7, 0x1000u64.to_le_bytes()).expect("aligned");
-        assert_eq!((r.cap, r.va), (7, 0x1000));
+    fn a_page_of_this_layout_opens() {
+        let p = page(IO_RING_VERSION);
+        let r = Ring::open(7, addr(&p)).expect("this layout");
+        assert_eq!((r.cap, r.va), (7, p.0.as_ptr() as usize));
+    }
+
+    /// **A page of the layout before `OP_CALL` (version 2: the device opcodes)
+    /// is refused**, and so is one whose word was never written.
+    /// Canary: drop the version test in `Ring::open`: both open.
+    #[test]
+    fn a_page_of_an_older_layout_is_refused() {
+        assert_eq!(IO_RING_VERSION, 3, "the layout with OP_CALL and without the device opcodes");
+        assert_eq!(Ring::open(7, addr(&page(2))).err(), Some(RingError::Version(2)));
+        assert_eq!(Ring::open(7, addr(&page(0))).err(), Some(RingError::Version(0)));
+    }
+}
+
+/// `push_call` lays an `OP_CALL` out as the kernel reads it: the endpoint in
+/// `param0`, the window offset and the word count in `param1`/`param2`, the
+/// request words in the window; `reply` reads the window back.
+#[cfg(test)]
+mod ioring_call {
+    use super::ioring::{Ring, CALL_WINDOW, CALL_WORDS, DATA, DATA_SIZE, IO_RING_VERSION, OP_CALL, SQ_ENTRIES, VERSION};
+
+    #[repr(align(4096))]
+    struct Page([u8; 4096]);
+
+    fn ring(p: &mut Page) -> Ring {
+        p.0[VERSION..VERSION + 4].copy_from_slice(&IO_RING_VERSION.to_ne_bytes());
+        Ring::open(1, (p.0.as_mut_ptr() as u64).to_le_bytes()).expect("this layout")
+    }
+
+    fn word(p: &Page, at: usize) -> u64 {
+        u64::from_ne_bytes(p.0[at..at + 8].try_into().unwrap())
+    }
+
+    /// **Canary.** Put the word count in `param1` and the offset in `param2`:
+    /// the entry line goes red.
+    #[test]
+    fn a_call_entry_names_its_window_and_its_words() {
+        let mut p = Box::new(Page([0; 4096]));
+        let r = ring(&mut p);
+        assert!(r.push_call(0x44, 128, &[0xAB_0001_0001, 30], 5));
+        let e = &p.0[SQ_ENTRIES..SQ_ENTRIES + 32];
+        let u32_at = |o: usize| u32::from_le_bytes(e[o..o + 4].try_into().unwrap());
+        assert_eq!((u16::from_le_bytes([e[0], e[1]]), u32_at(4), u32_at(8), u32_at(12)), (OP_CALL, 0x44, 128, 2));
+        assert_eq!(u64::from_le_bytes(e[24..32].try_into().unwrap()), 5);
+        assert_eq!((word(&p, DATA + 128), word(&p, DATA + 136)), (0xAB_0001_0001, 30));
+        p.0[DATA + 136..DATA + 144].copy_from_slice(&9u64.to_ne_bytes());
+        assert_eq!(r.reply(128)[..2], [0xAB_0001_0001, 9]);
+    }
+
+    /// No word, too many, a misaligned window or one past the buffer: refused,
+    /// nothing queued.
+    #[test]
+    fn a_call_that_does_not_fit_its_window_is_not_queued() {
+        let mut p = Box::new(Page([0; 4096]));
+        let r = ring(&mut p);
+        let last = (DATA_SIZE - CALL_WINDOW) as u32;
+        assert!(!r.push_call(1, 0, &[], 0));
+        assert!(!r.push_call(1, 0, &[0; CALL_WORDS + 1], 0));
+        assert!(!r.push_call(1, 4, &[1], 0));
+        assert!(!r.push_call(1, last + 8, &[1], 0));
+        assert_eq!(p.0[4..8], [0; 4], "sq_tail moved");
+        assert!(r.push_call(1, last, &[1; CALL_WORDS], 0));
     }
 }
 
@@ -147,7 +222,7 @@ mod ioring_open {
 /// 16/18) lays them out.
 #[cfg(test)]
 mod ioring_regbuf {
-    use super::ioring::{Ring, OP_BUF_REGISTER, OP_BUF_UNREGISTER, OP_NET_RECV, SQE_F_FIXED, SQE_F_LINK, SQ_ENTRIES};
+    use super::ioring::{Ring, IO_RING_VERSION, OP_BUF_REGISTER, OP_BUF_UNREGISTER, OP_NET_RECV, SQE_F_FIXED, SQE_F_LINK, SQ_ENTRIES, VERSION};
 
     #[repr(align(4096))]
     struct Page([u8; 4096]);
@@ -166,6 +241,7 @@ mod ioring_regbuf {
     #[test]
     fn the_buffer_pushes_name_the_slot_in_reg_and_set_the_fixed_flag() {
         let mut page = Box::new(Page([0; 4096]));
+        page.0[VERSION..VERSION + 4].copy_from_slice(&IO_RING_VERSION.to_ne_bytes());
         let ring = Ring::open(1, (page.0.as_mut_ptr() as u64).to_le_bytes()).expect("aligned");
         assert!(ring.push_register(0x31, 100, 512, 2, 7));
         assert!(ring.push_fixed(OP_NET_RECV, 0x78, 2, 8, 64, SQE_F_LINK, 8));

@@ -238,8 +238,8 @@ fn the_ring_page_is_mapped_at_the_returned_address_and_unmapped_on_destroy() {
 /// `azos_abi::io_ring::VERSION` through the task's own mapping.
 ///
 /// **Canary.** Delete the `version.store(..)` in `io_ring_create`: this goes
-/// red (the page is zeroed, so the word reads 0). Change the stored value to
-/// 2: red.
+/// red (the page is zeroed, so the word reads 0). Store 2, the layout of the
+/// device opcodes: red.
 #[test]
 fn the_kernel_writes_the_layout_version_at_setup() {
     let _g = serial();
@@ -248,9 +248,9 @@ fn the_kernel_writes_the_layout_version_at_setup() {
     let mut word = [0u8; 4];
     assert!(azos_sched::copy_from_user(word.as_mut_ptr(), va + azos_abi::io_ring::VERSION, 4));
     assert_eq!(u32::from_le_bytes(word), azos_abi::io_ring::IO_RING_VERSION);
-    assert_eq!(u32::from_le_bytes(word), 2, "today's layout is version 2 (registered buffers)");
+    assert_eq!(u32::from_le_bytes(word), 3, "today's layout is version 3 (`OP_CALL`)");
     // The kernel's own view of the same page agrees.
-    assert_eq!(unsafe { (*ring).version.load(Ordering::Acquire) }, 2);
+    assert_eq!(unsafe { (*ring).version.load(Ordering::Acquire) }, 3);
     assert_eq!(sys_ioring_destroy_typed(cap), 0);
 }
 
@@ -1897,4 +1897,266 @@ fn a_file_entry_runs_inline_only_without_ioring_async_or_under_the_canary() {
     assert!((KERNEL_IORING_OPS.file_inline)(), "the canary did not put the inline run back");
     assert!((KERNEL_IORING_OPS.may_block)(), "the canary lets an RT task block");
     crate::ioring_ops::RT_INLINE_CANARY.store(false, SeqCst);
+}
+
+// ── The IDL entry (`OP_CALL`) ─────────────────────────────────────────────
+//
+// One entry carries an IDL request on a kernel-hosted endpoint handle, and the
+// kernel answers it with the call's own resolve, mask, profile and dispatch
+// (`ioring_ops::idl_call`). The oracle is the call itself: `khost::serve` on
+// the same request, and, while they exist, the device entries it replaces.
+
+/// Grant `tid` an endpoint to the kernel-hosted interface `key` for `badge`,
+/// with `perms` and the op mask `ops` (0: none), and answer its handle.
+fn grant_ep(tid: u32, key: u16, badge: u32, perms: CapPerms, ops: u64) -> u32 {
+    azos_ipc::endpoint::kernel_endpoint_cap_ops(tid, perms, key, badge, ops)
+        .expect("cap table full")
+        .raw()
+        .as_raw()
+}
+
+/// The message window of the entry at `off`.
+unsafe fn put_window(ring: *mut IoRing, off: usize, words: &[u64]) {
+    for (i, w) in words.iter().enumerate() {
+        (&mut (*ring).data_buf)[off + i * 8..off + i * 8 + 8].copy_from_slice(&w.to_ne_bytes());
+    }
+}
+
+unsafe fn window(ring: *const IoRing, off: usize) -> [u64; azos_ipc::io_ring::CALL_WORDS] {
+    let mut out = [0u64; azos_ipc::io_ring::CALL_WORDS];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u64::from_ne_bytes((&(*ring).data_buf)[off + i * 8..off + i * 8 + 8].try_into().unwrap());
+    }
+    out
+}
+
+/// Queue the request `words` on endpoint `ep` in the window at `off`.
+unsafe fn queue_call(ring: *mut IoRing, ep: u32, off: u32, words: &[u64], tag: u64) {
+    put_window(ring, off as usize, words);
+    let tail = (*ring).sq_tail.load(Ordering::Acquire);
+    (*ring).sq_entries[tail as usize % RING_SQ_SIZE] =
+        SqEntry { user_data: tag, ..sqe(azos_ipc::io_ring::OP_CALL, ep, off, words.len() as u32) };
+    (*ring).sq_tail.store(tail.wrapping_add(1), Ordering::Release);
+}
+
+/// Submit what is queued and take every completion.
+unsafe fn submit_queued(cap: u64, ring: *mut IoRing) -> Vec<CqEntry> {
+    let cq = (*ring).cq_tail.load(Ordering::Acquire);
+    assert!(sys_ioring_submit_typed(cap) >= 0);
+    let end = (*ring).cq_tail.load(Ordering::Acquire);
+    let out = (cq..end).map(|i| (*ring).cq_entries[i as usize % RING_CQ_SIZE]).collect();
+    (*ring).cq_head.store(end, Ordering::Release);
+    out
+}
+
+fn sensor_read_hdr() -> u64 {
+    use azos_devif::SensorIdl as S;
+    azos_idl::header(S::ID, S::LEVEL, S::OP_READ)
+}
+
+fn motor_speed_hdr() -> u64 {
+    use azos_devif::MotorIdl as M;
+    azos_idl::header(M::ID, M::LEVEL, M::OP_SPEED)
+}
+
+/// The descriptor-form call on the same state: `khost::serve` for `tid`
+/// through `ep`, the oracle of an `OP_CALL`.
+fn served_reply(tid: u32, ep: u32, key: u16, words: &[u64]) -> [u64; azos_ipc::io_ring::CALL_WORDS] {
+    let who = crate::khost::admit(tid, ep, words[0]).expect("the capability resolves");
+    let mut req = azos_abi::ipc_msg::MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: words.len() as u8, ..Default::default() };
+    req.words[..words.len()].copy_from_slice(words);
+    let mut rep = azos_abi::ipc_msg::MsgDesc::default();
+    crate::khost::serve(key, &who, &req, &mut rep);
+    let mut out = [0u64; azos_ipc::io_ring::CALL_WORDS];
+    out[..rep.n_words as usize].copy_from_slice(&rep.words[..rep.n_words as usize]);
+    out
+}
+
+/// **An IDL entry without the authority the call needs does nothing.** A handle
+/// the owner does not hold is refused with `-ECAPPERMS` and the refusal flag;
+/// an endpoint whose op mask omits `read` is refused the same way; an endpoint
+/// with `WRITE` alone is served and answers `DENIED`, the op's class check. In
+/// none of them are the encoders read. With `READ` the reply is the `Sensor`
+/// interface's sample of the encoders.
+///
+/// **Canary** (the capability check skipped): build the caller in `idl_call`
+/// from the handle's badge with every right in place of `khost::admit`'s: the
+/// masked and the WRITE-only entries read the encoders.
+#[test]
+fn an_idl_entry_without_the_capability_is_refused_and_reads_nothing() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    azos_robot::shim_set_encoder(21, -4);
+    let (cap, _va, ring) = create(pt);
+    let enc = SENSOR_TYPE_ENCODER as u32;
+    let reads = azos_robot::shim_encoder_reads();
+
+    unsafe { queue_call(ring, 0x77, 0, &[sensor_read_hdr()], 1) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (Errno::ECAPPERMS.to_syscall_ret() as i32, CQE_F_REFUSED), "an unheld handle");
+
+    let masked = grant_ep(s.tid, azos_devif::key::SENSOR, enc, CapPerms::READ, 1 << azos_devif::SensorIdl::OP_BIND_VDSO);
+    unsafe { queue_call(ring, masked, 64, &[sensor_read_hdr()], 2) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (Errno::ECAPPERMS.to_syscall_ret() as i32, CQE_F_REFUSED), "a mask without `read`");
+    assert_eq!(unsafe { window(ring, 64) }[0], sensor_read_hdr(), "a refused entry wrote its window");
+
+    let write_only = grant_ep(s.tid, azos_devif::key::SENSOR, enc, CapPerms::WRITE, 0);
+    unsafe { queue_call(ring, write_only, 128, &[sensor_read_hdr()], 3) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (0, 0), "the op's class is the interface's answer, not a ring refusal");
+    assert_eq!(unsafe { window(ring, 128) }[1], azos_devif::outcome::DENIED as u64);
+    assert_eq!(azos_robot::shim_encoder_reads(), reads, "an entry without READ read the encoders");
+
+    let held = grant_ep(s.tid, azos_devif::key::SENSOR, enc, CapPerms::READ, 0);
+    unsafe { queue_call(ring, held, 192, &[sensor_read_hdr()], 4) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (0, 0));
+    let rep = unsafe { window(ring, 192) };
+    assert_eq!(rep[1], azos_devif::outcome::OK as u64);
+    assert_eq!(rep[2], 16, "the encoder pair is 16 bytes");
+    assert_eq!((rep[5] as i64, rep[6] as i64), (21, -4));
+}
+
+/// **The profile is asked as for the call**: `SYS_IPC_CALL` first, then the
+/// interface once the handle names it. A row without the `sensor` interface
+/// refuses the held entry with `-EPERM` and reads nothing; audit mode runs it;
+/// listed, it runs. A row without `SYS_IPC_CALL` refuses it too.
+///
+/// **Canary.** Drop the `iface_allowed` test from `idl_call`: the unlisted
+/// entry reads the encoders.
+#[test]
+fn a_profile_without_the_sensor_interface_refuses_the_idl_entry() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    azos_robot::shim_set_encoder(5, 6);
+    let ep = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
+    let (cap, _va, ring) = create(pt);
+    let run = |f: SyscallFilter| {
+        azos_sched::scheduler::set_current_syscall_filter(f);
+        unsafe {
+            queue_call(ring, ep, 0, &[sensor_read_hdr()], 9);
+            done(submit_queued(cap, ring)[0])
+        }
+    };
+    let eperm = (Errno::EPERM.to_syscall_ret() as i32, CQE_F_REFUSED);
+    let reads = azos_robot::shim_encoder_reads();
+    assert_eq!(run(profile(&[nr::SYS_RING_ENTER], false)), eperm, "no SYS_IPC_CALL");
+    assert_eq!(run(profile(&[nr::SYS_RING_ENTER, nr::SYS_IPC_CALL], false)), eperm, "no `sensor` interface");
+    assert_eq!(azos_robot::shim_encoder_reads(), reads, "a denied entry read the encoders");
+    assert_eq!(run(profile(&[nr::SYS_RING_ENTER, nr::SYS_IPC_CALL], true)), (0, 0), "audit mode");
+    let mut listed = profile(&[nr::SYS_RING_ENTER, nr::SYS_IPC_CALL], false);
+    listed.allow_iface(azos_devif::key::SENSOR);
+    assert_eq!(run(listed), (0, 0), "a listed interface");
+}
+
+/// **The sensor read through the IDL entry is the call's**: the same reply
+/// words as `khost::serve` on the same request, and the same bytes the
+/// device entry put in the data buffer.
+///
+/// **Canary.** Copy the reply's words from index 1 in `idl_call`: the status
+/// word differs from the call's.
+#[test]
+fn the_idl_sensor_read_answers_what_the_call_and_the_device_entry_answer() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    azos_robot::shim_set_encoder(1234, 5678);
+    let enc = SENSOR_TYPE_ENCODER as u32;
+    let ep = grant_ep(s.tid, azos_devif::key::SENSOR, enc, CapPerms::READ, 0);
+    let (cap, _va, ring) = create(pt);
+    unsafe { queue_call(ring, ep, 256, &[sensor_read_hdr()], 1) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (0, 0));
+    let rep = unsafe { window(ring, 256) };
+    let mut oracle = served_reply(s.tid, ep, azos_devif::key::SENSOR, &[sensor_read_hdr()]);
+    // The acquisition stamp is the read's own.
+    oracle[4] = rep[4];
+    assert_eq!(rep, oracle, "the IDL entry and the call disagree");
+
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_READ_SENSOR, enc, 0, 16)) };
+    assert_eq!(done(c), (16, 0));
+    let old: Vec<u8> = unsafe { (&(*ring).data_buf)[..16].to_vec() };
+    let new: Vec<u8> = [rep[5].to_ne_bytes(), rep[6].to_ne_bytes()].concat();
+    assert_eq!(old, new, "the device entry and the IDL entry read different bytes");
+}
+
+/// **Both wheels through two IDL entries in one submit are the device entry's
+/// command, and the latch holds them the same way.** Driven: each wheel's
+/// `speed` reaches the effect gate as the owner's, writes its duty and names
+/// the owner as commander, exactly the PWM writes `OP_MOTOR_SPEED` made.
+/// Latched: both write duty 0; the device entry completed refused, the IDL
+/// entries answer `REFUSED` (served: the halt rule is the interface's answer).
+/// Each reply equals the register-form call's on the same state.
+///
+/// **Canary.** Make `MotorServer::speed` skip `wheel_speed` and write the
+/// channel with `motor_set_reporting` directly: the gate sees nothing and the
+/// commander is not named.
+#[test]
+fn two_idl_motor_entries_command_what_the_device_entry_commanded() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    let l = grant_ep(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW, 0);
+    let r = grant_ep(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW, 0);
+    wheels();
+    let (cap, _va, ring) = create(pt);
+    let _gate = RingGate;
+    ring_gate_seen();
+    crate::motor_host::set_effect_gate(ring_gate);
+
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 30, 40, 0)) };
+    assert_eq!(done(c), (0, 0));
+    let old_pwm = pwm_calls();
+    let old_gate = ring_gate_seen();
+    clear_pwm_calls();
+
+    unsafe {
+        queue_call(ring, l, 0, &[motor_speed_hdr(), 30], 1);
+        queue_call(ring, r, 64, &[motor_speed_hdr(), 40], 2);
+    }
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(c.iter().map(|c| (c.user_data, c.result, c.flags)).collect::<Vec<_>>(), vec![(1, 0, 0), (2, 0, 0)]);
+    assert_eq!(unsafe { (window(ring, 0)[..2].to_vec(), window(ring, 64)[..2].to_vec()) },
+               (vec![0, azos_devif::outcome::OK as u64], vec![0, azos_devif::outcome::OK as u64]));
+    assert_eq!(pwm_calls(), old_pwm, "the IDL entries wrote other duties than the device entry");
+    assert_eq!(ring_gate_seen(), old_gate, "the IDL entries reached the effect gate otherwise");
+    if azos_limits::MOTOR_COMMANDER_EXIT_STOP {
+        for id in 0..2 {
+            assert_eq!(crate::motor_commander::commander(id), s.tid, "wheel {id} names no commander");
+        }
+    }
+
+    ESTOP.store(true, Ordering::SeqCst);
+    clear_pwm_calls();
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 60, 60, 0)) };
+    assert_eq!(done(c), (E_CONTAINED as i32, CQE_F_REFUSED));
+    let old_pwm = pwm_calls();
+    clear_pwm_calls();
+    unsafe {
+        queue_call(ring, l, 0, &[motor_speed_hdr(), 60], 1);
+        queue_call(ring, r, 64, &[motor_speed_hdr(), 60], 2);
+    }
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(c.iter().map(|c| (c.result, c.flags)).collect::<Vec<_>>(), vec![(0, 0), (0, 0)]);
+    let refused = vec![0, azos_devif::outcome::REFUSED as u64];
+    assert_eq!(unsafe { (window(ring, 0)[..2].to_vec(), window(ring, 64)[..2].to_vec()) }, (refused.clone(), refused));
+    assert_eq!(pwm_calls(), old_pwm, "the latch held the IDL entries otherwise");
+    assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 0), (PwmOp::SetDutyPct, CH[1], 0)]);
+    assert_eq!(unsafe { window(ring, 0) }, served_reply(s.tid, l, azos_devif::key::MOTOR, &[motor_speed_hdr(), 60]));
+}
+
+/// **A task-hosted endpoint is not served from a pass**: `-ENOSYS`, refused,
+/// and the window untouched.
+///
+/// **Canary.** Answer a task-hosted endpoint with `Ok(())` in `idl_call`: the
+/// completion is not refused.
+#[test]
+fn an_idl_entry_on_a_task_hosted_endpoint_is_refused() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    let ep = azos_ipc::endpoint::endpoint_create_cap(s.tid, CapPerms::RW).expect("an endpoint").raw().as_raw();
+    let (cap, _va, ring) = create(pt);
+    unsafe { queue_call(ring, ep, 0, &[motor_speed_hdr(), 1], 1) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (Errno::ENOSYS.to_syscall_ret() as i32, CQE_F_REFUSED));
+    assert_eq!(unsafe { window(ring, 0) }[..2], [motor_speed_hdr(), 1]);
 }

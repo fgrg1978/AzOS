@@ -10,6 +10,10 @@
 //! the kernel or a ring-3 driver serves it.
 
 pub use azos_devif::*;
+/// The request header word of an op (`<Name>Idl::ID`, `LEVEL`, `OP_*`), for a
+/// call that travels as words of its own: an io_ring `OP_CALL`
+/// (`crate::ioring::Ring::push_call`).
+pub use azos_idl::header;
 
 use crate::{cap_lookup_host, fast_ipc_call_ep_status, ipc_call_v2};
 
@@ -76,6 +80,16 @@ pub fn value<T>(r: azos_idl::Result<Out<T>>) -> Result<T, u32> {
         Ok(o) => Err(o.code),
         Err(_) => Err(outcome::NO_SERVER),
     }
+}
+
+/// [`value`] for a reply that came back as words: the message window of an
+/// io_ring `OP_CALL` (`crate::ioring::Ring::reply`), status first.
+/// `NO_SERVER` for a reply whose status is not served or that does not decode.
+pub fn reply_value<T: Wire>(words: &[u64; azos_idl::MSG_WORDS_MAX]) -> Result<T, u32> {
+    let msg = MsgDesc { version: azos_idl::MSG_VERSION, n_words: words.len() as u8, words: *words, ..MsgDesc::default() };
+    let mut r = Reader::new(&msg);
+    let out = r.status().map(|()| <Out<T> as Wire>::get(&mut r));
+    value(out.and_then(|o| r.finish().map(|()| o)))
 }
 
 /// Fill `buf` from the kernel entropy pool behind the entropy endpoint `ep`

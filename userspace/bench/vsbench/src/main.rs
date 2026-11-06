@@ -2866,6 +2866,83 @@ fn ioring_lanes(abi: &impl Abi, floor_ns: u64) {
     let _ = sys::ioring_destroy_typed(ring.cap);
 }
 
+/// `ioring-idl xN`: N `Sensor::read` calls on the encoder's kernel-hosted
+/// endpoint as N `OP_CALL` entries through one `SYS_RING_ENTER`, against the
+/// same call as N register-form `SYS_IPC_CALL`s (`sensor-read-call`, the vdso
+/// section's lane, timed again here for the break-even). Each entry has its own
+/// message window; every completion is checked (served, not refused, the
+/// call's outcome) after the batch that produced it, and a wrong one prints
+/// `FAIL rc=`.
+#[cfg(feature = "azos")]
+fn ioring_idl_lanes(abi: &impl Abi, floor_ns: u64) {
+    use azos_libsys as sys;
+    use sys::dev::SensorIdl as S;
+
+    let fail = |what: &[u8], rc: i64| {
+        abi.write(b"[VSBENCH] ioring-idl ");
+        abi.write(what);
+        abi.write(b": FAIL rc=");
+        put_i(abi, rc);
+        abi.write(b"\n");
+    };
+    let Some(ep) = sys::dev::lookup(sys::dev::key::SENSOR, SENSOR_ENCODER) else {
+        return fail(b"(sensor endpoint lookup)", -2);
+    };
+    let mut out = [0u8; 8];
+    let cap = sys::ioring_create_typed(&mut out);
+    let ring = match (cap > 0).then(|| sys::ioring::Ring::open(cap as u32, out)) {
+        Some(Ok(r)) => r,
+        _ => {
+            if cap > 0 { let _ = sys::ioring_destroy_typed(cap as u32); }
+            return fail(b"(ring)", cap as i64);
+        }
+    };
+
+    let mut buf = [0u8; 32];
+    let outcome = match sys::dev::sensor_read(ep, &mut buf) {
+        Ok(_) => sys::dev::outcome::OK as u64,
+        Err(_) => sys::dev::outcome::NOT_READY as u64,
+    };
+    let t_call = batch(N_IORING_OPS, || { let _ = core::hint::black_box(sys::dev::sensor_read(ep, &mut buf)); });
+    let call_ns = ns_per_op(t_call, N_IORING_OPS);
+
+    let hdr = sys::dev::header(S::ID, S::LEVEL, S::OP_READ);
+    let win = |i: u32| i * sys::ioring::CALL_WINDOW as u32;
+    let mut be = 0u32;
+    for &n in IORING_BATCHES.iter() {
+        let iters = N_IORING_OPS / n as u64;
+        let (mut bad, mut last) = (0u32, 0i64);
+        let t = batch(iters, || {
+            for i in 0..n {
+                if !ring.push_call(ep, win(i), &[hdr], i as u64) { bad += 1; }
+            }
+            let rc = sys::ioring_submit_typed(ring.cap);
+            if rc != n as isize { bad += 1; last = rc as i64; }
+            let mut got = 0;
+            while let Some((tag, result, flags)) = ring.pop() {
+                if result != 0 || flags & sys::ioring::CQE_F_REFUSED != 0 || ring.reply(win(tag as u32))[1] != outcome {
+                    bad += 1;
+                    last = result as i64;
+                }
+                got += 1;
+            }
+            if got != n { bad += 1; }
+        });
+        let (label, len) = label_n(b"ioring-idl  x", n);
+        if bad != 0 {
+            fail(&label[..len], last);
+            continue;
+        }
+        report(abi, &label[..len], t, iters * n as u64, floor_ns);
+        if be == 0 && ns_per_op(t, iters * n as u64) <= call_ns { be = n; }
+    }
+    // Not a lane line (no `ns/op`), so the comparison scripts do not read it.
+    abi.write(b"[VSBENCH] ioring-idl break-even N against sensor-read-call (0 = never): ");
+    put_u(abi, be as u64);
+    abi.write(b"\n");
+    let _ = sys::ioring_destroy_typed(ring.cap);
+}
+
 /// Bytes one receive of the `ioring-recv` lanes asks for: `brain_client`'s
 /// wire buffer (`RECV_RAW_SIZE`), the receive it polls the brain link with.
 const RECV_LANE_BYTES: usize = 512;
@@ -3266,6 +3343,8 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
     if lanes.on(b"ioring") { abi_linux::ioring_recv_lanes(abi, floor_ns); }
     #[cfg(feature = "azos")]
     if lanes.on(b"ioring") { sqpoll_lanes(abi, floor_ns); }
+    #[cfg(feature = "azos")]
+    if lanes.on(b"ioring") { ioring_idl_lanes(abi, floor_ns); }
 
     // 4e. Wave 12: the user shell's primitives (`bench_core::Shell`), both
     //     sides. Appended before the closing floor, so no lane above moves.

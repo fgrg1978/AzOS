@@ -90,6 +90,15 @@ pub const OP_FILE_READ: u16 = 12;
 /// `NODE_WRITE` on a ring: `param0` a `Cap<File>` handle (`WRITE`,
 /// refused while contained), `param1`/`param2` the `data_buf` window to write.
 pub const OP_FILE_WRITE: u16 = 13;
+/// An IDL call on a kernel-hosted endpoint (`azos_abi::io_ring::OP_CALL`):
+/// `param0` the endpoint handle, `param1` the offset of its message window in
+/// `data_buf`, `param2` the request's words. [`dispatch_sqe`] bounds the
+/// window and copies the words once; [`IoRingOps::idl_call`] answers.
+pub const OP_CALL: u16 = 14;
+/// Words of an [`OP_CALL`] message.
+pub const CALL_WORDS: usize = azos_abi::io_ring::CALL_WORDS;
+/// Bytes of an [`OP_CALL`] message window.
+pub const CALL_WINDOW: usize = azos_abi::io_ring::CALL_WINDOW;
 /// A completion at a deadline (`SYS_SLEEP_UNTIL`'s twin): `param0 | param1 <<
 /// 32` is the deadline in nanoseconds on the time counter. Completes with `1`
 /// in the pass that sees it when the deadline had already passed, otherwise
@@ -299,6 +308,8 @@ const _: () = {
     assert!(SQE_F_FIXED == azos_abi::io_ring::SQE_F_FIXED);
     assert!(OP_FILE_READ == azos_abi::io_ring::OP_FILE_READ);
     assert!(OP_FILE_WRITE == azos_abi::io_ring::OP_FILE_WRITE);
+    assert!(OP_CALL == azos_abi::io_ring::OP_CALL);
+    assert!(CALL_WINDOW <= RING_DATA_BUF_SIZE && CALL_WINDOW % 8 == 0);
     assert!(OP_TIMER == azos_abi::io_ring::OP_TIMER);
     assert!(OP_NOTIFY_WAIT == azos_abi::io_ring::OP_NOTIFY_WAIT);
     assert!(OP_SQPOLL_START == azos_abi::io_ring::OP_SQPOLL_START);
@@ -1691,6 +1702,15 @@ pub struct IoRingOps {
     /// read-write and no clone may share a frame of it (a write would show in
     /// the clone).
     pub buf_usable:    fn(owner_tid: u32, r: u32, sink: bool) -> bool,
+    /// [`OP_CALL`] below the ring: the IDL request `req[..n]` (header first) on
+    /// the endpoint handle `ep` of `owner_tid`'s table, decided as
+    /// `SYS_IPC_CALL` decides a call on an endpoint the kernel hosts and in its
+    /// order: the handle resolved (a refusal recorded), the capability's op
+    /// mask, the owner's profile listing the interface, then the interface's
+    /// own dispatch, which checks the op's class. `Ok` with the reply in `rep`
+    /// (status first, zeros past it); `Err` with the negative errno of a
+    /// refusal made before the interface ran.
+    pub idl_call:      fn(owner_tid: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mut [u64; CALL_WORDS]) -> Result<(), i32>,
 }
 
 /// What [`IoRingOps::buf_pin`] answers: the pinned object's packed reference
@@ -2438,6 +2458,9 @@ pub const fn opcode_gate(opcode: u16) -> Option<OpGate> {
         OP_BUF_REGISTER | OP_BUF_UNREGISTER => Some(OpGate::Op(inv::MEMOBJ_ACQUIRE)),
         OP_FILE_READ => Some(OpGate::Op(inv::NODE_READ)),
         OP_FILE_WRITE => Some(OpGate::Op(inv::NODE_WRITE)),
+        // The trap's question for a call: the interface is asked after the
+        // handle names it ([`IoRingOps::idl_call`]).
+        OP_CALL => Some(OpGate::Syscall(nr::SYS_IPC_CALL)),
         OP_TIMER => Some(OpGate::Syscall(nr::SYS_SLEEP_UNTIL)),
         OP_SQPOLL_START => Some(OpGate::Syscall(nr::SYS_RING_ENTER)),
         OP_FSYNC => Some(OpGate::Op(inv::NODE_FSYNC)),
@@ -2926,6 +2949,28 @@ fn dispatch_sqe(
             let write = sqe.opcode == OP_FILE_WRITE;
             let ptr = sqe_window(owner_tid, sqe, data_buf, bufs, ops, !write)?;
             (ops.file_io)(owner_tid, p0, write, ptr, p2 as usize)
+        }
+
+        // The request is copied out of the window once, so ring 3 rewriting it
+        // during the pass cannot change what was checked; the reply is
+        // written back whole, zeros past its last word.
+        OP_CALL => {
+            let (offset, n) = (p1 as usize, p2 as usize);
+            if n == 0 || n > CALL_WORDS || offset % 8 != 0 || !window_ok(offset, CALL_WINDOW) {
+                return Err(IO_ERR_INVALID_PARAM);
+            }
+            let at = window_start(offset);
+            let win = &mut data_buf[at..at + CALL_WINDOW];
+            let mut req = [0u64; CALL_WORDS];
+            for (w, b) in req.iter_mut().zip(win.chunks_exact(8)).take(n) {
+                *w = u64::from_ne_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+            }
+            let mut rep = [0u64; CALL_WORDS];
+            (ops.idl_call)(owner_tid, p0, &req, n, &mut rep)?;
+            for (b, w) in win.chunks_exact_mut(8).zip(rep.iter()) {
+                b.copy_from_slice(&w.to_ne_bytes());
+            }
+            Ok(rep[0].min(i32::MAX as u64) as i32)
         }
 
         // `OP_TIMER`, `OP_NOTIFY_WAIT` and the block opcodes complete
@@ -3534,6 +3579,24 @@ mod tests {
         MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// `(owner, endpoint, request words)` of every call that reached
+    /// `idl_call`. The test endpoint answers status 0 and each request word
+    /// past the header plus one; [`BAD_CAP`] is refused as a stale handle.
+    static CALLS_SEEN: Mutex<Vec<(u32, u32, Vec<u64>)>> = Mutex::new(Vec::new());
+    fn hook_idl_call(owner: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mut [u64; CALL_WORDS]) -> Result<(), i32> {
+        if ep == BAD_CAP {
+            return Err(E_STALE);
+        }
+        CALLS_SEEN.lock().unwrap_or_else(|e| e.into_inner()).push((owner, ep, req[..n].to_vec()));
+        for (o, w) in rep.iter_mut().zip(req.iter()).take(n).skip(1) {
+            *o = w + 1;
+        }
+        Ok(())
+    }
+    fn calls_seen() -> Vec<(u32, u32, Vec<u64>)> {
+        CALLS_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// The one syscall number the test profile denies; 0 for none.
     static SECCOMP_DENIES: AtomicU64 = AtomicU64::new(0);
     fn hook_syscall_allowed(_owner: u32, nr: u64) -> bool {
@@ -3773,6 +3836,7 @@ mod tests {
         buf_pin:     hook_buf_pin,
         buf_unpin:   hook_buf_unpin,
         buf_usable:  hook_buf_usable,
+        idl_call:    hook_idl_call,
     };
 
     /// Put the test table's hooks back to "allow, not contained, nothing seen".
@@ -3796,6 +3860,7 @@ mod tests {
         MOTOR_REFUSES.store(u32::MAX, AOrd::SeqCst);
         MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         DENIALS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        CALLS_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         IO_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         NOW_NS.store(0, AOrd::SeqCst);
         WORD.store(0, AOrd::SeqCst);
@@ -6631,5 +6696,88 @@ mod tests {
         assert_eq!(unsafe { drain(phys) }, vec![(1, IO_ERR_SECCOMP, CQE_F_REFUSED)]);
         assert!(block_seen().is_empty() && block_reqs().is_empty());
         assert!(io_ring_destroy(id));
+    }
+
+    // ── OP_CALL ────────────────────────────────────────────────────────────
+
+    /// Put `words` in the message window at `offset` of `phys`'s data buffer.
+    unsafe fn put_window(phys: usize, offset: usize, words: &[u64]) {
+        let ring = phys as *mut IoRing;
+        for (i, w) in words.iter().enumerate() {
+            (&mut (*ring).data_buf)[offset + i * 8..offset + i * 8 + 8].copy_from_slice(&w.to_ne_bytes());
+        }
+    }
+
+    /// The window at `offset`, as words.
+    unsafe fn window(phys: usize, offset: usize) -> [u64; CALL_WORDS] {
+        let ring = phys as *const IoRing;
+        let mut out = [0u64; CALL_WORDS];
+        for (i, o) in out.iter_mut().enumerate() {
+            let b = &(&(*ring).data_buf)[offset + i * 8..offset + i * 8 + 8];
+            *o = u64::from_ne_bytes(b.try_into().unwrap());
+        }
+        out
+    }
+
+    /// **An `OP_CALL` hands the endpoint the request words of its window, once,
+    /// and writes the reply back over the whole window**: status in the
+    /// completion, the value after it, zeros past it (the stale request words
+    /// do not survive as reply words).
+    ///
+    /// **Canary.** Write back only `n` reply words: word 3 still reads the
+    /// request's 0x33.
+    #[test]
+    fn a_call_entry_passes_its_window_and_answers_over_it() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        unsafe { put_window(phys, 64, &[0xAB00_0001, 41, 0x22, 0x33]) };
+        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, 9, 64, 2, 0, 0)) };
+        assert_eq!(done(c), (0, 0));
+        assert_eq!(calls_seen(), vec![(OWNER, 9, vec![0xAB00_0001, 41])], "only `param2` words are the request");
+        assert_eq!(unsafe { window(phys, 64) }, [0, 42, 0, 0, 0, 0, 0, 0]);
+    }
+
+    /// **A window the buffer cannot hold, a misaligned one, and a word count
+    /// of 0 or past the message's are refused before the endpoint is asked.**
+    ///
+    /// **Canary.** Drop the `offset % 8` test: the misaligned window reaches
+    /// the endpoint.
+    #[test]
+    fn a_call_entry_with_a_bad_window_is_refused_unasked() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        let last = (RING_DATA_BUF_SIZE - CALL_WINDOW) as u32;
+        for (off, n) in [(last + 8, 1), (4, 1), (0, 0), (0, CALL_WORDS as u32 + 1), (u32::MAX - 7, 1)] {
+            let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, 9, off, n, 0, 0)) };
+            assert_eq!(done(c), (IO_ERR_INVALID_PARAM, CQE_F_REFUSED), "offset {off} words {n}");
+        }
+        assert!(calls_seen().is_empty());
+        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, 9, last, CALL_WORDS as u32, 0, 0)) };
+        assert_eq!(done(c), (0, 0), "the last window of the buffer is a window");
+    }
+
+    /// **A refused call leaves its window as ring 3 wrote it, and the profile
+    /// is asked for `SYS_IPC_CALL` before anything else**: a profile without
+    /// the call refuses the entry with the endpoint never asked.
+    ///
+    /// **Canary.** Gate `OP_CALL` on another syscall in `opcode_gate`: the
+    /// denied profile lets the entry reach the endpoint.
+    #[test]
+    fn a_refused_call_writes_nothing_and_the_call_is_asked_of_the_profile() {
+        let _g = setup();
+        io_ring_register_ops(&TEST_OPS);
+        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        unsafe { put_window(phys, 0, &[7, 8]) };
+        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, BAD_CAP, 0, 2, 0, 0)) };
+        assert_eq!(done(c), (E_STALE, CQE_F_REFUSED));
+        assert_eq!(unsafe { window(phys, 0) }[..2], [7, 8]);
+
+        SECCOMP_DENIES.store(azos_abi::syscall_nr::SYS_IPC_CALL, AOrd::SeqCst);
+        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, 9, 0, 2, 0, 0)) };
+        SECCOMP_DENIES.store(0, AOrd::SeqCst);
+        assert_eq!(done(c), (IO_ERR_SECCOMP, CQE_F_REFUSED));
+        assert!(calls_seen().is_empty());
     }
 }
