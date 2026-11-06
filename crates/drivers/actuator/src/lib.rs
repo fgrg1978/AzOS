@@ -6,14 +6,6 @@
 
 #![no_std]
 
-// Fourth Driver trait migration (A3a.4). Multi-parameter actuator
-// (PWM channel + nanosecond period/duty).
-pub mod pwm_driver;
-
-// Fifth Driver trait migration (A3a.5). Closed-loop controller
-// (motor PID) — pure software, no MMIO of its own.
-pub mod motor_driver;
-
 pub mod pwm;
 
 /// The SpacemiT K1 PWM's registers and period arithmetic over a trait

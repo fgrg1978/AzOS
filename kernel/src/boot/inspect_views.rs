@@ -18,7 +18,6 @@
 //! ```text
 //! system/{version, platform}
 //! fs/tmpfs/{files, used_bytes, max_bytes}             the /tmp mount
-//! drivers/<slot>/{kind, name, isolation, perms}       name "" = free slot
 //! chaos/{seed, <point>/{rate, checked, fired}}         Kconfig CHAOS
 //! ```
 //!
@@ -91,17 +90,10 @@ struct Endpoint {
     server: NodeId,
 }
 
-struct Driver {
-    kind: NodeId,
-    name: NodeId,
-    isolation: NodeId,
-    perms: NodeId,
-}
 
 /// The public nodes the refresh writes.
 struct Ids {
     tmpfs: [NodeId; 3],
-    drivers: [Option<Driver>; azos_drv_api::REGISTRY_MAX_DRIVERS],
     #[cfg(feature = "chaos")]
     chaos: [(NodeId, NodeId, NodeId); azos_chaos::POINTS.len()],
 }
@@ -155,37 +147,28 @@ pub(crate) fn build(b: &mut Builder<'_, '_>, root: NodeId) -> Result<(), Error> 
     let fs = b.dir(root, "fs")?;
     let t = b.dir(fs, "tmpfs")?;
     let tmpfs = [b.u64(t, "files", 0)?, b.u64(t, "used_bytes", 0)?, b.u64(t, "max_bytes", 0)?];
+    #[cfg_attr(not(feature = "chaos"), allow(unused_mut))]
     let mut ids = Ids {
         tmpfs,
-        drivers: [const { None }; azos_drv_api::REGISTRY_MAX_DRIVERS],
         #[cfg(feature = "chaos")]
         chaos: [(NodeId::ROOT, NodeId::ROOT, NodeId::ROOT); azos_chaos::POINTS.len()],
     };
-    let r = build_rest(b, root, &mut ids);
+    #[cfg(feature = "chaos")]
+    let r = build_chaos(b, root, &mut ids);
+    #[cfg(not(feature = "chaos"))]
+    let r = Ok(());
     // What was built is refreshed even when a later subtree did not fit.
     *IDS.lock() = Some(ids);
     r
 }
 
-fn build_rest(b: &mut Builder<'_, '_>, root: NodeId, ids: &mut Ids) -> Result<(), Error> {
-    let drv = b.dir(root, "drivers")?;
-    for (i, slot) in ids.drivers.iter_mut().enumerate() {
-        let d = b.dir(drv, &Num::name("", i as u64))?;
-        *slot = Some(Driver {
-            kind: b.u64(d, "kind", 0)?,
-            name: b.string(d, "name", 24, "")?,
-            isolation: b.string(d, "isolation", 10, "")?,
-            perms: b.u64(d, "perms", 0)?,
-        });
-    }
-    #[cfg(feature = "chaos")]
-    {
-        let c = b.dir(root, "chaos")?;
-        b.u64(c, "seed", azos_chaos::seed())?;
-        for (slot, p) in ids.chaos.iter_mut().zip(azos_chaos::POINTS) {
-            let d = b.dir(c, p.name())?;
-            *slot = (b.u64(d, "rate", 0)?, b.u64(d, "checked", 0)?, b.u64(d, "fired", 0)?);
-        }
+#[cfg(feature = "chaos")]
+fn build_chaos(b: &mut Builder<'_, '_>, root: NodeId, ids: &mut Ids) -> Result<(), Error> {
+    let c = b.dir(root, "chaos")?;
+    b.u64(c, "seed", azos_chaos::seed())?;
+    for (slot, p) in ids.chaos.iter_mut().zip(azos_chaos::POINTS) {
+        let d = b.dir(c, p.name())?;
+        *slot = (b.u64(d, "rate", 0)?, b.u64(d, "checked", 0)?, b.u64(d, "fired", 0)?);
     }
     Ok(())
 }
@@ -211,49 +194,6 @@ pub(crate) fn refresh(w: &Writer<'_>) -> u32 {
                 ok(w.set_u64(*fired, f));
             }
         }
-    }
-    bad + refresh_drivers(w)
-}
-
-fn refresh_drivers(w: &Writer<'_>) -> u32 {
-    use azos_drv_api::DriverIsolation;
-    let mut rows = [(0u32, [0u8; 24], 0usize, "", 0u64); azos_drv_api::REGISTRY_MAX_DRIVERS];
-    let mut n = 0;
-    {
-        // One pass over the table under its lock; the order is made after.
-        let reg = azos_drv_base::runtime::registry::REGISTRY.lock();
-        for d in reg.iter() {
-            if n == rows.len() {
-                break;
-            }
-            let m = d.manifest();
-            let iso = match m.isolation {
-                DriverIsolation::InKernel => "inkernel",
-                DriverIsolation::UserProcess { .. } => "userproc",
-                DriverIsolation::Hypervisor => "hypervisor",
-            };
-            let name = m.name.as_bytes();
-            let l = name.len().min(24);
-            rows[n].0 = m.kind;
-            rows[n].1[..l].copy_from_slice(&name[..l]);
-            rows[n].2 = l;
-            rows[n].3 = iso;
-            rows[n].4 = m.required_perms.bits() as u64;
-            n += 1;
-        }
-    }
-    // By kind, as the registry is looked up.
-    rows[..n].sort_unstable_by_key(|r| r.0);
-    let g = IDS.lock();
-    let Some(ids) = g.as_ref() else { return 0 };
-    let mut bad = 0;
-    for (i, d) in ids.drivers.iter().enumerate() {
-        let Some(d) = d else { continue };
-        let (kind, name, len, iso, perms) = if i < n { rows[i] } else { (0, [0; 24], 0, "", 0) };
-        bad += w.set_u64(d.kind, kind as u64).is_err() as u32;
-        bad += w.set_str(d.name, core::str::from_utf8(&name[..len]).unwrap_or("?")).is_err() as u32;
-        bad += w.set_str(d.isolation, iso).is_err() as u32;
-        bad += w.set_u64(d.perms, perms).is_err() as u32;
     }
     bad
 }

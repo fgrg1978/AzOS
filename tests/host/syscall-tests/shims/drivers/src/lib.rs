@@ -12,21 +12,7 @@
 //! `handlers.rs` compiles unchanged, bodies that panic if anything ever
 //! calls them from a test.
 //!
-//! **Two things here are real, not stand-ins:**
-//! - `azos_drv_api` is the real crate (`crates/drivers/api`), a dependency
-//!   of this shim and of the suite: `errno_for_driver_err` (target 1) needs
-//!   the real `DriverError` type, and this is it.
-//! - `runtime::registry` is the real `crates/drivers/base/src/runtime/registry.rs`
-//!   pulled in with `#[path]` (15 lines: one `SpinLock<Registry>` static).
-//!   `drv_invoke_authorized`, which `cap_kind_for_driver` (target 2) feeds
-//!   into, reads `REGISTRY` — trivial enough to pull verbatim rather than
-//!   reproduce.
-
-#[path = "../../../../../../crates/drivers/base/src/runtime/registry.rs"]
-pub mod registry_real;
-pub mod runtime {
-    pub use super::registry_real as registry;
-}
+//! Some modules below are real, not stand-ins: each says so.
 
 /// The board constants, the REAL module. Constants and `const fn`s, nothing
 /// that needs a device.
@@ -39,7 +25,7 @@ pub mod platform;
 #[path = "../../../../../../crates/drivers/bus/src/hwbus.rs"]
 pub mod hwbus;
 
-/// Third real module, not a stand-in — same rationale as `runtime::registry`.
+/// A real module, not a stand-in.
 ///
 /// `pwm_domain` states which PWM channels one control-register write actually
 /// reaches (on the JH7110 the enable bit and prescaler share one `PWMCFG`, so

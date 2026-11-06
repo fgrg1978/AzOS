@@ -22,10 +22,9 @@
 /// true`) — enabling ESC channel N there enables every other channel on the
 /// same instance too (the real OpenCores part, `PWM_DOMAIN_INDEPENDENT_8`, does
 /// not share; the driver does). That is a property `pwm.rs` encodes, not something
-/// `esc.rs` needs to re-check (the ring-3 capability gate for that lives in
-/// `pwm_driver.rs::handle_request` via `pwm_domain::pwm_control_allowed`,
-/// per that module's own doc — this file has no ring-3 caller identity to
-/// gate against).
+/// `esc.rs` needs to re-check (the ring-3 capability gate for that is the
+/// `Pwm` interface's reach check, `pwm_domain` — this file has no ring-3
+/// caller identity to gate against).
 ///
 /// ESC protocol: standard PWM 400 Hz
 /// - 1000 µs pulse = 0% throttle (idle)

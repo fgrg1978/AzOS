@@ -6,8 +6,8 @@ This page describes how hardware reaches drivers: how devices are found and matc
 
 | Piece | Path | Role |
 |---|---|---|
-| Driver API | `crates/drivers/api` (`azos_drv_api`) | `Driver` trait, `DriverManifest`, `DriverIsolation`, `MmioRange`, the lock-free `Registry`, and class traits for block, console and network devices. Host-testable. |
-| Driver base | `crates/drivers/base` (`azos_drv_base`) | The board description (`platform::hw`) and the in-kernel driver registry static. No MMIO of its own. |
+| Driver API | `crates/drivers/api` (`azos_drv_api`) | Class traits for block, console and network devices, and the device-timeout policy. Host-testable. The other classes are IDL interfaces (`crates/core/devif`). |
+| Driver base | `crates/drivers/base` (`azos_drv_base`) | The board description (`platform::hw`). No MMIO of its own. |
 | Hardware bus | `crates/drivers/hwbus` (`azos_hwbus`), instance in `crates/drivers/bus/src/hwbus.rs` | Device objects, match tables, bind policy. |
 | Enumerators | `crates/drivers/pci`, `crates/drivers/dtb`, `crates/drivers/virtio`, `kernel/src/boot/hwbus.rs` | Find PCI/PCIe functions, device-tree nodes and virtio-mmio windows. |
 | Driver environment | `crates/drivers/kit` (`azos_drvkit`) | `Mmio` (a register block), `PortIo` (x86 port space) and `Ticks` (the clock a bounded wait uses), the traits a driver is written over, with the kernel and ring-3 `Window` and the host fakes. |
@@ -15,8 +15,6 @@ This page describes how hardware reaches drivers: how devices are found and matc
 | SoC frameworks | `crates/drivers/soc` | Clock, reset, regulator, pin control, power domains. |
 | DMA and IOMMU | `crates/drivers/dma`, `crates/drivers/iommu` | Mapping API, bounce decision, cache maintenance, IOMMU units. |
 | Interrupts | `crates/core/ipc/src/irq_bind.rs`, `crates/drivers/irqchip`, `kernel/src/irq_thread.rs` | Line ownership, binding to event ports, budgets. |
-
-`Driver` methods all take `&self`: the registry hands out `&'static dyn Driver`, so a driver manages its own interior mutability. `DriverIsolation` names where a driver's code runs: `InKernel`, `UserProcess { tid }`, or `Hypervisor` (reserved). `Registry` holds at most `REGISTRY_MAX_DRIVERS` entries and refuses a second driver of the same `kind`.
 
 Source: `crates/drivers/api/src/lib.rs`, `crates/drivers/base/src/lib.rs`.
 
@@ -378,9 +376,9 @@ All crates are `no_std`. "Chip logic" crates contain no host-specific code and a
 | Path | Package | Contents |
 |---|---|---|
 | `crates/drivers/api` | `azos_drv_api` | Driver API surface, class traits for block, console, network |
-| `crates/drivers/base` | `azos_drv_base` | Board description, in-kernel driver registry |
+| `crates/drivers/base` | `azos_drv_base` | Board description |
 | `crates/drivers/hwbus` | `azos_hwbus` | Hardware bus logic |
-| `crates/drivers/bus` | `azos_drv_bus` | I2C (`i2c_driver`, `i2c`, `i2c_txn` the DesignWare engine, `i2c_dw` its bring-up, `i2c_k1` the SpacemiT K1 engine), SPI, CAN, the UART bridge to the companion radio, the `hwbus` instance |
+| `crates/drivers/bus` | `azos_drv_bus` | I2C (`i2c`, `i2c_txn` the DesignWare engine, `i2c_dw` its bring-up, `i2c_k1` the SpacemiT K1 engine), SPI, CAN, the UART bridge to the companion radio, the `hwbus` instance |
 | `crates/drivers/pci` | `azos_pci` | PCI/PCIe enumeration, BAR and bridge-window placement, SoC host controllers |
 | `crates/drivers/dtb` | `azos_dtb` | Device-tree parser |
 | `crates/drivers/irqchip` | `azos_drv_irqchip` | PLIC-or-AIA selection (riscv64), GICv3-or-GICv2 selection (aarch64, `gic`), MSI identities waiting for a hart (`msi_pending`), ring-3 line ownership (the controllers themselves are in `azos_arch::irq`) |

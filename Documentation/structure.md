@@ -90,8 +90,8 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 
 | Crate (directory under `crates/drivers/`) | What it holds |
 |---|---|
-| `api` | The stable driver-framework surface: the `Driver` trait, manifest and isolation types, a lockless registry. Host-compatible. |
-| `base` | The board description (`platform::hw`) and the in-kernel driver registry (`runtime`). |
+| `api` | Class traits for block, console and network devices, and the device-timeout policy. Host-compatible. |
+| `base` | The board description (`platform::hw`). |
 | `sys` | System devices every image needs: console UART and `kprint!`, the monotonic clock and timer programming, the hardware watchdog, WCET measurement. |
 | `soc` | SoC resource frameworks a driver asks of the SoC first: clock tree, reset lines, regulators, pin control, power domains. |
 | `dma` | The DMA mapping API (`DmaDomain`) and the domains that need no hardware. |

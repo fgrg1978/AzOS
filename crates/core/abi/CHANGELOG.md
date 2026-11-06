@@ -12,6 +12,14 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 - `CapHandle` is `kind 6 | generation 16 | slot 10`. The rights left the handle
   (`CAP_INFO_QUERY` reads them), so the generation is the slot word's whole field.
 
+### Removed
+
+- The driver-server ABI: the `drv_kind` module (`DRV_KIND_*`, `power_op`), the
+  `ty::DRIVER_REGISTRY` type (`Device` class 2, not reused) and the six
+  `DOMAIN_DRIVER_*` ops (`CLASS_DRIVER` 39, 40, 44-47, not reused; the
+  dispatcher's default arm answers them). A ring-3 driver serves its class's
+  IDL interface on an endpoint.
+
 ### Added
 
 - Initial import of the crate. It holds everything that crosses the
@@ -31,7 +39,6 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
   | `ushell` | The spawn request block, the startup block and console flags |
   | `exit_status` | Exit statuses the kernel assigns when it kills a task |
   | `families` | Selectors of the flight, behavior, config and OTA families |
-  | `drv_kind` | `DRV_KIND_*` identifiers of the driver registry |
   | `rt_levels` | The cross-level admission rule for deadline reservations |
   | `trace` | Event classes and ids of the kernel tracer |
   | `time` | Conversions between nanoseconds and the `time` counter |

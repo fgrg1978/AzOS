@@ -3,9 +3,8 @@
 //! The network device class: what every NIC backend implements.
 
 /// Typed error from a [`NetDevice`] operation. Small and `Copy`, one word,
-/// no payload — the same shape `azos_drv_api::DriverError` uses for
-/// the ring-3 invocation path, deliberately, per the module doc of
-/// `azos_drv_net::net_device`.
+/// no payload: the bounded contract a caller of a ring-3 host needs, per
+/// the module doc of `azos_drv_net::net_device`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetError {
     /// No backend selected yet, or the selected one has not completed

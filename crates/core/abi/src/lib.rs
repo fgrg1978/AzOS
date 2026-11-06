@@ -43,7 +43,6 @@
 #![forbid(unsafe_code)]
 
 pub mod cap;
-pub mod drv_kind;
 pub mod error;
 pub mod foreign;
 pub mod exit_status;

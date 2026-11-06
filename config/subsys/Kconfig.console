@@ -85,7 +85,7 @@ config RECOVERY_CONSOLE
       takes the UART when that shell cannot (safe mode, no console image on
       the volume, the supervisor gave up, SH_START_TIMEOUT_S passed) or when
       the build has no console program at all (CONSOLE_PROGRAM_NONE). Its
-      commands are recovery and diagnosis only: help, mem, uptime, drvls,
+      commands are recovery and diagnosis only: help, mem, uptime,
       security, estop, ls, cat, crash, ota, config, ifconfig, dhcp, swap, reboot,
       shutdown, and the two bench tools wcet and bench.
 

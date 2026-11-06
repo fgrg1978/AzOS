@@ -287,7 +287,6 @@ dependencies = [
 name = "azos_drv_api"
 version = "0.1.0"
 dependencies = [
- "azos_abi",
  "azos_common",
  "azos_devif",
 ]
@@ -900,8 +899,6 @@ dependencies = [
  "azos_common",
  "azos_config",
  "azos_decision",
- "azos_drv_api",
- "azos_drv_base",
  "azos_drv_sys",
  "azos_flight",
  "azos_fs",

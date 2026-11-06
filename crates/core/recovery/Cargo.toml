@@ -20,9 +20,7 @@ azos_fs = { workspace = true }
 azos_net = { workspace = true }
 azos_sched = { workspace = true }
 azos_mm = { workspace = true }
-azos_drv_base      = { workspace = true }
 azos_drv_sys       = { workspace = true }
-azos_drv_api       = { workspace = true }
 azos_robot_drivers = { workspace = true, optional = true }
 azos_robot = { workspace = true, optional = true }
 azos_arch = { workspace = true }

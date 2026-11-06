@@ -549,9 +549,6 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
          no utilisation tracking and no energy model are linked in"
     );
 
-    // The driver registry smoke: five drivers registered, one write through `dyn Driver`.
-    smokes::driver_registry_smoke();
-
     // The network conformance probe and the loopback check: boot self-tests
     // (Kconfig BOOT_SELFTESTS, `smokes::net_conformance`), with the stack's
     // bring-up (Kconfig NET).

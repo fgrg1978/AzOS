@@ -6,11 +6,6 @@
 
 #![no_std]
 
-// Third Driver trait migration (A3a.3). Bus-oriented hardware
-// (DesignWare I2C). Proves the uniform `(op, input, output)` API
-// scales to multi-axis (bus + slave addr + register) addressing.
-pub mod i2c_driver;
-
 pub mod i2c;
 pub mod i2c_port;
 pub mod i2c_txn;

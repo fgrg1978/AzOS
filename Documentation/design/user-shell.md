@@ -508,7 +508,7 @@ While a user program owns input, the recovery console cannot read the UART.
 There is no physical-console takeover from a wedged but live shell.
 
 **What the recovery console keeps.** What a machine without a working ring 3
-needs to be diagnosed and repaired: status (`help`, `mem`, `uptime`, `drvls`,
+needs to be diagnosed and repaired: status (`help`, `mem`, `uptime`,
 `security`, `estop`), file and diagnosis commands (`ls`, `cat`, `crash`, `why`),
 repair (`ota`, `config`, `ifconfig`, `dhcp`), the live update of a supervised
 server (`swap`), measurement (`wcet`, `bench`), and the two exits `reboot` and `shutdown`, which are checked

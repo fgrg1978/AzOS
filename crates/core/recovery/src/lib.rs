@@ -8,7 +8,7 @@
 //! (`userspace/services/sh`); this is not a second one, so it carries only
 //! what diagnosing and repairing a machine without ring 3 needs:
 //!
-//! * `help`, `mem`, `uptime`, `drvls`, `security`, `estop`: status;
+//! * `help`, `mem`, `uptime`, `security`, `estop`: status;
 //! * `ls`, `cat`, `crash [log|clear]`,
 //!   `why [<id>]` (the chain behind a refusal or denial, from the decision
 //!   query: rule, verdict, subject, numbers, provenance, clock): diagnosis;
@@ -153,7 +153,6 @@ fn cmd_help() {
     azos_drv_sys::kconsoleln!("  help              - this message");
     azos_drv_sys::kconsoleln!("  mem               - memory info");
     azos_drv_sys::kconsoleln!("  uptime            - system uptime ticks");
-    azos_drv_sys::kconsoleln!("  drvls             - list registered drivers (runtime registry)");
     azos_drv_sys::kconsoleln!("  swap <image>      - live update of a supervised server (successor from its row, endpoints handed over)");
     azos_drv_sys::kconsoleln!("  security          - security overview");
     azos_drv_sys::kconsoleln!("  estop             - e-stop latch / safe mode");
@@ -205,31 +204,6 @@ fn cmd_uptime() {
     let ticks = azos_drv_sys::timebase::now();
     azos_drv_sys::kconsoleln!("[UPTIME] {} ticks (~{} ms)", ticks,
         ticks / (azos_drv_sys::timebase::TIMER_FREQ / 1000));
-}
-
-/// List registered drivers from the runtime registry (the introspection
-/// tree's `drivers/` holds the same rows for ring 3).
-fn cmd_drvls() {
-    use azos_drv_api::DriverIsolation;
-    use azos_drv_base::runtime::registry::REGISTRY;
-    let reg = REGISTRY.lock();
-    let mut shown = 0u32;
-    for kind in 0u32..0x100 {
-        if let Some(d) = reg.find_by_kind(kind) {
-            let m = d.manifest();
-            let iso = match m.isolation {
-                DriverIsolation::InKernel       => "inkernel",
-                DriverIsolation::UserProcess { .. } => "userproc",
-                DriverIsolation::Hypervisor     => "hypervisor",
-            };
-            azos_drv_sys::kconsoleln!(
-                "[DRV] 0x{:04x}  {:<16}  {}  perms=0x{:02x}",
-                m.kind, m.name, iso, m.required_perms.bits(),
-            );
-            shown += 1;
-        }
-    }
-    azos_drv_sys::kconsoleln!("[DRV] {} drivers registered", shown);
 }
 
 /// `estop`: is the actuators' e-stop latch (or safe mode, which holds the
@@ -1463,7 +1437,6 @@ pub fn recovery_run() -> ! {
                 if      cmd == b"help"     { cmd_help(); }
                 else if cmd == b"mem"      { cmd_mem(); }
                 else if cmd == b"uptime"   { cmd_uptime(); }
-                else if cmd == b"drvls"    { cmd_drvls(); }
                 else if cmd == b"swap"     { cmd_swap(&args, argc); }
                 else if cmd == b"security" { cmd_security(); }
                 else if cmd == b"estop"    { cmd_estop(); }

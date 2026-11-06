@@ -4,11 +4,6 @@
 
 #![no_std]
 
-// Second Driver trait migration (A3a.2). Validates the trait shape
-// against a pin-oriented hardware family — sim on QEMU, real MMIO
-// on VF2/K1.
-pub mod gpio_driver;
-
 pub mod gpio;
 
 /// The kill switch's debounce: which samples of an input line are a new

@@ -31,10 +31,6 @@ pub mod console_defer;
 // The one owner of console input.
 pub mod console_rx;
 
-// First Driver trait migration (A3a). The legacy `uart` module
-// stays for `kprint!` + early-boot panic path; this provides the
-// unified API for client tasks via `runtime::REGISTRY`.
-pub mod uart_driver;
 
 
 /// The monotonic clock under an ISA-neutral name — see the module docs for

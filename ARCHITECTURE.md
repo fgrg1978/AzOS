@@ -194,9 +194,9 @@ shared crates.
 
 ### Drivers
 
-Drivers are crates under `crates/drivers`; drivers with a runtime presence
-register through the `Driver` trait of `azos_drv_api`, and some crates are pure
-protocol logic with no registration. A driver can run in the kernel or, when its
+Drivers are crates under `crates/drivers`; a driver class is an IDL interface
+(`crates/core/devif`) or a class trait of `azos_drv_api` (block, console,
+network), and some crates are pure protocol logic. A driver can run in the kernel or, when its
 source is written for both, in a ring-3 server that serves the same IDL
 interface on an endpoint. A topology row picks the host (`place`), and a
 `stateless` driver can move between hosts at run time. The component manager

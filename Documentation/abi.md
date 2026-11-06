@@ -676,7 +676,6 @@ ring-3 users share:
 | `ushell` | The `SYS_SPAWN_EX` request block (`SpawnReq`, 184 bytes, `SPAWN_F_*`, the move list), the `StartupBlock` (120 bytes) a spawned child receives in `a1`, and the flag values of `LOG_CONSOLE_WAIT` and `SYS_ALERT` (`KILL_*`). |
 | `io_ring` | The io_ring page as ring 3 sees it: offsets, ring sizes, opcodes and flags; the kernel's `IoRing` asserts its layout against them. |
 | `foreign` | `ForeignFrame`, its alignment and red zone, the user flags mask, and the window the ring-3 runtime is mapped in (`RUNTIME_BASE`..`RUNTIME_LIMIT`, above the vDSO). |
-| `drv_kind` | The `DRV_KIND_*` device-kind numbers the driver ops of the Domain take. |
 | `exit_status` | The exit statuses the kernel assigns when it kills a task (128 + the signal number). |
 | `trace` | The tracer's event classes and event ids, used with the `LOG_TRACE_*` ops. |
 | `families` | The operation selectors of the kernel-served `flight`, `behavior`, `config` and `ota` interfaces. |

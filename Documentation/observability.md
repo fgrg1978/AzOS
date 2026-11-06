@@ -264,7 +264,6 @@ memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
 decisions/{recorded, deny_dropped}
 system/{version, platform}
 fs/tmpfs/{files, used_bytes, max_bytes}                    (the /tmp mount)
-drivers/<slot>/{kind, name, isolation, perms}
 devices/<handle>/{name, identity, state, driver, base, size, irq}
 chaos/{seed, <point>/{rate, checked, fired}}                (CHAOS)
 soc/{up, clocks, resets, ...}                               (SOC_FRAMEWORKS)
@@ -720,8 +719,7 @@ recorder is where durable decision receipts, the per-fault crash record, safety
 violations and the e-stop log land.
 
 **No procfs.** The kernel publishes no text files: what `/proc` and `/sys` once
-carried is in the introspection tree (`system/`, `memory/`, `fs/`, `drivers/`,
-`devices/`, the admin task list, the views), the vDSO clock and
+carried is in the introspection tree (`system/`, `memory/`, `fs/`, `devices/`, the admin task list, the views), the vDSO clock and
 `DOMAIN_UPTIME` (the uptime). A Linux binary's `/proc` is the Linux runtime's
 (`userspace/lib/linux_rt`, ring 3).
 

@@ -242,8 +242,8 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
     // on a clear road produce byte-identical output.
     //
     // This is the only seed. A second one, into the global handle table, stood
-    // here once: ten sensor types READ, motors 0 and 1
-    // READ|WRITE and the GPIO driver registry READ|WRITE. The topology declares
+    // here once: ten sensor types READ and motors 0 and 1
+    // READ|WRITE. The topology declares
     // each of those with the same permissions (`crates/core/topology/src/builder.rs`),
     // and no capability decision reads the handle table any more.
     //

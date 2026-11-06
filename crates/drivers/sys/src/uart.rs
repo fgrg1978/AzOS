@@ -1216,15 +1216,11 @@ static HW_INIT_DONE: AtomicBool = AtomicBool::new(false);
 /// polling a ring buffer the ISR can no longer fill: received bytes sit in
 /// the hardware FIFO and the console stops answering.
 ///
-/// That is what silenced the riscv64 shell: the driver-registry smoke in
-/// `kernel_main` calls `UartDriver::init`, whose own `initialized` flag
-/// starts `false`, so it ran `hw::init()` a second time, after the boot hook
-/// had enabled the RX interrupt (observed: two calls, `IER = 0x1` on entry
-/// to the second, `IER = 0x0` afterwards, `LSR.DR = 1` with the ring empty).
-///
-/// Consequence for `UartDriver::shutdown` followed by `init`: the device is
-/// not reprogrammed. The console is live from the first line the kernel
-/// prints until reset, and nothing here powers it down.
+/// A second caller of `init` after the boot hook enabled the RX interrupt
+/// once silenced the riscv64 shell (observed: `IER = 0x1` on entry to the
+/// second call, `IER = 0x0` afterwards, `LSR.DR = 1` with the ring empty):
+/// the device is programmed once. The console is live from the first line
+/// the kernel prints until reset, and nothing here powers it down.
 pub fn init() {
     if HW_INIT_DONE.swap(true, Ordering::AcqRel) {
         return;
@@ -1832,8 +1828,8 @@ pub fn console_write(bytes: &[u8]) {
 ///   `print` + `print` + `println`): between two syscalls the console is not
 ///   owned.
 /// * The lock-free writer: [`puts`] (the panic path, by design). `sys_putchar`
-///   and `vfs`'s `/dev/stdout` come through here, and `uart_driver`'s write
-///   op and the kernel shell through [`write_locked`]/[`putc_locked`]
+///   and `vfs`'s `/dev/stdout` come through here, and the kernel shell
+///   through [`write_locked`]/[`putc_locked`]
 ///   (wave 11; [`putc`] has no caller left in the kernel).
 pub fn console_write_ring3(bytes: &[u8]) {
     mirror(bytes);

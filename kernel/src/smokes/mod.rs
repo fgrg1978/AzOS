@@ -11,10 +11,6 @@
 // Read by the feature-gated spawns below only: unused in a default image.
 #[allow(unused_imports)]
 use crate::*;
-// The driver registry smoke (every boot).
-mod registry;
-pub(crate) use registry::driver_registry_smoke;
-
 #[cfg(any(feature = "boot-selftests", all(feature = "rvv", feature = "rvv-isolation-probe")))]
 mod selftest;
 #[cfg(any(feature = "boot-selftests", all(feature = "rvv", feature = "rvv-isolation-probe")))]

@@ -98,7 +98,6 @@ kernel, `azos_libsys` and the userspace images all read these definitions.
 | `io_ring` | The io_ring page as ring 3 sees it: offsets, sizes, opcodes, flags |
 | `vdso` | The vDSO page's fixed user-space address, field offsets and layout version, the per-ISA `hwcap` bits and the per-task page offsets |
 | `time` | `ClockId`, the clock offsets (`ClockWords`), and nanosecond and counter-tick conversions |
-| `drv_kind` | The `DRV_KIND_*` device-kind identifiers of the driver registry |
 | `exit_status` | The exit statuses the kernel assigns when it kills a task |
 | `families` | Operation selectors of the flight, behavior, config and OTA families |
 | `foreign` | The two calls that let a ring-3 runtime host another system-call ABI |

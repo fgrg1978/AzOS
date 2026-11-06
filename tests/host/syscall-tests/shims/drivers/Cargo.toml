@@ -20,9 +20,9 @@ azos_abi = { path = "../../../../../crates/core/abi" }
 # The `Spi`, `Can`, `Uart` and `Adc` traits the port stand-ins in `h3_ports.rs`
 # implement (real, pure, host-buildable).
 azos_devif = { path = "../../../../../crates/core/devif" }
-# `runtime::registry` is pulled in verbatim below (real code, 15 lines) and
-# needs a SpinLock. Reused from tests/host/cap-tests, same reasons as everywhere
-# else in this crate.
+# The hardware bus's static instance (`hwbus.rs`, below) needs a SpinLock.
+# Reused from tests/host/cap-tests, same reasons as everywhere else in this
+# crate.
 azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
 # The hardware bus: the logic is real, and so is the static instance
 # (`crates/drivers/bus/src/hwbus.rs`, pulled in `src/lib.rs`).

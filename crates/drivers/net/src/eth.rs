@@ -494,8 +494,7 @@ pub use macb::*;
 
 // ── NetDevice ────────────────────────────────────────────────────────────
 //
-// A thin, zero-sized adapter over the free-function API above — the same
-// pattern `UartDriver` (`azos_drv_sys::uart_driver`) uses over `azos_drv_sys::uart::*`.
+// A thin, zero-sized adapter over the free-function API above.
 // The stub/macb split stays exactly as it is; this just gives the two
 // backends (this one and `virtio::net`) one call shape `net_device::select`
 // can dispatch through.
