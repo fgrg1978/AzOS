@@ -20,6 +20,8 @@ description = "Host-side tests for the W2 topology parser and the P1 topology->c
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 
 [features]
+# Declared for the pulled endpoint.rs's `calls_set_link` canary (syscall-tests runs it).
+calls-any-binder-canary = []
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.
 fork-revoke-canary = []
 # Pulled-in source declares it (cap_store.rs cell source); only the kernel uses it.

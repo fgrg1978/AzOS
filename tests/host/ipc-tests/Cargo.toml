@@ -40,6 +40,8 @@ ipc_test_drivers = { path = "shims/drivers" }
 azos_arch = { path = "shims/arch", package = "ipc_test_arch" }
 
 [features]
+# Declared for the pulled endpoint.rs's `calls_set_link` canary (syscall-tests runs it).
+calls-any-binder-canary = []
 # Pulled-in source declares it (cap_store.rs `cell_source`); the cfg is kernel-only.
 cap-table-cross-type-canary = []
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.

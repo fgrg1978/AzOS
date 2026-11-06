@@ -473,16 +473,24 @@ pub fn endpoint_set_link(
 }
 
 /// Store `link` as the port source the calls queued on endpoint `r` are
-/// reported to (`PORT_BIND`, source 5), for its serving task `tid` only
-/// (`NotOwner` otherwise). The rules of [`endpoint_set_link`];
-/// `Stored { ready }` is whether a call is queued already.
+/// reported to (`PORT_BIND`, source 5), for its serving task `tid` or, during
+/// a live update, its successor (`NotOwner` otherwise). The rules of
+/// [`endpoint_set_link`]; `Stored { ready }` is whether a call is queued
+/// already. The queue is asked under `ENDPOINTS` (the documented order), and
+/// checks the server again.
 pub fn calls_set_link(
     r: u32,
     tid: u32,
     link: crate::port_link::PortLink,
     replace: crate::port_link::PortLink,
 ) -> Result<crate::port_link::LinkSet, EndpointCapError> {
-    glue::set_call_link(LAYOUT.idx(r) as usize, LAYOUT.gen(r), tid, link, replace)
+    let eps = ENDPOINTS.lock_irqsave();
+    let i = live_index(&eps, r)?;
+    // Canary `calls-any-binder-canary` (host): any holder of `READ` binds.
+    if eps[i].owner_tid != tid && !(eps[i].handover && eps[i].successor == tid) && !cfg!(feature = "calls-any-binder-canary") {
+        return Err(EndpointCapError::NotOwner);
+    }
+    glue::set_call_link(i, LAYOUT.gen(r), tid, link, replace)
 }
 
 /// Clear endpoint `r`'s call link if it is still `link`.

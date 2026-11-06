@@ -55,6 +55,9 @@ port-calls-canary = []
 # `ep_queue.rs` `keep_link_for`'s canary: a change of owner always drops the
 # call link (a live update's successor loses it; a same-owner grant unbinds).
 call-link-drop-canary = []
+# `endpoint.rs` `calls_set_link`'s canary: any holder of a READ capability binds
+# an endpoint's calls (syscall-tests' only_the_server_binds_an_endpoints_calls).
+calls-any-binder-canary = []
 # `port.rs`'s doorbell canary: no futex wake reaches a doorbell source, so
 # `a_doorbell_reaches_the_ports_bound_to_its_word` goes red. Host suite only.
 port-doorbell-canary = []

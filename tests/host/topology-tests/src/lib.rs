@@ -74,6 +74,7 @@ mod port {
         Ring(u32),
         Irq(u32),
         Endpoint(u32),
+        Calls(u32),
     }
 
     /// A gone source: nothing is bound in this harness.

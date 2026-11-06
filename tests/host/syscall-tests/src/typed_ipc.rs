@@ -21,7 +21,7 @@ use azos_abi::syscall_nr::{
 };
 use azos_arch_api::PagePerms;
 use azos_ipc::cap::objref::PORT;
-use azos_ipc::cap::targets::{Irq, Port, Shm};
+use azos_ipc::cap::targets::{Endpoint, Irq, Port, Shm};
 use azos_ipc::cap::{Cap, CapTarget};
 use azos_ipc::port::PortEvent;
 use azos_sched::WaitReason;
@@ -1702,4 +1702,24 @@ fn a_doorbell_offset_outside_its_region_is_refused() {
         assert_eq!(sys_port_bind_typed(port, PORT_SRC_DOORBELL, shm, 1, off), errno(Errno::EINVAL), "{why}");
     }
     assert_eq!(sys_port_bind_typed(port, PORT_SRC_DOORBELL, shm, 1, bytes - 4), 0, "the last word");
+}
+
+/// **Only the endpoint's server binds its calls to a port.** A task holding a
+/// `READ` capability on an endpoint another task serves is refused `-EPERM`;
+/// the server binds.
+#[test]
+fn only_the_server_binds_an_endpoints_calls() {
+    let _g = serial();
+    let (a, b) = (fresh_tid(), fresh_tid());
+    let _s = Scene::new(&[a, b]);
+    let pt_a = ring3(a, SLOT_A);
+    let ep = handle(sys_endpoint_create_typed());
+    let r = resource_of::<Endpoint>(a, ep);
+    let port_a = handle(sys_port_create_typed());
+    ring3(b, SLOT_B);
+    let port_b = handle(sys_port_create_typed());
+    let theirs = held::<Endpoint>(b, CapPerms::READ, r);
+    assert_eq!(sys_port_bind_typed(port_b, PORT_SRC_CALLS, theirs, 1, 0), errno(Errno::EPERM), "not its server");
+    become_task(a, pt_a);
+    assert_eq!(sys_port_bind_typed(port_a, PORT_SRC_CALLS, ep, 1, 0), 0, "its server");
 }

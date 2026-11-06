@@ -38,6 +38,9 @@ mmap-prot-canary = []
 # `ipc_handlers.rs` `doorbell_word`'s canary: the doorbell offset's end wraps
 # (`a_doorbell_offset_outside_its_region_is_refused` goes red).
 doorbell-wrap-canary = []
+# `endpoint.rs` `calls_set_link`'s canary: any READ holder binds an endpoint's
+# calls (`only_the_server_binds_an_endpoints_calls` goes red).
+calls-any-binder-canary = ["azos_ipc/calls-any-binder-canary"]
 # Mirror azos_syscall's mmap-hint canaries (the pulled-in handlers.rs): the
 # rows of src/mmap_hint.rs go red under each. Off: the real behaviour.
 mmap-hint-canary = []
