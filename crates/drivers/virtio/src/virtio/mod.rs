@@ -600,6 +600,51 @@ pub unsafe fn virtq_reprogram(dev: &VirtioDev, queue_idx: u32, vq: &mut Virtq) -
     Ok(())
 }
 
+/// The bytes of `vq`'s rings as mapped: one block (legacy) or one page each.
+fn ring_spans(vq: &Virtq, legacy: bool) -> [(*const u8, usize); 3] {
+    let page = azos_arch::PAGE_SIZE;
+    if legacy {
+        let (_, _, total) = legacy_layout(vq.num);
+        [(vq.desc as *const u8, total.div_ceil(page) * page), (core::ptr::null(), 0), (core::ptr::null(), 0)]
+    } else {
+        [(vq.desc as *const u8, page), (vq.avail as *const u8, page), (vq.used as *const u8, page)]
+    }
+}
+
+/// Take `vq`'s rings out of the device's DMA domain (the device reset first:
+/// it no longer touches them). The memory stays the driver's;
+/// [`virtq_remap`] maps it again. What an unbind does before the device can
+/// be handed on.
+///
+/// # Safety
+/// The device is reset and `vq` was set up by [`virtq_init_sized`].
+pub unsafe fn virtq_unmap(vq: &mut Virtq, dma: &Dma, legacy: bool) -> Result<(), ()> {
+    for (i, (_, len)) in ring_spans(vq, legacy).into_iter().enumerate() {
+        if len != 0 {
+            dma.unmap(vq.bus[i], len)?;
+        }
+    }
+    vq.bus = [0; 3];
+    Ok(())
+}
+
+/// Map `vq`'s rings into `dma` again after [`virtq_unmap`]; then
+/// [`virtq_reprogram`] gives them to the device.
+///
+/// # Safety
+/// As [`virtq_unmap`].
+pub unsafe fn virtq_remap(vq: &mut Virtq, dma: &Dma, legacy: bool) -> Result<(), ()> {
+    let mut bus = [0u64; 3];
+    for (i, (ptr, len)) in ring_spans(vq, legacy).into_iter().enumerate() {
+        if len != 0 {
+            bus[i] = dma.map(ptr, len, Direction::Bidirectional)?;
+        }
+    }
+    vq.bus = bus;
+    vq.nc = dma.non_coherent();
+    Ok(())
+}
+
 /// How long a reset device may take to read back status 0 (virtio 1.2
 /// section 2.4.1: the driver waits for it before it touches the queues).
 pub const RESET_WAIT_US: u64 = 100_000;

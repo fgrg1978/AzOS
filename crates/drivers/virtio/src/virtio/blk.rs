@@ -59,7 +59,7 @@ use super::{
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
     VIRTIO_QUEUE_SIZE,
 };
-use super::{mmio_read, mmio_write, probe, reset_confirmed, virtq_init, virtq_reprogram, RESET_WAIT_US,
+use super::{mmio_read, mmio_write, probe, reset_confirmed, virtq_init, virtq_remap, virtq_reprogram, virtq_unmap, RESET_WAIT_US,
             virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
             read_config32, read_config64};
 use azos_dma::Direction;
@@ -349,6 +349,12 @@ static FOUND_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// them to the device again instead of allocating new ones.
 static PARKED: AtomicUsize = AtomicUsize::new(0);
 
+/// The transport of a device an unbind let go of ([`release`]): parked, and
+/// its rings and buffers taken out of its DMA domain, so the device can be
+/// handed on. `claim` answers `Dead`; [`init_at`] at the same base maps them
+/// again.
+static RELEASED: AtomicUsize = AtomicUsize::new(0);
+
 fn mmio_base() -> Option<usize> {
     let _guard = BLK_LOCK.lock();
     if !READY.load(Ordering::Acquire) { return None; }
@@ -543,10 +549,11 @@ pub fn init_at(base: usize) -> Result<(), ()> {
     if READY.load(Ordering::Acquire) {
         return Err(());
     }
-    match PARKED.load(Ordering::Acquire) {
-        0 => {}
-        parked if parked == base => return unpark(),
-        // The rings belong to the parked device's DMA domain.
+    match (PARKED.load(Ordering::Acquire), RELEASED.load(Ordering::Acquire)) {
+        (0, 0) => {}
+        (parked, _) if parked == base => return unpark(),
+        (0, released) if released == base => return remap_and_unpark(),
+        // The kept rings are the other device's.
         _ => return Err(()),
     }
 
@@ -752,6 +759,52 @@ pub fn park(base: usize) -> Result<(), ()> {
     }
     kprintln!("[VIRTIO-BLK] device at {:#x} out of service: reset ({} command(s) past their budget ended)", base, ended);
     Ok(())
+}
+
+/// Let go of the parked device at `base` for good: its request headers,
+/// status bytes, staging buffers and rings are unmapped from its DMA domain
+/// (the memory stays the driver's), so a ring-3 or another driver given the
+/// device cannot reach it. From here `claim` answers `Dead`; [`init_at`] at
+/// the same base maps everything again. `Err` for a device that is not parked
+/// here, or a mapping the domain would not undo (then it stays parked).
+pub fn release(base: usize) -> Result<(), ()> {
+    let _guard = BLK_LOCK.lock();
+    if PARKED.load(Ordering::Acquire) != base || base == 0 {
+        return Err(());
+    }
+    // SAFETY: the device is parked: reset, nothing submits, `BLK_LOCK` held.
+    let dev = unsafe { &mut *(&raw mut BLK_DEV) };
+    let dma = dev.dma;
+    dma.unmap(dev.hdr_bus, SLOTS * HDR_STRIDE as usize)?;
+    dma.unmap(dev.status_bus, SLOTS * STATUS_STRIDE as usize)?;
+    dma.unmap(dev.buf_bus, SLOTS * BUF_STRIDE as usize)?;
+    for q in 0..dev.queues {
+        // SAFETY: the device is reset; the queue is the driver's.
+        unsafe { virtq_unmap(&mut (*(&raw mut VQS))[q], &dma, dev.vdev.version == 1)? };
+    }
+    PARKED.store(0, Ordering::Release);
+    RELEASED.store(base, Ordering::Release);
+    kprintln!("[VIRTIO-BLK] device at {:#x} let go: its memory is out of its DMA domain", base);
+    Ok(())
+}
+
+/// Map the released device's memory again and put it back in service.
+/// Caller holds `BLK_LOCK`.
+fn remap_and_unpark() -> Result<(), ()> {
+    // SAFETY: the device is released: reset, nothing submits, `BLK_LOCK` held.
+    let dev = unsafe { &mut *(&raw mut BLK_DEV) };
+    let dma = dev.dma;
+    dev.hdr_bus = dma.map((&raw const BLK_REQ_HDR) as *const u8, SLOTS * HDR_STRIDE as usize, Direction::ToDevice)?;
+    dev.status_bus = dma.map((&raw const BLK_STATUS) as *const u8, SLOTS * STATUS_STRIDE as usize, Direction::FromDevice)?;
+    dev.buf_bus = dma.map((&raw const BLK_DMA_BUF) as *const u8, SLOTS * BUF_STRIDE as usize, Direction::Bidirectional)?;
+    for q in 0..dev.queues {
+        // SAFETY: as above.
+        unsafe { virtq_remap(&mut (*(&raw mut VQS))[q], &dma, dev.vdev.version == 1)? };
+    }
+    dma.enable()?;
+    PARKED.store(dev.vdev.base as usize, Ordering::Release);
+    RELEASED.store(0, Ordering::Release);
+    unpark()
 }
 
 /// Give the parked device its rings again (a reset device, the same one: its

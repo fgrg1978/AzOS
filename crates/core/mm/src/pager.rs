@@ -347,6 +347,11 @@ static SWAP: azos_sync::kmutex::Mutex<SwapState> = azos_sync::kmutex::Mutex::new
 /// Swap is attached (set once at boot, after `SWAP` holds the state): the
 /// callers ask this and never take the mutex for a swap that is not there.
 static SWAP_ON: AtomicBool = AtomicBool::new(false);
+
+/// Is swap attached (its area is on the block medium)?
+pub fn swap_on() -> bool {
+    SWAP_ON.load(Ordering::Acquire)
+}
 /// Swap steps that have ended, and the faults that wait for one to.
 static SWAP_STEPS: AtomicU32 = AtomicU32::new(0);
 static SWAP_WAIT: azos_sync::waitqueue::WaitQueue = azos_sync::waitqueue::WaitQueue::new();

@@ -199,10 +199,29 @@ fn virtio_blk_probe(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     }
     Ok(())
 }
-/// The device out of service (its commands ended, its reset confirmed),
-/// then its line given back.
+/// Is the virtio disk the block layer's medium with a volume mounted on it or
+/// swap on it? The block layer keeps no count of openers; these are the ones
+/// the kernel has (a ring-3 client of the block interface is not counted).
+fn disk_in_use() -> bool {
+    let medium = azos_drv_block::queue::bound().is_some_and(|q| {
+        core::ptr::addr_eq(q as *const dyn azos_drv_api::block::HwQueue, &azos_drv_virtio::virtio::blk::VIRTIO_BLK as *const _)
+    });
+    medium && (azos_fs::vfs_block_mounts() != 0 || azos_mm::pager::swap_on())
+}
+
+/// `Busy` while the disk is in use ([`disk_in_use`]). Otherwise the device
+/// out of service (what it was given finished, its reset confirmed), its line
+/// given back, and its memory taken out of its DMA domain (`blk::release`): a
+/// later `claim` finds it gone. A release the domain refuses leaves the DMA
+/// booked, so the bus reads the unbind as leaked and binds the driver again.
 fn virtio_blk_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     use azos_drv_virtio::virtio::blk;
+    if disk_in_use() {
+        if !canary!("unbind-ignores-openers") {
+            return Err(ProbeError::Busy);
+        }
+        crate::kprintln!("[CANARY] unbind-ignores-openers: virtio-blk lets go of a disk in use");
+    }
     blk::park(dev.base as usize).map_err(|()| ProbeError::Busy)?;
     if canary!("unbind-leaves-irq") {
         crate::kprintln!("[CANARY] unbind-leaves-irq: virtio-blk's unbind keeps its interrupt line");
@@ -213,6 +232,10 @@ fn virtio_blk_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     if let Some(line) = booked(h).irq {
         super::unwire_line(line);
         hold(h, |held| held.irq = None);
+    }
+    if blk::release(dev.base as usize).is_err() {
+        hold(h, |held| held.window = false);
+        return Ok(());
     }
     book_live(h, false);
     Ok(())
@@ -491,8 +514,10 @@ const DWC2: Ops<Kernel> = bring_up(dwc2_probe);
 // ── In-kernel rows ──────────────────────────────────────────────────────
 
 // Each device bound to a driver whose record has an unbind is unbound and
-// bound again once, through the bus; the disk and the entropy device are
-// read after. The QEMU row attaches a disk and pins the count line, so a run
+// bound again once, through the bus, except the disk while a volume or swap
+// is on it, whose unbind must be refused (it is never parked under its
+// users); the disk and the entropy device are read after. Canary
+// `unbind-ignores-openers`: the disk in use lets go and this test fails. The QEMU row attaches a disk and pins the count line, so a run
 // that bound nothing with an unbind is not a pass. Canary
 // `unbind-leaves-irq`: the disk's unbind keeps its line, the bus keeps the
 // device bound and this test fails.
@@ -500,7 +525,7 @@ const DWC2: Ops<Kernel> = bring_up(dwc2_probe);
 azos_ktest::ktest_late! {
     fn driver_records_unbind_and_rebind_each_bound_driver() {
         use azos_drv_bus::hwbus::{Binding, State};
-        let mut n = 0;
+        let (mut n, mut refused, mut cycled_disk) = (0, false, false);
         for i in 0..hwbus::MAX_DEVICES as u32 {
             let h = Handle(i);
             let bound = hwbus::with(|b| match b.get(h) {
@@ -517,13 +542,22 @@ azos_ktest::ktest_late! {
             if !matches!(rec.ops.unbind, Unbind::Op(_)) {
                 continue;
             }
-            if super::hwbus::unbind_rebind(h, rec.name()).is_err() {
-                return Err("a device did not unbind and bind again through its record");
+            let disk = rec.name() == "virtio-blk";
+            if disk && disk_in_use() {
+                if super::hwbus::unbind_rebind(h, rec.name()) != Err(hwbus::UnbindError::Refused) {
+                    return Err("an unbind of the disk in use was not refused");
+                }
+                refused = true;
+            } else {
+                if super::hwbus::unbind_rebind(h, rec.name()).is_err() {
+                    return Err("a device did not unbind and bind again through its record");
+                }
+                cycled_disk |= disk;
+                n += 1;
             }
             if !hwbus::with(|b| b.get(h).is_some_and(|s| s.state == State::Bound)) {
-                return Err("a rebound device is not bound");
+                return Err("a device is not bound after its unbind and rebind, or its refusal");
             }
-            n += 1;
         }
         let mut sector = [0u8; 512];
         if azos_drv_virtio::virtio::blk::init().is_ok() && azos_drv_block::blkdev::read_quiet(0, 1, &mut sector).is_err() {
@@ -533,7 +567,11 @@ azos_ktest::ktest_late! {
         if matches!(azos_drv_virtio::virtio::rng::read_seed(&mut seed), azos_drv_virtio::virtio::rng::SeedRead::Failed(_)) {
             return Err("the entropy device does not read after its rebind");
         }
-        crate::kprintln!("[KTEST] driver records: {} device(s) unbound and bound again", n);
+        if refused {
+            crate::kprintln!("[KTEST] driver records: the disk in use refused its unbind");
+        }
+        crate::kprintln!("[KTEST] driver records: {} device(s) unbound and bound again{}", n,
+            if cycled_disk { ", the disk among them" } else { "" });
         Ok(())
     }
 }

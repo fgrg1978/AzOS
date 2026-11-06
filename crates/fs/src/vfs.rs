@@ -2851,6 +2851,16 @@ pub fn sync_volumes(
     r
 }
 
+/// Mounted volumes that live on the block medium (FAT32, azvol): an opener
+/// that keeps the disk's driver from letting go of it.
+pub fn vfs_block_mounts() -> usize {
+    let fs = FS.lock();
+    fs.mounts[..fs.mount_count.min(MAX_MOUNTS)]
+        .iter()
+        .filter(|m| m.active && matches!(m.fs_type, FS_TYPE_FAT32 | FS_TYPE_AZVOL))
+        .count()
+}
+
 /// Make every mounted volume durable ([`sync_volumes`] over the mount table):
 /// the kernel's orderly power-off and reboot, and the `Power` interface's
 /// `sync`. Bounded by `expired` for the backends that flush on a task of their

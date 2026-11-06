@@ -94,6 +94,9 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/driver_records.rs: virtio-blk's unbind leaves its interrupt line
     // bound (ktest `driver_records_unbind_and_rebind_each_bound_driver`).
     "unbind-leaves-irq",
+    // boot/driver_records.rs: virtio-blk lets go of a disk with a volume or
+    // swap on it (ktest `driver_records_unbind_and_rebind_each_bound_driver`).
+    "unbind-ignores-openers",
     // boot/driver_records.rs: virtio-blk's suspend does nothing (ktest
     // `driver_records_quiesce_and_bring_back_every_kernel_device`).
     "suspend-leaves-disk-up",

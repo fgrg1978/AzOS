@@ -96,7 +96,7 @@ pub use vfs::{
     vfs_unmount,
     vfs_truncate, vfs_fsync,
     // Every mounted volume made durable: the orderly power-off and `Power::sync`.
-    SyncAll, sync_volumes, vfs_sync_all,
+    SyncAll, sync_volumes, vfs_block_mounts, vfs_sync_all,
     // The check of a mounted volume (the `Volume` interface, the toolbox `fsck`).
     FsCheck, vfs_check,
     // `storage_delete` of the effect gate: asked before a delete takes effect.

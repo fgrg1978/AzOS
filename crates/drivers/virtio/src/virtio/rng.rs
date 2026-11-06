@@ -109,7 +109,8 @@ mod device {
     use super::{arm_read, SeedRead};
     use super::super::{
         Dma, VirtioDev, Virtq, VIRTIO_DEV_RNG,
-        probe, init as virtio_init, reset_confirmed, virtq_init, virtq_reprogram, virtq_submit, virtq_poll_with_len,
+        probe, init as virtio_init, reset_confirmed, virtq_init, virtq_remap, virtq_reprogram, virtq_unmap,
+        virtq_submit, virtq_poll_with_len,
         virtq_free_desc, mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
     };
     use azos_dma::Direction;
@@ -147,6 +148,9 @@ mod device {
         /// mapping of `buf` are `dev`'s, and the next bring-up reprograms
         /// them.
         parked: bool,
+        /// `vq` and `buf` are mapped in `dma`; cleared by an unbind, which
+        /// takes them out of the device's domain before it can be handed on.
+        mapped: bool,
         dead:  bool,
     }
 
@@ -162,6 +166,7 @@ mod device {
         buf_bus: 0,
         ready: false,
         parked: false,
+        mapped: false,
         dead:  false,
     });
 
@@ -201,6 +206,14 @@ mod device {
             return Err(());
         }
         stop(&mut st)?;
+        if st.mapped {
+            let dma = st.dma;
+            dma.unmap(st.buf_bus, BUF_BYTES)?;
+            let legacy = st.dev.version == 1;
+            // SAFETY: the device is reset (`stop`); the queue is the driver's.
+            unsafe { virtq_unmap(&mut st.vq, &dma, legacy)? };
+            st.mapped = false;
+        }
         st.base = 0;
         Ok(())
     }
@@ -238,6 +251,23 @@ mod device {
                 return SeedRead::Failed("device did not accept FEATURES_OK");
             }
             if st.parked {
+                if !st.mapped {
+                    // An unbind took the queue and the buffer out of the domain.
+                    st.dma = Dma::mmio(st.base);
+                    let dma = st.dma;
+                    let legacy = dev.version == 1;
+                    let mapped = dma.map(st.buf.0.as_ptr(), BUF_BYTES, Direction::FromDevice).and_then(|bus| {
+                        st.buf_bus = bus;
+                        // SAFETY: the device is reset; the queue is the driver's.
+                        unsafe { virtq_remap(&mut st.vq, &dma, legacy) }?;
+                        dma.enable()
+                    });
+                    if mapped.is_err() {
+                        st.dead = true;
+                        return SeedRead::Failed("the kept queue could not be mapped again");
+                    }
+                    st.mapped = true;
+                }
                 // SAFETY: the device is reset and the queue is its own.
                 if unsafe { virtq_reprogram(&dev, 0, &mut st.vq) }.is_err() {
                     st.dead = true;
@@ -262,6 +292,7 @@ mod device {
                     st.dead = true;
                     return SeedRead::Failed("request queue 0 could not be set up");
                 }
+                st.mapped = true;
             }
             // The device serves requests only after DRIVER_OK.
             unsafe {
