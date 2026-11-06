@@ -21,10 +21,11 @@
 //! hands it a call directly), the pump thread
 //! calls [`Server::tick`] every few milliseconds while a stream runs and parks
 //! on a futex word when none does. The server's state is behind one lock they
-//! share, a futex word a thread that finds it held sleeps on (never spins: the
-//! pump runs at a real-time level, so a spin would keep every task below it
-//! off that CPU until its budget ran out); the longest it is held is one mix
-//! pass or one kernel control call, never a wait. The periods themselves move
+//! share, a priority-inheritance futex word a thread that finds it held sleeps
+//! on (never spins: the pump runs at a real-time level, so a spin would keep
+//! every task below it off that CPU until its budget ran out; and a plain futex
+//! would let tasks between the calls thread and the pump delay the holder); the
+//! longest it is held is one mix pass or one kernel control call, never a wait. The periods themselves move
 //! in queues in shared memory, never in calls; the calls are the ones that
 //! change what a stream may do.
 //!
@@ -221,7 +222,7 @@ impl Env for Kernel {
 }
 
 struct Shared {
-    /// 0 free, 1 held, 2 held with a thread asleep on it.
+    /// The PI word: free, or its owner's TID.
     lock: AtomicU32,
     state: UnsafeCell<Option<Server<Kernel>>>,
 }
@@ -235,21 +236,16 @@ static SHARED: Shared = Shared { lock: AtomicU32::new(0), state: UnsafeCell::new
 /// pump thread's futex word.
 static CHANGED: AtomicU32 = AtomicU32::new(0);
 
-/// Run `f` on the server. While the other thread has it, sleep on the lock
-/// word until it lets go.
+/// Run `f` on the server. The lock is a PI word: while the best-effort calls
+/// thread holds it, the kernel runs it at least at the mixer's attribute, so a
+/// mixer that finds it held is not kept off the CPU by tasks between the two.
 fn with<R>(f: impl FnOnce(&mut Server<Kernel>) -> R) -> R {
-    if SHARED.lock.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        // Mark it contended and sleep while it stays so; the holder's release
-        // wakes one sleeper.
-        while SHARED.lock.swap(2, Ordering::Acquire) != 0 {
-            let _ = sys::futex_wait(&SHARED.lock, 2, 0);
-        }
-    }
+    let rc = sys::futex_lock_pi_addr(SHARED.lock.as_ptr() as usize, 0);
+    assert!(rc >= 0, "audiod: state lock: {rc}");
     // SAFETY: the lock is held.
     let r = unsafe { (*SHARED.state.get()).as_mut() }.map(f);
-    if SHARED.lock.swap(0, Ordering::Release) == 2 {
-        let _ = sys::futex_wake(&SHARED.lock, 1);
-    }
+    let rc = sys::futex_unlock_pi_addr(SHARED.lock.as_ptr() as usize);
+    assert!(rc >= 0, "audiod: state unlock: {rc}");
     r.expect("audiod: state used before it was set up")
 }
 

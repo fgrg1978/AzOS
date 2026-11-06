@@ -963,3 +963,25 @@ mod row {
         assert_eq!((iface.id, badge), (azos_devif::SOUND_ID, azos_devif::sound::device_badge(0)));
     }
 }
+
+/// The state lock of `main.rs` (a thread of the real-time pump and a best-effort
+/// calls thread share it) must inherit priority: a plain futex lets a task
+/// between the two delay the holder while the pump waits.
+///
+/// **Canary.** `with` back on `futex_wait`/`futex_wake` on the word: red.
+mod state_lock {
+    fn with_body() -> String {
+        let src = include_str!("../../../../userspace/services/audiod/src/main.rs");
+        let at = src.find("\nfn with<R>").expect("main.rs has `with`");
+        let rest = &src[at..];
+        rest[..rest.find("\n}\n").expect("`with` ends")].to_string()
+    }
+
+    #[test]
+    fn the_state_lock_is_a_priority_inheritance_word() {
+        let body = with_body();
+        assert!(body.contains("futex_lock_pi_addr"), "`with` takes the PI word");
+        assert!(body.contains("futex_unlock_pi_addr"), "`with` releases the PI word");
+        assert!(!body.contains("futex_wait") && !body.contains("futex_wake"), "no plain futex on the state lock");
+    }
+}
