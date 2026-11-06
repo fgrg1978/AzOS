@@ -6,8 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
+aarch64-microvm	.text	2776876
+aarch64-microvm	.rodata	336032
+aarch64-microvm	.data	515136
+aarch64-microvm	.bss	947752
+aarch64-microvm	reason	the microvm cells' first lines (PRESET_MICROVM; generic on the same image table: x86_64 -872 KB, aarch64 -765 KB)
 riscv64-qemu	.text	2778126
 riscv64-qemu	.rodata	470776
 riscv64-qemu	.data	743208
 riscv64-qemu	.bss	2277096
 riscv64-qemu	reason	driver_server, proxy and Driver/Registry deleted; compmgr restarts every ring-3 driver (riscv64-qemu .text/.data down)
+x86_64-microvm	.text	2640201
+x86_64-microvm	.rodata	168336
+x86_64-microvm	.data	665424
+x86_64-microvm	.bss	962640
+x86_64-microvm	reason	the microvm cells' first lines (PRESET_MICROVM; generic on the same image table: x86_64 -872 KB, aarch64 -765 KB)

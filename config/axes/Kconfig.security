@@ -17,7 +17,7 @@ choice
     prompt "Security posture (SECURITY)"
     default SECURITY_SEPARATION_STATIC if PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
     default SECURITY_HARDENED if PRESET_IOT_HMI || PRESET_GATEWAY || PRESET_DESKTOP || \
-                                 PRESET_SERVER || PRESET_FIRMWARE || PRESET_WEARABLE
+                                 PRESET_SERVER || PRESET_FIRMWARE || PRESET_WEARABLE || PRESET_MICROVM
     default SECURITY_GENERAL
     help
       How much the image trusts what runs on it, and so who it defends

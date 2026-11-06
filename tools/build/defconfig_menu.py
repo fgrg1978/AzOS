@@ -21,7 +21,8 @@ tools/build/gen_defconfigs.py:
     qemu` boots it; +gui is added when the preset's USE is the desktop;
   * the Linux personality is on in a dev image, as +linux-dev has it: without the
     gate's pins (+linux), so BusyBox and, on x86_64, the ring-3 runtime that
-    hosts it take their Kconfig defaults, which are on.
+    hosts it take their Kconfig defaults, which are on; not for microvm, a
+    guest that runs native services only (NO_LINUX_PRESETS).
 
 --after NAME prints what was chosen and what to run next; it marks the choice
 green when tools/gate/preset_boot_green.tsv names a green boot row for the
@@ -48,6 +49,7 @@ ISAS = ("riscv64", "aarch64", "x86_64")
 HOST_ISA = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64", "riscv64": "riscv64"}
 DEFAULT_PRESET = "generic"
 OVERLAYS_BY_PRESET = {"desktop": ("gui",)}  # the preset whose USE gets the compositor's inputs
+NO_LINUX_PRESETS = ("microvm",)  # a guest that runs native services only
 STATUSES = ("green", "experimental")
 
 
@@ -140,7 +142,7 @@ def hwclass_of(preset):
 
 
 def defconfig_name(preset, isa, hwclass):
-    overlays = ("qemu",) + OVERLAYS_BY_PRESET.get(preset, ()) + ("linux-dev",)
+    overlays = ("qemu",) + OVERLAYS_BY_PRESET.get(preset, ()) + (() if preset in NO_LINUX_PRESETS else ("linux-dev",))
     return f"{preset}-{hwclass}-{isa}-dev+" + "+".join(overlays)
 
 
@@ -269,13 +271,16 @@ def self_test():
                 os.unlink(t.name)
             for w in k.warnings[warned:]:
                 fails.append(f"{name}: Kconfig drops an assignment: {w.strip()}")
+            linux = p not in NO_LINUX_PRESETS
             for sym in (f"PRESET_{p.upper()}", f"HWCLASS_{hw.upper()}", f"ARCH_{isa.upper()}",
-                        "BUILD_TYPE_DEV", "LINUX_ABI", "USERSPACE_GPL"):
+                        "BUILD_TYPE_DEV") + (("LINUX_ABI", "USERSPACE_GPL") if linux else ()):
                 if k.syms[sym].str_value != "y":
                     fails.append(f"{name}: expands without {sym}")
+            if not linux and k.syms["LINUX_ABI"].str_value != "n":
+                fails.append(f"{name}: a preset without the Linux personality expands with LINUX_ABI")
             unhosted = isa == "x86_64" and hw == "embedded"   # no ring-3 runtime there, so no BusyBox
             for sym in ("BUSYBOX",) + (("LINUX_RUNTIME",) if isa == "x86_64" else ()):
-                want = "n" if unhosted else "y"
+                want = "n" if unhosted or not linux else "y"
                 if k.syms[sym].str_value != want:
                     fails.append(f"{name}: {sym} is {k.syms[sym].str_value}, want {want}")
             if (k.syms["INPUTD"].str_value == "y") != (p in OVERLAYS_BY_PRESET):

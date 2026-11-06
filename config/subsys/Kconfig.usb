@@ -65,6 +65,7 @@ config USB_MSC_TIMEOUT_MS
 config USB_HOST
     # cargo-feature: usb-host
     bool "USB host stack (core, hubs, class-driver interface)"
+    default n if PRESET_MICROVM
     default y if !HWCLASS_EMBEDDED
     default n
     depends on !HWCLASS_EMBEDDED

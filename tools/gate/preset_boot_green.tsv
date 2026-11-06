@@ -33,3 +33,6 @@ server	x86_64	green	preset boot: server x86_64: make defconfig, build and qemu r
 wearable	riscv64	green	preset boot: wearable riscv64: make defconfig, build and qemu reached the recovery console (no console program) and answered, console clean (u3-presets 2026-10-30)
 wearable	aarch64	green	preset boot: wearable aarch64: make defconfig, build and qemu reached the recovery console (no console program) and answered, console clean (u3-presets 2026-10-30)
 wearable	x86_64	green	preset boot: wearable x86_64: make defconfig, build and qemu reached the recovery console (no console program) and answered, console clean (u3-presets 2026-10-30)
+microvm	riscv64	experimental	not run yet: the row is written (preset boot: microvm riscv64), the cell compiles (make check CHECK_PRESET=microvm)
+microvm	aarch64	experimental	not run yet: the row is written (preset boot: microvm aarch64), the cell compiles (make check CHECK_PRESET=microvm)
+microvm	x86_64	experimental	not run yet: the row is written (preset boot: microvm x86_64), the cell compiles (make check CHECK_PRESET=microvm)

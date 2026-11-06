@@ -78,6 +78,8 @@ Test & gate
   unsafe-budget          Unsafe counts, #![forbid(unsafe_code)] and the kernel's unsafe share against tools/lint/unsafe_budget.tsv.
   size-check             Build the riscv64 QEMU defconfig kernel; its section sizes against tools/lint/size_budget.tsv.
   size-update REASON=..  Rebuild it and move tools/lint/size_budget.tsv, recording why.
+  size-check-microvm     Build the x86_64 and aarch64 microvm kernels; their sizes against the same file.
+  size-update-microvm REASON=..  Rebuild them and move their lines, recording why.
   advisories             RustSec advisories for every registry crate a lockfile resolves, against third_party/advisory-db (offline).
   advisories-update      Network, by hand: fetch the RustSec database and rewrite third_party/advisory-db with its date.
   check1                 Change check: check0, then smoke boots and the QEMU scenarios the diff maps to.

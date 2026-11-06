@@ -65,6 +65,7 @@ config ENTROPY_CPU_RETRIES
 config TPM
     # cargo-feature: tpm
     bool "TPM 2.0 (entropy, measured boot, OTA rollback floor)"
+    default n if PRESET_MICROVM
     default y if !HWCLASS_EMBEDDED
     default n
     help

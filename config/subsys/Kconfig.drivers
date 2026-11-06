@@ -257,6 +257,7 @@ config DRV_E1000E
 config WDT_SBSA
     # cargo-feature: wdt-sbsa
     bool "Arm SBSA Generic Watchdog"
+    default n if PRESET_MICROVM
     default y if ARCH_AARCH64
     default n
     depends on ARCH_AARCH64
@@ -293,6 +294,7 @@ config WDT_SP5100_TCO
 config WDT_BCM2835_PM
     # cargo-feature: wdt-bcm2835-pm
     bool "Raspberry Pi PM block: hardware watchdog, reboot and power-off (BCM2835/6/7)"
+    default n if PRESET_MICROVM
     default y if ARCH_AARCH64 && !HWCLASS_EMBEDDED
     default n
     depends on ARCH_AARCH64
@@ -320,6 +322,7 @@ config WDT_BCM2835_PM
 config RPI_FIRMWARE
     # cargo-feature: rpi-firmware
     bool "Raspberry Pi VideoCore firmware mailbox (power domains, and thermal)"
+    default n if PRESET_MICROVM
     default y if ARCH_AARCH64 && !HWCLASS_EMBEDDED
     depends on ARCH_AARCH64
     help
@@ -380,6 +383,7 @@ config DRV_IGC
 config DRV_VIRTIO_INPUT
     # cargo-feature: virtio-input
     bool "virtio-input keyboards and mice (QEMU)"
+    default n if PRESET_MICROVM
     default n if HWCLASS_EMBEDDED
     default y
     help
@@ -407,6 +411,7 @@ config DRV_VIRTIO_INPUT
 config DRV_VIRTIO_SND
     # cargo-feature: virtio-snd
     bool "virtio-sound audio device (QEMU)"
+    default n if PRESET_MICROVM
     default n if HWCLASS_EMBEDDED
     default y
     help
@@ -438,6 +443,7 @@ config DRV_PS2
     # cargo-feature: ps2
     bool "PS/2 keyboard and mouse (i8042 controller, PC)"
     depends on ARCH_X86_64
+    default n if PRESET_MICROVM
     default n if HWCLASS_EMBEDDED
     default n if USE_ROBOT || USE_INDUSTRIAL
     default y
@@ -487,6 +493,7 @@ config PS2_WAIT_SPINS
 config DRV_RTC
     # cargo-feature: rtc
     bool "Real-time clock (seeds the wall clock at boot, written back by a reference)"
+    default n if PRESET_MICROVM
     default n if HWCLASS_EMBEDDED
     default y
     help

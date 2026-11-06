@@ -15,9 +15,12 @@
 # line plus its board lines (ISA, board, RAM, the HWCLASS the board is).
 #
 # A preset works only through `default ... if PRESET_*` on the axes and
-# through the axes' own `default`/`imply` lines on the options they own; it
-# never `select`s. Every axis can be changed by hand after the preset, and a
-# value set by hand wins. A hard incompatibility is a `depends on`.
+# through the axes' own `default`/`imply` lines on the options they own, or,
+# for what no axis carries (the QoS timer tolerance, the hardware bus policy,
+# a microvm's physical-hardware drivers), a `default ... if PRESET_*` on the
+# option itself; it never `select`s. Every axis can be changed by hand after
+# the preset, and a value set by hand wins. A hard incompatibility is a
+# `depends on`.
 #
 # USE is what was called the application domain: it has no menu of its own and is
 # set by the PRESET alone (a defconfig names the preset, never a USE_* symbol).
@@ -102,5 +105,19 @@ choice
         help
           USE server on HWCLASS server (the Fleet cap tables), RT none,
           hardened; VIRT hosted on x86_64 and split on aarch64.
+
+    config PRESET_MICROVM
+        bool "Computers: MicroVM (a guest of a hypervisor, virtio devices only)"
+        help
+          A virtual machine's kernel: the virtio devices its host gives it
+          (block, network, console, entropy) and nothing else. Hardened, RT
+          soft, VIRT none, no extension. Its host loads and vouches for the
+          image, so the A/B boot slots are off (BOOT_SLOTS), and with them
+          the boot-time package apply and the slot image checks; no board
+          I/O (BOARD_IO), no Linux personality. The drivers of physical
+          hardware a QEMU or board image starts by default (USB, TPM, the
+          RTC, PS/2, virtio-input and virtio-sound, the Raspberry Pi
+          firmware and watchdogs, the SBSA watchdog) start off; each can be
+          turned on by hand. There is no USE_* symbol: nothing reads one.
 
 endchoice

@@ -12,11 +12,15 @@
 # target has to be installed. RUSTFLAGS is set only when the ISA has baseline
 # flags: an empty one would override riscv64's build.rustflags.
 # CHECK_PRESET picks the gate cell: generic (the default, the image the gate
-# is about) or robot (the robot worked example, which links crates/domains/robot/).
+# is about), robot (the robot worked example, which links crates/domains/robot/)
+# or microvm (a virtual machine's kernel: no Linux personality and no GUI, so
+# its cell has the QEMU overlay alone).
 CHECK_PRESET ?= generic
-CHECK_DEFCONFIG_riscv64 := config/defconfigs/$(CHECK_PRESET)-sbc-riscv64-dev+qemu+linux+gui.config
-CHECK_DEFCONFIG_aarch64 := config/defconfigs/$(CHECK_PRESET)-sbc-aarch64-dev+qemu+linux+gui.config
-CHECK_DEFCONFIG_x86_64  := config/defconfigs/$(CHECK_PRESET)-sbc-x86_64-dev+qemu+linux+gui.config
+CHECK_OVERLAYS_microvm := qemu
+CHECK_OVERLAYS = $(or $(CHECK_OVERLAYS_$(CHECK_PRESET)),qemu+linux+gui)
+CHECK_DEFCONFIG_riscv64 = config/defconfigs/$(CHECK_PRESET)-sbc-riscv64-dev+$(CHECK_OVERLAYS).config
+CHECK_DEFCONFIG_aarch64 = config/defconfigs/$(CHECK_PRESET)-sbc-aarch64-dev+$(CHECK_OVERLAYS).config
+CHECK_DEFCONFIG_x86_64  = config/defconfigs/$(CHECK_PRESET)-sbc-x86_64-dev+$(CHECK_OVERLAYS).config
 CHECK_KCONFIG := $(OUT_BUILD)/check-$(ARCH)-$(CHECK_PRESET).config
 # The image table the kernel `include!`s, made when missing (order-only: a
 # type-check never waits for a userspace rebuild; `make` refreshes the table).
@@ -161,6 +165,42 @@ size-update: size-kernel
 	@test -n "$(REASON)" || { echo 'make size-update REASON="why the image moved"'; exit 1; }
 	@$(PYTHON) tools/lint/size_budget.py --report $(SIZE_LABEL)=$(SIZE_ELF)
 	@$(PYTHON) tools/lint/size_budget.py --update --reason "$(REASON)" $(SIZE_LABEL)=$(SIZE_ELF)
+
+# The microvm cells' size budget (labels x86_64-microvm and aarch64-microvm in
+# tools/lint/size_budget.tsv): each ISA's kernel as `make x86_64` / `make
+# aarch64` builds it from config/defconfigs/microvm-sbc-<isa>-dev+qemu.config,
+# with the image table of that configuration, into target dirs of their own.
+# `make size-update-microvm REASON=".."` moves both lines.
+SIZE_MV_DIR := $(AZOS_OUT)/target/size-microvm
+SIZE_MV_ELF_x86_64  := $(SIZE_MV_DIR)/x86_64/$(X86_64_TARGET)/release/kernel
+SIZE_MV_ELF_aarch64 := $(SIZE_MV_DIR)/aarch64/$(AARCH64_TARGET)/release/kernel
+SIZE_MV_LABELS := x86_64-microvm=$(SIZE_MV_ELF_x86_64) aarch64-microvm=$(SIZE_MV_ELF_aarch64)
+.PHONY: size-kernel-microvm size-check-microvm size-update-microvm
+size-kernel-microvm:
+	@mkdir -p $(OUT_BUILD)
+	@for isa in x86_64 aarch64; do \
+	    k="$(OUT_BUILD)/size-$$isa-microvm.config"; \
+	    cp "config/defconfigs/microvm-sbc-$$isa-dev+qemu.config" "$$k.new"; \
+	    KCONFIG_CONFIG="$$k.new" $(PYTHON) -m olddefconfig >/dev/null; \
+	    if cmp -s "$$k.new" "$$k"; then rm -f "$$k.new"; else mv "$$k.new" "$$k"; fi; \
+	done
+	KCONFIG_CONFIG="$(OUT_BUILD)/size-x86_64-microvm.config" $(MAKE) --no-print-directory x86_64 \
+	    X86_64_DEFCONFIG=config/defconfigs/microvm-sbc-x86_64-dev+qemu.config \
+	    X86_64_KCONFIG=$(OUT_BUILD)/size-x86_64-microvm.config X86_64_TARGET_DIR=$(SIZE_MV_DIR)/x86_64 \
+	    X86_64_IMG=$(OUT_BUILD)/size-kernel-x86_64-microvm.elf
+	KCONFIG_CONFIG="$(OUT_BUILD)/size-aarch64-microvm.config" $(MAKE) --no-print-directory aarch64 \
+	    AARCH64_DEFCONFIG=config/defconfigs/microvm-sbc-aarch64-dev+qemu.config \
+	    AARCH64_KCONFIG=$(OUT_BUILD)/size-aarch64-microvm.config AARCH64_USER_KCONFIG=$(OUT_BUILD)/size-aarch64-microvm.config \
+	    AARCH64_KTARGET_ENV='CARGO_TARGET_DIR=$(SIZE_MV_DIR)/aarch64' AARCH64_ELF=$(SIZE_MV_ELF_aarch64) \
+	    AARCH64_IMG=$(OUT_BUILD)/size-kernel-aarch64-microvm.img
+
+size-check-microvm: size-kernel-microvm
+	@$(PYTHON) tools/lint/size_budget.py $(SIZE_MV_LABELS)
+
+size-update-microvm: size-kernel-microvm
+	@test -n "$(REASON)" || { echo 'make size-update-microvm REASON="why the image moved"'; exit 1; }
+	@$(PYTHON) tools/lint/size_budget.py --report $(SIZE_MV_LABELS)
+	@$(PYTHON) tools/lint/size_budget.py --update --reason "$(REASON)" $(SIZE_MV_LABELS)
 
 # RustSec advisories against the snapshot in third_party/advisory-db (tools/lint/advisories.sh).
 .PHONY: advisories advisories-update

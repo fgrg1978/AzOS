@@ -1017,7 +1017,8 @@ def test_profile_defconfigs_generic_robot_variants_robot() -> None:
     robot twin of each (`robot-` in place of `generic-`, assembled from the
     same fragments by tools/build/gen_defconfigs.py) differs from it in the preset
     line only. Every committed defconfig is Generic exactly when its name
-    says so: a robot- cell links the robot crates, a generic- cell does not."""
+    says so: a robot- cell links the robot crates, a generic- (or microvm-)
+    cell does not."""
     import shutil
     import tempfile
 
@@ -1034,7 +1035,7 @@ def test_profile_defconfigs_generic_robot_variants_robot() -> None:
             if d.stem in OTHER_KERNEL_DEFCONFIGS:
                 continue
             feats = _bridge_args(cfg)
-            if d.stem.startswith("generic-"):
+            if d.stem.startswith(("generic-", "microvm-")):
                 assert "use-robot" not in feats, f"{d.name}: {feats}"
             else:
                 assert d.stem.startswith("robot-"), d.name

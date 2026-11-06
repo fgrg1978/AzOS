@@ -3010,6 +3010,41 @@ else
 fi
 fi; ci_row_end
 
+# The microvm cell (config/defconfigs/microvm-sbc-<isa>-dev+qemu.config): a
+# virtual machine's kernel, with no A/B slots, no Linux personality, no board
+# I/O and no physical-hardware driver, type-checks on every ISA with zero
+# warnings (what it leaves out: tools/lint/profile_cut_lint.py --cut microvm).
+microvm_check_row() { # microvm_check_row <isa>
+    local out
+    printf "  %-26s" "microvm: make check ($1)..."
+    if out="$(make ARCH="$1" CHECK_PRESET=microvm check 2>&1)"; then
+        if printf '%s\n' "$out" | grep -E "^warning:" \
+             | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|prod pubkey|future version of Rust"; then
+            bad; printf '%s\n' "$out" | grep -E "^warning:" -A4 | sed -n 1,20p | sed 's/^/      /'
+        else
+            ok
+        fi
+    else
+        bad; printf '%s\n' "$out" | grep -A6 '^error' | sed -n 1,40p | sed 's/^/      /'
+    fi
+}
+for mv_isa in riscv64 aarch64 x86_64; do
+    ci_row "microvm: make check ($mv_isa)" microvm_check_row "$mv_isa"
+done
+# Its size budget (`make size-check-microvm`: the x86_64 and aarch64 kernels
+# against their lines in tools/lint/size_budget.tsv; a commit that moves them
+# runs `make size-update-microvm REASON=..`).
+size_microvm_row() {
+    local out
+    printf "  %-26s" "size budget: microvm..."
+    if out="$(make size-check-microvm 2>&1)"; then
+        ok
+    else
+        bad; printf '%s\n' "$out" | grep -E "FAIL|stale|^error|\*\*\*" | sed -n 1,10p | sed 's/^/      /'
+    fi
+}
+ci_row "size budget: microvm" size_microvm_row
+
 # No forced recompile here any more. This line used to `touch` every .rs file
 # under the kernel source roots because "rustc only emits warnings when it
 # compiles": four unused-constant warnings once sat unnoticed on a warm cache.
@@ -27922,7 +27957,7 @@ par -s -h "supply chain: reproducible build" repro_row
 
 # ── Preset boot rows ────────────────────────────────────────────────────────
 #
-# One row per cell of `make defconfig` (10 presets x 3 ISAs): the commands the
+# One row per cell of `make defconfig` (11 presets x 3 ISAs): the commands the
 # owner types, `make defconfig ARCH=<isa> PRESET=<preset>`, `make build`,
 # `make qemu`, and the console they end in. The cell passes when the
 # console program its configuration selects owns the console (the native shell
@@ -28009,7 +28044,7 @@ preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64> [acceler
         echo "      log kept: $log"
     fi
 }
-for pb_preset in generic robot server gateway iot_hmi desktop firmware wearable industrial automotive; do
+for pb_preset in generic robot server gateway iot_hmi desktop firmware wearable industrial automotive microvm; do
     for pb_isa in riscv64 aarch64 x86_64; do
         par -s "preset boot: $pb_preset $pb_isa" preset_boot_row "$pb_preset" "$pb_isa"
     done

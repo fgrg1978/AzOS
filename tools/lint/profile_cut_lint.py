@@ -3,16 +3,18 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """A profile cut leaves its crates out of the kernel.
 
-Each cut is a Kconfig symbol and the crates it alone brings in. For each ISA
-the cut's defconfig is taken with the symbol turned off, and the kernel's
-dependency set for that cell (`make check-deps`, a `cargo tree`, nothing is
-built) must name none of those crates. `--self-test` runs the cut's on
-defconfig as is, where every crate must appear: the lint can see what it
-forbids.
+A symbol cut is a Kconfig symbol and the crates it alone brings in: for each
+ISA the cut's defconfig is taken with the symbol turned off. A preset cut is a
+preset's own defconfig, as is. Either way the kernel's dependency set for that
+cell (`make check-deps`, a `cargo tree`, nothing is built) must name none of
+those crates. `--self-test` runs the cut's on defconfig as is, where every
+crate must appear: the lint can see what it forbids.
 
   linux     LINUX_ABI (LINUX_RUNTIME depends on it): azos_linux_abi
   board-io  BOARD_IO: the board's sensors, actuators, kill switch and the camera frame ring
   robot     USE_ROBOT: the robot extension's crates (core and kernel name none)
+  microvm   PRESET_MICROVM: no Linux personality, no physical-hardware driver
+            (TPM, USB and its storage, the RTC), no board I/O, no extension
 """
 
 import argparse
@@ -35,10 +37,20 @@ CUTS = {
     "robot": ("robot", "USE_ROBOT", ("CONFIG_USE_ROBOT", "CONFIG_PRESET_"),
               ("azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers")),
 }
+# name: (the presets whose defconfigs have the crates between them, preset of the cut, crates)
+PRESET_CUTS = {
+    "microvm": (("robot", "generic"), "microvm",
+                ("azos_linux_abi", "azos_tpm", "azos_usb", "azos_usb_hid", "azos_scsi", "azos_rtc",
+                 "azos_drv_sensor", "azos_cam_ring", "azos_drv_actuator", "azos_kill_switch",
+                 "azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers")),
+}
+# The overlays of a preset's gate cell (mk/lints.mk CHECK_OVERLAYS).
+OVERLAYS = {"microvm": "qemu"}
 
 
 def defconfig(preset, arch):
-    return os.path.join(ROOT, "config", "defconfigs", f"{preset}-sbc-{arch}-dev+qemu+linux+gui.config")
+    return os.path.join(ROOT, "config", "defconfigs",
+                        f"{preset}-sbc-{arch}-dev+{OVERLAYS.get(preset, 'qemu+linux+gui')}.config")
 
 
 def without(path, drop, symbol, out):
@@ -63,25 +75,36 @@ def deps(arch, cfg, work):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--self-test", action="store_true")
-    ap.add_argument("--cut", choices=sorted(CUTS), action="append")
+    ap.add_argument("--cut", choices=sorted({**CUTS, **PRESET_CUTS}), action="append")
     args = ap.parse_args()
     out_root = os.environ.get("AZOS_OUT") or tempfile.gettempdir()
     work = tempfile.mkdtemp(prefix="cut-", dir=out_root)
     bad = []
-    for name in args.cut or sorted(CUTS):
-        preset, symbol, drop, crates = CUTS[name]
+    for name in args.cut or sorted({**CUTS, **PRESET_CUTS}):
+        if name in PRESET_CUTS:
+            preset, cut, crates = PRESET_CUTS[name]
+            what = f"the {cut} preset's kernel"
+        else:
+            preset, symbol, drop, crates = CUTS[name]
+            what = f"a kernel without {symbol}"
+        presets = preset if isinstance(preset, tuple) else (preset,)
         for arch in ARCHES:
-            on = defconfig(preset, arch)
             if args.self_test:
-                missing = [c for c in crates if c not in deps(arch, on, work)]
+                linked = set().union(*(deps(arch, defconfig(p, arch), work) for p in presets))
+                missing = [c for c in crates if c not in linked]
                 if missing:
-                    bad.append(f"{name} {arch}: {preset}'s defconfig does not link {', '.join(missing)}: the lint cannot see it")
+                    bad.append(f"{name} {arch}: the {'/'.join(presets)} defconfigs do not link "
+                               f"{', '.join(missing)}: the lint cannot see it")
                 continue
-            cfg = os.path.join(work, f"{name}-{arch}.defconfig")
-            without(on, drop, symbol, cfg)
+            on = defconfig(presets[0], arch)
+            if name in PRESET_CUTS:
+                cfg = defconfig(cut, arch)
+            else:
+                cfg = os.path.join(work, f"{name}-{arch}.defconfig")
+                without(on, drop, symbol, cfg)
             found = [c for c in crates if c in deps(arch, cfg, work)]
             if found:
-                bad.append(f"{name} {arch}: a kernel without {symbol} still depends on {', '.join(found)}")
+                bad.append(f"{what} on {arch} still depends on {', '.join(found)}")
     for b in bad:
         print(b)
     return 1 if bad else 0

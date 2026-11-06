@@ -10,6 +10,8 @@
 config BOOT_SLOTS
     # cargo-feature: boot-slots
     bool "A/B boot slots: slot validation, boot counter, recovery mode, boot confirmation" if !BUILD_TYPE_CERTIFIABLE
+    default y if BUILD_TYPE_CERTIFIABLE
+    default n if PRESET_MICROVM
     default y
     help
       The kernel's part of booting from A/B slots on the FAT volume
@@ -24,11 +26,11 @@ config BOOT_SLOTS
       receive task.
 
       Off (a machine whose loader owns the image: a virtual machine booted
-      by its host): none of that is built, the boot writes nothing to the
-      volume, and BOOTMETA's floor is never raised. The floor is still
-      read; with no backend that holds it (OTA_FLOOR_TPM_NV) the build has
-      no floor it may trust, so what judges an epoch by it needs the slots
-      or the backend (LIVEPATCH depends on one of them, PKG_BOOT_APPLY on
+      by its host, PRESET_MICROVM's default): none of that is built, the
+      boot writes nothing to the volume, and BOOTMETA's floor is never
+      raised. The floor is still read; with no backend that holds it
+      (OTA_FLOOR_TPM_NV) the build has no floor it may trust, so what
+      judges an epoch by it needs the slots or the backend (LIVEPATCH depends on one of them, PKG_BOOT_APPLY on
       the slots, whose boot counter its trial also reads) and a signed
       image check has nothing to check (OTA_SIG_MANDATORY and
       SECURE_BOOT_ENFORCED depend on it). A BUILD_TYPE_CERTIFIABLE build

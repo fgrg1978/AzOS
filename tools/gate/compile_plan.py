@@ -21,7 +21,10 @@ toolchain pin). Then:
     the changed paths decides.
   * preset: `generic` always; `robot` too when a changed path is under
     crates/domains/robot/ or names `robot` / mentions `use-robot` or `use_robot`
-    (the cell that links the robot crates and the kernel's use-robot code).
+    (the cell that links the robot crates and the kernel's use-robot code);
+    `microvm` too when a path is under config/, names `microvm`, or mentions a
+    feature the microvm cell turns off that its default cells keep (the A/B
+    slots, the package apply, the TPM, the RTC, USB, the Linux personality).
 A diff outside the kernel's closure (userspace/, tests/, tools/, docs) plans no cell.
 """
 import os
@@ -39,6 +42,7 @@ ISAS = {"riscv64": "riscv64", "aarch64": "aarch64", "x86_64": "x86_64"}
 BUILD_WIDE = ["Cargo.toml", "Cargo.lock", "Kconfig", "config/**", ".cargo/**", "rust-toolchain.toml",
               "kernel/Cargo.toml", "kernel/build.rs", "kernel/linker-common.ld", "tools/build/kconfig_to_cargo.py"]
 ROBOT_RE = re.compile(r"use[-_]robot|domains/robot")
+MICROVM_RE = re.compile(r'microvm|boot[-_]slots|pkg[-_]boot[-_]apply|feature = "(tpm|rtc|usb-host|linux-abi)"')
 
 
 def isa_of(path):
@@ -60,40 +64,54 @@ def in_kernel(path, closure):
     return path in {x[5:] for x in closure if x.startswith("file:")} or rows_for_diff.match(path, BUILD_WIDE)
 
 
-def wants_robot(path, text=None):
-    if ROBOT_RE.search(path) or "robot" in os.path.basename(path):
-        return True
+def _text(path, text):
     if text is None:
         try:
             text = open(os.path.join(ROOT, path), errors="replace").read()
         except OSError:
-            return False
-    return bool(ROBOT_RE.search(text))
+            return ""
+    return text
+
+
+def wants_robot(path, text=None):
+    if ROBOT_RE.search(path) or "robot" in os.path.basename(path):
+        return True
+    return bool(ROBOT_RE.search(_text(path, text)))
+
+
+def wants_microvm(path, text=None):
+    if path.startswith("config/") or MICROVM_RE.search(path):
+        return True
+    return bool(MICROVM_RE.search(_text(path, text)))
 
 
 def plan(paths, closure=None, graph=None, read=None):
     """(cells [(isa, preset)], suites, why) for the changed paths."""
     closure = gate_rows.crate_closure("kernel") if closure is None else closure
-    isas, robot, why = set(), False, []
+    isas, robot, microvm, why = set(), False, False, []
     for p in paths:
         if not in_kernel(p, closure):
             continue
         i = None if wide(p) else isa_of(p)
         isas |= {i} if i else set(ISAS)
         r = wants_robot(p, read(p) if read else None)
+        m = wants_microvm(p, read(p) if read else None)
         robot |= r
-        why.append("%s: %s%s" % (p, i or "all ISAs", ", robot" if r else ""))
+        microvm |= m
+        why.append("%s: %s%s%s" % (p, i or "all ISAs", ", robot" if r else "", ", microvm" if m else ""))
     order = ["riscv64", "aarch64", "x86_64"]
     cells = [(i, "generic") for i in order if i in isas]
     if robot:
         cells += [(i, "robot") for i in order if i in isas]
+    if microvm:
+        cells += [(i, "microvm") for i in order if i in isas]
     return cells, rows_for_diff.host_suites(paths, graph), why
 
 
 def self_test():
     bad = []
     clo = {"kernel", "arch/riscv", "arch/aarch64", "crates/core/ipc", "crates/domains/robot/nav", "file:crates/x/inc.rs"}
-    rd = lambda p: "use-robot" if p == "kernel/src/robotish.rs" else ""
+    rd = lambda p: {"kernel/src/robotish.rs": "use-robot", "crates/core/ipc/src/slots.rs": '#[cfg(feature = "boot-slots")]'}.get(p, "")
     g = {}  # no suites in the toy graph
 
     def t(paths, want, what):
@@ -107,7 +125,10 @@ def self_test():
     t(["docs/x.md", "userspace/services/a/src/main.rs", "tests/host/x/src/lib.rs"], [], "outside the kernel plans no cell")
     t(["crates/x/inc.rs"], [(i, "generic") for i in ISAS], "included file counts as the kernel's")
     t(["Cargo.lock"], [(i, "generic") for i in ISAS], "build-wide: three ISAs")
-    t(["config/defconfigs/generic-sbc-x86_64-dev+qemu+linux+gui.config"], [("x86_64", "generic")], "a defconfig names its ISA")
+    t(["config/subsys/Kconfig.x"], [(i, p) for p in ("generic", "microvm") for i in ISAS], "Kconfig: the microvm cell too")
+    t(["config/defconfigs/generic-sbc-x86_64-dev+qemu+linux+gui.config"], [("x86_64", "generic"), ("x86_64", "microvm")],
+      "a defconfig names its ISA")
+    t(["crates/core/ipc/src/slots.rs"], [(i, p) for p in ("generic", "microvm") for i in ISAS], "a microvm-off feature: both presets")
     t(["arch/riscv/a.rs", "arch/aarch64/b.rs"], [("riscv64", "generic"), ("aarch64", "generic")], "union of two ISAs")
     for b in bad:
         print("compile_plan self-test: FAIL " + b)

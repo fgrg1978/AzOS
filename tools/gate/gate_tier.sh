@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # The gate's short tiers (wave 15). `make ci` is the full gate (N2).
 #
-#   tools/gate/gate_tier.sh n0   `make check` for riscv64, aarch64 and x86_64 (generic and robot), the
+#   tools/gate/gate_tier.sh n0   `make check` for riscv64, aarch64 and x86_64 (generic, robot, microvm), the
 #                           output-dir lint (tools/lint/out_dir_lint.py), the gate
 #                           rows manifest (tools/gate/gate_rows.py --check), the
 #                           unsafe and size budgets (`make size-check`), plus
@@ -52,10 +52,10 @@ if [ -z "${KCONFIG_CONFIG:-}" ] && [ ! -f .config ]; then
     cp config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config "$KCONFIG_CONFIG" && python3 -m olddefconfig >/dev/null 2>&1 || exit 2
 fi
 suites=""
-cells="riscv64 aarch64 x86_64 riscv64:robot aarch64:robot x86_64:robot"
+cells="riscv64 aarch64 x86_64 riscv64:robot aarch64:robot x86_64:robot riscv64:microvm aarch64:microvm x86_64:microvm"
 if [ "$tier" = compile ]; then
     plan="$(python3 tools/gate/compile_plan.py --base "$base")" || exit 2
-    cells="$(printf '%s\n' "$plan" | awk '$1 == "cell" { print ($3 == "robot") ? $2 ":robot" : $2 }' | tr '\n' ' ')"
+    cells="$(printf '%s\n' "$plan" | awk '$1 == "cell" { print ($3 == "generic") ? $2 : $2 ":" $3 }' | tr '\n' ' ')"
     suites="$(printf '%s\n' "$plan" | awk '$1 == "host" { print $2 }')"
 elif [ "$tier" != lints ]; then
     suites="$(python3 tools/gate/rows_for_diff.py --base "$base" --host)" || exit 2
@@ -74,13 +74,14 @@ fi
 # notes and the aarch64 build's known noise (A64_KNOWN_NOISE in ci_check.sh);
 # the x86_64 skeleton by exit status, as the gate's "x86_64: make check" row.
 noise='^warning: [A-Za-z0-9_-]+@[0-9]|prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0'
-# Each ISA twice: the generic gate cell and the robot one (the robot crates
-# under crates/domains/robot/ and the kernel's `use-robot` code).
+# Each ISA three times: the generic gate cell, the robot one (the robot crates
+# under crates/domains/robot/ and the kernel's `use-robot` code) and the
+# microvm one (the cut: no slots, no Linux personality, no physical-hardware drivers).
 if [ "$tier" = n0 ] || [ "$tier" = compile ]; then
     for arch in $cells; do
         preset=generic
-        case "$arch" in *:robot) preset=robot; arch="${arch%:robot}" ;; esac
-        printf "  %-26s" "check ${arch}$([ "$preset" = robot ] && echo ' robot')..."
+        case "$arch" in *:*) preset="${arch#*:}"; arch="${arch%%:*}" ;; esac
+        printf "  %-26s" "check ${arch}$([ "$preset" != generic ] && echo " $preset")..."
         if out="$(make ARCH="$arch" CHECK_PRESET="$preset" CHECK_PROFILE="$cprofile" check 2>&1)" \
            && { [ "$arch" = x86_64 ] || ! printf '%s\n' "$out" | grep -E '^warning:' | qgrep -qvE "$noise"; }; then
             echo ok
