@@ -285,6 +285,11 @@ azos_ktest::ktest_late! {
 //   both wake it, the call is taken with the poll accept and answered.
 //   Canary `canary=port-calls-none`: the call signals no port, the server's
 //   wait times out and the caller is never answered: `not ok`.
+// * `port_serves_calls_and_a_doorbell_on_one_wait`: the same with no
+//   interrupt line, so it runs with IRQ_THREADED too: the poll accept answers
+//   `-EAGAIN` with nothing queued and `-EINVAL` for an unknown flag, a kernel
+//   producer's wake rings a doorbell, and two queued calls come on one event,
+//   the first marked `MSG_MORE`. Canary `canary=port-calls-none`: `not ok`.
 
 use azos_abi::syscall_nr::{
     PORT_EVENT_NO_SENDERS, PORT_EVENT_SOURCE_GONE, PORT_SRC_ENDPOINT, SYS_INVOKE, SYS_PORT_WAIT,
@@ -321,8 +326,13 @@ fn wait_event(port: u64, ms: u64) -> Option<Ev> {
 }
 
 fn bind(port: u64, ty: u64, src: u64, key: u64) -> i64 {
+    bind_at(port, ty, src, key, 0)
+}
+
+/// [`bind`] with `PORT_BIND`'s fourth word (a doorbell's offset).
+fn bind_at(port: u64, ty: u64, src: u64, key: u64, w3: u64) -> i64 {
     let mut out = SyscallOut::new();
-    dispatch(SYS_INVOKE, [port, INVOKE_REGS | PORT_BIND as u64, ty, src, key, 0], &mut out)
+    dispatch(SYS_INVOKE, [port, INVOKE_REGS | PORT_BIND as u64, ty, src, key, w3], &mut out)
 }
 
 /// A new port in the current task's table, as a raw handle.
@@ -351,7 +361,7 @@ fn no_senders(e: Option<Ev>, key: u64) -> bool {
 
 /// Each scenario runs in its own kernel task (a task's table and port
 /// waits); its verdict comes back here.
-static VERDICT: [azos_sync::SpinLock<Option<Verdict>>; 5] = [const { azos_sync::SpinLock::new(None) }; 5];
+static VERDICT: [azos_sync::SpinLock<Option<Verdict>>; 6] = [const { azos_sync::SpinLock::new(None) }; 6];
 
 fn report(k: usize, v: Verdict) {
     *VERDICT[k].lock() = Some(v);
@@ -663,8 +673,14 @@ fn sc_one_wait() -> Verdict {
                 let mut out = SyscallOut::new();
                 let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut MsgDesc as u64, IPC_ACCEPT_F_POLL, 0, 0, 0, 0], &mut out);
                 if h < 0 {
-                    // A wake ahead of the call's queueing reads empty: wait again.
-                    continue;
+                    // The event is the queueing of a call nobody withdraws:
+                    // an empty or refused poll accept is the flag broken.
+                    verdict = Err(if h == Errno::EAGAIN.to_syscall_ret() {
+                        "the poll accept found no call the port announced"
+                    } else {
+                        "the poll accept was refused"
+                    });
+                    break;
                 }
                 let rep = MsgDesc { version: MSG_VERSION, n_words: 1, words: [req.words[0] + 1, 0, 0, 0, 0, 0, 0, 0], ..MsgDesc::default() };
                 if dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out) != 0 {
@@ -709,6 +725,107 @@ azos_ktest::ktest_late! {
         azos_sched::task_create_affinity("f14-one-srv", one_wait_task, 4, PRIO, -1);
         crate::ktest::wait("the server never reported", || VERDICT[4].lock().is_some())?;
         VERDICT[4].lock().take().unwrap_or(Err("no verdict"))
+    }
+}
+
+// ── One wait for calls and a doorbell, every configuration ─────────────────
+
+const KEY_BELL: u64 = 0xF1_4003;
+/// The doorbell word's offset in its region.
+const BELL_OFF: u64 = 8;
+static TWO_EP: AtomicU32 = AtomicU32::new(0);
+static TWO_RC: [AtomicI64; 2] = [const { AtomicI64::new(NOT_YET) }; 2];
+
+fn two_client(k: usize) {
+    let Some(c) = sender(TWO_EP.load(Ordering::Acquire)) else {
+        TWO_RC[k].store(-1, Ordering::Release);
+        return;
+    };
+    let mut out = SyscallOut::new();
+    let rc = dispatch(SYS_IPC_CALL, [c.raw().0 as u64, 0, ONE_WORD + k as u64, 0, 0, 0], &mut out);
+    TWO_RC[k].store(rc, Ordering::Release);
+}
+
+/// The poll accept: its handle (or code) and the request.
+fn accept_poll(flags: u64) -> (i64, azos_abi::ipc_msg::MsgDesc) {
+    let mut req = azos_abi::ipc_msg::MsgDesc::default();
+    let mut out = SyscallOut::new();
+    let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut _ as u64, flags, 0, 0, 0, 0], &mut out);
+    (h, req)
+}
+
+fn reply_word(h: i64, w: u64) -> i64 {
+    use azos_abi::ipc_msg::{MsgDesc, MSG_VERSION};
+    let rep = MsgDesc { version: MSG_VERSION, n_words: 1, words: [w, 0, 0, 0, 0, 0, 0, 0], ..MsgDesc::default() };
+    let mut out = SyscallOut::new();
+    dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out)
+}
+
+fn sc_calls_and_bell() -> Verdict {
+    use azos_abi::ipc_msg::MSG_MORE;
+    use azos_abi::syscall_nr::{IPC_ACCEPT_F_POLL, PORT_EVENT_CALLS, PORT_EVENT_DOORBELL, PORT_SRC_CALLS, PORT_SRC_DOORBELL};
+    let me = azos_sched::current_task_tid();
+    let (r, srv) = new_endpoint()?;
+    let port = new_port()?;
+    if bind(port, PORT_SRC_CALLS, srv, KEY_CALLS) != 0 {
+        return Err("the server could not bind its endpoint's calls to its port");
+    }
+    if accept_poll(IPC_ACCEPT_F_POLL).0 != Errno::EAGAIN.to_syscall_ret() {
+        return Err("the poll accept with nothing queued is not -EAGAIN");
+    }
+    if accept_poll(2).0 != Errno::EINVAL.to_syscall_ret() {
+        return Err("an unknown accept flag is not -EINVAL");
+    }
+    // The doorbell, rung the way a kernel producer of a shared ring rings it.
+    if azos_sched::futex_table::SHARED {
+        let region = azos_ipc::memobj::memobj_create_ref(me, 1, azos_ipc::memobj::MemPerms::ReadWrite)
+            .ok_or("no region for the doorbell")?;
+        let cap = azos_ipc::cap_store::grant::<azos_ipc::cap::targets::Shm>(me, CapPerms::READ, region)
+            .ok_or("no capability on the doorbell's region")?;
+        if bind_at(port, PORT_SRC_DOORBELL, cap.raw().0 as u64, KEY_BELL, BELL_OFF) != 0 {
+            return Err("the doorbell would not bind");
+        }
+        azos_syscall::vdso_notify::notify_wake_kernel(region, BELL_OFF as u32, 1);
+        if wait_event(port, 2000) != Some((KEY_BELL, PORT_EVENT_DOORBELL, 0)) {
+            return Err("the producer's wake never rang the doorbell");
+        }
+    }
+    // Two calls queue, then one event announces both: MSG_MORE on the first.
+    TWO_EP.store(r, Ordering::Release);
+    for k in 0..2 {
+        azos_sched::task_create_affinity("f14-two-cli", two_client, k, PRIO, -1);
+    }
+    crate::ktest::wait("the two calls never queued", || azos_ipc::fastcall::census().0 >= 2)?;
+    if !matches!(wait_event(port, 2000), Some((KEY_CALLS, PORT_EVENT_CALLS, _))) {
+        return Err("the calls never reached the port (the server would sleep for ever)");
+    }
+    let (h1, q1) = accept_poll(IPC_ACCEPT_F_POLL);
+    if h1 < 0 || q1.flags & MSG_MORE == 0 {
+        return Err("the first call was not taken, or not marked MSG_MORE");
+    }
+    let (h2, q2) = accept_poll(IPC_ACCEPT_F_POLL);
+    if h2 < 0 || q2.flags & MSG_MORE != 0 {
+        return Err("the second call was not taken, or marked MSG_MORE");
+    }
+    if reply_word(h1, q1.words[0] + 1) != 0 || reply_word(h2, q2.words[0] + 1) != 0 {
+        return Err("a reply was refused");
+    }
+    crate::ktest::wait("a caller was never answered", || TWO_RC.iter().all(|c| c.load(Ordering::Acquire) != NOT_YET))?;
+    if (0..2).any(|k| TWO_RC[k].load(Ordering::Acquire) != (ONE_WORD + k as u64 + 1) as i64) {
+        return Err("a caller's answer is not the server's");
+    }
+    Ok(())
+}
+
+fn calls_bell_task(k: usize) {
+    report(k, sc_calls_and_bell());
+}
+
+azos_ktest::ktest_late! {
+    fn port_serves_calls_and_a_doorbell_on_one_wait() {
+        azos_sched::task_create_affinity("f14-two-srv", calls_bell_task, 5, PRIO, -1);
+        crate::ktest::wait("the server never reported", || VERDICT[5].lock().is_some())?;
+        VERDICT[5].lock().take().unwrap_or(Err("no verdict"))
     }
 }
 
