@@ -13,6 +13,7 @@ azos_idl = { path = "../../../crates/core/idl" }
 azos_devif = { path = "../../../crates/core/devif" }
 azos_rings = { path = "../../../crates/core/rings" }
 azos_limits = { path = "../../../crates/core/limits" }
+azos_srv = { path = "../../../userspace/lib/srv", features = ["libsys"] }
 
 [profile.release]
 opt-level = "s"

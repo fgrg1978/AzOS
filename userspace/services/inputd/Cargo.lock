@@ -86,6 +86,15 @@ name = "azos_rings"
 version = "0.1.0"
 
 [[package]]
+name = "azos_srv"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_libsys",
+ "azos_limits",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -150,6 +159,7 @@ dependencies = [
  "azos_libsys",
  "azos_limits",
  "azos_rings",
+ "azos_srv",
 ]
 
 [[package]]

@@ -1389,12 +1389,15 @@ mod image_profiles {
             src!("userspace/services/zenohd/src/route.rs"),
             src!("userspace/lib/ualloc/src/native.rs"),
         ]),
-        // The audio server: its loop, and the mixer and the decisions beside
-        // it (which issue no call of their own).
+        // The audio server: its handlers, the runtime that waits for them,
+        // and the mixer and the decisions beside it (which issue no call of
+        // their own).
         ("AUDIOD.ELF", Lang::Rust, &[
             src!("userspace/services/audiod/src/main.rs"),
             src!("userspace/services/audiod/src/mixer.rs"),
             src!("userspace/services/audiod/src/server.rs"),
+            src!("userspace/lib/srv/src/lib.rs"),
+            src!("userspace/lib/srv/src/sys/mod.rs"),
         ]),
         // The PTP daemon: its loop, its NIC queue (the rings, the attach, the
         // kick, the wait), and the engine, codec and helpers beside it (which

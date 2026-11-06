@@ -9,10 +9,11 @@ description = "The ring-3 server runtime: one thread, one event port, one wait. 
 [dependencies]
 azos_abi = { path = "../../../crates/core/abi" }
 azos_libsys = { path = "../../../crates/core/libsys", optional = true }
+azos_limits = { path = "../../../crates/core/limits", optional = true }
 
 [features]
 # The kernel side over libsys: what a server image builds with.
-libsys = ["dep:azos_libsys"]
+libsys = ["dep:azos_libsys", "dep:azos_limits"]
 # Host canary only (tests/host/srv-tests): a turn serves every queued call, so
 # a storm of calls starves the interrupts and the timers.
 batch-canary = []

@@ -14,6 +14,7 @@ azos_devif = { path = "../../../crates/core/devif" }
 azos_rings = { path = "../../../crates/core/rings" }
 azos_input_wire = { path = "../../../crates/drivers/input/wire" }
 azos_limits = { path = "../../../crates/core/limits" }
+azos_srv = { path = "../../../userspace/lib/srv", features = ["libsys"] }
 
 [profile.release]
 opt-level = "s"

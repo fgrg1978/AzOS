@@ -1216,29 +1216,29 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         ifaces: &[azos_devif::key::CLOCK],
     },
-    // The audio server (Kconfig AUDIOD): the v2 accept and reply of the `Sound`
-    // interface it serves on `endpoint.audio`, the v2 call on the kernel's
-    // `sound.0` (the one device stream it holds: the `sound` interface), the
-    // clients' memory objects it maps and lets go of (`SYS_MO_MAP`,
-    // `SYS_MO_UNMAP`; `MEMOBJ_ACQUIRE` reads a size) and the three it makes for
-    // the device stream (`SYS_MO_CREATE`), a second thread for the pump
-    // (`SYS_THREAD_CREATE`, parked on a futex word the main thread bumps; the
-    // ring doorbells are woken with `SYS_FUTEX_WAKE`) and the clock it paces
-    // the pump with (`SYS_SLEEP_UNTIL`), and the pump's own deadline
-    // reservation (`SYS_SCHEDCTL`, on the row's `time` warrant). The two threads
-    // share one lock, a futex word the one that finds it held sleeps on: no
-    // `SYS_YIELD`, so no spin. No file, no network, no spawn, no console input.
+    // The audio server (Kconfig AUDIOD): one thread on one port (`azos_srv`:
+    // `DOMAIN_CREATE_PORT`, `PORT_BIND` for the calls on `endpoint.audio`,
+    // found with `SYS_CAP_INFO`, and for the mixer's timer, `SYS_PORT_WAIT`),
+    // the poll accept and the reply of the `Sound` interface it serves, the v2
+    // call on the kernel's `sound.0` (the one device stream it holds: the
+    // `sound` interface), the clients' memory objects it maps and lets go of
+    // (`SYS_MO_MAP`, `SYS_MO_UNMAP`; `MEMOBJ_ACQUIRE` reads a size) and the
+    // three it makes for the device stream (`SYS_MO_CREATE`), the ring
+    // doorbells it wakes (`SYS_FUTEX_WAKE`), its deadline reservation
+    // (`SYS_SCHEDCTL`, on the row's `time` warrant) and the back-off after a
+    // refused wait (`SYS_SLEEP_UNTIL`). No file, no network, no spawn, no
+    // console input.
     ImageProfile {
         image: "AUDIOD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
             SYS_CAP_INFO,
-            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL, SYS_PORT_WAIT,
             SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
-            SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_SCHEDCTL,
+            SYS_FUTEX_WAKE, SYS_SCHEDCTL,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, MEMOBJ_ACQUIRE, DOMAIN_CREATE_PORT, PORT_BIND],
         // `time` is never called (it serves no op): it is the warrant the
         // pump presents to `SYS_SCHEDCTL`, and a row's grant of an interface
         // the profile does not list is withheld.

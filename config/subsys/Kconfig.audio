@@ -30,20 +30,20 @@ config AUDIOD
       holds `endpoint.audio` and straight to `sound.0` otherwise; with the
       server, the toolbox row holds no `sound.0` (the device has one holder).
 
-      The row is a best-effort service (its main thread accepts the calls);
-      the mixer thread asks for a deadline reservation of its own at start
+      The server is one thread on one port (the calls and the mixer's timer
+      wake the same wait). It asks for a deadline reservation at start
       (SYS_SCHEDCTL with the `time` warrant the row grants:
       AUDIOD_PUMP_RUNTIME_US every AUDIOD_PUMP_PERIOD_US at band level
-      AUDIOD_PUMP_LEVEL), so the mixing that keeps the device fed is the
-      only real-time work, and it is budgeted. When admission refuses it the
+      AUDIOD_PUMP_LEVEL), so the mixing that keeps the device fed, and the
+      short control calls between two passes, are budgeted. When admission refuses it the
       server says so on the console and refuses every playback stream
       (UNSUPPORTED) rather than mix without a budget. A robot or industrial
       image has no speaker to share and is n; a small board is n (native
       drivers only: it has no virtio-sound).
 
       Cost when set: one task of AUDIOD_MEM_PAGES pages (the topology
-      builder), two threads (16 KiB stack for the pump), 48 KiB of static
-      state, and 3 + 3 memory objects open at a time per stream.
+      builder), one thread, 37 KiB of static state, and 3 + 3 memory
+      objects open at a time per stream.
 
 config AUDIOD_PUMP_RUNTIME_US
     int "Audio server: the mixer's reservation, run time per period (us)"
