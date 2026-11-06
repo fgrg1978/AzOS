@@ -46,6 +46,12 @@ pub(crate) fn report_security(early: &EarlyBoot) {
             azos_ota::OTA_BOOT_GOOD_DELAY_S);
     }
 
+    // Without the A/B slots nothing in the kernel checks its image: say whose
+    // trust it boots on (the build refuses a release without that answer).
+    #[cfg(not(feature = "boot-slots"))]
+    kprintln!("[SECURE] kernel image: no slot check (BOOT_SLOTS off); {}",
+        if azos_limits::IMAGE_TRUST_LOADER { "its loader vouches for it (IMAGE_TRUST_LOADER)" } else { "a development build" });
+
     // PMP: display the intended AzOS memory-protection policy.
     // pmp_configure() must be called from M-mode (before mret into S-mode).
     // Here we display it for boot-time audit; actual enforcement is M-mode only.

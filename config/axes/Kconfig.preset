@@ -112,8 +112,9 @@ choice
           A virtual machine's kernel: the virtio devices its host gives it
           (block, network, console, entropy) and nothing else. Hardened, RT
           soft, VIRT none, no extension. Its host loads and vouches for the
-          image, so the A/B boot slots are off (BOOT_SLOTS), and with them
-          the boot-time package apply and the slot image checks; no board
+          image (IMAGE_TRUST_LOADER: its signature is the host's job), so
+          the A/B boot slots are off (BOOT_SLOTS), and with them the
+          boot-time package apply and the slot image checks; no board
           I/O (BOARD_IO), no Linux personality. The drivers of physical
           hardware a QEMU or board image starts by default (USB, TPM, the
           RTC, PS/2, virtio-input and virtio-sound, the Raspberry Pi

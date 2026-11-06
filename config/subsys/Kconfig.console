@@ -118,7 +118,7 @@ config FB_CONSOLE_ROWS_MAX
       See FB_CONSOLE_COLS_MAX. 64 rows is 1024 pixels of 8x16 cells.
 
 config KERNEL_CMDLINE_INIT
-    bool "Honour init=/fat/NAME.ELF on the kernel command line (secure boot off)"
+    bool "Honour init=/fat/NAME.ELF on the kernel command line (development, secure boot off)"
     default y
     help
       The kernel command line (the device tree's /chosen/bootargs; QEMU
@@ -128,9 +128,11 @@ config KERNEL_CMDLINE_INIT
       those, and spawn refuses an image without a row; the row's seccomp
       profile, capabilities and supervision apply). It replaces
       CONSOLE_PROGRAM for that boot. Never with secure boot on
-      (SECURE_BOOT_ENFORCED): the word is ignored and the boot log says so,
-      since the console program is part of what the signed configuration
-      decides. Costs one device-tree walk at boot.
+      (SECURE_BOOT_ENFORCED) nor in a build that is not BUILD_TYPE_DEV,
+      whether or not the A/B slots are built (BOOT_SLOTS): the word is
+      ignored and the boot log says so, since the console program is part
+      of what the signed configuration decides. Costs one device-tree walk
+      at boot.
 
       n: init= is ignored on every build (the log says so).
 

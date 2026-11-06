@@ -499,6 +499,19 @@ SAFETY_READ_DRIVERS: frozenset[str] = frozenset({
 })
 
 
+def image_trust_violation(cfg: dict[str, str]) -> Optional[str]:
+    """A build that is not a development one, without the A/B slots (so with
+    no in-kernel image check) and without saying its loader vouches for the
+    image (IMAGE_TRUST_LOADER)."""
+    # An unexpanded file without the line has the default, the slots.
+    if cfg.get("CONFIG_BUILD_TYPE_DEV") == "y" or cfg.get("CONFIG_BOOT_SLOTS", "y") == "y":
+        return None
+    if cfg.get("CONFIG_IMAGE_TRUST_LOADER") == "y":
+        return None
+    return ("BOOT_SLOTS is off in a build that is not BUILD_TYPE_DEV: nothing checks the kernel image "
+            "(SECURE_BOOT_ENFORCED needs the slots); set IMAGE_TRUST_LOADER if the loader vouches for it")
+
+
 def placement_violations(cfg: dict[str, str]) -> list[str]:
     """The `CONFIG_DRV_<NAME>_PLACEMENT_RING3=y` lines naming a driver that a
     safety decision reads."""
@@ -831,6 +844,11 @@ def main() -> int:
         # .config absent — emit nothing.  Existing `--features X` invocations
         # in the Makefile continue to work untouched.
         return 0
+
+    trust = image_trust_violation(cfg)
+    if trust:
+        print(f"kconfig_to_cargo: {trust}", file=sys.stderr)
+        return 1
 
     bad = placement_violations(cfg)
     if bad:

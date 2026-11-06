@@ -40,6 +40,19 @@ config BOOT_SLOTS
       the recovery console's OTA commands) and the BOOTMETA writes of every
       boot; off, none of it.
 
+config IMAGE_TRUST_LOADER
+    bool "The loader vouches for the kernel image (no slot image check)"
+    depends on !BOOT_SLOTS
+    default y if PRESET_MICROVM
+    help
+      Without the A/B slots there is no in-kernel check of the image's
+      signature (SECURE_BOOT_ENFORCED needs BOOT_SLOTS): what booted the
+      kernel vouches for it, as the host of a virtual machine does. A
+      build that is not BUILD_TYPE_DEV and has neither the slots nor this
+      answer is refused (tools/build/kconfig_to_cargo.py), so the check
+      is never lost by turning BOOT_SLOTS off alone. On, the boot says
+      whose trust the image has. PRESET_MICROVM starts it on.
+
 config OTA_SIG_MANDATORY
     bool "OTA images must be signed (refuse unsigned updates)" if !BUILD_TYPE_CERTIFIABLE
     depends on BOOT_SLOTS

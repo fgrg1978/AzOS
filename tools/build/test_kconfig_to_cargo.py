@@ -1513,6 +1513,30 @@ def test_without_boot_slots_nothing_judges_by_an_untrusted_floor() -> None:
         assert "CONFIG_LIVEPATCH=y" not in tpm and "CONFIG_PKG_BOOT_APPLY=y" not in tpm, tpm
 
 
+def test_a_release_without_slots_says_who_vouches_for_the_image() -> None:
+    """A build that is not BUILD_TYPE_DEV with BOOT_SLOTS off has no in-kernel
+    image check: kconfig_to_cargo refuses it unless IMAGE_TRUST_LOADER says the
+    loader vouches (PRESET_MICROVM's default). Canary: drop
+    `image_trust_violation` and the first case builds."""
+    import tempfile
+
+    script = REPO_ROOT / "tools/build/kconfig_to_cargo.py"
+    run = lambda c: subprocess.run([sys.executable, str(script), str(c)], capture_output=True, text=True)
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        rel = ["CONFIG_BOARD_QEMU=y", "CONFIG_ARCH_RISCV64=y", "CONFIG_BUILD_TYPE_RELEASE=y", "# CONFIG_BOOT_SLOTS is not set"]
+        _expand(rel, t, "a.config")
+        r = run(t / "a.config")
+        assert r.returncode == 1 and "IMAGE_TRUST_LOADER" in r.stderr, r
+        _expand(rel + ["CONFIG_IMAGE_TRUST_LOADER=y"], t, "b.config")
+        assert run(t / "b.config").returncode == 0
+        _expand(["CONFIG_PRESET_MICROVM=y", "CONFIG_ARCH_AARCH64=y", "CONFIG_BUILD_TYPE_RELEASE=y"], t, "c.config")
+        assert run(t / "c.config").returncode == 0
+        _expand(["CONFIG_BOARD_QEMU=y", "CONFIG_ARCH_RISCV64=y", "CONFIG_BUILD_TYPE_DEV=y", "# CONFIG_BOOT_SLOTS is not set"],
+                t, "d.config")
+        assert run(t / "d.config").returncode == 0
+
+
 GOLDEN = TOOLS_DIR / "kconfig_to_cargo.golden"
 
 
@@ -1612,6 +1636,7 @@ def _run_all_tests() -> int:
         test_kaslr_links_position_independent,
         test_select_applies_a_selection_through_kconfig,
         test_without_boot_slots_nothing_judges_by_an_untrusted_floor,
+        test_a_release_without_slots_says_who_vouches_for_the_image,
         test_defconfig_features_match_the_golden_file,
         test_no_defconfig_builds_a_self_test,
     ]

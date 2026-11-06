@@ -167,8 +167,11 @@ pub(crate) fn read_cmdline(dtb_ptr: usize) {
         return;
     };
     let shown = core::str::from_utf8(init).unwrap_or("?");
-    if cfg!(feature = "secure-boot-enforced") && !cfg!(feature = "cmdline-init-canary") {
-        azos_drv_sys::kwarn!("[CONSOLE] init={} ignored: secure boot is on", shown);
+    // Whether or not the A/B slots check the image, a build that is not a
+    // development one keeps the console program its configuration decides.
+    if (cfg!(feature = "secure-boot-enforced") || !azos_limits::BUILD_TYPE_DEV) && !cfg!(feature = "cmdline-init-canary") {
+        azos_drv_sys::kwarn!("[CONSOLE] init={} ignored: {}", shown,
+            if cfg!(feature = "secure-boot-enforced") { "secure boot is on" } else { "not a development build" });
         return;
     }
     if !azos_limits::KERNEL_CMDLINE_INIT {
