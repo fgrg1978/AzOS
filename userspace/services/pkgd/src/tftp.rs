@@ -194,6 +194,9 @@ impl Remote for TftpRemote {
     }
 
     fn get_sibling(&mut self, rows: &[u8], name: &str, buf: &mut [u8]) -> Result<usize, FetchErr> {
+        if !azos_packages::sibling_name_ok(name) {
+            return Err(FetchErr::Rows);
+        }
         let source = Source::parse(rows).map_err(|_| FetchErr::Rows)?;
         self.fetch(&source.sibling(name), buf)
     }

@@ -44,6 +44,14 @@ fn a_sibling_is_asked_for_in_the_directory_of_the_named_file() {
 }
 
 #[test]
+fn a_sibling_that_is_not_one_path_segment_is_not_asked_for() {
+    let rows = rows("127.0.0.1:9".parse().unwrap(), NAME, &[GOOD_PIN]);
+    for bad in ["", ".", "..", "a/b", "../x", "a b"] {
+        assert_eq!(HttpsRemote::new(at(NOW)).get_sibling(rows.as_bytes(), bad, &mut [0u8; 8]), Err(FetchErr::Rows), "{bad:?}");
+    }
+}
+
+#[test]
 fn a_server_that_is_not_pinned_gives_nothing() {
     let (got, _) = fetch(Reply::Ok(body(100)), (OTHER, OTHER_KEY), &[GOOD_PIN], 1000);
     assert_eq!(got, Err(FetchErr::Tls));

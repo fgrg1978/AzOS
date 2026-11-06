@@ -50,21 +50,16 @@ pub fn id_prefix(id: &[u8; 32]) -> u64 {
     u64::from_be_bytes([id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]])
 }
 
-/// The third number of the record of an index accepted, above its serial:
-/// told apart from a package install (whose third number is 0) and from an
-/// update (which has no signer) by it.
-pub const INDEX_MARK: u64 = 1 << 40;
-
-/// The record of a repository index accepted: `ix.entries` entries in `n`,
-/// signer `ix.signer_index` of the topology (plus one), the serial under the
-/// [`INDEX_MARK`], and as provenance the first eight bytes of the SHA-256 of
+/// The record of a repository index accepted ([`Rule::PackageIndex`]):
+/// `ix.entries` entries in `n`, signer `ix.signer_index` of the topology (plus
+/// one), its serial, and as provenance the first eight bytes of the SHA-256 of
 /// its body.
 pub fn index_accepted(ix: &crate::index::Index<'_, '_>, clock_ns: u64) -> ProvenanceRecord {
     let mut p = ProvenanceRecord::new(
-        Rule::PackageInstall as u8,
+        Rule::PackageIndex as u8,
         Verdict::Admit as u8,
-        ix.entries as u32,
-        [ix.entries as u64, ix.signer_index as u64 + 1, INDEX_MARK | ix.serial as u64],
+        ix.signer_index as u32 + 1,
+        [ix.entries as u64, ix.serial as u64, 0],
     );
     p.image_hash_prefix = id_prefix(&ix.digest);
     p.clock_ns = clock_ns;

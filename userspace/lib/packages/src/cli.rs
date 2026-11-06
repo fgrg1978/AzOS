@@ -150,6 +150,14 @@ impl Row {
         &self.name[..self.len]
     }
 
+    fn installed(&self) -> Option<u64> {
+        (self.standing & standing::HAS_INSTALLED != 0).then_some(self.installed)
+    }
+
+    fn offered(&self) -> Option<u64> {
+        (self.standing & standing::HAS_OFFERED != 0).then_some(self.offered)
+    }
+
     fn behind(&self) -> bool {
         self.standing & standing::AVAILABILITY == standing::BEHIND
     }
@@ -224,14 +232,17 @@ impl Write for Count {
     }
 }
 
-fn version_cell(out: &mut impl Write, v: u64) -> core::fmt::Result {
+fn version_cell(out: &mut impl Write, v: Option<u64>) -> core::fmt::Result {
     let mut c = Count(0);
-    if v == 0 {
-        c.0 = 1;
-        out.write_char('-')?;
-    } else {
-        write_version(&mut c, v)?;
-        write_version(out, v)?;
+    match v {
+        None => {
+            c.0 = 1;
+            out.write_char('-')?;
+        }
+        Some(v) => {
+            write_version(&mut c, v)?;
+            write_version(out, v)?;
+        }
     }
     pad(out, c.0, 11)
 }
@@ -312,9 +323,9 @@ pub fn run<C: PackagesCall, O: Opener>(
                 let Some(r) = row(client, i)? else { break };
                 write!(out, "{}", text(r.name()))?;
                 pad(out, r.len, 34)?;
-                version_cell(out, r.installed)?;
+                version_cell(out, r.installed())?;
                 write!(out, " ")?;
-                version_cell(out, r.offered)?;
+                version_cell(out, r.offered())?;
                 write!(out, " ")?;
                 state(out, &r)?;
                 writeln!(out)?;
@@ -335,7 +346,7 @@ pub fn run<C: PackagesCall, O: Opener>(
                     for i in 0..LIST_MAX {
                         let Some(r) = row(client, i)? else { break };
                         if r.name() == *name {
-                            shown = Some((r.installed, r.offered));
+                            shown = r.installed().zip(r.offered());
                         }
                     }
                     refused += !upgrade_one(client, out, name, shown)? as u32;
@@ -347,7 +358,7 @@ pub fn run<C: PackagesCall, O: Opener>(
                         if !r.behind() {
                             continue;
                         }
-                        if upgrade_one(client, out, r.name(), Some((r.installed, r.offered)))? {
+                        if upgrade_one(client, out, r.name(), r.installed().zip(r.offered()))? {
                             done += 1;
                         } else {
                             refused += 1;

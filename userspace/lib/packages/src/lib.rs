@@ -90,7 +90,7 @@ pub mod cli;
 pub mod service;
 
 #[cfg(feature = "service")]
-pub use service::{FetchErr, Read, Remote, Service, VolErr, Volume, Work};
+pub use service::{sibling_name_ok, FetchErr, Read, Remote, Service, VolErr, Volume, Work};
 
 // The whole-system update lives in the OTA crate, which links the drivers and so
 // cannot be linked here; its two pure files are included by path, as the host
@@ -186,8 +186,8 @@ pub trait Packages {
     /// Row `index` of the report `refresh` made. `part` 0 answers the
     /// package's name (32 bytes, zero padded, as four big-endian words); `part`
     /// 1 answers `[status(step::ROW, standing), installed, offered, floor]`:
-    /// the versions as `azos_pkg::index::Version::packed` (0 where there is
-    /// none), the standing as [`standing`]. All zero past the last row.
+    /// the versions as `azos_pkg::index::Version::packed`, the standing (which
+    /// of them are there included) as [`standing`]. All zero past the last row.
     #[idempotent]
     fn outdated(&mut self, index: u32, part: u32) -> [u64; 4];
     /// Install the newer version the index lists for the staged package named
@@ -254,7 +254,9 @@ pub mod io {
 
 /// The standing of a report row, the detail of a [`step::ROW`] status: bits 0..3
 /// the availability, bits 3..6 the floor, bit 6 set when the package is below
-/// its floor (or cannot be shown to meet it).
+/// its floor (or cannot be shown to meet it), and bits 7..10 say which of the
+/// three version words that follow the status mean anything (a version of 0 is
+/// a version: absence is not encoded in the word).
 pub mod standing {
     /// The index does not list the package.
     pub const NOT_LISTED: u64 = 0;
@@ -282,6 +284,12 @@ pub mod standing {
     pub const FLOOR: u64 = 7 << 3;
     /// Below the floor, or not shown to meet it.
     pub const BELOW: u64 = 1 << 6;
+    /// The installed version has an order: word 1 is it.
+    pub const HAS_INSTALLED: u64 = 1 << 7;
+    /// The index offers a version: word 2 is it.
+    pub const HAS_OFFERED: u64 = 1 << 8;
+    /// The index names a floor: word 3 is it.
+    pub const HAS_FLOOR: u64 = 1 << 9;
 }
 
 /// A status word from a step and its detail.

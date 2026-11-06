@@ -9,7 +9,6 @@ use super::*;
 use azos_decision::{Rule, Verdict};
 use azos_packages::{id_words, name_words, standing, step, step_name, step_of, status, FetchErr, Packages};
 use azos_pkg::index::Version;
-use azos_pkg::receipt::INDEX_MARK;
 
 fn other() -> SigningKey {
     SigningKey::from_bytes(&[0xC3; 32])
@@ -30,6 +29,8 @@ fn v(s: &str) -> u64 {
 }
 
 const NAME: &str = "acme-vision";
+/// All three version words mean something.
+const ALL: u64 = standing::HAS_INSTALLED | standing::HAS_OFFERED | standing::HAS_FLOOR;
 
 /// A device with `installed` staged and the source configured.
 fn rig_with(installed: &str) -> Rig {
@@ -69,7 +70,7 @@ fn refresh_reports_what_is_behind_and_what_is_below_its_floor() {
 
     assert_eq!(r.service().outdated(0, 0), name_words(NAME.as_bytes()).unwrap());
     let facts = row_facts(&mut r, 0);
-    let want = standing::BEHIND | standing::FLOOR_BELOW | standing::BELOW;
+    let want = standing::BEHIND | standing::FLOOR_BELOW | standing::BELOW | ALL;
     assert_eq!(facts, [status(step::ROW, want), v("1.0.0"), v("1.3.0"), v("1.2.0")]);
     assert_eq!(r.service().outdated(1, 1), [0; 4], "all zero past the last row");
     assert_eq!(r.service().outdated(0, 2)[0], status(step::BAD_ARG, 1));
@@ -78,7 +79,7 @@ fn refresh_reports_what_is_behind_and_what_is_below_its_floor() {
     let stored = r.vol.borrow().files[&b"/fat/PKG/INDEX.AZX"[..]].clone();
     let body = index_body(7, &[Offer::of(&offered, "ACMEV.PKG", Some("1.2.0"))]);
     assert_eq!(stored, build_index(&body, &author()));
-    assert_eq!(journal_tail(&r, 1), vec![(Rule::PackageInstall as u8, Verdict::Admit as u8, [1, 1, INDEX_MARK | 7])]);
+    assert_eq!(journal_tail(&r, 1), vec![(Rule::PackageIndex as u8, Verdict::Admit as u8, [1, 7, 0])]);
 }
 
 #[test]
@@ -86,14 +87,14 @@ fn a_current_package_and_a_package_the_index_does_not_list_are_not_behind() {
     let mut r = rig_with("1.3.0");
     let offered = pkg("1.3.0");
     r.service_with(repo(1, &offered, None, &author())).refresh();
-    assert_eq!(row_facts(&mut r, 0)[0], status(step::ROW, standing::CURRENT));
+    assert_eq!(row_facts(&mut r, 0)[0], status(step::ROW, standing::CURRENT | standing::HAS_INSTALLED | standing::HAS_OFFERED));
     // The same index for a package it does not list.
     let mut s = Spec::acme();
     s.name = "elsewhere".into();
     let body = index_body(2, &[Offer::of(&build(&s, &author()), "X.PKG", None)]);
     let fake = Fake::repository(&[("INDEX.AZX", build_index(&body, &author()))]);
     r.service_with(fake).refresh();
-    assert_eq!(row_facts(&mut r, 0)[0], status(step::ROW, standing::NOT_LISTED));
+    assert_eq!(row_facts(&mut r, 0)[0], status(step::ROW, standing::NOT_LISTED | standing::HAS_INSTALLED));
 }
 
 /// **Canary** `pkg-verify-skip-canary`, `pkg-signer-canary`: the forged index is accepted.
@@ -163,7 +164,7 @@ fn upgrade_installs_the_newer_version_in_place_of_the_staged_one() {
     let id8 = azos_pkg::receipt::id_prefix;
     assert_eq!(tail, [(Verdict::Admit as u8, id8(&new_id)), (Verdict::Deny as u8, id8(&old_id))]);
     // And the report knows: nothing left to do.
-    assert_eq!(row_facts(&mut r, 0), [status(step::ROW, standing::CURRENT | standing::FLOOR_MET), v("1.3.0"), v("1.3.0"), v("1.2.0")]);
+    assert_eq!(row_facts(&mut r, 0), [status(step::ROW, standing::CURRENT | standing::FLOOR_MET | ALL), v("1.3.0"), v("1.3.0"), v("1.2.0")]);
     let again = r.service_with(repo(7, &offered, Some("1.2.0"), &author())).upgrade(name_words(NAME.as_bytes()).unwrap());
     assert_eq!((step_of(again[0]), again[0] & 0xFF_FFFF), (23, 5), "{}", step_name(again[0]));
 }
@@ -183,8 +184,6 @@ fn an_upgrade_that_the_index_does_not_allow_is_refused_and_leaves_the_staged_pac
     other_signer.version = "1.3.0".into();
     let by_other = build(&other_signer, &other());
     let cases: Vec<(&str, Vec<u8>, Option<&str>, Vec<u8>, u64)> = vec![
-        // The offer is below its own floor: an index that contradicts itself.
-        ("below the floor", pkg("1.3.0"), Some("1.4.0"), pkg("1.3.0"), 11),
         // The file served is not the build the index pins.
         ("another build than pinned", pkg("1.3.0"), None, swapped, 7),
         // The file is pinned, verifies, and is another author's.
@@ -212,7 +211,7 @@ fn an_older_offer_is_not_an_upgrade() {
     let mut r = rig_with("2.0.0");
     let offered = pkg("1.5.0");
     r.service_with(repo(7, &offered, None, &author())).refresh();
-    assert_eq!(row_facts(&mut r, 0)[0], status(step::ROW, standing::AHEAD));
+    assert_eq!(row_facts(&mut r, 0)[0], status(step::ROW, standing::AHEAD | standing::HAS_INSTALLED | standing::HAS_OFFERED));
     let mut svc = r.service_with(repo(7, &offered, None, &author()));
     let reply = svc.upgrade(name_words(NAME.as_bytes()).unwrap());
     assert!(svc.remote.asked.is_empty(), "nothing is fetched for it");

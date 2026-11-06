@@ -180,8 +180,16 @@ pub trait Remote {
     fn get(&mut self, rows: &[u8], buf: &mut [u8]) -> Result<usize, FetchErr>;
     /// The file `name` beside the one the source `rows` describe (same server,
     /// same directory: the repository index, or the package an index names),
-    /// into `buf`. `name` is a single path segment, never a path.
+    /// into `buf`. `name` is a single path segment, never a path
+    /// ([`sibling_name_ok`]); a name that is not one is `Err(Rows)`.
     fn get_sibling(&mut self, rows: &[u8], name: &str, buf: &mut [u8]) -> Result<usize, FetchErr>;
+}
+
+/// May `name` be asked of a source as a file beside the one its rows name
+/// ([`Remote::get_sibling`])? One path segment, never `.` or `..`: every
+/// [`Remote`] checks it, whatever the index said.
+pub fn sibling_name_ok(name: &str) -> bool {
+    azos_pkg::index::file_name_ok(name.as_bytes())
 }
 
 /// An offer of the index for an installed package: the entry's fields, owned.
@@ -284,7 +292,12 @@ impl Row {
             Floor::Below(_) => (standing::FLOOR_BELOW, standing::BELOW),
             Floor::Unordered(_) => (standing::FLOOR_UNORDERED, standing::BELOW),
         };
-        a | f | below
+        let has = |b: bool, bit: u64| if b { bit } else { 0 };
+        a | f
+            | below
+            | has(Version::parse(self.version()).is_ok(), standing::HAS_INSTALLED)
+            | has(self.offer.is_some(), standing::HAS_OFFERED)
+            | has(self.offer.is_some_and(|o| o.sec_floor.is_some()), standing::HAS_FLOOR)
     }
 }
 

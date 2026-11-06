@@ -288,3 +288,28 @@ fn the_client_and_the_library_print_a_version_alike() {
         assert_eq!(a, v.to_string(), "{s}");
     }
 }
+
+/// A version of 0 is a version: a package at 0.0.0 with a floor of 0 prints them, and `-` stays for "none".
+#[test]
+fn version_zero_is_printed_and_absence_is_a_dash() {
+    let d = Device0::with_signers(&signer_text("acme", &author(), CEILING));
+    let vol = RefCell::new(MemVol::device(&d, &owner()));
+    vol.borrow_mut().files.insert(b"/fat/PKG/SOURCE.CFG".to_vec(), SOURCE_ROWS.to_vec());
+    let mut s = Spec::acme();
+    s.version = "0.0.0".into();
+    let zero = build(&s, &author());
+    s.version = "1.0.0".into();
+    let body = index_body(1, &[Offer::of(&build(&s, &author()), "A.PKG", Some("0"))]);
+    let remote = Fake::repository(&[("INDEX.AZX", build_index(&body, &author()))]);
+    let mut work = Box::new(Work::new());
+    let mut topo = Box::new(Topology::empty());
+    let key = *owner().verifying_key().as_bytes();
+    let svc = RefCell::new(Service::new(Shared(&vol), remote, &mut work, &mut topo, key, device()));
+    let mut c = PackagesClient::new(Loop(&svc));
+    let mut files = Files { vol: &vol, named: vec![(b"/z", zero)], next: 0 };
+    assert_eq!(run(&["install", "/z"], &mut files, &mut c).0, Ok(0));
+    let (r, out) = run(&["outdated"], &mut files, &mut c);
+    assert_eq!(r, Ok(0), "{out}");
+    let line = out.lines().find(|l| l.starts_with("acme-vision")).unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(line, "acme-vision 0.0.0 1.0.0 behind");
+}

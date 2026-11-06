@@ -374,6 +374,10 @@ pub enum Rule {
     /// An effect of a kind no installed effect provider owns was refused: the
     /// image has no such device (`azos_actuation::effect`).
     EffectUnserved,
+    /// A signed repository index was accepted (`azos_pkg::index`): the
+    /// installer's journal records which index it keeps, the boot-time apply
+    /// which one it judged the security floors by.
+    PackageIndex,
 }
 
 impl Rule {
@@ -1257,7 +1261,8 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // basis: 1 image grant, 2 package grant, 3 the caller's own row
         // (admitted); 4 no grant, 5 bytes bound to no row, 6 not a Linux row,
-        // 7 no topology row (refused). site: 0 SYS_SPAWN_EX, 1 execve.
+        // 7 no topology row, 8 the package is below its security floor
+        // (refused). site: 0 SYS_SPAWN_EX, 1 execve.
         name: "exec-grant",
         subject: "tid",
         fields: ["digest_prefix", "basis", "site"],
@@ -1271,6 +1276,14 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["effect", "device", "-"],
         rejected_if_yes: "-",
         rejected_if_no: "hand the effect to a stand-in for the missing device: it would answer as a device fault and leave no record",
+    },
+    RuleInfo {
+        // signer: the topology index plus one; serial: the index's own.
+        name: "package-index",
+        subject: "signer",
+        fields: ["entries", "serial", "digest_prefix"],
+        rejected_if_yes: "-",
+        rejected_if_no: "keep the index the signer last published: the one offered is older than the one the device recorded, or its body differs at the same serial",
     },
 ];
 

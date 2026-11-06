@@ -574,6 +574,7 @@ mod tests {
             (Rule::RcuCallbackCpu, 84, "rcu-callback-cpu"),
             (Rule::ExecGrant, 85, "exec-grant"),
             (Rule::EffectUnserved, 86, "effect-unserved"),
+            (Rule::PackageIndex, 87, "package-index"),
         ];
         assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {

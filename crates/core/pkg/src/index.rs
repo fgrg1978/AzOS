@@ -86,6 +86,13 @@ pub const FILE_MAX: usize = HEADER_LEN + KEY_LEN_MAX + SIG_LEN_MAX + BODY_MAX;
 /// Longest file name an entry names.
 pub const NAME_FILE_MAX: usize = 32;
 
+/// Is `f` a file name beside the index: one path segment of
+/// `[A-Za-z0-9._-]`, at most [`NAME_FILE_MAX`] long, and not made only of dots
+/// (`.` and `..` name directories).
+pub fn file_name_ok(f: &[u8]) -> bool {
+    name_ok(f) && f.len() <= NAME_FILE_MAX && f.iter().any(|&b| b != b'.')
+}
+
 /// A package version that has an order: up to four decimal components.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Version(pub [u16; 4]);
@@ -223,9 +230,14 @@ struct Open<'a> {
 
 impl<'a> Open<'a> {
     fn close(self) -> Result<Entry<'a>, IndexWhy> {
+        let version = self.version.ok_or(IndexWhy::Missing)?;
+        // A floor above the build on offer could never be met by upgrading.
+        if self.floor.is_some_and(|f| f > version) {
+            return Err(IndexWhy::Value);
+        }
         Ok(Entry {
             name: self.name,
-            version: self.version.ok_or(IndexWhy::Missing)?,
+            version,
             sec_floor: self.floor,
             id: self.id.ok_or(IndexWhy::Missing)?,
             file: self.file.ok_or(IndexWhy::Missing)?,
@@ -310,7 +322,7 @@ fn walk<'a>(
             b"sec_floor" if o.floor.is_none() => o.floor = Some(version_value(val)?),
             b"id" if o.id.is_none() => o.id = Some(quoted(val).and_then(hex32).ok_or(IndexWhy::Value)?),
             b"file" if o.file.is_none() => {
-                let f = quoted(val).filter(|f| name_ok(f) && f.len() <= NAME_FILE_MAX).ok_or(IndexWhy::Value)?;
+                let f = quoted(val).filter(|f| file_name_ok(f)).ok_or(IndexWhy::Value)?;
                 o.file = Some(core::str::from_utf8(f).map_err(|_| IndexWhy::Text)?);
             }
             b"version" | b"sec_floor" | b"id" | b"file" => return Err(IndexWhy::Repeated),

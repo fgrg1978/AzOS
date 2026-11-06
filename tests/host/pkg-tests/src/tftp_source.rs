@@ -182,6 +182,14 @@ fn a_package_fetched_over_tftp_is_installed() {
     assert_eq!((j[0].rule, j[0].verdict), (Rule::PackageInstall as u8, Verdict::Admit as u8));
 }
 
+#[test]
+fn a_sibling_that_is_not_one_path_segment_is_not_asked_for_over_tftp() {
+    let rows = b"tftp=127.0.0.1:9\nfile=acme.pkg\n";
+    for bad in ["", ".", "..", "a/b", "../x"] {
+        assert_eq!(TftpRemote::new().get_sibling(rows, bad, &mut [0u8; 8]), Err(FetchErr::Rows), "{bad:?}");
+    }
+}
+
 /// `pkg outdated`'s index comes over the same transport: the file beside the
 /// one the rows name.
 #[test]

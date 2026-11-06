@@ -129,6 +129,9 @@ fn a_malformed_body_is_refused_even_when_signed() {
         ("a floor that is not a version", format!("{ok}sec_floor = \"x\"\n"), IndexWhy::Value),
         ("a short id", ok.replacen(&id, "abcd", 1), IndexWhy::Value),
         ("a path as file", ok.replacen("A.PKG", "../A.PKG", 1), IndexWhy::Value),
+        ("the parent directory as file", ok.replacen("A.PKG", "..", 1), IndexWhy::Value),
+        ("the current directory as file", ok.replacen("A.PKG", ".", 1), IndexWhy::Value),
+        ("a floor above the offered version", ok.replacen("file =", "sec_floor = \"1.1\"\nfile =", 1), IndexWhy::Value),
         ("a foreign section", format!("{ok}[other.x]\n"), IndexWhy::Unknown),
         ("names out of order", format!("{ok}[pkg.a]\nversion = \"1\"\nid = \"{id}\"\nfile = \"B.PKG\"\n"), IndexWhy::Repeated),
         ("a section before the header", format!("[pkg.a]\n{ok}"), IndexWhy::Missing),
@@ -236,7 +239,11 @@ fn an_upgrade_is_refused_for_a_downgrade_a_floor_a_stranger_or_a_swapped_file() 
     assert_eq!(try_with("1.6.0", Some("1.4.0"), "1.6.0", &cur, 0), Ok(()));
     assert_eq!(try_with("1.4.0", None, "1.4.0", &cur, 0), Err(UpgradeWhy::Downgrade), "below the installed version");
     assert_eq!(try_with("1.5.0", None, "1.5.0", &cur, 0), Err(UpgradeWhy::NotNewer), "the same version");
-    assert_eq!(try_with("1.6.0", Some("1.7.0"), "1.6.0", &cur, 0), Err(UpgradeWhy::BelowFloor), "the offer is below its own floor");
+    // An index cannot say it (the parser refuses a floor above the offer), but the check does not rely on that.
+    let entry = azos_pkg::index::Entry { name: "acme-vision", version: Version([1, 6, 0, 0]), sec_floor: Some(Version([1, 7, 0, 0])), id: id_of(&pkg_at("1.6.0")), file: "A.PKG" };
+    let p6 = pkg_at("1.6.0");
+    let (m6, id6) = meta_of(&p6);
+    assert_eq!(check_upgrade(&cur, &entry, &m6, &id6, 0), Err(UpgradeWhy::BelowFloor), "the offer is below its own floor");
     assert_eq!(try_with("1.6.0", None, "1.6.0", &cur, 1), Err(UpgradeWhy::SignerChanged));
     assert_eq!(try_with("1.6.0", None, "1.6.1", &cur, 0), Err(UpgradeWhy::IdMismatch), "another build than the one pinned");
     assert_eq!(try_with("1.6.0", None, "1.6.0", &installed("1.0-rc1", 0), 0), Err(UpgradeWhy::Unordered));
