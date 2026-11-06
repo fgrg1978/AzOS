@@ -184,8 +184,10 @@ fn a_write_tree_admits_its_entries_and_nothing_outside() {
 /// that stays beneath the directory is resolved there: `fat/../tmp/a` is
 /// `/tmp/a`, and `tmp/../fat/a` is judged as `/fat/a` (no tree).
 ///
-/// **Canary.** In `join_beneath`, push an empty component instead of
-/// skipping it: the filesystem is handed `/tmp//a`.
+/// **Canary.** Both spelling guards at once: `copy_path_from_user` without
+/// `collapse_slashes`, and `join_beneath` pushing an empty component instead
+/// of skipping it: the filesystem is handed `/tmp//a`. (Either guard alone
+/// keeps the test green.)
 #[test]
 fn a_tree_holder_reaches_the_filesystem_by_the_spelling_the_check_judged() {
     let _g = serial();
