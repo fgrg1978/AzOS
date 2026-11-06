@@ -78,6 +78,8 @@ fn a_device_resource_spelling_is_bounded() {
     assert_eq!(badge("gpio.17"), Some((key::GPIO, 17)));
     assert!(badge("gpio.9999").is_none());
     assert!(badge("gpio").is_none(), "a pin needs a number");
+    assert!(badge("gpio.1.256").is_none());
+    assert!(badge("gpio.256.1").is_none());
     assert_eq!(badge("pwm.3"), Some((key::PWM, 3)));
     assert_eq!(badge("motor.0"), Some((key::MOTOR, 0)));
     assert_eq!(badge("motor.1"), Some((key::MOTOR, 1)));
@@ -95,4 +97,22 @@ fn a_device_resource_spelling_is_bounded() {
     assert!(badge("block").is_none());
     assert_eq!(badge("time"), Some((key::TIME, 0)));
     assert!(badge("time.0").is_none());
+}
+
+/// A `gpio` spelling names a controller and a pin; the short form is
+/// controller 0's, so a row written for a one-controller board means what it
+/// meant. Two controllers' pins of the same number are two badges.
+///
+/// **Canary.** `badge-without-controller-canary` (the badge is stamped
+/// without the controller): `gpio.1.3` names controller 0's pin 3 and the
+/// second line goes red.
+#[test]
+fn a_gpio_badge_names_its_controller() {
+    use azos_devif::gpio;
+    let badge = |t: &str| parse_target(t).map(|(i, b)| (i.key, b));
+    assert_eq!(badge("gpio.0.17"), badge("gpio.17"));
+    assert_ne!(badge("gpio.1.3"), badge("gpio.3"), "controller 1's pin 3 is not controller 0's");
+    assert_eq!(badge("gpio.1.3"), Some((key::GPIO, gpio::badge(1, 3))));
+    assert_eq!(gpio::unbadge(gpio::badge(1, 3)), (1, 3));
+    assert_eq!(badge("gpio.0x2.0x10").map(|b| gpio::unbadge(b.1)), Some((2, 16)));
 }

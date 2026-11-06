@@ -14,6 +14,9 @@ azos_devif = { path = "../../../crates/core/devif" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_ina219 = { path = "../../../crates/drivers/ina219" }
 
+[features]
+badge-without-controller-canary = ["azos_devif/badge-without-controller-canary"]
+
 [profile.release]
 overflow-checks = true
 

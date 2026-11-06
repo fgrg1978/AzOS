@@ -10,3 +10,8 @@ description = "The interfaces of the services the kernel hosts and of the device
 azos_abi = { path = "../abi" }
 azos_idl = { path = "../idl" }
 azos_rings = { path = "../rings" }
+
+[features]
+# Canary: `gpio::badge` drops the controller, so a capability on controller
+# 1's pin names controller 0's (the cross-controller refusal tests go red).
+badge-without-controller-canary = []
