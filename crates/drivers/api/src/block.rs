@@ -174,6 +174,9 @@ pub enum BlockError {
     Unsupported,
     /// The device failed the request, or is not usable.
     Io,
+    /// The flush ahead of a [`FLAG_PREFLUSH`] write failed, and the write was
+    /// not made. A device that cannot tell which half failed says `Io`.
+    PreFlush,
     /// The run leaves the device.
     Range,
     /// The request means nothing (unknown flag, buffer not `count` sectors).

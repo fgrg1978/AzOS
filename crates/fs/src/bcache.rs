@@ -130,31 +130,15 @@ pub const MAX_BLOCK: usize = 4096;
 /// Lines per set of a write-through cache larger than this many lines.
 pub const MAX_WAYS: usize = 8;
 
-/// The device underneath a cache.
+/// The device underneath a cache: any [`BlockDev`]. `lba` and the buffer
+/// lengths are in 512 B sectors; a buffer is exactly one block.
 ///
-/// `lba` and `count` are in 512 B sectors; `buf` is exactly
-/// `count * SECTOR_BYTES` bytes.
-pub trait BlockIo {
-    /// What a failed flush says; the cache hands it back unchanged.
-    type FlushErr;
-    fn read(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()>;
-    fn write(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()>;
-    fn flush(&mut self) -> Result<(), Self::FlushErr>;
-
-    /// Submit a write-back as ONE request: write `buf` after every write the
-    /// device has completed so far is durable (`preflush`, the epoch rule:
-    /// the cache asks for it when a line of an older epoch was written since
-    /// the last flush). A device behind the block request layer takes this as
-    /// a single `PREFLUSH` write, so the flush and the data go out
-    /// back-to-back with no round trip to the cache between them; the default
-    /// is the two calls in order, which is what every device did before.
-    fn write_ordered(&mut self, lba: u64, count: u32, buf: &[u8], preflush: bool) -> Result<(), IoError<Self::FlushErr>> {
-        if preflush {
-            self.flush().map_err(IoError::Flush)?;
-        }
-        self.write(lba, count, buf).map_err(|()| IoError::Io)
-    }
-}
+/// A write-back is ONE request: when the epoch rule asks for a flush ahead of
+/// it ([`FLAG_PREFLUSH`], the cache asks when a line of an older epoch was
+/// written since the last flush) the flush and the data go out back-to-back
+/// with no round trip to the cache between them. The device decides what a
+/// flush it cannot confirm means for the write.
+pub use azos_drv_api::block::{BlockDev, BlockError, FLAG_PREFLUSH};
 
 /// Write policy. See the module doc.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -175,11 +159,11 @@ pub enum ConfigError {
 
 /// Why an I/O operation of the cache failed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum IoError<F> {
+pub enum IoError {
     /// A device read or write failed.
     Io,
     /// The device flush failed, with the device's reason.
-    Flush(F),
+    Flush(BlockError),
     /// The block number does not map to an LBA (overflow), or the buffer is
     /// not exactly one block.
     Range,
@@ -427,9 +411,9 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     #[inline]
     pub fn force_generation(&mut self, g: u32) { self.view().force_generation(g) }
     #[inline]
-    pub fn read<D: BlockIo>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError<D::FlushErr>> { self.view().read(dev, block, dst) }
+    pub fn read<D: BlockDev>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError> { self.view().read(dev, block, dst) }
     #[inline]
-    pub fn write<D: BlockIo>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError<D::FlushErr>> { self.view().write(dev, block, src) }
+    pub fn write<D: BlockDev>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError> { self.view().write(dev, block, src) }
     #[inline]
     pub fn write_dirty(&mut self, block: u64, src: &[u8]) -> Dirty { self.view().write_dirty(block, src) }
     #[inline]
@@ -447,9 +431,9 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     #[inline]
     pub fn barrier(&mut self) -> u64 { self.view().barrier() }
     #[inline]
-    pub fn write_back_all<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().write_back_all(dev) }
+    pub fn write_back_all<D: BlockDev>(&mut self, dev: &mut D) -> Result<(), IoError> { self.view().write_back_all(dev) }
     #[inline]
-    pub fn sync<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().sync(dev) }
+    pub fn sync<D: BlockDev>(&mut self, dev: &mut D) -> Result<(), IoError> { self.view().sync(dev) }
     #[inline]
     pub fn note_flushed(&mut self) { self.view().note_flushed() }
 }
@@ -953,13 +937,16 @@ impl CacheMut<'_> {
 
     /// Write dirty line `i` to the device, keeping the epoch rule: if a
     /// line of an older epoch was written since the last flush, flush first.
-    fn write_line<D: BlockIo>(&mut self, dev: &mut D, i: usize) -> Result<(), IoError<D::FlushErr>> {
+    fn write_line<D: BlockDev>(&mut self, dev: &mut D, i: usize) -> Result<(), IoError> {
         let t = self.tags[i];
         let lba = self.lba_of(t.block).ok_or(IoError::Range)?;
         let preflush = self.c.pending_lo.is_some_and(|lo| lo < t.epoch);
-        let n = self.sectors();
         let b = self.c.block;
-        dev.write_ordered(lba, n, &self.data[i * b..(i + 1) * b], preflush)?;
+        let flags = if preflush { FLAG_PREFLUSH } else { 0 };
+        dev.write_flagged(lba, &self.data[i * b..(i + 1) * b], flags).map_err(|e| match e {
+            BlockError::PreFlush => IoError::Flush(e),
+            _ => IoError::Io,
+        })?;
         if preflush {
             self.c.pending_lo = None;
             self.c.stats.ordering_flushes = self.c.stats.ordering_flushes.saturating_add(1);
@@ -977,7 +964,7 @@ impl CacheMut<'_> {
 
     /// Make room for `block` and return the line to use, writing a dirty
     /// victim back first.
-    fn make_room<D: BlockIo>(&mut self, dev: &mut D, block: u64) -> Result<usize, IoError<D::FlushErr>> {
+    fn make_room<D: BlockDev>(&mut self, dev: &mut D, block: u64) -> Result<usize, IoError> {
         let v = self.pick_victim(block);
         if self.live(v) && self.tags[v].dirty {
             // The set's oldest-epoch dirty line. Other sets may hold older
@@ -991,7 +978,7 @@ impl CacheMut<'_> {
 
     /// Read `block` into `dst` (exactly one block), from the cache or the
     /// device.
-    pub fn read<D: BlockIo>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError<D::FlushErr>> {
+    pub fn read<D: BlockDev>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError> {
         if dst.len() != self.c.block {
             return Err(IoError::Range);
         }
@@ -999,7 +986,7 @@ impl CacheMut<'_> {
             return Ok(());
         }
         let lba = self.lba_of(block).ok_or(IoError::Range)?;
-        dev.read(lba, self.sectors(), dst).map_err(|()| IoError::Io)?;
+        dev.read(lba, dst).map_err(|_| IoError::Io)?;
         self.c.stats.misses = self.c.stats.misses.saturating_add(1);
         if self.c.lines == 0 {
             return Ok(());
@@ -1010,14 +997,14 @@ impl CacheMut<'_> {
     }
 
     /// Write `src` (exactly one block) as `block`, by the cache's mode.
-    pub fn write<D: BlockIo>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError<D::FlushErr>> {
+    pub fn write<D: BlockDev>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError> {
         if src.len() != self.c.block {
             return Err(IoError::Range);
         }
         let lba = self.lba_of(block).ok_or(IoError::Range)?;
         self.c.wseq = self.c.wseq.wrapping_add(1);
         if self.c.mode == Mode::WriteThrough || self.c.lines == 0 {
-            dev.write(lba, self.sectors(), src).map_err(|()| IoError::Io)?;
+            dev.write(lba, src).map_err(|_| IoError::Io)?;
             if let Some(i) = self.find(block) {
                 self.line_mut(i).copy_from_slice(src);
             }
@@ -1311,13 +1298,13 @@ impl CacheMut<'_> {
     /// Write every dirty line, oldest epoch first, without the final flush.
     /// A no-op (no I/O at all) when nothing is dirty — always the case in
     /// write-through mode.
-    pub fn write_back_all<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> {
+    pub fn write_back_all<D: BlockDev>(&mut self, dev: &mut D) -> Result<(), IoError> {
         self.write_back_before(dev, u64::MAX)
     }
 
     /// Write every dirty line of an epoch older than `epoch`, oldest first
     /// (`u64::MAX`: every dirty line).
-    fn write_back_before<D: BlockIo>(&mut self, dev: &mut D, epoch: u64) -> Result<(), IoError<D::FlushErr>> {
+    fn write_back_before<D: BlockDev>(&mut self, dev: &mut D, epoch: u64) -> Result<(), IoError> {
         if self.c.ndirty == 0 {
             return Ok(());
         }
@@ -1339,7 +1326,7 @@ impl CacheMut<'_> {
     }
 
     /// Write every dirty line, then flush the device.
-    pub fn sync<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> {
+    pub fn sync<D: BlockDev>(&mut self, dev: &mut D) -> Result<(), IoError> {
         self.write_back_all(dev)?;
         dev.flush().map_err(IoError::Flush)?;
         self.c.pending_lo = None;

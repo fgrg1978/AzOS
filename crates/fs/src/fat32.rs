@@ -1348,7 +1348,7 @@ pub use vol_cache::VolCache;
 /// storage (`CacheMut`, `CacheRef`).
 mod vol_cache {
     use super::{BootCacheRef, RemovableCache};
-    use crate::bcache::{BlockIo, CacheMut, CacheRef, CacheStats, ConfigError, Dirty, IoError, Mode, Run};
+    use crate::bcache::{BlockDev, CacheMut, CacheRef, CacheStats, ConfigError, Dirty, IoError, Mode, Run};
     use azos_sync::{SpinLock, SpinLockGuard};
 
     /// Where a volume's sector cache is.
@@ -1463,9 +1463,9 @@ mod vol_cache {
     #[inline]
     pub fn force_generation(&mut self, g: u32) { self.view().force_generation(g) }
     #[inline]
-    pub fn read<D: BlockIo>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError<D::FlushErr>> { self.view().read(dev, block, dst) }
+    pub fn read<D: BlockDev>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError> { self.view().read(dev, block, dst) }
     #[inline]
-    pub fn write<D: BlockIo>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError<D::FlushErr>> { self.view().write(dev, block, src) }
+    pub fn write<D: BlockDev>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError> { self.view().write(dev, block, src) }
     #[inline]
     pub fn write_dirty(&mut self, block: u64, src: &[u8]) -> Dirty { self.view().write_dirty(block, src) }
     #[inline]
@@ -1483,9 +1483,9 @@ mod vol_cache {
     #[inline]
     pub fn barrier(&mut self) -> u64 { self.view().barrier() }
     #[inline]
-    pub fn write_back_all<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().write_back_all(dev) }
+    pub fn write_back_all<D: BlockDev>(&mut self, dev: &mut D) -> Result<(), IoError> { self.view().write_back_all(dev) }
     #[inline]
-    pub fn sync<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().sync(dev) }
+    pub fn sync<D: BlockDev>(&mut self, dev: &mut D) -> Result<(), IoError> { self.view().sync(dev) }
     #[inline]
     pub fn note_flushed(&mut self) { self.view().note_flushed() }
     }
@@ -1545,27 +1545,37 @@ pub fn boot_cache_sealed() -> bool { BOOT_CACHE_POOL.is_sealed() }
 /// A volume's device, as the shared cache sees it.
 struct BlkDev(&'static Vol);
 
-impl crate::bcache::BlockIo for BlkDev {
-    type FlushErr = FsError;
-    fn read(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        let v = self.0;
-        v.dev.read_quiet(dev_lba(v, lba), count, buf)
+impl crate::bcache::BlockDev for BlkDev {
+    fn geometry(&self) -> azos_drv_api::block::Geometry {
+        let d = &self.0.dev;
+        azos_drv_api::block::Geometry { sectors: d.capacity_sectors(), fua: d.fua_commit(), discard: d.discard_supported() }
     }
-    fn write(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+
+    fn submit(&mut self, req: azos_drv_api::block::BlockReq<'_>) -> Result<(), crate::bcache::BlockError> {
+        use azos_drv_api::block::{BlockData, BlockError, BlockOp, FLAG_FUA, FLAG_PREFLUSH};
         let v = self.0;
         // Quiet: this runs with `SECTOR_CACHE` held (`device_flush`'s
         // write-back pass), and the observer takes it.
-        v.dev.write_quiet(dev_lba(v, lba), count, buf)
-    }
-    fn flush(&mut self) -> Result<(), FsError> {
-        device_flush_raw(self.0)
-    }
-    fn write_ordered(&mut self, lba: u64, count: u32, buf: &[u8], preflush: bool)
-        -> Result<(), crate::bcache::IoError<FsError>>
-    {
-        let v = self.0;
-        // Quiet, like `write`; the epoch flush rides in the request.
-        v.dev.write_run(dev_lba(v, lba), count, buf, preflush, false).map_err(|()| crate::bcache::IoError::Io)
+        let r = match (req.op, req.data) {
+            (BlockOp::Read, BlockData::Read(buf)) => v.dev.read_quiet(dev_lba(v, req.sector), req.count, buf),
+            (BlockOp::Write, BlockData::Write(buf)) if req.flags == 0 => v.dev.write_quiet(dev_lba(v, req.sector), req.count, buf),
+            // The epoch flush rides in the request.
+            (BlockOp::Write, BlockData::Write(buf)) => v.dev.write_run(
+                dev_lba(v, req.sector),
+                req.count,
+                buf,
+                req.flags & FLAG_PREFLUSH != 0,
+                req.flags & FLAG_FUA != 0,
+            ),
+            (BlockOp::Flush, _) => {
+                return device_flush_raw(v).map_err(|e| match e {
+                    FsError::Unsupported => BlockError::Unsupported,
+                    _ => BlockError::Io,
+                });
+            }
+            _ => return Err(BlockError::Invalid),
+        };
+        r.map_err(|()| BlockError::Io)
     }
 }
 
@@ -5259,7 +5269,7 @@ fn device_flush(v: &'static Vol) -> Result<(), FsError> {
         let mut c = v.sector_cache.lock();
         match c.write_back_all(&mut BlkDev(v)) {
             Ok(()) => {}
-            Err(crate::bcache::IoError::Flush(e)) => return Err(e),
+            Err(crate::bcache::IoError::Flush(crate::bcache::BlockError::Unsupported)) => return Err(FsError::Unsupported),
             Err(_) => return Err(FsError::Io),
         }
     }

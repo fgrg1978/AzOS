@@ -4891,13 +4891,11 @@ mod power_cut {
 // not on the cache's own bookkeeping.
 #[cfg(test)]
 mod bcache_tests {
-    use super::bcache::{BlockCache, BlockIo, CacheStats, ConfigError, IoError, Mode};
+    use super::bcache::{BlockCache, BlockDev, BlockError, CacheStats, ConfigError, IoError, Mode};
+    use azos_drv_api::block::{BlockData, BlockOp, BlockReq, Geometry, FLAG_PREFLUSH, SECTOR};
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Ev { R(u64, u32), W(u64, u32, u8), F }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct FlushFailed;
 
     struct Dev {
         data: Vec<u8>,
@@ -4914,29 +4912,37 @@ mod bcache_tests {
         fn take(&mut self) -> Vec<Ev> { core::mem::take(&mut self.log) }
     }
 
-    impl BlockIo for Dev {
-        type FlushErr = FlushFailed;
-        fn read(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-            let off = lba as usize * 512;
-            let len = count as usize * 512;
-            if buf.len() != len || off + len > self.data.len() { return Err(()); }
-            buf.copy_from_slice(&self.data[off..off + len]);
-            self.log.push(Ev::R(lba, count));
-            Ok(())
+    impl BlockDev for Dev {
+        fn geometry(&self) -> Geometry {
+            Geometry { sectors: (self.data.len() / SECTOR) as u64, fua: false, discard: false }
         }
-        fn write(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-            if self.fail_writes { return Err(()); }
-            let off = lba as usize * 512;
-            let len = count as usize * 512;
-            if buf.len() != len || off + len > self.data.len() { return Err(()); }
-            self.data[off..off + len].copy_from_slice(buf);
-            self.log.push(Ev::W(lba, count, buf[0]));
-            Ok(())
-        }
-        fn flush(&mut self) -> Result<(), FlushFailed> {
-            if self.fail_flush { return Err(FlushFailed); }
-            self.log.push(Ev::F);
-            Ok(())
+        fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+            let off = req.sector as usize * SECTOR;
+            let len = req.count as usize * SECTOR;
+            match (req.op, req.data) {
+                (BlockOp::Read, BlockData::Read(buf)) => {
+                    if buf.len() != len || off + len > self.data.len() { return Err(BlockError::Io); }
+                    buf.copy_from_slice(&self.data[off..off + len]);
+                    self.log.push(Ev::R(req.sector, req.count));
+                    Ok(())
+                }
+                (BlockOp::Write, BlockData::Write(buf)) => {
+                    if req.flags & FLAG_PREFLUSH != 0 {
+                        self.flush().map_err(|_| BlockError::PreFlush)?;
+                    }
+                    if self.fail_writes { return Err(BlockError::Io); }
+                    if buf.len() != len || off + len > self.data.len() { return Err(BlockError::Io); }
+                    self.data[off..off + len].copy_from_slice(buf);
+                    self.log.push(Ev::W(req.sector, req.count, buf[0]));
+                    Ok(())
+                }
+                (BlockOp::Flush, _) => {
+                    if self.fail_flush { return Err(BlockError::Io); }
+                    self.log.push(Ev::F);
+                    Ok(())
+                }
+                _ => Err(BlockError::Invalid),
+            }
         }
     }
 
@@ -5102,7 +5108,7 @@ mod bcache_tests {
         assert_eq!(c.dirty_count(), 2);
         dev.fail_writes = false;
         dev.fail_flush = true;
-        assert_eq!(c.sync(&mut dev), Err(IoError::Flush(FlushFailed)),
+        assert_eq!(c.sync(&mut dev), Err(IoError::Flush(BlockError::PreFlush)),
                    "the device's own reason must come back");
         assert_eq!(dev.take(), vec![Ev::W(2, 1, 2)], "epoch 1 was written past a failed ordering flush");
         dev.fail_flush = false;
@@ -8024,7 +8030,8 @@ mod fatcache {
 // recording device.
 #[cfg(test)]
 mod bcache_sets {
-    use super::bcache::{BlockCache, BlockIo, IoError, Mode, MAX_WAYS};
+    use super::bcache::{BlockCache, BlockDev, BlockError, IoError, Mode, MAX_WAYS};
+    use azos_drv_api::block::{BlockData, BlockOp, BlockReq, Geometry, SECTOR};
 
     struct Dev { data: Vec<u8>, reads: Vec<u64> }
 
@@ -8034,20 +8041,27 @@ mod bcache_sets {
         }
     }
 
-    impl BlockIo for Dev {
-        type FlushErr = ();
-        fn read(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-            let o = lba as usize * 512;
-            buf.copy_from_slice(&self.data[o..o + count as usize * 512]);
-            self.reads.push(lba);
-            Ok(())
+    impl BlockDev for Dev {
+        fn geometry(&self) -> Geometry {
+            Geometry { sectors: (self.data.len() / SECTOR) as u64, fua: false, discard: false }
         }
-        fn write(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-            let o = lba as usize * 512;
-            self.data[o..o + count as usize * 512].copy_from_slice(buf);
-            Ok(())
+        fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+            let o = req.sector as usize * SECTOR;
+            let n = req.count as usize * SECTOR;
+            match (req.op, req.data) {
+                (BlockOp::Read, BlockData::Read(buf)) => {
+                    buf.copy_from_slice(&self.data[o..o + n]);
+                    self.reads.push(req.sector);
+                    Ok(())
+                }
+                (BlockOp::Write, BlockData::Write(buf)) => {
+                    self.data[o..o + n].copy_from_slice(buf);
+                    Ok(())
+                }
+                (BlockOp::Flush, _) => Ok(()),
+                _ => Err(BlockError::Invalid),
+            }
         }
-        fn flush(&mut self) -> Result<(), ()> { Ok(()) }
     }
 
     type Big = BlockCache<{ 64 * 512 }, 64>;

@@ -243,7 +243,7 @@ fn ordered_write(
     if flags & FLAG_PREFLUSH != 0 {
         match flush() {
             Ok(()) | Err(BlockError::Unsupported) => {}
-            Err(e) => return Err(e),
+            Err(_) => return Err(BlockError::PreFlush),
         }
     }
     write()
