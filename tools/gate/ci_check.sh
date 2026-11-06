@@ -11858,6 +11858,19 @@ host_job host_canary_row "envelope: connect canary" net-tests envelope-egress-ca
 # canary makes the receive pass ignore the take, and the named test, alone,
 # must go red (the stack would get the queue's frames).
 host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-canary a_taken_queue_goes_to_the_sink_and_the_stack_sees_none_of_it
+# The port sources of the server runtime (crates/core/ipc/src/{ep_queue,port,endpoint}.rs,
+# crates/core/syscall/src/ipc_handlers.rs, userspace/lib/srv): each canary puts one hole
+# back and the named test, alone, must go red.
+host_job host_canary_row "port: call link canary" ipc-fast-tests port-calls-canary a_call_on_an_empty_queue_hands_back_its_call_link
+host_job host_canary_row "port: call link drop canary" ipc-fast-tests call-link-drop-canary a_successor_binds_its_calls_before_the_rebind_and_keeps_them
+host_job host_canary_row "port: doorbell canary" ipc-tests port-doorbell-canary a_doorbell_reaches_the_ports_bound_to_its_word
+host_job host_canary_row "port: doorbell leak canary" ipc-tests port-bell-leak-canary a_freed_doorbell_leaves_the_filter_with_nothing_to_look_up
+host_job host_canary_row "port: shared doorbells canary" ipc-tests port-bells-shared-canary a_full_port_does_not_take_another_tasks_doorbell
+host_job host_canary_row "port: doorbell offset canary" syscall-tests doorbell-wrap-canary a_doorbell_offset_outside_its_region_is_refused
+host_job host_canary_row "port: calls binder canary" syscall-tests calls-any-binder-canary only_the_server_binds_an_endpoints_calls
+host_job host_canary_row "srv: call signal canary" srv-tests port-calls-canary a_call_and_an_irq_on_one_port_are_served_by_one_thread
+host_job host_canary_row "srv: batch canary" srv-tests batch-canary neither_calls_nor_interrupts_starve_the_other
+host_job host_canary_row "srv: owed calls canary" srv-tests owed-drop-canary a_refused_accept_keeps_the_calls_owed
 # SLAAC (crates/net/stack/src/ipv6.rs, RFC 4862): Duplicate Address Detection
 # and the valid-lifetime rule of §5.5.3 (e); each canary takes one out.
 # std's `TcpListener::bind` of a taken port is `AddrInUse` because `NODE_LISTEN`
