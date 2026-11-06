@@ -94,7 +94,7 @@ SAFETY = {0x01: "envelope_refused", 0x02: "estop", 0x03: "degrade", 0x04: "cap_d
           0x11: "release_nonce", 0x12: "sensor_incoherent", 0x13: "payload_refused",
           0x14: "entropy_unseeded_refused", 0x16: "topo_class_refused",
           0x17: "driver_supervisor", 0x18: "ml_absent", 0x19: "rt_watchdog", 0x1A: "topo_source",
-          0x1B: "decision_refused", 0x1C: "decision_provenance"}
+          0x1B: "decision_refused", 0x1C: "decision_provenance", 0x1F: "mm_quota_fault"}
 DECISION_BASE, DECISION_EXT = 0x1B, 0x1C
 # logger.rs `LOG_FLAG_EFFECT`: an `actuator_cmd` record that is a write-ahead
 # effect record (effect_gate.rs): payload `[kind u8][class u8][subject u16]

@@ -824,9 +824,11 @@ config MM_SLOTS_INLINE
       this many pages have their words inside the object; the rest are
       kept in 4 KiB pages of 512 words (the first four through the object,
       the others through one directory page), taken on the first touch of
-      a page they hold, charged to the task within its limit (a touch
-      past the limit that needs one is refused), and freed by a munmap
-      that leaves no page of them mapped.  A small mapping then costs no
+      a page they hold, charged to the task within its limit, and freed
+      by a munmap that leaves no page of them mapped.  A first touch past
+      the limit that needs one kills the task with exit status 137
+      (SIGKILL's, not a bad pointer's 139) and a SAFETY_MM_QUOTA_FAULT
+      record.  A small mapping then costs no
       page beyond the object, and a large one one or two loads more per
       fault.
 

@@ -17,8 +17,10 @@ pub const KILLED_ILL: i32 = 128 + 4;
 pub const KILLED_BUS: i32 = 128 + 7;
 /// Breakpoint with no debugger attached (Linux: SIGTRAP = 5).
 pub const KILLED_TRAP: i32 = 128 + 5;
-/// Stopped by force, not for anything the task did (`task_stop`). Linux:
-/// SIGKILL = 9.
+/// Stopped by force, not for anything the task did (`task_stop`), or killed
+/// at its Domain's memory limit (a page's first touch needed kernel memory the
+/// limit refused; a `SAFETY_MM_QUOTA_FAULT` record names it). Linux: SIGKILL =
+/// 9, as its out-of-memory kill.
 pub const KILLED_KILL: i32 = 128 + 9;
 
 #[cfg(test)]

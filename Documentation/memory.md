@@ -305,10 +305,13 @@ have their words inside the object. The others sit in 4 KiB chunks of 512 words:
 the first four chunks from the object's first through pointers in the object,
 the rest of a window of 512 chunks (1 GiB of address space, half below, half
 above) through one directory page. Chunks and the directory are allocated on the
-first touch of a page they hold, charged to the task within its limit (a
-touch past the limit that needs one is refused, the one exception to "a fault
-never refuses on quota"), and a `munmap` that leaves none of a chunk's pages
-mapped frees it; a mapping that would leave the window gets an object of its own. The lookup is a
+first touch of a page they hold, charged to the task within its limit, and a
+`munmap` that leaves none of a chunk's pages mapped frees it. A touch past the
+limit that needs a chunk is refused, the one exception to "a fault never
+refuses on quota": a ring-3 touch kills the task with exit status 137
+(`KILLED_KILL`, SIGKILL's, as an out-of-memory kill; not 139, a bad pointer's)
+and writes a durable `SAFETY_MM_QUOTA_FAULT` record with the address, and a
+kernel copy into the page answers `EFAULT`; a mapping that would leave the window gets an object of its own. The lookup is a
 binary search over the space's mapping records and one or two loads into the
 object.
 

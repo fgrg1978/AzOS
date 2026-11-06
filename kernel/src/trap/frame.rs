@@ -137,6 +137,18 @@ pub enum Cow {
     No,
 }
 
+/// How demand paging of a user fault ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Demand {
+    /// Resolved (or already resolved by another install): resume the task.
+    Resolved,
+    /// The task's Domain is at its limit and the page needed kernel memory
+    /// (its slot words): the task did nothing wrong with a pointer.
+    QuotaRefused,
+    /// Not a fault demand paging resolves.
+    No,
+}
+
 /// What an ISA's own exception cases decided before the generic policy runs.
 /// Each ISA constructs the variants its own cases need (`Kill`: x86_64's split
 /// lock; `Fatal`: aarch64's failed FP trap).
@@ -208,9 +220,9 @@ pub trait FaultServices<F: Frame> {
     /// Break copy-on-write at `va`; counts a resolved fault.
     fn cow(space: Self::Space, va: u64) -> Cow;
     /// Demand-page `va` (`write`: the access was a store); counts a resolved
-    /// fault. `true` also for a fault another install already resolved (the
-    /// page is mapped with the access allowed): the access retries.
-    fn demand(space: Self::Space, va: u64, write: bool) -> bool;
+    /// fault. `Resolved` also for a fault another install already resolved
+    /// (the page is mapped with the access allowed): the access retries.
+    fn demand(space: Self::Space, va: u64, write: bool) -> Demand;
     /// Page aging's software half: set the Accessed bit the CPU did not set
     /// itself on the user leaf of `va`, so the access can be retried. Asked
     /// last, after COW and demand paging declined (a leaf this resolves is
@@ -219,6 +231,9 @@ pub trait FaultServices<F: Frame> {
     fn accessed(space: Self::Space, va: u64) -> bool;
     /// The durable record and the console line of a COW that ran out of memory.
     fn cow_oom(va: u64);
+    /// The durable record and the console line of a demand fault the Domain's
+    /// limit refused ([`Demand::QuotaRefused`]).
+    fn mm_quota(va: u64);
     /// Is `va` inside the null guard?
     fn in_null_guard(va: u64) -> bool;
     /// Is `va` in the area the user stack can occupy, the ceiling an image may

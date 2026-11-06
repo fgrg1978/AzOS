@@ -2852,6 +2852,9 @@ pub enum UserFault {
     /// sibling's install between the access and this, a block promoted
     /// meanwhile). The access retries, as Linux's spurious fault does.
     Spurious,
+    /// The page's first touch needs memory the Domain's limit refused (a
+    /// chunk of slot words): the task is at its limit, not at a bad pointer.
+    QuotaRefused,
     /// Not resolved: the task's own fault.
     No,
 }
@@ -2865,6 +2868,7 @@ pub enum UserFault {
 pub fn handle_user_fault(space: crate::aspace::SpaceRef, fault_addr: usize, write: bool) -> UserFault {
     match handle_demand_fault(space, fault_addr) {
         Ok(()) => UserFault::Resolved,
+        Err(KernelError::QuotaRefused) => UserFault::QuotaRefused,
         Err(_) if !cfg!(feature = "spurious-fault-canary") && access_allowed(space.root(), fault_addr, write) => {
             UserFault::Spurious
         }

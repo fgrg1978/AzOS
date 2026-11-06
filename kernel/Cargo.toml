@@ -267,6 +267,10 @@ kmem-cache-cross-type-canary = ["azos_mm/kmem-cache-cross-type-canary"]
 # A private anonymous page's fault believes the leaf over its object's slot:
 # the ktest `anon_fault_decides_from_the_slot_not_the_leaf` goes red.
 mm-pte-truth-canary = ["azos_mm/mm-pte-truth-canary"]
+# A demand fault the Domain's limit refused is killed as SIGSEGV with no
+# record (kernel/src/trap/fault.rs): trap-tests
+# `a_demand_fault_at_the_memory_limit_is_named_and_killed_as_such` fails.
+mm-quota-as-segv-canary = []
 # Capability tables come from a cache of another type: the `cap table cache` ktest goes red.
 cap-table-cross-type-canary = ["azos_ipc/cap-table-cross-type-canary"]
 # Gate canary: the tasks come from a cache of another type, so the ktest

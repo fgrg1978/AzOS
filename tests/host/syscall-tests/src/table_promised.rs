@@ -61,8 +61,8 @@ fn a_touch_at_the_limit_gets_its_tables() {
     // a chunk of slot words (`anon_obj.rs`), kernel memory the reservation did
     // not count, which the limit refuses: the touch is refused before a table
     // is built.
-    let refused = azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), b);
-    assert!(refused.is_err(), "a slot chunk was charged past the limit");
+    let refused = azos_mm::vmm::handle_user_fault(azos_sched::shim_space(pt), b, true);
+    assert_eq!(refused, azos_mm::vmm::UserFault::QuotaRefused, "a slot chunk was charged past the limit");
     assert_eq!(azos_mm::shim_pages_in_use(), frames, "nothing taken for the refused touch");
     // Room for the chunk (the limit again, the reservation charged again).
     azos_sched::shim_set_page_limit(REGION_PAGES as u32 + 1);

@@ -34,3 +34,6 @@ boot-selftests = []
 # chaos); never enabled here.
 ktest = []
 chaos = []
+# The kernel's canary in the pulled-in `fault.rs`: a memory-limit demand fault
+# killed as SIGSEGV with no record.
+mm-quota-as-segv-canary = []

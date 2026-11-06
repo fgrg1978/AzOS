@@ -20,7 +20,7 @@ use core::fmt;
 
 use azos_abi::exit_status as es;
 
-use super::frame::{Cow, Disposition, FaultServices, Frame, KernelFault};
+use super::frame::{Cow, Demand, Disposition, FaultServices, Frame, KernelFault};
 
 /// The console report of a user task killed by an unresolved page fault: the
 /// banner, what else is worth knowing, and the kill. Exactly two lines carry
@@ -126,8 +126,16 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
                     Cow::No => {}
                 }
             }
-            if S::demand(space, va, write) {
-                return;
+            match S::demand(space, va, write) {
+                Demand::Resolved => return,
+                // The task is at its Domain's limit, not at a bad pointer: a
+                // record of its own and SIGKILL's status, as an out-of-memory
+                // kill. Canary `mm-quota-as-segv-canary`: a SIGSEGV death.
+                Demand::QuotaRefused if !cfg!(feature = "mm-quota-as-segv-canary") => {
+                    S::mm_quota(va);
+                    kill_user::<S, F>(frame, es::KILLED_KILL);
+                }
+                Demand::QuotaRefused | Demand::No => {}
             }
             // A page the aging scan cleared A on, touched again on a CPU that
             // does not set A itself (Svade, an aarch64 core without HAFDBS):

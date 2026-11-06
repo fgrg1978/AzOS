@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 
 use crate::trap::frame::{
-    Cow, Disposition, EntryKind, FaultServices, Frame, IrqServices, KernelFault, SyscallServices, TrapClass,
+    Cow, Demand, Disposition, EntryKind, FaultServices, Frame, IrqServices, KernelFault, SyscallServices, TrapClass,
 };
 use azos_abi::exit_status as es;
 
@@ -33,6 +33,7 @@ pub struct St {
     pub user_pt: usize,
     pub cow: Vec<Cow>,
     pub demand_ok: bool,
+    pub demand_quota: bool,
     pub accessed_ok: bool,
     pub report: bool,
     pub arch_pf: bool,
@@ -63,6 +64,7 @@ impl St {
             user_pt: 0x8000,
             cow: Vec::new(),
             demand_ok: false,
+            demand_quota: false,
             accessed_ok: false,
             report: true,
             arch_pf: false,
@@ -218,9 +220,9 @@ impl<F: Frame> FaultServices<F> for Fake {
         log(format!("cow {pt:#x} {va:#x}"));
         with(|s| if s.cow.is_empty() { Cow::No } else { s.cow.remove(0) })
     }
-    fn demand(pt: usize, va: u64, _write: bool) -> bool {
+    fn demand(pt: usize, va: u64, _write: bool) -> Demand {
         log(format!("demand {pt:#x} {va:#x}"));
-        with(|s| s.demand_ok)
+        with(|s| if s.demand_quota { Demand::QuotaRefused } else if s.demand_ok { Demand::Resolved } else { Demand::No })
     }
     fn accessed(pt: usize, va: u64) -> bool {
         log(format!("accessed {pt:#x} {va:#x}"));
@@ -228,6 +230,9 @@ impl<F: Frame> FaultServices<F> for Fake {
     }
     fn cow_oom(va: u64) {
         log(format!("cow_oom {va:#x}"));
+    }
+    fn mm_quota(va: u64) {
+        log(format!("mm_quota {va:#x}"));
     }
     fn in_null_guard(va: u64) -> bool {
         va < 0x1000

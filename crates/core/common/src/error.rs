@@ -35,6 +35,11 @@ pub enum KernelError {
     /// for "why did the kernel say EncodeFailed" should find exactly the
     /// encode call, not a grep full of unrelated I/O failures.
     EncodeFailed,
+    /// The Domain's limit refused memory the kernel needed on the task's
+    /// behalf where the task could not have been asked first (the slot words
+    /// of an anonymous page's first touch): the task is at its limit, it did
+    /// nothing wrong with a pointer.
+    QuotaRefused,
 }
 
 /// Kernel-wide Result type alias.

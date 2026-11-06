@@ -13,7 +13,7 @@ use core::fmt;
 
 use azos_syscall::SyscallEntry;
 
-use super::frame::{Cow, Disposition, EntryKind, FaultServices, Frame, IrqServices, SyscallServices};
+use super::frame::{Cow, Demand, Disposition, EntryKind, FaultServices, Frame, IrqServices, SyscallServices};
 use super::irq::Resched;
 
 /// What an ISA adds to [`Frame`] for the kernel-typed half of the trap flow.
@@ -282,14 +282,15 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
         }
     }
 
-    fn demand(space: Self::Space, va: u64, write: bool) -> bool {
+    fn demand(space: Self::Space, va: u64, write: bool) -> Demand {
         match azos_mm::vmm::handle_user_fault(space, va as usize, write) {
             azos_mm::vmm::UserFault::Resolved => {
                 azos_mm::vmm::note_demand_resolved();
-                true
+                Demand::Resolved
             }
-            azos_mm::vmm::UserFault::Spurious => true,
-            azos_mm::vmm::UserFault::No => false,
+            azos_mm::vmm::UserFault::Spurious => Demand::Resolved,
+            azos_mm::vmm::UserFault::QuotaRefused => Demand::QuotaRefused,
+            azos_mm::vmm::UserFault::No => Demand::No,
         }
     }
 
@@ -307,6 +308,20 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
         // SITE: 0 = the page-fault arm of the trap policy.
         let _ = azos_actuation::logger::log_safety_violation_durable(
             azos_actuation::logger::SAFETY_COW_OOM,
+            0,
+            va as u32,
+        );
+    }
+
+    fn mm_quota(va: u64) {
+        azos_drv_sys::kerr!();
+        azos_drv_sys::kerr!("[PAGE FAULT] MEMORY LIMIT at {:#x}: the first touch of a reserved page needs \
+                             kernel memory (its slot words) the task's Domain has no room for", va);
+        azos_drv_sys::kerr!("  task: {} (tid {})", azos_sched::current_task_name(), azos_sched::current_task_tid());
+        // Durable, as the COW out-of-memory record: `action_code` 0 = the
+        // page-fault arm of the trap policy.
+        let _ = azos_actuation::logger::log_safety_violation_durable(
+            azos_actuation::logger::SAFETY_MM_QUOTA_FAULT,
             0,
             va as u32,
         );

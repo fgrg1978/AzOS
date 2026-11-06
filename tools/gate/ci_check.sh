@@ -12309,6 +12309,11 @@ host_job host_canary_row "anon: slot chunk within the limit canary" syscall-test
     a_touch_at_the_limit_gets_its_tables
 host_job host_canary_row "anon: slot chunk freed by munmap canary" syscall-tests slot-chunk-kept-canary \
     a_munmap_frees_the_slot_chunks_of_the_pages_it_unmaps
+# A ring-3 fault the Domain's limit refused (a slot chunk) is killed with
+# SIGKILL's status and a SAFETY_MM_QUOTA_FAULT record, not as a bad pointer
+# (trap/fault.rs). mm-quota-as-segv-canary: SIGSEGV, no record.
+host_job host_canary_row "fault: memory limit kill canary" trap-tests mm-quota-as-segv-canary \
+    a_demand_fault_at_the_memory_limit_is_named_and_killed_as_such
 # A copy-on-write break moves the page's slot with its leaf (pager::cow_swap),
 # found by root for another task's space too. cow-slot-canary: the slot stays
 # on the shared frame and the page is never the reclaimer's again.

@@ -169,6 +169,20 @@ fn a_cow_out_of_memory_is_named_and_the_task_still_dies() {
     });
 }
 
+/// **A demand fault the Domain's limit refused is not a pointer bug: it leaves
+/// its own record and the task dies with SIGKILL's status, not SIGSEGV's; no
+/// other resolution is tried.** Canary `mm-quota-as-segv-canary`: a SIGSEGV
+/// death with no record.
+#[test]
+fn a_demand_fault_at_the_memory_limit_is_named_and_killed_as_such() {
+    on_each_isa!(true, false, 0xC000, |f| {
+        with(|s| s.demand_quota = true);
+        assert!(matches!(pf(&mut f), Ended::Killed(s) if s == es::KILLED_KILL));
+        assert!(saw("mm_quota 0xc000"), "{:?}", logged());
+        assert!(!saw("accessed 0x"), "{:?}", logged());
+    });
+}
+
 #[test]
 fn a_task_with_no_page_table_is_killed_without_a_resolution_attempt() {
     on_each_isa!(true, true, 0xB000, |f| {

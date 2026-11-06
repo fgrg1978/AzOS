@@ -1806,10 +1806,12 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let mut spare = match missing {
         0 => None,
         n => match Spare::take(root, n) {
-            Some(s) => Some(s),
-            None => {
+            Ok(s) => Some(s),
+            // `QuotaRefused`: the Domain is at its limit, which the trap tells
+            // from a bad pointer (`vmm::UserFault::QuotaRefused`).
+            Err(e) => {
                 src.give_back(root, block);
-                return Err(KernelError::OutOfMemory);
+                return Err(e);
             }
         },
     };
@@ -2255,7 +2257,7 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
                         let i = m.page_index(va);
                         let slot = match o.slot(i) {
                             Some(s) => Some(s),
-                            None => Spare::take(child.root(), o.missing(i)).and_then(|mut sp| o.slot_fill(i, &mut sp)),
+                            None => Spare::take(child.root(), o.missing(i)).ok().and_then(|mut sp| o.slot_fill(i, &mut sp)),
                         };
                         match slot {
                             Some(s) => s.store(slot::frame(frame), Ordering::Release),
@@ -2321,7 +2323,7 @@ fn fork_race_canary(parent: SpaceRef, child: SpaceRef, m: &Mapping, o: &anon_obj
     for i in m.off..m.off + m.pages() {
         let Some(f) = slot::frame_of(po.look(i).0) else { continue };
         if o.look(i).0 == slot::EMPTY {
-            if let Some(s) = Spare::take(child.root(), o.missing(i)).and_then(|mut sp| o.slot_fill(i, &mut sp)) {
+            if let Some(s) = Spare::take(child.root(), o.missing(i)).ok().and_then(|mut sp| o.slot_fill(i, &mut sp)) {
                 s.store(slot::frame(f), Ordering::Release);
             }
         }
@@ -2376,7 +2378,7 @@ fn copy_markers(child: SpaceRef, maps: &[Mapping]) -> Option<usize> {
             }
             let slot = match co.slot(i) {
                 Some(s) => Some(s),
-                None => Spare::take(child.root(), co.missing(i)).and_then(|mut sp| co.slot_fill(i, &mut sp)),
+                None => Spare::take(child.root(), co.missing(i)).ok().and_then(|mut sp| co.slot_fill(i, &mut sp)),
             };
             let Some(cs) = slot else {
                 short = true;

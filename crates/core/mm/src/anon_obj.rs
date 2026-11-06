@@ -40,6 +40,7 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use azos_arch::PAGE_SIZE;
+use azos_common::error::{KResult, KernelError};
 
 use crate::addr::{phys_to_virt, virt_to_phys, PhysAddr};
 use crate::cache::Cache;
@@ -176,26 +177,26 @@ pub struct Spare {
 
 impl Spare {
     /// `n` (at most 2) pages charged to `root` within its Domain's limit.
-    /// `None` when the limit refuses one or the allocator has none: nothing is
-    /// held then.
+    /// `QuotaRefused` when the limit refuses one, `OutOfMemory` when the
+    /// allocator has none: nothing is held then.
     #[inline]
-    pub fn take(root: usize, n: usize) -> Option<Self> {
+    pub fn take(root: usize, n: usize) -> KResult<Self> {
         let s = Spare { root, pages: [0; 2], n: 0 };
         if n == 0 {
-            return Some(s);
+            return Ok(s);
         }
         s.fill(n)
     }
 
     #[cold]
-    fn fill(mut self, n: usize) -> Option<Self> {
+    fn fill(mut self, n: usize) -> KResult<Self> {
         let s = &mut self;
         while s.n < n.min(2) {
             // Canary `slot-chunk-promised-canary`: charged whatever the
             // Domain's limit says, as a table a first touch needs is.
             let take = if cfg!(feature = "slot-chunk-promised-canary") { TableCharge::Promised } else { TableCharge::Take };
             if !vmm::table_charge(s.root, take) {
-                return None;
+                return Err(KernelError::QuotaRefused);
             }
             match pmm::alloc_page() {
                 Ok(p) => {
@@ -204,11 +205,11 @@ impl Spare {
                 }
                 Err(_) => {
                     let _ = vmm::table_charge(s.root, TableCharge::Return);
-                    return None;
+                    return Err(KernelError::OutOfMemory);
                 }
             }
         }
-        Some(self)
+        Ok(self)
     }
 
     fn pop(&mut self) -> Option<usize> {

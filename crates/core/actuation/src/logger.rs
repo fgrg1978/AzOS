@@ -512,6 +512,14 @@ pub const SAFETY_OPERATOR_KEY: u8 = 0x1D;
 /// `detail` the boot's rollback count so far. Not a latch: the loop runs on.
 pub const SAFETY_TXN_ROLLBACK: u8 = 0x1E;
 
+/// A ring-3 task was killed because the first touch of a page it had reserved
+/// needed kernel memory (the page's slot words, `azos_mm::anon_obj`) its
+/// Domain's limit refused. The task did nothing wrong with a pointer: it was
+/// at its limit. `action_code` 0 = the page-fault arm of the trap policy,
+/// `detail` the faulting address. The task exits with SIGKILL's status
+/// (`azos_abi::exit_status::KILLED_KILL`).
+pub const SAFETY_MM_QUOTA_FAULT: u8 = 0x1F;
+
 /// Bytes of a release-key fingerprint: what fits a record's payload after the
 /// kind and its three reserved bytes.
 pub const OPERATOR_KEY_FP_BYTES: usize = LOG_PAYLOAD_BYTES - 4;
