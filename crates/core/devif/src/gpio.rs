@@ -27,6 +27,12 @@ use azos_idl::azos_interface;
 /// The interface id (ASCII "GPIO").
 pub const GPIO_ID: u32 = 0x4750_494F;
 
+/// Pins of controller 0, the board's: the kernel's pin space of the board's
+/// controller (`azos_drv_gpio::gpio::GPIO_MAX_PINS` is this), so a topology
+/// row naming a board pin past it is refused when it is read. Another
+/// controller's pins are its own, checked when one is used.
+pub const BOARD_PINS: u32 = 64;
+
 /// The badge of `pin` on controller `ctrl`.
 #[cfg(not(feature = "badge-without-controller-canary"))]
 pub const fn badge(ctrl: u8, pin: u8) -> u32 {

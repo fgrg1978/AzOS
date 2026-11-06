@@ -11,7 +11,8 @@
 //! `GPIO_CONTROLLERS`.
 
 use crate::gpio::{self, GpioDir};
-use crate::instances::{Instances, RegisterError};
+use crate::instances::Instances;
+pub use crate::instances::{DeviceId, Lease, RegisterError, UnregisterError};
 
 /// A controller's op failed: the pin is not usable as asked (not an output,
 /// held by the kernel's stop, unread), or the controller is not bound.
@@ -19,6 +20,11 @@ use crate::instances::{Instances, RegisterError};
 pub struct Fault;
 
 /// One GPIO controller.
+///
+/// An op runs on a [`Lease`] with no lock held, so the controller may be
+/// called from several harts at once. Its driver's unbind withdraws it with
+/// [`unregister`], which returns only when no op is inside it: after that
+/// the driver may power the device down, and no op reaches it again.
 pub trait GpioChip: Sync {
     /// Its pins, `0..pins()`.
     fn pins(&self) -> u32;
@@ -56,19 +62,21 @@ static BOARD: Board = Board;
 
 static CHIPS: Instances<dyn GpioChip, { azos_limits::GPIO_CONTROLLERS as usize }> = Instances::with_board(&BOARD);
 
-/// Controller `ctrl`, if one is registered.
-pub fn chip(ctrl: u32) -> Option<&'static dyn GpioChip> {
+/// Controller `ctrl`, if one is registered: held for the op while the lease
+/// lives.
+pub fn chip(ctrl: u32) -> Option<Lease<'static, dyn GpioChip>> {
     CHIPS.get(ctrl)
 }
 
 /// Register bound device `dev`'s controller; its controller number.
-pub fn register(dev: u32, ctrl: &'static dyn GpioChip) -> Result<u32, RegisterError> {
+pub fn register(dev: DeviceId, ctrl: &'static dyn GpioChip) -> Result<u32, RegisterError> {
     CHIPS.register(dev, ctrl)
 }
 
-/// Withdraw device `dev`'s controller; the number it had.
-pub fn unregister(dev: u32) -> Option<u32> {
-    CHIPS.unregister(dev)
+/// Withdraw device `dev`'s controller once no op is inside it; the number it
+/// had. `patience` says how long to wait for the ops in flight.
+pub fn unregister(dev: DeviceId, patience: &mut dyn FnMut() -> bool) -> Result<u32, UnregisterError> {
+    CHIPS.unregister(dev, patience)
 }
 
 /// How many controllers are registered.

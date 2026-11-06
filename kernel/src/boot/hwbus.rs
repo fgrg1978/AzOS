@@ -722,10 +722,6 @@ pub(crate) fn note_firmware_virtio(dtb_ptr: usize) {
     // arch-only: x86_64's firmware table is no device tree.
     #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
     let _ = dtb_ptr;
-    // The development kernel's soft GPIO expander: a device no firmware
-    // describes, added so that its record binds and unbinds it like any other.
-    #[cfg(feature = "gpio-soft-expander")]
-    add(Device::dt("gpio-soft", b"azos,soft-gpio", 0, 0, 0));
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     if dtb_ptr != 0 {
         let mut named = false;
@@ -814,6 +810,12 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
                 .with_dma_coherent(coherent));
         }
     }
+
+    // The development kernel's soft GPIO expander: a device no firmware
+    // describes, added after every one the firmware does, so that their
+    // handles are the same with it or without it.
+    #[cfg(feature = "gpio-soft-expander")]
+    add(Device::dt("gpio-soft", b"azos,soft-gpio", 0, 0, 0));
 
     // The kernel's own hardware among them is bound now: it was brought up
     // before this point.

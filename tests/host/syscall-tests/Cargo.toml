@@ -38,6 +38,12 @@ mmap-prot-canary = []
 # `azos_devif::gpio::badge`'s canary: a badge is stamped without its controller
 # (`a_capability_on_controller_1_never_reaches_controller_0` goes red).
 gpio-badge-canary = ["azos_devif/badge-without-controller-canary"]
+# The pulled-in devices.rs: a controller that is not registered is answered by
+# the board's (`a_controller_not_bound_is_no_resource_and_a_pin_past_its_last_is_bad_argument`
+# goes red); the safety core's lines are not kept from an acting op
+# (`the_kill_switch_line_is_refused_to_a_holder_of_its_endpoint` goes red).
+gpio-unbound-falls-to-board-canary = []
+gpio-safety-guard-canary = []
 # `ipc_handlers.rs` `doorbell_word`'s canary: the doorbell offset's end wraps
 # (`a_doorbell_offset_outside_its_region_is_refused` goes red).
 doorbell-wrap-canary = []
@@ -152,6 +158,9 @@ azos_abi = { path = "../../../crates/core/abi" }
 # `path::join_beneath` (the filesystem's own join). Pure, no_std.
 azos_common = { path = "../../../crates/core/common" }
 azos_devif = { path = "../../../crates/core/devif" }
+# CONFIG.INI `estop_gpio_pin` (the pulled-in handlers.rs keeps the kill switch's
+# line from Gpio ops), the real crate.
+azos_config = { path = "../../../crates/core/config" }
 azos_idl = { path = "../../../crates/core/idl" }
 # The scanout, the EDID parser and the copy `display.rs` serves the `Display` interface from.
 azos_fb = { path = "../../../crates/drivers/fb" }

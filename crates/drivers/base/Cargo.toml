@@ -10,6 +10,11 @@ publish = false
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []
+# Canaries of `instances.rs` (built by tests/host/drivers-tests): a freed
+# instance number goes to another device; an unregistration does not wait for
+# the ops in flight.
+instances-reuse-canary = []
+instances-no-drain-canary = []
 
 [dependencies]
 azos_abi     = { workspace = true }

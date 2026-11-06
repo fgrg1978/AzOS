@@ -847,12 +847,27 @@ config GPIO_CONTROLLERS
       when every number is taken is refused. Cost: three words per
       controller.
 
+config INSTANCE_UNBIND_WAIT_US
+    int "Controllers: how long an unbind waits for the ops inside one (us)"
+    depends on GPIO_SOFT_EXPANDER
+    range 1 1000000
+    default 1000
+    help
+      A controller of a class served by number (GPIO,
+      crates/drivers/base/src/instances.rs) is withdrawn by its driver's
+      unbind only when no op is inside it: new ops are refused at once
+      (NO_RESOURCE), and the unbind waits this long for the ones already
+      running. Past it the unbind fails, the controller stays registered and
+      the device stays bound with its driver. An op is a few register
+      accesses or one bus transfer, so the default leaves a slow I2C
+      expander's transfer room. Only a controller that unbinds asks it:
+      today the soft expander (GPIO_SOFT_EXPANDER).
+
 config GPIO_SOFT_EXPANDER
     # cargo-feature: gpio-soft-expander
     bool "GPIO: a soft 16-line expander as a second controller (test)"
-    depends on BUILD_TYPE_DEV
-    default y if BOARD_QEMU
-    default n
+    depends on BUILD_TYPE_DEV && BOARD_QEMU && GPIO_CONTROLLERS >= 2
+    default y
     help
       Kernel feature `gpio-soft-expander` (crates/drivers/gpio/src/
       expander.rs): the hardware bus gets one more device, `gpio-soft`,
@@ -861,8 +876,9 @@ config GPIO_SOFT_EXPANDER
       with one), and whose unbind withdraws it. It gives the machines with
       one GPIO controller (QEMU on every ISA) a second, for the gate's
       two-controller rows (ktest `gpio_two_controllers_serve_one_interface`);
-      on by default in development builds for QEMU. Needs GPIO_CONTROLLERS
-      of 2 or more for the driver to bind. n: no such device.
+      on by default in development builds for QEMU, and only there (the
+      boards have no place it is added). Needs GPIO_CONTROLLERS of 2 or
+      more. n: no such device.
 
 menu "I2C bus transactions"
 

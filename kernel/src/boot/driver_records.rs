@@ -74,6 +74,27 @@ pub(crate) fn hold_line(h: Handle, line: u32, target: u32) {
     }
 }
 
+/// Device `h` as a class registry names it: its handle and the occupancy of
+/// its slot (`azos_drv_base::instances::DeviceId`). The bus lock is taken from
+/// a driver op, which the bus calls with it released.
+#[cfg(feature = "gpio-soft-expander")]
+fn device_id(h: Handle) -> Option<azos_drv_base::instances::DeviceId> {
+    hwbus::with(|b| b.get(h).map(|s| azos_drv_base::instances::DeviceId { handle: h.0, generation: s.generation() }))
+}
+
+/// The patience of an unbind waiting for the ops inside a controller: Kconfig
+/// `INSTANCE_UNBIND_WAIT_US` from the first time it is asked.
+#[cfg(feature = "gpio-soft-expander")]
+fn unbind_wait() -> impl FnMut() -> bool {
+    use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    let wait = azos_limits::INSTANCE_UNBIND_WAIT_US as u64 * TIMER_FREQ / 1_000_000;
+    let mut end = None;
+    move || {
+        let t = now();
+        t < *end.get_or_insert(t.saturating_add(wait.max(1)))
+    }
+}
+
 /// Does a device other than `h` bound to a kernel driver share `line`? It
 /// sees what a device's `irq` names: a virtio-mmio slot's line; a PCI function
 /// carries `irq` 0, so an INTx co-user is not seen (no PCI driver has an
@@ -436,17 +457,23 @@ fn gpio_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
 const GPIO: Ops<Kernel> = bring_up(gpio_probe);
 
 // The development kernel's soft expander: its probe registers it as the next
-// GPIO controller, its unbind withdraws it, and the number stays the device's.
+// GPIO controller, its unbind withdraws it once no op is inside it, and the
+// number stays the device's.
 #[cfg(feature = "gpio-soft-expander")]
 fn gpio_soft_probe(_: &mut KernelEnv<'_>, h: Handle, _: &Device) -> R {
-    let ctrl = azos_drv_gpio::chips::register(h.0, &azos_drv_gpio::expander::EXPANDER).map_err(|_| ProbeError::Busy)?;
+    let dev = device_id(h).ok_or(ProbeError::Failed)?;
+    let ctrl = azos_drv_gpio::chips::register(dev, &azos_drv_gpio::expander::EXPANDER).map_err(|_| ProbeError::Busy)?;
     crate::kprintln!("[GPIO] soft expander: controller {}, {} pins ({} controllers registered)",
         ctrl, azos_drv_gpio::expander::PINS, azos_drv_gpio::chips::count());
     Ok(())
 }
 #[cfg(feature = "gpio-soft-expander")]
 fn gpio_soft_unbind(_: &mut KernelEnv<'_>, h: Handle, _: &Device) -> R {
-    azos_drv_gpio::chips::unregister(h.0).map(|_| ()).ok_or(ProbeError::Failed)
+    let dev = device_id(h).ok_or(ProbeError::Failed)?;
+    azos_drv_gpio::chips::unregister(dev, &mut unbind_wait()).map(|_| ()).map_err(|e| {
+        azos_drv_sys::kwarn!("[GPIO] the soft expander stays bound: {:?}", e);
+        ProbeError::Failed
+    })
 }
 #[cfg(feature = "gpio-soft-expander")]
 const GPIO_SOFT: Ops<Kernel> = Ops { probe: gpio_soft_probe, unbind: unbind(gpio_soft_unbind), power: Power::Stateless };

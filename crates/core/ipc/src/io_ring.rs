@@ -1545,8 +1545,10 @@ pub struct IoRingOps {
     /// toggle the degrade level on their own lock, has a deterministic answer.
     pub write_contained: fn() -> bool,
     pub read_sensor:   fn(sensor_type: u32, buf: *mut u8, buf_len: usize) -> OpResult,
-    pub write_gpio:    fn(pin: u32, value: u32) -> OpResult,
-    pub read_gpio:     fn(pin: u32) -> OpResult,
+    /// `badge`: the `Gpio` badge of the pin, `(ctrl, pin)`
+    /// (`azos_devif::gpio::badge`), the entry's `param0`.
+    pub write_gpio:    fn(badge: u32, value: u32) -> OpResult,
+    pub read_gpio:     fn(badge: u32) -> OpResult,
     /// Mirrors `sys_i2c_read(bus, addr, reg, buf, len)`. `addr_reg` used to be
     /// one packed word; see [`SqEntry`] for why it had to be split.
     pub i2c_read:      fn(bus: u32, addr: u32, reg: u32, buf: *mut u8, len: usize) -> OpResult,

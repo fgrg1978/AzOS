@@ -2507,6 +2507,17 @@ pub(crate) fn gpio_pin_is_motor_bound(pin: u32) -> bool {
     azos_robot::motor::gpio_pin_motor_id(pin).is_some()
 }
 
+/// Is board pin `pin` a line the safety core reads? The kill switch's input
+/// (CONFIG.INI `estop_gpio_pin`, the value `azos_kill_switch` arms, read
+/// again on every call as it does), and every input the device tree
+/// describes as a `gpio-keys` line of the controller (the switch's polarity
+/// and window come from there). A holder that turned one into an output, or
+/// drove it, would make the switch read what the holder drives.
+pub(crate) fn gpio_pin_is_safety_line(pin: u32) -> bool {
+    pin == azos_config::CFG_ESTOP_GPIO_PIN.load(core::sync::atomic::Ordering::Acquire)
+        || azos_drv_gpio::gpio::gpio_key(pin).is_some()
+}
+
 // ── Memory management (Phase 7) ───────────────────────────────────────────────
 
 /// The Linux personality's `brk` (`linux.rs`, `nr::BRK`): a0 = new break

@@ -503,8 +503,8 @@ submission), `result` i32 at 8 (bytes, or a negative code), `flags` u32 at 12:
 |---|---:|---|
 | `OP_NOP` | 0 | completes with 0 |
 | `OP_READ_SENSOR` | 1 | read a sensor into the data buffer |
-| `OP_WRITE_GPIO` | 2 | write a GPIO pin |
-| `OP_READ_GPIO` | 3 | read a GPIO pin |
+| `OP_WRITE_GPIO` | 2 | write a GPIO pin: `param0` its `gpio` badge `(ctrl, pin)` (`azos_devif::gpio::badge`), `param1` the level; `-ENODEV` for a controller not bound, `-EINVAL` for a pin it does not have, `-EPERM` for a motor's or a safety line's pin |
+| `OP_READ_GPIO` | 3 | read a GPIO pin: `param0` as for `OP_WRITE_GPIO` |
 | `OP_I2C_READ` | 4 | I2C read into the data buffer |
 | `OP_I2C_WRITE` | 5 | I2C write from the data buffer (the register is the first payload byte) |
 | `OP_PWM_SET` | 6 | set a PWM channel duty |

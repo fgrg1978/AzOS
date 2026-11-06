@@ -14,7 +14,7 @@
 /// wakes the task ([`set_edge_waker`]); the task samples the level, debounces
 /// it (`crate::debounce`) and unmasks the pin again. The simulation takes its
 /// edges from [`gpio_inject`], the circuit QEMU does not model.
-pub const GPIO_MAX_PINS: usize = 64;
+pub const GPIO_MAX_PINS: usize = azos_devif::gpio::BOARD_PINS as usize;
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering as EdgeOrdering};
 

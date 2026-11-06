@@ -89,7 +89,8 @@ use azos_devif::i2c::{self, Bytes};
 use azos_devif::uart::{self, Chunk, ChunkSink, ChunkSource, RxQueue, TxQueue};
 use azos_devif::{outcome, Cap, Out};
 use azos_drv_bus::uart_bridge::{BridgePort, BRIDGE_PORT};
-use azos_drv_gpio::chips::{Fault, GpioChip};
+use azos_devif::GpioIdl;
+use azos_drv_gpio::chips::{Fault, GpioChip, Lease};
 use azos_drv_gpio::gpio::GpioDir;
 use azos_rings::region::{RingStep, SpscSlots, RING_SLOTS};
 use azos_sync::SpinLock;
@@ -100,11 +101,23 @@ use crate::handlers::gpio_pin_is_motor_bound;
 use crate::handlers::{pwm_channel_is_motor_bound, pwm_control_reaches_a_motor};
 use crate::khost::Caller;
 
-/// The pin a `gpio` badge names, on its controller (`azos_drv_gpio::chips`).
+/// The pin a `gpio` badge names, on its controller (`azos_drv_gpio::chips`),
+/// held for the op (the controller's unbind waits for it).
 pub(crate) struct GpioPin {
-    chip: &'static dyn GpioChip,
+    chip: Lease<'static, dyn GpioChip>,
     ctrl: u8,
     pin: u32,
+}
+
+/// Why an acting op on a pin is refused before the controller is touched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Held {
+    /// A direction pin of a motor's H-bridge: the motor interface is the
+    /// gated path to it.
+    Motor,
+    /// A line the safety core reads (`handlers::gpio_pin_is_safety_line`):
+    /// whoever holds a capability on it, no op may drive it or turn it.
+    Safety,
 }
 
 impl GpioPin {
@@ -115,7 +128,7 @@ impl GpioPin {
             return Err(outcome::BAD_ARGUMENT);
         }
         let (ctrl, pin) = azos_devif::gpio::unbadge(badge);
-        let chip = azos_drv_gpio::chips::chip(ctrl as u32).ok_or(outcome::NO_RESOURCE)?;
+        let chip = controller(ctrl).ok_or(outcome::NO_RESOURCE)?;
         let pin = pin as u32;
         if pin >= chip.pins() {
             return Err(outcome::BAD_ARGUMENT);
@@ -123,9 +136,27 @@ impl GpioPin {
         Ok(GpioPin { chip, ctrl, pin })
     }
 
-    /// A pin of a motor's H-bridge: those are on the board's controller.
-    pub(crate) fn motor_bound(&self) -> bool {
-        self.ctrl == 0 && gpio_pin_is_motor_bound(self.pin)
+    /// Who keeps the pin from an acting op, if anyone: the motors' and the
+    /// safety core's lines are the board's controller's. A safety-line
+    /// refusal is a decision record of task `tid`'s op `op` (the IDL op).
+    pub(crate) fn held(&self, tid: u32, op: u32) -> Option<Held> {
+        if self.ctrl != 0 {
+            return None;
+        }
+        if gpio_pin_is_motor_bound(self.pin) {
+            return Some(Held::Motor);
+        }
+        if !cfg!(feature = "gpio-safety-guard-canary") && crate::handlers::gpio_pin_is_safety_line(self.pin) {
+            azos_decision::record_keyed(
+                azos_decision::Rule::SafetyLine,
+                azos_decision::Verdict::Refuse,
+                tid,
+                crate::handlers::durable_bucket(tid),
+                [self.ctrl as u64, self.pin as u64, op as u64],
+            );
+            return Some(Held::Safety);
+        }
+        None
     }
 
     pub(crate) fn read(&self) -> Result<u32, Fault> {
@@ -137,17 +168,30 @@ impl GpioPin {
     }
 }
 
+/// Controller `ctrl`, when it is registered.
+#[cfg(not(feature = "gpio-unbound-falls-to-board-canary"))]
+fn controller(ctrl: u8) -> Option<Lease<'static, dyn GpioChip>> {
+    azos_drv_gpio::chips::chip(ctrl as u32)
+}
+
+/// Canary: a controller that is not registered is answered by the board's,
+/// so an unbound expander's capability drives the board's pin of its number.
+#[cfg(feature = "gpio-unbound-falls-to-board-canary")]
+fn controller(ctrl: u8) -> Option<Lease<'static, dyn GpioChip>> {
+    azos_drv_gpio::chips::chip(ctrl as u32).or_else(|| azos_drv_gpio::chips::chip(0))
+}
+
 /// The `Gpio` interface served for one caller: the pin the badge names, on
 /// the controller it names.
 pub struct GpioServer(pub Caller);
 
 impl GpioServer {
-    /// The caller may use op class `class` on the pin; for an acting op, the
-    /// pin is not a motor's.
-    fn pin(&self, class: CapPerms) -> Result<GpioPin, Out<()>> {
+    /// The caller may use op class `class` on the pin; for an acting op (IDL
+    /// op `op`), no one keeps the pin from it.
+    fn pin(&self, class: CapPerms, op: u32) -> Result<GpioPin, Out<()>> {
         self.0.gate::<()>(class)?;
         let p = GpioPin::of(self.0.badge).map_err(Out::err)?;
-        if class.contains(CapPerms::WRITE) && p.motor_bound() {
+        if class.contains(CapPerms::WRITE) && p.held(self.0.tid, op).is_some() {
             return Err(Out::err(outcome::REFUSED));
         }
         Ok(p)
@@ -163,21 +207,21 @@ fn served(r: Result<(), Fault>) -> Out<()> {
 
 impl azos_devif::Gpio for GpioServer {
     fn read(&self) -> Out<u32> {
-        match self.pin(CapPerms::READ) {
+        match self.pin(CapPerms::READ, GpioIdl::OP_READ as u32) {
             Ok(p) => p.read().map_or(Out::err(outcome::FAULT), Out::ok),
             Err(o) => Out::err(o.code),
         }
     }
 
     fn write(&mut self, level: u32) -> Out<()> {
-        match self.pin(CapPerms::WRITE) {
+        match self.pin(CapPerms::WRITE, GpioIdl::OP_WRITE as u32) {
             Ok(p) => served(p.write(level)),
             Err(o) => o,
         }
     }
 
     fn set_dir(&mut self, dir: u32) -> Out<()> {
-        let p = match self.pin(CapPerms::WRITE) {
+        let p = match self.pin(CapPerms::WRITE, GpioIdl::OP_SET_DIR as u32) {
             Ok(p) => p,
             Err(o) => return o,
         };

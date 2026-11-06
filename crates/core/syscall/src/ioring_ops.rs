@@ -237,24 +237,30 @@ fn read_sensor(sensor_type: u32, buf: *mut u8, len: usize) -> OpResult {
     Ok(n.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
 }
 
+/// A `Gpio` refusal as the ring answers it: a controller that is not
+/// registered `ENODEV`, a pin past its last `EINVAL`, both refused before any
+/// driver, as the interface's `NO_RESOURCE` and `BAD_ARGUMENT` are.
+fn gpio_refusal(code: u32) -> i32 {
+    errno(if code == azos_devif::outcome::NO_RESOURCE { Errno::ENODEV } else { Errno::EINVAL })
+}
+
 /// `SYS_GPIO_WRITE_TYPED` below its capability: `badge` names the pin on its
-/// controller (`Gpio`'s badge); a pin bound to a motor's H-bridge is refused
-/// with the typed call's `E_PERM`, then the level's low bit is written.
+/// controller (`Gpio`'s badge, `(ctrl, pin)`); a pin a motor's H-bridge or the
+/// safety core keeps is refused with the typed call's `E_PERM`, then the
+/// level's low bit is written. A driver fault is `-EIO`.
 fn write_gpio(badge: u32, value: u32) -> OpResult {
-    let Ok(p) = crate::devices::GpioPin::of(badge) else { return Ok(errno(Errno::EIO)) };
-    if p.motor_bound() {
+    let p = crate::devices::GpioPin::of(badge).map_err(gpio_refusal)?;
+    if p.held(azos_sched::current_task_tid(), azos_devif::GpioIdl::OP_WRITE as u32).is_some() {
         return Err(crate::handlers::E_PERM as i32);
     }
     Ok(if p.write(value).is_ok() { 0 } else { errno(Errno::EIO) })
 }
 
-/// `SYS_GPIO_READ_TYPED` below its capability: 0 or 1, `-EIO` for a pin no
-/// controller has or a driver fault.
+/// `SYS_GPIO_READ_TYPED` below its capability: 0 or 1; the refusals of
+/// [`write_gpio`], and `-EIO` for a driver fault.
 fn read_gpio(badge: u32) -> OpResult {
-    match crate::devices::GpioPin::of(badge).map(|p| p.read()) {
-        Ok(Ok(v)) => Ok(v as i32),
-        _ => Ok(errno(Errno::EIO)),
-    }
+    let p = crate::devices::GpioPin::of(badge).map_err(gpio_refusal)?;
+    Ok(p.read().map_or(errno(Errno::EIO), |v| v as i32))
 }
 
 /// Largest I2C transfer one ring entry carries: the ring's own bound (its

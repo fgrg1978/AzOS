@@ -21,5 +21,7 @@ azos_sync          = { workspace = true }
 azos_drv_api       = { workspace = true }
 azos_drv_base      = { workspace = true }
 azos_drv_sys       = { workspace = true }
+# The board controller's pin space (`azos_devif::gpio::BOARD_PINS`).
+azos_devif         = { workspace = true }
 # Kconfig GPIO_CONTROLLERS: the controllers `chips` keeps.
 azos_limits        = { workspace = true }

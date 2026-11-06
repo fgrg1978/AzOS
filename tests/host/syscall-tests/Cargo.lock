@@ -76,6 +76,10 @@ name = "azos_common"
 version = "0.1.0"
 
 [[package]]
+name = "azos_config"
+version = "0.1.0"
+
+[[package]]
 name = "azos_crypto"
 version = "0.1.0"
 dependencies = [
@@ -191,6 +195,7 @@ dependencies = [
  "azos_abi",
  "azos_arch_api",
  "azos_common",
+ "azos_config",
  "azos_crypto",
  "azos_decision",
  "azos_devif",

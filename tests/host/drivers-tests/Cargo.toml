@@ -64,6 +64,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1
 overflow-checks = true
 
 [features]
+# instances.rs (pulled via #[path]): a freed number goes to another device
+# (`a_freed_number_is_never_another_devices` goes red); an unregistration does
+# not wait for the ops in flight (`an_unbind_waits_for_the_op_inside_the_controller`).
+instances-reuse-canary = []
+instances-no-drain-canary = []
 # virtio/mod.rs (pulled via #[path]) gates its PCI transport on `pci`; declared
 # here so the cfg is a known value on the host build (never enabled).
 pci = []

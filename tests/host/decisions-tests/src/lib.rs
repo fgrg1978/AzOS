@@ -602,6 +602,7 @@ mod tests {
             (Rule::EffectUnserved, 86, "effect-unserved"),
             (Rule::PackageIndex, 87, "package-index"),
             (Rule::BudgetGrow, 88, "budget-grow"),
+            (Rule::SafetyLine, 89, "safety-line"),
         ];
         assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {

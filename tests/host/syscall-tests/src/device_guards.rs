@@ -165,6 +165,8 @@ impl Drop for Scene {
         azos_ipc::cap::degraded_set(false);
         azos_robot::motor::shim_clear_motor_channels();
         azos_robot::motor::shim_clear_motor_pins();
+        azos_drv_gpio::gpio::shim_clear_keys();
+        azos_config::CFG_ESTOP_GPIO_PIN.store(azos_config::ESTOP_GPIO_PIN_FAIL_CLOSED, SeqCst);
         OBSERVE.store(false, SeqCst);
         ipc_task_pool::shim_kill(self.tid);
     }
@@ -379,8 +381,6 @@ impl azos_drv_gpio::chips::GpioChip for Expander {
 
 static EXPANDER: Expander = Expander;
 
-/// The bus handle the expander is bound as.
-const EXPANDER_DEV: u32 = 5;
 
 /// The expander registered for one test (controller 1: the first number after
 /// the board's), withdrawn when it drops.
@@ -388,12 +388,12 @@ struct Bound;
 
 impl Drop for Bound {
     fn drop(&mut self) {
-        azos_drv_gpio::chips::unregister(EXPANDER_DEV);
+        let _ = azos_drv_gpio::chips::unregister(super::harness::GPIO_EXPANDER_DEV, &mut || false);
     }
 }
 
 fn expander() -> Bound {
-    assert_eq!(azos_drv_gpio::chips::register(EXPANDER_DEV, &EXPANDER), Ok(1));
+    assert_eq!(azos_drv_gpio::chips::register(super::harness::GPIO_EXPANDER_DEV, &EXPANDER), Ok(1));
     Bound
 }
 
@@ -468,6 +468,50 @@ fn a_motor_pin_number_on_another_controller_is_not_the_motors() {
     let mut x = GpioServer(caller(&s, gpio::badge(1, 2), CapPerms::RW));
     assert_eq!(x.write(1), Out::ok(()));
     assert_eq!(calls(), vec![("x.write", 2, 1)]);
+}
+
+// ── Gpio: the safety core's lines ────────────────────────────────────────
+
+fn safety_records(tid: u32) -> Vec<[u64; 3]> {
+    let mut v = Vec::new();
+    azos_decision::for_each(|r| {
+        if r.rule == azos_decision::Rule::SafetyLine as u8 && r.subject == tid {
+            v.push(r.n);
+        }
+    });
+    v
+}
+
+/// **The kill switch's line is not a holder's to drive**: with CONFIG.INI's
+/// `estop_gpio_pin` on board pin 4, a holder of `gpio.4` with `WRITE` is
+/// refused `write` and `set_dir`, whatever its capability, the driver sees
+/// neither, and each refusal is a `safety-line` decision record; reading the
+/// line stays open. A `gpio-keys` line of the tree is kept the same way, and
+/// the expander's pin 4 is not the board's.
+///
+/// **Canary.** `gpio-safety-guard-canary` (the safety lines are not kept):
+/// the set_dir reaches the driver and the first assertion goes red.
+#[test]
+fn the_kill_switch_line_is_refused_to_a_holder_of_its_endpoint() {
+    let _g = serial();
+    let s = scene(1);
+    let _x = expander();
+    azos_config::CFG_ESTOP_GPIO_PIN.store(4, SeqCst);
+    let mut g = GpioServer(caller(&s, gpio::badge(0, 4), CapPerms::RW));
+    assert_eq!(g.set_dir(gpio::DIR_OUTPUT), Out::err(outcome::REFUSED));
+    assert_eq!(g.write(0), Out::err(outcome::REFUSED));
+    assert_eq!(calls(), vec![], "the driver saw an op on the kill switch's line");
+    assert_eq!(g.read(), Out::ok(1), "reading the line is observation");
+    let (dir, write) = (GpioIdl::OP_SET_DIR as u64, GpioIdl::OP_WRITE as u64);
+    assert_eq!(safety_records(s.tid), vec![[0, 4, dir], [0, 4, write]]);
+
+    CALLS.lock().unwrap().clear();
+    azos_drv_gpio::gpio::shim_describe_key(6);
+    let mut key = GpioServer(caller(&s, gpio::badge(0, 6), CapPerms::RW));
+    assert_eq!(key.set_dir(gpio::DIR_OUTPUT), Out::err(outcome::REFUSED));
+    let mut x = GpioServer(caller(&s, gpio::badge(1, 4), CapPerms::RW));
+    assert_eq!(x.write(1), Out::ok(()), "the expander's pin 4 is not the kill switch's");
+    assert_eq!(calls(), vec![("x.write", 4, 1)]);
 }
 
 /// **The driver is not called while the caller's cap-table lock is held**: a

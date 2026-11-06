@@ -95,6 +95,17 @@ pub struct Slot {
     seq: u32,
     /// Taken down by [`Access::quiesce`], not yet brought back.
     suspended: bool,
+    /// How many devices this slot has held: a handle and its generation
+    /// name one device for the boot, even once a freed slot holds another.
+    generation: u32,
+}
+
+impl Slot {
+    /// How many devices the slot has held, this one included: with its
+    /// handle, it names this device for the boot.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
 }
 
 /// Why a native probe said no.
@@ -220,6 +231,7 @@ const FREE: Slot = Slot {
     user_maps: 0,
     seq: 0,
     suspended: false,
+    generation: 0,
 };
 
 impl Bus {
@@ -244,6 +256,7 @@ impl Bus {
         s.binding = Binding::None;
         s.user_maps = 0;
         s.suspended = false;
+        s.generation = s.generation.wrapping_add(1);
         Ok(Handle::new(i))
     }
 

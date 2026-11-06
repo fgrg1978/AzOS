@@ -32,7 +32,7 @@ use azos_ipc::cap::CapTarget;
 use azos_ipc::io_ring::{
     CqEntry, IoRing, SqEntry, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED, OP_BUF_REGISTER, OP_BUF_UNREGISTER, OP_FSYNC, OP_NET_RECV,
     OP_NET_SEND, OP_FILE_READ, OP_FILE_WRITE, SQE_F_FIXED,
-    OP_MOTOR_SPEED, OP_NOP, OP_PWM_SET, OP_READ_SENSOR, OP_TIMER,
+    OP_MOTOR_SPEED, OP_NOP, OP_PWM_SET, OP_READ_SENSOR, OP_TIMER, OP_WRITE_GPIO,
     RING_CQ_SIZE, RING_SQ_SIZE,
 };
 use azos_sched::filter::SyscallFilter;
@@ -365,6 +365,71 @@ fn a_sensor_entry_needs_the_capability_and_reads_what_the_interface_reads() {
     let mut rec = [0u8; 16];
     assert_eq!(smp.copy_to(&mut rec), 16);
     assert_eq!(unsafe { (&(*ring).data_buf)[..16].to_vec() }, rec.to_vec());
+}
+
+// ── A GPIO entry names its controller ─────────────────────────────────────
+
+/// Every op of the expander a GPIO entry reaches, `(pin, level)`.
+static EXPANDER_WRITES: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+/// Every op an entry made on the board controller's stand-in.
+static BOARD_OPS: Mutex<Vec<(GpioOp, u32, u32)>> = Mutex::new(Vec::new());
+
+struct RingExpander;
+
+impl azos_drv_gpio::chips::GpioChip for RingExpander {
+    fn pins(&self) -> u32 {
+        16
+    }
+    fn read(&self, _pin: u32) -> Result<u32, azos_drv_gpio::chips::Fault> {
+        Ok(1)
+    }
+    fn write(&self, pin: u32, level: u32) -> Result<(), azos_drv_gpio::chips::Fault> {
+        EXPANDER_WRITES.lock().unwrap_or_else(|e| e.into_inner()).push((pin, level));
+        Ok(())
+    }
+    fn set_dir(&self, _pin: u32, _dir: azos_drv_gpio::gpio::GpioDir) -> Result<(), azos_drv_gpio::chips::Fault> {
+        Ok(())
+    }
+}
+
+static RING_EXPANDER: RingExpander = RingExpander;
+
+fn board_probe(op: GpioOp, pin: u32, arg: u32) -> i32 {
+    BOARD_OPS.lock().unwrap_or_else(|e| e.into_inner()).push((op, pin, arg));
+    0
+}
+
+/// **A GPIO entry names its controller**: an entry whose `param0` is the
+/// badge of pin 3 of controller 1 drives the expander's pin 3, and the
+/// board's controller sees nothing; with the expander unbound the entry is
+/// refused `-ENODEV` (the interface's `NO_RESOURCE`), and a pin past the
+/// expander's last `-EINVAL` (`BAD_ARGUMENT`), neither reaching a driver.
+///
+/// **Canary.** Map every `GpioPin::of` refusal to `-EIO` in `ioring_ops.rs`
+/// (the old answer): the unbound entry completes `-EIO`.
+#[test]
+fn a_gpio_entry_on_controller_1_drives_the_expanders_pin_and_not_the_boards() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    EXPANDER_WRITES.lock().unwrap().clear();
+    BOARD_OPS.lock().unwrap().clear();
+    set_gpio_probe(Some(board_probe));
+    let dev = super::harness::GPIO_EXPANDER_DEV;
+    assert_eq!(azos_drv_gpio::chips::register(dev, &RING_EXPANDER), Ok(1));
+    let (cap, _va, ring) = create(pt);
+    let pin3 = azos_devif::gpio::badge(1, 3);
+    let past = azos_devif::gpio::badge(1, 16);
+    grant_dev(s.tid, azos_devif::key::GPIO, pin3, CapPerms::RW);
+    grant_dev(s.tid, azos_devif::key::GPIO, past, CapPerms::RW);
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_WRITE_GPIO, pin3, 1, 0)) };
+    let (_, beyond) = unsafe { submit(cap, ring, sqe(OP_WRITE_GPIO, past, 1, 0)) };
+    let _ = azos_drv_gpio::chips::unregister(dev, &mut || false);
+    let (_, gone) = unsafe { submit(cap, ring, sqe(OP_WRITE_GPIO, pin3, 1, 0)) };
+    assert_eq!(done(c), (0, 0));
+    assert_eq!(*EXPANDER_WRITES.lock().unwrap(), vec![(3, 1)]);
+    assert_eq!(*BOARD_OPS.lock().unwrap(), vec![], "the board's controller saw a controller-1 entry");
+    assert_eq!(done(beyond), (Errno::EINVAL.to_syscall_ret() as i32, CQE_F_REFUSED));
+    assert_eq!(done(gone), (Errno::ENODEV.to_syscall_ret() as i32, CQE_F_REFUSED));
 }
 
 // ── Actuation authority ───────────────────────────────────────────────────

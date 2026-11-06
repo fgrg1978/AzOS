@@ -112,7 +112,24 @@ pub mod gpio {
     use std::sync::Mutex;
 
     /// The driver's pin table size, as the real crate has it.
-    pub const GPIO_MAX_PINS: usize = 64;
+    pub const GPIO_MAX_PINS: usize = azos_devif::gpio::BOARD_PINS as usize;
+
+    /// The inputs a test describes as the tree's `gpio-keys` lines.
+    static KEYS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    pub fn shim_describe_key(pin: u32) {
+        KEYS.fetch_or(1 << pin, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn shim_clear_keys() {
+        KEYS.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The real crate's answer for a described line is its polarity and
+    /// window; a caller here asks only whether there is one.
+    pub fn gpio_key(pin: u32) -> Option<()> {
+        (pin < 64 && KEYS.load(std::sync::atomic::Ordering::SeqCst) >> pin & 1 != 0).then_some(())
+    }
 
     /// The pins the kernel's stop holds, as in the real backends.
     static HOLD: PinHold = PinHold::new();

@@ -72,6 +72,8 @@ fn out_crosses_as_the_code_then_the_value() {
 ///
 /// **Canary.** Drop the `+ 1` of `block_partition` (a partition's badge would
 /// be the whole medium's for partition 0): the first block line goes red.
+/// Drop controller 0's `BOARD_PINS` bound from `gpio_pin`: the `gpio.64` line
+/// goes red.
 #[test]
 fn a_device_resource_spelling_is_bounded() {
     let badge = |t: &str| parse_target(t).map(|(i, b)| (i.key, b));
@@ -80,6 +82,9 @@ fn a_device_resource_spelling_is_bounded() {
     assert!(badge("gpio").is_none(), "a pin needs a number");
     assert!(badge("gpio.1.256").is_none());
     assert!(badge("gpio.256.1").is_none());
+    assert!(badge("gpio.64").is_none(), "the board's controller has 64 pins");
+    assert!(badge("gpio.0.64").is_none());
+    assert!(badge("gpio.1.64").is_some(), "another controller's pins are its own");
     assert_eq!(badge("pwm.3"), Some((key::PWM, 3)));
     assert_eq!(badge("motor.0"), Some((key::MOTOR, 0)));
     assert_eq!(badge("motor.1"), Some((key::MOTOR, 1)));

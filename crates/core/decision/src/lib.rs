@@ -388,6 +388,10 @@ pub enum Rule {
     /// base, within its row's `mem_pages_max`, or was refused at that ceiling
     /// (`azos_sched::domain::charge_request`).
     BudgetGrow,
+    /// An op that would drive or turn a GPIO line the safety core reads (the
+    /// kill switch's input, a `gpio-keys` line) was refused, whatever the
+    /// capability it came through (`azos_syscall::devices::GpioPin::held`).
+    SafetyLine,
 }
 
 impl Rule {
@@ -398,7 +402,7 @@ impl Rule {
     /// system events and are never limited.
     pub const fn caller_paced(self) -> bool {
         matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant
-            | Rule::EffectUnserved | Rule::BudgetGrow)
+            | Rule::EffectUnserved | Rule::BudgetGrow | Rule::SafetyLine)
     }
 }
 
@@ -1302,6 +1306,14 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["pages", "limit", "ceiling"],
         rejected_if_yes: "refuse the request at the base: the row's signed ceiling holds it",
         rejected_if_no: "grow past the ceiling: the signed row bounds the domain there",
+    },
+    RuleInfo {
+        // op: the `Gpio` IDL op (write, set_dir).
+        name: "safety-line",
+        subject: "tid",
+        fields: ["controller", "pin", "op"],
+        rejected_if_yes: "-",
+        rejected_if_no: "let a holder of the line's capability drive it: an output on the kill switch's input makes the switch read what the holder drives",
     },
 ];
 

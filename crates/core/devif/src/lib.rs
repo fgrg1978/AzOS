@@ -159,15 +159,17 @@ fn index_below(rest: &str, limit: u32) -> Option<u32> {
     number(rest).filter(|&n| n < limit)
 }
 
-/// `<controller>.<pin>`, or `<pin>` for controller 0, both below 256: which
-/// controllers are bound and how many pins each has is the kernel's, checked
-/// when the pin is used.
+/// `<controller>.<pin>`, or `<pin>` for controller 0, both below 256, and a
+/// pin of controller 0 below [`gpio::BOARD_PINS`]: which other controllers
+/// are bound and how many pins each has is the kernel's, checked when the pin
+/// is used.
 fn gpio_pin(rest: &str) -> Option<u32> {
     let (ctrl, pin) = match rest.split_once('.') {
         Some((c, p)) => (number(c)?, number(p)?),
         None => (0, number(rest)?),
     };
-    (ctrl < 256 && pin < 256).then(|| gpio::badge(ctrl as u8, pin as u8))
+    let limit = if ctrl == 0 { gpio::BOARD_PINS } else { 256 };
+    (ctrl < 256 && pin < limit).then(|| gpio::badge(ctrl as u8, pin as u8))
 }
 
 fn pwm_channel(rest: &str) -> Option<u32> {

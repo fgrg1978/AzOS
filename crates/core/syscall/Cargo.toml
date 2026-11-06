@@ -39,6 +39,8 @@ azos_topology = { workspace = true }
 # `nospec` (Spectre v1 index masking, Kconfig MITIGATION_SPECTRE_V1_INDEX).
 azos_limits = { workspace = true }
 azos_decision = { workspace = true }
+# CONFIG.INI `estop_gpio_pin`: the kill switch's line, which no Gpio op drives.
+azos_config = { workspace = true }
 # Kernel feature `hv` (Kconfig HV): the `vm` and `vcpu` interfaces over the hypervisor core.
 azos_hv = { workspace = true, optional = true }
 # The interfaces the kernel hosts (D6 part A): `khost` serves them.
@@ -51,6 +53,11 @@ azos_linux_abi = { workspace = true, optional = true }
 azos_crypto = { workspace = true }
 
 [features]
+# Canaries of `devices.rs` (built by tests/host/syscall-tests): a controller
+# that is not registered is answered by the board's; the safety core's lines
+# are not kept from an acting Gpio op.
+gpio-unbound-falls-to-board-canary = []
+gpio-safety-guard-canary = []
 # Kernel feature `hv` (Kconfig HV): `src/vm.rs`, the `Vm` and `Vcpu` endpoints.
 hv = ["dep:azos_hv"]
 # Kernel feature `virtio-snd` (Kconfig DRV_VIRTIO_SND): `src/sound_host.rs`, the

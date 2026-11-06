@@ -20,6 +20,11 @@ use std::sync::Mutex;
 
 pub static SERIAL: Mutex<()> = Mutex::new(());
 
+/// The bus device every GPIO expander a test registers stands for: one
+/// device, so it is controller 1 whichever test registers it first.
+pub const GPIO_EXPANDER_DEV: azos_drv_gpio::chips::DeviceId =
+    azos_drv_gpio::chips::DeviceId { handle: 5, generation: 1 };
+
 /// Take the crate-wide lock and reset the shared state.
 ///
 /// Kernel context by default (`user_pt == 0`, `tid == 0`, break 0): a
