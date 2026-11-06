@@ -504,6 +504,12 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             if flags & SPAWN_F_DIE_WITH_PARENT != 0 {
                 azos_sched::scheduler::set_die_with_parent(ctid);
             }
+            // A child of the component manager is marked as such on itself:
+            // its exit decides from the mark whether its named endpoints are
+            // held for the manager's restart.
+            if spawned_by_manager(me) {
+                azos_sched::scheduler::set_managed(ctid);
+            }
             // The console program, Linux: it reads the console, so console
             // input is claimed for it and lent to it before it runs.
             if console.is_some() && child.is_linux() {
@@ -619,4 +625,12 @@ pub fn sys_task_kill(tid: u64, how: u64, signo: u64, flags: u64) -> i64 {
         n += 1;
     }
     if n == 0 { err(Errno::ESRCH) } else { n }
+}
+
+/// Is `tid` the component manager (the task of its topology row)?
+fn spawned_by_manager(tid: u32) -> bool {
+    azos_sched::task_row(tid).is_some_and(|r| {
+        let l = r.name.iter().position(|&b| b == 0).unwrap_or(r.name.len());
+        &r.name[..l] == azos_topology::builder::TASK_COMPMGR_IMAGE
+    })
 }

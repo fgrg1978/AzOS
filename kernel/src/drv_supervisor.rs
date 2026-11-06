@@ -306,6 +306,25 @@ pub(crate) fn exit_done(tid: u32, e: Exit) {
     defer_wake(tid);
 }
 
+/// The dying task of `e` stopped `n` children with it: its successor waits
+/// for their exit hooks (`sup_children_stopping`).
+pub(crate) fn children_stopping(e: &Exit, n: usize) {
+    if let ExitVerdict::Restart { slot, .. } = e.0 {
+        let _ = azos_sched::supervisor::sup_children_stopping(slot, n);
+    }
+}
+
+/// A child stopped by `parent`'s death has run its exit hook; the last one
+/// makes `parent`'s successor due, so the supervisor looks again.
+pub(crate) fn child_gone(parent: u32) {
+    if azos_sched::supervisor::sup_child_gone(parent).is_some() {
+        let sup = SUP_TID.load(Ordering::Acquire);
+        if sup != 0 {
+            azos_sched::scheduler::wake_task_by_tid(sup, &|r| matches!(r, WaitReason::Timer(_)));
+        }
+    }
+}
+
 /// Wake the supervisor task: a placement move is waiting for it
 /// (`crate::buzzer`'s callers).
 #[cfg(any(feature = "use-robot", feature = "ring3-drv-smoke", feature = "drv-contain-smoke",
@@ -779,8 +798,9 @@ fn image_str(b: &[u8]) -> &str {
 
 #[cfg(feature = "sup-smoke")]
 pub(crate) fn start_smoke() {
+    // Any hart: the row also boots one.
     azos_sched::task_create_affinity("sup-smoke", smoke::run, 0,
-                                         azos_sched::DEFAULT_PRIORITY, 1);
+                                         azos_sched::DEFAULT_PRIORITY, -1);
 }
 
 /// The ring-3 INA219 host (`INADRV.ELF` on `endpoint.powermon`), a

@@ -213,6 +213,13 @@ pub struct SupEntry {
     /// It is not the entry's task until [`SupTable::swap_commit`]; a swap is
     /// not a failure and spends none of the restart budget.
     pub successor: u32,
+    /// Children the dead task's exit stopped with it (`SPAWN_F_DIE_WITH_PARENT`)
+    /// whose own exit hooks have not run yet ([`SupTable::children_stopping`],
+    /// [`SupTable::child_gone`]). No successor is due before they have: a
+    /// successor that started its own children earlier would race the old ones
+    /// for the endpoints they still serve. May go below 0 for a moment, when a
+    /// child's hook runs before the count is added.
+    pub children: i16,
 }
 
 impl SupEntry {
@@ -235,6 +242,7 @@ impl SupEntry {
             recorded: false,
             swap_pending: false,
             successor: 0,
+            children: 0,
         }
     }
 
@@ -279,6 +287,19 @@ fn fall_of(e: &SupEntry) -> Option<SupFall> {
         SupState::Exited if e.restart == SupRestart::No => Some(SupFall::NoRestart),
         _ => None,
     }
+}
+
+/// Does a child of the component manager, ending with `code`, keep its named
+/// endpoints for the successor the manager will start? `managed`: the mark the
+/// spawn put on the child itself (never its parent's row, whose slot may be
+/// freed before the child's exit hook runs); `restart`: its row's key.
+pub fn manager_child_holds(managed: bool, restart: SupRestart, code: i32) -> bool {
+    managed
+        && match restart {
+            SupRestart::Always => true,
+            SupRestart::No => false,
+            SupRestart::OnFailure => code != 0,
+        }
 }
 
 /// The supervisor's table. Pure: no clock, no lock, no scheduler.
@@ -361,6 +382,7 @@ impl SupTable {
                 e.tid = 0;
                 e.died_at = now;
                 e.recorded = false;
+                e.children = 0;
                 if e.restart == SupRestart::No {
                     // `restart = no`: any end is final, clean or not. Left
                     // unrecorded: a supervised driver gone for good belongs on
@@ -446,13 +468,38 @@ impl SupTable {
         }
     }
 
+    /// The dead task of `slot` stopped `n` children with it: its successor
+    /// waits for their exit hooks ([`Self::child_gone`]). `false` unless the
+    /// slot is waiting for a successor.
+    pub fn children_stopping(&mut self, slot: usize, n: usize) -> bool {
+        match self.entries.get_mut(slot) {
+            Some(e) if e.state == SupState::Restarting && e.tid == 0 => {
+                e.children = e.children.saturating_add(n.min(i16::MAX as usize) as i16);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A child stopped with `parent` has run its exit hook. The slot whose
+    /// dead task is `parent`, if one is waiting for its successor.
+    pub fn child_gone(&mut self, parent: u32) -> Option<usize> {
+        if parent == 0 {
+            return None;
+        }
+        let i = self.entries.iter().position(|e| e.state == SupState::Restarting && e.tid == 0 && e.dead_tid == parent)?;
+        self.entries[i].children = self.entries[i].children.saturating_sub(1);
+        Some(i)
+    }
+
     /// The first entry whose successor is due at `now`, if any, and the
     /// earliest time a pending one becomes due otherwise. An entry whose exit
-    /// hook has not finished holding ([`Self::held`]) is neither.
+    /// hook has not finished holding ([`Self::held`]), or whose dead task's
+    /// children have not all finished theirs, is neither.
     pub fn next_due(&self, now: u64) -> (Option<usize>, Option<u64>) {
         let mut earliest: Option<u64> = None;
         for (i, e) in self.entries.iter().enumerate() {
-            if e.state == SupState::Restarting && e.tid == 0 && e.held {
+            if e.state == SupState::Restarting && e.tid == 0 && e.held && e.children <= 0 {
                 if e.not_before <= now {
                     return (Some(i), None);
                 }
@@ -671,6 +718,16 @@ pub fn sup_on_exit(tid: u32, now: u64, code: i32, policy: SupPolicy) -> ExitVerd
 /// [`SupTable::held`] on the kernel's table.
 pub fn sup_held(slot: usize) -> bool {
     SUPERVISOR.lock().held(slot)
+}
+
+/// [`SupTable::children_stopping`] on the kernel's table.
+pub fn sup_children_stopping(slot: usize, n: usize) -> bool {
+    SUPERVISOR.lock().children_stopping(slot, n)
+}
+
+/// [`SupTable::child_gone`] on the kernel's table.
+pub fn sup_child_gone(parent: u32) -> Option<usize> {
+    SUPERVISOR.lock().child_gone(parent)
 }
 
 /// [`SupTable::next_due`] on the kernel's table.

@@ -2827,6 +2827,15 @@ static STOP_WORD: [core::sync::atomic::AtomicU32; MAX_TASKS] =
 /// 0 = none.
 static DWP_TID: [core::sync::atomic::AtomicU32; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
+/// The TID of a child the component manager spawned, in this slot; 0 = none.
+/// The child's own mark, read in its exit hook: its parent's slot may be
+/// freed by then.
+static MANAGED_TID: [core::sync::atomic::AtomicU32; MAX_TASKS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
+/// The task in this slot was stopped by its parent's death: `child << 32 |
+/// parent`; 0 = not. Taken by the child's exit hook.
+static DWP_STOPPED: [core::sync::atomic::AtomicU64; MAX_TASKS] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
 /// Forced stops issued that have not ended their task yet, machine-wide:
 /// what the timer tick from user mode tests before looking at its own slot.
 /// Changed only through `stop_policy::forced_*` on [`FORCED_ACCT`], so it is
@@ -3091,21 +3100,47 @@ pub fn set_die_with_parent(tid: u32) {
     }
 }
 
+/// `tid` (a child just spawned, still parked) was spawned by the component
+/// manager.
+pub fn set_managed(tid: u32) {
+    if let Some(idx) = idx_for_tid(tid) {
+        MANAGED_TID[idx].store(tid, Ordering::Release);
+    }
+}
+
+/// Was `tid` spawned by the component manager? Its own mark, valid while its
+/// slot is.
+pub fn is_managed(tid: u32) -> bool {
+    tid != 0 && idx_for_tid(tid).is_some_and(|idx| MANAGED_TID[idx].load(Ordering::Acquire) == tid)
+}
+
 /// `dead` is exiting: force-stop (signal 1) every live child of it that was
-/// spawned with `SPAWN_F_DIE_WITH_PARENT`. Returns how many. Called from the
-/// exit hook, while `dead`'s slot is still valid.
+/// spawned with `SPAWN_F_DIE_WITH_PARENT`, each marked as stopped by `dead`
+/// ([`take_stopped_with_parent`]). Returns how many. Called from the exit
+/// hook, while `dead`'s slot is still valid.
 pub fn stop_die_with_parent_children(dead: u32) -> usize {
     let mut n = 0;
     for idx in 0..MAX_TASKS {
         let Some(tid) = tid_for_idx(idx) else { continue };
-        if DWP_TID[idx].load(Ordering::Acquire) == tid
-            && PARENT_TID[idx].load(Ordering::Relaxed) == dead
-            && task_stop(tid, true, 1)
-        {
+        if DWP_TID[idx].load(Ordering::Acquire) != tid || PARENT_TID[idx].load(Ordering::Relaxed) != dead {
+            continue;
+        }
+        let mark = (tid as u64) << 32 | dead as u64;
+        DWP_STOPPED[idx].store(mark, Ordering::Release);
+        if task_stop(tid, true, 1) {
             n += 1;
+        } else {
+            let _ = DWP_STOPPED[idx].compare_exchange(mark, 0, Ordering::AcqRel, Ordering::Relaxed);
         }
     }
     n
+}
+
+/// `tid`, in its exit hook: the parent whose death stopped it, once.
+pub fn take_stopped_with_parent(tid: u32) -> Option<u32> {
+    let idx = idx_for_tid(tid)?;
+    let w = DWP_STOPPED[idx].swap(0, Ordering::AcqRel);
+    (w >> 32 == tid as u64 && w != 0).then_some(w as u32)
 }
 
 /// Core scheduling logic: pick next task for `cpu` and context-switch to it.

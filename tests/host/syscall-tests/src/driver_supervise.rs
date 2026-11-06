@@ -6,7 +6,7 @@
 use super::harness::serial;
 use azos_arch_api::PagePerms;
 use azos_sched::supervisor::{
-    ExitVerdict, SupFall, SupOrigin, SupPolicy, SupRestart, SupState, SupTable,
+    manager_child_holds, ExitVerdict, SupFall, SupOrigin, SupPolicy, SupRestart, SupState, SupTable,
     DRIVER_MAX_RESTARTS, MAX_SUPERVISED,
 };
 
@@ -667,4 +667,48 @@ fn an_aborted_swap_keeps_the_old_task_and_a_death_ends_the_swap() {
     assert!(matches!(t.on_exit(100, 10, FAILED, POLICY), ExitVerdict::Restart { .. }));
     let e = t.entry(slot).unwrap();
     assert_eq!((e.tid, e.successor), (0, 0), "the death ended the swap");
+}
+
+// ── The component manager's children ────────────────────────────────────────
+
+/// A dead task's successor waits for every child its death stopped
+/// (`SPAWN_F_DIE_WITH_PARENT`): the old children hold the endpoints the new
+/// ones claim. The order modelled is the one a single hart always gives: the
+/// manager's slot is freed first, and a child's exit hook runs after (here even
+/// before the manager's hook has counted them).
+///
+/// **Canary**: drop `&& e.children <= 0` from `next_due`: the successor is
+/// due with a child still in its exit hook.
+#[test]
+fn a_successor_waits_for_the_children_its_predecessor_stopped() {
+    let mut t = SupTable::new();
+    let slot = serving(&mut t, 4000);
+    assert!(matches!(t.on_exit(4000, 10, FAILED, POLICY), ExitVerdict::Restart { .. }));
+    assert_eq!(t.child_gone(4000), Some(slot), "a child's hook before the count");
+    assert!(t.children_stopping(slot, 2));
+    assert!(t.held(slot));
+    assert_eq!(t.next_due(10), (None, None), "due with a child still in its exit hook");
+    assert_eq!(t.child_gone(9999), None, "the child of a task nobody restarts");
+    assert_eq!(t.child_gone(4000), Some(slot));
+    assert_eq!(t.next_due(10), (Some(slot), None));
+    assert!(t.respawned(slot, 4001, 10));
+    assert_eq!(t.child_gone(4000), None, "counted after the successor started");
+    // The next death starts from no children.
+    assert!(matches!(t.on_exit(4001, 20 * COOLDOWN, FAILED, POLICY), ExitVerdict::Restart { .. }));
+    assert!(t.held(slot));
+    assert_eq!(t.next_due(u64::MAX).0, Some(slot));
+}
+
+/// A child of the manager keeps its named endpoints on its own mark and its
+/// row's `restart` key alone: nothing about its parent (whose slot may be gone
+/// by then) enters the decision.
+///
+/// **Canary**: let `manager_child_holds` ignore `managed`: the last line holds.
+#[test]
+fn a_manager_child_holds_by_its_own_mark() {
+    assert!(manager_child_holds(true, SupRestart::OnFailure, FAILED));
+    assert!(!manager_child_holds(true, SupRestart::OnFailure, 0), "a clean exit under on-failure");
+    assert!(manager_child_holds(true, SupRestart::Always, 0));
+    assert!(!manager_child_holds(true, SupRestart::No, FAILED));
+    assert!(!manager_child_holds(false, SupRestart::Always, FAILED), "not the manager's child");
 }

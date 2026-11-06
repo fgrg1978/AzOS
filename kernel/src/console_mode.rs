@@ -249,7 +249,9 @@ pub(crate) fn restart_expected(tid: u32, code: i32) -> bool {
 }
 
 /// Is task `tid`, ending with `code`, a child of the component manager that
-/// the manager will start again ([`restart_expected`])? Its named endpoints
+/// the manager will start again? The child's own mark says it is the
+/// manager's (`scheduler::set_managed`, at its spawn): its parent's slot may
+/// be freed before this hook runs. Its named endpoints
 /// are then kept for the successor (`azos_ipc::task_release_all_supervised`,
 /// the task-exit hook) instead of freed, as they were for a task the kernel's
 /// supervisor restarted: a capability another task holds on such an endpoint
@@ -263,12 +265,19 @@ pub(crate) fn restart_expected(tid: u32, code: i32) -> bool {
 /// then stays unclaimed, which is what a call on a named endpoint whose
 /// server has not started answers.
 pub(crate) fn manager_restarts(tid: u32, code: i32) -> bool {
-    let parent = azos_sched::scheduler::parent_of_tid(tid);
-    let is_manager = azos_sched::task_row(parent).is_some_and(|r| {
-        let l = r.name.iter().position(|&b| b == 0).unwrap_or(r.name.len());
-        &r.name[..l] == azos_topology::builder::TASK_COMPMGR_IMAGE
-    });
-    is_manager && restart_expected(tid, code)
+    use azos_sched::supervisor::{manager_child_holds, SupRestart};
+    use azos_topology::RestartPolicy;
+    let restart = azos_sched::task_row(tid)
+        .and_then(|row| {
+            let l = row.name.iter().position(|&b| b == 0).unwrap_or(row.name.len());
+            azos_topology::get().map(|t| t.restart_of(&row.name[..l]))
+        })
+        .map_or(SupRestart::OnFailure, |p| match p {
+            RestartPolicy::Always => SupRestart::Always,
+            RestartPolicy::No => SupRestart::No,
+            RestartPolicy::OnFailure => SupRestart::OnFailure,
+        });
+    manager_child_holds(azos_sched::scheduler::is_managed(tid), restart, code)
 }
 
 /// The user shell's input ownership was released by its exit (the task-exit

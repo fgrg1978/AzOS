@@ -5805,7 +5805,11 @@ par "aarch64: sdktest canary (64-page budget)" aarch64_sdktest_row "aarch64: sdk
 # `[SUP] FAIL kill 1: the capability taken before the kills is refused`.
 #
 # The manager's children die with it (`SPAWN_F_DIE_WITH_PARENT`), so its
-# restart starts BUZZDRV.ELF and INADRV.ELF afresh.
+# restart starts BUZZDRV.ELF and INADRV.ELF afresh. `SUP_SMP=1`: one hart, the
+# order in which the dead manager's slot is always freed before its children's
+# exit hooks run; each child keeps its endpoints on its own mark
+# (`scheduler::set_managed`), and the manager's successor waits for every
+# child's hook (`SupTable::children_stopping`).
 #
 # `window` (riscv64): kernel and COMPMGR.ELF built with SUP_RESTART_INTERVAL_S
 # = 5 (`SUP_ROW_CONFIG`): kill, wait the interval out, kill again; both served,
@@ -5840,7 +5844,7 @@ sup_row() { # sup_row <label> <isa: rv|arm> <features> <expect: PASS|NOT-RESTART
             rm -f $AZOS_OUT/build/compmgr.elf
         fi
         par_ready
-        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp "${SUP_SMP:-4}" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 ${canary_arg:+-append "$canary_arg"} >"$log" 2>&1 &
@@ -5856,7 +5860,7 @@ sup_row() { # sup_row <label> <isa: rv|arm> <features> <expect: PASS|NOT-RESTART
         kimg="$CI_LOG_DIR/${tag}-kernel.img"
         cp "$A64_IMG" "$kimg"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${SUP_SMP:-4}" -nographic \
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
@@ -5915,6 +5919,7 @@ sup_row() { # sup_row <label> <isa: rv|arm> <features> <expect: PASS|NOT-RESTART
 }
 par_row -s sup_row "userspace: a crashed ring-3 driver is restarted (arm)" arm "qemu,sup-smoke" PASS
 par_row -s sup_row "userspace: a crashed ring-3 driver is restarted, hold canary (arm)" arm "qemu,sup-smoke" HOLD "canary=manager-hold-skip"
+SUP_SMP=1 par_row -s sup_row "userspace: a crashed ring-3 driver is restarted, one hart (arm)" arm "qemu,sup-smoke" PASS
 
 # F3: a split image halts, naming the reason, instead of letting a secondary
 # bypass the monitor. QEMU `virt` has neither a spin table nor a missing
@@ -21911,6 +21916,7 @@ PYEOF
         "qemu,sup-smoke,supall-canary" NOT-RESTARTED
     par_row -s sup_row "userspace: a crashed ring-3 driver is restarted, hold canary" rv "qemu,sup-smoke" \
         HOLD "canary=manager-hold-skip"
+    SUP_SMP=1 par_row -s sup_row "userspace: a crashed ring-3 driver is restarted, one hart" rv "qemu,sup-smoke" PASS
 
     # ── The manager's restart window ─────────────────────────────────────
     #

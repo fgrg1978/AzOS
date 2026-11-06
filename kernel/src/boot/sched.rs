@@ -705,6 +705,8 @@ fn task_release_all_resources(tid: u32) {
     let orphans = azos_sched::scheduler::stop_die_with_parent_children(tid);
     if orphans > 0 {
         kprintln!("[KILL] {} child(ren) of tid {} stopped with it (die-with-parent)", orphans, tid);
+        // A successor of this task waits for their exit hooks.
+        drv_supervisor::children_stopping(&sup, orphans);
     }
     let _ = azos_sched::scheduler::take_current_forced_exit();
     // The dying task's slot, resolved once for the per-slot releases below;
@@ -761,6 +763,11 @@ fn task_release_all_resources(tid: u32) {
     azos_sched::prof::add(19, t_ph);
     let t_ph = azos_sched::prof::t();
     drv_supervisor::exit_done(tid, sup);
+    // Stopped by its parent's death: one exit hook fewer before the parent's
+    // successor may start (its endpoints are held by now).
+    if let Some(parent) = azos_sched::scheduler::take_stopped_with_parent(tid) {
+        drv_supervisor::child_gone(parent);
+    }
     azos_sched::prof::add(21, t_ph);
 }
 
