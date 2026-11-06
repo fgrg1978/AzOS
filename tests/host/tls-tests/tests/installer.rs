@@ -101,11 +101,26 @@ impl Volume for Mem {
     }
 }
 
+/// The installer's buffers (1.4 MB), zero-filled on the heap: `Box::new(Work::new())`
+/// builds the value on the stack first, which a 2 MiB test thread cannot hold
+/// next to a TLS handshake in a debug build. The installer's own design is a
+/// static in `.bss`; all-zero is `Work::new()`.
+fn zeroed_work() -> Box<Work> {
+    let layout = std::alloc::Layout::new::<Work>();
+    // SAFETY: `Work` is byte arrays and an integer, all zero in `Work::new()`;
+    // the pointer comes from the global allocator with `Work`'s own layout.
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout).cast::<Work>();
+        assert!(!p.is_null(), "allocation of the installer's buffers failed");
+        Box::from_raw(p)
+    }
+}
+
 /// The installer over `vol`, fetching through TLS with the clock at `NOW`; its
 /// reply and the volume it left. The signers' key is a stand-in: no package
 /// here gets as far as being checked against it.
 fn fetch(vol: Mem) -> ([u64; 4], Mem) {
-    let mut work = Box::new(Work::new());
+    let mut work = zeroed_work();
     let mut topo = Box::new(Topology::empty());
     let dev = Device { hwclass: HwClass::Sbc, abi: azos_abi::ABI_VERSION, epoch_floor: 0, api: &[] };
     let mut svc = Service::new(vol, HttpsRemote::new(at(NOW)), &mut work, &mut topo, [7; 32], dev);
