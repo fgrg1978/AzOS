@@ -13,8 +13,9 @@ config/extensions/Kconfig:
   - a `Manifest` static no symbol names, or an install of a static that is no
     manifest, is an error, except a base provider's: a `Manifest` under
     crates/drivers/ (the board's kill switch), whose crate is an optional
-    dependency of kernel/Cargo.toml (its Kconfig symbol turns it on) and which
-    is installed exactly once.
+    dependency of kernel/Cargo.toml (its Kconfig symbol turns it on), which
+    owns no effect provider (`providers: &[]`) and which is installed exactly
+    once.
 
 And the base does not name an extension: no crate under crates/core and no
 file under kernel/src names a crate of crates/domains, except from an item
@@ -281,7 +282,7 @@ def check(root):
     symbols = re.findall(r"^config EXT_(\w+)", read(kconfig), re.M) if os.path.exists(kconfig) else []
     wanted = {s.lower(): "EXT_" + s for s in symbols}
 
-    manifests, installs = {}, []
+    manifests, installs, bodies = {}, [], {}
     for f in rust_files(root, "crates", "kernel"):
         rel = os.path.relpath(f, root)
         if rel.startswith(os.path.join("crates", "core", "ext-api")):
@@ -289,6 +290,8 @@ def check(root):
         stripped = re.sub(r"//[^\n]*", "", read(f))
         for m in MANIFEST.finditer(stripped):
             manifests.setdefault(m.group(2), []).append((m.group(1), rel))
+            end = stripped.find("};", m.end())
+            bodies[(m.group(1), rel)] = stripped[m.end():end if end >= 0 else len(stripped)]
         for m in INSTALL.finditer(stripped):
             installs.append((m.group(1), rel))
 
@@ -308,7 +311,7 @@ def check(root):
         if name not in wanted:
             for static, rel in found:
                 if rel.startswith(os.path.join("crates", "drivers") + os.sep):
-                    errs.extend(base_provider_errors(root, static, rel, installs))
+                    errs.extend(base_provider_errors(root, static, rel, installs, bodies[(static, rel)]))
                 else:
                     errs.append(f"{rel}: manifest `{static}` is named \"{name}\", which no EXT_ symbol of config/extensions/Kconfig names")
     for static, rel in installs:
@@ -340,8 +343,13 @@ def package_of(root, rel):
     return m.group(1) if m else None
 
 
-def base_provider_errors(root, static, rel, installs):
+def base_provider_errors(root, static, rel, installs, body):
     out = []
+    # A base provider owns no effect kind and no stop work: those are an
+    # extension's, and a driver that claimed a kind would make an image
+    # without the extension serve it.
+    if not re.search(r"\bproviders\s*:\s*&\s*\[\s*\]", body):
+        out.append(f"{rel}: base provider `{static}` declares effect providers (a base provider has `providers: &[]`)")
     pkg = package_of(root, rel)
     kernel = os.path.join(root, "kernel", "Cargo.toml")
     dep = re.search(rf"^{re.escape(pkg or '')}\s*=\s*\{{([^}}]*)\}}", read(kernel), re.M) if pkg else None
@@ -393,6 +401,10 @@ def self_test():
         "crates/drivers/hard/Cargo.toml": '[package]\nname = "azos_hard"\n',
         "crates/drivers/hard/src/lib.rs":
             'pub static HARD: Manifest = Manifest { name: "hard", api_level: 1, providers: &[] };\n',
+        "crates/drivers/kind/Cargo.toml": '[package]\nname = "azos_kind"\n',
+        "crates/drivers/kind/src/lib.rs":
+            'pub static KIND: Manifest = Manifest { name: "kind", api_level: 2, '
+            'providers: &[Provider { name: "p", kinds: &[1] }], hooks: &[] };\n',
         "crates/core/c/Cargo.toml":
             '[features]\nuse-robot = ["dep:azos_foo"]\nsmoke = ["use-robot"]\n[dependencies]\nazos_foo = { path = "x", optional = true }\n',
         "crates/core/c/src/lib.rs":
@@ -404,10 +416,11 @@ def self_test():
             '#[cfg(any(feature = "use-robot", feature = "other"))]\nfn any_of() { azos_foo::d(); }\n',
         "crates/core/c/src/gated_mod.rs": "fn g() { azos_foo::e(); }\n",
         "kernel/Cargo.toml": '[features]\nuse-robot = []\n[dependencies]\nazos_foo = { path = "x" }\n'
-            'azos_sw = { path = "s", optional = true }\nazos_hard = { path = "h" }\n',
+            'azos_sw = { path = "s", optional = true }\nazos_hard = { path = "h" }\n'
+            'azos_kind = { path = "k", optional = true }\n',
         "kernel/src/main.rs": "mod boot;\nfn k() { azos_foo::f(); }\n"
             "fn p() { providers::install(&azos_sw::SW); providers::install(&azos_hard::HARD); "
-            "providers::install(&azos_hard::HARD); }\n",
+            "providers::install(&azos_hard::HARD); providers::install(&azos_kind::KIND); }\n",
         "kernel/src/boot.rs": '#![cfg(feature = "use-robot")]\nfn b() { azos_foo::g(); }\n',
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -429,6 +442,7 @@ def self_test():
             "kernel/Cargo.toml: depends on `azos_foo` without `optional = true`",
             "crates/drivers/hard/src/lib.rs: base provider `HARD`: `azos_hard` is not an optional dependency of kernel/Cargo.toml",
             "crates/drivers/hard/src/lib.rs: base provider `HARD` is installed 2 times (want exactly 1)",
+            "crates/drivers/kind/src/lib.rs: base provider `KIND` declares effect providers (a base provider has `providers: &[]`)",
         ])
         if got != want:
             print("self-test FAIL")
@@ -449,6 +463,7 @@ def self_test():
                                       'azos_sw = { path = "s", optional = true }\n')
         clean["kernel/src/main.rs"] = "mod boot;\nfn p() { providers::install(&azos_sw::SW); }\n"
         clean["crates/drivers/hard/src/lib.rs"] = ""
+        clean["crates/drivers/kind/src/lib.rs"] = ""
         for rel, body in clean.items():
             with open(os.path.join(tmp, rel), "w", encoding="utf-8") as fh:
                 fh.write(body)
