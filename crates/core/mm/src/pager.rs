@@ -61,7 +61,10 @@
 //! in transit would be in neither) and holds the parent until the child's
 //! mappings are cloned ([`ForkHold`]: no store, no restore meanwhile). The pool's entries are keyed by the space
 //! and the page's address, which a private object's single mapper makes
-//! unique. The pool's lock is a leaf: taken with
+//! unique and the same name as the object and its page index. A key by object
+//! would need an object handle that outlives reuse (a generation, as the
+//! space's key has) and a per-object duplicate, discard and retag: the shape
+//! objects with several mappers need, not these. The pool's lock is a leaf: taken with
 //! neither a space's lock nor `RESVS` held, and over the page allocator, never the
 //! other way round.
 //!

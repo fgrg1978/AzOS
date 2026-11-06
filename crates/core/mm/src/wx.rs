@@ -29,14 +29,12 @@
 //!
 //! One narrowing from the old full-bitset comparison, stated rather than
 //! left to be discovered by a failing test: `PagePerms` carries
-//! `read/write/exec/user/cache/accessed/dirty` but not the software COW /
-//! DEMAND markers `PteFlags` also held. `judge`'s equality therefore no
-//! longer distinguishes a COW- or DEMAND-marked leaf from a plain one.
-//! This is inert in practice — `enforce_wx`/`verify_wx` only ever walk the
-//! kernel's own page table, and the kernel image is never COW-shared or
-//! demand-mapped — but it is a real change in what the check can see, and
-//! future code that reused `judge` for a user mapping should know it will
-//! not catch a COW/DEMAND mismatch.
+//! `read/write/exec/user/cache/accessed/dirty` but not the software COW
+//! marker `PteFlags` also holds. `judge`'s equality therefore does not
+//! distinguish a COW-marked leaf from a plain one. This is inert in practice
+//! — `enforce_wx`/`verify_wx` only ever walk the kernel's own page table, and
+//! the kernel image is never COW-shared — but future code that reused `judge`
+//! for a user mapping should know it will not catch a COW mismatch.
 
 use azos_arch_api::{PagePerms, PAGE_SIZE};
 
