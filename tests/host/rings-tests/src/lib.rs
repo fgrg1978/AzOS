@@ -49,6 +49,9 @@
 //! ```
 
 #[cfg(test)]
+mod record;
+
+#[cfg(test)]
 mod tests {
     use azos_rings::region::RingSleep;
     use azos_rings::{Doorbell, Full, Log, Next, Push, Queue};

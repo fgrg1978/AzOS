@@ -22,8 +22,10 @@
 //! so a producer publishes any number of bytes with one head store and a
 //! consumer takes any number with one tail store (a POSIX pipe's buffer).
 //!
-//! And one more shape, [`trace`]: the kernel tracer's per-CPU record rings,
-//! whose slots carry their own sequence stamp instead of sharing a head word.
+//! And two more shapes whose slots carry their own sequence stamp: [`trace`],
+//! the kernel tracer's per-CPU record rings, and [`record`], the record
+//! substrate (the kernel log, decisions and telemetry behind one envelope,
+//! read by one merging reader).
 //!
 //! No `ecall` here: every decision is pure, and the side that must enter the
 //! kernel is told so (`RingStep::DoneWake`, `RingSleep::Wait`).
@@ -381,4 +383,5 @@ pub use bytes::*;
 mod stream;
 pub use stream::*;
 
+pub mod record;
 pub mod trace;

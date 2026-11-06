@@ -11830,6 +11830,11 @@ host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,lin
 host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mismatch_is_refused
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused
 host_job host_canary_row "tls: rsa key canary" tls-tests canary-rsa-keys the_server_refuses_an_rsa_private_key
+# The record substrate's reader (azos_rings::region::record): a stale sequence
+# is dropped, the merge is in time order, a lap is counted.
+host_job host_canary_row "records: stale seq canary" rings-tests canary-record-stale a_record_with_a_stale_sequence_is_dropped_and_counted
+host_job host_canary_row "records: merge order canary" rings-tests canary-record-unordered records_of_three_sources_come_out_in_time_order_with_one_reader
+host_job host_canary_row "records: overrun canary" rings-tests canary-no-overrun a_lapped_reader_is_told_how_many_records_it_lost
 # The host dry boot (tools/gate/azos_sim, `make sim`): its suite, and its canary
 # (`sim-cpu-canary`: it admits on one CPU more than it was given), under which
 # the named test, alone, must go red. Its QEMU rows are "topology: dry boot on

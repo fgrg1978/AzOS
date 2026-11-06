@@ -15,6 +15,10 @@ canary-no-recheck = []
 canary-no-fence = []
 canary-queue-overwrites = []
 canary-no-overrun = []
-# Unlike the four above, a gate build enables this one: the kernel tracer's
+# The record reader hands on a record whose envelope names a stale sequence.
+canary-record-stale = []
+# The record merge hands out the first ring with a record, not the oldest.
+canary-record-unordered = []
+# Unlike the six above, a gate build enables this one: the kernel tracer's
 # `azos_trace/producer-canary` row. The trace producer never advances its head.
 trace-producer-canary = []
