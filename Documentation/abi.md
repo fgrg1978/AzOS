@@ -374,8 +374,9 @@ same op numbers are the `Node` and `Dir` IDL interfaces
 
 | Op | Value | Class | Summary |
 |---|---|---|---|
-| `DEVICE_IRQ_BIND` | 0x7901 | DRIVER | Bind an interrupt line to an event port with a key and a CPU (`DEVICE_IRQ_CPU_ANY`). A message-signalled slot also returns address, data and vector in `a1`..`a3`. |
-| `DEVICE_IRQ_ACK` | 0x7902 | DRIVER | Unmask the line after the device was quietened; returns 0, or 1 if the handler's budget is spent. |
+| `DEVICE_IRQ_ACK` | 0x7902 | DRIVER | Unmask the line after the device was quietened; returns 0, or 1 if the handler's budget is spent. A line is bound to a port by the port's `PORT_BIND` (`PORT_SRC_IRQ`); 0x7901, the line's old bind, is retired. |
+| `DEVICE_DMA_MAP` | 0x7903 | DRIVER | On a `ty::MMIO` device no kernel driver owns, with `WRITE`: let the device reach the memory object `w0` (a read-write `SHM_KIND_CONTIG` region, `READ\|WRITE`), the data moving `w1` (`DMA_TO_DEVICE` 0, `DMA_FROM_DEVICE` 1, `DMA_BIDIRECTIONAL` 2). Replies the bus address in `a1` and the length in `a2`. See [drivers.md](drivers.md#ring-3-dma-memory). |
+| `DEVICE_DMA_UNMAP` | 0x7904 | DRIVER | End that binding of `w0` once the device is stopped: out of the device's domain, then the kernel's reference. `-EIO`: the unmap failed and the frames are kept. |
 | `DEVICE_IOPORT_ENABLE` | 0x7906 | DRIVER | Open the I/O ports of a `ty::IOPORT` capability to the calling thread (x86_64); needs `READ\|WRITE`, every word 0. `-ENODEV` on an ISA without a port space. |
 
 **Endpoint** (kind 1)

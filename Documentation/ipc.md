@@ -365,7 +365,8 @@ takes an event; `PORT_DESTROY` frees the port.
 
 `PORT_BIND` words: `w0` the source type, or-ed with `PORT_BIND_F_REMOVE`
 (`0x100`) to remove; `w1` the source's capability (for a timer, its deadline);
-`w2` the event key; `w3` a doorbell's word offset (0 for every other source).
+`w2` the event key; `w3` a doorbell's word offset or an interrupt line's CPU
+(0 for every other source).
 The port handle needs `WRITE`.
 
 | Source | `PORT_SRC_*` | Bound with | Event type |
@@ -374,7 +375,7 @@ The port handle needs `WRITE`.
 | timer | 2 | an absolute deadline in ns; one-shot; binding a key already armed re-arms it | `PORT_EVENT_TIMER` (4) |
 | endpoint notices | 3 | a `Cap<Endpoint>` with `READ`, held by the serving task; only with Kconfig `IPC_PORT_NOTICES` (a bind is `-EINVAL` otherwise) | `PORT_EVENT_NO_SENDERS` (5), `PORT_EVENT_SOURCE_GONE` (6), `PORT_EVENT_CALL_NOTICE` (8) |
 | memory pressure | 4 | `DOMAIN_SELF` (the caller's own Domain); one port per Domain, a second bind replaces the first; remove takes the port and key | `PORT_EVENT_PRESSURE` (7) |
-| interrupt line | n/a | from the line's side: `DEVICE_IRQ_BIND` with the port handle | `PORT_EVENT_IRQ` (3) |
+| interrupt line | 7 | a `ty::IRQ` handle with `READ`, `w3` the CPU (`DEVICE_IRQ_CPU_ANY`: the kernel chooses); mask-until-ACK (`DEVICE_IRQ_ACK`); an `msi.<k>` slot replies its message in `a1`..`a3`; remove unbinds the caller's line | `PORT_EVENT_IRQ` (3) |
 | queued calls | 5 | a `Cap<Endpoint>` with `READ`, held by the serving task (`-EPERM` otherwise); one port per endpoint | `PORT_EVENT_CALLS` (9) |
 | doorbell | 6 | a `Cap<Shm>` with `READ`, `w3` the byte offset of a 4-aligned word in the region; only with Kconfig `FUTEX_SHARED` | `PORT_EVENT_DOORBELL` (10) |
 

@@ -113,7 +113,7 @@ A server whose Linux code runs on N threads is N CPUs. Beyond the per-thread bas
 - **The CPU number** per thread: `thread_info.cpu` in each `task_struct` on riscv64 and aarch64, `cpu_number` through the per-thread GS base on x86_64. A task that moves between threads has to update it, so tasks would stay on the thread that created them.
 - **Real locks.** Spinlocks and `local_irq_save` stop being flags: they need atomics, and the interrupt flag becomes per thread. Mutex and wait-queue hand-off, the run queue, the timer list and the work queue become per-thread structures with cross-thread wake-ups, which on AzOS means a futex or a port notification between the threads.
 - **RCU** needs a grace period that waits for every thread to pass a quiescent point, not one loop pass.
-- **Interrupts** get a target thread: each line binds to the port of the thread that serves it (`DEVICE_IRQ_BIND` already routes a line to one CPU), and `IRQF_PERCPU` and affinity calls map onto that.
+- **Interrupts** get a target thread: each line binds to the port of the thread that serves it (`PORT_SRC_IRQ` already routes a line to one CPU), and `IRQF_PERCPU` and affinity calls map onto that.
 - **`percpu_counter`** batching starts to matter: its sum has to walk every CPU's copy.
 
 None of this is needed while one thread serves a class. The cost of the single thread is that a class's Linux code is serialised, which the native drivers, not the Linux ones, are meant to beat.

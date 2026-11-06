@@ -226,10 +226,13 @@ usb rtc usb-hid scsi pkg
 # a blob, never linked as a crate.
 # `pcspk` is the PC speaker's PIT/port logic: its user is the ring-3 buzzer
 # driver (BUZZDRV.ELF, through ring-3 port I/O), never the kernel.
+# `virtio-rng` is the virtio entropy device's logic: its user is the ring-3
+# virtio-rng driver (RNGDRV.ELF, through a mapped window and a DMA object).
 OFF_IMAGE_CRATES="
 libsys libsys-macros stdrt idl-macros azos-config wcet-macro
 ethercat
 pcspk
+virtio-rng
 hyp-mon
 "
 
