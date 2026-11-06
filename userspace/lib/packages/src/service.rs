@@ -1086,10 +1086,9 @@ const FLOOR_QUOTA: usize = azos_limits::PKG_INDEX_FLOORS_PER_SIGNER as usize;
 /// signer? Only when the signer's stored index floors `v` under a name not
 /// staged yet (an upgrade, `replacing` the package of that name, adds none),
 /// and floors [`FLOOR_QUOTA`] staged packages of the signer already (`staged`:
-/// signer and name hash of each). Without a stored index
-/// that verifies there is nothing to count; the boot-time apply decides again
-/// either way, and also counts the floors the device remembers of packages no
-/// longer staged.
+/// signer and name hash of each). Without a stored index that verifies there
+/// is nothing to count; the boot-time apply decides again either way, and also
+/// counts the floors the device remembers of packages no longer staged.
 fn past_floor_quota<V: Volume>(
     vol: &mut V,
     buf: &mut [u8],
