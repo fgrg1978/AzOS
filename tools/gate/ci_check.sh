@@ -2299,8 +2299,7 @@ userspace: IPC
 aarch64 captest
 userspace: capabilities
 aarch64 ring-3 drivers
-userspace: ring-3 GPIO driver
-aarch64 driver restarted
+userspace: a crashed ring-3 driver is restarted (arm)
 userspace: a crashed ring-3 driver is restarted
 aarch64 INA219 placed in kernel
 drivers: INA219 placed in kernel
@@ -5804,6 +5803,9 @@ par "aarch64: sdktest canary (64-page budget)" aarch64_sdktest_row "aarch64: sdk
 # fails on `[SUP] FAIL not restarted after kill 1`; runtime `manager-hold-skip`
 # (the exit hook frees the endpoints of a child the manager restarts) fails on
 # `[SUP] FAIL kill 1: the capability taken before the kills is refused`.
+#
+# The manager's children die with it (`SPAWN_F_DIE_WITH_PARENT`), so its
+# restart starts BUZZDRV.ELF and INADRV.ELF afresh.
 #
 # `window` (riscv64): kernel and COMPMGR.ELF built with SUP_RESTART_INTERVAL_S
 # = 5 (`SUP_ROW_CONFIG`): kill, wait the interval out, kill again; both served,
@@ -15227,8 +15229,9 @@ PY
     #   sched_hooks_wired                   aarch64: sched hooks (now rv too)
     # Kept as rows: `sched: timer heap raced` (judged on the wall clock, so serial, and
     # built with `ipc-census`, whose periodic dumps flood a shared boot),
-    # `pifast:` (-smp 1 -icount latency bound), `aarch64 driver restarted`
-    # (kills a ring-3 driver past its restart budget: global).
+    # `pifast:` (-smp 1 -icount latency bound), `userspace: a crashed ring-3
+    # driver is restarted (arm)` (kills a ring-3 driver past its restart
+    # budget: global).
     #
     # The pass row requires the plan to be exactly the tests the source registers
     # for that kernel (tools/gate/ktest_registry.py: the `ktest!` sites, their cfg

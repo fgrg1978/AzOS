@@ -329,8 +329,8 @@ const ML_IMAGE: &[u8] = b"/fat/MLSRV.ELF";
 /// supervised from its start: its entry is `Serving`, and a failed death is
 /// restarted.
 ///
-/// **Canary**: drop `SupState::Serving` from `on_exit`'s death arm: the
-/// spawned image's death is `NotSupervised`.
+/// **Canary**: move `SupState::Serving` from `on_exit`'s death arm to its
+/// `NotSupervised` arm: the spawned image's death is `NotSupervised`.
 #[test]
 fn a_spawned_image_is_supervised_from_its_start() {
     let mut t = SupTable::new();
@@ -364,8 +364,8 @@ fn a_spawned_images_successor_is_its_entrys_task() {
 /// `DRIVER_MAX_RESTARTS` times and then given up on, `Down` and waiting to be
 /// recorded. Before wave 11 that image died once, unsupervised and unrecorded.
 ///
-/// **Canary**: drop `SupState::Serving` from `on_exit`'s death arm: the
-/// first death is `NotSupervised` and nothing is ever recorded.
+/// **Canary**: move `SupState::Serving` from `on_exit`'s death arm to its
+/// `NotSupervised` arm: the first death is `NotSupervised` and nothing is ever recorded.
 #[test]
 fn a_spawned_crash_loop_gives_up_after_the_burst_and_is_recorded() {
     let mut t = SupTable::new();
@@ -542,8 +542,8 @@ fn spawned_entries_share_the_bounded_table() {
 /// `CONTAINED_EXIT_STATUS`) restarts it on the same entry, within the burst,
 /// and the burst still gives up.
 ///
-/// **Canary**: drop `SupState::Serving` from `on_exit`'s death arm: the
-/// first contained death is `NotSupervised` and nothing restarts.
+/// **Canary**: move `SupState::Serving` from `on_exit`'s death arm to its
+/// `NotSupervised` arm: the first contained death is `NotSupervised` and nothing restarts.
 #[test]
 fn a_kernel_host_is_supervised_and_its_contained_panic_restarts_it() {
     const CONTAINED: i32 = 128 + 6;
