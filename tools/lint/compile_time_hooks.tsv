@@ -190,6 +190,7 @@ mem-quota-canary	pending	adds rows to the built-in topology (crates/core/topolog
 memobj-hold-canary	pending	
 memobj-inherit-unmarked-canary	host-shared	crates/core/mm/src/memobj.rs: ipc-tests and syscall-tests build the same source
 memobj-map-unrecorded-canary	host-shared	crates/core/mm/src/memobj.rs: ipc-tests and syscall-tests build the same source
+mm-pte-truth-canary	hot	crates/core/mm/src/slot.rs: resolve, on every anonymous page fault (syscall-tests and mm-tests build the same source with the same feature)
 mmap-break-only-canary	hot	crates/core/syscall/src/handlers.rs: mmap_place, on the syscall path, in a crate `canary!` does not reach
 mmap-prot-canary	pending	
 mmc-flush-canary	pending	

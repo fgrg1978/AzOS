@@ -18,15 +18,16 @@ Contents:
 3. [Object rmap](#object-rmap)
 4. [Page cache as a Paged MemObj](#page-cache-as-a-paged-memobj)
 5. [File-backed mmap](#file-backed-mmap)
-6. [2 MiB reservations and contiguous leaves](#2-mib-reservations-and-contiguous-leaves)
-7. [User stacks](#user-stacks)
-8. [Kept image frames](#kept-image-frames)
-9. [Kernel heap](#kernel-heap)
-10. [Kernel image permissions (W^X)](#kernel-image-permissions-wx)
-11. [Kernel memory charged to the Domain](#kernel-memory-charged-to-the-domain)
-12. [Reclaim order](#reclaim-order)
-13. [Marker PTEs](#marker-ptes)
-14. [TLB invalidation per ISA](#tlb-invalidation-per-isa)
+6. [Anonymous objects and slots](#anonymous-objects-and-slots)
+7. [2 MiB reservations and contiguous leaves](#2-mib-reservations-and-contiguous-leaves)
+8. [User stacks](#user-stacks)
+9. [Kept image frames](#kept-image-frames)
+10. [Kernel heap](#kernel-heap)
+11. [Kernel image permissions (W^X)](#kernel-image-permissions-wx)
+12. [Kernel memory charged to the Domain](#kernel-memory-charged-to-the-domain)
+13. [Reclaim order](#reclaim-order)
+14. [Marker PTEs](#marker-ptes)
+15. [TLB invalidation per ISA](#tlb-invalidation-per-isa)
 
 ## Physical allocator and frame descriptors
 
@@ -128,10 +129,11 @@ Attributes in `MemSpec::attrs`:
 | `ATTR_NO_KERNEL_MAP` | The kernel never reads the object through the direct map; `memobj_with_word_ref` refuses it, and a reclaimer of MemObj frames would have to leave it alone. |
 | `ATTR_VOLATILE` | Purgeable (Anon only). The owner marks the object droppable with `MemCtl::set_volatile` (kernel-hosted endpoint `memctl`, `WRITE`) and in use again with `set_nonvolatile`, which answers whether the object was purged. While volatile, the first stage of the reclaim pass (`memobj_purge_volatile`) may take its frames whole: every holder's mapping is unmapped, the frames and the charge go back, nothing is written, one `Rule::Purge` record is made. Purged is final: `SYS_MO_MAP` and a clone answer `-EPURGED`, and the holder creates a new object. Stage 0 runs only with `MM_RECLAIM_COMPRESS`: on a `MM_RECLAIM_OFF` image a volatile object is never purged (`set_nonvolatile` always answers `false`). `infsrv` (the inference service) keeps its blob arena in one: droppable between calls, held during a call, rebuilt from the signed bundles when it finds the object purged. Never purged: an object in use, one the kernel holds a reference to (a guest's RAM), one a clone shares frames with, one with a pinned holder, one charged to a `mem = "locked"` Domain. |
 
-An anonymous mapping used by one task does not need a table slot at all: it is
-a `Region` of `PagerKind::Anon` in the task's own address space (`mmap`), on
-the demand and marker-PTE paths described below (no frame until the first
-touch, no object lock on the fault). That is Kconfig `MM_DEMAND_PAGING`
+An anonymous mapping used by one task does not need a table slot at all: a
+private `mmap` is a mapping of an *unnamed* anonymous object of the address
+space (see *Anonymous objects and slots* below): no capability, no table slot,
+no frame until the first touch, and no lock on the fault but the address
+space's own. That is Kconfig `MM_DEMAND_PAGING`
 (default y; n on industrial and automotive): the reservation is charged to
 the page budget when it is made, so a fault never refuses on quota. A mapping
 with `MAP_POPULATE` or `MAP_LOCKED`, every mapping of a `mem = "locked"` row,
@@ -227,15 +229,16 @@ Source: `crates/core/mm/src/memobj.rs`,
 
 ## File-backed mmap
 
-`mmap` of a file does not commit frames. It records a `Region` of
-`PagerKind::File` in the address space's `RegionSet`
-(`crates/core/mm/src/region.rs`), and the first touch of each page faults into
+`mmap` of a file does not commit frames. It records a `Mapping` with
+`Backing::File` in the address space's `MapSet`
+(`crates/core/mm/src/mapping.rs`), and the first touch of each page faults into
 the pager (`crates/core/mm/src/pager.rs`), which supplies the page and installs
-it with the region's exact permissions.
+it with the mapping's exact permissions.
 
 * **One object per window.** A file is cached in aligned 64-page windows, one
   Paged MemObj each, and a mapping is cut into one piece (one `Region`) per
-  window it touches, at most `MAX_PIECES` (8) per call. The registry in
+  window it touches, at most `MAX_PIECES` (8) per call (a `Region` of
+  `file_map.rs`, one mapping record each). The registry in
   `crates/core/syscall/src/file_map.rs` names the object of each (file,
   window); the file is identified by the filesystem's own key under that
   filesystem's backing, so every mapper of the same file reaches the same
@@ -260,14 +263,61 @@ Regions are never executable (`PROT_EXEC` is refused before a region is made)
 and a `PROT_NONE` range is not a region. A cut of a file region may only take
 whole regions, because the cache counts regions.
 
-An anonymous region is supplied by `AnonPager`: a slot whose marker names a
-compressed copy is restored from the pool, any other page is zero-filled. A
-pager that cannot answer at once could return `Supply::Pending`; no in-kernel
-pager does, and a `Pending` answer is treated as unresolved.
+A pager that cannot answer at once could return `Supply::Pending`; no
+in-kernel pager does, and a `Pending` answer is treated as unresolved.
 
 Source: `crates/core/syscall/src/file_map.rs`,
-`crates/core/mm/src/pager.rs`, `crates/core/mm/src/region.rs`,
+`crates/core/mm/src/pager.rs`, `crates/core/mm/src/mapping.rs`,
 `crates/core/mm/src/demand.rs`.
+
+## Anonymous objects and slots
+
+A private anonymous `mmap` is a mapping of an anonymous object the address
+space owns (`crates/core/mm/src/anon_obj.rs`). The object holds one 64-bit
+**slot word** per page (`crates/core/mm/src/slot.rs`, the same encoding on every
+ISA):
+
+| Slot | Word | Meaning |
+|------|------|---------|
+| `Empty` | `0` | Never touched: a zero page. |
+| `Frame(pa)` | `pa \| 1` | Resident in the frame at `pa`. |
+| `Marker(kind, payload)` | `payload << 32 \| code << 1` | In transit, compressed or swapped (see *Marker PTEs*). |
+
+**The slot is the page's state; the leaf is a cache of it.** A fault reads the
+slot, never the leaf (`slot::resolve`): `Empty` is supplied zero-filled (a leaf
+over an empty slot is a stale cache word and is replaced), `Frame` whose leaf is
+missing is installed again, `InTransit` is waited for, `Compressed`/`Swapped`
+is restored. The install compares the slot and the leaf words it decided on and
+writes both under the address space's lock, which is also the object's (the
+object has one mapper). A leaf is written when a slot becomes `Frame` and
+cleared when it stops being one; a copy-on-write break moves the leaf and the
+slot together (`pager::cow_swap`). The leaf sweep of `munmap` and of the space's
+end frees the frames, which a `Frame` slot and its leaf name alike.
+
+**Pages are numbered by address**, as Linux numbers an anonymous VMA's: the page
+an object maps at `va` is `va >> PAGE_SHIFT`. A new mapping next to one of the
+object's (below or above it, same permission) is more pages of that object and
+folds into its record, so a heap that grows up or down holds one record of
+`MM_REGIONS_PER_SPACE`.
+
+**Slot storage.** `MM_SLOTS_INLINE` (default 16) pages from the object's first
+have their words inside the object. The others sit in 4 KiB chunks of 512 words:
+the first four chunks from the object's first through pointers in the object,
+the rest of a window of 512 chunks (1 GiB of address space, half below, half
+above) through one directory page. Chunks and the directory are allocated on the
+first touch of a page they hold and charged to the task as its page tables are;
+a mapping that would leave the window gets an object of its own. The lookup is a
+binary search over the space's mapping records and one or two loads into the
+object.
+
+**Fork** (until objects are cloned): the copy-on-write walk shares the
+parent's leaves, then `pager::fork_clone` gives each parent object one child
+object whose `Frame` slots are the child's own leaves (not the parent's slots:
+a page a sibling thread committed after the walk is not the child's) and whose
+markers are the parent's, with a share of the pool's entries.
+
+Source: `crates/core/mm/src/anon_obj.rs`, `crates/core/mm/src/slot.rs`,
+`crates/core/mm/src/mapping.rs`, `crates/core/mm/src/pager.rs`.
 
 ## 2 MiB reservations and contiguous leaves
 
@@ -279,12 +329,12 @@ maps boot-reserved regions with 2 MiB leaves directly.
 Requires `MM_DEMAND_PAGING` and a 4 KiB base page; default y on desktop and
 server, n otherwise. A task that commits at map time never reserves. The first fault in a
 block-aligned part (`resv::BLOCK_SIZE` = one level-0 table's span, 2 MiB at
-4 KiB pages) of an anonymous region that one region record covers whole, with
+4 KiB pages) of an anonymous mapping that one mapping record covers whole, with
 nothing mapped in it yet, takes a physically contiguous, aligned run
 (`alloc_contiguous_aligned_uninit`). That fault and the following ones fill 4
 KiB pages from the run, each zeroed when handed out. The fault that fills the
 last page replaces the level-0 table with one level-1 leaf
-(`vmm::promote_user_block`). A cut of the region (`munmap`, `mprotect`), a fork,
+(`vmm::promote_user_block`). A cut of the mapping (`munmap`, `mprotect`), a fork,
 task exit, or an allocator that ran dry breaks the reservation, and frames not
 yet handed out go back. A promoted leaf is split back to 4 KiB leaves
 (`vmm::split_user_mega`) before part of it is unmapped or re-protected, and
@@ -609,9 +659,11 @@ entry, no bytes), a *blob*, or nothing: a page that does not compress below
 
 A storm picks victims from the source it is given, unmaps each from its address
 space with a shootdown, stores it, frees the frame, and gives the charge back.
-`pager::AnonReclaim` offers resident anonymous region pages that are owned by
-their space alone and are plain 4 KiB leaves, coldest generation first (see
-*Page generations* below). It never offers file-region pages,
+`pager::AnonReclaim` offers resident anonymous mapping pages that are owned by
+their space alone and are plain 4 KiB leaves whose slot names their frame,
+coldest generation first (see *Page generations* below). Taking one out turns
+its slot into the `InTransit` marker and clears its leaf. It never offers
+file-mapping pages,
 pages shared copy-on-write, pages of a promoted block or contiguous run, or
 any page of a space with a fork walking it. A storm stops at the first refusal
 that is not "this page does not compress", and is recorded as one
@@ -714,11 +766,13 @@ page is reserved but has no frame. The final permissions are stored inline so
 the fault handler can recover them. The first touch allocates a zeroed frame
 and rewrites the word (`demand::map_demand`, `vmm::handle_demand_fault`).
 
-**Page marker** (`pte_make_marker`, `pte_marker`). The reclaimer leaves one in
-a user page's slot while the page is outside the address space. A fault decides
-from the word it reads, never from a look at the pool: an empty slot is a zero
-page, `InTransit` is waited for, and a compressed or swapped marker is
-restored. A 32-bit payload is stored inline.
+**Page marker.** The reclaimer leaves one in an anonymous page's slot
+(*Anonymous objects and slots*, `slot::marker`) while the page is outside the
+address space, its leaf cleared. A fault decides from the slot, never from a
+look at the pool: an empty slot is a zero page, `InTransit` is waited for, and a
+compressed or swapped marker is restored. A 32-bit payload is stored inline.
+The page-table encodings of the same markers below (`pte_make_marker`,
+`pte_marker`) are no longer written for an anonymous page.
 
 | `PageMarker` | Code | Meaning | Payload |
 |--------------|------|---------|---------|
