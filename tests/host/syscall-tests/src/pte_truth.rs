@@ -352,7 +352,8 @@ fn a_munmap_frees_the_slot_chunks_of_the_pages_it_unmaps() {
     let tables = azos_mm::vmm::table_frames(pt);
     write(pt, first_chunk + PAGE_SIZE, 0x02);
     let built = azos_mm::vmm::table_frames(pt) - tables;
-    assert_eq!(azos_mm::shim_pages_in_use(), before + built + 2, "the page, its chunk and its tables");
+    // (With reservations on, the touch also took a run, which the cut gives back.)
+    assert!(azos_mm::shim_pages_in_use() >= before + built + 2, "the page, its chunk and its tables");
     assert_eq!(sys_munmap(first_chunk as u64, chunk as u64), 0);
     assert_eq!(azos_mm::shim_pages_in_use(), before + built, "the page and its chunk are back, the tables stay");
     assert!(azos_mm::vmm::translate(pt, base).is_some(), "the object lives on");
