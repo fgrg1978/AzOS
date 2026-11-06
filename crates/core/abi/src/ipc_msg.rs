@@ -52,6 +52,9 @@ pub const MSG_KEEP: u32 = 1 << 0;
 /// Message flag (kernel-set on receive): [`MsgDesc::badge`] is meaningful
 /// (the call came through ABI v2; a v1 call carries no badge).
 pub const MSG_BADGED: u32 = 1 << 31;
+/// Message flag (kernel-set on an accept): another call is queued for the
+/// accepting server, so its next poll accept finds one.
+pub const MSG_MORE: u32 = 1 << 30;
 
 /// Label bit: platform code the signed topology vouches for
 /// (`PrincipalKind::System`).
@@ -131,7 +134,7 @@ pub struct MsgDesc {
     pub n_words: u8,
     /// Capability entries used, `0..=` the kernel's `IPC_MSG_MAX_CAPS`.
     pub n_caps: u8,
-    /// [`MSG_KEEP`] on send; [`MSG_BADGED`] on receive.
+    /// [`MSG_KEEP`] on send; [`MSG_BADGED`] and [`MSG_MORE`] on receive.
     pub flags: u32,
     /// Kernel-set on receive: the badge of the caller's endpoint capability.
     pub badge: u64,

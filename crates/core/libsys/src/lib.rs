@@ -2517,9 +2517,9 @@ fn console_cap() -> isize {
 
 // The source and event types live in `azos_abi::syscall_nr` (one home).
 pub use azos_abi::syscall_nr::{
-    PORT_EVENT_CALL_NOTICE, PORT_EVENT_CODE_OFFSET, PORT_EVENT_IRQ, PORT_EVENT_NO_SENDERS, PORT_EVENT_RING,
-    PORT_EVENT_PRESSURE, PORT_EVENT_SOURCE_GONE, PORT_EVENT_TIMER, PORT_SRC_ENDPOINT,
-    PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER,
+    PORT_EVENT_CALLS, PORT_EVENT_CALL_NOTICE, PORT_EVENT_CODE_OFFSET, PORT_EVENT_DOORBELL, PORT_EVENT_IRQ,
+    PORT_EVENT_NO_SENDERS, PORT_EVENT_RING, PORT_EVENT_PRESSURE, PORT_EVENT_SOURCE_GONE, PORT_EVENT_TIMER,
+    PORT_SRC_CALLS, PORT_SRC_DOORBELL, PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER,
 };
 /// [`port_bind_typed`] flag, or-ed into the source type: remove the sources
 /// of that type bound with the key instead of binding one.
@@ -3119,7 +3119,7 @@ pub fn port_poll_typed(cap: u32, out: &mut [u8]) -> isize {
 ///
 /// Returns 0, or `-Errno`, in order: `-ECAPSTALE` / `-ECAPKIND` /
 /// `-ECAPPERMS` for the port capability, or `-EAGAIN` while containment is
-/// armed; `-EINVAL` for a source type above 4 or an unknown flag, or a pressure source whose word is not `DOMAIN_SELF`;
+/// armed; `-EINVAL` for a source type above 6 or an unknown flag, or a pressure source whose word is not `DOMAIN_SELF`;
 /// `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` for the source capability;
 /// `-ECAPSTALE` when the port was destroyed before the binding was stored;
 /// `-EMFILE` when the port's source table or the IRQ binding table is full;
@@ -3129,6 +3129,24 @@ pub fn port_poll_typed(cap: u32, out: &mut [u8]) -> isize {
 /// The full contract is `azos_abi::syscall_nr::PORT_BIND`'s.
 pub fn port_bind_typed(port: u32, source_type: u64, source_cap: u32, key: u64) -> isize {
     invoke(port, invoke_abi::PORT_BIND, [source_type, source_cap as u64, key, 0]).0
+}
+
+/// Have the port behind `port` report the calls queued on the endpoint
+/// `ep` this task serves (`PORT_BIND` with [`PORT_SRC_CALLS`]): a
+/// [`PORT_EVENT_CALLS`] event with `key` when a call is queued on an empty
+/// queue, taken with [`ipc_accept_poll`]. 0, or [`port_bind_typed`]'s
+/// refusals.
+pub fn port_bind_calls(port: u32, ep: u32, key: u64) -> isize {
+    port_bind_typed(port, PORT_SRC_CALLS, ep, key)
+}
+
+/// Have the port behind `port` report every futex wake of the word at byte
+/// `offset` of the shm region `region` (`PORT_BIND` with
+/// [`PORT_SRC_DOORBELL`]): a [`PORT_EVENT_DOORBELL`] event with `key`. 0, or
+/// [`port_bind_typed`]'s refusals (`-EINVAL` for an offset that is not an
+/// aligned word of the region).
+pub fn port_bind_doorbell(port: u32, region: u32, offset: u32, key: u64) -> isize {
+    invoke(port, invoke_abi::PORT_BIND, [PORT_SRC_DOORBELL, region as u64, key, offset as u64]).0
 }
 
 /// Arm (or, with a key already armed, re-arm) a one-shot timer source on the
@@ -3544,7 +3562,14 @@ pub fn ipc_call_v2(ep: u32, msg: &mut MsgDesc) -> isize {
 /// task serves, written into `*msg` (with the badge for a v2 call). The
 /// call's handle (`>= 0`), -1 when nothing arrived, or `-EFAULT`.
 pub fn ipc_accept_v2(msg: &mut MsgDesc) -> isize {
-    unsafe { syscall1(SYS_IPC_ACCEPT, msg as *mut MsgDesc as u64) }
+    unsafe { syscall2(SYS_IPC_ACCEPT, msg as *mut MsgDesc as u64, 0) }
+}
+
+/// [`ipc_accept_v2`] that never blocks (`IPC_ACCEPT_F_POLL`): the call's
+/// handle, or `-EAGAIN` when none is queued. `MSG_MORE` in `msg.flags`: another
+/// call is queued behind it.
+pub fn ipc_accept_poll(msg: &mut MsgDesc) -> isize {
+    unsafe { syscall2(SYS_IPC_ACCEPT, msg as *mut MsgDesc as u64, azos_abi::syscall_nr::IPC_ACCEPT_F_POLL) }
 }
 
 /// The descriptor-form reply (`SYS_IPC_REPLY`): answer call `handle`, as the holder of

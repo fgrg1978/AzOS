@@ -788,6 +788,20 @@ pub(crate) fn fast_ipc_accept_into_waking_as<const V1: bool>(
     }
 }
 
+/// The v2 accept that never blocks (`IPC_ACCEPT_F_POLL`): the call
+/// delivered in `out` as [`fast_ipc_accept_into_waking_as`] delivers it, or
+/// `-EAGAIN` when none is queued. A server that polls is never parked, so no
+/// fast-path deposit can be waiting for it.
+pub(crate) fn fast_ipc_accept_poll_v2(out: &mut SyscallOut, server_idx: usize, server_tid: u32) -> i64 {
+    match accept_as::<false>(server_idx, server_tid) {
+        Some((handle, caller_tid, words, moved_cap)) => {
+            out.set([caller_tid as u64, words[0], words[1], words[2], words[3], moved_cap as u64]);
+            handle as i64
+        }
+        None => azos_abi::error::Errno::EAGAIN.to_syscall_ret(),
+    }
+}
+
 /// Take the call the fast path deposited for the server in slot
 /// `server_idx` (`azos_ipc::fastcall::take_deposit`), delivering it in
 /// `out` exactly as an accept delivers a queued call. Its handle, or `None`
@@ -1012,7 +1026,7 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         // old, payload-less behaviour. `libsys::fast_ipc_accept_req` detects
         // that case explicitly instead of reporting stale registers as data.
         // The descriptor form (`a0` a `MsgDesc`) is `crate::ipc_v2`'s.
-        SYS_IPC_ACCEPT => if a0 == 0 { fast_ipc_accept_into(out) } else { crate::ipc_v2::sys_ipc_accept_v2(a0) },
+        SYS_IPC_ACCEPT => if a0 == 0 { fast_ipc_accept_into(out) } else { crate::ipc_v2::sys_ipc_accept_v2(a0, a1) },
 
         // SYS_IPC_REPLY, register form: server side.
         // a0 = the handle (from the accept's return value), a1 = 0,

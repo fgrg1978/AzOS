@@ -172,7 +172,9 @@ pub fn sys_port_destroy_typed(cap_raw: u64) -> i64 {
 }
 
 /// Port source types in `SYS_PORT_BIND`'s (512) encoding, which 575 keeps.
-use azos_abi::syscall_nr::{PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER};
+use azos_abi::syscall_nr::{
+    PORT_SRC_CALLS, PORT_SRC_DOORBELL, PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER,
+};
 
 /// The time counter in nanoseconds: the clock a port's timer sources and
 /// 604's deadline are read against (`SYS_SLEEP_UNTIL`'s unit).
@@ -292,7 +294,12 @@ fn bind_object(
 ///   counter; no capability (`port_arm_timer`; a known key re-arms);
 /// - 3: an endpoint's notices: a `Cap<Endpoint>` with `READ`, and the caller
 ///   must serve it (`bind_object`, `endpoint_set_link`, `-EPERM` otherwise);
-///   reports no-senders (wave 15 N5b).
+///   reports no-senders (wave 15 N5b);
+/// - 5: an endpoint's queued calls: the same capability and rule
+///   (`bind_object`, `endpoint::calls_set_link`);
+/// - 6: a doorbell word: a `Cap<Shm>` with `READ`, `offset` the word's byte
+///   offset (4-aligned, inside the region; `port_bind_doorbell`). Every other
+///   source takes `offset` 0.
 ///
 /// An interrupt line is bound to a port from the line's side
 /// (`DEVICE_IRQ_BIND`), not from the port's.
@@ -304,8 +311,10 @@ fn bind_object(
 /// In order:
 /// - `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` / `-EAGAIN` for the port
 ///   capability, recorded under `Port`;
-/// - `-EINVAL` for a source type above 4 or 0, or an unknown flag bit, or for
-///   [`PORT_SRC_PRESSURE`] with a source word other than `DOMAIN_SELF`;
+/// - `-EINVAL` for a source type above 6 or 0, or an unknown flag bit, or for
+///   [`PORT_SRC_PRESSURE`] with a source word other than `DOMAIN_SELF`, or an
+///   `offset` that is not a doorbell's (not 0 for another source; for a
+///   doorbell misaligned or past the region);
 /// - `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` for the source capability,
 ///   recorded under its own kind;
 /// - `-ECAPSTALE` when the port (or the ring) was destroyed before the
@@ -313,11 +322,11 @@ fn bind_object(
 /// - `-EMFILE` when the port's source table is full;
 /// - `-EPERM` when the caller does not serve the endpoint;
 /// - `-EBUSY` when the ring or endpoint already reports to another live port.
-pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u64) -> i64 {
+pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u64, offset: u64) -> i64 {
     use azos_abi::cap::{CapHandle, CapPerms};
     use azos_abi::error::Errno;
     use azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
-    use azos_ipc::cap::{targets::{Endpoint, IoRing, Port}, Cap, CapError};
+    use azos_ipc::cap::{targets::{Endpoint, IoRing, Port, Shm}, Cap, CapError};
     use azos_ipc::port::{self, PortCapError, PortSourceKind};
 
     enum Refusal {
@@ -328,6 +337,8 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
     enum Source {
         Ring(u32),
         Endpoint(u32),
+        Calls(u32),
+        Doorbell(u32),
         Timer(u64),
         Pressure,
         Remove(u8),
@@ -345,12 +356,14 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
         // only with reclaim on (Kconfig MM_RECLAIM_COMPRESS). Type 0 was the
         // channel; no source has it now.
         let known = match ty {
-            PORT_SRC_RING | PORT_SRC_TIMER => true,
+            PORT_SRC_RING | PORT_SRC_TIMER | PORT_SRC_CALLS => true,
             PORT_SRC_ENDPOINT => azos_limits::IPC_PORT_NOTICES,
             PORT_SRC_PRESSURE => azos_limits::MM_RECLAIM_COMPRESS,
+            // A doorbell is a shared futex word: none without shared keys.
+            PORT_SRC_DOORBELL => azos_sched::futex_table::SHARED,
             _ => false,
         };
-        if !known || flags & !PORT_BIND_F_REMOVE != 0 {
+        if !known || flags & !PORT_BIND_F_REMOVE != 0 || (ty != PORT_SRC_DOORBELL && offset != 0) {
             return Err(Refusal::Errno(Errno::EINVAL));
         }
         if flags != 0 {
@@ -358,6 +371,8 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
                 PORT_SRC_RING => port::PORT_EVENT_RING,
                 PORT_SRC_TIMER => port::PORT_EVENT_TIMER,
                 PORT_SRC_ENDPOINT => port::PORT_EVENT_NO_SENDERS,
+                PORT_SRC_CALLS => port::PORT_EVENT_CALLS,
+                PORT_SRC_DOORBELL => port::PORT_EVENT_DOORBELL,
                 PORT_SRC_PRESSURE => port::PORT_EVENT_PRESSURE,
                 _ => return Err(Refusal::Errno(Errno::EINVAL)),
             };
@@ -368,9 +383,14 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
                 let c: Cap<IoRing> = Cap::from_raw(handle);
                 Source::Ring(table.get_op(c, CapPerms::READ, bind_op(ty::IORING)).map_err(|e| Refusal::Source(ty::IORING, e))?)
             }
-            PORT_SRC_ENDPOINT => {
+            PORT_SRC_ENDPOINT | PORT_SRC_CALLS => {
                 let c: Cap<Endpoint> = Cap::from_raw(handle);
-                Source::Endpoint(table.get_op(c, CapPerms::READ, bind_op(ty::ENDPOINT)).map_err(|e| Refusal::Source(ty::ENDPOINT, e))?)
+                let e = table.get_op(c, CapPerms::READ, bind_op(ty::ENDPOINT)).map_err(|e| Refusal::Source(ty::ENDPOINT, e))?;
+                if ty == PORT_SRC_CALLS { Source::Calls(e) } else { Source::Endpoint(e) }
+            }
+            PORT_SRC_DOORBELL => {
+                let c: Cap<Shm> = Cap::from_raw(handle);
+                Source::Doorbell(table.get_op(c, CapPerms::READ, bind_op(ty::SHM)).map_err(|e| Refusal::Source(ty::SHM, e))?)
             }
             // The Domain's own budget: nothing to resolve, only to name.
             PORT_SRC_PRESSURE if source == u64::from(azos_abi::invoke::DOMAIN_SELF.as_raw()) => Source::Pressure,
@@ -418,6 +438,37 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
                 })
             })
         }
+        Source::Calls(e) => {
+            let held = || azos_ipc::cap_store::with_table(tid, |t| {
+                t.get_op(Cap::<Endpoint>::from_raw(handle), CapPerms::READ, bind_op(ty::ENDPOINT)) == Ok(e)
+            }) == Some(true);
+            bind_object(r, PortSourceKind::Calls(e), source as u32, key, binder, held, |link, replace| {
+                azos_ipc::endpoint::calls_set_link(e, tid, link, replace).map_err(|err| match err {
+                    azos_ipc::endpoint::EndpointCapError::NotOwner => Errno::EPERM.to_syscall_ret(),
+                    _ => Errno::ECAPSTALE.to_syscall_ret(),
+                })
+            })
+        }
+        Source::Doorbell(obj) => {
+            let bytes = azos_ipc::memobj::memobj_describe_ref(obj).map(|d| (d.page_count * azos_arch::PAGE_SIZE) as u64);
+            match bytes {
+                Ok(bytes) if offset % 4 == 0 && offset + 4 <= bytes => {}
+                Ok(_) => return Errno::EINVAL.to_syscall_ret(),
+                Err(e) => return errno_for_memobj_err(e),
+            }
+            let r2 = port::port_bind_doorbell(r, obj, offset as u32, source as u32, key, binder);
+            let held = azos_ipc::cap_store::with_table(tid, |t| {
+                t.get_op(Cap::<Shm>::from_raw(handle), CapPerms::READ, bind_op(ty::SHM)) == Ok(obj)
+            }) == Some(true);
+            match r2 {
+                Ok(()) if held => 0,
+                Ok(()) => {
+                    port::port_unbind_kind(r, PortSourceKind::Doorbell { obj, offset: offset as u32 });
+                    Errno::ECAPSTALE.to_syscall_ret()
+                }
+                Err(e) => errno_for_port_err(e),
+            }
+        }
         Source::Pressure => {
             // A port destroyed (or its slot reused) after the epoch is read is
             // found stale by the first delivery, which clears the binding.
@@ -444,6 +495,7 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
                 match kind {
                     PortSourceKind::Ring(g) => azos_ipc::io_ring::io_ring_clear_link(g, link),
                     PortSourceKind::Endpoint(e) => azos_ipc::endpoint::endpoint_clear_link(e, link),
+                    PortSourceKind::Calls(e) => azos_ipc::endpoint::calls_clear_link(e, link),
                     _ => {}
                 }
             }

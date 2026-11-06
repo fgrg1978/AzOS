@@ -711,10 +711,19 @@ pub const SYS_IPC_CALL: u64 = 21;
 /// a descriptor-form call the badge and `MSG_BADGED`. Returns the call's
 /// handle (`>= 0`), -1 when nothing arrived, `-EFAULT` (the call stays
 /// accepted: answer or delegate it by the returned handle). Writes no
-/// register but `a0`.
+/// register but `a0`. `a1` = flags: [`IPC_ACCEPT_F_POLL`] takes a queued call
+/// or answers `-EAGAIN` at once, never blocking; any other bit is `-EINVAL`.
+/// The written descriptor carries `MSG_MORE` when another call is queued for
+/// this server.
 ///
 /// Foundational case 2 (block/wake: the server sleeps until a call arrives).
 pub const SYS_IPC_ACCEPT: u64 = 22;
+
+/// [`SYS_IPC_ACCEPT`] descriptor form, `a1`: do not block. A server that waits
+/// in [`SYS_PORT_WAIT`] for its calls ([`PORT_SRC_CALLS`]) takes them with it,
+/// so a call withdrawn between the event and the accept costs one `-EAGAIN`,
+/// not a sleep that no other source can end.
+pub const IPC_ACCEPT_F_POLL: u64 = 1;
 
 /// `SYS_IPC_REPLY` — answer, as the holder of the call's reply warrant, once.
 /// `a0` = the call handle from the accept.
@@ -833,6 +842,22 @@ pub const PORT_SRC_ENDPOINT: u64 = 3;
 /// first, and removing the type unbinds it.
 pub const PORT_SRC_PRESSURE: u64 = 4;
 
+/// Port source: the calls queued on an endpoint (`Cap<Endpoint>` with `READ`,
+/// held by the endpoint's serving task). Reports [`PORT_EVENT_CALLS`] when a
+/// call is queued on an empty queue (and at bind when one is already
+/// queued): edge-triggered and coalesced, so the server takes calls with
+/// [`IPC_ACCEPT_F_POLL`] until `MSG_MORE` is clear or the accept answers
+/// `-EAGAIN`. One port per endpoint.
+pub const PORT_SRC_CALLS: u64 = 5;
+
+/// Port source: a doorbell word of a shared-memory region (`Cap<Shm>` with
+/// `READ`; the `PORT_BIND` op's fourth word is the word's byte offset in
+/// the region, 4-aligned). Every futex wake of that word ([`SYS_FUTEX_WAKE`]
+/// or a kernel producer's) reports [`PORT_EVENT_DOORBELL`]: the consumer of a
+/// shared ring announces its sleep on the word as for a futex wait, then
+/// waits on the port. Coalesced: one event stands for at least one wake.
+pub const PORT_SRC_DOORBELL: u64 = 6;
+
 /// Event source type: an io_ring has completions.
 pub const PORT_EVENT_RING: u8 = 2;
 
@@ -870,6 +895,14 @@ pub const PORT_EVENT_PRESSURE: u8 = 7;
 /// at its own priority, and the deadline is likely missed). One event each
 /// time; the port's bounded queue drops one that finds it full.
 pub const PORT_EVENT_CALL_NOTICE: u8 = 8;
+
+/// Event source type: a call is queued on the bound endpoint
+/// ([`PORT_SRC_CALLS`]); `source_id` is the endpoint capability's handle.
+pub const PORT_EVENT_CALLS: u8 = 9;
+
+/// Event source type: the bound doorbell word was woken
+/// ([`PORT_SRC_DOORBELL`]); `source_id` is the region capability's handle.
+pub const PORT_EVENT_DOORBELL: u8 = 10;
 
 /// Byte offset of the event's code (`u16`, little-endian; a positive errno,
 /// 0 for an ordinary event) in the 16-byte port event. Bytes 12..16 are

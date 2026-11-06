@@ -273,7 +273,7 @@ fn port_op(c: &mut Call) -> i64 {
     let h = c.handle as u64;
     match c.op {
         PORT_POLL => crate::ipc_handlers::sys_port_poll_typed(h, c.w[0]),
-        PORT_BIND => crate::ipc_handlers::sys_port_bind_typed(h, c.w[0], c.w[1], c.w[2]),
+        PORT_BIND => crate::ipc_handlers::sys_port_bind_typed(h, c.w[0], c.w[1], c.w[2], c.w[3]),
         PORT_DESTROY => crate::ipc_handlers::sys_port_destroy_typed(h),
         _ => Errno::EINVAL.to_syscall_ret(),
     }

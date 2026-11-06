@@ -863,7 +863,7 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
     let calls: &[(&str, CapType, fn() -> i64)] = &[
         ("port_poll", ty::PORT, || sys_port_poll_typed(0, S)),
         ("port_destroy", ty::PORT, || sys_port_destroy_typed(0)),
-        ("port_bind", ty::PORT, || sys_port_bind_typed(0, 2, 0, 0)),
+        ("port_bind", ty::PORT, || sys_port_bind_typed(0, 2, 0, 0, 0)),
         ("shm_acquire", ty::SHM, || sys_shm_acquire_typed(0, S)),
         ("memobj_release", ty::SHM, || sys_shm_release_typed(0)),
         ("shm_map", ty::SHM, || sys_shm_map_typed(0, 0)),

@@ -472,6 +472,24 @@ pub fn endpoint_set_link(
     Ok(crate::port_link::LinkSet::Busy(cur))
 }
 
+/// Store `link` as the port source the calls queued on endpoint `r` are
+/// reported to (`PORT_BIND`, source 5), for its serving task `tid` only
+/// (`NotOwner` otherwise). The rules of [`endpoint_set_link`];
+/// `Stored { ready }` is whether a call is queued already.
+pub fn calls_set_link(
+    r: u32,
+    tid: u32,
+    link: crate::port_link::PortLink,
+    replace: crate::port_link::PortLink,
+) -> Result<crate::port_link::LinkSet, EndpointCapError> {
+    glue::set_call_link(LAYOUT.idx(r) as usize, LAYOUT.gen(r), tid, link, replace)
+}
+
+/// Clear endpoint `r`'s call link if it is still `link`.
+pub fn calls_clear_link(r: u32, link: crate::port_link::PortLink) {
+    glue::clear_call_link(LAYOUT.idx(r) as usize, LAYOUT.gen(r), link);
+}
+
 /// Clear endpoint `r`'s link if it is still `link`. Nothing for a stale `r`.
 pub fn endpoint_clear_link(r: u32, link: crate::port_link::PortLink) {
     let mut eps = ENDPOINTS.lock_irqsave();
@@ -611,6 +629,19 @@ mod glue {
     pub fn in_service(i: usize, old: u32) -> usize {
         crate::ep_queue::in_service(i, old)
     }
+    use crate::port_link::{LinkSet, PortLink};
+    pub fn set_call_link(
+        i: usize, gen: u32, tid: u32, link: PortLink, replace: PortLink,
+    ) -> Result<LinkSet, super::EndpointCapError> {
+        use crate::ep_queue::CallLinkError;
+        crate::ep_queue::set_call_link(i, gen, tid, link, replace).map_err(|e| match e {
+            CallLinkError::NotOwner => super::EndpointCapError::NotOwner,
+            CallLinkError::Stale => super::EndpointCapError::Cap(super::CapError::Stale),
+        })
+    }
+    pub fn clear_call_link(i: usize, gen: u32, link: PortLink) {
+        crate::ep_queue::clear_call_link(i, gen, link)
+    }
 
     #[repr(C)]
     struct Head(UnsafeCell<RcuHead>);
@@ -695,6 +726,13 @@ mod glue {
     }
     pub fn represent(_i: usize, _gen: u32, _old: u32) -> Result<(usize, usize), HandoverError> { Ok((0, 0)) }
     pub fn in_service(_i: usize, _old: u32) -> usize { 0 }
+    use crate::port_link::{LinkSet, PortLink};
+    pub fn set_call_link(
+        _i: usize, _gen: u32, _tid: u32, _link: PortLink, _replace: PortLink,
+    ) -> Result<LinkSet, super::EndpointCapError> {
+        Ok(LinkSet::Stored { ready: false })
+    }
+    pub fn clear_call_link(_i: usize, _gen: u32, _link: PortLink) {}
     pub fn retire(i: usize) {
         if let Some(h) = super::HELD.get(i) {
             h.store(false, core::sync::atomic::Ordering::Release);

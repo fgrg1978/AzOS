@@ -13,3 +13,9 @@ description = "Host-side tests for the per-endpoint fast-call queues in crates/c
 [dependencies]
 
 [dev-dependencies]
+
+[features]
+# `ep_queue.rs`'s call-source canary (`crates/core/ipc/Cargo.toml`): a call
+# that finds its queue empty hands back no port link, so
+# `a_call_on_an_empty_queue_hands_back_its_call_link` goes red.
+port-calls-canary = []

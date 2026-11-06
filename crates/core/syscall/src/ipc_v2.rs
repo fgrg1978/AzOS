@@ -467,8 +467,12 @@ fn call_kernel_hosted(key: u16, caller_tid: u32, ep_raw: u64, d: &MsgDesc, label
     0
 }
 
-/// `SYS_IPC_ACCEPT` — `a0 = *mut MsgDesc`. See the number's doc.
-pub fn sys_ipc_accept_v2(msg_ptr: u64) -> i64 {
+/// `SYS_IPC_ACCEPT` — `a0 = *mut MsgDesc`, `a1` = flags. See the number's doc.
+pub fn sys_ipc_accept_v2(msg_ptr: u64, flags: u64) -> i64 {
+    use azos_abi::syscall_nr::IPC_ACCEPT_F_POLL;
+    if flags & !IPC_ACCEPT_F_POLL != 0 {
+        return einval();
+    }
     // The buffer is checked before a call is taken, so an unwritable one
     // never strands an accepted call.
     if !write_desc(msg_ptr, &MsgDesc::default()) {
@@ -476,7 +480,11 @@ pub fn sys_ipc_accept_v2(msg_ptr: u64) -> i64 {
     }
     let (idx, tid) = azos_sched::current_task_slot().unwrap_or((usize::MAX, 0));
     let mut o = crate::dispatch::SyscallOut::new();
-    let h = crate::dispatch::fast_ipc_accept_into_waking_as::<false>(&mut o, idx, tid, None, None);
+    let h = if flags & IPC_ACCEPT_F_POLL != 0 {
+        crate::dispatch::fast_ipc_accept_poll_v2(&mut o, idx, tid)
+    } else {
+        crate::dispatch::fast_ipc_accept_into_waking_as::<false>(&mut o, idx, tid, None, None)
+    };
     if h < 0 {
         return h;
     }
@@ -495,6 +503,7 @@ pub fn sys_ipc_accept_v2(msg_ptr: u64) -> i64 {
             ..desc_of_v1([o.regs[1], o.regs[2], o.regs[3], o.regs[4]], o.regs[5] as u32)
         },
     };
+    let d = if fastcall::more_queued(idx) { MsgDesc { flags: d.flags | azos_abi::ipc_msg::MSG_MORE, ..d } } else { d };
     // The server works on this request's data until it replies.
     azos_ipc::endpoint::label::enter(tid, d.label);
     if write_desc(msg_ptr, &d) { h } else { efault() }

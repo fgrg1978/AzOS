@@ -16,7 +16,9 @@ use super::harness::serial;
 use crate::ipc_handlers::*;
 use azos_abi::cap::{CapHandle, CapKind, CapPerms, ty, CapType};
 use azos_abi::error::Errno;
-use azos_abi::syscall_nr::{PORT_BIND_F_REMOVE, PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER};
+use azos_abi::syscall_nr::{
+    PORT_BIND_F_REMOVE, PORT_SRC_CALLS, PORT_SRC_DOORBELL, PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER,
+};
 use azos_arch_api::PagePerms;
 use azos_ipc::cap::objref::PORT;
 use azos_ipc::cap::targets::{Irq, Port, Shm};
@@ -713,26 +715,31 @@ fn a_typed_bind_refuses_in_its_documented_order() {
     // A handle of the wrong kind for every source.
     let irq = held::<Irq>(a, CapPerms::READ, IRQ);
 
-    assert_eq!(sys_port_bind_typed(0, PORT_SRC_ENDPOINT, irq, 1), errno(Errno::ECAPSTALE), "a forged port handle first");
-    assert_eq!(sys_port_bind_typed(ro_port, PORT_SRC_RING, irq, 1), errno(Errno::ECAPPERMS), "a READ-only port");
-    assert_eq!(sys_port_bind_typed(irq, PORT_SRC_RING, irq, 1), errno(Errno::ECAPKIND), "an IRQ handle as the port");
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE + 1, irq, 1), errno(Errno::EINVAL), "an unknown source type");
-    assert_eq!(sys_port_bind_typed(port, u64::MAX, irq, 1), errno(Errno::EINVAL));
+    assert_eq!(sys_port_bind_typed(0, PORT_SRC_ENDPOINT, irq, 1, 0), errno(Errno::ECAPSTALE), "a forged port handle first");
+    assert_eq!(sys_port_bind_typed(ro_port, PORT_SRC_RING, irq, 1, 0), errno(Errno::ECAPPERMS), "a READ-only port");
+    assert_eq!(sys_port_bind_typed(irq, PORT_SRC_RING, irq, 1, 0), errno(Errno::ECAPKIND), "an IRQ handle as the port");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_DOORBELL + 1, irq, 1, 0), errno(Errno::EINVAL), "an unknown source type");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_RING, irq, 1, 4), errno(Errno::EINVAL), "an offset is a doorbell's");
+    assert_eq!(sys_port_bind_typed(port, u64::MAX, irq, 1, 0), errno(Errno::EINVAL));
     // Wave 11 (PORTWAIT): a ring and an endpoint take their own capability, a
     // timer none (its source is a deadline). Type 0 was the channel: no source;
     // type 2 was the IRQ line, which binds from its own side.
-    assert_eq!(sys_port_bind_typed(port, 0, irq, 1), errno(Errno::EINVAL), "source type 0");
-    for typed in [PORT_SRC_RING, PORT_SRC_ENDPOINT] {
-        assert_eq!(sys_port_bind_typed(port, typed, 0, 1), errno(Errno::ECAPSTALE), "source type {typed}, forged");
-        assert_eq!(sys_port_bind_typed(port, typed, irq, 1), errno(Errno::ECAPKIND), "source type {typed}, an IRQ handle");
+    assert_eq!(sys_port_bind_typed(port, 0, irq, 1, 0), errno(Errno::EINVAL), "source type 0");
+    let mut typed_sources = vec![PORT_SRC_RING, PORT_SRC_ENDPOINT, PORT_SRC_CALLS];
+    if azos_limits::FUTEX_SHARED {
+        typed_sources.push(PORT_SRC_DOORBELL);
     }
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, u64::MAX, 1), 0, "a timer needs no capability");
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER | 0x200, 0, 1), errno(Errno::EINVAL), "an unknown flag");
+    for typed in typed_sources {
+        assert_eq!(sys_port_bind_typed(port, typed, 0, 1, 0), errno(Errno::ECAPSTALE), "source type {typed}, forged");
+        assert_eq!(sys_port_bind_typed(port, typed, irq, 1, 0), errno(Errno::ECAPKIND), "source type {typed}, an IRQ handle");
+    }
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, u64::MAX, 1, 0), 0, "a timer needs no capability");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER | 0x200, 0, 1, 0), errno(Errno::EINVAL), "an unknown flag");
 
     azos_ipc::cap::degraded_set(true);
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, u64::MAX, 1), errno(Errno::EAGAIN), "a bind is contained");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, u64::MAX, 1, 0), errno(Errno::EAGAIN), "a bind is contained");
     azos_ipc::cap::degraded_set(false);
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, u64::MAX, 1), 0);
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, u64::MAX, 1, 0), 0);
 }
 
 /// **A pressure source names the caller's own Domain and binds its port.** The
@@ -756,34 +763,34 @@ fn a_pressure_bind_stores_the_port_on_the_callers_domain() {
     let me = u64::from(azos_abi::invoke::DOMAIN_SELF.as_raw());
 
     if !azos_limits::MM_RECLAIM_COMPRESS {
-        assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 7), errno(Errno::EINVAL), "no reclaim, no watermarks, no source");
+        assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 7, 0), errno(Errno::EINVAL), "no reclaim, no watermarks, no source");
         domain::leave(key);
         return;
     }
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, 0, 7), errno(Errno::EINVAL), "only the Domain itself");
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, u64::from(irq), 7), errno(Errno::EINVAL), "not a capability");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, 0, 7, 0), errno(Errno::EINVAL), "only the Domain itself");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, u64::from(irq), 7, 0), errno(Errno::EINVAL), "not a capability");
     assert_eq!(domain::pressure_port(key), None);
 
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 7), 0);
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 7, 0), 0);
     let bound = domain::pressure_port(key).expect("bound");
     assert_eq!((bound.port, bound.key), (r, 7));
     assert_eq!(bound.epoch, azos_ipc::port::port_live_epoch(r).unwrap());
 
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 8), 0, "a second bind replaces the first");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 8, 0), 0, "a second bind replaces the first");
     assert_eq!(domain::pressure_port(key).unwrap().key, 8);
 
     let remove = PORT_SRC_PRESSURE | PORT_BIND_F_REMOVE;
-    assert_eq!(sys_port_bind_typed(port, remove, 0, 7), errno(Errno::ENOENT), "the old key is no longer bound");
+    assert_eq!(sys_port_bind_typed(port, remove, 0, 7, 0), errno(Errno::ENOENT), "the old key is no longer bound");
     assert!(domain::pressure_port(key).is_some());
-    assert_eq!(sys_port_bind_typed(port, remove, 0, 8), 0);
+    assert_eq!(sys_port_bind_typed(port, remove, 0, 8, 0), 0);
     assert_eq!(domain::pressure_port(key), None);
-    assert_eq!(sys_port_bind_typed(port, remove, 0, 8), errno(Errno::ENOENT));
+    assert_eq!(sys_port_bind_typed(port, remove, 0, 8, 0), errno(Errno::ENOENT));
 
     // A binding names a Port: the reclaim task's clear takes away the one it
     // found stale and no other.
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 9), 0);
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 9, 0), 0);
     let found = domain::pressure_port(key).unwrap();
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 10), 0);
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_PRESSURE, me, 10, 0), 0);
     assert!(!domain::clear_pressure_port(key, |now| *now == found), "rebound since: not cleared");
     let now = domain::pressure_port(key).unwrap();
     assert!(domain::clear_pressure_port(key, |b| *b == now));
@@ -947,7 +954,7 @@ fn the_deadline_wait_blocks_until_the_earlier_of_its_deadline_and_a_timer() {
     assert_eq!(sys_port_wait(port, BUF as u64, 3_000_000), 0, "timed out");
     assert_eq!(azos_sched::shim_take_blocks(), vec![WaitReason::Timer(ticks(3_000_000))]);
 
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, 4_000_000, 0x7), 0, "a timer at 4 ms");
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, 4_000_000, 0x7, 0), 0, "a timer at 4 ms");
     assert_eq!(sys_port_wait(port, BUF as u64, 9_000_000), 16);
     assert_eq!(event_at_buf(), (0x7, 4, 0));
     assert_eq!(azos_sched::shim_take_blocks(), vec![WaitReason::Timer(ticks(4_000_000))], "woke at the timer");
@@ -979,7 +986,7 @@ fn a_typed_wait_wakes_for_an_armed_timer() {
     ring3(a, SLOT_A);
     let port = handle(sys_port_create_typed());
     azos_drv_irqchip::clint::set_time(ticks(1_000_000));
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, 2_000_000, 0x42), 0);
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_TIMER, 2_000_000, 0x42, 0), 0);
     azos_sched::shim_set_block_hook(Some(Box::new(|reason| match reason {
         WaitReason::Timer(t) => azos_drv_irqchip::clint::set_time(t),
         other => panic!("577 with an armed timer blocked on {other:?}, which no timer ends"),
@@ -1028,13 +1035,13 @@ fn an_endpoint_bound_to_a_port_reports_no_senders_and_its_destruction() {
     assert_eq!(azos_ipc::endpoint::senders_of(r), Some(1));
 
     let port = handle(sys_port_create_typed());
-    assert_eq!(sys_port_bind_typed(port, PORT_SRC_ENDPOINT, ep, 0xE1), 0);
+    assert_eq!(sys_port_bind_typed(port, PORT_SRC_ENDPOINT, ep, 0xE1, 0), 0);
     assert_eq!(sys_port_poll_typed(port, BUF as u64), errno(Errno::EAGAIN), "one sender left: nothing");
 
     // A holder of READ that does not serve the endpoint may not bind it.
     become_task(b, pt_b);
     let port_b = handle(sys_port_create_typed());
-    assert_eq!(sys_port_bind_typed(port_b, PORT_SRC_ENDPOINT, b_read, 1), errno(Errno::EPERM));
+    assert_eq!(sys_port_bind_typed(port_b, PORT_SRC_ENDPOINT, b_read, 1, 0), errno(Errno::EPERM));
 
     azos_ipc::cap_store::revoke(b, send);
     become_task(a, pt_a);
@@ -1439,9 +1446,9 @@ fn an_op_mask_gates_each_port_op_by_its_class() {
         assert_eq!(sys_port_poll_typed(h, BUF as u64), denied);
     }
     // PORT_BIND: CTL.
-    assert_eq!(sys_port_bind_typed(ctl, PORT_SRC_TIMER, u64::MAX, 1), 0);
+    assert_eq!(sys_port_bind_typed(ctl, PORT_SRC_TIMER, u64::MAX, 1, 0), 0);
     for h in [rd, wait, wr] {
-        assert_eq!(sys_port_bind_typed(h, PORT_SRC_TIMER, u64::MAX, 1), denied);
+        assert_eq!(sys_port_bind_typed(h, PORT_SRC_TIMER, u64::MAX, 1, 0), denied);
     }
     // SYS_PORT_WAIT: WAIT.
     assert_eq!(azos_ipc::port::port_queue_event_ref(r, event(0x61)), Ok(()));

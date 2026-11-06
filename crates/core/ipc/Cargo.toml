@@ -48,6 +48,13 @@ ioring-regbuf-leak-canary = []
 # `port.rs`'s capability-binding canary (wave 11): `port_cap_event`
 # ignores every event, so a binding outlives a revoke. Host suite only.
 port-revoke-canary = []
+# `ep_queue.rs`'s call-source canary: a call that finds its queue empty hands
+# back no port link, so a server that waits on its port for calls never
+# hears of one. Host suites only (`tests/host/ipc-fast-tests`, `srv-tests`).
+port-calls-canary = []
+# `port.rs`'s doorbell canary: no futex wake reaches a doorbell source, so
+# `a_doorbell_reaches_the_ports_bound_to_its_word` goes red. Host suite only.
+port-doorbell-canary = []
 
 # MemObj host canaries (tests/host/ipc-tests, syscall-tests): the object table is in `azos_mm`.
 memobj-move-keeps-map-canary = ["azos_mm/memobj-move-keeps-map-canary"]

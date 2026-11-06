@@ -43,6 +43,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
+use crate::port_link::{LinkSet, PortLink};
+
 #[cfg(target_os = "none")]
 use azos_sync::SpinLock;
 #[cfg(not(target_os = "none"))]
@@ -206,11 +208,18 @@ struct Queue {
     /// The send queue: singly linked through `Rec::next`, oldest first.
     send_head: u32,
     send_tail: u32,
+    /// The port source the serving task bound this endpoint's calls to
+    /// (`PORT_SRC_CALLS`), [`PortLink::NONE`] for none: a call that finds
+    /// the queue empty hands it back for the port to be signalled.
+    link: PortLink,
 }
 
 impl Queue {
     const fn closed() -> Self {
-        Queue { gen: 0, owner: UNCLAIMED, old: UNCLAIMED, new: UNCLAIMED, send_head: NIL, send_tail: NIL }
+        Queue {
+            gen: 0, owner: UNCLAIMED, old: UNCLAIMED, new: UNCLAIMED, send_head: NIL, send_tail: NIL,
+            link: PortLink::NONE,
+        }
     }
 
     /// The task whose table the endpoint's queued calls moved their
@@ -306,6 +315,13 @@ fn ready_any(idx: usize) -> bool {
     READY.get(idx).is_some_and(|m| m.iter().any(|w| w.load(Ordering::Acquire) != 0))
 }
 
+/// The server in task slot `idx` has a call queued on an endpoint it serves
+/// (lock-free; what an accept reports as `MSG_MORE`).
+#[inline]
+pub fn more_queued(idx: usize) -> bool {
+    ready_any(idx)
+}
+
 // ── Intrusive lists (under the queue lock) ──────────────────────────────────
 
 #[inline(always)]
@@ -385,6 +401,7 @@ pub fn set_owner(ep: usize, gen: u32, owner: u32) {
     let mut q = l.lock_irqsave();
     if q.gen == gen {
         q.owner = owner;
+        q.link = PortLink::NONE;
         OWNERS[ep].store(owner, Ordering::Relaxed);
     }
 }
@@ -396,7 +413,50 @@ pub fn close(ep: usize) {
     let mut q = l.lock_irqsave();
     q.gen = 0;
     q.owner = UNCLAIMED;
+    q.link = PortLink::NONE;
     OWNERS[ep].store(UNCLAIMED, Ordering::Relaxed);
+}
+
+/// Why [`set_call_link`] stored nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CallLinkError {
+    /// The endpoint in slot `ep` is not of generation `gen` any more.
+    Stale,
+    /// The caller does not serve it.
+    NotOwner,
+}
+
+/// Store `link` as the port source the calls queued on endpoint slot `ep`
+/// (generation `gen`) are reported to, for its serving task `server` only.
+/// The rules of `endpoint::endpoint_set_link`: stored when there is no link,
+/// the link names the same port, or it equals `replace`; `Busy(current)`
+/// otherwise. `Stored { ready }`: a call is queued already, so the binder
+/// signals once itself.
+pub fn set_call_link(ep: usize, gen: u32, server: u32, link: PortLink, replace: PortLink) -> Result<LinkSet, CallLinkError> {
+    let l = QUEUES.get(ep).ok_or(CallLinkError::Stale)?;
+    let mut q = l.lock_irqsave();
+    if q.gen != gen || gen == 0 {
+        return Err(CallLinkError::Stale);
+    }
+    if q.owner != server {
+        return Err(CallLinkError::NotOwner);
+    }
+    let cur = q.link;
+    if cur.is_none() || cur.port == link.port || cur == replace {
+        q.link = link;
+        return Ok(LinkSet::Stored { ready: q.send_head != NIL });
+    }
+    Ok(LinkSet::Busy(cur))
+}
+
+/// Clear the call link of endpoint slot `ep` (generation `gen`) if it is
+/// still `link`.
+pub fn clear_call_link(ep: usize, gen: u32, link: PortLink) {
+    let Some(l) = QUEUES.get(ep) else { return };
+    let mut q = l.lock_irqsave();
+    if q.gen == gen && q.link == link {
+        q.link = PortLink::NONE;
+    }
 }
 
 /// The endpoint slot `ep` is served by `tid` right now (lock-free filter).
@@ -590,6 +650,7 @@ pub fn rebind(
     q.owner = new;
     q.old = UNCLAIMED;
     q.new = UNCLAIMED;
+    q.link = PortLink::NONE;
     OWNERS[ep].store(new, Ordering::Relaxed);
     ready_clear(old_idx, ep);
     if q.send_head != NIL && !broken(BREAK_QUIESCE) {
@@ -819,6 +880,26 @@ pub fn call(
     moved_cap: u32,
     donee: u32,
 ) -> Option<u64> {
+    call_linked(caller_idx, caller, ep, gen, owner, owner_idx, words, moved_cap, donee).map(|(h, _)| h)
+}
+
+/// [`call`], also answering the port link to signal once the queue lock is
+/// released: the endpoint's call link when this call found its queue empty
+/// ([`set_call_link`]), [`PortLink::NONE`] otherwise. Canary
+/// `port-calls-canary` (host): never a link.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn call_linked(
+    caller_idx: usize,
+    caller: u32,
+    ep: usize,
+    gen: u32,
+    owner: u32,
+    owner_idx: usize,
+    words: [u64; WORDS],
+    moved_cap: u32,
+    donee: u32,
+) -> Option<(u64, PortLink)> {
     let r = RECORDS.get(caller_idx)?;
     let l = QUEUES.get(ep)?;
     let t = r.tag.load(Ordering::Relaxed);
@@ -844,11 +925,12 @@ pub fn call(
     r.tag.store(tag(g, ep as u64, S_PENDING), Ordering::Relaxed);
     let was_empty = q.send_head == NIL;
     push_send(&mut q, caller_idx);
+    let link = if was_empty && !cfg!(feature = "port-calls-canary") { q.link } else { PortLink::NONE };
     if was_empty {
         ready_set(owner_idx, ep);
     }
     drop(q);
-    Some(make_handle(caller_idx, g))
+    Some((make_handle(caller_idx, g), link))
 }
 
 /// A request a server took: `(handle, caller, words, moved_cap)`.
@@ -1889,6 +1971,53 @@ mod tests {
     fn call_from(i: usize) -> Option<u64> {
         let (idx, tid) = client(i);
         call(idx, tid, EP, GEN, SERVER, SERVER_IDX, [i as u64, 0, 0, 0], 0, NO_DONEE)
+    }
+
+    const LINK: PortLink = PortLink { port: 0x41, epoch: 2, slot: 3 };
+
+    fn call_linked_from(i: usize) -> Option<(u64, PortLink)> {
+        let (idx, tid) = client(i);
+        call_linked(idx, tid, EP, GEN, SERVER, SERVER_IDX, [i as u64, 0, 0, 0], 0, NO_DONEE)
+    }
+
+    /// A server that waits on a port for its calls hears of the call that
+    /// finds its queue empty, and of no call queued behind it: it takes those
+    /// with the accept, told by `more_queued`. **Canary** `port-calls-canary`:
+    /// no link is handed back, so the first assertion fails.
+    #[test]
+    fn a_call_on_an_empty_queue_hands_back_its_call_link() {
+        let _e = env();
+        assert_eq!(set_call_link(EP, GEN, SERVER, LINK, PortLink::NONE), Ok(LinkSet::Stored { ready: false }));
+        assert_eq!(call_linked_from(0).map(|(_, l)| l), Some(LINK), "the first call signals the port");
+        assert_eq!(call_linked_from(1).map(|(_, l)| l), Some(PortLink::NONE), "the second is coalesced");
+        assert!(accept_v2(SERVER_IDX, SERVER).is_some());
+        assert!(more_queued(SERVER_IDX), "one call is still queued");
+        assert!(accept_v2(SERVER_IDX, SERVER).is_some());
+        assert!(!more_queued(SERVER_IDX));
+        assert_eq!(call_linked_from(2).map(|(_, l)| l), Some(LINK), "an emptied queue signals again");
+    }
+
+    #[test]
+    fn only_the_serving_task_links_the_calls_of_a_live_endpoint() {
+        let _e = env();
+        assert_eq!(set_call_link(EP, GEN, SERVER + 1, LINK, PortLink::NONE), Err(CallLinkError::NotOwner));
+        assert_eq!(set_call_link(EP, GEN + 1, SERVER, LINK, PortLink::NONE), Err(CallLinkError::Stale));
+        let _ = call_from(0).unwrap();
+        assert_eq!(
+            set_call_link(EP, GEN, SERVER, LINK, PortLink::NONE),
+            Ok(LinkSet::Stored { ready: true }),
+            "a call queued before the bind is reported by the binder"
+        );
+        let other = PortLink { port: 0x99, ..LINK };
+        assert_eq!(set_call_link(EP, GEN, SERVER, other, PortLink::NONE), Ok(LinkSet::Busy(LINK)));
+        assert_eq!(set_call_link(EP, GEN, SERVER, other, LINK), Ok(LinkSet::Stored { ready: true }));
+        clear_call_link(EP, GEN, LINK);
+        assert!(accept_v2(SERVER_IDX, SERVER).is_some());
+        assert_eq!(call_linked_from(1).map(|(_, l)| l), Some(other), "a clear of another link leaves it");
+        set_owner(EP, GEN, SERVER + 1);
+        set_owner(EP, GEN, SERVER);
+        assert!(accept_v2(SERVER_IDX, SERVER).is_some());
+        assert_eq!(call_linked_from(2).map(|(_, l)| l), Some(PortLink::NONE), "a new server binds again");
     }
 
     #[test]

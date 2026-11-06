@@ -15,6 +15,10 @@
 #[path = "../../../../crates/core/ipc/src/ep_queue.rs"]
 pub mod ep_queue;
 
+// The link an endpoint's call queue keeps to its port (`PORT_SRC_CALLS`).
+#[path = "../../../../crates/core/ipc/src/port_link.rs"]
+pub mod port_link;
+
 // The descriptor the provenance label rides in (B4).
 #[allow(dead_code)]
 #[path = "../../../../crates/core/abi/src/ipc_msg.rs"]

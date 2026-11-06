@@ -256,14 +256,28 @@ pub fn call(caller_idx: usize, caller_tid: u32, dest: Dest, words: [u64; WORDS],
     // hold of the queue lock: the server may accept and reply on another CPU
     // before this one runs its next instruction.
     let donee = Edge::lend(caller_idx, server_idx, server, donate)?;
-    let h = ep_queue::call(
+    let Some((h, link)) = ep_queue::call_linked(
         caller_idx, caller_tid, dest.index(), dest.generation(), server, server_idx,
         words, moved_cap, donee,
-    );
-    if h.is_none() && donee != NO_DONEE {
-        Edge::leave(caller_idx);
+    ) else {
+        if donee != NO_DONEE {
+            Edge::leave(caller_idx);
+        }
+        return None;
+    };
+    // A server that waits on a port for its calls (`PORT_SRC_CALLS`) is told
+    // after the queue lock is released; a stale link signals nothing.
+    if !link.is_none() {
+        let _ = crate::port::port_signal(link, crate::port::PortSourceKind::Calls(dest.r));
     }
-    h
+    Some(h)
+}
+
+/// The server in task slot `server_idx` has another call queued
+/// (`ep_queue::more_queued`): an accept reports it as `MSG_MORE`.
+#[inline]
+pub fn more_queued(server_idx: usize) -> bool {
+    ep_queue::more_queued(server_idx)
 }
 
 /// A live-update rebind moves the donation of the queued call of the task

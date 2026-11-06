@@ -251,7 +251,9 @@ pub const fn pledge_bit(num: u64, opw: u64, linux: bool) -> u8 {
 pub const PORT_POLL: u16 = op(CapKind::Port, CLASS_READ, 1);
 /// Bind an event source to the port (a `PORT_SRC_*`, or-ed with
 /// `PORT_BIND_F_REMOVE` to remove): `w0` the source type, `w1` the source's
-/// capability (a timer: its deadline), `w2` the event key. Needs `WRITE`.
+/// capability (a timer: its deadline), `w2` the event key, `w3` the word's
+/// byte offset for a doorbell (`PORT_SRC_DOORBELL`), 0 for every other
+/// source. Needs `WRITE`.
 pub const PORT_BIND: u16 = op(CapKind::Port, CLASS_CTL, 2);
 /// Free the port and revoke the handle. Needs `WRITE`.
 pub const PORT_DESTROY: u16 = op(CapKind::Port, CLASS_CTL, 3);
