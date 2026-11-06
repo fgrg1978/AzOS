@@ -20,6 +20,7 @@ version = "0.1.0"
 dependencies = [
  "azos_common",
  "azos_limits",
+ "azos_records",
 ]
 
 [[package]]
@@ -90,6 +91,14 @@ dependencies = [
  "azos_limits",
  "azos_power",
  "cap_test_sync",
+]
+
+[[package]]
+name = "azos_records"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+ "azos_rings",
 ]
 
 [[package]]

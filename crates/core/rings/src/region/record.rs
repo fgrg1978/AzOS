@@ -83,12 +83,9 @@ const DESC_BYTES: usize = 16;
 const S_STAMP: usize = 0;
 const S_SEQ: usize = 8;
 const S_TS: usize = 16;
-const S_CLOCK: usize = 24;
-const S_SOURCE: usize = 25;
-const S_KIND: usize = 26;
-const S_LEN: usize = 28;
-const S_CPU: usize = 30;
-const S_FLAGS: usize = 31;
+/// The word of clock, source, kind, len, cpu and flags (little endian, so
+/// their byte offsets are the layout's 24..32).
+const S_META: usize = 24;
 
 const _: () = assert!(OFF_TABLE + MAX_RINGS * DESC_BYTES <= HDR_BYTES && HDR_BYTES % 64 == 0);
 
@@ -406,7 +403,7 @@ impl Ring {
         let slot = self.g.slot(c);
         // SAFETY: the slot is inside the region `open` validated.
         let stamp = unsafe { word(slot, S_STAMP) };
-        let want = 2 * c + 2;
+        let want = c.wrapping_mul(2).wrapping_add(2);
         let s = stamp.load(Ordering::Acquire);
         if s < want {
             return Read::Pending;
@@ -419,12 +416,9 @@ impl Ring {
         unsafe {
             env.seq = word(slot, S_SEQ).load(Ordering::Relaxed);
             env.ts = word(slot, S_TS).load(Ordering::Relaxed);
-            env.clock = core::ptr::read_volatile(slot.add(S_CLOCK));
-            env.source = core::ptr::read_volatile(slot.add(S_SOURCE));
-            env.kind = core::ptr::read_volatile(slot.add(S_KIND) as *const u16);
-            env.len = core::ptr::read_volatile(slot.add(S_LEN) as *const u16);
-            env.cpu = core::ptr::read_volatile(slot.add(S_CPU));
-            env.flags = core::ptr::read_volatile(slot.add(S_FLAGS));
+            let m = word(slot, S_META).load(Ordering::Relaxed);
+            (env.clock, env.source, env.kind, env.len) = (m as u8, (m >> 8) as u8, (m >> 16) as u16, (m >> 32) as u16);
+            (env.cpu, env.flags) = ((m >> 48) as u8, (m >> 56) as u8);
             core::ptr::copy_nonoverlapping(slot.add(ENV_BYTES), payload.as_mut_ptr(), n);
         }
         fence(Ordering::Acquire);
@@ -560,21 +554,23 @@ impl Writer {
         let slot = self.g.slot(s);
         // SAFETY: every store is inside the claimed slot.
         let stamp = unsafe { word(slot, S_STAMP) };
-        stamp.store(2 * s + 1, Ordering::Relaxed);
+        stamp.store(s.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
         fence(Ordering::Release);
+        // The clock, source, kind, length, CPU and flags are one word: one store.
+        let meta = h.clock as u64
+            | (self.g.source as u64) << 8
+            | (h.kind as u64) << 16
+            | (h.len as u64) << 32
+            | (h.cpu as u64) << 48
+            | (h.flags as u64) << 56;
         unsafe {
             word(slot, S_SEQ).store(seq, Ordering::Relaxed);
             word(slot, S_TS).store(h.ts, Ordering::Relaxed);
-            core::ptr::write_volatile(slot.add(S_CLOCK), h.clock);
-            core::ptr::write_volatile(slot.add(S_SOURCE), self.g.source);
-            core::ptr::write_volatile(slot.add(S_KIND) as *mut u16, h.kind);
-            core::ptr::write_volatile(slot.add(S_LEN) as *mut u16, h.len);
-            core::ptr::write_volatile(slot.add(S_CPU), h.cpu);
-            core::ptr::write_volatile(slot.add(S_FLAGS), h.flags);
+            word(slot, S_META).store(meta, Ordering::Relaxed);
         }
         // SAFETY: the payload area of the claimed slot.
         fill(&mut Payload { at: unsafe { slot.add(ENV_BYTES) }, cap: self.payload() });
-        stamp.store(2 * s + 2, Ordering::Release);
+        stamp.store(s.wrapping_mul(2).wrapping_add(2), Ordering::Release);
     }
 
     /// [`publish`](Self::publish), its envelope naming the sequence before
