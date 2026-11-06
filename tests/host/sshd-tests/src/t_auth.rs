@@ -233,6 +233,55 @@ fn passwords_are_not_a_method_and_the_attempt_is_recorded() {
     assert_eq!(refused(&env)[0].why, "method not offered (public keys only)");
 }
 
+fn password_request(user: &[u8], len: usize, change: bool) -> Vec<u8> {
+    let mut w = Writer::new(MSG_USERAUTH_REQUEST);
+    w.string(user).string(b"ssh-connection").string(b"password").boolean(change).string(&vec![b'a'; len]);
+    if change {
+        w.string(&vec![b'b'; len]);
+    }
+    w.buf
+}
+
+/// The length of a password changes nothing: a `password` request, for the one configured user and for an
+/// unknown one, with or without the change-password form, is refused as an unoffered method, never logs in,
+/// and is not a `publickey` request (so no signature is verified for it). OpenSSH on musl accepted a locked
+/// account for passwords of 257 to 1024 bytes, because crypt() failed in-band.
+/// **Canary.** Make `Method::Other` mark the connection authenticated and every length here goes red.
+#[test]
+fn a_password_request_is_refused_whatever_its_length() {
+    for len in [0usize, 1, 256, 257, 1024, 16 * 1024] {
+        for (user, change) in [(&b"root"[..], false), (&b"root"[..], true), (&b"nobody"[..], false)] {
+            let cfg = config();
+            let mut env = TestEnv::default();
+            let (mut srv, mut cl) = at_service(&cfg, &mut env);
+            cl.send(&password_request(user, len, change));
+            exchange(&mut cl, &mut srv, &mut env);
+            let p = cl.take_type(MSG_USERAUTH_FAILURE);
+            assert_eq!(failure_methods(&p), (b"publickey".to_vec(), false), "len {len}");
+            assert!(!srv.is_authenticated(), "len {len}");
+            let r = refused(&env);
+            assert_eq!(r.len(), 1, "len {len}");
+            assert_eq!(r[0].why, "method not offered (public keys only)", "len {len}");
+            assert!(r[0].key.is_none(), "len {len}");
+        }
+    }
+}
+
+/// Past the packet limit the password never reaches the method parser: the transport cannot frame it, and the
+/// parser, handed it anyway, calls it a method that is not offered.
+#[test]
+fn an_oversized_password_is_not_framed_and_parses_as_no_method() {
+    let big = password_request(b"root", 64 * 1024, false);
+    assert!(big.len() > crate::packet::MAX_PAYLOAD);
+    assert!(crate::packet::seal(&crate::packet::Key::new(&[7u8; 64]), 0, &big, &mut Vec::new()).is_none());
+    for len in [1usize, 256, 257, 1024, 64 * 1024] {
+        let req = password_request(b"root", len, false);
+        let (user, _, m) = parse_request(&req).unwrap();
+        assert_eq!(user, b"root");
+        assert!(matches!(m, Method::Other), "len {len}");
+    }
+}
+
 #[test]
 fn another_service_than_ssh_connection_is_refused() {
     let cfg = config();
