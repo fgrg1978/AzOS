@@ -473,3 +473,48 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
+
+/// **A kernel copy waits out a fork's hold.** A sibling's `read()` into a page
+/// that is compressed while a fork holds the space: the copy's fault waits for
+/// the fork's end, however long it runs, instead of answering EFAULT after
+/// its tries. Needs the compressed pool.
+/// **Canary** `fork-wait-counted-canary`: the waits count as tries and the
+/// copy gives up.
+#[test]
+fn a_kernel_copy_waits_out_a_fork_hold() {
+    if !azos_mm::zpool::ENABLED {
+        return;
+    }
+    let _g = serial();
+    azos_crypto::entropy::mix(&[0x6e; 64], 512);
+    let pt = space();
+    let base = map(2);
+    write(pt, base, 0x5A);
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base };
+    assert!(reclaim.unmap(victim));
+    assert!(reclaim.store(victim).is_ok());
+    reclaim.free(victim);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, _, hold) =
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    azos_sched::shim_serial_share(true);
+    let copied = std::thread::scope(|sc| {
+        let sibling = sc.spawn(|| azos_mm::vmm::translate_user(pt, base, true));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        azos_sched::shim_forget_space(child);
+        azos_sched::shim_set_other_task(2, child, 0);
+        assert!(fork_regions_to_child(2));
+        drop(hold);
+        sibling.join().unwrap()
+    });
+    azos_sched::shim_serial_share(false);
+    let f = copied.expect("the copy gave up on a page the fork kept out");
+    assert!(bytes(f & !(PAGE_SIZE - 1)).iter().all(|&b| b == 0x5A));
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}

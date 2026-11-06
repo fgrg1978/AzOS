@@ -1647,11 +1647,19 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Mapping, obj: u32, share
 /// The same two steps are why the kernel's own access to a user page
 /// ([`vmm::translate_user`]) can rely on this: it does not return before the
 /// page is resident or the access is hopeless.
+///
+/// A wait for a fork's hold on the space is no try: the fault waits as long as
+/// the fork runs, so a kernel copy (which does not fault again) does not give
+/// up on a page a long fork keeps out.
 pub fn resolve_fault(r: SpaceRef, va: usize) -> KResult<()> {
     let page = va & !(PAGE_SIZE - 1);
-    for _ in 0..FAULT_TRIES {
-        if let Step::Done = fault_once(r, page)? {
-            return Ok(());
+    let mut tries = 0;
+    while tries < FAULT_TRIES {
+        match fault_once(r, page)? {
+            Step::Done => return Ok(()),
+            // Canary `fork-wait-counted-canary`: the wait counts as a try.
+            Step::Held if !cfg!(feature = "fork-wait-counted-canary") => {}
+            Step::Held | Step::Again => tries += 1,
         }
     }
     // Still racing after every try: the access retries, and faults again.
@@ -1668,6 +1676,8 @@ enum Step {
     Done,
     /// The slot or the mapping changed under the attempt: look again.
     Again,
+    /// A fork holds the space (its copy of the markers runs): waited, look again.
+    Held,
 }
 
 /// The word that maps `page` under `root` and the level of its entry (0: the
@@ -1757,7 +1767,7 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         // the wait.
         Resolve::Restore(..) if forking => {
             MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
-            return Ok(Step::Again);
+            return Ok(Step::Held);
         }
         Resolve::Restore(kind, gen) => Some((kind, gen)),
         Resolve::Supply | Resolve::Install(_) => None,

@@ -12284,6 +12284,11 @@ host_job zpool_host_canary_row "anon: fork hold, no restore canary" fork-hold-ca
 host_job zpool_host_row "anon: fork hold, restore begun before" a_restore_begun_before_the_fork_does_not_install_during_it
 host_job zpool_host_canary_row "anon: fork hold, restore begun before canary" fork-install-recheck-canary \
     a_restore_begun_before_the_fork_does_not_install_during_it
+# A fault's wait for a fork's hold is no try (pager::resolve_fault): a kernel
+# copy waits the fork out. fork-wait-counted-canary: it gives up (EFAULT).
+host_job zpool_host_row "anon: kernel copy waits out a fork" a_kernel_copy_waits_out_a_fork_hold
+host_job zpool_host_canary_row "anon: kernel copy waits out a fork canary" fork-wait-counted-canary \
+    a_kernel_copy_waits_out_a_fork_hold
 # A demand reservation (brk) skips the pages of a mapping, whose state is its
 # object's slot (demand::map_demand). demand-over-mapping-canary: the empty leaf
 # alone decides, and a page in the pool would come back as zeros.

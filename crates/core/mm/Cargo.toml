@@ -118,6 +118,10 @@ fork-install-recheck-canary = []
 # that is not the page's: `syscall-tests` thp_vmm.rs
 # `an_install_whose_table_was_promoted_away_is_refused` fails.
 fault-entry-rewalk-canary = []
+# Host-suite canary: a fault's wait for a fork's hold counts as one of its
+# tries, so a kernel copy into a page a long fork keeps out gives up (EFAULT):
+# `syscall-tests` pte_truth.rs `a_kernel_copy_waits_out_a_fork_hold` fails.
+fork-wait-counted-canary = []
 # Host-suite canary: a demand reservation (`brk`) is written over a page of a
 # mapping, whose state is its object's slot: `syscall-tests` pte_truth.rs
 # `a_heap_reservation_skips_the_pages_of_a_mapping` fails.
