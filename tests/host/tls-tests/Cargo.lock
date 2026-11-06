@@ -21,6 +21,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures",
+ "zeroize",
 ]
 
 [[package]]
@@ -59,9 +60,18 @@ version = "0.1.0"
 name = "azos_crypto"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "azos_common",
+ "chacha20",
+ "chacha20poly1305",
+ "ctr",
  "curve25519-dalek",
+ "digest",
  "ed25519-dalek",
+ "hkdf",
+ "hmac",
+ "poly1305",
+ "sha2",
 ]
 
 [[package]]
@@ -653,6 +663,7 @@ dependencies = [
  "cpufeatures",
  "opaque-debug",
  "universal-hash",
+ "zeroize",
 ]
 
 [[package]]
