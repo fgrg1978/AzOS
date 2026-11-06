@@ -130,6 +130,14 @@ fault-foreign-retry-canary = []
 # `mm-tests` `a_request_grows_the_limit_by_itself_up_to_the_ceiling` and
 # `syscall-tests` brk_heap.rs `a_heap_grows_past_its_base_up_to_the_ceiling` fail.
 budget-ceiling-ignored-canary = []
+# Host-suite canary: growth never takes from the growth pool, so one Domain's
+# growth can take frames another's admitted base was promised: `mm-tests`
+# `a_domains_growth_never_takes_another_domains_base` and `syscall-tests`
+# brk_heap.rs `a_heap_grows_only_as_far_as_the_growth_pool` fail.
+budget-pool-ignored-canary = []
+# Host-suite canary: the base an exec keeps and a fork child starts from is
+# the grown limit: `mm-tests` `the_base_is_the_declared_limit_not_the_grown_one` fails.
+budget-keep-grown-canary = []
 # Host-suite canary: the install trusts the entry its walk found before the
 # lock, so a block promoted (and split) meanwhile gets a 4 KiB leaf in a table
 # that is not the page's: `syscall-tests` thp_vmm.rs

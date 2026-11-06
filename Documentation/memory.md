@@ -575,15 +575,29 @@ A request (`mmap`, a `brk` growth) is charged whole by
 `PageBudget::charge_request`. Past the limit, a Domain that may grow (not
 `mem = "locked"`, not real time) has its limit grown by exactly the request, up
 to its ceiling, the row's `mem_pages_max` (CAPS.TOML format 8, in 4 KiB pages,
-set with the limit at exec and spawn and kept by a fork child). Admission
-counts the base, not the ceiling; it refuses a ceiling below the base, past the
-free memory, or on a locked row, and a package row's ceiling is bounded by its
-signer's `mem_pages_max`. Each growth, and each refusal at the ceiling, leaves
-a `budget-grow` decision record (pages asked for, limit after, ceiling), and
-the growths are counted (`memory/budget_growths` in the introspection tree,
-`grew=` beside `mem quota refused=` in the census). Other charges stay within
-the limit as it is. A new declaration of the limit starts again at its base,
-and a row with no `mem_pages_max` never grows.
+set with the limit at exec and spawn). Admitted bases are guaranteed: admission
+counts the bases (with their copy-on-write copies and the kernel reserve), and
+what that leaves of the free pages is the **growth pool**
+(`budget::set_growth_pool`). Every growth takes its pages from the pool
+atomically and is refused when the pool cannot hold it, so no Domain's growth
+can take a frame another Domain's base (a real-time row's precommitted maps
+included) was promised; a new declaration of the limit (exec, the Domain's
+end) gives the growth back. Admission refuses rows whose growth, `(ceiling -
+base) × instances` over every row, does not fit the pool; a ceiling below the
+base; and a ceiling on a locked, real-time or kernel row, where it would change
+nothing. A package row's ceiling is bounded by its signer's `mem_pages_max`.
+
+An exec that keeps its budget and a fork child start from the row's **base**
+(`PageBudget::base`), not the grown limit, with the same ceiling: a growth is
+the Domain's own and is never handed on as base. What a fork child holds past
+its base (the reservation it inherits) is a growth of its own, from the pool.
+
+Each growth, and each refusal at the ceiling or for want of pool, leaves a
+`budget-grow` decision record (pages asked for, limit after, ceiling), paced per
+Domain like other caller-raised refusals; the growths are counted
+(`memory/budget_growths` in the introspection tree, `grew=` beside `mem quota
+refused=` in the census). Other charges stay within the limit as it is. A row
+with no `mem_pages_max` never grows.
 
 Rules shared by `PageBudget` and `KmemBudget` (`crates/core/mm/src/budget.rs`):
 charges are atomic compare-and-swap loops, all-or-nothing (a charge that would

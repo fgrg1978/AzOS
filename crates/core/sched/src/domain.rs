@@ -616,8 +616,9 @@ pub fn charge(key: Key, pages: u32) -> Option<u32> {
 /// Charge the `pages` one request reserves to the domain `key` names
 /// (`PageBudget::charge_request`): `used` after it, and how it was granted.
 /// `None` when the key names no domain. A growth past the base, and a refusal
-/// at the ceiling, leave a record (`Rule::BudgetGrow`: the pages asked for,
-/// the limit after, the ceiling).
+/// at the ceiling or for want of growth pool, leave a record
+/// (`Rule::BudgetGrow`: the pages asked for, the limit after, the ceiling),
+/// paced per Domain (`Rule::caller_paced`).
 pub fn charge_request(
     key: Key,
     pages: u32,
@@ -628,7 +629,7 @@ pub fn charge_request(
     let r = d.budget.charge_request(pages, may_grow);
     let verdict = match r {
         Ok(Granted::Grew(_)) => Some(Verdict::Admit),
-        Err(RequestRefused::Ceiling) => Some(Verdict::Refuse),
+        Err(RequestRefused::Ceiling | RequestRefused::Pool) => Some(Verdict::Refuse),
         _ => None,
     };
     if let Some(v) = verdict {
@@ -683,6 +684,12 @@ pub fn set_ceiling(key: Key, ceiling: u32) {
     if let Some(d) = get(key) {
         d.budget.set_ceiling(ceiling);
     }
+}
+
+/// The domain's limit as declared, before any growth; 0 for a key that names
+/// none.
+pub fn base(key: Key) -> u32 {
+    get(key).map_or(0, |d| d.budget.base())
 }
 
 /// How far requests may grow the domain's limit; 0 for a key that names none.

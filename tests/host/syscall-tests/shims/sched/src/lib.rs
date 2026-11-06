@@ -265,8 +265,7 @@ pub fn mm_discharge_tid(tid: u32, pages: u32) {
 // ── Wave 14 (DEMANDPAGE) ─────────────────────────────────────────────────
 static SCHED_CLASS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3);
 static OTHER_PT: std::sync::Mutex<Vec<(u32, usize)>> = std::sync::Mutex::new(Vec::new());
-static OTHER_PAGES: AtomicU32 = AtomicU32::new(0);
-static OTHER_LIMIT: AtomicU32 = AtomicU32::new(0);
+static OTHER: azos_mm::budget::PageBudget = azos_mm::budget::PageBudget::new();
 
 /// Test-only control surface: the current task's scheduling class
 /// (`SchedClass` discriminant; 3 = BestEffort, the default here).
@@ -281,19 +280,30 @@ pub fn current_sched_params() -> (u32, u8) {
 
 /// Test-only control surface: give task `tid` (not the current one) a
 /// page-table root, and a budget of `limit` pages (0 = none) for
-/// `mm_charge_tid`; resets its charge.
+/// `mm_charge_request_tid`; resets its charge.
 pub fn shim_set_other_task(tid: u32, pt: usize, limit: u32) {
     shim_assert_serial("shim_set_other_task");
     let mut v = OTHER_PT.lock().unwrap();
     v.retain(|&(t, _)| t != tid);
     v.push((tid, pt));
-    OTHER_LIMIT.store(limit, Ordering::SeqCst);
-    OTHER_PAGES.store(0, Ordering::SeqCst);
+    OTHER.set_limit(limit);
+    OTHER.reset();
+}
+
+/// Test-only control surface: how far requests may grow the other task's
+/// limit (after [`shim_set_other_task`]).
+pub fn shim_set_other_ceiling(ceiling: u32) {
+    OTHER.set_ceiling(ceiling);
 }
 
 /// Test-only control surface: pages charged to the other task.
 pub fn shim_other_pages() -> u32 {
-    OTHER_PAGES.load(Ordering::SeqCst)
+    OTHER.used()
+}
+
+/// Test-only control surface: `(limit, pages the limit grew by)` of the other task.
+pub fn shim_other_limit_grown() -> (u32, u32) {
+    (OTHER.limit(), OTHER.grown())
 }
 
 pub fn task_aspace(tid: u32) -> Option<azos_mm::aspace::SpaceRef> {
@@ -304,20 +314,14 @@ pub fn task_aspace(tid: u32) -> Option<azos_mm::aspace::SpaceRef> {
     (pt != 0).then(|| shim_space(pt))
 }
 
-pub fn mm_charge_tid(tid: u32, pages: u32) -> bool {
+pub fn mm_charge_request_tid(tid: u32, pages: u32, may_grow: bool) -> bool {
     if tid == current_task_tid() {
-        return mm_charge(pages);
+        return mm_charge_request(pages, may_grow);
     }
     if task_aspace(tid).is_none() {
         return false;
     }
-    let limit = OTHER_LIMIT.load(Ordering::SeqCst);
-    let next = OTHER_PAGES.load(Ordering::SeqCst).saturating_add(pages);
-    if limit != 0 && next > limit {
-        return false;
-    }
-    OTHER_PAGES.store(next, Ordering::SeqCst);
-    true
+    OTHER.charge_request(pages, may_grow).is_ok()
 }
 
 static MEM_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1598,8 +1602,8 @@ pub fn shim_reset() {
     BUDGET.reset();
     SCHED_CLASS.store(3, Ordering::SeqCst);
     OTHER_PT.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    OTHER_PAGES.store(0, Ordering::SeqCst);
-    OTHER_LIMIT.store(0, Ordering::SeqCst);
+    OTHER.set_limit(0);
+    OTHER.reset();
     MEM_LOCKED.store(false, Ordering::SeqCst);
     MM_REFUSALS.store(0, Ordering::SeqCst);
     SPAWNED.lock().unwrap_or_else(|e| e.into_inner()).clear();

@@ -3805,7 +3805,7 @@ pub(crate) fn fork_regions_to_child(child: u32) -> bool {
     match azos_mm::pager::fork_clone(parent, child_space) {
         Ok(0) => true,
         Ok(n) => {
-            if azos_sched::mm_charge_tid(child, n.min(u32::MAX as usize) as u32) {
+            if azos_sched::mm_charge_request_tid(child, n.min(u32::MAX as usize) as u32, request_may_grow()) {
                 true
             } else {
                 azos_mm::pager::forget(child_space);

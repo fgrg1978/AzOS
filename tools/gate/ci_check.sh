@@ -12657,6 +12657,17 @@ host_job host_canary_row "budget: grow up to the ceiling canary" syscall-tests b
     a_heap_grows_past_its_base_up_to_the_ceiling
 host_job host_canary_row "budget: grow up to the ceiling (model) canary" mm-tests budget-ceiling-ignored-canary \
     a_request_grows_the_limit_by_itself_up_to_the_ceiling
+# Every growth takes from the growth pool, what admission left after the
+# bases (budget::set_growth_pool): no growth takes a frame an admitted base was
+# promised. budget-pool-ignored-canary: the pool never refuses.
+host_job host_canary_row "budget: growth pool (model) canary" mm-tests budget-pool-ignored-canary \
+    a_domains_growth_never_takes_another_domains_base
+host_job host_canary_row "budget: growth pool canary" syscall-tests budget-pool-ignored-canary \
+    a_heap_grows_only_as_far_as_the_growth_pool
+# An exec that keeps its budget and a fork child start from the row's base
+# (PageBudget::base). budget-keep-grown-canary: from the grown limit.
+host_job host_canary_row "budget: keep the base canary" mm-tests budget-keep-grown-canary \
+    the_base_is_the_declared_limit_not_the_grown_one
 # The fault entry asks the pagers (vmm::demand_fault). demand-region-canary:
 # they are never asked, so a first touch and a kernel copy into fresh memory
 # are not resolved.

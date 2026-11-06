@@ -3753,21 +3753,30 @@ mod memory_admission_tests {
 
     /// **A row's growth ceiling** (`mem_pages_max`, format 8): parsed onto the
     /// row and handed to the kernel with its budget (`RowMem::ceiling`), not
-    /// counted by admission (the base is), and refused when it is below the
-    /// base, past the memory, on a locked row, zero, or in an older format.
-    /// **Canary** (by hand): drop the `CeilingBelowBase` test in
-    /// `memory_admission`: red at "below the base".
+    /// counted by admission (the base is). The growth the ceilings allow past
+    /// the bases, over every row, must fit what the bases, their COW copies and
+    /// the reserve leave free (`headroom`, the growth pool). Refused: a ceiling
+    /// below the base, on a locked, real-time or kernel row (it would change
+    /// nothing), zero, twice in a row, or in an older format.
+    /// **Canary** (by hand): admission comparing the growth with the whole of
+    /// `free` instead of `headroom`: red at "the bases leave 6".
     #[test]
     fn a_rows_growth_ceiling_is_parsed_bounded_and_not_counted() {
         let t = topo(b"format = 8\n[task.A.ELF]\nmem_pages = 10\nmem_pages_max = 40\ncaps = []\n");
         assert_eq!(t.tasks()[0].mem_pages_max, 40);
         assert_eq!(t.row_mem(b"A.ELF", None, 64).map(|m| (m.limit, m.ceiling)), Some((10, 40)));
         let r = t.memory_admission(1 << 20, 0, 64, &FORKS).unwrap();
-        assert_eq!(r.ceiling_pages, 10, "admission counts the base");
+        assert_eq!((r.ceiling_pages, r.growth_pages), (10, 30), "admission counts the base");
+        assert_eq!(r.headroom, (1 << 20) - r.need);
+        // Two rows: bases 10 + 20, each copied once (FORKS), reserve 4: 64
+        // needed of 70, the bases leave 6; A's ceiling would grow 30.
+        let two = topo(b"format = 8\n[task.A.ELF]\nmem_pages = 10\nmem_pages_max = 40\ncaps = []\n[task.B.ELF]\nmem_pages = 20\ncaps = []\n");
         assert_eq!(
-            t.memory_admission(39, 0, 64, &FORKS),
-            Err(AdmissionError::Memory(MemoryRefusal::CeilingPastMemory { task: 0, ceiling: 40, free: 39 }))
+            two.memory_admission(70, 4, 64, &FORKS),
+            Err(AdmissionError::Memory(MemoryRefusal::GrowthPastHeadroom { growth: 30, headroom: 6 })),
+            "the bases leave 6"
         );
+        assert_eq!(two.memory_admission(94, 4, 64, &FORKS).map(|r| r.headroom), Ok(30), "30 left: the growth fits");
         let low = topo(b"format = 8\n[task.A.ELF]\nmem_pages = 10\nmem_pages_max = 9\ncaps = []\n");
         assert_eq!(
             low.memory_admission(1 << 20, 0, 64, &FORKS),
@@ -3780,12 +3789,28 @@ mod memory_admission_tests {
             Err(AdmissionError::Memory(MemoryRefusal::CeilingBelowBase { task: 0 })),
             "the profile default is the base of a row that declares none"
         );
-        let locked = topo(b"format = 8\n[task.A.ELF]\nmem = \"locked\"\nmem_pages = 10\nmem_pages_max = 20\ncaps = []\n");
-        assert_eq!(
-            locked.memory_admission(1 << 20, 0, 64, &FORKS),
-            Err(AdmissionError::Memory(MemoryRefusal::CeilingOnLocked { task: 0 }))
-        );
-        for bad in [&b"format = 8\n[task.A.ELF]\nmem_pages_max = 0\ncaps = []\n"[..], b"format = 8\n[task.A.ELF]\nmem_pages_max = 4294967296\ncaps = []\n"] {
+        let never = [
+            &b"format = 8\n[task.A.ELF]\nmem = \"locked\"\nmem_pages = 10\nmem_pages_max = 20\ncaps = []\n"[..],
+            b"format = 8\n[task.A.ELF]\nmem_pages = 10\nperiod_us = 10000\nruntime_us = 1000\nmem_pages_max = 20\ncaps = []\n",
+            b"format = 8\n[task.supervisor]\nmem_pages_max = 20\ncaps = []\n",
+        ];
+        for (k, caps) in never.iter().enumerate() {
+            let mut t = Topology::empty();
+            parse_sched(SCHED, &mut t).unwrap();
+            if parse_caps(caps, &mut t).is_err() {
+                continue; // a row the parser itself refuses changes nothing either
+            }
+            assert_eq!(
+                t.memory_admission(1 << 20, 0, 64, &FORKS),
+                Err(AdmissionError::Memory(MemoryRefusal::CeilingNeverUsed { task: 0 })),
+                "row {k}: locked, real-time or kernel"
+            );
+        }
+        for bad in [
+            &b"format = 8\n[task.A.ELF]\nmem_pages_max = 0\ncaps = []\n"[..],
+            b"format = 8\n[task.A.ELF]\nmem_pages_max = 4294967296\ncaps = []\n",
+            b"format = 8\n[task.A.ELF]\nmem_pages_max = 20\nmem_pages_max = 30\ncaps = []\n",
+        ] {
             let mut t = Topology::empty();
             parse_sched(SCHED, &mut t).unwrap();
             assert_eq!(parse_caps(bad, &mut t), Err(ParseError::BadValue));

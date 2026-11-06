@@ -567,13 +567,14 @@ fn admit(
     }
     let reserve = kernel_reserve_pages();
     let free = azos_topology::units_for(azos_mm::pmm::free_pages() as u64, page);
-    match topo.memory_admission(free, reserve, azos_topology::RING3_DEFAULT_PAGES, &may_fork) {
+    let headroom = match topo.memory_admission(free, reserve, azos_topology::RING3_DEFAULT_PAGES, &may_fork) {
         Ok(m) => {
             record(Rule::MemoryAdmission, Verdict::Admit, m.rows as u32, [m.need as u64, m.free as u64, m.reserve_pages as u64]);
             kprintln!(
                 "[TOPO] Memory admission: {} ring-3 row(s) ({} locked, {} forking), {} instance(s): {} locked + {} ceiling + {} COW copy + {} kernel reserve = {} of {} free pages",
                 m.rows, m.locked_rows, m.fork_rows, m.instances, m.locked_pages, m.ceiling_pages, m.cow_pages, m.reserve_pages, m.need, m.free,
-            )
+            );
+            m.headroom
         }
         Err(e) => {
             let need = match e {
@@ -587,7 +588,7 @@ fn admit(
             azos_mm::pmm::release_dma_pool();
             return Err(SignedRefusal::Admission(e));
         }
-    }
+    };
 
     // 4. The 2 MiB-leaf regions, each one physically contiguous and 2 MiB
     // aligned (`azos_mm::huge`); exec maps them with 2 MiB leaves.
@@ -615,6 +616,9 @@ fn admit(
             }
         }
     }
+    // What the admitted bases leave is all the rows' growth may take
+    // (`azos_mm::budget::set_growth_pool`), in frames.
+    azos_mm::budget::set_growth_pool(headroom * azos_topology::TOPOLOGY_PAGE / page);
     Ok(())
 }
 

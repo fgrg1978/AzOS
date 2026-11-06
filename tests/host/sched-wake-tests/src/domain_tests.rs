@@ -605,3 +605,39 @@ fn a_login_grant_is_spent_once_under_concurrent_takers() {
     assert_eq!(domain::take_login_grant(k, 5), None, "and is gone either way");
     free_all(k);
 }
+
+// ── Budget growth: the ceiling's receipts ─────────────────────────────────
+
+/// The `budget-grow` records written for `key` since `after`.
+fn grow_records(key: Key, after: u64) -> Vec<(u8, [u64; 3])> {
+    let mut v = Vec::new();
+    azos_decision::for_each(|r| {
+        if r.seq > after && r.rule == azos_decision::Rule::BudgetGrow as u8 && r.subject == key {
+            v.push((r.verdict, r.n));
+        }
+    });
+    v
+}
+
+/// A request that grows the budget past its base leaves an admitted
+/// `budget-grow` record, and one refused at the ceiling or for want of growth
+/// pool a refused one: pages asked for, the limit after, the ceiling. A
+/// request within the limit writes none.
+/// **Canary** (by hand): drop the record in `domain::charge_request`: red.
+#[test]
+fn a_growth_and_a_refusal_at_the_ceiling_leave_a_record() {
+    let _s = serial();
+    let k = domain::create().expect("a free domain");
+    domain::set_limit(k, 8);
+    domain::set_ceiling(k, 12);
+    azos_mm::budget::set_growth_pool(2);
+    let before = azos_decision::total();
+    assert!(matches!(domain::charge_request(k, 8, true), Some(Ok(_))));
+    assert!(grow_records(k, before).is_empty(), "within the limit: no record");
+    assert!(matches!(domain::charge_request(k, 2, true), Some(Ok((azos_mm::budget::Granted::Grew(2), 10)))));
+    assert!(matches!(domain::charge_request(k, 1, true), Some(Err(azos_mm::budget::RequestRefused::Pool))));
+    assert!(matches!(domain::charge_request(k, 4, true), Some(Err(azos_mm::budget::RequestRefused::Ceiling))));
+    let (a, r) = (azos_decision::Verdict::Admit as u8, azos_decision::Verdict::Refuse as u8);
+    assert_eq!(grow_records(k, before), vec![(a, [2, 10, 12]), (r, [1, 10, 12]), (r, [4, 10, 12])]);
+    free_all(k);
+}

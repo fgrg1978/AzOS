@@ -49,6 +49,8 @@ pmm-inflight-canary = []
 slab-align-canary = []
 # `cfg(feature = "budget-ceiling-ignored-canary")` in the pulled-in budget.rs: a request grows past the ceiling.
 budget-ceiling-ignored-canary = []
+budget-pool-ignored-canary = []
+budget-keep-grown-canary = []
 # L2 (physical memory) canaries for the pulled frame.rs / buddy.rs /
 # cow_table.rs (see src/buddy_tests.rs and src/pmm_tests.rs).
 buddy-merge-canary = []

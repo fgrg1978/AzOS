@@ -214,6 +214,8 @@ fn a_row_that_imports_a_name_outside_the_signers_ceiling_is_refused() {
     assert!(install(&imports("\"term\""), &wide).is_ok());
 }
 
+/// **Canary** (by hand): `admit.rs` bounding the base alone (`one = base`):
+/// red at "a ceiling past the signer's max".
 #[test]
 fn real_time_and_frames_are_the_signers_to_allow() {
     let d = dev();
@@ -230,6 +232,12 @@ fn real_time_and_frames_are_the_signers_to_allow() {
     assert_eq!(install(&build(&s, &author()), &d), Err(Refusal::Frames(0)), "3 x 32 > 64");
     s.rows = "[task.ACME.ELF]\nclass = \"best_effort\"\npriority = 20\nmem_pages = 32\ninstances = 2\ncaps = []\n".into();
     assert!(install(&build(&s, &author()), &d).is_ok(), "2 x 32 = 64");
+    // So is how far requests may grow it (`mem_pages_max`): the signer's max
+    // bounds the ceiling, not only the base.
+    s.rows = "format = 8\n[task.ACME.ELF]\nclass = \"best_effort\"\npriority = 20\nmem_pages = 32\nmem_pages_max = 65\ncaps = []\n".into();
+    assert_eq!(install(&build(&s, &author()), &d), Err(Refusal::Frames(0)), "a ceiling past the signer's max");
+    s.rows = "format = 8\n[task.ACME.ELF]\nclass = \"best_effort\"\npriority = 20\nmem_pages = 32\nmem_pages_max = 64\ncaps = []\n".into();
+    assert!(install(&build(&s, &author()), &d).is_ok(), "a ceiling at the signer's max");
     // Memory pinned for the task's life, a huge region and a ring poller are
     // real-time features: the owner gives them with `rt = true`, or not.
     for extra in ["mem = \"locked\"\n", "sqpoll_idle_ms = 10\n"] {

@@ -1426,6 +1426,25 @@ mod deny_receipts {
         assert_eq!(refused_with(Rule::ExecGrant as u8) as u64, BURST, "an admitted exec adds no durable record");
     }
 
+    /// A loop of `brk` past its row's ceiling is limited per Domain like a
+    /// flood of denials: the burst of `budget-grow` refusals is durable, the
+    /// rest is reported, so the loop cannot push every other receipt out of
+    /// the journal.
+    ///
+    /// **Canary.** Leave `Rule::BudgetGrow` out of `caller_paced`: every
+    /// refusal is durable and no report is written, red.
+    #[test]
+    fn a_loop_of_growths_past_the_ceiling_is_limited() {
+        let _g = scene();
+        let key = 0x7800_0030;
+        let calls = BURST * 3;
+        for _ in 0..calls {
+            record(Rule::BudgetGrow, Verdict::Refuse, key, [64, 32, 48]);
+        }
+        assert_eq!(refused_with(Rule::BudgetGrow as u8) as u64, BURST, "the burst");
+        assert_eq!(reports(key), vec![[Rule::BudgetGrow as u64, 1, 1]], "the start of the run is reported at once");
+    }
+
     /// A loop of motor ops on an image without wheels is limited per Domain
     /// on the medium like a flood of denials: the burst is durable, the rest
     /// is reported.

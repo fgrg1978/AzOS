@@ -1042,7 +1042,57 @@ mod cow_table_tests {
 /// `scheduler.rs` to make this the code that ships).
 #[cfg(test)]
 mod budget_tests {
-    use super::budget::{Granted, PageBudget, RequestRefused};
+    use super::budget::{growth_pool, set_growth_pool, Granted, PageBudget, RequestRefused};
+
+    /// The growth pool is one for the whole suite: the rows that grow take turns.
+    static POOL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn pool(pages: u64) -> std::sync::MutexGuard<'static, ()> {
+        let g = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        set_growth_pool(pages);
+        g
+    }
+
+    /// **One Domain's growth never takes an admitted base's frames.** 80 free
+    /// pages, bases of 30 (A, which may grow to 80) and 40 (B, a real-time row
+    /// that never grows and whose precommitted maps need all of its base):
+    /// admission leaves 10, the growth pool. A grows by at most those 10, so B
+    /// still gets its 40 and the two never hold more than the 80 there are.
+    /// A's later growth is refused for want of pool, with nothing charged, and
+    /// A's exec (a new declaration) gives its growth back.
+    /// **Canary** `budget-pool-ignored-canary`: A grows by 20 and the two hold
+    /// 90 of 80 pages.
+    #[test]
+    fn a_domains_growth_never_takes_another_domains_base() {
+        let _g = pool(10);
+        let (a, b) = (PageBudget::new(), PageBudget::new());
+        a.set_limit(30);
+        a.set_ceiling(80);
+        b.set_limit(40);
+        assert_eq!(a.charge_request(30, true), Ok(Granted::Within));
+        assert_eq!(a.charge_request(20, true), Err(RequestRefused::Pool), "20 past the base, 10 in the pool");
+        assert_eq!(a.used(), 30, "a refusal charges nothing");
+        assert_eq!(a.charge_request(10, true), Ok(Granted::Grew(10)));
+        assert_eq!(growth_pool(), 0);
+        assert_eq!(b.charge_request(40, false), Ok(Granted::Within), "the real-time base is all there");
+        assert!(a.used() + b.used() <= 80, "never more than the free pages");
+        assert_eq!(a.charge_request(1, true), Err(RequestRefused::Pool));
+        a.set_limit_marked(30, 0, 0);
+        assert_eq!(growth_pool(), 10, "a new declaration gives the growth back");
+    }
+
+    /// **An exec that keeps its budget and a fork child start from the base.**
+    /// A grown Domain's base is the limit it was declared with, not the grown
+    /// one, so the growth stays its own and is never handed on as base.
+    /// **Canary** `budget-keep-grown-canary`: the grown limit is the base.
+    #[test]
+    fn the_base_is_the_declared_limit_not_the_grown_one() {
+        let _g = pool(100);
+        let a = PageBudget::new();
+        a.set_limit(16);
+        a.set_ceiling(64);
+        assert_eq!(a.charge_request(24, true), Ok(Granted::Grew(8)));
+        assert_eq!((a.limit(), a.base(), a.ceiling()), (24, 16, 64));
+    }
 
     /// **A budget grows by request, up to its ceiling** (mem-budget-grow). A
     /// request past the limit is granted when the Domain may grow and the
@@ -1054,6 +1104,7 @@ mod budget_tests {
     /// request: red at the limit it grew to.
     #[test]
     fn a_request_grows_the_limit_by_itself_up_to_the_ceiling() {
+        let _g = pool(1 << 20);
         let b = PageBudget::new();
         b.set_limit(16);
         b.set_ceiling(32);
@@ -1075,6 +1126,7 @@ mod budget_tests {
     /// limit drops the ceiling and the growth.
     #[test]
     fn a_domain_that_does_not_grow_is_refused_at_its_limit() {
+        let _g = pool(1 << 20);
         let b = PageBudget::new();
         b.set_limit(8);
         b.set_ceiling(64);

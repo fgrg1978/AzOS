@@ -125,9 +125,11 @@ pub enum MemoryRefusal {
         /// Pages free when the pool was reserved.
         free: u64,
     },
-    /// Row `task` declares `mem_pages_max` on a `mem = "locked"` row: a
-    /// locked row's memory is reserved whole, it never grows.
-    CeilingOnLocked {
+    /// Row `task` declares `mem_pages_max` where it would change nothing: a
+    /// kernel row (no frame budget), a `mem = "locked"` row (its memory is
+    /// reserved whole) or a real-time row (a profile, or a priority in the
+    /// band): none of them grows.
+    CeilingNeverUsed {
         /// Index of the row in [`Topology::tasks`].
         task: u16,
     },
@@ -137,15 +139,14 @@ pub enum MemoryRefusal {
         /// Index of the row in [`Topology::tasks`].
         task: u16,
     },
-    /// Row `task`'s `mem_pages_max`, over its instances, is more than the free
-    /// pages: a ceiling no memory could ever hold bounds nothing.
-    CeilingPastMemory {
-        /// Index of the row in [`Topology::tasks`].
-        task: u16,
-        /// Pages of the ceiling over every instance.
-        ceiling: u64,
-        /// Pages the allocator has free.
-        free: u64,
+    /// The growth the rows' ceilings allow past their bases, over every
+    /// instance, is more than the free pages the admitted bases leave: one
+    /// Domain's growth could take frames another's base was promised.
+    GrowthPastHeadroom {
+        /// Pages of `(mem_pages_max - base) × instances`, over the rows.
+        growth: u64,
+        /// Free pages less what admission counted.
+        headroom: u64,
     },
     /// Row `task` asks for a `mib` MiB 2 MiB-leaf region and the allocator
     /// has no free, 2 MiB-aligned contiguous run of that size.
@@ -181,6 +182,10 @@ pub struct MemReport {
     pub reserve_pages: u64,
     /// `locked_pages + ceiling_pages + cow_pages + reserve_pages`.
     pub need: u64,
+    /// Pages the rows' ceilings may grow past their bases, together.
+    pub growth_pages: u64,
+    /// `free - need`: what the bases leave, the growth pool's size.
+    pub headroom: u64,
     /// Free pages it was checked against.
     pub free: u64,
 }
@@ -257,6 +262,10 @@ impl<'a> Topology<'a> {
         let mut r = MemReport { reserve_pages, free: free_pages, ..MemReport::default() };
         for (i, t) in self.tasks().iter().enumerate() {
             if !t.is_ring3() {
+                // A kernel row has no frame budget to grow.
+                if t.mem_pages_max != 0 {
+                    return Err(AdmissionError::Memory(MemoryRefusal::CeilingNeverUsed { task: i as u16 }));
+                }
                 continue;
             }
             let n = t.instance_count() as u64;
@@ -267,20 +276,20 @@ impl<'a> Topology<'a> {
                 * n;
             r.rows += 1;
             r.instances += n as u32;
-            // The base is what is counted; the ceiling, how far requests may
-            // grow it, is checked against the base and the memory alone.
+            // The base is what is counted; the growth a ceiling allows past it
+            // is checked, over every row, against what the bases leave free
+            // (below). A locked or real-time row never grows.
             if t.mem_pages_max != 0 {
                 let task = i as u16;
-                if t.mem_locked {
-                    return Err(AdmissionError::Memory(MemoryRefusal::CeilingOnLocked { task }));
+                let rt = t.profile != crate::deadline::SchedProfile::NONE
+                    || self.row_band_entry(i) != crate::deadline::BandEntry::NotBand;
+                if t.mem_locked || rt {
+                    return Err(AdmissionError::Memory(MemoryRefusal::CeilingNeverUsed { task }));
                 }
                 if (t.mem_pages_max as u64) * n < pages {
                     return Err(AdmissionError::Memory(MemoryRefusal::CeilingBelowBase { task }));
                 }
-                let ceiling = t.mem_pages_max as u64 * n;
-                if ceiling > free_pages {
-                    return Err(AdmissionError::Memory(MemoryRefusal::CeilingPastMemory { task, ceiling, free: free_pages }));
-                }
+                r.growth_pages += t.mem_pages_max as u64 * n - pages;
             }
             if t.mem_huge_mib != 0 {
                 if !t.mem_locked {
@@ -307,6 +316,10 @@ impl<'a> Topology<'a> {
         r.need = r.locked_pages + r.ceiling_pages + r.cow_pages + r.reserve_pages;
         if r.need > free_pages {
             return Err(AdmissionError::Memory(MemoryRefusal::Overcommit { need: r.need, free: free_pages }));
+        }
+        r.headroom = free_pages - r.need;
+        if r.growth_pages > r.headroom {
+            return Err(AdmissionError::Memory(MemoryRefusal::GrowthPastHeadroom { growth: r.growth_pages, headroom: r.headroom }));
         }
         Ok(r)
     }

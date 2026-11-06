@@ -166,8 +166,48 @@ pub struct PageBudget {
     /// How far a request may grow the limit ([`PageBudget::charge_request`]);
     /// at or below the limit: no growth.
     ceiling: AtomicU32,
-    /// Pages the limit grew by past the base it was declared with.
+    /// Pages the limit grew by past its declared base, taken from the growth
+    /// pool ([`set_growth_pool`]) and given back when the limit is declared
+    /// again.
     grown: AtomicU32,
+    /// The limit as declared, before any growth.
+    base: AtomicU32,
+}
+
+/// Pages every Domain's growth past its base may take, together: what
+/// admission left free after the admitted bases, their copy-on-write copies
+/// and the kernel reserve ([`set_growth_pool`]). Growth takes from it and
+/// gives back, so no growth can take a frame an admitted base was promised.
+/// 0 until admission sets it: nothing grows.
+static GROWTH_POOL: AtomicU64 = AtomicU64::new(0);
+
+/// Set the growth pool to `pages` (admission's free pages less what it
+/// counted, once it passed).
+pub fn set_growth_pool(pages: u64) {
+    GROWTH_POOL.store(pages, Ordering::Release);
+}
+
+/// Pages the growth pool holds now.
+#[must_use]
+pub fn growth_pool() -> u64 {
+    GROWTH_POOL.load(Ordering::Acquire)
+}
+
+/// Take `n` pages from the growth pool, all or none.
+/// Canary `budget-pool-ignored-canary`: the pool never refuses or runs down.
+fn pool_take(n: u32) -> bool {
+    if cfg!(feature = "budget-pool-ignored-canary") {
+        return true;
+    }
+    GROWTH_POOL
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |p| p.checked_sub(n as u64))
+        .is_ok()
+}
+
+fn pool_give(n: u32) {
+    if n != 0 && !cfg!(feature = "budget-pool-ignored-canary") {
+        GROWTH_POOL.fetch_add(n as u64, Ordering::AcqRel);
+    }
 }
 
 /// What a request charge ([`PageBudget::charge_request`]) granted.
@@ -187,6 +227,9 @@ pub enum RequestRefused {
     Limit,
     /// Past the ceiling.
     Ceiling,
+    /// The growth pool cannot hold the growth: it would take frames an
+    /// admitted base was promised.
+    Pool,
 }
 
 const STORM_IDLE: u8 = 0;
@@ -285,6 +328,7 @@ impl PageBudget {
             cut_short: AtomicBool::new(false),
             ceiling: AtomicU32::new(0),
             grown: AtomicU32::new(0),
+            base: AtomicU32::new(0),
         }
     }
 
@@ -303,9 +347,7 @@ impl PageBudget {
     /// the marks of the old limit): [`set_limit_marked`](Self::set_limit_marked)
     /// is the declaration that gives it reclaim.
     pub fn set_limit(&self, limit: u32) {
-        self.limit.store(limit, Ordering::Relaxed);
-        self.ceiling.store(0, Ordering::Relaxed);
-        self.grown.store(0, Ordering::Relaxed);
+        self.declare(limit);
         self.set_watermarks(0, 0);
         // A new occupant of the slot has told nobody anything yet, and its
         // pages have not been aged.
@@ -318,12 +360,19 @@ impl PageBudget {
     /// ([`watermarks_for`]; `high_pct == 0`: reclaim is off, none). The one call
     /// the Domain's frame limit goes through when its topology row is applied.
     pub fn set_limit_marked(&self, limit: u32, high_pct: u32, low_pct: u32) {
-        self.limit.store(limit, Ordering::Relaxed);
-        self.ceiling.store(0, Ordering::Relaxed);
-        self.grown.store(0, Ordering::Relaxed);
+        self.declare(limit);
         let (low, high) = watermarks_for(limit, high_pct, low_pct);
         self.set_watermarks(low, high);
         self.aged.store(0, Ordering::Relaxed);
+    }
+
+    /// The limit `limit` and its base, no ceiling, and the growth of the one
+    /// before given back to the pool.
+    fn declare(&self, limit: u32) {
+        self.limit.store(limit, Ordering::Relaxed);
+        self.base.store(limit, Ordering::Relaxed);
+        self.ceiling.store(0, Ordering::Relaxed);
+        pool_give(self.grown.swap(0, Ordering::AcqRel));
     }
 
     /// Declare where reclaim starts and stops, in pages (`high == 0`: never;
@@ -535,9 +584,10 @@ impl PageBudget {
     /// or nothing. Past the limit the limit grows to hold the request, up to
     /// the ceiling ([`Self::set_ceiling`]), when `may_grow` (a real-time or
     /// locked Domain never grows: its memory is sized, not discovered). The
-    /// growth is the request's, never a page more, and is counted in
-    /// [`Self::grown`]. The other charges (tables, the image, shm) stay within
-    /// the limit as it is, grown or not.
+    /// growth is the request's, never a page more, is taken from the growth
+    /// pool ([`set_growth_pool`]: refused when the pool cannot hold it) and is
+    /// counted in [`Self::grown`]. The other charges (tables, the image, shm)
+    /// stay within the limit as it is, grown or not.
     pub fn charge_request(&self, pages: u32, may_grow: bool) -> Result<Granted, RequestRefused> {
         if self.charge(pages) {
             return Ok(Granted::Within);
@@ -554,17 +604,39 @@ impl PageBudget {
             if next > ceiling && !cfg!(feature = "budget-ceiling-ignored-canary") {
                 return Err(RequestRefused::Ceiling);
             }
+            // What this growth needs past the limit read now; a racing growth
+            // that raised it meanwhile leaves the difference to give back.
+            let need = next.saturating_sub(limit);
+            if !pool_take(need) {
+                return Err(RequestRefused::Pool);
+            }
             match self.used.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed) {
                 Ok(_) => {
                     self.peak.fetch_max(next, Ordering::Relaxed);
                     let before = self.limit.fetch_max(next, Ordering::AcqRel);
                     let by = next.saturating_sub(before);
+                    pool_give(need.saturating_sub(by));
                     self.grown.fetch_add(by, Ordering::Relaxed);
                     return Ok(if by == 0 { Granted::Within } else { Granted::Grew(by) });
                 }
-                Err(now) => cur = now,
+                Err(now) => {
+                    pool_give(need);
+                    cur = now;
+                }
             }
         }
+    }
+
+    /// The limit as declared, before any growth: what an exec that keeps the
+    /// budget and a fork child start from.
+    /// Canary `budget-keep-grown-canary`: the grown limit, so growth becomes
+    /// base with no record and a fork child starts past the row's base.
+    #[must_use]
+    pub fn base(&self) -> u32 {
+        if cfg!(feature = "budget-keep-grown-canary") {
+            return self.limit();
+        }
+        self.base.load(Ordering::Relaxed)
     }
 
     /// Let request charges grow the limit up to `ceiling` pages (at or below the

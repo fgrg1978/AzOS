@@ -75,7 +75,7 @@ pub use scheduler::{
     current_mem_policy, current_mem_locked, current_mem_report, mm_install_frames,
     set_task_mem, note_mm_quota_refusal,
     set_current_sched_params, current_sched_params, task_class_raw,
-    task_aspace, mm_charge_tid, mm_charge_domain, mm_discharge_domain,
+    task_aspace, mm_charge_request_tid, mm_charge_domain, mm_discharge_domain,
     current_user_pages, mm_quota_refusals, mm_budget_growths, mm_peak_pages, mm_peak_global,
     current_task_name, current_task_tid, current_task_slot, current_task_parent_tid, current_task_stack_top,
     current_task_switches, current_task_hart,

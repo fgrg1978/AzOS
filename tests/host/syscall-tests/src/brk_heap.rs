@@ -27,7 +27,10 @@
 //   and refused whole past it; a real-time task's never grows. Canary
 //   `budget-ceiling-ignored-canary` (the ceiling holds nothing): red at "past
 //   the ceiling"; by hand, `request_may_grow` answering `true`: red at "real
-//   time never grows".
+//   time never grows". The growth pool (`azos_mm::budget::set_growth_pool`):
+//   a growth past what it holds is refused whole (canary
+//   `budget-pool-ignored-canary`); a fork child starts from the base and its
+//   growth past it is its own, from the pool.
 // * With the pool on (`MM_RECLAIM_COMPRESS`, its gate row): a heap page the
 //   reclaimer stores leaves a marker in its slot and an empty leaf, and its
 //   next touch restores its bytes. Canary: `mm-pte-truth-canary` (the leaf
@@ -187,6 +190,7 @@ fn a_heap_page_the_reclaimer_stores_comes_back_through_its_slot() {
 fn a_heap_grows_past_its_base_up_to_the_ceiling() {
     let _g = serial();
     let pt = space();
+    azos_mm::budget::set_growth_pool(1 << 20);
     azos_sched::shim_set_page_limit(4);
     azos_sched::shim_set_page_ceiling(10);
     assert_eq!(sys_brk(BRK + 4 * PG), (BRK + 4 * PG) as i64, "within the base");
@@ -203,11 +207,58 @@ fn a_heap_grows_past_its_base_up_to_the_ceiling() {
 fn a_real_time_heap_does_not_grow() {
     let _g = serial();
     let pt = space();
+    azos_mm::budget::set_growth_pool(1 << 20);
     azos_sched::shim_set_page_limit(4);
     azos_sched::shim_set_page_ceiling(10);
     azos_sched::shim_set_sched_class(1);
     assert_eq!(sys_brk(BRK + 6 * PG), BRK as i64, "real time never grows");
     assert_eq!(azos_sched::shim_user_pages(), 0);
     azos_sched::shim_set_sched_class(3);
+    done(pt);
+}
+
+/// **A heap's growth is the growth pool's.** With 2 pages left in the pool, a
+/// growth that needs 3 past the base is refused whole, one that needs 2 is
+/// had, and the pool is then empty.
+/// **Canary** `budget-pool-ignored-canary`: the 3-page growth is had.
+#[test]
+fn a_heap_grows_only_as_far_as_the_growth_pool() {
+    let _g = serial();
+    let pt = space();
+    azos_mm::budget::set_growth_pool(2);
+    azos_sched::shim_set_page_limit(4);
+    azos_sched::shim_set_page_ceiling(10);
+    assert_eq!(sys_brk(BRK + 4 * PG), (BRK + 4 * PG) as i64);
+    assert_eq!(sys_brk(BRK + 7 * PG), (BRK + 4 * PG) as i64, "3 past the base, 2 in the pool");
+    assert_eq!(sys_brk(BRK + 6 * PG), (BRK + 6 * PG) as i64);
+    assert_eq!(azos_mm::budget::growth_pool(), 0);
+    done(pt);
+}
+
+/// **A fork child starts from the row's base, and its growth is its own.**
+/// The parent grew past its base; the child is given the base and the
+/// ceiling, and what it inherits past the base is a growth of its own from
+/// the pool, not the parent's limit handed on.
+/// **Canary** (by hand): `fork_regions_to_child` charging the child within its
+/// limit only (`mm_charge_request_tid(.., false)`): red at "the child grew".
+#[test]
+fn a_fork_childs_growth_past_its_base_is_its_own() {
+    let _g = serial();
+    let pt = space();
+    azos_mm::budget::set_growth_pool(1 << 20);
+    azos_sched::shim_set_page_limit(4);
+    azos_sched::shim_set_page_ceiling(16);
+    assert_eq!(sys_brk(BRK + 8 * PG), (BRK + 8 * PG) as i64, "the parent grows to 8");
+    let pool = azos_mm::budget::growth_pool();
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 4);
+    azos_sched::shim_set_other_ceiling(16);
+    assert!(fork_regions_to_child(2));
+    assert_eq!(azos_sched::shim_other_limit_grown(), (8, 4), "the child grew from its base");
+    assert_eq!(azos_mm::budget::growth_pool(), pool - 4, "from the pool");
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
     done(pt);
 }

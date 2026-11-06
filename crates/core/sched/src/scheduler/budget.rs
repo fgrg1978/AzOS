@@ -512,13 +512,16 @@ pub fn take_current_pt_build() -> u32 {
     }
 }
 
-/// The current task's `(limit, locked)`.
+/// The current task's `(base, locked)`: its limit as declared, before any
+/// growth (`PageBudget::base`). What an exec that keeps the task's budget and
+/// a fork child start from, so a growth stays the Domain's own and never
+/// becomes another's base.
 pub fn current_mem_policy() -> (u32, bool) {
     let idx = my_idx();
     {
         if idx >= MAX_TASKS { return (0, false); }
         let d = TASKS[idx].domain();
-        (crate::domain::used_limit(d).1, crate::domain::mem_locked(d))
+        (crate::domain::base(d), crate::domain::mem_locked(d))
     }
 }
 
@@ -798,19 +801,25 @@ pub fn mm_reset_charge() {
     }
 }
 
-/// Charge `pages` to the budget of `tid`'s process, all or nothing, like
-/// [`mm_charge`] for the current task. Wave 14 (DEMANDPAGE): a fork's child
-/// is charged the uncommitted reservation it inherits, before it runs, under
-/// the reserve-time model. `false` when `tid` is not live or
-/// would go over its budget; nothing is charged then.
-pub fn mm_charge_tid(tid: u32, pages: u32) -> bool {
+/// Charge the `pages` of one request to the budget of `tid`'s process, all or
+/// nothing, like [`mm_charge_request`] for the current task. Wave 14
+/// (DEMANDPAGE): a fork's child is charged the uncommitted reservation it
+/// inherits, before it runs, under the reserve-time model. The child starts
+/// from its row's base, so what it holds past it is a growth of its own, from
+/// the growth pool. `false` when `tid` is not live or would go over its
+/// budget; nothing is charged then.
+pub fn mm_charge_request_tid(tid: u32, pages: u32, may_grow: bool) -> bool {
     if pages == 0 { return true; }
-    {
-        let Some(idx) = idx_for_tid(tid) else { return false };
-        if let Some(used) = crate::domain::charge(TASKS[idx].domain(), pages) {
+    let Some(idx) = idx_for_tid(tid) else { return false };
+    match crate::domain::charge_request(TASKS[idx].domain(), pages, may_grow) {
+        Some(Ok((granted, used))) => {
             MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
+            if let azos_mm::budget::Granted::Grew(_) = granted {
+                MM_BUDGET_GROWTHS.fetch_add(1, Ordering::Relaxed);
+            }
             true
-        } else {
+        }
+        _ => {
             MM_QUOTA_REFUSALS.fetch_add(1, Ordering::Relaxed);
             false
         }

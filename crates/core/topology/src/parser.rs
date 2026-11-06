@@ -1757,13 +1757,20 @@ fn handle_task_kv<'a>(
             }
             match key_str {
                 "security_boundary" => ext.security_boundary = bool_only(after)?,
+                // Once per row: a second one would silently win.
                 "mem_pages_max" => {
+                    if ext.mem_pages_max != 0 {
+                        return Err(ParseError::BadValue);
+                    }
                     ext.mem_pages_max = uint_only(after, u32::MAX as u64)? as u32;
                     if ext.mem_pages_max == 0 {
                         return Err(ParseError::BadValue);
                     }
                 }
                 _ => {
+                    if ext.partition_id != 0 {
+                        return Err(ParseError::BadValue);
+                    }
                     ext.partition_id = uint_only(after, u16::MAX as u64)? as u16;
                     if ext.partition_id == 0 {
                         return Err(ParseError::BadValue);

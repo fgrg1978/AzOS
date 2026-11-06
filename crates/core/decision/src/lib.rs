@@ -398,7 +398,7 @@ impl Rule {
     /// system events and are never limited.
     pub const fn caller_paced(self) -> bool {
         matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant
-            | Rule::EffectUnserved)
+            | Rule::EffectUnserved | Rule::BudgetGrow)
     }
 }
 
