@@ -371,8 +371,8 @@ mod dma {
             .as_raw() as u64
     }
 
-    /// A `pages`-page object of `kind`, and its slot index.
-    fn object(pages: u64, kind: u64) -> (u64, u32) {
+    /// A `pages`-page object of `kind`, its slot index and its reference.
+    fn object(pages: u64, kind: u64) -> (u64, u32, u32) {
         let h = crate::ipc_handlers::sys_shm_create_typed(pages, 1 | kind << SHM_CREATE_KIND_SHIFT);
         assert!(h > 0, "create: {h}");
         let r = azos_ipc::cap_store::get(
@@ -381,7 +381,7 @@ mod dma {
             CapPerms::NONE,
         )
         .unwrap();
-        (h as u64, azos_common::slot_ref::SHM.idx(r))
+        (h as u64, azos_common::slot_ref::SHM.idx(r), r)
     }
 
     fn op(dev: u64, op: u16, obj: u64, dir: u64) -> (i64, [u64; 6]) {
@@ -404,9 +404,10 @@ mod dma {
         setup();
         let m = machine();
         let dev = device(m.bus, CapPerms::RW);
-        let (anon, _) = object(1, 0);
+        let (anon, ..) = object(1, 0);
         assert_eq!(op(dev, DEVICE_DMA_MAP, anon, DMA_BIDIRECTIONAL).0, Errno::EINVAL.to_syscall_ret(), "an Anon object");
-        let (obj, idx) = object(2, SHM_KIND_CONTIG);
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(anon), 0);
+        let (obj, idx, _) = object(2, SHM_KIND_CONTIG);
         OBJ.store(idx, Ordering::SeqCst);
         assert_eq!(op(dev, DEVICE_DMA_MAP, obj, 7).0, Errno::EINVAL.to_syscall_ret(), "an unknown direction");
         let ro = device(m.rtc, CapPerms::READ);
@@ -442,7 +443,7 @@ mod dma {
         setup();
         let m = machine();
         let dev = device(m.bus, CapPerms::RW);
-        let (obj, idx) = object(1, SHM_KIND_CONTIG);
+        let (obj, idx, _) = object(1, SHM_KIND_CONTIG);
         OBJ.store(idx, Ordering::SeqCst);
         assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
         assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, 0);
@@ -464,7 +465,7 @@ mod dma {
         setup();
         let m = machine();
         let dev = device(m.bus, CapPerms::RW);
-        let (obj, idx) = object(1, SHM_KIND_CONTIG);
+        let (obj, idx, r) = object(1, SHM_KIND_CONTIG);
         OBJ.store(idx, Ordering::SeqCst);
         assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
         assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
@@ -474,5 +475,9 @@ mod dma {
         assert_eq!(*EVENTS.lock().unwrap(), vec![("map", true), ("quiesce", true)], "unmapped though not stopped");
         assert!(alive(), "the frames went while the device may still write them");
         assert_eq!(azos_dma::leaked_bytes(), kept + azos_arch::PAGE_SIZE as u64, "the kept page is not counted");
+        // The suite shares one object table: the kept reference goes here, as
+        // nothing in the kernel ever gives it back.
+        azos_ipc::memobj::memobj_frames_unpin(r);
+        assert!(!alive());
     }
 }
