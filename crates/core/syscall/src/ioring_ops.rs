@@ -208,8 +208,11 @@ fn write_contained() -> bool {
 /// mask), the
 /// owner's profile listing the interface, and the hosted row's IDL dispatch
 /// (`khost::serve_admitted`), which checks the op's class against the
-/// capability's rights. A task-hosted endpoint is not served from a pass:
-/// `-ENOSYS`.
+/// capability's rights. A task-hosted endpoint, and a kernel-hosted
+/// interface whose ops may wait (`khost::ring_served`), is not served from a
+/// pass: `-ENOSYS`. Neither is handed to the worker: the worker is the file
+/// seam's queue, and a suspend or a DNS nap there would hold every ring's
+/// file entries behind it.
 fn idl_call(owner_tid: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mut [u64; CALL_WORDS]) -> Result<(), i32> {
     use azos_abi::ipc_msg::{MsgDesc, MSG_VERSION};
     let dest = match azos_sched::current_task_slot() {
@@ -218,6 +221,9 @@ fn idl_call(owner_tid: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mu
     };
     let Some(dest) = dest else { return Err(errno(Errno::ECAPPERMS)) };
     let Some(key) = azos_ipc::endpoint::host_key(dest.owner) else { return Err(errno(Errno::ENOSYS)) };
+    if !crate::khost::ring_served(key) {
+        return Err(errno(Errno::ENOSYS));
+    }
     let Some(who) = crate::khost::admit(owner_tid, ep, req[0]) else { return Err(errno(Errno::ECAPPERMS)) };
     if !iface_allowed(owner_tid, key) {
         return Err(errno(Errno::EPERM));

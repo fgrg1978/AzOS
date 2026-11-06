@@ -215,6 +215,23 @@ mod ioring_call {
         assert_eq!(p.0[4..8], [0; 4], "sq_tail moved");
         assert!(r.push_call(1, last, &[1; CALL_WORDS], 0));
     }
+
+    /// `room` counts the SQ entries a push may still fill.
+    /// **Canary:** answer `SQ_SIZE` always: the full-SQ line goes red.
+    #[test]
+    fn room_counts_what_the_kernel_has_not_consumed() {
+        use super::ioring::SQ_SIZE;
+        let mut p = Box::new(Page([0; 4096]));
+        let r = ring(&mut p);
+        assert_eq!(r.room(), SQ_SIZE);
+        assert!(r.push_call(1, 0, &[1], 0));
+        assert_eq!(r.room(), SQ_SIZE - 1);
+        for _ in 1..SQ_SIZE {
+            assert!(r.push_call(1, 0, &[1], 0));
+        }
+        assert_eq!(r.room(), 0, "a full SQ has room");
+        assert!(!r.push_call(1, 0, &[1], 0));
+    }
 }
 
 /// The entries the registered-buffer pushes write, read back as the kernel's

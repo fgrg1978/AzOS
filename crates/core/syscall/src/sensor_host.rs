@@ -11,7 +11,9 @@
 //! for a sensor it was not granted. A reading is the record and when it was
 //! acquired (`azos_devif::Sample`: the stamp the stamped read used to carry in
 //! its header). A type whose record does not fit a reply, the LiDAR scan and the
-//! camera frame, answers `UNSUPPORTED`: neither has a ring-3 path.
+//! camera frame, answers `UNSUPPORTED`. Neither has a ring-3 path: a camera
+//! frame goes to the brain over the kernel's own link (`azos_cam_ring`'s
+//! fan-out ring, kernel consumers only).
 
 use azos_abi::cap::CapPerms;
 use azos_devif::sensor::{Sample, SAMPLE_BYTES, TYPES};

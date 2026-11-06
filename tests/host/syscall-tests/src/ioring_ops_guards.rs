@@ -1214,6 +1214,9 @@ fn a_poller_motor_entry_under_a_latched_estop_holds_both_wheels_at_duty_zero() {
     let c = unsafe { poll_call(ring, r, eps[0], &[motor_speed_hdr(), 50]) };
     assert_eq!(done(c), (0, 0));
     assert_eq!(ring_gate_seen(), vec![(0, owner, 50, false)], "the poller's entry was not the owner's command");
+    if azos_limits::MOTOR_COMMANDER_EXIT_STOP {
+        assert_eq!(crate::motor_commander::commander(0), owner, "the poller's command named another commander");
+    }
 }
 
 /// [`poll_one`] for an `OP_CALL` of `words` on `ep`, in the window at 0.
@@ -2014,4 +2017,153 @@ fn an_idl_entry_on_a_task_hosted_endpoint_is_refused() {
     let c = unsafe { submit_queued(cap, ring) };
     assert_eq!(done(c[0]), (Errno::ENOSYS.to_syscall_ret() as i32, CQE_F_REFUSED));
     assert_eq!(unsafe { window(ring, 0) }[..2], [motor_speed_hdr(), 1]);
+}
+
+/// **An actuator argument out of range is refused, not clamped**: a wheel
+/// speed past 100 (a reverse written as `u32` among them), a PWM duty past 100
+/// percent or past the period, a GPIO level other than 0 or 1 and a PID target
+/// past 100 percent answer `BAD_ARGUMENT` through an `OP_CALL`, and nothing is
+/// written. The motor layer and the PWM driver clamp, so a clamp here would be
+/// full speed forward.
+///
+/// **Canary.** Delete the `pct > 100` test from `MotorServer::speed`: the
+/// first entry drives wheel 0 at 100.
+#[test]
+fn an_actuator_argument_out_of_range_is_refused_not_clamped() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    let l = grant_ep(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW, 0);
+    let _r = grant_ep(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW, 0);
+    let pwm = grant_ep(s.tid, azos_devif::key::PWM, FREE_CH, CapPerms::RW, 0);
+    let pin = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(0, 9), CapPerms::RW, 0);
+    wheels();
+    let (cap, _va, ring) = create(pt);
+    let call = |ep: u32, words: &[u64]| unsafe {
+        queue_call(ring, ep, 0, words, 1);
+        let c = submit_queued(cap, ring);
+        assert_eq!(done(c[0]), (0, 0), "the ring refused a held entry");
+        window(ring, 0)[1] as u32
+    };
+    let bad = azos_devif::outcome::BAD_ARGUMENT;
+    let motor = |op| {
+        use azos_devif::MotorIdl as M;
+        azos_idl::header(M::ID, M::LEVEL, op)
+    };
+    let pwm_op = |op| {
+        use azos_devif::PwmIdl as P;
+        azos_idl::header(P::ID, P::LEVEL, op)
+    };
+    use azos_devif::{MotorIdl, PwmIdl};
+    assert_eq!(call(l, &[motor_speed_hdr(), 101]), bad, "speed 101");
+    assert_eq!(call(l, &[motor_speed_hdr(), u32::MAX as u64]), bad, "speed -1 as u32");
+    assert_eq!(call(l, &[motor_speed_hdr(), (-40i32) as u32 as u64]), bad, "speed -40 as u32");
+    assert_eq!(call(l, &[motor(MotorIdl::OP_PID_TARGET), 101, 0]), bad, "PID target 101");
+    assert_eq!(call(l, &[motor(MotorIdl::OP_PID_TARGET), 0, (-101i64) as u64]), bad, "PID target -101");
+    assert_eq!(call(pwm, &[pwm_op(PwmIdl::OP_SET_DUTY_PCT), 101]), bad, "duty 101 %");
+    assert_eq!(call(pwm, &[pwm_op(PwmIdl::OP_SET_DUTY), u32::MAX as u64]), bad, "duty past the period");
+    assert_eq!(call(pin, &[gpio_hdr(azos_devif::GpioIdl::OP_WRITE), 2]), bad, "GPIO level 2");
+    assert!(pwm_calls().is_empty(), "an out-of-range entry wrote {:?}", pwm_calls());
+    assert!(matches!(azos_robot::motor_state(0), Some((_, 0))), "wheel 0 recorded a speed");
+
+    // In range, the same ops run.
+    assert_eq!(call(l, &[motor_speed_hdr(), 100]), azos_devif::outcome::OK);
+    assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 100)]);
+}
+
+/// **An interface whose ops may wait is not served from a pass**: `Clock`
+/// and `Power` (whose `sync` does block I/O) answer `-ENOSYS` with the
+/// refusal flag, the window untouched, from a real-time submitter too, as a
+/// task-hosted endpoint does. The device interfaces are (`khost::ring_served`).
+///
+/// **Canary.** Answer `true` from `khost::ring_served`: the clock entry is
+/// served.
+#[test]
+fn an_interface_that_may_wait_is_not_served_from_a_pass() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    let clock = grant_ep(s.tid, azos_devif::key::CLOCK, 0, CapPerms::RW, 0);
+    let power = grant_ep(s.tid, azos_devif::key::POWER, 0, CapPerms::RW, 0);
+    let (cap, _va, ring) = create(pt);
+    let enosys = (Errno::ENOSYS.to_syscall_ret() as i32, CQE_F_REFUSED);
+    let status = {
+        use azos_devif::ClockIdl as C;
+        azos_idl::header(C::ID, C::LEVEL, C::OP_STATUS)
+    };
+    unsafe { queue_call(ring, clock, 0, &[status], 1) };
+    assert_eq!(done(unsafe { submit_queued(cap, ring) }[0]), enosys, "a clock entry was served from a pass");
+    let sync = {
+        use azos_devif::PowerIdl as P;
+        azos_idl::header(P::ID, P::LEVEL, P::OP_SYNC)
+    };
+    let prio = azos_sched::scheduler::current_task_base_priority();
+    azos_sched::scheduler::shim_set_base_priority(azos_sched::RT_PRIORITY_THRESHOLD - 1);
+    unsafe { queue_call(ring, power, 64, &[sync], 2) };
+    let c = unsafe { submit_queued(cap, ring) };
+    azos_sched::scheduler::shim_set_base_priority(prio);
+    assert_eq!(done(c[0]), enosys, "an RT submitter's sync was served from a pass");
+    assert_eq!(unsafe { window(ring, 64) }[0], sync, "a refused entry wrote its window");
+    for key in [azos_devif::key::SENSOR, azos_devif::key::MOTOR, azos_devif::key::GPIO, azos_devif::key::PWM, azos_devif::key::I2C] {
+        assert!(crate::khost::ring_served(key), "host key {key}");
+    }
+}
+
+/// **The poller asks the OWNER's profile for the interface**, as for the
+/// call: a row of the owner without the `sensor` interface refuses the owner's
+/// held sensor entry run by the poller (a kernel task, unfiltered); listed, it
+/// runs.
+///
+/// **Canary.** Answer `current_iface_verdict(key)` in both arms of
+/// `iface_allowed`: the unlisted entry runs.
+#[test]
+fn a_poller_pass_asks_the_owners_profile_for_the_interface() {
+    let _g = serial();
+    let (_s, _p, _f, owner, ring, r) = polled_ring();
+    let ep = grant_ep(owner, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
+    let row = profile(&[nr::SYS_RING_ENTER, nr::SYS_IPC_CALL], false);
+    azos_sched::scheduler::shim_set_task_filter(owner, Some(row.clone()));
+    let c = unsafe { poll_call(ring, r, ep, &[sensor_read_hdr()]) };
+    assert_eq!(done(c), (Errno::EPERM.to_syscall_ret() as i32, CQE_F_REFUSED), "ran past the owner's row");
+    let mut listed = row;
+    listed.allow_iface(azos_devif::key::SENSOR);
+    azos_sched::scheduler::shim_set_task_filter(owner, Some(listed));
+    let c = unsafe { poll_call(ring, r, ep, &[sensor_read_hdr()]) };
+    assert_eq!(done(c), (0, 0), "the owner's listed interface was refused");
+}
+
+/// **The kill switch's line through the poller**: a `Gpio::set_dir` the
+/// poller runs for the owner on the line CONFIG.INI names is answered
+/// `REFUSED`, the driver sees nothing, and the `safety-line` record names the
+/// OWNER, not the poller.
+///
+/// **Canary.** `gpio-safety-guard-canary` (the safety lines are not kept):
+/// the set_dir is served `OK` and reaches the driver.
+#[test]
+fn a_poller_set_dir_on_the_kill_switch_line_is_refused_and_recorded_for_the_owner() {
+    struct Pin(u32);
+    impl Drop for Pin {
+        fn drop(&mut self) {
+            azos_config::CFG_ESTOP_GPIO_PIN.store(self.0, Ordering::SeqCst);
+            set_gpio_probe(None);
+        }
+    }
+    let _g = serial();
+    let (_s, _p, _f, owner, ring, r) = polled_ring();
+    azos_sched::scheduler::shim_set_task_filter(owner, Some(SyscallFilter::disabled()));
+    let _pin = Pin(azos_config::CFG_ESTOP_GPIO_PIN.swap(4, Ordering::SeqCst));
+    BOARD_OPS.lock().unwrap().clear();
+    set_gpio_probe(Some(board_probe));
+    let ep = grant_ep(owner, azos_devif::key::GPIO, azos_devif::gpio::badge(0, 4), CapPerms::RW, 0);
+    let op = azos_devif::GpioIdl::OP_SET_DIR;
+    let c = unsafe { poll_call(ring, r, ep, &[gpio_hdr(op), azos_devif::gpio::DIR_OUTPUT as u64]) };
+    assert_eq!(done(c), (0, 0));
+    assert_eq!(unsafe { window(ring, 0) }[1], azos_devif::outcome::REFUSED as u64, "the kill switch's line was set");
+    assert_eq!(*BOARD_OPS.lock().unwrap(), vec![], "the driver saw an op on the kill switch's line");
+    let mut subjects = Vec::new();
+    azos_decision::for_each(|rec| {
+        if rec.rule == azos_decision::Rule::SafetyLine as u8 && rec.n == [0, 4, op as u64] {
+            subjects.push(rec.subject);
+        }
+    });
+    assert!(subjects.contains(&owner), "no safety-line record names the owner: {subjects:?}");
+    assert!(!subjects.contains(&POLLER_TID), "a safety-line record names the poller");
 }

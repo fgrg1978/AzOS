@@ -3905,14 +3905,13 @@ pub(crate) fn robot_sensor_absent(sensor_type: u64) -> bool {
 /// `sensor_type` builds the bytes and hands them to `sink` once, with the
 /// value's [`SampleMeta`], and `sink`'s answer is the call's.
 ///
-/// Two doors reach it: the `Sensor` interface (`crate::sensor_host`; its sink
-/// builds the reply's sample with the meta) and the kernel's io_ring op table
-/// (`crate::ioring_ops`; its sink copies into the ring's data buffer). One
-/// function, so a sensor reads the same through both. Callers MUST have
-/// authorised `sensor_type`: this performs no capability check of any kind.
+/// Its one caller is the `Sensor` interface (`crate::sensor_host`, called or
+/// as an io_ring `OP_CALL`; its sink builds the reply's sample with the meta).
+/// A LiDAR scan and a camera frame do not fit a sample and have no arm. Callers MUST have authorised
+/// `sensor_type`: this performs no capability check of any kind.
 ///
 /// **Where each stamp comes from** (`azos_abi::sensor_sample` states the
-/// rule): the IMU, LiDAR, GPS and camera stamps are taken in their drivers;
+/// rule): the IMU and GPS stamps are taken in their drivers;
 /// odometry carries the time `odom_task` read the encoder counts it
 /// integrated; the encoder, rangefinder, battery ADC and GPIO lines are read
 /// here, and the counter is read right after the first device read returns.
@@ -4013,20 +4012,6 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             }
             sink(&tmp, meta)
         }
-        #[cfg(feature = "board-io")]
-        SENSOR_TYPE_LIDAR => {
-            // Read latest LiDAR scan into user buffer
-            // Data format: N × [angle_cdeg(u16 LE) + distance_mm(u16 LE)]
-            let count = azos_drv_sensor::lidar::lidar_scan_count();
-            if count == 0 { return 0; } // no scan available
-            let needed = count * azos_drv_sensor::lidar::SCAN_POINT_SIZE;
-            if (buf_len as usize) < needed { return -1; }
-            // Read into kernel tmp buffer, then copy to user
-            let mut tmp = [0u8; azos_drv_sensor::lidar::SCAN_DATA_MAX_BYTES];
-            let (bytes, acq) = azos_drv_sensor::lidar::lidar_read_scan_stamped(&mut tmp);
-            if bytes == 0 { return 0; }
-            sink(&tmp[..bytes], SampleMeta::at_ticks(acq, 0))
-        }
         SENSOR_TYPE_GPIO_FLAGS => {
             const FLAGS_DATA_SIZE: usize = 2; // u16
             if (buf_len as usize) < FLAGS_DATA_SIZE { return -1; }
@@ -4053,42 +4038,6 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
             let (n, acq_ns) = azos_drv_sensor::ina219::ina219_read_power_stamped(&mut tmp);
             if n == 0 { return 0; }
             sink(&tmp[..n], SampleMeta { acq_ns, flags: 0 })
-        }
-        #[cfg(feature = "board-io")]
-        SENSOR_TYPE_CAMERA => {
-            // The JPEG frame lives in a static, not on the kernel stack.
-            //
-            // WHY: `JPEG_MAX_SIZE` is 19,200 bytes and a task's kernel stack is
-            // 16 KiB with the bottom 4 KiB as a guard page — 12 KiB usable.
-            // Rust emits no stack probes, so the prologue of this handler moved
-            // `sp` *past* the guard page in one step and landed in the adjacent
-            // task's stack.  The guard never fires; the result is silent
-            // cross-task memory corruption instead of a clean fault.  Same
-            // bounce-buffer shape `block_io` already uses.
-            //
-            // A `Mutex`, not a `SpinLock`, and for the same reason as
-            // `KERNEL_FD_TABLE` above. This guard is held across
-            // `csi_capture_jpeg` — itself a ~300-block JPEG encode — AND the
-            // copy to the caller that follows, so it nests the exact
-            // cost `JPEG_RAW` inside `crates/drivers/sensor/src/csi.rs` was written
-            // to keep preemptible. Under a `SpinLock` this whole
-            // encode-plus-copy became non-preemptible with K-C29 step 2
-            // (`eeda7c4`), on top of whatever `JPEG_RAW`'s own lock cost.
-            // `MutexGuard` takes no preempt count, so the 1 kHz tick can
-            // still land here, and a second caller contending for the
-            // buffer is boosted-and-yields instead of spinning blind for
-            // the encode's duration.
-            static CAM_BUF: azos_sync::kmutex::Mutex<[u8; azos_drv_sensor::csi::JPEG_MAX_SIZE]> =
-                azos_sync::kmutex::Mutex::new([0u8; azos_drv_sensor::csi::JPEG_MAX_SIZE]);
-            let mut jpeg_buf = CAM_BUF.lock();
-            let (jpeg_len, acq) = azos_drv_sensor::csi::csi_capture_jpeg_stamped(&mut jpeg_buf[..]);
-            if jpeg_len == 0 { return 0; }
-            // Clamp before slicing: a driver reporting more than the buffer
-            // holds must not panic here (`panic = "abort"` → board reset).
-            let jpeg_len = jpeg_len.min(azos_drv_sensor::csi::JPEG_MAX_SIZE);
-            if (buf_len as usize) < jpeg_len { return -1; }
-            // The CSI frames are a generated test pattern (`csi.rs`).
-            sink(&jpeg_buf[..jpeg_len], SampleMeta::at_ticks(acq, SYNTHETIC))
         }
         _ => -1,
     }

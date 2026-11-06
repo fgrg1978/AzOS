@@ -193,8 +193,10 @@ impl Readings {
     fn through_ring(ring: &sys::ioring::Ring, caps: &[isize; SENSORS]) -> Option<Readings> {
         let hdr = sys::dev::header(SensorIdl::ID, SensorIdl::LEVEL, SensorIdl::OP_READ);
         let mut asked = 0;
+        let mut pushed = [false; SENSORS];
         for (i, &c) in caps.iter().enumerate() {
             if c >= 0 && ring.push_call(c as u32, sensor_window(i), &[hdr], TAG_SENSOR + i as u64) {
+                pushed[i] = true;
                 asked += 1;
             }
         }
@@ -219,7 +221,18 @@ impl Readings {
             line.push(b"\n");
             sys::print(line.bytes());
         }
-        (ok && asked != 0).then_some(Readings(out))
+        // A ring that served nothing (a row without the interface, say) is no
+        // reading: the typed calls are.
+        if !ok || served == 0 {
+            return None;
+        }
+        // A sensor the SQ had no room for is read by its typed call.
+        for (i, &c) in caps.iter().enumerate() {
+            if c >= 0 && !pushed[i] {
+                out[i] = sys::dev::sensor_read(c as u32, &mut []).ok();
+            }
+        }
+        Some(Readings(out))
     }
 
     /// The record of sensor `i` copied into `buf`: its byte count, or -1 for
@@ -352,8 +365,15 @@ fn motor_ring_submit(left: u32, right: u32) {
     // SAFETY: written once by `motor_caps_init`; read by value.
     let caps = unsafe { [CAP_LEFT, CAP_RIGHT] };
     let hdr = sys::dev::header(MotorIdl::ID, MotorIdl::LEVEL, MotorIdl::OP_SPEED);
+    // Both wheels or neither: one queued alone would be submitted with the
+    // next command.
+    if ring.room() < 2 {
+        sys::print(b"[brain_client] FAILED: ioring motor: no room for both wheels\n");
+        return;
+    }
     for (w, (&ep, pct)) in caps.iter().zip([left, right]).enumerate() {
         if !ring.push_call(ep, motor_window(w), &[hdr, pct as u64], TAG_MOTOR + w as u64) {
+            sys::print(b"[brain_client] FAILED: ioring motor: push refused\n");
             return;
         }
     }

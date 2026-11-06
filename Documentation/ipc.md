@@ -551,8 +551,11 @@ written over the window, status first, then the return value, zeros past it;
 the completion's `result` is the reply's status (`0` served, else the IDL error
 status). An answer of the interface, a `DENIED` or a halt rule's `REFUSED`
 included, is a served reply (`flags` 0); `CQE_F_REFUSED` means the interface was
-never reached, and the window is left as ring 3 wrote it. A task-hosted
-endpoint is not served from a pass: `-ENOSYS`. `libsys::ioring::Ring::push_call`
+never reached, and the window is left as ring 3 wrote it. A pass serves only
+the interfaces whose ops never wait (`khost::ring_served`: `sensor`, `motor`,
+`gpio`, `pwm`, `i2c`, `adc`, `entropy`), so an entry runs inline in a
+real-time submitter and in the SQ poller; any other interface, and a
+task-hosted endpoint, is refused `-ENOSYS` (the call is its door). `libsys::ioring::Ring::push_call`
 and `reply` write and read the window; `libsys::dev::reply_value` decodes it.
 
 **Authorization.** Each entry is checked, in order, against the ring owner's

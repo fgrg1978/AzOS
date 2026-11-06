@@ -107,6 +107,14 @@ impl Ring {
         self.push_with(OP_BUF_REGISTER, shm_cap, off, len, (slot as u32) << 16, user_data)
     }
 
+    /// SQ entries free for pushes: `SQ_SIZE` less those the kernel has not
+    /// consumed yet.
+    #[inline(always)]
+    pub fn room(&self) -> u32 {
+        let tail = self.word(SQ_TAIL).load(Ordering::Relaxed);
+        SQ_SIZE.saturating_sub(tail.wrapping_sub(self.word(SQ_HEAD).load(Ordering::Acquire)))
+    }
+
     /// Queue an [`OP_CALL`]: the IDL request `words` (the header first) on the
     /// kernel-hosted endpoint `ep`, in the message window at data-buffer offset
     /// `off`, where [`Ring::reply`] reads the answer once the entry completes.

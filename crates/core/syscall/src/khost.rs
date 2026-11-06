@@ -182,18 +182,24 @@ pub fn admit(tid: u32, ep_raw: u32, header: u64) -> Option<Caller> {
 
 /// One hosted interface: its host key, whether its requests may carry
 /// capability entries (derived from the IDL: some op takes a `Cap` or a
-/// `Lent`), and the server dispatching a request for one caller.
+/// `Lent`), whether an io_ring pass may serve it, and the server dispatching a
+/// request for one caller.
 struct Hosted {
     key: u16,
     takes_caps: bool,
+    ring: bool,
     dispatch: fn(&Caller, &MsgDesc, &mut MsgDesc),
 }
 
 macro_rules! hosted {
+    (ring; $key:expr, $idl:ty, $server:expr) => {
+        Hosted { ring: true, ..hosted!($key, $idl, $server) }
+    };
     ($key:expr, $idl:ty, $server:expr) => {
         Hosted {
             key: $key,
             takes_caps: <$idl>::TAKES_CAPS,
+            ring: false,
             dispatch: |who, req, rep| {
                 let _ = <$idl>::dispatch(&mut $server(*who), req, rep);
             },
@@ -201,12 +207,18 @@ macro_rules! hosted {
     };
 }
 
-/// The interfaces this build hosts, one row per host key.
+/// The interfaces this build hosts, one row per host key. A `ring;` row is
+/// served from an io_ring pass (`OP_CALL`): every op of it is bounded and
+/// never waits (no sleep, no block I/O, no scheduler hand-off), so it may run
+/// inline in a real-time task's submit and in the SQ poller's pass. Any other
+/// row is the call's alone: `Net::resolve` naps, `Power::sync` and
+/// `Volume::check` do block I/O, `Power::suspend` and `reboot` take the
+/// machine down.
 const HOSTED: &[Hosted] = {
     use azos_devif::key as k;
     use azos_devif::*;
     &[
-        hosted!(k::ENTROPY, EntropyIdl, crate::entropy::Server),
+        hosted!(ring; k::ENTROPY, EntropyIdl, crate::entropy::Server),
         hosted!(k::LINK_KEY, LinkKeyIdl, crate::link_key::Server),
         hosted!(k::POWER, PowerIdl, crate::power::Server),
         hosted!(k::POWER_ASSERT, PowerAssertIdl, crate::power_assert::Server),
@@ -214,18 +226,18 @@ const HOSTED: &[Hosted] = {
         hosted!(k::BEHAVIOR, BehaviorIdl, crate::families::BehaviorServer),
         hosted!(k::CONFIG, ConfigIdl, crate::families::ConfigServer),
         hosted!(k::OTA, OtaIdl, crate::families::OtaServer),
-        hosted!(k::GPIO, GpioIdl, crate::devices::GpioServer),
-        hosted!(k::I2C, I2cIdl, crate::devices::I2cServer),
-        hosted!(k::PWM, PwmIdl, crate::devices::PwmServer),
-        hosted!(k::MOTOR, MotorIdl, crate::motor_host::MotorServer),
-        hosted!(k::SENSOR, SensorIdl, crate::sensor_host::SensorServer),
+        hosted!(ring; k::GPIO, GpioIdl, crate::devices::GpioServer),
+        hosted!(ring; k::I2C, I2cIdl, crate::devices::I2cServer),
+        hosted!(ring; k::PWM, PwmIdl, crate::devices::PwmServer),
+        hosted!(ring; k::MOTOR, MotorIdl, crate::motor_host::MotorServer),
+        hosted!(ring; k::SENSOR, SensorIdl, crate::sensor_host::SensorServer),
         hosted!(k::BLOCK, BlockIdl, crate::block_host::BlockServer),
         hosted!(k::CLOCK, ClockIdl, crate::clock::Server),
         hosted!(k::SPI, SpiIdl, crate::devices::SpiServer),
         hosted!(k::CAN, CanIdl, crate::devices::CanServer),
         hosted!(k::UART, UartIdl, crate::devices::UartServer),
         #[cfg(feature = "board-io")]
-        hosted!(k::ADC, AdcIdl, crate::adc_host::AdcServer),
+        hosted!(ring; k::ADC, AdcIdl, crate::adc_host::AdcServer),
         hosted!(k::NET, NetIdl, crate::net_host::Server),
         hosted!(k::DISPLAY, DisplayIdl, crate::display::Server),
         hosted!(k::MEMCTL, MemCtlIdl, crate::memctl::Server),
@@ -270,6 +282,12 @@ fn row(key: u16) -> Option<&'static Hosted> {
 /// carries one.
 pub fn takes_caps(key: u16) -> bool {
     row(key).is_some_and(|h| h.takes_caps)
+}
+
+/// May an io_ring pass serve the interface with host key `key` (a `ring;`
+/// row of [`HOSTED`])? `false` for a key this build does not host.
+pub fn ring_served(key: u16) -> bool {
+    row(key).is_some_and(|h| h.ring)
 }
 
 /// The host keys this build serves, each with its `takes_caps`.

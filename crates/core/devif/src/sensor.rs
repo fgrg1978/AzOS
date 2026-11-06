@@ -9,7 +9,8 @@
 //!
 //! A reading is the sample header's two fields and up to [`SAMPLE_BYTES`]
 //! bytes of record. A type whose record is larger (a LiDAR scan, a camera
-//! frame) is not read through this interface, and neither has a ring-3 path.
+//! frame) is not read through this interface, and neither has a ring-3 path
+//! (a camera frame goes to the brain over the kernel's own link).
 //!
 //! The control loops that need a sensor at their own rate bind it to the
 //! vDSO page with `bind_vdso` and read it there with no call at all.
