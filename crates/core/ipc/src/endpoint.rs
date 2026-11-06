@@ -1412,14 +1412,6 @@ pub mod resolve_cache {
         };
     static ENTRIES: [Entry; if ENABLED { SLOTS } else { 0 }] = [EMPTY; if ENABLED { SLOTS } else { 0 }];
 
-    #[cfg(test)]
-    std::thread_local! {
-        /// Runs in [`hit_at`] between the revocation test and the slot word's
-        /// load: another hart, for the host tests.
-        pub(super) static BETWEEN_LOADS: core::cell::RefCell<Option<std::boxed::Box<dyn FnOnce()>>> =
-            const { core::cell::RefCell::new(None) };
-    }
-
     #[inline(always)]
     fn key(tid: u32, cap_raw: u32) -> u64 {
         (u64::from(tid) << 32) | u64::from(cap_raw)
@@ -1455,9 +1447,7 @@ pub mod resolve_cache {
             return None;
         }
         #[cfg(test)]
-        if let Some(f) = BETWEEN_LOADS.with(|b| b.borrow_mut().take()) {
-            f();
-        }
+        crate::cap::between_loads::run();
         let w = crate::cap_store::slot_word(e.table.load(Relaxed) as usize, CapHandle(cap_raw));
         if w != e.cap.load(Relaxed) {
             return None;
@@ -3126,20 +3116,10 @@ mod tests {
         assert_eq!(resolve_cache::hit(THIRD as usize, THIRD, child), None, "the swept slot hit");
     }
 
-    /// **A hit never takes a word that a sweep confirmed after the hit's
-    /// revocation test had freed.** A revocation and its whole sweep run between
-    /// the cache's revocation test and its load of the slot word
-    /// (`BETWEEN_LOADS`, another hart): the descendant's word is loaded freed,
-    /// and misses.
-    ///
-    /// **Canary (by hand).** Load the slot word before the revocation test, the
-    /// probe between the two: the freed descendant hits.
-    #[test]
-    fn a_revocation_swept_between_the_test_and_the_word_load_misses() {
-        if !resolve_cache::ENABLED {
-            return;
-        }
-        let _g = setup();
+    /// A client's capability derived into THIRD's table, resolved once (so the
+    /// cache holds it), with every revocation earlier tests left in flight swept
+    /// and confirmed: `(root, child)`.
+    fn derived_and_settled() -> (azos_abi::cap::CapHandle, u32) {
         assert!(endpoint_named_cap(SERVER, CapPerms::READ, b"svc").is_some());
         let root = endpoint_named_cap(CLIENT, CapPerms::WRITE.union(CapPerms::DELEGATE), b"svc").unwrap().raw();
         let x = crate::cap_store::CapXfer::new(root, true);
@@ -3147,17 +3127,65 @@ mod tests {
         crate::cap_store::move_caps(CLIENT, THIRD, &[x], true, &mut out).expect("derive");
         let child = out[0].as_raw();
         assert_eq!(resolve(THIRD, child).map(|d| d.owner), Ok(SERVER));
+        crate::cap::sweep_owed();
+        crate::cap_store::sweep();
         assert!(!crate::cap::revocation_in_flight(), "precondition: no revocation in flight");
+        (root, child)
+    }
 
-        resolve_cache::BETWEEN_LOADS.with(|b| {
-            *b.borrow_mut() = Some(std::boxed::Box::new(move || {
-                crate::cap_store::with_table(CLIENT, |t| assert!(t.revoke_raw(root))).unwrap();
-                crate::cap_store::sweep();
-                assert!(!crate::cap::revocation_in_flight(), "precondition: the sweep confirmed");
-            }))
+    /// Between the reader's revocation test and its word load: the client's
+    /// root is revoked and the sweep frees the derived slot and confirms.
+    fn revoke_and_sweep_between_the_loads(root: azos_abi::cap::CapHandle) {
+        crate::cap::between_loads::set(move || {
+            crate::cap_store::with_table(CLIENT, |t| assert!(t.revoke_raw(root))).unwrap();
+            crate::cap::sweep_owed();
+            crate::cap_store::sweep();
+            assert!(!crate::cap::revocation_in_flight(), "precondition: the sweep confirmed");
         });
+    }
+
+    /// **A hit never takes a word that a sweep confirmed after the hit's
+    /// revocation test had freed.** A revocation and its whole sweep run between
+    /// the cache's revocation test and its load of the slot word
+    /// (`cap::between_loads`, another hart): the descendant's word is loaded
+    /// freed, and misses.
+    ///
+    /// **Canary (by hand).** Load the slot word before the revocation test in
+    /// `hit_at`, the probe between the two: the freed descendant hits.
+    #[test]
+    fn a_revocation_swept_between_the_test_and_the_word_load_misses() {
+        if !resolve_cache::ENABLED {
+            return;
+        }
+        let _g = setup();
+        let (root, child) = derived_and_settled();
+        revoke_and_sweep_between_the_loads(root);
         assert_eq!(resolve_cache::hit(THIRD as usize, THIRD, child), None, "a word the sweep freed hit");
-        assert!(resolve_cache::BETWEEN_LOADS.with(|b| b.borrow().is_none()), "the probe did not run");
+        assert!(crate::cap::between_loads::ran(), "the probe did not run");
+    }
+
+    /// **A lock-free resolve never takes a word that a sweep confirmed after its
+    /// revocation test had freed.** As above, through `read_table` with
+    /// RCU_QSBR (no table lock, so the sweep runs between the loads), in the
+    /// capability table's own resolve.
+    ///
+    /// **Canary (by hand).** Load the slot word before the revocation test in
+    /// `CapTable::resolve`, the probe between the two: the freed descendant
+    /// resolves.
+    #[test]
+    fn a_lock_free_resolve_refuses_a_slot_swept_between_its_test_and_its_word_load() {
+        if !azos_limits::RCU_QSBR {
+            return;
+        }
+        let _g = setup();
+        let (root, child) = derived_and_settled();
+        let cap: crate::cap::Cap<crate::cap::targets::Endpoint> =
+            crate::cap::Cap::from_raw(azos_abi::cap::CapHandle(child));
+        assert!(crate::cap_store::read_table(THIRD, |t| t.get(cap, CapPerms::WRITE)).unwrap().is_ok(), "precondition");
+        revoke_and_sweep_between_the_loads(root);
+        let got = crate::cap_store::read_table(THIRD, |t| t.get(cap, CapPerms::WRITE)).unwrap();
+        assert!(crate::cap::between_loads::ran(), "the probe did not run");
+        assert!(got.is_err(), "a slot the sweep freed resolved: {got:?}");
     }
 
     /// **A change of the capability slot word misses**: revoked, the cached

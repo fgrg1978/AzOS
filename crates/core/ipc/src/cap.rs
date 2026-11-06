@@ -1328,6 +1328,31 @@ pub fn revocation_in_flight() -> bool {
     REVOCATIONS.cleared.load(core::sync::atomic::Ordering::Relaxed) != swept
 }
 
+/// What runs between a reader's [`revocation_in_flight`] and its load of the
+/// slot word (`resolve`, the IPC resolve cache): another hart, for the host
+/// tests. Taken before it runs, so a resolve inside it does not run it again.
+#[cfg(test)]
+#[allow(dead_code)] // its users are the endpoint tests; cap-tests builds cap.rs without them
+pub(crate) mod between_loads {
+    std::thread_local! {
+        static AT: core::cell::RefCell<Option<std::boxed::Box<dyn FnOnce()>>> = const { core::cell::RefCell::new(None) };
+    }
+
+    pub(crate) fn set(f: impl FnOnce() + 'static) {
+        AT.with(|a| *a.borrow_mut() = Some(std::boxed::Box::new(f)));
+    }
+
+    pub(crate) fn run() {
+        if let Some(f) = AT.with(|a| a.borrow_mut().take()) {
+            f();
+        }
+    }
+
+    pub(crate) fn ran() -> bool {
+        AT.with(|a| a.borrow().is_none())
+    }
+}
+
 // ── Delete is not revoke (owner decision 20-10) ─────────────────────────────
 //
 // Deleting a capability (a close, an exit, a spawn's undo) frees its own slot
@@ -2403,6 +2428,8 @@ impl CapTable {
         };
         // Before the word (`revocation_in_flight`).
         let revoking = revocation_in_flight();
+        #[cfg(test)]
+        between_loads::run();
         // One load: the checks below see one version of the slot.
         let w = cell.word();
         match slot_word::check(w, raw.generation(), Some(T::TYPE), need) {
@@ -2534,14 +2561,13 @@ impl CapTable {
 
     /// The slot word `w` of slot `i` is neither past its deadline nor
     /// exhausted (one test of the word for a slot with neither a deadline nor a
-    /// caveat), nor derived from a revoked capability (two loads while no
-    /// revocation is in flight). For the presence tests: a capability whose
-    /// warrant ended or whose ancestor was revoked is not held. Presence
-    /// charges nothing and names no op.
+    /// caveat), nor derived from a revoked capability (`revoking`: the
+    /// caller's [`revocation_in_flight`], asked before it loaded `w`). For the
+    /// presence tests: a capability whose warrant ended or whose ancestor was
+    /// revoked is not held. Presence charges nothing and names no op.
     #[inline(always)]
-    fn usable(&self, i: usize, w: u64) -> bool {
-        (!CapSlotCell::w_expires(w) || self.gate(i, w, Probe::Held).is_ok())
-            && (!revocation_in_flight() || self.chain_alive(i, w))
+    fn usable(&self, i: usize, w: u64, revoking: bool) -> bool {
+        (!CapSlotCell::w_expires(w) || self.gate(i, w, Probe::Held).is_ok()) && (!revoking || self.chain_alive(i, w))
     }
 
     /// Does the warrant of slot `i`, whose hot word `w` carries the gate flag,
@@ -2652,10 +2678,11 @@ impl CapTable {
         let i = handle.slot() as usize;
         match azos_limits::nospec::get(&self.slots, i) {
             Some(cell) => {
+                let revoking = revocation_in_flight();
                 let w = cell.word();
                 CapSlotCell::w_occupied(w)
                     && CapSlotCell::w_generation(w) == handle.generation()
-                    && !self.usable(i, w)
+                    && !self.usable(i, w, revoking)
             }
             None => false,
         }
@@ -2930,10 +2957,11 @@ impl CapTable {
         let mut n = 0usize;
         let mut i = from;
         let end = self.live().len();
+        let revoking = revocation_in_flight();
         while i < end && n < out.len() {
             let w = self.slots[i].word();
             let s = if CapSlotCell::w_occupied(w) { CapSlotCell::decode(w) } else { CapSlot::EMPTY };
-            if s.is_occupied() && want(s.ty) && self.usable(i, w) {
+            if s.is_occupied() && want(s.ty) && self.usable(i, w, revoking) {
                 out[n] = (CapHandle::pack(s.ty, s.generation, i as u16), s.perms, s.resource);
                 n += 1;
             }
@@ -3322,9 +3350,10 @@ impl CapTable {
             return false;
         }
         // `kind` is not Null here, so a kind match is an occupied slot.
+        let revoking = revocation_in_flight();
         self.live().iter().enumerate().any(|(i, c)| {
             let w = c.word();
-            CapSlotCell::w_ty_is(w, kind) && CapSlotCell::w_perms(w).contains(need) && self.usable(i, w)
+            CapSlotCell::w_ty_is(w, kind) && CapSlotCell::w_perms(w).contains(need) && self.usable(i, w, revoking)
         }) || self.refused_by_mask(need, |w| CapSlotCell::w_ty_is(w, kind))
     }
 
@@ -3345,6 +3374,7 @@ impl CapTable {
     #[cold]
     #[inline(never)]
     fn record_mask_refusal(&self, need: CapPerms, mut hit: impl FnMut(u64) -> bool) {
+        let revoking = revocation_in_flight();
         for (i, cell) in self.live().iter().enumerate() {
             let w = cell.word();
             if CapSlotCell::w_weak(w)
@@ -3352,7 +3382,7 @@ impl CapTable {
                 && hit(w)
                 && !CapSlotCell::w_perms(w).contains(need)
                 && CapSlotCell::w_perms_raw(w).contains(need)
-                && self.usable(i, w)
+                && self.usable(i, w, revoking)
             {
                 let h = CapHandle::pack(slot_word::ty(w), CapSlotCell::w_generation(w), i as u16);
                 self.shadow_refusal(h, w, need);
@@ -3405,12 +3435,13 @@ impl CapTable {
         if kind == CapType::NULL || objref::is_packed_kind(kind) {
             return false;
         }
+        let revoking = revocation_in_flight();
         self.live().iter().enumerate().any(|(i, c)| {
             let w = c.word();
             CapSlotCell::w_ty_is(w, kind)
                 && CapSlotCell::w_resource(w) == resource
                 && CapSlotCell::w_perms(w).contains(need)
-                && self.usable(i, w)
+                && self.usable(i, w, revoking)
         }) || self.refused_by_mask(need, |w| CapSlotCell::w_ty_is(w, kind) && CapSlotCell::w_resource(w) == resource)
     }
 
@@ -3427,12 +3458,13 @@ impl CapTable {
         if kind == CapType::NULL || objref::is_packed_kind(kind) {
             return false;
         }
+        let revoking = revocation_in_flight();
         self.live().iter().enumerate().any(|(i, c)| {
             let w = c.word();
             CapSlotCell::w_ty_is(w, kind)
                 && CapSlotCell::w_perms(w).contains(need)
                 && pred(CapSlotCell::w_resource(w))
-                && self.usable(i, w)
+                && self.usable(i, w, revoking)
         }) || self.refused_by_mask(need, |w| CapSlotCell::w_ty_is(w, kind) && pred(CapSlotCell::w_resource(w)))
     }
 
@@ -3460,12 +3492,13 @@ impl CapTable {
             return false;
         }
         // A packed kind is never Null, so a kind match is an occupied slot.
+        let revoking = revocation_in_flight();
         self.live().iter().enumerate().any(|(i, c)| {
             let w = c.word();
             CapSlotCell::w_ty_is(w, kind)
                 && CapSlotCell::w_resource(w) == r
                 && CapSlotCell::w_perms(w).contains(need)
-                && self.usable(i, w)
+                && self.usable(i, w, revoking)
         }) || self.refused_by_mask(need, |w| CapSlotCell::w_ty_is(w, kind) && CapSlotCell::w_resource(w) == r)
     }
 
