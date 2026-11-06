@@ -11,11 +11,11 @@ aarch64-microvm	.rodata	345520
 aarch64-microvm	.data	465448
 aarch64-microvm	.bss	947752
 aarch64-microvm	reason	ring-3 DMA memory and the writable-window rule, PORT_SRC_IRQ, entropy feed, irq grants: +19.9/+21.1 KB .text, +4 KB .rodata, +8 KB .bss on x86_64
-riscv64-qemu	.text	2892300
+riscv64-qemu	.text	2890356
 riscv64-qemu	.rodata	484384
-riscv64-qemu	.data	749456
+riscv64-qemu	.data	730256
 riscv64-qemu	.bss	2281192
-riscv64-qemu	reason	ring-3 DMA memory and the writable-window rule (binding table, lazy IOMMU domain, unconfined refusal), PORT_SRC_IRQ, entropy feed, irq grants: +17.8 KB .text riscv64-qemu
+riscv64-qemu	reason	io_ring OP_CALL: the camera buffer CAM_BUF and the ring's dead LiDAR/camera arms are gone
 x86_64-microvm	.text	2687225
 x86_64-microvm	.rodata	172448
 x86_64-microvm	.data	618944
