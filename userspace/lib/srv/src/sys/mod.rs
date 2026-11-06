@@ -14,7 +14,7 @@ mod doorbell;
 mod port;
 
 pub use calls::Calls;
-pub use port::Port;
+pub use port::{Port, ServedError};
 
 const E_AGAIN: isize = azos_abi::error::Errno::EAGAIN.to_syscall_ret() as isize;
 

@@ -6,6 +6,16 @@ use super::{accept_blocking, accept_poll, ok, reply};
 use crate::{Event, Kernel, MsgDesc};
 use azos_libsys as sys;
 
+/// Why [`Port::bind_served`] did not bind every endpoint this task serves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ServedError {
+    /// The task serves no endpoint.
+    NoEndpoint,
+    /// The endpoint behind `handle` would not bind (`code`, a negative errno:
+    /// another live port has its calls, the port is full).
+    Refused { handle: u32, code: isize },
+}
+
 /// How long a server backs off after a refused wait, ms.
 const PAUSE_MS: u64 = 10;
 
@@ -28,23 +38,26 @@ impl Port {
     }
 
     /// Report the calls of every endpoint this task serves: each endpoint
-    /// capability it holds with `READ` and no badge (the serving half; a
-    /// kernel-hosted interface it calls is refused by the kernel and
-    /// skipped). How many were bound, or `-ENOENT` for none.
-    pub fn bind_served(&self, key: u64) -> Result<u32, isize> {
+    /// capability it holds with `READ` and no badge. One the kernel answers
+    /// `-EPERM` is not this task's to serve (an interface it calls) and is
+    /// skipped; any other refusal fails the whole bind, so a served endpoint
+    /// is never left unbound and silent. How many were bound.
+    pub fn bind_served(&self, key: u64) -> Result<u32, ServedError> {
         let read = azos_abi::cap::CapPerms::READ.bits();
+        let eperm = azos_abi::error::Errno::EPERM.to_syscall_ret() as isize;
         let mut n = 0;
         for i in 0..azos_limits::IPC_ENDPOINTS as u32 {
             let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), i);
-            if h <= 0 {
+            if h <= 0 || !sys::cap_info(h as u32).is_ok_and(|c| c.rights & read != 0 && c.badge == 0) {
                 continue;
             }
-            let serving = sys::cap_info(h as u32).is_ok_and(|c| c.rights & read != 0 && c.badge == 0);
-            if serving && self.bind_calls(h as u32, key).is_ok() {
-                n += 1;
+            match self.bind_calls(h as u32, key) {
+                Ok(()) => n += 1,
+                Err(code) if code == eperm => {}
+                Err(code) => return Err(ServedError::Refused { handle: h as u32, code }),
             }
         }
-        if n == 0 { Err(azos_abi::error::Errno::ENOENT.to_syscall_ret() as isize) } else { Ok(n) }
+        if n == 0 { Err(ServedError::NoEndpoint) } else { Ok(n) }
     }
 
     /// Arm (or re-arm) the one-shot timer `key` for `deadline_ns`.

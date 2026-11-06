@@ -102,8 +102,8 @@ pub fn serve_loop(bound: u64) -> ! {
 
 /// The server side of `ipc-roundtrip-port`: the runtime on a port with only
 /// this server's calls bound, answering `w + 1` until `PORT_END`. A port
-/// that cannot be made or bound serves nothing: the client's calls then
-/// reach the ordinary loop again and its lane reports what it measured.
+/// that cannot be made or bound says so and serves nothing: the client's
+/// calls then reach the ordinary loop again.
 fn port_serve() {
     use azos_srv::sys::Port;
     struct Echo {
@@ -117,8 +117,16 @@ fn port_serve() {
             self.done = w == port::PORT_END;
         }
     }
-    let Ok(p) = Port::create() else { return };
-    if p.bind_served(1).is_ok() {
+    let Ok(p) = Port::create() else {
+        sys::println(b"[vssrv] ipc-roundtrip-port: no port");
+        return;
+    };
+    if let Err(e) = p.bind_served(1) {
+        sys::println(match e {
+            azos_srv::sys::ServedError::NoEndpoint => b"[vssrv] ipc-roundtrip-port: no endpoint to serve".as_slice(),
+            azos_srv::sys::ServedError::Refused { .. } => b"[vssrv] ipc-roundtrip-port: endpoint.bench would not bind".as_slice(),
+        });
+    } else {
         let mut srv = azos_srv::Server::new(p);
         let mut h = Echo { done: false };
         while !h.done {
