@@ -577,16 +577,22 @@ is a `PackageInstall` decision record.
 
 Source: `crates/core/crypto/src`.
 
-The crate is `no_std` and has no allocation. Symmetric primitives and hashes
-are implemented in the crate; the two asymmetric ones call the vetted
-`curve25519-dalek` and `ed25519-dalek` crates (`default-features = false`).
+The crate is `no_std` and has no allocation. It holds the protocol code; the
+primitives come from one source each, the vetted RustCrypto crates the ring-3
+TLS/QUIC provider links (`sha2`, `hmac`, `hkdf`, `chacha20`, `poly1305`,
+`chacha20poly1305`, `aes`, `ctr`) and `curve25519-dalek` / `ed25519-dalek`, all
+`default-features = false`. On bare metal they run their portable backends:
+`sha2` with `force-soft`, and the x86_64 kernel builds pass
+`--cfg chacha20_force_soft --cfg poly1305_force_soft --cfg aes_force_soft`
+(`tools/build/kconfig_to_cargo.py`), since the kernel keeps no SIMD state;
+`azos_crypto` refuses an x86_64 bare-metal build without them.
 
 | Module | Provides |
 |--------|----------|
-| `sha256` | SHA-256 (FIPS 180-4), streaming. The block function is chosen at boot: generic, riscv64 `zbb` or `zknh` variants, or a hook other code can install (`select_riscv`, `select_hook`); the `no-bitmanip` feature compiles the generic one only. |
-| `aes` | AES-128 (FIPS 197), ECB block and CTR mode |
-| `chachapoly` | ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439); constant-time by construction; `open` verifies the tag before decrypting and leaves the buffer untouched on mismatch |
-| `hkdf` | HMAC-SHA256 with arbitrary key, HKDF-SHA256 (RFC 5869) |
+| `sha256` | SHA-256 (FIPS 180-4), streaming, over `digest`'s core API. The block function is chosen at boot and no caller picks it: `sha2::compress256`, the riscv64 `zbb` or `zknh` paths, or a hook the kernel installs (aarch64 SHA2 instructions; `select_riscv`, `select_hook`), each kept only after its self-test; the `no-bitmanip` feature compiles out the riscv64 paths. |
+| `aes` | AES-128 (FIPS 197) and CTR mode (`nonce(12) \|\| u32 BE counter from 1`), from `aes` (fixsliced software backend) and `ctr` |
+| `chachapoly` | ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439), from `chacha20`, `poly1305` and `chacha20poly1305`; `open` verifies the tag before decrypting and leaves the buffer untouched on mismatch |
+| `hkdf` | HMAC-SHA256 with arbitrary key, HKDF-SHA256 (RFC 5869), from `hmac` and `hkdf` over the crate's SHA-256; the resident monitor's key derivation includes this same file |
 | `x25519` | X25519 (RFC 7748) via `curve25519-dalek`, with a checked variant that rejects low-order points |
 | `ed25519` | Ed25519 (RFC 8032) via `ed25519-dalek`: strict verification, and signing from a seed (the keystore's `SIGN` keys) |
 | `sig` | The signature algorithms by id and their key and signature sizes, the configured one (`SigAlg::CONFIGURED`), and the signed containers: `RSIG` (image signatures, with the 54-byte manifest message) and `DSIG` (detached signatures) |
@@ -599,8 +605,9 @@ are implemented in the crate; the two asymmetric ones call the vetted
 | `wkdm` | WKdm page compression (not a security primitive; it lives in this crate) |
 
 Secret-dependent comparisons (peer static keys, the boot public key) use
-`ct_eq`. The hand-written SHA-256 and AES are not constant-time against cache
-attacks; the crate does not claim it.
+`ct_eq`; the AEAD's tag check is `subtle`'s. None of the primitives indexes a
+table by a secret. Every primitive has published known answers in
+`tests/host/crypto-tests/tests/kat_primitives.rs`.
 
 Ring 3 TLS and QUIC use rustls from `third_party/vendor` with the
 `rustls-rustcrypto` provider (a patched copy in

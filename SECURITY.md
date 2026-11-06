@@ -44,7 +44,7 @@ Source: `crates/core/crypto`, `crates/core/ota`.
 |---|---|
 | Ed25519 signature verification (secure boot, configuration, topology, packages, e-stop release) | the `ed25519-dalek` crate, through `crates/core/crypto/src/ed25519.rs` |
 | X25519 key agreement | the `curve25519-dalek` crate, through `crates/core/crypto/src/x25519.rs` |
-| SHA-256, AES-128 | in-tree implementations (`sha256.rs`, `aes.rs`) |
+| SHA-256, HMAC, HKDF, ChaCha20-Poly1305, AES-128 | the RustCrypto `sha2`, `hmac`, `hkdf`, `chacha20poly1305` and `aes` crates, through `crates/core/crypto/src` (SHA-256 also on the CPU's SHA-2 instructions when it has them) |
 
 The production firmware-signing key is not in the repository. The build embeds
 only the public half: `crates/core/ota/build.rs` reads

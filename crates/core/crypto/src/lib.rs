@@ -2,14 +2,12 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Cryptographic primitives for AzOS (F07).
 //!
-//! `no_std`, suitable for bare-metal RISC-V/aarch64 targets. Most of this
-//! crate (SHA-256, AES-128, the OTA/anti-rollback logic) is hand-rolled with
-//! no external dependencies; `ed25519.rs` and `x25519.rs` are the exception —
-//! they depend on the vetted `ed25519-dalek`/`curve25519-dalek` crates
-//! (`default-features = false`, no_std-compatible) rather than a hand-rolled
-//! implementation, specifically BECAUSE hand-rolling asymmetric-crypto
-//! verification is the class of mistake task #213 existed to fix (see that
-//! module's docs).
+//! `no_std`, no allocation. The crate holds the protocol code (Noise, the
+//! secure channel, the keystore, the DRBG, key derivation); every primitive
+//! has one source, a vetted crate: RustCrypto's `sha2`, `hmac`, `hkdf`,
+//! `chacha20`, `poly1305`, `chacha20poly1305`, `aes` and `ctr`, and
+//! `curve25519-dalek` / `ed25519-dalek`. The CPU's SHA-2 instructions sit
+//! behind the same SHA-256 API (`sha256`).
 
 #![no_std]
 

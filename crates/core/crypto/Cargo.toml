@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "AZOS crypto primitives. Hand-rolled SHA-256 + AES-128 + X25519 (task #212), the Noise handshakes and the brain link's secure_channel (Noise transport). Ed25519 verify is via the vetted ed25519-dalek crate (no_std) to avoid the HMAC-SHA256 stub trap (task #213)."
+description = "AzOS crypto: the Noise handshakes, the brain link's secure channel, the keystore, the DRBG and key derivation, over one source per primitive (RustCrypto sha2/hmac/hkdf/chacha20poly1305/aes, curve25519-dalek, ed25519-dalek), with the CPU's SHA-2 instructions behind the same SHA-256 API."
 
 [features]
 # Boards whose kernel must contain no bit-manipulation instruction at all, not
