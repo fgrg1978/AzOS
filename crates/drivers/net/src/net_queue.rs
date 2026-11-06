@@ -1,69 +1,56 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `NetDevice` — one trait per NIC backend, and the table of the NICs that
-//! came up: `crates/net/stack` calls through it, by NIC number, instead of
-//! asking `eth::eth_is_ready()` at every one of its three call sites (send,
-//! recv, and the MAC/ready read at `net_init`).
+//! The table of the NICs that came up, and the one place the stack reaches
+//! them: each NIC is a queue pair ([`NetQueue`]: post, ring, reap), numbered
+//! in the order [`select`] found them (board Ethernet first, then virtio-net),
+//! and `crates/net/stack` addresses it by that number.
 //!
-//! # What this replaces
+//! # What the table decides, and the driver does not
 //!
-//! Before this module, `crates/net/stack/src/lib.rs` did:
-//! ```ignore
-//! if azos_drv_net::eth::eth_is_ready() {
-//!     azos_drv_net::eth::eth_send(frame)
-//! } else {
-//!     azos_drv_virtio::virtio::net::send(frame) // mapped from Result<(),()>
-//! }
-//! ```
-//! duplicated at three call sites, with `eth_is_ready()` — a real,
-//! non-inlined cross-crate call on QEMU builds, where it always returns
-//! `false` — paid on every single frame. [`select`] below runs that decision
-//! exactly once, at `net_init()`, and numbers the NICs that are ready (board
-//! Ethernet first, then virtio-net); [`send`]/[`recv`]/[`mac`] then read a
-//! relaxed `AtomicU8` for the NIC they were given and jump straight to that
-//! backend's `NetDevice` method. One backend of each kind exists in the tree
-//! (`virtio::net` keeps its rings in statics), so the table holds at most
-//! [`MAX_NICS`] NICs today; a second NIC of a kind is a new backend value
-//! here, not a change to the callers.
+//! A driver publishes frames into its submission ring ([`NetQueue::post`])
+//! and rings the device's doorbell on request ([`NetQueue::ring`]). When it
+//! rings is [`submit`]'s: one [`TxDoorbell`] per NIC applies the same rule to
+//! every backend (at once outside a batch, at the end of one or at
+//! `NET_TX_BATCH_MAX` frames inside it, and when the ring is full), so the
+//! batching that four drivers each kept a copy of is written once.
+//! [`batch_begin`] and [`batch_end`] bracket a flush point; [`flush`] is one
+//! without a batch (a frame that must leave now).
 //!
-//! # Why an enum-selected static, not `&'static dyn NetDevice`
+//! # Why an enum-selected static, not `&'static dyn NetQueue`
 //!
 //! This workspace builds with `lto = false`, so a call through `dyn
-//! NetDevice` cannot be devirtualised across the `crates/net/stack` ↔
-//! `crates/drivers/net` boundary — every `send`/`recv` on the network hot path
-//! would keep a real vtable indirection forever. The two-backend enum
-//! dispatch below compiles to a compare-and-branch on a byte the caller
-//! already has to load, and every method on [`EthNetDevice`] /
-//! [`VirtioNetDevice`] is `#[inline]`, so the whole chain — `crates/net/stack`'s
-//! `net_raw_send` down to the backend's own `send`/`eth_send` — is eligible
-//! to inline into one function body despite the crate boundary. See the
-//! module doc on why that boundary matters at all: cross-crate calls need an
-//! explicit `#[inline]` under `lto = false` or they stay real calls.
+//! NetQueue` cannot be devirtualised across the `crates/net/stack` ↔
+//! `crates/drivers/net` boundary — every call on the network hot path would
+//! keep a real vtable indirection forever. The enum dispatch below
+//! ([`on_nic!`]) compiles to a compare-and-branch on a byte the caller
+//! already has to load, and every method of the zero-sized queue types is
+//! `#[inline]`, so the chain from the stack's `net_raw_send` to the backend's
+//! `post` is eligible to inline into one function body despite the crate
+//! boundary. One backend of each kind exists in the tree (the virtio-net
+//! rings are statics), so the table holds at most [`MAX_NICS`] NICs.
 //!
 //! # A NIC that appears after boot (USB)
 //!
-//! The NICs above are probed once. A USB network function (CDC-ECM/NCM,
-//! `azos_usb::class::cdc`) comes and goes with its cable, so it is not probed:
-//! its driver [`register_usb`]s a `&'static dyn NetDevice` when the function is
-//! ready and [`unregister_usb`]s it when the device is gone. Registration
-//! takes the first free number of the table (after the NICs [`select`]
-//! numbered, so no number moves) and returns it; a [`select`] run while one is
-//! registered numbers it last. One USB NIC at a time. The dispatch is through
-//! the registered trait object, not an enum arm of its own: a USB NIC is bound
-//! by the bus, not by the call, and the extra indirection is the smaller part
-//! of a frame's cost on it. It is polled (no interrupt reaches this table), so
+//! A USB network function (CDC-ECM/NCM, `azos_usb::class::cdc`) comes and
+//! goes with its cable, so it is not probed: its driver [`register_usb`]s a
+//! `&'static dyn NetQueue` when the function is ready and [`unregister_usb`]s
+//! it when the device is gone. Registration takes the first free number of
+//! the table (after the NICs [`select`] numbered, so no number moves) and
+//! returns it. One USB NIC at a time. The dispatch is through the registered
+//! trait object, not an enum arm of its own: a USB NIC is bound by the bus,
+//! not by the call, and the extra indirection is the smaller part of a
+//! frame's cost on it. It is polled (no interrupt reaches this table), so
 //! [`irq_driven`] is false while it is registered.
 //!
 //! # A ring-3 host
 //!
-//! [`NetDevice`] takes `&self` on every method, borrows fixed-size byte
-//! slices (never an owned buffer), returns a small `Copy` error enum and
-//! never blocks — `recv` polls once and returns `Ok(0)` for "nothing queued"
-//! — which is the bounded contract a caller of a ring-3 host needs. A ring-3
-//! NIC driver would serve the same operations as an IDL interface on its
-//! endpoint, as the buzzer and the INA219 do; that host is not built.
+//! [`NetQueue`] takes `&self` on every method, borrows fixed-size byte
+//! slices, returns a small `Copy` error enum and never blocks — `reap_rx`
+//! polls once and reports 0 for "nothing queued" — which is the bounded
+//! contract a caller of a ring-3 host needs; a ring-3 NIC driver would be a
+//! producer of the same queue pair after the DMA-and-IRQ object lands.
 
-use azos_drv_api::net::{NetDevice, NetError};
+use azos_drv_api::net::{NetError, NetQueue, TxDoorbell};
 use azos_sync::SpinLock;
 
 // ── Selection, done once ────────────────────────────────────────────────
@@ -128,18 +115,18 @@ const fn pick(
 }
 
 /// The registered USB NIC (see the module doc).
-static USB_NIC: SpinLock<Option<&'static dyn NetDevice>> = SpinLock::new(None);
+static USB_NIC: SpinLock<Option<&'static dyn NetQueue>> = SpinLock::new(None);
 
 /// The registered USB NIC, copied out so the call runs without the lock.
 #[inline]
-fn usb_nic() -> Option<&'static dyn NetDevice> {
+fn usb_nic() -> Option<&'static dyn NetQueue> {
     *USB_NIC.lock()
 }
 
 /// Register the NIC of a USB network function once it is ready; the number
 /// the stack addresses it by. `None` when a USB NIC is registered already or
 /// the table is full.
-pub fn register_usb(dev: &'static dyn NetDevice) -> Option<usize> {
+pub fn register_usb(dev: &'static dyn NetQueue) -> Option<usize> {
     let mut slot = USB_NIC.lock();
     if slot.is_some() {
         return None;
@@ -163,7 +150,7 @@ pub fn unregister_usb() {
 /// Is the board's Synopsys MAC up? Only the VisionFive 2 has one.
 #[cfg(feature = "vf2")]
 fn dwmac_ready() -> bool {
-    crate::dwmac::board::DwmacNetDevice.is_ready()
+    crate::dwmac::board::DwmacNetQueue.is_ready()
 }
 #[cfg(not(feature = "vf2"))]
 fn dwmac_ready() -> bool {
@@ -175,7 +162,7 @@ fn dwmac_ready() -> bool {
 #[inline]
 fn e1000e_ready() -> bool {
     #[cfg(feature = "e1000e")]
-    { crate::e1000e::E1000eNetDevice.is_ready() }
+    { crate::e1000e::E1000eNetQueue.is_ready() }
     #[cfg(not(feature = "e1000e"))]
     { false }
 }
@@ -185,7 +172,7 @@ fn e1000e_ready() -> bool {
 #[inline]
 fn igc_ready() -> bool {
     #[cfg(feature = "igc")]
-    { crate::igc::IgcNetDevice.is_ready() }
+    { crate::igc::IgcNetQueue.is_ready() }
     #[cfg(not(feature = "igc"))]
     { false }
 }
@@ -195,11 +182,11 @@ fn igc_ready() -> bool {
 /// device. Returns how many NICs there are.
 pub fn select() -> usize {
     let picked = pick(
-        crate::eth::EthNetDevice.is_ready(),
+        crate::eth::EthNetQueue.is_ready(),
         dwmac_ready(),
         e1000e_ready(),
         igc_ready(),
-        azos_drv_virtio::virtio::net::VirtioNetDevice.is_ready(),
+        azos_drv_virtio::virtio::net::VirtioNetQueue.is_ready(),
         usb_nic().is_some_and(|d| d.is_ready()),
     );
     for (slot, backend) in NIC_BACKEND.iter().zip(picked) {
@@ -228,156 +215,132 @@ fn backend(nic: usize) -> u8 {
     }
 }
 
-/// Send through NIC `nic`.
+/// Run `$e` with `$d` bound to the queue pair of NIC `$nic`; `$none` when
+/// there is no such NIC.
+macro_rules! on_nic {
+    ($nic:expr, $d:ident => $e:expr, else $none:expr) => {
+        match backend($nic) {
+            BACKEND_ETH => { let $d = &crate::eth::EthNetQueue; $e }
+            #[cfg(feature = "vf2")]
+            BACKEND_DWMAC => { let $d = &crate::dwmac::board::DwmacNetQueue; $e }
+            #[cfg(feature = "e1000e")]
+            BACKEND_E1000E => { let $d = &crate::e1000e::E1000eNetQueue; $e }
+            #[cfg(feature = "igc")]
+            BACKEND_IGC => { let $d = &crate::igc::IgcNetQueue; $e }
+            BACKEND_VIRTIO => { let $d = &azos_drv_virtio::virtio::net::VirtioNetQueue; $e }
+            BACKEND_USB => match usb_nic() { Some($d) => $e, None => $none },
+            _ => $none,
+        }
+    };
+}
+
+/// Frames posted inside a batch before the doorbell rings anyway (Kconfig
+/// `NET_TX_BATCH_MAX`).
+const TX_BATCH_MAX: u16 = azos_limits::NET_TX_BATCH_MAX as u16;
+
+/// The doorbell policy of each NIC, by number.
+static DOORBELL: [TxDoorbell; MAX_NICS] = [const { TxDoorbell::new() }; MAX_NICS];
+
+/// Post `frame` on NIC `nic` and ring its doorbell if the rule says so.
 #[inline]
-pub fn send(nic: usize, frame: &[u8]) -> Result<usize, NetError> {
-    match backend(nic) {
-        BACKEND_ETH => crate::eth::EthNetDevice.send(frame),
-        #[cfg(feature = "vf2")]
-        BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.send(frame),
-        #[cfg(feature = "e1000e")]
-        BACKEND_E1000E => crate::e1000e::E1000eNetDevice.send(frame),
-        #[cfg(feature = "igc")]
-        BACKEND_IGC => crate::igc::IgcNetDevice.send(frame),
-        BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.send(frame),
-        BACKEND_USB => usb_nic().map_or(Err(NetError::NotReady), |d| d.send(frame)),
-        _ => Err(NetError::NotReady),
+pub fn submit(nic: usize, frame: &[u8]) -> Result<usize, NetError> {
+    let r = on_nic!(nic, d => d.post(frame), else Err(NetError::NotReady));
+    if let Some(db) = DOORBELL.get(nic) {
+        match r {
+            Ok(_) if db.posted(TX_BATCH_MAX) => ring(nic),
+            Err(NetError::QueueFull) => {
+                db.rang();
+                ring(nic);
+            }
+            _ => {}
+        }
+    }
+    r
+}
+
+/// Ring NIC `nic`'s doorbell now.
+#[inline]
+fn ring(nic: usize) {
+    on_nic!(nic, d => d.ring(), else ())
+}
+
+/// Announce everything posted on NIC `nic` so far: a flush point for a frame
+/// that must not wait for its batch.
+#[inline]
+pub fn flush(nic: usize) {
+    if let Some(db) = DOORBELL.get(nic) {
+        db.rang();
+    }
+    ring(nic);
+}
+
+/// Open a batch on NIC `nic`: frames posted until [`batch_end`] share one
+/// doorbell (at most `NET_TX_BATCH_MAX` frames wait). Never hold one across a
+/// block or a yield. Nests.
+#[inline]
+pub fn batch_begin(nic: usize) {
+    if let Some(db) = DOORBELL.get(nic) {
+        db.begin();
     }
 }
 
-/// Receive through NIC `nic`. `Ok(0)` — not an error — when there is no such
-/// NIC or nothing is queued.
+/// Close a batch of NIC `nic` and announce what it posted.
 #[inline]
-pub fn recv(nic: usize, buf: &mut [u8]) -> Result<usize, NetError> {
-    match backend(nic) {
-        BACKEND_ETH => crate::eth::EthNetDevice.recv(buf),
-        #[cfg(feature = "vf2")]
-        BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.recv(buf),
-        #[cfg(feature = "e1000e")]
-        BACKEND_E1000E => crate::e1000e::E1000eNetDevice.recv(buf),
-        #[cfg(feature = "igc")]
-        BACKEND_IGC => crate::igc::IgcNetDevice.recv(buf),
-        BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.recv(buf),
-        BACKEND_USB => usb_nic().map_or(Ok(0), |d| d.recv(buf)),
-        _ => Ok(0),
+pub fn batch_end(nic: usize) {
+    if let Some(db) = DOORBELL.get(nic) {
+        db.end();
+        ring(nic);
     }
 }
 
-/// Hand up to `max` received frames of NIC `nic` to `f`
-/// (`NetDevice::recv_batch`): by reference on virtio-net, one copy each on
-/// board Ethernet. 0 when there is no such NIC or nothing is queued.
+/// Hand up to `max` received frames of NIC `nic` to `f` (`NetQueue::reap_rx`):
+/// by reference on virtio-net, one copy each on board Ethernet. 0 when there
+/// is no such NIC or nothing is queued. Outside a batch the buffers it
+/// re-posted are announced before it returns.
 #[inline]
-pub fn recv_batch(nic: usize, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
-    match backend(nic) {
-        BACKEND_ETH => crate::eth::EthNetDevice.recv_batch(max, f),
-        #[cfg(feature = "vf2")]
-        BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.recv_batch(max, f),
-        #[cfg(feature = "e1000e")]
-        BACKEND_E1000E => crate::e1000e::E1000eNetDevice.recv_batch(max, f),
-        #[cfg(feature = "igc")]
-        BACKEND_IGC => crate::igc::IgcNetDevice.recv_batch(max, f),
-        BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.recv_batch(max, f),
-        BACKEND_USB => usb_nic().map_or(0, |d| d.recv_batch(max, f)),
-        _ => 0,
+pub fn reap_rx(nic: usize, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+    let n = on_nic!(nic, d => d.reap_rx(max, f), else 0);
+    if n != 0 && DOORBELL.get(nic).is_some_and(|db| !db.batching()) {
+        ring(nic);
     }
+    n
 }
 
 /// MAC of NIC `nic`; all-zero if there is no such NIC.
 #[inline]
 pub fn mac(nic: usize) -> [u8; 6] {
-    match backend(nic) {
-        BACKEND_ETH => crate::eth::EthNetDevice.mac(),
-        #[cfg(feature = "vf2")]
-        BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.mac(),
-        #[cfg(feature = "e1000e")]
-        BACKEND_E1000E => crate::e1000e::E1000eNetDevice.mac(),
-        #[cfg(feature = "igc")]
-        BACKEND_IGC => crate::igc::IgcNetDevice.mac(),
-        BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.mac(),
-        BACKEND_USB => usb_nic().map_or([0u8; 6], |d| d.mac()),
-        _ => [0u8; 6],
+    on_nic!(nic, d => d.mac(), else [0u8; 6])
+}
+
+/// Canary `net-kick-per-frame`: every NIC rings per frame, batches ignored
+/// (and virtio-net ignores its device's NO_NOTIFY).
+pub fn set_kick_every_frame(on: bool) {
+    for db in DOORBELL.iter() {
+        db.set_every_frame(on);
     }
+    azos_drv_virtio::virtio::net::set_kick_every_frame(on);
 }
 
 /// How often, in ticks, a transmit ring that holds frames is looked at
-/// ([`tx_watch`], `recovery::TX_LOOK_US`); the stack's poller keeps to it.
+/// ([`reap_tx`], `recovery::TX_LOOK_US`); the stack's poller keeps to it.
 pub fn tx_look_ticks() -> u64 {
     azos_drv_api::recovery::TX_LOOK_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000
 }
 
-/// Look at every NIC's transmit ring (`NetDevice::tx_watch`): take back
-/// what the devices sent, reset a NIC whose ring is past its budget, and
-/// return the earliest tick by which a ring that still holds frames must be
-/// looked at again (`None`: no ring holds any).
-pub fn tx_watch() -> Option<u64> {
+/// Reap every NIC's transmit completions (`NetQueue::reap_tx`): take back what
+/// the devices sent, reset a NIC whose ring is past its budget, and return the
+/// earliest tick by which a ring that still holds frames must be looked at
+/// again (`None`: no ring holds any).
+pub fn reap_tx() -> Option<u64> {
     let mut due: Option<u64> = None;
     for nic in 0..MAX_NICS {
-        let d = match backend(nic) {
-            BACKEND_ETH => crate::eth::EthNetDevice.tx_watch(),
-            #[cfg(feature = "vf2")]
-            BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.tx_watch(),
-            #[cfg(feature = "e1000e")]
-            BACKEND_E1000E => crate::e1000e::E1000eNetDevice.tx_watch(),
-            #[cfg(feature = "igc")]
-            BACKEND_IGC => crate::igc::IgcNetDevice.tx_watch(),
-            BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.tx_watch(),
-            BACKEND_USB => usb_nic().and_then(|d| d.tx_watch()),
-            _ => None,
-        };
+        let d = on_nic!(nic, d => d.reap_tx(), else None);
         due = match (due, d) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
     }
     due
-}
-
-/// Open a TX batch on every NIC (see `NetDevice::tx_batch_begin`): sends
-/// until [`tx_batch_end`] may share one doorbell. No-op without a NIC, and on
-/// the Cadence board Ethernet.
-#[inline]
-pub fn tx_batch_begin() {
-    for nic in 0..MAX_NICS {
-        match backend(nic) {
-            BACKEND_ETH => crate::eth::EthNetDevice.tx_batch_begin(),
-            #[cfg(feature = "vf2")]
-            BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.tx_batch_begin(),
-            #[cfg(feature = "e1000e")]
-            BACKEND_E1000E => crate::e1000e::E1000eNetDevice.tx_batch_begin(),
-            #[cfg(feature = "igc")]
-            BACKEND_IGC => crate::igc::IgcNetDevice.tx_batch_begin(),
-            BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.tx_batch_begin(),
-            BACKEND_USB => {
-                if let Some(d) = usb_nic() {
-                    d.tx_batch_begin();
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Close the batch [`tx_batch_begin`] opened and announce what it queued.
-#[inline]
-pub fn tx_batch_end() {
-    for nic in 0..MAX_NICS {
-        match backend(nic) {
-            BACKEND_ETH => crate::eth::EthNetDevice.tx_batch_end(),
-            #[cfg(feature = "vf2")]
-            BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.tx_batch_end(),
-            #[cfg(feature = "e1000e")]
-            BACKEND_E1000E => crate::e1000e::E1000eNetDevice.tx_batch_end(),
-            #[cfg(feature = "igc")]
-            BACKEND_IGC => crate::igc::IgcNetDevice.tx_batch_end(),
-            BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.tx_batch_end(),
-            BACKEND_USB => {
-                if let Some(d) = usb_nic() {
-                    d.tx_batch_end();
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Switch the board Ethernet to interrupt mode on interrupt source `line`
@@ -560,8 +523,8 @@ mod tests {
     /// panic on an out-of-range index.
     #[test]
     fn an_unnumbered_nic_is_refused_not_a_panic() {
-        assert_eq!(send(MAX_NICS, &[0u8; 60]), Err(NetError::NotReady));
-        assert_eq!(recv(MAX_NICS + 7, &mut [0u8; 8]), Ok(0));
+        assert_eq!(submit(MAX_NICS, &[0u8; 60]), Err(NetError::NotReady));
+        assert_eq!(reap_rx(MAX_NICS + 7, 4, &mut |_| {}), 0);
         assert_eq!(mac(MAX_NICS), [0u8; 6]);
     }
 
@@ -581,64 +544,67 @@ mod tests {
 
     /// A NIC that counts what is asked of it.
     struct Probe {
-        sent: AtomicUsize,
-        batches: AtomicUsize,
+        posted: AtomicUsize,
+        rings: AtomicUsize,
     }
 
-    impl NetDevice for Probe {
-        fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
-            self.sent.fetch_add(1, Ordering::SeqCst);
-            Ok(frame.len())
-        }
-        fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-            buf[..3].copy_from_slice(&[7, 8, 9]);
-            Ok(3)
+    impl NetQueue for Probe {
+        fn is_ready(&self) -> bool {
+            true
         }
         fn mac(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 9]
         }
-        fn is_ready(&self) -> bool {
-            true
+        fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
+            self.posted.fetch_add(1, Ordering::SeqCst);
+            Ok(frame.len())
         }
-        fn tx_batch_begin(&self) {
-            self.batches.fetch_add(1, Ordering::SeqCst);
+        fn ring(&self) {
+            self.rings.fetch_add(1, Ordering::SeqCst);
         }
-        fn tx_batch_end(&self) {
-            self.batches.fetch_add(10, Ordering::SeqCst);
+        fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+            for _ in 0..max {
+                f(&[7, 8, 9]);
+            }
+            max
         }
     }
 
     /// **Discriminates.** A registered USB NIC takes the first free number,
     /// every call addressed to that number reaches it, a second registration
-    /// is refused, and once it is unregistered the number names nothing. Drop
-    /// the `BACKEND_USB` arm of any dispatch function, or leave the table
-    /// entry behind in `unregister_usb`, and this fails. (One test touches the
-    /// shared table, so the suite cannot race on it.)
+    /// is refused, and once it is unregistered the number names nothing. A
+    /// frame outside a batch rings at once; inside one the frames share the
+    /// doorbell rung at its end. Drop the `BACKEND_USB` arm of `on_nic!`, or
+    /// leave the table entry behind in `unregister_usb`, and this fails.
+    /// (One test touches the shared table, so the suite cannot race on it.)
     #[test]
     fn a_registered_usb_nic_is_reached_by_its_number_until_it_is_gone() {
-        static PROBE: Probe = Probe { sent: AtomicUsize::new(0), batches: AtomicUsize::new(0) };
+        static PROBE: Probe = Probe { posted: AtomicUsize::new(0), rings: AtomicUsize::new(0) };
         let before = count();
         let nic = register_usb(&PROBE).expect("a free number");
         assert_eq!(nic, before, "the first free number: nothing already numbered moves");
         assert!(register_usb(&PROBE).is_none(), "one USB NIC at a time");
         assert_eq!(count(), before + 1);
-        assert_eq!(send(nic, &[0u8; 60]), Ok(60));
-        assert_eq!(PROBE.sent.load(Ordering::SeqCst), 1);
-        let mut buf = [0u8; 8];
-        assert_eq!(recv(nic, &mut buf), Ok(3));
-        assert_eq!(&buf[..3], &[7, 8, 9]);
+        assert_eq!(submit(nic, &[0u8; 60]), Ok(60));
+        assert_eq!((PROBE.posted.load(Ordering::SeqCst), PROBE.rings.load(Ordering::SeqCst)), (1, 1), "outside a batch: ring at once");
         let mut got = 0;
-        assert_eq!(recv_batch(nic, 4, &mut |f| got += f.len()), 4, "the default loop: one frame per recv");
+        assert_eq!(reap_rx(nic, 4, &mut |f| got += f.len()), 4);
         assert_eq!(got, 12);
+        assert_eq!(PROBE.rings.load(Ordering::SeqCst), 2, "outside a batch the re-posted buffers are announced");
         assert_eq!(mac(nic), [2, 0, 0, 0, 0, 9]);
-        tx_batch_begin();
-        tx_batch_end();
-        assert_eq!(PROBE.batches.load(Ordering::SeqCst), 11);
+        batch_begin(nic);
+        for _ in 0..3 {
+            submit(nic, &[0u8; 60]).unwrap();
+        }
+        reap_rx(nic, 1, &mut |_| {});
+        assert_eq!((PROBE.posted.load(Ordering::SeqCst), PROBE.rings.load(Ordering::SeqCst)), (4, 2), "inside a batch nothing rings");
+        batch_end(nic);
+        assert_eq!(PROBE.rings.load(Ordering::SeqCst), 3, "one doorbell for the batch");
         assert!(!irq_driven(), "a polled NIC makes the poller run on its timer");
         unregister_usb();
         assert_eq!(count(), before);
-        assert_eq!(send(nic, &[0u8; 60]), Err(NetError::NotReady));
-        assert_eq!(recv(nic, &mut buf), Ok(0));
+        assert_eq!(submit(nic, &[0u8; 60]), Err(NetError::NotReady));
+        assert_eq!(reap_rx(nic, 4, &mut |_| {}), 0);
         assert_eq!(mac(nic), [0u8; 6]);
         // And it can come back.
         assert_eq!(register_usb(&PROBE), Some(nic));

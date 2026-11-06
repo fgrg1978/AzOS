@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 /// VirtIO Network driver — port of virtio_net_init / virtio_net_send / recv.
 ///
-/// Two transports behind one set of free functions (`send`, `poll_recv`,
-/// `get_mac`, `is_ready`, and `VirtioNetDevice` over them):
+/// Two transports behind one set of free functions (`post`, `ring`, `reap_rx`,
+/// `get_mac`, `is_ready`, and `VirtioNetQueue` over them):
 ///
 ///  * virtio-MMIO ([`init`]): probes the QEMU `virt` MMIO window for a net
 ///    device (device_id = 1). Polled until the kernel wires the transport's
@@ -13,7 +13,7 @@
 ///    function found by the kernel's bus-0 enumeration. With an MSI route
 ///    (riscv64 AIA/IMSIC, aarch64 GICv3 ITS) it runs in IRQ mode: MSI-X
 ///    vector 0 = config change, 1 = RX queue, 2 = TX queue, and
-///    [`poll_recv`] does not read the RX ring until [`msi_irq`] has seen
+///    [`reap_rx`] does not read the RX ring until [`msi_irq`] has seen
 ///    an RX vector. Without a route (plain riscv64 `virt`, PLIC) it runs
 ///    polled, exactly like MMIO — no INTx wiring.
 ///
@@ -94,23 +94,9 @@ const TX_BUF_SIZE: usize = 1514;
 /// `NET_VIRTIO_TXQ_SIZE` (was `VIRTIO_QUEUE_SIZE` = 16): two descriptors
 /// per frame, so half of it is frames in flight.
 const NUM_TX_BUFS: usize = azos_limits::NET_VIRTIO_TXQ_SIZE as usize;
-/// Kconfig `NET_TX_BATCH_MAX`: inside a batch, frames published before
-/// the doorbell is rung anyway.
-const TX_BATCH_MAX: u16 = azos_limits::NET_TX_BATCH_MAX as u16;
-
 /// Kconfig `NET_VIRTIO_EVENT_IDX`: offer VIRTIO_F_EVENT_IDX on the modern
 /// transports (virtio-mmio version 2, virtio-pci).
 const EVENT_IDX_WANTED: bool = azos_limits::NET_VIRTIO_EVENT_IDX;
-
-/// Whether `send` rings the TX doorbell for the frame it just published
-/// (subject to the device's NO_NOTIFY, [`virtq_device_wants_kick`]):
-/// outside any batch at once, as before batching existed; inside one only
-/// when `pending` frames reach the batch bound; always under the
-/// `net-kick-per-frame` canary.
-#[inline(always)]
-pub const fn tx_kick_now(depth: u16, pending: u16, batch_max: u16, every_frame: bool) -> bool {
-    every_frame || depth == 0 || pending >= batch_max
-}
 
 /// Queue counters, all since boot. `*_doorbells` are the MMIO notify
 /// writes actually issued; `*_skipped` the ones the device's NO_NOTIFY
@@ -158,8 +144,6 @@ struct NetState {
     /// IRQ mode: TX completion interrupts currently requested (the ring
     /// filled up; the next reclaim switches them off again).
     tx_cb_on: bool,
-    /// Open TX batches ([`tx_batch_begin`]); 0 = every send rings at once.
-    tx_depth: u16,
     /// Frames published on the TX ring since the last doorbell decision.
     tx_pending: u16,
     /// RX buffers re-posted since the last doorbell decision.
@@ -187,7 +171,7 @@ struct NetState {
     /// Feature word 0 the MMIO transport accepted: a reset device must
     /// accept the same again.
     accepted: u32,
-    /// RX buffers [`recv_batch`] holds off the ring (bit `b`: buffer `b`):
+    /// RX buffers [`reap_rx`] holds off the ring (bit `b`: buffer `b`):
     /// a reset gives the device every other one, and these go back when
     /// the batch re-posts them.
     rx_lent: [u64; RX_LENT_WORDS],
@@ -213,7 +197,6 @@ impl NetState {
             notify:  [0; 2],
             irq:     false,
             tx_cb_on: false,
-            tx_depth: 0,
             tx_pending: 0,
             rx_pending: 0,
             rx_irq_on: true,
@@ -251,8 +234,8 @@ fn look() -> (u64, u64) {
 
 /// The RX buffers, outside `NET` (IO-QUEUES N2 step 2): a frame popped off
 /// the used ring is handed to the stack in place, with no lock held, and
-/// its buffer goes back on the ring under `NET` afterwards ([`recv_batch`]).
-/// Buffer `b` belongs to descriptor `b` for good (see [`poll_recv`]).
+/// its buffer goes back on the ring under `NET` afterwards ([`reap_rx`]).
+/// Buffer `b` belongs to descriptor `b` for good (see [`reap_rx`]).
 #[repr(C, align(4096))]
 struct RxBufs(core::cell::UnsafeCell<[RxBuf; NUM_RX_BUFS]>);
 
@@ -289,12 +272,12 @@ struct TxHdr([u8; NET_HDR_MODERN]);
 
 /// The TX staging buffers, one per descriptor index, in storage of their own
 /// (page-aligned and padded to whole pages, for the same reason). The device
-/// is never handed a caller address: `send` returns as soon as the frame is
+/// is never handed a caller address: `post` returns as soon as the frame is
 /// queued, so a caller buffer could be reused or popped off the stack while
-/// the device is still reading it. Written only by `send`, under `NET`.
+/// the device is still reading it. Written only by `post`, under `NET`.
 #[repr(C, align(4096))]
 struct TxBufs(core::cell::UnsafeCell<[[u8; TX_BUF_SIZE]; NUM_TX_BUFS]>);
-// SAFETY: written only under `NET`, by the one `send` that owns the
+// SAFETY: written only under `NET`, by the one `post` that owns the
 // descriptor index; read by the device only while that descriptor is posted.
 unsafe impl Sync for TxBufs {}
 static TX_BUFS: TxBufs = TxBufs(core::cell::UnsafeCell::new([[0u8; TX_BUF_SIZE]; NUM_TX_BUFS]));
@@ -342,7 +325,7 @@ fn rx_buf_dma(b: usize) -> u64 {
     RX_BUS.load(Ordering::Relaxed) + b as u64 * RX_STRIDE
 }
 
-/// Frames one [`recv_batch`] call pops under one lock (Kconfig
+/// Frames one [`reap_rx`] call pops under one lock (Kconfig
 /// `NET_RX_BATCH_MAX`); their buffers are off the ring until the batch has
 /// been handed to the stack.
 const RX_BATCH: usize = azos_limits::NET_RX_BATCH_MAX;
@@ -370,14 +353,14 @@ static MSI_TOKEN: [AtomicU32; NUM_VECTORS] = [const { AtomicU32::new(0) }; NUM_V
 /// Per-vector count of interrupts [`msi_irq`] accepted.
 static MSI_COUNT: [AtomicU32; NUM_VECTORS] = [const { AtomicU32::new(0) }; NUM_VECTORS];
 /// RX gate. Starts (and on the MMIO/polled paths stays) `true`. In IRQ
-/// mode `poll_recv` clears it when it finds the RX ring empty, and only an
+/// mode `reap_rx` clears it when it finds the RX ring empty, and only an
 /// RX MSI sets it again: no RX-ring read happens without an interrupt.
 static RX_PENDING: AtomicBool = AtomicBool::new(true);
 /// `NetState::irq`, readable without the lock.
 static IRQ_MODE: AtomicBool = AtomicBool::new(false);
 
 /// TX completion interrupts. `false`: requested only while the ring is
-/// full (reclaim is lazy, in `send`), the same trade Linux virtio-net makes
+/// full (reclaim is lazy, in `post`), the same trade Linux virtio-net makes
 /// without napi_tx. `true`: one MSI per completed frame. A constant so the
 /// egress lane can be measured both ways from one source (measured: see
 /// `init_pci`'s `tx-irq=` boot line and the PCI-transport numbers).
@@ -638,7 +621,7 @@ unsafe fn tx_reclaim_chain(net: &mut NetState, head: usize) {
 /// memory — otherwise a stack buffer could be reused mid-DMA. Completed chains
 /// are reclaimed lazily at the head of the next call, so a descriptor the
 /// device still owns is never recycled underneath it.
-pub fn send(data: &[u8]) -> Result<(), ()> {
+pub fn post(data: &[u8]) -> Result<(), ()> {
     if data.is_empty() || data.len() > TX_BUF_SIZE { return Err(()); }
 
     let mut net = NET.lock();
@@ -704,15 +687,11 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
         (*net.txq.desc.add(data_idx)).next  = 0;
 
         // Published at once (the device may pick it up on its own if it is
-        // already draining); the doorbell follows the batch rule.
+        // already draining); the doorbell is [`ring`]'s.
         let _ = virtq_publish(&mut net.txq, hdr_idx);
     }
     net.stats.tx_frames += 1;
     net.tx_pending = net.tx_pending.saturating_add(1);
-    if tx_kick_now(net.tx_depth, net.tx_pending, TX_BATCH_MAX, net.kick_every_frame) {
-        tx_kick(&mut net);
-    }
-
     Ok(())
 }
 
@@ -720,7 +699,7 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
 /// budget: `Some((held, waited))` when its announced frames sat past
 /// `NET_TX_TIMEOUT_MS` (`held` in the ring, `waited` ticks), for the caller
 /// to drop `NET` and call [`tx_timed_out`]. The only place descriptors come
-/// back (a send, and the poller's [`tx_watch`]) — which is what makes the
+/// back (a post, and the poller's [`reap_tx`]) — which is what makes the
 /// send's early return safe.
 fn tx_reclaim(net: &mut NetState) -> Option<(u64, u64)> {
     let mut freed = 0;
@@ -741,12 +720,12 @@ fn tx_reclaim(net: &mut NetState) -> Option<(u64, u64)> {
 }
 
 /// The transmit ring holds announced frames (`NetState::watch` runs): the
-/// poller's [`tx_watch`] takes `NET` only then.
+/// poller's [`reap_tx`] takes `NET` only then.
 static TX_WATCHED: AtomicBool = AtomicBool::new(false);
 
-/// `NetDevice::tx_watch`: look at the transmit ring between sends, so its
+/// `NetQueue::reap_tx`: look at the transmit ring between sends, so its
 /// budget runs out for a sender that sends seldom too (`TxWatch`).
-pub fn tx_watch() -> Option<u64> {
+pub fn reap_tx() -> Option<u64> {
     if !TX_WATCHED.load(Ordering::Relaxed) {
         return None;
     }
@@ -812,34 +791,11 @@ fn rx_kick(net: &mut NetState) {
     }
 }
 
-/// Open a TX batch: until the matching [`tx_batch_end`], `send` publishes
-/// frames without ringing the doorbell (up to `NET_TX_BATCH_MAX` of them)
-/// and `poll_recv` re-posts RX buffers without one. Batches nest and may be
-/// open on several harts at once; any `tx_batch_end` or [`flush`] rings for
-/// everything pending. A caller must not block with a batch open — close it
-/// first (the TCP `send_all_*` loops close it around every wait) — or the
-/// frames of other tasks published meanwhile wait for it, up to the batch
-/// bound.
-pub fn tx_batch_begin() {
-    let mut net = NET.lock();
-    if net.ready {
-        net.tx_depth = net.tx_depth.saturating_add(1);
-    }
-}
-
-/// Close a batch opened by [`tx_batch_begin`] and ring the doorbells for
-/// what it published: a flush point.
-pub fn tx_batch_end() {
-    let mut net = NET.lock();
-    net.tx_depth = net.tx_depth.saturating_sub(1);
-    if net.ready {
-        tx_kick(&mut net);
-        rx_kick(&mut net);
-    }
-}
-
-/// Ring the doorbells for everything published so far, batch or not.
-pub fn flush() {
+/// The doorbells: announce the TX frames [`post`] published and the RX
+/// buffers re-posted since the last ring. `azos_drv_net::net_queue` decides
+/// when (a flush point), the device's NO_NOTIFY decides whether the write is
+/// needed.
+pub fn ring() {
     let mut net = NET.lock();
     if net.ready {
         tx_kick(&mut net);
@@ -899,9 +855,6 @@ pub fn set_kick_every_frame(on: bool) {
 #[cold]
 fn tx_ring_full(net: &mut NetState) {
     net.tx_dropped = net.tx_dropped.saturating_add(1);
-    // Inside a batch the ring can be full of frames nobody announced yet:
-    // announce them, or the device never drains what would free the room.
-    tx_kick(net);
     if net.irq && !net.tx_cb_on {
         net.tx_cb_on = true;
         irqs(net, Q_TX, true);
@@ -1010,31 +963,6 @@ fn rx_repost(net: &mut NetState, slot: usize) {
     }
 }
 
-/// Poll for a received Ethernet frame.  Copies data into `buf`, returns byte count.
-/// Returns 0 if no packet is available.
-///
-/// One frame, one lock, one copy: the path [`recv_batch`] replaces for the
-/// stack, kept for `NetDevice::recv` callers and the `net-rx-copy` canary.
-/// The buffer goes back on the RX ring at once; its doorbell follows the
-/// batch rule (`tx_batch_begin`: one doorbell at the end of the pass) and
-/// the device's NO_NOTIFY.
-pub fn poll_recv(buf: &mut [u8]) -> usize {
-    // IRQ mode: no RX interrupt since the ring was last found empty ->
-    // nothing to read, and the ring is not touched. Always open when polled.
-    if !RX_PENDING.load(Ordering::Acquire) { return 0; }
-
-    let mut net = NET.lock();
-    if !net.ready { return 0; }
-    let Some((slot, len)) = rx_pop(&mut net) else { return 0 };
-    let hdr_len = net_hdr_size(&net.dev);
-    let n = len.min(buf.len());
-    // SAFETY: `slot` was just popped (ours until re-posted); `hdr_len + n`
-    // is within RX_BUF_SIZE by `rx_pop`'s clamp.
-    unsafe { core::ptr::copy_nonoverlapping(rx_buf_ptr(slot).add(hdr_len), buf.as_mut_ptr(), n) };
-    rx_repost(&mut net, slot);
-    n
-}
-
 /// Hand up to `max` received frames to `f`, in ring order, each by
 /// reference into its RX buffer, and return how many (IO-QUEUES N2 step 2).
 ///
@@ -1043,7 +971,7 @@ pub fn poll_recv(buf: &mut [u8]) -> usize {
 /// re-posts every buffer, with one doorbell decision under the batch rule.
 /// No copy here: the frame is read where the device wrote it. A slice is
 /// valid only for the duration of its `f` call.
-pub fn recv_batch(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+pub fn reap_rx(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
     if !RX_PENDING.load(Ordering::Acquire) { return 0; }
     let mut got = [(0u16, 0u16); RX_BATCH];
     let want = max.min(RX_BATCH);
@@ -1084,9 +1012,9 @@ pub fn recv_batch(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
     k
 }
 
-/// Give the device every RX buffer not lent to a [`recv_batch`] in progress,
+/// Give the device every RX buffer not lent to a [`reap_rx`] in progress,
 /// on a fresh free list: descriptor `b` is allocated for buffer `b` (the
-/// pairing `poll_recv` relies on: descriptor index == buffer slot), and a
+/// pairing `reap_rx` relies on: descriptor index == buffer slot), and a
 /// lent buffer's descriptor waits, allocated, for its re-post. A device that
 /// granted fewer entries than NUM_RX_BUFS gets `rxq.num`. The caller rings
 /// the doorbell.
@@ -1116,7 +1044,7 @@ const RESET_WAIT_US: u64 = 100_000;
 /// Frames sat in the transmit ring past the budget with the device taking
 /// none (`held` of them, for `waited` ticks): the timeout policy resets the
 /// device and programs it again once, then stops it for good. The frames in
-/// the ring are dropped. Called by `send` with `NET` not held.
+/// the ring are dropped. Called by `post` with `NET` not held.
 #[cold]
 fn tx_timed_out(held: u64, waited: u64) {
     let ms = waited.saturating_mul(1000) / azos_drv_sys::timebase::TIMER_FREQ.max(1);
@@ -1262,12 +1190,12 @@ fn stop_locked(net: &mut NetState) {
 
 /// Hand RX descriptor `desc_idx` (already filled in) back to the device:
 /// published at once, so the ring is never left short of a buffer; the
-/// doorbell rings now outside a batch, at the batch's end inside one.
+/// doorbell is [`ring`]'s (per buffer under the `net-kick-per-frame` canary).
 #[inline(always)]
 unsafe fn rx_requeue(net: &mut NetState, desc_idx: usize) {
     let _ = virtq_publish(&mut net.rxq, desc_idx);
     net.rx_pending = net.rx_pending.saturating_add(1);
-    if net.tx_depth == 0 || net.kick_every_frame {
+    if net.kick_every_frame {
         rx_kick(net);
     }
 }
@@ -1374,30 +1302,25 @@ pub fn info() {
 // Alias for clarity
 const VIRTIO_BASE: usize = VIRTIO_MMIO_BASE;
 
-// ── NetDevice ────────────────────────────────────────────────────────────
+// ── NetQueue ─────────────────────────────────────────────────────────────
 //
-// Thin, zero-sized adapter over `send`/`poll_recv`/`get_mac`/`is_ready`
-// above — same pattern as `eth::EthNetDevice`. `send`'s `Result<(), ()>`
-// only ever meant one of two things at its single call site (`crates/net/stack`):
-// "not ready" or "ring full"; split those here rather than changing `send`
-// itself, since that keeps the fast path (an `Ok(())` return) exactly as
-// cheap as before — the extra `is_ready()` read only runs on the error path.
-use azos_drv_api::net::{NetDevice, NetError};
+// Thin, zero-sized adapter over the free functions above. `post`'s
+// `Result<(), ()>` only ever meant one of two things: "not ready" or "ring
+// full"; they are split here, so the fast path (an `Ok(())` return) stays as
+// cheap as it was: the extra `is_ready()` read only runs on the error path.
+use azos_drv_api::net::{NetError, NetQueue};
 
-pub struct VirtioNetDevice;
+pub struct VirtioNetQueue;
 
-impl NetDevice for VirtioNetDevice {
+impl NetQueue for VirtioNetQueue {
     #[inline]
-    fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
+    fn post(&self, frame: &[u8]) -> Result<usize, NetError> {
         if frame.is_empty() || frame.len() > TX_BUF_SIZE {
             return Err(NetError::BadLength);
         }
         let len = frame.len();
-        match send(frame) {
+        match post(frame) {
             Ok(()) => Ok(len),
-            // `send()` itself only returns `Err(())` for "not ready" or "ring
-            // full" (the length case was just ruled out above) — `is_ready()`
-            // tells the two apart without touching `send`'s own logic.
             Err(()) => {
                 if is_ready() {
                     Err(NetError::QueueFull)
@@ -1409,13 +1332,13 @@ impl NetDevice for VirtioNetDevice {
     }
 
     #[inline]
-    fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-        Ok(poll_recv(buf))
+    fn ring(&self) {
+        ring()
     }
 
     #[inline]
-    fn recv_batch(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
-        recv_batch(max, f)
+    fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+        reap_rx(max, f)
     }
 
     #[inline]
@@ -1429,18 +1352,8 @@ impl NetDevice for VirtioNetDevice {
     }
 
     #[inline]
-    fn tx_watch(&self) -> Option<u64> {
-        tx_watch()
-    }
-
-    #[inline]
-    fn tx_batch_begin(&self) {
-        tx_batch_begin()
-    }
-
-    #[inline]
-    fn tx_batch_end(&self) {
-        tx_batch_end()
+    fn reap_tx(&self) -> Option<u64> {
+        reap_tx()
     }
 }
 
@@ -1482,7 +1395,7 @@ const VIRTIO_NET_F_MAC: u32 = azos_virtio_proto::feature::word(azos_virtio_proto
 /// back the MSI-X Enable bit, so a device whose enable did not stick is a
 /// NIC that receives nothing (which is what the gate canary relies on),
 /// not a NIC that silently falls back to polling. Otherwise polled mode:
-/// no vector programmed, `poll_recv` reads the ring on every call.
+/// no vector programmed, `reap_rx` reads the ring on every call.
 ///
 /// Only the hart `route` targets takes the NIC's interrupts (the boot
 /// hart's IMSIC file / the ITS's one collection).
