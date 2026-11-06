@@ -66,6 +66,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_image"
+version = "0.1.0"
+
+[[package]]
 name = "azos_limits"
 version = "0.1.0"
 dependencies = [
@@ -78,6 +82,7 @@ name = "azos_linux_abi"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_image",
 ]
 
 [[package]]
