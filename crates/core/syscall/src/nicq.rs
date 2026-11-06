@@ -366,7 +366,9 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
             _ => return Errno::ENOENT.to_syscall_ret(),
         }
     };
-    azos_net::nic_queue_batch(ifindex, true);
+    if !cfg!(feature = "nicq-no-batch-canary") {
+        azos_net::nic_queue_batch(ifindex, true);
+    }
     let mut sent = 0i64;
     let mut wake_producer = None;
     let mut gone = false;
@@ -392,7 +394,9 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
         if desc.flags & nq::TX_STAMP != 0 {
             // A stamp is the departure time: the frame leaves now, not with
             // the rest of the kick.
-            azos_net::nic_queue_flush(ifindex);
+            if !cfg!(feature = "nicq-no-stamp-flush-canary") {
+                azos_net::nic_queue_flush(ifindex);
+            }
             let done = Desc {
                 kind: nq::DESC_TX_DONE,
                 flags: if ok { nq::STAMP_SW } else { nq::TX_REFUSED },
@@ -407,7 +411,9 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
             break;
         }
     }
-    azos_net::nic_queue_batch(ifindex, false);
+    if !cfg!(feature = "nicq-no-batch-canary") {
+        azos_net::nic_queue_batch(ifindex, false);
+    }
     let rx_ring = {
         let mut t = ATTACHED.lock();
         t[i].0.as_mut().filter(|a| a.gen == gen).and_then(|a| {

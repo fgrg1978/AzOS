@@ -213,6 +213,11 @@ portwait-timer-canary = []
 # `ipc_handlers.rs` `doorbell_word`: the end of a doorbell word wraps, so an
 # offset near u64::MAX binds. Host canary (tests/host/syscall-tests).
 doorbell-wrap-canary = []
+# `nicq.rs` `kick`'s canaries: the kick posts each frame with its own doorbell,
+# or a stamped frame waits for the rest of the kick (host canaries,
+# tests/host/syscall-tests).
+nicq-no-batch-canary = []
+nicq-no-stamp-flush-canary = []
 ipc-trace = []
 # Periodic census of fast-IPC slot state. Independent of ipc-trace ON
 # PURPOSE: the per-exchange trace perturbs timing enough to hide the very

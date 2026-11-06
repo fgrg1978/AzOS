@@ -53,6 +53,10 @@ gpio-safety-guard-canary = []
 # `ipc_handlers.rs` `doorbell_word`'s canary: the doorbell offset's end wraps
 # (`a_doorbell_offset_outside_its_region_is_refused` goes red).
 doorbell-wrap-canary = []
+# `nicq.rs` `kick`'s canaries (`a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once`
+# goes red).
+nicq-no-batch-canary = []
+nicq-no-stamp-flush-canary = []
 # `endpoint.rs` `calls_set_link`'s canary: any READ holder binds an endpoint's
 # calls (`only_the_server_binds_an_endpoints_calls` goes red).
 calls-any-binder-canary = ["azos_ipc/calls-any-binder-canary"]
