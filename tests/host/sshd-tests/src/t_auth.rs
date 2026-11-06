@@ -244,8 +244,7 @@ fn password_request(user: &[u8], len: usize, change: bool) -> Vec<u8> {
 
 /// The length of a password changes nothing: a `password` request, for the one configured user and for an
 /// unknown one, with or without the change-password form, is refused as an unoffered method, never logs in,
-/// and is not a `publickey` request (so no signature is verified for it). OpenSSH on musl accepted a locked
-/// account for passwords of 257 to 1024 bytes, because crypt() failed in-band.
+/// and is not a `publickey` request (so no signature is verified for it).
 /// **Canary.** Make `Method::Other` mark the connection authenticated and every length here goes red.
 #[test]
 fn a_password_request_is_refused_whatever_its_length() {
