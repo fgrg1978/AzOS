@@ -206,6 +206,7 @@ dependencies = [
  "azos_crypto",
  "azos_decision",
  "azos_devif",
+ "azos_dma",
  "azos_drv_api",
  "azos_fb",
  "azos_idl",

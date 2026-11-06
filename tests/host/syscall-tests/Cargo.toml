@@ -162,6 +162,8 @@ azos_abi = { path = "../../../crates/core/abi" }
 # `file_ops.rs` and `handlers.rs` join a name beneath a directory with its
 # `path::join_beneath` (the filesystem's own join). Pure, no_std.
 azos_common = { path = "../../../crates/core/common" }
+# The DMA domain trait the binding tests (`mmio_map.rs`) install a recording one of.
+azos_dma = { path = "../../../crates/drivers/dma" }
 azos_devif = { path = "../../../crates/core/devif" }
 # CONFIG.INI `estop_gpio_pin` (the pulled-in handlers.rs keeps the kill switch's
 # line from Gpio ops), the real crate.

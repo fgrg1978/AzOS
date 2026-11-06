@@ -293,3 +293,186 @@ fn a_kernel_caller_gets_minus_one() {
     let m = machine();
     assert_eq!(map(m.rtc as u64, READ), -1);
 }
+
+// ── `DEVICE_DMA_MAP` / `DEVICE_DMA_UNMAP`: the memory a device reaches ──────
+//
+// Real: the op (`mmio.rs` `device_op`), the binding table and its teardown
+// (`azos_ipc::dma_bind`, `azos_dma::bind`), the memory objects. The device's
+// domain is the recording one below, installed as the kernel installs its
+// own (`dma_bind::set_hooks`): it logs what happened in which order, and
+// whether the object still had its frames when it happened.
+
+mod dma {
+    use super::*;
+    use azos_abi::invoke::{DEVICE_DMA_MAP, DEVICE_DMA_UNMAP, DMA_BIDIRECTIONAL, DMA_TO_DEVICE, INVOKE_REGS};
+    use azos_abi::syscall_nr::{SHM_CREATE_KIND_SHIFT, SHM_KIND_CONTIG};
+    use azos_dma::{Direction, DmaAddr, DmaDomain, DmaError, DomainKind};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Mutex;
+
+    /// What the domain and the quiesce saw: (what, did the object still have
+    /// its frames).
+    static EVENTS: Mutex<Vec<(&'static str, bool)>> = Mutex::new(Vec::new());
+    /// The object under test (its slot index), for the frames check.
+    static OBJ: AtomicU32 = AtomicU32::new(u32::MAX);
+    static QUIESCE_OK: AtomicBool = AtomicBool::new(true);
+    /// What the domain adds to a physical address: a bus address is not one.
+    const BUS_OFFSET: u64 = 0x10_0000_0000;
+
+    fn alive() -> bool {
+        azos_ipc::memobj::memobj_info(OBJ.load(Ordering::SeqCst)).is_some()
+    }
+
+    struct Rec;
+    impl DmaDomain for Rec {
+        fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
+            EVENTS.lock().unwrap().push(("map", alive()));
+            Ok(DmaAddr(pa + BUS_OFFSET))
+        }
+        fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
+            EVENTS.lock().unwrap().push(("unmap", alive()));
+            Ok(())
+        }
+        fn coherent(&self) -> bool {
+            true
+        }
+        fn kind(&self) -> DomainKind {
+            DomainKind::Soft
+        }
+        fn enable(&self) -> Result<(), DmaError> {
+            Ok(())
+        }
+        fn allow_msi(&self, _: u64) -> Result<(), DmaError> {
+            Ok(())
+        }
+    }
+    static REC: Rec = Rec;
+
+    fn domain(_dev: u32) -> Option<&'static dyn DmaDomain> {
+        Some(&REC)
+    }
+    fn quiesce(_dev: u32) -> bool {
+        EVENTS.lock().unwrap().push(("quiesce", alive()));
+        QUIESCE_OK.load(Ordering::SeqCst)
+    }
+
+    fn setup() -> usize {
+        azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain, quiesce });
+        EVENTS.lock().unwrap().clear();
+        QUIESCE_OK.store(true, Ordering::SeqCst);
+        ring3()
+    }
+
+    /// The handle of a capability on device `dev` with `perms`.
+    fn device(dev: u32, perms: CapPerms) -> u64 {
+        azos_ipc::cap_store::grant::<azos_ipc::cap::targets::MmioRegion>(TID, perms, dev)
+            .expect("cap table full")
+            .raw()
+            .as_raw() as u64
+    }
+
+    /// A `pages`-page object of `kind`, and its slot index.
+    fn object(pages: u64, kind: u64) -> (u64, u32) {
+        let h = crate::ipc_handlers::sys_shm_create_typed(pages, 1 | kind << SHM_CREATE_KIND_SHIFT);
+        assert!(h > 0, "create: {h}");
+        let r = azos_ipc::cap_store::get(
+            TID,
+            azos_ipc::cap::Cap::<azos_ipc::cap::targets::Shm>::from_raw(azos_abi::cap::CapHandle::from_raw(h as u32)),
+            CapPerms::NONE,
+        )
+        .unwrap();
+        (h as u64, azos_common::slot_ref::SHM.idx(r))
+    }
+
+    fn op(dev: u64, op: u16, obj: u64, dir: u64) -> (i64, [u64; 6]) {
+        let mut out = crate::dispatch::SyscallOut::new();
+        let rc = crate::invoke::sys_invoke(dev, INVOKE_REGS | op as u64, obj, dir, 0, 0, &mut out);
+        (rc, out.regs)
+    }
+
+    /// **Only a read-write Contig object ring 3 made reaches a device, and only
+    /// a device no kernel driver owns, through a capability that carries
+    /// `WRITE`; the binding keeps the frames past the task's own release, and
+    /// the unmap takes the object out of the domain while it still has them,
+    /// then gives them back.**
+    ///
+    /// **Canary.** Unpin before the domain's unmap in `bind::release`: the
+    /// unmap finds the object gone.
+    #[test]
+    fn a_bound_object_keeps_its_frames_until_it_is_out_of_the_domain() {
+        let _g = serial();
+        setup();
+        let m = machine();
+        let dev = device(m.bus, CapPerms::RW);
+        let (anon, _) = object(1, 0);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, anon, DMA_BIDIRECTIONAL).0, Errno::EINVAL.to_syscall_ret(), "an Anon object");
+        let (obj, idx) = object(2, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, 7).0, Errno::EINVAL.to_syscall_ret(), "an unknown direction");
+        let ro = device(m.rtc, CapPerms::READ);
+        assert_eq!(op(ro, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, Errno::ECAPPERMS.to_syscall_ret(), "a READ-only device");
+        let uart = device(m.uart, CapPerms::RW);
+        assert_eq!(op(uart, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, Errno::ENODEV.to_syscall_ret(), "the kernel's device");
+        assert!(EVENTS.lock().unwrap().is_empty(), "a refused map reached the domain");
+
+        let (rc, regs) = op(dev, DEVICE_DMA_MAP, obj, DMA_BIDIRECTIONAL);
+        assert_eq!(rc, 0);
+        assert_eq!(regs[0] & BUS_OFFSET, BUS_OFFSET, "the reply is the domain's bus address");
+        assert_eq!(regs[1], 2 * azos_arch::PAGE_SIZE as u64, "and the object's length");
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_BIDIRECTIONAL).0, Errno::EBUSY.to_syscall_ret(), "bound twice");
+
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
+        assert!(alive(), "the task's release freed frames a device can reach");
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, Errno::ECAPSTALE.to_syscall_ret(), "the released handle");
+        // The binding is the process's: the exit path ends it (the device
+        // stopped first).
+        azos_ipc::dma_bind::release_all(azos_sched::group::proc_tid(TID));
+        assert_eq!(
+            *EVENTS.lock().unwrap(),
+            vec![("map", true), ("quiesce", true), ("unmap", true)],
+            "stopped, out of the domain, then the frames"
+        );
+        assert!(!alive(), "the frames stayed after the unmap");
+    }
+
+    /// **The driver's unmap ends its binding, once; a second one finds none.**
+    #[test]
+    fn the_unmap_ends_the_binding_once() {
+        let _g = serial();
+        setup();
+        let m = machine();
+        let dev = device(m.bus, CapPerms::RW);
+        let (obj, idx) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, 0);
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, Errno::ENOENT.to_syscall_ret());
+        assert_eq!(*EVENTS.lock().unwrap(), vec![("map", true), ("unmap", true)], "no quiesce: the driver stopped it");
+        assert!(alive(), "the task still holds the object");
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
+        assert!(!alive());
+    }
+
+    /// **At the exit, a device that cannot be shown stopped keeps the frames
+    /// it was given out of the allocator, counted.**
+    ///
+    /// **Canary.** Ignore the quiesce's answer in `dma_bind::release_all`:
+    /// the frames go while the device may still write them.
+    #[test]
+    fn a_device_not_shown_stopped_keeps_its_frames() {
+        let _g = serial();
+        setup();
+        let m = machine();
+        let dev = device(m.bus, CapPerms::RW);
+        let (obj, idx) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
+        QUIESCE_OK.store(false, Ordering::SeqCst);
+        let kept = azos_dma::leaked_bytes();
+        azos_ipc::dma_bind::release_all(azos_sched::group::proc_tid(TID));
+        assert_eq!(*EVENTS.lock().unwrap(), vec![("map", true), ("quiesce", true)], "unmapped though not stopped");
+        assert!(alive(), "the frames went while the device may still write them");
+        assert_eq!(azos_dma::leaked_bytes(), kept + azos_arch::PAGE_SIZE as u64, "the kept page is not counted");
+    }
+}
