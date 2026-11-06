@@ -109,7 +109,8 @@ mod device {
     use super::{arm_read, SeedRead};
     use super::super::{
         Dma, VirtioDev, Virtq, VIRTIO_DEV_RNG,
-        probe, init as virtio_init, reset_confirmed, virtq_init, virtq_remap, virtq_reprogram, virtq_unmap,
+        probe, init as virtio_init, reset_confirmed, unmap_all, virtq_init, virtq_remap, virtq_reprogram, virtq_unmap,
+        Release,
         virtq_submit, virtq_poll_with_len,
         virtq_free_desc, mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
     };
@@ -208,11 +209,15 @@ mod device {
         stop(&mut st)?;
         if st.mapped {
             let dma = st.dma;
-            dma.unmap(st.buf_bus, BUF_BYTES)?;
             let legacy = st.dev.version == 1;
+            let r = unmap_all([(st.buf_bus, BUF_BYTES)], |bus, len| dma.unmap(bus, len));
             // SAFETY: the device is reset (`stop`); the queue is the driver's.
-            unsafe { virtq_unmap(&mut st.vq, &dma, legacy)? };
+            let r = r.and(unsafe { virtq_unmap(&mut st.vq, &dma, legacy) });
+            // Unmapped either way: the next bring-up maps everything again.
             st.mapped = false;
+            if r == Release::Partial {
+                return Err(());
+            }
         }
         st.base = 0;
         Ok(())

@@ -611,21 +611,48 @@ fn ring_spans(vq: &Virtq, legacy: bool) -> [(*const u8, usize); 3] {
     }
 }
 
+/// What undoing a device's mappings did.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Release {
+    /// Every mapping is out of the domain.
+    Clean,
+    /// Some unmap was refused: that mapping may still be live.
+    Partial,
+}
+
+impl Release {
+    pub fn and(self, other: Release) -> Release {
+        if self == Release::Clean { other } else { Release::Partial }
+    }
+}
+
+/// Undo every mapping of `spans` (`(bus, len)`; `len` 0 is none) with
+/// `unmap`, every one of them even past a refusal: a refused one is reported,
+/// the ones after it are not left mapped because of it.
+pub fn unmap_all<I: IntoIterator<Item = (u64, usize)>>(spans: I, mut unmap: impl FnMut(u64, usize) -> Result<(), ()>) -> Release {
+    let mut r = Release::Clean;
+    for (bus, len) in spans {
+        if len != 0 && unmap(bus, len).is_err() {
+            r = Release::Partial;
+        }
+    }
+    r
+}
+
 /// Take `vq`'s rings out of the device's DMA domain (the device reset first:
 /// it no longer touches them). The memory stays the driver's;
-/// [`virtq_remap`] maps it again. What an unbind does before the device can
-/// be handed on.
+/// [`virtq_remap`] maps it again, after a `Partial` one too (a mapping still
+/// there is mapped twice, which a domain allows). What an unbind does before
+/// the device can be handed on.
 ///
 /// # Safety
 /// The device is reset and `vq` was set up by [`virtq_init_sized`].
-pub unsafe fn virtq_unmap(vq: &mut Virtq, dma: &Dma, legacy: bool) -> Result<(), ()> {
-    for (i, (_, len)) in ring_spans(vq, legacy).into_iter().enumerate() {
-        if len != 0 {
-            dma.unmap(vq.bus[i], len)?;
-        }
-    }
+pub unsafe fn virtq_unmap(vq: &mut Virtq, dma: &Dma, legacy: bool) -> Release {
+    let spans = ring_spans(vq, legacy);
+    let r = unmap_all((0..3).map(|i| (vq.bus[i], spans[i].1)), |bus, len| dma.unmap(bus, len));
     vq.bus = [0; 3];
-    Ok(())
+    r
 }
 
 /// Map `vq`'s rings into `dma` again after [`virtq_unmap`]; then

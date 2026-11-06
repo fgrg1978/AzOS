@@ -59,7 +59,8 @@ use super::{
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
     VIRTIO_QUEUE_SIZE,
 };
-use super::{mmio_read, mmio_write, probe, reset_confirmed, virtq_init, virtq_remap, virtq_reprogram, virtq_unmap, RESET_WAIT_US,
+use super::{mmio_read, mmio_write, probe, reset_confirmed, unmap_all, virtq_init, virtq_remap, virtq_reprogram, virtq_unmap,
+            Release, RESET_WAIT_US,
             virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
             read_config32, read_config64};
 use azos_dma::Direction;
@@ -766,7 +767,8 @@ pub fn park(base: usize) -> Result<(), ()> {
 /// (the memory stays the driver's), so a ring-3 or another driver given the
 /// device cannot reach it. From here `claim` answers `Dead`; [`init_at`] at
 /// the same base maps everything again. `Err` for a device that is not parked
-/// here, or a mapping the domain would not undo (then it stays parked).
+/// here, and when the domain refused an unmap (the device is released all the
+/// same, and a bring-up maps everything again).
 pub fn release(base: usize) -> Result<(), ()> {
     let _guard = BLK_LOCK.lock();
     if PARKED.load(Ordering::Acquire) != base || base == 0 {
@@ -775,15 +777,27 @@ pub fn release(base: usize) -> Result<(), ()> {
     // SAFETY: the device is parked: reset, nothing submits, `BLK_LOCK` held.
     let dev = unsafe { &mut *(&raw mut BLK_DEV) };
     let dma = dev.dma;
-    dma.unmap(dev.hdr_bus, SLOTS * HDR_STRIDE as usize)?;
-    dma.unmap(dev.status_bus, SLOTS * STATUS_STRIDE as usize)?;
-    dma.unmap(dev.buf_bus, SLOTS * BUF_STRIDE as usize)?;
+    let mut r = unmap_all(
+        [
+            (dev.hdr_bus, SLOTS * HDR_STRIDE as usize),
+            (dev.status_bus, SLOTS * STATUS_STRIDE as usize),
+            (dev.buf_bus, SLOTS * BUF_STRIDE as usize),
+        ],
+        |bus, len| dma.unmap(bus, len),
+    );
     for q in 0..dev.queues {
         // SAFETY: the device is reset; the queue is the driver's.
-        unsafe { virtq_unmap(&mut (*(&raw mut VQS))[q], &dma, dev.vdev.version == 1)? };
+        r = r.and(unsafe { virtq_unmap(&mut (*(&raw mut VQS))[q], &dma, dev.vdev.version == 1) });
     }
+    // Released either way: some cached bus addresses may be gone, so the next
+    // bring-up maps everything again (`remap_and_unpark`) and never programs
+    // the device over them.
     PARKED.store(0, Ordering::Release);
     RELEASED.store(base, Ordering::Release);
+    if r == Release::Partial {
+        azos_drv_sys::kerr!("[VIRTIO-BLK] device at {:#x}: its DMA domain refused an unmap; some memory may still be reachable", base);
+        return Err(());
+    }
     kprintln!("[VIRTIO-BLK] device at {:#x} let go: its memory is out of its DMA domain", base);
     Ok(())
 }

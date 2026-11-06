@@ -394,6 +394,33 @@ mod recovery_records {
 #[path = "../../../../crates/drivers/block/src/write_observer.rs"]
 mod write_observer;
 
+/// An unbind's release of a device's mappings (`virtio::unmap_all`, which
+/// virtio-blk's and virtio-rng's unbind run): a refused unmap is reported and
+/// every mapping after it is still undone, so the driver goes to "released"
+/// (everything mapped again by the next bring-up) instead of programming the
+/// device over bus addresses some of which are gone. **Canary**: stop at the
+/// first refusal (`?` across the unmaps, as before): the later mappings stay
+/// and this row fails.
+#[cfg(test)]
+mod unbind_release {
+    use super::virtio::{unmap_all, Release};
+
+    #[test]
+    fn a_refused_unmap_is_reported_and_the_ones_after_it_are_still_undone() {
+        let spans = [(0x1000u64, 64usize), (0x2000, 64), (0x3000, 4096), (0x4000, 0), (0x5000, 4096)];
+        let mut asked = Vec::new();
+        let r = unmap_all(spans, |bus, _| {
+            asked.push(bus);
+            if bus == 0x2000 { Err(()) } else { Ok(()) }
+        });
+        assert_eq!(r, Release::Partial);
+        assert_eq!(asked, [0x1000, 0x2000, 0x3000, 0x5000], "an empty span is not unmapped, none after a refusal is skipped");
+        assert_eq!(unmap_all(spans, |_, _| Ok(())), Release::Clean);
+        assert_eq!(Release::Clean.and(Release::Partial), Release::Partial);
+        assert_eq!(Release::Partial.and(Release::Clean), Release::Partial);
+    }
+}
+
 #[cfg(test)]
 mod virtq {
     use super::virtio::*;
