@@ -63,6 +63,7 @@ azos_abi           = { workspace = true }
 azos_arch          = { workspace = true }
 azos_sync          = { workspace = true }
 azos_rings         = { workspace = true }
+azos_records       = { workspace = true }
 azos_limits        = { workspace = true }
 azos_drv_api       = { workspace = true }
 azos_drv_base      = { workspace = true }

@@ -59,6 +59,9 @@ pub(crate) fn arm_from_cmdline(read: impl FnOnce(&mut [u8]) -> Option<usize>) {
     if canary!("refusal-limit-off") {
         azos_decision::set_pace_off();
     }
+    if canary!("record-stale") {
+        azos_drv_sys::klog::set_stale_canary();
+    }
 }
 
 /// Boot init is done: the command line's points fire from here on.

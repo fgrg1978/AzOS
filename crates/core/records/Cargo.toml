@@ -1,0 +1,11 @@
+[package]
+name = "azos_records"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The kernel's record substrate: the region the kernel log, the decision records and the actuation telemetry are written into (azos_rings::region::record, one ring per source, one envelope), a small region in .bss until boot hands over to a memory object ring 3 maps read-only, and logd its one reader."
+
+[dependencies]
+azos_rings  = { workspace = true }
+azos_limits = { workspace = true }

@@ -1441,6 +1441,7 @@ azos_hv        = { workspace = true, optional = true }
 azos_devif     = { workspace = true }
 # Wave 15: the trace ring layout (the cost probe reads its own ring).
 azos_rings      = { workspace = true }
+azos_records    = { workspace = true }
 azos_topology  = { workspace = true }
 # The boot-time apply of staged packages (kernel/src/boot/pkg_apply.rs).
 azos_pkg       = { workspace = true }

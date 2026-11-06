@@ -12,11 +12,13 @@
 //! the one with the highest N, and `log` reads them in that order.
 //!
 //! **Where to resume.** After a restart the sink must neither write a record
-//! twice nor skip one. The newest file's last record line is compared, byte
-//! for byte, with the same sequence number rendered from the ring
-//! ([`Tail::matches`]): equal means the ring still is the stream that line came
-//! from and the sink resumes after it; anything else (a new boot, a ring that
-//! lapped the line) restarts at the ring's oldest record.
+//! twice nor skip one. The newest file's last kernel log line is compared,
+//! byte for byte, with the same sequence number rendered from the kernel log's
+//! ring ([`Tail::matches`]): equal means the region still is the stream that
+//! line came from, and the sink resumes every ring after its own last line
+//! (the decisions' and the telemetry's by their sequence numbers); anything
+//! else (a new boot, a ring that lapped the line) restarts every ring at its
+//! oldest record.
 
 use crate::wire::{self, Lines, LINE_MAX};
 
@@ -32,12 +34,13 @@ pub trait Vol {
 
 /// What the newest file ends with.
 pub struct Tail {
-    /// The sequence number of the file's last line, whatever it is: where the
-    /// next record to read stands, less one.
-    pub last_seq: u64,
-    /// The last line a kernel record made (not `logd`'s own), without its
-    /// newline, and its sequence number.
+    /// The last line a kernel log record made (not `logd`'s own, not another
+    /// source's), without its newline, and its sequence number.
     rec: Option<(u64, [u8; LINE_MAX], usize)>,
+    /// The sequence number of the last decision record line.
+    pub last_decision: Option<u64>,
+    /// The sequence number of the last telemetry line.
+    pub last_telemetry: Option<u64>,
 }
 
 impl Tail {
@@ -75,9 +78,12 @@ fn scan<V: Vol>(vol: &mut V, slot: u8) -> Option<Scan> {
                 first = false;
                 s.serial = wire::head_serial(&l);
             }
-            let tail = s.tail.get_or_insert(Tail { last_seq: 0, rec: None });
-            tail.last_seq = l.seq;
-            if l.module != wire::LOGD_MODULE {
+            let tail = s.tail.get_or_insert(Tail { rec: None, last_decision: None, last_telemetry: None });
+            if l.module == wire::DECISION_MODULE {
+                tail.last_decision = Some(l.seq);
+            } else if l.module == wire::TELEMETRY_MODULE {
+                tail.last_telemetry = Some(l.seq);
+            } else if l.module != wire::LOGD_MODULE {
                 let mut b = [0u8; LINE_MAX];
                 b[..text.len()].copy_from_slice(text);
                 tail.rec = Some((l.seq, b, text.len()));

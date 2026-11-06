@@ -95,6 +95,13 @@ const _: () = assert!(OFF_TABLE + MAX_RINGS * DESC_BYTES <= HDR_BYTES && HDR_BYT
 /// The monotonic timebase every producer stamps with (`ts_hz` ticks a second).
 pub const CLOCK_TIMEBASE: u8 = 0;
 
+/// The kernel log: every `kerr!` .. `kprintln!` line.
+pub const SOURCE_KLOG: u8 = 1;
+/// The explainable decision records (`azos_decision`).
+pub const SOURCE_DECISION: u8 = 2;
+/// The actuation telemetry (`azos_actuation::logger`'s ordinary events).
+pub const SOURCE_TELEMETRY: u8 = 3;
+
 /// What every record carries, whatever its source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Envelope {
@@ -140,6 +147,17 @@ pub const fn region_bytes(rings: &[RingSpec]) -> usize {
     while i < rings.len() {
         n += rings[i].bytes();
         i += 1;
+    }
+    n
+}
+
+/// The byte offset of ring `i` of a region holding `rings`.
+pub const fn ring_offset(rings: &[RingSpec], i: usize) -> usize {
+    let mut n = HDR_BYTES;
+    let mut k = 0;
+    while k < i {
+        n += rings[k].bytes();
+        k += 1;
     }
     n
 }
@@ -343,6 +361,15 @@ pub struct Ring {
 }
 
 impl Ring {
+    /// The ring at `ring` laid out as `spec` (a producer reading its own
+    /// region, whose geometry it knows at build time).
+    ///
+    /// # Safety
+    /// `ring` is the start of a ring of `spec` inside a live region.
+    pub const unsafe fn at(ring: *const u8, spec: RingSpec) -> Ring {
+        Ring { g: Geom { ring: ring as *mut u8, slot_bytes: spec.slot_bytes as usize, entries: spec.entries as u64, source: spec.source } }
+    }
+
     pub fn source(&self) -> u8 {
         self.g.source
     }
@@ -497,6 +524,15 @@ pub struct Head {
 }
 
 impl Writer {
+    /// The ring at `ring` laid out as `spec`, to write.
+    ///
+    /// # Safety
+    /// `ring` is the start of a ring of `spec` inside a live region the
+    /// caller owns.
+    pub const unsafe fn at(ring: *mut u8, spec: RingSpec) -> Writer {
+        Writer { g: Geom { ring, slot_bytes: spec.slot_bytes as usize, entries: spec.entries as u64, source: spec.source } }
+    }
+
     pub fn source(&self) -> u8 {
         self.g.source
     }

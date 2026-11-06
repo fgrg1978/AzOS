@@ -111,10 +111,10 @@ fn recover_picks_the_highest_serial_not_the_highest_slot_or_sequence() {
     let (mut s2, tail) = Store::recover(&mut v, 3, 300);
     assert!(s2.write(&mut v, &batch(0, 1), 0, 1_000_000));
     let tail = tail.expect("the newest file has records");
-    assert_eq!(tail.last_seq, 1029, "the newest file's last record");
+    assert_eq!(tail.rec_seq(), Some(1029), "the newest file's last record");
     let f = &v.files[&name(newest_slot)];
     assert!(String::from_utf8_lossy(f).ends_with("line 0\n"), "the new boot's line was appended to the newest file");
-    // Canary: choose the slot with the greatest `last_seq` in `recover` and
+    // Canary: choose the slot with the greatest sequence number in `recover` and
     // this goes red as soon as a boot's sequence numbers restart.
 }
 
@@ -132,13 +132,30 @@ fn the_resume_test_is_byte_for_byte() {
     let (_, tail) = Store::recover(&mut v, 4, 4096);
     let tail: Tail = tail.unwrap();
     assert_eq!(tail.rec_seq(), Some(12), "the sink's own lines are not kernel records");
-    assert_eq!(tail.last_seq, 12);
     let same = rec_line(12, "line 12");
     assert!(tail.matches(12, &same[..same.len() - 1]));
     let other = rec_line(12, "line 12 but another boot");
     assert!(!tail.matches(12, &other[..other.len() - 1]), "same sequence, other content: another stream");
     assert!(!tail.matches(11, &same[..same.len() - 1]));
     // Canary: compare only the sequence number and the second assertion goes red.
+}
+
+#[test]
+fn the_other_sources_resume_by_their_own_last_line() {
+    let mut v = Mem::default();
+    let (mut s, _) = Store::recover(&mut v, 4, 4096);
+    let mut b = batch(10, 12);
+    for (seq, module) in [(5u64, wire::DECISION_MODULE), (40, wire::TELEMETRY_MODULE), (6, wire::DECISION_MODULE)] {
+        let r = Record::make(seq, 99, wire::LEVEL_INFO, 0, 0, core::str::from_utf8(module).unwrap(), b"rule=3");
+        let mut nb = [0u8; LINE_MAX];
+        let n = wire::line(&r, 1_000_000, &mut nb);
+        b.extend_from_slice(&nb[..n]);
+    }
+    assert!(s.write(&mut v, &b, 0, 1_000_000));
+    let (_, tail) = Store::recover(&mut v, 4, 4096);
+    let tail: Tail = tail.unwrap();
+    assert_eq!(tail.rec_seq(), Some(11), "a decision or telemetry line is not a kernel log record");
+    assert_eq!((tail.last_decision, tail.last_telemetry), (Some(6), Some(40)));
 }
 
 #[test]

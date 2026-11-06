@@ -105,7 +105,7 @@ crate_dir() {
 CORE_CRATES="
 abi arch/facade arch/api arch/riscv arch/aarch64 arch/x86_64 common sync mm limits
 api base irqchip sys gpio kill-switch bus virtio virtio-proto block net sensor actuator power
-ina219 buzzer rings pci dma iommu
+ina219 buzzer rings records pci dma iommu
 ipc sched syscall stack energy
 crypto
 actuation channel ext-api
@@ -155,6 +155,9 @@ kit image hyp-api
 # `rings` is CORE (it replaced `spsc`, wave 11 SHMRING): the ring shapes the
 # kernel publishes trace records through (crates/core/trace) and the channels
 # sit on; libsys re-exports its shared-memory forms.
+
+# `records` is CORE: the record substrate the kernel log (drivers/sys, CORE)
+# and the decision records write into; it depends on rings and limits only.
 
 # `linux-abi` joined CORE in wave 12: the Linux personality's
 # numbers and layouts, a dependency of `sched` (the initial stack's auxv) and

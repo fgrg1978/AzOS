@@ -46,6 +46,10 @@ pub(crate) const NAMES: &[&str] = &[
     // `decision_admission_recorded`, `decision_cap_denial_recorded`,
     // `why_resolves_a_refused_reservation`).
     "decision-skip",
+    // boot/chaos.rs: the next kernel log line is written under a stale
+    // sequence; `logd` must drop it and count it (gate row `records: logd
+    // drops a stale sequence`).
+    "record-stale",
     // boot/chaos.rs: the durable rate limit of caller-paced refusals holds
     // nothing back (ktest `refusal_flood_costs_no_other_domain`).
     "refusal-limit-off",

@@ -1,23 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `LOGD.ELF`: the sink of the structured kernel log (Kconfig `KLOG`).
+//! `LOGD.ELF`: the sink of the kernel's records (Kconfig `KLOG`).
 //!
-//! The kernel pushes every log line as a record `{ts, level, module, msg}`
-//! into one ring (`azos_drv_sys::klog`) and grants it by the topology row
-//! `MemObj klog.ring` (`READ|MAP`). This program maps it, polls it every
-//! `LOGD_POLL_MS`, and appends what arrived to a ring of files
-//! (`KLOGn.TXT`, `store.rs`) under the tree its row grants: one append and one
-//! `fsync` per period, never one per line. It holds no other authority: it
-//! cannot write the ring, and it has no endpoint to serve and none to call.
-//! The toolbox's `log` reads the files.
+//! The kernel writes its log lines, its decision records and the actuation
+//! telemetry into one region, a ring per source behind one envelope
+//! (`azos_records`, layout `azos_rings::region::record`), and grants it by the
+//! topology row `MemObj klog.ring` (`READ|MAP`). This program maps it, polls
+//! it every `LOGD_POLL_MS`, reads every ring with one reader that hands the
+//! records out oldest first (`Merge`), and appends them as text lines to a
+//! ring of files (`KLOGn.TXT`, `store.rs`) under the tree its row grants:
+//! one append and one `fsync` per period, never one per line. It holds no
+//! other authority: it cannot write the region, and it has no endpoint to
+//! serve and none to call. The toolbox's `log` reads the files.
 //!
-//! Nothing here waits on the kernel and the kernel never waits on this: the
-//! ring overwrites its oldest record, and a period in which more than
-//! `KLOG_ENTRIES` lines arrived writes a `lost` line saying how many.
-//! A write the volume refuses leaves the cursor where it was, so the next
-//! period offers the same records again (the ring is the buffer).
+//! Nothing here waits on the kernel and the kernel never waits on this: a
+//! ring overwrites its oldest record, and a period in which a ring lapped the
+//! reader writes a `lost` line saying how many. A record whose envelope names
+//! a stale sequence is dropped and counted (a `stale` line). A write the
+//! volume refuses puts the reader back where it was, so the next period
+//! offers the same records again (the rings are the buffer).
 //!
-//! A start that finds nothing to do (no ring granted, a ring of another layout,
+//! A start that finds nothing to do (no region granted, one of another layout,
 //! no directory) says so and exits 0: the supervisor restarts a failure, and a
 //! restart would find the same.
 //!
@@ -37,7 +40,11 @@ mod wire;
 mod store;
 
 use store::{Store, Vol};
-use wire::{Next, Reader, Record, LINE_MAX};
+use sys::record::{Envelope, Merge, Region, Step, SOURCE_DECISION, SOURCE_KLOG, SOURCE_TELEMETRY};
+use wire::{Record, LINE_MAX};
+
+/// Payload bytes the reader keeps per ring: the largest, the kernel log's.
+const PAYLOAD: usize = wire::PAYLOAD_BYTES;
 
 /// `O_WRONLY`, `O_CREAT`, `O_TRUNC`, `O_APPEND` (`azos_fs` values).
 const O_WRONLY: u64 = 0x1;
@@ -136,12 +143,10 @@ fn notice(out: &mut [u8], level: u8, seq: u64, ts: u64, hz: u64, msg: &[u8]) -> 
     wire::line(&r, hz, out)
 }
 
-/// `n` in decimal after `prefix`, as a message.
-fn msg_num(prefix: &[u8], n: u64, out: &mut [u8; 48]) -> usize {
-    out[..prefix.len()].copy_from_slice(prefix);
+/// Decimal digits of `v` appended to `out` at `*n`.
+fn put_dec(out: &mut [u8], n: &mut usize, mut v: u64) {
     let mut d = [0u8; 20];
     let mut i = d.len();
-    let mut v = n;
     loop {
         i -= 1;
         d[i] = b'0' + (v % 10) as u8;
@@ -150,87 +155,175 @@ fn msg_num(prefix: &[u8], n: u64, out: &mut [u8; 48]) -> usize {
             break;
         }
     }
-    out[prefix.len()..prefix.len() + d.len() - i].copy_from_slice(&d[i..]);
-    prefix.len() + d.len() - i
+    for &b in &d[i..] {
+        if *n < out.len() {
+            out[*n] = b;
+            *n += 1;
+        }
+    }
 }
 
-/// The sink's state: the ring, the files, and how far it has read.
+fn put(out: &mut [u8], n: &mut usize, b: &[u8]) {
+    for &x in b {
+        if *n < out.len() {
+            out[*n] = x;
+            *n += 1;
+        }
+    }
+}
+
+/// `n` in decimal after `prefix`, as a message.
+fn msg_num(prefix: &[u8], n: u64, out: &mut [u8; 48]) -> usize {
+    let mut k = 0;
+    put(out, &mut k, prefix);
+    put_dec(out, &mut k, n);
+    k
+}
+
+fn word(p: &[u8], i: usize) -> u64 {
+    p.get(i * 8..i * 8 + 8).map_or(0, |b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+}
+
+/// The text of a record of another source than the kernel log (a decision
+/// record, a telemetry event): its numbers, under the module
+/// [`wire::DECISION_MODULE`] / [`wire::TELEMETRY_MODULE`]; `why` and the
+/// exporters name them.
+fn other_msg(env: &Envelope, payload: &[u8], out: &mut [u8; 160]) -> usize {
+    let mut n = 0;
+    if env.source == SOURCE_DECISION {
+        put(out, &mut n, b"rule=");
+        put_dec(out, &mut n, (env.kind & 0xff) as u64);
+        put(out, &mut n, b" verdict=");
+        put_dec(out, &mut n, (env.kind >> 8) as u64);
+        put(out, &mut n, b" subject=");
+        put_dec(out, &mut n, word(payload, 0));
+        put(out, &mut n, b" n=");
+        for i in 0..3 {
+            if i > 0 {
+                put(out, &mut n, b",");
+            }
+            put_dec(out, &mut n, word(payload, 1 + i));
+        }
+    } else {
+        put(out, &mut n, b"kind=");
+        put_dec(out, &mut n, env.kind as u64);
+        put(out, &mut n, b" flags=");
+        put_dec(out, &mut n, env.flags as u64);
+        put(out, &mut n, b" payload=");
+        for &b in &payload[..(env.len as usize).min(payload.len())] {
+            put(out, &mut n, &[b"0123456789abcdef"[(b >> 4) as usize], b"0123456789abcdef"[(b & 15) as usize]]);
+        }
+    }
+    n
+}
+
+/// The line of one record of the region, whatever its source.
+fn render(env: &Envelope, payload: &[u8], hz: u64, out: &mut [u8]) -> Option<usize> {
+    match env.source {
+        SOURCE_KLOG => {
+            if env.kind as u8 > azos_limits::LOGD_MAX_LEVEL as u8 {
+                return None;
+            }
+            let r = Record::decode(env.seq, env.ts, env.kind as u8, env.flags, env.cpu, env.len, payload);
+            Some(wire::line(&r, hz, out))
+        }
+        SOURCE_DECISION | SOURCE_TELEMETRY => {
+            let module = if env.source == SOURCE_DECISION { wire::DECISION_MODULE } else { wire::TELEMETRY_MODULE };
+            let mut m = [0u8; 160];
+            let k = other_msg(env, payload, &mut m);
+            let r = Record::make(env.seq, env.ts, wire::LEVEL_INFO, 0, env.cpu, core::str::from_utf8(module).unwrap_or("-"), &m[..k]);
+            Some(wire::line(&r, hz, out))
+        }
+        _ => None,
+    }
+}
+
+/// The ring of `source` in the region, if it has one.
+fn ring_index(region: &Region, source: u8) -> Option<usize> {
+    (0..region.rings()).find(|&i| region.ring(i).is_some_and(|r| r.source() == source))
+}
+
+/// The sink's state: the region, the files, and how far it has read.
 struct Sink {
-    rd: Reader,
     vol: SysVol,
     store: Store,
-    /// The next record to read.
-    cursor: u64,
-    /// Up to where the files hold: a failed write returns the cursor here.
-    committed: u64,
-    /// The record `cursor` is stuck on and for how many polls.
-    stuck: (u64, u32),
+    hz: u64,
+    /// The reader: a cursor per ring.
+    rd: Merge<PAYLOAD>,
+    /// The reader as of the last write the files hold: a failed write puts
+    /// `rd` back to it.
+    committed: Merge<PAYLOAD>,
+    /// The ring and cursor the reader is stuck on, and for how many polls.
+    stuck: (usize, u64, u32),
     batch: [u8; BATCH],
     n: usize,
 }
 
 impl Sink {
-    /// The tick of `now`, in the ring's timebase.
+    /// The tick of `now`, in the region's timebase.
     fn ticks(&self) -> u64 {
-        (sys::vdso_now_ns() as u128 * self.rd.ts_hz() as u128 / 1_000_000_000) as u64
+        (sys::vdso_now_ns() as u128 * self.hz as u128 / 1_000_000_000) as u64
     }
 
-    /// Write the batch. False (and the cursor back at the last write) when the
-    /// volume refused.
+    /// Write the batch. False (and the reader back at the last write) when
+    /// the volume refused.
     fn flush(&mut self) -> bool {
         if self.n == 0 {
-            self.committed = self.cursor;
+            self.committed = self.rd;
             return true;
         }
         let ts = self.ticks();
-        if self.store.write(&mut self.vol, &self.batch[..self.n], ts, self.rd.ts_hz()) {
+        if self.store.write(&mut self.vol, &self.batch[..self.n], ts, self.hz) {
             self.n = 0;
-            self.committed = self.cursor;
+            self.committed = self.rd;
             true
         } else {
             self.n = 0;
-            self.cursor = self.committed;
+            self.rd = self.committed;
             false
         }
     }
 
-    /// Add a notice about `lost` records, ending at the cursor.
-    fn lost(&mut self, lost: u64) {
+    /// Add a notice: `prefix` and `count`, at ring `ring`'s cursor.
+    fn note(&mut self, ring: usize, prefix: &[u8], count: u64) {
         let mut m = [0u8; 48];
-        let k = msg_num(b"records lost: ", lost, &mut m);
+        let k = msg_num(prefix, count, &mut m);
         let ts = self.ticks();
-        let seq = self.cursor.saturating_sub(1);
-        self.n += notice(&mut self.batch[self.n..], wire::LEVEL_WARN, seq, ts, self.rd.ts_hz(), &m[..k]);
+        let seq = self.rd.cursor(ring).saturating_sub(1);
+        self.n += notice(&mut self.batch[self.n..], wire::LEVEL_WARN, seq, ts, self.hz, &m[..k]);
     }
 
-    /// One period: everything the ring has, in as few writes as fit.
+    /// One period: everything the region has, in as few writes as fit.
     fn drain(&mut self) {
-        let mut rec = Record::empty();
+        let mut env = Envelope::default();
+        let mut payload = [0u8; PAYLOAD];
         loop {
             if self.n + LINE_MAX > BATCH && !self.flush() {
                 return;
             }
-            match self.rd.next(&mut self.cursor, &mut rec) {
-                Next::Record => {
-                    self.stuck = (0, 0);
-                    if rec.level <= azos_limits::LOGD_MAX_LEVEL as u8 {
-                        self.n += wire::line(&rec, self.rd.ts_hz(), &mut self.batch[self.n..]);
+            match self.rd.next(&mut env, &mut payload) {
+                Step::Record { .. } => {
+                    self.stuck = (0, 0, 0);
+                    if let Some(k) = render(&env, &payload, self.hz, &mut self.batch[self.n..]) {
+                        self.n += k;
                     }
                 }
-                Next::Lost(n) => self.lost(n),
-                Next::Pending => {
+                Step::Lost { ring, n } => self.note(ring, b"records lost: ", n),
+                Step::Stale { ring } => self.note(ring, b"records dropped (stale sequence): ", self.rd.stale(ring)),
+                Step::Pending { ring } => {
                     // A producer claimed it and has not finished: try again
                     // next period, and give up on it if it never does.
-                    self.stuck = if self.stuck.0 == self.cursor { (self.cursor, self.stuck.1 + 1) } else { (self.cursor, 1) };
-                    if self.stuck.1 >= STUCK_POLLS {
-                        self.rd.skip(&mut self.cursor);
-                        self.stuck = (0, 0);
-                        self.lost(1);
+                    let c = self.rd.cursor(ring);
+                    self.stuck = if (self.stuck.0, self.stuck.1) == (ring, c) { (ring, c, self.stuck.2 + 1) } else { (ring, c, 1) };
+                    if self.stuck.2 >= STUCK_POLLS {
+                        self.rd.skip(ring);
+                        self.stuck = (0, 0, 0);
+                        self.note(ring, b"records lost: ", 1);
                         continue;
                     }
                     break;
                 }
-                Next::Empty => break,
+                Step::Empty => break,
             }
         }
         self.flush();
@@ -244,10 +337,10 @@ fn run() -> i32 {
         say(b"logd: no klog.ring granted (Kconfig KLOG off, or the row has none)\n");
         return 0;
     };
-    // SAFETY: a read-only mapping of the kernel's ring, held for the life of
-    // the program; `open` checks it is one.
-    let Some(rd) = (unsafe { Reader::open(base as *const u8, bytes) }) else {
-        say(b"logd: the klog.ring is not a ring this build reads\n");
+    // SAFETY: a read-only mapping of the kernel's region, held for the life
+    // of the program; `open` checks it is one.
+    let Some(region) = (unsafe { Region::open(base as *const u8, bytes) }) else {
+        say(b"logd: the klog.ring is not a record region this build reads\n");
         return 0;
     };
     let root = sys::root_dir();
@@ -258,33 +351,42 @@ fn run() -> i32 {
     let mut vol = SysVol { root: root as u32 };
     let limit = azos_limits::LOGD_FILE_KB as u64 * 1024;
     let (store, tail) = Store::recover(&mut vol, azos_limits::LOGD_FILES_KEEP as u8, limit);
+    let hz = region.ts_hz();
+    let mut rd = Merge::<PAYLOAD>::oldest(region);
 
-    // Resume after the file's last record when the ring still holds it, else
-    // start at the ring's oldest.
-    let mut cursor = rd.oldest();
+    // Resume after the files' last records when the kernel log's ring still
+    // holds the last one (the same boot): every ring after its own last line.
+    // Anything else starts every ring at its oldest record.
     let mut resumed = false;
-    if let Some(t) = &tail {
-        if let Some(seq) = t.rec_seq() {
-            let (mut c, mut rec) = (seq, Record::empty());
-            if rd.next(&mut c, &mut rec) == Next::Record {
+    if let (Some(t), Some(k)) = (&tail, ring_index(&region, SOURCE_KLOG)) {
+        if let (Some(seq), Some(ring)) = (t.rec_seq(), region.ring(k)) {
+            let (mut c, mut env, mut payload) = (seq, Envelope::default(), [0u8; PAYLOAD]);
+            if ring.read(&mut c, &mut env, &mut payload) == sys::record::Read::Record {
                 let mut line = [0u8; LINE_MAX];
-                let n = wire::line(&rec, rd.ts_hz(), &mut line);
+                let r = Record::decode(env.seq, env.ts, env.kind as u8, env.flags, env.cpu, env.len, &payload);
+                let n = wire::line(&r, hz, &mut line);
                 if t.matches(seq, &line[..n - 1]) {
-                    cursor = (t.last_seq + 1).min(rd.head());
+                    rd.seek(k, (seq + 1).min(ring.head()));
+                    for (source, last) in [(SOURCE_DECISION, t.last_decision), (SOURCE_TELEMETRY, t.last_telemetry)] {
+                        if let (Some(i), Some(s)) = (ring_index(&region, source), last) {
+                            let r = region.ring(i);
+                            rd.seek(i, (s + 1).max(r.map_or(0, |r| r.oldest())).min(r.map_or(0, |r| r.head())));
+                        }
+                    }
                     resumed = true;
                 }
             }
         }
     }
-    say(b"[logd] AzOS kernel log sink (klog.ring to KLOGn.TXT)\n");
-    let mut sink = Sink { rd, vol, store, cursor, committed: cursor, stuck: (0, 0), batch: [0; BATCH], n: 0 };
+    say(b"[logd] AzOS record sink (klog.ring to KLOGn.TXT)\n");
+    let mut sink = Sink { vol, store, hz, rd, committed: rd, stuck: (0, 0, 0), batch: [0; BATCH], n: 0 };
     // The start line: where this run begins, so a reader of the files sees the
     // seam (a new boot, or a restart).
     {
         let ts = sink.ticks();
-        let seq = sink.cursor.saturating_sub(1);
+        let seq = ring_index(&region, SOURCE_KLOG).map_or(0, |k| sink.rd.cursor(k)).saturating_sub(1);
         let msg: &[u8] = if resumed { b"start: resumed after the last record" } else { b"start: from the oldest record in the ring" };
-        sink.n += notice(&mut sink.batch, wire::LEVEL_INFO, seq, ts, sink.rd.ts_hz(), msg);
+        sink.n += notice(&mut sink.batch, wire::LEVEL_INFO, seq, ts, hz, msg);
     }
     let period_ns = azos_limits::LOGD_POLL_MS as u64 * 1_000_000;
     let mut next = sys::vdso_now_ns() + period_ns;

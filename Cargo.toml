@@ -439,6 +439,7 @@ members = [
     "crates/domains/robot/behavior",
     "crates/core/channel",
     "crates/core/rings",
+    "crates/core/records",
     "crates/core/bytepipe",
     "crates/core/hv",
     "crates/core/hyp-api",
@@ -584,6 +585,7 @@ azos_soc      = { path = "crates/drivers/soc" }
 azos_behavior = { path = "crates/domains/robot/behavior" }
 azos_channel  = { path = "crates/core/channel" }
 azos_rings    = { path = "crates/core/rings" }
+azos_records  = { path = "crates/core/records" }
 azos_bytepipe = { path = "crates/core/bytepipe" }
 azos_hv       = { path = "crates/core/hv" }
 azos_hyp_api  = { path = "crates/core/hyp-api" }

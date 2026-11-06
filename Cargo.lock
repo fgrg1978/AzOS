@@ -431,6 +431,7 @@ dependencies = [
  "azos_drv_base",
  "azos_drv_power",
  "azos_limits",
+ "azos_records",
  "azos_rings",
  "azos_sync",
 ]
@@ -710,6 +711,7 @@ dependencies = [
  "azos_pci",
  "azos_percpu",
  "azos_pkg",
+ "azos_records",
  "azos_recovery",
  "azos_rings",
  "azos_robot",
@@ -885,6 +887,14 @@ dependencies = [
  "azos_devif",
  "azos_limits",
  "azos_topology",
+]
+
+[[package]]
+name = "azos_records"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+ "azos_rings",
 ]
 
 [[package]]
