@@ -3674,10 +3674,10 @@ impl<'a> Topology<'a> {
         }
         if name.is_empty()
             || mem_pages_max == 0
-            // The first four bytes of a key id name the signer's index slot on the
+            // The first 28 bits of a key id name the signer's index slot on the
             // package volume: two signers may not share them, so one cannot be ground
             // to take another's slot.
-            || self.signers().iter().any(|s| s.name == name || s.key_id[..4] == key_id[..4])
+            || self.signers().iter().any(|s| s.name == name || same_index_slot(&s.key_id, &key_id))
             || !warrants.iter().all(|w| warrant_ok(w.as_bytes()))
         {
             return Err(AdmissionError::BadSigner);
@@ -4694,4 +4694,11 @@ mod tests {
             assert_eq!(PolicyKind::from_str(gone), None, "{gone}");
         }
     }
+}
+
+/// Do two signer key ids name the same index slot on the package volume? The slot
+/// file name is `I`, seven hex digits (the first 28 bits of the id) and `.AZX`
+/// (`azos_pkg::index::slot_name`, whose host suite holds the two together).
+pub fn same_index_slot(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a[..3] == b[..3] && a[3] >> 4 == b[3] >> 4
 }
