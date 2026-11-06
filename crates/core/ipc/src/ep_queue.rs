@@ -212,13 +212,16 @@ struct Queue {
     /// (`PORT_SRC_CALLS`), [`PortLink::NONE`] for none: a call that finds
     /// the queue empty hands it back for the port to be signalled.
     link: PortLink,
+    /// During a live update: the successor's call link, bound before the
+    /// rebind, which makes it `link` ([`rebind`]); an abort drops it.
+    next_link: PortLink,
 }
 
 impl Queue {
     const fn closed() -> Self {
         Queue {
             gen: 0, owner: UNCLAIMED, old: UNCLAIMED, new: UNCLAIMED, send_head: NIL, send_tail: NIL,
-            link: PortLink::NONE,
+            link: PortLink::NONE, next_link: PortLink::NONE,
         }
     }
 
@@ -409,8 +412,13 @@ pub fn set_owner(ep: usize, gen: u32, owner: u32) {
     let Some(l) = QUEUES.get(ep) else { return };
     let mut q = l.lock_irqsave();
     if q.gen == gen {
+        // Only a change of server drops the link: a grant to the same server
+        // leaves its binding. Canary `call-link-drop-canary` (host): it
+        // always drops it.
+        if q.owner != owner || cfg!(feature = "call-link-drop-canary") {
+            q.link = PortLink::NONE;
+        }
         q.owner = owner;
-        q.link = PortLink::NONE;
         OWNERS[ep].store(owner, Ordering::Relaxed);
     }
 }
@@ -423,6 +431,7 @@ pub fn close(ep: usize) {
     q.gen = 0;
     q.owner = UNCLAIMED;
     q.link = PortLink::NONE;
+    q.next_link = PortLink::NONE;
     OWNERS[ep].store(UNCLAIMED, Ordering::Relaxed);
 }
 
@@ -436,24 +445,33 @@ pub enum CallLinkError {
 }
 
 /// Store `link` as the port source the calls queued on endpoint slot `ep`
-/// (generation `gen`) are reported to, for its serving task `server` only.
-/// The rules of `endpoint::endpoint_set_link`: stored when there is no link,
-/// the link names the same port, or it equals `replace`; `Busy(current)`
-/// otherwise. `Stored { ready }`: a call is queued already, so the binder
-/// signals once itself.
+/// (generation `gen`) are reported to, for its serving task `server` only;
+/// during a live update, for the successor too, whose link is kept apart and
+/// becomes the endpoint's at the rebind ([`rebind`] hands it back to signal
+/// for the calls queued meanwhile). The rules of
+/// `endpoint::endpoint_set_link`: stored when there is no link, the link
+/// names the same port, or it equals `replace`; `Busy(current)` otherwise.
+/// `Stored { ready }`: a call the binder may take is queued already, so it
+/// signals once itself (never for a successor: it takes none before the
+/// rebind).
 pub fn set_call_link(ep: usize, gen: u32, server: u32, link: PortLink, replace: PortLink) -> Result<LinkSet, CallLinkError> {
     let l = QUEUES.get(ep).ok_or(CallLinkError::Stale)?;
     let mut q = l.lock_irqsave();
     if q.gen != gen || gen == 0 {
         return Err(CallLinkError::Stale);
     }
-    if q.owner != server {
+    let successor = q.owner == HANDOVER && q.new == server;
+    if q.owner != server && !successor {
         return Err(CallLinkError::NotOwner);
     }
-    let cur = q.link;
+    let cur = if successor { q.next_link } else { q.link };
     if cur.is_none() || cur.port == link.port || cur == replace {
-        q.link = link;
-        return Ok(LinkSet::Stored { ready: q.send_head != NIL });
+        if successor {
+            q.next_link = link;
+        } else {
+            q.link = link;
+        }
+        return Ok(LinkSet::Stored { ready: !successor && q.send_head != NIL });
     }
     Ok(LinkSet::Busy(cur))
 }
@@ -463,8 +481,13 @@ pub fn set_call_link(ep: usize, gen: u32, server: u32, link: PortLink, replace: 
 pub fn clear_call_link(ep: usize, gen: u32, link: PortLink) {
     let Some(l) = QUEUES.get(ep) else { return };
     let mut q = l.lock_irqsave();
-    if q.gen == gen && q.link == link {
-        q.link = PortLink::NONE;
+    if q.gen == gen {
+        if q.link == link {
+            q.link = PortLink::NONE;
+        }
+        if q.next_link == link {
+            q.next_link = PortLink::NONE;
+        }
     }
 }
 
@@ -641,9 +664,14 @@ pub fn represent(ep: usize, gen: u32, old: u32) -> Result<(usize, usize), Handov
 /// endpoint's lock, so no call queues, is answered or is withdrawn meanwhile,
 /// and the flip and the donations change together; it takes the wait graph's
 /// lock (queue lock, then graph lock, as nothing takes them the other way).
+///
+/// The successor's call link ([`set_call_link`] during the handover) becomes
+/// the endpoint's; answered when calls are queued, for the caller to signal
+/// once the locks are released (their queueing found the old server's link
+/// or none, so nothing told the successor's port).
 pub fn rebind(
     ep: usize, gen: u32, new: u32, old_idx: usize, new_idx: usize, mut retarget: impl FnMut(usize, u32) -> u32,
-) -> Result<(), HandoverError> {
+) -> Result<PortLink, HandoverError> {
     let l = QUEUES.get(ep).ok_or(HandoverError::Stale)?;
     let mut q = l.lock_irqsave();
     rebind_refusal(&q, ep, gen, new)?;
@@ -659,13 +687,14 @@ pub fn rebind(
     q.owner = new;
     q.old = UNCLAIMED;
     q.new = UNCLAIMED;
-    q.link = PortLink::NONE;
+    q.link = if cfg!(feature = "call-link-drop-canary") { PortLink::NONE } else { q.next_link };
+    q.next_link = PortLink::NONE;
     OWNERS[ep].store(new, Ordering::Relaxed);
     ready_clear(old_idx, ep);
     if q.send_head != NIL && !broken(BREAK_QUIESCE) {
         ready_set(new_idx, ep);
     }
-    Ok(())
+    Ok(if q.send_head != NIL { q.link } else { PortLink::NONE })
 }
 
 /// Would [`rebind`] refuse slot `ep` now? The same answer, nothing changed:
@@ -711,6 +740,7 @@ pub fn abort_handover(ep: usize, gen: u32, old_idx: usize) -> Result<(), Handove
     q.owner = q.old;
     q.old = UNCLAIMED;
     q.new = UNCLAIMED;
+    q.next_link = PortLink::NONE;
     if q.send_head != NIL {
         ready_set(old_idx, ep);
     }
@@ -2032,10 +2062,51 @@ mod tests {
         clear_call_link(EP, GEN, LINK);
         assert!(accept_v2(SERVER_IDX, SERVER).is_some());
         assert_eq!(call_linked_from(1).map(|(_, l)| l), Some(other), "a clear of another link leaves it");
+        set_owner(EP, GEN, SERVER);
+        assert!(accept_v2(SERVER_IDX, SERVER).is_some());
+        assert_eq!(call_linked_from(2).map(|(_, l)| l), Some(other), "the same owner keeps its link");
         set_owner(EP, GEN, SERVER + 1);
         set_owner(EP, GEN, SERVER);
         assert!(accept_v2(SERVER_IDX, SERVER).is_some());
-        assert_eq!(call_linked_from(2).map(|(_, l)| l), Some(PortLink::NONE), "a new server binds again");
+        assert_eq!(call_linked_from(3).map(|(_, l)| l), Some(PortLink::NONE), "a new server binds again");
+    }
+
+    /// A live update's successor binds its calls before the rebind (the old
+    /// server's link is replaced, not Busy) and keeps the link through it.
+    /// **Canary** `call-link-drop-canary`: the rebind drops the successor's
+    /// link (and a same-owner grant drops the owner's: the test above).
+    #[test]
+    fn a_successor_binds_its_calls_before_the_rebind_and_keeps_them() {
+        let _e = env();
+        const NEW: u32 = 8;
+        const NEW_IDX: usize = 9;
+        let theirs = PortLink { port: 0x77, ..LINK };
+        assert_eq!(set_call_link(EP, GEN, SERVER, LINK, PortLink::NONE), Ok(LinkSet::Stored { ready: false }));
+        begin_handover(EP, GEN, SERVER, NEW).unwrap();
+        assert_eq!(set_call_link(EP, GEN, NEW + 1, theirs, PortLink::NONE), Err(CallLinkError::NotOwner));
+        let (idx, tid) = client(0);
+        let queued = call_linked(idx, tid, EP, GEN, SERVER, SERVER_IDX, [1, 0, 0, 0], 0, NO_DONEE).map(|(_, l)| l);
+        assert_eq!(queued, Some(LINK), "a call during the handover still tells the old server's port");
+        assert_eq!(set_call_link(EP, GEN, NEW, theirs, PortLink::NONE), Ok(LinkSet::Stored { ready: false }));
+        assert_eq!(super::rebind(EP, GEN, NEW, SERVER_IDX, NEW_IDX, |_, d| d), Ok(theirs), "the queued call is the successor's to hear");
+        assert!(accept_v2(NEW_IDX, NEW).is_some());
+        let (idx, tid) = client(1);
+        let got = call_linked(idx, tid, EP, GEN, NEW, NEW_IDX, [1, 0, 0, 0], 0, NO_DONEE).map(|(_, l)| l);
+        assert_eq!(got, Some(theirs), "and its next call");
+    }
+
+    /// An aborted handover leaves the old server's link and drops the
+    /// successor's.
+    #[test]
+    fn an_aborted_handover_keeps_the_old_servers_link() {
+        let _e = env();
+        const NEW: u32 = 8;
+        let theirs = PortLink { port: 0x77, ..LINK };
+        let _ = set_call_link(EP, GEN, SERVER, LINK, PortLink::NONE);
+        begin_handover(EP, GEN, SERVER, NEW).unwrap();
+        let _ = set_call_link(EP, GEN, NEW, theirs, PortLink::NONE);
+        abort_handover(EP, GEN, SERVER_IDX).unwrap();
+        assert_eq!(call_linked_from(0).map(|(_, l)| l), Some(LINK));
     }
 
     #[test]
@@ -2873,7 +2944,7 @@ mod tests {
 
     /// The rebind, with the donations left where they are.
     fn rebind(ep: usize, gen: u32, new: u32, old_idx: usize, new_idx: usize) -> Result<(), HandoverError> {
-        super::rebind(ep, gen, new, old_idx, new_idx, |_, d| d)
+        super::rebind(ep, gen, new, old_idx, new_idx, |_, d| d).map(|_| ())
     }
 
     /// A call carrying a donation to `donee`, from client `i`.
@@ -2901,7 +2972,7 @@ mod tests {
             seen.push((caller_idx, d));
             NEW
         });
-        assert_eq!(r, Ok(()));
+        assert_eq!(r, Ok(PortLink::NONE), "nothing bound to signal");
         let mut want = vec![(client(0).0, SERVER), (client(1).0, SERVER)];
         want.sort();
         seen.sort();
@@ -2922,7 +2993,7 @@ mod tests {
         handover();
         let _ = donating_call_from(0, SERVER);
         BREAK[BREAK_RETARGET].store(true, Ordering::Relaxed);
-        assert_eq!(super::rebind(EP, GEN, NEW, SERVER_IDX, NEW_IDX, |_, _| NEW), Ok(()));
+        assert_eq!(super::rebind(EP, GEN, NEW, SERVER_IDX, NEW_IDX, |_, _| NEW), Ok(PortLink::NONE));
         assert_eq!(rec(client(0).0).donee.load(Ordering::Relaxed), SERVER, "still lent to the old server");
     }
 

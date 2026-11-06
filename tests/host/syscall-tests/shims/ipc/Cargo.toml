@@ -32,6 +32,7 @@ port-recheck-canary = []
 port-revoke-canary = []
 # And for its call-source and doorbell canaries.
 port-calls-canary = []
+call-link-drop-canary = []
 port-doorbell-canary = []
 port-bell-leak-canary = []
 port-bells-shared-canary = []

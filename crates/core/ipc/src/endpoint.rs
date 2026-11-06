@@ -617,7 +617,9 @@ mod glue {
     pub fn rebind_check(i: usize, gen: u32, new: u32) -> Result<(), HandoverError> {
         crate::ep_queue::rebind_check(i, gen, new).map_err(map)
     }
-    pub fn rebind(i: usize, gen: u32, new: u32, old_idx: usize, new_idx: usize) -> Result<(), HandoverError> {
+    pub fn rebind(
+        i: usize, gen: u32, new: u32, old_idx: usize, new_idx: usize,
+    ) -> Result<crate::port_link::PortLink, HandoverError> {
         crate::ep_queue::rebind(i, gen, new, old_idx, new_idx, |caller_idx, _old| {
             crate::fastcall::retarget_donation(caller_idx, new, new_idx)
         })
@@ -721,8 +723,10 @@ mod glue {
     #[cfg(not(test))]
     fn refusal(_i: usize) -> Result<(), HandoverError> { Ok(()) }
     pub fn rebind_check(i: usize, _gen: u32, _new: u32) -> Result<(), HandoverError> { refusal(i) }
-    pub fn rebind(i: usize, _gen: u32, _new: u32, _old_idx: usize, _new_idx: usize) -> Result<(), HandoverError> {
-        refusal(i)
+    pub fn rebind(
+        i: usize, _gen: u32, _new: u32, _old_idx: usize, _new_idx: usize,
+    ) -> Result<crate::port_link::PortLink, HandoverError> {
+        refusal(i).map(|()| crate::port_link::PortLink::NONE)
     }
     pub fn represent(_i: usize, _gen: u32, _old: u32) -> Result<(usize, usize), HandoverError> { Ok((0, 0)) }
     pub fn in_service(_i: usize, _old: u32) -> usize { 0 }
@@ -1963,6 +1967,7 @@ pub fn endpoint_rebind_all(old: u32, new: u32) -> Result<usize, HandoverError> {
     }
     let (old_idx, new_idx) = (slot_of(old), slot_of(new));
     let mut n = 0usize;
+    let mut owed = [(crate::port_link::PortLink::NONE, 0u32); MAX_ENDPOINTS];
     for i in 0..MAX_ENDPOINTS {
         if !(eps[i].active && eps[i].owner_tid == old && eps[i].handover && eps[i].successor == new) {
             continue;
@@ -1975,10 +1980,13 @@ pub fn endpoint_rebind_all(old: u32, new: u32) -> Result<usize, HandoverError> {
         publish(&eps, i);
         // `rebind_check` answered for it above, under the same hold, so this
         // is not refused; the undo is for a queue that broke that contract.
-        if let Err(e) = glue::rebind(i, gen, new, old_idx, new_idx) {
-            eps[i].owner_tid = owner_before;
-            publish(&eps, i);
-            return Err(e);
+        match glue::rebind(i, gen, new, old_idx, new_idx) {
+            Ok(link) => owed[i] = (link, LAYOUT.pack(i as u32, gen)),
+            Err(e) => {
+                eps[i].owner_tid = owner_before;
+                publish(&eps, i);
+                return Err(e);
+            }
         }
         eps[i].release_kmem();
         eps[i].kmem_key = kmem.take();
@@ -1986,6 +1994,12 @@ pub fn endpoint_rebind_all(old: u32, new: u32) -> Result<usize, HandoverError> {
         eps[i].handover = false;
         eps[i].link = crate::port_link::PortLink::NONE;
         n += 1;
+    }
+    drop(eps);
+    // The successor's port hears of the calls queued during the handover,
+    // with no lock held (`port::port_signal`'s rule).
+    for &(link, r) in owed.iter().filter(|(l, _)| !l.is_none()) {
+        let _ = crate::port::port_signal(link, crate::port::PortSourceKind::Calls(r));
     }
     Ok(n)
 }

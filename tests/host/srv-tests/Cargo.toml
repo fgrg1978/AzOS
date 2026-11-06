@@ -21,6 +21,7 @@ azos_srv = { path = "../../../userspace/lib/srv" }
 # that finds its queue empty signals no port, so the single-thread server
 # never hears of it and every test that waits for an answer runs out of turns.
 port-calls-canary = []
+call-link-drop-canary = []
 # The runtime's canary: a turn serves every queued call, so
 # `neither_calls_nor_interrupts_starve_the_other` goes red.
 batch-canary = ["azos_srv/batch-canary"]

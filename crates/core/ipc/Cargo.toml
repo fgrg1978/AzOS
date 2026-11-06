@@ -52,6 +52,9 @@ port-revoke-canary = []
 # back no port link, so a server that waits on its port for calls never
 # hears of one. Host suites only (`tests/host/ipc-fast-tests`, `srv-tests`).
 port-calls-canary = []
+# `ep_queue.rs` `keep_link_for`'s canary: a change of owner always drops the
+# call link (a live update's successor loses it; a same-owner grant unbinds).
+call-link-drop-canary = []
 # `port.rs`'s doorbell canary: no futex wake reaches a doorbell source, so
 # `a_doorbell_reaches_the_ports_bound_to_its_word` goes red. Host suite only.
 port-doorbell-canary = []
