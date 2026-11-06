@@ -26,10 +26,18 @@
 //! "entropy" is exactly what V1.2 refused. So this is the same rule with
 //! `enforced` pinned `true`: unseeded => refuse, on every build.
 //!
-//! The answer is `NOT_READY`, and it does not change within a boot: nothing
-//! seeds the pool after boot in this tree (`install_entropy` in
-//! `kernel/src/boot/entropy.rs` is the only credited mix), so a caller told to
-//! retry would retry forever.
+//! The answer is `NOT_READY`. It changes within a boot only when a ring-3
+//! entropy source feeds the pool (`feed`, below): on an image whose
+//! virtio-rng is driven from ring 3 the pool is seeded once that driver has
+//! read its device, and a caller that asked before is told `NOT_READY`.
+//!
+//! ## Feeding the pool
+//!
+//! A ring-3 entropy device driver (`userspace/drivers/rng_drv`) holds the
+//! endpoint with `WRITE`, which only its topology row grants, and hands over
+//! what its device delivered: `feed` mixes the words into the pool and
+//! credits them in full, as the boot credits the kernel's own virtio-rng
+//! read. The kernel says on the console when a feed seeded the pool.
 //!
 //! The first refusal of a boot is recorded through the recorder hook -- the
 //! kernel installs one that prints `[ENTROPY] REFUSED: ring-3 read` and
@@ -49,7 +57,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use azos_abi::cap::CapPerms;
-use azos_devif::entropy::DRAW_WORDS;
+use azos_devif::entropy::{DRAW_WORDS, FEED_WORDS};
 use azos_devif::{outcome, Out};
 use azos_sync::SpinLock;
 
@@ -66,17 +74,23 @@ static ENTROPY_FILL_HOOK: SpinLock<Option<fn(&mut [u8]) -> bool>> = SpinLock::ne
 /// TID.
 static ENTROPY_REFUSED_RECORDER: SpinLock<Option<fn(u32)>> = SpinLock::new(None);
 
+/// Mixes bytes a ring-3 source (the second argument, its TID) fed into the
+/// kernel pool, credited in full.
+static ENTROPY_MIX_HOOK: SpinLock<Option<fn(&[u8], u32)>> = SpinLock::new(None);
+
 /// Set once the first refusal of this boot has gone to the recorder.
 static REFUSAL_RECORDED: AtomicBool = AtomicBool::new(false);
 
 /// Unseeded refusals this boot, recorded or not.
 static REFUSALS: AtomicU32 = AtomicU32::new(0);
 
-/// Install the pool reader and the refusal recorder. Called once at boot,
-/// from `install_entropy`, after the pool has been (or failed to be) seeded.
-pub fn set_entropy_hooks(fill: fn(&mut [u8]) -> bool, refused: fn(u32)) {
+/// Install the pool reader, the refusal recorder and the mixer a ring-3
+/// source feeds through. Called once at boot, from `install_entropy`, after
+/// the pool has been (or failed to be) seeded.
+pub fn set_entropy_hooks(fill: fn(&mut [u8]) -> bool, refused: fn(u32), mix: fn(&[u8], u32)) {
     *ENTROPY_FILL_HOOK.lock() = Some(fill);
     *ENTROPY_REFUSED_RECORDER.lock() = Some(refused);
+    *ENTROPY_MIX_HOOK.lock() = Some(mix);
 }
 
 /// Fill `buf` from the kernel pool for the kernel's own use (a
@@ -101,6 +115,7 @@ pub fn entropy_refusals() -> u32 {
 pub fn __entropy_clear_for_tests() {
     *ENTROPY_FILL_HOOK.lock() = None;
     *ENTROPY_REFUSED_RECORDER.lock() = None;
+    *ENTROPY_MIX_HOOK.lock() = None;
     REFUSAL_RECORDED.store(false, Ordering::Relaxed);
     REFUSALS.store(0, Ordering::Relaxed);
 }
@@ -163,6 +178,27 @@ impl azos_devif::Entropy for Server {
         }
         wipe(&mut buf);
         Out::ok(out)
+    }
+
+    /// In order: the right (`WRITE`, a capability-denial record on refusal);
+    /// the range; then the words go to the pool, credited. No mixer installed
+    /// answers `NOT_READY`, nothing mixed.
+    fn feed(&mut self, words: [u64; FEED_WORDS], n: u32) -> Out<()> {
+        if !self.0.allows(CapPerms::WRITE) {
+            self.0.deny(CapPerms::WRITE);
+            return Out::err(outcome::DENIED);
+        }
+        if n == 0 || n as usize > FEED_WORDS {
+            return Out::err(outcome::BAD_ARGUMENT);
+        }
+        let Some(mix) = *ENTROPY_MIX_HOOK.lock() else { return Out::err(outcome::NOT_READY) };
+        let mut buf = [0u8; FEED_WORDS * 8];
+        for (c, w) in buf.chunks_exact_mut(8).zip(words.iter()) {
+            c.copy_from_slice(&w.to_le_bytes());
+        }
+        mix(&buf[..n as usize * 8], self.0.tid);
+        wipe(&mut buf);
+        Out::ok(())
     }
 }
 

@@ -14,7 +14,7 @@
 use super::harness::serial;
 use azos_abi::cap::CapPerms;
 use azos_devif::{key, outcome, Entropy, EntropyIdl, Out};
-use azos_devif::entropy::DRAW_WORDS;
+use azos_devif::entropy::{DRAW_WORDS, FEED_WORDS};
 use azos_idl::{header, MsgDesc, Writer, MSG_VERSION};
 use crate::khost::Caller;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -38,6 +38,15 @@ fn seeded_fill(out: &mut [u8]) -> bool {
         *b = 0xA0 ^ (i as u8);
     }
     true
+}
+
+/// The bytes the last feed mixed, and who fed them.
+static MIXED: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+static MIXED_BY: AtomicU32 = AtomicU32::new(0);
+
+fn mix(bytes: &[u8], tid: u32) {
+    *MIXED.lock().unwrap() = bytes.to_vec();
+    MIXED_BY.store(tid, Ordering::SeqCst);
 }
 
 /// An unseeded pool: writes nothing, refuses.
@@ -67,7 +76,7 @@ fn setup(fill: Option<fn(&mut [u8]) -> bool>) -> u32 {
     RECORDED.store(0, Ordering::SeqCst);
     RECORDED_TID.store(0, Ordering::SeqCst);
     if let Some(f) = fill {
-        crate::entropy::set_entropy_hooks(f, recorder);
+        crate::entropy::set_entropy_hooks(f, recorder, mix);
     }
     let tid = fresh_tid();
     ipc_task_pool::shim_bind(tid, SLOT);
@@ -138,6 +147,33 @@ fn the_right_is_checked_first() {
     }
     assert_eq!(FILLS.load(Ordering::SeqCst), 0, "a refused capability must not reach the pool");
     crate::entropy::__entropy_clear_for_tests();
+}
+
+/// A feed needs `WRITE`, takes 1..=`FEED_WORDS` words, and mixes exactly the
+/// first `n` of them, little endian, in the feeder's name; a refused feed
+/// mixes nothing. The draw's `READ` does not feed.
+///
+/// **Canary.** Skip the `allows` check in `feed`: the `READ`-only caller's
+/// words reach the pool.
+#[test]
+fn a_feed_needs_write_and_mixes_exactly_its_words() {
+    let _g = serial();
+    let tid = setup(Some(seeded_fill));
+    MIXED.lock().unwrap().clear();
+    let words = [0x0807_0605_0403_0201, 0x1111, 0x2222, 0x3333, 0x4444, 0x5555];
+    for rights in [CapPerms::NONE, CapPerms::READ] {
+        assert_eq!(server(tid, rights).feed(words, 2), Out::err(outcome::DENIED), "{rights:?}");
+    }
+    let mut s = server(tid, CapPerms::WRITE);
+    assert_eq!(s.feed(words, 0).code, outcome::BAD_ARGUMENT);
+    assert_eq!(s.feed(words, FEED_WORDS as u32 + 1).code, outcome::BAD_ARGUMENT);
+    assert!(MIXED.lock().unwrap().is_empty(), "a refused feed mixed bytes");
+    assert!(s.feed(words, 2).is_ok());
+    assert_eq!(*MIXED.lock().unwrap(), bytes(&words[..2]), "the first n words, little endian");
+    assert_eq!(MIXED_BY.load(Ordering::SeqCst), tid);
+    assert_eq!(FILLS.load(Ordering::SeqCst), 0, "a feed draws nothing");
+    crate::entropy::__entropy_clear_for_tests();
+    assert_eq!(server(tid, CapPerms::WRITE).feed(words, 1), Out::err(outcome::NOT_READY), "no mixer installed");
 }
 
 /// An unseeded pool answers `NOT_READY`, writes nothing, and the FIRST

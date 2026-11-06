@@ -118,6 +118,7 @@ pub(crate) fn install_entropy(dtb_ptr: usize) {
     azos_syscall::entropy::set_entropy_hooks(
         crate::boot::entropy_pool::pool_fill,
         crate::boot::entropy_pool::record_ring3_unseeded_refusal,
+        crate::boot::entropy_pool::pool_mix_ring3,
     );
 }
 

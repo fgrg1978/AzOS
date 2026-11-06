@@ -29,6 +29,9 @@ impl Entropy for Pool {
         }
         Out::new(OK, v)
     }
+    fn feed(&mut self, _words: [u64; azos_devif::entropy::FEED_WORDS], _n: u32) -> Out<()> {
+        Out::new(OK, ())
+    }
 }
 
 fn through(pool: &mut Pool) -> impl FnMut(&mut MsgDesc) -> isize + '_ {

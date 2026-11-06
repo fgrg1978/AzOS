@@ -91,7 +91,7 @@ fn reset() {
     azos_ipc::cap::degraded_set(false);
     crate::keys::__keys_clear_for_tests();
     crate::link_key::set_link_key_read_hook(seed_hook);
-    crate::entropy::set_entropy_hooks(pool_fill, pool_recorder);
+    crate::entropy::set_entropy_hooks(pool_fill, pool_recorder, |_, _| ());
 }
 
 fn tidy() {
