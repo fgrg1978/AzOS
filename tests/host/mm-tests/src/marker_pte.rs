@@ -32,6 +32,8 @@
 //! * `Pool::dup_obj` giving the child a new generation:
 //!   `a_forks_child_restores_through_the_parents_marker_word` red.
 //! * `clear` leaving an `InTransit` marker: `munmap_clears_every_kind_of_marker` red.
+//! * Feature `keep-leaf-first-canary` (the put-back writes the leaf first):
+//!   `a_failed_store_writes_no_leaf_for_a_slot_that_is_not_its_own` red.
 //! * Feature `mm-pte-truth-canary` (the leaf believed over the slot):
 //!   `a_stale_leaf_over_an_empty_slot_is_not_believed` and
 //!   `a_fault_on_a_compressed_marker_restores_the_page` red.
@@ -48,7 +50,7 @@
 //! aarch64 word encodings have their rows in `tests/host/arch-tests/src/marker_pte.rs`.
 
 use super::budget::PageBudget;
-use super::slot::{self, resolve, Resolve, SlotWords};
+use super::slot::{self, put_back_page, resolve, PutBack, Resolve, SlotWords};
 use super::zpool::{
     clear, fill_page, publish, put_back, reclaim_pass, take_out, Backing, Codec, Fetched, Lookup, Packed, PageWords,
     Pool, Refusal, Round, Stages,
@@ -336,12 +338,39 @@ fn a_fault_racing_a_store_that_gives_up_finds_the_page_where_it_was() {
     std::thread::scope(|s| {
         let faulting = s.spawn(|| fault(&pool, &pg, &waits));
         wait_for(&waits);
-        // The pool refused: the leaf goes back, then the slot.
-        assert!(pg.leaf.compare_exchange(0, original, Ordering::AcqRel, Ordering::Acquire).is_ok());
-        assert!(put_back(&SlotWords, &pg.slot, 2, slot::frame(FRAME)));
+        // The pool refused: the page goes back (`AnonReclaim::keep`).
+        let put = put_back_page(&pg.slot, 2, FRAME, || pg.leaf.compare_exchange(0, original, Ordering::AcqRel, Ordering::Acquire).is_ok());
+        assert_eq!(put, PutBack::Back);
         assert_eq!(faulting.join().unwrap(), Fate::Present, "the fault retries on the page");
     });
     assert_eq!(pg.read(), Some(page(6)));
+}
+
+/// **A failed store writes no leaf for a slot that is not its own.** The range
+/// was unmapped while the store ran (the slot emptied), maybe mapped again and
+/// touched (another frame in the slot): the put-back looks at the slot first
+/// and writes nothing, so no translation of the frame it then frees exists.
+/// Canary `keep-leaf-first-canary`: the leaf is written first.
+#[test]
+fn a_failed_store_writes_no_leaf_for_a_slot_that_is_not_its_own() {
+    for now in [slot::EMPTY, slot::frame(FRAME + PAGE_SIZE), slot::marker(PageMarker::InTransit, 8)] {
+        let s = AtomicU64::new(now);
+        let mut wrote = false;
+        assert_eq!(put_back_page(&s, 7, FRAME, || { wrote = true; true }), PutBack::NotMine);
+        assert!(!wrote, "a leaf was written for a slot that is {now:#x}");
+        assert_eq!(s.load(Ordering::Acquire), now);
+    }
+}
+
+#[test]
+fn a_failed_store_puts_its_page_back_or_empties_the_slot() {
+    let s = AtomicU64::new(slot::marker(PageMarker::InTransit, 7));
+    assert_eq!(put_back_page(&s, 7, FRAME, || true), PutBack::Back);
+    assert_eq!(s.load(Ordering::Acquire), slot::frame(FRAME));
+    // The leaf could not be written: the slot is not left in transit for good.
+    let s = AtomicU64::new(slot::marker(PageMarker::InTransit, 7));
+    assert_eq!(put_back_page(&s, 7, FRAME, || false), PutBack::Emptied);
+    assert_eq!(s.load(Ordering::Acquire), slot::EMPTY);
 }
 
 /// Spin until the fault has been seen waiting; a fault that never waits (it

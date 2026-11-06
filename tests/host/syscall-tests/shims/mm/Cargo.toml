@@ -64,6 +64,7 @@ as-stale-ref-canary = []
 # ... and the slot-over-leaf canary of the pulled-in `slot.rs`.
 mm-pte-truth-canary = []
 fault-block-leaf-canary = []
+keep-leaf-first-canary = []
 as-gen-unchecked-canary = []
 as-key-no-gen-canary = []
 table-refusable-canary = []

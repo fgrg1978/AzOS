@@ -163,3 +163,36 @@ fn a_page_committed_during_the_fork_is_a_zero_page_in_the_child() {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
+
+/// **A store whose range was unmapped and mapped again puts nothing back.**
+/// The reclaimer has the page out; `munmap` and a new `mmap` of the same range
+/// (the same object, its pages numbered by address) run before the store
+/// fails. The put-back finds the slot is not its own: no leaf goes in for the
+/// old frame, which is freed, and the new page is a zero page.
+#[test]
+fn a_failed_store_after_the_range_was_mapped_again_puts_nothing_back() {
+    let _g = serial();
+    let pt = space();
+    // A Linux task's mmap honours a free hint: the range comes back.
+    azos_sched::shim_set_linux(true);
+    let base = map(2);
+    write(pt, base, 0x66);
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base };
+    assert!(reclaim.unmap(victim));
+    assert_eq!(sys_munmap(base as u64, (2 * PAGE_SIZE) as u64), 0);
+    let used = azos_mm::shim_pages_in_use();
+    assert_eq!(sys_mmap(base as u64, (2 * PAGE_SIZE) as u64, RW, 0, ANON, 0), base as i64, "the same range again");
+    reclaim.keep(victim);
+    assert!(azos_mm::vmm::translate(pt, base).is_none(), "no leaf for the old frame");
+    assert_eq!(azos_mm::shim_pages_in_use() + 1, used, "the old frame is freed");
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base).is_ok());
+    let f = azos_mm::vmm::translate(pt, base).expect("the new page");
+    assert!(bytes(f).iter().all(|&b| b == 0), "a zero page, not the old one");
+    azos_sched::shim_set_linux(false);
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+

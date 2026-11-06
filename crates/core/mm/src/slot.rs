@@ -20,6 +20,8 @@
 //!
 //! Pure arithmetic: the host suites pull this file in with `#[path]`.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use azos_arch_api::PageMarker;
 
 use crate::zpool::PageWords;
@@ -112,6 +114,45 @@ pub fn resolve(word: u64, leaf: Option<usize>) -> Option<Resolve> {
         Slot::Marker(PageMarker::InTransit, _) => Resolve::Wait,
         Slot::Marker(kind, payload) => Resolve::Restore(kind, payload),
     })
+}
+
+/// How [`put_back_page`] ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PutBack {
+    /// The leaf and the slot name the frame again.
+    Back,
+    /// The slot is not the store's any more (the range was unmapped meanwhile,
+    /// and maybe mapped again): nothing was written.
+    NotMine,
+    /// The leaf could not be written (one is already there, which nothing
+    /// writes while the slot is in transit): the slot is emptied rather than
+    /// left in transit for good.
+    Emptied,
+}
+
+/// End a store that did not happen: put the page whose slot is `slot` back in
+/// the frame at `frame`. The slot must still hold the `InTransit` marker of
+/// `ticket`, checked before anything is written, so a slot that does not gets
+/// no leaf and no translation of the frame exists once the caller frees it.
+/// Then `install` writes the page's leaf, and the slot gets the frame. Under
+/// the space's lock, which every writer of a mapped page's slot holds. Unless
+/// [`PutBack::Back`], the frame is the caller's to free.
+///
+/// Canary `keep-leaf-first-canary`: the leaf is written before the slot is
+/// looked at.
+pub fn put_back_page(slot: &AtomicU64, ticket: u32, frame: usize, install: impl FnOnce() -> bool) -> PutBack {
+    let mine = marker(PageMarker::InTransit, ticket);
+    let mut install = Some(install);
+    let early = if cfg!(feature = "keep-leaf-first-canary") { install.take().map(|f| f()) } else { None };
+    if slot.load(Ordering::Acquire) != mine {
+        return PutBack::NotMine;
+    }
+    if !early.unwrap_or_else(|| install.take().is_some_and(|f| f())) {
+        slot.store(EMPTY, Ordering::Release);
+        return PutBack::Emptied;
+    }
+    slot.store(self::frame(frame), Ordering::Release);
+    PutBack::Back
 }
 
 /// The marker protocol's view of slot words: a `Frame` slot is the page the

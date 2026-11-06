@@ -37,7 +37,7 @@ azos_crypto = { path = "../../../crates/core/crypto" }
 # are failures in this project. Declared rather than silenced so the condition
 # stays visible.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("swap-plain-canary", "storm-ignore-locked-canary", "restore-flip-canary", "swap-busy-rings-canary", "storm-no-resume-canary", "swap-no-restore-slot-canary", "slab-freelist-canary", "slab-align-canary", "slab-geometry-canary", "buddy-merge-canary", "buddy-split-canary", "buddy-rotate-hot-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary", "budget-racy-charge-canary", "zone-share-canary", "swap-pinned-canary", "swap-verify-canary", "mm-pte-truth-canary", "ktest"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("swap-plain-canary", "storm-ignore-locked-canary", "restore-flip-canary", "swap-busy-rings-canary", "storm-no-resume-canary", "swap-no-restore-slot-canary", "slab-freelist-canary", "slab-align-canary", "slab-geometry-canary", "buddy-merge-canary", "buddy-split-canary", "buddy-rotate-hot-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary", "budget-racy-charge-canary", "zone-share-canary", "swap-pinned-canary", "swap-verify-canary", "mm-pte-truth-canary", "keep-leaf-first-canary", "ktest"))'] }
 
 # Wave 15 (SLAB) canaries for the pulled `slab.rs` (see src/slab_tests.rs):
 # a free list that hands an object out twice, objects off their alignment,
@@ -73,6 +73,8 @@ storm-ignore-locked-canary = []
 restore-flip-canary = []
 # The slot-over-leaf canary of the pulled-in `slot.rs`: `marker_pte.rs`' `a_stale_leaf_over_an_empty_slot_is_not_believed` and the restore rows fail.
 mm-pte-truth-canary = []
+# The reclaimer's put-back writing the leaf before it looks at the slot (`slot.rs`).
+keep-leaf-first-canary = []
 
 [profile.release]
 overflow-checks = true

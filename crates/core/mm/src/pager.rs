@@ -940,19 +940,23 @@ impl Reclaimee for AnonReclaim<'_> {
 
     fn keep(&mut self, _v: Victim) {
         let Some(f) = self.flight.take() else { return };
-        // The leaf first, then the slot, both under the lock: a fault that
-        // finds the slot `InTransit` waits, so nothing installed a leaf here.
+        // The slot first, then the leaf, both under the lock: a fault that
+        // finds the slot `InTransit` waits, so nothing installed a leaf here,
+        // and a slot that is not this store's any more gets no leaf at all.
         let back = f.state == FlightState::Out
-            && f.space.lock().is_some_and(|sp| {
-                let (Some(slot), Some(leaf)) = (Self::slot_of(&sp, &f), Self::leaf_of(&sp, &f)) else { return false };
-                if leaf.compare_exchange(ARCH.pte_empty(), f.original, Ordering::AcqRel, Ordering::Acquire).is_err() {
-                    return false;
+            && f.space.lock().is_some_and(|mut sp| {
+                let Some(slot) = Self::slot_of(&sp, &f) else { return false };
+                let leaf = Self::leaf_of(&sp, &f);
+                let put = slot::put_back_page(slot, f.ticket, f.frame.as_usize(), || {
+                    leaf.is_some_and(|l| {
+                        l.compare_exchange(ARCH.pte_empty(), f.original, Ordering::AcqRel, Ordering::Acquire).is_ok()
+                    })
+                });
+                // An emptied slot is a reserved page that is not committed.
+                if put == slot::PutBack::Emptied {
+                    sp.committed = sp.committed.saturating_sub(1);
                 }
-                if zpool::put_back(&SlotWords, slot, f.ticket, slot::frame(f.frame.as_usize())) {
-                    return true;
-                }
-                leaf.store(ARCH.pte_empty(), Ordering::Release);
-                false
+                put == slot::PutBack::Back
             });
         if back {
             ARCH.flush_tlb_page(f.va);

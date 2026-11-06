@@ -97,6 +97,11 @@ mm-pte-truth-canary = []
 # block's) for the page's own 4 KiB leaf and installs one into it:
 # `syscall-tests` thp_vmm.rs `a_fault_on_a_promoted_block_leaves_its_leaf_alone` fails.
 fault-block-leaf-canary = []
+# Host-suite canary: the reclaimer's failed store writes the page's leaf back
+# before it looks at the slot, so a range unmapped meanwhile gets a leaf on a
+# frame about to be freed: `mm-tests` marker_pte.rs
+# `a_failed_store_writes_no_leaf_for_a_slot_that_is_not_its_own` fails.
+keep-leaf-first-canary = []
 # Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
 # kept past its space's end reaches the next space made from the object:
 # `syscall-tests`' `aspace_life` fails.

@@ -12258,6 +12258,14 @@ host_job host_canary_row "anon: stale leaf over empty slot canary" syscall-tests
 host_job host_canary_row "anon: slot decides (model) canary" mm-tests mm-pte-truth-canary \
     a_stale_leaf_over_an_empty_slot_is_not_believed
 host_job zpool_host_row "anon: restore from the slot, pool on" a_compressed_page_comes_back_from_its_slot
+# A reclaimer store that fails puts its page back only into its own slot, and
+# looks at the slot before it writes the leaf (slot::put_back_page).
+# keep-leaf-first-canary: the leaf is written first, and a range unmapped and
+# mapped again during the store gets a leaf on the frame that is then freed.
+host_job host_canary_row "anon: failed store, leaf after slot canary" syscall-tests keep-leaf-first-canary \
+    a_failed_store_after_the_range_was_mapped_again_puts_nothing_back
+host_job host_canary_row "anon: failed store, leaf after slot (model) canary" mm-tests keep-leaf-first-canary \
+    a_failed_store_writes_no_leaf_for_a_slot_that_is_not_its_own
 host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
     a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,
