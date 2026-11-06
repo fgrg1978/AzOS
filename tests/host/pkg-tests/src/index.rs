@@ -192,6 +192,47 @@ fn the_mark_table_replaces_a_signers_floors_and_holds_to_its_quota() {
     assert_eq!(full.accept(&a, Mark { serial: 1, digest: 0 }, &many), Err(MarkErr::Full));
 }
 
+/// An index listing `names` at 9.0, each with its floor.
+fn listing(serial: u32, names: &[(&str, Option<&str>)]) -> Vec<u8> {
+    let offers: Vec<Offer> = names
+        .iter()
+        .enumerate()
+        .map(|(i, (n, f))| Offer {
+            name: (*n).into(),
+            version: "9.0".into(),
+            sec_floor: f.map(Into::into),
+            id: [i as u8 + 1; 32],
+            file: format!("P{i}.PKG"),
+        })
+        .collect();
+    build_index(&index_body(serial, &offers), &author())
+}
+
+/// The floors the device remembers of an index: the ones of the packages staged
+/// under its signer and the ones it remembers already, the remembered first, with
+/// the index's values; a name the index does not floor is not kept, remembered or not.
+///
+/// **Canary** `pkg-floor-forget-canary`: the remembered package that is not staged
+/// loses its floor.
+#[test]
+fn a_remembered_floor_stays_while_an_index_floors_it() {
+    use azos_pkg::index::{floors_to_remember, mark_key, name_hash};
+    let d = dev();
+    let topo = d.topology();
+    let key = mark_key(&topo.signers()[0].key_id);
+    let h = |n: &str| name_hash(&key, n);
+    let v = |s: &str| Version::parse(s).unwrap();
+    let bytes = listing(7, &[("pa", Some("1.0")), ("pb", Some("2.0")), ("pc", Some("3.0")), ("pd", None)]);
+    let ix = index::verify(&bytes, &topo).unwrap();
+    let staged = |x: u64| x == h("pa") || x == h("pd");
+    let remembered = |x: u64| x == h("pc") || x == h("pd") || x == h("gone");
+    let got: Vec<(u64, Version)> = floors_to_remember(&ix, &key, &staged, &remembered).collect();
+    assert_eq!(got, vec![(h("pc"), v("3.0")), (h("pa"), v("1.0"))], "pc kept although not staged, and first");
+    // Nothing staged: the remembered floors are all there is, never none.
+    let none = |_: u64| false;
+    assert_eq!(floors_to_remember(&ix, &key, &none, &remembered).collect::<Vec<_>>(), vec![(h("pc"), v("3.0"))]);
+}
+
 /// What a signer's floors are when the device remembers its index: the newest
 /// one it has seen, or unknown, and unknown is not met. **Canary**
 /// `pkg-mark-canary`: a replayed or deleted index passes as the first one.

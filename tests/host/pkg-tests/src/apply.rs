@@ -1163,6 +1163,58 @@ fn a_replayed_or_deleted_index_cannot_lift_a_floor() {
     assert_eq!(judged(&mut v).0, (false, false), "and the lower floor is the one remembered now");
 }
 
+/// **A package out of the staging directory for a boot keeps its floor.** A
+/// writer of the volume deletes the package (or spoils its head) for one boot
+/// while another package of the signer is staged, then puts back an older signed
+/// build and deletes the index: the floor the device remembered still stops it.
+/// Only a newer index that stops flooring the package lets its floor go.
+///
+/// **Canary** `pkg-floor-forget-canary`: the boot without the package forgets its
+/// floor and the old build runs.
+#[test]
+fn a_floor_outlives_a_boot_without_its_package() {
+    use azos_pkg::index::{mark_key, Marks};
+    let d = signed_device();
+    let marks = mem_marks();
+    let key = mark_key(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
+    let judged = |v: &mut Volume<MemDev>| {
+        let mut t = topo(d);
+        let a = apply(v, &mut t, &enforcing_with(marks), &mut Log::default());
+        a.images.iter().map(|i| (String::from_utf8(i.name.clone()).unwrap(), i.below_floor)).collect::<Vec<_>>()
+    };
+    let index = |serial: u32, floor: Option<&str>| {
+        let mut s = Spec::acme();
+        s.version = "1.9.0".into();
+        build_index(&index_body(serial, &[Offer::of(&build(&s, &author()), "ACME190.PKG", floor)]), &author())
+    };
+    let mut v = volume();
+    let new_name = stage(&mut v, &acme_at("1.3.0", 11));
+    stage(&mut v, &other());
+    put_index(&mut v, &index(6, Some("1.3.0")));
+    assert!(judged(&mut v).iter().all(|(_, low)| !low), "1.3.0 meets its floor");
+    assert_eq!(marks.floor(&key, "acme-vision").map(|f| f.0), Some([1, 3, 0, 0]));
+
+    // Boot k+1: the package is gone; the index (same serial) is judged for the other one.
+    let root = v.root();
+    v.unlink(root, new_name.as_bytes()).unwrap();
+    v.commit().unwrap();
+    assert_eq!(judged(&mut v), [("OTHER.ELF".to_string(), false)]);
+    assert_eq!(marks.floor(&key, "acme-vision").map(|f| f.0), Some([1, 3, 0, 0]), "the floor stays");
+
+    // Boot k+2: the old signed build is put back and the index deleted.
+    stage(&mut v, &acme());
+    drop_index(&mut v);
+    let mut got = judged(&mut v);
+    got.sort();
+    assert_eq!(got, [("ACME.ELF".to_string(), true), ("OTHER.ELF".to_string(), false)], "1.2.0 is below the remembered floor");
+
+    // A newer index that names no floor for it is the one way the floor goes.
+    put_index(&mut v, &index(7, None));
+    assert!(judged(&mut v).iter().all(|(_, low)| !low));
+    assert_eq!(marks.floor(&key, "acme-vision"), None);
+    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
+}
+
 /// A device that never saw an index has no floors to lose, and the policy off
 /// reads no slot at all.
 #[test]

@@ -39,6 +39,9 @@ pkg-downgrade-canary = []
 # The device remembers no index: a replayed, deleted or diverging index passes as
 # the first one.
 pkg-mark-canary = []
+# Only the floors of the packages staged this boot are remembered: a boot without
+# a package forgets its floor, and an older build of it is admitted later.
+pkg-floor-forget-canary = []
 # A write of the marks goes over the bank that holds the newest copy instead of the
 # other one: a cut or a torn sector in it loses other signers' marks.
 pkg-bank-canary = []

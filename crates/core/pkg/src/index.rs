@@ -666,6 +666,27 @@ pub fn name_hash(signer: &SignerKey, name: &str) -> u64 {
     u64::from_be_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]])
 }
 
+/// The floors of `ix` the device is to remember for its signer `signer`: the
+/// ones of the packages staged under it and the ones it remembers already
+/// (`staged` and `remembered` answer by [`name_hash`]), with the values `ix`
+/// names, the remembered ones first. A remembered floor therefore stays while
+/// the signer's mark stands, whether or not its package is staged this boot,
+/// and leaves only when an index stops flooring the package.
+///
+/// **Canary** `pkg-floor-forget-canary`: only the staged packages' floors, so a
+/// boot without the package forgets its floor.
+pub fn floors_to_remember<'s>(
+    ix: &'s Index<'_, '_>,
+    signer: &SignerKey,
+    staged: &'s dyn Fn(u64) -> bool,
+    remembered: &'s dyn Fn(u64) -> bool,
+) -> impl Iterator<Item = (u64, Version)> + 's {
+    let kept = move |h: u64| !cfg!(feature = "pkg-floor-forget-canary") && remembered(h);
+    let old = ix.floors(signer).filter(move |(h, _)| kept(*h));
+    let new = ix.floors(signer).filter(move |(h, _)| !kept(*h) && staged(*h));
+    old.chain(new)
+}
+
 /// What the device remembers of the newest index it accepted from a signer:
 /// the serial and the first eight bytes of the body's SHA-256.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -696,11 +717,15 @@ pub enum MarkErr {
 pub trait Marks {
     /// The mark of `signer`.
     fn mark(&self, signer: &SignerKey) -> Option<Mark>;
+    /// The floor remembered for `signer`'s package whose [`name_hash`] is `hash`.
+    fn remembered(&self, signer: &SignerKey, hash: u64) -> Option<Version>;
     /// The floor `signer`'s newest accepted index named for package `name`.
-    fn floor(&self, signer: &SignerKey, name: &str) -> Option<Version>;
+    fn floor(&self, signer: &SignerKey, name: &str) -> Option<Version> {
+        self.remembered(signer, name_hash(signer, name))
+    }
     /// Remember `mark` as `signer`'s newest index and `floors` (by
-    /// [`name_hash`]) as the floors it names, replacing the floors remembered
-    /// from the signer's earlier index. All or nothing.
+    /// [`name_hash`], from [`floors_to_remember`]) as its floors, in place of
+    /// what was remembered for the signer. All or nothing.
     fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr>;
     /// The memory was written before and no copy of it can be read now (media
     /// damage): what it held is gone. Nothing is remembered until the next
@@ -718,7 +743,7 @@ impl Marks for NoMarks {
     fn mark(&self, _: &SignerKey) -> Option<Mark> {
         None
     }
-    fn floor(&self, _: &SignerKey, _: &str) -> Option<Version> {
+    fn remembered(&self, _: &SignerKey, _: u64) -> Option<Version> {
         None
     }
     fn accept(&self, _: &SignerKey, _: Mark, _: &[(u64, Version)]) -> Result<(), MarkErr> {
@@ -1038,8 +1063,8 @@ impl<T: Tail> Marks for MarkStore<T> {
         self.state.borrow().table.mark(signer)
     }
 
-    fn floor(&self, signer: &SignerKey, name: &str) -> Option<Version> {
-        self.state.borrow().table.floor_of(signer, name_hash(signer, name))
+    fn remembered(&self, signer: &SignerKey, hash: u64) -> Option<Version> {
+        self.state.borrow().table.floor_of(signer, hash)
     }
 
     fn lost(&self) -> bool {

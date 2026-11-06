@@ -158,8 +158,8 @@ enum SignerFloors {
 }
 
 /// What the apply keeps while it judges floors: each signer's floors once read,
-/// and the packages staged under each signer (the only ones a floor is
-/// remembered for).
+/// and the packages staged under each signer (a floor is remembered for them
+/// and kept for the ones remembered already).
 struct FloorCtx {
     cache: Vec<(usize, SignerFloors)>,
     staged: Vec<(usize, String)>,
@@ -194,15 +194,18 @@ fn below_floor<D: BlockDev>(
         let state = match floors {
             index::Floors::Known(ix) => {
                 // Remember the index (a newer one replaces what the device held) and
-                // the floors it names for the packages staged under this signer, and
-                // again whenever that set changes at the same serial.
-                let floors: Vec<(u64, azos_pkg::index::Version)> = (0..ix.entries)
-                    .filter_map(|i| ix.get(i))
-                    .filter_map(|e| {
-                        let f = e.sec_floor?;
-                        cx.staged.iter().any(|(s, n)| *s == signer && n == e.name).then(|| (index::name_hash(&key, e.name), f))
-                    })
-                    .collect();
+                // the floors it names for the packages staged under this signer or
+                // remembered already: a package out of the staging directory for a
+                // boot keeps its floor.
+                let staged: Vec<u64> =
+                    cx.staged.iter().filter(|(s, _)| *s == signer).map(|(_, n)| index::name_hash(&key, n)).collect();
+                let floors: Vec<(u64, azos_pkg::index::Version)> = index::floors_to_remember(
+                    &ix,
+                    &key,
+                    &|h| staged.contains(&h),
+                    &|h| boot.marks.remembered(&key, h).is_some(),
+                )
+                .collect();
                 match boot.marks.accept(&key, ix.mark(), &floors) {
                     Ok(()) if raise.is_some() => sink.record(&receipt::index_accepted(&ix, boot.now_ns)),
                     Ok(()) => {}

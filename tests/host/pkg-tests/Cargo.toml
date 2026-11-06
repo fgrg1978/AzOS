@@ -20,6 +20,7 @@ description = "Host-side tests for signed application packages (crates/core/pkg)
 #   cargo test --offline --features pkg-downgrade-canary
 #   cargo test --offline --features pkg-mark-canary
 #   cargo test --offline --features pkg-bank-canary
+#   cargo test --offline --features pkg-floor-forget-canary
 #   cargo test --offline --features neverallow-canary
 #   cargo test --offline --features pkg-launch-grant-canary
 #   cargo test --offline --features pkg-supersede-canary
@@ -40,6 +41,7 @@ pkg-floor-canary = ["azos_pkg/pkg-floor-canary"]
 pkg-downgrade-canary = ["azos_pkg/pkg-downgrade-canary"]
 pkg-mark-canary = ["azos_pkg/pkg-mark-canary"]
 pkg-bank-canary = ["azos_pkg/pkg-bank-canary"]
+pkg-floor-forget-canary = ["azos_pkg/pkg-floor-forget-canary"]
 neverallow-canary = ["azos_topology/neverallow-canary"]
 # The whole-system update's own canaries (included from the OTA crate by
 # `azos_packages`): the signature / a part's hash is not checked, and the
