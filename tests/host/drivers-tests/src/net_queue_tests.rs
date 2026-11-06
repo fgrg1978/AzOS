@@ -118,7 +118,8 @@ fn every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells() {
         seen.extend(drain(nic));
     }
     unregister_usb();
-    assert_eq!(seen, (0..1000).collect::<Vec<u64>>(), "every frame, once, in order");
+    assert_eq!(seen.len(), 1000, "the NIC lost {} of 1000 frames", 1000 - seen.len());
+    assert!(seen.iter().copied().eq(0..1000), "every frame, once, in order");
     let rings = wire.rings.load(Ordering::SeqCst);
     let bound = azos_limits::NET_TX_BATCH_MAX as usize;
     assert!(rings <= 10 * (100usize.div_ceil(bound) + 1), "a doorbell per batch bound, not per frame: {rings}");
