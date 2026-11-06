@@ -310,6 +310,31 @@ pub fn current_proc_tid() -> u32 {
 // The budget is declared per task in the topology, beside the capabilities and
 // the seccomp profile, and lands here through `set_current_user_page_limit`.
 
+/// Charge the `pages` one request of the current task reserves (an `mmap`, a
+/// `brk` growth), all or nothing: as [`mm_charge`], except that past its limit
+/// a Domain that `may_grow` grows by the request up to its ceiling
+/// (`PageBudget::charge_request`), and the growth is counted
+/// ([`mm_budget_growths`]).
+pub fn mm_charge_request(pages: u32, may_grow: bool) -> bool {
+    if pages == 0 { return true; }
+    let idx = my_idx();
+    if idx == usize::MAX { return true; }
+    match crate::domain::charge_request(TASKS[idx].domain(), pages, may_grow) {
+        None => true,
+        Some(Ok((granted, used))) => {
+            MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
+            if let azos_mm::budget::Granted::Grew(_) = granted {
+                MM_BUDGET_GROWTHS.fetch_add(1, Ordering::Relaxed);
+            }
+            true
+        }
+        Some(Err(_)) => {
+            MM_QUOTA_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
 /// Charge `pages` frames to the current task.
 ///
 /// Returns `false` and charges **nothing** when the task would go over its
@@ -874,6 +899,17 @@ static MM_QUOTA_REFUSALS: AtomicU32 = AtomicU32::new(0);
 #[must_use]
 pub fn mm_quota_refusals() -> u32 {
     MM_QUOTA_REFUSALS.load(Ordering::Relaxed)
+}
+
+/// Requests a Domain's budget grew to hold past its base, over all tasks
+/// ([`mm_charge_request`]): the record that a row's base is smaller than what
+/// its task uses.
+static MM_BUDGET_GROWTHS: AtomicU32 = AtomicU32::new(0);
+
+/// See [`MM_BUDGET_GROWTHS`].
+#[must_use]
+pub fn mm_budget_growths() -> u32 {
+    MM_BUDGET_GROWTHS.load(Ordering::Relaxed)
 }
 
 /// Current priority of a task by TID, or `None` if no such task.

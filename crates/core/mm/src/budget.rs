@@ -163,6 +163,30 @@ pub struct PageBudget {
     /// The last storm stopped for want of room, having freed pages
     /// ([`PageBudget::storm_cut_short`]).
     cut_short: AtomicBool,
+    /// How far a request may grow the limit ([`PageBudget::charge_request`]);
+    /// at or below the limit: no growth.
+    ceiling: AtomicU32,
+    /// Pages the limit grew by past the base it was declared with.
+    grown: AtomicU32,
+}
+
+/// What a request charge ([`PageBudget::charge_request`]) granted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Granted {
+    /// Within the limit.
+    Within,
+    /// Past the limit, which grew by this many pages to hold the request.
+    Grew(u32),
+}
+
+/// Why a request charge was refused. Nothing is charged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestRefused {
+    /// Past the limit, and this Domain does not grow (no ceiling above the
+    /// limit, or a real-time or locked Domain).
+    Limit,
+    /// Past the ceiling.
+    Ceiling,
 }
 
 const STORM_IDLE: u8 = 0;
@@ -259,6 +283,8 @@ impl PageBudget {
             level: AtomicU8::new(Pressure::Normal as u8),
             aged: AtomicU64::new(0),
             cut_short: AtomicBool::new(false),
+            ceiling: AtomicU32::new(0),
+            grown: AtomicU32::new(0),
         }
     }
 
@@ -278,6 +304,8 @@ impl PageBudget {
     /// is the declaration that gives it reclaim.
     pub fn set_limit(&self, limit: u32) {
         self.limit.store(limit, Ordering::Relaxed);
+        self.ceiling.store(0, Ordering::Relaxed);
+        self.grown.store(0, Ordering::Relaxed);
         self.set_watermarks(0, 0);
         // A new occupant of the slot has told nobody anything yet, and its
         // pages have not been aged.
@@ -291,6 +319,8 @@ impl PageBudget {
     /// the Domain's frame limit goes through when its topology row is applied.
     pub fn set_limit_marked(&self, limit: u32, high_pct: u32, low_pct: u32) {
         self.limit.store(limit, Ordering::Relaxed);
+        self.ceiling.store(0, Ordering::Relaxed);
+        self.grown.store(0, Ordering::Relaxed);
         let (low, high) = watermarks_for(limit, high_pct, low_pct);
         self.set_watermarks(low, high);
         self.aged.store(0, Ordering::Relaxed);
@@ -500,6 +530,52 @@ impl PageBudget {
             }
         }
     }
+
+    /// Charge the `pages` one request (an `mmap`, a `brk` growth) reserves, all
+    /// or nothing. Past the limit the limit grows to hold the request, up to
+    /// the ceiling ([`Self::set_ceiling`]), when `may_grow` (a real-time or
+    /// locked Domain never grows: its memory is sized, not discovered). The
+    /// growth is the request's, never a page more, and is counted in
+    /// [`Self::grown`]. The other charges (tables, the image, shm) stay within
+    /// the limit as it is, grown or not.
+    pub fn charge_request(&self, pages: u32, may_grow: bool) -> Result<Granted, RequestRefused> {
+        if self.charge(pages) {
+            return Ok(Granted::Within);
+        }
+        let ceiling = self.ceiling.load(Ordering::Relaxed);
+        let mut cur = self.used.load(Ordering::Relaxed);
+        loop {
+            let limit = self.limit.load(Ordering::Relaxed);
+            if !may_grow || limit == 0 || ceiling <= limit {
+                return Err(RequestRefused::Limit);
+            }
+            let next = cur.saturating_add(pages);
+            if next > ceiling {
+                return Err(RequestRefused::Ceiling);
+            }
+            match self.used.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => {
+                    self.peak.fetch_max(next, Ordering::Relaxed);
+                    let before = self.limit.fetch_max(next, Ordering::AcqRel);
+                    let by = next.saturating_sub(before);
+                    self.grown.fetch_add(by, Ordering::Relaxed);
+                    return Ok(if by == 0 { Granted::Within } else { Granted::Grew(by) });
+                }
+                Err(now) => cur = now,
+            }
+        }
+    }
+
+    /// Let request charges grow the limit up to `ceiling` pages (at or below the
+    /// limit: never). A new declaration of the limit
+    /// ([`set_limit_marked`](Self::set_limit_marked)) drops it.
+    pub fn set_ceiling(&self, ceiling: u32) {
+        self.ceiling.store(ceiling, Ordering::Relaxed);
+    }
+
+    /// Pages the limit grew by past its declared base.
+    #[must_use]
+    pub fn grown(&self) -> u32 { self.grown.load(Ordering::Relaxed) }
 
     /// Give `pages` frames back. Mirrors `mm_discharge`. A saturating atomic
     /// subtract: concurrent discharges and charges never lose an update.

@@ -208,6 +208,13 @@ pub fn mm_charge(pages: u32) -> bool {
     true
 }
 
+/// `scheduler/budget.rs`'s request charge: the shim's budget has no ceiling,
+/// so a request is a [`mm_charge`] (`PageBudget::charge_request` has its rows
+/// in mm-tests).
+pub fn mm_charge_request(pages: u32, _may_grow: bool) -> bool {
+    mm_charge(pages)
+}
+
 static CHARGE_TABLES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The page-table hook of `scheduler/budget.rs`, for the current task's root:

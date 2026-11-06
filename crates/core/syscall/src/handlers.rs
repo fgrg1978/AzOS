@@ -2541,7 +2541,7 @@ pub fn sys_brk(addr: u64) -> i64 {
     if pages == 0 {
         return azos_sched::update_user_brk(end as u64) as i64;
     }
-    if !azos_sched::mm_charge(pages as u32) {
+    if !azos_sched::mm_charge_request(pages as u32, request_may_grow()) {
         return cur as i64;
     }
     if !mmap_precommit(0) {
@@ -3226,6 +3226,13 @@ fn mmap_precommit(flags: u64) -> bool {
         || (azos_mm::pager::PRECOMMIT_RT && azos_sched::current_sched_params().1 <= RT_CLASS_MAX)
 }
 
+/// May a request of the current task grow its Domain's budget past the base
+/// (`azos_sched::mm_charge_request`)? Not a locked or real-time task's: its
+/// memory is sized at admission.
+fn request_may_grow() -> bool {
+    !azos_sched::current_mem_locked() && azos_sched::current_sched_params().1 > RT_CLASS_MAX
+}
+
 /// Where a new mapping of `span` bytes (a page multiple) goes: `sys_mmap`'s
 /// and a private file mapping's (`crate::file_map`). The start, or the
 /// value to return (`-1` or a negative errno). [`mmap_placed`] records it once
@@ -3450,7 +3457,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
         return aligned_base as i64;
     }
 
-    if !azos_sched::mm_charge(num_pages as u32) { return -1; }
+    if !azos_sched::mm_charge_request(num_pages as u32, request_may_grow()) { return -1; }
 
     // Wave 14 (DEMANDPAGE): reserve; the fault path commits each page from
     // the region's pager with exactly these permissions (never executable).

@@ -135,8 +135,8 @@ fn dump_sched_counters() {
     // ceiling, and the gate says so instead of the program quietly failing to
     // allocate.
     let (peak_tid, peak_pages) = azos_sched::mm_peak_pages();
-    kprintln!("[SCHED-DBG]   mem quota refused={} peak_live={} (tid={}) peak_ever={}",
-        azos_sched::mm_quota_refusals(), peak_pages, peak_tid,
+    kprintln!("[SCHED-DBG]   mem quota refused={} grew={} peak_live={} (tid={}) peak_ever={}",
+        azos_sched::mm_quota_refusals(), azos_sched::mm_budget_growths(), peak_pages, peak_tid,
         azos_sched::mm_peak_global());
     // Wave 9: spawns and execs refused past their row's `instances`.
     kprintln!("[SCHED-DBG]   mem instances refused={}",

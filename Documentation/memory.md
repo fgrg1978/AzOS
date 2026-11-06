@@ -571,6 +571,15 @@ security boundary (`crates/core/sched/src/domain.rs`). Three ledgers hang off it
 | Compressed pool ledger | Bytes | Compressed blobs stored for the Domain's pages (`zpool.rs`), and bytes of its segments on swap. | `MM_ZPOOL_DOMAIN_KIB`, `MM_SWAP_DOMAIN_KIB` |
 | `KmemBudget` | Bytes | What the kernel keeps *for* the Domain, by class. | `kmem_kib` of the row. `0` = no ceiling. |
 
+A request (`mmap`, a `brk` growth) is charged whole by
+`PageBudget::charge_request`. Past the limit, a Domain that may grow (not
+`mem = "locked"`, not real time) has its limit grown by exactly the request, up
+to its ceiling (`PageBudget::set_ceiling`), and the growth is counted
+(`grew=` beside `mem quota refused=` in the census). Other charges stay within
+the limit as it is. A new declaration of the limit starts again at its base.
+No row declares a ceiling yet, so every Domain's ceiling is its limit and
+nothing grows.
+
 Rules shared by `PageBudget` and `KmemBudget` (`crates/core/mm/src/budget.rs`):
 charges are atomic compare-and-swap loops, all-or-nothing (a charge that would
 pass the limit charges nothing), and discharges saturate at zero. A MemObj move

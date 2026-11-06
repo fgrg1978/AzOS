@@ -613,6 +613,18 @@ pub fn charge(key: Key, pages: u32) -> Option<u32> {
     d.budget.charge(pages).then(|| d.budget.used())
 }
 
+/// Charge the `pages` one request reserves to the domain `key` names
+/// (`PageBudget::charge_request`): `used` after it, and how it was granted.
+/// `None` when the key names no domain.
+pub fn charge_request(
+    key: Key,
+    pages: u32,
+    may_grow: bool,
+) -> Option<Result<(azos_mm::budget::Granted, u32), azos_mm::budget::RequestRefused>> {
+    let d = get(key)?;
+    Some(d.budget.charge_request(pages, may_grow).map(|g| (g, d.budget.used())))
+}
+
 /// Charge `pages` to the domain `key` names whatever its limit says
 /// (`PageBudget::charge_restore`): for a frame the kernel took for memory the
 /// domain was promised. `Some(used)`, or `None` when the key names no domain.

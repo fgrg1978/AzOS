@@ -1042,7 +1042,52 @@ mod cow_table_tests {
 /// `scheduler.rs` to make this the code that ships).
 #[cfg(test)]
 mod budget_tests {
-    use super::budget::PageBudget;
+    use super::budget::{Granted, PageBudget, RequestRefused};
+
+    /// **A budget grows by request, up to its ceiling** (mem-budget-grow). A
+    /// request past the limit is granted when the Domain may grow and the
+    /// ceiling holds it: the limit grows by exactly what the request needs, and
+    /// the growth is counted. Every other charge stays within the limit as it
+    /// is. A request past the ceiling, or from a Domain that does not grow, is
+    /// refused with nothing charged.
+    /// **Canary** (by hand): grow the limit to the ceiling instead of by the
+    /// request: red at the limit it grew to.
+    #[test]
+    fn a_request_grows_the_limit_by_itself_up_to_the_ceiling() {
+        let b = PageBudget::new();
+        b.set_limit(16);
+        b.set_ceiling(32);
+        assert_eq!(b.charge_request(10, true), Ok(Granted::Within));
+        assert_eq!(b.charge_request(10, true), Ok(Granted::Grew(4)), "grew by the request");
+        assert_eq!((b.used(), b.limit(), b.grown()), (20, 20, 4));
+        assert!(!b.charge(1), "a charge that is not a request stays within the limit");
+        assert_eq!(b.charge_request(13, true), Err(RequestRefused::Ceiling));
+        assert_eq!((b.used(), b.limit()), (20, 20), "a refusal charges nothing");
+        assert_eq!(b.charge_request(12, true), Ok(Granted::Grew(12)));
+        assert_eq!((b.used(), b.limit(), b.grown()), (32, 32, 16));
+        b.discharge(12);
+        assert_eq!(b.charge_request(12, true), Ok(Granted::Within), "the grown limit stays");
+    }
+
+    /// **A Domain that does not grow is refused at its limit**: one that may not
+    /// (real time, locked) whatever its ceiling, and one with no ceiling above
+    /// its limit, the way every Domain was before. A new declaration of the
+    /// limit drops the ceiling and the growth.
+    #[test]
+    fn a_domain_that_does_not_grow_is_refused_at_its_limit() {
+        let b = PageBudget::new();
+        b.set_limit(8);
+        b.set_ceiling(64);
+        assert_eq!(b.charge_request(9, false), Err(RequestRefused::Limit), "real time never grows");
+        assert_eq!(b.used(), 0);
+        assert_eq!(b.charge_request(9, true), Ok(Granted::Grew(1)));
+        b.set_limit_marked(8, 0, 0);
+        b.reset();
+        assert_eq!((b.limit(), b.grown()), (8, 0), "a new declaration starts at its base");
+        assert_eq!(b.charge_request(9, true), Err(RequestRefused::Limit), "and grows no more");
+        b.set_ceiling(4);
+        assert_eq!(b.charge_request(9, true), Err(RequestRefused::Limit), "a ceiling under the limit is none");
+    }
 
     /// `pages == 0` must succeed and touch nothing — not even the peak. A
     /// caller (`sys_mmap` with a zero-length request) must not see a spurious
