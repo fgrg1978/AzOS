@@ -220,34 +220,8 @@ pub fn install() {
 
     #[cfg(feature = "effect-gate")]
     {
-        // Write-ahead receipts (B1, Kconfig EFFECT_WRITE_AHEAD): a ring-3
-        // motor op is issued by the effect gate, after its record is
-        // committed. Through a hook for the same reason as the recorders
-        // above: `crates/core/syscall` cannot depend on this crate. A stop,
-        // brake or coast is `Class::Safe` (never refused), any other motion
-        // `Class::Reversible`.
-        fn motor_effect(e: &azos_syscall::motor_host::MotorEffect, op: &mut dyn FnMut() -> bool) -> bool {
-            use crate::effect_gate::{issue, Class, Effect, Timing, KIND_MOTOR};
-            let effect = Effect {
-                kind: KIND_MOTOR,
-                class: if e.toward_safe { Class::Safe } else { Class::Reversible },
-                subject: e.wheel as u16,
-                tid: e.tid,
-                a0: e.dir,
-                a1: e.pct,
-            };
-            let t = Timing {
-                deadline_ns: e.timing.deadline_ns,
-                placement_ns: e.timing.placement_ns,
-                commit_ns: e.timing.commit_ns,
-                safe_op: e.timing.safe_op,
-                compensate_op: e.timing.compensate_op,
-            };
-            issue(&effect, &t, || ((), op())).is_ok()
-        }
-        azos_syscall::motor_host::set_effect_gate(motor_effect);
-        // B4: the gate holds an effect to the envelopes of the principals its
-        // data passed through (the kernel's per-task labels).
+        // B4: the effect gate holds an effect to the envelopes of the
+        // principals its data passed through (the kernel's per-task labels).
         // Without Kconfig IPC_LABELS no task has a label and the probe would
         // only answer "none".
         if azos_ipc::endpoint::label::ENABLED {
@@ -256,21 +230,9 @@ pub fn install() {
         // The storage-delete and network-egress kinds of the same gate: the
         // Domain's `delete` and `egress` envelope rows (`envelope.rs`).
         crate::envelope::install();
-        // B2: how the kernel drives a wheel to its safe state when the op
-        // missed its deadline, and runs the inverse of a failed command (a
-        // stop too). The motor layer's lock-free safe-state entry, not the
-        // wheel's locks; it holds the wheel's pins and channel until the
-        // release, the third driver. As the inverse it adds no hold of its
-        // own: the motor layer fails a command only for a wheel it does not
-        // have, after a panic, or on a wheel that drive already holds.
-        crate::safe_state::register(
-            crate::effect_gate::KIND_MOTOR,
-            azos_syscall::motor_host::drive_safe,
-            azos_syscall::motor_host::drive_safe,
-            azos_syscall::motor_host::release_safe,
-        );
-        kprintln!("[SAFETY] ring-3 motor effects recorded write-ahead (effect gate)");
-        kprintln!("[SAFETY] motor effects watched against their deadline (safe-state sweep in sys-wdt)");
     }
+    // The kinds the extensions' providers own (a robot's wheels) are wired
+    // by the providers themselves.
+    crate::providers::effects();
     INSTALLED.store(true, Ordering::Release);
 }

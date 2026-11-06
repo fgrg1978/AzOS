@@ -7,20 +7,24 @@
 //! Each `check_*` takes any manifest whose providers record through [`note`]
 //! and holds one clause of the contract:
 //!
-//! * installing a manifest twice registers each provider once;
+//! * installing a manifest twice registers each provider and each hook once;
 //! * a manifest of another contract level is refused and registers nothing;
+//! * each boot hook runs at its own phase only, in manifest order, and the
+//!   task phase hands it the kernel's line enable;
+//! * the table serves exactly the effect kinds its providers own;
 //! * when the latch arms, every `on_latch` runs, then every `stop`, both
 //!   after the latch store, each in provider order;
 //! * the panic-path stop takes no lock the ordinary stop may take.
 //!
 //! The robot's own manifest links the whole robot stack and cannot be built on
-//! the host; [`ROBOT_SHAPED`] has its shape (one provider with all four hooks)
-//! and [`MIXED`] covers a bare provider and a provider with no latch work.
+//! the host; [`ROBOT_SHAPED`] has its shape (one provider with all four hooks,
+//! owning the motor kind, and an effects hook) and [`MIXED`] covers a bare
+//! provider, a provider with no latch work and a hook at every phase.
 //! The robot's manifest meets the same clauses through the table, and the
 //! kernel's ktest holds that the table carries its providers.
 
 use crate::{estop, providers};
-use azos_ext_api::{Manifest, Provider, API_LEVEL};
+use azos_ext_api::{BootHook, Manifest, Provider, API_LEVEL};
 use std::sync::{Mutex, TryLockError};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -30,6 +34,10 @@ enum Ev {
     PanicStop(&'static str),
     /// The stop found the lock a concurrent holder has.
     Blocked(&'static str),
+    /// A boot hook ran.
+    Hook(&'static str),
+    /// A task hook enabled an interrupt line through the kernel's enable.
+    Enable(u32),
 }
 
 static EVENTS: Mutex<Vec<Ev>> = Mutex::new(Vec::new());
@@ -46,9 +54,10 @@ fn take() -> Vec<Ev> {
 }
 
 macro_rules! provider {
-    ($name:literal, latch: $latch:expr, ready: $ready:expr) => {
+    ($name:literal, kinds: $kinds:expr, latch: $latch:expr, ready: $ready:expr) => {
         Provider {
             name: $name,
+            kinds: $kinds,
             stop: {
                 fn stop() {
                     match STOP_LOCK.try_lock() {
@@ -79,6 +88,42 @@ macro_rules! provider {
     };
 }
 
+macro_rules! hook {
+    (ConfigLoaded, $name:literal) => {
+        BootHook::ConfigLoaded({
+            fn run() {
+                note(Ev::Hook($name));
+            }
+            run
+        })
+    };
+    (Effects, $name:literal) => {
+        BootHook::Effects({
+            fn run() {
+                note(Ev::Hook($name));
+            }
+            run
+        })
+    };
+    (Tasks, $name:literal, line: $line:literal) => {
+        BootHook::Tasks({
+            fn run(enable_line: azos_ext_api::EnableLine) {
+                note(Ev::Hook($name));
+                assert!(enable_line($line));
+            }
+            run
+        })
+    };
+}
+
+/// The kernel's line enable, as the task phase hands it over.
+fn enable_line(line: u32) -> bool {
+    note(Ev::Enable(line));
+    true
+}
+
+const KIND_MOTOR: u8 = crate::kind::KIND_MOTOR;
+
 fn yes() -> bool {
     true
 }
@@ -90,18 +135,38 @@ fn no() -> bool {
 static ROBOT_SHAPED: Manifest = Manifest {
     name: "robot-shaped",
     api_level: API_LEVEL,
-    providers: &[provider!("actuators", latch: true, ready: Some(yes))],
+    providers: &[provider!("actuators", kinds: &[KIND_MOTOR], latch: true, ready: Some(yes))],
+    hooks: &[hook!(Effects, "robot-shaped effects")],
 };
 
 static MIXED: Manifest = Manifest {
     name: "mixed",
     api_level: API_LEVEL,
     providers: &[
-        provider!("bare", latch: false, ready: None),
-        provider!("latching", latch: true, ready: None),
-        provider!("gated", latch: false, ready: Some(yes)),
+        provider!("bare", kinds: &[], latch: false, ready: None),
+        provider!("latching", kinds: &[KIND_MOTOR], latch: true, ready: None),
+        provider!("gated", kinds: &[], latch: false, ready: Some(yes)),
+    ],
+    hooks: &[
+        hook!(Tasks, "mixed tasks", line: 7),
+        hook!(ConfigLoaded, "mixed config"),
+        hook!(Effects, "mixed effects"),
+        hook!(ConfigLoaded, "mixed config again"),
     ],
 };
+
+/// What the hooks of `m` at one phase note when run by hand, in manifest
+/// order.
+fn hooks_at(m: &Manifest, phase: fn(&BootHook) -> bool) -> Vec<Ev> {
+    take();
+    for h in m.hooks.iter().filter(|h| phase(h)) {
+        match *h {
+            BootHook::ConfigLoaded(f) | BootHook::Effects(f) => f(),
+            BootHook::Tasks(f) => f(enable_line),
+        }
+    }
+    take()
+}
 
 fn fresh() -> std::sync::MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -121,10 +186,38 @@ fn check_installs_each_provider_once(m: &'static Manifest) {
 fn check_other_level_is_refused(m: &'static Manifest) {
     let _g = fresh();
     let other: &'static Manifest =
-        Box::leak(Box::new(Manifest { name: m.name, api_level: m.api_level + 1, providers: m.providers }));
+        Box::leak(Box::new(Manifest { name: m.name, api_level: m.api_level + 1, providers: m.providers, hooks: m.hooks }));
     let refused = std::panic::catch_unwind(|| providers::install(other)).is_err();
     assert!(refused, "`{}`: a manifest of contract level {} was installed", m.name, other.api_level);
     assert_eq!(providers::count(), 0, "`{}`: a refused manifest left providers behind", m.name);
+    assert_eq!(providers::manifests(), 0, "`{}`: a refused manifest left its hooks behind", m.name);
+}
+
+fn check_hooks_run_once_at_their_phase(m: &'static Manifest) {
+    let _g = fresh();
+    let want_config = hooks_at(m, |h| matches!(h, BootHook::ConfigLoaded(_)));
+    let want_effects = hooks_at(m, |h| matches!(h, BootHook::Effects(_)));
+    let want_tasks = hooks_at(m, |h| matches!(h, BootHook::Tasks(_)));
+    providers::install(m);
+    providers::install(m);
+    assert_eq!(providers::manifests(), 1, "`{}`: a repeated install kept the manifest twice", m.name);
+    assert!(take().is_empty(), "`{}`: a hook ran at install", m.name);
+    providers::config_loaded();
+    assert_eq!(take(), want_config, "`{}`: the config phase ran other hooks, or these out of order", m.name);
+    providers::effects();
+    assert_eq!(take(), want_effects, "`{}`: the effects phase ran other hooks, or these out of order", m.name);
+    providers::start_tasks(enable_line);
+    assert_eq!(take(), want_tasks, "`{}`: the task phase ran other hooks, or without the line enable", m.name);
+}
+
+fn check_serves_the_kinds_its_providers_own(m: &'static Manifest) {
+    let _g = fresh();
+    assert!(!providers::serves(KIND_MOTOR), "an empty table served the motor kind");
+    providers::install(m);
+    for kind in 0..=u8::MAX {
+        let owned = m.providers.iter().any(|p| p.kinds.contains(&kind));
+        assert_eq!(providers::serves(kind), owned, "`{}`: kind {} served = {}", m.name, kind, !owned);
+    }
 }
 
 fn check_latch_runs_the_providers_after_the_latch_store(m: &'static Manifest) {
@@ -159,6 +252,8 @@ conformance!(
     check_other_level_is_refused,
     check_latch_runs_the_providers_after_the_latch_store,
     check_panic_stop_takes_no_stop_lock,
+    check_hooks_run_once_at_their_phase,
+    check_serves_the_kinds_its_providers_own,
 );
 
 /// The table's ordering and gate, over a manifest built by hand.
@@ -167,7 +262,8 @@ fn providers_run_in_installation_order_and_a_provider_not_ready_closes_the_gate(
     static NO: Manifest = Manifest {
         name: "not-ready",
         api_level: API_LEVEL,
-        providers: &[provider!("closed", latch: false, ready: Some(no))],
+        providers: &[provider!("closed", kinds: &[], latch: false, ready: Some(no))],
+        hooks: &[],
     };
     let _g = fresh();
     providers::install(&MIXED);

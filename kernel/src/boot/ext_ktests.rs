@@ -27,3 +27,19 @@ azos_ktest::ktest! {
         Ok(())
     }
 }
+
+azos_ktest::ktest! {
+    fn ext_robot_owns_the_motor_kind() {
+        use azos_actuation::kind::KIND_MOTOR;
+        if !providers::serves(KIND_MOTOR) {
+            return Err("no installed provider owns the motor kind");
+        }
+        // The robot provider's effects hook, not the core, registers the
+        // wheel's safe-state drive (Kconfig EFFECT_WRITE_AHEAD).
+        #[cfg(feature = "effect-gate")]
+        if !azos_actuation::safe_state::can_drive(KIND_MOTOR) {
+            return Err("the robot provider's effects hook did not register the wheel's safe-state drive");
+        }
+        Ok(())
+    }
+}

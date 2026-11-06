@@ -144,20 +144,75 @@ fn stop_robot_actuators_panic() {
 /// resolves for robot callers.
 pub use azos_actuation::gate::latch_and_stop;
 
+/// The wheels' kind of the effect interface (Kconfig EFFECT_WRITE_AHEAD): a
+/// ring-3 motor op is issued by the effect gate after its record is
+/// committed (B1), and a wheel that missed its deadline is driven to its safe
+/// state by the kernel (B2). Run by `azos_actuation::gate::install`, after
+/// the gate's own seams.
+#[cfg(feature = "effect-gate")]
+fn wire_motor_effects() {
+    use azos_actuation::effect_gate::{issue, Class, Effect, Timing, KIND_MOTOR};
+    // Through a hook: `crates/core/syscall` cannot depend on the actuation
+    // core. A stop, brake or coast is `Class::Safe` (never refused), any
+    // other motion `Class::Reversible`.
+    fn motor_effect(e: &azos_syscall::motor_host::MotorEffect, op: &mut dyn FnMut() -> bool) -> bool {
+        let effect = Effect {
+            kind: KIND_MOTOR,
+            class: if e.toward_safe { Class::Safe } else { Class::Reversible },
+            subject: e.wheel as u16,
+            tid: e.tid,
+            a0: e.dir,
+            a1: e.pct,
+        };
+        let t = Timing {
+            deadline_ns: e.timing.deadline_ns,
+            placement_ns: e.timing.placement_ns,
+            commit_ns: e.timing.commit_ns,
+            safe_op: e.timing.safe_op,
+            compensate_op: e.timing.compensate_op,
+        };
+        issue(&effect, &t, || ((), op())).is_ok()
+    }
+    azos_syscall::motor_host::set_effect_gate(motor_effect);
+    // B2: how the kernel drives a wheel to its safe state when the op missed
+    // its deadline, and runs the inverse of a failed command (a stop too).
+    // The motor layer's lock-free safe-state entry, not the wheel's locks; it
+    // holds the wheel's pins and channel until the release, the third
+    // driver. As the inverse it adds no hold of its own: the motor layer
+    // fails a command only for a wheel it does not have, after a panic, or on
+    // a wheel that drive already holds.
+    azos_actuation::safe_state::register(
+        KIND_MOTOR,
+        azos_syscall::motor_host::drive_safe,
+        azos_syscall::motor_host::drive_safe,
+        azos_syscall::motor_host::release_safe,
+    );
+    kprintln!("[SAFETY] ring-3 motor effects recorded write-ahead (effect gate)");
+    kprintln!("[SAFETY] motor effects watched against their deadline (safe-state sweep in sys-wdt)");
+}
+
+#[cfg(feature = "effect-gate")]
+const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[azos_ext_api::BootHook::Effects(wire_motor_effects)];
+#[cfg(not(feature = "effect-gate"))]
+const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[];
+
 /// The robot extension, as the actuation core sees it: one effect provider
-/// for the wheels, the ESC and the payload. The latch work makes the brain's
-/// cached remote action the stop; ring-3 images start only once the motor
-/// gate is in place (the loader asks `azos_actuation::gate::gate_installed`).
+/// for the wheels, the ESC and the payload, which owns the motor kind. The
+/// latch work makes the brain's cached remote action the stop; ring-3 images
+/// start only once the motor gate is in place (the loader asks
+/// `azos_actuation::gate::gate_installed`).
 pub static ROBOT: azos_ext_api::Manifest = azos_ext_api::Manifest {
     name: "robot",
     api_level: azos_ext_api::API_LEVEL,
     providers: &[azos_ext_api::Provider {
         name: "robot actuators",
+        kinds: &[azos_actuation::kind::KIND_MOTOR],
         stop: stop_robot_actuators,
         panic_stop: stop_robot_actuators_panic,
         on_latch: Some(azos_behavior::safety::on_estop_latched),
         ready: Some(azos_robot::motor::motor_gate_installed),
     }],
+    hooks: ROBOT_HOOKS,
 };
 
 /// Install the robot's seams, in the order the kernel always installed them.

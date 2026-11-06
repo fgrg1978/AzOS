@@ -32,6 +32,10 @@ rtwd-window-smoke = []
 # `rtwd-record-canary` (wave 14): the watchdog prints its transitions and
 # writes no `SAFETY_RT_WATCHDOG` record. The gate row must go red on it.
 rtwd-record-canary = []
+# `effect-gate` (forwarded by the kernel's, Kconfig EFFECT_WRITE_AHEAD): the
+# robot provider wires the motor kind into the effect gate and the safe-state
+# drivers (`actuation.rs`, `wire_motor_effects`).
+effect-gate = []
 # `ktest` (forwarded by the kernel's): the control task takes a fault the
 # ktest injects (`txn::txn_inject_once`), for I-13's rollback ktest.
 ktest = []

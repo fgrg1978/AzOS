@@ -1137,7 +1137,7 @@ decisions-durable = ["azos_decision/durable"]
 # Kconfig EFFECT_WRITE_AHEAD: a ring-3 motor op is issued by the effect gate
 # after its record is on the flight recorder's ring (crates/core/actuation
 # effect_gate.rs). A `base` tag: emitted unless the symbol is n.
-effect-gate = ["azos_actuation/effect-gate"]
+effect-gate = ["azos_actuation/effect-gate", "azos_safety_core?/effect-gate"]
 # Kconfig SOC_FRAMEWORKS: the clock, reset, regulator and power-domain managers
 # built from the device tree at boot (kernel/src/boot/soc.rs). Every change is
 # an effect of the write-ahead gate, so it needs `effect-gate`.

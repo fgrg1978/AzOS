@@ -3276,11 +3276,13 @@ mod estop_replaces_the_standing_action {
             api_level: azos_ext_api::API_LEVEL,
             providers: &[azos_ext_api::Provider {
                 name: "robot actuators",
+                kinds: &[],
                 stop: || {},
                 panic_stop: || {},
                 on_latch: Some(super::safety::on_estop_latched),
                 ready: None,
             }],
+            hooks: &[],
         };
         super::providers::install(&ROBOT);
         set_last_action(driving_at_full_speed(1_000));
