@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2764972
-aarch64-microvm	.rodata	335480
-aarch64-microvm	.data	459968
+aarch64-microvm	.text	2783328
+aarch64-microvm	.rodata	340016
+aarch64-microvm	.data	460480
 aarch64-microvm	.bss	947752
-aarch64-microvm	reason	port sources
-riscv64-qemu	.text	2843980
-riscv64-qemu	.rodata	475600
-riscv64-qemu	.data	743976
+aarch64-microvm	reason	driver records
+riscv64-qemu	.text	2858200
+riscv64-qemu	.rodata	479776
+riscv64-qemu	.data	744488
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	port sources for calls and doorbells, over the pkg floors
-x86_64-microvm	.text	2632905
-x86_64-microvm	.rodata	168208
-x86_64-microvm	.data	609976
+riscv64-qemu	reason	driver records over the port sources
+x86_64-microvm	.text	2650713
+x86_64-microvm	.rodata	168288
+x86_64-microvm	.data	612152
 x86_64-microvm	.bss	962640
-x86_64-microvm	reason	port sources
+x86_64-microvm	reason	driver records
