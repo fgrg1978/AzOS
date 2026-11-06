@@ -25,6 +25,7 @@ mod azvol_mount;
 mod build;
 mod cases;
 mod format;
+mod index;
 mod loader_admit;
 mod python;
 mod service;

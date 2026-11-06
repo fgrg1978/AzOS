@@ -89,11 +89,20 @@ pub struct Package<'a> {
     pub images_len: usize,
 }
 
-fn le16(b: &[u8], at: usize) -> usize {
+/// The algorithm `alg_id` names, if it is the one this device trusts
+/// ([`SigAlg::CONFIGURED`]) and `key` and `sig` have the lengths its keys and
+/// signatures have. Every signed file of this crate (packages, indexes) is
+/// held to it.
+pub fn accepted_alg(alg_id: u16, key: &[u8], sig: &[u8]) -> Option<SigAlg> {
+    let a = SigAlg::accepted(alg_id)?;
+    (key.len() == a.key_len() && sig.len() == a.sig_len()).then_some(a)
+}
+
+pub(crate) fn le16(b: &[u8], at: usize) -> usize {
     u16::from_le_bytes([b[at], b[at + 1]]) as usize
 }
 
-fn le32(b: &[u8], at: usize) -> usize {
+pub(crate) fn le32(b: &[u8], at: usize) -> usize {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as usize
 }
 
@@ -158,8 +167,7 @@ impl<'a> Package<'a> {
     /// ([`SigAlg::CONFIGURED`]) and the key and signature have the lengths its
     /// keys and signatures have.
     pub fn alg(&self) -> Option<SigAlg> {
-        let a = SigAlg::accepted(self.alg_id)?;
-        (self.key.len() == a.key_len() && self.sig.len() == a.sig_len()).then_some(a)
+        accepted_alg(self.alg_id, self.key, self.sig)
     }
 
     /// The id of the author's key ([`key_id`]).

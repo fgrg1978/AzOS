@@ -171,7 +171,7 @@ fn is_word(b: u8) -> bool {
 }
 
 /// A package name: 1..=32 of `[A-Za-z0-9._-]`.
-fn name_ok(s: &[u8]) -> bool {
+pub(crate) fn name_ok(s: &[u8]) -> bool {
     !s.is_empty() && s.len() <= 32 && s.iter().all(|&b| is_word(b))
 }
 
@@ -193,13 +193,13 @@ pub fn image_name_ok(s: &[u8]) -> bool {
     (1..=8).contains(&stem.len()) && stem.iter().all(up) && ext == b"ELF"
 }
 
-fn trim(s: &[u8]) -> &[u8] {
+pub(crate) fn trim(s: &[u8]) -> &[u8] {
     let a = s.iter().position(|&b| b != b' ' && b != b'\t').unwrap_or(s.len());
     let b = s.iter().rposition(|&b| b != b' ' && b != b'\t').map_or(a, |p| p + 1);
     &s[a..b]
 }
 
-fn hex32(s: &[u8]) -> Option<[u8; 32]> {
+pub(crate) fn hex32(s: &[u8]) -> Option<[u8; 32]> {
     if s.len() != 64 {
         return None;
     }
@@ -215,7 +215,7 @@ fn hex32(s: &[u8]) -> Option<[u8; 32]> {
     Some(out)
 }
 
-fn uint(s: &[u8]) -> Option<u32> {
+pub(crate) fn uint(s: &[u8]) -> Option<u32> {
     if s.is_empty() || s.len() > 10 || (s.len() > 1 && s[0] == b'0') {
         return None;
     }
@@ -230,7 +230,7 @@ fn uint(s: &[u8]) -> Option<u32> {
 }
 
 /// `"text"` with nothing after it, no escapes: the text.
-fn quoted(v: &[u8]) -> Option<&[u8]> {
+pub(crate) fn quoted(v: &[u8]) -> Option<&[u8]> {
     let inner = v.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
     (!inner.contains(&b'"') && !inner.contains(&b'\\')).then_some(inner)
 }

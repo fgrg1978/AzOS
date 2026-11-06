@@ -41,6 +41,11 @@
 //!   levels, then the rows merged into the topology and judged by
 //!   `Topology::admission_check` (neverallow, schedulability, one writer per
 //!   motor), by the signer's ceiling and by the device's security epoch floor.
+//! * [`index`]: the signed repository index (`INDEX.AZX`): per package the
+//!   newest version, the id of that build and an optional security floor. It is
+//!   verified by the same steps as a package; it tells `pkg outdated` what is
+//!   behind and the boot-time apply what is below its floor, and pins the
+//!   build an `upgrade` may fetch.
 //! * [`receipt`]: the decision record of an install, `azos_decision::Rule::
 //!   PackageInstall`, with the package id as the provenance hash.
 //! * [`apply`]: what the installer and the boot-time apply share on the
@@ -85,6 +90,7 @@ pub mod admit;
 pub mod api;
 pub mod apply;
 pub mod container;
+pub mod index;
 pub mod meta;
 pub mod receipt;
 pub mod verify;
@@ -164,6 +170,10 @@ pub enum Refusal {
     Admission(AdmissionError),
     /// Refused by the boot-time apply after the installer admitted it.
     Boot(apply::BootWhy),
+    /// The repository index was refused.
+    Index(index::IndexWhy),
+    /// An upgrade was refused.
+    Upgrade(index::UpgradeWhy),
 }
 
 impl Refusal {
@@ -171,7 +181,7 @@ impl Refusal {
     /// (1 container, 2 algorithm, 3 signer, 4 signature, 5 metadata, 6 images,
     /// 7 hardware, 8 ABI, 9 interface level, 10 foreign section, 11 rows,
     /// 12 rows and images, 13 warrants, 14 real time, 15 frames, 16
-    /// admission, 17 imports, 18 epoch, 19 boot admission, 20 unconfirmed trial, 21 volume), bits 0..24 the step's own value (the algorithm id, the
+    /// admission, 17 imports, 18 epoch, 19 boot admission, 20 unconfirmed trial, 21 volume, 22 repository index, 23 upgrade), bits 0..24 the step's own value (the algorithm id, the
     /// image or interface index, the row, the grant).
     pub const fn code(&self) -> u64 {
         let (step, low) = match *self {
@@ -196,6 +206,8 @@ impl Refusal {
             Refusal::Boot(apply::BootWhy::Admission) => (19, 0),
             Refusal::Boot(apply::BootWhy::Unconfirmed) => (20, 0),
             Refusal::Boot(apply::BootWhy::Volume) => (21, 0),
+            Refusal::Index(w) => (22, w as u64),
+            Refusal::Upgrade(w) => (23, w as u64),
         };
         step << 24 | low
     }

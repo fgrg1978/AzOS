@@ -143,3 +143,45 @@ config PKG_FETCH_TFTP
 
       Cost: about 2 KiB of code in PKGD.ELF and no RAM beyond the UDP socket
       the image's seccomp profile already grants; the same on every ISA.
+
+config PKG_INDEX_MAX_ENTRIES
+    int "Packages one repository index may list"
+    range 1 256
+    default 16 if HWCLASS_EMBEDDED
+    default 256 if HWCLASS_SERVER
+    default 64
+    help
+      `pkg outdated` and `pkg upgrade` read the signed index of the configured
+      package source (INDEX.AZX next to the package the source rows name): one
+      entry per package the repository offers, with its newest version, the
+      id of that build, and optionally the lowest version still considered
+      secure (`sec_floor`). An index that lists more than this is refused
+      whole; its text is bounded by 256 bytes per entry.
+
+      Cost: the index is read into the installer's package buffer (no extra
+      RAM) and the kernel's boot-time apply reads it into the heap while it
+      applies packages, at most PKG_INDEX_MAX_ENTRIES x 256 B.
+
+config PKG_SEC_FLOOR_ENFORCE
+    bool "Refuse to launch a program of a package installed below its security floor"
+    depends on USERSPACE_PKGD
+    default n if BUILD_TYPE_DEV
+    default y
+    help
+      The signed repository index can declare, per package, the lowest version
+      that is still secure (`sec_floor`). `pkg outdated` always reports a
+      package installed below its floor. With this on, the kernel's boot-time
+      apply also re-verifies the stored index and marks the programs of such a
+      package, and the exec check (`Rule::ExecGrant`, basis `below security
+      floor`) refuses to start them even for a task that holds a launch grant
+      on the image or the package, writing a decision record per refusal. The
+      way out is `pkg upgrade`, which installs the fixed version through the
+      normal signed path.
+
+      On by default in every release and certifiable build (and so in the
+      hardened presets, which are release); off in development builds, where a
+      stale package is a nuisance and not a hole.
+      With it off nothing is refused: the report still names the package.
+
+      Cost: the exec check of a package image compares one flag; the apply
+      reads and verifies the index (one signature) per boot, either ISA.

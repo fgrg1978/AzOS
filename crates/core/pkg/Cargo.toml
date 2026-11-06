@@ -30,6 +30,12 @@ pkg-import-canary = []
 # Skips the epoch floor: a package signed against a security epoch below the
 # device's confirmed floor is still admitted.
 pkg-epoch-canary = []
+# Treats every version as meeting its security floor: an upgrade to a build below
+# the floor is allowed and a package below it is not reported or refused.
+pkg-floor-canary = []
+# Skips the downgrade check of an upgrade: a version below the installed one is
+# installed.
+pkg-downgrade-canary = []
 # The trial rule never rolls back: a package whose boots all failed stays applied.
 pkg-trial-canary = []
 

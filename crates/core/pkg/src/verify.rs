@@ -21,7 +21,7 @@
 use azos_crypto::sha256::sha256;
 use azos_topology::{SignerSpec, Topology};
 
-use crate::container::Package;
+use crate::container::{accepted_alg, Package};
 use crate::meta::Meta;
 use crate::Refusal;
 
@@ -60,25 +60,63 @@ impl<'p> Verified<'p, '_> {
 /// signer lookup, the image hashes); the host suite shows the matching refusal
 /// turn into an installed package.
 pub fn verify_head<'p, 'a>(pkg: Package<'p>, topo: &Topology<'a>) -> Result<Verified<'p, 'a>, Refusal> {
-    let alg = pkg.alg().ok_or(Refusal::Algorithm(pkg.alg_id))?;
-
-    let key_id = pkg.key_id();
-    let signer_index = if cfg!(feature = "pkg-signer-canary") {
-        0
-    } else {
-        topo.signers().iter().position(|s| s.key_id == key_id).ok_or(Refusal::UnknownSigner)?
-    };
-    let signer = *topo.signers().get(signer_index).ok_or(Refusal::UnknownSigner)?;
-
-    if !cfg!(feature = "pkg-verify-skip-canary") && !alg.verify(pkg.key, &pkg.message(), pkg.sig) {
-        return Err(Refusal::Signature);
-    }
-
+    let (signer, signer_index) = authenticate(pkg.alg_id, pkg.key, pkg.sig, &pkg.message(), topo)?;
     let meta = Meta::parse(pkg.meta).map_err(Refusal::Meta)?;
     if meta.images_total() != pkg.images_len as u64 {
         return Err(Refusal::Images(meta.images().len() as u16));
     }
     Ok(Verified { pkg, meta, signer, signer_index, id: pkg.id() })
+}
+
+/// Why a signed file was not authenticated: the first of the three checks every
+/// signed file of this crate passes, in this order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AuthError {
+    /// The algorithm id is not the device's, or the key or signature has a
+    /// length no key or signature of that algorithm has.
+    Algorithm(u16),
+    /// The key is not one of the topology's signers.
+    UnknownSigner,
+    /// The signature does not verify.
+    Signature,
+}
+
+impl From<AuthError> for Refusal {
+    fn from(e: AuthError) -> Self {
+        match e {
+            AuthError::Algorithm(a) => Refusal::Algorithm(a),
+            AuthError::UnknownSigner => Refusal::UnknownSigner,
+            AuthError::Signature => Refusal::Signature,
+        }
+    }
+}
+
+/// The algorithm, the signer and the signature of a signed file: the steps
+/// 2 to 4 above, shared by packages and by the repository index
+/// ([`crate::index`]). `message` is what the author signed. Returns the signer
+/// the topology admits the key under (a copy) and its index.
+///
+/// The canary features of the crate skip the signature and the signer lookup
+/// here, so they turn a forged package AND a forged index into an accepted one.
+pub fn authenticate<'a>(
+    alg_id: u16,
+    key: &[u8],
+    sig: &[u8],
+    message: &[u8],
+    topo: &Topology<'a>,
+) -> Result<(SignerSpec<'a>, usize), AuthError> {
+    let alg = accepted_alg(alg_id, key, sig).ok_or(AuthError::Algorithm(alg_id))?;
+    let key_id = azos_crypto::sig::key_id(alg_id, key);
+    let signer_index = if cfg!(feature = "pkg-signer-canary") {
+        0
+    } else {
+        topo.signers().iter().position(|s| s.key_id == key_id).ok_or(AuthError::UnknownSigner)?
+    };
+    let signer = *topo.signers().get(signer_index).ok_or(AuthError::UnknownSigner)?;
+    if !cfg!(feature = "pkg-verify-skip-canary") && !alg.verify(key, message, sig) {
+        return Err(AuthError::Signature);
+    }
+    Ok((signer, signer_index))
 }
 
 /// Verify the whole file `bytes` against the signers of `topo`.

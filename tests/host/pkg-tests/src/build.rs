@@ -92,3 +92,57 @@ pub fn build(spec: &Spec, key: &SigningKey) -> Vec<u8> {
     let sig = key.sign(&msg).to_bytes();
     assemble(1, key.verifying_key().as_bytes(), &sig, meta.as_bytes(), rows.as_bytes(), &images)
 }
+
+/// One package an index lists.
+#[derive(Clone)]
+pub struct Offer {
+    pub name: String,
+    pub version: String,
+    pub sec_floor: Option<String>,
+    pub id: [u8; 32],
+    pub file: String,
+}
+
+impl Offer {
+    /// The offer of the package `bytes` holds, as its repository would list it.
+    pub fn of(bytes: &[u8], file: &str, sec_floor: Option<&str>) -> Self {
+        let p = azos_pkg::Package::parse(bytes).unwrap();
+        let m = azos_pkg::Meta::parse(p.meta).unwrap();
+        Offer { name: m.name.into(), version: m.version.into(), sec_floor: sec_floor.map(Into::into), id: p.id(), file: file.into() }
+    }
+}
+
+/// The text of an index body listing `offers` (sorted by name, as the format wants).
+pub fn index_body(serial: u32, offers: &[Offer]) -> String {
+    let mut sorted = offers.to_vec();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut t = format!("format = 1\nserial = {serial}\n");
+    for o in &sorted {
+        t.push_str(&format!("\n[pkg.{}]\nversion = \"{}\"\n", o.name, o.version));
+        if let Some(f) = &o.sec_floor {
+            t.push_str(&format!("sec_floor = \"{f}\"\n"));
+        }
+        t.push_str(&format!("id = \"{}\"\nfile = \"{}\"\n", hex(&o.id), o.file));
+    }
+    t
+}
+
+/// Assemble an index file from parts.
+pub fn assemble_index(alg_id: u16, key: &[u8], sig: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut b = azos_pkg::index::MAGIC.to_vec();
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&alg_id.to_le_bytes());
+    b.extend_from_slice(&(key.len() as u16).to_le_bytes());
+    b.extend_from_slice(&(sig.len() as u16).to_le_bytes());
+    b.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    for part in [key, sig, body] {
+        b.extend_from_slice(part);
+    }
+    b
+}
+
+/// Sign the index body `body` with `key`.
+pub fn build_index(body: &str, key: &SigningKey) -> Vec<u8> {
+    let sig = key.sign(&azos_pkg::index::message(1, body.as_bytes())).to_bytes();
+    assemble_index(1, key.verifying_key().as_bytes(), &sig, body.as_bytes())
+}
