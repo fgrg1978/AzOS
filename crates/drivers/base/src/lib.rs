@@ -16,3 +16,5 @@ pub mod window;
 
 pub mod instances;
 
+pub mod sensors;
+

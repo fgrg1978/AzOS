@@ -6268,3 +6268,15 @@ mod expander;
 
 #[cfg(test)]
 mod gpio_chips_tests;
+
+// ── The sensor class (front sensor-class) ───────────────────────────────────
+//
+// The class (`sensors.rs`: channels, instances, streams) and the sensors the
+// board registers first (`sensors/board.rs`), the real files
+// (`sensor_class_tests.rs`).
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/base/src/sensors.rs"]
+mod sensors;
+
+#[cfg(test)]
+mod sensor_class_tests;

@@ -42,6 +42,9 @@ pub struct Sample {
 }
 
 impl Sample {
+    /// No record, no stamp: what a stream holds before its first sample.
+    pub const EMPTY: Sample = Sample { len: 0, flags: 0, acq_ns: 0, w: [0; SAMPLE_WORDS] };
+
     /// Copy the record into `out`; returns how many bytes were copied.
     pub fn copy_to(&self, out: &mut [u8]) -> usize {
         let n = (self.len as usize).min(SAMPLE_BYTES).min(out.len());

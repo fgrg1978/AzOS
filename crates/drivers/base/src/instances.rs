@@ -101,12 +101,29 @@ pub struct Instances<C: ?Sized + 'static, const N: usize> {
 }
 
 impl<C: ?Sized + Sync + 'static, const N: usize> Instances<C, N> {
+    /// A class with nothing registered: the board's own instances are added
+    /// with [`register_board`](Self::register_board), in the order that fixes
+    /// their numbers.
+    pub const fn empty() -> Self {
+        let slots = [Slot { owner: Owner::Nobody, ctrl: None, closing: false }; N];
+        Instances { slots: SpinLock::new(slots), inflight: [const { AtomicU32::new(0) }; N] }
+    }
+
     /// A class whose instance 0 is `board`.
     pub const fn with_board(board: &'static C) -> Self {
         assert!(N >= 1, "a class keeps at least the board's controller");
         let mut slots = [Slot { owner: Owner::Nobody, ctrl: None, closing: false }; N];
         slots[0] = Slot { owner: Owner::Board, ctrl: Some(board), closing: false };
         Instances { slots: SpinLock::new(slots), inflight: [const { AtomicU32::new(0) }; N] }
+    }
+
+    /// Register one of the board's own instances, never given back: the lowest
+    /// number nobody has had.
+    pub fn register_board(&self, ctrl: &'static C) -> Result<u32, RegisterError> {
+        let mut slots = self.slots.lock();
+        let i = fresh(&slots[..]).ok_or(RegisterError::Full)?;
+        slots[i] = Slot { owner: Owner::Board, ctrl: Some(ctrl), closing: false };
+        Ok(i as u32)
     }
 
     /// Register device `dev`'s controller: the instance number it had before,

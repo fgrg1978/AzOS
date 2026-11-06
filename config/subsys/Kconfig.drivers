@@ -882,6 +882,72 @@ config GPIO_SOFT_EXPANDER
       boards have no place it is added). Needs GPIO_CONTROLLERS of 2 or
       more. n: no such device.
 
+config SENSOR_INSTANCES
+    int "Sensors: most instances the Sensor interface serves"
+    range 12 256
+    default 16
+    help
+      The sensors the kernel keeps for the `Sensor` interface
+      (crates/drivers/base/src/sensors.rs): the board's own come first,
+      in the order the topology's `sensor.<n>` endpoints name them (the
+      IMU is 0, the power monitor 9; the IMU's die temperature follows
+      them), then every temperature sensor a thermal zone reads. A
+      capability on an instance past this limit, or on one not
+      registered, answers BAD_ARGUMENT or NOT_READY. Cost: a stream
+      (SENSOR_STREAM_DEPTH samples) per instance.
+
+config SENSOR_STREAM_DEPTH
+    int "Sensors: samples a stream keeps"
+    range 2 1024
+    default 16
+    help
+      Every sensor instance publishes into a log of this many samples
+      (azos_rings::Log: one writer, any number of readers, each with its
+      own cursor). A reader that falls further behind than this loses the
+      oldest samples and is told how many. At the IMU's rate the default
+      leaves a reader 160 ms. Cost: 48 bytes of .bss per sample per
+      instance.
+
+config SENSOR_IMU_HZ
+    int "Sensors: IMU sample rate (Hz)"
+    range 1 1000
+    default 100
+    help
+      The rate of the real-time `imu` task, and the IMU's channel
+      descriptor.
+
+config SENSOR_ODOM_HZ
+    int "Sensors: odometry and encoder sample rate (Hz)"
+    range 1 1000
+    default 50
+
+config SENSOR_SLOW_HZ
+    int "Sensors: rangefinder, battery and digital-line sample rate (Hz)"
+    range 1 100
+    default 10
+
+config SENSOR_PIR_GPIO
+    int "Sensors: GPIO pin of the PIR motion sensor"
+    range 0 63
+    default 13
+    help
+      Bit 0 of the digital-line sensor (`sensor.7`). Guard mode wires the
+      three lines to these pins.
+
+config SENSOR_IR_GPIO
+    int "Sensors: GPIO pin of the IR sensor"
+    range 0 63
+    default 14
+    help
+      Bit 2 of the digital-line sensor.
+
+config SENSOR_SOUND_GPIO
+    int "Sensors: GPIO pin of the sound sensor"
+    range 0 63
+    default 15
+    help
+      Bit 1 of the digital-line sensor.
+
 menu "I2C bus transactions"
 
 config I2C_DESIGNWARE

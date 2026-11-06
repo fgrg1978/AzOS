@@ -15,6 +15,9 @@ k1  = []
 # the ops in flight.
 instances-reuse-canary = []
 instances-no-drain-canary = []
+# Canary of `sensors.rs` (built by tests/host/drivers-tests and the kernel's
+# `sensor-drop-canary`): a producer drops every 10th sample.
+sensor-drop-canary = []
 
 [dependencies]
 azos_abi     = { workspace = true }
@@ -22,3 +25,5 @@ azos_arch    = { workspace = true }
 azos_sync    = { workspace = true }
 azos_limits  = { workspace = true }
 azos_drv_api = { workspace = true }
+azos_devif   = { workspace = true }
+azos_rings   = { workspace = true }
