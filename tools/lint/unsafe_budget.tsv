@@ -40,7 +40,7 @@ crates/core/ipc	36	9	6	0	0	52
 crates/core/ktest	3	0	0	0	0	66
 crates/core/libsys	95	10	2	0	0	94
 crates/core/libsys-macros	0	0	0	0	1	-
-crates/core/limits	4	0	0	0	0	10
+crates/core/limits	4	0	0	0	0	9
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
 crates/core/mm	313	49	13	0	0	82
@@ -91,7 +91,7 @@ crates/drivers/irqchip	0	0	0	0	1	0
 crates/drivers/kill-switch	0	0	0	0	1	0
 crates/drivers/kit	2	1	0	0	0	14
 crates/drivers/lx/emul	18	12	0	6	0	-
-crates/drivers/net	31	4	6	0	0	64
+crates/drivers/net	25	4	6	0	0	60
 crates/drivers/nvme	0	0	0	0	1	0
 crates/drivers/pci	0	0	0	0	1	0
 crates/drivers/power	0	0	0	0	1	0
