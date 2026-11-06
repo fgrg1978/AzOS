@@ -123,17 +123,37 @@ enum DmaFail {
     /// The device never wrote the descriptor back: it could not read it (an
     /// address that is not guest physical memory) or does not run.
     NoAnswer,
+    /// The descriptor or the payload could not be put in fw_cfg's DMA domain.
+    NotMapped,
 }
 
 /// Write `CFG` to fw_cfg file `sel` (the selector key from
 /// `find_ramfb_selector()`) via the DMA protocol, the only functional write
 /// path (see `REG_DATA`'s doc comment). QEMU reads the descriptor and the
-/// payload from guest physical memory, so both are handed by their physical
-/// addresses.
+/// payload from guest memory, so both are handed by the bus addresses
+/// fw_cfg's DMA domain gives them, for the transfer only.
 fn dma_write_file(sel: u16) -> Result<(), DmaFail> {
+    use azos_dma::Direction;
+    const DESC: usize = core::mem::size_of::<DmaAccess>();
+    let domain = azos_dma::registry::domain_for_mmio(FW_CFG_BASE as u64);
     let dma = &raw mut DMA;
     let payload_pa = azos_mm::addr::virt_to_phys((&raw const CFG) as usize) as u64;
     let dma_pa = azos_mm::addr::virt_to_phys(dma as usize) as u64;
+    let payload_bus = domain.map(payload_pa, RAMFB_CFG_BYTES, Direction::ToDevice).map_err(|_| DmaFail::NotMapped)?;
+    // The device writes the descriptor's `control` back.
+    let Ok(dma_bus) = domain.map(dma_pa, DESC, Direction::Bidirectional) else {
+        let _ = domain.unmap(payload_bus, RAMFB_CFG_BYTES);
+        return Err(DmaFail::NotMapped);
+    };
+    let r = dma_transfer(sel, dma, payload_bus.0, dma_bus.0);
+    let _ = domain.unmap(dma_bus, DESC);
+    let _ = domain.unmap(payload_bus, RAMFB_CFG_BYTES);
+    r
+}
+
+/// One fw_cfg DMA write of `CFG` to file `sel`: the descriptor at `dma`,
+/// whose bus address is `dma_bus`, names the payload at `payload_bus`.
+fn dma_transfer(sel: u16, dma: *mut DmaAccess, payload_bus: u64, dma_bus: u64) -> Result<(), DmaFail> {
     // SAFETY: `init` is the only user of `DMA`, once, on the boot CPU.
     unsafe {
         core::ptr::write_volatile(
@@ -141,14 +161,14 @@ fn dma_write_file(sel: u16) -> Result<(), DmaFail> {
             (((sel as u32) << 16) | FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_WRITE).to_be(),
         );
         core::ptr::write_volatile(core::ptr::addr_of_mut!((*dma).length), (RAMFB_CFG_BYTES as u32).to_be());
-        core::ptr::write_volatile(core::ptr::addr_of_mut!((*dma).address), payload_pa.to_be());
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*dma).address), payload_bus.to_be());
     }
 
     // The descriptor and the payload before the doorbell. A single 8-byte
     // write to REG_DMA starts `fw_cfg_dma_transfer()`.
     azos_dma::order::io_wmb();
     // SAFETY: the fw_cfg DMA register of the board's mapped window.
-    unsafe { azos_arch_api::mmio::write64(FW_CFG_BASE + REG_DMA, dma_pa.to_be()) };
+    unsafe { azos_arch_api::mmio::write64(FW_CFG_BASE + REG_DMA, dma_bus.to_be()) };
 
     // The device clears `control` when it is done and leaves only the error
     // bit if it failed (Linux `fw_cfg_wait_for_control`). A volatile read:
@@ -201,7 +221,7 @@ fn find_ramfb_selector() -> Option<u16> {
 }
 
 /// Configure QEMU's `ramfb` device to display `fb_addr` (a *guest
-/// physical* address, which the device reads directly) as an
+/// physical* address, handed to the device by its bus address) as an
 /// XRGB8888 framebuffer of `width`x`height`, `stride` bytes/row.
 ///
 /// Returns `false` (does nothing else) if `ramfb` wasn't found in the
@@ -222,11 +242,20 @@ pub fn init(fb_addr: usize, width: u32, height: u32, stride: u32) -> bool {
         return false;
     }
 
+    // The device scans the buffer out from now on: it stays in fw_cfg's DMA
+    // domain for as long as the kernel runs.
+    let fb_bytes = stride as usize * height as usize;
+    let domain = azos_dma::registry::domain_for_mmio(FW_CFG_BASE as u64);
+    let Ok(fb_bus) = domain.map(fb_addr as u64, fb_bytes, azos_dma::Direction::ToDevice) else {
+        azos_drv_sys::kerr!("[RAMFB] the framebuffer at {:#x} is not in fw_cfg's DMA domain", fb_addr);
+        return false;
+    };
+
     // 28-byte `RAMFBCfg` payload (addr, fourcc, flags, width, height,
     // stride — confirmed field order against QEMU mainline
     // `hw/display/ramfb.c`'s `struct RAMFBCfg`), all big-endian.
     let mut payload = [0u8; RAMFB_CFG_BYTES];
-    payload[0..8].copy_from_slice(&(fb_addr as u64).to_be_bytes());
+    payload[0..8].copy_from_slice(&fb_bus.0.to_be_bytes());
     payload[8..12].copy_from_slice(&FOURCC_XRGB8888.to_be_bytes());
     payload[12..16].copy_from_slice(&0u32.to_be_bytes()); // flags
     payload[16..20].copy_from_slice(&width.to_be_bytes());
@@ -237,6 +266,7 @@ pub fn init(fb_addr: usize, width: u32, height: u32, stride: u32) -> bool {
 
     if let Err(why) = dma_write_file(sel) {
         azos_drv_sys::kerr!("[RAMFB] DMA write of 'etc/ramfb' failed: {:?}", why);
+        let _ = domain.unmap(fb_bus, fb_bytes);
         return false;
     }
 
