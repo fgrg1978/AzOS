@@ -30,7 +30,8 @@ use azos_sync::{IrqSaveGuard, SpinLock};
 
 use crate::addr::KERNEL_PHYS_TO_VIRT_OFFSET;
 use crate::cache::Cache;
-use crate::mapping::MapSet;
+use crate::anon_obj::{self, AnonObj};
+use crate::mapping::{MapSet, Mapping};
 use crate::pager::MAPPINGS_PER_SPACE;
 
 /// The pager's records of one space, under the space's lock.
@@ -75,6 +76,16 @@ impl Space {
     pub(crate) fn close(&mut self) {
         self.recorded = false;
         self.set.clear();
+    }
+
+    /// The anonymous mapping holding `va` and its object. The object lives
+    /// while a mapping of the set names it, and the set is read under the
+    /// space's lock, which `self` is.
+    #[inline]
+    pub(crate) fn anon_at(&self, va: usize) -> Option<(&Mapping, &AnonObj)> {
+        let m = self.set.find(va)?;
+        // SAFETY: a mapping of this set names a live object (above).
+        Some((m, unsafe { anon_obj::get(m.anon_obj()?) }))
     }
 }
 

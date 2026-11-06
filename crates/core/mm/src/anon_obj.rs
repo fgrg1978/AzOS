@@ -170,22 +170,32 @@ pub struct Spare {
 impl Spare {
     /// `n` (at most 2) pages charged to `root`. `None` when the allocator has
     /// none: nothing is held then.
+    #[inline]
     pub fn take(root: usize, n: usize) -> Option<Self> {
-        let mut s = Spare { root, pages: [0; 2], n: 0 };
+        let s = Spare { root, pages: [0; 2], n: 0 };
+        if n == 0 {
+            return Some(s);
+        }
+        s.fill(n)
+    }
+
+    #[cold]
+    fn fill(mut self, n: usize) -> Option<Self> {
+        let s = &mut self;
         while s.n < n.min(2) {
-            let _ = vmm::table_charge(root, TableCharge::Promised);
+            let _ = vmm::table_charge(s.root, TableCharge::Promised);
             match pmm::alloc_page() {
                 Ok(p) => {
                     s.pages[s.n] = phys_to_virt(p.as_usize());
                     s.n += 1;
                 }
                 Err(_) => {
-                    let _ = vmm::table_charge(root, TableCharge::Return);
+                    let _ = vmm::table_charge(s.root, TableCharge::Return);
                     return None;
                 }
             }
         }
-        Some(s)
+        Some(self)
     }
 
     fn pop(&mut self) -> Option<usize> {
@@ -198,7 +208,17 @@ impl Spare {
 }
 
 impl Drop for Spare {
+    #[inline]
     fn drop(&mut self) {
+        if self.n != 0 {
+            self.give_back();
+        }
+    }
+}
+
+impl Spare {
+    #[cold]
+    fn give_back(&mut self) {
         while let Some(va) = self.pop() {
             free_page(self.root, va);
         }
@@ -256,28 +276,36 @@ impl AnonObj {
         (chunk.0 != 0).then(|| unsafe { word_in(chunk.0, chunk.1) })
     }
 
-    /// The word of page `i`'s slot.
+    /// The word of page `i`'s slot and the pages a [`Spare`] needs for
+    /// [`Self::slot_fill`] of it, read under the space's lock.
     #[inline(always)]
-    pub fn word(&self, i: usize) -> u64 {
-        self.slot(i).map_or(slot::EMPTY, |s| s.load(Ordering::Acquire))
+    pub fn look(&self, i: usize) -> (u64, usize) {
+        let (chunk, k) = match self.place(i) {
+            Some(Place::Inline(j)) => return (self.inline[j].load(Ordering::Relaxed), 0),
+            Some(Place::Near(r, k)) => (self.near[r].load(Ordering::Acquire), k),
+            Some(Place::Dir(d, k)) => match self.dir() {
+                None => return (slot::EMPTY, 2),
+                Some(dir) => (dir[d].load(Ordering::Acquire), k),
+            },
+            None => return (slot::EMPTY, 0),
+        };
+        if chunk == 0 {
+            return (slot::EMPTY, 1);
+        }
+        // SAFETY: a chunk page of this object.
+        (unsafe { word_in(chunk, k) }.load(Ordering::Relaxed), 0)
     }
 
     /// Pages a [`Spare`] needs for [`Self::slot_fill`] of page `i`.
     #[inline]
     pub fn missing(&self, i: usize) -> usize {
-        match self.place(i) {
-            Some(Place::Near(r, _)) => (self.near[r].load(Ordering::Acquire) == 0) as usize,
-            Some(Place::Dir(d, _)) => match self.dir() {
-                None => 2,
-                Some(dir) => (dir[d].load(Ordering::Acquire) == 0) as usize,
-            },
-            Some(Place::Inline(_)) | None => 0,
-        }
+        self.look(i).1
     }
 
     /// The slot of page `i`, its storage installed from `spare` when it has
     /// none. Under the space's lock. `None` when `spare` is short or the page
     /// has no place ([`Self::holds`]).
+    #[inline]
     pub fn slot_fill(&self, i: usize, spare: &mut Spare) -> Option<&AtomicU64> {
         match self.place(i)? {
             Place::Inline(_) => {}

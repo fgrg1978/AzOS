@@ -1334,18 +1334,28 @@ mod mapping_tests {
         assert_eq!(s.reserved_pages(), 11);
     }
 
-    #[test]
-    fn the_binary_search_finds_every_record_of_a_full_set() {
-        let mut s = MapSet::<32>::new();
-        for i in 0..32 {
-            s.insert(Mapping::anon(2 * i * P, (2 * i + 1) * P, true, OBJ + i, 0)).unwrap();
+    /// Every record of a full set of `N`, and every hole between them.
+    fn finds_every_record<const N: usize>() {
+        let mut s = MapSet::<N>::new();
+        for i in 0..N {
+            s.insert(Mapping::anon(2 * i * P, (2 * i + 1) * P, true, OBJ + i, 2 * i)).unwrap();
         }
-        for i in 0..32 {
+        for i in 0..N {
             assert_eq!(s.find(2 * i * P).and_then(|m| m.anon_obj()), Some(OBJ + i));
+            assert_eq!(s.find(2 * i * P + P - 1).and_then(|m| m.anon_obj()), Some(OBJ + i));
             assert!(s.find((2 * i + 1) * P).is_none(), "the hole after record {i}");
         }
-        assert_eq!(s.ending_at(5 * P).and_then(|m| m.anon_obj()), Some(OBJ + 2));
-        assert!(s.ending_at(4 * P).is_none());
+        assert!(s.find(2 * N * P).is_none());
+        assert_eq!(s.ending_at((2 * N - 1) * P).and_then(|m| m.anon_obj()), Some(OBJ + N - 1));
+        assert!(s.ending_at(2 * N * P).is_none());
+    }
+
+    #[test]
+    fn the_scan_and_the_search_find_every_record_of_a_full_set() {
+        use super::mapping::SCAN_MAX;
+        finds_every_record::<SCAN_MAX>();
+        finds_every_record::<{ 2 * SCAN_MAX }>();
+        finds_every_record::<1>();
     }
 
     #[test]

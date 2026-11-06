@@ -855,9 +855,8 @@ fn anon_slot(sp: &Space, va: usize) -> Option<&AtomicU64> {
     if !sp.recorded {
         return None;
     }
-    let m = sp.set.find(va)?;
-    // SAFETY: the mapping names a live object, and the lock is held.
-    unsafe { anon_obj::get(m.anon_obj()?) }.slot(m.page_index(va))
+    let (m, o) = sp.anon_at(va)?;
+    o.slot(m.page_index(va))
 }
 
 impl Reclaimee for AnonReclaim<'_> {
@@ -1359,10 +1358,11 @@ pub fn reserve(r: SpaceRef, start: usize, end: usize, write: bool) -> Result<(),
             if sp.set.covered_pages(start, end) != 0 {
                 return Err(MapError::Overlap);
             }
-            let next = sp.set.find(end).filter(|m| m.start == end).copied();
-            let beside = sp.set.ending_at(start).copied().into_iter().chain(next).find_map(|m| {
-                // SAFETY: the mapping names a live object, and the lock is held.
-                m.anon_obj().filter(|&h| m.write == write && unsafe { anon_obj::get(h) }.holds(lo, hi))
+            let below = sp.set.ending_at(start).map(|m| m.start);
+            let above = sp.set.find(end).filter(|m| m.start == end).map(|m| m.start);
+            let beside = below.into_iter().chain(above).find_map(|at| {
+                let (m, o) = sp.anon_at(at)?;
+                (m.write == write && o.holds(lo, hi)).then_some(m.anon_obj()).flatten()
             });
             if let Some(h) = beside {
                 return sp.set.insert(Mapping::anon(start, end, write, h, lo));
@@ -1652,15 +1652,12 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let seq = MARKER_SEQ.load(Ordering::Acquire);
     let (m, word, missing) = {
         let sp = space.lock().filter(|sp| sp.recorded).ok_or(KernelError::NotMapped)?;
-        let m = *sp.set.find(page).ok_or(KernelError::NotMapped)?;
-        match m.anon_obj() {
-            Some(h) => {
-                // SAFETY: the mapping names a live object, and the lock is held.
-                let o = unsafe { anon_obj::get(h) };
-                let i = m.page_index(page);
-                (m, o.word(i), o.missing(i))
+        match sp.anon_at(page) {
+            Some((m, o)) => {
+                let (word, missing) = o.look(m.page_index(page));
+                (*m, word, missing)
             }
-            None => (m, slot::EMPTY, 0),
+            None => (*sp.set.find(page).ok_or(KernelError::NotMapped)?, slot::EMPTY, 0),
         }
     };
     // Mappings are made below the shm window and above the null guard, but the
@@ -1724,9 +1721,15 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     };
     let (Source::Plain(frame) | Source::Held(frame) | Source::Run { frame, .. }) = src;
     // The slot's storage, if it has none yet: taken now, never under the lock.
-    let Some(mut spare) = Spare::take(root, missing) else {
-        src.give_back(root, block);
-        return Err(KernelError::OutOfMemory);
+    let mut spare = match missing {
+        0 => None,
+        n => match Spare::take(root, n) {
+            Some(s) => Some(s),
+            None => {
+                src.give_back(root, block);
+                return Err(KernelError::OutOfMemory);
+            }
+        },
     };
     let pte_ptr = match walk_installing(root, page, true) {
         Ok(p) => p,
@@ -1755,23 +1758,28 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let installed = space.lock().filter(|sp| sp.recorded).is_some_and(|mut t| {
         // Unmapped or re-protected since the lookup: look again and let the
         // new layout answer (a removed mapping then kills, as any hole does).
-        if !t.set.find(page).is_some_and(|n| n.write == m.write && n.backing == m.backing && n.page_index(page) == idx) {
+        let Some((n, o)) = t.anon_at(page) else { return false };
+        if n.write != m.write || n.backing != m.backing || n.page_index(page) != idx {
             return false;
         }
-        // SAFETY: the mapping names a live object, and the lock is held.
-        let Some(slot) = unsafe { anon_obj::get(h) }.slot_fill(idx, &mut spare) else { return false };
+        // Storage only grows, so a slot that had it still has it.
+        let slot = match spare.as_mut() {
+            None => o.slot(idx),
+            Some(sp) => o.slot_fill(idx, sp),
+        };
+        let Some(slot) = slot else { return false };
         // SAFETY: `pte_ptr` is an aligned entry of a live table page (the
         // mapping still exists, so `munmap` has not swept it).
         let leaf_word = unsafe { &*(pte_ptr as *const AtomicU64) };
         // Both words the decision was made on, or nothing: installs are
         // serialised by the space's lock, but the leaf is shared with walkers
         // that do not take it (a fork, `munmap`'s sweep).
-        if slot.load(Ordering::Acquire) != word
+        if slot.load(Ordering::Relaxed) != word
             || leaf_word.compare_exchange(seen, new, Ordering::AcqRel, Ordering::Acquire).is_err()
         {
             return false;
         }
-        slot.store(slot::frame(frame.as_usize()), Ordering::Release);
+        slot.store(slot::frame(frame.as_usize()), Ordering::Relaxed);
         if !matches!(src, Source::Held(_)) {
             t.committed += 1;
         }
