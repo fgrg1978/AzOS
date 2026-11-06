@@ -28,7 +28,9 @@ use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use azos_idl::Cap;
 use azos_pkg::apply::{is_parked, supersede_iter, supersede_push, SUPERSEDE_FILE_MAX, SUPERSEDE_REC};
 use azos_pkg::container::{ParseError, HEADER_LEN, KEY_LEN_MAX, SIG_LEN_MAX};
-use azos_pkg::index::{assess, check_upgrade, upgrade_entry, Availability, Entry, Floor, IndexWhy, Installed, UpgradeWhy, Version};
+use azos_pkg::index::{
+    assess, check_upgrade, mark_key, name_hash, upgrade_entry, Availability, Entry, Floor, IndexWhy, Installed, UpgradeWhy, Version,
+};
 use azos_pkg::{admit, receipt, verify, verify_head, Device, Package, Refusal};
 use azos_topology::signed::{fill_signed, DeviceContext, SignedFiles};
 use azos_topology::{Topology, CAPS_SIG_PATH, CAPS_TOML_PATH, SCHED_TOML_PATH};
@@ -343,6 +345,8 @@ pub struct Work {
     sched: [u8; SCHED_BUF],
     arena: [u8; MAX_STAGED * META_MAX],
     supersede: [u8; SUPERSEDE_FILE_MAX],
+    /// A signer's stored index, read to judge an install against its floor quota.
+    index: [u8; azos_pkg::index::FILE_MAX],
     upd: update::Work,
     io: [u8; UPDATE_IO],
     /// The running slot's manifest, for the base of a delta update.
@@ -359,6 +363,7 @@ struct Parts<'r> {
     sched: &'r mut [u8],
     arena: &'r mut [u8],
     supersede: &'r mut [u8],
+    index: &'r mut [u8],
     topo: &'r mut Topology<'r>,
     report: &'r mut Report,
 }
@@ -374,6 +379,7 @@ impl Work {
             sched: [0; SCHED_BUF],
             arena: [0; MAX_STAGED * META_MAX],
             supersede: [0; SUPERSEDE_FILE_MAX],
+            index: [0; azos_pkg::index::FILE_MAX],
             upd: update::Work::new(),
             io: [0; UPDATE_IO],
             base_mb: [0; update::MANIFEST_MAX],
@@ -401,6 +407,7 @@ fn parts<'r>(w: &'r mut Work, topo: &'r mut Topology<'static>) -> Parts<'r> {
         sched: &mut w.sched,
         arena: &mut w.arena,
         supersede: &mut w.supersede,
+        index: &mut w.index,
         topo,
         report: &mut w.report,
     }
@@ -921,7 +928,7 @@ fn install_or_admit<'r, V: Volume>(
     now: u64,
     replace: Option<&Replace<'_>>,
 ) -> [u64; 4] {
-    let Parts { pkg: pkg_buf, head, caps: caps_buf, sig: sig_buf, sched: sched_buf, arena, supersede, topo, .. } = p;
+    let Parts { pkg: pkg_buf, head, caps: caps_buf, sig: sig_buf, sched: sched_buf, arena, supersede, index: ix_buf, topo, .. } = p;
     let none = [0u8; 32];
 
     // 1. The package, whole, copied out of the client's object. One larger
@@ -952,6 +959,9 @@ fn install_or_admit<'r, V: Volume>(
     let (ok_ids, ok_n) = staged_ids(vol, head, Some(topo));
     let mut ids = [[0u8; 32]; MAX_STAGED];
     let mut staged = 0usize;
+    // The verified staged packages: signer and name, as the floor quota counts them.
+    let mut names = [(0usize, 0u64); MAX_STAGED];
+    let mut named = 0usize;
     let mut arena: &'r mut [u8] = arena;
     let mut i = 0;
     let mut old_path: Option<StagePath> = None;
@@ -976,6 +986,8 @@ fn install_or_admit<'r, V: Volume>(
             continue;
         }
         let Ok(v) = verify_head(pk, topo) else { continue };
+        names[named] = (v.signer_index, name_hash(&mark_key(&v.signer.key_id), v.meta.name));
+        named += 1;
         let (slot, rest) = core::mem::take(&mut arena).split_at_mut(META_MAX);
         arena = rest;
         let (rows, _) = slot.split_at_mut(pk.rows.len());
@@ -1010,6 +1022,10 @@ fn install_or_admit<'r, V: Volume>(
         if let Some(why) = why {
             return refuse(vol, mode, &id, signer, Refusal::Upgrade(why), now);
         }
+    }
+    let replacing = replace.map(|r| r.installed.name);
+    if past_floor_quota(vol, ix_buf, topo, &v, &names[..named], replacing) {
+        return refuse(vol, mode, &id, signer, Refusal::FloorQuota(FLOOR_QUOTA as u16), now);
     }
     let a = match admit(&v, v.pkg.rows, topo, dev) {
         Ok(a) => a,
@@ -1061,6 +1077,50 @@ fn install_or_admit<'r, V: Volume>(
         }
     }
     [0, receipt::id_prefix(&id), a.rows as u64, a.first_row as u64]
+}
+
+/// Floors the device remembers per signer (Kconfig `PKG_INDEX_FLOORS_PER_SIGNER`).
+const FLOOR_QUOTA: usize = azos_limits::PKG_INDEX_FLOORS_PER_SIGNER as usize;
+
+/// Would staging `v` take its signer past the floors the device remembers per
+/// signer? Only when the signer's stored index floors `v` under a name not
+/// staged yet (an upgrade, `replacing` the package of that name, adds none),
+/// and floors [`FLOOR_QUOTA`] staged packages of the signer already (`staged`:
+/// signer and name hash of each). Without a stored index
+/// that verifies there is nothing to count; the boot-time apply decides again
+/// either way, and also counts the floors the device remembers of packages no
+/// longer staged.
+fn past_floor_quota<V: Volume>(
+    vol: &mut V,
+    buf: &mut [u8],
+    topo: &Topology<'_>,
+    v: &azos_pkg::Verified<'_, '_>,
+    staged: &[(usize, u64)],
+    replacing: Option<&str>,
+) -> bool {
+    if replacing == Some(v.meta.name) {
+        return false;
+    }
+    let key = mark_key(&v.signer.key_id);
+    let n = match vol.read_file(&slot_path(&v.signer.key_id), buf) {
+        Ok(Read { n, more: false }) => n,
+        _ => return false,
+    };
+    let Ok(ix) = azos_pkg::index::verify(&buf[..n], topo) else { return false };
+    if ix.signer_index != v.signer_index {
+        return false;
+    }
+    let floored = |h: u64| ix.floors(&key).any(|(x, _)| x == h);
+    let mine = (v.signer_index, name_hash(&key, v.meta.name));
+    if !floored(mine.1) || staged.contains(&mine) {
+        return false;
+    }
+    let others = staged
+        .iter()
+        .enumerate()
+        .filter(|&(i, e)| e.0 == v.signer_index && floored(e.1) && !staged[..i].contains(e))
+        .count();
+    others + 1 > FLOOR_QUOTA
 }
 
 // ── The whole-system update ─────────────────────────────────────────────────

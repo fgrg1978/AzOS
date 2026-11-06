@@ -206,18 +206,28 @@ fn below_floor<D: BlockDev>(
                     &|h| boot.marks.remembered(&key, h).is_some(),
                 )
                 .collect();
+                let subject = signer as u32 + 1;
                 match boot.marks.accept(&key, ix.mark(), &floors) {
-                    Ok(()) if raise.is_some() => sink.record(&receipt::index_accepted(&ix, boot.now_ns)),
-                    Ok(()) => {}
+                    Ok(taken) => {
+                        if raise.is_some() {
+                            sink.record(&receipt::index_accepted(&ix, boot.now_ns));
+                        }
+                        if taken.left_out != 0 {
+                            sink.note(format_args!(
+                                "[PKG] signer {}: {} floor(s) of the index (serial {}) past the signer's quota are not remembered; the volume alone holds them",
+                                signer + 1, taken.left_out, ix.serial
+                            ));
+                            let n = taken.left_out as u64;
+                            sink.record(&receipt::index_event(subject, n, ix.serial, index::MarkEvent::OverQuota, boot.now_ns));
+                        }
+                    }
                     Err(e) => {
                         sink.note(format_args!(
                             "[PKG] signer {}: the index (serial {}) and its floors were not remembered ({:?}); the volume alone holds them",
                             signer + 1, ix.serial, e
                         ));
-                        if e != index::MarkErr::Write {
-                            let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer as u32 + 1, [0, ix.serial as u64, 1]);
-                            p.clock_ns = boot.now_ns;
-                            sink.record(&p);
+                        if e == index::MarkErr::Full {
+                            sink.record(&receipt::index_event(subject, 1, ix.serial, index::MarkEvent::NotRemembered, boot.now_ns));
                         }
                     }
                 }
@@ -228,9 +238,7 @@ fn below_floor<D: BlockDev>(
                     "[PKG] signer {}: no repository index at or above the one the device recorded; the floors it remembered stand",
                     signer + 1
                 ));
-                let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer as u32 + 1, [0, 0, 0]);
-                p.clock_ns = boot.now_ns;
-                sink.record(&p);
+                sink.record(&receipt::index_event(signer as u32 + 1, 0, 0, index::MarkEvent::Judged, boot.now_ns));
                 SignerFloors::Remembered
             }
             index::Floors::None => SignerFloors::Nothing,
@@ -903,9 +911,7 @@ pub fn apply<D: BlockDev>(
         sink.note(format_args!(
             "[PKG] index marks lost: no copy of the device's memory of the repository indexes can be read; each signer's stored index stands until it is written again"
         ));
-        let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, 0, [0, 0, 2]);
-        p.clock_ns = boot.now_ns;
-        sink.record(&p);
+        sink.record(&receipt::index_event(0, 0, 0, index::MarkEvent::Lost, boot.now_ns));
     }
     let heads = if pairs.is_empty() && !boot.sec_floor_enforce { Vec::new() } else { staged_heads(vol, root, &names, topo) };
     let new_verifies = |n: &[u8; 32]| heads.iter().any(|h| h.id == *n && h.verifies);

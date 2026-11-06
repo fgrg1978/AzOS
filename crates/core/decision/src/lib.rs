@@ -1278,10 +1278,11 @@ pub const RULES: &[RuleInfo] = &[
         rejected_if_no: "hand the effect to a stand-in for the missing device: it would answer as a device fault and leave no record",
     },
     RuleInfo {
-        // signer: the topology index plus one; serial: the index's own.
+        // signer: the topology index plus one; serial: the index's own; event:
+        // `azos_pkg::index::MarkEvent`.
         name: "package-index",
         subject: "signer",
-        fields: ["entries", "serial", "digest_prefix"],
+        fields: ["entries", "serial", "event"],
         rejected_if_yes: "-",
         rejected_if_no: "keep the index the signer last published: the one offered is older than the one the device recorded, or its body differs at the same serial",
     },

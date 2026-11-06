@@ -353,11 +353,11 @@ pub const UPGRADE_REASONS: [&str; 12] = [
 /// `azos_pkg::Refusal::code`'s, 32.. the installer's [`step`]s. Empty where no
 /// step has the number.
 pub fn step_name(status: u64) -> &'static str {
-    const PACKAGE: [&str; 24] = [
+    const PACKAGE: [&str; 25] = [
         "ok", "container", "algorithm", "signer", "signature", "metadata", "images", "hardware", "abi",
         "interface level", "foreign section", "rows", "rows and images", "warrants", "real time", "frames",
         "admission", "imports", "epoch floor", "boot admission", "unconfirmed trial", "volume", "repository index",
-        "upgrade",
+        "upgrade", "floor quota",
     ];
     let detail = ((status & 0xFF_FFFF) as usize).wrapping_sub(1);
     match step_of(status) {

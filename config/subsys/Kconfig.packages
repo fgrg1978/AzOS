@@ -210,8 +210,8 @@ config PKG_INDEX_MARK_SECTORS
       does not hold the newest copy and wins by generation when every sector of
       it verifies against the digest of the whole bank, so no cut or torn
       sector loses what was remembered. No writer of the staging volume reaches
-      them. An index that would not fit is still used from the volume, and the
-      apply says that it was not remembered.
+      them. Floors past a signer's quota (PKG_INDEX_FLOORS_PER_SIGNER) are used
+      from the volume, and the apply says that they were not remembered.
 
       0 is the link key, 1 the entropy seed, 2 the device record and
       TOPOLOGY_FLOOR_SECTOR (3 to 7) the topology counter floor: the build
@@ -221,13 +221,15 @@ config PKG_INDEX_MARK_SECTORS
 config PKG_INDEX_FLOORS_PER_SIGNER
     int "Floors remembered per signer"
     range 1 12
-    default 6
+    default 5
     help
       The floors a signer's newest index names for the packages staged under that
-      signer are remembered (PKG_INDEX_MARK_SECTORS) up to this many; an index
-      that names more is not remembered (a refusal record says so), so no signer
-      can fill the table at another's expense. A signer takes one entry for its
-      mark and these for its floors: the table holds as many signers as its
-      entries (13 a sector) divide into, and one beyond that is not remembered
-      either.
+      signer, or remembered already, are remembered (PKG_INDEX_MARK_SECTORS) up to
+      this many, the remembered ones first: past it the mark is still raised and
+      the rest are not remembered (a refusal record counts them), so no signer
+      can fill the table at another's expense. The installer refuses a package
+      that would take its signer past this many floored packages. A signer takes
+      one entry for its mark and these for its floors; with
+      PKG_SEC_FLOOR_ENFORCE the build refuses a table (13 entries a sector) that
+      does not hold TOPOLOGY_MAX_SIGNERS x (1 + this).
 

@@ -349,3 +349,49 @@ fn the_old_version_of_an_upgrade_is_removable_only_when_the_new_one_is_not_there
     assert_eq!(r.service().remove(id_words(&new_id))[0], 0);
     assert_eq!(r.service().remove(id_words(&old_id))[0], 0);
 }
+
+/// **The installer keeps a signer within the floors the device remembers.** With
+/// the signer's stored index flooring `PKG_INDEX_FLOORS_PER_SIGNER` staged packages
+/// of it, one more floored package is refused (typed, step 24); one the index does
+/// not floor takes no floor and is staged, and so is an upgrade, which adds none.
+///
+/// Canary (by hand): `past_floor_quota` answering `false` stages the package past
+/// the quota.
+#[test]
+fn an_install_past_the_signers_floor_quota_is_refused() {
+    let q = azos_limits::PKG_INDEX_FLOORS_PER_SIGNER as usize;
+    let mut r = Rig::new(MemVol::device(&device_with_two_signers(), &owner()));
+    let named = |i: usize, version: &str| {
+        let mut s = Spec::acme();
+        s.name = format!("pkg-{i}");
+        s.version = version.into();
+        s.images = vec![(format!("PKG{i}.ELF"), (0..300u32).map(|x| (x * (i as u32 + 3)) as u8).collect())];
+        s.rows = row(&format!("PKG{i}.ELF"), "best_effort", 20, "{ kind = \"endpoint\", target = \"endpoint.acme\", perm = \"rw\" }");
+        build(&s, &author())
+    };
+    let pkgs: Vec<Vec<u8>> = (0..q + 2).map(|i| named(i, "1.0.0")).collect();
+    let upgrade = named(0, "1.1.0");
+    // The stored index floors the first q + 1 and lists the last without a floor.
+    let mut offers: Vec<Offer> =
+        pkgs.iter().enumerate().map(|(i, b)| Offer::of(b, &format!("P{i}.PKG"), (i <= q).then_some("1.0.0"))).collect();
+    offers[0] = Offer::of(&upgrade, "P0.PKG", Some("1.0.0"));
+    r.vol.borrow_mut().files.insert(slot_path(&author()), build_index(&index_body(3, &offers), &author()));
+    let mut install = |b: &[u8]| {
+        let (cap, len) = r.put(1, b);
+        r.service().install(cap, len)[0]
+    };
+    for b in &pkgs[..q] {
+        assert_eq!(install(b), 0);
+    }
+    let reply = install(&pkgs[q]);
+    assert_eq!(reply, azos_pkg::Refusal::FloorQuota(q as u16).code(), "{}", step_name(reply));
+    assert_eq!(step_name(reply), "floor quota");
+    assert_eq!(install(&pkgs[q + 1]), 0, "a package the index does not floor takes no floor");
+    // Refreshed and upgraded: the upgrade replaces a floored package and adds none.
+    r.vol.borrow_mut().files.insert(b"/fat/PKG/SOURCE.CFG".to_vec(), SOURCE_ROWS.to_vec());
+    let repo = Fake::repository(&[("INDEX.AZX", build_index(&index_body(4, &offers), &author())), ("P0.PKG", upgrade.clone())]);
+    assert_eq!(r.service_with(repo).refresh()[0], 0);
+    let repo = Fake::repository(&[("P0.PKG", upgrade.clone())]);
+    let reply = r.service_with(repo).upgrade(name_words(b"pkg-0").unwrap());
+    assert_eq!(reply[0], 0, "{}", step_name(reply[0]));
+}

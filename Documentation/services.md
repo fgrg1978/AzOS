@@ -615,10 +615,20 @@ names the floor. The package is still applied, so `pkg upgrade` can replace it a
 boot starts the fixed version.
 
 **What the device remembers (`PKG_INDEX_MARK_SECTORS`).** The apply records, per signer, the
-serial and digest of the newest index it judged by, and the floors that index named for the
-packages staged under that signer (at most `PKG_INDEX_FLOORS_PER_SIGNER`, so no signer fills the
-table at another's expense; one beyond what the table's entries divide into is refused, not
-evicted for), in the last tail sectors of the medium that no writer of the volume reaches (as the
+serial and digest of the newest index it judged by, and the floors that index names for the
+packages staged under that signer or remembered already: a floor stays while the signer's mark
+stands, whether or not its package is staged in a boot, and leaves only when an index stops
+flooring the package. A signer keeps at most `PKG_INDEX_FLOORS_PER_SIGNER` floors (default 5), the
+remembered ones first; past that its mark is still raised and the excess is used from the volume
+with a `package-index` refusal record (event 3) that counts it, so no signer fills the table at
+another's expense. With `PKG_SEC_FLOOR_ENFORCE` the build refuses a table that does not hold
+`TOPOLOGY_MAX_SIGNERS` x (1 + the quota) entries; entries of signers the topology no longer names
+keep their room, and a signer the table has no room for then is refused (event 1), never evicted
+for. `pkgd` refuses to stage a package (`floor quota`, step 24) that its signer's stored index
+floors when that index already floors the quota of the signer's staged packages; it cannot see
+the floors the device keeps for packages no longer staged. A package name the device never staged
+has no remembered floor: once the slot is deleted, a writer of the volume can stage an old build of
+a package the device never ran. The floors live in the last tail sectors of the medium that no writer of the volume reaches (as the
 topology counter floor is kept). The table is two banks of `PKG_INDEX_MARK_SECTORS` sectors, 13
 entries a sector, each signer keyed by the first 16 bytes of its key id, a floor by the hash of the
 signer and the package name. A write fills the bank that does NOT hold the newest copy and wins by

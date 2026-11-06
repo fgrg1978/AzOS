@@ -174,6 +174,11 @@ pub enum Refusal {
     Index(index::IndexWhy),
     /// An upgrade was refused.
     Upgrade(index::UpgradeWhy),
+    /// The package would take its signer past the floors the device
+    /// remembers per signer (Kconfig `PKG_INDEX_FLOORS_PER_SIGNER`, the value):
+    /// its signer's stored index floors it and as many other staged packages
+    /// of the signer as that.
+    FloorQuota(u16),
 }
 
 impl Refusal {
@@ -181,7 +186,7 @@ impl Refusal {
     /// (1 container, 2 algorithm, 3 signer, 4 signature, 5 metadata, 6 images,
     /// 7 hardware, 8 ABI, 9 interface level, 10 foreign section, 11 rows,
     /// 12 rows and images, 13 warrants, 14 real time, 15 frames, 16
-    /// admission, 17 imports, 18 epoch, 19 boot admission, 20 unconfirmed trial, 21 volume, 22 repository index, 23 upgrade), bits 0..24 the step's own value (the algorithm id, the
+    /// admission, 17 imports, 18 epoch, 19 boot admission, 20 unconfirmed trial, 21 volume, 22 repository index, 23 upgrade, 24 floor quota), bits 0..24 the step's own value (the algorithm id, the
     /// image or interface index, the row, the grant).
     pub const fn code(&self) -> u64 {
         let (step, low) = match *self {
@@ -208,6 +213,7 @@ impl Refusal {
             Refusal::Boot(apply::BootWhy::Volume) => (21, 0),
             Refusal::Index(w) => (22, w as u64),
             Refusal::Upgrade(w) => (23, w as u64),
+            Refusal::FloorQuota(q) => (24, q as u64),
         };
         step << 24 | low
     }

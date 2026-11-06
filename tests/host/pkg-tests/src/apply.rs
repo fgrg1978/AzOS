@@ -985,8 +985,12 @@ fn drop_index(v: &mut Volume<MemDev>) {
 type MemMarks = azos_pkg::index::MarkStore<&'static RamTail>;
 
 fn mem_marks() -> &'static MemMarks {
+    mem_marks_with(5)
+}
+
+fn mem_marks_with(quota: usize) -> &'static MemMarks {
     let tail: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
-    Box::leak(Box::new(MemMarks::load(tail, 2, 6)))
+    Box::leak(Box::new(MemMarks::load(tail, 2, quota)))
 }
 
 fn enforcing() -> Boot<'static> {
@@ -1213,6 +1217,42 @@ fn a_floor_outlives_a_boot_without_its_package() {
     assert!(judged(&mut v).iter().all(|(_, low)| !low));
     assert_eq!(marks.floor(&key, "acme-vision"), None);
     assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
+}
+
+/// Past the signer's quota the mark is raised all the same, the floors the device
+/// remembers already are kept first, and the ones left out are on record (event 3,
+/// with their number): the boot judges by the volume's index either way.
+///
+/// Canary (by hand): `MarkTable::accept` refusing past the quota leaves the mark at
+/// 6 and no record of the excess.
+#[test]
+fn past_the_quota_the_mark_rises_and_the_excess_is_recorded() {
+    use azos_pkg::index::{mark_key, MarkEvent, Marks};
+    let d = signed_device();
+    let marks = mem_marks_with(1);
+    let key = mark_key(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
+    let mut v = volume();
+    stage(&mut v, &acme());
+    let both = |serial: u32| {
+        let offers = [Offer::of(&acme(), "ACME.PKG", Some("1.0.0")), Offer::of(&other(), "OTHER.PKG", Some("1.0.0"))];
+        build_index(&index_body(serial, &offers), &author())
+    };
+    let judged = |v: &mut Volume<MemDev>| {
+        let mut t = topo(d);
+        let mut log = Log::default();
+        apply(v, &mut t, &enforcing_with(marks), &mut log);
+        log.records.iter().filter(|p| p.rule == Rule::PackageIndex as u8).map(|p| (p.verdict, p.n)).collect::<Vec<_>>()
+    };
+    put_index(&mut v, &both(6));
+    assert_eq!(judged(&mut v), [(Verdict::Admit as u8, [2, 6, 0])], "one floor staged, within the quota");
+    // The other package arrives: two floors, room for one, and the remembered one stays.
+    stage(&mut v, &other());
+    put_index(&mut v, &both(7));
+    let over = (Verdict::Refuse as u8, [1, 7, MarkEvent::OverQuota as u64]);
+    assert_eq!(judged(&mut v), [(Verdict::Admit as u8, [2, 7, 0]), over]);
+    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7), "the mark rises past the quota");
+    assert!(marks.floor(&key, "acme-vision").is_some() && marks.floor(&key, "acme-other").is_none(), "the remembered floor first");
+    assert_eq!(judged(&mut v), [over], "and every boot says so");
 }
 
 /// A device that never saw an index has no floors to lose, and the policy off

@@ -165,8 +165,8 @@ fn an_older_serial_is_stale_and_the_same_index_is_not_a_different_one() {
 }
 
 #[test]
-fn the_mark_table_replaces_a_signers_floors_and_holds_to_its_quota() {
-    use azos_pkg::index::{name_hash, MarkErr, SECTOR_ENTRIES};
+fn the_mark_table_stores_a_signers_floors_up_to_its_quota() {
+    use azos_pkg::index::{name_hash, MarkErr, Taken, SECTOR_ENTRIES};
     let (a, b): (SignerKey, SignerKey) = ([1; 16], [2; 16]);
     let v = |s: &str| Version::parse(s).unwrap();
     let mut t = MarkTable::new(2, 6);
@@ -181,15 +181,19 @@ fn the_mark_table_replaces_a_signers_floors_and_holds_to_its_quota() {
     assert_eq!((t.floor_of(&a, name_hash(&a, "x")), t.floor_of(&a, name_hash(&a, "y"))), (None, Some(v("4"))));
     assert_eq!(t.floor_of(&b, name_hash(&b, "x")), Some(v("9")));
 
-    // One signer cannot take another's room: over its quota it gets a typed refusal and
-    // the table is as it was; signers past the capacity are refused (Full), none evicted.
-    let before = t;
+    // One signer cannot take another's room: past its quota its mark is still raised
+    // and the floors offered first are kept, the rest counted; signers past the
+    // capacity are refused (Full), none evicted.
     let seven: Vec<(u64, Version)> = (0..7u64).map(|i| (i, v("1"))).collect();
-    assert_eq!(t.accept(&b, Mark { serial: 2, digest: 2 }, &seven), Err(MarkErr::Quota));
-    assert_eq!(t, before);
+    assert_eq!(t.accept(&b, Mark { serial: 2, digest: 2 }, &seven), Ok(Taken { left_out: 1 }));
+    assert_eq!(t.mark(&b), Some(Mark { serial: 2, digest: 2 }), "the mark is raised");
+    assert_eq!((0..7u64).map(|i| t.floor_of(&b, i).is_some()).collect::<Vec<_>>(), [true, true, true, true, true, true, false]);
+    assert_eq!(t.floor_of(&a, name_hash(&a, "y")), Some(v("4")), "and a's stand");
+    let before = t;
     let mut full = MarkTable::new(1, 20);
     let many: Vec<(u64, Version)> = (0..SECTOR_ENTRIES as u64).map(|i| (i, v("1"))).collect();
     assert_eq!(full.accept(&a, Mark { serial: 1, digest: 0 }, &many), Err(MarkErr::Full));
+    assert_eq!(t, before);
 }
 
 /// An index listing `names` at 9.0, each with its floor.
@@ -428,7 +432,7 @@ mod banks {
     }
 
     fn load(t: &RamTail) -> MarkStore<&RamTail> {
-        MarkStore::load(t, 2, 6)
+        MarkStore::load(t, 2, 5)
     }
 
     /// What the store knows of a signer: its serial and its floors for `names`.
@@ -555,25 +559,24 @@ mod banks {
         }
     }
 
-    /// A third-party signer cannot push another's floors out: it holds to its quota, and
-    /// when the table is full it is the newcomer that is refused.
+    /// A third-party signer cannot push another's floors out: it holds to its quota (its
+    /// mark raised, its floors past the quota left out), and when the table is full it is
+    /// the newcomer that is refused.
     #[test]
     fn a_signer_cannot_evict_another_signers_floors() {
-        use azos_pkg::index::MarkErr;
+        use azos_pkg::index::{MarkErr, Taken};
         let t = populated();
         let s = load(&t);
         let c: SignerKey = [0xC3; 16];
         let many: Vec<(u64, Version)> = (0..20u64).map(|i| (i, v("1"))).collect();
-        assert_eq!(s.accept(&c, Mark { serial: u32::MAX, digest: 0 }, &many), Err(MarkErr::Quota));
-        // Up to its quota it may, and then the table is what it is.
-        s.accept(&c, Mark { serial: u32::MAX, digest: 0 }, &many[..6]).unwrap();
+        assert_eq!(s.accept(&c, Mark { serial: u32::MAX, digest: 0 }, &many), Ok(Taken { left_out: 15 }));
         let d: SignerKey = [0xD4; 16];
         let e: SignerKey = [0xE5; 16];
         let f: SignerKey = [0xF6; 16];
-        // 26 entries: A 3, B 2, C 7, D 7, E 7 -- the sixth signer is the one that is refused.
-        s.accept(&d, Mark { serial: 1, digest: 0 }, &many[..6]).unwrap();
-        s.accept(&e, Mark { serial: 1, digest: 0 }, &many[..6]).unwrap();
-        assert_eq!(s.accept(&f, Mark { serial: 1, digest: 0 }, &many[..6]), Err(MarkErr::Full));
+        // 26 entries: A 3, B 2, C 6, D 6, E 6 -- the sixth signer is the one that is refused.
+        s.accept(&d, Mark { serial: 1, digest: 0 }, &many[..5]).unwrap();
+        s.accept(&e, Mark { serial: 1, digest: 0 }, &many[..5]).unwrap();
+        assert_eq!(s.accept(&f, Mark { serial: 1, digest: 0 }, &many[..5]), Err(MarkErr::Full));
         // Nobody who was there lost anything.
         let after = load(&t);
         assert_eq!(view(&after, &A, &["p", "q"]), (Some(6), vec![Some(v("1.5")), Some(v("2.0"))]));

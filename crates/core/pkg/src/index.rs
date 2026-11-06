@@ -700,15 +700,38 @@ pub struct Mark {
 /// Why the memory could not take an index.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkErr {
-    /// The table has no room for another signer or another floor (raise the
-    /// Kconfig `PKG_INDEX_MARK_SECTORS`): nothing was changed.
+    /// The table has no room for another signer (the entries of signers the
+    /// topology no longer names take it): nothing was changed.
     Full,
-    /// The index names more floors for the signer's staged packages than the
-    /// per-signer quota (Kconfig `PKG_INDEX_FLOORS_PER_SIGNER`) holds: nothing
-    /// was changed, and no signer can take another's room.
-    Quota,
     /// The record could not be made durable.
     Write,
+}
+
+/// What the memory took of an index.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Taken {
+    /// Floors past the signer's quota (Kconfig `PKG_INDEX_FLOORS_PER_SIGNER`)
+    /// that were not remembered: the last ones offered. The mark is raised
+    /// whatever their number, and no signer takes another's room.
+    pub left_out: usize,
+}
+
+/// What a `Rule::PackageIndex` record of the boot-time apply says, in its third
+/// number.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u64)]
+pub enum MarkEvent {
+    /// Admit: the index was judged by and remembered. Refuse: no index at or
+    /// above the one remembered; the remembered floors stand.
+    Judged = 0,
+    /// Refuse: the index was judged by and not remembered (the first number
+    /// says why: 1 the table is full).
+    NotRemembered = 1,
+    /// Refuse: the memory was written before and no copy of it reads whole.
+    Lost = 2,
+    /// Refuse: the index was remembered without its last floors (the first
+    /// number), past the signer's quota.
+    OverQuota = 3,
 }
 
 /// Where the newest accepted index of each signer is remembered, with the floors
@@ -726,7 +749,7 @@ pub trait Marks {
     /// Remember `mark` as `signer`'s newest index and `floors` (by
     /// [`name_hash`], from [`floors_to_remember`]) as its floors, in place of
     /// what was remembered for the signer. All or nothing.
-    fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr>;
+    fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<Taken, MarkErr>;
     /// The memory was written before and no copy of it can be read now (media
     /// damage): what it held is gone. Nothing is remembered until the next
     /// [`accept`](Self::accept) writes it again.
@@ -746,7 +769,7 @@ impl Marks for NoMarks {
     fn remembered(&self, _: &SignerKey, _: u64) -> Option<Version> {
         None
     }
-    fn accept(&self, _: &SignerKey, _: Mark, _: &[(u64, Version)]) -> Result<(), MarkErr> {
+    fn accept(&self, _: &SignerKey, _: Mark, _: &[(u64, Version)]) -> Result<Taken, MarkErr> {
         Err(MarkErr::Write)
     }
 }
@@ -832,23 +855,21 @@ impl MarkTable {
         self.live().iter().find(|e| e.kind == KIND_FLOOR && e.signer == *signer && e.a == hash).map(|e| Version::from_packed(e.b))
     }
 
-    /// Remember `mark` and `floors` for `signer` in place of what it had. The
-    /// table is unchanged when the floors are over the quota or would not fit.
-    pub fn accept(&mut self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr> {
-        if floors.len() > self.quota {
-            return Err(MarkErr::Quota);
-        }
+    /// Remember `mark` and the first `quota` of `floors` for `signer` in place
+    /// of what it had. The table is unchanged when they would not fit.
+    pub fn accept(&mut self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<Taken, MarkErr> {
+        let (kept, left_out) = floors.split_at(floors.len().min(self.quota));
         let mut next = *self;
         next.retain(|e| e.signer != *signer);
-        if next.n + 1 + floors.len() > next.cap {
+        if next.n + 1 + kept.len() > next.cap {
             return Err(MarkErr::Full);
         }
         next.push(Slot { kind: KIND_MARK, signer: *signer, a: mark.serial as u64, b: mark.digest });
-        for (h, v) in floors {
+        for (h, v) in kept {
             next.push(Slot { kind: KIND_FLOOR, signer: *signer, a: *h, b: v.packed() });
         }
         *self = next;
-        Ok(())
+        Ok(Taken { left_out: left_out.len() })
     }
 
     fn retain(&mut self, keep: impl Fn(&Slot) -> bool) {
@@ -1071,15 +1092,15 @@ impl<T: Tail> Marks for MarkStore<T> {
         self.state.borrow().lost
     }
 
-    fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<(), MarkErr> {
+    fn accept(&self, signer: &SignerKey, mark: Mark, floors: &[(u64, Version)]) -> Result<Taken, MarkErr> {
         if !self.tail.writable() {
             return Err(MarkErr::Write);
         }
         let mut st = self.state.borrow_mut();
         let mut next = st.table;
-        next.accept(signer, mark, floors)?;
+        let taken = next.accept(signer, mark, floors)?;
         if next == st.table && !st.lost {
-            return Ok(());
+            return Ok(taken);
         }
         let gen = st.gen.checked_add(1).ok_or(MarkErr::Write)?;
         // **Canary** `pkg-bank-canary`: over the bank that holds the newest copy.
@@ -1094,7 +1115,7 @@ impl<T: Tail> Marks for MarkStore<T> {
             return Err(MarkErr::Write);
         }
         *st = State { table: next, gen, bank: Some(target), lost: false };
-        Ok(())
+        Ok(taken)
     }
 }
 

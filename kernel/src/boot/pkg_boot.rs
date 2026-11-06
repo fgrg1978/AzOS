@@ -112,6 +112,15 @@ const _: () = assert!(
     "PKG_INDEX_MARK_SECTORS reaches TOPOLOGY_FLOOR_SECTOR: lower it or move the topology floor sector"
 );
 
+// Every signer the topology may admit has room for its mark and a full quota of
+// floors, so no signer is refused for another's.
+#[cfg(feature = "pkg-sec-floor")]
+const _: () = assert!(
+    azos_limits::PKG_INDEX_MARK_SECTORS as usize * azos_pkg::index::SECTOR_ENTRIES
+        >= azos_limits::TOPOLOGY_MAX_SIGNERS * (1 + azos_limits::PKG_INDEX_FLOORS_PER_SIGNER as usize),
+    "the index marks do not hold TOPOLOGY_MAX_SIGNERS x (1 + PKG_INDEX_FLOORS_PER_SIGNER) entries (13 a sector): raise PKG_INDEX_MARK_SECTORS or lower the quota or the signers"
+);
+
 /// The reserved tail, as the marks read and write it (`azos_pkg::index::MarkStore`
 /// holds the logic: two banks, generations, digests).
 struct KernelTail;

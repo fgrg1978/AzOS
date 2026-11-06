@@ -65,3 +65,13 @@ pub fn index_accepted(ix: &crate::index::Index<'_, '_>, clock_ns: u64) -> Proven
     p.clock_ns = clock_ns;
     p
 }
+
+/// A refusal record of the boot-time apply about the device's memory of the
+/// indexes ([`Rule::PackageIndex`]): `event` for signer `signer` of the
+/// topology plus one (0: the memory as a whole), with `detail` and the
+/// index's serial (0: none).
+pub fn index_event(signer: u32, detail: u64, serial: u32, event: crate::index::MarkEvent, clock_ns: u64) -> ProvenanceRecord {
+    let mut p = ProvenanceRecord::new(Rule::PackageIndex as u8, Verdict::Refuse as u8, signer, [detail, serial as u64, event as u64]);
+    p.clock_ns = clock_ns;
+    p
+}
