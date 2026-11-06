@@ -122,30 +122,33 @@ static CURRENT: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 /// Source ids a ring can have (`SOURCE_*` are 1..).
 const SOURCES: usize = 4;
 
-/// Each source's writer: the early region's ring until [`attach`] points it
-/// at the shared region's. One read per record, no select.
-struct Writers(UnsafeCell<[Option<Writer>; SOURCES]>);
-
-// SAFETY: written only by `attach`, on the boot hart with interrupts masked
-// before any other hart starts; every reader on another hart starts after
-// the hart-start handshake (SBI HSM, PSCI CPU_ON, the INIT-SIPI with its
-// barriers), which orders the boot hart's stores before its first load.
-unsafe impl Sync for Writers {}
-
-const fn early_writers() -> [Option<Writer>; SOURCES] {
-    let mut w = [None; SOURCES];
-    let mut i = 0;
-    while i < EARLY_RINGS.len() {
-        let spec = EARLY_RINGS[i];
-        // SAFETY: the ring's offset inside the early region, by its layout.
-        w[spec.source as usize] =
-            Some(unsafe { Writer::at((EARLY.0.get() as *mut u8).add(rec::ring_offset(EARLY_RINGS, i)), spec) });
-        i += 1;
+const fn spec_of(rings: &[RingSpec], source: u8) -> Option<RingSpec> {
+    match index(rings, source) {
+        Some(i) => Some(rings[i]),
+        None => None,
     }
-    w
 }
 
-static WRITERS: Writers = Writers(UnsafeCell::new(early_writers()));
+/// Each source's ring, in the early region until [`attach`] points it at
+/// the shared region's. The geometry stays a compile-time constant where the
+/// two regions agree on it (the decision ring), so a record costs one load
+/// here and no select.
+///
+/// Relaxed: written only by `attach`, on the boot hart with interrupts
+/// masked before any other hart starts; every reader on another hart starts
+/// after the hart-start handshake (SBI HSM, PSCI CPU_ON, the INIT-SIPI with
+/// its barriers), which orders the boot hart's stores before its first load.
+static BASES: [AtomicPtr<u8>; SOURCES] = {
+    let mut b = [const { AtomicPtr::new(core::ptr::null_mut()) }; SOURCES];
+    let mut i = 0;
+    while i < EARLY_RINGS.len() {
+        // SAFETY: the ring's offset inside the early region, by its layout.
+        b[EARLY_RINGS[i].source as usize] =
+            AtomicPtr::new(unsafe { (EARLY.0.get() as *mut u8).add(rec::ring_offset(EARLY_RINGS, i)) });
+        i += 1;
+    }
+    b
+};
 
 const _: () = {
     let mut i = 0;
@@ -156,22 +159,46 @@ const _: () = {
     }
 };
 
+/// Where ring `S` is and its geometry, the geometry chosen at compile time.
+#[inline(always)]
+fn place_of<const S: u8>() -> Option<(*mut u8, RingSpec)> {
+    let early = const { spec_of(EARLY_RINGS, S) }?;
+    let full = const { spec_of(RINGS, S) };
+    let spec = match full {
+        Some(f) if f.entries == early.entries => f,
+        Some(f) if attached() => f,
+        _ => early,
+    };
+    Some((BASES[S as usize].load(Ordering::Relaxed), spec))
+}
+
+#[inline(always)]
+fn place(source: u8) -> Option<(*mut u8, RingSpec)> {
+    match source {
+        SOURCE_KLOG => place_of::<SOURCE_KLOG>(),
+        SOURCE_DECISION => place_of::<SOURCE_DECISION>(),
+        SOURCE_TELEMETRY => place_of::<SOURCE_TELEMETRY>(),
+        _ => None,
+    }
+}
+
 /// The ring of `source`, to write; `None` when the build keeps none.
 #[inline(always)]
 pub fn writer(source: u8) -> Option<Writer> {
-    // SAFETY: see `Writers`; the index is checked.
-    unsafe { (*WRITERS.0.get()).get(source as usize).copied().flatten() }
+    // SAFETY: a ring of `spec` at its place; the kernel owns both regions.
+    place(source).map(|(p, spec)| unsafe { Writer::at(p, spec) })
 }
 
 /// The ring of `source`, to read.
 #[inline]
 pub fn reader(source: u8) -> Option<Ring> {
-    writer(source).map(|w| w.ring())
+    // SAFETY: as `writer`.
+    place(source).map(|(p, spec)| unsafe { Ring::at(p, spec) })
 }
 
 /// Has the boot handed the records over to the shared region?
 pub fn attached() -> bool {
-    // Relaxed: see `Writers` for what orders it.
+    // Relaxed: see `BASES` for what orders it.
     !CURRENT.load(Ordering::Relaxed).is_null()
 }
 
@@ -220,13 +247,10 @@ pub unsafe fn attach(base: *mut u8, bytes: usize, ts_hz: u64) -> Option<Handover
             _ => {}
         }
     }
-    let mut w = [None; SOURCES];
     for (i, spec) in RINGS.iter().enumerate() {
         // SAFETY: the ring's offset inside the region just formatted.
-        w[spec.source as usize] = Some(unsafe { Writer::at(base.add(rec::ring_offset(RINGS, i)), *spec) });
+        BASES[spec.source as usize].store(unsafe { base.add(rec::ring_offset(RINGS, i)) }, Ordering::Relaxed);
     }
-    // SAFETY: see `Writers`: no other hart runs, interrupts are masked.
-    unsafe { *WRITERS.0.get() = w };
-    CURRENT.store(base, Ordering::Release);
+    CURRENT.store(base, Ordering::Relaxed);
     Some(h)
 }

@@ -608,7 +608,7 @@ impl Writer {
         // SAFETY: the payload area of the claimed slot.
         fill(&mut Payload { at: unsafe { slot.add(ENV_BYTES) }, cap: self.payload() });
         // A lapper owns the slot now: its stamp stays, this record is lost.
-        if stamp.compare_exchange(odd, odd + 1, Ordering::Release, Ordering::Relaxed).is_err() {
+        if stamp.compare_exchange(odd, odd.wrapping_add(1), Ordering::Release, Ordering::Relaxed).is_err() {
             self.g.lapped().fetch_add(1, Ordering::Relaxed);
         }
     }
