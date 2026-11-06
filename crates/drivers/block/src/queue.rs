@@ -5,7 +5,7 @@
 //! `BLK_MERGE_MAX`, `BLK_IOSCHED`).
 //!
 //! ```text
-//!   blkdev::read/write/flush      (the synchronous facade, `BlockDevice`)
+//!   blkdev::read/write/flush      (the synchronous facade, `BlockDev`)
 //!        |  BlockRequest + kernel buffer
 //!        v
 //!   ReqQueue: one submission queue per hart  --pick-->  merged command

@@ -307,6 +307,10 @@ mod queue;
 #[cfg(test)]
 mod block_queue_tests;
 
+// Host tests of the one block request and the partition stacked on a device.
+#[cfg(test)]
+mod block_req_tests;
+
 // Host tests of virtio-blk's wire facts and queue arithmetic.
 #[cfg(test)]
 mod blk_proto_tests;

@@ -6,7 +6,7 @@
 //! encoding, PRP lists, Identify decoding) lives in `azos_nvme` and is
 //! host-tested; this file owns the device: BAR mapping, the admin and I/O
 //! queues in page-allocator memory, the staging slots, the interrupts, and the
-//! [`BlockDevice`](azos_drv_api::block::BlockDevice) entry points
+//! [`BlockDev`](azos_drv_api::block::BlockDev) entry points
 //! `blkdev` forwards to when [`active`].
 //!
 //! # Shape

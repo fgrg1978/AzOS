@@ -1,40 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The block device class: what every block backend implements.
+//! The block device class: the one request every block role speaks, and the
+//! device that takes it.
 
-/// Backend-agnostic block device operations, selected once at bring-up (see
-/// `azos_drv_block::blkdev`). One implementation per board: `blkdev::Queued`
-/// (virtio-blk on QEMU, NVMe) over the request layer, `Mmc` on VF2/K1.
-///
-/// `#[inline]` on every method: with `lto = false` workspace-wide, a
-/// cross-crate call (this crate to `crates/fs`) is not inlined without the
-/// hint, and the FAT32 read path (`fat32_read_chain` → `fat32_next_cluster`
-/// → `read_sector` → `blkdev::read`) runs on every file read and every
-/// exec. Each method here is a one-line forward to the existing
-/// `virtio::blk`/`mmc` functions, so with the hint LLVM collapses this
-/// trait dispatch back down to the same call the old `#[cfg]` free function
-/// made — measured in the write-path audit's report, not assumed.
-pub trait BlockDevice: Sync {
-    fn init(&self) -> Result<(), ()>;
-    fn capacity_sectors(&self) -> u64;
-    fn read(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()>;
-    fn write(&self, sector: u64, count: u32, buf: &[u8]) -> Result<(), ()>;
-
-    /// Make every write that has completed so far durable on the medium.
-    ///
-    /// A completed `write` means the device accepted the data, which on a
-    /// device with a volatile write cache is not the same as the data
-    /// surviving a power cut. `Ok` means the device confirmed the flush.
-    ///
-    /// The default is `Err(Unsupported)`, never `Ok`: a backend that has no
-    /// way to confirm durability must say so, and a caller that claims
-    /// durability passes that on instead of claiming it.
-    fn flush(&self) -> Result<(), FlushError> {
-        Err(FlushError::Unsupported)
-    }
-}
-
-/// Why [`BlockDevice::flush`] could not confirm durability.
+/// Why [`BlockDev::flush`] could not confirm durability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlushError {
     /// The backend cannot flush: the device offered no flush command, or
@@ -70,6 +39,257 @@ impl Durability {
             (true, Err(FlushError::Unsupported)) => Durability::Unconfirmed,
             (true, Ok(())) => Durability::Durable,
         }
+    }
+}
+
+// ── The one block request ───────────────────────────────────────────────
+//
+// Every role speaks this: the consumers above the device (the FAT32 cache,
+// azvol, the SCSI target), a partition stacked on a device, and the device
+// itself. A request is made for a caller and answered when it is done.
+
+/// [`BlockReq::flags`]: the write is stable on the medium when it completes
+/// (force unit access), not only accepted by a volatile cache. Writes only.
+/// A FUA write is not a barrier: it orders nothing before it.
+pub const FLAG_FUA: u32 = 1 << 0;
+/// [`BlockReq::flags`]: every write that completed before this request is
+/// made durable before it starts (a flush ahead of it). Writes only. The
+/// epoch rule of a write-back cache rides on it.
+pub const FLAG_PREFLUSH: u32 = 1 << 1;
+/// Every flag bit a request may carry.
+pub const FLAGS_ALL: u32 = FLAG_FUA | FLAG_PREFLUSH;
+
+/// What a [`BlockReq`] does. The numbers are the wire codes of
+/// `azos_devif::block` (`REQ_READ`..`REQ_DISCARD`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BlockOp {
+    Read = 0,
+    Write = 1,
+    /// Make every write that completed before this request durable.
+    Flush = 2,
+    /// Tell the device the sectors hold nothing worth keeping (a hint).
+    Discard = 3,
+}
+
+/// The memory a request moves, matching its op.
+pub enum BlockData<'a> {
+    /// A flush.
+    None,
+    /// A read's destination: `count * 512` bytes.
+    Read(&'a mut [u8]),
+    /// A write's source: `count * 512` bytes.
+    Write(&'a [u8]),
+    /// A discard's runs, `(first sector, sectors)` relative to
+    /// [`BlockReq::sector`], handed to the device together.
+    Runs(&'a [(u64, u32)]),
+}
+
+/// One request: an op over sector runs, its ordering flags, and the buffers.
+/// Sectors are 512 bytes. The answer is the `Result` of [`BlockDev::submit`],
+/// which returns once the request is done.
+pub struct BlockReq<'a> {
+    pub op: BlockOp,
+    /// [`FLAG_FUA`] | [`FLAG_PREFLUSH`]; writes only.
+    pub flags: u32,
+    /// First sector of a read or write; the base a discard's runs are
+    /// relative to; 0 for a flush.
+    pub sector: u64,
+    /// Sectors of a read or write; the sum of a discard's runs; 0 for a flush.
+    pub count: u32,
+    /// The Domain the request is made for (`azos_devif::block::OWNER_*`);
+    /// 0: the adapter that reaches the hardware stamps the caller's.
+    pub owner: u32,
+    pub data: BlockData<'a>,
+}
+
+impl<'a> BlockReq<'a> {
+    pub fn read(sector: u64, buf: &'a mut [u8]) -> Self {
+        BlockReq { op: BlockOp::Read, flags: 0, sector, count: (buf.len() / SECTOR) as u32, owner: 0, data: BlockData::Read(buf) }
+    }
+
+    pub fn write(sector: u64, buf: &'a [u8]) -> Self {
+        BlockReq { op: BlockOp::Write, flags: 0, sector, count: (buf.len() / SECTOR) as u32, owner: 0, data: BlockData::Write(buf) }
+    }
+
+    pub fn flush() -> Self {
+        BlockReq { op: BlockOp::Flush, flags: 0, sector: 0, count: 0, owner: 0, data: BlockData::None }
+    }
+
+    /// A discard of `runs`, relative to `sector 0` of the device it is made to.
+    pub fn discard(runs: &'a [(u64, u32)]) -> Self {
+        let count = runs.iter().fold(0u64, |a, r| a.saturating_add(r.1 as u64)).min(u32::MAX as u64) as u32;
+        BlockReq { op: BlockOp::Discard, flags: 0, sector: 0, count, owner: 0, data: BlockData::Runs(runs) }
+    }
+
+    pub fn with_flags(mut self, flags: u32) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    /// Is the request well formed for a device of `sectors`? Buffers match
+    /// the count, the flags only ride on a write, the range lies inside the
+    /// device. [`BlockError::Invalid`] for a shape that means nothing,
+    /// [`BlockError::Range`] for one that leaves the device.
+    pub fn check(&self, sectors: u64) -> Result<(), BlockError> {
+        if self.flags & !FLAGS_ALL != 0 || (self.flags != 0 && self.op != BlockOp::Write) {
+            return Err(BlockError::Invalid);
+        }
+        let bytes = self.count as usize * SECTOR;
+        match (&self.op, &self.data) {
+            (BlockOp::Read, BlockData::Read(b)) if b.len() == bytes && self.count != 0 => {}
+            (BlockOp::Write, BlockData::Write(b)) if b.len() == bytes && self.count != 0 => return self.within(sectors),
+            (BlockOp::Flush, BlockData::None) if self.count == 0 && self.sector == 0 => return Ok(()),
+            (BlockOp::Discard, BlockData::Runs(runs)) if !runs.is_empty() => {
+                for &(first, n) in runs.iter() {
+                    let end = self.sector.checked_add(first).and_then(|s| s.checked_add(n as u64)).ok_or(BlockError::Range)?;
+                    if n == 0 || end > sectors {
+                        return Err(BlockError::Range);
+                    }
+                }
+                return Ok(());
+            }
+            _ => return Err(BlockError::Invalid),
+        }
+        self.within(sectors)
+    }
+
+    fn within(&self, sectors: u64) -> Result<(), BlockError> {
+        match self.sector.checked_add(self.count as u64) {
+            Some(end) if end <= sectors => Ok(()),
+            _ => Err(BlockError::Range),
+        }
+    }
+}
+
+/// Bytes per sector: every block device in the tree speaks 512 B.
+pub const SECTOR: usize = 512;
+
+/// Why a request did not complete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockError {
+    /// The device does not implement the op (a flush it cannot confirm, a
+    /// discard it lacks, FUA without native support). Never an `Ok`: a
+    /// caller that claims durability passes it on.
+    Unsupported,
+    /// The device failed the request, or is not usable.
+    Io,
+    /// The run leaves the device.
+    Range,
+    /// The request means nothing (unknown flag, buffer not `count` sectors).
+    Invalid,
+}
+
+impl From<BlockError> for FlushError {
+    fn from(e: BlockError) -> FlushError {
+        match e {
+            BlockError::Unsupported => FlushError::Unsupported,
+            _ => FlushError::Io,
+        }
+    }
+}
+
+/// What a device is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Geometry {
+    /// Sectors on the device.
+    pub sectors: u64,
+    /// A [`FLAG_FUA`] write is stable when it completes, natively.
+    pub fua: bool,
+    /// The device takes [`BlockOp::Discard`].
+    pub discard: bool,
+}
+
+/// A block device: the boot disk, a stick, a partition of either, a verity
+/// view. Requests complete before `submit` returns.
+pub trait BlockDev {
+    fn geometry(&self) -> Geometry;
+
+    fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError>;
+
+    /// The sector of the medium where sector 0 of this device lies, when the
+    /// device is a plain window onto it (the bytes written are the bytes on
+    /// the sectors). A device that transforms them says `None`.
+    fn medium_start(&self) -> Option<u64> {
+        None
+    }
+
+    #[inline]
+    fn read(&mut self, sector: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.submit(BlockReq::read(sector, buf))
+    }
+
+    #[inline]
+    fn write(&mut self, sector: u64, buf: &[u8]) -> Result<(), BlockError> {
+        self.submit(BlockReq::write(sector, buf))
+    }
+
+    /// A write with `flags`: [`FLAG_PREFLUSH`] makes every completed write
+    /// durable before it starts; [`FLAG_FUA`] makes this one durable when it
+    /// completes. Together they commit without a flush behind.
+    #[inline]
+    fn write_flagged(&mut self, sector: u64, buf: &[u8], flags: u32) -> Result<(), BlockError> {
+        self.submit(BlockReq::write(sector, buf).with_flags(flags))
+    }
+
+    /// Make every write that completed so far durable. `Err(Unsupported)`
+    /// where the device cannot confirm it, never `Ok`.
+    #[inline]
+    fn flush(&mut self) -> Result<(), BlockError> {
+        self.submit(BlockReq::flush())
+    }
+
+    #[inline]
+    fn discard(&mut self, runs: &[(u64, u32)]) -> Result<(), BlockError> {
+        self.submit(BlockReq::discard(runs))
+    }
+}
+
+/// A window onto `[start, start + sectors)` of the device under it: the
+/// stacked device a partition is. Everything it forwards is shifted by
+/// `start`, and a request that leaves the window is refused before the
+/// device sees it.
+pub struct Part<D: BlockDev> {
+    inner: D,
+    start: u64,
+    sectors: u64,
+}
+
+impl<D: BlockDev> Part<D> {
+    /// `None` when the window leaves `inner`.
+    pub fn new(inner: D, start: u64, sectors: u64) -> Option<Self> {
+        if start.checked_add(sectors)? > inner.geometry().sectors {
+            return None;
+        }
+        Some(Part { inner, start, sectors })
+    }
+
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// The device under the window.
+    pub fn device(&self) -> &D {
+        &self.inner
+    }
+}
+
+impl<D: BlockDev> BlockDev for Part<D> {
+    fn geometry(&self) -> Geometry {
+        Geometry { sectors: self.sectors, ..self.inner.geometry() }
+    }
+
+    #[inline]
+    fn submit(&mut self, mut req: BlockReq<'_>) -> Result<(), BlockError> {
+        req.check(self.sectors)?;
+        if req.op != BlockOp::Flush {
+            req.sector += self.start;
+        }
+        self.inner.submit(req)
+    }
+
+    fn medium_start(&self) -> Option<u64> {
+        Some(self.inner.medium_start()? + self.start)
     }
 }
 

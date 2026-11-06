@@ -23,52 +23,20 @@
 //! no storage-related code needs to be gated on platform features outside
 //! this file.
 //!
-//! ── `BlockDevice` trait (2026-09-23) ─────────────────────────────────────
+//! ── One request type ────────────────────────────────────────────────────
 //!
-//! Previously this module was four free functions, each forked in two by
-//! `#[cfg(vf2/k1)]` vs `#[cfg(not(vf2/k1))]` — a per-function `if/else` at
-//! the source level rather than a value. That made the two backends
-//! (VirtIO-blk, the MMC controllers) harder to tell apart at a glance and gave
-//! no seam a third backend (e.g. a ring-3 forwarder) could
-//! plug into without adding a third `#[cfg]` arm to every function.
-//!
-//! Now there is one [`BlockDevice`] trait, one zero-sized implementation per
-//! backend, and a single `BACKEND` static selected once at bring-up (still
-//! by `#[cfg]` — each board is its own kernel binary, so the "selection" is
-//! at compile time, not a runtime branch). The four public functions below
-//! are unchanged in name, signature and behaviour; they now forward to
-//! `BACKEND` instead of directly to `virtio::blk`/`mmc`. A fifth, `flush`,
-//! was added with the trait method of the same name; it has no free-function
-//! predecessor.
-//!
-//! **Kept deliberately close to the old free-function surface, not
-//! redesigned toward gap P.** `Result<(), ()>` and borrowed `&[u8]`/`&mut
-//! [u8]` buffers are exactly what FAT32 already called through. A ring-3
-//! forwarder implementing this trait would still need, beyond what is here:
-//!   - **Typed errors.** `Result<(), ()>` cannot tell a caller "device not
-//!     ready" from "sector out of range" from "read to a ring-3 IPC peer
-//!     timed out" — a forwarder would have to fold all of those into `Err`,
-//!     losing exactly the distinction FAT32's own callers (e.g. journal
-//!     recovery) might need to react differently to a transient IPC failure
-//!     versus a real disk error.
-//!   - **Fixed-size buffers.** `&mut [u8]` of caller-chosen length crosses
-//!     an in-process function call for free; crossing a ring-3 IPC boundary
-//!     it does not — a forwarder needs a bounded, fixed-size message buffer
-//!     (mirroring the DMA staging area `virtio::blk` already keeps for the
-//!     same reason: the device must never be handed a pointer into caller
-//!     memory) and would have to chunk any request larger than that buffer
-//!     itself, the way `virtio::blk::read`/`write` already chunk against
-//!     `BLK_DMA_SECTORS`.
-//!   - **A bounded-wait guarantee in the trait signature, not just in one
-//!     implementation.** `virtio::blk` already bounds its wait with a
-//!     500 ms wall-clock deadline (see that file), but the trait itself
-//!     promises nothing: a future implementation could block on an
-//!     unbounded IPC `recv()`. A ring-3 forwarder's `read`/`write` would
-//!     need the same wall-clock discipline, and ideally the trait would say
-//!     so instead of leaving it to each `impl` to remember.
+//! Each backend is a zero-sized [`BlockDev`] (`azos_drv_api::block`) selected
+//! once, at compile time, by the board's feature: a request is an op over a
+//! sector run with its ordering flags, and `submit` returns when it is done.
+//! [`Boot`] is the backend behind this module's checks (real-time rule, the
+//! write-back observers, the chaos point); the free functions below are its
+//! synchronous helpers, and a partition is a [`Part`](azos_drv_api::block::Part)
+//! stacked on it.
 
-use azos_devif::block::{FLAG_FUA, FLAG_PREFLUSH, OWNER_KERNEL, OWNER_NONE};
-use azos_drv_api::block::{BlockDevice, FlushError};
+use azos_devif::block::{OWNER_KERNEL, OWNER_NONE};
+use azos_drv_api::block::{
+    BlockData, BlockDev, BlockError, BlockOp, BlockReq, FlushError, Geometry, FLAG_FUA, FLAG_PREFLUSH,
+};
 
 // ── Queued backend: virtio-blk, NVMe, AHCI ─────────────────────────────────────────
 
@@ -81,7 +49,7 @@ use azos_drv_api::block::{BlockDevice, FlushError};
 pub struct Queued;
 
 #[cfg(not(any(feature = "vf2", feature = "k1")))]
-impl BlockDevice for Queued {
+impl Queued {
     #[inline]
     fn init(&self) -> Result<(), ()> {
         if crate::queue::bound().is_some() {
@@ -92,37 +60,54 @@ impl BlockDevice for Queued {
         crate::queue::bind(&azos_drv_virtio::virtio::blk::VIRTIO_BLK);
         Ok(())
     }
+}
 
+#[cfg(not(any(feature = "vf2", feature = "k1")))]
+impl BlockDev for Queued {
     #[inline]
-    fn capacity_sectors(&self) -> u64 {
-        crate::queue::bound().map_or(0, |hw| hw.caps().sectors)
-    }
-
-    #[inline]
-    fn read(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        let hw = crate::queue::bound().ok_or(())?;
-        crate::queue::read(hw, owner_now(), sector, count, buf).map_err(|_| ())
-    }
-
-    #[inline]
-    fn write(&self, sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-        let hw = crate::queue::bound().ok_or(())?;
-        crate::queue::write(hw, owner_now(), sector, count, 0, buf).map_err(|_| ())
-    }
-
-    #[inline]
-    fn flush(&self) -> Result<(), FlushError> {
-        let Some(hw) = crate::queue::bound() else { return Err(FlushError::Io) };
-        match crate::queue::flush(hw, owner_now()) {
-            Ok(()) => Ok(()),
-            Err(crate::queue::Failure::Ended(crate::queue::Outcome::Unsupported)) => Err(FlushError::Unsupported),
-            Err(_) => Err(FlushError::Io),
+    fn geometry(&self) -> Geometry {
+        match crate::queue::bound() {
+            None => Geometry { sectors: 0, fua: false, discard: false },
+            Some(hw) => {
+                let c = hw.caps();
+                Geometry { sectors: c.sectors, fua: c.fua, discard: c.max_discard_sectors != 0 }
+            }
         }
+    }
+
+    #[inline]
+    fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+        let Some(hw) = crate::queue::bound() else {
+            return Err(if req.op == BlockOp::Discard { BlockError::Unsupported } else { BlockError::Io });
+        };
+        let owner = if req.owner == 0 { owner_now() } else { req.owner };
+        let done = match (req.op, req.data) {
+            (BlockOp::Read, BlockData::Read(buf)) => crate::queue::read(hw, owner, req.sector, req.count, buf),
+            (BlockOp::Write, BlockData::Write(buf)) => {
+                crate::queue::write(hw, owner, req.sector, req.count, req.flags, buf)
+            }
+            (BlockOp::Flush, _) => crate::queue::flush(hw, owner),
+            (BlockOp::Discard, BlockData::Runs(runs)) => {
+                crate::queue::discard(hw, owner, runs, azos_limits::BLK_DISCARD_BATCHED)
+            }
+            _ => return Err(BlockError::Invalid),
+        };
+        match done {
+            Ok(()) => Ok(()),
+            Err(crate::queue::Failure::Refused(azos_devif::outcome::UNSUPPORTED))
+            | Err(crate::queue::Failure::Ended(crate::queue::Outcome::Unsupported)) => Err(BlockError::Unsupported),
+            Err(_) => Err(BlockError::Io),
+        }
+    }
+
+    #[inline]
+    fn medium_start(&self) -> Option<u64> {
+        Some(0)
     }
 }
 
 #[cfg(not(any(feature = "vf2", feature = "k1")))]
-static BACKEND: Queued = Queued;
+type Backend = Queued;
 
 // ── Real-hardware SD backends (VisionFive 2, SpacemiT K1) ────────────────────
 
@@ -133,42 +118,52 @@ static BACKEND: Queued = Queued;
 pub struct DwMshc;
 
 #[cfg(feature = "vf2")]
-impl BlockDevice for DwMshc {
+impl DwMshc {
     #[inline]
     fn init(&self) -> Result<(), ()> {
         if crate::dwmshc::init() { Ok(()) } else { Err(()) }
     }
+}
 
+#[cfg(feature = "vf2")]
+impl BlockDev for DwMshc {
     #[inline]
-    fn capacity_sectors(&self) -> u64 {
-        crate::dwmshc::capacity()
+    fn geometry(&self) -> Geometry {
+        Geometry { sectors: crate::dwmshc::capacity(), fua: false, discard: false }
     }
 
     #[inline]
-    fn read(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        crate::dwmshc::read(sector, count, buf)
+    fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+        match (req.op, req.data) {
+            (BlockOp::Read, BlockData::Read(buf)) => {
+                crate::dwmshc::read(req.sector, req.count, buf).map_err(|()| BlockError::Io)
+            }
+            (BlockOp::Write, BlockData::Write(buf)) => {
+                ordered_write(req.flags, || flush_state(crate::dwmshc::flush()), || {
+                    crate::dwmshc::write(req.sector, req.count, buf).map_err(|()| BlockError::Io)?;
+                    // This backend has no request layer to complete the write: the write
+                    // ledger is fed here (`write_observer::account`).
+                    crate::write_observer::account(owner_now(), req.count as u64 * crate::queue::SECTOR as u64);
+                    Ok(())
+                })
+            }
+            // `dwmshc::flush`: CMD13 until the card is back in `tran` with
+            // READY_FOR_DATA (error bits checked, bounded). `Ok` only on a
+            // confirmed card status, `Err(Io)` otherwise.
+            (BlockOp::Flush, _) => flush_state(crate::dwmshc::flush()),
+            (BlockOp::Discard, _) => Err(BlockError::Unsupported),
+            _ => Err(BlockError::Invalid),
+        }
     }
 
     #[inline]
-    fn write(&self, sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-        crate::dwmshc::write(sector, count, buf)?;
-        // This backend has no request layer to complete the write: the write
-        // ledger is fed here (`write_observer::account`).
-        crate::write_observer::account(owner_now(), count as u64 * crate::queue::SECTOR as u64);
-        Ok(())
-    }
-
-    /// `dwmshc::flush`: CMD13 until the card is back in `tran` with
-    /// READY_FOR_DATA (error bits checked, bounded). `Ok` only on a confirmed
-    /// card status, `Err(Io)` otherwise.
-    #[inline]
-    fn flush(&self) -> Result<(), FlushError> {
-        crate::dwmshc::flush()
+    fn medium_start(&self) -> Option<u64> {
+        Some(0)
     }
 }
 
 #[cfg(feature = "vf2")]
-static BACKEND: DwMshc = DwMshc;
+type Backend = DwMshc;
 
 /// Boot storage slot on K1: the SD card socket (K1 naming: "Emmc" slot 0
 /// physically wires to the removable SD socket).
@@ -181,55 +176,109 @@ const BOOT_SLOT: crate::mmc::MmcSlot = crate::mmc::MmcSlot::Emmc;
 pub struct Mmc;
 
 #[cfg(feature = "k1")]
-impl BlockDevice for Mmc {
+impl Mmc {
     #[inline]
     fn init(&self) -> Result<(), ()> {
         if crate::mmc::mmc_init(BOOT_SLOT) { Ok(()) } else { Err(()) }
     }
+}
 
+#[cfg(feature = "k1")]
+impl BlockDev for Mmc {
     #[inline]
-    fn capacity_sectors(&self) -> u64 {
-        crate::mmc::mmc_capacity(BOOT_SLOT)
+    fn geometry(&self) -> Geometry {
+        Geometry { sectors: crate::mmc::mmc_capacity(BOOT_SLOT), fua: false, discard: false }
     }
 
     #[inline]
-    fn read(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        crate::mmc::mmc_read(BOOT_SLOT, sector, count, buf)
+    fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+        match (req.op, req.data) {
+            (BlockOp::Read, BlockData::Read(buf)) => {
+                crate::mmc::mmc_read(BOOT_SLOT, req.sector, req.count, buf).map_err(|()| BlockError::Io)
+            }
+            (BlockOp::Write, BlockData::Write(buf)) => {
+                ordered_write(req.flags, || flush_state(crate::mmc::mmc_flush(BOOT_SLOT)), || {
+                    crate::mmc::mmc_write(BOOT_SLOT, req.sector, req.count, buf).map_err(|()| BlockError::Io)?;
+                    // This backend has no request layer to complete the write: the write
+                    // ledger is fed here (`write_observer::account`).
+                    crate::write_observer::account(owner_now(), req.count as u64 * crate::queue::SECTOR as u64);
+                    Ok(())
+                })
+            }
+            // `mmc::mmc_flush`: CMD13 until the card is back in `tran` with
+            // READY_FOR_DATA (error bits checked, bounded), plus CMD6
+            // FLUSH_CACHE if an eMMC cache was ever enabled; `mmc.rs` never
+            // enables one. `Ok` only on a confirmed card status, `Err(Io)`
+            // otherwise; never `Unsupported`.
+            (BlockOp::Flush, _) => flush_state(crate::mmc::mmc_flush(BOOT_SLOT)),
+            (BlockOp::Discard, _) => Err(BlockError::Unsupported),
+            _ => Err(BlockError::Invalid),
+        }
     }
 
     #[inline]
-    fn write(&self, sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-        crate::mmc::mmc_write(BOOT_SLOT, sector, count, buf)?;
-        // This backend has no request layer to complete the write: the write
-        // ledger is fed here (`write_observer::account`).
-        crate::write_observer::account(owner_now(), count as u64 * crate::queue::SECTOR as u64);
-        Ok(())
-    }
-
-    /// `mmc::mmc_flush`: CMD13 until the card is back in `tran` with
-    /// READY_FOR_DATA (error bits checked, bounded), plus CMD6 FLUSH_CACHE
-    /// if an eMMC cache was ever enabled — `mmc.rs` never enables one. `Ok`
-    /// only on a confirmed card status, `Err(Io)` otherwise; never
-    /// `Unsupported`.
-    #[inline]
-    fn flush(&self) -> Result<(), FlushError> {
-        crate::mmc::mmc_flush(BOOT_SLOT)
+    fn medium_start(&self) -> Option<u64> {
+        Some(0)
     }
 }
 
 #[cfg(feature = "k1")]
-static BACKEND: Mmc = Mmc;
+type Backend = Mmc;
 
-// ── Public API — unchanged names/signatures, now forwarding to `BACKEND` ────
+/// The two SD backends have no request layer and no native FUA: a write that
+/// asks for the flush ahead of it (`FLAG_PREFLUSH`) is ordered by the card's
+/// own status poll, a device with nothing to flush has nothing to order, a
+/// flush that failed fails the write before it is made, and one that asks for
+/// FUA gets the refusal `fua_commit` says it would.
+#[cfg(any(feature = "vf2", feature = "k1"))]
+#[inline]
+fn ordered_write(
+    flags: u32,
+    flush: impl FnOnce() -> Result<(), BlockError>,
+    write: impl FnOnce() -> Result<(), BlockError>,
+) -> Result<(), BlockError> {
+    if flags & FLAG_FUA != 0 {
+        return Err(BlockError::Unsupported);
+    }
+    if flags & FLAG_PREFLUSH != 0 {
+        match flush() {
+            Ok(()) | Err(BlockError::Unsupported) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    write()
+}
+
+#[cfg(any(feature = "vf2", feature = "k1"))]
+#[inline]
+fn flush_state(r: Result<(), FlushError>) -> Result<(), BlockError> {
+    r.map_err(|e| match e {
+        FlushError::Unsupported => BlockError::Unsupported,
+        FlushError::Io => BlockError::Io,
+    })
+}
+
+/// The board's backend: zero-sized, so a fresh value per call is the device.
+#[inline(always)]
+fn backend() -> Backend {
+    #[cfg(not(any(feature = "vf2", feature = "k1")))]
+    return Queued;
+    #[cfg(feature = "vf2")]
+    return DwMshc;
+    #[cfg(feature = "k1")]
+    return Mmc;
+}
+
+// ── Public API — unchanged names/signatures, now forwarding to the board's backend ──
 
 #[inline]
 pub fn init() -> Result<(), ()> {
-    BACKEND.init()
+    backend().init()
 }
 
 #[inline]
 pub fn capacity_sectors() -> u64 {
-    BACKEND.capacity_sectors()
+    backend().geometry().sectors
 }
 
 /// Block reads and writes that answered an error since boot, the device's
@@ -250,11 +299,11 @@ fn note_io_error() {
 /// The device's answer, or an injected I/O error (point `disk-io`, before
 /// the device is touched), counted in [`IO_ERRORS`] either way (CHAOS on).
 #[inline(always)]
-fn io(r: impl FnOnce() -> Result<(), ()>) -> Result<(), ()> {
+fn io(r: impl FnOnce() -> Result<(), BlockError>) -> Result<(), BlockError> {
     if !azos_chaos::ON {
         return r();
     }
-    let r = if azos_chaos::fire(azos_chaos::Point::DiskIo) { Err(()) } else { r() };
+    let r = if azos_chaos::fire(azos_chaos::Point::DiskIo) { Err(BlockError::Io) } else { r() };
     if r.is_err() {
         note_io_error();
     }
@@ -321,23 +370,77 @@ pub fn rt_io_check() {
     }
 }
 
+/// The boot medium with this module's rules: the real-time check, the
+/// write-back observers and the chaos point around the backend. `observed`
+/// tells the block-cache owner which sectors moved and first makes it write
+/// back what it holds for a range read ([`crate::write_observer`]); `quiet`
+/// is for that owner itself, which updates its cache on its own and may hold
+/// the cache's lock while it calls. Zero-sized: the device is the board's
+/// backend.
+///
+#[derive(Clone, Copy)]
+pub struct Boot {
+    observed: bool,
+}
+
+impl Boot {
+    pub const fn observed() -> Boot {
+        Boot { observed: true }
+    }
+
+    pub const fn quiet() -> Boot {
+        Boot { observed: false }
+    }
+}
+
+impl BlockDev for Boot {
+    #[inline]
+    fn geometry(&self) -> Geometry {
+        backend().geometry()
+    }
+
+    #[inline]
+    fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+        rt_io_check();
+        let (op, sector, count) = (req.op, req.sector, req.count);
+        match op {
+            BlockOp::Read => {
+                if self.observed {
+                    crate::write_observer::before_read(sector, count);
+                }
+                io(|| backend().submit(req))
+            }
+            BlockOp::Write => {
+                let r = io(|| backend().submit(req));
+                if self.observed {
+                    crate::write_observer::notify(sector, count);
+                }
+                r
+            }
+            BlockOp::Flush | BlockOp::Discard => backend().submit(req),
+        }
+    }
+
+    #[inline]
+    fn medium_start(&self) -> Option<u64> {
+        backend().medium_start()
+    }
+}
+
 /// Read the medium. A block-cache owner that keeps writes back
 /// ([`crate::write_observer::before_read`], FAT32 under Kconfig
 /// `FS_WRITEBACK`) first writes any it holds for these sectors, so this
 /// reader never sees a sector older than a write that already returned.
 #[inline]
 pub fn read(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-    rt_io_check();
-    crate::write_observer::before_read(sector, count);
-    io(|| BACKEND.read(sector, count, buf))
+    Boot::observed().submit(BlockReq { count, ..BlockReq::read(sector, buf) }).map_err(|_| ())
 }
 
 /// [`read`] without the read observer: for the cache owner itself, whose
 /// reads already look in its cache first.
 #[inline]
 pub fn read_quiet(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-    rt_io_check();
-    io(|| BACKEND.read(sector, count, buf))
+    Boot::quiet().submit(BlockReq { count, ..BlockReq::read(sector, buf) }).map_err(|_| ())
 }
 
 /// For a reader of the boot medium that does not go through [`read`]
@@ -369,10 +472,7 @@ pub fn read_would_wait(sector: u64, count: u32) -> bool {
 /// a failed multi-sector write may have landed in part.
 #[inline]
 pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-    rt_io_check();
-    let r = io(|| BACKEND.write(sector, count, buf));
-    crate::write_observer::notify(sector, count);
-    r
+    Boot::observed().submit(BlockReq { count, ..BlockReq::write(sector, buf) }).map_err(|_| ())
 }
 
 /// [`write`] without telling the observer: for the one caller that updates
@@ -381,8 +481,7 @@ pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
 /// `crates/fs/src/fat32.rs`.
 #[inline]
 pub fn write_quiet(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-    rt_io_check();
-    io(|| BACKEND.write(sector, count, buf))
+    Boot::quiet().submit(BlockReq { count, ..BlockReq::write(sector, buf) }).map_err(|_| ())
 }
 
 /// Write `count` sectors for the write-back cache's owner, with the ordering
@@ -400,25 +499,8 @@ pub fn write_quiet(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
 /// the write is not made.
 #[inline]
 pub fn write_run(sector: u64, count: u32, buf: &[u8], preflush: bool, fua: bool) -> Result<(), ()> {
-    rt_io_check();
-    io(|| {
-        if let Some(hw) = crate::queue::bound() {
-            let flags = if preflush { FLAG_PREFLUSH } else { 0 } | if fua { FLAG_FUA } else { 0 };
-            return crate::queue::write(hw, owner_now(), sector, count, flags, buf).map_err(|_| ());
-        }
-        // No request layer, no native FUA: the caller asked for what
-        // `fua_commit` says is not there.
-        if fua {
-            return Err(());
-        }
-        if preflush {
-            match BACKEND.flush() {
-                Ok(()) | Err(FlushError::Unsupported) => {}
-                Err(FlushError::Io) => return Err(()),
-            }
-        }
-        BACKEND.write(sector, count, buf)
-    })
+    let flags = if preflush { FLAG_PREFLUSH } else { 0 } | if fua { FLAG_FUA } else { 0 };
+    Boot::quiet().submit(BlockReq { count, ..BlockReq::write(sector, buf) }.with_flags(flags)).map_err(|_| ())
 }
 
 /// Does a [`write_run`] with `fua` commit natively (Kconfig `BLK_FUA`, and a
@@ -427,7 +509,7 @@ pub fn write_run(sector: u64, count: u32, buf: &[u8], preflush: bool, fua: bool)
 /// [`flush`] that follows the writes.
 #[inline]
 pub fn fua_commit() -> bool {
-    azos_limits::BLK_FUA && crate::queue::bound().is_some_and(|hw| hw.caps().fua)
+    azos_limits::BLK_FUA && backend().geometry().fua
 }
 
 /// Discard is compiled in (Kconfig `BLK_DISCARD` is not `off`).
@@ -455,12 +537,9 @@ pub fn discard(runs: &[(u64, u32)]) -> Result<(), DiscardError> {
     if !DISCARD || runs.is_empty() {
         return Ok(());
     }
-    rt_io_check();
-    let Some(hw) = crate::queue::bound() else { return Err(DiscardError::Unsupported) };
-    match crate::queue::discard(hw, owner_now(), runs, azos_limits::BLK_DISCARD_BATCHED) {
+    match Boot::quiet().submit(BlockReq::discard(runs)) {
         Ok(()) => Ok(()),
-        Err(crate::queue::Failure::Refused(azos_devif::outcome::UNSUPPORTED))
-        | Err(crate::queue::Failure::Ended(crate::queue::Outcome::Unsupported)) => Err(DiscardError::Unsupported),
+        Err(BlockError::Unsupported) => Err(DiscardError::Unsupported),
         Err(_) => Err(DiscardError::Io),
     }
 }
@@ -486,13 +565,13 @@ pub fn set_write_observer(f: fn(u64, u32)) {
 /// device is not virtio-blk (an NVMe boot disk, the VF2's SD card).
 #[inline]
 pub fn read_raw(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-    BACKEND.read(sector, count, buf)
+    backend().submit(BlockReq { count, ..BlockReq::read(sector, buf) }).map_err(|_| ())
 }
 
 /// See [`read_raw`]; the write twin (`note_external_write` reports it).
 #[inline]
 pub fn write_raw(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-    BACKEND.write(sector, count, buf)
+    backend().submit(BlockReq { count, ..BlockReq::write(sector, buf) }).map_err(|_| ())
 }
 
 // ── Queued raw transfers (the io_ring block entries) ──────────────────────
@@ -537,15 +616,15 @@ pub fn wait_raw(t: RawTicket) -> Result<(), ()> {
     let Some(hw) = crate::queue::bound() else { return Err(()) };
     io(|| match crate::queue::wait(hw, t.0) {
         crate::queue::Outcome::Ok => Ok(()),
-        _ => Err(()),
+        _ => Err(BlockError::Io),
     })
+    .map_err(|_| ())
 }
 
-/// See [`BlockDevice::flush`].
+/// Make every write that completed so far durable ([`BlockDev::flush`]).
 #[inline]
 pub fn flush() -> Result<(), FlushError> {
-    rt_io_check();
-    BACKEND.flush()
+    Boot::quiet().flush().map_err(FlushError::from)
 }
 
 /// Orderly power-off or reboot (`azos_syscall::handlers`, after every

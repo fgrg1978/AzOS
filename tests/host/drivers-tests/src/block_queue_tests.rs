@@ -1172,7 +1172,7 @@ fn several_tasks_on_several_harts_each_get_their_own_data() {
 
 // ── The facade ──────────────────────────────────────────────────────────
 
-/// `blkdev` over a bound device: the `BlockDevice` calls become requests, the
+/// `blkdev` over a bound device: the `BlockDev` calls become requests, the
 /// owner is the registered source's (and the kernel's where it has none), and
 /// `write_run` carries its PREFLUSH to the device as one flush ahead of the
 /// data. The only test that binds the global queue (no other test calls

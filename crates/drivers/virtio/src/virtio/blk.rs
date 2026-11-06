@@ -645,7 +645,7 @@ pub fn init_at(base: usize) -> Result<(), ()> {
     Ok(())
 }
 
-/// Is the block device the bus bound up? (`BlockDevice::init`: the layer
+/// Is the block device the bus bound up? (`blkdev::init`: the layer
 /// above asks, and a machine with no admitted virtio disk answers no.)
 pub fn init() -> Result<(), ()> {
     if READY.load(Ordering::Acquire) { Ok(()) } else { Err(()) }
