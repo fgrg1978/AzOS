@@ -15,7 +15,6 @@
 5	crates/drivers/net/src/dwmac.rs	DMA descriptors, in RAM
 13	crates/drivers/net/src/eth.rs	DMA descriptor rings, in RAM
 6	crates/drivers/net/src/pci_nic.rs	DMA descriptor rings, in RAM
-11	crates/drivers/sys/src/klog/wire.rs	the klog region, shared memory
 4	crates/drivers/usb/src/hw.rs	DmaBuf, RAM the controller also writes
 2	crates/drivers/virtio/src/virtio/blk.rs	request headers and status bytes, in RAM
 4	crates/drivers/virtio/src/virtio/gpu.rs	virtqueue rings, in RAM
