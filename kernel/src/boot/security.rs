@@ -31,6 +31,7 @@ pub(crate) fn report_security(early: &EarlyBoot) {
     // BOOTMETA's `boot_count` (`boot_count_loaded`). It is NOT cleared here:
     // a boot counts as clean only once `ota_mark_boot_good` runs (sys-wdt,
     // after `OTA_BOOT_GOOD_DELAY_S` of uptime), which clears both copies.
+    #[cfg(feature = "boot-slots")]
     {
         let prev_crashes = azos_drv_sys::wdt::crash_counter_get();
         if prev_crashes >= 3 {

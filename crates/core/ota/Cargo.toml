@@ -6,6 +6,11 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
+# Kconfig BOOT_SLOTS: A/B boot trust (`src/slots.rs`, `src/recovery.rs`): the
+# slots, the BOOTMETA writes, the boot counter, its confirmation (where the
+# epoch floor rises) and the update's switch. Without it BOOTMETA is read for
+# its floor only (`ota_floor`).
+boot-slots = []
 vf2     = []
 k1      = []
 # Force `CFG_SECURE_BOOT_REQUIRE_SIG = 1` at build time. Production / release

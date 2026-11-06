@@ -15,6 +15,11 @@ use-robot = [
     "dep:azos_bench", "dep:azos_robot_drivers",
 ]
 
+# Kconfig BOOT_SLOTS: the `ota` command, the `ota-recv` task and the Ota
+# family's bodies (`src/ota.rs`, `families::ota`). Without it they are not
+# built and the Ota interface answers ENOSYS.
+boot-slots = ["azos_ota/boot-slots"]
+
 [dependencies]
 azos_fs = { workspace = true }
 azos_net = { workspace = true }

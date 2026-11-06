@@ -91,12 +91,13 @@ impl Sink for Kernel {
 pub(super) struct Staged {
     vol: Volume<PartDev>,
     applied: Applied,
+    /// The epoch floor the apply judged by (`azos_ota::ota_floor`).
+    floor: u32,
 }
 
 /// The interface table and the epoch floor, built where the device is judged.
-fn judge<R>(f: impl FnOnce(&Boot<'_>) -> R) -> R {
+fn judge<R>(floor: u32, f: impl FnOnce(&Boot<'_>) -> R) -> R {
     let api = azos_pkg::api::device_api();
-    let floor = azos_ota::floor::lift(azos_ota::ota_read_boot_meta().min_sec_epoch);
     let boot = Boot {
         device: Device::this(&api).with_epoch_floor(floor),
         now_ns: clock_ns(),
@@ -117,6 +118,10 @@ pub(super) fn apply(topo: &mut Topology<'static>) -> Option<Staged> {
         kprintln!("[PKG] the staging volume {} is read-only or hash-checked: no package is applied", row.name.as_str());
         return None;
     }
+    let Some(floor) = azos_ota::ota_floor() else {
+        kprintln!("[PKG] no epoch floor this build may trust: no package is applied");
+        return None;
+    };
     let Some(dev) = open(partition) else {
         kprintln!("[PKG] no partition {} for the staging volume: no package is applied", partition);
         return None;
@@ -128,8 +133,8 @@ pub(super) fn apply(topo: &mut Topology<'static>) -> Option<Staged> {
             return None;
         }
     };
-    let applied = judge(|boot| pkg_apply::apply(&mut vol, topo, boot, &mut Kernel));
-    Some(Staged { vol, applied })
+    let applied = judge(floor, |boot| pkg_apply::apply(&mut vol, topo, boot, &mut Kernel));
+    Some(Staged { vol, applied, floor })
 }
 
 impl Staged {
@@ -137,7 +142,7 @@ impl Staged {
     /// began one. The caller tries the signed topology again, without packages.
     pub(super) fn undo(mut self) {
         kprintln!("[PKG] the kernel's admission refused the topology with {} package row(s): trial undone", self.applied.rows);
-        judge(|boot| pkg_apply::undo(&mut self.vol, &self.applied, boot, &mut Kernel));
+        judge(self.floor, |boot| pkg_apply::undo(&mut self.vol, &self.applied, boot, &mut Kernel));
     }
 
     /// The signed topology alone is refused as well as the one with packages:

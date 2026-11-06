@@ -1016,6 +1016,17 @@ pub(crate) fn install_ring3_seams() {
             crate::boot::tpm::shutdown();
         }
         azos_syscall::handlers::set_orderly_devices_hook(orderly_devices_down);
+        // Owner decision 2026-09-28: an orderly reboot or power-off before the
+        // boot is confirmed voids this boot's mark instead of counting as a
+        // crash (`ota_void_unconfirmed_boot`, with the A/B slots). The shell
+        // calls it directly; `sys_reboot`/`sys_shutdown` reach it through this
+        // hook, which also leaves the next boot a fresh entropy seed.
+        fn orderly_power_off() {
+            #[cfg(feature = "boot-slots")]
+            let _ = azos_ota::ota_void_unconfirmed_boot();
+            crate::boot::entropy_seed_refresh_at_power_off();
+        }
+        azos_syscall::handlers::set_orderly_power_hook(orderly_power_off);
         #[cfg(feature = "lat-fat")]
         FD_TABLE_ADDR.store(&KERNEL_FD_TABLE as *const _ as usize,
             core::sync::atomic::Ordering::Relaxed);

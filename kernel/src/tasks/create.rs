@@ -426,6 +426,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // other resident is `behavior` at 14, so a watchdog at 11 is always at the
     // top of that queue when its timer fires. Both changes are kept so that
     // neither is the single thing standing between this task and silence.
+    #[cfg(feature = "boot-slots")]
     install_ota_boot_good_hook();
     //
     // aarch64 created it above (in its own block, before its probes). Every

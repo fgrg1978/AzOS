@@ -24,5 +24,8 @@ panic = "abort"
 # The FAT32 image(s) this crate builds and their board-volume defaults
 # (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
-# On every class but a small board (`PKGD_ROW`, crates/core/topology/src/builder.rs).
+# On every class but a small board (`PKGD_ROW`, crates/core/topology/src/builder.rs),
+# where the A/B slots are built: both the packages' boot-time apply and the
+# whole-system update's switch need them.
 default = "!HWCLASS_EMBEDDED"
+depends = "BOOT_SLOTS"

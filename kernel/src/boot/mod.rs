@@ -149,6 +149,7 @@ pub(crate) mod keys;
 // L15: the topology's `[volume.NAME]` rows, mounted.
 // The volume engine, under the one name the apply step uses, so the host suite
 // can include that file over its own copy of the engine.
+#[cfg(feature = "pkg-boot-apply")]
 use azos_fs::azvol as engine;
 mod azvol;
 pub(crate) use azvol::{fat32_check_report, install_azvol};
@@ -156,8 +157,12 @@ pub(crate) use azvol::{fat32_check_report, install_azvol};
 mod azvol_key;
 // The boot-time apply of staged packages: the decision (host-tested over the
 // real engine) and the kernel's side of it. Called from the topology install.
+#[cfg(feature = "pkg-boot-apply")]
 mod pkg_apply;
+#[cfg(feature = "pkg-boot-apply")]
 pub(crate) mod pkg_boot;
+#[cfg(all(feature = "pkg-boot-apply", not(feature = "boot-slots")))]
+compile_error!("Kconfig PKG_BOOT_APPLY needs BOOT_SLOTS: its trial reads the boot counter, its floor rises at a confirmed boot");
 // The PCI host bridge: the configuration space the enumeration reads and, with
 // Kconfig PCI_SOC_HOST, the SoC controllers brought up before it.
 #[cfg(feature = "pci")]
@@ -177,8 +182,13 @@ mod ext_ktests;
 mod effect_ktests;
 mod robot;
 pub(crate) use robot::*;
+// Kconfig BOOT_SLOTS: A/B boot trust.
+#[cfg(feature = "boot-slots")]
 mod ota;
+#[cfg(feature = "boot-slots")]
 pub(crate) use ota::*;
+#[cfg(all(feature = "secure-boot-enforced", not(feature = "boot-slots")))]
+compile_error!("Kconfig SECURE_BOOT_ENFORCED verifies the boot slot's image: it needs BOOT_SLOTS");
 mod stacks;
 pub(crate) use stacks::*;
 // The end of hook installation: `.data.ro_after_init` read-only.

@@ -8,6 +8,26 @@
 # author keys are admitted is not here: it is the `[signer.NAME]` sections of
 # the signed topology (TOPOLOGY_MAX_SIGNERS in config/subsys/Kconfig.topology).
 
+config PKG_BOOT_APPLY
+    # cargo-feature: pkg-boot-apply
+    bool "Apply staged packages at boot"
+    depends on BOOT_SLOTS
+    default y if !HWCLASS_EMBEDDED
+    help
+      The kernel's boot-time apply of the signed packages the installer
+      staged (kernel/src/boot/pkg_boot.rs, pkg_apply.rs): admitted against
+      the epoch floor, merged into the signed topology before the kernel
+      checks it, bound by SHA-256 to their rows, and run as a trial that
+      the next confirmed boot ends. Needs BOOT_SLOTS: the trial is judged by
+      the boot counter, and the floor rises only at a confirmed boot. The
+      installer (USERSPACE_PKGD) and its tool depend on BOOT_SLOTS; neither
+      is built on a small board (HWCLASS_EMBEDDED), where the option starts
+      off. Off, a staging
+      volume the topology declares is left as it is, and the boot says so.
+
+      Cost: on, the apply's code and one staged package at a time in the
+      heap at boot (at most PKG_MAX_KB); off, none.
+
 config PKG_MAX_KB
     int "Largest package the installer accepts (KiB)"
     range 16 65536

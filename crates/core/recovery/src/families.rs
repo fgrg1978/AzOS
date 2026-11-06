@@ -13,6 +13,7 @@
 //! answers as the syscall does: a value or 0, or a negative errno.
 
 use azos_abi::error::Errno;
+#[cfg(any(feature = "use-robot", feature = "boot-slots"))]
 use azos_abi::families::*;
 
 fn errno(e: Errno) -> i64 {
@@ -105,6 +106,7 @@ pub fn config_set(key: &[u8], val: &[u8]) -> i64 {
 }
 
 /// What `ota rollback` did, for the console's message.
+#[cfg(feature = "boot-slots")]
 pub enum Rollback {
     /// Rolled back from the first slot to the second (applies at the next boot).
     Done(u8, u8),
@@ -118,6 +120,7 @@ pub enum Rollback {
 /// `ota_boot_validate_pure`, and for the same reason: `last_good` is only a
 /// pointer, not a guarantee that the bytes still there are signed, and a
 /// manual rollback is the other door into the same slot.
+#[cfg(feature = "boot-slots")]
 pub fn ota_rollback() -> Rollback {
     let mut meta = azos_ota::ota_read_boot_meta();
     if meta.active_slot == meta.last_good {
@@ -138,6 +141,7 @@ pub fn ota_rollback() -> Rollback {
 /// one that boots (`azos_ota::ota_update_switch`). The set's `sec_epoch`, or a
 /// negative errno; the refusal itself goes to the log, which the errno cannot
 /// carry.
+#[cfg(feature = "boot-slots")]
 pub fn ota_switch() -> i64 {
     use azos_ota::UpdateError;
     match azos_ota::ota_update_switch() {
@@ -159,6 +163,7 @@ pub fn ota_switch() -> i64 {
 /// `OTA_OP_STATUS` (the packed word) / `OTA_OP_ROLLBACK` (0 rolled back,
 /// 1 already on the last good slot, `-EACCES` refused) / `OTA_OP_SWITCH`
 /// ([`ota_switch`]).
+#[cfg(feature = "boot-slots")]
 pub fn ota(op: u64) -> i64 {
     match op {
         OTA_OP_STATUS => {
@@ -177,4 +182,11 @@ pub fn ota(op: u64) -> i64 {
         OTA_OP_SWITCH => ota_switch(),
         _ => errno(Errno::EINVAL),
     }
+}
+
+/// Without the A/B slots (Kconfig `BOOT_SLOTS`) there is no slot to report,
+/// roll back or switch.
+#[cfg(not(feature = "boot-slots"))]
+pub fn ota(_op: u64) -> i64 {
+    errno(Errno::ENOSYS)
 }

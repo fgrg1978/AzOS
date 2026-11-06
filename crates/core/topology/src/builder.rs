@@ -3486,8 +3486,10 @@ const PKG_STAGE_TREE: CapSpec = CapSpec {
 
 /// Does the built-in topology carry the package installer's two rows (and the
 /// shell its right to start the tool)? Every class but a small board
-/// (`HWCLASS_EMBEDDED`), like the Linux personality's.
-pub const PKGD_ROW: bool = !azos_limits::HWCLASS_EMBEDDED;
+/// (`HWCLASS_EMBEDDED`), like the Linux personality's, where the A/B slots
+/// (`BOOT_SLOTS`) are built: what the installer stages is applied or switched
+/// only through them.
+pub const PKGD_ROW: bool = !azos_limits::HWCLASS_EMBEDDED && azos_limits::BOOT_SLOTS;
 
 /// The package installer's image (`userspace/services/pkgd`).
 pub const TASK_PKGD_IMAGE: &[u8] = b"PKGD.ELF";

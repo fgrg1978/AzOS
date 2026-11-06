@@ -582,6 +582,7 @@ pub fn secure_boot_verify_other_slots(
 /// persisted, verified recovery target replaces a diagnosable brick with a
 /// reset loop, which is strictly worse — nothing reaches the console long
 /// enough to read, and the flash takes a write per cycle.
+#[cfg(feature = "boot-slots")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoverySteer {
     /// `/fat/BOOTMETA*` now names slot R, and the readback confirms it.
@@ -626,6 +627,7 @@ pub enum RecoverySteer {
 /// Single-hart, pre-SMP, pre-`task_create` — same call context as the boot
 /// gate itself. No shared buffer to reason about (U09-14): this adds a
 /// second sequential streaming-hash pass, nothing concurrent.
+#[cfg(feature = "boot-slots")]
 #[must_use]
 pub fn secure_boot_steer_to_recovery(active_slot: u8) -> RecoverySteer {
     if active_slot == crate::SLOT_R {

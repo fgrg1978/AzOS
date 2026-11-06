@@ -79,8 +79,9 @@ pub(crate) fn start_network() {
     // rt-motor / flight-ctrl / sensor-ahrs are created and the timer ISR
     // starts preempting kernel_main on the boot CPU, late init code may
     // never run to completion. Spawning early guarantees the listener is
-    // registered while the boot CPU is still single-tasking. Kconfig NET.
-    #[cfg(feature = "net")]
+    // registered while the boot CPU is still single-tasking. Kconfig NET and
+    // BOOT_SLOTS (the receiver writes the inactive slot).
+    #[cfg(all(feature = "net", feature = "boot-slots"))]
     {
         let port = azos_config::CFG_OTA_AUTO_RECV_PORT.load(
             core::sync::atomic::Ordering::Relaxed);

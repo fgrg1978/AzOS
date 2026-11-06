@@ -55,7 +55,7 @@ use azos_drv_block::blkdev::Boot;
 use azos_drv_block::partition;
 use azos_drv_sys::{kprintln, kwarn};
 use azos_fs::azvol::verity::{Fail, Tamper};
-use azos_fs::azvol::{Error, Volume, VolumeKey, BLOCK_SIZE};
+use azos_fs::azvol::{Error, VolumeKey, BLOCK_SIZE};
 use azos_fs::azvol_mount::{mount_rows, Env, Outcome, Row, Why};
 use azos_fs::probe::VolumeKind;
 
@@ -153,7 +153,9 @@ pub(super) fn volume_key(name: &[u8]) -> Option<VolumeKey> {
 /// Open the volume of row `name` on `dev` with the engine itself (not the VFS):
 /// sealed with its key when the row is, plain otherwise. For the steps that run
 /// before the VFS serves the volume (`pkg_apply`).
-pub(super) fn engine_mount(dev: PartDev, name: &[u8], aead: bool) -> Result<Volume<PartDev>, Why> {
+#[cfg(feature = "pkg-boot-apply")]
+pub(super) fn engine_mount(dev: PartDev, name: &[u8], aead: bool) -> Result<azos_fs::azvol::Volume<PartDev>, Why> {
+    use azos_fs::azvol::Volume;
     if !aead {
         return Volume::mount(dev).map_err(Why::Engine);
     }

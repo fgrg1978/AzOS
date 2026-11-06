@@ -798,7 +798,7 @@ fn every_reason_has_its_own_code_and_name() {
         Reason::Applied, Reason::Profile, Reason::Format, Reason::Isa, Reason::NotAdmitted,
         Reason::Signature, Reason::BuildId, Reason::Epoch, Reason::NotNosleep, Reason::NotAllowed, Reason::NoSite,
         Reason::Entry, Reason::Range, Reason::PoolFull, Reason::Poke, Reason::TableFull,
-        Reason::NoAlias, Reason::GraceMissed,
+        Reason::NoAlias, Reason::GraceMissed, Reason::NoFloor,
     ];
     assert_eq!(all.iter().map(|r| r.code()).collect::<HashSet<_>>().len(), all.len());
     assert_eq!(all.iter().map(|r| r.name()).collect::<HashSet<_>>().len(), all.len());

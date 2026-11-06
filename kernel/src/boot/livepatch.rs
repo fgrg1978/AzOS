@@ -57,6 +57,10 @@ const ISA: u8 = if cfg!(target_arch = "riscv64") {
 // five-byte nopl), so the compiler must leave at least that many entry nops.
 const _: () = assert!(!ENABLED || azos_limits::LIVEPATCH_POOL_KIB != 0, "LIVEPATCH needs LIVEPATCH_POOL_KIB");
 const _: () = assert!(
+    !ENABLED || azos_limits::BOOT_SLOTS || azos_limits::OTA_FLOOR_TPM_NV,
+    "LIVEPATCH needs an epoch floor it may trust: BOOT_SLOTS or OTA_FLOOR_TPM_NV"
+);
+const _: () = assert!(
     !ENABLED || azos_limits::LIVEPATCH_ENTRY_NOPS >= if cfg!(target_arch = "aarch64") { 1 } else if cfg!(target_arch = "riscv64") { 3 } else { 5 },
     "LIVEPATCH needs LIVEPATCH_ENTRY_NOPS: 1 on aarch64, 3 on riscv64, 5 on x86_64"
 );
@@ -293,12 +297,17 @@ pub(crate) fn install_livepatch() {
     if rows.iter().all(|r| r.isa as u8 != ISA) {
         return;
     }
-    let floor = if ENABLED { azos_ota::ota_read_boot_meta().min_sec_epoch } else { 0 };
+    let floor = if ENABLED { azos_ota::ota_floor() } else { None };
     for (i, row) in rows.iter().enumerate().filter(|(_, r)| r.isa as u8 == ISA) {
+        let name = u64::from_be_bytes(row.sha256[..8].try_into().unwrap_or([0; 8]));
         if !ENABLED {
-            record(i as u32, u64::from_be_bytes(row.sha256[..8].try_into().unwrap_or([0; 8])), 0, Reason::Profile);
+            record(i as u32, name, 0, Reason::Profile);
             continue;
         }
+        let Some(floor) = floor else {
+            record(i as u32, name, 0, Reason::NoFloor);
+            continue;
+        };
         // 8.3 name from the row's own hash: unique per blob, no long names.
         let mut path = *b"/fat/PATCH/00000000.PCH";
         for (k, b) in row.sha256[..4].iter().enumerate() {
@@ -307,9 +316,7 @@ pub(crate) fn install_livepatch() {
         }
         match read_blob(&path) {
             Blob::Absent => kprintln!("[LIVEPATCH] row {}: no blob at {}", i, core::str::from_utf8(&path).unwrap_or("?")),
-            Blob::TooLarge => {
-                record(i as u32, u64::from_be_bytes(row.sha256[..8].try_into().unwrap_or([0; 8])), 0, Reason::Format)
-            }
+            Blob::TooLarge => record(i as u32, name, 0, Reason::Format),
             Blob::Read(mut v) => {
                 apply(&mut v, floor);
             }

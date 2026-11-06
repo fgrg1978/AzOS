@@ -136,6 +136,9 @@ pub enum Reason {
     /// Applied, but the bounded grace period ran out: an old
     /// body may still be running on some CPU.
     GraceMissed = 17,
+    /// The build keeps no epoch floor it may trust this boot
+    /// (`azos_ota::ota_floor`): no blob is judged.
+    NoFloor = 18,
 }
 
 impl Reason {
@@ -165,6 +168,7 @@ impl Reason {
             Reason::TableFull => "table-full",
             Reason::NoAlias => "no-text-writer",
             Reason::GraceMissed => "grace-missed",
+            Reason::NoFloor => "no-floor",
         }
     }
 

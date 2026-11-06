@@ -988,9 +988,9 @@ def test_page_size_reaches_the_build() -> None:
 # (`base` tags on symbols that default y everywhere; INSPECT is y on embedded
 # too since the tree replaced procfs: the native services have no other view).
 ALWAYS_BASE = ("sched-o1-placement", "sched-ipc-affinity", "decisions-durable",
-               "inspect", "net", "autorun", "virtio-input", "virtio-snd", "rtc")
+               "inspect", "net", "autorun", "virtio-input", "virtio-snd", "rtc", "boot-slots")
 # Base features of every hardware class but embedded (`default n if HWCLASS_EMBEDDED`).
-FULL_PROFILE_BASE = ("crashdump", "decisions")
+FULL_PROFILE_BASE = ("crashdump", "decisions", "pkg-boot-apply")
 
 
 def _bridge_args(cfg: Path) -> list[str]:
@@ -1480,6 +1480,31 @@ def test_select_applies_a_selection_through_kconfig() -> None:
         assert r.returncode == 1 and "CONFIG_BOARD_QEMU=y, a choice member" in r.stderr, r
 
 
+def test_without_boot_slots_nothing_judges_by_an_untrusted_floor() -> None:
+    """BOOT_SLOTS off: BOOTMETA's epoch floor is never raised, so what judges an
+    epoch by it is not offered without a floor it may trust: LIVEPATCH needs
+    the slots or the TPM floor, the boot-time package apply the slots (its
+    trial reads the boot counter), and the slot image checks
+    (OTA_SIG_MANDATORY, SECURE_BOOT_ENFORCED) the slots. Canary: drop a
+    `depends on` and its symbol survives here."""
+    import tempfile
+
+    base = ["CONFIG_BOARD_QEMU=y", "CONFIG_ARCH_RISCV64=y", "CONFIG_BUILD_TYPE_DEV=y", "CONFIG_TPM=y",
+            "CONFIG_LIVEPATCH=y", "CONFIG_LIVEPATCH_POOL_KIB=64", "CONFIG_LIVEPATCH_ENTRY_NOPS=3",
+            "CONFIG_PKG_BOOT_APPLY=y", "CONFIG_OTA_SIG_MANDATORY=y",
+            "CONFIG_SECURE_BOOT_ENFORCED=y"]
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        on = _expand(base, t, "on.config")
+        for sym in ("BOOT_SLOTS", "LIVEPATCH", "PKG_BOOT_APPLY", "OTA_SIG_MANDATORY", "SECURE_BOOT_ENFORCED"):
+            assert f"CONFIG_{sym}=y" in on, (sym, "the slots on hold it")
+        off = _expand(base + ["# CONFIG_BOOT_SLOTS is not set"], t, "off.config")
+        for sym in ("LIVEPATCH", "PKG_BOOT_APPLY", "OTA_SIG_MANDATORY", "SECURE_BOOT_ENFORCED"):
+            assert f"CONFIG_{sym}=y" not in off, (sym, "kept without the slots")
+        tpm = _expand(base + ["# CONFIG_BOOT_SLOTS is not set", "CONFIG_OTA_FLOOR_TPM_NV=y"], t, "tpm.config")
+        assert "CONFIG_LIVEPATCH=y" in tpm and "CONFIG_PKG_BOOT_APPLY=y" not in tpm, tpm
+
+
 GOLDEN = TOOLS_DIR / "kconfig_to_cargo.golden"
 
 
@@ -1578,6 +1603,7 @@ def _run_all_tests() -> int:
         test_scheduler_options_follow_their_symbols,
         test_kaslr_links_position_independent,
         test_select_applies_a_selection_through_kconfig,
+        test_without_boot_slots_nothing_judges_by_an_untrusted_floor,
         test_defconfig_features_match_the_golden_file,
         test_no_defconfig_builds_a_self_test,
     ]

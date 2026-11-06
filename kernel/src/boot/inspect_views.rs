@@ -391,10 +391,14 @@ fn build_components(
             let (serves, needs) = eps.as_str().split_once(' ').ok_or(Error::Corrupt)?;
             text(b, d, "serves", serves)?;
             text(b, d, "needs", needs)?;
+            #[cfg(feature = "pkg-boot-apply")]
             let mut dbuf = [0u8; 16];
+            #[cfg(feature = "pkg-boot-apply")]
             let dir_s = crate::boot::pkg_boot::image_dir(row.name.as_bytes(), &mut dbuf)
                 .and_then(|d| core::str::from_utf8(d).ok())
                 .unwrap_or("");
+            #[cfg(not(feature = "pkg-boot-apply"))]
+            let dir_s = "";
             text(b, d, "dir", dir_s)?;
             ids.starts.push((b.u64(d, "start", super::row_startable(i) as u64)?, i));
             n += 1;

@@ -38,6 +38,7 @@ pub(crate) fn recover_persistent_state() {
         // `boot_validate_and_verify_slots()` so aarch64's `kernel_main`
         // runs the same code instead of a copy. See that function's doc
         // for the three preconditions this call site satisfies.
+        #[cfg(feature = "boot-slots")]
         boot_validate_and_verify_slots();
 
         // ── Brain link key (reserved tail sector) ───────────────────────

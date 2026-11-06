@@ -221,7 +221,9 @@ pub(crate) fn boot_launch_task(_: usize) {
         // A row a package brought runs the program that package carried, from
         // the staging volume (`boot::pkg_boot`), not one of its name on /fat;
         // the manager is told the directory by `components/<n>/dir` of its view.
+        #[cfg(feature = "pkg-boot-apply")]
         let mut applied = [0u8; 48];
+        #[cfg(feature = "pkg-boot-apply")]
         if let Some(path) = crate::boot::pkg_boot::image_path(row.name.as_bytes(), &mut applied) {
             if !on_volume(path) {
                 kprintln!("[DRVLAUNCH] {} is not on this volume -- the component manager does not start it",

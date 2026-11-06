@@ -44,6 +44,7 @@ fn boot_count_loaded(v: &azos_ota::BootValidation) {
     azos_drv_sys::wdt::crash_counter_set(v.prior_unconfirmed);
     // The staged packages' trial is judged by the same counter, when the
     // topology is installed (`pkg_boot`).
+    #[cfg(feature = "pkg-boot-apply")]
     super::pkg_boot::note_boot(v.prior_unconfirmed, v.max_attempts);
     kprintln!("[BOOTCNT] {} unconfirmed boot(s) before this one ({}); this boot {}",
         v.prior_unconfirmed,
@@ -90,15 +91,6 @@ fn boot_count_loaded(v: &azos_ota::BootValidation) {
     } else {
         kprintln!("[RECOVERY] not armed (crash count {})", slot_crashes);
     }
-    // Owner decision 2026-09-28: an orderly reboot or power-off before the
-    // boot is confirmed voids this boot's mark instead of counting as a
-    // crash (`ota_void_unconfirmed_boot`). The shell calls it directly;
-    // `sys_reboot`/`sys_shutdown` reach it through this hook.
-    fn orderly_power_off() {
-        let _ = azos_ota::ota_void_unconfirmed_boot();
-        entropy_seed_refresh_at_power_off();
-    }
-    azos_syscall::handlers::set_orderly_power_hook(orderly_power_off);
     // Gate row `safe mode: attempts exhausted`: every boot that is NOT safe
     // mode crashes here, after its unconfirmed mark is written, so a fresh
     // volume walks the real sequence (1, 2, 3, then 4 = exhausted) on one

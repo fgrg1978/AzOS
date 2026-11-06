@@ -622,6 +622,13 @@ no-ml       = ["azos_recovery/no-ml", "azos_behavior?/no-ml"]
 # Off by default in every existing defconfig — dev/CI
 # builds keep today's warn-only behaviour unless this is explicitly set.
 secure-boot-enforced = ["azos_ota/secure-boot-enforced"]
+# Kconfig BOOT_SLOTS: A/B boot trust, `kernel/src/boot/ota.rs` and its calls
+# (the slot validation, the boot counter, safe mode, the boot-good mark), and
+# the recovery console's `ota` command and receive task.
+boot-slots = ["azos_ota/boot-slots", "azos_recovery/boot-slots"]
+# Kconfig PKG_BOOT_APPLY: the boot-time apply of staged packages
+# (`kernel/src/boot/pkg_boot.rs`, `pkg_apply.rs`).
+pkg-boot-apply = []
 # Brain-link provisioning hardening: refuse to boot without a link key,
 # refuse a handshake without seeded entropy, hold the UART bridge down (a
 # keyless robot can never talk -- fail at provisioning time, loudly, not in the
@@ -664,7 +671,7 @@ mmc-poll-canary = ["mmc-flush-smoke", "azos_drv_block/mmc-poll-canary"]
 # `ota_boot_validate` records it as unconfirmed (`boot_count_loaded` in
 # kernel/src/boot/ota.rs); the next boot of the same volume must read the count back. Never
 # in a board build.
-boot-count-smoke = ["qemu"]
+boot-count-smoke = ["qemu", "boot-slots"]
 # Wave 8 TLB shootdown probe (riscv64, -smp >= 3): a stale access after a
 # cross-hart unmap must fault. `tlb-local-only` is its canary: the remote half
 # of the shootdown is compiled out, and the probe must print STALE READ.
@@ -735,12 +742,12 @@ supall-canary = []
 # boot that is not safe mode, so one volume walks the sequence to safe mode,
 # then probes the actuators; `orderly-reboot-smoke` calls `sys_reboot` a few
 # seconds into a boot on a fresh volume.
-safe-mode-smoke = ["qemu", "use-robot"]
+safe-mode-smoke = ["qemu", "use-robot", "boot-slots"]
 # Gate canary only (wave 14): the boot launcher ignores safe mode, so safe mode
 # starts the component manager, which starts SH.ELF, and `sh: safe mode
 # canary` must see it.
 safe-mode-launch-canary = []
-orderly-reboot-smoke = ["qemu"]
+orderly-reboot-smoke = ["qemu", "boot-slots"]
 # Gate rows `power-off: the kernel's sync keeps a written file` (owner decision
 # 2026-10-23, Q1): once the boot is confirmed, write a file through the VFS and
 # call the orderly power-off at once, so only the kernel's own sync can make it

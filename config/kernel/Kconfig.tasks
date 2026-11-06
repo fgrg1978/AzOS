@@ -364,6 +364,7 @@ config HUNG_CPU_TIMEOUT_MS
 
 config TASK_OTA_RECV_PLACE
     string "ota-recv: placement class"
+    depends on BOOT_SLOTS
     default "general"
     help
       The OTA receiver (CONFIG.INI `ota_auto_recv_port`), created early in

@@ -398,16 +398,27 @@ fn signed_candidate(
     // if the signed topology alone passes, the packages caused it and the trial
     // they began is undone (`pkg_boot`); if it is refused too, they are not to
     // blame and are kept as the apply left them.
+    #[cfg(feature = "pkg-boot-apply")]
     let mut staged: Option<super::pkg_boot::Staged> = None;
+    #[cfg_attr(not(feature = "pkg-boot-apply"), allow(unused_mut))]
     let mut outcome = azos_topology::try_init_with(
         |t| {
             counter = azos_topology::signed::fill_signed(t, &files, &azos_topology::TRUSTED_PUBKEY, ctx)?;
-            staged = super::pkg_boot::apply(t);
+            #[cfg(feature = "pkg-boot-apply")]
+            {
+                staged = super::pkg_boot::apply(t);
+            }
+            #[cfg(not(feature = "pkg-boot-apply"))]
+            if t.volumes().iter().any(|v| v.mount.as_bytes() == azos_pkg::apply::STAGE_MOUNT) {
+                kprintln!("[PKG] the topology declares a staging volume; this build applies no package (Kconfig PKG_BOOT_APPLY)");
+            }
             Ok(())
         },
         |t| admit(t, num_cpus, Mode::Candidate),
     );
+    #[cfg(feature = "pkg-boot-apply")]
     let refused = matches!(&outcome, Err(e) if !matches!(e, TryInitError::AlreadyInit));
+    #[cfg(feature = "pkg-boot-apply")]
     if let (true, Some(s)) = (refused, staged.take()) {
         outcome = azos_topology::try_init_with(
             |t| {
@@ -422,6 +433,7 @@ fn signed_candidate(
             s.keep();
         }
     }
+    #[cfg(feature = "pkg-boot-apply")]
     if let (true, Some(s)) = (outcome.is_ok(), staged.take()) {
         s.finish();
     }

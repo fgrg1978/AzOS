@@ -10,8 +10,14 @@ config LIVEPATCH
     bool "Signed kernel livepatch of non-sleeping functions"
     depends on RCU_QSBR && LIVEPATCH_POOL_KIB != 0 && LIVEPATCH_ENTRY_NOPS != 0
     depends on !HYP_MONITOR
+    depends on BOOT_SLOTS || OTA_FLOOR_TPM_NV
     default n
     help
+      Needs a floor it may trust for the blob's sec_epoch: BOOTMETA's,
+      raised at every confirmed boot (BOOT_SLOTS), or the TPM's
+      (OTA_FLOOR_TPM_NV). With neither the floor is whatever the volume
+      says, so the option is not offered; with the TPM floor and no
+      slots, a boot whose TPM did not hold the floor refuses every row.
       Not with HYP_MONITOR (VIRT_SPLIT): text is read-only at stage 2 after
       the image lock, and the monitor writes only the static keys' sites; a
       signed `text_write` would need the signature checked in the monitor.

@@ -141,6 +141,7 @@ pub(crate) fn bring_up_devices(early: &EarlyBoot, dtb_ptr: usize, num_cpus: usiz
                         // The files of the system that is running (a signed
                         // set's, after a whole-system update) before any of
                         // them is read.
+                        #[cfg(feature = "boot-slots")]
                         install_boot_set();
                         // A panic record the previous boot left in RAM goes
                         // into /fat/CRASH.LOG now.

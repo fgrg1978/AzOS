@@ -19,7 +19,7 @@ pub(crate) const NET_POLL: Place = Place::of_kconfig(azos_limits::TASK_NET_POLL_
 #[cfg(feature = "autorun")]
 pub(crate) const AUTORUN: Place = Place::of_kconfig(azos_limits::TASK_AUTORUN_PLACE);
 pub(crate) const SYS_WDT: Place = Place::of_kconfig(azos_limits::TASK_SYS_WDT_PLACE);
-#[cfg(feature = "net")]
+#[cfg(all(feature = "net", feature = "boot-slots"))]
 pub(crate) const OTA_RECV: Place = Place::of_kconfig(azos_limits::TASK_OTA_RECV_PLACE);
 /// rt-motor and flight-ctrl.
 #[cfg(feature = "use-robot")]
