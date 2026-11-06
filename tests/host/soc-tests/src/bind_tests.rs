@@ -430,7 +430,7 @@ fn lists_count_their_entries_placeholders_included() {
 
 // ---- the hardware bus calls it ----
 
-/// What the kernel's driver registry does (`kernel/src/boot/hwbus.rs`), over
+/// What the kernel's driver records do (`kernel/src/boot/driver_records.rs`), over
 /// the managers of a rig: the resources before the driver, released when the
 /// probe fails or the driver lets go.
 struct Registry<'r, 'p, 'f> {

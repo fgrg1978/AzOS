@@ -7,7 +7,7 @@
 //! resources before the driver is asked.
 //!
 //! This covers the row-to-device mapping and the order of the calls. The
-//! kernel's probe arms (`kernel/src/boot/hwbus.rs`: map the window, hand the
+//! kernel's record probes (`kernel/src/boot/driver_records.rs`: map the window, hand the
 //! base to `gpio_attach` / `i2c_attach` / ...) are board territory; the
 //! window bookkeeping they end in is `tests/host/drivers-tests`'
 //! `window_tests`.
@@ -337,7 +337,7 @@ fn repo_file(rel: &str) -> String {
 ///   display ones included);
 /// - the SoC frameworks' register windows, at most `MAX_WINDOWS_JH7110` (a CRG that
 ///   is clock and reset provider shares one, so the bound is loose);
-/// - one window per `map_window` arm of the hardware bus that a `vf2` image
+/// - one window per `map_window` probe of the driver records that a `vf2` image
 ///   compiles (the pad
 ///   controller's own, even though the framework maps it too: the record
 ///   de-duplicates, but the bound assumes the frameworks failed), and the I2C
@@ -349,13 +349,15 @@ fn vf2_window_bound() -> usize {
         .map(str::trim)
         .filter(|l| l.starts_with("#[cfg(") && l.contains("\"vf2\"") && !l.contains("not(") && l.contains("] ("))
         .count();
-    let hwbus = repo_file("kernel/src/boot/hwbus.rs");
+    // The probes are the driver records'; the helpers some of them call are
+    // the bus's.
+    let probes = repo_file("kernel/src/boot/hwbus.rs") + &repo_file("kernel/src/boot/driver_records.rs");
     // Only the arms a VisionFive 2 image compiles: the `#[cfg(..)]` line above
     // an arm names `vf2`, or `i2c-dw`, which `vf2` implies (the Raspberry Pi
     // mailbox and the K1's sensor are other boards' windows).
     let mut cfg = "";
     let mut arms = 0;
-    for l in hwbus.lines().map(str::trim) {
+    for l in probes.lines().map(str::trim) {
         if l.starts_with("#[cfg(") {
             cfg = l;
         } else if l.contains("map_window(dev)?") && (cfg.contains("\"vf2\"") || cfg.contains("\"i2c-dw\"")) {
@@ -390,7 +392,7 @@ fn the_vf2_window_budget_fits_the_kconfig_default() {
     // **Canary.** Delete the `default 32 if BOARD_VF2` line of MAX_MMIO_REGIONS
     // (the generic 16 is what the board had): the lookup finds none and this
     // row goes red; set it to 16 and the bound exceeds it. Add a `map_window`
-    // arm to `kernel/src/boot/hwbus.rs` past the headroom: red as well. The
+    // probe to `kernel/src/boot/driver_records.rs` past the headroom: red as well. The
     // failure it guards: a full record makes the bind of a later controller
     // `Failed`, and when that controller is the GPIO the e-stop line is
     // silently absent.
