@@ -5305,8 +5305,9 @@ ota_update_row() { # ota_update_row <riscv64|aarch64> <good|forged>
 # the volume, the row stops QEMU once logd says two periods are on the volume
 # (`[logd] two periods on the volume`, after its second fsync'd write) and
 # reads the files back with mtools: a kernel log line and a `@decision` line
-# (a boot refusal: logd writes refusals and denials only, LOGD_DECISIONS_ALL
-# off) are there, each source's sequence numbers only grow, and where the
+# are there (logd writes refusals and denials only, LOGD_DECISIONS_ALL off, so
+# the row boots the captest kernel and volume: captest's ungranted ADC channel
+# and forged motor handle are capability denials every boot makes), each source's sequence numbers only grow, and where the
 # lines change source the timestamp does not go back (one reader, in time
 # order). Flake mode, accepted: a producer stamps its time a few instructions
 # before it claims its slot, so a line can come late by that much, across a
@@ -5352,17 +5353,18 @@ records_logd_row() { # records_logd_row <riscv64|aarch64> <pass|stale>
     rm -rf "$work"; mkdir -p "$work"
     kernel="$work/kernel"; disk="$work/disk.img"; log="$work/boot.log"
     if [ "$isa" = riscv64 ]; then
-        if ! kbuild "qemu"; then bad; echo "      riscv64 kernel (--features qemu) did not build"; return; fi
+        if ! kbuild "qemu,captest-row"; then bad; echo "      riscv64 kernel (--features qemu,captest-row) did not build"; return; fi
         cp "$KERNEL" "$kernel"
-        rm -f $AZOS_OUT/build/disk.img
-        make_disk $AZOS_OUT/build/disk.img
-        cp $AZOS_OUT/build/disk.img "$disk"
+        rm -f $AZOS_OUT/build/disk-captest.img
+        make_disk $AZOS_OUT/build/disk-captest.img
+        cp $AZOS_OUT/build/disk-captest.img "$disk"
     else
-        if ! a64_kbuild "qemu"; then bad; echo "      aarch64 kernel (--features qemu) did not build"; return; fi
+        if ! a64_kbuild "qemu,captest-row"; then bad; echo "      aarch64 kernel (--features qemu,captest-row) did not build"; return; fi
         cp "$A64_IMG" "$kernel"
-        rm -f $AZOS_OUT/build/disk-aarch64.img
-        make_disk $AZOS_OUT/build/disk-aarch64.img
-        cp $AZOS_OUT/build/disk-aarch64.img "$disk"
+        if ! make $AZOS_OUT/build/disk-aarch64-captest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-captest.img"; return
+        fi
+        cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk"
     fi
     par_ready
     OTAE2E_APPEND=""; [ "$mode" = stale ] && OTAE2E_APPEND="canary=record-stale"
@@ -17337,8 +17339,9 @@ CPU 5 lacks hwcap bits"
         bad; echo "      $why"; echo "      log kept: $log"
     }
     # The record substrate read back from logd's files (records_files_check,
-    # the riscv64/aarch64 rows' check): the gate's x86_64 cell, its volume on
-    # virtio-blk, two harts.
+    # the riscv64/aarch64 rows' check): the gate's x86_64 cell with captest's
+    # row and volume (its denials are the decision records the files must
+    # hold), on virtio-blk, two harts.
     x86_records_row() { # x86_records_row <label> <pass|stale>
         local label="$1" mode="$2" why=""
         printf "  %-26s" "${label}..."
@@ -17346,9 +17349,9 @@ CPU 5 lacks hwcap bits"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
         local -a app=(); [ "$mode" = stale ] && app=(-append "canary=record-stale")
-        x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
-        fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
-            || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; return; }
+        x86_kbuild "captest-row" "$kimg" || { bad; echo "      make x86_64 X86_64_SELECT=captest-row did not build"; return; }
+        make $AZOS_OUT/build/disk-x86_64-captest.img >/dev/null 2>&1 && cp $AZOS_OUT/build/disk-x86_64-captest.img "$dimg" \
+            || { bad; echo "      $AZOS_OUT/build/disk-x86_64-captest.img did not build"; return; }
         par_ready
         x86_qemu "$kimg" "$log" 180 '\[logd\] two periods on the volume|KERNEL PANIC|\[X86-TRAP\]' -smp 2 ${app[@]+"${app[@]}"} \
             -drive "file=$dimg,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \

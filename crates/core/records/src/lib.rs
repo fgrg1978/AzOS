@@ -162,14 +162,17 @@ const _: () = {
 /// Where ring `S` is and its geometry, the geometry chosen at compile time.
 #[inline(always)]
 fn place_of<const S: u8>() -> Option<(*mut u8, RingSpec)> {
-    let early = const { spec_of(EARLY_RINGS, S) }?;
+    let early = const { spec_of(EARLY_RINGS, S) };
     let full = const { spec_of(RINGS, S) };
-    let spec = match full {
-        Some(f) if f.entries == early.entries => f,
-        Some(f) if attached() => f,
-        _ => early,
+    let spec = match (early, full) {
+        (Some(e), Some(f)) if f.entries == e.entries => f,
+        (_, Some(f)) if attached() => f,
+        // A source with no early ring writes nothing before the handover.
+        (Some(e), _) => e,
+        (None, _) => return None,
     };
-    Some((BASES[S as usize].load(Ordering::Relaxed), spec))
+    let p = BASES[S as usize].load(Ordering::Relaxed);
+    (!p.is_null()).then_some((p, spec))
 }
 
 #[inline(always)]

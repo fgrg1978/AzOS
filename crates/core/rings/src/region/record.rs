@@ -561,10 +561,6 @@ impl Writer {
     pub fn source(&self) -> u8 {
         self.g.source
     }
-    /// The same ring, to read.
-    pub fn ring(&self) -> Ring {
-        Ring { g: self.g }
-    }
     /// Payload bytes a slot holds.
     pub fn payload(&self) -> usize {
         self.g.slot_bytes - ENV_BYTES
