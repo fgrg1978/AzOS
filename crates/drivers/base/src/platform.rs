@@ -197,8 +197,7 @@ pub mod hw {
     /// GMAC0 base — `gmac0: ethernet@16030000` in `jh7110.dtsi`, a Synopsys
     /// DesignWare QoS MAC (`compatible = "starfive,jh7110-dwmac",
     /// "snps,dwmac-5.20"`, the `stmmac` family), not Cadence GEM/MACB. Driven
-    /// by `crates/drivers/net/src/dwmac.rs`; the Cadence model in `eth.rs`
-    /// is not called on this board (its VF2 half goes with NIC-MACB). The
+    /// by `crates/drivers/net/src/dwmac.rs`. The
     /// register window the driver needs is `azos_drv_net::dwmac::reg::WINDOW`
     /// (the DTS `reg` is 64 KiB).
     pub const ETH0_BASE:   usize = 0x1603_0000;

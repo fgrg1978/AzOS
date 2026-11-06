@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Network devices: the NIC backend selection (`net_queue`), the Ethernet MAC
-//! drivers (`eth`: Cadence MACB/GEM; `dwmac`: Synopsys DesignWare QoS).
+//! drivers (`dwmac`: Synopsys DesignWare QoS).
 
 #![no_std]
 
@@ -26,10 +26,6 @@ pub mod igc;
 // LAN95xx) as a NIC.
 #[cfg(feature = "usb-net")]
 pub mod usb_net;
-
-// Real Ethernet MAC driver (Cadence MACB/GEM on VF2; stub on QEMU).
-#[allow(dead_code)]
-pub mod eth;
 
 // Synopsys DesignWare Ethernet QoS MAC + MDIO/PHY (the VisionFive 2's gmac0).
 // The driver proper is generic over the register window and the DMA domain

@@ -227,7 +227,7 @@ mod pid {
     }
 }
 
-// The `NetQueue` adapters over `eth.rs`/`virtio/net.rs` reference
+// The `NetQueue` adapter over `virtio/net.rs` references
 // `crate::net_queue` — pulled in here so those two `impl NetQueue for ...`
 // blocks (and `net_queue`'s own `pick()` canaries) compile and run on the
 // host, same as everything else in this file.
@@ -792,55 +792,6 @@ mod virtio_net_device {
     }
 }
 
-// `unused_imports` as well as `dead_code`: without the `vf2` feature the file's
-// stub half is compiled and its imports go unused, which is the module's own
-// design rather than a defect in it.
-#[allow(dead_code, unused_imports)]
-#[path = "../../../../crates/drivers/net/src/eth.rs"]
-mod eth;
-
-#[cfg(test)]
-mod macb_rx {
-    use super::eth::rx_copy_len;
-
-    /// The MACB values: a 13-bit length field against a 1536-byte DMA slot.
-    const BUF_SIZE: usize = 1536;
-    const LEN_MAX: usize = 0x1FFF;          // 8191, what the field can hold
-    const ETH_FRAME_MAX: usize = 1514;      // what the one caller passes today
-
-    /// **The bound that was missing.** The hardware writes the length, so it
-    /// is untrusted: a device reporting the field's maximum must not produce a
-    /// copy longer than the DMA slot, whatever the caller's buffer size. Read
-    /// past it and `copy_nonoverlapping` walks into the next frame's buffer,
-    /// then out of the static entirely, into memory the network stack parses.
-    #[test]
-    fn a_device_reported_length_cannot_exceed_the_dma_slot() {
-        // A caller with a jumbo-sized buffer is the case the old bound missed.
-        assert_eq!(rx_copy_len(LEN_MAX, 9000, BUF_SIZE), BUF_SIZE);
-        assert_eq!(rx_copy_len(LEN_MAX, 65536, BUF_SIZE), BUF_SIZE);
-        // And with no caller bound at all it still cannot exceed the slot.
-        assert_eq!(rx_copy_len(usize::MAX, usize::MAX, BUF_SIZE), BUF_SIZE);
-    }
-
-    /// The caller's buffer still bounds it when that is the smaller of the
-    /// two — dropping either `min` reopens a different overflow.
-    #[test]
-    fn the_callers_buffer_still_bounds_a_short_read() {
-        assert_eq!(rx_copy_len(1000, 64, BUF_SIZE), 64);
-        assert_eq!(rx_copy_len(LEN_MAX, 64, BUF_SIZE), 64);
-    }
-
-    /// The ordinary path must be untouched: a normal frame with today's caller
-    /// copies exactly its own length, so the clamp cannot be truncating real
-    /// traffic.
-    #[test]
-    fn a_normal_frame_is_copied_whole() {
-        assert_eq!(rx_copy_len(60, ETH_FRAME_MAX, BUF_SIZE), 60);
-        assert_eq!(rx_copy_len(ETH_FRAME_MAX, ETH_FRAME_MAX, BUF_SIZE), ETH_FRAME_MAX);
-        assert_eq!(rx_copy_len(0, ETH_FRAME_MAX, BUF_SIZE), 0, "an empty frame is legal");
-    }
-}
-
 // The Synopsys DesignWare QoS MAC (`dwmac.rs`): generic over the register
 // window and the DMA domain, so the whole bring-up, both rings and the
 // MDIO/PHY machine run here against a model of the device. `dwmac::board`
@@ -851,44 +802,6 @@ mod dwmac;
 
 #[cfg(test)]
 mod dwmac_tests;
-
-#[cfg(test)]
-mod eth_net_queue {
-    use super::eth::EthNetQueue;
-    use azos_drv_api::net::{NetError, NetQueue};
-
-    /// **Discriminates.** No `vf2` feature on this host build, so the stub
-    /// half of `eth.rs` is what is under test: it must report not-ready, the
-    /// same as it does before the driver was given a `NetQueue` face at
-    /// all. A `NetQueue::is_ready` that hardcoded `true` fails this.
-    #[test]
-    fn stub_backend_is_never_ready() {
-        assert!(!EthNetQueue.is_ready());
-    }
-
-    /// **Discriminates.** `eth_post` returns -1 on the stub unconditionally;
-    /// the trait must turn that into `NotReady`, not `Ok`.
-    #[test]
-    fn stub_backend_refuses_to_post() {
-        assert_eq!(EthNetQueue.post(&[1, 2, 3]), Err(NetError::NotReady));
-    }
-
-    /// **Discriminates.** `eth_recv` also returns -1 on the stub, and the
-    /// receive pass treats that as "nothing available", not an error — the
-    /// trait must match, or `net_poll`'s drain loop (which stops at the first
-    /// 0) changes behaviour on every QEMU boot, since QEMU never compiles
-    /// `vf2`.
-    #[test]
-    fn stub_backend_reap_rx_is_empty() {
-        assert_eq!(EthNetQueue.reap_rx(4, &mut |_| panic!("nothing is queued")), 0);
-    }
-
-    /// **Discriminates.** All-zero MAC on the stub, same as before.
-    #[test]
-    fn stub_backend_mac_is_zero() {
-        assert_eq!(EthNetQueue.mac(), [0u8; 6]);
-    }
-}
 
 // can.rs has no hardware (MMIO) half at all right now — see the doc comment
 // at the top of the file for why one was not added this session (the SoC

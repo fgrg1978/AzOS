@@ -54,8 +54,7 @@ azos_virtio_rng = { path = "../../../crates/drivers/virtio-rng" }
 # green. The kernel builds with overflow-checks = true and panic = "abort",
 # which is what turns a wrapped subtraction into a board reset, so a suite
 # that does not match it is testing a different program.
-# eth.rs is split by a `vf2` cfg the drivers crate declares, and can.rs by
-# both `vf2` and `k1`, i2c.rs by `i2c-dw` and `k1`. Echoed here so the pulled modules do not emit
+# can.rs is split by both `vf2` and `k1`, i2c.rs by `i2c-dw` and `k1`. Echoed here so the pulled modules do not emit
 # unexpected_cfgs -- declared rather than silenced, so the condition stays
 # visible in the source.
 [lints.rust]

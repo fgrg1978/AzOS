@@ -172,7 +172,7 @@ pub fn nic_queue_flush(ifindex: IfIndex) {
 
 /// Initialize the network stack.
 ///
-/// Must be called after the transport driver is ready (VirtIO net or MACB eth).
+/// Must be called after the transport driver is ready (VirtIO net, the DesignWare MAC, an Intel NIC or a USB one).
 pub fn net_init() {
     // Seed the TCP ISN secret from runtime entropy so an attacker who has the
     // binary cannot predict every initial sequence number (RFC 6528). This

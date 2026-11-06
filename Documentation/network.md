@@ -36,8 +36,9 @@ a separate call.
 - `ring()` is the doorbell: it announces everything posted and the receive
   buffers re-posted by the last reap.
 - `reap_rx(max, f)` hands up to `max` received frames to `f`, in place in the
-  NIC's own buffers where the driver owns them (virtio-net, the Intel NICs, the
-  DesignWare MAC) and with one copy where it does not (the Cadence MAC, USB).
+  NIC's own buffers (virtio-net, the DesignWare MAC) or, where `f` may post
+  while the ring's lock would be held (the Intel NICs), or the buffers cannot be
+  lent (USB), with one copy per frame.
 - `reap_tx()` takes back what the device sent and looks at the ring's budget
   (Kconfig `NET_TX_TIMEOUT_MS`).
 
@@ -50,6 +51,18 @@ departure stamp. Ring depths are Kconfig: `NET_VIRTIO_RXQ_SIZE` and
 `NET_VIRTIO_TXQ_SIZE`, `E1000E_RX_DESCS`/`E1000E_TX_DESCS`,
 `IGC_RX_DESCS`/`IGC_TX_DESCS`, `DWMAC_RX_DESCS`/`DWMAC_TX_DESCS`,
 `USB_CDC_BUFS`.
+
+Each NIC contributes one queue pair (`QUEUES_PER_NIC` is a const, so taking its
+queue takes the NIC). Multi-queue virtio-net (the MQ feature and its control
+queue) is a later performance front.
+
+The vsbench network lanes (`udp-roundtrip`, `tcp-bulk-tx`, `tcp-bulk-rx`) have a
+gate row per ISA that holds them to a recorded baseline
+(`tools/bench/net_lane_gate.py`; the row skips while no baseline is recorded).
+riscv64 and aarch64 run the UDP and TCP lanes against Linux; x86_64 has no
+network lane yet (its microvm line has no NIC), which belongs to the x86 PC
+phase. There is no PTP row in the gate: the NIC-queue PTP path is exercised
+only by `ptpd`'s own tests.
 
 ## Receive path
 
@@ -79,7 +92,7 @@ it (virtio-pci with MSI, the e1000e with MSI, and with Kconfig `NET_RX_IRQ`,
 default on, the virtio-mmio line and the VisionFive 2 MAC) wakes it on
 traffic, and with no deadline it sleeps at most `NET_IRQ_IDLE_CEILING_MS`;
 any other NIC is polled every `NET_POLL_PERIOD_US`. The NIC drivers themselves (virtio-net, e1000e, igc,
-the Cadence and DesignWare MACs, USB CDC-ECM/NCM) and their DMA are described
+the DesignWare MAC, USB CDC-ECM/NCM) and their DMA are described
 in [drivers.md](drivers.md).
 
 Only one pass runs at a time (`rx_owner::PassOwner`). A caller that finds a

@@ -36,7 +36,7 @@ choice
         help
           StarFive VisionFive 2 SBC with JH7110 SoC.
           4-core rv64gc @ 1.5 GHz, 8 GiB LPDDR4.
-          MACB Ethernet, StarFive GPIO/PWM/I2C controllers.
+          DesignWare Ethernet, StarFive GPIO/PWM/I2C controllers.
 
     config BOARD_K1
         # cargo-feature: k1

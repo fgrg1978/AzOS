@@ -138,8 +138,7 @@ pub(crate) fn install_robot_hw() {
 ///
 /// **Call only after `install_robot_hw()` and after network bring-up**
 /// (`install_net_config`/`install_net`/`net_init`) — the SPI/CAN/DMA/USB/PM
-/// block's own comment below ("eth_init() already called above during
-/// network init sequence") assumes the network stack is already up; that
+/// block assumes the network stack is already up; that
 /// was already true on riscv64's existing call order and the unified
 /// `kernel_main` keeps net before this helper on BOTH ISAs so the comment
 /// stays true everywhere it is compiled (see the merge's ordering-decisions
@@ -172,7 +171,6 @@ pub(crate) fn install_robot_payload_and_sensors() {
     // are unverified (see `platform.rs`'s VF2 checklist); re-add the day a
     // board's `boot_hooks.rs` maps them.
     azos_drv_bus::can::can_init();
-    // eth_init() already called above during network init sequence.
     kprintln!("[HW] CAN initialized");
 
     kprintln!();

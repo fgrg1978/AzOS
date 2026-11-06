@@ -13,9 +13,7 @@ use crate::*;
 pub(crate) fn start_network() {
     #[cfg(all(feature = "net", feature = "vf2"))]
     {
-        // The board Ethernet is the Synopsys DesignWare QoS MAC (gmac0). The
-        // Cadence driver `eth.rs` is not called: its register model is the
-        // wrong IP's (NIC-MACB removes the VF2 half).
+        // The board Ethernet is the Synopsys DesignWare QoS MAC (gmac0).
         install_dwmac();
         // Init UART1 bridge for ESP32-C3 WiFi relay
         let bridge_rc = azos_drv_bus::uart_bridge::bridge_init();

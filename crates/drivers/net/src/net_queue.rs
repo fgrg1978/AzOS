@@ -58,7 +58,6 @@ use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 const BACKEND_NONE: u8 = 0;
-const BACKEND_ETH: u8 = 1;
 const BACKEND_VIRTIO: u8 = 2;
 const BACKEND_DWMAC: u8 = 3;
 const BACKEND_E1000E: u8 = 4;
@@ -66,7 +65,7 @@ const BACKEND_IGC: u8 = 5;
 const BACKEND_USB: u8 = 6;
 
 /// NICs the table holds: one per backend kind.
-pub const MAX_NICS: usize = 6;
+pub const MAX_NICS: usize = 5;
 
 /// The backend of each NIC, in the order [`select`] numbered them.
 static NIC_BACKEND: [AtomicU8; MAX_NICS] = [const { AtomicU8::new(BACKEND_NONE) }; MAX_NICS];
@@ -74,12 +73,10 @@ static NIC_BACKEND: [AtomicU8; MAX_NICS] = [const { AtomicU8::new(BACKEND_NONE) 
 /// Pure decision table, split out of [`select`] so it is testable on the
 /// host without real hardware: `select` is a short caller that feeds it
 /// live `is_ready()` reads. Every ready backend becomes a NIC, the physical
-/// ones first (board Ethernet, the Cadence MAC then the Synopsys one: no board
-/// has both; then the PCI Intel NICs, e1000e before igc), virtio-net, and a USB NIC last: board Ethernet is the
-/// one the pre-table `if eth_is_ready() {...} else {...}` chain preferred, and
-/// NIC 0 is the stack's primary interface.
+/// ones first (board Ethernet, the Synopsys MAC; then the PCI Intel NICs,
+/// e1000e before igc), virtio-net, and a USB NIC last. NIC 0 is the stack's
+/// primary interface.
 const fn pick(
-    eth_ready: bool,
     dwmac_ready: bool,
     e1000e_ready: bool,
     igc_ready: bool,
@@ -88,10 +85,6 @@ const fn pick(
 ) -> [u8; MAX_NICS] {
     let mut out = [BACKEND_NONE; MAX_NICS];
     let mut n = 0;
-    if eth_ready {
-        out[n] = BACKEND_ETH;
-        n += 1;
-    }
     if dwmac_ready {
         out[n] = BACKEND_DWMAC;
         n += 1;
@@ -182,7 +175,6 @@ fn igc_ready() -> bool {
 /// device. Returns how many NICs there are.
 pub fn select() -> usize {
     let picked = pick(
-        crate::eth::EthNetQueue.is_ready(),
         dwmac_ready(),
         e1000e_ready(),
         igc_ready(),
@@ -220,7 +212,6 @@ fn backend(nic: usize) -> u8 {
 macro_rules! on_nic {
     ($nic:expr, $d:ident => $e:expr, else $none:expr) => {
         match backend($nic) {
-            BACKEND_ETH => { let $d = &crate::eth::EthNetQueue; $e }
             #[cfg(feature = "vf2")]
             BACKEND_DWMAC => { let $d = &crate::dwmac::board::DwmacNetQueue; $e }
             #[cfg(feature = "e1000e")]
@@ -315,7 +306,7 @@ pub fn batch_end_all() {
 }
 
 /// Hand up to `max` received frames of NIC `nic` to `f` (`NetQueue::reap_rx`):
-/// by reference on virtio-net, one copy each on board Ethernet. 0 when there
+/// by reference on virtio-net, one copy each where the driver cannot lend its buffers. 0 when there
 /// is no such NIC or nothing is queued. Outside a batch the buffers it
 /// re-posted are announced before it returns.
 #[inline]
@@ -480,27 +471,17 @@ pub fn virtio_queue_stats() -> Option<azos_drv_virtio::virtio::net::NetQueueStat
 mod tests {
     use super::*;
 
-    /// **Discriminates.** Board Ethernet is NIC 0 when both backends read
-    /// ready — the priority the old `if eth_is_ready() {...} else {...}`
-    /// chain encoded — and virtio-net is no longer shadowed: it is NIC 1.
-    /// Flip the order in `pick`, or drop the second push, and this fails.
-    #[test]
-    fn both_ready_makes_two_nics_with_eth_first() {
-        assert_eq!(pick(true, false, false, false, true, false), [BACKEND_ETH, BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
+    fn nics(list: &[u8]) -> [u8; MAX_NICS] {
+        let mut out = [BACKEND_NONE; MAX_NICS];
+        out[..list.len()].copy_from_slice(list);
+        out
     }
 
     /// **Discriminates.** VirtIO is the QEMU fallback: with no board
-    /// Ethernet, it must still be NIC 0. A `pick` that only ever returns
-    /// `BACKEND_ETH` (a stub that ignores its second argument) fails this.
+    /// Ethernet, it must still be NIC 0.
     #[test]
     fn virtio_alone_is_nic_zero() {
-        assert_eq!(pick(false, false, false, false, true, false), [BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-    }
-
-    /// **Discriminates.** Board Ethernet alone is NIC 0 with nothing after it.
-    #[test]
-    fn eth_alone_is_nic_zero() {
-        assert_eq!(pick(true, false, false, false, false, false), [BACKEND_ETH, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
+        assert_eq!(pick(false, false, false, true, false), nics(&[BACKEND_VIRTIO]));
     }
 
     /// **Discriminates.** The VisionFive 2: the Synopsys MAC is NIC 0 and
@@ -508,15 +489,15 @@ mod tests {
     /// `pick`, or put it after virtio, and this fails.
     #[test]
     fn dwmac_is_board_ethernet_and_virtio_follows() {
-        assert_eq!(pick(false, true, false, false, true, false), [BACKEND_DWMAC, BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(false, true, false, false, false, false), [BACKEND_DWMAC, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
+        assert_eq!(pick(true, false, false, true, false), nics(&[BACKEND_DWMAC, BACKEND_VIRTIO]));
+        assert_eq!(pick(true, false, false, false, false), nics(&[BACKEND_DWMAC]));
     }
 
     /// **Discriminates.** Neither ready must not silently default to a
     /// backend that does not exist.
     #[test]
     fn neither_ready_selects_none() {
-        assert_eq!(pick(false, false, false, false, false, false), [BACKEND_NONE; MAX_NICS]);
+        assert_eq!(pick(false, false, false, false, false), [BACKEND_NONE; MAX_NICS]);
     }
 
     /// **Discriminates.** The Intel NIC is NIC 0 on a PC (alone), and ahead
@@ -525,9 +506,9 @@ mod tests {
     /// NIC 1. A `pick` that leaves it out, or puts virtio first, fails.
     #[test]
     fn e1000e_is_a_physical_nic_ahead_of_virtio() {
-        assert_eq!(pick(false, false, true, false, false, false), [BACKEND_E1000E, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(false, false, true, false, true, false), [BACKEND_E1000E, BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(true, false, true, false, true, false), [BACKEND_ETH, BACKEND_E1000E, BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
+        assert_eq!(pick(false, true, false, false, false), nics(&[BACKEND_E1000E]));
+        assert_eq!(pick(false, true, false, true, false), nics(&[BACKEND_E1000E, BACKEND_VIRTIO]));
+        assert_eq!(pick(false, true, false, true, false), nics(&[BACKEND_E1000E, BACKEND_VIRTIO]));
     }
 
     /// **Discriminates.** The I225/I226 NIC is NIC 0 on a PC (alone), ahead of
@@ -536,10 +517,10 @@ mod tests {
     /// leaves it out, or puts it after virtio, fails.
     #[test]
     fn igc_is_a_physical_nic_after_e1000e_and_ahead_of_virtio() {
-        assert_eq!(pick(false, false, false, true, false, false), [BACKEND_IGC, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(false, false, false, true, true, false), [BACKEND_IGC, BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(false, false, true, true, true, false), [BACKEND_E1000E, BACKEND_IGC, BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(true, false, true, true, true, false), [BACKEND_ETH, BACKEND_E1000E, BACKEND_IGC, BACKEND_VIRTIO, BACKEND_NONE, BACKEND_NONE]);
+        assert_eq!(pick(false, false, true, false, false), nics(&[BACKEND_IGC]));
+        assert_eq!(pick(false, false, true, true, false), nics(&[BACKEND_IGC, BACKEND_VIRTIO]));
+        assert_eq!(pick(false, true, true, true, false), nics(&[BACKEND_E1000E, BACKEND_IGC, BACKEND_VIRTIO]));
+        assert_eq!(pick(false, true, true, true, false), nics(&[BACKEND_E1000E, BACKEND_IGC, BACKEND_VIRTIO]));
     }
 
     /// **Discriminates.** A NIC number past the table, or one `select` left
@@ -558,9 +539,9 @@ mod tests {
     /// first fails.
     #[test]
     fn usb_follows_the_nics_probed_at_boot() {
-        assert_eq!(pick(false, false, false, false, false, true), [BACKEND_USB, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(false, false, false, false, true, true), [BACKEND_VIRTIO, BACKEND_USB, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(true, false, true, false, true, true), [BACKEND_ETH, BACKEND_E1000E, BACKEND_VIRTIO, BACKEND_USB, BACKEND_NONE, BACKEND_NONE]);
-        assert_eq!(pick(true, true, true, true, true, true).iter().filter(|b| **b != BACKEND_NONE).count(), 6, "the table holds every backend at once");
+        assert_eq!(pick(false, false, false, false, true), nics(&[BACKEND_USB]));
+        assert_eq!(pick(false, false, false, true, true), nics(&[BACKEND_VIRTIO, BACKEND_USB]));
+        assert_eq!(pick(false, true, false, true, true), nics(&[BACKEND_E1000E, BACKEND_VIRTIO, BACKEND_USB]));
+        assert_eq!(pick(true, true, true, true, true).iter().filter(|b| **b != BACKEND_NONE).count(), 5, "the table holds every backend at once");
     }
 }

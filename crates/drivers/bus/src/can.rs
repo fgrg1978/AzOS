@@ -52,8 +52,7 @@
 ///        CAN frames against fake state and report success. The VF2 is the
 ///        board this can be built for; K1 needs its own SPI driver first.
 /// What IS covered: frame encode/decode and ID handling in
-/// `tests/host/drivers-tests` (pulls this file in via `#[path]`, same pattern as
-/// `eth.rs`) — the "pure logic, already present and untested" gap the
+/// `tests/host/drivers-tests` (pulls this file in via `#[path]`) — the "pure logic, already present and untested" gap the
 /// roadmap names. That is the honest intermediate step; a driver against a
 /// guessed register map or an unverified CS assignment would read as
 /// progress while being worse than the skeleton it replaced.
