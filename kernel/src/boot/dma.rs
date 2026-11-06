@@ -26,8 +26,11 @@
 //! - a driver that hands its device physical addresses (NVMe, AHCI) leaves
 //!   the function in pass-through, said per function (the NVMe driver reads
 //!   only its domain's coherence, to sync its pages);
-//! - a function no kernel driver binds is blocked: ring 3 has no DMA path
-//!   yet, so nothing it drives can need one.
+//! - a function no kernel driver binds is blocked. A ring-3 driver of it
+//!   that maps memory for it (`DEVICE_DMA_MAP`) gets a translating domain
+//!   of its own then ([`ring3_domain`]), pointed at an empty table before
+//!   its first mapping: the device reaches what ring 3 mapped and nothing
+//!   else.
 //!
 //! The first two stay in pass-through until their driver has run. Once every
 //! PCI driver had its turn, [`iommu_settle`] blocks each function none of them
@@ -261,6 +264,55 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
     } else {
         kprintln!("[DMA] default domain: identity (unchecked), {}", coherence);
     }
+    azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain: ring3_domain, quiesce: ring3_quiesce });
+}
+
+/// The domain a ring-3 driver maps memory for the device `dev` (a hardware
+/// bus handle) through: a PCI function's own translating domain while an
+/// IOMMU is up (made on first use), else the domain the registry gives the
+/// device, as it would a kernel driver. `None`: an IOMMU is up and the
+/// function cannot have a domain of its own, so nothing it is given would
+/// reach it.
+fn ring3_domain(dev: u32) -> Option<&'static dyn DmaDomain> {
+    use azos_drv_bus::hwbus::{self, BusKind, Handle};
+    let d = hwbus::with(|b| b.get(Handle(dev)).map(|s| s.dev))?;
+    match d.kind {
+        // Without PCI support the bus holds no function.
+        #[cfg(not(feature = "pci"))]
+        BusKind::Pci => None,
+        #[cfg(feature = "pci")]
+        BusKind::Pci => {
+            let rid = azos_pci::Bdf::new(d.pci.bus, d.pci.device, d.pci.function).requester_id();
+            #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
+            if hw::iommu_up() {
+                return hw::ring3_domain(rid);
+            }
+            Some(azos_dma::registry::domain_for(Some(rid)))
+        }
+        BusKind::Dt | BusKind::VirtioMmio => Some(azos_dma::registry::domain_for_mmio(d.base)),
+    }
+}
+
+/// Stop the device `dev` a ring-3 driver left behind from issuing DMA, where
+/// no IOMMU confines it: a virtio-mmio transport is reset and the reset
+/// confirmed. Any other device cannot be shown stopped here (`false`), and
+/// the memory it was given stays out of the allocator.
+fn ring3_quiesce(dev: u32) -> bool {
+    use azos_drv_bus::hwbus::{self, BusKind, Handle};
+    let Some(d) = hwbus::with(|b| b.get(Handle(dev)).map(|s| s.dev)) else { return false };
+    if d.kind != BusKind::VirtioMmio || d.base == 0 {
+        return false;
+    }
+    #[cfg(not(any(feature = "vf2", feature = "k1")))]
+    {
+        // SAFETY: the transport window the enumerator read, which the kernel
+        // keeps mapped; a reset touches only its status register.
+        unsafe { azos_drv_virtio::virtio::reset_confirmed(d.base as *mut u32) }
+    }
+    #[cfg(any(feature = "vf2", feature = "k1"))]
+    {
+        false
+    }
 }
 
 #[cfg(any(
@@ -432,6 +484,51 @@ mod hw {
             Some(_) => Placement::Bypass("its driver hands the device physical addresses"),
             None => Placement::Block,
         }
+    }
+
+    /// What [`ring3_domain`] builds a domain from: the unit and its
+    /// page-table format, kept by `iommu_init`.
+    #[derive(Clone, Copy)]
+    struct Unit {
+        unit: &'static dyn UnitHandle,
+        flavour: Flavour,
+        fmt: PtFormat,
+        coherent: bool,
+        own: Option<u32>,
+    }
+    static UNIT: SpinLock<Option<Unit>> = SpinLock::new(None);
+
+    /// The translating domain of PCI function `rid` for its ring-3 driver:
+    /// its own, if it has one, else a free one of the pool, pointed at its
+    /// still empty table before it is handed out (the function reaches
+    /// nothing until ring 3 maps memory in it). `None`: the IOMMU's own
+    /// function, a function a kernel driver's domain is for, or no domain
+    /// left (Kconfig `IOMMU_DOMAINS`).
+    pub(crate) fn ring3_domain(rid: u32) -> Option<&'static dyn azos_dma::DmaDomain> {
+        let u = (*UNIT.lock())?;
+        if u.own == Some(rid) || azos_limits::IOMMU_BYPASS {
+            return None;
+        }
+        // One maker at a time: two first maps of one function make one domain.
+        static MAKING: SpinLock<()> = SpinLock::new(());
+        let _one = MAKING.lock();
+        if let Some(slot) = POOL.iter().find(|s| s.with(|d| d.dev() == rid) == Some(true)) {
+            // A kernel driver's function keeps its domain; ring 3 never gets
+            // one that is not enabled for it.
+            return (slot.with(|d| d.enabled()) == Some(true)).then_some(slot as &'static dyn azos_dma::DmaDomain);
+        }
+        let slot = POOL.iter().find(|s| s.with(|_| ()).is_none())?;
+        let mut d = IoDomain::<ENTRIES>::new(rid, u.flavour, u.fmt, u.unit, &MEM, u.coherent).ok()?;
+        if azos_dma::DomainOps::enable(&mut d).is_err() {
+            azos_drv_sys::kerr!("[IOMMU] {:#06x}: ring-3 domain refused by the unit", rid);
+            return None;
+        }
+        slot.set(d);
+        if azos_dma::registry::install_for(rid, slot).is_err() {
+            azos_drv_sys::kerr!("[IOMMU] {:#06x}: ring-3 domain not recorded (registry full)", rid);
+        }
+        kprintln!("[IOMMU] {:#06x}: translating for its ring-3 driver", rid);
+        Some(slot)
     }
 
     /// The unit the fault task drains.
@@ -637,6 +734,7 @@ mod hw {
 
         *OWN.lock() = f.own;
         *FAULTS.lock() = Some(f.unit);
+        *UNIT.lock() = Some(Unit { unit: f.unit, flavour: f.flavour, fmt: f.fmt, coherent: f.coherent, own: f.own });
         UP.store(true, Ordering::Release);
     }
 

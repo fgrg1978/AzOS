@@ -14,3 +14,9 @@ no_std, no allocator, no locks, host-tested via tests/host/dma-tests.
 
 [dependencies]
 azos_common = { path = "../../core/common" }
+
+[features]
+# Gate canary: a ring-3 object is recorded as bound without entering its
+# device's domain (`bind::map`), so behind an IOMMU the device's first access
+# faults and the host test of the binding sees the page missing.
+dma-bind-skip-map-canary = []

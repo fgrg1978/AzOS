@@ -543,7 +543,7 @@ pub const NODE_TRUNCATEAT: u16 = op(CapKind::Node, CLASS_FS_MUTATE, 23);
 /// names the others in (`azos_ipc::file_cap::ROOT_TREE_RESOURCE` asserts it).
 pub const ROOT_DIR_RESOURCE: u32 = 0x4000_0000;
 
-// ── Device: an interrupt line the caller holds ──────────────────────────────
+// ── Device: an interrupt line, a device or a port range the caller holds ────
 
 /// `w3` of [`PORT_BIND`] with an interrupt line (`PORT_SRC_IRQ`): let the
 /// kernel choose the CPU.
@@ -554,6 +554,37 @@ pub const DEVICE_IRQ_CPU_ANY: u64 = u64::MAX;
 /// handler's budget is spent and the line stays masked until the
 /// reservation is replenished, `-ENOENT` when nobody binds the line.
 pub const DEVICE_IRQ_ACK: u16 = op(CapKind::Device, CLASS_DRIVER, 2);
+/// Let the device the handle names (`ty::MMIO`, a device of the hardware bus
+/// no kernel driver owns) reach a memory object: `w0` a `Cap<Shm>` with
+/// `READ|WRITE` of a read-write object ring 3 created physically contiguous
+/// (`SHM_KIND_CONTIG`), `w1` the direction the data moves ([`DMA_TO_DEVICE`],
+/// [`DMA_FROM_DEVICE`], [`DMA_BIDIRECTIONAL`]). Needs `WRITE` on the device.
+/// The object enters the device's DMA domain (behind an IOMMU, its pages and
+/// no other; with none, checked against RAM) and the kernel keeps it until
+/// the binding ends ([`DEVICE_DMA_UNMAP`] or the caller's exit, which first
+/// stops a device no IOMMU confines). The register form replies `a1` the bus
+/// address the device is to be given and `a2` the length in bytes; the CPU
+/// mapping is the object's own (`SYS_MO_MAP`). Returns 0, or
+/// `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` (the device or the object),
+/// `-EINVAL` (another direction, or an object that is not such a Contig
+/// object), `-ENODEV` (a device a kernel driver owns, or with no domain ring
+/// 3 may map into), `-EBUSY` (the object is bound already), `-EMFILE` (no
+/// free binding, Kconfig `DMA_MAP_ENTRIES`), `-EIO` (the domain refused).
+pub const DEVICE_DMA_MAP: u16 = op(CapKind::Device, CLASS_DRIVER, 3);
+/// End the binding [`DEVICE_DMA_MAP`] made of the object `w0` (a `Cap<Shm>`)
+/// for the device the handle names, once the caller has stopped the device
+/// reaching it: out of the device's domain (an IOMMU's cached translations
+/// dropped), then the kernel's reference. Needs `WRITE` on the device.
+/// Returns 0, `-ENOENT` (the caller made no such binding), `-EIO` (the unmap
+/// failed: the object's frames are kept from the allocator for good), or the
+/// capability errors.
+pub const DEVICE_DMA_UNMAP: u16 = op(CapKind::Device, CLASS_DRIVER, 4);
+/// [`DEVICE_DMA_MAP`]'s `w1`: the device reads the object.
+pub const DMA_TO_DEVICE: u64 = 0;
+/// [`DEVICE_DMA_MAP`]'s `w1`: the device writes the object.
+pub const DMA_FROM_DEVICE: u64 = 1;
+/// [`DEVICE_DMA_MAP`]'s `w1`: both.
+pub const DMA_BIDIRECTIONAL: u64 = 2;
 /// Open the I/O ports of the range the handle names (`ty::IOPORT`) to the
 /// calling thread: from the return on, `in` and `out` on them run in ring 3,
 /// and on any other port they fault (#GP, the task's fault). Register form,

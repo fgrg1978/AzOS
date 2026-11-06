@@ -43,3 +43,80 @@ pub fn sys_mmio_map(a0: u64, a1: u64) -> i64 {
         }
     }
 }
+
+/// Ops on a device the caller holds (`ty::MMIO`): the memory its device
+/// reaches (`DEVICE_DMA_MAP`, `DEVICE_DMA_UNMAP`). The device and the object
+/// are resolved in one hold of the caller's table; the binding is the
+/// process's, so a thread's exit leaves it.
+pub(crate) fn device_op(c: &mut crate::invoke::Call) -> i64 {
+    use azos_abi::cap::{ty, CapHandle, CapPerms};
+    use azos_abi::error::Errno;
+    use azos_abi::invoke::{CLASS_CTL, DEVICE_DMA_MAP, DEVICE_DMA_UNMAP, DMA_BIDIRECTIONAL, DMA_FROM_DEVICE, DMA_TO_DEVICE};
+    use azos_ipc::cap::{targets, Cap, CapError};
+    use azos_ipc::dma_bind::{self, DmaBindError, Direction};
+    enum Refusal {
+        Device(CapError),
+        Object(CapError),
+    }
+    let map = match c.op {
+        DEVICE_DMA_MAP => true,
+        DEVICE_DMA_UNMAP => false,
+        _ => return Errno::EINVAL.to_syscall_ret(),
+    };
+    let dir = match (map, c.w[1]) {
+        (false, _) => Direction::Bidirectional,
+        (true, DMA_TO_DEVICE) => Direction::ToDevice,
+        (true, DMA_FROM_DEVICE) => Direction::FromDevice,
+        (true, DMA_BIDIRECTIONAL) => Direction::Bidirectional,
+        _ => return Errno::EINVAL.to_syscall_ret(),
+    };
+    if c.w[0] > u32::MAX as u64 {
+        return Errno::ECAPSTALE.to_syscall_ret();
+    }
+    let dev: Cap<targets::MmioRegion> = Cap::from_raw(CapHandle::from_raw(c.handle));
+    let obj: Cap<targets::Shm> = Cap::from_raw(CapHandle::from_raw(c.w[0] as u32));
+    let op = c.op;
+    // A map gives a device a way to write memory: containment refuses it. The
+    // unmap takes one back and stays live.
+    let resolved = azos_ipc::cap_store::with_table(c.tid, |t| {
+        let d = if map { t.get_op(dev, CapPerms::WRITE, op) } else { t.get_op_uncontained(dev, CapPerms::WRITE, op) };
+        let d = d.map_err(Refusal::Device)?;
+        let o = t
+            .get_op_uncontained(obj, CapPerms::RW, crate::invoke::class_op(ty::SHM, CLASS_CTL))
+            .map_err(Refusal::Object)?;
+        Ok((d, o))
+    });
+    let (dev, obj) = match resolved {
+        None => return Errno::ECAPSTALE.to_syscall_ret(),
+        Some(Err(Refusal::Device(e))) => {
+            crate::handlers::note_typed_denial_for(c.tid, ty::MMIO, e);
+            return crate::invoke::errno_cap(e);
+        }
+        Some(Err(Refusal::Object(e))) => {
+            crate::handlers::note_typed_denial_for(c.tid, ty::SHM, e);
+            return crate::invoke::errno_cap(e);
+        }
+        Some(Ok(v)) => v,
+    };
+    let owner = azos_sched::group::proc_tid(c.tid);
+    let errno = |e: DmaBindError| match e {
+        DmaBindError::BadObject => Errno::EINVAL,
+        DmaBindError::NoDomain => Errno::ENODEV,
+        DmaBindError::Busy => Errno::EBUSY,
+        DmaBindError::Full => Errno::EMFILE,
+        DmaBindError::Refused | DmaBindError::Kept => Errno::EIO,
+        DmaBindError::NotBound => Errno::ENOENT,
+    }
+    .to_syscall_ret();
+    if !map {
+        return dma_bind::unmap(owner, dev, obj).map_or_else(errno, |()| 0);
+    }
+    match dma_bind::map(owner, dev, obj, dir) {
+        Ok((bus, len)) => {
+            c.rep[..2].copy_from_slice(&[bus.0, len as u64]);
+            c.nrep = 2;
+            0
+        }
+        Err(e) => errno(e),
+    }
+}

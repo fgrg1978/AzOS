@@ -75,6 +75,8 @@ azos_devif = { path = "../../../../../crates/core/devif" }
 # `memobj.rs`'s pipe section runs the byte pipe's header calls on a region's first page.
 azos_bytepipe = { path = "../../../../../crates/core/bytepipe" }
 azos_limits = { path = "../../../../../crates/core/limits" }
+# `dma_bind.rs`: the binding bookkeeping and the domain trait.
+azos_dma = { path = "../../../../../crates/drivers/dma" }
 azos_decision = { path = "../../../../../crates/core/decision" }
 wcet-macro = { path = "../../../../../crates/core/wcet-macro" }
 # Reused host stand-ins, same reasons as everywhere else in this crate.

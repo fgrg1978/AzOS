@@ -638,6 +638,7 @@ dependencies = [
  "azos_common",
  "azos_decision",
  "azos_devif",
+ "azos_dma",
  "azos_drv_base",
  "azos_drv_block",
  "azos_drv_bus",

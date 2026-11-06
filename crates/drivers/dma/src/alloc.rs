@@ -31,6 +31,11 @@ pub fn canary_free_anyway(on: bool) {
     CANARY_FREE_ANYWAY.store(on, Ordering::Relaxed);
 }
 
+/// Is [`canary_free_anyway`] on?
+pub(crate) fn free_anyway() -> bool {
+    CANARY_FREE_ANYWAY.load(Ordering::Relaxed)
+}
+
 /// Bytes [`note_leak`] has counted since boot.
 pub fn leaked_bytes() -> u64 {
     LEAKED_BYTES.load(Ordering::Relaxed)
@@ -46,7 +51,7 @@ pub fn note_leak(len: usize) {
 /// IOTLB flush did not complete): the pages then stay out for good, counted.
 pub fn unmap_and_free<S: PageSource>(domain: &dyn DmaDomain, src: &S, pa: u64, bus: DmaAddr, len: usize) -> Result<(), DmaError> {
     let r = domain.unmap(bus, len);
-    if r.is_err() && !CANARY_FREE_ANYWAY.load(Ordering::Relaxed) {
+    if r.is_err() && !free_anyway() {
         note_leak(len);
         return r;
     }

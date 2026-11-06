@@ -86,7 +86,7 @@ pub mod kregion;
 #[path = "../../../../../../crates/core/ipc/src/io_ring.rs"]
 pub mod io_ring;
 
-// `DEVICE_IRQ_BIND` stores its binding through the real
+// `PORT_SRC_IRQ` stores its binding through the real
 // `irq_bind::irq_bind_port`.
 #[path = "../../../../../../crates/core/ipc/src/irq_bind.rs"]
 pub mod irq_bind;
@@ -97,6 +97,10 @@ pub mod irq_bind;
 // syscall see one bus.
 #[path = "../../../../../../crates/core/ipc/src/mmio_cap.rs"]
 pub mod mmio_cap;
+
+// `DEVICE_DMA_MAP`'s bindings, over the hardware bus above.
+#[path = "../../../../../../crates/core/ipc/src/dma_bind.rs"]
+pub mod dma_bind;
 
 
 // Wave 10: the directory-tree `Cap<File>` the tree-modifying calls check.

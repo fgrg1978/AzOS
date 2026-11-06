@@ -105,6 +105,7 @@ azos_mm = { workspace = true }
 azos_drv_base     = { workspace = true }
 azos_drv_sys      = { workspace = true }
 azos_drv_bus      = { workspace = true }
+azos_dma          = { workspace = true }
 azos_drv_block    = { workspace = true }
 azos_arch = { workspace = true }
 # `ioport_cap`: the ISA's port space (`azos_arch_api::ioport::PORTS`).

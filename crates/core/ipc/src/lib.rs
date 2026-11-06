@@ -39,6 +39,8 @@ pub mod endpoint;
 // crates/drivers/*) because `drivers → ipc` would create a Cargo
 // cycle; `ipc → drivers` already exists.
 pub mod mmio_cap;
+// `DEVICE_DMA_MAP`: the memory a ring-3 driver's device reaches.
+pub mod dma_bind;
 // `Cap<Device>` over a range of I/O ports (x86_64's port space).
 pub mod ioport_cap;
 // Wave 10: `Cap<File>` naming a directory tree, the authority for the calls
@@ -148,6 +150,9 @@ fn release_all(tid: u32, keep_named_endpoints: bool) {
     // gets delivered into the port of a live one — the same class of bug as
     // IPC-3 itself, only harder to see because it needs a device to fire.
     irq_bind::irq_unbind_all(tid);
+    // Memory its devices reach: out of their domains (the device stopped
+    // first where no IOMMU confines it) before any reference to it goes.
+    dma_bind::release_all(tid);
 
     // Typed Cap<T> table for this task's pool slot.
     cap_store::reset(tid);

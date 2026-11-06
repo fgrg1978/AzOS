@@ -3126,7 +3126,29 @@ pub fn memobj_frames_pin(r: u32, out: &mut [usize]) -> Result<usize, MemObjError
     Ok(region.page_count)
 }
 
-/// Give back the reference [`memobj_frames_pin`] took on `r`.
+/// Take a kernel reference on `r` for a device to reach it (`azos_dma::bind`):
+/// the physical address of its first byte and its length. Only a read-write
+/// Contig object a device may be given (`device_visible`, what ring 3's
+/// `SHM_KIND_CONTIG` creates) qualifies, `BadArg` for any other. The kernel
+/// reference keeps the frames (a release, a revoke and the holders' exits
+/// leave them) until [`memobj_frames_unpin`], which the binding's end calls
+/// only once the device can no longer reach them.
+pub fn memobj_dma_pin(r: u32) -> Result<(u64, usize), MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let region = &mut regions[i];
+    if region.kind != MemKind::Contig
+        || !region.device_visible
+        || region.perms != MemPerms::ReadWrite
+        || region.page_count == 0
+    {
+        return Err(MemObjError::BadArg);
+    }
+    acquire_locked(region, MEMOBJ_KERNEL_OWNER).ok_or(MemObjError::Closed)?;
+    Ok((region.phys_pages[0] as u64, region.page_count * azos_arch::PAGE_SIZE))
+}
+
+/// Give back the reference [`memobj_frames_pin`] or [`memobj_dma_pin`] took on `r`.
 pub fn memobj_frames_unpin(r: u32) {
     let mut regions = MEMOBJS.lock();
     let freed = live_index(&regions, r).ok().and_then(|i| release_locked(&mut regions[i], MEMOBJ_KERNEL_OWNER));

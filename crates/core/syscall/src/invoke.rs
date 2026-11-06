@@ -171,6 +171,7 @@ fn dispatch(c: &mut Call) -> i64 {
         t if t == CapType::new(azos_abi::cap::CapKind::Domain, 1) => domain_self_op(c),
         t if t == ty::PORT => port_op(c),
         t if t == ty::IRQ => irq_op(c),
+        t if t == ty::MMIO => crate::mmio::device_op(c),
         t if t == ty::IOPORT => crate::ioport::ioport_op(c),
         t if t == ty::NIC_QUEUE => crate::nicq::nicq_op(c),
         t if t == ty::ENDPOINT => endpoint_op(c),

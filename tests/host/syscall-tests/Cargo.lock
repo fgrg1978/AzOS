@@ -116,6 +116,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_dma"
+version = "0.1.0"
+dependencies = [
+ "azos_common",
+]
+
+[[package]]
 name = "azos_drv_api"
 version = "0.1.0"
 dependencies = [
@@ -577,6 +584,7 @@ dependencies = [
  "azos_common",
  "azos_decision",
  "azos_devif",
+ "azos_dma",
  "azos_limits",
  "azos_trace",
  "cap_test_sync",
