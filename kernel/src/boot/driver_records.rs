@@ -601,14 +601,20 @@ azos_ktest::ktest_late! {
     }
 }
 
-// A system suspend's device step on the real bus: every device a kernel
-// driver is bound to goes down through its record (the disk and the NIC are
-// seen down) and comes back, or the first that cannot refuses and none is
-// left down; the disk reads after. Canary `suspend-leaves-disk-up`: the
+// A system suspend's device step on the real bus (volumes synced, write-back
+// held): every device a kernel driver is bound to goes down through its
+// record (the disk and the NIC are seen down) and comes back, or the first
+// that cannot refuses and none is left down; the disk reads after. Not run
+// while a volume or swap is on the disk: the late phase of the other rows
+// never parks their mounted disk (the scratch-disk rows run it). Canary `suspend-leaves-disk-up`: the
 // disk's suspend does nothing and this test fails.
 #[cfg(feature = "ktest")]
 azos_ktest::ktest_late! {
     fn driver_records_quiesce_and_bring_back_every_kernel_device() {
+        if disk_in_use() {
+            crate::kprintln!("[KTEST] driver records: quiesce not run: a volume or swap is on the disk");
+            return Ok(());
+        }
         let (disk_up, nic_up) = (azos_drv_virtio::virtio::blk::init().is_ok(), azos_drv_virtio::virtio::net::is_ready());
         let downed = super::hwbus::quiesce();
         let left = hwbus::with(|b| b.iter().filter(|(h, _)| b.suspended(*h)).count());
@@ -623,7 +629,13 @@ azos_ktest::ktest_late! {
                 if failed != 0 {
                     return Err("a device did not come back after the quiesce");
                 }
-                crate::kprintln!("[KTEST] driver records: {} device(s) quiesced and brought back", left);
+                let among = match (disk_up, nic_up) {
+                    (true, true) => ", the disk and the NIC among them",
+                    (true, false) => ", the disk among them",
+                    (false, true) => ", the NIC among them",
+                    (false, false) => "",
+                };
+                crate::kprintln!("[KTEST] driver records: {} device(s) quiesced and brought back{}", left, among);
             }
             Err(_) if left != 0 => return Err("a refused quiesce left devices down"),
             Err(_) => crate::kprintln!("[KTEST] driver records: quiesce refused by a driver without power ops"),

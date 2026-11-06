@@ -86,7 +86,13 @@ One record per driver: its ids and its host's ops (`crates/drivers/hwbus/src/rec
 - **System suspend.** `Access::quiesce` takes every device bound to a native driver down, newest bind first (each slot carries its bind order), all or nothing; `unquiesce` brings them back oldest first. It is the kernel suspend platform's `quiesce` step (`kernel/src/boot/energy.rs`). Devices bound to a Linux class server are the ring-3 host's (the power service, over `DevicePower`).
 - **Readers.** An unbind needs no grace period: every device instance is static storage that is never freed, the submit paths check the driver's `ready` state under the lock the unbind takes, the rings are kept (parked) and given back to the same device on a rebind, and a late interrupt finds the line unbound and the driver no longer naming it. A driver that frees an instance or its rings on unbind would need one.
 
-Unbind and power ops today: `virtio-blk` (unbind and suspend park the device and keep its rings; a rebind programs them again and wires the line), `virtio-rng` (unbind and suspend reset a device that was brought up), `virtio-net` and `virtio-net-pci` (suspend and resume). Every other driver has a probe only; the pinned records are stateless.
+Unbind and power ops today:
+
+- `virtio-blk`. Its unbind is refused (`Busy`) while the disk is the block layer's medium with a FAT32 or azvol volume mounted or swap on it (a ring-3 client of the block interface is not counted), and while another kernel driver's device shares its line. Otherwise it parks the device: requests not yet started wait (`claim` answers `Busy`), what the device was given finishes within its budgets, then the device is reset. It then gives the line back on the context it was enabled on (and to ring 3's pool), and unmaps its buffers and rings from the device's DMA domain (`claim` then answers `Dead`). A rebind maps them again and wires the line. Suspend parks and resume programs the rings again.
+- `virtio-rng`. Unbind and suspend reset a device that was brought up; an unbind also unmaps its queue and buffer, and the next read maps and programs them again.
+- `virtio-net` and `virtio-net-pci`: suspend and resume.
+
+Every other driver has a probe only, so it cannot be unbound and a system suspend is refused while it is bound; the pinned records are stateless.
 
 Drivers bind in stages, because they depend on each other's order (entropy before PCI bring-up, the disk before the filesystem, the NIC after the scheduler hooks). `bind` takes the drivers one stage wants; `settle` closes the last stage and reports the rest. The boot prints one `[HWBUS]` line per outcome and lists devices in the introspection tree's `devices/`.
 
