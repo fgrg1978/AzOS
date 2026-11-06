@@ -227,8 +227,9 @@ impl MemKind {
 }
 
 /// The frames may be taken by a reclaimer. None reads it yet: a MemObj frame
-/// taken out of its mappings has no fault path to restore it (the shm window is
-/// not a pager Region), so the compressed pool takes anonymous region pages
+/// taken out of its mappings has no fault path to restore it (a mapping of a
+/// named object is a pager record whose pages are mapped with it, and no fault
+/// supplies one), so the compressed pool takes anonymous region pages
 /// only (`azos_mm::pager::AnonReclaim`). Kept as the object's opt-in for the
 /// front that adds one; a guest's memory (`syscall/vm.rs`) refuses an object
 /// that carries it.
@@ -290,8 +291,8 @@ pub struct MemHolder {
     /// ([`memobj_release_holder_ref`]); only a [`pinned`](Self::pinned) reference
     /// waits for the task's exit.
     pub refs: u32,
-    /// User virtual base address this task mapped the region at via
-    /// `shm_map_user`, or `0` if it has no live mapping.
+    /// User virtual base address this task mapped the region at (`SYS_MO_MAP`,
+    /// or a file `mmap`), or `0` if it has no live mapping.
     ///
     /// **WHY the VA is recorded:** the pages must never go back to the PMM
     /// while a user page table still points at them. Keeping the VA is what
@@ -304,8 +305,8 @@ pub struct MemHolder {
     /// page its mapping starts at, a named object from page 0.
     pub map_off: usize,
     /// This task may have PTEs into the region that `map_va` does not name:
-    /// a `SYS_MO_MAP` failed after its reference was taken, and
-    /// `shm_map_user` returns `None` from a partial mapping. Set by
+    /// a `SYS_MO_MAP` lost its holder's references (a revoke, a MOVE) while
+    /// its leaves were being installed, so no address names them. Set by
     /// [`memobj_pin_ref`]. While set, the typed release keeps one reference, so no
     /// frame returns to the PMM under those PTEs; the task's exit
     /// (`memobj_release_all`) gives it back, when its address space is gone.
@@ -2753,12 +2754,12 @@ fn unmap_frame_in(region: &MemObj, idx: usize) -> usize {
     spaces
 }
 
-/// Windows of mappings a MOVE removed, until the sender gives the addresses
-/// back: `(tid, va, pages)`, `tid == 0` a free row. Only the sender can release
-/// its own window addresses (they are per task), and a MOVE can run on
-/// another task's behalf, so the row waits here for the sender's next
-/// shm call or syscall return. A full table drops the row: the window then
-/// stays reserved until the task exits, which wastes addresses and nothing else.
+/// Mappings a MOVE or a purge removed, until their holder drops the records:
+/// `(tid, va, pages)`, `tid == 0` a free row. Only the holder can drop a record
+/// of its own address space, and a MOVE can run on another task's behalf, so
+/// the row waits here for the holder's next shm call, `mmap` or `munmap`. A
+/// full table drops the row: the record then stays until the task exits, which
+/// wastes addresses and nothing else.
 static MOVED_WINDOWS: SpinLock<[(u32, usize, usize); MOVED_WINDOW_ROWS]> =
     SpinLock::new([(0, 0, 0); MOVED_WINDOW_ROWS]);
 
@@ -2782,8 +2783,8 @@ pub fn memobj_moved_windows_pending() -> bool {
     MOVED_PENDING.load(Ordering::Acquire) != 0
 }
 
-/// Take the windows of `tid`'s mappings a MOVE removed, into `out`; how many.
-/// The caller (`tid` itself) gives each back with `release_user_window`.
+/// Take the mappings of `tid` a MOVE removed, into `out`; how many. The caller
+/// (`tid` itself) drops each record with `pager::release_range`.
 pub fn memobj_take_moved_windows(tid: u32, out: &mut [(usize, usize)]) -> usize {
     let mut t = MOVED_WINDOWS.lock_irqsave();
     let mut n = 0;
@@ -2815,8 +2816,8 @@ pub fn memobj_moved_shm(resource: u32, from_tid: u32, to_tid: u32) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Moved {
     /// The sender's recorded mapping `(va, pages)`: dropped from the record and
-    /// removed from its page table. Its window addresses are the sender's to
-    /// give back ([`memobj_take_moved_windows`]).
+    /// removed from its page table. Its record is the sender's to drop
+    /// ([`memobj_take_moved_windows`]).
     pub mapping: Option<(usize, usize)>,
     /// The references (and, for the owning reference, the ownership and the
     /// charge) are now the receiver's. `false`: the receiver could not take
@@ -4020,8 +4021,7 @@ fn purge_locked(o: &mut MemObj) -> (u32, usize, Reclaim) {
             let (tid, root, va, pages) = (h.tid, h.map_root, h.map_va, h.map_pages);
             h.clear_mapping();
             // The PTEs go now, shot down on every hart, before a frame is
-            // freed; the window addresses are the holder's to give back, as
-            // after a MOVE.
+            // freed; the records are the holder's to drop, as after a MOVE.
             unmap_range(root, va, pages);
             note_moved_window(tid, va, pages);
         }

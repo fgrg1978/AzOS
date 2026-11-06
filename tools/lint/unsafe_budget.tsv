@@ -50,7 +50,7 @@ crates/core/pkg	0	0	0	0	1	0
 crates/core/records	8	1	1	0	0	100
 crates/core/recovery	5	0	0	0	0	55
 crates/core/rings	45	14	8	0	0	99
-crates/core/sched	425	160	14	3	0	67
+crates/core/sched	423	160	14	3	0	67
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	47	9	20	0	0	82
 crates/core/syscall	36	2	1	0	0	37
