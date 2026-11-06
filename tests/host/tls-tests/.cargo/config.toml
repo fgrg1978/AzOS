@@ -15,3 +15,8 @@ directory = "../../../third_party/vendor"
 
 [net]
 offline = true
+
+# The installer's `Work` (a megabyte of buffers and a topology) is built on the
+# test thread's stack before it is boxed (tests/host/pkg-tests does the same).
+[env]
+RUST_MIN_STACK = "67108864"

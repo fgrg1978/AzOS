@@ -65,9 +65,14 @@ const _: () = assert!(SUPERSEDE_BUF <= HEAD_BUF);
 /// The index's file name beside the package the source rows name.
 pub const INDEX_FILE: &str = "INDEX.AZX";
 
-// A fetched index is read into the package buffer, a stored one into a buffer of
-// its own: an index that does not fit either would be silently ignored.
+// A fetched index is read into the package buffer, a stored one into the rows
+// arena (nothing else uses it while a refresh runs): an index that does not fit
+// either would be silently ignored.
 const _: () = assert!(azos_pkg::index::FILE_MAX <= PKG_BUF, "PKG_MAX_KB is smaller than the largest index (PKG_INDEX_MAX_ENTRIES)");
+const _: () = assert!(
+    azos_pkg::index::FILE_MAX <= azos_limits::PKG_MAX_STAGED as usize * azos_limits::PKG_META_MAX_KB as usize * 1024,
+    "PKG_MAX_STAGED x PKG_META_MAX_KB is smaller than the largest index (PKG_INDEX_MAX_ENTRIES)"
+);
 
 const META_MAX: usize = azos_limits::PKG_META_MAX_KB as usize * 1024;
 /// Packages staged at once (Kconfig `PKG_MAX_STAGED`).
@@ -351,7 +356,6 @@ pub struct Work {
     sig: [u8; azos_topology::SIDECAR_MAX],
     sched: [u8; SCHED_BUF],
     arena: [u8; MAX_STAGED * META_MAX],
-    kept: [u8; azos_pkg::index::FILE_MAX],
     supersede: [u8; SUPERSEDE_BUF],
     upd: update::Work,
     io: [u8; UPDATE_IO],
@@ -368,7 +372,6 @@ struct Parts<'r> {
     sig: &'r mut [u8],
     sched: &'r mut [u8],
     arena: &'r mut [u8],
-    kept: &'r mut [u8],
     supersede: &'r mut [u8],
     topo: &'r mut Topology<'r>,
     report: &'r mut Report,
@@ -384,7 +387,6 @@ impl Work {
             sig: [0; azos_topology::SIDECAR_MAX],
             sched: [0; SCHED_BUF],
             arena: [0; MAX_STAGED * META_MAX],
-            kept: [0; azos_pkg::index::FILE_MAX],
             supersede: [0; SUPERSEDE_BUF],
             upd: update::Work::new(),
             io: [0; UPDATE_IO],
@@ -412,7 +414,6 @@ fn parts<'r>(w: &'r mut Work, topo: &'r mut Topology<'static>) -> Parts<'r> {
         sig: &mut w.sig,
         sched: &mut w.sched,
         arena: &mut w.arena,
-        kept: &mut w.kept,
         supersede: &mut w.supersede,
         topo,
         report: &mut w.report,
@@ -787,7 +788,7 @@ fn load_topology<'r, V: Volume>(
 /// Verify the index in the first `n` bytes of the package buffer, keep it on
 /// the volume and work out where every staged package stands against it.
 fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: usize, now: u64) -> [u64; 4] {
-    let Parts { pkg, head, caps, sig, sched, kept, supersede, topo, report, .. } = p;
+    let Parts { pkg, head, caps, sig, sched, arena: kept, supersede, topo, report, .. } = p;
     if let Err(r) = load_topology(vol, caps, sig, sched, topo, key) {
         return r;
     }

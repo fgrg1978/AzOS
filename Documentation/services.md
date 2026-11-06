@@ -568,34 +568,62 @@ entries. A malformed body is refused even when signed.
   65535, no leading zero); `1.2` equals `1.2.0`. Any other text (`1.0-rc1`) is valid package
   metadata but unordered: it is reported as such, `upgrade` refuses it, and a floor check
   treats it as below the floor.
-* **The serial** never goes backwards: the stored index (`/fat/PKG/INDEX.AZX`, on the
-  package volume) is verified again by the installer and a lower serial is refused.
+* **One slot and one serial per signer.** The installer keeps the index it accepted from a
+  signer in that signer's slot on the package volume (`I` and seven hex digits of the key id,
+  `.AZX`, `azos_pkg::index::slot_name`). A signer's serial never goes backwards and its body
+  never changes at the same serial (`index older than the stored one`, `index differs from
+  the stored one at the same serial`); another signer's index goes to its own slot, so it can
+  neither replace this one's floors nor use up its serial. `pkg outdated` judges the packages
+  of the signer that signed the index the source served; packages of other signers show as
+  `index is signed by another signer`.
 * **Whose say it has.** An index speaks only about packages installed under its own signer;
-  an entry for a name installed from another signer is ignored (`index is signed by another
-  signer`), so one signer cannot raise another author's floor or push a build onto it.
+  an entry for a name installed from another signer is ignored, so one signer cannot raise
+  another author's floor or push a build onto it.
 * **What an upgrade needs.** The report says the package is behind. The installer fetches
   `file`, and the file must be the build the entry pins (`id`), carry the entry's name and
   version, be signed by the signer of the package it replaces, be newer than it and not below
   its own `sec_floor`; then it goes through `verify`, `admit`, staging and the journal
-  exactly as `install`. The new file is staged and journalled (one commit), then the old one is
-  removed and journalled (`Deny`, like `remove`); the kernel's boot-time apply snapshots the
-  volume before it writes the new programs, so the restore point and the A/B trial rule
-  apply as for any new package. A power cut between the two commits leaves both versions
-  staged: the apply keeps the applied one and refuses the other's rows with a record, and
-  `pkg remove` clears the old. A refusal is journalled and leaves the staged package alone.
+  exactly as `install`.
+* **The old version stays until the new one is confirmed.** The new file, the pair `old id ->
+  new id` in `SUPERSEDE.REQ` and the journal record are one transaction; nothing is removed.
+  At the next boot the kernel's apply snapshots the volume, applies the new version as a trial
+  and leaves the old one out of the topology (its staged file is kept). When the trial is
+  confirmed it removes the old file, with a `Deny` record that counts the old package's images
+  and drops the pair. When the trial rolls back it drops the new version (a refusal on record)
+  and applies the old one again from its staged file, whose programs the snapshot restored. A
+  new version that has to wait for another trial leaves the old one running. While an upgrade
+  is on trial, `pkg upgrade` of that package is refused (`the previous upgrade is not confirmed
+  yet`). A refusal is journalled and leaves the staged package alone.
 
 **Security floors.** `sec_floor` is the lowest version of the package still considered
-secure. `pkg outdated` always marks a package below it. With Kconfig
-`PKG_SEC_FLOOR_ENFORCE` (default `y` in release and certifiable builds, `n` in development
-builds) the kernel's boot-time apply also reads the stored index, verifies it against the
-signed topology, and marks the programs of such a package; the exec check
-(`azos_syscall::exec_grant`, the one `SYS_SPAWN_EX` and `execve` share) then refuses to
-start them, whatever launch grant (`pkg.<hex>` or the image's) the caller holds, with a
-`Rule::ExecGrant` record whose basis is `BelowSecFloor` (8). The package is still applied, so
-`pkg upgrade` can replace it and the next boot starts the fixed version. An index that is
-missing or does not verify names no floor: floors are an addition to the signed topology,
-never a way to lose a package. Whoever can write the staging volume can delete the stored
-index (as they can delete a package); the floors are as durable as the volume.
+secure; an index whose floor is above its own offered version is refused. `pkg outdated`
+always marks a package below its floor. With Kconfig `PKG_SEC_FLOOR_ENFORCE` (default `y` in
+release and certifiable builds, `n` in development builds; the option is the cargo feature
+`pkg-sec-floor`, so a build with it off does not contain the check) the kernel's boot-time
+apply reads each signer's slot, verifies it against the signed topology, and marks the
+programs of a package below its signer's floor; the exec check (`azos_syscall::exec_grant`,
+the one `SYS_SPAWN_EX` and `execve` share, also for an `execve` into the caller's own image)
+then refuses to start them, whatever launch grant (`pkg.<hex>` or the image's) the caller
+holds, with a `Rule::ExecGrant` record whose basis is `BelowSecFloor` (8) and a log line that
+names the floor. The package is still applied, so `pkg upgrade` can replace it and the next
+boot starts the fixed version.
+
+**What the device remembers (`PKG_INDEX_MARK_SECTOR`).** The apply records, per signer, the
+serial and digest of the newest index it judged by in a tail sector no writer of the volume
+reaches (as the topology counter floor is kept). An index put back that is older, one that
+differs at the same serial, and a deleted slot are not floors the device can know: that
+signer's floors are *unknown*, and an unknown floor is not met, so its packages are treated
+as below their floors (a `package-index` refusal record and a console line) until `pkg
+refresh` brings the index back. A signer the device has never seen an index from has no
+floors. On a medium with no usable records store nothing is remembered and the slot on the
+volume alone holds the floors (its signature is still verified).
+
+Floors are read at the boot-time apply: a `pkg refresh` that raises a floor does not stop a
+program that is already running, it takes effect at the next boot. A floor can therefore make
+a package the device runs unlaunchable at the next boot, on a signed statement from the
+repository; that is the policy, and `pkg outdated` shows a floor above what is installed
+before it takes effect. The launch check is keyed by the digest of the program, so two
+packages that carry identical bytes share one entry.
 
 `pkgd` is a `std` program (the SDK, like `rpcquic`) because the fetch is TLS: `azos_tls`
 (rustls with the rustls-rustcrypto provider, `third_party/vendor`) dials the address in

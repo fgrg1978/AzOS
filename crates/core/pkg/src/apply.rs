@@ -12,8 +12,10 @@
 //!   requests SNAPDEL.REQ       ───────►     its images to APPS/NAME.ELF, after a
 //!                                           snapshot of the volume
 //!   lists    APPLY.TBL         ◄───────     records the snapshots (APPLY.TBL)
-//!   writes   INDEX.AZX         ───────►     security floors: a package below its
-//!                                           floor is applied but never launched
+//!   writes   I<key>.AZX        ───────►     security floors, one index per signer: a
+//!                                           package below its floor is applied, never launched
+//!   writes   SUPERSEDE.REQ     ───────►     upgrades on trial: the old version waits, goes on
+//!                                           confirm, comes back on rollback
 //! ```
 //!
 //! The volume is the mailbox: the installer owns the staging, the kernel owns
@@ -47,10 +49,6 @@ pub const APPS_DIR: &[u8] = b"APPS";
 /// The install journal: `ProvenanceRecord` wire records, appended by the
 /// installer and, at boot, by the kernel.
 pub const JOURNAL: &[u8] = b"JOURNAL.BIN";
-/// The repository index the installer last verified and accepted
-/// ([`crate::index`]): the installer writes it, the kernel reads it (and
-/// verifies it again) for the security floors.
-pub const INDEX: &[u8] = b"INDEX.AZX";
 /// Upgrades in flight: the installer stages the new version beside the old and
 /// records the pair here ([`SUPERSEDE_REC`]-byte records, old id then new id).
 /// The kernel leaves the old version out of the topology while the new one is
