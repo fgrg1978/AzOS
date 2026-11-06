@@ -2,7 +2,7 @@
 
 Changes to the ABI crate (`crates/core/abi`), in the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). There are no tagged
-releases. `ABI_VERSION` (`crates/core/abi/src/lib.rs`) is 2. The tree-wide
+releases. `ABI_VERSION` (`crates/core/abi/src/lib.rs`) is 3. The tree-wide
 changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ## [Unreleased]

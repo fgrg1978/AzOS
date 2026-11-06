@@ -411,6 +411,10 @@ fn count_bell_locked(port: &mut Port, kind: PortSourceKind, up: bool) {
     if up {
         port.bells += 1;
         f.fetch_add(1, Ordering::SeqCst);
+        // An aarch64 LL/SC add has no trailing barrier: without the fence the
+        // consumer's later relaxed sleep announcement can become visible before
+        // the count, and a ringer that sees the sleeper reads the bucket as 0.
+        core::sync::atomic::fence(Ordering::SeqCst);
     } else if !cfg!(feature = "port-bell-leak-canary") {
         port.bells -= 1;
         f.fetch_sub(1, Ordering::SeqCst);
