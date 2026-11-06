@@ -19,7 +19,7 @@
 # virtio-mmio: the transport reports the device id; PCI: the modern ids.
 virtio-blk       virtio:2
 virtio-net       virtio:1
-virtio-rng       virtio:4
+virtio-rng       virtio:4           if=DRV_VIRTIO_RNG_PLACEMENT_KERNEL
 virtio-input     virtio:18          if=DRV_VIRTIO_INPUT
 virtio-net-pci   pci:1af4:1041      if=DRV_PCI
 virtio-gpu       virtio:16          if=FB_GENERIC

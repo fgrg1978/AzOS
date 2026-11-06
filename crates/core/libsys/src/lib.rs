@@ -2264,6 +2264,30 @@ pub fn irq_unbind(line: u32, port: u32) -> isize {
 
 pub use azos_abi::invoke::DEVICE_IRQ_CPU_ANY;
 
+pub use azos_abi::invoke::{DMA_BIDIRECTIONAL, DMA_FROM_DEVICE, DMA_TO_DEVICE};
+
+/// Let the device the `ty::MMIO` handle `device` names reach the memory
+/// object `obj` (a read-write [`SHM_KIND_CONTIG`] region, `READ|WRITE`), the
+/// data moving `dir` ([`DMA_TO_DEVICE`], [`DMA_FROM_DEVICE`],
+/// [`DMA_BIDIRECTIONAL`]): `DEVICE_DMA_MAP`. The bus address the device is to
+/// be given and the length in bytes, or `-Errno` (`-EINVAL` an object that is
+/// not such a region, `-ENODEV` a device a kernel driver owns or with no
+/// domain, `-EBUSY` an object bound already, `-EMFILE`, `-EIO`, the
+/// capability errors). The CPU's mapping is the object's own ([`shm_map_typed`]).
+pub fn dma_map(device: u32, obj: u32, dir: u64) -> Result<(u64, u64), isize> {
+    match invoke(device, invoke_abi::DEVICE_DMA_MAP, [obj as u64, dir, 0, 0]) {
+        (0, r) => Ok((r[0], r[1])),
+        (e, _) => Err(e),
+    }
+}
+
+/// End what [`dma_map`] made of `obj` for `device`, once the device no longer
+/// reaches it (`DEVICE_DMA_UNMAP`): 0, `-ENOENT`, or `-EIO` when the unmap
+/// failed and the kernel keeps the object's frames.
+pub fn dma_unmap(device: u32, obj: u32) -> isize {
+    invoke(device, invoke_abi::DEVICE_DMA_UNMAP, [obj as u64, 0, 0, 0]).0
+}
+
 /// Acknowledge the interrupt line `line` after its device was quietened:
 /// unmask it (`DEVICE_IRQ_ACK`). 0 when the line is live again; 1 when the
 /// handler's budget is spent and the line stays masked until the reservation

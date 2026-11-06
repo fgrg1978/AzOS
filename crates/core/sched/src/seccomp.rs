@@ -744,6 +744,29 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::I2C],
     },
+    // The ring-3 virtio-rng driver. Finds its device in the public
+    // introspection region (`SYS_CAP_INFO` finds the region, the device and
+    // the line; `MEMOBJ_ACQUIRE` and `SYS_MO_MAP` map it), maps the
+    // registers (`DOMAIN_MMIO_MAP`), makes and maps the queue's memory
+    // (`SYS_MO_CREATE`, `SYS_MO_MAP`), binds it to the device
+    // (`DEVICE_DMA_MAP`) and the line to a port (`DOMAIN_CREATE_PORT`,
+    // `PORT_BIND`), waits on the port (`SYS_PORT_WAIT`), acknowledges the
+    // line (`DEVICE_IRQ_ACK`), feeds the pool (`SYS_IPC_CALL` to the entropy
+    // endpoint) and sleeps until the next feed (`DOMAIN_UPTIME`: the clock
+    // where the kernel publishes no vDSO one).
+    ImageProfile {
+        image: "RNGDRV.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
+            SYS_CAP_INFO,
+            SYS_IPC_CALL,
+            SYS_MO_CREATE, SYS_MO_MAP,
+            SYS_PORT_WAIT,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME, DOMAIN_MMIO_MAP, DEVICE_DMA_MAP, DOMAIN_CREATE_PORT, PORT_BIND, DEVICE_IRQ_ACK],
+        ifaces: &[azos_devif::key::ENTROPY],
+    },
     // The component manager. Reads its plan from its view region of the
     // introspection tree (`SYS_CAP_INFO` finds it and the console and domain
     // handles, `MEMOBJ_ACQUIRE` reads its size, `SYS_MO_MAP` maps it), starts the rows with `SYS_SPAWN_EX` (no request block, so no

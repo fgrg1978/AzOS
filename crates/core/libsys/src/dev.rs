@@ -80,8 +80,8 @@ pub fn value<T>(r: azos_idl::Result<Out<T>>) -> Result<T, u32> {
 
 /// Fill `buf` from the kernel entropy pool behind the entropy endpoint `ep`
 /// (`READ`). `Err` is the outcome: `NOT_READY` when the pool is unseeded (no
-/// entropy source fed it at boot, and nothing seeds it later in the same boot:
-/// retrying does not help, and `buf` is untouched), `DENIED` for a capability
+/// entropy source fed it at boot, and no ring-3 entropy driver has fed it
+/// since; `buf` is untouched), `DENIED` for a capability
 /// without `READ`, `NO_SERVER` when the call did not reach the kernel's
 /// interface.
 pub fn entropy_read(ep: u32, buf: &mut [u8]) -> Result<(), u32> {
@@ -104,6 +104,30 @@ pub fn entropy_read(ep: u32, buf: &mut [u8]) -> Result<(), u32> {
         // SAFETY: a valid, aligned `&mut [u64; N]`; volatile so it is not elided.
         unsafe { core::ptr::write_volatile(&mut out.value, [0; entropy::DRAW_WORDS]) };
         done += want;
+    }
+    Ok(())
+}
+
+/// Mix `bytes`, read from an entropy device, into the kernel pool behind the
+/// entropy endpoint `ep` (`WRITE`), credited: what a ring-3 entropy driver
+/// feeds. `Err` is the outcome: `DENIED` for a capability without `WRITE`,
+/// `NO_SERVER` when the call did not reach the kernel's interface.
+pub fn entropy_feed(ep: u32, bytes: &[u8]) -> Result<(), u32> {
+    let mut c = EntropyClient::new(Ep(ep));
+    for chunk in bytes.chunks(entropy::FEED_WORDS * 8) {
+        let mut words = [0u64; entropy::FEED_WORDS];
+        for (i, b) in chunk.iter().enumerate() {
+            words[i / 8] |= (*b as u64) << (8 * (i % 8));
+        }
+        let r = c.feed(words, chunk.len().div_ceil(8) as u32);
+        // The words were entropy on this stack: not left behind.
+        // SAFETY: a valid, aligned `&mut [u64; N]`; volatile so it is not elided.
+        unsafe { core::ptr::write_volatile(&mut words, [0; entropy::FEED_WORDS]) };
+        match r {
+            Ok(o) if o.is_ok() => {}
+            Ok(o) => return Err(o.code),
+            Err(_) => return Err(outcome::NO_SERVER),
+        }
     }
     Ok(())
 }

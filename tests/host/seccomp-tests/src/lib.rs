@@ -1030,6 +1030,8 @@ mod image_profiles {
         ("value", &[]),
         // The draws go over the v2 call (`dev::Ep`).
         ("entropy_read", &["SYS_IPC_CALL"]),
+        // And the feed, over the same call.
+        ("entropy_feed", &["SYS_IPC_CALL"]),
         // So is the brain-link key's.
         ("link_key_read", &["SYS_IPC_CALL"]),
         // And the brain's pinned key, from the same endpoint.
@@ -1345,6 +1347,11 @@ mod image_profiles {
             // (shared with the kernel host): no syscalls.
             src!("crates/drivers/ina219/src/lib.rs"),
             src!("crates/drivers/ina219/src/chip.rs"),
+        ]),
+        ("RNGDRV.ELF", Lang::Rust, &[
+            src!("userspace/drivers/rng_drv/src/main.rs"),
+            // The device logic, shared with nothing that makes a syscall.
+            src!("crates/drivers/virtio-rng/src/lib.rs"),
         ]),
         // The user shell. Its modules other than
         // `main.rs` are pure (no syscalls), listed so a call added to one of
@@ -3462,10 +3469,12 @@ mod image_profiles {
         // that hosts the personality: it is embedded in the kernel, not on a
         // disk, so it is in no `SOURCES`/`IMAGE_ELFS`.
         // +4 on x86_64 with SYSTEST.ELF, CAPTEST.ELF, LATBENCH.ELF and LXSRV.ELF.
+        // +1 on each of aarch64 and x86_64 with the ring-3 virtio-rng driver
+        // (RNGDRV.ELF; riscv64's is in `rust_images`).
         assert_eq!(
             recipes,
-            rust_images + 43 + 1 + 43 + 3,
-            "expected {rust_images} riscv64 + 43 aarch64 + 1 board + 43 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
+            rust_images + 44 + 1 + 44 + 3,
+            "expected {rust_images} riscv64 + 44 aarch64 + 1 board + 44 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
         );
         // The SDK's recipes: WHY.ELF on three ISAs and the SDK's own test, sdktest,
         // on three.

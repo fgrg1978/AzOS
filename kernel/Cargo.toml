@@ -786,6 +786,9 @@ pkg-park-canary = []
 # (the default, `ring3`) the same chip logic runs in ring 3
 # (`userspace/drivers/ina_drv`) on `endpoint.powermon`.
 ina219-kernel = ["board-io", "azos_topology/ina219-kernel"]
+# Kconfig DRV_VIRTIO_RNG_PLACEMENT = ring3: the kernel leaves the virtio-rng
+# device to the ring-3 driver RNGDRV.ELF, whose topology row it adds.
+virtio-rng-ring3 = ["azos_topology/virtio-rng-ring3"]
 # Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel: the buzzer starts
 # in the kernel (the built-in topology's BUZZDRV.ELF row says `place =
 # "kernel"`): a call plays through the kernel's PWM driver directly and a

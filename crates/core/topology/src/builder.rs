@@ -181,6 +181,21 @@ const RESOURCE_ENDPOINT_POWERMON: &[u8] = b"endpoint.powermon";
 pub const INADRV_ROW: bool = !cfg!(feature = "ina219-kernel") && azos_limits::USERSPACE_INADRV;
 /// `INADRV.ELF`'s priority: `hard_rt`'s least urgent number, outside the band.
 pub const INADRV_PRIORITY: u8 = 15;
+/// The ring-3 virtio-rng driver's image, the name of its row.
+pub const TASK_RNGDRV_IMAGE: &[u8] = b"RNGDRV.ELF";
+/// Does this topology declare the ring-3 virtio-rng driver? Only when the
+/// device is placed in ring 3 (Kconfig `DRV_VIRTIO_RNG_PLACEMENT`, the
+/// kernel's `virtio-rng-ring3`) and the volume carries the image (Kconfig
+/// `USERSPACE_RNGDRV`).
+pub const RNGDRV_ROW: bool = cfg!(feature = "virtio-rng-ring3") && azos_limits::USERSPACE_RNGDRV;
+/// `RNGDRV.ELF`'s reservation: it binds its device's line, and with Kconfig
+/// `IRQ_THREADED` a line's handler runs on a hard reservation. 1 ms of every
+/// second is far above one read of 64 bytes and one feed.
+pub const RNGDRV_RT: crate::deadline::SchedProfile =
+    crate::deadline::SchedProfile { period_us: 1_000_000, runtime_us: 1_000, deadline_us: 0, cpu_mask: 0, core_class: None };
+/// The device `RNGDRV.ELF` drives: its registers and its line, by what it is.
+const RESOURCE_MMIO_RNG: &[u8] = b"mmio.virtio:4";
+const RESOURCE_IRQ_RNG: &[u8] = b"irq.virtio:4";
 /// `INADRV.ELF`'s EDF + CBS reservation. The period is the chip's sample
 /// period, `1 / azos_ina219::INA219_POLL_HZ` (this crate does not depend on
 /// the chip crate; `tests/host/topology-tests` asserts the two agree). The
@@ -1488,6 +1503,41 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             INADRV_RT,
         )
         .expect("default_minimal_topology: INADRV.ELF push failed");
+        topo.set_last_task_mem_pages(RING3_DRIVER_MEM_PAGES);
+        #[cfg(feature = "ring3-driver-start")]
+        topo.set_last_task_start(true);
+    }
+
+    // The ring-3 virtio-rng driver ([`RNGDRV_ROW`]): the device's registers
+    // and line by what the device is, the `entropy` endpoint to feed (`WRITE`)
+    // and the public introspection region it finds the device's handle and
+    // line in. Started at boot, restarted by the component manager.
+    if RNGDRV_ROW {
+        topo.push_task_profiled(
+            MaybeStr::from_bytes(TASK_RNGDRV_IMAGE),
+            MaybeStr::from_bytes(NAME_HARD_RT),
+            INADRV_PRIORITY,
+            &[
+                CapSpec {
+                    kind: CapKind::Device,
+                    perms: CapPerms::RW,
+                    target: MaybeStr::from_bytes(RESOURCE_MMIO_RNG), transfer: false, ops: 0,
+                },
+                CapSpec {
+                    kind: CapKind::Device,
+                    perms: CapPerms::READ,
+                    target: MaybeStr::from_bytes(RESOURCE_IRQ_RNG), transfer: false, ops: 0,
+                },
+                CapSpec {
+                    kind: CapKind::Endpoint,
+                    perms: CapPerms::WRITE,
+                    target: MaybeStr::from_bytes(RESOURCE_ENTROPY), transfer: false, ops: 0,
+                },
+                INSPECT_PUBLIC_CAP,
+            ],
+            RNGDRV_RT,
+        )
+        .expect("default_minimal_topology: RNGDRV.ELF push failed");
         topo.set_last_task_mem_pages(RING3_DRIVER_MEM_PAGES);
         #[cfg(feature = "ring3-driver-start")]
         topo.set_last_task_start(true);

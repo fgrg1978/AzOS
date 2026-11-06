@@ -286,7 +286,9 @@ pub fn seed_one_cap_ops(
 }
 
 /// A `Device` row: `"irq.<N>"` (the target convention `crates/core/topology`'s
-/// parser accepts; `irq_grant_cap` PLIC-range-checks `N`), `"msi.<k>"` (a
+/// parser accepts; `irq_grant_cap` PLIC-range-checks `N`), `"irq.<selector>"`
+/// (the line of the hardware-bus device the selector names, as
+/// `"mmio.<selector>"` names its registers), `"msi.<k>"` (a
 /// message-signalled slot; refused where the platform has none for ring 3),
 /// `"mmio.<selector>"`
 /// (the register window of the hardware-bus device the selector
@@ -299,6 +301,10 @@ pub fn seed_one_cap_ops(
 fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     if let Some(n) = parse_dotted(target, "irq") {
         return crate::irq_bind::irq_grant_cap(tid, n, perms).map(|c| c.raw());
+    }
+    if let Some(selector) = target.strip_prefix("irq.") {
+        let line = crate::mmio_cap::mmio_device_line(selector)?;
+        return crate::irq_bind::irq_grant_cap(tid, line, perms).map(|c| c.raw());
     }
     if let Some(k) = parse_dotted(target, "msi") {
         return crate::irq_bind::irq_grant_msi_cap(tid, k, perms).map(|c| c.raw());

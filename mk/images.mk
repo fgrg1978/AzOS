@@ -282,12 +282,13 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
 # (through COMPMGR.ELF, the component manager, which carries the rows since
 # the kernel stopped starting them), so this is the one gate disk that starts
 # BUZZDRV.ELF and INADRV.ELF; no other scenario gains their tasks.
-$(OUT_BUILD)/disk-drv.img: $(OUT_BUILD)/disk-drvbase.img $(BUZZ_DRV_ELF) $(INA_DRV_ELF) $(COMPMGR_ELF)
+$(OUT_BUILD)/disk-drv.img: $(OUT_BUILD)/disk-drvbase.img $(BUZZ_DRV_ELF) $(INA_DRV_ELF) $(RNG_DRV_ELF) $(COMPMGR_ELF)
 	cp $(OUT_BUILD)/disk-drvbase.img $@
 	mcopy -i $@ $(BUZZ_DRV_ELF) ::BUZZDRV.ELF
 	mcopy -i $@ $(INA_DRV_ELF) ::INADRV.ELF
+	mcopy -i $@ $(RNG_DRV_ELF) ::RNGDRV.ELF
 	mcopy -i $@ $(COMPMGR_ELF) ::COMPMGR.ELF
-	@echo "[DISK] FAT32 image: $@ (ring-3 drivers BUZZDRV.ELF, INADRV.ELF, and COMPMGR.ELF, which starts them)"
+	@echo "[DISK] FAT32 image: $@ (ring-3 drivers BUZZDRV.ELF, INADRV.ELF, RNGDRV.ELF, and COMPMGR.ELF, which starts them)"
 
 # The user-shell disk — the drivers base (no autorun) plus
 # SH.ELF, TOOLBOX.ELF and POWER.ELF. The only gate image that carries them: on every
@@ -578,12 +579,13 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 	@echo "[DISK] aarch64 FAT32 image: $@ (autorun=$(AUTORUN_ELF_AARCH64))"
 
 # Wave 9 (DRV1): see `build/disk-drv.img`.
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64) $(COMPMGR_ELF_AARCH64)
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64) $(RNG_DRV_ELF_AARCH64) $(COMPMGR_ELF_AARCH64)
 	cp $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $@
 	mcopy -i $@ $(BUZZ_DRV_ELF_AARCH64) ::BUZZDRV.ELF
 	mcopy -i $@ $(INA_DRV_ELF_AARCH64) ::INADRV.ELF
+	mcopy -i $@ $(RNG_DRV_ELF_AARCH64) ::RNGDRV.ELF
 	mcopy -i $@ $(COMPMGR_ELF_AARCH64) ::COMPMGR.ELF
-	@echo "[DISK] aarch64 FAT32 image: $@ (ring-3 drivers BUZZDRV.ELF, INADRV.ELF, and COMPMGR.ELF, which starts them)"
+	@echo "[DISK] aarch64 FAT32 image: $@ (ring-3 drivers BUZZDRV.ELF, INADRV.ELF, RNGDRV.ELF, and COMPMGR.ELF, which starts them)"
 
 # See `build/disk-sh.img`.
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(SH_ELF_AARCH64) $(TERMD_ELF_AARCH64) $(NAMESD_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(TRACECTL_ELF_AARCH64) $(DECISD_ELF_AARCH64) $(INPUTD_ELF_AARCH64) $(COMPSRV_ELF_AARCH64) $(LOGD_ELF_AARCH64) $(WHY_ELF_AARCH64) $(PKGD_ELF_AARCH64) $(PKG_ELF_AARCH64) $(RPCSRV_ELF_AARCH64) $(ZENOHD_ELF_AARCH64) $(VMMD_ELF_AARCH64) $(PTPD_ELF_AARCH64) $(AUDIOD_ELF_AARCH64) $(RPCQUIC_ELF_AARCH64) $(MCPD_ELF_AARCH64) $(SSHD_ELF_AARCH64) $(LOGIND_ELF_AARCH64)
@@ -998,6 +1000,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 	mcopy -i $@ $(GPIO_DRV_ELF_X86_64) ::GPIODRV.ELF
 	mcopy -i $@ $(BUZZ_DRV_ELF_X86_64) ::BUZZDRV.ELF
 	mcopy -i $@ $(INA_DRV_ELF_X86_64) ::INADRV.ELF
+	mcopy -i $@ $(RNG_DRV_ELF_X86_64) ::RNGDRV.ELF
 	mcopy -i $@ $(MLSRV_ELF_X86_64) ::MLSRV.ELF
 	mmd -i $@ ::PKG
 	mcopy -i $@ $(SH_ELF_X86_64) ::SH.ELF

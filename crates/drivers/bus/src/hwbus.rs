@@ -11,6 +11,7 @@
 //!
 //! - [`resolve`]: a selector (`"dt:google,goldfish-rtc"`, `"pci:1af4:1041"`,
 //!   `"virtio:2#1"`: the Nth match) to the handle of the device it names;
+//! - [`line_of`]: the interrupt line of the device a handle names;
 //! - [`user_window`]: the register window ring 3 may map for a handle, and
 //!   [`claim_user_window`] / [`unclaim_user_window`], which book a mapping so
 //!   no kernel driver is bound to the device afterwards.
@@ -62,6 +63,13 @@ pub fn resolve(selector: &str) -> Option<u32> {
 /// a device a kernel driver owns or may still take ([`Bus::user_window`]).
 pub fn user_window(handle: u32) -> Option<(u64, u64)> {
     with(|b| b.user_window(Handle(handle)))
+}
+
+/// The interrupt line the device `handle` names raises (what its enumerator
+/// found: a device-tree specifier, the line of a virtio-mmio slot); `None` for
+/// a stale handle or a device with no line known.
+pub fn line_of(handle: u32) -> Option<u32> {
+    with(|b| b.get(Handle(handle)).map(|s| s.dev.irq)).filter(|&l| l != 0)
 }
 
 /// [`user_window`] and book the mapping about to be made ([`Bus::claim_user_window`]).

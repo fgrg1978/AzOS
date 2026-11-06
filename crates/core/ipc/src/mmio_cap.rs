@@ -89,6 +89,14 @@ pub fn mmio_grant_cap(
     crate::cap_store::grant::<targets::MmioRegion>(tid, perms, handle)
 }
 
+/// The interrupt line of the device `selector` names, for a topology row
+/// `"irq.<selector>"`: the line the bus found for it, so a row names the
+/// device and not the number a machine wired it to. `None` for a selector no
+/// device matches and a device with no line known.
+pub fn mmio_device_line(selector: &str) -> Option<u32> {
+    hwbus::line_of(hwbus::resolve(selector)?)
+}
+
 /// Check `DOMAIN_MMIO_MAP`'s arguments: `handle` (`a0`) and `access` (`a1`).
 ///
 /// Returns the handle as the capability resource to check, the window

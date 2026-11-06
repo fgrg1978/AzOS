@@ -1,0 +1,29 @@
+[package]
+name = "rng_drv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Ring-3 virtio-rng driver: the host of crates/drivers/virtio-rng. Maps the device's registers, has it write into a DMA memory object bound to its Device capability, takes its interrupt on a port and feeds the kernel entropy pool through the entropy endpoint. Excluded from workspace; built standalone like ina_drv."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_limits = { path = "../../../crates/core/limits" }
+azos_drvkit = { path = "../../../crates/drivers/kit", features = ["window"] }
+azos_virtio_rng = { path = "../../../crates/drivers/virtio-rng" }
+azos_inspect_lib = { path = "../../lib/inspect" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Standalone, as ina_drv: see gpio_drv's Cargo.toml.
+[workspace]
+
+# The FAT32 image this crate builds and its board-volume default
+# (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true
+depends = "DRV_VIRTIO_RNG_PLACEMENT_RING3"

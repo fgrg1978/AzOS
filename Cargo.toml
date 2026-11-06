@@ -14,9 +14,10 @@ exclude = [
     "userspace/lib/ml",
     # azos_ualloc — the hardened allocator of native ring-3 programs; no_std.
     "userspace/lib/ualloc",
-    # buzz_drv / ina_drv — ring-3 buzzer and INA219 drivers.
+    # buzz_drv / ina_drv / rng_drv — ring-3 buzzer, INA219 and virtio-rng drivers.
     "userspace/drivers/buzz_drv",
     "userspace/drivers/ina_drv",
+    "userspace/drivers/rng_drv",
     # captest — ring-3 capability + syscall ABI test. Asserts both halves:
     # a granted resource works, an ungranted one is still denied.
     "userspace/tests/captest",

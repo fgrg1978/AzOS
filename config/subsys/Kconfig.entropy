@@ -2,6 +2,51 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # config/subsys/Kconfig.entropy — Entropy sources and the TPM
 
+choice DRV_VIRTIO_RNG_PLACEMENT
+    prompt "virtio entropy device (virtio-rng): placement"
+    default DRV_VIRTIO_RNG_PLACEMENT_RING3 if DRV_RING3_DEFAULT
+    default DRV_VIRTIO_RNG_PLACEMENT_KERNEL
+    help
+      Who drives the virtio-rng device (QEMU's `-device virtio-rng-device`,
+      a virtio-mmio slot). Both feed the kernel entropy pool what the device
+      delivered, credited in full. Not read by any safety decision.
+
+    config DRV_VIRTIO_RNG_PLACEMENT_KERNEL
+        bool "kernel"
+        help
+          The kernel's driver (crates/drivers/virtio/src/virtio/rng.rs)
+          reads the device once at boot, polled, before the first task:
+          the stack canary and the network stack's secrets are drawn from
+          a pool it seeded.
+
+    config DRV_VIRTIO_RNG_PLACEMENT_RING3
+        # cargo-feature: virtio-rng-ring3
+        bool "ring3"
+        depends on INSPECT
+        help
+          Kernel feature `virtio-rng-ring3`: the kernel does not bind the
+          device, and the ring-3 driver RNGDRV.ELF (userspace/drivers/rng_drv,
+          over crates/drivers/virtio-rng) does, started from its topology row
+          and restarted by the component manager. It maps the registers, has
+          the device write into a DMA memory object (`DEVICE_DMA_MAP`), takes
+          its interrupt on a port (`PORT_SRC_IRQ`) and feeds the pool through
+          the `entropy` endpoint every DRV_VIRTIO_RNG_FEED_S seconds; it
+          finds the device in the introspection tree (Kconfig INSPECT). The
+          pool is seeded when it first feeds: what is drawn before (the stack
+          canary, the network secrets) rests on the other sources (the CPU
+          instruction, the TPM, the persisted seed).
+
+endchoice
+
+config DRV_VIRTIO_RNG_FEED_S
+    int "virtio-rng ring-3 driver: seconds between feeds of the pool"
+    range 1 3600
+    default 60
+    help
+      RNGDRV.ELF reads the device and feeds the pool once at its start and
+      then once every this many seconds (64 bytes each time). Read by that
+      image only, which the drivers disks carry whatever the placement.
+
 choice
     prompt "CPU entropy instruction as a pool seed source"
     default ENTROPY_CPU_SOURCE_CREDIT

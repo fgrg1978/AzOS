@@ -323,25 +323,34 @@ fn virtio_net_resume(_: &mut KernelEnv<'_>, _: Handle, _: &Device) -> R {
 }
 const VIRTIO_NET: Ops<Kernel> = Ops { power: power(virtio_net_suspend, virtio_net_resume), ..bring_up(virtio_net_probe) };
 
+// With Kconfig DRV_VIRTIO_RNG_PLACEMENT = ring3 the id table has no
+// `virtio-rng` entry (crates/drivers/virtio/hwbus.ids): the ring-3 driver
+// takes the device, and these ops have no record.
+
 /// Polled: the device has no line. Nothing sets it up until the first seed
 /// read.
+#[cfg_attr(feature = "virtio-rng-ring3", allow(dead_code))]
 fn virtio_rng_probe(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     azos_drv_virtio::virtio::rng::bind(dev.base as usize).map_err(|_| ProbeError::Busy)?;
     book_live(h, true);
     Ok(())
 }
+#[cfg_attr(feature = "virtio-rng-ring3", allow(dead_code))]
 fn virtio_rng_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     azos_drv_virtio::virtio::rng::unbind(dev.base as usize).map_err(|_| ProbeError::Busy)?;
     book_live(h, false);
     Ok(())
 }
+#[cfg_attr(feature = "virtio-rng-ring3", allow(dead_code))]
 fn virtio_rng_suspend(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
     azos_drv_virtio::virtio::rng::suspend(dev.base as usize).map_err(|_| ProbeError::Busy)
 }
 /// The first read after the resume programs the device again.
+#[cfg_attr(feature = "virtio-rng-ring3", allow(dead_code))]
 fn virtio_rng_resume(_: &mut KernelEnv<'_>, _: Handle, _: &Device) -> R {
     Ok(())
 }
+#[cfg_attr(feature = "virtio-rng-ring3", allow(dead_code))]
 const VIRTIO_RNG: Ops<Kernel> = Ops {
     unbind: unbind(virtio_rng_unbind),
     power: power(virtio_rng_suspend, virtio_rng_resume),

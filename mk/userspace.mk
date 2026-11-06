@@ -256,6 +256,17 @@ $(INA_DRV_ELF): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Car
 	cp $(INA_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+# The ring-3 virtio-rng driver and the device logic it hosts.
+RNG_DRV_SRC := $(RNG_DRV_DIR)/src/main.rs $(RNG_DRV_DIR)/Cargo.toml \
+               $(wildcard crates/drivers/virtio-rng/src/*.rs) crates/drivers/virtio-rng/Cargo.toml \
+               $(wildcard crates/drivers/virtio-proto/src/*.rs) $(wildcard crates/drivers/kit/src/*.rs) \
+               $(wildcard crates/drivers/dma/src/*.rs) $(wildcard userspace/lib/inspect/src/*.rs)
+$(RNG_DRV_ELF): $(RNG_DRV_SRC) $(LIBSYS_SRC)
+	@mkdir -p $(OUT_BUILD)
+	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	cp $(RNG_DRV_BUILT) $@
+	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 # The user shell and its tool image.
 $(SH_ELF): $(SH_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
@@ -875,6 +886,12 @@ $(INA_DRV_ELF_AARCH64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/ina_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+$(RNG_DRV_ELF_AARCH64): $(RNG_DRV_SRC) $(LIBSYS_SRC)
+	@mkdir -p $(AARCH64_DIR)
+	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/rng_drv $@
+	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 $(TERMD_ELF_AARCH64): $(TERMD_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
 	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
@@ -1240,6 +1257,11 @@ $(INA_DRV_ELF_X86_64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_D
 	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS) $(INA_DRV_FEATURES_ARG)
 	python3 tools/lint/chip_source_check.py ina219 $(UTGT_X86_64)/$(X86_64_UBUILT)/ina_drv
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/ina_drv $@
+
+$(RNG_DRV_ELF_X86_64): $(RNG_DRV_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(RNG_DRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/rng_drv $@
 
 $(MLSRV_ELF_X86_64): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
