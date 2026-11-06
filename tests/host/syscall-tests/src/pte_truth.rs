@@ -392,13 +392,14 @@ fn fork_at_install() {
 
 /// **A restore that was supplying when the fork began does not install during
 /// it.** A sibling decides to restore a compressed page and decompresses it;
-/// meanwhile the fork raises its hold and its walk passes the page (no leaf,
-/// so the child gets none). The install then finds the hold and is refused;
-/// it waits for the fork's end. The child's copy of the markers sees the page
-/// out, and the child reads it, not a zero page. Needs the compressed pool.
+/// meanwhile the fork raises its hold. The install then finds the hold and is
+/// refused; it waits for the fork's end, so the clone finds the page out and
+/// gives the child the marker over its share of the pool's entry (a restore
+/// that installed between that share and the clone's read would leave the
+/// child an entry no slot names). The child reads the page, not a zero page.
+/// Needs the compressed pool.
 /// **Canary** `fork-install-recheck-canary`: the install goes through during
-/// the hold, the parent's slot is a frame when the markers are copied, and the
-/// child reads zeros.
+/// the hold, and the parent's page is resident before the fork ends.
 #[test]
 fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     if !azos_mm::zpool::ENABLED {
@@ -409,6 +410,9 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     let pt = space();
     let base = map(2);
     write(pt, base, 0x5A);
+    // A resident neighbour: the leaf table is not blank, so the fork's walk
+    // does not prune it from under the sibling's install.
+    write(pt, base + PAGE_SIZE, 0x5B);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
     let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
@@ -439,8 +443,12 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
         azos_sched::shim_forget_space(child);
         azos_sched::shim_set_other_task(2, child, 0);
         assert!(fork_regions_to_child(2));
+        // Time for a sibling the hold did not stop to install.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let early = azos_mm::vmm::translate(pt, base).is_some();
         drop(HOOK_FORK.lock().unwrap().take());
         assert!(sibling.join().unwrap().is_ok());
+        assert!(!early, "the sibling's restore installed while the fork held the space");
         child
     });
     azos_sched::shim_serial_share(false);

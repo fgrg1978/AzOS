@@ -12737,6 +12737,8 @@ host_job host_canary_row "fork: clone shares read-only canary" syscall-tests cow
     a_fork_shares_each_anonymous_frame_read_only_on_both_sides
 host_job host_canary_row "fork: large heap clone canary" syscall-tests cow-shared-write-canary \
     a_large_heap_fork_copies_no_frame
+host_job host_canary_row "fork: sparse clone canary" syscall-tests cow-shared-write-canary \
+    a_sparse_mapping_is_cloned_page_by_page_across_its_leaf_tables
 host_job host_canary_row "fork: heap clone canary" syscall-tests cow-shared-write-canary \
     a_heap_page_is_the_childs_own_after_the_fork
 host_job host_canary_row "fork: sibling commit shared canary" syscall-tests cow-shared-write-canary \

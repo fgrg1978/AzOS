@@ -17,6 +17,9 @@
 // * `a_large_heap_fork_copies_no_frame`: a 64 MiB heap touched whole is
 //   forked with no frame copied and no page shared twice (the walk passes the
 //   anonymous mapping, the clone shares it). Same canary as the first row.
+// * `a_sparse_mapping_is_cloned_page_by_page_across_its_leaf_tables`: pages
+//   touched in three leaf tables of one mapping, each the parent's frame in the
+//   child at its own address. Same canary.
 // * `a_heap_page_is_the_childs_own_after_the_fork`: the `brk` heap is an
 //   anonymous mapping and is cloned with it. Same canary.
 // * `a_compressed_page_is_shared_with_the_child_not_restored`: the clone copies
@@ -194,6 +197,27 @@ fn a_large_heap_fork_copies_no_frame() {
     assert_eq!(read(child, first), 0x5F, "the parent's store reached the child");
     write(child, last, 0x61);
     assert_eq!(read(pt, last), 0x5E, "the child's store reached the parent");
+    exit(child);
+    done(pt);
+}
+
+#[test]
+fn a_sparse_mapping_is_cloned_page_by_page_across_its_leaf_tables() {
+    let _g = serial();
+    let pt = space();
+    let base = map(1100);
+    let touched = [0usize, 600, 1099];
+    let frames: Vec<usize> = touched.iter().map(|&i| write(pt, base + i * PAGE_SIZE, i as u8)).collect();
+    let child = fork(pt);
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (1100, 3));
+    let mut seen = Vec::new();
+    azos_mm::vmm::for_each_leaf_in(child, base, base + 1100 * PAGE_SIZE, |va, f| seen.push(((va - base) / PAGE_SIZE, f)));
+    let want: Vec<(usize, usize)> = touched.iter().copied().zip(frames.iter().copied()).collect();
+    assert_eq!(seen, want, "the child's leaves are the touched pages, each on the parent's frame");
+    for &i in &touched {
+        write(pt, base + i * PAGE_SIZE, 0xFF);
+        assert_eq!(read(child, base + i * PAGE_SIZE), i as u8, "page {i}: the parent's store reached the child");
+    }
     exit(child);
     done(pt);
 }
