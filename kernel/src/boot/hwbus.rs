@@ -989,21 +989,48 @@ pub(crate) fn reconcile() {
     with_rules(|rules| hwbus::Locked.reconcile(rules, &mut kd, &mut Console));
 }
 
-/// Take every device a kernel driver is bound to down for a system suspend,
-/// newest bind first, through its record (`Access::quiesce`): all or nothing,
-/// `Err(n)` with the ones already down back up.
+/// The device step of a system suspend. The mounted volumes are made durable
+/// first (FAT32's flush runs on `fs-wb`, so before it is held), then FAT32's
+/// write-back is held so nothing is written while the disk is down, then every
+/// kernel device goes down through its record, newest bind first, all or
+/// nothing (`Access::quiesce`: what each was given finishes first; `Err(n)`
+/// with the ones already down back up). A volume that would not sync keeps its
+/// dirty data in its cache, written after the resume.
 #[cfg(any(feature = "system-suspend", feature = "ktest"))]
 pub(crate) fn quiesce() -> Result<(), u32> {
+    use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    let step = azos_limits::POWER_OFF_STEP_TIMEOUT_MS as u64 * TIMER_FREQ / 1000;
+    let deadline = now().saturating_add(step);
+    let look = || {
+        let until = now().saturating_add((TIMER_FREQ / 1000).max(1)).min(deadline);
+        azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+    };
+    let r = azos_fs::vfs_sync_all(&|| now() >= deadline, &look);
+    if r.failed != 0 || r.timed_out != 0 {
+        azos_drv_sys::kwarn!("[PM] suspend: {} of {} volume(s) did not sync ({} timed out): their dirty data waits in the cache",
+            r.failed + r.timed_out, r.volumes, r.timed_out);
+    }
+    if !super::fs_wb_hold(true) {
+        azos_drv_sys::kwarn!("[PM] suspend: the write-back pass did not end in time: its writes wait for the disk");
+    }
     let mut env = KernelEnv::plain();
-    hwbus::Locked.quiesce(&mut Records { records: &RECORDS, env: &mut env }, &mut Console)
+    let downed = hwbus::Locked.quiesce(&mut Records { records: &RECORDS, env: &mut env }, &mut Console);
+    if downed.is_err() {
+        super::fs_wb_hold(false);
+    }
+    downed
 }
 
-/// Bring them back, oldest bind first; how many did not come.
+/// Undo [`quiesce`]: the devices back, oldest bind first, then the
+/// write-back let go. How many devices did not come back.
 #[cfg(any(feature = "system-suspend", feature = "ktest"))]
 pub(crate) fn unquiesce() -> u32 {
     let mut env = KernelEnv::plain();
-    hwbus::Locked.unquiesce(&mut Records { records: &RECORDS, env: &mut env }, &mut Console)
+    let failed = hwbus::Locked.unquiesce(&mut Records { records: &RECORDS, env: &mut env }, &mut Console);
+    super::fs_wb_hold(false);
+    failed
 }
+
 
 /// Unbind the device `h`, then bind it to `driver` again, through the records.
 #[cfg(feature = "ktest")]

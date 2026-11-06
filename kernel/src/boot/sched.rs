@@ -835,6 +835,33 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
 static FS_WB_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 /// Set by a writer that crossed the dirty watermark; ends the task's sleep.
 static FS_WB_KICK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// A system suspend holds the write-back: the task writes nothing while set.
+static FS_WB_HOLD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The task is in a write-back pass.
+static FS_WB_IN_PASS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Hold FAT32's write-back (`on`) or let it go on. Holding waits, bounded by
+/// `POWER_OFF_STEP_TIMEOUT_MS`, for a pass in progress to end; `false` when it
+/// did not (the hold is still set, and the pass's writes wait in the queue
+/// for the disk to come back).
+#[cfg(any(feature = "system-suspend", feature = "ktest"))]
+pub(crate) fn fs_wb_hold(on: bool) -> bool {
+    use core::sync::atomic::Ordering::SeqCst;
+    use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    FS_WB_HOLD.store(on, SeqCst);
+    if !on {
+        fs_wb_wake();
+        return true;
+    }
+    let deadline = now().saturating_add(azos_limits::POWER_OFF_STEP_TIMEOUT_MS as u64 * TIMER_FREQ / 1000);
+    while FS_WB_IN_PASS.load(SeqCst) {
+        if now() >= deadline {
+            return false;
+        }
+        azos_sched::task_block(azos_sched::WaitReason::Timer(now().saturating_add((TIMER_FREQ / 1000).max(1))));
+    }
+    true
+}
 
 pub(crate) fn fs_wb_now_ms() -> u64 {
     azos_drv_sys::timebase::now() / (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1)
@@ -897,12 +924,18 @@ fn fs_writeback_task(_: usize) {
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
     loop {
         FS_WB_KICK.store(false, SeqCst);
-        // io_ring OP_FSYNC (K1): a flush asked for runs now, whatever the
-        // age, and its completions are posted from here.
-        if azos_fs::fat32_flush_service() {
-            azos_ipc::io_ring::io_ring_flush_posted();
+        // Set before the hold is read: a suspend that sets the hold then sees
+        // this pass and waits for it.
+        FS_WB_IN_PASS.store(true, SeqCst);
+        if !FS_WB_HOLD.load(SeqCst) {
+            // io_ring OP_FSYNC (K1): a flush asked for runs now, whatever the
+            // age, and its completions are posted from here.
+            if azos_fs::fat32_flush_service() {
+                azos_ipc::io_ring::io_ring_flush_posted();
+            }
+            azos_fs::fat32_writeback_tick(fs_wb_now_ms());
         }
-        azos_fs::fat32_writeback_tick(fs_wb_now_ms());
+        FS_WB_IN_PASS.store(false, SeqCst);
         let end = azos_drv_sys::timebase::now() + azos_fs::fat32_writeback_period_ms() * per_ms;
         while azos_drv_sys::timebase::now() < end && !FS_WB_KICK.load(SeqCst) {
             azos_sched::task_block(azos_sched::WaitReason::Timer(end));
