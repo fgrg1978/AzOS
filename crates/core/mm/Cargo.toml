@@ -87,6 +87,11 @@ fork-commit-race-canary = []
 # object, so the next space made from it starts with them: `syscall-tests`'
 # `aspace_life` fails.
 as-stale-root-canary = []
+# Host-suite and gate canary: a fault on an anonymous page believes the page's
+# leaf over its object's slot (`slot::resolve`): a leaf over an empty slot is
+# taken as resident and a compressed page comes back as zeros; the
+# `pte_truth` rows of `syscall-tests` and `mm-tests` and the ktest fail.
+mm-pte-truth-canary = []
 # Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
 # kept past its space's end reaches the next space made from the object:
 # `syscall-tests`' `aspace_life` fails.

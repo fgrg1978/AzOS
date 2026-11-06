@@ -91,11 +91,18 @@ pub mod cow;
 #[path = "../../../../../../crates/core/mm/src/demand.rs"]
 pub mod demand;
 
-// Wave 14 (DEMANDPAGE): `vmm.rs` sends unowned faults to the region pagers,
-// and the region records are the pure seam they keep.
+// Wave 14 (DEMANDPAGE): `vmm.rs` sends unowned faults to the pagers, and the
+// mapping records are the pure seam they keep; an anonymous mapping's object
+// keeps its pages' slot words.
 #[allow(dead_code)]
-#[path = "../../../../../../crates/core/mm/src/region.rs"]
-pub mod region;
+#[path = "../../../../../../crates/core/mm/src/mapping.rs"]
+pub mod mapping;
+#[allow(dead_code)]
+#[path = "../../../../../../crates/core/mm/src/slot.rs"]
+pub mod slot;
+#[allow(dead_code)]
+#[path = "../../../../../../crates/core/mm/src/anon_obj.rs"]
+pub mod anon_obj;
 
 // Kconfig `MM_THP_RESV`: `pager.rs` keeps the superpage reservations in this
 // pure table, and `vmm.rs` tells a promoted block from a locked row's region

@@ -67,12 +67,18 @@ mod kmem_charge;
 #[cfg(test)]
 mod livepatch;
 
-// Wave 14 (DEMANDPAGE): the region records of demand-paged `mmap`. Pure
-// (only `azos_arch_api::PAGE_SHIFT`), so the real file is tested as is; the
-// fault path and table that use it are tested in syscall-tests.
+// The mapping records of an address space. Pure (only
+// `azos_arch_api::PAGE_SHIFT`), so the real file is tested as is; the fault
+// path and table that use it are tested in syscall-tests.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/mm/src/region.rs"]
-mod region;
+#[path = "../../../../crates/core/mm/src/mapping.rs"]
+mod mapping;
+// The slot word of an object's page and the fault's decision over it (pure:
+// `azos_arch_api::PageMarker` and the marker protocol of `zpool.rs`). Its rows
+// are in `marker_pte.rs`.
+#[allow(dead_code)]
+#[path = "../../../../crates/core/mm/src/slot.rs"]
+mod slot;
 
 // Superpage reservations (MM_THP_RESV): the bookkeeping of the reserved
 // aligned runs. Its rows are in `thp_resv.rs`.
@@ -1291,28 +1297,32 @@ mod cow_break_tests {
     }
 }
 
-/// Wave 14 (DEMANDPAGE): `region.rs`, the bookkeeping the demand-fault path
-/// trusts to say whether an address is reserved and with what permission.
+/// `mapping.rs`, the bookkeeping the fault path trusts to say whether an
+/// address is mapped, by which object's page and with what permission.
 /// Mutation canaries (run by hand, see the front report): `joins` always
-/// false turns the fold rows red; dropping the straddle check in
-/// `remove_range` turns `a_cut_needs_a_slot` red (index out of bounds);
-/// `find` answering the first region whatever `va` turns the lookup rows red.
+/// false turns the fold rows red, `joins` not comparing the object or the
+/// offset turns `only_the_next_pages_of_one_object_fold` red; dropping the
+/// straddle check in `remove_range` turns `a_cut_needs_a_slot` red (index out
+/// of bounds); `find` answering the first mapping whatever `va` turns the
+/// lookup rows red.
 #[cfg(test)]
-mod region_tests {
-    use super::region::{Region, RegionError, RegionSet};
+mod mapping_tests {
+    use super::mapping::{Backing, MapError, MapSet, Mapping};
     const P: usize = 4096;
+    const OBJ: usize = 0x1000;
 
-    fn anon(a: usize, b: usize, w: bool) -> Region {
-        Region::anon(a * P, b * P, w)
+    /// Pages `a..b` of the one object `OBJ`, its page `a` at `a`.
+    fn anon(a: usize, b: usize, w: bool) -> Mapping {
+        Mapping::anon(a * P, b * P, w, OBJ, a)
     }
 
-    fn spans<const N: usize>(s: &RegionSet<N>) -> Vec<(usize, usize, bool)> {
+    fn spans<const N: usize>(s: &MapSet<N>) -> Vec<(usize, usize, bool)> {
         s.as_slice().iter().map(|r| (r.start / P, r.end / P, r.write)).collect()
     }
 
     #[test]
     fn lookup_answers_inside_and_only_inside() {
-        let mut s = RegionSet::<4>::new();
+        let mut s = MapSet::<4>::new();
         s.insert(anon(10, 20, true)).unwrap();
         s.insert(anon(30, 31, false)).unwrap();
         assert!(s.find(9 * P + P - 1).is_none());
@@ -1325,8 +1335,22 @@ mod region_tests {
     }
 
     #[test]
+    fn the_binary_search_finds_every_record_of_a_full_set() {
+        let mut s = MapSet::<32>::new();
+        for i in 0..32 {
+            s.insert(Mapping::anon(2 * i * P, (2 * i + 1) * P, true, OBJ + i, 0)).unwrap();
+        }
+        for i in 0..32 {
+            assert_eq!(s.find(2 * i * P).and_then(|m| m.anon_obj()), Some(OBJ + i));
+            assert!(s.find((2 * i + 1) * P).is_none(), "the hole after record {i}");
+        }
+        assert_eq!(s.ending_at(5 * P).and_then(|m| m.anon_obj()), Some(OBJ + 2));
+        assert!(s.ending_at(4 * P).is_none());
+    }
+
+    #[test]
     fn adjacent_compatible_ranges_fold() {
-        let mut s = RegionSet::<2>::new();
+        let mut s = MapSet::<2>::new();
         s.insert(anon(10, 11, true)).unwrap();
         s.insert(anon(11, 12, true)).unwrap();
         s.insert(anon(9, 10, true)).unwrap();
@@ -1338,42 +1362,65 @@ mod region_tests {
         // Different permission: its own record.
         s.insert(anon(15, 16, false)).unwrap();
         assert_eq!(s.len(), 2);
-        assert_eq!(s.insert(anon(20, 21, true)), Err(RegionError::Full));
+        assert_eq!(s.insert(anon(20, 21, true)), Err(MapError::Full));
         assert_eq!(s.len(), 2, "a refusal changes nothing");
     }
 
     #[test]
+    fn only_the_next_pages_of_one_object_fold() {
+        let mut s = MapSet::<4>::new();
+        s.insert(Mapping::anon(10 * P, 12 * P, true, OBJ, 0)).unwrap();
+        // Another object, or the same one not continuing: separate records.
+        s.insert(Mapping::anon(12 * P, 13 * P, true, OBJ + 1, 2)).unwrap();
+        s.insert(Mapping::anon(13 * P, 14 * P, true, OBJ, 5)).unwrap();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.naming(OBJ), 2);
+        let mut t = MapSet::<4>::new();
+        t.insert(Mapping::anon(10 * P, 12 * P, true, OBJ, 0)).unwrap();
+        t.insert(Mapping::anon(12 * P, 13 * P, true, OBJ, 2)).unwrap();
+        assert_eq!(spans(&t), vec![(10, 13, true)], "pages 0..3 of one object: one record");
+        // A file mapping never folds, not even with its own next pages.
+        let mut f = MapSet::<4>::new();
+        f.insert(Mapping::file(10 * P, 11 * P, true, false, 7, 0)).unwrap();
+        f.insert(Mapping::file(11 * P, 12 * P, true, false, 7, 1)).unwrap();
+        assert_eq!(f.len(), 2);
+        assert_eq!(f.as_slice()[0].backing, Backing::File { obj: 7, shared: false });
+    }
+
+    #[test]
     fn overlap_and_bad_ranges_are_refused() {
-        let mut s = RegionSet::<4>::new();
+        let mut s = MapSet::<4>::new();
         s.insert(anon(10, 20, true)).unwrap();
-        assert_eq!(s.insert(anon(19, 21, true)), Err(RegionError::Overlap));
-        assert_eq!(s.insert(anon(5, 11, true)), Err(RegionError::Overlap));
-        assert_eq!(s.insert(anon(12, 13, false)), Err(RegionError::Overlap));
-        assert_eq!(s.insert(Region::anon(P, P, true)), Err(RegionError::Invalid));
-        assert_eq!(s.insert(Region::anon(P + 1, 2 * P, true)), Err(RegionError::Invalid));
+        assert_eq!(s.insert(anon(19, 21, true)), Err(MapError::Overlap));
+        assert_eq!(s.insert(anon(5, 11, true)), Err(MapError::Overlap));
+        assert_eq!(s.insert(anon(12, 13, false)), Err(MapError::Overlap));
+        assert_eq!(s.insert(Mapping::anon(P, P, true, OBJ, 0)), Err(MapError::Invalid));
+        assert_eq!(s.insert(Mapping::anon(P + 1, 2 * P, true, OBJ, 0)), Err(MapError::Invalid));
         assert_eq!(spans(&s), vec![(10, 20, true)]);
     }
 
     #[test]
     fn remove_range_trims_cuts_and_counts() {
-        let mut s = RegionSet::<4>::new();
+        let mut s = MapSet::<4>::new();
         s.insert(anon(10, 20, true)).unwrap();
         s.insert(anon(30, 40, false)).unwrap();
         assert_eq!(s.remove_range(12 * P, 14 * P), Ok(2));
         assert_eq!(spans(&s), vec![(10, 12, true), (14, 20, true), (30, 40, false)]);
+        assert_eq!(s.naming(OBJ), 3, "the pieces name the one object");
         assert_eq!(s.remove_range(18 * P, 35 * P), Ok(2 + 5));
         assert_eq!(spans(&s), vec![(10, 12, true), (14, 18, true), (35, 40, false)]);
         assert_eq!(s.remove_range(0, 100 * P), Ok(2 + 4 + 5));
         assert!(s.is_empty());
+        assert_eq!(s.naming(OBJ), 0);
         assert_eq!(s.remove_range(0, P), Ok(0));
     }
 
     #[test]
     fn a_cut_needs_a_slot() {
-        let mut s = RegionSet::<2>::new();
+        let mut s = MapSet::<2>::new();
         s.insert(anon(10, 20, true)).unwrap();
         s.insert(anon(30, 40, true)).unwrap();
-        assert_eq!(s.remove_range(12 * P, 14 * P), Err(RegionError::Full));
+        assert_eq!(s.remove_range(12 * P, 14 * P), Err(MapError::Full));
         assert_eq!(spans(&s), vec![(10, 20, true), (30, 40, true)], "nothing changed");
         // Trimming an end needs no slot.
         assert_eq!(s.remove_range(10 * P, 12 * P), Ok(2));
@@ -1382,14 +1429,14 @@ mod region_tests {
 
     #[test]
     fn protect_splits_then_folds_back() {
-        let mut s = RegionSet::<4>::new();
+        let mut s = MapSet::<4>::new();
         s.insert(anon(10, 20, true)).unwrap();
         s.protect_range(12 * P, 14 * P, false).unwrap();
         assert_eq!(spans(&s), vec![(10, 12, true), (12, 14, false), (14, 20, true)]);
         assert_eq!(s.find(13 * P).map(|r| r.write), Some(false));
         s.protect_range(0, 100 * P, true).unwrap();
         assert_eq!(spans(&s), vec![(10, 20, true)], "same permission again: one record");
-        // Only region pages change; a hole stays a hole.
+        // Only mapped pages change; a hole stays a hole.
         s.protect_range(5 * P, 11 * P, false).unwrap();
         assert_eq!(spans(&s), vec![(10, 11, false), (11, 20, true)]);
         assert_eq!(s.reserved_pages(), 10);
@@ -1397,32 +1444,21 @@ mod region_tests {
 
     #[test]
     fn protect_refuses_when_its_cuts_do_not_fit() {
-        let mut s = RegionSet::<2>::new();
+        let mut s = MapSet::<2>::new();
         s.insert(anon(10, 20, true)).unwrap();
-        assert_eq!(s.protect_range(12 * P, 14 * P, false), Err(RegionError::Full));
+        assert_eq!(s.protect_range(12 * P, 14 * P, false), Err(MapError::Full));
         assert_eq!(spans(&s), vec![(10, 20, true)]);
         s.protect_range(10 * P, 14 * P, false).unwrap();
         assert_eq!(spans(&s), vec![(10, 14, false), (14, 20, true)]);
     }
 
     #[test]
-    fn a_copy_is_the_same_reservation() {
-        let mut a = RegionSet::<4>::new();
-        a.insert(anon(10, 20, true)).unwrap();
-        a.insert(anon(30, 31, false)).unwrap();
-        let mut b = RegionSet::<4>::new();
-        b.copy_from(&a);
-        assert_eq!(spans(&a), spans(&b));
-        a.remove_range(10 * P, 20 * P).unwrap();
-        assert_eq!(b.reserved_pages(), 11, "independent after the copy");
-    }
-
-    #[test]
     fn page_index_follows_the_cut() {
-        let mut s = RegionSet::<4>::new();
-        s.insert(anon(10, 20, true)).unwrap();
+        let mut s = MapSet::<4>::new();
+        s.insert(Mapping::anon(10 * P, 20 * P, true, OBJ, 0)).unwrap();
         s.remove_range(10 * P, 13 * P).unwrap();
         let r = *s.find(15 * P).unwrap();
+        assert_eq!(r.off, 3);
         assert_eq!(r.page_index(15 * P), 5, "object offset survives the trim");
     }
 }

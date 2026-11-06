@@ -689,13 +689,11 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
     // Compare-and-swap (wave 13): another thread of the process may have
     // broken the same page, or unmapped it, since the read above. The loser
     // frees its copy and returns as resolved, keeping its hands off the old
-    // frame's count: its access retries on whatever the entry now says.
+    // frame's count: its access retries on whatever the entry now says. The
+    // page's slot, if an anonymous object holds it, moves with the leaf.
     // SAFETY: `pte_ptr` is an aligned entry of a live table page.
     let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
-    if slot
-        .compare_exchange(pte, new_pte, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire)
-        .is_err()
-    {
+    if !crate::pager::cow_swap(pt, aligned_addr, slot, pte, new_pte) {
         let _ = pmm::free_page(PhysAddr::new(new_phys));
         return Ok(());
     }

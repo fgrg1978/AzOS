@@ -3,16 +3,21 @@
 //! Demand paging for `mmap` through pagers (wave 14, DEMANDPAGE).
 //!
 //! The kernel owns the address space; a pager owns what is *in* a page. `mmap`
-//! records a reserved range (a [`Region`]) instead of committing frames, and
-//! the first touch of each page faults here: the region's pager supplies the
-//! page and the kernel installs it with the region's exact permissions. The
-//! split is GNU Mach's external-pager idea (the kernel asks, the pager
-//! answers), not a port of it.
+//! records a reserved range (a [`Mapping`] of an object) instead of committing
+//! frames, and the first touch of each page faults here: the object's pager
+//! supplies the page and the kernel installs it with the mapping's exact
+//! permissions. The split is GNU Mach's external-pager idea (the kernel asks,
+//! the pager answers), not a port of it.
 //!
-//! **Pagers.** One exists: [`AnonPager`], anonymous memory: a page whose slot
-//! holds a page marker (below) is decompressed into a fresh frame from the
-//! compressed-page pool (Kconfig `MM_RECLAIM_COMPRESS`, `crate::zpool`), any
-//! other is zero-filled.
+//! **Anonymous memory is an object.** A private anonymous `mmap` is a mapping
+//! of an unnamed object of the space's own ([`crate::anon_obj`]), and a page's
+//! state is its slot word ([`crate::slot`]): empty, resident in a frame, in
+//! transit, compressed or swapped. **The slot decides**: a fault reads the
+//! slot, never the page-table entry ([`slot::resolve`]), and the entry is a
+//! cache of the slot, written when a page is installed and cleared when it
+//! leaves. [`AnonPager`] supplies an empty slot's page zero-filled and a marked
+//! one's from the compressed-page pool (Kconfig `MM_RECLAIM_COMPRESS`,
+//! `crate::zpool`).
 //!
 //! * File pages come from the page cache: a file-backed page is a frame of a
 //!   `MemKind::Paged` MemObj (storage L11, `azos_ipc::memobj`), the one page
@@ -20,8 +25,8 @@
 //!   [`PageBacking`] callback defined below. The file layer has the
 //!   positional read and write it needs (`FileSystem::read_at`/`write_at`, an
 //!   `InodeKey` naming the file), and `azos_fs::FsPageBacking` is the
-//!   implementation. A file `mmap` is a [`Region`] of [`PagerKind::File`] whose
-//!   `obj`/`off` name the cache object and the page in it; the object table is
+//!   implementation. A file `mmap` is a [`Backing::File`] mapping whose `obj`
+//!   and `off` name the cache object and the page in it; the object table is
 //!   `crate::memobj`'s, which the fault path calls directly. Two kinds:
 //!   **`MAP_SHARED`** maps the cache's own frame (the cache frame IS the mapped
 //!   frame: every mapper sees every store, and the page is written back to the
@@ -29,16 +34,17 @@
 //!   into a frame of the task's own, charged and freed like anonymous memory,
 //!   so its stores never reach the cache or the file. See [`resolve_file_fault`].
 //! * An IPC pager (a ring-3 server answering page requests) is what
-//!   [`Supply::Pending`] and the `obj`/`off` fields of [`Region`] are shaped
-//!   for: a pager that cannot answer at once returns `Pending`, the faulting
-//!   task waits, and the server's reply installs the page through the same
-//!   region re-check [`resolve_fault`] does. Not implemented; no pager returns
-//!   `Pending` today, and a `Pending` answer is treated as unresolved.
+//!   [`Supply::Pending`] and [`PageRequest`] are shaped for: a pager that cannot
+//!   answer at once returns `Pending`, the faulting task waits, and the
+//!   server's reply installs the page through the same mapping re-check
+//!   [`resolve_fault`] does. Not implemented; no pager returns `Pending` today,
+//!   and a `Pending` answer is treated as unresolved.
 //!
 //! **The compressed pool** (see [`AnonReclaim`] and the section below). The
 //! reclaimer takes a resident page out of an address space, compresses it into
-//! the pool and leaves a *page marker* in its slot (`azos_arch_api::PageMarker`,
-//! the protocol is `crate::zpool`'s): `InTransit` while the store runs,
+//! the pool and leaves a *page marker* in its object's slot
+//! (`azos_arch_api::PageMarker` over [`slot::SlotWords`], the protocol is
+//! `crate::zpool`'s; its leaf is cleared): `InTransit` while the store runs,
 //! `Compressed` (`Swapped` once its segment is on the swap area) after it. A
 //! fault decides from the word it reads, never from a look at the pool: an
 //! empty slot is a zero page, `InTransit` is waited for (so a fault that
@@ -46,13 +52,15 @@
 //! and a marker is restored, the pool's entry being the one whose generation
 //! the marker carries. Three rules keep that sound. The pool's entry stays
 //! until the restored frame is *installed* (a thread that loses the install
-//! race, or a region that changed under the fault, leaves it for the retry)
+//! race, or a mapping that changed under the fault, leaves it for the retry)
 //! and is then dropped by generation, the copy the fault restored and no other;
 //! whatever ends the address range (`munmap`, `mprotect(PROT_NONE)`, the
 //! space's end) clears the markers and drops the entries; and a `fork` gives
 //! the child a marker, and a pool entry sharing the parent's blob, for each
 //! page the parent has out, and waits for the stores in flight first (a page
-//! in transit would be in neither). The pool's lock is a leaf: taken with
+//! in transit would be in neither). The pool's entries are keyed by the space
+//! and the page's address, which a private object's single mapper makes
+//! unique. The pool's lock is a leaf: taken with
 //! neither a space's lock nor `RESVS` held, and over the page allocator, never the
 //! other way round.
 //!
@@ -79,26 +87,28 @@
 //! to a table.
 //!
 //! **Superpage reservations** (Kconfig `MM_THP_RESV`, `crate::resv`). The first
-//! fault in a block-aligned part of an anonymous region that one record covers
+//! fault in a block-aligned part of an anonymous mapping that one record covers
 //! whole, and where nothing is mapped yet, takes a contiguous run; this and
 //! the following faults fill 4 KiB pages from it, and the fault that fills the
 //! last one replaces the level-0 table with one level-1 leaf. A cut of the
-//! region (`munmap`, `mprotect`), a fork, the task's exit, or an allocator that
+//! mapping (`munmap`, `mprotect`), a fork, the task's exit, or an allocator that
 //! ran dry breaks the reservation: the frames not yet handed out go back. The
 //! reservation table has its own lock, never held across the page allocator
 //! and never with a space's lock held (the promotion is the one place one is held
 //! over a page-table swap, and takes no other lock). The task's quota is
-//! unaffected: a reservation lies inside a region, which was charged whole.
+//! unaffected: a reservation lies inside a mapping, which was charged whole.
 //!
-//! **State.** One [`RegionSet`] per address space, in the space's object
+//! **State.** One [`MapSet`] per address space, in the space's object
 //! ([`crate::aspace`]), under its IRQ-safe lock held only for lookups and the
-//! install itself, never across the 4 KiB zero or a table walk. Every install
-//! happens under that lock after re-finding the region, and `munmap` removes
-//! the region under it before sweeping the committed pages: a commit can never
-//! land after the sweep. No path holds two spaces' locks at once.
+//! install itself, never across the 4 KiB zero or a table walk. The space's
+//! lock is also its anonymous objects' (each has that one mapper), so a fault
+//! takes one lock twice, as before objects. Every install happens under it
+//! after re-finding the mapping and its slot, and `munmap` removes the mapping
+//! under it before sweeping the committed pages: a commit can never land after
+//! the sweep. No path holds two spaces' locks at once.
 
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use azos_arch::ARCH;
 use azos_arch_api::{Mmu, PageMarker, PagePerms, PAGE_SIZE};
@@ -107,15 +117,17 @@ use azos_sync::SpinLock;
 
 use crate::addr::{self, PhysAddr};
 use crate::aging;
+use crate::anon_obj::{self, Spare};
 use crate::aspace::{Space, SpaceRef};
-pub use crate::region::{PagerKind, Region, RegionError, RegionSet};
+pub use crate::mapping::{Backing, MapError, MapSet, Mapping};
+use crate::slot::{self, Resolve, SlotWords};
 // Core-only, so the object table, the file layer and the host suites link the
 // one source (`#[path]`: it is a sibling of this file, not a crate module).
 #[path = "page_backing.rs"]
 mod page_backing;
 pub use page_backing::{fill_page, valid_len, write_back_page, PageBacking, PageIoError, PageKey, PAGE_KEY_LEN};
 use crate::resv::{self, Claim, Filled, ResvTable};
-use crate::zpool::{self, Fault, Fetched, Lookup, PageWords, Packed, Reclaimee};
+use crate::zpool::{self, Fetched, Lookup, PageWords, Packed, Reclaimee};
 use crate::swap;
 use crate::memobj::{self, MemObjError, PagedError};
 use crate::{pmm, vmm};
@@ -125,14 +137,14 @@ pub const DEMAND_PAGING: bool = azos_limits::MM_DEMAND_PAGING;
 /// Kconfig `MM_PRECOMMIT_RT`: real-time-class tasks' mappings are committed
 /// at map time.
 pub const PRECOMMIT_RT: bool = azos_limits::MM_PRECOMMIT_RT;
-/// Region records per address space (Kconfig `MM_REGIONS_PER_SPACE`).
-pub const REGIONS_PER_SPACE: usize = azos_limits::MM_REGIONS_PER_SPACE as usize;
+/// Mapping records per address space (Kconfig `MM_REGIONS_PER_SPACE`).
+pub const MAPPINGS_PER_SPACE: usize = azos_limits::MM_REGIONS_PER_SPACE as usize;
 
 /// What a pager is asked for: page `page` of object `obj`, which is the page
 /// at `va` of the address space whose pool key is `space` (`SpaceRef::key`).
 #[derive(Clone, Copy, Debug)]
 pub struct PageRequest {
-    pub obj: u32,
+    pub obj: usize,
     pub page: usize,
     pub write: bool,
     pub space: usize,
@@ -447,22 +459,10 @@ fn mark_swapped() {
 /// or the marker is not there.
 fn retag(key: usize, va: usize, from: PageMarker, to: PageMarker, gen: u32) -> bool {
     // SAFETY: a pool entry's container is a space's key (`zkey`).
-    let Some((r, sp)) = (unsafe { SpaceRef::of_key(key) }) else { return false };
-    let space = r.root();
-    if !sp.recorded || vmm::write_would_enter_kernel_table(space, va) {
-        return false;
-    }
-    let Ok(p) = vmm::walk(space, va, false) else { return false };
-    // SAFETY: an aligned entry of a live table page; the space's lock is
-    // held, so its teardown (`forget`) has not started.
-    let slot = unsafe { &*(p as *const core::sync::atomic::AtomicU64) };
-    slot.compare_exchange(
-        ARCH.pte_make_marker(from, gen),
-        ARCH.pte_make_marker(to, gen),
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    )
-    .is_ok()
+    let Some((_, sp)) = (unsafe { SpaceRef::of_key(key) }) else { return false };
+    anon_slot(&sp, va).is_some_and(|slot| {
+        slot.compare_exchange(slot::marker(from, gen), slot::marker(to, gen), Ordering::AcqRel, Ordering::Acquire).is_ok()
+    })
 }
 
 /// Bring back the segment holding the page `(obj, pg)`, if swap has it. Any
@@ -488,7 +488,7 @@ fn swap_bring_in(obj: u64, pg: u64) -> KResult<()> {
 }
 
 /// A page's name in the pool: the container is the address space's key
-/// ([`SpaceRef::key`], until anonymous regions are MemObjs), the page its
+/// ([`SpaceRef::key`]: a private object has that one mapper), the page its
 /// virtual page number.
 #[inline]
 fn zkey(space: usize, va: usize) -> (u64, u64) {
@@ -554,7 +554,7 @@ unsafe fn frame_bytes<'a>(f: PhysAddr) -> &'a mut [u8] {
 /// calls for the pass's swap stage ([`swap_segment`]), this store does not
 /// write to swap itself.
 ///
-/// The page's address range must have a region (`reserve`d, not `release_range`d):
+/// The page's address range must be mapped (`reserve`d, not `release_range`d):
 /// a stored page of an unreserved range could never be asked for, and would
 /// stay until the space ends.
 fn zpool_store(owner: usize, space: usize, va: usize, frame: PhysAddr) -> Result<(usize, u32), zpool::Error> {
@@ -737,14 +737,14 @@ pub struct Victim {
 /// it, [`AnonReclaim`] reads the order of its victims from it.
 pub type Ages = aging::AgeTable<{ aging::CHUNKS }>;
 
-/// A store in flight: the page is out of the table, its slot holds the
-/// `InTransit` marker `ticket` names.
+/// A store in flight: the page is out of the table, its object's slot holds
+/// the `InTransit` marker `ticket` names.
 #[derive(Clone, Copy)]
 struct Flight {
     space: SpaceRef,
     va: usize,
     frame: PhysAddr,
-    /// The leaf word the marker replaced, for a store that does not happen.
+    /// The leaf word that mapped the page, for a store that does not happen.
     original: u64,
     ticket: u32,
     state: FlightState,
@@ -762,26 +762,26 @@ enum FlightState {
 }
 
 /// The pages of one Domain's address spaces, as a reclaim storm's source
-/// ([`Reclaimee`]): anonymous region pages that are resident, owned by their
+/// ([`Reclaimee`]): anonymous mapping pages that are resident, owned by their
 /// space alone and plain 4 KiB leaves, oldest generation first
 /// ([`aging::AgeTable::pick`]: the Accessed bit through `age_space`, four
 /// generations, address order inside one), skipping the ones the compressor
 /// gave up on until they are touched.
 ///
-/// Per victim: `next` finds it, `unmap` replaces its leaf with an `InTransit`
-/// marker and shoots the translation down on every hart, `store` compresses it
-/// into the pool and replaces the marker with a `Compressed` one, `free`
-/// frees the frame (or `keep` puts the leaf back and, for a page whose range
-/// was unmapped meanwhile, frees the frame). A fault on the page meanwhile
-/// waits ([`resolve_fault`]).
+/// Per victim: `next` finds it, `unmap` turns its slot into an `InTransit`
+/// marker, clears its leaf and shoots the translation down on every hart,
+/// `store` compresses it into the pool and turns the marker into a
+/// `Compressed` one, `free` frees the frame (or `keep` puts the slot and the
+/// leaf back and, for a page whose range was unmapped meanwhile, frees the
+/// frame). A fault on the page meanwhile waits ([`resolve_fault`]).
 ///
-/// What it never offers or takes: a file region's page; a page shared with
+/// What it never offers or takes: a file mapping's page; a page shared with
 /// another space (a fork's copy-on-write sharing, counted in the frame's
 /// reference count); a page of a block promoted to one superpage or of a
 /// contiguous run; any page of a space with a fork walking it. A Domain on a
 /// `mem = "locked"` row, and a real-time hart, are the storm's gate
 /// (`PageBudget::storm_begin`), not asked here; a real-time task's pages are
-/// committed eagerly and have no region, so they are not offered either.
+/// committed eagerly and have no mapping, so they are not offered either.
 pub struct AnonReclaim<'a> {
     spaces: &'a [Option<SpaceRef>],
     owner: usize,
@@ -810,8 +810,8 @@ impl<'a> AnonReclaim<'a> {
         ARCH.is_victim_leaf(w) && pmm::desc_of(ARCH.pte_phys(w)).is_some()
     }
 
-    /// Copy out the regions of `r` (empty when it has none).
-    fn regions_of(r: SpaceRef, out: &mut [Region; REGIONS_PER_SPACE]) -> usize {
+    /// Copy out the mappings of `r` (empty when it has none).
+    fn mappings_of(r: SpaceRef, out: &mut [Mapping; MAPPINGS_PER_SPACE]) -> usize {
         let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return 0 };
         let rs = sp.set.as_slice();
         out[..rs.len()].copy_from_slice(rs);
@@ -828,8 +828,15 @@ impl<'a> AnonReclaim<'a> {
     }
 
     /// The slot of the flight's page, under the space's lock (`sp`, which the
-    /// caller holds): `None` when the space has no records or no table there.
-    fn slot_of<'t>(sp: &'t Space, f: &Flight) -> Option<&'t core::sync::atomic::AtomicU64> {
+    /// caller holds): `None` when no anonymous mapping holds the page any more
+    /// (the range was unmapped meanwhile).
+    fn slot_of<'t>(sp: &'t Space, f: &Flight) -> Option<&'t AtomicU64> {
+        anon_slot(sp, f.va)
+    }
+
+    /// The flight's page's leaf entry, under the space's lock: `None` when the
+    /// space has no records or no table there.
+    fn leaf_of<'t>(sp: &'t Space, f: &Flight) -> Option<&'t AtomicU64> {
         if !sp.recorded {
             return None;
         }
@@ -837,8 +844,20 @@ impl<'a> AnonReclaim<'a> {
         // SAFETY: an aligned entry of a live table page: the space has
         // records, and `forget` (which precedes the teardown of its tables)
         // takes the lock the caller holds.
-        Some(unsafe { &*(p as *const core::sync::atomic::AtomicU64) })
+        Some(unsafe { &*(p as *const AtomicU64) })
     }
+}
+
+/// The slot of the anonymous page at `va` of the space whose records are `sp`
+/// (its lock held): `None` outside every anonymous mapping, or while the page
+/// has no slot storage (an `Empty` slot).
+fn anon_slot(sp: &Space, va: usize) -> Option<&AtomicU64> {
+    if !sp.recorded {
+        return None;
+    }
+    let m = sp.set.find(va)?;
+    // SAFETY: the mapping names a live object, and the lock is held.
+    unsafe { anon_obj::get(m.anon_obj()?) }.slot(m.page_index(va))
 }
 
 impl Reclaimee for AnonReclaim<'_> {
@@ -887,14 +906,11 @@ impl Reclaimee for AnonReclaim<'_> {
             }
         };
         let published = f.space.lock().is_some_and(|mut sp| match Self::slot_of(&sp, f) {
-            // The range is still a region of the space: `release_range` takes
-            // the region out before it drops the pool's pages of it, so a
-            // publish that finds the region here is followed by that drop and
-            // the marker's clear, and one that does not was preceded by them.
-            Some(slot)
-                if sp.set.find(f.va).is_some_and(|r| r.pager == PagerKind::Anon)
-                    && zpool::publish(&ARCH, slot, f.ticket, PageMarker::Compressed, gen) =>
-            {
+            // The range is still mapped: `release_range` takes the mapping out
+            // before it drops the pool's pages of it, so a publish that finds
+            // the mapping here is followed by that drop and the slot's clear,
+            // and one that does not was preceded by them.
+            Some(slot) if zpool::publish(&SlotWords, slot, f.ticket, PageMarker::Compressed, gen) => {
                 sp.committed = sp.committed.saturating_sub(1);
                 true
             }
@@ -925,9 +941,19 @@ impl Reclaimee for AnonReclaim<'_> {
 
     fn keep(&mut self, _v: Victim) {
         let Some(f) = self.flight.take() else { return };
+        // The leaf first, then the slot, both under the lock: a fault that
+        // finds the slot `InTransit` waits, so nothing installed a leaf here.
         let back = f.state == FlightState::Out
             && f.space.lock().is_some_and(|sp| {
-                Self::slot_of(&sp, &f).is_some_and(|slot| zpool::put_back(&ARCH, slot, f.ticket, f.original))
+                let (Some(slot), Some(leaf)) = (Self::slot_of(&sp, &f), Self::leaf_of(&sp, &f)) else { return false };
+                if leaf.compare_exchange(ARCH.pte_empty(), f.original, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                    return false;
+                }
+                if zpool::put_back(&SlotWords, slot, f.ticket, slot::frame(f.frame.as_usize())) {
+                    return true;
+                }
+                leaf.store(ARCH.pte_empty(), Ordering::Release);
+                false
             });
         if back {
             ARCH.flush_tlb_page(f.va);
@@ -941,8 +967,9 @@ impl Reclaimee for AnonReclaim<'_> {
 }
 
 impl AnonReclaim<'_> {
-    /// Under the space's lock (`sp`): check the page again and swap its leaf
-    /// for the `InTransit` marker. The frame and the leaf word it held.
+    /// Under the space's lock (`sp`): check the page again, turn its slot into
+    /// the `InTransit` marker and clear its leaf. The frame and the leaf word
+    /// it held.
     fn take_out_locked(sp: &mut Space, v: Victim, ticket: u32) -> Option<(PhysAddr, u64)> {
         if !sp.recorded {
             return None;
@@ -951,35 +978,43 @@ impl AnonReclaim<'_> {
         if sp.forking != 0 || vmm::write_would_enter_kernel_table(v.space, v.va) {
             return None;
         }
-        let r = sp.set.find(v.va)?;
-        if r.pager != PagerKind::Anon {
-            return None;
-        }
         // A leaf of 4 KiB: a promoted block's level-1 word is no page of ours
         // (promotion runs under this lock, so the answer holds).
         if vmm::leaf_level(v.space, v.va) != Some(0) {
             return None;
         }
+        let slot = anon_slot(sp, v.va)?;
         let p = vmm::walk(v.space, v.va, false).ok()?;
         // SAFETY: an aligned entry of a live table page (the space has a slot).
-        let slot = unsafe { &*(p as *const core::sync::atomic::AtomicU64) };
-        let w = slot.load(Ordering::Acquire);
+        let leaf = unsafe { &*(p as *const AtomicU64) };
+        let w = leaf.load(Ordering::Acquire);
         let frame = ARCH.pte_phys(w);
-        // Shared with another space (a fork, a copy-on-write sibling), or not
-        // a frame the allocator tracks: not ours to free.
-        if pmm::desc_of(frame).is_none() || crate::cow_table::page_is_shared(frame) {
+        // Shared with another space (a fork, a copy-on-write sibling), not a
+        // frame the allocator tracks, or not the frame the slot names: not ours
+        // to free.
+        if !ARCH.is_victim_leaf(w)
+            || slot::frame_of(slot.load(Ordering::Acquire)) != Some(frame)
+            || pmm::desc_of(frame).is_none()
+            || crate::cow_table::page_is_shared(frame)
+        {
             return None;
         }
-        let original = zpool::take_out(&ARCH, slot, ticket).ok()?;
+        zpool::take_out(&SlotWords, slot, ticket).ok()?;
+        // The leaf may have changed since the read (the hardware's Accessed or
+        // Dirty bit): the page stays.
+        if leaf.compare_exchange(w, ARCH.pte_empty(), Ordering::AcqRel, Ordering::Acquire).is_err() {
+            slot.store(slot::frame(frame), Ordering::Release);
+            return None;
+        }
         sp.reclaiming += 1;
-        Some((PhysAddr::new(frame), original))
+        Some((PhysAddr::new(frame), w))
     }
 }
 
-/// One aging pass over the anonymous regions of the space `r`, for Domain
+/// One aging pass over the anonymous mappings of the space `r`, for Domain
 /// slot `owner`: feed `ages` (between `AgeTable::begin` and `end` of the
 /// caller) the pages the reclaimer could take now and the ones used since the
-/// last pass. Each 64-page window of a region is looked at with the space's
+/// last pass. Each 64-page window of a mapping is looked at with the space's
 /// lock held for the harvest only: `Mmu::harvest_accessed` clears bits in the
 /// page tables, and a table freed under it would be a stray write into a frame
 /// the allocator has reissued; `forget` takes this lock before the space's
@@ -993,14 +1028,14 @@ pub fn age_space(r: SpaceRef, owner: usize, ages: &mut Ages) -> bool {
         return true;
     }
     let root = r.root();
-    let mut regions = [Region::anon(0, 0, false); REGIONS_PER_SPACE];
-    let n = AnonReclaim::regions_of(r, &mut regions);
+    let mut maps = [Mapping::anon(0, 0, false, 0, 0); MAPPINGS_PER_SPACE];
+    let n = AnonReclaim::mappings_of(r, &mut maps);
     let span = aging::WINDOW * PAGE_SIZE;
     let mut fit = true;
-    for reg in regions[..n].iter().filter(|r| r.pager == PagerKind::Anon) {
+    for reg in maps[..n].iter().filter(|m| m.anon_obj().is_some()) {
         let mut base = reg.start & !(span - 1);
         while base < reg.end {
-            // The pages of this window inside the region.
+            // The pages of this window inside the mapping.
             let first = reg.start.max(base).div_ceil(PAGE_SIZE) - base / PAGE_SIZE;
             let last = reg.end.min(base + span).div_ceil(PAGE_SIZE) - base / PAGE_SIZE;
             let scope = bits(first, last);
@@ -1014,7 +1049,7 @@ pub fn age_space(r: SpaceRef, owner: usize, ages: &mut Ages) -> bool {
                 0
             } else {
                 // Only the span that holds them: the Accessed bit of a page
-                // another region owns is not ours to clear.
+                // another mapping owns is not ours to clear.
                 let (lo, hi) = (resident.trailing_zeros() as usize, 64 - resident.leading_zeros() as usize);
                 let Some(_sp) = r.lock().filter(|sp| sp.recorded) else { return fit };
                 ARCH.harvest_accessed(root, base + lo * PAGE_SIZE, hi - lo) << lo
@@ -1087,7 +1122,7 @@ fn break_range(root: usize, s: usize, e: usize) {
 /// blocks already promoted (the walk skips level-1 leaves, so the child would
 /// get a hole). `false`: a block could not be split, the fork is to be refused.
 /// Call [`fork_end`] after the walk either way. Free for a space without
-/// regions. Walks of one space may overlap (threads forking at once): the space
+/// mappings. Walks of one space may overlap (threads forking at once): the space
 /// counts them, and promotion and reclaim resume when the last is over.
 ///
 /// A page in transit is in no table the walk can see and not yet in the pool
@@ -1116,7 +1151,7 @@ pub fn fork_end(r: SpaceRef) {
 
 /// Wait for the stores in flight in `r` to end and keep the reclaimer from
 /// starting more until [`reclaim_release`]. Counted, so holds nest and overlap.
-/// `false`: the space has no records (no regions), so nothing is held.
+/// `false`: the space has no records (no mappings), so nothing is held.
 /// Sleeps while a store is in flight: call it outside every lock of this module.
 fn reclaim_hold(r: SpaceRef) -> bool {
     loop {
@@ -1189,6 +1224,8 @@ fn reclaim_reservation() -> bool {
 enum Source {
     /// A page of its own, already zeroed.
     Plain(PhysAddr),
+    /// The frame the slot already names (its leaf is missing): nothing to give back.
+    Held(PhysAddr),
     /// Frame `idx` of the block's reservation (`run` is the run's base), zeroed.
     Run { run: usize, idx: usize, frame: PhysAddr },
 }
@@ -1200,6 +1237,7 @@ impl Source {
             Source::Plain(f) => {
                 let _ = pmm::free_page(f);
             }
+            Source::Held(_) => {}
             Source::Run { run, idx, frame } => {
                 // The reservation takes it back; if it is gone, the frame is
                 // this thread's to free.
@@ -1236,9 +1274,9 @@ fn make_reservation(root: usize, block: usize) -> bool {
 
 /// The frame for the fault at `page` from the block's reservation, making the
 /// reservation first when the block qualifies. `None`: take a plain page.
-fn run_frame(root: usize, page: usize, r: &Region) -> Option<Source> {
+fn run_frame(root: usize, page: usize, m: &Mapping) -> Option<Source> {
     let block = resv::block_of(page);
-    if r.pager != PagerKind::Anon || !resv::covers(r.start, r.end, block) {
+    if m.anon_obj().is_none() || !resv::covers(m.start, m.end, block) {
         return None;
     }
     let idx = resv::index_of(page);
@@ -1279,12 +1317,13 @@ fn after_install(r: SpaceRef, block: usize, run: usize, idx: usize, write: bool)
     if !matches!(filled, Filled::Complete(_)) {
         return;
     }
-    // Under the space's lock: the region is still the one whole record that
+    // Under the space's lock: the mapping is still the one whole record that
     // lets a leaf map the block, so no `munmap` or `mprotect` has cut it, and
-    // none can start its sweep before the swap is done.
+    // none can start its sweep before the swap is done. The block's slots keep
+    // naming its frames, one each.
     let old = r.lock().filter(|sp| sp.recorded).and_then(|sp| {
-        let whole = sp.set.find(block).is_some_and(|reg| {
-            resv::covers(reg.start, reg.end, block) && reg.write == write && reg.pager == PagerKind::Anon
+        let whole = sp.set.find(block).is_some_and(|m| {
+            resv::covers(m.start, m.end, block) && m.write == write && m.anon_obj().is_some()
         }) && sp.forking == 0;
         if whole { vmm::promote_user_block(root, block, run, write) } else { None }
     });
@@ -1294,23 +1333,57 @@ fn after_install(r: SpaceRef, block: usize, run: usize, idx: usize, write: bool)
 }
 
 /// Reserve `[start, end)` in the address space `r` as anonymous memory,
-/// readable and writable iff `write`. Commits nothing. `Full` when the space's
-/// records are exhausted (or it is no space any more): the caller commits the
-/// range eagerly instead.
+/// readable and writable iff `write`: a mapping of the object of the
+/// anonymous mapping next to it with the same permission (below or above it,
+/// whose record it then folds into), or of a new object of the space's.
+/// Commits nothing. `Full` when the space's records are exhausted (or it is
+/// no space any more, or no object can be made): the caller commits the range
+/// eagerly instead.
 ///
-/// `Overlap` when the range is not vacant in the page table (something is
-/// mapped or marked there, or reaching it enters a kernel-shared table): the
-/// eager path refuses such a range through `map`'s `AlreadyMapped`, and so
-/// must a reservation.
-pub fn reserve(r: SpaceRef, start: usize, end: usize, write: bool) -> Result<(), RegionError> {
-    if !vmm::user_range_vacant(r.root(), start, end) {
-        return Err(RegionError::Overlap);
+/// `Overlap` when the range is not vacant: a mapping holds part of it, or
+/// something is mapped or marked there in the page table (or reaching it
+/// enters a kernel-shared table): the eager path refuses such a range
+/// through `map`'s `AlreadyMapped`, and so must a reservation.
+pub fn reserve(r: SpaceRef, start: usize, end: usize, write: bool) -> Result<(), MapError> {
+    if start >= end {
+        return Err(MapError::Invalid);
     }
-    let mut sp = r.lock().ok_or(RegionError::Full)?;
-    sp.open();
-    let res = sp.set.insert(Region::anon(start, end, write));
-    if res.is_err() && sp.set.is_empty() {
-        sp.close();
+    if !vmm::user_range_vacant(r.root(), start, end) {
+        return Err(MapError::Overlap);
+    }
+    // The object's page numbers are addresses (`anon_obj` module doc).
+    let (lo, hi) = (start / PAGE_SIZE, end / PAGE_SIZE);
+    {
+        let mut sp = r.lock().ok_or(MapError::Full)?;
+        if sp.recorded {
+            if sp.set.covered_pages(start, end) != 0 {
+                return Err(MapError::Overlap);
+            }
+            let next = sp.set.find(end).filter(|m| m.start == end).copied();
+            let beside = sp.set.ending_at(start).copied().into_iter().chain(next).find_map(|m| {
+                // SAFETY: the mapping names a live object, and the lock is held.
+                m.anon_obj().filter(|&h| m.write == write && unsafe { anon_obj::get(h) }.holds(lo, hi))
+            });
+            if let Some(h) = beside {
+                return sp.set.insert(Mapping::anon(start, end, write, h, lo));
+            }
+        }
+    }
+    let h = anon_obj::create(lo, hi - lo).ok_or(MapError::Full)?;
+    let res = match r.lock() {
+        Some(mut sp) => {
+            sp.open();
+            let res = sp.set.insert(Mapping::anon(start, end, write, h, lo));
+            if res.is_err() && sp.set.is_empty() {
+                sp.close();
+            }
+            res
+        }
+        None => Err(MapError::Full),
+    };
+    if res.is_err() {
+        // SAFETY: never mapped.
+        unsafe { anon_obj::destroy(h, r.root()) };
     }
     res
 }
@@ -1318,12 +1391,12 @@ pub fn reserve(r: SpaceRef, start: usize, end: usize, write: bool) -> Result<(),
 /// Reserve `[start, end)` as one piece of a file mapping: pages `off..` of the
 /// page-cache object `obj`, readable and writable iff `write`; `shared` is
 /// `MAP_SHARED`. Commits nothing, and charges nothing (the caller charges a
-/// private region as it does `mmap`'s anonymous ones; a shared one is the
-/// cache's memory). The region counts as one user of `obj`
+/// private mapping as it does `mmap`'s anonymous ones; a shared one is the
+/// cache's memory). The mapping counts as one user of `obj`
 /// ([`memobj::memobj_paged_region_add_ref`]) until it ends.
 ///
-/// `Overlap` as [`reserve`]; `Full` when the space's records are exhausted;
-/// `Invalid` before any page cache is installed.
+/// `Overlap` when the page table is not vacant there or a mapping holds part
+/// of the range; `Full` when the space's records are exhausted.
 pub fn reserve_file(
     r: SpaceRef,
     start: usize,
@@ -1332,14 +1405,14 @@ pub fn reserve_file(
     shared: bool,
     obj: u32,
     off: usize,
-) -> Result<(), RegionError> {
+) -> Result<(), MapError> {
     if !vmm::user_range_vacant(r.root(), start, end) {
-        return Err(RegionError::Overlap);
+        return Err(MapError::Overlap);
     }
     {
-        let mut sp = r.lock().ok_or(RegionError::Full)?;
+        let mut sp = r.lock().ok_or(MapError::Full)?;
         sp.open();
-        let res = sp.set.insert(Region::file(start, end, write, shared, obj, off));
+        let res = sp.set.insert(Mapping::file(start, end, write, shared, obj, off));
         if res.is_err() {
             if sp.set.is_empty() {
                 sp.close();
@@ -1351,7 +1424,7 @@ pub fn reserve_file(
     Ok(())
 }
 
-/// A file region as [`file_regions_in`] reports it.
+/// A file mapping as [`file_regions_in`] reports it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileRegion {
     pub start: usize,
@@ -1367,40 +1440,42 @@ impl FileRegion {
     pub const NONE: FileRegion = FileRegion { start: 0, end: 0, obj: 0, off: 0, shared: false };
 }
 
-/// The file regions `[s, e)` touches, into `out`; how many. `Invalid` when the
-/// range would cut one (a file region goes whole or not at all), `Full` when
-/// `out` is too short. Nothing changes.
-pub fn file_regions_in(r: SpaceRef, s: usize, e: usize, out: &mut [FileRegion]) -> Result<usize, RegionError> {
+/// The file mappings `[s, e)` touches, into `out`; how many. `Invalid` when
+/// the range would cut one (a file mapping goes whole or not at all), `Full`
+/// when `out` is too short. Nothing changes.
+pub fn file_regions_in(r: SpaceRef, s: usize, e: usize, out: &mut [FileRegion]) -> Result<usize, MapError> {
     let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return Ok(0) };
     let set = &sp.set;
     if !set.file_cut_ok(s, e) {
-        return Err(RegionError::Invalid);
+        return Err(MapError::Invalid);
     }
     let mut n = 0;
-    for r in set.as_slice() {
-        if r.pager == PagerKind::File && r.start < e && s < r.end {
-            if n == out.len() {
-                return Err(RegionError::Full);
+    for m in set.as_slice() {
+        if let Backing::File { obj, shared } = m.backing {
+            if m.start < e && s < m.end {
+                if n == out.len() {
+                    return Err(MapError::Full);
+                }
+                out[n] = FileRegion { start: m.start, end: m.end, obj, off: m.off, shared };
+                n += 1;
             }
-            out[n] = FileRegion { start: r.start, end: r.end, obj: r.obj, off: r.off, shared: r.shared };
-            n += 1;
         }
     }
     Ok(n)
 }
 
-/// Does `[s, e)` touch a file region?
+/// Does `[s, e)` touch a file mapping?
 pub fn has_file(r: SpaceRef, s: usize, e: usize) -> bool {
     r.lock().is_some_and(|sp| sp.recorded && sp.set.has_file(s, e))
 }
 
-/// Resolve a fault in a file region (`r`, copied out of the set; `page` the
-/// faulting page). The same two phases as [`resolve_fault`]: the page is
-/// supplied with no lock held, then the region is found again and the entry
-/// installed under the lock.
+/// Resolve a fault in a file mapping (`r`, copied out of the set, of the
+/// object `obj`; `page` the faulting page). The same two phases as
+/// [`resolve_fault`]: the page is supplied with no lock held, then the mapping
+/// is found again and the entry installed under the lock.
 ///
 /// * **Shared**: the cache's frame ([`memobj::memobj_paged_frame_pinned_ref`]) is installed with the
-///   region's permissions. The mapper's record in the object (made by the
+///   mapping's permissions. The mapper's record in the object (made by the
 ///   syscall layer when it mapped) is what lets the cache drop the page from
 ///   this space, so after the install the cache is asked again: the same frame
 ///   means the install is covered, anything else means the page was dropped
@@ -1408,8 +1483,8 @@ pub fn has_file(r: SpaceRef, s: usize, e: usize) -> bool {
 ///   faults again).
 /// * **Private**: a frame of the task's own, the page's bytes copied in from the
 ///   cache and zeros after them. It is owned (munmap and the space's end free
-///   it) and was charged when the region was reserved.
-fn resolve_file_fault(space: SpaceRef, page: usize, r: &Region) -> KResult<()> {
+///   it) and was charged when the mapping was reserved.
+fn resolve_file_fault(space: SpaceRef, page: usize, r: &Mapping, obj: u32, shared: bool) -> KResult<()> {
     let root = space.root();
     let idx = r.page_index(page);
     // The cache's pin on a shared frame, held to the end of the install.
@@ -1422,16 +1497,16 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Region) -> KResult<()> {
         }
     }
     let mut _pin = Pin(None);
-    let frame = if r.shared {
-        let f = memobj::memobj_paged_frame_pinned_ref(r.obj, idx, r.write).map(PhysAddr::new).map_err(file_err)?;
-        _pin = Pin(Some(r.obj));
+    let frame = if shared {
+        let f = memobj::memobj_paged_frame_pinned_ref(obj, idx, r.write).map(PhysAddr::new).map_err(file_err)?;
+        _pin = Pin(Some(obj));
         f
     } else {
         // SAFETY: filled right below, before the entry that exposes it exists.
         let f = unsafe { pmm::alloc_page_uninit()? };
         // SAFETY: a frame this call owns, mapped by the direct map.
         let bytes = unsafe { core::slice::from_raw_parts_mut(addr::phys_to_virt(f.as_usize()) as *mut u8, PAGE_SIZE) };
-        match memobj::memobj_paged_read_ref(r.obj, idx * PAGE_SIZE, bytes).map_err(file_err) {
+        match memobj::memobj_paged_read_ref(obj, idx * PAGE_SIZE, bytes).map_err(file_err) {
             Ok(n) => bytes[n.min(PAGE_SIZE)..].fill(0),
             Err(e) => {
                 let _ = pmm::free_page(f);
@@ -1441,13 +1516,13 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Region) -> KResult<()> {
         f
     };
     let give_back = |f: PhysAddr| {
-        if !r.shared {
+        if !shared {
             let _ = pmm::free_page(f);
         }
     };
     // A private mapping was charged whole when it was made; a shared one is the
     // cache's memory and promised nothing.
-    let pte_ptr = match walk_installing(root, page, !r.shared) {
+    let pte_ptr = match walk_installing(root, page, !shared) {
         Ok(p) => p,
         Err(e) => {
             give_back(frame);
@@ -1464,17 +1539,14 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Region) -> KResult<()> {
     };
 
     let same = space.lock().filter(|sp| {
-        sp.recorded
-            && sp.set.find(page).is_some_and(|now| {
-                now.write == r.write && now.pager == r.pager && now.obj == r.obj && now.shared == r.shared
-            })
+        sp.recorded && sp.set.find(page).is_some_and(|now| now.write == r.write && now.backing == r.backing)
     });
     let Some(mut t) = same else {
         // Unmapped or re-protected since the lookup: retry on the new layout.
         give_back(frame);
         return Ok(());
     };
-    // SAFETY: `pte_ptr` is an aligned entry of a live table page (the region
+    // SAFETY: `pte_ptr` is an aligned entry of a live table page (the mapping
     // still exists, so `munmap` has not swept it).
     let old = unsafe { core::ptr::read_volatile(pte_ptr) };
     if ARCH.pte_is_valid(old) || ARCH.pte_is_demand(old) {
@@ -1483,7 +1555,7 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Region) -> KResult<()> {
         return if ARCH.pte_is_valid(old) { Ok(()) } else { Err(KernelError::AlreadyMapped) };
     }
     // SAFETY: as above.
-    let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
+    let slot = unsafe { &*(pte_ptr as *const AtomicU64) };
     if slot.compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire).is_err() {
         drop(t);
         give_back(frame);
@@ -1492,7 +1564,7 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Region) -> KResult<()> {
     t.committed += 1;
     drop(t);
     ARCH.flush_tlb_page(page);
-    if r.shared && memobj::memobj_page_phys_ref(r.obj, idx).ok().flatten().map(PhysAddr::new) != Some(frame) {
+    if shared && memobj::memobj_page_phys_ref(obj, idx).ok().flatten().map(PhysAddr::new) != Some(frame) {
         // The cache dropped the page before the install could be covered.
         vmm::unmap(root, page);
         if let Some(mut sp) = space.lock().filter(|sp| sp.recorded) {
@@ -1502,30 +1574,32 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Region) -> KResult<()> {
     Ok(())
 }
 
-/// Resolve a fault at `va` of the space `r` from its region's pager.
+/// Resolve a fault at `va` of the space `r` from its mapping's pager.
 ///
-/// `NotMapped` when no region holds `va` (the caller kills the task, as
+/// `NotMapped` when no mapping holds `va` (the caller kills the task, as
 /// before demand paging). `Ok` when the access should retry: the page is now
-/// present (installed here or by another thread first), or the region changed
+/// present (installed here or by another thread first), or the mapping changed
 /// under the fault (`mprotect`, `munmap`) and the retry decides afresh.
 ///
 /// Two phases, so interrupts are never off across the pager or the walk: the
-/// region is copied out under the lock, the page supplied (4 KiB zeroed) and
-/// the tables walked without it, then the lock is retaken, the region found
-/// again and the entry installed. The install is the only step under the lock
-/// besides the lookups, which is what keeps `release_range`'s promise: no
-/// commit lands after a removal, because every install re-finds its region.
-/// The same shape is what an IPC pager needs: its `Pending` answer is a
-/// supply that finishes later.
+/// mapping and the page's slot word are copied out under the lock, the page
+/// supplied (4 KiB zeroed) and the tables walked without it, then the lock is
+/// retaken, the mapping and the slot found again and the entry installed. The
+/// install is the only step under the lock besides the lookups, which is what
+/// keeps `release_range`'s promise: no commit lands after a removal, because
+/// every install re-finds its mapping. The same shape is what an IPC pager
+/// needs: its `Pending` answer is a supply that finishes later.
 ///
-/// **The slot decides.** What the page is, a zero page, a page in transit, a
-/// page in the pool, is read from the word in its slot ([`zpool::classify`]),
-/// before anything is supplied, and the install replaces exactly that word:
-/// whatever changed it in between (the reclaimer, a fork, another fault) makes
-/// the install fail and the fault start again, bounded by [`FAULT_TRIES`]. A
-/// page in transit is waited for. The same two steps are why the kernel's own
-/// access to a user page ([`vmm::translate_user`]) can rely on this: it does
-/// not return before the page is resident or the access is hopeless.
+/// **The slot decides.** What an anonymous page is, a zero page, a resident
+/// page whose leaf is missing, a page in transit, a page in the pool, is read
+/// from its object's slot ([`slot::resolve`]), never from its leaf, before
+/// anything is supplied, and the install replaces exactly that slot word and
+/// the leaf word read with it: whatever changed either in between (the
+/// reclaimer, a fork, another fault) makes the install fail and the fault
+/// start again, bounded by [`FAULT_TRIES`]. A page in transit is waited for.
+/// The same two steps are why the kernel's own access to a user page
+/// ([`vmm::translate_user`]) can rely on this: it does not return before the
+/// page is resident or the access is hopeless.
 pub fn resolve_fault(r: SpaceRef, va: usize) -> KResult<()> {
     let page = va & !(PAGE_SIZE - 1);
     for _ in 0..FAULT_TRIES {
@@ -1545,12 +1619,11 @@ const FAULT_TRIES: usize = 8;
 enum Step {
     /// Resolved, or nothing left to resolve here: the access retries.
     Done,
-    /// The slot or the region changed under the attempt: look again.
+    /// The slot or the mapping changed under the attempt: look again.
     Again,
 }
 
-/// The word in the slot of `page` under `root`; empty when its table is not
-/// there yet.
+/// The leaf word of `page` under `root`; empty when its table is not there yet.
 fn peek(root: usize, page: usize) -> u64 {
     match vmm::walk(root, page, false) {
         // SAFETY: `walk` answers an aligned entry of a live table page.
@@ -1574,64 +1647,87 @@ fn walk_installing(root: usize, page: usize, promised: bool) -> KResult<*mut u64
 
 fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let root = space.root();
-    let r = {
+    // The store counter first, then the slot: a store that ends between the
+    // two moves the counter, and the wait below does not sleep.
+    let seq = MARKER_SEQ.load(Ordering::Acquire);
+    let (m, word, missing) = {
         let sp = space.lock().filter(|sp| sp.recorded).ok_or(KernelError::NotMapped)?;
-        *sp.set.find(page).ok_or(KernelError::NotMapped)?
+        let m = *sp.set.find(page).ok_or(KernelError::NotMapped)?;
+        match m.anon_obj() {
+            Some(h) => {
+                // SAFETY: the mapping names a live object, and the lock is held.
+                let o = unsafe { anon_obj::get(h) };
+                let i = m.page_index(page);
+                (m, o.word(i), o.missing(i))
+            }
+            None => (m, slot::EMPTY, 0),
+        }
     };
-    // Regions are made below the shm window and above the null guard, but the
+    // Mappings are made below the shm window and above the null guard, but the
     // walk below allocates tables: never into a table the kernel shares.
     if vmm::write_would_enter_kernel_table(root, page) {
         return Err(KernelError::InvalidArg);
     }
-    if r.pager == PagerKind::File {
-        resolve_file_fault(space, page, &r)?;
-        return Ok(Step::Done);
-    }
-    // The store counter first, then the slot: a store that ends between the
-    // two moves the counter, and the wait below does not sleep.
-    let seq = MARKER_SEQ.load(Ordering::Acquire);
+    let h = match m.backing {
+        Backing::File { obj, shared } => {
+            resolve_file_fault(space, page, &m, obj, shared)?;
+            return Ok(Step::Done);
+        }
+        Backing::Anon { obj } => obj,
+    };
+    let idx = m.page_index(page);
     let seen = peek(root, page);
-    let stored = match zpool::classify(&ARCH, seen) {
-        Fault::Zero => None,
-        Fault::Present => return Ok(Step::Done),
-        Fault::Wait => {
+    // A word that is neither empty nor a leaf is not the pager's (a demand
+    // reservation): the demand path owns it.
+    if seen != ARCH.pte_empty() && !ARCH.pte_is_valid(seen) {
+        return Err(KernelError::AlreadyMapped);
+    }
+    let leaf = ARCH.pte_is_valid(seen).then(|| ARCH.pte_phys(seen));
+    let res = slot::resolve(word, leaf).ok_or(KernelError::InvalidArg)?;
+    let stored = match res {
+        Resolve::Present => return Ok(Step::Done),
+        Resolve::Wait => {
             MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
             return Ok(Step::Again);
         }
-        Fault::Restore(kind, gen) => Some((kind, gen)),
-        // A demand reservation: the demand path owns it.
-        Fault::Other => return Err(KernelError::AlreadyMapped),
+        Resolve::Restore(kind, gen) => Some((kind, gen)),
+        Resolve::Supply | Resolve::Install(_) => None,
     };
     let block = resv::block_of(page);
     let mut restored = None;
     // A page the pool holds is not a reservation's to zero.
-    let src = match if resv::ENABLED && stored.is_none() { run_frame(root, page, &r) } else { None } {
-        Some(s) => s,
-        None => {
-            let req = PageRequest { obj: r.obj, page: r.page_index(page), write: r.write, space: space.key(), va: page, stored };
-            // Anonymous memory: the file regions took their own path above.
+    let run = if resv::ENABLED && res == Resolve::Supply { run_frame(root, page, &m) } else { None };
+    let src = match (res, run) {
+        (Resolve::Install(f), _) => Source::Held(PhysAddr::new(f)),
+        (_, Some(s)) => s,
+        _ => {
+            let req = PageRequest { obj: h, page: idx, write: m.write, space: space.key(), va: page, stored };
             match AnonPager.supply(&req)? {
                 Supply::Frame(f) => Source::Plain(f),
                 Supply::Restored(f, gen, owner) => {
                     restored = Some((gen, owner));
                     Source::Plain(f)
                 }
-                // Another thread installed the page first, and (the entry
+                // Another thread restored the page first, and (the entry
                 // being gone) the slot says what it is now.
                 Supply::Raced => {
-                    return if peek(root, page) == seen {
-                        // The slot still names a page the pool no longer
-                        // holds: it is lost, and the task that touched it dies.
-                        Err(KernelError::InvalidArg)
-                    } else {
-                        Ok(Step::Again)
-                    };
+                    let same = space
+                        .lock()
+                        .is_some_and(|sp| anon_slot(&sp, page).is_some_and(|s| s.load(Ordering::Acquire) == word));
+                    // The slot still names a page the pool no longer holds:
+                    // it is lost, and the task that touched it dies.
+                    return if same { Err(KernelError::InvalidArg) } else { Ok(Step::Again) };
                 }
                 Supply::Pending => return Err(KernelError::NotMapped),
             }
         }
     };
-    let (Source::Plain(frame) | Source::Run { frame, .. }) = src;
+    let (Source::Plain(frame) | Source::Held(frame) | Source::Run { frame, .. }) = src;
+    // The slot's storage, if it has none yet: taken now, never under the lock.
+    let Some(mut spare) = Spare::take(root, missing) else {
+        src.give_back(root, block);
+        return Err(KernelError::OutOfMemory);
+    };
     let pte_ptr = match walk_installing(root, page, true) {
         Ok(p) => p,
         Err(e) => {
@@ -1642,10 +1738,10 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let perms = PagePerms {
         user: true,
         read: true,
-        write: r.write,
+        write: m.write,
         exec: false,
         accessed: true,
-        dirty: r.write,
+        dirty: m.write,
         ..PagePerms::USER_RW
     };
     let new = match ARCH.pte_make_leaf(frame.as_usize(), perms, 0) {
@@ -1656,37 +1752,48 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         }
     };
 
-    let same = space.lock().filter(|sp| {
-        sp.recorded && sp.set.find(page).is_some_and(|now| now.write == r.write && now.pager == r.pager && now.obj == r.obj)
-    });
-    let Some(mut t) = same else {
+    let installed = space.lock().filter(|sp| sp.recorded).is_some_and(|mut t| {
         // Unmapped or re-protected since the lookup: look again and let the
-        // new layout answer (a removed region then kills, as any hole does).
-        src.give_back(root, block);
-        return Ok(Step::Again);
-    };
-    // SAFETY: `pte_ptr` is an aligned entry of a live table page (the region
-    // still exists, so `munmap` has not swept it).
-    let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
-    // Compare-and-swap from the word the decision was made on, as `demand.rs`
-    // does: installs are serialised by the space's lock, but the entry is shared
-    // with walkers that do not take it (a fork, the reclaimer, `munmap`). A
-    // word that is not the one the fault read, a marker included, is not
-    // replaced: that is the whole point of the marker.
-    if slot.compare_exchange(seen, new, Ordering::AcqRel, Ordering::Acquire).is_err() {
-        drop(t);
+        // new layout answer (a removed mapping then kills, as any hole does).
+        if !t.set.find(page).is_some_and(|n| n.write == m.write && n.backing == m.backing && n.page_index(page) == idx) {
+            return false;
+        }
+        // SAFETY: the mapping names a live object, and the lock is held.
+        let Some(slot) = unsafe { anon_obj::get(h) }.slot_fill(idx, &mut spare) else { return false };
+        // SAFETY: `pte_ptr` is an aligned entry of a live table page (the
+        // mapping still exists, so `munmap` has not swept it).
+        let leaf_word = unsafe { &*(pte_ptr as *const AtomicU64) };
+        // Both words the decision was made on, or nothing: installs are
+        // serialised by the space's lock, but the leaf is shared with walkers
+        // that do not take it (a fork, `munmap`'s sweep).
+        if slot.load(Ordering::Acquire) != word
+            || leaf_word.compare_exchange(seen, new, Ordering::AcqRel, Ordering::Acquire).is_err()
+        {
+            return false;
+        }
+        slot.store(slot::frame(frame.as_usize()), Ordering::Release);
+        if !matches!(src, Source::Held(_)) {
+            t.committed += 1;
+        }
+        true
+    });
+    drop(spare);
+    if !installed {
         src.give_back(root, block);
         return Ok(Step::Again);
     }
-    t.committed += 1;
-    drop(t);
-    ARCH.flush_tlb_page(page);
+    // A leaf the slot did not back may sit in another hart's TLB.
+    if leaf.is_some() {
+        vmm::user_shootdown(root, page, PAGE_SIZE);
+    } else {
+        ARCH.flush_tlb_page(page);
+    }
     if let Some((gen, owner)) = restored {
         zpool_release(space.key(), page, gen);
         restore_hook(owner);
     }
     if let Source::Run { run, idx, .. } = src {
-        after_install(space, block, run, idx, r.write);
+        after_install(space, block, run, idx, m.write);
     }
     Ok(Step::Done)
 }
@@ -1696,108 +1803,115 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
 /// committed by the copy itself (`vmm::translate_user`).
 pub fn reserved_writable(r: SpaceRef, va: usize) -> Option<bool> {
     let sp = r.lock().filter(|sp| sp.recorded)?;
-    sp.set.find(va & !(PAGE_SIZE - 1)).map(|reg| reg.write)
+    sp.set.find(va & !(PAGE_SIZE - 1)).map(|m| m.write)
 }
 
-/// Does a region hold `va`?
+/// Does a mapping hold `va`?
 pub fn contains(r: SpaceRef, va: usize) -> bool {
     reserved_writable(r, va).is_some()
 }
 
 /// Most sub-ranges one removal can produce: one per record.
-const MAX_PIECES: usize = REGIONS_PER_SPACE;
+const MAX_PIECES: usize = MAPPINGS_PER_SPACE;
 
 /// Can any slot hold a page marker: the pool has pages, or a store is in
-/// flight? When not, the paths that clear markers skip their walk.
+/// flight? When not, a fork copies none.
 fn marks_possible() -> bool {
     zpool::ENABLED && (ZSTORED.load(Ordering::Acquire) != 0 || RECLAIMING.load(Ordering::Acquire) != 0)
 }
 
-/// Empty the slot of the page at `va` of `root` if it holds a page marker, and
-/// say which kind.
-fn clear_marker(root: usize, va: usize) -> Option<PageMarker> {
-    if vmm::write_would_enter_kernel_table(root, va) {
-        return None;
-    }
-    let p = vmm::walk(root, va, false).ok()?;
-    // SAFETY: `walk` answers an aligned entry of a live table page.
-    zpool::clear(&ARCH, unsafe { &*(p as *const core::sync::atomic::AtomicU64) }).map(|(kind, _)| kind)
-}
-
-/// Take `[s, e)` out of every region of the space `r`, for `munmap` and
+/// Take `[s, e)` out of every mapping of the space `r`, for `munmap` and
 /// `mprotect(PROT_NONE)`. Returns the reserved pages in the range that were
 /// never committed: the caller discharges those itself, and its sweep frees
 /// (and discharges) the committed ones. Call it **before** the sweep: once
 /// it returns, no fault can commit a page in the range.
 ///
-/// `Full` (nothing changed) when cutting a region in two needs a record the
+/// The slots of the anonymous pieces are emptied (their frames are the
+/// sweep's to free, their pool pages go here), and an object no mapping names
+/// any more goes with them.
+///
+/// `Full` (nothing changed) when cutting a mapping in two needs a record the
 /// space does not have.
-pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, RegionError> {
+pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError> {
     let root = r.root();
-    // `(start, end, pays, file object)` of each piece.
-    let mut pieces = [(0usize, 0usize, false, None::<u32>); MAX_PIECES];
+    // `(start, end, pays, backing, first object page)` of each piece.
+    let mut pieces = [(0usize, 0usize, false, Backing::Anon { obj: 0 }, 0usize); MAX_PIECES];
     let mut np = 0;
+    // The objects no mapping names after the cut.
+    let mut dead = [0usize; MAX_PIECES];
+    let mut nd = 0;
     {
         let Some(mut sp) = r.lock().filter(|sp| sp.recorded) else { return Ok(0) };
-        // A file region goes whole or not at all, or the page cache's count of
-        // regions would be wrong (`RegionSet::file_cut_ok`).
+        // A file mapping goes whole or not at all, or the page cache's count of
+        // mappings would be wrong (`MapSet::file_cut_ok`).
         if !sp.set.file_cut_ok(s, e) {
-            return Err(RegionError::Invalid);
+            return Err(MapError::Invalid);
         }
-        sp.set.for_each_overlap(s, e, |a, b, reg| {
-            let file = (reg.pager == PagerKind::File).then_some(reg.obj);
-            pieces[np] = (a, b, reg.charged(), file);
+        sp.set.for_each_overlap(s, e, |a, b, m| {
+            pieces[np] = (a, b, m.charged(), m.backing, m.page_index(a));
             np += 1;
         });
         if np == 0 {
             return Ok(0);
         }
         sp.set.remove_range(s, e)?;
+        for &(_, _, _, backing, _) in &pieces[..np] {
+            if let Backing::Anon { obj } = backing {
+                if sp.set.naming(obj) == 0 && !dead[..nd].contains(&obj) {
+                    dead[nd] = obj;
+                    nd += 1;
+                }
+            }
+        }
     }
     // The cut breaks every reservation it touches (no new frame comes out of
     // one for the removed part: the fault path needs the block whole).
     break_range(root, s, e);
-    // Are there markers to look for? Asked before the pool's pages go, which
-    // is what makes the answer zero: a marker outlives its entry only here.
-    let marked = marks_possible();
-    // The pages of the pool in the removed pieces are gone with them.
-    for &(a, b, _, _) in &pieces[..np] {
-        zpool_discard(r.key(), a, b);
-    }
-    // Outside the lock: nothing can commit in these pieces any more, and the
-    // walk is up to 16,384 entries (64 MiB) — not with interrupts off.
+    // Outside the lock: nothing can commit in these pieces any more, and a
+    // piece is up to 16,384 pages (64 MiB) — not with interrupts off.
     // `paid`: reserved pages of the pieces the task paid for; the committed
     // ones of them are the sweep's to discharge, the rest are returned.
     let mut paid = 0usize;
     let mut committed = 0usize;
     let mut paid_committed = 0usize;
-    for &(a, b, pays, _) in &pieces[..np] {
-        let mut va = a;
-        while va < b {
-            let mut here = matches!(vmm::user_page(root, va), vmm::UserPage::Leaf { .. });
-            // The marker goes (it would make the range look occupied to the
-            // next `mmap`). A store that fails meanwhile puts the leaf back
-            // under the clear: the page is then resident after all, and the
-            // sweep's to free.
-            let mut cleared = None;
-            if !here && marked {
-                cleared = clear_marker(root, va);
-                if cleared.is_none() {
-                    here = matches!(vmm::user_page(root, va), vmm::UserPage::Leaf { .. });
+    for &(a, b, pays, backing, off) in &pieces[..np] {
+        let n = (b - a) / PAGE_SIZE;
+        let (here, out) = match backing {
+            Backing::Anon { obj } => {
+                // The pages of the pool in the piece are gone with it.
+                zpool_discard(r.key(), a, b);
+                // SAFETY: the object is destroyed below, after this; no
+                // mapping names these pages any more, so nothing else reaches
+                // their slots (`anon_obj` module doc).
+                let o = unsafe { anon_obj::get(obj) };
+                let (mut here, mut out) = (0usize, 0usize);
+                o.for_each(off, off + n, |_, slot| match slot::decode(slot.swap(slot::EMPTY, Ordering::AcqRel)) {
+                    Some(slot::Slot::Frame(_)) => here += 1,
+                    // In transit: it was resident and has not given its charge
+                    // back, and its store, which fails now, never will; it is a
+                    // committed page of the space that the sweep does not see.
+                    Some(slot::Slot::Marker(PageMarker::InTransit, _)) => committed += 1,
+                    // In the pool (or swap): it gave its charge back when the
+                    // reclaimer took it out, so nothing to return for it.
+                    Some(slot::Slot::Marker(..)) => out += 1,
+                    _ => {}
+                });
+                (here, out)
+            }
+            Backing::File { .. } => {
+                let mut here = 0usize;
+                let mut va = a;
+                while va < b {
+                    here += matches!(vmm::user_page(root, va), vmm::UserPage::Leaf { .. }) as usize;
+                    va += PAGE_SIZE;
                 }
+                (here, 0)
             }
-            // A page the pool holds (or swap) gave its charge back when the
-            // reclaimer took it out: nothing to return for it. A page in
-            // transit has not given it back, and its store, which fails now,
-            // never will; but it was resident, so it is a committed page of
-            // the space that the sweep does not see.
-            let out = matches!(cleared, Some(PageMarker::Compressed | PageMarker::Swapped));
-            committed += (here || cleared == Some(PageMarker::InTransit)) as usize;
-            if pays {
-                paid += 1;
-                paid_committed += (here || out) as usize;
-            }
-            va += PAGE_SIZE;
+        };
+        committed += here;
+        if pays {
+            paid += n;
+            paid_committed += here + out;
         }
     }
     if let Some(mut sp) = r.lock().filter(|sp| sp.recorded) {
@@ -1806,24 +1920,28 @@ pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, RegionErr
             sp.close();
         }
     }
-    // The regions are gone: their users in the page cache with them.
-    for &(_, _, _, file) in &pieces[..np] {
-        if let Some(obj) = file {
+    for &obj in &dead[..nd] {
+        // SAFETY: no mapping names it (above).
+        unsafe { anon_obj::destroy(obj, root) };
+    }
+    // The file mappings are gone: their users in the page cache with them.
+    for &(_, _, _, backing, _) in &pieces[..np] {
+        if let Backing::File { obj, .. } = backing {
             memobj::memobj_paged_region_drop_ref(obj);
         }
     }
     Ok(paid - paid_committed)
 }
 
-/// Set the write permission of every region page in `[s, e)` (`mprotect` to
+/// Set the write permission of every mapped page in `[s, e)` (`mprotect` to
 /// `PROT_READ` or read-write). Pages already committed are the caller's to
 /// re-protect (`vmm::protect_user_range`). `Full`, nothing changed, when a
 /// cut needs records the space does not have.
-pub fn protect_range(r: SpaceRef, s: usize, e: usize, write: bool) -> Result<(), RegionError> {
+pub fn protect_range(r: SpaceRef, s: usize, e: usize, write: bool) -> Result<(), MapError> {
     let res = match r.lock().filter(|sp| sp.recorded) {
-        // A file region keeps the permission it was mapped with: a shared
+        // A file mapping keeps the permission it was mapped with: a shared
         // one's dirty record in the page cache is made from it.
-        Some(sp) if sp.set.has_file(s, e) => Err(RegionError::Invalid),
+        Some(sp) if sp.set.has_file(s, e) => Err(MapError::Invalid),
         Some(mut sp) => sp.set.protect_range(s, e, write),
         None => Ok(()),
     };
@@ -1835,26 +1953,71 @@ pub fn protect_range(r: SpaceRef, s: usize, e: usize, write: bool) -> Result<(),
     res
 }
 
+/// A copy-on-write break of the page at `va` under `root` swaps its leaf
+/// (`leaf`) from `old` to `new`, a leaf on another frame: the leaf and, for a
+/// page of an anonymous mapping of the running task's space, its slot move
+/// together, under the space's lock. `false`: the leaf is not `old` any more,
+/// nothing changed.
+pub(crate) fn cow_swap(root: usize, va: usize, leaf: &AtomicU64, old: u64, new: u64) -> bool {
+    let guard = crate::aspace::current_with_root(root).and_then(|r| r.lock());
+    let slot = guard.as_ref().and_then(|sp| anon_slot(sp, va));
+    if leaf.compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return false;
+    }
+    if let Some(s) = slot {
+        let _ = s.compare_exchange(
+            slot::frame(ARCH.pte_phys(old)),
+            slot::frame(ARCH.pte_phys(new)),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    true
+}
+
 /// Give a fork's child (`child`) the parent's (`parent`) reservation: the
-/// same regions, not the pages (the parent's committed region pages reach
-/// the child through the copy-on-write fork). Returns the reserved pages the
-/// child holds uncommitted, for the caller to charge to the child.
+/// same mappings, each anonymous object of the parent copied into one of the
+/// child's (the parent's committed pages reach the child through the
+/// copy-on-write fork, and its compressed ones as a share of the pool).
+/// Returns the reserved pages the child holds uncommitted, for the caller to
+/// charge to the child.
 ///
-/// **The child's committed count is the child's own** (wave 14, FORKSPAWN):
-/// its region pages present in ITS table, counted after the copy-on-write
-/// walk, not the parent's counter. A sibling thread of a multithreaded
-/// parent can commit a region page after the walk passed it and before this
-/// runs: the parent's counter then includes a page the child does not have,
-/// and the child was charged one page short and could commit it unpaid. The
-/// region set itself cannot change meanwhile (the caller holds the group's
+/// **The child's slots are the child's own leaves** (wave 14, FORKSPAWN): its
+/// object's `Frame` slots are the leaves present in ITS table after the
+/// copy-on-write walk, not the parent's slots, and so is its committed count.
+/// A sibling thread of a multithreaded parent can commit a page after the walk
+/// passed it and before this runs: the parent's slot then names a frame the
+/// child does not have (and must never map), and the parent's counter includes
+/// it, so the child was charged one page short and could commit it unpaid. The
+/// mapping set itself cannot change meanwhile (the caller holds the group's
 /// `mm_lock`), and nothing runs on the child's table yet, so the count is
 /// exact.
-pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, RegionError> {
+pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapError> {
+    let r = fork_clone_twinned(parent, child);
+    // The twins served this fork only.
+    let mut buf = [Mapping::anon(0, 0, false, 0, 0); FORK_BATCH];
+    let mut at = 0;
+    loop {
+        let n = mappings_from(parent, at, &mut buf);
+        if n == 0 {
+            break;
+        }
+        for h in buf[..n].iter().filter_map(Mapping::anon_obj) {
+            // SAFETY: the parent's mappings cannot change (the caller holds
+            // the group's `mm_lock`), so the object lives.
+            unsafe { anon_obj::get(h) }.set_twin(0);
+        }
+        at += n;
+    }
+    r
+}
+
+fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapError> {
     // The records go a few at a time, each batch copied out under one space's
     // lock and in under the other's: no path holds two spaces' locks, and the
     // stack holds a batch, not a set. The parent's set cannot change
-    // meanwhile (the caller holds the group's `mm_lock`).
-    let mut buf = [Region::anon(0, 0, false); FORK_BATCH];
+    // meanwhile (the caller holds the group's `mm_lock`), so its objects live.
+    let mut buf = [Mapping::anon(0, 0, false, 0, 0); FORK_BATCH];
     let mut reserved = 0;
     let mut copied_any = false;
     let mut at = 0;
@@ -1872,21 +2035,46 @@ pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, RegionErro
         if n == 0 {
             break;
         }
-        let mut c = child.lock().ok_or(RegionError::Full)?;
         // A shared file mapping is not inherited: its pages are the cache's
         // frames in the parent's shm window, which the fork walk leaves out of
         // the child, as it does every shared mapping.
-        for r in buf[..n].iter().filter(|r| r.charged()) {
-            if !copied_any {
-                c.open();
-                c.committed = 0;
-                copied_any = true;
+        for m in buf[..n].iter().filter(|m| m.charged()) {
+            let mut cm = *m;
+            let mut made = None;
+            if let Backing::Anon { obj } = m.backing {
+                // SAFETY: a mapping of the parent names it (above).
+                let o = unsafe { anon_obj::get(obj) };
+                if o.twin() == 0 {
+                    let Some(t) = anon_obj::create_twin(o) else {
+                        drop_records(child);
+                        return Err(MapError::Full);
+                    };
+                    o.set_twin(t);
+                    made = Some(t);
+                }
+                cm.backing = Backing::Anon { obj: o.twin() };
             }
-            // In order and never joining (the parent's set is folded): no
-            // record more than the parent's. Refused anyway, the child keeps
-            // none (no page-cache count was taken for them yet).
-            if let Err(e) = c.set.insert(*r) {
-                c.close();
+            let res = match child.lock() {
+                Some(mut c) => {
+                    if !copied_any {
+                        c.open();
+                        c.committed = 0;
+                        copied_any = true;
+                    }
+                    // In order and never joining (the parent's set is folded):
+                    // no record more than the parent's.
+                    c.set.insert(cm)
+                }
+                None => Err(MapError::Full),
+            };
+            if let Err(e) = res {
+                if let Some(t) = made {
+                    // SAFETY: just made, named by no mapping (`fork_clone`
+                    // clears the parent's twins).
+                    unsafe { anon_obj::destroy(t, child.root()) };
+                }
+                // No page-cache count was taken for the child's records yet.
+                drop_records(child);
                 return Err(e);
             }
         }
@@ -1895,22 +2083,42 @@ pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, RegionErro
     if !copied_any {
         return Ok(0);
     }
-    // Outside the lock, as `release_range`'s sweep: a walk of the child's
-    // own leaf tables over the regions. Every child region is a charged one.
+    // Outside the lock, as `release_range`'s sweep: a walk of the child's own
+    // leaf tables over its mappings. Every child mapping is a charged one.
     let mut committed = 0usize;
+    let mut short = false;
     let mut at = 0;
     loop {
-        let n = regions_from(child, at, &mut buf);
+        let n = mappings_from(child, at, &mut buf);
         if n == 0 {
             break;
         }
-        for r in &buf[..n] {
-            if !cfg!(feature = "fork-commit-race-canary") {
-                committed += vmm::user_leaves_in(child.root(), r.start, r.end);
-            }
-            // The private file regions the child now holds, for the page cache's count.
-            if r.pager == PagerKind::File {
-                memobj::memobj_paged_region_add_ref(r.obj);
+        for m in &buf[..n] {
+            let count = !cfg!(feature = "fork-commit-race-canary");
+            match m.backing {
+                Backing::Anon { obj } => {
+                    // SAFETY: the child's mapping names it; nothing else
+                    // writes the slots of a child that has not run, so they
+                    // are filled without its lock.
+                    let o = unsafe { anon_obj::get(obj) };
+                    vmm::for_each_leaf_in(child.root(), m.start, m.end, |va, frame| {
+                        let i = m.page_index(va);
+                        let slot = match o.slot(i) {
+                            Some(s) => Some(s),
+                            None => Spare::take(child.root(), o.missing(i)).and_then(|mut sp| o.slot_fill(i, &mut sp)),
+                        };
+                        match slot {
+                            Some(s) => s.store(slot::frame(frame), Ordering::Release),
+                            None => short = true,
+                        }
+                        committed += count as usize;
+                    });
+                }
+                Backing::File { obj, .. } => {
+                    vmm::for_each_leaf_in(child.root(), m.start, m.end, |_, _| committed += count as usize);
+                    // The private file mappings the child now holds, for the page cache's count.
+                    memobj::memobj_paged_region_add_ref(obj);
+                }
             }
         }
         at += n;
@@ -1921,27 +2129,25 @@ pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, RegionErro
     // The pages the parent has compressed are the child's too: a share of the
     // pool's entries, and a copy of the parent's marker for each.
     let marked = marks_possible();
-    if zpool_dup(parent.key(), child.key()).is_err() {
-        // The fork is refused: the child's copy of the regions goes too.
+    if short || zpool_dup(parent.key(), child.key()).is_err() {
+        // The fork is refused: the child's copy of the mappings goes too.
         forget(child);
-        return Err(RegionError::Full);
+        return Err(MapError::Full);
     }
     let mut copied = 0;
     let mut at = 0;
     while marked {
-        let n = regions_from(child, at, &mut buf);
+        let n = mappings_from(parent, at, &mut buf);
         if n == 0 {
             break;
         }
-        let mut spans = [(0usize, 0usize); FORK_BATCH];
-        for (s, r) in spans.iter_mut().zip(&buf[..n]) {
-            *s = (r.start, r.end);
+        match copy_markers(child, &buf[..n]) {
+            Some(k) => copied += k,
+            None => {
+                forget(child);
+                return Err(MapError::Full);
+            }
         }
-        let Ok(k) = copy_markers(parent, child, &spans[..n]) else {
-            forget(child);
-            return Err(RegionError::Full);
-        };
-        copied += k;
         at += n;
     }
     if let Some(mut c) = child.lock().filter(|sp| sp.recorded) {
@@ -1955,9 +2161,9 @@ pub fn fork_clone(parent: SpaceRef, child: SpaceRef) -> Result<usize, RegionErro
 /// Records [`fork_clone`] copies at a time.
 const FORK_BATCH: usize = 8;
 
-/// Copy the regions of `r` from index `at` on into `out`; how many (0 when
+/// Copy the mappings of `r` from index `at` on into `out`; how many (0 when
 /// there are no more, or no records).
-fn regions_from(r: SpaceRef, at: usize, out: &mut [Region]) -> usize {
+fn mappings_from(r: SpaceRef, at: usize, out: &mut [Mapping]) -> usize {
     let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return 0 };
     let rs = &sp.set.as_slice()[at.min(sp.set.len())..];
     let n = rs.len().min(out.len());
@@ -1965,53 +2171,80 @@ fn regions_from(r: SpaceRef, at: usize, out: &mut [Region]) -> usize {
     n
 }
 
-/// Give the child's slots the parent's page markers over `spans`, word for
-/// word (the pool's shared entries have the parent's generations, so the same
-/// word names the child's copy). How many. Table allocation can fail: the
-/// fork is then refused. No store of the parent is in flight (`fork_begin`
-/// waited for them and the pages the walk left valid are shared with the
-/// child, so the reclaimer takes none), so no marker is `InTransit`.
-fn copy_markers(parent: SpaceRef, child: SpaceRef, spans: &[(usize, usize)]) -> KResult<usize> {
+/// Give the child's slots the parent's page markers over the parent's mappings
+/// `maps`, word for word, into each object's twin (the pool's shared entries
+/// have the parent's generations, so the same word names the child's copy).
+/// How many; `None` when slot storage could not be had (the fork is then
+/// refused). No store of the parent is in flight (`fork_begin` waited for them
+/// and the pages the walk left valid are shared with the child, so the
+/// reclaimer takes none), so no marker is `InTransit`.
+fn copy_markers(child: SpaceRef, maps: &[Mapping]) -> Option<usize> {
     let mut n = 0;
-    for &(a, b) in spans {
-        let mut va = a;
-        while va < b {
-            if let Ok(p) = vmm::walk(parent.root(), va, false) {
-                // SAFETY: `walk` answers an aligned entry of a live table page.
-                let word = unsafe { core::ptr::read_volatile(p) };
-                if let Some((PageMarker::Compressed | PageMarker::Swapped, _)) = ARCH.pte_marker(word) {
-                    let c = vmm::walk(child.root(), va, true)?;
-                    // SAFETY: the child's own entry, which only this fork writes.
-                    let slot = unsafe { &*(c as *const core::sync::atomic::AtomicU64) };
-                    // Over an empty slot only. The walk left the page out
-                    // (it was a marker), so an empty slot is the usual case;
-                    // a leaf here is a page the parent got back and lost again
-                    // since the walk, which the child holds from the walk and
-                    // must keep: its copy in the pool is dropped, not used.
-                    if slot.compare_exchange(0, word, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                        n += 1;
-                    } else {
-                        zpool_discard(child.key(), va, va + PAGE_SIZE);
-                    }
-                }
+    let mut short = false;
+    for m in maps.iter().filter(|m| m.charged()) {
+        let Some(h) = m.anon_obj() else { continue };
+        // SAFETY: the parent's mappings cannot change (the caller holds the
+        // group's `mm_lock`); the twin is the child's, which has not run.
+        let (po, co) = unsafe { (anon_obj::get(h), anon_obj::get(anon_obj::get(h).twin())) };
+        po.for_each(m.off, m.off + m.pages(), |i, ps| {
+            let word = ps.load(Ordering::Acquire);
+            if !matches!(slot::decode(word), Some(slot::Slot::Marker(PageMarker::Compressed | PageMarker::Swapped, _))) {
+                return;
             }
-            va += PAGE_SIZE;
-        }
+            let slot = match co.slot(i) {
+                Some(s) => Some(s),
+                None => Spare::take(child.root(), co.missing(i)).and_then(|mut sp| co.slot_fill(i, &mut sp)),
+            };
+            let Some(cs) = slot else {
+                short = true;
+                return;
+            };
+            // Over an empty slot only. The walk left the page out (it was a
+            // marker), so an empty slot is the usual case; a frame here is a
+            // page the parent got back and lost again since the walk, which
+            // the child holds from the walk and must keep: its copy in the
+            // pool is dropped, not used.
+            if cs.compare_exchange(slot::EMPTY, word, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                n += 1;
+            } else {
+                let va = m.start + (i - m.off) * PAGE_SIZE;
+                zpool_discard(child.key(), va, va + PAGE_SIZE);
+            }
+        });
     }
-    Ok(n)
+    (!short).then_some(n)
 }
 
-/// Forget every region of the space `r` (its page table is being destroyed,
-/// or a fork that copied the regions in is refused).
+/// Forget every mapping of the space `r` and the anonymous objects they name
+/// (its page table is being destroyed, or a fork that copied the mappings in
+/// is refused).
 pub fn forget(r: SpaceRef) {
-    let mut files = [0u32; REGIONS_PER_SPACE];
+    close_records(r, true);
+}
+
+/// [`forget`] of a fork's child whose file mappings took no page-cache count yet.
+fn drop_records(r: SpaceRef) {
+    close_records(r, false);
+}
+
+fn close_records(r: SpaceRef, files_counted: bool) {
+    let mut files = [0u32; MAPPINGS_PER_SPACE];
     let mut nf = 0;
+    let mut objs = [0usize; MAPPINGS_PER_SPACE];
+    let mut no = 0;
     if let Some(mut sp) = r.lock() {
         if sp.recorded {
-            for reg in sp.set.as_slice() {
-                if reg.pager == PagerKind::File && nf < files.len() {
-                    files[nf] = reg.obj;
-                    nf += 1;
+            for m in sp.set.as_slice() {
+                match m.backing {
+                    Backing::File { obj, .. } => {
+                        files[nf] = obj;
+                        nf += 1;
+                    }
+                    Backing::Anon { obj } if !objs[..no].contains(&obj) => {
+                        objs[no] = obj;
+                        no += 1;
+                    }
+                    Backing::Anon { .. } => {}
                 }
             }
         }
@@ -2019,15 +2252,19 @@ pub fn forget(r: SpaceRef) {
     }
     break_root(r.root());
     zpool_forget(r.key());
-    // The regions are gone: their users in the page cache with them.
-    if nf != 0 {
+    for &obj in &objs[..no] {
+        // SAFETY: the set that named it is closed.
+        unsafe { anon_obj::destroy(obj, r.root()) };
+    }
+    // The mappings are gone: their users in the page cache with them.
+    if files_counted {
         for &obj in &files[..nf] {
             memobj::memobj_paged_region_drop_ref(obj);
         }
     }
 }
 
-/// `(reserved, committed)` region pages of the space `r`, for tests and reports.
+/// `(reserved, committed)` mapped pages of the space `r`, for tests and reports.
 pub fn space_pages(r: SpaceRef) -> (usize, usize) {
     r.lock().filter(|sp| sp.recorded).map_or((0, 0), |sp| (sp.set.reserved_pages(), sp.committed))
 }

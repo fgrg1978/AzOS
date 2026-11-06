@@ -360,7 +360,7 @@ pub fn set_fault_hook(f: fn()) {
 }
 
 #[inline]
-fn table_charge(root: usize, what: TableCharge) -> bool {
+pub(crate) fn table_charge(root: usize, what: TableCharge) -> bool {
     match TABLE_HOOK.get() {
         Some(f) => f(root, what),
         None => true,
@@ -900,13 +900,12 @@ fn next_entry<const ANY: bool>(table: usize, from: usize, n: usize) -> usize {
     n
 }
 
-/// Valid 4 KiB user leaves in `[s, e)` of the table at `root` (wave 14): one
-/// walk per leaf table, then its entries read in place. For a fork's child,
-/// whose region pages are exactly the leaves its copy-on-write walk gave it
-/// (`pager::fork_clone`).
-pub fn user_leaves_in(root: usize, s: usize, e: usize) -> usize {
+/// Call `f(va, frame)` for each valid 4 KiB leaf in `[s, e)` of the table at
+/// `root`: one walk per leaf table, then its entries read in place. For a
+/// fork's child, whose mapped pages are exactly the leaves its copy-on-write
+/// walk gave it (`pager::fork_clone`).
+pub fn for_each_leaf_in(root: usize, s: usize, e: usize, mut f: impl FnMut(usize, usize)) {
     let span = PAGE_SIZE * entries_per_table();
-    let mut n = 0usize;
     let mut va = s & !(PAGE_SIZE - 1);
     while va < e {
         let table_end = (va | (span - 1)).saturating_add(1).min(e);
@@ -916,14 +915,13 @@ pub fn user_leaves_in(root: usize, s: usize, e: usize) -> usize {
                 // `table_end`, the table's own end.
                 let w = unsafe { core::ptr::read_volatile(p.add(k)) };
                 if ARCH.pte_is_valid(w) && ARCH.pte_is_leaf(w, 0) {
-                    n += 1;
+                    f(va + k * PAGE_SIZE, ARCH.pte_phys(w));
                 }
             }
         }
         if table_end == va { break; }
         va = table_end;
     }
-    n
 }
 
 /// Map a virtual address to a physical address with the given permissions.

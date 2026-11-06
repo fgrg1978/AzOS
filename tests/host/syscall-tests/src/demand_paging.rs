@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // Wave 14 (DEMANDPAGE): host rows for demand-paged `mmap`, against the real
-// `handlers.rs`, `vmm.rs`, `pager.rs` and `region.rs` on the shim arena.
+// `handlers.rs`, `vmm.rs`, `pager.rs` and `mapping.rs` on the shim arena.
 //
 // What each row pins, and its canary:
 //
@@ -297,10 +297,10 @@ fn a_break_range_that_is_occupied_goes_in_the_mmap_area() {
 fn consecutive_maps_fold_into_one_record() {
     let _g = serial();
     let pt = space();
-    for _ in 0..(2 * azos_mm::pager::REGIONS_PER_SPACE) {
+    for _ in 0..(2 * azos_mm::pager::MAPPINGS_PER_SPACE) {
         map(1, RW, 0);
     }
     // Twice as many maps as records, all reserved: they folded.
-    let n = 2 * azos_mm::pager::REGIONS_PER_SPACE;
+    let n = 2 * azos_mm::pager::MAPPINGS_PER_SPACE;
     assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (n, 0));
 }

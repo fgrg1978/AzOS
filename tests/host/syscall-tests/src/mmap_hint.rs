@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // A Linux task's mmap placement (`handlers::mmap_place`): the hint, exact
 // no-replace placement, the area apart from the break. Against the real
-// `handlers.rs`, `vmm.rs`, `pager.rs` and `region.rs` on the shim arena.
+// `handlers.rs`, `vmm.rs`, `pager.rs` and `mapping.rs` on the shim arena.
 //
 // What each row pins, and its canary (a feature of this crate mirroring
 // azos_syscall's):

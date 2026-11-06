@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // Front mmap-file (storage L11, part B): `NODE_MMAP`, the first user of the
 // page cache, against the REAL `file_map.rs`, `handlers.rs` (munmap, mprotect,
-// fsync), `pager.rs`, `region.rs`, `vmm.rs` and `memobj.rs` on the shim arena.
+// fsync), `pager.rs`, `mapping.rs`, `vmm.rs` and `memobj.rs` on the shim arena.
 // The file is a byte vector behind the real `PageBacking` seam, which counts
 // what the cache asked of it.
 //

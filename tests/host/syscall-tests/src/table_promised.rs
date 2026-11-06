@@ -59,9 +59,11 @@ fn a_touch_at_the_limit_gets_its_tables() {
     assert!(first.is_ok(), "the first touch at the limit was refused: {first:?}");
     assert!(second.is_ok(), "the touch in the next block was refused: {second:?}");
 
+    // The second page is past the object's inline slots: one chunk of slot
+    // words (`anon_obj.rs`), kernel memory of the mapping charged as a table is.
     let built = azos_mm::shim_pages_in_use() - frames - 2;
-    assert_eq!(built, 3, "three tables for two touches");
-    assert_eq!(azos_sched::shim_user_pages() as usize, REGION_PAGES + built, "each table is charged");
+    assert_eq!(built, 3 + 1, "three tables and a slot chunk for two touches");
+    assert_eq!(azos_sched::shim_user_pages() as usize, REGION_PAGES + built, "each table and the chunk are charged");
     azos_sched::shim_set_page_limit(0);
 }
 

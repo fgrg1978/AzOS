@@ -793,24 +793,45 @@ config MEM_KERNEL_RESERVE_KB
       slot on top (kernel/src/boot/topology.rs): 256 KiB at edge's 64 tasks.
 
 config MM_REGIONS_PER_SPACE
-    int "Demand-paged mmap region records per address space"
+    int "Mapping records per address space"
     range 2 256
     default 8
     help
-      Wave 14 (DEMANDPAGE): an anonymous mmap reserves its range as a
-      region record (crates/core/mm/src/region.rs) and commits each page
-      on first touch.  Each user address space has this many records, in
-      its address space object (crates/core/mm/src/aspace.rs).
-      Consecutive mmaps with the same permissions fold into one record,
-      so a task that only grows its mappings uses one; mprotect and a
-      munmap in the middle of a region cut records.  A mapping that finds
-      no free record is committed eagerly instead (the pre-wave-14
-      behaviour); a munmap or mprotect whose cut needs a record answers
-      ENOMEM, as Linux does past its map count.
+      Each user address space keeps this many mapping records
+      (crates/core/mm/src/mapping.rs), in its address space object
+      (crates/core/mm/src/aspace.rs): a private anonymous mmap is a
+      mapping of an anonymous object of the space's own, a file mmap a
+      mapping of the file's page cache, and each page is installed on
+      first touch.  A mapping that continues the previous one with the
+      same permissions grows that one's object instead, so a task that
+      only grows its mappings uses one record; mprotect and a munmap in
+      the middle of a mapping cut records.  A mapping that finds no free
+      record is committed eagerly instead; a munmap or mprotect whose cut
+      needs a record answers ENOMEM, as Linux does past its map count.
 
-      Cost: about (64 + 32 x this) B per live address space, both ISAs
-      (320 B at 8), taken from the kernel heap's ceiling when a space is
+      Cost: about (64 + 48 x this) B per live address space, both ISAs
+      (448 B at 8), taken from the kernel heap's ceiling when a space is
       made; the object cache keeps the pages it took.
+
+config MM_SLOTS_INLINE
+    int "Page slots held inside an anonymous object"
+    range 0 128
+    default 16
+    help
+      An anonymous object (crates/core/mm/src/anon_obj.rs, the memory of
+      a private mmap) keeps one 8-byte slot word per page: the page's
+      state (empty, resident in a frame, compressed, swapped).  The first
+      this many pages have their words inside the object; the rest are
+      kept in 4 KiB pages of 512 words (the first four through the object,
+      the others through one directory page), taken on the first touch of
+      a page they hold and charged to the task as its page tables are.  A
+      small mapping then costs no page beyond the object, and a large one
+      one or two loads more per fault.
+
+      Cost: 8 B per slot in every anonymous object (64 + 8 x this B,
+      192 B at 16), from the kernel heap's ceiling; past it, 4 KiB per
+      512 touched pages, and 4 KiB for the directory of an object past
+      2,048 pages of its start.
 
 config MM_ZPOOL_ENTRIES
     int "Compressed-pool index entries (pages it can hold)"

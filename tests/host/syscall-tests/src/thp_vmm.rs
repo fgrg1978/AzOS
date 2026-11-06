@@ -62,6 +62,10 @@ const REGION_PAGES: usize = 3 * MEGA / PAGE_SIZE;
 const BLOCK_A: usize = 0x20_0000;
 const BLOCK_B: usize = 0x40_0000;
 const PAGES: usize = MEGA / PAGE_SIZE;
+/// The chunk of slot words the mapping's object takes on the first touch of a
+/// page past its inline slots (`anon_obj.rs`): kernel memory of the mapping,
+/// charged as a table is.
+const SLOT_CHUNK: usize = 1;
 
 fn on() -> bool {
     azos_mm::resv::ENABLED
@@ -222,7 +226,7 @@ fn munmap_of_a_part_of_a_reservation_returns_its_unused_frames() {
     // The cut broke the reservation: of the run only the two pages still
     // mapped stay out, and the one unmapped came back with the sweep.
     let tables = azos_mm::vmm::table_frames(pt) - base_tables;
-    assert_eq!(used() - base_used, 2 + tables, "two mapped pages and the tables; everything else is back");
+    assert_eq!(used() - base_used, 2 + tables + SLOT_CHUNK, "two mapped pages, the tables and the slots; everything else is back");
     // Pages faulted after the cut are plain: not promoted ever, any frame.
     touch(pt, BLOCK_A + 100 * PAGE_SIZE);
     assert_eq!(level(pt, BLOCK_A), Some(0));
@@ -238,7 +242,7 @@ fn mprotect_of_a_part_of_a_reservation_returns_its_unused_frames() {
     touch(pt, BLOCK_A);
     assert_eq!(sys_mprotect((BLOCK_A + 10 * PAGE_SIZE) as u64, (2 * PAGE_SIZE) as u64, RO), 0);
     let tables = azos_mm::vmm::table_frames(pt) - base_tables;
-    assert_eq!(used() - base_used, 1 + tables, "the one page and the tables; the rest of the run is back");
+    assert_eq!(used() - base_used, 1 + tables + SLOT_CHUNK, "the one page, the tables and the slots; the rest of the run is back");
 }
 
 #[test]

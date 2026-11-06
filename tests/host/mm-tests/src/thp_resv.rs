@@ -18,7 +18,7 @@
 //!   and `the_pmm_accounting_closes_after_a_break` go red.
 
 use super::pmm;
-use super::region::{Region, RegionSet};
+use super::mapping::{MapSet, Mapping};
 use super::resv::{block_of, covers, index_of, Claim, Filled, ResvTable, BLOCK_PAGES, BLOCK_SIZE};
 use azos_arch::mmu::PAGE_SIZE;
 
@@ -222,8 +222,8 @@ fn a_cut_breaks_every_block_it_touches_and_only_those() {
 fn a_permission_change_splits_the_region_and_breaks_the_reservation() {
     // The pager's rule, with the real region records: a block is reservable
     // only inside one record, and mprotect of a part cuts the record.
-    let mut set: RegionSet<8> = RegionSet::new();
-    set.insert(Region::anon(VA, VA + 4 * BLOCK_SIZE, true)).unwrap();
+    let mut set: MapSet<8> = MapSet::new();
+    set.insert(Mapping::anon(VA, VA + 4 * BLOCK_SIZE, true, 0x1000, 0)).unwrap();
     let mut t = table();
     for k in 0..4 {
         let b = VA + k * BLOCK_SIZE;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host rows for the file regions of `crates/core/mm/src/region.rs` (front
+//! Host rows for the file mappings of `crates/core/mm/src/mapping.rs` (front
 //! mmap-file, storage L11 part B): the records a file `mmap` leaves in an
 //! address space, as plain data. The fault path that resolves them
 //! (`pager.rs`) and the page cache they name (`memobj.rs`) are exercised
@@ -35,21 +35,22 @@
 
 #![cfg(test)]
 
-use super::region::{Region, RegionError, RegionSet};
+use super::mapping::{Backing, MapError, MapSet, Mapping};
 
 const P: usize = 4096;
 
-fn file(a: usize, b: usize, write: bool, shared: bool, obj: u32, off: usize) -> Region {
-    Region::file(a * P, b * P, write, shared, obj, off)
+fn file(a: usize, b: usize, write: bool, shared: bool, obj: u32, off: usize) -> Mapping {
+    Mapping::file(a * P, b * P, write, shared, obj, off)
 }
 
-fn anon(a: usize, b: usize) -> Region {
-    Region::anon(a * P, b * P, true)
+/// Pages `a..b` of one anonymous object, its page `a` at `a`.
+fn anon(a: usize, b: usize) -> Mapping {
+    Mapping::anon(a * P, b * P, true, 0x1000, a)
 }
 
 #[test]
 fn file_regions_never_fold() {
-    let mut s = RegionSet::<4>::new();
+    let mut s = MapSet::<4>::new();
     // The next pages of the same object, same permission, adjacent: two
     // mappings, so two records.
     s.insert(file(10, 12, true, true, 7, 0)).unwrap();
@@ -59,9 +60,9 @@ fn file_regions_never_fold() {
     s.insert(file(20, 22, false, false, 7, 0)).unwrap();
     s.insert(file(22, 24, false, false, 7, 2)).unwrap();
     assert_eq!(s.len(), 4);
-    assert_eq!(s.insert(file(30, 31, true, true, 7, 0)), Err(RegionError::Full));
+    assert_eq!(s.insert(file(30, 31, true, true, 7, 0)), Err(MapError::Full));
     // Anonymous regions still do.
-    let mut a = RegionSet::<4>::new();
+    let mut a = MapSet::<4>::new();
     a.insert(anon(10, 12)).unwrap();
     a.insert(anon(12, 14)).unwrap();
     assert_eq!(a.len(), 1);
@@ -72,7 +73,7 @@ fn file_regions_never_fold() {
 
 #[test]
 fn a_cut_takes_file_regions_whole_or_not_at_all() {
-    let mut s = RegionSet::<8>::new();
+    let mut s = MapSet::<8>::new();
     s.insert(anon(0, 4)).unwrap();
     s.insert(file(10, 14, true, true, 7, 0)).unwrap();
     s.insert(file(20, 24, true, false, 8, 3)).unwrap();
@@ -92,18 +93,18 @@ fn a_cut_takes_file_regions_whole_or_not_at_all() {
 
 #[test]
 fn a_shared_file_region_is_not_charged() {
-    let mut s = RegionSet::<8>::new();
+    let mut s = MapSet::<8>::new();
     s.insert(anon(0, 4)).unwrap(); // 4 pages, charged
     s.insert(file(10, 18, true, true, 7, 0)).unwrap(); // 8, the cache's
     s.insert(file(20, 23, true, false, 8, 0)).unwrap(); // 3 private copies, charged
     assert_eq!(s.reserved_pages(), 15);
     assert_eq!(s.charged_pages(), 7);
-    assert!(s.as_slice().iter().map(Region::charged).eq([true, false, true]));
+    assert!(s.as_slice().iter().map(Mapping::charged).eq([true, false, true]));
 }
 
 #[test]
 fn has_file_looks_only_at_the_range() {
-    let mut s = RegionSet::<8>::new();
+    let mut s = MapSet::<8>::new();
     s.insert(anon(0, 4)).unwrap();
     s.insert(file(10, 14, true, true, 7, 0)).unwrap();
     let has = |a: usize, b: usize| s.has_file(a * P, b * P);
@@ -117,7 +118,7 @@ fn has_file_looks_only_at_the_range() {
 
 #[test]
 fn a_clip_keeps_the_object_page() {
-    let mut s = RegionSet::<8>::new();
+    let mut s = MapSet::<8>::new();
     s.insert(file(10, 18, true, true, 7, 5)).unwrap();
     let r = s.find(10 * P).unwrap();
     assert_eq!(r.page_index(10 * P), 5);
@@ -126,5 +127,5 @@ fn a_clip_keeps_the_object_page() {
     // set can do) moves the object page with it.
     s.remove_range(10 * P, 13 * P).unwrap();
     let r = s.find(13 * P).unwrap();
-    assert_eq!((r.start, r.off, r.obj, r.shared), (13 * P, 8, 7, true));
+    assert_eq!((r.start, r.off, r.backing), (13 * P, 8, Backing::File { obj: 7, shared: true }));
 }

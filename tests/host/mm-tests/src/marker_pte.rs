@@ -1,27 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host rows for the page markers the reclaimer leaves in a page's slot
-//! (Kconfig `MM_RECLAIM_COMPRESS`): the protocol of `zpool.rs`
-//! ([`take_out`], [`publish`], [`put_back`], [`clear`], [`classify`]) over the
-//! real pool and codec, with the RISC-V encoding of the shim's real `mmu.rs` for
-//! the words, the generation checks of `Pool::fetch_named`, the stage order of
+//! Host rows for the page markers the reclaimer leaves in an anonymous page's
+//! slot (Kconfig `MM_RECLAIM_COMPRESS`): the protocol of `zpool.rs`
+//! ([`take_out`], [`publish`], [`put_back`], [`clear`]) over the real slot
+//! words of `slot.rs` ([`SlotWords`]), the fault's decision over the slot
+//! ([`resolve`]: the slot decides, the leaf is a cache of it), the real pool
+//! and codec, the generation checks of `Pool::fetch_named`, the stage order of
 //! `reclaim_pass`, and the Domain watermarks `PageBudget::set_limit_marked`
 //! derives from a row's limit.
 //!
-//! **What is real and what is a model.** The protocol functions, the pool, the
-//! codec, the pass and the budget are the shipping code. The fault and the
-//! reclaimer below are the order `pager.rs` runs them in (`resolve_fault`,
-//! `AnonReclaim`), written out over a slot that is an `AtomicU64` and a
-//! "frame" that is a `Vec`: `pager.rs` itself needs the page allocator, the
-//! scheduler's wait queue and a live MMU, and is exercised by the boot gate
-//! (not run in this front: no QEMU).
+//! **What is real and what is a model.** The protocol functions, the slot
+//! words, the decision, the pool, the codec, the pass and the budget are the
+//! shipping code. The fault and the reclaimer below are the order `pager.rs`
+//! runs them in (`fault_once`, `AnonReclaim::unmap`), written out over a page
+//! that is a slot word and a leaf word (`AtomicU64`s, the leaf in the RISC-V
+//! encoding of the shim's real `mmu.rs`) and frames that are `Vec`s:
+//! `pager.rs` itself needs the page allocator, the scheduler's wait queue and
+//! a live MMU, and runs in `tests/host/syscall-tests` (`pte_truth.rs`) and
+//! the boot gate.
 //!
-//! Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
-//! * `classify` answering `Zero` for an `InTransit` marker:
+//! Canaries (by hand; discriminates / does not / did not compile):
+//! * `resolve` answering `Supply` for an `InTransit` slot:
 //!   `a_fault_racing_a_store_waits_and_restores_the_page` red (it zero-fills,
 //!   the stored copy is orphaned).
-//! * `take_out` not checking `is_victim_leaf` (a COW leaf, a marker):
-//!   `only_a_plain_user_leaf_is_taken_out` red.
+//! * `take_out` taking a slot that is not a `Frame` (a marker):
+//!   `only_a_resident_slot_is_taken_out` red.
 //! * `publish` / `put_back` not comparing the ticket (swapping from whatever
 //!   marker is there): `a_store_ends_only_its_own_marker` red.
 //! * `Pool::fetch_named` not comparing the generation:
@@ -29,6 +32,9 @@
 //! * `Pool::dup_obj` giving the child a new generation:
 //!   `a_forks_child_restores_through_the_parents_marker_word` red.
 //! * `clear` leaving an `InTransit` marker: `munmap_clears_every_kind_of_marker` red.
+//! * Feature `mm-pte-truth-canary` (the leaf believed over the slot):
+//!   `a_stale_leaf_over_an_empty_slot_is_not_believed` and
+//!   `a_fault_on_a_compressed_marker_restores_the_page` red.
 //! * `reclaim_pass` swapping before compressing, or without a `full` round:
 //!   `the_pass_runs_purge_then_cache_then_compression_then_swap_only_when_full` red.
 //! * `reclaim_pass` not running `purge` first (or at all): the same row red (2026-10-20).
@@ -37,19 +43,22 @@
 //! * `set_limit_marked` taking the percentages the wrong way round:
 //!   `a_rows_limit_sets_the_domains_watermarks` red.
 //!
-//! The one arch seam not run here is the x86_64 and aarch64 word encoding: it
-//! has its rows in `tests/host/arch-tests/src/marker_pte.rs`.
+//! The arch seam the reclaimer reads on the leaf (`Mmu::is_victim_leaf`
+//! through the blanket `PageWords`) is mirrored by `Rv` below; the x86_64 and
+//! aarch64 word encodings have their rows in `tests/host/arch-tests/src/marker_pte.rs`.
 
 use super::budget::PageBudget;
+use super::slot::{self, resolve, Resolve, SlotWords};
 use super::zpool::{
-    classify, clear, fill_page, publish, put_back, reclaim_pass, take_out, Backing, Codec, Fault, Fetched,
-    Lookup, Packed, PageWords, Pool, Refusal, Round, Stages,
+    clear, fill_page, publish, put_back, reclaim_pass, take_out, Backing, Codec, Fetched, Lookup, Packed, PageWords,
+    Pool, Refusal, Round, Stages,
 };
-use azos_arch::mmu::{self as rv, Pte, PteFlags};
+use azos_arch::mmu::{Pte, PteFlags};
 use azos_arch_api::{PageMarker, PAGE_SIZE};
 use std::alloc::{alloc, dealloc, Layout};
+use std::collections::HashMap;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 struct Heap;
@@ -72,6 +81,8 @@ const KEY: [u8; 16] = *b"marker test key.";
 const OWN: usize = 1;
 const OBJ: u64 = 0x0100_0007;
 const PG: u64 = 3;
+/// The frame of the page's first install.
+const FRAME: usize = 0x8020_0000;
 
 fn codec() -> Codec {
     Codec::new(&KEY, 75)
@@ -90,41 +101,81 @@ fn page(seed: u32) -> Vec<u8> {
     p
 }
 
-/// The words of the RISC-V encoding the shim's real `mmu.rs` builds. The
-/// kernel's blanket impl over `Mmu` is the same four functions on the real
-/// trait.
+/// The reclaimer's test on the leaf, as the kernel's blanket `PageWords` over
+/// `Mmu` makes it, on the RISC-V words of the shim's real `mmu.rs`.
 struct Rv;
 
-impl PageWords for Rv {
-    fn is_valid(&self, w: u64) -> bool {
-        Pte(w).is_valid()
-    }
+impl Rv {
     fn is_victim_leaf(&self, w: u64) -> bool {
         let p = Pte(w);
         p.is_valid() && p.is_leaf() && p.flags().contains(PteFlags::USER) && !p.flags().contains(PteFlags::COW)
     }
-    fn make_marker(&self, kind: PageMarker, payload: u32) -> u64 {
-        rv::make_marker(kind.code(), payload)
+}
+
+/// A resident user page's leaf on `frame`.
+fn leaf_on(frame: usize) -> u64 {
+    Pte::new(frame, PteFlags::USER_RW | PteFlags::ACCESSED | PteFlags::DIRTY).0
+}
+
+/// One page of an anonymous object: its slot (the truth) and its leaf (the
+/// cache), and the frames of the model's memory.
+struct Page {
+    slot: AtomicU64,
+    leaf: AtomicU64,
+    mem: Mutex<HashMap<usize, Vec<u8>>>,
+    next: AtomicUsize,
+}
+
+impl Page {
+    /// Resident in `FRAME`, holding `bytes`.
+    fn resident(bytes: Vec<u8>) -> Self {
+        let p = Page::empty();
+        p.slot.store(slot::frame(FRAME), Ordering::Release);
+        p.leaf.store(leaf_on(FRAME), Ordering::Release);
+        p.mem.lock().unwrap().insert(FRAME, bytes);
+        p
     }
-    fn marker(&self, w: u64) -> Option<(PageMarker, u32)> {
-        let (code, payload) = rv::marker_of(w)?;
-        Some((PageMarker::from_code(code)?, payload))
+
+    fn empty() -> Self {
+        Page { slot: AtomicU64::new(slot::EMPTY), leaf: AtomicU64::new(0), mem: Mutex::new(HashMap::new()), next: AtomicUsize::new(FRAME + PAGE_SIZE) }
+    }
+
+    /// A frame of the allocator, holding `bytes`.
+    fn frame(&self, bytes: Vec<u8>) -> usize {
+        let f = self.next.fetch_add(PAGE_SIZE, Ordering::Relaxed);
+        self.mem.lock().unwrap().insert(f, bytes);
+        f
+    }
+
+    /// What a load through the leaf reads (the hardware walks the leaf only).
+    fn read(&self) -> Option<Vec<u8>> {
+        let p = Pte(self.leaf.load(Ordering::Acquire));
+        p.is_valid().then(|| self.mem.lock().unwrap()[&p.phys_addr()].clone())
+    }
+
+    fn bytes_of(&self, frame: usize) -> Vec<u8> {
+        self.mem.lock().unwrap()[&frame].clone()
     }
 }
 
-/// A resident user page's leaf.
-fn leaf() -> u64 {
-    Pte::new(0x8020_0000, PteFlags::USER_RW | PteFlags::ACCESSED | PteFlags::DIRTY).0
-}
-
-/// The reclaimer's store of the page in `frame` whose slot is `slot`, in the
-/// order `AnonReclaim` runs it: take it out, pack and insert, publish. The
-/// leaf that was replaced and the entry's generation.
-fn reclaim(pool: &Mutex<P>, slot: &AtomicU64, frame: &[u8], ticket: u32) -> (u64, u32) {
-    let original = take_out(&Rv, slot, ticket).expect("a plain user leaf");
-    let gen = store(pool, frame);
-    assert!(publish(&Rv, slot, ticket, PageMarker::Compressed, gen), "the store's own marker");
+/// The reclaimer's store of `page`, in the order `AnonReclaim` runs it: the
+/// slot becomes `InTransit`, the leaf is cleared, the frame's bytes are packed
+/// and inserted, the marker is published. The leaf word that was cleared and
+/// the entry's generation.
+fn reclaim(pool: &Mutex<P>, pg: &Page, ticket: u32) -> (u64, u32) {
+    let original = out(pg, ticket);
+    let gen = store(pool, &pg.bytes_of(Pte(original).phys_addr()));
+    assert!(publish(&SlotWords, &pg.slot, ticket, PageMarker::Compressed, gen), "the store's own marker");
     (original, gen)
+}
+
+/// The take-out half of a store: the slot first, then the leaf.
+fn out(pg: &Page, ticket: u32) -> u64 {
+    let w = pg.leaf.load(Ordering::Acquire);
+    assert!(Rv.is_victim_leaf(w), "a plain user leaf");
+    take_out(&SlotWords, &pg.slot, ticket).expect("a resident slot");
+    pg.leaf.compare_exchange(w, 0, Ordering::AcqRel, Ordering::Acquire).expect("the leaf it read");
+    w
 }
 
 fn store(pool: &Mutex<P>, frame: &[u8]) -> u32 {
@@ -143,22 +194,29 @@ fn store(pool: &Mutex<P>, frame: &[u8]) -> u32 {
 enum Fate {
     Zero,
     Restored(Vec<u8>),
+    /// Nothing to do: the access retries on the leaf.
+    Present,
 }
 
-/// One fault on `slot` as `resolve_fault` runs it: decide from the word, wait
-/// while a store is in flight (`waits` counts the looks), restore the marked
-/// page and install it over exactly the word it read, then drop the pool's copy
-/// by generation.
-fn fault(pool: &Mutex<P>, slot: &AtomicU64, waits: &AtomicBool) -> Fate {
+/// One fault on `pg` as `fault_once` runs it: decide from the slot (the leaf
+/// only says whether it already maps the slot's frame), wait while a store is
+/// in flight (`waits` counts the looks), supply a zero page or restore the
+/// marked one, and install it over exactly the slot and leaf words it read,
+/// then drop the pool's copy by generation.
+fn fault(pool: &Mutex<P>, pg: &Page, waits: &AtomicBool) -> Fate {
     loop {
-        let seen = slot.load(Ordering::Acquire);
-        match classify(&Rv, seen) {
-            Fault::Zero => return Fate::Zero,
-            Fault::Wait => {
+        let seen = pg.slot.load(Ordering::Acquire);
+        let seen_leaf = pg.leaf.load(Ordering::Acquire);
+        let leaf = Pte(seen_leaf).is_valid().then(|| Pte(seen_leaf).phys_addr());
+        let (bytes, gen) = match resolve(seen, leaf).expect("a word an encoder made") {
+            Resolve::Present => return Fate::Present,
+            Resolve::Wait => {
                 waits.store(true, Ordering::Release);
                 std::thread::yield_now();
+                continue;
             }
-            Fault::Restore(_, gen) => {
+            Resolve::Supply => (vec![0u8; PAGE_SIZE], None),
+            Resolve::Restore(_, gen) => {
                 let mut scratch = vec![0u8; PAGE_SIZE];
                 let mut out = vec![0u8; PAGE_SIZE];
                 let got = pool.lock().unwrap().fetch_named(OBJ, PG, gen, &mut scratch);
@@ -167,13 +225,23 @@ fn fault(pool: &Mutex<P>, slot: &AtomicU64, waits: &AtomicBool) -> Fate {
                     Fetched::Fill(w) => fill_page(w, &mut out),
                     Fetched::Blob { len, nonce } => codec().unpack(nonce, len, &mut scratch, &mut out).unwrap(),
                 }
-                // Install over the word read; a changed slot starts over.
-                if slot.compare_exchange(seen, leaf(), Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                    pool.lock().unwrap().remove_if(OBJ, PG, g);
-                    return Fate::Restored(out);
-                }
+                (out, Some(g))
             }
             other => panic!("not a fault of this row: {other:?}"),
+        };
+        let f = pg.frame(bytes.clone());
+        // Install over the words read; a changed one starts over.
+        if pg.slot.load(Ordering::Acquire) == seen
+            && pg.leaf.compare_exchange(seen_leaf, leaf_on(f), Ordering::AcqRel, Ordering::Acquire).is_ok()
+        {
+            pg.slot.store(slot::frame(f), Ordering::Release);
+            return match gen {
+                Some(g) => {
+                    pool.lock().unwrap().remove_if(OBJ, PG, g);
+                    Fate::Restored(bytes)
+                }
+                None => Fate::Zero,
+            };
         }
     }
 }
@@ -185,26 +253,48 @@ fn pool() -> Mutex<P> {
 #[test]
 fn a_fault_on_a_compressed_marker_restores_the_page() {
     let pool = pool();
-    let slot = AtomicU64::new(leaf());
-    let data = page(3);
-    let (_, gen) = reclaim(&pool, &slot, &data, 1);
-    let word = slot.load(Ordering::Acquire);
-    assert!(!Pte(word).is_valid(), "the page is out of the table");
-    assert_eq!(Rv.marker(word), Some((PageMarker::Compressed, gen)));
+    let pg = Page::resident(page(3));
+    let (_, gen) = reclaim(&pool, &pg, 1);
+    assert_eq!(pg.leaf.load(Ordering::Acquire), 0, "the page is out of the table");
+    assert_eq!(SlotWords.marker(pg.slot.load(Ordering::Acquire)), Some((PageMarker::Compressed, gen)));
 
-    assert_eq!(fault(&pool, &slot, &AtomicBool::new(false)), Fate::Restored(data));
-    assert_eq!(slot.load(Ordering::Acquire), leaf(), "installed over the marker");
+    assert_eq!(fault(&pool, &pg, &AtomicBool::new(false)), Fate::Restored(page(3)));
+    assert_eq!(pg.read(), Some(page(3)), "the leaf maps the restored copy");
+    assert!(slot::frame_of(pg.slot.load(Ordering::Acquire)).is_some(), "the slot names its frame");
     assert!(pool.lock().unwrap().is_empty(), "the copy goes with the install");
+}
+
+/// **The slot decides.** A leaf over an `Empty` slot (a cache word no install
+/// of this object made: a clear that was missed) is no page of the object:
+/// the fault gives a zero page and the stale frame's bytes are never seen.
+/// Canary `mm-pte-truth-canary`: the leaf is believed, the stale bytes read.
+#[test]
+fn a_stale_leaf_over_an_empty_slot_is_not_believed() {
+    let pool = pool();
+    let pg = Page::empty();
+    let stale = pg.frame(page(7));
+    pg.leaf.store(leaf_on(stale), Ordering::Release);
+    assert_eq!(fault(&pool, &pg, &AtomicBool::new(false)), Fate::Zero);
+    assert_eq!(pg.read(), Some(vec![0u8; PAGE_SIZE]), "a zero page, not the previous owner's bytes");
+    assert_eq!(slot::frame_of(pg.slot.load(Ordering::Acquire)), Some(Pte(pg.leaf.load(Ordering::Acquire)).phys_addr()));
+}
+
+#[test]
+fn a_resident_slot_whose_leaf_is_gone_is_installed_again() {
+    let pg = Page::resident(page(2));
+    pg.leaf.store(0, Ordering::Release);
+    assert_eq!(resolve(pg.slot.load(Ordering::Acquire), None), Some(Resolve::Install(FRAME)));
+    assert_eq!(resolve(pg.slot.load(Ordering::Acquire), Some(FRAME)), Some(Resolve::Present));
+    assert_eq!(resolve(pg.slot.load(Ordering::Acquire), Some(FRAME + PAGE_SIZE)), Some(Resolve::Install(FRAME)), "the slot's frame, not the leaf's");
 }
 
 #[test]
 fn a_zero_page_is_restored_from_a_single_entry() {
     let pool = pool();
-    let slot = AtomicU64::new(leaf());
-    let zeros = vec![0u8; PAGE_SIZE];
-    reclaim(&pool, &slot, &zeros, 1);
+    let pg = Page::resident(vec![0u8; PAGE_SIZE]);
+    reclaim(&pool, &pg, 1);
     assert_eq!(pool.lock().unwrap().stats().live_bytes, 0, "a same-filled page keeps no bytes");
-    assert_eq!(fault(&pool, &slot, &AtomicBool::new(false)), Fate::Restored(zeros));
+    assert_eq!(fault(&pool, &pg, &AtomicBool::new(false)), Fate::Restored(vec![0u8; PAGE_SIZE]));
 }
 
 #[test]
@@ -213,44 +303,45 @@ fn an_empty_slot_is_a_zero_page_and_the_pool_is_not_asked() {
     // A stale entry under the key, as a reclaimer that lost its race leaves for
     // a moment: no marker, so no restore.
     store(&pool, &page(9));
-    let slot = AtomicU64::new(0);
-    assert_eq!(fault(&pool, &slot, &AtomicBool::new(false)), Fate::Zero);
+    let pg = Page::empty();
+    assert_eq!(fault(&pool, &pg, &AtomicBool::new(false)), Fate::Zero);
     assert_eq!(pool.lock().unwrap().len(), 1, "and the entry is not touched");
 }
 
 #[test]
 fn a_fault_racing_a_store_waits_and_restores_the_page() {
     let pool = pool();
-    let slot = AtomicU64::new(leaf());
-    let data = page(5);
+    let pg = Page::resident(page(5));
     let waits = AtomicBool::new(false);
     // The reclaimer has the page out and has not stored it.
-    take_out(&Rv, &slot, 7).unwrap();
+    let original = out(&pg, 7);
     let fate = std::thread::scope(|s| {
-        let faulting = s.spawn(|| fault(&pool, &slot, &waits));
+        let faulting = s.spawn(|| fault(&pool, &pg, &waits));
         // The fault is in its wait before the store goes on.
         wait_for(&waits);
-        let gen = store(&pool, &data);
-        assert!(publish(&Rv, &slot, 7, PageMarker::Compressed, gen));
+        let gen = store(&pool, &pg.bytes_of(Pte(original).phys_addr()));
+        assert!(publish(&SlotWords, &pg.slot, 7, PageMarker::Compressed, gen));
         faulting.join().unwrap()
     });
     assert!(waits.load(Ordering::Acquire), "the fault waited for the store");
-    assert_eq!(fate, Fate::Restored(data), "and then restored the page, not a zero one");
+    assert_eq!(fate, Fate::Restored(page(5)), "and then restored the page, not a zero one");
 }
 
 #[test]
 fn a_fault_racing_a_store_that_gives_up_finds_the_page_where_it_was() {
-    let slot = AtomicU64::new(leaf());
+    let pool = pool();
+    let pg = Page::resident(page(6));
     let waits = AtomicBool::new(false);
-    let original = take_out(&Rv, &slot, 2).unwrap();
+    let original = out(&pg, 2);
     std::thread::scope(|s| {
-        let faulting = s.spawn(|| classify_until_not_wait(&slot, &waits));
+        let faulting = s.spawn(|| fault(&pool, &pg, &waits));
         wait_for(&waits);
-        // The pool refused: the page goes back.
-        assert!(put_back(&Rv, &slot, 2, original));
-        assert_eq!(faulting.join().unwrap(), Fault::Present, "the fault retries on the page");
+        // The pool refused: the leaf goes back, then the slot.
+        assert!(pg.leaf.compare_exchange(0, original, Ordering::AcqRel, Ordering::Acquire).is_ok());
+        assert!(put_back(&SlotWords, &pg.slot, 2, slot::frame(FRAME)));
+        assert_eq!(faulting.join().unwrap(), Fate::Present, "the fault retries on the page");
     });
-    assert_eq!(slot.load(Ordering::Acquire), original);
+    assert_eq!(pg.read(), Some(page(6)));
 }
 
 /// Spin until the fault has been seen waiting; a fault that never waits (it
@@ -265,88 +356,97 @@ fn wait_for(waits: &AtomicBool) {
     panic!("the fault never waited for the store");
 }
 
-fn classify_until_not_wait(slot: &AtomicU64, waits: &AtomicBool) -> Fault {
-    loop {
-        match classify(&Rv, slot.load(Ordering::Acquire)) {
-            Fault::Wait => {
-                waits.store(true, Ordering::Release);
-                std::thread::yield_now();
-            }
-            f => return f,
-        }
+#[test]
+fn only_a_resident_slot_is_taken_out() {
+    for w in [slot::EMPTY, slot::marker(PageMarker::Compressed, 4), slot::marker(PageMarker::Swapped, 4), slot::marker(PageMarker::InTransit, 4)] {
+        let s = AtomicU64::new(w);
+        assert_eq!(take_out(&SlotWords, &s, 1), Err(Refusal::NotVictim), "{w:#x}");
+        assert_eq!(s.load(Ordering::Acquire), w, "{w:#x} is left as it was");
     }
+    let s = AtomicU64::new(slot::frame(FRAME));
+    assert_eq!(take_out(&SlotWords, &s, 1), Ok(slot::frame(FRAME)));
+    assert_eq!(resolve(s.load(Ordering::Acquire), None), Some(Resolve::Wait));
 }
 
 #[test]
-fn only_a_plain_user_leaf_is_taken_out() {
-    let marker = rv::make_marker(PageMarker::Compressed.code(), 4);
-    let cow = leaf() | PteFlags::COW.bits();
-    let kernel = Pte::new(0x8020_0000, PteFlags::KERNEL_RW).0;
+fn only_a_plain_user_leaf_is_a_victim() {
+    let cow = leaf_on(FRAME) | PteFlags::COW.bits();
+    let kernel = Pte::new(FRAME, PteFlags::KERNEL_RW).0;
     let table = Pte::new(0x8030_0000, PteFlags::VALID).0;
     let demand = PteFlags::DEMAND.bits() | PteFlags::USER.bits() | PteFlags::READ.bits();
-    for (w, what) in [(0, "empty"), (marker, "a marker"), (cow, "a COW leaf"), (kernel, "a kernel leaf"), (table, "a table"), (demand, "a demand word")] {
-        let slot = AtomicU64::new(w);
-        assert_eq!(take_out(&Rv, &slot, 1), Err(Refusal::NotVictim), "{what}");
-        assert_eq!(slot.load(Ordering::Acquire), w, "{what} is left as it was");
+    for (w, what) in [(0, "empty"), (cow, "a COW leaf"), (kernel, "a kernel leaf"), (table, "a table"), (demand, "a demand word")] {
+        assert!(!Rv.is_victim_leaf(w), "{what}");
     }
-    let slot = AtomicU64::new(leaf());
-    assert_eq!(take_out(&Rv, &slot, 1), Ok(leaf()));
-    assert_eq!(classify(&Rv, slot.load(Ordering::Acquire)), Fault::Wait);
+    assert!(Rv.is_victim_leaf(leaf_on(FRAME)));
+}
+
+#[test]
+fn slot_words_round_trip() {
+    assert_eq!(slot::decode(slot::EMPTY), Some(slot::Slot::Empty));
+    assert_eq!(slot::decode(slot::frame(FRAME)), Some(slot::Slot::Frame(FRAME)));
+    for kind in [PageMarker::Compressed, PageMarker::Swapped, PageMarker::InTransit] {
+        let w = slot::marker(kind, u32::MAX);
+        assert_eq!(slot::decode(w), Some(slot::Slot::Marker(kind, u32::MAX)));
+        assert_eq!(slot::frame_of(w), None, "a marker names no frame");
+    }
+    assert_eq!(slot::decode(0b11 << 3), None, "no encoder makes a word with no kind");
 }
 
 #[test]
 fn a_store_ends_only_its_own_marker() {
-    let slot = AtomicU64::new(leaf());
-    take_out(&Rv, &slot, 10).unwrap();
-    let mine = slot.load(Ordering::Acquire);
+    let s = AtomicU64::new(slot::frame(FRAME));
+    take_out(&SlotWords, &s, 10).unwrap();
+    let mine = s.load(Ordering::Acquire);
     // Another store's ticket: the slot is not touched.
-    assert!(!publish(&Rv, &slot, 11, PageMarker::Compressed, 5));
-    assert!(!put_back(&Rv, &slot, 11, leaf()));
-    assert_eq!(slot.load(Ordering::Acquire), mine);
+    assert!(!publish(&SlotWords, &s, 11, PageMarker::Compressed, 5));
+    assert!(!put_back(&SlotWords, &s, 11, slot::frame(FRAME)));
+    assert_eq!(s.load(Ordering::Acquire), mine);
     // The page went (unmapped) and came back to be taken out by a later store:
     // the first store's end must not finish the second's marker.
-    assert!(clear(&Rv, &slot).is_some());
-    assert_eq!(slot.load(Ordering::Acquire), 0);
-    slot.store(leaf(), Ordering::Release);
-    take_out(&Rv, &slot, 12).unwrap();
-    assert!(!publish(&Rv, &slot, 10, PageMarker::Compressed, 5), "the first store's late end");
-    assert!(publish(&Rv, &slot, 12, PageMarker::Compressed, 5));
+    assert!(clear(&SlotWords, &s).is_some());
+    assert_eq!(s.load(Ordering::Acquire), slot::EMPTY);
+    s.store(slot::frame(FRAME), Ordering::Release);
+    take_out(&SlotWords, &s, 12).unwrap();
+    assert!(!publish(&SlotWords, &s, 10, PageMarker::Compressed, 5), "the first store's late end");
+    assert!(publish(&SlotWords, &s, 12, PageMarker::Compressed, 5));
 }
 
 #[test]
 fn munmap_clears_every_kind_of_marker() {
     for kind in [PageMarker::Compressed, PageMarker::Swapped, PageMarker::InTransit] {
-        let slot = AtomicU64::new(rv::make_marker(kind.code(), 77));
-        assert_eq!(clear(&Rv, &slot), Some((kind, 77)));
-        assert_eq!(slot.load(Ordering::Acquire), 0, "{kind:?}: the range is vacant again");
+        let s = AtomicU64::new(slot::marker(kind, 77));
+        assert_eq!(clear(&SlotWords, &s), Some((kind, 77)));
+        assert_eq!(s.load(Ordering::Acquire), slot::EMPTY, "{kind:?}: the page is empty again");
     }
-    // And nothing else: a resident page and a demand reservation stay.
-    for w in [leaf(), PteFlags::DEMAND.bits(), 0] {
-        let slot = AtomicU64::new(w);
-        assert_eq!(clear(&Rv, &slot), None);
-        assert_eq!(slot.load(Ordering::Acquire), w);
+    // And nothing else: a resident page and an empty slot stay.
+    for w in [slot::frame(FRAME), slot::EMPTY] {
+        let s = AtomicU64::new(w);
+        assert_eq!(clear(&SlotWords, &s), None);
+        assert_eq!(s.load(Ordering::Acquire), w);
     }
 }
 
 #[test]
 fn a_store_whose_range_was_unmapped_cannot_publish_or_put_back() {
-    let slot = AtomicU64::new(leaf());
-    let original = take_out(&Rv, &slot, 3).unwrap();
-    assert_eq!(clear(&Rv, &slot), Some((PageMarker::InTransit, 3)), "munmap while the store runs");
-    assert!(!publish(&Rv, &slot, 3, PageMarker::Compressed, 1));
-    assert!(!put_back(&Rv, &slot, 3, original), "the frame is the store's to free");
-    assert_eq!(slot.load(Ordering::Acquire), 0);
+    let s = AtomicU64::new(slot::frame(FRAME));
+    let original = take_out(&SlotWords, &s, 3).unwrap();
+    assert_eq!(clear(&SlotWords, &s), Some((PageMarker::InTransit, 3)), "munmap while the store runs");
+    assert!(!publish(&SlotWords, &s, 3, PageMarker::Compressed, 1));
+    assert!(!put_back(&SlotWords, &s, 3, original), "the frame is the store's to free");
+    assert_eq!(s.load(Ordering::Acquire), slot::EMPTY);
 }
 
 #[test]
 fn a_marker_never_restores_another_stores_copy() {
     let pool = pool();
-    let slot = AtomicU64::new(leaf());
-    let (_, first) = reclaim(&pool, &slot, &page(1), 1);
+    let pg = Page::resident(page(1));
+    let (_, first) = reclaim(&pool, &pg, 1);
     // The first copy is restored and dropped; the page is written and stored
     // again: a second entry, a second generation, the same key.
-    assert_eq!(fault(&pool, &slot, &AtomicBool::new(false)), Fate::Restored(page(1)));
-    let (_, second) = reclaim(&pool, &slot, &page(2), 2);
+    assert_eq!(fault(&pool, &pg, &AtomicBool::new(false)), Fate::Restored(page(1)));
+    let f = Pte(pg.leaf.load(Ordering::Acquire)).phys_addr();
+    pg.mem.lock().unwrap().insert(f, page(2));
+    let (_, second) = reclaim(&pool, &pg, 2);
     assert_ne!(first, second);
     let mut scratch = vec![0u8; PAGE_SIZE];
     // A fault that read the first marker and is late with its fetch is told so,
@@ -360,8 +460,8 @@ fn a_marker_never_restores_another_stores_copy() {
 #[test]
 fn a_forks_child_restores_through_the_parents_marker_word() {
     let pool = pool();
-    let parent = AtomicU64::new(leaf());
-    let (_, gen) = reclaim(&pool, &parent, &page(4), 1);
+    let parent = Page::resident(page(4));
+    let (_, gen) = reclaim(&pool, &parent, 1);
     let child_obj = OBJ + 1;
     {
         let mut p = pool.lock().unwrap();

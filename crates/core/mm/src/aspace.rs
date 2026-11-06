@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The address space object: a user page-table root and the region records
-//! made in it ([`crate::pager`]'s state for the space).
+//! The address space object: a user page-table root and the mappings made in
+//! it ([`crate::pager`]'s state for the space), with the anonymous objects
+//! they name.
 //!
 //! One per thread group. It is made when a root is handed to a task (exec,
 //! spawn, fork) and ends with [`destroy`]: its records first, then its tables.
@@ -29,17 +30,17 @@ use azos_sync::{IrqSaveGuard, SpinLock};
 
 use crate::addr::KERNEL_PHYS_TO_VIRT_OFFSET;
 use crate::cache::Cache;
-use crate::pager::REGIONS_PER_SPACE;
-use crate::region::RegionSet;
+use crate::mapping::MapSet;
+use crate::pager::MAPPINGS_PER_SPACE;
 
 /// The pager's records of one space, under the space's lock.
 pub(crate) struct Space {
-    /// The space has records: a region was reserved and the set has not been
+    /// The space has records: a mapping was made and the set has not been
     /// emptied since (`open`, `close`). The counters below mean nothing while
     /// it is not.
     pub(crate) recorded: bool,
-    /// Region pages whose frame is installed (page table entries the pager
-    /// made valid and that `munmap` has not taken back).
+    /// Mapped pages whose frame is installed (an anonymous page's `Frame`
+    /// slot, a file page's leaf the pager made and `munmap` has not taken back).
     pub(crate) committed: usize,
     /// Fork walks running on this space (`fork_begin` .. `fork_end`; threads
     /// of one space may fork at once, so a count, not a flag): while it is
@@ -51,12 +52,12 @@ pub(crate) struct Space {
     /// table and not yet in the pool). A fork waits for them to end, and the
     /// reclaimer starts none while a fork walks.
     pub(crate) reclaiming: u32,
-    pub(crate) set: RegionSet<REGIONS_PER_SPACE>,
+    pub(crate) set: MapSet<MAPPINGS_PER_SPACE>,
 }
 
 impl Space {
     const fn new() -> Self {
-        Space { recorded: false, committed: 0, forking: 0, reclaiming: 0, set: RegionSet::new() }
+        Space { recorded: false, committed: 0, forking: 0, reclaiming: 0, set: MapSet::new() }
     }
 
     /// The space gets records, starting from none if it had none.
@@ -294,8 +295,9 @@ pub fn create(root: usize) -> Option<SpaceRef> {
     Some(SpaceRef { root, tag: tag_of(p as usize, gen) })
 }
 
-/// End the space `r`: its records go (`pager::forget`: regions, reservations,
-/// pool pages, the page cache's region counts), then the object, then its
+/// End the space `r`: its records go (`pager::forget`: mappings and their
+/// anonymous objects, reservations, pool pages, the page cache's counts), then
+/// the object, then its
 /// page tables, sparing the leaf frames in `[skip_lo, skip_hi)`
 /// ([`crate::vmm::destroy_user_pagetable_skip_range`]). Returns that call's
 /// answer: the mask of harts still on the root, the tables then leaked.
