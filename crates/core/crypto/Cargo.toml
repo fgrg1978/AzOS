@@ -30,3 +30,17 @@ azos_common = { path = "../common" }
 # which are pure no_std.
 curve25519-dalek = { version = "4", default-features = false, features = ["zeroize"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+# The symmetric primitives: the RustCrypto crates the ring-3 TLS/QUIC stack
+# links (userspace/lib/quic), no_std and without alloc.
+chacha20 = { version = "0.9.1", default-features = false, features = ["zeroize"] }
+poly1305 = { version = "0.8", default-features = false, features = ["zeroize"] }
+chacha20poly1305 = { version = "0.10", default-features = false }
+
+# Bare metal (the kernels, the resident monitor): sha2's portable backend.
+# On x86_64 it would otherwise run SHA-NI / AVX2 picked from CPUID at CPL0,
+# where the kernel keeps no SIMD state; ed25519-dalek's SHA-512 included.
+[target.'cfg(target_os = "none")'.dependencies]
+sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(chacha20_force_soft)', 'cfg(poly1305_force_soft)', 'cfg(aes_force_soft)'] }

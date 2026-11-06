@@ -830,6 +830,8 @@ def test_isa_level_and_require_reach_the_codegen() -> None:
 
 
 RT = " -Z retpoline -Z retpoline-external-thunk"
+# The x86_64 kernel's portable RustCrypto backends (kernel only).
+SOFT = " --cfg chacha20_force_soft --cfg poly1305_force_soft --cfg aes_force_soft"
 
 
 def test_cfi_pads_follow_each_isas_extension_choices() -> None:
@@ -872,12 +874,12 @@ def test_x86_64_level_and_require_reach_the_codegen() -> None:
         # that has it, for VA nobody here needs.
         assert "CONFIG_X86_LA57_NEVER=y" in out
         # The development defconfig slides (KASLR probe), so its flags end in the PIE link.
-        assert _isa(t / "q.config", "--rustflags") == "-C target-cpu=x86-64-v2" + CF + RT + KASLR_PIE_X86
+        assert _isa(t / "q.config", "--rustflags") == "-C target-cpu=x86-64-v2" + CF + RT + KASLR_PIE_X86 + SOFT
         assert _isa(t / "q.config", "--target-features").startswith("require=cmpxchg16b,lahfsahf,popcnt\n")
         _expand(["CONFIG_ARCH_X86_64=y", NO_SLIDE, "CONFIG_X86_64_LEVEL_V4=y", "CONFIG_X86_ADX_REQUIRE=y",
                  "CONFIG_X86_AES_REQUIRE=y", "CONFIG_X86_XSAVES_REQUIRE=y"], t, "v4.config")
         assert _isa(t / "v4.config", "--rustflags") == \
-            "-C target-cpu=x86-64-v4 -C target-feature=+adx,+xsaves" + CF + RT
+            "-C target-cpu=x86-64-v4 -C target-feature=+adx,+xsaves" + CF + RT + SOFT
         assert _isa(t / "v4.config", "--user-rustflags") == \
             "-C target-cpu=x86-64-v4 -C target-feature=+aes,+adx,+xsaves" + CF
         tf = _isa(t / "v4.config", "--target-features")
@@ -891,11 +893,11 @@ def test_x86_64_level_and_require_reach_the_codegen() -> None:
         assert "CONFIG_X86_AVX_NEVER=y" in out and "CONFIG_X86_AVX2_NEVER=y" in out, "AVX2 without XSAVE"
         # XSAVE `n` takes XSAVES and with it CET IBT to `n`: no ENDBR64 pads.
         assert "CONFIG_X86_CET_IBT_NEVER=y" in out
-        assert _isa(t / "v1.config", "--rustflags") == "-C target-cpu=x86-64" + RT
+        assert _isa(t / "v1.config", "--rustflags") == "-C target-cpu=x86-64" + RT + SOFT
         # X86_MIT_SPECTRE_V2: the thunk is built only under probe, and only into the kernel.
         for pol, flags in (("NEVER", ""), ("REQUIRE", ""), ("PROBE", RT)):
             _expand(["CONFIG_ARCH_X86_64=y", NO_SLIDE, f"CONFIG_X86_MIT_SPECTRE_V2_{pol}=y"], t, f"m{pol}.config")
-            assert _isa(t / f"m{pol}.config", "--rustflags") == "-C target-cpu=x86-64-v2" + CF + flags, pol
+            assert _isa(t / f"m{pol}.config", "--rustflags") == "-C target-cpu=x86-64-v2" + CF + flags + SOFT, pol
         assert RT not in _isa(t / "mPROBE.config", "--user-rustflags")
 
 

@@ -231,11 +231,23 @@ def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool 
     already carry (for a `--config` that merges with them)."""
     base = _baseline_isa_flags(cfg, user, skip_base)
     extra = cfi_rustflags(cfg) + ([] if user else livepatch_rustflags(cfg) + x86_mitigation_rustflags(cfg)
-                                  + kaslr_rustflags(cfg) + kasan_rustflags(cfg))
+                                  + kaslr_rustflags(cfg) + kasan_rustflags(cfg)
+                                  + x86_soft_crypto_rustflags(cfg))
     if cfg.get("CONFIG_PROFILER") == "y" and "force-frame-pointers=yes" not in extra:
         # The profiler walks frame-pointer chains, kernel and user.
         extra += ["-C", "force-frame-pointers=yes"]
     return " ".join(w for w in [base] + extra if w)
+
+
+def x86_soft_crypto_rustflags(cfg: dict[str, str]) -> list[str]:
+    """The x86_64 kernel is soft-float (no SSE/AVX state at CPL0), but the
+    RustCrypto ciphers azos_crypto links pick SSE2/AVX2/AES-NI at run time from
+    CPUID on x86_64: these cfgs pin their portable backends (sha2's is a Cargo
+    feature, set for every bare-metal target in crates/core/crypto/Cargo.toml).
+    azos_crypto refuses an x86_64 kernel build without them."""
+    if cfg.get("CONFIG_ARCH_X86_64") != "y":
+        return []
+    return ["--cfg", "chacha20_force_soft", "--cfg", "poly1305_force_soft", "--cfg", "aes_force_soft"]
 
 
 def kasan_rustflags(cfg: dict[str, str]) -> list[str]:
