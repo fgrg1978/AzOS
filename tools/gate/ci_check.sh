@@ -12266,6 +12266,15 @@ host_job host_canary_row "anon: failed store, leaf after slot canary" syscall-te
     a_failed_store_after_the_range_was_mapped_again_puts_nothing_back
 host_job host_canary_row "anon: failed store, leaf after slot (model) canary" mm-tests keep-leaf-first-canary \
     a_failed_store_writes_no_leaf_for_a_slot_that_is_not_its_own
+# A fork holds its parent from its walk until the child's mappings are cloned
+# (pager::ForkHold): no store, no restore meanwhile. fork-hold-canary: the hold
+# ends with the walk, the reclaimer stores a page the child then has a marker
+# for and no pool entry, and a sibling's restore leaves the child a zero page.
+host_job host_canary_row "anon: fork hold, no store canary" syscall-tests fork-hold-canary \
+    the_reclaimer_takes_no_page_of_a_parent_until_its_fork_is_cloned
+host_job zpool_host_row "anon: fork hold, no restore, pool on" a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it
+host_job zpool_host_canary_row "anon: fork hold, no restore canary" fork-hold-canary \
+    a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it
 host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
     a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,

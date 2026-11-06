@@ -73,7 +73,7 @@ pub fn fork_cow(parent_pt: usize, skip_lo: usize, skip_hi: usize) -> KResult<usi
     // (See [`fork_share_range`] for the one thing a fork gives the child out
     // of that window: a shared-memory mapping the child inherits.)
     let parent = crate::aspace::current_with_root(parent_pt);
-    fork_cow_walk_held(parent, parent_pt, skip_lo, skip_hi, false).map(|(pt, _)| pt)
+    fork_cow_walk_held(parent, parent_pt, skip_lo, skip_hi, false).map(|(pt, _, _)| pt)
 }
 
 /// The fork rule for a shared-memory mapping (owner decision 16-10, the
@@ -155,6 +155,19 @@ impl crate::memobj::ChildLeaves for ForkLeaves {
 /// 14): each is a page the child may commit later, charged to it by the
 /// caller as the parent's were charged at reservation.
 pub fn fork_cow_shared(parent: SpaceRef, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<(usize, usize)> {
+    fork_cow_shared_held(parent, skip_lo, skip_hi, concurrent).map(|(pt, n, _)| (pt, n))
+}
+
+/// [`fork_cow_shared`] that keeps the fork's hold on the parent
+/// ([`crate::pager::ForkHold`]): the caller drops it once the child's mappings
+/// are cloned (`pager::fork_clone`), so the parent's pages stay as the walk saw
+/// them meanwhile.
+pub fn fork_cow_shared_held(
+    parent: SpaceRef,
+    skip_lo: usize,
+    skip_hi: usize,
+    concurrent: bool,
+) -> KResult<(usize, usize, crate::pager::ForkHold)> {
     fork_cow_walk_held(Some(parent), parent.root(), skip_lo, skip_hi, concurrent)
 }
 
@@ -166,7 +179,7 @@ fn fork_cow_walk_held(
     skip_lo: usize,
     skip_hi: usize,
     concurrent: bool,
-) -> KResult<(usize, usize)> {
+) -> KResult<(usize, usize, crate::pager::ForkHold)> {
     // Superpage reservations (Kconfig `MM_THP_RESV`): the walk below skips
     // level-1 leaves, so promoted blocks are split first and no block may be
     // promoted while it runs.
@@ -176,11 +189,9 @@ fn fork_cow_walk_held(
             return Err(KernelError::OutOfMemory);
         }
     }
-    let r = fork_cow_walk(parent_pt, skip_lo, skip_hi, concurrent);
-    if let Some(p) = parent {
-        crate::pager::fork_end(p);
-    }
-    r
+    let hold = crate::pager::ForkHold::new(parent);
+    let (pt, n) = fork_cow_walk(parent_pt, skip_lo, skip_hi, concurrent)?;
+    Ok((pt, n, hold))
 }
 
 fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<(usize, usize)> {

@@ -102,6 +102,10 @@ fault-block-leaf-canary = []
 # frame about to be freed: `mm-tests` marker_pte.rs
 # `a_failed_store_writes_no_leaf_for_a_slot_that_is_not_its_own` fails.
 keep-leaf-first-canary = []
+# Host-suite canary: a fork's hold on its parent ends with the walk, before the
+# child's mappings are cloned, so a sibling's restore or the reclaimer's store
+# runs while the markers are copied: `syscall-tests` pte_truth.rs fork rows fail.
+fork-hold-canary = []
 # Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
 # kept past its space's end reaches the next space made from the object:
 # `syscall-tests`' `aspace_life` fails.

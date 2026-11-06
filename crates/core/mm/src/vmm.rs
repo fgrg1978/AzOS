@@ -2816,7 +2816,7 @@ pub fn enable_paging() {
 // COW (AQ9) and Demand Paging (AQ10) live in sibling modules `cow` and
 // `demand`.  Re-export their public API here for backward compatibility
 // with callers that still reference them via `vmm::`.
-pub use crate::cow::{fork_cow, fork_cow_shared, handle_cow_fault, page_addref, page_decref, page_getref};
+pub use crate::cow::{fork_cow, fork_cow_shared, fork_cow_shared_held, handle_cow_fault, page_addref, page_decref, page_getref};
 pub use crate::demand::{map_demand, map_demand_range};
 
 /// Resolve a demand-paging fault, refusing anything in the null guard region.

@@ -2357,7 +2357,9 @@ fn fork_hooked_inner(
     // Wave 13: a thread group's other members may fault on the parent's
     // entries while they are walked (`fork_cow_shared`).
     let concurrent = crate::scheduler::current_slot().is_some_and(|i| crate::group::lead_of_idx(i) != 0);
-    let (child_pt, child_reserved) = match vmm::fork_cow_shared(parent, USER_MMIO_BASE, USER_MMIO_LIMIT, concurrent) {
+    // The hold on the parent lasts until `before_release` has cloned its
+    // mappings into the child's (`azos_mm::pager::ForkHold`).
+    let (child_pt, child_reserved, fork_hold) = match vmm::fork_cow_shared_held(parent, USER_MMIO_BASE, USER_MMIO_LIMIT, concurrent) {
         Ok(r) => r,
         Err(_) => {
             let _ = crate::scheduler::take_current_pt_build();
@@ -2510,6 +2512,7 @@ fn fork_hooked_inner(
     // land on the parent's slots, which a grant made before could take.
     let t_ph = crate::prof::t();
     let refused = before_release(child_tid).err();
+    drop(fork_hold);
     if refused.is_some() {
         crate::scheduler::task_abandon_unstarted(child_tid);
     }

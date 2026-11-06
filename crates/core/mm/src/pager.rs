@@ -1145,11 +1145,43 @@ pub fn fork_begin(r: SpaceRef) -> bool {
     vmm::demote_all_user_megas(r.root())
 }
 
-/// The fork walk of `r` is over: the parent's pages are copy-on-write, so
-/// nothing of it can be promoted until it is filled afresh, and the reclaimer
-/// may take pages of it again.
+/// The fork of `r` is over (its walk, and the copy of its mappings into the
+/// child's, [`fork_clone`]): the parent's pages are copy-on-write, so nothing
+/// of it can be promoted until it is filled afresh, and the reclaimer may take
+/// pages of it again and its faults restore them.
 pub fn fork_end(r: SpaceRef) {
     reclaim_release(r);
+}
+
+/// A fork's hold on its parent's space ([`fork_begin`] to [`fork_end`]), from
+/// its walk until the child's mappings are cloned: while it lives the
+/// reclaimer takes no page of the parent and the parent's faults restore none,
+/// so the child's copy of the parent's markers ([`fork_clone`]) sees each page
+/// as the walk did. Dropping it is the fork's end.
+pub struct ForkHold(Option<SpaceRef>);
+
+impl ForkHold {
+    /// A hold on `r`, whose [`fork_begin`] succeeded (none: a root without
+    /// records).
+    pub(crate) fn new(r: Option<SpaceRef>) -> Self {
+        // Canary `fork-hold-canary`: the hold ends with the walk, so a
+        // sibling's restore or store runs while the markers are copied.
+        if cfg!(feature = "fork-hold-canary") {
+            if let Some(r) = r {
+                fork_end(r);
+            }
+            return ForkHold(None);
+        }
+        ForkHold(r)
+    }
+}
+
+impl Drop for ForkHold {
+    fn drop(&mut self) {
+        if let Some(r) = self.0.take() {
+            fork_end(r);
+        }
+    }
 }
 
 /// Wait for the stores in flight in `r` to end and keep the reclaimer from
@@ -1174,6 +1206,8 @@ fn reclaim_release(r: SpaceRef) {
     if let Some(mut sp) = r.lock().filter(|sp| sp.recorded) {
         sp.forking = sp.forking.saturating_sub(1);
     }
+    // The restores that waited for the hold to end.
+    store_ended();
 }
 
 /// The reclaimer takes no page out of a space for as long as this lives, and
@@ -1669,14 +1703,14 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     // The store counter first, then the slot: a store that ends between the
     // two moves the counter, and the wait below does not sleep.
     let seq = MARKER_SEQ.load(Ordering::Acquire);
-    let (m, word, missing) = {
+    let (m, word, missing, forking) = {
         let sp = space.lock().filter(|sp| sp.recorded).ok_or(KernelError::NotMapped)?;
         match sp.anon_at(page) {
             Some((m, o)) => {
                 let (word, missing) = o.look(m.page_index(page));
-                (*m, word, missing)
+                (*m, word, missing, sp.forking != 0)
             }
-            None => (*sp.set.find(page).ok_or(KernelError::NotMapped)?, slot::EMPTY, 0),
+            None => (*sp.set.find(page).ok_or(KernelError::NotMapped)?, slot::EMPTY, 0, false),
         }
     };
     // Mappings are made below the shm window and above the null guard, but the
@@ -1708,6 +1742,13 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let stored = match res {
         Resolve::Present => return Ok(Step::Done),
         Resolve::Wait => {
+            MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
+            return Ok(Step::Again);
+        }
+        // A fork is copying the space's markers into its child: the page
+        // stays out until it is done ([`ForkHold`]), and the fork's end wakes
+        // the wait.
+        Resolve::Restore(..) if forking => {
             MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
             return Ok(Step::Again);
         }
@@ -2213,9 +2254,10 @@ fn mappings_from(r: SpaceRef, at: usize, out: &mut [Mapping]) -> usize {
 /// `maps`, word for word, into each object's twin (the pool's shared entries
 /// have the parent's generations, so the same word names the child's copy).
 /// How many; `None` when slot storage could not be had (the fork is then
-/// refused). No store of the parent is in flight (`fork_begin` waited for them
-/// and the pages the walk left valid are shared with the child, so the
-/// reclaimer takes none), so no marker is `InTransit`.
+/// refused). The fork's hold on the parent ([`ForkHold`], from before its walk
+/// until after this) keeps every marker as the walk saw it: no store was in
+/// flight when it began and the reclaimer starts none, so no marker is
+/// `InTransit`, and the parent's faults restore none.
 fn copy_markers(child: SpaceRef, maps: &[Mapping]) -> Option<usize> {
     let mut n = 0;
     let mut short = false;

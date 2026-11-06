@@ -196,3 +196,96 @@ fn a_failed_store_after_the_range_was_mapped_again_puts_nothing_back() {
     azos_sched::set_current_user_pt(0);
 }
 
+
+/// **No page of the parent leaves it while a fork copies it.** A sibling
+/// commits a page after the fork's walk; the reclaimer must not store it before
+/// the child's mappings are cloned, or the child would get a marker with no
+/// entry in its share of the pool (the pool was shared before the store) and
+/// die on its first touch. The fork's hold lasts until the clone.
+/// **Canary** `fork-hold-canary`: the hold ends with the walk.
+#[test]
+fn the_reclaimer_takes_no_page_of_a_parent_until_its_fork_is_cloned() {
+    let _g = serial();
+    let pt = space();
+    let base = map(4);
+    write(pt, base, 0x10);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, _, hold) =
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    write(pt, base + PAGE_SIZE, 0x77);
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base + PAGE_SIZE };
+    assert!(!reclaim.unmap(victim), "the reclaimer took a page of a parent its fork is still copying");
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 0);
+    assert!(fork_regions_to_child(2));
+    drop(hold);
+    assert!(reclaim.unmap(victim), "the fork is over: the page may be taken");
+    reclaim.keep(victim);
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+/// **A page out at the fork's walk is the child's, whatever a sibling does
+/// meanwhile.** The parent's page is compressed when the fork walks; a sibling
+/// touches it before the child's mappings are cloned. The restore waits for the
+/// fork to end, so the child gets the parent's marker (and its share of the
+/// pool's copy) and reads the page, not a zero page. Needs the compressed pool
+/// (Kconfig MM_RECLAIM_COMPRESS).
+/// **Canary** `fork-hold-canary`: the sibling restores at once, the child's
+/// slot stays empty and it reads zeros.
+#[test]
+fn a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it() {
+    if !azos_mm::zpool::ENABLED {
+        return;
+    }
+    let _g = serial();
+    azos_crypto::entropy::mix(&[0x4b; 64], 512);
+    let pt = space();
+    let base = map(2);
+    write(pt, base, 0x5A);
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base };
+    assert!(reclaim.unmap(victim));
+    assert!(reclaim.store(victim).is_ok());
+    reclaim.free(victim);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, _, hold) =
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    let parent_space = azos_sched::shim_space(pt);
+    azos_sched::shim_serial_share(true);
+    std::thread::scope(|sc| {
+        // The sibling's access retries until its page is there.
+        let sibling = sc.spawn(|| {
+            while azos_mm::vmm::translate(pt, base).is_none() {
+                azos_mm::vmm::handle_demand_fault(parent_space, base)?;
+                std::thread::yield_now();
+            }
+            Ok::<(), azos_common::error::KernelError>(())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let early = azos_mm::vmm::translate(pt, base).is_some();
+        azos_sched::shim_forget_space(child);
+        azos_sched::shim_set_other_task(2, child, 0);
+        assert!(fork_regions_to_child(2));
+        drop(hold);
+        assert!(sibling.join().unwrap().is_ok());
+        assert!(!early, "the sibling restored the page while the fork copied the markers");
+    });
+    azos_sched::shim_serial_share(false);
+    let f = azos_mm::vmm::translate(pt, base).expect("restored in the parent");
+    assert!(bytes(f).iter().all(|&b| b == 0x5A));
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(child), base).is_ok());
+    let cf = azos_mm::vmm::translate(child, base).expect("restored in the child");
+    assert!(bytes(cf).iter().all(|&b| b == 0x5A), "the child reads the parent's page, not zeros");
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
