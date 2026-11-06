@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2784752
-aarch64-microvm	.rodata	340320
-aarch64-microvm	.data	464808
+aarch64-microvm	.text	2787408
+aarch64-microvm	.rodata	340288
+aarch64-microvm	.data	465320
 aarch64-microvm	.bss	947752
-aarch64-microvm	reason	record substrate: the early region (kernel log and decision rings) is built in .data; the decision ring moved out of .bss
-riscv64-qemu	.text	2859044
-riscv64-qemu	.rodata	480072
-riscv64-qemu	.data	748816
+aarch64-microvm	reason	brk markers out, growth pool
+riscv64-qemu	.text	2860776
+riscv64-qemu	.rodata	484048
+riscv64-qemu	.data	749328
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	record substrate: the early region (kernel log and decision rings, one header) is built in .data; the decision ring moved out of .bss (64-byte slots, was 48)
-x86_64-microvm	.text	2653241
+riscv64-qemu	reason	brk as an anonymous mapping, markers gone, budget growth pool, over the record substrate
+x86_64-microvm	.text	2656665
 x86_64-microvm	.rodata	168352
-x86_64-microvm	.data	616768
+x86_64-microvm	.data	617600
 x86_64-microvm	.bss	958544
-x86_64-microvm	reason	record substrate: the early region (kernel log and decision rings) is built in .data; the decision ring moved out of .bss
+x86_64-microvm	reason	brk markers out, growth pool
