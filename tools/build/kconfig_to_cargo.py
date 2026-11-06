@@ -537,6 +537,34 @@ class SelectError(Exception):
     """A build selection that cannot be built from the configuration."""
 
 
+def hook_symbols(hook: str, feats: dict[str, list[str]], sym_of: dict[str, str]) -> list[str]:
+    """The Kconfig symbols whose features test hook `hook` turns on: the
+    symbol-owned features in its closure in kernel/Cargo.toml (a hook's own
+    list, the lists of the features it names, and so on)."""
+    seen, todo, need = set(), [hook], []
+    while todo:
+        for e in feats.get(todo.pop(), []):
+            if e.startswith("dep:") or "/" in e or e in seen:
+                continue
+            seen.add(e)
+            if e in sym_of and sym_of[e] not in need:
+                need.append(sym_of[e])
+            todo.append(e)
+    return need
+
+
+def _choice_members(syms: list[str]) -> list[str]:
+    """Those of `syms` (CONFIG_<SYM>) that are members of a Kconfig choice."""
+    import kconfiglib
+    old = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        k = kconfiglib.Kconfig("Kconfig", warn=False)
+    finally:
+        os.chdir(old)
+    return [s for s in syms if (x := k.syms.get(s.removeprefix("CONFIG_"))) is not None and x.choice is not None]
+
+
 def select(base: str, tokens: list[str], out: str) -> list[str]:
     """Write to `out` the configuration a build selection asks for, and return
     its test hooks.
@@ -551,8 +579,13 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
     the features; a symbol the expansion cannot keep at y is an error, never a
     feature built against a configuration that says otherwise. A test hook
     (TEST_HOOK_RE) has no symbol: it is returned, for the caller to add to
-    the configuration's own features. Any other name is an error: a policy
-    feature without a Kconfig symbol, or no feature at all.
+    the configuration's own features, and the features a symbol owns that it
+    turns on (`hook_symbols`) are their symbols set to y as above, so the
+    configuration and the features agree (a hook that turns on `board-io`
+    builds with BOARD_IO and its constants). A choice member is not switched
+    for a hook: one the configuration does not have is an error (a selection
+    names the board). Any other name is an error: a policy feature without a
+    Kconfig symbol, or no feature at all.
     """
     cfg = read_dot_config(base)
     if cfg is None:
@@ -561,9 +594,11 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
     sym_of = {f: k for k, f in KCONFIG_TO_CARGO_FEATURE.items()}
     hooks: list[str] = []
     lines: dict[str, str] = {}
+    asked: dict[str, str] = {}
     for t in tokens:
         m = _SELECT_LINE_RE.match(t)
         if m:
+            asked[m.group(1)] = m.group(2)
             if cfg.get(m.group(1), "n") != m.group(2):
                 lines[m.group(1)] = m.group(2)
         elif t in sym_of:
@@ -578,6 +613,16 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
                               f"give it one (a `# cargo-feature: {t}` tag), it is not named by hand")
         else:
             raise SelectError(f"`{t}` is not a feature of kernel/Cargo.toml")
+    needs: dict[str, str] = {}
+    for h in hooks:
+        for sym in hook_symbols(h, feats, sym_of):
+            needs.setdefault(sym, h)
+            if cfg.get(sym) != "y" and asked.get(sym, "y") == "y":
+                lines.setdefault(sym, "y")
+    switched = [s for s, h in needs.items() if cfg.get(s) != "y" and lines.get(s) == "y"]
+    for s in _choice_members(switched) if switched else []:
+        raise SelectError(f"`{needs[s]}` needs {s}=y, a choice member this configuration has not chosen: "
+                          f"the selection names it, a hook does not switch it")
     with open(base, encoding="utf-8") as fh:
         text = fh.read()
     # Rows of a parallel gate derive the same copy at once: each writes its own.
@@ -603,6 +648,15 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
             os.unlink(tmp)
             raise SelectError(f"{', '.join(lost)} does not hold on {base} (olddefconfig "
                               f"drops it: a dependency is not met, or another symbol derives it)")
+    else:
+        got = cfg
+    # The invariant the lines above serve, checked on what the build reads: no
+    # feature a symbol owns is turned on by a hook while its symbol is off.
+    off = [f"{s} (for `{h}`)" for s, h in needs.items() if got.get(s, "n") != "y" or asked.get(s, "y") != "y"]
+    if off:
+        os.unlink(tmp)
+        raise SelectError(f"a test hook turns on the feature of {', '.join(off)}, which this configuration "
+                          f"does not set: the hook would build against constants that say otherwise")
     os.replace(tmp, out)
     return hooks
 

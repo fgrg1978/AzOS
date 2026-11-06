@@ -28,8 +28,8 @@ default = []
 # actuation authority (crates/core/actuation: e-stop latch, flight recorder,
 # sys-wdt), and none of those crates.
 #
-# Owned by USE_ROBOT (its tag): tools/build/kconfig_to_cargo.py emits it for every
-# .config that selects the Robot domain; no build names it by hand.
+# Owned by EXT_ROBOT (its tag; USE_ROBOT follows it): tools/build/kconfig_to_cargo.py
+# emits it for every .config that turns the robot extension on; no build names it by hand.
 # kernel/src/main.rs refuses (compile error) a .config that selects
 # USE_ROBOT without this feature.
 use-robot = [

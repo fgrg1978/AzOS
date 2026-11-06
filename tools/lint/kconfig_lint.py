@@ -360,12 +360,11 @@ def lint(root=k2c.REPO_ROOT, cargo_toml=k2c.KERNEL_CARGO_TOML, generate=True, kc
         kept = ", ".join(f"{n[c]} {c}" for c in HOOK_CLASSES if c != "pending")
         report.append(f"{len(hooks)} compile-time test hooks: {kept}, {n['pending']} pending "
                       f"(F6: the pending ones become runtime canary= names; target about 40 in all)")
-    # A test hook that turns on a Kconfig symbol's feature bypasses the symbol.
-    for f in hooks:
-        owned = [e for e in feats[f] if e in by_feat]
-        if owned:
-            report.append(f"test hook `{f}` turns on Kconfig-owned feature(s) {', '.join(owned)}: "
-                          f"the selection should name the symbol")
+    # A test hook that turns on a Kconfig symbol's feature: a build selection
+    # sets the symbol for it, or refuses (kconfig_to_cargo.select, `hook_symbols`).
+    sym_of = {f: syms[0] for f, syms in by_feat.items()}
+    n = sum(1 for f in hooks if k2c.hook_symbols(f, feats, sym_of))
+    report.append(f"{n} test hooks turn on Kconfig-owned features: a selection sets their symbols")
     return errors, report
 
 

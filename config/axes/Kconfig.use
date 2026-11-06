@@ -36,12 +36,11 @@ config USE_GENERIC
       default features (tools/build/kconfig_to_cargo.py).
 
 config USE_ROBOT
-    # cargo-feature: use-robot
     def_bool EXT_ROBOT
     help
       The robot extension is on (EXT_ROBOT, config/extensions/Kconfig, which
-      the robot preset picks by default). Links the robot crates (kernel
-      feature `use-robot`):
+      the robot preset picks by default and which owns the kernel feature
+      `use-robot`). Links the robot crates:
       behavior and the brain link, the motor control loop and the
       per-robot-type safety envelope (safety-core), IMU / barometer /
       GPS / AHRS, flight, navigation, telemetry, the in-kernel benches, and starts their tasks.

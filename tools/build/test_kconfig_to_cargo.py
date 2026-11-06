@@ -1458,6 +1458,26 @@ def test_select_applies_a_selection_through_kconfig() -> None:
         # Nothing to apply: the configuration's own features, copied unchanged.
         r = sel("")
         assert r.returncode == 0 and (t / "s.config").read_text() == base.read_text(), r
+        # A test hook that turns on a symbol's feature sets the symbol, so its
+        # constants are there (`supall-smoke` turns on `board-io`).
+        assert "CONFIG_BOARD_IO=y" not in base.read_text().splitlines()
+        r = sel("supall-smoke")
+        assert r.returncode == 0, r
+        feats = r.stdout.split("--features ", 1)[1].split()[0].split(",")
+        assert "board-io" in feats and "CONFIG_BOARD_IO=y" in (t / "s.config").read_text().splitlines(), r
+        # The robot hooks reach the extension's symbol, not the derived USE_ROBOT.
+        r = sel("reflex-smoke")
+        assert r.returncode == 0 and "CONFIG_USE_ROBOT=y" in (t / "s.config").read_text().splitlines(), r
+        # The symbol turned off by the selection itself: refused, never built against.
+        r = sel("supall-smoke,CONFIG_BOARD_IO=n")
+        assert r.returncode == 1 and "CONFIG_BOARD_IO (for `supall-smoke`)" in r.stderr, r
+        # A hook never switches a choice: off QEMU, a QEMU hook is refused.
+        r = sel("vf2,supall-smoke")
+        assert r.returncode == 1 and "CONFIG_BOARD_QEMU (for `supall-smoke`)" in r.stderr, r
+        _expand(["CONFIG_BOARD_VF2=y", "CONFIG_BUILD_TYPE_DEV=y"], t, "v.config")
+        r = subprocess.run([sys.executable, str(script), "--select", "supall-smoke",
+                            "--out", str(t / "s.config"), str(t / "v.config")], capture_output=True, text=True)
+        assert r.returncode == 1 and "CONFIG_BOARD_QEMU=y, a choice member" in r.stderr, r
 
 
 GOLDEN = TOOLS_DIR / "kconfig_to_cargo.golden"

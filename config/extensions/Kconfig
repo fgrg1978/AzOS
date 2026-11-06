@@ -11,6 +11,7 @@
 menu "Extensions"
 
 config EXT_ROBOT
+    # cargo-feature: use-robot
     bool "Robot: motors, sensors, safety envelope and the brain link"
     default y if PRESET_ROBOT
     imply BOARD_IO
