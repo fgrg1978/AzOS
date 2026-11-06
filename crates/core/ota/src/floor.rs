@@ -86,12 +86,14 @@ pub fn lift(stored: u32) -> u32 {
 
 // REQ-014
 /// The floor a consumer may judge by, from BOOTMETA's `stored`: lifted by the
-/// backend when BOOTMETA's floor is `raised` at every confirmed boot (the
-/// A/B slots) or a backend holds it; `None` when neither, as BOOTMETA's
-/// floor alone, never raised, is whatever the volume says and no floor.
+/// backend when the floor is `raised` at every confirmed boot (the A/B
+/// slots, the one caller of [`commit`]); `None` otherwise. A floor nothing
+/// raises is no floor, whoever holds it: BOOTMETA's is whatever the volume
+/// says, and a backend's stays where it was provisioned, so an older signed
+/// blob would pass it.
 #[must_use]
 pub fn trusted(stored: u32, raised: bool) -> Option<u32> {
-    (raised || active()).then(|| lift(stored))
+    raised.then(|| lift(stored))
 }
 
 // REQ-014

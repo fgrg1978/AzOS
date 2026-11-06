@@ -57,8 +57,8 @@ const ISA: u8 = if cfg!(target_arch = "riscv64") {
 // five-byte nopl), so the compiler must leave at least that many entry nops.
 const _: () = assert!(!ENABLED || azos_limits::LIVEPATCH_POOL_KIB != 0, "LIVEPATCH needs LIVEPATCH_POOL_KIB");
 const _: () = assert!(
-    !ENABLED || azos_limits::BOOT_SLOTS || azos_limits::OTA_FLOOR_TPM_NV,
-    "LIVEPATCH needs an epoch floor it may trust: BOOT_SLOTS or OTA_FLOOR_TPM_NV"
+    !ENABLED || azos_limits::BOOT_SLOTS,
+    "LIVEPATCH needs an epoch floor that rises: BOOT_SLOTS"
 );
 const _: () = assert!(
     !ENABLED || azos_limits::LIVEPATCH_ENTRY_NOPS >= if cfg!(target_arch = "aarch64") { 1 } else if cfg!(target_arch = "riscv64") { 3 } else { 5 },

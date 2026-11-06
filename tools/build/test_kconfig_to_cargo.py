@@ -1489,9 +1489,9 @@ def test_select_applies_a_selection_through_kconfig() -> None:
 
 def test_without_boot_slots_nothing_judges_by_an_untrusted_floor() -> None:
     """BOOT_SLOTS off: BOOTMETA's epoch floor is never raised, so what judges an
-    epoch by it is not offered without a floor it may trust: LIVEPATCH needs
-    the slots or the TPM floor, the boot-time package apply the slots (its
-    trial reads the boot counter), and the slot image checks
+    epoch by it is not offered without a floor that rises: LIVEPATCH and the
+    boot-time package apply (whose trial also reads the boot counter) need
+    the slots, even with the TPM floor, and the slot image checks
     (OTA_SIG_MANDATORY, SECURE_BOOT_ENFORCED) the slots. Canary: drop a
     `depends on` and its symbol survives here."""
     import tempfile
@@ -1508,8 +1508,9 @@ def test_without_boot_slots_nothing_judges_by_an_untrusted_floor() -> None:
         off = _expand(base + ["# CONFIG_BOOT_SLOTS is not set"], t, "off.config")
         for sym in ("LIVEPATCH", "PKG_BOOT_APPLY", "OTA_SIG_MANDATORY", "SECURE_BOOT_ENFORCED"):
             assert f"CONFIG_{sym}=y" not in off, (sym, "kept without the slots")
+        # A TPM floor nothing raises is no floor either.
         tpm = _expand(base + ["# CONFIG_BOOT_SLOTS is not set", "CONFIG_OTA_FLOOR_TPM_NV=y"], t, "tpm.config")
-        assert "CONFIG_LIVEPATCH=y" in tpm and "CONFIG_PKG_BOOT_APPLY=y" not in tpm, tpm
+        assert "CONFIG_LIVEPATCH=y" not in tpm and "CONFIG_PKG_BOOT_APPLY=y" not in tpm, tpm
 
 
 GOLDEN = TOOLS_DIR / "kconfig_to_cargo.golden"

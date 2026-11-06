@@ -27,12 +27,12 @@ config BOOT_SLOTS
 
       Off (a machine whose loader owns the image: a virtual machine booted
       by its host, PRESET_MICROVM's default): none of that is built, the
-      boot writes nothing to the volume, and BOOTMETA's floor is never
-      raised. The floor is still read; with no backend that holds it
-      (OTA_FLOOR_TPM_NV) the build has no floor it may trust, so what
-      judges an epoch by it needs the slots or the backend (LIVEPATCH depends on one of them, PKG_BOOT_APPLY on
-      the slots, whose boot counter its trial also reads) and a signed
-      image check has nothing to check (OTA_SIG_MANDATORY and
+      boot writes nothing to the volume, and no epoch floor rises,
+      BOOTMETA's or its backend's (OTA_FLOOR_TPM_NV). The floor is still
+      read, but a floor that never rises is not one to judge an epoch by
+      (`azos_ota::ota_floor` is None), so what does needs the slots
+      (LIVEPATCH, PKG_BOOT_APPLY, whose trial also reads the boot counter),
+      and the slot image check has nothing to check (OTA_SIG_MANDATORY and
       SECURE_BOOT_ENFORCED depend on it). A BUILD_TYPE_CERTIFIABLE build
       has it on.
 

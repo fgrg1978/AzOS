@@ -269,10 +269,10 @@ pub fn ota_read_boot_meta() -> BootMeta {
 
 // REQ-014
 /// The epoch floor a package or a livepatch is judged against, `None` when
-/// this build keeps none it may trust: BOOTMETA's floor rises only at a
-/// confirmed boot (`BOOT_SLOTS`), so without the slots it is trusted only
-/// where a hardware backend holds it too (`floor::trusted`). Never a zero
-/// standing in for "no floor".
+/// this build keeps none it may trust: the floor rises only at a confirmed
+/// boot (`BOOT_SLOTS`), so without the slots there is none, a hardware
+/// backend's included (`floor::trusted`). Never a zero standing in for "no
+/// floor".
 #[must_use]
 pub fn ota_floor() -> Option<u32> {
     floor::trusted(read_boot_meta_stored().min_sec_epoch, cfg!(feature = "boot-slots"))
