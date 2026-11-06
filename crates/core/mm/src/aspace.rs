@@ -186,8 +186,22 @@ impl SpaceSlot {
         }
     }
 
-    #[inline(always)]
+    /// The reference the slot holds. Another task's slot may be read while it
+    /// is written (the reclaimer reads them): a torn pair with either word zero
+    /// reads as none, and a pair of an old and a new word is a reference that
+    /// [`SpaceRef::lock`] refuses (the object is type-stable, its root compared).
+    #[inline]
     pub fn get(self) -> Option<SpaceRef> {
+        if self.obj == 0 {
+            return None;
+        }
+        self.get_own()
+    }
+
+    /// [`Self::get`] of the running task's own slot, which nothing writes while
+    /// the task runs: no torn pair to refuse.
+    #[inline(always)]
+    pub fn get_own(self) -> Option<SpaceRef> {
         NonZeroUsize::new(self.root).map(|root| SpaceRef { root, obj: self.obj as *const AddressSpace })
     }
 

@@ -204,7 +204,7 @@ pub fn current_user_pt() -> usize {
 /// as [`current_user_pt`].
 pub fn current_aspace() -> Option<azos_mm::aspace::SpaceRef> {
     let idx = my_idx();
-    if idx == usize::MAX { None } else { TASKS[idx].aspace.get() }
+    if idx == usize::MAX { None } else { TASKS[idx].aspace.get_own() }
 }
 
 /// The current task's translation root word (`satp` / TTBR0 with its ASID):
