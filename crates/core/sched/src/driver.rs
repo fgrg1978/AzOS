@@ -414,9 +414,9 @@ impl DriverDescriptor {
 /// Maximum number of drivers that can be auto-spawned at boot.
 pub const MAX_SPAWN_DESCRIPTORS: usize = 8;
 
-/// Boot-time driver descriptors. Nothing populates or reads them: the M4
-/// supervisor (`supervisor.rs`) records the image path the autorun loader
-/// actually opened instead, at load time.
+/// Boot-time driver descriptors. Nothing populates or reads them: what the
+/// kernel restarts is `supervisor.rs`'s, what the component manager starts
+/// is its own.
 static mut SPAWN_DESCRIPTORS: [DriverDescriptor; MAX_SPAWN_DESCRIPTORS] = {
     const EMPTY: DriverDescriptor = DriverDescriptor::empty();
     [EMPTY; MAX_SPAWN_DESCRIPTORS]

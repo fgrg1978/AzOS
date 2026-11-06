@@ -631,7 +631,7 @@ impl ClassPi {
         }
         let floored = graph_floored(idx, p);
         if floored != u32::MAX {
-            super::note_pi_boost(idx, floored, floored != p);
+            super::note_pi_boost(idx, floored != p);
         }
         let p = floored;
         PI_PRIO[idx].store(p, Ordering::Relaxed);

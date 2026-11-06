@@ -260,8 +260,8 @@ pub(crate) fn spawn_sched_smokes(num_cpus: usize) {
 }
 
 /// `kernel_main`'s ring-3 driver, safety and refusal smokes, in its order:
-/// the AQ3 GPIO round trip (and the supervisor smoke after it), the OTA and
-/// durability probes, the buzzer and INA219 test, the supervised restarts,
+/// the OTA and durability probes, the buzzer and INA219 test, the supervised
+/// restarts,
 /// the e-stop line, the console splice, reflex, envelope, geofence and RC
 /// smokes, the sensor stamp, the flight-recorder read-backs, then the
 /// fork-refusal probe. Each is feature-gated; a default image spawns none.

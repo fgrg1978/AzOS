@@ -1557,7 +1557,7 @@ pub unsafe fn sret_to_user_forked(_entry: usize, _satp: usize, _regs: &crate::ta
 /// translation root does not map (`SUM=0` on riscv64, no `TTBR0` entry on
 /// aarch64) and ended the machine in `[FATAL] Kernel page fault` (seen once,
 /// riscv64 `-smp 4`, host load 17-25: task `thread`, store to `0x14fb8`,
-/// shortly after `[AQ3] GPIO ring-3 round-trip OK`). It is a refusal now,
+/// on the GPIO driver's volume). It is a refusal now,
 /// `false` (EFAULT to the caller), and logged with the task's identity.
 ///
 /// K1 (riscv64 with RAM at 0) is the one layout with kernel memory below the

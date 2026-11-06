@@ -214,15 +214,13 @@ pub fn set_pi_floor_recorder(f: fn(target_tid: u32)) {
     PI_FLOOR_RECORDER.set(f);
 }
 
-/// The graph boosted slot `idx` to `prio`, and the ring-3 floor bound it
-/// (`floored`): telemetry for the proxy smoke, and one record per target task.
-pub(super) fn note_pi_boost(idx: usize, prio: u32, floored: bool) {
-    let target = unsafe { task_ref(idx) }.tid;
-    LAST_PI_BOOST.store(((target as u64) << 32) | prio as u64, Ordering::Relaxed);
+/// The graph boosted slot `idx`, and the ring-3 floor bound it (`floored`):
+/// one record per target task.
+pub(super) fn note_pi_boost(idx: usize, floored: bool) {
     if !floored {
         return;
     }
-    PI_FLOORED.fetch_add(1, Ordering::Relaxed);
+    let target = unsafe { task_ref(idx) }.tid;
     if !slot_holds(idx, target) || FLOOR_RECORDED_TID[idx].swap(target, Ordering::Relaxed) == target {
         return;
     }

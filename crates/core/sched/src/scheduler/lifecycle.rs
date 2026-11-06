@@ -2505,7 +2505,7 @@ pub(super) static SUBREAPER: [core::sync::atomic::AtomicBool; MAX_TASKS] =
 
 /// Wave 13 (orphans): the reaper of last resort, Linux's init — the task the
 /// autorun row's image runs as (`set_init_tid`, called by the kernel's
-/// autorun loader at its exec; a supervised successor sets its own). 0: none,
+/// autorun loader at its exec). 0: none,
 /// and an orphan with no subreaper ancestor is left with no parent.
 static INIT_TID: AtomicU32 = AtomicU32::new(0);
 

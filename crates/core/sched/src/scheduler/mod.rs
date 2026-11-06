@@ -3718,15 +3718,6 @@ pub fn ktest_tree_refused() -> u32 {
 #[cfg(feature = "ktest")]
 static KTEST_RING3_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// The last wait-graph boost applied to a task: `target_tid << 32 | priority`.
-/// Telemetry for the `proxy-pi-smoke` floor check, which reads the priority
-/// the boost actually applied rather than sampling for it.
-pub static LAST_PI_BOOST: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Wait-graph boosts the ring-3 floor bound, since boot. Telemetry; the
-/// `proxy-pi-smoke` floor check reads it across one call.
-pub static PI_FLOORED: AtomicU32 = AtomicU32::new(0);
-
 azos_common::ro_hook! {
     /// Where a floored boost is recorded (the kernel installs a flight-recorder
     /// writer: `SAFETY_TOPO_CLASS_REFUSED`, site `SITE_DONATION_FLOOR`). This

@@ -7,8 +7,7 @@
 //! The crash it pins: `[PAGE FAULT] CPU 3 - Store/AMO page fault at 0x14fb8`
 //! in task `thread`, `sepc` in `compiler_builtins`' word copy, `ra` in
 //! `copy_to_user`, then `[FATAL] Kernel page fault` (riscv64 `-smp 4`, the
-//! GPIODRV autorun volume, host load 17-25, right after `[AQ3] GPIO ring-3
-//! round-trip OK`). A task whose `current_user_pt()` read 0 took the helper's
+//! GPIODRV autorun volume, host load 17-25). A task whose `current_user_pt()` read 0 took the helper's
 //! kernel-context branch, which memcpy'd straight to the user VA the syscall
 //! carried (`sys_ipc_accept_v2`'s `write_desc` into the endpoint thread's
 //! stack, in gpio_drv's image). Two changes close it:

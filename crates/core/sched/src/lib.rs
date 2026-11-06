@@ -84,7 +84,7 @@ pub use scheduler::{
     stack_canary_check, MAX_CPUS, STACK_CANARY,
     boost_ready_task, restore_ready_task, task_priority,
     task_cpu_affinity,
-    set_pi_floor_recorder, PI_FLOORED, LAST_PI_BOOST,
+    set_pi_floor_recorder,
     task_running_on_other_hart,
     task_exit_with_code, current_exit_code, take_exit_note, take_exit_note_for, WaitpidMiss,
     exit_stat,

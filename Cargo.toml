@@ -3,9 +3,9 @@ resolver = "2"
 exclude = [
     "userspace/services/brain_client",
     "userspace/services/reflex",
-    # uhello — minimal Rust user-space ELF (E11.AQ3 phase-1 de-risk).
+    # uhello — minimal Rust user-space ELF.
     "userspace/tests/uhello",
-    # gpio_drv — userspace GPIO driver process (E11.AQ3).
+    # gpio_drv — ring-3 GPIO device host (DevicePower on its endpoint).
     "userspace/drivers/gpio_drv",
     # infsrv — ring-3 inference service: the broker behind the Infer interface,
     # and the behavior task's MLP (it replaced mlsrv; the image is MLSRV.ELF).
