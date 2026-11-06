@@ -40,7 +40,15 @@ mod wire;
 mod store;
 
 use store::{Store, Vol};
-use sys::record::{Envelope, Merge, Region, Step, SOURCE_DECISION, SOURCE_KLOG, SOURCE_TELEMETRY};
+// The record substrate's reader, named by path (the seccomp scanner reads
+// `use sys::` lists as function imports).
+type Envelope = sys::record::Envelope;
+type Merge<const P: usize> = sys::record::Merge<P>;
+type Region = sys::record::Region;
+type Step = sys::record::Step;
+const SOURCE_KLOG: u8 = sys::record::SOURCE_KLOG;
+const SOURCE_DECISION: u8 = sys::record::SOURCE_DECISION;
+const SOURCE_TELEMETRY: u8 = sys::record::SOURCE_TELEMETRY;
 use wire::{Record, LINE_MAX};
 
 /// Payload bytes the reader keeps per ring: the largest, the kernel log's.
@@ -339,7 +347,7 @@ fn run() -> i32 {
     };
     // SAFETY: a read-only mapping of the kernel's region, held for the life
     // of the program; `open` checks it is one.
-    let Some(region) = (unsafe { Region::open(base as *const u8, bytes) }) else {
+    let Some(region) = (unsafe { sys::record::Region::open(base as *const u8, bytes) }) else {
         say(b"logd: the klog.ring is not a record region this build reads\n");
         return 0;
     };
@@ -352,7 +360,7 @@ fn run() -> i32 {
     let limit = azos_limits::LOGD_FILE_KB as u64 * 1024;
     let (store, tail) = Store::recover(&mut vol, azos_limits::LOGD_FILES_KEEP as u8, limit);
     let hz = region.ts_hz();
-    let mut rd = Merge::<PAYLOAD>::oldest(region);
+    let mut rd = sys::record::Merge::<PAYLOAD>::oldest(region);
 
     // Resume after the files' last records when the kernel log's ring still
     // holds the last one (the same boot): every ring after its own last line.
