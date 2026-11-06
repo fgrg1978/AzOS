@@ -4210,26 +4210,32 @@ mod file_tree_cap_tests {
 // ── CONFIG.SIG v2 and the device record (hardware root of trust) ──────
 //
 // Fixtures produced by the host tools, so the tests prove the WIRE FORMAT the
-// tools and the kernel agree on:
+// tools and the kernel agree on. They are signed with a fixed fixture seed (32
+// bytes of 0x42, public half FIXTURE_PUBKEY), not with `tools/keys/test_priv.bin`,
+// which is generated per clone and so cannot be a constant:
 //   printf 'sched_hz=42\nlink_encrypt=1\n' > fx.ini
-//   python3 tools/sign/gen_config_sig.py fx.ini --config-v2 --counter 3 \
-//       --device-id 00112233445566778899aabbccddeeff --out fx.sig
+//   python3 -c "open('fx_priv.bin','wb').write(bytes([0x42])*32)"
+//   python3 tools/sign/gen_config_sig.py fx.ini --priv fx_priv.bin --config-v2 \
+//       --counter 3 --device-id 00112233445566778899aabbccddeeff --out fx.sig
 //   python3 -c "import device_provision as d; \
 //       print(d.record(bytes.fromhex('00112233445566778899aabbccddeeff'), 7).hex())"
-// with `tools/keys/test_priv.bin`, whose public half this crate embeds
-// (`dev-key`). Regenerating the key pair breaks these: re-sign instead.
 #[cfg(test)]
 mod config_sig_v2_tests {
     use azos_topology::device_record::{DeviceRecord, DEVICE_RECORD_LEN};
-    use azos_topology::{verify_config_sig_v2, ConfigSigError, TRUSTED_PUBKEY};
+    use azos_topology::{verify_config_sig_v2, ConfigSigError};
+
+    const FIXTURE_PUBKEY: [u8; 32] = [
+        0x21, 0x52, 0xf8, 0xd1, 0x9b, 0x79, 0x1d, 0x24, 0x45, 0x32, 0x42, 0xe1, 0x5f, 0x2e, 0xab, 0x6c,
+        0xb7, 0xcf, 0xfa, 0x7b, 0x6a, 0x5e, 0xd3, 0x00, 0x97, 0x96, 0x0e, 0x06, 0x98, 0x81, 0xdb, 0x12,
+    ];
 
     const INI: &[u8] = b"sched_hz=42\nlink_encrypt=1\n";
     const DEVICE: [u8; 16] = [
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
     ];
     const SIDECAR_HEX: &str = "4b4346470200010000112233445566778899aabbccddeeff0300000000000000\
-        8931408a5739d12c85cf293a7669f112e2b9f35cb05862b708e94218570b18cc\
-        103ee9dc783e95900f86c992118c9a41d02b8bfb3a4900d0f194faa7b92e0707";
+        7f4bf4d223ef284e4fe140be5feecb4123b8d0ac62f845a4b1ac79eb5fb07a39\
+        8f6632c9b9e79e8eb4c84243903f1e02d30baf76acf72c177e94a059683d3604";
     const RECORD_HEX: &str = "4b4445560100112233445566778899aabbccddeeff07000000000000007fd24d44";
 
     fn hex(s: &str) -> Vec<u8> {
@@ -4242,7 +4248,7 @@ mod config_sig_v2_tests {
     fn a_tool_signed_v2_sidecar_verifies_and_yields_its_counter() {
         let sig = hex(SIDECAR_HEX);
         assert_eq!(sig.len(), 96);
-        assert_eq!(verify_config_sig_v2(INI, &sig, &DEVICE, &TRUSTED_PUBKEY), Ok(3));
+        assert_eq!(verify_config_sig_v2(INI, &sig, &DEVICE, &FIXTURE_PUBKEY), Ok(3));
     }
 
     /// Another device's id is refused before the signature is checked, and the
@@ -4253,10 +4259,10 @@ mod config_sig_v2_tests {
         let sig = hex(SIDECAR_HEX);
         let mut other = DEVICE;
         other[15] ^= 1;
-        assert_eq!(verify_config_sig_v2(INI, &sig, &other, &TRUSTED_PUBKEY), Err(ConfigSigError::WrongDevice));
+        assert_eq!(verify_config_sig_v2(INI, &sig, &other, &FIXTURE_PUBKEY), Err(ConfigSigError::WrongDevice));
         let mut forged = sig.clone();
         forged[8 + 15] ^= 1;
-        assert_eq!(verify_config_sig_v2(INI, &forged, &other, &TRUSTED_PUBKEY), Err(ConfigSigError::InvalidSignature));
+        assert_eq!(verify_config_sig_v2(INI, &forged, &other, &FIXTURE_PUBKEY), Err(ConfigSigError::InvalidSignature));
     }
 
     /// The counter, the file and the signature are all covered: change any one
@@ -4267,13 +4273,13 @@ mod config_sig_v2_tests {
         let sig = hex(SIDECAR_HEX);
         let mut c = sig.clone();
         c[24] = 2;
-        assert_eq!(verify_config_sig_v2(INI, &c, &DEVICE, &TRUSTED_PUBKEY), Err(ConfigSigError::InvalidSignature));
+        assert_eq!(verify_config_sig_v2(INI, &c, &DEVICE, &FIXTURE_PUBKEY), Err(ConfigSigError::InvalidSignature));
         let mut ini = INI.to_vec();
         ini[9] ^= 1;
-        assert_eq!(verify_config_sig_v2(&ini, &sig, &DEVICE, &TRUSTED_PUBKEY), Err(ConfigSigError::InvalidSignature));
+        assert_eq!(verify_config_sig_v2(&ini, &sig, &DEVICE, &FIXTURE_PUBKEY), Err(ConfigSigError::InvalidSignature));
         let mut s = sig.clone();
         s[40] ^= 1;
-        assert_eq!(verify_config_sig_v2(INI, &s, &DEVICE, &TRUSTED_PUBKEY), Err(ConfigSigError::InvalidSignature));
+        assert_eq!(verify_config_sig_v2(INI, &s, &DEVICE, &FIXTURE_PUBKEY), Err(ConfigSigError::InvalidSignature));
     }
 
     /// The v1 format (a bare 64-byte signature) is refused by its own error,
@@ -4281,8 +4287,8 @@ mod config_sig_v2_tests {
     #[test]
     fn v1_and_malformed_sidecars_are_refused() {
         let sig = hex(SIDECAR_HEX);
-        assert_eq!(verify_config_sig_v2(INI, &sig[32..], &DEVICE, &TRUSTED_PUBKEY), Err(ConfigSigError::V1Format));
-        assert_eq!(verify_config_sig_v2(INI, &sig[..95], &DEVICE, &TRUSTED_PUBKEY), Err(ConfigSigError::BadFormat));
+        assert_eq!(verify_config_sig_v2(INI, &sig[32..], &DEVICE, &FIXTURE_PUBKEY), Err(ConfigSigError::V1Format));
+        assert_eq!(verify_config_sig_v2(INI, &sig[..95], &DEVICE, &FIXTURE_PUBKEY), Err(ConfigSigError::BadFormat));
         // Magic, version, padding, the algorithm id (ML-DSA-65's, none, one
         // that is two bytes wide), the counter.
         for (at, v) in [(0usize, b'X'), (4, 1), (5, 1), (6, 2), (6, 0), (7, 1), (24, 0)] {
@@ -4291,7 +4297,7 @@ mod config_sig_v2_tests {
             if at == 24 {
                 m[25..32].fill(0);
             }
-            assert_eq!(verify_config_sig_v2(INI, &m, &DEVICE, &TRUSTED_PUBKEY), Err(ConfigSigError::BadFormat), "byte {at}");
+            assert_eq!(verify_config_sig_v2(INI, &m, &DEVICE, &FIXTURE_PUBKEY), Err(ConfigSigError::BadFormat), "byte {at}");
         }
     }
 
