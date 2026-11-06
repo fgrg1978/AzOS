@@ -106,6 +106,10 @@ keep-leaf-first-canary = []
 # child's mappings are cloned, so a sibling's restore or the reclaimer's store
 # runs while the markers are copied: `syscall-tests` pte_truth.rs fork rows fail.
 fork-hold-canary = []
+# Host-suite canary: a demand reservation (`brk`) is written over a page of a
+# mapping, whose state is its object's slot: `syscall-tests` pte_truth.rs
+# `a_heap_reservation_skips_the_pages_of_a_mapping` fails.
+demand-over-mapping-canary = []
 # Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
 # kept past its space's end reaches the next space made from the object:
 # `syscall-tests`' `aspace_life` fails.

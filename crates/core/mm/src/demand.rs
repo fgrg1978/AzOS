@@ -80,6 +80,15 @@ pub fn map_demand(pt_phys: usize, vaddr: usize, flags: PagePerms) -> KResult<()>
     if vmm::write_would_enter_kernel_table(pt_phys, vaddr) {
         return Err(KernelError::AlreadyMapped);
     }
+    // A page of a mapping is its object's: its state is the slot, and an empty
+    // leaf may be a page in the pool or one never touched. A demand marker
+    // there would make its next touch a zero page the slot does not know.
+    // Canary `demand-over-mapping-canary`: the leaf alone decides.
+    if !cfg!(feature = "demand-over-mapping-canary")
+        && crate::aspace::current_with_root(pt_phys).is_some_and(|r| crate::pager::contains(r, vaddr))
+    {
+        return Err(KernelError::AlreadyMapped);
+    }
 
     let pte_ptr = vmm::walk(pt_phys, vaddr, true)?;
     let old = unsafe { core::ptr::read_volatile(pte_ptr) };

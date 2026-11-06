@@ -12274,6 +12274,11 @@ host_job host_canary_row "anon: fork hold, no store canary" syscall-tests fork-h
 host_job zpool_host_row "anon: fork hold, no restore, pool on" a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it
 host_job zpool_host_canary_row "anon: fork hold, no restore canary" fork-hold-canary \
     a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it
+# A demand reservation (brk) skips the pages of a mapping, whose state is its
+# object's slot (demand::map_demand). demand-over-mapping-canary: the empty leaf
+# alone decides, and a page in the pool would come back as zeros.
+host_job host_canary_row "anon: brk over a mapping canary" syscall-tests demand-over-mapping-canary \
+    a_heap_reservation_skips_the_pages_of_a_mapping
 host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
     a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,
