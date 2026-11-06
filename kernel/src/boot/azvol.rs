@@ -50,7 +50,7 @@
 //! block layer's published table is 0-based (`partition::partition(0)`), and a
 //! `block` endpoint's badge is `n + 1`. The subtraction is in [`open`], once.
 
-use azos_drv_api::block::{BlockData, BlockDev, BlockError, BlockOp, BlockReq, Geometry, Part};
+use azos_drv_api::block::{BlockData, BlockDev, BlockError, BlockOp, BlockReq, Geometry, Part, FLAG_PREFLUSH};
 use azos_drv_block::blkdev::Boot;
 use azos_drv_block::partition;
 use azos_drv_sys::{kprintln, kwarn};
@@ -80,6 +80,8 @@ impl BlockDev for PartDev {
     }
 
     fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+        // The whole request is refused before any piece is written.
+        req.check(self.part.geometry().sectors)?;
         // A long run goes down in pieces: the block layer stages at most this
         // much per call, however long a run the volume asks for.
         match (req.op, req.data) {
@@ -91,7 +93,9 @@ impl BlockDev for PartDev {
             }
             (BlockOp::Write, BlockData::Write(buf)) => {
                 for (i, piece) in buf.chunks(RUN_SECTORS as usize * 512).enumerate() {
-                    self.part.write_flagged(req.sector + i as u64 * RUN_SECTORS, piece, req.flags)?;
+                    // The flush ahead of the request is sent once, with the first piece.
+                    let flags = if i == 0 { req.flags } else { req.flags & !FLAG_PREFLUSH };
+                    self.part.write_flagged(req.sector + i as u64 * RUN_SECTORS, piece, flags)?;
                 }
                 Ok(())
             }
