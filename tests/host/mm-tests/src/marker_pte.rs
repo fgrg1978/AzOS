@@ -46,18 +46,17 @@
 //! * `set_limit_marked` taking the percentages the wrong way round:
 //!   `a_rows_limit_sets_the_domains_watermarks` red.
 //!
-//! The arch seam the reclaimer reads on the leaf (`Mmu::is_victim_leaf`
-//! through the blanket `PageWords`) is mirrored by `Rv` below; the x86_64 and
-//! aarch64 word encodings have their rows in `tests/host/arch-tests/src/marker_pte.rs`.
+//! The test the reclaimer makes on the leaf (`pager::victim_leaf`) is mirrored
+//! by `Rv` below.
 
 use super::budget::PageBudget;
-use super::slot::{self, put_back_page, resolve, PutBack, Resolve, SlotWords};
+use super::slot::{self, put_back_page, resolve, PageMarker, PutBack, Resolve, SlotWords};
 use super::zpool::{
     clear, fill_page, publish, put_back, reclaim_pass, take_out, Backing, Codec, Fetched, Lookup, Packed, PageWords,
     Pool, Refusal, Round, Stages,
 };
 use azos_arch::mmu::{Pte, PteFlags};
-use azos_arch_api::{PageMarker, PAGE_SIZE};
+use azos_arch_api::PAGE_SIZE;
 use std::alloc::{alloc, dealloc, Layout};
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -104,8 +103,8 @@ fn page(seed: u32) -> Vec<u8> {
     p
 }
 
-/// The reclaimer's test on the leaf, as the kernel's blanket `PageWords` over
-/// `Mmu` makes it, on the RISC-V words of the shim's real `mmu.rs`.
+/// The reclaimer's test on the leaf (`pager::victim_leaf`), on the RISC-V words
+/// of the shim's real `mmu.rs`.
 struct Rv;
 
 impl Rv {
@@ -406,8 +405,8 @@ fn only_a_plain_user_leaf_is_a_victim() {
     let cow = leaf_on(FRAME) | PteFlags::COW.bits();
     let kernel = Pte::new(FRAME, PteFlags::KERNEL_RW).0;
     let table = Pte::new(0x8030_0000, PteFlags::VALID).0;
-    let demand = PteFlags::DEMAND.bits() | PteFlags::USER.bits() | PteFlags::READ.bits();
-    for (w, what) in [(0, "empty"), (cow, "a COW leaf"), (kernel, "a kernel leaf"), (table, "a table"), (demand, "a demand word")] {
+    let invalid = PteFlags::USER.bits() | PteFlags::READ.bits();
+    for (w, what) in [(0, "empty"), (cow, "a COW leaf"), (kernel, "a kernel leaf"), (table, "a table"), (invalid, "an invalid word")] {
         assert!(!Rv.is_victim_leaf(w), "{what}");
     }
     assert!(Rv.is_victim_leaf(leaf_on(FRAME)));

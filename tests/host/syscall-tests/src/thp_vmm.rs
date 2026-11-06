@@ -608,11 +608,10 @@ impl Drop for Bbm {
 }
 
 #[test]
-fn the_park_word_is_invalid_and_is_not_empty_or_a_marker() {
+fn the_park_word_is_invalid_and_is_not_empty() {
     use azos_arch_api::Mmu;
     assert!(!azos_arch::ARCH.pte_is_valid(PTE_BBM_PARK));
     assert_ne!(PTE_BBM_PARK, azos_arch::ARCH.pte_empty());
-    assert!(!azos_arch::ARCH.pte_is_demand(PTE_BBM_PARK));
 }
 
 /// The level-0 slot that maps `va` under `root`, by hand.

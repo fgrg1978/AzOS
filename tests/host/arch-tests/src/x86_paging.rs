@@ -111,7 +111,6 @@ mod tests {
     fn no_read_has_no_encoding() {
         let p = PagePerms { read: false, ..PagePerms::USER_RX };
         assert_eq!(attr_bits(p), Err(MmuError::UnrepresentablePerms));
-        assert_eq!(make_demand(p), 0);
     }
 
     #[test]
@@ -122,19 +121,6 @@ mod tests {
         let b = break_cow(s);
         assert!(!is_cow(b) && b & RW != 0 && b & D != 0 && phys_addr(b) == 0x7000);
         assert_eq!(b & NX, NX, "exec state survives the round trip");
-    }
-
-    #[test]
-    fn demand_marker_is_not_present_and_carries_its_perms() {
-        for p in ALL_PERMS {
-            let w = make_demand(p);
-            assert!(!is_valid(w) && is_demand(w));
-            assert_eq!(demand_perms(w), PagePerms { ..p });
-            assert!(!is_leaf(w, 0) && !is_table(w, 1));
-        }
-        // A present COW leaf is not a demand marker even with bit 10 set.
-        assert!(!is_demand(P | SW_DEMAND));
-        assert_eq!([SW_COW, SW_DEMAND], [1 << 9, 1 << 10]);
     }
 
     #[test]

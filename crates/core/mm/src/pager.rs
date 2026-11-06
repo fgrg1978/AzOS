@@ -43,7 +43,7 @@
 //! **The compressed pool** (see [`AnonReclaim`] and the section below). The
 //! reclaimer takes a resident page out of an address space, compresses it into
 //! the pool and leaves a *page marker* in its object's slot
-//! (`azos_arch_api::PageMarker` over [`slot::SlotWords`], the protocol is
+//! ([`slot::PageMarker`] over [`slot::SlotWords`], the protocol is
 //! `crate::zpool`'s; its leaf is cleared): `InTransit` while the store runs,
 //! `Compressed` (`Swapped` once its segment is on the swap area) after it. A
 //! fault decides from the word it reads, never from a look at the pool: an
@@ -114,7 +114,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use azos_arch::ARCH;
-use azos_arch_api::{Mmu, PageMarker, PagePerms, PAGE_SIZE};
+use azos_arch_api::{Mmu, PagePerms, PAGE_SIZE};
 use azos_common::error::{KResult, KernelError};
 use azos_sync::SpinLock;
 
@@ -123,14 +123,14 @@ use crate::aging;
 use crate::anon_obj::{self, Spare};
 use crate::aspace::{Space, SpaceRef};
 pub use crate::mapping::{Backing, MapError, MapSet, Mapping};
-use crate::slot::{self, Resolve, SlotWords};
+use crate::slot::{self, PageMarker, Resolve, SlotWords};
 // Core-only, so the object table, the file layer and the host suites link the
 // one source (`#[path]`: it is a sibling of this file, not a crate module).
 #[path = "page_backing.rs"]
 mod page_backing;
 pub use page_backing::{fill_page, valid_len, write_back_page, PageBacking, PageIoError, PageKey, PAGE_KEY_LEN};
 use crate::resv::{self, Claim, Filled, ResvTable};
-use crate::zpool::{self, Fetched, Lookup, PageWords, Packed, Reclaimee};
+use crate::zpool::{self, Fetched, Lookup, Packed, Reclaimee};
 use crate::swap;
 use crate::memobj::{self, MemObjError, PagedError};
 use crate::{pmm, vmm};
@@ -737,6 +737,14 @@ fn zpool_dup(parent: usize, child: usize) -> Result<(), zpool::Error> {
 
 // ── The reclaimer's victims ──────────────────────────────────────────────────
 
+/// Is `w` a leaf whose page the reclaimer may take: a valid 4 KiB user leaf,
+/// not shared copy-on-write and not one of a contiguous run (one member of a
+/// run cannot change on its own).
+#[inline]
+fn victim_leaf(w: u64) -> bool {
+    ARCH.pte_is_valid(w) && ARCH.pte_is_leaf(w, 0) && ARCH.pte_perms(w).user && !ARCH.pte_is_cow(w) && !ARCH.pte_is_contig(w)
+}
+
 /// A page of an address space the reclaimer may take: where it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Victim {
@@ -819,7 +827,7 @@ impl<'a> AnonReclaim<'a> {
     /// The cheap test of the aging walk; `unmap` repeats it under the lock.
     fn candidate(root: usize, va: usize) -> bool {
         let (w, _) = peek(root, va);
-        ARCH.is_victim_leaf(w) && pmm::desc_of(ARCH.pte_phys(w)).is_some()
+        victim_leaf(w) && pmm::desc_of(ARCH.pte_phys(w)).is_some()
     }
 
     /// Copy out the mappings of `r` (empty when it has none).
@@ -1007,7 +1015,7 @@ impl AnonReclaim<'_> {
         // Shared with another space (a fork, a copy-on-write sibling), not a
         // frame the allocator tracks, or not the frame the slot names: not ours
         // to free.
-        if !ARCH.is_victim_leaf(w)
+        if !victim_leaf(w)
             || slot::frame_of(slot.load(Ordering::Acquire)) != Some(frame)
             || pmm::desc_of(frame).is_none()
             || crate::cow_table::page_is_shared(frame)

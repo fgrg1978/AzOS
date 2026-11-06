@@ -26,7 +26,7 @@ Contents:
 11. [Kernel image permissions (W^X)](#kernel-image-permissions-wx)
 12. [Kernel memory charged to the Domain](#kernel-memory-charged-to-the-domain)
 13. [Reclaim order](#reclaim-order)
-14. [Marker PTEs](#marker-ptes)
+14. [Page markers](#page-markers)
 15. [TLB invalidation per ISA](#tlb-invalidation-per-isa)
 
 ## Physical allocator and frame descriptors
@@ -280,7 +280,7 @@ ISA):
 |------|------|---------|
 | `Empty` | `0` | Never touched: a zero page. |
 | `Frame(pa)` | `pa \| 1` | Resident in the frame at `pa`. |
-| `Marker(kind, payload)` | `payload << 32 \| code << 1` | In transit, compressed or swapped (see *Marker PTEs*). |
+| `Marker(kind, payload)` | `payload << 32 \| code << 1` | In transit, compressed or swapped (see *Page markers*). |
 
 **The slot is the page's state; the leaf is a cache of it.** A fault reads the
 slot, never the leaf (`slot::resolve`): `Empty` is supplied zero-filled (a leaf
@@ -298,6 +298,15 @@ an object maps at `va` is `va >> PAGE_SHIFT`. A new mapping next to one of the
 object's (below or above it, same permission) is more pages of that object and
 folds into its record, so a heap that grows up or down holds one record of
 `MM_REGIONS_PER_SPACE`.
+
+**The program break is such a heap** (`sys_brk`, the Linux personality's): a
+growth reserves `[page_up(brk), page_up(addr))`, which folds into the mapping
+below it, and is charged once for the whole growth before anything is made. A
+growth that cannot be had in full (the budget, a range that is not vacant, no
+memory) leaves the break where it was, as Linux's does. A task whose pages are
+committed at map time (`mem = "locked"`, a real-time task with
+`MM_PRECOMMIT_RT`, `MM_DEMAND_PAGING` off) gets the frames at once, as its
+`mmap` does.
 
 **Slot storage.** `MM_SLOTS_INLINE` (default 16) pages from the object's first
 have their words inside the object. The others sit in 4 KiB chunks of 512 words:
@@ -371,7 +380,7 @@ with interrupts off on the one CPU doing the change:
 
 1. **Break:** compare-and-swap the slot from the old word to
    `azos_arch_api::PTE_BBM_PARK` (bit 62: invalid on every ISA, not the empty
-   word, not a demand marker).
+   word).
 2. **Shoot down** the block's range (`Mmu::tlb_shootdown`).
 3. **Make:** store the new word and publish it.
 
@@ -762,49 +771,26 @@ Source: `crates/core/mm/src/zpool.rs`, `crates/core/mm/src/swap.rs`,
 `kernel/src/tasks/reclaim.rs`, `kernel/src/boot/swap.rs`,
 `config/limits/Kconfig.limits`.
 
-## Marker PTEs
+## Page markers
 
-A page-table word with the valid bit clear is ignored whole by the hardware
-walker, so the kernel stores its own state in it. Two kinds exist, built by
-the `Mmu` trait.
+A page of a mapping that is not resident has an empty page-table word: its
+state is its object's slot (*Anonymous objects and slots*), and a not-present
+user entry carries nothing. There is no demand marker: a page reserved and not
+touched yet is an `Empty` slot of its mapping's object, `brk` included.
 
-**Demand marker** (`pte_make_demand`, `pte_is_demand`, `pte_demand_perms`). The
-page is reserved but has no frame. The final permissions are stored inline so
-the fault handler can recover them. The first touch allocates a zeroed frame
-and rewrites the word (`demand::map_demand`, `vmm::handle_demand_fault`).
-
-**Page marker.** The reclaimer leaves one in an anonymous page's slot
-(*Anonymous objects and slots*, `slot::marker`) while the page is outside the
-address space, its leaf cleared. A fault decides from the slot, never from a
-look at the pool: an empty slot is a zero page, `InTransit` is waited for, and a
-compressed or swapped marker is restored. A 32-bit payload is stored inline.
-The page-table encodings of the same markers below (`pte_make_marker`,
-`pte_marker`) are no longer written for an anonymous page.
+The reclaimer leaves a marker in an anonymous page's slot (`slot::marker`,
+`slot::PageMarker`) while the page is outside the address space, its leaf
+cleared. A fault decides from the slot, never from a look at the pool: an empty
+slot is a zero page, `InTransit` is waited for, and a compressed or swapped
+marker is restored. The encoding is the slot word's, the same on every ISA:
+the payload in bits 63:32, the code in bits 2:1, bit 0 clear (a set bit 0 is
+a `Frame`).
 
 | `PageMarker` | Code | Meaning | Payload |
 |--------------|------|---------|---------|
 | `Compressed` | 1 | The page is in the compressed pool. | Generation of the pool entry, so a marker never restores an earlier or later store of the same page. |
 | `Swapped` | 2 | As `Compressed`, and the entry's segment is on the swap area; a fault brings it back first. | Same |
 | `InTransit` | 3 | The reclaimer is storing the page now: out of the table, not yet in the pool. A fault waits. | Unused |
-
-Encoding per ISA (software bits of an invalid word; the marker flag and the
-DEMAND bit occupy distinct positions, and a marker has DEMAND clear; on
-riscv64 the marker flag is the COW bit's position, which only a valid leaf
-reads as COW):
-
-| ISA | Marker flag | Demand flag | Kind code (2 bits) | 32-bit payload |
-|-----|-------------|-------------|--------------------|----------------|
-| riscv64 | RSW bit 8 (the position COW uses on a valid leaf) | bit 9 | bits 11:10 | bits 63:32 |
-| aarch64 | software bit 57 | software bit 58 | bits 56:55 | bits 47:16 |
-| x86_64 | available bit 11 | bit 10 | bits 4:3 | bits 43:12, stored inverted, with bits 51:44 always set |
-
-On riscv64 the kind bits sit clear of the R/W/X bits so `Pte::is_leaf`, which
-does not look at the valid bit, still reports "not a leaf". On x86_64 the
-payload is inverted and the high address bits are set so the address field of
-a non-present entry never names real memory, because a speculative load through
-the field of a non-present entry on some CPUs reads whatever line is cached at
-that address. A marker is never read as a demand marker or as a COW leaf:
-`pte_is_cow` is true only for a valid word.
 
 Marker lifecycle rules (`pager.rs`): the pool entry stays until the restored
 frame is installed, then is dropped by generation; whatever ends the address
@@ -813,10 +799,14 @@ drops the entries; a fork gives the child a marker and a pool entry sharing the
 parent's blob for each page the parent has out, after waiting for stores in
 flight.
 
-Source: `arch/api/src/lib.rs`,
-`arch/riscv/src/mmu.rs`,
-`arch/aarch64/src/mmu/mod.rs`,
-`arch/x86_64/src/mmu.rs`, `crates/core/mm/src/demand.rs`,
+The pool is keyed by the address space and the page's address, not by the
+object: a private object has its space as its one mapper and numbers its pages
+by address, so the two keys name the same page. Keying by object needs an
+object handle that outlives reuse (a generation, as an address space's key
+has) and per-object duplicate, discard and retag, which shared objects with
+several mappers bring.
+
+Source: `crates/core/mm/src/slot.rs`, `crates/core/mm/src/zpool.rs`,
 `crates/core/mm/src/pager.rs`.
 
 ## TLB invalidation per ISA
@@ -825,7 +815,7 @@ The cross-ISA contract is in `Mmu` (`arch/api/src/lib.rs`):
 
 | Function | Contract |
 |----------|----------|
-| `flush_tlb_page(va)` | Invalidate the entry translating `va`. For changes where a stale entry elsewhere only faults and re-walks: demand materialize, permission widening, the kernel's own table at boot. |
+| `flush_tlb_page(va)` | Invalidate the entry translating `va`. For changes where a stale entry elsewhere only faults and re-walks: a first-touch install, permission widening, the kernel's own table at boot. |
 | `tlb_shootdown(root, va, len)` | After the caller removed, downgraded or repointed user PTEs of the table at `root`, invalidate `[va, va + len)` (`TLB_ALL`: everything) on every hart that may hold a translation, this one included, and return only when none can use one. Frames the old PTEs named may be freed after it returns, not before. Returns the mask of remote harts interrupted. |
 | `flush_tlb_all` | Whole-TLB form. |
 | `root_holders(root)` | Harts that still translate through `root`; a page table may be freed only while this is 0. |

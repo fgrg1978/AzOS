@@ -137,7 +137,7 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use azos_arch_api::{Mmu, PageMarker};
+use crate::slot::PageMarker;
 
 use azos_crypto::aes::Aes128;
 use azos_crypto::wkdm;
@@ -1412,7 +1412,7 @@ impl<
     /// of the index on, into `out`: how many, and where to go on (`None`: the
     /// index is done). For the caller that turns their markers into
     /// [`Swapped`](PageMarker::Swapped) ones a few at a time, without holding
-    /// the pool's lock across a page-table write.
+    /// the pool's lock across a slot write.
     pub fn parked_from(&self, from: usize, out: &mut [Stored]) -> (usize, Option<usize>) {
         let mut n = 0;
         let mut i = from;
@@ -1627,65 +1627,32 @@ pub fn run_storm<R: Reclaimee>(
 // ── Page markers ─────────────────────────────────────────────────────────────
 //
 // What makes the pool restorable by a fault. A page the reclaimer takes out of
-// an address space leaves a *marker* in its page-table slot
-// (`azos_arch_api::PageMarker`), and the fault path decides from the word it
-// reads, not from a look at the pool:
+// an address space leaves a *marker* ([`PageMarker`]) in its object's slot
+// (`crate::slot`), and the fault path decides from the word it reads, not
+// from a look at the pool (`slot::resolve`):
 //
 // * empty: a page nobody touched, or one `munmap` took: a zero page;
 // * [`InTransit`](PageMarker::InTransit): the reclaimer has the page out of
 //   the table and has not stored it yet. The fault waits and retries. Without
 //   it the fault would read the pool (nothing yet), zero-fill, and the
-//   reclaimer's copy would be orphaned: the window `pager::zpool_store`'s
-//   doc used to list as open;
+//   reclaimer's copy would be orphaned;
 // * [`Compressed`](PageMarker::Compressed) / [`Swapped`](PageMarker::Swapped):
 //   restore from the pool, and replace the marker with the page.
 //
-// A marker is only ever written over a plain user leaf the reclaimer owns, by
-// compare-and-swap from the exact word it read, so a fork, a COW break or an
-// `mprotect` that got there first wins and the reclaimer leaves the page
-// alone. All the words are compare-and-swapped, never stored: the fault, the
-// reclaimer and `munmap` race on them without a lock.
+// A marker is only ever written over a slot that names a frame, by
+// compare-and-swap from the exact word read, so whatever got there first wins
+// and the reclaimer leaves the page alone.
 //
-// This file does not know the page-table format; `PageWords` is the part of
-// the architecture's `Mmu` it needs, so the host rows run these functions
-// over each ISA's real encoding.
+// This file does not know the slot format; `PageWords` is the part of it the
+// protocol needs.
 
-/// The page-table words a marker protocol reads and writes: the part of
-/// [`azos_arch_api::Mmu`] it needs, which every `Mmu` is (the blanket impl).
+/// The slot words a marker protocol reads and writes (`slot::SlotWords`).
 pub trait PageWords {
-    /// A plain 4 KiB user leaf the reclaimer may take: valid, a leaf at level
-    /// 0, user-accessible, not shared copy-on-write, not one of a contiguous
-    /// run (changing one member of a run on its own is not allowed).
+    /// A page the reclaimer may take: resident in a frame.
     fn is_victim_leaf(&self, word: u64) -> bool;
     fn is_valid(&self, word: u64) -> bool;
     fn make_marker(&self, kind: PageMarker, payload: u32) -> u64;
     fn marker(&self, word: u64) -> Option<(PageMarker, u32)>;
-}
-
-impl<M: Mmu> PageWords for M {
-    #[inline]
-    fn is_victim_leaf(&self, word: u64) -> bool {
-        self.pte_is_valid(word)
-            && self.pte_is_leaf(word, 0)
-            && self.pte_perms(word).user
-            && !self.pte_is_cow(word)
-            && !self.pte_is_contig(word)
-    }
-
-    #[inline]
-    fn is_valid(&self, word: u64) -> bool {
-        self.pte_is_valid(word)
-    }
-
-    #[inline]
-    fn make_marker(&self, kind: PageMarker, payload: u32) -> u64 {
-        self.pte_make_marker(kind, payload)
-    }
-
-    #[inline]
-    fn marker(&self, word: u64) -> Option<(PageMarker, u32)> {
-        self.pte_marker(word)
-    }
 }
 
 /// Why [`take_out`] left the slot as it was.
@@ -1741,37 +1708,6 @@ pub fn clear<W: PageWords>(w: &W, slot: &AtomicU64) -> Option<(PageMarker, u32)>
             Ok(_) => return Some(m),
             Err(now) => cur = now,
         }
-    }
-}
-
-/// What a fault found in the slot of a page its region covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fault {
-    /// Nothing there: a zero page.
-    Zero,
-    /// A leaf: another thread resolved it, the access retries.
-    Present,
-    /// A store of the page is in flight: wait for it, then retry.
-    Wait,
-    /// The page is in the pool (or on swap): restore it.
-    Restore(PageMarker, u32),
-    /// A word the pager does not own (a demand reservation).
-    Other,
-}
-
-/// Decide a fault from the word read from the slot. The only place that says
-/// what an empty slot means: a zero page. The pool is not asked.
-pub fn classify<W: PageWords>(w: &W, word: u64) -> Fault {
-    if word == 0 {
-        return Fault::Zero;
-    }
-    if w.is_valid(word) {
-        return Fault::Present;
-    }
-    match w.marker(word) {
-        Some((PageMarker::InTransit, _)) => Fault::Wait,
-        Some((kind, payload)) => Fault::Restore(kind, payload),
-        None => Fault::Other,
     }
 }
 

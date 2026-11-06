@@ -94,7 +94,7 @@ pub fn shadow_step(
 /// that address is a device window the kernel-half merge copied into the
 /// task's own table (`fill_empty`, or an L1 fill), through which the kernel
 /// reaches the device while that task is current. Anything else is the
-/// task's: a USER leaf, an invalid word (empty, or its own demand marker),
+/// task's: a USER leaf, an invalid word,
 /// or a kernel-permission leaf only this root maps (a smoke's private page).
 /// `kernel_maps_same` is asked only for a valid non-USER word.
 #[inline]

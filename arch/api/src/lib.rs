@@ -362,21 +362,11 @@ const _: () = assert!(core::mem::align_of::<PageAlign>() == PAGE_SIZE);
 /// than a decode-then-re-encode round trip, which on RISC-V would lose
 /// whatever convention a caller applied when it first built the word.
 ///
-/// **The COW/DEMAND markers are mm's software convention, not hardware.**
-/// RISC-V stores them in the PTE's RSW field (bits 8–9, architecturally
-/// reserved for software). aarch64 has four software-defined bits at
-/// `[58:55]` (Arm ARM §D8.3) for the same purpose. Neither ISA's MMU
-/// reads them; they exist so mm can tell "this page is COW-shared" or
-/// "this VA is demand-reserved" apart from every other invalid/valid
-/// state, and both ISAs have room for the two-bit space mm needs.
-///
-/// **The page markers ([`PageMarker`]) use the same seam, on an invalid
-/// word.** A word with `VALID = 0` is ignored whole by the walker, so the
-/// marker flag, the kind and a 32-bit payload fit in the bits the hardware
-/// does not read; [`Self::pte_marker`] tells such a word from an empty one, a
-/// leaf or a demand reservation. A marker is only ever written over a leaf
-/// the reclaimer owns, and cleared when the page is restored or its range
-/// goes.
+/// **The COW marker is mm's software convention, not hardware.** It lives in
+/// a bit each ISA leaves to software (RISC-V's RSW field, an aarch64 software
+/// bit, an x86-64 available bit), which no MMU reads. A not-present user word
+/// carries no state at all: what a page of a mapping is when it is not in the
+/// table lives in its object's slot (`azos_mm::slot`).
 ///
 /// **`accessed`/`dirty` are request flags, not hardware facts.** Every ISA
 /// supports software-managed A/D (the leaf encoders assume no `ADUE`/`HAFDBS`),
@@ -464,9 +454,7 @@ pub trait Mmu: Send + Sync {
     fn pte_perms(&self, word: u64) -> PagePerms;
 
     /// Is this word a valid leaf with the software COW marker set? A word that
-    /// is not present is never COW: a page marker (`pte_make_marker`) reuses the
-    /// software bits of a leaf, the COW position among them, so the flag is read
-    /// only from a valid word, whatever the caller walked.
+    /// is not present is never COW.
     fn pte_is_cow(&self, word: u64) -> bool;
 
     /// Mark a writable leaf as COW-shared: clear WRITE, set the COW
@@ -477,32 +465,6 @@ pub trait Mmu: Send + Sync {
     /// COW marker, set WRITE and DIRTY (the page was just written by the
     /// copy).
     fn pte_break_cow(&self, word: u64) -> u64;
-
-    /// Build a demand-paging marker: `VALID = 0` (so any access traps),
-    /// the software DEMAND marker set, and `perms` stored inline so
-    /// [`Self::pte_demand_perms`] can recover them when the fault fires.
-    fn pte_make_demand(&self, perms: PagePerms) -> u64;
-
-    /// Is `word` a demand-paging marker (invalid, DEMAND-marked)?
-    fn pte_is_demand(&self, word: u64) -> bool;
-
-    /// Recover the `perms` stored in a demand marker built by
-    /// [`Self::pte_make_demand`].
-    fn pte_demand_perms(&self, word: u64) -> PagePerms;
-
-    /// Build a not-present *page marker*: `VALID = 0` (any access traps), the
-    /// software marker flag set, `kind` and a 32-bit `payload` stored inline.
-    /// It is the word the reclaimer leaves in a user page's slot while the
-    /// page is in the compressed pool or on swap ([`PageMarker`]), so a fault
-    /// reads where the contents are instead of finding an empty slot and
-    /// zero-filling. Never read as a demand marker ([`Self::pte_is_demand`]
-    /// is false for it) and never as a COW leaf.
-    fn pte_make_marker(&self, kind: PageMarker, payload: u32) -> u64;
-
-    /// The kind and payload of a page marker built by
-    /// [`Self::pte_make_marker`]; `None` for any other word (empty, valid,
-    /// demand).
-    fn pte_marker(&self, word: u64) -> Option<(PageMarker, u32)>;
 
     /// Switch the current address space to `root_phys` (page
     /// table root physical address). The ASID slot is provided
@@ -587,8 +549,8 @@ pub trait Mmu: Send + Sync {
 
     /// Invalidate the TLB entry (if any) translating `va`, on this hart only
     /// on riscv64 (aarch64's form is a broadcast). Used where a PTE change
-    /// cannot leave another hart with a harmful stale entry: demand
-    /// materialize and permission widening (a stale entry only faults and
+    /// cannot leave another hart with a harmful stale entry: a first-touch
+    /// install and permission widening (a stale entry only faults and
     /// re-walks), and the kernel's own table at boot. Removals, downgrades and
     /// repoints of user PTEs (unmap, munmap, fork COW write-protect, COW
     /// break) use [`Self::tlb_shootdown`].
@@ -702,7 +664,7 @@ pub const TLB_ALL: usize = usize::MAX;
 /// The word a level-1 slot holds between the break and the make of a
 /// break-before-make block change (`vmm::promote_user_block`): not valid on
 /// any ISA (bit 0 clear, the hardware ignores the rest), not the empty word,
-/// not a demand marker, so the hardware faults on the block and a page-table
+/// so the hardware faults on the block and a page-table
 /// walk in software knows to wait for the make instead of building a table
 /// over it.
 pub const PTE_BBM_PARK: u64 = 1 << 62;
@@ -730,52 +692,6 @@ pub enum MemType {
     WC,
     NC,
     Device,
-}
-
-/// What a not-present page marker ([`Mmu::pte_make_marker`]) says about a
-/// user page the reclaimer took out of the address space.
-///
-/// The encoding lives in software bits of the invalid word, so the hardware
-/// never reads it: RISC-V RSW bit 8 (with DEMAND, bit 9, clear), aarch64
-/// software bit 57 (with DEMAND, bit 58, clear), x86-64 available bit 11 (with
-/// DEMAND, bit 10, clear). The kind takes two more bits of the word and the
-/// payload 32, in places each ISA's own `mmu` module documents. Only the
-/// pager reads a payload: the architecture keeps it whole.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum PageMarker {
-    /// The page is in the compressed pool. The payload is the generation of
-    /// the pool entry that holds it: the entry is found by the page's key and
-    /// has to carry this generation, so a marker never restores the copy of
-    /// an earlier or later store of the same page.
-    Compressed = 1,
-    /// As `Compressed`, and the entry's segment is on the swap area: a fault
-    /// brings it back before it reads the entry.
-    Swapped = 2,
-    /// The reclaimer is storing the page right now: it is out of the table
-    /// and not in the pool yet. A fault that finds this waits for the store
-    /// to end, instead of zero-filling a page whose contents are in flight.
-    InTransit = 3,
-}
-
-impl PageMarker {
-    /// The two-bit code the ISA modules store; never 0.
-    #[inline]
-    pub const fn code(self) -> u8 {
-        self as u8
-    }
-
-    /// The kind a stored code names (`None` for 0, which no marker carries,
-    /// and for the unused code 4 and above).
-    #[inline]
-    pub const fn from_code(code: u8) -> Option<PageMarker> {
-        match code {
-            1 => Some(PageMarker::Compressed),
-            2 => Some(PageMarker::Swapped),
-            3 => Some(PageMarker::InTransit),
-            _ => None,
-        }
-    }
 }
 
 /// Page permissions in the cross-ISA model.

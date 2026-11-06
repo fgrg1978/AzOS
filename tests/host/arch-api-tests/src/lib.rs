@@ -128,10 +128,6 @@ mod idle_deep;
 #[cfg(test)]
 mod cpu_power;
 
-// The page-marker contract of `Mmu` (`marker_pte.rs`).
-#[cfg(test)]
-mod marker_pte;
-
 // `Mmu::block_change_needs_bbm` on aarch64: FEAT_BBM probe and the
 // weakest-CPU survey (`cpu/features.rs`), the break-before-make park word.
 #[cfg(test)]
@@ -481,25 +477,6 @@ mod tests {
         fn pte_break_cow(&self, word: u64) -> u64 {
             (word & !0b100) | (1u64 << 13) | (1u64 << 15)
         }
-        fn pte_make_demand(&self, perms: PagePerms) -> u64 {
-            // Invalid (bit 0 clear) but DEMAND-marked (bit 3) with perms stored.
-            stub_perm_bits(perms) | 0b1000
-        }
-        fn pte_is_demand(&self, word: u64) -> bool {
-            word & 1 == 0 && word & 0b1000 != 0
-        }
-        // The page markers are the real aarch64 encoding this crate already pulls.
-        fn pte_make_marker(&self, kind: azos_arch_api::PageMarker, payload: u32) -> u64 {
-            super::aarch64_mmu::make_marker(kind.code(), payload)
-        }
-        fn pte_marker(&self, word: u64) -> Option<(azos_arch_api::PageMarker, u32)> {
-            let (code, payload) = super::aarch64_mmu::marker_of(word)?;
-            Some((azos_arch_api::PageMarker::from_code(code)?, payload))
-        }
-        fn pte_demand_perms(&self, word: u64) -> PagePerms {
-            stub_perms_from_bits(word)
-        }
-
         fn switch_pt(&self, _root_phys: usize, _asid: u16) {}
         fn switch_kernel_pt(&self, _root_phys: usize) {}
         fn flush_tlb_all(&self) {}
@@ -713,19 +690,6 @@ mod tests {
         let broken = s.pte_break_cow(shared);
         assert!(!s.pte_is_cow(broken), "break must clear the COW marker");
         assert!(s.pte_perms(broken).write, "break must restore WRITE");
-    }
-
-    /// Canary for [`Mmu::pte_make_demand`] / [`Mmu::pte_is_demand`]: a
-    /// demand marker must read as INVALID (traps on access) yet still be
-    /// recognisable as a demand marker, with its perms recoverable.
-    #[test]
-    fn stub_mmu_demand_marker_is_invalid_but_recoverable() {
-        let s = Stub;
-        let marker = s.pte_make_demand(PagePerms::USER_RW);
-        assert!(!s.pte_is_valid(marker), "a demand marker must trap on access");
-        assert!(s.pte_is_demand(marker));
-        let perms = s.pte_demand_perms(marker);
-        assert!(perms.read && perms.write && perms.user);
     }
 
     #[test]
@@ -1051,26 +1015,6 @@ mod aarch64_encoding_tests {
         assert!(!m::is_cow(broken));
         assert!(m::perms_of(broken).write, "break must restore WRITE");
         assert!(m::perms_of(broken).dirty, "break must mark the page dirty");
-    }
-
-    /// A DEMAND marker is invalid (traps on access) yet distinguishable
-    /// from a plain unmapped slot, with its perms recoverable — the same
-    /// contract RISC-V's RSW-bit marker gives mm's demand-paging path.
-    ///
-    /// **Canary.** Make `is_demand` ignore the `is_valid` check: a real
-    /// (valid) leaf would then also read as a demand marker, which
-    /// `demand_marker_is_invalid_and_distinct_from_unmapped` catches via
-    /// its `!m::is_valid(marker)` assertion combined with reusing the
-    /// same word shape as a leaf.
-    #[test]
-    fn demand_marker_is_invalid_and_distinct_from_unmapped() {
-        let marker = m::make_demand(PagePerms::USER_RW).unwrap();
-        assert!(!m::is_valid(marker), "a demand marker must trap on access");
-        assert!(m::is_demand(marker));
-        assert!(!m::is_demand(m::empty()), "plain unmapped must not read as demand-reserved");
-
-        let perms = m::demand_perms(marker);
-        assert!(perms.read && perms.write && perms.user);
     }
 }
 

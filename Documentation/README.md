@@ -28,7 +28,7 @@ is a one-file map that links into the pages below.
 | [scheduler.md](scheduler.md) | Dispatch classes, EEVDF, EDF with CBS, admission, wake placement, priority donation and the wait graph, balancing, core scheduling, tickless CPUs. |
 | [time.md](time.md) | The counter per ISA, timer programming, clocks, the vDSO clock, SNTP and PTP, deadlines. |
 | [energy.md](energy.md) | Utilisation tracking, the energy model, governors, idle states, thermal, runtime power, hotplug, suspend, battery. |
-| [memory.md](memory.md) | Frames, memory objects, the page cache and mmap, the kernel heap, W^X, reclaim, marker PTEs, TLB invalidation. |
+| [memory.md](memory.md) | Frames, memory objects, the page cache and mmap, the kernel heap, W^X, reclaim, page markers, TLB invalidation. |
 | [storage.md](storage.md) | The VFS, file systems, caches, block devices, the volume format. |
 | [network.md](network.md) | The network stack, link layers and ring-3 protocol libraries. |
 

@@ -51,9 +51,6 @@ bitflags! {
         const DIRTY    = 1 << 7;
         /// OS-defined: Copy-on-Write flag (bit 8, in RSW field).
         const COW      = 1 << 8;
-        /// OS-defined: Demand-mapped page (bit 9, in RSW field).
-        /// PTE is invalid but marks a reserved virtual range (allocate on fault).
-        const DEMAND   = 1 << 9;
         /// Svpbmt PBMT field, bits 62:61: `01` = NC (normal, non-cacheable,
         /// weakly ordered), `10` = IO (device, strongly ordered), `00` = the
         /// PMA's own type. Only written once [`svpbmt_select`] found the
@@ -199,43 +196,12 @@ impl Pte {
     }
 }
 
-/// Is `word` a valid leaf with the software COW bit set? A page marker's flag
-/// is that same bit (RSW 8), so a word that is not valid is never COW.
+/// Is `word` a valid leaf with the software COW bit set? A word that is not
+/// valid is never COW.
 #[inline]
 pub const fn is_cow(word: u64) -> bool {
     const BOTH: u64 = PteFlags::VALID.bits() | PteFlags::COW.bits();
     word & BOTH == BOTH
-}
-
-// ── Page markers (arch-api `PageMarker`) ─────────────────────────────────
-
-/// The marker flag of a not-present page marker: RSW bit 8 (the COW position,
-/// which a leaf alone uses) with VALID clear and the DEMAND bit (bit 9) clear.
-/// A walker ignores every bit of a word with V = 0, so the rest is free.
-pub const MARKER_FLAG: u64 = PteFlags::COW.bits();
-/// The two-bit kind code sits at bits 11:10, clear of R/W/X (bits 3:1) so
-/// that [`Pte::is_leaf`], which does not look at V, still says "not a leaf".
-const MARKER_KIND_SHIFT: u32 = 10;
-/// The 32-bit payload fills bits 63:32.
-const MARKER_PAYLOAD_SHIFT: u32 = 32;
-
-/// A page marker of kind `code` (1..=3, `PageMarker::code`) carrying `payload`.
-#[inline]
-pub const fn make_marker(code: u8, payload: u32) -> u64 {
-    MARKER_FLAG | (((code & 3) as u64) << MARKER_KIND_SHIFT) | ((payload as u64) << MARKER_PAYLOAD_SHIFT)
-}
-
-/// `(code, payload)` of a page marker; `None` for any other word.
-#[inline]
-pub const fn marker_of(word: u64) -> Option<(u8, u32)> {
-    if word & (PteFlags::VALID.bits() | PteFlags::DEMAND.bits() | MARKER_FLAG) != MARKER_FLAG {
-        return None;
-    }
-    let code = ((word >> MARKER_KIND_SHIFT) & 3) as u8;
-    if code == 0 {
-        return None;
-    }
-    Some((code, (word >> MARKER_PAYLOAD_SHIFT) as u32))
 }
 
 /// Extract VPN[2] from a virtual address (bits [38:30]).

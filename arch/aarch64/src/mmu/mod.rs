@@ -48,15 +48,6 @@
 //! aarch64 stage-1 has no hardware dirty-bit management wired up in this
 //! tree, so "dirty" here is purely mm's bookkeeping, round-tripped through
 //! [`perms_of`]/[`make_leaf`] the same way RISC-V's architectural D bit is).
-//!
-//! A DEMAND marker (mm's "reserved but not yet backed" state) sets `VALID =
-//! 0`, which makes the MMU ignore every other bit in the word — so instead
-//! of contending for one more software bit alongside COW/DIRTY, the marker
-//! reuses the *entire* attribute encoding a real leaf would carry (AttrIdx,
-//! AP, PXN/UXN, nG) so [`demand_perms`] can decode it with the same logic
-//! [`perms_of`] uses, plus one more bit (58) that only means something
-//! while invalid: "this hole is DEMAND-reserved" vs. "this hole is just
-//! unmapped".
 
 use azos_arch_api::{MemType, PagePerms, MmuError};
 
@@ -434,9 +425,6 @@ const SW_DIRTY: u64 = 1 << 56;
 /// Contiguous hint (bit 52): this level-3 page is one of a run of
 /// [`CONT_PAGES`] adjacent pages the TLB may cache as one entry.
 const CONT: u64 = 1 << 52;
-/// Software bit: valid only while `VALID = 0` — marks a DEMAND-reserved
-/// hole (see module doc).
-const SW_DEMAND: u64 = 1 << 58;
 
 /// The empty (all-zero) word — an unmapped slot.
 #[inline]
@@ -479,8 +467,7 @@ pub const fn make_table(pa: usize) -> u64 {
 
 /// Encode the level-independent attribute bits `perms` implies (AttrIdx,
 /// AP, PXN/UXN, nG — everything except `VALID`/the type bit/the physical
-/// address). Shared by [`make_leaf`] and [`make_demand`], which store the
-/// same attributes at `VALID = 0`.
+/// address), for [`make_leaf`].
 ///
 /// AF is set unconditionally, matching this crate's existing convention
 /// (`arch-aarch64::api_impl`'s original `encode_pte` always set AF too):
@@ -670,59 +657,6 @@ pub const fn share_cow(word: u64) -> u64 {
 #[inline]
 pub const fn break_cow(word: u64) -> u64 {
     (word & !SW_COW & !AP_RO) | SW_DIRTY
-}
-
-/// Build a demand-paging marker: `VALID = 0` (any access traps), the
-/// software DEMAND marker set, `perms`' attribute bits stored inline so
-/// [`demand_perms`] can recover them when the fault fires.
-#[inline]
-pub fn make_demand(perms: PagePerms) -> Result<u64, MmuError> {
-    Ok(attr_bits(perms)? | SW_DEMAND)
-}
-
-/// Is `word` a demand-paging marker (invalid, DEMAND-marked)?
-#[inline]
-pub const fn is_demand(word: u64) -> bool {
-    !is_valid(word) && word & SW_DEMAND != 0
-}
-
-// ── Page markers (arch-api `PageMarker`) ──────────────────────────────────
-//
-// A not-present word is ignored whole by the walker (VALID = 0), so the
-// marker is: software bit 57 (the one of the four at [58:55] that COW (55),
-// DIRTY (56) and DEMAND (58) leave free) as the flag, DEMAND clear, the
-// two-bit kind code in bits 56:55 (the COW/DIRTY positions, which only a
-// valid leaf uses) and the 32-bit payload in the output-address field,
-// bits 47:16.
-
-/// The marker flag: software bit 57.
-const SW_MARKER: u64 = 1 << 57;
-const MARKER_KIND_SHIFT: u32 = 55;
-const MARKER_PAYLOAD_SHIFT: u32 = 16;
-
-/// A page marker of kind `code` (1..=3, `PageMarker::code`) carrying `payload`.
-#[inline]
-pub const fn make_marker(code: u8, payload: u32) -> u64 {
-    SW_MARKER | (((code & 3) as u64) << MARKER_KIND_SHIFT) | ((payload as u64) << MARKER_PAYLOAD_SHIFT)
-}
-
-/// `(code, payload)` of a page marker; `None` for any other word.
-#[inline]
-pub const fn marker_of(word: u64) -> Option<(u8, u32)> {
-    if word & (VALID | SW_DEMAND | SW_MARKER) != SW_MARKER {
-        return None;
-    }
-    let code = ((word >> MARKER_KIND_SHIFT) & 3) as u8;
-    if code == 0 {
-        return None;
-    }
-    Some((code, (word >> MARKER_PAYLOAD_SHIFT) as u32))
-}
-
-/// Recover the perms stored in a demand marker built by [`make_demand`].
-#[inline]
-pub fn demand_perms(word: u64) -> PagePerms {
-    perms_from_attr_bits(word)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

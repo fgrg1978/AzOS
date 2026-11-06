@@ -97,11 +97,6 @@ pub const PAT_4K: u64 = 1 << 7;
 pub const G: u64 = 1 << 8;
 /// Software (ignored by the walker): copy-on-write shared leaf.
 pub const SW_COW: u64 = 1 << 9;
-/// Software: demand-reserved slot. Meaningful only with [`P`] clear.
-pub const SW_DEMAND: u64 = 1 << 10;
-/// Software: page marker (compressed, swapped, in transit). Meaningful only
-/// with [`P`] clear and [`SW_DEMAND`] clear.
-pub const SW_MARKER: u64 = 1 << 11;
 /// PAT index bit 2 of a PS leaf. Never set.
 pub const PAT_HUGE: u64 = 1 << 12;
 /// Execute-disable (EFER.NXE; reserved, and a #PF, without it).
@@ -466,7 +461,7 @@ pub fn smap_on() -> bool {
 
 // ── Descriptor encode / decode ───────────────────────────────────────────
 
-/// The empty word: not present, no software marker.
+/// The empty word: not present, nothing in it.
 #[inline]
 pub const fn empty() -> u64 { 0 }
 
@@ -504,8 +499,8 @@ pub const fn make_table(pa: usize) -> u64 {
     ((pa as u64) & PHYS_MASK) | P | RW | US
 }
 
-/// The attribute bits `perms` implies, without P / PS / the address. Shared
-/// by [`make_leaf`] and [`make_demand`] (which stores them with P clear).
+/// The attribute bits `perms` implies, without P / PS / the address, for
+/// [`make_leaf`].
 ///
 /// `read: false` has no x86 encoding (a present page is readable), as on
 /// aarch64: `UnrepresentablePerms`. W+X is representable; W^X is mm's rule
@@ -588,8 +583,7 @@ pub const fn make_leaf_with(pa: usize, perms: PagePerms, level: usize, gb: bool)
 #[inline]
 pub const fn perms_of(word: u64) -> PagePerms { perms_from_bits(word) }
 
-/// Is `word` present with the software COW bit set? (A page marker never
-/// sets that bit; the check keeps the contract the same on every ISA.)
+/// Is `word` present with the software COW bit set?
 #[inline]
 pub const fn is_cow(word: u64) -> bool { word & P != 0 && word & SW_COW != 0 }
 
@@ -600,69 +594,6 @@ pub const fn share_cow(word: u64) -> u64 { (word & !RW) | SW_COW }
 /// Break COW after the private copy: COW off, RW and D on.
 #[inline]
 pub const fn break_cow(word: u64) -> u64 { (word & !SW_COW) | RW | D }
-
-/// A demand marker: P clear, [`SW_DEMAND`] set, `perms` stored inline (the
-/// walker ignores every other bit of a non-present entry). A `!read`
-/// request has no encoding and yields the EMPTY word (no reservation), as on
-/// aarch64; every `PagePerms` this tree builds has `read`.
-#[inline]
-pub const fn make_demand(perms: PagePerms) -> u64 {
-    match attr_bits(perms) {
-        Ok(a) => a | SW_DEMAND,
-        Err(_) => 0,
-    }
-}
-
-/// Not present and demand-marked.
-#[inline]
-pub const fn is_demand(word: u64) -> bool { !is_valid(word) && word & SW_DEMAND != 0 }
-
-/// The perms a demand marker carries.
-#[inline]
-pub const fn demand_perms(word: u64) -> PagePerms { perms_from_bits(word) }
-
-// ── Page markers (arch-api `PageMarker`) ──────────────────────────────────
-//
-// A non-present entry is ignored whole by the walker, so the marker is:
-// available bit 11 as the flag (DEMAND, bit 10, clear), the two-bit kind code
-// in bits 4:3 (PWT/PCD positions, meaningless with P clear), and the 32-bit
-// payload in the address field, bits 43:12.
-//
-// **The payload is stored inverted, with the address bits above it set.** A
-// non-present entry's address field is not translated, but on parts with the
-// L1 Terminal Fault flaw (Intel) a speculative load through it reads whatever
-// cached line sits at that physical address. Linux's answer, which this
-// follows, is that the field of a non-present entry never names real memory:
-// the small numbers a payload usually holds invert to addresses near the top
-// of the 52-bit space, and bits 51:44 are always set, so a part with fewer
-// physical address bits that drops them still lands above any RAM.
-
-const MARKER_KIND_SHIFT: u32 = 3;
-const MARKER_PAYLOAD_SHIFT: u32 = 12;
-/// Address-field bits above the payload (51:44), always set in a marker.
-const MARKER_GUARD: u64 = 0xFF << 44;
-
-/// A page marker of kind `code` (1..=3, `PageMarker::code`) carrying `payload`.
-#[inline]
-pub const fn make_marker(code: u8, payload: u32) -> u64 {
-    SW_MARKER
-        | (((code & 3) as u64) << MARKER_KIND_SHIFT)
-        | ((!payload as u64) << MARKER_PAYLOAD_SHIFT)
-        | MARKER_GUARD
-}
-
-/// `(code, payload)` of a page marker; `None` for any other word.
-#[inline]
-pub const fn marker_of(word: u64) -> Option<(u8, u32)> {
-    if word & (P | SW_DEMAND | SW_MARKER) != SW_MARKER || word & MARKER_GUARD != MARKER_GUARD {
-        return None;
-    }
-    let code = ((word >> MARKER_KIND_SHIFT) & 3) as u8;
-    if code == 0 {
-        return None;
-    }
-    Some((code, !((word >> MARKER_PAYLOAD_SHIFT) as u32)))
-}
 
 // ── CR3 ──────────────────────────────────────────────────────────────────
 
@@ -719,7 +650,7 @@ pub enum WalkError {
     Misaligned,
     /// No frame for an intermediate table.
     NoMemory,
-    /// The slot already holds a leaf (or a demand marker).
+    /// The slot already holds a leaf (or another non-empty word).
     AlreadyMapped,
     /// A larger leaf covers the VA: splitting it is the caller's policy.
     HugeLeafInTheWay,
@@ -759,7 +690,7 @@ fn descend<M: TableMem>(mem: &mut M, root: usize, levels: usize, va: usize,
         } else if !alloc {
             return Err(WalkError::NotMapped);
         } else if w != 0 {
-            // A demand marker above the leaf level: not a table to enter.
+            // A non-empty word that is no table (a parked block): not a table to enter.
             return Err(WalkError::AlreadyMapped);
         } else {
             let t = mem.alloc_table().ok_or(WalkError::NoMemory)?;

@@ -59,10 +59,6 @@ mod suspend;
 #[cfg(test)]
 mod cpu_power;
 
-// Not-present page markers (compressed, swapped, in transit) per ISA (`marker_pte.rs`).
-#[cfg(test)]
-mod marker_pte;
-
 // The contiguous-run encoders (arm64 contiguous hint, RISC-V Svnapot).
 #[cfg(test)]
 mod pgsz;

@@ -13,18 +13,54 @@
 //! cache of it: a fault decides from the slot, never from the entry
 //! ([`resolve`]), and an entry is written only to install a `Frame` slot's
 //! frame or to clear it. The reclaimer's marker protocol (`zpool::take_out`,
-//! `publish`, `put_back`, `clear`, `classify`) runs over slot words through
-//! [`SlotWords`], so the compressed and swapped states live here and not in a
-//! page-table entry. Bits 1..12 of a `Frame` word are free (a dirty or a
+//! `publish`, `put_back`, `clear`) runs over slot words through
+//! [`SlotWords`], so the compressed and swapped states live here, and a
+//! page-table entry of a page that is not resident is always empty. Bits 1..12 of a `Frame` word are free (a dirty or a
 //! pinned bit, a head bit for a multi-page run) and nothing sets them yet.
 //!
 //! Pure arithmetic: the host suites pull this file in with `#[path]`.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use azos_arch_api::PageMarker;
-
 use crate::zpool::PageWords;
+
+/// What a marker slot says about a page the reclaimer took out of the address
+/// space. Only the pager reads a payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PageMarker {
+    /// The page is in the compressed pool. The payload is the generation of
+    /// the pool entry that holds it: the entry is found by the page's key and
+    /// has to carry this generation, so a marker never restores the copy of
+    /// an earlier or later store of the same page.
+    Compressed = 1,
+    /// As `Compressed`, and the entry's segment is on the swap area: a fault
+    /// brings it back before it reads the entry.
+    Swapped = 2,
+    /// The reclaimer is storing the page right now: it is out of the table
+    /// and not in the pool yet. A fault that finds this waits for the store
+    /// to end, instead of zero-filling a page whose contents are in flight.
+    InTransit = 3,
+}
+
+impl PageMarker {
+    /// The two-bit code a marker word stores; never 0.
+    #[inline(always)]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// The kind a stored code names (`None` for 0, which no marker carries).
+    #[inline(always)]
+    pub const fn from_code(code: u8) -> Option<PageMarker> {
+        match code {
+            1 => Some(PageMarker::Compressed),
+            2 => Some(PageMarker::Swapped),
+            3 => Some(PageMarker::InTransit),
+            _ => None,
+        }
+    }
+}
 
 /// The word of a slot that holds nothing.
 pub const EMPTY: u64 = 0;

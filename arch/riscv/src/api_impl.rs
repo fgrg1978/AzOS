@@ -383,45 +383,6 @@ impl Mmu for Riscv64 {
     }
 
     #[inline]
-    fn pte_make_demand(&self, perms: PagePerms) -> u64 {
-        // VALID = 0 (never set below), DEMAND set, desired flags stored
-        // in-line for `pte_demand_perms` to recover at fault time.
-        crate::mmu::PteFlags::DEMAND.bits() | riscv_leaf_flags_no_valid(perms)
-    }
-
-    #[inline]
-    fn pte_make_marker(&self, kind: azos_arch_api::PageMarker, payload: u32) -> u64 {
-        crate::mmu::make_marker(kind.code(), payload)
-    }
-
-    #[inline]
-    fn pte_marker(&self, word: u64) -> Option<(azos_arch_api::PageMarker, u32)> {
-        let (code, payload) = crate::mmu::marker_of(word)?;
-        Some((azos_arch_api::PageMarker::from_code(code)?, payload))
-    }
-
-    #[inline]
-    fn pte_is_demand(&self, word: u64) -> bool {
-        word & crate::mmu::PteFlags::DEMAND.bits() != 0
-    }
-
-    #[inline]
-    fn pte_demand_perms(&self, word: u64) -> PagePerms {
-        let f = crate::mmu::PteFlags::from_bits_truncate(
-            word & !crate::mmu::PteFlags::DEMAND.bits(),
-        );
-        PagePerms {
-            read:  f.contains(crate::mmu::PteFlags::READ),
-            write: f.contains(crate::mmu::PteFlags::WRITE),
-            exec:  f.contains(crate::mmu::PteFlags::EXEC),
-            user:  f.contains(crate::mmu::PteFlags::USER),
-            mem: mem_of(f),
-            accessed: f.contains(crate::mmu::PteFlags::ACCESSED),
-            dirty:    f.contains(crate::mmu::PteFlags::DIRTY),
-        }
-    }
-
-    #[inline]
     fn switch_pt(&self, root_phys: usize, asid: u16) {
         // `write_satp` already emits `sfence.vma zero, zero` (see
         // `cpu::write_satp`) — no second fence here. That used to be a
@@ -520,9 +481,7 @@ fn mem_of(f: crate::mmu::PteFlags) -> MemType {
     else { MemType::WB }
 }
 
-/// Shared flag-building body for [`Riscv64::pte_make_leaf`] and
-/// [`Riscv64::pte_make_demand`] (which stores the same bits minus
-/// `VALID`). The memory type becomes the Svpbmt field when the extension
+/// The flag bits of [`Riscv64::pte_make_leaf`] but `VALID`. The memory type becomes the Svpbmt field when the extension
 /// is on; Sv39 has no other cacheability bit (PMAs govern it).
 #[inline]
 fn riscv_leaf_flags_no_valid(perms: PagePerms) -> u64 {

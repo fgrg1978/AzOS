@@ -208,32 +208,6 @@ impl Mmu for Arch {
         mmu::Pte::new(p.phys_addr(), flags).0
     }
 
-    fn pte_make_demand(&self, perms: PagePerms) -> u64 {
-        mmu::PteFlags::DEMAND.bits() | leaf_flags_no_valid(perms)
-    }
-    fn pte_make_marker(&self, kind: azos_arch_api::PageMarker, payload: u32) -> u64 {
-        mmu::make_marker(kind.code(), payload)
-    }
-    fn pte_marker(&self, word: u64) -> Option<(azos_arch_api::PageMarker, u32)> {
-        let (code, payload) = mmu::marker_of(word)?;
-        Some((azos_arch_api::PageMarker::from_code(code)?, payload))
-    }
-    fn pte_is_demand(&self, word: u64) -> bool {
-        word & mmu::PteFlags::DEMAND.bits() != 0
-    }
-    fn pte_demand_perms(&self, word: u64) -> PagePerms {
-        let f = mmu::PteFlags::from_bits_truncate(word & !mmu::PteFlags::DEMAND.bits());
-        PagePerms {
-            read: f.contains(mmu::PteFlags::READ),
-            write: f.contains(mmu::PteFlags::WRITE),
-            exec: f.contains(mmu::PteFlags::EXEC),
-            user: f.contains(mmu::PteFlags::USER),
-            mem: mem_of(f),
-            accessed: f.contains(mmu::PteFlags::ACCESSED),
-            dirty: f.contains(mmu::PteFlags::DIRTY),
-        }
-    }
-
     fn switch_pt(&self, root_phys: usize, asid: u16) {
         cpu::write_satp(mmu::make_satp(root_phys, asid));
     }

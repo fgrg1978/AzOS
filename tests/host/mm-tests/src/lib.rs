@@ -73,8 +73,8 @@ mod livepatch;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/mapping.rs"]
 mod mapping;
-// The slot word of an object's page and the fault's decision over it (pure:
-// `azos_arch_api::PageMarker` and the marker protocol of `zpool.rs`). Its rows
+// The slot word of an object's page, its markers and the fault's decision over
+// it (pure: the marker protocol of `zpool.rs`). Its rows
 // are in `marker_pte.rs`.
 #[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/slot.rs"]

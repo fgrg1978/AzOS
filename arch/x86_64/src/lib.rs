@@ -258,19 +258,6 @@ impl Mmu for X86_64 {
     fn pte_share_cow(&self, word: u64) -> u64 { mmu::share_cow(word) }
     #[inline]
     fn pte_break_cow(&self, word: u64) -> u64 { mmu::break_cow(word) }
-    #[inline]
-    fn pte_make_demand(&self, perms: PagePerms) -> u64 { mmu::make_demand(perms) }
-    #[inline]
-    fn pte_make_marker(&self, kind: azos_arch_api::PageMarker, payload: u32) -> u64 { mmu::make_marker(kind.code(), payload) }
-    #[inline]
-    fn pte_marker(&self, word: u64) -> Option<(azos_arch_api::PageMarker, u32)> {
-        let (code, payload) = mmu::marker_of(word)?;
-        Some((azos_arch_api::PageMarker::from_code(code)?, payload))
-    }
-    #[inline]
-    fn pte_is_demand(&self, word: u64) -> bool { mmu::is_demand(word) }
-    #[inline]
-    fn pte_demand_perms(&self, word: u64) -> PagePerms { mmu::demand_perms(word) }
     /// Publish, then `mov cr3, root|PCID` (no-flush clear: the incoming
     /// PCID's entries go, as every switch flushes on the other ISAs).
     fn switch_pt(&self, _root_phys: usize, _asid: u16) {

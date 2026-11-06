@@ -282,42 +282,6 @@ impl Mmu for Aarch64 {
     fn pte_break_cow(&self, word: u64) -> u64 { crate::mmu::break_cow(word) }
 
     #[inline]
-    fn pte_make_marker(&self, kind: azos_arch_api::PageMarker, payload: u32) -> u64 {
-        crate::mmu::make_marker(kind.code(), payload)
-    }
-
-    #[inline]
-    fn pte_marker(&self, word: u64) -> Option<(azos_arch_api::PageMarker, u32)> {
-        let (code, payload) = crate::mmu::marker_of(word)?;
-        Some((azos_arch_api::PageMarker::from_code(code)?, payload))
-    }
-
-    #[inline]
-    fn pte_make_demand(&self, perms: PagePerms) -> u64 {
-        // `Mmu::pte_make_demand` is infallible (mm's demand-reservation
-        // path never checked for an error before — `map_demand`'s only
-        // failure modes are "already mapped" and OOM on the intermediate
-        // table, never a bad `perms`). Every `PagePerms` this tree builds
-        // is representable (has `read: true`, the one thing `attr_bits`
-        // rejects), so this cannot fail today.
-        //
-        // If a future caller passes a `!read` request, the fallback is `0`
-        // — an EMPTY entry, i.e. no reservation at all. (An earlier version
-        // of this comment called that "a read-only marker"; it is not.) The
-        // page then faults as unmapped instead of being demand-filled: a
-        // wrong but visible outcome, not a panic, which under
-        // `panic = "abort"` would be a board reset. The honest fix is to
-        // make the trait method fallible if such a caller ever appears.
-        crate::mmu::make_demand(perms).unwrap_or(0)
-    }
-
-    #[inline]
-    fn pte_is_demand(&self, word: u64) -> bool { crate::mmu::is_demand(word) }
-
-    #[inline]
-    fn pte_demand_perms(&self, word: u64) -> PagePerms { crate::mmu::demand_perms(word) }
-
-    #[inline]
     fn switch_pt(&self, root_phys: usize, asid: u16) {
         // percpu-hint: the arch contract: called with interrupts off; the record and the install are one PE
         crate::tlb::publish(crate::cpu::hart_id(), root_phys);

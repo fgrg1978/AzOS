@@ -131,9 +131,8 @@ fn one_weak_cpu_among_strong_ones_decides() {
 }
 
 #[test]
-fn the_park_word_is_not_valid_not_empty_and_not_a_demand_marker() {
+fn the_park_word_is_not_valid_and_not_empty() {
     use crate::aarch64_mmu as m;
     assert!(!m::is_valid(PTE_BBM_PARK), "the hardware must fault on it");
     assert_ne!(PTE_BBM_PARK, m::empty(), "a walker that builds over empty must not take it");
-    assert!(!m::is_demand(PTE_BBM_PARK), "not a demand marker");
 }
