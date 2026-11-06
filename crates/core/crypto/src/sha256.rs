@@ -12,6 +12,7 @@ mod core_impl;
 mod blocks;
 
 pub use blocks::blocks_wide;
+pub(crate) use core_impl::Hasher;
 pub use core_impl::{sha256, Digest, Sha256};
 use core_impl::Block;
 // arch-only: the riscv64 Zbb / Zknh block functions; every other ISA takes the portable code.

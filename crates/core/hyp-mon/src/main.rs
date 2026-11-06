@@ -23,9 +23,9 @@ mod arch;
 mod state;
 
 // The kernel's own crypto, by source: SHA-256, HMAC and HKDF are
-// `azos_crypto`'s, so the monitor and the kernel derive the same bytes by the
-// same code. The monitor answers the SHA-256 block-function choice with the
-// portable one.
+// `azos_crypto`'s files over the same RustCrypto crates, so the monitor and
+// the kernel derive the same bytes by the same code. The monitor answers the
+// SHA-256 block-function choice with the portable `sha2::compress256`.
 #[allow(dead_code)] // reason: the parts of azos_crypto's files the monitor does not call
 #[path = "../../crypto/src/ct.rs"]
 mod ct;
