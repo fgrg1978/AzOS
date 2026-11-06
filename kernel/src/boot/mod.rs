@@ -128,8 +128,9 @@ pub(crate) mod swap;
 mod hv;
 #[cfg(feature = "hv")]
 pub(crate) use hv::install_hv;
-// The hardware bus: enumeration, the driver registry, binding in stages.
+// The hardware bus: enumeration, binding in stages; the driver records it binds through.
 pub(crate) mod hwbus;
+pub(crate) mod driver_records;
 // Kconfig SOC_FRAMEWORKS: the clock, reset, regulator and power-domain managers
 // built from the device tree.
 #[cfg(feature = "soc")]

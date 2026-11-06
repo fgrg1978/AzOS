@@ -1,0 +1,393 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! The kernel's driver records: one per driver the image's id table names.
+//!
+//! The ids are `azos_hwbus::DRIVERS`, generated from the `hwbus.ids` files;
+//! [`RECORDS`] pairs each with the kernel's ops for it, through
+//! `native_drivers!`, so the table is built from the generated list: a driver
+//! whose ids are in the image and whose ops are not here does not compile,
+//! and an ops const no driver names is dead code. Every bind, unbind and
+//! system suspend of a kernel-driven device goes through a record
+//! (`boot::hwbus`).
+//!
+//! The environment ([`KernelEnv`]) lends what a probe needs besides the
+//! device (the PCI bring-up's configuration space for the stage that binds
+//! PCI drivers) and keeps the books an unbind is checked against: the
+//! interrupt line, DMA and register window each device holds,
+//! and, for a line the IRQ thread serves, the line binding itself.
+
+use azos_drv_bus::hwbus::{self, Device, Env, Handle, Held, Host, Op, Ops, Power, ProbeError, Record, Unbind};
+use azos_sync::SpinLock;
+
+
+/// The kernel as a driver host.
+pub(crate) struct Kernel;
+
+impl Host for Kernel {
+    type Env<'a> = KernelEnv<'a>;
+}
+
+/// What a kernel op is lent for one bind.
+pub(crate) struct KernelEnv<'a> {
+    #[cfg(feature = "pci")]
+    pub(crate) pci: Option<&'a mut dyn super::hwbus::PciProbe>,
+    #[cfg(not(feature = "pci"))]
+    pub(crate) pci: core::marker::PhantomData<&'a ()>,
+}
+
+impl KernelEnv<'_> {
+    /// No PCI configuration space lent: the stages that bind no PCI driver.
+    pub(crate) fn plain() -> Self {
+        #[cfg(feature = "pci")]
+        return KernelEnv { pci: None };
+        #[cfg(not(feature = "pci"))]
+        KernelEnv { pci: core::marker::PhantomData }
+    }
+
+    /// The PCI function `dev` is, with the configuration space and BAR
+    /// window the bring-up lent: `Failed` outside the PCI stage.
+    #[cfg(feature = "pci")]
+    fn pci_fn(&mut self, dev: &Device) -> Result<super::hwbus::PciFn<'_>, ProbeError> {
+        self.pci.as_mut().and_then(|p| p.function(dev)).ok_or(ProbeError::Failed)
+    }
+}
+
+/// What each device holds, by handle: written by the ops that take and give
+/// back an interrupt line, DMA or a window.
+static HELD: SpinLock<[Held; hwbus::MAX_DEVICES]> = SpinLock::new([Held::NONE; hwbus::MAX_DEVICES]);
+
+impl Env for KernelEnv<'_> {
+    /// The clocks, resets, power domains and `default` pin state the device's
+    /// node names (`boot::soc::bind`), before its driver is asked. Pinned
+    /// hardware is out: the kernel brought it up before the SoC frameworks
+    /// existed, outside the bus. A device that did not come from the tree has
+    /// no node, and a node without the properties asks for nothing.
+    fn resources(&mut self, driver: &str, _h: Handle, dev: &Device) -> Result<(), ProbeError> {
+        #[cfg(feature = "soc")]
+        if let (true, Some(node)) = (super::hwbus::wants_resources(driver), dev.dt_node) {
+            if let Err(e) = super::soc::bind(node) {
+                azos_drv_sys::kwarn!("[HWBUS] {} resources for {} refused: {:?}", dev.name.as_str(), driver, e);
+                return Err(ProbeError::Resources);
+            }
+        }
+        let _ = (driver, dev);
+        Ok(())
+    }
+
+    fn release(&mut self, driver: &str, _h: Handle, dev: &Device) {
+        #[cfg(feature = "soc")]
+        if let (true, Some(node)) = (super::hwbus::wants_resources(driver), dev.dt_node) {
+            if let Err(e) = super::soc::unbind(node) {
+                azos_drv_sys::kwarn!("[HWBUS] {} resources of {} not all released: {:?}", dev.name.as_str(), driver, e);
+            }
+        }
+        let _ = (driver, dev);
+    }
+
+    /// The books, and the line binding: a line the IRQ thread still has bound
+    /// is held whatever the books say.
+    fn held(&mut self, h: Handle, dev: &Device) -> Held {
+        let mut held = HELD.lock().get(h.index()).copied().unwrap_or(Held::NONE);
+        if held.irq.is_none() && dev.irq != 0 && azos_ipc::irq_bind::irq_bindings_of(dev.irq) != 0 {
+            held.irq = Some(dev.irq);
+        }
+        held
+    }
+}
+
+type R = Result<(), ProbeError>;
+
+/// The kernel's record table, one record per generated id entry.
+macro_rules! records {
+    ($($i:literal $id:ident)*) => {
+        pub(crate) static RECORDS: [Record<Kernel>; hwbus::DRIVERS.len()] =
+            [$(Record { ids: &hwbus::DRIVERS[$i], ops: &$id }),*];
+    };
+}
+hwbus::native_drivers!(records);
+
+/// Is `driver`'s record pinned (hardware the kernel drives outside the bus)?
+pub(crate) fn pinned(driver: &str) -> bool {
+    hwbus::record::find(&RECORDS, driver).is_some_and(|r| matches!(r.ops.unbind, Unbind::Pinned))
+}
+
+const fn unbind(f: Op<Kernel>) -> Unbind<Kernel> {
+    Unbind::<Kernel>::Op(f)
+}
+
+/// `Busy` when the driver already holds a device (a second one is not its
+/// business), `Failed` when it tried and the hardware refused.
+fn refusal(already_up: bool) -> ProbeError {
+    if already_up { ProbeError::Busy } else { ProbeError::Failed }
+}
+
+/// A driver whose probe brings a device up and has no unbind, power ops or
+/// reset yet.
+const fn bring_up(probe: Op<Kernel>) -> Ops<Kernel> {
+    Ops { probe, unbind: Unbind::Unsupported, power: Power::Unsupported, reset: None }
+}
+
+// ── Pinned: hardware the kernel brought up before the bus ───────────────
+
+fn record_only(_: &mut KernelEnv<'_>, _: Handle, _: &Device) -> R {
+    Ok(())
+}
+
+/// The binding only records that the device is the kernel's, so ring 3 is
+/// never handed a window the kernel is using. Its state across a suspend is
+/// the platform's save and restore (the interrupt controller, the console).
+const PINNED: Ops<Kernel> = Ops { probe: record_only, unbind: Unbind::Pinned, power: Power::Stateless, reset: None };
+
+const UART: Ops<Kernel> = PINNED;
+const INTC: Ops<Kernel> = PINNED;
+const PCI_HOST: Ops<Kernel> = PINNED;
+const CCACHE: Ops<Kernel> = PINNED;
+#[cfg(feature = "ramfb")]
+const RAMFB: Ops<Kernel> = PINNED;
+#[cfg(feature = "fb-generic")]
+const FB_SIMPLE: Ops<Kernel> = PINNED;
+#[cfg(any(feature = "soc-jh7110", feature = "soc-k1"))]
+const SOC: Ops<Kernel> = PINNED;
+#[cfg(feature = "iommu-riscv")]
+const RISCV_IOMMU: Ops<Kernel> = PINNED;
+#[cfg(feature = "iommu-smmuv3")]
+const SMMUV3: Ops<Kernel> = PINNED;
+
+// ── virtio-mmio ─────────────────────────────────────────────────────────
+
+fn virtio_blk_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    use azos_drv_virtio::virtio::blk;
+    blk::init_at(dev.base as usize).map_err(|_| refusal(blk::init().is_ok()))
+}
+const VIRTIO_BLK: Ops<Kernel> = bring_up(virtio_blk_probe);
+
+fn virtio_net_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    use azos_drv_virtio::virtio::net;
+    net::init_at(dev.base as usize).map_err(|_| refusal(net::is_ready()))
+}
+const VIRTIO_NET: Ops<Kernel> = bring_up(virtio_net_probe);
+
+fn virtio_rng_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::rng::bind(dev.base as usize).map_err(|_| ProbeError::Busy)
+}
+/// Nothing sets the device up until the first seed read, and only that
+/// device is given back.
+fn virtio_rng_unbind(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::rng::unbind(dev.base as usize).map_err(|_| ProbeError::Busy)
+}
+const VIRTIO_RNG: Ops<Kernel> = Ops { unbind: unbind(virtio_rng_unbind), ..bring_up(virtio_rng_probe) };
+
+#[cfg(feature = "virtio-input")]
+fn virtio_input_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    use azos_drv_virtio::virtio::input;
+    input::init_at(dev.base as usize).map_err(|_| refusal(input::device_count() >= 1))
+}
+#[cfg(feature = "virtio-input")]
+const VIRTIO_INPUT: Ops<Kernel> = bring_up(virtio_input_probe);
+
+#[cfg(feature = "fb-generic")]
+fn virtio_gpu_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::gpu::init_at(dev.base as usize).map_err(|_| ProbeError::Failed)
+}
+#[cfg(feature = "fb-generic")]
+const VIRTIO_GPU: Ops<Kernel> = bring_up(virtio_gpu_probe);
+
+#[cfg(feature = "virtio-snd")]
+fn virtio_snd_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::snd::init_at(dev.base as usize).map_err(|_| ProbeError::Failed)
+}
+#[cfg(feature = "virtio-snd")]
+const VIRTIO_SND: Ops<Kernel> = bring_up(virtio_snd_probe);
+
+// ── PCI (the configuration space is the bring-up's, `boot::pci`) ────────
+
+#[cfg(feature = "pci")]
+fn virtio_net_pci_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_virtio_net_pci(env.pci_fn(dev)?, dev)
+}
+#[cfg(feature = "pci")]
+const VIRTIO_NET_PCI: Ops<Kernel> = bring_up(virtio_net_pci_probe);
+
+#[cfg(all(feature = "fb-generic", feature = "pci"))]
+fn virtio_gpu_pci_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_virtio_gpu_pci(env.pci_fn(dev)?, dev)
+}
+#[cfg(all(feature = "fb-generic", feature = "pci"))]
+const VIRTIO_GPU_PCI: Ops<Kernel> = bring_up(virtio_gpu_pci_probe);
+
+#[cfg(all(feature = "virtio-snd", feature = "pci"))]
+fn virtio_snd_pci_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_virtio_snd_pci(env.pci_fn(dev)?, dev)
+}
+#[cfg(all(feature = "virtio-snd", feature = "pci"))]
+const VIRTIO_SND_PCI: Ops<Kernel> = bring_up(virtio_snd_pci_probe);
+
+#[cfg(feature = "nvme")]
+fn nvme_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_nvme(env.pci_fn(dev)?, dev)
+}
+#[cfg(feature = "nvme")]
+const NVME: Ops<Kernel> = bring_up(nvme_probe);
+
+#[cfg(feature = "ahci")]
+fn ahci_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_ahci(env.pci_fn(dev)?, dev)
+}
+#[cfg(feature = "ahci")]
+const AHCI: Ops<Kernel> = bring_up(ahci_probe);
+
+#[cfg(feature = "e1000e")]
+fn e1000e_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_e1000e(env.pci_fn(dev)?, dev)
+}
+#[cfg(feature = "e1000e")]
+const E1000E: Ops<Kernel> = bring_up(e1000e_probe);
+
+#[cfg(feature = "igc")]
+fn igc_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_igc(env.pci_fn(dev)?, dev)
+}
+#[cfg(feature = "igc")]
+const IGC: Ops<Kernel> = bring_up(igc_probe);
+
+#[cfg(feature = "pci-soc-host")]
+fn rp1_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_rp1(env.pci_fn(dev)?, dev)
+}
+#[cfg(feature = "pci-soc-host")]
+const RP1: Ops<Kernel> = bring_up(rp1_probe);
+
+#[cfg(all(feature = "i2c-dw", feature = "pci"))]
+fn i2c_lpss_spt_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_lpss_i2c(env.pci_fn(dev)?, "i2c-lpss-spt", dev)
+}
+#[cfg(all(feature = "i2c-dw", feature = "pci"))]
+const I2C_LPSS_SPT: Ops<Kernel> = bring_up(i2c_lpss_spt_probe);
+
+#[cfg(all(feature = "i2c-dw", feature = "pci"))]
+fn i2c_lpss_cnl_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::pci::probe_lpss_i2c(env.pci_fn(dev)?, "i2c-lpss-cnl", dev)
+}
+#[cfg(all(feature = "i2c-dw", feature = "pci"))]
+const I2C_LPSS_CNL: Ops<Kernel> = bring_up(i2c_lpss_cnl_probe);
+
+// ── Board controllers: the node's window, mapped, to the driver ─────────
+
+// A second node for a one-controller driver is `Busy`. The GPIO window is
+// mapped here even though the SoC pinctrl framework maps the same one
+// (`boot::soc::install`, when it comes up): the e-stop line does not depend
+// on another framework's success. The mapping record covers an identical
+// window already, so the second call costs no MAX_MMIO_REGIONS slot.
+#[cfg(any(feature = "vf2", feature = "k1"))]
+fn gpio_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::hwbus::attach_gpio(dev)
+}
+#[cfg(any(feature = "vf2", feature = "k1"))]
+const GPIO: Ops<Kernel> = bring_up(gpio_probe);
+
+#[cfg(all(any(feature = "vf2", feature = "k1"), feature = "board-io"))]
+fn pwm_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_actuator::pwm::pwm_attach(super::hwbus::map_window(dev)?).map_err(|_| ProbeError::Busy)
+}
+#[cfg(all(any(feature = "vf2", feature = "k1"), feature = "board-io"))]
+const PWM: Ops<Kernel> = bring_up(pwm_probe);
+
+/// A device-tree node here; the AMD FCH's SMBus function through the PCI
+/// bring-up (it reads the revision).
+#[cfg(any(feature = "vf2", feature = "wdt-sbsa", feature = "wdt-sp5100"))]
+fn wdt_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    match dev.kind {
+        #[cfg(feature = "wdt-sp5100")]
+        hwbus::BusKind::Pci => super::pci::probe_sp5100(env.pci_fn(dev)?, dev),
+        _ => {
+            let _ = env;
+            super::hwbus::attach_wdt(dev)
+        }
+    }
+}
+#[cfg(any(feature = "vf2", feature = "wdt-sbsa", feature = "wdt-sp5100"))]
+const WDT: Ops<Kernel> = bring_up(wdt_probe);
+
+// arch-only: the BCM2835 PM block is the Raspberry Pis', and the Pis are aarch64.
+#[cfg(all(feature = "wdt-bcm2835-pm", target_arch = "aarch64"))]
+fn pm_wdt_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    if dev.size < azos_drv_power::bcm2835_pm::MIN_WINDOW {
+        return Err(ProbeError::Failed);
+    }
+    crate::entry::aarch64::ext::rpi_pm::attach(super::hwbus::map_window(dev)?).map_err(|_| ProbeError::Busy)
+}
+#[cfg(all(feature = "wdt-bcm2835-pm", target_arch = "aarch64"))]
+const PM_WDT: Ops<Kernel> = bring_up(pm_wdt_probe);
+
+#[cfg(feature = "vf2")]
+fn dw_mshc_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::hwbus::attach_dwmshc(dev)
+}
+#[cfg(feature = "vf2")]
+const DW_MSHC: Ops<Kernel> = bring_up(dw_mshc_probe);
+
+/// One probe per controller the tree enables; the bus number is the order
+/// they bind in (`i2c_attach`). A DesignWare node brings its timing facts.
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
+fn i2c_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::hwbus::attach_i2c_node(dev, super::hwbus::map_window(dev)?)
+}
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
+const I2C: Ops<Kernel> = bring_up(i2c_probe);
+
+// The thermal sensors: the kernel's thermal task reads them (`boot::thermal`,
+// which keeps the window). The VisionFive 2's `sfctemp` is powered up and
+// left converting; the K1's five-channel block checks the window it is given
+// (its clock and reset are the platform's: the APBC controller has no
+// provider); the Raspberry Pi's VideoCore mailbox is both sensor and ARM
+// clock.
+#[cfg(all(feature = "vf2", feature = "thermal"))]
+fn sfctemp_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::thermal::attach_sfctemp(super::hwbus::map_window(dev)?);
+    Ok(())
+}
+#[cfg(all(feature = "vf2", feature = "thermal"))]
+const SFCTEMP: Ops<Kernel> = bring_up(sfctemp_probe);
+
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+fn k1_tsensor_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::thermal::attach_k1_tsensor(super::hwbus::map_window(dev)?).map_err(|_| ProbeError::Failed)
+}
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+const K1_TSENSOR: Ops<Kernel> = bring_up(k1_tsensor_probe);
+
+// arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
+#[cfg(all(feature = "rpi-firmware", target_arch = "aarch64"))]
+fn rpi_mbox_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    crate::entry::aarch64::ext::rpi_mbox::attach(super::hwbus::map_window(dev)?);
+    Ok(())
+}
+#[cfg(all(feature = "rpi-firmware", target_arch = "aarch64"))]
+const RPI_MBOX: Ops<Kernel> = bring_up(rpi_mbox_probe);
+
+// ── USB host controllers ────────────────────────────────────────────────
+
+/// A device-tree node is mapped and started here; a PCI function needs the
+/// bring-up's configuration space.
+#[cfg(feature = "usb-xhci")]
+fn xhci_probe(env: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    match dev.kind {
+        hwbus::BusKind::Dt => super::usb::attach_dt(dev),
+        #[cfg(feature = "pci")]
+        hwbus::BusKind::Pci => super::pci::probe_xhci(env.pci_fn(dev)?, dev),
+        _ => {
+            let _ = env;
+            Err(ProbeError::NoSuchDriver)
+        }
+    }
+}
+#[cfg(feature = "usb-xhci")]
+const XHCI: Ops<Kernel> = bring_up(xhci_probe);
+
+/// A DesignWare USB 2.0 core (the Raspberry Pi's): device tree only.
+#[cfg(feature = "usb-dwc2")]
+fn dwc2_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    super::usb::attach_dwc2(dev)
+}
+#[cfg(feature = "usb-dwc2")]
+const DWC2: Ops<Kernel> = bring_up(dwc2_probe);

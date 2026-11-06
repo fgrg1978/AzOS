@@ -10,9 +10,10 @@
 //!   with the window), and the PCI/PCIe functions behind the ECAM window (or
 //!   the legacy port pair), each into a `Device` object with a handle that a
 //!   `Device` capability names.
-//! - **Bind** through [`KernelDrivers`], the registry that turns the name a
-//!   table gave a device ("virtio-blk", "nvme") into the call that brings the
-//!   driver up on it. The drivers no longer scan for their hardware: they are
+//! - **Bind** through the driver records (`boot::driver_records`): the name a
+//!   table gave a device ("virtio-blk", "nvme") is a record, whose probe
+//!   brings the driver up on it and whose unbind and power ops are what the
+//!   bus asks later. The drivers no longer scan for their hardware: they are
 //!   asked about the one device the bus found.
 //! - **Report**: one `[HWBUS]` line per outcome, the introspection tree's
 //!   `devices/` (Kconfig INSPECT), and the
@@ -22,9 +23,9 @@
 //!
 //! The JH7110's GPIO (the sys pin controller), I2C, PWM, watchdog, DMA
 //! controller and temperature sensor take their register window from the
-//! device-tree node: [`KernelDrivers::probe`] maps the node's `reg` and hands
+//! device-tree node: the driver's record probe maps the node's `reg` and hands
 //! the base to the driver's `attach` (`gpio_attach`, `i2c_attach`, ...), after
-//! [`KernelDrivers::resources`] gave the node its clocks, resets and default
+//! the kernel environment's `resources` gave the node its clocks, resets and default
 //! pin state. A tree without a node leaves its driver absent, not failed. The
 //! K1's GPIO (`spacemit,k1-gpio`) and PWM (`spacemit,k1-pwm`, one node per
 //! channel, the channel number being the node's hardware PWM number) bind the
@@ -71,17 +72,13 @@
 //! using.
 
 use azos_drv_bus::hwbus::{
-    self, Access, Binding, Choice, Device, Drivers, Event, Handle, Pattern, Policy, ProbeError, Row, Rules, Sink,
-    State, Verdict, LINUX, NATIVE,
+    self, Access, Binding, Choice, Device, Event, Pattern, Policy, Records, Row, Rules, Sink, State,
+    Verdict, LINUX, NATIVE,
 };
 use core::fmt::Write as _;
 
+use super::driver_records::{KernelEnv, RECORDS};
 use crate::kprintln;
-
-/// Drivers the kernel brought up before the bus, or without asking it: the
-/// binding only records that the device is the kernel's.
-const RECORD_ONLY: [&str; 9] =
-    ["uart", "intc", "pci-host", "ramfb", "fb-simple", "soc", "ccache", "riscv-iommu", "smmuv3"];
 
 /// Drivers whose node is hardware the SoC frameworks themselves drive, so the
 /// bus does not ask them for the node's resources again: on the VisionFive 2
@@ -99,8 +96,8 @@ const NO_RESOURCES: [&str; 1] = ["gpio"];
 
 /// Whether the bus gives `driver`'s node its SoC resources around the bind.
 #[cfg(feature = "soc")]
-fn wants_resources(driver: &str) -> bool {
-    !RECORD_ONLY.contains(&driver) && !(cfg!(feature = "vf2") && NO_RESOURCES.contains(&driver))
+pub(super) fn wants_resources(driver: &str) -> bool {
+    !super::driver_records::pinned(driver) && !(cfg!(feature = "vf2") && NO_RESOURCES.contains(&driver))
 }
 
 /// Map the register window of a board controller's node and return its base:
@@ -119,7 +116,7 @@ fn wants_resources(driver: &str) -> bool {
     all(feature = "rpi-firmware", target_arch = "aarch64"),
     all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
-fn map_window(dev: &Device) -> Result<usize, ProbeError> {
+pub(super) fn map_window(dev: &Device) -> Result<usize, hwbus::ProbeError> {
     map_reg(dev, dev.base, dev.size)
 }
 
@@ -133,18 +130,18 @@ fn map_window(dev: &Device) -> Result<usize, ProbeError> {
     all(feature = "rpi-firmware", target_arch = "aarch64"),
     all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
-fn map_reg(dev: &Device, base: u64, size: u64) -> Result<usize, ProbeError> {
+fn map_reg(dev: &Device, base: u64, size: u64) -> Result<usize, hwbus::ProbeError> {
     let (base, size) = (base as usize, size as usize);
     if base == 0 || size == 0 {
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     }
     if azos_abi::vdso::vdso_shares_a_2mib_slot_with(base, size) {
         azos_drv_sys::kwarn!("[HWBUS] {} window {:#x} (+{:#x}) shares the vDSO page's 2 MiB slot: not mapped",
             dev.name.as_str(), base, size);
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     }
     if !super::map_mmio_region(base, size) {
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     }
     Ok(base)
 }
@@ -227,7 +224,7 @@ fn dw_i2c_timing(dev: &Device) -> azos_drv_bus::i2c_dw::Timing {
 /// DesignWare one with its node's timing facts (`dw_i2c_timing`), a K1 one
 /// recorded by window for the PMIC's bus (`I2C_WINDOWS`).
 #[cfg(any(feature = "i2c-dw", feature = "k1"))]
-fn attach_i2c_node(dev: &Device, base: usize) -> Result<(), ProbeError> {
+pub(super) fn attach_i2c_node(dev: &Device, base: usize) -> Result<(), hwbus::ProbeError> {
     #[cfg(feature = "i2c-dw")]
     let cfg = dw_i2c_timing(dev);
     #[cfg(feature = "k1")]
@@ -244,7 +241,7 @@ fn attach_i2c_node(dev: &Device, base: usize) -> Result<(), ProbeError> {
 /// the binding knows of it (`timing`; the K1 takes nothing), and the boot
 /// line that says which bus it became.
 #[cfg(any(feature = "i2c-dw", feature = "k1"))]
-fn attach_i2c(name: &str, phys: u64, base: usize, cfg: &azos_drv_bus::i2c::BusConfig) -> Result<u8, ProbeError> {
+fn attach_i2c(name: &str, phys: u64, base: usize, cfg: &azos_drv_bus::i2c::BusConfig) -> Result<u8, hwbus::ProbeError> {
     use azos_drv_bus::i2c::AttachError;
     match azos_drv_bus::i2c::i2c_attach(base, cfg) {
         Ok((bus, found)) => {
@@ -269,10 +266,10 @@ fn attach_i2c(name: &str, phys: u64, base: usize, cfg: &azos_drv_bus::i2c::BusCo
             }
             Ok(bus)
         }
-        Err(AttachError::Taken) => Err(ProbeError::Busy),
+        Err(AttachError::Taken) => Err(hwbus::ProbeError::Busy),
         Err(AttachError::Refused(e)) => {
             azos_drv_sys::kerr!("[I2C] {} ({:#x}) not driven: {:?}", name, phys, e);
-            Err(ProbeError::Failed)
+            Err(hwbus::ProbeError::Failed)
         }
     }
 }
@@ -280,29 +277,30 @@ fn attach_i2c(name: &str, phys: u64, base: usize, cfg: &azos_drv_bus::i2c::BusCo
 /// A device-tree watchdog: the VF2's WDT-L or an SBSA Generic Watchdog,
 /// whichever the node's `compatible` names (the id table bound only the ones
 /// this image compiles).
-fn attach_wdt(dev: &Device) -> Result<(), ProbeError> {
+#[cfg(any(feature = "vf2", feature = "wdt-sbsa", feature = "wdt-sp5100"))]
+pub(super) fn attach_wdt(dev: &Device) -> Result<(), hwbus::ProbeError> {
     #[cfg(feature = "vf2")]
     if dev.compatible().any(|c| c == "starfive,jh7110-wdt") {
-        return azos_drv_sys::wdt::wdt_attach(map_window(dev)?).map_err(|_| ProbeError::Busy);
+        return azos_drv_sys::wdt::wdt_attach(map_window(dev)?).map_err(|_| hwbus::ProbeError::Busy);
     }
     #[cfg(feature = "wdt-sbsa")]
     if dev.compatible().any(|c| c == "arm,sbsa-gwdt") {
         use azos_drv_sys::wdt_sbsa::FRAME_BYTES;
         let Some((rbase, rsize)) = dev.reg2 else {
             azos_drv_sys::kerr!("[WDT] {}: arm,sbsa-gwdt without a refresh frame (second reg)", dev.name.as_str());
-            return Err(ProbeError::Failed);
+            return Err(hwbus::ProbeError::Failed);
         };
         if dev.size < FRAME_BYTES || rsize < FRAME_BYTES {
-            return Err(ProbeError::Failed);
+            return Err(hwbus::ProbeError::Failed);
         }
         let (ctrl, refresh) = (map_window(dev)?, map_reg(dev, rbase, rsize)?);
-        let v = azos_drv_sys::wdt::sbsa_attach(ctrl, refresh).map_err(|_| ProbeError::Busy)?;
+        let v = azos_drv_sys::wdt::sbsa_attach(ctrl, refresh).map_err(|_| hwbus::ProbeError::Busy)?;
         kprintln!("[WDT] SBSA generic watchdog: control {:#x}, refresh {:#x}, architecture version {}",
                   dev.base, rbase, v);
         return Ok(());
     }
     let _ = dev;
-    Err(ProbeError::NoSuchDriver)
+    Err(hwbus::ProbeError::NoSuchDriver)
 }
 
 /// The AMD FCH watchdog behind the SMBus function `vendor:device` at
@@ -310,20 +308,20 @@ fn attach_wdt(dev: &Device) -> Result<(), ProbeError> {
 /// the PM window mapped and the watchdog's decode turned on, then its window
 /// mapped and handed over (`azos_drv_sys::wdt_sp5100`).
 #[cfg(feature = "wdt-sp5100")]
-pub(crate) fn attach_sp5100(vendor: u16, device: u16, revision: u8) -> Result<(), ProbeError> {
+pub(crate) fn attach_sp5100(vendor: u16, device: u16, revision: u8) -> Result<(), hwbus::ProbeError> {
     use azos_drv_sys::wdt_sp5100 as t;
     if !t::is_efch_mmio(vendor, device, revision) {
         kprintln!("[WDT] FCH {:04x}:{:04x} rev {:#04x}: not the Zen layout, watchdog not driven",
                   vendor, device, revision);
-        return Err(ProbeError::NoSuchDriver);
+        return Err(hwbus::ProbeError::NoSuchDriver);
     }
     let map = |phys: u64, len: u64| {
-        if super::map_mmio_region(phys as usize, len as usize) { Ok(phys as usize) } else { Err(ProbeError::Failed) }
+        if super::map_mmio_region(phys as usize, len as usize) { Ok(phys as usize) } else { Err(hwbus::ProbeError::Failed) }
     };
     let pm = map(t::PM_PHYS, t::PM_BYTES)?;
     if let Err(e) = azos_drv_sys::wdt::sp5100_decode(pm) {
         azos_drv_sys::kerr!("[WDT] FCH watchdog: {:?}", e);
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     }
     let wdt = map(t::WDT_PHYS, t::WDT_BYTES)?;
     match azos_drv_sys::wdt::sp5100_attach(pm, wdt) {
@@ -332,10 +330,10 @@ pub(crate) fn attach_sp5100(vendor: u16, device: u16, revision: u8) -> Result<()
                       if fired { "; the last reset was the watchdog's" } else { "" });
             Ok(())
         }
-        Err(t::Refused::Busy) => Err(ProbeError::Busy),
+        Err(t::Refused::Busy) => Err(hwbus::ProbeError::Busy),
         Err(e) => {
             azos_drv_sys::kerr!("[WDT] FCH watchdog: {:?}", e);
-            Err(ProbeError::Failed)
+            Err(hwbus::ProbeError::Failed)
         }
     }
 }
@@ -354,9 +352,9 @@ pub(crate) fn attach_sp5100(vendor: u16, device: u16, revision: u8) -> Result<()
 /// answer fails the bind rather than guess a constant, since the card clock is
 /// divided from it.
 #[cfg(feature = "vf2")]
-fn attach_dwmshc(dev: &Device) -> Result<(), ProbeError> {
+pub(super) fn attach_dwmshc(dev: &Device) -> Result<(), hwbus::ProbeError> {
     use azos_drv_block::dwmshc;
-    let Some(node) = dev.dt_node else { return Err(ProbeError::NoSuchDriver) };
+    let Some(node) = dev.dt_node else { return Err(hwbus::ProbeError::NoSuchDriver) };
     #[cfg(feature = "soc")]
     let facts = super::soc::with(|fdt, soc, bus, _| {
         let n = azos_soc::NodeId(node);
@@ -373,28 +371,28 @@ fn attach_dwmshc(dev: &Device) -> Result<(), ProbeError> {
     let facts: Option<(bool, Option<u32>, Option<u64>)> = None;
     let Some((non_removable, fifo_depth, ciu_hz)) = facts else {
         azos_drv_sys::kerr!("[SDMMC] {}: no SoC frameworks or no tree: the node's facts are unknown", dev.name.as_str());
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     };
     if non_removable {
         kprintln!("[SDMMC] {}: non-removable (eMMC): not driven", dev.name.as_str());
-        return Err(ProbeError::NoSuchDriver);
+        return Err(hwbus::ProbeError::NoSuchDriver);
     }
     let (Some(fifo_depth), Some(ciu_hz)) = (fifo_depth, ciu_hz.and_then(|hz| u32::try_from(hz).ok())) else {
         azos_drv_sys::kerr!("[SDMMC] {}: no fifo-depth or no ciu clock rate in the tree", dev.name.as_str());
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     };
     let base = map_window(dev)?;
     dwmshc::attach(dwmshc::Node { base, line: dev.irq, ciu_hz, fifo_depth }).map_err(|e| match e {
-        dwmshc::AttachError::Busy => ProbeError::Busy,
-        dwmshc::AttachError::Invalid => ProbeError::Failed,
+        dwmshc::AttachError::Busy => hwbus::ProbeError::Busy,
+        dwmshc::AttachError::Invalid => hwbus::ProbeError::Failed,
     })
 }
 
 /// The GPIO controller: its window and interrupt line to the driver, then
 /// what the tree says about its input pins (`describe_gpio_keys`).
 #[cfg(any(feature = "vf2", feature = "k1"))]
-fn attach_gpio(dev: &Device) -> Result<(), ProbeError> {
-    azos_drv_gpio::gpio::gpio_attach(map_window(dev)?, dev.irq).map_err(|_| ProbeError::Busy)?;
+pub(super) fn attach_gpio(dev: &Device) -> Result<(), hwbus::ProbeError> {
+    azos_drv_gpio::gpio::gpio_attach(map_window(dev)?, dev.irq).map_err(|_| hwbus::ProbeError::Busy)?;
     #[cfg(feature = "soc")]
     if let Some(node) = dev.dt_node {
         describe_gpio_keys(node);
@@ -520,191 +518,44 @@ pub(crate) fn attach_lpss_i2c<C: azos_pci::ConfigSpace>(
     cfg: &mut C,
     f: &azos_pci::FunctionInfo,
     window: &mut azos_pci::BarWindow,
-) -> Result<(), ProbeError> {
+) -> Result<(), hwbus::ProbeError> {
     use azos_drv_bus::i2c_dw::Timing;
-    let Some(clk) = lpss_ic_clk_hz(driver) else { return Err(ProbeError::NoSuchDriver) };
+    let Some(clk) = lpss_ic_clk_hz(driver) else { return Err(hwbus::ProbeError::NoSuchDriver) };
     let bars = azos_drv_virtio::virtio::pci::msix_selftest::map_bars(cfg, f, window).map_err(|e| {
         azos_drv_sys::kerr!("[I2C] LPSS {} not driven: {:?}", f.bdf, e);
-        ProbeError::Failed
+        hwbus::ProbeError::Failed
     })?;
     let base = bars[0];
     if base == 0 {
         azos_drv_sys::kerr!("[I2C] LPSS {} not driven: BAR 0 is not a memory BAR", f.bdf);
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     }
     if let Err(ty) = azos_drv_bus::i2c::i2c_lpss_release(base) {
         azos_drv_sys::kerr!("[I2C] LPSS {} not driven: its CAPS name type {}, not an I2C", f.bdf, ty);
-        return Err(ProbeError::Failed);
+        return Err(hwbus::ProbeError::Failed);
     }
     attach_i2c(dev.name.as_str(), base as u64, base, &Timing::with_clock(Some(clk))).map(|_| ())
 }
 
-/// What a PCI driver needs besides the device: the configuration space, the
-/// BAR window, the MSI route. The PCI bring-up in `kernel_main` owns them and
-/// lends them for the stage that binds PCI drivers.
+/// What a PCI driver's probe needs besides the device: the configuration
+/// space, the BAR window, the function. The PCI bring-up in `kernel_main` owns
+/// them and lends them for the stage that binds PCI drivers.
 #[cfg(feature = "pci")]
 pub(crate) trait PciProbe {
-    fn probe(&mut self, driver: &str, dev: &Device) -> Result<(), ProbeError>;
+    /// The function `dev` is, `None` for one the bring-up did not enumerate.
+    fn function(&mut self, dev: &Device) -> Option<PciFn<'_>>;
 }
 
-/// The driver registry.
-struct KernelDrivers<'a> {
-    #[cfg(feature = "pci")]
-    pci: Option<&'a mut dyn PciProbe>,
-    #[cfg(not(feature = "pci"))]
-    pci: core::marker::PhantomData<&'a ()>,
-}
-
-/// `Busy` when the driver already holds a device (a second one is not its
-/// business), `Failed` when it tried and the hardware refused.
-fn refusal(already_up: bool) -> ProbeError {
-    if already_up { ProbeError::Busy } else { ProbeError::Failed }
-}
-
-impl Drivers for KernelDrivers<'_> {
-    /// The clocks, resets, power domains and `default` pin state the device's
-    /// node names (`boot::soc::bind`), before its driver is asked. The
-    /// record-only hardware is out: the kernel brought it up before the SoC
-    /// frameworks existed, outside the bus. A device that did not come from
-    /// the tree has no node, and a node without the properties asks for
-    /// nothing. The bus's lock is not held: a bind takes it for the state
-    /// change before and after the driver's call (`azos_hwbus::Access`).
-    fn resources(&mut self, driver: &str, _h: Handle, dev: &Device) -> Result<(), ProbeError> {
-        #[cfg(feature = "soc")]
-        if let (true, Some(node)) = (wants_resources(driver), dev.dt_node) {
-            if let Err(e) = super::soc::bind(node) {
-                azos_drv_sys::kwarn!("[HWBUS] {} resources for {} refused: {:?}", dev.name.as_str(), driver, e);
-                return Err(ProbeError::Resources);
-            }
-        }
-        let _ = (driver, dev);
-        Ok(())
-    }
-
-    fn release(&mut self, driver: &str, _h: Handle, dev: &Device) {
-        #[cfg(feature = "soc")]
-        if let (true, Some(node)) = (wants_resources(driver), dev.dt_node) {
-            if let Err(e) = super::soc::unbind(node) {
-                azos_drv_sys::kwarn!("[HWBUS] {} resources of {} not all released: {:?}", dev.name.as_str(), driver, e);
-            }
-        }
-        let _ = (driver, dev);
-    }
-
-    fn probe(&mut self, driver: &str, _h: Handle, dev: &Device) -> Result<(), ProbeError> {
-        let base = dev.base as usize;
-        if RECORD_ONLY.contains(&driver) {
-            return Ok(());
-        }
-        match driver {
-            "virtio-blk" => azos_drv_virtio::virtio::blk::init_at(base)
-                .map_err(|_| refusal(azos_drv_virtio::virtio::blk::init().is_ok())),
-            "virtio-net" => azos_drv_virtio::virtio::net::init_at(base)
-                .map_err(|_| refusal(azos_drv_virtio::virtio::net::is_ready())),
-            "virtio-rng" => azos_drv_virtio::virtio::rng::bind(base).map_err(|_| ProbeError::Busy),
-            // The board controllers: the node's window, mapped, to the
-            // driver. A second node for a one-controller driver is `Busy`.
-            // The window is mapped here even though the SoC pinctrl framework
-            // maps the same one (`boot::soc::install`, when it comes up): the
-            // e-stop line does not depend on another framework's success. The
-            // mapping record covers an identical window already, so the second
-            // call costs no MAX_MMIO_REGIONS slot (`vmm::map_mmio_region`).
-            #[cfg(any(feature = "vf2", feature = "k1"))]
-            "gpio" => attach_gpio(dev),
-            #[cfg(all(any(feature = "vf2", feature = "k1"), feature = "board-io"))]
-            "pwm" => azos_drv_actuator::pwm::pwm_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
-            // The watchdogs: a device-tree node here, the AMD FCH's SMBus
-            // function through the PCI bring-up (it reads the revision).
-            "wdt" => match dev.kind {
-                #[cfg(feature = "wdt-sp5100")]
-                hwbus::BusKind::Pci => match self.pci.as_mut() {
-                    Some(p) => p.probe(driver, dev),
-                    None => Err(ProbeError::Failed),
-                },
-                _ => attach_wdt(dev),
-            },
-            // arch-only: the BCM2835 PM block is the Raspberry Pis', and the Pis are aarch64.
-            #[cfg(all(feature = "wdt-bcm2835-pm", target_arch = "aarch64"))]
-            "pm-wdt" => {
-                if dev.size < azos_drv_power::bcm2835_pm::MIN_WINDOW {
-                    return Err(ProbeError::Failed);
-                }
-                crate::entry::aarch64::ext::rpi_pm::attach(map_window(dev)?).map_err(|_| ProbeError::Busy)
-            }
-            #[cfg(feature = "vf2")]
-            "dw-mshc" => attach_dwmshc(dev),
-            // One probe per controller the tree enables; the bus number is
-            // the order they bind in (`i2c_attach`). A DesignWare node brings
-            // its timing facts (`dw_i2c_timing`).
-            #[cfg(any(feature = "i2c-dw", feature = "k1"))]
-            "i2c" => attach_i2c_node(dev, map_window(dev)?),
-            // The thermal sensors: the kernel's thermal task reads them
-            // (`boot::thermal`, which keeps the window). The VisionFive 2's
-            // `sfctemp` is powered up and left converting; the Raspberry Pi's
-            // VideoCore mailbox is both sensor and ARM clock.
-            #[cfg(all(feature = "vf2", feature = "thermal"))]
-            "sfctemp" => {
-                super::thermal::attach_sfctemp(map_window(dev)?);
-                Ok(())
-            }
-            // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
-            #[cfg(all(feature = "rpi-firmware", target_arch = "aarch64"))]
-            "rpi-mbox" => {
-                crate::entry::aarch64::ext::rpi_mbox::attach(map_window(dev)?);
-                Ok(())
-            }
-            // The K1's five-channel temperature block. Its clock and reset are
-            // the platform's (the APBC controller has no provider, so the bind
-            // skipped them as unmodelled): the start checks the window and
-            // refuses a block that does not hold what it is given. The thermal
-            // task reads it (`boot::thermal`, which keeps the window).
-            #[cfg(all(feature = "soc-k1", feature = "thermal"))]
-            "k1-tsensor" => super::thermal::attach_k1_tsensor(map_window(dev)?).map_err(|_| ProbeError::Failed),
-            #[cfg(feature = "virtio-input")]
-            "virtio-input" => azos_drv_virtio::virtio::input::init_at(base)
-                .map_err(|_| refusal(azos_drv_virtio::virtio::input::device_count() >= 1)),
-            #[cfg(feature = "fb-generic")]
-            "virtio-gpu" => azos_drv_virtio::virtio::gpu::init_at(base).map_err(|_| ProbeError::Failed),
-            #[cfg(feature = "virtio-snd")]
-            "virtio-snd" => azos_drv_virtio::virtio::snd::init_at(base).map_err(|_| ProbeError::Failed),
-            #[cfg(feature = "pci")]
-            "nvme" | "ahci" | "virtio-net-pci" | "virtio-gpu-pci" | "virtio-snd-pci" | "e1000e" | "igc" | "rp1"
-            | "i2c-lpss-spt" | "i2c-lpss-cnl" => match self.pci.as_mut() {
-                Some(p) => p.probe(driver, dev),
-                None => Err(ProbeError::Failed),
-            },
-            // An xHCI controller: a device-tree node is mapped and started
-            // here; a PCI function needs the bring-up's configuration space.
-            #[cfg(feature = "usb-xhci")]
-            "xhci" => match dev.kind {
-                hwbus::BusKind::Dt => super::usb::attach_dt(dev),
-                #[cfg(feature = "pci")]
-                hwbus::BusKind::Pci => match self.pci.as_mut() {
-                    Some(p) => p.probe(driver, dev),
-                    None => Err(ProbeError::Failed),
-                },
-                _ => Err(ProbeError::NoSuchDriver),
-            },
-            // A DesignWare USB 2.0 core (the Raspberry Pi's): device tree only.
-            #[cfg(feature = "usb-dwc2")]
-            "dwc2" => super::usb::attach_dwc2(dev),
-            _ => Err(ProbeError::NoSuchDriver),
-        }
-    }
-
-    fn remove(&mut self, driver: &str, _h: Handle, dev: &Device) -> Result<(), ProbeError> {
-        if RECORD_ONLY.contains(&driver) {
-            // The kernel keeps what it was driving.
-            return Err(ProbeError::Busy);
-        }
-        match driver {
-            // Nothing has set the device up until the first seed read.
-            "virtio-rng" => azos_drv_virtio::virtio::rng::unbind(dev.base as usize).map_err(|_| ProbeError::Busy),
-            // A disk with a volume mounted, a NIC with its queues posted, a
-            // controller with its admin queue up: none gives itself back.
-            _ => Err(ProbeError::Busy),
-        }
-    }
+/// One PCI function, lent with the bring-up's configuration space and BAR
+/// window.
+#[cfg(feature = "pci")]
+pub(crate) struct PciFn<'a> {
+    pub(crate) cfg: &'a mut super::pci::KernelConfigSpace,
+    pub(crate) f: &'a azos_pci::FunctionInfo,
+    pub(crate) window: &'a mut azos_pci::BarWindow,
+    /// CPUs the machine will run: bounds the NVMe I/O queue pairs.
+    #[cfg(feature = "nvme")]
+    pub(crate) cpus: usize,
 }
 
 /// The identity a line and a record print: `pci:1af4:1041`, `dt:ns16550a`,
@@ -962,7 +813,7 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
 
     // The kernel's own hardware among them is bound now: it was brought up
     // before this point.
-    bind(&RECORD_ONLY);
+    run_stage(&super::driver_records::pinned, KernelEnv::plain());
 }
 
 /// Add the PCI/PCIe functions the bring-up enumerated. The first assigned
@@ -1050,28 +901,18 @@ pub(crate) fn window_for(driver: &str) -> Option<(u64, u64)> {
 
 // ── Binding ─────────────────────────────────────────────────────────────
 
-fn run_stage(drivers: &[&str], pci: PciHandle<'_>) {
-    let mut kd = KernelDrivers {
-        #[cfg(feature = "pci")]
-        pci,
-        #[cfg(not(feature = "pci"))]
-        pci: { let _ = pci; core::marker::PhantomData },
-    };
+fn run_stage(accept: &dyn Fn(&str) -> bool, mut env: KernelEnv<'_>) {
+    let mut kd = Records { records: &RECORDS, env: &mut env };
     with_rules(|rules| {
         hwbus::Locked.bind_where(rules, &mut kd, &mut Console, &|_, v| {
-            matches!(v, Verdict::Bind(Choice::Native(n)) if drivers.contains(n))
+            matches!(v, Verdict::Bind(Choice::Native(n)) if accept(n))
         })
     });
 }
 
-#[cfg(feature = "pci")]
-type PciHandle<'a> = Option<&'a mut dyn PciProbe>;
-#[cfg(not(feature = "pci"))]
-type PciHandle<'a> = Option<&'a mut ()>;
-
 /// Bind the detected devices the table gives to one of `drivers`.
 pub(crate) fn bind(drivers: &[&str]) {
-    run_stage(drivers, None);
+    run_stage(&|n| drivers.contains(&n), KernelEnv::plain());
 }
 
 /// The board's safety-read stage: bind the GPIO that carries the e-stop line
@@ -1099,7 +940,7 @@ pub(crate) fn bind_safety() {
 /// As [`bind`], lending the PCI drivers the bring-up's configuration space.
 #[cfg(feature = "pci")]
 pub(crate) fn bind_pci(drivers: &[&str], pci: &mut dyn PciProbe) {
-    run_stage(drivers, Some(pci));
+    run_stage(&|n| drivers.contains(&n), KernelEnv { pci: Some(pci) });
 }
 
 /// Close the stages that have run: every device still detected is decided now
@@ -1108,12 +949,8 @@ pub(crate) fn bind_pci(drivers: &[&str], pci: &mut dyn PciProbe) {
 /// for the stage that brings their driver up (the input devices wait for the
 /// interrupt wiring). The call that names none prints the one-line summary.
 pub(crate) fn settle(later: &[&str]) {
-    let mut kd = KernelDrivers {
-        #[cfg(feature = "pci")]
-        pci: None,
-        #[cfg(not(feature = "pci"))]
-        pci: core::marker::PhantomData,
-    };
+    let mut env = KernelEnv::plain();
+    let mut kd = Records { records: &RECORDS, env: &mut env };
     with_rules(|rules| {
         hwbus::Locked.bind_where(rules, &mut kd, &mut Console, &|_, v| {
             !matches!(v, Verdict::Bind(Choice::Native(n)) if later.contains(n))
@@ -1147,12 +984,8 @@ pub(crate) fn settle(later: &[&str]) {
 /// takes effect on the drivers that can let go; a disk with a mounted volume
 /// stays bound and says so.
 pub(crate) fn reconcile() {
-    let mut kd = KernelDrivers {
-        #[cfg(feature = "pci")]
-        pci: None,
-        #[cfg(not(feature = "pci"))]
-        pci: core::marker::PhantomData,
-    };
+    let mut env = KernelEnv::plain();
+    let mut kd = Records { records: &RECORDS, env: &mut env };
     with_rules(|rules| hwbus::Locked.reconcile(rules, &mut kd, &mut Console));
 }
 

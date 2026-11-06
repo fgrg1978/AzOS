@@ -24,28 +24,28 @@ i2c              dt:spacemit,k1-i2c       boot   if=BOARD_K1
 # Linux tree here has no drivers/mfd sources); later PCHs (Tiger Lake on)
 # are not listed: their clock is not known here. They bind in the PCI stage
 # and number after the tree's buses.
-i2c-lpss-spt     pci:8086:9d60   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:9d61   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:9d62   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:9d63   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:9d64   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:9d65   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:a160   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:a161   boot   if=I2C_DESIGNWARE
-i2c-lpss-spt     pci:8086:a162   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:9de8   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:9de9   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:9dea   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:9deb   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:9dc5   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:9dc6   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:a368   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:a369   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:a36a   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:a36b   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:02e8   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:02e9   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:02ea   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:02eb   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:02c5   boot   if=I2C_DESIGNWARE
-i2c-lpss-cnl     pci:8086:02c6   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:9d60   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:9d61   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:9d62   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:9d63   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:9d64   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:9d65   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:a160   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:a161   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-spt     pci:8086:a162   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:9de8   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:9de9   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:9dea   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:9deb   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:9dc5   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:9dc6   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:a368   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:a369   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:a36a   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:a36b   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:02e8   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:02e9   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:02ea   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:02eb   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:02c5   boot   if=I2C_DESIGNWARE if=DRV_PCI
+i2c-lpss-cnl     pci:8086:02c6   boot   if=I2C_DESIGNWARE if=DRV_PCI

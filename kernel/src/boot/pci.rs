@@ -841,7 +841,7 @@ pub(crate) fn bring_up(early: &EarlyBoot, num_cpus: usize) {
     // the NIC driver below (offset 4) count in different
     // `LPI_VECTOR_COUNT` slots. `prepare` issues a fresh MAPD for the
     // DeviceID each time (a new ITT slot; the ITS replaces the mapping).
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", feature = "boot-selftests"))]
     use crate::entry::aarch64::ext::its_route::ItsRoute;
     #[cfg(all(target_arch = "aarch64", feature = "boot-selftests"))]
     if crate::boot_hooks::its_ready() {
@@ -915,150 +915,17 @@ pub(crate) fn bring_up(early: &EarlyBoot, num_cpus: usize) {
         cpus: usize,
     }
     impl boot::hwbus::PciProbe for PciBind<'_> {
-        fn probe(
-            &mut self,
-            driver: &str,
-            dev: &azos_drv_bus::hwbus::Device,
-        ) -> Result<(), azos_drv_bus::hwbus::ProbeError> {
-            use azos_drv_bus::hwbus::ProbeError;
-            let Some(f) = self.funcs.iter().flatten().find(|f| {
+        fn function(&mut self, dev: &azos_drv_bus::hwbus::Device) -> Option<boot::hwbus::PciFn<'_>> {
+            let f = self.funcs.iter().flatten().find(|f| {
                 f.bdf.bus == dev.pci.bus && f.bdf.device == dev.pci.device && f.bdf.function == dev.pci.function
-            }) else {
-                return Err(ProbeError::Failed);
-            };
-            match driver {
+            })?;
+            Some(boot::hwbus::PciFn {
+                cfg: &mut *self.cfg,
+                f,
+                window: &mut *self.window,
                 #[cfg(feature = "nvme")]
-                "nvme" => {
-                    // One MSI-X vector per I/O queue pair, queue `q` to
-                    // CPU `q`: each hart's IMSIC file / each CPU's local
-                    // APIC (the secondaries enable theirs when they come
-                    // up). The ITS has the boot CPU's collection only.
-                    #[cfg(target_arch = "riscv64")]
-                    let mut route = azos_drv_block::nvme::PerCpuRoute::new(|cpu| {
-                        azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(cpu as u32)
-                    });
-                    #[cfg(target_arch = "aarch64")]
-                    let mut route = ItsRoute::new(f.bdf, 8);
-                    #[cfg(target_arch = "x86_64")]
-                    let mut route = azos_drv_block::nvme::PerCpuRoute::new(|cpu| {
-                        azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(cpu as u32)
-                    });
-                    attach_nvme(self.cfg, f, self.window, &mut route, dev.dma_mask, self.cpus);
-                    // A refusal is a line (`attach_nvme`), and the block
-                    // device stays virtio-blk.
-                    if azos_drv_block::nvme::active() { Ok(()) } else { Err(ProbeError::Failed) }
-                }
-                // Kconfig DRV_AHCI: a SATA disk behind an AHCI host; its one
-                // MSI goes to the boot hart (aarch64: LPI slot 19, after the
-                // Intel NICs' 16 and 17 and the sound function's 18).
-                #[cfg(feature = "ahci")]
-                "ahci" => {
-                    #[cfg(target_arch = "riscv64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(
-                        azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32);
-                    #[cfg(target_arch = "aarch64")]
-                    let mut route = ItsRoute::new(f.bdf, 19);
-                    #[cfg(target_arch = "x86_64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(
-                        azos_sched::smp::current_cpu_id() as u32);
-                    // A refusal is a line (`attach_ahci`), and the block
-                    // device stays what it was.
-                    if attach_ahci(self.cfg, f, self.window, &mut route, dev.dma_mask) {
-                        Ok(())
-                    } else {
-                        Err(ProbeError::Failed)
-                    }
-                }
-                #[cfg(feature = "usb-xhci")]
-                "xhci" => {
-                    // Polled for now: no MSI-X vector is routed to it.
-                    boot::usb::attach_pci(self.cfg, f, self.window, dev.dma_mask)
-                        .map_err(|()| ProbeError::Failed)
-                }
-                "virtio-net-pci" => {
-                    #[cfg(target_arch = "riscv64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(
-                        azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32);
-                    #[cfg(target_arch = "aarch64")]
-                    let mut route = ItsRoute::new(f.bdf, 4);
-                    #[cfg(target_arch = "x86_64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(
-                        azos_sched::smp::current_cpu_id() as u32);
-                    azos_drv_virtio::virtio::net::init_pci(self.cfg, f, self.window, &mut route).map_err(|e| {
-                        kprintln!("[NET] virtio-net-pci {} not used: {:?}", f.bdf, e);
-                        ProbeError::Failed
-                    })
-                }
-                // Kconfig DRV_E1000E: the Intel NIC; its one MSI goes to the
-                // boot hart as the virtio NIC's do (aarch64: LPI slot 16,
-                // after the self-test's 0-1, the virtio NIC's 4-6, NVMe's 8-15).
-                #[cfg(feature = "e1000e")]
-                "e1000e" => {
-                    #[cfg(target_arch = "riscv64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(
-                        azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32);
-                    #[cfg(target_arch = "aarch64")]
-                    let mut route = ItsRoute::new(f.bdf, 16);
-                    #[cfg(target_arch = "x86_64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(
-                        azos_sched::smp::current_cpu_id() as u32);
-                    azos_drv_net::e1000e::init_pci(self.cfg, f, self.window, &mut route).map_err(|e| {
-                        kprintln!("[NET] e1000e {} not used: {:?}", f.bdf, e);
-                        ProbeError::Failed
-                    })
-                }
-                // Kconfig DRV_IGC: the Intel I225/I226 (and QEMU's `igb`); its one
-                // MSI goes to the boot hart (aarch64: LPI slot 17, after e1000e's 16).
-                #[cfg(feature = "igc")]
-                "igc" => {
-                    #[cfg(target_arch = "riscv64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(
-                        azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32);
-                    #[cfg(target_arch = "aarch64")]
-                    let mut route = ItsRoute::new(f.bdf, 17);
-                    #[cfg(target_arch = "x86_64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(
-                        azos_sched::smp::current_cpu_id() as u32);
-                    azos_drv_net::igc::init_pci(self.cfg, f, self.window, &mut route).map_err(|e| {
-                        kprintln!("[NET] igc {} not used: {:?}", f.bdf, e);
-                        ProbeError::Failed
-                    })
-                }
-                // Kconfig DRV_VIRTIO_SND: the virtio-sound function; one MSI-X
-                // vector for its three queues, to the boot hart as the
-                // NICs' (aarch64: LPI slot 18, after igc's 17).
-                #[cfg(feature = "virtio-snd")]
-                "virtio-snd-pci" => {
-                    #[cfg(target_arch = "riscv64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(
-                        azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32);
-                    #[cfg(target_arch = "aarch64")]
-                    let mut route = ItsRoute::new(f.bdf, 18);
-                    #[cfg(target_arch = "x86_64")]
-                    let mut route = azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(
-                        azos_sched::smp::current_cpu_id() as u32);
-                    azos_drv_virtio::virtio::snd::init_pci(self.cfg, f, self.window, &mut route)
-                        .map_err(|_| ProbeError::Failed)
-                }
-                // The Raspberry Pi 5's south bridge: its window mapped and
-                // its blocks named, no driver behind them yet.
-                #[cfg(feature = "pci-soc-host")]
-                "rp1" => boot::pci::attach_rp1(self.cfg, f, self.window).map_err(|()| ProbeError::Failed),
-                // The development display: polled, so no MSI route is needed.
-                #[cfg(feature = "fb-generic")]
-                "virtio-gpu-pci" => azos_drv_virtio::virtio::gpu::init_pci(self.cfg, f, self.window)
-                    .map_err(|_| ProbeError::Failed),
-                // Kconfig WDT_SP5100_TCO: the AMD FCH's SMBus function names
-                // the FCH; its revision picks the layout.
-                #[cfg(feature = "wdt-sp5100")]
-                "wdt" => boot::hwbus::attach_sp5100(f.vendor, f.device,
-                    azos_pci::ConfigSpace::read32(&*self.cfg, f.bdf, azos_pci::OFF_CLASS_REV) as u8),
-                // Kconfig I2C_DESIGNWARE: an Intel LPSS I2C function, a
-                // DesignWare controller in its BAR 0; polled, no MSI.
-                #[cfg(feature = "i2c-dw")]
-                "i2c-lpss-spt" | "i2c-lpss-cnl" => boot::hwbus::attach_lpss_i2c(driver, dev, self.cfg, f, self.window),
-                _ => Err(ProbeError::NoSuchDriver),
-            }
+                cpus: self.cpus,
+            })
         }
     }
     let mut pci_bind = PciBind {
@@ -1106,4 +973,127 @@ pub(crate) fn bring_up(early: &EarlyBoot, num_cpus: usize) {
 
     #[cfg(feature = "mmc-flush-smoke")]
     mmc_flush_smoke(&mut cfg, &funcs[..pci_n], &mut window);
+}
+
+// ── The PCI drivers' probes (their records are `boot::driver_records`) ───
+
+use azos_drv_bus::hwbus::{Device, ProbeError};
+use boot::hwbus::PciFn;
+
+/// The boot hart's MSI route for a driver with one vector, at LPI slot
+/// `lpi` of the ITS on aarch64 (the self-test uses 0-1, the virtio NIC 4-6,
+/// NVMe 8-15, the Intel NICs 16 and 17, the sound function 18, AHCI 19).
+#[cfg(target_arch = "riscv64")]
+fn boot_route(_f: &azos_pci::FunctionInfo, _lpi: u32) -> azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute {
+    azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32)
+}
+#[cfg(target_arch = "aarch64")]
+fn boot_route(f: &azos_pci::FunctionInfo, lpi: u32) -> crate::entry::aarch64::ext::its_route::ItsRoute {
+    crate::entry::aarch64::ext::its_route::ItsRoute::new(f.bdf, lpi)
+}
+#[cfg(target_arch = "x86_64")]
+fn boot_route(_f: &azos_pci::FunctionInfo, _lpi: u32) -> azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute {
+    azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(azos_sched::smp::current_cpu_id() as u32)
+}
+
+/// Kconfig DRV_NVME: one MSI-X vector per I/O queue pair, queue `q` to CPU
+/// `q` (each hart's IMSIC file / each CPU's local APIC, which the
+/// secondaries enable when they come up); the ITS has the boot CPU's
+/// collection only. A refusal is a line (`attach_nvme`), and the block
+/// device stays virtio-blk.
+#[cfg(feature = "nvme")]
+pub(crate) fn probe_nvme(p: PciFn<'_>, dev: &Device) -> Result<(), ProbeError> {
+    #[cfg(target_arch = "riscv64")]
+    let mut route = azos_drv_block::nvme::PerCpuRoute::new(|cpu| {
+        azos_drv_virtio::virtio::pci::msix_selftest::AiaRoute::new(cpu as u32)
+    });
+    #[cfg(target_arch = "aarch64")]
+    let mut route = boot_route(p.f, 8);
+    #[cfg(target_arch = "x86_64")]
+    let mut route = azos_drv_block::nvme::PerCpuRoute::new(|cpu| {
+        azos_drv_virtio::virtio::pci::msix_selftest::ApicMsiRoute::new(cpu as u32)
+    });
+    boot::attach_nvme(p.cfg, p.f, p.window, &mut route, dev.dma_mask, p.cpus);
+    if azos_drv_block::nvme::active() { Ok(()) } else { Err(ProbeError::Failed) }
+}
+
+/// Kconfig DRV_AHCI: a SATA disk behind an AHCI host, its one MSI to the
+/// boot hart. A refusal is a line (`attach_ahci`), and the block device
+/// stays what it was.
+#[cfg(feature = "ahci")]
+pub(crate) fn probe_ahci(p: PciFn<'_>, dev: &Device) -> Result<(), ProbeError> {
+    let mut route = boot_route(p.f, 19);
+    if boot::attach_ahci(p.cfg, p.f, p.window, &mut route, dev.dma_mask) { Ok(()) } else { Err(ProbeError::Failed) }
+}
+
+/// An xHCI function: polled for now, no MSI-X vector is routed to it.
+#[cfg(feature = "usb-xhci")]
+pub(crate) fn probe_xhci(p: PciFn<'_>, dev: &Device) -> Result<(), ProbeError> {
+    boot::usb::attach_pci(p.cfg, p.f, p.window, dev.dma_mask).map_err(|()| ProbeError::Failed)
+}
+
+/// The kernel's NIC over virtio-pci (`install_net` then keeps it and does
+/// not probe MMIO).
+pub(crate) fn probe_virtio_net_pci(p: PciFn<'_>, _dev: &Device) -> Result<(), ProbeError> {
+    let mut route = boot_route(p.f, 4);
+    azos_drv_virtio::virtio::net::init_pci(p.cfg, p.f, p.window, &mut route).map_err(|e| {
+        kprintln!("[NET] virtio-net-pci {} not used: {:?}", p.f.bdf, e);
+        ProbeError::Failed
+    })
+}
+
+/// Kconfig DRV_E1000E: the Intel NIC; its one MSI goes to the boot hart.
+#[cfg(feature = "e1000e")]
+pub(crate) fn probe_e1000e(p: PciFn<'_>, _dev: &Device) -> Result<(), ProbeError> {
+    let mut route = boot_route(p.f, 16);
+    azos_drv_net::e1000e::init_pci(p.cfg, p.f, p.window, &mut route).map_err(|e| {
+        kprintln!("[NET] e1000e {} not used: {:?}", p.f.bdf, e);
+        ProbeError::Failed
+    })
+}
+
+/// Kconfig DRV_IGC: the Intel I225/I226 (and QEMU's `igb`); one MSI to the
+/// boot hart.
+#[cfg(feature = "igc")]
+pub(crate) fn probe_igc(p: PciFn<'_>, _dev: &Device) -> Result<(), ProbeError> {
+    let mut route = boot_route(p.f, 17);
+    azos_drv_net::igc::init_pci(p.cfg, p.f, p.window, &mut route).map_err(|e| {
+        kprintln!("[NET] igc {} not used: {:?}", p.f.bdf, e);
+        ProbeError::Failed
+    })
+}
+
+/// Kconfig DRV_VIRTIO_SND: the virtio-sound function; one MSI-X vector for
+/// its three queues, to the boot hart as the NICs'.
+#[cfg(feature = "virtio-snd")]
+pub(crate) fn probe_virtio_snd_pci(p: PciFn<'_>, _dev: &Device) -> Result<(), ProbeError> {
+    let mut route = boot_route(p.f, 18);
+    azos_drv_virtio::virtio::snd::init_pci(p.cfg, p.f, p.window, &mut route).map_err(|_| ProbeError::Failed)
+}
+
+/// The Raspberry Pi 5's south bridge: its window mapped and its blocks
+/// named, no driver behind them yet.
+#[cfg(feature = "pci-soc-host")]
+pub(crate) fn probe_rp1(p: PciFn<'_>, _dev: &Device) -> Result<(), ProbeError> {
+    attach_rp1(p.cfg, p.f, p.window).map_err(|()| ProbeError::Failed)
+}
+
+/// The development display: polled, so no MSI route is needed.
+#[cfg(feature = "fb-generic")]
+pub(crate) fn probe_virtio_gpu_pci(p: PciFn<'_>, _dev: &Device) -> Result<(), ProbeError> {
+    azos_drv_virtio::virtio::gpu::init_pci(p.cfg, p.f, p.window).map_err(|_| ProbeError::Failed)
+}
+
+/// Kconfig WDT_SP5100_TCO: the AMD FCH's SMBus function names the FCH; its
+/// revision picks the layout.
+#[cfg(feature = "wdt-sp5100")]
+pub(crate) fn probe_sp5100(p: PciFn<'_>, _dev: &Device) -> Result<(), ProbeError> {
+    boot::hwbus::attach_sp5100(p.f.vendor, p.f.device, ConfigSpace::read32(&*p.cfg, p.f.bdf, azos_pci::OFF_CLASS_REV) as u8)
+}
+
+/// Kconfig I2C_DESIGNWARE: an Intel LPSS I2C function, a DesignWare
+/// controller in its BAR 0; polled, no MSI.
+#[cfg(feature = "i2c-dw")]
+pub(crate) fn probe_lpss_i2c(p: PciFn<'_>, driver: &str, dev: &Device) -> Result<(), ProbeError> {
+    boot::hwbus::attach_lpss_i2c(driver, dev, p.cfg, p.f, p.window)
 }

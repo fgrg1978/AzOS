@@ -9,7 +9,7 @@
 # kernel's own PWM layer; a topology cannot refuse it and ring 3 is never
 # handed the window.
 
-pwm              dt:starfive,jh7110-pwm   boot   if=BOARD_VF2
+pwm              dt:starfive,jh7110-pwm   boot   if=BOARD_VF2 if=BOARD_IO
 
 # SpacemiT K1 PWM (`pwm@d401a000` + n * 0x400, compatible "spacemit,k1-pwm",
 # "marvell,pxa910-pwm"): one node per channel, the PXA PWM (crates/drivers/
@@ -17,4 +17,4 @@ pwm              dt:starfive,jh7110-pwm   boot   if=BOARD_VF2
 # driver takes the channel number from the node's address. `boot` for the same
 # reason as the JH7110's.
 
-pwm              dt:spacemit,k1-pwm   boot   if=BOARD_K1
+pwm              dt:spacemit,k1-pwm   boot   if=BOARD_K1 if=BOARD_IO
