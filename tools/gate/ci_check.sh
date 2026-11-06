@@ -3828,8 +3828,9 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *its-skip-mapti*) hyp_mon_blob hyp-its-skip-mapti-canary ;;
         *) hyp_mon_blob "" ;;
     esac
+    # A canary must build: "did not build" is its own failure (the third bucket),
+    # never a canary that bit.
     if ! a64_kbuild "$sel"; then
-        if [ "$want" = canary ]; then ok; return; fi
         bad; echo "      the split kernel ($sel) did not build"; return
     fi
     local img="$CI_LOG_DIR/kernel-hyp-$want.img"; cp "$A64_IMG" "$img"

@@ -553,8 +553,10 @@ def hook_symbols(hook: str, feats: dict[str, list[str]], sym_of: dict[str, str])
     return need
 
 
-def _choice_members(syms: list[str]) -> list[str]:
-    """Those of `syms` (CONFIG_<SYM>) that are members of a Kconfig choice."""
+def _symbol_kinds(syms: list[str]) -> dict[str, str]:
+    """{CONFIG_<SYM>: "choice" | "derived" | "set"} for `syms`: a choice member,
+    a symbol with no prompt (another symbol derives it, so a line naming it is
+    dropped by olddefconfig), or one a line sets."""
     import kconfiglib
     old = os.getcwd()
     os.chdir(REPO_ROOT)
@@ -562,7 +564,13 @@ def _choice_members(syms: list[str]) -> list[str]:
         k = kconfiglib.Kconfig("Kconfig", warn=False)
     finally:
         os.chdir(old)
-    return [s for s in syms if (x := k.syms.get(s.removeprefix("CONFIG_"))) is not None and x.choice is not None]
+    out = {}
+    for s in syms:
+        x = k.syms.get(s.removeprefix("CONFIG_"))
+        if x is None:
+            continue
+        out[s] = "choice" if x.choice is not None else "set" if any(n.prompt for n in x.nodes) else "derived"
+    return out
 
 
 def select(base: str, tokens: list[str], out: str) -> list[str]:
@@ -584,7 +592,9 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
     configuration and the features agree (a hook that turns on `board-io`
     builds with BOARD_IO and its constants). A choice member is not switched
     for a hook: one the configuration does not have is an error (a selection
-    names the board). Any other name is an error: a policy feature without a
+    names the board). A symbol with no prompt, which another derives
+    (HYP_MONITOR from VIRT_SPLIT), cannot be set by a line: its feature rides
+    along with the hook, as any hook's own does. Any other name is an error: a policy feature without a
     Kconfig symbol, or no feature at all.
     """
     cfg = read_dot_config(base)
@@ -617,12 +627,19 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
     for h in hooks:
         for sym in hook_symbols(h, feats, sym_of):
             needs.setdefault(sym, h)
-            if cfg.get(sym) != "y" and asked.get(sym, "y") == "y":
-                lines.setdefault(sym, "y")
-    switched = [s for s, h in needs.items() if cfg.get(s) != "y" and lines.get(s) == "y"]
-    for s in _choice_members(switched) if switched else []:
-        raise SelectError(f"`{needs[s]}` needs {s}=y, a choice member this configuration has not chosen: "
-                          f"the selection names it, a hook does not switch it")
+    pending = [s for s in needs if cfg.get(s) != "y" and asked.get(s, "y") == "y" and s not in lines]
+    kinds = _symbol_kinds(pending) if pending else {}
+    for s in pending:
+        if kinds.get(s) == "choice":
+            raise SelectError(f"`{needs[s]}` needs {s}=y, a choice member this configuration has not chosen: "
+                              f"the selection names it, a hook does not switch it")
+        if kinds.get(s) == "derived":
+            # A symbol another derives (HYP_MONITOR from VIRT_SPLIT): no line can
+            # set it, so the hook builds its feature as before, unless the
+            # selection names the deriving line.
+            del needs[s]
+            continue
+        lines[s] = "y"
     with open(base, encoding="utf-8") as fh:
         text = fh.read()
     # Rows of a parallel gate derive the same copy at once: each writes its own.

@@ -1469,6 +1469,12 @@ def test_select_applies_a_selection_through_kconfig() -> None:
         # The robot hooks reach the extension's symbol, not the derived USE_ROBOT.
         r = sel("reflex-smoke")
         assert r.returncode == 0 and "CONFIG_USE_ROBOT=y" in (t / "s.config").read_text().splitlines(), r
+        # A symbol with no prompt (HYP_MONITOR, derived from VIRT_SPLIT) cannot be
+        # set by a line: its hook builds the feature as before, not refused.
+        r = sel("hyp-monitor-row")
+        assert r.returncode == 0, r
+        feats = r.stdout.split("--features ", 1)[1].split()[0].split(",")
+        assert feats[-1] == "hyp-monitor-row" and "CONFIG_HYP_MONITOR=y" not in (t / "s.config").read_text().splitlines(), r
         # The symbol turned off by the selection itself: refused, never built against.
         r = sel("supall-smoke,CONFIG_BOARD_IO=n")
         assert r.returncode == 1 and "CONFIG_BOARD_IO (for `supall-smoke`)" in r.stderr, r
