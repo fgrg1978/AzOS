@@ -78,10 +78,11 @@ pub fn secure_zero<T: Copy + Default>(buf: &mut [T]) {
 }
 
 /// Bytes [`scrub_stack`] overwrites below its caller's frame: at least the
-/// deepest stack an HMAC or HKDF call reaches under it, on every kernel image
-/// (`hkdf.rs`; measured with tools/lint/stack_chain.py, checked on the host by
-/// tests/host/crypto-tests).
-pub const STACK_SCRUB_BYTES: usize = 2048;
+/// deepest stack an HMAC or HKDF call reaches under it (`hkdf.rs`), on every
+/// kernel image (tools/lint/stack_scrub_check.py, a gate row per ISA; riscv64
+/// is the deepest, sha2's portable block function spilling) and on the host
+/// (tests/host/crypto-tests).
+pub const STACK_SCRUB_BYTES: usize = 3072;
 
 /// Zero the stack just below the caller's frame, where a call that returned
 /// left its locals. The `hmac` and `hkdf` crates wipe nothing they put on the

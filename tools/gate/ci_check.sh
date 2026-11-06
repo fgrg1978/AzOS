@@ -12972,6 +12972,19 @@ else
             bad; echo "$out" | sed 's/^/      /'
         fi
     }
+    # The stack scrub after HMAC/HKDF (azos_crypto ct::scrub_stack) reaches
+    # deeper than every chain under the crate calls it follows
+    # (tools/lint/stack_scrub_check.py). Canary: `--bytes 256` fails each image.
+    scrub_row() { # scrub_row <label> <elf>
+        printf "  %-26s" "${1}..."
+        local out
+        if out="$(python3 "${REPO_ROOT}/tools/lint/stack_scrub_check.py" "$2" 2>&1)"; then
+            ok
+        else
+            bad; echo "$out" | grep -a "OVER\|no symbol\|no image" | sed 's/^/      /'
+        fi
+    }
+    ci_row "stack scrub: qemu" scrub_row "stack scrub: qemu" "$KERNEL"
     ci_row "stack frames: qemu" frame_row "stack frames: qemu" "$KERNEL" 8192
     # Under CI_TIER=rows these need the fleet/embedded build rows
     # (tools/gate/gate_needs.tsv); without a passing build they are not run.
@@ -16535,6 +16548,7 @@ CPU 5 lacks hwcap bits"
         fi
         par_ready
         if [ "$2" = frames ]; then frame_row "$1" "$kimg" 8192
+        elif [ "$2" = scrub ]; then scrub_row "$1" "$kimg"
         else chain_row "$1" "$kimg" "$AZOS_OUT/build/x86_64-$(gate_defc x86 "$3").config" 192; fi
         rm -f "$kimg" "$kimg.features"
     }
@@ -16562,6 +16576,7 @@ CPU 5 lacks hwcap bits"
     par "x86_64 kernel SIMD-free robot" x86_simd_row "x86_64 kernel SIMD-free robot" use-robot
     par "stack frames: x86_64" x86_stack_row "stack frames: x86_64" frames ""
     par "stack chain: x86_64" x86_stack_row "stack chain: x86_64" chain ""
+    par "stack scrub: x86_64" x86_stack_row "stack scrub: x86_64" scrub ""
     par "stack frames: x86_64 robot" x86_stack_row "stack frames: x86_64 robot" frames use-robot
     par "stack chain: x86_64 robot" x86_stack_row "stack chain: x86_64 robot" chain use-robot
     # The same two on the gate's aarch64 kernel (the generic cell's), with its
@@ -16573,10 +16588,12 @@ CPU 5 lacks hwcap bits"
         fi
         par_ready
         if [ "$2" = frames ]; then frame_row "$1" "$A64_KERNEL" 8192
+        elif [ "$2" = scrub ]; then scrub_row "$1" "$A64_KERNEL"
         else chain_row "$1" "$A64_KERNEL" "$AARCH64_CONFIG" 304; fi
     }
     par "stack frames: aarch64" a64_stack_row "stack frames: aarch64" frames
     par "stack chain: aarch64" a64_stack_row "stack chain: aarch64" chain
+    par "stack scrub: aarch64" a64_stack_row "stack scrub: aarch64" scrub
     # virtio-input on x86_64 (Kconfig DRV_VIRTIO_INPUT): the kernel shell reads a
     # `-device virtio-keyboard-device` (a virtio-mmio v1 transport on microvm)
     # with the serial stdin silent. A typist in the background waits for the

@@ -89,7 +89,7 @@ ROLES = {
         "mmio_accessors.py", "mmio_accessors.tsv",
         "chip_source_check.py", "claims_check.sh", "doc_lint.py", "elf_page_perms.py", "extension_lint.py", "kconfig_lint.py",
         "host_paths_lint.py", "lx_license_lint.py", "out_dir_lint.py", "req_trace.py", "size_budget.py", "size_budget.tsv",
-        "spdx_headers.py", "stack_chain.py", "stack_frames.py", "tcb_check.sh", "third_party_versions.py", "tools_layout.py",
+        "spdx_headers.py", "stack_chain.py", "stack_frames.py", "stack_scrub_check.py", "tcb_check.sh", "third_party_versions.py", "tools_layout.py",
         "trap_lint.py", "unsafe_budget.py", "unsafe_budget.tsv", "user_entry_lint.py", "user_stacks.py",
         "x86_64_simd_free_check.sh",
     ],
