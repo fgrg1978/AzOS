@@ -2363,6 +2363,13 @@ pub fn nicq_kick(queue: u32) -> isize {
     invoke(queue, invoke_abi::QUEUE_NICQ_KICK, [0; 4]).0
 }
 
+/// The component manager gives up the row whose task `dead` was: the kernel
+/// releases the named endpoints it held for the row's restart and records the
+/// give-up (`DOMAIN_SUP_GIVE_UP`). 0, or `-ENOENT`.
+pub fn sup_give_up(dead: u32) -> isize {
+    domain_op(invoke_abi::DOMAIN_SUP_GIVE_UP, [dead as u64, 0, 0, 0])
+}
+
 /// Find the handle of a capability this task already holds.
 ///
 /// `kind` is a [`CapType`] ([`ty`]`::SHM.raw()`: a kind and its class) and

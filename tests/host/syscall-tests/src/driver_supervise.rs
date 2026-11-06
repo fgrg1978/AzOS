@@ -6,7 +6,7 @@
 use super::harness::serial;
 use azos_arch_api::PagePerms;
 use azos_sched::supervisor::{
-    manager_child_holds, ExitVerdict, SupFall, SupOrigin, SupPolicy, SupRestart, SupState, SupTable,
+    manager_child_holds, ExitVerdict, ManagerRows, SupFall, SupOrigin, SupPolicy, SupRestart, SupState, SupTable,
     DRIVER_MAX_RESTARTS, MAX_SUPERVISED,
 };
 
@@ -711,4 +711,29 @@ fn a_manager_child_holds_by_its_own_mark() {
     assert!(manager_child_holds(true, SupRestart::Always, 0));
     assert!(!manager_child_holds(true, SupRestart::No, FAILED));
     assert!(!manager_child_holds(false, SupRestart::Always, FAILED), "not the manager's child");
+}
+
+/// The kernel's receipts of the manager's rows: a death with a hold counts,
+/// a start for a held row is a restart (and only then), and only the manager
+/// that spawned the dead task may give its row up, once.
+///
+/// **Canary**: drop `&& r.manager == caller` from `give_up`: the stranger's
+/// give-up is accepted.
+#[test]
+fn only_the_manager_that_spawned_a_dead_child_gives_its_row_up() {
+    const MGR: u32 = 70;
+    let mut m = ManagerRows::new();
+    assert_eq!(m.started(3), None, "a first start is no restart");
+    assert_eq!(m.died(3, 500, MGR), Some(1));
+    assert_eq!(m.started(3), Some(1));
+    assert_eq!(m.started(3), None, "one restart per held death");
+    assert_eq!(m.died(3, 501, MGR), Some(2));
+    assert_eq!(m.give_up(MGR + 1, 501), None, "a task that did not spawn it");
+    assert_eq!(m.give_up(MGR, 500), None, "a task that is not the one held");
+    assert_eq!(m.give_up(MGR, 0), None);
+    assert_eq!(m.give_up(MGR, 501), Some((3, 1)));
+    assert_eq!(m.give_up(MGR, 501), None, "given up once");
+    assert_eq!(m.started(3), None, "a start after the give-up is not a restart");
+    let r = m.get(3).unwrap();
+    assert_eq!((r.deaths, r.restarts, r.held), (2, 1, false));
 }

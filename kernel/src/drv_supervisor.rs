@@ -67,7 +67,7 @@
 use core::sync::atomic::{AtomicBool, AtomicI8, AtomicU32, Ordering};
 
 use azos_actuation::logger::{
-    log_safety_violation_durable, sup_record_detail, SAFETY_DRIVER_SUPERVISOR,
+    log_safety_violation_durable, sup_record_detail, SAFETY_DRIVER_SUPERVISOR, SUP_ACTION_CHILD_DIED,
     SUP_ACTION_GAVE_UP, SUP_ACTION_NO_RESTART, SUP_ACTION_RESPAWN_FAILED, SUP_ACTION_RESTART,
 };
 use azos_drv_sys::kprintln;
@@ -398,18 +398,20 @@ fn supervisor_task(_: usize) {
         // they never crowd the shared notice table a ring-3 parent's `wait`
         // reads.
         while azos_sched::take_exit_note(me).is_some() {}
+        // The receipts of the manager's children the hooks queued.
+        flush_child_records();
         // Give-ups and `restart = no` ends the exit hook decided: record
         // each once.
         while let Some((slot, e, fall)) = sup_next_unrecorded() {
             let img = image_str(&e.image[..e.image_len as usize]);
             match fall {
                 SupFall::GaveUp => {
-                    record(SUP_ACTION_GAVE_UP, slot, e.restarts);
+                    record(SUP_ACTION_GAVE_UP, &e, e.restarts);
                     azos_drv_sys::kerr!("[SUP] gave up on {} after {} restarts: recorded",
                               img, e.restarts);
                 }
                 SupFall::NoRestart => {
-                    record(SUP_ACTION_NO_RESTART, slot, e.restarts);
+                    record(SUP_ACTION_NO_RESTART, &e, e.restarts);
                     kprintln!("[SUP] {} ended under restart = no after {} restarts: recorded",
                               img, e.restarts);
                 }
@@ -470,11 +472,11 @@ fn respawn_kernel_host(slot: usize, e: &SupEntry) {
             kprintln!("[SUP] restart {}/{} of kernel host {}: successor tid={} for tid={} created \
                        {} ms after the death", e.window_n, RESTART_BURST, image_str(e.image()),
                       heir, dead, t.saturating_sub(e.died_at) / ticks_per_ms());
-            record(SUP_ACTION_RESTART, slot, e.restarts);
+            record(SUP_ACTION_RESTART, e, e.restarts);
         }
         None => {
             let _ = sup_respawn_failed(slot);
-            record(SUP_ACTION_RESPAWN_FAILED, slot, e.restarts);
+            record(SUP_ACTION_RESPAWN_FAILED, e, e.restarts);
             sup_mark_recorded(slot);
             azos_drv_sys::kerr!("[SUP] restart {}/{} of kernel host {} REFUSED: no task; it stays down",
                       e.window_n, RESTART_BURST, image_str(e.image()));
@@ -514,10 +516,10 @@ fn respawn_spawned(slot: usize, e: &SupEntry) {
                    the death",
                   e.window_n, RESTART_BURST, image_str(e.image()), heir, dead,
                   now().saturating_sub(e.died_at) / ticks_per_ms());
-        record(SUP_ACTION_RESTART, slot, e.restarts);
+        record(SUP_ACTION_RESTART, e, e.restarts);
         return;
     }
-    record(SUP_ACTION_RESPAWN_FAILED, slot, e.restarts);
+    record(SUP_ACTION_RESPAWN_FAILED, e, e.restarts);
     match sup_respawn_refused(slot, now(), policy()) {
         ExitVerdict::Restart { attempt, not_before, .. } => {
             azos_drv_sys::kwarn!("[SUP] restart {}/{} of {} REFUSED ({}): attempt {}/{} due in {} ms",
@@ -668,6 +670,121 @@ fn swap(slot: usize) {
     }
 }
 
+// ── The component manager's children: their deaths, restarts and give-ups ──
+//
+// The manager restarts its rows; the kernel keeps the receipts. A child's
+// death with its endpoints held, the manager's start of a successor for a held
+// row, and the manager's give-up (which releases the hold) are
+// `SAFETY_DRIVER_SUPERVISOR` records under the child's topology row. The exit
+// hook and the spawn path do not write to the disk: the supervisor task does
+// (`flush_child_records`).
+
+/// A record subject when the image has no topology row.
+const ROW_NONE: u16 = u16::MAX;
+
+/// The topology row named after the image of `path` (its last component).
+fn row_of_image(path: &[u8]) -> u16 {
+    let name = path.rsplit(|&b| b == b'/').next().unwrap_or(path);
+    azos_topology::get()
+        .and_then(|t| t.tasks().iter().position(|r| r.name.as_bytes() == name))
+        .map_or(ROW_NONE, |i| i as u16)
+}
+
+/// The topology row of task `tid`.
+fn row_of_task(tid: u32) -> u16 {
+    azos_sched::task_row(tid).map_or(ROW_NONE, |r| {
+        let l = r.name.iter().position(|&b| b == 0).unwrap_or(r.name.len());
+        row_of_image(&r.name[..l])
+    })
+}
+
+/// Records the supervisor task writes: `(action, row, count)`.
+static CHILD_RECORDS: azos_sync::SpinLock<[Option<(u8, u16, u8)>; 16]> = azos_sync::SpinLock::new([None; 16]);
+/// Records that did not fit [`CHILD_RECORDS`] before the supervisor wrote it.
+static CHILD_RECORDS_LOST: AtomicU32 = AtomicU32::new(0);
+
+fn defer_record(action: u8, row: u16, count: u8) {
+    let queued = {
+        let mut q = CHILD_RECORDS.lock();
+        match q.iter_mut().find(|s| s.is_none()) {
+            Some(s) => {
+                *s = Some((action, row, count));
+                true
+            }
+            None => false,
+        }
+    };
+    if !queued {
+        CHILD_RECORDS_LOST.fetch_add(1, Ordering::Relaxed);
+    }
+    let sup = SUP_TID.load(Ordering::Acquire);
+    if sup != 0 {
+        azos_sched::scheduler::wake_task_by_tid(sup, &|r| matches!(r, WaitReason::Timer(_)));
+    }
+}
+
+/// The supervisor task: write what the hooks queued.
+fn flush_child_records() {
+    loop {
+        let Some((action, row, count)) = CHILD_RECORDS.lock().iter_mut().find_map(|s| s.take()) else { break };
+        record_row(action, row, count);
+    }
+    let lost = CHILD_RECORDS_LOST.swap(0, Ordering::Relaxed);
+    if lost != 0 {
+        azos_drv_sys::kerr!("[SUP] {} record(s) of the manager's children lost: the queue was full", lost);
+    }
+}
+
+/// The exit hook: `tid`, a child of the manager, died and its named endpoints
+/// are held for the manager's restart.
+pub(crate) fn manager_child_died(tid: u32) {
+    let (row, manager) = (row_of_task(tid), azos_sched::scheduler::managed_by(tid).unwrap_or(0));
+    let deaths = azos_sched::supervisor::sup_manager_child_died(row, tid, manager).unwrap_or(0);
+    defer_record(SUP_ACTION_CHILD_DIED, row, deaths);
+}
+
+/// The spawn path: the manager started `tid`. A successor of a held row is
+/// a restart.
+pub(crate) fn manager_child_started(tid: u32) {
+    let row = row_of_task(tid);
+    if let Some(n) = azos_sched::supervisor::sup_manager_child_started(row) {
+        defer_record(SUP_ACTION_RESTART, row, n);
+    }
+}
+
+/// `DOMAIN_SUP_GIVE_UP`: the manager `caller` will not restart the row whose
+/// task `dead` was. Its held endpoints are released (a call on them answers
+/// `Stale` from now on) and the give-up is recorded. 0, or `-ENOENT` when
+/// `dead` holds nothing the caller spawned.
+pub(crate) fn manager_gives_up(caller: u32, dead: u32) -> i64 {
+    let Some((row, restarts)) = azos_sched::supervisor::sup_manager_gives_up(caller, dead) else {
+        return azos_abi::error::Errno::ENOENT.to_syscall_ret();
+    };
+    let freed = release_row_endpoints(row);
+    kprintln!("[SUP] the manager gave up row {}: {} held endpoint(s) released", row, freed);
+    defer_record(SUP_ACTION_GAVE_UP, row, restarts);
+    0
+}
+
+/// Free the named endpoints row `row` serves that no task serves now.
+fn release_row_endpoints(row: u16) -> usize {
+    use azos_ipc::endpoint::{destroy_ref, endpoint_owner_ref, endpoint_ref_by_name, UNCLAIMED};
+    let Some(t) = azos_topology::get() else { return 0 };
+    let Some(spec) = t.tasks().get(row as usize) else { return 0 };
+    let mut n = 0;
+    for c in t.caps_of(spec) {
+        if c.kind != azos_abi::cap::CapKind::Endpoint || !c.perms.contains(azos_abi::cap::CapPerms::READ) {
+            continue;
+        }
+        let Some(name) = azos_topology::types::endpoint_target(c) else { continue };
+        let Some(r) = endpoint_ref_by_name(name) else { continue };
+        if endpoint_owner_ref(r) == Ok(UNCLAIMED) && destroy_ref(r).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 // ── Block devices that stop answering ───────────────────────────────────────
 
 /// `Rule::BlockTimeout` / `Rule::NetTimeout` subject when no `[device.*]` row
@@ -785,9 +902,13 @@ pub(crate) fn register_block_sink() {
     azos_drv_api::recovery::set_sink(device_timeout_sink);
 }
 
-fn record(action: u8, slot: usize, count: u8) {
-    let _ = log_safety_violation_durable(
-        SAFETY_DRIVER_SUPERVISOR, action, sup_record_detail(slot as u32, count));
+/// A record of the supervised image of `e`, under its topology row.
+fn record(action: u8, e: &SupEntry, count: u8) {
+    record_row(action, row_of_image(e.image()), count);
+}
+
+fn record_row(action: u8, row: u16, count: u8) {
+    let _ = log_safety_violation_durable(SAFETY_DRIVER_SUPERVISOR, action, sup_record_detail(row, count));
 }
 
 fn image_str(b: &[u8]) -> &str {
@@ -814,10 +935,12 @@ pub(crate) fn start_smoke() {
 /// holds a dead child's named endpoint (slot and generation) for the
 /// successor the manager starts (`console_mode::manager_restarts`). The kill
 /// after the burst: nothing may serve the endpoint or answer for
-/// `DOWN_FOR_MS`, and the held capability is refused, not left
-/// waiting. Then the manager itself is stopped: the kernel restarts it
-/// ([`spawn_supervised`]) and its successor starts a new host behind the
-/// held endpoint. The manager's own lines (`[compmgr] restart INADRV.ELF ...
+/// `DOWN_FOR_MS`, and the held capability is refused, not left waiting; the
+/// manager's give-up (`DOMAIN_SUP_GIVE_UP`) then releases the endpoint, and
+/// the flight recorder holds, under INADRV.ELF's topology row, burst + 1
+/// deaths, burst restarts and one give-up. Then the manager itself is
+/// stopped: the kernel restarts it ([`spawn_supervised`]) and its successor
+/// starts a new host. The manager's own lines (`[compmgr] restart INADRV.ELF ...
 /// attempt=N`, `[compmgr] give-up INADRV.ELF`) are the gate row's to check.
 ///
 /// `sup-window-smoke` (built, kernel and COMPMGR.ELF, with a short
@@ -976,23 +1099,88 @@ mod smoke {
         }
         kprintln!("[SUP] kill {}: tid={} died past the limit: no host and {} reads refused over \
                    {} ms", last, victim, refused, DOWN_FOR_MS);
-        let Some(m) = manager_restarted(h) else { return };
+        // The manager's give-up released the hold: the endpoint is gone.
+        let t1 = now();
+        while azos_ipc::endpoint::endpoint_ref_by_name(ENDPOINT_NAME.as_bytes()).is_some() {
+            if ms_since(t1) > BACK_WITHIN_MS {
+                kprintln!("[SUP] FAIL give-up: endpoint.{} still held {} ms after kill {}",
+                          ENDPOINT_NAME, BACK_WITHIN_MS, last);
+                return;
+            }
+            sleep_ms(20);
+        }
+        let burst = RESTART_BURST as u32;
+        let want = (burst + 1, burst, 1);
+        let row = row_of_image(azos_topology::builder::TASK_INADRV_IMAGE);
+        let t2 = now();
+        let got = loop {
+            let _ = azos_actuation::logger::logger_flush();
+            let got = count_records(row);
+            if got == want || ms_since(t2) > BACK_WITHIN_MS {
+                break got;
+            }
+            sleep_ms(100);
+        };
+        if got != want {
+            kprintln!("[SUP] FAIL flight recorder, row {}: {} death(s), {} restart(s), {} give-up(s) \
+                       recorded, want {}, {} and 1", row, got.0, got.1, got.2, want.0, want.1);
+            return;
+        }
+        let Some(m) = manager_restarted() else { return };
         let s = &mut back[..RESTART_BURST as usize];
         s.sort_unstable();
-        kprintln!("[SUP] PASS budget {}: {} restarts served, the kill past them stays down, the \
-                   manager restarted by the kernel serves it again after {} ms; death -> first \
-                   answer {} / {} / {} ms min/median/max",
-                  RESTART_BURST, RESTART_BURST, m, s[0], s[s.len() / 2], s[s.len() - 1]);
+        kprintln!("[SUP] PASS budget {}: {} restarts served, the kill past them stays down and its \
+                   hold is released; recorded {} deaths, {} restarts and the give-up; the manager \
+                   restarted by the kernel serves it again after {} ms; death -> first answer \
+                   {} / {} / {} ms min/median/max",
+                  RESTART_BURST, RESTART_BURST, want.0, want.1, m, s[0], s[s.len() / 2], s[s.len() - 1]);
+    }
+
+    /// `SAFETY_DRIVER_SUPERVISOR` records of topology row `row` in THIS
+    /// session's file: (deaths, restarts, give-ups).
+    #[cfg(not(feature = "sup-window-smoke"))]
+    fn count_records(row: u16) -> (u32, u32, u32) {
+        use azos_actuation::logger as lg;
+        let (mut d, mut r, mut g) = (0u32, 0u32, 0u32);
+        let mut path = [0u8; 17];
+        lg::make_log_path(lg::logger_current_serial(), &mut path);
+        let Ok(vol) = azos_fs::fat32_mount_volume() else { return (0, 0, 0) };
+        let Ok(file) = azos_fs::fat32_open(vol, &path, azos_fs::open_flags::READ) else { return (0, 0, 0) };
+        let mut hdr = [0u8; lg::LOG_FILE_HEADER_BYTES];
+        let _ = azos_fs::fat32_read(file, &mut hdr);
+        loop {
+            let mut raw = [0u8; lg::LOG_RECORD_SIZE];
+            match azos_fs::fat32_read(file, &mut raw) {
+                Ok(n) if n == lg::LOG_RECORD_SIZE => {
+                    let rec = lg::LogRecord::decode(&raw);
+                    let detail = u32::from_le_bytes([rec.payload[4], rec.payload[5], rec.payload[6], rec.payload[7]]);
+                    if rec.kind == lg::LOG_EVT_SAFETY_VIOLATION
+                        && rec.payload[0] == SAFETY_DRIVER_SUPERVISOR
+                        && (detail >> 16) as u16 == row
+                    {
+                        match rec.payload[1] {
+                            SUP_ACTION_CHILD_DIED => d += 1,
+                            SUP_ACTION_RESTART => r += 1,
+                            SUP_ACTION_GAVE_UP => g += 1,
+                            _ => {}
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        let _ = azos_fs::fat32_close(file);
+        (d, r, g)
     }
 
     /// The component manager itself, which only the kernel restarts
     /// ([`spawn_supervised`]): stopped by force, a successor must start, and
-    /// with it a new INA219 host behind the endpoint the kernel held (the
-    /// held capability reaches it). Its wake must follow the dead manager's
-    /// teardown ([`EARLY_SUP_WAKES`]). The ms from the kill to the host's
-    /// first answer, or `None` with a FAIL printed.
+    /// with it a new INA219 host that answers a capability taken on its
+    /// endpoint. Its wake must follow the dead manager's teardown
+    /// ([`EARLY_SUP_WAKES`]). The ms from the kill to the host's first answer,
+    /// or `None` with a FAIL printed.
     #[cfg(not(feature = "sup-window-smoke"))]
-    fn manager_restarted(h: u32) -> Option<u64> {
+    fn manager_restarted() -> Option<u64> {
         const DIR: &[u8] = b"/fat/";
         let name = azos_topology::builder::TASK_COMPMGR_IMAGE;
         let mut path = [0u8; azos_sched::supervisor::SUP_IMAGE_MAX];
@@ -1017,8 +1205,9 @@ mod smoke {
             }
             sleep_ms(20);
         };
-        if !held_answers(h) {
-            kprintln!("[SUP] FAIL manager: the capability taken before the kills is refused");
+        if !kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()).is_some_and(held_answers) {
+            kprintln!("[SUP] FAIL manager: the new host does not answer a capability on endpoint.{}",
+                      ENDPOINT_NAME);
             return None;
         }
         let early = EARLY_SUP_WAKES.load(Ordering::Relaxed);

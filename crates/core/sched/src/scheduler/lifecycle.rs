@@ -2827,11 +2827,11 @@ static STOP_WORD: [core::sync::atomic::AtomicU32; MAX_TASKS] =
 /// 0 = none.
 static DWP_TID: [core::sync::atomic::AtomicU32; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
-/// The TID of a child the component manager spawned, in this slot; 0 = none.
-/// The child's own mark, read in its exit hook: its parent's slot may be
-/// freed by then.
-static MANAGED_TID: [core::sync::atomic::AtomicU32; MAX_TASKS] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
+/// A child the component manager spawned, in this slot: `child << 32 |
+/// manager`; 0 = none. The child's own mark, read in its exit hook: its
+/// parent's slot may be freed by then.
+static MANAGED: [core::sync::atomic::AtomicU64; MAX_TASKS] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
 /// The task in this slot was stopped by its parent's death: `child << 32 |
 /// parent`; 0 = not. Taken by the child's exit hook.
 static DWP_STOPPED: [core::sync::atomic::AtomicU64; MAX_TASKS] =
@@ -3101,17 +3101,23 @@ pub fn set_die_with_parent(tid: u32) {
 }
 
 /// `tid` (a child just spawned, still parked) was spawned by the component
-/// manager.
-pub fn set_managed(tid: u32) {
+/// manager `manager`.
+pub fn set_managed(tid: u32, manager: u32) {
     if let Some(idx) = idx_for_tid(tid) {
-        MANAGED_TID[idx].store(tid, Ordering::Release);
+        MANAGED[idx].store((tid as u64) << 32 | manager as u64, Ordering::Release);
     }
 }
 
-/// Was `tid` spawned by the component manager? Its own mark, valid while its
-/// slot is.
+/// The component manager that spawned `tid`, if one did. Its own mark, valid
+/// while its slot is.
+pub fn managed_by(tid: u32) -> Option<u32> {
+    let w = MANAGED[idx_for_tid(tid)?].load(Ordering::Acquire);
+    (tid != 0 && w >> 32 == tid as u64).then_some(w as u32)
+}
+
+/// Was `tid` spawned by the component manager?
 pub fn is_managed(tid: u32) -> bool {
-    tid != 0 && idx_for_tid(tid).is_some_and(|idx| MANAGED_TID[idx].load(Ordering::Acquire) == tid)
+    managed_by(tid).is_some()
 }
 
 /// `dead` is exiting: force-stop (signal 1) every live child of it that was

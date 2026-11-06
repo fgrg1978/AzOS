@@ -23,7 +23,7 @@ use azos_abi::invoke::{
     DOMAIN_SOCKET, DOMAIN_STAT, DOMAIN_STATFS, DOMAIN_TASKINFO, DOMAIN_TRUNCATE, DOMAIN_UNLINK,
     NODE_ACCEPT, NODE_BIND, NODE_CONNECT, NODE_FSYNC, NODE_LISTEN, NODE_MCAST_JOIN, NODE_MCAST_LEAVE, NODE_READ, NODE_RECV, NODE_RECVFROM, NODE_SEND,
     NODE_MMAP, NODE_OPENAT, NODE_SEEK, NODE_SENDTO, NODE_WRITE,
-    DOMAIN_MMIO_MAP,
+    DOMAIN_MMIO_MAP, DOMAIN_SUP_GIVE_UP,
     DEVICE_IRQ_ACK, DEVICE_IRQ_BIND, ENDPOINT_DERIVE, EndpointDerive,
     DOMAIN_MPROTECT, DOMAIN_SET_CLEAR_TID, DOMAIN_UPTIME, DOMAIN_VDSO_MAP, DOMAIN_WAIT,
     MEMOBJ_ACQUIRE, MEMOBJ_END_DROP,
@@ -249,6 +249,7 @@ fn domain_self_op(c: &mut Call) -> i64 {
         #[cfg(feature = "lx-loader")]
         DOMAIN_MODULE_MAP_X => crate::module_ops::sys_module_map_x(w[0], w[1], w[2]),
         DOMAIN_MMIO_MAP => crate::mmio::sys_mmio_map(w[0], w[1]),
+        DOMAIN_SUP_GIVE_UP => crate::ushell::sys_sup_give_up(c.tid, w[0]),
         _ => Errno::EINVAL.to_syscall_ret(),
     }
 }

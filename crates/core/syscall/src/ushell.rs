@@ -195,6 +195,28 @@ pub fn set_spawn_ex_hook(f: fn(&[u8], u32)) {
     SPAWN_EX_HOOK.set(f);
 }
 
+azos_common::ro_hook! {
+    /// `DOMAIN_SUP_GIVE_UP` (caller, dead task): the kernel's supervisor
+    /// releases what it holds for the component manager's row and records the
+    /// give-up (installed by the kernel at boot).
+    static SUP_GIVE_UP_HOOK: fn(u32, u32) -> i64;
+}
+
+/// Install the `DOMAIN_SUP_GIVE_UP` hook. Called once at boot.
+pub fn set_sup_give_up_hook(f: fn(u32, u32) -> i64) {
+    SUP_GIVE_UP_HOOK.set(f);
+}
+
+/// `DOMAIN_SUP_GIVE_UP`: `caller` gives up the row whose task `dead` was.
+/// The authority is the kernel's own record that `caller` spawned `dead`.
+pub(crate) fn sys_sup_give_up(caller: u32, dead: u64) -> i64 {
+    let Ok(dead) = u32::try_from(dead) else { return Errno::EINVAL.to_syscall_ret() };
+    match SUP_GIVE_UP_HOOK.get() {
+        Some(f) => f(caller, dead),
+        None => Errno::ENOENT.to_syscall_ret(),
+    }
+}
+
 /// Asked before every `SYS_SPAWN_EX` with the path as typed and the caller's
 /// TID: `Some(args)` when the spawn starts the console program for the
 /// component manager, and what its arguments are (see [`sys_spawn_ex`]).
@@ -508,7 +530,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             // its exit decides from the mark whether its named endpoints are
             // held for the manager's restart.
             if spawned_by_manager(me) {
-                azos_sched::scheduler::set_managed(ctid);
+                azos_sched::scheduler::set_managed(ctid, me);
             }
             // The console program, Linux: it reads the console, so console
             // input is claimed for it and lent to it before it runs.

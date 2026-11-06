@@ -739,7 +739,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // handles, `MEMOBJ_ACQUIRE` reads its size, `SYS_MO_MAP` maps it), starts the rows with `SYS_SPAWN_EX` (no request block, so no
     // descriptor is moved), reaps them with `DOMAIN_WAIT`, stops a dependent
     // of a restarted component with `SYS_ALERT`, sleeps until the next restart
-    // is due, and writes one console line per start, restart or give-up. No
+    // is due, writes one console line per start, restart or give-up, and
+    // hands a give-up to the kernel (`DOMAIN_SUP_GIVE_UP`, which releases the
+    // row's held endpoints and records it). No
     // device, network, file write or console-input call: it holds no
     // capability of its own; what a child may do is its own row.
     ImageProfile {
@@ -749,7 +751,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_SPAWN_EX, SYS_ALERT, SYS_YIELD,
         ],
         audit: false,
-        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_WAIT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_WAIT, DOMAIN_SUP_GIVE_UP],
         ifaces: NO_IFACES,
     },
     // Wave 11: the user shell. The profile that lists

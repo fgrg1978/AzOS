@@ -353,6 +353,7 @@ pub mod ushell {
     pub fn ms_ticks(ms: u64) -> u64 { ms }
     pub fn park_until(_deadline: u64) {}
     pub fn stop_requested() -> bool { true }
+    pub fn sys_sup_give_up(_caller: u32, _dead: u64) -> i64 { REACHED }
 }
 #[path = "../../../../crates/core/syscall/src/invoke.rs"]
 #[allow(dead_code)]

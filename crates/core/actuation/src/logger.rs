@@ -556,11 +556,15 @@ pub const SAFETY_ENTROPY_UNSEEDED_REFUSED: u8 = 0x14;
 /// ring-3 task may run; `detail` is the target's TID, once per target task.
 pub const SAFETY_TOPO_CLASS_REFUSED: u8 = 0x16;
 
-/// The driver supervisor restarted a ring-3 driver, gave up on it, or
-/// saw it end under its topology row's `restart = no`. `action_code` is one
-/// of the `SUP_ACTION_*` below; `detail` packs the supervisor slot of the
-/// image (high 16 bits) and the restart count so far (low 16): the attempt number for a
-/// restart, the spent budget for a give-up, the restarts before for an end.
+/// A supervised task was restarted, given up on, or ended under its topology
+/// row's `restart = no`: one the kernel keeps up (the component manager, the
+/// ML service, a kernel host) or a child of the component manager (its
+/// death with its endpoints held, the successor the manager started, the
+/// manager's give-up). `action_code` is one of the `SUP_ACTION_*` below;
+/// `detail` packs the image's topology row (high 16 bits, `0xFFFF` for none)
+/// and a count (low 16): the attempt number for a restart, the spent budget
+/// for a give-up, the restarts before for an end, the deaths so far for a
+/// child's death.
 ///
 /// One code with four actions rather than four codes: the supervisor's
 /// whole history for one driver is one filter on the recorder.
@@ -578,10 +582,14 @@ pub const SUP_ACTION_RESPAWN_FAILED: u8 = 3;
 /// (wave 11). Recorded as a give-up is, so a driver that is gone for good is
 /// always on the recorder, whichever rule ended it.
 pub const SUP_ACTION_NO_RESTART: u8 = 4;
+/// A child of the component manager died with its named endpoints held for
+/// the manager's restart (the restart, when it comes, is `SUP_ACTION_RESTART`;
+/// the manager's give-up `SUP_ACTION_GAVE_UP`).
+pub const SUP_ACTION_CHILD_DIED: u8 = 5;
 
 /// The `detail` word of a [`SAFETY_DRIVER_SUPERVISOR`] record.
-pub const fn sup_record_detail(slot: u32, count: u8) -> u32 {
-    ((slot & 0xFFFF) << 16) | count as u32
+pub const fn sup_record_detail(row: u16, count: u8) -> u32 {
+    (row as u32) << 16 | count as u32
 }
 
 /// The behavior loop has held STOP through L1 for

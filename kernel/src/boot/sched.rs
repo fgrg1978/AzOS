@@ -130,6 +130,7 @@ pub(crate) fn install_sched_hooks() {
     // start timeout begins at that `SYS_SPAWN_EX`, and the program gets its
     // console there (`console_mode::console_start`).
     azos_syscall::ushell::set_spawn_ex_hook(crate::console_mode::note_spawn_ex);
+    azos_syscall::ushell::set_sup_give_up_hook(drv_supervisor::manager_gives_up);
     azos_syscall::ushell::set_console_start_hook(crate::console_mode::console_start);
     // A MOVE, a revoke or a shrink of a MemObj removes a holder's mapping
     // through this hook. Before the first user task.
@@ -689,8 +690,8 @@ fn task_release_all_resources(tid: u32) {
     // kernel's supervisor, restarts every ring-3 row but its own. Runtime
     // canary `manager-hold-skip`: they are freed, and the `sup-smoke`
     // capability taken before a kill is refused after it.
-    let keep_endpoints = held
-        || (crate::console_mode::manager_restarts(tid, code) && !canary!("manager-hold-skip"));
+    let manager_hold = !held && crate::console_mode::manager_restarts(tid, code) && !canary!("manager-hold-skip");
+    let keep_endpoints = held || manager_hold;
     // The console's input owner (the user shell) releases it here,
     // and the console mode learns whether a successor is coming.
     if azos_drv_sys::uart::CONSOLE_RX.release(tid) {
@@ -728,6 +729,10 @@ fn task_release_all_resources(tid: u32) {
         azos_ipc::task_release_all_supervised(tid);
     } else {
         azos_ipc::task_release_all(tid);
+    }
+    if manager_hold {
+        // The receipt: written by the supervisor task, not on this path.
+        drv_supervisor::manager_child_died(tid);
     }
     azos_sched::prof::add(18, t_ph);
     let t_ph = azos_sched::prof::t();

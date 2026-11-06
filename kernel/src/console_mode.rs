@@ -52,9 +52,12 @@ static STARTED_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64
 /// A `SYS_SPAWN_EX` started `image` as `tid` (`azos_syscall::ushell::set_spawn_ex_hook`).
 /// The component manager starts the console program, so this is when the
 /// start timeout begins: the user shell has just been started.
-pub(crate) fn note_spawn_ex(image: &[u8], _tid: u32) {
+pub(crate) fn note_spawn_ex(image: &[u8], tid: u32) {
     if is_console_path(image) {
         STARTED_AT.store(now(), Ordering::Release);
+    }
+    if azos_sched::scheduler::is_managed(tid) {
+        crate::drv_supervisor::manager_child_started(tid);
     }
 }
 

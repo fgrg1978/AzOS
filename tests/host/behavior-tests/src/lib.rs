@@ -1284,16 +1284,18 @@ mod safety_codes {
         assert_eq!(value("SAFETY_CAP_DENIED_SUPPRESSED"), Some(super::logger::SAFETY_CAP_DENIED_SUPPRESSED));
     }
 
-    /// The supervisor's four actions under `SAFETY_DRIVER_SUPERVISOR` are four
-    /// numbers: an end under `restart = no` (wave 11) must not read back as a
-    /// give-up, nor as a restart. Canary: give `SUP_ACTION_NO_RESTART` the
-    /// value 2: red.
+    /// The supervisor's five actions under `SAFETY_DRIVER_SUPERVISOR` are five
+    /// numbers: an end under `restart = no` must not read back as a give-up,
+    /// nor a manager child's death as a restart. Canary: give
+    /// `SUP_ACTION_CHILD_DIED` the value 1: red.
     #[test]
     fn the_supervisor_actions_are_distinct() {
         use super::logger::{
-            SUP_ACTION_GAVE_UP, SUP_ACTION_NO_RESTART, SUP_ACTION_RESPAWN_FAILED, SUP_ACTION_RESTART,
+            SUP_ACTION_CHILD_DIED, SUP_ACTION_GAVE_UP, SUP_ACTION_NO_RESTART, SUP_ACTION_RESPAWN_FAILED,
+            SUP_ACTION_RESTART,
         };
-        let a = [SUP_ACTION_RESTART, SUP_ACTION_GAVE_UP, SUP_ACTION_RESPAWN_FAILED, SUP_ACTION_NO_RESTART];
+        let a = [SUP_ACTION_RESTART, SUP_ACTION_GAVE_UP, SUP_ACTION_RESPAWN_FAILED, SUP_ACTION_NO_RESTART,
+                 SUP_ACTION_CHILD_DIED];
         for (i, x) in a.iter().enumerate() {
             assert!(!a[i + 1..].contains(x), "supervisor action {x} names two events");
         }

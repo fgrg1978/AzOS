@@ -188,6 +188,11 @@ impl Host for Kernel {
         line.num(e.attempt as i64);
         line.put(b"\n");
         let _ = sys::console_write(sys::STDOUT, line.bytes());
+        // Not restarted again: the kernel releases the endpoints it held for
+        // the task that ended and records the give-up.
+        if matches!(e.kind, EventKind::GiveUp | EventKind::Escalate) && e.tid != 0 {
+            let _ = sys::sup_give_up(e.tid);
+        }
     }
 
     fn contract(&mut self, endpoint: &[u8]) -> Option<OnFailure> {

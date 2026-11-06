@@ -305,6 +305,7 @@ where the source states them.
 | `DOMAIN_VDSO_MAP` | 0x5321 | CTL | Map the per-task vDSO page read-only; returns its address. |
 | `DOMAIN_MODULE_VERIFY` | 0x5722 | MODULE | Verify a signed module (at most `MODULE_MAX_BYTES` = 4 MiB); returns a token. |
 | `DOMAIN_MODULE_MAP_X` | 0x5723 | MODULE | Map a verified module executable. |
+| `DOMAIN_SUP_GIVE_UP` | 0x5333 | CTL | The component manager will not restart the row whose task `w0` was: the kernel releases the endpoints it held for it and records the give-up; `-ENOENT` when `w0` is not a held child of the caller. |
 | `DOMAIN_MMIO_MAP` | 0x5930 | DRIVER | Map a device's register window; needs the `Device` (`ty::MMIO`) capability. |
 | `DOMAIN_MPROTECT` | 0x5331 | CTL | Change the protection of the caller's own pages (`w0` address, `w1` length, `w2` read/write bits); `PROT_EXEC` is refused with `-EACCES`. |
 

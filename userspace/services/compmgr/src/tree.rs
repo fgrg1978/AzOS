@@ -160,7 +160,7 @@ pub enum EventKind {
     /// It ended on purpose and is not restarted: `code` its exit code.
     Exit,
     /// Its budget is spent: `attempt` restarts were granted, `code` the
-    /// failure that was not restarted.
+    /// failure that was not restarted, `tid` the task that ended.
     GiveUp,
     /// Its failure contract is `escalate`: `code` the failure, handed up.
     Escalate,
@@ -222,6 +222,9 @@ struct Comp {
     /// The task standing for it, 0 for none. Kept while `Blocked` or `Down`
     /// until its exit is seen.
     tid: u32,
+    /// The task whose end was seen last, 0 for none: what a give-up or an
+    /// escalation names (the kernel releases what it held for that task).
+    dead: u32,
     /// When each restart still inside the interval was granted, oldest first.
     window: [u64; BURST_MAX],
     window_n: u8,
@@ -246,6 +249,7 @@ impl Comp {
             deps: 0,
             state: State::Wanted,
             tid: 0,
+            dead: 0,
             window: [0; BURST_MAX],
             window_n: 0,
             not_before: 0,
@@ -486,6 +490,7 @@ impl Tree {
         let now = host.now_ns();
         let c = &mut self.comps[i];
         c.tid = 0;
+        c.dead = tid;
         match c.state {
             // Stopped for a sibling's restart: comes back, no charge.
             State::Stopping => {
@@ -518,7 +523,7 @@ impl Tree {
         if !clean {
             match self.comps[i].contract {
                 Some(OnFailure::Escalate) => {
-                    host.record(&Event { kind: EventKind::Escalate, name, tid: 0, code, attempt: self.comps[i].window_n });
+                    host.record(&Event { kind: EventKind::Escalate, name, tid: self.comps[i].dead, code, attempt: self.comps[i].window_n });
                     self.comps[i].state = State::Down;
                     self.block_dependents(i, host);
                     return;
@@ -542,7 +547,7 @@ impl Tree {
         c.window_n = kept as u8;
         if kept >= burst as usize {
             c.state = State::Down;
-            host.record(&Event { kind: EventKind::GiveUp, name, tid: 0, code, attempt: c.window_n });
+            host.record(&Event { kind: EventKind::GiveUp, name, tid: c.dead, code, attempt: c.window_n });
             self.block_dependents(i, host);
             return;
         }

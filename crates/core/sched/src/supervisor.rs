@@ -813,3 +813,97 @@ pub fn sup_swap_abort(slot: usize) -> u32 {
 pub fn sup_find_image(image: &[u8]) -> Option<(usize, SupEntry)> {
     SUPERVISOR.lock().find_image(image)
 }
+
+// ── The component manager's rows: the kernel's receipts ──────────────────
+
+/// Rows the kernel tracks for the manager at once (its own table's size).
+pub const MANAGER_ROWS: usize = 24;
+
+/// A row of the component manager whose task died with its endpoints held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ManagerRow {
+    /// Its topology row.
+    pub row: u16,
+    /// The task that died last.
+    pub dead: u32,
+    /// The manager that spawned it: the one task that may give it up.
+    pub manager: u32,
+    /// Deaths with a hold, and successors started, in total.
+    pub deaths: u8,
+    pub restarts: u8,
+    /// Its endpoints are held now.
+    pub held: bool,
+}
+
+/// What the kernel records of the manager's rows: each death with a hold,
+/// each successor the manager starts for a held row, and the manager's
+/// give-up. Pure, like [`SupTable`].
+pub struct ManagerRows {
+    rows: [Option<ManagerRow>; MANAGER_ROWS],
+}
+
+impl ManagerRows {
+    pub const fn new() -> Self {
+        ManagerRows { rows: [None; MANAGER_ROWS] }
+    }
+
+    /// `dead`, spawned by `manager` for `row`, died and its endpoints are
+    /// held: the deaths so far, `None` when the table is full.
+    pub fn died(&mut self, row: u16, dead: u32, manager: u32) -> Option<u8> {
+        let i = self.rows.iter().position(|r| r.is_some_and(|r| r.row == row))
+            .or_else(|| self.rows.iter().position(Option::is_none))?;
+        let r = self.rows[i].get_or_insert(ManagerRow { row, dead, manager, deaths: 0, restarts: 0, held: false });
+        r.dead = dead;
+        r.manager = manager;
+        r.deaths = r.deaths.saturating_add(1);
+        r.held = true;
+        Some(r.deaths)
+    }
+
+    /// The manager started a task for `row`: a restart when the row is held
+    /// (the restarts so far), else `None`.
+    pub fn started(&mut self, row: u16) -> Option<u8> {
+        let r = self.rows.iter_mut().flatten().find(|r| r.row == row && r.held)?;
+        r.held = false;
+        r.restarts = r.restarts.saturating_add(1);
+        Some(r.restarts)
+    }
+
+    /// The manager `caller` gives up the row whose task `dead` was: `(row,
+    /// restarts)` when `dead` is held and `caller` spawned it; the hold ends.
+    pub fn give_up(&mut self, caller: u32, dead: u32) -> Option<(u16, u8)> {
+        if dead == 0 {
+            return None;
+        }
+        let r = self.rows.iter_mut().flatten().find(|r| r.held && r.dead == dead && r.manager == caller)?;
+        r.held = false;
+        Some((r.row, r.restarts))
+    }
+
+    pub fn get(&self, row: u16) -> Option<ManagerRow> {
+        self.rows.iter().flatten().find(|r| r.row == row).copied()
+    }
+}
+
+impl Default for ManagerRows {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static MANAGER_ROWS_TABLE: SpinLock<ManagerRows> = SpinLock::new(ManagerRows::new());
+
+/// [`ManagerRows::died`] on the kernel's table.
+pub fn sup_manager_child_died(row: u16, dead: u32, manager: u32) -> Option<u8> {
+    MANAGER_ROWS_TABLE.lock().died(row, dead, manager)
+}
+
+/// [`ManagerRows::started`] on the kernel's table.
+pub fn sup_manager_child_started(row: u16) -> Option<u8> {
+    MANAGER_ROWS_TABLE.lock().started(row)
+}
+
+/// [`ManagerRows::give_up`] on the kernel's table.
+pub fn sup_manager_gives_up(caller: u32, dead: u32) -> Option<(u16, u8)> {
+    MANAGER_ROWS_TABLE.lock().give_up(caller, dead)
+}

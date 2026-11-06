@@ -367,6 +367,11 @@ pub const DOMAIN_VDSO_MAP: u16 = op(CapKind::Domain, CLASS_CTL, 33);
 pub const DOMAIN_MODULE_VERIFY: u16 = op(CapKind::Domain, CLASS_MODULE, 34);
 /// Map the verified module `w0` executable at `w1` for `w2` bytes.
 pub const DOMAIN_MODULE_MAP_X: u16 = op(CapKind::Domain, CLASS_MODULE, 35);
+/// The component manager will not restart the row whose task `w0` was (a
+/// child it spawned that died with its named endpoints held): the kernel
+/// releases them and records the give-up. 0, or `-ENOENT` when `w0` is not a
+/// held child of the caller.
+pub const DOMAIN_SUP_GIVE_UP: u16 = op(CapKind::Domain, CLASS_CTL, 51);
 /// Map device registers: `w0` the handle of a device of the hardware bus (not
 /// an address), `w1` the access (`CapPerms` bits: READ, or READ|WRITE). Maps
 /// exactly the device's register window read-only unless WRITE was asked and
