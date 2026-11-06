@@ -303,6 +303,10 @@ pub(crate) const NAMES: &[&str] = &[
     // ring-3 INA219 host through its quiet window (rows `... INA219 idle
     // wake-up canary`).
     "ina219-idle-busy",
+    // boot/sched.rs task-exit hook: the named endpoints of a component
+    // manager child it restarts are freed, not held (rows `userspace: a
+    // crashed ring-3 driver is restarted ... hold canary`).
+    "manager-hold-skip",
     "hung-task-blind",
     "hung-cpu-blind",
     "rcu-idle-qs-skip",

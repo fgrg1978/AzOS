@@ -696,20 +696,20 @@ proxy-pi-smoke = ["qemu", "gpio-aq3-smoke"]
 # Gate canary only: the kernel installs a proxy donation hook that never
 # donates. The row above must fail on `[PROXYPI] FAIL TIMEOUT` with it.
 proxy-donation-canary = ["proxy-pi-smoke"]
-# Wave 9: the kernel stops the ring-3 GPIO driver four times;
-# the supervisor must restart it three times (each answering again, with the
-# death-to-first-reply latency printed) and keep it down after the fourth,
-# with every restart and the give-up on the flight recorder
-# (`kernel/src/drv_supervisor.rs`). Booted by the `userspace: a crashed
-# ring-3 driver is restarted` row, on the gpio_drv disk.
-sup-smoke = ["qemu", "gpio-aq3-smoke"]
-# Gate canary only: the supervisor is switched off (every death releases
-# everything, as before M4). The row above must fail on
-# `[SUP] FAIL not restarted after kill 1` with it.
-sup-canary = ["sup-smoke"]
-# Wave 10 (owner decisions 2026-09-28): the supervisor's restart window and
-# `Restart=on-failure`. Built by the `userspace: supervisor restart window`
-# row with a short `SUP_RESTART_INTERVAL_S`; see `drv_supervisor::smoke::window`.
+# The ring-3 INA219 host, a row of the component manager, stopped by force
+# past the manager's restart limit: SUP_RESTART_BURST restarts served, the
+# kill after them final, a capability taken before the kills reaching every
+# successor (the kernel holds the endpoint); then the manager itself, which
+# the kernel restarts (`drv_supervisor::smoke`). Booted by the `userspace: a
+# crashed ring-3 driver is restarted` rows, on the drv disk.
+sup-smoke = ["qemu", "board-io"]
+# Gate canary only: the kernel's supervisor is switched off (every death it
+# would restart releases everything); the `rt7: driver contained` row must
+# fail with it.
+sup-canary = []
+# The manager's restart window: built by the `userspace: supervisor restart
+# window` row with a short `SUP_RESTART_INTERVAL_S`, kernel and COMPMGR.ELF;
+# see `drv_supervisor::smoke::window`.
 sup-window-smoke = ["sup-smoke"]
 # Wave 11: the ring-3 host of the buzzer, a `start = true` row of the component
 # manager like any other (`drv_supervisor::supall`): killed and restarted by

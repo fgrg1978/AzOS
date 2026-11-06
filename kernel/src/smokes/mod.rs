@@ -300,10 +300,6 @@ pub(crate) fn spawn_system_smokes() {
             "gpio-aq3-smoke", gpio_user_driver_smoke_task, 0,
             GPIO_SMOKE_PRIORITY, GPIO_SMOKE_HART,
         );
-        // sup-smoke: kill the ring-3 GPIO driver four times, after the AQ3
-        // smoke is done with it.
-        #[cfg(feature = "sup-smoke")]
-        drv_supervisor::start_smoke();
     }
     #[cfg(feature = "orderly-reboot-smoke")]
     azos_sched::task_create_affinity("orderly-smoke", orderly_reboot_smoke_task, 0,
@@ -328,6 +324,8 @@ pub(crate) fn spawn_system_smokes() {
     // (`drv_supervisor::supall`).
     #[cfg(feature = "supall-smoke")]
     drv_supervisor::start_supall_smoke();
+    #[cfg(feature = "sup-smoke")]
+    drv_supervisor::start_smoke();
     #[cfg(feature = "restart-smoke")]
     drv_supervisor::start_restart_smoke();
     #[cfg(feature = "hung-smoke")]

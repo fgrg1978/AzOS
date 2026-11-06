@@ -3072,8 +3072,8 @@ build       "proxy-pi-smoke"      --release --select proxy-pi-smoke
 # cannot rot; booted by hand (it must fail on `[PROXYPI] FAIL TIMEOUT`).
 build       "proxy-donation-canary" --release --select proxy-donation-canary
 build       "sup-smoke"           --release --select sup-smoke
-# The supervisor canary: built here so it cannot rot; booted by
-# hand (the restart row must fail on `[SUP] FAIL not restarted after kill 1`).
+# The kernel supervisor's canary: built here so it cannot rot; booted by hand
+# (the `rt7: driver contained` row must fail with it).
 build       "sup-canary"          --release --select sup-canary
 
 # ipc-census is load-bearing diagnostics: the userspace-IPC scenario's
@@ -5792,60 +5792,136 @@ aarch64_sdktest_row() { # aarch64_sdktest_row <label> <PASS|CANARY>
 par "aarch64: sdktest boots" aarch64_sdktest_row "aarch64: sdktest boots" PASS
 par "aarch64: sdktest canary (64-page budget)" aarch64_sdktest_row "aarch64: sdktest canary (64-page budget)" CANARY
 
-# aarch64 twin of `userspace: a crashed ring-3 driver is restarted` (`kernel/src/drv_supervisor.rs`): the kernel stops gpio_drv four times;
-# three restarts must answer again and the fourth death must stay down, with
-# 3 restarts + 1 give-up added to the flight recorder. `[SUP] FAIL` is a
-# verdict; `sup-canary` (supervisor off) fails on `[SUP] FAIL not restarted
-# after kill 1`; a supervisor wake before the dead driver's address-space
-# teardown fails on `[SUP] FAIL the supervisor was woken` (wave 12, see the
-# riscv64 row). Only `[SUP] FAIL`, the driver's own FAILED line and an
-# unhandled trap are judged here: this ISA's `--features qemu` boot prints the
-# known `[SCHED] FAILED: task A and B did not interleave` (front INV), which is
-# not this row's property. `-smp 2`: the autorun hart (3) does not exist, so
-# the successor must follow the dead driver's live hart, not the constant.
-aarch64_sup_row() {
-    local label="aarch64 driver restarted"
+# ── A crashed ring-3 driver is restarted by the component manager ───────────
+#
+# `sup-smoke` (`drv_supervisor::smoke`) on the drv disk: the ring-3 INA219 host
+# (`INADRV.ELF`, `endpoint.powermon`), a `start = true` row of the component
+# manager, is stopped by force (exit 137) SUP_RESTART_BURST + 1 times. Each of
+# the first SUP_RESTART_BURST deaths must be served again by a new task within
+# 20 s, and a capability the smoke took before the first kill must reach every
+# successor (the kernel holds a dead child's named endpoint, slot and
+# generation, for it); the kill after them must stay down for 3 s (no server,
+# every read refused). Then the manager itself is stopped: the kernel's
+# supervisor restarts it (`[SUP] restart 1/` of COMPMGR.ELF) and its successor
+# serves the endpoint again. The row also reads the manager's own account:
+# `[compmgr] restart INADRV.ELF ... attempt=1..N` and `[compmgr] give-up
+# INADRV.ELF`. Its restart limit is the manager's, from the same Kconfig
+# symbols (`tests/host/compmgr-tests`: `the_intensity_limit_gives_up_with_
+# exactly_one_record`, `a_second_restart_waits_out_the_cooldown`).
+# Canaries: `supall-canary` (the manager is shown every row as `restart = no`)
+# fails on `[SUP] FAIL not restarted after kill 1`; runtime `manager-hold-skip`
+# (the exit hook frees the endpoints of a child the manager restarts) fails on
+# `[SUP] FAIL kill 1: the capability taken before the kills is refused`.
+#
+# `window` (riscv64): kernel and COMPMGR.ELF built with SUP_RESTART_INTERVAL_S
+# = 5 (`SUP_ROW_CONFIG`): kill, wait the interval out, kill again; both served,
+# and the manager must count the second as attempt 1 of a fresh window (no
+# `attempt=2` line). Canary by hand: COMPMGR.ELF left at the primary config's
+# 300 s -> `attempt=2`; the forgetting itself is host-tested
+# (`restarts_older_than_the_interval_do_not_count`), as the clean exit under
+# `on-failure` is (`on_failure_leaves_a_clean_exit_alone`).
+#
+# Alone (`-s`): the limit and the window are judged against the clock.
+sup_row() { # sup_row <label> <isa: rv|arm> <features> <expect: PASS|NOT-RESTARTED|HOLD|WINDOW> [cmdline]
+    local label="$1" isa="$2" feats="$3" expect="$4" canary_arg="${5:-}"
     printf "  %-26s" "${label}..."
-    mkdir -p "$CI_LOG_DIR"
-    local log="$CI_LOG_DIR/aarch64-sup.log"
-    rm -f "$log"
-    if ! a64_kbuild "qemu,sup-smoke"; then
-        bad; echo "      aarch64 kernel (--features qemu,sup-smoke) did not build"; return
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img"
+    if [ "$isa" = "rv" ]; then
+        if ! kbuild "$feats"; then
+            bad; echo "      riscv64 kernel ($feats) did not build"; return
+        fi
+        pristine_disk $AZOS_OUT/build/disk-drv.img $AZOS_OUT/build/disk-drvbase.img
+        cp $AZOS_OUT/build/disk-drv.img.pristine "$img"
+        if [ -n "${SUP_ROW_CONFIG:-}" ]; then
+            # The manager under the row's config; removed after, so the next
+            # disk that needs it builds it from the primary config again.
+            rm -f $AZOS_OUT/build/compmgr.elf
+            if ! KCONFIG_CONFIG="$SUP_ROW_CONFIG" make $AZOS_OUT/build/compmgr.elf >/dev/null 2>&1 \
+                || ! mcopy -o -i "$img" $AZOS_OUT/build/compmgr.elf ::COMPMGR.ELF; then
+                rm -f $AZOS_OUT/build/compmgr.elf "$img"
+                bad; echo "      COMPMGR.ELF did not build under $SUP_ROW_CONFIG"; return
+            fi
+            rm -f $AZOS_OUT/build/compmgr.elf
+        fi
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 ${canary_arg:+-append "$canary_arg"} >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "$feats"; then
+            bad; echo "      aarch64 kernel ($feats) did not build"; return
+        fi
+        rm -f $AZOS_OUT/build/disk-aarch64-drvbase.img $AZOS_OUT/build/disk-aarch64-drv.img
+        if ! make $AZOS_OUT/build/disk-aarch64-drv.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-drv.img"; return
+        fi
+        cp $AZOS_OUT/build/disk-aarch64-drv.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        cp "$A64_IMG" "$kimg"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            -kernel "$kimg" \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 ${canary_arg:+-append "$canary_arg"} >"$log" 2>&1 &
     fi
-    if ! make $AZOS_OUT/build/disk-aarch64-gpiodrv.img >/dev/null 2>&1; then
-        bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-gpiodrv.img"; return
-    fi
-    local img_copy="$CI_LOG_DIR/kernel-aarch64-sup.img"
-    local disk_copy="$CI_LOG_DIR/disk-aarch64-gpiodrv-sup.img"
-    cp "$A64_IMG" "$img_copy"
-    cp $AZOS_OUT/build/disk-aarch64-gpiodrv.img "$disk_copy"
-    par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
-        -kernel "$img_copy" \
-        -global virtio-mmio.force-legacy=false \
-        -drive file="$disk_copy",if=none,format=raw,id=hd0 \
-        -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     local pid=$! i=0
-    while [ "$i" -lt 240 ]; do
-        grep -aqE "\[SUP\] (PASS|FAIL)|\[gpio_drv\] .*FAILED|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+    while [ "$i" -lt 600 ]; do
+        grep -aqE "\[SUP\] (PASS|FAIL)" "$log" 2>/dev/null && break
+        grep -aqiE "kernel panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
         kill -0 "$pid" 2>/dev/null || break
-        i=$((i + 1)); sleep 1
+        i=$((i + 1)); sleep 0.5
     done
+    sleep 1
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    rm -f "$img_copy" "$disk_copy"
-    if grep -aqE "\[SUP\] FAIL|\[gpio_drv\] .*FAILED|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
-        bad; echo "      scenario reported failure:"
-        grep -aE "\[SUP\] FAIL|\[gpio_drv\] .*FAILED|AARCH64-TRAP" "$log" | tr -d '\r' | sed -n '1,4p' | sed 's|^|        |'
+    rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"
+    tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+
+    if grep -aqiE "kernel panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      kernel panic or fatal exception:"
+        grep -aiE -m3 "kernel panic|\[FATAL\]|AARCH64-TRAP" "$log" | sed 's|^|        |'
         echo "      log kept: $log"; return
     fi
-    if ! grep -aq "\[SUP\] PASS" "$log" 2>/dev/null; then
-        bad; echo "      no '[SUP] PASS' within 240 s — last lines:"
-        tr -d '\r' < "$log" | tail -5 | sed 's|^|        |'
+    local verdict why="" n k
+    verdict="$(grep -a "\[SUP\] \(PASS\|FAIL\)" "$log" | sed -n '1p')"
+    case "$expect" in
+        NOT-RESTARTED)
+            case "$verdict" in "[SUP] FAIL not restarted after kill 1"*) ;; *) why="the canary did not fail on the not-restarted line" ;; esac ;;
+        HOLD)
+            case "$verdict" in "[SUP] FAIL kill 1: the capability taken before the kills is refused"*) ;; *) why="the canary did not fail on the held capability" ;; esac ;;
+        WINDOW)
+            case "$verdict" in "[SUP] PASS window"*) ;; *) why="${verdict:-no [SUP] verdict}" ;; esac
+            n="$(grep -ac '\[compmgr\] restart INADRV\.ELF .* attempt=1$' "$log")"
+            [ -z "$why" ] && [ "$n" != 2 ] && why="$n restart(s) of INADRV.ELF counted as attempt 1, want 2 (a fresh window)"
+            [ -z "$why" ] && grep -aq '\[compmgr\] restart INADRV\.ELF .* attempt=2$' "$log" \
+                && why="the manager counted the restart past the interval as attempt 2" ;;
+        PASS)
+            case "$verdict" in "[SUP] PASS budget "*) ;; *) why="${verdict:-no [SUP] verdict}" ;; esac
+            n="$(printf '%s' "$verdict" | sed -n 's/^\[SUP\] PASS budget \([0-9][0-9]*\):.*/\1/p')"
+            k=1
+            while [ -z "$why" ] && [ "$k" -le "${n:-0}" ]; do
+                grep -aq "\[compmgr\] restart INADRV\.ELF .* attempt=$k\$" "$log" \
+                    || why="no '[compmgr] restart INADRV.ELF ... attempt=$k' line"
+                k=$((k + 1))
+            done
+            [ -z "$why" ] && ! grep -aq '\[compmgr\] give-up INADRV\.ELF ' "$log" \
+                && why="no '[compmgr] give-up INADRV.ELF' line"
+            [ -z "$why" ] && ! grep -aq '\[SUP\] restart 1/[0-9]* of /fat/COMPMGR\.ELF' "$log" \
+                && why="the kernel did not restart the manager ('[SUP] restart 1/N of /fat/COMPMGR.ELF')" ;;
+    esac
+    if [ -n "$why" ]; then
+        bad; echo "      $why: '${verdict:-no verdict}'"
+        grep -a "\[SUP\]\|\[compmgr\].*INADRV\|DRVLAUNCH" "$log" | sed -n '1,16p' | sed 's|^|        |'
         echo "      log kept: $log"; return
     fi
     ok; rm -f "$log"
 }
-par "aarch64 driver restarted" aarch64_sup_row
+par_row -s sup_row "userspace: a crashed ring-3 driver is restarted (arm)" arm "qemu,sup-smoke" PASS
+par_row -s sup_row "userspace: a crashed ring-3 driver is restarted, hold canary (arm)" arm "qemu,sup-smoke" HOLD "canary=manager-hold-skip"
+
 # F3: a split image halts, naming the reason, instead of letting a secondary
 # bypass the monitor. QEMU `virt` has neither a spin table nor a missing
 # conduit, so the runtime canary `hyp-fake-*` makes the input look so and the
@@ -21898,53 +21974,22 @@ PYEOF
         -drive file=$AZOS_OUT/build/disk-gpiodrv.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # ── A crashed ring-3 driver is restarted, three times and no more ─────
+    # ── A crashed ring-3 driver is restarted by the component manager ─────
     #
-    # The kernel stops gpio_drv (`driver_request_stop`: it exits
-    # with 137 at its next driver call) four times. Kills 1-3: the supervisor
-    # holds the GPIO driver-server slot, creates a successor from the same
-    # image (re-read, re-hashed), hands it the slot, and the successor answers
-    # a ping; the row prints death -> successor created -> registered -> first
-    # reply in ms (wall clock under TCG: the cold-restart baseline a faster
-    # restore would be compared against). Kill 4: the budget (3) is spent, the kind
-    # must stay down for 3 s, and the flight recorder must hold exactly three
-    # more restart records and one more give-up than before kill 1.
-    # `[SUP] FAIL` is a verdict. Canary: `sup-canary` (supervisor off) fails
-    # on `[SUP] FAIL not restarted after kill 1`, which only a driver that
-    # never came back prints. Wave 12 (EXIT2): the supervisor is woken from the
-    # post-teardown exit hook, and a wake while the dead driver still holds its
-    # address space fails the smoke (`[SUP] FAIL the supervisor was woken N
-    # time(s) while ...`); canary by hand, 2026-10-03: wake from `exit_done`
-    # again -> that line, N = 4, both ISAs. Its own disk copy: the recorder count must not
-    # see another boot's records, and the other gpio rows must not see these.
-    # Before the seccomp block's `kbuild "qemu"`, like the row above.
-    kbuild "qemu,sup-smoke"
-    rm -f $AZOS_OUT/build/disk-gpiodrv-sup.img
-    cp $AZOS_OUT/build/disk-gpiodrv.img $AZOS_OUT/build/disk-gpiodrv-sup.img
-    QEMU_FAIL_RE="$QEMU_FAIL_RE|\[SUP\] FAIL|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)" \
-    # Alone, like the restart-window row below: its restart budget is judged
-    # against the clock, and with other jobs running it once read "restarted
-    # past the budget" (2026-10-03).
-    par_row -s qemu_run "userspace: a crashed ring-3 driver is restarted" "SUP] PASS" 240 \
-        -smp 4 -global virtio-mmio.force-legacy=false \
-        -drive file=$AZOS_OUT/build/disk-gpiodrv-sup.img,if=none,format=raw,id=hd0 \
-        -device virtio-blk-device,drive=hd0
-    rm -f $AZOS_OUT/build/disk-gpiodrv-sup.img
+    # `sup_row` (defined beside the aarch64 rows): the INA219 host killed past
+    # the manager's restart limit, then the manager itself; its two canaries.
+    par_row -s sup_row "userspace: a crashed ring-3 driver is restarted" rv "qemu,sup-smoke" PASS
+    par_row -s sup_row "userspace: a crashed ring-3 driver is restarted, not-restarted canary" rv \
+        "qemu,sup-smoke,supall-canary" NOT-RESTARTED
+    par_row -s sup_row "userspace: a crashed ring-3 driver is restarted, hold canary" rv "qemu,sup-smoke" \
+        HOLD "canary=manager-hold-skip"
 
-    # ── The supervisor's restart window and Restart=on-failure ───────────
+    # ── The manager's restart window ─────────────────────────────────────
     #
-    # Owner decisions 2026-09-28 (`crates/core/sched/src/supervisor.rs`): at most
-    # SUP_RESTART_BURST restarts within SUP_RESTART_INTERVAL_S (systemd's
-    # StartLimitBurst/IntervalSec), and a driver that exits 0 is not restarted.
-    # The row above covers the burst at the default interval (300 s). This one
-    # builds with the interval set to 5 s in a copy of the primary config, so the
-    # Kconfig symbol is what reaches the table: kill gpio_drv (137), wait the
-    # interval out, kill it again -> restarted as restart 1 of a FRESH window;
-    # then stop it with exit code 0 (the code a driver's own exit(0) passes to
-    # task_exit_with_code) -> not restarted, no owner for 3 s. Canaries (by
-    # hand, reverted): the window never forgets -> `[SUP] FAIL window`; exit 0
-    # treated as a failure -> `[SUP] FAIL restarted after exit 0`. The plain
-    # kernel is rebuilt with the primary config afterwards.
+    # `sup_row ... WINDOW`: the kernel and COMPMGR.ELF built with the interval
+    # set to 5 s in a copy of the primary config, so the Kconfig symbol is what
+    # reaches the manager's tree. The plain kernel is rebuilt with the primary
+    # config afterwards.
     # Absolute, under the primary column's own directory: `azos_limits`'s
     # build script resolves KCONFIG_CONFIG from its crate directory, so a
     # relative path (CI_LOG_DIR is one) builds against no config at all.
@@ -21960,18 +22005,8 @@ PYEOF
         bad; echo "      $PRIMARY_CONFIG has no CONFIG_SUP_RESTART_INTERVAL_S to shorten"
     else
         export KCONFIG_CONFIG="$sup_window_cfg"
-        kbuild "qemu,sup-window-smoke"
-        rm -f $AZOS_OUT/build/disk-gpiodrv-supw.img
-        cp $AZOS_OUT/build/disk-gpiodrv.img $AZOS_OUT/build/disk-gpiodrv-supw.img
-        QEMU_FAIL_RE="$QEMU_FAIL_RE|\[SUP\] FAIL|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)" \
-        # Alone: a 5 s window, judged by the in-kernel smoke against the clock;
-        # with other jobs running it read "restarted after exit 0" before the
-        # supervisor had released the driver (2026-10-03).
-        par_row -s qemu_run "userspace: supervisor restart window" "SUP] PASS window" 240 \
-            -smp 4 -global virtio-mmio.force-legacy=false \
-            -drive file=$AZOS_OUT/build/disk-gpiodrv-supw.img,if=none,format=raw,id=hd0 \
-            -device virtio-blk-device,drive=hd0
-        rm -f $AZOS_OUT/build/disk-gpiodrv-supw.img
+        SUP_ROW_CONFIG="$sup_window_cfg" par_row -s sup_row "userspace: supervisor restart window" rv \
+            "qemu,sup-window-smoke" WINDOW
         export KCONFIG_CONFIG="$PRIMARY_CONFIG"
         kbuild "qemu"
     fi

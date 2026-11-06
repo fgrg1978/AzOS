@@ -756,8 +756,11 @@ fn task_release_all_resources(tid: u32) {
     let code = azos_sched::current_exit_code();
     // The named endpoints of a child the component manager starts again are
     // kept too (`console_mode::manager_restarts`): the manager, not the
-    // kernel's supervisor, restarts every ring-3 row but its own.
-    let keep_endpoints = held || crate::console_mode::manager_restarts(tid, code);
+    // kernel's supervisor, restarts every ring-3 row but its own. Runtime
+    // canary `manager-hold-skip`: they are freed, and the `sup-smoke`
+    // capability taken before a kill is refused after it.
+    let keep_endpoints = held
+        || (crate::console_mode::manager_restarts(tid, code) && !canary!("manager-hold-skip"));
     // The console's input owner (the user shell) releases it here,
     // and the console mode learns whether a successor is coming.
     if azos_drv_sys::uart::CONSOLE_RX.release(tid) {

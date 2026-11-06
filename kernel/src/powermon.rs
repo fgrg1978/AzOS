@@ -279,7 +279,7 @@ pub(crate) fn init() -> Option<Host> {
 }
 
 /// The owner of `endpoint.powermon`, the ring-3 host serving now.
-#[cfg(feature = "ring3-drv-smoke")]
+#[cfg(any(feature = "ring3-drv-smoke", feature = "sup-smoke"))]
 pub(crate) fn ring3_host_tid() -> Option<u32> {
     let r = azos_ipc::endpoint::endpoint_ref_by_name(ENDPOINT_NAME.as_bytes())?;
     azos_ipc::endpoint::endpoint_owner_ref(r).ok().filter(|&t| t != azos_ipc::endpoint::UNCLAIMED)

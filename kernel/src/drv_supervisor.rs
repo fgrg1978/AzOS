@@ -331,9 +331,8 @@ static WAKE_AFTER_TEARDOWN: [AtomicU32; MAX_SUPERVISED] = {
 };
 
 /// Supervisor wakes issued while the dying task still held its address
-/// space: 0 while the wake follows the teardown (wave 12, EXIT2). The
-/// `sup-smoke` verdict reads it, as `EARLY_EXIT_NOTICES` is read for the exit
-/// notice.
+/// space: 0 while the wake follows the teardown. The `sup-smoke` verdict
+/// reads it, as `EARLY_EXIT_NOTICES` is read for the exit notice.
 static EARLY_SUP_WAKES: AtomicU32 = AtomicU32::new(0);
 
 fn defer_wake(tid: u32) {
@@ -865,7 +864,7 @@ fn image_str(b: &[u8]) -> &str {
     core::str::from_utf8(b).unwrap_or("?")
 }
 
-// ── sup-smoke: the gate row ─────────────────────────────────────────────────
+// ── sup-smoke: the component manager's restart limit, on a driver ──────────
 
 #[cfg(feature = "sup-smoke")]
 pub(crate) fn start_smoke() {
@@ -873,377 +872,247 @@ pub(crate) fn start_smoke() {
                                          azos_sched::DEFAULT_PRIORITY, 1);
 }
 
-/// Kill the ring-3 GPIO driver four times. Kills 1–3: it must come back and
-/// answer a ping, and the time from the death to that first answer is the
-/// restart latency (wall clock under TCG). Kill 4: it must stay down — no
-/// owner, pings refused for the whole observation window. Then the flight
-/// recorder must hold exactly three restarts and one give-up more than before
-/// the first kill.
+/// The ring-3 INA219 host (`INADRV.ELF` on `endpoint.powermon`), a
+/// `start = true` row of the component manager, stopped by force (exit 137)
+/// under the manager's restart limit: Kconfig `SUP_RESTART_BURST` restarts
+/// within `SUP_RESTART_INTERVAL_S`, the symbols this file's policy reads too.
 ///
-/// Every verdict that is not a pass prints a `[SUP] FAIL` line; the one only a
-/// kernel without the supervisor prints is `FAIL not restarted after kill 1`.
+/// Kills 1..=burst: a task other than the dead one must serve the endpoint and
+/// answer a read within `BACK_WITHIN_MS`, and a call through the
+/// capability the smoke took before the first kill must reach it: the kernel
+/// holds a dead child's named endpoint (slot and generation) for the
+/// successor the manager starts (`console_mode::manager_restarts`). The kill
+/// after the burst: nothing may serve the endpoint or answer for
+/// `DOWN_FOR_MS`, and the held capability is refused, not left
+/// waiting. Then the manager itself is stopped: the kernel restarts it
+/// ([`spawn_supervised`]) and its successor starts a new host behind the
+/// held endpoint. The manager's own lines (`[compmgr] restart INADRV.ELF ...
+/// attempt=N`, `[compmgr] give-up INADRV.ELF`) are the gate row's to check.
+///
+/// `sup-window-smoke` (built, kernel and COMPMGR.ELF, with a short
+/// `SUP_RESTART_INTERVAL_S`): kill, wait the interval out, kill again; both
+/// must be served again, and the row checks that the manager counted the
+/// second restart as attempt 1 of a fresh window.
+///
+/// Verdict lines `[SUP] PASS ...` / `[SUP] FAIL ...`. Only a manager that does
+/// not restart its rows prints `[SUP] FAIL not restarted after kill 1`
+/// (`supall-canary`); only a kernel that frees a dying child's named
+/// endpoints prints `[SUP] FAIL kill 1: the capability taken before the kills
+/// is refused` (runtime canary `manager-hold-skip`).
 #[cfg(feature = "sup-smoke")]
 mod smoke {
     use super::*;
-    use azos_driver_server::DRV_KIND_GPIO;
-    use azos_drv_api::{DriverIsolation, DriverManifest};
-    use azos_drv_sys::user_driver_proxy::{ProxyError, UserDriverProxy};
-    use azos_sched::supervisor::sup_find_kind;
+    use azos_devif::powermon::ENDPOINT_NAME;
+    use azos_devif::{PowerMonCall as _, PowerMonClient};
+    use azos_syscall::kcall::{self, KernelEndpoint};
 
-    const GPIO_OP_PING: u32 = 0;
-    const PING_REPLY_TAG: u8 = 0xA5;
-    // The row's arithmetic and its PASS line are written for a budget of 3
-    // (Kconfig `SUP_RESTART_BURST`'s default).
-    const DRIVER_MAX_RESTARTS: u8 = RESTART_BURST;
-    const _: () = assert!(DRIVER_MAX_RESTARTS == 3, "sup-smoke is written for a budget of 3");
-    /// How long a killed driver may take to answer again (TCG, loaded host).
+    /// How long the host may take to be serving at boot (the launcher reads
+    /// the manager's ELF off FAT32, and the manager starts the driver).
+    const SETUP_MS: u64 = 60_000;
+    /// How long a killed host may take to answer again (TCG, loaded host, the
+    /// manager's poll and its restart cooldown).
     const BACK_WITHIN_MS: u64 = 20_000;
-    /// How long the driver must stay down after the fourth kill.
+    /// How long the host must stay down after the kill past the burst: more
+    /// than the manager's cooldown, so a restart it should not make is seen.
+    #[cfg(not(feature = "sup-window-smoke"))]
     const DOWN_FOR_MS: u64 = 3_000;
-    const STEP_MS: u64 = 2;
+    const STEP_MS: u64 = 5;
 
     fn sleep_ms(ms: u64) {
-        azos_sched::task_block(WaitReason::Timer(now() + ms * ticks_per_ms()));
+        let end = now() + ms * ticks_per_ms();
+        while now() < end {
+            azos_sched::task_block(WaitReason::Timer(end));
+        }
     }
 
-    fn ping(proxy: &UserDriverProxy) -> Result<(), ProxyError> {
-        let mut out = [0u8; 8];
-        match proxy.call(GPIO_OP_PING, &[0x5A], &mut out) {
-            Ok(n) if n >= 2 && out[0] == PING_REPLY_TAG => Ok(()),
-            Ok(_) => Err(ProxyError::OutputTooLarge),
-            Err(e) => Err(e),
+    fn ms_since(t: u64) -> u64 {
+        now().saturating_sub(t) / ticks_per_ms()
+    }
+
+    /// The task serving the endpoint now.
+    fn host() -> Option<u32> {
+        crate::powermon::ring3_host_tid()
+    }
+
+    /// A read through the kernel's power API (by the endpoint's name).
+    fn answers() -> bool {
+        azos_drv_sensor::ina219::ina219_stats().is_some()
+    }
+
+    /// A call through the capability `h`, held since before the first kill.
+    fn held_answers(h: u32) -> bool {
+        matches!(PowerMonClient::new(KernelEndpoint(h)).stats(), Ok(o) if o.is_ok())
+    }
+
+    /// A task other than `not` serves the endpoint and answers, within `ms`.
+    fn serving(not: u32, ms: u64) -> Option<u32> {
+        let t0 = now();
+        loop {
+            if let Some(t) = host().filter(|&t| t != not) {
+                if answers() {
+                    return Some(t);
+                }
+            }
+            if ms_since(t0) > ms {
+                return None;
+            }
+            sleep_ms(STEP_MS);
         }
+    }
+
+    /// Stop the host by force and wait until it no longer serves. The dead
+    /// TID, or `None` with a `[SUP] FAIL` printed.
+    fn kill(step: u32) -> Option<u32> {
+        let Some(victim) = host() else {
+            kprintln!("[SUP] FAIL kill {}: no INA219 host to stop", step);
+            return None;
+        };
+        azos_sched::scheduler::task_stop(victim, true, 9);
+        let t0 = now();
+        while host() == Some(victim) {
+            if ms_since(t0) > BACK_WITHIN_MS {
+                kprintln!("[SUP] FAIL kill {}: tid={} asked to stop, still serving after {} ms",
+                          step, victim, BACK_WITHIN_MS);
+                return None;
+            }
+            sleep_ms(1);
+        }
+        Some(victim)
+    }
+
+    /// Kill `step`, which must be restarted: the successor's TID and the ms
+    /// from the death to its first answer, or `None` with a FAIL printed.
+    fn kill_and_back(step: u32, h: u32) -> Option<(u32, u32, u64)> {
+        let victim = kill(step)?;
+        let t0 = now();
+        let Some(heir) = serving(victim, BACK_WITHIN_MS) else {
+            kprintln!("[SUP] FAIL not restarted after kill {}: tid={} stopped, no host answered \
+                       within {} ms", step, victim, BACK_WITHIN_MS);
+            return None;
+        };
+        let back = ms_since(t0);
+        if !held_answers(h) {
+            kprintln!("[SUP] FAIL kill {}: the capability taken before the kills is refused by \
+                       tid={}", step, heir);
+            return None;
+        }
+        kprintln!("[SUP] kill {}: tid={} died -> tid={} serving after {} ms; the held capability \
+                   reaches it", step, victim, heir, back);
+        Some((victim, heir, back))
     }
 
     pub(super) fn run(_: usize) {
-        // Wait for the AQ3 smoke to finish with the driver.
-        while !crate::GPIO_SMOKE_DONE.load(Ordering::Acquire) {
-            sleep_ms(50);
-        }
-        let proxy = UserDriverProxy::new(DriverManifest::new(
-            DRV_KIND_GPIO, "gpio-user", DriverIsolation::UserProcess { tid: 0 },
-            azos_abi::cap::CapPerms::RW,
-        ));
-        // The driver may come up after the AQ3 smoke has given up on it.
-        let t_setup = now();
-        while ping(&proxy).is_err() || sup_find_kind(DRV_KIND_GPIO).is_none() {
-            if now() - t_setup > BACK_WITHIN_MS * ticks_per_ms() {
-                kprintln!("[SUP] FAIL setup: the GPIO driver is not serving under supervision \
-                           after {} ms", BACK_WITHIN_MS);
-                return;
-            }
-            sleep_ms(50);
-        }
+        let Some(t0) = serving(0, SETUP_MS) else {
+            kprintln!("[SUP] FAIL setup: the INA219 host {:?} is not serving within {} ms",
+                      host(), SETUP_MS);
+            return;
+        };
+        let Some(h) = kcall::endpoint_handle(ENDPOINT_NAME.as_bytes()).filter(|&h| held_answers(h)) else {
+            kprintln!("[SUP] FAIL setup: no capability on endpoint.{} that answers", ENDPOINT_NAME);
+            return;
+        };
+        kprintln!("[SUP] INA219 host tid={} serving; restart limit {} within {} s",
+                  t0, RESTART_BURST, RESTART_INTERVAL_S);
         #[cfg(feature = "sup-window-smoke")]
-        window::run(&proxy);
+        window(h);
         #[cfg(not(feature = "sup-window-smoke"))]
-        budget(&proxy);
+        budget(h);
     }
 
-    /// The four-kill budget sequence above.
+    /// Kills 1..=burst restarted, the next one final.
     #[cfg(not(feature = "sup-window-smoke"))]
-    fn budget(proxy: &UserDriverProxy) {
-        kprintln!("[SUP] smoke: GPIO driver tid={} serving under supervision; stopping it {} times",
-                  azos_driver_server::driver_owner_tid(DRV_KIND_GPIO).unwrap_or(0),
-                  DRIVER_MAX_RESTARTS + 1);
-        let (r0, g0) = count_records();
-        // Per restart: successor created -> first reply (the mechanism: load,
-        // hash, exec, register, serve), and the death -> creation wait (the
-        // cooldown from the second restart on, a few ms for the first).
-        let mut lat = [0u64; DRIVER_MAX_RESTARTS as usize];
-        let mut wait = [0u64; DRIVER_MAX_RESTARTS as usize];
-        let mut first = 0u64;
-        for kill in 1..=(DRIVER_MAX_RESTARTS + 1) {
-            let Some(victim) = azos_driver_server::driver_request_stop(DRV_KIND_GPIO) else {
-                kprintln!("[SUP] FAIL kill {}: no GPIO driver to stop", kill);
-                return;
-            };
-            // The death, as the supervisor saw it.
-            let t0 = now();
-            let died_at = loop {
-                if let Some((_, e)) = sup_find_kind(DRV_KIND_GPIO) {
-                    if e.dead_tid == victim && e.tid != victim {
-                        break Some(e.died_at);
-                    }
-                }
-                if now() - t0 > BACK_WITHIN_MS * ticks_per_ms() {
-                    break None;
-                }
-                sleep_ms(STEP_MS);
-            };
-            if kill <= DRIVER_MAX_RESTARTS {
-                // Any death must be SEEN by a supervisor, and followed by an
-                // answer from a new task.
-                let back = loop {
-                    let owner = azos_driver_server::driver_owner_tid(DRV_KIND_GPIO);
-                    if owner.is_some() && owner != Some(victim) && ping(&proxy).is_ok() {
-                        break Some(now());
-                    }
-                    if now() - t0 > BACK_WITHIN_MS * ticks_per_ms() {
-                        break None;
-                    }
-                    sleep_ms(STEP_MS);
-                };
-                let (Some(died_at), Some(back)) = (died_at, back) else {
-                    kprintln!("[SUP] FAIL not restarted after kill {}: tid={} stopped, no \
-                               driver answered within {} ms (death seen by a supervisor: {})",
-                              kill, victim, BACK_WITHIN_MS, died_at.is_some());
-                    return;
-                };
-                let e = sup_find_kind(DRV_KIND_GPIO).map(|(_, e)| e).unwrap();
-                let ms = |t: u64| t.saturating_sub(died_at) / ticks_per_ms();
-                lat[kill as usize - 1] = ms(back).saturating_sub(ms(e.respawned_at));
-                wait[kill as usize - 1] = ms(e.respawned_at);
-                if kill == 1 {
-                    first = ms(back);
-                }
-                kprintln!("[SUP] kill {}: tid={} died, restart {}/{} -> tid={} serving: \
-                           successor created +{} ms, registered +{} ms, first reply +{} ms",
-                          kill, victim, e.restarts, DRIVER_MAX_RESTARTS, e.tid,
-                          ms(e.respawned_at), ms(e.bound_at), ms(back));
-                if e.restarts != kill {
-                    kprintln!("[SUP] FAIL kill {}: the supervisor counts {} restarts", kill,
-                              e.restarts);
-                    return;
-                }
-            } else {
-                if died_at.is_none() {
-                    kprintln!("[SUP] FAIL kill {}: tid={} did not die", kill, victim);
-                    return;
-                }
-                // Budget spent: it must stay down for the whole window.
-                let t1 = now();
-                let mut refused = 0u32;
-                while now() - t1 < DOWN_FOR_MS * ticks_per_ms() {
-                    if let Some(t) = azos_driver_server::driver_owner_tid(DRV_KIND_GPIO) {
-                        kprintln!("[SUP] FAIL restarted past the budget: tid={} owns GPIO after \
-                                   kill {}", t, kill);
-                        return;
-                    }
-                    match ping(&proxy) {
-                        Ok(()) => {
-                            kprintln!("[SUP] FAIL restarted past the budget: a ping was answered \
-                                       after kill {}", kill);
-                            return;
-                        }
-                        Err(_) => refused += 1,
-                    }
-                    sleep_ms(100);
-                }
-                let state = sup_find_kind(DRV_KIND_GPIO).map(|(_, e)| e.state);
-                if state != Some(SupState::Down) {
-                    kprintln!("[SUP] FAIL kill {}: supervisor state {:?}, not Down", kill, state);
-                    return;
-                }
-                kprintln!("[SUP] kill {}: tid={} died with the budget spent: no owner and {} \
-                           pings refused over {} ms", kill, victim, refused, DOWN_FOR_MS);
-            }
+    fn budget(h: u32) {
+        let mut back = [0u64; azos_sched::supervisor::SUP_BURST_MAX];
+        for step in 1..=RESTART_BURST as u32 {
+            let Some((_, _, ms)) = kill_and_back(step, h) else { return };
+            back[step as usize - 1] = ms;
         }
-        // The give-up is recorded by the supervisor task; wait for its mark.
-        let t2 = now();
-        while !sup_find_kind(DRV_KIND_GPIO).map_or(false, |(_, e)| e.recorded) {
-            if now() - t2 > BACK_WITHIN_MS * ticks_per_ms() {
-                kprintln!("[SUP] FAIL the give-up was never recorded");
+        let last = RESTART_BURST as u32 + 1;
+        let Some(victim) = kill(last) else { return };
+        let t0 = now();
+        let mut refused = 0u32;
+        while ms_since(t0) < DOWN_FOR_MS {
+            if let Some(t) = host() {
+                kprintln!("[SUP] FAIL restarted past the limit: tid={} serves after kill {}", t, last);
                 return;
+            }
+            if answers() || held_answers(h) {
+                kprintln!("[SUP] FAIL restarted past the limit: a read was answered after kill {}", last);
+                return;
+            }
+            refused += 1;
+            sleep_ms(100);
+        }
+        kprintln!("[SUP] kill {}: tid={} died past the limit: no host and {} reads refused over \
+                   {} ms", last, victim, refused, DOWN_FOR_MS);
+        let Some(m) = manager_restarted(h) else { return };
+        let s = &mut back[..RESTART_BURST as usize];
+        s.sort_unstable();
+        kprintln!("[SUP] PASS budget {}: {} restarts served, the kill past them stays down, the \
+                   manager restarted by the kernel serves it again after {} ms; death -> first \
+                   answer {} / {} / {} ms min/median/max",
+                  RESTART_BURST, RESTART_BURST, m, s[0], s[s.len() / 2], s[s.len() - 1]);
+    }
+
+    /// The component manager itself, which only the kernel restarts
+    /// ([`spawn_supervised`]): stopped by force, a successor must start, and
+    /// with it a new INA219 host behind the endpoint the kernel held (the
+    /// held capability reaches it). Its wake must follow the dead manager's
+    /// teardown ([`EARLY_SUP_WAKES`]). The ms from the kill to the host's
+    /// first answer, or `None` with a FAIL printed.
+    #[cfg(not(feature = "sup-window-smoke"))]
+    fn manager_restarted(h: u32) -> Option<u64> {
+        const DIR: &[u8] = b"/fat/";
+        let name = azos_topology::builder::TASK_COMPMGR_IMAGE;
+        let mut path = [0u8; SUP_IMAGE_MAX];
+        let n = DIR.len() + name.len();
+        path[..DIR.len()].copy_from_slice(DIR);
+        path[DIR.len()..n].copy_from_slice(name);
+        let Some(old) = current_tid(&path[..n]) else {
+            kprintln!("[SUP] FAIL manager: {} is not supervised by the kernel", image_str(&path[..n]));
+            return None;
+        };
+        azos_sched::scheduler::task_stop(old, true, 9);
+        let t0 = now();
+        let back = loop {
+            let mgr = current_tid(&path[..n]).filter(|&t| t != old);
+            if mgr.is_some() && host().is_some() && answers() {
+                break ms_since(t0);
+            }
+            if ms_since(t0) > SETUP_MS {
+                kprintln!("[SUP] FAIL manager: tid={} killed, manager {:?} and no INA219 host \
+                           serving within {} ms", old, mgr, SETUP_MS);
+                return None;
             }
             sleep_ms(20);
-        }
-        let _ = azos_actuation::logger::logger_flush();
-        let (r1, g1) = count_records();
-        if (r1.wrapping_sub(r0), g1.wrapping_sub(g0)) != (DRIVER_MAX_RESTARTS as u32, 1) {
-            kprintln!("[SUP] FAIL flight recorder: {} restart and {} give-up record(s) added, \
-                       want {} and 1", r1.wrapping_sub(r0), g1.wrapping_sub(g0),
-                      DRIVER_MAX_RESTARTS);
-            return;
+        };
+        if !held_answers(h) {
+            kprintln!("[SUP] FAIL manager: the capability taken before the kills is refused");
+            return None;
         }
         let early = EARLY_SUP_WAKES.load(Ordering::Relaxed);
         if early != 0 {
-            kprintln!("[SUP] FAIL the supervisor was woken {} time(s) while the dead driver \
-                       still held its address space", early);
+            kprintln!("[SUP] FAIL the supervisor was woken {} time(s) while the dead manager still \
+                       held its address space", early);
+            return None;
+        }
+        Some(back)
+    }
+
+    /// A restart older than the interval no longer counts.
+    #[cfg(feature = "sup-window-smoke")]
+    fn window(h: u32) {
+        if RESTART_INTERVAL_S > 30 {
+            kprintln!("[SUP] FAIL window smoke needs SUP_RESTART_INTERVAL_S <= 30, built with {}",
+                      RESTART_INTERVAL_S);
             return;
         }
-        let mut s = lat;
-        s.sort_unstable();
-        kprintln!("[SUP] PASS budget {}: {} restarts served, the death after the last stays \
-                   down; recorded {} restarts + 1 give-up. Restart latency: first restart death \
-                   -> first reply {} ms; successor created -> first reply {} / {} / {} ms \
-                   min/median/max; death -> successor created {} / {} / {} ms (cooldown from \
-                   the second)",
-                  DRIVER_MAX_RESTARTS, DRIVER_MAX_RESTARTS, DRIVER_MAX_RESTARTS, first,
-                  s[0], s[s.len() / 2], s[s.len() - 1], wait[0], wait[1], wait[2]);
-    }
-
-    /// `sup-window-smoke`: the two owner decisions of 2026-09-28, on a kernel
-    /// built with a short `SUP_RESTART_INTERVAL_S` (the gate row sets it).
-    ///
-    /// 1. Kill (137) -> restart 1 of the window. Wait the interval out, plus a
-    ///    margin, after that restart. Kill again -> restarted, and counted as
-    ///    restart **1** of a fresh window: the first restart no longer counts.
-    ///    A supervisor that never forgets counts it as 2 and fails here, on
-    ///    `FAIL window`.
-    /// 2. Stop with exit code 0, the code a driver's own `exit(0)` passes to
-    ///    `task_exit_with_code` -> NOT restarted: no owner and every ping
-    ///    refused for `DOWN_FOR_MS`, entry `Exited`. A supervisor that restarts
-    ///    on any death fails on `FAIL restarted after exit 0`.
-    #[cfg(feature = "sup-window-smoke")]
-    mod window {
-        use super::*;
-
-        /// Stop the GPIO driver with exit `code` and wait until the supervisor has
-        /// seen that death. The dead TID, or `None` (a `[SUP] FAIL` is printed).
-        fn stop_and_see_death(step: &str, code: i32) -> Option<u32> {
-            let Some(victim) = azos_driver_server::driver_request_stop_code(DRV_KIND_GPIO, code)
-            else {
-                kprintln!("[SUP] FAIL {}: no GPIO driver to stop", step);
-                return None;
-            };
-            let t0 = now();
-            loop {
-                if let Some((_, e)) = sup_find_kind(DRV_KIND_GPIO) {
-                    if e.dead_tid == victim && e.tid != victim {
-                        return Some(victim);
-                    }
-                }
-                if now() - t0 > BACK_WITHIN_MS * ticks_per_ms() {
-                    kprintln!("[SUP] FAIL {}: tid={} stopped with exit {}, no death seen within {} ms",
-                              step, victim, code, BACK_WITHIN_MS);
-                    return None;
-                }
-                sleep_ms(STEP_MS);
-            }
-        }
-
-        /// A new task owns the GPIO kind and answers a ping, within the bound.
-        fn back_serving(proxy: &UserDriverProxy, victim: u32) -> bool {
-            let t0 = now();
-            loop {
-                let owner = azos_driver_server::driver_owner_tid(DRV_KIND_GPIO);
-                if owner.is_some() && owner != Some(victim) && ping(proxy).is_ok() {
-                    return true;
-                }
-                if now() - t0 > BACK_WITHIN_MS * ticks_per_ms() {
-                    return false;
-                }
-                sleep_ms(STEP_MS);
-            }
-        }
-
-
-        pub(in super::super) fn run(proxy: &UserDriverProxy) {
-            kprintln!("[SUP] window smoke: burst {} within {} s; GPIO driver tid={} serving",
-                      RESTART_BURST, RESTART_INTERVAL_S,
-                      azos_driver_server::driver_owner_tid(DRV_KIND_GPIO).unwrap_or(0));
-            if RESTART_INTERVAL_S > 30 {
-                kprintln!("[SUP] FAIL window smoke needs SUP_RESTART_INTERVAL_S <= 30, built \
-                           with {}", RESTART_INTERVAL_S);
-                return;
-            }
-            // 1a. First failure: restart 1 of a window.
-            let Some(v1) = stop_and_see_death("kill 1", azos_abi::exit_status::KILLED_KILL)
-            else { return };
-            if !back_serving(proxy, v1) {
-                kprintln!("[SUP] FAIL kill 1: tid={} not restarted within {} ms", v1, BACK_WITHIN_MS);
-                return;
-            }
-            let Some((_, e1)) = sup_find_kind(DRV_KIND_GPIO) else { return };
-            if e1.window_n != 1 || e1.restarts != 1 {
-                kprintln!("[SUP] FAIL kill 1: window {} total {}, want 1 and 1", e1.window_n,
-                          e1.restarts);
-                return;
-            }
-            kprintln!("[SUP] window kill 1: tid={} died (exit 137) -> tid={} serving, restart 1/{} \
-                       of the window", v1, e1.tid, RESTART_BURST);
-            // 1b. Let the interval pass after that restart was granted.
-            let wait_until = e1.died_at + (RESTART_INTERVAL_S + 2) * freq();
-            while now() < wait_until {
-                sleep_ms(100);
-            }
-            let Some(v2) = stop_and_see_death("kill 2", azos_abi::exit_status::KILLED_KILL)
-            else { return };
-            if !back_serving(proxy, v2) {
-                kprintln!("[SUP] FAIL kill 2: tid={} not restarted within {} ms", v2, BACK_WITHIN_MS);
-                return;
-            }
-            let Some((_, e2)) = sup_find_kind(DRV_KIND_GPIO) else { return };
-            let apart_ms = (e2.died_at - e1.died_at) / ticks_per_ms();
-            if e2.window_n != 1 {
-                kprintln!("[SUP] FAIL window: the restart {} ms earlier (interval {} s) still \
-                           counts: restart {} of the window, want 1", apart_ms,
-                          RESTART_INTERVAL_S, e2.window_n);
-                return;
-            }
-            kprintln!("[SUP] window kill 2: {} ms after kill 1 -> tid={} serving, restart 1/{} of a \
-                       fresh window ({} in total)", apart_ms, e2.tid, RESTART_BURST, e2.restarts);
-            // 2. A clean exit is not restarted.
-            let Some(v3) = stop_and_see_death("exit 0", 0) else { return };
-            let t1 = now();
-            let mut refused = 0u32;
-            while now() - t1 < DOWN_FOR_MS * ticks_per_ms() {
-                // The dead driver itself may still hold the slot until the
-                // supervisor task releases it: only ANOTHER owner is a restart.
-                if let Some(t) = azos_driver_server::driver_owner_tid(DRV_KIND_GPIO)
-                    .filter(|&t| t != v3)
-                {
-                    kprintln!("[SUP] FAIL restarted after exit 0: tid={} owns GPIO", t);
-                    return;
-                }
-                match ping(proxy) {
-                    Ok(()) => {
-                        kprintln!("[SUP] FAIL restarted after exit 0: a ping was answered");
-                        return;
-                    }
-                    Err(_) => refused += 1,
-                }
-                sleep_ms(100);
-            }
-            let state = sup_find_kind(DRV_KIND_GPIO).map(|(_, e)| e.state);
-            if state != Some(SupState::Exited) {
-                kprintln!("[SUP] FAIL exit 0: supervisor state {:?}, not Exited", state);
-                return;
-            }
-            kprintln!("[SUP] PASS window: a restart {} ms old (interval {} s) no longer counted; \
-                       tid={} exited 0 and was not restarted: no owner and {} pings refused over \
-                       {} ms", apart_ms, RESTART_INTERVAL_S, v3, refused, DOWN_FOR_MS);
-        }
-    }
-
-    /// `SAFETY_DRIVER_SUPERVISOR` records on disk: (restarts, give-ups), in
-    /// THIS session's file. Not `LOG00000.BIN`: a disk that was booted before
-    /// resumes at the next serial (U08-3), and the gate's gpio_drv disk has
-    /// been booted twice (the GPIO and proxy rows) before this row copies it.
-    #[cfg(not(feature = "sup-window-smoke"))]
-    fn count_records() -> (u32, u32) {
-        use azos_actuation::logger as lg;
-        let (mut r, mut g) = (0u32, 0u32);
-        let mut path = [0u8; 17];
-        lg::make_log_path(lg::logger_current_serial(), &mut path);
-        let Ok(vol) = azos_fs::fat32_mount_volume() else { return (0, 0) };
-        let Ok(file) = azos_fs::fat32_open(vol, &path,
-                                               azos_fs::open_flags::READ) else {
-            return (0, 0);
-        };
-        let mut hdr = [0u8; lg::LOG_FILE_HEADER_BYTES];
-        let _ = azos_fs::fat32_read(file, &mut hdr);
-        loop {
-            let mut raw = [0u8; lg::LOG_RECORD_SIZE];
-            match azos_fs::fat32_read(file, &mut raw) {
-                Ok(n) if n == lg::LOG_RECORD_SIZE => {
-                    let rec = lg::LogRecord::decode(&raw);
-                    if rec.kind == lg::LOG_EVT_SAFETY_VIOLATION
-                        && rec.payload[0] == SAFETY_DRIVER_SUPERVISOR
-                    {
-                        match rec.payload[1] {
-                            SUP_ACTION_RESTART => r += 1,
-                            SUP_ACTION_GAVE_UP => g += 1,
-                            _ => {}
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-        let _ = azos_fs::fat32_close(file);
-        (r, g)
+        let Some(_) = kill_and_back(1, h) else { return };
+        let t1 = now();
+        sleep_ms((RESTART_INTERVAL_S + 2) * 1000);
+        let Some((_, heir, _)) = kill_and_back(2, h) else { return };
+        kprintln!("[SUP] PASS window: kill 2 {} ms after the first restart (interval {} s) \
+                   served by tid={}", ms_since(t1), RESTART_INTERVAL_S, heir);
     }
 }
 
