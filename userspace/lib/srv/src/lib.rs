@@ -79,12 +79,23 @@ pub trait Handler<K: Kernel> {
     fn doorbell(&mut self, _k: &mut K, _key: u64) {}
     /// Any other event: a notice, a source that is gone, a ring, pressure.
     fn other(&mut self, _k: &mut K, _ev: &Event) {}
-    /// Called before every wait: do the work that needs no event and
-    /// announce the sleeps the doorbells stand for. `true`: work is left, so
-    /// the wait only polls.
-    fn idle(&mut self, _k: &mut K) -> bool {
-        false
+    /// Called before every wait: do the work that needs no event, announce
+    /// the sleeps the doorbells stand for, and say how long the wait may be.
+    fn idle(&mut self, _k: &mut K) -> Idle {
+        Idle::Sleep
     }
+}
+
+/// How long the wait after [`Handler::idle`] may sleep.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Idle {
+    /// Work is left: the wait only polls.
+    Busy,
+    /// Until an event.
+    Sleep,
+    /// Until an event or the deadline (absolute, the time counter's ns): a
+    /// backstop for a wake that went astray.
+    Until(u64),
 }
 
 /// What one [`Server::turn`] did.
@@ -111,11 +122,16 @@ impl<K: Kernel> Server<K> {
     }
 
     /// Wait once (only poll while calls are owed or the handler has work
-    /// left), dispatch the event, then serve up to [`CALL_BATCH`] calls.
+    /// left; otherwise until an event or the handler's deadline), dispatch
+    /// the event, then serve up to [`CALL_BATCH`] calls.
     pub fn turn<H: Handler<K>>(&mut self, h: &mut H) -> Turn {
         let mut t = Turn::default();
-        let busy = h.idle(&mut self.kernel);
-        let deadline = if self.owed || busy { 0 } else { u64::MAX };
+        let deadline = match h.idle(&mut self.kernel) {
+            _ if self.owed => 0,
+            Idle::Busy => 0,
+            Idle::Sleep => u64::MAX,
+            Idle::Until(ns) => ns,
+        };
         match self.kernel.wait(deadline) {
             Ok(Some(ev)) => {
                 t.event = Some(ev.source_type);
@@ -169,6 +185,29 @@ impl<K: Kernel> Server<K> {
             }
         }
         TAKE
+    }
+}
+
+/// The home of a server's state when it is too big for the stack: a static,
+/// written once by the server's one thread before it serves.
+pub struct State<T>(core::cell::UnsafeCell<Option<T>>);
+
+// SAFETY: a server is one thread, and `install` hands out the one reference.
+unsafe impl<T> Sync for State<T> {}
+
+impl<T> State<T> {
+    pub const fn new() -> Self {
+        Self(core::cell::UnsafeCell::new(None))
+    }
+
+    /// Store `v` and return the one reference to it.
+    ///
+    /// # Safety
+    /// Called once, by the thread that then serves, before any other thread
+    /// of the process exists.
+    pub unsafe fn install(&'static self, v: T) -> &'static mut T {
+        // SAFETY: the caller's contract: no other reference exists or will.
+        unsafe { (*self.0.get()).insert(v) }
     }
 }
 

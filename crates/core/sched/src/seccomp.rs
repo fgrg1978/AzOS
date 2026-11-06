@@ -978,30 +978,29 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE],
         ifaces: NO_IFACES,
     },
-    // The Input object's server (Kconfig INPUTD). Serves `endpoint.input` (the
-    // v2 accept/reply on its main thread, the one the endpoint is stamped with;
-    // the thread `SYS_THREAD_CREATE` makes reads the stream),
-    // finds the capabilities its row grants (`SYS_CAP_INFO`: the drivers'
-    // region, the endpoint it derives warrants from), maps the drivers' region
+    // The Input object's server (Kconfig INPUTD): one thread on one port
+    // (`azos_srv`: `DOMAIN_CREATE_PORT`, `PORT_BIND` for the calls on
+    // `endpoint.input` and for the doorbell of the drivers' stream,
+    // `SYS_PORT_WAIT`), the poll accept and the reply of the calls; finds the
+    // capabilities its row grants (`SYS_CAP_INFO`: the drivers' region, the
+    // endpoint it derives warrants from), maps the drivers' region
     // (`SYS_MO_MAP`, `MEMOBJ_ACQUIRE` reads its size), makes a region per
     // focus grant and one for the trusted-path page (`SYS_MO_CREATE`, mapped
     // with `SYS_MO_MAP`, given back with `SYS_MO_UNMAP`), derives a warrant
     // (`ENDPOINT_DERIVE`) and revokes it (`SYS_CAP_REVOKE`, `SYS_CAP_CLOSE`
-    // for the replacement handle), sleeps on the stream's head word until the
-    // drivers wake it (`SYS_FUTEX_WAIT`; `SYS_YIELD` between batches and at the
-    // lock, `SYS_SLEEP_UNTIL` after a spurious accept) and writes its start-up
-    // and focus lines on the console; the clock is
-    // `DOMAIN_UPTIME` where ring 3 may not read the counter. No spawn, no file,
-    // no device, no console input, no network.
+    // for the replacement handle), backs off after a refused wait
+    // (`SYS_SLEEP_UNTIL`) and writes its start-up and focus lines on the
+    // console; the clock is `DOMAIN_UPTIME` where ring 3 may not read the
+    // counter. No spawn, no file, no device, no console input, no network.
     ImageProfile {
         image: "INPUTD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_REVOKE, SYS_YIELD,
-            SYS_IPC_ACCEPT, SYS_IPC_REPLY,
-            SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_THREAD_CREATE, SYS_SLEEP_UNTIL, SYS_FUTEX_WAIT,
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_REVOKE,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_PORT_WAIT,
+            SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_SLEEP_UNTIL,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, ENDPOINT_DERIVE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME],
+        ops: inv_ops![LOG_CONSOLE_WRITE, ENDPOINT_DERIVE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME, DOMAIN_CREATE_PORT, PORT_BIND],
         ifaces: NO_IFACES,
     },
     // The compositor (Kconfig COMPOSITOR): the sole holder of the kernel's

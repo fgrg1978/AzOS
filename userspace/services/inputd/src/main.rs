@@ -12,20 +12,15 @@
 //! holds the focus; the decisions are `focus.rs`'s, which the host suite
 //! (`tests/host/inputd-tests`) drives.
 //!
-//! Two threads. **The main thread serves**: it accepts a call, dispatches it and
-//! replies. The row's `READ` grant stamped the endpoint with the TID of the task
-//! the program started as, and the kernel hands a call only to the thread
-//! that has that TID (`ep_queue::take_locked`: `q.owner != server`; a created
-//! thread has a TID of its own and accepts nothing on the endpoint, so a
-//! caller waits for ever). The thread the main thread creates is the reader:
-//! it drains the stream into the holder's ring and, when the stream is empty,
-//! announces a sleep on its consumer flag and waits on its head word. The
-//! drivers' push that finds the announcement wakes it (the kernel's futex wake
-//! on the region, from the interrupt arm), so an event is handed on as soon as
-//! the reader runs, and an idle machine wakes it for nothing. A single task
-//! cannot wait on the stream and block in the endpoint's accept. Both threads
-//! meet in one spin lock around the server's state; the server holds it for
-//! one call, the reader for one batch.
+//! One thread on one port (`azos_srv`): the calls on `endpoint.input` and the
+//! doorbell of the drivers' stream wake the same wait. Before it waits the
+//! server drains the stream into the holder's ring and, when the stream is
+//! empty, announces a sleep on its consumer flag, as a futex waiter would; the
+//! drivers' push that finds the announcement wakes the stream's head word
+//! (the kernel's futex wake on the region, from the interrupt arm), and that
+//! wake rings the port. An event is handed on as soon as the server runs, an
+//! idle machine wakes it for nothing, and a batch of events and a batch of
+//! calls take turns.
 //!
 //! **The keyboard is this server's to give.** While nobody holds the focus it
 //! is the console's: the drivers type its keys into the console's input as
@@ -44,9 +39,10 @@ use azos_devif::input::{EventRing, InputIdl, TrustedPage, RING_PAGES, RING_SLOTS
 use azos_idl::MsgDesc;
 use azos_input_wire::event::{FOCUS_BYTES, FOCUS_OFFSET, REGION_TOTAL, STREAM_CAP, STREAM_DROPS_OFFSET, STREAM_OFFSET};
 use azos_libsys as sys;
-use azos_rings::region::{RingSleep, RingStep, SpscRing};
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use azos_rings::region::{RingSleep, RingStep, SpscRing, RING_HEAD};
+use azos_srv::sys::Port;
+use azos_srv::{Answer, Handler, Idle, Server, State};
+use core::sync::atomic::{AtomicU32, Ordering};
 use focus::{Host, Ring, Service};
 
 /// The rights of the capability the warrants are derived from: the call right
@@ -168,9 +164,9 @@ fn make_region(pages: u64) -> Option<(u32, usize)> {
 }
 
 /// Map the kernel-owned region the row grants under `key` (`MemObj
-/// input.events`, `MemObj input.focus`): its base, when it is granted and at
-/// least `bytes` long.
-fn open_region(key: u32, bytes: usize) -> Option<usize> {
+/// input.events`, `MemObj input.focus`): its capability and base, when it is
+/// granted and at least `bytes` long.
+fn open_region(key: u32, bytes: usize) -> Option<(u32, usize)> {
     let cap = sys::cap_lookup(sys::ty::SHM.raw(), key);
     if cap < 0 {
         return None;
@@ -181,7 +177,7 @@ fn open_region(key: u32, bytes: usize) -> Option<usize> {
     }
     let pages = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
     let va = sys::shm_map_typed(cap as u32);
-    (va > 0 && pages * sys::PAGE_SIZE >= bytes).then_some(va as usize)
+    (va > 0 && pages * sys::PAGE_SIZE >= bytes).then_some((cap as u32, va as usize))
 }
 
 /// The capability on this server's endpoint: the row's one grant, with `READ`
@@ -200,79 +196,44 @@ fn find_source() -> Option<u32> {
     })
 }
 
-/// The server's state, shared by the two threads under [`LOCK`].
-struct State(UnsafeCell<Option<Service<Sys>>>);
+/// The port's sources: the calls on `endpoint.input`, the stream's doorbell.
+const CALLS: u64 = 1;
+const STREAM: u64 = 2;
 
-// SAFETY: every access is under `LOCK` (see `with`).
-unsafe impl Sync for State {}
-
-static STATE: State = State(UnsafeCell::new(None));
-static LOCK: AtomicBool = AtomicBool::new(false);
-
-/// Run `f` on the server with the lock held.
-fn with<R>(f: impl FnOnce(&mut Service<Sys>) -> R) -> R {
-    while LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        sys::yield_now();
-    }
-    // SAFETY: the lock is held; `main` stored the server before the second
-    // thread existed and nothing takes it out.
-    let r = f(unsafe { (*STATE.0.get()).as_mut() }.expect("the server is installed before it is used"));
-    LOCK.store(false, Ordering::Release);
-    r
+/// The server on its port.
+struct Input {
+    svc: Service<Sys>,
+    /// The drivers' stream, consumed here.
+    stream: SpscRing,
 }
 
-/// The stack of the reader thread.
-const READER_STACK_BYTES: usize = 8192;
+impl Handler<Port> for Input {
+    fn call(&mut self, _port: &mut Port, _handle: u64, req: &MsgDesc, rep: &mut MsgDesc) -> Answer {
+        // The badge of the capability the call came through: the row's, or a
+        // warrant's (0 when the call carried none).
+        self.svc.caller = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
+        let _ = InputIdl::dispatch(&mut self.svc, req, rep);
+        Answer::Reply
+    }
 
-#[repr(C, align(16))]
-struct Stack(UnsafeCell<[u8; READER_STACK_BYTES]>);
-
-// SAFETY: the reader thread's alone.
-unsafe impl Sync for Stack {}
-
-static READER_STACK: Stack = Stack(UnsafeCell::new([0; READER_STACK_BYTES]));
-
-/// The reader thread: deliver the drivers' stream to the holder of the focus as
-/// it comes, for ever. `region`: where the drivers' region is mapped.
-extern "C" fn reader(_: u64, _: u64, region: u64) -> ! {
-    let stream = SpscRing { base: region as usize + STREAM_OFFSET, cap: STREAM_CAP };
-    loop {
-        if with(|svc| svc.pump()) {
-            // A batch was taken, more may wait: let a request in, then look again.
-            sys::yield_now();
-            continue;
+    /// Deliver what the stream holds; when it is empty, announce the sleep
+    /// the doorbell ends (an event that came meanwhile is taken first). The
+    /// ring library's backstop bounds a wake that went astray.
+    fn idle(&mut self, _port: &mut Port) -> Idle {
+        self.stream.consumer_woke();
+        if self.svc.pump() {
+            // A batch was taken, more may wait: let a call in, then look again.
+            return Idle::Busy;
         }
-        // Empty: announce the sleep (an event that came meanwhile is taken
-        // first) and wait for the push that sees the announcement. The ring
-        // library's backstop bounds a wake that went astray.
-        if let RingSleep::Wait { addr, expected } = stream.consumer_sleep() {
-            let _ = sys::futex_wait_addr(addr, expected, sys::RING_WAIT_NS);
-            stream.consumer_woke();
+        match self.stream.consumer_sleep() {
+            RingSleep::Wait { .. } => Idle::Until(sys::vdso_now_ns().saturating_add(sys::RING_WAIT_NS)),
+            RingSleep::Retry => Idle::Busy,
         }
     }
 }
 
-/// Accept a call on `endpoint.input`, dispatch it, reply, for ever: the main
-/// thread's loop (the thread the endpoint is stamped with).
-fn serve() -> ! {
-    loop {
-        let mut req = MsgDesc::default();
-        let call = sys::ipc_accept_v2(&mut req);
-        if call < 0 {
-            // Nothing arrived (a spurious wake): wait a little rather than spin.
-            sys::sleep(10);
-            continue;
-        }
-        let mut rep = MsgDesc::default();
-        with(|svc| {
-            // The badge of the capability the call came through: the row's, or
-            // a warrant's (0 when the call carried none).
-            svc.caller = if req.flags & azos_abi::ipc_msg::MSG_BADGED != 0 { req.badge as u32 } else { 0 };
-            let _ = InputIdl::dispatch(svc, &req, &mut rep);
-        });
-        let _ = sys::ipc_reply_v2(call as u64, &rep);
-    }
-}
+/// The server's state.
+static INPUT: State<Input> = State::new();
 
 fn log(line: &[u8]) {
     let _ = sys::console_write(sys::STDOUT, line);
@@ -280,13 +241,13 @@ fn log(line: &[u8]) {
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
-    let Some(region) = open_region(azos_abi::cap::SHM_INPUT_EVENTS, REGION_TOTAL) else {
+    let Some((events, region)) = open_region(azos_abi::cap::SHM_INPUT_EVENTS, REGION_TOTAL) else {
         log(b"[inputd] no input event region in this row (no keyboard or mouse driver): nothing to serve\n");
         sys::exit(0);
     };
     // Without the word the drivers cannot be told who holds the keyboard: the
     // console keeps it, and a grant would lend a ring nothing is routed to.
-    let Some(focus) = open_region(azos_abi::cap::SHM_INPUT_FOCUS, FOCUS_BYTES) else {
+    let Some((_, focus)) = open_region(azos_abi::cap::SHM_INPUT_FOCUS, FOCUS_BYTES) else {
         log(b"[inputd] the row grants no focus word (MemObj input.focus): the console keeps the keyboard\n");
         sys::exit(1);
     };
@@ -300,15 +261,21 @@ fn main() -> ! {
     };
     let mut svc = Service::new(Sys { region, focus, page, page_base, source }, azos_limits::COMPOSITOR);
     svc.attach();
-    // SAFETY: no other thread exists yet.
-    unsafe { *STATE.0.get() = Some(svc) };
-
-    // The stack is the reader's alone; its top is 16-aligned.
-    let top = READER_STACK.0.get() as usize + READER_STACK_BYTES;
-    if sys::thread_create(reader, top, region as u64, core::ptr::null_mut()) < 0 {
-        log(b"[inputd] no thread for the stream: nothing is delivered\n");
+    let Ok(port) = Port::create() else {
+        log(b"[inputd] no event port\n");
+        sys::exit(1);
+    };
+    if port.bind_calls(source, CALLS).is_err() {
+        log(b"[inputd] the calls on endpoint.input reach no port\n");
         sys::exit(1);
     }
+    if port.bind_doorbell(events, (STREAM_OFFSET + RING_HEAD) as u32, STREAM).is_err() {
+        log(b"[inputd] the stream's doorbell reaches no port: nothing is delivered\n");
+        sys::exit(1);
+    }
+    let stream = SpscRing { base: region + STREAM_OFFSET, cap: STREAM_CAP };
+    // SAFETY: once, on the only thread.
+    let input = unsafe { INPUT.install(Input { svc, stream }) };
     log(b"[inputd] AzOS input server (Input on endpoint.input)\n");
-    serve()
+    Server::new(port).run(input)
 }

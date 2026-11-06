@@ -1223,6 +1223,9 @@ mod image_profiles {
         ("INPUTD.ELF", Lang::Rust, &[
             src!("userspace/services/inputd/src/main.rs"),
             src!("userspace/services/inputd/src/focus.rs"),
+            src!("userspace/lib/srv/src/lib.rs"),
+            src!("userspace/lib/srv/src/sys/mod.rs"),
+            src!("userspace/lib/srv/src/sys/doorbell.rs"),
         ]),
         // The compositor: the Compositor object's server (the windows, the
         // trusted path's timing, the surface's cut and the panels are the pure

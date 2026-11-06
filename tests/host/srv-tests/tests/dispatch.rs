@@ -8,7 +8,7 @@ use azos_srv_tests::ep_queue::{self, Collected, NO_DONEE};
 use azos_srv_tests::port_link::{LinkSet, PortLink};
 use azos_abi::ipc_msg::{MsgDesc, MSG_MORE};
 use azos_abi::syscall_nr::{PortEventInfo, PORT_EVENT_CALLS, PORT_EVENT_DOORBELL, PORT_EVENT_IRQ, PORT_EVENT_TIMER};
-use azos_srv::{Answer, Event, Handler, Kernel, Server, CALL_BATCH};
+use azos_srv::{Answer, Event, Handler, Idle, Kernel, Server, CALL_BATCH};
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
 
@@ -34,6 +34,8 @@ struct Fake {
     /// Waits that found nothing and had no deadline: a sleep in the kernel.
     slept: usize,
     accepts: usize,
+    /// The deadline of every wait, in order.
+    deadlines: Vec<u64>,
 }
 
 fn ev(source_type: u8, key: u64) -> Event {
@@ -68,6 +70,7 @@ impl Fake {
 
 impl Kernel for Fake {
     fn wait(&mut self, deadline_ns: u64) -> Result<Option<Event>, isize> {
+        self.deadlines.push(deadline_ns);
         let e = self.take();
         if e.is_none() && deadline_ns == u64::MAX {
             self.slept += 1;
@@ -107,6 +110,8 @@ struct Echo {
     announced: usize,
     /// Work left after `idle`: the next wait polls.
     busy: bool,
+    /// A backstop `idle` asks for.
+    until: Option<u64>,
 }
 
 impl Handler<Fake> for Echo {
@@ -125,9 +130,13 @@ impl Handler<Fake> for Echo {
     fn doorbell(&mut self, _k: &mut Fake, key: u64) {
         self.doorbells.push(key);
     }
-    fn idle(&mut self, _k: &mut Fake) -> bool {
+    fn idle(&mut self, _k: &mut Fake) -> Idle {
         self.announced += 1;
-        core::mem::take(&mut self.busy)
+        match (core::mem::take(&mut self.busy), self.until) {
+            (true, _) => Idle::Busy,
+            (false, Some(ns)) => Idle::Until(ns),
+            (false, None) => Idle::Sleep,
+        }
     }
 }
 
@@ -299,4 +308,20 @@ fn work_left_by_idle_makes_the_wait_a_poll() {
     s.srv.turn(&mut s.h);
     assert_eq!(s.srv.kernel.slept, 1);
     assert_eq!(s.h.announced, 2);
+}
+
+/// A backstop deadline from `idle` bounds the wait, unless calls are owed.
+#[test]
+fn a_deadline_from_idle_bounds_the_wait_and_owed_calls_poll() {
+    let mut s = Scene::new(90);
+    s.h.until = Some(77);
+    s.srv.turn(&mut s.h);
+    let n = CALL_BATCH + 2;
+    let hs: Vec<u64> = (0..n).map(|i| s.call(i, i as u64)).collect();
+    s.srv.turn(&mut s.h);
+    s.srv.turn(&mut s.h);
+    assert_eq!(s.srv.kernel.deadlines, [77, 77, 0], "a batch left calls owed: the third wait polls");
+    for (i, h) in hs.into_iter().enumerate() {
+        assert_eq!(s.answer(i, h), Some(i as u64 + 1));
+    }
 }

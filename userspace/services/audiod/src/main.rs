@@ -38,15 +38,13 @@
 mod mixer;
 mod server;
 
-use core::cell::UnsafeCell;
-
 use azos_abi::cap::CapPerms;
 use azos_devif::sound::{self as snd, Info, Opened, Params, Status};
 use azos_devif::{Lent, MsgDesc, SoundIdl};
 use azos_libsys as sys;
 use azos_rings::region::SpscSlots;
 use azos_srv::sys::Port;
-use azos_srv::{Answer, Handler, Server as Loop};
+use azos_srv::{Answer, Handler, Idle, Server as Loop, State};
 use server::{DevMem, Env, Limits, Mapped, Server};
 use sys::dev::{Ep, SoundCall, SoundClient};
 
@@ -307,19 +305,16 @@ impl Handler<Port> for Audio {
         }
     }
 
-    fn idle(&mut self, port: &mut Port) -> bool {
+    fn idle(&mut self, port: &mut Port) -> Idle {
         if core::mem::take(&mut self.changed) {
             self.pump(port);
         }
-        false
+        Idle::Sleep
     }
 }
 
-/// Where the server's state lives: some 37 KiB, too big for the stack.
-struct Slot(UnsafeCell<Option<Audio>>);
-// SAFETY: one thread, and `_start` takes the one reference before it serves.
-unsafe impl Sync for Slot {}
-static AUDIO: Slot = Slot(UnsafeCell::new(None));
+/// The server's state: some 37 KiB, too big for the stack.
+static AUDIO: State<Audio> = State::new();
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -333,12 +328,12 @@ pub extern "C" fn _start() -> ! {
         arena_bytes_max: azos_limits::AUDIO_ARENA_KB_MAX as u64 * 1024,
         capture: azos_limits::AUDIO_CAPTURE,
     };
-    // SAFETY: the only reference to the slot, taken once on the only thread.
-    let audio = unsafe { &mut *AUDIO.0.get() }.insert(Audio {
+    // SAFETY: once, on the only thread.
+    let audio = unsafe { AUDIO.install(Audio {
         s: Server::new(Kernel { snd: SoundClient::new(Ep(ep)), dev: None }, limits),
         changed: false,
         due: u64::MAX,
-    });
+    }) };
     // No call is served before the server knows whether it may mix.
     let rc = reserve_mixer_time();
     let admitted = rc == 0;
