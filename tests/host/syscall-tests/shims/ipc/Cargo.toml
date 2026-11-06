@@ -7,6 +7,8 @@ publish = false
 description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests. NOT part of the kernel."
 
 [features]
+# Declared for the pulled `dma_bind.rs`'s canary.
+dma-ring3-unconfined-canary = []
 # Pulled-in source declares it (cap_store.rs `cell_source`); the cfg is kernel-only.
 cap-table-cross-type-canary = []
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.

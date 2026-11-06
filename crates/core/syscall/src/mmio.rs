@@ -47,7 +47,7 @@ pub fn sys_mmio_map(a0: u64, a1: u64) -> i64 {
 /// Ops on a device the caller holds (`ty::MMIO`): the memory its device
 /// reaches (`DEVICE_DMA_MAP`, `DEVICE_DMA_UNMAP`). The device and the object
 /// are resolved in one hold of the caller's table; the binding is the
-/// process's, so a thread's exit leaves it.
+/// calling thread's, as an interrupt line it binds is, and its exit ends it.
 pub(crate) fn device_op(c: &mut crate::invoke::Call) -> i64 {
     use azos_abi::cap::{ty, CapHandle, CapPerms};
     use azos_abi::error::Errno;
@@ -98,7 +98,7 @@ pub(crate) fn device_op(c: &mut crate::invoke::Call) -> i64 {
         }
         Some(Ok(v)) => v,
     };
-    let owner = azos_sched::group::proc_tid(c.tid);
+    let owner = c.tid;
     let errno = |e: DmaBindError| match e {
         DmaBindError::BadObject => Errno::EINVAL,
         DmaBindError::NoDomain => Errno::ENODEV,
@@ -112,9 +112,9 @@ pub(crate) fn device_op(c: &mut crate::invoke::Call) -> i64 {
         return dma_bind::unmap(owner, dev, obj).map_or_else(errno, |()| 0);
     }
     match dma_bind::map(owner, dev, obj, dir) {
-        Ok((bus, len)) => {
-            c.rep[..2].copy_from_slice(&[bus.0, len as u64]);
-            c.nrep = 2;
+        Ok(m) => {
+            c.rep[..3].copy_from_slice(&[m.bus.0, m.len as u64, m.coherent as u64]);
+            c.nrep = 3;
             0
         }
         Err(e) => errno(e),

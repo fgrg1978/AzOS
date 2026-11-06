@@ -87,6 +87,11 @@ impl<const N: usize> IoDomain<N> {
         self.enabled
     }
 
+    /// Does the table map nothing (no mapping recorded)?
+    pub fn is_empty(&self) -> bool {
+        cfg!(feature = "domain-empty-canary") || self.entries.iter().all(Option::is_none)
+    }
+
     /// Make the table agree with `entries` for pages `first..=last`: each
     /// page gets the union of the permissions of the entries covering it, or
     /// is unmapped when none does. Returns whether any entry changed: the unit

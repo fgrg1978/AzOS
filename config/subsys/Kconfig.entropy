@@ -9,7 +9,8 @@ choice DRV_VIRTIO_RNG_PLACEMENT
     help
       Who drives the virtio-rng device (QEMU's `-device virtio-rng-device`,
       a virtio-mmio slot). Both feed the kernel entropy pool what the device
-      delivered, credited in full. Not read by any safety decision.
+      delivered; the kernel's read is credited, the ring-3 driver's only as
+      ENTROPY_RING3_FEED says. Not read by any safety decision.
 
     config DRV_VIRTIO_RNG_PLACEMENT_KERNEL
         bool "kernel"
@@ -23,6 +24,9 @@ choice DRV_VIRTIO_RNG_PLACEMENT
         # cargo-feature: virtio-rng-ring3
         bool "ring3"
         depends on INSPECT
+        # virtio-mmio sits behind no IOMMU: the device masters the bus with
+        # whatever its ring-3 driver programs.
+        depends on DMA_RING3_WITHOUT_IOMMU
         help
           Kernel feature `virtio-rng-ring3`: the kernel does not bind the
           device, and the ring-3 driver RNGDRV.ELF (userspace/drivers/rng_drv,
@@ -31,12 +35,31 @@ choice DRV_VIRTIO_RNG_PLACEMENT
           the device write into a DMA memory object (`DEVICE_DMA_MAP`), takes
           its interrupt on a port (`PORT_SRC_IRQ`) and feeds the pool through
           the `entropy` endpoint every DRV_VIRTIO_RNG_FEED_S seconds; it
-          finds the device in the introspection tree (Kconfig INSPECT). With
-          no other source the pool is seeded only when it first feeds: what
-          is drawn before (the stack canary, the network secrets) rests on
-          the other sources (the CPU instruction, the TPM, the persisted
-          seed). Its bytes are credited in full, as the kernel driver's are.
+          finds the device in the introspection tree (Kconfig INSPECT). It
+          needs DMA_RING3_WITHOUT_IOMMU: no IOMMU confines a virtio-mmio
+          device, so the driver is kernel-trust for what the device writes.
+          Its bytes are not credited unless ENTROPY_RING3_FEED is `credit`:
+          with this placement and the default `mix-only`, virtio-rng no
+          longer seeds the pool, and the pool needs another credited source
+          (the CPU instruction, the TPM, the persisted seed) or stays
+          unseeded (ring 3's draws answer NOT_READY).
 
+endchoice
+
+choice ENTROPY_RING3_FEED
+    prompt "Entropy fed by a ring-3 driver: credit"
+    default ENTROPY_RING3_FEED_MIX
+    help
+      How the bytes a ring-3 entropy device driver feeds through the
+      `entropy` endpoint (`feed`, WRITE) count toward a seed of the kernel
+      pool. A driver outside the kernel chose what it hands over: credited,
+      a compromised driver can seed an otherwise unseeded pool with bytes it
+      knows, and every key and nonce drawn after is predictable to it.
+
+    config ENTROPY_RING3_FEED_MIX
+        bool "mix-only: mixed, never credited"
+    config ENTROPY_RING3_FEED_CREDIT
+        bool "credit: counted in full (trust the ring-3 driver as the kernel's)"
 endchoice
 
 config DRV_VIRTIO_RNG_FEED_S

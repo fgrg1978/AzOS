@@ -599,7 +599,9 @@ config DRV_RING3_DEFAULT
       `ring3`. Implied by STRUCTURE_RING3_DRIVERS; each driver's choice can
       still be changed by hand. n: each driver keeps its own default
       (written in its help). Drivers with no placement choice are not
-      affected (see the closed rule above).
+      affected (see the closed rule above). A driver whose device masters
+      the bus with no IOMMU in front of it (virtio-rng) moves only where
+      DMA_RING3_WITHOUT_IOMMU accepts that.
 
 config BOARD_IO
     # cargo-feature: board-io
@@ -1078,6 +1080,22 @@ config DMA_MAP_ENTRIES
       buffers) plus its ring, virtio-net 3 plus 2 rings, rng and input about
       2 each. The software-checked domain and every IOMMU domain keep this
       many records. Cost: 24 bytes of .bss per record per domain.
+
+config DMA_RING3_WITHOUT_IOMMU
+    bool "Let ring 3 master the bus without an IOMMU (kernel-trust)"
+    default n
+    help
+      A ring-3 driver gives its device memory with DEVICE_DMA_MAP. Behind
+      a translating IOMMU domain the device then reaches that memory and
+      nothing else. Without one (no IOMMU on the board, IOMMU_BYPASS, or a
+      device no IOMMU sits in front of, such as virtio-mmio) the device
+      reaches whatever physical address its registers are given, and a
+      ring-3 driver that holds them writable can point it at any RAM, the
+      kernel's included: such a driver is kernel-trust.
+      n: DEVICE_DMA_MAP is refused (-ENODEV) for a device whose domain is
+      not an IOMMU's. y: accepted; the boot says so and records it. The
+      ring-3 placement of a DMA-capable driver (DRV_VIRTIO_RNG_PLACEMENT)
+      needs it.
 
 config DMA_NONCOHERENT
     bool "Devices are NOT cache-coherent with the CPU (cache maintenance around every DMA transfer)"

@@ -18,6 +18,9 @@ vtd-window-canary = ["azos_iommu/vtd-window-canary"]
 # A ring-3 object recorded as bound without entering its domain
 # (`a_device_reaches_its_object_and_no_other_page` goes red).
 dma-bind-skip-map-canary = ["azos_dma/dma-bind-skip-map-canary"]
+# A domain with a mapping left reads as empty
+# (`a_domain_with_a_mapping_left_is_not_handed_to_ring_3` goes red).
+domain-empty-canary = ["azos_iommu/domain-empty-canary"]
 
 [profile.release]
 overflow-checks = true

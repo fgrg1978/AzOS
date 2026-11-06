@@ -264,7 +264,33 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
     } else {
         kprintln!("[DMA] default domain: identity (unchecked), {}", coherence);
     }
-    azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain: ring3_domain, quiesce: ring3_quiesce });
+    // The gate's refusal rows withhold the acceptance for one boot.
+    let unconfined = azos_limits::DMA_RING3_WITHOUT_IOMMU && !canary!("dma-ring3-refusal");
+    azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks {
+        domain: ring3_domain,
+        quiesce: ring3_quiesce,
+        unconfined,
+        report: ring3_report,
+    });
+    if unconfined {
+        azos_drv_sys::kwarn!("[DMA] ring 3 may master the bus without an IOMMU (DMA_RING3_WITHOUT_IOMMU): \
+                              a ring-3 driver of such a device is kernel-trust; each binding is recorded");
+    } else {
+        kprintln!("[DMA] ring 3 masters the bus only behind an IOMMU: memory for any other device is refused");
+    }
+}
+
+/// The console line of a ring-3 binding's end.
+fn ring3_report(e: azos_ipc::dma_bind::Ended) {
+    use azos_ipc::dma_bind::Outcome;
+    let at = if e.exit { "the exit" } else { "the unmap" };
+    match e.outcome {
+        Outcome::Released => kprintln!("[DMA] device {}: {} of tid {} ended its binding, {} bytes back", e.dev, at, e.tid, e.bytes),
+        Outcome::NotStopped | Outcome::UnmapFailed => azos_drv_sys::kerr!(
+            "[DMA] device {}: {} of tid {}: {} bytes kept from the allocator ({}); no ring-3 memory for it until the next boot",
+            e.dev, at, e.tid, e.bytes,
+            if e.outcome == Outcome::NotStopped { "it could not be shown stopped" } else { "the domain's unmap failed" }),
+    }
 }
 
 /// The domain a ring-3 driver maps memory for the device `dev` (a hardware
@@ -513,9 +539,10 @@ mod hw {
         static MAKING: SpinLock<()> = SpinLock::new(());
         let _one = MAKING.lock();
         if let Some(slot) = POOL.iter().find(|s| s.with(|d| d.dev() == rid) == Some(true)) {
-            // A kernel driver's function keeps its domain; ring 3 never gets
-            // one that is not enabled for it.
-            return (slot.with(|d| d.enabled()) == Some(true)).then_some(slot as &'static dyn azos_dma::DmaDomain);
+            // The function's domain from before (a kernel driver's, unbound,
+            // or ring 3's own from an earlier binding): handed out only
+            // translating and empty, so nothing it held stays reachable.
+            return (slot.with(|d| d.enabled() && d.is_empty()) == Some(true)).then_some(slot as &'static dyn azos_dma::DmaDomain);
         }
         let slot = POOL.iter().find(|s| s.with(|_| ()).is_none())?;
         let mut d = IoDomain::<ENTRIES>::new(rid, u.flavour, u.fmt, u.unit, &MEM, u.coherent).ok()?;

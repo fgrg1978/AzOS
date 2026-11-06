@@ -131,15 +131,18 @@ fn a_failed_flush_keeps_the_frames() {
 /// first one's binding.
 #[test]
 fn the_table_keeps_one_binding_per_object_and_its_owner() {
-    let mut t: Table<3> = Table::new();
+    let mut t: Table<8> = Table::new();
     let a = object(0x8040_0000);
     let b = Binding { owner: 9, obj: 0x102, ..object(0x8050_0000) };
     t.insert(a).unwrap();
     assert_eq!(t.insert(Binding { dev: 4, ..a }), Err(BindError::Busy), "an object bound to a second device");
-    assert_eq!(t.can_insert(a.obj), Err(BindError::Busy));
+    assert_eq!(t.can_insert(a.owner, 4, a.obj), Err(BindError::Busy));
     t.insert(b).unwrap();
     t.insert(Binding { obj: 0x103, ..b }).unwrap();
-    assert_eq!(t.insert(Binding { obj: 0x104, ..b }), Err(BindError::Full));
+    for (owner, obj) in [(20u32, 0x110u32), (21, 0x111), (22, 0x112), (23, 0x113), (24, 0x114)] {
+        t.insert(Binding { owner, obj, ..a }).unwrap();
+    }
+    assert_eq!(t.insert(Binding { owner: 25, obj: 0x115, ..a }), Err(BindError::Full));
     assert_eq!(t.take(b.owner, a.dev, a.obj), None, "another task ended the binding");
     assert_eq!(t.take(a.owner, a.dev, a.obj), Some(a));
     let mut drained = 0;
@@ -147,5 +150,45 @@ fn the_table_keeps_one_binding_per_object_and_its_owner() {
         drained += 1;
     }
     assert_eq!(drained, 2);
-    assert!(t.is_empty());
+    assert_eq!(t.len(), 5, "the others' bindings stay");
+}
+
+/// **A function's earlier domain (a kernel driver's, unbound) is handed to
+/// ring 3 only empty.** The kernel hands out a pool slot again only when
+/// `is_empty` says no mapping is left in it: one the kernel driver did not
+/// take back stays reachable by a device ring 3 then programs.
+///
+/// **Canary.** `domain-empty-canary` (`is_empty` always true): the domain
+/// with a mapping left reads as empty.
+#[test]
+fn a_domain_with_a_mapping_left_is_not_handed_to_ring_3() {
+    let (_mem, _unit, d) = ring3_domain();
+    assert!(d.0.lock().unwrap().is_empty(), "a fresh domain");
+    let bus = d.map(0x8060_0000, PAGE as usize, Direction::ToDevice).unwrap();
+    assert!(!d.0.lock().unwrap().is_empty(), "a domain with a mapping left reads as empty");
+    d.unmap(bus, PAGE as usize).unwrap();
+    assert!(d.0.lock().unwrap().is_empty(), "and empty again once it is taken back");
+}
+
+/// **A device whose binding is parked gets no new one, and a task holds at
+/// most its share of the table.** A crash loop of a driver whose device
+/// cannot be stopped keeps one object's pages, not one per restart.
+///
+/// **Canary.** Drop the `parked` test in `Table::can_insert`: the restarted
+/// driver binds again.
+#[test]
+fn a_parked_device_takes_no_new_binding_and_a_task_has_a_share() {
+    let mut t: Table<8> = Table::new();
+    let a = object(0x8070_0000);
+    t.insert(a).unwrap();
+    let b = t.take_owned(a.owner).unwrap();
+    t.park(b);
+    assert_eq!(t.take_owned(a.owner), None, "a parked binding ends for nobody");
+    let restarted = Binding { owner: 8, obj: 0x200, ..a };
+    assert_eq!(t.insert(restarted), Err(BindError::Parked), "the device of a parked binding took a new one");
+    assert_eq!(Table::<8>::PER_OWNER, 2);
+    for (i, obj) in [0x300u32, 0x301].into_iter().enumerate() {
+        t.insert(Binding { owner: 9, dev: 10 + i as u32, obj, ..a }).unwrap();
+    }
+    assert_eq!(t.insert(Binding { owner: 9, dev: 20, obj: 0x302, ..a }), Err(BindError::Quota), "past the task's share");
 }

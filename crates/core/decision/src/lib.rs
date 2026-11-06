@@ -392,6 +392,9 @@ pub enum Rule {
     /// kill switch's input, a `gpio-keys` line) was refused, whatever the
     /// capability it came through (`azos_syscall::devices::GpioPin::held`).
     SafetyLine,
+    /// A ring-3 driver gave a device memory (`DEVICE_DMA_MAP`, `azos_ipc::dma_bind`)
+    /// where no IOMMU confines the device, or was refused it, or its pages were kept.
+    Ring3Dma,
 }
 
 impl Rule {
@@ -402,7 +405,7 @@ impl Rule {
     /// system events and are never limited.
     pub const fn caller_paced(self) -> bool {
         matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant
-            | Rule::EffectUnserved | Rule::BudgetGrow | Rule::SafetyLine)
+            | Rule::EffectUnserved | Rule::BudgetGrow | Rule::SafetyLine | Rule::Ring3Dma)
     }
 }
 
@@ -1314,6 +1317,16 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["controller", "pin", "op"],
         rejected_if_yes: "-",
         rejected_if_no: "let a holder of the line's capability drive it: an output on the kill switch's input makes the switch read what the holder drives",
+    },
+    RuleInfo {
+        // why: 0 admitted without an IOMMU (DMA_RING3_WITHOUT_IOMMU), 1 refused
+        // without one, 2 refused: an earlier binding's pages are kept, 3 kept:
+        // the device could not be shown stopped.
+        name: "ring3-dma",
+        subject: "device",
+        fields: ["tid", "bytes", "why"],
+        rejected_if_yes: "refuse ring 3 every device no IOMMU confines: its drivers stay in the kernel",
+        rejected_if_no: "let a ring-3 driver program a device that reaches any physical address: the kernel's memory is the driver's to write",
     },
 ];
 

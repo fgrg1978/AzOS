@@ -30,6 +30,10 @@ pub(crate) const NAMES: &[&str] = &[
     // entry/x86_64/fp.rs: a fork's child gets the initial FP state, not the
     // parent's (ktest `x86_ring3_syscall_fork_fp`, x86_64 only).
     "x86-fork-fp-skip",
+    // boot/dma.rs: ring 3 is refused memory for a device no IOMMU confines,
+    // whatever DMA_RING3_WITHOUT_IOMMU accepts (the `ring-3 virtio-rng,
+    // refused` rows).
+    "dma-ring3-refusal",
     // boot/dma.rs `iommu_settle`: a function whose driver gave up stays as the
     // boot placed it (gate rows `... fail open canary`).
     "iommu-fail-open",

@@ -9,6 +9,9 @@ description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded
 # Run with:  cd tests/host/syscall-tests && cargo test --release
 
 [features]
+# `dma_bind.rs`'s canary: a device no IOMMU confines is given memory anyway
+# (`an_unconfined_device_is_refused_without_the_acceptance` goes red).
+dma-ring3-unconfined-canary = ["azos_ipc/dma-ring3-unconfined-canary"]
 # The syscall sources pulled in below name the robot crates through the shims
 # in `shims/` (robot, imu, gps); `use-robot` is what makes them do so
 # instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).

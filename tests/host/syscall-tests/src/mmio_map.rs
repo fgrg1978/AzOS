@@ -356,8 +356,19 @@ mod dma {
         QUIESCE_OK.load(Ordering::SeqCst)
     }
 
+    /// What the binding's ends reported.
+    static ENDS: Mutex<Vec<azos_ipc::dma_bind::Ended>> = Mutex::new(Vec::new());
+    fn report(e: azos_ipc::dma_bind::Ended) {
+        ENDS.lock().unwrap().push(e);
+    }
+
+    fn hooks(unconfined: bool) {
+        azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain, quiesce, unconfined, report });
+    }
+
     fn setup() -> usize {
-        azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain, quiesce });
+        hooks(true);
+        ENDS.lock().unwrap().clear();
         EVENTS.lock().unwrap().clear();
         QUIESCE_OK.store(true, Ordering::SeqCst);
         ring3()
@@ -420,14 +431,15 @@ mod dma {
         assert_eq!(rc, 0);
         assert_eq!(regs[0] & BUS_OFFSET, BUS_OFFSET, "the reply is the domain's bus address");
         assert_eq!(regs[1], 2 * azos_arch::PAGE_SIZE as u64, "and the object's length");
+        assert_eq!(regs[2], 1, "and the domain's coherence");
         assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_BIDIRECTIONAL).0, Errno::EBUSY.to_syscall_ret(), "bound twice");
 
         assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
         assert!(alive(), "the task's release freed frames a device can reach");
         assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, Errno::ECAPSTALE.to_syscall_ret(), "the released handle");
-        // The binding is the process's: the exit path ends it (the device
-        // stopped first).
-        azos_ipc::dma_bind::release_all(azos_sched::group::proc_tid(TID));
+        // The binding is the thread's: its exit ends it (the device stopped
+        // first).
+        azos_ipc::dma_bind::release_all(TID);
         assert_eq!(
             *EVENTS.lock().unwrap(),
             vec![("map", true), ("quiesce", true), ("unmap", true)],
@@ -448,7 +460,11 @@ mod dma {
         assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
         assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, 0);
         assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, Errno::ENOENT.to_syscall_ret());
-        assert_eq!(*EVENTS.lock().unwrap(), vec![("map", true), ("unmap", true)], "no quiesce: the driver stopped it");
+        assert_eq!(
+            *EVENTS.lock().unwrap(),
+            vec![("map", true), ("quiesce", true), ("unmap", true)],
+            "the kernel stops a device no IOMMU confines before its frames go, whatever the driver did"
+        );
         assert!(alive(), "the task still holds the object");
         assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
         assert!(!alive());
@@ -492,6 +508,87 @@ mod dma {
         assert!(!alive());
     }
 
+    /// **Without the build's acceptance a device no IOMMU confines is given no
+    /// memory, and the refusal touches neither the object nor the domain.**
+    ///
+    /// **Canary.** `dma-ring3-unconfined-canary`: the map is admitted.
+    #[test]
+    fn an_unconfined_device_is_refused_without_the_acceptance() {
+        let _g = serial();
+        setup();
+        hooks(false);
+        let m = machine();
+        let dev = device(m.bus, CapPerms::RW);
+        let (obj, idx, _) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, Errno::ENODEV.to_syscall_ret());
+        assert!(EVENTS.lock().unwrap().is_empty(), "a refused map reached the domain");
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
+        assert!(!alive(), "the refusal kept a reference");
+        hooks(true);
+    }
+
+    /// **A read-write Contig object the kernel made (a terminal's region, a
+    /// tracer's) is never given to a device, though a task holds it
+    /// read-write: only what ring 3 created device-visible is.**
+    ///
+    /// **Canary.** Drop the `device_visible` test in `memobj_dma_pin`: the
+    /// kernel's region reaches the device.
+    #[test]
+    fn a_kernel_made_contig_object_is_refused() {
+        use azos_ipc::memobj::{memobj_create_kernel, MemPerms, MemSpec};
+        let _g = serial();
+        setup();
+        let m = machine();
+        let dev = device(m.bus, CapPerms::RW);
+        let (r, _) = memobj_create_kernel(1, &MemSpec::contig(MemPerms::ReadWrite, false)).expect("a kernel region");
+        let h = azos_ipc::cap_store::grant::<azos_ipc::cap::targets::Shm>(TID, CapPerms::RW, r)
+            .expect("cap table full")
+            .raw()
+            .as_raw() as u64;
+        assert_eq!(op(dev, DEVICE_DMA_MAP, h, DMA_BIDIRECTIONAL).0, Errno::EINVAL.to_syscall_ret());
+        assert!(EVENTS.lock().unwrap().is_empty(), "the kernel's region reached the domain");
+        azos_ipc::memobj::memobj_frames_unpin(r);
+    }
+
+    /// A device of its own, that nothing drives: a parked binding keeps its
+    /// device for the rest of the suite.
+    fn fresh_device(name: &str, compatible: &'static [u8], base: u64) -> u32 {
+        hwbus::with(|b| {
+            let mut q = Quiet;
+            let h = b.add(hwbus::Device::dt(name, compatible, base, 0x1000, 0), &mut q).unwrap();
+            let none = hwbus::Rules { native: &[], linux: &[], rows: &[], policy: hwbus::Policy::Auto };
+            b.bind(h, &none, &mut Accepting, &mut q);
+            h.0
+        })
+    }
+
+    /// **A device whose pages were kept gets no ring-3 memory again: a crash
+    /// loop of its driver keeps one object, not one per restart.**
+    ///
+    /// **Canary.** Drop the `parked` test in `Table::can_insert`: the
+    /// restarted driver's map is admitted.
+    #[test]
+    fn a_device_whose_pages_were_kept_takes_no_new_binding() {
+        let _g = serial();
+        setup();
+        let dev = device(fresh_device("park@7300000", b"vendor,parkdev\0", 0x0730_0000), CapPerms::RW);
+        let (obj, idx, r) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
+        QUIESCE_OK.store(false, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, Errno::EIO.to_syscall_ret(), "an unmap of a device not shown stopped");
+        assert!(alive());
+        let (again, idx2, _) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx2, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, again, DMA_TO_DEVICE).0, Errno::EBUSY.to_syscall_ret(), "a second binding of a parked device");
+        assert_eq!(ENDS.lock().unwrap().last().map(|e| e.outcome), Some(azos_ipc::dma_bind::Outcome::NotStopped));
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(again), 0);
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
+        // The suite shares one object table: the kept reference goes here.
+        azos_ipc::memobj::memobj_frames_unpin(r);
+    }
+
     /// **At the exit, a device that cannot be shown stopped keeps the frames
     /// it was given out of the allocator, counted.**
     ///
@@ -501,15 +598,14 @@ mod dma {
     fn a_device_not_shown_stopped_keeps_its_frames() {
         let _g = serial();
         setup();
-        let m = machine();
-        let dev = device(m.bus, CapPerms::RW);
+        let dev = device(fresh_device("keep@7400000", b"vendor,keepdev\0", 0x0740_0000), CapPerms::RW);
         let (obj, idx, r) = object(1, SHM_KIND_CONTIG);
         OBJ.store(idx, Ordering::SeqCst);
         assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
         assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
         QUIESCE_OK.store(false, Ordering::SeqCst);
         let kept = azos_dma::leaked_bytes();
-        azos_ipc::dma_bind::release_all(azos_sched::group::proc_tid(TID));
+        azos_ipc::dma_bind::release_all(TID);
         assert_eq!(*EVENTS.lock().unwrap(), vec![("map", true), ("quiesce", true)], "unmapped though not stopped");
         assert!(alive(), "the frames went while the device may still write them");
         assert_eq!(azos_dma::leaked_bytes(), kept + azos_arch::PAGE_SIZE as u64, "the kept page is not counted");

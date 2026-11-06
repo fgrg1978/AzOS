@@ -562,21 +562,28 @@ pub const DEVICE_IRQ_ACK: u16 = op(CapKind::Device, CLASS_DRIVER, 2);
 /// The object enters the device's DMA domain (behind an IOMMU, its pages and
 /// no other; with none, checked against RAM) and the kernel keeps it until
 /// the binding ends ([`DEVICE_DMA_UNMAP`] or the caller's exit, which first
-/// stops a device no IOMMU confines). The register form replies `a1` the bus
-/// address the device is to be given and `a2` the length in bytes; the CPU
-/// mapping is the object's own (`SYS_MO_MAP`). Returns 0, or
+/// stops a device no IOMMU confines). The binding is the calling thread's.
+/// The register form replies `a1` the bus address the device is to be given,
+/// `a2` the length in bytes and `a3` 1 when the device is cache-coherent with
+/// the CPU (0: the driver cleans and invalidates around each transfer); the
+/// CPU mapping is the object's own (`SYS_MO_MAP`). Returns 0, or
 /// `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` (the device or the object),
 /// `-EINVAL` (another direction, or an object that is not such a Contig
-/// object), `-ENODEV` (a device a kernel driver owns, or with no domain ring
-/// 3 may map into), `-EBUSY` (the object is bound already), `-EMFILE` (no
-/// free binding, Kconfig `DMA_MAP_ENTRIES`), `-EIO` (the domain refused).
+/// object), `-ENODEV` (a device a kernel driver owns, one with no domain ring
+/// 3 may map into, or one no IOMMU confines on a build without Kconfig
+/// `DMA_RING3_WITHOUT_IOMMU`), `-EBUSY` (the object is bound already, or an
+/// earlier binding of the device is kept because the device could not be
+/// shown stopped), `-EMFILE` (no free binding, or the caller holds a quarter
+/// of Kconfig `DMA_MAP_ENTRIES` already), `-EIO` (the domain refused).
 pub const DEVICE_DMA_MAP: u16 = op(CapKind::Device, CLASS_DRIVER, 3);
 /// End the binding [`DEVICE_DMA_MAP`] made of the object `w0` (a `Cap<Shm>`)
-/// for the device the handle names, once the caller has stopped the device
-/// reaching it: out of the device's domain (an IOMMU's cached translations
-/// dropped), then the kernel's reference. Needs `WRITE` on the device.
-/// Returns 0, `-ENOENT` (the caller made no such binding), `-EIO` (the unmap
-/// failed: the object's frames are kept from the allocator for good), or the
+/// for the device the handle names: a device no IOMMU confines is stopped by
+/// the kernel first (a virtio-mmio transport reset), then the object leaves
+/// the device's domain (an IOMMU's cached translations dropped), then the
+/// kernel's reference goes. Needs `WRITE` on the device. Returns 0, `-ENOENT`
+/// (the caller made no such binding), `-EIO` (the device could not be shown
+/// stopped or the unmap failed: the object's frames are kept from the
+/// allocator, and the device gets no ring-3 memory again this boot), or the
 /// capability errors.
 pub const DEVICE_DMA_UNMAP: u16 = op(CapKind::Device, CLASS_DRIVER, 4);
 /// [`DEVICE_DMA_MAP`]'s `w1`: the device reads the object.

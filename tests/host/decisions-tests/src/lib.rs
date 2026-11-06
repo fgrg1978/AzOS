@@ -603,6 +603,7 @@ mod tests {
             (Rule::PackageIndex, 87, "package-index"),
             (Rule::BudgetGrow, 88, "budget-grow"),
             (Rule::SafetyLine, 89, "safety-line"),
+            (Rule::Ring3Dma, 90, "ring3-dma"),
         ];
         assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {
