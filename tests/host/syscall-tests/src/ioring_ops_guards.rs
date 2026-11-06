@@ -6,10 +6,11 @@
 // **What is real here.** The ring's own checks (`crates/core/ipc/src/io_ring.rs`,
 // pulled in whole by `shims/ipc`) run against `KERNEL_IORING_OPS`: the
 // submitter's filter through the real `SyscallFilter::verdict_for`, the
-// owner's real capability table, the real `motor_host::wheel_speed` (the
+// owner's real capability table, the real `khost` resolve, mask and interface
+// dispatch an `OP_CALL` reaches, the real `motor_host::wheel_speed` (the
 // effect gate's seam, the real `motor_set_reporting` with its halt rule from
-// `shims/robot`, the real commander table), and the typed call on the same state wherever the two
-// doors must give the same answer. The ring page is mapped by the
+// `shims/robot`, the real commander table), and the call on the same state
+// wherever the two doors must give the same answer. The ring page is mapped by the
 // `shm_map_user` stand-in into a real Sv39 table and read back through the
 // real `translate_user`.
 //
@@ -17,7 +18,7 @@
 // the PWM and GPIO drivers are the probes in `shims/drivers`.
 //
 // The ring-level rules against a test table — back-pressure, the refusal flag,
-// the pair rule — are in `crates/core/ipc/src/io_ring.rs`'s own suite.
+// the message window — are in `crates/core/ipc/src/io_ring.rs`'s own suite.
 
 use super::harness::serial;
 use crate::ioring_ops::KERNEL_IORING_OPS;
@@ -32,7 +33,7 @@ use azos_ipc::cap::CapTarget;
 use azos_ipc::io_ring::{
     CqEntry, IoRing, SqEntry, CQE_F_DURABLE, CQE_F_QUEUED, CQE_F_REFUSED, OP_BUF_REGISTER, OP_BUF_UNREGISTER, OP_FSYNC, OP_NET_RECV,
     OP_NET_SEND, OP_FILE_READ, OP_FILE_WRITE, SQE_F_FIXED,
-    OP_MOTOR_SPEED, OP_NOP, OP_PWM_SET, OP_READ_SENSOR, OP_TIMER, OP_WRITE_GPIO,
+    OP_NOP, OP_TIMER,
     RING_CQ_SIZE, RING_SQ_SIZE,
 };
 use azos_sched::filter::SyscallFilter;
@@ -277,94 +278,28 @@ fn a_submit_against_a_full_cq_answers_ebusy() {
 
 // ── Seccomp per entry ─────────────────────────────────────────────────────
 
-/// **A profile that does not list the `sensor` interface refuses the ring's
-/// sensor read, and the encoders are not read**, although the capability is
-/// held. In audit mode the same entry runs; listed, it runs.
+/// **A profile without the `motor` interface refuses the motor entries, and no
+/// PWM channel is written**, the endpoints held.
 ///
-/// **Canary.** Answer `true` from the `Deny` arm of `iface_allowed`: the
-/// entry reads 16 bytes and the encoders.
+/// **Canary.** Drop the `iface_allowed` test from `idl_call`: both wheels
+/// are driven.
 #[test]
-fn a_profile_without_the_sensor_interface_refuses_the_ring_read_and_reads_nothing() {
+fn a_profile_without_the_motor_interface_refuses_the_motor_entries_and_moves_nothing() {
     let _g = serial();
     let (s, pt) = ring3();
-    grant_dev(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ);
-    azos_robot::shim_set_encoder(11, -7);
-    let (cap, _va, ring) = create(pt);
-    let e = sqe(OP_READ_SENSOR, SENSOR_TYPE_ENCODER as u32, 0, 16);
-
-    azos_sched::scheduler::set_current_syscall_filter(profile(&[nr::SYS_RING_ENTER], false));
-    let reads = azos_robot::shim_encoder_reads();
-    let (n, c) = unsafe { submit(cap, ring, e) };
-    assert_eq!(n, 1, "a refused entry still completes");
-    assert_eq!(done(c), (Errno::EPERM.to_syscall_ret() as i32, CQE_F_REFUSED));
-    assert_eq!(azos_robot::shim_encoder_reads(), reads, "a denied entry read the encoders");
-
-    azos_sched::scheduler::set_current_syscall_filter(profile(&[nr::SYS_RING_ENTER], true));
-    let (_, c) = unsafe { submit(cap, ring, e) };
-    assert_eq!(done(c), (16, 0), "audit mode lets the entry through");
-
-    let mut listed = profile(&[nr::SYS_RING_ENTER], false);
-    listed.allow_iface(azos_devif::key::SENSOR);
-    azos_sched::scheduler::set_current_syscall_filter(listed);
-    let (_, c) = unsafe { submit(cap, ring, e) };
-    assert_eq!(done(c), (16, 0), "a listed interface runs");
-    let bytes = unsafe { &(&(*ring).data_buf)[..16] };
-    assert_eq!(bytes[..8], 11i64.to_le_bytes());
-    assert_eq!(bytes[8..], (-7i64).to_le_bytes());
-}
-
-/// **A profile without the `motor` interface refuses the motor entry, and no
-/// PWM channel is written.**
-///
-/// **Canary.** Delete the `syscall_allowed` check from `dispatch_sqe`: both
-/// wheels are driven.
-#[test]
-fn a_profile_without_the_motor_call_refuses_the_motor_entry_and_moves_nothing() {
-    let _g = serial();
-    let (s, pt) = ring3();
-    grant_dev(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW);
-    grant_dev(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW);
+    let l = grant_ep(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW, 0);
+    let r = grant_ep(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW, 0);
     wheels();
     let (cap, _va, ring) = create(pt);
-    azos_sched::scheduler::set_current_syscall_filter(profile(&[nr::SYS_RING_ENTER], false));
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 30, 30, 0)) };
-    assert_eq!(done(c), (Errno::EPERM.to_syscall_ret() as i32, CQE_F_REFUSED));
+    azos_sched::scheduler::set_current_syscall_filter(profile(&[nr::SYS_RING_ENTER, nr::SYS_IPC_CALL], false));
+    unsafe {
+        queue_call(ring, l, 0, &[motor_speed_hdr(), 30], 1);
+        queue_call(ring, r, 64, &[motor_speed_hdr(), 30], 2);
+    }
+    let c = unsafe { submit_queued(cap, ring) };
+    let eperm = (Errno::EPERM.to_syscall_ret() as i32, CQE_F_REFUSED);
+    assert_eq!(c.iter().map(|c| done(*c)).collect::<Vec<_>>(), vec![eperm, eperm]);
     assert!(pwm_calls().is_empty(), "a denied motor entry wrote {:?}", pwm_calls());
-}
-
-// ── Capability per entry, through the kernel's sensor read ────────────────
-
-/// **Without the capability the sensor entry is refused with `-ECAPPERMS` and
-/// the encoders are not read; with it, the entry's bytes are the `Sensor`
-/// interface's record.** One function behind both doors.
-///
-/// **Canary.** Drop `need_dev!` from `OP_READ_SENSOR` in `io_ring.rs`: the
-/// unheld entry reads the encoders.
-#[test]
-fn a_sensor_entry_needs_the_capability_and_reads_what_the_interface_reads() {
-    let _g = serial();
-    let (s, pt) = ring3();
-    azos_robot::shim_set_encoder(1234, 5678);
-    let (cap, _va, ring) = create(pt);
-    let e = sqe(OP_READ_SENSOR, SENSOR_TYPE_ENCODER as u32, 0, 16);
-
-    let reads = azos_robot::shim_encoder_reads();
-    let (_, c) = unsafe { submit(cap, ring, e) };
-    assert_eq!(done(c), (Errno::ECAPPERMS.to_syscall_ret() as i32, CQE_F_REFUSED));
-    assert_eq!(azos_robot::shim_encoder_reads(), reads, "an unheld entry read the encoders");
-
-    grant_dev(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ);
-    let (_, c) = unsafe { submit(cap, ring, e) };
-    assert_eq!(done(c), (16, 0));
-    let via_iface = crate::sensor_host::SensorServer(crate::khost::Caller {
-        tid: s.tid,
-        badge: SENSOR_TYPE_ENCODER as u32,
-        rights: CapPerms::READ,
-    });
-    let smp = azos_devif::Sensor::read(&via_iface).value;
-    let mut rec = [0u8; 16];
-    assert_eq!(smp.copy_to(&mut rec), 16);
-    assert_eq!(unsafe { (&(*ring).data_buf)[..16].to_vec() }, rec.to_vec());
 }
 
 // ── A GPIO entry names its controller ─────────────────────────────────────
@@ -399,14 +334,14 @@ fn board_probe(op: GpioOp, pin: u32, arg: u32) -> i32 {
     0
 }
 
-/// **A GPIO entry names its controller**: an entry whose `param0` is the
-/// badge of pin 3 of controller 1 drives the expander's pin 3, and the
-/// board's controller sees nothing; with the expander unbound the entry is
-/// refused `-ENODEV` (the interface's `NO_RESOURCE`), and a pin past the
-/// expander's last `-EINVAL` (`BAD_ARGUMENT`), neither reaching a driver.
+/// **A GPIO entry names its controller**: a `Gpio::write` entry on the
+/// endpoint whose badge is pin 3 of controller 1 drives the expander's pin 3,
+/// and the board's controller sees nothing; a pin past the expander's last is
+/// answered `BAD_ARGUMENT`, and with the expander unbound `NO_RESOURCE`,
+/// neither reaching a driver.
 ///
-/// **Canary.** Map every `GpioPin::of` refusal to `-EIO` in `ioring_ops.rs`
-/// (the old answer): the unbound entry completes `-EIO`.
+/// **Canary.** Map every `GpioPin::of` refusal to `FAULT` in `devices.rs`:
+/// the unbound entry answers `FAULT`.
 #[test]
 fn a_gpio_entry_on_controller_1_drives_the_expanders_pin_and_not_the_boards() {
     let _g = serial();
@@ -417,65 +352,26 @@ fn a_gpio_entry_on_controller_1_drives_the_expanders_pin_and_not_the_boards() {
     let dev = super::harness::GPIO_EXPANDER_DEV;
     assert_eq!(azos_drv_gpio::chips::register(dev, &RING_EXPANDER), Ok(1));
     let (cap, _va, ring) = create(pt);
-    let pin3 = azos_devif::gpio::badge(1, 3);
-    let past = azos_devif::gpio::badge(1, 16);
-    grant_dev(s.tid, azos_devif::key::GPIO, pin3, CapPerms::RW);
-    grant_dev(s.tid, azos_devif::key::GPIO, past, CapPerms::RW);
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_WRITE_GPIO, pin3, 1, 0)) };
-    let (_, beyond) = unsafe { submit(cap, ring, sqe(OP_WRITE_GPIO, past, 1, 0)) };
+    let pin3 = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(1, 3), CapPerms::RW, 0);
+    let past = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(1, 16), CapPerms::RW, 0);
+    let write = |ep: u32| unsafe {
+        queue_call(ring, ep, 0, &[gpio_hdr(azos_devif::GpioIdl::OP_WRITE), 1], 1);
+        let c = submit_queued(cap, ring);
+        assert_eq!(done(c[0]), (0, 0), "the ring refused a held GPIO entry");
+        window(ring, 0)[1] as u32
+    };
+    use azos_devif::outcome::{BAD_ARGUMENT, NO_RESOURCE, OK};
+    assert_eq!(write(pin3), OK);
+    assert_eq!(write(past), BAD_ARGUMENT);
     let _ = azos_drv_gpio::chips::unregister(dev, &mut || false);
-    let (_, gone) = unsafe { submit(cap, ring, sqe(OP_WRITE_GPIO, pin3, 1, 0)) };
-    assert_eq!(done(c), (0, 0));
+    assert_eq!(write(pin3), NO_RESOURCE);
     assert_eq!(*EXPANDER_WRITES.lock().unwrap(), vec![(3, 1)]);
     assert_eq!(*BOARD_OPS.lock().unwrap(), vec![], "the board's controller saw a controller-1 entry");
-    assert_eq!(done(beyond), (Errno::EINVAL.to_syscall_ret() as i32, CQE_F_REFUSED));
-    assert_eq!(done(gone), (Errno::ENODEV.to_syscall_ret() as i32, CQE_F_REFUSED));
 }
 
-// ── Actuation authority ───────────────────────────────────────────────────
-
-/// **A motor entry during a latched e-stop does not move either wheel.** The
-/// halt rule refuses both commands in the motor layer, each writes duty 0 and
-/// records speed 0, and the entry completes refused with `-EAGAIN`, the answer
-/// `motor.speed` gives on the same state. Released, the same entry
-/// drives both wheels: the refusal is the latch, not the path.
-///
-/// **Canary.** Make `motor_wheel` write the channel itself
-/// (`pwm_set_duty_pct(CH, speed)` in place of `motor_host::wheel_speed`): the
-/// latched entry writes duty 60.
-#[test]
-fn a_motor_entry_under_a_latched_estop_holds_both_wheels_at_duty_zero() {
-    let _g = serial();
-    let (s, pt) = ring3();
-    grant_dev(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW);
-    grant_dev(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW);
-    wheels();
-    let (cap, _va, ring) = create(pt);
-
-    ESTOP.store(true, Ordering::SeqCst);
-    let (n, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 60, 60, 0)) };
-    assert_eq!(n, 1);
-    assert_eq!(done(c), (E_CONTAINED as i32, CQE_F_REFUSED));
-    assert_eq!(
-        pwm_calls(),
-        vec![(PwmOp::SetDutyPct, CH[0], 0), (PwmOp::SetDutyPct, CH[1], 0)],
-        "a wheel was driven under a latched e-stop"
-    );
-    for id in 0..2 {
-        assert!(
-            matches!(azos_robot::motor_state(id), Some((_, 0))),
-            "wheel {id} recorded a speed under the latch"
-        );
-    }
-    clear_pwm_calls();
-    // The `Motor` interface's `speed` gives the same answer on the same state
-    // (the halt rule is the motor layer's): `motor_guards.rs`.
-
-    ESTOP.store(false, Ordering::SeqCst);
-    clear_pwm_calls();
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 60, 60, 0)) };
-    assert_eq!(done(c), (0, 0));
-    assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 60), (PwmOp::SetDutyPct, CH[1], 60)]);
+fn gpio_hdr(op: u16) -> u64 {
+    use azos_devif::GpioIdl as G;
+    azos_idl::header(G::ID, G::LEVEL, op)
 }
 
 // ── The effect gate on the ring ─────────────────────────────────────────────
@@ -530,17 +426,16 @@ impl Drop for RingGate {
 }
 
 /// **No provider, no wheel, on the ring too.** On an image whose providers
-/// own no motor kind a motor entry completes with `-ENODEV`, reaches neither
+/// own no motor kind a motor entry is answered `UNSUPPORTED`, reaches neither
 /// the effect gate nor a wheel, and names no commander.
 ///
-/// **Canary.** Answer `Unissued::NoDevice` with `E_CONTAINED` in
-/// `motor_wheel`: the entry completes with `-EAGAIN`.
+/// **Canary.** Answer `Unissued::NoDevice` with `REFUSED` in
+/// `Unissued::outcome`: the entry answers `REFUSED`.
 #[test]
-fn a_motor_entry_on_an_image_without_wheels_answers_enodev() {
+fn a_motor_entry_on_an_image_without_wheels_answers_unsupported() {
     let _g = serial();
     let (s, pt) = ring3();
-    grant_dev(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW);
-    grant_dev(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW);
+    let l = grant_ep(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW, 0);
     wheels();
     let (cap, _va, ring) = create(pt);
     let _gate = RingGate;
@@ -548,8 +443,10 @@ fn a_motor_entry_on_an_image_without_wheels_answers_enodev() {
     crate::motor_host::set_effect_gate(ring_gate);
     crate::motor_host::set_provider_check(unserved);
 
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 30, 40, 0)) };
-    assert_eq!(done(c).0, Errno::ENODEV.to_syscall_ret() as i32, "a motor entry with no wheel");
+    unsafe { queue_call(ring, l, 0, &[motor_speed_hdr(), 30], 1) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (0, 0));
+    assert_eq!(unsafe { window(ring, 0) }[1], azos_devif::outcome::UNSUPPORTED as u64, "a motor entry with no wheel");
     assert!(ring_gate_seen().is_empty(), "an unserved entry was put to the effect gate");
     assert!(pwm_calls().is_empty(), "an unserved entry wrote {:?}", pwm_calls());
 }
@@ -560,26 +457,35 @@ fn a_motor_entry_on_an_image_without_wheels_answers_enodev() {
 /// that task's) before it reaches the wheel, and a wheel left turning names
 /// the owner as its commander, so the owner's death stops it (Kconfig
 /// `MOTOR_COMMANDER_EXIT_STOP`). A motion entry the gate refuses writes
-/// nothing and completes refused with the typed call's `-EAGAIN`; a stop is
-/// never refused and clears the commander.
+/// nothing and is answered `REFUSED`, as the call is; a stop is never refused
+/// and clears the commander.
 ///
-/// **Canary.** Make `motor_wheel` call `motor_set_reporting` /
-/// `motor_stop_reporting` directly again: the gate sees nothing, the
-/// refused entry drives both wheels, and no wheel names a commander.
+/// **Canary.** Make `MotorServer::speed` call `motor_set_reporting` directly
+/// in place of `wheel_speed`: the gate sees nothing, the refused entry drives
+/// both wheels, and no wheel names a commander.
 #[test]
 fn a_motor_entry_goes_through_the_effect_gate_and_names_its_owner_as_commander() {
     let _g = serial();
     let (s, pt) = ring3();
-    grant_dev(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW);
-    grant_dev(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW);
+    let eps = [
+        grant_ep(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW, 0),
+        grant_ep(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW, 0),
+    ];
     wheels();
     let (cap, _va, ring) = create(pt);
     let _gate = RingGate;
     ring_gate_seen();
     crate::motor_host::set_effect_gate(ring_gate);
+    let both = |l: u64, r: u64| unsafe {
+        queue_call(ring, eps[0], 0, &[motor_speed_hdr(), l], 1);
+        queue_call(ring, eps[1], 64, &[motor_speed_hdr(), r], 2);
+        let c = submit_queued(cap, ring);
+        assert_eq!(c.iter().map(|c| done(*c)).collect::<Vec<_>>(), vec![(0, 0), (0, 0)]);
+        (window(ring, 0)[1] as u32, window(ring, 64)[1] as u32)
+    };
+    use azos_devif::outcome::{OK, REFUSED};
 
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 30, 40, 0)) };
-    assert_eq!(done(c), (0, 0));
+    assert_eq!(both(30, 40), (OK, OK));
     assert_eq!(ring_gate_seen(), vec![(0, s.tid, 30, false), (1, s.tid, 40, false)],
                "the entry's commands did not reach the effect gate as the owner's");
     assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 30), (PwmOp::SetDutyPct, CH[1], 40)]);
@@ -592,13 +498,11 @@ fn a_motor_entry_goes_through_the_effect_gate_and_names_its_owner_as_commander()
 
     RING_GATE_REFUSES.store(true, Ordering::SeqCst);
     clear_pwm_calls();
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 60, 60, 0)) };
-    assert_eq!(done(c), (E_CONTAINED as i32, CQE_F_REFUSED), "a refused motion entry did not complete refused");
+    assert_eq!(both(60, 60), (REFUSED, REFUSED), "a refused motion entry was not answered REFUSED");
     assert!(pwm_calls().is_empty(), "a motion entry the gate refused wrote {:?}", pwm_calls());
     assert_eq!(ring_gate_seen().len(), 2);
 
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 0, 0, 0)) };
-    assert_eq!(done(c), (0, 0), "a stop entry was refused");
+    assert_eq!(both(0, 0), (OK, OK), "a stop entry was refused");
     assert_eq!(ring_gate_seen(), vec![(0, s.tid, 0, true), (1, s.tid, 0, true)]);
     assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 0), (PwmOp::SetDutyPct, CH[1], 0)]);
     for id in 0..2 {
@@ -606,34 +510,43 @@ fn a_motor_entry_goes_through_the_effect_gate_and_names_its_owner_as_commander()
     }
 }
 
-/// **Containment refuses the PWM entry with the code every contained write
-/// answers (`-EAGAIN`),
-/// and writes nothing; a read-only entry on the same ring keeps running.**
+/// **Containment refuses the PWM entry's act and writes nothing; a read on
+/// the same ring keeps running.** The act is answered `DENIED` by the
+/// interface, as the call is answered while contained; the ring itself
+/// refuses nothing.
 ///
-/// **Canary.** Delete `not_contained!()` from `OP_PWM_SET` in `io_ring.rs`:
-/// the contained entry writes duty 40.
+/// **Canary.** Test `holds` in place of `allows` in `Caller::gate`: the
+/// contained entry writes duty 40.
 #[test]
-fn containment_refuses_the_pwm_entry_with_the_typed_code_and_keeps_reads_running() {
+fn containment_refuses_the_pwm_entry_and_keeps_reads_running() {
     let _g = serial();
     let (s, pt) = ring3();
-    grant_dev(s.tid, azos_devif::key::PWM, FREE_CH, CapPerms::RW);
-    grant_dev(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ);
+    let pwm = grant_ep(s.tid, azos_devif::key::PWM, FREE_CH, CapPerms::RW, 0);
+    let enc = grant_ep(s.tid, azos_devif::key::SENSOR, SENSOR_TYPE_ENCODER as u32, CapPerms::READ, 0);
     set_pwm_probe(Some(pwm_probe));
     clear_pwm_calls();
     let (cap, _va, ring) = create(pt);
+    let duty = {
+        use azos_devif::PwmIdl as P;
+        azos_idl::header(P::ID, P::LEVEL, P::OP_SET_DUTY_PCT)
+    };
 
     azos_ipc::cap::degraded_set(true);
-    let typed = Errno::EAGAIN.to_syscall_ret();
-    let (n, c) = unsafe { submit(cap, ring, sqe(OP_PWM_SET, FREE_CH, 40, 0)) };
-    assert_eq!(n, 1, "the submit itself is not refused while contained");
-    assert_eq!(done(c), (typed as i32, CQE_F_REFUSED));
+    unsafe {
+        queue_call(ring, pwm, 0, &[duty, 40], 1);
+        queue_call(ring, enc, 64, &[sensor_read_hdr()], 2);
+    }
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(c.iter().map(|c| done(*c)).collect::<Vec<_>>(), vec![(0, 0), (0, 0)], "the ring refused while contained");
+    assert_eq!(unsafe { window(ring, 0) }[1], azos_devif::outcome::DENIED as u64);
     assert!(pwm_calls().is_empty(), "a contained entry wrote {:?}", pwm_calls());
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_READ_SENSOR, SENSOR_TYPE_ENCODER as u32, 0, 16)) };
-    assert_eq!(done(c), (16, 0), "a read on the same ring");
+    assert_eq!(unsafe { window(ring, 64) }[1], azos_devif::outcome::OK as u64, "a read on the same ring");
 
     azos_ipc::cap::degraded_set(false);
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_PWM_SET, FREE_CH, 40, 0)) };
-    assert_eq!(c.flags, 0, "released, the entry runs");
+    unsafe { queue_call(ring, pwm, 0, &[duty, 40], 1) };
+    let c = unsafe { submit_queued(cap, ring) };
+    assert_eq!(done(c[0]), (0, 0));
+    assert_ne!(unsafe { window(ring, 0) }[1], azos_devif::outcome::DENIED as u64, "released, the entry runs");
     assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, FREE_CH, 40)]);
 }
 
@@ -1249,14 +1162,15 @@ fn a_poller_refusal_is_recorded_against_the_owner_as_the_syscall_would_be() {
 
     // The owner's own typed refusal, once: recorded.
     assert_eq!(crate::handlers::sys_file_read_typed(0, 0, 0), Errno::ECAPSTALE.to_syscall_ret());
-    // The poller's refusal of the owner's entry: recorded, as the same record.
-    let c = unsafe { poll_one(ring, r, sqe(azos_ipc::io_ring::OP_WRITE_GPIO, 7, 1, 0)) };
+    // The poller's refusal of the owner's entry (a call on a handle the owner
+    // does not hold): recorded, as the same record.
+    let c = unsafe { poll_call(ring, r, 0x77, &[sensor_read_hdr()]) };
     assert_eq!(done(c), (Errno::ECAPPERMS.to_syscall_ret() as i32, CQE_F_REFUSED));
     assert_eq!(
         typed_seen(),
         vec![
             (ty::FILE.denial_code(), CapError::Stale.code()),
-            (ty::ENDPOINT.denial_code(), CapError::MissingPerms.code()),
+            (ty::ENDPOINT.denial_code(), CapError::Stale.code()),
         ]
     );
     // Two more of the owner's own: its bound of four is spent.
@@ -1266,27 +1180,46 @@ fn a_poller_refusal_is_recorded_against_the_owner_as_the_syscall_would_be() {
     assert_eq!(typed_seen().len(), 4);
     // The poller refuses the owner's entry again: suppressed, like the owner's
     // fifth refusal.
-    let c = unsafe { poll_one(ring, r, sqe(azos_ipc::io_ring::OP_WRITE_GPIO, 7, 1, 0)) };
+    let c = unsafe { poll_call(ring, r, 0x77, &[sensor_read_hdr()]) };
     assert_eq!(done(c).1, CQE_F_REFUSED);
     assert_eq!(typed_seen().len(), 4, "the poller's refusal was charged to the poller, not the owner");
 }
 
-/// **The actuation gate per entry under SQPOLL.** A motor entry the poller
-/// runs under a latched e-stop holds both wheels at duty 0 and completes
-/// refused, as the submitted entry does.
+/// **The actuation gate per entry under SQPOLL.** Motor entries the poller
+/// runs under a latched e-stop hold both wheels at duty 0 and are answered
+/// `REFUSED`, as the submitted entries are; released, the poller's entry is
+/// the OWNER's command at the effect gate.
 #[test]
 fn a_poller_motor_entry_under_a_latched_estop_holds_both_wheels_at_duty_zero() {
     let _g = serial();
     let (_s, _p, _f, owner, ring, r) = polled_ring();
     azos_sched::scheduler::shim_set_task_filter(owner, Some(SyscallFilter::disabled()));
-    grant_dev(owner, azos_devif::key::MOTOR, 0, CapPerms::RW);
-    grant_dev(owner, azos_devif::key::MOTOR, 1, CapPerms::RW);
+    let eps = [
+        grant_ep(owner, azos_devif::key::MOTOR, 0, CapPerms::RW, 0),
+        grant_ep(owner, azos_devif::key::MOTOR, 1, CapPerms::RW, 0),
+    ];
     wheels();
+    let _gate = RingGate;
+    ring_gate_seen();
+    crate::motor_host::set_effect_gate(ring_gate);
     ESTOP.store(true, Ordering::SeqCst);
-    let c = unsafe { poll_one(ring, r, sqe(OP_MOTOR_SPEED, 50, 50, 0)) };
-    assert_eq!(done(c), (Errno::EAGAIN.to_syscall_ret() as i32, CQE_F_REFUSED));
+    for ep in eps {
+        let c = unsafe { poll_call(ring, r, ep, &[motor_speed_hdr(), 50]) };
+        assert_eq!(done(c), (0, 0));
+        assert_eq!(unsafe { window(ring, 0) }[1], azos_devif::outcome::REFUSED as u64);
+    }
     let duties: Vec<u32> = pwm_calls().iter().filter(|c| c.0 == PwmOp::SetDutyPct).map(|c| c.2).collect();
     assert_eq!(duties, vec![0, 0], "a wheel moved under a latched e-stop");
+    ESTOP.store(false, Ordering::SeqCst);
+    let c = unsafe { poll_call(ring, r, eps[0], &[motor_speed_hdr(), 50]) };
+    assert_eq!(done(c), (0, 0));
+    assert_eq!(ring_gate_seen(), vec![(0, owner, 50, false)], "the poller's entry was not the owner's command");
+}
+
+/// [`poll_one`] for an `OP_CALL` of `words` on `ep`, in the window at 0.
+unsafe fn poll_call(ring: *mut IoRing, r: u32, ep: u32, words: &[u64]) -> CqEntry {
+    put_window(ring, 0, words);
+    poll_one(ring, r, sqe(azos_ipc::io_ring::OP_CALL, ep, 0, words.len() as u32))
 }
 
 // ── OVSwrap review F1: a gifted or stale `Cap<File>` through the poller ────
@@ -1347,65 +1280,6 @@ fn fd_owned_by_admits_only_the_stamped_owner() {
     assert!(!fd_owned_by(Some(7), 8, 0));
     assert!(!fd_owned_by(None, 7, 0));
     assert!(!fd_owned_by(Some(0), 0, 0), "the vacant marker matched itself");
-}
-
-// ── OVSwrap review F4: the I2C payload is read once ───────────────────────
-
-/// The ring page, for the probe below: it plays ring 3 writing its own buffer
-/// while the driver runs.
-static RACE_RING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-/// `(register seen first, register seen again)` by the probe.
-static REG_SEEN: Mutex<Vec<(u8, u8)>> = Mutex::new(Vec::new());
-
-/// An I2C driver that reads the register byte, lets "ring 3" rewrite the
-/// window under it, and reads the register byte again.
-fn racing_i2c_write(_bus: u8, _addr: u8, data: &[u8]) -> i32 {
-    // Volatile reads: `data` is a shared slice, so the compiler may otherwise
-    // reuse the first read for the second and hide exactly what this probes.
-    let first = unsafe { core::ptr::read_volatile(data.as_ptr()) };
-    let ring = RACE_RING.load(Ordering::SeqCst) as *mut IoRing;
-    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!((*ring).data_buf[0]), 0xEE) };
-    let again = unsafe { core::ptr::read_volatile(data.as_ptr()) };
-    REG_SEEN.lock().unwrap_or_else(|e| e.into_inner()).push((first, again));
-    0
-}
-
-/// **`OP_I2C_WRITE` hands the driver a copy of its payload, not the ring
-/// window.** `data[0]` is the register, and ring 3 maps the window RW: the
-/// probe driver reads the register, the window is rewritten (what ring 3 can
-/// do on another hart), and the driver reads the register again. Both reads
-/// must see the register submitted.
-///
-/// **Canary (by hand, 2026-10-02).** In `ioring_ops::i2c_write`, pass
-/// `core::slice::from_raw_parts(data, len)` to the driver instead of the stack
-/// copy: red on "the driver saw the register change under it", `(0x21, 0xee)`.
-#[test]
-fn an_i2c_write_entry_gives_the_driver_one_stable_copy_of_its_payload() {
-    struct ProbeGuard;
-    impl Drop for ProbeGuard {
-        fn drop(&mut self) {
-            azos_drv_bus::i2c::set_i2c_write_probe(None);
-            RACE_RING.store(0, Ordering::SeqCst);
-            REG_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        }
-    }
-    let _g = serial();
-    let (s, pt) = ring3();
-    let (cap, _va, ring) = create(pt);
-    let _p = ProbeGuard;
-    const BUS: u32 = 1;
-    const ADDR: u16 = 0x40;
-    grant_dev(s.tid, azos_devif::key::I2C, (BUS << 8) | ADDR as u32, CapPerms::RW);
-    RACE_RING.store(ring as usize, Ordering::SeqCst);
-    REG_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    azos_drv_bus::i2c::set_i2c_write_probe(Some(racing_i2c_write));
-    unsafe { (&mut (*ring).data_buf)[..3].copy_from_slice(&[0x21, 0x10, 0x20]) };
-    let mut e = sqe(azos_ipc::io_ring::OP_I2C_WRITE, BUS, 0, 3);
-    e.addr = ADDR;
-    let (_, c) = unsafe { submit(cap, ring, e) };
-    assert_eq!(done(c), (0, 0), "the write did not run");
-    let seen = REG_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    assert_eq!(seen, vec![(0x21, 0x21)], "the driver saw the register change under it");
 }
 
 /// **An op mask gates the ring's own ops and the entries it runs for its
@@ -1904,7 +1778,7 @@ fn a_file_entry_runs_inline_only_without_ioring_async_or_under_the_canary() {
 // One entry carries an IDL request on a kernel-hosted endpoint handle, and the
 // kernel answers it with the call's own resolve, mask, profile and dispatch
 // (`ioring_ops::idl_call`). The oracle is the call itself: `khost::serve` on
-// the same request, and, while they exist, the device entries it replaces.
+// the same request.
 
 /// Grant `tid` an endpoint to the kernel-hosted interface `key` for `badge`,
 /// with `perms` and the op mask `ops` (0: none), and answer its handle.
@@ -2051,13 +1925,13 @@ fn a_profile_without_the_sensor_interface_refuses_the_idl_entry() {
 }
 
 /// **The sensor read through the IDL entry is the call's**: the same reply
-/// words as `khost::serve` on the same request, and the same bytes the
-/// device entry put in the data buffer.
+/// words as `khost::serve` on the same request, and the encoders' bytes as the
+/// interface's record.
 ///
 /// **Canary.** Copy the reply's words from index 1 in `idl_call`: the status
 /// word differs from the call's.
 #[test]
-fn the_idl_sensor_read_answers_what_the_call_and_the_device_entry_answer() {
+fn the_idl_sensor_read_answers_what_the_call_answers() {
     let _g = serial();
     let (s, pt) = ring3();
     azos_robot::shim_set_encoder(1234, 5678);
@@ -2072,42 +1946,26 @@ fn the_idl_sensor_read_answers_what_the_call_and_the_device_entry_answer() {
     // The acquisition stamp is the read's own.
     oracle[4] = rep[4];
     assert_eq!(rep, oracle, "the IDL entry and the call disagree");
-
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_READ_SENSOR, enc, 0, 16)) };
-    assert_eq!(done(c), (16, 0));
-    let old: Vec<u8> = unsafe { (&(*ring).data_buf)[..16].to_vec() };
-    let new: Vec<u8> = [rep[5].to_ne_bytes(), rep[6].to_ne_bytes()].concat();
-    assert_eq!(old, new, "the device entry and the IDL entry read different bytes");
+    assert_eq!((rep[5] as i64, rep[6] as i64), (1234, 5678));
 }
 
-/// **Both wheels through two IDL entries in one submit are the device entry's
+/// **Both wheels through two IDL entries in one submit are the call's
 /// command, and the latch holds them the same way.** Driven: each wheel's
-/// `speed` reaches the effect gate as the owner's, writes its duty and names
-/// the owner as commander, exactly the PWM writes `OP_MOTOR_SPEED` made.
-/// Latched: both write duty 0; the device entry completed refused, the IDL
-/// entries answer `REFUSED` (served: the halt rule is the interface's answer).
-/// Each reply equals the register-form call's on the same state.
+/// `speed` writes its duty. Latched:
+/// both write duty 0 and the entries answer `REFUSED` (served: the halt rule
+/// is the interface's answer). Each reply equals the register-form call's on
+/// the same state.
 ///
-/// **Canary.** Make `MotorServer::speed` skip `wheel_speed` and write the
-/// channel with `motor_set_reporting` directly: the gate sees nothing and the
-/// commander is not named.
+/// **Canary.** Make `MotorServer::speed` answer `OK` whatever the motor
+/// layer said: the latched replies read `OK`.
 #[test]
-fn two_idl_motor_entries_command_what_the_device_entry_commanded() {
+fn two_idl_motor_entries_command_what_the_call_commands() {
     let _g = serial();
     let (s, pt) = ring3();
     let l = grant_ep(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW, 0);
     let r = grant_ep(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW, 0);
     wheels();
     let (cap, _va, ring) = create(pt);
-    let _gate = RingGate;
-    ring_gate_seen();
-    crate::motor_host::set_effect_gate(ring_gate);
-
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 30, 40, 0)) };
-    assert_eq!(done(c), (0, 0));
-    let old_pwm = pwm_calls();
-    let old_gate = ring_gate_seen();
-    clear_pwm_calls();
 
     unsafe {
         queue_call(ring, l, 0, &[motor_speed_hdr(), 30], 1);
@@ -2115,10 +1973,9 @@ fn two_idl_motor_entries_command_what_the_device_entry_commanded() {
     }
     let c = unsafe { submit_queued(cap, ring) };
     assert_eq!(c.iter().map(|c| (c.user_data, c.result, c.flags)).collect::<Vec<_>>(), vec![(1, 0, 0), (2, 0, 0)]);
-    assert_eq!(unsafe { (window(ring, 0)[..2].to_vec(), window(ring, 64)[..2].to_vec()) },
-               (vec![0, azos_devif::outcome::OK as u64], vec![0, azos_devif::outcome::OK as u64]));
-    assert_eq!(pwm_calls(), old_pwm, "the IDL entries wrote other duties than the device entry");
-    assert_eq!(ring_gate_seen(), old_gate, "the IDL entries reached the effect gate otherwise");
+    let ok = vec![0, azos_devif::outcome::OK as u64];
+    assert_eq!(unsafe { (window(ring, 0)[..2].to_vec(), window(ring, 64)[..2].to_vec()) }, (ok.clone(), ok));
+    assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 30), (PwmOp::SetDutyPct, CH[1], 40)]);
     if azos_limits::MOTOR_COMMANDER_EXIT_STOP {
         for id in 0..2 {
             assert_eq!(crate::motor_commander::commander(id), s.tid, "wheel {id} names no commander");
@@ -2126,10 +1983,6 @@ fn two_idl_motor_entries_command_what_the_device_entry_commanded() {
     }
 
     ESTOP.store(true, Ordering::SeqCst);
-    clear_pwm_calls();
-    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 60, 60, 0)) };
-    assert_eq!(done(c), (E_CONTAINED as i32, CQE_F_REFUSED));
-    let old_pwm = pwm_calls();
     clear_pwm_calls();
     unsafe {
         queue_call(ring, l, 0, &[motor_speed_hdr(), 60], 1);
@@ -2139,8 +1992,10 @@ fn two_idl_motor_entries_command_what_the_device_entry_commanded() {
     assert_eq!(c.iter().map(|c| (c.result, c.flags)).collect::<Vec<_>>(), vec![(0, 0), (0, 0)]);
     let refused = vec![0, azos_devif::outcome::REFUSED as u64];
     assert_eq!(unsafe { (window(ring, 0)[..2].to_vec(), window(ring, 64)[..2].to_vec()) }, (refused.clone(), refused));
-    assert_eq!(pwm_calls(), old_pwm, "the latch held the IDL entries otherwise");
     assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 0), (PwmOp::SetDutyPct, CH[1], 0)]);
+    for id in 0..2 {
+        assert!(matches!(azos_robot::motor_state(id), Some((_, 0))), "wheel {id} recorded a speed under the latch");
+    }
     assert_eq!(unsafe { window(ring, 0) }, served_reply(s.tid, l, azos_devif::key::MOTOR, &[motor_speed_hdr(), 60]));
 }
 

@@ -9,6 +9,13 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- The io_ring carries IDL calls: one entry kind, `OP_CALL`, names a
+  kernel-hosted endpoint and a message window in the ring's data buffer, and is
+  decided with the checks of `SYS_IPC_CALL` (the owner's profile, the handle in
+  the owner's table, the capability's op mask, the op's class) through the
+  interface's own dispatch. The seven device opcodes are deleted; `brain_client`
+  reads its sensors with one submit and sends its ring motor command as one
+  `speed` entry per wheel ([Documentation/ipc.md](Documentation/ipc.md)).
 - Updates and advisories on the device: `pkg outdated` asks the configured
   package source for its signed index (`INDEX.AZX`, verified like a package) and
   prints, per staged package, the installed and the available version and whether

@@ -498,6 +498,13 @@ pub fn current_task_tid() -> u32 {
     CURRENT_TASK_TID.load(Ordering::SeqCst)
 }
 
+/// The running task's slot and TID, as `azos_sched::current_task_slot`
+/// answers it: a slot only for a task [`idx_for_tid`] knows.
+pub fn current_task_slot() -> Option<(usize, u32)> {
+    let tid = current_task_tid();
+    idx_for_tid(tid).map(|i| (i, tid))
+}
+
 /// The real per-task window allocator, pulled unmodified — see
 /// [`process::shm_map_user`].
 #[path = "../../../../../../crates/core/sched/src/user_window.rs"]

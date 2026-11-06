@@ -163,7 +163,7 @@ A small set of operations is deliberately resolved without the containment step:
 releasing an object the caller holds (`get_uncontained`, as `io_ring_destroy_cap`
 does), and commanding a wheel (`Caller::holds` in
 `crates/core/syscall/src/khost.rs`, used by the `Motor` interface's per-wheel
-ops; the I/O ring's `OP_MOTOR_SPEED` likewise asks no containment). Destroying stays
+ops, from the call or from an I/O ring `OP_CALL`). Destroying stays
 live the way closing a socket does. Wheel commands are not refused one level up
 because the motor layer applies its own halt rule: while an emergency stop is
 latched or containment is active (`actuation_halt`), `motor_set_reporting`
@@ -224,8 +224,8 @@ topology declares an `envelope` (`Envelope::Full`, `Cautious`, `Slow`,
 kernel keeps, per task, a label of the principal kinds whose data the task is
 serving or has read (`label` in `crates/core/ipc/src/endpoint.rs`), and per
 kind the most restrictive envelope any class declares for it. When a ring-3
-task issues a motor effect through the `Motor` interface (not the I/O ring's
-`OP_MOTOR_SPEED`, which bypasses the effect gate), the effect gate (`issue` in
+task issues a motor effect through the `Motor` interface (a call or an I/O ring
+`OP_CALL`), the effect gate (`issue` in
 `crates/core/actuation/src/effect_gate.rs`) asks `provenance_of(tid)` for the
 label and the meet of its envelopes, the most restrictive one, and applies that
 level before anything else. At CAUTIOUS or SLOW, a motor effect whose duty

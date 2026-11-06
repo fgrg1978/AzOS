@@ -34,11 +34,9 @@ neither linked nor installed and a motor op goes straight to the motor layer.
 The kernel's own motor writes (the real-time motor task, the PID loop) are not
 ring-3 ops and do not pass through it; they are recorded after the write, on a
 change of duty, at most four records per wheel per second
-(`record_motor_change`, `crates/domains/robot/safety-core/src/actuation.rs`). Neither
-does the I/O ring's `OP_MOTOR_SPEED` entry (`ioring_ops::motor_wheel`): it calls
-the motor layer directly, so the motor gate, the halt rule and the speed
-envelope apply to it, but not the write-ahead record, the hold, the deadline
-watch or the provenance meet.
+(`record_motor_change`, `crates/domains/robot/safety-core/src/actuation.rs`). A
+motor command submitted on the I/O ring is an `OP_CALL` of the `Motor`
+interface: the same op as the call, through the gate.
 
 An effect is described by an `Effect`: a kind, a class, a subject (the device;
 for a motor, the wheel), the asking task id, and two kind-specific arguments (for
@@ -138,7 +136,7 @@ Source: `crates/core/actuation/src/effect_gate.rs` (`Effect`, `Class`,
 `crates/core/actuation/src/effect.rs`, `crates/core/ext-api/src/lib.rs`,
 `crates/drivers/kill-switch/src/lib.rs`,
 `crates/core/syscall/src/motor_host.rs`, `crates/core/syscall/src/ioring_ops.rs`
-(`motor_wheel`), `crates/drivers/soc/src/effect.rs`,
+(`idl_call`), `crates/drivers/soc/src/effect.rs`,
 `config/subsys/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).
 
 ## Write-ahead receipts and the safety reserve
@@ -250,7 +248,7 @@ could not be done.
 **The hold.** From the drive on, the device is **held**. A further reversible
 effect through the gate is refused with a receipt (`Why::Held`,
 `Rule::SafeState`) and only stops pass; the motor writes that bypass the gate
-(the kernel's control loop, the I/O ring's `OP_MOTOR_SPEED`) do not consult the
+(the kernel's control loop) do not consult the
 hold. A stop does not lift the hold, from whichever path: a device that stalled
 once is not trusted again because somebody told it to stop. The hold is a time,
 not a bit: it records when the device was last driven, and lasts at least
@@ -301,7 +299,7 @@ after it. A warrant can be made conditional on one with the `RECEIPT` caveat
 ([capabilities.md](capabilities.md#caveats)), so the kernel can ask at the point
 of use "did this device stop in the last 200 ms, and has nothing moved it since".
 Only effect records the gate commits are receipts: a write that bypasses the
-gate (the kernel's control loop, the I/O ring's `OP_MOTOR_SPEED`, the e-stop's
+gate (the kernel's control loop, the e-stop's
 stop hooks) leaves none, so it neither satisfies nor contradicts a caveat.
 
 **The index.** The recorder keeps the time of the newest receipt of each device

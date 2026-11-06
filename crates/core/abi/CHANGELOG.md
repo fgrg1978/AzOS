@@ -9,11 +9,18 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ### Changed
 
+- The io_ring layout is version 3 (`IO_RING_VERSION`): `OP_CALL` (14) carries an
+  IDL call on a kernel-hosted endpoint in a message window of the data buffer
+  (`CALL_WORDS`, `CALL_WINDOW`), and the device opcodes are gone (below).
 - `CapHandle` is `kind 6 | generation 16 | slot 10`. The rights left the handle
   (`CAP_INFO_QUERY` reads them), so the generation is the slot word's whole field.
 
 ### Removed
 
+- The io_ring device opcodes `OP_READ_SENSOR` (1), `OP_WRITE_GPIO` (2),
+  `OP_READ_GPIO` (3), `OP_I2C_READ` (4), `OP_I2C_WRITE` (5), `OP_PWM_SET` (6) and
+  `OP_MOTOR_SPEED` (7): a device is an `OP_CALL` of its interface. The numbers
+  now answer `-ENOSYS`.
 - The absolute-path ops of the domain: `DOMAIN_STAT` (0x500D), `DOMAIN_READDIR`
   (0x500E), `DOMAIN_STATFS` (0x500F), `DOMAIN_MKDIR` (0x5614), `DOMAIN_UNLINK`
   (0x5615), `DOMAIN_RMDIR` (0x5616), `DOMAIN_RENAME` (0x5617) and

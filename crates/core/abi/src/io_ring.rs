@@ -80,20 +80,6 @@ pub const OP_CALL: u16 = 14;
 pub const CALL_WORDS: usize = crate::ipc_msg::MSG_WORDS_MAX;
 /// Bytes of an [`OP_CALL`] message window.
 pub const CALL_WINDOW: usize = CALL_WORDS * 8;
-/// Read a sensor into the data buffer.
-pub const OP_READ_SENSOR: u16 = 1;
-/// Write a GPIO pin.
-pub const OP_WRITE_GPIO: u16 = 2;
-/// Read a GPIO pin.
-pub const OP_READ_GPIO: u16 = 3;
-/// I2C read into the data buffer.
-pub const OP_I2C_READ: u16 = 4;
-/// I2C write from the data buffer.
-pub const OP_I2C_WRITE: u16 = 5;
-/// Set a PWM channel duty.
-pub const OP_PWM_SET: u16 = 6;
-/// Set a wheel speed (through the actuation gate).
-pub const OP_MOTOR_SPEED: u16 = 7;
 /// Queue a send on a socket: `param0` is a `Cap<Socket>` handle (WRITE), as the
 /// `NODE_SEND` op takes it; completes `CQE_F_QUEUED` without waiting.
 pub const OP_NET_SEND: u16 = 8;

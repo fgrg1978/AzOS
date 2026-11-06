@@ -1652,7 +1652,8 @@ const RING_CQ_ENTRIES: usize = 1040;
 /// `CqEntry::flags` bit `CQE_F_REFUSED`: the kernel refused the entry.
 const RING_CQE_F_REFUSED: u32 = 1;
 const RING_OP_NOP: u16 = 0;
-const RING_OP_READ_SENSOR: u16 = 1;
+/// `OP_NET_RECV`: `NODE_RECV` on a socket handle.
+const RING_OP_NET_RECV: u16 = 9;
 
 /// Write SQE `idx` on the page at `va`: opcode @0, param0..2 @4/8/12,
 /// user_data @24 (`io_ring::SqEntry`).
@@ -1683,13 +1684,13 @@ unsafe fn ring_cqe(va: usize, idx: usize) -> (u64, i32, u32) {
 /// tagged with a value only this task wrote comes back in the CQE at that
 /// address, so the page is mapped writable, readable, and is the kernel's.
 ///
-/// IPCTEST's seccomp row does not list the `sensor` interface, and this task
-/// holds no sensor endpoint. A sensor read submitted through the ring
-/// must complete **refused by the profile**: `-EPERM` with the refusal flag,
-/// while the submit itself answers 1. `-ECAPPERMS` (-201) there would mean the
-/// profile was never asked per entry and only the capability stopped it —
-/// Linux's `io_uring` gap. Canary for the scenario: list the `sensor`
-/// interface in the row, and this line reads -201.
+/// IPCTEST's seccomp row does not list the `NODE_RECV` op, and this task
+/// holds no socket. A receive submitted through the ring must complete
+/// **refused by the profile**: `-EPERM` with the refusal flag, while the
+/// submit itself answers 1. `-ECAPPERMS` (-201) there would mean the profile
+/// was never asked per entry and only the capability stopped it — Linux's
+/// `io_uring` gap. Canary for the scenario: list `NODE_RECV` in the row's ops,
+/// and this line reads -201.
 fn phase_c_ring(ring: u32, va: usize) {
     let aligned = va != 0 && va % 4096 == 0;
     expect_true(b"C/owner ioring_create_typed wrote a page address", aligned, va as isize);
@@ -1709,13 +1710,13 @@ fn phase_c_ring(ring: u32, va: usize) {
         expect_eq(b"C/owner NOP not refused", flags as isize, 0);
         core::ptr::write_volatile((va + RING_CQ_HEAD) as *mut u32, 1);
 
-        ring_put_sqe(va, 1, RING_OP_READ_SENSOR, 1, 0, 16, 0x5E45);
+        ring_put_sqe(va, 1, RING_OP_NET_RECV, 1, 0, 16, 0x5E45);
         core::ptr::write_volatile((va + RING_SQ_TAIL) as *mut u32, 2);
-        expect_eq(b"C/owner ioring_submit_typed sensor", sys::ioring_submit_typed(ring), 1);
+        expect_eq(b"C/owner ioring_submit_typed recv", sys::ioring_submit_typed(ring), 1);
         let (tag, result, flags) = ring_cqe(va, 1);
-        expect_true(b"C/owner sensor completion tag", tag == 0x5E45, tag as isize);
-        expect_eq(b"C/owner sensor entry refused by seccomp -EPERM", result as isize, E_EPERM);
-        expect_eq(b"C/owner sensor entry carries CQE_F_REFUSED", (flags & RING_CQE_F_REFUSED) as isize, 1);
+        expect_true(b"C/owner recv completion tag", tag == 0x5E45, tag as isize);
+        expect_eq(b"C/owner recv entry refused by seccomp -EPERM", result as isize, E_EPERM);
+        expect_eq(b"C/owner recv entry carries CQE_F_REFUSED", (flags & RING_CQE_F_REFUSED) as isize, 1);
         core::ptr::write_volatile((va + RING_CQ_HEAD) as *mut u32, 2);
     }
 }

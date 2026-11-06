@@ -2449,6 +2449,7 @@ pub fn reboot_orderly() -> ! {
 /// `SYS_PWM_*_TYPED`) checks it, and so does `sys_drv_invoke`. The topology
 /// declares `pwm.4` for autorun, and `pwm.0` under `cap-refusal-canary`, which
 /// is channel 0 and motor 0's: the guard is what keeps that grant off the wheel.
+#[cfg(feature = "board-io")]
 pub(crate) fn pwm_channel_is_motor_bound(ch: u32) -> bool {
     azos_robot::motor::pwm_channel_motor_id(ch).is_some()
 }

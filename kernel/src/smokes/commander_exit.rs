@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Wave 15 ktest (owner decision): a task that dies commanding a wheel leaves
-//! it at a SAFE STOP. A probe task drives wheel 0 at 30 % through the
-//! kernel's io_ring motor entry (`KERNEL_IORING_OPS.motor_wheel`, as its own
-//! ring's owner), which is the `Motor` interface's `speed` op
-//! (`motor_host::wheel_speed`: the effect gate, the motor layer, the
-//! commander note), and returns; its exit hook (`kernel/src/boot/sched.rs`)
-//! must take the wheel and have the motor layer confirm duty 0. A ring entry
-//! that skipped that path names no commander, and the test reports `not ok`. The hook also writes the
+//! it at a SAFE STOP. A probe task drives wheel 0 at 30 % through the `Motor`
+//! interface's `speed` path (`motor_host::wheel_speed`: the effect gate, the
+//! motor layer, the commander note; the call and an io_ring `OP_CALL` both
+//! end there), and returns; its exit hook (`kernel/src/boot/sched.rs`) must
+//! take the wheel and have the motor layer confirm duty 0. A command that
+//! skipped that path names no commander, and the test reports `not ok`. The hook also writes the
 //! `SAFETY_ESTOP` / action 14 record and its `[MOTOR] commander ... SAFE
 //! STOP` line. Canary `commander-exit-nostop-canary`: the wheel is taken and
 //! never stopped, so the test reports `not ok`.
@@ -32,7 +31,7 @@ const WHEEL: u32 = 0;
 /// Mid-band: the probe only writes the wheel and returns.
 const PROBE_PRIO: u32 = 10;
 static TID: AtomicU32 = AtomicU32::new(0);
-/// The probe's ring entry completed (not refused) and left the probe named as
+/// The probe's command was taken (not refused) and left the probe named as
 /// the wheel's commander.
 static NOTED: AtomicBool = AtomicBool::new(false);
 /// The last task whose exit hook has run its releases.
@@ -55,8 +54,8 @@ pub(crate) fn note_stopped(tid: u32) {
 
 fn commander(_: usize) {
     let me = azos_sched::current_task_tid();
-    let done = (azos_syscall::ioring_ops::KERNEL_IORING_OPS.motor_wheel)(me, WHEEL, 30);
-    let noted = matches!(done, Ok(rc) if rc >= 0) && azos_syscall::motor_commander::commander(WHEEL) == me;
+    let done = azos_syscall::motor_host::wheel_speed(WHEEL, me, 30);
+    let noted = matches!(done, Ok((rc, _)) if rc >= 0) && azos_syscall::motor_commander::commander(WHEEL) == me;
     NOTED.store(noted, Ordering::Release);
     TID.store(me, Ordering::Release);
 }
@@ -70,7 +69,7 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("the commander probe never ran", || TID.load(Ordering::Acquire) != 0)?;
         let tid = TID.load(Ordering::Acquire);
         if !NOTED.load(Ordering::Acquire) {
-            return Err("the probe's 30 % ring entry named no commander (refused, or it skipped the typed op's path)");
+            return Err("the probe's 30 % command named no commander (refused, or it skipped the typed op's path)");
         }
         crate::ktest::wait("the commander's exit never took its wheel", || {
             azos_syscall::motor_commander::last_exit_stop().0 == tid

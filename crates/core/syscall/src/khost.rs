@@ -159,17 +159,25 @@ pub fn caller(tid: u32, ep_raw: u32) -> Option<Caller> {
 /// follow-up when such an interface is hosted.
 pub fn admit(tid: u32, ep_raw: u32, header: u64) -> Option<Caller> {
     let h = CapHandle(ep_raw);
-    let ops = azos_ipc::cap_store::read_table(tid, |t| t.hosted_op_mask(h))?;
     let op = azos_idl::header_op(header);
-    if ops != u64::MAX && (op == 0 || op >= 64 || ops >> op & 1 == 0) {
+    // One read of the table for the mask and the caller.
+    let who = azos_ipc::cap_store::read_table(tid, |t| {
+        let ops = t.hosted_op_mask(h);
+        if ops != u64::MAX && (op == 0 || op >= 64 || ops >> op & 1 == 0) {
+            return Some(None);
+        }
+        let (_, rights, _) = t.peek_raw(h)?;
+        let badge = t.ext_of(h).map_or(0, |e| e.badge);
+        Some(Some(Caller { tid, badge, rights }))
+    })??;
+    if who.is_none() {
         crate::handlers::note_typed_denial_for(
             tid,
             azos_abi::cap::ty::ENDPOINT,
             azos_ipc::cap::CapError::MissingPerms,
         );
-        return None;
     }
-    caller(tid, ep_raw)
+    who
 }
 
 /// One hosted interface: its host key, whether its requests may carry

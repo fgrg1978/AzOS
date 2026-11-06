@@ -2,16 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The kernel's `io_ring` op table.
 //!
-//! Each entry calls what the matching typed syscall calls once that call has
-//! resolved its capability: the sensor read is `handlers::sensor_read_into`,
-//! a wheel is `motor_host::wheel_speed` (the effect gate, the motor layer,
-//! the commander note), a PWM duty or
-//! GPIO pin goes through the same motor-binding guard and driver call. There
-//! is no second implementation of any operation. What the typed call's
-//! resolution decides is decided per entry by `io_ring::dispatch_sqe` instead:
-//! the submitter's seccomp verdict (`syscall_allowed` below), its Domain's
-//! pledge mask (`pledge_allowed`), the capability
-//! of the ring's owner, and containment for a write (`write_contained`).
+//! Each entry calls what the matching typed call calls once that call has
+//! resolved its capability: a device call (`OP_CALL`) is the kernel-hosted
+//! interface's own dispatch behind `SYS_IPC_CALL`'s resolve and mask
+//! (`idl_call`), a socket or file entry the op of its handle. There is no
+//! second implementation of any operation. What the trap decides is decided
+//! per entry by `io_ring::dispatch_sqe` instead: the submitter's seccomp
+//! verdict (`syscall_allowed` below), its Domain's pledge mask
+//! (`pledge_allowed`), the capability of the ring's owner, and containment for
+//! a write (`write_contained`).
 //!
 //! The kernel registers the table once at boot, before any task runs:
 //! `azos_ipc::io_ring::io_ring_register_ops(&KERNEL_IORING_OPS)`.
@@ -21,11 +20,8 @@
 //! runs with no lock of the ring table held.
 
 use azos_abi::cap::ty;
-#[cfg(not(feature = "use-robot"))]
-use crate::no_robot::{robot as azos_robot};
 use azos_abi::error::Errno;
 use azos_ipc::io_ring::{BlockStart, IoRingOps, OpResult, PinnedBuf, CALL_WORDS, IO_ERR_INVALID_PARAM};
-use azos_robot::MOTOR_REFUSED_HALTED;
 
 /// The table `io_ring_register_ops` installs.
 pub static KERNEL_IORING_OPS: IoRingOps = KERNEL_IORING_OPS_TABLE;
@@ -38,13 +34,6 @@ pub const KERNEL_IORING_OPS_TABLE: IoRingOps = IoRingOps {
     op_allowed,
     pledge_allowed,
     write_contained,
-    read_sensor,
-    write_gpio,
-    read_gpio,
-    i2c_read,
-    i2c_write,
-    pwm_set,
-    motor_wheel,
     net_send,
     net_recv,
     note_denial,
@@ -211,171 +200,23 @@ fn write_contained() -> bool {
     azos_ipc::cap::degraded_active()
 }
 
-/// The `Sensor` interface's read (with no size limit but the window's), into
-/// the ring's buffer. The answer is the
-/// typed call's: the byte count, 0 when a scan or frame is not ready, -1 for a
-/// buffer too small or a sensor not ready.
-fn read_sensor(sensor_type: u32, buf: *mut u8, len: usize) -> OpResult {
-    // SAFETY: `dispatch_sqe` bounded `[buf, buf + len)` inside the ring's data
-    // buffer. That buffer is NOT private to the pass: the whole ring page is
-    // mapped user RW (`sys_ioring_create_typed`), so ring 3 can write it while
-    // this runs (OVSwrap review F4; this comment used to claim nothing else
-    // writes it). Every op on the window treats it as payload: a read lands
-    // bytes in it, a write copies bytes out of it once, and nothing here reads
-    // a byte back to decide anything — the one op that interprets its payload,
-    // `i2c_write`, copies it to the stack first. Ring 3 racing its own buffer
-    // can corrupt only its own data.
-    let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-    let n = crate::handlers::sensor_read_into(sensor_type as u64, len as u64, |data, _| {
-        match out.get_mut(..data.len()) {
-            Some(dst) => {
-                dst.copy_from_slice(data);
-                data.len() as i64
-            }
-            None => -1,
-        }
-    });
-    Ok(n.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
-}
-
-/// A `Gpio` refusal as the ring answers it: a controller that is not
-/// registered `ENODEV`, a pin past its last `EINVAL`, both refused before any
-/// driver, as the interface's `NO_RESOURCE` and `BAD_ARGUMENT` are.
-fn gpio_refusal(code: u32) -> i32 {
-    errno(if code == azos_devif::outcome::NO_RESOURCE { Errno::ENODEV } else { Errno::EINVAL })
-}
-
-/// `SYS_GPIO_WRITE_TYPED` below its capability: `badge` names the pin on its
-/// controller (`Gpio`'s badge, `(ctrl, pin)`); a pin a motor's H-bridge or the
-/// safety core keeps is refused with the typed call's `E_PERM`, then the
-/// level's low bit is written. A driver fault is `-EIO`.
-fn write_gpio(badge: u32, value: u32) -> OpResult {
-    let p = crate::devices::GpioPin::of(badge).map_err(gpio_refusal)?;
-    if p.held(azos_sched::current_task_tid(), azos_devif::GpioIdl::OP_WRITE as u32).is_some() {
-        return Err(crate::handlers::E_PERM as i32);
-    }
-    Ok(if p.write(value).is_ok() { 0 } else { errno(Errno::EIO) })
-}
-
-/// `SYS_GPIO_READ_TYPED` below its capability: 0 or 1; the refusals of
-/// [`write_gpio`], and `-EIO` for a driver fault.
-fn read_gpio(badge: u32) -> OpResult {
-    let p = crate::devices::GpioPin::of(badge).map_err(gpio_refusal)?;
-    Ok(p.read().map_or(errno(Errno::EIO), |v| v as i32))
-}
-
-/// Largest I2C transfer one ring entry carries: the ring's own bound (its
-/// data buffer is a page), not the interface's inline one
-/// (`azos_devif::i2c::MAX_BYTES`).
-const I2C_RING_MAX_BYTES: usize = 256;
-
-/// An I2C read below its capability: the length bound, the driver read into
-/// the ring's buffer, `-EIO` for a driver fault.
-fn i2c_read(bus: u32, addr: u32, reg: u32, buf: *mut u8, len: usize) -> OpResult {
-    if len == 0 || len > I2C_RING_MAX_BYTES {
-        return Err(errno(Errno::EINVAL));
-    }
-    // SAFETY: bounded by `dispatch_sqe`, as in `read_sensor`.
-    let dst = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-    // `dispatch_sqe` narrowed all three to `u8` before the capability check.
-    let n = azos_drv_bus::i2c::i2c_read(bus as u8, addr as u8, reg as u8, dst);
-    Ok(if n < 0 { errno(Errno::EIO) } else { n })
-}
-
-/// `SYS_I2C_WRITE_TYPED` below its capability: the same length bound,
-/// `data[0]` the register, `-EIO` for a driver fault.
-fn i2c_write(bus: u32, addr: u32, data: *const u8, len: usize) -> OpResult {
-    if len == 0 || len > I2C_RING_MAX_BYTES {
-        return Err(errno(Errno::EINVAL));
-    }
-    // `data[0]` is the register and the driver may read it more than once;
-    // ring 3 can rewrite the window during the pass (see `read_sensor`), so
-    // the payload is copied to the stack ONCE and the driver sees only the
-    // copy (OVSwrap review F4): one register, one value, whatever ring 3 does.
-    let mut bounce = [0u8; I2C_RING_MAX_BYTES];
-    // SAFETY: bounded by `dispatch_sqe`, as in `read_sensor`; `len` is at most
-    // `I2C_RING_MAX_BYTES` (checked above). A raw copy, never a slice over
-    // the shared window.
-    unsafe { core::ptr::copy_nonoverlapping(data, bounce.as_mut_ptr(), len) };
-    let rc = azos_drv_bus::i2c::i2c_write(bus as u8, addr as u8, &bounce[..len]);
-    Ok(if rc == 0 { 0 } else { errno(Errno::EIO) })
-}
-
-/// `SYS_PWM_SET_DUTY_PCT_TYPED` below its capability: a channel bound to a
-/// motor is refused with the typed call's `E_PERM` (the raw interface never
-/// reaches a wheel past its gate), then the duty is written.
-fn pwm_set(channel: u32, duty_pct: u32) -> OpResult {
-    if crate::handlers::pwm_channel_is_motor_bound(channel) {
-        return Err(crate::handlers::E_PERM as i32);
-    }
-    // Without `board-io` there is no PWM driver: the op answers as a read of a
-    // sensor that is not there (`sensor_read_into`).
-    #[cfg(not(feature = "board-io"))]
-    {
-        let _ = duty_pct;
-        Ok(-1)
-    }
-    #[cfg(feature = "board-io")]
-    {
-        let rc = azos_drv_actuator::pwm::pwm_set_duty_pct(channel, duty_pct);
-        Ok(if rc == 0 { 0 } else { errno(Errno::EIO) })
-    }
-}
-
-/// One wheel, as `motor.speed` commands it, for the ring's owner: the same
-/// call (`motor_host::wheel_speed`), so the effect gate's record, hold,
-/// deadline watch and provenance, the motor layer's halt rule and envelope,
-/// and the commander note that stops the wheel when `owner_tid` dies all
-/// apply as they do to the typed op. A command the halt rule refuses has
-/// still written duty 0 and, like one the effect gate refuses (nothing
-/// reached the wheel), answers the typed call's refusal: `-EAGAIN`. An image
-/// no effect provider gives wheels answers `-ENODEV`.
-fn motor_wheel(owner_tid: u32, id: u32, speed_pct: u32) -> OpResult {
-    use crate::motor_host::Unissued;
-    let (rc, applied) = match crate::motor_host::wheel_speed(id, owner_tid, speed_pct) {
-        Ok(r) => r,
-        Err(Unissued::Refused) => return Err(crate::handlers::E_CONTAINED as i32),
-        Err(Unissued::NoDevice) => return Err(Errno::ENODEV.to_syscall_ret() as i32),
-    };
-    // The applied duty comes out of the write itself; see the marker in
-    // `MotorServer::speed` for why it is not read back afterwards.
-    #[cfg(feature = "actuation-smoke")]
-    {
-        let duty = applied.map(|d| d as i64).unwrap_or(-1);
-        azos_drv_sys::kprintln!(
-            "[ACTSMOKE] ioring motor id={} ask={} duty={} rc={}",
-            id, speed_pct, duty, rc);
-    }
-    #[cfg(not(feature = "actuation-smoke"))]
-    let _ = applied;
-    if rc == MOTOR_REFUSED_HALTED {
-        Err(crate::handlers::E_CONTAINED as i32)
-    } else {
-        Ok(rc)
-    }
-}
-
 /// `OP_CALL`: `SYS_IPC_CALL` on an endpoint the kernel hosts, for the ring's
 /// owner and with the call's own functions in the call's order (the register
 /// form, `dispatch::fast_ipc_call_arm`): the handle resolved in the owner's
-/// table, a refusal recorded against the owner (the pass may be the SQ
-/// poller's, so neither the current task's resolve cache nor its denial
-/// bucket is the owner's), `khost::admit` (the capability's op mask), the
+/// table (through its resolve cache when the owner runs the pass itself), a
+/// refusal recorded against the owner, `khost::admit` (the capability's op
+/// mask), the
 /// owner's profile listing the interface, and the hosted row's IDL dispatch
 /// (`khost::serve_admitted`), which checks the op's class against the
 /// capability's rights. A task-hosted endpoint is not served from a pass:
 /// `-ENOSYS`.
 fn idl_call(owner_tid: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mut [u64; CALL_WORDS]) -> Result<(), i32> {
     use azos_abi::ipc_msg::{MsgDesc, MSG_VERSION};
-    let dest = match azos_ipc::endpoint::endpoint_resolve(owner_tid, ep) {
-        Ok(d) => d,
-        Err(e) => {
-            if let azos_ipc::endpoint::EndpointCapError::Cap(e) = e {
-                crate::handlers::note_typed_denial_for(owner_tid, ty::ENDPOINT, e);
-            }
-            return Err(errno(Errno::ECAPPERMS));
-        }
+    let dest = match azos_sched::current_task_slot() {
+        Some((idx, tid)) if tid == owner_tid => crate::handlers::endpoint_dest_at(idx, owner_tid, ep),
+        _ => owner_dest(owner_tid, ep),
     };
+    let Some(dest) = dest else { return Err(errno(Errno::ECAPPERMS)) };
     let Some(key) = azos_ipc::endpoint::host_key(dest.owner) else { return Err(errno(Errno::ENOSYS)) };
     let Some(who) = crate::khost::admit(owner_tid, ep, req[0]) else { return Err(errno(Errno::ECAPPERMS)) };
     if !iface_allowed(owner_tid, key) {
@@ -389,6 +230,21 @@ fn idl_call(owner_tid: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mu
         *o = *w;
     }
     Ok(())
+}
+
+/// The resolve of a pass the owner does not run (the SQ poller's): neither the
+/// running task's resolve cache nor its denial bucket is the owner's.
+#[cold]
+fn owner_dest(owner_tid: u32, ep: u32) -> Option<azos_ipc::endpoint::Dest> {
+    match azos_ipc::endpoint::endpoint_resolve(owner_tid, ep) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            if let azos_ipc::endpoint::EndpointCapError::Cap(e) = e {
+                crate::handlers::note_typed_denial_for(owner_tid, ty::ENDPOINT, e);
+            }
+            None
+        }
+    }
 }
 
 /// `NODE_SEND` on a ring (K1): the `Cap<Socket>` handle resolved in the

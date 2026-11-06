@@ -151,7 +151,7 @@ mod ring {
     use crate::ioring_ops::KERNEL_IORING_OPS;
     use azos_ipc::io_ring::{
         self as io, CqEntry, IoRing, SqEntry, CQE_F_REFUSED, IO_ERR_PLEDGE, IO_ERR_SECCOMP, OP_BLOCK_WRITE, OP_FILE_READ,
-        OP_FILE_WRITE, OP_FSYNC, OP_MOTOR_SPEED, OP_NET_RECV, OP_NET_SEND, OP_NOTIFY_WAIT, OP_TIMER, RING_CQ_SIZE, RING_SQ_SIZE,
+        OP_CALL, OP_FILE_WRITE, OP_FSYNC, OP_NET_RECV, OP_NET_SEND, OP_NOTIFY_WAIT, OP_TIMER, RING_CQ_SIZE, RING_SQ_SIZE,
     };
 
     fn sqe(opcode: u16) -> SqEntry {
@@ -238,7 +238,7 @@ mod ring {
         // Giving up block/wake takes the device entries and the waits with it.
         let keep = pledge_class(CLASS_READ);
         assert_eq!(pledge_call(u64::from(keep)), i64::from(keep | PLEDGE_ALWAYS));
-        assert!(refused(all(OP_MOTOR_SPEED)), "a device entry is an IPC call");
+        assert!(refused(all(OP_CALL)), "a device entry is an IPC call");
         assert!(refused(all(OP_BLOCK_WRITE)), "block entry");
         assert!(refused(all(OP_TIMER)), "timer");
         assert!(refused(all(OP_NOTIFY_WAIT)), "wait");

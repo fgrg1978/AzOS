@@ -10,10 +10,6 @@
 //! the kernel or a ring-3 driver serves it.
 
 pub use azos_devif::*;
-/// The request header word of an op (`<Name>Idl::ID`, `LEVEL`, `OP_*`), for a
-/// call that travels as words of its own: an io_ring `OP_CALL`
-/// (`crate::ioring::Ring::push_call`).
-pub use azos_idl::header;
 
 use crate::{cap_lookup_host, fast_ipc_call_ep_status, ipc_call_v2};
 
@@ -80,6 +76,13 @@ pub fn value<T>(r: azos_idl::Result<Out<T>>) -> Result<T, u32> {
         Ok(o) => Err(o.code),
         Err(_) => Err(outcome::NO_SERVER),
     }
+}
+
+/// The request header word of an op (`<Name>Idl::ID`, `LEVEL`, `OP_*`), for a
+/// call that travels as words of its own: an io_ring `OP_CALL`
+/// (`crate::ioring::Ring::push_call`).
+pub const fn header(id: u32, level: u16, op: u16) -> u64 {
+    azos_idl::header(id, level, op)
 }
 
 /// [`value`] for a reply that came back as words: the message window of an
@@ -199,7 +202,7 @@ pub fn brain_pk_read(ep: u32) -> Result<Option<[u8; linkkey::KEY_WORDS * 8]>, u3
 /// copied into `buf` (as far as it fits) and the sample, with its acquisition
 /// stamp on the clock [`crate::vdso_now_ns`] reads, is returned. `Err` is the
 /// outcome: `NOT_READY` when the driver has nothing yet, `UNSUPPORTED` for the
-/// LiDAR and the camera (a scan travels on the io_ring's `READ_SENSOR` op), `DENIED`
+/// LiDAR and the camera (their records do not fit a reply), `DENIED`
 /// for a capability without `READ`, `NO_SERVER` when the call did not reach the
 /// kernel's interface.
 pub fn sensor_read(ep: u32, buf: &mut [u8]) -> Result<Sample, u32> {

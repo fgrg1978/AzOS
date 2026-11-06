@@ -285,8 +285,8 @@ fn toward_safe(dir: u32, pct: u32) -> bool {
 
 /// One wheel's `speed` op for task `tid`: 0 coasts, anything else drives
 /// forward. **The one path of a speed command from ring 3**: the `Motor`
-/// interface's `speed` and the io_ring's `OP_MOTOR_SPEED` entry
-/// (`ioring_ops::motor_wheel`) both come here. The effect gate first (the
+/// interface's `speed`, called or submitted as an io_ring `OP_CALL`, comes
+/// here. The effect gate first (the
 /// write-ahead record, a held wheel's refusal, the deadline watch, the
 /// provenance of `tid`), then the motor layer with its halt rule and
 /// envelope, then the commander note that lets `tid`'s exit stop the wheel

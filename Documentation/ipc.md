@@ -474,14 +474,14 @@ submission entries, advances `sq_tail`, and calls `SYS_RING_ENTER(a0 = handle)`
 | `CQ_ENTRIES` 1040 | 32 x 16 | completion queue (`CQ_SIZE` = 32 entries) |
 | `DATA` 1552 | 2048 | shared data buffer (`DATA_SIZE`) |
 | `SQ_FLAGS` 3600 | 4 | `SQ_F_SQPOLL` (1): a poller runs the ring; `SQ_F_NEED_WAKEUP` (2): the poller parked, publish `sq_tail` then kick |
-| `VERSION` 3604 | 4 | `IO_RING_VERSION` (2), written at setup |
+| `VERSION` 3604 | 4 | `IO_RING_VERSION` (3), written at setup; `libsys::ioring::Ring::open` refuses a page that carries another |
 
 **Submission entry (32 bytes):** `opcode` u16 at 0, `flags` u16 at 2,
 `param0` u32 at 4, `param1` u32 at 8, `param2` u32 at 12, `addr` u16 at 16,
-`reg` u16 at 18, `user_data` u64 at 24. `param0` selects a bus, pin, sensor
-type, channel or handle; `param1` is an offset into the data buffer for buffer
-opcodes or a scalar for register opcodes; `param2` is a length; `addr` and `reg`
-are an I2C device address and register. `SQE_F_LINK` (bit 0 of `flags`) links the
+`reg` u16 at 18, `user_data` u64 at 24. `param0` is a handle, a badge or a
+scalar; `param1` is an offset into the data buffer or a scalar; `param2` is a
+length or a count; `addr` and `reg` carry a sector number (block opcodes) or a
+registered buffer's slot (`reg`). `SQE_F_LINK` (bit 0 of `flags`) links the
 next entry: it runs only if this one completed in the same pass and succeeded,
 otherwise it completes with `-ECANCELED` and `CQE_F_REFUSED` without running.
 `SQE_F_FIXED` (bit 1) names a registered buffer instead of a data-buffer window:
@@ -503,19 +503,13 @@ submission), `result` i32 at 8 (bytes, or a negative code), `flags` u32 at 12:
 | Opcode | Value | Meaning |
 |---|---:|---|
 | `OP_NOP` | 0 | completes with 0 |
-| `OP_READ_SENSOR` | 1 | read a sensor into the data buffer |
-| `OP_WRITE_GPIO` | 2 | write a GPIO pin: `param0` its `gpio` badge `(ctrl, pin)` (`azos_devif::gpio::badge`), `param1` the level; `-ENODEV` for a controller not bound, `-EINVAL` for a pin it does not have, `-EPERM` for a motor's or a safety line's pin |
-| `OP_READ_GPIO` | 3 | read a GPIO pin: `param0` as for `OP_WRITE_GPIO` |
-| `OP_I2C_READ` | 4 | I2C read into the data buffer |
-| `OP_I2C_WRITE` | 5 | I2C write from the data buffer (the register is the first payload byte) |
-| `OP_PWM_SET` | 6 | set a PWM channel duty |
-| `OP_MOTOR_SPEED` | 7 | set wheel speeds, through the actuation gate |
 | `OP_NET_SEND` | 8 | queue a send on a socket handle (`WRITE`); completes `CQE_F_QUEUED` |
 | `OP_NET_RECV` | 9 | receive from a socket handle (`READ`) without waiting: the byte count, `-EAGAIN` with nothing queued on a datagram socket (`0` there is an empty datagram; on a stream `0` is nothing queued), `-1` for a socket that cannot receive, `-EEOF` once a stream has ended |
 | `OP_BUF_REGISTER` | 10 | pin a range of a `MemObj` this task maps as registered buffer `reg`: `param0` a `Cap<Shm>` handle (`READ | WRITE | MAP`), `param1` the byte offset, `param2` the length |
 | `OP_BUF_UNREGISTER` | 11 | give back the pin of registered buffer `reg` |
 | `OP_FILE_READ` | 12 | `NODE_READ` on a file handle into a data buffer window; completes from the io_ring worker, never in the submit (Kconfig `IORING_ASYNC`) |
 | `OP_FILE_WRITE` | 13 | `NODE_WRITE` on a file handle from a data buffer window; completes `CQE_F_QUEUED` from the io_ring worker |
+| `OP_CALL` | 14 | an IDL call on a kernel-hosted endpoint (below) |
 | `OP_TIMER` | 16 | complete at an absolute deadline; 1 if already passed, otherwise parked and completes with 0 in the first pass at or after it |
 | `OP_NOTIFY_WAIT` | 17 | complete when a futex word in a `Cap<Shm>` region changes (1 if it already differs) |
 | `OP_SQPOLL_START` | 18 | start a kernel poller that consumes the queue without a syscall; allowed only when the owner's topology row declares `sqpoll_idle_ms`, else `-EPERM` |
@@ -541,16 +535,37 @@ is gated, like any entry, by the owner's seccomp profile (it stands for
 `MEMOBJ_ACQUIRE`) and its Domain's pledge mask. The block opcodes do not take
 the flag (their `reg` is half of a sector number).
 
+**IDL calls (`OP_CALL`).** A device is an endpoint, and the ring has one entry
+for every interface rather than an opcode per device: `param0` is the
+`Cap<Endpoint>` handle, `param1` the byte offset of the call's message window in
+the data buffer (a multiple of 8; `CALL_WINDOW`, 64 bytes, must fit) and
+`param2` the request's word count (1 to `CALL_WORDS`, 8), the IDL header
+(`azos_idl::header`: interface, level, op) first, then the arguments in the
+IDL's wire form. The kernel copies the words once and decides the entry as it
+decides `SYS_IPC_CALL` on an endpoint it hosts, in the same order: the owner's
+profile for `SYS_IPC_CALL` and its pledge mask, the handle resolved in the
+owner's table (a refusal recorded against the owner), the capability's op mask,
+the owner's profile listing the interface, then the interface's own dispatch,
+which checks the op's class against the capability's rights. The reply is
+written over the window, status first, then the return value, zeros past it;
+the completion's `result` is the reply's status (`0` served, else the IDL error
+status). An answer of the interface, a `DENIED` or a halt rule's `REFUSED`
+included, is a served reply (`flags` 0); `CQE_F_REFUSED` means the interface was
+never reached, and the window is left as ring 3 wrote it. A task-hosted
+endpoint is not served from a pass: `-ENOSYS`. `libsys::ioring::Ring::push_call`
+and `reply` write and read the window; `libsys::dev::reply_value` decodes it.
+
 **Authorization.** Each entry is checked, in order, against the ring owner's
 seccomp profile for the call the opcode stands for, the owner's Domain pledge
 mask for the same call, the capability the owner must hold, and, for a write,
 containment; it then runs through the same function its typed call runs. A
 refused entry completes with `CQE_F_REFUSED` and one of, in the order checked:
-`-ENOSYS` (an opcode this kernel does not execute), `-EPERM` (seccomp),
-`-EACCES` (the pledge mask), `-EINVAL` (an argument rejected before the
-capability check reads it), `-ECAPPERMS` (a capability the owner does not hold),
-`-EAGAIN` (a write refused by containment, or a motor command refused by the
-halt rule), or the typed call's own code. At most `RING_SQ_SIZE` entries run per
+`-ENOSYS` (an opcode this kernel does not execute, or an `OP_CALL` on a
+task-hosted endpoint), `-EPERM` (seccomp, for the call or, of an `OP_CALL`, the
+interface), `-EACCES` (the pledge mask), `-EINVAL` (an argument rejected before
+the capability check reads it), `-ECAPPERMS` (a capability the owner does not
+hold, or an op its mask omits), `-EAGAIN` (a write refused by containment), or
+the typed call's own code. At most `RING_SQ_SIZE` entries run per
 submit, and never one whose completion the CQ has no room for: `SYS_RING_ENTER`
 returns `-EBUSY` when an entry is pending and the CQ is full, with nothing run
 and `sq_head` still naming that entry. Without a poller a pass is a submit; a

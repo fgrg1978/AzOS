@@ -1025,9 +1025,11 @@ mod image_profiles {
     const DEV_REACH: &[(&str, &[&str])] = &[
         // The lookup of an endpoint capability by interface and badge.
         ("lookup", &["SYS_CAP_INFO"]),
-        // The helpers over a reply issue nothing.
+        // The helpers over a request or a reply issue nothing.
         ("succeeded", &[]),
         ("value", &[]),
+        ("header", &[]),
+        ("reply_value", &[]),
         // The draws go over the v2 call (`dev::Ep`).
         ("entropy_read", &["SYS_IPC_CALL"]),
         // And the feed, over the same call.

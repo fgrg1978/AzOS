@@ -21039,60 +21039,63 @@ PY
         fi
 
         # THE SAME LATCH THROUGH THE io_ring (owner decision 81).
-        # brain_client submits each forward command a second time as one
-        # `OP_MOTOR_SPEED` entry for both wheels, and the kernel's op-table
-        # entry prints `ACTSMOKE] ioring motor` per wheel with the duty its own
-        # write reported. The checks mirror the typed ones: driven through the
-        # ring before the e-stop, never at duty 60 after it, refused on each
-        # wheel after it — and the refusal carried back to ring 3 in the
-        # completion as -EAGAIN with CQE_F_REFUSED (`result=-11 flags=1`). A
-        # wheel written at duty 0 by an entry that answered success would pass
-        # the first three and not the last.
+        # brain_client submits each forward command a second time as two
+        # `OP_CALL` entries, `Motor::speed` on each wheel's endpoint, in one
+        # submit, and prints each completion as
+        # `ioring motor wheel=<w> status=<s> outcome=<o> flags=<f>`. The entry
+        # is the interface's op (the effect gate, the halt rule), so its write
+        # prints the same `ring3 motor` marker the checks above count, and the
+        # latch's answer comes back in the reply: served (status 0, flags 0)
+        # with outcome 8, `REFUSED`. The checks: driven through the ring before
+        # the e-stop (outcome 0 on each wheel), never served OK after it, and
+        # refused on each wheel after it. An entry that skipped the halt rule
+        # would answer outcome 0 after the latch; one refused by the ring
+        # itself (flags 1) never reached the interface.
+        # The same boot reads its sensors through the ring: one submit of
+        # `Sensor::read` entries, reported once as `ioring sensors asked=N
+        # served=N`; a ring that refused them would leave served below asked.
         if grep -aq "\[brain_client\] FAILED: io_ring" "$log" 2>/dev/null; then
             bad; echo "      brain_client could not create its motor ring:"
             grep -a -m2 "\[brain_client\] FAILED: io_ring" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        local ring_before_l ring_before_r ring_after ring_refused_l ring_refused_r ring_cqe
-        ring_before_l=$(grep -an "ACTSMOKE] ioring motor id=0 ask=60 duty=60 rc=" "$log" 2>/dev/null \
+        local ring_before_l ring_before_r ring_after ring_refused_l ring_refused_r ring_sensors
+        ring_before_l=$(grep -an "\[brain_client\] ioring motor wheel=0 status=0 outcome=0 flags=0" "$log" 2>/dev/null \
                         | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
-        ring_before_r=$(grep -an "ACTSMOKE] ioring motor id=1 ask=60 duty=60 rc=" "$log" 2>/dev/null \
+        ring_before_r=$(grep -an "\[brain_client\] ioring motor wheel=1 status=0 outcome=0 flags=0" "$log" 2>/dev/null \
                         | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
-        ring_after=$(grep -an "ACTSMOKE] ioring motor id=[01] ask=60 duty=60 rc=" "$log" 2>/dev/null \
+        ring_after=$(grep -anE "\[brain_client\] ioring motor wheel=[01] status=0 outcome=0 " "$log" 2>/dev/null \
                      | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_refused_l=$(grep -an "ACTSMOKE] ioring motor id=0 ask=60 duty=0 rc=" "$log" 2>/dev/null \
+        ring_refused_l=$(grep -an "\[brain_client\] ioring motor wheel=0 status=0 outcome=8 flags=0" "$log" 2>/dev/null \
                          | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_refused_r=$(grep -an "ACTSMOKE] ioring motor id=1 ask=60 duty=0 rc=" "$log" 2>/dev/null \
+        ring_refused_r=$(grep -an "\[brain_client\] ioring motor wheel=1 status=0 outcome=8 flags=0" "$log" 2>/dev/null \
                          | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_cqe=$(grep -anE "\[brain_client\] ioring motor cqe result=-11 flags=1([^0-9]|$)" "$log" 2>/dev/null \
-                   | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+        ring_sensors=$(grep -acE "\[brain_client\] ioring sensors asked=([1-9][0-9]*) served=\1([^0-9]|$)" "$log" 2>/dev/null)
 
         if [ "$ring_before_l" -lt 1 ] || [ "$ring_before_r" -lt 1 ]; then
             bad; echo "      the io_ring never drove the wheels before the e-stop"
-            echo "      (ring entries at 60%: left=$ring_before_l right=$ring_before_r, want >=1 each),"
+            echo "      (served ring entries: left=$ring_before_l right=$ring_before_r, want >=1 each),"
             echo "      so its refusals after it prove nothing. First ring lines:"
             grep -a -m4 "ioring motor" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         if [ "$ring_after" -ne 0 ]; then
             bad; echo "      THE E-STOP DID NOT HOLD ON THE io_ring: $ring_after ring entries"
-            echo "      reached the wheels at full duty after it latched."
-            grep -an "ACTSMOKE] ioring motor id=[01] ask=60 duty=60 rc=" "$log" \
+            echo "      were served OK after it latched."
+            grep -anE "ioring motor wheel=[01] status=0 outcome=0 " "$log" \
                 | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         if [ "$ring_refused_l" -lt 2 ] || [ "$ring_refused_r" -lt 2 ]; then
-            bad; echo "      the io_ring entries after the e-stop did not reach the motor layer"
-            echo "      (ring refusals seen: left=$ring_refused_l right=$ring_refused_r, want >=2 each)."
+            bad; echo "      the io_ring entries after the e-stop were not answered REFUSED by the"
+            echo "      interface (left=$ring_refused_l right=$ring_refused_r, want >=2 each)."
             grep -an "ioring motor" "$log" \
                 | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if [ "$ring_cqe" -lt 1 ]; then
-            bad; echo "      no io_ring completion after the e-stop came back refused with"
-            echo "      -EAGAIN (want result=-11 flags=1); completions seen:"
-            grep -an "ioring motor cqe" "$log" \
-                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
+        if [ "$ring_sensors" -lt 1 ]; then
+            bad; echo "      brain_client's sensor reads through the io_ring were not all served:"
+            grep -a -m2 "ioring sensors" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"

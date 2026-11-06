@@ -153,8 +153,7 @@ config MOTOR_COMMANDER_EXIT_STOP
       same contract). rt_motor_task rewrites the wheels every tick only
       while its command channel is live, so without this a ring-3 duty
       written after its watchdog fired stays on the channel. A wheel driven
-      through the I/O ring's OP_MOTOR_SPEED is not noted, so its commander's
-      exit does not stop it.
+      through an I/O ring OP_CALL is the same op, and is noted the same way.
 
       Cost: one atomic store per typed motor call, and per task exit one
       compare-and-swap per wheel (MAX_MOTORS, 4); a stop and a record
@@ -190,8 +189,8 @@ config EFFECT_WRITE_AHEAD
       is not linked or installed, and the op goes straight to the motor
       layer. Maps to the kernel cargo feature `effect-gate`. The kernel's
       own motor writes (rt_motor_task, the PID loop) are not ring-3 ops and
-      are not recorded by this gate, nor is the I/O ring's OP_MOTOR_SPEED,
-      which calls the motor layer directly.
+      are not recorded by this gate; an I/O ring OP_CALL of the motor
+      interface is the ring-3 op, and is.
 
       Innovation B2, deadline or safe state, rides on the same gate (it has
       no switch of its own: it needs the gate). A motion op carries its

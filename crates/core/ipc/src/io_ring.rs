@@ -61,13 +61,6 @@ const _: () = assert!(MAX_IO_RINGS <= 1 << LAYOUT.idx_bits());
 // ---------------------------------------------------------------------------
 
 pub const OP_NOP: u16 = 0;
-pub const OP_READ_SENSOR: u16 = 1;
-pub const OP_WRITE_GPIO: u16 = 2;
-pub const OP_READ_GPIO: u16 = 3;
-pub const OP_I2C_READ: u16 = 4;
-pub const OP_I2C_WRITE: u16 = 5;
-pub const OP_PWM_SET: u16 = 6;
-pub const OP_MOTOR_SPEED: u16 = 7;
 pub const OP_NET_SEND: u16 = 8;
 /// `NODE_RECV` on a ring: `param0` a `Cap<Socket>` handle of the ring's owner
 /// (`READ`), `param1`/`param2` the window the bytes land in (a `data_buf`
@@ -192,48 +185,22 @@ const _: () = assert!(RING_DATA_BUF_SIZE <= u16::MAX as usize);
 // ---------------------------------------------------------------------------
 
 /// Submission queue entry — written by userspace, read by kernel.
-///
-/// # WHY `addr` and `reg` are their own fields (the `param1` split)
-///
-/// The previous layout had three generic `paramN` words and told I2C to pack
-/// *both* the device address and the register into `param1`. Two things went
-/// wrong with that, and only one of them was documented:
-///
-///  * **The capability could not be reconstructed.** The I2C capability
-///    `(bus, addr)` — what the I2C read and write calls checked — needs the
-///    address on its own. With addr and reg fused there is no faithful way to
-///    rebuild it, so [`dispatch_sqe`] denied both I2C opcodes outright to
-///    unprivileged rings rather than enforce something weaker than the
-///    syscall path.
-///  * **`param1` was already taken.** The I2C arms *also* read `param1` as
-///    the offset into `data_buf`, in the same expression that passed it as
-///    `addr_reg` to the driver. One field, two mutually exclusive meanings:
-///    any ring submitting a working I2C read addressed a device number equal
-///    to its own buffer offset. Inert only because `OPS` is never registered.
-///
-/// Splitting them costs 8 bytes per SQE (24 → 32). The ring still fits one
-/// 4 KiB page with room to spare: 4 queue indices (16 B) + 32 × 32 B SQ
-/// (1024) + 32 × 16 B CQ (512) + 2048 B data = 3600 B.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct SqEntry {
     pub opcode: u16,
     pub flags: u16,
-    /// Bus / device selector: I2C bus, GPIO pin, sensor type, PWM channel,
-    /// socket fd, left motor speed.
+    /// A capability handle (a socket, a file, an endpoint, a `Cap<Shm>`), a
+    /// partition's badge, or a scalar.
     pub param0: u32,
-    /// Offset into `data_buf` for the buffer opcodes; a scalar (GPIO level,
-    /// PWM duty, right motor speed) for the register opcodes.
+    /// Offset into `data_buf` (or into a registered buffer), or a scalar.
     pub param1: u32,
-    /// Length in bytes for the buffer opcodes.
+    /// Length in bytes, or an `OP_CALL`'s word count.
     pub param2: u32,
-    /// Device address on the bus named by `param0`. **I2C only.** Kept
-    /// separate from `param1` so `dispatch_sqe` can check the exact
-    /// (bus, addr) resource a the `i2c` endpoint names.
+    /// Low half of a block entry's first sector.
     pub addr: u16,
-    /// Device register. **`OP_I2C_READ` only** — `OP_I2C_WRITE` takes the
-    /// register as the first byte of its payload, exactly as `sys_i2c_write`
-    /// defines it, and ignores this field.
+    /// High half of a block entry's first sector, or a registered buffer's
+    /// slot.
     pub reg: u16,
     /// Opaque tag for correlation.
     pub user_data: u64,
@@ -254,13 +221,14 @@ pub struct CqEntry {
 /// so a refusal can never be mistaken for one.
 ///
 /// The refusals, in the order they are checked: `-ENOSYS` for an opcode this
-/// kernel does not execute; `-EPERM` for the submitter's seccomp profile;
-/// `-EINVAL` for an argument rejected before the capability check reads it;
-/// `-ECAPPERMS` for a capability the ring's owner does not hold; `-EAGAIN` for
-/// a write refused by containment, or a motor command refused by the halt rule
-/// (a latched e-stop or containment); and the typed call's own code where an
-/// op-table entry refuses as that call does (a motor-bound PWM channel or GPIO
-/// pin).
+/// kernel does not execute (and an [`OP_CALL`] on a task-hosted endpoint);
+/// `-EPERM` for the submitter's seccomp profile; `-EACCES` for its Domain's
+/// pledge mask; `-EINVAL` for an argument rejected before the capability check
+/// reads it; `-ECAPPERMS` for a capability the ring's owner does not hold (or
+/// an op its mask omits); `-EAGAIN` for a write refused by containment; and the
+/// typed call's own code where an op-table entry refuses as that call does. An
+/// [`OP_CALL`] that reached its interface is never refused here: the
+/// interface's own answer (a denial, a halt rule's refusal) is its reply.
 pub const CQE_F_REFUSED: u32 = 1 << 0;
 
 /// [`CqEntry::flags`] bit: the operation was ACCEPTED ONTO A QUEUE and is not
@@ -294,13 +262,6 @@ const _: () = {
     assert!(core::mem::size_of::<IoRing>() == azos_abi::io_ring::VERSION + 4);
     // Opcodes, flags and sizes ring 3 compiles against (`azos_abi::io_ring`).
     assert!(OP_NOP == azos_abi::io_ring::OP_NOP);
-    assert!(OP_READ_SENSOR == azos_abi::io_ring::OP_READ_SENSOR);
-    assert!(OP_WRITE_GPIO == azos_abi::io_ring::OP_WRITE_GPIO);
-    assert!(OP_READ_GPIO == azos_abi::io_ring::OP_READ_GPIO);
-    assert!(OP_I2C_READ == azos_abi::io_ring::OP_I2C_READ);
-    assert!(OP_I2C_WRITE == azos_abi::io_ring::OP_I2C_WRITE);
-    assert!(OP_PWM_SET == azos_abi::io_ring::OP_PWM_SET);
-    assert!(OP_MOTOR_SPEED == azos_abi::io_ring::OP_MOTOR_SPEED);
     assert!(OP_NET_SEND == azos_abi::io_ring::OP_NET_SEND);
     assert!(OP_NET_RECV == azos_abi::io_ring::OP_NET_RECV);
     assert!(OP_BUF_REGISTER == azos_abi::io_ring::OP_BUF_REGISTER);
@@ -1555,25 +1516,6 @@ pub struct IoRingOps {
     /// `cap::degraded_active` call so the host suite, whose capability tests
     /// toggle the degrade level on their own lock, has a deterministic answer.
     pub write_contained: fn() -> bool,
-    pub read_sensor:   fn(sensor_type: u32, buf: *mut u8, buf_len: usize) -> OpResult,
-    /// `badge`: the `Gpio` badge of the pin, `(ctrl, pin)`
-    /// (`azos_devif::gpio::badge`), the entry's `param0`.
-    pub write_gpio:    fn(badge: u32, value: u32) -> OpResult,
-    pub read_gpio:     fn(badge: u32) -> OpResult,
-    /// Mirrors `sys_i2c_read(bus, addr, reg, buf, len)`. `addr_reg` used to be
-    /// one packed word; see [`SqEntry`] for why it had to be split.
-    pub i2c_read:      fn(bus: u32, addr: u32, reg: u32, buf: *mut u8, len: usize) -> OpResult,
-    /// Mirrors `sys_i2c_write(bus, addr, data, len)`: `data[0]` is the
-    /// register, so there is no separate `reg` argument.
-    pub i2c_write:     fn(bus: u32, addr: u32, data: *const u8, len: usize) -> OpResult,
-    /// Duty in percent, `SYS_PWM_SET_DUTY_PCT_TYPED`'s argument.
-    pub pwm_set:       fn(channel: u32, duty_pct: u32) -> OpResult,
-    /// ONE wheel, as the `Motor` interface's `speed` commands one: 0 stops (coast),
-    /// anything else drives forward at that percentage. `OP_MOTOR_SPEED` calls
-    /// it once per wheel, so the halt rule and the envelope apply to each. The
-    /// command is `owner_tid`'s: the effect gate records it as that task's,
-    /// and that task's exit stops the wheel.
-    pub motor_wheel:   fn(owner_tid: u32, id: u32, speed_pct: u32) -> OpResult,
     /// `NODE_SEND` below the trap: resolve the `Cap<Socket>` handle `cap`
     /// in `owner_tid`'s table (`WRITE`, with containment) as the typed call
     /// does, record a refusal as it does, and queue at most `len` bytes on the
@@ -1799,8 +1741,8 @@ pub fn io_ring_submit(ring_id: u32) -> i32 {
 ///
 /// Every device-capability check inside a submit pass is resolved on the
 /// ring's **owner** — `state.owner_task`, stamped once by [`create_core`] and
-/// never touched again ([`ring_dev_ok`], `dispatch_sqe`'s I2C/GPIO/PWM/motor
-/// arms). That was sound under decision 3 ("a capability may never be handed
+/// never touched again ([`ring_dev_ok`] for the block entries, and the
+/// op-table entries, which resolve each handle in the owner's table). That was sound under decision 3 ("a capability may never be handed
 /// to another task"): the only task that could ever present a live
 /// `Cap<IoRing>` for this ring **was** its owner, so "the owner's table" and
 /// "the caller's table" were the same table by construction.
@@ -1811,8 +1753,8 @@ pub fn io_ring_submit(ring_id: u32) -> i32 {
 /// is kind-erased — nothing about it is specific to `Cap<Socket>`, the kind
 /// the gap-2 ring-3 exercise happened to use — and `SYS_IPC_CALL`
 /// (582) is the one live syscall that reaches it. Without this check, a task
-/// that received a moved `Cap<IoRing>` this way could submit I2C, GPIO, PWM
-/// or motor operations that `ring_dev_ok` would authorize against the
+/// that received a moved `Cap<IoRing>` this way could submit device calls and
+/// block entries that would be authorized against the
 /// **original owner's** table: a confused deputy that runs hardware
 /// operations under a different task's authority than the one that actually
 /// called this syscall, entirely without that task presenting any device
@@ -1922,8 +1864,8 @@ struct PassOut {
 /// The one read of SQ entry `idx` a pass makes (OVSwrap review F4): a volatile
 /// copy of the 32-byte entry out of the ring page, which ring 3 maps RW and may
 /// rewrite during the pass. Everything after works on this copy — the opcode,
-/// the handle, the offsets `window_ok` bounds, the selectors `narrow_u8!`
-/// checks — so the value checked is the value used.
+/// the handle, the offsets `window_ok` bounds — so the value checked is the
+/// value used.
 ///
 /// `#[inline(never)]` and volatile on purpose. A plain `(*ring).sq_entries[i]`
 /// copy is an ordinary load the compiler may split, sink or re-materialise
@@ -2364,7 +2306,7 @@ fn dispatch_entry(
     // Every opcode below `OP_TIMER` completes now: one compare, not a chain,
     // on the path every ring entry takes.
     if sqe.opcode < OP_TIMER {
-        return Step::Done(dispatch_sqe(sqe, data_buf, bufs, ops, owner_tid, owner_priv));
+        return Step::Done(dispatch_sqe(sqe, data_buf, bufs, ops, owner_tid));
     }
     match sqe.opcode {
         OP_TIMER => {
@@ -2413,7 +2355,7 @@ fn dispatch_entry(
                 None => Step::Park(ParkedOn::Flush(ticket)),
             }
         }
-        _ => Step::Done(dispatch_sqe(sqe, data_buf, bufs, ops, owner_tid, owner_priv)),
+        _ => Step::Done(dispatch_sqe(sqe, data_buf, bufs, ops, owner_tid)),
     }
 }
 
@@ -2438,20 +2380,14 @@ pub const IO_ERR_PERM: i32 = azos_abi::error::Errno::ECAPPERMS.to_syscall_ret() 
 /// whether the entry may run; `None` for an opcode this kernel does not
 /// execute (`OP_NOP` is answered before the question is asked).
 ///
-/// Each is the interface or the typed call whose function the kernel's
-/// op-table entry calls: the `sensor`, `gpio`, `i2c`, `pwm` and `motor`
-/// interfaces (the motor speed asked once for the pair) and the socket send
-/// and receive (569, 570).
+/// Each is the typed call whose function the kernel's op-table entry calls:
+/// `SYS_IPC_CALL` for [`OP_CALL`] (the interface is asked once the handle
+/// names it), the ops of a handle for the socket, file and buffer entries.
 pub const fn opcode_gate(opcode: u16) -> Option<OpGate> {
     use azos_abi::invoke as inv;
     use azos_abi::syscall_nr as nr;
     use azos_devif::key;
     match opcode {
-        OP_READ_SENSOR => Some(OpGate::Iface(key::SENSOR)),
-        OP_WRITE_GPIO | OP_READ_GPIO => Some(OpGate::Iface(key::GPIO)),
-        OP_I2C_READ | OP_I2C_WRITE => Some(OpGate::Iface(key::I2C)),
-        OP_PWM_SET => Some(OpGate::Iface(key::PWM)),
-        OP_MOTOR_SPEED => Some(OpGate::Iface(key::MOTOR)),
         OP_NET_SEND => Some(OpGate::Op(inv::NODE_SEND)),
         OP_NET_RECV => Some(OpGate::Op(inv::NODE_RECV)),
         // A pinned reference to an object the task holds: the op `MEMOBJ_ACQUIRE`.
@@ -2523,7 +2459,7 @@ fn admit(ops: &IoRingOps, owner_tid: u32, gate: OpGate) -> Result<(), i32> {
 
 /// Does the ring's owner hold an endpoint of the kernel-hosted interface `key`
 /// carrying `badge` with the op class the entry needs? The badge is the
-/// resource (a pin, a bus and an address, a channel, a sensor type), the rights
+/// resource (a partition of the `block` interface), the rights
 /// the op class: `READ` for a read (a WRITE-only grant must not read through the
 /// ring), `WRITE` for an act. No containment step here (a write is refused after
 /// the capability, so a task that does not hold the device learns nothing from
@@ -2688,46 +2624,22 @@ fn dispatch_block(
     Step::Done((ops.block_io)(badge, write, sector, ptr, len))
 }
 
-/// Dispatch a single SQ entry to the appropriate hardware operation.
+/// Dispatch a single SQ entry that completes now.
 ///
-/// **WHY every actuator arm is capability-checked (W3-F3):** this function
-/// used to execute `OP_MOTOR_SPEED`, `OP_WRITE_GPIO`, `OP_PWM_SET` and
-/// `OP_I2C_WRITE` with no `cap_check` whatsoever. It was inert only because
-/// `io_ring_register_ops` has no callers, so `OPS` is `None` — the day a
-/// board registers the dispatch table, an io_ring becomes a complete bypass
-/// of the capability system that every equivalent syscall
-/// (`sys_motor_set_target`, `sys_gpio_write`, …) does enforce. The checks
-/// mirror those syscalls' `cap_check` calls exactly, kind for kind.
-///
-/// **What this batch changed.** Every opcode is now checked against the same
-/// authority its syscall counterpart uses, and no opcode is denied for want
-/// of a check that could not be expressed:
-///
-///  * **I2C** — was a blanket deny for unprivileged rings, because the ABI
-///    fused address and register (and the buffer offset) into `param1`.
-///    Splitting them (see [`SqEntry`]) makes the I2C capability `(bus, addr)`
-///    reconstructible, so the check is the I2C read call's.
-///  * **Sockets** — were a blanket deny, then an owner-stamp lookup on a bare
-///    descriptor. Both net opcodes now name a `Cap<Socket>` handle in the
-///    owner's table, which the op-table entry resolves as the typed call does.
-///  * **Narrowed parameters** — `Sensor`, `Pwm` and the I2C bus/address are
-///    `u8` in the capability resource but arrive as `u32`/`u16`. They are rejected out
-///    of range rather than truncated; see `narrow_u8!` below for why that was
-///    a live bypass and not a tidiness issue.
-///
-/// **The order of the checks.** An opcode this kernel does not
-/// execute is refused first; then the submitter's seccomp profile for the
-/// syscall the opcode stands for; then the capability, with the narrowing of
-/// its parameters; then containment, for a write; then the op-table entry,
-/// which calls what the typed call calls. A refusal at any step completes the
-/// entry with a negative errno and [`CQE_F_REFUSED`].
+/// **The order of the checks.** An opcode this kernel does not execute is
+/// refused first; then the owner's seccomp profile and its Domain's pledge mask
+/// for the call the opcode stands for ([`opcode_gate`]); then the entry's
+/// windows; then the op-table entry, which resolves the entry's handle in the
+/// owner's table and calls what the typed call calls. A device is reached only
+/// through [`OP_CALL`], whose op-table entry is the call's own resolve, mask
+/// and interface dispatch. A refusal at any step completes the entry with a
+/// negative errno and [`CQE_F_REFUSED`].
 fn dispatch_sqe(
     sqe: &SqEntry,
     data_buf: &mut [u8; RING_DATA_BUF_SIZE],
     bufs: &mut RegBufSet,
     ops: &IoRingOps,
     owner_tid: u32,
-    owner_priv: bool,
 ) -> OpResult {
     let p0 = sqe.param0;
     let p1 = sqe.param1;
@@ -2747,159 +2659,7 @@ fn dispatch_sqe(
     // the net class does not send through its ring either.
     admit(ops, owner_tid, gate)?;
 
-    // Local shorthand so each arm reads like its call counterpart: the
-    // owner's table must hold an endpoint of interface `$key` carrying `$badge`, with the
-    // op class the entry needs. A refusal is recorded under the endpoint.
-    macro_rules! need_dev {
-        ($key:expr, $badge:expr, $write:expr) => {
-            if !ring_dev_ok(owner_tid, owner_priv, $key, $badge, $write) {
-                (ops.note_denial)(owner_tid, ty::ENDPOINT);
-                return Err(IO_ERR_PERM);
-            }
-        };
-    }
-
-    // Containment for a write, after the capability: a task that
-    // does not hold the device still gets `-ECAPPERMS` and learns nothing from
-    // the degrade level, as `CapTable::get` orders its checks. A kernel-created
-    // ring is not contained, as a kernel caller of the untyped writes is not
-    // (`untyped_write_contained`). The motor opcode does not use this: its
-    // typed call resolves without containment and the halt rule refuses in
-    // the motor layer, which the op-table entry reaches.
-    macro_rules! not_contained {
-        () => {
-            if !owner_priv && (ops.write_contained)() {
-                return Err(IO_ERR_CONTAINED);
-            }
-        };
-    }
-
-    // **WHY every narrowed parameter is range-checked first (found in
-    // passing, same class as W3-F3).** The capability resources store sensor
-    // type, PWM channel and I2C bus/address as `u8`, while the ring ABI delivers them
-    // as `u32`/`u16`. The pre-existing arms wrote `HandleKind::Sensor(p0 as
-    // u8)` and then handed the *un-narrowed* `p0` to the driver, so
-    // `p0 = 256` passed the capability check for `Sensor(0)` and drove
-    // sensor 256. That is a live capability bypass by aliasing: a task
-    // granted one device can reach every 256th device above it. Rejecting
-    // out-of-range values — rather than truncating — is what makes the value
-    // checked and the value used the same value.
-    macro_rules! narrow_u8 {
-        ($v:expr) => {{
-            let v = $v;
-            if v > u8::MAX as u32 { return Err(IO_ERR_INVALID_PARAM); }
-            v as u8
-        }};
-    }
-
     match sqe.opcode {
-        OP_READ_SENSOR => {
-            need_dev!(azos_devif::key::SENSOR, narrow_u8!(p0) as u32, false);
-            let offset = p1 as usize;
-            let len = p2 as usize;
-            if !window_ok(offset, len) {
-                return Err(IO_ERR_INVALID_PARAM);
-            }
-            let buf_ptr = data_buf[window_start(offset)..].as_mut_ptr();
-            (ops.read_sensor)(p0, buf_ptr, len)
-        }
-
-        OP_WRITE_GPIO => {
-            need_dev!(azos_devif::key::GPIO, p0, true);
-            not_contained!();
-            (ops.write_gpio)(p0, p1)
-        }
-
-        OP_READ_GPIO => {
-            need_dev!(azos_devif::key::GPIO, p0, false);
-            (ops.read_gpio)(p0)
-        }
-
-        // I2C now carries bus in `param0` and the device address in its own
-        // `addr` field, so the check below names the same (bus, addr) a
-        // the `i2c` endpoint names, READ for a read. Before the split, addr and reg shared
-        // `param1` with the `data_buf` offset and the handle could not be
-        // rebuilt, so both opcodes were denied to every unprivileged ring —
-        // a whole class of legitimate work the capability system was
-        // supposed to permit.
-        OP_I2C_READ => {
-            let bus  = narrow_u8!(p0);
-            let addr = narrow_u8!(sqe.addr as u32);
-            // `reg` is not part of the capability, but it is narrowed to u8
-            // by the driver: a silently truncated register writes/reads the
-            // wrong register on a live actuator bus. Reject instead.
-            let reg  = narrow_u8!(sqe.reg as u32);
-            need_dev!(azos_devif::key::I2C, azos_devif::i2c::badge(bus, addr), false);
-            let offset = p1 as usize;
-            let len = p2 as usize;
-            if !window_ok(offset, len) {
-                return Err(IO_ERR_INVALID_PARAM);
-            }
-            let buf_ptr = data_buf[window_start(offset)..].as_mut_ptr();
-            (ops.i2c_read)(bus as u32, addr as u32, reg as u32, buf_ptr, len)
-        }
-
-        // Write is the actuator direction — this is how the PWM/motor
-        // expanders are driven — so it demands `write` on the same handle,
-        // matching `sys_i2c_write`'s `cap_check(…, true)`.
-        OP_I2C_WRITE => {
-            let bus  = narrow_u8!(p0);
-            let addr = narrow_u8!(sqe.addr as u32);
-            need_dev!(azos_devif::key::I2C, azos_devif::i2c::badge(bus, addr), true);
-            not_contained!();
-            let offset = p1 as usize;
-            let len = p2 as usize;
-            if !window_ok(offset, len) {
-                return Err(IO_ERR_INVALID_PARAM);
-            }
-            let data_ptr = data_buf[window_start(offset)..].as_ptr();
-            (ops.i2c_write)(bus as u32, addr as u32, data_ptr, len)
-        }
-
-        OP_PWM_SET => {
-            need_dev!(azos_devif::key::PWM, narrow_u8!(p0) as u32, true);
-            not_contained!();
-            (ops.pwm_set)(p0, p1)
-        }
-
-        // `param0`/`param1` are the left and right wheel speeds in percent,
-        // each commanded through its own `motor_wheel` call. The SQE carries
-        // no motor id, so the equivalent of a per-wheel `motor.N` WRITE
-        // check is to require write on both ids. The topology seeds exactly
-        // `motor.0` and `motor.1` RW for the drivetrain
-        // (`crates/core/topology/src/builder.rs`), so a task legitimately allowed
-        // to drive holds both; requiring only one would let a task granted a
-        // single wheel command the pair. Most safety-relevant opcode in the
-        // table — deny on any doubt.
-        //
-        // **A speed above 100 is refused, not clamped.** The typed call clamps
-        // (`gate_speed` takes `min(100)`), which on a ring would turn a
-        // negative speed written as `u32` — a reverse, to its author — into
-        // full speed forward.
-        //
-        // **Both wheels are always commanded, and a refusal of either refuses
-        // the entry.** The halt rule reads one query per command, so under a
-        // latched e-stop both answer `MOTOR_REFUSED_HALTED` and both write duty
-        // 0; stopping at the first refusal would leave the second wheel's last
-        // duty on its channel. The completion reports the first refusal, else
-        // the first negative code, else the right wheel's result. A halt that
-        // latches between the two calls leaves the left wheel driven and the
-        // entry refused, exactly as two typed calls would.
-        OP_MOTOR_SPEED => {
-            need_dev!(azos_devif::key::MOTOR, 0, true);
-            need_dev!(azos_devif::key::MOTOR, 1, true);
-            if p0 > 100 || p1 > 100 {
-                return Err(IO_ERR_INVALID_PARAM);
-            }
-            let left = (ops.motor_wheel)(owner_tid, 0, p0);
-            let right = (ops.motor_wheel)(owner_tid, 1, p1);
-            match (left, right) {
-                (Err(e), _) | (_, Err(e)) => Err(e),
-                (Ok(l), _) if l < 0 => Ok(l),
-                (_, Ok(r)) => Ok(r),
-            }
-        }
-
         // `param0` is a `Cap<Socket>` handle in the owner's table, as the
         // typed socket calls take it; the op-table entry resolves it (WRITE,
         // containment) and records a refusal as `NODE_SEND` does, then
@@ -2998,7 +2758,7 @@ fn dispatch_sqe(
 // **Zero syscalls is not zero checks.** A poller pass is the same `run_pass`
 // a submit runs: every entry asks the owner's seccomp profile (read from the
 // owner's slot, `IoRingOps::syscall_allowed`), the owner's capabilities
-// (`ring_dev_ok`, keyed on the owner since W3-F3), containment, and reaches
+// (resolved in the owner's table since W3-F3), containment, and reaches
 // the same op-table entry, so the motor layer's halt rule applies per entry.
 // A refusal is recorded against the owner, as the typed call records it.
 //
@@ -3435,12 +3195,13 @@ mod tests {
     /// that create.
     static ORPHAN_SLOT_IN_WINDOW: Mutex<Option<(bool, bool, bool, usize)>> = Mutex::new(None);
 
-    /// Calls that reached `read_sensor`, so a refusal can be shown to have
+    /// Calls that reached `idl_call`, so a refusal can be shown to have
     /// executed nothing.
-    static SENSOR_CALLS: AtomicU32 = AtomicU32::new(0);
+    static CALLS: AtomicU32 = AtomicU32::new(0);
 
-    fn hook_read_sensor(_ty: u32, _buf: *mut u8, _len: usize) -> OpResult {
-        SENSOR_CALLS.fetch_add(1, AOrd::SeqCst);
+    /// The orphan window, from inside the pass: the owner dies (and, when
+    /// asked, another ring is created) while the entry runs.
+    fn orphan_window() {
         if ORPHAN_ARMED.swap(false, AOrd::SeqCst) {
             io_ring_release_all(ORPHAN_TID.load(AOrd::SeqCst));
             FREES_DURING_PASS.store(
@@ -3460,30 +3221,8 @@ mod tests {
                     Some(__io_ring_slot_for_tests(ORPHAN_RING.load(AOrd::SeqCst)));
             }
         }
-        Ok(7)
     }
 
-    /// Last `(bus, addr, reg, len)` seen by the I2C hooks, so a test can prove
-    /// the driver got the *same* address the capability was checked against.
-    static I2C_SEEN: Mutex<Option<(u32, u32, u32, usize)>> = Mutex::new(None);
-    fn i2c_seen() -> Option<(u32, u32, u32, usize)> {
-        *I2C_SEEN.lock().unwrap_or_else(|e| e.into_inner())
-    }
-    fn i2c_seen_clear() {
-        *I2C_SEEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    fn nop_wg(_p: u32, _v: u32) -> OpResult { Ok(0) }
-    fn nop_rg(_p: u32) -> OpResult { Ok(0) }
-    fn hook_i2c_r(b: u32, a: u32, r: u32, _buf: *mut u8, l: usize) -> OpResult {
-        *I2C_SEEN.lock().unwrap_or_else(|e| e.into_inner()) = Some((b, a, r, l));
-        Ok(0)
-    }
-    fn hook_i2c_w(b: u32, a: u32, _d: *const u8, l: usize) -> OpResult {
-        *I2C_SEEN.lock().unwrap_or_else(|e| e.into_inner()) = Some((b, a, u32::MAX, l));
-        Ok(0)
-    }
-    fn nop_pwm(_c: u32, _d: u32) -> OpResult { Ok(0) }
     /// `(owner, cap, len)` of every send that reached the socket.
     static NET_SEEN: Mutex<Vec<(u32, u32, usize)>> = Mutex::new(Vec::new());
     fn hook_net_send(owner: u32, cap: u32, _d: *const u8, l: usize) -> OpResult {
@@ -3566,28 +3305,19 @@ mod tests {
         !BUF_UNMAPPED.load(AOrd::SeqCst) && !(sink && BUF_SHARED.load(AOrd::SeqCst))
     }
 
-    /// `(id, speed_pct)` of every `motor_wheel` call, in order.
-    static MOTOR_SEEN: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
-    /// The wheel whose `motor_wheel` call refuses with `-EAGAIN`, as the
-    /// kernel's entry does under the halt rule; `u32::MAX` for none.
-    static MOTOR_REFUSES: AtomicU32 = AtomicU32::new(u32::MAX);
-    fn hook_motor_wheel(_owner: u32, id: u32, pct: u32) -> OpResult {
-        MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).push((id, pct));
-        if MOTOR_REFUSES.load(AOrd::SeqCst) == id { Err(IO_ERR_CONTAINED) } else { Ok(0) }
-    }
-    fn motor_seen() -> Vec<(u32, u32)> {
-        MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
     /// `(owner, endpoint, request words)` of every call that reached
-    /// `idl_call`. The test endpoint answers status 0 and each request word
-    /// past the header plus one; [`BAD_CAP`] is refused as a stale handle.
+    /// `idl_call`. The test endpoint answers status 7 (a value no refusal
+    /// carries) and each request word past the header plus one; [`BAD_CAP`]
+    /// is refused as a stale handle.
     static CALLS_SEEN: Mutex<Vec<(u32, u32, Vec<u64>)>> = Mutex::new(Vec::new());
     fn hook_idl_call(owner: u32, ep: u32, req: &[u64; CALL_WORDS], n: usize, rep: &mut [u64; CALL_WORDS]) -> Result<(), i32> {
         if ep == BAD_CAP {
             return Err(E_STALE);
         }
+        CALLS.fetch_add(1, AOrd::SeqCst);
         CALLS_SEEN.lock().unwrap_or_else(|e| e.into_inner()).push((owner, ep, req[..n].to_vec()));
+        orphan_window();
+        rep[0] = 7;
         for (o, w) in rep.iter_mut().zip(req.iter()).take(n).skip(1) {
             *o = w + 1;
         }
@@ -3810,13 +3540,6 @@ mod tests {
         op_allowed: hook_op_allowed,
         pledge_allowed: hook_pledge_allowed,
         write_contained: hook_write_contained,
-        read_sensor: hook_read_sensor,
-        write_gpio:  nop_wg,
-        read_gpio:   nop_rg,
-        i2c_read:    hook_i2c_r,
-        i2c_write:   hook_i2c_w,
-        pwm_set:     nop_pwm,
-        motor_wheel: hook_motor_wheel,
         net_send:    hook_net_send,
         net_recv:    hook_net_recv,
         note_denial: hook_note_denial,
@@ -3841,7 +3564,7 @@ mod tests {
 
     /// Put the test table's hooks back to "allow, not contained, nothing seen".
     fn reset_hooks() {
-        SENSOR_CALLS.store(0, AOrd::SeqCst);
+        CALLS.store(0, AOrd::SeqCst);
         BLOCK_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         BLOCK_INLINE.store(0, AOrd::SeqCst);
         BLOCK_MODE.store(0, AOrd::SeqCst);
@@ -3857,8 +3580,6 @@ mod tests {
         OP_DENIES.store(0, AOrd::SeqCst);
         PLEDGE_DROPPED.store(255, AOrd::SeqCst);
         CONTAINED.store(false, AOrd::SeqCst);
-        MOTOR_REFUSES.store(u32::MAX, AOrd::SeqCst);
-        MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         DENIALS.lock().unwrap_or_else(|e| e.into_inner()).clear();
         CALLS_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         IO_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -3887,7 +3608,8 @@ mod tests {
     /// submitter's side an `IO_OK` for work not done is indistinguishable
     /// from work done. 10 and 11 once named camera capture and IRQ wait,
     /// which answered `IO_OK` without doing either; they are the buffer
-    /// opcodes now, and 22 and 23 are the unassigned ones.
+    /// opcodes now. 1 to 7 were the device opcodes (`OP_CALL` carries every
+    /// device now), and 15, 22 and 23 were never assigned.
     ///
     /// **The positive control is what gives this teeth.** Asserting only that
     /// two opcodes fail passes against a `dispatch_sqe` that fails on
@@ -3910,38 +3632,33 @@ mod tests {
             reg: 0,
             user_data: 0,
         };
-        for op in [22u16, 23] {
+        for op in [1u16, 2, 3, 4, 5, 6, 7, 15, 22, 23] {
             assert_eq!(
-                dispatch_sqe(&sqe_for(op), &mut buf, &mut bufs, &TEST_OPS, 1, false),
+                dispatch_sqe(&sqe_for(op), &mut buf, &mut bufs, &TEST_OPS, 1),
                 Err(IO_ERR_INVALID_OP),
                 "opcode {op} is not implemented and must not answer IO_OK"
             );
         }
         // Positive control: the dispatch still works.
         assert_eq!(
-            dispatch_sqe(&sqe_for(OP_NOP), &mut buf, &mut bufs, &TEST_OPS, 1, false),
+            dispatch_sqe(&sqe_for(OP_NOP), &mut buf, &mut bufs, &TEST_OPS, 1),
             Ok(IO_OK),
             "OP_NOP must still succeed — otherwise this test passes against a \
              dispatch that refuses everything"
         );
     }
 
-    /// Queue one `OP_READ_SENSOR` on the ring page.
-    ///
-    /// # Safety
-    ///
-    /// `phys` is the physical address of a live ring page created by the
-    /// calling test, and nothing else touches that ring meanwhile.
-    unsafe fn queue_sensor_sqe(phys: usize) {
+    /// Queue one `OP_CALL` on the ring page (endpoint 0, the window at 0).
+    unsafe fn queue_call_sqe(phys: usize) {
         // `phys` is PHYSICAL; the kernel writes the ring through its own
         // view of that page — identity on riscv64, upper half on aarch64.
         let ring = azos_mm::addr::phys_to_virt(phys) as *mut IoRing;
         (*ring).sq_entries[0] = SqEntry {
-            opcode: OP_READ_SENSOR,
+            opcode: OP_CALL,
             flags: 0,
             param0: 0,
             param1: 0,
-            param2: 0,
+            param2: 1,
             addr: 0,
             reg: 0,
             user_data: 0xABCD_1234,
@@ -4013,8 +3730,8 @@ mod tests {
         ORPHAN_PHYS.store(phys, AOrd::SeqCst);
         ORPHAN_RING.store(id, AOrd::SeqCst);
         FREES_DURING_PASS.store(u32::MAX, AOrd::SeqCst);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_sensor_sqe`).
-        unsafe { queue_sensor_sqe(phys) };
+        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_call_sqe`).
+        unsafe { queue_call_sqe(phys) };
 
         let completions = io_ring_submit(id);
 
@@ -4053,8 +3770,8 @@ mod tests {
         ORPHAN_TID.store(OWNER, AOrd::SeqCst);
         ORPHAN_PHYS.store(phys, AOrd::SeqCst);
         ORPHAN_RING.store(id, AOrd::SeqCst);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_sensor_sqe`).
-        unsafe { queue_sensor_sqe(phys) };
+        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_call_sqe`).
+        unsafe { queue_call_sqe(phys) };
         io_ring_submit(id);
 
         // After the deferred free the slot is empty, so every accessor that
@@ -4091,8 +3808,8 @@ mod tests {
         ORPHAN_PHYS.store(phys, AOrd::SeqCst);
         ORPHAN_RING.store(id, AOrd::SeqCst);
         CREATE_IN_WINDOW_FOR.store(OTHER, AOrd::SeqCst);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_sensor_sqe`).
-        unsafe { queue_sensor_sqe(phys) };
+        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_call_sqe`).
+        unsafe { queue_call_sqe(phys) };
 
         assert_eq!(io_ring_submit(id), 1);
         let (new_id, new_phys, claimed) = CREATED_IN_WINDOW
@@ -4233,12 +3950,11 @@ mod tests {
         assert_eq!(azos_mm::shim_free_count(pa), 0);
     }
 
-    // ── The per-opcode capability matrix (the `param1` split) ──────────────
+    // ── Rings owned by ring 3 ──────────────────────────────────────────────
     //
     // Every test here drives a **ring-3-owned** ring (`user_pt != 0`), which
-    // is the only configuration where `dispatch_sqe`'s checks do anything.
-    // Both halves are asserted each time: the holder of the exact handle gets
-    // through, and every other identity/handle in the space is refused.
+    // is the only configuration where the block entries' capability check
+    // does anything.
 
     // `IoRing` in this module is the shared ring page; the capability target
     // goes by another name here.
@@ -4252,11 +3968,6 @@ mod tests {
         crate::endpoint::kernel_endpoint_cap(tid, perms, key, badge).expect("cap table full");
     }
 
-    /// The badge of the I2C device at `addr` on `bus`.
-    fn i2c_badge(bus: u8, addr: u8) -> u32 {
-        azos_devif::i2c::badge(bus, addr)
-    }
-
     /// A ring owned by an unprivileged task, with both tasks' capability
     /// tables wiped.
     fn setup_unpriv() -> (std::sync::MutexGuard<'static, ()>, u32, usize) {
@@ -4267,156 +3978,11 @@ mod tests {
         cap_store::reset(OTHER);
         crate::endpoint::__endpoint_reset_for_tests();
         ORPHAN_ARMED.store(false, AOrd::SeqCst);
-        i2c_seen_clear();
         io_ring_register_ops(&TEST_OPS);
         // Non-zero user page table = ring 3 ⇒ `owner_privileged == false`.
         azos_sched::shim_set_current(OWNER, 0x1000);
         let (id, phys) = io_ring_create(OWNER as usize).unwrap();
         (g, id, phys)
-    }
-
-    #[test]
-    fn i2c_read_needs_the_same_handle_the_syscall_needs() {
-        let (_g, id, phys) = setup_unpriv();
-        // A the `i2c` endpoint names (bus, addr) as `bus << 8 | addr`; READ for a read.
-        grant_dev(OWNER, azos_devif::key::I2C, i2c_badge(1, 0x68), CapPerms::READ);
-
-        // The legitimate call goes through...
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        let r = unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 1, 0, 4, 0x68, 0x3B)) };
-        assert_eq!(r, 0, "the holder of I2c(1,0x68) was refused its own device");
-        // ...and the driver saw exactly the bus/addr/reg that were checked.
-        assert_eq!(i2c_seen(), Some((1, 0x68, 0x3B, 4)));
-
-        // ...but nothing else on the bus, and no other bus, is reachable.
-        for addr in 0u16..=0xFF {
-            if addr == 0x68 { continue; }
-            i2c_seen_clear();
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            let r = unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 1, 0, 4, addr, 0)) };
-            assert_eq!(r, IO_ERR_PERM, "addr 0x{addr:02x} on bus 1 was not refused");
-            assert_eq!(i2c_seen(), None, "a refused op still reached the driver");
-        }
-        for bus in 0u32..=0xFF {
-            if bus == 1 { continue; }
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            let r = unsafe { submit_one(id, phys, sqe(OP_I2C_READ, bus, 0, 4, 0x68, 0)) };
-            assert_eq!(r, IO_ERR_PERM, "bus {bus} was not refused");
-        }
-    }
-
-    #[test]
-    fn i2c_write_needs_write_perms_read_only_is_not_enough() {
-        let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::I2C, i2c_badge(0, 0x40), CapPerms::READ);
-        // Read is allowed by an RO handle...
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 0, 0, 1, 0x40, 0)) },
-            0
-        );
-        // ...the actuator direction is not. This is the half that matters:
-        // an I2C write is how the PWM/motor expanders are driven.
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_I2C_WRITE, 0, 0, 2, 0x40, 0)) },
-            IO_ERR_PERM
-        );
-        // With RW it is.
-        cap_store::reset(OWNER);
-        grant_dev(OWNER, azos_devif::key::I2C, i2c_badge(0, 0x40), CapPerms::RW);
-        i2c_seen_clear();
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_I2C_WRITE, 0, 0, 2, 0x40, 0)) },
-            0
-        );
-        // `sys_i2c_write` takes the register as data[0], so no reg is passed.
-        assert_eq!(i2c_seen(), Some((0, 0x40, u32::MAX, 2)));
-    }
-
-    #[test]
-    fn another_tasks_i2c_handle_does_not_authorize_this_ring() {
-        let (_g, id, phys) = setup_unpriv();
-        // The device exists and somebody holds it — just not the ring's owner.
-        grant_dev(OTHER, azos_devif::key::I2C, i2c_badge(1, 0x68), CapPerms::RW);
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 1, 0, 4, 0x68, 0)) },
-            IO_ERR_PERM
-        );
-        assert_eq!(i2c_seen(), None);
-    }
-
-    /// **The aliasing hole this batch closed.** The capability resources store
-    /// these as `u8`; the ring delivers `u32`/`u16`. Truncating meant `p0 = 256` was
-    /// checked as device 0 and then executed as device 256.
-    #[test]
-    fn a_parameter_that_does_not_fit_its_handle_width_is_rejected_not_truncated() {
-        let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::RW);
-        grant_dev(OWNER, azos_devif::key::PWM, 0, CapPerms::RW);
-        grant_dev(OWNER, azos_devif::key::I2C, i2c_badge(0, 0), CapPerms::RW);
-
-        // Baseline: device 0 works for each.
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0)) }, 7);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_PWM_SET, 0, 50, 0, 0, 0)) }, 0);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 0, 0, 1, 0, 0)) }, 0);
-
-        // Every alias of device 0 is refused, on every narrowed parameter.
-        for k in 1u32..=4 {
-            let alias = k * 256;
-            assert_eq!(
-                // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-                unsafe { submit_one(id, phys, sqe(OP_READ_SENSOR, alias, 0, 8, 0, 0)) },
-                IO_ERR_INVALID_PARAM, "sensor {alias} aliased sensor 0"
-            );
-            assert_eq!(
-                // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-                unsafe { submit_one(id, phys, sqe(OP_PWM_SET, alias, 50, 0, 0, 0)) },
-                IO_ERR_INVALID_PARAM, "pwm {alias} aliased pwm 0"
-            );
-            assert_eq!(
-                // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-                unsafe { submit_one(id, phys, sqe(OP_I2C_READ, alias, 0, 1, 0, 0)) },
-                IO_ERR_INVALID_PARAM, "i2c bus {alias} aliased bus 0"
-            );
-            i2c_seen_clear();
-            assert_eq!(
-                // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-                unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 0, 0, 1, alias as u16, 0)) },
-                IO_ERR_INVALID_PARAM, "i2c addr {alias} aliased addr 0"
-            );
-            assert_eq!(i2c_seen(), None);
-        }
-        // And the largest values the fields can hold do not panic either.
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_READ_SENSOR, u32::MAX, 0, 8, 0, 0)) },
-            IO_ERR_INVALID_PARAM
-        );
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_I2C_READ, u32::MAX, 0, 1, u16::MAX, u16::MAX)) },
-            IO_ERR_INVALID_PARAM
-        );
-    }
-
-    /// A truncated I2C register silently talks to the wrong register on a live
-    /// actuator bus, so it is refused even though it is not part of the cap.
-    #[test]
-    fn an_out_of_range_i2c_register_is_refused() {
-        let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::I2C, i2c_badge(0, 0x40), CapPerms::RW);
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 0, 0, 1, 0x40, 0x100)) },
-            IO_ERR_INVALID_PARAM
-        );
-        assert_eq!(i2c_seen(), None);
     }
 
     /// `OP_NET_SEND` and `OP_NET_RECV` name a `Cap<Socket>`: the op-table entry
@@ -4552,18 +4118,18 @@ mod tests {
 
     /// `SQE_F_FIXED` is refused on every opcode that does not move bytes to a
     /// window of ring 3 memory, before the entry is read: the block opcodes
-    /// (their `reg` is half a sector number), the register opcodes, a timer, and
-    /// an opcode no kernel knows.
+    /// (their `reg` is half a sector number), a call (its window is the data
+    /// buffer's), a timer, and an opcode no kernel knows.
     #[test]
     fn the_fixed_flag_is_refused_where_reg_means_something_else() {
         let (_g, id, phys) = setup_unpriv();
-        for op in [OP_NOP, OP_READ_SENSOR, OP_I2C_READ, OP_I2C_WRITE, OP_PWM_SET, OP_BLOCK_READ, OP_BLOCK_WRITE,
+        for op in [OP_NOP, OP_CALL, OP_BLOCK_READ, OP_BLOCK_WRITE,
                    OP_TIMER, OP_FSYNC, OP_BUF_REGISTER, OP_BUF_UNREGISTER, 77] {
             // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
             let c = unsafe { submit_one_cqe(id, phys, SqEntry { flags: SQE_F_FIXED, ..sqe(op, 0, 0, 512, 0, 0) }) };
             assert_eq!(done(c), (IO_ERR_INVALID_PARAM, CQE_F_REFUSED), "opcode {op}");
         }
-        assert!(block_seen().is_empty() && pins().is_empty());
+        assert!(block_seen().is_empty() && pins().is_empty() && calls_seen().is_empty());
     }
 
     /// The slot table: a slot is filled once, freed by an unregister, and a
@@ -4691,58 +4257,21 @@ mod tests {
     #[test]
     fn data_buffer_windows_are_bounded_without_panicking() {
         let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::RW);
         let last = RING_DATA_BUF_SIZE as u32;
         // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_READ_SENSOR, 0, last - 1, 1, 0, 0)) }, 7);
+        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_RECV, 0x78, last - 1, 1, 0, 0)) }, 1);
         // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_READ_SENSOR, 0, last, 0, 0, 0)) }, 7);
+        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_RECV, 0x78, last, 0, 0, 0)) }, 0);
         assert_eq!(
             // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_READ_SENSOR, 0, last, 1, 0, 0)) },
+            unsafe { submit_one(id, phys, sqe(OP_NET_RECV, 0x78, last, 1, 0, 0)) },
             IO_ERR_INVALID_PARAM
         );
         assert_eq!(
             // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_READ_SENSOR, 0, u32::MAX, u32::MAX, 0, 0)) },
+            unsafe { submit_one(id, phys, sqe(OP_NET_RECV, 0x78, u32::MAX, u32::MAX, 0, 0)) },
             IO_ERR_INVALID_PARAM
         );
-    }
-
-    /// Motor is the most safety-relevant opcode: it drives both wheels in one
-    /// call and carries no motor id, so it requires write on *both*.
-    #[test]
-    fn motor_speed_requires_write_on_both_wheels() {
-        let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::MOTOR, 0, CapPerms::RW);
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_MOTOR_SPEED, 100, 100, 0, 0, 0)) },
-            IO_ERR_PERM, "one wheel's handle commanded the pair"
-        );
-        grant_dev(OWNER, azos_devif::key::MOTOR, 1, CapPerms::RW);
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-            unsafe { submit_one(id, phys, sqe(OP_MOTOR_SPEED, 100, 100, 0, 0, 0)) },
-            0
-        );
-    }
-
-    /// The whole matrix is inert for a kernel-created ring, by design: a ring
-    /// a kernel task created keeps the kernel's full access
-    /// (`owner_privileged`).
-    #[test]
-    fn a_kernel_owned_ring_keeps_its_bypass() {
-        let _g = setup();
-        io_ring_register_ops(&TEST_OPS);
-        let (id, phys) = io_ring_create(OWNER as usize).unwrap();
-        // No handles granted at all, yet every opcode runs.
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_I2C_READ, 1, 0, 4, 0x68, 0)) }, 0);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_MOTOR_SPEED, 0, 0, 0, 0, 0)) }, 0);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one`).
-        assert_eq!(unsafe { submit_one(id, phys, sqe(OP_NET_SEND, 999, 0, 4, 0, 0)) }, 4);
     }
 
     #[test]
@@ -4991,11 +4520,11 @@ mod tests {
     /// A task that receives a MOVED `Cap<IoRing>` (decision
     /// 38, `cap_store::move_cap`, kind-erased — this needs no `Cap<Socket>`
     /// dressing, only a capability a task did not create) must not borrow the
-    /// ring's ORIGINAL creator's device authority. `ring_dev_ok` resolves I2C
-    /// / GPIO / PWM / motor checks against `state.owner_task`, stamped once at
-    /// create and never updated by a move — so before this fix, `OTHER`
-    /// submitting through a capability it received from `OWNER` executed with
-    /// `OWNER`'s sensor endpoint, which `OTHER` never held.
+    /// ring's ORIGINAL creator's device authority. Every entry is authorized
+    /// against `state.owner_task`, stamped once at create and never updated by
+    /// a move — so before this fix, `OTHER` submitting through a capability it
+    /// received from `OWNER` executed with `OWNER`'s sensor endpoint, which
+    /// `OTHER` never held.
     ///
     /// `mint` stands in for the far side of a completed move: after
     /// `cap_store::move_cap`, the receiver holds exactly this — a live,
@@ -5003,52 +4532,49 @@ mod tests {
     /// did not create.
     ///
     /// **Canary.** Delete the `caller_tid != owner_tid` check from
-    /// `io_ring_submit_ref`: `OTHER`'s submit succeeds, `SENSOR_CALLS` reads 1
+    /// `io_ring_submit_ref`: `OTHER`'s submit succeeds, `CALLS` reads 1
     /// instead of 0, and the final assertion (`OWNER` submitting its own entry)
     /// finds nothing queued.
     #[test]
     fn a_moved_capability_does_not_borrow_the_creators_device_authority() {
         let (_g, id, phys) = setup_unpriv();
-        // OWNER — and only OWNER — holds the Sensor capability the queued op
-        // needs.
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::READ);
         let r = io_ring_ref(id).expect("live");
 
         // OTHER now holds a live Cap<IoRing> to a ring it did not create and
         // no sensor endpoint at all — exactly what a completed move leaves behind.
         let _in_other: Cap<RingTarget> = mint(OTHER, r);
 
-        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_sensor_reads`).
-        unsafe { queue_sensor_reads(phys, 1); }
+        // SAFETY: `phys` is this test's live ring page, no other user (see `queue_calls`).
+        unsafe { queue_calls(phys, 1); }
         assert_eq!(
             io_ring_submit_ref(OTHER, r),
             Err(IoRingCapError::Cap(CapError::MissingPerms)),
             "a task holding a moved Cap<IoRing> ran a device op under its \
              creator's authority",
         );
-        assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 0, "nothing ran under borrowed authority");
+        assert_eq!(CALLS.load(AOrd::SeqCst), 0, "nothing ran under borrowed authority");
 
         // The queued entry is untouched: OWNER, the actual owner, still
         // submits it successfully.
         assert_eq!(io_ring_submit_ref(OWNER, r), Ok(1));
-        assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 1);
+        assert_eq!(CALLS.load(AOrd::SeqCst), 1);
     }
 
     // ── Completion-queue back-pressure ─────────────────────────────────────
 
-    /// Queue `n` sensor reads at the ring's `sq_tail`, each tagged with
+    /// Queue `n` calls at the ring's `sq_tail`, each tagged with
     /// `0x100 + ` its SQ position.
     ///
     /// # Safety
     ///
     /// `phys` is the physical address of a live ring page created by the
     /// calling test, and nothing else touches that ring meanwhile.
-    unsafe fn queue_sensor_reads(phys: usize, n: u32) {
+    unsafe fn queue_calls(phys: usize, n: u32) {
         let ring = phys as *mut IoRing;
         for _ in 0..n {
             let tail = (*ring).sq_tail.load(Ordering::Acquire);
             (*ring).sq_entries[(tail as usize) % RING_SQ_SIZE] =
-                SqEntry { user_data: 0x100 + tail as u64, ..sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0) };
+                SqEntry { user_data: 0x100 + tail as u64, ..sqe(OP_CALL, 0, 0, 1, 0, 0) };
             (*ring).sq_tail.store(tail.wrapping_add(1), Ordering::Release);
         }
     }
@@ -5064,27 +4590,26 @@ mod tests {
     #[test]
     fn a_full_cq_executes_nothing_more() {
         let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::READ);
         let ring = phys as *mut IoRing;
         let r = io_ring_ref(id).expect("live");
         // SAFETY: `phys` and `ring` are this test's live ring page; every access is by the test thread,
         // between passes, and each helper called here states the same contract.
         unsafe {
-            queue_sensor_reads(phys, RING_SQ_SIZE as u32);
+            queue_calls(phys, RING_SQ_SIZE as u32);
             assert_eq!(io_ring_submit(id), RING_SQ_SIZE as i32);
-            assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 32);
+            assert_eq!(CALLS.load(AOrd::SeqCst), 32);
 
-            queue_sensor_reads(phys, 1);
+            queue_calls(phys, 1);
             assert_eq!(io_ring_submit(id), IO_ERR_CQ_FULL, "a full CQ answered as a submit that ran");
             assert_eq!(io_ring_submit_ref(OWNER, r), Err(IoRingCapError::CqFull), "the typed path");
-            assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 32, "an entry ran with no room for its completion");
+            assert_eq!(CALLS.load(AOrd::SeqCst), 32, "an entry ran with no room for its completion");
             assert_eq!((*ring).sq_head.load(Ordering::Acquire), 32, "sq_head passed an entry that did not run");
             assert_eq!((*ring).cq_tail.load(Ordering::Acquire), 32);
             assert_eq!((*ring).cq_entries[0].user_data, 0x100, "an unread completion was overwritten");
 
             (*ring).cq_head.store(1, Ordering::Release);
             assert_eq!(io_ring_submit(id), 1, "one slot drained, one entry runs");
-            assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 33);
+            assert_eq!(CALLS.load(AOrd::SeqCst), 33);
             assert_eq!((*ring).sq_head.load(Ordering::Acquire), 33);
             assert_eq!((*ring).cq_entries[0].user_data, 0x100 + 32, "written into the slot the consumer freed");
             assert_eq!(io_ring_submit(id), 0, "nothing pending");
@@ -5099,19 +4624,18 @@ mod tests {
     #[test]
     fn a_pass_stops_where_the_cq_fills() {
         let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::READ);
         let ring = phys as *mut IoRing;
         // SAFETY: `phys` and `ring` are this test's live ring page; every access is by the test thread,
         // between passes, and each helper called here states the same contract.
         unsafe {
-            queue_sensor_reads(phys, 30);
+            queue_calls(phys, 30);
             assert_eq!(io_ring_submit(id), 30);
-            queue_sensor_reads(phys, 3);
+            queue_calls(phys, 3);
             assert_eq!(io_ring_submit(id), 2, "two completions fit");
             assert_eq!((*ring).sq_head.load(Ordering::Acquire), 32);
-            assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 32);
+            assert_eq!(CALLS.load(AOrd::SeqCst), 32);
             assert_eq!(io_ring_submit(id), IO_ERR_CQ_FULL);
-            assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 32);
+            assert_eq!(CALLS.load(AOrd::SeqCst), 32);
         }
     }
 
@@ -5123,15 +4647,14 @@ mod tests {
     #[test]
     fn a_cq_head_ahead_of_its_tail_reads_full() {
         let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::READ);
         let ring = phys as *mut IoRing;
         // SAFETY: `phys` and `ring` are this test's live ring page; every access is by the test thread,
         // between passes, and each helper called here states the same contract.
         unsafe {
             (*ring).cq_head.store(1, Ordering::Release);
-            queue_sensor_reads(phys, 1);
+            queue_calls(phys, 1);
             assert_eq!(io_ring_submit(id), IO_ERR_CQ_FULL);
-            assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 0);
+            assert_eq!(CALLS.load(AOrd::SeqCst), 0);
             assert_eq!((*ring).cq_tail.load(Ordering::Acquire), 0);
             assert_eq!((*ring).sq_head.load(Ordering::Acquire), 0);
         }
@@ -5154,60 +4677,6 @@ mod tests {
 
     fn done(c: CqEntry) -> (i32, u32) {
         (c.result, c.flags)
-    }
-
-    /// **A missing capability completes refused, with `-ECAPPERMS`, and the
-    /// operation does not run.** With the capability the same entry runs and
-    /// completes without the flag.
-    ///
-    /// **Canaries.** Drop `need_dev!` from the `OP_READ_SENSOR` arm: the first
-    /// completion is the hook's 7. Complete a refusal with `flags: 0`: the flag
-    /// assertion goes red.
-    #[test]
-    fn a_missing_capability_completes_refused_with_ecapperms_and_runs_nothing() {
-        let (_g, id, phys) = setup_unpriv();
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0)) };
-        assert_eq!(done(c), (-201, CQE_F_REFUSED));
-        assert_eq!(IO_ERR_PERM, -201);
-        assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 0, "a refused entry reached the sensor");
-
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::READ);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0)) };
-        assert_eq!(done(c), (7, 0), "the holder's read runs and is not flagged");
-        assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 1);
-    }
-
-    /// **Seccomp per entry.** A profile that does not list the `sensor`
-    /// interface refuses the ring's sensor read with `-EPERM` whether or
-    /// not the capability is held — the profile is asked first — and the sensor is not read. An
-    /// opcode the profile lists still runs on the same ring.
-    ///
-    /// **Canary.** Delete the `iface_allowed` check from `dispatch_sqe`: the
-    /// held read completes 7 and the hook count is 1.
-    #[test]
-    fn a_seccomp_denial_refuses_the_entry_before_its_capability_and_runs_nothing() {
-        let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::READ);
-        grant_dev(OWNER, azos_devif::key::GPIO, 5, CapPerms::READ);
-        IFACE_DENIES.store(azos_devif::key::SENSOR as u32, AOrd::SeqCst);
-
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let held = unsafe { submit_one_cqe(id, phys, sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0)) };
-        assert_eq!(done(held), (-1, CQE_F_REFUSED), "a held sensor, denied by the profile");
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let unheld = unsafe { submit_one_cqe(id, phys, sqe(OP_READ_SENSOR, 1, 0, 8, 0, 0)) };
-        assert_eq!(done(unheld), (-1, CQE_F_REFUSED), "the profile answers before the capability");
-        assert_eq!(SENSOR_CALLS.load(AOrd::SeqCst), 0, "a denied entry reached the sensor");
-
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let gpio = unsafe { submit_one_cqe(id, phys, sqe(OP_READ_GPIO, 5, 0, 0, 0, 0)) };
-        assert_eq!(done(gpio), (0, 0), "a listed opcode still runs");
-        IFACE_DENIES.store(0, AOrd::SeqCst);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0)) };
-        assert_eq!(done(c), (7, 0));
     }
 
     /// **A block entry needs the partition's endpoint with the op class, whole
@@ -5266,13 +4735,12 @@ mod tests {
     }
 
     /// Every executable opcode asks the profile for its own gate (the typed
-    /// syscall it stands for, or the kernel-hosted interface whose op it is),
-    /// on a kernel ring where no capability can refuse first.
+    /// syscall it stands for, the op of a handle, or the kernel-hosted
+    /// interface whose op it is), on a kernel ring where no capability can
+    /// refuse first.
     ///
     /// **Canaries.** Swap two entries of `opcode_gate`: the literal pins go
     /// red. Map an opcode to `None`: its entry reads `-ENOSYS`, not `-EPERM`.
-    /// Ask the syscall verdict for a device opcode instead of the interface's:
-    /// the opcode runs past a profile that does not list the interface.
     #[test]
     fn every_executable_opcode_asks_seccomp_for_its_own_gate() {
         use azos_devif::key;
@@ -5282,13 +4750,7 @@ mod tests {
         let dev = OpGate::Iface;
         let opg = OpGate::Op;
         let table = [
-            (OP_READ_SENSOR, dev(key::SENSOR), 12),
-            (OP_WRITE_GPIO, dev(key::GPIO), 8),
-            (OP_READ_GPIO, dev(key::GPIO), 8),
-            (OP_I2C_READ, dev(key::I2C), 9),
-            (OP_I2C_WRITE, dev(key::I2C), 9),
-            (OP_PWM_SET, dev(key::PWM), 10),
-            (OP_MOTOR_SPEED, dev(key::MOTOR), 11),
+            (OP_CALL, OpGate::Syscall(azos_abi::syscall_nr::SYS_IPC_CALL), 21),
             (OP_NET_SEND, opg(azos_abi::invoke::NODE_SEND), 0x6806),
             (OP_NET_RECV, opg(azos_abi::invoke::NODE_RECV), 0x6807),
             (OP_FILE_READ, opg(azos_abi::invoke::NODE_READ), 0x6001),
@@ -5323,9 +4785,9 @@ mod tests {
             let c = unsafe { submit_one_cqe(id, phys, sqe(op, 0, 0, 1, 0, 0)) };
             assert_eq!(done(c), (-1, CQE_F_REFUSED), "opcode {op} ran past a profile denying {gate:?}");
         }
-        assert!(motor_seen().is_empty() && SENSOR_CALLS.load(AOrd::SeqCst) == 0);
+        assert_eq!(CALLS.load(AOrd::SeqCst), 0, "a denied call reached its endpoint");
         assert!(io_seen().is_empty(), "a denied file or channel entry reached its hook");
-        for op in [OP_NOP, 22, u16::MAX] {
+        for op in [OP_NOP, 1, 7, 15, 22, u16::MAX] {
             assert_eq!(opcode_gate(op), None, "opcode {op}");
         }
     }
@@ -5349,13 +4811,7 @@ mod tests {
         let (id, phys) = io_ring_create(OWNER as usize).unwrap();
         let bw = pledge_case(CASE_BLOCK_WAKE);
         let table = [
-            (OP_READ_SENSOR, bw),
-            (OP_WRITE_GPIO, bw),
-            (OP_READ_GPIO, bw),
-            (OP_I2C_READ, bw),
-            (OP_I2C_WRITE, bw),
-            (OP_PWM_SET, bw),
-            (OP_MOTOR_SPEED, bw),
+            (OP_CALL, bw),
             (OP_BLOCK_READ, bw),
             (OP_BLOCK_WRITE, bw),
             (OP_TIMER, bw),
@@ -5378,90 +4834,15 @@ mod tests {
             let c = unsafe { submit_one_cqe(id, phys, sqe(op, 0, 0, 1, 0, 0)) };
             assert_eq!(done(c), (IO_ERR_PLEDGE, CQE_F_REFUSED), "opcode {op} ran past a mask without {gate:?}'s bit");
         }
-        assert!(motor_seen().is_empty() && SENSOR_CALLS.load(AOrd::SeqCst) == 0);
+        assert_eq!(CALLS.load(AOrd::SeqCst), 0, "a pledged-away call reached its endpoint");
         assert!(io_seen().is_empty() && block_seen().is_empty(), "a pledged-away entry reached its hook");
         assert_eq!(__io_ring_parked_for_tests(id as usize), 0, "a refused timer or wait parked");
         // The mask gives up one bit only: an entry of another bit still runs
         // (a kernel ring holds every capability).
         PLEDGE_DROPPED.store(pledge_class(CLASS_NET).trailing_zeros(), AOrd::SeqCst);
         // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0)) };
-        assert_eq!(done(c), (7, 0), "dropping the net class stopped a sensor read");
-    }
-
-    /// **Containment refuses write entries, with the typed calls' `-EAGAIN`,
-    /// and leaves reads running.** A ring without the capability still gets
-    /// `-ECAPPERMS`. The motor opcode is not refused here: the halt rule
-    /// refuses it in the motor layer, which its entry reaches.
-    ///
-    /// **Canary.** Delete `not_contained!()` from the `OP_PWM_SET` arm: the PWM
-    /// entry completes 0.
-    #[test]
-    fn containment_refuses_write_entries_and_leaves_reads_running() {
-        let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::SENSOR, 0, CapPerms::READ);
-        grant_dev(OWNER, azos_devif::key::PWM, 0, CapPerms::RW);
-        grant_dev(OWNER, azos_devif::key::GPIO, 3, CapPerms::RW);
-        grant_dev(OWNER, azos_devif::key::I2C, i2c_badge(0, 0x40), CapPerms::RW);
-        grant_dev(OWNER, azos_devif::key::MOTOR, 0, CapPerms::RW);
-        grant_dev(OWNER, azos_devif::key::MOTOR, 1, CapPerms::RW);
-        CONTAINED.store(true, AOrd::SeqCst);
-
-        let eagain = (-11, CQE_F_REFUSED);
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        assert_eq!(done(unsafe { submit_one_cqe(id, phys, sqe(OP_PWM_SET, 0, 50, 0, 0, 0)) }), eagain, "pwm");
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        assert_eq!(done(unsafe { submit_one_cqe(id, phys, sqe(OP_WRITE_GPIO, 3, 1, 0, 0, 0)) }), eagain, "gpio");
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        assert_eq!(done(unsafe { submit_one_cqe(id, phys, sqe(OP_I2C_WRITE, 0, 0, 2, 0x40, 0)) }), eagain, "i2c");
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        assert_eq!(done(unsafe { submit_one_cqe(id, phys, sqe(OP_NET_SEND, 0x77, 0, 4, 0, 0)) }), eagain, "send");
-        assert_eq!(i2c_seen(), None, "a contained write reached the bus");
-
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        assert_eq!(done(unsafe { submit_one_cqe(id, phys, sqe(OP_READ_SENSOR, 0, 0, 8, 0, 0)) }), (7, 0), "a read");
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        assert_eq!(done(unsafe { submit_one_cqe(id, phys, sqe(OP_MOTOR_SPEED, 10, 10, 0, 0, 0)) }), (0, 0), "motor");
-        assert_eq!(motor_seen(), vec![(0, 10), (1, 10)]);
-        assert_eq!(
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-            done(unsafe { submit_one_cqe(id, phys, sqe(OP_PWM_SET, 1, 50, 0, 0, 0)) }),
-            (-201, CQE_F_REFUSED),
-            "a channel not held learns nothing from containment"
-        );
-    }
-
-    /// **A motor entry commands both wheels, and a refusal of either refuses
-    /// the entry.** A speed above 100 is refused before any wheel is touched.
-    ///
-    /// **Canaries.** Return at the first wheel's refusal (`?` on the left
-    /// call): the right wheel is never commanded. Report only the right
-    /// wheel's result: the left refusal completes 0.
-    #[test]
-    fn a_motor_entry_commands_both_wheels_and_reports_either_refusal() {
-        let (_g, id, phys) = setup_unpriv();
-        grant_dev(OWNER, azos_devif::key::MOTOR, 0, CapPerms::RW);
-        grant_dev(OWNER, azos_devif::key::MOTOR, 1, CapPerms::RW);
-        for refusing in [0u32, 1] {
-            MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            MOTOR_REFUSES.store(refusing, AOrd::SeqCst);
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-            let c = unsafe { submit_one_cqe(id, phys, sqe(OP_MOTOR_SPEED, 40, 40, 0, 0, 0)) };
-            assert_eq!(done(c), (-11, CQE_F_REFUSED), "wheel {refusing} refused");
-            assert_eq!(motor_seen(), vec![(0, 40), (1, 40)], "wheel {refusing} refused");
-        }
-        MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        MOTOR_REFUSES.store(u32::MAX, AOrd::SeqCst);
-        for (l, r) in [(101, 0), (0, 101), (u32::MAX, u32::MAX)] {
-            // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-            let c = unsafe { submit_one_cqe(id, phys, sqe(OP_MOTOR_SPEED, l, r, 0, 0, 0)) };
-            assert_eq!(done(c), (-22, CQE_F_REFUSED), "({l}, {r})");
-        }
-        assert!(motor_seen().is_empty(), "an out-of-range speed reached a wheel");
-        // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_MOTOR_SPEED, 0, 25, 0, 0, 0)) };
-        assert_eq!(done(c), (0, 0));
-        assert_eq!(motor_seen(), vec![(0, 0), (1, 25)]);
+        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, 0, 0, 1, 0, 0)) };
+        assert_eq!(done(c), (7, 0), "dropping the net class stopped a device call");
     }
 
     // ── The user mapping of the ring page ──────────────────────────────────
@@ -5569,22 +4950,22 @@ mod tests {
         assert_eq!(io_seen().len(), 2, "a refused entry reached its hook");
     }
 
-    /// **A refused device entry is recorded, charged to the ring's owner**, the
+    /// **A refused block entry is recorded, charged to the ring's owner**, the
     /// way the typed call records its refusal; a granted one records nothing.
     ///
-    /// **Canary.** Delete the `note_denial` call in `need_dev!`: `denials()`
-    /// stays empty after the refusal.
+    /// **Canary.** Delete the `note_denial` call in `dispatch_block`:
+    /// `denials()` stays empty after the refusal.
     #[test]
-    fn a_refused_device_entry_is_recorded_for_the_owner() {
+    fn a_refused_block_entry_is_recorded_for_the_owner() {
         let (_g, id, phys) = setup_unpriv();
         // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_WRITE_GPIO, 7, 1, 0, 0, 0)) };
+        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_BLOCK_READ, 1, 0, 512, 0, 0)) };
         assert_eq!(done(c), (IO_ERR_PERM, CQE_F_REFUSED));
         assert_eq!(denials(), vec![(OWNER, ty::ENDPOINT)]);
-        grant_dev(OWNER, azos_devif::key::GPIO, 7, CapPerms::RW);
+        grant_dev(OWNER, azos_devif::key::BLOCK, 1, CapPerms::READ);
         // SAFETY: `phys` is this test's live ring page, no other user (see `submit_one_cqe`).
-        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_WRITE_GPIO, 7, 1, 0, 0, 0)) };
-        assert_eq!(done(c), (0, 0));
+        let c = unsafe { submit_one_cqe(id, phys, sqe(OP_BLOCK_READ, 1, 0, 512, 0, 0)) };
+        assert_eq!(done(c), (512, 0));
         assert_eq!(denials().len(), 1, "a granted entry was recorded as a denial");
     }
 
@@ -5829,25 +5210,27 @@ mod tests {
     /// refusal is recorded for the OWNER.** The pass runs with a different
     /// current task (the poller); the capability is the owner's.
     ///
-    /// **Canary.** Key `need_dev!` on `current_task_tid()`: the GPIO read the
-    /// owner holds is refused.
+    /// **Canary.** Key `ring_dev_ok` on `current_task_tid()`: the block read the
+    /// owner holds is refused; hand `idl_call` the current task: the call is
+    /// the poller's.
     #[test]
     fn a_poller_pass_authorizes_on_the_owner_and_records_its_refusals() {
         let (_g, _id, phys, r) = setup_sqpoll();
         assert!(io_ring_permit_sqpoll(OWNER, 20));
-        grant_dev(OWNER, azos_devif::key::GPIO, 5, CapPerms::READ);
+        grant_dev(OWNER, azos_devif::key::BLOCK, 1, CapPerms::READ);
         // SAFETY: `phys` and `ring` are this test's live ring page; every access is by the test thread,
         // between passes, and each helper called here states the same contract.
         unsafe {
             queue(phys, sqe(OP_SQPOLL_START, 0, 0, 0, 0, 0));
             assert_eq!(io_ring_submit_ref(OWNER, r), Ok(1));
             azos_sched::shim_set_current(POLLER, 0);
-            queue(phys, sqe(OP_READ_GPIO, 5, 0, 0, 0, 0));
-            queue(phys, sqe(OP_WRITE_GPIO, 5, 1, 0, 0, 0));
+            queue(phys, sqe(OP_CALL, 9, 0, 1, 0, 0));
+            queue(phys, sqe(OP_BLOCK_WRITE, 1, 0, 512, 0, 0));
             let p = io_ring_sqpoll_pass(r);
             assert!(matches!(p, SqpollPass::Done { ran: 2, .. }), "{p:?}");
             let ring = phys as *mut IoRing;
-            assert_eq!(done((*ring).cq_entries[1]), (0, 0), "the owner's READ grant");
+            assert_eq!(done((*ring).cq_entries[1]), (7, 0), "the owner's call");
+            assert_eq!(calls_seen(), vec![(OWNER, 9, vec![0])], "the call was not made as the owner's");
             assert_eq!(done((*ring).cq_entries[2]), (IO_ERR_PERM, CQE_F_REFUSED), "no WRITE grant");
             assert_eq!(denials(), vec![(OWNER, ty::ENDPOINT)], "recorded for someone else");
         }
@@ -6733,9 +6116,9 @@ mod tests {
         let (id, phys) = io_ring_create(OWNER as usize).unwrap();
         unsafe { put_window(phys, 64, &[0xAB00_0001, 41, 0x22, 0x33]) };
         let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, 9, 64, 2, 0, 0)) };
-        assert_eq!(done(c), (0, 0));
+        assert_eq!(done(c), (7, 0));
         assert_eq!(calls_seen(), vec![(OWNER, 9, vec![0xAB00_0001, 41])], "only `param2` words are the request");
-        assert_eq!(unsafe { window(phys, 64) }, [0, 42, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(unsafe { window(phys, 64) }, [7, 42, 0, 0, 0, 0, 0, 0]);
     }
 
     /// **A window the buffer cannot hold, a misaligned one, and a word count
@@ -6755,7 +6138,7 @@ mod tests {
         }
         assert!(calls_seen().is_empty());
         let c = unsafe { submit_one_cqe(id, phys, sqe(OP_CALL, 9, last, CALL_WORDS as u32, 0, 0)) };
-        assert_eq!(done(c), (0, 0), "the last window of the buffer is a window");
+        assert_eq!(done(c), (7, 0), "the last window of the buffer is a window");
     }
 
     /// **A refused call leaves its window as ring 3 wrote it, and the profile
