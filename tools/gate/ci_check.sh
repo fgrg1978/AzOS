@@ -5646,34 +5646,47 @@ ota_bundle_row() { # ota_bundle_row <riscv64|aarch64> <good|tampered>
     ok; rm -rf "$work"
 }
 
-# ── Updates and advisories on the device (QEMU rows, written, not yet run) ───
+# ── Updates and advisories on the device (QEMU rows, written, NOT RUN) ───────
 #
-#   <isa>: pkg outdated and upgrade   `pkg outdated` reports an installed
-#                          package behind and below its security floor, `pkg
-#                          upgrade --all` installs the fixed build through the
-#                          signed path, the next boot applies it (a trial the
-#                          boot confirms) and the report says current
-#   <isa>: package below its floor refused  the same device with the package
-#                          left at the old version and the kernel built with
+#   <isa>: pkg outdated and upgrade   `pkg outdated` reports an installed package
+#                          behind and below its security floor, `pkg upgrade`
+#                          installs the fixed build through the signed path, the
+#                          next boot applies it (the old build stays staged until
+#                          the boot confirms) and starts it, and the report says
+#                          current
+#   <isa>: package below its floor refused  the same device with the old build
+#                          left installed and the kernel built with
 #                          PKG_SEC_FLOOR_ENFORCE=y: the boot applies it, notes
-#                          that it is below its floor, and the exec of its
-#                          program is refused with an `exec-grant` record whose
-#                          basis is 8; with the option off (the control) the
-#                          program starts
+#                          that it is below its floor, and the component manager's
+#                          start of its program is refused (`spawn-refused`, the
+#                          `[SPAWN] REFUSED ... security floor` line and the
+#                          `exec-grant` record's basis 8)
+#   <isa>: below-floor control        the same boot with PKG_SEC_FLOOR_ENFORCE
+#                          off: the program is started (`[compmgr] start`), so the
+#                          refusal above is the option's and not the fixture's
 #
-# What it puts together: a package author key (`azpkg.py keygen`) that is a
-# `[signer.acme]` of the device's signed topology (appended to CAPS.TOM and signed
-# again with the TEST key, as tests/host/pkg-tests `Device0::with_signers` does),
-# two builds of one package (1.0.0 and 2.0.0), the index that lists 2.0.0 with
-# `sec_floor = 1.5.0` (`azpkg.py index`), all served by QEMU's TFTP gateway from
-# the directory SOURCE.CFG names. Prerequisites the gate does not provide yet and
-# the first run will have to: a signer section in the gate's topology volume, the
-# native `/pkg` volume row the installer stages on, and a package row whose
-# program the boot loader starts. Host rows cover every decision these rows
-# observe (`pkg: outdated, upgrade and security floors`, the canaries after it).
+# The package is the smallest real one: the tree's hello program (an ELF the
+# build makes), with a distinct trailer per version so the two builds differ and
+# the bytes are not a shipped image's (a shipped digest keeps its shipped binding
+# and is never marked), one row `PKGHELLO.ELF` with `start = true`, signed by a
+# fresh author key that is a `[signer.acme]` of the device's signed topology
+# (appended to CAPS.TOM and signed again with the TEST key, as tests/host/pkg-tests
+# `Device0::with_signers` does). The repository is QEMU's TFTP gateway: SOURCE.CFG
+# names `ACMEV1.PKG`, and `INDEX.AZX` (`azpkg.py index`, build 2.0.0 offered, floor
+# 1.5.0) and `ACMEV2.PKG` sit beside it.
+#
+# UNVERIFIED, because nothing in the gate installs a package in QEMU yet and these
+# rows were written without running them: that the gate's topology volume carries
+# the native `/pkg` volume row the installer stages on (the installer refuses to
+# stage without it); that `make topo-volume`'s CAPS.TOM accepts the appended
+# `[signer]` section the way the host fixture's does; that the package row's
+# program is admitted under its signer's ceiling; and the exact console text of the
+# two apply lines the rows grep. Every decision they observe is covered by host
+# rows (`pkg: outdated, upgrade and security floors` and its canaries).
 pkgup_volume() { # <isa> <disk> <work>
-    local isa="$1" disk="$2" work="$3" k="$3/tftp" tisa=riscv64
-    [ "$isa" = aarch64 ] && tisa=aarch64
+    local isa="$1" disk="$2" work="$3" k="$3/tftp" tisa=riscv64 v elf="$AZOS_OUT/build/hello.elf"
+    [ "$isa" = aarch64 ] && { tisa=aarch64; elf="$AZOS_OUT/build/aarch64/hello.elf"; }
+    [ -f "$elf" ] || return 1
     par_shared "make topo-volume" || return 1
     make topo-volume TOPO_IMAGE="$disk" TOPO_ISA="$tisa" TOPO_KCONFIG_RISCV64="$PRIMARY_CONFIG" \
         TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" TOPO_SELECT="${PKGUP_SELECT:-}" >"$work/topo.log" 2>&1 || return 1
@@ -5684,31 +5697,31 @@ pkgup_volume() { # <isa> <disk> <work>
     printf '\n[signer.acme]\nkey_id = "%s"\nmem_pages_max = 64\nwarrants = ["endpoint:endpoint.acme"]\n' "$kid" >>"$work/CAPS.TOM"
     python3 tools/sign/gen_config_sig.py "$work/CAPS.TOM" --priv "$OTAE2E_PRIV" --out "$work/CAPS.SIG" >/dev/null 2>&1 || return 1
     mcopy -o -i "$disk" "$work/CAPS.TOM" ::CAPS.TOM 2>/dev/null && mcopy -o -i "$disk" "$work/CAPS.SIG" ::CAPS.SIG 2>/dev/null || return 1
-    # Two builds of one package, and the index listing the newer with a floor above the older.
-    local v
     for v in 1.0.0 2.0.0; do
         mkdir -p "$work/p$v"
-        head_bytes() { python3 -c "import sys; sys.stdout.buffer.write(bytes((i * 7) % 256 for i in range(int(sys.argv[1]))))" "$1"; }
-        head_bytes 400 >"$work/p$v/acme.elf"
-        printf 'format = 5\n[task.ACME.ELF]\nclass = "best_effort"\npriority = 20\nmem_pages = 32\ncaps = [\n    { kind = "endpoint", target = "endpoint.acme", perm = "rw" },\n]\n' >"$work/p$v/rows.toml"
-        printf '[package]\nname = "acme-vision"\nversion = "%s"\nhardware = ["sbc"]\nlicence = "Apache-2.0"\nrows = "rows.toml"\n[image."ACME.ELF"]\npath = "acme.elf"\nlicence = "Apache-2.0"\n' "$v" >"$work/p$v/package.toml"
-        python3 tools/image/azpkg.py build "$work/p$v/package.toml" -o "$k/ACME$v.PKG" >/dev/null 2>&1 \
-          && python3 tools/image/azpkg.py sign "$k/ACME$v.PKG" --key "$work/author.priv" >/dev/null 2>&1 || return 1
+        { cat "$elf"; printf 'pkg-hello %s' "$v"; } >"$work/p$v/pkghello.elf"
+        printf 'format = 5\n[task.PKGHELLO.ELF]\nclass = "best_effort"\npriority = 20\nmem_pages = 32\nstart = true\ncaps = [\n    { kind = "endpoint", target = "endpoint.acme", perm = "rw" },\n]\n' >"$work/p$v/rows.toml"
+        printf '[package]\nname = "pkg-hello"\nversion = "%s"\nhardware = ["sbc"]\nlicence = "Apache-2.0"\nrows = "rows.toml"\n[image."PKGHELLO.ELF"]\npath = "pkghello.elf"\nlicence = "Apache-2.0"\n' "$v" >"$work/p$v/package.toml"
+        python3 tools/image/azpkg.py build "$work/p$v/package.toml" -o "$work/p$v/p.azpkg" >/dev/null 2>&1 \
+          && python3 tools/image/azpkg.py sign "$work/p$v/p.azpkg" --key "$work/author.priv" >/dev/null 2>&1 || return 1
     done
-    mv "$k/ACME1.0.0.PKG" "$k/ACMEV1.PKG"; mv "$k/ACME2.0.0.PKG" "$k/ACMEV2.PKG"
-    python3 tools/image/azpkg.py index "$k/ACMEV2.PKG" --key "$work/author.priv" --serial 1 --floor acme-vision=1.5.0 -o "$k/INDEX.AZX" >/dev/null 2>&1 || return 1
+    cp "$work/p1.0.0/p.azpkg" "$k/ACMEV1.PKG"; cp "$work/p2.0.0/p.azpkg" "$k/ACMEV2.PKG"
+    python3 tools/image/azpkg.py index "$k/ACMEV2.PKG" --key "$work/author.priv" --serial 1 --floor pkg-hello=1.5.0 -o "$k/INDEX.AZX" >/dev/null 2>&1 || return 1
     printf 'tftp=10.0.2.2\nfile=ACMEV1.PKG\n' >"$work/SOURCE.CFG"
     mcopy -o -i "$disk" "$work/SOURCE.CFG" ::PKG/SOURCE.CFG 2>/dev/null
 }
-pkgup_row() { # pkgup_row <riscv64|aarch64> <upgrade|floor>
-    local isa="$1" mode="$2" label
-    if [ "$mode" = upgrade ]; then label="$isa: pkg outdated and upgrade"; else label="$isa: package below its floor refused"; fi
+pkgup_row() { # pkgup_row <riscv64|aarch64> <upgrade|floor|control>
+    local isa="$1" mode="$2" label feats="qemu"
+    case "$mode" in
+        upgrade) label="$isa: pkg outdated and upgrade" ;;
+        floor)   label="$isa: package below its floor refused"; feats="qemu,CONFIG_PKG_SEC_FLOOR_ENFORCE=y" ;;
+        *)       label="$isa: below-floor control" ;;
+    esac
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
-    local work="$CI_LOG_DIR/pkgup-$isa-$mode" kimg disk fifo log1 log2 feats="qemu"
+    local work="$CI_LOG_DIR/pkgup-$isa-$mode" kimg disk fifo log1 log2
     rm -rf "$work"; mkdir -p "$work/tftp"
     kimg="$work/kernel"; disk="$work/disk.img"; fifo="$work/in.fifo"; log1="$work/boot1.log"; log2="$work/boot2.log"
-    [ "$mode" = floor ] && feats="qemu,CONFIG_PKG_SEC_FLOOR_ENFORCE=y"
     if [ "$isa" = riscv64 ]; then
         kbuild "$feats" || { bad; echo "      riscv64 kernel ($feats) did not build"; return; }
         cp "$KERNEL" "$kimg"; rm -f $AZOS_OUT/build/disk-sh.img; make_disk $AZOS_OUT/build/disk-sh.img; cp $AZOS_OUT/build/disk-sh.img "$disk"
@@ -5721,7 +5734,7 @@ pkgup_row() { # pkgup_row <riscv64|aarch64> <upgrade|floor>
     mkfifo "$fifo" || { bad; echo "      mkfifo failed"; return; }
     par_ready
     OTABUN_LOG="$log1"
-    # Boot 1: install the old build, ask what is outdated, upgrade it.
+    # Boot 1: install the old build; `pkg outdated`; upgrade it (upgrade mode).
     otabun_qemu "$isa" "$kimg" "$disk" "$log1" "$fifo" "$work/tftp" || { bad; echo "      QEMU did not start (log: $log1)"; return; }
     exec 9>"$fifo"
     if ! otae2e_wait "$log1" 'azos\$ ' 150 || ! otae2e_wait "$log1" '\[pkgd\] AzOS package installer' 90; then
@@ -5731,39 +5744,49 @@ pkgup_row() { # pkgup_row <riscv64|aarch64> <upgrade|floor>
     if ! grep -aq 'installed: package' "$log1"; then
         exec 9>&-; otae2e_stop; bad; echo "      the old build was not installed: $(grep -a 'refused: ' "$log1" | tr -d '\r' | sed -n '$p') (log: $log1)"; return
     fi
-    # The source now names the new build's directory entry; the index sits beside it.
     otabun_cmd "pkg outdated" '[0-9]+ behind, [0-9]+ below' 60
-    if ! grep -aqE 'acme-vision +1\.0\.0 +2\.0\.0 +behind; below security floor 1\.5\.0' "$log1" \
+    if ! grep -aqE 'pkg-hello +1\.0\.0 +2\.0\.0 +behind; below security floor 1\.5\.0' "$log1" \
        || ! grep -aqE '1 behind, 1 below their security floor' "$log1"; then
         exec 9>&-; otae2e_stop; bad; echo "      pkg outdated did not report the package behind and below its floor:"
-        grep -a 'acme-vision\|behind\|refused' "$log1" | tr -d '\r' | sed -n '1,6p' | sed 's/^/        /'; echo "      log kept: $log1"; return
+        grep -a 'pkg-hello\|behind\|refused' "$log1" | tr -d '\r' | sed -n '1,6p' | sed 's/^/        /'; echo "      log kept: $log1"; return
     fi
     if [ "$mode" = upgrade ]; then
-        otabun_cmd "pkg upgrade --all" 'upgraded acme-vision|refused acme-vision' 90
-        if ! grep -aqE 'upgraded acme-vision 1\.0\.0 -> 2\.0\.0' "$log1"; then
+        otabun_cmd "pkg upgrade --all" 'upgraded pkg-hello|refused pkg-hello' 90
+        if ! grep -aqE 'upgraded pkg-hello 1\.0\.0 -> 2\.0\.0' "$log1"; then
             exec 9>&-; otae2e_stop; bad; echo "      pkg upgrade --all did not upgrade the package (log: $log1)"; return
         fi
     fi
     exec 9>&-; otae2e_stop
-    # Boot 2: the kernel applies what is staged. Upgrade: the new build is applied and not below
-    # its floor. Floor: the old build is applied, noted below its floor, and its program is refused.
-    otae2e_qemu "$isa" "$kimg" "$disk" "$log2" || { bad; echo "      QEMU did not start (log: $log2)"; return; }
-    otae2e_wait "$log2" '\[PKG\] [0-9]+ of [0-9]+ package program\(s\) bound|!!! KERNEL PANIC !!!|\[FATAL\]' 150
-    otae2e_stop
+    # Boot 2: the kernel applies what is staged, the component manager starts the row.
+    OTABUN_LOG="$log2"
+    mkfifo "$fifo.2" 2>/dev/null
+    otabun_qemu "$isa" "$kimg" "$disk" "$log2" "$fifo.2" "$work/tftp" || { bad; echo "      QEMU did not start (log: $log2)"; return; }
+    exec 9>"$fifo.2"
+    otae2e_wait "$log2" 'azos\$ ' 150
     if otae2e_trap "$log2" || ! grep -aq '\[PKG\] 1 package(s) applied' "$log2"; then
-        bad; echo "      the boot did not apply the package:"; grep -a '\[PKG\]' "$log2" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'; echo "      logs kept: $log1 $log2"; return
+        exec 9>&-; otae2e_stop; bad; echo "      the boot did not apply the package:"; grep -a '\[PKG\]' "$log2" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'; echo "      logs kept: $log1 $log2"; return
     fi
-    if [ "$mode" = upgrade ]; then
-        grep -aq 'below its security floor' "$log2" && { bad; echo "      the upgraded package is still below its floor (log: $log2)"; return; }
-    else
-        if ! grep -aq '\[PKG\] acme-vision 1\.0\.0 is below its security floor' "$log2"; then
-            bad; echo "      the kernel did not mark the package below its floor (log: $log2)"; return
-        fi
-        # The exec check's record: basis 8 (BelowSecFloor), on the program's digest.
-        if ! grep -aqiE 'exec-grant.*(basis[ =]8|below)' "$log2"; then
-            bad; echo "      no exec-grant record with the BelowSecFloor basis (log: $log2)"; return
-        fi
-    fi
+    case "$mode" in
+        upgrade)
+            # The new build runs, is not below its floor, and the report says current.
+            otabun_cmd "pkg outdated" '[0-9]+ behind, [0-9]+ below' 60
+            if grep -aq 'below its security floor' "$log2" || ! grep -aq '\[compmgr\] start PKGHELLO.ELF' "$log2" \
+               || ! grep -aqE '0 behind, 0 below their security floor' "$log2"; then
+                exec 9>&-; otae2e_stop; bad; echo "      the upgraded package did not start current (log: $log2)"; return
+            fi ;;
+        floor)
+            if ! grep -aq '\[PKG\] pkg-hello 1\.0\.0 is below its security floor' "$log2" \
+               || ! grep -aq 'spawn-refused PKGHELLO.ELF' "$log2" \
+               || ! grep -aq 'REFUSED: .*PKGHELLO.ELF: its package is below its security floor' "$log2" \
+               || grep -aq '\[compmgr\] start PKGHELLO.ELF' "$log2"; then
+                exec 9>&-; otae2e_stop; bad; echo "      the below-floor program was not refused at its start (log: $log2)"; return
+            fi ;;
+        *)
+            if grep -aq 'security floor' "$log2" || ! grep -aq '\[compmgr\] start PKGHELLO.ELF' "$log2"; then
+                exec 9>&-; otae2e_stop; bad; echo "      with the option off the program did not start (log: $log2)"; return
+            fi ;;
+    esac
+    exec 9>&-; otae2e_stop
     ok; rm -rf "$work"
 }
 
@@ -9602,6 +9625,8 @@ par "aarch64: pkg outdated and upgrade" pkgup_row aarch64 upgrade
 a64_kbuild "qemu" >/dev/null
 par "aarch64: package below its floor refused" pkgup_row aarch64 floor
 a64_kbuild "qemu" >/dev/null
+par "aarch64: below-floor control" pkgup_row aarch64 control
+a64_kbuild "qemu" >/dev/null
 par "aarch64: watchdog wired" aarch64_watchdog_row
 par "aarch64: console routed" aarch64_console_route_row
 par "aarch64: entropy seeds pool" aarch64_entropy_row
@@ -10348,6 +10373,8 @@ kbuild "qemu"
 par "riscv64: pkg outdated and upgrade" pkgup_row riscv64 upgrade
 kbuild "qemu"
 par "riscv64: package below its floor refused" pkgup_row riscv64 floor
+kbuild "qemu"
+par "riscv64: below-floor control" pkgup_row riscv64 control
 kbuild "qemu"
 
 # ── boot count: an orderly reboot is not a crash (owner decision 2026-09-28)
