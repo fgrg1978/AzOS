@@ -435,6 +435,21 @@ fn gpio_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
 #[cfg(any(feature = "vf2", feature = "k1"))]
 const GPIO: Ops<Kernel> = bring_up(gpio_probe);
 
+// The development kernel's soft expander: its probe registers it as the next
+// GPIO controller, its unbind withdraws it, and the number stays the device's.
+#[cfg(feature = "gpio-soft-expander")]
+fn gpio_soft_probe(_: &mut KernelEnv<'_>, h: Handle, _: &Device) -> R {
+    let ctrl = azos_drv_gpio::chips::register(h.0, &azos_drv_gpio::expander::EXPANDER).map_err(|_| ProbeError::Busy)?;
+    crate::kprintln!("[GPIO] soft expander: controller {}, {} pins", ctrl, azos_drv_gpio::expander::PINS);
+    Ok(())
+}
+#[cfg(feature = "gpio-soft-expander")]
+fn gpio_soft_unbind(_: &mut KernelEnv<'_>, h: Handle, _: &Device) -> R {
+    azos_drv_gpio::chips::unregister(h.0).map(|_| ()).ok_or(ProbeError::Failed)
+}
+#[cfg(feature = "gpio-soft-expander")]
+const GPIO_SOFT: Ops<Kernel> = Ops { probe: gpio_soft_probe, unbind: unbind(gpio_soft_unbind), power: Power::Stateless };
+
 #[cfg(all(any(feature = "vf2", feature = "k1"), feature = "board-io"))]
 fn pwm_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
     azos_drv_actuator::pwm::pwm_attach(super::hwbus::map_window(dev)?).map_err(|_| ProbeError::Busy)

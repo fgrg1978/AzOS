@@ -722,6 +722,10 @@ pub(crate) fn note_firmware_virtio(dtb_ptr: usize) {
     // arch-only: x86_64's firmware table is no device tree.
     #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
     let _ = dtb_ptr;
+    // The development kernel's soft GPIO expander: a device no firmware
+    // describes, added so that its record binds and unbinds it like any other.
+    #[cfg(feature = "gpio-soft-expander")]
+    add(Device::dt("gpio-soft", b"azos,soft-gpio", 0, 0, 0));
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     if dtb_ptr != 0 {
         let mut named = false;
@@ -1039,6 +1043,71 @@ pub(crate) fn unbind_rebind(h: hwbus::Handle, driver: &str) -> Result<(), hwbus:
     let mut kd = Records { records: &RECORDS, env: &mut env };
     hwbus::Locked.unbind(h, &mut kd, &mut Console)?;
     if hwbus::Locked.rebind(h, driver, &mut kd, &mut Console) { Ok(()) } else { Err(hwbus::UnbindError::NotBound) }
+}
+
+// The board's GPIO controller and the soft expander serve the one `Gpio`
+// interface: the capability the topology stamps for `gpio.1.9` drives the
+// expander's pin 9 and leaves the board's pin 9 as it was, while `gpio.9`
+// still answers for the board's. The expander's unbind makes its capability
+// answer NO_RESOURCE; its rebind gives it the same number back.
+//
+// Canary: the kernel feature `gpio-badge-canary` (a badge is stamped without
+// its controller): the expander's capability lands on the board's pin.
+#[cfg(all(feature = "ktest", feature = "gpio-soft-expander"))]
+azos_ktest::ktest_late! {
+    fn gpio_two_controllers_serve_one_interface() {
+        use azos_devif::{gpio, outcome, Gpio, Out};
+        use azos_drv_gpio::chips::GpioChip;
+        use azos_drv_gpio::expander::EXPANDER;
+        use azos_syscall::devices::GpioServer;
+        const PIN: u32 = 9;
+        let server = |target: &str| {
+            azos_devif::parse_target(target).map(|(_, badge)| {
+                GpioServer(azos_syscall::khost::Caller { tid: 0, badge, rights: azos_abi::cap::CapPerms::RW })
+            })
+        };
+        let (Some(mut x), Some(board)) = (server("gpio.1.9"), server("gpio.9")) else {
+            return Err("a gpio spelling names nothing");
+        };
+        let Some(h) = hwbus::with(|b| b.iter().find(|(_, s)| s.dev.name.as_str() == "gpio-soft").map(|(h, _)| h)) else {
+            return Err("the soft expander is not on the bus");
+        };
+        if azos_drv_gpio::chips::chip(1).is_none() {
+            return Err("the soft expander is not controller 1");
+        }
+        let before = azos_drv_gpio::gpio::gpio_read(PIN);
+        if x.set_dir(gpio::DIR_OUTPUT) != Out::ok(()) || x.write(1) != Out::ok(()) || x.read() != Out::ok(1) {
+            return Err("the expander's pin was not driven through its capability");
+        }
+        if EXPANDER.read(PIN) != Ok(1) {
+            return Err("the expander's own register does not hold what its capability drove");
+        }
+        if azos_drv_gpio::gpio::gpio_read(PIN) != before {
+            return Err("a capability on controller 1 changed controller 0's pin");
+        }
+        let board_reads = match u32::try_from(before) {
+            Ok(v) => Out::ok(v),
+            Err(_) => Out::err(outcome::FAULT),
+        };
+        if board.read() != board_reads {
+            return Err("controller 0's capability does not answer for controller 0's pin");
+        }
+        let mut env = KernelEnv::plain();
+        let mut kd = Records { records: &RECORDS, env: &mut env };
+        if hwbus::Locked.unbind(h, &mut kd, &mut Console).is_err() {
+            return Err("the soft expander did not unbind through its record");
+        }
+        let gone = x.write(0);
+        let back = hwbus::Locked.rebind(h, "gpio-soft", &mut kd, &mut Console);
+        if gone != Out::err(outcome::NO_RESOURCE) {
+            return Err("the unbound expander's capability did not answer NO_RESOURCE");
+        }
+        if !back || x.write(0) != Out::ok(()) || EXPANDER.read(PIN) != Ok(0) {
+            return Err("the expander did not come back as controller 1");
+        }
+        crate::kprintln!("[KTEST] gpio: two controllers, one interface; controller 1's capability left controller 0 alone");
+        Ok(())
+    }
 }
 
 // ── The introspection tree: devices/ ────────────────────────────────────

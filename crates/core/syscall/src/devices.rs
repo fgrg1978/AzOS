@@ -89,6 +89,8 @@ use azos_devif::i2c::{self, Bytes};
 use azos_devif::uart::{self, Chunk, ChunkSink, ChunkSource, RxQueue, TxQueue};
 use azos_devif::{outcome, Cap, Out};
 use azos_drv_bus::uart_bridge::{BridgePort, BRIDGE_PORT};
+use azos_drv_gpio::chips::{Fault, GpioChip};
+use azos_drv_gpio::gpio::GpioDir;
 use azos_rings::region::{RingStep, SpscSlots, RING_SLOTS};
 use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -98,77 +100,93 @@ use crate::handlers::gpio_pin_is_motor_bound;
 use crate::handlers::{pwm_channel_is_motor_bound, pwm_control_reaches_a_motor};
 use crate::khost::Caller;
 
-/// The `Gpio` interface served for one caller.
+/// The pin a `gpio` badge names, on its controller (`azos_drv_gpio::chips`).
+pub(crate) struct GpioPin {
+    chip: &'static dyn GpioChip,
+    ctrl: u8,
+    pin: u32,
+}
+
+impl GpioPin {
+    /// `NO_RESOURCE` for a controller that is not registered, `BAD_ARGUMENT`
+    /// for a badge no spelling makes or a pin past the controller's last.
+    pub(crate) fn of(badge: u32) -> Result<GpioPin, u32> {
+        if badge >> 16 != 0 {
+            return Err(outcome::BAD_ARGUMENT);
+        }
+        let (ctrl, pin) = azos_devif::gpio::unbadge(badge);
+        let chip = azos_drv_gpio::chips::chip(ctrl as u32).ok_or(outcome::NO_RESOURCE)?;
+        let pin = pin as u32;
+        if pin >= chip.pins() {
+            return Err(outcome::BAD_ARGUMENT);
+        }
+        Ok(GpioPin { chip, ctrl, pin })
+    }
+
+    /// A pin of a motor's H-bridge: those are on the board's controller.
+    pub(crate) fn motor_bound(&self) -> bool {
+        self.ctrl == 0 && gpio_pin_is_motor_bound(self.pin)
+    }
+
+    pub(crate) fn read(&self) -> Result<u32, Fault> {
+        self.chip.read(self.pin)
+    }
+
+    pub(crate) fn write(&self, level: u32) -> Result<(), Fault> {
+        self.chip.write(self.pin, level & 1)
+    }
+}
+
+/// The `Gpio` interface served for one caller: the pin the badge names, on
+/// the controller it names.
 pub struct GpioServer(pub Caller);
 
 impl GpioServer {
-    /// The pin, if the board has it.
-    fn pin(&self) -> Result<u32, u32> {
-        let pin = self.0.badge;
-        if (pin as usize) < azos_drv_gpio::gpio::GPIO_MAX_PINS {
-            Ok(pin)
-        } else {
-            Err(outcome::BAD_ARGUMENT)
+    /// The caller may use op class `class` on the pin; for an acting op, the
+    /// pin is not a motor's.
+    fn pin(&self, class: CapPerms) -> Result<GpioPin, Out<()>> {
+        self.0.gate::<()>(class)?;
+        let p = GpioPin::of(self.0.badge).map_err(Out::err)?;
+        if class.contains(CapPerms::WRITE) && p.motor_bound() {
+            return Err(Out::err(outcome::REFUSED));
         }
+        Ok(p)
+    }
+}
+
+fn served(r: Result<(), Fault>) -> Out<()> {
+    match r {
+        Ok(()) => Out::ok(()),
+        Err(Fault) => Out::err(outcome::FAULT),
     }
 }
 
 impl azos_devif::Gpio for GpioServer {
     fn read(&self) -> Out<u32> {
-        if let Err(o) = self.0.gate::<u32>(CapPerms::READ) {
-            return o;
-        }
-        let pin = match self.pin() {
-            Ok(p) => p,
-            Err(c) => return Out::err(c),
-        };
-        let v = azos_drv_gpio::gpio::gpio_read(pin);
-        if v < 0 {
-            Out::err(outcome::FAULT)
-        } else {
-            Out::ok(v as u32)
+        match self.pin(CapPerms::READ) {
+            Ok(p) => p.read().map_or(Out::err(outcome::FAULT), Out::ok),
+            Err(o) => Out::err(o.code),
         }
     }
 
     fn write(&mut self, level: u32) -> Out<()> {
-        if let Err(o) = self.0.gate::<()>(CapPerms::WRITE) {
-            return o;
-        }
-        let pin = match self.pin() {
-            Ok(p) => p,
-            Err(c) => return Out::err(c),
-        };
-        if gpio_pin_is_motor_bound(pin) {
-            return Out::err(outcome::REFUSED);
-        }
-        if azos_drv_gpio::gpio::gpio_write(pin, level & 1) == 0 {
-            Out::ok(())
-        } else {
-            Out::err(outcome::FAULT)
+        match self.pin(CapPerms::WRITE) {
+            Ok(p) => served(p.write(level)),
+            Err(o) => o,
         }
     }
 
     fn set_dir(&mut self, dir: u32) -> Out<()> {
-        if let Err(o) = self.0.gate::<()>(CapPerms::WRITE) {
-            return o;
-        }
-        let pin = match self.pin() {
+        let p = match self.pin(CapPerms::WRITE) {
             Ok(p) => p,
-            Err(c) => return Out::err(c),
+            Err(o) => return o,
         };
-        if gpio_pin_is_motor_bound(pin) {
-            return Out::err(outcome::REFUSED);
-        }
         let dir = match dir {
-            azos_devif::gpio::DIR_INPUT => azos_drv_gpio::gpio::GpioDir::Input,
-            azos_devif::gpio::DIR_OUTPUT => azos_drv_gpio::gpio::GpioDir::Output,
+            azos_devif::gpio::DIR_INPUT => GpioDir::Input,
+            azos_devif::gpio::DIR_OUTPUT => GpioDir::Output,
             _ => return Out::err(outcome::BAD_ARGUMENT),
         };
-        if azos_drv_gpio::gpio::gpio_set_direction(pin, dir) == 0 {
-            Out::ok(())
-        } else {
-            Out::err(outcome::FAULT)
-        }
+        served(p.chip.set_dir(p.pin, dir))
     }
 }
 

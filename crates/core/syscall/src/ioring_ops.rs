@@ -237,25 +237,23 @@ fn read_sensor(sensor_type: u32, buf: *mut u8, len: usize) -> OpResult {
     Ok(n.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
 }
 
-/// `SYS_GPIO_WRITE_TYPED` below its capability: a pin bound to a motor's
-/// H-bridge is refused with the typed call's `E_PERM`, then the level's low
-/// bit is written.
-fn write_gpio(pin: u32, value: u32) -> OpResult {
-    if crate::handlers::gpio_pin_is_motor_bound(pin) {
+/// `SYS_GPIO_WRITE_TYPED` below its capability: `badge` names the pin on its
+/// controller (`Gpio`'s badge); a pin bound to a motor's H-bridge is refused
+/// with the typed call's `E_PERM`, then the level's low bit is written.
+fn write_gpio(badge: u32, value: u32) -> OpResult {
+    let Ok(p) = crate::devices::GpioPin::of(badge) else { return Ok(errno(Errno::EIO)) };
+    if p.motor_bound() {
         return Err(crate::handlers::E_PERM as i32);
     }
-    let rc = azos_drv_gpio::gpio::gpio_write(pin, value & 1);
-    Ok(if rc == 0 { 0 } else { errno(Errno::EIO) })
+    Ok(if p.write(value).is_ok() { 0 } else { errno(Errno::EIO) })
 }
 
-/// `SYS_GPIO_READ_TYPED` below its capability: 0 or 1, `-EIO` for a driver
-/// fault.
-fn read_gpio(pin: u32) -> OpResult {
-    let v = azos_drv_gpio::gpio::gpio_read(pin);
-    if v < 0 {
-        Ok(errno(Errno::EIO))
-    } else {
-        Ok(v)
+/// `SYS_GPIO_READ_TYPED` below its capability: 0 or 1, `-EIO` for a pin no
+/// controller has or a driver fault.
+fn read_gpio(badge: u32) -> OpResult {
+    match crate::devices::GpioPin::of(badge).map(|p| p.read()) {
+        Ok(Ok(v)) => Ok(v as i32),
+        _ => Ok(errno(Errno::EIO)),
     }
 }
 

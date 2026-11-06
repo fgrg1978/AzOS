@@ -1000,6 +1000,12 @@ wdt-sim = ["azos_drv_sys/wdt-sim"]
 # Kconfig WDT_SBSA / WDT_SP5100_TCO: the SBSA Generic Watchdog (device tree)
 # and the AMD FCH watchdog (PCI) as the hardware watchdog.
 wdt-sbsa = ["azos_drv_sys/wdt-sbsa"]
+# Kconfig GPIO_SOFT_EXPANDER: a soft expander on the hardware bus, a second
+# GPIO controller (gate rows "ktest gpio two controllers").
+gpio-soft-expander = ["azos_drv_gpio/soft-expander"]
+# Canary: a gpio badge is stamped without its controller (ktest
+# `gpio_two_controllers_serve_one_interface` goes red).
+gpio-badge-canary = ["azos_devif/badge-without-controller-canary"]
 wdt-sp5100 = ["pci", "azos_drv_sys/wdt-sp5100"]
 energy-i1-canary = ["energy-gov-smoke", "azos_energy/i1-canary"]
 energy-i3-canary = ["energy-gov-smoke", "azos_energy/i3-canary"]

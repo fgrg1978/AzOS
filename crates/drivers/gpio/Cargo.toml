@@ -10,6 +10,8 @@ publish = false
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []
+# Kconfig GPIO_SOFT_EXPANDER: a soft 16-line expander as a second controller.
+soft-expander = []
 
 [dependencies]
 azos_arch_api = { workspace = true }
@@ -19,3 +21,5 @@ azos_sync          = { workspace = true }
 azos_drv_api       = { workspace = true }
 azos_drv_base      = { workspace = true }
 azos_drv_sys       = { workspace = true }
+# Kconfig GPIO_CONTROLLERS: the controllers `chips` keeps.
+azos_limits        = { workspace = true }

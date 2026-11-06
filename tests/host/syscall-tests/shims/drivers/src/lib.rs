@@ -100,6 +100,13 @@ pub mod hold;
 #[path = "../../../../../../crates/drivers/actuator/src/pwm_hold.rs"]
 pub mod pwm_hold;
 
+/// The GPIO controllers by number and the class's registry -- the REAL
+/// files: controller 0 is the stand-in `gpio` below, a test registers more.
+#[path = "../../../../../../crates/drivers/base/src/instances.rs"]
+pub mod instances;
+#[path = "../../../../../../crates/drivers/gpio/src/chips.rs"]
+pub mod chips;
+
 pub mod gpio {
     use crate::hold::PinHold;
     use std::sync::Mutex;

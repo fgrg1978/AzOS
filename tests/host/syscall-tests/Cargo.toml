@@ -35,6 +35,9 @@ exec-floor-canary = []
 # Mirrors azos_syscall's gate canary (wave 13): `cfg!(feature =
 # "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
 mmap-prot-canary = []
+# `azos_devif::gpio::badge`'s canary: a badge is stamped without its controller
+# (`a_capability_on_controller_1_never_reaches_controller_0` goes red).
+gpio-badge-canary = ["azos_devif/badge-without-controller-canary"]
 # `ipc_handlers.rs` `doorbell_word`'s canary: the doorbell offset's end wraps
 # (`a_doorbell_offset_outside_its_region_is_refused` goes red).
 doorbell-wrap-canary = []

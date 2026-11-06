@@ -14,3 +14,5 @@ pub mod platform;
 
 pub mod window;
 
+pub mod instances;
+

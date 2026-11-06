@@ -6,6 +6,16 @@
 
 pub mod gpio;
 
+/// The controllers the `Gpio` interface serves, by controller number.
+pub mod chips;
+
+pub(crate) use azos_drv_base::instances;
+
+/// A soft second controller for development kernels (Kconfig
+/// `GPIO_SOFT_EXPANDER`).
+#[cfg(feature = "soft-expander")]
+pub mod expander;
+
 /// The kill switch's debounce: which samples of an input line are a new
 /// press. Pure; the host suite pulls the file in with `#[path]`.
 pub mod debounce;

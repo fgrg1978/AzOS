@@ -832,6 +832,38 @@ config CAMERA_TX_CAPTURE_PERIOD_MS
       period is not per profile. With no sender attached the capture task
       does not wake at all.
 
+config GPIO_CONTROLLERS
+    int "GPIO: most controllers the Gpio interface serves"
+    range 1 256
+    default 4
+    help
+      The controllers the kernel keeps for the `Gpio` interface
+      (crates/drivers/gpio/src/chips.rs): controller 0 is the board's own,
+      the e-stop's; every other one (an expander, a companion chip's bank)
+      is registered by its driver when it binds and keeps its number for
+      the boot. A topology names a pin `gpio.<controller>.<pin>`, or
+      `gpio.<pin>` on controller 0; a capability on a controller past this
+      limit, or one not bound, answers NO_RESOURCE. A driver that binds
+      when every number is taken is refused. Cost: three words per
+      controller.
+
+config GPIO_SOFT_EXPANDER
+    # cargo-feature: gpio-soft-expander
+    bool "GPIO: a soft 16-line expander as a second controller (test)"
+    depends on BUILD_TYPE_DEV
+    default y if BOARD_QEMU
+    default n
+    help
+      Kernel feature `gpio-soft-expander` (crates/drivers/gpio/src/
+      expander.rs): the hardware bus gets one more device, `gpio-soft`,
+      whose driver models a 16-line expander's register file and
+      registers it as the next GPIO controller (controller 1 on a board
+      with one), and whose unbind withdraws it. It gives the machines with
+      one GPIO controller (QEMU on every ISA) a second, for the gate's
+      two-controller rows (ktest `gpio_two_controllers_serve_one_interface`);
+      on by default in development builds for QEMU. Needs GPIO_CONTROLLERS
+      of 2 or more for the driver to bind. n: no such device.
+
 menu "I2C bus transactions"
 
 config I2C_DESIGNWARE

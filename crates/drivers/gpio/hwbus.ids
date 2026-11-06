@@ -22,3 +22,10 @@ gpio             dt:starfive,jh7110-sys-pinctrl   boot   if=BOARD_VF2
 # `pinctrl@d401e000`), so the bus gives it its clock and reset itself.
 
 gpio             dt:spacemit,k1-gpio   boot   if=BOARD_K1
+
+# The soft expander of development kernels (Kconfig GPIO_SOFT_EXPANDER,
+# crates/drivers/gpio/src/expander.rs): a device the kernel adds to the bus
+# itself, the next GPIO controller. Not `boot`: it is an ordinary bound device,
+# probed, unbound and bound again through its record.
+
+gpio-soft        dt:azos,soft-gpio   if=GPIO_SOFT_EXPANDER

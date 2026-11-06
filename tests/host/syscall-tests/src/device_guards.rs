@@ -353,6 +353,123 @@ fn gpio_is_served_through_its_host_key_in_both_forms() {
     assert_eq!(calls(), vec![("gpio.write", 9, 1), ("gpio.write", 9, 0)]);
 }
 
+// ── Gpio: more than one controller ───────────────────────────────────────
+
+/// A second controller (an expander) whose every op is recorded as `x.*`, so
+/// a call that lands on controller 0's stand-in (`gpio.*`) is told apart.
+struct Expander;
+
+impl azos_drv_gpio::chips::GpioChip for Expander {
+    fn pins(&self) -> u32 {
+        16
+    }
+    fn read(&self, pin: u32) -> Result<u32, azos_drv_gpio::chips::Fault> {
+        note("x.read", pin, 0);
+        Ok(1)
+    }
+    fn write(&self, pin: u32, level: u32) -> Result<(), azos_drv_gpio::chips::Fault> {
+        note("x.write", pin, level);
+        Ok(())
+    }
+    fn set_dir(&self, pin: u32, dir: azos_drv_gpio::gpio::GpioDir) -> Result<(), azos_drv_gpio::chips::Fault> {
+        note("x.dir", pin, dir as u32);
+        Ok(())
+    }
+}
+
+static EXPANDER: Expander = Expander;
+
+/// The bus handle the expander is bound as.
+const EXPANDER_DEV: u32 = 5;
+
+/// The expander registered for one test (controller 1: the first number after
+/// the board's), withdrawn when it drops.
+struct Bound;
+
+impl Drop for Bound {
+    fn drop(&mut self) {
+        azos_drv_gpio::chips::unregister(EXPANDER_DEV);
+    }
+}
+
+fn expander() -> Bound {
+    assert_eq!(azos_drv_gpio::chips::register(EXPANDER_DEV, &EXPANDER), Ok(1));
+    Bound
+}
+
+/// **A capability on controller 1 never reaches controller 0**: the badge the
+/// topology stamps for `gpio.1.3` drives the expander's pin 3, every op, and
+/// controller 0's pin 3 is not touched; controller 0's own capability still
+/// drives its pin 3. One interface serves both.
+///
+/// **Canary.** `gpio-badge-canary` (the badge is stamped without its
+/// controller): the expander's capability drives controller 0's pin 3 and the
+/// first list goes red.
+#[test]
+fn a_capability_on_controller_1_never_reaches_controller_0() {
+    let _g = serial();
+    let s = scene(0);
+    let _x = expander();
+    let (iface, badge) = azos_devif::parse_target("gpio.1.3").unwrap();
+    assert_eq!(iface.key, key::GPIO);
+    let mut g = GpioServer(caller(&s, badge, CapPerms::RW));
+    assert_eq!(g.set_dir(gpio::DIR_OUTPUT), Out::ok(()));
+    assert_eq!(g.write(1), Out::ok(()));
+    assert_eq!(g.read(), Out::ok(1));
+    assert_eq!(calls(), vec![("x.dir", 3, 1), ("x.write", 3, 1), ("x.read", 3, 0)], "controller 0 was not touched");
+
+    CALLS.lock().unwrap().clear();
+    let (_, own) = azos_devif::parse_target("gpio.3").unwrap();
+    let mut board = GpioServer(caller(&s, own, CapPerms::RW));
+    assert_eq!(board.write(1), Out::ok(()));
+    assert_eq!(calls(), vec![("gpio.write", 3, 1)]);
+}
+
+/// A controller that is not registered is `NO_RESOURCE`, the expander after
+/// its unbind included, until it binds again under the same number; a pin past
+/// the controller's last is `BAD_ARGUMENT`. Nothing reaches a driver.
+///
+/// **Canary.** Look the pin up on controller 0 when the badge's controller is
+/// not registered: the first line answers `OK` and the board's stand-in is
+/// called.
+#[test]
+fn a_controller_not_bound_is_no_resource_and_a_pin_past_its_last_is_bad_argument() {
+    let _g = serial();
+    let s = scene(0);
+    let mut absent = GpioServer(caller(&s, gpio::badge(2, 0), CapPerms::RW));
+    assert_eq!(absent.write(1), Out::err(outcome::NO_RESOURCE));
+    {
+        let _x = expander();
+        let mut past = GpioServer(caller(&s, gpio::badge(1, 16), CapPerms::RW));
+        assert_eq!(past.write(1), Out::err(outcome::BAD_ARGUMENT));
+    }
+    let mut gone = GpioServer(caller(&s, gpio::badge(1, 3), CapPerms::RW));
+    assert_eq!(gone.write(1), Out::err(outcome::NO_RESOURCE), "the unbound expander answers as absent");
+    assert_eq!(gone.read(), Out::err(outcome::NO_RESOURCE));
+    assert_eq!(calls(), vec![]);
+    let _x = expander();
+    assert_eq!(gone.write(1), Out::ok(()), "bound again, the same number names it");
+    assert_eq!(calls(), vec![("x.write", 3, 1)]);
+}
+
+/// The motor guard is controller 0's: the H-bridge pins are the board's, so
+/// the expander's pin of the same number is the holder's to drive.
+///
+/// **Canary.** Drop the controller from `GpioPin::motor_bound`: the expander's
+/// write is `REFUSED`.
+#[test]
+fn a_motor_pin_number_on_another_controller_is_not_the_motors() {
+    let _g = serial();
+    let s = scene(0);
+    let _x = expander();
+    azos_robot::motor::shim_bind_motor_pin(2);
+    let mut board = GpioServer(caller(&s, gpio::badge(0, 2), CapPerms::RW));
+    assert_eq!(board.write(1), Out::err(outcome::REFUSED));
+    let mut x = GpioServer(caller(&s, gpio::badge(1, 2), CapPerms::RW));
+    assert_eq!(x.write(1), Out::ok(()));
+    assert_eq!(calls(), vec![("x.write", 2, 1)]);
+}
+
 /// **The driver is not called while the caller's cap-table lock is held**: a
 /// capability table is read under its lock to learn the badge and the rights,
 /// and the lock is released before the op touches hardware (a driver transfer

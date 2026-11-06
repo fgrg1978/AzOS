@@ -6375,3 +6375,23 @@ mod pwm_hold;
 
 #[cfg(test)]
 mod stop_hold_tests;
+
+// ── GPIO controllers by number (front controller-instances) ────────────────
+//
+// The class registry (`instances.rs`), the GPIO class over it (`chips.rs`,
+// controller 0 the `gpio` backend above) and the soft expander, the real
+// files (`gpio_chips_tests.rs`).
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/base/src/instances.rs"]
+mod instances;
+
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/gpio/src/chips.rs"]
+mod chips;
+
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/gpio/src/expander.rs"]
+mod expander;
+
+#[cfg(test)]
+mod gpio_chips_tests;

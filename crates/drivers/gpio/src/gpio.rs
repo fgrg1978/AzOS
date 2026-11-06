@@ -711,7 +711,7 @@ pub use mmio::*;
 //   clear registers, so arming takes one store per edge and only the mask is
 //   a read-modify-write (under `IRQ_LOCK`);
 // * the controller has 128 pins, the kernel's pin space is `GPIO_MAX_PINS`
-//   (64, `azos_devif::gpio::PINS`): pins 64..127 (bank 2 and 3, among them the
+//   (64): pins 64..127 (bank 2 and 3, among them the
 //   BPI-F3's user LED, GPIO 96) are not reachable until that constant moves.
 
 #[cfg(feature = "k1")]
