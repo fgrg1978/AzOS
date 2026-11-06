@@ -745,14 +745,16 @@ pub(crate) fn walk(pt_phys: usize, vaddr: usize, alloc: bool) -> KResult<*mut u6
     walk_charged(pt_phys, vaddr, alloc, false)
 }
 
-/// [`walk`] allocating, for the first touch of a page a reservation promised:
-/// a table it must build is taken from the Domain whatever its limit says
-/// ([`TableCharge::Promised`]).
-pub(crate) fn walk_promised(pt_phys: usize, vaddr: usize) -> KResult<*mut u64> {
-    walk_charged(pt_phys, vaddr, true, true)
+fn walk_charged(pt_phys: usize, vaddr: usize, alloc: bool, promised: bool) -> KResult<*mut u64> {
+    walk_level(pt_phys, vaddr, alloc, promised).map(|(p, _)| p)
 }
 
-fn walk_charged(pt_phys: usize, vaddr: usize, alloc: bool, promised: bool) -> KResult<*mut u64> {
+/// [`walk`] that also says the level of the entry it answers: 0 for a 4 KiB
+/// leaf's slot, above for a block leaf (a promoted block, a locked row), which
+/// the walk does not descend. `promised` (with `alloc`): the first touch of a
+/// page a reservation promised, so a table it must build is taken from the
+/// Domain whatever its limit says ([`TableCharge::Promised`]).
+pub(crate) fn walk_level(pt_phys: usize, vaddr: usize, alloc: bool, promised: bool) -> KResult<(*mut u64, usize)> {
     let mut pt = pt_phys;
     // N12i: an allocating walk is a writer. On a user root it walks the
     // kernel root in step and refuses to descend into a table the kernel
@@ -775,7 +777,7 @@ fn walk_charged(pt_phys: usize, vaddr: usize, alloc: bool, promised: bool) -> KR
             // If this is a leaf PTE (megapage at L1 or gigapage at L2),
             // return it directly — do NOT follow phys_addr as a PT pointer.
             if ARCH.pte_is_leaf(pte, level) {
-                return Ok(pte_ptr);
+                return Ok((pte_ptr, level));
             }
             let child = ARCH.pte_phys(pte);
             if kt != 0 {
@@ -808,7 +810,7 @@ fn walk_charged(pt_phys: usize, vaddr: usize, alloc: bool, promised: bool) -> KR
                         return Err(KernelError::NotMapped);
                     }
                     if ARCH.pte_is_leaf(cur, level) {
-                        return Ok(pte_ptr);
+                        return Ok((pte_ptr, level));
                     }
                     // The word that beat ours may be the push's link to the
                     // kernel's table: the step below refuses it.
@@ -827,7 +829,7 @@ fn walk_charged(pt_phys: usize, vaddr: usize, alloc: bool, promised: bool) -> KR
 
     // Return pointer to level-0 PTE
     let vpn0 = ARCH.vpn(vaddr, 0);
-    Ok((crate::addr::phys_to_virt(pt + vpn0 * 8)) as *mut u64)
+    Ok(((crate::addr::phys_to_virt(pt + vpn0 * 8)) as *mut u64, 0))
 }
 
 /// The first index at or after `from`, below `n`, whose entry in the table at

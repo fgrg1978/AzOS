@@ -165,6 +165,37 @@ fn a_block_outside_one_whole_record_is_not_reserved() {
     assert_eq!(level(pt, BRK as usize), Some(0));
 }
 
+/// **A fault that loses the race to a promotion leaves the block alone.** Two
+/// threads fault on the last page of a block; one installs it and promotes the
+/// block. The other's next look finds the block's level-1 leaf where the walk
+/// stops, and the page's slot naming a frame of the run: the page is resident,
+/// and its word is no 4 KiB leaf to replace. Played here in order: the block is
+/// promoted, then a fault on one of its pages (the retry of the late thread).
+///
+/// **Canary** `fault-block-leaf-canary`: the block's word is taken for the
+/// page's leaf, and a 4 KiB leaf is written into the level-1 entry.
+#[test]
+fn a_fault_on_a_promoted_block_leaves_its_leaf_alone() {
+    let _g = serial();
+    let pt = space();
+    region(RW);
+    fill(pt, BLOCK_A, PAGES);
+    if !on() {
+        return;
+    }
+    assert_eq!(level(pt, BLOCK_A), Some(1));
+    let block_word = |pt: usize| azos_mm::vmm::leaf_level(pt, BLOCK_A).zip(azos_mm::vmm::translate(pt, BLOCK_A));
+    let before = block_word(pt);
+    let p1 = pa(pt, BLOCK_A + PAGE_SIZE);
+    for i in [1, PAGES / 2, PAGES - 1] {
+        assert!(azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), BLOCK_A + i * PAGE_SIZE).is_ok());
+    }
+    assert_eq!(block_word(pt), before, "the block's level-1 leaf is as it was");
+    assert_eq!(level(pt, BLOCK_A + PAGE_SIZE), Some(1));
+    assert_eq!(pa(pt, BLOCK_A + PAGE_SIZE), p1, "and maps the run's frame");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (REGION_PAGES, PAGES), "nothing installed twice");
+}
+
 #[test]
 fn filling_a_block_promotes_it_to_one_leaf_and_the_data_survives() {
     let _g = serial();

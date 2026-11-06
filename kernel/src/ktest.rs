@@ -2431,6 +2431,50 @@ azos_ktest::ktest_late! {
     }
 }
 
+// A fault on a page a block leaf maps (a promoted block) leaves the block's
+// level-1 word alone: the page is resident, and that word is no 4 KiB leaf to
+// install into. Host rows with reservations on (syscall-tests thp_vmm.rs) run
+// the promotion race; this one maps the block directly.
+azos_ktest::ktest_late! {
+    fn anon_fault_leaves_a_block_leaf_alone() {
+        use azos_mm::{aspace, pager, pmm, vmm};
+        let mega = vmm::MEGA_SIZE;
+        let base = 2 * mega;
+        let page = azos_arch::PAGE_SIZE;
+        let pages = mega / page;
+        let pt = vmm::create_pagetable().map_err(|_| "no root")?;
+        let Some(a) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            return Err("no address space");
+        };
+        let Ok(run) = pmm::alloc_contiguous_aligned(pages, mega) else {
+            let _ = aspace::destroy(a, 0, 0);
+            return Err("no run");
+        };
+        let mapped = pager::reserve(a, base, base + mega, true).is_ok()
+            && vmm::map_mega(pt, base, run.as_usize(), azos_arch_api::PagePerms::USER_RW).is_ok();
+        let before = (vmm::leaf_level(pt, base + page), vmm::translate(pt, base + page));
+        let resolved = mapped && pager::resolve_fault(a, base + page).is_ok();
+        let after = (vmm::leaf_level(pt, base + page), vmm::translate(pt, base + page));
+        // Back to 4 KiB leaves, then cleared: the run is the test's to free.
+        for i in 0..pages {
+            vmm::unmap(pt, base + i * page);
+        }
+        let _ = aspace::destroy(a, 0, 0);
+        let _ = pmm::free_run(run, pages);
+        if !mapped {
+            return Err("the block was not mapped");
+        }
+        if !resolved {
+            return Err("the fault on the block's page was not resolved");
+        }
+        if before.0 != Some(1) || after != before {
+            return Err("the fault rewrote the block's level-1 leaf");
+        }
+        Ok(())
+    }
+}
+
 // A private anonymous page's state is its object's slot, and its leaf a cache
 // of it: a fault on a page whose slot is empty supplies a zero page even when a
 // leaf is there (a cache word no install made), so a previous owner's bytes are

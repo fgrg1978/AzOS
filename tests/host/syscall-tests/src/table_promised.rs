@@ -7,7 +7,7 @@
 // charging the budget the way `scheduler/budget.rs` does.
 //
 // Canary: `pager::fault_once` walking with `vmm::walk(.., true)` instead of
-// `vmm::walk_promised` hands a table to the budget as refusable: the first
+// `vmm::walk_level(.., promised)` hands a table to the budget as refusable: the first
 // touch at the limit is refused and `a_touch_at_the_limit_gets_its_tables` fails.
 //
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.

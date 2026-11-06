@@ -806,7 +806,7 @@ impl<'a> AnonReclaim<'a> {
     /// Is the page at `va` of `root` resident and one the reclaimer may take?
     /// The cheap test of the aging walk; `unmap` repeats it under the lock.
     fn candidate(root: usize, va: usize) -> bool {
-        let w = peek(root, va);
+        let (w, _) = peek(root, va);
         ARCH.is_victim_leaf(w) && pmm::desc_of(ARCH.pte_phys(w)).is_some()
     }
 
@@ -1523,7 +1523,12 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Mapping, obj: u32, share
     // A private mapping was charged whole when it was made; a shared one is the
     // cache's memory and promised nothing.
     let pte_ptr = match walk_installing(root, page, !shared) {
-        Ok(p) => p,
+        Ok(Some(Leaf0(p))) => p,
+        // A block leaf maps the page: the access retries on it.
+        Ok(None) => {
+            give_back(frame);
+            return Ok(());
+        }
         Err(e) => {
             give_back(frame);
             return Err(e);
@@ -1623,26 +1628,36 @@ enum Step {
     Again,
 }
 
-/// The leaf word of `page` under `root`; empty when its table is not there yet.
-fn peek(root: usize, page: usize) -> u64 {
-    match vmm::walk(root, page, false) {
-        // SAFETY: `walk` answers an aligned entry of a live table page.
-        Ok(p) => unsafe { core::ptr::read_volatile(p) },
-        Err(_) => ARCH.pte_empty(),
+/// The word that maps `page` under `root` and the level of its entry (0: the
+/// page's own 4 KiB leaf slot); empty when its table is not there yet.
+fn peek(root: usize, page: usize) -> (u64, usize) {
+    match vmm::walk_level(root, page, false, false) {
+        // SAFETY: `walk_level` answers an aligned entry of a live table page.
+        Ok((p, level)) => (unsafe { core::ptr::read_volatile(p) }, level),
+        Err(_) => (ARCH.pte_empty(), 0),
     }
 }
+
+/// A page's 4 KiB leaf entry: the only entry a fault installs into.
+#[derive(Clone, Copy)]
+struct Leaf0(*mut u64);
+
+/// Canary `fault-block-leaf-canary`: a block leaf's word (a promoted block's)
+/// is taken for the page's own 4 KiB leaf, by the fault's decision and by its
+/// install.
+const BLOCK_LEAF_CHECKED: bool = !cfg!(feature = "fault-block-leaf-canary");
 
 /// The walk of a fault that is about to install a page, building the tables it
 /// needs. `promised`: the page was charged with its reservation, so a table is
 /// taken from the Domain whatever the limit says ([`vmm::TableCharge::Promised`]).
-fn walk_installing(root: usize, page: usize, promised: bool) -> KResult<*mut u64> {
+/// `None` when a block leaf maps the page (a promoted block): it is resident,
+/// and its word is no 4 KiB leaf to replace.
+fn walk_installing(root: usize, page: usize, promised: bool) -> KResult<Option<Leaf0>> {
     // Canary `table-refusable-canary`: the table is refusable like any other,
     // and a touch at the limit dies for it.
-    if promised && !cfg!(feature = "table-refusable-canary") {
-        vmm::walk_promised(root, page)
-    } else {
-        vmm::walk(root, page, true)
-    }
+    let promised = promised && !cfg!(feature = "table-refusable-canary");
+    let (p, level) = vmm::walk_level(root, page, true, promised)?;
+    Ok((level == 0 || !BLOCK_LEAF_CHECKED).then_some(Leaf0(p)))
 }
 
 fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
@@ -1673,7 +1688,12 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         Backing::Anon { obj } => obj,
     };
     let idx = m.page_index(page);
-    let seen = peek(root, page);
+    let (seen, level) = peek(root, page);
+    // A block leaf maps the page (a promoted block): it is resident, and the
+    // access retries on it.
+    if level != 0 && ARCH.pte_is_valid(seen) && BLOCK_LEAF_CHECKED {
+        return Ok(Step::Done);
+    }
     // A word that is neither empty nor a leaf is not the pager's (a demand
     // reservation): the demand path owns it.
     if seen != ARCH.pte_empty() && !ARCH.pte_is_valid(seen) {
@@ -1732,7 +1752,11 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         },
     };
     let pte_ptr = match walk_installing(root, page, true) {
-        Ok(p) => p,
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            src.give_back(root, block);
+            return Ok(Step::Done);
+        }
         Err(e) => {
             src.give_back(root, block);
             return Err(e);
@@ -1768,9 +1792,11 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
             Some(sp) => o.slot_fill(idx, sp),
         };
         let Some(slot) = slot else { return false };
-        // SAFETY: `pte_ptr` is an aligned entry of a live table page (the
-        // mapping still exists, so `munmap` has not swept it).
-        let leaf_word = unsafe { &*(pte_ptr as *const AtomicU64) };
+        // SAFETY: `pte_ptr` is an aligned level-0 entry of a live table page
+        // (the mapping still exists, so `munmap` has not swept it, and the
+        // block was not promoted since: promotion needs this page's slot to
+        // have become a frame, which the compare below refuses).
+        let leaf_word = unsafe { &*(pte_ptr.0 as *const AtomicU64) };
         // Both words the decision was made on, or nothing: installs are
         // serialised by the space's lock, but the leaf is shared with walkers
         // that do not take it (a fork, `munmap`'s sweep).
