@@ -2876,7 +2876,7 @@ fn ioring_lanes(abi: &impl Abi, floor_ns: u64) {
 #[cfg(feature = "azos")]
 fn ioring_idl_lanes(abi: &impl Abi, floor_ns: u64) {
     use azos_libsys as sys;
-    use sys::dev::SensorIdl as S;
+    use sys::dev::SensorIdl;
 
     let fail = |what: &[u8], rc: i64| {
         abi.write(b"[VSBENCH] ioring-idl ");
@@ -2906,7 +2906,7 @@ fn ioring_idl_lanes(abi: &impl Abi, floor_ns: u64) {
     let t_call = batch(N_IORING_OPS, || { let _ = core::hint::black_box(sys::dev::sensor_read(ep, &mut buf)); });
     let call_ns = ns_per_op(t_call, N_IORING_OPS);
 
-    let hdr = sys::dev::header(S::ID, S::LEVEL, S::OP_READ);
+    let hdr = sys::dev::header(SensorIdl::ID, SensorIdl::LEVEL, SensorIdl::OP_READ);
     let win = |i: u32| i * sys::ioring::CALL_WINDOW as u32;
     let mut be = 0u32;
     for &n in IORING_BATCHES.iter() {

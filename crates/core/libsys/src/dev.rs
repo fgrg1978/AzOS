@@ -81,7 +81,8 @@ pub fn value<T>(r: azos_idl::Result<Out<T>>) -> Result<T, u32> {
 /// The request header word of an op (`<Name>Idl::ID`, `LEVEL`, `OP_*`), for a
 /// call that travels as words of its own: an io_ring `OP_CALL`
 /// (`crate::ioring::Ring::push_call`).
-pub const fn header(id: u32, level: u16, op: u16) -> u64 {
+#[inline]
+pub fn header(id: u32, level: u16, op: u16) -> u64 {
     azos_idl::header(id, level, op)
 }
 
