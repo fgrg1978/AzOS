@@ -66,8 +66,10 @@ pub mod vdso;
 
 /// AZOS ABI version. Bumps on **major** breaking change only.
 ///
-/// Version 2 is the native ABI of `SYS_INVOKE` and the 33-call table
-/// (`syscall_nr`). Three places read it, and a mismatch is refused at each:
+/// Version 2 was the native ABI of `SYS_INVOKE` and the 33-call table
+/// (`syscall_nr`); version 3 is the same table with `SYS_IPC_ACCEPT`'s
+/// descriptor form reading `a1` as flags (`IPC_ACCEPT_F_POLL`, any other bit
+/// `-EINVAL`), which a version-2 program left as garbage. Three places read it, and a mismatch is refused at each:
 ///
 ///  * **The loader.** `libsys` carries an ELF note (`.note.azos.abi`, name
 ///    `AZOS`, type [`ABI_NOTE_TYPE`], the version as its 4-byte descriptor); the
@@ -78,7 +80,7 @@ pub mod vdso;
 ///    `vdso::VDSO_ABI_VERSION_OFFSET`; `libsys::abi_matches` compares it with
 ///    the version the program was built against.
 ///  * **`RobotInfo`.** The firmware version in `types::RobotInfo`.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 /// The note type of the `.note.azos.abi` ELF note (name `AZOS`).
 pub const ABI_NOTE_TYPE: u32 = 1;

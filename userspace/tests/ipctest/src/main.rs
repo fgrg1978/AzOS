@@ -402,7 +402,8 @@ fn post(tag: u8, v: u32) {
 /// mailbox. A non-mailbox call is not expected outside phase A; it is answered
 /// `0` so its sender does not wedge.
 ///
-/// One request, not a drain. `SYS_IPC_ACCEPT` has no non-blocking form:
+/// One request, not a drain. The register-form `SYS_IPC_ACCEPT` this uses
+/// has no non-blocking form (the descriptor form's `IPC_ACCEPT_F_POLL` does):
 /// with nothing pending it blocks on `FastIpcServer(tid)` for up to eight
 /// wakes, and the only waker is a `SYS_IPC_FAST_CALL` addressed to this TID.
 /// A loop that accepts until the queue is empty therefore never returns once

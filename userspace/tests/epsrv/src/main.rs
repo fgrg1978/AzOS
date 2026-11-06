@@ -21,8 +21,9 @@
 //! not depending on how it was started; that does not work, for a reason worth
 //! writing down because it is not visible in the syscall's signature:
 //!
-//! **`SYS_IPC_ACCEPT` blocks, and there is no non-blocking form.**
-//! Its `None` arm calls `task_block(WaitReason::FastIpcServer(tid))`, and the
+//! **The register-form `SYS_IPC_ACCEPT` blocks** (only the descriptor form has
+//! a poll flag, `IPC_ACCEPT_F_POLL`). Its `None` arm calls
+//! `task_block(WaitReason::FastIpcServer(tid))`, and the
 //! only thing that releases that waiter is a client calling THIS server. A
 //! task that accepts when nobody will ever call it is wedged for good. Run as
 //! autorun, `uhello` held `WRITE` — it was nobody's server — and it hung

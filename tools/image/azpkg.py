@@ -28,7 +28,7 @@ package.toml (TOML; paths relative to the file):
     hardware = ["sbc", "desktop"]       # embedded | sbc | desktop | server
     licence = "Apache-2.0"              # SPDX expression of the package itself
     rows = "rows.toml"                  # [task.NAME] sections, CAPS.TOM syntax
-    abi = 2                             # default: ABI_VERSION of crates/core/abi
+    abi = 3                             # default: ABI_VERSION of crates/core/abi
     sec_epoch = 0                       # default 0: the system security epoch it is signed against
     supplier = "Organization: Acme"     # optional
     sources = ["src"]                   # optional: trees whose SPDX tags are linted

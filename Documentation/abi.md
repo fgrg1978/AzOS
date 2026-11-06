@@ -464,7 +464,7 @@ value as `-EPERM`; the contract of each call says which it means.
 |---|---|
 | `SYS_IPC_CALL` | `-1`: capability does not resolve, lacks `WRITE`, names an endpoint nobody serves, or the call was given up. Also `-EPEERDIED`, `-EREVOKED`. |
 | `SYS_IPC_REPLY` | 0 delivered, `-2` stale handle, `-1` any other refusal |
-| `SYS_IPC_ACCEPT` | `-1` when nothing arrived |
+| `SYS_IPC_ACCEPT` | `-1` when nothing arrived; descriptor form: `-EAGAIN` with `IPC_ACCEPT_F_POLL` and nothing queued, `-EINVAL` for a flag bit other than it, `-EFAULT` |
 | `SYS_IPC_REPLY_ACCEPT` | `-2` stale handle, `-3` any other refusal of the reply (nothing accepted); then as accept |
 | `SYS_IPC_REPLY` | `-3` the caller holds no warrant of an unanswered call, `-2` the call ended meanwhile, `-1` refused transfer |
 | `SYS_IPC_REPLY_DELEGATE` | `-2` call over, `-3` no warrant, `-EPERM` target is not a thread of the caller's process |
@@ -648,8 +648,9 @@ Source: `crates/core/abi/src/vdso.rs`, `crates/core/mm/src/vdso.rs`,
 
 ## ABI version
 
-`ABI_VERSION` (`crates/core/abi/src/lib.rs`) is 2. A program and a kernel compare
-it at two places:
+`ABI_VERSION` (`crates/core/abi/src/lib.rs`) is 3: version 2's table, with the
+descriptor-form `SYS_IPC_ACCEPT` reading `a1` as flags. A program and a kernel
+compare it at two places:
 
 - **The loader.** `libsys` embeds an ELF note `.note.azos.abi` (name `AZOS`,
   type `ABI_NOTE_TYPE` = 1, the version as a 4-byte descriptor). The kernel's

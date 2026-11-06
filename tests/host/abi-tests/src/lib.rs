@@ -700,8 +700,8 @@ mod abi_version_tests {
     use azos_abi::ABI_VERSION;
 
     #[test]
-    fn abi_version_is_v2() {
-        assert_eq!(ABI_VERSION, 2);
+    fn abi_version_is_v3() {
+        assert_eq!(ABI_VERSION, 3);
     }
 
     /// The vDSO word sits after the layout version, 4-aligned, inside the
