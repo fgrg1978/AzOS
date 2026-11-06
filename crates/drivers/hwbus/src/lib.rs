@@ -22,7 +22,7 @@
 //!   bring the devices bound under the built-in one to its rows.
 //!
 //! - **Records** ([`record`]): each driver's ids (generated, [`DRIVERS`]) and
-//!   its host's ops (probe, unbind, suspend/resume, reset); the host's record
+//!   its host's ops (probe, unbind, suspend/resume); the host's record
 //!   table is built from [`native_drivers!`], so a driver with ids and no ops
 //!   does not compile, and the bus drives every driver through [`Records`].
 //!

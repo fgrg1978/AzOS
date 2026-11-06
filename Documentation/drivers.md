@@ -28,7 +28,7 @@ Source: `crates/drivers/kit/`, `tests/host/drivers-tests/src/drvkit_tests.rs`.
 
 ## Discovery: the hardware bus
 
-The hardware bus finds devices, gives each a `Device` object and a `Handle`, and binds drivers to them. The logic (`azos_hwbus`) has no arch code, locks or I/O and is host-tested. `azos_drv_bus::hwbus` holds the kernel's static `Bus` and two lookups the capability layer needs. `kernel/src/boot/hwbus.rs` holds what only the kernel can do: the enumerators and the driver registry that turns a table's driver name into a probe call.
+The hardware bus finds devices, gives each a `Device` object and a `Handle`, and binds drivers to them. The logic (`azos_hwbus`) has no arch code, locks or I/O and is host-tested. `azos_drv_bus::hwbus` holds the kernel's static `Bus` and two lookups the capability layer needs. `kernel/src/boot/hwbus.rs` holds what only the kernel can do: the enumerators and the binding stages; `kernel/src/boot/driver_records.rs` holds the kernel's driver records, through which every bind, unbind and suspend goes ([Driver records](#driver-records)).
 
 A `Handle` is what a `Device` capability names. `BusKind` says which enumerator found a device:
 
@@ -58,7 +58,7 @@ One spelling serves the driver id files, the topology's `[device.*]` rows and `m
 - **Native table.** Every driver crate that owns hardware declares its ids in an `hwbus.ids` file next to its `Cargo.toml`. One line per id: `<driver> <selector> [boot] [if=<KCONFIG_SYMBOL>]`. A line whose symbol is not `y` in `.config` is left out, so a driver the image does not compile claims nothing. `crates/drivers/hwbus/build.rs` turns every `crates/drivers/*/hwbus.ids` into the `NATIVE` table.
 - **Linux table.** Ids of Linux leaf drivers, read from their `MODULE_DEVICE_TABLE` by `tools/build/lx_device_table.py` (see [linux.md](linux.md)), become the `LINUX` table.
 - **Overlap checks.** The build fails, naming the ids, if a native pattern overlaps a Linux one or two native drivers claim overlapping patterns.
-- **`boot` entries.** Hardware the kernel drives outside the bus (the console UART, interrupt controllers and timers, the PCI host bridge, the firmware framebuffer, the SoC clock/reset/power controllers, the cache controller) is marked `boot` and binds to a driver that only records the fact (`RECORD_ONLY` in `kernel/src/boot/hwbus.rs`). The board controllers a kernel driver attaches to (GPIO, PWM, I2C, watchdog, DMA controller, microSD, temperature sensors, see [SoC resource frameworks](#soc-resource-frameworks)) are marked `boot` too. A `boot` device is decided before any topology row, its driver refuses `remove`, and `user_window` answers `None` for it, so ring 3 is not handed a window the kernel is using and no policy or topology row can unbind it.
+- **`boot` entries.** Hardware the kernel drives outside the bus (the console UART, interrupt controllers and timers, the PCI host bridge, the firmware framebuffer, the SoC clock/reset/power controllers, the cache controller) is marked `boot` and binds to a driver whose record only records the fact (a `Pinned` record in `kernel/src/boot/driver_records.rs`). The board controllers a kernel driver attaches to (GPIO, PWM, I2C, watchdog, DMA controller, microSD, temperature sensors, see [SoC resource frameworks](#soc-resource-frameworks)) are marked `boot` too. A `boot` device is decided before any topology row, a pinned record refuses `remove`, and `user_window` answers `None` for it, so ring 3 is not handed a window the kernel is using and no policy or topology row can unbind it.
 
 Source ids files: `crates/drivers/{actuator,block,bus,display,dma,fb,gpio,irqchip,net,pci,soc,sys,thermal,usb,virtio}/hwbus.ids`.
 
@@ -73,7 +73,20 @@ Source ids files: `crates/drivers/{actuator,block,bus,display,dma,fb,gpio,irqchi
 
 `decide` is pure: tables, policy and topology rows in, a `Verdict` out. The order is: a `boot` native entry; then the first topology row whose selector names the device (it may refuse the device, name the native driver to use, or only admit it); then the native table; then the Linux table. A native entry always beats a Linux one for the same device.
 
-A slot moves through `State`: `Free`, `Detected`, `Probing`, `Bound`, `ProbeFailed`, `Unbound`, `NotAdmitted`, `Unmatched`. `Binding` records the owner: `None`, `Native(name)` or `Linux { class }`. A native probe can answer `ProbeError::NoSuchDriver`, `Busy` or `Failed`; `Resources` means the device's clocks, resets, power domains or pin state could not be given and the driver was not asked. `Access::unbind`, `rebind` and `reconcile` (the `Access` trait, implemented by `Bus` and by the kernel's locked instance) bring bound devices to what the installed signed topology says. A Linux class server is started only once one of its ids matched a device (`Bus::linux_class_wanted`).
+A slot moves through `State`: `Free`, `Detected`, `Probing`, `Bound`, `ProbeFailed`, `Unbound`, `NotAdmitted`, `Unmatched`. `Binding` records the owner: `None`, `Native(name)` or `Linux { class }`. A native probe can answer `ProbeError::NoSuchDriver`, `Busy` or `Failed`; `Unsupported` and `Pinned` are a record without the op asked for and kernel-driven hardware; `Resources` means the device's clocks, resets, power domains or pin state could not be given and the driver was not asked. `Access::unbind`, `rebind` and `reconcile` (the `Access` trait, implemented by `Bus` and by the kernel's locked instance) bring bound devices to what the installed signed topology says. A Linux class server is started only once one of its ids matched a device (`Bus::linux_class_wanted`).
+
+### Driver records
+
+One record per driver: its ids and its host's ops (`crates/drivers/hwbus/src/record.rs`).
+
+- **Ids.** `build.rs` emits `DRIVERS`, one `DriverIds { name, ids, boot }` per driver name of the native table, and `native_drivers!`, which lists them by index and identifier (`virtio-blk`: `VIRTIO_BLK`). Every line of a driver must agree on `boot`, and a name must read as an identifier.
+- **Ops.** `Ops { probe, unbind, power }` over a `Host`'s environment. `unbind` is `Op` (quiesce the device: DMA stopped and confirmed, in-flight work ended with an error, its line given back, its window forgotten), `Pinned` (kernel-driven hardware) or `Unsupported`. `power` is `Op { suspend, resume }`, `Stateless` (the platform's save and restore keep it) or `Unsupported` (a suspend is refused while the device is bound).
+- **Kernel table.** `RECORDS` in `kernel/src/boot/driver_records.rs` is built by `native_drivers!`: a driver whose ids are in the image and whose ops are not does not compile, and ops no id names are dead code. The PCI drivers' probes take the function the bring-up lends (`PciProbe::function`, `PciFn`).
+- **Unbind check.** After a record's unbind returns, the bus asks the environment what the device still holds (`Held`: its interrupt line, live DMA, its window). The kernel's books are kept per handle by the ops and by the stage that wires a line, and a line the IRQ thread still has bound counts whatever the books say. Anything left keeps the device bound (`UnbindError::Leaked`, an `[HWBUS] ... still holds` line).
+- **System suspend.** `Access::quiesce` takes every device bound to a native driver down, newest bind first (each slot carries its bind order), all or nothing; `unquiesce` brings them back oldest first. It is the kernel suspend platform's `quiesce` step (`kernel/src/boot/energy.rs`). Devices bound to a Linux class server are the ring-3 host's (the power service, over `DevicePower`).
+- **Readers.** An unbind needs no grace period: every device instance is static storage that is never freed, the submit paths check the driver's `ready` state under the lock the unbind takes, the rings are kept (parked) and given back to the same device on a rebind, and a late interrupt finds the line unbound and the driver no longer naming it. A driver that frees an instance or its rings on unbind would need one.
+
+Unbind and power ops today: `virtio-blk` (unbind and suspend park the device and keep its rings; a rebind programs them again and wires the line), `virtio-rng` (unbind and suspend reset a device that was brought up), `virtio-net` and `virtio-net-pci` (suspend and resume). Every other driver has a probe only; the pinned records are stateless.
 
 Drivers bind in stages, because they depend on each other's order (entropy before PCI bring-up, the disk before the filesystem, the NIC after the scheduler hooks). `bind` takes the drivers one stage wants; `settle` closes the last stage and reports the rest. The boot prints one `[HWBUS]` line per outcome and lists devices in the introspection tree's `devices/`.
 
@@ -81,7 +94,7 @@ Drivers bind in stages, because they depend on each other's order (entropy befor
 
 `user_window(handle)` returns the register window ring 3 may map for a device (used by `DOMAIN_MMIO_MAP`). It answers `None` for a stale handle, a device with no window, or a device a kernel driver owns or may still take. `claim_user_window` books the mapping so no kernel driver is bound to the device afterwards.
 
-Source: `crates/drivers/hwbus/src/{lib,bus,device,pattern,policy,tables}.rs`, `crates/drivers/hwbus/build.rs`, `crates/drivers/bus/src/hwbus.rs`, `kernel/src/boot/hwbus.rs`, `config/subsys/Kconfig.drivers`.
+Source: `crates/drivers/hwbus/src/{lib,bus,device,pattern,policy,record,tables}.rs`, `crates/drivers/hwbus/build.rs`, `crates/drivers/bus/src/hwbus.rs`, `kernel/src/boot/{hwbus,driver_records}.rs`, `config/subsys/Kconfig.drivers`.
 
 ### Ring-3 access to I/O ports (x86_64)
 

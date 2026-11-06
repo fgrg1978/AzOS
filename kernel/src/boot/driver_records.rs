@@ -158,7 +158,7 @@ fn refusal(already_up: bool) -> ProbeError {
 /// A driver whose probe brings a device up and has no unbind, power ops or
 /// reset yet.
 const fn bring_up(probe: Op<Kernel>) -> Ops<Kernel> {
-    Ops { probe, unbind: Unbind::Unsupported, power: Power::Unsupported, reset: None }
+    Ops { probe, unbind: Unbind::Unsupported, power: Power::Unsupported }
 }
 
 // ── Pinned: hardware the kernel brought up before the bus ───────────────
@@ -170,7 +170,7 @@ fn record_only(_: &mut KernelEnv<'_>, _: Handle, _: &Device) -> R {
 /// The binding only records that the device is the kernel's, so ring 3 is
 /// never handed a window the kernel is using. Its state across a suspend is
 /// the platform's save and restore (the interrupt controller, the console).
-const PINNED: Ops<Kernel> = Ops { probe: record_only, unbind: Unbind::Pinned, power: Power::Stateless, reset: None };
+const PINNED: Ops<Kernel> = Ops { probe: record_only, unbind: Unbind::Pinned, power: Power::Stateless };
 
 const UART: Ops<Kernel> = PINNED;
 const INTC: Ops<Kernel> = PINNED;

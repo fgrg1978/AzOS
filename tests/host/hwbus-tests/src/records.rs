@@ -90,11 +90,10 @@ static CLEAN: Ops<Fake> = Ops {
     probe,
     unbind: Unbind::<Fake>::Op(unbind),
     power: Power::<Fake>::Op { suspend, resume },
-    reset: None,
 };
 static LEAKY: Ops<Fake> = Ops { unbind: Unbind::<Fake>::Op(leaky_unbind), ..CLEAN };
 static NO_PM: Ops<Fake> = Ops { power: Power::Unsupported, ..CLEAN };
-static PINNED: Ops<Fake> = Ops { probe: record_only, unbind: Unbind::Pinned, power: Power::Stateless, reset: None };
+static PINNED: Ops<Fake> = Ops { probe: record_only, unbind: Unbind::Pinned, power: Power::Stateless };
 
 static BLK: DriverIds = DriverIds { name: "virtio-blk", ids: &[Pattern::Virtio(2)], boot: false };
 static NET: DriverIds = DriverIds { name: "virtio-net", ids: &[Pattern::Virtio(1)], boot: false };
