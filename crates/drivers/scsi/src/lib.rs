@@ -5,7 +5,7 @@
 //! - [`bbb`]: the Bulk-Only Transport wrappers, CBW and CSW, parsed and
 //!   encoded by whichever end needs them.
 //! - [`target`]: the command set a device answers (INQUIRY, READ CAPACITY,
-//!   READ/WRITE(10), SYNCHRONIZE CACHE ...) over a [`target::BlockDevice`]:
+//!   READ/WRITE(10), SYNCHRONIZE CACHE ...) over a [`BlockDev`](azos_drv_api::block::BlockDev):
 //!   the USB MSC gadget (`azos_msc`) serves the board's storage as a stick.
 //! - [`initiator`]: the command set a host sends: CDB builders and the parsers
 //!   for the data that comes back: the USB mass-storage host driver

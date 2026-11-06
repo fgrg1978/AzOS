@@ -10,5 +10,6 @@ description = "Host-side tests for azos_scsi: the initiator (CDB builders, INQUI
 
 [dependencies]
 azos_scsi = { path = "../../../crates/drivers/scsi" }
+azos_drv_api = { path = "../../../crates/drivers/api" }
 
 [workspace]

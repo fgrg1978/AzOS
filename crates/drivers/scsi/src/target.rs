@@ -3,12 +3,14 @@
 //! The target side of the SCSI command set: what the USB MSC gadget answers.
 //!
 //! Decodes the 8 commands a standard PC / Mac / Linux OS issues
-//! when mounting a USB drive, and dispatches to a [`BlockDevice`]
-//! impl that abstracts the backing store. Sufficient to make the
+//! when mounting a USB drive, and dispatches to a [`BlockDev`]
+//! that is the backing store. Sufficient to make the
 //! board appear as a read/write USB stick to the host operating
 //! system without going near a real on-disk filesystem driver.
 //!
 //! Reference: SBC-3 (block commands) + SPC-4 (primary cmd set).
+
+use azos_drv_api::block::BlockDev;
 
 /// 6/10-byte SCSI opcodes we implement.
 pub const SCSI_OP_TEST_UNIT_READY:   u8 = 0x00;
@@ -54,25 +56,6 @@ pub const BLOCK_SIZE: usize = 512;
 pub const INQUIRY_VENDOR_ID:   &[u8; 8]  = b"AZOS    ";
 pub const INQUIRY_PRODUCT_ID:  &[u8; 16] = b"AzOS Recovery   ";
 pub const INQUIRY_REVISION:    &[u8; 4]  = b"0001";
-
-/// Block backing-store trait.  The kernel impl wraps the FAT32
-/// SD-card driver; host tests use an in-memory `Vec`.
-pub trait BlockDevice {
-    /// Total number of 512-byte blocks. Used by READ_CAPACITY.
-    fn block_count(&self) -> u32;
-
-    /// Read one block into `out` (which must be ≥ 512 bytes).
-    fn read_block(&self, lba: u32, out: &mut [u8]) -> Result<(), ()>;
-
-    /// Write one block from `data` (which must be ≥ 512 bytes).
-    fn write_block(&mut self, lba: u32, data: &[u8]) -> Result<(), ()>;
-
-    /// Make every completed `write_block` durable on the medium
-    /// (SYNCHRONIZE CACHE). `Ok` only when the backing store confirmed it.
-    /// No default: an implementation that cannot confirm durability must
-    /// say `Err`, not inherit an `Ok`.
-    fn sync_cache(&self) -> Result<(), ()>;
-}
 
 /// MODE SENSE(6) mode parameter header length (no block descriptor).
 pub const MODE_HEADER6_LEN: usize = 4;
@@ -181,7 +164,7 @@ pub enum ScsiResponse {
 /// and sets it when it fails.
 pub fn execute_scsi(
     cmd: ScsiCommand,
-    blk: &dyn BlockDevice,
+    blk: &mut dyn BlockDev,
     data_in_buf: &mut [u8],
     sense: &mut Sense,
 ) -> ScsiResponse {
@@ -211,9 +194,10 @@ pub fn execute_scsi(
             ScsiResponse::Done { data_in_len: need }
         }
 
-        ScsiCommand::SynchronizeCache10 => match blk.sync_cache() {
+        // Only a flush the device confirmed is `Done`.
+        ScsiCommand::SynchronizeCache10 => match blk.flush() {
             Ok(()) => ScsiResponse::Done { data_in_len: 0 },
-            Err(()) => {
+            Err(_) => {
                 *sense = Sense::WRITE_ERROR;
                 ScsiResponse::Failed
             }
@@ -298,7 +282,8 @@ pub fn execute_scsi(
             if data_in_buf.len() < 8 {
                 return ScsiResponse::Failed;
             }
-            let last_lba = blk.block_count().saturating_sub(1);
+            // A 10-byte CDB addresses 2^32 blocks at most.
+            let last_lba = blk.geometry().sectors.min(u32::MAX as u64 + 1).saturating_sub(1) as u32;
             data_in_buf[0..4].copy_from_slice(&last_lba.to_be_bytes());
             data_in_buf[4..8].copy_from_slice(&(BLOCK_SIZE as u32).to_be_bytes());
             ScsiResponse::Done { data_in_len: 8 }

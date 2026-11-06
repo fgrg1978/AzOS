@@ -3,12 +3,32 @@
 version = 4
 
 [[package]]
+name = "azos_abi"
+version = "1.0.0"
+
+[[package]]
+name = "azos_common"
+version = "0.1.0"
+
+[[package]]
+name = "azos_drv_api"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_common",
+]
+
+[[package]]
 name = "azos_scsi"
 version = "0.1.0"
+dependencies = [
+ "azos_drv_api",
+]
 
 [[package]]
 name = "azos_scsi_tests"
 version = "0.1.0"
 dependencies = [
+ "azos_drv_api",
  "azos_scsi",
 ]

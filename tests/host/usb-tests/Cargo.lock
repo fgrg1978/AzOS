@@ -89,6 +89,9 @@ version = "0.1.0"
 [[package]]
 name = "azos_scsi"
 version = "0.1.0"
+dependencies = [
+ "azos_drv_api",
+]
 
 [[package]]
 name = "azos_usb"

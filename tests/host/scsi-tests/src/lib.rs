@@ -12,8 +12,9 @@ mod tests {
         parse_inquiry, parse_read_capacity_10, parse_sense, CapacityError, Cdb, INQUIRY_LEN, READ_CAPACITY_10_LEN,
         SENSE_LEN,
     };
+    use azos_drv_api::block::{BlockDev, BlockError, BlockOp, BlockReq, Geometry};
     use azos_scsi::target::{
-        execute_scsi, parse_scsi_command, BlockDevice, ScsiCommand, ScsiResponse, Sense, BLOCK_SIZE,
+        execute_scsi, parse_scsi_command, ScsiCommand, ScsiResponse, Sense, BLOCK_SIZE,
         INQUIRY_PRODUCT_ID, INQUIRY_REVISION, INQUIRY_VENDOR_ID,
     };
 
@@ -22,23 +23,20 @@ mod tests {
         sync_ok: bool,
     }
 
-    impl BlockDevice for Disk {
-        fn block_count(&self) -> u32 {
-            self.blocks
+    impl BlockDev for Disk {
+        fn geometry(&self) -> Geometry {
+            Geometry { sectors: self.blocks as u64, fua: false, discard: false }
         }
-        fn read_block(&self, _: u32, _: &mut [u8]) -> Result<(), ()> {
-            Ok(())
-        }
-        fn write_block(&mut self, _: u32, _: &[u8]) -> Result<(), ()> {
-            Ok(())
-        }
-        fn sync_cache(&self) -> Result<(), ()> {
-            if self.sync_ok { Ok(()) } else { Err(()) }
+        fn submit(&mut self, req: BlockReq<'_>) -> Result<(), BlockError> {
+            match req.op {
+                BlockOp::Flush if !self.sync_ok => Err(BlockError::Io),
+                _ => Ok(()),
+            }
         }
     }
 
     /// Run `cdb` on the target and return the bytes it answers.
-    fn answer(cdb: &Cdb, disk: &Disk, sense: &mut Sense) -> Vec<u8> {
+    fn answer(cdb: &Cdb, disk: &mut Disk, sense: &mut Sense) -> Vec<u8> {
         let cmd = parse_scsi_command(&cdb.bytes[..cdb.len as usize]).expect("the target decodes every CDB built");
         let mut buf = [0u8; 64];
         match execute_scsi(cmd, disk, &mut buf, sense) {
@@ -145,8 +143,8 @@ mod tests {
 
     #[test]
     fn inquiry_data_from_the_gadget_parses() {
-        let d = Disk { blocks: 8, sync_ok: true };
-        let data = answer(&Cdb::inquiry(INQUIRY_LEN as u8), &d, &mut Sense::default());
+        let mut d = Disk { blocks: 8, sync_ok: true };
+        let data = answer(&Cdb::inquiry(INQUIRY_LEN as u8), &mut d, &mut Sense::default());
         let i = parse_inquiry(&data).expect("36 bytes");
         assert_eq!(&i.vendor, INQUIRY_VENDOR_ID);
         assert_eq!(&i.product, INQUIRY_PRODUCT_ID);
@@ -177,8 +175,8 @@ mod tests {
 
     #[test]
     fn capacity_from_the_gadget_is_blocks_not_last_lba() {
-        let d = Disk { blocks: 1000, sync_ok: true };
-        let data = answer(&Cdb::read_capacity_10(), &d, &mut Sense::default());
+        let mut d = Disk { blocks: 1000, sync_ok: true };
+        let data = answer(&Cdb::read_capacity_10(), &mut d, &mut Sense::default());
         assert_eq!(data.len(), READ_CAPACITY_10_LEN);
         // The wire carries the LAST lba (999); the parser says 1000 sectors.
         assert_eq!(parse_read_capacity_10(&data).unwrap().sectors, 1000);
@@ -204,15 +202,15 @@ mod tests {
 
     #[test]
     fn a_sense_the_gadget_reports_is_the_one_the_host_reads() {
-        let d = Disk { blocks: 8, sync_ok: false };
+        let mut d = Disk { blocks: 8, sync_ok: false };
         let mut sense = Sense::WRITE_ERROR;
-        let data = answer(&Cdb::request_sense(SENSE_LEN as u8), &d, &mut sense);
+        let data = answer(&Cdb::request_sense(SENSE_LEN as u8), &mut d, &mut sense);
         assert_eq!(data.len(), SENSE_LEN);
         assert_eq!(parse_sense(&data), Some(Sense::WRITE_ERROR));
         // Reported and cleared.
         assert_eq!(sense, Sense::NONE);
         let mut sense = Sense::INVALID_OPCODE;
-        let data = answer(&Cdb::request_sense(SENSE_LEN as u8), &d, &mut sense);
+        let data = answer(&Cdb::request_sense(SENSE_LEN as u8), &mut d, &mut sense);
         let got = parse_sense(&data).unwrap();
         assert!(got.is_invalid_opcode());
         assert!(!got.is_not_ready() && !got.is_unit_attention());

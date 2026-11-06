@@ -12,7 +12,7 @@ use azos_devif::outcome::{BUSY, OK, UNSUPPORTED};
 use azos_scsi::bbb::{Cbw, Csw, CBW_TOTAL_LEN, CSW_STATUS_FAIL, CSW_STATUS_OK, CSW_STATUS_PHASE_ERROR, REQ_BULK_ONLY_RESET};
 use azos_scsi::initiator::INQUIRY_LEN;
 use azos_scsi::target::{
-    execute_scsi, parse_scsi_command, BlockDevice, ScsiCommand, ScsiResponse, Sense, BLOCK_SIZE, SCSI_OP_INQUIRY,
+    execute_scsi, parse_scsi_command, ScsiCommand, ScsiResponse, Sense, BLOCK_SIZE, SCSI_OP_INQUIRY,
     SCSI_OP_READ_10, SCSI_OP_READ_CAPACITY_10, SCSI_OP_REQUEST_SENSE, SCSI_OP_SYNCHRONIZE_CACHE_10,
     SCSI_OP_TEST_UNIT_READY, SCSI_OP_WRITE_10,
 };
@@ -234,17 +234,11 @@ impl Stick {
 /// A block device over nothing, so `execute_scsi` can be asked what the
 /// gadget would answer to INQUIRY (kept honest by the scsi-tests).
 struct NoDisk;
-impl BlockDevice for NoDisk {
-    fn block_count(&self) -> u32 {
-        0
+impl azos_drv_api::block::BlockDev for NoDisk {
+    fn geometry(&self) -> azos_drv_api::block::Geometry {
+        azos_drv_api::block::Geometry { sectors: 0, fua: false, discard: false }
     }
-    fn read_block(&self, _: u32, _: &mut [u8]) -> Result<(), ()> {
-        Err(())
-    }
-    fn write_block(&mut self, _: u32, _: &[u8]) -> Result<(), ()> {
-        Err(())
-    }
-    fn sync_cache(&self) -> Result<(), ()> {
+    fn submit(&mut self, _: azos_drv_api::block::BlockReq<'_>) -> Result<(), azos_drv_api::block::BlockError> {
         Ok(())
     }
 }
@@ -401,7 +395,7 @@ fn the_driver_answers_inquiry_as_the_gadget_does() {
     // half of azos_scsi. Both must parse the same, or the fake proves nothing.
     let cmd = parse_scsi_command(&azos_scsi::initiator::Cdb::inquiry(36).bytes[..6]).unwrap();
     let mut buf = [0u8; 64];
-    let ScsiResponse::Done { data_in_len } = execute_scsi(cmd, &NoDisk, &mut buf, &mut Sense::default()) else { panic!() };
+    let ScsiResponse::Done { data_in_len } = execute_scsi(cmd, &mut NoDisk, &mut buf, &mut Sense::default()) else { panic!() };
     assert!(azos_scsi::initiator::parse_inquiry(&buf[..data_in_len]).unwrap().is_block_device());
 }
 
