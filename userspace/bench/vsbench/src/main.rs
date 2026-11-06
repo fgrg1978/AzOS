@@ -1244,8 +1244,8 @@ fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
     // 1. The heap upward, one page at a time (Linux: `brk`; AzOS has no break
     //    and maps a page). Growth only: shrinking and
     //    regrowing would measure bookkeeping on a kernel that keeps the pages,
-    //    not allocation. Since wave 14 AzOS reserves the pages (demand
-    //    markers) and backs each at its first touch, as Linux does; this lane
+    //    not allocation. AzOS reserves the pages (pages of a mapping) and
+    //    backs each at its first touch, as Linux does; this lane
     //    never touches them, so on both sides it is the reservation alone.
     let mut brk_err = 0i64;
     let t_brk = batch(N_BRK, || {
