@@ -38,7 +38,7 @@ crates/core/image	0	0	0	0	1	0
 crates/core/inspect	1	1	0	0	0	3
 crates/core/ipc	36	9	6	0	0	52
 crates/core/ktest	3	0	0	0	0	66
-crates/core/libsys	93	10	2	0	0	93
+crates/core/libsys	95	10	2	0	0	94
 crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
@@ -53,7 +53,7 @@ crates/core/rings	45	14	8	0	0	99
 crates/core/sched	425	160	14	3	0	67
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	47	9	20	0	0	82
-crates/core/syscall	39	2	1	0	0	38
+crates/core/syscall	36	2	1	0	0	37
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	26	0	1	0	0	30
 crates/core/wcet-macro	0	0	0	0	1	-
@@ -98,7 +98,7 @@ crates/drivers/power	0	0	0	0	1	0
 crates/drivers/rc-esc	0	0	0	0	1	0
 crates/drivers/rtc	0	0	0	0	1	0
 crates/drivers/scsi	0	0	0	0	1	0
-crates/drivers/sensor	2	2	0	0	0	16
+crates/drivers/sensor	2	2	0	0	0	15
 crates/drivers/soc	0	0	0	0	1	0
 crates/drivers/sys	44	2	3	0	0	49
 crates/drivers/thermal	0	0	0	0	1	0
@@ -143,7 +143,7 @@ userspace/lib/tls-probe	0	1	0	0	0	-
 userspace/lib/ualloc	10	5	2	0	0	-
 userspace/lib/zenoh	0	0	0	0	1	-
 userspace/services/audiod	4	0	1	0	0	-
-userspace/services/brain_client	25	0	0	0	0	-
+userspace/services/brain_client	23	0	0	0	0	-
 userspace/services/compmgr	1	0	0	0	0	-
 userspace/services/compositor	4	0	2	0	0	-
 userspace/services/decisd	1	0	0	0	0	-
