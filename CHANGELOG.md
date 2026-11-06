@@ -9,6 +9,16 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- Updates and advisories on the device: `pkg outdated` asks the configured
+  package source for its signed index (`INDEX.AZX`, verified like a package) and
+  prints, per staged package, the installed and the available version and whether
+  it is behind or below a security floor; `pkg upgrade [NAME | --all]` installs
+  the newer build the index pins through the normal signed path, never a
+  downgrade and never below the floor. With Kconfig `PKG_SEC_FLOOR_ENFORCE`
+  (default on outside development builds) the kernel refuses to launch a program
+  of a package installed below its floor, with a `Rule::ExecGrant` record. The
+  `Packages` interface is at level 2
+  ([Documentation/services.md](Documentation/services.md)).
 - The compositor (Kconfig `COMPOSITOR`, `COMPSRV.ELF`, the `Compositor`
   interface): the sole holder of the kernel's `Display` interface. Clients attach
   windows (a memory object with a damage ring in its first page; the attach lends

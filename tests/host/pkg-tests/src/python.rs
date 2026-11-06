@@ -185,3 +185,40 @@ fn the_sbom_is_spdx_and_deterministic() {
     // The unsigned build is the signed one without its 32-byte key and 64-byte signature.
     assert_eq!(std::fs::read(d.join("again.azpkg")).unwrap().len() + 96, std::fs::read(d.join("p.azpkg")).unwrap().len());
 }
+
+/// The index `azpkg.py index` writes is the one the crate verifies: the same
+/// container, signed message and body, byte for byte, and the id it pins is the
+/// package id the crate computes. A byte changed after signing is refused by the
+/// crate; the tool refuses floors and versions the device cannot order.
+///
+/// **Canary** `pkg-verify-skip-canary`: the tampered index verifies.
+#[test]
+fn an_index_built_and_signed_by_the_tool_is_the_one_the_crate_verifies() {
+    let Some((d, kid, _)) = built("index") else { eprintln!("skipped: python3 + cryptography not available"); return };
+    let (ok, out) = run(&d, &["index", "p.azpkg", "--key", "author.priv", "--serial", "9", "--floor", "pyvision=0.3.0", "-o", "INDEX.AZX"]).unwrap();
+    assert!(ok, "{out}");
+    let bytes = std::fs::read(d.join("INDEX.AZX")).unwrap();
+    let pkg = std::fs::read(d.join("p.azpkg")).unwrap();
+    let dev0 = device_for(&kid);
+    let topo = dev0.topology();
+    let ix = azos_pkg::index::verify(&bytes, &topo).expect("the tool's index verifies");
+    assert_eq!((ix.serial, ix.entries), (9, 1));
+    let e = ix.find("pyvision").unwrap();
+    assert_eq!((e.version, e.sec_floor, e.file), (azos_pkg::index::Version([0, 3, 1, 0]), Some(azos_pkg::index::Version([0, 3, 0, 0])), "p.azpkg"));
+    assert_eq!(e.id, azos_pkg::Package::parse(&pkg).unwrap().id());
+
+    let mut tampered = bytes.clone();
+    let at = tampered.len() - 4;
+    tampered[at] ^= 1;
+    assert_eq!(azos_pkg::index::verify(&tampered, &topo).unwrap_err(), azos_pkg::index::IndexWhy::Signature);
+
+    for (what, args) in [
+        ("a floor with no order", &["--floor", "pyvision=1.0-rc1"][..]),
+        ("a floor for a package not listed", &["--floor", "elsewhere=1.0"]),
+    ] {
+        let mut a = vec!["index", "p.azpkg", "--key", "author.priv", "--serial", "1", "-o", "X.AZX"];
+        a.extend_from_slice(args);
+        let (ok, out) = run(&d, &a).unwrap();
+        assert!(!ok, "{what}: {out}");
+    }
+}

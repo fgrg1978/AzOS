@@ -15,6 +15,7 @@ with the Rust crate.
     azpkg.py build   package.toml -o X.azpkg  # unsigned container + X.spdx.json (SBOM)
     azpkg.py sign    X.azpkg --key PREFIX.priv [-o Y.azpkg]
     azpkg.py verify  X.azpkg (--signer KEYID ... | --signers FILE) [--sbom X.spdx.json]
+    azpkg.py index   --key PREFIX.priv --serial N -o INDEX.AZX [--floor NAME=VERSION ...] X.azpkg ...
     azpkg.py inspect X.azpkg
     azpkg.py lint    package.toml | --sbom X.spdx.json   # licence allowlist
     azpkg.py selftest                          # every refusal, on a package it builds
@@ -599,6 +600,66 @@ def cmd_verify(a):
     return 0
 
 
+# ── the repository index (crates/core/pkg/src/index.rs) ──────────────────────
+INDEX_MAGIC = b"AZIX"
+INDEX_FORMAT = 1
+INDEX_DOMAIN = b"azos-idx-v1\0"
+ORDERED_VERSION_RE = re.compile(r"^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){0,3}$")
+
+
+def ordered_version(v: str) -> bool:
+    """A version the device can order: one to four decimals, each at most 65535."""
+    return bool(ORDERED_VERSION_RE.match(v)) and all(int(c) <= 0xFFFF for c in v.split("."))
+
+
+def index_message(alg: int, body: bytes) -> bytes:
+    """The bytes the index signer signs: crates/core/pkg index::message."""
+    return INDEX_DOMAIN + struct.pack("<H", alg) + sha(body)
+
+
+def index_body(serial: int, offers: list) -> bytes:
+    """offers: (name, version, floor or None, package id hex, file) sorted by name."""
+    lines = ["format = 1", f"serial = {serial}"]
+    names = set()
+    for name, version, floor, pid, file in sorted(offers):
+        if name in names:
+            raise Refused(f"{name}: listed twice")
+        names.add(name)
+        if not NAME_RE.match(file):
+            raise Refused(f"{file!r}: a file name beside the index is [A-Za-z0-9._-]{{1,32}}")
+        for what, v in (("version", version), ("sec_floor", floor)):
+            if v is not None and not ordered_version(v):
+                raise Refused(f"{name}: {what} {v!r} has no order (one to four decimals, 0..65535)")
+        lines += ["", f"[pkg.{name}]", f'version = "{version}"']
+        if floor is not None:
+            lines.append(f'sec_floor = "{floor}"')
+        lines += [f'id = "{pid}"', f'file = "{file}"']
+    return ("\n".join(lines) + "\n").encode()
+
+
+def cmd_index(a):
+    priv = read_key(a.key)
+    pub = priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    floors = {}
+    for f in a.floor:
+        name, _, ver = f.partition("=")
+        floors[name] = ver
+    offers = []
+    for path in a.packages:
+        p = unpack(Path(path).read_bytes())
+        meta = parse_meta(p["meta"])
+        offers.append((meta["name"], meta["version"], floors.pop(meta["name"], None),
+                       package_id(p["alg"], p["key"], p["meta"], p["rows"]).hex(), Path(path).name))
+    if floors:
+        raise Refused(f"--floor names no listed package: {', '.join(sorted(floors))}")
+    body = index_body(a.serial, offers)
+    sig = priv.sign(index_message(ALG_ED25519, body))
+    head = INDEX_MAGIC + struct.pack("<HHHHI", INDEX_FORMAT, ALG_ED25519, len(pub), len(sig), len(body))
+    Path(a.out).write_bytes(head + pub + sig + body)
+    print(f"index {a.out}: serial {a.serial}, {len(offers)} package(s), signed by key_id {key_id(ALG_ED25519, pub).hex()}")
+    return 0
+
+
 def cmd_inspect(a):
     data = Path(a.package).read_bytes()
     p = unpack(data)
@@ -659,6 +720,12 @@ def cmd_selftest(_):
         expect("trailing byte", lambda: check(signed + b"\0", good, sbom))
         expect("unknown algorithm", lambda: check(signed[:6] + b"\x02\x00" + signed[8:], good, sbom))
         expect("foreign section", lambda: rows_ok(b"[operator]\npubkey = \"00\"\n"))
+        pid = "ab" * 32
+        index_body(1, [("a", "1.0", "0.9", pid, "A.PKG")])
+        expect("floor without an order", lambda: index_body(1, [("a", "1.0", "1.0-rc1", pid, "A.PKG")]))
+        expect("version without an order", lambda: index_body(1, [("a", "1+b", None, pid, "A.PKG")]))
+        expect("a path as the file", lambda: index_body(1, [("a", "1.0", None, pid, "../A.PKG")]))
+        expect("a package listed twice", lambda: index_body(1, [("a", "1.0", None, pid, "A.PKG")] * 2))
         for what, expr in (("GPL-only package", "GPL-3.0-only"), ("licence ref", "LicenseRef-x"),
                            ("AND with one bad", "MIT AND GPL-3.0-only"), ("empty", ""), ("dangling", "MIT OR")):
             if licence_ok(expr, allowed):
@@ -688,6 +755,9 @@ def main(argv=None):
     s = sub.add_parser("verify"); s.add_argument("package"); s.add_argument("--signer", action="append")
     s.add_argument("--signers"); s.add_argument("--any-signer", action="store_true"); s.add_argument("--sbom")
     s.add_argument("--allow", action="append", default=[]); s.set_defaults(fn=cmd_verify)
+    s = sub.add_parser("index"); s.add_argument("packages", nargs="+"); s.add_argument("--key", required=True)
+    s.add_argument("--serial", type=int, required=True); s.add_argument("-o", "--out", required=True)
+    s.add_argument("--floor", action="append", default=[], metavar="NAME=VERSION"); s.set_defaults(fn=cmd_index)
     s = sub.add_parser("inspect"); s.add_argument("package"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("selftest"); s.set_defaults(fn=cmd_selftest)
     a = ap.parse_args(argv)

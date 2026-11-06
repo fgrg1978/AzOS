@@ -508,6 +508,9 @@ Exit status: 0, 1 when the decision or dump is not held, 2 on a usage error or n
 | `update` | stage a signed whole-system update (kernel, userspace images, topology, configuration) into the inactive boot slot's directory under `/fat/PKG`, and read it back; nothing switches; `#[once_only]`, `on_failure(degrade)` |
 | `fetch` | get the package from the source the rows in `/fat/PKG/SOURCE.CFG` describe (a pinned HTTPS server; in a development build also a TFTP server, below) and install it as `install` does; `#[once_only]`, `on_failure(degrade)` |
 | `fetch_update` | `update` for a bundle (or a delta against the running slot's set) the installer gets from the same source, at most `PKG_MAX_KB`; `#[once_only]`, `on_failure(degrade)` |
+| `refresh` | get the repository's signed index from the same source, verify it, keep it on the volume and work out where every staged package stands against it (reply: status, serial, packages in the report, entries); `#[once_only]`, `on_failure(degrade)` |
+| `outdated` | row `index` of that report: `part` 0 the package's name, `part` 1 `[status(ROW, standing), installed, offered, floor]`, versions as `Version::packed`; all zero past the last row; `#[idempotent]` |
+| `upgrade` | install the newer version the index lists for the named staged package, in place of the staged one, through the same verification, admission, staging and journal as `install`; `#[once_only]`, `on_failure(degrade)` |
 
 It verifies a package against the signers of the device's signed topology, admits its rows
 as a topology delta (with the `neverallow` rules), stages the package, and journals the
@@ -517,9 +520,82 @@ so without it an install is refused rather than staged on the boot volume (`stag
 staging volume can stage a file without the installer, so the verdict is not a trust anchor:
 a consumer verifies again. It holds no authority over the boot record; `ota switch` and the
 kernel own the switch. `PKG.ELF` is its client (`pkg admit FILE`, `pkg install FILE`,
-`pkg fetch`, `pkg update FILE`, `pkg fetch-update`, `pkg list`, `pkg remove ID`): it reads the file into a memory object, hands the installer
-that capability and the length, and prints the answer; `pkg fetch` and `pkg fetch-update`
-hand it nothing, the installer dials the source itself.
+`pkg fetch`, `pkg update FILE`, `pkg fetch-update`, `pkg list`, `pkg remove ID`,
+`pkg outdated`, `pkg upgrade [NAME | --all]`): it reads the file into a memory object, hands the installer
+that capability and the length, and prints the answer; `pkg fetch`, `pkg fetch-update`,
+`pkg outdated` and `pkg upgrade` hand it nothing, the installer dials the source itself.
+
+### Updates and advisories: `pkg outdated`, `pkg upgrade`
+
+The source (`SOURCE.CFG`, HTTPS or, in a development build, TFTP) names one file, the
+package `pkg fetch` gets. The repository is the directory that file is in: the installer
+asks the same server for `INDEX.AZX` beside it (the index) and, on an upgrade, for the file
+the index names beside it. No transport was added; `HttpsRemote` and `TftpRemote` gained
+`get_sibling`.
+
+```
+$ pkg outdated
+PACKAGE                           INSTALLED  AVAILABLE  STATE
+acme-vision                       1.0.0      1.3.0      behind; below security floor 1.2.0
+zeta                              2.0.0      2.0.0      up to date
+1 behind, 1 below their security floor
+$ pkg upgrade acme-vision          # or: pkg upgrade --all
+upgraded acme-vision 1.0.0 -> 1.3.0 (package 3f9c...)
+```
+
+Both commands begin with `refresh`. A reply is a typed status (`step_name`); a refused
+index is `refused: index signature (status 0x16000007)` and so on, never a default.
+
+**The index (`INDEX.AZX`, `azos_pkg::index`).** One file, signed by one of the device's
+signers and verified by the steps a package is (`azos_pkg::verify::authenticate`: algorithm,
+signer in the signed topology, signature; the body is not read before that). Container
+format 1:
+
+```
+ 0   4  "AZIX"
+ 4   2  format (1)          6  2  signature algorithm      8  2  key_len
+10   2  sig_len             12 4  body_len                 16  key | signature | body
+```
+
+The signed message is `"azos-idx-v1\0"`, the algorithm id (2 bytes LE) and the SHA-256 of
+the body: a package signature is not an index signature. The body (body format 1) is a
+strict subset of TOML, `format = 1`, `serial = N`, then `[pkg.NAME]` sections in strictly
+increasing name order, each `version`, optionally `sec_floor`, `id` (the 64-hex package id
+of that build) and `file` (a file name beside the index). At most `PKG_INDEX_MAX_ENTRIES`
+entries. A malformed body is refused even when signed.
+
+* **Versions** have an order when they are one to four dot-separated decimals (each at most
+  65535, no leading zero); `1.2` equals `1.2.0`. Any other text (`1.0-rc1`) is valid package
+  metadata but unordered: it is reported as such, `upgrade` refuses it, and a floor check
+  treats it as below the floor.
+* **The serial** never goes backwards: the stored index (`/fat/PKG/INDEX.AZX`, on the
+  package volume) is verified again by the installer and a lower serial is refused.
+* **Whose say it has.** An index speaks only about packages installed under its own signer;
+  an entry for a name installed from another signer is ignored (`index is signed by another
+  signer`), so one signer cannot raise another author's floor or push a build onto it.
+* **What an upgrade needs.** The report says the package is behind. The installer fetches
+  `file`, and the file must be the build the entry pins (`id`), carry the entry's name and
+  version, be signed by the signer of the package it replaces, be newer than it and not below
+  its own `sec_floor`; then it goes through `verify`, `admit`, staging and the journal
+  exactly as `install`. The new file is staged and journalled (one commit), then the old one is
+  removed and journalled (`Deny`, like `remove`); the kernel's boot-time apply snapshots the
+  volume before it writes the new programs, so the restore point and the A/B trial rule
+  apply as for any new package. A power cut between the two commits leaves both versions
+  staged: the apply keeps the applied one and refuses the other's rows with a record, and
+  `pkg remove` clears the old. A refusal is journalled and leaves the staged package alone.
+
+**Security floors.** `sec_floor` is the lowest version of the package still considered
+secure. `pkg outdated` always marks a package below it. With Kconfig
+`PKG_SEC_FLOOR_ENFORCE` (default `y` in release and certifiable builds, `n` in development
+builds) the kernel's boot-time apply also reads the stored index, verifies it against the
+signed topology, and marks the programs of such a package; the exec check
+(`azos_syscall::exec_grant`, the one `SYS_SPAWN_EX` and `execve` share) then refuses to
+start them, whatever launch grant (`pkg.<hex>` or the image's) the caller holds, with a
+`Rule::ExecGrant` record whose basis is `BelowSecFloor` (8). The package is still applied, so
+`pkg upgrade` can replace it and the next boot starts the fixed version. An index that is
+missing or does not verify names no floor: floors are an addition to the signed topology,
+never a way to lose a package. Whoever can write the staging volume can delete the stored
+index (as they can delete a package); the floors are as durable as the volume.
 
 `pkgd` is a `std` program (the SDK, like `rpcquic`) because the fetch is TLS: `azos_tls`
 (rustls with the rustls-rustcrypto provider, `third_party/vendor`) dials the address in

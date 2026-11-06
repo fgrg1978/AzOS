@@ -99,7 +99,7 @@ pub fn record(tid: u32, site: Site, basis: Basis, digest: &[u8; 32]) -> u64 {
 /// The check and the record: `Ok` with the basis that admits `tid`'s exec of
 /// `image`, `Err` with the id of the refusal's record.
 pub fn decide(tid: u32, site: Site, image: &str, digest: &[u8; 32]) -> Result<Basis, u64> {
-    if azos_sched::seccomp::package_below_floor(digest) {
+    if !cfg!(feature = "exec-floor-canary") && azos_sched::seccomp::package_below_floor(digest) {
         return Err(record(tid, site, Basis::BelowSecFloor, digest));
     }
     match grant_for(tid, image, digest) {

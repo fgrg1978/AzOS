@@ -5646,6 +5646,127 @@ ota_bundle_row() { # ota_bundle_row <riscv64|aarch64> <good|tampered>
     ok; rm -rf "$work"
 }
 
+# ── Updates and advisories on the device (QEMU rows, written, not yet run) ───
+#
+#   <isa>: pkg outdated and upgrade   `pkg outdated` reports an installed
+#                          package behind and below its security floor, `pkg
+#                          upgrade --all` installs the fixed build through the
+#                          signed path, the next boot applies it (a trial the
+#                          boot confirms) and the report says current
+#   <isa>: package below its floor refused  the same device with the package
+#                          left at the old version and the kernel built with
+#                          PKG_SEC_FLOOR_ENFORCE=y: the boot applies it, notes
+#                          that it is below its floor, and the exec of its
+#                          program is refused with an `exec-grant` record whose
+#                          basis is 8; with the option off (the control) the
+#                          program starts
+#
+# What it puts together: a package author key (`azpkg.py keygen`) that is a
+# `[signer.acme]` of the device's signed topology (appended to CAPS.TOM and signed
+# again with the TEST key, as tests/host/pkg-tests `Device0::with_signers` does),
+# two builds of one package (1.0.0 and 2.0.0), the index that lists 2.0.0 with
+# `sec_floor = 1.5.0` (`azpkg.py index`), all served by QEMU's TFTP gateway from
+# the directory SOURCE.CFG names. Prerequisites the gate does not provide yet and
+# the first run will have to: a signer section in the gate's topology volume, the
+# native `/pkg` volume row the installer stages on, and a package row whose
+# program the boot loader starts. Host rows cover every decision these rows
+# observe (`pkg: outdated, upgrade and security floors`, the canaries after it).
+pkgup_volume() { # <isa> <disk> <work>
+    local isa="$1" disk="$2" work="$3" k="$3/tftp" tisa=riscv64
+    [ "$isa" = aarch64 ] && tisa=aarch64
+    par_shared "make topo-volume" || return 1
+    make topo-volume TOPO_IMAGE="$disk" TOPO_ISA="$tisa" TOPO_KCONFIG_RISCV64="$PRIMARY_CONFIG" \
+        TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" TOPO_SELECT="${PKGUP_SELECT:-}" >"$work/topo.log" 2>&1 || return 1
+    python3 tools/image/azpkg.py keygen "$work/author" >"$work/author.id" 2>&1 || return 1
+    local kid; kid="$(sed -n 's/.*"\([0-9a-f]\{64\}\)".*/\1/p' "$work/author.id" | sed -n 1p)"
+    [ -n "$kid" ] || return 1
+    mcopy -n -i "$disk" ::CAPS.TOM "$work/CAPS.TOM" 2>/dev/null || return 1
+    printf '\n[signer.acme]\nkey_id = "%s"\nmem_pages_max = 64\nwarrants = ["endpoint:endpoint.acme"]\n' "$kid" >>"$work/CAPS.TOM"
+    python3 tools/sign/gen_config_sig.py "$work/CAPS.TOM" --priv "$OTAE2E_PRIV" --out "$work/CAPS.SIG" >/dev/null 2>&1 || return 1
+    mcopy -o -i "$disk" "$work/CAPS.TOM" ::CAPS.TOM 2>/dev/null && mcopy -o -i "$disk" "$work/CAPS.SIG" ::CAPS.SIG 2>/dev/null || return 1
+    # Two builds of one package, and the index listing the newer with a floor above the older.
+    local v
+    for v in 1.0.0 2.0.0; do
+        mkdir -p "$work/p$v"
+        head_bytes() { python3 -c "import sys; sys.stdout.buffer.write(bytes((i * 7) % 256 for i in range(int(sys.argv[1]))))" "$1"; }
+        head_bytes 400 >"$work/p$v/acme.elf"
+        printf 'format = 5\n[task.ACME.ELF]\nclass = "best_effort"\npriority = 20\nmem_pages = 32\ncaps = [\n    { kind = "endpoint", target = "endpoint.acme", perm = "rw" },\n]\n' >"$work/p$v/rows.toml"
+        printf '[package]\nname = "acme-vision"\nversion = "%s"\nhardware = ["sbc"]\nlicence = "Apache-2.0"\nrows = "rows.toml"\n[image."ACME.ELF"]\npath = "acme.elf"\nlicence = "Apache-2.0"\n' "$v" >"$work/p$v/package.toml"
+        python3 tools/image/azpkg.py build "$work/p$v/package.toml" -o "$k/ACME$v.PKG" >/dev/null 2>&1 \
+          && python3 tools/image/azpkg.py sign "$k/ACME$v.PKG" --key "$work/author.priv" >/dev/null 2>&1 || return 1
+    done
+    mv "$k/ACME1.0.0.PKG" "$k/ACMEV1.PKG"; mv "$k/ACME2.0.0.PKG" "$k/ACMEV2.PKG"
+    python3 tools/image/azpkg.py index "$k/ACMEV2.PKG" --key "$work/author.priv" --serial 1 --floor acme-vision=1.5.0 -o "$k/INDEX.AZX" >/dev/null 2>&1 || return 1
+    printf 'tftp=10.0.2.2\nfile=ACMEV1.PKG\n' >"$work/SOURCE.CFG"
+    mcopy -o -i "$disk" "$work/SOURCE.CFG" ::PKG/SOURCE.CFG 2>/dev/null
+}
+pkgup_row() { # pkgup_row <riscv64|aarch64> <upgrade|floor>
+    local isa="$1" mode="$2" label
+    if [ "$mode" = upgrade ]; then label="$isa: pkg outdated and upgrade"; else label="$isa: package below its floor refused"; fi
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local work="$CI_LOG_DIR/pkgup-$isa-$mode" kimg disk fifo log1 log2 feats="qemu"
+    rm -rf "$work"; mkdir -p "$work/tftp"
+    kimg="$work/kernel"; disk="$work/disk.img"; fifo="$work/in.fifo"; log1="$work/boot1.log"; log2="$work/boot2.log"
+    [ "$mode" = floor ] && feats="qemu,CONFIG_PKG_SEC_FLOOR_ENFORCE=y"
+    if [ "$isa" = riscv64 ]; then
+        kbuild "$feats" || { bad; echo "      riscv64 kernel ($feats) did not build"; return; }
+        cp "$KERNEL" "$kimg"; rm -f $AZOS_OUT/build/disk-sh.img; make_disk $AZOS_OUT/build/disk-sh.img; cp $AZOS_OUT/build/disk-sh.img "$disk"
+    else
+        a64_kbuild "$feats" || { bad; echo "      aarch64 kernel ($feats) did not build"; return; }
+        cp "$A64_IMG" "$kimg"; rm -f $AZOS_OUT/build/disk-aarch64-sh.img; make_disk $AZOS_OUT/build/disk-aarch64-sh.img; cp $AZOS_OUT/build/disk-aarch64-sh.img "$disk"
+    fi
+    PKGUP_SELECT="${feats#qemu}"; PKGUP_SELECT="${PKGUP_SELECT#,}"
+    if ! pkgup_volume "$isa" "$disk" "$work"; then bad; echo "      could not prepare the volume and the repository (topology: $work/topo.log)"; return; fi
+    mkfifo "$fifo" || { bad; echo "      mkfifo failed"; return; }
+    par_ready
+    OTABUN_LOG="$log1"
+    # Boot 1: install the old build, ask what is outdated, upgrade it.
+    otabun_qemu "$isa" "$kimg" "$disk" "$log1" "$fifo" "$work/tftp" || { bad; echo "      QEMU did not start (log: $log1)"; return; }
+    exec 9>"$fifo"
+    if ! otae2e_wait "$log1" 'azos\$ ' 150 || ! otae2e_wait "$log1" '\[pkgd\] AzOS package installer' 90; then
+        exec 9>&-; otae2e_stop; bad; echo "      boot 1: the shell or the installer never came up (log: $log1)"; return
+    fi
+    otabun_cmd "pkg fetch" 'installed: package|refused: ' 60
+    if ! grep -aq 'installed: package' "$log1"; then
+        exec 9>&-; otae2e_stop; bad; echo "      the old build was not installed: $(grep -a 'refused: ' "$log1" | tr -d '\r' | sed -n '$p') (log: $log1)"; return
+    fi
+    # The source now names the new build's directory entry; the index sits beside it.
+    otabun_cmd "pkg outdated" '[0-9]+ behind, [0-9]+ below' 60
+    if ! grep -aqE 'acme-vision +1\.0\.0 +2\.0\.0 +behind; below security floor 1\.5\.0' "$log1" \
+       || ! grep -aqE '1 behind, 1 below their security floor' "$log1"; then
+        exec 9>&-; otae2e_stop; bad; echo "      pkg outdated did not report the package behind and below its floor:"
+        grep -a 'acme-vision\|behind\|refused' "$log1" | tr -d '\r' | sed -n '1,6p' | sed 's/^/        /'; echo "      log kept: $log1"; return
+    fi
+    if [ "$mode" = upgrade ]; then
+        otabun_cmd "pkg upgrade --all" 'upgraded acme-vision|refused acme-vision' 90
+        if ! grep -aqE 'upgraded acme-vision 1\.0\.0 -> 2\.0\.0' "$log1"; then
+            exec 9>&-; otae2e_stop; bad; echo "      pkg upgrade --all did not upgrade the package (log: $log1)"; return
+        fi
+    fi
+    exec 9>&-; otae2e_stop
+    # Boot 2: the kernel applies what is staged. Upgrade: the new build is applied and not below
+    # its floor. Floor: the old build is applied, noted below its floor, and its program is refused.
+    otae2e_qemu "$isa" "$kimg" "$disk" "$log2" || { bad; echo "      QEMU did not start (log: $log2)"; return; }
+    otae2e_wait "$log2" '\[PKG\] [0-9]+ of [0-9]+ package program\(s\) bound|!!! KERNEL PANIC !!!|\[FATAL\]' 150
+    otae2e_stop
+    if otae2e_trap "$log2" || ! grep -aq '\[PKG\] 1 package(s) applied' "$log2"; then
+        bad; echo "      the boot did not apply the package:"; grep -a '\[PKG\]' "$log2" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'; echo "      logs kept: $log1 $log2"; return
+    fi
+    if [ "$mode" = upgrade ]; then
+        grep -aq 'below its security floor' "$log2" && { bad; echo "      the upgraded package is still below its floor (log: $log2)"; return; }
+    else
+        if ! grep -aq '\[PKG\] acme-vision 1\.0\.0 is below its security floor' "$log2"; then
+            bad; echo "      the kernel did not mark the package below its floor (log: $log2)"; return
+        fi
+        # The exec check's record: basis 8 (BelowSecFloor), on the program's digest.
+        if ! grep -aqiE 'exec-grant.*(basis[ =]8|below)' "$log2"; then
+            bad; echo "      no exec-grant record with the BelowSecFloor basis (log: $log2)"; return
+        fi
+    fi
+    ok; rm -rf "$work"
+}
+
 # ── aarch64: file-open / captest / ipctest parity (aarch64 parity program) ──
 #
 # `aarch64_kernel_row`/`aarch64_userspace_row` above build the aarch64 kernel
@@ -9477,6 +9598,10 @@ par "aarch64: OTA bundle over the network, B confirmed" ota_bundle_row aarch64 g
 a64_kbuild "qemu" >/dev/null
 par "aarch64: OTA tampered bundle refused" ota_bundle_row aarch64 tampered
 a64_kbuild "qemu" >/dev/null
+par "aarch64: pkg outdated and upgrade" pkgup_row aarch64 upgrade
+a64_kbuild "qemu" >/dev/null
+par "aarch64: package below its floor refused" pkgup_row aarch64 floor
+a64_kbuild "qemu" >/dev/null
 par "aarch64: watchdog wired" aarch64_watchdog_row
 par "aarch64: console routed" aarch64_console_route_row
 par "aarch64: entropy seeds pool" aarch64_entropy_row
@@ -10219,6 +10344,10 @@ kbuild "qemu"
 par "riscv64: OTA bundle over the network, B confirmed" ota_bundle_row riscv64 good
 kbuild "qemu"
 par "riscv64: OTA tampered bundle refused" ota_bundle_row riscv64 tampered
+kbuild "qemu"
+par "riscv64: pkg outdated and upgrade" pkgup_row riscv64 upgrade
+kbuild "qemu"
+par "riscv64: package below its floor refused" pkgup_row riscv64 floor
 kbuild "qemu"
 
 # ── boot count: an orderly reboot is not a crash (owner decision 2026-09-28)
@@ -11817,6 +11946,45 @@ host_job host_canary_row "fs check: azvol unclean unchecked canary" fs-tests azv
     an_unclean_mount_is_checked_and_damage_makes_the_volume_read_only_or_refused
 host_job host_canary_row "network: TFTP forged package canary" pkg-tests pkg-verify-skip-canary \
     tftp_source::a_forged_package_fetched_over_tftp_is_refused
+# Updates and advisories (`pkg outdated`, `pkg upgrade`, Kconfig
+# PKG_SEC_FLOOR_ENFORCE): the signed repository index, the report, the upgrade
+# through the normal signed path, and the refusal to launch a package below its
+# floor. The row passes when the suites do AND the tests that carry each
+# property ran; the canaries below turn each check off, one at a time, and
+# require exactly the test that carries it to fail.
+pkg_updates_row() { # <label>
+    local label="$1" out rc=0 t
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    host_cargo out "${REPO_ROOT}/tests/host/pkg-tests" test --release -- index:: upgrade:: tool:: apply:: python:: || rc=$?
+    if [ "$rc" = 0 ] && ! echo "$out" | qgrep -q "test result: FAILED"; then
+        for t in index::a_tampered_index_is_refused upgrade::upgrade_installs_the_newer_version_in_place_of_the_staged_one \
+                 upgrade::an_older_offer_is_not_an_upgrade tool::the_tool_reports_what_is_outdated_and_upgrades_it \
+                 apply::a_package_below_its_floor_is_marked_when_the_policy_enforces_floors \
+                 apply::floors_come_only_from_a_verified_index_and_only_when_enforced; do
+            echo "$out" | qgrep -q "test ${t} \.\.\. ok" || { rc=1; echo "      did not run and pass: $t"; }
+        done
+    fi
+    if [ "$rc" = 0 ]; then
+        ok
+    else
+        bad
+        echo "$out" | sed -n 's/^---- \(.*\) stdout ----$/      failed test: \1/p'
+        echo "$out" | grep -m4 -E "^error|test result" | sed 's/^/      /'
+        ci_debug_dump "pkg-updates" "$out"
+    fi
+}
+host_job pkg_updates_row "pkg: outdated, upgrade and security floors"
+host_job host_canary_row "pkg: forged index canary" pkg-tests pkg-verify-skip-canary \
+    index::a_tampered_index_is_refused
+host_job host_canary_row "pkg: foreign index signer canary" pkg-tests pkg-signer-canary \
+    index::an_index_signed_by_a_key_the_device_does_not_admit_is_refused
+host_job host_canary_row "pkg: downgrade canary" pkg-tests pkg-downgrade-canary \
+    index::an_upgrade_is_refused_for_a_downgrade_a_floor_a_stranger_or_a_swapped_file
+host_job host_canary_row "pkg: security floor canary" pkg-tests pkg-floor-canary \
+    apply::a_package_below_its_floor_is_marked_when_the_policy_enforces_floors
+host_job host_canary_row "exec: below security floor canary" syscall-tests exec-floor-canary \
+    a_package_below_its_security_floor_is_refused_whatever_the_grants
 host_job host_canary_row "quic: rsa key canary" quic-tests canary-rsa-keys the_quic_providers_refuse_an_rsa_private_key
 host_job host_canary_row "soc: effect-after-write canary" soc-tests effect-after-write-canary \
     effects_are_committed_before_the_register_write

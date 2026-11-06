@@ -68,6 +68,9 @@ ktest = []
 linux-abi = ["dep:azos_linux_abi", "azos_sched/linux-abi"]
 # Canary: a forked Linux child is also granted `/fat` read-write,
 # which its row does not declare. The gate's fork row must fail with it.
+# Host canary (syscall-tests exec_grant_tests), never in a real build: the exec
+# check does not look at the security floor of a package program.
+exec-floor-canary = []
 linux-abi-fork-canary = []
 # D6 canary: a child the ring-3 runtime hosts gets no startup block, so the
 # runtime starts on its defaults (the console, `/`) and the descriptors and

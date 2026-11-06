@@ -184,7 +184,7 @@ fn the_skip_switch_is_the_only_way_past_the_check() {
 /// at both sites. The grant check itself is untouched (`grant_for` still finds
 /// the grant): the floor is policy, written as its own record.
 ///
-/// **Canary.** Remove the `package_below_floor` test from `decide`: the
+/// **Canary** `exec-floor-canary`: `decide` does not look at the floor and the
 /// refusal assertions go red.
 #[test]
 fn a_package_below_its_security_floor_is_refused_whatever_the_grants() {

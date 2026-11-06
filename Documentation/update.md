@@ -351,7 +351,9 @@ volume. That boot is a trial judged by the same attempt count as an A/B slot:
 confirmed, or rolled back to the snapshot with the packages removed and a
 `package-install` refusal on record. The limits are Kconfig `PKG_MAX_KB`,
 `PKG_META_MAX_KB`, `PKG_MAX_IMAGES`, `PKG_MAX_STAGED`, `PKG_MAX_API` and
-`PKG_SNAPSHOTS_KEPT`; `PKG_FETCH_TFTP` (development builds only) lets `pkg fetch`
+`PKG_SNAPSHOTS_KEPT`; `PKG_INDEX_MAX_ENTRIES` and `PKG_SEC_FLOOR_ENFORCE` (what is out of
+date and what may no longer launch: `pkg outdated`, `pkg upgrade`, `Documentation/services.md`);
+`PKG_FETCH_TFTP` (development builds only) lets `pkg fetch`
 use a TFTP source. The signature and admission rules are "Packages" in
 [security.md](security.md); the commands are under `pkgd` in
 [services.md](services.md).
