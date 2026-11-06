@@ -235,8 +235,9 @@ impl<K: Kernel> Server<K> {
 /// written once by the server's one thread before it serves.
 pub struct State<T>(core::cell::UnsafeCell<Option<T>>);
 
-// SAFETY: a server is one thread, and `install` hands out the one reference.
-unsafe impl<T> Sync for State<T> {}
+// SAFETY: `install` hands out the one reference, to the thread that serves;
+// `T: Send` because that thread need not be the one the static was made on.
+unsafe impl<T: Send> Sync for State<T> {}
 
 impl<T> State<T> {
     pub const fn new() -> Self {
