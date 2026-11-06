@@ -524,13 +524,31 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         rx.cur.flushed();
     }
 
-    /// Hand up to `max` received frames to `f`, in place in their buffers, and
-    /// return how many. A frame the stack must not see (errored, split, runt,
-    /// longer than [`ETH_FRAME_MAX`]) is dropped here, its descriptor
-    /// re-posted, and the next one looked at. `RDT` is written once per eighth
-    /// of the ring and when the ring is found empty.
-    #[inline]
+    /// Hand up to `max` received frames to `f`, in arrival order, and return
+    /// how many. Each frame is copied out under the ring's lock and handed up
+    /// with no lock held: `f` may post, and a post that finds the ring wedged
+    /// resets the controller, which takes this lock.
     pub fn reap_rx(&self, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
+        let mut buf = [0u8; ETH_FRAME_MAX];
+        let mut n = 0;
+        while n < max {
+            let len = self.take_rx(&mut buf);
+            if len == 0 {
+                break;
+            }
+            f(&buf[..len]);
+            n += 1;
+        }
+        n
+    }
+
+    /// Copy the next received frame into `buf`; 0 when none is queued. A frame
+    /// the stack must not see (errored, split, runt, too big for `buf`) is
+    /// dropped here, its descriptor re-posted, and the next one looked at.
+    /// `RDT` is written once per eighth of the ring and when the ring is found
+    /// empty.
+    #[inline]
+    fn take_rx(&self, buf: &mut [u8]) -> usize {
         if !self.ready.load(Ordering::Acquire) {
             return 0;
         }
@@ -540,8 +558,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             // Being reset: the ring is the restart's until it is live again.
             return 0;
         }
-        let mut got = 0;
-        while got < max {
+        loop {
             let i = rx.cur.clean as usize;
             // SAFETY: descriptor `i` is in the mapped ring; the controller
             // owns it until it writes DD, and reads of it are volatile.
@@ -555,20 +572,19 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
                     // Polled mode has no link-change interrupt.
                     self.link_up.store(self.regs().link_is_up(), Ordering::Relaxed);
                 }
-                break;
+                return 0;
             }
             // The write-back is visible: the frame it describes is too.
             azos_dma::order::dma_rmb();
             let len = st.len as usize;
-            if rx_accept(&st, rx.cur.discarding, ETH_FRAME_MAX.min(BUF_SIZE)) {
+            let accept = rx_accept(&st, rx.cur.discarding, buf.len().min(BUF_SIZE));
+            if accept {
                 // SAFETY: buffer `i` holds `len <= BUF_SIZE` bytes the
-                // controller wrote; the descriptor is not re-posted until
-                // `f` is done with them.
+                // controller wrote; `buf` has room for them.
                 unsafe {
                     rx.dma.sync_for_cpu(mem.rx_buf(i) as *const u8, len, Direction::FromDevice);
-                    f(core::slice::from_raw_parts(mem.rx_buf(i) as *const u8, len));
+                    core::ptr::copy_nonoverlapping(mem.rx_buf(i) as *const u8, buf.as_mut_ptr(), len);
                 }
-                got += 1;
             }
             rx.cur.discarding = !st.eop;
             let taken = rx.cur.take(RX_N) as usize;
@@ -585,8 +601,10 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             if rx.cur.flush_due(Self::RX_RDT_BATCH) {
                 self.flush_tail(&mut rx);
             }
+            if accept {
+                return len;
+            }
         }
-        got
     }
 
     // ---- Transmit ----

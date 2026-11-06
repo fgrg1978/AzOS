@@ -36,11 +36,13 @@ struct Wire {
     rx: Mutex<VecDeque<Vec<u8>>>,
     rings: AtomicUsize,
     delivered: AtomicUsize,
+    /// Receive buffers handed back by `reap_rx` that no doorbell announced.
+    rx_unannounced: AtomicUsize,
 }
 
 impl Wire {
     fn new(depth: usize) -> Wire {
-        Wire { depth, sq: Mutex::new(Vec::new()), rx: Mutex::new(VecDeque::new()), rings: AtomicUsize::new(0), delivered: AtomicUsize::new(0) }
+        Wire { depth, sq: Mutex::new(Vec::new()), rx: Mutex::new(VecDeque::new()), rings: AtomicUsize::new(0), delivered: AtomicUsize::new(0), rx_unannounced: AtomicUsize::new(0) }
     }
 }
 
@@ -60,6 +62,7 @@ impl NetQueue for Wire {
         Ok(frame.len())
     }
     fn ring(&self) {
+        self.rx_unannounced.store(0, Ordering::SeqCst);
         let mut sq = self.sq.lock().unwrap();
         if sq.is_empty() {
             return;
@@ -81,6 +84,7 @@ impl NetQueue for Wire {
             f(&frame);
             n += 1;
         }
+        self.rx_unannounced.fetch_add(n, Ordering::SeqCst);
         n
     }
 }
@@ -148,13 +152,16 @@ fn a_lone_frame_rings_at_once_a_batched_one_at_the_end_and_flush_does_not_wait()
     let _slot = Registered;
     submit(nic, &tagged(1)).unwrap();
     assert_eq!(drain(nic), vec![1], "outside a batch the frame is on its way at once");
+    assert_eq!(wire.rx_unannounced.load(Ordering::SeqCst), 0, "outside a batch the buffers a reap handed back are announced");
     batch_begin(nic);
     submit(nic, &tagged(2)).unwrap();
     assert!(drain(nic).is_empty(), "inside a batch it waits");
     flush(nic);
     assert_eq!(drain(nic), vec![2], "a flush point does not wait for the batch");
+    assert_ne!(wire.rx_unannounced.load(Ordering::SeqCst), 0, "inside a batch the buffers wait for its end");
     submit(nic, &tagged(3)).unwrap();
     batch_end(nic);
+    assert_eq!(wire.rx_unannounced.load(Ordering::SeqCst), 0, "the end of the batch announces them");
     assert_eq!(drain(nic), vec![3]);
 }
 
