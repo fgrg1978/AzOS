@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2803296
-aarch64-microvm	.rodata	340800
+aarch64-microvm	.text	2824400
+aarch64-microvm	.rodata	345520
 aarch64-microvm	.data	465448
 aarch64-microvm	.bss	947752
-aarch64-microvm	reason	fork clones anonymous objects slot by slot; breaks wait for a fork
-riscv64-qemu	.text	2874528
-riscv64-qemu	.rodata	484336
+aarch64-microvm	reason	ring-3 DMA memory and the writable-window rule, PORT_SRC_IRQ, entropy feed, irq grants: +19.9/+21.1 KB .text, +4 KB .rodata, +8 KB .bss on x86_64
+riscv64-qemu	.text	2892300
+riscv64-qemu	.rodata	484384
 riscv64-qemu	.data	749456
-riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	fork clones anonymous objects slot by slot; breaks wait for a fork; refusal injection is host-only
-x86_64-microvm	.text	2667321
-x86_64-microvm	.rodata	168352
-x86_64-microvm	.data	618496
-x86_64-microvm	.bss	958544
-x86_64-microvm	reason	fork clones anonymous objects slot by slot; breaks wait for a fork
+riscv64-qemu	.bss	2281192
+riscv64-qemu	reason	ring-3 DMA memory and the writable-window rule (binding table, lazy IOMMU domain, unconfined refusal), PORT_SRC_IRQ, entropy feed, irq grants: +17.8 KB .text riscv64-qemu
+x86_64-microvm	.text	2687225
+x86_64-microvm	.rodata	172448
+x86_64-microvm	.data	618944
+x86_64-microvm	.bss	966736
+x86_64-microvm	reason	ring-3 DMA memory and the writable-window rule, PORT_SRC_IRQ, entropy feed, irq grants: +19.9/+21.1 KB .text, +4 KB .rodata, +8 KB .bss on x86_64
