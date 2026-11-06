@@ -256,10 +256,11 @@ fn inherits(parent: u32, kind: CapType, res: u32) -> bool {
 
 /// Give `child` the parent's `Cap<Shm>` `h` (packed reference `r`) and its
 /// mapping: a reference of its own, the same capability at the same handle,
-/// the parent's page-table leaves for the mapping verbatim
+/// the parent's page-table leaves for the mapping
 /// ([`azos_mm::cow::fork_share_range`]) and the mapping booked in the
-/// region's record and in the child's window, so its own later maps cannot
-/// land on it. Everything done is undone if a step fails.
+/// region's record, with the parent's recorded access, and in the child's
+/// window, so its own later maps cannot land on it. Everything done is undone
+/// if a step fails.
 fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> bool {
     // A volatile object is not purged while the child's leaves are copied and
     // booked (`memobj_pin_for_map`); a purged one is not inherited.
@@ -272,7 +273,7 @@ fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, w
 }
 
 fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> bool {
-    use azos_ipc::memobj::{self, MapAccess};
+    use azos_ipc::memobj;
     let Ok(Some((va, pages))) = memobj::memobj_mapping_of_ref(parent, r) else { return false };
     let (Some(parent_pt), Some(child_pt)) =
         (azos_sched::task_aspace(parent).map(|a| a.root()), azos_sched::task_aspace(child).map(|a| a.root()))
@@ -301,25 +302,34 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r:
         let _ = azos_sched::scheduler::release_user_window_of(child, va, span);
         release_child();
     };
-    if azos_mm::cow::fork_share_range(parent_pt, child_pt, va, pages).is_err() {
+    // The copied leaves may be writable before the child's record says so: the
+    // child's holder counts as writing from before the copy to the booking.
+    if memobj::memobj_inherit_begin_ref(parent, child, r, va, pages).is_err() {
         undo_window();
         return false;
     }
-    let undo_map = || {
+    let undo_leaves = || {
         for i in 0..pages {
             azos_mm::vmm::unmap(child_pt, va + i * azos_arch_api::PAGE_SIZE);
         }
-        undo_window();
+        memobj::memobj_unmap_end_ref(child, r);
     };
-    let writable = perms.contains(CapPerms::WRITE);
-    let access = MapAccess { write: writable, max_write: writable };
-    if !matches!(memobj::memobj_note_mapping_ref(child, r, child_pt, va, pages, access), Ok(true)) {
-        undo_map();
+    if azos_mm::cow::fork_share_range(parent_pt, child_pt, va, pages).is_err() {
+        memobj::memobj_unmap_end_ref(child, r);
+        undo_window();
+        return false;
+    }
+    // The child's access is the parent's record as it is at the booking, and
+    // its leaves are set to it.
+    if memobj::memobj_inherit_commit_ref(parent, child, r, child_pt, va, pages).is_err() {
+        undo_leaves();
+        undo_window();
         return false;
     }
     if azos_ipc::cap_store::with_table(child, |t| t.install_at(h, perms, r, warrant)) != Some(true) {
-        let _ = memobj::memobj_take_mapping_ref(child, r);
-        undo_map();
+        let _ = memobj::memobj_unmap_begin_ref(child, r);
+        undo_leaves();
+        undo_window();
         return false;
     }
     true

@@ -69,6 +69,7 @@ memobj-word-spin-canary = ["azos_mm/memobj-word-spin-canary"]
 memobj-resolve-stale-canary = ["azos_mm/memobj-resolve-stale-canary"]
 memobj-hold-canary = ["azos_mm/memobj-hold-canary"]
 memobj-map-unrecorded-canary = ["azos_mm/memobj-map-unrecorded-canary"]
+memobj-inherit-unmarked-canary = ["azos_mm/memobj-inherit-unmarked-canary"]
 memobj-resolve-one-answer-canary = ["azos_mm/memobj-resolve-one-answer-canary"]
 # Delete is not revoke (20-10): a delete revokes the copies of the slot again.
 delete-revokes-canary = []

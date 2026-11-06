@@ -194,6 +194,8 @@ memobj-hold-canary = []
 # A map or unmap in flight (its leaves exist, its record does not say so) does
 # not count for a clone, a break, a release or a purge.
 memobj-map-unrecorded-canary = []
+# A fork child's copied leaves do not count for a clone before its booking.
+memobj-inherit-unmarked-canary = []
 # Front memobj-multihart: the resolution cache keeps one answer a process, so a
 # shm word and a private word evict each other's
 # (a_process_alternating_a_shm_word_and_a_private_word_keeps_both_answers).

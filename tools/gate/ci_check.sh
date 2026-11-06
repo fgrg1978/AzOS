@@ -12247,6 +12247,12 @@ host_job host_canary_row "memobj: clone inside an unmap canary" syscall-tests me
     a_clone_inside_an_unmap_does_not_share_the_frames
 host_job host_canary_row "memobj: move inside a map canary" syscall-tests memobj-map-unrecorded-canary \
     a_move_inside_a_map_leaves_no_leaf_and_frees_no_frame_under_it
+# memobj-inherit-unmarked-canary: a fork child's copied leaves count as read-only
+# until its booking, so a clone shares the frame under a writable leaf.
+host_job host_canary_row "memobj: clone inside a fork inherit canary" syscall-tests memobj-inherit-unmarked-canary \
+    a_fork_childs_inherited_record_and_leaves_agree_with_the_parent_at_the_booking
+host_job host_canary_row "memobj: clone inside a fork inherit canary (ipc)" ipc-tests memobj-inherit-unmarked-canary \
+    an_inherited_mapping_counts_before_its_booking_and_takes_the_parents_access
 # Hardware bus (crates/drivers/hwbus): `policy-canary` makes the topology-only
 # policy admit like auto; the four rows that pin the policy must fail, and
 # only they.
@@ -15635,7 +15641,9 @@ PY
     par "ktest task cross type canary (arm)" ktest_row "ktest task cross type canary (arm)" arm ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (arm)" ktest_row "ktest kmem preload canary (arm)" arm ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
     par "ktest clone against maps in flight canary (rv)" ktest_row "ktest clone against maps in flight canary (rv)" rv ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
+    par "ktest fork inherit against a clone canary (rv)" ktest_row "ktest fork inherit against a clone canary (rv)" rv ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
     par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
+    par "ktest fork inherit against a clone canary (arm)" ktest_row "ktest fork inherit against a clone canary (arm)" arm ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (rv)" ktest_row "ktest tid stamp canary (rv)" rv ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
@@ -17605,6 +17613,7 @@ CPU 5 lacks hwcap bits"
     par "ktest task cross type canary (x86)" x86_ktest_row "ktest task cross type canary (x86)" ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (x86)" x86_ktest_row "ktest kmem preload canary (x86)" ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
+    par "ktest fork inherit against a clone canary (x86)" x86_ktest_row "ktest fork inherit against a clone canary (x86)" ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (x86)" x86_ktest_row "ktest tid stamp canary (x86)" ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task

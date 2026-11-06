@@ -253,6 +253,8 @@ memobj-hold-canary = ["azos_ipc/memobj-hold-canary"]
 # A map or unmap in flight does not count (crates/core/ipc/Cargo.toml). Never in a
 # real build.
 memobj-map-unrecorded-canary = ["azos_ipc/memobj-map-unrecorded-canary"]
+# A fork child's copied leaves do not count before its booking. Never in a real build.
+memobj-inherit-unmarked-canary = ["azos_ipc/memobj-inherit-unmarked-canary"]
 # `free_pages` leaves out the frames a cache refill or flush has in flight
 # (crates/core/mm/Cargo.toml). Never in a real build.
 pmm-inflight-canary = ["azos_mm/pmm-inflight-canary"]

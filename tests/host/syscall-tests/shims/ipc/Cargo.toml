@@ -52,6 +52,7 @@ memobj-resolve-stale-canary = ["azos_mm/memobj-resolve-stale-canary"]
 # kernel's `scale` vsbench canary; no host test enables it).
 memobj-hold-canary = ["azos_mm/memobj-hold-canary"]
 memobj-map-unrecorded-canary = ["azos_mm/memobj-map-unrecorded-canary"]
+memobj-inherit-unmarked-canary = ["azos_mm/memobj-inherit-unmarked-canary"]
 # Front memobj-multihart: one resolve answer a process (memobj.rs).
 memobj-resolve-one-answer-canary = ["azos_mm/memobj-resolve-one-answer-canary"]
 delete-revokes-canary = []

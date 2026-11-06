@@ -1400,6 +1400,69 @@ pub fn memobj_unmap_begin_ref(tid: u32, r: u32) -> Result<Option<(usize, usize)>
     Ok(taken)
 }
 
+/// Start `child`'s inheritance of `parent`'s mapping of the object `r` names,
+/// recorded at `va` for `pages` pages: mark `child`'s holder as building with
+/// writable leaves, so that from here a clone copies, a break waits and a
+/// release is refused while the caller copies the parent's leaves (which may be
+/// writable) into the child's table. `Closed` when the parent no longer has
+/// that mapping or the child holds no reference, `Busy` when the child already
+/// maps or builds. Ends with [`memobj_inherit_commit_ref`], or with
+/// [`memobj_unmap_end_ref`] once the copied leaves are removed.
+pub fn memobj_inherit_begin_ref(parent: u32, child: u32, r: u32, va: usize, pages: usize) -> Result<(), MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let o = &mut regions[i];
+    if !o.holders.iter().any(|h| h.is_mapped() && h.tid == parent && h.map_va == va && h.map_pages == pages) {
+        return Err(MemObjError::Closed);
+    }
+    let h = o.holders.iter_mut().find(|h| h.refs > 0 && h.tid == child).ok_or(MemObjError::Closed)?;
+    if h.map_va != 0 || h.building {
+        return Err(MemObjError::Busy);
+    }
+    h.building = true;
+    // Canary `memobj-inherit-unmarked-canary`: the copied leaves count as read-only.
+    h.build_write = !cfg!(feature = "memobj-inherit-unmarked-canary");
+    Ok(())
+}
+
+/// The parent's leaves for `va`, `pages` are in `child`'s table at `root`: book
+/// the child's mapping with the parent's recorded access as it is now, and set
+/// the child's leaves to that access, so the record and the leaves agree.
+/// `Closed` when the parent no longer has that mapping or the child is no
+/// longer building; `Busy` for a writable access over frames a clone shares.
+/// On an error nothing is booked and the caller removes the leaves, then calls
+/// [`memobj_unmap_end_ref`].
+pub fn memobj_inherit_commit_ref(
+    parent: u32,
+    child: u32,
+    r: u32,
+    root: usize,
+    va: usize,
+    pages: usize,
+) -> Result<MapAccess, MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let o = &mut regions[i];
+    if !o.holders.iter().any(|h| h.refs > 0 && h.tid == child && h.building && h.map_va == 0) {
+        return Err(MemObjError::Closed);
+    }
+    let access = o
+        .holders
+        .iter()
+        .find(|h| h.is_mapped() && h.tid == parent && h.map_va == va && h.map_pages == pages)
+        .map(|h| MapAccess { write: h.map_write, max_write: h.map_max_write })
+        .ok_or(MemObjError::Closed)?;
+    if access.write && o.cow_shared != 0 {
+        return Err(MemObjError::Busy);
+    }
+    let _ = protect_range(root, va, pages, access.write);
+    if !note_mapping_locked(o, child, root, va, pages, access) {
+        return Err(MemObjError::Closed);
+    }
+    regions.map_epoch += u64::from(!cfg!(feature = "memobj-resolve-stale-canary"));
+    Ok(access)
+}
+
 /// The leaves of [`memobj_unmap_begin_ref`] are gone, on every hart.
 pub fn memobj_unmap_end_ref(tid: u32, r: u32) {
     let mut regions = MEMOBJS.lock();
@@ -4457,6 +4520,51 @@ mod tests {
         assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((0x4000_0000, 1))));
         assert_eq!(memobj_release_ref(A, first), Ok(()));
         assert_eq!(memobj_release_ref(A, second), Ok(()));
+    }
+
+    /// **A fork child's inherited mapping counts from before its leaves are
+    /// copied, and books the parent's access as it is at the booking.** A clone
+    /// taken while the child's copied leaves are not yet booked copies, even
+    /// after the parent's own mapping became read-only; the booking takes the
+    /// parent's record, never a writable one over frames a clone shares, and
+    /// only where the leaves were copied from.
+    ///
+    /// Canary `memobj-inherit-unmarked-canary`: the clone shares the frame.
+    #[test]
+    fn an_inherited_mapping_counts_before_its_booking_and_takes_the_parents_access() {
+        let _g = setup();
+        const VA: usize = 0x4000_0000;
+        const CHILD_ROOT: usize = 0xB000;
+        let page = azos_arch::PAGE_SIZE;
+        let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_note_mapping_ref(A, r, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert!(memobj_acquire_ref(B, r).is_ok());
+        assert_eq!(memobj_inherit_begin_ref(A, B, r, VA + page, 1), Err(MemObjError::Closed), "not the parent's mapping");
+        assert_eq!(memobj_inherit_begin_ref(A, B, r, VA, 1), Ok(()));
+        assert_eq!(memobj_inherit_begin_ref(A, B, r, VA, 1), Err(MemObjError::Busy), "one at a time");
+
+        assert_eq!(memobj_protect_ref(A, r, false), Ok(()));
+        let c = memobj_clone(A, r, A, MemPerms::ReadOnly).expect("clone");
+        assert_eq!(memobj_describe_ref(r).unwrap().cow_shared, 0, "a clone shared frames under the child's leaves");
+        assert_ne!(memobj_page_phys_ref(c, 0), memobj_page_phys_ref(r, 0));
+        assert_eq!(memobj_release_ref(A, c), Ok(()));
+
+        // A writable record over shared frames, forced: the table keeps it from arising.
+        assert_eq!(memobj_protect_ref(A, r, true), Ok(()));
+        let shared = |bits| {
+            let mut regions = MEMOBJS.lock();
+            let i = live_index(&regions, r).unwrap();
+            regions[i].cow_shared = bits;
+        };
+        shared(1);
+        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA, 1), Err(MemObjError::Busy));
+        shared(0);
+        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA + page, 1), Err(MemObjError::Closed), "not where the leaves are");
+        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA, 1), Ok(MapAccess::RW), "the parent's access now");
+        assert_eq!(memobj_mapping_of_ref(B, r), Ok(Some((VA, 1))));
+        assert_eq!(memobj_inherit_commit_ref(A, B, r, CHILD_ROOT, VA, 1), Err(MemObjError::Closed), "booked once");
+        assert_eq!(memobj_take_mapping_ref(B, r), Ok(Some((VA, 1))));
+        assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((VA, 1))));
     }
 
     /// **An exit ends a map left in flight**: its references go back with the
