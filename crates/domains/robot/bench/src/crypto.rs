@@ -78,7 +78,7 @@ pub fn bench_aes128_ctr_64B(iters: u64) -> BenchResult {
 
     let start = read_cycles();
     for _ in 0..iters {
-        cipher.ctr_encrypt(&nonce, &mut data);
+        let _ = cipher.ctr_encrypt(&nonce, &mut data);
     }
     let end = read_cycles();
     BenchResult::from_total(start, end, iters)

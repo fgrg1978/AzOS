@@ -131,10 +131,10 @@ mod aes128_tests {
         let plaintext = b"the quick brown fox jumps over the lazy dog \
                           which is exactly 64 bytes of test data here.";
         let mut buf = plaintext.to_vec();
-        Aes128::new(&key).ctr_encrypt(&nonce, &mut buf);
+        Aes128::new(&key).ctr_encrypt(&nonce, &mut buf).unwrap();
         // Ciphertext must differ from plaintext (catches no-op impl).
         assert_ne!(buf.as_slice(), plaintext);
-        Aes128::new(&key).ctr_decrypt(&nonce, &mut buf);
+        Aes128::new(&key).ctr_decrypt(&nonce, &mut buf).unwrap();
         assert_eq!(buf.as_slice(), plaintext);
     }
 
@@ -147,8 +147,8 @@ mod aes128_tests {
         let msg = [0xFFu8; 100];
         let mut buf = msg;
         let cipher = Aes128::new(&key);
-        cipher.ctr_encrypt(&nonce, &mut buf);
-        cipher.ctr_encrypt(&nonce, &mut buf);
+        cipher.ctr_encrypt(&nonce, &mut buf).unwrap();
+        cipher.ctr_encrypt(&nonce, &mut buf).unwrap();
         assert_eq!(buf, msg);
     }
 
@@ -161,8 +161,8 @@ mod aes128_tests {
         let cipher = Aes128::new(&key);
         let mut a = [0u8; 64];
         let mut b = [0u8; 64];
-        cipher.ctr_encrypt(&nonce_a, &mut a);
-        cipher.ctr_encrypt(&nonce_b, &mut b);
+        cipher.ctr_encrypt(&nonce_a, &mut a).unwrap();
+        cipher.ctr_encrypt(&nonce_b, &mut b).unwrap();
         assert_ne!(a, b);
     }
 }

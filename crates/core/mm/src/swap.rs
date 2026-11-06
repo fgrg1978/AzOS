@@ -248,6 +248,9 @@ pub enum SwapError {
     /// one is coming back); nothing was touched. Try again when
     /// [`Locked::step_end`] has rung.
     Busy,
+    /// The segment is longer than one AES-CTR keystream
+    /// (`azos_crypto::aes::CTR_MAX_LEN`); nothing was encrypted.
+    TooLong,
 }
 
 impl From<PoolError> for SwapError {
@@ -505,15 +508,16 @@ impl<'d, const SW: usize, const SEG: usize> Swap<'d, SW, SEG> {
     }
 
     /// Encrypt the staged image `img` for `slot`, tag it and remember the
-    /// nonce and tag. Returns nothing: the record is the slot's.
-    fn seal(&mut self, slot: usize, img: &mut [u8]) {
+    /// nonce and tag (the record is the slot's).
+    fn seal(&mut self, slot: usize, img: &mut [u8]) -> Result<(), SwapError> {
         self.idle = 0;
         self.nonce += 1;
         let nonce = self.nonce;
         if !cfg!(feature = "swap-plain-canary") {
-            self.enc.ctr_encrypt(&nonce12(nonce), img);
+            self.enc.ctr_encrypt(&nonce12(nonce), img).map_err(|_| SwapError::TooLong)?;
         }
         self.recs[slot] = Rec { nonce, tag: self.tag_of(slot, nonce, img) };
+        Ok(())
     }
 
     /// Verify then decrypt `img`, just read from `slot`, against `rec`: the
@@ -527,7 +531,7 @@ impl<'d, const SW: usize, const SEG: usize> Swap<'d, SW, SEG> {
             return Err(SwapError::Tamper);
         }
         if !cfg!(feature = "swap-plain-canary") {
-            self.enc.ctr_decrypt(&nonce12(rec.nonce), img);
+            self.enc.ctr_decrypt(&nonce12(rec.nonce), img).map_err(|_| SwapError::TooLong)?;
         }
         Ok(())
     }
@@ -632,7 +636,7 @@ where
             }
             Err(e) => return Err(e.into()),
         }
-        swap.with(|s| s.seal(pick.slot, img));
+        swap.with(|s| s.seal(pick.slot, img))?;
         // The device wait: neither the swap lock nor the pool's is held.
         if dev.write(sector_of::<SEG>(pick.slot), img).is_err() {
             swap.with(|s| s.stats.io_errors += 1);

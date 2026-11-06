@@ -136,9 +136,9 @@ fn aes128_ctr_rfc_3686() {
     for (i, (key, nonce, pt, want)) in cases.iter().enumerate() {
         let aes = Aes128::new(&arr(key));
         let mut buf = pt.clone();
-        aes.ctr_encrypt(&arr(nonce), &mut buf);
+        aes.ctr_encrypt(&arr(nonce), &mut buf).unwrap();
         assert_eq!(hex(&buf), *want, "RFC 3686 vector {}", i + 1);
-        aes.ctr_decrypt(&arr(nonce), &mut buf);
+        aes.ctr_decrypt(&arr(nonce), &mut buf).unwrap();
         assert_eq!(&buf, pt);
     }
 }

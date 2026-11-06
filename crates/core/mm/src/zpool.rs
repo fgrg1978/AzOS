@@ -286,7 +286,8 @@ impl Codec {
             Ok(0) => Ok(Packed::Fill(0)),
             Ok(len) => {
                 let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
-                self.aes.ctr_encrypt(&nonce12(nonce), &mut scratch[..len]);
+                // A page-sized stream is far below the keystream's length.
+                self.aes.ctr_encrypt(&nonce12(nonce), &mut scratch[..len]).map_err(|_| Error::BadPageSize)?;
                 Ok(Packed::Blob { len, nonce })
             }
             Err(wkdm::Error::Incompressible) => Ok(Packed::Skip),
@@ -301,7 +302,7 @@ impl Codec {
         if len > scratch.len() {
             return Err(Error::Corrupt);
         }
-        self.aes.ctr_decrypt(&nonce12(nonce), &mut scratch[..len]);
+        self.aes.ctr_decrypt(&nonce12(nonce), &mut scratch[..len]).map_err(|_| Error::Corrupt)?;
         wkdm::decompress(&scratch[..len], page).map_err(|e| match e {
             wkdm::Error::BadPageSize => Error::BadPageSize,
             _ => Error::Corrupt,
