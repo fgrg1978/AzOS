@@ -173,6 +173,8 @@ pub(crate) mod chaos;
 mod asym_ktests;
 #[cfg(all(feature = "ktest", feature = "use-robot"))]
 mod ext_ktests;
+#[cfg(all(feature = "ktest", not(feature = "use-robot")))]
+mod effect_ktests;
 mod robot;
 pub(crate) use robot::*;
 mod ota;
