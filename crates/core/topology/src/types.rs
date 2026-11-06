@@ -3674,7 +3674,10 @@ impl<'a> Topology<'a> {
         }
         if name.is_empty()
             || mem_pages_max == 0
-            || self.signers().iter().any(|s| s.name == name || s.key_id == key_id)
+            // The first four bytes of a key id name the signer's index slot on the
+            // package volume: two signers may not share them, so one cannot be ground
+            // to take another's slot.
+            || self.signers().iter().any(|s| s.name == name || s.key_id[..4] == key_id[..4])
             || !warrants.iter().all(|w| warrant_ok(w.as_bytes()))
         {
             return Err(AdmissionError::BadSigner);

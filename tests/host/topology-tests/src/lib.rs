@@ -5810,8 +5810,13 @@ mod signer_tests {
         let two = format!(
             "{}[signer.other]\nkey_id = \"{KEY_A}\"\nmem_pages_max = 8\n", signer("acme", ""));
         assert_eq!(parse(&two).1, Err(ParseError::Admission(AdmissionError::BadSigner)), "same key");
+        // Keys that agree on the first four bytes of their ids share a slot for their indexes.
+        let prefix = format!("{}{}", &KEY_A[..8], "f".repeat(56));
+        assert_ne!(prefix, KEY_A);
+        let two = format!("{}[signer.other]\nkey_id = \"{prefix}\"\nmem_pages_max = 8\n", signer("acme", ""));
+        assert_eq!(parse(&two).1, Err(ParseError::Admission(AdmissionError::BadSigner)), "same first four bytes");
         let many: String = (0..azos_topology::MAX_SIGNERS + 1)
-            .map(|i| format!("[signer.s{i}]\nkey_id = \"{:064x}\"\nmem_pages_max = 1\n", i + 1))
+            .map(|i| format!("[signer.s{i}]\nkey_id = \"{:08x}{:056x}\"\nmem_pages_max = 1\n", i + 1, 1))
             .collect();
         assert_eq!(
             parse(&format!("format = 6\n{many}")).1,
