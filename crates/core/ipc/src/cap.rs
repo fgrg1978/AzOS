@@ -1332,7 +1332,7 @@ pub fn revocation_in_flight() -> bool {
 /// slot word (`resolve`, the IPC resolve cache): another hart, for the host
 /// tests. Taken before it runs, so a resolve inside it does not run it again.
 #[cfg(test)]
-#[allow(dead_code)] // its users are the endpoint tests; cap-tests builds cap.rs without them
+#[allow(dead_code)] // reason: its users are the endpoint tests; cap-tests builds cap.rs without them
 pub(crate) mod between_loads {
     std::thread_local! {
         static AT: core::cell::RefCell<Option<std::boxed::Box<dyn FnOnce()>>> = const { core::cell::RefCell::new(None) };
