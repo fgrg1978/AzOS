@@ -30,7 +30,8 @@ pub trait Entropy {
     /// outside the range. Needs `READ`.
     fn draw(&mut self, words: u32) -> Out<[u64; DRAW_WORDS]>;
     /// Mix the first `n` (1..=[`FEED_WORDS`]) of `words`, read from an
-    /// entropy device, into the pool, credited in full: the pool may become
-    /// seeded by it. `BAD_ARGUMENT` outside the range. Needs `WRITE`.
+    /// entropy device, into the pool; they count toward a seed only where
+    /// Kconfig `ENTROPY_RING3_FEED` is `credit` (by default they are mixed,
+    /// never counted). `BAD_ARGUMENT` outside the range. Needs `WRITE`.
     fn feed(&mut self, words: [u64; FEED_WORDS], n: u32) -> Out<()>;
 }

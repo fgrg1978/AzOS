@@ -32,23 +32,32 @@ pub fn pool_mix(input: &[u8], credit: usize) {
     azos_crypto::entropy::mix(input, credit)
 }
 
+/// How a ring-3 entropy driver's feed counts (Kconfig `ENTROPY_RING3_FEED`).
+const RING3_FEED: azos_crypto::entropy::FeedCredit = if azos_limits::ENTROPY_RING3_FEED_CREDIT {
+    azos_crypto::entropy::FeedCredit::Credit
+} else {
+    azos_crypto::entropy::FeedCredit::MixOnly
+};
+
 /// Mix what a ring-3 entropy device driver (task `tid`) read from its device,
-/// credited in full as the boot's own virtio-rng read is. The first feed of
-/// a boot says so, and whether the pool was seeded by it or before it.
+/// credited as Kconfig `ENTROPY_RING3_FEED` says (by default not at all). The
+/// first feed of a boot says so, and how the pool stands after it.
 pub fn pool_mix_ring3(input: &[u8], tid: u32) {
     use core::sync::atomic::{AtomicBool, Ordering};
     static SAID: AtomicBool = AtomicBool::new(false);
     let was = azos_crypto::entropy::seeded();
-    pool_mix(input, input.len());
+    let credit = RING3_FEED.credit(input.len());
+    pool_mix(input, credit);
     if !SAID.swap(true, Ordering::AcqRel) {
+        let how = if credit == 0 { "mixed, not credited" } else { "credited" };
         let now = if was {
             "the pool was seeded already"
         } else if azos_crypto::entropy::seeded() {
             "pool seeded"
         } else {
-            "short of a seed"
+            "pool unseeded"
         };
-        crate::kprintln!("[ENTROPY] {} bytes fed from ring 3 (tid {}): {}", input.len(), tid, now);
+        crate::kprintln!("[ENTROPY] {} bytes fed from ring 3 (tid {}), {}: {}", input.len(), tid, how, now);
     }
 }
 

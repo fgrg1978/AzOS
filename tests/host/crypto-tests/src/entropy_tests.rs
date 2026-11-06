@@ -59,6 +59,28 @@ fn drbg_matches_an_independent_implementation() {
          961df86803482cb37ed6d5c0bb8d50cf1f50d476aa0458bdaba806f48be9dcb8"));
 }
 
+/// **A ring-3 driver's feed seeds nothing unless its credit is configured.**
+/// Under `MixOnly` (the default of Kconfig `ENTROPY_RING3_FEED`) any amount
+/// fed leaves an unseeded pool unseeded; under `Credit` one seed's worth
+/// seeds it.
+///
+/// **Canary.** `ring3-feed-credit-canary` (every feed credited): the mix-only
+/// pool is seeded.
+#[test]
+fn a_mix_only_feed_leaves_an_unseeded_pool_unseeded() {
+    use azos_crypto::entropy::FeedCredit;
+    let mut p = Pool::new();
+    for _ in 0..64 {
+        let feed = [0x5Au8; 64];
+        p.mix(&feed, FeedCredit::MixOnly.credit(feed.len()));
+    }
+    assert!(!p.seeded(), "a mix-only feed seeded the pool");
+    let mut q = Pool::new();
+    let feed = [0x5Au8; SEED_BYTES];
+    q.mix(&feed, FeedCredit::Credit.credit(feed.len()));
+    assert!(q.seeded(), "a credited seed's worth did not seed the pool");
+}
+
 /// **Unseeded writes nothing.** Uncredited input — however much — and one
 /// credited byte short of the seed must both leave `fill` refusing with the
 /// buffer untouched: the consumers' fallback depends on that `false`.

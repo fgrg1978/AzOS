@@ -16,6 +16,8 @@ azos_crypto = { path = "../../../crates/core/crypto" }
 [features]
 # The stack-scrub canary (tests/stack_scrub.rs).
 canary-no-stack-scrub = ["azos_crypto/canary-no-stack-scrub"]
+# The ring-3 feed canary (`a_mix_only_feed_leaves_an_unseeded_pool_unseeded`).
+ring3-feed-credit-canary = ["azos_crypto/ring3-feed-credit-canary"]
 
 [dev-dependencies]
 # Signing side of the manifest-scheme tests (`sign_manifest` helper in

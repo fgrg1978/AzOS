@@ -26,6 +26,9 @@ fuzz-clone = []
 # nothing, so the key bytes hmac/hkdf leave on the stack survive the call.
 # No kernel or ring-3 build enables it.
 canary-no-stack-scrub = []
+# Canary of tests/host/crypto-tests' ring-3 feed test: `FeedCredit::credit`
+# counts every byte whatever the policy. No kernel or ring-3 build enables it.
+ring3-feed-credit-canary = []
 
 [dependencies]
 azos_common = { path = "../common" }

@@ -35,10 +35,10 @@
 //!
 //! A ring-3 entropy device driver (`userspace/drivers/rng_drv`) holds the
 //! endpoint with `WRITE`, which only its topology row grants, and hands over
-//! what its device delivered: `feed` mixes the words into the pool and
-//! credits them in full, as the boot credits the kernel's own virtio-rng
-//! read. The first feed of a boot is said on the console, with whether it
-//! seeded the pool.
+//! what its device delivered: `feed` mixes the words into the pool. They are
+//! not counted toward a seed unless Kconfig `ENTROPY_RING3_FEED` is `credit`:
+//! a driver outside the kernel chose them. The first feed of a boot is said
+//! on the console, with how it counted and how the pool stands.
 //!
 //! The first refusal of a boot is recorded through the recorder hook -- the
 //! kernel installs one that prints `[ENTROPY] REFUSED: ring-3 read` and
@@ -76,7 +76,7 @@ static ENTROPY_FILL_HOOK: SpinLock<Option<fn(&mut [u8]) -> bool>> = SpinLock::ne
 static ENTROPY_REFUSED_RECORDER: SpinLock<Option<fn(u32)>> = SpinLock::new(None);
 
 /// Mixes bytes a ring-3 source (the second argument, its TID) fed into the
-/// kernel pool, credited in full.
+/// kernel pool, credited as Kconfig `ENTROPY_RING3_FEED` says.
 static ENTROPY_MIX_HOOK: SpinLock<Option<fn(&[u8], u32)>> = SpinLock::new(None);
 
 /// Set once the first refusal of this boot has gone to the recorder.

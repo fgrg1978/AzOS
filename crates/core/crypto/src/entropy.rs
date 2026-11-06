@@ -183,6 +183,31 @@ fn with_pool<R>(f: impl FnOnce(&mut Pool) -> R) -> R {
     r
 }
 
+/// How bytes a ring-3 entropy device driver feeds count toward a seed
+/// (Kconfig `ENTROPY_RING3_FEED`). A driver outside the kernel chose what it
+/// hands over, so by default it only stirs the pool: crediting it lets a
+/// compromised driver seed an otherwise unseeded pool with bytes it knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedCredit {
+    /// Mixed, never counted.
+    MixOnly,
+    /// Counted in full, as the kernel's own device read is.
+    Credit,
+}
+
+impl FeedCredit {
+    /// Bytes of a `len`-byte feed that count toward a seed.
+    pub const fn credit(self, len: usize) -> usize {
+        if cfg!(feature = "ring3-feed-credit-canary") {
+            return len;
+        }
+        match self {
+            FeedCredit::MixOnly => 0,
+            FeedCredit::Credit => len,
+        }
+    }
+}
+
 /// Mix `input` into the kernel pool. See [`Pool::mix`] and the locking note.
 pub fn mix(input: &[u8], credit: usize) {
     with_pool(|p| p.mix(input, credit))
