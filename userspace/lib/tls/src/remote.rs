@@ -90,6 +90,17 @@ impl HttpsRemote {
 impl Remote for HttpsRemote {
     fn get(&mut self, rows: &[u8], buf: &mut [u8]) -> Result<usize, FetchErr> {
         let source = Source::parse(rows).map_err(|_| FetchErr::Rows)?;
+        self.fetch(&source, buf)
+    }
+
+    fn get_sibling(&mut self, rows: &[u8], name: &str, buf: &mut [u8]) -> Result<usize, FetchErr> {
+        let source = Source::parse(rows).map_err(|_| FetchErr::Rows)?;
+        self.fetch(&source.sibling(name), buf)
+    }
+}
+
+impl HttpsRemote {
+    fn fetch(&mut self, source: &Source, buf: &mut [u8]) -> Result<usize, FetchErr> {
         let config = client::config(&source.pins, self.time.clone()).map_err(|_| FetchErr::Tls)?;
         // A server that stops answering, or that answers just often enough,
         // must not hold the installer for ever: one deadline covers the

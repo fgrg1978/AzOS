@@ -143,6 +143,14 @@ fn every_refusal_prints_the_name_of_its_step() {
         (Refusal::RealTime(0), "real time"),
         (Refusal::Frames(0), "frames"),
         (Refusal::Admission(azos_topology::AdmissionError::DuplicateTask), "admission"),
+        (Refusal::Epoch { have: 1, floor: 2 }, "epoch floor"),
+        (Refusal::Boot(azos_pkg::apply::BootWhy::Admission), "boot admission"),
+        (Refusal::Boot(azos_pkg::apply::BootWhy::Unconfirmed), "unconfirmed trial"),
+        (Refusal::Boot(azos_pkg::apply::BootWhy::Volume), "volume"),
+        (Refusal::Index(azos_pkg::index::IndexWhy::Signature), "index signature"),
+        (Refusal::Index(azos_pkg::index::IndexWhy::Stale), "index older than the stored one"),
+        (Refusal::Upgrade(azos_pkg::index::UpgradeWhy::Downgrade), "older than the installed version"),
+        (Refusal::Upgrade(azos_pkg::index::UpgradeWhy::BelowFloor), "below the security floor"),
     ];
     for (r, name) in cases {
         assert_eq!(azos_packages::step_name(r.code()), name, "{r:?}");
@@ -182,4 +190,101 @@ fn the_tool_fetches_through_the_installer() {
     assert_eq!((r, out.starts_with("installed: package ")), (Ok(0), true), "{out}");
     let (r, out) = run(&["list"], &mut files, &mut c);
     assert_eq!((r, out), (Ok(0), format!("{want}\n")));
+}
+
+#[test]
+fn the_outdated_and_upgrade_commands_are_read_exactly() {
+    use azos_packages::cli::Upgrade;
+    assert_eq!(cli::parse(&args(&["outdated"])), Ok(Cmd::Outdated));
+    assert_eq!(cli::parse(&args(&["upgrade"])), Ok(Cmd::Upgrade(Upgrade::All)));
+    assert_eq!(cli::parse(&args(&["upgrade", "--all"])), Ok(Cmd::Upgrade(Upgrade::All)));
+    assert_eq!(cli::parse(&args(&["upgrade", "acme-vision"])), Ok(Cmd::Upgrade(Upgrade::Name(b"acme-vision"))));
+    let long = "x".repeat(33);
+    for bad in [&["outdated", "x"][..], &["upgrade", "a", "b"], &["upgrade", &long]] {
+        assert!(cli::parse(&args(bad)).is_err(), "{bad:?}");
+    }
+}
+
+/// `pkg outdated` and `pkg upgrade` through the installer: the report, the
+/// upgrade of what is behind, and what a refusal prints.
+#[test]
+fn the_tool_reports_what_is_outdated_and_upgrades_it() {
+    let d = Device0::with_signers(&signer_text("acme", &author(), CEILING));
+    let vol = RefCell::new(MemVol::device(&d, &owner()));
+    vol.borrow_mut().files.insert(b"/fat/PKG/SOURCE.CFG".to_vec(), SOURCE_ROWS.to_vec());
+    let at = |name: &str, version: &str| {
+        let mut s = Spec::acme();
+        s.name = name.into();
+        s.version = version.into();
+        let image = format!("{}.ELF", name.to_uppercase().replace('-', "_").chars().take(8).collect::<String>());
+        s.images = vec![(image.clone(), vec![1; 50])];
+        s.rows = row(&image, "best_effort", 20, "{ kind = \"endpoint\", target = \"endpoint.acme\", perm = \"rw\" }");
+        build(&s, &author())
+    };
+    let (acme_old, acme_new, zeta) = (at("acme-vision", "1.0.0"), at("acme-vision", "1.3.0"), at("zeta", "2.0"));
+    let body = index_body(5, &[Offer::of(&acme_new, "ACMEV130.PKG", Some("1.2.0")), Offer::of(&zeta, "ZETA.PKG", None)]);
+    let remote = Fake::repository(&[("INDEX.AZX", build_index(&body, &author())), ("ACMEV130.PKG", acme_new.clone()), ("ZETA.PKG", zeta.clone())]);
+
+    let mut work = Box::new(Work::new());
+    let mut topo = Box::new(Topology::empty());
+    let key = *owner().verifying_key().as_bytes();
+    let svc = RefCell::new(Service::new(Shared(&vol), remote, &mut work, &mut topo, key, device()));
+    let mut c = PackagesClient::new(Loop(&svc));
+    let mut files = Files { vol: &vol, named: vec![(b"/a", acme_old.clone()), (b"/z", zeta)], next: 0 };
+    for f in ["/a", "/z"] {
+        assert_eq!(run(&["install", f], &mut files, &mut c).0, Ok(0));
+    }
+
+    let (r, out) = run(&["outdated"], &mut files, &mut c);
+    assert_eq!(r, Ok(0), "{out}");
+    let line = |name: &str| out.lines().find(|l| l.starts_with(name)).unwrap_or_else(|| panic!("{name} in {out}")).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(line("acme-vision"), "acme-vision 1.0.0 1.3.0 behind; below security floor 1.2.0");
+    assert_eq!(line("zeta"), "zeta 2.0.0 2.0.0 up to date");
+    assert!(out.ends_with("1 behind, 1 below their security floor\n"), "{out}");
+
+    // A package that is current is not an upgrade; the refusal names its reason.
+    let (r, out) = run(&["upgrade", "zeta"], &mut files, &mut c);
+    assert_eq!((r, out.starts_with("refused zeta: nothing newer on offer (status 0x17000005)")), (Ok(1), true), "{out}");
+    let (r, out) = run(&["upgrade", "nothing-here"], &mut files, &mut c);
+    assert_eq!((r, out.contains("not installed")), (Ok(1), true), "{out}");
+
+    let (r, out) = run(&["upgrade", "--all"], &mut files, &mut c);
+    assert_eq!(r, Ok(0), "{out}");
+    assert!(out.starts_with("upgraded acme-vision 1.0.0 -> 1.3.0 (package "), "{out}");
+    assert_eq!(vol.borrow().staged().len(), 2);
+    let (r, out) = run(&["outdated"], &mut files, &mut c);
+    assert_eq!(r, Ok(0));
+    assert!(out.ends_with("0 behind, 0 below their security floor\n"), "{out}");
+    let (r, out) = run(&["upgrade"], &mut files, &mut c);
+    assert_eq!((r, out.as_str()), (Ok(0), "nothing to upgrade\n"));
+}
+
+#[test]
+fn the_tool_prints_why_an_index_was_refused() {
+    let d = Device0::with_signers(&signer_text("acme", &author(), CEILING));
+    let vol = RefCell::new(MemVol::device(&d, &owner()));
+    vol.borrow_mut().files.insert(b"/fat/PKG/SOURCE.CFG".to_vec(), SOURCE_ROWS.to_vec());
+    let body = index_body(5, &[]);
+    let forged = build_index(&body, &stranger());
+    let mut work = Box::new(Work::new());
+    let mut topo = Box::new(Topology::empty());
+    let key = *owner().verifying_key().as_bytes();
+    let svc = RefCell::new(Service::new(Shared(&vol), Fake::repository(&[("INDEX.AZX", forged)]), &mut work, &mut topo, key, device()));
+    let mut c = PackagesClient::new(Loop(&svc));
+    let mut files = Files { vol: &vol, named: Vec::new(), next: 0 };
+    for cmd in [&["outdated"][..], &["upgrade", "--all"]] {
+        let (r, out) = run(cmd, &mut files, &mut c);
+        assert_eq!((r, out.starts_with("refused: index signer (status 0x16000006)")), (Ok(1), true), "{cmd:?}: {out}");
+    }
+}
+
+/// The client prints versions from the wire form; the library prints them from the type.
+#[test]
+fn the_client_and_the_library_print_a_version_alike() {
+    for s in ["0.0.1", "1.2", "1.2.3.4", "65535.0.0", "10.20.30"] {
+        let v = azos_pkg::index::Version::parse(s).unwrap();
+        let mut a = String::new();
+        azos_packages::write_version(&mut a, v.packed()).unwrap();
+        assert_eq!(a, v.to_string(), "{s}");
+    }
 }

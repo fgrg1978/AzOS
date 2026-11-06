@@ -19,7 +19,7 @@ use azos_devif as d;
 pub const COUNT: usize = 17;
 
 /// The levels of the interfaces ring-3 libraries serve.
-pub const USER_SERVED: UserServed = UserServed { decisions: 1, names: 1, packages: 1, terminal: 1 };
+pub const USER_SERVED: UserServed = UserServed { decisions: 1, names: 1, packages: 2, terminal: 1 };
 
 /// The levels of the four interfaces served from ring 3.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

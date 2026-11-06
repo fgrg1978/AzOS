@@ -30,6 +30,19 @@ fn the_package_arrives_whole() {
     assert!(served.unwrap().starts_with("GET /azos/acme.pkg HTTP/1.0\r\n"));
 }
 
+/// The index and the packages an index names are the files beside the one the
+/// source rows name: same server, same directory.
+#[test]
+fn a_sibling_is_asked_for_in_the_directory_of_the_named_file() {
+    let index = body(3000);
+    let (addr, server) = serve(GOOD, GOOD_KEY, at(NOW), Reply::Ok(index.clone()));
+    let rows = rows(addr, NAME, &[GOOD_PIN]);
+    let mut buf = vec![0u8; 4096];
+    let n = HttpsRemote::new(at(NOW)).get_sibling(rows.as_bytes(), "INDEX.AZX", &mut buf).unwrap();
+    assert_eq!(&buf[..n], &index[..]);
+    assert!(server.join().unwrap().unwrap().starts_with("GET /azos/INDEX.AZX HTTP/1.0\r\n"));
+}
+
 #[test]
 fn a_server_that_is_not_pinned_gives_nothing() {
     let (got, _) = fetch(Reply::Ok(body(100)), (OTHER, OTHER_KEY), &[GOOD_PIN], 1000);

@@ -47,6 +47,20 @@
 //!   buffer (Kconfig `PKG_MAX_KB`); the signed manifest and the part hashes
 //!   decide, as for any bundle.
 //!
+//! * [`Packages::refresh`]: get the repository's signed index (`INDEX.AZX`, next
+//!   to the package the source rows name), verify it with the same steps as a
+//!   package (`azos_pkg::index`), keep it on the staging volume for the
+//!   boot-time apply (the security floors) and compute, for every staged
+//!   package, where it stands against it. The index never goes backwards (its
+//!   serial is checked against the stored one).
+//! * [`Packages::outdated`]: row `index` of that report, in two calls (the
+//!   package's name, then its versions and standing).
+//! * [`Packages::upgrade`]: install the newer version the index lists for a
+//!   package, through the same verification, admission, staging and journal
+//!   as `install`, in place of the version staged. The file fetched is pinned
+//!   by the index to one build (its id), must be signed by the signer of the
+//!   package it replaces, and may not be older than it or below its floor.
+//!
 //! **Staging is not installing.** Nothing applies a staged package yet: its
 //! rows join no topology and none of its images runs. The kernel's boot-time
 //! application is not built. The staged file is the installer's own record (the
@@ -100,7 +114,7 @@ pub const ENDPOINT: &str = "endpoint.packages";
 pub struct PkgMem;
 
 /// The Packages interface.
-#[azos_interface(id = 0x504B_4753, level = 1)]
+#[azos_interface(id = 0x504B_4753, level = 2)]
 pub trait Packages {
     /// Would the device take the package in the first `len` bytes of `pkg`
     /// now? Changes nothing.
@@ -158,6 +172,35 @@ pub trait Packages {
     #[once_only]
     #[on_failure(degrade)]
     fn fetch_update(&mut self) -> [u64; 4];
+    /// Get the repository's signed index from the source the rows in
+    /// `/fat/PKG/SOURCE.CFG` describe (the file `INDEX.AZX` beside the one the
+    /// rows name), verify it, keep it on the volume and work out where every
+    /// staged package stands against it. A refused index is journalled and
+    /// changes nothing; one that does not arrive is a `step::FETCH` status.
+    ///
+    /// Reply: the status, the index's serial, the packages in the report, the
+    /// entries the index lists.
+    #[once_only]
+    #[on_failure(degrade)]
+    fn refresh(&mut self) -> [u64; 4];
+    /// Row `index` of the report `refresh` made. `part` 0 answers the
+    /// package's name (32 bytes, zero padded, as four big-endian words); `part`
+    /// 1 answers `[status(step::ROW, standing), installed, offered, floor]`:
+    /// the versions as `azos_pkg::index::Version::packed` (0 where there is
+    /// none), the standing as [`standing`]. All zero past the last row.
+    #[idempotent]
+    fn outdated(&mut self, index: u32, part: u32) -> [u64; 4];
+    /// Install the newer version the index lists for the staged package named
+    /// `name` (32 bytes, zero padded, four big-endian words), in place of the
+    /// version staged: fetched from the source, verified, admitted, staged and
+    /// journalled as `install` does, and refused if it is older than the
+    /// staged version or below the package's floor. Never retried by a
+    /// transport. If the installer fails the device keeps the package it has.
+    ///
+    /// Reply as `install`.
+    #[once_only]
+    #[on_failure(degrade)]
+    fn upgrade(&mut self, name: [u64; 4]) -> [u64; 4];
 }
 
 /// Installer steps (bits 24.. of a status), after the 16 of `azos_pkg`.
@@ -186,6 +229,13 @@ pub mod step {
     /// `FetchErr::code`; [`super::FETCH_REASONS`] names it). Nothing is
     /// recorded: no package arrived.
     pub const FETCH: u64 = 39;
+    /// No report: `refresh` has not been asked since the installer started.
+    pub const NO_REPORT: u64 = 40;
+    /// An argument outside what the call takes (detail: 1 for `outdated`'s
+    /// `part`).
+    pub const BAD_ARG: u64 = 41;
+    /// A row of the report; the detail is its [`super::standing`].
+    pub const ROW: u64 = 42;
 }
 
 /// Which access failed, the detail of a [`step::IO`] status.
@@ -200,6 +250,38 @@ pub mod io {
     pub const JOURNAL: u64 = 4;
     /// Removing the staged file.
     pub const REMOVE: u64 = 5;
+}
+
+/// The standing of a report row, the detail of a [`step::ROW`] status: bits 0..3
+/// the availability, bits 3..6 the floor, bit 6 set when the package is below
+/// its floor (or cannot be shown to meet it).
+pub mod standing {
+    /// The index does not list the package.
+    pub const NOT_LISTED: u64 = 0;
+    /// The index is signed by another signer than the package's.
+    pub const OTHER_SIGNER: u64 = 1;
+    /// Up to date.
+    pub const CURRENT: u64 = 2;
+    /// A newer version is on offer.
+    pub const BEHIND: u64 = 3;
+    /// Newer than the one on offer.
+    pub const AHEAD: u64 = 4;
+    /// The installed version has no order.
+    pub const UNORDERED: u64 = 5;
+    /// Mask of the availability.
+    pub const AVAILABILITY: u64 = 7;
+    /// The index names no floor.
+    pub const NO_FLOOR: u64 = 0;
+    /// At or above the floor.
+    pub const FLOOR_MET: u64 = 1 << 3;
+    /// Below the floor.
+    pub const FLOOR_BELOW: u64 = 2 << 3;
+    /// A floor and a version with no order.
+    pub const FLOOR_UNORDERED: u64 = 3 << 3;
+    /// Mask of the floor.
+    pub const FLOOR: u64 = 7 << 3;
+    /// Below the floor, or not shown to meet it.
+    pub const BELOW: u64 = 1 << 6;
 }
 
 /// A status word from a step and its detail.
@@ -235,16 +317,35 @@ pub const DELTA_REASONS: [&str; 8] = [
 /// Why a package was not fetched, by `FetchErr::code` minus one.
 pub const FETCH_REASONS: [&str; 6] = ["no source rows", "source rows", "connect", "tls", "http status", "transfer"];
 
+/// Why an index was refused, by `IndexWhy` minus one.
+pub const INDEX_REASONS: [&str; 16] = [
+    "index truncated", "index magic", "index format", "index length", "index algorithm", "index signer",
+    "index signature", "index text", "index syntax", "index unknown key", "index repeated key", "index value",
+    "index missing key", "index too many entries", "index body format", "index older than the stored one",
+];
+
+/// Why an upgrade was refused, by `UpgradeWhy` minus one.
+pub const UPGRADE_REASONS: [&str; 11] = [
+    "not installed", "not in the index", "index signed by another signer", "installed version has no order",
+    "nothing newer on offer", "file is another package than listed", "file is not the build listed",
+    "file carries another version than listed", "file signed by another signer than the installed package",
+    "older than the installed version", "below the security floor",
+];
+
 /// The names of the steps of a status word, by step number: 1..17 are
 /// `azos_pkg::Refusal::code`'s, 32.. the installer's [`step`]s. Empty where no
 /// step has the number.
 pub fn step_name(status: u64) -> &'static str {
-    const PACKAGE: [&str; 18] = [
+    const PACKAGE: [&str; 24] = [
         "ok", "container", "algorithm", "signer", "signature", "metadata", "images", "hardware", "abi",
         "interface level", "foreign section", "rows", "rows and images", "warrants", "real time", "frames",
-        "admission", "imports",
+        "admission", "imports", "epoch floor", "boot admission", "unconfirmed trial", "volume", "repository index",
+        "upgrade",
     ];
+    let detail = ((status & 0xFF_FFFF) as usize).wrapping_sub(1);
     match step_of(status) {
+        22 => INDEX_REASONS.get(detail).copied().unwrap_or("repository index"),
+        23 => UPGRADE_REASONS.get(detail).copied().unwrap_or("upgrade"),
         n if n < PACKAGE.len() => PACKAGE[n],
         32 => "no signed topology",
         33 => "already staged",
@@ -252,6 +353,9 @@ pub fn step_name(status: u64) -> &'static str {
         35 => "volume",
         36 => "not staged",
         37 => "no boot record",
+        40 => "no index report (run refresh first)",
+        41 => "bad argument",
+        42 => "row",
         39 => FETCH_REASONS.get(((status & 0xFF_FFFF) as usize).wrapping_sub(1)).copied().unwrap_or("fetch"),
         38 => DELTA_REASONS.get(((status & 0xFF_FFFF) as usize).wrapping_sub(1)).copied().unwrap_or("delta"),
         n if (UPDATE_STEP_FIRST..UPDATE_STEP_FIRST + UPDATE_STEPS.len()).contains(&n) => {
@@ -259,6 +363,44 @@ pub fn step_name(status: u64) -> &'static str {
         }
         _ => "?",
     }
+}
+
+/// A version as `azos_pkg::index::Version::packed` carries it, written as
+/// `a.b.c` (and `.d` when the fourth component is not 0); the client of this
+/// interface links none of `azos_pkg`, so it prints from the wire form. The
+/// host suite compares it with `Version`'s own `Display`.
+pub fn write_version(out: &mut impl core::fmt::Write, packed: u64) -> core::fmt::Result {
+    let c = |shift: u32| (packed >> shift) as u16;
+    write!(out, "{}.{}.{}", c(48), c(32), c(16))?;
+    match c(0) {
+        0 => Ok(()),
+        d => write!(out, ".{d}"),
+    }
+}
+
+/// A package name (at most 32 bytes) as the four big-endian words `upgrade` and
+/// `outdated` carry, zero padded.
+pub fn name_words(name: &[u8]) -> Option<[u64; 4]> {
+    if name.len() > 32 {
+        return None;
+    }
+    let mut b = [0u8; 32];
+    b[..name.len()].copy_from_slice(name);
+    let mut w = [0u64; 4];
+    for (i, c) in b.chunks_exact(8).enumerate() {
+        w[i] = u64::from_be_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
+    }
+    Some(w)
+}
+
+/// The name four words stand for, with its length.
+pub fn words_name(w: &[u64; 4]) -> ([u8; 32], usize) {
+    let mut b = [0u8; 32];
+    for (i, x) in w.iter().enumerate() {
+        b[i * 8..i * 8 + 8].copy_from_slice(&x.to_be_bytes());
+    }
+    let n = b.iter().position(|&c| c == 0).unwrap_or(32);
+    (b, n)
 }
 
 /// A package id as the four big-endian words `remove` and `installed` carry.

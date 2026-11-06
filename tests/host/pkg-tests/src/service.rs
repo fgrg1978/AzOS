@@ -68,6 +68,9 @@ impl Remote for NoRemote {
     fn get(&mut self, _rows: &[u8], _buf: &mut [u8]) -> Result<usize, FetchErr> {
         panic!("this test fetches nothing");
     }
+    fn get_sibling(&mut self, _rows: &[u8], _name: &str, _buf: &mut [u8]) -> Result<usize, FetchErr> {
+        panic!("this test fetches nothing");
+    }
 }
 
 fn fill(src: &[u8], buf: &mut [u8]) -> Read {
@@ -289,11 +292,22 @@ pub struct Fake {
     out: Result<Vec<u8>, FetchErr>,
     pub rows: Vec<u8>,
     pub calls: u32,
+    /// The files beside the one the rows name, by name.
+    pub siblings: std::collections::BTreeMap<String, Result<Vec<u8>, FetchErr>>,
+    /// The names asked of `get_sibling`, in order.
+    pub asked: Vec<String>,
 }
 
 impl Fake {
     pub fn new(out: Result<Vec<u8>, FetchErr>) -> Self {
-        Fake { out, rows: Vec::new(), calls: 0 }
+        Fake { out, rows: Vec::new(), calls: 0, siblings: Default::default(), asked: Vec::new() }
+    }
+
+    /// A source that delivers `files` by name and nothing as the package itself.
+    pub fn repository(files: &[(&str, Vec<u8>)]) -> Self {
+        let mut f = Fake::new(Err(FetchErr::Status));
+        f.siblings = files.iter().map(|(n, b)| (n.to_string(), Ok(b.clone()))).collect();
+        f
     }
 }
 
@@ -302,6 +316,17 @@ impl Remote for Fake {
         self.calls += 1;
         self.rows = rows.to_vec();
         let bytes = self.out.clone()?;
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Ok(bytes.len())
+    }
+    fn get_sibling(&mut self, rows: &[u8], name: &str, buf: &mut [u8]) -> Result<usize, FetchErr> {
+        self.calls += 1;
+        self.rows = rows.to_vec();
+        self.asked.push(name.to_string());
+        let bytes = self.siblings.get(name).cloned().unwrap_or(Err(FetchErr::Status))?;
+        if bytes.len() > buf.len() {
+            return Err(FetchErr::TooLarge);
+        }
         buf[..bytes.len()].copy_from_slice(&bytes);
         Ok(bytes.len())
     }

@@ -27,13 +27,14 @@ use azos_crypto::sig::KEY_LEN;
 use azos_decision::{ProvenanceRecord, Rule, Verdict};
 use azos_idl::Cap;
 use azos_pkg::container::{ParseError, HEADER_LEN, KEY_LEN_MAX, SIG_LEN_MAX};
+use azos_pkg::index::{assess, check_upgrade, upgrade_entry, Availability, Entry, Floor, IndexWhy, Installed, UpgradeWhy, Version};
 use azos_pkg::{admit, receipt, verify, verify_head, Device, Package, Refusal};
 use azos_topology::signed::{fill_signed, DeviceContext, SignedFiles};
 use azos_topology::{Topology, CAPS_SIG_PATH, CAPS_TOML_PATH, SCHED_TOML_PATH};
 
 use crate::pure::{BootMeta, DeltaSource, SetBase, DELTA_MAGIC};
 use crate::update::{self, Source, Store};
-use crate::{id_words, io, status, step, words_id, Packages, PkgMem};
+use crate::{id_words, io, standing, status, step, words_id, words_name, Packages, PkgMem};
 
 /// Where packages are staged.
 pub const STAGE_DIR: &[u8] = b"/fat/PKG";
@@ -43,6 +44,13 @@ pub const JOURNAL: &[u8] = b"/fat/PKG/JOURNAL.BIN";
 /// naming the server, where to connect, what to GET and the keys it is pinned
 /// to (`azos_tls::rows`). Absent, there is no source.
 pub const SOURCE: &[u8] = b"/fat/PKG/SOURCE.CFG";
+
+/// The repository index, as the installer keeps it: the last one it verified
+/// and accepted. The kernel's boot-time apply reads the security floors from it
+/// (and verifies it again).
+pub const INDEX: &[u8] = b"/fat/PKG/INDEX.AZX";
+/// The index's file name beside the package the source rows name.
+pub const INDEX_FILE: &str = "INDEX.AZX";
 
 const META_MAX: usize = azos_limits::PKG_META_MAX_KB as usize * 1024;
 /// Packages staged at once (Kconfig `PKG_MAX_STAGED`).
@@ -170,6 +178,131 @@ pub trait Remote {
     /// The package the source `rows` describe, into `buf`: how many bytes.
     /// `Err(TooLarge)` when it does not fit.
     fn get(&mut self, rows: &[u8], buf: &mut [u8]) -> Result<usize, FetchErr>;
+    /// The file `name` beside the one the source `rows` describe (same server,
+    /// same directory: the repository index, or the package an index names),
+    /// into `buf`. `name` is a single path segment, never a path.
+    fn get_sibling(&mut self, rows: &[u8], name: &str, buf: &mut [u8]) -> Result<usize, FetchErr>;
+}
+
+/// An offer of the index for an installed package: the entry's fields, owned.
+#[derive(Clone, Copy)]
+struct Offer {
+    version: Version,
+    sec_floor: Option<Version>,
+    id: [u8; 32],
+    file: [u8; 32],
+    file_len: u8,
+}
+
+impl Offer {
+    fn of(e: &Entry<'_>) -> Self {
+        let mut file = [0u8; 32];
+        file[..e.file.len()].copy_from_slice(e.file.as_bytes());
+        Self { version: e.version, sec_floor: e.sec_floor, id: e.id, file, file_len: e.file.len() as u8 }
+    }
+
+    fn file(&self) -> &str {
+        core::str::from_utf8(&self.file[..self.file_len as usize]).unwrap_or("")
+    }
+
+    fn entry<'a>(&'a self, name: &'a str) -> Entry<'a> {
+        Entry { name, version: self.version, sec_floor: self.sec_floor, id: self.id, file: self.file() }
+    }
+}
+
+/// One staged package in the report `refresh` makes.
+#[derive(Clone, Copy)]
+struct Row {
+    name: [u8; 32],
+    name_len: u8,
+    version: [u8; 24],
+    version_len: u8,
+    signer: usize,
+    id: [u8; 32],
+    availability: Availability,
+    floor: Floor,
+    offer: Option<Offer>,
+    /// `Some(why)` when an upgrade of it is refused before anything is fetched.
+    blocked: Option<UpgradeWhy>,
+}
+
+impl Row {
+    const EMPTY: Row = Row {
+        name: [0; 32],
+        name_len: 0,
+        version: [0; 24],
+        version_len: 0,
+        signer: 0,
+        id: [0; 32],
+        availability: Availability::NotListed,
+        floor: Floor::NoFloor,
+        offer: None,
+        blocked: None,
+    };
+
+    fn name(&self) -> &str {
+        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("")
+    }
+
+    fn version(&self) -> &str {
+        core::str::from_utf8(&self.version[..self.version_len as usize]).unwrap_or("")
+    }
+
+    fn set_version(&mut self, v: Version) {
+        use core::fmt::Write;
+        struct Buf<'a>(&'a mut [u8], usize);
+        impl Write for Buf<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let end = self.1 + s.len();
+                self.0.get_mut(self.1..end).ok_or(core::fmt::Error)?.copy_from_slice(s.as_bytes());
+                self.1 = end;
+                Ok(())
+            }
+        }
+        let mut w = Buf(&mut self.version, 0);
+        // A version prints in at most 23 bytes.
+        let _ = write!(w, "{v}");
+        self.version_len = w.1 as u8;
+    }
+
+    fn installed(&self) -> Installed<'_> {
+        Installed { name: self.name(), version: self.version(), signer_index: self.signer, id: self.id }
+    }
+
+    fn standing(&self) -> u64 {
+        let a = match self.availability {
+            Availability::NotListed => standing::NOT_LISTED,
+            Availability::OtherSigner => standing::OTHER_SIGNER,
+            Availability::Current => standing::CURRENT,
+            Availability::Behind(_) => standing::BEHIND,
+            Availability::Ahead(_) => standing::AHEAD,
+            Availability::Unordered => standing::UNORDERED,
+        };
+        let (f, below) = match self.floor {
+            Floor::NoFloor => (standing::NO_FLOOR, 0),
+            Floor::Met(_) => (standing::FLOOR_MET, 0),
+            Floor::Below(_) => (standing::FLOOR_BELOW, standing::BELOW),
+            Floor::Unordered(_) => (standing::FLOOR_UNORDERED, standing::BELOW),
+        };
+        a | f | below
+    }
+}
+
+/// Where every staged package stands against the index `refresh` last accepted.
+struct Report {
+    valid: bool,
+    n: usize,
+    rows: [Row; MAX_STAGED],
+}
+
+impl Report {
+    const fn new() -> Self {
+        Self { valid: false, n: 0, rows: [Row::EMPTY; MAX_STAGED] }
+    }
+
+    fn find(&self, name: &[u8]) -> Option<usize> {
+        self.rows[..self.n].iter().position(|r| r.name[..r.name_len as usize] == *name)
+    }
 }
 
 /// Where the bytes of a request are.
@@ -193,6 +326,7 @@ pub struct Work {
     /// The running slot's manifest, for the base of a delta update.
     base_mb: [u8; update::MANIFEST_MAX],
     base_msg: [u8; update::MSG_MAX],
+    report: Report,
 }
 
 struct Parts<'r> {
@@ -203,6 +337,7 @@ struct Parts<'r> {
     sched: &'r mut [u8],
     arena: &'r mut [u8],
     topo: &'r mut Topology<'r>,
+    report: &'r mut Report,
 }
 
 impl Work {
@@ -219,6 +354,7 @@ impl Work {
             io: [0; UPDATE_IO],
             base_mb: [0; update::MANIFEST_MAX],
             base_msg: [0; update::MSG_MAX],
+            report: Report::new(),
         }
     }
 }
@@ -241,6 +377,7 @@ fn parts<'r>(w: &'r mut Work, topo: &'r mut Topology<'static>) -> Parts<'r> {
         sched: &mut w.sched,
         arena: &mut w.arena,
         topo,
+        report: &mut w.report,
     }
 }
 
@@ -281,7 +418,7 @@ impl<'w, V: Volume, R: Remote> Service<'w, V, R> {
     fn request(&mut self, cap: Cap<PkgMem>, len: u32, mode: Mode) -> [u64; 4] {
         let now = self.vol.now_ns();
         let Self { vol, work, topo, key, dev, .. } = self;
-        install_or_admit(vol, parts(work, topo), key, dev, Input::Object(cap, len as usize), mode, now)
+        install_or_admit(vol, parts(work, topo), key, dev, Input::Object(cap, len as usize), mode, now, None)
     }
 }
 
@@ -342,7 +479,91 @@ impl<V: Volume, R: Remote> Packages for Service<'_, V, R> {
             Err(FetchErr::TooLarge) => return refuse(vol, Mode::Install, &[0u8; 32], 0, Refusal::Container(ParseError::Length), now),
             Err(e) => return failed(e),
         };
-        install_or_admit(vol, parts(work, topo), key, dev, Input::Loaded(n), Mode::Install, now)
+        install_or_admit(vol, parts(work, topo), key, dev, Input::Loaded(n), Mode::Install, now, None)
+    }
+
+    fn refresh(&mut self) -> [u64; 4] {
+        let now = self.vol.now_ns();
+        let failed = |e: FetchErr| [status(step::FETCH, e.code()), 0, 0, 0];
+        let Self { vol, remote, work, topo, key, .. } = self;
+        work.report.valid = false;
+        let rows = match vol.read_file(SOURCE, &mut work.head) {
+            Ok(Read { n, more: false }) => &work.head[..n],
+            Ok(_) => return failed(FetchErr::Rows),
+            Err(VolErr::Missing) => return failed(FetchErr::NoSource),
+            Err(_) => return failed(FetchErr::Io),
+        };
+        let n = match remote.get_sibling(rows, INDEX_FILE, &mut work.pkg) {
+            Ok(n) if n <= PKG_BUF => n,
+            Ok(_) => return failed(FetchErr::Io),
+            Err(FetchErr::TooLarge) => return refuse_index(vol, IndexWhy::Length, 0, now),
+            Err(e) => return failed(e),
+        };
+        refresh_index(vol, parts(work, topo), key, n, now)
+    }
+
+    fn outdated(&mut self, index: u32, part: u32) -> [u64; 4] {
+        let r = &self.work.report;
+        if !r.valid {
+            return [status(step::NO_REPORT, 0), 0, 0, 0];
+        }
+        let Some(row) = r.rows[..r.n].get(index as usize) else { return [0; 4] };
+        let v = |x: Option<Version>| x.map_or(0, Version::packed);
+        match part {
+            0 => crate::name_words(row.name().as_bytes()).unwrap_or([0; 4]),
+            1 => [
+                status(step::ROW, row.standing()),
+                Version::parse(row.version()).ok().map_or(0, Version::packed),
+                v(row.offer.map(|o| o.version)),
+                v(row.offer.and_then(|o| o.sec_floor)),
+            ],
+            _ => [status(step::BAD_ARG, 1), 0, 0, 0],
+        }
+    }
+
+    fn upgrade(&mut self, name: [u64; 4]) -> [u64; 4] {
+        let now = self.vol.now_ns();
+        let failed = |e: FetchErr| [status(step::FETCH, e.code()), 0, 0, 0];
+        let Self { vol, remote, work, topo, key, dev } = self;
+        if !work.report.valid {
+            return [status(step::NO_REPORT, 0), 0, 0, 0];
+        }
+        let (nb, nl) = words_name(&name);
+        let Some(at) = work.report.find(&nb[..nl]) else {
+            return refuse(vol, Mode::Install, &[0u8; 32], 0, Refusal::Upgrade(UpgradeWhy::NotInstalled), now);
+        };
+        let row = work.report.rows[at];
+        if let Some(why) = row.blocked {
+            return refuse(vol, Mode::Install, &row.id, row.signer as u64 + 1, Refusal::Upgrade(why), now);
+        }
+        let Some(offer) = row.offer else {
+            return refuse(vol, Mode::Install, &row.id, row.signer as u64 + 1, Refusal::Upgrade(UpgradeWhy::NotListed), now);
+        };
+        let rows = match vol.read_file(SOURCE, &mut work.head) {
+            Ok(Read { n, more: false }) => &work.head[..n],
+            Ok(_) => return failed(FetchErr::Rows),
+            Err(VolErr::Missing) => return failed(FetchErr::NoSource),
+            Err(_) => return failed(FetchErr::Io),
+        };
+        let n = match remote.get_sibling(rows, offer.file(), &mut work.pkg) {
+            Ok(n) if n <= PKG_BUF => n,
+            Ok(_) => return failed(FetchErr::Io),
+            Err(FetchErr::TooLarge) => {
+                return refuse(vol, Mode::Install, &offer.id, row.signer as u64 + 1, Refusal::Container(ParseError::Length), now)
+            }
+            Err(e) => return failed(e),
+        };
+        let replace = Replace { id: row.id, installed: row.installed(), entry: offer.entry(row.name()) };
+        let reply = install_or_admit(vol, parts(work, topo), key, dev, Input::Loaded(n), Mode::Install, now, Some(&replace));
+        if reply[0] == 0 {
+            let r = &mut work.report.rows[at];
+            r.set_version(offer.version);
+            r.id = offer.id;
+            r.availability = Availability::Current;
+            r.floor = offer.sec_floor.map_or(Floor::NoFloor, Floor::Met);
+            r.blocked = Some(UpgradeWhy::NotNewer);
+        }
+        reply
     }
 
     fn update(&mut self, bundle: Cap<PkgMem>, len: u32) -> [u64; 4] {
@@ -401,6 +622,7 @@ impl<V: Volume, R: Remote> Packages for Service<'_, V, R> {
 /// one: [`StagePath::of_id`] takes `try_` windows of the id in turn (bytes
 /// `4*try_..4*try_+4`) and the installer stages at the first one that is free
 /// or already this package's, never over another package's file.
+#[derive(Clone, Copy)]
 struct StagePath {
     b: [u8; 21],
 }
@@ -496,6 +718,113 @@ fn refuse<V: Volume>(vol: &mut V, mode: Mode, id: &[u8; 32], signer: u64, r: Ref
     [pkg_status(&r), receipt::id_prefix(id), 0, signer]
 }
 
+/// The reply of an index refused, journalled.
+fn refuse_index<V: Volume>(vol: &mut V, why: IndexWhy, signer: u64, now: u64) -> [u64; 4] {
+    refuse(vol, Mode::Install, &[0u8; 32], signer, Refusal::Index(why), now)
+}
+
+/// The device's signed topology, read off the volume and verified like the
+/// kernel does at boot. `Err` is the reply that says it could not be.
+fn load_topology<'r, V: Volume>(
+    vol: &mut V,
+    caps_buf: &'r mut [u8],
+    sig_buf: &'r mut [u8],
+    sched_buf: &'r mut [u8],
+    topo: &mut Topology<'r>,
+    key: &[u8; KEY_LEN],
+) -> Result<(), [u64; 4]> {
+    let no_topology = |detail: u64| [status(step::NO_TOPOLOGY, detail), 0, 0, 0];
+    let Ok(Read { n: nc, more: false }) = vol.read_file(CAPS_TOML_PATH, caps_buf) else { return Err(no_topology(0)) };
+    let Ok(Read { n: ns, more: false }) = vol.read_file(CAPS_SIG_PATH, sig_buf) else { return Err(no_topology(0)) };
+    let Ok(Read { n: nh, more: false }) = vol.read_file(SCHED_TOML_PATH, sched_buf) else { return Err(no_topology(0)) };
+    let (caps, _) = caps_buf.split_at_mut(nc);
+    let (sched, _) = sched_buf.split_at_mut(nh);
+    let files = SignedFiles { caps, caps_sig: &sig_buf[..ns], sched };
+    // The device id and the counter floor are the device record's, which a ring-3
+    // program cannot read: neither is checked here (see the module docs).
+    let ctx = DeviceContext { device_id: None, floor: 0, bind_device: false, enforce_floor: false };
+    fill_signed(topo, &files, key, &ctx).map(|_| ()).map_err(|r| no_topology(r.code() as u64 >> 28))
+}
+
+/// Verify the index in the first `n` bytes of the package buffer, keep it on
+/// the volume and work out where every staged package stands against it.
+fn refresh_index<V: Volume>(vol: &mut V, p: Parts<'_>, key: &[u8; KEY_LEN], n: usize, now: u64) -> [u64; 4] {
+    let Parts { pkg, head, caps, sig, sched, arena, topo, report } = p;
+    if let Err(r) = load_topology(vol, caps, sig, sched, topo, key) {
+        return r;
+    }
+    let bytes = &pkg[..n];
+    let ix = match azos_pkg::index::verify(bytes, topo) {
+        Ok(ix) => ix,
+        Err(why) => return refuse_index(vol, why, 0, now),
+    };
+    let signer = ix.signer_index as u64 + 1;
+
+    // The index the device accepted before, if it still verifies: the serial
+    // never goes backwards, and it is what a failed write puts back.
+    let stored_len = match vol.read_file(INDEX, arena) {
+        Ok(Read { n, more: false }) => Some(n),
+        _ => None,
+    };
+    let stored = stored_len.and_then(|n| azos_pkg::index::verify(&arena[..n], topo).ok());
+    if let Err(why) = ix.check_serial(stored.map(|s| s.serial)) {
+        return refuse_index(vol, why, signer, now);
+    }
+
+    report.n = 0;
+    let mut i = 0;
+    while report.n < MAX_STAGED {
+        let Some((_, pk)) = staged_at(vol, head, &mut i) else { break };
+        let Ok(v) = verify_head(pk, topo) else { continue };
+        let a = assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: v.signer_index, id: v.id }, &ix);
+        let mut row = Row::EMPTY;
+        row.name[..v.meta.name.len()].copy_from_slice(v.meta.name.as_bytes());
+        row.name_len = v.meta.name.len() as u8;
+        row.version[..v.meta.version.len()].copy_from_slice(v.meta.version.as_bytes());
+        row.version_len = v.meta.version.len() as u8;
+        row.signer = v.signer_index;
+        row.id = v.id;
+        row.availability = a.availability;
+        row.floor = a.floor;
+        row.offer = a.entry.as_ref().map(Offer::of);
+        row.blocked = upgrade_entry(&a).err();
+        report.rows[report.n] = row;
+        report.n += 1;
+    }
+
+    if !vol.dir_exists(STAGE_DIR) {
+        return [status(step::IO, io::NO_STAGE_DIR), 0, 0, 0];
+    }
+    // The old index goes back if the new one cannot be written down.
+    let undo = |vol: &mut V| match stored_len {
+        Some(n) => {
+            let _ = vol.write_file(INDEX, &arena[..n]);
+        }
+        None => {
+            let _ = vol.remove(INDEX);
+        }
+    };
+    if vol.write_file(INDEX, bytes).is_err() {
+        undo(vol);
+        return [status(step::IO, io::WRITE_PACKAGE), 0, 0, 0];
+    }
+    if vol.append(JOURNAL, &receipt::index_accepted(&ix, now).to_bytes()).is_err() {
+        undo(vol);
+        return [status(step::IO, io::JOURNAL), 0, 0, 0];
+    }
+    report.valid = true;
+    [0, ix.serial as u64, report.n as u64, ix.entries as u64]
+}
+
+/// What an upgrade replaces: the staged package, as the report knew it, and
+/// the index's entry for the version that replaces it.
+struct Replace<'a> {
+    id: [u8; 32],
+    installed: Installed<'a>,
+    entry: Entry<'a>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn install_or_admit<'r, V: Volume>(
     vol: &mut V,
     p: Parts<'r>,
@@ -504,8 +833,9 @@ fn install_or_admit<'r, V: Volume>(
     input: Input,
     mode: Mode,
     now: u64,
+    replace: Option<&Replace<'_>>,
 ) -> [u64; 4] {
-    let Parts { pkg: pkg_buf, head, caps: caps_buf, sig: sig_buf, sched: sched_buf, arena, topo } = p;
+    let Parts { pkg: pkg_buf, head, caps: caps_buf, sig: sig_buf, sched: sched_buf, arena, topo, .. } = p;
     let none = [0u8; 32];
 
     // 1. The package, whole, copied out of the client's object. One larger
@@ -523,18 +853,8 @@ fn install_or_admit<'r, V: Volume>(
     let id = Package::parse(pkg_bytes).map_or(none, |p| p.id());
 
     // 2. The device's signed topology, verified like the kernel does.
-    let no_topology = |detail: u64| [status(step::NO_TOPOLOGY, detail), 0, 0, 0];
-    let Ok(Read { n: nc, more: false }) = vol.read_file(CAPS_TOML_PATH, caps_buf) else { return no_topology(0) };
-    let Ok(Read { n: ns, more: false }) = vol.read_file(CAPS_SIG_PATH, sig_buf) else { return no_topology(0) };
-    let Ok(Read { n: nh, more: false }) = vol.read_file(SCHED_TOML_PATH, sched_buf) else { return no_topology(0) };
-    let (caps, _) = caps_buf.split_at_mut(nc);
-    let (sched, _) = sched_buf.split_at_mut(nh);
-    let files = SignedFiles { caps, caps_sig: &sig_buf[..ns], sched };
-    // The device id and the counter floor are the device record's, which a ring-3
-    // program cannot read: neither is checked here (see the module docs).
-    let ctx = DeviceContext { device_id: None, floor: 0, bind_device: false, enforce_floor: false };
-    if let Err(r) = fill_signed(topo, &files, key, &ctx) {
-        return no_topology(r.code() as u64 >> 28);
+    if let Err(r) = load_topology(vol, caps_buf, sig_buf, sched_buf, topo, key) {
+        return r;
     }
 
     // 3. What is staged already, merged in first: a package is admitted against
@@ -543,9 +863,17 @@ fn install_or_admit<'r, V: Volume>(
     let mut staged = 0usize;
     let mut arena: &'r mut [u8] = arena;
     let mut i = 0;
-    while let Some((_, pk)) = staged_at(vol, head, &mut i) {
+    let mut old_path: Option<StagePath> = None;
+    while let Some((path, pk)) = staged_at(vol, head, &mut i) {
         if staged == MAX_STAGED {
             break;
+        }
+        // The package an upgrade replaces is no part of the device it is judged
+        // against: its rows would collide with its successor's, and its slot is
+        // the successor's.
+        if replace.is_some_and(|r| r.id == pk.id()) {
+            old_path = Some(path);
+            continue;
         }
         // A staged package that no longer verifies (its signer was dropped)
         // takes its slot but adds no rows.
@@ -577,6 +905,16 @@ fn install_or_admit<'r, V: Volume>(
         Err(r) => return refuse(vol, mode, &id, signer_of_key, r, now),
     };
     let signer = v.signer_index as u64 + 1;
+    if let Some(r) = replace {
+        let why = if old_path.is_none() {
+            Some(UpgradeWhy::NotInstalled)
+        } else {
+            check_upgrade(&r.installed, &r.entry, &v.meta, &v.id, v.signer_index).err()
+        };
+        if let Some(why) = why {
+            return refuse(vol, mode, &id, signer, Refusal::Upgrade(why), now);
+        }
+    }
     let a = match admit(&v, v.pkg.rows, topo, dev) {
         Ok(a) => a,
         Err(r) => return refuse(vol, mode, &id, signer, r, now),
@@ -602,6 +940,23 @@ fn install_or_admit<'r, V: Volume>(
     if vol.append(JOURNAL, &receipt::admitted(&v, &a, now).to_bytes()).is_err() {
         let _ = vol.remove(&path.bytes());
         return [status(step::IO, io::JOURNAL), receipt::id_prefix(&id), 0, 0];
+    }
+    // An upgrade: the version it replaces goes, as `remove` takes a package
+    // away, once the new one is durable. Between the two commits a power cut
+    // leaves both staged; the boot-time apply keeps the applied one and refuses
+    // the other's rows, and `pkg remove` clears the old.
+    if let (Some(r), Some(old)) = (replace, old_path) {
+        let reply = [0, receipt::id_prefix(&id), a.rows as u64, a.first_row as u64];
+        if vol.remove(&old.bytes()).is_err() {
+            return [status(step::IO, io::REMOVE), receipt::id_prefix(&r.id), a.rows as u64, 0];
+        }
+        let mut gone = ProvenanceRecord::new(Rule::PackageInstall as u8, Verdict::Deny as u8, a.rows as u32, [a.rows as u64, 0, 0]);
+        gone.image_hash_prefix = receipt::id_prefix(&r.id);
+        gone.clock_ns = now;
+        if vol.append(JOURNAL, &gone.to_bytes()).is_err() {
+            return [status(step::IO, io::JOURNAL), receipt::id_prefix(&r.id), a.rows as u64, 0];
+        }
+        return reply;
     }
     [0, receipt::id_prefix(&id), a.rows as u64, a.first_row as u64]
 }

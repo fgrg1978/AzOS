@@ -32,6 +32,7 @@ mod service;
 mod tftp_source;
 mod tool;
 mod update;
+mod upgrade;
 mod volume_key;
 
 pub use build::*;

@@ -75,6 +75,12 @@ fn token(s: &str) -> bool {
 }
 
 impl Source {
+    /// The same server for the file `name` in the directory of `path`.
+    pub fn sibling(&self, name: &str) -> Source {
+        let dir = self.path.rfind('/').map_or("/", |i| &self.path[..=i]);
+        Source { path: format!("{dir}{name}"), ..self.clone() }
+    }
+
     /// The source the rows in `text` describe.
     pub fn parse(text: &[u8]) -> Result<Self, RowError> {
         let text = std::str::from_utf8(text).map_err(|_| RowError::Encoding)?;

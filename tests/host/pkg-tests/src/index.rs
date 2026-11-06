@@ -259,12 +259,12 @@ fn only_a_newer_listed_version_under_the_same_signer_is_an_upgrade() {
     let topo = d.topology();
     let (bytes, _) = index_for("1.6.0", None);
     let ix = index::verify(&bytes, &topo).unwrap();
-    assert_eq!(upgrade_entry(&installed("1.5", 0), &ix).unwrap().version, Version([1, 6, 0, 0]));
-    assert_eq!(upgrade_entry(&installed("1.6", 0), &ix), Err(UpgradeWhy::NotNewer));
-    assert_eq!(upgrade_entry(&installed("1.7", 0), &ix), Err(UpgradeWhy::NotNewer));
-    assert_eq!(upgrade_entry(&installed("1.5", 1), &ix), Err(UpgradeWhy::OtherSigner));
-    assert_eq!(upgrade_entry(&installed("x", 0), &ix), Err(UpgradeWhy::Unordered));
+    assert_eq!(upgrade_entry(&assess(&installed("1.5", 0), &ix)).unwrap().version, Version([1, 6, 0, 0]));
+    assert_eq!(upgrade_entry(&assess(&installed("1.6", 0), &ix)), Err(UpgradeWhy::NotNewer));
+    assert_eq!(upgrade_entry(&assess(&installed("1.7", 0), &ix)), Err(UpgradeWhy::NotNewer));
+    assert_eq!(upgrade_entry(&assess(&installed("1.5", 1), &ix)), Err(UpgradeWhy::OtherSigner));
+    assert_eq!(upgrade_entry(&assess(&installed("x", 0), &ix)), Err(UpgradeWhy::Unordered));
     let mut gone = installed("1.5", 0);
     gone.name = "other-pkg";
-    assert_eq!(upgrade_entry(&gone, &ix), Err(UpgradeWhy::NotListed));
+    assert_eq!(upgrade_entry(&assess(&gone, &ix)), Err(UpgradeWhy::NotListed));
 }

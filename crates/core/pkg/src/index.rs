@@ -530,10 +530,9 @@ pub enum UpgradeWhy {
     BelowFloor,
 }
 
-/// The entry an upgrade of `installed` would install: the index lists a newer
-/// version, under the installed package's own signer.
-pub fn upgrade_entry<'p>(installed: &Installed<'_>, index: &Index<'p, '_>) -> Result<Entry<'p>, UpgradeWhy> {
-    let a = assess(installed, index);
+/// The entry an upgrade would install, given where the package stands: the
+/// index lists a newer version, under the installed package's own signer.
+pub fn upgrade_entry<'p>(a: &Assessment<'p>) -> Result<Entry<'p>, UpgradeWhy> {
     match (a.availability, a.entry) {
         (Availability::NotListed, _) => Err(UpgradeWhy::NotListed),
         (Availability::OtherSigner, _) => Err(UpgradeWhy::OtherSigner),

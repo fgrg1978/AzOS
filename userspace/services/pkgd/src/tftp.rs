@@ -82,6 +82,12 @@ pub fn is_tftp(text: &[u8]) -> bool {
 }
 
 impl Source {
+    /// The same server for the file `name` in the directory of `file`.
+    pub fn sibling(&self, name: &str) -> Source {
+        let dir = self.file.rfind('/').map_or("", |i| &self.file[..=i]);
+        Source { file: format!("{dir}{name}"), ..self.clone() }
+    }
+
     /// The source the rows in `text` describe.
     pub fn parse(text: &[u8]) -> Result<Self, RowError> {
         let rows = rows_of(text).ok_or(RowError::Encoding)?;
@@ -184,6 +190,17 @@ impl TftpRemote {
 impl Remote for TftpRemote {
     fn get(&mut self, rows: &[u8], buf: &mut [u8]) -> Result<usize, FetchErr> {
         let source = Source::parse(rows).map_err(|_| FetchErr::Rows)?;
+        self.fetch(&source, buf)
+    }
+
+    fn get_sibling(&mut self, rows: &[u8], name: &str, buf: &mut [u8]) -> Result<usize, FetchErr> {
+        let source = Source::parse(rows).map_err(|_| FetchErr::Rows)?;
+        self.fetch(&source.sibling(name), buf)
+    }
+}
+
+impl TftpRemote {
+    fn fetch(&mut self, source: &Source, buf: &mut [u8]) -> Result<usize, FetchErr> {
         let blocks = (buf.len() / TFTP_BLOCK_SIZE + 1) as u32;
         let pacing = Pacing {
             // A wait per block, with room for a few repeats, and the silences.
@@ -226,6 +243,14 @@ impl<H: Remote, const TFTP: bool> Remote for Sources<H, TFTP> {
             self.tftp.get(rows, buf)
         } else {
             self.https.get(rows, buf)
+        }
+    }
+
+    fn get_sibling(&mut self, rows: &[u8], name: &str, buf: &mut [u8]) -> Result<usize, FetchErr> {
+        if TFTP && is_tftp(rows) {
+            self.tftp.get_sibling(rows, name, buf)
+        } else {
+            self.https.get_sibling(rows, name, buf)
         }
     }
 }
