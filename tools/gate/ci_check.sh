@@ -11973,6 +11973,14 @@ host_job host_canary_row "port: calls binder canary" syscall-tests calls-any-bin
 # Gpio server's cross-controller refusal go red.
 host_job host_canary_row "gpio: badge controller canary (devif)" devif-tests badge-without-controller-canary a_gpio_badge_names_its_controller
 host_job host_canary_row "gpio: badge controller canary (endpoint)" syscall-tests gpio-badge-canary a_capability_on_controller_1_never_reaches_controller_0
+# The GPIO controller registry: a freed number goes to another device; an
+# unbind does not wait for the op inside the controller; a controller that is
+# not registered is answered by the board's; the kill switch's line is not
+# kept from an acting op.
+host_job host_canary_row "gpio: freed number reuse canary" drivers-tests instances-reuse-canary a_freed_number_is_never_another_devices
+host_job host_canary_row "gpio: unbind drain canary" drivers-tests instances-no-drain-canary an_unbind_waits_for_the_op_inside_the_controller
+host_job host_canary_row "gpio: unbound falls to board canary" syscall-tests gpio-unbound-falls-to-board-canary a_controller_not_bound_is_no_resource_and_a_pin_past_its_last_is_bad_argument
+host_job host_canary_row "gpio: safety line canary" syscall-tests gpio-safety-guard-canary the_kill_switch_line_is_refused_to_a_holder_of_its_endpoint
 host_job host_canary_row "srv: call signal canary" srv-tests port-calls-canary a_call_and_an_irq_on_one_port_are_served_by_one_thread
 host_job host_canary_row "srv: batch canary" srv-tests batch-canary neither_calls_nor_interrupts_starve_the_other
 host_job host_canary_row "srv: owed calls canary" srv-tests owed-drop-canary a_refused_accept_keeps_the_calls_owed
