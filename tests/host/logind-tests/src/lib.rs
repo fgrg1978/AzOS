@@ -123,6 +123,8 @@ mod service {
         gone: bool,
         /// The shell survives the forced stop.
         stuck: bool,
+        /// The account the kernel has locked: refused whatever the credential, as its lockout is.
+        locked: Option<[u64; NAME_WORDS]>,
         said: Vec<String>,
     }
 
@@ -137,6 +139,7 @@ mod service {
                 stopped: vec![],
                 gone: false,
                 stuck: false,
+                locked: None,
                 said: vec![],
             }
         }
@@ -148,6 +151,9 @@ mod service {
         }
         fn verify(&mut self, user: [u64; NAME_WORDS], credential: [u64; CREDENTIAL_WORDS]) -> Result<u32, u32> {
             self.verified.push((user, credential));
+            if self.locked == Some(user) {
+                return Err(1);
+            }
             self.verdict
         }
         fn start_session(&mut self, name: &[u8]) -> Result<u32, isize> {
@@ -234,6 +240,33 @@ mod service {
         s.verdict = Err(outcome::NOT_READY);
         let d = RefCell::new(Daemon::new(s));
         assert_eq!(LoginClient::new(Loop(&d)).login(alice(), cred()).unwrap(), status::NOT_READY);
+    }
+
+    /// A locked account is refused whatever the credential is: the right one, the empty one, all ones, a
+    /// credential of another user, each bit of the right one flipped. The service asks the kernel every time
+    /// (it decides nothing from the credential), starts no shell, and the console stays locked. Every other
+    /// account of the same board still logs in.
+    ///
+    /// **Canary.** Make the `Err(_)` arm of `login` start the session: every refusal here starts a shell.
+    #[test]
+    fn a_locked_account_is_refused_for_every_credential() {
+        let mut s = Stand::new(true);
+        s.locked = Some(alice());
+        let d = RefCell::new(Daemon::new(s));
+        let mut c = LoginClient::new(Loop(&d));
+        let mut creds = vec![cred(), [0; CREDENTIAL_WORDS], [u64::MAX; CREDENTIAL_WORDS], pack_credential(&credential(b"bob", b"pw"))];
+        for bit in 0..(CREDENTIAL_WORDS * 64) {
+            let mut x = cred();
+            x[bit / 64] ^= 1 << (bit % 64);
+            creds.push(x);
+        }
+        for (i, cr) in creds.iter().enumerate() {
+            assert_eq!(c.login(alice(), *cr).unwrap(), status::REFUSED, "credential {i}");
+        }
+        assert_eq!(d.borrow().k.verified.len(), creds.len(), "the kernel was asked each time");
+        assert!(d.borrow().k.started.is_empty(), "no shell for a locked account");
+        assert_eq!(c.state().unwrap(), state::LOCKED);
+        assert_eq!(c.login(pack_name(b"bob").unwrap(), cred()).unwrap(), status::STARTED, "another account is not locked");
     }
 
     /// A shell that did not start leaves no session; the credential is spent.
