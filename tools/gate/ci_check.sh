@@ -12013,6 +12013,15 @@ pkg_updates_row() { # <label>
                  index::banks::a_signer_cannot_evict_another_signers_floors \
                  index::a_remembered_floor_stays_while_an_index_floors_it \
                  apply::a_floor_outlives_a_boot_without_its_package \
+                 index::banks::a_boot_that_cannot_read_a_sector_writes_nothing \
+                 index::banks::a_rebuild_after_a_loss_outranks_every_bank_that_reads_again \
+                 index::banks::the_provisioning_tool_writes_an_empty_bank_the_kernel_reads \
+                 index::banks::an_erased_medium_of_a_provisioned_device_is_lost_not_new \
+                 apply::past_the_quota_the_mark_rises_and_the_excess_is_recorded \
+                 apply::a_failed_write_of_the_marks_is_on_record_and_no_store_is_not \
+                 apply::a_boot_that_cannot_read_the_marks_says_so_and_writes_none \
+                 apply::a_lost_memory_is_on_record_with_how_it_was_lost \
+                 upgrade::an_install_past_the_signers_floor_quota_is_refused \
                  index::the_topology_refuses_exactly_the_key_ids_that_share_a_slot; do
             echo "$out" | qgrep -q "test ${t} \.\.\. ok" || { rc=1; echo "      did not run and pass: $t"; }
         done
