@@ -43,12 +43,3 @@ digest = { version = "0.10", default-features = false, features = ["core-api"] }
 sha2 = { version = "0.10", default-features = false, features = ["compress"] }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
-
-# Bare metal (the kernels, the resident monitor): sha2's portable backend.
-# On x86_64 it would otherwise run SHA-NI / AVX2 picked from CPUID at CPL0,
-# where the kernel keeps no SIMD state; ed25519-dalek's SHA-512 included.
-[target.'cfg(target_os = "none")'.dependencies]
-sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(chacha20_force_soft)', 'cfg(poly1305_force_soft)', 'cfg(aes_force_soft)'] }

@@ -11,16 +11,6 @@
 
 #![no_std]
 
-// The x86_64 kernel runs with no SIMD state at CPL0; the RustCrypto ciphers
-// would pick SSE2/AVX2/AES-NI from CPUID (tools/build/kconfig_to_cargo.py
-// passes these cfgs to every kernel build).
-#[cfg(all(
-    target_arch = "x86_64",
-    target_os = "none",
-    not(all(chacha20_force_soft, poly1305_force_soft, aes_force_soft))
-))]
-compile_error!("x86_64 bare metal needs --cfg chacha20_force_soft --cfg poly1305_force_soft --cfg aes_force_soft");
-
 pub mod ct;
 pub mod sha256;
 pub mod aes;

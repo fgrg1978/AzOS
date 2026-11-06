@@ -3,8 +3,8 @@
 //! SHA-256 hash function (FIPS 180-4).
 //!
 //! The hash is `sha256_core.rs`; this file picks the block function that
-//! runs: RustCrypto's `sha2::compress256` (its portable backend on bare
-//! metal), or an arch backend the CPU has (below). No caller chooses.
+//! runs: RustCrypto's `sha2::compress256` (its portable backend on every
+//! kernel target), or an arch backend the CPU has (below). No caller chooses.
 
 #[path = "sha256_core.rs"]
 mod core_impl;

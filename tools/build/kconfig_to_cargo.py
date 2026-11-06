@@ -240,14 +240,15 @@ def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool 
 
 
 def x86_soft_crypto_rustflags(cfg: dict[str, str]) -> list[str]:
-    """The x86_64 kernel is soft-float (no SSE/AVX state at CPL0), but the
-    RustCrypto ciphers azos_crypto links pick SSE2/AVX2/AES-NI at run time from
-    CPUID on x86_64: these cfgs pin their portable backends (sha2's is a Cargo
-    feature, set for every bare-metal target in crates/core/crypto/Cargo.toml).
-    azos_crypto refuses an x86_64 kernel build without them."""
+    """x86_64 kernel only: `poly1305` and `aes` (azos_crypto) compile their
+    AVX2 / AES-NI backends unless these cfgs are set, and rustc aborts (SIGTRAP)
+    building those for the soft-float `x86_64-unknown-none` target. A type-check
+    (`make check`) never reaches codegen, so only a build shows it. The portable
+    backends would run anyway: run-time detection answers false on
+    `target_os = "none"`."""
     if cfg.get("CONFIG_ARCH_X86_64") != "y":
         return []
-    return ["--cfg", "chacha20_force_soft", "--cfg", "poly1305_force_soft", "--cfg", "aes_force_soft"]
+    return ["--cfg", "poly1305_force_soft", "--cfg", "aes_force_soft"]
 
 
 def kasan_rustflags(cfg: dict[str, str]) -> list[str]:

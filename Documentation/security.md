@@ -582,10 +582,15 @@ primitives come from one source each, the vetted RustCrypto crates the ring-3
 TLS/QUIC provider links (`sha2`, `hmac`, `hkdf`, `chacha20`, `poly1305`,
 `chacha20poly1305`, `aes`, `ctr`) and `curve25519-dalek` / `ed25519-dalek`, all
 `default-features = false`. On bare metal they run their portable backends:
-`sha2` with `force-soft`, and the x86_64 kernel builds pass
-`--cfg chacha20_force_soft --cfg poly1305_force_soft --cfg aes_force_soft`
-(`tools/build/kconfig_to_cargo.py`), since the kernel keeps no SIMD state;
-`azos_crypto` refuses an x86_64 bare-metal build without them.
+the crates' run-time CPU detection (`cpufeatures`) answers false for
+`target_os = "none"` unless a feature is enabled at build time, and no kernel
+build enables a SIMD target feature (the kernels are soft-float). Checked by
+disassembly: `azos_crypto` built for `x86_64-unknown-none` at `x86-64-v3` has
+no xmm/ymm instruction and no `cpuid`. The x86_64 kernel builds also pass
+`--cfg poly1305_force_soft --cfg aes_force_soft`
+(`tools/build/kconfig_to_cargo.py`): without them those two crates compile
+their AVX2 / AES-NI backends, and rustc aborts on them for the soft-float
+target.
 
 | Module | Provides |
 |--------|----------|
