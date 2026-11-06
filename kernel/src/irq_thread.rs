@@ -123,6 +123,30 @@ pub(crate) fn register(line: u32) {
     }
 }
 
+/// Undo [`register`]: the line leaves the thread's maps and its port, so
+/// the top half no longer defers it and an event already queued finds no
+/// binding to ACK (nothing is unmasked for it). Called where the line is
+/// given back (an unbind), before the controller masks it.
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) fn unregister(line: u32) {
+    if !ENABLED {
+        return;
+    }
+    for map in [&BOUND, &REGISTERED] {
+        if let Some((w, m)) = bit(map, line) {
+            w.fetch_and(!m, Ordering::AcqRel);
+        }
+    }
+    let tid = THREAD_TID.load(Ordering::Acquire);
+    if tid != 0 {
+        let _ = azos_ipc::irq_bind::irq_unbind(line, tid);
+    }
+}
+
+/// x86_64 registers no line.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn unregister(_line: u32) {}
+
 /// Bind `line` to the thread's port. The thread's SC is the line's budget.
 #[cfg(not(target_arch = "x86_64"))]
 fn bind(line: u32) {

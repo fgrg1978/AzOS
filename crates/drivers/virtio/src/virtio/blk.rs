@@ -59,7 +59,7 @@ use super::{
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
     VIRTIO_QUEUE_SIZE,
 };
-use super::{mmio_read, mmio_write, probe, virtq_init, virtq_reprogram,
+use super::{mmio_read, mmio_write, probe, reset_confirmed, virtq_init, virtq_reprogram,
             virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
             read_config32, read_config64};
 use azos_dma::Direction;
@@ -344,6 +344,11 @@ azos_common::ro_hook! {
 /// The virtio-mmio slot `init` found the device in (`usize::MAX`: none).
 static FOUND_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
+/// The transport of a device taken out of service by [`park`] (0: none): its
+/// rings and DMA mappings are kept, and [`init_at`] at the same base gives
+/// them to the device again instead of allocating new ones.
+static PARKED: AtomicUsize = AtomicUsize::new(0);
+
 fn mmio_base() -> Option<usize> {
     let _guard = BLK_LOCK.lock();
     if !READY.load(Ordering::Acquire) { return None; }
@@ -538,6 +543,12 @@ pub fn init_at(base: usize) -> Result<(), ()> {
     if READY.load(Ordering::Acquire) {
         return Err(());
     }
+    match PARKED.load(Ordering::Acquire) {
+        0 => {}
+        parked if parked == base => return unpark(),
+        // The rings belong to the parked device's DMA domain.
+        _ => return Err(()),
+    }
 
     // SAFETY: `READY` is clear and `BLK_LOCK` held: nobody else reads the
     // device state, and the queues are not in use.
@@ -645,6 +656,62 @@ pub fn init_at(base: usize) -> Result<(), ()> {
     Ok(())
 }
 
+/// Take the device at `base` out of service: no command starts after this
+/// (`READY` is cleared, then every queue lock is taken once, so a `start`
+/// that passed its check has submitted), the device is reset and its stop
+/// confirmed (its DMA is over), and every command it held ends `Reset`, its
+/// waiter woken. The rings and mappings stay the driver's ([`PARKED`]): the
+/// unbind and the system suspend of the hardware bus. `Err` for a device that
+/// is not this one or not up, and for one that never confirmed its reset (the
+/// driver latches dead: its memory is never reused).
+pub fn park(base: usize) -> Result<(), ()> {
+    let _guard = BLK_LOCK.lock();
+    // SAFETY: `READY` is checked under `BLK_LOCK`; bring-up wrote the state.
+    let dev = unsafe { &*(&raw const BLK_DEV) };
+    if !READY.load(Ordering::Acquire) || dev.vdev.base as usize != base {
+        return Err(());
+    }
+    READY.store(false, Ordering::Release);
+    for q in 0..dev.queues {
+        drop(QLOCK[q].lock());
+    }
+    // SAFETY: the transport is mapped; status 0 resets the device.
+    if !unsafe { reset_confirmed(dev.vdev.base) } {
+        latch_dead("the device did not confirm its reset when taken out of service", false);
+        return Err(());
+    }
+    for t in 0..dev.slots {
+        if SLOT_INFLIGHT[t].load(Ordering::Acquire) && !SLOT_DONE[t].load(Ordering::Acquire) {
+            SLOT_STATUS[t].store(proto::S_RESET, Ordering::Relaxed);
+            SLOT_DONE[t].store(true, Ordering::Release);
+        }
+    }
+    PARKED.store(base, Ordering::Release);
+    if let (Some(wake), tid) = (WAKE_FN.get(), WAITER.sleeper()) {
+        if tid != 0 {
+            wake(tid);
+        }
+    }
+    kprintln!("[VIRTIO-BLK] device at {:#x} out of service: reset, its commands ended", base);
+    Ok(())
+}
+
+/// Give the parked device its rings again (a reset device, the same one: its
+/// features and size are checked) and put it back in service. Caller holds
+/// `BLK_LOCK`.
+fn unpark() -> Result<(), ()> {
+    // SAFETY: the device is parked: nothing submits, and it is reset.
+    let dev = unsafe { &*(&raw const BLK_DEV) };
+    if !reprogram(dev, 0) {
+        azos_drv_sys::kerr!("[VIRTIO-BLK] the parked device would not program again");
+        return Err(());
+    }
+    PARKED.store(0, Ordering::Release);
+    READY.store(true, Ordering::Release);
+    kprintln!("[VIRTIO-BLK] device at {:#x} back in service", dev.vdev.base as usize);
+    Ok(())
+}
+
 /// Is the block device the bus bound up? (`blkdev::init`: the layer
 /// above asks, and a machine with no admitted virtio disk answers no.)
 pub fn init() -> Result<(), ()> {
@@ -690,10 +757,6 @@ fn latch_dead(reason: &str, latched: bool) {
     azos_drv_sys::kerr!("[VIRTIO-BLK] Error: {} - device reset, block I/O disabled", reason);
 }
 
-/// How long a reset device may take to read back status 0 (virtio 1.2
-/// section 2.4.1: the driver waits for it before it touches the queues).
-const RESET_WAIT_US: u64 = 100_000;
-
 /// Commands in `late` (a slot bitmap, every one in the device) ran out of
 /// their budget at tick `now`. The timeout policy decides: reset the device
 /// and program it again over the same rings, or, with the resets spent,
@@ -715,8 +778,7 @@ fn timed_out(late: u32, now: u64) {
             // SAFETY: the transport base was set in bring-up.
             let base = unsafe { (*(&raw const BLK_DEV)).vdev.base };
             // SAFETY: as above; status 0 resets the device.
-            unsafe { mmio_write(base, VIRTIO_MMIO_STATUS, 0) };
-            let stopped = wait_us(RESET_WAIT_US, || unsafe { mmio_read(base, VIRTIO_MMIO_STATUS) } == 0);
+            let stopped = unsafe { reset_confirmed(base) };
             let ok = stopped && reprogram(dev, late);
             if !ok {
                 // SAFETY: as above.
@@ -749,19 +811,6 @@ fn mark_late(dev: &BlkDev, late: u32) {
             SLOT_DONE[t].store(true, Ordering::Release);
         }
     }
-}
-
-/// Spin until `cond` holds or `us` microseconds passed; `cond` is asked once
-/// more at the end.
-fn wait_us(us: u64, mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = deadline_after_us(us);
-    while !cond() {
-        if azos_drv_sys::timebase::now() >= deadline {
-            return cond();
-        }
-        core::hint::spin_loop();
-    }
-    true
 }
 
 /// The device read back status 0 (it no longer touches the rings or the

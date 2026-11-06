@@ -59,9 +59,12 @@ pub fn bind(base: usize) -> Result<(), ()> {
     device::bind(base)
 }
 
-/// Let go of the device at `base`: only before the first [`read_seed`] has
-/// brought it up (a device with its queue set up and its buffer mapped is
-/// not given back).
+/// Let go of the device at `base`. A device the first [`read_seed`] brought
+/// up is reset first, its stop confirmed (no read is in flight: a read holds
+/// the driver for its whole length); its queue and staging buffer stay the
+/// driver's, and a later [`bind`] of the same device gives them back to it.
+/// `Err` for another device, a dead one, or one that never confirmed its
+/// reset (then latched dead).
 #[cfg(any(feature = "vf2", feature = "k1"))]
 pub fn unbind(_base: usize) -> Result<(), ()> { Err(()) }
 
@@ -69,6 +72,17 @@ pub fn unbind(_base: usize) -> Result<(), ()> { Err(()) }
 #[cfg(not(any(feature = "vf2", feature = "k1")))]
 pub fn unbind(base: usize) -> Result<(), ()> {
     device::unbind(base)
+}
+
+/// Take the device at `base` down for a system suspend, as [`unbind`] does,
+/// keeping it bound: the first read after the resume programs it again.
+#[cfg(any(feature = "vf2", feature = "k1"))]
+pub fn suspend(_base: usize) -> Result<(), ()> { Err(()) }
+
+/// See the board build's.
+#[cfg(not(any(feature = "vf2", feature = "k1")))]
+pub fn suspend(base: usize) -> Result<(), ()> {
+    device::suspend(base)
 }
 
 /// Fill `out` with bytes from the VirtIO entropy device.
@@ -95,7 +109,7 @@ mod device {
     use super::{arm_read, SeedRead};
     use super::super::{
         Dma, VirtioDev, Virtq, VIRTIO_DEV_RNG,
-        probe, init as virtio_init, virtq_init, virtq_submit, virtq_poll_with_len,
+        probe, init as virtio_init, reset_confirmed, virtq_init, virtq_reprogram, virtq_submit, virtq_poll_with_len,
         virtq_free_desc, mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
     };
     use azos_dma::Direction;
@@ -129,6 +143,10 @@ mod device {
         dma:     Dma,
         buf_bus: u64,
         ready: bool,
+        /// Reset by an unbind or a suspend after it was up: `vq` and the
+        /// mapping of `buf` are `dev`'s, and the next bring-up reprograms
+        /// them.
+        parked: bool,
         dead:  bool,
     }
 
@@ -143,6 +161,7 @@ mod device {
         dma:     Dma::fallback(),
         buf_bus: 0,
         ready: false,
+        parked: false,
         dead:  false,
     });
 
@@ -154,17 +173,44 @@ mod device {
         if st.base != 0 || unsafe { probe(base, &mut dev) }.is_err() || dev.device_id != VIRTIO_DEV_RNG {
             return Err(());
         }
+        // The kept queue is in the parked device's DMA domain.
+        if st.parked && st.dev.base as usize != base {
+            return Err(());
+        }
         st.base = base;
+        Ok(())
+    }
+
+    /// Reset a device that is up and confirm the stop.
+    fn stop(st: &mut RngState) -> Result<(), ()> {
+        if st.ready {
+            // SAFETY: the transport the bring-up programmed, still mapped.
+            if !unsafe { reset_confirmed(st.dev.base) } {
+                st.dead = true;
+                return Err(());
+            }
+            st.ready = false;
+            st.parked = true;
+        }
         Ok(())
     }
 
     pub(super) fn unbind(base: usize) -> Result<(), ()> {
         let mut st = RNG.lock();
-        if st.base != base || st.ready || st.dead {
+        if st.base != base || st.dead {
             return Err(());
         }
+        stop(&mut st)?;
         st.base = 0;
         Ok(())
+    }
+
+    pub(super) fn suspend(base: usize) -> Result<(), ()> {
+        let mut st = RNG.lock();
+        if st.base != base || st.dead {
+            return Err(());
+        }
+        stop(&mut st)
     }
 
     pub(super) fn read_seed(out: &mut [u8]) -> SeedRead {
@@ -191,22 +237,31 @@ mod device {
                 st.dead = true;
                 return SeedRead::Failed("device did not accept FEATURES_OK");
             }
-            // The device's DMA domain, and the staging buffer mapped through
-            // it (the device writes it).
-            st.dma = Dma::mmio(st.base);
-            let dma = st.dma;
-            match dma.map(st.buf.0.as_ptr(), BUF_BYTES, Direction::FromDevice) {
-                Ok(bus) => st.buf_bus = bus,
-                Err(()) => {
+            if st.parked {
+                // SAFETY: the device is reset and the queue is its own.
+                if unsafe { virtq_reprogram(&dev, 0, &mut st.vq) }.is_err() {
                     st.dead = true;
-                    return SeedRead::Failed("staging buffer not mappable");
+                    return SeedRead::Failed("request queue 0 would not program again");
                 }
-            }
-            // A device that probes but offers no request queue cannot be read:
-            // that is a failure of a present device, not an absent one.
-            if unsafe { virtq_init(&mut dev, 0, &mut st.vq, &dma) }.is_err() || dma.enable().is_err() {
-                st.dead = true;
-                return SeedRead::Failed("request queue 0 could not be set up");
+                st.parked = false;
+            } else {
+                // The device's DMA domain, and the staging buffer mapped through
+                // it (the device writes it).
+                st.dma = Dma::mmio(st.base);
+                let dma = st.dma;
+                match dma.map(st.buf.0.as_ptr(), BUF_BYTES, Direction::FromDevice) {
+                    Ok(bus) => st.buf_bus = bus,
+                    Err(()) => {
+                        st.dead = true;
+                        return SeedRead::Failed("staging buffer not mappable");
+                    }
+                }
+                // A device that probes but offers no request queue cannot be read:
+                // that is a failure of a present device, not an absent one.
+                if unsafe { virtq_init(&mut dev, 0, &mut st.vq, &dma) }.is_err() || dma.enable().is_err() {
+                    st.dead = true;
+                    return SeedRead::Failed("request queue 0 could not be set up");
+                }
             }
             // The device serves requests only after DRIVER_OK.
             unsafe {

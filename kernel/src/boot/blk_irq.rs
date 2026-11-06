@@ -90,10 +90,21 @@ azos_ktest::ktest_late! {
     }
 }
 
+/// The boot has reached the stage that wires the disk's line: a rebind after
+/// it wires the line again (`boot::driver_records`).
+static BLK_WIRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Is the disk's line wired by now (its stage has run)?
+pub(crate) fn virtio_blk_irq_stage_ran() -> bool {
+    BLK_WIRED.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// Route the block device's line and switch the driver to it. A no-op
 /// without a block device, or where the line cannot be routed (the driver
-/// then stays polled, as before).
+/// then stays polled, as before). The line is booked to the device's bus
+/// handle (`driver_records::hold`), which its unbind gives back.
 pub(crate) fn wire_virtio_blk_irq() {
+    BLK_WIRED.store(true, core::sync::atomic::Ordering::Release);
     if canary!("blk-reap-unlocked") {
         azos_drv_virtio::virtio::blk::set_reap_unlocked(true);
         kprintln!("[CANARY] blk-reap-unlocked: reapers check and set a slot's report with no lock");
@@ -127,6 +138,18 @@ pub(crate) fn wire_virtio_blk_irq() {
     if azos_drv_virtio::virtio::blk::irq_mode() {
         crate::irq_thread::register(line);
     }
+    if let Some(h) = super::driver_records::handle_at(base) {
+        super::driver_records::hold(h, |held| held.irq = Some(line));
+    }
+}
+
+/// Give back the line [`wire_virtio_blk_irq`] took: the driver stops naming
+/// it (its handler no longer recognises it), the IRQ thread lets go of it (a
+/// late event finds no binding, and its ACK unmasks nothing), and the
+/// controller masks it.
+pub(crate) fn unwire_line(line: u32) {
+    crate::irq_thread::unregister(line);
+    disable_line(line);
 }
 
 /// The SD/eMMC drivers' hooks (`mmc.rs`, `dwmshc.rs`): the caller's TID, the
@@ -212,6 +235,21 @@ pub(super) fn enable_line(gsi: u32) -> bool {
     azos_arch::irq::ioapic::set_masked(gsi, false)
 }
 
+#[cfg(target_arch = "riscv64")]
+fn disable_line(irq: u32) {
+    azos_drv_irqchip::irqchip::disable_irq(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as u32, irq);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn disable_line(intid: u32) {
+    azos_arch::irq::gic::disable_spi(intid);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn disable_line(gsi: u32) {
+    let _ = azos_arch::irq::ioapic::set_masked(gsi, true);
+}
+
 #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
 fn line_of(_slot: usize, _base: usize) -> Option<u32> {
     None
@@ -221,3 +259,6 @@ fn line_of(_slot: usize, _base: usize) -> Option<u32> {
 pub(super) fn enable_line(_line: u32) -> bool {
     false
 }
+
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+fn disable_line(_line: u32) {}

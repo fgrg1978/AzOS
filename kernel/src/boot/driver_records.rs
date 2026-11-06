@@ -56,6 +56,36 @@ impl KernelEnv<'_> {
 /// back an interrupt line, DMA or a window.
 static HELD: SpinLock<[Held; hwbus::MAX_DEVICES]> = SpinLock::new([Held::NONE; hwbus::MAX_DEVICES]);
 
+/// Change what device `h` holds.
+pub(crate) fn hold(h: Handle, f: impl FnOnce(&mut Held)) {
+    if let Some(held) = HELD.lock().get_mut(h.index()) {
+        f(held);
+    }
+}
+
+fn booked(h: Handle) -> Held {
+    HELD.lock().get(h.index()).copied().unwrap_or(Held::NONE)
+}
+
+/// The virtio-mmio device whose transport is at `base`, in any state (a
+/// rebind wires its line while the bus has it `Probing`).
+pub(crate) fn handle_at(base: usize) -> Option<Handle> {
+    hwbus::with(|b| {
+        b.iter()
+            .find(|(_, s)| s.dev.kind == hwbus::BusKind::VirtioMmio && s.dev.base == base as u64)
+            .map(|(h, _)| h)
+    })
+}
+
+/// The device's window is the driver's and it may DMA: what a probe that
+/// brought it up books, and an unbind that stopped it gives back.
+fn book_live(h: Handle, live: bool) {
+    hold(h, |held| {
+        held.window = live;
+        held.dma = live;
+    });
+}
+
 impl Env for KernelEnv<'_> {
     /// The clocks, resets, power domains and `default` pin state the device's
     /// node names (`boot::soc::bind`), before its driver is asked. Pinned
@@ -87,7 +117,7 @@ impl Env for KernelEnv<'_> {
     /// The books, and the line binding: a line the IRQ thread still has bound
     /// is held whatever the books say.
     fn held(&mut self, h: Handle, dev: &Device) -> Held {
-        let mut held = HELD.lock().get(h.index()).copied().unwrap_or(Held::NONE);
+        let mut held = booked(h);
         if held.irq.is_none() && dev.irq != 0 && azos_ipc::irq_bind::irq_bindings_of(dev.irq) != 0 {
             held.irq = Some(dev.irq);
         }
@@ -113,6 +143,10 @@ pub(crate) fn pinned(driver: &str) -> bool {
 
 const fn unbind(f: Op<Kernel>) -> Unbind<Kernel> {
     Unbind::<Kernel>::Op(f)
+}
+
+const fn power(suspend: Op<Kernel>, resume: Op<Kernel>) -> Power<Kernel> {
+    Power::<Kernel>::Op { suspend, resume }
 }
 
 /// `Busy` when the driver already holds a device (a second one is not its
@@ -155,11 +189,41 @@ const SMMUV3: Ops<Kernel> = PINNED;
 
 // ── virtio-mmio ─────────────────────────────────────────────────────────
 
-fn virtio_blk_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+/// A rebind after the boot wired the line wires it again.
+fn virtio_blk_probe(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     use azos_drv_virtio::virtio::blk;
-    blk::init_at(dev.base as usize).map_err(|_| refusal(blk::init().is_ok()))
+    blk::init_at(dev.base as usize).map_err(|_| refusal(blk::init().is_ok()))?;
+    book_live(h, true);
+    if super::virtio_blk_irq_stage_ran() {
+        super::wire_virtio_blk_irq();
+    }
+    Ok(())
 }
-const VIRTIO_BLK: Ops<Kernel> = bring_up(virtio_blk_probe);
+/// The device out of service (its commands ended, its reset confirmed),
+/// then its line given back.
+fn virtio_blk_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
+    use azos_drv_virtio::virtio::blk;
+    blk::park(dev.base as usize).map_err(|()| ProbeError::Busy)?;
+    blk::irq_mode_off();
+    if let Some(line) = booked(h).irq {
+        super::unwire_line(line);
+        hold(h, |held| held.irq = None);
+    }
+    book_live(h, false);
+    Ok(())
+}
+/// The line stays wired across a suspend: a reset device raises nothing.
+fn virtio_blk_suspend(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::blk::park(dev.base as usize).map_err(|()| ProbeError::Busy)
+}
+fn virtio_blk_resume(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::blk::init_at(dev.base as usize).map_err(|()| ProbeError::Failed)
+}
+const VIRTIO_BLK: Ops<Kernel> = Ops {
+    unbind: unbind(virtio_blk_unbind),
+    power: power(virtio_blk_suspend, virtio_blk_resume),
+    ..bring_up(virtio_blk_probe)
+};
 
 fn virtio_net_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
     use azos_drv_virtio::virtio::net;
@@ -167,15 +231,30 @@ fn virtio_net_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
 }
 const VIRTIO_NET: Ops<Kernel> = bring_up(virtio_net_probe);
 
-fn virtio_rng_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
-    azos_drv_virtio::virtio::rng::bind(dev.base as usize).map_err(|_| ProbeError::Busy)
+/// Polled: the device has no line. Nothing sets it up until the first seed
+/// read.
+fn virtio_rng_probe(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::rng::bind(dev.base as usize).map_err(|_| ProbeError::Busy)?;
+    book_live(h, true);
+    Ok(())
 }
-/// Nothing sets the device up until the first seed read, and only that
-/// device is given back.
-fn virtio_rng_unbind(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
-    azos_drv_virtio::virtio::rng::unbind(dev.base as usize).map_err(|_| ProbeError::Busy)
+fn virtio_rng_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::rng::unbind(dev.base as usize).map_err(|_| ProbeError::Busy)?;
+    book_live(h, false);
+    Ok(())
 }
-const VIRTIO_RNG: Ops<Kernel> = Ops { unbind: unbind(virtio_rng_unbind), ..bring_up(virtio_rng_probe) };
+fn virtio_rng_suspend(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    azos_drv_virtio::virtio::rng::suspend(dev.base as usize).map_err(|_| ProbeError::Busy)
+}
+/// The first read after the resume programs the device again.
+fn virtio_rng_resume(_: &mut KernelEnv<'_>, _: Handle, _: &Device) -> R {
+    Ok(())
+}
+const VIRTIO_RNG: Ops<Kernel> = Ops {
+    unbind: unbind(virtio_rng_unbind),
+    power: power(virtio_rng_suspend, virtio_rng_resume),
+    ..bring_up(virtio_rng_probe)
+};
 
 #[cfg(feature = "virtio-input")]
 fn virtio_input_probe(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {

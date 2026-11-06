@@ -600,6 +600,31 @@ pub unsafe fn virtq_reprogram(dev: &VirtioDev, queue_idx: u32, vq: &mut Virtq) -
     Ok(())
 }
 
+/// How long a reset device may take to read back status 0 (virtio 1.2
+/// section 2.4.1: the driver waits for it before it touches the queues).
+pub const RESET_WAIT_US: u64 = 100_000;
+
+/// Reset the virtio-mmio device at `base` (status 0) and wait, at most
+/// [`RESET_WAIT_US`], for it to read back 0: from then on it touches none of
+/// its queues or buffers. `false`: it never confirmed.
+///
+/// # Safety
+/// `base` is a mapped virtio-mmio window.
+pub unsafe fn reset_confirmed(base: *mut u32) -> bool {
+    mmio_write(base, VIRTIO_MMIO_STATUS, 0);
+    let deadline = azos_drv_sys::timebase::now()
+        + RESET_WAIT_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000;
+    loop {
+        if mmio_read(base, VIRTIO_MMIO_STATUS) == 0 {
+            return true;
+        }
+        if azos_drv_sys::timebase::now() >= deadline {
+            return mmio_read(base, VIRTIO_MMIO_STATUS) == 0;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 unsafe fn init_free_list(vq: &mut Virtq, queue_size: u16) {
     vq.free_head     = 0;
     vq.free_count    = queue_size;
