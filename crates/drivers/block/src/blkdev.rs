@@ -88,7 +88,7 @@ impl BlockDev for Queued {
             }
             (BlockOp::Flush, _) => crate::queue::flush(hw, owner),
             (BlockOp::Discard, BlockData::Runs(runs)) => {
-                crate::queue::discard(hw, owner, runs, azos_limits::BLK_DISCARD_BATCHED)
+                crate::queue::discard(hw, owner, req.sector, runs, azos_limits::BLK_DISCARD_BATCHED)
             }
             _ => return Err(BlockError::Invalid),
         };

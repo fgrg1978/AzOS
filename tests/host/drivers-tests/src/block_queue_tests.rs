@@ -955,14 +955,14 @@ fn preflush_proceeds_when_the_device_has_nothing_to_flush_and_stops_when_it_fail
 fn discard_reaches_a_device_that_has_it_and_is_refused_by_one_that_has_not() {
     let (q, hw) = (queue(), Fake::new(256, 8, 2));
     write(q, &hw, 8, 8, 0, 1).unwrap();
-    q.discard(&hw, 7, &[(8, 20)], false).unwrap();
+    q.discard(&hw, 7, 0, &[(8, 20)], false).unwrap();
     // 20 sectors at 8 per command.
     assert_eq!(hw.log().iter().filter(|c| c.op == HwOp::Discard).map(|c| c.sectors).collect::<Vec<_>>(), vec![8, 8, 4]);
     assert_eq!(hw.medium(8, 8), vec![0u8; 8 * SECTOR]);
 
     let (q, mut hw) = (queue(), Fake::new(64, 8, 2));
     hw.max_discard = 0;
-    assert_eq!(q.discard(&hw, 7, &[(8, 4)], false), Err(Failure::Refused(outcome::UNSUPPORTED)));
+    assert_eq!(q.discard(&hw, 7, 0, &[(8, 4)], false), Err(Failure::Refused(outcome::UNSUPPORTED)));
     let r = BlockRequest { op: REQ_DISCARD, ..BlockRequest::rw(false, 8, 4, 7) };
     assert_eq!(unsafe { q.submit(&hw, &r, core::ptr::null_mut()) }.unwrap_err(), Failure::Refused(outcome::UNSUPPORTED));
     assert_eq!(hw.starts.load(Ordering::SeqCst), 0);
@@ -974,7 +974,7 @@ fn discard_reaches_a_device_that_has_it_and_is_refused_by_one_that_has_not() {
 fn a_discard_is_cut_at_the_discard_limit_not_the_transfer_limit() {
     let (q, mut hw) = (queue(), Fake::new(512, 8, 2));
     hw.max_discard = 64;
-    q.discard(&hw, 7, &[(0, 150)], false).unwrap();
+    q.discard(&hw, 7, 0, &[(0, 150)], false).unwrap();
     assert_eq!(hw.log().iter().map(|c| c.sectors).collect::<Vec<_>>(), vec![64, 64, 22]);
     // A request over the limit is refused, not truncated.
     let r = BlockRequest { op: REQ_DISCARD, ..BlockRequest::rw(false, 0, 65, 7) };
@@ -1000,7 +1000,7 @@ fn discard_ranges_go_one_at_a_time_or_together() {
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 hw.thaw();
             });
-            q.discard(&hw, 7, &ranges, together).unwrap();
+            q.discard(&hw, 7, 0, &ranges, together).unwrap();
         });
         let mut lbas: Vec<u64> = hw.log().iter().filter(|c| c.op == HwOp::Discard).map(|c| c.lba).collect();
         lbas.sort();
@@ -1019,7 +1019,7 @@ fn discard_ranges_go_one_at_a_time_or_together() {
 fn a_discard_batch_that_fails_still_waits_for_the_rest() {
     let (q, hw) = (queue(), Fake::new(256, 8, 4));
     *hw.discard_status.lock().unwrap() = HwStatus::Unsupported;
-    let r = q.discard(&hw, 7, &[(0, 8), (16, 8), (32, 8)], true);
+    let r = q.discard(&hw, 7, 0, &[(0, 8), (16, 8), (32, 8)], true);
     assert_eq!(r, Err(Failure::Ended(Outcome::Unsupported)));
     assert!(hw.inner.lock().unwrap().slots.iter().all(|s| s.is_none()), "no ticket left behind");
 }
@@ -1233,6 +1233,16 @@ fn blkdev_over_a_bound_device_is_the_synchronous_facade_of_the_queue() {
         *hw.discard_status.lock().unwrap() = HwStatus::Io;
         assert_eq!(crate::blkdev::discard(&[(30, 4)]), Err(crate::blkdev::DiscardError::Io));
         assert_eq!(crate::blkdev::discard(&[]), Ok(()));
+        *hw.discard_status.lock().unwrap() = HwStatus::Ok;
+        // A partition's discard reaches the device at ITS addresses, not the
+        // disk's first sectors. Canary: `Queued` ignores `req.sector` of a
+        // discard: sectors 0..4 are zeroed and 10..14 are not.
+        crate::blkdev::write(0, 4, &pattern(0, 4, 3)).unwrap();
+        crate::blkdev::write(10, 4, &pattern(10, 4, 4)).unwrap();
+        let mut part = azos_drv_api::block::Part::new(crate::blkdev::Boot::observed(), 10, 20).unwrap();
+        azos_drv_api::block::BlockDev::discard(&mut part, &[(0, 4)]).unwrap();
+        assert_eq!(hw.medium(10, 4), vec![0u8; 4 * SECTOR], "the partition's sectors are discarded");
+        assert_eq!(hw.medium(0, 4), pattern(0, 4, 3), "the disk's first sectors are not");
     }
     assert!(crate::blkdev::write(300, 1, &[0u8; SECTOR]).is_err(), "past the medium");
 

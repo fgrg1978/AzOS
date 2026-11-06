@@ -46,7 +46,7 @@ macro_rules! block_dev_of_units {
                     (BlockOp::Write, BlockData::Write(buf)) => self.unit_write(first, buf).map_err(e),
                     (BlockOp::Flush, _) => self.unit_flush().map_err(e),
                     (BlockOp::Discard, BlockData::Runs(runs)) => {
-                        let blocks: Vec<(u64, u32)> = runs.iter().map(|&(s, n)| (s / 8, n / 8)).collect();
+                        let blocks: Vec<(u64, u32)> = runs.iter().map(|&(s, n)| ((req.sector + s) / 8, n / 8)).collect();
                         self.unit_discard(&blocks).map_err(e)
                     }
                     _ => Err(BlockError::Invalid),

@@ -1249,12 +1249,13 @@ impl ReqQueue {
         }
     }
 
-    /// Deallocate the sectors of `ranges` (`(first sector, sectors)`; a hint),
+    /// Deallocate the sectors of `ranges` (`(first sector, sectors)` relative to
+    /// `base`; a hint),
     /// in requests of at most the device's largest discard. `together`: up
     /// to `BLK_QUEUE_DEPTH` requests are in the device at once and the call
     /// waits for the last; otherwise one at a time. Every request is waited
     /// for before this returns, and the first failure is the answer.
-    pub fn discard(&self, hw: &dyn HwQueue, owner: u32, ranges: &[(u64, u32)], together: bool) -> Result<(), Failure> {
+    pub fn discard(&self, hw: &dyn HwQueue, owner: u32, base: u64, ranges: &[(u64, u32)], together: bool) -> Result<(), Failure> {
         let max = hw.caps().max_discard_sectors;
         if max == 0 {
             return Err(Failure::Refused(outcome::UNSUPPORTED));
@@ -1274,7 +1275,7 @@ impl ReqQueue {
                 }
                 let Some(&(first, count)) = ranges.get(ri) else { break };
                 let n = (count - roff).min(max);
-                let req = BlockRequest { op: REQ_DISCARD, ..BlockRequest::rw(false, first + roff as u64, n, owner) };
+                let req = BlockRequest { op: REQ_DISCARD, ..BlockRequest::rw(false, base + first + roff as u64, n, owner) };
                 // A full queue is answered by collecting, never by sleeping
                 // with tickets in hand (see `transfer`).
                 // SAFETY: a discard has no buffer.
@@ -1396,8 +1397,8 @@ pub fn flush(hw: &dyn HwQueue, owner: u32) -> Result<(), Failure> {
 }
 
 /// [`ReqQueue::discard`] on the bound device's queue.
-pub fn discard(hw: &dyn HwQueue, owner: u32, ranges: &[(u64, u32)], together: bool) -> Result<(), Failure> {
-    GLOBAL.discard(hw, owner, ranges, together)
+pub fn discard(hw: &dyn HwQueue, owner: u32, base: u64, ranges: &[(u64, u32)], together: bool) -> Result<(), Failure> {
+    GLOBAL.discard(hw, owner, base, ranges, together)
 }
 
 /// Tell the kernel's sink, if it registered one ([`set_timeout_sink`]).

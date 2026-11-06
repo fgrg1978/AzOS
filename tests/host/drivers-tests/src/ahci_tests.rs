@@ -1996,7 +1996,7 @@ fn a_discard_trims_exactly_its_sectors() {
     let q: &'static ReqQueue = Box::leak(Box::new(ReqQueue::new()));
     let neighbours = || [99usize, 108, 1999, 72_000].map(|s| m.disk(s, 1));
     let before = neighbours();
-    q.discard(hw, 10, &[(100, 8), (2000, 70_000)], true).expect("discard");
+    q.discard(hw, 10, 0, &[(100, 8), (2000, 70_000)], true).expect("discard");
     let mut t = m.with(|m| m.trimmed.clone());
     t.sort();
     assert_eq!(t, vec![(100, 8), (2000, 65535), (2000 + 65535, 70_000 - 65535)]);
@@ -2034,7 +2034,7 @@ fn a_disk_without_trim_is_not_asked_and_one_that_aborts_it_has_none() {
     let hw: &'static Ahci<Mock> = Box::leak(Box::new(new_ahci(&m, false)));
     assert_eq!(hw.caps().max_discard_sectors, 0);
     let q: &'static ReqQueue = Box::leak(Box::new(ReqQueue::new()));
-    assert_eq!(q.discard(hw, 10, &[(8, 8)], true), Err(Failure::Refused(azos_devif::outcome::UNSUPPORTED)));
+    assert_eq!(q.discard(hw, 10, 0, &[(8, 8)], true), Err(Failure::Refused(azos_devif::outcome::UNSUPPORTED)));
     let Claim::Tag(d) = hw.claim() else { panic!() };
     assert!(hw.start(d, &HwCmd { op: HwOp::Discard, lba: 8, sectors: 8, fua: false, segs: &[] }).is_err());
     hw.release(d);
