@@ -37,7 +37,8 @@
 //! endpoint with `WRITE`, which only its topology row grants, and hands over
 //! what its device delivered: `feed` mixes the words into the pool and
 //! credits them in full, as the boot credits the kernel's own virtio-rng
-//! read. The kernel says on the console when a feed seeded the pool.
+//! read. The first feed of a boot is said on the console, with whether it
+//! seeded the pool.
 //!
 //! The first refusal of a boot is recorded through the recorder hook -- the
 //! kernel installs one that prints `[ENTROPY] REFUSED: ring-3 read` and

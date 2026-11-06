@@ -6604,8 +6604,9 @@ a64_kbuild "qemu" || true
 # the gate's with the device placed in ring 3 and a feed every second; the
 # drivers disk carries the image and the component manager that starts it.
 #
-# Pass: the pool says it was seeded from ring 3 and the driver fed it three
-# times (every read waits for the device's interrupt, so the line was
+# Pass: the kernel says it took a feed from ring 3 (the pool may have been
+# seeded before it, by the CPU instruction or the persisted seed) and the
+# driver fed it three times (every read waits for the device's interrupt, so the line was
 # acknowledged and delivered again twice). Canary row: `irq-ack-canary` (the
 # ACK does not unmask): the first read is served, the second interrupt never
 # comes, and the driver reports the device silent.
@@ -6663,8 +6664,8 @@ rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent
         why="the kernel crashed"
     elif [ "$want" = fed ]; then
         grep -aqF '[rngdrv] FAIL' "$log" && why="$(grep -aF '[rngdrv] FAIL' "$log" | tr -d '\r' | sed -n 1p)"
-        [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] pool seeded: [0-9]+ bytes fed from ring 3' "$log" \
-            && why="the pool never said it was seeded from ring 3"
+        [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] [0-9]+ bytes fed from ring 3' "$log" \
+            && why="the pool never took a feed from ring 3"
         [ -z "$why" ] && ! grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="fewer than three feeds"
         [ -z "$why" ] && grep -aqF '[ENTROPY] pool seeded: ' "$log" && grep -aqF 'from virtio-rng' "$log" \
             && why="the kernel read the device itself"
@@ -18862,8 +18863,8 @@ CPU 5 lacks hwcap bits"
             why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
         elif [ "$want" = fed ]; then
             grep -aqF '[rngdrv] FAIL' "$log" && why="$(grep -aF '[rngdrv] FAIL' "$log" | tr -d '\r' | sed -n 1p)"
-            [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] pool seeded: [0-9]+ bytes fed from ring 3' "$log" \
-                && why="the pool never said it was seeded from ring 3"
+            [ -z "$why" ] && ! grep -aqE '\[ENTROPY\] [0-9]+ bytes fed from ring 3' "$log" \
+                && why="the pool never took a feed from ring 3"
             [ -z "$why" ] && ! grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="fewer than three feeds"
         else
             grep -aqF '[rngdrv] fed the pool 3 times' "$log" && why="three feeds with the ACK not unmasking"

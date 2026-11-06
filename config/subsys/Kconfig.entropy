@@ -31,10 +31,11 @@ choice DRV_VIRTIO_RNG_PLACEMENT
           the device write into a DMA memory object (`DEVICE_DMA_MAP`), takes
           its interrupt on a port (`PORT_SRC_IRQ`) and feeds the pool through
           the `entropy` endpoint every DRV_VIRTIO_RNG_FEED_S seconds; it
-          finds the device in the introspection tree (Kconfig INSPECT). The
-          pool is seeded when it first feeds: what is drawn before (the stack
-          canary, the network secrets) rests on the other sources (the CPU
-          instruction, the TPM, the persisted seed).
+          finds the device in the introspection tree (Kconfig INSPECT). With
+          no other source the pool is seeded only when it first feeds: what
+          is drawn before (the stack canary, the network secrets) rests on
+          the other sources (the CPU instruction, the TPM, the persisted
+          seed). Its bytes are credited in full, as the kernel driver's are.
 
 endchoice
 
