@@ -42,7 +42,7 @@
 //!        blocked_on/{...}, rt/{...},
 //!        balance/{...}}
 //! memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
-//!         quota_refusals, domains}
+//!         quota_refusals, budget_growths, domains}
 //! decisions/{recorded, deny_dropped}
 //! system/, fs/, drivers/, chaos/                                            (inspect_views.rs)
 //! devices/<handle>/{name, identity, state, driver, base, size, irq}          (hwbus.rs)
@@ -117,6 +117,7 @@ struct Ids {
     pages_used: NodeId,
     peak_user_pages: NodeId,
     quota_refusals: NodeId,
+    budget_growths: NodeId,
     domains: NodeId,
     recorded: NodeId,
     deny_dropped: NodeId,
@@ -436,6 +437,7 @@ fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error>
     let pages_used = b.u64(mem, "pages_used", 0)?;
     let peak_user_pages = b.u64(mem, "peak_user_pages", 0)?;
     let quota_refusals = b.u64(mem, "quota_refusals", 0)?;
+    let budget_growths = b.u64(mem, "budget_growths", 0)?;
     let domains = b.u64(mem, "domains", 0)?;
 
     let dec = b.dir(root, "decisions")?;
@@ -486,7 +488,7 @@ fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error>
 
     Ok(Ids {
         refreshes, ready, blocked, running, runq, blocked_on, rt, balance, moved, rt_load, pages_total, pages_free,
-        pages_used, peak_user_pages, quota_refusals, domains, recorded, deny_dropped,
+        pages_used, peak_user_pages, quota_refusals, budget_growths, domains, recorded, deny_dropped,
     })
 }
 
@@ -541,6 +543,7 @@ impl State {
         put(ids.pages_used, total.saturating_sub(free) as u64);
         put(ids.peak_user_pages, azos_sched::mm_peak_global() as u64);
         put(ids.quota_refusals, azos_sched::mm_quota_refusals() as u64);
+        put(ids.budget_growths, azos_sched::mm_budget_growths() as u64);
         put(ids.domains, azos_sched::domain::count() as u64);
         put(ids.recorded, azos_decision::total());
         put(ids.deny_dropped, azos_decision::deny_dropped_total());

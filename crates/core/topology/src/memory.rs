@@ -125,6 +125,28 @@ pub enum MemoryRefusal {
         /// Pages free when the pool was reserved.
         free: u64,
     },
+    /// Row `task` declares `mem_pages_max` on a `mem = "locked"` row: a
+    /// locked row's memory is reserved whole, it never grows.
+    CeilingOnLocked {
+        /// Index of the row in [`Topology::tasks`].
+        task: u16,
+    },
+    /// Row `task`'s `mem_pages_max` is below its base (`mem_pages`, or the
+    /// profile default): a ceiling under the limit grows nothing.
+    CeilingBelowBase {
+        /// Index of the row in [`Topology::tasks`].
+        task: u16,
+    },
+    /// Row `task`'s `mem_pages_max`, over its instances, is more than the free
+    /// pages: a ceiling no memory could ever hold bounds nothing.
+    CeilingPastMemory {
+        /// Index of the row in [`Topology::tasks`].
+        task: u16,
+        /// Pages of the ceiling over every instance.
+        ceiling: u64,
+        /// Pages the allocator has free.
+        free: u64,
+    },
     /// Row `task` asks for a `mib` MiB 2 MiB-leaf region and the allocator
     /// has no free, 2 MiB-aligned contiguous run of that size.
     HugeRegion {
@@ -186,6 +208,9 @@ pub struct RowMem<'a> {
     /// [`TaskSpec::partition_id`] of the row: the hardware resource partition
     /// the Domain of a program of this row runs in (`0` = none declared).
     pub partition_id: u16,
+    /// [`TaskSpec::mem_pages_max`] of the row: how far requests may grow the
+    /// limit, in pages (`0` = never).
+    pub ceiling: u32,
 }
 
 impl TaskSpec<'_> {
@@ -242,6 +267,21 @@ impl<'a> Topology<'a> {
                 * n;
             r.rows += 1;
             r.instances += n as u32;
+            // The base is what is counted; the ceiling, how far requests may
+            // grow it, is checked against the base and the memory alone.
+            if t.mem_pages_max != 0 {
+                let task = i as u16;
+                if t.mem_locked {
+                    return Err(AdmissionError::Memory(MemoryRefusal::CeilingOnLocked { task }));
+                }
+                if (t.mem_pages_max as u64) * n < pages {
+                    return Err(AdmissionError::Memory(MemoryRefusal::CeilingBelowBase { task }));
+                }
+                let ceiling = t.mem_pages_max as u64 * n;
+                if ceiling > free_pages {
+                    return Err(AdmissionError::Memory(MemoryRefusal::CeilingPastMemory { task, ceiling, free: free_pages }));
+                }
+            }
             if t.mem_huge_mib != 0 {
                 if !t.mem_locked {
                     return Err(AdmissionError::Memory(MemoryRefusal::HugeWithoutLocked { task: i as u16 }));
@@ -298,6 +338,7 @@ impl<'a> Topology<'a> {
             huge_mib: t.mem_huge_mib,
             kmem_kib: t.kmem_kib,
             partition_id: t.partition_id,
+            ceiling: t.mem_pages_max,
         })
     }
 }

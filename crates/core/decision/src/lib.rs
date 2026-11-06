@@ -384,6 +384,10 @@ pub enum Rule {
     /// installer's journal records which index it keeps, the boot-time apply
     /// which one it judged the security floors by.
     PackageIndex,
+    /// A request (`mmap`, a `brk` growth) grew a Domain's budget past its
+    /// base, within its row's `mem_pages_max`, or was refused at that ceiling
+    /// (`azos_sched::domain::charge_request`).
+    BudgetGrow,
 }
 
 impl Rule {
@@ -1291,6 +1295,13 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["entries", "serial", "event"],
         rejected_if_yes: "-",
         rejected_if_no: "keep the index the signer last published: the one offered is older than the one the device recorded, or its body differs at the same serial",
+    },
+    RuleInfo {
+        name: "budget-grow",
+        subject: "domain",
+        fields: ["pages", "limit", "ceiling"],
+        rejected_if_yes: "refuse the request at the base: the row's signed ceiling holds it",
+        rejected_if_no: "grow past the ceiling: the signed row bounds the domain there",
     },
 ];
 

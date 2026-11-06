@@ -481,8 +481,9 @@ fn mem_of(f: crate::mmu::PteFlags) -> MemType {
     else { MemType::WB }
 }
 
-/// The flag bits of [`Riscv64::pte_make_leaf`] but `VALID`. The memory type becomes the Svpbmt field when the extension
-/// is on; Sv39 has no other cacheability bit (PMAs govern it).
+/// The flag bits of [`Riscv64::pte_make_leaf`] but `VALID`. The memory type
+/// becomes the Svpbmt field when the extension is on; Sv39 has no other
+/// cacheability bit (PMAs govern it).
 #[inline]
 fn riscv_leaf_flags_no_valid(perms: PagePerms) -> u64 {
     let mut flags = crate::mmu::PteFlags::empty();

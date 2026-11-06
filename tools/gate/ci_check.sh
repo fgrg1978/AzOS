@@ -12641,6 +12641,29 @@ host_job zpool_host_canary_row "anon: fork hold, restore begun before canary" fo
 # and the released page gets a leaf.
 host_job host_canary_row "anon: install after release canary" syscall-tests mm-install-after-release-canary \
     an_install_after_its_release_is_refused
+# A kernel copy whose fault finds the page a sibling installed after its miss
+# looks at the leaf again (vmm::translate_user_reserved).
+# uaccess-mapped-refused-canary: AlreadyMapped is a refusal, the copy fails.
+host_job host_canary_row "uaccess: sibling installed after the miss canary" syscall-tests uaccess-mapped-refused-canary \
+    a_kernel_copy_reaches_a_page_a_sibling_installed_after_its_miss
+# A refusing leaf the slot does not name is judged by the access at the first
+# look (pager::fault_once). fault-foreign-retry-canary: it faults for ever.
+host_job host_canary_row "fault: foreign refusing leaf canary" syscall-tests fault-foreign-retry-canary \
+    a_refusing_leaf_the_slot_does_not_name_is_the_tasks_fault
+# A request grows the Domain's budget past its base up to the row's
+# mem_pages_max, never past it (PageBudget::charge_request, sys_brk).
+# budget-ceiling-ignored-canary: the ceiling holds nothing.
+host_job host_canary_row "budget: grow up to the ceiling canary" syscall-tests budget-ceiling-ignored-canary \
+    a_heap_grows_past_its_base_up_to_the_ceiling
+host_job host_canary_row "budget: grow up to the ceiling (model) canary" mm-tests budget-ceiling-ignored-canary \
+    a_request_grows_the_limit_by_itself_up_to_the_ceiling
+# The fault entry asks the pagers (vmm::demand_fault). demand-region-canary:
+# they are never asked, so a first touch and a kernel copy into fresh memory
+# are not resolved.
+host_job host_canary_row "demand: fault entry commits canary" syscall-tests demand-region-canary \
+    the_fault_entry_commits_a_region_page_with_its_permissions
+host_job host_canary_row "demand: kernel copy commits canary" syscall-tests demand-region-canary \
+    a_kernel_copy_into_fresh_mmap_memory_commits_it
 # The program break is an anonymous mapping (sys_brk over pager::reserve): a
 # heap page the reclaimer stores comes back through its slot.
 # mm-pte-truth-canary: the leaf is believed and the page comes back as zeros.

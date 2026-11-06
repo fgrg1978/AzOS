@@ -11,3 +11,4 @@ description = "Host stand-in for azos_mm, used only by tests/host/trap-tests."
 budget-racy-charge-canary = []
 storm-no-resume-canary = []
 storm-ignore-locked-canary = []
+budget-ceiling-ignored-canary = []

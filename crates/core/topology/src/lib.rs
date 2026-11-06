@@ -199,7 +199,7 @@ pub enum RowKind {
     /// A key of `[sched]`: `isolcpus`.
     Sched,
     /// A key of a `[task.NAME]` row: `shadow`, `isolated`, `kmem_kib`, `principal`,
-    /// `security_boundary`, `partition_id`.
+    /// `security_boundary`, `partition_id`, `mem_pages_max`.
     Task,
     /// A `[policy.NAME]` row: name unique per topology, and one row per
     /// Domain and scope.

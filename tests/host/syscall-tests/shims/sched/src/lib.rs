@@ -179,40 +179,44 @@ pub fn shim_set_brk(v: u64) {
 /// What the tests here can therefore prove is the WIRING in the pulled
 /// `handlers.rs`: that `sys_mmap` charges before allocating and refuses over
 /// budget, and that `sys_munmap` gives back what it actually freed. The real
-/// counter lives on `Task`; this stands in for it.
-static USER_PAGES: AtomicU32 = AtomicU32::new(0);
-static USER_PAGE_LIMIT: AtomicU32 = AtomicU32::new(0);
+/// counter lives on the task's Domain; this stands in for it, and is the
+/// real `PageBudget` (`crates/core/mm/src/budget.rs`, pulled by the mm shim).
+static BUDGET: azos_mm::budget::PageBudget = azos_mm::budget::PageBudget::new();
 
 /// Test-only control surface — not part of the real `azos_sched` API.
 pub fn shim_set_page_limit(limit: u32) {
     shim_assert_serial("shim_set_page_limit");
     shim_assert_serial("page_limit");
-    USER_PAGE_LIMIT.store(limit, Ordering::SeqCst);
-    USER_PAGES.store(0, Ordering::SeqCst);
+    BUDGET.set_limit(limit);
+    BUDGET.reset();
+}
+
+/// Test-only control surface: how far requests may grow the current task's
+/// limit (the row's `mem_pages_max`, as `scheduler::install_domain_mem` sets
+/// it). After [`shim_set_page_limit`], which drops it.
+pub fn shim_set_page_ceiling(ceiling: u32) {
+    BUDGET.set_ceiling(ceiling);
+}
+
+/// Test-only control surface: `(limit, pages the limit grew by)`.
+pub fn shim_page_limit_grown() -> (u32, u32) {
+    (BUDGET.limit(), BUDGET.grown())
 }
 
 /// Test-only control surface: frames charged to the current task.
 pub fn shim_user_pages() -> u32 {
-    USER_PAGES.load(Ordering::SeqCst)
+    BUDGET.used()
 }
 
 pub fn mm_charge(pages: u32) -> bool {
     shim_assert_serial("mm_charge");
-    if pages == 0 { return true; }
-    let limit = USER_PAGE_LIMIT.load(Ordering::SeqCst);
-    let next = USER_PAGES.load(Ordering::SeqCst).saturating_add(pages);
-    if limit != 0 && next > limit {
-        return false;
-    }
-    USER_PAGES.store(next, Ordering::SeqCst);
-    true
+    BUDGET.charge(pages)
 }
 
-/// `scheduler/budget.rs`'s request charge: the shim's budget has no ceiling,
-/// so a request is a [`mm_charge`] (`PageBudget::charge_request` has its rows
-/// in mm-tests).
-pub fn mm_charge_request(pages: u32, _may_grow: bool) -> bool {
-    mm_charge(pages)
+/// `scheduler/budget.rs`'s request charge over the same budget.
+pub fn mm_charge_request(pages: u32, may_grow: bool) -> bool {
+    shim_assert_serial("mm_charge_request");
+    BUDGET.charge_request(pages, may_grow).is_ok()
 }
 
 static CHARGE_TABLES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -228,7 +232,7 @@ fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
     match what {
         TableCharge::Take => mm_charge(1),
         TableCharge::Promised => {
-            USER_PAGES.fetch_add(1, Ordering::SeqCst);
+            BUDGET.charge_restore(1);
             true
         }
         TableCharge::Return => {
@@ -249,9 +253,7 @@ pub fn shim_charge_tables(on: bool) {
 }
 
 pub fn mm_discharge(pages: u32) {
-    if pages == 0 { return; }
-    let cur = USER_PAGES.load(Ordering::SeqCst);
-    USER_PAGES.store(cur.saturating_sub(pages), Ordering::SeqCst);
+    BUDGET.discharge(pages);
 }
 
 /// Memory admission: a discharge posted for `tid` from another task. The stand-in
@@ -1592,8 +1594,8 @@ pub fn shim_reset() {
     USER_BRK.store(0, Ordering::SeqCst);
     USER_MMAP_LOW.store(0, Ordering::SeqCst);
     CURRENT_IS_LINUX.store(false, Ordering::SeqCst);
-    USER_PAGES.store(0, Ordering::SeqCst);
-    USER_PAGE_LIMIT.store(0, Ordering::SeqCst);
+    BUDGET.set_limit(0);
+    BUDGET.reset();
     SCHED_CLASS.store(3, Ordering::SeqCst);
     OTHER_PT.lock().unwrap_or_else(|e| e.into_inner()).clear();
     OTHER_PAGES.store(0, Ordering::SeqCst);

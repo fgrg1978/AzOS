@@ -2480,8 +2480,10 @@ azos_ktest::ktest_late! {
 // A page of a mapping has an empty leaf until its first touch and again after
 // its release, on every ISA (no page-table word carries a reservation), and a
 // fault on a released page is a hole: nothing is installed, and the pages the
-// mapping still holds keep their bytes. Canary by hand: `pager::release_range`
-// keeping the mapping record, so the fault installs a zero page.
+// mapping still holds keep their bytes. Its host twin is syscall-tests
+// pte_truth.rs `a_released_page_of_a_mapping_is_a_hole`. Canaries by hand:
+// `pager::release_range` keeping the mapping record (the fault installs a zero
+// page), and `pager::reserve` committing the range whole (`untouched` fails).
 azos_ktest::ktest_late! {
     fn anon_released_page_is_a_hole_on_every_isa() {
         use azos_mm::{addr, aspace, pager, vmm};
@@ -2498,7 +2500,10 @@ azos_ktest::ktest_late! {
         let made = pager::reserve(a, BASE, BASE + 4 * page, true).is_ok()
             && pager::resolve_fault(a, BASE + page).is_ok()
             && pager::resolve_fault(a, BASE).is_ok();
-        let untouched = empty(BASE + 2 * page);
+        // Two touches, two pages: nothing else of the mapping was committed,
+        // and the untouched page's word is empty (a range committed whole, or
+        // a word written at the reservation, fails here).
+        let untouched = empty(BASE + 2 * page) && pager::space_pages(a) == (4, 2);
         let kept = vmm::translate(pt, BASE + page);
         if let Some(f) = kept {
             // SAFETY: the page's frame, through the direct map, while it is mapped.
@@ -2518,7 +2523,7 @@ azos_ktest::ktest_late! {
             return Err("the first touches were not resolved");
         }
         if !untouched {
-            return Err("an untouched page of a mapping has a word in its leaf");
+            return Err("an untouched page of a mapping was committed or has a word in its leaf");
         }
         if !released || !hole || !cleared {
             return Err("a fault on a released page was resolved");

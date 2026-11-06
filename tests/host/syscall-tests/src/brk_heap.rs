@@ -22,6 +22,12 @@
 //   and no mapping record. Canary: `sys_brk` ignoring `mmap_precommit`: red.
 // * A query, a shrink and a break past the mmap floor answer the break as it
 //   is.
+// * A row's ceiling (`mem_pages_max`, `shim_set_page_ceiling` here): a growth
+//   past the base is had up to the ceiling, the limit growing by the request,
+//   and refused whole past it; a real-time task's never grows. Canary
+//   `budget-ceiling-ignored-canary` (the ceiling holds nothing): red at "past
+//   the ceiling"; by hand, `request_may_grow` answering `true`: red at "real
+//   time never grows".
 // * With the pool on (`MM_RECLAIM_COMPRESS`, its gate row): a heap page the
 //   reclaimer stores leaves a marker in its slot and an empty leaf, and its
 //   next touch restores its bytes. Canary: `mm-pte-truth-canary` (the leaf
@@ -174,5 +180,34 @@ fn a_heap_page_the_reclaimer_stores_comes_back_through_its_slot() {
     // SAFETY: as above.
     let page = unsafe { core::slice::from_raw_parts(azos_mm::addr::phys_to_virt(back) as *const u8, PAGE_SIZE) };
     assert!(page.iter().all(|&b| b == 0xB7), "the stored page, not a zero one");
+    done(pt);
+}
+
+#[test]
+fn a_heap_grows_past_its_base_up_to_the_ceiling() {
+    let _g = serial();
+    let pt = space();
+    azos_sched::shim_set_page_limit(4);
+    azos_sched::shim_set_page_ceiling(10);
+    assert_eq!(sys_brk(BRK + 4 * PG), (BRK + 4 * PG) as i64, "within the base");
+    assert_eq!(sys_brk(BRK + 7 * PG), (BRK + 7 * PG) as i64, "past the base, within the ceiling");
+    assert_eq!(azos_sched::shim_page_limit_grown(), (7, 3), "the limit grew by the request");
+    assert_eq!(sys_brk(BRK + 11 * PG), (BRK + 7 * PG) as i64, "past the ceiling: refused whole");
+    assert_eq!(azos_sched::shim_user_pages(), 7, "nothing of it charged");
+    assert_eq!(sys_brk(BRK + 10 * PG), (BRK + 10 * PG) as i64, "up to the ceiling");
+    assert_eq!(azos_sched::shim_page_limit_grown(), (10, 6));
+    done(pt);
+}
+
+#[test]
+fn a_real_time_heap_does_not_grow() {
+    let _g = serial();
+    let pt = space();
+    azos_sched::shim_set_page_limit(4);
+    azos_sched::shim_set_page_ceiling(10);
+    azos_sched::shim_set_sched_class(1);
+    assert_eq!(sys_brk(BRK + 6 * PG), BRK as i64, "real time never grows");
+    assert_eq!(azos_sched::shim_user_pages(), 0);
+    azos_sched::shim_set_sched_class(3);
     done(pt);
 }

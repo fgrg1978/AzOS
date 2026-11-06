@@ -335,14 +335,14 @@ pub fn record_refusal(site: u8, tid: u32) {
 pub fn resolve_mem(image: &'static str, fallback: Option<&'static str>) -> (azos_sched::MemSpec, &'static str) {
     let default = azos_topology::RING3_DEFAULT_PAGES;
     let Some(topo) = azos_topology::get() else {
-        return (azos_sched::MemSpec { limit: 0, locked: false, row: 0, instances: 0, huge_mib: 0, kmem_kib: 0, partition: 0 }, image);
+        return (azos_sched::MemSpec { limit: 0, locked: false, row: 0, instances: 0, huge_mib: 0, kmem_kib: 0, partition: 0, ceiling: 0 }, image);
     };
     match topo.row_mem(image.as_bytes(), fallback.map(str::as_bytes), default) {
         Some(m) => {
             let row = if m.row == image.as_bytes() { image } else { fallback.unwrap_or(image) };
             (mem_spec(m), row)
         }
-        None => (azos_sched::MemSpec { limit: budget_frames(default), locked: false, row: 0, instances: 0, huge_mib: 0, kmem_kib: 0, partition: 0 }, image),
+        None => (azos_sched::MemSpec { limit: budget_frames(default), locked: false, row: 0, instances: 0, huge_mib: 0, kmem_kib: 0, partition: 0, ceiling: 0 }, image),
     }
 }
 
@@ -360,6 +360,7 @@ fn budget_frames(units: u32) -> u32 {
 fn mem_spec(m: azos_topology::RowMem<'_>) -> azos_sched::MemSpec {
     azos_sched::MemSpec {
         limit: budget_frames(m.limit),
+        ceiling: budget_frames(m.ceiling),
         locked: m.locked,
         row: m.index + 1,
         instances: m.instances,

@@ -181,6 +181,7 @@ pub fn emit_caps<W: Write>(topo: &Topology<'_>, binding: &Binding, out: &mut W) 
         if let Some(p) = t.principal { writeln!(out, "principal = \"{}\"", p.as_str())?; }
         if t.security_boundary { writeln!(out, "security_boundary = true")?; }
         if t.partition_id != 0 { writeln!(out, "partition_id = {}", t.partition_id)?; }
+        if t.mem_pages_max != 0 { writeln!(out, "mem_pages_max = {}", t.mem_pages_max)?; }
         let imports = topo.imports_of(t);
         if !imports.is_empty() {
             write!(out, "imports = [")?;
@@ -462,6 +463,7 @@ pub fn first_difference(a: &Topology<'_>, b: &Topology<'_>) -> Option<&'static s
         if x.principal != y.principal { return Some("task principal"); }
         if x.security_boundary != y.security_boundary { return Some("task security_boundary"); }
         if x.partition_id != y.partition_id { return Some("task partition_id"); }
+        if x.mem_pages_max != y.mem_pages_max { return Some("task mem_pages_max"); }
         if topo_imports_differ(a, b, x, y) { return Some("task imports"); }
         if topo_exports_differ(a, b, x, y) { return Some("task exports"); }
         let (cx, cy) = (a.caps_of(x), b.caps_of(y));

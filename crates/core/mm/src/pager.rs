@@ -1789,9 +1789,14 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     let res = slot::resolve(word, leaf).ok_or(KernelError::InvalidArg)?;
     let stored = match res {
         Resolve::Present => return Ok(Step::Mapped),
-        // Looked at again: another thread's install reads as `Present` then,
-        // and a leaf no install made stays as it is (`slot::Resolve::Foreign`).
-        Resolve::Foreign => return Ok(Step::Again),
+        // A leaf the slot does not name is never replaced
+        // (`slot::Resolve::Foreign`), and it is not the pager's: at the first
+        // look the caller judges it by the access (a refusing leaf kills, as
+        // for any mapped page), after a raced attempt the access retries.
+        // Canary `fault-foreign-retry-canary`: it is looked at again, and
+        // a refusing leaf faults for ever.
+        Resolve::Foreign if cfg!(feature = "fault-foreign-retry-canary") => return Ok(Step::Again),
+        Resolve::Foreign => return Ok(Step::Mapped),
         Resolve::Wait => {
             MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
             return Ok(Step::Again);

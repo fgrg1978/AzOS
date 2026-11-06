@@ -460,7 +460,7 @@ pub fn spawn_prepare(
     // the hart when the child consumes its hand-off.
     crate::pac::draw(idx);
     // Checked against `mem.limit` above, so this cannot refuse.
-    let _ = crate::scheduler::set_task_mem(idx, mem.limit, mem.locked, ctx.frames);
+    let _ = crate::scheduler::set_task_mem(idx, mem.limit, mem.ceiling, mem.locked, ctx.frames);
     crate::scheduler::set_task_kmem_kib(idx, mem.kmem_kib);
     crate::scheduler::set_task_partition(idx, mem.partition);
     crate::scheduler::set_task_mem_row(idx, mem.row);

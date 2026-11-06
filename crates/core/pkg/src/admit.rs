@@ -155,9 +155,11 @@ fn merge<'a>(v: &Verified<'_, 'a>, rows: &'a [u8], topo: &mut Topology<'a>) -> R
         if rt && !signer.rt {
             return Err(Refusal::RealTime(r as u16));
         }
-        // The ceiling is the row's whole budget: every instance, and the
-        // 2 MiB leaves of a huge region (256 pages a MiB) as well.
-        let one = if task.mem_pages == 0 { azos_topology::RING3_DEFAULT_PAGES } else { task.mem_pages } as u64;
+        // The ceiling is the row's whole budget: every instance, as far as its
+        // requests may grow it (`mem_pages_max`), and the 2 MiB leaves of a
+        // huge region (256 pages a MiB) as well.
+        let base = if task.mem_pages == 0 { azos_topology::RING3_DEFAULT_PAGES } else { task.mem_pages } as u64;
+        let one = base.max(task.mem_pages_max as u64);
         let frames = (one + task.mem_huge_mib as u64 * 256) * task.instance_count() as u64;
         if frames > signer.mem_pages_max as u64 {
             return Err(Refusal::Frames(r as u16));

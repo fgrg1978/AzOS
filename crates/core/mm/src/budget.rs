@@ -550,7 +550,8 @@ impl PageBudget {
                 return Err(RequestRefused::Limit);
             }
             let next = cur.saturating_add(pages);
-            if next > ceiling {
+            // Canary `budget-ceiling-ignored-canary`: the ceiling holds nothing.
+            if next > ceiling && !cfg!(feature = "budget-ceiling-ignored-canary") {
                 return Err(RequestRefused::Ceiling);
             }
             match self.used.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed) {
@@ -576,6 +577,10 @@ impl PageBudget {
     /// Pages the limit grew by past its declared base.
     #[must_use]
     pub fn grown(&self) -> u32 { self.grown.load(Ordering::Relaxed) }
+
+    /// How far requests may grow the limit (at or below it: never).
+    #[must_use]
+    pub fn ceiling(&self) -> u32 { self.ceiling.load(Ordering::Relaxed) }
 
     /// Give `pages` frames back. Mirrors `mm_discharge`. A saturating atomic
     /// subtract: concurrent discharges and charges never lose an update.

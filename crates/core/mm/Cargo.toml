@@ -118,6 +118,18 @@ fork-install-recheck-canary = []
 # after the release: `syscall-tests` pte_truth.rs
 # `an_install_after_its_release_is_refused` fails.
 mm-install-after-release-canary = []
+# Host-suite canary: a kernel copy takes the pager's `AlreadyMapped` (a page a
+# sibling installed after the copy's miss) for a refusal: `syscall-tests`
+# pte_truth.rs `a_kernel_copy_reaches_a_page_a_sibling_installed_after_its_miss` fails.
+uaccess-mapped-refused-canary = []
+# Host-suite canary: a leaf the slot does not name is looked at again, so a
+# refusing one faults for ever: `syscall-tests` pte_truth.rs
+# `a_refusing_leaf_the_slot_does_not_name_is_the_tasks_fault` fails.
+fault-foreign-retry-canary = []
+# Host-suite canary: a request grows the budget past the row's ceiling:
+# `mm-tests` `a_request_grows_the_limit_by_itself_up_to_the_ceiling` and
+# `syscall-tests` brk_heap.rs `a_heap_grows_past_its_base_up_to_the_ceiling` fail.
+budget-ceiling-ignored-canary = []
 # Host-suite canary: the install trusts the entry its walk found before the
 # lock, so a block promoted (and split) meanwhile gets a 4 KiB leaf in a table
 # that is not the page's: `syscall-tests` thp_vmm.rs

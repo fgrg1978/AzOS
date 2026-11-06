@@ -270,11 +270,9 @@ fn mmu_error_to_kernel_error(e: MmuError) -> KernelError {
 ///
 /// What it closes: an instruction fetch or a load/store at VA 0 is the most
 /// common bug there is (null pointer / jump through a null function
-/// pointer). Before this, the fault path tried COW, then demand paging, and
-/// a demand-marked PTE at a low VA — `sys_alloc_demand` bases its
-/// reservation at `update_user_brk(0)`, which is 0 for a task whose brk was
-/// never initialized — made the *demand* attempt SUCCEED: the kernel mapped
-/// a zero page over the null pointer and let ring 3 keep running on it.
+/// pointer). Before this, a reservation at a low VA (a break that was never
+/// initialized is 0) let the first-touch path SUCCEED there: the kernel
+/// mapped a zero page over the null pointer and let ring 3 keep running on it.
 /// A null dereference then executes zeros silently instead of killing the
 /// task. On a robot that is a control task that never stops and never
 /// reports; a dead task at least trips the supervisor.
@@ -1645,13 +1643,40 @@ pub fn translate_user(pt_phys: usize, vaddr: usize, write: bool) -> Option<usize
 /// of a mapping: `mmap`, `brk`) not touched yet is committed here, as
 /// the fault the copy would have taken from ring 3 would commit it — a
 /// `read()` into fresh `mmap` memory must not answer EFAULT — and the
-/// translation is then done afresh.
+/// translation is then done afresh. A page a leaf maps by the time the pager
+/// looks (`AlreadyMapped`: a sibling thread installed it after the miss) is
+/// looked at again too; the leaf decides.
+///
+/// Canary `uaccess-mapped-refused-canary`: `AlreadyMapped` is a refusal, so
+/// the copy fails (EFAULT) on a page a sibling just installed.
 #[cold]
 #[inline(never)]
 fn translate_user_reserved(pt_phys: usize, vaddr: usize, write: bool) -> Option<usize> {
-    demand_fault(pt_phys, crate::aspace::current_with_root(pt_phys), vaddr).ok()?;
+    #[cfg(not(target_os = "none"))]
+    {
+        let h = MISS_HOOK.lock().take();
+        if let Some(h) = h {
+            h();
+        }
+    }
+    match demand_fault(pt_phys, crate::aspace::current_with_root(pt_phys), vaddr) {
+        Ok(()) => {}
+        Err(KernelError::AlreadyMapped) if !cfg!(feature = "uaccess-mapped-refused-canary") => {}
+        Err(_) => return None,
+    }
     let (pte, mask) = user_leaf(pt_phys, vaddr)?;
     user_leaf_ok(pt_phys, vaddr, pte, mask, write)
+}
+
+/// Host suites: run once between a kernel copy's miss and its fault (a
+/// sibling's install in that window).
+#[cfg(not(target_os = "none"))]
+static MISS_HOOK: azos_sync::SpinLock<Option<fn()>> = azos_sync::SpinLock::new(None);
+
+/// Host suites: arm [`MISS_HOOK`].
+#[cfg(not(target_os = "none"))]
+pub fn shim_set_miss_hook(hook: Option<fn()>) {
+    *MISS_HOOK.lock() = hook;
 }
 
 /// The physical address of `vaddr` when its user page is ALREADY writable:
@@ -2876,9 +2901,10 @@ fn demand_fault(pt: usize, space: Option<crate::aspace::SpaceRef>, fault_addr: u
     if wait_out_parked_fault(pt, fault_addr) {
         return Ok(());
     }
+    // Canary `demand-region-canary`: the pagers are never asked.
     match space {
-        Some(r) => crate::pager::resolve_fault(r, fault_addr),
-        None => Err(KernelError::NotMapped),
+        Some(r) if !cfg!(feature = "demand-region-canary") => crate::pager::resolve_fault(r, fault_addr),
+        _ => Err(KernelError::NotMapped),
     }
 }
 

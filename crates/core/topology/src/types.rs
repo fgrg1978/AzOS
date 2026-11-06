@@ -529,6 +529,13 @@ pub struct TaskSpec<'a> {
     /// row's Domain runs in, 1 to 65535; 0 (absent) for none. Only a
     /// `security_boundary` row has one.
     pub partition_id: u16,
+    /// `mem_pages_max = N` in the row (CAPS.TOML format 8): how far a request
+    /// (`mmap`, a `brk` growth) may grow the row's budget past its base
+    /// (`mem_pages`, or the profile default), in 4 KiB pages; 0 (absent): it
+    /// never grows. Admission counts the base; each growth leaves a record.
+    /// At least the base, within the memory admission sees, and never on a
+    /// locked row ([`Topology::memory_admission`]).
+    pub mem_pages_max: u32,
 }
 
 /// The syscall table a row's image is run against.
@@ -639,6 +646,7 @@ impl<'a> TaskSpec<'a> {
             principal: None,
             security_boundary: false,
             partition_id: 0,
+            mem_pages_max: 0,
         }
     }
 
@@ -4050,6 +4058,7 @@ impl<'a> Topology<'a> {
             // so (`set_last_task_boundary`).
             security_boundary: false,
             partition_id: 0,
+            mem_pages_max: 0,
         };
         self.tasks_len += 1;
         Ok(())
@@ -4295,6 +4304,16 @@ impl<'a> Topology<'a> {
             return false;
         }
         self.tasks[self.tasks_len as usize - 1].kmem_kib = kib;
+        true
+    }
+
+    /// Declare how far requests may grow the most recently pushed task's budget
+    /// ([`TaskSpec::mem_pages_max`]). `false` when no task has been pushed.
+    pub fn set_last_task_mem_pages_max(&mut self, pages: u32) -> bool {
+        if self.tasks_len == 0 {
+            return false;
+        }
+        self.tasks[self.tasks_len as usize - 1].mem_pages_max = pages;
         true
     }
 

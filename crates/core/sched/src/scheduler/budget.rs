@@ -320,7 +320,11 @@ pub fn mm_charge_request(pages: u32, may_grow: bool) -> bool {
     let idx = my_idx();
     if idx == usize::MAX { return true; }
     match crate::domain::charge_request(TASKS[idx].domain(), pages, may_grow) {
-        None => true,
+        // As `mm_charge`: a key that names no Domain is refused.
+        None => {
+            MM_QUOTA_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            false
+        }
         Some(Ok((granted, used))) => {
             MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
             if let azos_mm::budget::Granted::Grew(_) = granted {
@@ -523,6 +527,15 @@ pub fn current_mem_locked() -> bool {
     current_mem_policy().1
 }
 
+/// The growth ceiling of the current task's Domain (its row's `mem_pages_max`;
+/// 0 = it never grows): what an exec that keeps the task's budget, and a fork
+/// child, keep.
+pub fn current_mem_ceiling() -> u32 {
+    let idx = my_idx();
+    if idx >= MAX_TASKS { return 0; }
+    crate::domain::ceiling(TASKS[idx].domain())
+}
+
 /// `(faults, peak, locked)` of the current task, for the exit report.
 pub fn current_mem_report() -> (u32, u32, bool) {
     let idx = my_idx();
@@ -538,18 +551,20 @@ pub fn current_mem_report() -> (u32, u32, bool) {
 /// holds. Called by exec right after `set_current_user_info`. The caller has
 /// already checked `frames` against `limit` (exec refuses an image that does
 /// not fit), so this charge cannot be refused.
-pub fn mm_install_frames(limit: u32, locked: bool, frames: u32) {
+pub fn mm_install_frames(limit: u32, ceiling: u32, locked: bool, frames: u32) {
     let idx = my_idx();
     {
         if idx >= MAX_TASKS { return; }
-        install_domain_mem(TASKS[idx].domain(), limit, locked, frames);
+        install_domain_mem(TASKS[idx].domain(), limit, ceiling, locked, frames);
     }
 }
 
-/// Give the domain `d` the budget `limit` and lock `locked`, and charge it
-/// `frames` (what its freshly built address space already holds).
-fn install_domain_mem(d: crate::domain::Key, limit: u32, locked: bool, frames: u32) {
+/// Give the domain `d` the budget `limit`, the growth ceiling `ceiling` (its
+/// row's `mem_pages_max`) and lock `locked`, and charge it `frames` (what its
+/// freshly built address space already holds).
+fn install_domain_mem(d: crate::domain::Key, limit: u32, ceiling: u32, locked: bool, frames: u32) {
     crate::domain::set_limit(d, limit);
+    crate::domain::set_ceiling(d, ceiling);
     crate::domain::set_mem_locked(d, locked);
     if let Some(used) = crate::domain::charge(d, frames) {
         MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
@@ -639,14 +654,14 @@ pub fn set_task_partition(idx: usize, partition: u16) {
 /// [`mm_install_frames`] for a task that is not running yet
 /// (a spawned or forked child, by pool index, before it is released).
 /// `false`, and nothing changed, if `frames` exceeds a nonzero `limit`.
-pub fn set_task_mem(idx: usize, limit: u32, locked: bool, frames: u32) -> bool {
+pub fn set_task_mem(idx: usize, limit: u32, ceiling: u32, locked: bool, frames: u32) -> bool {
     if limit != 0 && frames > limit {
         MM_QUOTA_REFUSALS.fetch_add(1, Ordering::Relaxed);
         return false;
     }
     unsafe {
         if idx >= MAX_TASKS || !TASK_VALID[idx].load(Ordering::Relaxed) { return false; }
-        install_domain_mem(TASKS[idx].domain(), limit, locked, frames);
+        install_domain_mem(TASKS[idx].domain(), limit, ceiling, locked, frames);
     }
     true
 }

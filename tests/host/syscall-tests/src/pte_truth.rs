@@ -95,7 +95,9 @@ fn a_leaf_the_slot_does_not_name_is_left_alone() {
     // the page nor replaces it (its frame is nobody's it could free).
     azos_mm::vmm::map(pt, base, stale, azos_arch_api::PagePerms::USER_RW).unwrap();
     let used = azos_mm::shim_pages_in_use();
-    assert!(azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), base).is_ok());
+    // Not the pager's: the caller judges the leaf by the access.
+    let r = azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), base);
+    assert!(r.as_ref().is_err_and(|e| format!("{e:?}") == "AlreadyMapped"), "{r:?}");
     assert_eq!(azos_mm::vmm::translate(pt, base), Some(stale), "left as it was");
     assert_eq!(azos_mm::shim_pages_in_use(), used, "no frame taken, none lost");
     assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (4, 0), "nothing committed");
@@ -550,6 +552,89 @@ fn an_install_after_its_release_is_refused() {
     assert!(r.is_err(), "the page is a hole now: the fault is the task's");
     assert_eq!(azos_mm::pager::space_pages(s), (3, 1), "nothing committed for it");
     assert_eq!(azos_mm::shim_pages_in_use(), frames, "the supplied frame went back");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+static HOOK_SIBLING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn sibling_installs_at_the_miss() {
+    let va = HOOK_SIBLING.load(std::sync::atomic::Ordering::SeqCst);
+    let pt = azos_sched::current_user_pt();
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), va).is_ok(), "the sibling's install");
+}
+
+/// **A kernel copy reaches a page a sibling installed after its miss.** The
+/// copy finds the leaf empty, a sibling thread's first touch installs the page,
+/// and the copy's fault finds it mapped (`AlreadyMapped` from the pager at the
+/// first look): that is no refusal, and the leaf it looks at again is the
+/// page.
+/// **Canary** `uaccess-mapped-refused-canary`: the copy answers EFAULT.
+#[test]
+fn a_kernel_copy_reaches_a_page_a_sibling_installed_after_its_miss() {
+    let _g = serial();
+    let pt = space();
+    let base = map(2);
+    HOOK_SIBLING.store(base, std::sync::atomic::Ordering::SeqCst);
+    azos_mm::vmm::shim_set_miss_hook(Some(sibling_installs_at_the_miss));
+    let pa = azos_mm::vmm::translate_user(pt, base, true);
+    azos_mm::vmm::shim_set_miss_hook(None);
+    assert_eq!(pa, azos_mm::vmm::translate(pt, base), "the copy reaches the sibling's page");
+    assert!(pa.is_some());
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (2, 1), "installed once");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+/// **A refusing leaf the slot does not name is the task's fault.** A leaf that
+/// no install made (here planted read-only over an untouched page) is never
+/// replaced, and a store to it is judged by the leaf, as any mapped page is:
+/// the task's, not a fault to retry for ever.
+/// **Canary** `fault-foreign-retry-canary`: the pager looks again, gives up
+/// after its tries, and the store is "resolved".
+#[test]
+fn a_refusing_leaf_the_slot_does_not_name_is_the_tasks_fault() {
+    use azos_mm::vmm::{handle_user_fault, UserFault};
+    let _g = serial();
+    let pt = space();
+    let base = map(2);
+    let s = azos_sched::shim_space(pt);
+    let frame = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
+    let ro = azos_arch_api::PagePerms { accessed: true, dirty: false, write: false, ..azos_arch_api::PagePerms::USER_RW };
+    azos_mm::vmm::map(pt, base, frame, ro).unwrap();
+    assert_eq!(handle_user_fault(s, base, true), UserFault::No, "a store to it is the task's");
+    assert_eq!(azos_mm::vmm::translate(pt, base), Some(frame), "and the leaf is left as it was");
+    azos_mm::vmm::unmap(pt, base);
+    let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(frame));
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+/// **A released page of a mapping is a hole** (the host twin of the ktest
+/// `anon_released_page_is_a_hole_on_every_isa`, same steps over the shim): an
+/// untouched page has an empty leaf and no commit, a released one faults as a
+/// hole with nothing installed, and the pages the mapping keeps keep their
+/// bytes. **Canary** (by hand): `pager::release_range` keeping the mapping
+/// record, so the fault installs a zero page.
+#[test]
+fn a_released_page_of_a_mapping_is_a_hole() {
+    let _g = serial();
+    let pt = space();
+    let base = map(4);
+    let s = azos_sched::shim_space(pt);
+    assert!(azos_mm::pager::resolve_fault(s, base + PAGE_SIZE).is_ok());
+    assert!(azos_mm::pager::resolve_fault(s, base).is_ok());
+    assert_eq!(azos_mm::vmm::user_page(pt, base + 2 * PAGE_SIZE), azos_mm::vmm::UserPage::Missing);
+    assert_eq!(azos_mm::pager::space_pages(s), (4, 2), "two touches, two pages committed");
+    let kept = write(pt, base + PAGE_SIZE, 0x6E);
+    assert!(azos_mm::pager::release_range(s, base, base + PAGE_SIZE).is_ok());
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let _ = azos_mm::vmm::unmap_user_range_and_free(pt, base, base + PAGE_SIZE, shm_lo, shm_hi);
+    let r = azos_mm::pager::resolve_fault(s, base);
+    assert!(r.as_ref().is_err_and(|e| format!("{e:?}") == "NotMapped"), "a hole: {r:?}");
+    assert_eq!(azos_mm::vmm::user_page(pt, base), azos_mm::vmm::UserPage::Missing, "no leaf");
+    assert_eq!(azos_mm::vmm::translate(pt, base + PAGE_SIZE), Some(kept));
+    assert!(bytes(kept).iter().all(|&b| b == 0x6E), "the kept page keeps its bytes");
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }

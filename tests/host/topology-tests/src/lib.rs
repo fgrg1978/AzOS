@@ -3751,6 +3751,50 @@ mod memory_admission_tests {
         t
     }
 
+    /// **A row's growth ceiling** (`mem_pages_max`, format 8): parsed onto the
+    /// row and handed to the kernel with its budget (`RowMem::ceiling`), not
+    /// counted by admission (the base is), and refused when it is below the
+    /// base, past the memory, on a locked row, zero, or in an older format.
+    /// **Canary** (by hand): drop the `CeilingBelowBase` test in
+    /// `memory_admission`: red at "below the base".
+    #[test]
+    fn a_rows_growth_ceiling_is_parsed_bounded_and_not_counted() {
+        let t = topo(b"format = 8\n[task.A.ELF]\nmem_pages = 10\nmem_pages_max = 40\ncaps = []\n");
+        assert_eq!(t.tasks()[0].mem_pages_max, 40);
+        assert_eq!(t.row_mem(b"A.ELF", None, 64).map(|m| (m.limit, m.ceiling)), Some((10, 40)));
+        let r = t.memory_admission(1 << 20, 0, 64, &FORKS).unwrap();
+        assert_eq!(r.ceiling_pages, 10, "admission counts the base");
+        assert_eq!(
+            t.memory_admission(39, 0, 64, &FORKS),
+            Err(AdmissionError::Memory(MemoryRefusal::CeilingPastMemory { task: 0, ceiling: 40, free: 39 }))
+        );
+        let low = topo(b"format = 8\n[task.A.ELF]\nmem_pages = 10\nmem_pages_max = 9\ncaps = []\n");
+        assert_eq!(
+            low.memory_admission(1 << 20, 0, 64, &FORKS),
+            Err(AdmissionError::Memory(MemoryRefusal::CeilingBelowBase { task: 0 })),
+            "below the base"
+        );
+        let dflt = topo(b"format = 8\n[task.A.ELF]\nmem_pages_max = 63\ncaps = []\n");
+        assert_eq!(
+            dflt.memory_admission(1 << 20, 0, 64, &FORKS),
+            Err(AdmissionError::Memory(MemoryRefusal::CeilingBelowBase { task: 0 })),
+            "the profile default is the base of a row that declares none"
+        );
+        let locked = topo(b"format = 8\n[task.A.ELF]\nmem = \"locked\"\nmem_pages = 10\nmem_pages_max = 20\ncaps = []\n");
+        assert_eq!(
+            locked.memory_admission(1 << 20, 0, 64, &FORKS),
+            Err(AdmissionError::Memory(MemoryRefusal::CeilingOnLocked { task: 0 }))
+        );
+        for bad in [&b"format = 8\n[task.A.ELF]\nmem_pages_max = 0\ncaps = []\n"[..], b"format = 8\n[task.A.ELF]\nmem_pages_max = 4294967296\ncaps = []\n"] {
+            let mut t = Topology::empty();
+            parse_sched(SCHED, &mut t).unwrap();
+            assert_eq!(parse_caps(bad, &mut t), Err(ParseError::BadValue));
+        }
+        let mut t = Topology::empty();
+        parse_sched(SCHED, &mut t).unwrap();
+        assert_eq!(parse_caps(b"format = 7\n[task.A.ELF]\nmem_pages_max = 20\ncaps = []\n", &mut t), Err(ParseError::FieldNeedsFormat));
+    }
+
     #[test]
     fn mem_field_parses_locked_and_ceiling_and_nothing_else() {
         let t = topo(b"[task.A.ELF]\nmem = \"locked\"\nmem_pages = 10\ncaps = []\n[task.B.ELF]\ncaps = []\n[task.C.ELF]\nmem = \"ceiling\"\n");

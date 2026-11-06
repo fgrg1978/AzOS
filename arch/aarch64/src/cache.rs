@@ -146,8 +146,8 @@ pub fn icache_invalidate_all() {}
 // RISC-V's `arch/riscv/src/cache.rs` dispatches to `cbo.zero`
 // (Zicboz) behind a DTB-driven, trap-verified probe, with a scalar
 // `core::ptr::write_bytes` fallback whenever the extension is absent or
-// unproven. `crates/core/mm` (`pmm::alloc_page`, `demand::handle_demand_fault`,
-// `vdso::vdso_init`) calls `azos_arch::cache::zero_memory` expecting
+// unproven. `crates/core/mm` (`pmm::alloc_page`, which the pager's zero page
+// comes from, `vdso::vdso_init`) calls `azos_arch::cache::zero_memory` expecting
 // that same signature on every ISA — this module gives aarch64 the
 // fallback half of that contract.
 //

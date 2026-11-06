@@ -168,6 +168,7 @@ what `RuleInfo::fields` names.
 | 74 | `ioport-reserved` | tid | first, last, kernel_port | A topology row's I/O port grant refused: the range holds a port a kernel driver bound (COM1, the CMOS clock, PCI configuration, the 8042, the PIT's channel 0) |
 | 85 | `exec-grant` | tid | image digest prefix, basis, site | A process exec admitted by a launch grant on its image or its package (or its own row), or refused (basis 4 to 8: no grant, bytes bound to no image, a native row, no topology row, a package below its security floor); site 0 `SYS_SPAWN_EX`, 1 `execve` |
 | 87 | `package-index` | signer | entries, serial, event | A signed repository index accepted (the installer's journal, the boot-time apply: event 0, the body's digest prefix as provenance; event 6 when it rebuilt a lost memory), or a refusal of the boot-time apply about the device's memory of the indexes, by event: 0 no index at or above the one remembered (older, different at the same serial, or deleted: the remembered floors stand), 1 the index not remembered (first number: 1 the table is full, 2 the write or flush failed, 3 a sector did not read), 2 the memory lost (first number: 0 damaged, 1 erased on a provisioned medium), 3 floors past the signer's quota not remembered (first number: how many), 4 a sector of the memory did not read (nothing written that boot), 5 a bank ignored (first number: which) |
+| 88 | `budget-grow` | domain | pages, limit, ceiling | A request (`mmap`, a `brk` growth) grew the Domain's budget past its base, within its row's `mem_pages_max` (admit: the limit after), or was refused at that ceiling (refuse) |
 | 86 | `effect-unserved` | tid | effect, device | An effect of a kind no installed effect provider owns, refused: the image has no such device (a motor op on an image without wheels) |
 
 **Reading them.**
@@ -263,7 +264,7 @@ sched/{tasks_ready, tasks_blocked, tasks_running,
        cpu/cpuN/{runq_len, moved_in, moved_out, rt_load_ppm, rt_band_ppm}, blocked_on/{...},
        rt/{...}, balance/{...}}
 memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
-        quota_refusals, domains}
+        quota_refusals, budget_growths, domains}
 decisions/{recorded, deny_dropped}
 system/{version, platform}
 fs/tmpfs/{files, used_bytes, max_bytes}                    (the /tmp mount)

@@ -574,11 +574,16 @@ security boundary (`crates/core/sched/src/domain.rs`). Three ledgers hang off it
 A request (`mmap`, a `brk` growth) is charged whole by
 `PageBudget::charge_request`. Past the limit, a Domain that may grow (not
 `mem = "locked"`, not real time) has its limit grown by exactly the request, up
-to its ceiling (`PageBudget::set_ceiling`), and the growth is counted
-(`grew=` beside `mem quota refused=` in the census). Other charges stay within
-the limit as it is. A new declaration of the limit starts again at its base.
-No row declares a ceiling yet, so every Domain's ceiling is its limit and
-nothing grows.
+to its ceiling, the row's `mem_pages_max` (CAPS.TOML format 8, in 4 KiB pages,
+set with the limit at exec and spawn and kept by a fork child). Admission
+counts the base, not the ceiling; it refuses a ceiling below the base, past the
+free memory, or on a locked row, and a package row's ceiling is bounded by its
+signer's `mem_pages_max`. Each growth, and each refusal at the ceiling, leaves
+a `budget-grow` decision record (pages asked for, limit after, ceiling), and
+the growths are counted (`memory/budget_growths` in the introspection tree,
+`grew=` beside `mem quota refused=` in the census). Other charges stay within
+the limit as it is. A new declaration of the limit starts again at its base,
+and a row with no `mem_pages_max` never grows.
 
 Rules shared by `PageBudget` and `KmemBudget` (`crates/core/mm/src/budget.rs`):
 charges are atomic compare-and-swap loops, all-or-nothing (a charge that would

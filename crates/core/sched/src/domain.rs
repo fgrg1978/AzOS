@@ -615,14 +615,27 @@ pub fn charge(key: Key, pages: u32) -> Option<u32> {
 
 /// Charge the `pages` one request reserves to the domain `key` names
 /// (`PageBudget::charge_request`): `used` after it, and how it was granted.
-/// `None` when the key names no domain.
+/// `None` when the key names no domain. A growth past the base, and a refusal
+/// at the ceiling, leave a record (`Rule::BudgetGrow`: the pages asked for,
+/// the limit after, the ceiling).
 pub fn charge_request(
     key: Key,
     pages: u32,
     may_grow: bool,
 ) -> Option<Result<(azos_mm::budget::Granted, u32), azos_mm::budget::RequestRefused>> {
+    use azos_mm::budget::{Granted, RequestRefused};
     let d = get(key)?;
-    Some(d.budget.charge_request(pages, may_grow).map(|g| (g, d.budget.used())))
+    let r = d.budget.charge_request(pages, may_grow);
+    let verdict = match r {
+        Ok(Granted::Grew(_)) => Some(Verdict::Admit),
+        Err(RequestRefused::Ceiling) => Some(Verdict::Refuse),
+        _ => None,
+    };
+    if let Some(v) = verdict {
+        let n = [pages as u64, d.budget.limit() as u64, d.budget.ceiling() as u64];
+        azos_decision::record(Rule::BudgetGrow, v, key, n);
+    }
+    Some(r.map(|g| (g, d.budget.used())))
 }
 
 /// Charge `pages` to the domain `key` names whatever its limit says
@@ -661,6 +674,20 @@ pub fn set_limit(key: Key, limit: u32) {
         // low watermarks follow from it (none for no limit, or with reclaim off).
         d.budget.set_limit_marked(limit, RECLAIM_HIGH_PCT, RECLAIM_LOW_PCT);
     }
+}
+
+/// Let requests grow the domain's limit up to `ceiling` pages (the row's
+/// `mem_pages_max`; at or below the limit: never). After [`set_limit`], which
+/// drops it.
+pub fn set_ceiling(key: Key, ceiling: u32) {
+    if let Some(d) = get(key) {
+        d.budget.set_ceiling(ceiling);
+    }
+}
+
+/// How far requests may grow the domain's limit; 0 for a key that names none.
+pub fn ceiling(key: Key) -> u32 {
+    get(key).map_or(0, |d| d.budget.ceiling())
 }
 
 /// Where a Domain's reclaim starts and stops, in percent of its frame limit

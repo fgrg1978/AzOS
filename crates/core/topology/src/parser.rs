@@ -110,8 +110,8 @@ pub enum ParseError {
 /// and B, wave 11) adds the task keys `shadow`, `isolated` and `kmem_kib`, the
 /// device keys `safe_state`, `commit_ns` and `compensate`, the peer keys
 /// `noise_pk` and `measurement` and the sections the `Section` enum lists.
-/// Format 8 (TOPO-ROWS-C) adds the task keys `security_boundary` and
-/// `partition_id`, the guest keys `passthrough`, `static`, `pcpus` and
+/// Format 8 (TOPO-ROWS-C) adds the task keys `security_boundary`,
+/// `partition_id` and `mem_pages_max`, the guest keys `passthrough`, `static`, `pcpus` and
 /// `mem_base`, and the sections of [`Kind8`]. The new
 /// SCHED.TOML keys (`isolcpus`, a class's `envelope` and `principal`) carry no
 /// format: that file has none, and its hash is bound by the signed CAPS.TOM.
@@ -962,6 +962,7 @@ struct TaskExt {
     principal: Option<PrincipalKind>,
     security_boundary: bool,
     partition_id: u16,
+    mem_pages_max: u32,
 }
 
 impl TaskExt {
@@ -970,6 +971,7 @@ impl TaskExt {
         topology.set_last_task_isolated(self.isolated);
         topology.set_last_task_kmem_kib(self.kmem_kib);
         topology.set_last_task_principal(self.principal);
+        topology.set_last_task_mem_pages_max(self.mem_pages_max);
         // A partition id on a row that is no security boundary is refused
         // here, not when the key is read: the keys come in any order.
         if !topology.set_last_task_boundary(self.security_boundary, self.partition_id) {
@@ -1745,12 +1747,22 @@ fn handle_task_kv<'a>(
         // (`TaskSpec::security_boundary`), in a hardware partition
         // (`TaskSpec::partition_id`, 1 to 65535; refused rather than
         // truncated, and only with the boundary).
-        "security_boundary" | "partition_id" => {
+        // Format 8: how far requests may grow the row's budget
+        // (`TaskSpec::mem_pages_max`, a `u32`, refused rather than truncated;
+        // 0 is no growth, said by leaving the key out). Admission checks it
+        // against the base and the memory.
+        "security_boundary" | "partition_id" | "mem_pages_max" => {
             if format < 8 {
                 return Err(ParseError::FieldNeedsFormat);
             }
             match key_str {
                 "security_boundary" => ext.security_boundary = bool_only(after)?,
+                "mem_pages_max" => {
+                    ext.mem_pages_max = uint_only(after, u32::MAX as u64)? as u32;
+                    if ext.mem_pages_max == 0 {
+                        return Err(ParseError::BadValue);
+                    }
+                }
                 _ => {
                     ext.partition_id = uint_only(after, u16::MAX as u64)? as u16;
                     if ext.partition_id == 0 {

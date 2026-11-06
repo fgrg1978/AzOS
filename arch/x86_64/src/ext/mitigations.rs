@@ -40,8 +40,9 @@
 //! * GDS: the microcode mitigation, kept enabled (`IA32_MCU_OPT_CTRL`).
 //! * Zenbleed: the `DE_CFG` chicken bit, unless the microcode is fixed.
 //! * L1TF: PTE inversion by construction. A not-present PTE this kernel
-//!   writes holds no frame address (`mmu::empty`, `mmu::make_demand`), and
-//!   frame 0, which such an entry names, is never allocated.
+//!   writes holds no frame address (`mmu::empty`, or `PTE_BBM_PARK`: bit 62,
+//!   address field 0), and frame 0, which such an entry names, is never
+//!   allocated.
 //! * Not in the tree, so `Vulnerable` on an affected CPU: KPTI (Meltdown),
 //!   the return thunk / IBRS-on-entry (Retbleed), safe-RET / IBPB-on-entry
 //!   (SRSO), the BHB clearing loop.

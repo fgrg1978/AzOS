@@ -230,6 +230,9 @@ pub struct MemSpec {
     /// That row's `kmem_kib` (KMEM-CHARGE): the kernel memory, in KiB, the
     /// Domain's objects may hold at once. `0` = no ceiling of its own.
     pub kmem_kib: u32,
+    /// That row's `mem_pages_max`, in frames: how far requests may grow `limit`
+    /// (`0` = never).
+    pub ceiling: u32,
     /// That row's `partition_id`: the hardware resource partition (cache and
     /// bandwidth share, Ssqosid RCID) the Domain's tasks run under
     /// (`scheduler::set_task_partition`). `0` = the row declares none, and the
@@ -401,6 +404,7 @@ fn exec_admit(
     let spec = mem.unwrap_or(MemSpec {
         limit: cur_limit, locked: cur_locked, row: cur_row, instances: 0, huge_mib: 0,
         kmem_kib: crate::scheduler::current_kmem_kib(), partition: 0,
+        ceiling: crate::scheduler::current_mem_ceiling(),
     });
     // Kconfig LOCKED_HUGE_LEAVES: the row's region, mapped now that
     // the address space exists and before anything is charged or
@@ -495,7 +499,7 @@ pub fn exec_commit(p: PreparedExec) -> i64 {
     // Store user PT info into the current task so context_switch.S can
     // write the correct SATP on every subsequent context switch.
     crate::scheduler::set_current_user_info(ctx.satp, Some(space), ctx.brk);
-    crate::scheduler::mm_install_frames(spec.limit, spec.locked, ctx.frames);
+    crate::scheduler::mm_install_frames(spec.limit, spec.ceiling, spec.locked, ctx.frames);
     crate::scheduler::set_current_kmem_kib(spec.kmem_kib);
     crate::scheduler::set_current_partition(spec.partition);
     // The old image's foreign-ABI registration goes with it.
@@ -2358,7 +2362,7 @@ fn fork_hooked_inner(
     // row of its own) and starts charged for its page tables. It is never
     // locked: a locked parent cannot get here.
     // `child_charge <= parent_limit` was checked before the child existed.
-    let _ = crate::scheduler::set_task_mem(child_idx, parent_limit, false, child_charge);
+    let _ = crate::scheduler::set_task_mem(child_idx, parent_limit, crate::scheduler::current_mem_ceiling(), false, child_charge);
     crate::scheduler::set_task_kmem_kib(child_idx, crate::scheduler::current_kmem_kib());
 
     // AQ11: Inherit parent's syscall filter — child cannot be less restricted.

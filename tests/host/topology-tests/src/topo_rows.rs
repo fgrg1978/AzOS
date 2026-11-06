@@ -252,6 +252,23 @@ fn a_task_row_declares_shadow_and_kmem_kib() {
     assert_eq!((t.tasks()[1].shadow, t.tasks()[1].kmem_kib), (true, u32::MAX));
 }
 
+/// A row's growth ceiling (`mem_pages_max`, format 8) is written back and read
+/// again whole, and a different one is a different row.
+#[test]
+fn a_task_rows_growth_ceiling_round_trips() {
+    let row = |n: u32| -> Box<Topology<'static>> {
+        let caps: &'static str =
+            Box::leak(format!("format = 8\n[task.A.ELF]\nmem_pages = 8\nmem_pages_max = {n}\ncaps = []\n[task.B.ELF]\ncaps = []\n").into_boxed_str());
+        let (t, r) = parse(caps);
+        assert_eq!(r, Ok(()));
+        t
+    };
+    let t = row(32);
+    assert_eq!((t.tasks()[0].mem_pages_max, t.tasks()[1].mem_pages_max), (32, 0), "the next row inherits nothing");
+    assert_eq!(round_trip(&t), None);
+    assert_eq!(first_difference(&t, &row(33)), Some("task mem_pages_max"));
+}
+
 #[test]
 fn task_shadow_isolated_and_kmem_kib_are_refused_below_format_7() {
     for line in ["shadow = true", "isolated = true", "kmem_kib = 4"] {

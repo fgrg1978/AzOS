@@ -31,7 +31,6 @@ pub mod text_poke;
 /// E11 / AQ9 — Copy-on-Write support for `fork()`.
 pub mod cow;
 mod cow_table;
-/// E11 / AQ10 — Demand paging (allocate-on-first-access).
 /// An address space's mappings: which object backs each range (host-tested, `#[path]`).
 pub mod mapping;
 /// The slot word: a page's state in its object, the same on every ISA (host-tested, `#[path]`).

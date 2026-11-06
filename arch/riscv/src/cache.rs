@@ -188,7 +188,7 @@ pub fn zicboz_block_size() -> u32 {
 /// defined on a cache block; on a device or otherwise non-idempotent PMA it
 /// may raise an access fault or do nothing, so the two branches of this
 /// function would stop agreeing. Every caller today (`pmm::alloc_page`,
-/// `demand::handle_demand_fault`, `vdso::vdso_init`) passes a page the PMM
+/// which the pager's zero page comes from, `vdso::vdso_init`) passes a page the PMM
 /// just handed out, which is always RAM.
 pub unsafe fn zero_memory(addr: usize, len: usize) {
     let block = zicboz_block_size() as usize;
