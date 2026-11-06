@@ -23,6 +23,34 @@ the OTA listener that uses the stack.
 | Socket syscalls | `crates/core/syscall/src/handlers.rs`, `crates/core/syscall/src/invoke.rs` |
 | TLS, QUIC | `userspace/lib/tls`, `userspace/lib/quic` |
 
+## NIC queue pairs
+
+Source: `crates/drivers/api/src/net.rs`, `crates/drivers/net/src/net_queue.rs`.
+
+Every NIC is one queue pair, `NetQueue`: a submission ring the stack posts
+frames to and a completion ring it reaps received frames from, with the doorbell
+a separate call.
+
+- `post(frame)` publishes a frame on the submission ring and announces nothing;
+  a full ring is `QueueFull`.
+- `ring()` is the doorbell: it announces everything posted and the receive
+  buffers re-posted by the last reap.
+- `reap_rx(max, f)` hands up to `max` received frames to `f`, in place in the
+  NIC's own buffers where the driver owns them (virtio-net, the Intel NICs, the
+  DesignWare MAC) and with one copy where it does not (the Cadence MAC, USB).
+- `reap_tx()` takes back what the device sent and looks at the ring's budget
+  (Kconfig `NET_TX_TIMEOUT_MS`).
+
+When the doorbell rings is decided once, for every NIC, by the table
+(`net_queue::submit`, one `TxDoorbell` per NIC): at once for a frame outside a
+batch, at the end of a batch or after `NET_TX_BATCH_MAX` frames inside one, and
+when the ring is full. The stack brackets a receive pass and a TCP send loop as
+a batch; a taken NIC queue brackets a kick, and flushes a frame that asked for a
+departure stamp. Ring depths are Kconfig: `NET_VIRTIO_RXQ_SIZE` and
+`NET_VIRTIO_TXQ_SIZE`, `E1000E_RX_DESCS`/`E1000E_TX_DESCS`,
+`IGC_RX_DESCS`/`IGC_TX_DESCS`, `DWMAC_RX_DESCS`/`DWMAC_TX_DESCS`,
+`USB_CDC_BUFS`.
+
 ## Receive path
 
 Source: `crates/net/stack/src/lib.rs`, `crates/net/stack/src/rx_owner.rs`,

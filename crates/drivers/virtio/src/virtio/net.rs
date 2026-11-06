@@ -968,7 +968,7 @@ fn rx_repost(net: &mut NetState, slot: usize) {
 ///
 /// One lock pops up to `NET_RX_BATCH_MAX` used entries; the lock is dropped
 /// while `f` runs (the stack may transmit, which takes it); one more lock
-/// re-posts every buffer, with one doorbell decision under the batch rule.
+/// re-posts every buffer (the doorbell is [`ring`]'s).
 /// No copy here: the frame is read where the device wrote it. A slice is
 /// valid only for the duration of its `f` call.
 pub fn reap_rx(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
