@@ -736,6 +736,14 @@ pub fn park(base: usize) -> Result<(), ()> {
     while RECOVERY.resetting() && azos_drv_sys::timebase::now() < until {
         pause(until);
     }
+    if RECOVERY.resetting() {
+        // A timeout reset is still programming the device: it stays in
+        // service (the reset brings it back) and the park is refused.
+        let _guard = BLK_LOCK.lock();
+        READY.store(true, Ordering::Release);
+        PARKED.store(0, Ordering::Release);
+        return Err(());
+    }
     // SAFETY: the transport is mapped; status 0 resets the device.
     if !unsafe { reset_confirmed(dev.vdev.base) } {
         PARKED.store(0, Ordering::Release);
@@ -828,7 +836,9 @@ fn unpark() -> Result<(), ()> {
     // SAFETY: the device is parked: nothing submits, and it is reset.
     let dev = unsafe { &*(&raw const BLK_DEV) };
     if !reprogram(dev, 0) {
-        azos_drv_sys::kerr!("[VIRTIO-BLK] the parked device would not program again");
+        // Not left parked (`claim` would answer `Busy` for ever): dead.
+        PARKED.store(0, Ordering::Release);
+        latch_dead("the parked device would not program again", false);
         return Err(());
     }
     PARKED.store(0, Ordering::Release);
@@ -1327,6 +1337,10 @@ impl HwQueue for VirtioBlk {
             core::ptr::copy_nonoverlapping(
                 ((&raw const BLK_DMA_BUF[t]) as *const u8).add(off), dst.as_mut_ptr(), dst.len());
         }
+    }
+
+    fn parked(&self) -> bool {
+        PARKED.load(Ordering::Acquire) != 0
     }
 
     fn release(&self, tag: u8) {

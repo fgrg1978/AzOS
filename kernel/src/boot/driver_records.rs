@@ -74,7 +74,12 @@ pub(crate) fn hold_line(h: Handle, line: u32, target: u32) {
     }
 }
 
-/// Does a device other than `h` bound to a kernel driver share `line`?
+/// Does a device other than `h` bound to a kernel driver share `line`? It
+/// sees what a device's `irq` names: a virtio-mmio slot's line; a PCI function
+/// carries `irq` 0, so an INTx co-user is not seen (no PCI driver has an
+/// unbind yet: one that gets it stores its routed GSI there first). It takes
+/// the bus lock from a driver op, which is safe only because the bus calls
+/// `remove` with its lock released (`Access::unbind`).
 fn line_shared(h: Handle, line: u32) -> bool {
     hwbus::with(|b| {
         b.iter().any(|(o, s)| {
@@ -213,6 +218,7 @@ const SMMUV3: Ops<Kernel> = PINNED;
 fn virtio_blk_probe(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
     use azos_drv_virtio::virtio::blk;
     blk::init_at(dev.base as usize).map_err(|_| refusal(blk::init().is_ok()))?;
+    azos_drv_block::queue::rebound(&blk::VIRTIO_BLK);
     book_live(h, true);
     if super::virtio_blk_irq_stage_ran() {
         super::wire_virtio_blk_irq();

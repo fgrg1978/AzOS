@@ -951,6 +951,11 @@ impl ReqQueue {
             if !self.start(hw, tag, &g) {
                 self.inflight.lock()[tag as usize] = None;
                 hw.release(tag);
+                // Out of service for a while: the request waits, as for `Busy`.
+                if hw.parked() {
+                    self.give_back(&g);
+                    return;
+                }
                 self.fail(&g, Outcome::Io);
             }
         }
@@ -1354,6 +1359,14 @@ static BOUND: SpinLock<Option<&'static dyn HwQueue>> = SpinLock::new(None);
 /// writes and flushes become requests on it. Once, at the device's bring-up.
 pub fn bind(hw: &'static dyn HwQueue) {
     *BOUND.lock() = Some(hw);
+}
+
+/// `hw`, the bound device, was bound again by its driver (an unbind and a
+/// rebind): its next death is reported again.
+pub fn rebound(hw: &'static dyn HwQueue) {
+    if BOUND.lock().is_some_and(|b| core::ptr::addr_eq(b as *const dyn HwQueue, hw as *const dyn HwQueue)) {
+        GLOBAL.offline.store(false, Ordering::SeqCst);
+    }
 }
 
 /// The device bound by [`bind`], if any.

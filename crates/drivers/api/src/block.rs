@@ -424,6 +424,11 @@ pub trait HwQueue: Sync {
     fn copy_out(&self, tag: u8, off: usize, dst: &mut [u8]);
     /// The command is retired: its slot is free again.
     fn release(&self, tag: u8);
+    /// The device is out of service for a while (a suspend or an unbind in
+    /// progress): a `start` it refuses is given back to the queue, not failed.
+    fn parked(&self) -> bool {
+        false
+    }
     /// Sleep until the device may have completed something or `until_ns` on
     /// the monotonic clock; `false` when it cannot sleep (polled, or no
     /// scheduler yet) and the caller should spin. At most one task is ever in
