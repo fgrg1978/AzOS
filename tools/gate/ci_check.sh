@@ -12115,6 +12115,24 @@ host_job host_canary_row "envelope: connect canary" net-tests envelope-egress-ca
 # canary makes the receive pass ignore the take, and the named test, alone,
 # must go red (the stack would get the queue's frames).
 host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-canary a_taken_queue_goes_to_the_sink_and_the_stack_sees_none_of_it
+# The NIC queue pair (crates/drivers/api/src/net.rs, crates/drivers/net/src/net_queue.rs):
+# every NIC posts, rings and reaps through one table with one doorbell rule. The
+# loss row sends a thousand frames through a queue pair that delivers only what
+# was announced; its canary has the NIC lose every 100th frame and the row must
+# fail. The kick of a taken queue shares one doorbell and announces a stamped
+# frame at once; each canary takes one of the two away and the test, alone,
+# must go red.
+host_job host_canary_row "net queue: NIC loss canary" drivers-tests net-queue-drop-canary every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells
+host_job host_canary_row "nicq: kick batch canary" syscall-tests nicq-no-batch-canary a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once
+host_job host_canary_row "nicq: stamp flush canary" syscall-tests nicq-no-stamp-flush-canary a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once
+# The vsbench network lanes' gate against the recorded baseline
+# (tools/bench/net_lane_gate.py): the self-test feeds it made-up logs.
+net_lane_selftest_row() { # <label>
+    ci_tier_skips "$1" && return 0
+    printf "  %-26s" "${1}..."
+    if python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate_selftest.py" >/dev/null 2>&1; then ok; else bad; fi
+}
+host_job net_lane_selftest_row "net queue: lane gate self-test"
 # The port sources of the server runtime (crates/core/ipc/src/{ep_queue,port,endpoint}.rs,
 # crates/core/syscall/src/ipc_handlers.rs, userspace/lib/srv): each canary puts one hole
 # back and the named test, alone, must go red.
@@ -24897,6 +24915,38 @@ PYEOF
         fi
     }
     par -s "bench: vsbench x86_64" vsbench_x86_row   # one QEMU at a time, two kernels
+
+    # The NIC queue pair's lanes (Kconfig NET_*, crates/drivers/net/src/net_queue.rs):
+    # vsbench's UDP round trip and its two TCP bulk lanes, booted under -icount
+    # (where ns/op is an instruction count), may not cost more than the baseline
+    # recorded from the tree before the queue pair (tools/bench/net_lane_baseline.tsv,
+    # `tools/bench/net_lane_gate.py record`); the Linux column of the riscv64 run
+    # prints beside them. riscv64 runs the net and tcp sections through
+    # vsbench_compare.sh, aarch64 the net section through vsbench_aarch64.sh (that
+    # script has no TCP pass); x86_64's microvm line has no NIC, so it has no row.
+    # A lane the baseline does not hold is a failure: the row stays red until the
+    # baseline is recorded.
+    net_lane_row() { # net_lane_row <rv|arm>
+        local isa="$1" work="$AZOS_OUT/build/net-lane-$1"
+        printf "  %-26s" "net queue: vsbench lanes ($isa)..."
+        rm -rf "$work"
+        if [ "$isa" = rv ]; then
+            KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net,tcp VSBENCH_WORK="$work" \
+                bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh" >"$work.out" 2>&1 \
+                && python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check rv "$work"/*.log >>"$work.out" 2>&1
+        else
+            QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net VSBENCH_AARCH64_WORK="$work" \
+                bash "${REPO_ROOT}/tools/bench/vsbench_aarch64.sh" >"$work.out" 2>&1 \
+                && python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check arm "$work/aarch64.log" >>"$work.out" 2>&1
+        fi
+        if [ $? -eq 0 ]; then
+            ok; grep -a 'net_lane_gate:' "$work.out" | sed 's/^/      /'
+        else
+            bad; grep -a 'net_lane_gate:\|^vsbench' "$work.out" | sed -n '1,8p' | sed 's/^/      /'; echo "      logs in $work"
+        fi
+    }
+    par -s "net queue: vsbench lanes (rv)" net_lane_row rv
+    par -s "net queue: vsbench lanes (arm)" net_lane_row arm
 
     # Besides the round trip, the script requires both ends to report
     # `opts wscale=1/1 sack=1 ts=1 ecn=1`: this is the only boot where both SYNs come

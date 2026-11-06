@@ -384,7 +384,9 @@ config NET_NIC_QUEUES
       queue. The primary interface and the interface the route to the link
       peer (the brain, which carries the e-stop) leaves by are never handed
       over: the attach is refused and recorded (Rule::NicQueue). Every NIC
-      the stack drives has one queue, so taking it takes the NIC. Stamps are
+      the stack drives has one queue pair, so taking it takes the NIC. The
+      frames of one kick share a doorbell; a frame that asked for a stamp is
+      announced at once. Stamps are
       the kernel's, read at the driver boundary, and flagged so: no NIC
       driver in the tree reads the hardware's yet.
 
@@ -737,20 +739,22 @@ config NET_VIRTIO_TXQ_SIZE
       TCP senders.
 
 config NET_TX_BATCH_MAX
-    int "virtio-net TX frames published per doorbell inside a batch"
+    int "NIC TX frames posted per doorbell inside a batch"
     range 1 128
     default 4  if HWCLASS_EMBEDDED
     default 64 if HWCLASS_SERVER
     default 16
     help
-      Inside a TX batch (one net_poll pass, one TCP send_all_* burst
-      between waits) frames are published on the TX ring without ringing
-      the doorbell; it rings once when the batch ends, or after this many
-      frames, whichever comes first.  A send outside any batch rings at
-      once, as before, so no frame waits for a flush point that is not
-      coming.  Either way the doorbell is skipped while the device reports
-      it is already draining the ring (used.flags NO_NOTIFY, virtio 1.x
-      2.7.10; the legacy transport defines it too).
+      crates/drivers/net/src/net_queue.rs, one rule for every NIC (virtio-net,
+      the Intel NICs, the Synopsys MAC, USB): inside a TX batch (one net_poll
+      pass, one TCP send_all_* burst between waits, one NIC-queue kick) frames
+      are posted on the TX ring without ringing the doorbell; it rings once
+      when the batch ends, or after this many frames, whichever comes first,
+      or when the ring is full.  A send outside any batch rings at once, so
+      no frame waits for a flush point that is not coming.  On virtio-net the
+      doorbell is also skipped while the device reports it is already
+      draining the ring (used.flags NO_NOTIFY, virtio 1.x 2.7.10; the legacy
+      transport defines it too).
 
       1 = one doorbell per frame (the behaviour before wave 15).  At most
       NET_VIRTIO_TXQ_SIZE / 2, the frames the ring holds (build.rs checks

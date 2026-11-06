@@ -1,0 +1,2 @@
+# vsbench network lanes, ns/op = instructions under -icount shift=0 (tools/bench/net_lane_gate.py)
+# tolerance_permille 30
