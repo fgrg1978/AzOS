@@ -85,6 +85,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_common",
+ "azos_devif",
 ]
 
 [[package]]
