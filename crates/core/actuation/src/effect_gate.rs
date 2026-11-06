@@ -273,16 +273,6 @@ fn within(e: &Effect, meet: u8) -> bool {
     }
 }
 
-/// How much an effect may be refused.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum Class {
-    /// Toward the device's safe state; never refused.
-    Safe = 0,
-    /// Undoable by a later effect; refused when it cannot be recorded.
-    Reversible = 1,
-}
-
 /// One physical effect, as the record describes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Effect {

@@ -442,13 +442,50 @@ fn no_gate(_e: &crate::motor_host::MotorEffect, op: &mut dyn FnMut() -> bool) ->
     true
 }
 
+/// A kernel whose robot provider owns the motor kind. Put back when a test
+/// here ends.
+fn served(_e: &crate::motor_host::MotorEffect) -> bool {
+    true
+}
+
+/// A kernel no provider gives wheels.
+fn unserved(_e: &crate::motor_host::MotorEffect) -> bool {
+    false
+}
+
 struct RingGate;
 
 impl Drop for RingGate {
     fn drop(&mut self) {
+        crate::motor_host::set_provider_check(served);
         crate::motor_host::set_effect_gate(no_gate);
         RING_GATE_REFUSES.store(false, Ordering::SeqCst);
     }
+}
+
+/// **No provider, no wheel, on the ring too.** On an image whose providers
+/// own no motor kind a motor entry completes with `-ENODEV`, reaches neither
+/// the effect gate nor a wheel, and names no commander.
+///
+/// **Canary.** Answer `Unissued::NoDevice` with `E_CONTAINED` in
+/// `motor_wheel`: the entry completes with `-EAGAIN`.
+#[test]
+fn a_motor_entry_on_an_image_without_wheels_answers_enodev() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    grant_dev(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW);
+    grant_dev(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW);
+    wheels();
+    let (cap, _va, ring) = create(pt);
+    let _gate = RingGate;
+    ring_gate_seen();
+    crate::motor_host::set_effect_gate(ring_gate);
+    crate::motor_host::set_provider_check(unserved);
+
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 30, 40, 0)) };
+    assert_eq!(done(c).0, Errno::ENODEV.to_syscall_ret() as i32, "a motor entry with no wheel");
+    assert!(ring_gate_seen().is_empty(), "an unserved entry was put to the effect gate");
+    assert!(pwm_calls().is_empty(), "an unserved entry wrote {:?}", pwm_calls());
 }
 
 /// **A motor entry is the typed `speed` op, effect gate and commander

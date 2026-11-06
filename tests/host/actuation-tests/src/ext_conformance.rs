@@ -168,7 +168,9 @@ fn hooks_at(m: &Manifest, phase: fn(&BootHook) -> bool) -> Vec<Ev> {
     take()
 }
 
-fn fresh() -> std::sync::MutexGuard<'static, ()> {
+/// The provider table and the latch as a fresh boot has them, under the lock
+/// every test of the table holds.
+pub(crate) fn fresh() -> std::sync::MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     providers::clear_for_tests();
     estop::estop_release(estop::ReleaseAuthority::for_test());

@@ -76,6 +76,11 @@ mod estop;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/actuation/src/providers.rs"]
 mod providers;
+#[allow(dead_code)]
+#[path = "../../../../crates/core/actuation/src/effect.rs"]
+mod effect;
+#[cfg(test)]
+mod unserved;
 
 #[cfg(test)]
 mod ext_conformance;

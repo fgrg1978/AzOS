@@ -11,6 +11,8 @@
 //! - [`gate`]: the one latch-and-stop sequence, the stop work a domain
 //!   registers into it, the ring-3 e-stop and the capability-denial / audit
 //!   recorders the kernel installs at boot.
+//! - [`effect`]: the effect interface every profile has; an effect of a kind
+//!   no installed provider owns is refused with a receipt.
 //! - `effect_gate` (feature `effect-gate`, Kconfig `EFFECT_WRITE_AHEAD`):
 //!   write-ahead receipts, the device op is issued only after its record is
 //!   committed to the flight recorder's ring (innovation B1); a ring at its
@@ -38,6 +40,7 @@
 //! on no extension crate.
 
 pub mod boot_latch;
+pub mod effect;
 #[cfg(feature = "effect-gate")]
 pub mod effect_gate;
 #[cfg(feature = "effect-gate")]

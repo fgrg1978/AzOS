@@ -371,6 +371,9 @@ pub enum Rule {
     /// launch grant on its image or on its package, or refused for the lack of
     /// one (`azos_syscall::exec_grant`).
     ExecGrant,
+    /// An effect of a kind no installed effect provider owns was refused: the
+    /// image has no such device (`azos_actuation::effect`).
+    EffectUnserved,
 }
 
 impl Rule {
@@ -380,7 +383,8 @@ impl Rule {
     /// reported by [`Rule::RefusalLimited`]. Every other rule's refusals are
     /// system events and are never limited.
     pub const fn caller_paced(self) -> bool {
-        matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant)
+        matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant
+            | Rule::EffectUnserved)
     }
 }
 
@@ -1259,6 +1263,14 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["digest_prefix", "basis", "site"],
         rejected_if_yes: "judge the path the caller named: the grant is on the image the bytes are, or on the package that carries them",
         rejected_if_no: "start the image: the caller holds no launch grant on it, on its package, or the bytes are bound to no row",
+    },
+    RuleInfo {
+        // effect: the kind in the high byte, the class in the low one.
+        name: "effect-unserved",
+        subject: "tid",
+        fields: ["effect", "device", "-"],
+        rejected_if_yes: "-",
+        rejected_if_no: "hand the effect to a stand-in for the missing device: it would answer as a device fault and leave no record",
     },
 ];
 

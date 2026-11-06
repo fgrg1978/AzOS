@@ -231,6 +231,14 @@ pub fn install() {
         // Domain's `delete` and `egress` envelope rows (`envelope.rs`).
         crate::envelope::install();
     }
+    // A ring-3 motor op on an image no provider gives wheels is refused with
+    // a receipt instead of reaching a motor layer that has none.
+    fn motor_served(e: &azos_syscall::motor_host::MotorEffect) -> bool {
+        use crate::kind::Class;
+        let class = if e.toward_safe { Class::Safe } else { Class::Reversible };
+        crate::effect::admit_kind(crate::kind::KIND_MOTOR, class, e.wheel, e.tid).is_ok()
+    }
+    azos_syscall::motor_host::set_provider_check(motor_served);
     // The kinds the extensions' providers own (a robot's wheels) are wired
     // by the providers themselves.
     crate::providers::effects();

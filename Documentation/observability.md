@@ -165,6 +165,7 @@ what `RuleInfo::fields` names.
 | 73 | `clocksource` | clock | reason, drift_ppm, limit_ppm | x86_64: the TSC refused as the clock at boot (not invariant) or demoted by the watchdog (it drifted from the HPET or the PM timer) (refuse), or kept though not invariant because nothing else can be read (admit) |
 | 74 | `ioport-reserved` | tid | first, last, kernel_port | A topology row's I/O port grant refused: the range holds a port a kernel driver bound (COM1, the CMOS clock, PCI configuration, the 8042, the PIT's channel 0) |
 | 85 | `exec-grant` | tid | image digest prefix, basis, site | A process exec admitted by a launch grant on its image or its package (or its own row), or refused (basis 4 to 7: no grant, bytes bound to no image, a native row, no topology row); site 0 `SYS_SPAWN_EX`, 1 `execve` |
+| 86 | `effect-unserved` | tid | effect, device | An effect of a kind no installed effect provider owns, refused: the image has no such device (a motor op on an image without wheels) |
 
 **Reading them.**
 

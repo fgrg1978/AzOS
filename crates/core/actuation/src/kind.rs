@@ -1,8 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The effect kinds on the gate's wire (`crate::effect_gate::Effect::kind`),
-//! in every build: a provider names its kind whether or not the image has the
-//! gate (Kconfig `EFFECT_WRITE_AHEAD`).
+//! The effect kinds and classes on the gate's wire
+//! (`crate::effect_gate::Effect`), in every build: a provider names its kind,
+//! and a refusal its class, whether or not the image has the gate (Kconfig
+//! `EFFECT_WRITE_AHEAD`).
+
+/// How much an effect may be refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Class {
+    /// Toward the device's safe state; never refused.
+    Safe = 0,
+    /// Undoable by a later effect; refused when it cannot be recorded.
+    Reversible = 1,
+}
 
 /// Effect kind: one wheel of the drivetrain (`motor_host.rs`).
 pub const KIND_MOTOR: u8 = 1;

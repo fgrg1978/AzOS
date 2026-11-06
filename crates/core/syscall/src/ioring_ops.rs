@@ -323,10 +323,14 @@ fn pwm_set(channel: u32, duty_pct: u32) -> OpResult {
 /// and the commander note that stops the wheel when `owner_tid` dies all
 /// apply as they do to the typed op. A command the halt rule refuses has
 /// still written duty 0 and, like one the effect gate refuses (nothing
-/// reached the wheel), answers the typed call's refusal: `-EAGAIN`.
+/// reached the wheel), answers the typed call's refusal: `-EAGAIN`. An image
+/// no effect provider gives wheels answers `-ENODEV`.
 fn motor_wheel(owner_tid: u32, id: u32, speed_pct: u32) -> OpResult {
-    let Ok((rc, applied)) = crate::motor_host::wheel_speed(id, owner_tid, speed_pct) else {
-        return Err(crate::handlers::E_CONTAINED as i32);
+    use crate::motor_host::Unissued;
+    let (rc, applied) = match crate::motor_host::wheel_speed(id, owner_tid, speed_pct) {
+        Ok(r) => r,
+        Err(Unissued::Refused) => return Err(crate::handlers::E_CONTAINED as i32),
+        Err(Unissued::NoDevice) => return Err(Errno::ENODEV.to_syscall_ret() as i32),
     };
     // The applied duty comes out of the write itself; see the marker in
     // `MotorServer::speed` for why it is not read back afterwards.

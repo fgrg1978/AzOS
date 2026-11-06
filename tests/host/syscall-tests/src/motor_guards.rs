@@ -27,7 +27,7 @@ use azos_devif::{key, outcome, Motor, Out};
 use azos_drv_actuator::pwm::{set_pwm_probe, PwmOp};
 use azos_drv_gpio::gpio::{set_gpio_probe, GpioOp};
 use crate::khost::Caller;
-use crate::motor_host::{set_effect_gate, MotorEffect, MotorServer};
+use crate::motor_host::{set_effect_gate, set_provider_check, MotorEffect, MotorServer};
 use azos_robot::MotorDir;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::SeqCst};
 use std::sync::Mutex;
@@ -145,8 +145,23 @@ struct Scene {
     pid_enabled: bool,
 }
 
+/// A kernel whose robot provider owns the motor kind.
+fn served(_e: &MotorEffect) -> bool {
+    true
+}
+
+/// `(wheel, tid, toward_safe)` of every op the provider check refused.
+static UNSERVED: Mutex<Vec<(u32, u32, bool)>> = Mutex::new(Vec::new());
+
+/// A kernel no provider gives wheels: every op is refused, with its receipt.
+fn unserved(e: &MotorEffect) -> bool {
+    UNSERVED.lock().unwrap_or_else(|x| x.into_inner()).push((e.wheel, e.tid, e.toward_safe));
+    false
+}
+
 impl Drop for Scene {
     fn drop(&mut self) {
+        set_provider_check(served);
         set_effect_gate(pass_gate);
         GATE_REFUSES.store(false, SeqCst);
         ESTOP.store(false, SeqCst);
@@ -877,6 +892,37 @@ fn a_refused_motion_op_reaches_no_wheel_and_a_stop_still_does() {
     assert_eq!(w.direction(DIR_BRAKE), Out::ok(()), "a brake is never refused");
     assert_eq!(w.drive(DIR_COAST, 70), Out::ok(()), "a coast is never refused");
     assert!(!gpio_calls().is_empty() && matches!(azos_robot::motor_state(0), Some((MotorDir::Coast, _))));
+}
+
+/// **No provider, no wheel.** On an image whose providers own no motor kind,
+/// every op, a stop included, answers `UNSUPPORTED` with a receipt, before the
+/// effect gate is asked and before the motor layer runs: no pin, no duty, no
+/// write-ahead record. With the kind served the same ops are carried out.
+///
+/// **Canary.** Delete the provider check in `through_gate`: the ops reach the
+/// gate and the wheel.
+#[test]
+fn an_image_no_provider_gives_wheels_refuses_every_op_with_a_receipt() {
+    let _g = serial();
+    let s = scene();
+    install_recording_gate(false);
+    UNSERVED.lock().unwrap_or_else(|x| x.into_inner()).clear();
+    set_provider_check(unserved);
+    let mut w = who(&s, 0, CapPerms::RW);
+
+    assert_eq!(w.speed(60), Out::err(outcome::UNSUPPORTED), "speed");
+    assert_eq!(w.drive(DIR_FORWARD, 30), Out::err(outcome::UNSUPPORTED), "drive");
+    assert_eq!(w.direction(DIR_BACKWARD), Out::err(outcome::UNSUPPORTED), "direction");
+    assert_eq!(w.speed(0), Out::err(outcome::UNSUPPORTED), "a stop of a wheel the image has not");
+    assert!(gate_seen().is_empty(), "an unserved op was put to the effect gate: {:?}", gate_seen());
+    assert!(gpio_calls().is_empty() && pwm_calls().is_empty(), "an unserved op reached the wheel");
+    assert_eq!(*UNSERVED.lock().unwrap_or_else(|x| x.into_inner()),
+               [(0, s.tid, false), (0, s.tid, false), (0, s.tid, false), (0, s.tid, true)],
+               "one receipt per refused op");
+
+    set_provider_check(served);
+    assert_eq!(w.speed(60), Out::ok(()), "the same op with the kind served");
+    assert_eq!(gate_seen().len(), 1);
 }
 
 /// **A halted machine commits no record for a motion op.** While an e-stop is

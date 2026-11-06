@@ -117,6 +117,41 @@ pub fn set_effect_gate(gate: EffectGate) {
     EFFECT_GATE.set(gate);
 }
 
+/// Does an installed effect provider own the motor kind? `false`: the image
+/// has no wheels, and the check has written the refusal's receipt.
+pub type ProviderCheck = fn(&MotorEffect) -> bool;
+
+azos_common::ro_hook! {
+    /// The installed check, 0 until `azos_actuation::gate::install` runs
+    /// (before it the loader starts no ring-3 image).
+    static PROVIDER_CHECK: ProviderCheck;
+}
+
+/// Install the provider check (the kernel, at boot, once).
+pub fn set_provider_check(check: ProviderCheck) {
+    PROVIDER_CHECK.set(check);
+}
+
+/// Why a motor op did not reach a wheel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Unissued {
+    /// The effect gate refused it, with its receipt.
+    Refused,
+    /// No effect provider owns the motor kind, so there is no wheel; refused
+    /// with a receipt.
+    NoDevice,
+}
+
+impl Unissued {
+    /// The interface's outcome for it.
+    fn outcome(self) -> u32 {
+        match self {
+            Unissued::Refused => outcome::REFUSED,
+            Unissued::NoDevice => outcome::UNSUPPORTED,
+        }
+    }
+}
+
 /// Safe-state / compensating ops of a wheel (the codes of [`drive_safe`]).
 /// `coast` and `stop` are the motor layer's lock-free safe state; a row naming
 /// any other op (`brake`: there is no lock-free brake) gets
@@ -193,10 +228,14 @@ fn timing_of(toward_safe: bool, wheel: u32, op: u16) -> MotorTiming {
     t
 }
 
-/// Run `op` through the effect gate: `Ok` with its result, or `Err` when the
-/// gate refused and `op` did not run. `op` returns its result and whether the
-/// wheel took the command.
-fn through_gate<R>(e: &MotorEffect, op: impl FnOnce() -> (R, bool)) -> Result<R, ()> {
+/// Run `op` through the effect gate: `Ok` with its result, or `Err` when it
+/// was refused (no provider owns the motor kind, or the gate refused it) and
+/// `op` did not run. `op` returns its result and whether the wheel took the
+/// command.
+fn through_gate<R>(e: &MotorEffect, op: impl FnOnce() -> (R, bool)) -> Result<R, Unissued> {
+    if PROVIDER_CHECK.get().is_some_and(|served| !served(e)) {
+        return Err(Unissued::NoDevice);
+    }
     let Some(gate) = EFFECT_GATE.get() else {
         return Ok(op().0);
     };
@@ -221,7 +260,7 @@ fn through_gate<R>(e: &MotorEffect, op: impl FnOnce() -> (R, bool)) -> Result<R,
     });
     match out {
         Some(r) if issued => Ok(r),
-        _ => Err(()),
+        _ => Err(Unissued::Refused),
     }
 }
 
@@ -247,7 +286,7 @@ fn toward_safe(dir: u32, pct: u32) -> bool {
 /// (`motor_commander`). `Ok` with the motor layer's code and the duty its
 /// write left (see `MotorServer::speed` for why that, and not a read back);
 /// `Err` when the gate refused and nothing reached the wheel.
-pub fn wheel_speed(id: u32, tid: u32, pct: u32) -> Result<(i32, Option<u32>), ()> {
+pub fn wheel_speed(id: u32, tid: u32, pct: u32) -> Result<(i32, Option<u32>), Unissued> {
     let dir = if pct == 0 { DIR_COAST } else { DIR_FORWARD };
     let effect = MotorEffect { wheel: id, tid, dir, pct, toward_safe: toward_safe(dir, pct),
                                timing: timing_of(toward_safe(dir, pct), id, azos_devif::motor::MotorIdl::OP_SPEED) };
@@ -338,8 +377,9 @@ impl azos_devif::Motor for MotorServer {
             Ok(id) => id,
             Err(o) => return o,
         };
-        let Ok((rc, applied)) = wheel_speed(id, self.0.tid, pct) else {
-            return Out::err(outcome::REFUSED);
+        let (rc, applied) = match wheel_speed(id, self.0.tid, pct) {
+            Ok(r) => r,
+            Err(u) => return Out::err(u.outcome()),
         };
 
         // The marker that says ring 3 COMMANDED a motor, not merely that it
@@ -374,11 +414,12 @@ impl azos_devif::Motor for MotorServer {
         }
         let effect = MotorEffect { wheel: id, tid: self.0.tid, dir, pct, toward_safe: toward_safe(dir, pct),
                                    timing: timing_of(toward_safe(dir, pct), id, azos_devif::motor::MotorIdl::OP_DRIVE) };
-        let Ok((rc, applied)) = through_gate(&effect, || {
+        let (rc, applied) = match through_gate(&effect, || {
             let r = motor_set_reporting(id, d, pct);
             (r, took(r.0))
-        }) else {
-            return Out::err(outcome::REFUSED);
+        }) {
+            Ok(r) => r,
+            Err(u) => return Out::err(u.outcome()),
         };
         crate::motor_commander::note(id, self.0.tid, applied);
         #[cfg(feature = "actuation-smoke")]
@@ -403,11 +444,12 @@ impl azos_devif::Motor for MotorServer {
         let Some(d) = direction_of(dir) else { return Out::err(outcome::BAD_ARGUMENT) };
         let effect = MotorEffect { wheel: id, tid: self.0.tid, dir, pct: 50, toward_safe: toward_safe(dir, 50),
                                    timing: timing_of(toward_safe(dir, 50), id, azos_devif::motor::MotorIdl::OP_DIRECTION) };
-        let Ok((rc, applied)) = through_gate(&effect, || {
+        let (rc, applied) = match through_gate(&effect, || {
             let r = motor_set_reporting(id, d, 50);
             (r, took(r.0))
-        }) else {
-            return Out::err(outcome::REFUSED);
+        }) {
+            Ok(r) => r,
+            Err(u) => return Out::err(u.outcome()),
         };
         crate::motor_commander::note(id, self.0.tid, applied);
         // The same readback marker as `speed`, and reflex is why it has to be
