@@ -244,40 +244,6 @@ fn a_fork_child_inherits_the_reservation_and_is_charged_for_it() {
     assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (0, 0));
 }
 
-/// **A page a sibling thread commits during a fork is the child's to pay
-/// for (wave 14, FORKSPAWN).** The fork's copy-on-write walk runs first and
-/// `fork_regions_to_child` after it, with only the layout lock held: another
-/// thread of the parent can commit a region page in between. The child does
-/// not have that page (the walk had passed it), but the parent's committed
-/// counter, which the child took, did, so the child was charged one page
-/// short and could commit it unpaid. The child now counts its own.
-///
-/// **Canary.** Feature `azos_mm/fork-commit-race-canary`: the child takes
-/// the parent's counter and is charged 5.
-#[test]
-fn a_page_committed_during_the_fork_is_charged_to_the_child() {
-    let _g = serial();
-    let pt = space();
-    let base = map(8, RW, 0);
-    assert!(azos_mm::vmm::translate_user(pt, base, true).is_some());
-    assert!(azos_mm::vmm::translate_user(pt, base + PAGE_SIZE, true).is_some());
-
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
-    // The sibling's commit, after the walk and before the regions are cloned.
-    assert!(azos_mm::vmm::translate_user(pt, base + 2 * PAGE_SIZE, true).is_some());
-    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (8, 3));
-
-    azos_sched::shim_forget_space(child);
-    azos_sched::shim_set_other_task(2, child, 0);
-    assert!(fork_regions_to_child(2));
-    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (8, 2), "the child holds two of the eight");
-    assert_eq!(azos_sched::shim_other_pages(), 6, "and may still commit six, all charged");
-    assert!(!committed(child, base + 2 * PAGE_SIZE));
-    azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
-}
-
 #[test]
 fn a_break_range_that_is_occupied_goes_in_the_mmap_area() {
     let _g = serial();

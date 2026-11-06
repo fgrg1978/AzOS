@@ -21,9 +21,9 @@
 //   first. Canary: `release_megas` removed: the frames leak and
 //   `munmap_of_the_whole...` goes red.
 // * `mprotect` of the whole block rewrites the leaf, of a part splits it.
-// * A fork splits the parent's promoted blocks (the walk skips level-1
-//   leaves). Canary: drop `fork_begin` from `cow::fork_cow_shared`: the child
-//   gets a hole and `fork_splits...` goes red.
+// * A fork splits the parent's promoted blocks (the clone shares 4 KiB
+//   leaves only). Canary: drop `fork_begin` from `cow::fork_cow_shared`: the
+//   clone refuses the block and `fork_splits...` goes red.
 // * Promotion waits for every running fork walk of the space, not the first
 //   to end (`a_block_filled_while_any_fork_walk_runs_is_not_promoted`).
 // * A cut of the region (munmap, mprotect of a part) returns the run's unused
@@ -427,8 +427,13 @@ fn fork_splits_the_parents_promoted_blocks_and_the_child_gets_the_pages() {
     let p5 = pa(pt, BLOCK_A + 5 * PAGE_SIZE);
     page_bytes(p5)[3] = 0x77;
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::cow::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    let (child, hold) =
+        azos_mm::cow::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     assert_eq!(level(pt, BLOCK_A), Some(0), "the parent's block was split before the walk");
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 0);
+    assert!(fork_regions_to_child(2), "the clone of the mapping");
+    drop(hold);
     assert_eq!(level(child, BLOCK_A), Some(0));
     for k in [0usize, 5, 300, 511] {
         assert_eq!(pa(child, BLOCK_A + k * PAGE_SIZE), pa(pt, BLOCK_A + k * PAGE_SIZE),

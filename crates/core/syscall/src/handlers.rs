@@ -3803,17 +3803,20 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     0
 }
 
-/// Wave 14 (DEMANDPAGE), a fork's `before_release` step: the child inherits
-/// the parent's `mmap` reservation (region records, not pages; committed
-/// pages reach it through the copy-on-write fork) and is charged for the
-/// part not committed yet, under the same reserve-time model as `sys_mmap`.
+/// Wave 14 (DEMANDPAGE), a fork's `before_release` step: the child gets
+/// the parent's mappings, its anonymous objects cloned (their resident pages
+/// shared copy-on-write, their compressed ones a share of the pool), and is
+/// charged for the part not committed yet, under the same reserve-time model
+/// as `sys_mmap`, plus the page tables and slot chunks the clone built for it.
 /// `false` (the fork is refused) when the child's budget cannot take it.
 /// Called with the group's `mm_lock` held, before the child can run.
 pub(crate) fn fork_regions_to_child(child: u32) -> bool {
     let (Some(parent), Some(child_space)) = (azos_sched::current_aspace(), azos_sched::task_aspace(child)) else {
         return true;
     };
-    match azos_mm::pager::fork_clone(parent, child_space) {
+    let cloned = azos_mm::pager::fork_clone(parent, child_space);
+    let built = azos_sched::take_current_pt_build() as usize;
+    match cloned.map(|n| n + built) {
         Ok(0) => true,
         Ok(n) => {
             if azos_sched::mm_charge_request_tid(child, n.min(u32::MAX as usize) as u32, request_may_grow()) {

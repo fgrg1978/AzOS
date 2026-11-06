@@ -504,6 +504,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod fork_clone {
+        use super::*;
+        include!("fork_clone.rs");
+    }
+
+    #[cfg(test)]
     mod thp_vmm {
         use super::*;
         include!("thp_vmm.rs");

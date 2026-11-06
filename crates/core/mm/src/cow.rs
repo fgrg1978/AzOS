@@ -8,6 +8,11 @@
 //! physical page, copies the data, restores the WRITE bit, and decrements
 //! the refcount on the original page.
 //!
+//! A fork shares the pages of anonymous mappings through their objects
+//! (`pager::fork_clone`: slot by slot, no walk of the parent's table). The
+//! walk here is for the pages no anonymous mapping holds: the image, the
+//! stack, the vDSO and trampoline, eager commits and private file pages.
+//!
 //! Design notes:
 //!   - The refcount is one `u16` per managed physical frame, indexed by frame
 //!     number (`cow_table.rs`): no heap, no search, no capacity to exhaust.
@@ -47,7 +52,8 @@ pub use crate::cow_table::shim_set_cow_breaks;
 
 /// Create a COW copy of a user page table.
 ///
-/// Marks every USER leaf (4 KiB) page outside `[skip_lo, skip_hi)` as
+/// Marks every USER leaf (4 KiB) page outside `[skip_lo, skip_hi)` and outside
+/// the anonymous mappings of the space (`pager::fork_clone` clones those) as
 /// read-only + COW in both parent and child.  Kernel entries (megapages / no
 /// USER bit) are skipped — use `vmm::copy_kernel_entries_to_user()` separately.
 ///
@@ -189,18 +195,22 @@ fn fork_cow_walk_held(
         }
     }
     let hold = crate::pager::ForkHold::new(parent);
-    let pt = fork_cow_walk(parent_pt, skip_lo, skip_hi, concurrent)?;
+    // The anonymous mappings' pages are the clone's: the walk passes them.
+    let mut anon = [(0usize, 0usize); crate::pager::MAPPINGS_PER_SPACE];
+    let n = parent.map_or(0, |p| crate::pager::anon_ranges(p, &mut anon));
+    let pt = fork_cow_walk(parent_pt, skip_lo, skip_hi, &anon[..n], concurrent)?;
     Ok((pt, hold))
 }
 
-fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<usize> {
+fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, anon: &[(usize, usize)], concurrent: bool) -> KResult<usize> {
     let child_pt = vmm::create_pagetable()?;
 
     let mut pruned = Pruned { tables: [0; PRUNE_MAX], n: 0 };
+    let skip = Skip { lo: skip_lo, hi: skip_hi, anon };
     let r = if concurrent {
-        fork_cow_inner::<true>(parent_pt, child_pt, skip_lo, skip_hi, &mut pruned)
+        fork_cow_inner::<true>(parent_pt, child_pt, &skip, &mut pruned)
     } else {
-        fork_cow_inner::<false>(parent_pt, child_pt, skip_lo, skip_hi, &mut pruned)
+        fork_cow_inner::<false>(parent_pt, child_pt, &skip, &mut pruned)
     };
     match r {
         Ok(()) => {
@@ -242,11 +252,46 @@ struct Pruned {
     n: usize,
 }
 
+/// What the walk passes: the shm/MMIO window `[lo, hi)`, and the anonymous
+/// mappings (sorted, disjoint), whose pages the clone shares.
+struct Skip<'a> {
+    lo: usize,
+    hi: usize,
+    anon: &'a [(usize, usize)],
+}
+
+/// How much of a leaf table's span the anonymous mappings hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Held {
+    None,
+    Part,
+    All,
+}
+
+impl Skip<'_> {
+    /// The anonymous mappings' hold on `[lo, hi)`.
+    #[inline]
+    fn held(&self, lo: usize, hi: usize) -> Held {
+        let i = self.anon.partition_point(|&(_, e)| e <= lo);
+        match self.anon.get(i) {
+            Some(&(s, e)) if s <= lo && e >= hi => Held::All,
+            Some(&(s, _)) if s < hi => Held::Part,
+            _ => Held::None,
+        }
+    }
+
+    /// Does an anonymous mapping hold the page at `va`?
+    #[inline]
+    fn anon_at(&self, va: usize) -> bool {
+        let i = self.anon.partition_point(|&(_, e)| e <= va);
+        self.anon.get(i).is_some_and(|&(s, _)| s <= va)
+    }
+}
+
 fn fork_cow_inner<const CONCURRENT: bool>(
     parent_pt: usize,
     child_pt: usize,
-    skip_lo: usize,
-    skip_hi: usize,
+    skip: &Skip,
     pruned: &mut Pruned,
 ) -> KResult<()> {
     let entries = ARCH.entries_per_table();
@@ -258,12 +303,10 @@ fn fork_cow_inner<const CONCURRENT: bool>(
     // PDPT on x86_64 (`vmm::for_each_user_l2`, borrowed kernel tables
     // skipped).
     if vmm::root_level() <= 2 {
-        return fork_cow_l2::<CONCURRENT>(parent_pt, kpt, 0, child_pt, skip_lo, skip_hi, pruned,
-                                         entries, tramp);
+        return fork_cow_l2::<CONCURRENT>(parent_pt, kpt, 0, child_pt, skip, pruned, entries, tramp);
     }
     vmm::for_each_user_l2(parent_pt, kpt, |parent_l2, k_l2, base| {
-        fork_cow_l2::<CONCURRENT>(parent_l2, k_l2, base, child_pt, skip_lo, skip_hi, pruned,
-                                  entries, tramp)
+        fork_cow_l2::<CONCURRENT>(parent_l2, k_l2, base, child_pt, skip, pruned, entries, tramp)
     })
 }
 
@@ -276,8 +319,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
     k_l2: usize,
     base: usize,
     child_pt: usize,
-    skip_lo: usize,
-    skip_hi: usize,
+    skip: &Skip,
     pruned: &mut Pruned,
     entries: usize,
     tramp: usize,
@@ -347,16 +389,22 @@ fn fork_cow_l2<const CONCURRENT: bool>(
             let mut child_l0: *mut u64 = core::ptr::null_mut();
             let mut vpn0_next = 0usize;
             // A leaf table wholly inside the shm/MMIO window holds nothing a
-            // child gets (see `fork_cow`): not walked at all (wave 13).
-            {
+            // child gets (see `fork_cow`), and one an anonymous mapping holds
+            // whole is the clone's: not walked at all.
+            let part = {
                 const L0_SPAN_SHIFT: usize = azos_arch_api::PAGE_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
                 const L1_SPAN_SHIFT: usize = L0_SPAN_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
                 let lo = base | (vpn2 << L1_SPAN_SHIFT) | (vpn1 << L0_SPAN_SHIFT);
                 let hi = lo + (1usize << L0_SPAN_SHIFT);
-                if lo >= skip_lo && hi <= skip_hi {
+                if lo >= skip.lo && hi <= skip.hi {
                     continue;
                 }
-            }
+                match skip.held(lo, hi) {
+                    Held::All => continue,
+                    Held::Part => true,
+                    Held::None => false,
+                }
+            };
             // A table with no entry of any kind is unhooked from the parent
             // (not while other threads may walk it): "nothing from index 0"
             // under `next_present` is the whole-table blank test.
@@ -393,9 +441,10 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 let vaddr = base | leaf_vaddr(vpn2, vpn1, vpn0);
 
                 // The shm/MMIO window is neither COW nor shared (see
-                // `fork_cow`). Checked before the addref, or every skipped
-                // page would still take a refcount entry.
-                if vaddr >= skip_lo && vaddr < skip_hi {
+                // `fork_cow`), and an anonymous mapping's page is the clone's.
+                // Checked before the addref, or every skipped page would still
+                // take a refcount entry.
+                if (vaddr >= skip.lo && vaddr < skip.hi) || (part && skip.anon_at(vaddr)) {
                     continue;
                 }
 

@@ -56,8 +56,9 @@ storm-ignore-locked-canary = []
 lx-wx-canary = []
 # ... and `cfg(feature = "cow-ro-canary")` in the pulled-in `cow.rs` (wave 13).
 cow-ro-canary = []
-# ... and the wave 14 (FORKSPAWN) `pager.rs` canary.
-fork-commit-race-canary = []
+# ... and the fork clone's `pager.rs` canary.
+cow-shared-write-canary = []
+fork-marker-canary = []
 uaccess-race-canary = []
 as-stale-root-canary = []
 as-stale-ref-canary = []

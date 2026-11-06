@@ -47,6 +47,7 @@ console-splice-smoke	hot	a site on kernel/src/entry/aarch64/irq.rs, kernel/src/e
 console-tx-sync	pending	
 cow-reuse-canary	hot	crates/core/mm/src/cow.rs: the copy-on-write fault
 cow-ro-canary	hot	crates/core/mm/src/cow.rs: the copy-on-write fault
+cow-shared-write-canary	host-shared	crates/core/mm/src/pager.rs: syscall-tests builds the same source with this feature
 cow-spurious-canary	hot	crates/core/mm/src/cow.rs: the copy-on-write fault
 cpuid-probe	pending	
 cpuid-probe-canary	pending	
@@ -92,7 +93,6 @@ fence-arm-canary	pending
 fence-refuse-smoke	pending	
 file-census	pending	
 foreign-regs-canary	pending	
-fork-commit-race-canary	pending	
 fork-profile	pending	
 fork-refusal-probe	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 fs-base-cache-canary	pending	

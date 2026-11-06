@@ -12725,13 +12725,27 @@ host_job host_canary_row "anon: COW break moves the slot canary" syscall-tests c
     a_copy_on_write_break_moves_the_slot_with_the_leaf
 host_job host_canary_row "anon: COW break by root canary" syscall-tests cow-slot-canary \
     a_copy_on_write_break_through_another_tasks_root_moves_its_slot
-# A page a sibling commits during a fork is the child's to pay for and not the
-# child's page (pager::fork_clone counts the child's own leaves and makes its
-# slots from them). fork-commit-race-canary: the parent's count and slots.
-host_job host_canary_row "fork: sibling commit charge canary" syscall-tests fork-commit-race-canary \
-    a_page_committed_during_the_fork_is_charged_to_the_child
-host_job host_canary_row "fork: sibling commit page canary" syscall-tests fork-commit-race-canary \
-    a_page_committed_during_the_fork_is_a_zero_page_in_the_child
+# A fork clones the parent's anonymous objects (pager::fork_clone, syscall-tests
+# fork_clone.rs): each resident frame shared once more and read-only on both
+# sides, the heap with them, a sibling's commit before the clone shared and
+# paid once. cow-shared-write-canary: the share keeps the write permission and
+# a store by one side reaches the other. A child's exit gives every frame back
+# and the parent's next store keeps its frame (cow-reuse-canary: it copies).
+# A compressed page is the marker and a share of the pool's entry, restored
+# by each side alone (fork-marker-canary: the child's slot stays empty).
+host_job host_canary_row "fork: clone shares read-only canary" syscall-tests cow-shared-write-canary \
+    a_fork_shares_each_anonymous_frame_read_only_on_both_sides
+host_job host_canary_row "fork: large heap clone canary" syscall-tests cow-shared-write-canary \
+    a_large_heap_fork_copies_no_frame
+host_job host_canary_row "fork: heap clone canary" syscall-tests cow-shared-write-canary \
+    a_heap_page_is_the_childs_own_after_the_fork
+host_job host_canary_row "fork: sibling commit shared canary" syscall-tests cow-shared-write-canary \
+    a_page_committed_before_the_clone_is_shared_with_the_child
+host_job host_canary_row "fork: exit gives the share back canary" syscall-tests cow-reuse-canary \
+    a_child_that_exits_gives_its_share_back_and_the_parent_keeps_its_frames
+host_job zpool_host_row "fork: compressed page shared, pool on" a_compressed_page_is_shared_with_the_child_not_restored
+host_job zpool_host_canary_row "fork: compressed page shared canary" fork-marker-canary \
+    a_compressed_page_is_shared_with_the_child_not_restored
 host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
     a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,

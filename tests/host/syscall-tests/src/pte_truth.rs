@@ -16,10 +16,11 @@
 //   parent's write gives it a new frame and its slot follows, so the page is
 //   still the reclaimer's to take. Canary `cow-slot-canary` (`pager::cow_swap`
 //   leaves the slot): the unmap is refused (the slot names the child's frame).
-// * `a_page_committed_during_the_fork_is_a_zero_page_in_the_child`: the child's
-//   slots are its own leaves, not the parent's slots. Canary
-//   `fork-commit-race-canary` (the child's empty slots take the parent's frame
-//   slots): the child maps the parent's frame.
+// * `a_page_committed_before_the_clone_is_shared_with_the_child`: the child's
+//   slot and leaf come from one read of the parent's slot, so a sibling's
+//   commit after the fork's walk is the child's, shared copy-on-write and
+//   paid. Canary `cow-shared-write-canary` (the share keeps the write
+//   permission): the parent's later store reaches the child.
 //
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
 
@@ -163,7 +164,7 @@ fn a_copy_on_write_break_moves_the_slot_with_the_leaf() {
 }
 
 #[test]
-fn a_page_committed_during_the_fork_is_a_zero_page_in_the_child() {
+fn a_page_committed_before_the_clone_is_shared_with_the_child() {
     let _g = serial();
     let pt = space();
     let base = map(8);
@@ -175,12 +176,12 @@ fn a_page_committed_during_the_fork_is_a_zero_page_in_the_child() {
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
-    let cs = azos_sched::shim_space(child);
-    assert!(azos_mm::vmm::handle_demand_fault(cs, base + 2 * PAGE_SIZE).is_ok());
-    let theirs = azos_mm::vmm::translate(child, base + 2 * PAGE_SIZE).expect("the child's page");
-    assert_ne!(theirs, late, "the child maps the parent's private frame");
-    assert!(bytes(theirs).iter().all(|&b| b == 0), "a zero page");
-    assert!(bytes(late).iter().all(|&b| b == 0x44), "the parent's page is untouched");
+    assert_eq!(azos_mm::vmm::translate(child, base + 2 * PAGE_SIZE), Some(late), "the child shares the page");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (8, 2), "and holds it");
+    assert_eq!(azos_sched::shim_other_pages(), 6, "and does not pay for it twice");
+    let mine = write(pt, base + 2 * PAGE_SIZE, 0x55);
+    assert_ne!(mine, late, "the parent's store broke the share");
+    assert!(bytes(late).iter().all(|&b| b == 0x44), "the parent's store reached the child");
     azos_sched::shim_forget_space(child);
     azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
     azos_sched::shim_forget_space(pt);
@@ -245,6 +246,9 @@ fn the_reclaimer_takes_no_page_of_a_parent_until_its_fork_is_cloned() {
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
     drop(hold);
+    // The page is the child's too (the clone shared it): the parent's store
+    // makes it the parent's alone again.
+    write(pt, base + PAGE_SIZE, 0x78);
     assert!(reclaim.unmap(victim), "the fork is over: the page may be taken");
     reclaim.keep(victim);
     azos_sched::shim_forget_space(child);

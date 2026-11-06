@@ -226,7 +226,15 @@ static CHARGE_TABLES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// is charged past the limit, and one that goes back is discharged.
 fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
     use azos_mm::vmm::TableCharge;
-    if !CHARGE_TABLES.load(Ordering::SeqCst) || root != current_user_pt() {
+    if !CHARGE_TABLES.load(Ordering::SeqCst) {
+        return true;
+    }
+    if root != current_user_pt() {
+        if what == TableCharge::Return {
+            let _ = PT_BUILD.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(v.saturating_sub(1)));
+        } else {
+            PT_BUILD.fetch_add(1, Ordering::SeqCst);
+        }
         return true;
     }
     match what {
@@ -240,6 +248,14 @@ fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
             true
         }
     }
+}
+
+/// Tables built under a root that is not the current task's while tables are
+/// charged (`scheduler/budget.rs`'s `pt_build`).
+static PT_BUILD: AtomicU32 = AtomicU32::new(0);
+
+pub fn take_current_pt_build() -> u32 {
+    PT_BUILD.swap(0, Ordering::SeqCst)
 }
 
 /// Test-only control surface: page tables built for the current task's root
