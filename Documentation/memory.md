@@ -343,7 +343,10 @@ private file pages). The fork holds the parent (`pager::ForkHold`) from before
 its walk until the clone is done: the reclaimer takes no page of it and its
 faults restore none meanwhile, so no marker changes under the clone and none is
 in transit. The child is charged its uncommitted reservation and the leaf tables
-and slot chunks the clone built for it. A fork of a fully touched 64 MiB heap
+and slot chunks the clone built for it as one request, which may grow its limit
+from the row's base: a parent that grew past its base can still fork. A clone
+refused because the parent's records disagree (a resident page with no leaf)
+is counted as `clone-invariant` and warned, not taken for memory pressure. A fork of a fully touched 64 MiB heap
 copies no frame: it takes 69 pages (host suite), the child's root, its 32 leaf
 tables and upper tables, and its 33 pages of slot words.
 

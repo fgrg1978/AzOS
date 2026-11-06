@@ -362,6 +362,18 @@ pub fn current_mem_locked() -> bool {
     MEM_LOCKED.load(Ordering::SeqCst)
 }
 
+static CLONE_INVARIANTS: AtomicU32 = AtomicU32::new(0);
+
+/// Test-only control surface: forks refused because the parent's records
+/// disagreed.
+pub fn shim_clone_invariants() -> u32 {
+    CLONE_INVARIANTS.load(Ordering::SeqCst)
+}
+
+pub fn note_clone_invariant() {
+    CLONE_INVARIANTS.fetch_add(1, Ordering::SeqCst);
+}
+
 pub fn note_mm_quota_refusal() {
     MM_REFUSALS.fetch_add(1, Ordering::SeqCst);
 }

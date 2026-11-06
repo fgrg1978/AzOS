@@ -33,7 +33,14 @@
 //   the parent's frame. Canary `cow-break-during-fork-canary`: it breaks at once.
 // * `a_frame_whose_parent_leaf_is_missing_refuses_the_fork`: the clone does
 //   not share a frame the parent's leaf does not map (the parent's next fault
-//   would install it writable). Canary `fork-leafless-frame-canary`.
+//   would install it writable). Canary `fork-leafless-frame-canary`; the
+//   refusal is reported as an invariant breach, not as memory pressure
+//   (canary `clone-invariant-silent-canary`).
+// * `a_parent_that_grew_past_its_base_still_forks`: the child starts from the
+//   row's base limit, and the tables and slot chunks of its clone ride the
+//   reservation's request, which may grow it. Canary
+//   `fork-chunks-within-base-canary`: they must fit the base, and the fork is
+//   refused.
 //
 // The host has no TLB: no row here sees the parent's shootdown after the
 // clone; the QEMU fork rows run it.
@@ -344,11 +351,45 @@ fn a_frame_whose_parent_leaf_is_missing_refuses_the_fork() {
         azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
+    let reported = azos_sched::shim_clone_invariants();
     let cloned = fork_regions_to_child(2);
     drop(hold);
     assert!(!cloned, "the clone shared a frame its parent leaf does not map");
+    assert_eq!(azos_sched::shim_clone_invariants(), reported + 1, "the refusal was taken for memory pressure, not reported");
     assert!(azos_mm::cow::page_getref(f) <= 1, "the refusal kept a reference");
     azos_sched::shim_forget_space(child);
     azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    done(pt);
+}
+
+#[test]
+fn a_parent_that_grew_past_its_base_still_forks() {
+    let _g = serial();
+    let pt = space();
+    // Pages touched in three chunks' reach: the clone builds a slot chunk for
+    // each of the last two, more than the base below.
+    let pages = 1100;
+    let base = map(pages);
+    write(pt, base, 0x51);
+    write(pt, base + 520 * PAGE_SIZE, 0x52);
+    write(pt, base + 1040 * PAGE_SIZE, 0x53);
+    azos_sched::shim_charge_tables(true);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let (child, hold) =
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    // The walk's tables are the sched layer's own check, as `sys_fork` does.
+    let _ = azos_sched::take_current_pt_build();
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 1);
+    azos_mm::budget::set_growth_pool(1 << 20);
+    azos_sched::shim_set_other_ceiling(4096);
+    let cloned = fork_regions_to_child(2);
+    drop(hold);
+    azos_sched::shim_charge_tables(false);
+    assert!(cloned, "the fork was refused: its tables and chunks did not fit the base limit");
+    let (limit, grown) = azos_sched::shim_other_limit_grown();
+    assert!(grown > 0 && limit > 1, "the child's limit did not grow: {limit} {grown}");
+    assert!(azos_sched::shim_other_pages() as usize > pages - 3, "the child was not charged its reservation");
+    exit(child);
     done(pt);
 }

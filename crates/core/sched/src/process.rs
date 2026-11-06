@@ -2076,11 +2076,15 @@ pub enum ForkRefusalSite {
     /// inherit.
     MemBudget = 7,
     SpaceExhausted = 8,
+    /// The clone of the parent's mappings found them inconsistent (a resident
+    /// page with no leaf): refused, not an out-of-memory.
+    CloneInvariant = 9,
 }
 
-const FORK_REFUSAL_SITES: usize = 9;
+const FORK_REFUSAL_SITES: usize = 10;
 
 static FORK_REFUSAL_COUNTS: [core::sync::atomic::AtomicU32; FORK_REFUSAL_SITES] = [
+    core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
@@ -2103,6 +2107,7 @@ fn fork_refusal_site_name(site: ForkRefusalSite) -> &'static str {
         ForkRefusalSite::MemLocked => "mem-locked",
         ForkRefusalSite::MemBudget => "mem-budget",
         ForkRefusalSite::SpaceExhausted => "space-exhausted",
+        ForkRefusalSite::CloneInvariant => "clone-invariant",
     }
 }
 
@@ -2154,6 +2159,13 @@ fn note_fork_refusal(site: ForkRefusalSite) -> i64 {
         );
     }
     -1
+}
+
+/// The fork's clone of the parent's mappings was refused because they disagree
+/// with each other. Every time, unlike the one-shot line of the first hit.
+pub fn note_clone_invariant() {
+    azos_drv_sys::kwarn!("[FORK] refused: a resident page of the parent has no leaf that maps its frame");
+    note_fork_refusal(ForkRefusalSite::CloneInvariant);
 }
 
 /// Current counts, indexed by `ForkRefusalSite as usize`. Read by

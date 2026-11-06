@@ -122,6 +122,9 @@ native-fork-copy-canary = []
 # Wave 13 (security) canary: native and Linux `mmap` map read-write whatever
 # `prot` says, and `mprotect` changes nothing (the `mprot:` rows go red).
 mmap-prot-canary = []
+# Host canaries of `handlers::fork_regions_to_child` (syscall-tests fork_clone.rs).
+fork-chunks-within-base-canary = []
+clone-invariant-silent-canary = []
 # `vdso_notify.rs` `TICK_HARTS`: eight harts' previous-interrupt times are kept,
 # whatever the kernel's CPU count (host test `tick_interval_covers_every_cpu`).
 vdso-8cpu-canary = []

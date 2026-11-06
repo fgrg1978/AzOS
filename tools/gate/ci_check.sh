@@ -12949,6 +12949,14 @@ host_job host_canary_row "fork: COW break waits for the fork canary" syscall-tes
     a_copy_on_write_break_waits_for_the_fork_to_end
 host_job host_canary_row "fork: leafless frame refused canary" syscall-tests fork-leafless-frame-canary \
     a_frame_whose_parent_leaf_is_missing_refuses_the_fork
+# A parent that grew past its base still forks (handlers::fork_regions_to_child
+# charges the clone's tables and chunks inside the reservation's request);
+# fork-chunks-within-base-canary: they must fit the base. A clone refused on an
+# invariant is reported; clone-invariant-silent-canary: it is not.
+host_job host_canary_row "fork: grown parent forks canary" syscall-tests fork-chunks-within-base-canary \
+    a_parent_that_grew_past_its_base_still_forks
+host_job host_canary_row "fork: invariant refusal reported canary" syscall-tests clone-invariant-silent-canary \
+    a_frame_whose_parent_leaf_is_missing_refuses_the_fork
 host_job zpool_host_row "fork: compressed page shared, pool on" a_compressed_page_is_shared_with_the_child_not_restored
 host_job zpool_host_canary_row "fork: compressed page shared canary" fork-marker-canary \
     a_compressed_page_is_shared_with_the_child_not_restored

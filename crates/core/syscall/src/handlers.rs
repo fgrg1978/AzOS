@@ -3808,8 +3808,9 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
 /// the parent's mappings, its anonymous objects cloned (their resident pages
 /// shared copy-on-write, their compressed ones a share of the pool), and is
 /// charged for the part not committed yet, under the same reserve-time model
-/// as `sys_mmap`, plus the page tables and slot chunks the clone built for it.
-/// `false` (the fork is refused) when the child's budget cannot take it.
+/// as `sys_mmap`, plus the page tables and slot chunks the clone built for it,
+/// all as one request. `false` (the fork is refused) when the child's budget
+/// cannot take it.
 /// Called with the group's `mm_lock` held, before the child can run.
 pub(crate) fn fork_regions_to_child(child: u32) -> bool {
     let (Some(parent), Some(child_space)) = (azos_sched::current_aspace(), azos_sched::task_aspace(child)) else {
@@ -3817,17 +3818,31 @@ pub(crate) fn fork_regions_to_child(child: u32) -> bool {
     };
     let cloned = azos_mm::pager::fork_clone(parent, child_space);
     let built = azos_sched::take_current_pt_build();
-    let Ok(owed) = cloned else { return false };
-    let owed = owed.min(u32::MAX as usize) as u32;
-    // The tables and slot chunks within the child's limit as it is, as every
-    // charge but a request's (`PageBudget::charge_request`); the reservation as
-    // a request, which may grow the limit.
-    if !azos_sched::mm_charge_request_tid(child, built, false) {
+    let owed = match cloned {
+        Ok(n) => n.min(u32::MAX as usize) as u32,
+        Err(e) => {
+            // Not memory pressure: the parent's own records disagree.
+            // Canary `clone-invariant-silent-canary`: it is not reported.
+            if e == azos_mm::mapping::MapError::Invalid && !cfg!(feature = "clone-invariant-silent-canary") {
+                azos_sched::note_clone_invariant();
+            }
+            return false;
+        }
+    };
+    // The reservation and the tables and slot chunks built for it are one
+    // request: the child starts from the row's base limit, and a parent that
+    // grew past it must still be able to fork. Canary
+    // `fork-chunks-within-base-canary`: the tables and chunks must fit the base.
+    let within_base = cfg!(feature = "fork-chunks-within-base-canary");
+    if within_base && !azos_sched::mm_charge_request_tid(child, built, false) {
         azos_mm::pager::forget(child_space);
         return false;
     }
-    if !azos_sched::mm_charge_request_tid(child, owed, request_may_grow()) {
-        azos_sched::mm_discharge_tid(child, built);
+    let request = if within_base { owed } else { owed.saturating_add(built) };
+    if !azos_sched::mm_charge_request_tid(child, request, request_may_grow()) {
+        if within_base {
+            azos_sched::mm_discharge_tid(child, built);
+        }
         azos_mm::pager::forget(child_space);
         return false;
     }

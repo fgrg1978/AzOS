@@ -587,7 +587,8 @@ impl PageBudget {
     /// growth is the request's, never a page more, is taken from the growth
     /// pool ([`set_growth_pool`]: refused when the pool cannot hold it) and is
     /// counted in [`Self::grown`]. The other charges (tables, the image, shm)
-    /// stay within the limit as it is, grown or not.
+    /// stay within the limit as it is, grown or not; a fork's child is charged
+    /// the tables and slot chunks its clone built inside its reservation's request.
     pub fn charge_request(&self, pages: u32, may_grow: bool) -> Result<Granted, RequestRefused> {
         if self.charge(pages) {
             return Ok(Granted::Within);
