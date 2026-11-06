@@ -256,13 +256,18 @@ pub fn ota_read_boot_meta_records() -> (Option<BootMetaRecord>, Option<BootMetaR
 /// 2. (Migration) the legacy `/fat/BOOTMETA` parsed as raw `BootMeta`
 ///    (no seq, no CRC) — only consulted on first boot after upgrade.
 /// 3. `BootMeta::default()` if nothing is available.
+///
+/// The slots' own read (Kconfig `BOOT_SLOTS`): its `min_sec_epoch` is lifted
+/// but not judged trusted. A consumer that judges an epoch reads
+/// [`ota_floor`], which is `None` without the slots.
+#[cfg(feature = "boot-slots")]
 #[must_use]
 pub fn ota_read_boot_meta() -> BootMeta {
     let mut meta = read_boot_meta_stored();
     // The epoch floor is the higher of the volume's and the hardware
     // backend's (`floor`): a record that was rolled back on the volume does
-    // not lower it. Every consumer (the update's admission, the livepatch
-    // check) reads it through here.
+    // not lower it. The slots' readers (the update's admission, the
+    // confirmation) read it through here.
     meta.min_sec_epoch = floor::lift(meta.min_sec_epoch);
     meta
 }
