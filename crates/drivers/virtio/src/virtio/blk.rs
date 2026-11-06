@@ -660,7 +660,8 @@ pub fn init_at(base: usize) -> Result<(), ()> {
 /// (`READY` is cleared, then every queue lock is taken once, so a `start`
 /// that passed its check has submitted), the device is reset and its stop
 /// confirmed (its DMA is over), and every command it held ends `Reset`, its
-/// waiter woken. The rings and mappings stay the driver's ([`PARKED`]): the
+/// waiter woken; a request the layer has not started waits (`claim` answers
+/// `Busy`). The rings and mappings stay the driver's ([`PARKED`]): the
 /// unbind and the system suspend of the hardware bus. `Err` for a device that
 /// is not this one or not up, and for one that never confirmed its reset (the
 /// driver latches dead: its memory is never reused).
@@ -671,12 +672,15 @@ pub fn park(base: usize) -> Result<(), ()> {
     if !READY.load(Ordering::Acquire) || dev.vdev.base as usize != base {
         return Err(());
     }
+    // Parked before not ready: `claim` never reads the gap as a dead device.
+    PARKED.store(base, Ordering::Release);
     READY.store(false, Ordering::Release);
     for q in 0..dev.queues {
         drop(QLOCK[q].lock());
     }
     // SAFETY: the transport is mapped; status 0 resets the device.
     if !unsafe { reset_confirmed(dev.vdev.base) } {
+        PARKED.store(0, Ordering::Release);
         latch_dead("the device did not confirm its reset when taken out of service", false);
         return Err(());
     }
@@ -686,7 +690,6 @@ pub fn park(base: usize) -> Result<(), ()> {
             SLOT_DONE[t].store(true, Ordering::Release);
         }
     }
-    PARKED.store(base, Ordering::Release);
     if let (Some(wake), tid) = (WAKE_FN.get(), WAITER.sleeper()) {
         if tid != 0 {
             wake(tid);
@@ -761,8 +764,15 @@ fn latch_dead(reason: &str, latched: bool) {
 /// their budget at tick `now`. The timeout policy decides: reset the device
 /// and program it again over the same rings, or, with the resets spent,
 /// latch it dead. The late commands end `Timeout`; a reset ends the others
-/// the device held `Reset`. Called by `reap` with no queue lock held.
+/// the device held `Reset`. Called by `reap` with no queue lock held. Under
+/// `BLK_LOCK`, so a [`park`] is either before it (the device is out of
+/// service: nothing to reset, and its commands are ended) or after it: a
+/// timeout never programs a parked device again.
 fn timed_out(late: u32, now: u64) {
+    let _guard = BLK_LOCK.lock();
+    if !READY.load(Ordering::Acquire) {
+        return;
+    }
     // SAFETY: written once in bring-up.
     let dev = unsafe { &*(&raw const BLK_DEV) };
     let first = late.trailing_zeros() as usize;
@@ -935,7 +945,9 @@ impl HwQueue for VirtioBlk {
     }
 
     fn claim(&self) -> Claim {
-        if RECOVERY.resetting() {
+        // Out of service is not dead: the layer keeps the request until the
+        // device is back (a `Dead` would take it offline for good).
+        if RECOVERY.resetting() || PARKED.load(Ordering::Acquire) != 0 {
             return Claim::Busy;
         }
         if !usable() {

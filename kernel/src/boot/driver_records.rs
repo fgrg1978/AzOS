@@ -219,6 +219,10 @@ fn virtio_blk_unbind(_: &mut KernelEnv<'_>, h: Handle, dev: &Device) -> R {
 }
 /// The line stays wired across a suspend: a reset device raises nothing.
 fn virtio_blk_suspend(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
+    if canary!("suspend-leaves-disk-up") {
+        crate::kprintln!("[CANARY] suspend-leaves-disk-up: virtio-blk's suspend does nothing");
+        return Ok(());
+    }
     azos_drv_virtio::virtio::blk::park(dev.base as usize).map_err(|()| ProbeError::Busy)
 }
 fn virtio_blk_resume(_: &mut KernelEnv<'_>, _: Handle, dev: &Device) -> R {
@@ -535,16 +539,24 @@ azos_ktest::ktest_late! {
 }
 
 // A system suspend's device step on the real bus: every device a kernel
-// driver is bound to goes down through its record and comes back, or the
-// first that cannot refuses and none is left down; the disk reads after.
+// driver is bound to goes down through its record (the disk and the NIC are
+// seen down) and comes back, or the first that cannot refuses and none is
+// left down; the disk reads after. Canary `suspend-leaves-disk-up`: the
+// disk's suspend does nothing and this test fails.
 #[cfg(feature = "ktest")]
 azos_ktest::ktest_late! {
     fn driver_records_quiesce_and_bring_back_every_kernel_device() {
+        let (disk_up, nic_up) = (azos_drv_virtio::virtio::blk::init().is_ok(), azos_drv_virtio::virtio::net::is_ready());
         let downed = super::hwbus::quiesce();
         let left = hwbus::with(|b| b.iter().filter(|(h, _)| b.suspended(*h)).count());
         match downed {
             Ok(()) => {
+                let still_up = (disk_up && azos_drv_virtio::virtio::blk::init().is_ok())
+                    || (nic_up && azos_drv_virtio::virtio::net::is_ready());
                 let failed = super::hwbus::unquiesce();
+                if still_up {
+                    return Err("a quiesced device was still up");
+                }
                 if failed != 0 {
                     return Err("a device did not come back after the quiesce");
                 }
