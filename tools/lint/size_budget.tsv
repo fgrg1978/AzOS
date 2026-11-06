@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2783328
-aarch64-microvm	.rodata	340016
-aarch64-microvm	.data	460480
+aarch64-microvm	.text	2784752
+aarch64-microvm	.rodata	340320
+aarch64-microvm	.data	464808
 aarch64-microvm	.bss	947752
-aarch64-microvm	reason	driver records
-riscv64-qemu	.text	2858200
-riscv64-qemu	.rodata	479776
-riscv64-qemu	.data	744488
+aarch64-microvm	reason	record substrate: the early region (kernel log and decision rings) is built in .data; the decision ring moved out of .bss
+riscv64-qemu	.text	2859044
+riscv64-qemu	.rodata	480072
+riscv64-qemu	.data	748816
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	driver records over the port sources
-x86_64-microvm	.text	2650713
-x86_64-microvm	.rodata	168288
-x86_64-microvm	.data	612152
-x86_64-microvm	.bss	962640
-x86_64-microvm	reason	driver records
+riscv64-qemu	reason	record substrate: the early region (kernel log and decision rings, one header) is built in .data; the decision ring moved out of .bss (64-byte slots, was 48)
+x86_64-microvm	.text	2653241
+x86_64-microvm	.rodata	168352
+x86_64-microvm	.data	616768
+x86_64-microvm	.bss	958544
+x86_64-microvm	reason	record substrate: the early region (kernel log and decision rings) is built in .data; the decision ring moved out of .bss

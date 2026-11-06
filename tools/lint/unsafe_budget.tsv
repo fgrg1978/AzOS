@@ -25,7 +25,7 @@ crates/core/chaos	0	0	0	0	1	0
 crates/core/common	4	0	0	0	0	37
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	15	2	1	0	0	25
-crates/core/decision	2	0	2	0	0	61
+crates/core/decision	2	0	2	0	0	62
 crates/core/devif	0	0	0	0	1	0
 crates/core/energy	0	0	0	0	1	0
 crates/core/ext-api	0	0	0	0	1	0
@@ -47,9 +47,9 @@ crates/core/mm	321	49	13	0	0	82
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	74
 crates/core/pkg	0	0	0	0	1	0
-crates/core/records	7	1	1	0	0	100
+crates/core/records	8	1	1	0	0	100
 crates/core/recovery	5	0	0	0	0	55
-crates/core/rings	43	14	8	0	0	99
+crates/core/rings	45	14	8	0	0	99
 crates/core/sched	425	160	14	3	0	67
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	47	9	20	0	0	82
