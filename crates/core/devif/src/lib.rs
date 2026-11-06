@@ -116,6 +116,9 @@ pub use keys::{Keys, KeysCall, KeysClient, KeysIdl, KEYS_ID};
 pub mod volume;
 pub use volume::{Report as VolumeReport, Volume, VolumeCall, VolumeClient, VolumeIdl, VOLUME_ID};
 
+pub mod fs;
+pub use fs::{Dir, DirCall, DirClient, DirIdl, Node, NodeCall, NodeClient, NodeIdl, DIR_ID, NODE_ID};
+
 pub mod families;
 pub use families::{
     Behavior, BehaviorCall, BehaviorClient, BehaviorIdl, Config, ConfigCall, ConfigClient, ConfigIdl, Flight,

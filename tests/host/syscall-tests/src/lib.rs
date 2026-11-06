@@ -524,6 +524,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod fs_protocol {
+        use super::*;
+        include!("fs_protocol.rs");
+    }
+
+    #[cfg(test)]
     mod socket_gate {
         use super::*;
         include!("socket_gate.rs");
