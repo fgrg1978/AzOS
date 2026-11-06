@@ -1,0 +1,28 @@
+[package]
+name = "azos_srv_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the ring-3 server runtime (userspace/lib/srv) over the kernel's own call queues (crates/core/ipc/src/ep_queue.rs, pulled with #[path]) and a stand-in port. Excluded from workspace."
+
+# Run with:  cd tests/host/srv-tests && cargo test
+
+# The library is the kernel's call queues; their own suite is ipc-fast-tests.
+[lib]
+test = false
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_srv = { path = "../../../userspace/lib/srv" }
+
+[features]
+# `ep_queue.rs`'s call-source canary (`crates/core/ipc/Cargo.toml`): a call
+# that finds its queue empty signals no port, so the single-thread server
+# never hears of it and every test that waits for an answer runs out of turns.
+port-calls-canary = []
+# The runtime's canary: a turn serves every queued call, so
+# `neither_calls_nor_interrupts_starve_the_other` goes red.
+batch-canary = ["azos_srv/batch-canary"]
+
+[workspace]

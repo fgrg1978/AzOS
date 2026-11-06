@@ -164,7 +164,7 @@ DECISD_SRC := $(DECISD_DIR)/src/main.rs $(DECISD_DIR)/src/bin.rs $(DECISD_DIR)/C
 INPUTD_DIR := userspace/services/inputd
 INPUTD_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/inputd
 INPUTD_ELF := $(OUT_BUILD)/inputd.elf
-INPUTD_SRC := $(INPUTD_DIR)/src/main.rs $(INPUTD_DIR)/src/focus.rs $(INPUTD_DIR)/Cargo.toml crates/core/devif/src/input.rs crates/drivers/input/wire/src/event.rs
+INPUTD_SRC := $(INPUTD_DIR)/src/main.rs $(INPUTD_DIR)/src/focus.rs $(INPUTD_DIR)/Cargo.toml crates/core/devif/src/input.rs crates/drivers/input/wire/src/event.rs $(SRV_SRC)
 # The compositor (Kconfig COMPOSITOR): the sole holder of the Display interface and
 # the Secure Attention Key's trusted surface. It links the pixel engine and the
 # protocol library, and includes the framebuffer console's font.
@@ -219,7 +219,7 @@ PTPD_SRC     := $(wildcard $(PTPD_DIR)/src/*.rs) $(PTPD_DIR)/Cargo.toml $(PTPD_D
 AUDIOD_DIR   := userspace/services/audiod
 AUDIOD_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/audiod
 AUDIOD_ELF   := $(OUT_BUILD)/audiod.elf
-AUDIOD_SRC   := $(wildcard $(AUDIOD_DIR)/src/*.rs) $(AUDIOD_DIR)/Cargo.toml
+AUDIOD_SRC   := $(wildcard $(AUDIOD_DIR)/src/*.rs) $(AUDIOD_DIR)/Cargo.toml $(SRV_SRC)
 # The MCP bridge (Kconfig MCP_BRIDGE) over the in-tree MCP codec and the RPC
 # transport's warrant token.
 MCP_LIB_SRC   := $(wildcard userspace/lib/mcp/src/*.rs) userspace/lib/mcp/Cargo.toml
@@ -492,6 +492,8 @@ VSBENCH_ELF_AARCH64   := $(AARCH64_DIR)/vsbench.elf
 # any name with a space then a digit, the shape every one of these
 # duplicates takes; it does nothing when no duplicate exists.
 LIBSYS_DIR := crates/core/libsys
+# The ring-3 server runtime (userspace/lib/srv), for the images built on it.
+SRV_SRC = userspace/lib/srv/Cargo.toml $(wildcard userspace/lib/srv/src/*.rs)
 LIBSYS_SRC := $(LIBSYS_DIR)/Cargo.toml $(LIBSYS_DIR)/src/lib.rs \
               $(shell find $(LIBSYS_DIR)/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') \
               crates/core/abi/Cargo.toml $(shell find crates/core/abi/src -name '*.rs' -not -name '* [0-9]*') \

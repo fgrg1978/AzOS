@@ -11764,7 +11764,7 @@ HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests scsi-tests
          percpu-tests trace-tests iommu-tests pci-tests dma-tests
          nvme-tests x86-platform-tests fb-tests rings-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
          logind-tests stdrt-tests pkg-tests zenoh-tests mcp-tests inspect-tests actuation-tests
-         usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests"
+         usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests srv-tests"
 # The same hole, one suite at a time: percpu-tests (wave 15) and four suites
 # from b6d74c00 were never in the list above. Every tracked suite is now either
 # in it or run by a row of its own (lx-loader-tests, below, needs its modules).

@@ -1,0 +1,21 @@
+[package]
+name = "azos_srv"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The ring-3 server runtime: one thread, one event port, one wait. A server's calls (the endpoint's queued-calls source and the poll accept), its interrupt lines, its timers and its shared-ring doorbells all wake the same SYS_PORT_WAIT, and each reaches a typed handler. no_std; the kernel side is a trait, implemented over libsys (feature `libsys`) and by the host suite (tests/host/srv-tests). Standalone, not a member of the root workspace."
+
+[dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
+azos_libsys = { path = "../../../crates/core/libsys", optional = true }
+
+[features]
+# The kernel side over libsys: what a server image builds with.
+libsys = ["dep:azos_libsys"]
+# Host canary only (tests/host/srv-tests): a turn serves every queued call, so
+# a storm of calls starves the interrupts and the timers.
+batch-canary = []
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]
