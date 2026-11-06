@@ -33,9 +33,9 @@ const POLICY: SupPolicy = SupPolicy { burst: DRIVER_MAX_RESTARTS, interval: u64:
 
 // ── The supervisor's table ─────────────────────────────────────────────────
 
-/// A supervised image: loaded as `tid`, registered at `t`.
+/// A supervised image: spawned as `tid`, registered at `t`.
 fn serving(t: &mut SupTable, tid: u32, now: u64) -> usize {
-    let slot = t.note_spawn(tid, IMAGE).expect("table full");
+    let slot = t.note_started(tid, IMAGE).expect("table full");
     assert_eq!(t.bind(KIND, tid, now), BindOutcome::First { slot });
     slot
 }
@@ -70,8 +70,6 @@ fn deaths_one_to_three_restart_and_the_fourth_gives_up() {
         let heir = tid + 1;
         assert!(t.respawned(slot, heir, now));
         assert_eq!(t.next_due(now), (None, None), "created once, not twice");
-        // The loader notes the successor under the entry it already has.
-        assert_eq!(t.note_spawn(heir, IMAGE), Some(slot));
         match t.bind(KIND, heir, now + 7) {
             BindOutcome::Restored { slot: s, attempt: a, since_death } => {
                 assert_eq!((s, a), (slot, attempt));
@@ -177,37 +175,22 @@ fn no_successor_is_due_until_the_exit_hook_has_held_its_resources() {
     assert_eq!(t.next_due(u64::MAX), (None, None));
 }
 
-/// A program the loader started that never registers a kind is not a driver:
-/// its death releases everything as before, and its entry is freed so the
-/// table does not fill with programs that exited.
-#[test]
-fn a_program_that_never_registers_is_not_supervised() {
-    let mut t = SupTable::new();
-    let slot = t.note_spawn(500, b"/fat/BRAINCLI.ELF").unwrap();
-    assert_eq!(t.entry(slot).unwrap().state, SupState::Candidate);
-    assert_eq!(t.on_exit(500, 1, FAILED, POLICY), ExitVerdict::NotSupervised);
-    assert!(t.entry(slot).is_none(), "the candidate's entry was not freed");
-    // A TID the loader never started is never bound, whatever it registers.
-    assert_eq!(t.bind(KIND, 501, 2), BindOutcome::NotSupervised);
-    assert_eq!(t.on_exit(501, 3, FAILED, POLICY), ExitVerdict::NotSupervised);
-    // TID 0 is "no task": never noted, never matched.
-    assert_eq!(t.note_spawn(0, IMAGE), None);
-    assert_eq!(t.on_exit(0, 4, FAILED, POLICY), ExitVerdict::NotSupervised);
-}
-
 /// The table is bounded; past it a program runs unsupervised rather than
-/// displacing one that is supervised. A path longer than the loader's buffer
-/// is refused rather than cut.
+/// displacing one that is supervised. A path longer than the table keeps is
+/// refused rather than cut. TID 0 is "no task": never noted, never matched.
 #[test]
 fn the_table_is_bounded_and_refuses_what_does_not_fit() {
     let mut t = SupTable::new();
     for i in 0..MAX_SUPERVISED as u32 {
-        assert!(t.note_spawn(600 + i, IMAGE).is_some());
+        assert!(t.note_started(600 + i, IMAGE).is_some());
     }
-    assert_eq!(t.note_spawn(700, IMAGE), None);
+    assert_eq!(t.note_started(700, IMAGE), None);
     let mut t = SupTable::new();
-    assert_eq!(t.note_spawn(1, &[b'x'; 65]), None);
-    assert_eq!(t.note_spawn(1, b""), None);
+    assert_eq!(t.note_started(1, &[b'x'; 65]), None);
+    assert_eq!(t.note_started(1, b""), None);
+    assert_eq!(t.note_started(0, IMAGE), None);
+    assert_eq!(t.on_exit(0, 4, FAILED, POLICY), ExitVerdict::NotSupervised);
+    assert_eq!(t.on_exit(501, 3, FAILED, POLICY), ExitVerdict::NotSupervised);
 }
 
 /// No successor could be created (task pool full): the entry goes `Down`
@@ -236,7 +219,6 @@ fn cycle(t: &mut SupTable, slot: usize, dead: u32, heir: u32, now: u64, p: SupPo
     assert_eq!(s, slot);
     assert!(t.held(slot));
     assert!(t.respawned(slot, heir, not_before));
-    assert_eq!(t.note_spawn(heir, IMAGE), Some(slot));
     assert!(matches!(t.bind(KIND, heir, not_before + 1), BindOutcome::Restored { .. }));
     attempt
 }
@@ -506,12 +488,10 @@ const ML_IMAGE: &[u8] = b"/fat/MLSRV.ELF";
 
 /// A `Spawned` image (a topology `start = true` row, the ML service) is
 /// supervised from its start: before it registers anything its entry is
-/// `Serving` with no kind, and a failed death is restarted. The same death of
-/// an autorun image that never registered is not (the pre-wave behaviour for
-/// autorun, unchanged).
+/// `Serving` with no kind, and a failed death is restarted.
 ///
-/// **Canary**: `note_started` enters `Candidate` (supervised only once it
-/// registers, as autorun): the spawned image's death is `NotSupervised`.
+/// **Canary**: `on_exit` restarts only an entry with a kind: the spawned
+/// image's death is `NotSupervised`.
 #[test]
 fn a_spawned_image_is_supervised_before_it_registers() {
     let mut t = SupTable::new();
@@ -521,10 +501,6 @@ fn a_spawned_image_is_supervised_before_it_registers() {
                                                      SUP_NO_KIND, 2000));
     assert!(matches!(t.on_exit(2000, 10, FAILED, POLICY),
                      ExitVerdict::Restart { attempt: 1, not_before: 10, .. }));
-    // The autorun twin of that same death: not supervised.
-    let a = t.note_spawn(2100, IMAGE).unwrap();
-    assert_eq!(t.entry(a).unwrap().origin, SupOrigin::Autorun);
-    assert_eq!(t.on_exit(2100, 10, FAILED, POLICY), ExitVerdict::NotSupervised);
 }
 
 /// Its first registration is `First` (it keeps the kind); a successor's is
@@ -554,8 +530,8 @@ fn a_spawned_image_binds_its_first_kind_and_its_successor_is_restored() {
 /// `DRIVER_MAX_RESTARTS` times and then given up on, `Down` and waiting to be
 /// recorded. Before wave 11 that image died once, unsupervised and unrecorded.
 ///
-/// **Canary**: `note_started` enters `Candidate`: the first death is
-/// `NotSupervised` and nothing is ever recorded.
+/// **Canary**: `on_exit` restarts only an entry with a kind: the first death
+/// is `NotSupervised` and nothing is ever recorded.
 #[test]
 fn a_spawned_crash_loop_gives_up_after_the_burst_and_is_recorded() {
     let mut t = SupTable::new();
@@ -710,15 +686,15 @@ fn restart_no_never_restarts_and_on_failure_is_the_default() {
     assert!(!t.set_restart(MAX_SUPERVISED - 1, SupRestart::Always));
 }
 
-/// Spawned and autorun entries share the one bounded table, and TID 0 or a
-/// path that does not fit is never noted.
+/// Spawned entries and kernel hosts share the one bounded table, and TID 0 or
+/// a path that does not fit is never noted.
 #[test]
 fn spawned_entries_share_the_bounded_table() {
     let mut t = SupTable::new();
     assert_eq!(t.note_started(0, ML_IMAGE), None);
     assert_eq!(t.note_started(1, &[b'x'; 65]), None);
     assert_eq!(t.note_started(1, b""), None);
-    assert!(t.note_spawn(2700, IMAGE).is_some());
+    assert!(t.note_kernel_host(2700, b"buzzer").is_some());
     for i in 1..MAX_SUPERVISED as u32 {
         assert!(t.note_started(2700 + i, ML_IMAGE).is_some());
     }
@@ -732,7 +708,7 @@ fn spawned_entries_share_the_bounded_table() {
 /// `CONTAINED_EXIT_STATUS`) restarts it on the same entry, within the burst,
 /// and the burst still gives up.
 ///
-/// **Canary**: `note_kernel_host` enters `Candidate` (as autorun): the first
+/// **Canary**: `on_exit` restarts only an entry with a kind: the first
 /// contained death is `NotSupervised` and nothing restarts.
 #[test]
 fn a_kernel_host_is_supervised_and_its_contained_panic_restarts_it() {
@@ -795,8 +771,8 @@ fn spawned(t: &mut SupTable, tid: u32) -> usize {
 ///
 /// **Canaries.** Let `swap_commit` count a restart: `restarts` reads 1.
 /// Let `swap_begin` accept the entry's own task: the self-swap assertion
-/// fails. Let `request_swap` accept an `Autorun` image: the origin
-/// assertion fails.
+/// fails. Let `request_swap` accept a kernel host: `only_a_spawned_image_can_be_swapped`
+/// fails.
 #[test]
 fn a_swap_replaces_the_task_and_spends_no_restart() {
     let mut t = SupTable::new();
@@ -828,8 +804,8 @@ fn a_swap_replaces_the_task_and_spends_no_restart() {
 #[test]
 fn only_a_spawned_image_can_be_swapped() {
     let mut t = SupTable::new();
-    let slot = serving(&mut t, 100, 1_000); // Autorun origin
-    assert!(!t.request_swap(slot), "an autorun image is not created from a row");
+    let slot = t.note_kernel_host(100, b"buzzer").expect("table full");
+    assert!(!t.request_swap(slot), "a kernel host is not created from a row");
     assert!(!t.request_swap(MAX_SUPERVISED), "no such slot");
     let mut t = SupTable::new();
     let slot = spawned(&mut t, 100);

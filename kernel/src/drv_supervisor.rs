@@ -1,51 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel side of the cold-restart supervisor for ring-3
-//! drivers. The decisions live in `azos_sched::supervisor` (a pure table
-//! with host tests); this file is what acts on them.
+//! The kernel side of the cold-restart supervisor: what the kernel keeps up
+//! itself. The decisions live in `azos_sched::supervisor` (a pure table with
+//! host tests); this file is what acts on them.
 //!
-//! # The path, from a death to a driver serving again
+//! Every ring-3 component of the topology, drivers included, is the component
+//! manager's (`userspace/services/compmgr`): it starts them with
+//! `SYS_SPAWN_EX` and restarts them by their row's `restart` key and the
+//! failure contract of what they serve. The kernel supervises only what no
+//! ring-3 supervisor could keep up: the manager itself and the ML service
+//! ([`spawn_supervised`], `SupOrigin::Spawned`), and the host task of a driver
+//! placed in the kernel ([`start_kernel_host`], `SupOrigin::KernelHost`).
+//! For a manager child the kernel keeps one mechanism: the exit hook holds
+//! the dead server's named endpoints, unclaimed with the same generation, for
+//! the successor the manager starts (`console_mode::manager_restarts`).
 //!
-//! 1. The driver's task dies — a fault, a seccomp kill, a stop request from
-//!    the kernel (`driver_request_stop`) or its own exit. The exit hook
-//!    (`task_release_all_resources`) asks [`exit_verdict`] first.
-//! 2. `Restart`: the hook HOLDS what a client reaches the driver through —
-//!    the driver-server slot (active, queue and waiters kept, no owner), the
-//!    named endpoints (unclaimed, same generation) — and releases everything else as for any task. Then
-//!    [`exit_done`] wakes the supervisor task.
-//! 3. The supervisor task (created at boot, from a kernel context) creates
-//!    the successor on the dead driver's hart, hands it the slot before it can run, and records the restart on the flight recorder.
-//! 4. The successor runs the autorun loader on the same path: it re-reads
-//!    the image, re-checks its digest against its seccomp profile, is granted
-//!    its topology capabilities (re-claiming its named endpoints), and execs.
-//!    The image registers its kind exactly as the first one did; the driver
-//!    server accepts the owner it was handed to, and the queued requests are
-//!    served.
-//! 5. `GiveUp` (a failure after `SUP_RESTART_BURST` restarts within
+//! # The path, from a death to a task serving again
+//!
+//! 1. The task dies — a fault, a seccomp kill, a stop request or its own
+//!    exit. The exit hook (`task_release_all_resources`) asks
+//!    [`exit_verdict`] first.
+//! 2. `Restart`: the hook HOLDS what a client reaches the task through — the
+//!    named endpoints (unclaimed, same generation) — and releases everything
+//!    else as for any task. Then [`exit_done`] wakes the supervisor task.
+//! 3. The supervisor task (created at boot, from a kernel context) spawns the
+//!    successor from the same path (`respawn_spawned`: same digest check, row,
+//!    class, budget and capabilities, re-claiming the named endpoints), or a
+//!    new kernel task on the host's entry, and records the restart on the
+//!    flight recorder.
+//! 4. `GiveUp` (a failure after `SUP_RESTART_BURST` restarts within
 //!    `SUP_RESTART_INTERVAL_S`): the hook releases everything; the supervisor
-//!    records it. The kind stays down.
-//! 6. `Exited` (the driver exited 0): released like any task, not restarted
-//!    and not recorded — systemd's `Restart=on-failure`. Its row's
-//!    `restart` key (wave 11) changes that: `always` restarts an exit 0 as
-//!    in step 2, `no` ends every death here (`NoRestart`).
+//!    records it. The image stays down.
+//! 5. `Exited` (the task exited 0): released like any task, not restarted
+//!    and not recorded — systemd's `Restart=on-failure`. Its row's `restart`
+//!    key changes that: `always` restarts an exit 0 as in step 2, `no` ends
+//!    every death here (`NoRestart`).
 //!
 //! # The interface (what a kernel caller uses)
 //!
 //! * [`spawn_supervised`] — the one way a kernel task starts a ring-3 image
-//!   that it keeps up itself: the component manager (`boot::launch`), which
-//!   no ring-3 supervisor could keep up, and the ML service. Every other
-//!   `start = true` row of the topology is the component manager's
-//!   (`userspace/services/compmgr`), the ring-3 host of a driver that moves
-//!   between hosts (`crate::buzzer`) included: it starts them with
-//!   `SYS_SPAWN_EX` and restarts them by the row's `restart` key and the
-//!   failure contract of what they serve; the kernel holds no entry for those.
-//!   It is `SYS_SPAWN_EX`'s machinery (`spawn_path`):
-//!   same digest check, row, class, budget and capabilities. The entry is
+//!   that it keeps up itself: the component manager (`boot::launch`) and the
+//!   ML service. It is `SYS_SPAWN_EX`'s machinery (`spawn_path`). The entry is
 //!   made before the child is released, so there is no instant at which the
-//!   child runs unsupervised. Its successors are spawned the same way, from
-//!   the same path, by the supervisor task (`respawn`, `SupOrigin::Spawned`).
-//! * The autorun loader (`load_and_exec_image` in `kernel/src/tasks/loader.rs`) notes its image
-//!   itself (`sup_note_spawn`); it is supervised once it registers a kind.
+//!   child runs unsupervised.
 //! * [`start`] creates the supervisor task. `kernel_main` calls it once, on a
 //!   boot that can start anything supervised, before any of the above.
 //! * [`exit_verdict`] / [`exit_done`] are the exit hook's two calls.
@@ -56,7 +53,7 @@
 //! `SUP_RESTART_BURST` / `SUP_RESTART_INTERVAL_S`, a give-up recorded on the
 //! flight recorder (`SAFETY_DRIVER_SUPERVISOR`, `SUP_ACTION_GAVE_UP`), unless
 //! the image's topology row says `restart = always` or `restart = no`
-//! ([`row_restart`], wave 11). An end under `restart = no` is recorded too
+//! ([`row_restart`]). An end under `restart = no` is recorded too
 //! (`SUP_ACTION_NO_RESTART`), by the same loop.
 //!
 //! # Why a task, and not a restart from the exit hook
@@ -79,19 +76,18 @@ use azos_sched::supervisor::{
     sup_entry, sup_find_image, sup_held, sup_mark_recorded, sup_next_due, sup_next_swap,
     sup_next_unrecorded, sup_note_started, sup_on_exit, sup_respawn_failed,
     sup_respawn_refused, sup_respawned, sup_set_restart, sup_swap_abort, sup_swap_begin,
-    sup_swap_commit, sup_swap_refused, ExitVerdict, SupEntry, SupFall, SupOrigin, SupPolicy, SupRestart, SupState,
-    DRIVER_RESTART_COOLDOWN_MS, MAX_SUPERVISED, SUP_IMAGE_MAX,
+    sup_swap_commit, sup_swap_refused, ExitVerdict, SupEntry, SupFall, SupOrigin, SupPolicy, SupRestart,
+    DRIVER_RESTART_COOLDOWN_MS, MAX_SUPERVISED,
 };
 use azos_sched::WaitReason;
 
 /// The supervisor task's TID, 0 until it runs.
 static SUP_TID: AtomicU32 = AtomicU32::new(0);
 
-/// Per supervisor slot: the hart the dead driver was pinned to, read in its
-/// exit hook, where the successor is created. Not the autorun hart constant:
-/// on a machine with fewer harts, the boot's autorun task was moved off a
-/// hart that never started (`rebalance_from_offline_cpus`), and a task pinned
-/// at run time to such a hart is never dispatched. -1 = any hart.
+/// Per supervisor slot: the hart the dead kernel host was pinned to, read in
+/// its exit hook, where the successor is created: the live hart, not a
+/// constant, since a task pinned at run time to a hart that never started is
+/// never dispatched. -1 = any hart.
 static SUCCESSOR_HART: [AtomicI8; MAX_SUPERVISED] = {
     const ANY: AtomicI8 = AtomicI8::new(-1);
     [ANY; MAX_SUPERVISED]
@@ -134,10 +130,9 @@ fn policy() -> SupPolicy {
 }
 
 /// Create the supervisor task. Called once, by `kernel_main`, on a boot that
-/// can start something supervised: an autorun image is configured, a topology
-/// row says `start = true` (the component manager), a driver may move between
-/// hosts (the supervisor task does the moves), or ML is enabled (the ML
-/// service). It blocks with
+/// can start something supervised: a topology row says `start = true` (the
+/// component manager), a driver may move between hosts (the supervisor task
+/// does the moves), or ML is enabled (the ML service). It blocks with
 /// no deadline until a supervised task dies, so it costs no wake-ups.
 pub(crate) fn start() {
     if STARTED.swap(true, Ordering::AcqRel) {
@@ -427,8 +422,7 @@ fn supervisor_task(_: usize) {
     }
 }
 
-/// Step 3: create the successor for `slot`, hand it what its predecessor
-/// held, then let it run.
+/// Step 3: create the successor for `slot`.
 fn respawn(slot: usize) {
     let Some(e) = sup_entry(slot) else { return };
     if e.origin == SupOrigin::Spawned {
@@ -437,35 +431,6 @@ fn respawn(slot: usize) {
     }
     if e.origin == SupOrigin::KernelHost {
         respawn_kernel_host(slot, &e);
-        return;
-    }
-    let dead = e.dead_tid;
-    let hart = SUCCESSOR_HART.get(slot).map_or(-1, |h| h.load(Ordering::Relaxed));
-    match azos_sched::try_task_create_affinity(
-        "drv-restart", successor_task, slot, crate::AUTORUN_PRIORITY, hart)
-        .and_then(azos_sched::tid_for_idx)
-    {
-        Some(heir) => {
-            // Before `sup_respawned`: the successor waits for that before it
-            // loads anything, so the slot is its own by the time its image
-            // registers.
-            let slots = azos_driver_server::driver_adopt(dead, heir);
-            let t = now();
-            let _ = sup_respawned(slot, heir, t);
-            kprintln!("[SUP] restart {}/{} of {}: successor tid={} for tid={} created {} ms after \
-                       the death ({} driver slot(s) handed over)",
-                      e.window_n, RESTART_BURST, image_str(e.image()), heir, dead,
-                      t.saturating_sub(e.died_at) / ticks_per_ms(), slots);
-            record(SUP_ACTION_RESTART, e.kind, e.restarts);
-        }
-        None => {
-            let _ = sup_respawn_failed(slot);
-            let _ = azos_driver_server::driver_release_orphans(dead);
-            record(SUP_ACTION_RESPAWN_FAILED, e.kind, e.restarts);
-            sup_mark_recorded(slot);
-            azos_drv_sys::kerr!("[SUP] restart {}/{} of {} REFUSED: task pool full; released, it stays down",
-                      e.window_n, RESTART_BURST, image_str(e.image()));
-        }
     }
 }
 
@@ -694,49 +659,6 @@ fn swap(slot: usize) {
         }
     }
 }
-
-/// Step 4: a successor. Waits until the supervisor has made it the entry's
-/// task (the hand-over is done by then), then runs the autorun loader on the
-/// entry's path. It returns only if the image could not be started, and that
-/// exit counts against the budget like any death.
-fn successor_task(slot: usize) {
-    let me = azos_sched::current_task_tid();
-    // Sleep-polled on the counter, with a ceiling: it was an unbounded yield
-    // loop, and a yield hands the hart only to tasks at this one's priority
-    // or above — never to a lower-priority supervisor on the same hart.
-    let give_up = now().saturating_add(azos_syscall::sleep::ms_to_ticks(SUCCESSOR_WAIT_MS));
-    let e = loop {
-        match sup_entry(slot) {
-            Some(e) if e.tid == me => break e,
-            Some(e) if e.state == SupState::Restarting && e.tid == 0 => {
-                if now() >= give_up {
-                    azos_drv_sys::kerr!("[SUP] FAIL successor tid={} was not handed slot {} in {} ms",
-                              me, slot, SUCCESSOR_WAIT_MS);
-                    return;
-                }
-                azos_syscall::sleep::sleep_ms(1);
-            }
-            _ => return,
-        }
-    };
-    let mut path = [0u8; SUP_IMAGE_MAX];
-    let n = e.image_len as usize;
-    path[..n].copy_from_slice(&e.image[..n]);
-    crate::load_and_exec_image(&path[..n]);
-    // Reached only when the image could not be started (gone, digest
-    // mismatch, gate absent): a FAILURE, so it spends budget like a crash.
-    // Returning would exit 0 through `task_entry_wrapper`, which the
-    // supervisor reads as a clean exit (`Restart=on-failure`) and would stop
-    // the driver for good without a give-up record.
-    azos_sched::task_exit_with_code(SUCCESSOR_LOAD_FAILED);
-}
-
-/// How long a successor waits for the supervisor to make it the entry's task.
-const SUCCESSOR_WAIT_MS: u64 = 10_000;
-
-/// Exit code of a successor whose image could not be started. Non-zero: a
-/// failure to the supervisor. Not `128 + signal`: nothing killed it.
-const SUCCESSOR_LOAD_FAILED: i32 = 1;
 
 // ── Block devices that stop answering ───────────────────────────────────────
 
@@ -1064,7 +986,7 @@ mod smoke {
     fn manager_restarted(h: u32) -> Option<u64> {
         const DIR: &[u8] = b"/fat/";
         let name = azos_topology::builder::TASK_COMPMGR_IMAGE;
-        let mut path = [0u8; SUP_IMAGE_MAX];
+        let mut path = [0u8; azos_sched::supervisor::SUP_IMAGE_MAX];
         let n = DIR.len() + name.len();
         path[..DIR.len()].copy_from_slice(DIR);
         path[DIR.len()..n].copy_from_slice(name);

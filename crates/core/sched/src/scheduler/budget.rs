@@ -253,7 +253,7 @@ pub fn domain_shared(tid: u32) -> bool {
 ///
 /// The caller wipes `tid`'s own table first (`cap_store::reset`, while `tid`
 /// is still alone in its domain) and must be sure `tid` takes no capability
-/// call meanwhile (a successor still parked in `successor_task`). Pages
+/// call meanwhile (a swap successor its spawn has not released yet). Pages
 /// charged to `tid`'s old domain are charged to the new one best effort: a
 /// refusal at the limit leaves them uncharged, and the budget's discharge
 /// saturates. `false`, nothing changed, when either task is gone or `of`'s

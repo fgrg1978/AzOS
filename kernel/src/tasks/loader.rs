@@ -27,9 +27,7 @@ pub(crate) fn autorun_task(arg: usize) {
 }
 
 /// The autorun loader's priority (Kconfig TASK_AUTORUN_PRIORITY; its CPU:
-/// TASK_AUTORUN_PLACE). Every successor the M4 supervisor creates
-/// (`drv_supervisor`) loads at this priority, on the hart the driver it
-/// replaces was pinned to.
+/// TASK_AUTORUN_PLACE).
 pub(crate) const AUTORUN_PRIORITY: u32 = azos_limits::TASK_AUTORUN_PRIORITY as u32;
 const _: () = assert!(
     AUTORUN_PRIORITY >= azos_sched::RT_PRIORITY_THRESHOLD,
@@ -229,17 +227,6 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
     // image; the `linkkey` endpoint derives the node's identity from it.
     if let Some(idx) = azos_sched::idx_for_tid(azos_sched::current_task_tid()) {
         azos_sched::domain::set_measurement(azos_sched::task_domain(idx), digest);
-    }
-
-    // Note which image this task is, so that if it registers a
-    // driver-server kind the supervisor can re-create it from the same path.
-    // A successor the supervisor created is already on its entry.
-    // Its topology row's `restart` key (wave 11) applies from here on.
-    if let Some(slot) = azos_sched::supervisor::sup_note_spawn(
-        azos_sched::current_task_tid(), path_slice)
-    {
-        let _ = azos_sched::supervisor::sup_set_restart(
-            slot, drv_supervisor::row_restart(path_slice));
     }
 
     // Provision the capabilities the process will need BEFORE it runs: the

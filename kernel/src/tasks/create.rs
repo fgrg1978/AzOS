@@ -566,25 +566,21 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // of the kernel's own lines, on the boot CPU where the kernel routes them.
     irq_thread::start(hart_id);
 
-    // The supervisor that restarts what the kernel itself starts
-    // in ring 3 — the autorun image once it registers as a driver, the
-    // component manager (which supervises every other `start = true` row
-    // itself, the ring-3 host of the buzzer included) and the ML service
-    // (`drv_supervisor::spawn_supervised`). Created only on a boot that can
-    // start one of them, and here, from a kernel context, on purpose: a task
-    // inherits its creator's page table root, and the successors it creates
-    // must not inherit a dying ring-3 task's.
+    // The supervisor that restarts what the kernel itself starts in ring 3 —
+    // the component manager (which supervises every other `start = true` row
+    // itself, drivers included) and the ML service
+    // (`drv_supervisor::spawn_supervised`) — and the kernel hosts of drivers.
+    // Created only on a boot that can start one of them, and here, from a
+    // kernel context, on purpose: a task inherits its creator's page table
+    // root, and the successors it creates must not inherit a dying ring-3
+    // task's.
     let start_rows = azos_topology::get().is_some_and(|t| t.tasks().iter().any(|r| r.start));
     // A row that may move between hosts needs the supervisor task even if
     // nothing else does: it does the moves, and supervises the kernel host.
     let elastic_rows = azos_topology::get().is_some_and(|t| t.tasks().iter().any(|r| r.place.elastic()));
-    {
-        let autorun = cfg!(feature = "autorun")
-            && azos_config::cfg_get(b"autorun").is_some_and(|p| !p.is_empty());
-        let ml = cfg!(not(feature = "no-ml")) && ML_ENABLED.load(Ordering::Acquire);
-        if autorun || start_rows || ml || elastic_rows {
-            drv_supervisor::start();
-        }
+    let ml = cfg!(not(feature = "no-ml")) && ML_ENABLED.load(Ordering::Acquire);
+    if start_rows || ml || elastic_rows {
+        drv_supervisor::start();
     }
 
     // The INA219: its topology row says where it runs. Placed in the kernel

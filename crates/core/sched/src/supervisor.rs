@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Cold-restart supervisor for ring-3 drivers.
+//! The kernel's cold-restart supervisor: what it keeps up itself.
 //!
-//! A ring-3 task that the autorun loader started from an image on disk, and
-//! that then registered a driver-server kind, or that the kernel spawned
-//! because the system declares it (see *Origins*), is **supervised**: when it dies
-//! (a fault, a seccomp kill, a kernel stop request or a plain exit) the kernel
-//! keeps its driver-server slot, its named endpoints and its service names,
-//! re-creates the task from the same image, and hands those to the new task.
+//! Every ring-3 component of the topology is the component manager's
+//! (`userspace/services/compmgr`), drivers included: the manager restarts them.
+//! The kernel supervises only what nothing in ring 3 could keep up (see
+//! *Origins*): the component manager itself and the ML service, which it
+//! spawns because the system declares them, and the host task of a driver
+//! placed in the kernel. When one dies (a fault, a seccomp kill, a kernel stop
+//! request or a plain exit) the kernel keeps its named endpoints and its
+//! service names, re-creates the task, and hands those to the new task.
 //!
 //! # When it restarts (owner decision 2026-09-28: systemd's model)
 //!
@@ -36,29 +38,22 @@
 //! fill its 16 entries by name; deleted in D6), and `sys_wdt` moves its
 //! `Crashed` entries back to `Registered` every ~500 ms. A restart decision taken there could be exhausted, or steered, by
 //! a program that is not the driver. No syscall reaches this table: it is
-//! written only by the autorun loader ([`sup_note_spawn`]), by the kernel's
-//! own spawn of a declared image ([`sup_note_started`]), by the driver's
-//! own successful typed registration ([`sup_bind`]), by the exit hook
-//! ([`sup_on_exit`]) and by the supervisor task. It shares the AQ2 cooldown
-//! constant; its budget is the window above.
+//! written only by the kernel's own spawn of a declared image
+//! ([`sup_note_started`]) or of a kernel host ([`sup_note_kernel_host`]), by
+//! the driver's own successful typed registration ([`sup_bind`]), by the exit
+//! hook ([`sup_on_exit`]) and by the supervisor task. It shares the AQ2
+//! cooldown constant; its budget is the window above.
 //!
 //! # Identity
 //!
 //! TIDs are never reused within an uptime, so a task that is re-created has a
-//! new TID. The identity that survives is the **image path** the loader read
+//! new TID. The identity that survives is the **image path** the spawn read
 //! (and re-reads, and re-hashes against its seccomp profile, on every
-//! restart). The entry follows the task through `Candidate` (loaded, not a
-//! driver yet) → `Serving` (registered a kind) → `Restarting` (died, a
-//! successor is due or loading) → `Serving` again, or → `Down`.
+//! restart). The entry follows the task through `Serving` → `Restarting`
+//! (died, a successor is due or starting) → `Serving` again, or → `Down`.
 //!
-//! # Origins (wave 11; `KernelHost` wave 13)
+//! # Origins
 //!
-//! * [`SupOrigin::Autorun`] — an image the autorun loader started
-//!   ([`sup_note_spawn`]). It is a `Candidate` until it registers a
-//!   driver-server kind, and only then supervised: the autorun image may be a
-//!   program that is not a driver (the brain client, a test image), and such a
-//!   program is never restarted. Its successor is a kernel task that runs the
-//!   autorun loader on the same path.
 //! * [`SupOrigin::Spawned`] — an image the kernel itself started through
 //!   `SYS_SPAWN_EX`'s machinery because the system declares it: the topology's
 //!   `start = true` rows and the ML service ([`sup_note_started`]). It is
@@ -67,7 +62,7 @@
 //!   given up on like one that crashes later. Its successor is spawned again
 //!   from the same path by the supervisor task.
 //!
-//! * [`SupOrigin::KernelHost`] (wave 13) — the host task of a driver placed
+//! * [`SupOrigin::KernelHost`] — the host task of a driver placed
 //!   in the kernel ([`sup_note_kernel_host`]). Supervised from the start like
 //!   `Spawned`; it dies only through a contained kernel panic, and its
 //!   successor is a new kernel task on the same entry point.
@@ -102,9 +97,8 @@ use azos_sync::SpinLock;
 
 pub use crate::driver::{DRIVER_MAX_RESTARTS, DRIVER_RESTART_COOLDOWN_MS};
 
-/// Supervised images at once: the autorun image, the ML service and the
-/// topology's `start = true` rows (`driver.rs`'s `MAX_SPAWN_DESCRIPTORS` is
-/// the same bound). An image that does not fit runs unsupervised.
+/// Supervised images at once: the component manager, the ML service and the
+/// kernel hosts of drivers. An image that does not fit runs unsupervised.
 pub const MAX_SUPERVISED: usize = 8;
 
 /// Largest restart burst a [`SupPolicy`] may name (Kconfig
@@ -129,16 +123,12 @@ impl SupPolicy {
     }
 }
 
-/// Longest image path kept. The autorun path buffer is 64 bytes with its NUL
-/// (`AUTORUN_PATH_MAX` in the kernel), so every path the loader can open fits.
+/// Longest image path kept.
 pub const SUP_IMAGE_MAX: usize = 64;
 
 /// How a supervised image was first started, and so how it is restarted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SupOrigin {
-    /// The autorun loader ([`SupTable::note_spawn`]): supervised once it
-    /// registers a driver-server kind; restarted by re-running the loader.
-    Autorun,
     /// A kernel spawn of a declared image ([`SupTable::note_started`]):
     /// supervised from the start; restarted by spawning the path again.
     Spawned,
@@ -156,11 +146,7 @@ pub enum SupOrigin {
 pub enum SupState {
     /// Unused slot.
     Free,
-    /// Loaded by the autorun loader; not a driver (yet). Freed when its task
-    /// exits without having registered a kind.
-    Candidate,
-    /// Its task is alive and supervised: an `Autorun` task that registered a
-    /// driver-server kind, or a `Spawned` task from its start (its `kind` is
+    /// Its task is alive and supervised, from its start (its `kind` is
     /// [`SUP_NO_KIND`] until it registers one).
     Serving,
     /// Its task died with budget left. `tid == 0`: the successor is not
@@ -195,7 +181,7 @@ pub struct SupEntry {
     pub restart: SupRestart,
     /// How the image was first started; how its successors are created.
     pub origin: SupOrigin,
-    /// The path the loader opened, byte for byte.
+    /// The path the spawn opened, byte for byte.
     pub image: [u8; SUP_IMAGE_MAX],
     pub image_len: u8,
     /// The driver-server kind its task registered first. `u32::MAX` until then.
@@ -248,7 +234,7 @@ impl SupEntry {
         SupEntry {
             state: SupState::Free,
             restart: SupRestart::OnFailure,
-            origin: SupOrigin::Autorun,
+            origin: SupOrigin::Spawned,
             image: [0; SUP_IMAGE_MAX],
             image_len: 0,
             kind: SUP_NO_KIND,
@@ -277,7 +263,7 @@ impl SupEntry {
 /// What registering a kind meant for the supervisor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BindOutcome {
-    /// The task was not started by the autorun loader: not supervised.
+    /// The task is not supervised.
     NotSupervised,
     /// First registration of a supervised image: from now on it is restarted.
     First { slot: usize },
@@ -342,29 +328,6 @@ impl SupTable {
         self.entries.iter().position(|e| e.state != SupState::Free && e.tid == tid)
     }
 
-    /// The autorun loader is about to exec `image` as task `tid`.
-    ///
-    /// A successor the supervisor created is already on its entry and keeps
-    /// it. Anything else becomes a `Candidate`. `None` when the table is full
-    /// or the path does not fit: the program then runs unsupervised, as every
-    /// program did before M4.
-    pub fn note_spawn(&mut self, tid: u32, image: &[u8]) -> Option<usize> {
-        if tid == 0 || image.is_empty() || image.len() > SUP_IMAGE_MAX {
-            return None;
-        }
-        if let Some(i) = self.slot_of_tid(tid) {
-            return Some(i);
-        }
-        let i = self.entries.iter().position(|e| e.state == SupState::Free)?;
-        let mut e = SupEntry::empty();
-        e.state = SupState::Candidate;
-        e.image[..image.len()].copy_from_slice(image);
-        e.image_len = image.len() as u8;
-        e.tid = tid;
-        self.entries[i] = e;
-        Some(i)
-    }
-
     /// The kernel is about to release `tid`, a task it spawned from `image`
     /// because the system declares it (a topology `start = true` row, the ML
     /// service). Supervised from now on, before it runs a single instruction:
@@ -400,8 +363,7 @@ impl SupTable {
     }
 
     /// The restart policy of `slot` (its topology row's `restart`). Set by
-    /// the kernel right after [`Self::note_started`] / [`Self::note_spawn`],
-    /// before the task can run. `false` for a free slot.
+    /// the kernel right after [`Self::note_started`], before the task can run. `false` for a free slot.
     pub fn set_restart(&mut self, slot: usize, restart: SupRestart) -> bool {
         match self.entries.get_mut(slot) {
             Some(e) if e.state != SupState::Free => {
@@ -419,12 +381,6 @@ impl SupTable {
         };
         let e = &mut self.entries[i];
         match e.state {
-            SupState::Candidate => {
-                e.state = SupState::Serving;
-                e.kind = kind;
-                e.bound_at = now;
-                BindOutcome::First { slot: i }
-            }
             SupState::Restarting => {
                 e.state = SupState::Serving;
                 if e.kind == SUP_NO_KIND {
@@ -437,7 +393,7 @@ impl SupTable {
                     since_death: now.saturating_sub(e.died_at),
                 }
             }
-            // A `Spawned` task's first kind: it was supervised already.
+            // Its first kind: it was supervised already.
             SupState::Serving if e.kind == SUP_NO_KIND => {
                 e.kind = kind;
                 e.bound_at = now;
@@ -456,12 +412,6 @@ impl SupTable {
         };
         let e = &mut self.entries[i];
         match e.state {
-            // Loaded but never a driver: nothing to keep, and the slot is
-            // not held for a program that will not be restarted.
-            SupState::Candidate => {
-                *e = SupEntry::empty();
-                ExitVerdict::NotSupervised
-            }
             SupState::Serving | SupState::Restarting => {
                 // A death during a swap ends it: the kernel's swap sees the
                 // entry's task changed and cancels what it started.
@@ -624,14 +574,6 @@ impl SupTable {
     pub fn entry(&self, slot: usize) -> Option<SupEntry> {
         self.entries.get(slot).copied().filter(|e| e.state != SupState::Free)
     }
-
-    /// The entry of the image that registered `kind`.
-    pub fn find_kind(&self, kind: u32) -> Option<(usize, SupEntry)> {
-        self.entries
-            .iter()
-            .position(|e| e.state != SupState::Free && e.kind == kind)
-            .map(|i| (i, self.entries[i]))
-    }
 }
 
 impl SupTable {
@@ -664,8 +606,8 @@ impl SupTable {
 /// rather than drained.
 impl SupTable {
     /// Ask for a swap of `slot`'s task. Only a `Spawned` image can be (it
-    /// is created again from its signed row); only a serving entry with no
-    /// swap under way. `true` when recorded.
+    /// is created again from its signed row, a kernel host is not); only a
+    /// serving entry with no swap under way. `true` when recorded.
     pub fn request_swap(&mut self, slot: usize) -> bool {
         match self.entries.get_mut(slot) {
             Some(e)
@@ -756,11 +698,6 @@ impl Default for SupTable {
 
 static SUPERVISOR: SpinLock<SupTable> = SpinLock::new(SupTable::new());
 
-/// [`SupTable::note_spawn`] on the kernel's table.
-pub fn sup_note_spawn(tid: u32, image: &[u8]) -> Option<usize> {
-    SUPERVISOR.lock().note_spawn(tid, image)
-}
-
 /// [`SupTable::note_started`] on the kernel's table.
 pub fn sup_note_started(tid: u32, image: &[u8]) -> Option<usize> {
     SUPERVISOR.lock().note_started(tid, image)
@@ -832,11 +769,6 @@ pub fn sup_mark_recorded(slot: usize) {
 /// [`SupTable::entry`] on the kernel's table.
 pub fn sup_entry(slot: usize) -> Option<SupEntry> {
     SUPERVISOR.lock().entry(slot)
-}
-
-/// [`SupTable::find_kind`] on the kernel's table.
-pub fn sup_find_kind(kind: u32) -> Option<(usize, SupEntry)> {
-    SUPERVISOR.lock().find_kind(kind)
 }
 
 /// The supervisor task's TID, 0 until it runs (set by the kernel).
