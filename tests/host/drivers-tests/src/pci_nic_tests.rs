@@ -349,8 +349,8 @@ fn tx_timeout_scenario<W: Wire>(nic: &'static Nic<W, N, N>, mem: &'static Mem<N,
 /// writes nothing: frames posted inside a batch, then the reset quiesces the
 /// paths, then another hart's batch end rings. The stale tail must not reach
 /// the freshly started ring (the controller would fetch zeroed descriptors and
-/// the ring would be declared wedged again). Canary: drop the `ready` check
-/// from `Nic::ring` and the tail register moves.
+/// the ring would be declared wedged again). Canary: `quiesce_paths` not
+/// clearing the pending count and `ring` not checking `ready`.
 #[test]
 fn e1000e_a_ring_during_the_restart_writes_no_tail() {
     static MEM: Mem<N, N> = Mem::new();
@@ -360,6 +360,22 @@ fn e1000e_a_ring_during_the_restart_writes_no_tail() {
     NIC.quiesce_paths();
     NIC.ring();
     assert_eq!(rig.regs.get(E_TDT), 0, "the tail was written while the controller restarts");
+}
+
+/// **Discriminates.** A NIC the timeout policy latched dead writes no tail
+/// either: `stop` leaves frames posted and unannounced, and a later doorbell
+/// must not touch the stopped controller. Canary: drop the `ready` check from
+/// `Nic::ring` and the tail register moves (the restart row above is covered by
+/// `quiesce_paths` clearing the pending count as well).
+#[test]
+fn e1000e_a_ring_on_a_stopped_nic_writes_no_tail() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<E1000eWire, N, N> = Nic::new(&MEM);
+    let rig = bring_up(&NIC, &MEM, None, E1000eWire::IRQ);
+    assert_eq!(NIC.post(&[0u8; 60]), Ok(60));
+    NIC.stop();
+    NIC.ring();
+    assert_eq!(rig.regs.get(E_TDT), 0, "the tail was written to a stopped controller");
 }
 
 #[test]

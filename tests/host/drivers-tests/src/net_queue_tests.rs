@@ -189,8 +189,9 @@ fn a_full_ring_is_announced_and_the_refused_frame_goes_in_afterwards() {
 /// **Discriminates.** A pass that opened a batch on every NIC closes exactly
 /// those, whatever the table says by the time it ends: a USB NIC unplugged in
 /// between must not keep a batch open for the function plugged in next. Canary:
-/// `net-queue-gated-end` closes only the NICs still in the table, and the
-/// batch stays open.
+/// `net-queue-gated-end` with `net-queue-no-slot-reset` closes only the NICs
+/// still in the table and keeps the dead slot's state, and the batch stays open
+/// (each defence alone covers this scenario; the two together are the old code).
 #[test]
 fn a_pass_closes_the_batches_it_opened_on_a_nic_that_was_unplugged_meanwhile() {
     static WIRE: std::sync::OnceLock<Wire> = std::sync::OnceLock::new();

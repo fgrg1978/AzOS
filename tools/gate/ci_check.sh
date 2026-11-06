@@ -12122,9 +12122,9 @@ host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-ca
 # fail. The kick of a taken queue shares one doorbell and announces a stamped
 # frame at once; each canary takes one of the two away and the test, alone,
 # must go red.
-host_job host_canary_row "net queue: unplugged NIC batch canary" drivers-tests net-queue-gated-end a_pass_closes_the_batches_it_opened_on_a_nic_that_was_unplugged_meanwhile
+host_job host_canary_row "net queue: unplugged NIC batch canary" drivers-tests net-queue-gated-end,net-queue-no-slot-reset a_pass_closes_the_batches_it_opened_on_a_nic_that_was_unplugged_meanwhile
 host_job host_canary_row "net queue: replugged NIC canary" drivers-tests net-queue-no-slot-reset a_replugged_usb_nic_does_not_inherit_the_batch_of_the_one_before
-host_job host_canary_row "net queue: batch end canary" drivers-tests net-queue-no-end-ring every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells
+host_job host_canary_row "net queue: batch end canary" drivers-tests net-queue-no-end-ring a_lone_frame_rings_at_once_a_batched_one_at_the_end_and_flush_does_not_wait
 host_job host_canary_row "net queue: full ring canary" drivers-tests net-queue-no-full-ring a_full_ring_is_announced_and_the_refused_frame_goes_in_afterwards
 host_job host_canary_row "nicq: kick close canary" syscall-tests nicq-gated-close-canary a_kick_closes_its_batch_when_the_queue_goes_back_to_the_stack_meanwhile
 host_job host_canary_row "net queue: NIC loss canary" drivers-tests net-queue-drop-canary every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells

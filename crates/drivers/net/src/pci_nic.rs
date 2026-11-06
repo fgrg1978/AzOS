@@ -712,7 +712,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
     /// Stop the controller for good: no send or receive from here on, its
     /// interrupts masked and both engines off (the buffers stay the
     /// driver's, never reused).
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.ready.store(false, Ordering::Release);
         self.msi_armed.store(false, Ordering::Release);
         let r = self.regs();
