@@ -223,52 +223,10 @@ pub mod cow {
     }
 }
 
-/// The marker PTEs of `demand.rs`, as a set of `(root, va)`: the all-or-nothing
-/// range reservation and the clear, with the real module's refusals (a
-/// page already marked is `AlreadyMapped`).
-pub mod demand {
-    use super::PAGE_SIZE;
-    use std::sync::Mutex;
-
-    static MARKERS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
-
-    pub fn map_demand_range(root: usize, base: usize, pages: usize) -> Result<(), ()> {
-        let mut m = MARKERS.lock().unwrap_or_else(|e| e.into_inner());
-        if (0..pages).any(|i| m.contains(&(root, base + i * PAGE_SIZE))) {
-            return Err(());
-        }
-        for i in 0..pages {
-            m.push((root, base + i * PAGE_SIZE));
-        }
-        Ok(())
-    }
-
-    pub fn clear_demand_marker(root: usize, va: usize) -> bool {
-        let mut m = MARKERS.lock().unwrap_or_else(|e| e.into_inner());
-        match m.iter().position(|&x| x == (root, va & !(PAGE_SIZE - 1))) {
-            Some(i) => {
-                m.swap_remove(i);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Markers standing now.
-    pub fn shim_markers() -> usize {
-        MARKERS.lock().unwrap_or_else(|e| e.into_inner()).len()
-    }
-
-    pub fn shim_clear() {
-        MARKERS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    }
-}
-
 // ── Test-only observability ────────────────────────────────────────────────
 
 pub fn shim_reset() {
     cow::shim_clear();
-    demand::shim_clear();
     let mut s = state();
     s.used = [false; SHIM_PAGES];
     s.frees = [0; SHIM_PAGES];

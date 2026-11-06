@@ -424,7 +424,7 @@ fn fork_splits_the_parents_promoted_blocks_and_the_child_gets_the_pages() {
     let p5 = pa(pt, BLOCK_A + 5 * PAGE_SIZE);
     page_bytes(p5)[3] = 0x77;
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::cow::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork").0;
+    let child = azos_mm::cow::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     assert_eq!(level(pt, BLOCK_A), Some(0), "the parent's block was split before the walk");
     assert_eq!(level(child, BLOCK_A), Some(0));
     for k in [0usize, 5, 300, 511] {

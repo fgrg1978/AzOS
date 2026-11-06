@@ -544,7 +544,7 @@ pub fn create_pagetable() -> KResult<usize> {
 /// Returns a pointer to the leaf PTE (L0 for 4K pages).
 /// If a megapage (leaf at L1) is encountered, returns a pointer to that PTE.
 ///
-/// `pub(crate)` so sibling modules (`cow`, `demand`) can share this walker.
+/// `pub(crate)` so sibling modules (`cow`, `pager`) can share this walker.
 /// The physical address of the table the KERNEL uses for this slot, or 0.
 ///
 /// `vpn1 = None` asks for the kernel's L1 under `vpn2`; `Some(v)` asks for its
@@ -612,7 +612,7 @@ pub fn write_would_enter_kernel_table(pt_phys: usize, vaddr: usize) -> bool {
 }
 
 /// Is `[start, end)` (page-aligned) empty in the user table `pt_phys` — no
-/// leaf, no demand marker, no entry of any kind — and reachable without
+/// leaf, no entry of any kind — and reachable without
 /// entering a table the kernel shares? Wave 14 (DEMANDPAGE): a reservation
 /// must answer what the eager `mmap` loop answered through `map`'s
 /// `AlreadyMapped`, or a region could be laid over a page something else
@@ -843,11 +843,9 @@ pub(crate) fn next_valid(table: usize, from: usize, n: usize) -> usize {
     next_entry::<false>(table, from, n)
 }
 
-/// [`next_valid`] for any entry that is not zero: a valid entry or a demand
-/// marker (wave 14). A fork walks leaf tables with this, because a child
-/// inherits its parent's demand reservations (a lazily grown heap) as well as
-/// its pages; and an index with nothing at or after it means the table is
-/// blank from there, which is the whole-table test the fork's pruning needs.
+/// [`next_valid`] for any entry that is not zero. An index with nothing at or
+/// after it means the table is blank from there, which is the whole-table test
+/// a fork's pruning needs.
 #[inline]
 pub(crate) fn next_present(table: usize, from: usize, n: usize) -> usize {
     next_entry::<true>(table, from, n)
@@ -929,9 +927,9 @@ pub fn for_each_leaf_in(root: usize, s: usize, e: usize, mut f: impl FnMut(usize
 /// Map a virtual address to a physical address with the given permissions.
 pub fn map(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) -> KResult<()> {
     // Placed here, at the mapper, and not in each syscall that calls it. Seven
-    // paths reach a user page table this way -- `sys_mmap`, `sys_alloc_demand`,
-    // `sys_brk`, the shm and mmio window mappers, the ELF loader and the COW
-    // fork -- and only some of them carry a VA ceiling. A ceiling is the wrong
+    // paths reach a user page table this way -- `sys_mmap`, `sys_brk` (both
+    // when committed at once), the shm and mmio window mappers, the ELF loader
+    // and the COW fork -- and only some of them carry a VA ceiling. A ceiling is the wrong
     // instrument anyway: it encodes where one board's MMIO happens to start,
     // and the tables a user page table borrows are a fact about the page
     // table, not about the address.
@@ -953,8 +951,7 @@ pub fn map(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) -> KRes
     // By CAS from the word read above (N12i), as `map_mega` and the merge do:
     // in a level-0 table the root shares with the kernel-half merge, the
     // push (`fill_empty`) or another thread may have installed a leaf here
-    // since that read; a plain store would overwrite it. `old` may be a
-    // demand marker, which this replaces as it did before.
+    // since that read; a plain store would overwrite it.
     // SAFETY: `walk` returned an aligned entry of a live table page, and
     // `AtomicU64` has the layout of the `u64` word.
     let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
@@ -1412,8 +1409,8 @@ fn map_contig_run(pt_phys: usize, va: usize, run_pa: usize, pages: usize, flags:
     // run, which divides a table); `AtomicU64` has the layout of the word.
     let slot = |k: usize| unsafe { &*(first.add(k) as *const core::sync::atomic::AtomicU64) };
     // A leaf there (`walk` also answers a megapage's entry) or any valid slot
-    // refuses the run before the first store; an invalid one (a demand
-    // marker included) is replaced, as `map` replaces it.
+    // refuses the run before the first store; an invalid one is replaced, as
+    // `map` replaces it.
     for k in 0..pages {
         if ARCH.pte_is_valid(slot(k).load(Ordering::Acquire)) {
             return Err(KernelError::AlreadyMapped);
@@ -1522,8 +1519,8 @@ fn l0_read(slot: *const u64) -> u64 {
 /// A user page fault whose level-0 word is [`azos_arch_api::PTE_BBM_PARK`]:
 /// the thread touched a page of a run while [`break_contig_run`] (on another
 /// CPU) had it broken-before-made. The page is not unmapped, it is about to
-/// be mapped again as a plain leaf, so the fault is no kill and no demand
-/// marker's: wait out the window ([`l0_read`]) and say `true`, the access
+/// be mapped again as a plain leaf, so the fault is no kill and no pager's:
+/// wait out the window ([`l0_read`]) and say `true`, the access
 /// retries. `false` for any other fault. Never true where
 /// `Mmu::block_change_needs_bbm` is false (nothing is ever parked), and costs
 /// nothing there but that test.
@@ -1644,8 +1641,8 @@ pub fn translate_user(pt_phys: usize, vaddr: usize, write: bool) -> Option<usize
     }
 }
 
-/// [`translate_user`]'s miss: wave 14 (DEMANDPAGE). A reserved page (`mmap`
-/// region or `sys_alloc_demand` marker) not touched yet is committed here, as
+/// [`translate_user`]'s miss: wave 14 (DEMANDPAGE). A reserved page (a page
+/// of a mapping: `mmap`, `brk`) not touched yet is committed here, as
 /// the fault the copy would have taken from ring 3 would commit it — a
 /// `read()` into fresh `mmap` memory must not answer EFAULT — and the
 /// translation is then done afresh.
@@ -1735,8 +1732,8 @@ pub fn user_write_would_be_permitted(pt_phys: usize, vaddr: usize) -> bool {
             f.user && f.read && (f.write || ARCH.pte_is_cow(pte))
                 && kernel_reaches(f.mem, ARCH.pte_phys(pte) + (vaddr & mask))
         }
-        // Wave 14: a reserved page is writable if its region (or demand
-        // marker) says so; the copy that follows commits it.
+        // Wave 14: a reserved page is writable if its mapping says so; the
+        // copy that follows commits it.
         None => reserved_write_permitted(pt_phys, vaddr),
     }
 }
@@ -1746,13 +1743,6 @@ pub fn user_write_would_be_permitted(pt_phys: usize, vaddr: usize) -> bool {
 fn reserved_write_permitted(pt_phys: usize, vaddr: usize) -> bool {
     if in_null_guard(vaddr) || write_would_enter_kernel_table(pt_phys, vaddr) {
         return false;
-    }
-    if let Ok(p) = walk(pt_phys, vaddr & !(PAGE_SIZE - 1), false) {
-        // SAFETY: `walk` returned an aligned entry of a live table page.
-        let pte = unsafe { core::ptr::read_volatile(p) };
-        if !ARCH.pte_is_valid(pte) && ARCH.pte_is_demand(pte) {
-            return ARCH.pte_demand_perms(pte).write;
-        }
     }
     crate::aspace::current_with_root(pt_phys).and_then(|r| crate::pager::reserved_writable(r, vaddr)) == Some(true)
 }
@@ -2813,37 +2803,26 @@ pub fn enable_paging() {
     ARCH.switch_kernel_pt(kpt);
 }
 
-// COW (AQ9) and Demand Paging (AQ10) live in sibling modules `cow` and
-// `demand`.  Re-export their public API here for backward compatibility
-// with callers that still reference them via `vmm::`.
+// COW (AQ9) lives in the sibling module `cow`; its public API is re-exported
+// here for the callers that reach it through `vmm::`.
 pub use crate::cow::{fork_cow, fork_cow_shared, fork_cow_shared_held, handle_cow_fault, page_addref, page_decref, page_getref};
-pub use crate::demand::{map_demand, map_demand_range};
 
-/// Resolve a demand-paging fault, refusing anything in the null guard region.
-///
-/// This is the entry point the kernel's page-fault arm uses. It is a wrapper
-/// rather than a plain re-export of [`crate::demand::handle_demand_fault`]
-/// because that function will happily materialize a page for *any* VA that
-/// carries a `DEMAND`-marked PTE, VA 0 included — and a demand PTE at VA 0 is
-/// reachable (`sys_alloc_demand` bases its reservation at the task's `brk`,
-/// which is 0 for a task that never got one). Materializing it turns a jump
-/// through a null pointer into a task that keeps running on a page of zeros
-/// instead of dying. See [`USER_GUARD_LIMIT`] for the threshold's derivation.
+/// Resolve a fault on a page of a mapping of `space` (`crate::pager`: a first
+/// touch, a page the reclaimer has out, a file page), refusing anything in the
+/// null guard region (see [`USER_GUARD_LIMIT`]): a jump through a null pointer
+/// kills, it never runs on a page of zeros.
 ///
 /// `InvalidArg` (not `NotMapped`) on a guard hit, so the caller can tell
-/// "there was nothing to resolve here" from "I refuse to resolve this".
-///
-/// Wave 14 (DEMANDPAGE): a fault the marker path does not own (`NotMapped`:
-/// no table, or an empty entry) goes to the region pagers of the space
-/// `space` ([`crate::pager::resolve_fault`]); one outside every region stays
-/// `NotMapped` and the caller kills the task as before. A word parked by a
-/// run break is waited out and answers `Ok` (the access retries).
+/// "there was nothing to resolve here" from "I refuse to resolve this". An
+/// address outside every mapping is `NotMapped`, and the caller kills the task.
+/// A word parked by a run break is waited out and answers `Ok` (the access
+/// retries).
 pub fn handle_demand_fault(space: crate::aspace::SpaceRef, fault_addr: usize) -> KResult<()> {
     demand_fault(space.root(), Some(space), fault_addr)
 }
 
-/// What a ring-3 page fault the demand path and the pagers were asked about
-/// came to ([`handle_user_fault`]).
+/// What a ring-3 page fault the pagers were asked about came to
+/// ([`handle_user_fault`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UserFault {
     /// Resolved here: the access retries.
@@ -2861,8 +2840,7 @@ pub enum UserFault {
 
 /// [`handle_demand_fault`] for the trap, which also knows whether the access
 /// was a `write`: a fault that lost the race to another install finds the
-/// page mapped (`AlreadyMapped` from the demand path, or the pagers' answer)
-/// and is not the task's fault.
+/// page mapped and is not the task's fault.
 ///
 /// Canary `spurious-fault-canary`: such a fault is the task's, which dies.
 pub fn handle_user_fault(space: crate::aspace::SpaceRef, fault_addr: usize, write: bool) -> UserFault {
@@ -2898,12 +2876,9 @@ fn demand_fault(pt: usize, space: Option<crate::aspace::SpaceRef>, fault_addr: u
     if wait_out_parked_fault(pt, fault_addr) {
         return Ok(());
     }
-    match crate::demand::handle_demand_fault(pt, fault_addr) {
-        Err(KernelError::NotMapped) if !cfg!(feature = "demand-region-canary") => match space {
-            Some(r) => crate::pager::resolve_fault(r, fault_addr),
-            None => Err(KernelError::NotMapped),
-        },
-        r => r,
+    match space {
+        Some(r) => crate::pager::resolve_fault(r, fault_addr),
+        None => Err(KernelError::NotMapped),
     }
 }
 
@@ -3208,7 +3183,7 @@ fn merge_kernel_l2(kpt: usize, user_pt: usize) -> usize {
                 // root mapped its own pages here): adopt it, copying the
                 // kernel's leaves into its empty words. Kernel leaves have no
                 // USER bit, so teardown never frees their frames; a word the
-                // root uses (a page or a demand marker) is left alone.
+                // root uses is left alone.
                 if ARCH.pte_is_table(kl1pte, 1) && ARCH.pte_is_table(ul1pte, 1)
                     && ARCH.pte_phys(kl1pte) != ARCH.pte_phys(ul1pte)
                 {
@@ -3699,7 +3674,6 @@ pub static LIVE_ROOT_REFUSALS: core::sync::atomic::AtomicU32 =
 ///
 ///   - `map` and `unmap` — `write_would_enter_kernel_table`, which is the
 ///     guard the old comment named.
-///   - `demand::handle_page_fault` — the same call, at `demand.rs`.
 ///   - `add_user_leaf_perms` — **not that guard.** It has its own: it refuses
 ///     any leaf above L0 (a superpage means the kernel's merged entries, or
 ///     a locked row's region, which must stay as mapped) and
@@ -3865,13 +3839,11 @@ pub(crate) fn release_pruned_tables(root: usize, tables: &[usize]) {
 /// What one user page of an address space is, for `mprotect` (wave 13).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UserPage {
-    /// Nothing there (no leaf, no demand marker), or a page marker: the page
-    /// is out of the table (see `pager`).
+    /// No leaf: nothing there, or a page of a mapping that is not in the
+    /// table (not touched yet, or out with the reclaimer: see `pager`).
     Missing,
     /// A 4 KiB user leaf; `exec`: its execute bit.
     Leaf { exec: bool },
-    /// A demand-paging reservation not touched yet.
-    Demand,
     /// Something `mprotect` does not touch: a kernel table or mapping, a
     /// megapage or gigapage, a non-user leaf.
     Other,
@@ -3914,16 +3886,7 @@ pub fn user_page(pt_phys: usize, vaddr: usize) -> UserPage {
         return UserPage::Missing;
     }
     if !ARCH.pte_is_valid(pte) {
-        // A page marker is a page of its region that the reclaimer has out
-        // (in the pool, on swap, or on its way): as far as `mprotect` and the
-        // sweeps care, not there yet, like a reserved page nobody touched.
-        return if ARCH.pte_is_demand(pte) {
-            UserPage::Demand
-        } else if ARCH.pte_marker(pte).is_some() {
-            UserPage::Missing
-        } else {
-            UserPage::Other
-        };
+        return UserPage::Other;
     }
     // A page of a promoted block is a user leaf like any other (Kconfig
     // `MM_THP_RESV`); `walk` returned the block's level-1 word.
@@ -3937,7 +3900,7 @@ pub fn user_page(pt_phys: usize, vaddr: usize) -> UserPage {
     if !f.user { UserPage::Other } else { UserPage::Leaf { exec: f.exec } }
 }
 
-/// Give every user leaf and demand reservation in `[start, end)` exactly the
+/// Give every user leaf in `[start, end)` exactly the
 /// write permission `write` (wave 13, `mprotect`), then one shootdown of the
 /// range if anything changed. Read stays; execute is never combined with
 /// write (a leaf with execute is left alone when `write`; the caller refuses
@@ -3965,34 +3928,18 @@ pub fn protect_user_range(pt_phys: usize, start: usize, end: usize, write: bool)
             if let Ok(ptr) = walk(pt_phys, va, false) {
                 break_contig_run(pt_phys, va, ptr);
                 let pte = unsafe { core::ptr::read_volatile(ptr) };
-                let new = if ARCH.pte_is_valid(pte) && ARCH.pte_is_leaf(pte, 0) {
+                if ARCH.pte_is_valid(pte) && ARCH.pte_is_leaf(pte, 0) {
                     let f = ARCH.pte_perms(pte);
                     let cow = ARCH.pte_is_cow(pte);
-                    if !f.user || (write && (f.exec || kernel_shared_user_frame(ARCH.pte_phys(pte)))) {
-                        None
-                    } else if write && cow {
-                        None
-                    } else if f.write == write && !cow {
-                        None
-                    } else {
-                        // Written here, under the refcount table: adding
-                        // write to a frame another space maps is a COW grant.
-                        if rewrite_leaf_write(ptr, pte, f, write) { changed += 1; }
-                        None
+                    let keep = !f.user
+                        || (write && (f.exec || kernel_shared_user_frame(ARCH.pte_phys(pte))))
+                        || (write && cow)
+                        || (f.write == write && !cow);
+                    // Written here, under the refcount table: adding write to a
+                    // frame another space maps is a COW grant.
+                    if !keep && rewrite_leaf_write(ptr, pte, f, write) {
+                        changed += 1;
                     }
-                } else if !ARCH.pte_is_valid(pte) && ARCH.pte_is_demand(pte) {
-                    let f = ARCH.pte_demand_perms(pte);
-                    if f.write == write || (write && f.exec) {
-                        None
-                    } else {
-                        Some(ARCH.pte_make_demand(PagePerms { write, ..f }))
-                    }
-                } else {
-                    None
-                };
-                if let Some(word) = new {
-                    unsafe { core::ptr::write_volatile(ptr, word) };
-                    changed += 1;
                 }
             }
         }
@@ -4400,9 +4347,8 @@ pub struct UserRun {
 /// lock and allocates nothing (the crash dump of a task a fault killed,
 /// `kernel/src/trap/crash.rs`). The pages it sees are the ones teardown
 /// would free or share: a leaf without USER and the tables borrowed from the
-/// kernel are skipped, a promoted block is one run of its size. Pages a
-/// reservation promised and nothing touched yet (demand markers) are not
-/// mapped and are not listed.
+/// kernel are skipped, a promoted block is one run of its size. Pages of a
+/// mapping not in the table are not listed.
 pub fn user_runs(pt_phys: usize, out: &mut [UserRun]) -> (usize, usize) {
     struct Acc<'a> {
         out: &'a mut [UserRun],

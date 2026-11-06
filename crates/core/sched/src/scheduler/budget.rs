@@ -301,7 +301,7 @@ pub fn current_proc_tid() -> u32 {
 // ── Owner decision 102 — per-task frame budget ────────────────────────────
 //
 // Scan unit 3 finding 3: CPU had quotas and
-// memory had none. `sys_brk_impl` stops at `USER_LOW_MAX`, a VA ceiling, not a
+// memory had none. `sys_brk` stops at `USER_LOW_MAX`, a VA ceiling, not a
 // frame budget — and on the QEMU linker window that ceiling (32 MiB) is the
 // whole arena. One ring-3 task could empty the page allocator, and then the
 // kernel heap, the copy-on-write break and every allocating safety path fail

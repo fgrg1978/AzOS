@@ -2142,7 +2142,7 @@ pub fn mcast_leave_typed(cap: u32, group: [u8; 4]) -> isize {
 /// honoured (wave 13): [`PROT_READ`] maps read-only pages (a store faults),
 /// [`PROT_READ`]` | `[`PROT_WRITE`] read-write ones, `0` reserves the range
 /// and maps nothing, `PROT_EXEC` is refused. `len` is capped at
-/// `azos_mm::demand::MAX_DEMAND_ALLOC_BYTES`.
+/// `azos_mm::pager::MAX_MAP_BYTES`.
 ///
 /// Returns the mapped virtual address, or `-1`. Kernel tasks get `-1`.
 pub fn mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, offset: u64) -> isize {

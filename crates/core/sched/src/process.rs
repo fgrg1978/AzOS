@@ -23,7 +23,6 @@ use azos_arch_api::PagePerms;
 // Sv39 `satp` word, aarch64 `TTBR0_EL1` (ASID | table PA, `0` meaning "keep
 // the kernel's own table"), x86_64 CR3 (PML4 | PCID).
 use azos_mm::{pmm, vmm, vdso};
-use azos_common::error::KernelError;
 
 // ── User-space memory layout ──────────────────────────────────────────────────
 
@@ -463,6 +462,10 @@ fn exec_admit(
         }
         return None;
     };
+    if cfg!(feature = "mem-locked-canary") && ctx.stack > PAGE_SIZE {
+        // The lazy part of the stack (`finish_user_space`), charged with the image.
+        let _ = azos_mm::pager::reserve(space, USER_STACK_TOP - ctx.stack, USER_STACK_TOP - PAGE_SIZE, true);
+    }
     Some(PreparedExec { ctx, space, spec, cur_row, row_change })
 }
 
@@ -1052,22 +1055,16 @@ fn finish_user_space(user_pt: usize, e_entry: u64, brk_va: usize, mut frames: u3
     let mut va = stack_bottom;
     while va < USER_STACK_TOP {
         frames = frames.saturating_add(1);
-        // Canary: populate the stack lazily, so a task takes a
-        // demand fault on its first stack touch. A `mem = "locked"` row must
-        // then report faults > 0 and its gate row must fail. Never in a
-        // normal build: the stack is eager, which is why a locked task does
-        // not fault.
-        #[cfg(feature = "mem-locked-canary")]
-        {
-            if azos_mm::demand::map_demand(
-                user_pt, va, PagePerms { accessed: true, ..PagePerms::USER_RW },
-            ).is_err() {
-                return None;
-            }
+        // Canary: every stack page but the top one (where the loader writes
+        // the arguments) is left to a mapping `prepare_exec` reserves, so a
+        // task takes a fault on its first touch of one. A `mem = "locked"`
+        // row must then report faults > 0 and its gate row must fail. Never
+        // in a normal build: the stack is eager, which is why a locked task
+        // does not fault.
+        if cfg!(feature = "mem-locked-canary") && va < USER_STACK_TOP - PAGE_SIZE {
             va += PAGE_SIZE;
             continue;
         }
-        #[allow(unreachable_code)]
         let page = pmm::alloc_page().ok()?;
         if vmm::map(
             user_pt, va, page.as_usize(),
@@ -1980,126 +1977,6 @@ pub fn copy_cstr_from_user(dst: &mut [u8], user_ptr: usize) -> Option<usize> {
     azos_mm::uaccess::cstr_in(user_pt, dst, user_ptr)
 }
 
-// ── sys_brk ───────────────────────────────────────────────────────────────────
-
-/// Implement the brk(2) syscall of the Linux personality: extend or query the
-/// user heap (native programs map memory with `SYS_MO_MAP` and have no break).
-///
-/// - `addr == 0`: return current brk
-/// - `addr > current_brk`: reserve the new pages (demand markers; allocated
-///   at once only for a `mem = "locked"` task), advance brk, return new brk
-/// - `addr < current_brk` (shrink): unsupported in Phase 7, return current brk
-///
-/// Hostile-input handling — `addr` comes straight from a ring-3 register:
-///   - **No arithmetic may overflow.** With `panic = "abort"` +
-///     `overflow-checks = true` an overflow is not a wrong answer, it is a
-///     board reset: on a robot, a physical-safety event. `brk(u64::MAX)`
-///     cleared every guard above and then overflowed the page-round-up.
-///     [`page_up`] now saturates.
-///   - **The heap is bounded** by [`USER_LOW_MAX`]. Unbounded, a single
-///     `brk(0x7FFF_FFFF)` walks ~500K pages: it drains the PMM, and on the way
-///     it maps over the kernel's MMIO slots and (further up) the user stack.
-///   - **Mapping failures are not swallowed.** The old `let _ = vmm::map(..)`
-///     dropped `AlreadyMapped` on the floor, leaking the page it had just
-///     allocated on every repeated call over the same range.
-pub fn sys_brk_impl(addr: u64) -> i64 {
-    let user_pt = crate::scheduler::current_user_pt();
-    if user_pt == 0 { return -1; } // kernel task
-
-    let cur_brk = crate::scheduler::update_user_brk(0); // query
-    if addr == 0 || addr == cur_brk { return cur_brk as i64; }
-    if addr < cur_brk { return cur_brk as i64; } // shrink not supported
-
-    // Saturating round-up: `u64::MAX` lands on `0xFFFF_FFFF_FFFF_F000`, which
-    // the ceiling below then rejects — no wrap, no panic, no allocation.
-    let new_brk = page_up(addr as usize) as u64;
-    if new_brk > USER_LOW_MAX as u64 { return cur_brk as i64; }
-
-    // Commit whatever we managed to map, so a partial extension is reported
-    // honestly instead of handing back pages the caller cannot see.
-    let commit = |va: usize| -> i64 {
-        if va as u64 > cur_brk {
-            crate::scheduler::update_user_brk(va as u64) as i64
-        } else {
-            cur_brk as i64
-        }
-    };
-
-    // Allocate pages from cur_brk to addr. `va < new_brk <= USER_LOW_MAX`, so
-    // the `va += PAGE_SIZE` below cannot overflow either.
-    // Reserved, not allocated (wave 14), as Linux grows a heap: each page is
-    // a demand marker, charged now (the reservation is what the budget
-    // admits, as `sys_alloc_demand` charges it) and backed by a zeroed frame
-    // at its first touch, by the task or by a copy into it
-    // (`vmm::translate_user`). A heap grown and never touched used to cost
-    // an allocation and a 4 KiB zero-fill per page, and then a refcount, two
-    // entries and a teardown visit per page in every fork (vsbench: 200
-    // such pages in each `fork+exit`). A `mem = "locked"` task never takes a
-    // fault: its heap is still allocated here, eagerly.
-    let lazy = !crate::scheduler::current_mem_locked();
-    let mut va = page_up(cur_brk as usize);
-    while (va as u64) < new_brk {
-        // Owner decision 102 — charge BEFORE allocating, one page at a time.
-        //
-        // Before the frame, because a charge that fails must leave the
-        // allocator untouched; and per page rather than for the whole
-        // extension, so a task at its budget still grows by whatever is left
-        // of it instead of being refused outright. `commit` then reports the
-        // honest partial answer, exactly as it does for OOM — to the caller a
-        // budget refusal and an empty allocator look the same, which is
-        // correct: both mean "this is all the memory you get".
-        if !crate::scheduler::mm_charge(1) {
-            return commit(va);
-        }
-        if lazy {
-            match vmm::map_demand(
-                user_pt, va,
-                PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW },
-            ) {
-                Ok(()) => {}
-                // Already a page or a reservation: kept, not charged twice.
-                Err(KernelError::AlreadyMapped) => crate::scheduler::mm_discharge(1),
-                Err(_) => {
-                    crate::scheduler::mm_discharge(1);
-                    return commit(va);
-                }
-            }
-            va += PAGE_SIZE;
-            continue;
-        }
-        let page = match pmm::alloc_page() {
-            Ok(p) => p,
-            Err(_) => {
-                crate::scheduler::mm_discharge(1);
-                return commit(va); // OOM — keep what we mapped
-            }
-        };
-        match vmm::map(
-            user_pt, va, page.as_usize(),
-            PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW },
-        ) {
-            Ok(()) => {}
-            Err(KernelError::AlreadyMapped) => {
-                // Already backed (an image page overlapping the first heap
-                // page, or a re-issued brk over the same range). Hand the
-                // fresh frame straight back — the old code leaked it — and
-                // the charge with it: this page was already somebody's, and
-                // charging twice for one frame is the ratchet that would
-                // eventually refuse a task memory it is entitled to.
-                let _ = pmm::free_page(page);
-                crate::scheduler::mm_discharge(1);
-            }
-            Err(_) => {
-                let _ = pmm::free_page(page);
-                crate::scheduler::mm_discharge(1);
-                return commit(va);
-            }
-        }
-        va += PAGE_SIZE;
-    }
-    crate::scheduler::update_user_brk(new_brk) as i64
-}
-
 // ── fork() ──────────────────────────────────────────────────────────────────
 
 /// The address the CHILD must resume at — "the instruction after the
@@ -2359,7 +2236,7 @@ fn fork_hooked_inner(
     let concurrent = crate::scheduler::current_slot().is_some_and(|i| crate::group::lead_of_idx(i) != 0);
     // The hold on the parent lasts until `before_release` has cloned its
     // mappings into the child's (`azos_mm::pager::ForkHold`).
-    let (child_pt, child_reserved, fork_hold) = match vmm::fork_cow_shared_held(parent, USER_MMIO_BASE, USER_MMIO_LIMIT, concurrent) {
+    let (child_pt, fork_hold) = match vmm::fork_cow_shared_held(parent, USER_MMIO_BASE, USER_MMIO_LIMIT, concurrent) {
         Ok(r) => r,
         Err(_) => {
             let _ = crate::scheduler::take_current_pt_build();
@@ -2370,13 +2247,9 @@ fn fork_hooked_inner(
     // copy-on-write: their breaks are observed, not charged (P3 -- the row's
     // admission paid for one full copy).
     crate::prof::add(1, t_ph);
-    // Wave 14: plus the demand reservations it inherited (a lazily grown
-    // heap): pages it may still commit, charged now as the parent's were at
-    // reservation, so the budget is never overcommitted (the rule DEMANDPAGE's
-    // region fork follows too).
-    let child_charge = 1u32
-        .saturating_add(crate::scheduler::take_current_pt_build())
-        .saturating_add(u32::try_from(child_reserved).unwrap_or(u32::MAX));
+    // The pages its mappings reserve are charged when they are cloned
+    // (`fork_regions_to_child`), as the parent's were at reservation.
+    let child_charge = 1u32.saturating_add(crate::scheduler::take_current_pt_build());
     let (parent_limit, _) = crate::scheduler::current_mem_policy();
     if parent_limit != 0 && child_charge > parent_limit {
         crate::scheduler::note_mm_quota_refusal();
@@ -2883,7 +2756,7 @@ const _: () = assert!(USER_MMIO_BASE >= azos_abi::foreign::RUNTIME_LIMIT);
 /// The mmap area of a Linux task, `[USER_MMAP_FLOOR, USER_MMAP_CEILING)`:
 /// `sys_mmap` places its mappings top-down from the ceiling, as Linux places
 /// them below its mmap base, and apart from the program break. The floor is
-/// the break's own ceiling ([`USER_LOW_MAX`], where `sys_brk_impl` stops), so
+/// the break's own ceiling ([`USER_LOW_MAX`], where `sys_brk` stops), so
 /// the break can never grow into a mapping and no mapping sits where it
 /// grows. The ceiling is the vDSO page, below the Linux runtime's window and
 /// (on every board) the shm/MMIO window. What the kernel maps into the area
@@ -3147,15 +3020,4 @@ pub fn mmio_map_user(phys_base: usize, size: usize, writable: bool) -> Option<us
         d[off],   d[off+1], d[off+2], d[off+3],
         d[off+4], d[off+5], d[off+6], d[off+7],
     ])
-}
-/// Round `a` up to the next page boundary, saturating instead of wrapping.
-///
-/// `a + PAGE_SIZE - 1` overflows for any `a` within a page of `usize::MAX`,
-/// and under this build profile (`overflow-checks = true`, `panic = "abort"`)
-/// an overflow reboots the board. `sys_brk_impl` passes a raw ring-3 register
-/// here, so that was a one-instruction reset available to unprivileged code.
-/// Saturating yields `0xFFFF_FFFF_FFFF_F000`, which every caller's range check
-/// rejects.
-#[inline] fn page_up(a: usize) -> usize {
-    a.saturating_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }

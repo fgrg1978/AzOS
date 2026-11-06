@@ -538,7 +538,7 @@ pub const SYS_MO_CREATE: u64 = 14;
 /// **Anonymous memory** (`a0` 0): `a1` the address hint (ignored for a native
 /// task: the range is placed at the break; a Linux task's mmap honours it in
 /// its mmap area), `a2` the length (capped at
-/// `azos_mm::demand::MAX_DEMAND_ALLOC_BYTES`), `a3` the protection
+/// `azos_mm::pager::MAX_MAP_BYTES`), `a3` the protection
 /// (`PROT_READ` 1, `PROT_WRITE` 2, 0 reserves the range and maps nothing;
 /// `PROT_EXEC` is refused with `-EINVAL`: W^X holds for ring 3 by
 /// construction), `a4` the flags (`MAP_POPULATE`/`MAP_LOCKED` commit now;
@@ -573,7 +573,7 @@ pub const MMAP_MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
 ///
 /// **Anonymous memory** (`a0` 0): `a1` the address, `a2` the length of the
 /// range to unmap (page-rounded, in the user half, at most
-/// `azos_mm::demand::MAX_DEMAND_ALLOC_BYTES`). `-1` for a range it refuses.
+/// `azos_mm::pager::MAX_MAP_BYTES`). `-1` for a range it refuses.
 ///
 /// A handle that is not memory is `-ECAPKIND`.
 ///

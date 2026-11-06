@@ -1082,7 +1082,7 @@ mod budget_tests {
     }
 
     /// **The runaway-`brk` proof, at the host.** A task that keeps charging
-    /// one page at a time (`sys_brk_impl`'s shape) is granted pages up to
+    /// one page at a time (abitest's `report_map_growth`) is granted pages up to
     /// EXACTLY the budget and refused — with NOTHING charged — the moment it
     /// would go over. This is the host-level twin of the QEMU
     /// `mem-quota-canary` row (`tools/gate/ci_check.sh`, budget dropped to 16,

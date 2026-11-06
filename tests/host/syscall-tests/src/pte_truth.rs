@@ -231,7 +231,7 @@ fn the_reclaimer_takes_no_page_of_a_parent_until_its_fork_is_cloned() {
     let base = map(4);
     write(pt, base, 0x10);
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let (child, _, hold) =
+    let (child, hold) =
         azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     write(pt, base + PAGE_SIZE, 0x77);
     let roots = [Some(azos_sched::shim_space(pt))];
@@ -277,7 +277,7 @@ fn a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it() {
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let (child, _, hold) =
+    let (child, hold) =
         azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     let parent_space = azos_sched::shim_space(pt);
     azos_sched::shim_serial_share(true);
@@ -307,30 +307,6 @@ fn a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it() {
     assert!(bytes(cf).iter().all(|&b| b == 0x5A), "the child reads the parent's page, not zeros");
     azos_sched::shim_forget_space(child);
     azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
-    azos_sched::shim_forget_space(pt);
-    azos_sched::set_current_user_pt(0);
-}
-
-/// **A heap reservation skips the pages of a mapping.** `brk` grows by demand
-/// markers (`vmm::map_demand`); over a mapping's page, whose empty leaf may be
-/// a page the reclaimer has out or one not touched yet, a marker would make
-/// the next touch a zero page the page's slot does not know. It is refused
-/// there (`brk` keeps the page and does not charge it twice).
-/// **Canary** `demand-over-mapping-canary`: the leaf alone decides.
-#[test]
-fn a_heap_reservation_skips_the_pages_of_a_mapping() {
-    let _g = serial();
-    let pt = space();
-    let base = map(2);
-    let f = write(pt, base, 0x21);
-    // The page leaves its leaf, as the reclaimer leaves it (the slot keeps it).
-    azos_mm::vmm::unmap(pt, base);
-    let perms = azos_arch_api::PagePerms { accessed: true, dirty: true, ..azos_arch_api::PagePerms::USER_RW };
-    assert!(azos_mm::vmm::map_demand(pt, base, perms).is_err(), "a demand marker over a mapping's page");
-    assert!(azos_mm::vmm::map_demand(pt, base + PAGE_SIZE, perms).is_err(), "and over its untouched page");
-    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base).is_ok());
-    assert_eq!(azos_mm::vmm::translate(pt, base), Some(f), "the page comes back from its slot");
-    assert!(bytes(f).iter().all(|&b| b == 0x21));
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -403,7 +379,7 @@ static HOOK_FORK: std::sync::Mutex<Option<(usize, azos_mm::pager::ForkHold)>> = 
 fn fork_at_install() {
     let pt = HOOK_PARENT.load(std::sync::atomic::Ordering::SeqCst);
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let (child, _, hold) =
+    let (child, hold) =
         azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     *HOOK_FORK.lock().unwrap() = Some((child, hold));
 }
@@ -498,7 +474,7 @@ fn a_kernel_copy_waits_out_a_fork_hold() {
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let (child, _, hold) =
+    let (child, hold) =
         azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     azos_sched::shim_serial_share(true);
     let copied = std::thread::scope(|sc| {

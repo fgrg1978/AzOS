@@ -12,7 +12,7 @@ azos_chaos = { path = "../../../../../crates/core/chaos" }
 # Renamed so the pulled `crates/core/mm/src/*.rs` files' own `use azos_arch::…`
 # resolve unchanged.
 azos_arch = { path = "../arch", package = "syscall_test_arch" }
-# Real crate: `vmm.rs`/`cow.rs`/`demand.rs`/`wx.rs` (pulled by path below)
+# Real crate: `vmm.rs`/`cow.rs`/`pager.rs`/`wx.rs` (pulled by path below)
 # type against `azos_arch_api::{Mmu, PagePerms, PAGE_SIZE}` directly
 # since the page-table abstraction (B2); pure no_std, host-clean.
 azos_arch_api = { path = "../../../../../arch/api" }
@@ -70,7 +70,6 @@ fork-install-recheck-canary = []
 fault-entry-rewalk-canary = []
 fork-wait-counted-canary = []
 spurious-fault-canary = []
-demand-over-mapping-canary = []
 slot-chunk-promised-canary = []
 slot-chunk-kept-canary = []
 cow-slot-canary = []
@@ -81,8 +80,6 @@ uaccess-mmio-canary = []
 # ... and `cfg!(feature = "demand-region-canary")` in the pulled-in `vmm.rs`
 # (wave 14, DEMANDPAGE).
 demand-region-canary = []
-# ... and the wave 14 (FORKSPAWN) canaries in the pulled-in `cow.rs`.
-fork-demand-canary = []
 cow-reuse-canary = []
 # ... and `cfg(feature = "cow-spurious-canary")` in the pulled-in `cow.rs` (CTXHUNT).
 cow-spurious-canary = []
@@ -122,7 +119,6 @@ memobj-charge-stays-canary = []
 memobj-protect-max-canary = []
 memobj-cow-no-break-canary = []
 memobj-no-kernel-map-canary = []
-memobj-anon-uncharged-canary = []
 memobj-refcount-wrap-canary = []
 memobj-sweep-no-hook-canary = []
 memobj-sweep-no-retain-canary = []

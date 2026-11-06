@@ -304,7 +304,7 @@ fn mmap_va_ceiling_is_exclusive_at_the_top_and_inclusive_below_it() {
     assert_eq!(azos_mm::vmm::translate_user(pt, window_base, false), None);
 }
 
-/// The length ceiling (`len > MAX_DEMAND_ALLOC_BYTES`).
+/// The length ceiling (`len > MAX_MAP_BYTES`).
 ///
 /// **Divergence:** the mutant is `>=`, differing only at `len == MAX`. The
 /// only way to tell them apart is for a request of exactly `MAX` to succeed,
@@ -313,13 +313,13 @@ fn mmap_va_ceiling_is_exclusive_at_the_top_and_inclusive_below_it() {
 fn mmap_length_ceiling_is_inclusive() {
     let _g = serial();
     fresh_user_pt();
-    let max = azos_mm::demand::MAX_DEMAND_ALLOC_BYTES;
+    let max = azos_mm::pager::MAX_MAP_BYTES;
 
     azos_sched::shim_set_brk(0x1_0000);
     assert_eq!(
         sys_mmap(0, max as u64, 3, 0, ANON, 0),
         0x1_0000,
-        "a request of exactly MAX_DEMAND_ALLOC_BYTES is at the ceiling, not over it"
+        "a request of exactly MAX_MAP_BYTES is at the ceiling, not over it"
     );
 
     // Second half needs a clean arena; `serial()` is already held (and is not
@@ -387,7 +387,7 @@ fn a_failed_mmap_leaves_no_physical_pages_stranded() {
     // Wave 14 (DEMANDPAGE): committed at map time (`MAP_POPULATE`, 0x8000),
     // the path this row is about; a plain `mmap` now only reserves, and a
     // reservation needs no frame to succeed.
-    let max = azos_mm::demand::MAX_DEMAND_ALLOC_BYTES;
+    let max = azos_mm::pager::MAX_MAP_BYTES;
     assert_eq!(sys_mmap(0, max as u64, 3, MMAP_MAP_POPULATE, ANON, 0), -1, "must fail: the arena cannot back it");
 
     let after = azos_mm::shim_pages_in_use();
@@ -483,7 +483,7 @@ fn munmap_refuses_a_range_whose_end_crosses_the_ceiling() {
     );
 }
 
-/// The length ceiling (`len > MAX_DEMAND_ALLOC_BYTES`).
+/// The length ceiling (`len > MAX_MAP_BYTES`).
 ///
 /// **Divergence:** the mutant is `>=`, differing only at `len == MAX`, which
 /// must succeed. Note the base: `MAX` is 64 MiB, so the range has to start
@@ -492,7 +492,7 @@ fn munmap_refuses_a_range_whose_end_crosses_the_ceiling() {
 fn munmap_length_ceiling_is_inclusive() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let max = azos_mm::demand::MAX_DEMAND_ALLOC_BYTES;
+    let max = azos_mm::pager::MAX_MAP_BYTES;
     let phys = a_page();
     azos_mm::vmm::map(pt, 0x0100_0000, phys, PagePerms::USER_RW).unwrap();
 
@@ -557,14 +557,14 @@ fn munmap_survives_every_extreme_argument() {
 //    reordering, which is a fine reason to keep it and not a reason to claim
 //    coverage of it.
 //
-//  * **`sys_munmap`'s `len > MAX_DEMAND_ALLOC_BYTES`** is likewise subsumed
+//  * **`sys_munmap`'s `len > MAX_MAP_BYTES`** is likewise subsumed
 //    for the *rejection* direction: a length that clears the ceiling also
 //    pushes `end` past `USER_VA_TOP` or overflows `checked_add`, so the
 //    return value is -1 either way. Only its *inclusive boundary* is
 //    observable, which is what `munmap_length_ceiling_is_inclusive` asserts.
 //
 //  * **`len.saturating_add(page_size - 1)` in both handlers** cannot
-//    overflow: the `len > MAX_DEMAND_ALLOC_BYTES` check runs first, so `len`
+//    overflow: the `len > MAX_MAP_BYTES` check runs first, so `len`
 //    is at most 64 MiB by the time it is used. Same for
 //    `num_pages.checked_mul(page_size)` in `sys_mmap`. No reachable input
 //    distinguishes them from plain arithmetic. (The `base.saturating_add` in
@@ -715,7 +715,7 @@ fn mmap_cannot_walk_into_a_shared_kernel_table_on_this_layout() {
     // hit `AlreadyMapped` before touching anything — which would make this
     // test blind to the unwind it is here to check (it was, at first).
     azos_sched::shim_set_brk(0x2_0000);
-    let max = azos_mm::demand::MAX_DEMAND_ALLOC_BYTES;
+    let max = azos_mm::pager::MAX_MAP_BYTES;
     // 64 MiB from 0x20000 would run up to the CLINT at 0x0200_0000: it goes in
     // the mmap area, and no page of it in a table the kernel shares.
     let at = sys_mmap(0, max as u64, 3, 0, ANON, 0) as usize;
@@ -749,10 +749,10 @@ fn mmap_cannot_walk_into_a_shared_kernel_table_on_this_layout() {
 ///
 /// **This is not reachable from ring 3 on the current tree, and the test says
 /// so rather than implying otherwise.** Every writer of `user_brk` is bounded
-/// below the CLINT: `sys_brk_impl` caps at `USER_LOW_MAX == 0x0200_0000`
-/// (`crates/core/sched/src/process.rs:45`), `sys_mmap` cannot step over the CLINT
-/// page (the test above), and `sys_alloc_demand` fails there too because
-/// `demand::map_demand` also rejects `AlreadyMapped`. So the hazard is held
+/// below the CLINT: `sys_brk` caps at the mmap area's floor (`USER_LOW_MAX ==
+/// 0x0200_0000`, `crates/core/sched/src/process.rs`), `sys_mmap` cannot step over
+/// the CLINT page (the test above), and `pager::reserve` refuses a range that
+/// is not vacant. So the hazard is held
 /// shut by a coincidence of address-map arithmetic — the CLINT base being
 /// 2 MiB-aligned — and not by anything in `handlers.rs`. A board whose lowest
 /// kernel-mapped window did not start on its VPN[1] boundary, or a change to
@@ -1021,59 +1021,6 @@ fn fork_keeps_code_and_rodata_read_only() {
     assert_eq!(azos_mm::vmm::page_getref(rodata), 0);
 }
 
-/// **A fork's child inherits its parent's demand reservations (wave 14).**
-/// The fork walk saw valid entries only, so a child lost every demand marker
-/// and its first touch of one was an unhandled fault that killed it. Since
-/// `brk` reserves instead of allocating, that was every forked child's
-/// untouched heap. The child gets the marker itself: no frame, no refcount,
-/// the parent's entry unchanged, and the child's first touch (here a kernel
-/// copy into it, `translate_user`) commits a zeroed page of its own.
-///
-/// **Canary.** Feature `fork-demand-canary` (or `next_valid` back in the
-/// fork's leaf walk): the child has no entry at the reserved page.
-#[test]
-fn fork_gives_the_child_the_parents_demand_reservations() {
-    let _g = serial();
-    let pt = fresh_user_pt();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let rw = PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW };
-    const MAPPED: usize = 0x2_0000;
-    const RESERVED: usize = 0x2_1000;
-    let mapped = a_page();
-    azos_mm::vmm::map(pt, MAPPED, mapped, rw).unwrap();
-    azos_mm::vmm::map_demand(pt, RESERVED, rw).unwrap();
-    // A run of them (the fork copies a run word for word), then a hole.
-    azos_mm::vmm::map_demand(pt, RESERVED + PAGE_SIZE, rw).unwrap();
-    azos_mm::vmm::map_demand(pt, RESERVED + 2 * PAGE_SIZE, rw).unwrap();
-    azos_mm::vmm::map_demand(pt, RESERVED + 4 * PAGE_SIZE, rw).unwrap();
-
-    let (child, reserved) = azos_mm::vmm::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
-    assert_eq!(reserved, 4, "the reservations the child got, for its fork to charge");
-
-    for k in [0, 1, 2, 4] {
-        assert_eq!(azos_mm::vmm::user_page(child, RESERVED + k * PAGE_SIZE),
-                   azos_mm::vmm::UserPage::Demand, "the child holds reservation {k}");
-    }
-    assert_eq!(azos_mm::vmm::user_page(child, RESERVED + 3 * PAGE_SIZE),
-               azos_mm::vmm::UserPage::Missing, "and nothing where the parent has nothing");
-    assert_eq!(azos_mm::vmm::user_page(pt, RESERVED), azos_mm::vmm::UserPage::Demand,
-               "the parent's is untouched");
-    assert!(azos_mm::vmm::user_write_would_be_permitted(child, RESERVED),
-            "a writable reservation reports writable before it is committed");
-    let committed = azos_mm::vmm::translate_user(child, RESERVED, true)
-        .expect("a copy into the child's reservation commits it");
-    assert_ne!(committed, mapped);
-    assert_eq!(azos_mm::vmm::user_page(pt, RESERVED), azos_mm::vmm::UserPage::Demand,
-               "committing the child's page leaves the parent's reservation alone");
-    assert_eq!(azos_mm::vmm::page_getref(committed), 0, "a committed page is the child's alone");
-
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
-    let _ = azos_mm::vmm::unmap_user_and_free(pt, MAPPED, shm_lo, shm_hi);
-    for k in [0, 1, 2, 4] {
-        assert!(azos_mm::demand::clear_demand_marker(pt, RESERVED + k * PAGE_SIZE));
-    }
-}
-
 /// **The last holder of a copy-on-write frame keeps it (wave 14).** A break
 /// always allocated a frame, copied 4 KiB into it and dropped the original,
 /// also when every other sharer had already broken or exited and the
@@ -1096,8 +1043,7 @@ fn cow_break_by_the_last_holder_keeps_the_frame() {
     azos_mm::vmm::map(pt, DATA, data, rw).unwrap();
     azos_mm::vmm::map(pt, KEPT, kept, rw).unwrap();
 
-    let (child, reserved) = azos_mm::vmm::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
-    assert_eq!(reserved, 0, "pages, not reservations");
+    let child = azos_mm::vmm::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     assert_eq!(azos_mm::vmm::page_getref(data), 2);
 
     // Shared: the child's break copies, and the parent keeps the original.

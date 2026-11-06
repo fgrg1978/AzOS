@@ -126,10 +126,6 @@ fork-wait-counted-canary = []
 # the task's and kills it: `syscall-tests` pte_truth.rs
 # `a_fault_another_install_resolved_is_spurious` fails.
 spurious-fault-canary = []
-# Host-suite canary: a demand reservation (`brk`) is written over a page of a
-# mapping, whose state is its object's slot: `syscall-tests` pte_truth.rs
-# `a_heap_reservation_skips_the_pages_of_a_mapping` fails.
-demand-over-mapping-canary = []
 # Host-suite canaries of the slot chunks (`anon_obj.rs`): charged past the
 # Domain's limit (`slot-chunk-promised-canary`), kept after a `munmap` of every
 # page they hold (`slot-chunk-kept-canary`): `syscall-tests` table_promised.rs
@@ -162,14 +158,10 @@ table-refusable-canary = []
 # so a user device window passes the user walk again: `syscall-tests`'
 # `uaccess_mmio` and ktest `uaccess_refuses_a_user_device_window` fail.
 uaccess-mmio-canary = []
-# Canary only (wave 14, DEMANDPAGE): the fault path never asks the region
-# pagers, so the first touch of a demand-paged `mmap` page kills the task
-# (and a kernel copy into one fails). Host rows in syscall-tests must go red.
+# Canary only (wave 14, DEMANDPAGE): the fault path never asks the pagers, so
+# the first touch of a page of a mapping (`mmap`, `brk`) kills the task (and a
+# kernel copy into one fails). Host rows in syscall-tests must go red.
 demand-region-canary = []
-# Gate canary only (wave 14): a fork leaves the parent's demand markers out
-# of the child again, so a child's first touch of a reserved page (a `brk`
-# heap page it never touched) kills it.
-fork-demand-canary = []
 # Gate canary only (wave 14): a COW break always copies, also when the
 # breaking task is the frame's last holder.
 cow-reuse-canary = []
@@ -223,7 +215,6 @@ memobj-charge-stays-canary = []
 memobj-protect-max-canary = []
 memobj-cow-no-break-canary = []
 memobj-no-kernel-map-canary = []
-memobj-anon-uncharged-canary = []
 memobj-refcount-wrap-canary = []
 memobj-sweep-no-hook-canary = []
 memobj-sweep-no-retain-canary = []

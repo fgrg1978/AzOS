@@ -267,8 +267,7 @@ A pager that cannot answer at once could return `Supply::Pending`; no
 in-kernel pager does, and a `Pending` answer is treated as unresolved.
 
 Source: `crates/core/syscall/src/file_map.rs`,
-`crates/core/mm/src/pager.rs`, `crates/core/mm/src/mapping.rs`,
-`crates/core/mm/src/demand.rs`.
+`crates/core/mm/src/pager.rs`, `crates/core/mm/src/mapping.rs`.
 
 ## Anonymous objects and slots
 

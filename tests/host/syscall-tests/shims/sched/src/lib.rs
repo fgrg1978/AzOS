@@ -15,7 +15,7 @@
 //!
 //! **`update_user_brk` is real, with the kernel's own semantics**
 //! (`crates/core/sched/src/scheduler.rs:3147`): `0` reads the current break, any
-//! other value sets it and returns it. `sys_mmap` and `sys_alloc_demand`
+//! other value sets it and returns it. `sys_mmap` and `sys_brk`
 //! both take it as the base of the range they hand out, so the null-brk
 //! refusal (`base < USER_GUARD_LIMIT`) and the VA-ceiling check (`end_va`
 //! against the base of [`user_shm_window`]) are both functions of it — a `todo!()` here
@@ -621,10 +621,6 @@ pub fn copy_cstr_from_user(dst: &mut [u8], user_ptr: usize) -> Option<usize> {
 
     // User task — the real per-page loop.
     azos_mm::uaccess::cstr_in(user_pt, dst, user_ptr)
-}
-
-pub fn sys_brk_impl(_addr: u64) -> i64 {
-    todo!("not reached by any test in this crate")
 }
 
 /// Marker every panic from here carries — V1.8's kill path is the first

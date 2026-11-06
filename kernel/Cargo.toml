@@ -335,7 +335,6 @@ mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
 # Gate canary only (wave 15, security): mprotect(RW) on the vDSO page is
 # granted again (in place while the frame has no other counted holder).
 vdso-write-canary = ["azos_mm/vdso-write-canary"]
-fork-demand-canary = ["azos_mm/fork-demand-canary"]
 cow-reuse-canary = ["azos_mm/cow-reuse-canary"]
 cow-spurious-canary = ["azos_mm/cow-spurious-canary"]
 fork-commit-race-canary = ["azos_mm/fork-commit-race-canary"]

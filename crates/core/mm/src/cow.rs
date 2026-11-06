@@ -73,7 +73,7 @@ pub fn fork_cow(parent_pt: usize, skip_lo: usize, skip_hi: usize) -> KResult<usi
     // (See [`fork_share_range`] for the one thing a fork gives the child out
     // of that window: a shared-memory mapping the child inherits.)
     let parent = crate::aspace::current_with_root(parent_pt);
-    fork_cow_walk_held(parent, parent_pt, skip_lo, skip_hi, false).map(|(pt, _, _)| pt)
+    fork_cow_walk_held(parent, parent_pt, skip_lo, skip_hi, false).map(|(pt, _)| pt)
 }
 
 /// The fork rule for a shared-memory mapping (owner decision 16-10, the
@@ -146,16 +146,15 @@ impl crate::memobj::ChildLeaves for ForkLeaves {
 
 /// [`fork_cow`] of an address space other threads may be changing meanwhile
 /// (`concurrent`, wave 13: the parent is one thread of a group). Their
-/// faults (a copy-on-write break, a demand fault) rewrite parent entries
+/// faults (a copy-on-write break, a first touch) rewrite parent entries
 /// while the walk runs, so each parent entry is flipped by compare-and-swap
 /// and retaken when it changed. A single-threaded parent's entries change
 /// only under its own syscalls, so its walk stores them plainly.
 ///
-/// Returns the child's root and the demand reservations it was given (wave
-/// 14): each is a page the child may commit later, charged to it by the
-/// caller as the parent's were charged at reservation.
-pub fn fork_cow_shared(parent: SpaceRef, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<(usize, usize)> {
-    fork_cow_shared_held(parent, skip_lo, skip_hi, concurrent).map(|(pt, n, _)| (pt, n))
+/// Returns the child's root. Its mappings, and what they reserve, are the
+/// pager's to clone (`pager::fork_clone`).
+pub fn fork_cow_shared(parent: SpaceRef, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<usize> {
+    fork_cow_shared_held(parent, skip_lo, skip_hi, concurrent).map(|(pt, _)| pt)
 }
 
 /// [`fork_cow_shared`] that keeps the fork's hold on the parent
@@ -167,7 +166,7 @@ pub fn fork_cow_shared_held(
     skip_lo: usize,
     skip_hi: usize,
     concurrent: bool,
-) -> KResult<(usize, usize, crate::pager::ForkHold)> {
+) -> KResult<(usize, crate::pager::ForkHold)> {
     fork_cow_walk_held(Some(parent), parent.root(), skip_lo, skip_hi, concurrent)
 }
 
@@ -179,7 +178,7 @@ fn fork_cow_walk_held(
     skip_lo: usize,
     skip_hi: usize,
     concurrent: bool,
-) -> KResult<(usize, usize, crate::pager::ForkHold)> {
+) -> KResult<(usize, crate::pager::ForkHold)> {
     // Superpage reservations (Kconfig `MM_THP_RESV`): the walk below skips
     // level-1 leaves, so promoted blocks are split first and no block may be
     // promoted while it runs.
@@ -190,19 +189,18 @@ fn fork_cow_walk_held(
         }
     }
     let hold = crate::pager::ForkHold::new(parent);
-    let (pt, n) = fork_cow_walk(parent_pt, skip_lo, skip_hi, concurrent)?;
-    Ok((pt, n, hold))
+    let pt = fork_cow_walk(parent_pt, skip_lo, skip_hi, concurrent)?;
+    Ok((pt, hold))
 }
 
-fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<(usize, usize)> {
+fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<usize> {
     let child_pt = vmm::create_pagetable()?;
 
     let mut pruned = Pruned { tables: [0; PRUNE_MAX], n: 0 };
-    let mut markers = 0usize;
     let r = if concurrent {
-        fork_cow_inner::<true>(parent_pt, child_pt, skip_lo, skip_hi, &mut pruned, &mut markers)
+        fork_cow_inner::<true>(parent_pt, child_pt, skip_lo, skip_hi, &mut pruned)
     } else {
-        fork_cow_inner::<false>(parent_pt, child_pt, skip_lo, skip_hi, &mut pruned, &mut markers)
+        fork_cow_inner::<false>(parent_pt, child_pt, skip_lo, skip_hi, &mut pruned)
     };
     match r {
         Ok(()) => {
@@ -214,7 +212,7 @@ fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: b
             // Blank leaf tables the walk unhooked go only now, after every
             // hart has dropped its translations through them.
             vmm::release_pruned_tables(parent_pt, &pruned.tables[..pruned.n]);
-            Ok((child_pt, markers))
+            Ok(child_pt)
         }
         Err(e) => {
             // The parent's PTEs we already flipped to COW stay flipped: that
@@ -250,7 +248,6 @@ fn fork_cow_inner<const CONCURRENT: bool>(
     skip_lo: usize,
     skip_hi: usize,
     pruned: &mut Pruned,
-    markers: &mut usize,
 ) -> KResult<()> {
     let entries = ARCH.entries_per_table();
     // Wave 13: the trampoline's frame, read once (0 on aarch64).
@@ -261,11 +258,11 @@ fn fork_cow_inner<const CONCURRENT: bool>(
     // PDPT on x86_64 (`vmm::for_each_user_l2`, borrowed kernel tables
     // skipped).
     if vmm::root_level() <= 2 {
-        return fork_cow_l2::<CONCURRENT>(parent_pt, kpt, 0, child_pt, skip_lo, skip_hi, pruned, markers,
+        return fork_cow_l2::<CONCURRENT>(parent_pt, kpt, 0, child_pt, skip_lo, skip_hi, pruned,
                                          entries, tramp);
     }
     vmm::for_each_user_l2(parent_pt, kpt, |parent_l2, k_l2, base| {
-        fork_cow_l2::<CONCURRENT>(parent_l2, k_l2, base, child_pt, skip_lo, skip_hi, pruned, markers,
+        fork_cow_l2::<CONCURRENT>(parent_l2, k_l2, base, child_pt, skip_lo, skip_hi, pruned,
                                   entries, tramp)
     })
 }
@@ -282,7 +279,6 @@ fn fork_cow_l2<const CONCURRENT: bool>(
     skip_lo: usize,
     skip_hi: usize,
     pruned: &mut Pruned,
-    markers: &mut usize,
     entries: usize,
     tramp: usize,
 ) -> KResult<()> {
@@ -361,11 +357,9 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                     continue;
                 }
             }
-            // A table with no valid entry, and no demand marker either, is
-            // unhooked from the parent (not while other threads may walk it).
-            // `next_present` finds both, so "nothing from index 0" is the
-            // whole-table blank test (it was a valid-entry scan followed by a
-            // second, word-by-word one).
+            // A table with no entry of any kind is unhooked from the parent
+            // (not while other threads may walk it): "nothing from index 0"
+            // under `next_present` is the whole-table blank test.
             if !CONCURRENT
                 && pruned.n < PRUNE_MAX
                 && crate::vmm::next_present(l0_pt, 0, entries) >= entries
@@ -377,57 +371,12 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 continue;
             }
             loop {
-                let vpn0 = crate::vmm::next_present(l0_pt, vpn0_next, entries);
+                let vpn0 = crate::vmm::next_valid(l0_pt, vpn0_next, entries);
                 if vpn0 >= entries { break; }
                 vpn0_next = vpn0 + 1;
                 let l0_pte_ptr = (crate::addr::phys_to_virt(l0_pt + vpn0 * 8)) as *mut u64;
                 let l0_pte = unsafe { core::ptr::read_volatile(l0_pte_ptr) };
                 if !ARCH.pte_is_valid(l0_pte) {
-                    // A demand reservation (wave 14): the child gets the same
-                    // marker, so its first touch of the page faults in a
-                    // fresh zero page of its own, as the parent's would. No
-                    // frame, so no refcount and no change to the parent's
-                    // entry. Until wave 14 the walk saw valid entries only
-                    // and a child silently lost every reservation: a store to
-                    // one killed it. Since `brk` reserves instead of
-                    // allocating, that would have been every child's heap.
-                    if ARCH.pte_is_demand(l0_pte) && !cfg!(feature = "fork-demand-canary") {
-                        let vaddr = base | leaf_vaddr(vpn2, vpn1, vpn0);
-                        if vaddr >= skip_lo && vaddr < skip_hi {
-                            continue;
-                        }
-                        if child_l0.is_null() {
-                            let p = vmm::walk(child_pt, vaddr, true)?;
-                            child_l0 = unsafe { p.sub(vpn0) };
-                        }
-                        // SAFETY: the child's leaf table walked above, entry vpn0.
-                        unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
-                        *markers += 1;
-                        // The run of reservations after it (a grown heap is
-                        // one) is copied word for word, about six
-                        // instructions each, without going back through the
-                        // walk's search and per-entry decoding.
-                        // `vaddr` is outside the window: below it, the run
-                        // stops where the window starts; above, nothing does.
-                        let lim = if vaddr < skip_lo {
-                            entries.min(vpn0 + (skip_lo - vaddr) / PAGE_SIZE)
-                        } else {
-                            entries
-                        };
-                        let src = crate::addr::phys_to_virt(l0_pt) as *const u64;
-                        let mut i = vpn0_next;
-                        while i < lim {
-                            // SAFETY: entry `i` of the same two leaf tables.
-                            let w = unsafe { core::ptr::read_volatile(src.add(i)) };
-                            if ARCH.pte_is_valid(w) || !ARCH.pte_is_demand(w) {
-                                break;
-                            }
-                            unsafe { core::ptr::write_volatile(child_l0.add(i), w) };
-                            i += 1;
-                        }
-                        *markers += i - vpn0_next;
-                        vpn0_next = i;
-                    }
                     continue;
                 }
                 if !ARCH.pte_is_leaf(l0_pte, 0) {
@@ -658,7 +607,7 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
     // `alloc_page`'s zero-fill (U09-11) would be ~1500 RV64 instructions
     // spent producing 4 KiB that the copy immediately discards — 8 KiB
     // written (zero, then copy) to land 4 KiB of live data. `alloc_page` is
-    // still correct for demand.rs's anonymous-page path, which has no data
+    // still correct for the pager's zero page (`pager::AnonPager`), which has no data
     // to copy in and must not hand a task a stale sibling's bytes; a COW
     // break always has real data, so it does not need that guarantee.
     // SAFETY: initialised immediately below, before the PTE (the only way

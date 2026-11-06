@@ -2513,10 +2513,52 @@ pub(crate) fn gpio_pin_is_motor_bound(pin: u32) -> bool {
 /// address (0 = query the current one). Returns the new (or current) break.
 /// Native programs have no program break: they map memory through `MemObj`
 /// (`SYS_MO_MAP`), and the ring-3 Linux runtime builds its own break on it.
+///
+/// The heap is an anonymous mapping like a private `mmap`'s: a growth reserves
+/// `[page_up(brk), page_up(addr))`, which folds into the mapping below it (one
+/// record and one object for the whole heap), and the pages are faulted in on
+/// first touch, or committed at once where [`mmap_precommit`] says so. The
+/// whole growth is charged before anything is made, and a growth that cannot
+/// be had in full (the charge, a range that is not vacant, no memory) leaves
+/// the break where it was, as Linux does. A shrink is not supported: the break
+/// stays. The break stops below the mmap area (`azos_sched::user_mmap_area`),
+/// which is above every image and below every kernel window.
 pub fn sys_brk(addr: u64) -> i64 {
     // Wave 13: one layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
-    azos_sched::sys_brk_impl(addr)
+    let Some(space) = azos_sched::current_aspace() else { return -1 }; // kernel task
+    let cur = azos_sched::update_user_brk(0);
+    if addr <= cur {
+        return cur as i64;
+    }
+    let page = azos_arch::PAGE_SIZE as u64;
+    let up = |a: u64| a.saturating_add(page - 1) & !(page - 1);
+    let (start, end) = (up(cur) as usize, up(addr) as usize);
+    if end > azos_sched::user_mmap_area().0 || start < azos_mm::vmm::USER_GUARD_LIMIT {
+        return cur as i64;
+    }
+    let pages = (end - start) / page as usize;
+    if pages == 0 {
+        return azos_sched::update_user_brk(end as u64) as i64;
+    }
+    if !azos_sched::mm_charge(pages as u32) {
+        return cur as i64;
+    }
+    if !mmap_precommit(0) {
+        match azos_mm::pager::reserve(space, start, end, true) {
+            Ok(()) => return azos_sched::update_user_brk(end as u64) as i64,
+            Err(azos_mm::pager::MapError::Full) => {}
+            Err(_) => {
+                azos_sched::mm_discharge(pages as u32);
+                return cur as i64;
+            }
+        }
+    }
+    if !commit_now(space.root(), start, pages, true) {
+        azos_sched::mm_discharge(pages as u32);
+        return cur as i64;
+    }
+    azos_sched::update_user_brk(end as u64) as i64
 }
 
 // ── Network (Phase 9) ─────────────────────────────────────────────────────────
@@ -3369,10 +3411,8 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     // Cap the request.  `length` used to be unbounded, so a single
     // `mmap(0, u64::MAX, ..)` from ring 3 drained every free physical page —
     // and because the OOM path below returned without unwinding, the pages
-    // already mapped stayed lost for the lifetime of the boot.  Same ceiling
-    // `sys_alloc_demand` already enforces, so the two allocators agree on how
-    // much one call may claim.
-    if len > azos_mm::demand::MAX_DEMAND_ALLOC_BYTES { return -1; }
+    // already mapped stayed lost for the lifetime of the boot.
+    if len > azos_mm::pager::MAX_MAP_BYTES { return -1; }
     // A native task's `MAP_FIXED_NOREPLACE`: a Linux driver server's module
     // memory, an exact address inside its module window, the break untouched
     // (module_window.rs). A Linux task's is placed in its mmap area below.
@@ -3395,9 +3435,8 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
 
     // Owner decision 102 — charge the whole request before taking one frame.
     //
-    // All-or-nothing here, unlike `brk`: `mmap` hands back a single contiguous
-    // range and a caller that asked for 64 pages cannot use 40. Charging first
-    // also means a refusal leaves the allocator untouched.
+    // All or nothing, as `brk`: a caller that asked for 64 pages cannot use 40.
+    // Charging first also means a refusal leaves the allocator untouched.
     // Wave 13 (security): `prot` is honoured. PROT_NONE reserves the range
     // (the break moves past it) and maps nothing; `mprotect` maps it later.
     // Anything else maps readable pages, writable only with PROT_WRITE: a
@@ -3421,40 +3460,40 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
         mmap_placed(aligned_base, end_va);
         return aligned_base as i64;
     }
+    if !commit_now(user_pt, aligned_base, num_pages, writable) {
+        // The whole request was charged up front and none of it survives.
+        azos_sched::mm_discharge(num_pages as u32);
+        return -1;
+    }
+    mmap_placed(aligned_base, end_va);
+    aligned_base as i64
+}
 
-    let mut va = aligned_base;
-    for _ in 0..num_pages {
-        match azos_mm::pmm::alloc_page() {
-            Ok(page) => {
-                let flags = azos_arch_api::PagePerms {
-                    accessed: true, dirty: writable, write: writable,
-                    ..azos_arch_api::PagePerms::USER_RW
-                };
-                if azos_mm::vmm::map(user_pt, va, page.as_usize(), flags).is_err() {
-                    // This page never made it into the PT — free it directly,
-                    // then unwind everything mapped so far.
-                    let _ = azos_mm::pmm::free_page(page);
-                    mmap_unwind(user_pt, aligned_base, va);
-                    // The whole request was charged up front and none of it
-                    // survives — give all of it back, not the part that had
-                    // been mapped.
-                    azos_sched::mm_discharge(num_pages as u32);
-                    return -1;
-                }
-            }
-            Err(_) => {
-                // OOM part-way through.  Without this the caller got -1 while
-                // the kernel silently kept every page already mapped.
-                mmap_unwind(user_pt, aligned_base, va);
-                azos_sched::mm_discharge(num_pages as u32);
-                return -1;
-            }
+/// Map `pages` zeroed frames from `base` on, writable iff `writable`: the
+/// committed form of an anonymous mapping (`sys_mmap`, `sys_brk`) for a task
+/// whose pages are never faulted in ([`mmap_precommit`]), or a space with no
+/// record left. All or nothing: on `false` every frame mapped here is unmapped
+/// and freed again. The caller charged the pages.
+fn commit_now(user_pt: usize, base: usize, pages: usize, writable: bool) -> bool {
+    let page_size = azos_arch::PAGE_SIZE;
+    let flags = azos_arch_api::PagePerms {
+        accessed: true, dirty: writable, write: writable,
+        ..azos_arch_api::PagePerms::USER_RW
+    };
+    let mut va = base;
+    for _ in 0..pages {
+        let Ok(page) = azos_mm::pmm::alloc_page() else {
+            mmap_unwind(user_pt, base, va);
+            return false;
+        };
+        if azos_mm::vmm::map(user_pt, va, page.as_usize(), flags).is_err() {
+            let _ = azos_mm::pmm::free_page(page);
+            mmap_unwind(user_pt, base, va);
+            return false;
         }
         va += page_size;
     }
-
-    mmap_placed(aligned_base, va);
-    aligned_base as i64
+    true
 }
 
 /// Free and unmap the pages `sys_mmap` installed in `[base, end)` after a
@@ -3564,9 +3603,8 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
             Ok(n) => n as u32,
             Err(_) => return Errno::ENOMEM.to_syscall_ret(),
         };
-        let mut freed = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end, shm_lo, shm_hi)
+        let freed = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end, shm_lo, shm_hi)
             .saturating_add(reserved);
-        freed = freed.saturating_add(azos_ipc::memobj::anon_release_range(user_pt, start, end));
         azos_sched::mm_discharge(freed);
         return 0;
     }
@@ -3649,7 +3687,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // instead of silently unmapping a different range than it asked for.
     let start = addr as usize & !(page_size - 1);
     if start >= USER_VA_TOP { return -1; }
-    if len > azos_mm::demand::MAX_DEMAND_ALLOC_BYTES { return -1; }
+    if len > azos_mm::pager::MAX_MAP_BYTES { return -1; }
     let rounded = len.saturating_add(page_size - 1) & !(page_size - 1);
     let end = match start.checked_add(rounded) {
         Some(e) if e <= USER_VA_TOP => e,
@@ -3739,14 +3777,9 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
         Ok(n) => n as u32,
         Err(_) => return azos_abi::error::Errno::ENOMEM.to_syscall_ret(),
     };
-    let mut freed: u32 = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end, shm_lo, shm_hi)
+    let freed: u32 = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end, shm_lo, shm_hi)
         .saturating_add(reserved);
     crate::file_map::unmap_finish(&files[..nfiles]);
-    // A demand-reserved page never touched holds no frame but was
-    // charged at reservation; clearing its marker gives it back. The batch
-    // above skips it (`take_user_leaf` only takes VALID leaves), and an
-    // invalid PTE is never cached in a TLB, so this pass needs no shootdown.
-    freed = freed.saturating_add(azos_ipc::memobj::anon_release_range(user_pt, start, end));
     azos_sched::mm_discharge(freed);
     mmap_unmapped(start, end);
     0

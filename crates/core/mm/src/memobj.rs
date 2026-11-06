@@ -22,8 +22,8 @@
 //! waits for its first user, the framebuffer handed to a ring-3 display server.
 //!
 //! An Anon object that is only ever mapped by one task does not need a table
-//! slot: [`anon_reserve`] is that case, on the marker-PTE fast path of
-//! `azos_mm::demand` (no frame until the first touch, no lock on the fault).
+//! slot: that is a private anonymous mapping, an unnamed object of its address
+//! space (`crate::anon_obj`, `crate::pager`).
 //! A shared Anon object has its frames at create because every mapper needs
 //! the same frames and the fault path would have to ask the object; that is
 //! the pager (`Paged`), not built.
@@ -3173,59 +3173,6 @@ fn pipe_drop_all(tid: u32) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Private Anon: the marker-PTE fast path
-// ──────────────────────────────────────────────────────────────────────────
-//
-// An Anon object that one task maps does not need a table slot, a capability or
-// a holder record: its frames are the PTEs' and `vmm` frees them on unmap. It is
-// the demand-zero mapping an anonymous `SYS_MO_MAP` makes, and it keeps the
-// mechanism `azos_mm::demand` built for it: one marker PTE per page, no frame
-// until the first touch, the fault resolved by a compare-and-swap on that
-// entry with no lock. A pager or an object-aware fault would cost every
-// first touch a table lookup; this is what the fast path is for.
-
-/// Reserve `pages` pages of private Anon memory at `base` in the address space
-/// rooted at `root`, as the CALLING task: charged to its Domain now, the whole
-/// reservation, so a first touch can never be refused for budget
-/// (as Linux's strict overcommit). The page tables the markers sit in are built
-/// here too (the walk allocates them, charged like any table), so the touch
-/// never needs one (`mmap`'s regions build theirs at the touch, and take them
-/// past the limit: `azos_mm::pager`). All or nothing: a refusal leaves
-/// no marker and no page charged (tables already built stay). `NoMem` when the
-/// Domain cannot take the pages, `Busy` when part of the range is already
-/// mapped or marked, or a table was refused.
-pub fn anon_reserve(root: usize, base: usize, pages: usize) -> Result<(), MemObjError> {
-    // Canary `memobj-anon-uncharged-canary`: the reservation is not charged.
-    if !cfg!(feature = "memobj-anon-uncharged-canary") && !host().task_charge(pages as u32) {
-        return Err(MemObjError::NoMem);
-    }
-    if crate::demand::map_demand_range(root, base, pages).is_err() {
-        // The range wrote no marker (all or nothing); the charge goes back.
-        host().task_discharge(pages as u32);
-        return Err(MemObjError::Busy);
-    }
-    Ok(())
-}
-
-/// Clear the markers in `[start, end)` of the address space rooted at `root`
-/// and answer how many there were: reserved pages that were never touched and
-/// so hold no frame, which the caller discharges (`unmap_user_range_and_free`
-/// counts only the pages that had one). An invalid PTE is never cached in a
-/// TLB, so this needs no shootdown.
-pub fn anon_release_range(root: usize, start: usize, end: usize) -> u32 {
-    let page = azos_arch::PAGE_SIZE;
-    let mut n = 0u32;
-    let mut va = start;
-    while va < end {
-        if crate::demand::clear_demand_marker(root, va) {
-            n = n.saturating_add(1);
-        }
-        va += page;
-    }
-    n
-}
-
-// ──────────────────────────────────────────────────────────────────────────
 // Paged objects: the page cache (storage L11, part A)
 // ──────────────────────────────────────────────────────────────────────────
 //
@@ -5617,37 +5564,6 @@ mod tests {
         assert_eq!(memobj_protect_ref(A, r, false), Ok(()));
         assert_eq!(memobj_protect_ref(A, r, true), Ok(()));
         assert_eq!(PROTECTS.lock().unwrap().len(), 2);
-    }
-
-    /// **Private Anon on the marker-PTE path.** A reservation is charged whole to
-    /// the caller's Domain, writes one marker per page and no frame; one that
-    /// overlaps an existing reservation, or does not fit the budget, takes nothing
-    /// (no marker, no charge); releasing the range answers how many markers there
-    /// were, for the caller to discharge.
-    ///
-    /// **Canary** `memobj-anon-uncharged-canary`: the reservation is not charged,
-    /// and "reserve charged the caller" fails.
-    #[test]
-    fn a_private_anon_reservation_is_charged_whole_and_all_or_nothing() {
-        let _g = setup();
-        azos_sched::shim_set_current(A, ROOT_A);
-        let page = azos_arch::PAGE_SIZE;
-        let frames = azos_mm::shim_pages_in_use();
-        assert_eq!(anon_reserve(ROOT_A, VA, 4), Ok(()));
-        assert_eq!(azos_sched::shim_charged(A), 4, "reserve charged the caller");
-        assert_eq!(azos_mm::demand::shim_markers(), 4, "one marker per page");
-        assert_eq!(azos_mm::shim_pages_in_use(), frames, "and no frame");
-        // Overlapping: refused, nothing taken, the first reservation untouched.
-        assert_eq!(anon_reserve(ROOT_A, VA + 2 * page, 4), Err(MemObjError::Busy));
-        assert_eq!((azos_sched::shim_charged(A), azos_mm::demand::shim_markers()), (4, 4));
-        // Over budget.
-        azos_sched::shim_set_limit(A, 6);
-        assert_eq!(anon_reserve(ROOT_A, VA + 0x10_0000, 4), Err(MemObjError::NoMem));
-        assert_eq!((azos_sched::shim_charged(A), azos_mm::demand::shim_markers()), (4, 4));
-        // The release counts what was never touched.
-        assert_eq!(anon_release_range(ROOT_A, VA, VA + 6 * page), 4);
-        azos_sched::mm_discharge(4);
-        assert_eq!((azos_sched::shim_charged(A), azos_mm::demand::shim_markers()), (0, 0));
     }
 
     // ── The reverse map: object -> mappings ───────────────────────────────────

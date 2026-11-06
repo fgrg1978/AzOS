@@ -12425,8 +12425,6 @@ host_job host_canary_row "memobj: MOVE keeps the charge canary" ipc-tests memobj
     a_move_drops_the_senders_mapping_and_the_charge_follows_the_holder
 host_job host_canary_row "memobj: SHARE without narrowing canary" ipc-tests memobj-share-no-narrow-canary \
     a_share_is_attenuated_and_charges_nobody_twice
-host_job host_canary_row "memobj: private Anon uncharged canary" ipc-tests memobj-anon-uncharged-canary \
-    a_private_anon_reservation_is_charged_whole_and_all_or_nothing
 host_job host_canary_row "memobj: refcount wrap canary" ipc-tests memobj-refcount-wrap-canary \
     a_sum_past_u32_max_frees_nothing
 # The revoke of a MemObj share (cap_store SweptHook -> memobj_warrant_swept).
@@ -12649,11 +12647,6 @@ host_job host_canary_row "fault: spurious after another install canary" syscall-
 host_job thp_host_canary_row "fault: spurious over a promoted block canary" spurious-fault-canary a_fault_on_a_promoted_block_leaves_its_leaf_alone
 host_job zpool_host_canary_row "anon: kernel copy waits out a fork canary" fork-wait-counted-canary \
     a_kernel_copy_waits_out_a_fork_hold
-# A demand reservation (brk) skips the pages of a mapping, whose state is its
-# object's slot (demand::map_demand). demand-over-mapping-canary: the empty leaf
-# alone decides, and a page in the pool would come back as zeros.
-host_job host_canary_row "anon: brk over a mapping canary" syscall-tests demand-over-mapping-canary \
-    a_heap_reservation_skips_the_pages_of_a_mapping
 # The slot chunks of an anonymous object (anon_obj.rs) are charged within the
 # Domain's limit and freed by a munmap that leaves none of their pages mapped.
 # slot-chunk-promised-canary: charged past the limit; slot-chunk-kept-canary:
@@ -15540,7 +15533,7 @@ PY
     # refuse nothing would fail the first.
     #
     # `ALL PASSED` is also required: a refused allocation must leave the program
-    # RUNNING. `sys_brk_impl` commits what it mapped and reports it honestly, so
+    # RUNNING. abitest maps one page per call and counts what it got, so
     # hitting the ceiling is not an error, it is a smaller heap.
     kbuild "qemu,mem-quota-canary"
     fresh_disk $AZOS_OUT/build/disk-abitest.img

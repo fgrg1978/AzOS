@@ -54,7 +54,7 @@ thread-objects-canary = []
 # Mirrors azos_syscall's `lx-loader` in the pulled-in invoke.rs (the module ops
 # of the domain). Off: the host has no module loader.
 lx-loader = []
-# Wave 14 (DEMANDPAGE): the region pagers never resolve a fault.
+# Wave 14 (DEMANDPAGE): the pagers never resolve a fault.
 demand-region-canary = ["azos_mm/demand-region-canary"]
 # Wave 14 (SPAWNCACHE): mirrors azos_syscall's canaries of the same names
 # (the pulled-in image_cache.rs).
@@ -74,7 +74,6 @@ fork-install-recheck-canary = ["azos_mm/fork-install-recheck-canary"]
 fault-entry-rewalk-canary = ["azos_mm/fault-entry-rewalk-canary"]
 fork-wait-counted-canary = ["azos_mm/fork-wait-counted-canary"]
 spurious-fault-canary = ["azos_mm/spurious-fault-canary"]
-demand-over-mapping-canary = ["azos_mm/demand-over-mapping-canary"]
 slot-chunk-promised-canary = ["azos_mm/slot-chunk-promised-canary"]
 slot-chunk-kept-canary = ["azos_mm/slot-chunk-kept-canary"]
 cow-slot-canary = ["azos_mm/cow-slot-canary"]
@@ -96,7 +95,6 @@ memobj-charge-stays-canary = ["azos_ipc/memobj-charge-stays-canary"]
 memobj-protect-max-canary = ["azos_ipc/memobj-protect-max-canary"]
 memobj-cow-no-break-canary = ["azos_ipc/memobj-cow-no-break-canary"]
 memobj-no-kernel-map-canary = ["azos_ipc/memobj-no-kernel-map-canary"]
-memobj-anon-uncharged-canary = ["azos_ipc/memobj-anon-uncharged-canary"]
 memobj-refcount-wrap-canary = ["azos_ipc/memobj-refcount-wrap-canary"]
 memobj-sweep-no-hook-canary = ["azos_ipc/memobj-sweep-no-hook-canary"]
 memobj-sweep-no-retain-canary = ["azos_ipc/memobj-sweep-no-retain-canary"]

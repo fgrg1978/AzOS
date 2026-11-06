@@ -92,7 +92,6 @@ fence-refuse-smoke	pending
 file-census	pending	
 foreign-regs-canary	pending	
 fork-commit-race-canary	pending	
-fork-demand-canary	hot	crates/core/mm/src/cow.rs: the copy-on-write fault
 fork-profile	pending	
 fork-refusal-probe	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 fs-base-cache-canary	pending	

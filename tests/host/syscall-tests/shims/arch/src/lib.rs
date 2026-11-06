@@ -13,12 +13,12 @@
 pub mod mmu;
 
 /// Host stand-in for `azos_arch::cache` (cache-block zeroing), needed
-/// because `tests/host/syscall-tests/shims/mm` pulls the **real** `demand.rs`
+/// because `tests/host/syscall-tests/shims/mm` pulls the **real** `pager.rs`
 /// and `vdso.rs`, and both zero a fresh page through this module.
 ///
-/// Unlike the `cpu` stand-ins below this is not `todo!()`: the demand-fault
-/// path under test really does zero the page it hands to the caller, and
-/// that zeroing is load-bearing (a demand page must never carry stale
+/// Unlike the `cpu` stand-ins below this is not `todo!()`: the fault path
+/// under test really does zero the page it hands to the caller, and that
+/// zeroing is load-bearing (a first-touch page must never carry stale
 /// bytes). Faking it cannot make a wrong answer look right either — the
 /// real module's own behavior on a target with no Zicboz to probe is
 /// exactly this `write_bytes`, so the host takes the same branch a board
@@ -35,7 +35,7 @@ pub mod cache {
 
 /// Host stand-in for the S-mode CSR accessors, needed because
 /// `tests/host/syscall-tests/shims/mm` pulls the **real** `vmm.rs`/`cow.rs`/
-/// `demand.rs`, and those call `sfence.vma` and touch `satp`.
+/// `pager.rs`, and those call `sfence.vma` and touch `satp`.
 ///
 /// **These are the only faked things on the mmap/munmap path, and faking
 /// them cannot make a wrong answer look right.** `sfence.vma` invalidates
@@ -108,7 +108,7 @@ pub mod firmware {
 
 // ── `Mmu` singleton ──────────────────────────────────────────────────────
 //
-// `vmm.rs`/`cow.rs`/`demand.rs` (pulled by path into `shims/mm`) reach the
+// `vmm.rs`/`cow.rs`/`pager.rs` (pulled by path into `shims/mm`) reach the
 // active ISA through `azos_arch::ARCH` + `azos_arch_api::Mmu`, not
 // through the free-function `mmu`/`cpu` modules above directly any more —
 // see `crates/core/mm/src/vmm.rs`'s module doc (page-table abstraction, B2).

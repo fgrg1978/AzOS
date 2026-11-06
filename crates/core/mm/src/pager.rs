@@ -65,9 +65,9 @@
 //! neither a space's lock nor `RESVS` held, and over the page allocator, never the
 //! other way round.
 //!
-//! **Accounting.** Reserve-time charging, kept from the page-budget model (the model
-//! `sys_alloc_demand` already follows) and owner decision 102 (charge the
-//! whole request before taking a frame): `mmap` charges every reserved page to
+//! **Accounting.** Reserve-time charging, from the page-budget model and owner
+//! decision 102 (charge the whole request before taking a frame): `mmap` and
+//! `brk` charge every reserved page to
 //! the task's quota when it reserves, so a fault never refuses on quota — the
 //! same reason a copy-on-write break is "observed, not charged". A page the
 //! reclaimer stores gives its charge back (`PageBudget::storm_note_stored`),
@@ -140,6 +140,10 @@ pub const DEMAND_PAGING: bool = azos_limits::MM_DEMAND_PAGING;
 /// Kconfig `MM_PRECOMMIT_RT`: real-time-class tasks' mappings are committed
 /// at map time.
 pub const PRECOMMIT_RT: bool = azos_limits::MM_PRECOMMIT_RT;
+/// The most bytes one anonymous mapping request (`mmap`) may reserve: 64 MiB,
+/// 16,384 pages. A bound on what one call makes the kernel promise, its slot
+/// chunks and page tables included, before any frame is taken.
+pub const MAX_MAP_BYTES: usize = 64 * 1024 * 1024;
 /// Mapping records per address space (Kconfig `MM_REGIONS_PER_SPACE`).
 pub const MAPPINGS_PER_SPACE: usize = azos_limits::MM_REGIONS_PER_SPACE as usize;
 
@@ -208,7 +212,7 @@ impl Pager for AnonPager {
             };
         }
         // `alloc_page` zero-fills, and that is the only zero: a task must
-        // never see a previous owner's bytes (see `demand.rs`).
+        // never see a previous owner's bytes.
         match pmm::alloc_page() {
             // The allocator ran dry: reservations hold frames no page uses
             // yet. Give one back and ask again.
@@ -1601,7 +1605,7 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Mapping, obj: u32, share
     // SAFETY: `pte_ptr` is an aligned entry of a live table page (the mapping
     // still exists, so `munmap` has not swept it).
     let old = unsafe { core::ptr::read_volatile(pte_ptr) };
-    if ARCH.pte_is_valid(old) || ARCH.pte_is_demand(old) {
+    if old != ARCH.pte_empty() {
         drop(t);
         give_back(frame);
         return if ARCH.pte_is_valid(old) { Ok(()) } else { Err(KernelError::AlreadyMapped) };
@@ -1656,12 +1660,23 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Mapping, obj: u32, share
 /// A wait for a fork's hold on the space is no try: the fault waits as long as
 /// the fork runs, so a kernel copy (which does not fault again) does not give
 /// up on a page a long fork keeps out.
+///
+/// `AlreadyMapped` when a leaf maps the page at the first look: the fault was
+/// not the pager's (a store to a read-only page, or a sibling's install the
+/// caller tells apart, `vmm::handle_user_fault`). A page found mapped after an
+/// attempt of this call raced is resolved.
 pub fn resolve_fault(r: SpaceRef, va: usize) -> KResult<()> {
     let page = va & !(PAGE_SIZE - 1);
     let mut tries = 0;
+    let mut first = true;
     while tries < FAULT_TRIES {
-        match fault_once(r, page)? {
-            Step::Done => return Ok(()),
+        let step = fault_once(r, page)?;
+        if matches!(step, Step::Mapped) && first {
+            return Err(KernelError::AlreadyMapped);
+        }
+        first = false;
+        match step {
+            Step::Done | Step::Mapped => return Ok(()),
             // Canary `fork-wait-counted-canary`: the wait counts as a try.
             Step::Held if !cfg!(feature = "fork-wait-counted-canary") => {}
             Step::Held | Step::Again => tries += 1,
@@ -1679,6 +1694,8 @@ const FAULT_TRIES: usize = 8;
 enum Step {
     /// Resolved, or nothing left to resolve here: the access retries.
     Done,
+    /// A leaf maps the page (its frame's, or a promoted block's).
+    Mapped,
     /// The slot or the mapping changed under the attempt: look again.
     Again,
     /// A fork holds the space (its copy of the markers runs): waited, look again.
@@ -1737,7 +1754,9 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
     if vmm::write_would_enter_kernel_table(root, page) {
         return Err(KernelError::InvalidArg);
     }
+    let (seen, level) = peek(root, page);
     let h = match m.backing {
+        Backing::File { .. } if ARCH.pte_is_valid(seen) => return Ok(Step::Mapped),
         Backing::File { obj, shared } => {
             resolve_file_fault(space, page, &m, obj, shared)?;
             return Ok(Step::Done);
@@ -1745,21 +1764,20 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         Backing::Anon { obj } => obj,
     };
     let idx = m.page_index(page);
-    let (seen, level) = peek(root, page);
     // A block leaf maps the page (a promoted block): it is resident, and the
     // access retries on it.
     if level != 0 && ARCH.pte_is_valid(seen) && BLOCK_LEAF_CHECKED {
-        return Ok(Step::Done);
+        return Ok(Step::Mapped);
     }
-    // A word that is neither empty nor a leaf is not the pager's (a demand
-    // reservation): the demand path owns it.
+    // A word that is neither empty nor a leaf (a run break's parked entry)
+    // is not the pager's to replace.
     if seen != ARCH.pte_empty() && !ARCH.pte_is_valid(seen) {
         return Err(KernelError::AlreadyMapped);
     }
     let leaf = ARCH.pte_is_valid(seen).then(|| ARCH.pte_phys(seen));
     let res = slot::resolve(word, leaf).ok_or(KernelError::InvalidArg)?;
     let stored = match res {
-        Resolve::Present => return Ok(Step::Done),
+        Resolve::Present => return Ok(Step::Mapped),
         // Looked at again: another thread's install reads as `Present` then,
         // and a leaf no install made stays as it is (`slot::Resolve::Foreign`).
         Resolve::Foreign => return Ok(Step::Again),
@@ -1934,9 +1952,9 @@ pub fn contains(r: SpaceRef, va: usize) -> bool {
 /// Most sub-ranges one removal can produce: one per record.
 const MAX_PIECES: usize = MAPPINGS_PER_SPACE;
 /// Most slot chunks one removal frees: those of the largest `munmap`
-/// (`MAX_DEMAND_ALLOC_BYTES`) and one at each end; any past that stay with
+/// (`MAX_MAP_BYTES`) and one at each end; any past that stay with
 /// their object until it ends.
-const CHUNKS_FREED: usize = crate::demand::MAX_DEMAND_ALLOC_BYTES / (anon_obj::PER_CHUNK * PAGE_SIZE) + 2;
+const CHUNKS_FREED: usize = MAX_MAP_BYTES / (anon_obj::PER_CHUNK * PAGE_SIZE) + 2;
 
 /// Can any slot hold a page marker: the pool has pages, or a store is in
 /// flight? When not, a fork copies none.

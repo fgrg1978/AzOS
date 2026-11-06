@@ -32,7 +32,6 @@ pub mod text_poke;
 pub mod cow;
 mod cow_table;
 /// E11 / AQ10 — Demand paging (allocate-on-first-access).
-pub mod demand;
 /// An address space's mappings: which object backs each range (host-tested, `#[path]`).
 pub mod mapping;
 /// The slot word: a page's state in its object, the same on every ISA (host-tested, `#[path]`).

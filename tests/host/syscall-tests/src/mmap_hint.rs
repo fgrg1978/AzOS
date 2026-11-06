@@ -184,7 +184,7 @@ fn the_break_and_the_mappings_stay_apart() {
     let _g = serial();
     let _pt = linux_space();
     let (floor, ceiling) = azos_sched::user_mmap_area();
-    // `sys_brk_impl` grows the break up to `USER_LOW_MAX` and no further: that
+    // `sys_brk` grows the break up to `USER_LOW_MAX` and no further: that
     // is the floor here, so no mapping can lie where the break grows.
     assert_eq!(floor, 0x0200_0000, "the floor is the break's ceiling");
     for (pages, prot) in [(4, RW), (2, NONE), (OVER / PAGE_SIZE, RW)] {

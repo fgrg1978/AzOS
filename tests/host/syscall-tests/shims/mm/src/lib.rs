@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host stand-in for `azos_mm`, used only by `tests/host/syscall-tests`.
 //!
-//! **Almost none of this is a stand-in.** `addr`, `pmm`, `vmm`, `cow` and
-//! `demand` are the actual files from `crates/core/mm/src`, pulled in with
+//! **Almost none of this is a stand-in.** `addr`, `pmm`, `vmm` and `cow`
+//! are the actual files from `crates/core/mm/src`, pulled in with
 //! `#[path]` — the same trick `tests/host/mm-tests` already uses for `pmm.rs`
 //! and `tests/host/cap-tests` uses for `cap.rs`. The mmap/munmap guards in
 //! `handlers.rs` are tested against the kernel's own Sv39 walker, its own
@@ -87,10 +87,6 @@ mod cow_table;
 #[path = "../../../../../../crates/core/mm/src/cow.rs"]
 pub mod cow;
 
-#[allow(dead_code)]
-#[path = "../../../../../../crates/core/mm/src/demand.rs"]
-pub mod demand;
-
 // Wave 14 (DEMANDPAGE): `vmm.rs` sends unowned faults to the pagers, and the
 // mapping records are the pure seam they keep; an anonymous mapping's object
 // keeps its pages' slot words.
@@ -168,8 +164,7 @@ pub mod vdso;
 /// page tables that map them.
 ///
 /// **The 64 MiB is not arbitrary.** It is
-/// [`demand::MAX_DEMAND_ALLOC_BYTES`], the ceiling both `sys_mmap` and
-/// `sys_alloc_demand` enforce. A `len > MAX` guard's mutant (`>` -> `>=`)
+/// [`pager::MAX_MAP_BYTES`], the ceiling `sys_mmap` enforces. A `len > MAX` guard's mutant (`>` -> `>=`)
 /// differs from the original at exactly one input — `len == MAX` — and the
 /// only way to tell them apart is for `len == MAX` to *succeed*. That needs
 /// an arena that can actually back 16,384 pages.
