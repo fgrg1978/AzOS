@@ -2229,6 +2229,9 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
                         }
                         committed += count as usize;
                     });
+                    if cfg!(feature = "fork-commit-race-canary") {
+                        fork_race_canary(parent, child, m, o);
+                    }
                 }
                 Backing::File { obj, .. } => {
                     vmm::for_each_leaf_in(child.root(), m.start, m.end, |_, _| committed += count as usize);
@@ -2272,6 +2275,23 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
     // A page behind a marker is not charged (the reclaimer gave the charge
     // back), in the child as in the parent.
     Ok(reserved.saturating_sub(committed).saturating_sub(copied))
+}
+
+/// Canary `fork-commit-race-canary`, the slot half: the child's empty slots
+/// take the parent's frame slots, so a page a sibling committed after the walk
+/// is the parent's frame in the child.
+fn fork_race_canary(parent: SpaceRef, child: SpaceRef, m: &Mapping, o: &anon_obj::AnonObj) {
+    let Some(ph) = parent.lock().and_then(|sp| sp.set.find(m.start).and_then(|pm| pm.anon_obj())) else { return };
+    // SAFETY: the parent's mappings cannot change (the group's `mm_lock`).
+    let po = unsafe { anon_obj::get(ph) };
+    for i in m.off..m.off + m.pages() {
+        let Some(f) = slot::frame_of(po.look(i).0) else { continue };
+        if o.look(i).0 == slot::EMPTY {
+            if let Some(s) = Spare::take(child.root(), o.missing(i)).and_then(|mut sp| o.slot_fill(i, &mut sp)) {
+                s.store(slot::frame(f), Ordering::Release);
+            }
+        }
+    }
 }
 
 /// Records [`fork_clone`] copies at a time.

@@ -12294,6 +12294,13 @@ host_job host_canary_row "anon: COW break moves the slot canary" syscall-tests c
     a_copy_on_write_break_moves_the_slot_with_the_leaf
 host_job host_canary_row "anon: COW break by root canary" syscall-tests cow-slot-canary \
     a_copy_on_write_break_through_another_tasks_root_moves_its_slot
+# A page a sibling commits during a fork is the child's to pay for and not the
+# child's page (pager::fork_clone counts the child's own leaves and makes its
+# slots from them). fork-commit-race-canary: the parent's count and slots.
+host_job host_canary_row "fork: sibling commit charge canary" syscall-tests fork-commit-race-canary \
+    a_page_committed_during_the_fork_is_charged_to_the_child
+host_job host_canary_row "fork: sibling commit page canary" syscall-tests fork-commit-race-canary \
+    a_page_committed_during_the_fork_is_a_zero_page_in_the_child
 host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
     a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,

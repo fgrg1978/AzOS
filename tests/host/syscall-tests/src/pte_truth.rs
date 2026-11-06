@@ -17,9 +17,9 @@
 //   still the reclaimer's to take. Canary `cow-slot-canary` (`pager::cow_swap`
 //   leaves the slot): the unmap is refused (the slot names the child's frame).
 // * `a_page_committed_during_the_fork_is_a_zero_page_in_the_child`: the child's
-//   slots are its own leaves, not the parent's slots. Canary by hand: the
-//   child's frame slots copied from the parent's: the child maps the parent's
-//   frame.
+//   slots are its own leaves, not the parent's slots. Canary
+//   `fork-commit-race-canary` (the child's empty slots take the parent's frame
+//   slots): the child maps the parent's frame.
 //
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
 

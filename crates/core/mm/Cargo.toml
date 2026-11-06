@@ -79,9 +79,11 @@ lx-wx-canary = []
 # copy-on-write again, so a store to one gets a writable copy that keeps its
 # execute bit. The `wx:` abitest checks must go red with it on.
 cow-ro-canary = []
-# Gate canary only (wave 14, FORKSPAWN): a fork's child takes the parent's
+# Canary (wave 14, FORKSPAWN): a fork's child takes the parent's
 # committed-page counter instead of counting its own pages, so a page a
-# sibling thread commits during the fork is left out of the child's charge.
+# sibling thread commits during the fork is left out of the child's charge,
+# and its empty slots take the parent's frame slots, so it maps the parent's
+# frame: `syscall-tests` demand_paging.rs and pte_truth.rs fork rows fail.
 fork-commit-race-canary = []
 # Host-suite canary: `aspace::destroy` leaves the space's records in the
 # object, so the next space made from it starts with them: `syscall-tests`'
