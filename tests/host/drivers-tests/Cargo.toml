@@ -98,6 +98,8 @@ virtio-cap-bounds-canary = []
 snd-no-reset-canary = []
 # virtio/net.rs canary (the NIC's TX buffers left out of its DMA domain): never enabled on the host.
 iommu-tx-canary = []
+# net_queue_tests.rs: the NIC loses every 100th frame it is given.
+net-queue-drop-canary = []
 # mmc.rs's gate canaries (never enabled on the host; known values).
 mmc-flush-canary = []
 mmc-poll-canary = []

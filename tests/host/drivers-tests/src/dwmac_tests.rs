@@ -17,8 +17,22 @@
 
 use super::dwmac::*;
 use azos_dma::Direction;
-use azos_drvkit::Ticks;
+use azos_drvkit::{Mmio, Ticks};
 use azos_drv_api::net::NetError;
+
+/// A frame sent the way the table sends one outside a batch: posted, then the
+/// doorbell.
+trait PostRing {
+    fn send(&mut self, frame: &[u8]) -> Result<usize, NetError>;
+}
+
+impl<M: Mmio, T: Ticks, D: DmaOps> PostRing for Dwmac<M, T, D> {
+    fn send(&mut self, frame: &[u8]) -> Result<usize, NetError> {
+        let r = self.post(frame);
+        self.ring();
+        r
+    }
+}
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -692,24 +706,22 @@ mod transmit {
         }
     }
 
-    /// **Discriminates.** A batch rings the doorbell once at the end, not once
-    /// per frame, and still delivers every frame.
+    /// **Discriminates.** One ring announces everything posted before it
+    /// with one tail write, and still delivers every frame; a ring with
+    /// nothing posted writes nothing.
     #[test]
-    fn a_batch_has_one_doorbell() {
+    fn one_ring_announces_every_posted_frame() {
         let (mut nic, s) = bring_up(Some(GIGABIT));
         s.log.borrow_mut().clear();
-        nic.tx_batch_begin();
         for i in 0..5 {
-            nic.send(&frame(i, 64)).unwrap();
+            nic.post(&frame(i, 64)).unwrap();
         }
-        assert!(s.writes(reg::DMA_CH0_TXDESC_TAIL).is_empty(), "doorbell inside the batch");
+        assert!(s.writes(reg::DMA_CH0_TXDESC_TAIL).is_empty(), "doorbell before the ring");
         assert!(s.wire.borrow().is_empty());
-        nic.tx_batch_end();
+        nic.ring();
         assert_eq!(s.writes(reg::DMA_CH0_TXDESC_TAIL).len(), 1);
         assert_eq!(s.wire.borrow().len(), 5);
-        // An empty batch rings nothing.
-        nic.tx_batch_begin();
-        nic.tx_batch_end();
+        nic.ring();
         assert_eq!(s.writes(reg::DMA_CH0_TXDESC_TAIL).len(), 1);
     }
 

@@ -1,12 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The kernel's adapter (`crates/drivers/net/src/usb_net.rs`): a network
-//! function as the `NetDevice` the stack addresses, driven the way the `usb`
+//! function as the `NetQueue` the stack addresses, driven the way the `usb`
 //! task drives it.
 
 use std::cell::Cell;
 
-use azos_drv_api::net::{NetDevice, NetError};
+use azos_drv_api::net::{NetError, NetQueue};
+
+/// A frame sent the way the table sends one outside a batch: posted, then the
+/// doorbell.
+pub fn send_now<Q: NetQueue>(nic: &Q, frame: &[u8]) -> Result<usize, NetError> {
+    let r = nic.post(frame);
+    nic.ring();
+    r
+}
+
+/// The next received frame into `buf`; its length, 0 when none waits.
+pub fn recv_one<Q: NetQueue>(nic: &Q, buf: &mut [u8]) -> usize {
+    let mut n = 0;
+    nic.reap_rx(1, &mut |f| {
+        n = f.len();
+        buf[..n].copy_from_slice(f);
+    });
+    n
+}
 use azos_usb::class::cdc::State;
 use azos_usb::class::{Registry, UsbClassDirect};
 use azos_usb::hw::{Clock, DmaBuf, Memory};
@@ -135,8 +153,8 @@ fn the_function_comes_up_once_and_is_a_nic() {
     assert_eq!(b.events, vec![Event::Up]);
     b.run(20);
     assert_eq!(b.events, vec![Event::Up], "reported once");
-    assert!(NetDevice::is_ready(&b.nic));
-    assert_eq!(NetDevice::mac(&b.nic), MAC_BYTES);
+    assert!(NetQueue::is_ready(&b.nic));
+    assert_eq!(NetQueue::mac(&b.nic), MAC_BYTES);
 }
 
 #[test]
@@ -144,7 +162,7 @@ fn frames_go_out_and_come_in_through_the_trait_and_the_usb_task_is_woken() {
     let mut b = Bench::new(ecm_device());
     let before = kicks();
     let f = eth(98, 4);
-    assert_eq!(NetDevice::send(&b.nic, &f), Ok(98));
+    assert_eq!(send_now(&b.nic, &f), Ok(98));
     assert!(kicks() > before, "a queued transfer wakes the usb task");
     b.run(5);
     assert_eq!(b.dev.borrow().out_log.iter().filter(|(e, _)| *e == 2).map(|(_, d)| d.clone()).collect::<Vec<_>>(), vec![f]);
@@ -154,32 +172,32 @@ fn frames_go_out_and_come_in_through_the_trait_and_the_usb_task_is_woken() {
     b.rig.hw.inject_in(&b.dev, 1, &y);
     b.run(5);
     let mut got = vec![];
-    assert_eq!(NetDevice::recv_batch(&b.nic, 8, &mut |fr| got.push(fr.to_vec())), 2);
+    assert_eq!(NetQueue::reap_rx(&b.nic, 8, &mut |fr| got.push(fr.to_vec())), 2);
     assert_eq!(got, vec![x, y]);
     let mut buf = [0u8; 2048];
-    assert_eq!(NetDevice::recv(&b.nic, &mut buf), Ok(0), "nothing queued is not an error");
+    assert_eq!(recv_one(&b.nic, &mut buf), 0, "nothing queued");
 }
 
 #[test]
 fn errors_are_the_stacks_errors() {
     let mut b = Bench::new(ecm_device());
-    assert_eq!(NetDevice::send(&b.nic, &[0; 4]), Err(NetError::BadLength));
+    assert_eq!(send_now(&b.nic, &[0; 4]), Err(NetError::BadLength));
     for _ in 0..azos_limits::USB_CDC_BUFS {
-        NetDevice::send(&b.nic, &eth(60, 0)).unwrap();
+        send_now(&b.nic, &eth(60, 0)).unwrap();
     }
-    assert_eq!(NetDevice::send(&b.nic, &eth(60, 0)), Err(NetError::QueueFull));
+    assert_eq!(send_now(&b.nic, &eth(60, 0)), Err(NetError::QueueFull));
     b.run(5);
-    assert_eq!(NetDevice::send(&b.nic, &eth(60, 0)), Ok(60));
+    assert_eq!(send_now(&b.nic, &eth(60, 0)), Ok(60));
 }
 
 #[test]
 fn nothing_works_before_the_function_is_up() {
     let rig = Rig::new();
     let nic = nic_over(&rig);
-    assert!(!NetDevice::is_ready(&nic));
-    assert_eq!(NetDevice::send(&nic, &eth(60, 0)), Err(NetError::NotReady));
-    assert_eq!(NetDevice::recv(&nic, &mut [0u8; 100]), Err(NetError::NotReady));
-    assert_eq!(NetDevice::mac(&nic), [0; 6]);
+    assert!(!NetQueue::is_ready(&nic));
+    assert_eq!(send_now(&nic, &eth(60, 0)), Err(NetError::NotReady));
+    assert_eq!(recv_one(&nic, &mut [0u8; 100]), 0);
+    assert_eq!(NetQueue::mac(&nic), [0; 6]);
 }
 
 #[test]
@@ -190,7 +208,7 @@ fn an_unplugged_function_goes_down_once() {
     assert_eq!(b.events, vec![Event::Up, Event::Down]);
     b.run(50);
     assert_eq!(b.events, vec![Event::Up, Event::Down]);
-    assert_eq!(NetDevice::send(&b.nic, &eth(60, 0)), Err(NetError::NotReady));
+    assert_eq!(send_now(&b.nic, &eth(60, 0)), Err(NetError::NotReady));
     // The next device comes up again.
     let d = ncm_device(8192, 8192);
     b.dev = d.clone();
@@ -200,17 +218,16 @@ fn an_unplugged_function_goes_down_once() {
 }
 
 #[test]
-fn a_batch_through_the_trait_shares_a_block() {
+fn posts_between_two_rings_share_a_block() {
     let mut b = Bench::new(ncm_device(8192, 8192));
-    NetDevice::tx_batch_begin(&b.nic);
     let fs = [eth(60, 1), eth(70, 2)];
     for f in &fs {
-        NetDevice::send(&b.nic, f).unwrap();
+        b.nic.post(f).unwrap();
     }
     b.run(3);
     assert!(b.dev.borrow().out_log.is_empty());
     let before = kicks();
-    NetDevice::tx_batch_end(&b.nic);
+    NetQueue::ring(&b.nic);
     assert!(kicks() > before);
     b.run(5);
     let log: Vec<Vec<u8>> = b.dev.borrow().out_log.iter().filter(|(e, _)| *e == 2).map(|(_, d)| d.clone()).collect();
@@ -221,7 +238,7 @@ fn a_batch_through_the_trait_shares_a_block() {
     b.rig.hw.inject_in(&b.dev, 1, &ncm_block(0, &[&g]));
     b.run(5);
     let mut buf = [0u8; 2048];
-    let n = NetDevice::recv(&b.nic, &mut buf).unwrap();
+    let n = recv_one(&b.nic, &mut buf);
     assert_eq!(&buf[..n], &g[..]);
 }
 
@@ -240,9 +257,9 @@ fn frames_waiting_for_the_stack_are_reported_until_they_are_taken() {
     b.run(5);
     assert!(b.nic.rx_pending(), "two frames wait");
     let mut buf = [0u8; 2048];
-    assert_eq!(NetDevice::recv(&b.nic, &mut buf), Ok(60));
+    assert_eq!(recv_one(&b.nic, &mut buf), 60);
     assert!(b.nic.rx_pending(), "one is left");
-    assert_eq!(NetDevice::recv(&b.nic, &mut buf), Ok(61));
-    assert_eq!(NetDevice::recv(&b.nic, &mut buf), Ok(0));
+    assert_eq!(recv_one(&b.nic, &mut buf), 61);
+    assert_eq!(recv_one(&b.nic, &mut buf), 0);
     assert!(!b.nic.rx_pending(), "the stack took them all");
 }

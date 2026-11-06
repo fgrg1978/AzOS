@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use azos_devif::outcome::{OK, UNSUPPORTED};
 use azos_devif::Out;
-use azos_drv_api::net::NetDevice;
+use azos_drv_api::net::NetQueue;
 use azos_usb::class::cdc::{Fail, SendError, State, FRAME_MAX};
 use azos_usb::class::net::NetFunction;
 use azos_usb::class::smsc95xx::*;
@@ -421,7 +421,7 @@ fn the_adapter_makes_the_function_a_nic() {
     assert_eq!(events, vec![Event::Up]);
     assert_eq!(nic.mac(), MAC);
     let f = eth(100, 8);
-    assert_eq!(nic.send(&f), Ok(100));
+    assert_eq!(crate::nic::send_now(&nic, &f), Ok(100));
     rig.hw.inject_in(&dev, 1, &rx_entry(&f, false));
     let mut h = UsbClassDirect(nic.class());
     let mut reg = Registry::new();
@@ -430,6 +430,6 @@ fn the_adapter_makes_the_function_a_nic() {
     drop(reg);
     nic.drive(&mut rig.usb);
     let mut buf = [0u8; 2048];
-    assert_eq!(nic.recv(&mut buf), Ok(100));
+    assert_eq!(crate::nic::recv_one(&nic, &mut buf), 100);
     assert_eq!(&buf[..100], &f[..]);
 }

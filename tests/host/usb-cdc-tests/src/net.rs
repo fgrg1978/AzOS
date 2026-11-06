@@ -499,6 +499,7 @@ fn an_ncm_frame_alone_is_a_block_of_one_datagram() {
     let mut b = Bench::new(ncm_device(8192, 8192));
     let f = eth(60, 9);
     b.net.borrow_mut().send(&f).unwrap();
+    b.net.borrow_mut().flush().unwrap();
     b.run(5);
     let sent = b.sent(2);
     assert_eq!(sent.len(), 1);
@@ -514,13 +515,12 @@ fn an_ncm_frame_alone_is_a_block_of_one_datagram() {
 fn a_batch_shares_one_block_and_the_sequence_counts_blocks() {
     let mut b = Bench::new(ncm_device(8192, 8192));
     let fs = [eth(60, 1), eth(61, 2), eth(900, 3)];
-    b.net.borrow_mut().tx_begin();
     for f in &fs {
         b.net.borrow_mut().send(f).unwrap();
     }
     b.run(5);
-    assert!(b.sent(2).is_empty(), "nothing leaves before the batch ends");
-    b.net.borrow_mut().tx_end();
+    assert!(b.sent(2).is_empty(), "nothing leaves before the ring");
+    b.net.borrow_mut().flush().unwrap();
     b.run(5);
     let sent = b.sent(2);
     assert_eq!(sent.len(), 1);
@@ -528,6 +528,7 @@ fn a_batch_shares_one_block_and_the_sequence_counts_blocks() {
     assert_eq!(u16::from_le_bytes([sent[0][6], sent[0][7]]), 0);
     // The next block is number 1.
     b.net.borrow_mut().send(&fs[0]).unwrap();
+    b.net.borrow_mut().flush().unwrap();
     b.run(5);
     assert_eq!(u16::from_le_bytes([b.sent(2)[1][6], b.sent(2)[1][7]]), 1);
     assert_eq!(b.net.borrow().stats().tx_frames, 4);
@@ -537,12 +538,11 @@ fn a_batch_shares_one_block_and_the_sequence_counts_blocks() {
 #[test]
 fn a_batch_is_cut_where_the_block_is_full() {
     let mut b = Bench::new(ncm_device(8192, 4000));
-    b.net.borrow_mut().tx_begin();
     // 1514 + 1514 + header and table fit in 4000 - 1; a third does not.
     for i in 0..3 {
         b.net.borrow_mut().send(&eth(1514, i)).unwrap();
     }
-    b.net.borrow_mut().tx_end();
+    b.net.borrow_mut().flush().unwrap();
     b.run(5);
     let sent = b.sent(2);
     assert_eq!(sent.iter().map(|s| datagrams(s).len()).collect::<Vec<_>>(), vec![2, 1]);
@@ -555,12 +555,11 @@ fn the_devices_datagram_limit_and_alignment_are_kept() {
     // At most 2 datagrams a block, datagrams at 2 modulo 8, NDP on 16.
     d.borrow_mut().canned.push((0xa1, 0x80, ntb_params(1, 8192, 8192, 8, 2, 16, 2)));
     let mut b = Bench::new(d);
-    b.net.borrow_mut().tx_begin();
     let fs: Vec<Vec<u8>> = (0..5).map(|i| eth(61 + i, i as u8)).collect();
     for f in &fs {
         b.net.borrow_mut().send(f).unwrap();
     }
-    b.net.borrow_mut().tx_end();
+    b.net.borrow_mut().flush().unwrap();
     b.run(8);
     let sent = b.sent(2);
     assert_eq!(sent.iter().map(|s| datagrams(s).len()).collect::<Vec<_>>(), vec![2, 2, 1]);
@@ -583,6 +582,7 @@ fn a_block_ending_on_a_packet_boundary_gets_a_pad_byte_outside_its_length() {
     // 12 + 484 + 16 = 512: one packet exactly.
     let f = eth(484, 3);
     b.net.borrow_mut().send(&f).unwrap();
+    b.net.borrow_mut().flush().unwrap();
     b.run(5);
     let s = &b.sent(2)[0];
     assert_eq!(s.len(), 513);

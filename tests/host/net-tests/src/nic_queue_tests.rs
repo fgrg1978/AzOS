@@ -83,7 +83,7 @@ fn refusals(first: u64) -> Vec<azos_decision::Record> {
 }
 
 /// A scripted NIC: hands out `frames` in batches of at most `batch`, the way
-/// `NetDevice::recv_batch` does, and counts its calls.
+/// `NetQueue::reap_rx` does, and counts its calls.
 struct Nic {
     frames: Vec<Vec<u8>>,
     batch: usize,

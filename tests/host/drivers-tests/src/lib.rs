@@ -227,14 +227,16 @@ mod pid {
     }
 }
 
-// The `NetDevice` trait + `EthNetDevice`/`VirtioNetDevice` adapters over
-// `eth.rs`/`virtio/net.rs` reference `crate::net_device` — pulled in here so
-// those two `impl NetDevice for ...` blocks (and `net_device`'s own
-// `pick()` canaries) compile and run on the host, same as everything else
-// in this file.
+// The `NetQueue` adapters over `eth.rs`/`virtio/net.rs` reference
+// `crate::net_queue` — pulled in here so those two `impl NetQueue for ...`
+// blocks (and `net_queue`'s own `pick()` canaries) compile and run on the
+// host, same as everything else in this file.
 #[allow(dead_code)]
-#[path = "../../../../crates/drivers/net/src/net_device.rs"]
-mod net_device;
+#[path = "../../../../crates/drivers/net/src/net_queue.rs"]
+mod net_queue;
+
+#[cfg(test)]
+mod net_queue_tests;
 
 // e1000e.rs: the wire format (descriptors, ring cursors, MAC and link decode)
 // and its tests; the device half is behind the `e1000e` feature, off here,
@@ -729,52 +731,24 @@ mod virtq {
 }
 
 #[cfg(test)]
-mod virtio_net_batch {
-    use super::virtio::net::tx_kick_now;
-
-    /// **Discriminates (IO-QUEUES N1).** The batching rule: outside a batch
-    /// every frame rings (no frame may wait for a flush point that is not
-    /// coming); inside one, only at the bound; always under the canary.
-    /// Canary: drop the `depth == 0` arm and the first assertion fails — a
-    /// lone DHCP DISCOVER would sit unannounced.
-    #[test]
-    fn a_frame_outside_a_batch_rings_at_once_and_inside_only_at_the_bound() {
-        let max = 16;
-        assert!(tx_kick_now(0, 1, max, false), "no batch open: ring now");
-        assert!(!tx_kick_now(1, 1, max, false), "batch open, 1 of 16: wait");
-        assert!(!tx_kick_now(2, 15, max, false));
-        assert!(tx_kick_now(1, 16, max, false), "bound reached: ring");
-        assert!(tx_kick_now(1, 1, max, true), "net-kick-per-frame canary: ring");
-    }
-
-    /// **Pins the Kconfig relation build.rs enforces:** a batch fits in the
-    /// frames the TX ring holds (two descriptors per frame).
-    #[test]
-    fn the_batch_bound_fits_in_the_tx_ring() {
-        assert!(azos_limits::NET_TX_BATCH_MAX >= 1);
-        assert!(azos_limits::NET_TX_BATCH_MAX <= azos_limits::NET_VIRTIO_TXQ_SIZE / 2);
-    }
-}
-
-#[cfg(test)]
 mod virtio_net_device {
-    use azos_drv_api::net::{NetDevice, NetError};
-    use super::virtio::net::VirtioNetDevice;
+    use azos_drv_api::net::{NetError, NetQueue};
+    use super::virtio::net::VirtioNetQueue;
 
     /// **Discriminates.** No MMIO on the host, so `init()` was never called
     /// and the device's own `ready` flag is false — `is_ready()` must say so
     /// rather than defaulting to `true`.
     #[test]
     fn uninitialised_device_is_not_ready() {
-        assert!(!VirtioNetDevice.is_ready());
+        assert!(!VirtioNetQueue.is_ready());
     }
 
     /// **Discriminates.** An empty frame must be refused before the device
-    /// state is even touched — `send`'s old bare `Err(())` gave no way to
+    /// state is even touched — `post`'s bare `Err(())` gave no way to
     /// tell this apart from "ring full"; the trait now can.
     #[test]
     fn an_empty_frame_is_a_bad_length_not_not_ready() {
-        assert_eq!(VirtioNetDevice.send(&[]), Err(NetError::BadLength));
+        assert_eq!(VirtioNetQueue.post(&[]), Err(NetError::BadLength));
     }
 
     /// **Discriminates.** Oversized frame, same bucket as empty: rejected on
@@ -782,68 +756,31 @@ mod virtio_net_device {
     #[test]
     fn an_oversized_frame_is_a_bad_length() {
         let huge = [0u8; 1515]; // TX_BUF_SIZE (1514) + 1
-        assert_eq!(VirtioNetDevice.send(&huge), Err(NetError::BadLength));
+        assert_eq!(VirtioNetQueue.post(&huge), Err(NetError::BadLength));
     }
 
     /// **Discriminates.** A correctly-sized frame against a device that was
     /// never initialised must fail `NotReady`, not `QueueFull` — the two
-    /// used to be indistinguishable behind `send`'s `Result<(), ()>`.
+    /// used to be indistinguishable behind `post`'s `Result<(), ()>`.
     #[test]
     fn a_well_sized_frame_against_an_unready_device_is_not_ready() {
-        assert_eq!(VirtioNetDevice.send(&[0xAA; 64]), Err(NetError::NotReady));
-    }
-
-    /// **Discriminates.** `recv` on an unready device must report "nothing
-    /// queued" (`Ok(0)`), matching `net_raw_recv`'s old direct use of
-    /// `poll_recv`'s return value as a plain byte count with no error case.
-    #[test]
-    fn recv_on_an_unready_device_is_empty_not_an_error() {
-        let mut buf = [0u8; 64];
-        assert_eq!(VirtioNetDevice.recv(&mut buf), Ok(0));
+        assert_eq!(VirtioNetQueue.post(&[0xAA; 64]), Err(NetError::NotReady));
     }
 
     /// **Discriminates.** All-zero MAC before `init()`.
     #[test]
     fn mac_is_zero_before_init() {
-        assert_eq!(VirtioNetDevice.mac(), [0u8; 6]);
+        assert_eq!(VirtioNetQueue.mac(), [0u8; 6]);
     }
 
-    /// `recv_batch` on an unready device hands nothing up.
+    /// `reap_rx` on an unready device hands nothing up, and `ring` on it
+    /// touches nothing.
     #[test]
-    fn recv_batch_on_an_unready_device_is_empty() {
+    fn reap_rx_on_an_unready_device_is_empty() {
         let mut calls = 0;
-        assert_eq!(VirtioNetDevice.recv_batch(16, &mut |_| calls += 1), 0);
+        assert_eq!(VirtioNetQueue.reap_rx(16, &mut |_| calls += 1), 0);
         assert_eq!(calls, 0);
-    }
-
-    /// A backend with only `recv` (board Ethernet): three queued frames.
-    struct Fifo(std::sync::Mutex<Vec<Vec<u8>>>);
-    impl NetDevice for Fifo {
-        fn send(&self, f: &[u8]) -> Result<usize, NetError> { Ok(f.len()) }
-        fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
-            let mut q = self.0.lock().unwrap();
-            if q.is_empty() { return Ok(0); }
-            let f = q.remove(0);
-            buf[..f.len()].copy_from_slice(&f);
-            Ok(f.len())
-        }
-        fn mac(&self) -> [u8; 6] { [0; 6] }
-        fn is_ready(&self) -> bool { true }
-    }
-
-    /// **Discriminates (IO-QUEUES N2 step 2).** The default `recv_batch`
-    /// hands frames up in arrival order, whole, and stops at `max` (the rest
-    /// stays queued for the next call) or when the backend is empty.
-    /// Canary: ignore `max` and the first call takes all three.
-    #[test]
-    fn the_default_recv_batch_keeps_order_and_stops_at_max() {
-        let dev = Fifo(std::sync::Mutex::new(vec![vec![1; 60], vec![2; 1514], vec![3; 61]]));
-        let mut seen: Vec<(u8, usize)> = Vec::new();
-        assert_eq!(dev.recv_batch(2, &mut |f| seen.push((f[0], f.len()))), 2);
-        assert_eq!(seen, vec![(1, 60), (2, 1514)]);
-        assert_eq!(dev.recv_batch(8, &mut |f| seen.push((f[0], f.len()))), 1);
-        assert_eq!(seen[2], (3, 61));
-        assert_eq!(dev.recv_batch(8, &mut |_| panic!("nothing is queued")), 0);
+        VirtioNetQueue.ring();
     }
 
     /// **Pins the Kconfig relation build.rs enforces:** a batch's buffers
@@ -916,41 +853,40 @@ mod dwmac;
 mod dwmac_tests;
 
 #[cfg(test)]
-mod eth_net_device {
-    use super::eth::EthNetDevice;
-    use azos_drv_api::net::{NetDevice, NetError};
+mod eth_net_queue {
+    use super::eth::EthNetQueue;
+    use azos_drv_api::net::{NetError, NetQueue};
 
     /// **Discriminates.** No `vf2` feature on this host build, so the stub
     /// half of `eth.rs` is what is under test: it must report not-ready, the
-    /// same as it does before the driver was given a `NetDevice` face at
-    /// all. A `NetDevice::is_ready` that hardcoded `true` fails this.
+    /// same as it does before the driver was given a `NetQueue` face at
+    /// all. A `NetQueue::is_ready` that hardcoded `true` fails this.
     #[test]
     fn stub_backend_is_never_ready() {
-        assert!(!EthNetDevice.is_ready());
+        assert!(!EthNetQueue.is_ready());
     }
 
-    /// **Discriminates.** `eth_send` returns -1 on the stub unconditionally;
+    /// **Discriminates.** `eth_post` returns -1 on the stub unconditionally;
     /// the trait must turn that into `NotReady`, not `Ok`.
     #[test]
-    fn stub_backend_refuses_to_send() {
-        assert_eq!(EthNetDevice.send(&[1, 2, 3]), Err(NetError::NotReady));
+    fn stub_backend_refuses_to_post() {
+        assert_eq!(EthNetQueue.post(&[1, 2, 3]), Err(NetError::NotReady));
     }
 
-    /// **Discriminates.** `eth_recv` also returns -1 on the stub, and
-    /// `net_raw_recv`'s old inline mapping treated that as "nothing
-    /// available" (`Ok(0)`), not an error — the trait must match exactly, or
-    /// `net_poll`'s drain loop (which stops at the first `Err`/0) changes
-    /// behaviour on every QEMU boot, since QEMU never compiles `vf2`.
+    /// **Discriminates.** `eth_recv` also returns -1 on the stub, and the
+    /// receive pass treats that as "nothing available", not an error — the
+    /// trait must match, or `net_poll`'s drain loop (which stops at the first
+    /// 0) changes behaviour on every QEMU boot, since QEMU never compiles
+    /// `vf2`.
     #[test]
-    fn stub_backend_recv_is_empty_not_an_error() {
-        let mut buf = [0u8; 16];
-        assert_eq!(EthNetDevice.recv(&mut buf), Ok(0));
+    fn stub_backend_reap_rx_is_empty() {
+        assert_eq!(EthNetQueue.reap_rx(4, &mut |_| panic!("nothing is queued")), 0);
     }
 
     /// **Discriminates.** All-zero MAC on the stub, same as before.
     #[test]
     fn stub_backend_mac_is_zero() {
-        assert_eq!(EthNetDevice.mac(), [0u8; 6]);
+        assert_eq!(EthNetQueue.mac(), [0u8; 6]);
     }
 }
 

@@ -21,6 +21,30 @@ use super::igc::{family, IgcWire, Model};
 use super::pci_nic::{rings_drivable, IrqRegs, Mem, Nic, Wire};
 use azos_dma::Direction;
 use azos_drv_api::net::NetError;
+
+/// A frame sent the way the table sends one outside a batch: posted, then the
+/// doorbell; and the one-frame receive the older tests are written in.
+trait PostRing {
+    fn send(&self, frame: &[u8]) -> Result<usize, NetError>;
+    fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError>;
+}
+
+impl<W: Wire, const R: usize, const T: usize> PostRing for Nic<W, R, T> {
+    fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
+        let r = self.post(frame);
+        self.ring();
+        r
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> Result<usize, NetError> {
+        let mut n = 0;
+        self.reap_rx(1, &mut |f| {
+            n = f.len();
+            buf[..n].copy_from_slice(f);
+        });
+        Ok(n)
+    }
+}
 use azos_drv_virtio::virtio::Dma;
 
 const N: usize = 8;
@@ -125,13 +149,14 @@ fn scenario<W: Wire>(rig: &Rig<W>) {
     assert_eq!(rig.nic.send(&frame[..14]), Ok(14));
     assert_eq!(rig.regs.get(W::TX.tail), 2);
 
-    // A batch shares one doorbell.
-    rig.nic.tx_batch_begin();
-    assert_eq!(rig.nic.send(&frame), Ok(60));
-    assert_eq!(rig.nic.send(&frame), Ok(60));
-    assert_eq!(rig.regs.get(W::TX.tail), 2, "inside a batch the doorbell waits");
-    rig.nic.tx_batch_end();
+    // A post alone rings nothing; one ring announces what several posted.
+    assert_eq!(rig.nic.post(&frame), Ok(60));
+    assert_eq!(rig.nic.post(&frame), Ok(60));
+    assert_eq!(rig.regs.get(W::TX.tail), 2, "the doorbell waits for the ring");
+    rig.nic.ring();
     assert_eq!(rig.regs.get(W::TX.tail), 4);
+    rig.nic.ring();
+    assert_eq!(rig.regs.get(W::TX.tail), 4, "a ring with nothing posted writes nothing");
 
     // Refusals.
     assert_eq!(rig.nic.send(&[]), Err(NetError::BadLength));
@@ -345,10 +370,10 @@ fn igc_wedged_transmit_ring_is_reset_once_then_latched() {
 /// **Discriminates.** A sender that sends seldom (a DHCP or TCP retry, here
 /// one frame per 100 ms, twice the stall gap) never sees its wedged ring run
 /// out of budget by itself: the stall clock credits every gap between two
-/// sends as time the guest did not run. The poller's look (`tx_watch`, every
+/// sends as time the guest did not run. The poller's look (`reap_tx`, every
 /// 10 ms here, as the network poller does every `TX_LOOK_US`) keeps the gaps
 /// short, so the ring is found wedged within its budget and the NIC reset.
-/// Canary: `tx_watch` answering `None` without a look (the 2-second bound
+/// Canary: `reap_tx` answering `None` without a look (the 2-second bound
 /// fires: the sends alone never reset it).
 #[test]
 fn e1000e_a_seldom_sender_is_found_wedged_by_the_poller() {
@@ -362,12 +387,12 @@ fn e1000e_a_seldom_sender_is_found_wedged_by_the_poller() {
     let _rig = bring_up(&NIC, &MEM, None, E1000eWire::IRQ);
     NIC.set_restart(restart);
     assert_eq!(NIC.send(&[0u8; 60]), Ok(60));
-    assert!(NIC.tx_watch().is_some(), "a ring holding a frame asks for no look");
+    assert!(NIC.reap_tx().is_some(), "a ring holding a frame asks for no look");
     let t0 = std::time::Instant::now();
     let mut last_send = t0;
     while COUNT.load(core::sync::atomic::Ordering::SeqCst) == 0 {
         assert!(t0.elapsed().as_secs() < 2, "a seldom sender's wedged ring was never declared wedged");
-        let _ = NIC.tx_watch();
+        let _ = NIC.reap_tx();
         if last_send.elapsed().as_millis() >= 100 {
             let _ = NIC.send(&[0u8; 60]);
             last_send = std::time::Instant::now();
@@ -375,7 +400,7 @@ fn e1000e_a_seldom_sender_is_found_wedged_by_the_poller() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(NIC.is_ready() && !NIC.is_dead());
-    assert_eq!(NIC.tx_watch(), None, "a reset ring still asks for a look");
+    assert_eq!(NIC.reap_tx(), None, "a reset ring still asks for a look");
 }
 
 /// Descriptors share cache lines, so a function whose DMA does not snoop the
