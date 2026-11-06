@@ -183,7 +183,7 @@ pub(crate) fn ring3_floor_at(idx: usize) -> u32 {
     if idx >= MAX_TASKS {
         return 0;
     }
-    if unsafe { task_ref(idx).user_pt } != 0 || ktest_ring3(idx) {
+    if unsafe { task_ref(idx).aspace }.is_some() || ktest_ring3(idx) {
         crate::task::RT_PRIORITY_THRESHOLD
     } else {
         0

@@ -27,3 +27,14 @@
 //! budget;` which works because `budget.rs` sits directly beside `lib.rs`.
 #[path = "../../../../../../crates/core/mm/src/budget.rs"]
 pub mod budget;
+
+/// The type of the address-space slot every task carries (`task.rs`, pulled
+/// above by this suite): only the type, as no test here reaches a space.
+pub mod aspace {
+    #[repr(C)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct SpaceSlot {
+        pub root: usize,
+        pub obj: usize,
+    }
+}

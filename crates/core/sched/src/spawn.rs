@@ -290,9 +290,10 @@ pub enum SpawnError {
 /// has one (wave 7, resolved by the caller), `None` for the scheduler's
 /// default (`DEFAULT_PRIORITY`, `DEFAULT_SCHED_CLASS_RAW`).
 ///
-/// Every failure after the address space exists destroys it with
+/// Every failure after the page table exists destroys it with
 /// `vmm::destroy_user_pagetable`, the teardown for a page table no task has
-/// published (fork's failure exits use the same one). `load_elf` tears down
+/// published, or, once its address space object is made, with
+/// `aspace::destroy` (fork's failure exits do the same). `load_elf` tears down
 /// its own on its failures. The ASID `load_elf` took is not returned:
 /// `alloc_asid` is a counter with no release.
 pub fn spawn_prepare(
@@ -401,6 +402,12 @@ pub fn spawn_prepare(
         vmm::destroy_user_pagetable(user_pt);
         return Err(SpawnError::Instances);
     }
+    let Some(space) = azos_mm::aspace::create(user_pt) else {
+        azos_drv_sys::kwarn!("[SPAWN] REFUSED: {} -- no memory for its address space object", name);
+        vmm::destroy_user_pagetable(user_pt);
+        crate::scheduler::row_release(mem.row);
+        return Err(SpawnError::BadImage);
+    };
 
     let (priority, class_raw) = match sched {
         Some((p, c)) => (p, Some(c)),
@@ -427,7 +434,7 @@ pub fn spawn_prepare(
     ) {
         Some(idx) => idx,
         None => {
-            vmm::destroy_user_pagetable(user_pt);
+            azos_mm::aspace::destroy(space, 0, 0);
             crate::scheduler::row_release(mem.row);
             return Err(SpawnError::NoTask);
         }
@@ -437,7 +444,7 @@ pub fn spawn_prepare(
     let tid = match crate::tid_for_idx(idx) {
         Some(tid) => tid,
         None => {
-            vmm::destroy_user_pagetable(user_pt);
+            azos_mm::aspace::destroy(space, 0, 0);
             crate::scheduler::row_release(mem.row);
             return Err(SpawnError::NoTask);
         }
@@ -446,7 +453,7 @@ pub fn spawn_prepare(
     // From here the page table is published on the child's slot: the child's
     // exit path owns its teardown (K-C22(C)), and the reuse-time reclaim in
     // `try_task_create_init` if the child was already past that point.
-    crate::scheduler::set_task_user_info(idx, ctx.satp, ctx.user_pt, ctx.brk, 0);
+    crate::scheduler::set_task_user_info(idx, ctx.satp, Some(space), ctx.brk, 0);
     // A spawned image has PAC keys of its own (A64_PAUTH_PROC_KEYS); they reach
     // the hart when the child consumes its hand-off.
     crate::pac::draw(idx);

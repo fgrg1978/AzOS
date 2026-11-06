@@ -264,13 +264,15 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
         }
     }
 
+    type Space = azos_mm::aspace::SpaceRef;
+
     #[inline(always)]
-    fn user_pt() -> usize {
-        azos_sched::current_user_pt()
+    fn user_space() -> Option<Self::Space> {
+        azos_sched::current_aspace()
     }
 
-    fn cow(pt: usize, va: u64) -> Cow {
-        match azos_mm::vmm::handle_cow_fault(pt, va as usize) {
+    fn cow(space: Self::Space, va: u64) -> Cow {
+        match azos_mm::vmm::handle_cow_fault(space.root(), va as usize) {
             Ok(()) => {
                 azos_mm::vmm::note_cow_resolved();
                 Cow::Resolved
@@ -280,8 +282,8 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
         }
     }
 
-    fn demand(pt: usize, va: u64) -> bool {
-        if azos_mm::vmm::handle_demand_fault(pt, va as usize).is_ok() {
+    fn demand(space: Self::Space, va: u64) -> bool {
+        if azos_mm::vmm::handle_demand_fault(space, va as usize).is_ok() {
             azos_mm::vmm::note_demand_resolved();
             true
         } else {
@@ -289,8 +291,8 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
         }
     }
 
-    fn accessed(pt: usize, va: u64) -> bool {
-        azos_mm::vmm::handle_accessed_fault(pt, va as usize)
+    fn accessed(space: Self::Space, va: u64) -> bool {
+        azos_mm::vmm::handle_accessed_fault(space.root(), va as usize)
     }
 
     fn cow_oom(va: u64) {

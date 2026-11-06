@@ -94,14 +94,14 @@ pub fn ktest_accessor_contracts() -> Result<(), &'static str> {
     // SAFETY: `idx` is the caller's own live slot.
     let (satp, user_pt, name0, prio, stack_top) = unsafe {
         let t = task_ref(idx);
-        (t.task_satp, t.user_pt, t.name[0], t.base_priority.load(Ordering::Relaxed), task_stack_top(t.stack_idx))
+        (t.task_satp, t.aspace.root(), t.name[0], t.base_priority.load(Ordering::Relaxed), task_stack_top(t.stack_idx))
     };
     let top = win!("current_task_stack_top", current_task_stack_top());
     let here_sp = core::ptr::addr_of!(r0) as usize;
     if top != stack_top || top < here_sp || top - here_sp > crate::task::STACK_SIZE {
         return Err("current_task_stack_top is not the top of the stack the caller runs on");
     }
-    if win!("current_user_pt", current_user_pt()) != user_pt as usize {
+    if win!("current_user_pt", current_user_pt()) != user_pt {
         return Err("current_user_pt is not the caller's page table");
     }
     if win!("current_task_satp", current_task_satp()) != satp {

@@ -114,10 +114,9 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
         // Resolve first, report only what could NOT be resolved: nearly every
         // fault is a COW break after `fork` that resolves, and a banner for
         // each of those reads exactly like a crash.
-        let pt = S::user_pt();
-        if pt != 0 {
+        if let Some(space) = S::user_space() {
             if write {
-                match S::cow(pt, va) {
+                match S::cow(space, va) {
                     Cow::Resolved => return,
                     // The one failure where the program did nothing wrong:
                     // its own page after its own fork and an empty allocator.
@@ -127,14 +126,14 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
                     Cow::No => {}
                 }
             }
-            if S::demand(pt, va) {
+            if S::demand(space, va) {
                 return;
             }
             // A page the aging scan cleared A on, touched again on a CPU that
             // does not set A itself (Svade, an aarch64 core without HAFDBS):
             // the leaf is valid and allows the access, so COW and demand paging
             // declined it above. Set A and retry; anything else is a real fault.
-            if S::accessed(pt, va) {
+            if S::accessed(space, va) {
                 return;
             }
         }

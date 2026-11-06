@@ -352,10 +352,10 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
     if npieces > MAX_PIECES {
         return enomem;
     }
-    let root = azos_sched::current_user_pt();
-    if root == 0 {
+    let Some(space) = azos_sched::current_aspace() else {
         return einval;
-    }
+    };
+    let root = space.root();
     let _mm = azos_sched::group::mm_lock();
     let need = if shared && write { CapPerms::READ.union(CapPerms::WRITE) } else { CapPerms::READ };
     let fd = match crate::handlers::file_fd_for(cap_raw, need, azos_abi::invoke::NODE_MMAP) {
@@ -414,10 +414,10 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
             }
         };
         let r = if shared {
-            map_shared_piece(root, tid, obj, in_win, n, write, pieces[..done].last().copied())
+            map_shared_piece(space, tid, obj, in_win, n, write, pieces[..done].last().copied())
         } else {
             let start = cursor;
-            pager::reserve_file(root, start, start + n * page, write, false, obj, in_win)
+            pager::reserve_file(space, start, start + n * page, write, false, obj, in_win)
                 .map(|()| Piece { obj, base: start, span: n })
                 .map_err(|_| enomem)
         };
@@ -437,7 +437,7 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
         }
     }
     if done < npieces {
-        unwind(root, tid, shared, &pieces[..done], if shared { 0 } else { pages });
+        unwind(space, tid, shared, &pieces[..done], if shared { 0 } else { pages });
         return failure;
     }
     if shared {
@@ -452,7 +452,7 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
 /// piece's window addresses start at the address of the object's page 0, right
 /// after the previous piece's when there is one (the mapping is contiguous).
 fn map_shared_piece(
-    root: usize,
+    space: azos_mm::aspace::SpaceRef,
     tid: u32,
     obj: u32,
     in_win: usize,
@@ -482,7 +482,7 @@ fn map_shared_piece(
         return Err(Errno::ENOMEM.to_syscall_ret());
     }
     let booked = matches!(
-        memobj::memobj_note_mapping_ref(tid, obj, root, base, span, MapAccess { write, max_write: write }),
+        memobj::memobj_note_mapping_ref(tid, obj, space.root(), base, span, MapAccess { write, max_write: write }),
         Ok(true)
     );
     if !booked {
@@ -491,7 +491,7 @@ fn map_shared_piece(
         return Err(Errno::EBUSY.to_syscall_ret());
     }
     let start = base + in_win * page;
-    if pager::reserve_file(root, start, start + n * page, write, true, obj, in_win).is_err() {
+    if pager::reserve_file(space, start, start + n * page, write, true, obj, in_win).is_err() {
         drop_shared(tid, obj, base, span);
         return Err(Errno::ENOMEM.to_syscall_ret());
     }
@@ -502,7 +502,7 @@ fn map_shared_piece(
 /// (and their uses of the objects), then each shared piece's booking and window,
 /// or a private mapping's charge. Nothing was committed: the call has not
 /// returned an address.
-fn unwind(root: usize, tid: u32, shared: bool, done: &[Piece], charged: usize) {
+fn unwind(space: azos_mm::aspace::SpaceRef, tid: u32, shared: bool, done: &[Piece], charged: usize) {
     let page = azos_arch::PAGE_SIZE;
     let (Some(first), Some(last)) = (done.first(), done.last()) else {
         if charged != 0 {
@@ -512,12 +512,12 @@ fn unwind(root: usize, tid: u32, shared: bool, done: &[Piece], charged: usize) {
     };
     if shared {
         // Regions start `in_win` pages into the first piece's reservation.
-        let _ = pager::release_range(root, first.base, last.base + last.span * page);
+        let _ = pager::release_range(space, first.base, last.base + last.span * page);
         for p in done {
             drop_shared(tid, p.obj, p.base, p.span);
         }
     } else {
-        let _ = pager::release_range(root, first.base, last.base + last.span * page);
+        let _ = pager::release_range(space, first.base, last.base + last.span * page);
         azos_sched::mm_discharge(charged as u32);
     }
 }
@@ -562,12 +562,11 @@ pub fn exit_writeback(tid: u32) {
     if azos_sched::domain_shared(tid) {
         return;
     }
-    let root = azos_sched::current_user_pt();
-    if root == 0 {
+    let Some(space) = azos_sched::current_aspace() else {
         return;
-    }
+    };
     let mut files = [FileRegion::NONE; EXIT_FILES];
-    let Ok(n) = pager::file_regions_in(root, 0, usize::MAX, &mut files) else {
+    let Ok(n) = pager::file_regions_in(space, 0, usize::MAX, &mut files) else {
         // More mappings than the list holds: every cached window, whoever maps it.
         for i in 0..MAX_MEMOBJS {
             let obj = {

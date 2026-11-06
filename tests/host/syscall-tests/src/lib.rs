@@ -448,6 +448,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod aspace_life {
+        use super::*;
+        include!("aspace_life.rs");
+    }
+
+    #[cfg(test)]
     mod table_promised {
         use super::*;
         include!("table_promised.rs");

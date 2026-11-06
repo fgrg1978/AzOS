@@ -1943,7 +1943,7 @@ mod percpu_accessor_window {
 
 /// **A new thread cannot run before its page table is set.** `thread_create_impl`
 /// queues the thread (`try_task_create_init`) and only then writes its
-/// `task_satp`/`user_pt` (`set_task_thread_info`), so the thread may be running
+/// `task_satp`/`aspace` (`set_task_thread_info`), so the thread may be running
 /// on another hart in between. It is harmless only because its sole way out of
 /// the wait loop in `fork_child_entry` is the hand-off `set_task_fork_ctx`
 /// publishes, which comes after those stores in `thread_create_impl`; and a
@@ -1979,8 +1979,8 @@ mod thread_birth_order {
             .min()
             .expect("the wait loop has no exit at all");
         assert!(take < first_exit, "the child can exit or enter user mode before its hand-off: {b}");
-        // Nothing in the loop reads the page table it is waiting for.
-        assert!(!b.contains("user_pt"), "the wait loop reads user_pt: {b}");
+        // Nothing in the loop reads the address space it is waiting for.
+        assert!(!b.contains("user_pt") && !b.contains("aspace"), "the wait loop reads the address space: {b}");
     }
 }
 

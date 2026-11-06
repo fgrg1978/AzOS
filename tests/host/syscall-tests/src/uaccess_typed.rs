@@ -21,7 +21,7 @@ const VA: usize = 0x60_0000;
 fn space() -> usize {
     let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
     unsafe { core::ptr::write_bytes(pt as *mut u8, 0, PAGE_SIZE) };
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     let fr = azos_mm::pmm::alloc_page().expect("arena").as_usize();
     unsafe { core::ptr::write_bytes(fr as *mut u8, 0, PAGE_SIZE) };
     azos_mm::vmm::map(pt, VA, fr, PagePerms::USER_RW).expect("map");

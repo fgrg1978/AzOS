@@ -999,7 +999,9 @@ pub struct Task {
 
     // == user-space state (Phase 7 — requires MMU) ==
     pub task_satp: u64,
-    pub user_pt:   u64,
+    /// The address space the task runs in (its thread group's); `None` for a
+    /// kernel task.
+    pub aspace:    azos_mm::aspace::SpaceSlot,
     pub user_brk:  u64,
     /// A Linux task's mmap cursor: the lowest address its mmap area has
     /// handed out, 0 before the first (the area's ceiling,
@@ -1159,11 +1161,11 @@ pub struct Task {
     pub exec_sstatus:    u64,
     pub exec_satp:       u64,
     /// K-C22: the address space this task is abandoning (its pre-exec
-    /// `user_pt`; 0 when a kernel task execs for the first time). Carried
+    /// `aspace`; `None` when a kernel task execs for the first time). Carried
     /// through the hand-off because only the CONSUMER may destroy it — after
     /// the hart's satp points at the new page table, never before. See
     /// `process::take_current_task_exec_ctx` for the full safety argument.
-    pub exec_old_pt:     u64,
+    pub exec_old_space:  azos_mm::aspace::SpaceSlot,
 
     // == priority-inheritance donation count ==
     //

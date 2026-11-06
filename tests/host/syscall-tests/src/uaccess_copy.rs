@@ -19,7 +19,7 @@ use azos_arch_api::PagePerms;
 fn fresh_root() -> usize {
     let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
     unsafe { core::ptr::write_bytes(pt as *mut u8, 0, PAGE_SIZE) };
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     pt
 }
 

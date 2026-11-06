@@ -83,6 +83,14 @@ cow-ro-canary = []
 # committed-page counter instead of counting its own pages, so a page a
 # sibling thread commits during the fork is left out of the child's charge.
 fork-commit-race-canary = []
+# Host-suite canary: `aspace::destroy` leaves the space's records in the
+# object, so the next space made from it starts with them: `syscall-tests`'
+# `aspace_life` fails.
+as-stale-root-canary = []
+# Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
+# kept past its space's end reaches the next space made from the object:
+# `syscall-tests`' `aspace_life` fails.
+as-stale-ref-canary = []
 # Host-suite canary (front uaccess-pin): `uaccess::wait_readers` returns at
 # once, as before the access sections; `syscall-tests`' `uaccess_race` fails.
 uaccess-race-canary = []

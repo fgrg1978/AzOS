@@ -84,6 +84,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use azos_decision::{Rule, Verdict};
 use azos_ipc::port::{self as ports, PortEvent};
 use azos_mm::budget::{NoStorm, Pressure, StormOutcome};
+use azos_mm::aspace::SpaceRef;
 use azos_mm::pager::{self, Ages, AnonReclaim};
 use azos_mm::zpool::{self, Round, Stages};
 use azos_mm::{budget, pmm};
@@ -206,19 +207,20 @@ fn announce_all() {
     });
 }
 
-/// Fill `roots` with the page-table roots of the Domain's tasks, each once;
-/// how many.
-fn roots_of(key: domain::Key, roots: &mut [usize; ROOTS_PER_DOMAIN]) -> usize {
+/// Fill `spaces` with the address spaces of the Domain's tasks, each once;
+/// how many. Read from other tasks' slots: a space may end before it is used
+/// (the pager's look at it then finds no records).
+fn spaces_of(key: domain::Key, spaces: &mut [Option<SpaceRef>; ROOTS_PER_DOMAIN]) -> usize {
     let mut n = 0;
     for idx in 0..azos_sched::MAX_TASKS {
         if domain_of(idx) != Some(key) {
             continue;
         }
-        let Some(root) = azos_sched::tid_for_idx(idx).and_then(azos_sched::task_user_pt).filter(|&r| r != 0) else {
+        let Some(r) = azos_sched::tid_for_idx(idx).and_then(azos_sched::task_aspace) else {
             continue;
         };
-        if n < roots.len() && !roots[..n].contains(&root) {
-            roots[n] = root;
+        if n < spaces.len() && !spaces[..n].contains(&Some(r)) {
+            spaces[n] = Some(r);
             n += 1;
         }
     }
@@ -231,13 +233,13 @@ fn roots_of(key: domain::Key, roots: &mut [usize; ROOTS_PER_DOMAIN]) -> usize {
 fn age_domain(key: domain::Key, now: u64) {
     let Some(b) = domain::budget(key) else { return };
     let owner = domain::index(key);
-    let mut roots = [0usize; ROOTS_PER_DOMAIN];
-    let n = roots_of(key, &mut roots);
+    let mut spaces = [None; ROOTS_PER_DOMAIN];
+    let n = spaces_of(key, &mut spaces);
     let tally = {
         let mut ages = AGES.lock();
         ages.begin(owner);
-        for &root in &roots[..n] {
-            pager::age_space(root, owner, &mut ages);
+        for r in spaces[..n].iter().flatten() {
+            pager::age_space(*r, owner, &mut ages);
         }
         ages.end(owner)
     };
@@ -286,15 +288,15 @@ fn storm(key: domain::Key, rt_hart: bool) -> Round {
         return none;
     }
     let pinned = domain::mem_locked(key) || canary!("reclaim-pin-storm");
-    let mut roots = [0usize; ROOTS_PER_DOMAIN];
-    let n = roots_of(key, &mut roots);
+    let mut spaces = [None; ROOTS_PER_DOMAIN];
+    let n = spaces_of(key, &mut spaces);
     let owner = domain::index(key);
     // The storm stops at the low watermark; this only bounds a source that
     // keeps offering pages that do not come off (twice what it has to free).
     let max_steps = b.used().saturating_sub(b.low()).saturating_mul(2).max(1);
     let r = {
         let mut ages = AGES.lock();
-        let mut source = AnonReclaim::new(&roots[..n], owner, &mut ages);
+        let mut source = AnonReclaim::new(&spaces[..n], owner, &mut ages);
         zpool::run_storm(b, &mut source, pinned, rt_hart, max_steps, azos_arch::PAGE_SIZE as u32)
     };
     let locked = canary!("storm-record-locked");

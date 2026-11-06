@@ -127,6 +127,11 @@ pub mod swap;
 #[path = "../../../../../../crates/core/mm/src/pager.rs"]
 pub mod pager;
 
+// The address space object the pager's records live in, over the cache
+// stand-in below.
+#[path = "../../../../../../crates/core/mm/src/aspace.rs"]
+pub mod aspace;
+
 // The object table: the pager reaches it, and the ipc shim's capability face sits over it.
 #[allow(dead_code)]
 #[path = "../../../../../../crates/core/mm/src/memobj.rs"]
@@ -204,20 +209,37 @@ pub fn shim_pages_in_use() -> usize {
     pmm::used_pages()
 }
 
-/// The typed object cache, as the boot volume's sector cache uses it: zeroed
-/// objects that live for the whole test run.
+/// The typed object cache, as the boot volume's sector cache and the address
+/// spaces use it: objects from the host heap, zeroed when new and never given
+/// back to it, so freed memory stays a `T`. A freed object is the next one
+/// `alloc` hands out, bytes as they were, as the kernel's cache does.
 pub mod cache {
     use core::marker::PhantomData;
     use core::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
 
-    pub struct Cache<T>(AtomicBool, PhantomData<fn() -> T>);
+    pub struct Cache<T>(AtomicBool, Mutex<Vec<usize>>, PhantomData<fn() -> T>);
 
     impl<T> Cache<T> {
-        pub const fn new() -> Self { Self(AtomicBool::new(false), PhantomData) }
-        pub fn alloc(&self) -> *mut T { self.alloc_zeroed() }
+        pub const fn new() -> Self { Self(AtomicBool::new(false), Mutex::new(Vec::new()), PhantomData) }
+        pub const fn retained() -> Self { Self::new() }
+        pub fn alloc(&self) -> *mut T {
+            match self.1.lock().unwrap_or_else(|e| e.into_inner()).pop() {
+                Some(p) => p as *mut T,
+                // SAFETY: a non-zero-sized layout; the object is leaked on purpose.
+                None => unsafe { std::alloc::alloc_zeroed(std::alloc::Layout::new::<T>()).cast() },
+            }
+        }
         pub fn alloc_zeroed(&self) -> *mut T {
-            // SAFETY: a non-zero-sized layout; the object is leaked on purpose.
-            unsafe { std::alloc::alloc_zeroed(std::alloc::Layout::new::<T>()).cast() }
+            let p = self.alloc();
+            // SAFETY: `p` is a whole object of this cache.
+            unsafe { core::ptr::write_bytes(p, 0, 1) };
+            p
+        }
+        /// # Safety
+        /// `p` came from this cache's `alloc` and nothing uses it any more.
+        pub unsafe fn free(&self, p: *mut T) {
+            self.1.lock().unwrap_or_else(|e| e.into_inner()).push(p as usize);
         }
         pub fn preload(&self, _n: usize) -> bool { self.0.store(true, Ordering::Relaxed); true }
         pub fn is_sealed(&self) -> bool { self.0.load(Ordering::Relaxed) }

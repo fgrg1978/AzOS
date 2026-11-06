@@ -23,7 +23,7 @@ fn rw() -> PagePerms { PagePerms { accessed: true, dirty: true, ..PagePerms::USE
 
 fn root() -> usize {
     let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     pt
 }
 

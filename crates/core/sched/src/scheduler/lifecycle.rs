@@ -496,8 +496,8 @@ pub fn try_task_create_init(
     // back on (a full teardown walks and frees hundreds of frames — not
     // something to do with SIE off on an RT hart). See the reuse-time
     // comment at the capture site for why destroying here is safe at all.
-    let mut stale_user_pt: u64 = 0;
-    let mut stale_exec_old_pt: u64 = 0;
+    let mut stale_space: Option<azos_mm::aspace::SpaceRef> = None;
+    let mut stale_exec_old: Option<azos_mm::aspace::SpaceRef> = None;
 
     let result = unsafe {
         // --- Allocate and initialize task under pool lock ---
@@ -595,19 +595,19 @@ pub fn try_task_create_init(
                     // it never consumed — no such path exists today, but the
                     // flag must not be the thing that assumption hangs on)
                     // would make this task's next ecall SRET into the dead
-                    // process's image. If one IS pending, its `exec_old_pt`
+                    // process's image. If one IS pending, its `exec_old_space`
                     // is an address space nothing else references any more —
-                    // hand it to the same reuse-time reclaim as `user_pt`
+                    // hand it to the same reuse-time reclaim as `aspace`
                     // below instead of leaking it.
                     if task.exec_ctx_ready.swap(false, Ordering::Relaxed) {
                         EXEC_HANDOFFS.fetch_sub(1, Ordering::Relaxed);
-                        stale_exec_old_pt = task.exec_old_pt;
+                        stale_exec_old = task.exec_old_space.get();
                     }
                     task.exec_entry   = 0;
                     task.exec_user_sp = 0;
                     task.exec_sstatus = 0;
                     task.exec_satp    = 0;
-                    task.exec_old_pt  = 0;
+                    task.exec_old_space.set(None);
                     task.context_saving.store(false, Ordering::Relaxed);
                     task.set_affinity(affinity);
                     // One plain store resets state AND clears any stale wake
@@ -697,7 +697,7 @@ pub fn try_task_create_init(
                     // `release_address_space_at_exit`), which is what the
                     // original deferral to REUSE time, i.e. right here, was
                     // working around: the exiting hart used to stay on that
-                    // satp until `do_schedule()` switched away. A `user_pt`
+                    // satp until `do_schedule()` switched away. An `aspace`
                     // still found here belongs to a task that never ran that
                     // path with it (a fork/spawn child published after it
                     // exited). K-C6 frees the slot only in the
@@ -705,7 +705,7 @@ pub fn try_task_create_init(
                     // off the dying task's stack. Zeroing without destroying
                     // (the old code) leaked the whole address space. Capture
                     // under POOL_LOCK, destroy after SIE is restored (see
-                    // `stale_user_pt` above).
+                    // `stale_space` above).
                     //
                     // Residual window, argued exactly: the Zombie arm clears
                     // TASK_VALID a few dozen instructions BEFORE its
@@ -745,8 +745,7 @@ pub fn try_task_create_init(
                         // table, which the owner's exit frees. See
                         // `kernel_task_satp`.
                         task.task_satp = kernel_task_satp();
-                        stale_user_pt  = task.user_pt;
-                        task.user_pt   = 0;
+                        stale_space    = task.aspace.take();
                         task.user_brk  = 0;
                         task.user_mmap_low = 0;
                         // Owner decision 102 / D2 — the frame budget is the
@@ -812,12 +811,12 @@ pub fn try_task_create_init(
                         core::sync::atomic::fence(Ordering::Release);
                         (*TASKS.get_mut(idx)).tid = 0;
                     }
-                    // K-C22(B): the claim already zeroed the slot's `user_pt`
+                    // K-C22(B): the claim already took the slot's `aspace`
                     // — the captured stale address spaces must be destroyed
                     // on THIS exit too, or they become unreachable forever.
-                    if (stale_user_pt | stale_exec_old_pt) != 0 {
+                    if stale_space.is_some() || stale_exec_old.is_some() {
                         REUSE_TEARDOWNS.fetch_add(1, Ordering::Relaxed);
-                        reclaim_stale_user_pts(stale_user_pt, stale_exec_old_pt);
+                        reclaim_stale_spaces(stale_space, stale_exec_old);
                     }
                     return None;
                 }
@@ -847,12 +846,12 @@ pub fn try_task_create_init(
     // K-C22(B): reuse-time reclaim of the previous occupant's address
     // space(s), with interrupts back on. Runs before the caller learns the
     // new index, but after the new task is enqueued — harmless: the new task
-    // holds `user_pt = 0` and never references what is being freed. A
+    // holds no `aspace` and never references what is being freed. A
     // fallback since K-C22(C): the exit path frees its own, so this finds
     // something only in the cases `release_address_space_at_exit` lists.
-    if (stale_user_pt | stale_exec_old_pt) != 0 {
+    if stale_space.is_some() || stale_exec_old.is_some() {
         REUSE_TEARDOWNS.fetch_add(1, Ordering::Relaxed);
-        reclaim_stale_user_pts(stale_user_pt, stale_exec_old_pt);
+        reclaim_stale_spaces(stale_space, stale_exec_old);
     }
     result
 }
@@ -867,12 +866,12 @@ pub fn try_task_create_init(
 /// `vmm::destroy_user_pagetable` — so shm/MMIO frames mapped into the dead
 /// address space are spared (they are owned by the shm registry / the
 /// hardware, not by the page table; see that function).
-fn reclaim_stale_user_pts(user_pt: u64, exec_old_pt: u64) {
-    if user_pt != 0 {
-        crate::process::destroy_user_address_space(user_pt);
+fn reclaim_stale_spaces(space: Option<azos_mm::aspace::SpaceRef>, exec_old: Option<azos_mm::aspace::SpaceRef>) {
+    if let Some(r) = space {
+        crate::process::destroy_user_address_space(r);
     }
-    if exec_old_pt != 0 {
-        crate::process::destroy_user_address_space(exec_old_pt);
+    if let Some(r) = exec_old {
+        crate::process::destroy_user_address_space(r);
     }
 }
 
@@ -1114,7 +1113,7 @@ pub fn set_task_exit_late_hook(f: fn(u32)) {
 pub fn tid_holds_address_space(tid: u32) -> bool {
     match idx_for_tid(tid) {
         // SAFETY: a valid slot index; one word read, as `note_exit` does.
-        Some(idx) => unsafe { task_ref(idx).user_pt != 0 },
+        Some(idx) => unsafe { task_ref(idx).aspace.is_some() },
         None => false,
     }
 }
@@ -1158,7 +1157,7 @@ pub(crate) fn invoke_task_fork_hook(parent_tid: u32, child_tid: u32) {
 /// load-bearing, because interrupts are ON here and a tick may switch this
 /// task out and back in at any point:
 ///
-///  1. `task_satp` becomes the kernel's root and `user_pt` is taken (zeroed)
+///  1. `task_satp` becomes the kernel's root and `aspace` is taken
 ///     FIRST. A switch back into this task after that installs the kernel
 ///     root, never the table being freed.
 ///  2. This hart leaves the user table: riscv64 `csrw satp` to the kernel root
@@ -1188,7 +1187,7 @@ pub(crate) fn invoke_task_fork_hook(parent_tid: u32, child_tid: u32) {
 ///
 /// A pending exec hand-off (published, never consumed — no path does that
 /// today, see `try_task_create_init`) leaves the replaced table in
-/// `exec_old_pt`; it is freed here too.
+/// `exec_old_space`; it is freed here too.
 ///
 /// K-C22(B)'s reuse-time reclaim stays as the fallback for a table that is
 /// published on a slot after its task already passed this point (a fork or
@@ -1197,7 +1196,7 @@ pub(crate) fn invoke_task_fork_hook(parent_tid: u32, child_tid: u32) {
 /// nothing is switched or freed here and the claim frees it.
 unsafe fn release_address_space_at_exit(idx: usize) {
     let task = task_mut(idx);
-    if task.user_pt == 0 && !task.exec_ctx_ready.load(Ordering::Relaxed) {
+    if task.aspace.is_none() && !task.exec_ctx_ready.load(Ordering::Relaxed) {
         return; // a kernel task: nothing to release, nothing to switch
     }
 
@@ -1220,14 +1219,14 @@ unsafe fn release_address_space_at_exit(idx: usize) {
 
     // Step 1.
     task.task_satp = kernel_task_satp();
-    let user_pt = core::mem::replace(&mut task.user_pt, 0);
+    let space = task.aspace.take();
     task.user_brk = 0;
     task.user_mmap_low = 0;
-    let exec_old_pt = if task.exec_ctx_ready.swap(false, Ordering::Relaxed) {
+    let exec_old = if task.exec_ctx_ready.swap(false, Ordering::Relaxed) {
         EXEC_HANDOFFS.fetch_sub(1, Ordering::Relaxed);
-        core::mem::replace(&mut task.exec_old_pt, 0)
+        task.exec_old_space.take()
     } else {
-        0
+        None
     };
     // The switch below must not be hoisted above the stores that tell a
     // context switch which root to install for this task.
@@ -1251,7 +1250,7 @@ unsafe fn release_address_space_at_exit(idx: usize) {
 
     // Step 3.
     EXIT_TEARDOWNS.fetch_add(1, Ordering::Relaxed);
-    reclaim_stale_user_pts(user_pt, exec_old_pt);
+    reclaim_stale_spaces(space, exec_old);
 }
 
 /// Address spaces torn down on the exit path ([`release_address_space_at_exit`]).
@@ -1614,7 +1613,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
         }
     }
     // Off the shared root, never destroying it: a slot reused with
-    // `user_pt` still set would tear the group's address space down
+    // `aspace` still set would tear the group's address space down
     // (K-C22(B)).
     {
         let task = task_mut(idx);
@@ -1628,7 +1627,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
             unsafe { AARCH64_KERNEL_TTBR0.load(Ordering::Acquire) }
         };
         task.task_satp = kernel_task_satp();
-        task.user_pt = 0;
+        task.aspace.set(None);
         task.user_brk = 0;
         task.user_mmap_low = 0;
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
@@ -1721,7 +1720,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
             // Wave 13: whether `note_exit` re-parents this task's children,
             // published with (before) the exiting mark that readers pair it with.
             EXIT_REPARENTS[idx].store(
-                task_ref(idx).user_pt != 0 && !cfg!(feature = "orphan-reparent-canary"),
+                task_ref(idx).aspace.is_some() && !cfg!(feature = "orphan-reparent-canary"),
                 Ordering::Relaxed,
             );
             TASK_EXITING[idx].store(true, Ordering::Release);
@@ -2589,10 +2588,10 @@ pub fn note_exit(idx: usize, code: i32) {
     if idx >= MAX_TASKS { return; }
     let (child, still_mapped) = unsafe {
         let t = task_ref(idx);
-        (t.tid, t.user_pt != 0)
+        (t.tid, t.aspace.is_some())
     };
     // Called by the exiting task for its own slot, after
-    // `release_address_space_at_exit` zeroed `user_pt`: a table still here
+    // `release_address_space_at_exit` took `aspace`: a space still here
     // means the notice is going out ahead of the teardown.
     if still_mapped {
         EARLY_EXIT_NOTICES.fetch_add(1, Ordering::Relaxed);

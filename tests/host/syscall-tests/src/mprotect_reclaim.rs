@@ -36,10 +36,10 @@ const BRK: u64 = 0x10_0000;
 fn resident_page() -> (usize, usize) {
     let old = azos_sched::current_user_pt();
     if old != 0 {
-        azos_mm::pager::forget(old);
+        azos_sched::shim_forget_space(old);
     }
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
     azos_sched::shim_set_page_limit(0);
@@ -48,7 +48,7 @@ fn resident_page() -> (usize, usize) {
     azos_sched::shim_set_brk(BRK);
     let va = sys_mmap(0, (2 * PAGE_SIZE) as u64, RW, 0, ANON, 0);
     assert_eq!(va, BRK as i64, "mmap failed: {va}");
-    assert!(azos_mm::vmm::handle_demand_fault(pt, va as usize).is_ok());
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), va as usize).is_ok());
     assert!(azos_mm::vmm::user_write_would_be_permitted(pt, va as usize));
     (pt, va as usize)
 }
@@ -58,7 +58,7 @@ fn mprotect_waits_out_a_store_in_flight() {
     let _g = serial();
     let (pt, va) = resident_page();
     let frame = azos_mm::vmm::translate(pt, va).expect("mapped");
-    let roots = [pt];
+    let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
     let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
     let victim = Victim { space: pt, va };
@@ -84,7 +84,7 @@ fn mprotect_waits_out_a_store_in_flight() {
     azos_sched::shim_serial_share(false);
     assert_eq!(azos_mm::vmm::translate(pt, va), Some(frame), "the same frame is still mapped");
     assert!(!azos_mm::vmm::user_write_would_be_permitted(pt, va), "the downgrade survived the failed store");
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
 
@@ -92,17 +92,17 @@ fn mprotect_waits_out_a_store_in_flight() {
 fn the_reclaimer_takes_nothing_while_mprotect_rewrites() {
     let _g = serial();
     let (pt, va) = resident_page();
-    let roots = [pt];
+    let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
     let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
     let victim = Victim { space: pt, va };
-    let pause = azos_mm::pager::reclaim_pause(pt).expect("the space has regions");
+    let pause = azos_mm::pager::reclaim_pause(azos_sched::shim_space(pt)).expect("the space has regions");
     assert!(!reclaim.unmap(victim), "no page leaves a space while its leaves are rewritten");
     assert!(azos_mm::vmm::translate(pt, va).is_some(), "the page stayed mapped");
     drop(pause);
     assert!(reclaim.unmap(victim), "the pause ended: the page may be taken again");
     reclaim.keep(victim);
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
 
@@ -111,7 +111,7 @@ fn module_map_x_waits_out_a_store_in_flight() {
     let _g = serial();
     let (pt, va) = resident_page();
     let frame = azos_mm::vmm::translate(pt, va).expect("mapped");
-    let roots = [pt];
+    let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
     let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
     let victim = Victim { space: pt, va };
@@ -133,6 +133,6 @@ fn module_map_x_waits_out_a_store_in_flight() {
     azos_sched::shim_serial_share(false);
     assert_eq!(azos_mm::vmm::translate(pt, va), Some(frame), "the same frame is still mapped");
     assert!(!azos_mm::vmm::user_write_would_be_permitted(pt, va), "write was taken off with execute put on");
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }

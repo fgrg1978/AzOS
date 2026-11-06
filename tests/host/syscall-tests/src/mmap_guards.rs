@@ -47,11 +47,11 @@ fn fresh_user_pt() -> usize {
     // are never torn down, and dead ones would fill the region table.
     let old = azos_sched::current_user_pt();
     if old != 0 {
-        azos_mm::pager::forget(old);
+        azos_sched::shim_forget_space(old);
     }
     azos_sched::shim_set_sched_class(3);
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
     // Owner decision 102 — clear the frame budget HERE, not in the tests that
@@ -1047,7 +1047,7 @@ fn fork_gives_the_child_the_parents_demand_reservations() {
     azos_mm::vmm::map_demand(pt, RESERVED + 2 * PAGE_SIZE, rw).unwrap();
     azos_mm::vmm::map_demand(pt, RESERVED + 4 * PAGE_SIZE, rw).unwrap();
 
-    let (child, reserved) = azos_mm::vmm::fork_cow_shared(pt, shm_lo, shm_hi, false).expect("fork");
+    let (child, reserved) = azos_mm::vmm::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     assert_eq!(reserved, 4, "the reservations the child got, for its fork to charge");
 
     for k in [0, 1, 2, 4] {
@@ -1096,7 +1096,7 @@ fn cow_break_by_the_last_holder_keeps_the_frame() {
     azos_mm::vmm::map(pt, DATA, data, rw).unwrap();
     azos_mm::vmm::map(pt, KEPT, kept, rw).unwrap();
 
-    let (child, reserved) = azos_mm::vmm::fork_cow_shared(pt, shm_lo, shm_hi, false).expect("fork");
+    let (child, reserved) = azos_mm::vmm::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
     assert_eq!(reserved, 0, "pages, not reservations");
     assert_eq!(azos_mm::vmm::page_getref(data), 2);
 

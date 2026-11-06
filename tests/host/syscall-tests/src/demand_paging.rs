@@ -40,10 +40,10 @@ fn not_mapped<E: core::fmt::Debug>(r: Result<(), E>) -> bool {
 fn space() -> usize {
     let old = azos_sched::current_user_pt();
     if old != 0 {
-        azos_mm::pager::forget(old);
+        azos_sched::shim_forget_space(old);
     }
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
     azos_sched::shim_set_page_limit(0);
@@ -71,7 +71,7 @@ fn mmap_reserves_and_commits_nothing() {
     let base = map(256, RW, 0); // 1 MiB
     assert_eq!(base, BRK as usize);
     assert_eq!(azos_mm::shim_pages_in_use(), before, "a reservation takes no frame and no table");
-    assert_eq!(azos_mm::pager::space_pages(pt), (256, 0));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (256, 0));
     assert_eq!(azos_sched::update_user_brk(0), BRK + 256 * PAGE_SIZE as u64, "the break moves past it");
     assert_eq!(azos_sched::shim_user_pages(), 256, "charged in full at reserve time");
     assert!(!committed(pt, base));
@@ -84,19 +84,19 @@ fn the_fault_entry_commits_a_region_page_with_its_permissions() {
     let rw = map(4, RW, 0);
     let ro = map(4, RO, 0);
 
-    assert!(azos_mm::vmm::handle_demand_fault(pt, rw + PAGE_SIZE + 0x123).is_ok(), "first touch commits");
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), rw + PAGE_SIZE + 0x123).is_ok(), "first touch commits");
     assert_eq!(azos_mm::vmm::user_page(pt, rw + PAGE_SIZE), azos_mm::vmm::UserPage::Leaf { exec: false });
     assert!(azos_mm::vmm::user_write_would_be_permitted(pt, rw + PAGE_SIZE));
     assert!(!committed(pt, rw), "one page per fault");
 
-    assert!(azos_mm::vmm::handle_demand_fault(pt, ro).is_ok());
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), ro).is_ok());
     assert_eq!(azos_mm::vmm::user_page(pt, ro), azos_mm::vmm::UserPage::Leaf { exec: false });
     assert!(!azos_mm::vmm::user_write_would_be_permitted(pt, ro), "PROT_READ is never writable");
     // A second fault on the committed read-only page (a store to it) is not
     // resolved again: the trap branch kills, as for any read-only page.
-    assert!(azos_mm::vmm::handle_demand_fault(pt, ro).is_err());
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), ro).is_err());
 
-    assert_eq!(azos_mm::pager::space_pages(pt), (8, 2));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (8, 2));
     assert_eq!(azos_sched::shim_user_pages(), 8, "a touch charges nothing more");
 }
 
@@ -106,9 +106,9 @@ fn a_fault_outside_every_region_is_not_resolved() {
     let pt = space();
     let base = map(4, RW, 0);
     let end = base + 4 * PAGE_SIZE;
-    assert!(not_mapped(azos_mm::vmm::handle_demand_fault(pt, end)));
-    assert!(not_mapped(azos_mm::vmm::handle_demand_fault(pt, base - PAGE_SIZE)));
-    assert!(azos_mm::vmm::handle_demand_fault(pt, 0x10).is_err(), "the null guard holds");
+    assert!(not_mapped(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), end)));
+    assert!(not_mapped(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base - PAGE_SIZE)));
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), 0x10).is_err(), "the null guard holds");
     assert!(!committed(pt, end));
 }
 
@@ -138,8 +138,8 @@ fn munmap_frees_committed_pages_and_discharges_the_whole_reservation() {
     assert_eq!(sys_munmap(base as u64, (16 * PAGE_SIZE) as u64), 0);
     assert_eq!(azos_mm::shim_pages_in_use(), with_three - 3, "the three committed frames come back");
     assert_eq!(azos_sched::shim_user_pages(), 0, "and all sixteen reserved pages are discharged");
-    assert_eq!(azos_mm::pager::space_pages(pt), (0, 0));
-    assert!(not_mapped(azos_mm::vmm::handle_demand_fault(pt, base + PAGE_SIZE)), "an unmapped reservation faults like any hole");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (0, 0));
+    assert!(not_mapped(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base + PAGE_SIZE)), "an unmapped reservation faults like any hole");
 }
 
 #[test]
@@ -150,10 +150,10 @@ fn munmap_in_the_middle_splits_the_region() {
     assert!(azos_mm::vmm::translate_user(pt, base + 3 * PAGE_SIZE, true).is_some());
     assert_eq!(sys_munmap((base + 2 * PAGE_SIZE) as u64, (2 * PAGE_SIZE) as u64), 0);
     assert_eq!(azos_sched::shim_user_pages(), 6);
-    assert_eq!(azos_mm::pager::space_pages(pt), (6, 0));
-    assert!(azos_mm::vmm::handle_demand_fault(pt, base).is_ok());
-    assert!(azos_mm::vmm::handle_demand_fault(pt, base + 2 * PAGE_SIZE).is_err());
-    assert!(azos_mm::vmm::handle_demand_fault(pt, base + 4 * PAGE_SIZE).is_ok());
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (6, 0));
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base).is_ok());
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base + 2 * PAGE_SIZE).is_err());
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base + 4 * PAGE_SIZE).is_ok());
 }
 
 #[test]
@@ -180,8 +180,8 @@ fn mprotect_none_drops_the_reservation() {
     assert!(azos_mm::vmm::translate_user(pt, base, true).is_some());
     assert_eq!(sys_mprotect(base as u64, (4 * PAGE_SIZE) as u64, 0), 0);
     assert_eq!(azos_sched::shim_user_pages(), 0);
-    assert_eq!(azos_mm::pager::space_pages(pt), (0, 0));
-    assert!(azos_mm::vmm::handle_demand_fault(pt, base + PAGE_SIZE).is_err());
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (0, 0));
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base + PAGE_SIZE).is_err());
     // Below the break and empty again: mprotect maps it eagerly, as before.
     assert_eq!(sys_mprotect(base as u64, (4 * PAGE_SIZE) as u64, RW), 0);
     assert_eq!(azos_sched::shim_user_pages(), 4);
@@ -209,13 +209,13 @@ fn populate_locked_and_rt_tasks_commit_at_map_time() {
         let base = map(8, RW, flags);
         assert!(azos_mm::shim_pages_in_use() >= before + 8, "case {how}: every page now");
         assert!(committed(pt, base) && committed(pt, base + 7 * PAGE_SIZE), "case {how}");
-        assert_eq!(azos_mm::pager::space_pages(pt), (0, 0), "case {how}: no region left to fault on");
+        assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (0, 0), "case {how}: no region left to fault on");
         assert_eq!(azos_sched::shim_user_pages(), 8, "case {how}");
     }
     // Best-effort again: reserve.
     let pt = space();
     map(8, RW, 0);
-    assert_eq!(azos_mm::pager::space_pages(pt), (8, 0));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (8, 0));
 }
 
 #[test]
@@ -228,20 +228,20 @@ fn a_fork_child_inherits_the_reservation_and_is_charged_for_it() {
 
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
-    azos_mm::pager::forget(child);
+    azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
-    assert_eq!(azos_mm::pager::space_pages(child), (8, 2), "the records, and what the COW fork shares");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (8, 2), "the records, and what the COW fork shares");
     assert_eq!(azos_sched::shim_other_pages(), 6, "charged for the six it may still commit");
-    azos_mm::pager::forget(child);
+    azos_sched::shim_forget_space(child);
     azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
 
     // A child whose budget cannot take it: the fork is refused, no records stay.
     let child = azos_mm::pmm::alloc_page().unwrap().as_usize();
-    azos_mm::pager::forget(child);
+    azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(3, child, 5);
     assert!(!fork_regions_to_child(3));
-    assert_eq!(azos_mm::pager::space_pages(child), (0, 0));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (0, 0));
 }
 
 /// **A page a sibling thread commits during a fork is the child's to pay
@@ -266,15 +266,15 @@ fn a_page_committed_during_the_fork_is_charged_to_the_child() {
     let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
     // The sibling's commit, after the walk and before the regions are cloned.
     assert!(azos_mm::vmm::translate_user(pt, base + 2 * PAGE_SIZE, true).is_some());
-    assert_eq!(azos_mm::pager::space_pages(pt), (8, 3));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (8, 3));
 
-    azos_mm::pager::forget(child);
+    azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
-    assert_eq!(azos_mm::pager::space_pages(child), (8, 2), "the child holds two of the eight");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (8, 2), "the child holds two of the eight");
     assert_eq!(azos_sched::shim_other_pages(), 6, "and may still commit six, all charged");
     assert!(!committed(child, base + 2 * PAGE_SIZE));
-    azos_mm::pager::forget(child);
+    azos_sched::shim_forget_space(child);
     azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
 }
 
@@ -290,18 +290,7 @@ fn a_break_range_that_is_occupied_goes_in_the_mmap_area() {
     assert!(at as usize >= floor && at as usize + 4 * PAGE_SIZE <= ceiling, "in the area: {at:#x}");
     assert_eq!(azos_sched::update_user_brk(0), BRK, "the break did not move");
     assert_eq!(azos_sched::shim_user_pages(), 4, "the mapping is charged where it went");
-    assert_eq!(azos_mm::pager::space_pages(pt), (4, 0));
-}
-
-#[test]
-fn page_table_teardown_forgets_the_regions() {
-    let _g = serial();
-    let pt = space();
-    map(4, RW, 0);
-    assert_eq!(azos_mm::pager::space_pages(pt), (4, 0));
-    azos_mm::vmm::destroy_user_pagetable(pt);
-    assert_eq!(azos_mm::pager::space_pages(pt), (0, 0));
-    azos_sched::set_current_user_pt(0);
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (4, 0));
 }
 
 #[test]
@@ -313,5 +302,5 @@ fn consecutive_maps_fold_into_one_record() {
     }
     // Twice as many maps as records, all reserved: they folded.
     let n = 2 * azos_mm::pager::REGIONS_PER_SPACE;
-    assert_eq!(azos_mm::pager::space_pages(pt), (n, 0));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (n, 0));
 }

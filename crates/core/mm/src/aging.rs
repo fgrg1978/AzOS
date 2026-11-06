@@ -246,17 +246,17 @@ impl<const N: usize> AgeTable<N> {
         before - w
     }
 
-    /// The next page to offer the reclaimer: of the spaces `spaces`, tracked,
-    /// not flagged incompressible, oldest generation first and by address
-    /// within one. `(space, page number)`. The cursor moves past the page it
-    /// answers, so a storm that keeps a page (it was busy, or did not
+    /// The next page to offer the reclaimer: of the spaces `wanted` accepts,
+    /// tracked, not flagged incompressible, oldest generation first and by
+    /// address within one. `(space, page number)`. The cursor moves past the
+    /// page it answers, so a storm that keeps a page (it was busy, or did not
     /// compress) is not handed it again.
-    pub fn pick(&self, cur: &mut Cursor, spaces: &[usize]) -> Option<(usize, usize)> {
+    pub fn pick(&self, cur: &mut Cursor, wanted: impl Fn(usize) -> bool) -> Option<(usize, usize)> {
         while cur.level < GENS {
             let age = OLDEST - cur.level;
             while cur.idx < self.len {
                 let c = &self.chunks[cur.idx];
-                if spaces.contains(&c.space) {
+                if wanted(c.space) {
                     let m = c.of_age(age) & c.valid & !c.skip;
                     let m = if cur.bit >= 64 { 0 } else { m & (u64::MAX << cur.bit) };
                     if m != 0 {

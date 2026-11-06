@@ -3017,11 +3017,11 @@ unsafe fn do_schedule(why: SwitchReason) {
 /// A new thread-group member in slot `idx` runs on its creator's address
 /// space: the same root and translation word, nothing reset (the budget and
 /// the break stay the leader's, `proc_slot`).
-pub(crate) fn set_task_thread_info(idx: usize, task_satp: u64, user_pt: u64) {
+pub(crate) fn set_task_thread_info(idx: usize, task_satp: u64, aspace: Option<azos_mm::aspace::SpaceRef>) {
     unsafe {
         if idx < MAX_TASKS && TASK_VALID[idx].load(Ordering::Relaxed) {
             (*TASKS.get_mut(idx)).task_satp = task_satp;
-            (*TASKS.get_mut(idx)).user_pt = user_pt;
+            (*TASKS.get_mut(idx)).aspace.set(aspace);
             (*TASKS.get_mut(idx)).user_brk = 0;
             (*TASKS.get_mut(idx)).user_mmap_low = 0;
         }
@@ -3039,15 +3039,15 @@ pub(crate) fn set_current_task_satp(task_satp: u64) {
     }
 }
 
-/// Update the task_satp, user_pt and user_brk of the current task (and
+/// Update the task_satp, address space and user_brk of the current task (and
 /// start its mmap cursor over: a new address space has handed nothing out).
 /// Called by exec_user after a new user page table has been built.
-pub fn set_current_user_info(task_satp: u64, user_pt: u64, brk: u64) {
+pub fn set_current_user_info(task_satp: u64, aspace: Option<azos_mm::aspace::SpaceRef>, brk: u64) {
     let idx = my_idx();
     unsafe {
         if idx != usize::MAX {
             (*TASKS.get_mut(idx)).task_satp = task_satp;
-            (*TASKS.get_mut(idx)).user_pt   = user_pt;
+            (*TASKS.get_mut(idx)).aspace.set(aspace);
             (*TASKS.get_mut(idx)).user_brk  = brk;
             (*TASKS.get_mut(idx)).user_mmap_low = 0;
             // A new image starts from nothing: new PAC keys (installed by
@@ -3124,10 +3124,10 @@ pub fn task_class_raw(tid: u32) -> Option<u8> {
     unsafe { idx_for_tid(tid).map(|i| task_ref(i).sched_class_raw) }
 }
 
-/// The page-table root of the task `tid`, if it is live (0: a kernel task).
-/// Wave 14 (DEMANDPAGE): a fork hands the child's root to the region table.
-pub fn task_user_pt(tid: u32) -> Option<usize> {
-    unsafe { idx_for_tid(tid).map(|i| task_ref(i).user_pt as usize) }
+/// The address space of the task `tid`, if it is live and has one. A read of
+/// another task's slot: the space may end meanwhile (`SpaceRef::lock` says).
+pub fn task_aspace(tid: u32) -> Option<azos_mm::aspace::SpaceRef> {
+    unsafe { idx_for_tid(tid).and_then(|i| task_ref(i).aspace.get()) }
 }
 
 /// Read + update user_brk for the current task (sys_brk).
@@ -3209,11 +3209,11 @@ pub fn release_user_window_of(tid: u32, base: usize, span: usize) -> bool {
 /// Set user info for a specific task by pool index (used by fork, whose child
 /// copies the parent's break and mmap cursor with its address space, and by
 /// spawn, whose new address space has handed nothing out: cursor 0).
-pub fn set_task_user_info(idx: usize, task_satp: u64, user_pt: u64, brk: u64, mmap_low: u64) {
+pub fn set_task_user_info(idx: usize, task_satp: u64, aspace: Option<azos_mm::aspace::SpaceRef>, brk: u64, mmap_low: u64) {
     unsafe {
         if idx < MAX_TASKS && TASK_VALID[idx].load(Ordering::Relaxed) {
             (*TASKS.get_mut(idx)).task_satp = task_satp;
-            (*TASKS.get_mut(idx)).user_pt   = user_pt;
+            (*TASKS.get_mut(idx)).aspace.set(aspace);
             (*TASKS.get_mut(idx)).user_brk  = brk;
             (*TASKS.get_mut(idx)).user_mmap_low = mmap_low;
             // Owner decision 102 — a new address space starts from zero. Both
@@ -3346,7 +3346,7 @@ pub(crate) fn set_current_task_exec_slots(
     user_sp: u64,
     sstatus: u64,
     satp: u64,
-    old_pt: u64,
+    old: Option<azos_mm::aspace::SpaceRef>,
 ) {
     let idx = my_idx();
     unsafe {
@@ -3356,7 +3356,7 @@ pub(crate) fn set_current_task_exec_slots(
         task.exec_user_sp = user_sp;
         task.exec_sstatus = sstatus;
         task.exec_satp    = satp;
-        task.exec_old_pt  = old_pt;
+        task.exec_old_space.set(old);
         if !task.exec_ctx_ready.swap(true, Ordering::Release) {
             EXEC_HANDOFFS.fetch_add(1, Ordering::Relaxed);
         }
@@ -3396,14 +3396,14 @@ pub(crate) fn current_task_exec_ctx_pending() -> bool {
 }
 
 /// K-C21: consume (read-and-clear) the exec hand-off of the task currently
-/// running on this CPU. Returns `(entry, user_sp, sstatus, satp, old_pt)`.
+/// running on this CPU. Returns `(entry, user_sp, sstatus, satp, old space)`.
 /// The `Acquire` swap pairs with the `Release` in
 /// [`set_current_task_exec_slots`] — on this design it is belt-and-braces
 /// (same task, same hart), but it keeps the protocol identical to fork's and
 /// costs nothing. Callers must go through
 /// `process::take_current_task_exec_ctx`, which owns the satp-switch /
 /// destroy-old ordering (K-C22).
-pub(crate) fn take_current_task_exec_slots() -> Option<(u64, u64, u64, u64, u64)> {
+pub(crate) fn take_current_task_exec_slots() -> Option<(u64, u64, u64, u64, Option<azos_mm::aspace::SpaceRef>)> {
     let idx = my_idx();
     unsafe {
         if idx == usize::MAX { return None; }
@@ -3419,7 +3419,7 @@ pub(crate) fn take_current_task_exec_slots() -> Option<(u64, u64, u64, u64, u64)
             task.exec_user_sp,
             task.exec_sstatus,
             task.exec_satp,
-            task.exec_old_pt,
+            task.exec_old_space.take(),
         ))
     }
 }

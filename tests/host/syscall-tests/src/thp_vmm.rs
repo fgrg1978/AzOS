@@ -70,10 +70,10 @@ fn on() -> bool {
 fn space() -> usize {
     let old = azos_sched::current_user_pt();
     if old != 0 {
-        azos_mm::pager::forget(old);
+        azos_sched::shim_forget_space(old);
     }
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
     azos_sched::shim_set_page_limit(0);
@@ -90,7 +90,7 @@ fn region(prot: u64) -> usize {
 }
 
 fn touch(pt: usize, va: usize) {
-    assert!(azos_mm::vmm::handle_demand_fault(pt, va).is_ok(), "fault at {va:#x}");
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), va).is_ok(), "fault at {va:#x}");
 }
 
 fn fill(pt: usize, block: usize, n: usize) {
@@ -188,7 +188,7 @@ fn filling_a_block_promotes_it_to_one_leaf_and_the_data_survives() {
     assert_eq!(page_bytes(p5)[17], 0xAB);
     assert_eq!(pa(pt, BLOCK_A + 5 * PAGE_SIZE), p5, "the same frames, not copies");
     // Both the pager's books and the charge are unchanged by the swap.
-    assert_eq!(azos_mm::pager::space_pages(pt), (REGION_PAGES, PAGES));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (REGION_PAGES, PAGES));
     // The neighbour block is untouched and still 4 KiB.
     assert_eq!(level(pt, BLOCK_B), None);
 }
@@ -260,7 +260,7 @@ fn munmap_of_the_whole_promoted_block_frees_all_its_frames() {
     assert!(used() - base_used <= 2, "512 frames freed, got {} still out", used() - base_used);
     assert_eq!(azos_sched::shim_user_pages(), (REGION_PAGES - PAGES) as u32, "512 pages discharged");
     // The range is a hole now: a fault there is not resolved.
-    assert!(azos_mm::vmm::handle_demand_fault(pt, BLOCK_A + PAGE_SIZE).is_err());
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), BLOCK_A + PAGE_SIZE).is_err());
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn fork_splits_the_parents_promoted_blocks_and_the_child_gets_the_pages() {
     let p5 = pa(pt, BLOCK_A + 5 * PAGE_SIZE);
     page_bytes(p5)[3] = 0x77;
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::cow::fork_cow_shared(pt, shm_lo, shm_hi, false).expect("fork").0;
+    let child = azos_mm::cow::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork").0;
     assert_eq!(level(pt, BLOCK_A), Some(0), "the parent's block was split before the walk");
     assert_eq!(level(child, BLOCK_A), Some(0));
     for k in [0usize, 5, 300, 511] {
@@ -372,12 +372,12 @@ fn a_block_filled_while_any_fork_walk_runs_is_not_promoted() {
     // promotion resume under the second's walk (a leaf the walk passes is a
     // hole in the child). Canary: `Space.forking` back to a bool: the block
     // is promoted after the first `fork_end`.
-    assert!(azos_mm::pager::fork_begin(pt));
-    assert!(azos_mm::pager::fork_begin(pt));
-    azos_mm::pager::fork_end(pt);
+    assert!(azos_mm::pager::fork_begin(azos_sched::shim_space(pt)));
+    assert!(azos_mm::pager::fork_begin(azos_sched::shim_space(pt)));
+    azos_mm::pager::fork_end(azos_sched::shim_space(pt));
     fill(pt, BLOCK_B, PAGES);
     assert_eq!(level(pt, BLOCK_B), Some(0), "a walk is still running");
-    azos_mm::pager::fork_end(pt);
+    azos_mm::pager::fork_end(azos_sched::shim_space(pt));
     // Nothing left to wait for: the next block fills and promotes.
     fill(pt, BLOCK_A, PAGES);
     assert_eq!(level(pt, BLOCK_A), Some(1));
@@ -417,7 +417,7 @@ fn under_memory_pressure_a_reservation_is_given_up_for_a_plain_page() {
     assert_eq!(azos_mm::pmm::free_pages(), 0);
     // A fault in a block with no reservation (block B: making one needs free
     // memory, there is none) still finds a frame: block A's run is reclaimed.
-    assert!(azos_mm::vmm::handle_demand_fault(pt, 0x60_0000 + PAGE_SIZE).is_ok(), "reclaim found a frame");
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), 0x60_0000 + PAGE_SIZE).is_ok(), "reclaim found a frame");
     assert!(azos_mm::pmm::free_pages() > 0, "the run's unused frames are back");
     // Block A's installed page survives; its next faults are plain.
     assert!(azos_mm::vmm::user_page(pt, BLOCK_A) == azos_mm::vmm::UserPage::Leaf { exec: false });
@@ -567,7 +567,7 @@ fn a_fault_on_a_word_a_run_break_has_parked_waits_for_the_plain_leaf() {
     });
     // The page stays mapped: the fault is waited out and the access retries,
     // not a kill (`NotMapped`) and not a second page.
-    assert!(azos_mm::vmm::handle_demand_fault(pt, va).is_ok(), "a parked word is no fault to kill for");
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), va).is_ok(), "a parked word is no fault to kill for");
     assert_eq!(unsafe { *slot }, leaf, "answered only once the leaf is back");
     maker.join().unwrap();
 }

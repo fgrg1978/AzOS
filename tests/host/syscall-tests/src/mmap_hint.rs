@@ -51,10 +51,10 @@ const EPERM: i64 = -1;
 fn linux_space() -> usize {
     let old = azos_sched::current_user_pt();
     if old != 0 {
-        azos_mm::pager::forget(old);
+        azos_sched::shim_forget_space(old);
     }
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
     azos_sched::shim_set_page_limit(0);
@@ -107,7 +107,7 @@ fn zig_heap_growth_is_one_contiguous_run() {
     for i in 0..SLABS {
         let (slab, peak) = zig_grow(last);
         let net = azos_sched::shim_user_pages() as usize;
-        eprintln!("slab {i:2}: {slab:#x} peak {peak} total {net} region {:?}", azos_mm::pager::space_pages(pt));
+        eprintln!("slab {i:2}: {slab:#x} peak {peak} total {net} region {:?}", azos_mm::pager::space_pages(azos_sched::shim_space(pt)));
         assert_eq!(peak as usize, OVER / PAGE_SIZE, "the whole request is charged at map time");
         assert_eq!(net, (i + 1) * SLAB / PAGE_SIZE, "the trims give back all but the slab");
         if let Some(prev) = last {
@@ -118,7 +118,7 @@ fn zig_heap_growth_is_one_contiguous_run() {
     // One run of reserved, uncommitted pages: one region record, so the
     // space never runs out of records and never falls back to committing
     // every page at map time (the baseline did from the ninth slab on).
-    assert_eq!(azos_mm::pager::space_pages(pt), (SLABS * SLAB / PAGE_SIZE, 0));
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (SLABS * SLAB / PAGE_SIZE, 0));
     assert_eq!(azos_mm::shim_pages_in_use(), frames, "nothing committed, no table built");
     let (floor, ceiling) = azos_sched::user_mmap_area();
     assert_eq!(last.unwrap() + SLABS * SLAB, ceiling, "the run ends at the ceiling");
@@ -135,12 +135,12 @@ fn a_free_hint_is_honoured_a_taken_one_falls_back() {
     let want = ceiling - 64 * PAGE_SIZE;
     assert_eq!(map_at(want, 4, RW, 0), want as i64, "a vacant range below the cursor");
     // Over the mapping just made: placed elsewhere, the mapping untouched.
-    let reserved = azos_mm::pager::space_pages(pt);
+    let reserved = azos_mm::pager::space_pages(azos_sched::shim_space(pt));
     let charged = azos_sched::shim_user_pages();
     let other = map_at(want, 4, RW, 0);
     assert!(other > 0 && other as usize != want, "a taken hint falls back: {other:#x}");
     assert!(other as usize + 4 * PAGE_SIZE <= want || other as usize >= want + 4 * PAGE_SIZE);
-    assert_eq!(azos_mm::pager::space_pages(pt).0, reserved.0 + 4);
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)).0, reserved.0 + 4);
     assert_eq!(azos_sched::shim_user_pages(), charged + 4);
     // An unaligned hint rounds up to its page, as Linux's does.
     let up = ceiling - 128 * PAGE_SIZE;
@@ -155,13 +155,13 @@ fn noreplace_places_exactly_or_answers_eexist() {
     let nr = MMAP_MAP_FIXED_NOREPLACE;
     let at = ceiling - 256 * PAGE_SIZE;
     assert_eq!(map_at(at, 8, RW, nr), at as i64);
-    let reserved = azos_mm::pager::space_pages(pt);
+    let reserved = azos_mm::pager::space_pages(azos_sched::shim_space(pt));
     let charged = azos_sched::shim_user_pages();
     // Over it, whole or in part: refused, nothing changes.
     assert_eq!(map_at(at, 8, RW, nr), EEXIST);
     assert_eq!(map_at(at + 4 * PAGE_SIZE, 8, RW, nr), EEXIST);
     assert_eq!(map_at(at - 4 * PAGE_SIZE, 8, RW, nr), EEXIST);
-    assert_eq!(azos_mm::pager::space_pages(pt), reserved);
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), reserved);
     assert_eq!(azos_sched::shim_user_pages(), charged);
     // Above the cursor nothing is presumed free: a PROT_NONE mapping there
     // leaves no record of itself.

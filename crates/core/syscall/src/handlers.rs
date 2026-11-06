@@ -3385,8 +3385,8 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     }
     // Only support anonymous mappings (fd == -1 or fd == u64::MAX)
     if fd != u64::MAX && fd as i64 != -1 { return -1; }
-    let user_pt = azos_sched::current_user_pt();
-    if user_pt == 0 { return -1; } // kernel task
+    let Some(space) = azos_sched::current_aspace() else { return -1 }; // kernel task
+    let user_pt = space.root();
 
     let len = length as usize;
     if len == 0 { return -1; }
@@ -3440,7 +3440,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     // Wave 14 (DEMANDPAGE): reserve; the fault path commits each page from
     // the region's pager with exactly these permissions (never executable).
     if !mmap_precommit(flags)
-        && azos_mm::pager::reserve(user_pt, aligned_base, end_va, writable).is_ok()
+        && azos_mm::pager::reserve(space, aligned_base, end_va, writable).is_ok()
     {
         mmap_placed(aligned_base, end_va);
         return aligned_base as i64;
@@ -3530,8 +3530,8 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     if prot & MMAP_PROT_EXEC != 0 {
         return Errno::EACCES.to_syscall_ret();
     }
-    let user_pt = azos_sched::current_user_pt();
-    if user_pt == 0 { return -1; }
+    let Some(space) = azos_sched::current_aspace() else { return -1 };
+    let user_pt = space.root();
     let start = addr as usize;
     let rounded = (length as usize).saturating_add(page_size - 1) & !(page_size - 1);
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
@@ -3545,7 +3545,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     }
     // A file mapping keeps the permission it was made with: a shared one's
     // dirty record in the page cache is made from it (`crate::file_map`).
-    if azos_mm::pager::has_file(user_pt, start, end) {
+    if azos_mm::pager::has_file(space, start, end) {
         return Errno::EINVAL.to_syscall_ret();
     }
     let none = prot & (MMAP_PROT_READ | MMAP_PROT_WRITE) == 0;
@@ -3570,7 +3570,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
             }
             // Wave 14: a reserved page is not missing (it is charged and
             // committed on first touch); its region takes the new `prot`.
-            azos_mm::vmm::UserPage::Missing if !none && !azos_mm::pager::contains(user_pt, va) => {
+            azos_mm::vmm::UserPage::Missing if !none && !azos_mm::pager::contains(space, va) => {
                 if va >= brk && !mmap_handed_out(va) { return Errno::ENOMEM.to_syscall_ret(); }
                 missing += 1;
             }
@@ -3584,7 +3584,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     if none {
         // Wave 14: a `PROT_NONE` range stops being reserved, before the
         // sweep (as in `sys_munmap`); its uncommitted pages are discharged.
-        let reserved = match azos_mm::pager::release_range(user_pt, start, end) {
+        let reserved = match azos_mm::pager::release_range(space, start, end) {
             Ok(n) => n as u32,
             Err(_) => return Errno::ENOMEM.to_syscall_ret(),
         };
@@ -3598,10 +3598,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     // The reclaimer takes no page of the space meanwhile: a leaf it swapped
     // out under the rewrite would be written back as a valid leaf on a frame
     // it is about to free, and a store that fails restores the old permission.
-    let _reclaim_off = azos_mm::pager::reclaim_pause(user_pt);
+    let _reclaim_off = azos_mm::pager::reclaim_pause(space);
     // Wave 14: regions first. It is the step that can refuse for want of a
     // record, and a refusal here leaves everything as it was.
-    if azos_mm::pager::protect_range(user_pt, start, end, write).is_err() {
+    if azos_mm::pager::protect_range(space, start, end, write).is_err() {
         return Errno::ENOMEM.to_syscall_ret();
     }
     if missing != 0 {
@@ -3613,7 +3613,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
         let mut v = start;
         while v < end {
             if azos_mm::vmm::user_page(user_pt, v) == azos_mm::vmm::UserPage::Missing
-                && !azos_mm::pager::contains(user_pt, v)
+                && !azos_mm::pager::contains(space, v)
             {
                 let ok = match azos_mm::pmm::alloc_page() {
                     Ok(page) => {
@@ -3629,7 +3629,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
                     let mut w = v;
                     while w < end {
                         if azos_mm::vmm::user_page(user_pt, w) == azos_mm::vmm::UserPage::Missing
-                            && !azos_mm::pager::contains(user_pt, w)
+                            && !azos_mm::pager::contains(space, w)
                         {
                             left += 1;
                         }
@@ -3649,8 +3649,8 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
 pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // Wave 13: one layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
-    let user_pt = azos_sched::current_user_pt();
-    if user_pt == 0 { return -1; }
+    let Some(space) = azos_sched::current_aspace() else { return -1 };
+    let user_pt = space.root();
 
     let page_size = azos_arch::PAGE_SIZE;
     let len = length as usize;
@@ -3755,11 +3755,11 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // all), listed first: the sweep below clears their PTEs, and only then may
     // their pages go back to the file and their bookings be given up.
     let mut files = [azos_mm::pager::FileRegion::NONE; crate::file_map::MUNMAP_FILES];
-    let nfiles = match azos_mm::pager::file_regions_in(user_pt, start, end, &mut files) {
+    let nfiles = match azos_mm::pager::file_regions_in(space, start, end, &mut files) {
         Ok(n) => n,
         Err(_) => return azos_abi::error::Errno::ENOMEM.to_syscall_ret(),
     };
-    let reserved = match azos_mm::pager::release_range(user_pt, start, end) {
+    let reserved = match azos_mm::pager::release_range(space, start, end) {
         Ok(n) => n as u32,
         Err(_) => return azos_abi::error::Errno::ENOMEM.to_syscall_ret(),
     };
@@ -3783,18 +3783,16 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
 /// `false` (the fork is refused) when the child's budget cannot take it.
 /// Called with the group's `mm_lock` held, before the child can run.
 pub(crate) fn fork_regions_to_child(child: u32) -> bool {
-    let parent_pt = azos_sched::current_user_pt();
-    let child_pt = azos_sched::task_user_pt(child).unwrap_or(0);
-    if parent_pt == 0 || child_pt == 0 {
+    let (Some(parent), Some(child_space)) = (azos_sched::current_aspace(), azos_sched::task_aspace(child)) else {
         return true;
-    }
-    match azos_mm::pager::fork_clone(parent_pt, child_pt) {
+    };
+    match azos_mm::pager::fork_clone(parent, child_space) {
         Ok(0) => true,
         Ok(n) => {
             if azos_sched::mm_charge_tid(child, n.min(u32::MAX as usize) as u32) {
                 true
             } else {
-                azos_mm::pager::forget(child_pt);
+                azos_mm::pager::forget(child_space);
                 false
             }
         }

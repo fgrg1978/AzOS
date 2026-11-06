@@ -239,7 +239,7 @@ pub struct MemSpec {
 }
 
 /// What [`take_current_task_exec_ctx`] hands the consumption sites: the
-/// register-visible half of the exec (`user_pt`/`brk` were already applied to
+/// register-visible half of the exec (the address space and `brk` were already applied to
 /// the task by `exec_user`, and the old address space is already gone by the
 /// time this struct exists).
 pub struct ExecHandoff {
@@ -267,7 +267,7 @@ pub struct ExecHandoff {
 // same way: another hart finishing any syscall in the window SRET'd into
 // the exec'er's fresh address space while the exec'er resumed its old sepc
 // under the new page table. It now lives on the exec'ing task's own slot
-// (`exec_entry`/`exec_user_sp`/`exec_sstatus`/`exec_satp`/`exec_old_pt`/
+// (`exec_entry`/`exec_user_sp`/`exec_sstatus`/`exec_satp`/`exec_old_space`/
 // `exec_ctx_ready` — see their doc in `crates/core/sched/src/task.rs`).
 
 // ── ELF loader ────────────────────────────────────────────────────────────────
@@ -362,6 +362,8 @@ fn exec_install(
 /// leaves the process and its threads as they were.
 pub struct PreparedExec {
     ctx: ExecContext,
+    /// The address space made over `ctx.user_pt`, the object the task takes.
+    space: azos_mm::aspace::SpaceRef,
     spec: MemSpec,
     /// The process's row when the exec was admitted, and whether the image's
     /// row differs from it (an instance of `spec.row` was then claimed).
@@ -453,13 +455,21 @@ fn exec_admit(
         vmm::destroy_user_pagetable(ctx.user_pt as usize);
         return None;
     }
-    Some(PreparedExec { ctx, spec, cur_row, row_change })
+    let Some(space) = azos_mm::aspace::create(ctx.user_pt as usize) else {
+        azos_drv_sys::kwarn!("[MEM] exec REFUSED: no memory for its address space object");
+        vmm::destroy_user_pagetable(ctx.user_pt as usize);
+        if row_change {
+            crate::scheduler::row_release(spec.row);
+        }
+        return None;
+    };
+    Some(PreparedExec { ctx, space, spec, cur_row, row_change })
 }
 
 /// Give back an admitted exec that will not run: its address space and
 /// the row instance it claimed. The caller keeps its image.
 pub fn exec_abort(p: PreparedExec) {
-    vmm::destroy_user_pagetable(p.ctx.user_pt as usize);
+    azos_mm::aspace::destroy(p.space, 0, 0);
     if p.row_change {
         crate::scheduler::row_release(p.spec.row);
     }
@@ -470,18 +480,18 @@ pub fn exec_abort(p: PreparedExec) {
 /// `scheduler::exec_end_other_threads`, whose PID hand-over put the process's
 /// state on this slot when a thread that was not the leader execs).
 pub fn exec_commit(p: PreparedExec) -> i64 {
-    let PreparedExec { ctx, spec, cur_row, row_change } = p;
+    let PreparedExec { ctx, space, spec, cur_row, row_change } = p;
     // K-C22(A): capture the address space this task is abandoning
-    // BEFORE `set_current_user_info` overwrites `user_pt` with the
-    // new one — this is the only moment the old root is still
+    // BEFORE `set_current_user_info` overwrites `aspace` with the
+    // new one — this is the only moment the old space is still
     // reachable. It rides in the hand-off because it must be
     // destroyed by the CONSUMER, after satp points at the new page
     // table: right now this hart is still fetching kernel code
     // through the old PT's kernel entries.
-    let old_pt = crate::scheduler::current_user_pt() as u64;
+    let old = crate::scheduler::current_aspace();
     // Store user PT info into the current task so context_switch.S can
     // write the correct SATP on every subsequent context switch.
-    crate::scheduler::set_current_user_info(ctx.satp, ctx.user_pt, ctx.brk);
+    crate::scheduler::set_current_user_info(ctx.satp, Some(space), ctx.brk);
     crate::scheduler::mm_install_frames(spec.limit, spec.locked, ctx.frames);
     crate::scheduler::set_current_kmem_kib(spec.kmem_kib);
     crate::scheduler::set_current_partition(spec.partition);
@@ -492,7 +502,7 @@ pub fn exec_commit(p: PreparedExec) -> i64 {
         crate::scheduler::set_current_mem_row(spec.row);
     }
     crate::scheduler::set_current_task_exec_slots(
-        ctx.entry, ctx.user_sp, ctx.sstatus, ctx.satp, old_pt,
+        ctx.entry, ctx.user_sp, ctx.sstatus, ctx.satp, old,
     );
     0
 }
@@ -514,7 +524,7 @@ pub fn exec_commit(p: PreparedExec) -> i64 {
 ///     would free frames — including live page-table frames — that this
 ///     hart's satp/TLB still translates through; another hart reallocating
 ///     them mid-walk turns that into silent corruption. After the switch the
-///     old root is referenced by nothing: `task_satp`/`user_pt` already point
+///     old root is referenced by nothing: `task_satp`/`aspace` already point
 ///     at the new PT (step done in `exec_user`), and no other thread of the
 ///     process runs any more (`scheduler::exec_end_other_threads` waits for
 ///     each to leave the root, `member_exit`). A hart that ran this PT may
@@ -544,7 +554,7 @@ pub fn take_current_task_exec_ctx() -> Option<ExecHandoff> {
 
 #[inline(never)]
 fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
-    let (entry, user_sp, sstatus, satp, old_pt) =
+    let (entry, user_sp, sstatus, satp, old) =
         crate::scheduler::take_current_task_exec_slots()?;
     // Step 1 on both ISAs. aarch64 used to skip it ("no register write here
     // yet") and leave the switch to `trap_entry.S`'s exec hand-off before
@@ -558,10 +568,10 @@ fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
     // ASID generation scheme (owner decision 10-10): the hart leaves exec
     // tracked, and a rollover since exec built the word re-tags it here.
     let satp = crate::asid::install_exec_root(satp as usize) as u64;
-    if old_pt != 0 {
+    if let Some(old) = old {
         // A ring-3 task looping on exec used to drain the PMM through the
         // success path — nothing ever freed the replaced address space.
-        destroy_user_address_space(old_pt);
+        destroy_user_address_space(old);
     }
     Some(ExecHandoff { entry, user_sp, sstatus, satp })
 }
@@ -584,13 +594,12 @@ fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
 /// Refused, and the address space leaked, when a hart still translates
 /// through it (`vmm::destroy_user_pagetable_skip_range`). Printed, because
 /// every caller has just argued that cannot happen.
-pub fn destroy_user_address_space(user_pt: u64) {
-    let holders =
-        vmm::destroy_user_pagetable_skip_range(user_pt as usize, USER_MMIO_BASE, USER_MMIO_LIMIT);
+pub fn destroy_user_address_space(space: azos_mm::aspace::SpaceRef) {
+    let holders = azos_mm::aspace::destroy(space, USER_MMIO_BASE, USER_MMIO_LIMIT);
     if holders != 0 {
         azos_drv_sys::kerr!(
             "[MM] page-table root {:#x} still live on hart mask {:#x}: teardown refused, address space leaked (refusals: {})",
-            user_pt, holders,
+            space.root(), holders,
             vmm::LIVE_ROOT_REFUSALS.load(core::sync::atomic::Ordering::Relaxed),
         );
     }
@@ -2185,11 +2194,13 @@ pub enum ForkRefusalSite {
     /// The child's page tables alone exceed the budget it would
     /// inherit.
     MemBudget = 7,
+    SpaceExhausted = 8,
 }
 
-const FORK_REFUSAL_SITES: usize = 8;
+const FORK_REFUSAL_SITES: usize = 9;
 
 static FORK_REFUSAL_COUNTS: [core::sync::atomic::AtomicU32; FORK_REFUSAL_SITES] = [
+    core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
@@ -2210,6 +2221,7 @@ fn fork_refusal_site_name(site: ForkRefusalSite) -> &'static str {
         ForkRefusalSite::ForkCtxIdentityMiss => "fork-ctx-identity-miss",
         ForkRefusalSite::MemLocked => "mem-locked",
         ForkRefusalSite::MemBudget => "mem-budget",
+        ForkRefusalSite::SpaceExhausted => "space-exhausted",
     }
 }
 
@@ -2322,9 +2334,10 @@ fn fork_hooked_inner(
     regs: &crate::task::UserRegs,
     before_release: &mut dyn FnMut(u32) -> bool,
 ) -> i64 {
-    let parent_pt = crate::scheduler::current_user_pt();
     // kernel task can't fork
-    if parent_pt == 0 { return note_fork_refusal(ForkRefusalSite::KernelTask); }
+    let Some(parent) = crate::scheduler::current_aspace() else {
+        return note_fork_refusal(ForkRefusalSite::KernelTask);
+    };
 
     // AQ9: Copy-on-Write fork — share all user pages read-only instead of
     // copying them eagerly.  The COW fault handler allocates new pages on write.
@@ -2344,7 +2357,7 @@ fn fork_hooked_inner(
     // Wave 13: a thread group's other members may fault on the parent's
     // entries while they are walked (`fork_cow_shared`).
     let concurrent = crate::scheduler::current_slot().is_some_and(|i| crate::group::lead_of_idx(i) != 0);
-    let (child_pt, child_reserved) = match vmm::fork_cow_shared(parent_pt, USER_MMIO_BASE, USER_MMIO_LIMIT, concurrent) {
+    let (child_pt, child_reserved) = match vmm::fork_cow_shared(parent, USER_MMIO_BASE, USER_MMIO_LIMIT, concurrent) {
         Ok(r) => r,
         Err(_) => {
             let _ = crate::scheduler::take_current_pt_build();
@@ -2390,6 +2403,10 @@ fn fork_hooked_inner(
     }
     vmm::copy_kernel_entries_to_user(child_pt);
     crate::prof::add(2, t_ph);
+    let Some(child_space) = azos_mm::aspace::create(child_pt) else {
+        vmm::destroy_user_pagetable(child_pt);
+        return note_fork_refusal(ForkRefusalSite::SpaceExhausted);
+    };
 
     // Get parent's brk and mmap cursor to set in child.
     let parent_brk = crate::scheduler::update_user_brk(0);
@@ -2432,7 +2449,7 @@ fn fork_hooked_inner(
     ) {
         Some(idx) => idx,
         None => {
-            vmm::destroy_user_pagetable(child_pt);
+            azos_mm::aspace::destroy(child_space, 0, 0);
             return note_fork_refusal(ForkRefusalSite::PoolExhausted);
         }
     };
@@ -2449,9 +2466,9 @@ fn fork_hooked_inner(
     let child_tid = match crate::tid_for_idx(child_idx) {
         Some(tid) => tid,
         None => {
-            // Unreachable: the slot was just allocated. Still release the page
-            // table — it is not yet published on any task.
-            vmm::destroy_user_pagetable(child_pt);
+            // Unreachable: the slot was just allocated. Still release the
+            // address space — it is not yet published on any task.
+            azos_mm::aspace::destroy(child_space, 0, 0);
             return note_fork_refusal(ForkRefusalSite::TidLookupMiss);
         }
     };
@@ -2461,7 +2478,7 @@ fn fork_hooked_inner(
     // Apply the child's user page table so context_switch.S writes the
     // correct SATP when the child is scheduled.
     let child_satp = crate::asid::new_root_word(child_pt) as u64;
-    crate::scheduler::set_task_user_info(child_idx, child_satp, child_pt as u64, parent_brk, parent_mmap_low);
+    crate::scheduler::set_task_user_info(child_idx, child_satp, Some(child_space), parent_brk, parent_mmap_low);
     // The child runs under its parent's budget limit (it has no
     // row of its own) and starts charged for its page tables. It is never
     // locked: a locked parent cannot get here.
@@ -2530,7 +2547,7 @@ fn fork_hooked_inner(
         //      K-C22(C)), or the slot was already reused and the claim in
         //      `try_task_create_affinity` destroyed it (K-C22(B)) —
         //      destroying again here would be a double-free;
-        //  (b) freed but not yet reused: `user_pt` still holds `child_pt` on
+        //  (b) freed but not yet reused: `aspace` still holds the child's space on
         //      the dead slot, and the next claim of that slot destroys it.
         // Either way the reuse-time reclaim owns the teardown; abandoning
         // the PT here leaks nothing.
@@ -2569,9 +2586,9 @@ pub fn thread_create_impl(
     before_release: &mut dyn FnMut(u32) -> bool,
 ) -> i64 {
     const EAGAIN: i64 = -11;
-    let user_pt = crate::scheduler::current_user_pt();
+    let space = crate::scheduler::current_aspace();
     let satp = crate::scheduler::current_task_satp();
-    if user_pt == 0 || stack == 0 {
+    if space.is_none() || stack == 0 {
         return -1;
     }
     // x86_64: the thread pointer is written to IA32_FS_BASE at the thread's
@@ -2621,7 +2638,7 @@ pub fn thread_create_impl(
     };
     crate::group::join(child_idx, leader);
     // The thread is already queued and may be running on another hart, with
-    // `user_pt` still 0 and its `task_satp` still `kernel_task_satp()` (every
+    // no `aspace` yet and its `task_satp` still `kernel_task_satp()` (every
     // new task starts on the kernel's root, `try_task_create_init`), which
     // `asid::prepare_switch` leaves alone: a switch to it in this window
     // writes nothing these stores race with. Nor can it be seen to matter:
@@ -2632,7 +2649,7 @@ pub fn thread_create_impl(
     // the thread cannot be ended or reaped (its slot reused under these
     // stores) before it reaches `exit_if_forced`, which comes after that
     // hand-off. Pinned by the host test `thread_user_pt_is_set_before_its_hand_off`.
-    crate::scheduler::set_task_thread_info(child_idx, satp, user_pt as u64);
+    crate::scheduler::set_task_thread_info(child_idx, satp, space);
     crate::group::set_clear_tid(child_idx, ctid);
     let refused = !before_release(child);
     if refused {

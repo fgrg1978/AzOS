@@ -274,12 +274,11 @@ fn inherit_shm(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, w
 fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r: u32, warrant: &Warrant) -> bool {
     use azos_ipc::memobj::{self, MapAccess};
     let Ok(Some((va, pages))) = memobj::memobj_mapping_of_ref(parent, r) else { return false };
-    let (Some(parent_pt), Some(child_pt)) = (azos_sched::task_user_pt(parent), azos_sched::task_user_pt(child)) else {
+    let (Some(parent_pt), Some(child_pt)) =
+        (azos_sched::task_aspace(parent).map(|a| a.root()), azos_sched::task_aspace(child).map(|a| a.root()))
+    else {
         return false;
     };
-    if parent_pt == 0 || child_pt == 0 {
-        return false;
-    }
     let span = pages * azos_arch_api::PAGE_SIZE;
     if memobj::memobj_acquire_ref(child, r).is_err() {
         return false;

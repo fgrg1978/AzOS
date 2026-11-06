@@ -73,10 +73,75 @@ pub fn shim_at_mm_lock(f: Box<dyn FnOnce() + Send>) {
     *AT_MM_LOCK.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
 }
 
-/// Test-only control surface — not part of the real `azos_sched` API.
+/// The address spaces the tests' roots stand for, made the first time a
+/// root is named ([`shim_space`]), as exec, spawn and fork make one for a new
+/// root, and ended by [`shim_forget_space`].
+static SPACES: std::sync::Mutex<Vec<azos_mm::aspace::SpaceRef>> = std::sync::Mutex::new(Vec::new());
+
+/// Test-only: the address space of the root `pt`, made if it has none.
+pub fn shim_space(pt: usize) -> azos_mm::aspace::SpaceRef {
+    let mut v = SPACES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = v.iter().find(|r| r.root() == pt) {
+        return *r;
+    }
+    let r = azos_mm::aspace::create(pt).expect("an address space for the root");
+    v.push(r);
+    r
+}
+
+/// Test-only: the address space of `pt` ends: its records go
+/// (`pager::forget`), and the root names a new one from then on.
+pub fn shim_forget_space(pt: usize) {
+    let r = {
+        let mut v = SPACES.lock().unwrap_or_else(|e| e.into_inner());
+        v.iter().position(|r| r.root() == pt).map(|i| v.swap_remove(i))
+    };
+    if let Some(r) = r {
+        azos_mm::pager::forget(r);
+    }
+}
+
+/// Test-only: the address space of `pt` ends as a task's does
+/// (`aspace::destroy`: its records, the object, then its tables, root
+/// included), and the root names a new one from then on.
+pub fn shim_end_space(pt: usize) {
+    let r = {
+        let mut v = SPACES.lock().unwrap_or_else(|e| e.into_inner());
+        v.iter().position(|r| r.root() == pt).map(|i| v.swap_remove(i))
+    };
+    if let Some(r) = r {
+        assert_eq!(azos_mm::aspace::destroy(r, 0, 0), 0, "no hart is on the root");
+    }
+}
+
+/// Test-only: every address space ends. The arena is rebuilt between tests,
+/// and a root a test never ended would greet the next test given the same
+/// page with records it did not make.
+pub fn shim_forget_all_spaces() {
+    let v = core::mem::take(&mut *SPACES.lock().unwrap_or_else(|e| e.into_inner()));
+    for r in v {
+        azos_mm::pager::forget(r);
+    }
+}
+
+/// Test-only control surface — not part of the real `azos_sched` API. The
+/// current task runs on the address space of `pt` (made if it has none), or
+/// on none for 0.
 pub fn set_current_user_pt(pt: usize) {
     shim_assert_serial("set_user_pt");
+    if pt != 0 {
+        let _ = shim_space(pt);
+        azos_mm::aspace::set_current_hook(current_aspace);
+    }
     CURRENT_USER_PT.store(pt, Ordering::SeqCst);
+}
+
+pub fn current_aspace() -> Option<azos_mm::aspace::SpaceRef> {
+    let pt = CURRENT_USER_PT.load(Ordering::SeqCst);
+    if pt == 0 {
+        return None;
+    }
+    SPACES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|r| r.root() == pt).copied()
 }
 
 /// Test-only control surface — not part of the real `azos_sched` API.
@@ -216,18 +281,19 @@ pub fn shim_other_pages() -> u32 {
     OTHER_PAGES.load(Ordering::SeqCst)
 }
 
-pub fn task_user_pt(tid: u32) -> Option<usize> {
+pub fn task_aspace(tid: u32) -> Option<azos_mm::aspace::SpaceRef> {
     if tid == current_task_tid() {
-        return Some(current_user_pt());
+        return current_aspace();
     }
-    OTHER_PT.lock().unwrap().iter().find(|&&(t, _)| t == tid).map(|&(_, pt)| pt)
+    let pt = OTHER_PT.lock().unwrap().iter().find(|&&(t, _)| t == tid).map(|&(_, pt)| pt)?;
+    (pt != 0).then(|| shim_space(pt))
 }
 
 pub fn mm_charge_tid(tid: u32, pages: u32) -> bool {
     if tid == current_task_tid() {
         return mm_charge(pages);
     }
-    if task_user_pt(tid).is_none() {
+    if task_aspace(tid).is_none() {
         return false;
     }
     let limit = OTHER_LIMIT.load(Ordering::SeqCst);

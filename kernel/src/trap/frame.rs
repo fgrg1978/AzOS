@@ -201,18 +201,20 @@ pub trait SyscallServices<F: Frame> {
 /// What the fault policy asks of the kernel (`fault.rs`).
 pub trait FaultServices<F: Frame> {
     fn trace_fault(addr: u64, cause: u32);
-    /// The running task's user page table, 0 when it has none.
-    fn user_pt() -> usize;
+    /// What names the running task's address space.
+    type Space: Copy;
+    /// The running task's address space, `None` when it has none.
+    fn user_space() -> Option<Self::Space>;
     /// Break copy-on-write at `va`; counts a resolved fault.
-    fn cow(pt: usize, va: u64) -> Cow;
+    fn cow(space: Self::Space, va: u64) -> Cow;
     /// Demand-page `va`; counts a resolved fault.
-    fn demand(pt: usize, va: u64) -> bool;
+    fn demand(space: Self::Space, va: u64) -> bool;
     /// Page aging's software half: set the Accessed bit the CPU did not set
     /// itself on the user leaf of `va`, so the access can be retried. Asked
     /// last, after COW and demand paging declined (a leaf this resolves is
     /// valid and permits the access, so neither of those claims it); `false`
     /// when the CPU keeps A in hardware or `va` has no such leaf.
-    fn accessed(pt: usize, va: u64) -> bool;
+    fn accessed(space: Self::Space, va: u64) -> bool;
     /// The durable record and the console line of a COW that ran out of memory.
     fn cow_oom(va: u64);
     /// Is `va` inside the null guard?

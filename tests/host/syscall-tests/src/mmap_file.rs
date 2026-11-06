@@ -206,7 +206,7 @@ struct Task {
 
 impl Drop for Task {
     fn drop(&mut self) {
-        azos_mm::pager::forget(self.pt);
+        azos_sched::shim_forget_space(self.pt);
         azos_ipc::memobj::memobj_release_all(self.tid);
         crate::file_ops::__file_ops_clear_for_tests();
     }
@@ -217,7 +217,7 @@ fn task(tid: u32, slot: usize) -> Task {
     azos_ipc::cap_store::reset(tid);
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     let path_page = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_mm::vmm::map(pt, SCRATCH, path_page, PagePerms::USER_RW).expect("map");
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(tid);
@@ -260,7 +260,7 @@ fn mmap_ok(t: &Task, cap: u64, len: usize, off: usize, prot: u64, flags: u64) ->
 
 fn fault(t: &Task, va: usize) {
     enter(t);
-    assert!(azos_mm::vmm::handle_demand_fault(t.pt, va).is_ok(), "fault at {va:#x}");
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(t.pt), va).is_ok(), "fault at {va:#x}");
 }
 
 /// The frame under `va`, which must be mapped.
@@ -280,7 +280,7 @@ fn munmap_as(t: &Task, va: usize, len: usize) -> i64 {
 /// The file region of `t` that holds `va`.
 fn region_at(t: &Task, va: usize) -> azos_mm::pager::FileRegion {
     let mut out = [azos_mm::pager::FileRegion::NONE; 8];
-    let n = azos_mm::pager::file_regions_in(t.pt, 0, azos_sched::user_shm_window().1, &mut out).expect("regions");
+    let n = azos_mm::pager::file_regions_in(azos_sched::shim_space(t.pt), 0, azos_sched::user_shm_window().1, &mut out).expect("regions");
     *out[..n].iter().find(|r| r.start <= va && va < r.end).expect("a file region holds the address")
 }
 
@@ -531,7 +531,7 @@ fn exit_of(t: &Task) {
     enter(t);
     crate::file_map::exit_writeback(t.tid);
     azos_ipc::memobj::memobj_release_all(t.tid);
-    azos_mm::pager::forget(t.pt);
+    azos_sched::shim_forget_space(t.pt);
 }
 
 #[test]
@@ -623,7 +623,7 @@ fn a_mapping_pins_its_file_through_map_munmap_fork_and_exit() {
 
     let private = mmap_ok(&parent, fp, 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW, PRIVATE);
     assert_eq!(pinned(0), 1);
-    azos_mm::pager::fork_clone(parent.pt, child.pt).expect("fork_clone");
+    azos_mm::pager::fork_clone(azos_sched::shim_space(parent.pt), azos_sched::shim_space(child.pt)).expect("fork_clone");
     assert_eq!(munmap_as(&parent, private, 2 * PAGE_SIZE), 0);
     assert_eq!(pinned(0), 1, "the child's copy of the region still pins it");
     exit_of(&child);
@@ -643,10 +643,10 @@ fn a_fork_child_gets_the_private_regions_only() {
     let private = mmap_ok(&parent, fp, 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW, PRIVATE);
     let _ = shared;
 
-    let owed = azos_mm::pager::fork_clone(parent.pt, child.pt).expect("fork_clone");
+    let owed = azos_mm::pager::fork_clone(azos_sched::shim_space(parent.pt), azos_sched::shim_space(child.pt)).expect("fork_clone");
     assert_eq!(owed, 2, "the child owes the private region's pages, nothing for the shared one");
     let mut out = [azos_mm::pager::FileRegion::NONE; 8];
-    let n = azos_mm::pager::file_regions_in(child.pt, 0, azos_sched::user_shm_window().1, &mut out).unwrap();
+    let n = azos_mm::pager::file_regions_in(azos_sched::shim_space(child.pt), 0, azos_sched::user_shm_window().1, &mut out).unwrap();
     assert_eq!(n, 1, "the shared mapping is not inherited");
     assert_eq!((out[0].start, out[0].shared), (private, false));
 

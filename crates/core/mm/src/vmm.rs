@@ -1652,7 +1652,7 @@ pub fn translate_user(pt_phys: usize, vaddr: usize, write: bool) -> Option<usize
 #[cold]
 #[inline(never)]
 fn translate_user_reserved(pt_phys: usize, vaddr: usize, write: bool) -> Option<usize> {
-    handle_demand_fault(pt_phys, vaddr).ok()?;
+    demand_fault(pt_phys, crate::aspace::current_with_root(pt_phys), vaddr).ok()?;
     let (pte, mask) = user_leaf(pt_phys, vaddr)?;
     user_leaf_ok(pt_phys, vaddr, pte, mask, write)
 }
@@ -1754,7 +1754,7 @@ fn reserved_write_permitted(pt_phys: usize, vaddr: usize) -> bool {
             return ARCH.pte_demand_perms(pte).write;
         }
     }
-    crate::pager::reserved_writable(pt_phys, vaddr) == Some(true)
+    crate::aspace::current_with_root(pt_phys).and_then(|r| crate::pager::reserved_writable(r, vaddr)) == Some(true)
 }
 
 /// The leaf PTE `vaddr` resolves to in `pt_phys`, and its in-page offset mask.
@@ -2834,11 +2834,17 @@ pub use crate::demand::{map_demand, map_demand_range};
 /// "there was nothing to resolve here" from "I refuse to resolve this".
 ///
 /// Wave 14 (DEMANDPAGE): a fault the marker path does not own (`NotMapped`:
-/// no table, or an empty entry) goes to the region pagers
-/// ([`crate::pager::resolve_fault`]); one outside every region stays
+/// no table, or an empty entry) goes to the region pagers of the space
+/// `space` ([`crate::pager::resolve_fault`]); one outside every region stays
 /// `NotMapped` and the caller kills the task as before. A word parked by a
 /// run break is waited out and answers `Ok` (the access retries).
-pub fn handle_demand_fault(pt: usize, fault_addr: usize) -> KResult<()> {
+pub fn handle_demand_fault(space: crate::aspace::SpaceRef, fault_addr: usize) -> KResult<()> {
+    demand_fault(space.root(), Some(space), fault_addr)
+}
+
+/// [`handle_demand_fault`] under `pt`, whose records are `space`'s (none: the
+/// root has no regions).
+fn demand_fault(pt: usize, space: Option<crate::aspace::SpaceRef>, fault_addr: usize) -> KResult<()> {
     if in_null_guard(fault_addr) {
         return Err(KernelError::InvalidArg);
     }
@@ -2848,9 +2854,10 @@ pub fn handle_demand_fault(pt: usize, fault_addr: usize) -> KResult<()> {
         return Ok(());
     }
     match crate::demand::handle_demand_fault(pt, fault_addr) {
-        Err(KernelError::NotMapped) if !cfg!(feature = "demand-region-canary") => {
-            crate::pager::resolve_fault(pt, fault_addr)
-        }
+        Err(KernelError::NotMapped) if !cfg!(feature = "demand-region-canary") => match space {
+            Some(r) => crate::pager::resolve_fault(r, fault_addr),
+            None => Err(KernelError::NotMapped),
+        },
         r => r,
     }
 }
@@ -4057,7 +4064,11 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
     // for its marker between the rewrite's read and its store would be
     // overwritten with a valid leaf on a frame it is freeing (as `mprotect`).
     // Gate canary `exec-reclaim-canary`: not held.
-    let _reclaim_off = if cfg!(feature = "exec-reclaim-canary") { None } else { crate::pager::reclaim_pause(pt_phys) };
+    let _reclaim_off = if cfg!(feature = "exec-reclaim-canary") {
+        None
+    } else {
+        crate::aspace::current_with_root(pt_phys).and_then(crate::pager::reclaim_pause)
+    };
     let mut va = start;
     while va < end {
         if va < skip_hi && va.saturating_add(PAGE_SIZE) > skip_lo { return Err(KernelError::InvalidArg); }
@@ -4208,11 +4219,6 @@ pub fn destroy_user_pagetable_skip_range(pt_phys: usize, skip_lo: usize, skip_hi
     // per-root merge in progress. A refused
     // teardown below leaks the root; it stays out of the roster.
     meta_set_merged(pt_phys, false);
-    // Wave 14 (DEMANDPAGE): the root's region records go with it, refused
-    // teardown included (a refused root is leaked, never reused). Left in
-    // place, a later address space given the same root frame would inherit
-    // reservations it never made.
-    crate::pager::forget(pt_phys);
 
     let holders = ARCH.root_holders(pt_phys);
     if holders != 0 {

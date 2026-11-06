@@ -20,11 +20,11 @@ fn win() -> (usize, usize) {
 fn fresh() -> usize {
     let old = azos_sched::current_user_pt();
     if old != 0 {
-        azos_mm::pager::forget(old);
+        azos_sched::shim_forget_space(old);
     }
     azos_sched::shim_set_sched_class(3);
     let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
     azos_sched::shim_set_page_limit(0);

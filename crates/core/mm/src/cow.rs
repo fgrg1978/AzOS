@@ -32,6 +32,7 @@ use azos_arch::ARCH;
 use azos_arch_api::{Mmu, PAGE_SIZE};
 use azos_common::error::{KResult, KernelError};
 use crate::addr::PhysAddr;
+use crate::aspace::SpaceRef;
 use crate::{pmm, vmm};
 
 // The share count lives in `cow_table.rs` (see its header for why).
@@ -71,7 +72,8 @@ pub use crate::cow_table::shim_set_cow_breaks;
 pub fn fork_cow(parent_pt: usize, skip_lo: usize, skip_hi: usize) -> KResult<usize> {
     // (See [`fork_share_range`] for the one thing a fork gives the child out
     // of that window: a shared-memory mapping the child inherits.)
-    fork_cow_shared(parent_pt, skip_lo, skip_hi, false).map(|(pt, _)| pt)
+    let parent = crate::aspace::current_with_root(parent_pt);
+    fork_cow_walk_held(parent, parent_pt, skip_lo, skip_hi, false).map(|(pt, _)| pt)
 }
 
 /// The fork rule for a shared-memory mapping (owner decision 16-10, the
@@ -123,16 +125,32 @@ pub fn fork_share_range(parent_pt: usize, child_pt: usize, va: usize, pages: usi
 /// Returns the child's root and the demand reservations it was given (wave
 /// 14): each is a page the child may commit later, charged to it by the
 /// caller as the parent's were charged at reservation.
-pub fn fork_cow_shared(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<(usize, usize)> {
+pub fn fork_cow_shared(parent: SpaceRef, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<(usize, usize)> {
+    fork_cow_walk_held(Some(parent), parent.root(), skip_lo, skip_hi, concurrent)
+}
+
+/// The walk of `parent_pt`, with the space's pager held off it (`parent`:
+/// none for a root with no records).
+fn fork_cow_walk_held(
+    parent: Option<SpaceRef>,
+    parent_pt: usize,
+    skip_lo: usize,
+    skip_hi: usize,
+    concurrent: bool,
+) -> KResult<(usize, usize)> {
     // Superpage reservations (Kconfig `MM_THP_RESV`): the walk below skips
     // level-1 leaves, so promoted blocks are split first and no block may be
     // promoted while it runs.
-    if !crate::pager::fork_begin(parent_pt) {
-        crate::pager::fork_end(parent_pt);
-        return Err(KernelError::OutOfMemory);
+    if let Some(p) = parent {
+        if !crate::pager::fork_begin(p) {
+            crate::pager::fork_end(p);
+            return Err(KernelError::OutOfMemory);
+        }
     }
     let r = fork_cow_walk(parent_pt, skip_lo, skip_hi, concurrent);
-    crate::pager::fork_end(parent_pt);
+    if let Some(p) = parent {
+        crate::pager::fork_end(p);
+    }
     r
 }
 

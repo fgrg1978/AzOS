@@ -130,7 +130,7 @@ fn user_task(_: usize) {
     use azos_arch::ArchPlatform;
     let root = ROOT.load(Ordering::Acquire);
     let word = azos_arch::ARCH.user_root_word(root, 0);
-    azos_sched::set_current_user_info(word as u64, root as u64, 0);
+    azos_sched::set_current_user_info(word as u64, azos_mm::aspace::create(root), 0);
     // SAFETY: `root` maps the code and stack pages USER and every kernel
     // entry; this kernel task never returns to its kernel stack.
     unsafe { azos_sched::sret_to_user(CODE_VA, STACK_TOP, word) }

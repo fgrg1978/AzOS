@@ -59,6 +59,8 @@ cow-ro-canary = []
 # ... and the wave 14 (FORKSPAWN) `pager.rs` canary.
 fork-commit-race-canary = []
 uaccess-race-canary = []
+as-stale-root-canary = []
+as-stale-ref-canary = []
 table-refusable-canary = []
 uaccess-mmio-canary = []
 # ... and `cfg!(feature = "demand-region-canary")` in the pulled-in `vmm.rs`

@@ -210,8 +210,9 @@ impl<F: Frame> FaultServices<F> for Fake {
     fn trace_fault(addr: u64, cause: u32) {
         log(format!("trace_fault {addr:#x} {cause}"));
     }
-    fn user_pt() -> usize {
-        with(|s| s.user_pt)
+    type Space = usize;
+    fn user_space() -> Option<usize> {
+        Some(with(|s| s.user_pt)).filter(|&pt| pt != 0)
     }
     fn cow(pt: usize, va: u64) -> Cow {
         log(format!("cow {pt:#x} {va:#x}"));

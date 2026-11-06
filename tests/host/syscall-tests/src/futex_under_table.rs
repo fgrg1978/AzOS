@@ -53,7 +53,7 @@ fn committed(pt: usize, va: usize) -> bool {
 fn a_look_under_the_table_commits_nothing_and_the_settle_does() {
     let _g = serial();
     let pt = azos_mm::pmm::alloc_page().expect("a page-table root").as_usize();
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(TID);
     azos_sched::shim_set_page_limit(0);
@@ -79,7 +79,7 @@ fn a_look_under_the_table_commits_nothing_and_the_settle_does() {
     assert_eq!(crate::vdso_notify::futex_look(0x7000_0000, false), None);
     assert!(!crate::vdso_notify::futex_settle(0x7000_0000));
     azos_sched::set_current_user_pt(0);
-    azos_mm::pager::forget(pt);
+    azos_sched::shim_forget_space(pt);
 }
 
 /// 0 the holder of the region table is not there yet, 1 it is, 2 the table's

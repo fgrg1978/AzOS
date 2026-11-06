@@ -196,8 +196,15 @@ pub fn current_runtime() -> u64 {
 pub fn current_user_pt() -> usize {
     let idx = my_idx();
     {
-        if idx == usize::MAX { 0 } else { TASKS[idx].user_pt as usize }
+        if idx == usize::MAX { 0 } else { TASKS[idx].aspace.root() }
     }
+}
+
+/// The current task's address space (`None`: a kernel task). The same window
+/// as [`current_user_pt`].
+pub fn current_aspace() -> Option<azos_mm::aspace::SpaceRef> {
+    let idx = my_idx();
+    if idx == usize::MAX { None } else { TASKS[idx].aspace.get() }
 }
 
 /// The current task's translation root word (`satp` / TTBR0 with its ASID):
@@ -403,7 +410,7 @@ fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
         if idx >= MAX_TASKS { return true; }
         // Wave 13: a member's root is its group's; `mm_charge` charges the
         // leader.
-        if TASKS[idx].user_pt as usize == root {
+        if TASKS[idx].aspace.get().is_some_and(|a| a.root() == root) {
             // KMEM-CHARGE: a table the Domain's own mappings grow is a frame
             // (the frame budget, above) AND kernel memory kept for it (the
             // ledger's page-table class, bounded by the row's `kmem_kib`).
@@ -455,6 +462,7 @@ fn fault_hook() {
 pub fn install_mm_hooks() {
     azos_mm::vmm::set_table_hook(table_hook);
     azos_mm::vmm::set_fault_hook(fault_hook);
+    azos_mm::aspace::set_current_hook(current_aspace);
 }
 
 /// Take (and zero) the page-table frames the current task allocated for an

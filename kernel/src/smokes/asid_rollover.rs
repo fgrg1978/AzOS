@@ -104,7 +104,7 @@ fn read(out: &AtomicU64) {
 
 /// Back on the kernel's own root before the roots are left behind.
 fn leave() {
-    azos_sched::set_current_user_info(azos_sched::kernel_task_satp(), 0, 0);
+    azos_sched::set_current_user_info(azos_sched::kernel_task_satp(), None, 0);
     azos_sched::task_yield();
 }
 
@@ -113,7 +113,7 @@ fn task_x(_: usize) {
         azos_sched::task_yield();
     }
     let wa = WA.load(Ordering::SeqCst);
-    azos_sched::set_current_user_info(wa as u64, 0, 0);
+    azos_sched::set_current_user_info(wa as u64, None, 0);
     azos_sched::task_yield(); // the switch back in installs A
     if live_word() != wa {
         fail(1);
@@ -128,7 +128,7 @@ fn task_x(_: usize) {
         fail(3);
     }
     WB.store(wb, Ordering::SeqCst);
-    azos_sched::set_task_user_info(Y_IDX.load(Ordering::SeqCst), wb as u64, 0, 0, 0);
+    azos_sched::set_task_user_info(Y_IDX.load(Ordering::SeqCst), wb as u64, None, 0, 0);
     STAGE.store(1, Ordering::SeqCst);
     azos_sched::task_yield(); // straight to Y: A -> B, same ASID
     while STAGE.load(Ordering::SeqCst) < 2 {

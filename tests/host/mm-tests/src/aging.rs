@@ -57,7 +57,7 @@ fn pass(t: &mut T, chunk: u32, resident: u64, accessed: u64) {
 fn picks(t: &T, spaces: &[usize]) -> Vec<usize> {
     let mut cur = Cursor::default();
     let mut v = vec![];
-    while let Some((_, page)) = t.pick(&mut cur, spaces) {
+    while let Some((_, page)) = t.pick(&mut cur, |s| spaces.contains(&s)) {
         v.push(page);
     }
     v
@@ -126,12 +126,12 @@ fn the_cursor_never_hands_a_page_back() {
     let t = five();
     let mut cur = Cursor::default();
     let mut seen = vec![];
-    while let Some((_, p)) = t.pick(&mut cur, &[SP]) {
+    while let Some((_, p)) = t.pick(&mut cur, |s| s == SP) {
         assert!(!seen.contains(&p));
         seen.push(p);
     }
     assert_eq!(seen.len(), 5);
-    assert_eq!(t.pick(&mut cur, &[SP]), None, "and the end stays the end");
+    assert_eq!(t.pick(&mut cur, |s| s == SP), None, "and the end stays the end");
 }
 
 /// Only the spaces the storm names: another Domain's pages are not its victims.
@@ -400,7 +400,7 @@ impl AgedSpace {
 impl Reclaimee for AgedSpace {
     type Victim = usize;
     fn next(&mut self) -> Option<usize> {
-        self.table.pick(&mut self.cursor, &[SP]).map(|(_, p)| p)
+        self.table.pick(&mut self.cursor, |s| s == SP).map(|(_, p)| p)
     }
     fn unmap(&mut self, _: usize) -> bool {
         true

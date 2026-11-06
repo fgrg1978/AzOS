@@ -356,7 +356,7 @@ fn toucher(_: usize) {
     let own = azos_arch::mmu::cpu::read_cr3();
     // Become a task whose address space is P, then leave the hart so the
     // scheduler's own switch path installs it.
-    azos_sched::set_current_user_info(as_value(root) as u64, 0, 0);
+    azos_sched::set_current_user_info(as_value(root) as u64, None, 0);
     sleep_ms(20);
     if running_on(root) {
         KTASK_CREATOR_ROOT.store(live_root(), Ordering::SeqCst);
@@ -404,7 +404,7 @@ fn toucher(_: usize) {
     // Back to the kernel's own table through the same switch path before
     // anyone frees P: the sleep's switch to idle installs the kernel root
     // (and, on riscv64, publishes it), and nothing brings P back.
-    azos_sched::set_current_user_info(own, 0, 0);
+    azos_sched::set_current_user_info(own, None, 0);
     irq_restore(saved);
     sleep_ms(5);
     STAGE.store(4, Ordering::SeqCst);
