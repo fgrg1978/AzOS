@@ -264,6 +264,9 @@ donation-stale-slot-canary = ["azos_sched/donation-stale-slot-canary"]
 buddy-rotate-hot-canary = ["azos_mm/buddy-rotate-hot-canary"]
 kheap-ceiling-canary = ["azos_mm/kheap-ceiling-canary"]
 kmem-cache-cross-type-canary = ["azos_mm/kmem-cache-cross-type-canary"]
+# A private anonymous page's fault believes the leaf over its object's slot:
+# the ktest `anon_fault_decides_from_the_slot_not_the_leaf` goes red.
+mm-pte-truth-canary = ["azos_mm/mm-pte-truth-canary"]
 # Capability tables come from a cache of another type: the `cap table cache` ktest goes red.
 cap-table-cross-type-canary = ["azos_ipc/cap-table-cross-type-canary"]
 # Gate canary: the tasks come from a cache of another type, so the ktest

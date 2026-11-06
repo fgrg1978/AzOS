@@ -12244,6 +12244,18 @@ zpool_host_canary_row() { # <label> <feature> <test fn>
 host_job zpool_host_row "aspace: late store, pool on" a_store_that_outlives_its_space_leaves_the_next_space_page_alone
 host_job zpool_host_canary_row "aspace: late store key canary" as-key-no-gen-canary \
     a_store_that_outlives_its_space_leaves_the_next_space_page_alone
+# A private anonymous page's state is its object's slot and its leaf a cache of
+# it (azos_mm::slot, anon_obj; syscall-tests pte_truth.rs, mm-tests
+# marker_pte.rs). mm-pte-truth-canary: the fault believes the leaf, so a stale
+# leaf over an empty slot shows its bytes and a compressed page comes back as
+# zeros (the restore row needs the pool, so it runs with MM_RECLAIM_COMPRESS).
+host_job host_canary_row "anon: stale leaf over empty slot canary" syscall-tests mm-pte-truth-canary \
+    a_stale_leaf_over_an_empty_slot_is_not_believed
+host_job host_canary_row "anon: slot decides (model) canary" mm-tests mm-pte-truth-canary \
+    a_stale_leaf_over_an_empty_slot_is_not_believed
+host_job zpool_host_row "anon: restore from the slot, pool on" a_compressed_page_comes_back_from_its_slot
+host_job zpool_host_canary_row "anon: restore from the slot canary" mm-pte-truth-canary \
+    a_compressed_page_comes_back_from_its_slot
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,
 # syscall-tests uaccess_race.rs). uaccess-race-canary: a user-leaf shootdown
 # returns without waiting for the access sections, as before the module.
@@ -15675,6 +15687,7 @@ PY
     par "ktest kheap ceiling canary (rv)" ktest_row "ktest kheap ceiling canary (rv)" rv ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest kmem cache cross type canary (rv)" ktest_row "ktest kmem cache cross type canary (rv)" rv ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
     par "ktest aspace reaped records canary (rv)" ktest_row "ktest aspace reaped records canary (rv)" rv "" "+aspace_made_again_starts_with_no_records" "canary=as-stale-root"
+    par "ktest anon slot truth canary (rv)" ktest_row "ktest anon slot truth canary (rv)" rv ",mm-pte-truth-canary" "anon_fault_decides_from_the_slot_not_the_leaf"
     par "ktest cap table cross type canary (rv)" ktest_row "ktest cap table cross type canary (rv)" rv ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (rv)" ktest_row "ktest task cross type canary (rv)" rv ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (rv)" ktest_row "ktest kmem preload canary (rv)" rv ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
@@ -15684,6 +15697,7 @@ PY
     par "ktest kheap ceiling canary (arm)" ktest_row "ktest kheap ceiling canary (arm)" arm ",kheap-ceiling-canary" "kheap_never_holds_more_than_its_ceiling"
     par "ktest kmem cache cross type canary (arm)" ktest_row "ktest kmem cache cross type canary (arm)" arm ",kmem-cache-cross-type-canary" "kmem_cache_never_reissues_a_freed_object_as_another_type"
     par "ktest aspace reaped records canary (arm)" ktest_row "ktest aspace reaped records canary (arm)" arm "" "+aspace_made_again_starts_with_no_records" "canary=as-stale-root"
+    par "ktest anon slot truth canary (arm)" ktest_row "ktest anon slot truth canary (arm)" arm ",mm-pte-truth-canary" "anon_fault_decides_from_the_slot_not_the_leaf"
     par "ktest cap table cross type canary (arm)" ktest_row "ktest cap table cross type canary (arm)" arm ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (arm)" ktest_row "ktest task cross type canary (arm)" arm ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (arm)" ktest_row "ktest kmem preload canary (arm)" arm ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"

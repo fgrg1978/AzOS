@@ -89,8 +89,9 @@ fork-commit-race-canary = []
 as-stale-root-canary = []
 # Host-suite and gate canary: a fault on an anonymous page believes the page's
 # leaf over its object's slot (`slot::resolve`): a leaf over an empty slot is
-# taken as resident and a compressed page comes back as zeros; the
-# `pte_truth` rows of `syscall-tests` and `mm-tests` and the ktest fail.
+# taken as resident and a compressed page comes back as zeros. Red:
+# `syscall-tests` pte_truth.rs, `mm-tests` marker_pte.rs, the ktest
+# `anon_fault_decides_from_the_slot_not_the_leaf`.
 mm-pte-truth-canary = []
 # Host-suite canary: `SpaceRef::lock` does not compare the root, so a reference
 # kept past its space's end reaches the next space made from the object:

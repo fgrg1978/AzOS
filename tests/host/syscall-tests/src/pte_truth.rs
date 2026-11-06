@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+// A private anonymous page's state is its object's slot and its leaf a cache of
+// it, on the real `handlers.rs`, `pager.rs`, `anon_obj.rs`, `slot.rs`, `cow.rs`
+// and `vmm.rs` over the shim arena.
+//
+// * `a_stale_leaf_over_an_empty_slot_is_not_believed`: the fault decides from
+//   the slot; a leaf no install made is replaced by a zero page. Canary
+//   `mm-pte-truth-canary` (the leaf believed): the stale bytes are read.
+// * `a_compressed_page_comes_back_from_its_slot`: a page the reclaimer stored
+//   is restored from the marker in its slot, its leaf being empty. Same canary:
+//   a zero page. Needs the compressed pool (Kconfig MM_RECLAIM_COMPRESS).
+// * `a_copy_on_write_break_moves_the_slot_with_the_leaf`: after a fork, the
+//   parent's write gives it a new frame and its slot follows, so the page is
+//   still the reclaimer's to take. Canary by hand: `pager::cow_swap` leaving
+//   the slot: the unmap is refused (the slot names the child's frame).
+// * `a_page_committed_during_the_fork_is_a_zero_page_in_the_child`: the child's
+//   slots are its own leaves, not the parent's slots. Canary by hand: the
+//   child's frame slots copied from the parent's: the child maps the parent's
+//   frame.
+//
+// Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
+
+use super::harness::serial;
+use azos_arch::mmu::PAGE_SIZE;
+use azos_mm::pager::{Ages, AnonReclaim, Victim};
+use azos_mm::zpool::Reclaimee;
+
+const ANON: u64 = u64::MAX;
+const RW: u64 = 3;
+const BRK: u64 = 0x10_0000;
+
+fn space() -> usize {
+    let old = azos_sched::current_user_pt();
+    if old != 0 {
+        azos_sched::shim_forget_space(old);
+    }
+    let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(pt);
+    azos_sched::set_current_task_tid(1);
+    azos_sched::shim_set_page_limit(0);
+    azos_sched::shim_set_mem_locked(false);
+    azos_sched::shim_set_sched_class(3);
+    azos_sched::shim_set_brk(BRK);
+    pt
+}
+
+fn map(pages: usize) -> usize {
+    let r = sys_mmap(0, (pages * PAGE_SIZE) as u64, RW, 0, ANON, 0);
+    assert!(r > 0, "mmap failed: {r}");
+    r as usize
+}
+
+fn bytes<'a>(frame: usize) -> &'a mut [u8] {
+    // SAFETY: a frame of the host arena, which the shim identity-maps.
+    unsafe { core::slice::from_raw_parts_mut(azos_mm::addr::phys_to_virt(frame) as *mut u8, PAGE_SIZE) }
+}
+
+/// Write `b` over the page at `va` the way a store does: a fault (or a
+/// copy-on-write break) first, then the frame the leaf maps.
+fn write(pt: usize, va: usize, b: u8) -> usize {
+    let f = azos_mm::vmm::translate_user(pt, va, true).expect("writable") & !(PAGE_SIZE - 1);
+    bytes(f).fill(b);
+    f
+}
+
+#[test]
+fn a_stale_leaf_over_an_empty_slot_is_not_believed() {
+    let _g = serial();
+    let pt = space();
+    let base = map(4);
+    let stale = azos_mm::pmm::alloc_page().unwrap().as_usize();
+    bytes(stale).fill(0xEE);
+    // A leaf no install of the object made: a clear that was missed.
+    azos_mm::vmm::map(pt, base, stale, azos_arch_api::PagePerms::USER_RW).unwrap();
+    assert!(azos_mm::pager::resolve_fault(azos_sched::shim_space(pt), base).is_ok());
+    let now = azos_mm::vmm::translate(pt, base).expect("mapped");
+    assert_ne!(now, stale, "the leaf was believed over the empty slot");
+    assert!(bytes(now).iter().all(|&b| b == 0), "a zero page, not the previous owner's bytes");
+    assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(pt)), (4, 1));
+    let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(stale));
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+#[test]
+fn a_compressed_page_comes_back_from_its_slot() {
+    if !azos_mm::zpool::ENABLED {
+        return;
+    }
+    let _g = serial();
+    azos_crypto::entropy::mix(&[0x3c; 64], 512);
+    let pt = space();
+    let base = map(2);
+    write(pt, base, 0x5C);
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base };
+    assert!(reclaim.unmap(victim));
+    assert!(reclaim.store(victim).is_ok(), "the page is in the pool");
+    reclaim.free(victim);
+    assert!(azos_mm::vmm::translate(pt, base).is_none(), "and its leaf is empty");
+    assert!(azos_mm::vmm::handle_demand_fault(azos_sched::shim_space(pt), base).is_ok());
+    let f = azos_mm::vmm::translate(pt, base).expect("restored");
+    assert!(bytes(f).iter().all(|&b| b == 0x5C), "the stored page, not a zero one");
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+#[test]
+fn a_copy_on_write_break_moves_the_slot_with_the_leaf() {
+    let _g = serial();
+    let pt = space();
+    let base = map(4);
+    let shared = write(pt, base, 0x11);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 0);
+    assert!(fork_regions_to_child(2));
+    // The parent's store breaks the sharing: a frame of its own.
+    let mine = write(pt, base, 0x22);
+    assert_ne!(mine, shared);
+    assert_eq!(azos_mm::vmm::translate(child, base), Some(shared), "the child keeps the shared frame");
+    assert!(bytes(shared).iter().all(|&b| b == 0x11));
+    // The parent's page is its own again, so the reclaimer may take it.
+    let roots = [Some(azos_sched::shim_space(pt))];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va: base };
+    assert!(reclaim.unmap(victim), "the slot names the parent's frame, the one its leaf maps");
+    reclaim.keep(victim);
+    assert_eq!(azos_mm::vmm::translate(pt, base), Some(mine));
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+#[test]
+fn a_page_committed_during_the_fork_is_a_zero_page_in_the_child() {
+    let _g = serial();
+    let pt = space();
+    let base = map(8);
+    write(pt, base, 0x33);
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    // A sibling's commit, after the walk and before the mappings are cloned.
+    let late = write(pt, base + 2 * PAGE_SIZE, 0x44);
+    azos_sched::shim_forget_space(child);
+    azos_sched::shim_set_other_task(2, child, 0);
+    assert!(fork_regions_to_child(2));
+    let cs = azos_sched::shim_space(child);
+    assert!(azos_mm::vmm::handle_demand_fault(cs, base + 2 * PAGE_SIZE).is_ok());
+    let theirs = azos_mm::vmm::translate(child, base + 2 * PAGE_SIZE).expect("the child's page");
+    assert_ne!(theirs, late, "the child maps the parent's private frame");
+    assert!(bytes(theirs).iter().all(|&b| b == 0), "a zero page");
+    assert!(bytes(late).iter().all(|&b| b == 0x44), "the parent's page is untouched");
+    azos_sched::shim_forget_space(child);
+    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_sched::shim_forget_space(pt);
+    azos_sched::set_current_user_pt(0);
+}

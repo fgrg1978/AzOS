@@ -492,6 +492,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod pte_truth {
+        use super::*;
+        include!("pte_truth.rs");
+    }
+
+    #[cfg(test)]
     mod thp_vmm {
         use super::*;
         include!("thp_vmm.rs");
