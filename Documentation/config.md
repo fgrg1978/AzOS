@@ -798,6 +798,7 @@ The index lists every declared option: 1278.
 | `LOGD_FILE_KB` | `config/kernel/Kconfig.trace` | logd: size at which the log file rotates (KiB) |
 | `LOGD_MAX_LEVEL` | `config/kernel/Kconfig.trace` | logd: highest level kept in the files (3 err, 4 warn, 6 info, 7 debug) |
 | `LOGD_POLL_MS` | `config/kernel/Kconfig.trace` | logd: how often it drains the ring and writes the files (ms) |
+| `LOGD_TELEMETRY_PER_SEC` | `config/kernel/Kconfig.trace` | logd: telemetry records written per second at most, per kind |
 | `LOGIN_GRANT_TTL_S` | `config/subsys/Kconfig.console` | Console login: seconds a verified credential may start its session |
 | `LOGIN_LOCKOUT_S` | `config/subsys/Kconfig.console` | Console login: seconds an account stays locked |
 | `LOGIN_MAX_FAILURES` | `config/subsys/Kconfig.console` | Console login: wrong credentials in a row before the account is locked |
@@ -1220,6 +1221,7 @@ The index lists every declared option: 1278.
 | `TCP_SYNCOOKIES` | `config/subsys/Kconfig.net` | TCP SYN cookies under a SYN flood (RFC 4987) |
 | `TCP_TIMESTAMPS` | `config/subsys/Kconfig.net` | TCP timestamps (RFC 7323): RTT measurement and PAWS |
 | `TCP_WINDOW_UPDATE_SHIFT` | `config/subsys/Kconfig.net` | Window update sent at once when the edge moves by ring >> N |
+| `TELEMETRY_RING_ENTRIES` | `config/kernel/Kconfig.trace` | Actuation telemetry: records the ring holds (power of two) |
 | `THERMAL` | `config/kernel/Kconfig.energy` | Thermal framework: zones, trips and cooling by OPP capping |
 | `THERMAL_TASK_PRIORITY` | `config/kernel/Kconfig.energy` | Thermal task priority (outside the RT band: 12..30) |
 | `THERMAL_X86_CRITICAL_C` | `config/kernel/Kconfig.energy` | x86_64 package: critical trip (degrees Celsius) |
