@@ -19496,13 +19496,15 @@ CPU 5 lacks hwcap bits"
                      stop='CAPTEST\] (ALL PASSED|FAILED)' ;;
             captestcanary) label="x86_64 captest canary, no hard reservation"; disk_t=$AZOS_OUT/build/disk-x86_64-captest.img
                      stop='CAPTEST\] (ALL PASSED|FAILED)' ;;
+            framecanary) label="x86_64 frame canary boot"; disk_t=$AZOS_OUT/build/disk-x86_64-captest.img
+                     stop='CAPTEST\] (ALL PASSED|FAILED)' ;;
         esac
         local -a app=()
         # The later `-cpu` wins over x86_qemu's `-cpu max`: the same CPU
         # without SHA-NI, so the vDSO bit must follow CPUID, not a constant.
         [ "$which" = hwcapcanary ] && app=(-cpu max,-sha-ni)
         # The later `-smp` wins too: captest's row is pinned to CPU 3.
-        case "$which" in captest|captestcanary) app=(-smp 4) ;; esac
+        case "$which" in captest|captestcanary) app=(-smp 4) ;; framecanary) app=(-smp 4 -append canary=frame-blank) ;; esac
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -19510,7 +19512,7 @@ CPU 5 lacks hwcap bits"
         local kfeat=""; [ "$which" = sysabicanary ] && kfeat=syscall-abi-canary
         [ "$which" = foreigncanary ] && kfeat=foreign-regs-canary
         [ "$which" = udpcanary ] && kfeat=udp-recv-zero-canary
-        [ "$which" = captest ] && kfeat=captest-row
+        { [ "$which" = captest ] || [ "$which" = framecanary ]; } && kfeat=captest-row
         # The robot kernel without the row: the sensors and motors captest
         # reads are there, the hard reservation is not (the generic kernel
         # failed every robot check, and its bind passed as -ENODEV).
@@ -19532,6 +19534,7 @@ CPU 5 lacks hwcap bits"
         if [ "$which" = sysabicanary ]; then sysabi_canary_judge "$log"; return; fi
         if [ "$which" = foreigncanary ]; then foreign_canary_judge "$log"; return; fi
         if [ "$which" = udpcanary ]; then udp_empty_canary_judge "$log"; return; fi
+        if [ "$which" = framecanary ]; then ok; frame_class_canary_verdict "x86_64 frame reaches ring 3 canary" "$log"; return; fi
         case "$which" in
             canary)
                 if ! grep -aqF "[AUTORUN] REFUSED: /fat/ABITEST.ELF" "$log"; then why="autorun did not refuse the altered ABITEST.ELF"
@@ -19558,6 +19561,8 @@ CPU 5 lacks hwcap bits"
                     fi
                 elif [ "$fails" -gt 0 ]; then why="captest reported $fails failure(s): $(printf '%s\n' "$fail_lines" | sed -n 1,4p | tr '\n' ';')"
                 elif ! grep -aqF "[CAPTEST] ALL PASSED" "$log"; then why="captest never printed ALL PASSED"
+                elif ! grep -aqF "[CAPTEST] frame: a camera frame reached ring 3 in a buffer of its own, a JPEG acquired before the call, the next one later" "$log"; then
+                    why="a frame did not reach ring 3 (no frame summary)"
                 elif ! grep -aqF "[IRQ] ring-3 line 1000 refused by the interrupt controller" "$log" \
                      || ! grep -aqE "\[IRQ\] ring-3 line 1000 refused .*bindings left on the line: 0" "$log"; then
                     why="the kernel did not refuse the absent line 1000 with no binding left"
@@ -19638,6 +19643,7 @@ CPU 5 lacks hwcap bits"
     par "x86_64 syscall latency" x86_autorun_row latbench
     par "x86_64 captest" x86_autorun_row captest
     par "x86_64 captest canary, no hard reservation" x86_autorun_row captestcanary
+    par "x86_64 frame canary" x86_autorun_row framecanary
 
     # ── Wave 15 (GR5): the panic report is not spliced (see the rv/arm rows,
     # `panic_splice_row`, for the property and the read). Same smoke and
