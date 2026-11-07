@@ -38,3 +38,4 @@
 1	kernel/src/smokes/tlb_probe.rs	a test page
 1	kernel/src/smokes/x86_64_ring3.rs	a test page
 1	userspace/drivers/rng_drv/src/main.rs	the entropy buffer scrubbed after the feed, on our stack
+3	kernel/src/entry/aarch64/ext/hyp_cost.rs	a free root page-table slot the gate-only pt-set lane borrows and clears
