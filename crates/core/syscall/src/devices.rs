@@ -1037,6 +1037,8 @@ pub fn release_all(tid: u32) {
     }
     #[cfg(feature = "board-io")]
     crate::adc_host::release_all(tid);
+    #[cfg(feature = "use-robot")]
+    crate::frame_host::release_all(tid);
 }
 
 /// What ending an attachment left to do once the table's lock is released.

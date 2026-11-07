@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the USB video class driver (crates/drivers/usb/src/class/uvc.rs) and the isochronous pipes of the USB core it streams over: the class-specific descriptor walker, PROBE/COMMIT, the payload header and frame assembly into a camera frame ring, and a camera streaming MJPEG and YUYV frames over isochronous and bulk endpoints behind the xHCI mock of tests/host/usb-tests. Excluded from the workspace like the other *-tests crates."
+description = "Host-side tests for the USB video class driver (crates/drivers/usb/src/class/uvc.rs) and the isochronous pipes of the USB core it streams over: the class-specific descriptor walker, PROBE/COMMIT, the payload header and frame assembly into the frame class's pool, and a camera streaming MJPEG and YUYV frames over isochronous and bulk endpoints behind the xHCI mock of tests/host/usb-tests. Excluded from the workspace like the other *-tests crates."
 
 # Run with:  cd tests/host/usb-uvc-tests && CARGO_TARGET_DIR=~/azos-out/usb-uvc-tests cargo test --release --target aarch64-apple-darwin
 # Canaries: `cargo test --release --target aarch64-apple-darwin --features canary-<name>` must FAIL.

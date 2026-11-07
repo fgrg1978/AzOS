@@ -69,6 +69,9 @@ pub use motor::{Motor, MotorCall, MotorClient, MotorIdl, MOTOR_ID};
 pub mod sensor;
 pub use sensor::{Sample, Sensor, SensorCall, SensorClient, SensorIdl, SENSOR_ID};
 
+pub mod frame;
+pub use frame::{Frame, FrameCall, FrameClient, FrameIdl, FRAME_ID};
+
 pub mod block;
 pub use block::{Block, BlockCall, BlockClient, BlockIdl, BLOCK_ID};
 
@@ -184,6 +187,10 @@ fn sensor_type(rest: &str) -> Option<u32> {
     index_below(rest, sensor::TYPES)
 }
 
+fn frame_camera(rest: &str) -> Option<u32> {
+    index_below(rest, frame::CAMERAS)
+}
+
 /// `part.<n>`: partition `n` of the kernel's table; the badge is `n + 1`
 /// (badge 0 is the whole medium, which no spelling names).
 fn block_partition(rest: &str) -> Option<u32> {
@@ -277,6 +284,7 @@ pub mod key {
     pub const SOUND: u16 = 26;
     pub const POWER_ASSERT: u16 = 27;
     pub const VOLUME: u16 = 28;
+    pub const FRAME: u16 = 29;
 }
 
 /// Every interface the kernel can host, by host key (`IFACES[key - 1]`).
@@ -309,6 +317,7 @@ pub const IFACES: &[Iface] = &[
     Iface { name: "sound", id: SOUND_ID, key: key::SOUND, resource: sound_device },
     Iface { name: "powerassert", id: POWER_ASSERT_ID, key: key::POWER_ASSERT, resource: no_resource },
     Iface { name: "volume", id: VOLUME_ID, key: key::VOLUME, resource: volume_index },
+    Iface { name: "frame", id: FRAME_ID, key: key::FRAME, resource: frame_camera },
 ];
 
 /// Split a topology target `<iface>[.<resource>]` into its interface and the

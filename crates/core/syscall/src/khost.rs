@@ -118,6 +118,37 @@ impl Caller {
 }
 
 impl Caller {
+    /// Run `f` on the kernel's address of the first `bytes` bytes of the
+    /// memory object the caller's capability `raw` names: a buffer the caller
+    /// shares for one call (`Cap<KeyBuf>`, `Cap<FrameBuf>`).
+    ///
+    /// `BAD_ARGUMENT` for a handle that is not a memory object or one smaller
+    /// than `least` bytes, `DENIED` (recorded under the object's kind) for a
+    /// missing `READ` or `WRITE`, `UNSUPPORTED` for an object the kernel cannot
+    /// touch as one piece (read-only, shared with a clone, hidden from the
+    /// kernel, or not physically contiguous). `f` runs with the region table's
+    /// lock held.
+    pub(crate) fn with_buffer(&self, raw: u32, least: usize, bytes: usize, f: impl FnOnce(usize)) -> Result<(), u32> {
+        let named = azos_ipc::cap_store::read_table(self.tid, |t| t.peek_raw(CapHandle(raw))).flatten();
+        let Some((ty, rights, region)) = named else { return Err(azos_devif::outcome::BAD_ARGUMENT) };
+        if ty != azos_abi::cap::ty::SHM {
+            return Err(azos_devif::outcome::BAD_ARGUMENT);
+        }
+        if !rights.contains(CapPerms::READ.union(CapPerms::WRITE)) {
+            crate::handlers::note_typed_denial_for(self.tid, ty, azos_ipc::cap::CapError::MissingPerms);
+            return Err(azos_devif::outcome::DENIED);
+        }
+        let desc = azos_ipc::memobj::memobj_describe_ref(region).map_err(|_| azos_devif::outcome::BAD_ARGUMENT)?;
+        if desc.page_count * azos_arch::PAGE_SIZE < least {
+            return Err(azos_devif::outcome::BAD_ARGUMENT);
+        }
+        match azos_ipc::memobj::memobj_with_span_ref(region, bytes, f) {
+            Ok(Some(())) => Ok(()),
+            Ok(None) => Err(azos_devif::outcome::UNSUPPORTED),
+            Err(_) => Err(azos_devif::outcome::BAD_ARGUMENT),
+        }
+    }
+
     /// [`deny`](Self::deny) for the ops the recovery console also offers: the
     /// console's refusal line, `[AUTHORITY] <cmd> REFUSED`, is printed only
     /// when the record was actually handed to the recorder (a bounded stream).
@@ -251,6 +282,8 @@ const HOSTED: &[Hosted] = {
         hosted!(k::DISPLAY, DisplayIdl, crate::display::Server),
         hosted!(k::MEMCTL, MemCtlIdl, crate::memctl::Server),
         hosted!(k::KEYS, KeysIdl, crate::keys::Server),
+        #[cfg(feature = "use-robot")]
+        hosted!(k::FRAME, FrameIdl, crate::frame_host::Server),
         hosted!(k::VOLUME, VolumeIdl, crate::volume_host::Server),
         #[cfg(feature = "virtio-snd")]
         hosted!(k::SOUND, SoundIdl, crate::sound_host::Server),

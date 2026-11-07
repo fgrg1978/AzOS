@@ -233,10 +233,14 @@ pub(crate) const NAMES: &[&str] = &[
     // volume mounted, so it is not marked clean and the next boot checks it
     // (gate row `boot count: orderly reboot`).
     "power-off-unmount-skip",
-    // tasks/cam_capture.rs `camera_with_frame`: each consumer of the camera
-    // frame ring captures and encodes a frame of its own again, as before
+    // tasks/cam_capture.rs `camera_with_frame`: each reader of the camera
+    // frame pool captures and encodes a frame of its own again, as before
     // B2 (ktest `camera_one_encode_per_frame`).
     "camera-encode-per-consumer",
+    // tasks/cam_capture.rs `camera_capture_once`: the capture task commits a
+    // frame of zeros, so what reaches a reader is not what the camera
+    // produced (gate row `frame reaches ring 3` and its canary).
+    "frame-blank",
     // boot/sched.rs `create_ioring_worker_task`: an RT submitter's io_ring
     // file entries run inline again, so a disk boot's RT block-I/O check
     // panics (ktest `ioring_rt_file_entries_never_block`).

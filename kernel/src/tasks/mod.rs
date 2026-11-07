@@ -42,7 +42,7 @@ mod buzzer_host;
 pub(crate) use ina219_host::*;
 #[cfg(feature = "board-io")]
 pub(crate) use buzzer_host::*;
-// Wave 15 (B2): the camera's one capture task and its frame ring.
+// The camera's one capture task and the frame class's pool.
 #[cfg(feature = "use-robot")]
 mod cam_capture;
 #[cfg(feature = "use-robot")]

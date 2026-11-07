@@ -42,7 +42,7 @@
 //!   Kconfig `USB_CDC_CONSOLE` the kernel then holds that port itself and the
 //!   console runs over it ([`console`]).
 //! - the video class driver (Kconfig `USB_UVC`): a UVC camera becomes the
-//!   producer of the camera frame ring (`tasks::CAM_RING`) while a reader is
+//!   producer of the frame class's pool (`azos_syscall::frame_host::POOL`) while a reader is
 //!   attached to it, in the CSI capture task's place. The driver lives behind
 //!   a sleeping mutex that the class-driver registry takes per call and the
 //!   `usb` task takes for the turn that drives its second half; the task naps
@@ -97,7 +97,7 @@ mod host {
     #[cfg(feature = "usb-uvc")]
     use azos_usb::class::uvc::{State as CamState, Uvc, Want};
     #[cfg(feature = "usb-uvc")]
-    use crate::tasks::{CamRing, CAM_RING};
+    use azos_syscall::frame_host::{Pool, POOL};
     use azos_usb::usbcore::pipe::PipeRings;
     use azos_usb::usbcore::Usb;
     use azos_usb::{EventKind, UsbEvent, EVENT_DEPTH, MAX_PIPES};
@@ -314,7 +314,7 @@ mod host {
     /// The USB camera, once the scheduler exists. The registry takes the lock
     /// per call ([`SharedCamera`]), the `usb` task for its own turn.
     #[cfg(feature = "usb-uvc")]
-    type Camera = Uvc<'static, KMem, KClock, CamRing>;
+    type Camera = Uvc<'static, KMem, KClock, Pool>;
     #[cfg(feature = "usb-uvc")]
     static CAMERA: Mutex<Option<Camera>> = Mutex::new(None);
     /// A camera is the frame source (the CSI capture task stands down), and a
@@ -678,10 +678,10 @@ mod host {
                 width: azos_drv_sensor::csi::JPEG_CAP_W as u16,
                 height: azos_drv_sensor::csi::JPEG_CAP_H as u16,
                 fps: (1000 / azos_limits::CAMERA_TX_CAPTURE_PERIOD_MS.max(1)).max(1) as u16,
-                max_frame: CamRing::slot_size(),
+                max_frame: Pool::slot_size(),
                 max_jpeg: crate::tasks::CAMERA_JPEG_MAX,
             };
-            let cam = Uvc::new(KMem { domain }, KClock, mask, &RINGS[..], &CAM_RING, want, camera_stamp);
+            let cam = Uvc::new(KMem { domain }, KClock, mask, &RINGS[..], &POOL, want, camera_stamp);
             *CAMERA.lock() = Some(cam);
         }
         #[cfg(not(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc")))]
@@ -1111,10 +1111,11 @@ mod host {
         }
     }
 
-    /// The frame stamp of a camera: the arch counter, as the CSI path's.
+    /// The frame stamp of a camera: the arch counter as the vDSO clock's
+    /// nanoseconds, as the CSI path's.
     #[cfg(feature = "usb-uvc")]
     fn camera_stamp() -> u64 {
-        azos_drv_sys::timebase::now()
+        azos_drv_sys::timebase::vdso_ns(azos_drv_sys::timebase::now())
     }
 
     /// A USB camera is the frame source: the CSI capture task stands down.
@@ -1123,7 +1124,7 @@ mod host {
         CAMERA_SOURCE.load(core::sync::atomic::Ordering::Relaxed)
     }
 
-    /// A reader attached to the frame ring: the camera starts on the next
+    /// A reader attached to the frame pool: the camera starts on the next
     /// turn of the `usb` task, which is woken for it.
     #[cfg(feature = "usb-uvc")]
     pub(crate) fn uvc_kick() {

@@ -69,7 +69,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use azos_abi::cap::{CapHandle, CapPerms};
+use azos_abi::cap::CapPerms;
 use azos_crypto::ct::secure_zero;
 use azos_crypto::keystore::{self as ks, Backend, Envelope, Keystore, Op, Principal, Reason, Refusal};
 use azos_decision::{Rule, Verdict};
@@ -519,7 +519,7 @@ impl Server {
     /// The message of `sign`, out of the caller's buffer.
     fn read_message(&self, buf: u32, msg: &mut [u8]) -> Result<(), u32> {
         let len = msg.len();
-        with_buf(&self.0, buf, len, |base| {
+        self.0.with_buffer(buf, SIGN_BUF_MIN, len, |base| {
             // SAFETY: `base` addresses at least `len` bytes of the object,
             // kernel-mapped, held by the region table's lock for this closure.
             unsafe { core::ptr::copy_nonoverlapping(base as *const u8, msg.as_mut_ptr(), len) }
@@ -528,40 +528,11 @@ impl Server {
 
     /// The signature of `sign`, into the caller's buffer.
     fn write_signature(&self, buf: u32, sig: &[u8; SIG_BYTES]) -> Result<(), u32> {
-        with_buf(&self.0, buf, SIG_BYTES, |base| {
+        self.0.with_buffer(buf, SIGN_BUF_MIN, SIG_BYTES, |base| {
             // SAFETY: as above, for `SIG_BYTES` bytes, the object being
             // read-write.
             unsafe { core::ptr::copy_nonoverlapping(sig.as_ptr(), base as *mut u8, SIG_BYTES) }
         })
-    }
-}
-
-/// Run `f` on the kernel's address of the first `bytes` bytes of the memory
-/// object the caller's capability `raw` names (the buffer of `sign`).
-///
-/// `BAD_ARGUMENT` for a handle that is not a memory object or one too small
-/// for [`SIGN_BUF_MIN`], `DENIED` (recorded under the object's kind) for a
-/// missing right, `UNSUPPORTED` for an object the kernel cannot touch as one
-/// piece (read-only, shared with a clone, hidden from the kernel, or not
-/// physically contiguous).
-fn with_buf(who: &Caller, raw: u32, bytes: usize, f: impl FnOnce(usize)) -> Result<(), u32> {
-    let named = azos_ipc::cap_store::read_table(who.tid, |t| t.peek_raw(CapHandle(raw))).flatten();
-    let Some((ty, rights, region)) = named else { return Err(outcome::BAD_ARGUMENT) };
-    if ty != azos_abi::cap::ty::SHM {
-        return Err(outcome::BAD_ARGUMENT);
-    }
-    if !rights.contains(CapPerms::READ.union(CapPerms::WRITE)) {
-        crate::handlers::note_typed_denial_for(who.tid, ty, azos_ipc::cap::CapError::MissingPerms);
-        return Err(outcome::DENIED);
-    }
-    let desc = azos_ipc::memobj::memobj_describe_ref(region).map_err(|_| outcome::BAD_ARGUMENT)?;
-    if desc.page_count * azos_arch::PAGE_SIZE < SIGN_BUF_MIN {
-        return Err(outcome::BAD_ARGUMENT);
-    }
-    match azos_ipc::memobj::memobj_with_span_ref(region, bytes, f) {
-        Ok(Some(())) => Ok(()),
-        Ok(None) => Err(outcome::UNSUPPORTED),
-        Err(_) => Err(outcome::BAD_ARGUMENT),
     }
 }
 

@@ -9,7 +9,7 @@
 //! ([`fixtures`]): a test plugs a camera in, the driver reads its descriptors
 //! and negotiates a stream through the control pipe, picks the setting that
 //! carries it, and the camera's payloads go out of the isochronous (or bulk)
-//! endpoint into a frame ring the way a device would send them.
+//! endpoint into the frame pool the way a device would send them.
 
 //! Every behaviour that has a canary (a feature of `azos_usb` that puts the
 //! matching bug back) is covered by a test that goes red with it:

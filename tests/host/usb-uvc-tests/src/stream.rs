@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use azos_cam_ring::{FanoutRing, FrameInfo, Policy};
+use azos_cam_ring::{FrameInfo, FramePool, Policy};
 use azos_devif::Out;
 use azos_usb::class::uvc::{Fail, Mode, Pixels, State, Uvc, Want, IDLE_STOP_US};
 use azos_usb::class::{Registry, UsbClass, UsbClassDirect};
@@ -20,7 +20,7 @@ use azos_usb_tests::mock::{MockClock, MockMem};
 
 use crate::fixtures::*;
 
-type Ring<const SZ: usize> = FanoutRing<4, SZ, 1>;
+type Ring<const SZ: usize> = FramePool<4, SZ, 1>;
 type Driver<const SZ: usize> = Uvc<'static, MockMem, MockClock, Ring<SZ>>;
 
 static STAMP: AtomicU64 = AtomicU64::new(1000);
@@ -79,6 +79,8 @@ impl<const SZ: usize> Bench<SZ> {
     pub fn with(cam: Cam, dev: DevRef, want: Want) -> Bench<SZ> {
         let rig = Rig::new();
         let ring: &'static Ring<SZ> = Box::leak(Box::new(Ring::<SZ>::new(Policy::OverwriteOldest)));
+        let buffers: Vec<usize> = (0..4).map(|_| Box::leak(vec![0u8; SZ].into_boxed_slice()).as_mut_ptr() as usize).collect();
+        ring.install(&buffers).expect("buffers for the pool");
         let uvc = RefCell::new(Uvc::new(rig.hw.mem(), rig.hw.clock(), u64::MAX, &rig.rings[..], ring, want, stamp));
         rig.hw.attach_root(1, dev.clone());
         Bench { rig, ring, uvc, dev, cam, fid: false }

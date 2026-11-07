@@ -321,7 +321,7 @@ pub(crate) fn behavior_task(_: usize) {
                 }
 
                 // A camera frame every CAMERA_SEND_INTERVAL passes (~2 Hz),
-                // the newest in the camera frame ring,
+                // the newest in the frame pool,
                 // here only when no camera connection is configured
                 // (`behavior_camera_port` = 0); otherwise `camera_tx_task`
                 // sends it on its own connection (C1). Through

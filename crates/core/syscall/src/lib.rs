@@ -63,6 +63,10 @@ pub mod memctl;
 pub mod keys;
 /// The check of a mounted volume, run by hand: the `Volume` interface the kernel hosts.
 pub mod volume_host;
+/// The frame class's pool and the `Frame` interface the kernel hosts: the camera's
+/// frames, copied to a task's buffer.
+#[cfg(feature = "use-robot")]
+pub mod frame_host;
 /// D6 part A: the interfaces the kernel hosts, served from endpoints.
 pub mod khost;
 pub mod vdso_notify;

@@ -39,7 +39,7 @@ impl CameraPkt {
 }
 
 /// The brain link's next camera frame, framed as a `PKT_CAMERA` packet in
-/// `cam.pkt`: the newest frame of the camera frame ring this consumer has
+/// `cam.pkt`: the newest frame of the frame pool this reader has
 /// not taken (wave 15, B2: captured and encoded once by the capture task,
 /// capped at `JPEG_CAP_W`×`JPEG_CAP_H`). Returns the packet's length, 0 when
 /// there is no new frame or it does not fit the packet; never waits for a

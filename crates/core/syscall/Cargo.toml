@@ -15,6 +15,7 @@ azos_ipc = { workspace = true }
 azos_rings = { workspace = true }
 azos_bytepipe = { workspace = true }
 azos_robot = { workspace = true, optional = true }
+azos_cam_ring = { workspace = true, optional = true }
 azos_arch = { workspace = true }
 azos_arch_api = { workspace = true }
 azos_sync = { workspace = true }
@@ -56,6 +57,15 @@ azos_crypto = { workspace = true }
 # are not kept from an acting Gpio op.
 gpio-unbound-falls-to-board-canary = []
 gpio-safety-guard-canary = []
+# `frame_host.rs` (built by tests/host/syscall-tests): a task that exits keeps
+# its reader slot, and with it the pool's hold on capture.
+frame-exit-keeps-canary = []
+# ... a task's second `next` takes another reader slot, so a few calls fill the table.
+frame-slot-per-call-canary = []
+# ... the buffer is checked after the frame is taken, so a bad one costs a frame.
+frame-check-late-canary = []
+# ... a read copies nothing.
+frame-copy-skip-canary = []
 # Kernel feature `hv` (Kconfig HV): `src/vm.rs`, the `Vm` and `Vcpu` endpoints.
 hv = ["dep:azos_hv"]
 # Kernel feature `virtio-snd` (Kconfig DRV_VIRTIO_SND): `src/sound_host.rs`, the
@@ -273,7 +283,7 @@ actuation-smoke = []
 # reach the real robot crates. Off, they reach `src/no_robot.rs` (no motor,
 # no IMU/GPS) and the robot crates are not linked. The kernel's own
 # `use-robot` feature turns this on.
-use-robot = ["dep:azos_robot", "board-io"]
+use-robot = ["dep:azos_robot", "dep:azos_cam_ring", "board-io"]
 # The board's sensors and actuators (kernel feature `board-io`, Kconfig
 # BOARD_IO): the converter, rangefinders, LiDAR, power monitor and camera behind
 # the `Sensor` and `Adc` interfaces, and PWM and the drivetrain's PID loop
