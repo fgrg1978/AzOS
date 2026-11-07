@@ -8,7 +8,7 @@ arch/x86_64/src/mmu.rs	3	the x86_64 boot table writers, used before the kernel's
 arch/x86_64/src/mmu/kaslr_boot.rs	2	two words of the boot PDPT, written before the MMU's final tables exist
 crates/core/mm/src/cow.rs	1	the copy of a page's bytes on a copy-on-write break
 crates/core/mm/src/pager.rs	9	object slot words, the stale epoch and the codec cell (MemObj state), not page-table words
-crates/core/mm/src/vmm.rs	2	a local counter of mapped windows
+crates/core/mm/src/vmm.rs	3	a local counter of mapped windows; the soft window's copy of a level-0 table into a fresh page that is not yet linked
 kernel/src/entry/aarch64/asm/boot.S	3	boot arguments and per-PE state saved to the image's data, not tables
 kernel/src/entry/aarch64/asm/context_switch.S	30	the saves into a task's own context block
 kernel/src/entry/aarch64/asm/trap_entry.S	1	the trap frame's pointer save
