@@ -12128,13 +12128,13 @@ host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <featu
 # shims' test controls, and `Sensor::bind_vdso` must refuse the four robot
 # sensors there, as `read` does, instead of letting the timer interrupt publish
 # a zero slot. The canary (`vdso-bind-canary`) skips the refusal.
-host_generic_row() { # <label> <test fn>
-    local label="$1" test="$2" out
+host_generic_row() { # <label> <test fn> [features, default the board I/O's]
+    local label="$1" test="$2" feats="${3:-virtio-snd,linux-abi,board-io}" out
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-generic" \
         host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release --no-default-features \
-        --features virtio-snd,linux-abi,board-io -- "$test"
+        --features "$feats" -- "$test"
     if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
     else
         bad; echo "      syscall-tests --no-default-features: $test did not pass alone"
@@ -12142,6 +12142,7 @@ host_generic_row() { # <label> <test fn>
     fi
 }
 host_job host_generic_row "sensor: vdso bind, board-io image without the robot extension" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain
+host_job host_generic_row "sensor: vdso bind, image with neither robot nor board I/O" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain virtio-snd,linux-abi
 host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,board-io,vdso-bind-canary \
     a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
 # The frame class (cam-ring-tests, the pool): a reader's view of a frame
@@ -16691,6 +16692,17 @@ PY
     }
     par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
     par "ktest (arm)" ktest_row "ktest (arm)" arm "" ""
+    # The images without the robot extension: the sensor numbers are reserved
+    # and vacant (`effect_the_robot_sensor_numbers_are_reserved_and_vacant`) with
+    # the board's I/O (the power monitor attached, arm) and without it (rv); the
+    # rest of the list is the generic image's. `ci_robot_feats` sees no
+    # `use-robot` and builds the generic configuration.
+    generic_ktest_row() { # <label> <isa> <board I/O features: "" or ",board-io">
+        local KTEST_FEATS="qemu,ktest$3"
+        ktest_row "$1" "$2" "" ""
+    }
+    par "ktest, no robot extension, board I/O (arm)" generic_ktest_row "ktest, no robot extension, board I/O (arm)" arm ",board-io"
+    par "ktest, no robot extension, no board I/O (rv)" generic_ktest_row "ktest, no robot extension, no board I/O (rv)" rv ""
     # RAM past the first gigabyte the boot alias in TTBR1 maps: `virt` at 5 GiB is
     # 0x4000_0000..0x1_8000_0000, and `vmm::init` writes its page-table pages
     # into the top frames; `pmm_floor` widens the alias over the rest. The
@@ -23338,12 +23350,7 @@ PYEOF
     # a live brain server on the host (their console harness had no
     # caller and was deleted on 2026-10-24).
     fresh_disk $AZOS_OUT/build/disk-uhello.img
-    par_row qemu_run "bench: the 37 measurements of azos_bench" "run_all done emitted=37 " 180 \
-        -smp 4 -global virtio-mmio.force-legacy=false \
-        -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
-        -device virtio-blk-device,drive=hd0
-    fresh_disk $AZOS_OUT/build/disk-uhello.img
-    par_row qemu_run "bench: the 4 measurements of the robot extension" "robot bench done emitted=4 " 180 \
+    par_row qemu_run "bench: all 41 measurements" "robot run_all done emitted=41 " 180 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0

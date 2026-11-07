@@ -983,6 +983,9 @@ def feature_deps(features):
                 if hooks_of.get(x, 0) < HUB_FEATURES or os.path.basename(x) not in REGISTRY_FILES:
                     out.setdefault(x, why)
 
+    # `crate?/feature` acts only when something else turns the optional crate on:
+    # its test hooks are the row's only then.
+    on, weak_hooks = set(), []
     todo = [f for f in features if f in feats and f not in base]
     while todo:
         f = todo.pop(0)
@@ -993,6 +996,7 @@ def feature_deps(features):
         for e in feats[f]:
             if e.startswith("dep:"):
                 if e[4:] in deps:
+                    on.add(e[4:])
                     dep_globs(deps[e[4:]], "feature %s turns on %s" % (f, e[4:]))
             elif "/" in e:
                 name, sub = e.split("/", 1)
@@ -1001,13 +1005,21 @@ def feature_deps(features):
                 if name not in deps:
                     continue
                 if name in optional and not weak:
+                    on.add(name)
                     dep_globs(deps[name], "feature %s turns on %s" % (f, name))
-                hook_files(deps[name], sub, "feature %s (%s)" % (f, e))
+                if weak and name in optional:
+                    weak_hooks.append((name, sub, "feature %s (%s)" % (f, e)))
+                else:
+                    hook_files(deps[name], sub, "feature %s (%s)" % (f, e))
             elif e in feats:
                 if e not in base:
                     todo.append(e)
             elif e in optional:  # an optional dependency's implicit feature
+                on.add(e)
                 dep_globs(deps[e], "feature %s turns on %s" % (f, e))
+    for name, sub, why in weak_hooks:
+        if name in on:
+            hook_files(deps[name], sub, why)
     return out
 
 
