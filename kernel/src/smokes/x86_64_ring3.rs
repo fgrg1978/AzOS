@@ -18,10 +18,10 @@
 //!      fork made copy-on-write (the kernel's write through SMAP's window
 //!      breaks it).
 //!
-//! The parent writes what it saw to the result page, which sits in the
-//! shm/MMIO window (`LOCKED_ARENA_VA`): fork neither shares nor copies that
-//! window, so the parent's stores reach this frame, and the teardown at exit
-//! does not free it. The test reads it back.
+//! The parent writes what it saw to the result page, which is a physical range
+//! of its address space (at `LOCKED_ARENA_VA`): fork neither shares nor copies
+//! it, so the parent's stores reach this frame, and the space's end does not
+//! free it. The test reads it back.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -130,7 +130,13 @@ fn user_task(_: usize) {
     use azos_arch::ArchPlatform;
     let root = ROOT.load(Ordering::Acquire);
     let word = azos_arch::ARCH.user_root_word(root, 0);
-    azos_sched::set_current_user_info(word as u64, azos_mm::aspace::create(root), 0);
+    let space = azos_mm::aspace::create(root);
+    if let Some(space) = space {
+        let page = azos_arch::PAGE_SIZE;
+        let frame = RESULT_FRAME.load(Ordering::Acquire);
+        let _ = azos_mm::pager::reserve_phys(space, RESULT_VA, RESULT_VA + page, true, frame, azos_arch_api::MemType::WB, false);
+    }
+    azos_sched::set_current_user_info(word as u64, space, 0);
     // SAFETY: `root` maps the code and stack pages USER and every kernel
     // entry; this kernel task never returns to its kernel stack.
     unsafe { azos_sched::sret_to_user(CODE_VA, STACK_TOP, word) }

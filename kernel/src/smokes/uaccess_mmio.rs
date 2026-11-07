@@ -32,8 +32,7 @@ azos_ktest::ktest! {
         let run_in = uaccess::copy_in(root, b.as_mut_ptr(), PROBE_VA, 64);
         let out = uaccess::copy_out(root, PROBE_VA, b.as_ptr(), 64);
         let s = uaccess::cstr_in(root, &mut b, PROBE_VA);
-        // A device frame the PMM never owned: unmapped, not freed, as
-        // `process::mmio_map_user`'s rollback does.
+        // A device frame the PMM never owned: unmapped, not freed.
         vmm::unmap(root, PROBE_VA);
         vmm::destroy_user_pagetable(root);
         if small_in || run_in || out || s.is_some() {
