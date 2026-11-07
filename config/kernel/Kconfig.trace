@@ -627,12 +627,13 @@ config KLOG_ENTRIES
       lines in LOGD_POLL_MS); lower it to save RAM.
 
 config TELEMETRY_RING_ENTRIES
-    int "Actuation telemetry: records the ring holds (power of two)"
+    int "Actuation telemetry: records the ring holds (power of two)" if KLOG
     range 16 1024
     default 64 if HWCLASS_EMBEDDED
     default 256
     help
-      Read only with KLOG. The actuation telemetry (a motor command, a mode
+      Asked with KLOG only (the ring is a ring of the record region; without KLOG the
+      value is just the default and nothing reads it). The actuation telemetry (a motor command, a mode
       change, a skill, a waypoint, an error, a sensor snapshot:
       crates/core/actuation/src/logger.rs) is one ring of the record region,
       beside the kernel log's and the decisions'. A producer (the real-time
@@ -738,6 +739,7 @@ config LOGD_DECISIONS_PER_SEC
 
 config LOGD_TELEMETRY_PER_SEC
     int "logd: telemetry records written per second at most, per kind"
+    depends on KLOG
     range 0 1000
     default 5
     help

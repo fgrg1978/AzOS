@@ -697,6 +697,9 @@ loss-tolerant. `logd` writes it as lines of module `@telemetry`, at most
 release floors, an effect's write-ahead record, the other safety violations) are not
 telemetry: they keep the flight recorder's own ring and files below.
 
+The kernel tracer (`region::trace`, `tracectl`) is not a ring of this region: it keeps another
+clock (per-CPU cycle stamps), another full-ring policy (drop the newest) and other consumers.
+
 **Structured log** (Kconfig `KLOG`; `crates/drivers/sys/src/klog.rs`, `klog/wire.rs`). Each
 line the macros above print is also a record of the substrate's kernel-log ring of
 `KLOG_ENTRIES` slots of 320 bytes: the envelope (its kind is the level) and a payload of a

@@ -6,7 +6,7 @@ Perfetto / Chrome trace-event JSON, so "what did the machine decide, and what
 was it doing at that moment" is one timeline.
 
 usage: perfetto_export.py [--recorder LOGNNNNN.BIN ...] [--decisions FILE ...]
-                          [--trace FILE ...] [--hz TICKS_PER_SECOND] -o out.json
+                          [--telemetry KLOGN.TXT ...] [--trace FILE ...] [--hz TICKS_PER_SECOND] -o out.json
        perfetto_export.py --self-test
 
 Inputs (any mix; every one optional, at least one needed):
@@ -28,6 +28,11 @@ Inputs (any mix; every one optional, at least one needed):
                     prints them in hex; the file name ends in `.bin`). Placed by the record's `clock` (nanoseconds); a
                     text line without one (an older kernel) is spaced one
                     microsecond per id and marked `clock: none`.
+  --telemetry FILE  the actuation telemetry `logd` wrote (`KLOGn.TXT` of the volume):
+                    the lines of module `@telemetry`, `SEQ TS_US CPU L @telemetry
+                    kind=K flags=F payload=HEX`, kind as in logger.rs `LOG_EVT_*`.
+                    Other lines are skipped. `TS_US` is microseconds on the
+                    kernel's timebase since boot.
   --trace FILE      `tracectl stream` text output (`[cpuN] SEC.NANOS event
                     key=value ...`), placed by its own clock.
 
@@ -37,7 +42,7 @@ microseconds (the trace-event unit), kept fractional.
 
 Tracks: process 1 "kernel trace" (one thread per CPU), process 2 "decisions"
 (one thread per rule), process 3 "flight recorder" (one thread per record
-kind). Every record is an instant event; its arguments are the fields.
+kind), process 4 "telemetry" (one thread per event kind). Every record is an instant event; its arguments are the fields.
 
 The tables below (rules, verdicts, safety codes) are the kernel's. `--self-test`
 checks them against crates/core/decision/src/lib.rs and
@@ -111,7 +116,7 @@ PROV_SIZE = 104
 PROV = struct.Struct("<BBxxIQ2Q2QIIQQ3QQ")
 assert PROV.size == PROV_SIZE
 
-PID_TRACE, PID_DECISIONS, PID_RECORDER = 1, 2, 3
+PID_TRACE, PID_DECISIONS, PID_RECORDER, PID_TELEMETRY = 1, 2, 3, 4
 
 
 class ExportError(Exception):
@@ -229,7 +234,21 @@ def instant(name, cat, ts_us, pid, tid, args):
     return {"name": name, "cat": cat, "ph": "i", "s": "t", "ts": ts_us, "pid": pid, "tid": tid, "args": args}
 
 
-def export(recorders=(), decisions=(), traces=(), hz=10_000_000):
+TELEMETRY_LINE = re.compile(r"^(\d+) (\d+) (\d+) \S+ @telemetry kind=(\d+) flags=(\d+) payload=([0-9a-f]*)$")
+
+
+def decode_telemetry(text):
+    """The telemetry lines of a `logd` file: (seq, ts_us, cpu, kind, flags, payload)."""
+    out = []
+    for line in text.splitlines():
+        m = TELEMETRY_LINE.match(line.rstrip("\r"))
+        if m:
+            seq, ts, cpu, kind, flags, hexp = m.groups()
+            out.append((int(seq), int(ts), int(cpu), int(kind), int(flags), bytes.fromhex(hexp)))
+    return out
+
+
+def export(recorders=(), decisions=(), traces=(), hz=10_000_000, telemetry=()):
     """The trace-event dict for the given file contents: recorders (bytes),
     decisions (`(name, bytes)`), traces (text)."""
     ev = []
@@ -307,6 +326,16 @@ def export(recorders=(), decisions=(), traces=(), hz=10_000_000):
             tid = d["rule"] + 1 if d["rule"] < len(RULES) else len(RULES) + 1
             ev.append(instant(f"{rule_name(d['rule'])} {verdict_name(d['verdict'])}", "decision", us,
                               PID_DECISIONS, tid, args))
+    if telemetry:
+        ev.append(meta(PID_TELEMETRY, 0, "process_name", "telemetry"))
+    seen_kinds = set()
+    for text in telemetry:
+        for seq, us, cpu, kind, flags, payload in decode_telemetry(text):
+            if kind not in seen_kinds:
+                seen_kinds.add(kind)
+                ev.append(meta(PID_TELEMETRY, kind, "thread_name", EVENTS.get(kind, f"event{kind}")))
+            ev.append(instant(EVENTS.get(kind, f"event{kind}"), "telemetry", us, PID_TELEMETRY, kind,
+                              {"seq": seq, "cpu": cpu, "flags": flags, "payload": payload.hex()}))
     if traces:
         ev.append(meta(PID_TRACE, 0, "process_name", "kernel trace"))
         cpus = set()
@@ -317,7 +346,7 @@ def export(recorders=(), decisions=(), traces=(), hz=10_000_000):
                 ev.append(meta(PID_TRACE, cpu + 1, "thread_name", f"cpu{cpu}"))
             ev.append(instant(event, "trace", ns / 1000, PID_TRACE, cpu + 1, args))
     if not ev:
-        raise ExportError("nothing to export: give --recorder, --decisions or --trace")
+        raise ExportError("nothing to export: give --recorder, --decisions, --telemetry or --trace")
     # Metadata first, then by time (stable for equal stamps).
     ev.sort(key=lambda e: (e["ph"] != "M", e.get("ts", 0)))
     return {"traceEvents": ev, "displayTimeUnit": "ns"}
@@ -421,6 +450,13 @@ def self_test(root=None):
     t = export(traces=[tr])
     i = [e for e in t["traceEvents"] if e["ph"] == "i"]
     assert [(e["tid"], e["ts"]) for e in i] == [(2, 1.5), (1, 2_000_000.0)], i
+    # The telemetry lines of a logd file; the other lines are skipped.
+    kl = ("0 5 0 I logd file 3\n7 2500000 1 I @telemetry kind=4 flags=0 payload=0001\n"
+          "8 2500100 0 I @decision id=3 rule=1 verdict=1 subject=0 n=0,0,0\n9 2600000 0 I @telemetry kind=2 flags=0 payload=03\n")
+    t = export(telemetry=[kl])
+    i = [e for e in t["traceEvents"] if e["ph"] == "i"]
+    assert [(e["name"], e["ts"], e["args"]["seq"]) for e in i] == [("mode_change", 2500000, 7), ("actuator_cmd", 2600000, 9)], i
+    assert i[0]["args"]["payload"] == "0001" and i[0]["args"]["cpu"] == 1, i[0]
     # A damaged recorder file and an empty request are refused, not guessed at.
     for bad in (lambda: export(recorders=[b"XXXX" + bytes(40)]), lambda: export()):
         try:
@@ -437,7 +473,7 @@ def main(argv):
     if argv[1:] == ["--self-test"]:
         self_test(azos_tools.ROOT)
         return 0
-    recorders, decisions, traces, out, hz = [], [], [], None, 10_000_000
+    recorders, decisions, traces, telemetry, out, hz = [], [], [], [], None, 10_000_000
     it = iter(argv[1:])
     try:
         for a in it:
@@ -448,6 +484,8 @@ def main(argv):
                 decisions.append((p, open(p, "rb").read()))
             elif a == "--trace":
                 traces.append(open(next(it), encoding="utf-8", errors="replace").read())
+            elif a == "--telemetry":
+                telemetry.append(open(next(it), encoding="utf-8", errors="replace").read())
             elif a == "--hz":
                 hz = int(next(it))
             elif a == "-o":
@@ -456,7 +494,7 @@ def main(argv):
                 raise ExportError(f"unknown argument {a}")
         if out is None:
             raise ExportError("-o out.json is required")
-        doc = export(recorders, decisions, traces, hz)
+        doc = export(recorders, decisions, traces, hz, telemetry)
     except (ExportError, StopIteration, OSError, ValueError) as e:
         print(f"perfetto_export: {e if str(e) else 'missing value'}", file=sys.stderr)
         print(__doc__.split("\n\n")[0], file=sys.stderr)

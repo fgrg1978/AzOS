@@ -22,6 +22,9 @@
 //!   index protocol; [`region::trace`] is the other overwrite ring and differs
 //!   on purpose (one consumer whose tail the producer must read, per-record
 //!   stamps in shared memory, a hostile-reader trust boundary).
+//!   The kernel tracer is not a ring of the record substrate (`region::record`)
+//!   for the same reason: another clock (per-CPU cycle stamps), another full-ring
+//!   policy (drop the newest) and other consumers (`tracectl`, the profiler).
 //! * [`region`] — the SPSC forms over a memory region two address spaces map
 //!   (runtime capacity, a notify doorbell that rings only when the other side
 //!   may be asleep): the rings ring 3 shares with the kernel and the kernel
