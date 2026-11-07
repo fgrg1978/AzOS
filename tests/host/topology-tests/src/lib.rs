@@ -6297,6 +6297,43 @@ mod exports_tests {
     }
 }
 
+/// `msi-slot-one-device`: a vector given back is kept for its slot, so the
+/// rows holding one `msi.<k>` slot must drive the same devices.
+///
+/// **Canary.** `msi-slot-shared-canary`: the rule finds nothing.
+#[cfg(test)]
+mod msi_slot_tests {
+    use azos_abi::cap::{CapKind, CapPerms};
+    use azos_topology::neverallow::{self, Env, RULES};
+    use azos_topology::{CapSpec, MaybeStr, SchedProfile, Topology};
+
+    fn dev(target: &'static [u8]) -> CapSpec<'static> {
+        CapSpec { kind: CapKind::Device, perms: CapPerms::RW, target: MaybeStr::from_bytes(target), transfer: false, ops: 0 }
+    }
+
+    fn two(a: &[CapSpec<'static>], b: &[CapSpec<'static>]) -> Box<Topology<'static>> {
+        let mut t = Box::new(Topology::empty());
+        for (name, caps) in [(&b"NICA.ELF"[..], a), (b"NICB.ELF", b)] {
+            t.push_task_profiled(MaybeStr::from_bytes(name), MaybeStr::from_bytes(b"best_effort"), 0, caps, SchedProfile::NONE).unwrap();
+        }
+        t
+    }
+
+    #[test]
+    fn two_rows_of_one_msi_slot_drive_one_device() {
+        let env = Env { desktop: false };
+        let id = RULES.iter().position(|r| r.id == "msi-slot-one-device").expect("the rule") as u8;
+        let (slot0, slot1) = (dev(b"msi.0"), dev(b"msi.1"));
+        let (nic, disk) = (dev(b"mmio.pci:8086:100e"), dev(b"mmio.pci:1b36:0010"));
+        let refused = |t: &Topology<'_>| neverallow::check(t, &env).err().map(|r| r.rule);
+        assert_eq!(refused(&two(&[slot0, nic], &[slot0, disk])), Some(id), "one slot, two devices");
+        assert_eq!(refused(&two(&[slot0, nic], &[slot0])), Some(id), "a row that names no device beside one that does");
+        assert_eq!(refused(&two(&[slot0, nic], &[slot0, nic])), None, "one slot, one device");
+        assert_eq!(refused(&two(&[slot0, nic], &[slot1, disk])), None, "two slots, two devices");
+        assert_eq!(refused(&two(&[slot0, nic, disk], &[slot0, disk, nic])), None, "the same set in another order");
+    }
+}
+
 /// The kernel half of the proxy endpoint, with the real endpoint table.
 #[cfg(test)]
 mod proxy_endpoint_tests {

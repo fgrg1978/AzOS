@@ -863,6 +863,7 @@ cannot excuse itself.
 | `actuation-grant-not-transferable` | A motor, PWM, GPIO or buzzer grant that carries `TRANSFER`. |
 | `proxy-endpoint-not-realtime` | A row with a real-time reservation or class holding any grant on a proxy endpoint (`endpoint.rpc-*`). |
 | `proxy-endpoint-served-by-rpcsrv-only` | A row other than `RPCSRV.ELF` serving a proxy endpoint. |
+| `msi-slot-one-device` | Two rows holding one `msi.<k>` slot while driving different devices (`mmio.<selector>` grants): a vector a holder gave back is kept for its slot, so the slot's holders must share a device. Later design: `msi.<selector>`, with the unbind masking MSI/MSI-X at the device. |
 
 A refusal writes a decision record naming the rule and the row.
 `make check-neverallow` runs the rules over the topology of every preset and

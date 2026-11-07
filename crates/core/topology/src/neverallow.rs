@@ -27,6 +27,7 @@
 //! |----|---------|
 //! | `actuation-outside-actuation-row` | a ring-3 row holding a motor, a PWM or GPIO write, or the buzzer, unless the row is listed as an actuation row |
 //! | `desktop-grants-no-motor` | any row holding a motor in a `USE_DESKTOP` image |
+//! | `msi-slot-one-device` | two rows holding one `msi.<k>` slot while driving different devices: a vector given back is kept for its slot, so the slot's holders must share a device |
 //! | `names-import-and-service-export` | a row that imports names from the name server and also serves a task-hosted endpoint (`endpoint.<name>`) or registers a driver |
 //! | `actuation-grant-not-transferable` | a motor, PWM, GPIO or buzzer grant that carries `TRANSFER` (`transfer = true` or the `t` letter of `perm`) |
 //! | `proxy-endpoint-not-realtime` | a row with a real-time reservation or class holding any grant on a proxy endpoint (`endpoint.rpc-*`) |
@@ -120,7 +121,7 @@ pub struct Rule {
     /// The rows that may break it anyway (see the module doc).
     pub exceptions: &'static [Exception],
     /// Does grant `c` of `row` break the rule (before exceptions)?
-    breaks: fn(&Env, &TaskSpec<'_>, &CapSpec<'_>) -> bool,
+    breaks: fn(&Env, &Topology<'_>, &TaskSpec<'_>, &CapSpec<'_>) -> bool,
 }
 
 /// Is `c` an endpoint grant of the interface whose resources are named
@@ -142,15 +143,15 @@ fn actuates(c: &CapSpec<'_>) -> bool {
     is_motor(c) || ((is_iface(c, "pwm") || is_iface(c, "gpio")) && c.perms.contains(CapPerms::WRITE))
 }
 
-fn actuation_outside_actuation_row(_: &Env, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+fn actuation_outside_actuation_row(_: &Env, _t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
     row.is_ring3() && actuates(c)
 }
 
-fn desktop_grants_no_motor(env: &Env, _: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+fn desktop_grants_no_motor(env: &Env, _t: &Topology<'_>, _: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
     env.desktop && is_motor(c)
 }
 
-fn names_import_and_service_export(_: &Env, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+fn names_import_and_service_export(_: &Env, _t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
     // Serving an endpoint (READ on a task-hosted `endpoint.<name>`, the half
     // that listens): the row answers other tasks
     // and can also ask the name server for any name it was granted, which is
@@ -163,7 +164,7 @@ fn names_import_and_service_export(_: &Env, row: &TaskSpec<'_>, c: &CapSpec<'_>)
         && c.perms.contains(CapPerms::READ)
 }
 
-fn actuation_grant_not_transferable(_: &Env, _: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+fn actuation_grant_not_transferable(_: &Env, _t: &Topology<'_>, _: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
     c.grant_perms().contains(CapPerms::TRANSFER) && actuates(c)
 }
 
@@ -183,17 +184,39 @@ const REALTIME_CLASSES: [&[u8]; 3] = [b"safety_critical", b"hard_rt", b"soft_rt"
 /// its own time: it may not wait on a node it does not control. (The kernel
 /// refuses the same call at run time for any task of a real-time class,
 /// including one that became real-time after it was admitted.)
-fn proxy_endpoint_not_realtime(_: &Env, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+fn proxy_endpoint_not_realtime(_: &Env, _t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
     (row.profile.is_declared() || REALTIME_CLASSES.contains(&row.class_name.as_bytes())) && is_proxy(c)
 }
 
-fn proxy_endpoint_served_by_rpcsrv_only(_: &Env, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+fn proxy_endpoint_served_by_rpcsrv_only(_: &Env, _t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
     is_proxy(c) && c.perms.contains(CapPerms::READ) && row.name.as_bytes() != crate::types::RPC_IMAGE
+}
+
+/// A message-signalled interrupt slot grant (`msi.<k>`).
+fn is_msi(c: &CapSpec<'_>) -> bool {
+    c.kind == CapKind::Device && c.target.as_str().starts_with("msi.")
+}
+
+/// The device registers a row holds (`mmio.<selector>`): the devices it drives.
+fn devices_of<'a, 't>(t: &'t Topology<'a>, row: &TaskSpec<'a>) -> impl Iterator<Item = &'t str> + 't {
+    t.caps_of(row).iter().filter(|c| c.kind == CapKind::Device && c.target.as_str().starts_with("mmio.")).map(|c| c.target.as_str())
+}
+
+/// A slot's vector is kept for the slot when its holder gives it back
+/// (`irq_bind`), so every row holding `msi.<k>` must drive the same devices.
+fn msi_slot_one_device(_: &Env, t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+    is_msi(c)
+        && t.tasks().iter().any(|other| {
+            t.caps_of(other).iter().any(|o| is_msi(o) && o.target.as_str() == c.target.as_str())
+                && !(devices_of(t, row).all(|d| devices_of(t, other).any(|e| e == d))
+                    && devices_of(t, other).all(|d| devices_of(t, row).any(|e| e == d)))
+        })
+        && !cfg!(feature = "msi-slot-shared-canary")
 }
 
 /// The rules, in the order they are checked. The index is what a decision
 /// record names.
-pub const RULES: [Rule; 6] = [
+pub const RULES: [Rule; 7] = [
     Rule {
         id: "actuation-outside-actuation-row",
         text: "no ring-3 row holds a motor, a PWM or GPIO write grant, or the buzzer, unless the row is an actuation row",
@@ -264,6 +287,12 @@ pub const RULES: [Rule; 6] = [
         exceptions: &[],
         breaks: proxy_endpoint_served_by_rpcsrv_only,
     },
+    Rule {
+        id: "msi-slot-one-device",
+        text: "no two rows that hold the same msi.<k> slot drive different devices (mmio.<selector> grants)",
+        exceptions: &[],
+        breaks: msi_slot_one_device,
+    },
 ];
 
 /// Check every rule against every grant of every row of `t`; the first grant
@@ -278,7 +307,7 @@ pub fn check(t: &Topology<'_>, env: &Env) -> Result<(), NeverallowRefusal> {
         for (row_i, row) in t.tasks().iter().enumerate() {
             let name = row.name.as_str();
             for (grant, c) in t.caps_of(row).iter().enumerate() {
-                if (rule.breaks)(env, row, c) && !rule.exceptions.iter().any(|e| e.excuses(name, c)) {
+                if (rule.breaks)(env, t, row, c) && !rule.exceptions.iter().any(|e| e.excuses(name, c)) {
                     return Err(NeverallowRefusal {
                         rule: ri as u8,
                         row: row_i as u16,

@@ -102,6 +102,8 @@ rt-levels-never-canary = ["azos_abi/rt-levels-never-canary"]
 # topology declares a row rule 0 forbids; the rules find nothing.
 neverallow-row-canary = ["azos_topology/neverallow-row-canary"]
 neverallow-canary = ["azos_topology/neverallow-canary"]
+# Canary: two rows may hold one msi.<k> slot while driving different devices.
+msi-slot-shared-canary = ["azos_topology/msi-slot-shared-canary"]
 # Placement canary: a move is committed without its record.
 placement-norecord-canary = ["azos_topology/placement-norecord-canary"]
 
