@@ -43,6 +43,13 @@ hyp: R9 pin-off canary (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64
 hyp: R9 TTBR0 cost, FGT (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** kernel/src/entry/aarch64/ext/hyp_monitor.rs
 hyp: R9 TTBR0 cost, TVM (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** kernel/src/entry/aarch64/ext/hyp_monitor.rs
 hyp: R9 TTBR0 cost canary (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** crates/core/hyp-api/**
+hyp: F11 lanes, split FGT (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** tools/bench/hyp_cost.py crates/core/hyp-api/** crates/core/hyp-mon/**
+hyp: F11 lanes, split TVM (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** tools/bench/hyp_cost.py crates/core/hyp-api/** crates/core/hyp-mon/**
+hyp: F11 lanes, hosted control (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** tools/bench/hyp_cost.py
+hyp: F11 lane canary, hosted judged as split (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** tools/bench/hyp_cost.py
+hyp: F11 TTBR0 trap canary (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** crates/core/hyp-api/** tools/bench/hyp_cost.py crates/core/hyp-mon/**
+hyp: F11 cost tool self-test	n1	tools/bench/hyp_cost.py tools/bench/hyp_cost_selftest.py
+hyp: F11 vsbench split vs hosted (arm)	n2	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** tools/bench/vsbench_split.sh tools/bench/hyp_cost.py userspace/bench/vsbench/** crates/core/hyp-api/** crates/core/hyp-mon/**
 hyp: split boot regression (arm)	n1	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** kernel/src/entry/aarch64/boot_hooks.rs kernel/src/entry/riscv64/boot_hooks.rs kernel/src/entry/x86_64/boot_hooks.rs kernel/src/entry/aarch64/ext/hyp_monitor.rs
 hyp: F3 spin-table halts (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** kernel/src/entry/aarch64/ext/hyp_monitor.rs kernel/src/entry/aarch64/boot_hooks.rs kernel/src/canary_rt.rs kernel/src/boot/isa.rs crates/core/hyp-api/**
 hyp: F3 spin-table halt canary (arm)	n1	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** kernel/src/entry/aarch64/ext/hyp_monitor.rs kernel/src/entry/aarch64/boot_hooks.rs kernel/src/canary_rt.rs kernel/src/boot/isa.rs crates/core/hyp-api/**

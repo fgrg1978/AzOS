@@ -4009,6 +4009,74 @@ par "hyp: R9 TTBR0 cost, TVM (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost, TVM (ar
 HYP_CPU=cortex-a76 HYP_QEMU="-icount shift=0,sleep=off" HYP_WAIT="$R9_WAIT" \
 par "hyp: R9 TTBR0 cost canary (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost canary (arm)" "hyp-pin-off-canary,hyp-pin-probe" canary \
     "[HYP] cost: the TTBR0 trap is visible"
+# F11: the cost lanes (kernel feature hyp-cost-probe, judged by
+# tools/bench/hyp_cost.py). A split image's lanes must separate before/after the
+# lock by a structural minimum, a hosted image's must not (the control), and the
+# TVM pin must show on the TTBR0 lane while FGT must not. The canaries: a hosted
+# log judged as split, and the pin-off monitor (the trap removed). Like every
+# split row they run under TCG and wait for HYP_MON_ROWS=1; the numbers
+# themselves are read by tools/bench/vsbench_split.sh.
+hyp_cost_row() { # hyp_cost_row <label> <features> <blob-feature|""> <judge: split|hosted> <want: pass|canary> [pin]
+    local label="$1" feats="$2" blobf="$3" as="$4" want="$5" pin="${6:-}"
+    printf "  %-26s" "${label}..."
+    if [ "${HYP_MON_ROWS:-0}" != 1 ]; then echo "skip (HYP_MON_ROWS=0)"; return; fi
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/hyp-cost-$want-${as}${pin:+-$pin}.log"
+    rm -f "$log"
+    case "$feats" in CONFIG_VIRT_HOSTED*) ;; *) hyp_mon_blob "$blobf" ;; esac
+    if ! a64_kbuild "$feats"; then
+        bad; echo "      the kernel ($feats) did not build"; return
+    fi
+    local img="$CI_LOG_DIR/kernel-hyp-cost-$want-${as}${pin:+-$pin}.img"; cp "$A64_IMG" "$img"
+    par_ready
+    qemu-system-aarch64 -M "virt,virtualization=on,gic-version=3" -cpu "${HYP_CPU:-max,pauth=on}" -smp 2 -nographic \
+        -icount shift=0,sleep=off -kernel "$img" >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 120 ]; do
+        grep -aqE "\[HYP\] cost: done|KERNEL PANIC|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$img"
+    local rc=0
+    python3 -I "$REPO_ROOT/tools/bench/hyp_cost.py" check "$as" "$log" ${pin:+"$pin"} >"$log.verdict" 2>&1 || rc=$?
+    if [ "$want" = canary ]; then
+        # Red (1) is the canary biting; 2 is a log the tool cannot read, which proves nothing.
+        if [ "$rc" = 1 ]; then ok; rm -f "$log" "$log.verdict"
+        else bad; echo "      the canary did not bite (judge status $rc) — log kept: $log"; fi
+    elif [ "$rc" = 0 ]; then ok; rm -f "$log" "$log.verdict"
+    else bad; sed 's/^/      /' "$log.verdict"; echo "      log kept: $log"; fi
+}
+HYP_COST_SPLIT="hyp-monitor-row,hyp-cost-probe"
+HYP_COST_HOSTED="CONFIG_VIRT_HOSTED=y,hyp-cost-probe"
+par "hyp: F11 lanes, split FGT (arm)" hyp_cost_row "hyp: F11 lanes, split FGT (arm)" "$HYP_COST_SPLIT" "" split pass fgt
+HYP_CPU=cortex-a76 \
+par "hyp: F11 lanes, split TVM (arm)" hyp_cost_row "hyp: F11 lanes, split TVM (arm)" "$HYP_COST_SPLIT" "" split pass tvm
+par "hyp: F11 lanes, hosted control (arm)" hyp_cost_row "hyp: F11 lanes, hosted control (arm)" "$HYP_COST_HOSTED" "" hosted pass
+par "hyp: F11 lane canary, hosted judged as split (arm)" hyp_cost_row "hyp: F11 lane canary, hosted judged as split (arm)" "$HYP_COST_HOSTED" "" split canary
+HYP_CPU=cortex-a76 \
+par "hyp: F11 TTBR0 trap canary (arm)" hyp_cost_row "hyp: F11 TTBR0 trap canary (arm)" "hyp-pin-off-canary,hyp-cost-probe" hyp-pin-off-canary split canary tvm
+# The tool's own canaries, on made-up logs (no QEMU).
+hyp_cost_selftest_row() { # <label>
+    ci_tier_skips "$1" && return 0
+    printf "  %-26s" "${1}..."
+    if python3 -I "${REPO_ROOT}/tools/bench/hyp_cost_selftest.py" >/dev/null 2>&1; then ok; else bad; fi
+}
+host_job hyp_cost_selftest_row "hyp: F11 cost tool self-test"
+# The numbers: hosted and split images of one tree, the monitor lanes and the
+# system lanes, with the Linux pair when its image is there. One QEMU at a time.
+hyp_vsbench_split_row() {
+    printf "  %-26s" "hyp: F11 vsbench split vs hosted (arm)..."
+    if [ "${HYP_MON_ROWS:-0}" != 1 ]; then echo "skip (HYP_MON_ROWS=0)"; return; fi
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/hyp-vsbench-split.log"
+    if QEMU_AARCH64=qemu-system-aarch64 WAIT_SECS=90 bash "${REPO_ROOT}/tools/bench/vsbench_split.sh" >"$log" 2>&1; then
+        ok; rm -f "$log"
+    else
+        bad; sed 's/^/      /' "$log"; echo "      logs in $AZOS_OUT/build/vsbench-split/"
+    fi
+}
+par -s "hyp: F11 vsbench split vs hosted (arm)" hyp_vsbench_split_row
 # R14: the split image is a regression guard — the ordinary boot subset still
 # passes under the monitor (same verdicts as the EL2 rows).
 par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regression (arm)" "hyp-monitor-row" pass \
