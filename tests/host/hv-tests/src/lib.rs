@@ -28,6 +28,7 @@ mod glue;
 mod hyp_api;
 mod hyp_kdf;
 mod hyp_pin;
+mod hyp_pt;
 mod iface;
 mod monitor;
 mod pause;

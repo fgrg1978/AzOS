@@ -73,9 +73,7 @@ pub const PAGE_SIZE: usize = azos_arch_api::PAGE_SIZE;
 /// log2(PAGE_SIZE) — bits shifted off a VA / PA to get a page number.
 pub const PAGE_SHIFT: usize = azos_arch_api::PAGE_SHIFT;
 
-/// Levels in the walk: three on every granule this crate builds (see
-/// [`Granule`] for the input-range sizes that keep it at three).
-pub const LEVELS: usize = 3;
+pub use pte_fmt::LEVELS;
 
 /// One VMSAv8-64 stage-1 translation regime: a granule plus the input range
 /// (`T0SZ` / `T1SZ = 64 - va_bits`) chosen for it.
@@ -352,11 +350,10 @@ const _: () = assert!(vpn(0x7F_FFFF_F000, 2) == GRANULE.vpn(0x7F_FFFF_F000, 2));
 
 // ── Raw bit layout (Arm ARM §D8.3) ──────────────────────────────────────
 
-const VALID: u64 = 1 << 0;
-/// Bit [1]: at a non-leaf level (trait level > 0), 1 = table descriptor,
-/// 0 = block (leaf). At the leaf level (trait level 0), must be 1 for a
-/// valid page descriptor — 0 there is reserved/invalid.
-const TYPE_TABLE_OR_PAGE: u64 = 1 << 1;
+#[path = "pte_fmt.rs"]
+pub mod pte_fmt;
+pub use pte_fmt::{empty, is_leaf, is_table, is_valid, make_table, phys_addr, AF};
+use pte_fmt::{AP_EL0, AP_RO, OA_MASK, PXN, TYPE_TABLE_OR_PAGE, UXN, VALID};
 const ATTRIDX_SHIFT: u32 = 2;
 /// `AttrIdx` values as `mmu/setup.rs` actually programs `MAIR_EL1`
 /// (`MAIR_VALUE = (0xFF << 8) | 0x04`): idx 0 = Device-nGnRE (`0x04`),
@@ -402,22 +399,11 @@ const ATTRIDX_DEVICE: u64 = MAIR_IDX_DEVICE << ATTRIDX_SHIFT;
 const ATTRIDX_NORMAL: u64 = MAIR_IDX_NORMAL << ATTRIDX_SHIFT;
 const ATTRIDX_NORMAL_NC: u64 = MAIR_IDX_NORMAL_NC << ATTRIDX_SHIFT;
 const ATTRIDX_NORMAL_WC: u64 = MAIR_IDX_NORMAL_WC << ATTRIDX_SHIFT;
-/// AP\[1\] (bit 6): 0 = EL1-only, 1 = EL0+EL1 (user-accessible).
-const AP_EL0: u64 = 1 << 6;
-/// AP\[2\] (bit 7): 0 = R/W, 1 = R/O.
-const AP_RO: u64 = 1 << 7;
 /// SH\[1:0\] = 0b11 (Inner Shareable) — Normal cacheable mappings on SMP
 /// must be IS for coherence with other PEs.
 const SH_INNER: u64 = 0b11 << 8;
-/// AF — Access Flag.
-pub const AF: u64 = 1 << 10;
 /// nG — non-global.
 const NG: u64 = 1 << 11;
-/// Output-address bits `[47:12]` — same field for a table pointer or a
-/// leaf frame base.
-const OA_MASK: u64 = 0x0000_FFFF_FFFF_F000;
-const PXN: u64 = 1 << 53;
-const UXN: u64 = 1 << 54;
 /// Software bit: mm's copy-on-write marker (see module doc).
 const SW_COW: u64 = 1 << 55;
 /// Software bit: mm's software-tracked dirty marker (see module doc).
@@ -425,45 +411,6 @@ const SW_DIRTY: u64 = 1 << 56;
 /// Contiguous hint (bit 52): this level-3 page is one of a run of
 /// [`CONT_PAGES`] adjacent pages the TLB may cache as one entry.
 const CONT: u64 = 1 << 52;
-
-/// The empty (all-zero) word — an unmapped slot.
-#[inline]
-pub const fn empty() -> u64 { 0 }
-
-/// Is `word`'s valid bit set? True for both table and leaf entries.
-#[inline]
-pub const fn is_valid(word: u64) -> bool { word & VALID != 0 }
-
-/// Is `word`, read AT `level` (trait numbering), a pointer to the
-/// next-level table?
-#[inline]
-pub const fn is_table(word: u64, level: usize) -> bool {
-    level > 0 && is_valid(word) && (word & TYPE_TABLE_OR_PAGE != 0)
-}
-
-/// Is `word`, read AT `level` (trait numbering), a leaf (page/block)?
-#[inline]
-pub const fn is_leaf(word: u64, level: usize) -> bool {
-    if !is_valid(word) { return false; }
-    if level == 0 {
-        word & TYPE_TABLE_OR_PAGE != 0 // page descriptor at L3
-    } else {
-        word & TYPE_TABLE_OR_PAGE == 0 // block descriptor at L1/L2
-    }
-}
-
-/// The physical address `word` encodes: the next-level table's base for a
-/// table entry, or the mapped frame's base for a leaf.
-#[inline]
-pub const fn phys_addr(word: u64) -> usize {
-    (word & OA_MASK) as usize
-}
-
-/// Build a non-leaf descriptor pointing at the table based at `pa`.
-#[inline]
-pub const fn make_table(pa: usize) -> u64 {
-    ((pa as u64) & OA_MASK) | VALID | TYPE_TABLE_OR_PAGE
-}
 
 /// Encode the level-independent attribute bits `perms` implies (AttrIdx,
 /// AP, PXN/UXN, nG — everything except `VALID`/the type bit/the physical

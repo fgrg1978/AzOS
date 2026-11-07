@@ -160,6 +160,19 @@ fn hvc(regs: *mut u64) {
             set(regs, 1, mode);
             set(regs, 2, pinned);
         }
+        azos_hyp_api::CALL_PT_LOCK_POOL => {
+            let (a1, a2, a3) = (reg(regs, 1), reg(regs, 2), reg(regs, 3));
+            let r = super::pt::lock_pool(a1, a2, a3);
+            if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_PT_LOCK_POOL, a1, a2); }
+            set(regs, 0, r as u64)
+        }
+        azos_hyp_api::CALL_PT_SET => {
+            let (entry, new) = (reg(regs, 1), reg(regs, 3));
+            let (r, seen) = super::pt::set(entry, reg(regs, 2), new, reg(regs, 4));
+            if r == azos_hyp_api::DENIED { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_PT_SET, entry, new); }
+            set(regs, 0, r as u64);
+            set(regs, 1, seen);
+        }
         azos_hyp_api::CALL_GUARD_PAGES => {
             let r = super::s2::guard_pages(reg(regs, 1), reg(regs, 2));
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_GUARD_PAGES, reg(regs, 1), reg(regs, 2)); }

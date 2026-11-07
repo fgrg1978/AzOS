@@ -82,6 +82,22 @@ pub const CALL_ITS_MAP_DEVICE: u64 = CALL_BASE + 14;
 /// configuration table, MAPTI the event of the slot's device to it, INV.
 pub const CALL_ITS_MAP_VECTOR: u64 = CALL_BASE + 15;
 
+/// `pt_lock_pool(pool_pa, pages | page_shift << 32, root_pa)`: one-shot, after
+/// the image lock. The `pages` page-table pages (`1 << page_shift` bytes each,
+/// at most [`PT_POOL_PAGES_MAX`]) at `pool_pa` become read-only for the host
+/// (I3), and `root_pa`, one of them, is the root of the kernel half. The tables
+/// already built are walked from the root and every word checked as `pt_set`
+/// checks it; one that fails refuses the lock.
+pub const CALL_PT_LOCK_POOL: u64 = CALL_BASE + 16;
+/// `pt_set(entry_pa, expected, new, level) -> (status, observed)`: after the
+/// pool lock, replace the word at `entry_pa` (an entry of a pool table, `level`
+/// 0 being the last) by `new` when it still holds `expected`. [`RACED`] with the
+/// word found when it does not; [`DENIED`] when the word breaks a rule.
+pub const CALL_PT_SET: u64 = CALL_BASE + 17;
+
+/// Pool pages the monitor keeps a level for (a bound, not a detected count).
+pub const PT_POOL_PAGES_MAX: u64 = 1024;
+
 /// Devices the monitor's ITS holds ITTs for, and events each (a bound, not a
 /// detected count; the kernel driver's own).
 pub const ITS_DEVICES_MAX: u64 = 4;
@@ -119,6 +135,8 @@ pub const DENIED: i64 = -2;
 pub const INVALID: i64 = -3;
 /// `violation_read` at the head of the ring: no record yet.
 pub const EMPTY: i64 = -4;
+/// `pt_set`: the word was not the one expected; the one found comes back.
+pub const RACED: i64 = -5;
 
 /// Invariants in force, as `probe` reports them. A bit is set only by the
 /// code that enforces it, never by configuration.
@@ -147,7 +165,11 @@ pub const INV_SMMU: u64 = 1 << 9;
 /// redistributors' LPI table pointers cannot be written by it.
 pub const INV_ITS: u64 = 1 << 10;
 
-pub const INVARIANT_NAMES: [(u64, &str); 11] = [
+/// I3: the kernel half's tables are the monitor's pool, read-only for the host,
+/// and every word written there passed `pt_set`'s checks.
+pub const INV_KERNEL_TABLES: u64 = 1 << 11;
+
+pub const INVARIANT_NAMES: [(u64, &str); 12] = [
     (INV_EL2_MMU, "el2-mmu"),
     (INV_HOST_S2, "host-s2"),
     (INV_PSCI, "psci"),
@@ -159,6 +181,7 @@ pub const INVARIANT_NAMES: [(u64, &str); 11] = [
     (INV_KEY_ROOTS, "key-roots"),
     (INV_SMMU, "smmu"),
     (INV_ITS, "its"),
+    (INV_KERNEL_TABLES, "kernel-tables"),
 ];
 
 /// What a violation record describes.
@@ -577,4 +600,41 @@ pub const fn mmio_store(esr: u64) -> Option<(u8, u8)> {
 /// redistributor frame, eight bytes each): the host does not write them.
 pub const fn rd_write_refused(offset: u64) -> bool {
     matches!(offset & 0xffff, 0x70..=0x7f)
+}
+
+/// Why `pt_lock_pool(pool_pa, pages | page_shift << 32, root_pa)` is refused;
+/// `None`: `pages` whole pages of a granule the walk supports lie in RAM, clear
+/// of the locked `image` ranges, the monitor and everything guarded, and the
+/// root is the first byte of one of them. Pure, so the host suite checks it.
+pub fn pt_pool_error(
+    pool_pa: u64,
+    pages: u64,
+    page_shift: u64,
+    root_pa: u64,
+    ram: &[[u64; 2]],
+    image: &[[u64; 2]],
+    hole: u64,
+    hole_end: u64,
+    guarded: &Guarded,
+) -> Option<&'static str> {
+    if !matches!(page_shift, 12 | 14 | 16) { return Some("granule"); }
+    if pages == 0 || pages > PT_POOL_PAGES_MAX { return Some("page count"); }
+    let page = 1u64 << page_shift;
+    if pool_pa % page != 0 { return Some("not page-aligned"); }
+    let Some(end) = pool_pa.checked_add(pages * page) else { return Some("wraps") };
+    if pool_pa < hole_end && hole < end { return Some("overlaps the monitor"); }
+    if image.iter().any(|r| pool_pa < r[1] && r[0] < end) { return Some("overlaps the image"); }
+    if guarded.overlaps(pool_pa, end) { return Some("overlaps a guarded page"); }
+    if !ram.iter().any(|m| m[0] <= pool_pa && end <= m[1]) { return Some("outside RAM"); }
+    if root_pa < pool_pa || root_pa >= end || root_pa % page != 0 { return Some("root outside the pool"); }
+    None
+}
+
+/// Why `pt_set(entry_pa, ..)` is refused for the entry alone; `None`: an
+/// 8-aligned word inside the pool's `pages` pages, at a level the walk has.
+pub fn pt_entry_error(entry_pa: u64, level: u64, pool_pa: u64, pages: u64, page_shift: u64, levels: u64) -> Option<&'static str> {
+    if level >= levels { return Some("level"); }
+    if entry_pa % 8 != 0 { return Some("entry not 8-aligned"); }
+    if entry_pa < pool_pa || entry_pa >= pool_pa + (pages << page_shift) { return Some("entry outside the pool"); }
+    None
 }

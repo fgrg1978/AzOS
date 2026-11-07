@@ -175,7 +175,7 @@ fn every_invariant_has_its_own_bit_and_a_name() {
         assert_eq!(seen & bit, 0, "{name} shares a bit");
         seen |= bit;
     }
-    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED | INV_KEY_ROOTS | INV_SMMU | INV_ITS);
+    assert_eq!(seen, INV_EL2_MMU | INV_HOST_S2 | INV_PSCI | INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_GUARDED | INV_PINNED | INV_KEY_ROOTS | INV_SMMU | INV_ITS | INV_KERNEL_TABLES);
     assert_eq!(Kind::from_u32(5), Some(Kind::SysregRefused));
     assert_eq!(Kind::from_u32(6), Some(Kind::DmaFault));
     assert_eq!(Kind::from_u32(7), Some(Kind::MmioRefused));

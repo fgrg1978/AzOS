@@ -289,6 +289,13 @@ pub fn with_guard_ram<R>(f: impl FnOnce(&Guarded, &[[u64; 2]], u64, u64) -> R) -
     r
 }
 
+/// The locked image ranges (text, rodata, `ro_after_init`); empty ranges before the lock.
+pub fn image() -> [[u64; 2]; 3] {
+    if IMAGE_SET.load(Ordering::Acquire) == 0 { return [[0; 2]; 3]; }
+    // SAFETY: written once at the lock, before `IMAGE_SET` was published.
+    unsafe { *core::ptr::addr_of!(IMAGE) }
+}
+
 /// The monitor's own range.
 pub fn monitor_range() -> (u64, u64) {
     (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed))
@@ -375,6 +382,37 @@ fn guard_locked(pa: u64, n: u64) -> i64 {
         flush_host();
     }
     HYP.set_invariant(INV_GUARDED);
+    OK
+}
+
+/// `len` bytes at `pa` become read-only for the host, splitting the blocks that
+/// hold them. The pool's tables are written from EL2 alone from here on, and
+/// the walker's accesses to them stay reads (the leaves carry AF).
+pub fn pool_read_only(pa: u64, len: u64) -> i64 {
+    GUARD_LOCK.lock();
+    let r = pool_read_only_locked(pa, len);
+    GUARD_LOCK.unlock();
+    r
+}
+
+fn pool_read_only_locked(pa: u64, len: u64) -> i64 {
+    let root = active_root();
+    let Some(cfg) = s2_cfg() else { return DENIED };
+    if root == 0 { return DENIED; }
+    let splits = 2 * (len.div_ceil(2 << 20) + 1);
+    if POOL_NEXT.load(Ordering::Acquire) + splits > POOL_TABLES as u64 { return NOT_SUPPORTED; }
+    let mut mem = PoolMem;
+    let mut s2 = Stage2::attach(cfg, root, &mut mem);
+    let mut broke = |_ipa: u64| flush_host();
+    let mut q = pa;
+    while q < pa + len {
+        if s2.split_to_page(q, &mut broke).is_err() || s2.set_page_attrs(q, RODATA).is_err() {
+            flush_host();
+            return INVALID;
+        }
+        q += stage2::S2_PAGE;
+    }
+    flush_host();
     OK
 }
 

@@ -9,6 +9,8 @@ pub mod kdf;
 pub mod keys;
 pub mod mmu;
 pub mod pin;
+pub mod pt;
+pub mod ptcheck;
 pub mod s2;
 pub mod smmu;
 pub mod sync;
