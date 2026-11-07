@@ -186,7 +186,7 @@ kit image hyp-api
 # `record` is empty.
 
 PROFILE_CRATES="
-behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core rc-esc
+behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core rc-esc sensors
 lx-loader
 "
 
