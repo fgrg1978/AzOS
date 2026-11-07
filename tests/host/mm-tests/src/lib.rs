@@ -110,6 +110,7 @@ mod ptpool;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/pte_install.rs"]
 mod pte_install;
+#[cfg(test)]
 mod pt_funnel;
 
 /// N12h: a merge-slot level-1 word two writers race for (the task's mapper
