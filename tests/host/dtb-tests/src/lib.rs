@@ -231,7 +231,7 @@ mod tests {
             mem_base: 0, mem_size: 0, timer_freq: 0,
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [0u8; 64], isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, isa_zicfiss: false, isa_zicfilp: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         assert_eq!(dtb_compatible_str(&info), b"");
     }
@@ -242,7 +242,7 @@ mod tests {
             mem_base: 0, mem_size: 0, timer_freq: 0,
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [0u8; 64], isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, isa_zicfiss: false, isa_zicfilp: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         let want = b"riscv-virtio";
         info.compatible[..want.len()].copy_from_slice(want);
@@ -258,7 +258,7 @@ mod tests {
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [b'A'; 64], // no NUL anywhere
             isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, isa_zicfiss: false, isa_zicfilp: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         let out = dtb_compatible_str(&info);
         assert_eq!(out.len(), 64);
@@ -382,6 +382,22 @@ mod tests {
         assert!(of(&cpu0_with("riscv,isa", &cstr("rv64imafdch_zicsr_sscofpmf_sstc"))));
         assert!(!of(&cpu0_with("riscv,isa", &cstr("rv64imafdch_zicsr_sstc_ssu64xl"))));
         assert!(!of(&cpu0_with("riscv,isa", &cstr("rv64imac_sscofpmfx"))), "an exact token");
+    }
+
+    /// Zicfiss and Zicfilp (RV_ZICFISS, RV_ZICFILP) each reach their own field
+    /// from both property forms and neither turns on the other. Canary: swap
+    /// the two token literals in the parser and both asserts on the pair fail.
+    #[test]
+    fn zicfiss_and_zicfilp_reach_their_own_fields() {
+        let of = |b: &[u8]| {
+            let i = unsafe { dtb_parse(b.as_ptr()) }.expect("well-formed blob");
+            (i.isa_zicfiss, i.isa_zicfilp)
+        };
+        let list: Vec<u8> = ["i", "m", "a", "zicfiss"].iter().flat_map(|e| cstr(e)).collect();
+        assert_eq!(of(&cpu0_with("riscv,isa-extensions", &list)), (true, false));
+        assert_eq!(of(&cpu0_with("riscv,isa", &cstr("rv64imafdc_zicfilp_zicsr"))), (false, true));
+        assert_eq!(of(&cpu0_with("riscv,isa", &cstr("rv64imac_zicfiss_zicfilp"))), (true, true));
+        assert_eq!(of(&cpu0_with("riscv,isa", &cstr("rv64imac_zicfissx"))), (false, false), "an exact token");
     }
 
     #[test]

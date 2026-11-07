@@ -34,7 +34,7 @@ static DT_ISA: AtomicU32 = AtomicU32::new(0);
 #[repr(u32)]
 enum Dt { Zicboz = 1, Sstc = 2, Svpbmt = 4, Zba = 8, Zbb = 16, Zbs = 32, V = 64, Aia = 128, F = 256, D = 512,
          Zawrs = 1024, Zacas = 2048, Zihintpause = 4096, H = 8192, Svnapot = 16384, Svadu = 32768, Ssqosid = 65536,
-         Sscofpmf = 131072 }
+         Sscofpmf = 131072, Zicfiss = 262144, Zicfilp = 524288 }
 
 /// Kconfig RV_V, except that a build given `--features rvv` by hand (`make
 /// build-rvv`, `qemu-rvv`, the `k1` feature's edge) on a config whose RV_V
@@ -178,7 +178,8 @@ pub fn cpu_features(fw: &Firmware) {
                       (info.isa_zawrs, Dt::Zawrs), (info.isa_zacas, Dt::Zacas),
                       (info.isa_zihintpause, Dt::Zihintpause), (info.isa_h, Dt::H),
                       (info.isa_svnapot, Dt::Svnapot), (info.isa_svadu, Dt::Svadu),
-                      (info.isa_ssqosid, Dt::Ssqosid), (info.isa_sscofpmf, Dt::Sscofpmf)] {
+                      (info.isa_ssqosid, Dt::Ssqosid), (info.isa_sscofpmf, Dt::Sscofpmf),
+                      (info.isa_zicfiss, Dt::Zicfiss), (info.isa_zicfilp, Dt::Zicfilp)] {
         if on {
             dt |= bit as u32;
         }
@@ -362,6 +363,8 @@ fn isa_report(zicboz_on: bool, zicbom_on: bool, sstc_on: bool, svpbmt_on: bool, 
         e("senvcfg", "RV_SENVCFG", policy::SENVCFG, azos_arch::ext::senvcfg::available()),
         e("pmu", "RV_PMU", policy::PMU, azos_arch::pmu::present()),
         e("sscofpmf", "RV_SSCOFPMF", policy::SSCOFPMF, azos_arch::pmu::sscofpmf()),
+        e("zicfiss", "RV_ZICFISS", policy::ZICFISS, dt_has(Dt::Zicfiss)),
+        e("zicfilp", "RV_ZICFILP", policy::ZICFILP, dt_has(Dt::Zicfilp)),
     ]);
 }
 

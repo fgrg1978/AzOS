@@ -191,6 +191,46 @@ choice
 endchoice
 
 choice
+    prompt "Guarded control stack (FEAT_GCS)"
+    default A64_GCS_PROBE
+    help
+      ID_AA64PFR1_EL1.GCS: a hardware return-address stack (the aarch64 twin
+      of the x86 shadow stack): BL pushes, RET pops and compares. Detected
+      and reported only: the kernel does not enable it (GCSCR_EL1,
+      GCSPR_EL1, a stack per task and the EL2 grants), and the pinned
+      compiler takes no `branch-protection=gcs`. n: no difference. probe: no
+      difference (the boot line only). require: the boot refuses a CPU
+      without it.
+    config A64_GCS_NEVER
+        bool "n: never use it"
+    config A64_GCS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_GCS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "POE (stage-1 permission overlays, FEAT_S1POE)"
+    default A64_POE_NEVER
+    help
+      ID_AA64MMFR3_EL1.S1POE: a 3-bit index in the leaf (bits 62:60) picks a
+      4-bit overlay in POR_EL1 that can take write away from a page whatever
+      its AP bits say; the arm twin of x86 PKS for PT_PROTECTION. Detected
+      and reported only: the EL2 grants that let EL1 write TCR2_EL1.POE and
+      POR_EL1 (HCRX_EL2.TCR2En, the HFGRTR_EL2/HFGWTR_EL2 n-bits, SCR_EL3
+      from firmware) are not programmed by the boot trampoline, so nothing
+      uses it and PT_PROTECTION is not derived from it.
+      n: no difference. probe: no difference (the boot line only). require:
+      the boot refuses a CPU without it.
+    config A64_POE_NEVER
+        bool "n: never use it"
+    config A64_POE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_POE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
     prompt "Memory tagging (FEAT_MTE)"
     default A64_MTE_NEVER if BOARD_RPI5
     default A64_MTE_PROBE

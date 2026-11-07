@@ -240,6 +240,48 @@ choice
 endchoice
 
 choice
+    prompt "Zicfiss (shadow stack)"
+    default RV_ZICFISS_PROBE
+    help
+      The hardware return-address stack (sspush/sspopchk on x1/x5, a shadow-stack
+      page type and the ssp CSR), the riscv twin of the x86 shadow stack.
+      Detected and reported only (cpu@0's riscv,isa token): the kernel does not
+      enable it. That needs M-mode to set menvcfg.SSE (SBI FWFT SHADOW_STACK),
+      a shadow stack per task with ssp switched in the context switch, and a
+      compiler that emits the instructions; the pinned one does not.
+      n: no difference. probe: no difference (the boot line only). require: a
+      hart whose device tree does not declare it is refused.
+
+    config RV_ZICFISS_NEVER
+        bool "n: never use it"
+    config RV_ZICFISS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZICFISS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zicfilp (landing pads)"
+    default RV_ZICFILP_PROBE
+    help
+      Indirect jumps must land on an lpad (the riscv twin of x86 ENDBR64 and
+      aarch64 BTI). Detected and reported only (cpu@0's riscv,isa token): the
+      kernel does not enable it. That needs M-mode to set menvcfg.LPE (SBI FWFT
+      LANDING_PAD), an lpad at every function entry and in the entry assembly
+      (the pinned compiler lists the LLVM feature as unstable), and the
+      sstatus.SPELP state in the trap path.
+      n: no difference. probe: no difference (the boot line only). require: a
+      hart whose device tree does not declare it is refused.
+
+    config RV_ZICFILP_NEVER
+        bool "n: never use it"
+    config RV_ZICFILP_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZICFILP_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
     prompt "V 1.0 (vector)"
     default RV_V_REQUIRE if RISCV64_LEVEL_RV64GCV
     default RV_V_NEVER

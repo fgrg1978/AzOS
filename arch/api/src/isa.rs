@@ -194,6 +194,8 @@ pub mod riscv64 {
     pub const ZBA: ExtPolicy = ext_policy!(RV_ZBA_NEVER, RV_ZBA_REQUIRE);
     pub const ZBB: ExtPolicy = ext_policy!(RV_ZBB_NEVER, RV_ZBB_REQUIRE);
     pub const ZBS: ExtPolicy = ext_policy!(RV_ZBS_NEVER, RV_ZBS_REQUIRE);
+    pub const ZICFISS: ExtPolicy = ext_policy!(RV_ZICFISS_NEVER, RV_ZICFISS_REQUIRE);
+    pub const ZICFILP: ExtPolicy = ext_policy!(RV_ZICFILP_NEVER, RV_ZICFILP_REQUIRE);
     pub const V: ExtPolicy = ext_policy!(RV_V_NEVER, RV_V_REQUIRE);
     pub const AIA: ExtPolicy = ext_policy!(RV_AIA_NEVER, RV_AIA_REQUIRE);
     pub const ZAWRS: ExtPolicy = ext_policy!(RV_ZAWRS_NEVER, RV_ZAWRS_REQUIRE);
@@ -234,6 +236,8 @@ pub mod aarch64 {
     pub const CRC32: ExtPolicy = ext_policy!(A64_CRC32_NEVER, A64_CRC32_REQUIRE);
     pub const PAUTH: ExtPolicy = ext_policy!(A64_PAUTH_NEVER, A64_PAUTH_REQUIRE);
     pub const BTI: ExtPolicy = ext_policy!(A64_BTI_NEVER, A64_BTI_REQUIRE);
+    pub const GCS: ExtPolicy = ext_policy!(A64_GCS_NEVER, A64_GCS_REQUIRE);
+    pub const POE: ExtPolicy = ext_policy!(A64_POE_NEVER, A64_POE_REQUIRE);
     pub const MTE: ExtPolicy = ext_policy!(A64_MTE_NEVER, A64_MTE_REQUIRE);
     pub const SVE: ExtPolicy = ext_policy!(A64_SVE_NEVER, A64_SVE_REQUIRE);
     pub const AES: ExtPolicy = ext_policy!(A64_AES_NEVER, A64_AES_REQUIRE);
@@ -303,6 +307,7 @@ pub mod x86_64 {
     pub const SMAP: ExtPolicy = ext_policy!(X86_SMAP_NEVER, X86_SMAP_REQUIRE);
     pub const UMIP: ExtPolicy = ext_policy!(X86_UMIP_NEVER, X86_UMIP_REQUIRE);
     pub const PKU: ExtPolicy = ext_policy!(X86_PKU_NEVER, X86_PKU_REQUIRE);
+    pub const PKS: ExtPolicy = ext_policy!(X86_PKS_NEVER, X86_PKS_REQUIRE);
     pub const LA57: ExtPolicy = ext_policy!(X86_LA57_NEVER, X86_LA57_REQUIRE);
     pub const CET_IBT: ExtPolicy = ext_policy!(X86_CET_IBT_NEVER, X86_CET_IBT_REQUIRE);
     pub const CET_SHSTK: ExtPolicy = ext_policy!(X86_CET_SHSTK_NEVER, X86_CET_SHSTK_REQUIRE);

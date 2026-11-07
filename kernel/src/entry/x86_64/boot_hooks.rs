@@ -279,6 +279,7 @@ pub fn cpu_features(_fw: &()) {
         e("smap", "X86_SMAP", p::SMAP, f.smap),
         e("umip", "X86_UMIP", p::UMIP, f.umip),
         e("pku", "X86_PKU", p::PKU, f.pku),
+        e("pks", "X86_PKS", p::PKS, f.pks),
         e("la57", "X86_LA57", p::LA57, f.la57),
         e("gbpages", "X86_GBPAGES", p::GBPAGES, f.gbpages),
         e("cet-ibt", "X86_CET_IBT", p::CET_IBT, f.cet_ibt),

@@ -85,6 +85,8 @@ macro_rules! cpu_isa_facts {
             isa_h: |p, l| isa_prop_has_letter(p, l, b'h'),
             isa_ssqosid: |p, l| isa_prop_has_token(p, l, b"ssqosid"),
             isa_sscofpmf: |p, l| isa_prop_has_token(p, l, b"sscofpmf"),
+            isa_zicfiss: |p, l| isa_prop_has_token(p, l, b"zicfiss"),
+            isa_zicfilp: |p, l| isa_prop_has_token(p, l, b"zicfilp"),
         }
     };
 }
@@ -215,6 +217,10 @@ pub struct DtbInfo {
     /// (RV_SSCOFPMF); the first of the two steps
     /// `azos_arch::pmu::sscofpmf_select` takes.
     pub isa_sscofpmf: bool,
+    /// Zicfiss (shadow stack) and Zicfilp (landing pads), exact tokens
+    /// (RV_ZICFISS, RV_ZICFILP): reported, not enabled.
+    pub isa_zicfiss: bool,
+    pub isa_zicfilp: bool,
     /// Base address of the S-domain APLIC, or 0 if
     /// none was found. `-machine virt,aia=aplic-imsic` has two
     /// `riscv,aplic` nodes: the M-domain root (has `riscv,children`,
@@ -271,6 +277,8 @@ impl DtbInfo {
             isa_h: false,
             isa_ssqosid: false,
             isa_sscofpmf: false,
+            isa_zicfiss: false,
+            isa_zicfilp: false,
             aplic_base: 0,
             aplic_num_sources: 0,
             imsic_base: 0,

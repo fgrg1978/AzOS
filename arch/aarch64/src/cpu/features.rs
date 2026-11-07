@@ -142,6 +142,8 @@ pub struct IdRegs {
     /// that predate it).
     pub isar2: u64,
     pub dfr0: u64,
+    /// ID_AA64MMFR3_EL1 (`S3_0_C0_C7_3`; reads as 0 where it is unallocated).
+    pub mmfr3: u64,
 }
 
 impl IdRegs {
@@ -153,6 +155,17 @@ impl IdRegs {
     /// FEAT_SVE: ID_AA64PFR0_EL1.SVE [35:32] >= 1.
     pub const fn sve(&self) -> bool {
         field(self.pfr0, 32) >= 1
+    }
+
+    /// FEAT_S1POE: ID_AA64MMFR3_EL1.S1POE [19:16] >= 1 (stage-1 permission
+    /// overlays, POR_EL1 and the POIndex field of a leaf).
+    pub const fn s1poe(&self) -> bool {
+        field(self.mmfr3, 16) >= 1
+    }
+
+    /// FEAT_GCS: ID_AA64PFR1_EL1.GCS [47:44] >= 1 (the guarded control stack).
+    pub const fn gcs(&self) -> bool {
+        field(self.pfr1, 44) >= 1
     }
 
     /// FEAT_E0PD: ID_AA64MMFR2_EL1.E0PD [63:60] >= 1. Absent on cores before
@@ -343,6 +356,7 @@ pub fn read_id_regs() -> IdRegs {
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     {
         let (isar0, isar1, pfr0, pfr1, mmfr1, mmfr2, isar2, dfr0): (u64, u64, u64, u64, u64, u64, u64, u64);
+        let mmfr3: u64;
         // SAFETY: architectural reads of EL1-readable ID registers.
         // ID_AA64MMFR2_EL1 by its encoding (an Armv8.2 name the assembler
         // may not accept at the base level; the register reads as 0 below).
@@ -355,8 +369,9 @@ pub fn read_id_regs() -> IdRegs {
             asm!("mrs {}, S3_0_C0_C7_2",     out(reg) mmfr2, options(nostack, nomem, preserves_flags));
             asm!("mrs {}, S3_0_C0_C6_2",     out(reg) isar2, options(nostack, nomem, preserves_flags));
             asm!("mrs {}, ID_AA64DFR0_EL1",  out(reg) dfr0,  options(nostack, nomem, preserves_flags));
+            asm!("mrs {}, S3_0_C0_C7_3",     out(reg) mmfr3, options(nostack, nomem, preserves_flags));
         }
-        IdRegs { isar0, isar1, pfr0, pfr1, mmfr1, mmfr2, isar2, dfr0 }
+        IdRegs { isar0, isar1, pfr0, pfr1, mmfr1, mmfr2, isar2, dfr0, mmfr3 }
     }
     #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
     {
@@ -485,6 +500,20 @@ mod tests {
         assert!(!decode(0x0000_1000_1021_1120, 0, 0).rng);
     }
 
+    /// FEAT_S1POE is ID_AA64MMFR3_EL1 [19:16] and FEAT_GCS ID_AA64PFR1_EL1 [47:44],
+    /// each alone. Canary: read either at the other's shift and the pair fails.
+    #[test]
+    fn the_overlay_and_guarded_stack_bits_come_from_their_own_fields() {
+        let z = IdRegs::default();
+        assert!(!z.s1poe() && !z.gcs());
+        assert!(IdRegs { mmfr3: 1 << 16, ..z }.s1poe() && !IdRegs { mmfr3: 1 << 16, ..z }.gcs());
+        assert!(IdRegs { pfr1: 1 << 44, ..z }.gcs() && !IdRegs { pfr1: 1 << 44, ..z }.s1poe());
+        assert!(IdRegs { mmfr3: 2 << 16, ..z }.s1poe(), "a larger value still counts");
+        // Neighbours: S1PIE [11:8] and TCRX [3:0] of MMFR3, MTE_frac [43:40] of PFR1.
+        assert!(!IdRegs { mmfr3: 0xF0FF, ..z }.s1poe(), "S1PIE/TCRX leaked into S1POE");
+        assert!(!IdRegs { pfr1: 0xF << 40, ..z }.gcs() && !IdRegs { pfr1: 0xF << 48, ..z }.gcs());
+    }
+
     /// FEAT_E0PD comes from ID_AA64MMFR2_EL1 [63:60] alone: QEMU `max` reports
     /// 1 there; the Cortex-A53/A72/A76 report 0. Its neighbour EVT [59:56] set
     /// alone is not E0PD, and the top nibble moves no other feature.
@@ -496,7 +525,7 @@ mod tests {
         assert!(!r(0x0FFF_FFFF_FFFF_FFFF).e0pd(), "neighbours leaked into E0PD");
         assert!(!r(0).e0pd());
         let all_but = IdRegs { isar0: u64::MAX, isar1: u64::MAX, pfr0: u64::MAX, pfr1: u64::MAX,
-                               mmfr1: u64::MAX, mmfr2: 0, isar2: u64::MAX, dfr0: u64::MAX };
+                               mmfr1: u64::MAX, mmfr2: 0, isar2: u64::MAX, dfr0: u64::MAX, mmfr3: u64::MAX };
         assert!(!all_but.e0pd(), "another register leaked into E0PD");
         assert!(!IdRegs { mmfr2: 1 << 60, ..IdRegs::default() }.pan(), "E0PD leaked into PAN");
     }
@@ -516,17 +545,17 @@ mod tests {
     #[test]
     fn the_level_check_names_the_first_missing_feature() {
         let a53 = IdRegs { isar0: 0x0000_0000_0001_1120, isar1: 0, pfr0: 0x2222,
-                           pfr1: 0, mmfr1: 0, mmfr2: 0, isar2: 0, dfr0: 0 };
+                           pfr1: 0, mmfr1: 0, mmfr2: 0, isar2: 0, dfr0: 0, mmfr3: 0 };
         assert_eq!(level_missing(&a53, 0), None);
         assert_eq!(level_missing(&a53, 1), Some("FEAT_LSE"));
         let a76 = IdRegs { isar0: 0x0000_1000_1021_1120, isar1: 0x0010_0001, pfr0: 0x1100_0000_1011_1112,
-                           pfr1: 0x10, mmfr1: 0x1021_2122, mmfr2: 0x1011, isar2: 0, dfr0: 0 };
+                           pfr1: 0x10, mmfr1: 0x1021_2122, mmfr2: 0x1011, isar2: 0, dfr0: 0, mmfr3: 0 };
         for minor in 0..=2 {
             assert_eq!(level_missing(&a76, minor), None, "A76 meets 8.{minor}");
         }
         assert_eq!(level_missing(&a76, 3), Some("FEAT_PAuth"));
         assert_eq!(level_missing(&a76, 5), Some("FEAT_PAuth"));
-        let all = IdRegs { isar0: !0, isar1: !0, pfr0: !0, pfr1: !0, mmfr1: !0, mmfr2: !0, isar2: !0, dfr0: !0 };
+        let all = IdRegs { isar0: !0, isar1: !0, pfr0: !0, pfr1: !0, mmfr1: !0, mmfr2: !0, isar2: !0, dfr0: !0, mmfr3: !0 };
         assert_eq!(level_missing(&all, 5), None);
         // Each row discriminates: clearing its field alone fails its level.
         // (Set just below its minimum, so PAN2/LRCPC2/FlagM2 keep PAN/LRCPC/FlagM.)

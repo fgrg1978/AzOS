@@ -348,6 +348,8 @@ pub fn cpu_features(_fw: &Firmware) {
         e("pauth", "A64_PAUTH", policy::PAUTH, f.pauth),
         e("bti", "A64_BTI", policy::BTI, f.bti),
         e("mte", "A64_MTE", policy::MTE, f.mte),
+        e("gcs", "A64_GCS", policy::GCS, regs.gcs()),
+        e("poe", "A64_POE", policy::POE, regs.s1poe()),
         e("sve", "A64_SVE", policy::SVE, regs.sve()),
         e("aes", "A64_AES", policy::AES, f.aes),
         e("pmull", "A64_PMULL", policy::PMULL, f.pmull),
