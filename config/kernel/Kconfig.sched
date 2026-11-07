@@ -314,18 +314,21 @@ config IRQ_MSI_PER_SLOT
       are at most this many.
 
 config IRQ_MSI_SLOTS
-    int "msi.<k> slots that hold vectors at once"
+    int "msi.<k> slots a topology may name"
     range 1 256
     default 8  if HWCLASS_EMBEDDED
     default 16 if HWCLASS_SBC
     default 32 if HWCLASS_DESKTOP
     default 64 if HWCLASS_SERVER
     help
-      How many distinct msi.<k> slots may hold a vector, live or kept, at
-      once. A slot's entry is freed when it holds none, so this bounds the
-      slots in use together, not the slots a boot ever sees. A bind of a slot
-      past it is refused (-EBUSY) and recorded (msi-vector, why 2). Each slot
-      keeps at most IRQ_MSI_PER_SLOT vectors, 8 bytes each, beside its count.
+      How many distinct msi.<k> slots a signed topology may name, and so the
+      most slots that hold vectors. A vector a holder gave back is kept for its
+      slot for good (the device may still raise it), so a slot's entry lasts
+      with the boot; admission refuses a topology that names more slots than
+      this. A slot whose bind failed before a vector left the kernel holds no
+      entry. A bind past it anyway is refused (-EBUSY) and recorded
+      (msi-vector, why 2). Each slot keeps at most IRQ_MSI_PER_SLOT vectors,
+      8 bytes each, beside its count.
 
 config IRQ_THREADED
     bool "Interrupts as scheduled objects: the handler runs on a hard reservation"

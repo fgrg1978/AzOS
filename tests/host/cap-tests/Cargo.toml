@@ -38,6 +38,8 @@ azos_sched = { path = "shims/sched", package = "cap_test_sched" }
 cap-table-cross-type-canary = []
 # Declared for the pulled `cap_store.rs`.
 msi-arrival-canary = []
+# Host canary (tests/host/ipc-tests): a domain with a live msi binding and no slot capability may take device registers.
+msi-bound-canary = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.

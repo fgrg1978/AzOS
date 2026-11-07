@@ -189,6 +189,11 @@ pub enum AdmissionError {
     /// A row holds a grant a `neverallow` rule forbids
     /// (`neverallow::check`, Kconfig `TOPOLOGY_NEVERALLOW`).
     Neverallow(neverallow::NeverallowRefusal),
+    /// The rows name more distinct `msi.<k>` slots than the kernel keeps
+    /// vectors for (Kconfig `IRQ_MSI_SLOTS`): a vector a slot's holder gave
+    /// back is kept for the slot for good, so a slot past the table could
+    /// never bind.
+    TooManyMsiSlots,
 }
 
 /// The kinds of row [`AdmissionError::BadRow`] and

@@ -873,7 +873,7 @@ mod dma {
 /// function's handle and the ports.** The ISA with no port space answers
 /// before this (`ioport_op`); the open is called past that test.
 ///
-/// **Canary.** `ioport-open-silent-canary`: the refusal leaves no record.
+/// **Canary.** `ioport-open-unrecorded-canary`: the open skips the call that records the refusal.
 #[test]
 fn the_open_of_ports_a_kernel_driver_took_since_the_grant_is_refused_and_recorded() {
     use azos_abi::invoke::DEVICE_IOPORT_ENABLE;

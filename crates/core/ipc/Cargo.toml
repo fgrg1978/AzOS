@@ -30,6 +30,10 @@ msi-out-leak-canary = []
 msi-stray-silent-canary = []
 # Host canary (tests/host/ipc-tests): a device capability may arrive in a table that holds an msi slot.
 msi-arrival-canary = []
+# Host canary (tests/host/ipc-tests): a domain with a live msi binding and no slot capability may take device registers.
+msi-bound-canary = []
+# Host canary (tests/host/ipc-tests): an exec into another row leaves the interrupt bindings.
+exec-keeps-binding-canary = []
 # Host canary (tests/host/syscall-tests `mmio_map.rs`): a refused ring-3 map writes no decision record.
 dma-refusal-silent-canary = []
 # Host canary (tests/host/syscall-tests `mmio_map.rs`): ring 3 is given memory

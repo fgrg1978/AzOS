@@ -862,7 +862,7 @@ cannot excuse itself.
 | `actuation-grant-not-transferable` | A motor, PWM, GPIO or buzzer grant that carries `TRANSFER`. |
 | `proxy-endpoint-not-realtime` | A row with a real-time reservation or class holding any grant on a proxy endpoint (`endpoint.rpc-*`). |
 | `proxy-endpoint-served-by-rpcsrv-only` | A row other than `RPCSRV.ELF` serving a proxy endpoint. |
-| `msi-slot-one-device` | Two rows holding one `msi.<k>` slot while driving different devices (`mmio.<selector>` and `ioport.*` grants): a vector a holder gave back is kept for its slot, so the slot's holders must share a device. Later design: `msi.<selector>`, with the unbind masking MSI/MSI-X at the device. |
+| `msi-slot-one-device` | Two rows holding one `msi.<k>` slot while driving different devices (`mmio.<selector>` and `ioport.*` grants): a vector a holder gave back is kept for its slot, so the slot's holders must share a device. Later design: `msi.<selector>`, with the unbind masking MSI/MSI-X at the device. Admission also refuses a topology that names more distinct `msi.<k>` slots than Kconfig `IRQ_MSI_SLOTS` (`TooManyMsiSlots`). |
 | `msi-grant-not-transferable` | An `msi.<k>` grant carrying TRANSFER or DUP, or any `mmio.*`/`ioport.*` grant doing so while a row holds an `msi.<k>`: the slot's kept vector would reach a holder of another device. The kernel refuses the arrival of such a capability in a task that holds a slot as well (`cap_store`, recorded as `msi-vector` why 3). |
 
 A refusal writes a decision record naming the rule and the row.

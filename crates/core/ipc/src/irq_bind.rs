@@ -398,6 +398,9 @@ fn bind(
             return Err(e);
         }
     }
+    if msi.is_some() {
+        crate::cap_store::note_msi_bound(owner_task);
+    }
     Ok(Bound { cpu, throttled, msi: msi.map(|(m, _)| m) })
 }
 
@@ -557,6 +560,17 @@ pub fn irq_unbind_all(owner_task: u32) {
             msi_kept_note(owner_task, irq, hw);
         }
         let _ = crate::port::port_post_gone(port, epoch, crate::port::PortSourceKind::Irq(irq), key, irq, code);
+    }
+}
+
+/// A task takes another row's authority (a Linux `execve` into another row):
+/// its interrupt bindings go as at exit, a message-signalled slot's vector kept
+/// for the slot, and its domain no longer counts as driving one. The new row
+/// starts with the authority its own grants give and nothing the old row bound.
+pub fn irq_release_for_new_row(owner_task: u32) {
+    if !cfg!(feature = "exec-keeps-binding-canary") {
+        irq_unbind_all(owner_task);
+        crate::cap_store::forget_msi_bound(owner_task);
     }
 }
 
@@ -1932,6 +1946,38 @@ mod tests {
         assert!(cap_store::move_cap(giver, plain, h, None).is_ok(), "a task with no slot takes registers");
         let own = cap_store::grant::<targets::MmioRegion>(holder, CapPerms::RW, 8);
         assert!(own.is_some(), "a slot holder keeps the registers it was granted");
+    }
+
+    /// **A domain that still drives a message-signalled slot takes no device
+    /// registers or ports, though its slot capability is gone; once its
+    /// bindings are released for a new row it may.** The binding outlives the
+    /// capability (a task drops it, an `execve` drops every capability), and
+    /// the device that arrives could be programmed with the slot's message.
+    ///
+    /// **Canaries.** `msi-bound-canary`: a binding with no capability beside it
+    /// is not seen. `exec-keeps-binding-canary`: the release keeps the bindings.
+    #[test]
+    fn a_domain_that_still_drives_a_slot_takes_no_device_capability() {
+        use crate::cap::{targets, CapPerms};
+        use crate::cap_store;
+        let _g = setup();
+        let (giver, holder) = (58, 59);
+        for t in [giver, holder] {
+            azos_sched::shim_bind(t, t as usize);
+            cap_store::reset(t);
+        }
+        msi_ops_installed();
+        let slot = irq_grant_msi_cap(holder, 6, CapPerms::READ).expect("the slot");
+        let port = port::port_create_ref(holder as usize).expect("create");
+        bind(MSI_LINE | 6, holder, port, 1, Route::Cpu(0), false).expect("bound");
+        cap_store::revoke(holder, slot);
+        let give = || cap_store::grant::<targets::MmioRegion>(giver, CapPerms::RW.union(CapPerms::TRANSFER), 7).expect("registers").raw();
+        let h = give();
+        assert!(cap_store::move_cap(giver, holder, h, None).is_err(), "the capability is gone and the binding is not");
+        irq_release_for_new_row(holder);
+        assert_eq!(irq_bindings_of(MSI_LINE | 6), 0, "the binding went with the old row");
+        assert_eq!(kept_for(MSI_LINE | 6).len(), 1, "its vector is kept for the slot as at exit");
+        assert!(cap_store::move_cap(giver, holder, h, None).is_ok(), "the new row takes its devices");
     }
 
     /// An `msi.<k>` slot is minted as a `Cap<Irq>` on `MSI_LINE | k` only where

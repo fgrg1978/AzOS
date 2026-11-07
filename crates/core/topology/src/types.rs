@@ -4343,6 +4343,28 @@ impl<'a> Topology<'a> {
         self.sched_config = cfg;
     }
 
+    /// More than `limit` distinct `msi.<k>` slots named by the rows
+    /// (admission passes Kconfig `IRQ_MSI_SLOTS`).
+    pub fn msi_slots_admission(&self, limit: usize) -> Result<(), AdmissionError> {
+        let msi = |c: &CapSpec<'_>| c.kind == CapKind::Device && c.target.as_str().starts_with("msi.");
+        let mut seen: usize = 0;
+        for (ri, row) in self.tasks().iter().enumerate() {
+            for (ci, c) in self.caps_of(row).iter().enumerate().filter(|(_, c)| msi(c)) {
+                let named_before = self.tasks()[..=ri].iter().enumerate().any(|(rj, other)| {
+                    let upto = if rj == ri { ci } else { usize::MAX };
+                    self.caps_of(other).iter().take(upto).any(|o| msi(o) && o.target.as_str() == c.target.as_str())
+                });
+                if !named_before {
+                    seen += 1;
+                    if seen > limit && !cfg!(feature = "msi-slots-unbounded-canary") {
+                        return Err(AdmissionError::TooManyMsiSlots);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The `neverallow` half of admission: every rule when `all` (Kconfig
     /// `TOPOLOGY_NEVERALLOW`), else the rules the kernel's safety rests on.
     pub fn neverallow_admission(&self, env: &crate::neverallow::Env, all: bool) -> Result<(), AdmissionError> {
@@ -4418,7 +4440,11 @@ impl<'a> Topology<'a> {
         }
         // What no topology may grant, whatever its file says (`neverallow`).
         // The rules the kernel's safety rests on hold with the option off too.
-        self.neverallow_admission(&crate::neverallow::Env::BUILD, azos_limits::TOPOLOGY_NEVERALLOW)?;
+        self.neverallow_admission(
+            &crate::neverallow::Env::BUILD,
+            azos_limits::TOPOLOGY_NEVERALLOW != cfg!(feature = "admission-flag-canary"),
+        )?;
+        self.msi_slots_admission(azos_limits::IRQ_MSI_SLOTS as usize)?;
         // Real-time tasks must be schedulable. The CPU count is not known this
         // early, so this checks against every CPU a mask can name, and the
         // dispatch order is the scheduler's, so this checks under the one

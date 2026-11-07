@@ -5820,6 +5820,8 @@ mod neverallow_tests {
 
     /// `admission_check` is where a topology is refused, with the refusal the
     /// kernel records, and the decision follows Kconfig `TOPOLOGY_NEVERALLOW`.
+    ///
+    /// **Canary.** `admission-flag-canary`: admission passes the option's opposite.
     #[test]
     fn admission_check_refuses_a_row_a_rule_forbids() {
         let mut t = default_minimal();
@@ -6439,6 +6441,25 @@ mod msi_slot_tests {
         assert_eq!(refused(&two(&other, &[with(dev(b"ioport.768.32"), true)])), Some(id), "ports too");
         assert_eq!(refused(&two(&other, &[with(dev(b"ioport.768.32"), false)])), None, "held, not handed on");
         assert_eq!(refused(&two(&[with(nic, true)], &[with(dev(b"ioport.768.32"), true)])), None, "no slot anywhere");
+    }
+
+    /// **A topology may name at most `IRQ_MSI_SLOTS` distinct `msi.<k>`
+    /// slots; a slot two rows share counts once.** A vector kept for a slot is
+    /// never freed, so a slot past the table could never bind.
+    ///
+    /// **Canary.** `msi-slots-unbounded-canary`: any number is admitted.
+    #[test]
+    fn a_topology_names_no_more_msi_slots_than_the_kernel_keeps_vectors_for() {
+        let slot = |k: u32| -> CapSpec<'static> {
+            let name: &'static str = Box::leak(format!("msi.{k}").into_boxed_str());
+            dev(name.as_bytes())
+        };
+        let three = [slot(0), slot(1), slot(2)];
+        let t = two(&three, &[slot(1), slot(2)]);
+        assert_eq!(t.msi_slots_admission(3), Ok(()), "three distinct slots, two shared");
+        assert_eq!(t.msi_slots_admission(2), Err(azos_topology::AdmissionError::TooManyMsiSlots));
+        assert_eq!(two(&[slot(0), slot(0)], &[]).msi_slots_admission(1), Ok(()), "one slot named twice");
+        assert_eq!(two(&[], &[]).msi_slots_admission(0), Ok(()));
     }
 
     /// **Admission with `TOPOLOGY_NEVERALLOW` off still refuses a topology

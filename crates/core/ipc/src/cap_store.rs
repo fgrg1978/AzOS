@@ -721,6 +721,7 @@ fn still_owned(table: usize, owner: u32) -> bool {
 fn wipe_claimed(table: usize, key: u32, prev: u32) {
     let t = CAP_TABLES[table].lock();
     t.clear_all();
+    MSI_BOUND[table].store(false, Ordering::Release);
     t.set_owner(key);
     if prev != NO_OWNER {
         cap_event(CapEvent::Wiped { slot: table });
@@ -1239,6 +1240,7 @@ pub fn reset(tid: u32) {
     };
     let table = CAP_TABLES[idx].lock();
     table.clear_all();
+    MSI_BOUND[idx].store(false, Ordering::Release);
     cap_event(CapEvent::Wiped { slot: idx });
     // Release the claim so the next domain re-registers cleanly.
     OWNER[idx].store(NO_OWNER, Ordering::Release);
@@ -1409,16 +1411,40 @@ fn moved_event(from: usize, to: usize, kind: crate::cap::CapType, perms: CapPerm
     }
 }
 
+/// Tables whose domain has a message-signalled binding, by table index: set
+/// when a slot is bound ([`note_msi_bound`]), cleared when the table is wiped
+/// or the domain execs into another row ([`forget_msi_bound`]). The binding
+/// outlives the slot's capability (a task can drop it, or an exec drops every
+/// capability), so the capability alone does not say a domain still drives
+/// the slot.
+static MSI_BOUND: [core::sync::atomic::AtomicBool; MAX_TASKS] = [const { core::sync::atomic::AtomicBool::new(false) }; MAX_TASKS];
+
+/// The domain of `tid` bound a message-signalled slot.
+pub fn note_msi_bound(tid: u32) {
+    if let Some(i) = slot_for(tid) {
+        MSI_BOUND[i].store(true, Ordering::Release);
+    }
+}
+
+/// The domain of `tid` holds no message-signalled binding any more (they were
+/// all released).
+pub fn forget_msi_bound(tid: u32) {
+    if let Some(i) = slot_for(tid) {
+        MSI_BOUND[i].store(false, Ordering::Release);
+    }
+}
+
 /// A device's registers or ports arriving in a table that holds a
 /// message-signalled slot: the slot's kept vector would then serve a device
 /// the topology never tied to it. Refused, and recorded (`msi-vector`, why 3;
 /// the vector word holds the resource, the subject is the receiving task).
-fn arrives_beside_msi_slot(receiver: &CapTable, to_tid: u32, kind: crate::cap::CapType, resource: u32) -> bool {
+fn arrives_beside_msi_slot(receiver: &CapTable, to_idx: usize, to_tid: u32, kind: crate::cap::CapType, resource: u32) -> bool {
     use azos_abi::cap::{ty, IRQ_MSI_LINE};
     if (kind != ty::MMIO && kind != ty::IOPORT) || cfg!(feature = "msi-arrival-canary") {
         return false;
     }
-    let beside = receiver.holds_kind_where(ty::IRQ, CapPerms::NONE, |r| r & IRQ_MSI_LINE != 0);
+    let beside = receiver.holds_kind_where(ty::IRQ, CapPerms::NONE, |r| r & IRQ_MSI_LINE != 0)
+        || (MSI_BOUND[to_idx].load(Ordering::Acquire) && !cfg!(feature = "msi-bound-canary"));
     if beside {
         azos_decision::record(Rule::MsiVector, Verdict::Refuse, to_tid, [u64::from(resource), 0, 3]);
     }
@@ -1449,7 +1475,7 @@ fn move_locked(
     if !perms.contains(crate::cap::CapPerms::TRANSFER) {
         return Err(CapError::MissingPerms);
     }
-    if arrives_beside_msi_slot(receiver, to_tid, kind, resource) {
+    if arrives_beside_msi_slot(receiver, to_idx, to_tid, kind, resource) {
         return Err(CapError::MissingPerms);
     }
     // Kept or lowered, never raised.
@@ -1848,7 +1874,7 @@ fn move_caps_locked(
     let mut blocks = 0;
     for (i, x) in xs.iter().enumerate() {
         let plan = xfer_plan(sender, from_key, x, need_transfer)?;
-        if need_transfer && arrives_beside_msi_slot(receiver, to_tid, plan.0, plan.2) {
+        if need_transfer && arrives_beside_msi_slot(receiver, to_idx, to_tid, plan.0, plan.2) {
             return Err(CapError::MissingPerms);
         }
         blocks += usize::from(!plan.5.caveats.is_empty());

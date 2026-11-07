@@ -223,8 +223,8 @@ fn msi_grant_not_transferable(_: &Env, t: &Topology<'_>, row: &TaskSpec<'_>, c: 
         let rows: &[TaskSpec<'_>] = if cfg!(feature = "msi-register-scope-canary") { core::slice::from_ref(row) } else { t.tasks() };
         rows.iter().any(|r| t.caps_of(r).iter().any(is_msi))
     };
-    (is_msi(c) || (is_device_reg(c) && slots()))
-        && (c.grant_perms().contains(CapPerms::TRANSFER) || c.grant_perms().contains(CapPerms::DUP))
+    (c.grant_perms().contains(CapPerms::TRANSFER) || c.grant_perms().contains(CapPerms::DUP))
+        && (is_msi(c) || (is_device_reg(c) && slots()))
         && !cfg!(feature = "msi-transfer-canary")
 }
 

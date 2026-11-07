@@ -1391,7 +1391,8 @@ pub const RULES: &[RuleInfo] = &[
         // `irq.<selector>`: its line is shared with one, 3 no device matches
         // the selector, 4 the device has no line known, 5 `irq.<N>` past the
         // controller's lines, 6 `msi.<k>` where the platform has no MSI for
-        // ring 3 or past 16 bits.
+        // ring 3 (x86_64 without interrupt remapping or
+        // the acceptance, riscv64 behind an IOMMU) or past 16 bits.
         name: "line-grant",
         subject: "tid",
         fields: ["line", "-", "why"],

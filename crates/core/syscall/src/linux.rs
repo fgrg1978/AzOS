@@ -2800,6 +2800,11 @@ fn enter_row(me: u32, profile: &'static azos_sched::seccomp::ImageProfile, own: 
             npipes += 1;
         }
     }
+    // What the old row bound goes with its capabilities: its interrupt lines
+    // (a message-signalled vector is kept for its slot) and the memory its
+    // devices reach.
+    azos_ipc::irq_bind::irq_release_for_new_row(me);
+    azos_ipc::dma_bind::release_all(me);
     let dropped = azos_ipc::cap_store::with_table(me, |t| {
         t.delete_where(|kind, res| {
             !((kind == ty::SHM && pipes[..npipes].contains(&res))
