@@ -24,6 +24,14 @@ line-grant-silent-canary = []
 msi-reissue-canary = []
 # Host canary (tests/host/ipc-tests): one slot may take every vector of the pool.
 msi-slot-unbounded-canary = []
+# Host canary (tests/host/ipc-tests): a slot's entry in the issued-vector table outlives its last vector.
+msi-out-leak-canary = []
+# Host canary (tests/host/ipc-tests): a delivery of a kept vector no binding holds is not counted.
+msi-stray-silent-canary = []
+# Host canary (tests/host/ipc-tests): a device capability may arrive in a table that holds an msi slot.
+msi-arrival-canary = []
+# Host canary (tests/host/syscall-tests `mmio_map.rs`): a refused ring-3 map writes no decision record.
+dma-refusal-silent-canary = []
 # Host canary (tests/host/syscall-tests `mmio_map.rs`): ring 3 is given memory
 # for a device no IOMMU confines whatever Kconfig DMA_RING3_WITHOUT_IOMMU says.
 dma-ring3-unconfined-canary = []

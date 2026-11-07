@@ -13435,6 +13435,16 @@ host_job host_canary_row "ring-3: msi vector reissue canary" ipc-tests msi-reiss
     a_given_back_msi_vector_is_reissued_only_to_its_own_slot
 host_job host_canary_row "ring-3: msi slot bound canary" ipc-tests msi-slot-unbounded-canary \
     a_slot_cannot_take_more_vectors_than_its_bound
+host_job host_canary_row "ring-3: msi table entry leak canary" ipc-tests msi-out-leak-canary \
+    a_slot_without_vectors_takes_no_table_entry_and_a_full_table_says_so
+host_job host_canary_row "ring-3: msi stray delivery silent canary" ipc-tests msi-stray-silent-canary \
+    a_delivery_of_a_kept_vector_with_no_binding_is_counted
+host_job host_canary_row "ring-3: device capability beside msi slot canary" ipc-tests msi-arrival-canary \
+    a_device_capability_does_not_arrive_in_a_task_that_holds_an_msi_slot
+host_job host_canary_row "ring-3: line grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \
+    a_line_past_the_controller_is_refused_and_recorded
+host_job host_canary_row "ring-3: msi grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \
+    an_msi_slot_is_minted_only_where_the_platform_has_msi
 host_job host_canary_row "ring-3: attach at settle canary" iommu-tests attach-assumed-canary \
     settle_notes_a_refused_block_as_nothing_and_a_translating_function_as_translate
 host_job host_canary_row "dma: failed map frees unconfirmed block canary" dma-tests map-failed-frees-canary \

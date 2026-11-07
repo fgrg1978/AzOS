@@ -434,6 +434,10 @@ impl From<CapKind> for CapType {
     }
 }
 
+/// Set in the resource of an `Irq` capability that names a message-signalled
+/// slot (`msi.<k>`, `IRQ_MSI_LINE | k`) rather than a controller input.
+pub const IRQ_MSI_LINE: u32 = 1 << 31;
+
 /// The named types: every class of every kind a kernel table can hold.
 pub mod ty {
     use super::{CapKind, CapType};

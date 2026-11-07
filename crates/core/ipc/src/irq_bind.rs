@@ -90,7 +90,7 @@ pub const MAX_IRQ_BINDINGS: usize = 32;
 
 /// Set in a line number that names a message-signalled slot (`msi.<k>`,
 /// `MSI_LINE | k`) rather than a controller input.
-pub const MSI_LINE: u32 = 1 << 31;
+pub const MSI_LINE: u32 = azos_abi::cap::IRQ_MSI_LINE;
 
 /// The message a device writes to raise a bound MSI: `data` to the physical
 /// `address` (an MSI-X table entry or the MSI capability takes both), and the
@@ -250,6 +250,10 @@ static IRQ_OVERRUNS: AtomicU32 = AtomicU32::new(0);
 
 /// MSI deliveries dropped because their handler was out of budget.
 static IRQ_MSI_DROPS: AtomicU32 = AtomicU32::new(0);
+
+/// MSI deliveries of a kept vector, which no binding holds: a device its
+/// last holder programmed still raises it.
+static IRQ_MSI_STRAY: AtomicU32 = AtomicU32::new(0);
 
 /// Runtime canary `irq-storm` (ktest `irq_storm_is_contained`, the gate's
 /// canary row): the budget rule is off. A throttle leaves an idle line live
@@ -631,6 +635,12 @@ pub fn irq_msi_drops() -> u32 {
     IRQ_MSI_DROPS.load(Ordering::Relaxed)
 }
 
+/// Deliveries since boot of a vector kept for its slot while no binding held
+/// it: a device that outlived its driver and still raises its interrupt.
+pub fn irq_msi_stray() -> u32 {
+    IRQ_MSI_STRAY.load(Ordering::Relaxed)
+}
+
 // ---------------------------------------------------------------------------
 // The interrupt controller, behind three hooks
 // ---------------------------------------------------------------------------
@@ -759,8 +769,8 @@ fn msi_ops() -> Option<MsiOps> {
 static MSI_KEPT: SpinLock<[Option<(u32, u32)>; MSI_SLOTS * azos_limits::IRQ_MSI_PER_SLOT as usize]> =
     SpinLock::new([None; MSI_SLOTS * azos_limits::IRQ_MSI_PER_SLOT as usize]);
 
-/// Slots that hold vectors at once.
-const MSI_SLOTS: usize = 16;
+/// Slots that hold vectors at once (Kconfig `IRQ_MSI_SLOTS`).
+const MSI_SLOTS: usize = azos_limits::IRQ_MSI_SLOTS as usize;
 
 /// Keep `vector`, given back by a holder of `slot`.
 fn msi_keep(slot: u32, vector: u32) {
@@ -772,7 +782,7 @@ fn msi_keep(slot: u32, vector: u32) {
         return;
     }
     // Room is certain: MSI_OUT counts every vector a slot holds, live or kept,
-    // and holds it to IRQ_MSI_PER_SLOT in at most MSI_SLOTS slots.
+    // and holds it to IRQ_MSI_PER_SLOT in at most MSI_SLOTS slots at once.
     if let Some(k) = MSI_KEPT.lock_irqsave().iter_mut().find(|k| k.is_none()) {
         *k = Some((slot, vector));
     }
@@ -810,33 +820,45 @@ pub(crate) fn line_refused(tid: u32, line: u32, why: u64) {
 }
 
 /// Vectors issued per slot and not given back to the pool: live and kept
-/// ones, `(slot, count)`. A slot never holds more than `IRQ_MSI_PER_SLOT`.
+/// ones, `(slot, count)`. A slot never holds more than `IRQ_MSI_PER_SLOT`,
+/// and an entry lasts while its slot holds any.
 static MSI_OUT: SpinLock<[Option<(u32, u32)>; MSI_SLOTS]> = SpinLock::new([None; MSI_SLOTS]);
 
+/// Why a slot may not take another vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutFull {
+    /// The slot holds `IRQ_MSI_PER_SLOT` already.
+    Slot,
+    /// `IRQ_MSI_SLOTS` other slots hold vectors.
+    Table,
+}
+
 /// Room for one more vector of `slot`: counted, or refused.
-fn msi_out_reserve(slot: u32) -> bool {
+fn msi_out_reserve(slot: u32) -> Result<(), OutFull> {
     let mut out = MSI_OUT.lock_irqsave();
     let limit = azos_limits::IRQ_MSI_PER_SLOT as u32;
     if let Some((_, n)) = out.iter_mut().flatten().find(|(s, _)| *s == slot) {
         if *n >= limit && !cfg!(feature = "msi-slot-unbounded-canary") {
-            return false;
+            return Err(OutFull::Slot);
         }
         *n += 1;
-        return true;
+        return Ok(());
     }
-    match out.iter_mut().find(|e| e.is_none()) {
-        Some(e) => {
-            *e = Some((slot, 1));
-            true
-        }
-        None => false,
-    }
+    let free = out.iter_mut().find(|e| e.is_none()).ok_or(OutFull::Table)?;
+    *free = Some((slot, 1));
+    Ok(())
 }
 
-/// A vector of `slot` went back to the pool.
+/// A vector of `slot` went back to the pool; the slot's entry goes with its
+/// last one.
 fn msi_out_release(slot: u32) {
-    if let Some((_, n)) = MSI_OUT.lock_irqsave().iter_mut().flatten().find(|(s, _)| *s == slot) {
+    let mut out = MSI_OUT.lock_irqsave();
+    let Some(e) = out.iter_mut().find(|e| matches!(e, Some((s, _)) if *s == slot)) else { return };
+    if let Some((_, n)) = e {
         *n = n.saturating_sub(1);
+        if *n == 0 && !cfg!(feature = "msi-out-leak-canary") {
+            *e = None;
+        }
     }
 }
 
@@ -849,9 +871,14 @@ fn msi_take(owner: u32, slot: u32, cpu: u32) -> Result<(Msi, bool), BindError> {
     let id = match kept {
         Some(id) => id,
         None => {
-            // A slot holds at most IRQ_MSI_PER_SLOT vectors, live and kept.
-            if !msi_out_reserve(slot) {
-                azos_decision::record(Rule::MsiVector, Verdict::Refuse, owner, [0, u64::from(slot), 1]);
+            // A slot holds at most IRQ_MSI_PER_SLOT vectors, live and kept,
+            // and at most IRQ_MSI_SLOTS slots hold any.
+            if let Err(full) = msi_out_reserve(slot) {
+                let why = match full {
+                    OutFull::Slot => 1,
+                    OutFull::Table => 2,
+                };
+                azos_decision::record(Rule::MsiVector, Verdict::Refuse, owner, [0, u64::from(slot), why]);
                 return Err(BindError::Busy);
             }
             match (ops.alloc)() {
@@ -975,18 +1002,29 @@ pub fn irq_dispatch(irq: u32) {
 /// and the delivery is dropped ([`irq_msi_drops`]); an MSI cannot be masked,
 /// so the top half drops instead of the line being held.
 pub fn irq_msi_dispatch(hw: u32) -> bool {
-    let (port, epoch, key, irq, cpu) = {
+    let held = {
         let bindings = IRQ_BINDINGS.lock_irqsave();
-        let Some(b) = bindings.iter().find(|b| b.active && b.msi && b.hw == hw) else {
-            return false;
-        };
-        if b.throttled {
-            IRQ_MSI_DROPS.fetch_add(1, Ordering::Relaxed);
-            return false;
+        match bindings.iter().find(|b| b.active && b.msi && b.hw == hw) {
+            Some(b) if b.throttled => {
+                IRQ_MSI_DROPS.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            Some(b) => Some((b.port, b.epoch, b.key, b.irq, b.cpu)),
+            None => None,
         }
-        (b.port, b.epoch, b.key, b.irq, b.cpu)
+    };
+    let Some((port, epoch, key, irq, cpu)) = held else {
+        if msi_is_kept(hw) && !cfg!(feature = "msi-stray-silent-canary") {
+            IRQ_MSI_STRAY.fetch_add(1, Ordering::Relaxed);
+        }
+        return false;
     };
     queue(port, epoch, key, irq, cpu)
+}
+
+/// Is `vector` one a slot keeps?
+fn msi_is_kept(vector: u32) -> bool {
+    MSI_KEPT.lock_irqsave().iter().flatten().any(|&(_, v)| v == vector)
 }
 
 /// Queue the event of a delivery on its binding's port.
@@ -1133,6 +1171,7 @@ pub fn __irq_bind_reset_for_tests() {
     IRQ_PORT_DROPS.store(0, Ordering::Relaxed);
     IRQ_OVERRUNS.store(0, Ordering::Relaxed);
     IRQ_MSI_DROPS.store(0, Ordering::Relaxed);
+    IRQ_MSI_STRAY.store(0, Ordering::Relaxed);
     *MSI_OPS.lock_irqsave() = None;
     *MSI_KEPT.lock_irqsave() = [None; MSI_SLOTS * azos_limits::IRQ_MSI_PER_SLOT as usize];
     *MSI_OUT.lock_irqsave() = [None; MSI_SLOTS];
@@ -1803,6 +1842,98 @@ mod tests {
         assert!(recorded >= 2, "each refusal is a record");
     }
 
+    /// Records of `rule` with `verdict` about `subject` and `why` (the third word).
+    fn records(rule: Rule, verdict: Verdict, subject: u32, why: u64) -> usize {
+        let mut n = 0;
+        azos_decision::for_each(|r| {
+            n += usize::from(r.rule == rule as u8 && r.verdict == verdict as u8 && r.subject == subject && r.n[2] == why);
+        });
+        n
+    }
+
+    /// **A slot that holds no vector holds no entry, so binds that failed
+    /// cannot fill the table; when the table is full of slots that do hold
+    /// vectors, the refusal says so (`msi-vector`, why 2), not that the slot
+    /// is at its own bound (why 1).**
+    ///
+    /// **Canary.** `msi-out-leak-canary`: the entry of a slot whose vector
+    /// went back stays, and the loop of failed binds fills the table.
+    #[test]
+    fn a_slot_without_vectors_takes_no_table_entry_and_a_full_table_says_so() {
+        let _g = setup();
+        msi_ops_installed();
+        let r = port::port_create_ref(OWNER as usize).expect("create");
+        // A CPU the vector cannot be enabled on: the fresh vector goes back, and with it the slot's entry.
+        for k in 0..(2 * MSI_SLOTS as u32) {
+            assert_eq!(bind(MSI_LINE | (100 + k), OWNER, r, 1, Route::Cpu(9), false), Err(BindError::Route));
+        }
+        assert_eq!(msi_given_back().len(), 1, "the one vector all those binds took went back");
+        // Every slot the table has room for holds a vector; one more is refused for the table.
+        let tasks: Vec<u32> = (0..MSI_SLOTS as u32 + 1).map(|i| 200 + i).collect();
+        for (k, &t) in tasks[..MSI_SLOTS].iter().enumerate() {
+            bind(MSI_LINE | k as u32, t, r, 1, Route::Cpu(0), false).expect("a slot with room in the table");
+        }
+        let over = tasks[MSI_SLOTS];
+        assert_eq!(bind(MSI_LINE | 99, over, r, 1, Route::Cpu(0), false), Err(BindError::Busy));
+        assert_eq!(records(Rule::MsiVector, Verdict::Refuse, over, 2), 1, "the table is full");
+        assert_eq!(records(Rule::MsiVector, Verdict::Refuse, over, 1), 0, "not the slot's own bound");
+        // A slot that has an entry still binds, and its own bound is the other reason.
+        assert!(bind(MSI_LINE, tasks[0], r, 1, Route::Cpu(0), false).is_ok());
+    }
+
+    /// **A kept vector a device still raises, with no binding to take it, is
+    /// counted; a vector nobody keeps, and a delivery a binding takes, are
+    /// not.**
+    ///
+    /// **Canary.** `msi-stray-silent-canary`: the delivery is dropped, uncounted.
+    #[test]
+    fn a_delivery_of_a_kept_vector_with_no_binding_is_counted() {
+        let _g = setup();
+        msi_ops_installed();
+        let r = port::port_create_ref(OWNER as usize).expect("create");
+        bind(SLOT, OWNER, r, 1, Route::Cpu(0), false).expect("bound");
+        assert!(irq_msi_dispatch(40));
+        assert_eq!(irq_msi_stray(), 0, "a bound vector is delivered");
+        assert!(irq_unbind(SLOT, OWNER));
+        assert!(!irq_msi_dispatch(40), "no binding holds it");
+        assert_eq!(irq_msi_stray(), 1, "the device that still raises it is seen");
+        assert!(!irq_msi_dispatch(99));
+        assert_eq!(irq_msi_stray(), 1, "a vector nobody keeps is not a stray of a slot");
+    }
+
+    /// **A device's registers or ports do not arrive in a task that holds an
+    /// msi slot, by a move or by a transfer message; they arrive in one that
+    /// holds none, and a slot holder keeps the registers it was granted.** The
+    /// refusal is recorded (`msi-vector`, why 3).
+    ///
+    /// **Canary.** `msi-arrival-canary`: the registers arrive beside the slot.
+    #[test]
+    fn a_device_capability_does_not_arrive_in_a_task_that_holds_an_msi_slot() {
+        use crate::cap::{targets, CapPerms};
+        use crate::cap_store::{self, CapXfer};
+        let _g = setup();
+        let (giver, holder, plain) = (61, 62, 63);
+        for t in [giver, holder, plain] {
+            azos_sched::shim_bind(t, t as usize);
+            cap_store::reset(t);
+        }
+        msi_ops_installed();
+        let slot = irq_grant_msi_cap(holder, 5, CapPerms::READ).expect("the slot");
+        let _ = slot;
+        let give = || cap_store::grant::<targets::MmioRegion>(giver, CapPerms::RW.union(CapPerms::TRANSFER), 7).expect("registers").raw();
+        let h = give();
+        assert!(cap_store::move_cap(giver, holder, h, None).is_err(), "a move beside a slot");
+        assert_eq!(records(Rule::MsiVector, Verdict::Refuse, holder, 3), 1, "the refusal is a record");
+        let mut out = [crate::cap::CapHandle::from_raw(0); 1];
+        assert!(cap_store::move_caps(giver, holder, &[CapXfer::new(h, false)], true, &mut out).is_err(), "a transfer message beside a slot");
+        assert_eq!(records(Rule::MsiVector, Verdict::Refuse, holder, 3), 2);
+        let ports = cap_store::grant::<targets::IoPorts>(giver, CapPerms::RW.union(CapPerms::TRANSFER), 0x300).expect("ports").raw();
+        assert!(cap_store::move_cap(giver, holder, ports, None).is_err(), "ports beside a slot");
+        assert!(cap_store::move_cap(giver, plain, h, None).is_ok(), "a task with no slot takes registers");
+        let own = cap_store::grant::<targets::MmioRegion>(holder, CapPerms::RW, 8);
+        assert!(own.is_some(), "a slot holder keeps the registers it was granted");
+    }
+
     /// An `msi.<k>` slot is minted as a `Cap<Irq>` on `MSI_LINE | k` only where
     /// the platform has MSI for ring 3, and for a slot that fits 16 bits.
     ///
@@ -1822,6 +1953,25 @@ mod tests {
         assert!(irq_grant_msi_cap(tid, 0x1_0000, CapPerms::READ).is_none(), "a slot past 16 bits");
         set_msi_ops(MsiOps { supported: || false, alloc: msi_alloc, free: msi_free, enable: msi_enable, message: msi_message });
         assert!(irq_grant_msi_cap(tid, 5, CapPerms::READ).is_none(), "a platform without MSI");
+        // Each refusal is a record (`line-grant`, why 6), by the real minter.
+        assert_eq!(records(Rule::LineGrant, Verdict::Refuse, tid, 6), 3);
+    }
+
+    /// An `irq.<N>` past the controller's lines is refused and recorded
+    /// (`line-grant`, why 5) by the real minter.
+    ///
+    /// **Canary.** `line-grant-silent-canary`: the refusal leaves no record.
+    #[test]
+    fn a_line_past_the_controller_is_refused_and_recorded() {
+        use crate::cap::CapPerms;
+        let _g = setup();
+        let tid = 13;
+        azos_sched::shim_bind(tid, tid as usize);
+        crate::cap_store::reset(tid);
+        assert!(irq_grant_cap(tid, 0, CapPerms::READ).is_none(), "line 0 means none");
+        assert!(irq_grant_cap(tid, 5000, CapPerms::READ).is_none(), "past the lines");
+        assert_eq!(records(Rule::LineGrant, Verdict::Refuse, tid, 5), 2);
+        assert!(irq_grant_cap(tid, 7, CapPerms::READ).is_some());
     }
 
     /// An MSI cannot be masked: while its handler is out of budget the

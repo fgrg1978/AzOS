@@ -36,6 +36,8 @@ azos_sched = { path = "shims/sched", package = "cap_test_sched" }
 [features]
 # Pulled-in source declares it (cap_store.rs `cell_source`); the cfg is kernel-only.
 cap-table-cross-type-canary = []
+# Declared for the pulled `cap_store.rs`.
+msi-arrival-canary = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.

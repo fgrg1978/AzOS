@@ -54,6 +54,12 @@ ktest = []
 msi-reissue-canary = []
 # Host canary (tests/host/ipc-tests): one slot may take every vector of the pool.
 msi-slot-unbounded-canary = []
+# Host canary (tests/host/ipc-tests): a slot's entry in the issued-vector table outlives its last vector.
+msi-out-leak-canary = []
+# Host canary (tests/host/ipc-tests): a delivery of a kept vector no binding holds is not counted.
+msi-stray-silent-canary = []
+# Host canary (tests/host/ipc-tests): a device capability may arrive in a table that holds an msi slot.
+msi-arrival-canary = []
 line-grant-silent-canary = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees

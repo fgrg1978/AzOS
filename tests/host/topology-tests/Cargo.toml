@@ -38,6 +38,8 @@ calls-any-binder-canary = []
 fork-revoke-canary = []
 # Pulled-in source declares it (cap_store.rs cell source); only the kernel uses it.
 cap-table-cross-type-canary = []
+# Declared for the pulled `cap_store.rs`.
+msi-arrival-canary = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.

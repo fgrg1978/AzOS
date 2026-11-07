@@ -1393,7 +1393,7 @@ fn move_cap_once(
     } else {
         (&*hi_tab, &*lo_tab)
     };
-    Some(move_locked(sender, receiver, (from_idx, from_owner), (to_idx, to_owner), handle, rights))
+    Some(move_locked(sender, receiver, (from_idx, from_owner), (to_idx, to_owner), to_tid, handle, rights))
 }
 
 /// Tell the hook a capability moved from `from`'s table into `to`'s, with
@@ -1409,12 +1409,29 @@ fn moved_event(from: usize, to: usize, kind: crate::cap::CapType, perms: CapPerm
     }
 }
 
+/// A device's registers or ports arriving in a table that holds a
+/// message-signalled slot: the slot's kept vector would then serve a device
+/// the topology never tied to it. Refused, and recorded (`msi-vector`, why 3;
+/// the vector word holds the resource, the subject is the receiving task).
+fn arrives_beside_msi_slot(receiver: &CapTable, to_tid: u32, kind: crate::cap::CapType, resource: u32) -> bool {
+    use azos_abi::cap::{ty, IRQ_MSI_LINE};
+    if (kind != ty::MMIO && kind != ty::IOPORT) || cfg!(feature = "msi-arrival-canary") {
+        return false;
+    }
+    let beside = receiver.holds_kind_where(ty::IRQ, CapPerms::NONE, |r| r & IRQ_MSI_LINE != 0);
+    if beside {
+        azos_decision::record(Rule::MsiVector, Verdict::Refuse, to_tid, [u64::from(resource), 0, 3]);
+    }
+    beside
+}
+
 /// The move itself, both tables locked and still their owners'.
 fn move_locked(
     sender: &CapTable,
     receiver: &CapTable,
     (from_idx, sender_key): (usize, u32),
     (to_idx, receiver_key): (usize, u32),
+    to_tid: u32,
     handle: CapHandle,
     rights: Option<CapPerms>,
 ) -> Result<(CapHandle, Option<(crate::cap::CapType, u32)>), CapError> {
@@ -1430,6 +1447,9 @@ fn move_locked(
     // `TRANSFER` gates the move to a different task (O3.4): checked before
     // anything is touched, same as the free-slot check below.
     if !perms.contains(crate::cap::CapPerms::TRANSFER) {
+        return Err(CapError::MissingPerms);
+    }
+    if arrives_beside_msi_slot(receiver, to_tid, kind, resource) {
         return Err(CapError::MissingPerms);
     }
     // Kept or lowered, never raised.
@@ -1757,7 +1777,7 @@ pub fn move_caps(
         }
         let (sender, receiver) = if from_idx == lo { (&*lo_tab, &*hi_tab) } else { (&*hi_tab, &*lo_tab) };
         let mut moved = MovedSet::new();
-        let r = move_caps_locked(sender, receiver, (from_idx, from_owner), (to_idx, to_owner), xs, out, true, &mut moved);
+        let r = move_caps_locked(sender, receiver, (from_idx, from_owner), (to_idx, to_owner), to_tid, xs, out, true, &mut moved);
         if r.is_err() && !keep {
             for x in xs.iter().filter(|x| !x.dup) {
                 if let Some((kind, perms, resource)) = sender.peek_stored(x.handle) {
@@ -1818,6 +1838,7 @@ fn move_caps_locked(
     receiver: &CapTable,
     (from_idx, from_key): (usize, u32),
     (to_idx, to_key): (usize, u32),
+    to_tid: u32,
     xs: &[CapXfer],
     out: &mut [CapHandle],
     need_transfer: bool,
@@ -1827,6 +1848,9 @@ fn move_caps_locked(
     let mut blocks = 0;
     for (i, x) in xs.iter().enumerate() {
         let plan = xfer_plan(sender, from_key, x, need_transfer)?;
+        if need_transfer && arrives_beside_msi_slot(receiver, to_tid, plan.0, plan.2) {
+            return Err(CapError::MissingPerms);
+        }
         blocks += usize::from(!plan.5.caveats.is_empty());
         if xs[..i].iter().any(|y| y.handle.slot() == x.handle.slot()) {
             return Err(CapError::MissingPerms);
@@ -1921,6 +1945,7 @@ fn move_back(from_tid: u32, to_tid: u32, xs: &[CapXfer]) -> bool {
             receiver,
             (from_idx, from_owner),
             (to_idx, to_owner),
+            to_tid,
             xs,
             &mut out[..xs.len()],
             false,

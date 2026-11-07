@@ -1373,7 +1373,12 @@ pub const RULES: &[RuleInfo] = &[
         // the flush after its map was not confirmed, 4 a writable window on it
         // refused (it masters the bus), 5 an I/O port range over a bus
         // master's I/O BAR (or the ISA DMA ports) refused, `bytes` then holds
-        // `first | last << 16`.
+        // `first | last << 16`. A map refused: 6 a kernel driver owns the
+        // device or may still take it, 7 the device has no domain ring 3 may
+        // map into, 8 the object or the device is bound or being ended, 9 no
+        // free record or the caller's share is held, 10 the object is not one
+        // a device may be given, 11 the domain refused the mapping (`bytes` the
+        // object's); 12 an unmap of a binding the caller does not hold.
         name: "ring3-dma",
         subject: "device",
         fields: ["tid", "bytes", "why"],
@@ -1396,7 +1401,10 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // why: 0 a vector kept for its slot at a holder's unbind or exit (a
         // Place: not a refusal), 1 a bind refused: the slot holds its limit
-        // of vectors (IRQ_MSI_PER_SLOT).
+        // of vectors (IRQ_MSI_PER_SLOT), 2 a bind refused: the slots that hold
+        // vectors are at their limit (IRQ_MSI_SLOTS), 3 a device's registers or
+        // ports refused arrival in a task that holds a slot (the vector word
+        // holds the capability's resource, the subject the receiving task).
         name: "msi-vector",
         subject: "tid",
         fields: ["vector", "slot", "why"],
