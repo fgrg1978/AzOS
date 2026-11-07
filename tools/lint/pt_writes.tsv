@@ -3,7 +3,16 @@
 # tools/lint/pt_writes_lint.py: the raw write sites of the scanned files that are
 # not page-table words, per file: <file><TAB><count><TAB><what they are>. Edited by
 # hand: a page-table word goes through pt_set, pt_store or pt_cas instead.
-arch/aarch64/src/mmu/setup.rs	4	the boot tables' own statics, written before the MMU is on (arch cannot reach the mm funnel)
-arch/x86_64/src/mmu.rs	1	the x86_64 boot table writer, used before the kernel's tables exist (the monitor is aarch64 only)
+arch/aarch64/src/mmu/setup.rs	5	the boot tables' own statics and the fresh pages they zero, written before the MMU is on (arch cannot reach the mm funnel)
+arch/x86_64/src/mmu.rs	3	the x86_64 boot table writers, used before the kernel's tables exist (the monitor is aarch64 only)
 arch/x86_64/src/mmu/kaslr_boot.rs	2	two words of the boot PDPT, written before the MMU's final tables exist
-crates/core/mm/src/pager.rs	8	object slot words and the stale epoch (MemObj state), not page-table words
+crates/core/mm/src/cow.rs	1	the copy of a page's bytes on a copy-on-write break
+crates/core/mm/src/pager.rs	9	object slot words, the stale epoch and the codec cell (MemObj state), not page-table words
+crates/core/mm/src/vmm.rs	2	a local counter of mapped windows
+kernel/src/entry/aarch64/asm/boot.S	3	boot arguments and per-PE state saved to the image's data, not tables
+kernel/src/entry/aarch64/asm/context_switch.S	30	the saves into a task's own context block
+kernel/src/entry/aarch64/asm/trap_entry.S	1	the trap frame's pointer save
+kernel/src/entry/riscv64/asm/boot.S	3	boot arguments saved to the image's data, not tables
+kernel/src/entry/riscv64/asm/context_switch.S	18	the saves into a task's own context block
+kernel/src/entry/riscv64/asm/context_switch_rvv.S	17	the vector registers saved into a task's context block
+kernel/src/entry/riscv64/asm/trap_entry.S	2	the trap frame's saves

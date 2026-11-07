@@ -3874,10 +3874,18 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         i=$((i + 1)); sleep 0.5
     done
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$img"
-    local missing=""
-    for m in "$@"; do grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"; done
+    # A marker starting with `!` is one the canary must print (a canary that bites by
+    # name, not by any crash); it is not looked for in a pass row.
+    local missing="" seen_all=1
+    for m in "$@"; do
+        case "$m" in
+            '!'*) [ "$want" = canary ] && { grep -aqF "${m#!}" "$log" 2>/dev/null || seen_all=0; } ;;
+            *) grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m" ;;
+        esac
+    done
     if [ "$want" = canary ]; then
-        if [ -n "$missing" ]; then ok; rm -f "$log"
+        if [ -n "$missing" ] && [ "$seen_all" = 1 ]; then ok; rm -f "$log"
+        elif [ -n "$missing" ]; then bad; echo "      the canary went red without printing its named failure — log kept: $log"
         else bad; echo "      canary did not bite: every marker still present — log kept: $log"; fi
         return
     fi
@@ -4074,7 +4082,7 @@ par "hyp: R11 pool open canary (arm)" hyp_monitor_row "hyp: R11 pool open canary
     "[FATAL] aarch64 kernel page fault"
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
 par "hyp: R11 pt check canary (arm)" hyp_monitor_row "hyp: R11 pt check canary (arm)" "hyp-pt-check-skip-canary,hyp-pt-probe" canary \
-    "[HYP] pt: words that break a rule are refused and recorded"
+    "[HYP] pt: words that break a rule are refused and recorded" "![HYP] PROBE FAILED: pt_set refused"
 
 # F9, the DMA the monitor cannot confine: the device tree's masters that name
 # no IOMMU are counted by kind on the boot line (QEMU `virt` has virtio-mmio
@@ -12183,6 +12191,27 @@ host_job host_generic_row "sensor: vdso bind, board-io image without the robot e
 host_job host_generic_row "sensor: vdso bind, image with neither robot nor board I/O" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain virtio-snd,linux-abi
 host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,board-io,vdso-bind-canary \
     a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
+# The kernel half's page-table pool and its funnel (mm-tests, feature hyp-monitor,
+# which the default run of the suite does not build): words of the armed pool go
+# to the monitor and nothing else does, the pool is sized from the RAM, and a pool
+# page never reaches the allocator. host_feature_row is the pass row of
+# host_canary_row: the named test passes alone with the features.
+host_feature_row() { # <label> <suite> <features> <test fn>
+    local label="$1" suite="$2" feats="$3" test="$4" out
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/$suite" \
+        host_cargo out "${REPO_ROOT}/tests/host/${suite}" test --release --features "$feats" -- "$test"
+    if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
+    else
+        bad; echo "      $suite --features $feats: $test did not pass alone"
+        echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
+host_job host_feature_row "mm: pool funnel (model)" mm-tests hyp-monitor words_in_the_armed_pool_go_to_the_monitor_and_nothing_else_does
+host_job host_feature_row "mm: pool sizing (model)" mm-tests hyp-monitor the_pool_is_sized_from_the_ram_the_stack_window_and_the_margin
+host_job host_canary_row "mm: pool unrouted (model) canary" mm-tests hyp-monitor,ptpool-unrouted-canary \
+    words_in_the_armed_pool_go_to_the_monitor_and_nothing_else_does
 # The frame class (cam-ring-tests, the pool): a reader's view of a frame
 # writes into it; back-pressure overwrites a frame a reader is owed; overwrite-
 # oldest refuses while a reader lags; a dropped frame reference is never given
