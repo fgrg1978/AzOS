@@ -13138,6 +13138,27 @@ host_job zpool_host_canary_row "swap: pinned map canary" swap-pinned-map-no-rest
 host_job zpool_host_row "swap: class change restores" a_change_to_a_real_time_class_brings_the_objects_pages_back
 host_job zpool_host_canary_row "swap: class change canary" swap-class-change-no-restore-canary \
     a_change_to_a_real_time_class_brings_the_objects_pages_back
+# A class change through SYS_SCHEDCTL is in force while the pages come back, and
+# is undone, with a pin-restore record, when they cannot (swap-class-change-order-canary:
+# they come back first); a pinning fork child has nothing out at its inheritance
+# (swap-pinned-map-no-restore-canary); a page installing holds off only itself and
+# every installer counts (swap-ready-ignored-canary, swap-install-count-narrow-canary:
+# a byte); a restored page is charged once; a swappable call buffer is a record
+# (swappable-ring-allowed-canary).
+host_job zpool_host_canary_row "swap: class change order canary" swap-class-change-order-canary \
+    a_change_to_a_real_time_class_brings_the_objects_pages_back
+host_job zpool_host_row "swap: class change rollback" a_class_change_whose_pages_cannot_come_back_is_undone_and_recorded
+host_job zpool_host_row "swap: pinning child inherits" a_pinning_child_has_nothing_out_when_it_inherits_an_object
+host_job zpool_host_canary_row "swap: pinning child canary" swap-pinned-map-no-restore-canary \
+    a_pinning_child_has_nothing_out_when_it_inherits_an_object
+host_job zpool_host_row "swap: install per page" an_install_holds_off_only_its_page_and_every_installer_counts
+host_job zpool_host_canary_row "swap: install per page canary" swap-ready-ignored-canary \
+    an_install_holds_off_only_its_page_and_every_installer_counts
+host_job zpool_host_canary_row "swap: install count canary" swap-install-count-narrow-canary \
+    an_install_holds_off_only_its_page_and_every_installer_counts
+host_job zpool_host_row "swap: restore charge" a_restored_page_is_charged_once_when_it_is_installed
+host_job host_canary_row "swap: call buffer refused canary" syscall-tests swappable-ring-allowed-canary \
+    a_swappable_object_is_refused_as_a_call_buffer_and_recorded
 # A fault on a page the storm is storing waits and maps nothing; a store that
 # fails gives the page back; the kernel does not address a swappable object; an
 # object is swappable or volatile. swap-transit-ignored-canary: a page in transit

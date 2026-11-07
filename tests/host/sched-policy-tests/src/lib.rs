@@ -2086,8 +2086,9 @@ mod proxy_tests {
 /// and the kernel registers the object table's `memobj_exec` there: if either
 /// line goes, a record keeps naming a root that is destroyed, and reclaim walks it.
 ///
-/// **Canary (by hand).** Delete the call in `exec_commit` or the registration in
-/// `install_sched_hooks`: red.
+/// **Canary (by hand).** Delete the call in `exec_commit`, move it below
+/// `set_current_task_exec_slots` or above `set_current_user_info`, or delete the
+/// registration in `install_sched_hooks`: red.
 #[cfg(test)]
 mod exec_hook {
     fn code(src: &str) -> String {
@@ -2097,8 +2098,16 @@ mod exec_hook {
     #[test]
     fn the_exec_commit_calls_the_hook_and_the_kernel_registers_the_object_tables_forget() {
         let process = code(include_str!("../../../../crates/core/sched/src/process.rs"));
-        let commit = &process[process.find("pub fn exec_commit").expect("exec_commit moved")..];
-        assert!(commit.contains("invoke_task_exec_hook("), "exec_commit no longer calls the exec hook");
+        let from = process.find("pub fn exec_commit").expect("exec_commit moved");
+        let body = &process[from..];
+        let commit = &body[..body.find("\n}\n").expect("exec_commit has no end")];
+        let at = |needle: &str| commit.find(needle).unwrap_or_else(|| panic!("exec_commit no longer calls {needle}"));
+        // The records name the old image's tables, and the new space is current
+        // before the hook runs; the old space is handed over only after it.
+        assert!(
+            at("set_current_user_info(") < at("invoke_task_exec_hook(") && at("invoke_task_exec_hook(") < at("set_current_task_exec_slots("),
+            "the exec hook must run after the new space is current and before the old one is handed over"
+        );
         let boot = code(include_str!("../../../../kernel/src/boot/sched.rs"));
         assert!(
             boot.contains("set_task_exec_hook(azos_ipc::memobj::memobj_exec)"),
