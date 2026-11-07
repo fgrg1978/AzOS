@@ -19,6 +19,9 @@ pub mod pt;
 /// The kernel half's page-table pool.
 #[cfg(feature = "pt-pool")]
 pub mod ptpool;
+/// The pool kept write-protected from the kernel (host-tested, `#[path]`).
+#[cfg(feature = "pt-protection")]
+pub mod ptprot;
 /// N12h: CAS installs of page-table words the user mapper and the kernel-half
 /// merge race for (host-tested, `#[path]`).
 pub mod pte_install;

@@ -513,6 +513,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     crate::entry::aarch64::ext::hyp_monitor::lock_image();
     if !canary!("ro-seal-skip") {
         boot::seal_ro_after_init();
+        #[cfg(feature = "pt-protection")]
+        boot::lock_pt_pool();
         // arch-only: as above.
         #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
         crate::entry::aarch64::ext::hyp_monitor::lock_ro_data();

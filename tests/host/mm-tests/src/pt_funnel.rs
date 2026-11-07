@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The page-table funnel (crates/core/mm/src/pt.rs) and the kernel-half pool
-//! behind it (ptpool.rs, feature `hyp-monitor`).
+//! behind it (ptpool.rs, feature `pt-pool`) and the write window that guards it
+//! (ptprot.rs, feature `pt-protection`).
 //!
 //! WHY. Every stage-1 word the kernel writes goes through one of three
 //! functions, so the monitor that makes the kernel half's tables read-only can
@@ -25,7 +26,7 @@ fn the_plain_funnel_is_the_store_and_the_swap() {
     assert_eq!(w.load(Ordering::Acquire), 13);
 }
 
-#[cfg(feature = "hyp-monitor")]
+#[cfg(feature = "pt-pool")]
 mod pool {
     use super::*;
     use crate::ptpool;
@@ -117,5 +118,70 @@ mod pool {
         while ptpool::take(0).is_ok() {}
         assert_eq!(ptpool::take(0), Err(azos_common::error::KernelError::OutOfMemory));
         assert_eq!(ptpool::extent().1, ptpool::MAX_PAGES);
+    }
+}
+
+#[cfg(feature = "pt-protection")]
+mod window {
+    use super::*;
+    use crate::ptprot::{write, Window};
+    use std::cell::RefCell;
+
+    /// A window over one word that checks, from inside `open` and `close`, where the store is.
+    struct Probe<'a> {
+        slot: &'a AtomicU64,
+        before: u64,
+        after: u64,
+        token: u64,
+        log: RefCell<Vec<(&'static str, u64)>>,
+    }
+
+    impl Window for Probe<'_> {
+        fn open(&self) -> u64 {
+            assert_eq!(self.slot.load(Ordering::Acquire), self.before, "the store came before the window opened");
+            self.log.borrow_mut().push(("open", 0));
+            self.token
+        }
+        fn close(&self, saved: u64) {
+            assert_eq!(self.slot.load(Ordering::Acquire), self.after, "the window closed before the store");
+            self.log.borrow_mut().push(("close", saved));
+        }
+    }
+
+    /// The store is made between an open and a close, and the close gets back
+    /// what the open returned.
+    /// Canary: `--features ptprot-store-outside-canary` makes the store after the
+    /// close, and `close` sees the old word.
+    #[test]
+    fn the_store_is_made_inside_the_window_and_the_token_comes_back() {
+        let slot = AtomicU64::new(5);
+        let w = Probe { slot: &slot, before: 5, after: 6, token: 0xA5, log: RefCell::new(Vec::new()) };
+        assert_eq!(write(&w, &slot, 5, 6), Ok(5));
+        assert_eq!(slot.load(Ordering::Acquire), 6);
+        assert_eq!(*w.log.borrow(), vec![("open", 0), ("close", 0xA5)]);
+    }
+
+    /// A lost race is the word found, the word is untouched, and the window is closed all the same.
+    #[test]
+    fn a_lost_race_closes_the_window_and_reports_the_word_found() {
+        let slot = AtomicU64::new(9);
+        let w = Probe { slot: &slot, before: 9, after: 9, token: 3, log: RefCell::new(Vec::new()) };
+        assert_eq!(write(&w, &slot, 5, 6), Err(9));
+        assert_eq!(slot.load(Ordering::Acquire), 9);
+        assert_eq!(*w.log.borrow(), vec![("open", 0), ("close", 3)]);
+    }
+
+    /// A window inside a window closes to the outer one's state.
+    #[test]
+    fn windows_nest_and_each_restores_what_it_found() {
+        let (a, b) = (AtomicU64::new(1), AtomicU64::new(1));
+        let outer = Probe { slot: &a, before: 1, after: 2, token: 10, log: RefCell::new(Vec::new()) };
+        let inner = Probe { slot: &b, before: 1, after: 2, token: 20, log: RefCell::new(Vec::new()) };
+        let saved = outer.open();
+        assert_eq!(write(&inner, &b, 1, 2), Ok(1));
+        assert_eq!(a.compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire), Ok(1));
+        outer.close(saved);
+        assert_eq!(*inner.log.borrow(), vec![("open", 0), ("close", 20)]);
+        assert_eq!(*outer.log.borrow(), vec![("open", 0), ("close", 10)]);
     }
 }

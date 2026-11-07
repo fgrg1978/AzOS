@@ -41,10 +41,12 @@ azos_decision = { path = "../../../../../crates/core/decision" }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("buddy-merge-canary", "buddy-split-canary", "buddy-rotate-hot-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary"))'] }
 
 [features]
-# `cfg(feature = "hyp-monitor")` in the pulled-in pmm.rs, pt.rs and vmm.rs (the kernel half's pool for
-# the resident monitor). Known here, never on: the pool and its funnel are host-tested in
-# tests/host/mm-tests with the feature.
-hyp-monitor = []
+# `cfg(feature = "pt-pool")` in the pulled-in pmm.rs, pt.rs and vmm.rs (the kernel half's pool for
+# the resident monitor or the kernel's own write window). Known here, never on: the pool and its
+# funnel are host-tested in tests/host/mm-tests with the features.
+pt-pool = []
+hyp-monitor = ["pt-pool"]
+pt-protection = ["pt-pool"]
 # `cfg(feature = "budget-racy-charge-canary")` in the pulled-in `budget.rs`
 # (the Domain ledgers of the subtree policy's Domain table).
 budget-racy-charge-canary = []

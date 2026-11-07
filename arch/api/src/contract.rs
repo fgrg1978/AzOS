@@ -100,6 +100,28 @@ pub trait ArchPlatform: Send + Sync {
     /// current root in place on ISAs where zero is not a valid root.
     fn install_user_root_local(&self, word: usize);
 
+    /// PT_PROTECTION: the leaf `word` tagged with the protection key the
+    /// kernel-half pool carries (x86_64 PKS: key 1 in PTE bits 62:59). The
+    /// word itself on an ISA with no supervisor key, and by default.
+    fn pt_tag_leaf(&self, word: u64) -> u64 { word }
+
+    /// Whether this CPU has the key hardware and the Kconfig policy lets the
+    /// kernel use it. Pure: the answer is the same on every CPU of a system.
+    fn pt_key_present(&self) -> bool { false }
+
+    /// Program this CPU so a store to a tagged page faults (CR4.PKS and
+    /// IA32_PKRS on x86_64). Per CPU: every CPU runs it, the boot CPU first.
+    /// `false`: the CPU could not take it, and nothing was changed.
+    fn pt_lock_this_cpu(&self) -> bool { false }
+
+    /// Open the write window on tagged pages for this CPU: interrupts off,
+    /// the key's write-deny lifted. Returns what [`Self::pt_window_close`]
+    /// restores, so windows nest.
+    fn pt_window_open(&self) -> u64 { 0 }
+
+    /// Close a window [`Self::pt_window_open`] opened.
+    fn pt_window_close(&self, _saved: u64) {}
+
     /// RAII window during which the kernel may touch user memory (riscv64
     /// `sstatus.SUM`, aarch64 `PSTATE.PAN` clear, x86 `stac`/`clac`).
     type UserAccess;

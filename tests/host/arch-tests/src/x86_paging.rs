@@ -373,4 +373,46 @@ mod tests {
         assert_eq!(pd[511], pa(0) | P | RW);
         assert_eq!(pts[0][511], 0x4000 + IMAGE_WINDOW - 0x1000 | P | RW);
     }
+
+    /// PT_PROTECTION's constants are the SDM's, written here as literals: the
+    /// key field is PTE bits 62:59, IA32_PKRS is MSR 0x6E1 with AD then WD per
+    /// key, and CR4.PKS is bit 24. Canary: shift the key field by one (58) and
+    /// `tag` lands in a neighbour bit.
+    #[test]
+    fn the_pks_encoding_is_the_sdms() {
+        use super::mmu::ptwin::*;
+        assert_eq!((PTE_PKEY_SHIFT, PTE_PKEY_MASK), (59, 0x7800_0000_0000_0000));
+        assert_eq!((IA32_PKRS, CR4_PKS), (0x6E1, 1 << 24));
+        assert_eq!((PKRS_AD, PKRS_WD, PKRS_LOCKED), (0b0100, 0b1000, 0b1000), "key 1 owns bits 3:2");
+        assert_eq!(key_bits(), 1 << 59);
+    }
+
+    /// Tagging sets the pool's key and nothing else (permissions, NX, the frame
+    /// and the other keys' bits stay), and a leaf of another key is retagged.
+    #[test]
+    fn tagging_a_leaf_changes_only_the_key_field() {
+        use super::mmu::ptwin::tag;
+        for perms in ALL_PERMS {
+            let w = make_leaf_with(0x1234_5000, perms, 0, true).unwrap();
+            let t = tag(w);
+            assert_eq!(t & !(0xF << 59), w & !(0xF << 59), "{perms:?}: a bit outside the key field moved");
+            assert_eq!((t >> 59) & 0xF, 1);
+            assert_eq!(perms_of(t), perms);
+        }
+        assert_eq!((tag(0x7800_0000_0000_0000 | 0x63) >> 59) & 0xF, 1, "another key is replaced");
+    }
+
+    /// The window lifts the write-deny of the pool's key and no other bit of
+    /// PKRS, and its token carries PKRS and the interrupt flag back whole.
+    #[test]
+    fn the_window_lifts_the_pool_keys_write_deny_only() {
+        use super::mmu::ptwin::*;
+        assert_eq!(opened(PKRS_LOCKED), 0);
+        assert_eq!(opened(PKRS_LOCKED | PKRS_AD | 0b11 | (0b11 << 4)), PKRS_AD | 0b11 | (0b11 << 4));
+        assert_eq!(opened(0), 0, "an already open window stays open (nesting)");
+        for (pkrs, on) in [(0u64, false), (PKRS_LOCKED, true), (0xFFFF_FFFF, true), (0x8000_0001, false)] {
+            assert_eq!(unpack(pack(pkrs, on)), (pkrs, on));
+        }
+        assert_ne!(pack(0, true), pack(0, false), "the interrupt flag is in the token");
+    }
 }

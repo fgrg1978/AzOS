@@ -465,7 +465,7 @@ pub(crate) fn lock_ro_data() {
     pt_probe();
 }
 
-const _: () = assert!(azos_limits::HYP_PT_POOL_PAGES as u64 <= PT_POOL_PAGES_MAX);
+const _: () = assert!(azos_limits::PT_POOL_PAGES as u64 <= PT_POOL_PAGES_MAX);
 
 /// The kernel half's tables, built and sealed, become the monitor's: the pool
 /// goes read-only for the host and every later word in it goes through `pt_set`

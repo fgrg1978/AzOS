@@ -14,6 +14,19 @@
 
 use azos_drv_sys::kprintln;
 
+/// PT_PROTECTION: tag the page-table pool with the supervisor key and deny
+/// writes to it on this CPU; say which. Right after the seal, one CPU up.
+#[cfg(feature = "pt-protection")]
+pub(crate) fn lock_pt_pool() {
+    use azos_mm::ptprot::Engaged;
+    match azos_mm::vmm::engage_pt_protection() {
+        // MARKER, asserted by the gate's `pt-protection` rows.
+        Engaged::Locked { pages } => kprintln!("[MM] page tables: kernel-half pool write-protected ({} pages in use)", pages),
+        Engaged::NoKey => kprintln!("[MM] page tables: kernel-half pool in use, not protected (no supervisor key on this CPU, or X86_PKS n)"),
+        Engaged::Untaggable => azos_drv_sys::kerr!("[MM] page tables: kernel-half pool NOT protected: a pool page is not a 4 KiB leaf of the direct map"),
+    }
+}
+
 /// Seal the hooks and make `.data.ro_after_init` read-only; read the page
 /// table back and say so.
 pub(crate) fn seal_ro_after_init() {

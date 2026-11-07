@@ -385,6 +385,23 @@ impl Drop for UserAccess {
 }
 
 impl ArchPlatform for X86_64 {
+    fn pt_tag_leaf(&self, word: u64) -> u64 {
+        mmu::ptwin::tag(word)
+    }
+    fn pt_key_present(&self) -> bool {
+        on_x86!(azos_arch_api::isa::x86_64::PKS.gate(cpu::features::detect().pks), "x86_64: pt_key_present: CPUID + Kconfig")
+    }
+    fn pt_lock_this_cpu(&self) -> bool {
+        on_x86!(mmu::ptwin::lock_this_cpu(), "x86_64: pt_lock_this_cpu: CR4.PKS + IA32_PKRS")
+    }
+    #[inline(always)]
+    fn pt_window_open(&self) -> u64 {
+        on_x86!(mmu::ptwin::open(), "x86_64: pt_window_open: IA32_PKRS")
+    }
+    #[inline(always)]
+    fn pt_window_close(&self, saved: u64) {
+        on_x86!(mmu::ptwin::close(saved), "x86_64: pt_window_close: IA32_PKRS")
+    }
     /// x86 instruction fetch snoops the data cache (self-modifying code is
     /// coherent after a serializing instruction): no clean needed.
     fn icache_needs_dcache_clean(&self) -> bool { false }

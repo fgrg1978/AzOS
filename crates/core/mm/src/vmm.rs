@@ -564,7 +564,7 @@ fn create_kernel_pagetable(ram: usize) -> KResult<usize> {
     let _ = ram;
     #[cfg(feature = "pt-pool")]
     {
-        let pages = crate::ptpool::pages_for(ram, ARCH.levels(), entries_per_table(), crate::kstack::TABLES, azos_limits::HYP_PT_POOL_MARGIN as usize)
+        let pages = crate::ptpool::pages_for(ram, ARCH.levels(), entries_per_table(), crate::kstack::TABLES, azos_limits::PT_POOL_MARGIN as usize)
             .ok_or(KernelError::OutOfMemory)?;
         crate::ptpool::init(pmm::alloc_contiguous(pages)?, pages);
         let page = crate::ptpool::take(root_level())?;
@@ -2538,6 +2538,54 @@ fn ro_after_init() -> wx::RoAfterInit {
         end: RO_END.load(Ordering::Relaxed),
         sealed: RO_SEALED.load(Ordering::Acquire),
     }
+}
+
+/// PT_PROTECTION: tag the pool's pages in the direct map with the ISA's
+/// supervisor key, route every later word of the pool through the write window
+/// and deny writes to the key on this CPU. After `seal_ro_after_init`, with one
+/// CPU up and no user root yet (the tags are written into the one kernel root).
+#[cfg(feature = "pt-protection")]
+pub fn engage_pt_protection() -> crate::ptprot::Engaged {
+    use crate::ptprot::Engaged;
+    struct ArchWindow;
+    impl crate::ptprot::Window for ArchWindow {
+        fn open(&self) -> u64 {
+            ARCH.pt_window_open()
+        }
+        fn close(&self, saved: u64) {
+            ARCH.pt_window_close(saved)
+        }
+    }
+    fn pool_write(pa: usize, expected: u64, new: u64, _level: usize) -> Result<(), u64> {
+        // SAFETY: `pa` is an entry of a pool page, which the direct map covers.
+        let slot = unsafe { &*(crate::addr::phys_to_virt(pa) as *const core::sync::atomic::AtomicU64) };
+        crate::ptprot::write(&ArchWindow, slot, expected, new).map(|_| ())
+    }
+    if !ARCH.pt_key_present() {
+        return Engaged::NoKey;
+    }
+    let (base, _, pages) = crate::ptpool::extent();
+    let lo = crate::addr::phys_to_virt(base);
+    let hi = lo + pages * PAGE_SIZE;
+    if split_mega_range(lo, hi) != 0 {
+        return Engaged::Untaggable;
+    }
+    let kpt = *KERNEL_PT.lock();
+    for addr in (lo..hi).step_by(PAGE_SIZE) {
+        match walk_level(kpt, addr, false, false) {
+            // SAFETY: a live level-0 leaf of the kernel root; the pool is not armed yet, so this is a store.
+            Ok((leaf, 0)) => unsafe { crate::pt::pt_set(leaf, ARCH.pt_tag_leaf(core::ptr::read_volatile(leaf))) },
+            _ => return Engaged::Untaggable,
+        }
+    }
+    ARCH.flush_tlb_all();
+    crate::ptpool::set_writer_hook(pool_write);
+    crate::ptpool::arm();
+    if !ARCH.pt_lock_this_cpu() {
+        return Engaged::NoKey;
+    }
+    crate::ptprot::mark_engaged();
+    Engaged::Locked { pages: crate::ptpool::extent().1 }
 }
 
 /// The span as 4 KiB-aligned `(start, end)` in the image's VAs, and, where the

@@ -103,10 +103,14 @@ mod slab_harden;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/pt.rs"]
 mod pt;
-#[cfg(feature = "hyp-monitor")]
+#[cfg(feature = "pt-pool")]
 #[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/ptpool.rs"]
 mod ptpool;
+#[cfg(feature = "pt-protection")]
+#[allow(dead_code)]
+#[path = "../../../../crates/core/mm/src/ptprot.rs"]
+mod ptprot;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/pte_install.rs"]
 mod pte_install;

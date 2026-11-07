@@ -25,6 +25,8 @@ pt-pool = []
 hyp-monitor = ["pt-pool"]
 # Kconfig PT_PROTECTION: the kernel protects the pool from itself, a write window opened in `pt_set`.
 pt-protection = ["pt-pool"]
+# Canary only (host row, tests/host/mm-tests): the pool's store is made after the window has closed.
+ptprot-store-outside-canary = []
 # Canary only (host row, tests/host/mm-tests): the pool is never recognised, so its words are stored directly.
 ptpool-unrouted-canary = []
 # Kconfig KASAN: the sanitizer's hooks and shadow (src/kasan.rs); the kernel is built with -Zsanitizer=kernel-address.

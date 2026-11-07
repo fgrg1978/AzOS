@@ -197,6 +197,8 @@ pub(crate) use stacks::*;
 // The end of hook installation: `.data.ro_after_init` read-only.
 mod seal;
 pub(crate) use seal::seal_ro_after_init;
+#[cfg(feature = "pt-protection")]
+pub(crate) use seal::lock_pt_pool;
 
 /// [`azos_mm::vmm::map_mmio_region`], saying a refusal. A full record
 /// (N12i): the first on the console, with the Kconfig symbol that bounds it;

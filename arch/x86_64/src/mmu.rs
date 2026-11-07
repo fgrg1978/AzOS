@@ -56,6 +56,10 @@ pub mod kaslr;
 #[path = "mmu/kaslr_boot.rs"]
 pub mod kaslr_boot;
 
+// PT_PROTECTION (Kconfig `X86_PKS`): the pool's key and the write window.
+#[path = "mmu/ptwin.rs"]
+pub mod ptwin;
+
 /// 4 KiB pages: the only base page x86_64 has.
 pub const PAGE_SIZE: usize = azos_arch_api::PAGE_SIZE;
 /// log2([`PAGE_SIZE`]).
@@ -891,6 +895,7 @@ pub struct PagingState {
     pub smep: bool,
     pub smap: bool,
     pub umip: bool,
+    pub pks: bool,
     pub pat: u64,
 }
 
@@ -972,7 +977,7 @@ pub mod cpu {
     }
 
     #[inline(always)]
-    fn rdmsr(msr: u32) -> u64 {
+    pub(super) fn rdmsr(msr: u32) -> u64 {
         let (lo, hi): (u32, u32);
         // SAFETY: an architectural MSR at CPL0.
         unsafe { asm!("rdmsr", in("ecx") msr, out("eax") lo, out("edx") hi, options(nomem, nostack, preserves_flags)) };
@@ -980,7 +985,7 @@ pub mod cpu {
     }
 
     #[inline(always)]
-    fn wrmsr(msr: u32, v: u64) {
+    pub(super) fn wrmsr(msr: u32, v: u64) {
         // SAFETY: an architectural MSR at CPL0.
         unsafe { asm!("wrmsr", in("ecx") msr, in("eax") v as u32, in("edx") (v >> 32) as u32, options(nostack, preserves_flags)) };
     }
@@ -1088,6 +1093,7 @@ pub mod cpu {
             smep: cr4 & CR4_SMEP != 0,
             smap: cr4 & CR4_SMAP != 0,
             umip: cr4 & CR4_UMIP != 0,
+            pks: cr4 & ptwin::CR4_PKS != 0,
             pat: rdmsr(IA32_PAT),
         }
     }

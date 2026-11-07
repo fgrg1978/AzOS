@@ -170,6 +170,30 @@ config USER_ALLOC_GUARD_PAGES
 #     trap needs its own decoder. Without a user it stays a note.
 
 # ---------------------------------------------------------------------------
+# Kernel self-protection of the page tables
+# ---------------------------------------------------------------------------
+
+config PT_PROTECTION
+    # cargo-feature: pt-protection
+    bool
+    default y if ARCH_X86_64 && !X86_PKS_NEVER && !HYP_MONITOR
+    default n
+    help
+      The kernel half's page tables come from a pool (PT_POOL_PAGES) the
+      kernel keeps write-protected from itself: pool pages carry a supervisor
+      protection key that denies writes, and `pt_set` (the one funnel every
+      kernel-half PTE write goes through) opens the write for the one store
+      and closes it again with interrupts off. A kernel write bug can no longer
+      rewrite a mapping. With the split monitor the same funnel is the
+      monitor's (stage 2), so this is not built there. Derived, never asked:
+      the per-ISA key choice (X86_PKS) is the Kconfig. Cost, where the CPU has
+      the key: two WRMSRs per kernel-half PTE word (mapping
+      kernel stacks, device windows, block splits); a user page-table word
+      and a fault pay one range compare against the pool, the cost the split
+      monitor's routing already has. riscv64 has no supervisor key hardware and
+      aarch64's overlay (A64_POE) is reported only, so neither derives it.
+
+# ---------------------------------------------------------------------------
 # Allocator hardening (audit findings D and E, allocator side)
 # ---------------------------------------------------------------------------
 

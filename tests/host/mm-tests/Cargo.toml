@@ -43,8 +43,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("swap-plai
 # a free list that hands an object out twice, objects off their alignment,
 # and a geometry that must not compile.
 [features]
-# `cfg(feature = "hyp-monitor")` in the pulled-in pt.rs: the kernel half's pool and its funnel to the monitor.
-hyp-monitor = []
+# `cfg(feature = "pt-pool")` in the pulled-in pt.rs: the kernel half's pool and its funnel to its writer.
+pt-pool = []
+hyp-monitor = ["pt-pool"]
+pt-protection = ["pt-pool"]
+# `cfg!(feature = "ptprot-store-outside-canary")` in the pulled-in ptprot.rs: the store is made after the window closed.
+ptprot-store-outside-canary = []
 # `cfg!(feature = "ptpool-unrouted-canary")` in the pulled-in ptpool.rs: the pool is never recognised.
 ptpool-unrouted-canary = []
 slab-freelist-canary = []

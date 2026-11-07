@@ -141,21 +141,21 @@ config HYP_ACCEPT_DMA_HOLE
       controllers the supported boards carry; a master it does not name is a
       hole this walk cannot see.
 
-config HYP_PT_POOL_PAGES
-    int "Most pages of kernel-half page tables the monitor can protect" if HYP_MONITOR
+config PT_POOL_PAGES
+    int "Most pages of kernel-half page tables the pool can hold" if HYP_MONITOR || PT_PROTECTION
     range 64 1024
     default 512
     help
       The upper bound of the run the kernel half's tables come from. The boot
       sizes the run itself from the RAM it detects (the direct map's tables),
       the kernel stack window (KERNEL_STACK_SIZE_KB, MAX_TASKS, NR_CPUS) and
-      HYP_PT_POOL_MARGIN, and refuses to boot when that is more than this. The
-      bound only sizes the pool's bookkeeping. The monitor makes the run
-      read-only for the host and takes every later change to a kernel-half table
-      through pt_set (I3). Not read without HYP_MONITOR.
+      PT_POOL_MARGIN, and refuses to boot when that is more than this. The
+      bound only sizes the pool's bookkeeping. The monitor (HYP_MONITOR) or
+      the kernel's own write window (PT_PROTECTION) takes every later change
+      to a kernel-half table through pt_set (I3). Not read with neither.
 
-config HYP_PT_POOL_MARGIN
-    int "Pages of kernel-half page tables kept for device windows and splits" if HYP_MONITOR
+config PT_POOL_MARGIN
+    int "Pages of kernel-half page tables kept for device windows and splits" if HYP_MONITOR || PT_PROTECTION
     range 16 256
     default 64
     help
@@ -163,8 +163,8 @@ config HYP_PT_POOL_MARGIN
       device window mapped into the kernel half (a table per 2 MiB it spans, one
       page at a time) and any block split after the lock. A table is never given
       back, and a map that needs a page past the run is refused. The boot prints
-      how many pages the tables used when the run was locked. Not read without
-      HYP_MONITOR.
+      how many pages the tables used when the run was locked. Not read with
+      neither HYP_MONITOR nor PT_PROTECTION.
 
 config HV_MAX_VCPUS
     int "vCPUs over all guests"

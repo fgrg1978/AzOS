@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The kernel half's page-table pool (VIRT_SPLIT or PT_PROTECTION, Kconfig
-//! `HYP_PT_POOL_PAGES`).
+//! `PT_POOL_PAGES`).
 //!
 //! The tables under the kernel root come from one contiguous run, carved at
 //! boot, so exactly those pages can be made read-only (the monitor's
@@ -17,9 +17,9 @@ use azos_common::error::{KResult, KernelError};
 use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-/// The most pages a pool can hold (Kconfig `HYP_PT_POOL_PAGES`); the run itself
+/// The most pages a pool can hold (Kconfig `PT_POOL_PAGES`); the run itself
 /// is sized at boot from the RAM and the layout ([`pages_for`]).
-pub const MAX_PAGES: usize = azos_limits::HYP_PT_POOL_PAGES as usize;
+pub const MAX_PAGES: usize = azos_limits::PT_POOL_PAGES as usize;
 /// The most levels any ISA walks (x86_64 with five-level paging).
 const MAX_LEVELS: usize = 5;
 const NONE: u16 = u16::MAX;

@@ -81,6 +81,12 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     }
     let caps = crate::boot_hooks::paging_caps();
     let _ = azos_arch::mmu::cpu::setup_paging_regs(&caps);
+    // CR4.PKS and IA32_PKRS are per CPU (Kconfig X86_PKS): the pool the boot CPU locked.
+    #[cfg(feature = "pt-protection")]
+    if azos_mm::ptprot::engaged() {
+        use azos_arch::ArchPlatform;
+        let _ = azos_arch::ARCH.pt_lock_this_cpu();
+    }
     let st = azos_arch::mmu::cpu::enable_access_protection(&caps);
     // Kconfig X86_CET_IBT: CR4.CET and IA32_S_CET are per CPU.
     let ibt = crate::boot_hooks::enable_ibt();
@@ -96,7 +102,7 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     let boot = BOOT_PROTECTION.load(Ordering::Acquire);
     if mine != boot {
         azos_drv_sys::kerr!("[SMP] FAILED: CPU {} runs protection {:#x}, the boot CPU {:#x} \
-            (bits: NXE WP PGE PCIDE SMEP SMAP UMIP IBT SPLIT-LOCK)", cpu, mine, boot);
+            (bits: NXE WP PGE PCIDE SMEP SMAP UMIP IBT SPLIT-LOCK PKS)", cpu, mine, boot);
     }
     // IA32_SPEC_CTRL, EFER.AIBRS, DE_CFG, MCU_OPT_CTRL are per CPU (Kconfig
     // X86_MIT_*); the boot CPU decided, each CPU writes its own.
@@ -139,7 +145,7 @@ static BOOT_PROTECTION: AtomicU32 = AtomicU32::new(0);
 /// A CPU's paging and protection readback, one bit each: what a secondary
 /// compares with the boot CPU's.
 fn protection(st: &azos_arch::mmu::PagingState, ibt: bool, split_lock: bool) -> u32 {
-    [st.nxe, st.wp, st.pge, st.pcide, st.smep, st.smap, st.umip, ibt, split_lock]
+    [st.nxe, st.wp, st.pge, st.pcide, st.smep, st.smap, st.umip, ibt, split_lock, st.pks]
         .iter()
         .enumerate()
         .fold(0, |w, (i, &on)| w | (on as u32) << i)
