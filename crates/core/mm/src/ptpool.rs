@@ -16,21 +16,25 @@ use azos_common::error::{KResult, KernelError};
 use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-pub const PAGES: usize = azos_limits::HYP_PT_POOL_PAGES as usize;
-const LEVELS: usize = 3;
+/// The most pages a pool can hold (Kconfig `HYP_PT_POOL_PAGES`); the run itself
+/// is sized at boot from the RAM and the layout ([`pages_for`]).
+pub const MAX_PAGES: usize = azos_limits::HYP_PT_POOL_PAGES as usize;
+/// The most levels any ISA walks (x86_64 with five-level paging).
+const MAX_LEVELS: usize = 5;
 const NONE: u16 = u16::MAX;
 
 struct Pool {
     next: usize,
     /// Per level, the head of the chain of pages handed back; `link` chains them.
-    free: [u16; LEVELS],
-    link: [u16; PAGES],
+    free: [u16; MAX_LEVELS],
+    link: [u16; MAX_PAGES],
 }
 
-static POOL: SpinLock<Pool> = SpinLock::new(Pool { next: 0, free: [NONE; LEVELS], link: [NONE; PAGES] });
+static POOL: SpinLock<Pool> = SpinLock::new(Pool { next: 0, free: [NONE; MAX_LEVELS], link: [NONE; MAX_PAGES] });
 static BASE: AtomicUsize = AtomicUsize::new(0);
+static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The level each handed-out page serves, read without the lock by every write.
-static LEVEL: [AtomicU8; PAGES] = [const { AtomicU8::new(0) }; PAGES];
+static LEVEL: [AtomicU8; MAX_PAGES] = [const { AtomicU8::new(0) }; MAX_PAGES];
 
 /// The pool's range in the direct map, set when the monitor has made it read-only.
 static ARMED_LO: AtomicUsize = AtomicUsize::new(0);
@@ -50,9 +54,28 @@ pub fn set_monitor_hook(f: MonitorSet) {
     MONITOR_SET.set(f);
 }
 
-/// The pool is the [`PAGES`] zeroed contiguous pages at physical `base`.
-/// Before the kernel root is built.
-pub fn init(base: PhysAddr) {
+/// Pages the kernel half's tables need for `ram` bytes of RAM, one table of
+/// each level a span of the direct map reaches, `stack_tables` for the kernel
+/// stack window, and `margin` for the device windows, the image's splits and
+/// later splits. `levels` and `entries` are the walk's; `None` past
+/// [`MAX_PAGES`].
+pub fn pages_for(ram: usize, levels: usize, entries: usize, stack_tables: usize, margin: usize) -> Option<usize> {
+    let mut span = PAGE_SIZE * entries;
+    let mut pages = 1;
+    // The direct map is blocks of the level-1 span, one table of each level above it per span reached.
+    for _ in 1..levels - 1 {
+        span *= entries;
+        pages += ram.div_ceil(span) + 1;
+    }
+    let total = pages + stack_tables + margin;
+    (total <= MAX_PAGES).then_some(total)
+}
+
+/// The pool is the `count` zeroed contiguous pages at physical `base`. Before
+/// the kernel root is built.
+pub fn init(base: PhysAddr, count: usize) {
+    debug_assert!(count <= MAX_PAGES);
+    COUNT.store(count, Ordering::Relaxed);
     BASE.store(base.as_usize(), Ordering::Relaxed);
 }
 
@@ -63,7 +86,7 @@ pub fn take(level: usize) -> KResult<PhysAddr> {
     let idx = if head != NONE {
         p.free[level] = p.link[head as usize];
         head as usize
-    } else if p.next < PAGES {
+    } else if p.next < COUNT.load(Ordering::Relaxed) {
         p.next += 1;
         p.next - 1
     } else {
@@ -85,17 +108,17 @@ pub fn give_back(page: PhysAddr) {
 /// Is `page` one of the pool's?
 pub fn contains(page: PhysAddr) -> bool {
     let base = BASE.load(Ordering::Relaxed);
-    base != 0 && (base..base + PAGES * PAGE_SIZE).contains(&page.as_usize())
+    base != 0 && (base..base + COUNT.load(Ordering::Relaxed) * PAGE_SIZE).contains(&page.as_usize())
 }
 
 /// `(base, pages in use, pages)`: the run, for the lock and the census.
 pub fn extent() -> (usize, usize, usize) {
-    (BASE.load(Ordering::Relaxed), POOL.lock_irqsave().next, PAGES)
+    (BASE.load(Ordering::Relaxed), POOL.lock_irqsave().next, COUNT.load(Ordering::Relaxed))
 }
 
 /// Words in the pool go through the monitor from here on.
 pub fn arm() {
-    ARMED_LEN.store(PAGES * PAGE_SIZE, Ordering::Relaxed);
+    ARMED_LEN.store(COUNT.load(Ordering::Relaxed) * PAGE_SIZE, Ordering::Relaxed);
     ARMED_LO.store(phys_to_virt(BASE.load(Ordering::Relaxed)), Ordering::Release);
 }
 

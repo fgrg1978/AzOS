@@ -55,6 +55,11 @@ const END: usize = azos_arch::mmu::KSTACK_WINDOW_END;
 const END: usize = 1 << 46;
 const BASE: usize = END - WINDOW;
 
+/// Tables the window can need at most: a level-0 table per span of its slots and a level-1 table per span of the window, built at `init`.
+pub const TABLES: usize = (SLOTS * STRIDE).div_ceil(L0_SPAN) + WINDOW.div_ceil(L0_SPAN * L0_SPAN / PAGE_SIZE);
+/// What one level-0 table maps.
+const L0_SPAN: usize = PAGE_SIZE * (PAGE_SIZE / 8);
+
 const _: () = assert!(SIZE % PAGE_SIZE == 0, "KERNEL_STACK_SIZE_KB must be a whole number of pages");
 const _: () = assert!(BASE % WINDOW == 0, "the stack window must be aligned to its size");
 // arch-only: the 64-slot limit is Sv39's; the other ISAs' kernel halves are wider.
@@ -123,10 +128,16 @@ pub fn init(guard_too: bool) -> bool {
         probe += vmm::MEGA_SIZE.max(STRIDE);
     }
     let Ok(pa) = pmm::alloc_page() else { return false };
-    let first = slot_base(1);
-    let ok = vmm::map(kpt, first, pa.as_usize(), PagePerms::KERNEL_RW).is_ok();
-    vmm::unmap_kernel(kpt, first);
-    ARCH.flush_tlb_page(first);
+    // A page mapped and unmapped in every level-0 span of the slots builds the
+    // window's tables now, while the boot may still write them freely.
+    let (first, mut ok) = (slot_base(1), true);
+    let mut at = first;
+    while ok && at < BASE + SLOTS * STRIDE {
+        ok = vmm::map(kpt, at, pa.as_usize(), PagePerms::KERNEL_RW).is_ok();
+        vmm::unmap_kernel(kpt, at);
+        ARCH.flush_tlb_page(at);
+        at += L0_SPAN;
+    }
     let _ = pmm::free_page(pa);
     if !ok { return false; }
     {

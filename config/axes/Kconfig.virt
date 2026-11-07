@@ -139,19 +139,29 @@ config HYP_ACCEPT_DMA_HOLE
       hole this walk cannot see.
 
 config HYP_PT_POOL_PAGES
-    int "Pages of kernel-half page tables the monitor protects" if HYP_MONITOR
-    range 16 512
-    default 128
+    int "Most pages of kernel-half page tables the monitor can protect" if HYP_MONITOR
+    range 64 1024
+    default 512
     help
-      The tables under the kernel root come from one run of this many pages,
-      carved at boot as one buddy block (at most 2^PMM_MAX_ORDER pages; 512 is
-      what every PMM_MAX_ORDER allows). The monitor makes the run read-only for
-      the host and takes every later change to a kernel-half table through
-      pt_set (I3). A table is never given back, so the run bounds how much the
-      kernel half can map: kernel stacks, device windows and the split direct
-      map. A map that needs another table past the run is refused. The boot
-      prints how many pages the tables used when the run was locked. Not read
-      without HYP_MONITOR (no run is carved).
+      The upper bound of the run the kernel half's tables come from. The boot
+      sizes the run itself from the RAM it detects (the direct map's tables),
+      the kernel stack window (KERNEL_STACK_SIZE_KB, MAX_TASKS, NR_CPUS) and
+      HYP_PT_POOL_MARGIN, and refuses to boot when that is more than this. The
+      bound only sizes the pool's bookkeeping. The monitor makes the run
+      read-only for the host and takes every later change to a kernel-half table
+      through pt_set (I3). Not read without HYP_MONITOR.
+
+config HYP_PT_POOL_MARGIN
+    int "Pages of kernel-half page tables kept for device windows and splits" if HYP_MONITOR
+    range 16 256
+    default 64
+    help
+      Added to what the RAM and the stack window need: the image's splits, every
+      device window mapped into the kernel half (a table per 2 MiB it spans, one
+      page at a time) and any block split after the lock. A table is never given
+      back, and a map that needs a page past the run is refused. The boot prints
+      how many pages the tables used when the run was locked. Not read without
+      HYP_MONITOR.
 
 config HV_MAX_VCPUS
     int "vCPUs over all guests"

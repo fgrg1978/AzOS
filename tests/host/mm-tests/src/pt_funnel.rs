@@ -49,19 +49,31 @@ mod pool {
         std::mem::take(&mut *CALLS.lock().unwrap())
     }
 
+    #[test]
+    fn the_pool_is_sized_from_the_ram_the_stack_window_and_the_margin() {
+        let (gib, entries) = (1usize << 30, PAGE_SIZE / 8);
+        // The root, a level-1 table per GiB (and one for the misalignment), then the window and the margin.
+        assert_eq!(ptpool::pages_for(gib, 3, entries, 10, 64), Some(1 + 2 + 10 + 64));
+        assert_eq!(ptpool::pages_for(64 * gib, 3, entries, 10, 64), Some(1 + 65 + 10 + 64));
+        // A fourth level adds a table per span of the level above.
+        assert_eq!(ptpool::pages_for(gib, 4, entries, 10, 64), Some(1 + 2 + 2 + 10 + 64));
+        // More than the bound is a refusal, not a smaller pool.
+        assert_eq!(ptpool::pages_for(1024 * 1024 * gib, 3, entries, 10, 64), None);
+    }
+
     /// One scenario, in order: the pool is global state.
     #[test]
     fn words_in_the_armed_pool_go_to_the_monitor_and_nothing_else_does() {
-        let layout = std::alloc::Layout::from_size_align(ptpool::PAGES * PAGE_SIZE, PAGE_SIZE).unwrap();
+        let layout = std::alloc::Layout::from_size_align(ptpool::MAX_PAGES * PAGE_SIZE, PAGE_SIZE).unwrap();
         // SAFETY: a zeroed allocation of the pool's size, kept for the process.
         let base = unsafe { std::alloc::alloc_zeroed(layout) } as usize;
-        ptpool::init(crate::addr::PhysAddr::new(base));
+        ptpool::init(crate::addr::PhysAddr::new(base), ptpool::MAX_PAGES);
         ptpool::set_monitor_hook(hook);
 
         let root = ptpool::take(2).unwrap();
         let mid = ptpool::take(1).unwrap();
         assert_eq!((root.as_usize(), mid.as_usize()), (base, base + PAGE_SIZE));
-        assert!(ptpool::contains(mid) && !ptpool::contains(crate::addr::PhysAddr::new(base + ptpool::PAGES * PAGE_SIZE)));
+        assert!(ptpool::contains(mid) && !ptpool::contains(crate::addr::PhysAddr::new(base + ptpool::MAX_PAGES * PAGE_SIZE)));
         let slot = unsafe { &*((base + PAGE_SIZE + 8) as *const AtomicU64) };
 
         // Before the lock a pool word is an ordinary word.
@@ -98,9 +110,12 @@ mod pool {
         assert_eq!(ptpool::take(1).unwrap().as_usize(), base + 2 * PAGE_SIZE + PAGE_SIZE);
         assert_eq!(ptpool::take(0).unwrap(), spare);
 
+        // A page of the pool never reaches the page allocator.
+        assert_eq!(crate::pmm::free_page(root), Err(azos_common::error::KernelError::PermissionDenied));
+
         // The pool is finite.
         while ptpool::take(0).is_ok() {}
         assert_eq!(ptpool::take(0), Err(azos_common::error::KernelError::OutOfMemory));
-        assert_eq!(ptpool::extent().1, ptpool::PAGES);
+        assert_eq!(ptpool::extent().1, ptpool::MAX_PAGES);
     }
 }

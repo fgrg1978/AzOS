@@ -559,10 +559,14 @@ pub fn create_pagetable() -> KResult<usize> {
 
 /// The kernel's root: the first page of the monitor's pool when it protects
 /// the kernel half, a table-zone page otherwise.
-fn create_kernel_pagetable() -> KResult<usize> {
+fn create_kernel_pagetable(ram: usize) -> KResult<usize> {
+    #[cfg(not(feature = "hyp-monitor"))]
+    let _ = ram;
     #[cfg(feature = "hyp-monitor")]
     {
-        crate::ptpool::init(pmm::alloc_contiguous(crate::ptpool::PAGES)?);
+        let pages = crate::ptpool::pages_for(ram, ARCH.levels(), entries_per_table(), crate::kstack::TABLES, azos_limits::HYP_PT_POOL_MARGIN as usize)
+            .ok_or(KernelError::OutOfMemory)?;
+        crate::ptpool::init(pmm::alloc_contiguous(pages)?, pages);
         let page = crate::ptpool::take(root_level())?;
         meta_add(page.as_usize())?;
         Ok(page.as_usize())
@@ -1230,6 +1234,10 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
 
         let l0_pt = match table_page(pt_phys, 0) {
             Ok(p) => p.as_usize(),
+            // The caller frees the frame once this returns: a mapping that stays would outlive it.
+            Err(_) if pt_phys == KERNEL_ROOT.load(Ordering::Relaxed) => {
+                panic!("unmap of {:#x}: no table page to split the block it lies in", vaddr)
+            }
             Err(_) => return, // OOM — cannot split, bail out.
         };
 
@@ -2078,8 +2086,17 @@ pub fn ram_end() -> usize {
     RAM_END.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// A RAM map that ran out of table pages is a boot that has lost memory: it is
+/// reported, not skipped. Any other answer (a block already there) is as before.
+fn ram_mapped(r: KResult<()>) -> KResult<()> {
+    match r {
+        Err(KernelError::OutOfMemory) => Err(KernelError::OutOfMemory),
+        _ => Ok(()),
+    }
+}
+
 pub fn init(mem_start: usize, mem_size: usize) -> KResult<()> {
-    let kpt = create_kernel_pagetable()?;
+    let kpt = create_kernel_pagetable(mem_size)?;
     *KERNEL_PT.lock() = kpt;
     KERNEL_ROOT.store(kpt, Ordering::Relaxed);
     // The device windows recorded belong to the kernel table `init` replaces:
@@ -2095,7 +2112,7 @@ pub fn init(mem_start: usize, mem_size: usize) -> KResult<()> {
     let mega_start = (mem_start + MEGA_SIZE - 1) & !(MEGA_SIZE - 1);
     let mut addr = mem_start;
     while addr < mega_start && addr < mem_end {
-        let _ = map(kpt, kernel_va(addr), addr, PagePerms::KERNEL_RWX);
+        ram_mapped(map(kpt, kernel_va(addr), addr, PagePerms::KERNEL_RWX))?;
         addr += PAGE_SIZE;
     }
 
@@ -2103,13 +2120,13 @@ pub fn init(mem_start: usize, mem_size: usize) -> KResult<()> {
     let mega_end = mem_end & !(MEGA_SIZE - 1);
     addr = mega_start;
     while addr < mega_end {
-        let _ = map_mega(kpt, kernel_va(addr), addr, PagePerms::KERNEL_RWX);
+        ram_mapped(map_mega(kpt, kernel_va(addr), addr, PagePerms::KERNEL_RWX))?;
         addr += MEGA_SIZE;
     }
 
     // Phase 3: 4 KiB pages for any unaligned tail (last partial 2M block)
     while addr < mem_end {
-        let _ = map(kpt, kernel_va(addr), addr, PagePerms::KERNEL_RWX);
+        ram_mapped(map(kpt, kernel_va(addr), addr, PagePerms::KERNEL_RWX))?;
         addr += PAGE_SIZE;
     }
 
