@@ -549,6 +549,12 @@ const RESOURCE_SENSORS: [&[u8]; 10] = [
     b"sensor.5", b"sensor.6", b"sensor.7", b"sensor.8", b"sensor.9",
 ];
 
+/// The camera's `frame.0` endpoint of the `Frame` interface
+/// (`azos_devif::frame`), READ only: a camera frame is what the camera saw.
+/// Narrowed at seeding like the sensors: only an image whose seccomp row lists
+/// the `frame` interface receives it (CAPTEST.ELF).
+const RESOURCE_FRAME: &[u8] = b"frame.0";
+
 /// The energy model the `energy-smoke` QEMU row boots with (`-smp 2`): a
 /// "little" CPU 0 and a "big" CPU 1. Invented numbers; they only have to be a
 /// model `EnergyModel::validate` accepts on two CPUs. The row checks that the
@@ -784,7 +790,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 
     // P1 migration seed for the autorun task: Motor(0)/Motor(1) RW, the free
     // PWM channel and GPIO pin, the IMU READ,
-    // and the ten `sensor.0`..`sensor.9` READ endpoints. Every kind
+    // the ten `sensor.0`..`sensor.9` READ endpoints and the camera's
+    // `frame.0` READ endpoint. Every kind
     // declared here has a typed minter in `crates/core/ipc/src/cap_seed.rs`
     // (`seed_one_cap`); a kind without one would document a capability the
     // bridge can never mint — see that file's gap list.
@@ -943,6 +950,11 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 kind: CapKind::Endpoint,
                 perms: CapPerms::READ,
                 target: MaybeStr::from_bytes(RESOURCE_SENSORS[9]), transfer: false, ops: 0,
+        },
+            CapSpec {
+                kind: CapKind::Endpoint,
+                perms: CapPerms::READ,
+                target: MaybeStr::from_bytes(RESOURCE_FRAME), transfer: false, ops: 0,
         },
             // U06-9 (2026-09-26): the ring-3 door onto the reserved-sector
             // brain-link PSK (the kernel-hosted `linkkey` endpoint). `brain_client` is
@@ -3932,11 +3944,11 @@ mod tests {
         let motor_count = caps.iter().filter(|c| c.kind == CapKind::Endpoint && c.target.as_str().starts_with("motor.")).count();
         let non_motor_count = caps.len() - motor_count;
         // Present regardless of `profile-actuation`: endpoint pwm.4,
-        // gpio.20, i2c.0.0x68, sensor.0..9 × 10 = 13 (plus whatever
+        // gpio.20, i2c.0.0x68, sensor.0..9 × 10, frame.0 = 14 (plus whatever
         // `cap-refusal-canary` adds, not exercised by this test — see
         // `tests/host/topology-tests`' cap-canary run for that half).
         assert_eq!(
-            non_motor_count, 13,
+            non_motor_count, 14,
             "non-motor grant count drifted — update this test AND check \
              whether the drift was intentional"
         );

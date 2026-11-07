@@ -575,6 +575,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // The partition block, issued only where the
             // topology grants `block.part.1` (the `disk-part-row` boot).
             azos_devif::key::BLOCK,
+            // The camera's frames, a robot image's: the endpoint is granted
+            // only there, and `frame_reads` returns where it is not.
+            azos_devif::key::FRAME,
         ],
     },
     ImageProfile {

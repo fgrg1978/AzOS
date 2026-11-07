@@ -220,6 +220,75 @@ pub fn sensor_bind_vdso(ep: u32) -> Result<bool, u32> {
     value(SensorClient::new(Ep(ep)).bind_vdso())
 }
 
+/// A buffer for [`frame_next`]: a contiguous read-write memory object, mapped
+/// in this task, that the kernel copies a camera frame into. Given back on drop.
+pub struct FrameBuffer {
+    cap: u32,
+    base: *const u8,
+    bytes: usize,
+}
+
+impl FrameBuffer {
+    /// A buffer of at least `bytes` bytes (ask the camera with
+    /// [`frame_buffer_bytes`]). `Err` is the outcome: `FAULT` when the object
+    /// could not be made or mapped.
+    pub fn new(bytes: usize) -> Result<FrameBuffer, u32> {
+        let pages = bytes.div_ceil(crate::PAGE_SIZE).max(1);
+        let cap = crate::shm_create_typed(
+            pages as u64,
+            crate::SHM_RW | azos_abi::syscall_nr::SHM_KIND_CONTIG << azos_abi::syscall_nr::SHM_CREATE_KIND_SHIFT,
+        );
+        if cap <= 0 {
+            return Err(outcome::FAULT);
+        }
+        let cap = cap as u32;
+        let va = crate::shm_map_typed(cap);
+        if va <= 0 {
+            let _ = crate::shm_release_typed(cap);
+            return Err(outcome::FAULT);
+        }
+        Ok(FrameBuffer { cap, base: va as usize as *const u8, bytes: pages * crate::PAGE_SIZE })
+    }
+
+    /// The first `len` bytes of the buffer (at most its size): the frame the
+    /// last [`frame_next`] copied, with `len` its [`frame::Meta::len`].
+    pub fn bytes(&self, len: usize) -> &[u8] {
+        // SAFETY: `base` is the start of a mapping of `self.bytes` bytes this
+        // task made and owns until the drop; the kernel writes it only during
+        // `frame_next`, which takes `&mut FrameBuffer`, so no slice from here
+        // is live then.
+        unsafe { core::slice::from_raw_parts(self.base, len.min(self.bytes)) }
+    }
+}
+
+impl Drop for FrameBuffer {
+    fn drop(&mut self) {
+        let _ = crate::shm_release_typed(self.cap);
+    }
+}
+
+/// The least size of the buffer [`frame_next`] takes, from the `frame`
+/// endpoint `ep` (`READ`). `Err` is the outcome (`NO_SERVER` when the call did
+/// not reach the kernel's interface).
+pub fn frame_buffer_bytes(ep: u32) -> Result<u32, u32> {
+    value(FrameClient::new(Ep(ep)).buffer_bytes())
+}
+
+/// Copy the camera's newest frame this task has not taken into `buf` (and
+/// become a reader of the camera if this is the first call): what the bytes are
+/// and when they were acquired come back. `Err` is the outcome: `NOT_READY`
+/// while there is no new frame (or no camera), `BUSY` when every reader slot is
+/// taken, `DENIED` without `READ`, `BAD_ARGUMENT` for a buffer too small,
+/// `UNSUPPORTED` for one that is not contiguous.
+pub fn frame_next(ep: u32, buf: &mut FrameBuffer) -> Result<frame::Meta, u32> {
+    value(FrameClient::new(Ep(ep)).next(Cap::<frame::FrameBuf>::from_raw(buf.cap)))
+}
+
+/// End this task's reading of the camera behind `ep`.
+pub fn frame_close(ep: u32) -> Result<(), u32> {
+    value(FrameClient::new(Ep(ep)).close())
+}
+
 /// Sign `msg` (1..=[`keys::SIGN_MSG_MAX`] bytes) with the key `key` of the
 /// kernel-hosted `keys` endpoint `ep` (`READ`): the message goes to the kernel
 /// in a memory object made for the call, the signature (Ed25519, 64 bytes)

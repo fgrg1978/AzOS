@@ -1143,6 +1143,7 @@ mod image_profiles {
         ("SOUND", azos_devif::key::SOUND),
         ("POWER_ASSERT", azos_devif::key::POWER_ASSERT),
         ("VOLUME", azos_devif::key::VOLUME),
+        ("FRAME", azos_devif::key::FRAME),
     ];
 
     /// The kernel-hosted interfaces the image's sources name (`dev::key::NAME`).

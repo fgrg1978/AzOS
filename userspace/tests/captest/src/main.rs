@@ -367,6 +367,69 @@ fn stamped_reads() {
     }
 }
 
+/// A camera frame reaches this task through the `frame` endpoint, into a
+/// buffer it made: the first call makes it a reader and the camera starts
+/// capturing, so a frame arrives within a few capture periods (the kernel's
+/// `CAMERA_TX_CAPTURE_PERIOD_MS`; polled for 5 s). The frame is a JPEG (SOI to
+/// EOI), acquired before the call on the vDSO clock, and the next one is a
+/// later frame. A buffer smaller than the pool's buffer is refused and takes
+/// no frame. Where no camera is built the endpoint is not granted and nothing
+/// is printed.
+///
+/// The summary line is printed only when every check held; the gate row greps
+/// it. Canary: the `frame-class-canary` kernel feature (a read copies nothing).
+fn frame_reads() {
+    use sys::dev::outcome;
+    let Some(ep) = sys::dev::lookup(sys::dev::key::FRAME, 0) else { return };
+    let before = unsafe { FAILURES };
+    let bytes = sys::dev::frame_buffer_bytes(ep).unwrap_or(0) as usize;
+    let (Some(mut buf), Some(mut small)) = (sys::dev::FrameBuffer::new(bytes).ok(), sys::dev::FrameBuffer::new(1).ok()) else {
+        report(b"frame: buffers", false, -1);
+        return;
+    };
+    report(b"frame_next(a buffer below the pool's) is refused",
+           bytes > sys::PAGE_SIZE && sys::dev::frame_next(ep, &mut small) == Err(outcome::BAD_ARGUMENT), 0);
+    let mut first = None;
+    for _ in 0..50 {
+        match sys::dev::frame_next(ep, &mut buf) {
+            Ok(m) => {
+                first = Some(m);
+                break;
+            }
+            Err(outcome::NOT_READY) => sys::sleep(100),
+            Err(c) => {
+                report(b"frame_next", false, -(c as isize));
+                return;
+            }
+        }
+    }
+    let Some(m) = first else {
+        report(b"frame_next: a frame within 5 s", false, -1);
+        return;
+    };
+    let t1 = sys::vdso_now_ns();
+    let jpeg = buf.bytes(m.len as usize);
+    report(b"frame is a JPEG (SOI ... EOI) of the format the reply says",
+           m.format == sys::dev::frame::format::JPEG && jpeg.len() > 4 && jpeg[..2] == [0xFF, 0xD8] && jpeg[jpeg.len() - 2..] == [0xFF, 0xD9], m.len as isize);
+    report(b"frame acquired before the call on the vDSO clock", m.acq_ns != 0 && m.acq_ns <= t1 && t1 - m.acq_ns < 5_000_000_000, m.acq_ns as isize);
+    let mut next = None;
+    for _ in 0..50 {
+        match sys::dev::frame_next(ep, &mut buf) {
+            Ok(n) => {
+                next = Some(n);
+                break;
+            }
+            Err(outcome::NOT_READY) => sys::sleep(100),
+            Err(_) => break,
+        }
+    }
+    report(b"the next frame is a later one", matches!(next, Some(n) if n.seq > m.seq && n.acq_ns >= m.acq_ns), next.map_or(-1, |n| n.seq as isize));
+    report(b"frame_close", sys::dev::frame_close(ep) == Ok(()), 0);
+    if unsafe { FAILURES } == before {
+        sys::println(b"[CAPTEST] frame: a camera frame reached ring 3 in a buffer of its own, a JPEG acquired before the call, the next one later");
+    }
+}
+
 /// One `[CAPTEST]  FAIL  sensor_read_ts(<name>): <what> rc=<rc>` line.
 fn stamped_fail(name: &[u8], what: &[u8], rc: isize) {
     Line::new()
@@ -556,6 +619,9 @@ pub extern "C" fn _start() -> ! {
 
     // ── Wave 11 (SENSORTS): the reading's acquisition stamp ──────────────
     stamped_reads();
+
+    // ── The frame class: a camera frame reaches ring 3 ───────────────────
+    frame_reads();
 
     // ── POSITIVE: granted motors accept a write ──────────────────────────
     // Speed 0 on purpose: this asserts the capability, and must not move a

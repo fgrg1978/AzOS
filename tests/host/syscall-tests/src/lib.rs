@@ -167,6 +167,10 @@ pub mod keys;
 // The `Volume` interface (the check of a mounted volume, by hand).
 #[path = "../../../../crates/core/syscall/src/volume_host.rs"]
 pub mod volume_host;
+// The `Frame` interface and the frame class's pool.
+#[cfg(feature = "use-robot")]
+#[path = "../../../../crates/core/syscall/src/frame_host.rs"]
+pub mod frame_host;
 #[path = "../../../../crates/core/syscall/src/power.rs"]
 pub mod power;
 #[path = "../../../../crates/core/syscall/src/power_assert.rs"]
@@ -783,6 +787,12 @@ mod handlers {
     mod volume_guards {
         use super::*;
         include!("volume_guards.rs");
+    }
+
+    #[cfg(all(test, feature = "use-robot"))]
+    mod frame_guards {
+        use super::*;
+        include!("frame_guards.rs");
     }
 
     #[cfg(test)]

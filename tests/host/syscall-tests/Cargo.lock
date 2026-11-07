@@ -65,6 +65,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_cam_ring"
+version = "0.1.0"
+dependencies = [
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_chaos"
 version = "0.1.0"
 dependencies = [
@@ -201,6 +208,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch_api",
+ "azos_cam_ring",
  "azos_common",
  "azos_config",
  "azos_crypto",

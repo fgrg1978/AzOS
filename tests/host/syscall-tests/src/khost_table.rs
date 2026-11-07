@@ -22,6 +22,7 @@ fn expected_keys() -> Vec<u16> {
         .filter(|&k| cfg!(feature = "board-io") || k != key::ADC)
         .filter(|&k| cfg!(feature = "virtio-snd") || k != key::SOUND)
         .filter(|&k| cfg!(feature = "hv") || (k != key::VM && k != key::VCPU))
+        .filter(|&k| cfg!(feature = "use-robot") || k != key::FRAME)
         .collect()
 }
 
@@ -41,7 +42,7 @@ fn every_hosted_interface_has_exactly_one_row() {
 
 /// **Which interfaces may carry capability entries**: the ones with an op that
 /// takes a queue (`Uart`, `Adc`), a memory object and a port (`Vm`, `Display`),
-/// a memory object (`MemCtl`, `Keys`) or a stream's queues (`Sound`). The row's
+/// a memory object (`MemCtl`, `Keys`, `Frame`) or a stream's queues (`Sound`). The row's
 /// column is derived from the IDL, so this list is the check that the derivation
 /// agrees with what the kernel-hosted call path (`ipc_v2::call_kernel_hosted`)
 /// has always allowed.
@@ -57,6 +58,7 @@ fn only_uart_adc_vm_display_memctl_keys_and_sound_requests_may_carry_capability_
             || k == key::DISPLAY
             || k == key::MEMCTL
             || k == key::KEYS
+            || k == key::FRAME
             || k == key::SOUND
     };
     let hosted: Vec<(u16, bool)> = crate::khost::hosted_keys().collect();

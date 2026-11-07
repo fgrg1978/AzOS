@@ -2148,7 +2148,7 @@ fn an_interface_that_may_wait_is_not_served_from_a_pass() {
     assert_eq!(done(c[0]), enosys, "an RT submitter's sync was served from a pass");
     assert_eq!(unsafe { window(ring, 64) }[0], sync, "a refused entry wrote its window");
     use azos_devif::key;
-    for k in [key::ADC, key::ENTROPY, key::CLOCK, key::POWER, key::NET, key::VOLUME] {
+    for k in [key::ADC, key::ENTROPY, key::CLOCK, key::POWER, key::NET, key::VOLUME, key::FRAME] {
         assert!(!crate::khost::ring_served(k, 0), "host key {k} is served from a pass");
     }
     // The device rows follow their sources' declarations (the stand-ins': a

@@ -53,6 +53,15 @@ gpio-badge-canary = ["azos_devif/badge-without-controller-canary"]
 # (`the_kill_switch_line_is_refused_to_a_holder_of_its_endpoint` goes red).
 gpio-unbound-falls-to-board-canary = []
 gpio-safety-guard-canary = []
+# Mirror azos_syscall's canaries of the pulled-in frame_host.rs (rows of
+# src/frame_guards.rs): a read copies nothing; the buffer is checked after the
+# frame is taken; a task's every call takes a reader slot; an exit keeps its
+# slot; the pool's view of a frame writes into it.
+frame-copy-skip-canary = []
+frame-check-late-canary = []
+frame-slot-per-call-canary = []
+frame-exit-keeps-canary = []
+frame-reader-writes-canary = ["azos_cam_ring/canary-reader-writes"]
 # `ipc_handlers.rs` `doorbell_word`'s canary: the doorbell offset's end wraps
 # (`a_doorbell_offset_outside_its_region_is_refused` goes red).
 doorbell-wrap-canary = []
@@ -208,6 +217,8 @@ azos_idl = { path = "../../../crates/core/idl" }
 azos_fb = { path = "../../../crates/drivers/fb" }
 # The region rings the `Uart` and `Adc` servers push into (`devices.rs`).
 azos_rings = { path = "../../../crates/core/rings" }
+# The frame class's pool, served by the pulled-in `frame_host.rs`.
+azos_cam_ring = { path = "../../../crates/drivers/cam-ring" }
 # Wave 14 (SPAWNCACHE): `image_cache.rs` sizes its kept frames by Kconfig
 # `EXEC_IMAGE_CACHE_KB` (generated from the tree's .config, as the mm shim's).
 azos_limits = { path = "../../../crates/core/limits" }
