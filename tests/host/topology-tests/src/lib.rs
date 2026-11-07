@@ -159,6 +159,7 @@ mod irq_bind {
         perms: crate::cap::CapPerms,
     ) -> Option<crate::cap::Cap<crate::cap::targets::Irq>> {
         if irq == 0 || irq >= azos_drv_irqchip::plic::MAX_IRQS {
+            line_refused(tid, irq, 5);
             return None;
         }
         crate::cap_store::grant::<crate::cap::targets::Irq>(tid, perms, irq)
@@ -168,11 +169,19 @@ mod irq_bind {
     /// ring 3; the host has none. (The real minter and its ops are covered by
     /// `tests/host/ipc-tests`.)
     pub fn irq_grant_msi_cap(
-        _tid: u32,
-        _k: u32,
+        tid: u32,
+        k: u32,
         _perms: crate::cap::CapPerms,
     ) -> Option<crate::cap::Cap<crate::cap::targets::Irq>> {
+        line_refused(tid, k, 6);
         None
+    }
+
+    /// The real `line_refused`'s record.
+    pub(crate) fn line_refused(tid: u32, line: u32, why: u64) {
+        if !cfg!(feature = "line-grant-silent-canary") {
+            azos_decision::record(azos_decision::Rule::LineGrant, azos_decision::Verdict::Refuse, tid, [u64::from(line), 0, why]);
+        }
     }
 }
 #[path = "../../../../crates/core/ipc/src/cap_seed.rs"]
@@ -3226,7 +3235,7 @@ mod mmio_cap_tests {
         machine();
         let tid = fresh_tid();
         assert!(hwbus::user_window(handle("dt:vendor,sharer")).is_some(), "the sharer is mappable");
-        for target in ["irq.dt:vendor,sharer", "irq.10", "irq.dt:ns16550a"] {
+        for target in ["irq.dt:vendor,sharer", "irq.10", "irq.dt:ns16550a", "irq.dt:no,such", "irq.dt:vendor,nowindow", "irq.9999999", "msi.1"] {
             assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, target).is_none(), "{target}");
         }
         let mut got = Vec::new();
@@ -3236,7 +3245,11 @@ mod mmio_cap_tests {
             }
         });
         got.sort();
-        assert_eq!(got, vec![(0, 1), (10, 0), (10, 2)], "line and why of each refusal");
+        assert_eq!(
+            got,
+            vec![(0, 1), (0, 1), (0, 3), (1, 6), (10, 0), (10, 2), (9_999_999, 5)],
+            "line and why of each refusal: the numeric form, a selector's device, its line, no device, the ranges"
+        );
     }
 
     /// A topology `mmio.<selector>` grant mints a capability whose resource is

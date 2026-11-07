@@ -140,6 +140,18 @@ impl<const N: usize> AttachLog<N> {
     }
 }
 
+/// What the boot notes for a function once it is settled ([`settle`]):
+/// `Blocked` is `Block` only if the unit accepted the Block (`block_accepted`;
+/// a refusal leaves the function as it was, so nothing is noted); `Translating`
+/// is `Translate`; a function in pass-through keeps what the boot noted.
+pub const fn settled_as(s: Settled, block_accepted: bool) -> Option<Attached> {
+    match s {
+        Settled::Translating => Some(Attached::Translate),
+        Settled::Blocked if block_accepted || cfg!(feature = "attach-assumed-canary") => Some(Attached::Block),
+        Settled::Blocked | Settled::PassThrough => None,
+    }
+}
+
 /// Which IOMMU a unit is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flavour {

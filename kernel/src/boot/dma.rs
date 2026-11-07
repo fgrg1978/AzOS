@@ -316,7 +316,11 @@ fn ring3_confinable(dev: u32) -> bool {
 /// The console line of a ring-3 binding's end.
 fn ring3_report(e: azos_ipc::dma_bind::Ended) {
     use azos_ipc::dma_bind::Outcome;
-    let at = if e.exit { "the exit" } else { "the unmap" };
+    let at = match (e.exit, e.outcome) {
+        (true, _) => "the exit",
+        (false, Outcome::MapUnconfirmed) => "the map",
+        (false, _) => "the unmap",
+    };
     match e.outcome {
         Outcome::Released => kprintln!("[DMA] device {}: {} of tid {} ended its binding, {} bytes back", e.dev, at, e.tid, e.bytes),
         Outcome::NotStopped | Outcome::UnmapFailed | Outcome::MapUnconfirmed => azos_drv_sys::kerr!(
@@ -859,14 +863,18 @@ mod hw {
             let bound = crate::boot::hwbus::pci_bound(info) || canary!("iommu-fail-open");
             match azos_iommu::settle(bound, enabled) {
                 Settled::Translating => {
-                    attached(rid, Attached::Translate);
+                    if let Some(how) = azos_iommu::settled_as(Settled::Translating, true) {
+                        attached(rid, how);
+                    }
                     translated += 1;
                     kprintln!("[IOMMU] {} {}: translating", info.bdf, driver.unwrap_or("?"));
                 }
                 Settled::PassThrough => passed += 1,
                 Settled::Blocked => match unit.attach(rid, DomainMode::Block) {
                     Ok(()) => {
-                        attached(rid, Attached::Block);
+                        if let Some(how) = azos_iommu::settled_as(Settled::Blocked, true) {
+                            attached(rid, how);
+                        }
                         blocked += 1;
                         kprintln!("[IOMMU] {}: DMA blocked (its driver did not bind)", info.bdf);
                     }

@@ -226,7 +226,9 @@ config TOPOLOGY_NEVERALLOW
       actuator unless the table lists the row as one, no desktop image
       grants a motor, no row both asks the name server for names and serves
       an endpoint or a driver. A topology that breaks one is refused by
-      `admission_check` (the signed candidate falls back or halts as
+      `admission_check`, except that the two msi rules (a slot's rows drive one
+      device and do not hand the slot on) are safety rules, applied with this
+      off too (the signed candidate falls back or halts as
       TOPOLOGY_SOURCE says; the built-in topology halts) and a decision
       record (`neverallow`, `why list`) names the rule and the row.
       `make check-neverallow` runs the same rules over every preset's

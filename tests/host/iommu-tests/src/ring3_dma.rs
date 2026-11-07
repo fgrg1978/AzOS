@@ -197,6 +197,40 @@ fn a_map_that_failed_in_the_page_table_is_flushed_back_or_keeps_its_frames() {
     assert!(!d.0.lock().unwrap().is_empty());
 }
 
+/// **The boot's notes at settle: a Block the unit refused is noted as nothing
+/// and the function keeps the pass-through it was placed in; a translating one
+/// is `Translate`.** This is the sequence `iommu_init` and `iommu_settle` run
+/// (`kernel/src/boot/dma.rs`), over the log the window policy reads.
+///
+/// **Canary.** `attach-assumed-canary`: a refused Block is noted as Block.
+#[test]
+fn settle_notes_a_refused_block_as_nothing_and_a_translating_function_as_translate() {
+    use azos_iommu::{settle, settled_as, AttachLog, Attached, Settled};
+    let mut log: AttachLog<4> = AttachLog::new();
+    // iommu_init: every function was attached as placed.
+    for rid in [0x10, 0x18, 0x20] {
+        assert!(log.note(rid, Attached::from(DomainMode::Bypass)));
+    }
+    // 0x10: no driver, and the unit refused its Block.
+    let blocked = settle(false, false);
+    assert_eq!(blocked, Settled::Blocked);
+    if let Some(how) = settled_as(blocked, false) {
+        log.note(0x10, how);
+    }
+    assert!(!log.confines(0x10), "a function whose Block was refused reads confined");
+    // 0x18: no driver, Block accepted.
+    if let Some(how) = settled_as(settle(false, false), true) {
+        log.note(0x18, how);
+    }
+    assert!(log.confines(0x18));
+    // 0x20: its driver enabled a translating domain.
+    if let Some(how) = settled_as(settle(true, true), true) {
+        log.note(0x20, how);
+    }
+    assert_eq!(log.get(0x20), Some(Attached::Translate));
+    assert_eq!(settled_as(settle(true, false), true), None, "pass-through keeps what init noted");
+}
+
 /// **One binding per object, and a binding is ended only by the task that
 /// made it.** The exit path drains a task's bindings one at a time and leaves
 /// the others'.

@@ -13175,6 +13175,10 @@ host_job host_canary_row "ring-3: neverallow always canary" topology-tests never
     an_msi_slot_cannot_be_handed_on_and_its_rules_hold_with_the_option_off
 host_job host_canary_row "ring-3: msi vector reissue canary" ipc-tests msi-reissue-canary \
     a_given_back_msi_vector_is_reissued_only_to_its_own_slot
+host_job host_canary_row "ring-3: msi slot bound canary" ipc-tests msi-slot-unbounded-canary \
+    a_slot_cannot_take_more_vectors_than_its_bound
+host_job host_canary_row "ring-3: attach at settle canary" iommu-tests attach-assumed-canary \
+    settle_notes_a_refused_block_as_nothing_and_a_translating_function_as_translate
 host_job host_canary_row "dma: failed map frees unconfirmed block canary" dma-tests map-failed-frees-canary \
     a_block_whose_map_may_have_landed_stays_allocated_and_counted
 # Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two

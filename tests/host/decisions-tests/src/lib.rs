@@ -605,6 +605,7 @@ mod tests {
             (Rule::SafetyLine, 89, "safety-line"),
             (Rule::Ring3Dma, 90, "ring3-dma"),
             (Rule::LineGrant, 91, "line-grant"),
+            (Rule::MsiVector, 92, "msi-vector"),
         ];
         assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {

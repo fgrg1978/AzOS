@@ -343,7 +343,7 @@ fn bind(
     // An MSI slot takes its vector now, enabled on `cpu`; it goes back with
     // the binding.
     let msi = if irq & MSI_LINE != 0 {
-        match msi_take(irq, cpu) {
+        match msi_take(owner_task, irq, cpu) {
             Ok(m) => Some(m),
             Err(e) => {
                 if budgeted {
@@ -756,16 +756,11 @@ fn msi_ops() -> Option<MsiOps> {
 /// Vectors a holder gave back, `(slot, vector)`: the device the holder
 /// programmed may still hold the message, so a vector is reissued only to a
 /// bind of the slot it was taken for ([`msi_take`]) and is never freed.
-static MSI_KEPT: SpinLock<[Option<(u32, u32)>; 2 * MAX_IRQ_BINDINGS]> = SpinLock::new([None; 2 * MAX_IRQ_BINDINGS]);
+static MSI_KEPT: SpinLock<[Option<(u32, u32)>; MSI_SLOTS * azos_limits::IRQ_MSI_PER_SLOT as usize]> =
+    SpinLock::new([None; MSI_SLOTS * azos_limits::IRQ_MSI_PER_SLOT as usize]);
 
-/// Vectors the table had no room to keep: never reissued, never freed.
-static IRQ_MSI_STRANDED: AtomicU32 = AtomicU32::new(0);
-
-/// MSI vectors given back with no room to keep them since boot: lost to the
-/// pool, not reissued to anyone.
-pub fn irq_msi_stranded() -> u32 {
-    IRQ_MSI_STRANDED.load(Ordering::Relaxed)
-}
+/// Slots that hold vectors at once.
+const MSI_SLOTS: usize = 16;
 
 /// Keep `vector`, given back by a holder of `slot`.
 fn msi_keep(slot: u32, vector: u32) {
@@ -773,14 +768,13 @@ fn msi_keep(slot: u32, vector: u32) {
         if let Some(ops) = msi_ops() {
             (ops.free)(vector);
         }
+        msi_out_release(slot);
         return;
     }
-    let mut kept = MSI_KEPT.lock_irqsave();
-    match kept.iter_mut().find(|k| k.is_none()) {
-        Some(k) => *k = Some((slot, vector)),
-        None => {
-            IRQ_MSI_STRANDED.fetch_add(1, Ordering::Relaxed);
-        }
+    // Room is certain: MSI_OUT counts every vector a slot holds, live or kept,
+    // and holds it to IRQ_MSI_PER_SLOT in at most MSI_SLOTS slots.
+    if let Some(k) = MSI_KEPT.lock_irqsave().iter_mut().find(|k| k.is_none()) {
+        *k = Some((slot, vector));
     }
 }
 
@@ -798,27 +792,76 @@ fn msi_unissue(slot: u32, vector: u32, reused: bool) {
         msi_keep(slot, vector);
     } else if let Some(ops) = msi_ops() {
         (ops.free)(vector);
+        msi_out_release(slot);
     }
 }
 
 /// Say a vector was kept (outside every lock: the decision log may write).
 fn msi_kept_note(owner: u32, slot: u32, vector: u32) {
-    azos_decision::record(Rule::Ring3Dma, Verdict::Refuse, vector, [u64::from(owner), u64::from(slot), WHY_VECTOR_KEPT]);
+    azos_decision::record(Rule::MsiVector, Verdict::Place, owner, [u64::from(vector), u64::from(slot), 0]);
 }
 
-/// `Rule::Ring3Dma`'s third word for a vector kept from reissue
-/// (`dma_bind.rs` has the others).
-const WHY_VECTOR_KEPT: u64 = 6;
+/// A line grant refused: recorded (`Rule::LineGrant`, `why` as its `RuleInfo`
+/// lists them).
+pub(crate) fn line_refused(tid: u32, line: u32, why: u64) {
+    if !cfg!(feature = "line-grant-silent-canary") {
+        azos_decision::record(Rule::LineGrant, Verdict::Refuse, tid, [u64::from(line), 0, why]);
+    }
+}
+
+/// Vectors issued per slot and not given back to the pool: live and kept
+/// ones, `(slot, count)`. A slot never holds more than `IRQ_MSI_PER_SLOT`.
+static MSI_OUT: SpinLock<[Option<(u32, u32)>; MSI_SLOTS]> = SpinLock::new([None; MSI_SLOTS]);
+
+/// Room for one more vector of `slot`: counted, or refused.
+fn msi_out_reserve(slot: u32) -> bool {
+    let mut out = MSI_OUT.lock_irqsave();
+    let limit = azos_limits::IRQ_MSI_PER_SLOT as u32;
+    if let Some((_, n)) = out.iter_mut().flatten().find(|(s, _)| *s == slot) {
+        if *n >= limit && !cfg!(feature = "msi-slot-unbounded-canary") {
+            return false;
+        }
+        *n += 1;
+        return true;
+    }
+    match out.iter_mut().find(|e| e.is_none()) {
+        Some(e) => {
+            *e = Some((slot, 1));
+            true
+        }
+        None => false,
+    }
+}
+
+/// A vector of `slot` went back to the pool.
+fn msi_out_release(slot: u32) {
+    if let Some((_, n)) = MSI_OUT.lock_irqsave().iter_mut().flatten().find(|(s, _)| *s == slot) {
+        *n = n.saturating_sub(1);
+    }
+}
 
 /// Take a vector for a binding of `slot` on `cpu`, with its message, and
 /// whether it is a kept one: the slot's own kept vector first, else a fresh
 /// one from the pool.
-fn msi_take(slot: u32, cpu: u32) -> Result<(Msi, bool), BindError> {
+fn msi_take(owner: u32, slot: u32, cpu: u32) -> Result<(Msi, bool), BindError> {
     let ops = msi_ops().ok_or(BindError::NoMsi)?;
     let kept = msi_reuse(slot);
     let id = match kept {
         Some(id) => id,
-        None => (ops.alloc)().ok_or(BindError::NoMsi)?,
+        None => {
+            // A slot holds at most IRQ_MSI_PER_SLOT vectors, live and kept.
+            if !msi_out_reserve(slot) {
+                azos_decision::record(Rule::MsiVector, Verdict::Refuse, owner, [0, u64::from(slot), 1]);
+                return Err(BindError::Busy);
+            }
+            match (ops.alloc)() {
+                Some(id) => id,
+                None => {
+                    msi_out_release(slot);
+                    return Err(BindError::NoMsi);
+                }
+            }
+        }
     };
     if !(ops.enable)(id, cpu) {
         msi_unissue(slot, id, kept.is_some());
@@ -883,6 +926,7 @@ pub fn irq_grant_cap(
     perms: crate::cap::CapPerms,
 ) -> Option<crate::cap::Cap<crate::cap::targets::Irq>> {
     if !irq_line_grantable(irq) {
+        line_refused(tid, irq, 5);
         return None;
     }
     crate::cap_store::grant::<crate::cap::targets::Irq>(tid, perms, irq)
@@ -898,6 +942,7 @@ pub fn irq_grant_msi_cap(
     perms: crate::cap::CapPerms,
 ) -> Option<crate::cap::Cap<crate::cap::targets::Irq>> {
     if k > 0xFFFF || !msi_ops().is_some_and(|o| (o.supported)()) {
+        line_refused(tid, k, 6);
         return None;
     }
     crate::cap_store::grant::<crate::cap::targets::Irq>(tid, perms, MSI_LINE | k)
@@ -1089,8 +1134,8 @@ pub fn __irq_bind_reset_for_tests() {
     IRQ_OVERRUNS.store(0, Ordering::Relaxed);
     IRQ_MSI_DROPS.store(0, Ordering::Relaxed);
     *MSI_OPS.lock_irqsave() = None;
-    *MSI_KEPT.lock_irqsave() = [None; 2 * MAX_IRQ_BINDINGS];
-    IRQ_MSI_STRANDED.store(0, Ordering::Relaxed);
+    *MSI_KEPT.lock_irqsave() = [None; MSI_SLOTS * azos_limits::IRQ_MSI_PER_SLOT as usize];
+    *MSI_OUT.lock_irqsave() = [None; MSI_SLOTS];
     CANARY_STORM.store(false, Ordering::Relaxed);
     set_test_line(None);
     LINE_RELEASE_HOOK.clear_for_tests();
@@ -1721,19 +1766,41 @@ mod tests {
         assert_eq!(msi_given_back(), Vec::<u32>::new());
     }
 
-    /// A vector given back with no room left to keep it is lost, not freed:
-    /// it is counted and never reissued.
+    /// **A slot holds at most `IRQ_MSI_PER_SLOT` vectors, live and kept, so a
+    /// row that forks cannot drain the pool.** A bind past the bound is
+    /// refused (`Busy`) and recorded (`msi-vector`, why 1); a kept vector is
+    /// taken again before a new one; another slot is not affected.
+    ///
+    /// **Canary.** `msi-slot-unbounded-canary`: the slot takes the whole pool.
     #[test]
-    fn a_vector_with_no_room_to_keep_it_is_stranded_not_freed() {
+    fn a_slot_cannot_take_more_vectors_than_its_bound() {
         let _g = setup();
-        let r = port::port_create_ref(OWNER as usize).expect("create");
         msi_ops_installed();
-        for k in 0..(2 * MAX_IRQ_BINDINGS as u32 + 1) {
-            bind(MSI_LINE | (100 + k), OWNER, r, 1, Route::Cpu(0), false).expect("bound");
-            assert!(irq_unbind(MSI_LINE | (100 + k), OWNER));
+        let limit = azos_limits::IRQ_MSI_PER_SLOT as u32;
+        let r = port::port_create_ref(OWNER as usize).expect("create");
+        let tasks: Vec<u32> = (0..limit + 1).map(|i| 50 + i).collect();
+        for &t in &tasks[..limit as usize] {
+            bind(SLOT, t, r, 1, Route::Cpu(0), false).expect("within the bound");
         }
-        assert_eq!(irq_msi_stranded(), 1, "the one past the table");
-        assert_eq!(msi_given_back(), Vec::<u32>::new(), "a stranded vector went back to the pool");
+        let over = tasks[limit as usize];
+        assert_eq!(bind(SLOT, over, r, 1, Route::Cpu(0), false), Err(BindError::Busy), "past the bound");
+        assert!(bind(MSI_LINE | 4, over, r, 1, Route::Cpu(0), false).is_ok(), "another slot is its own");
+        // They exit: the vectors are kept, none returns to the pool, and the slot is still at its bound.
+        for &t in &tasks[..limit as usize] {
+            irq_unbind_all(t);
+        }
+        assert_eq!(msi_given_back(), Vec::<u32>::new());
+        for &t in &tasks[..limit as usize] {
+            bind(SLOT, t, r, 1, Route::Cpu(0), false).expect("a kept vector is taken first");
+        }
+        assert_eq!(bind(SLOT, over, r, 1, Route::Cpu(0), false), Err(BindError::Busy));
+        let mut recorded = 0;
+        azos_decision::for_each(|rec| {
+            if rec.rule == Rule::MsiVector as u8 && rec.verdict == Verdict::Refuse as u8 && rec.n[2] == 1 {
+                recorded += 1;
+            }
+        });
+        assert!(recorded >= 2, "each refusal is a record");
     }
 
     /// An `msi.<k>` slot is minted as a `Cap<Irq>` on `MSI_LINE | k` only where

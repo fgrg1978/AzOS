@@ -300,6 +300,19 @@ config NOHZ_FULL_RESIDUAL_MS
       (a budget, a window end) comes first and is not rounded to this.
       Read only with NOHZ_FULL; no cost without it.
 
+config IRQ_MSI_PER_SLOT
+    int "MSI vectors one msi.<k> slot may hold at once"
+    range 1 32
+    default 4
+    help
+      A message-signalled slot (msi.<k>) takes a vector from a small pool
+      (riscv64: 32 identities). A vector a holder gives back is kept for its
+      slot, because the device it programmed may still raise it, so a slot's
+      vectors are never returned to the pool: this bounds what one slot, and so
+      one topology row, a forking one included, can take. A bind past it is
+      refused (-EBUSY) and recorded (msi-vector). A slot's concurrent holders
+      are at most this many.
+
 config IRQ_THREADED
     bool "Interrupts as scheduled objects: the handler runs on a hard reservation"
     depends on SCHED_CLASS_DL

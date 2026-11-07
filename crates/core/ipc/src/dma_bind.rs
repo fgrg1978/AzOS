@@ -199,7 +199,9 @@ fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) ->
         Err(DmaError::MaybeMapped) if !cfg!(feature = "dma-map-unpin-canary") => {
             // The domain may still map the object: pinned and parked for good.
             let kept = Binding { owner, group, dev, obj, pa, len, bus: DmaAddr(pa), domain };
-            let _ = t.insert_parked(kept);
+            // Checked by `can_insert` above, under the same hold.
+            let parked = t.insert_parked(kept);
+            debug_assert!(parked.is_ok());
             drop(t);
             azos_dma::note_leak(len);
             record(Verdict::Refuse, dev, owner, len, WHY_KEPT);

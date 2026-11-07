@@ -398,6 +398,9 @@ pub enum Rule {
     /// A topology row's interrupt line grant (`irq.<N>`, `irq.<selector>`) was
     /// refused because a device ring 3 may not have raises the line, or owns it.
     LineGrant,
+    /// An MSI vector a holder gave back was kept for its slot instead of returned
+    /// to the pool, or a bind of a slot was refused at its vector bound.
+    MsiVector,
 }
 
 impl Rule {
@@ -408,7 +411,8 @@ impl Rule {
     /// system events and are never limited.
     pub const fn caller_paced(self) -> bool {
         matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant
-            | Rule::EffectUnserved | Rule::BudgetGrow | Rule::SafetyLine | Rule::Ring3Dma)
+            | Rule::EffectUnserved | Rule::BudgetGrow | Rule::SafetyLine | Rule::Ring3Dma
+            | Rule::LineGrant | Rule::MsiVector)
     }
 }
 
@@ -1324,8 +1328,11 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // why: 0 admitted without an IOMMU (DMA_RING3_WITHOUT_IOMMU), 1 refused
         // without one, 2 refused: an earlier binding's pages are kept, 3 kept:
-        // the device could not be shown stopped, 4 a writable window on it
-        // refused (it masters the bus).
+        // the device could not be shown stopped, the domain's unmap failed or
+        // the flush after its map was not confirmed, 4 a writable window on it
+        // refused (it masters the bus), 5 an I/O port range over a bus
+        // master's I/O BAR (or the ISA DMA ports) refused, `bytes` then holds
+        // `first | last << 16`.
         name: "ring3-dma",
         subject: "device",
         fields: ["tid", "bytes", "why"],
@@ -1335,12 +1342,25 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // why: 0 `irq.<N>`: a device ring 3 may not have raises the line, 1
         // `irq.<selector>`: the device is not one ring 3 may have, 2
-        // `irq.<selector>`: its line is shared with one.
+        // `irq.<selector>`: its line is shared with one, 3 no device matches
+        // the selector, 4 the device has no line known, 5 `irq.<N>` past the
+        // controller's lines, 6 `msi.<k>` where the platform has no MSI for
+        // ring 3 or past 16 bits.
         name: "line-grant",
         subject: "tid",
-        fields: ["line", "selector hash", "why"],
+        fields: ["line", "-", "why"],
         rejected_if_yes: "refuse a ring-3 driver every line a kernel driver's device raises, polled or not",
         rejected_if_no: "grant a line a kernel device shares: the ring-3 holder takes interrupts of a device it does not drive",
+    },
+    RuleInfo {
+        // why: 0 a vector kept for its slot at a holder's unbind or exit (a
+        // Place: not a refusal), 1 a bind refused: the slot holds its limit
+        // of vectors (IRQ_MSI_PER_SLOT).
+        name: "msi-vector",
+        subject: "tid",
+        fields: ["vector", "slot", "why"],
+        rejected_if_yes: "return a given-back vector to the pool: the next holder of it receives the old device's interrupts",
+        rejected_if_no: "let one slot take the pool: a row that forks drains the vectors every other driver needs",
     },
 ];
 

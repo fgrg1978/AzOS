@@ -19,6 +19,8 @@ ioport-open-silent-canary = []
 line-grant-silent-canary = []
 # Host canary (tests/host/ipc-tests): a given-back MSI vector returns to the pool.
 msi-reissue-canary = []
+# Host canary (tests/host/ipc-tests): one slot may take every vector of the pool.
+msi-slot-unbounded-canary = []
 # Declared for the pulled `dma_bind.rs`'s canary.
 dma-ring3-unconfined-canary = []
 # Host canary (tests/host/syscall-tests `mmio_map.rs`): a map whose flush failed twice is

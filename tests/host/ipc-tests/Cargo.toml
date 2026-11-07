@@ -52,6 +52,9 @@ ktest = []
 # Host canary: a given-back MSI vector returns to the pool, and any slot's bind may take it
 # (`a_given_back_msi_vector_is_reissued_only_to_its_own_slot` goes red).
 msi-reissue-canary = []
+# Host canary (tests/host/ipc-tests): one slot may take every vector of the pool.
+msi-slot-unbounded-canary = []
+line-grant-silent-canary = []
 # Gate canary (D3/L4 lazy revocation, `cap.rs` `revocation_in_flight`): a
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.
