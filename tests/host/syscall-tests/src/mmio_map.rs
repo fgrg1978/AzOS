@@ -373,8 +373,12 @@ mod dma {
     struct Iommu(Mutex<usize>);
     impl DmaDomain for Iommu {
         fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
+            // A map the unit did not confirm leaves its entry in the table.
             *self.0.lock().unwrap() += 1;
             EVENTS.lock().unwrap().push(("map", alive()));
+            if MAYBE_MAPPED.load(Ordering::SeqCst) {
+                return Err(DmaError::MaybeMapped);
+            }
             Ok(DmaAddr(pa))
         }
         fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
@@ -396,6 +400,8 @@ mod dma {
         }
     }
     static IOMMU: Iommu = Iommu(Mutex::new(0));
+    /// The IOMMU model answers a map `MaybeMapped`.
+    static MAYBE_MAPPED: AtomicBool = AtomicBool::new(false);
     static HANDED: AtomicBool = AtomicBool::new(false);
 
     fn iommu_domain(_dev: u32, live: bool) -> Option<&'static dyn DmaDomain> {
@@ -668,6 +674,44 @@ mod dma {
         assert_eq!(op(dev, DEVICE_DMA_MAP, again, DMA_TO_DEVICE).0, 0, "the restarted driver's map");
         assert_eq!(op(dev, DEVICE_DMA_UNMAP, again, 0).0, 0);
         assert_eq!(crate::ipc_handlers::sys_shm_release_typed(again), 0);
+        hooks(true);
+    }
+
+    /// **A map the unit did not confirm taking back keeps the frames and
+    /// parks the device.** The domain's entry may still be in the unit, so
+    /// the object stays pinned (the task's release frees nothing), the bytes
+    /// are counted, the device gets no new binding (`-EBUSY`, not "no domain":
+    /// the domain is not empty), and the driver is told the memory is kept.
+    ///
+    /// **Canaries.** `dma-map-unpin-canary`: the failed map is unpinned and
+    /// forgotten like a refused one. Ask the domain before `can_insert` in
+    /// `bind_claimed`: the second map answers `-ENODEV`.
+    #[test]
+    fn a_map_the_unit_did_not_confirm_keeps_its_frames_and_parks_the_device() {
+        let _g = serial();
+        setup();
+        azos_ipc::dma_bind::set_hooks(azos_ipc::dma_bind::Hooks { domain: iommu_domain, quiesce, unconfined: false, report });
+        HANDED.store(false, Ordering::SeqCst);
+        let dev = device(fresh_device("pci@7600000", b"vendor,flushdev\0", 0x0760_0000), CapPerms::RW);
+        let (obj, idx, r) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        MAYBE_MAPPED.store(true, Ordering::SeqCst);
+        let kept = azos_dma::leaked_bytes();
+        let rc = op(dev, DEVICE_DMA_MAP, obj, DMA_BIDIRECTIONAL).0;
+        MAYBE_MAPPED.store(false, Ordering::SeqCst);
+        assert_eq!(rc, Errno::EIO.to_syscall_ret(), "the map the unit did not confirm");
+        assert_eq!(ENDS.lock().unwrap().last().map(|e| e.outcome), Some(azos_ipc::dma_bind::Outcome::MapUnconfirmed));
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
+        assert!(alive(), "the task's release freed frames the domain may still map");
+        assert_eq!(azos_dma::leaked_bytes(), kept + azos_arch::PAGE_SIZE as u64, "the kept page is not counted");
+        let (again, idx2, _) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx2, Ordering::SeqCst);
+        assert_eq!(op(dev, DEVICE_DMA_MAP, again, DMA_TO_DEVICE).0, Errno::EBUSY.to_syscall_ret(), "a parked device, behind an IOMMU");
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(again), 0);
+        // The suite shares one object table: the kept reference goes here.
+        azos_ipc::memobj::memobj_frames_unpin(r);
+        // The model's table is shared with the next test.
+        *IOMMU.0.lock().unwrap() = 0;
         hooks(true);
     }
 

@@ -131,6 +131,20 @@ impl<const N: usize> IoDomain<N> {
         }
         r
     }
+
+    /// A map whose flush failed: take `entry` out of the table again and
+    /// flush once more. `Iommu`: the unit now agrees with the table, nothing
+    /// is mapped. `MaybeMapped`: it does not, the domain is stale and the
+    /// caller must keep the frames.
+    fn take_back(&mut self, slot: usize, entry: Entry) -> DmaError {
+        self.entries[slot] = None;
+        let undone = self.sync_pages(entry.first_page(), entry.last_page()).is_ok() && self.flush().is_ok();
+        if undone || cfg!(feature = "map-keeps-frames-canary") {
+            DmaError::Iommu
+        } else {
+            DmaError::MaybeMapped
+        }
+    }
 }
 
 impl<const N: usize> DomainOps for IoDomain<N> {
@@ -144,8 +158,8 @@ impl<const N: usize> DomainOps for IoDomain<N> {
         self.entries[slot] = Some(entry);
         match self.sync_pages(entry.first_page(), entry.last_page()) {
             Ok(changed) => {
-                if changed {
-                    self.flush()?;
+                if changed && self.flush().is_err() {
+                    return Err(self.take_back(slot, entry));
                 }
                 Ok(DmaAddr(pa))
             }

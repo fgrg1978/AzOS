@@ -207,6 +207,18 @@ impl<const N: usize> Table<N> {
         Ok(())
     }
 
+    /// Record `b` parked at once: a map the unit did not confirm taking back
+    /// may have left the object in the domain, so its pages are kept and the
+    /// device gets no new binding, as for one whose end could not stop it.
+    /// `b.bus` is what the object would have been told; no end ever unmaps it.
+    pub fn insert_parked(&mut self, b: Binding) -> Result<(), BindError> {
+        self.can_insert(b.group, b.dev, b.obj)?;
+        let i = self.state.iter().position(|s| *s == State::Free).ok_or(BindError::Full)?;
+        self.slots[i] = Some(b);
+        self.state[i] = State::Parked;
+        Ok(())
+    }
+
     fn take_where(&mut self, f: impl Fn(&Binding) -> bool) -> Option<Taken> {
         let slot = (0..N).find(|&i| self.state[i] == State::Live && self.slots[i].as_ref().is_some_and(&f))?;
         self.state[slot] = State::Ending;

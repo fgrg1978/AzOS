@@ -21,6 +21,9 @@
 //!   frames go back only once it is shown stopped. One that cannot be is
 //!   *parked*: the pages stay pinned, the device stays booked, and it gets no
 //!   new binding, so a crash loop keeps one object's worth, not one per crash.
+//! * A map whose flush the unit did not confirm (`DmaError::MaybeMapped`) may
+//!   have left the object in the domain: it is pinned, parked and counted at
+//!   once, and the driver is answered `Kept`.
 //! * A binding books its device with the bus as a mapped register window does
 //!   (`hwbus::claim_user_window`), for as long as the device may reach it.
 //! * A binding is the thread's that made it, as an interrupt line's is; a
@@ -31,7 +34,7 @@
 
 use azos_dma::bind::{self, Binding, BindError, Table, Taken};
 pub use azos_dma::Direction;
-use azos_dma::{DmaAddr, DmaDomain, DomainKind};
+use azos_dma::{DmaAddr, DmaDomain, DmaError, DomainKind};
 use azos_sync::SpinLock;
 
 /// What the kernel answers for a device of the hardware bus.
@@ -73,6 +76,9 @@ pub enum Outcome {
     NotStopped,
     /// Parked: the domain's unmap failed.
     UnmapFailed,
+    /// Parked at the map: the domain's flush after it failed twice, so the
+    /// object may be reachable.
+    MapUnconfirmed,
 }
 
 static HOOKS: SpinLock<Option<Hooks>> = SpinLock::new(None);
@@ -98,8 +104,8 @@ pub enum DmaBindError {
     /// domain ring 3 may map into, or no IOMMU confines it and the build does
     /// not accept that.
     NoDomain,
-    /// The object is bound already, or an earlier binding of the device is
-    /// parked.
+    /// The object is bound already, a binding of the device is being ended,
+    /// or an earlier one is parked.
     Busy,
     /// No free record, or the caller holds its share of the table.
     Full,
@@ -107,8 +113,9 @@ pub enum DmaBindError {
     Refused,
     /// No such binding of the caller's.
     NotBound,
-    /// The device could not be shown stopped, or the domain's unmap failed:
-    /// the frames stay out of the allocator, parked.
+    /// The device could not be shown stopped, or the domain's unmap or the
+    /// flush after its map failed: the frames stay out of the allocator,
+    /// parked.
     Kept,
 }
 
@@ -147,37 +154,58 @@ pub fn map(owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<Mapped, Dma
         return Err(DmaBindError::NoDomain);
     }
     let r = bind_claimed(hooks, owner, dev, obj, dir);
-    if r.is_err() {
+    // A kept binding holds its booking: the device may still reach the object.
+    if matches!(r, Err(e) if e != DmaBindError::Kept) {
         azos_drv_bus::hwbus::unclaim_user_window(dev);
     }
     r
 }
 
+fn refusal(e: BindError, dev: u32, owner: u32) -> DmaBindError {
+    match e {
+        BindError::Busy => DmaBindError::Busy,
+        BindError::Parked => {
+            record(azos_decision::Verdict::Refuse, dev, owner, 0, WHY_PARKED);
+            DmaBindError::Busy
+        }
+        _ => DmaBindError::Full,
+    }
+}
+
 fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<Mapped, DmaBindError> {
     use azos_decision::Verdict;
-    let live = TABLE.lock().has_live(dev);
+    let group = azos_sched::group::proc_tid(owner);
+    // Before the domain is asked for: a device with an end in progress or a
+    // parked binding answers busy, not "no domain", whatever its domain says.
+    let (admitted, live) = {
+        let t = TABLE.lock();
+        (t.can_insert(group, dev, obj), t.has_live(dev))
+    };
+    admitted.map_err(|e| refusal(e, dev, owner))?;
     let domain = (hooks.domain)(dev, live).ok_or(DmaBindError::NoDomain)?;
     let unconfined = !confined(domain);
     if unconfined && !(hooks.unconfined || cfg!(feature = "dma-ring3-unconfined-canary")) {
         record(Verdict::Refuse, dev, owner, 0, WHY_UNCONFINED);
         return Err(DmaBindError::NoDomain);
     }
-    let group = azos_sched::group::proc_tid(owner);
     let mut t = TABLE.lock();
     if let Err(e) = t.can_insert(group, dev, obj) {
-        return Err(match e {
-            BindError::Busy => DmaBindError::Busy,
-            BindError::Parked => {
-                drop(t);
-                record(Verdict::Refuse, dev, owner, 0, WHY_PARKED);
-                return Err(DmaBindError::Busy);
-            }
-            _ => DmaBindError::Full,
-        });
+        drop(t);
+        return Err(refusal(e, dev, owner));
     }
     let (pa, len) = crate::memobj::memobj_dma_pin(obj).map_err(|_| DmaBindError::BadObject)?;
     let bus = match bind::map(domain, pa, len, dir) {
         Ok(b) => b,
+        Err(DmaError::MaybeMapped) if !cfg!(feature = "dma-map-unpin-canary") => {
+            // The domain may still map the object: pinned and parked for good.
+            let kept = Binding { owner, group, dev, obj, pa, len, bus: DmaAddr(pa), domain };
+            let _ = t.insert_parked(kept);
+            drop(t);
+            azos_dma::note_leak(len);
+            record(Verdict::Refuse, dev, owner, len, WHY_KEPT);
+            (hooks.report)(Ended { dev, tid: owner, bytes: len, exit: false, outcome: Outcome::MapUnconfirmed });
+            return Err(DmaBindError::Kept);
+        }
         Err(_) => {
             drop(t);
             crate::memobj::memobj_frames_unpin(obj);

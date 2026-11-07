@@ -29,3 +29,6 @@ domain-empty-canary = []
 # Host canary only: a failed flush leaves the domain reading empty
 # (`a_failed_flush_leaves_the_domain_not_empty` goes red).
 domain-stale-canary = []
+# Host canary only: a map whose flush failed twice answers a plain error, as if
+# nothing were mapped (`a_map_whose_flush_fails_twice_may_still_be_mapped` goes red).
+map-keeps-frames-canary = []

@@ -25,6 +25,7 @@ domain-stale-canary = ["azos_iommu/domain-stale-canary"]
 # The kernel's reuse rule and the park, broken (see crates/drivers/dma/Cargo.toml).
 ring3-reuse-canary = ["azos_dma/ring3-reuse-canary"]
 park-drop-canary = ["azos_dma/park-drop-canary"]
+map-keeps-frames-canary = ["azos_iommu/map-keeps-frames-canary"]
 
 [profile.release]
 overflow-checks = true

@@ -319,10 +319,14 @@ fn ring3_report(e: azos_ipc::dma_bind::Ended) {
     let at = if e.exit { "the exit" } else { "the unmap" };
     match e.outcome {
         Outcome::Released => kprintln!("[DMA] device {}: {} of tid {} ended its binding, {} bytes back", e.dev, at, e.tid, e.bytes),
-        Outcome::NotStopped | Outcome::UnmapFailed => azos_drv_sys::kerr!(
+        Outcome::NotStopped | Outcome::UnmapFailed | Outcome::MapUnconfirmed => azos_drv_sys::kerr!(
             "[DMA] device {}: {} of tid {}: {} bytes kept from the allocator ({}); no ring-3 memory for it until the next boot",
             e.dev, at, e.tid, e.bytes,
-            if e.outcome == Outcome::NotStopped { "it could not be shown stopped" } else { "the domain's unmap failed" }),
+            match e.outcome {
+                Outcome::NotStopped => "it could not be shown stopped",
+                Outcome::UnmapFailed => "the domain's unmap failed",
+                _ => "the domain's flush after the map failed",
+            }),
     }
 }
 

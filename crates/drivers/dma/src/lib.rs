@@ -65,6 +65,10 @@ pub enum DmaError {
     NoMemory,
     /// The IOMMU refused a command or did not answer.
     Iommu,
+    /// A map failed after the translation was written and the unit did not
+    /// confirm taking it back: the device may still reach the range, so its
+    /// frames must stay out of the allocator.
+    MaybeMapped,
 }
 
 // ---------------------------------------------------------------------

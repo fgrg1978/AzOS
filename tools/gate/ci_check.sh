@@ -13096,6 +13096,10 @@ host_job host_canary_row "hwbus: unbind leaves the line bound canary" hwbus-test
 # each canary puts one gap back and requires its test to fail alone.
 host_job host_canary_row "ring-3: irq selector shared line canary" topology-tests irq-selector-shared-canary \
     a_topology_irq_grant_by_selector_refuses_a_line_a_kernel_device_shares
+host_job host_canary_row "ring-3: map flush unconfirmed canary" iommu-tests map-keeps-frames-canary \
+    a_map_whose_flush_fails_twice_may_still_be_mapped
+host_job host_canary_row "ring-3: map unconfirmed unpinned canary" syscall-tests dma-map-unpin-canary \
+    a_map_the_unit_did_not_confirm_keeps_its_frames_and_parks_the_device
 # Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two
 # segments mapped differently (their union, as before): the refusal test in
 # sched-wake-tests (`elf_bounds_tests`) must fail.

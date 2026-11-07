@@ -15,6 +15,9 @@ ring3-reuse-canary = ["azos_dma/ring3-reuse-canary"]
 # `dma_bind.rs`'s canary: a device no IOMMU confines is given memory anyway
 # (`an_unconfined_device_is_refused_without_the_acceptance` goes red).
 dma-ring3-unconfined-canary = ["azos_ipc/dma-ring3-unconfined-canary"]
+# `dma_bind.rs`'s canary: a map whose flush failed twice is unpinned
+# (`a_map_the_unit_did_not_confirm_keeps_its_frames_and_parks_the_device` goes red).
+dma-map-unpin-canary = ["azos_ipc/dma-map-unpin-canary"]
 # The syscall sources pulled in below name the robot crates through the shims
 # in `shims/` (robot, imu, gps); `use-robot` is what makes them do so
 # instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).

@@ -127,6 +127,29 @@ fn a_failed_flush_keeps_the_frames() {
     assert!(azos_dma::leaked_bytes() >= kept + b.len as u64, "the kept bytes were not counted");
 }
 
+/// **A map whose flush fails once is taken back and nothing is mapped; one
+/// whose flush fails again may still be mapped, and says so.** A plain
+/// refusal lets the caller free the object; `MaybeMapped` tells it the
+/// frames must stay (the entry and the table are still there to be flushed
+/// later), and the domain reads as not empty either way.
+///
+/// **Canary.** `map-keeps-frames-canary`: the second case answers a plain
+/// refusal, so the caller would free frames the unit may still translate.
+#[test]
+fn a_map_whose_flush_fails_twice_may_still_be_mapped() {
+    let (mem, unit, d) = ring3_domain();
+    *unit.fail_flushes.lock().unwrap() = 1;
+    assert_eq!(d.map(0x8070_0000, PAGE as usize, Direction::ToDevice), Err(DmaError::Iommu), "taken back");
+    assert_eq!(walk(mem, unit.fmt, 0x8070_0000), None, "a map taken back left a translation");
+    assert!(!d.0.lock().unwrap().is_empty(), "a failed flush left the domain reading empty");
+    *unit.fail_flush.lock().unwrap() = true;
+    assert_eq!(
+        d.map(0x8078_0000, PAGE as usize, Direction::ToDevice),
+        Err(DmaError::MaybeMapped),
+        "the unit confirmed nothing: the frames must stay"
+    );
+}
+
 /// **One binding per object, and a binding is ended only by the task that
 /// made it.** The exit path drains a task's bindings one at a time and leaves
 /// the others'.
