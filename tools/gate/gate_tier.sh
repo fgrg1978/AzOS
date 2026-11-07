@@ -210,6 +210,7 @@ fi
 [ "$lints" = 1 ] && { printf "  %-26s" "arch layout lint..."; if out="$(python3 tools/lint/arch_layout_lint.py --self-test 2>&1 && python3 tools/lint/arch_layout_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 # No `allow(dead_code)` in kernel/ or crates/core/ without a `// reason:` (tools/lint/dead_code_lint.py).
 [ "$lints" = 1 ] && { printf "  %-26s" "dead code lint..."; if out="$(python3 tools/lint/dead_code_lint.py --self-test 2>&1 && python3 tools/lint/dead_code_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "neverallow presets..."; if out="$(python3 tools/lint/check_neverallow.py 2>&1 && python3 tools/lint/check_neverallow.py --canary 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 # A kernel with no personality (Kconfig LINUX_ABI off) depends on no Linux crate
 # on any ISA (`cargo tree`, nothing built; the self-test sees it with the gate's cell).
 # Every build selection the gate names is one `--select` accepts (tools/lint/gate_select_lint.py).

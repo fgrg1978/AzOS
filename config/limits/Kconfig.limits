@@ -219,7 +219,8 @@ config MAX_FDS_TOTAL
     int "Global file descriptor table size"
     range 16 262144
     default 128   if HWCLASS_EMBEDDED
-    default 2048  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 2048  if HWCLASS_SBC
+    default 8192  if HWCLASS_DESKTOP
     default 16384 if HWCLASS_SERVER
     help
       System-wide FD table.  The build-time validator in
@@ -234,6 +235,7 @@ config MAX_FDS_TOTAL
       `>=`, not the value chosen here):
         embedded (MAX_TASKS=32)   -> 128    (4x  the floor)
         edge     (MAX_TASKS=64)   -> 2048   (32x the floor)
+        desktop  (MAX_TASKS=1024) -> 8192   (2x  the floor)
         fleet    (MAX_TASKS=4096) -> 16384  (4x  the floor)
       A higher value changes nothing but this check. (Fixed
       2026-09-26, V2.6: this previously said "edge (512 tasks)" against
@@ -442,7 +444,8 @@ config MAX_CAPS_TOTAL
     int "Total capability pool size"
     range 64 1048576
     default 256   if HWCLASS_EMBEDDED
-    default 1024  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 1024  if HWCLASS_SBC
+    default 8192  if HWCLASS_DESKTOP
     default 65536 if HWCLASS_SERVER
     help
       Size of the capability-declaration pool of the signed topology
