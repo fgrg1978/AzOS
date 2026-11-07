@@ -20,23 +20,28 @@
 //! reading holds capture back for every reader until it closes or exits.
 //!
 //! The capability's `READ` is the right to read: a camera frame is what the
-//! camera saw.
+//! camera saw. A task's first `next` also needs the **`cam` effect** of its
+//! scheduler class (`azos_topology::EffectKind::Cam`), as a capture stream needs
+//! `mic`: a class an `[envelope.NAME]` row of kind `cam` caps at `contained` is
+//! refused. The grant, each refusal and the first frame are `cam-capture`
+//! decision records.
 //!
 //! # The buffer
 //!
 //! A `Cap<FrameBuf>` names a read-write memory object of at least
-//! [`Frame::buffer_bytes`] bytes, `SHM_KIND_CONTIG` (one physical run, which
-//! is how the kernel writes into it in one piece), held with `READ` and
-//! `WRITE`. It stays in the caller's table and the call keeps nothing of it.
+//! [`Frame::buffer_bytes`] bytes, an ordinary anonymous one (the kernel copies
+//! into it page by page, so it needs no device visibility), held with `READ`
+//! and `WRITE`. It stays in the caller's table and the call keeps nothing of it.
 //!
 //! # Outcomes
 //!
 //! `OK` with the [`Meta`]; `DENIED` without `READ`; `NO_RESOURCE` for an
-//! instance the topology does not name; `NOT_READY` when the pool has no
+//! instance the topology does not name; `REFUSED` when the task's class has no
+//! `cam` effect; `NOT_READY` when the pool has no
 //! buffers (no camera) or no frame newer than the reader's; `BUSY` when every
 //! reader slot is taken; `BAD_ARGUMENT` for a handle that is not a memory
 //! object or one too small; `UNSUPPORTED` for an object the kernel cannot
-//! touch as one piece; `FAULT` when the copy failed.
+//! write (read-only, shared with a clone); `FAULT` when the copy failed.
 
 use crate::outcome::Out;
 use azos_idl::{azos_interface, Cap, Reader, Wire, Writer};
@@ -47,10 +52,25 @@ pub const FRAME_ID: u32 = 0x4652_414D;
 /// Cameras the interface names: `frame.0`.
 pub const CAMERAS: u32 = 1;
 
-/// What a `Cap<FrameBuf>` names: a read-write contiguous memory object of at
-/// least [`Frame::buffer_bytes`] bytes the caller shares with the pool for one
-/// call.
+/// What a `Cap<FrameBuf>` names: a read-write memory object (any kind of
+/// frames) of at least [`Frame::buffer_bytes`] bytes the caller shares with the
+/// pool for one call.
 pub struct FrameBuf;
+
+/// The `reason` of a `cam-capture` decision record
+/// (`azos_decision::Rule::CamCapture`).
+pub mod reason {
+    /// The task became a reader.
+    pub const GRANTED: u32 = 0;
+    /// Its class has no `cam` effect.
+    pub const NO_EFFECT: u32 = 1;
+    /// Every reader slot is taken.
+    pub const NO_SLOT: u32 = 2;
+    /// The task read its first frame.
+    pub const FIRST_FRAME: u32 = 3;
+    /// The pool could not be made.
+    pub const POOL: u32 = 4;
+}
 
 /// What the bytes of a frame are ([`Meta::format`]).
 pub mod format {

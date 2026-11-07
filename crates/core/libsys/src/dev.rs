@@ -220,7 +220,7 @@ pub fn sensor_bind_vdso(ep: u32) -> Result<bool, u32> {
     value(SensorClient::new(Ep(ep)).bind_vdso())
 }
 
-/// A buffer for [`frame_next`]: a contiguous read-write memory object, mapped
+/// A buffer for [`frame_next`]: an anonymous read-write memory object, mapped
 /// in this task, that the kernel copies a camera frame into. Given back on drop.
 pub struct FrameBuffer {
     cap: u32,
@@ -245,10 +245,7 @@ impl FrameBuffer {
 /// not be made or mapped.
 pub fn frame_buffer(bytes: usize) -> Result<FrameBuffer, u32> {
     let pages = bytes.div_ceil(crate::PAGE_SIZE).max(1);
-    let cap = crate::shm_create_typed(
-        pages as u64,
-        crate::SHM_RW | azos_abi::syscall_nr::SHM_KIND_CONTIG << azos_abi::syscall_nr::SHM_CREATE_KIND_SHIFT,
-    );
+    let cap = crate::shm_create_typed(pages as u64, crate::SHM_RW);
     if cap <= 0 {
         return Err(outcome::FAULT);
     }
@@ -279,7 +276,8 @@ pub fn frame_buffer_bytes(ep: u32) -> Result<u32, u32> {
 /// and when they were acquired come back. `Err` is the outcome: `NOT_READY`
 /// while there is no new frame (or no camera), `BUSY` when every reader slot is
 /// taken, `DENIED` without `READ`, `BAD_ARGUMENT` for a buffer too small,
-/// `UNSUPPORTED` for one that is not contiguous.
+/// `UNSUPPORTED` for one the kernel cannot write, `REFUSED` when the task's
+/// class has no `cam` effect.
 pub fn frame_next(ep: u32, buf: &mut FrameBuffer) -> Result<frame::Meta, u32> {
     value(FrameClient::new(Ep(ep)).next(Cap::<frame::FrameBuf>::from_raw(buf.cap)))
 }

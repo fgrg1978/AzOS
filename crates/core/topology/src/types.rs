@@ -2048,6 +2048,8 @@ word_enum! {
         RtTime = "rt_time",
         /// Capturing audio: opening a `Sound` capture stream (`azos_devif::sound`).
         Mic = "mic",
+        /// Reading the camera: a task's first `Frame::next` (`azos_devif::frame`).
+        Cam = "cam",
     }
 }
 

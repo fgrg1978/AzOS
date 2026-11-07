@@ -401,6 +401,9 @@ pub enum Rule {
     /// An MSI vector a holder gave back was kept for its slot instead of returned
     /// to the pool, or a bind of a slot was refused at its vector bound.
     MsiVector,
+    /// A task became a reader of the camera's frames (`Frame::next`), was refused, or read its first
+    /// frame; or the frame pool could not be made.
+    CamCapture,
 }
 
 impl Rule {
@@ -412,7 +415,7 @@ impl Rule {
     pub const fn caller_paced(self) -> bool {
         matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle | Rule::ExecGrant
             | Rule::EffectUnserved | Rule::BudgetGrow | Rule::SafetyLine | Rule::Ring3Dma
-            | Rule::LineGrant | Rule::MsiVector)
+            | Rule::LineGrant | Rule::MsiVector | Rule::CamCapture)
     }
 }
 
@@ -1361,6 +1364,17 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["vector", "slot", "why"],
         rejected_if_yes: "return a given-back vector to the pool: the next holder of it receives the old device's interrupts",
         rejected_if_no: "let one slot take the pool: a row that forks drains the vectors every other driver needs",
+    },
+    RuleInfo {
+        // The subject is the task that asked (0 for the pool). `camera` is the
+        // `frame.<n>` index, `seq` the frame's sequence number for reason 3 (else 0), `reason` 0 the task
+        // became a reader (granted), 1 its class has no `cam` effect, 2 every reader slot is taken,
+        // 3 its first frame was read, 4 the pool could not be made (`seq` is the buffers that were).
+        name: "cam-capture",
+        subject: "tid",
+        fields: ["camera", "seq", "reason"],
+        rejected_if_yes: "let the task read the camera: its class has the cam effect and a slot is free",
+        rejected_if_no: "refuse the reader: a camera must not be read without the grant, and every read must have a record",
     },
 ];
 

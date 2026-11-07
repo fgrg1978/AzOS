@@ -39,6 +39,13 @@ const _: () = assert!(frames::BYTES >= 2 * csi::JPEG_CAP_W * csi::JPEG_CAP_H, "F
 const BUFFER_PAGES: usize = frames::BYTES.div_ceil(azos_arch::PAGE_SIZE);
 const _: () = assert!(BUFFER_PAGES <= MAX_MEMOBJ_PAGES, "FRAME_BYTES is more than one memory object holds");
 const PER_OBJECT: usize = MAX_MEMOBJ_PAGES / BUFFER_PAGES;
+/// Memory objects the pool takes from the table; a quarter of it at most, the
+/// rest being the kernel's own regions and the tasks' objects.
+const POOL_OBJECTS: usize = frames::SLOTS.div_ceil(PER_OBJECT);
+const _: () = assert!(
+    POOL_OBJECTS * 4 <= azos_mm::memobj::MAX_MEMOBJS,
+    "the frame pool needs more than a quarter of the memory-object table: lower FRAME_POOL_SLOTS or FRAME_BYTES, or raise MAX_MEMOBJS"
+);
 
 /// Lend the pool its buffers: kernel-owned contiguous memory objects (never
 /// released), as many buffers in each as fit. A pool that gets fewer than it
@@ -62,7 +69,10 @@ fn lend_buffers() {
             Policy::OverwriteOldest => "overwrite-oldest",
             Policy::Backpressure => "backpressure",
         }),
-        Err(NoRoom) => azos_drv_sys::kwarn!("[CAM] no memory for the frame pool ({} of {} buffers): the camera has no readers", n, frames::SLOTS),
+        Err(NoRoom) => {
+            azos_syscall::frame_host::refuse_pool(n);
+            azos_drv_sys::kerr!("[CAM] no memory for the frame pool ({} of {} buffers): refused, the camera has no readers", n, frames::SLOTS);
+        }
     }
 }
 

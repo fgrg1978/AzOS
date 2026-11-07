@@ -12,7 +12,9 @@ use super::harness::serial;
 use azos_abi::cap::{CapHandle, CapPerms};
 use azos_cam_ring::FrameInfo;
 use azos_devif::frame::{self, FrameBuf, Meta};
+use azos_decision::{Rule, Verdict};
 use azos_devif::{outcome, Cap as WireCap, Frame, Out};
+use azos_topology::EffectKind;
 use azos_ipc::memobj::{memobj_create_cap, memobj_with_span_ref, MemPerms, MemSpec};
 use crate::frame_host::{Server, BYTES, LINK, POOL, RING3_READERS};
 use crate::khost::Caller;
@@ -63,9 +65,9 @@ impl Task {
         memobj_create_cap(self.tid, bytes.div_ceil(azos_arch::PAGE_SIZE), &spec).expect("a buffer").raw().0
     }
 
-    /// The buffer a reader makes: contiguous, read-write, `BYTES` long.
+    /// The buffer a reader makes: anonymous, read-write, `BYTES` long.
     fn frame_buffer(&self) -> u32 {
-        self.buffer(BYTES, MemSpec::contig(MemPerms::ReadWrite, false))
+        self.buffer(BYTES, MemSpec::anon(MemPerms::ReadWrite))
     }
 
     fn next(&self, buf: u32) -> Out<Meta> {
@@ -131,14 +133,14 @@ fn the_frame_a_producer_committed_is_the_frame_a_task_reads() {
     let t = Task::new();
     let buf = t.frame_buffer();
     assert_eq!(t.next(buf), Out::err(outcome::NOT_READY), "a reader is made, no frame is owed yet");
-    let seq = commit(0x21, 700, 5_000, FrameInfo::JPEG);
+    let seq = commit(0x21, 9_000, 5_000, FrameInfo::JPEG);
     let m = t.next(buf);
     assert!(m.is_ok(), "{m:?}");
     assert_eq!(
         m.value,
-        Meta { len: 700, skipped: 0, seq, acq_ns: 5_000, format: frame::format::JPEG, size: 0 }
+        Meta { len: 9_000, skipped: 0, seq, acq_ns: 5_000, format: frame::format::JPEG, size: 0 }
     );
-    assert_eq!(t.get(buf, 700), pattern(0x21, 700), "the bytes the producer wrote");
+    assert_eq!(t.get(buf, 9_000), pattern(0x21, 9_000), "the bytes the producer wrote, across pages");
     assert_eq!(POOL.references(), 0, "the read's reference ended with the call");
     assert_eq!(t.next(buf), Out::err(outcome::NOT_READY), "a frame is taken once");
     let seq2 = commit(0x33, 24, 6_000, FrameInfo::yuyv(4, 3));
@@ -161,12 +163,12 @@ fn a_buffer_that_cannot_take_the_frame_takes_no_frame() {
     let good = t.frame_buffer();
     assert_eq!(t.next(good), Out::err(outcome::NOT_READY));
     let seq = commit(0x50, 300, 7_000, FrameInfo::JPEG);
-    let small = t.buffer(1, MemSpec::contig(MemPerms::ReadWrite, false));
+    let small = t.buffer(1, MemSpec::anon(MemPerms::ReadWrite));
     if BYTES > azos_arch::PAGE_SIZE {
         assert_eq!(t.next(small), Out::err(outcome::BAD_ARGUMENT), "below the pool's buffer");
     }
     assert_eq!(t.next(0x00ff_ffff), Out::err(outcome::BAD_ARGUMENT), "not a memory object");
-    let read_only = t.buffer(BYTES, MemSpec::contig(MemPerms::ReadOnly, false));
+    let read_only = t.buffer(BYTES, MemSpec::anon(MemPerms::ReadOnly));
     assert!(matches!(t.next(read_only).code, outcome::DENIED | outcome::UNSUPPORTED | outcome::BAD_ARGUMENT));
     let m = t.next(good);
     assert_eq!(m.value.seq, seq, "the refused calls took nothing: {m:?}");
@@ -268,4 +270,83 @@ fn what_a_task_writes_to_its_buffer_never_reaches_another_reader() {
         assert_eq!(f.bytes(), &pattern(0x70, 400)[..]);
     }
     POOL.detach(LINK);
+}
+
+/// The `cam-capture` records of `tid`, oldest first: `(verdict, seq, reason)`.
+fn records(tid: u32) -> Vec<(u8, u64, u64)> {
+    let mut v = Vec::new();
+    azos_decision::for_each(|r| {
+        if r.rule == Rule::CamCapture as u8 && r.subject == tid {
+            v.push((r.verdict, r.n[1], r.n[2]));
+        }
+    });
+    v
+}
+
+const ADMIT: u8 = Verdict::Admit as u8;
+const REFUSE: u8 = Verdict::Refuse as u8;
+
+/// **A class without the `cam` effect reads nothing, learns nothing and is
+/// recorded.** The refusal comes before the pool, the buffer and the slot: it
+/// is `REFUSED` even for a bad buffer, takes no slot, and is a `Refuse`
+/// record with the reason `NO_EFFECT`. A task that already reads is not asked
+/// again.
+///
+/// **Canary.** `frame-effect-ignored-canary` (the effect is not asked): the
+/// task gets `NOT_READY`, a slot and a grant.
+#[test]
+fn a_class_without_the_cam_effect_is_refused_and_recorded() {
+    let _g = serial();
+    let t = Task::new();
+    let b = t.frame_buffer();
+    crate::effect::withhold(EffectKind::Cam, t.tid);
+    assert_eq!(t.next(b), Out::err(outcome::REFUSED));
+    assert_eq!(t.next(0x00ff_ffff), Out::err(outcome::REFUSED), "it learns nothing of the buffer or the pool");
+    crate::effect::clear_withheld();
+    assert!(!POOL.any_attached(), "a refused task took no slot");
+    assert_eq!(records(t.tid), vec![(REFUSE, 0, frame::reason::NO_EFFECT as u64); 2]);
+    // A mic withheld is no cam withheld.
+    crate::effect::withhold(EffectKind::Mic, t.tid);
+    assert_eq!(t.next(b), Out::err(outcome::NOT_READY));
+    crate::effect::clear_withheld();
+}
+
+/// **Every grant and a reader's first frame are records, once each.** The
+/// first `next` is a `Admit` record `GRANTED`; the first frame it gets is an
+/// `Admit` `FIRST_FRAME` naming the frame; later frames and later calls write
+/// nothing. A full reader table is a `Refuse` `NO_SLOT`, and a pool that could
+/// not be made is a `Refuse` `POOL` of the pool (subject 0).
+///
+/// **Canaries.** `frame-unrecorded-canary` (nothing is written): no record.
+/// `frame-first-read-always-canary` (every frame is a first): two.
+#[test]
+fn the_grant_the_first_frame_and_the_refusals_are_recorded() {
+    let _g = serial();
+    let t = Task::new();
+    let b = t.frame_buffer();
+    assert_eq!(t.next(b), Out::err(outcome::NOT_READY));
+    assert_eq!(t.next(b), Out::err(outcome::NOT_READY));
+    assert_eq!(records(t.tid), vec![(ADMIT, 0, frame::reason::GRANTED as u64)], "one grant, however many calls");
+    let s1 = commit(0x11, 40, 1, FrameInfo::JPEG);
+    assert!(t.next(b).is_ok());
+    let s2 = commit(0x12, 40, 2, FrameInfo::JPEG);
+    assert!(t.next(b).is_ok());
+    assert_ne!(s1, s2);
+    assert_eq!(
+        records(t.tid),
+        vec![(ADMIT, 0, frame::reason::GRANTED as u64), (ADMIT, s1, frame::reason::FIRST_FRAME as u64)],
+        "the second frame is no first"
+    );
+    // The table: every slot held, one more asks.
+    let others: Vec<Task> = (0..RING3_READERS.saturating_sub(1)).map(|_| Task::new()).collect();
+    for o in &others {
+        let ob = o.frame_buffer();
+        assert_ne!(o.next(ob).code, outcome::BUSY);
+    }
+    let late = Task::new();
+    let lb = late.frame_buffer();
+    assert_eq!(late.next(lb), Out::err(outcome::BUSY));
+    assert_eq!(records(late.tid), vec![(REFUSE, 0, frame::reason::NO_SLOT as u64)]);
+    crate::frame_host::refuse_pool(2);
+    assert_eq!(records(0).last(), Some(&(REFUSE, 2, frame::reason::POOL as u64)));
 }

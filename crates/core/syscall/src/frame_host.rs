@@ -12,13 +12,20 @@
 //! The producers (the capture task, a USB camera's class driver) write frames
 //! in the nanoseconds of the vDSO clock.
 //!
+//! * **The camera effect.** A camera frame is what the camera saw, so a task's
+//!   first `next` needs the `cam` effect of its scheduler class, as a capture
+//!   stream needs `mic` (`crate::effect`); a class an `[envelope.NAME]` row of
+//!   kind `cam` caps at `contained` is refused (`REFUSED`) before it learns
+//!   anything of the pool. The grant, each refusal and a reader's first frame
+//!   are `cam-capture` decision records, and the console says when a reader
+//!   opens and ends.
 //! * **Whose cursor.** A table of the task ids that hold a reader slot; the
 //!   first `next` of a task takes one, `close` and the task's exit
 //!   ([`release_all`], from the kernel's task-exit hook) give it back and
 //!   detach the cursor, so a task that died under `FRAME_POOL_BACKPRESSURE`
 //!   holds capture back no longer.
 //! * **The copy.** A reference on the frame's buffer is held for the copy and
-//!   no longer: the frame goes into the caller's buffer (`Caller::with_buffer`,
+//!   no longer: the frame goes into the caller's buffer (`Caller::with_buffer_pages`,
 //!   checked first, so a bad buffer takes no frame) from a shared slice. The
 //!   pool's buffers are mapped nowhere but in the kernel.
 //! * **Not on the ring.** An io_ring pass does not serve `Frame`: a call takes
@@ -26,7 +33,9 @@
 //!   is not a bounded register access (`khost`'s `HOSTED` has no `ring =` for it).
 
 use azos_abi::cap::CapPerms;
-use azos_cam_ring::{FramePool, FrameFormat, Policy};
+use azos_cam_ring::{FrameFormat, FramePool, Policy};
+use azos_decision::{Rule, Verdict};
+use azos_topology::EffectKind;
 use azos_devif::frame::{self, Meta};
 use azos_devif::{outcome, Cap, Out};
 use azos_sync::SpinLock;
@@ -49,6 +58,11 @@ pub const POLICY: Policy = if azos_limits::FRAME_POOL_BACKPRESSURE {
 } else {
     Policy::OverwriteOldest
 };
+
+const _: () = assert!(
+    SLOTS >= RING3_READERS + 3,
+    "FRAME_POOL_SLOTS must be at least FRAME_READERS + 3 (a buffer per reader, the sender's, the newest frame and the one being written): raise FRAME_POOL_SLOTS or lower FRAME_READERS"
+);
 
 pub type Pool = FramePool<SLOTS, BYTES, READERS>;
 
@@ -79,29 +93,68 @@ pub fn attach(c: usize) -> bool {
     attached
 }
 
-/// The task that holds each ring-3 reader slot (0: free); slot `i` is the
-/// pool's cursor `1 + i`. A leaf lock, held to find or change a slot.
-static HOLDERS: SpinLock<[u32; RING3_READERS]> = SpinLock::new([0; RING3_READERS]);
+/// A ring-3 reader slot: the task that holds it (0: free) and whether it has
+/// read its first frame. Slot `i` is the pool's cursor `1 + i`.
+#[derive(Clone, Copy)]
+struct Holder {
+    tid: u32,
+    read: bool,
+}
+
+/// The holders of the ring-3 reader slots. A leaf lock, held to find or change
+/// a slot.
+static HOLDERS: SpinLock<[Holder; RING3_READERS]> = SpinLock::new([Holder { tid: 0, read: false }; RING3_READERS]);
+
+/// Does `tid` hold a reader slot?
+fn is_reader(tid: u32) -> bool {
+    HOLDERS.lock().iter().any(|h| h.tid == tid)
+}
 
 /// The cursor of `tid`, taking a free slot if it has none. `None`: all taken.
 fn cursor_of(tid: u32) -> Option<usize> {
     let mut h = HOLDERS.lock();
     #[cfg(not(feature = "frame-slot-per-call-canary"))]
-    if let Some(i) = h.iter().position(|t| *t == tid) {
+    if let Some(i) = h.iter().position(|x| x.tid == tid) {
         return Some(1 + i);
     }
-    let i = h.iter().position(|t| *t == 0)?;
-    h[i] = tid;
+    let i = h.iter().position(|x| x.tid == 0)?;
+    h[i] = Holder { tid, read: false };
     Some(1 + i)
+}
+
+/// `tid`'s first frame was read: `true` once per slot.
+fn first_read(tid: u32) -> bool {
+    let mut h = HOLDERS.lock();
+    match h.iter_mut().find(|x| x.tid == tid) {
+        Some(x) if !x.read => {
+            x.read = true;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// End `tid`'s reading, if it has any.
 fn end_reading(tid: u32) {
     let mut h = HOLDERS.lock();
-    if let Some(i) = h.iter().position(|t| *t == tid) {
-        h[i] = 0;
+    if let Some(i) = h.iter().position(|x| x.tid == tid) {
+        h[i] = Holder { tid: 0, read: false };
         POOL.detach(1 + i);
+        azos_drv_sys::kwarn!("[CAMERA] frame reader of tid {} ended", tid);
     }
+}
+
+/// One `cam-capture` decision record.
+fn record(verdict: Verdict, tid: u32, seq: u64, why: u32) {
+    #[cfg(not(feature = "frame-unrecorded-canary"))]
+    azos_decision::record(Rule::CamCapture, verdict, tid, [0, seq, why as u64]);
+    #[cfg(feature = "frame-unrecorded-canary")]
+    let _ = (verdict, tid, seq, why);
+}
+
+/// The pool could not be made: `have` of its buffers were (the boot refuses it).
+pub fn refuse_pool(have: usize) {
+    record(Verdict::Refuse, 0, have as u64, frame::reason::POOL);
 }
 
 /// A task exited: it reads no more.
@@ -126,9 +179,11 @@ impl azos_devif::Frame for Server {
         Out::ok(BYTES as u32)
     }
 
-    /// In order: the right (`READ`); the camera; the buffer (a bad one takes
-    /// no frame); a reader slot; the frame, copied under a reference that ends
-    /// with the call.
+    /// In order: the right (`READ`); the camera; for a task that is not yet a
+    /// reader, its class's `cam` effect (a task without it learns nothing of
+    /// the camera); the pool; the buffer (a bad one takes no frame); a reader
+    /// slot; the frame, copied under a reference that ends with the call.
+    /// A grant, a refusal and a task's first frame are `cam-capture` records.
     fn next(&mut self, buf: Cap<frame::FrameBuf>) -> Out<Meta> {
         if let Err(o) = self.0.gate::<Meta>(CapPerms::READ) {
             return o;
@@ -136,27 +191,53 @@ impl azos_devif::Frame for Server {
         if self.0.badge >= frame::CAMERAS {
             return Out::err(outcome::NO_RESOURCE);
         }
+        let tid = self.0.tid;
+        let newcomer = !is_reader(tid);
+        #[cfg(not(feature = "frame-effect-ignored-canary"))]
+        if newcomer && !crate::effect::task_has(EffectKind::Cam, tid) {
+            record(Verdict::Refuse, tid, 0, frame::reason::NO_EFFECT);
+            return Out::err(outcome::REFUSED);
+        }
         if !POOL.ready() {
             return Out::err(outcome::NOT_READY);
         }
         #[cfg(not(feature = "frame-check-late-canary"))]
-        if let Err(code) = self.0.with_buffer(buf.raw(), BYTES, BYTES, |_| ()) {
+        if let Err(code) = self.0.with_buffer_pages(buf.raw(), BYTES, BYTES, |_, _, _| ()) {
             return Out::err(code);
         }
-        let Some(c) = cursor_of(self.0.tid) else { return Out::err(outcome::BUSY) };
+        let Some(c) = cursor_of(tid) else {
+            record(Verdict::Refuse, tid, 0, frame::reason::NO_SLOT);
+            return Out::err(outcome::BUSY);
+        };
+        if newcomer {
+            record(Verdict::Admit, tid, 0, frame::reason::GRANTED);
+            azos_drv_sys::kwarn!("[CAMERA] frame reader opened by tid {}", tid);
+        }
         if !attach(c) {
             return Out::err(outcome::NOT_READY);
         }
         let Some(f) = POOL.acquire_latest(c) else { return Out::err(outcome::NOT_READY) };
         let bytes = f.bytes();
-        let copied = if bytes.is_empty() || cfg!(feature = "frame-copy-skip-canary") { Ok(()) } else { self.0.with_buffer(buf.raw(), BYTES, bytes.len(), |base| {
-            // SAFETY: `base` addresses at least `bytes.len()` bytes of the
-            // object, kernel-mapped, held by the region table's lock for this
-            // closure; the object is read-write and is not a pool buffer.
-            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), base as *mut u8, bytes.len()) }
-        }) };
+        let copied = if bytes.is_empty() || cfg!(feature = "frame-copy-skip-canary") {
+            Ok(())
+        } else {
+            self.0.with_buffer_pages(buf.raw(), BYTES, bytes.len(), |off, addr, len| {
+                // SAFETY: `addr` addresses `len` bytes of one page of the
+                // object, kernel-mapped, held by the region table's lock for
+                // this closure; the object is read-write and is not a pool
+                // buffer; `off + len` is within `bytes`.
+                unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr().add(off), addr as *mut u8, len) }
+            })
+        };
         if copied.is_err() {
             return Out::err(outcome::FAULT);
+        }
+        #[cfg(not(feature = "frame-first-read-always-canary"))]
+        let first = first_read(tid);
+        #[cfg(feature = "frame-first-read-always-canary")]
+        let first = true;
+        if first {
+            record(Verdict::Admit, tid, f.seq(), frame::reason::FIRST_FRAME);
         }
         let info = f.info();
         Out::ok(Meta {

@@ -61,6 +61,8 @@ pub mod adc_host;
 pub mod memctl;
 /// Keys held for their users, used by handle: the `Keys` interface the kernel hosts.
 pub mod keys;
+/// The envelope rule of the effects a task asks for (`mic`, `cam`).
+pub mod effect;
 /// The check of a mounted volume, run by hand: the `Volume` interface the kernel hosts.
 pub mod volume_host;
 /// The frame class's pool and the `Frame` interface the kernel hosts: the camera's

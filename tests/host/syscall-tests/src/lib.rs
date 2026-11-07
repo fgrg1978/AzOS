@@ -164,6 +164,9 @@ pub mod memctl;
 // The `Keys` interface (the keystore the kernel hosts).
 #[path = "../../../../crates/core/syscall/src/keys.rs"]
 pub mod keys;
+// The envelope rule of the `mic` and `cam` effects.
+#[path = "../../../../crates/core/syscall/src/effect.rs"]
+pub mod effect;
 // The `Volume` interface (the check of a mounted volume, by hand).
 #[path = "../../../../crates/core/syscall/src/volume_host.rs"]
 pub mod volume_host;

@@ -129,6 +129,28 @@ impl Caller {
     /// kernel, or not physically contiguous). `f` runs with the region table's
     /// lock held.
     pub(crate) fn with_buffer(&self, raw: u32, least: usize, bytes: usize, f: impl FnOnce(usize)) -> Result<(), u32> {
+        let region = self.shm_region(raw, least)?;
+        match azos_ipc::memobj::memobj_with_span_ref(region, bytes, f) {
+            Ok(Some(())) => Ok(()),
+            Ok(None) => Err(azos_devif::outcome::UNSUPPORTED),
+            Err(_) => Err(azos_devif::outcome::BAD_ARGUMENT),
+        }
+    }
+
+    /// [`with_buffer`](Self::with_buffer) for a buffer of any frames: `f(offset,
+    /// address, len)` runs for each page of the first `bytes` bytes (`Frame::next`).
+    pub(crate) fn with_buffer_pages(&self, raw: u32, least: usize, bytes: usize, f: impl FnMut(usize, usize, usize)) -> Result<(), u32> {
+        let region = self.shm_region(raw, least)?;
+        match azos_ipc::memobj::memobj_with_pages_ref(region, bytes, f) {
+            Ok(Some(())) => Ok(()),
+            Ok(None) => Err(azos_devif::outcome::UNSUPPORTED),
+            Err(_) => Err(azos_devif::outcome::BAD_ARGUMENT),
+        }
+    }
+
+    /// The region of the memory object the caller's capability `raw` names, held
+    /// with `READ` and `WRITE` and at least `least` bytes long.
+    fn shm_region(&self, raw: u32, least: usize) -> Result<u32, u32> {
         let named = azos_ipc::cap_store::read_table(self.tid, |t| t.peek_raw(CapHandle(raw))).flatten();
         let Some((ty, rights, region)) = named else { return Err(azos_devif::outcome::BAD_ARGUMENT) };
         if ty != azos_abi::cap::ty::SHM {
@@ -142,11 +164,7 @@ impl Caller {
         if desc.page_count * azos_arch::PAGE_SIZE < least {
             return Err(azos_devif::outcome::BAD_ARGUMENT);
         }
-        match azos_ipc::memobj::memobj_with_span_ref(region, bytes, f) {
-            Ok(Some(())) => Ok(()),
-            Ok(None) => Err(azos_devif::outcome::UNSUPPORTED),
-            Err(_) => Err(azos_devif::outcome::BAD_ARGUMENT),
-        }
+        Ok(region)
     }
 
     /// [`deny`](Self::deny) for the ops the recovery console also offers: the

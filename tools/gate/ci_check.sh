@@ -12159,6 +12159,9 @@ host_job host_canary_row "frame: copy skip canary" syscall-tests frame-copy-skip
 host_job host_canary_row "frame: late check canary" syscall-tests frame-check-late-canary a_buffer_that_cannot_take_the_frame_takes_no_frame
 host_job host_canary_row "frame: slot per call canary" syscall-tests frame-slot-per-call-canary a_reader_slot_is_a_tasks_and_a_full_table_is_busy
 host_job host_canary_row "frame: exit keeps canary" syscall-tests frame-exit-keeps-canary a_task_that_exits_reads_no_more
+host_job host_canary_row "frame: cam effect ignored canary" syscall-tests frame-effect-ignored-canary a_class_without_the_cam_effect_is_refused_and_recorded
+host_job host_canary_row "frame: unrecorded canary" syscall-tests frame-unrecorded-canary the_grant_the_first_frame_and_the_refusals_are_recorded
+host_job host_canary_row "frame: first read always canary" syscall-tests frame-first-read-always-canary the_grant_the_first_frame_and_the_refusals_are_recorded
 host_job host_canary_row "frame: task writes canary" syscall-tests frame-reader-writes-canary what_a_task_writes_to_its_buffer_never_reaches_another_reader
 host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mismatch_is_refused
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused

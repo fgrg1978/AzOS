@@ -782,8 +782,12 @@ config FRAME_POOL_SLOTS
       of the Frame interface take a reference on the same buffer. The JPEG is
       encoded once per frame, however many readers there are.
 
-      Each buffer is a kernel-owned contiguous memory object of FRAME_BYTES,
-      made at boot when the camera is set up; with no camera nothing is made.
+      Each buffer is a kernel-owned contiguous memory object of FRAME_BYTES
+      (as many buffers in one object as MAX_MEMOBJ_PAGES holds), made at boot
+      when the camera is set up; with no camera nothing is made. The pool may
+      take at most a quarter of MAX_MEMOBJS (a build error otherwise). If the
+      memory is not there the pool is refused, a cam-capture decision record
+      says so, and the camera has no readers.
       The pool needs FRAME_READERS + 3 buffers (a reference per reader, the
       newest frame, the one being written, and one spare): a smaller number
       with more readers is a build error. More buffers only matter under
@@ -803,14 +807,15 @@ config FRAME_BYTES
       A smaller number than the camera's bound is a build error; a bigger one
       only costs memory (FRAME_POOL_SLOTS x this, rounded up to pages). The
       most one memory object holds is 256 KiB. A ring-3 reader's buffer is
-      this size at least (Frame::info says it).
+      this size at least (Frame::buffer_bytes says it).
 
 config FRAME_READERS
     int "Frame class: most ring-3 readers at once"
     range 1 8
     default 1
     help
-      How many tasks may hold the Frame interface open (Frame::open) together;
+      How many tasks may read the camera through the Frame interface (Frame::next) together;
+      each needs the `cam` effect of its scheduler class;
       another one is answered BUSY until a reader closes or exits. Each costs
       the pool one more buffer (FRAME_POOL_SLOTS must stay at least this + 3)
       and one cursor. The brain link's sender is a reader of its own and not

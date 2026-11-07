@@ -66,6 +66,10 @@ frame-slot-per-call-canary = []
 frame-check-late-canary = []
 # ... a read copies nothing.
 frame-copy-skip-canary = []
+# ... the cam effect is not asked; no decision is written; every read is a first read.
+frame-effect-ignored-canary = []
+frame-unrecorded-canary = []
+frame-first-read-always-canary = []
 # Kernel feature `hv` (Kconfig HV): `src/vm.rs`, the `Vm` and `Vcpu` endpoints.
 hv = ["dep:azos_hv"]
 # Kernel feature `virtio-snd` (Kconfig DRV_VIRTIO_SND): `src/sound_host.rs`, the

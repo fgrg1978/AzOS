@@ -424,7 +424,7 @@ fn a_malformed_numa_envelope_or_usb_row_is_refused() {
         (en("egress-off", "ota-slow"), dup(RowKind::Envelope)),
         (en("ota-slow", "ota slow"), bad(RowKind::Envelope)),
     ]);
-    for k in ["config", "ota", "egress", "delete", "rt_time", "mic"] {
+    for k in ["config", "ota", "egress", "delete", "rt_time", "mic", "cam"] {
         let t = ok(&format!("[envelope.e]\nkind = \"{k}\"\nclass = \"best_effort\"\nlevel = \"cautious\"\n"));
         assert_eq!(t.envelopes()[0].kind.as_str(), k);
     }

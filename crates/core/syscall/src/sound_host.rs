@@ -154,46 +154,23 @@ fn code_of(e: dev::Error) -> u32 {
 /// The envelope rule: a class has the `mic` effect unless an `[envelope.NAME]`
 /// row of kind `mic` for the class caps it at `contained`.
 pub fn mic_admitted(envelopes: &[azos_topology::EnvelopeSpec<'_>], class: &azos_topology::MaybeStr<'_>) -> bool {
-    !envelopes
-        .iter()
-        .any(|e| e.kind == azos_topology::EffectKind::Mic && e.class == *class && e.level == azos_topology::Envelope::Contained)
+    crate::effect::admitted(azos_topology::EffectKind::Mic, envelopes, class)
 }
-
-/// Tasks whose `mic` effect the host suites withhold (0: free slot): they
-/// install no topology (it is installed once per process), so the class lookup
-/// has nothing to ask.
-#[cfg(test)]
-static MIC_WITHHELD: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 
 /// Withhold the `mic` effect from `tid` (host suites only).
 #[cfg(test)]
 pub fn withhold_mic(tid: u32) {
-    for s in &MIC_WITHHELD {
-        if s.compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            return;
-        }
-    }
+    crate::effect::withhold(azos_topology::EffectKind::Mic, tid);
 }
 
 /// Give every task the `mic` effect again (host suites only).
 #[cfg(test)]
 pub fn clear_withheld_mic() {
-    for s in &MIC_WITHHELD {
-        s.store(0, Ordering::Release);
-    }
+    crate::effect::clear_withheld();
 }
 
-/// Is the `mic` effect admitted for task `tid`'s scheduler class? No topology
-/// installed: there are no classes to cap. With one, a task seeded from no row
-/// has no class and so no grant.
 fn mic_effect(tid: u32) -> bool {
-    #[cfg(test)]
-    if MIC_WITHHELD.iter().any(|s| s.load(Ordering::Acquire) == tid) {
-        return false;
-    }
-    let Some(topo) = azos_topology::get() else { return true };
-    let Some(task) = crate::natfork::row_of(tid).and_then(|row| topo.tasks().get(row)) else { return false };
-    mic_admitted(topo.envelopes(), &task.class_name)
+    crate::effect::task_has(azos_topology::EffectKind::Mic, tid)
 }
 
 /// The task that made the call `call` names, when `server` is serving it (it
