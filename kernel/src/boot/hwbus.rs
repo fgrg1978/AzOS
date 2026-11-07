@@ -848,6 +848,9 @@ pub(crate) fn add_pci(funcs: &[Option<azos_pci::FunctionInfo>], window: &azos_pc
                 d = d.with_window(cpu, bar.size);
             }
         }
+        for bar in f.bars[..f.bar_count].iter().flatten().filter(|b| matches!(b.kind, azos_pci::BarKind::Io)) {
+            d = d.with_io_bar(bar.address, bar.size);
+        }
         add(d.with_dma_mask(dma_mask));
     }
 }

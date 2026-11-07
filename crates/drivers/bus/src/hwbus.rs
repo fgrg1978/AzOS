@@ -85,6 +85,16 @@ pub fn may_master_bus(handle: u32) -> Option<bool> {
     with(|b| b.get(Handle(handle)).map(|s| s.dev.may_master_bus()))
 }
 
+/// The handle of a device that masters the bus and has an I/O BAR over the
+/// ports `first..=last` (an overlap of any port); `None` when no such device.
+pub fn io_bar_master(first: u16, last: u16) -> Option<u32> {
+    with(|b| {
+        b.iter()
+            .find(|(_, s)| s.dev.may_master_bus() && s.dev.io_bars.iter().flatten().any(|&(f, l)| f <= last && first <= l))
+            .map(|(h, _)| h.0)
+    })
+}
+
 /// [`user_window`] and book the mapping about to be made ([`Bus::claim_user_window`]).
 pub fn claim_user_window(handle: u32) -> Option<(u64, u64)> {
     with(|b| b.claim_user_window(Handle(handle)))

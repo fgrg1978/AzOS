@@ -287,15 +287,15 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
 static RING3_UNCONFINED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// May ring 3 hold the registers of device `dev`, which masters the bus,
-/// writable (a topology grant): only where an IOMMU will confine it, or the
-/// build accepts that its driver is kernel-trust. A refusal is said and
-/// recorded (`ring3-dma`, why 4).
+/// writable (a topology grant of its window or of the ports of its I/O BARs):
+/// only where an IOMMU will confine it, or the build accepts that its driver
+/// is kernel-trust. A refusal is said here and recorded by the caller
+/// (`Rule::Ring3Dma`, why 4 and 5).
 fn ring3_window_policy(dev: u32) -> bool {
     if RING3_UNCONFINED.load(core::sync::atomic::Ordering::Acquire) || ring3_confinable(dev) || canary!("dma-ring3-window-anyway") {
         return true;
     }
-    azos_drv_sys::kwarn!("[DMA] device {}: a writable window refused to ring 3: it masters the bus and no IOMMU confines it", dev);
-    azos_decision::record(azos_decision::Rule::Ring3Dma, azos_decision::Verdict::Refuse, dev, [0, 0, 4]);
+    azos_drv_sys::kwarn!("[DMA] device {}: its registers refused to ring 3: it masters the bus and no IOMMU confines it", dev);
     false
 }
 

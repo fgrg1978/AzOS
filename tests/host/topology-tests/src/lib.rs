@@ -2897,6 +2897,12 @@ pub(crate) mod host_machine {
                 b.add(hwbus::Device::dt("nowindow@0", b"vendor,nowindow\0", 0x3000_0000, 0, 0), &mut q).unwrap();
                 b.add(hwbus::Device::virtio_mmio(0x1000_2000, 0x1000, 2, 2), &mut q).unwrap();
                 b.add(hwbus::Device::dt("dma@4000000", b"vendor,dmamaster\0", 0x400_0000, 0x1000, 0).with_dma_coherent(true), &mut q).unwrap();
+                b.add(
+                    hwbus::Device::pci(hwbus::PciId { bus: 0, device: 3, function: 0, vendor: 0x1af4, device_id: 0x1000, class: 0x02_0000 })
+                        .with_io_bar(0x300, 0x20),
+                    &mut q,
+                )
+                .unwrap();
                 b.add(hwbus::Device::dt("usb@6000000", b"spacemit,k1-dwc3\0", 0x600_0000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("dma@6001000", b"snps,axi-dma-1.01a\0", 0x600_1000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("misc@6002000", b"vendor,unlisted\0", 0x600_2000, 0x1000, 0), &mut q).unwrap();
@@ -3072,6 +3078,7 @@ mod mmio_cap_tests {
     /// with no policy installed.
     #[test]
     fn a_writable_window_on_a_bus_master_needs_the_policy() {
+        let _g = crate::harness::serial();
         machine();
         let tid = fresh_tid();
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:vendor,dmamaster").is_none(), "no policy: refused");
@@ -3091,6 +3098,7 @@ mod mmio_cap_tests {
     /// `dt-unknown-peripheral-canary` (an unknown node reads as a peripheral).
     #[test]
     fn a_writable_window_on_an_unclassified_or_known_dt_master_needs_the_policy() {
+        let _g = crate::harness::serial();
         machine();
         let tid = fresh_tid();
         for sel in ["mmio.dt:spacemit,k1-dwc3", "mmio.dt:snps,axi-dma-1.01a", "mmio.dt:vendor,unlisted"] {
@@ -3101,6 +3109,44 @@ mod mmio_cap_tests {
         crate::mmio_cap::set_writable_master_policy(|_| true);
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:spacemit,k1-dwc3").is_some(), "the policy admits it");
         crate::mmio_cap::set_writable_master_policy(|_| false);
+    }
+
+    /// **A port grant over the I/O BAR of a bus master needs the same policy
+    /// as a writable window, and the refusal is recorded.** A legacy virtio
+    /// device's queue address, an IDE bus master's table pointer, are I/O
+    /// registers; a range that touches the BAR anywhere is refused, one beside
+    /// it is not.
+    ///
+    /// **Canary.** `ioport-master-canary`: the BAR's ports are granted with no
+    /// policy.
+    #[test]
+    fn a_port_grant_over_a_bus_masters_io_bar_needs_the_policy() {
+        use crate::ioport_cap::ioport_grant_in;
+        use azos_decision::Rule;
+        let _g = crate::harness::serial();
+        machine();
+        let tid = fresh_tid();
+        let nowhere = |_: u16, _: u16| None;
+        let refusals = |tid: u32| {
+            let mut n = 0;
+            azos_decision::for_each(|r| {
+                if r.rule == Rule::Ring3Dma as u8 && r.n[0] == u64::from(tid) && r.n[2] == 5 {
+                    n += 1;
+                }
+            });
+            n
+        };
+        for spec in ["768.32", "799.1", "767.2", "780.1"] {
+            assert!(ioport_grant_in(tid, spec, CapPerms::RW, 1024, nowhere).is_none(), "{spec}: over the BAR");
+        }
+        assert_eq!(refusals(tid), 4, "each refusal is recorded");
+        for spec in ["800.8", "700.68"] {
+            assert!(ioport_grant_in(tid, spec, CapPerms::RW, 1024, nowhere).is_some(), "{spec}: beside it");
+        }
+        crate::mmio_cap::set_writable_master_policy(|_| true);
+        assert!(ioport_grant_in(tid, "768.32", CapPerms::RW, 1024, nowhere).is_some(), "the policy admits it");
+        crate::mmio_cap::set_writable_master_policy(|_| false);
+        assert_eq!(refusals(tid), 4);
     }
 
     /// A topology `irq.<selector>` grant mints the line the bus found for the

@@ -92,5 +92,15 @@ pub fn ioport_grant_in(
         azos_decision::record(Rule::IoportReserved, Verdict::Refuse, tid, [first as u64, last as u64, port as u64]);
         return None;
     }
+    // The ports of a bus master's I/O BAR are its registers: writing them is
+    // pointing it at memory, as a writable window is (legacy virtio's queue
+    // address, an IDE bus master's table pointer).
+    if let Some(dev) = azos_drv_bus::hwbus::io_bar_master(first, last) {
+        if !cfg!(feature = "ioport-master-canary")
+            && !crate::mmio_cap::master_window_ok(dev, tid, u64::from(first) | u64::from(last) << 16, crate::mmio_cap::WHY_IOPORT)
+        {
+            return None;
+        }
+    }
     crate::cap_store::grant::<targets::IoPorts>(tid, perms, range)
 }

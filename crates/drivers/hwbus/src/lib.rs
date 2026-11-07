@@ -49,7 +49,7 @@ pub use bus::{
 };
 pub use record::{Env, Held, Host, Op, Ops, Power, Record, Records, Unbind};
 pub use masters::{dt_role, DtRole};
-pub use device::{BusKind, Device, Name, PciId, COMPAT_LEN, NAME_LEN};
+pub use device::{BusKind, Device, Name, PciId, COMPAT_LEN, IO_BARS, NAME_LEN};
 pub use pattern::{Pattern, ANY};
 pub use policy::{decide, natural, Choice, Policy, Row, Verdict};
 pub use tables::{first_conflict, DriverIds, LinuxEntry, NativeEntry, DRIVERS, LINUX, NATIVE};

@@ -9,6 +9,8 @@ pub const NAME_LEN: usize = 32;
 /// Bytes of a device-tree `compatible` list kept (NUL-separated strings, most
 /// specific first; a string that does not fit whole is dropped).
 pub const COMPAT_LEN: usize = 96;
+/// I/O BARs of a PCI function kept (its BARs are six).
+pub const IO_BARS: usize = 6;
 
 /// Which enumerator found a device.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -84,6 +86,9 @@ pub struct Device {
     /// The second register window of a device-tree node, `(base, size)`;
     /// `None` when the node has one (the SBSA watchdog's refresh frame).
     pub reg2: Option<(u64, u64)>,
+    /// The ports `(first, last)` of the function's I/O BARs (PCI, x86): a bus
+    /// master's I/O registers are as much its DMA authority as its window.
+    pub io_bars: [Option<(u16, u16)>; IO_BARS],
     /// The first interrupt specifier cell (DT), or the line the transport
     /// uses; 0 when none is known.
     pub irq: u32,
@@ -155,6 +160,7 @@ impl Device {
             base: 0,
             size: 0,
             reg2: None,
+            io_bars: [None; IO_BARS],
             irq: 0,
             dma_mask: u64::MAX,
             dma_offset: 0,
@@ -252,6 +258,17 @@ impl Device {
     pub fn with_dma_declared(mut self, noncoherent: bool, has_iommu: bool) -> Self {
         self.dma_noncoherent = noncoherent;
         self.has_iommu = has_iommu;
+        self
+    }
+
+    /// The device with an I/O BAR of `size` ports at port `address` (see
+    /// [`Device::io_bars`]); one unassigned (port 0), past the port space or past
+    /// the six kept is not recorded.
+    pub fn with_io_bar(mut self, address: u64, size: u64) -> Self {
+        let last = address.checked_add(size.saturating_sub(1)).filter(|&l| size != 0 && address != 0 && l <= u64::from(u16::MAX));
+        if let (Some(last), Some(slot)) = (last, self.io_bars.iter_mut().find(|s| s.is_none())) {
+            *slot = Some((address as u16, last as u16));
+        }
         self
     }
 

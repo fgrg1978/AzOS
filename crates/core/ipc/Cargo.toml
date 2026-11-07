@@ -14,6 +14,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 writable-master-canary = []
 # Host canary (tests/host/topology-tests): `irq.<selector>` mints a line a kernel device shares.
 irq-selector-shared-canary = []
+# Host canary (tests/host/topology-tests): an I/O port grant over a bus master's BAR skips the master policy.
+ioport-master-canary = []
 # Host canary (tests/host/syscall-tests `mmio_map.rs`): ring 3 is given memory
 # for a device no IOMMU confines whatever Kconfig DMA_RING3_WITHOUT_IOMMU says.
 dma-ring3-unconfined-canary = []

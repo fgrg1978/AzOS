@@ -80,16 +80,32 @@ pub fn set_writable_master_policy(f: fn(u32) -> bool) {
     *WRITABLE_MASTER.lock() = Some(f);
 }
 
+/// Why a master's registers were refused (`Rule::Ring3Dma`, the record's third word).
+pub(crate) const WHY_WINDOW: u64 = 4;
+pub(crate) const WHY_IOPORT: u64 = 5;
+
+/// May `tid` be given registers or ports that point device `handle`, a bus
+/// master, at memory: only where the kernel's policy says so
+/// ([`set_writable_master_policy`]); unset, no. A refusal is recorded with
+/// `why`, and `range` (the ports asked for, or 0).
+pub(crate) fn master_window_ok(handle: u32, tid: u32, range: u64, why: u64) -> bool {
+    let policy = *WRITABLE_MASTER.lock();
+    if policy.is_some_and(|f| f(handle)) {
+        return true;
+    }
+    azos_decision::record(azos_decision::Rule::Ring3Dma, azos_decision::Verdict::Refuse, handle, [u64::from(tid), range, why]);
+    false
+}
+
 /// May a grant carrying `perms` be minted for device `handle`: one with
 /// `WRITE` on a device that masters the bus only where the kernel's policy
 /// says so (writing such a device's registers points it at any memory, and
 /// that is the DMA authority `DEVICE_DMA_MAP` refuses alone).
-fn writable_ok(handle: u32, perms: CapPerms) -> bool {
+fn writable_ok(handle: u32, tid: u32, perms: CapPerms) -> bool {
     if !perms.contains(CapPerms::WRITE) || hwbus::may_master_bus(handle) != Some(true) || cfg!(feature = "writable-master-canary") {
         return true;
     }
-    let policy = *WRITABLE_MASTER.lock();
-    policy.is_some_and(|f| f(handle))
+    master_window_ok(handle, tid, 0, WHY_WINDOW)
 }
 
 /// Topology-loader entry: grant `tid` a `Cap<Device>` over the device
@@ -110,7 +126,7 @@ pub fn mmio_grant_cap(
     }
     let handle = hwbus::resolve(selector)?;
     hwbus::user_window(handle)?;
-    if !writable_ok(handle, perms) {
+    if !writable_ok(handle, tid, perms) {
         return None;
     }
     crate::cap_store::grant::<targets::MmioRegion>(tid, perms, handle)
