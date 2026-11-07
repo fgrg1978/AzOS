@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2861204
-aarch64-microvm	.rodata	352720
+aarch64-microvm	.text	2865108
+aarch64-microvm	.rodata	351824
 aarch64-microvm	.data	468904
-aarch64-microvm	.bss	1013288
-aarch64-microvm	reason	reclaim of named swappable objects over main's default-deny privacy effects: object take, fault restore, aging over object slots, the exec hook, review fixes
-riscv64-qemu	.text	2928806
-riscv64-qemu	.rodata	495288
+aarch64-microvm	.bss	947752
+aarch64-microvm	reason	non-robot images no longer link the robot sensor streams
+riscv64-qemu	.text	2930486
+riscv64-qemu	.rodata	498528
 riscv64-qemu	.data	580240
 riscv64-qemu	.bss	2289384
-riscv64-qemu	reason	reclaim of named swappable objects over main's default-deny privacy effects: object take, fault restore, aging over object slots, the exec hook, review fixes
-x86_64-microvm	.text	2724937
-x86_64-microvm	.rodata	179736
-x86_64-microvm	.data	627536
-x86_64-microvm	.bss	974928
-x86_64-microvm	reason	reclaim of named swappable objects over main's default-deny privacy effects: object take, fault restore, aging over object slots, the exec hook, review fixes
+riscv64-qemu	reason	robot sensors to their own crate, bench harness to crates/lib/bench, board bring-up split from the robot boot
+x86_64-microvm	.text	2724553
+x86_64-microvm	.rodata	179064
+x86_64-microvm	.data	627088
+x86_64-microvm	.bss	966736
+x86_64-microvm	reason	non-robot images no longer link the robot sensor streams
