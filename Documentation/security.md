@@ -161,7 +161,8 @@ than allow rules:
 | `actuation-grant-not-transferable` | An actuator grant that carries `TRANSFER` |
 | `proxy-endpoint-not-realtime` | A real-time row holding a grant on a proxy endpoint (`endpoint.rpc-*`) |
 | `proxy-endpoint-served-by-rpcsrv-only` | A row other than `RPCSRV.ELF` serving a proxy endpoint |
-| `msi-slot-one-device` | Two rows holding one `msi.<k>` slot while driving different devices (`mmio.<selector>` grants): a vector a holder gave back is kept for its slot, so the slot's holders must share a device. |
+| `msi-slot-one-device` | Two rows holding one `msi.<k>` slot while driving different devices (`mmio.<selector>` and `ioport.*` grants): a vector a holder gave back is kept for its slot, so the slot's holders must share a device. |
+| `msi-grant-not-transferable` | An `msi.<k>` grant, or the device registers of a row that holds one, carrying TRANSFER or DUP (a slot's holder is the only one that may hand it on). |
 
 An exception is a row name plus the exact grants it may hold and a reason, in
 the table in the kernel image; a topology file cannot add one. A refusal is

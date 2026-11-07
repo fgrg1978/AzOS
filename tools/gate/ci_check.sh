@@ -13169,6 +13169,10 @@ host_job host_canary_row "ring-3: io port open refusal silent canary" topology-t
     a_port_grant_over_a_bus_masters_io_bar_needs_the_policy
 host_job host_canary_row "ring-3: msi slot shared canary" topology-tests msi-slot-shared-canary \
     two_rows_of_one_msi_slot_drive_one_device
+host_job host_canary_row "ring-3: msi transfer canary" topology-tests msi-transfer-canary \
+    an_msi_slot_cannot_be_handed_on_and_its_rules_hold_with_the_option_off
+host_job host_canary_row "ring-3: neverallow always canary" topology-tests neverallow-always-canary \
+    an_msi_slot_cannot_be_handed_on_and_its_rules_hold_with_the_option_off
 host_job host_canary_row "ring-3: msi vector reissue canary" ipc-tests msi-reissue-canary \
     a_given_back_msi_vector_is_reissued_only_to_its_own_slot
 host_job host_canary_row "dma: failed map frees unconfirmed block canary" dma-tests map-failed-frees-canary \

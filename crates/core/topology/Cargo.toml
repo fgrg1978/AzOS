@@ -149,6 +149,9 @@ neverallow-row-canary = []
 neverallow-canary = []
 # Canary: two rows may hold one msi.<k> slot while driving different devices.
 msi-slot-shared-canary = []
+# Canaries: an msi grant may carry TRANSFER or DUP; the always-on rules find nothing.
+msi-transfer-canary = []
+neverallow-always-canary = []
 # Shrinks the autorun frame budget so a ring-3 probe can hit it in 16 pages
 # instead of 2048. See `builder.rs`.
 mem-quota-canary = []

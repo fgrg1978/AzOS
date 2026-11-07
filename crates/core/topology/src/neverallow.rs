@@ -28,6 +28,7 @@
 //! | `actuation-outside-actuation-row` | a ring-3 row holding a motor, a PWM or GPIO write, or the buzzer, unless the row is listed as an actuation row |
 //! | `desktop-grants-no-motor` | any row holding a motor in a `USE_DESKTOP` image |
 //! | `msi-slot-one-device` | two rows holding one `msi.<k>` slot while driving different devices: a vector given back is kept for its slot, so the slot's holders must share a device |
+//! | `msi-grant-not-transferable` | an `msi.<k>` grant, or the device registers of a row that holds one, carrying TRANSFER or DUP |
 //! | `names-import-and-service-export` | a row that imports names from the name server and also serves a task-hosted endpoint (`endpoint.<name>`) or registers a driver |
 //! | `actuation-grant-not-transferable` | a motor, PWM, GPIO or buzzer grant that carries `TRANSFER` (`transfer = true` or the `t` letter of `perm`) |
 //! | `proxy-endpoint-not-realtime` | a row with a real-time reservation or class holding any grant on a proxy endpoint (`endpoint.rpc-*`) |
@@ -118,6 +119,9 @@ pub struct Rule {
     pub id: &'static str,
     /// The assertion, in English.
     pub text: &'static str,
+    /// A rule the kernel's safety rests on, not a lint: admission applies it
+    /// whatever Kconfig `TOPOLOGY_NEVERALLOW` says.
+    pub always: bool,
     /// The rows that may break it anyway (see the module doc).
     pub exceptions: &'static [Exception],
     /// Does grant `c` of `row` break the rule (before exceptions)?
@@ -197,9 +201,24 @@ fn is_msi(c: &CapSpec<'_>) -> bool {
     c.kind == CapKind::Device && c.target.as_str().starts_with("msi.")
 }
 
-/// The device registers a row holds (`mmio.<selector>`): the devices it drives.
+/// The device registers and ports a row holds (`mmio.<selector>`,
+/// `ioport.<first>.<count>`): the devices it drives.
 fn devices_of<'a, 't>(t: &'t Topology<'a>, row: &TaskSpec<'a>) -> impl Iterator<Item = &'t str> + 't {
-    t.caps_of(row).iter().filter(|c| c.kind == CapKind::Device && c.target.as_str().starts_with("mmio.")).map(|c| c.target.as_str())
+    t.caps_of(row).iter().filter(|c| is_device_reg(c)).map(|c| c.target.as_str())
+}
+
+fn is_device_reg(c: &CapSpec<'_>) -> bool {
+    c.kind == CapKind::Device && (c.target.as_str().starts_with("mmio.") || c.target.as_str().starts_with("ioport."))
+}
+
+/// A slot's holder is the only one that may hand it on: a capability that
+/// moves or copies to a task this check never saw puts the slot's kept vector
+/// under another device. Applies to the slot and to the device registers of a
+/// row that holds one.
+fn msi_grant_not_transferable(_: &Env, t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+    (is_msi(c) || (is_device_reg(c) && t.caps_of(row).iter().any(is_msi)))
+        && (c.grant_perms().contains(CapPerms::TRANSFER) || c.grant_perms().contains(CapPerms::DUP))
+        && !cfg!(feature = "msi-transfer-canary")
 }
 
 /// A slot's vector is kept for the slot when its holder gives it back
@@ -216,10 +235,11 @@ fn msi_slot_one_device(_: &Env, t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpe
 
 /// The rules, in the order they are checked. The index is what a decision
 /// record names.
-pub const RULES: [Rule; 7] = [
+pub const RULES: [Rule; 8] = [
     Rule {
         id: "actuation-outside-actuation-row",
         text: "no ring-3 row holds a motor, a PWM or GPIO write grant, or the buzzer, unless the row is an actuation row",
+        always: false,
         exceptions: &[
             Exception {
                 row: "autorun",
@@ -260,38 +280,51 @@ pub const RULES: [Rule; 7] = [
     Rule {
         id: "desktop-grants-no-motor",
         text: "no row of a USE_DESKTOP image holds a motor",
+        always: false,
         exceptions: &[],
         breaks: desktop_grants_no_motor,
     },
     Rule {
         id: "names-import-and-service-export",
         text: "no row both imports names from the name server and serves an endpoint or registers a driver",
+        always: false,
         exceptions: &[],
         breaks: names_import_and_service_export,
     },
     Rule {
         id: "actuation-grant-not-transferable",
         text: "no motor, PWM, GPIO or buzzer grant carries TRANSFER (transfer = true, or perm \"t\")",
+        always: false,
         exceptions: &[],
         breaks: actuation_grant_not_transferable,
     },
     Rule {
         id: "proxy-endpoint-not-realtime",
         text: "no row with a real-time reservation or class holds a grant on a proxy endpoint",
+        always: false,
         exceptions: &[],
         breaks: proxy_endpoint_not_realtime,
     },
     Rule {
         id: "proxy-endpoint-served-by-rpcsrv-only",
         text: "no row but RPCSRV.ELF serves a proxy endpoint",
+        always: false,
         exceptions: &[],
         breaks: proxy_endpoint_served_by_rpcsrv_only,
     },
     Rule {
         id: "msi-slot-one-device",
-        text: "no two rows that hold the same msi.<k> slot drive different devices (mmio.<selector> grants)",
+        text: "no two rows that hold the same msi.<k> slot drive different devices (mmio.<selector> and ioport.* grants)",
+        always: true,
         exceptions: &[],
         breaks: msi_slot_one_device,
+    },
+    Rule {
+        id: "msi-grant-not-transferable",
+        text: "no msi.<k> grant, nor the device registers of a row that holds one, carries TRANSFER or DUP",
+        always: true,
+        exceptions: &[],
+        breaks: msi_grant_not_transferable,
     },
 ];
 
@@ -299,11 +332,21 @@ pub const RULES: [Rule; 7] = [
 /// that breaks one is the refusal. A grant an exception of that rule lists for
 /// that row is skipped by that rule alone.
 pub fn check(t: &Topology<'_>, env: &Env) -> Result<(), NeverallowRefusal> {
+    check_where(t, env, |_| true)
+}
+
+/// [`check`] for the rules the kernel's safety rests on only
+/// ([`Rule::always`]): what admission applies with `TOPOLOGY_NEVERALLOW` off.
+pub fn check_always(t: &Topology<'_>, env: &Env) -> Result<(), NeverallowRefusal> {
+    check_where(t, env, |r| r.always && !cfg!(feature = "neverallow-always-canary"))
+}
+
+fn check_where(t: &Topology<'_>, env: &Env, wanted: impl Fn(&Rule) -> bool) -> Result<(), NeverallowRefusal> {
     // Canary of the host suite: the rules find nothing.
     if cfg!(feature = "neverallow-canary") {
         return Ok(());
     }
-    for (ri, rule) in RULES.iter().enumerate() {
+    for (ri, rule) in RULES.iter().enumerate().filter(|(_, r)| wanted(r)) {
         for (row_i, row) in t.tasks().iter().enumerate() {
             let name = row.name.as_str();
             for (grant, c) in t.caps_of(row).iter().enumerate() {

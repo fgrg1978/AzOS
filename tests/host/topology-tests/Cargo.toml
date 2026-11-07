@@ -106,6 +106,9 @@ neverallow-row-canary = ["azos_topology/neverallow-row-canary"]
 neverallow-canary = ["azos_topology/neverallow-canary"]
 # Canary: two rows may hold one msi.<k> slot while driving different devices.
 msi-slot-shared-canary = ["azos_topology/msi-slot-shared-canary"]
+# Canaries: an msi grant may carry TRANSFER or DUP; the always-on rules find nothing.
+msi-transfer-canary = ["azos_topology/msi-transfer-canary"]
+neverallow-always-canary = ["azos_topology/neverallow-always-canary"]
 # Placement canary: a move is committed without its record.
 placement-norecord-canary = ["azos_topology/placement-norecord-canary"]
 

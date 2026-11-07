@@ -4403,9 +4403,12 @@ impl<'a> Topology<'a> {
             }
         }
         // What no topology may grant, whatever its file says (`neverallow`).
+        // The rules the kernel's safety rests on hold with the option off too.
+        let env = crate::neverallow::Env::BUILD;
         if azos_limits::TOPOLOGY_NEVERALLOW {
-            crate::neverallow::check(self, &crate::neverallow::Env::BUILD)
-                .map_err(AdmissionError::Neverallow)?;
+            crate::neverallow::check(self, &env).map_err(AdmissionError::Neverallow)?;
+        } else {
+            crate::neverallow::check_always(self, &env).map_err(AdmissionError::Neverallow)?;
         }
         // Real-time tasks must be schedulable. The CPU count is not known this
         // early, so this checks against every CPU a mask can name, and the

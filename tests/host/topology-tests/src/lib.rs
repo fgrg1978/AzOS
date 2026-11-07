@@ -6355,6 +6355,38 @@ mod msi_slot_tests {
         assert_eq!(refused(&two(&[slot0, nic], &[slot0, nic])), None, "one slot, one device");
         assert_eq!(refused(&two(&[slot0, nic], &[slot1, disk])), None, "two slots, two devices");
         assert_eq!(refused(&two(&[slot0, nic, disk], &[slot0, disk, nic])), None, "the same set in another order");
+        // Port-only drivers: the ports they hold name the device.
+        let (p1, p2) = (dev(b"ioport.768.32"), dev(b"ioport.832.32"));
+        assert_eq!(refused(&two(&[slot0, p1], &[slot0, p2])), Some(id), "one slot, two port ranges");
+        assert_eq!(refused(&two(&[slot0, p1], &[slot0, p1])), None);
+    }
+
+    /// **A slot grant, and the device registers of a row that holds one, are
+    /// not transferable or duplicable**, and admission applies the two `msi`
+    /// rules with `TOPOLOGY_NEVERALLOW` off.
+    ///
+    /// **Canaries.** `msi-slot-shared-canary` for the slot rule; the
+    /// transfer rule: drop the `grant_perms` test.
+    #[test]
+    fn an_msi_slot_cannot_be_handed_on_and_its_rules_hold_with_the_option_off() {
+        let env = Env { desktop: false };
+        let id = RULES.iter().position(|r| r.id == "msi-grant-not-transferable").expect("the rule") as u8;
+        let slot = dev(b"msi.0");
+        let nic = dev(b"mmio.pci:8086:100e");
+        let with = |c: CapSpec<'static>, perms: CapPerms, transfer: bool| CapSpec { perms, transfer, ..c };
+        let refused = |t: &Topology<'_>| neverallow::check(t, &env).err().map(|r| r.rule);
+        let row = |caps: &[CapSpec<'static>]| two(caps, &[]);
+        assert_eq!(refused(&row(&[with(slot, CapPerms::RW, true), nic])), Some(id), "TRANSFER on the slot");
+        assert_eq!(refused(&row(&[with(slot, CapPerms::RW.union(CapPerms::DUP), false), nic])), Some(id), "DUP on the slot");
+        assert_eq!(refused(&row(&[slot, with(nic, CapPerms::RW, true)])), Some(id), "TRANSFER on its device registers");
+        assert_eq!(refused(&row(&[with(nic, CapPerms::RW, true)])), None, "a row with no slot may hand its registers on");
+        assert_eq!(refused(&row(&[slot, nic])), None);
+        // The `always` rules are the safety ones.
+        let always: Vec<_> = RULES.iter().filter(|r| r.always).map(|r| r.id).collect();
+        assert_eq!(always, ["msi-slot-one-device", "msi-grant-not-transferable"]);
+        let bad = two(&[slot, nic], &[slot, dev(b"mmio.pci:1b36:0010")]);
+        assert!(neverallow::check_always(&bad, &env).is_err(), "a lint-off admission still refuses it");
+        assert!(neverallow::check_always(&row(&[slot, nic]), &env).is_ok());
     }
 }
 
