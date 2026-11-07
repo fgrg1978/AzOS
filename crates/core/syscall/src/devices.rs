@@ -604,7 +604,7 @@ pub(crate) enum RegionRefusal {
 /// Is the region one a kernel end of a ring may address? A swappable object is
 /// not (`azos_mm::memobj`, "Swappable objects"): the refusal is recorded, with
 /// `site` saying which attach it was (1 a device or sound queue, 2 a NIC queue,
-/// 3 a key buffer).
+/// 3 a buffer shared for one call: a key or frame buffer).
 ///
 /// Canary `swappable-ring-allowed-canary`: the object is let through.
 pub(crate) fn ring_addressable(tid: u32, region: u32, pages: usize, site: u64) -> bool {

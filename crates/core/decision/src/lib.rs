@@ -409,7 +409,7 @@ pub enum Rule {
     /// had reserved needed kernel memory its Domain had no room for.
     MemKill,
     /// A client handed the kernel a swappable memory object as the region of a
-    /// ring the kernel's end addresses (a queue, a NIC queue, a key buffer),
+    /// ring the kernel's end addresses (a queue, a NIC queue, a call buffer),
     /// and was refused: the kernel does not address memory that can be out.
     SwappableRing,
     /// A storm left a shared object's pages in memory because a process that
@@ -1427,7 +1427,7 @@ pub const RULES: &[RuleInfo] = &[
     },
     RuleInfo {
         // The subject is the task that handed the region. `region` is the object's packed reference, `pages` its
-        // size, `site` 1 a device or sound queue, 2 a NIC queue, 3 a key buffer.
+        // size, `site` 1 a device or sound queue, 2 a NIC queue, 3 a buffer shared for one call.
         name: "swappable-ring",
         subject: "tid",
         fields: ["region", "pages", "site"],

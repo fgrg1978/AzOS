@@ -14,7 +14,7 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
   such an object by address, a kernel ring over one is refused, and its owner's MOVE
   and a clone answer `-EBUSY` while a page is out. `SHM_ATTR_SWAPPABLE` together
   with `SHM_ATTR_VOLATILE` on one object is refused (`-EINVAL`); it was accepted.
-- Decision rules `mem-kill` (93), `swappable-ring` (94), `reclaim-skip` (95) and `pin-restore` (96) are
+- Decision rules `mem-kill` (94), `swappable-ring` (95), `reclaim-skip` (96) and `pin-restore` (97) are
   added; a kill for want of memory is `mem-kill`.
 - The GPS sensor record is 14 bytes (latitude and longitude in degrees x 1e7, altitude in mm, fix quality, satellites; the two pad bytes are gone), and a sensor with
   no reading (a battery with no converter, a rangefinder with none, a GPS with no

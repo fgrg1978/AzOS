@@ -806,9 +806,9 @@ and its number in the object, so one entry serves every mapper.
   decompression or the swap device, then installed by the next attempt. A page
   with neither frame nor copy is not the pager's and the fault fails.
 * **Kernel-attached rings.** The kernel's end of a ring (a device or sound queue,
-  a NIC queue, a key buffer) addresses its region's pages directly, and a page
+  a NIC queue, a buffer shared for one call: a key or frame buffer) addresses its region's pages directly, and a page
   that can be out cannot be addressed. A swappable object handed as such a region
-  is refused by name (`ring_region`: `UNSUPPORTED` for a queue and a key buffer,
+  is refused by name (`ring_region`: `UNSUPPORTED` for a queue and a call buffer,
   `EINVAL` for a NIC queue) and the refusal is a `swappable-ring` decision record
   with the attach site. An application that wants swappable memory and a kernel
   ring uses two objects.

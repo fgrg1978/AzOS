@@ -168,6 +168,9 @@ impl Caller {
         if desc.page_count * azos_arch::PAGE_SIZE < least {
             return Err(azos_devif::outcome::BAD_ARGUMENT);
         }
+        if !crate::devices::ring_addressable(self.tid, region, desc.page_count, 3) {
+            return Err(azos_devif::outcome::UNSUPPORTED);
+        }
         Ok(region)
     }
 
