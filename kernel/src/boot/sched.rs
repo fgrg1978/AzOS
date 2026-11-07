@@ -140,7 +140,7 @@ pub(crate) fn install_sched_hooks() {
     azos_ipc::memobj::set_unmap_hook(mapping_unmap);
     // The reclaimer's take clears a page's leaves under the object table and
     // shoots them down after it.
-    azos_ipc::memobj::set_take_hooks(take_clear, take_shoot);
+    azos_ipc::memobj::set_take_hooks(azos_mm::vmm::clear_user_leaf_unflushed, take_shoot);
     // `SYS_MO_MAP`'s protect form changes a mapping's write permission
     // through this hook.
     azos_ipc::memobj::set_protect_hook(mapping_protect);
@@ -591,13 +591,6 @@ fn cap_event(e: azos_ipc::cap_store::CapEvent) {
 fn mapping_unmap(root: usize, va: usize, pages: usize) {
     let end = va.saturating_add(pages.saturating_mul(azos_arch::PAGE_SIZE));
     azos_mm::vmm::unmap_user_range_keep(root, va, end);
-}
-
-/// The take's first half (`memobj::LeafClearHook`): the leaves go, nothing is
-/// shot down yet.
-fn take_clear(root: usize, va: usize, pages: usize) -> bool {
-    let end = va.saturating_add(pages.saturating_mul(azos_arch::PAGE_SIZE));
-    azos_mm::vmm::clear_user_leaves_unflushed(root, va, end)
 }
 
 /// The take's second half (`memobj::ShootdownHook`), with no lock held.

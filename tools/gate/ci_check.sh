@@ -13204,6 +13204,20 @@ host_job zpool_host_canary_row "swap: restored bytes canary" restore-flip-canary
 host_job zpool_host_row "swap: take shoots after the table" a_take_shoots_its_page_down_after_the_table
 host_job zpool_host_canary_row "swap: take shoots after the table canary" take-shootdown-under-table-canary \
     a_take_shoots_its_page_down_after_the_table
+# A run member's take splits the run and shoots it down after the table, except
+# with break-before-make (contig-split-shoots-at-once-canary: at once, in the
+# hold); a leaf the clear may not touch keeps the frame with the object
+# (take-refused-leaf-ignored-canary); a space that ended in the gap is not shot
+# down (take-dead-space-shot-canary).
+host_job zpool_host_row "swap: take splits a run after the table" a_take_of_a_run_member_splits_the_run_and_shoots_it_down_after_the_table
+host_job zpool_host_canary_row "swap: take splits a run canary" contig-split-shoots-at-once-canary \
+    a_take_of_a_run_member_splits_the_run_and_shoots_it_down_after_the_table
+host_job zpool_host_row "swap: take refuses a foreign leaf" a_take_over_a_leaf_it_may_not_clear_leaves_the_frame_with_the_object
+host_job zpool_host_canary_row "swap: take refuses a foreign leaf canary" take-refused-leaf-ignored-canary \
+    a_take_over_a_leaf_it_may_not_clear_leaves_the_frame_with_the_object
+host_job zpool_host_row "swap: take skips an ended space" a_take_skips_the_shootdown_of_a_space_that_ended
+host_job zpool_host_canary_row "swap: take skips an ended space canary" take-dead-space-shot-canary \
+    a_take_skips_the_shootdown_of_a_space_that_ended
 host_job zpool_host_row "swap: opt-in only" an_object_that_did_not_opt_in_is_not_offered_or_taken
 host_job zpool_host_canary_row "swap: opt-in only canary" swappable-ignored-canary \
     an_object_that_did_not_opt_in_is_not_offered_or_taken

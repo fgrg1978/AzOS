@@ -141,6 +141,15 @@ pub static LIVE_ROOT: core::sync::atomic::AtomicUsize =
 /// Answer of `block_change_needs_bbm`: false like riscv64's own impl; a test
 /// of the break-before-make sequence (`thp_bbm.rs`) turns it on.
 pub static NEEDS_BBM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Pages in one contiguous run the shim writes, 0 (the default) for none, as
+/// an ISA without the feature. A test of a run member's take turns it on: the
+/// members then carry [`CONTIG_HINT`] and each names its own frame, as
+/// aarch64's contiguous hint does.
+pub static CONTIG_RUN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// The shim's contiguous-run bit: PTE bit 9, the upper RSW bit, which nothing
+/// else in this shim writes.
+pub const CONTIG_HINT: u64 = 1 << 9;
+
 /// Called by `tlb_shootdown` with `(root_phys, va, len)` before it counts,
 /// when set: lets a test look at the page table at the instant the real
 /// shootdown would run. Copied out of the lock before the call.
@@ -192,6 +201,29 @@ impl Mmu for Arch {
             accessed: f.contains(mmu::PteFlags::ACCESSED),
             dirty: f.contains(mmu::PteFlags::DIRTY),
         }
+    }
+
+    fn contig_run_pages(&self) -> usize {
+        CONTIG_RUN.load(core::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn pte_make_contig_leaf(&self, run_pa: usize, index: usize, perms: PagePerms) -> Result<u64, MmuError> {
+        let run = self.contig_run_pages();
+        if run == 0 {
+            return Err(MmuError::UnrepresentablePerms);
+        }
+        if run_pa & (run * Self::PAGE_SIZE - 1) != 0 {
+            return Err(MmuError::NotAligned);
+        }
+        Ok(self.pte_make_leaf(run_pa + index * Self::PAGE_SIZE, perms, 0)? | CONTIG_HINT)
+    }
+
+    fn pte_is_contig(&self, word: u64) -> bool {
+        mmu::Pte(word).is_valid() && word & CONTIG_HINT != 0
+    }
+
+    fn pte_contig_member(&self, word: u64, _index: usize) -> u64 {
+        word & !CONTIG_HINT
     }
 
     fn pte_is_cow(&self, word: u64) -> bool {

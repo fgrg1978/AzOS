@@ -172,9 +172,12 @@
 //!
 //! **Shootdowns after the table.** The take keeps no IPI inside the table's hold
 //! (memory model §2.10): each holder carries a reference to its space, and the
-//! shootdown after the hold skips a space that ended in the gap: nothing runs
-//! in it again, and its stale entries are as harmless as those of the frames
-//! its own teardown frees. A purge, a MOVE, a revoke and a page-cache drop still
+//! shootdown after the hold skips a space that ended in the gap (`shoot_down`
+//! says why that is safe). A leaf in a contiguous run splits the run in place
+//! and the whole run is shot down after the hold; only where the split needs
+//! break-before-make (aarch64 without FEAT_BBM level 2) does it shoot down in
+//! the hold, a broadcast with no IPI. A clear that meets a translation it may
+//! not touch leaves the frame with the object (`LeafClear::Refused`). A purge, a MOVE, a revoke and a page-cache drop still
 //! shoot down under the table; none is on the reclaim path of a Domain storm.
 //!
 //! **Who is never taken.** An object with a holder whose Domain is on a
@@ -980,12 +983,25 @@ pub(crate) fn unmap_range(root: usize, va: usize, pages: usize) {
     }
 }
 
+/// What the take's clear of one leaf did ([`LeafClearHook`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LeafClear {
+    /// No leaf at the address: nothing to shoot down.
+    Absent,
+    /// The leaf went; `pages` pages from `va` are to be shot down after the
+    /// table drops (a contiguous run the leaf was a member of is split in
+    /// place, and named whole).
+    Cleared { va: usize, pages: usize },
+    /// A translation is there that the clear may not touch (a block, a kernel
+    /// table, a copy of a kernel translation): the frame must not leave.
+    Refused,
+}
+
 /// The take's unmap in two halves ([`memobj_swap_take`]). The clear removes the
-/// user leaves of `pages` pages at `va` of the table rooted at `root`, frees no
-/// frame and shoots nothing down; it runs with the table lock held, under the
-/// rules of [`UnmapHook`], and says whether a leaf went. The kernel registers
-/// `vmm::clear_user_leaves_unflushed`.
-pub type LeafClearHook = fn(root: usize, va: usize, pages: usize) -> bool;
+/// user leaf at `va` of the table rooted at `root`, frees no frame and shoots
+/// nothing down; it runs with the table lock held, under the rules of
+/// [`UnmapHook`]. The kernel registers `vmm::clear_user_leaf_unflushed`.
+pub type LeafClearHook = fn(root: usize, va: usize) -> LeafClear;
 
 /// The second half: shoot `pages` pages at `va` of the table rooted at `root`
 /// down on every hart that may hold them and wait out the open user-copy
@@ -3075,36 +3091,52 @@ pub fn memobj_warrant_swept(resource: u32, owner: u32) {
     }
 }
 
-/// A leaf the take cleared under the table and has yet to shoot down: the
-/// space it was in and its address.
-type Shot = Option<(SpaceRef, usize)>;
+/// Leaves the take cleared under the table and has yet to shoot down: the space
+/// they were in, the first address and the pages.
+type Shot = Option<(SpaceRef, usize, usize)>;
 
 /// Clear page `idx`'s leaf in every recorded mapping that reaches it, with no
 /// shootdown; each mapping whose leaf went goes into `shots`, for
-/// [`shoot_down`] after the table lock drops. Table lock held.
-fn clear_frame_in(region: &MemObj, idx: usize, shots: &mut [Shot; MAX_MEMOBJ_HOLDERS]) {
+/// [`shoot_down`] after the table lock drops. `false` when a mapping holds a
+/// translation the clear may not touch ([`LeafClear::Refused`]): the frame
+/// stays the object's. Table lock held.
+///
+/// Canary `take-refused-leaf-ignored-canary`: a refused leaf counts as none.
+fn clear_frame_in(region: &MemObj, idx: usize, shots: &mut [Shot; MAX_MEMOBJ_HOLDERS]) -> bool {
     let page = azos_arch::PAGE_SIZE;
-    let Some(clear) = LEAF_CLEAR_HOOK.get() else { return };
+    let Some(clear) = LEAF_CLEAR_HOOK.get() else { return true };
+    let mut clean = true;
     for (h, shot) in region.holders.iter().zip(shots.iter_mut()) {
         let Some(space) = h.map_space.filter(|_| h.maps_page(idx)) else { continue };
-        let va = h.map_va + (idx - h.map_off) * page;
-        if clear(space.root(), va, 1) {
-            *shot = Some((space, va));
+        match clear(space.root(), h.map_va + (idx - h.map_off) * page) {
+            LeafClear::Absent => {}
+            LeafClear::Cleared { va, pages } => *shot = Some((space, va, pages)),
+            LeafClear::Refused => clean = cfg!(feature = "take-refused-leaf-ignored-canary") && clean,
         }
     }
+    clean
 }
 
-/// The shootdowns [`clear_frame_in`] left, with no lock held. A space that ended
-/// meanwhile is skipped: nothing runs in it again, as for the frames its own
-/// teardown frees. Until this returns the frame is read by nobody: a write
-/// through a stale entry lands before the store reads it.
+/// The shootdowns [`clear_frame_in`] left, with no lock held. Until this returns
+/// the frame is read by nobody: a write through a stale entry lands before the
+/// store reads it.
+///
+/// A space that ended meanwhile is skipped: nothing runs in it again, as for the
+/// frames its own teardown frees. That rests on three facts of the address-space
+/// machinery: an ASID is never issued twice within a generation, and a root
+/// made again takes a fresh one (`azos_sched::asid`); a generation's rollover
+/// flushes every hart before any ASID of the new one runs (`tlb_gen`); and a
+/// root's tables are not freed while a hart still holds the root
+/// (`vmm::destroy_user_pagetable` refuses). No user-copy section can be open in
+/// a space with no thread, so its `wait_readers` goes too.
 ///
 /// Canary `take-shootdown-under-table-canary`: the caller still holds the table.
+/// Canary `take-dead-space-shot-canary`: an ended space is shot down as well.
 fn shoot_down(shots: &[Shot]) {
     let Some(shoot) = SHOOTDOWN_HOOK.get() else { return };
-    for &(space, va) in shots.iter().flatten() {
-        if space.live() {
-            shoot(space.root(), va, 1);
+    for &(space, va, pages) in shots.iter().flatten() {
+        if space.live() || cfg!(feature = "take-dead-space-shot-canary") {
+            shoot(space.root(), va, pages);
         }
     }
 }
@@ -4546,8 +4578,13 @@ pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Take {
     // object call waits behind the IPIs. Canary `swap-rmap-skip-canary`: the
     // leaves stay.
     let mut shots: [Shot; MAX_MEMOBJ_HOLDERS] = [None; MAX_MEMOBJ_HOLDERS];
-    if !cfg!(feature = "swap-rmap-skip-canary") {
-        clear_frame_in(o, idx, &mut shots);
+    if !cfg!(feature = "swap-rmap-skip-canary") && !clear_frame_in(o, idx, &mut shots) {
+        // A mapping reaches the frame through something the clear may not
+        // touch: the frame stays the object's. The leaves that did go are shot
+        // down (the next touch installs them again).
+        drop(regions);
+        shoot_down(&shots);
+        return Take::Not;
     }
     let Some(frame) = o.frame(idx) else { return Take::Not };
     o.clear_frame(idx);

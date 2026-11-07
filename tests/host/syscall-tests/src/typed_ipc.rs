@@ -1929,8 +1929,8 @@ fn a_munmap_over_more_records_than_one_pass_cuts_takes_them_all() {
 
 /// The take's halves as the kernel registers them (`kernel/src/boot/sched.rs`),
 /// each shootdown recorded with whether the object table was held.
-fn take_clear(root: usize, va: usize, pages: usize) -> bool {
-    azos_mm::vmm::clear_user_leaves_unflushed(root, va, va + pages * azos_arch::PAGE_SIZE)
+fn take_clear(root: usize, va: usize) -> azos_ipc::memobj::LeafClear {
+    azos_mm::vmm::clear_user_leaf_unflushed(root, va)
 }
 fn take_shoot(root: usize, va: usize, pages: usize) {
     SHOTS.lock().unwrap_or_else(|e| e.into_inner()).push((root, va, azos_ipc::memobj::shim_table_held()));
@@ -2190,6 +2190,171 @@ mod swap_rows {
         let shots = core::mem::take(&mut *SHOTS.lock().unwrap());
         assert_eq!(shots.iter().map(|&(root, va, _)| (root, va)).collect::<Vec<_>>(), vec![(p.pt_a, p.va_a), (p.pt_b, p.va_b)]);
         assert!(shots.iter().all(|&(_, _, held)| !held), "no shootdown under the table");
+        src.keep(v);
+    }
+
+    /// `(root, va, len, object table held)` of every shootdown the arch shim saw.
+    static ARCH_SHOTS: std::sync::Mutex<Vec<(usize, usize, usize, bool)>> = std::sync::Mutex::new(Vec::new());
+
+    fn note_arch_shot(root: usize, va: usize, len: usize) {
+        ARCH_SHOTS.lock().unwrap_or_else(|e| e.into_inner()).push((root, va, len, mo::shim_table_held()));
+    }
+
+    /// The arch shim's contiguous runs, break-before-make answer and shootdown
+    /// hook, put back when dropped.
+    struct ContigScene;
+    impl ContigScene {
+        fn new(bbm: bool) -> Self {
+            ARCH_SHOTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            azos_arch::CONTIG_RUN.store(16, Ordering::SeqCst);
+            azos_arch::NEEDS_BBM.store(bbm, Ordering::SeqCst);
+            *azos_arch::SHOOTDOWN_HOOK.lock().unwrap() = Some(note_arch_shot);
+            ContigScene
+        }
+    }
+    impl Drop for ContigScene {
+        fn drop(&mut self) {
+            *azos_arch::SHOOTDOWN_HOOK.lock().unwrap() = None;
+            azos_arch::NEEDS_BBM.store(false, Ordering::SeqCst);
+            azos_arch::CONTIG_RUN.store(0, Ordering::SeqCst);
+        }
+    }
+
+    /// A's swappable object of 16 pages, recorded at `va` over a contiguous run
+    /// of 16 leaves; the frames the run names.
+    fn object_over_a_run(a: u32, pt: usize, va: usize) -> (u32, Vec<usize>) {
+        let cap = handle(sys_shm_create_typed(16, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        let base = azos_mm::pmm::alloc_contiguous_aligned(16, 16 * PAGE_SIZE).expect("a run of frames").as_usize();
+        let frames: Vec<usize> = (0..16).map(|k| base + k * PAGE_SIZE).collect();
+        azos_mm::vmm::map_contig_range(pt, va, &frames, PagePerms::USER_RW).expect("the run");
+        assert_eq!(mo::memobj_note_mapping_ref(a, r, azos_sched::shim_space(pt), va, 16, mo::MapAccess::RW), Ok(true));
+        (r, frames)
+    }
+
+    /// **A take of a contiguous run's member splits the run under the table and
+    /// shoots it down after, where no break-before-make is needed.** The member's
+    /// leaf goes, the other fifteen still translate their frames, and the one
+    /// shootdown, of the whole run, comes after the table drops. With
+    /// break-before-make (aarch64 without FEAT_BBM level 2) the split's broadcast
+    /// shootdown runs in the hold: the documented exception, with the same leaves.
+    ///
+    /// **Canary.** `contig-split-shoots-at-once-canary`: the split shoots the run
+    /// down at once, with the table held.
+    #[test]
+    fn a_take_of_a_run_member_splits_the_run_and_shoots_it_down_after_the_table() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        for bbm in [false, true] {
+            let a = fresh_tid();
+            let _s = Scene::new(&[a]);
+            let _h = hooks();
+            let _c = ContigScene::new(bbm);
+            let pt = ring3(a, SLOT_A);
+            let va = 0x4000_0000;
+            let (r, frames) = object_over_a_run(a, pt, va);
+            let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+            let mut ages = Ages::new();
+            let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+            let v = Victim::Obj { ident: r, idx: 3 };
+            assert!(src.unmap(v));
+            assert!(translate(pt, va + 3 * PAGE_SIZE).is_none(), "the member's leaf went");
+            for k in (0..16).filter(|&k| k != 3) {
+                assert_eq!(translate(pt, va + k * PAGE_SIZE), Some(frames[k]), "member {k} still translates");
+            }
+            let shots = core::mem::take(&mut *ARCH_SHOTS.lock().unwrap());
+            if bbm {
+                assert!(shots.iter().any(|&(root, at, len, held)| (root, at, len, held) == (pt, va, 16 * PAGE_SIZE, true)), "the break-before-make split in the hold: {shots:?}");
+            } else {
+                assert!(shots.iter().all(|&(_, _, _, held)| !held), "no shootdown under the table: {shots:?}");
+                assert!(shots.contains(&(pt, va, 16 * PAGE_SIZE, false)), "the whole run, after the table: {shots:?}");
+            }
+            src.keep(v);
+        }
+    }
+
+    /// **A take that meets a translation it may not clear leaves the frame with
+    /// the object.** The object is recorded over a 2 MiB block (a locked row's
+    /// kind of leaf, which the clear does not touch): the take answers no, the
+    /// page stays resident, and the block still translates.
+    ///
+    /// **Canary.** `take-refused-leaf-ignored-canary`: a refused leaf counts as
+    /// none, and the frame leaves the object under the block.
+    #[test]
+    fn a_take_over_a_leaf_it_may_not_clear_leaves_the_frame_with_the_object() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let pt = ring3(a, SLOT_A);
+        let va = 0x4020_0000;
+        let mega = 2 << 20;
+        let Ok(block) = azos_mm::pmm::alloc_contiguous_aligned(mega / PAGE_SIZE, mega) else {
+            panic!("the arena has no 2 MiB run");
+        };
+        azos_mm::vmm::map_user_mega_range(pt, va, block.as_usize(), mega, PagePerms::USER_RW).expect("the block");
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        assert_eq!(mo::memobj_note_mapping_ref(a, r, azos_sched::shim_space(pt), va, 1, mo::MapAccess::RW), Ok(true));
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        assert!(!src.unmap(Victim::Obj { ident: r, idx: 0 }), "the take refuses");
+        assert!(mo::memobj_page_phys_ref(r, 0).unwrap().is_some(), "the page stays resident");
+        assert_eq!(translate(pt, va), Some(block.as_usize()), "and the block translates");
+        assert_eq!(mo::memobj_take_mapping_ref(a, r).map(|m| m.is_some()), Ok(true));
+    }
+
+    static DEAD_SPACE: AtomicU32 = AtomicU32::new(0);
+    static DEAD_PT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    static DEAD_OBJ: AtomicU32 = AtomicU32::new(0);
+
+    /// The first shootdown of a take ends B's space before B's comes (and drops
+    /// B's record, which a real exit drops before its space ends).
+    fn end_b_at_first_shot(_root: usize, _va: usize, _len: usize) {
+        let pt = DEAD_PT.swap(0, Ordering::SeqCst);
+        if pt != 0 {
+            let _ = mo::memobj_take_mapping_ref(DEAD_SPACE.load(Ordering::SeqCst), DEAD_OBJ.load(Ordering::SeqCst));
+            azos_sched::shim_end_space(pt);
+        }
+    }
+
+    /// **A take does not shoot down a space that ended between its hold and its
+    /// shootdown.** A's shootdown runs first and B's space ends in it: B's is
+    /// skipped (nothing runs in it again), A's page is still out of every
+    /// mapping, and the frame is the store's only after the shootdowns.
+    ///
+    /// **Canary.** `take-dead-space-shot-canary`: the ended space is shot down
+    /// as well.
+    #[test]
+    fn a_take_skips_the_shootdown_of_a_space_that_ended() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        fill(p.r, 0, 0x5a);
+        DEAD_SPACE.store(b, Ordering::SeqCst);
+        DEAD_OBJ.store(p.r, Ordering::SeqCst);
+        DEAD_PT.store(p.pt_b, Ordering::SeqCst);
+        *azos_arch::SHOOTDOWN_HOOK.lock().unwrap() = Some(end_b_at_first_shot);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        let took = src.unmap(v);
+        *azos_arch::SHOOTDOWN_HOOK.lock().unwrap() = None;
+        assert!(took);
+        let shots = core::mem::take(&mut *SHOTS.lock().unwrap());
+        assert_eq!(shots.iter().map(|&(root, _, _)| root).collect::<Vec<_>>(), vec![p.pt_a], "B's space ended: no shootdown for it");
+        assert!(translate(p.pt_a, p.va_a).is_none());
         src.keep(v);
     }
 

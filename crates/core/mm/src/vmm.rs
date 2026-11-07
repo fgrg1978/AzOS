@@ -21,6 +21,7 @@ use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use azos_common::error::{KResult, KernelError};
 use crate::addr::PhysAddr;
+use crate::memobj::LeafClear;
 use crate::pmm;
 use crate::wx;
 use crate::zone::Zone;
@@ -1268,7 +1269,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
     if let Ok(pte_ptr) = walk(pt_phys, vaddr, false) {
         if shoot {
             // One page of a contiguous run: the run goes back to plain leaves first.
-            break_contig_run(pt_phys, vaddr, pte_ptr);
+            let _ = break_contig_run(pt_phys, vaddr, pte_ptr, false);
         }
         if user_root && !user_may_modify(unsafe { core::ptr::read_volatile(pte_ptr) }, vaddr, 0) {
             return;
@@ -1487,15 +1488,24 @@ fn map_contig_run(pt_phys: usize, va: usize, run_pa: usize, pages: usize, flags:
 /// `block_change_needs_bbm` is true) waits in [`wait_out_parked_fault`] and
 /// the access is retried. Slots that are not run members (a partly built
 /// run: a refused fork's rollback) are left alone.
-fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
+///
+/// `defer`: where no break-before-make is needed, the members are replaced and
+/// nothing is shot down; the run's `(first va, pages)` is answered, for the
+/// caller to shoot down before a frame of it is read, reused or freed (every
+/// stale entry still translates the same frames as the plain words). With
+/// break-before-make the shootdown cannot wait (the words are parked until it
+/// is done) and `None` is answered as without `defer`.
+///
+/// Canary `contig-split-shoots-at-once-canary`: `defer` is not read.
+fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64, defer: bool) -> Option<(usize, usize)> {
     // SAFETY: `slot` is an aligned level-0 entry of a live table page.
     let here = unsafe { core::ptr::read_volatile(slot) };
     if !ARCH.pte_is_contig(here) {
-        return;
+        return None;
     }
     let run = ARCH.contig_run_pages();
     if run == 0 {
-        return;
+        return None;
     }
     let idx = (vaddr >> PAGE_SHIFT) & (run - 1);
     let base_va = vaddr & !(run * PAGE_SIZE - 1);
@@ -1510,8 +1520,11 @@ fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
                 let _ = crate::pt::pt_cas(member(k), w, ARCH.pte_contig_member(w, k));
             }
         }
+        if defer && !cfg!(feature = "contig-split-shoots-at-once-canary") {
+            return Some((base_va, run));
+        }
         user_shootdown(pt_phys, base_va, run * PAGE_SIZE);
-        return;
+        return None;
     }
     use azos_arch_api::Interrupts;
     let irq = ARCH.disable_all();
@@ -1537,6 +1550,7 @@ fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
         ARCH.flush_tlb_page(base_va);
     }
     ARCH.restore(irq);
+    None
 }
 
 /// Load a level-0 slot, waiting out a [`break_contig_run`] window as
@@ -3914,24 +3928,29 @@ pub fn unmap_user_range_keep(pt_phys: usize, start: usize, end: usize) {
     unmap_user_range(pt_phys, start, end, false);
 }
 
-/// Clear the 4 KiB user leaves of `[start, end)` of `pt_phys`, freeing no frame
-/// and shooting nothing down: the caller does ([`shootdown_user_range`]) before
-/// a frame they named is read, reused or freed. Whether a leaf went. The take
-/// of a shared object's page clears with the object table held and shoots down
-/// after it drops it (`memobj::memobj_swap_take`); such a mapping has no block.
-pub fn clear_user_leaves_unflushed(pt_phys: usize, start: usize, end: usize) -> bool {
-    let mut cleared = false;
-    let mut va = start & !(PAGE_SIZE - 1);
-    while va < end {
-        cleared |= take_user_leaf(pt_phys, va, false).is_some();
-        va += PAGE_SIZE;
+/// Clear the 4 KiB user leaf at `va` of `pt_phys`, freeing no frame and
+/// shooting nothing down: the caller does ([`shootdown_user_range`], over the
+/// range [`LeafClear::Cleared`] names) before the frame it named is read,
+/// reused or freed. The take of a shared object's page clears with the object
+/// table held and shoots down after it drops it (`memobj::memobj_swap_take`).
+/// A member of a contiguous run splits the run in place and names the whole run;
+/// on an ISA that needs break-before-make for that (aarch64 without FEAT_BBM
+/// level 2) the split's shootdown runs here, a broadcast with no IPI. A
+/// translation that is not the task's to clear (a block, a kernel table, a copy
+/// of a kernel translation) is [`LeafClear::Refused`].
+pub fn clear_user_leaf_unflushed(pt_phys: usize, va: usize) -> LeafClear {
+    let va = va & !(PAGE_SIZE - 1);
+    match take_leaf0(pt_phys, va, false, true) {
+        Took::Absent => LeafClear::Absent,
+        Took::Refused => LeafClear::Refused,
+        Took::Cleared { split: Some((first, pages)), .. } => LeafClear::Cleared { va: first, pages },
+        Took::Cleared { split: None, .. } => LeafClear::Cleared { va, pages: 1 },
     }
-    cleared
 }
 
 /// Shoot `[va, va + len)` of the table rooted at `root` down on every hart that
 /// may hold it, then wait out the user-copy sections that may have walked it:
-/// the second half of [`clear_user_leaves_unflushed`].
+/// the second half of [`clear_user_leaf_unflushed`].
 pub fn shootdown_user_range(root: usize, va: usize, len: usize) {
     let _ = user_shootdown(root, va, len);
 }
@@ -4095,7 +4114,7 @@ pub fn protect_user_range(pt_phys: usize, start: usize, end: usize, write: bool)
         }
         if !write_would_enter_kernel_table(pt_phys, va) {
             if let Ok(ptr) = walk(pt_phys, va, false) {
-                break_contig_run(pt_phys, va, ptr);
+                let _ = break_contig_run(pt_phys, va, ptr, false);
                 let pte = unsafe { core::ptr::read_volatile(ptr) };
                 if ARCH.pte_is_valid(pte) && ARCH.pte_is_leaf(pte, 0) {
                     let f = ARCH.pte_perms(pte);
@@ -4323,7 +4342,7 @@ fn user_l0_leaf(pt_phys: usize, vaddr: usize) -> Option<*mut u64> {
     let l0_ptr = (crate::addr::phys_to_virt(ARCH.pte_phys(l1) + vpn0 * 8)) as *mut u64;
     // Every caller changes the leaf it gets: a member of a contiguous run is
     // handed out as a plain leaf.
-    break_contig_run(pt_phys, vaddr, l0_ptr);
+    let _ = break_contig_run(pt_phys, vaddr, l0_ptr, false);
     let l0: u64 = unsafe { core::ptr::read_volatile(l0_ptr) };
     if !ARCH.pte_is_valid(l0) || !ARCH.pte_is_leaf(l0, 0) { return None; }
     Some(l0_ptr)
@@ -4337,7 +4356,29 @@ fn user_l0_leaf(pt_phys: usize, vaddr: usize) -> Option<*mut u64> {
 /// the trampoline, a COW sibling still holds it), `Some(phys)` if the frame is the task's own.
 /// The caller MUST shoot the address down before freeing `phys`.
 fn take_user_leaf(pt_phys: usize, vaddr: usize, free: bool) -> Option<usize> {
-    if write_would_enter_kernel_table(pt_phys, vaddr) { return None; }
+    match take_leaf0(pt_phys, vaddr, free, false) {
+        Took::Cleared { owned, .. } => Some(owned),
+        Took::Absent | Took::Refused => None,
+    }
+}
+
+/// What [`take_leaf0`] did at one address.
+enum Took {
+    /// Nothing is mapped there.
+    Absent,
+    /// A translation is there that is not ours to clear: a kernel table, a
+    /// megapage or gigapage, a copy of a kernel translation.
+    Refused,
+    /// The leaf went. `owned` as [`take_user_leaf`] answers it; `split` the
+    /// contiguous run it was a member of, split in place and not yet shot down
+    /// (only when asked to `defer`).
+    Cleared { owned: usize, split: Option<(usize, usize)> },
+}
+
+/// [`take_user_leaf`], telling a leaf it may not touch from none, and with a
+/// run's split shootdown left to the caller when `defer` (see [`break_contig_run`]).
+fn take_leaf0(pt_phys: usize, vaddr: usize, free: bool, defer: bool) -> Took {
+    if write_would_enter_kernel_table(pt_phys, vaddr) { return Took::Refused; }
 
     // Descend by hand rather than through `walk`, for the same reason `unmap`
     // does: `walk` returns a megapage or gigapage leaf directly, and treating
@@ -4345,33 +4386,37 @@ fn take_user_leaf(pt_phys: usize, vaddr: usize, free: bool) -> Option<usize> {
     // Neither is ever created by `map`, so reaching one means a kernel mapping,
     // and it is not ours to touch.
     let l2t = l2_table(pt_phys, vaddr);
-    if no_l2(l2t) { return None; }
+    if no_l2(l2t) { return Took::Absent; }
     let vpn2 = ARCH.vpn(vaddr, 2);
     let l2: u64 = unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(l2t + vpn2 * 8)) as *const u64) };
-    if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { return None; }
+    if !ARCH.pte_is_valid(l2) { return Took::Absent; }
+    if ARCH.pte_is_leaf(l2, 2) { return Took::Refused; }
 
     let vpn1 = ARCH.vpn(vaddr, 1);
     let l1 = l1_read(crate::addr::phys_to_virt(ARCH.pte_phys(l2) + vpn1 * 8) as *const u64);
-    if !ARCH.pte_is_valid(l1) || ARCH.pte_is_leaf(l1, 1) { return None; }
+    if !ARCH.pte_is_valid(l1) { return Took::Absent; }
+    if ARCH.pte_is_leaf(l1, 1) { return Took::Refused; }
 
     let vpn0 = ARCH.vpn(vaddr, 0);
     let l0_ptr = (crate::addr::phys_to_virt(ARCH.pte_phys(l1) + vpn0 * 8)) as *mut u64;
     // A member of a contiguous run is cleared as a plain leaf, never alone:
     // the rest of the run would keep translating it (break, then clear).
-    break_contig_run(pt_phys, vaddr, l0_ptr);
+    let split = break_contig_run(pt_phys, vaddr, l0_ptr, defer);
     let l0: u64 = unsafe { core::ptr::read_volatile(l0_ptr) };
-    if !ARCH.pte_is_valid(l0) || !ARCH.pte_is_leaf(l0, 0) { return None; }
+    if !ARCH.pte_is_valid(l0) || !ARCH.pte_is_leaf(l0, 0) {
+        return if split.is_some() { Took::Cleared { owned: 0, split } } else { Took::Absent };
+    }
     // N12i: a copy of the kernel's own translation (a device window the
     // merge put in this table) is not the task's to clear or hand to the
     // frame free.
-    if !user_may_modify(l0, vaddr, 0) { return None; }
+    if !user_may_modify(l0, vaddr, 0) { return Took::Refused; }
 
     let owned = free && user_leaf_is_task_owned(l0, crate::vdso::sigtramp_phys());
     let phys = ARCH.pte_phys(l0);
 
     unsafe { crate::pt::pt_set(l0_ptr, ARCH.pte_empty()) };
 
-    Some(if owned { phys } else { 0 })
+    Took::Cleared { owned: if owned { phys } else { 0 }, split }
 }
 
 /// Tear down a **user** page table: free its own intermediate tables and its
