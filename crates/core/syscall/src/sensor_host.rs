@@ -18,7 +18,6 @@
 use azos_abi::cap::CapPerms;
 use azos_devif::sensor::{Sample, TYPES};
 use azos_devif::{outcome, Out};
-use azos_abi::sensor_sample::instance;
 use azos_drv_base::sensors::{self, ReadError};
 
 use crate::khost::Caller;
@@ -29,19 +28,6 @@ use crate::khost::Caller;
 /// An instance that is not registered is refused by the server without a read.
 pub(crate) fn ring_served(badge: u32) -> bool {
     sensors::get(badge).is_none_or(|s| !s.may_sleep())
-}
-
-/// Is the producer of board sensor `badge` built into this image? The IMU,
-/// odometry, encoder and GPS are the Robot domain's (`use-robot`), the
-/// rangefinders, battery converter, LiDAR, power monitor and camera the board's
-/// I/O (`board-io`). A bind to the vDSO page refuses one that is not, so the
-/// timer interrupt never publishes a slot nothing feeds.
-fn produced_in_this_image(badge: u32) -> bool {
-    match badge {
-        instance::IMU | instance::ODOM | instance::ENCODER | instance::GPS => cfg!(feature = "use-robot"),
-        instance::RANGE | instance::BATTERY | instance::LIDAR | instance::POWER | instance::CAMERA => cfg!(feature = "board-io"),
-        _ => true,
-    }
 }
 
 /// The `Sensor` interface served for one caller.
@@ -70,7 +56,9 @@ impl azos_devif::Sensor for SensorServer {
             return Out::err(outcome::BAD_ARGUMENT);
         }
         // CANARY, never in a real build: the bind skips the image's answer.
-        if !cfg!(feature = "vdso-bind-canary") && !produced_in_this_image(self.0.badge) {
+        // A number whose producer is not built into this image is vacant: a bind
+        // would have the timer interrupt publish a slot nothing feeds.
+        if !cfg!(feature = "vdso-bind-canary") && sensors::get(self.0.badge).is_none() {
             return Out::err(outcome::NOT_READY);
         }
         match crate::vdso_notify::bind_sensor(self.0.tid, self.0.badge) {

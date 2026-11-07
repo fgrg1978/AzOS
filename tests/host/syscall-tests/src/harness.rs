@@ -32,7 +32,6 @@ pub const GPIO_EXPANDER_DEV: azos_drv_gpio::chips::DeviceId =
 /// one, and every guard under test branches on exactly those registers.
 pub fn serial() -> SerialGuard {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    #[cfg(feature = "use-robot")]
     sensor_rig::ready();
     azos_sched::shim_serial_enter();
     reset_state();
@@ -176,6 +175,28 @@ pub fn op_masked(tid: u32, h: u64, mask: u64) -> u64 {
 /// The `OP_MASK` argument naming exactly the op classes in `classes`.
 pub fn classes(classes: &[u8]) -> u64 {
     classes.iter().fold(0, |m, &c| m | 1 << c)
+}
+
+/// The sensor class of an image without the robot extension: the numbers
+/// reserved, the board I/O's power monitor the only producer.
+#[cfg(not(feature = "use-robot"))]
+pub mod sensor_rig {
+    use azos_abi::sensor_sample::instance;
+    use azos_drv_base::sensors::{self, Sensor, Source, POWER_CHANNELS};
+    use std::sync::Once;
+
+    #[cfg(feature = "board-io")]
+    static POWER: Sensor = Sensor::new(&POWER_CHANNELS, Source::Unsupported);
+
+    /// Reserve the numbers once for the process.
+    pub fn ready() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            sensors::reserve_board_block().unwrap();
+            #[cfg(feature = "board-io")]
+            sensors::attach_board(instance::POWER, &POWER).unwrap();
+        });
+    }
 }
 
 /// The sensor class as the host tests meet it: the board's instances in the
