@@ -54,7 +54,7 @@ pub mod irq_bind;
 // `shims/arch`'s page size.
 // The object table lives in `azos_mm`; compiled here against the host shims. `crate::pmm`,
 // `crate::cow`... are the shim's, as `azos_mm::pmm` was.
-pub use azos_mm::{addr, cow, pager, pmm, slot};
+pub use azos_mm::{addr, aspace, cow, pager, pmm, slot};
 #[path = "../../../../crates/core/mm/src/memobj.rs"]
 pub mod memobj_core;
 #[path = "../../../../crates/core/ipc/src/memobj_cap.rs"]

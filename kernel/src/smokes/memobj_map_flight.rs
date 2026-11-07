@@ -24,6 +24,7 @@ use azos_ipc::memobj::{
     memobj_release_ref, memobj_take_mapping_ref, memobj_unmap_begin_ref, memobj_unmap_end_ref, ChildLeaves, MapAccess,
     MemObjError, MemPerms,
 };
+use azos_mm::aspace::{self, SpaceRef};
 use azos_mm::vmm;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
@@ -53,6 +54,11 @@ fn store_a_while(byte: &AtomicU8, seq: &mut u8) {
 fn writer(_: usize) {
     let me = azos_sched::current_task_tid();
     let r = OBJECT.load(Ordering::Acquire);
+    // The space the record names: an empty table, never walked.
+    let Some(space) = vmm::create_pagetable().ok().and_then(aspace::create) else {
+        WRITER_DONE.store(true, Ordering::Release);
+        return;
+    };
     let _ = memobj_acquire_ref(me, r);
     let mut seq = 0u8;
     while !STOP.load(Ordering::Acquire) {
@@ -68,7 +74,7 @@ fn writer(_: usize) {
         // The frame the map read: a break cannot move it under a map in flight.
         let byte = byte_at(pages[0]);
         store_a_while(byte, &mut seq);
-        let _ = memobj_map_commit_ref(me, r, 0, VA, 1, MapAccess::RW);
+        let _ = memobj_map_commit_ref(me, r, space, VA, 1, MapAccess::RW);
         store_a_while(byte, &mut seq);
         let _ = memobj_unmap_begin_ref(me, r);
         store_a_while(byte, &mut seq);
@@ -79,6 +85,7 @@ fn writer(_: usize) {
         }
     }
     let _ = memobj_release_ref(me, r);
+    aspace::destroy(space);
     WRITER_DONE.store(true, Ordering::Release);
 }
 
@@ -136,9 +143,9 @@ azos_ktest::ktest_late! {
 /// A TID no task has: the fork child's holder.
 const CHILD: u32 = 0x7fff_fff1;
 
-/// The parent's table with the object's frame at `VA`, user read-write, and an
-/// empty child's table; `None` when either cannot be made.
-fn parent_and_child(frame: usize) -> Option<(usize, usize)> {
+/// The parent's space with the object's frame at `VA`, user read-write, and an
+/// empty child's space; `None` when either cannot be made.
+fn parent_and_child(frame: usize) -> Option<(SpaceRef, SpaceRef)> {
     if vmm::va_is_kernel_mapped(VA) {
         return None;
     }
@@ -147,12 +154,19 @@ fn parent_and_child(frame: usize) -> Option<(usize, usize)> {
         vmm::destroy_user_pagetable(parent);
         return None;
     };
-    if vmm::map(parent, VA, frame, azos_arch::PagePerms::USER_RW).is_err() {
-        vmm::destroy_user_pagetable(parent);
-        vmm::destroy_user_pagetable(child);
-        return None;
+    let spaces = (aspace::create(parent), aspace::create(child));
+    match spaces {
+        (Some(p), Some(c)) if vmm::map(parent, VA, frame, azos_arch::PagePerms::USER_RW).is_ok() => Some((p, c)),
+        _ => {
+            for (s, root) in [(spaces.0, parent), (spaces.1, child)] {
+                match s {
+                    Some(s) => drop(aspace::destroy(s)),
+                    None => drop(vmm::destroy_user_pagetable(root)),
+                }
+            }
+            None
+        }
     }
-    Some((parent, child))
 }
 
 /// The child's real leaves, and what another hart does while they are copied:
@@ -189,7 +203,8 @@ impl ChildLeaves for RacedLeaves {
     }
 }
 
-fn inherit_once(parent: u32, r: u32, parent_pt: usize, child_pt: usize) -> Result<MapAccess, &'static str> {
+fn inherit_once(parent: u32, r: u32, parent_space: SpaceRef, child_space: SpaceRef) -> Result<MapAccess, &'static str> {
+    let (parent_pt, child_pt) = (parent_space.root(), child_space.root());
     let mut leaves = RacedLeaves {
         leaves: azos_mm::cow::ForkLeaves { parent_pt, child_pt, va: VA, pages: 1, sparse: false },
         parent,
@@ -197,7 +212,7 @@ fn inherit_once(parent: u32, r: u32, parent_pt: usize, child_pt: usize) -> Resul
         copied_write: false,
         clone_shared: false,
     };
-    let access = memobj_inherit_ref(parent, CHILD, r, child_pt, VA, 1, &mut leaves).map_err(|_| "the child was not booked")?;
+    let access = memobj_inherit_ref(parent, CHILD, r, child_space, VA, 1, &mut leaves).map_err(|_| "the child was not booked")?;
     if leaves.clone_shared && leaves.copied_write {
         return Err("a clone shared the frame under the child's writable leaf");
     }
@@ -220,12 +235,13 @@ azos_ktest::ktest_late! {
             let _ = memobj_release_ref(me, r);
             return Err("the object has no frame");
         };
-        let Some((parent_pt, child_pt)) = parent_and_child(frame) else {
+        let Some((parent_space, child_space)) = parent_and_child(frame) else {
             let _ = memobj_release_ref(me, r);
             return Err("no page tables");
         };
+        let (parent_pt, child_pt) = (parent_space.root(), child_space.root());
         let mut result = Ok(());
-        if memobj_note_mapping_ref(me, r, parent_pt, VA, 1, MapAccess::RW) != Ok(true) || memobj_acquire_ref(CHILD, r).is_err() {
+        if memobj_note_mapping_ref(me, r, parent_space, VA, 1, MapAccess::RW) != Ok(true) || memobj_acquire_ref(CHILD, r).is_err() {
             result = Err("the parent's mapping was not booked");
         }
         // Writable leaves copied and the parent read-only by the booking, then
@@ -234,7 +250,7 @@ azos_ktest::ktest_late! {
             if result.is_err() {
                 break;
             }
-            result = inherit_once(me, r, parent_pt, child_pt).map(|_| ());
+            result = inherit_once(me, r, parent_space, child_space).map(|_| ());
             if memobj_unmap_begin_ref(CHILD, r).is_ok() {
                 vmm::unmap(child_pt, VA);
                 memobj_unmap_end_ref(CHILD, r);
@@ -243,8 +259,8 @@ azos_ktest::ktest_late! {
         let _ = memobj_release_ref(CHILD, r);
         let _ = memobj_take_mapping_ref(me, r);
         vmm::unmap(parent_pt, VA);
-        vmm::destroy_user_pagetable(parent_pt);
-        vmm::destroy_user_pagetable(child_pt);
+        aspace::destroy(parent_space);
+        aspace::destroy(child_space);
         let _ = memobj_release_ref(me, r);
         result
     }

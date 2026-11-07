@@ -190,6 +190,30 @@ pub mod pager {
     pub fn store_ended() {}
 }
 
+/// An address space as the object table records it: its root, and whether it
+/// is still there (always, here: no space ends under a host test of the table).
+pub mod aspace {
+    use core::num::NonZeroUsize;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct SpaceRef(NonZeroUsize);
+
+    impl SpaceRef {
+        pub fn root(self) -> usize {
+            self.0.get()
+        }
+
+        pub fn live(self) -> bool {
+            true
+        }
+    }
+
+    /// A space over `root`; `None` for 0.
+    pub fn create(root: usize) -> Option<SpaceRef> {
+        NonZeroUsize::new(root).map(SpaceRef)
+    }
+}
+
 /// The COW share count (`cow_table.rs`), over the pool: `0` is untracked, the
 /// first `addref` takes a page to `2`, a `decref` from `1` or `0` answers
 /// "free it". The same rules as the real table, one counter per pool page.

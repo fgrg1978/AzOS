@@ -989,7 +989,7 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
         return Errno::ENOMEM.to_syscall_ret();
     }
     let access = MapAccess { write: writable, max_write: max_write && writable };
-    match memobj::memobj_map_commit_ref(tid, r, space.root(), va, page_count, access) {
+    match memobj::memobj_map_commit_ref(tid, r, space, va, page_count, access) {
         Ok(true) => {
             crate::handlers::mmap_area_placed(va);
             va as i64

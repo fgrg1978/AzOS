@@ -453,7 +453,7 @@ fn map_shared_piece(space: azos_mm::aspace::SpaceRef, tid: u32, p: Piece, in_win
     let n = (p.end - p.start) / page;
     let access = MapAccess { write, max_write: write };
     let booked = matches!(
-        memobj::memobj_note_mapping_at_ref(tid, p.obj, space.root(), p.start, in_win, n, access),
+        memobj::memobj_note_mapping_at_ref(tid, p.obj, space, p.start, in_win, n, access),
         Ok(true)
     );
     if !booked {

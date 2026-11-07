@@ -1340,7 +1340,7 @@ fn a_fork_childs_inherited_record_and_leaves_agree_with_the_parent_at_the_bookin
             assert_eq!(mo::memobj_release_ref(a, c), Ok(()));
         })),
     };
-    assert_eq!(mo::memobj_inherit_ref(a, b, r, pt_b, uva, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
+    assert_eq!(mo::memobj_inherit_ref(a, b, r, azos_sched::shim_space(pt_b), uva, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
     assert_eq!(shared.load(Ordering::SeqCst), 0, "a clone shares a frame under a writable leaf");
     assert!(!writable(pt_b, uva), "the child is booked read-only over a writable leaf");
 
@@ -1352,7 +1352,7 @@ fn a_fork_childs_inherited_record_and_leaves_agree_with_the_parent_at_the_bookin
         assert!(!writable(pt_b, uva), "precondition: the copied leaf is read-only");
         assert_eq!(mo::memobj_protect_ref(a, r, true), Ok(()));
     }));
-    assert_eq!(mo::memobj_inherit_ref(a, b, r, pt_b, uva, 1, &mut leaves), Ok(MapAccess::RW));
+    assert_eq!(mo::memobj_inherit_ref(a, b, r, azos_sched::shim_space(pt_b), uva, 1, &mut leaves), Ok(MapAccess::RW));
     assert!(writable(pt_b, uva), "the child is booked writable over a read-only leaf");
     assert_eq!(sys_shm_release_typed(cap), 0);
 }
@@ -1927,15 +1927,29 @@ fn a_munmap_over_more_records_than_one_pass_cuts_takes_them_all() {
     assert!(azos_mm::vmm::user_range_vacant(pt, first as usize, first as usize + n * page));
 }
 
+/// The take's halves as the kernel registers them (`kernel/src/boot/sched.rs`),
+/// each shootdown recorded with whether the object table was held.
+fn take_clear(root: usize, va: usize, pages: usize) -> bool {
+    azos_mm::vmm::clear_user_leaves_unflushed(root, va, va + pages * azos_arch::PAGE_SIZE)
+}
+fn take_shoot(root: usize, va: usize, pages: usize) {
+    SHOTS.lock().unwrap_or_else(|e| e.into_inner()).push((root, va, azos_ipc::memobj::shim_table_held()));
+    azos_mm::vmm::shootdown_user_range(root, va, pages * azos_arch::PAGE_SIZE);
+}
+/// `(root, va, table held)` of every take shootdown since the hooks went in.
+static SHOTS: std::sync::Mutex<Vec<(usize, usize, bool)>> = std::sync::Mutex::new(Vec::new());
+
 /// The unmap and MOVE hooks of a MOVE row, taken off when it ends.
 struct MoveHooks;
 impl MoveHooks {
     fn install() -> MoveHooks {
+        SHOTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
         fn unmap(root: usize, va: usize, pages: usize) {
             let end = va + pages * azos_arch::PAGE_SIZE;
             azos_mm::vmm::unmap_user_range_keep(root, va, end);
         }
         azos_ipc::memobj::set_unmap_hook(unmap);
+        azos_ipc::memobj::set_take_hooks(take_clear, take_shoot);
         azos_ipc::cap_store::set_move_hook(azos_ipc::memobj::memobj_moved);
         MoveHooks
     }
@@ -2154,6 +2168,33 @@ mod swap_rows {
     /// object's page and refuses to take the plain one's.
     ///
     /// **Canary.** `swappable-ignored-canary`: the attribute is not read.
+    /// **A take shoots its page down after it drops the object table, in each
+    /// space that maps it.** Both mappers lose their leaf in the take's hold;
+    /// the two shootdowns come after it, so no fault, map or object call waits
+    /// behind the IPIs.
+    ///
+    /// **Canary.** `take-shootdown-under-table-canary`: the shootdowns run with
+    /// the table held.
+    #[test]
+    fn a_take_shoots_its_page_down_after_the_table() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        fill(p.r, 0, 0x50);
+        assert!(translate(p.pt_a, p.va_a).is_some() && translate(p.pt_b, p.va_b).is_some(), "both map the page");
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v));
+        assert!(translate(p.pt_a, p.va_a).is_none() && translate(p.pt_b, p.va_b).is_none(), "both leaves went");
+        let shots = core::mem::take(&mut *SHOTS.lock().unwrap());
+        assert_eq!(shots.iter().map(|&(root, va, _)| (root, va)).collect::<Vec<_>>(), vec![(p.pt_a, p.va_a), (p.pt_b, p.va_b)]);
+        assert!(shots.iter().all(|&(_, _, held)| !held), "no shootdown under the table");
+        src.keep(v);
+    }
+
     #[test]
     fn an_object_that_did_not_opt_in_is_not_offered_or_taken() {
         if !azos_mm::zpool::ENABLED || azos_mm::aging::CHUNKS == 0 {
@@ -2381,7 +2422,7 @@ mod swap_rows {
         assert!(mo::memobj_map_begin_ref(b, r, true, &mut pages).is_ok());
         assert_eq!(mo::memobj_fault_look(r, pt_b, 0), mo::ObjLook::Wait);
         let seen = pg::shim_marker_seq();
-        assert_eq!(mo::memobj_map_commit_ref(b, r, pt_b, 0x4000_0000, 1, mo::MapAccess::RW), Ok(true));
+        assert_eq!(mo::memobj_map_commit_ref(b, r, azos_sched::shim_space(pt_b), 0x4000_0000, 1, mo::MapAccess::RW), Ok(true));
         assert_ne!(pg::shim_marker_seq(), seen, "the commit wakes the waiter");
         assert!(matches!(mo::memobj_take_mapping_ref(b, r), Ok(Some(_))));
         assert!(mo::memobj_map_begin_ref(b, r, true, &mut pages).is_ok());
@@ -3157,7 +3198,7 @@ mod swap_rows {
         // The child holds a reference and no mapping yet, as a fork's child.
         assert!(mo::memobj_acquire_ref(b, r).is_ok());
         let mut leaves = azos_mm::cow::ForkLeaves { parent_pt: pt_a, child_pt: pt_b, va, pages: 1, sparse: true };
-        let booked = mo::memobj_inherit_ref(a, b, r, pt_b, va, 1, &mut leaves);
+        let booked = mo::memobj_inherit_ref(a, b, r, azos_sched::shim_space(pt_b), va, 1, &mut leaves);
         assert!(booked.is_ok(), "the child is booked: {booked:?}");
         assert_eq!(mo::memobj_has_mapping_ref(b, r), Ok(true));
         assert!(translate(pt_b, va).is_none(), "and has no leaf for the page that is out");

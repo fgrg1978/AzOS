@@ -109,7 +109,7 @@ fn a_futex_look_never_spins_on_the_region_table() {
     azos_sched::set_current_user_pt(pt);
     let r = memobj_create_ref(TID, 1, MemPerms::ReadWrite).expect("a region");
     let frame = memobj_page_phys_ref(r, 0).expect("live").expect("a frame");
-    assert_eq!(memobj_note_mapping_ref(TID, r, pt, VA, 1, MapAccess::RW), Ok(true));
+    assert_eq!(memobj_note_mapping_ref(TID, r, azos_sched::shim_space(pt), VA, 1, MapAccess::RW), Ok(true));
     azos_mm::vmm::map(pt, VA, frame, PagePerms::USER_RW).expect("map");
     OBJ.store(r, SeqCst);
     STAGE.store(0, SeqCst);

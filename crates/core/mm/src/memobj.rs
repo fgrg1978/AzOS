@@ -141,18 +141,19 @@
 //! a fault holds the frame before its leaf is written), and the kernel's own
 //! reference (`MEMOBJ_KERNEL_OWNER`, which addresses the frames directly). Any
 //! other state reaches every leaf through the records: [`memobj_swap_take`]
-//! clears the page's leaf in each recorded mapping and shoots it down on every
-//! hart (`unmap_frame_in`, through the unmap hook, which waits out open
-//! user-copy sections) before the frame leaves its slot, all in one hold of
-//! the table. After that hold no leaf names the frame and none can again: a
-//! fault finds `transit` and waits, a fault after the publish finds `out` and
-//! restores through the object. A page with neither a frame, `transit` nor `out`
+//! clears the page's leaf in each recorded mapping in the same hold of the
+//! table that takes the frame out of its slot, and shoots the leaves down on
+//! every hart after the hold (waiting out open user-copy sections) and before
+//! the frame is handed to the store. After that hold no leaf names the frame
+//! and none can again: a fault finds `transit` and waits, a fault after the
+//! publish finds `out` and restores through the object. A store through a
+//! stale entry in the gap lands in the frame before the store reads it. A page with neither a frame, `transit` nor `out`
 //! is not the pager's, and the fault fails rather than zero-fill it.
 //!
 //! **Why the roots the holders name are alive.** The aging pass harvests the
 //! Accessed bits through each recorded mapping, and a take clears a leaf through
 //! it, both with the table locked and no lock of the address space. A holder's
-//! `map_root` is a live page-table root for as long as the record is set: a
+//! `map_space` is a live address space for as long as the record is set: a
 //! task's exit clears it in [`memobj_release_all`] (the exit hook, which runs
 //! before the task's address space is destroyed), an exec in [`memobj_exec`]
 //! (the exec hook of `exec_commit`, before the old space is destroyed), a MOVE,
@@ -169,12 +170,12 @@
 //! switch), so the leaves a record no longer names are unreachable until the
 //! space's teardown clears them.
 //!
-//! **Known exception to the lock order.** The take shoots a page down on every hart
-//! with `MEMOBJS` held, as `purge_locked` and a MOVE do (memory model §2.10 names
-//! the shootdown under the table for removal): doing it after the drop needs the
-//! holders to carry a reference to their space, not a bare root, which keeps the
-//! tables alive across the gap. Until then the cost is the latency of
-//! `MAX_MEMOBJ_HOLDERS` ranged shootdowns per victim page.
+//! **Shootdowns after the table.** The take keeps no IPI inside the table's hold
+//! (memory model §2.10): each holder carries a reference to its space, and the
+//! shootdown after the hold skips a space that ended in the gap: nothing runs
+//! in it again, and its stale entries are as harmless as those of the frames
+//! its own teardown frees. A purge, a MOVE, a revoke and a page-cache drop still
+//! shoot down under the table; none is on the reclaim path of a Domain storm.
 //!
 //! **Who is never taken.** An object with a holder whose Domain is on a
 //! `mem = "locked"` row, or with a real-time thread anywhere in its process
@@ -240,6 +241,7 @@ use azos_sync::{SpinLock, SpinLockGuard};
 
 use azos_abi::cap::CapError;
 use azos_common::slot_ref::{self, Layout};
+use crate::aspace::SpaceRef;
 use crate::pager::{PageBacking, PageIoError, PageKey};
 
 /// How a `Cap<Shm>` packs `(index, generation)`: 8 + 24 bits (`objref::SHM`).
@@ -414,11 +416,13 @@ pub struct MemHolder {
     /// frame returns to the PMM under those PTEs; the task's exit
     /// (`memobj_release_all`) gives it back, when its address space is gone.
     pub pinned: bool,
-    /// The page-table root `map_va` lives in (the process's, at map time). Valid
-    /// while `map_va != 0`: exec and exit clear the record before the root is
-    /// freed ([`memobj_exec`], [`memobj_release_all`]), so a MOVE or a protect
-    /// that finds it under the table lock finds a live address space.
-    pub map_root: usize,
+    /// The address space `map_va` lives in (the process's, at map time). Set
+    /// while `map_va != 0`: exec and exit clear the record before the space
+    /// ends ([`memobj_exec`], [`memobj_release_all`]), so a MOVE or a protect
+    /// that finds it under the table lock finds a live root. A take that has
+    /// dropped the lock asks the reference whether the space is still there
+    /// before it shoots its page down ([`memobj_swap_take`]).
+    pub map_space: Option<SpaceRef>,
     /// The mapping at `map_va` is writable now.
     pub map_write: bool,
     /// The most the mapping may be made writable again: the access the
@@ -442,7 +446,7 @@ pub struct MemHolder {
 
 impl MemHolder {
     pub const fn empty() -> Self {
-        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, map_off: 0, pinned: false, map_root: 0, map_write: false, map_max_write: false, ends: 0, building: false, build_write: false }
+        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, map_off: 0, pinned: false, map_space: None, map_write: false, map_max_write: false, ends: 0, building: false, build_write: false }
     }
 
     /// Are leaves of this holder in flight, which the record does not name?
@@ -490,6 +494,12 @@ impl MemHolder {
         }
     }
 
+    /// The page-table root of the recorded mapping, 0 for none.
+    #[inline]
+    fn root(&self) -> usize {
+        self.map_space.map_or(0, SpaceRef::root)
+    }
+
     /// Does this holder have a mapping recorded: a live reference and a VA?
     #[inline]
     fn is_mapped(&self) -> bool {
@@ -508,7 +518,7 @@ impl MemHolder {
         self.map_va = 0;
         self.map_pages = 0;
         self.map_off = 0;
-        self.map_root = 0;
+        self.map_space = None;
         self.map_write = false;
         self.map_max_write = false;
     }
@@ -958,12 +968,42 @@ pub fn set_unmap_hook(f: UnmapHook) {
 pub fn __clear_hooks_for_tests() {
     UNMAP_HOOK.clear_for_tests();
     PROTECT_HOOK.clear_for_tests();
+    LEAF_CLEAR_HOOK.clear_for_tests();
+    SHOOTDOWN_HOOK.clear_for_tests();
 }
 
 pub(crate) fn unmap_range(root: usize, va: usize, pages: usize) {
     if let Some(f) = UNMAP_HOOK.get() {
         f(root, va, pages);
     }
+}
+
+/// The take's unmap in two halves ([`memobj_swap_take`]). The clear removes the
+/// user leaves of `pages` pages at `va` of the table rooted at `root`, frees no
+/// frame and shoots nothing down; it runs with the table lock held, under the
+/// rules of [`UnmapHook`], and says whether a leaf went. The kernel registers
+/// `vmm::clear_user_leaves_unflushed`.
+pub type LeafClearHook = fn(root: usize, va: usize, pages: usize) -> bool;
+
+/// The second half: shoot `pages` pages at `va` of the table rooted at `root`
+/// down on every hart that may hold them and wait out the open user-copy
+/// sections. Runs with no lock held. The kernel registers
+/// `vmm::shootdown_user_range`.
+pub type ShootdownHook = fn(root: usize, va: usize, pages: usize);
+
+azos_common::ro_hook! {
+    static LEAF_CLEAR_HOOK: LeafClearHook;
+}
+
+azos_common::ro_hook! {
+    static SHOOTDOWN_HOOK: ShootdownHook;
+}
+
+/// Register the take's [`LeafClearHook`] and [`ShootdownHook`]. Boot, once.
+/// Without them a take removes no PTE (the host suite's default).
+pub fn set_take_hooks(clear: LeafClearHook, shoot: ShootdownHook) {
+    LEAF_CLEAR_HOOK.set(clear);
+    SHOOTDOWN_HOOK.set(shoot);
 }
 
 /// Set (`write == false`) or give back (`write == true`) the write permission
@@ -1480,12 +1520,12 @@ pub fn memobj_mapping_of_ref(tid: u32, r: u32) -> Result<Option<(usize, usize)>,
 pub fn memobj_note_mapping_ref(
     tid: u32,
     r: u32,
-    root: usize,
+    space: SpaceRef,
     va: usize,
     pages: usize,
     access: MapAccess,
 ) -> Result<bool, MemObjError> {
-    memobj_note_mapping_at_ref(tid, r, root, va, 0, pages, access)
+    memobj_note_mapping_at_ref(tid, r, space, va, 0, pages, access)
 }
 
 /// [`memobj_note_mapping_ref`] for a mapping of pages `off..off + pages` of the
@@ -1493,7 +1533,7 @@ pub fn memobj_note_mapping_ref(
 pub fn memobj_note_mapping_at_ref(
     tid: u32,
     r: u32,
-    root: usize,
+    space: SpaceRef,
     va: usize,
     off: usize,
     pages: usize,
@@ -1504,7 +1544,7 @@ pub fn memobj_note_mapping_at_ref(
     if va == 0 || pages == 0 {
         return Ok(false);
     }
-    let noted = note_mapping_locked(&mut regions[i], tid, root, va, off, pages, access);
+    let noted = note_mapping_locked(&mut regions[i], tid, space, va, off, pages, access);
     // The new mapping may cover an address a cached "no mapping" answers for.
     // Canary `memobj-resolve-stale-canary`: it does not move the epoch.
     regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
@@ -1550,13 +1590,13 @@ pub fn memobj_map_begin_ref(tid: u32, r: u32, write: bool, pages: &mut [usize]) 
 /// The leaves of [`memobj_map_begin_ref`] are in place: book them. `Ok(false)`
 /// when the holder lost its references meanwhile (a revoke, a MOVE); the caller
 /// removes the leaves and the holder's pinned reference waits for its exit.
-pub fn memobj_map_commit_ref(tid: u32, r: u32, root: usize, va: usize, pages: usize, access: MapAccess) -> Result<bool, MemObjError> {
+pub fn memobj_map_commit_ref(tid: u32, r: u32, space: SpaceRef, va: usize, pages: usize, access: MapAccess) -> Result<bool, MemObjError> {
     let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     if !regions[i].holders.iter().any(|h| h.refs > 0 && h.tid == tid && h.building) {
         return Ok(false);
     }
-    let noted = note_mapping_locked(&mut regions[i], tid, root, va, 0, pages, access);
+    let noted = note_mapping_locked(&mut regions[i], tid, space, va, 0, pages, access);
     regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
     drop(regions);
     booking_ended();
@@ -1635,7 +1675,7 @@ pub fn memobj_inherit_ref(
     parent: u32,
     child: u32,
     r: u32,
-    root: usize,
+    space: SpaceRef,
     va: usize,
     pages: usize,
     leaves: &mut impl ChildLeaves,
@@ -1645,7 +1685,7 @@ pub fn memobj_inherit_ref(
         memobj_unmap_end_ref(child, r);
         return Err(MemObjError::NoMem);
     }
-    inherit_commit(parent, child, r, root, va, pages, leaves).inspect(|_| booking_ended()).inspect_err(|_| {
+    inherit_commit(parent, child, r, space, va, pages, leaves).inspect(|_| booking_ended()).inspect_err(|_| {
         leaves.remove();
         memobj_unmap_end_ref(child, r);
     })
@@ -1672,7 +1712,7 @@ fn inherit_commit(
     parent: u32,
     child: u32,
     r: u32,
-    root: usize,
+    space: SpaceRef,
     va: usize,
     pages: usize,
     leaves: &mut impl ChildLeaves,
@@ -1713,7 +1753,7 @@ fn inherit_commit(
         access.write = false;
         leaves.set_write(false);
     }
-    if !leaves_agree(leaves, va, pages, access.write, sparse) || !note_mapping_locked(o, child, root, va, 0, pages, access) {
+    if !leaves_agree(leaves, va, pages, access.write, sparse) || !note_mapping_locked(o, child, space, va, 0, pages, access) {
         return Err(MemObjError::Closed);
     }
     regions.map_epoch += u64::from(!cfg!(feature = "memobj-resolve-stale-canary"));
@@ -1753,7 +1793,7 @@ impl MapAccess {
     pub const RO: MapAccess = MapAccess { write: false, max_write: false };
 }
 
-fn note_mapping_locked(region: &mut MemObj, tid: u32, root: usize, va: usize, off: usize, pages: usize, access: MapAccess) -> bool {
+fn note_mapping_locked(region: &mut MemObj, tid: u32, space: SpaceRef, va: usize, off: usize, pages: usize, access: MapAccess) -> bool {
     for i in 0..MAX_MEMOBJ_HOLDERS {
         let h = &mut region.holders[i];
         if h.refs > 0 && h.tid == tid {
@@ -1763,7 +1803,7 @@ fn note_mapping_locked(region: &mut MemObj, tid: u32, root: usize, va: usize, of
             h.map_va = va;
             h.map_pages = pages;
             h.map_off = off;
-            h.map_root = root;
+            h.map_space = Some(space);
             h.map_write = access.write;
             h.map_max_write = access.max_write;
             h.building = false;
@@ -1813,7 +1853,7 @@ fn take_mapping_root_locked(region: &mut MemObj, tid: u32) -> Option<(usize, usi
     for i in 0..MAX_MEMOBJ_HOLDERS {
         let h = &mut region.holders[i];
         if h.refs > 0 && h.tid == tid && h.map_va != 0 {
-            let out = (h.map_root, h.map_va, h.map_pages);
+            let out = (h.root(), h.map_va, h.map_pages);
             h.clear_mapping();
             return Some(out);
         }
@@ -2668,8 +2708,8 @@ pub fn memobj_protect_ref(tid: u32, r: u32, write: bool) -> Result<(), MemObjErr
         return Err(MemObjError::Busy);
     }
     // The leaves change under the table lock, as a MOVE's unmap does: the
-    // record's root is a live address space (`map_root`).
-    let (root, va, pages) = (h.map_root, h.map_va, h.map_pages);
+    // record's root is a live address space (`map_space`).
+    let (root, va, pages) = (h.root(), h.map_va, h.map_pages);
     h.map_write = write;
     let _ = protect_range(root, va, pages, write);
     Ok(())
@@ -2936,7 +2976,7 @@ fn copy_into_new(src_pages: &[usize], owner_task: u32, spec: &MemSpec, key: u32)
 // ──────────────────────────────────────────────────────────────────────────
 //
 // The mapping list of an object is its holder table: every holder with a
-// recorded mapping names the address space (`map_root`) and the VA it maps the
+// recorded mapping names the address space (`map_space`) and the VA it maps the
 // object at, one mapping per holder (the process), at most
 // `MAX_MEMOBJ_HOLDERS` of them. A frame does not name its object (the
 // descriptor carries no owner): the object's slots name its frames, and these
@@ -3033,13 +3073,47 @@ pub fn memobj_warrant_swept(resource: u32, owner: u32) {
     }
 }
 
+/// A leaf the take cleared under the table and has yet to shoot down: the
+/// space it was in and its address.
+type Shot = Option<(SpaceRef, usize)>;
+
+/// Clear page `idx`'s leaf in every recorded mapping that reaches it, with no
+/// shootdown; each mapping whose leaf went goes into `shots`, for
+/// [`shoot_down`] after the table lock drops. Table lock held.
+fn clear_frame_in(region: &MemObj, idx: usize, shots: &mut [Shot; MAX_MEMOBJ_HOLDERS]) {
+    let page = azos_arch::PAGE_SIZE;
+    let Some(clear) = LEAF_CLEAR_HOOK.get() else { return };
+    for (h, shot) in region.holders.iter().zip(shots.iter_mut()) {
+        let Some(space) = h.map_space.filter(|_| h.maps_page(idx)) else { continue };
+        let va = h.map_va + (idx - h.map_off) * page;
+        if clear(space.root(), va, 1) {
+            *shot = Some((space, va));
+        }
+    }
+}
+
+/// The shootdowns [`clear_frame_in`] left, with no lock held. A space that ended
+/// meanwhile is skipped: nothing runs in it again, as for the frames its own
+/// teardown frees. Until this returns the frame is read by nobody: a write
+/// through a stale entry lands before the store reads it.
+///
+/// Canary `take-shootdown-under-table-canary`: the caller still holds the table.
+fn shoot_down(shots: &[Shot]) {
+    let Some(shoot) = SHOOTDOWN_HOOK.get() else { return };
+    for &(space, va) in shots.iter().flatten() {
+        if space.live() {
+            shoot(space.root(), va, 1);
+        }
+    }
+}
+
 /// Remove page `idx` of `region`'s PTE from every recorded mapping that reaches
 /// it; how many. Table lock held.
 fn unmap_frame_in(region: &MemObj, idx: usize) -> usize {
     let page = azos_arch::PAGE_SIZE;
     let mut spaces = 0;
     for h in region.holders.iter().filter(|h| h.maps_page(idx)) {
-        unmap_range(h.map_root, h.map_va + (idx - h.map_off) * page, 1);
+        unmap_range(h.root(), h.map_va + (idx - h.map_off) * page, 1);
         spaces += 1;
     }
     spaces
@@ -3068,7 +3142,7 @@ pub fn memobj_stale_epoch() -> u64 {
 pub fn memobj_books_ref(r: u32, root: usize, va: usize) -> bool {
     let regions = MEMOBJS.lock();
     let Ok(i) = live_index(&regions, r) else { return false };
-    regions[i].holders.iter().any(|h| h.is_mapped() && h.map_root == root && h.map_va == va)
+    regions[i].holders.iter().any(|h| h.is_mapped() && h.root() == root && h.map_va == va)
 }
 
 /// The object half of a capability MOVE for `Cap<Shm>`, registered at boot by
@@ -3134,7 +3208,7 @@ pub fn memobj_move(from: u32, to: u32, r: u32) -> Result<Moved, MemObjError> {
         take_mapping_root_locked(&mut regions[i], from)
     };
     // The PTEs go now, shot down on every hart, with the table locked: the
-    // record's root is a live address space (`map_root`), so nothing can free
+    // record's root is a live address space (`map_space`), so nothing can free
     // it under this call, and no reference moves while they exist.
     let mapping = taken.map(|(root, va, pages)| {
         unmap_range(root, va, pages);
@@ -4285,7 +4359,7 @@ fn purge_locked(o: &mut MemObj) -> (u32, usize, Reclaim) {
     for hi in 0..MAX_MEMOBJ_HOLDERS {
         let h = &mut o.holders[hi];
         if h.is_mapped() {
-            let (root, va, pages) = (h.map_root, h.map_va, h.map_pages);
+            let (root, va, pages) = (h.root(), h.map_va, h.map_pages);
             h.clear_mapping();
             // The PTEs go now, shot down on every hart, before a frame is
             // freed; the records are the holder's to drop, as after a MOVE.
@@ -4427,7 +4501,7 @@ pub fn memobj_age_next(key: u32, from: usize, harvest: &dyn Fn(usize, usize, usi
     for h in o.holders.iter().filter(|h| h.is_mapped()) {
         let n = h.map_pages.min(o.page_count.saturating_sub(h.map_off));
         if n != 0 && n <= 64 {
-            accessed |= harvest(h.map_root, h.map_va, n).checked_shl(h.map_off as u32).unwrap_or(0);
+            accessed |= harvest(h.root(), h.map_va, n).checked_shl(h.map_off as u32).unwrap_or(0);
         }
     }
     Some(AgedObject { next: i + 1, ident: o.ident, pages: o.page_count, resident, accessed: accessed & resident })
@@ -4463,16 +4537,34 @@ pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Take {
     if !swap_ready(o, idx) || o.frame(idx).is_none() || o.transit & bit != 0 {
         return Take::Not;
     }
-    // Every recorded mapping loses its leaf, shot down on every hart, before
-    // the frame stops being the object's: no mapper can reach it after this
-    // hold. Canary `swap-rmap-skip-canary`: the leaves stay.
+    // Every recorded mapping loses its leaf in this hold, before the frame
+    // stops being the object's: no fault installs one again (it finds
+    // `transit`), and no walk through a record finds one. The stale entries
+    // other harts may hold are shot down after the hold, so no fault, map or
+    // object call waits behind the IPIs. Canary `swap-rmap-skip-canary`: the
+    // leaves stay.
+    let mut shots: [Shot; MAX_MEMOBJ_HOLDERS] = [None; MAX_MEMOBJ_HOLDERS];
     if !cfg!(feature = "swap-rmap-skip-canary") {
-        unmap_frame_in(o, idx);
+        clear_frame_in(o, idx, &mut shots);
     }
     let Some(frame) = o.frame(idx) else { return Take::Not };
     o.clear_frame(idx);
     o.transit |= bit;
+    if cfg!(feature = "take-shootdown-under-table-canary") {
+        shoot_down(&shots);
+    }
+    drop(regions);
+    if !cfg!(feature = "take-shootdown-under-table-canary") {
+        shoot_down(&shots);
+    }
     Take::Frame(frame)
+}
+
+/// Host suites only: is the object table held right now? What a shootdown hook
+/// asks to tell a take that shoots after its hold from one that shoots in it.
+#[cfg(not(target_os = "none"))]
+pub fn shim_table_held() -> bool {
+    MEMOBJS.try_lock().is_none()
 }
 
 /// What [`memobj_swap_take`] found.
@@ -4545,7 +4637,7 @@ pub fn memobj_fault_look(r: u32, root: usize, idx: usize) -> ObjLook {
     let mut regions = MEMOBJS.lock();
     let Ok(i) = live_index(&regions, r) else { return ObjLook::Gone };
     let o = &mut regions[i];
-    let Some(write) = o.holders.iter().find(|h| h.is_mapped() && h.map_root == root && h.maps_page(idx)).map(|h| h.map_write) else {
+    let Some(write) = o.holders.iter().find(|h| h.is_mapped() && h.root() == root && h.maps_page(idx)).map(|h| h.map_write) else {
         // A mapping being booked (its leaves are made, its record is not yet) is
         // a retry for a sibling thread that touches it, not a bad address.
         // Canary `swap-building-gone-canary`: it is a bad address.
@@ -4597,7 +4689,7 @@ pub fn memobj_maps_frame(r: u32, root: usize, idx: usize, frame: usize, write: b
         };
         idx < o.page_count
             && o.frame(idx) == Some(frame)
-            && o.holders.iter().any(|h| h.is_mapped() && h.map_root == root && h.maps_page(idx) && allowed(h))
+            && o.holders.iter().any(|h| h.is_mapped() && h.root() == root && h.maps_page(idx) && allowed(h))
     })
 }
 
@@ -4772,6 +4864,12 @@ pub fn __memobj_set_refs_for_tests(shm_id: u32, tid: u32, refs: u32) {
     let region = &mut regions[shm_id as usize];
     let (idx, _) = holder_slot(region, tid).expect("a holder slot");
     region.holders[idx] = MemHolder { tid, refs, ..MemHolder::empty() };
+}
+
+/// A space over `root` for a host test's mapping record.
+#[cfg(test)]
+fn sp(root: usize) -> SpaceRef {
+    crate::aspace::create(root).expect("a space")
 }
 
 /// The generation stamped in slot `shm_id` (host tests).
@@ -4964,7 +5062,7 @@ mod tests {
         let page = azos_arch::PAGE_SIZE;
         let cap = memobj_create_cap(A, PAGES, &MemSpec::anon(MemPerms::ReadWrite)).expect("create");
         let r = cap_store::get(A, cap, CapPerms::READ).expect("a fresh capability resolves");
-        assert_eq!(memobj_note_mapping_ref(A, r, 0x1000, VA, PAGES, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(0x1000), VA, PAGES, MapAccess::RW), Ok(true));
         let mut tag = 0x5100_0000u32;
         for p in 0..PAGES {
             for off in [p * page, p * page + page / 2 + 4, p * page + page - 4] {
@@ -4997,7 +5095,7 @@ mod tests {
         let page = azos_arch::PAGE_SIZE;
         let cap = memobj_create_cap(A, 4, &MemSpec::anon(MemPerms::ReadWrite)).expect("create");
         let r = cap_store::get(A, cap, CapPerms::READ).expect("a fresh capability resolves");
-        assert_eq!(memobj_note_mapping_at_ref(A, r, ROOT, VA, 2, 2, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_at_ref(A, r, sp(ROOT), VA, 2, 2, MapAccess::RW), Ok(true));
         assert_eq!(memobj_resolve_mapped(A, VA), Some((r, 2 * page)));
         assert_eq!(memobj_resolve_mapped(A, VA + page + 8), Some((r, 3 * page + 8)));
         assert_eq!(memobj_resolve_mapped(A, VA + 2 * page), None, "past the mapping");
@@ -5115,7 +5213,7 @@ mod tests {
             let k = rnd(3);
             match rnd(8) {
                 0 | 1 => {
-                    let _ = memobj_note_mapping_ref(t, regs[k], 0x1000, base(k) + rnd(3) * page, 1 + rnd(3), MapAccess::RW);
+                    let _ = memobj_note_mapping_ref(t, regs[k], sp(0x1000), base(k) + rnd(3) * page, 1 + rnd(3), MapAccess::RW);
                 }
                 2 => {
                     let _ = memobj_take_mapping_ref(t, regs[k]);
@@ -5269,7 +5367,7 @@ mod tests {
         let mut pages = [0usize; 1];
         assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Ok(()));
         assert_eq!(memobj_purge_volatile(8, nobody_is_locked), 0, "purged under leaves being installed");
-        assert_eq!(memobj_map_commit_ref(A, r, 0x1000, 0x4000_0000, 1, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_map_commit_ref(A, r, sp(0x1000), 0x4000_0000, 1, MapAccess::RO), Ok(true));
         assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((0x4000_0000, 1))));
         assert_eq!(memobj_purge_volatile(8, nobody_is_locked), 1);
         assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Err(MemObjError::Purged));
@@ -5296,7 +5394,7 @@ mod tests {
         assert_eq!(memobj_map_begin_ref(A, r, true, &mut pages), Err(MemObjError::Busy), "a write map over shared frames");
         assert_eq!(pages[0], 0, "a refused begin handed out a frame");
         assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Ok(()), "the refusal left the holder marked");
-        assert_eq!(memobj_map_commit_ref(A, r, 0x1000, 0x4000_0000, 1, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_map_commit_ref(A, r, sp(0x1000), 0x4000_0000, 1, MapAccess::RO), Ok(true));
         assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((0x4000_0000, 1))));
         assert_eq!(memobj_release_ref(A, first), Ok(()));
         assert_eq!(memobj_release_ref(A, second), Ok(()));
@@ -5365,10 +5463,10 @@ mod tests {
         const CHILD_ROOT: usize = 0xB000;
         let page = azos_arch::PAGE_SIZE;
         let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
-        assert_eq!(memobj_note_mapping_ref(A, r, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(0x1000), VA, 1, MapAccess::RW), Ok(true));
         assert!(memobj_acquire_ref(B, r).is_ok());
         let mut leaves = ModelLeaves::of(r, 1);
-        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA + page, 1, &mut leaves), Err(MemObjError::Closed), "not the parent's mapping");
+        assert_eq!(memobj_inherit_ref(A, B, r, sp(CHILD_ROOT), VA + page, 1, &mut leaves), Err(MemObjError::Closed), "not the parent's mapping");
         assert_eq!(leaves.copied, 0);
 
         let shared = std::rc::Rc::new(core::cell::Cell::new(None));
@@ -5379,7 +5477,7 @@ mod tests {
             seen.set(Some(memobj_describe_ref(r).unwrap().cow_shared));
             assert_eq!(memobj_release_ref(A, c), Ok(()));
         }));
-        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
+        assert_eq!(memobj_inherit_ref(A, B, r, sp(CHILD_ROOT), VA, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
         assert_eq!(shared.get(), Some(0), "a clone shared frames under the child's copied leaves");
         assert_eq!(leaves.writable(), Some(false), "the child is booked read-only over a writable leaf");
         assert_eq!(memobj_mapping_of_ref(B, r), Ok(Some((VA, 1))));
@@ -5399,26 +5497,26 @@ mod tests {
         };
         set_shared(1);
         let removed = leaves.removed;
-        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Err(MemObjError::Busy));
+        assert_eq!(memobj_inherit_ref(A, B, r, sp(CHILD_ROOT), VA, 1, &mut leaves), Err(MemObjError::Busy));
         assert_eq!(leaves.removed, removed + 1, "a refusal left the copied leaves");
         set_shared(0);
 
         // A leaf that names another frame.
         leaves.frames[0] ^= page;
-        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Err(MemObjError::Closed), "a leaf not the object's");
+        assert_eq!(memobj_inherit_ref(A, B, r, sp(CHILD_ROOT), VA, 1, &mut leaves), Err(MemObjError::Closed), "a leaf not the object's");
         leaves.frames[0] ^= page;
 
         // A leaf that refuses write: the record says read-only, as the leaf does.
         leaves.refuse_write = true;
-        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
+        assert_eq!(memobj_inherit_ref(A, B, r, sp(CHILD_ROOT), VA, 1, &mut leaves), Ok(MapAccess { write: false, max_write: true }));
         assert_eq!(leaves.writable(), Some(false));
         unbook(&mut leaves);
         leaves.refuse_write = false;
 
-        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Ok(MapAccess::RW), "the parent's access now");
+        assert_eq!(memobj_inherit_ref(A, B, r, sp(CHILD_ROOT), VA, 1, &mut leaves), Ok(MapAccess::RW), "the parent's access now");
         assert_eq!(leaves.writable(), Some(true));
         let removed = leaves.removed;
-        assert_eq!(memobj_inherit_ref(A, B, r, CHILD_ROOT, VA, 1, &mut leaves), Err(MemObjError::Busy), "booked once");
+        assert_eq!(memobj_inherit_ref(A, B, r, sp(CHILD_ROOT), VA, 1, &mut leaves), Err(MemObjError::Busy), "booked once");
         assert_eq!(leaves.removed, removed, "a refused begin touched the leaves");
         unbook(&mut leaves);
         assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((VA, 1))));
@@ -5452,7 +5550,7 @@ mod tests {
         const VA: usize = 0x4000_0000;
         const PRIVATE: usize = VA + 0x10_0000;
         let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
-        assert_eq!(memobj_note_mapping_ref(A, r, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(0x1000), VA, 1, MapAccess::RW), Ok(true));
         let kept = |want_hit: bool| {
             MEMOBJS.lock_irqsave().resolved.iter().flatten().any(|e| e.tid == A && e.hit.is_some() == want_hit)
         };
@@ -5464,7 +5562,7 @@ mod tests {
         }
         // Both stay correct: the gap answer still yields to a new mapping.
         let r2 = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
-        assert_eq!(memobj_note_mapping_ref(A, r2, 0x1000, PRIVATE, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r2, sp(0x1000), PRIVATE, 1, MapAccess::RW), Ok(true));
         assert!(memobj_resolve_mapped(A, PRIVATE).is_some(), "a cached gap answered over a new mapping");
         assert!(memobj_resolve_mapped(A, VA).is_some());
     }
@@ -5505,25 +5603,25 @@ mod tests {
         let load = |va: usize| memobj_with_mapped_word(A, va, false, |_, _, w| w.load(Ordering::Acquire)).ok().flatten();
 
         let rw = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
-        assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, rw, sp(0x1000), VA, 1, MapAccess::RO), Ok(true));
         assert_eq!(store(VA), None, "a read-only mapping is written");
         assert_eq!(load(VA), Some(0));
         assert_eq!(memobj_take_mapping_ref(A, rw), Ok(Some((VA, 1))));
-        assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, rw, sp(0x1000), VA, 1, MapAccess::RW), Ok(true));
         assert_eq!(store(VA), Some(()));
         assert_eq!(load(VA), Some(7));
         assert_eq!(store(VA + 2), None, "a misaligned word");
         assert_eq!(memobj_take_mapping_ref(A, rw), Ok(Some((VA, 1))));
 
         let ro = memobj_create_ref(A, 1, MemPerms::ReadOnly).expect("create");
-        assert_eq!(memobj_note_mapping_ref(A, ro, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, ro, sp(0x1000), VA, 1, MapAccess::RW), Ok(true));
         assert_eq!(store(VA), None, "a read-only object is written");
         assert_eq!(load(VA), Some(0));
         assert_eq!(memobj_take_mapping_ref(A, ro), Ok(Some((VA, 1))));
 
         let _clone = memobj_clone(A, rw, A, MemPerms::ReadWrite).expect("clone");
         assert_ne!(memobj_describe_ref(rw).expect("live").cow_shared, 0, "the clone shares the frame");
-        assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, rw, sp(0x1000), VA, 1, MapAccess::RW), Ok(true));
         assert_eq!(store(VA), None, "a page a clone shares is written");
         assert_eq!(load(VA), Some(7));
     }
@@ -5662,7 +5760,7 @@ mod tests {
         assert_eq!(refs(idx), None, "the exit gave it back");
 
         let (cap_c, rc) = create(C);
-        assert_eq!(memobj_note_mapping_ref(C, rc, 0x1000, 0x6000_0000, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(C, rc, sp(0x1000), 0x6000_0000, 1, MapAccess::RW), Ok(true));
         assert_eq!(release(C, cap_c), Err(MemObjError::Closed), "a recorded mapping");
         assert_eq!(refs(LAYOUT.idx(rc)), Some(1), "nothing was given back");
         memobj_release_all(C);
@@ -5754,7 +5852,7 @@ mod tests {
         assert_eq!(memobj_has_mapping_ref(A, old), Ok(false));
         assert_eq!(memobj_page_phys_ref(old, 1).map(|p| p.is_some()), Ok(true));
         assert_eq!(memobj_page_phys_ref(old, 2), Ok(None), "past the region");
-        assert_eq!(memobj_note_mapping_ref(A, old, 0x1000, 0x6000_0000, 2, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, old, sp(0x1000), 0x6000_0000, 2, MapAccess::RW), Ok(true));
         assert_eq!(memobj_has_mapping_ref(A, old), Ok(true));
         assert_eq!(memobj_release_ref(A, old), Err(MemObjError::Closed), "a live mapping refuses");
         assert_eq!(memobj_take_mapping_ref(A, old), Ok(Some((0x6000_0000, 2))));
@@ -5765,7 +5863,7 @@ mod tests {
         let answers = [
             ("has_mapping", memobj_has_mapping_ref(A, old).map(|_| ())),
             ("page_phys", memobj_page_phys_ref(old, 0).map(|_| ())),
-            ("note_mapping", memobj_note_mapping_ref(A, old, 0x1000, 0x6100_0000, 1, MapAccess::RW).map(|_| ())),
+            ("note_mapping", memobj_note_mapping_ref(A, old, sp(0x1000), 0x6100_0000, 1, MapAccess::RW).map(|_| ())),
             ("take_mapping", memobj_take_mapping_ref(A, old).map(|_| ())),
             ("acquire", memobj_acquire_ref(A, old).map(|_| ())),
             ("release", memobj_release_ref(A, old)),
@@ -5976,7 +6074,7 @@ mod tests {
         assert_eq!((d.kind, d.page_count, d.attrs, d.owner_task), (MemKind::Anon, 3, ATTR_SWAPPABLE, A));
         assert_ne!(d.charge_key, 0, "an owned object is charged to a Domain");
         assert_eq!(azos_sched::shim_charged(A), 3);
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, 3, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA, 3, MapAccess::RW), Ok(true));
         assert_eq!(memobj_protect_ref(A, r, false), Ok(()), "RW to RO");
         assert_eq!(PROTECTS.lock().unwrap().as_slice(), &[(ROOT_A, VA, 3, false)]);
         assert_eq!(memobj_protect_ref(A, r, true), Ok(()), "back, within what the map was allowed");
@@ -6031,7 +6129,7 @@ mod tests {
         );
         assert_eq!(memobj_kernel_page_phys_ref(rh, 0), Ok(None));
         assert!(memobj_page_phys_ref(rh, 0).unwrap().is_some(), "a user mapping still reaches its frames");
-        assert_eq!(memobj_note_mapping_ref(A, rh, ROOT_A, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, rh, sp(ROOT_A), VA, 1, MapAccess::RW), Ok(true));
         assert_eq!(memobj_resolve_mapped(A, VA), None, "notify cannot key a word the kernel may not read");
         assert!(memobj_resolve_mapped(A, VA).is_none());
     }
@@ -6071,7 +6169,7 @@ mod tests {
         assert_eq!(azos_sched::shim_charged(A), 4, "the clone is charged its own pages, shared or not");
 
         // A write mapping of a shared object is refused while another holder maps it.
-        assert_eq!(memobj_note_mapping_ref(A, src, ROOT_A, VA, 2, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, src, sp(ROOT_A), VA, 2, MapAccess::RO), Ok(true));
         assert_eq!(memobj_cow_break(clone, 0), Ok(()), "the clone's mappers are none: it may break");
         assert_eq!(memobj_cow_break(src, 0), Err(MemObjError::Busy), "a mapping names the old frame: no break under it");
         assert_eq!(memobj_protect_ref(A, src, true), Err(MemObjError::Cap(CapError::MissingPerms)), "RO map, max RO");
@@ -6127,7 +6225,7 @@ mod tests {
         let src = cap_store::get(A, src_cap, CapPerms::READ).unwrap();
         let p = memobj_page_phys_ref(src, 0).unwrap().unwrap();
         unsafe { *(p as *mut u8) = 0x5a };
-        assert_eq!(memobj_note_mapping_ref(A, src, ROOT_A, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, src, sp(ROOT_A), VA, 1, MapAccess::RW), Ok(true));
         let c = memobj_clone_cap(A, src_cap, MemPerms::ReadOnly, 1).expect("clone");
         let cr = cap_store::get(A, c, CapPerms::READ).unwrap();
         assert_ne!(memobj_page_phys_ref(cr, 0).unwrap().unwrap(), p, "a writable source is copied, not shared");
@@ -6158,7 +6256,7 @@ mod tests {
         azos_sched::shim_set_current(A, 0x1000);
         let cap_a = memobj_create_cap(A, 4, &MemSpec::anon(MemPerms::ReadWrite)).unwrap();
         let r = cap_store::get(A, cap_a, CapPerms::READ).unwrap();
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, 4, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA, 4, MapAccess::RW), Ok(true));
         assert_eq!((azos_sched::shim_charged(A), azos_sched::shim_charged(B)), (4, 0));
 
         let epoch = memobj_stale_epoch();
@@ -6248,7 +6346,7 @@ mod tests {
         azos_sched::shim_set_current(A, 0x1000);
         let cap_a = memobj_create_cap(A, 4, &MemSpec::anon(MemPerms::ReadWrite)).unwrap();
         let r = cap_store::get(A, cap_a, CapPerms::READ).unwrap();
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, 4, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA, 4, MapAccess::RW), Ok(true));
         azos_sched::shim_set_limit(B, 3);
         let cap_b = transfer(A, B, cap_a, false, None).expect("the capability still moves");
         assert_eq!(UNMAPS.lock().unwrap().len(), 1, "the sender lost its mapping");
@@ -6342,12 +6440,12 @@ mod tests {
         let r = cap_store::get(A, cap, CapPerms::READ).unwrap();
         assert_eq!(memobj_acquire_ref(B, r).map(|_| ()), Ok(()));
         // B mapped read-only: the access its capability allowed.
-        assert_eq!(memobj_note_mapping_ref(B, r, 0xB000, VA, 1, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(B, r, sp(0xB000), VA, 1, MapAccess::RO), Ok(true));
         let raised = memobj_protect_ref(B, r, true);
         assert_eq!(raised, Err(MemObjError::Cap(CapError::MissingPerms)), "protect raised past the map's rights");
         assert!(PROTECTS.lock().unwrap().is_empty(), "and no PTE changed");
         // A's own writable mapping can drop to read-only and come back.
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA + 0x10_0000, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA + 0x10_0000, 1, MapAccess::RW), Ok(true));
         assert_eq!(memobj_protect_ref(A, r, false), Ok(()));
         assert_eq!(memobj_protect_ref(A, r, true), Ok(()));
         assert_eq!(PROTECTS.lock().unwrap().len(), 2);
@@ -6380,7 +6478,7 @@ mod tests {
         azos_sched::shim_set_current(A, 0x1000);
         let cap = memobj_create_cap(A, pages, &MemSpec::anon(MemPerms::ReadWrite)).expect("create");
         let r = cap_store::get(A, cap, CapPerms::READ).unwrap();
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, pages, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA, pages, MapAccess::RW), Ok(true));
         (cap, r)
     }
 
@@ -6391,7 +6489,7 @@ mod tests {
         let shared = transfer(from, to, cap, true, None).expect("the share lands");
         acquire(to, shared).expect("the receiver takes a reference");
         let r = cap_store::get(to, shared, CapPerms::READ).unwrap();
-        assert_eq!(memobj_note_mapping_ref(to, r, root, va, n, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(to, r, sp(root), va, n, MapAccess::RW), Ok(true));
         shared
     }
 
@@ -6455,13 +6553,13 @@ mod tests {
         let other_r = cap_store::get(A, other, CapPerms::READ).unwrap();
         let other_b = transfer(A, B, other, true, None).expect("the second object is shared too");
         acquire(B, other_b).unwrap();
-        assert_eq!(memobj_note_mapping_ref(B, other_r, ROOT_B, VA_B + 0x10_0000, 1, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(B, other_r, sp(ROOT_B), VA_B + 0x10_0000, 1, MapAccess::RW), Ok(true));
 
         let cap_b = shared_and_mapped(A, B, cap_a, ROOT_B, VA_B, 2);
         let cap_c = shared_and_mapped(B, C, cap_b, ROOT_C, VA_C, 2);
         // D holds a reference to `r` with no capability from this warrant tree.
         memobj_acquire_ref(D, r).expect("D takes a reference");
-        assert_eq!(memobj_note_mapping_ref(D, r, 0xD000, VA_C + 0x10_0000, 2, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(D, r, sp(0xD000), VA_C + 0x10_0000, 2, MapAccess::RW), Ok(true));
         UNMAPS.lock().unwrap().clear();
 
         cap_store::revoke_derived(A, cap_a.raw()).expect("A revokes");
@@ -6612,7 +6710,7 @@ mod tests {
                 memobj_acquire_ref(tid, r).expect("a holder slot is free");
             }
             let root = 0x1_0000 + k * 0x1000;
-            assert_eq!(memobj_note_mapping_ref(tid, r, root, VA + k * 0x10_0000, 1, MapAccess::RW), Ok(true));
+            assert_eq!(memobj_note_mapping_ref(tid, r, sp(root), VA + k * 0x10_0000, 1, MapAccess::RW), Ok(true));
         }
         assert_eq!(memobj_acquire_ref(999, r), Err(MemObjError::Closed), "the list is full");
         release_all_holders(&tids, r);
@@ -6957,7 +7055,7 @@ mod tests {
         let page = azos_arch::PAGE_SIZE;
         let (f, r, base) = window();
         memobj_acquire_ref(A, r).expect("acquire");
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, 3, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA, 3, MapAccess::RO), Ok(true));
 
         let p1 = memobj_paged_frame_ref(r, 1, false).expect("fill");
         assert_eq!(memobj_page_phys_ref(r, 1), Ok(Some(p1)), "the object's page is the frame the mapper got");
@@ -6988,7 +7086,7 @@ mod tests {
 
         // A writable mapping: its pages are dirty while it lasts.
         assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((VA, 3))));
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, 3, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA, 3, MapAccess::RW), Ok(true));
         memobj_paged_frame_ref(r, 2, true).unwrap();
         UNMAPS.lock().unwrap().clear();
         assert_eq!(memobj_paged_info_ref(r).unwrap().dirty, 0b110, "resident pages under a writable mapping");
@@ -7217,7 +7315,7 @@ mod tests {
         // A mapping of the page is removed before the frame goes; a pinned holder refuses.
         let (_f2, r2, _) = window();
         memobj_acquire_ref(A, r2).expect("acquire");
-        assert_eq!(memobj_note_mapping_ref(A, r2, ROOT_A, VA, 3, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r2, sp(ROOT_A), VA, 3, MapAccess::RO), Ok(true));
         memobj_paged_frame_ref(r2, 1, false).unwrap();
         UNMAPS.lock().unwrap().clear();
         assert_eq!(memobj_paged_forget_ref(r2, 6 * page as u64), Ok(()));
@@ -7358,8 +7456,8 @@ mod tests {
         let (cap, r) = create_volatile(A, 4);
         let theirs = mint(B, r);
         acquire(B, theirs).expect("B shares it");
-        assert_eq!(memobj_note_mapping_ref(A, r, ROOT_A, VA, 4, MapAccess::RW), Ok(true));
-        assert_eq!(memobj_note_mapping_ref(B, r, ROOT_B, VA + 0x10_0000, 4, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(A, r, sp(ROOT_A), VA, 4, MapAccess::RW), Ok(true));
+        assert_eq!(memobj_note_mapping_ref(B, r, sp(ROOT_B), VA + 0x10_0000, 4, MapAccess::RO), Ok(true));
         assert_eq!(azos_sched::shim_charged(A), 5);
         let in_use = azos_mm::shim_pages_in_use();
 

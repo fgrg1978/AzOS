@@ -117,8 +117,8 @@ fn a_word_of_a_mapped_region_has_the_same_key_for_every_mapper() {
     caller();
     let r = memobj_create_ref(TID, 1, MemPerms::ReadWrite).expect("create a region");
     assert!(memobj_acquire_ref(OTHER, r).is_ok(), "the second task takes a reference");
-    assert_eq!(memobj_note_mapping_ref(TID, r, 0x1000, VA_A, 1, MapAccess::RW), Ok(true));
-    assert_eq!(memobj_note_mapping_ref(OTHER, r, 0x1000, VA_B, 1, MapAccess::RW), Ok(true));
+    assert_eq!(memobj_note_mapping_ref(TID, r, azos_sched::shim_space(0x1000), VA_A, 1, MapAccess::RW), Ok(true));
+    assert_eq!(memobj_note_mapping_ref(OTHER, r, azos_sched::shim_space(0x1000), VA_B, 1, MapAccess::RW), Ok(true));
     let key = Key::Shared { obj: r, offset: 8 };
 
     azos_sched::set_current_task_tid(TID);

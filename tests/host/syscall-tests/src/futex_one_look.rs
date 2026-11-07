@@ -64,7 +64,7 @@ fn word_of(r: u32) -> u32 {
 /// Record `r`'s mapping at `VA` and put its frame there in the page table.
 fn map(r: u32) {
     let pt = PT.load(SeqCst);
-    assert_eq!(memobj_note_mapping_ref(TID, r, pt, VA, 1, MapAccess::RW), Ok(true), "the mapping was made");
+    assert_eq!(memobj_note_mapping_ref(TID, r, azos_sched::shim_space(pt), VA, 1, MapAccess::RW), Ok(true), "the mapping was made");
     azos_mm::vmm::map(pt, VA, frame_of(r), PagePerms::USER_RW).expect("map");
 }
 

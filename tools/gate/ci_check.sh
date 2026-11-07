@@ -13199,6 +13199,11 @@ host_job zpool_host_canary_row "swap: shared page, rmap canary" swap-rmap-skip-c
     a_shared_page_leaves_every_mapper_and_comes_back_for_either
 host_job zpool_host_canary_row "swap: restored bytes canary" restore-flip-canary \
     a_shared_page_leaves_every_mapper_and_comes_back_for_either
+# The take clears a page's leaves under the object table and shoots them down
+# after it (take-shootdown-under-table-canary: in it).
+host_job zpool_host_row "swap: take shoots after the table" a_take_shoots_its_page_down_after_the_table
+host_job zpool_host_canary_row "swap: take shoots after the table canary" take-shootdown-under-table-canary \
+    a_take_shoots_its_page_down_after_the_table
 host_job zpool_host_row "swap: opt-in only" an_object_that_did_not_opt_in_is_not_offered_or_taken
 host_job zpool_host_canary_row "swap: opt-in only canary" swappable-ignored-canary \
     an_object_that_did_not_opt_in_is_not_offered_or_taken

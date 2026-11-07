@@ -3914,6 +3914,28 @@ pub fn unmap_user_range_keep(pt_phys: usize, start: usize, end: usize) {
     unmap_user_range(pt_phys, start, end, false);
 }
 
+/// Clear the 4 KiB user leaves of `[start, end)` of `pt_phys`, freeing no frame
+/// and shooting nothing down: the caller does ([`shootdown_user_range`]) before
+/// a frame they named is read, reused or freed. Whether a leaf went. The take
+/// of a shared object's page clears with the object table held and shoots down
+/// after it drops it (`memobj::memobj_swap_take`); such a mapping has no block.
+pub fn clear_user_leaves_unflushed(pt_phys: usize, start: usize, end: usize) -> bool {
+    let mut cleared = false;
+    let mut va = start & !(PAGE_SIZE - 1);
+    while va < end {
+        cleared |= take_user_leaf(pt_phys, va, false).is_some();
+        va += PAGE_SIZE;
+    }
+    cleared
+}
+
+/// Shoot `[va, va + len)` of the table rooted at `root` down on every hart that
+/// may hold it, then wait out the user-copy sections that may have walked it:
+/// the second half of [`clear_user_leaves_unflushed`].
+pub fn shootdown_user_range(root: usize, va: usize, len: usize) {
+    let _ = user_shootdown(root, va, len);
+}
+
 fn unmap_user_range(pt_phys: usize, start: usize, end: usize, free: bool) -> u32 {
     // Promoted blocks (Kconfig `MM_THP_RESV`) first: a whole one is freed
     // here, a partly covered one is split for the loop below. A locked row's

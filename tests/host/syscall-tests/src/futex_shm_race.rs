@@ -105,7 +105,7 @@ fn race<T: Send + 'static>(access: fn() -> T) -> Outcome<T> {
     let frame = memobj_page_phys_ref(r, 0).expect("live").expect("a frame");
     let word = azos_mm::addr::phys_to_virt(frame) as *mut u32;
     unsafe { word.write_volatile(MINE) };
-    assert_eq!(memobj_note_mapping_ref(TID, r, pt, VA, 1, MapAccess::RW), Ok(true));
+    assert_eq!(memobj_note_mapping_ref(TID, r, azos_sched::shim_space(pt), VA, 1, MapAccess::RW), Ok(true));
     azos_mm::vmm::map(pt, VA, frame, PagePerms::USER_RW).expect("map");
 
     STAGE.store(0, SeqCst);

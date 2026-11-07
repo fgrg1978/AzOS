@@ -217,6 +217,14 @@ impl SpaceRef {
         &tag_obj(self.tag).stale_seen
     }
 
+    /// Is the object still this space? For a caller that only needs to know
+    /// whether the space ended since it read the reference (a take shooting a
+    /// page down after it dropped the object table).
+    #[inline]
+    pub fn live(self) -> bool {
+        self.lock().is_some()
+    }
+
     /// The space's records, or `None` when the object is no longer this space.
     #[inline]
     pub(crate) fn lock(self) -> Option<IrqSaveGuard<'static, Space>> {
