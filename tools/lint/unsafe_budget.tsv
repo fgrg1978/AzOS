@@ -70,7 +70,7 @@ crates/drivers/api	0	0	0	0	1	0
 crates/drivers/baro	0	0	0	0	1	0
 crates/drivers/base	0	0	0	0	1	0
 crates/drivers/block	84	6	1	0	0	91
-crates/drivers/bus	11	1	1	0	0	61
+crates/drivers/bus	11	1	1	0	0	60
 crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
@@ -170,4 +170,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	503
+@unsafe-share	502
