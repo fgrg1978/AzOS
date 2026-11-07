@@ -98,6 +98,10 @@ pub mod irq_bind;
 #[path = "../../../../../../crates/core/ipc/src/mmio_cap.rs"]
 pub mod mmio_cap;
 
+// `DEVICE_IOPORT_ENABLE`'s refusal record and the port-range grant, over the same bus.
+#[path = "../../../../../../crates/core/ipc/src/ioport_cap.rs"]
+pub mod ioport_cap;
+
 // `DEVICE_DMA_MAP`'s bindings, over the hardware bus above.
 #[path = "../../../../../../crates/core/ipc/src/dma_bind.rs"]
 pub mod dma_bind;

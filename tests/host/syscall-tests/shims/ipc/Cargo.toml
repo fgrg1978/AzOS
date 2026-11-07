@@ -97,6 +97,8 @@ azos_limits = { path = "../../../../../crates/core/limits" }
 # `dma_bind.rs`: the binding bookkeeping and the domain trait.
 azos_dma = { path = "../../../../../crates/drivers/dma" }
 azos_decision = { path = "../../../../../crates/core/decision" }
+# `ioport_cap.rs`: the ISA's port space.
+azos_arch_api = { path = "../../../../../arch/api" }
 wcet-macro = { path = "../../../../../crates/core/wcet-macro" }
 # Reused host stand-ins, same reasons as everywhere else in this crate.
 azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
