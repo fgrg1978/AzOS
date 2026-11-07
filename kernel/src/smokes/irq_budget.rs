@@ -335,8 +335,14 @@ fn msi_scenario(tid: u32, port: u32) -> Result<(), &'static str> {
                 && e.source_type == azos_abi::syscall_nr::PORT_EVENT_IRQ => {}
             _ => return Err("the MSI event does not carry the slot and the key"),
         }
-        // Unbound, the vector is kept for its slot: the slot's next bind takes it again.
+        // Unbound, the vector is kept for its slot: a delivery to it is counted
+        // as a stray, and the slot's next bind takes it again.
         irq_bind::irq_unbind_all(tid);
+        let strays = irq_bind::irq_msi_stray();
+        if !azos_arch::irq::apic::send_ipi(cpu as usize, msi.id as u8) {
+            return Err("the self IPI was not sent");
+        }
+        crate::ktest::wait("the delivery of a kept vector was not counted", || irq_bind::irq_msi_stray() != strays)?;
         let again = irq_bind::irq_bind_port(SLOT, tid, port, 1, Route::Cpu(cpu)).map(|b| b.msi.map(|m| m.id));
         if again != Ok(Some(msi.id)) {
             return Err("the slot's vector was not kept when the binding went");
