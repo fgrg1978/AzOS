@@ -731,6 +731,17 @@ fn zpool_release(space: usize, va: usize, gen: u32) {
     with_pool(|p| p.remove_if(obj, pg, gen));
 }
 
+/// Host suites only: the pool starts empty again. A test's arena is given back
+/// whole between tests (`shim_reset`), frames of the pool's retained segment
+/// with it, so the pool must not keep a pointer into them.
+#[cfg(not(target_os = "none"))]
+pub fn shim_forget_pool() {
+    let mut p = ZPOOL.lock();
+    // The segment's frames are the arena's again: nothing to give back.
+    core::mem::forget(core::mem::replace(&mut *p, KernelPool::new(PmmBacking)));
+    ZSTORED.store(0, Ordering::Relaxed);
+}
+
 /// Every page the pool holds for the container `container` goes (a shared
 /// object ended, [`memobj::pool_container`]).
 pub(crate) fn forget_object(container: u64) {

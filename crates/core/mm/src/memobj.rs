@@ -4769,14 +4769,14 @@ mod tests {
             for off in [p * page, p * page + page / 2 + 4, p * page + page - 4] {
                 tag += 1;
                 assert_eq!(memobj_resolve_mapped(A, VA + off), Some((r, off)));
-                assert_eq!(memobj_with_mapped_word(A, VA + off, true, |_, _, w| w.store(tag, Ordering::Release)), Some(()));
+                assert_eq!(memobj_with_mapped_word(A, VA + off, true, |_, _, w| w.store(tag, Ordering::Release)), Ok(Some(())));
                 let v = memobj_with_word_ref(r, off, |word| word.load(Ordering::Acquire));
                 assert_eq!(v, Ok(Some(tag)), "offset {off:#x}: the notify word is not the mapped word");
             }
         }
         assert_eq!(memobj_with_word_ref(r, PAGES * page, |w| w.load(Ordering::Acquire)), Ok(None));
         assert_eq!(memobj_resolve_mapped(A, VA + PAGES * page), None);
-        assert_eq!(memobj_with_mapped_word(A, VA + PAGES * page, false, |_, _, w| w.load(Ordering::Acquire)), None);
+        assert_eq!(memobj_with_mapped_word(A, VA + PAGES * page, false, |_, _, w| w.load(Ordering::Acquire)), Ok(None));
     }
 
     /// **A mapping that starts inside the object is found from its own page.**
@@ -5300,8 +5300,8 @@ mod tests {
     fn a_mapped_word_is_written_only_through_a_writable_mapping() {
         let _g = setup();
         const VA: usize = 0x4000_0000;
-        let store = |va: usize| memobj_with_mapped_word(A, va, true, |_, _, w| w.store(7, Ordering::Release));
-        let load = |va: usize| memobj_with_mapped_word(A, va, false, |_, _, w| w.load(Ordering::Acquire));
+        let store = |va: usize| memobj_with_mapped_word(A, va, true, |_, _, w| w.store(7, Ordering::Release)).ok().flatten();
+        let load = |va: usize| memobj_with_mapped_word(A, va, false, |_, _, w| w.load(Ordering::Acquire)).ok().flatten();
 
         let rw = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
         assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RO), Ok(true));
@@ -6763,7 +6763,7 @@ mod tests {
         assert_eq!(memobj_resolve_mapped(A, VA + page + 16), Some((r, page + 16)));
         assert_eq!(
             memobj_with_mapped_word(A, VA + page + 16, false, |_, _, w| w as *const AtomicU32 as usize),
-            Some(azos_mm::addr::phys_to_virt(p1 + 16)),
+            Ok(Some(azos_mm::addr::phys_to_virt(p1 + 16))),
             "the mapping resolves to the same frame"
         );
         assert!(cached(r, 1).iter().enumerate().all(|(p, &b)| b == fbyte(base + page + p)));

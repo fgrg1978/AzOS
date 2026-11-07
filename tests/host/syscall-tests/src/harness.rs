@@ -88,6 +88,7 @@ pub fn reset_state() {
     azos_sched::shim_forget_all_spaces();
     azos_sched::shim_reset();
     azos_mm::shim_reset();
+    azos_mm::pager::shim_forget_pool();
     azos_ipc::memobj::install_host();
     // The page was a frame of the arena just rebuilt: it is free again.
     azos_mm::vdso::shim_forget_page();

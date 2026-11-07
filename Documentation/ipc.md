@@ -188,7 +188,7 @@ back when the last reference goes.
 |---|---|
 | 1..0 | access mode: 0 read-only, 1 read-write |
 | 15..8 | kind: `SHM_KIND_ANON` (0) or `SHM_KIND_CONTIG` (2); `Paged` is the kernel's. A `Contig` object takes no `SHM_ATTR_SWAPPABLE`, no `SHM_ATTR_VOLATILE` and no clone, and fails with `-ENOMEM` when no run of that length is free |
-| 23..16 | attributes: `SHM_ATTR_SWAPPABLE` (1), `SHM_ATTR_NO_KERNEL_MAP` (2); `SHM_ATTR_VOLATILE` (4, `Anon` only): the owner may make the object droppable under memory pressure (`MemCtl`, see [memory.md](memory.md)) |
+| 23..16 | attributes: `SHM_ATTR_SWAPPABLE` (1, `Anon` only, not with `SHM_ATTR_VOLATILE`): the owner's Domain may compress and swap the object's pages under pressure and any mapper's fault brings them back, but the kernel does not read the object by address (see [memory.md](memory.md), *Swappable objects*); `SHM_ATTR_NO_KERNEL_MAP` (2); `SHM_ATTR_VOLATILE` (4, `Anon` only): the owner may make the object droppable under memory pressure (`MemCtl`, see [memory.md](memory.md)) |
 | 24 | `SHM_CREATE_CLONE`: copy-on-write snapshot of the object the capability in bits 63..32 names (`READ`); `a0` is then 0 or the source's page count |
 | 63..32 | the source capability when bit 24 is set, else 0 |
 
