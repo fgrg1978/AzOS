@@ -441,8 +441,8 @@ Source: `userspace/services/logd/src/main.rs`, `userspace/services/logd/src/stor
 `kernel/src/boot/klog_region.rs`, `crates/core/records/src/lib.rs`,
 `crates/core/rings/src/region/record.rs`, `userspace/services/toolbox/src/log_view.rs`.
 
-The sink of the kernel's records (Kconfig `KLOG`): the structured kernel log and the
-decision records, rings of one region behind one envelope (the substrate and its protocol
+The sink of the kernel's records (Kconfig `KLOG`): the structured kernel log, the
+decision records and the actuation telemetry, rings of one region behind one envelope (the substrate and its protocol
 are in [observability](observability.md#kernel-log)). Its row is its whole authority: `MemObj
 klog.ring` (`READ|MAP`, so it can neither write the region nor hand it on), the `/fat` tree
 its files are written in, and the read-only root directory they are opened beneath. It
@@ -453,15 +453,17 @@ hands them out oldest first, drops kernel log lines above `LOGD_MAX_LEVEL`, and 
 rest as text lines (`seq ts_us cpu L module message`, the message escaped so a record is one
 line; a decision record is module `@decision`, `id=I rule=R verdict=V subject=S n=A,B,C`,
 `I` the id `why` takes; only refusals and denials unless `LOGD_DECISIONS_ALL`, and at most
-`LOGD_DECISIONS_PER_SEC` a second, the rest counted on one `records held back` line) to the
+`LOGD_DECISIONS_PER_SEC` a second, the rest counted on one `records held back` line; an
+actuation telemetry event is module `@telemetry`, `kind=K flags=F payload=<hex>`, at most
+`LOGD_TELEMETRY_PER_SEC` a second of each kind, none when it is 0) to the
 open file of a ring of
 `KLOGn.TXT`: one append and one `fsync` per period, never one per line. A file that would
 pass `LOGD_FILE_KB` is followed by the next of `LOGD_FILES_KEEP`, which is truncated, so
 the log takes at most `LOGD_FILES_KEEP x LOGD_FILE_KB` of the volume. Each file opens
 with a line `file N`, N one more than the file before it: the sequence numbers start
 again at every boot, so the serial is what orders the files. After a restart it resumes
-every ring after its own last line (in the newest file, or the one before it when a source
-has none there yet) when the kernel log's ring still holds the newest file's last kernel log
+every ring after its own last line (in the newest file, or the last older one that has a line
+of the source) when the kernel log's ring still holds the newest file's last kernel log
 record byte for byte, and from each ring's oldest record otherwise (a new
 boot). A write the volume refuses leaves the reader where it was, so the next period offers
 the same records again; a burst that laps a ring between two polls is written as a
