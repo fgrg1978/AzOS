@@ -11,14 +11,13 @@
 //! while it comes up, and a secondary does so after the lock. Canary
 //! `hyp-pin-off-canary`: the call succeeds and arms nothing.
 
-use super::ptcheck::{write_allowed, Vm};
+use super::ptcheck::{affinity, extensions, write_allowed, Extensions, Locked, PinTable, Vm};
 use super::sysreg::*;
 use crate::state::HYP;
 use azos_hyp_api::{Kind, DENIED, INV_PINNED, OK, PIN_FGT, PIN_TVM};
-use core::sync::atomic::{AtomicU64, Ordering};
 
-/// PEs that have pinned, one bit per `MPIDR_EL1.Aff0`.
-static PINNED: AtomicU64 = AtomicU64::new(0);
+/// The PEs that have pinned, by full affinity (a core off or powered down leaves it).
+static PINNED: PinTable<{ super::MAX_PES }> = PinTable::new();
 
 fn mmfr0() -> u64 {
     let v: u64;
@@ -26,15 +25,30 @@ fn mmfr0() -> u64 {
     v
 }
 
+fn mpidr() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) v) };
+    v
+}
+
 fn pe() -> u32 {
-    let mpidr: u64;
-    unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) mpidr) };
-    (mpidr & 0xff) as u32
+    (mpidr() & 0xff) as u32
+}
+
+/// `ID_AA64MMFR1_EL1` and `ID_AA64MMFR3_EL1`.
+///
+/// # Safety
+/// Reads ID registers.
+pub unsafe fn id_mmfr1_mmfr3() -> (u64, u64) {
+    let (a, b): (u64, u64);
+    unsafe { core::arch::asm!("mrs {}, ID_AA64MMFR1_EL1", "mrs {}, S3_0_C0_C7_3", out(reg) a, out(reg) b) };
+    (a, b)
 }
 
 /// Per PE, before EL1 runs: no fine-grained trap armed (`fgt_open`). Registers
 /// named by encoding: `HFGRTR`, `HFGWTR`, `HFGITR`, `HDFGRTR`, `HDFGWTR`.
 pub fn init_pe() {
+    hold_translation_extensions();
     if !has_fgt(mmfr0()) {
         return;
     }
@@ -62,17 +76,36 @@ pub fn init_pe() {
     }
 }
 
-/// Has this PE called `pin`?
-pub fn this_pe_pinned() -> bool {
-    PINNED.load(Ordering::Acquire) & (1u64 << (pe() & 63)) != 0
+/// `TCR2_EL1` and `PIR_EL1` change what a checked descriptor means (the indirect
+/// permissions), and the monitor checks the direct bits. Where the CPU has them
+/// the monitor zeroes `TCR2_EL1` (indirection off) and clears the `HCRX_EL2`
+/// enables, so any EL1 access to them traps and is recorded as unexpected, never
+/// carried out. Without `HCRX_EL2` to trap them the pool lock is refused.
+fn hold_translation_extensions() {
+    // SAFETY: ID registers.
+    let (mmfr1, mmfr3) = unsafe { id_mmfr1_mmfr3() };
+    if extensions(mmfr1, mmfr3) == Extensions::Trap {
+        // SAFETY: FEAT_HCX and FEAT_TCRX or FEAT_S1PIE are implemented (checked above); this PE's registers.
+        unsafe { core::arch::asm!("msr S3_4_C1_C2_2, xzr", "msr S3_0_C2_C0_3, xzr", "isb") };
+    }
 }
 
-/// This PE's `TTBR1_EL1` and `TCR_EL1`.
-pub fn walk_regs() -> (u64, u64) {
-    let (ttbr1, tcr): (u64, u64);
+/// Has this PE called `pin`?
+pub fn this_pe_pinned() -> bool {
+    PINNED.contains(affinity(mpidr()))
+}
+
+/// This PE is going off or down: it enters again through the monitor and pins again.
+pub fn unpin_this_pe() {
+    PINNED.remove(affinity(mpidr()));
+}
+
+/// This PE's `TTBR1_EL1`, `TCR_EL1` and `SCTLR_EL1`.
+pub fn walk_regs() -> Locked {
+    let (ttbr1, tcr, sctlr): (u64, u64, u64);
     // SAFETY: reads of this PE's EL1 registers.
-    unsafe { core::arch::asm!("mrs {}, TTBR1_EL1", "mrs {}, TCR_EL1", out(reg) ttbr1, out(reg) tcr) };
-    (ttbr1, tcr)
+    unsafe { core::arch::asm!("mrs {}, TTBR1_EL1", "mrs {}, TCR_EL1", "mrs {}, SCTLR_EL1", out(reg) ttbr1, out(reg) tcr, out(reg) sctlr) };
+    Locked { ttbr1, tcr, sctlr }
 }
 
 /// Trap this PE's EL1 writes to `fgt_bits` of `HFGWTR_EL2` (FEAT_FGT), or, without
@@ -115,8 +148,8 @@ pub fn pin() -> (i64, u64, u64) {
         return (DENIED, 0, 0);
     }
     if super::pt::pe_error().is_some() {
-        let (ttbr1, tcr) = walk_regs();
-        crate::record(Kind::CallRefused, pe(), azos_hyp_api::CALL_PIN, ttbr1, tcr);
+        let live = walk_regs();
+        crate::record(Kind::CallRefused, pe(), azos_hyp_api::CALL_PIN, live.ttbr1, live.tcr);
         HYP.clear_invariant(azos_hyp_api::INV_KERNEL_TABLES);
         loop {
             // SAFETY: parks this PE.
@@ -126,10 +159,10 @@ pub fn pin() -> (i64, u64, u64) {
     let fgt = has_fgt(mmfr0());
     if !cfg!(feature = "hyp-pin-off-canary") {
         arm(fgt, HFGWTR_PIN);
-        PINNED.fetch_or(1u64 << (pe() & 63), Ordering::AcqRel);
+        PINNED.insert(affinity(mpidr()));
         HYP.set_invariant(INV_PINNED);
     }
-    (OK, if fgt { PIN_FGT } else { PIN_TVM }, PINNED.load(Ordering::Acquire).count_ones() as u64)
+    (OK, if fgt { PIN_FGT } else { PIN_TVM }, PINNED.count())
 }
 
 macro_rules! write_reg {
@@ -155,7 +188,7 @@ pub fn trap(regs: *mut u64, esr: u64) {
                 _ => None,
             };
             // A refused register is carried out only when the pool is locked and the value is the locked one.
-            let carry = !refused(r) || vm.is_some_and(|vm| write_allowed(vm, v, this_pe_pinned(), super::pt::locked_regs()));
+            let carry = !refused(r) || vm.is_some_and(|vm| write_allowed(vm, v, super::pt::locked_regs()));
             if !carry {
                 crate::record(Kind::SysregRefused, pe(), esr, encoding(t), v);
             } else {

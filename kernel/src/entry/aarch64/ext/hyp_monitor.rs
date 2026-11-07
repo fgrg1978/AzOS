@@ -478,7 +478,8 @@ fn lock_pt_pool() {
         azos_mm::ptpool::arm();
         kprintln!("[BOOT] EL2:        kernel-half tables locked ({} of {} pool pages used)", used, pages);
     } else {
-        kprintln!("[BOOT] EL2:        kernel-half table lock refused ({})", r[0] as i64);
+        let why = if r[0] as i64 == azos_hyp_api::NOT_SUPPORTED { ": the CPU has TCR2/PIR (FEAT_TCRX, S1PIE or S1POE) and no HCRX_EL2 to trap them" } else { "" };
+        kprintln!("[BOOT] EL2:        kernel-half table lock refused ({}){}", r[0] as i64, why);
     }
 }
 
@@ -590,11 +591,11 @@ fn pin_probe() {
         kprintln!("[HYP] PROBE FAILED: boot wrote a pinned register after the pin ({} refused)", before);
         return;
     }
-    // TCR_EL1.SH1 (a walk field, so refused with the pool locked) and SCTLR_EL1.UCT: nothing the kernel runs on depends on either.
+    // TCR_EL1.SH1 (a walk field) and SCTLR_EL1.WXN (a fixed bit), both refused with the pool locked: the kernel has no writable-executable page for either to matter.
     let (tcr, sctlr) = (read_tcr_el1(), read_sctlr_el1());
     write_tcr_el1(tcr ^ (1 << 28));
     let tcr_kept = read_tcr_el1() == tcr;
-    write_sctlr_el1(sctlr ^ (1 << 15));
+    write_sctlr_el1(sctlr ^ (1 << 19));
     let sctlr_kept = read_sctlr_el1() == sctlr;
     if !tcr_kept {
         write_tcr_el1(tcr);

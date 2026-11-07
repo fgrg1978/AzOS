@@ -21,6 +21,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // PSCI / SMCCC function ids (the 32- and 64-bit forms the kernel issues).
 const PSCI_VERSION: u64 = 0x8400_0000;
 const PSCI_CPU_OFF: u64 = 0x8400_0002;
+/// `power_state.StateType` (bit 16) of `CPU_SUSPEND`: a power-down state.
+const POWER_DOWN: u64 = 1 << 16;
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
 const PSCI_AFFINITY_INFO_64: u64 = 0xC400_0004;
 const PSCI_CPU_SUSPEND_64: u64 = 0xC400_0001;
@@ -92,7 +94,17 @@ fn dispatch(regs: *mut u64, _trapped_smc: bool) {
     let id = reg(regs, 0);
     match id {
         PSCI_CPU_ON_64 => cpu_on(regs),
-        PSCI_CPU_SUSPEND_64 | PSCI_SYSTEM_SUSPEND_64 => suspend(regs),
+        PSCI_CPU_SUSPEND_64 | PSCI_SYSTEM_SUSPEND_64 => {
+            // A power-down loses the core's state and brings it back through the entry: it pins again.
+            if id == PSCI_SYSTEM_SUSPEND_64 || reg(regs, 1) & POWER_DOWN != 0 {
+                super::pin::unpin_this_pe();
+            }
+            suspend(regs)
+        }
+        PSCI_CPU_OFF => {
+            super::pin::unpin_this_pe();
+            forward(regs)
+        }
         _ if allowed(id) => forward(regs),
         _ => {
             crate::record(Kind::CallRefused, this_pe(), id, id, 0);
@@ -176,6 +188,7 @@ fn secondary_entry_pa() -> u64 {
 pub extern "C" fn hyp_secondary_resume(idx: u64) -> u64 {
     let i = (idx as usize).min(super::MAX_PES - 1);
     // Before the core runs the kernel: the locked kernel-half registers, writes to them trapped.
+    super::pin::unpin_this_pe();
     super::pt::enter_pe();
     // The stub reads x0 back from here as the kernel entry; context is placed
     // into the saved frame by the stub.

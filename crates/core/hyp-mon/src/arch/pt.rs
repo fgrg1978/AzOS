@@ -13,7 +13,7 @@ use super::ptcheck::*;
 use super::s2;
 use crate::state::HYP;
 use azos_hyp_api::{
-    pt_entry_error, pt_pool_error, DENIED, INVALID, INV_KERNEL_TABLES, OK, PT_POOL_PAGES_MAX, RACED,
+    pt_entry_error, pt_pool_error, DENIED, INVALID, INV_KERNEL_TABLES, NOT_SUPPORTED, OK, PT_POOL_PAGES_MAX, RACED,
 };
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
@@ -28,6 +28,7 @@ static READY: AtomicU64 = AtomicU64::new(0);
 /// under, which every PE that pins afterwards must have.
 static LOCKED_TTBR1: AtomicU64 = AtomicU64::new(0);
 static LOCKED_TCR: AtomicU64 = AtomicU64::new(0);
+static LOCKED_SCTLR: AtomicU64 = AtomicU64::new(0);
 static TAGS: [AtomicU8; PT_POOL_PAGES_MAX as usize] = [const { AtomicU8::new(0) }; PT_POOL_PAGES_MAX as usize];
 
 fn page_index(pa: u64, base: u64, shift: u32) -> usize {
@@ -87,17 +88,19 @@ fn unreached_not_empty(base: u64, pages: u64, shift: u32) -> bool {
     })
 }
 
-/// The `TTBR1_EL1` and `TCR_EL1` the pool was locked under, once it is locked.
-pub fn locked_regs() -> Option<(u64, u64)> {
-    (READY.load(Ordering::Acquire) != 0).then(|| (LOCKED_TTBR1.load(Ordering::Relaxed), LOCKED_TCR.load(Ordering::Relaxed)))
+/// The registers the pool was locked under, once it is locked.
+pub fn locked_regs() -> Option<Locked> {
+    (READY.load(Ordering::Acquire) != 0).then(|| Locked {
+        ttbr1: LOCKED_TTBR1.load(Ordering::Relaxed),
+        tcr: LOCKED_TCR.load(Ordering::Relaxed),
+        sctlr: LOCKED_SCTLR.load(Ordering::Relaxed),
+    })
 }
 
 /// Why this PE may not run the kernel half: after the pool lock, its
-/// `TTBR1_EL1` and `TCR_EL1` must be the locked ones.
+/// `TTBR1_EL1`, `TCR_EL1` and `SCTLR_EL1` must be the locked ones.
 pub fn pe_error() -> Option<&'static str> {
-    let (root, tcr) = locked_regs()?;
-    let (live_ttbr1, live_tcr) = pin::walk_regs();
-    pe_regs_error(live_ttbr1, live_tcr, root & TTBR1_BADDR, tcr)
+    pe_regs_error(pin::walk_regs(), locked_regs()?)
 }
 
 /// A core entering EL1 at the secondary or resume entry, after the pool lock:
@@ -124,8 +127,11 @@ pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
     {
         return INVALID;
     }
-    let (ttbr1, tcr) = pin::walk_regs();
-    if lock_regs_error(pin::this_pe_pinned(), ttbr1, root_pa).is_some() { return INVALID; }
+    let live = pin::walk_regs();
+    if lock_regs_error(pin::this_pe_pinned(), live.ttbr1, root_pa).is_some() { return INVALID; }
+    // SAFETY: ID registers.
+    let (mmfr1, mmfr3) = unsafe { pin::id_mmfr1_mmfr3() };
+    if extensions(mmfr1, mmfr3) == Extensions::Unenforceable { return NOT_SUPPORTED; }
     let (shift, end) = (shift as u32, pool_pa + (pages << shift));
     if scan(root_pa, LEVELS - 1, pool_pa, end, shift, &image).is_err() { return INVALID; }
     if unreached_not_empty(pool_pa, pages, shift) { return INVALID; }
@@ -141,8 +147,9 @@ pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
     POOL[0].store(pool_pa, Ordering::Relaxed);
     POOL[1].store(end, Ordering::Relaxed);
     SHIFT.store(shift as u64, Ordering::Relaxed);
-    LOCKED_TTBR1.store(ttbr1, Ordering::Relaxed);
-    LOCKED_TCR.store(tcr, Ordering::Relaxed);
+    LOCKED_TTBR1.store(live.ttbr1, Ordering::Relaxed);
+    LOCKED_TCR.store(live.tcr, Ordering::Relaxed);
+    LOCKED_SCTLR.store(live.sctlr, Ordering::Relaxed);
     READY.store(1, Ordering::Release);
     if !cfg!(feature = "hyp-pt-pool-open-canary") && !cfg!(feature = "hyp-pt-check-skip-canary") {
         HYP.set_invariant(INV_KERNEL_TABLES);

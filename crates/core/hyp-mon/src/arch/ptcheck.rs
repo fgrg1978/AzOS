@@ -13,6 +13,7 @@
 #[allow(dead_code)] // reason: shared by source with the kernel's page-table code, which uses the rest
 pub mod pte_fmt;
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use pte_fmt::*;
 
 /// A pool page's tag: set once the page has a level, `TAG_IMAGE` when it maps,
@@ -182,10 +183,14 @@ pub fn image_error(read: impl Fn(u64) -> u64, root: u64, va: u64, pa: u64, len: 
 pub const TTBR1_BADDR: u64 = 0x0000_FFFF_FFFF_FFFE;
 const TTBR1_ASID: u64 = 0xFFFF << 48;
 /// The `TCR_EL1` fields that decide how a `TTBR1_EL1` walk reads the tables:
-/// T1SZ, IRGN1, ORGN1, SH1 and TG1. EPD1 (a boot step turns the half off), A1
+/// T1SZ, IRGN1, ORGN1, SH1, TG1 and DS. EPD1 (a boot step turns the half off), A1
 /// and the rest (HA, TBI, IPS) are not the monitor's to compare: with the root
 /// the monitor's, a half that is off or read by another ASID reaches nothing.
-pub const TCR_WALK: u64 = 0xFF3F_0000;
+pub const TCR_WALK: u64 = 0xFF3F_0000 | TCR_DS;
+/// `TCR_EL1.DS` (FEAT_LPA2): it changes how descriptor bits 9:8 are read.
+pub const TCR_DS: u64 = 1 << 59;
+/// `TCR_EL1.EPD1`: the upper half is off, whatever else the register says.
+pub const TCR_EPD1: u64 = 1 << 23;
 
 /// Why a PE's `TTBR1_EL1` is not the locked root.
 pub fn ttbr1_error(ttbr1: u64, root: u64) -> Option<&'static str> {
@@ -200,10 +205,33 @@ pub fn tcr_error(tcr: u64, locked: u64) -> Option<&'static str> {
     if (tcr ^ locked) & TCR_WALK != 0 { Some("TCR walks the kernel half differently") } else { None }
 }
 
-/// Why a core that is about to run the kernel may not: the pool is locked and its
-/// `TTBR1_EL1` or `TCR_EL1` are not the locked ones.
-pub fn pe_regs_error(ttbr1: u64, tcr: u64, root: u64, locked_tcr: u64) -> Option<&'static str> {
-    ttbr1_error(ttbr1, root).or_else(|| tcr_error(tcr, locked_tcr))
+/// `SCTLR_EL1.M`, and the bits that change how the walk reads the tables or what
+/// a leaf's permissions mean: E0E and EE (byte order) and WXN.
+const SCTLR_M: u64 = 1;
+pub const SCTLR_FIXED: u64 = 1 << 25 | 1 << 24 | 1 << 19;
+
+/// Why an `SCTLR_EL1` value is not one the kernel may run with: the MMU off, or
+/// a byte order or WXN other than the locked one's.
+pub fn sctlr_error(v: u64, locked: u64) -> Option<&'static str> {
+    if v & SCTLR_M == 0 { return Some("SCTLR turns the MMU off"); }
+    if (v ^ locked) & SCTLR_FIXED != 0 { return Some("SCTLR changes the byte order or WXN"); }
+    None
+}
+
+/// The registers the pool was locked under, from the calling core.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Locked {
+    pub ttbr1: u64,
+    pub tcr: u64,
+    pub sctlr: u64,
+}
+
+/// Why a core that is about to run the kernel may not: the pool is locked and
+/// its `TTBR1_EL1`, `TCR_EL1` or `SCTLR_EL1` are not the locked ones.
+pub fn pe_regs_error(live: Locked, locked: Locked) -> Option<&'static str> {
+    ttbr1_error(live.ttbr1, locked.ttbr1 & TTBR1_BADDR)
+        .or_else(|| tcr_error(live.tcr, locked.tcr))
+        .or_else(|| sctlr_error(live.sctlr, locked.sctlr))
 }
 
 /// Why `pt_lock_pool` is refused for the calling core: it has not pinned, or its
@@ -222,8 +250,8 @@ pub struct EntryPlan {
     pub tcr: u64,
 }
 
-pub fn entry_plan(locked: Option<(u64, u64)>) -> Option<EntryPlan> {
-    locked.map(|(ttbr1, tcr)| EntryPlan { ttbr1, tcr })
+pub fn entry_plan(locked: Option<Locked>) -> Option<EntryPlan> {
+    locked.map(|l| EntryPlan { ttbr1: l.ttbr1, tcr: l.tcr })
 }
 
 /// The registers whose EL1 writes are trapped once the pool is locked.
@@ -234,15 +262,83 @@ pub enum Vm {
     Ttbr1,
 }
 
+/// Why a `TCR_EL1` value may not be written: it reads the kernel half differently
+/// from the locked one while the half is on. A value with EPD1 set (the boot's
+/// identity-map form, T1 fields zero) turns the half off and reaches nothing.
+pub fn tcr_write_error(v: u64, locked: u64) -> Option<&'static str> {
+    if v & TCR_EPD1 != 0 { None } else { tcr_error(v, locked) }
+}
+
 /// May the monitor carry out a trapped EL1 write of `v` to `reg`? Before the pool
 /// is locked, no (the pin refuses them). After it: `TTBR1_EL1` only to the locked
-/// root, `TCR_EL1` only with the locked walk fields, `SCTLR_EL1` only on a core
-/// that has not pinned (the boot turns its MMU on); everything else is dropped.
-pub fn write_allowed(reg: Vm, v: u64, pinned: bool, locked: Option<(u64, u64)>) -> bool {
-    let Some((ttbr1, tcr)) = locked else { return false };
+/// root, `TCR_EL1` only with the locked walk fields or the half off, `SCTLR_EL1`
+/// only with the MMU on and the locked byte order and WXN, pinned or not; everything
+/// else is dropped.
+pub fn write_allowed(reg: Vm, v: u64, locked: Option<Locked>) -> bool {
+    let Some(l) = locked else { return false };
     match reg {
-        Vm::Ttbr1 => ttbr1_error(v, ttbr1 & TTBR1_BADDR).is_none(),
-        Vm::Tcr => tcr_error(v, tcr).is_none(),
-        Vm::Sctlr => !pinned,
+        Vm::Ttbr1 => ttbr1_error(v, l.ttbr1 & TTBR1_BADDR).is_none(),
+        Vm::Tcr => tcr_write_error(v, l.tcr).is_none(),
+        Vm::Sctlr => sctlr_error(v, l.sctlr).is_none(),
     }
+}
+
+/// The affinity that names a core: Aff3:Aff2:Aff1:Aff0 of `MPIDR_EL1`. Aff0 alone
+/// does not (a DynamIQ core's number is in Aff1 and every Aff0 is 0).
+pub const fn affinity(mpidr: u64) -> u64 {
+    mpidr & 0x0000_00FF_00FF_FFFF
+}
+
+/// The cores that have pinned, by affinity.
+pub struct PinTable<const N: usize>([AtomicU64; N]);
+
+impl<const N: usize> PinTable<N> {
+    pub const fn new() -> Self {
+        PinTable([const { AtomicU64::new(0) }; N])
+    }
+
+    /// The slot value of an affinity (never 0, which is empty).
+    const fn key(aff: u64) -> u64 {
+        aff | 1 << 63
+    }
+
+    pub fn contains(&self, aff: u64) -> bool {
+        self.0.iter().any(|s| s.load(Ordering::Acquire) == Self::key(aff))
+    }
+
+    /// Record a pinned core; false when the table is full.
+    pub fn insert(&self, aff: u64) -> bool {
+        if self.contains(aff) { return true; }
+        self.0.iter().any(|s| s.compare_exchange(0, Self::key(aff), Ordering::AcqRel, Ordering::Acquire).is_ok())
+    }
+
+    /// The core is off, or about to power down: it pins again when it is back.
+    pub fn remove(&self, aff: u64) {
+        for s in self.0.iter() {
+            let _ = s.compare_exchange(Self::key(aff), 0, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+
+    pub fn count(&self) -> u64 {
+        self.0.iter().filter(|s| s.load(Ordering::Acquire) != 0).count() as u64
+    }
+}
+
+/// What the CPU has that changes how a stage-1 descriptor or the walk is read and
+/// that the monitor does not check word by word.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Extensions {
+    /// None of `TCR2_EL1`, `PIR_EL1`: nothing to do.
+    None,
+    /// FEAT_TCRX or FEAT_S1PIE, with FEAT_HCX to trap them: `HCRX_EL2` is
+    /// programmed to trap EL1's accesses and `TCR2_EL1` is zeroed.
+    Trap,
+    /// FEAT_TCRX or FEAT_S1PIE without FEAT_HCX: no way to hold them, the lock is refused.
+    Unenforceable,
+}
+
+/// `ID_AA64MMFR1_EL1.HCX` (bits 43:40) and `ID_AA64MMFR3_EL1.TCRX` (3:0), `S1PIE` (11:8), `S1POE` (19:16).
+pub fn extensions(mmfr1: u64, mmfr3: u64) -> Extensions {
+    if mmfr3 & (0xf | 0xf << 8 | 0xf << 16) == 0 { return Extensions::None; }
+    if (mmfr1 >> 40) & 0xf != 0 { Extensions::Trap } else { Extensions::Unenforceable }
 }

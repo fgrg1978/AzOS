@@ -232,20 +232,37 @@ fn a_block_resolves_to_the_frame_at_its_offset() {
 }
 
 #[test]
-fn a_pe_runs_the_kernel_half_only_on_the_locked_root_and_walk() {
+fn a_pe_runs_the_kernel_half_only_on_the_locked_root() {
     assert_eq!(ttbr1_error(POOL, POOL), None);
     // CnP is not part of the root.
     assert_eq!(ttbr1_error(POOL | 1, POOL), None);
     assert_eq!(ttbr1_error(POOL + 0x1000, POOL), Some("TTBR1 is not the locked root"));
     assert_eq!(ttbr1_error(POOL | 1 << 48, POOL), Some("TTBR1 carries an ASID"));
-    let tcr = 25 << 16 | 2 << 30 | 3 << 28;
+}
+
+#[test]
+fn each_field_that_decides_how_the_half_is_walked_is_compared_and_no_other() {
+    let tcr = 25 << 16 | 2 << 30 | 3 << 28 | 1 << 24 | 1 << 26;
     assert_eq!(tcr_error(tcr, tcr), None);
-    // HA is a per-core feature, not a walk field.
-    assert_eq!(tcr_error(tcr | 1 << 39, tcr), None);
-    // The boot turns the half off (EPD1) and back on; that reaches nothing under the monitor's root.
-    assert_eq!(tcr_error(tcr | 1 << 23, tcr), None);
-    assert_eq!(tcr_error(tcr ^ 1 << 16, tcr), Some("TCR walks the kernel half differently"));
-    assert_eq!(tcr_error(tcr ^ 1 << 30, tcr), Some("TCR walks the kernel half differently"));
+    // One assert per field: T1SZ, IRGN1, ORGN1, SH1, TG1, DS.
+    for (name, bit) in [("T1SZ", 16), ("IRGN1", 24), ("ORGN1", 26), ("SH1", 28), ("TG1", 30), ("DS", 59)] {
+        assert_eq!(tcr_error(tcr ^ 1 << bit, tcr), Some("TCR walks the kernel half differently"), "{name}");
+    }
+    // HA, TBI1, IPS and A1 are not the monitor's to compare.
+    for bit in [39, 38, 32, 22] {
+        assert_eq!(tcr_error(tcr ^ 1 << bit, tcr), None, "bit {bit}");
+    }
+}
+
+#[test]
+fn a_tcr_with_the_half_off_is_the_boots_identity_map_form_and_is_written() {
+    let tcr = 25 << 16 | 2 << 30 | 3 << 28;
+    // T0 fields only, EPD1 set, the T1 fields zero: what every secondary's first write is.
+    let early = 25 | 1 << 23 | 2 << 14 | 3 << 12;
+    assert_eq!(tcr_write_error(early, tcr), None);
+    assert_eq!(tcr_error(early, tcr), Some("TCR walks the kernel half differently"), "the live register is not excused");
+    // With the half on, the locked fields are needed.
+    assert_eq!(tcr_write_error(early & !(1 << 23), tcr), Some("TCR walks the kernel half differently"));
 }
 
 #[test]
@@ -264,12 +281,16 @@ fn the_lock_refuses_a_block_over_the_image_and_a_pool_page_nothing_checked() {
 
 const ROOT_REG: u64 = POOL | 1;
 const LOCKED_TCR: u64 = 25 << 16 | 2 << 30 | 3 << 28 | 1 << 39;
+const LOCKED_SCTLR: u64 = 1 | 1 << 2 | 1 << 12;
+const LOCKED: Locked = Locked { ttbr1: ROOT_REG, tcr: LOCKED_TCR, sctlr: LOCKED_SCTLR };
 
 #[test]
 fn a_core_that_differs_from_the_locked_registers_is_found() {
-    assert_eq!(pe_regs_error(ROOT_REG, LOCKED_TCR, POOL, LOCKED_TCR), None);
-    assert_eq!(pe_regs_error(POOL + 0x1000, LOCKED_TCR, POOL, LOCKED_TCR), Some("TTBR1 is not the locked root"));
-    assert_eq!(pe_regs_error(ROOT_REG, LOCKED_TCR ^ 1 << 30, POOL, LOCKED_TCR), Some("TCR walks the kernel half differently"));
+    assert_eq!(pe_regs_error(LOCKED, LOCKED), None);
+    assert_eq!(pe_regs_error(Locked { ttbr1: POOL + 0x1000, ..LOCKED }, LOCKED), Some("TTBR1 is not the locked root"));
+    assert_eq!(pe_regs_error(Locked { tcr: LOCKED_TCR ^ 1 << 30, ..LOCKED }, LOCKED), Some("TCR walks the kernel half differently"));
+    assert_eq!(pe_regs_error(Locked { sctlr: LOCKED_SCTLR & !1, ..LOCKED }, LOCKED), Some("SCTLR turns the MMU off"));
+    assert_eq!(pe_regs_error(Locked { sctlr: LOCKED_SCTLR | 1 << 25, ..LOCKED }, LOCKED), Some("SCTLR changes the byte order or WXN"));
 }
 
 #[test]
@@ -283,25 +304,70 @@ fn the_lock_wants_a_pinned_core_on_the_root_it_names() {
 #[test]
 fn a_core_enters_on_the_locked_registers_once_the_pool_is_locked_and_not_before() {
     assert_eq!(entry_plan(None), None);
-    assert_eq!(entry_plan(Some((ROOT_REG, LOCKED_TCR))), Some(EntryPlan { ttbr1: ROOT_REG, tcr: LOCKED_TCR }));
+    assert_eq!(entry_plan(Some(LOCKED)), Some(EntryPlan { ttbr1: ROOT_REG, tcr: LOCKED_TCR }));
 }
 
 #[test]
 fn a_trapped_write_to_the_walk_registers_is_carried_out_only_when_it_is_the_locked_one() {
-    let locked = Some((ROOT_REG, LOCKED_TCR));
+    let locked = Some(LOCKED);
     // Before the lock none is.
     for r in [Vm::Sctlr, Vm::Tcr, Vm::Ttbr1] {
-        assert!(!write_allowed(r, 0, false, None));
+        assert!(!write_allowed(r, LOCKED_SCTLR, None));
     }
-    // The locked root, with or without CnP, and nothing else.
-    assert!(write_allowed(Vm::Ttbr1, POOL, true, locked));
-    assert!(write_allowed(Vm::Ttbr1, ROOT_REG, true, locked));
-    assert!(!write_allowed(Vm::Ttbr1, 0x9000_0000, false, locked), "a forged root");
-    assert!(!write_allowed(Vm::Ttbr1, POOL | 1 << 48, false, locked), "an ASID");
-    // The locked walk fields, whatever else the boot sets.
-    assert!(write_allowed(Vm::Tcr, LOCKED_TCR | 1 << 23 | 1 << 37, true, locked));
-    assert!(!write_allowed(Vm::Tcr, LOCKED_TCR ^ 1 << 16, false, locked), "another T1SZ");
-    // The MMU is turned on by a core that has not pinned, and by none that has.
-    assert!(write_allowed(Vm::Sctlr, 1, false, locked));
-    assert!(!write_allowed(Vm::Sctlr, 1, true, locked));
+    assert!(write_allowed(Vm::Ttbr1, POOL, locked));
+    assert!(write_allowed(Vm::Ttbr1, ROOT_REG, locked));
+    assert!(!write_allowed(Vm::Ttbr1, 0x9000_0000, locked), "a forged root");
+    assert!(!write_allowed(Vm::Ttbr1, POOL | 1 << 48, locked), "an ASID");
+    assert!(write_allowed(Vm::Tcr, LOCKED_TCR | 1 << 37, locked));
+    assert!(!write_allowed(Vm::Tcr, LOCKED_TCR ^ 1 << 16, locked), "another T1SZ");
+    // The MMU is turned on with the locked byte order, by a core pinned or not; never off.
+    assert!(write_allowed(Vm::Sctlr, LOCKED_SCTLR | 1 << 15, locked));
+    assert!(!write_allowed(Vm::Sctlr, LOCKED_SCTLR & !1, locked), "MMU off");
+    assert!(!write_allowed(Vm::Sctlr, LOCKED_SCTLR | 1 << 25, locked), "EE");
+    assert!(!write_allowed(Vm::Sctlr, LOCKED_SCTLR | 1 << 24, locked), "E0E");
+    assert!(!write_allowed(Vm::Sctlr, LOCKED_SCTLR | 1 << 19, locked), "WXN");
+}
+
+/// MPIDR of a Cortex-A76 in a DynamIQ cluster: the core number is in Aff1, Aff0 is 0, MT is set.
+fn a76(core: u64) -> u64 {
+    1 << 31 | 1 << 24 | core << 8
+}
+
+#[test]
+fn cores_whose_aff0_is_zero_are_told_apart() {
+    let t: PinTable<8> = PinTable::new();
+    assert!(t.insert(affinity(a76(0))));
+    assert!(!t.contains(affinity(a76(1))), "core 1 is not pinned because core 0 is");
+    assert!(t.insert(affinity(a76(1))) && t.insert(affinity(a76(2))) && t.insert(affinity(a76(3))));
+    assert_eq!(t.count(), 4);
+    assert!(t.contains(affinity(a76(2))));
+    // Aff2 and Aff3 count as well.
+    assert!(!t.contains(affinity(a76(0) | 1 << 16)) && !t.contains(affinity(a76(0) | 1 << 32)));
+    // Core 0 (affinity 0) is a core: its slot is not "empty".
+    assert!(t.contains(affinity(0)));
+}
+
+#[test]
+fn a_core_that_goes_off_pins_again_when_it_is_back() {
+    let t: PinTable<8> = PinTable::new();
+    for c in 0..4 { assert!(t.insert(affinity(a76(c)))); }
+    t.remove(affinity(a76(2)));
+    assert!(!t.contains(affinity(a76(2))));
+    assert!(t.contains(affinity(a76(1))) && t.contains(affinity(a76(3))));
+    assert_eq!(t.count(), 3);
+    assert!(t.insert(affinity(a76(2))) && t.contains(affinity(a76(2))));
+    // The table holds as many cores as the monitor has stacks, and says so when it is full.
+    let full: PinTable<2> = PinTable::new();
+    assert!(full.insert(1) && full.insert(2) && !full.insert(3));
+}
+
+#[test]
+fn the_extensions_that_reread_a_descriptor_are_trapped_or_the_lock_is_refused() {
+    let hcx = 1 << 40;
+    assert_eq!(extensions(0, 0), Extensions::None);
+    assert_eq!(extensions(hcx, 0), Extensions::None, "HCX alone changes nothing");
+    for mmfr3 in [1, 1 << 8, 1 << 16] {
+        assert_eq!(extensions(hcx, mmfr3), Extensions::Trap);
+        assert_eq!(extensions(0, mmfr3), Extensions::Unenforceable);
+    }
 }

@@ -63,7 +63,10 @@ choice
         depends on ARCH_HAS_HYP_MONITOR && !BOARD_VF2
         help
           A small resident monitor owns the virtualization extension and the
-          kernel runs as its first guest. Not selectable until an ISA
+          kernel runs as its first guest. On a CPU without FEAT_FGT (v8.6; neither
+          the Pi 3 nor the Pi 5 has it) every write to TTBR0_EL1 traps to the
+          monitor, a cost on each address-space switch: hosted is the default for
+          that reason, and the R9 cost row measures it. Not selectable until an ISA
           provides ARCH_HAS_HYP_MONITOR: no ISA does yet, so the role is
           refused everywhere rather than run as hosted under another name.
 
