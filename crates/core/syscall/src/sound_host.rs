@@ -57,11 +57,12 @@
 //!   lends the device is each client's own request; its class is not consulted.
 //!   A warrant the caller does not hold is refused with the reason
 //!   `MIC_NO_REQUEST`, recorded against the caller.
-//! * **The `mic` effect** is withheld from a task whose scheduler class has an
-//!   `[envelope.NAME]` row with `kind = "mic"` and ceiling `contained`; a class
-//!   with no such row has it. The class is the one of the topology row the task
-//!   was seeded from (`natfork::row_of`); with a topology installed, a task with
-//!   no row has no class, so no grant.
+//! * **The `mic` effect** is granted only to a task whose scheduler class has an
+//!   `[envelope.NAME]` row with `kind = "mic"` at a level other than `contained`
+//!   (default-deny, `crate::effect`); a class
+//!   with no such row, or a build with no topology, does not have it. The class is the one of the topology row the task
+//!   was seeded from (`natfork::row_of`); a task with no row has no class,
+//!   so no grant.
 //! * **The indicator** that tells the person a microphone is live is a line on
 //!   the kernel console (`[AUDIO] microphone LIVE`, naming the requester) written
 //!   before the device is asked and again when the stream ends. The console is
@@ -151,10 +152,16 @@ fn code_of(e: dev::Error) -> u32 {
 
 // ── the microphone ───────────────────────────────────────────────────────
 
-/// The envelope rule: a class has the `mic` effect unless an `[envelope.NAME]`
-/// row of kind `mic` for the class caps it at `contained`.
+/// The envelope rule: a class has the `mic` effect only when an `[envelope.NAME]`
+/// row of kind `mic` names it at a level other than `contained`.
 pub fn mic_admitted(envelopes: &[azos_topology::EnvelopeSpec<'_>], class: &azos_topology::MaybeStr<'_>) -> bool {
     crate::effect::admitted(azos_topology::EffectKind::Mic, envelopes, class)
+}
+
+/// Grant the `mic` effect to every task (host suites only).
+#[cfg(test)]
+pub fn grant_mic_to_all() {
+    crate::effect::grant_all(azos_topology::EffectKind::Mic);
 }
 
 /// Withhold the `mic` effect from `tid` (host suites only).
@@ -163,7 +170,7 @@ pub fn withhold_mic(tid: u32) {
     crate::effect::withhold(azos_topology::EffectKind::Mic, tid);
 }
 
-/// Give every task the `mic` effect again (host suites only).
+/// Take back every grant and withholding (host suites only).
 #[cfg(test)]
 pub fn clear_withheld_mic() {
     crate::effect::clear_withheld();

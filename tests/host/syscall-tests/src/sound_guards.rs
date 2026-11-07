@@ -79,6 +79,7 @@ fn region(tid: u32, spec: &MemSpec) -> (u32, u32) {
 }
 
 fn client_in(slot: usize) -> Client {
+    host::grant_mic_to_all();
     DENIALS.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let tid = NEXT_TID.fetch_add(1, SeqCst);
     ipc_task_pool::shim_bind(tid, slot);
@@ -583,11 +584,14 @@ fn a_capture_stream_is_recorded_and_held_by_one_task() {
     assert_eq!(b.open(params(DIR_CAPTURE)).code, outcome::OK, "the device is free again");
 }
 
-/// The effect rule: a `mic` row at `contained` for the class withholds it.
+/// The effect rule, default-deny: the class has `mic` only through a row of kind
+/// `mic` that does not contain it. A contained row, another kind's row, no row
+/// for the class and no rows at all withhold it.
 ///
-/// **Canary.** Ignore the row's level: the contained row admits.
+/// **Canaries.** Ignore the row's level: the contained row admits. `effect-default-allow-canary`
+/// (a class with no row has the effect): the no-row lines fail.
 #[test]
-fn the_mic_effect_is_withheld_by_a_contained_envelope_of_the_class() {
+fn the_mic_effect_is_granted_only_by_a_row_that_does_not_contain_it() {
     use azos_topology::{EffectKind, EnvelopeSpec, Envelope, MaybeStr};
     let row = |name: &'static str, kind, class: &'static str, level| EnvelopeSpec {
         name: MaybeStr::from_bytes(name.as_bytes()),
@@ -602,10 +606,10 @@ fn the_mic_effect_is_withheld_by_a_contained_envelope_of_the_class() {
     ];
     let class = |c: &'static str| MaybeStr::from_bytes(c.as_bytes());
     assert!(!host::mic_admitted(&rows, &class("sandboxed")), "contained for its class");
-    assert!(host::mic_admitted(&rows, &class("trusted")), "another kind's row says nothing of the microphone");
-    assert!(host::mic_admitted(&rows, &class("limited")), "only `contained` withholds it");
-    assert!(host::mic_admitted(&rows, &class("anything else")), "a class with no row has the effect");
-    assert!(host::mic_admitted(&[], &class("sandboxed")));
+    assert!(!host::mic_admitted(&rows, &class("trusted")), "another kind's row says nothing of the microphone");
+    assert!(host::mic_admitted(&rows, &class("limited")), "a row that does not contain it grants it");
+    assert!(!host::mic_admitted(&rows, &class("anything else")), "a class with no row has no effect");
+    assert!(!host::mic_admitted(&[], &class("sandboxed")), "no rows, no effect");
 }
 
 /// A server in front of the device (the audio server) opens a capture stream for

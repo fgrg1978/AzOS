@@ -769,6 +769,25 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         }
     }
 
+    // The privacy effects are default-deny: a class has `cam` or `mic` only
+    // where a row says so. `cam` is the autorun class's (CAPTEST.ELF is the one
+    // image that reads the camera; the seccomp row and the `frame.0` grant
+    // narrow it to that image); `mic` is the best-effort class's (the toolbox's
+    // `beep`, and the audio server's clients). The brain link's own camera
+    // sender is the kernel's and asks for no effect.
+    for (name, kind, class) in [
+        (&b"dev_cam_soft_rt"[..], crate::types::EffectKind::Cam, NAME_SOFT_RT),
+        (&b"dev_mic_best_effort"[..], crate::types::EffectKind::Mic, NAME_BEST_EFFORT),
+    ] {
+        topo.push_envelope(crate::types::EnvelopeSpec {
+            name: MaybeStr::from_bytes(name),
+            kind,
+            class: MaybeStr::from_bytes(class),
+            level: crate::types::Envelope::Full,
+        })
+        .expect("default_minimal_topology: privacy envelope push failed");
+    }
+
     // Tasks. Two seed tasks: a safety supervisor + the brain-link.
     topo.push_task(
         MaybeStr::from_bytes(TASK_SUPERVISOR),

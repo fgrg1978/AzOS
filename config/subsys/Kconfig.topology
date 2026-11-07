@@ -669,16 +669,18 @@ config TOPOLOGY_MAX_NUMA
 
 config TOPOLOGY_MAX_ENVELOPES
     int "[envelope.NAME] rows (effect ceilings) a topology may declare"
-    range 15 64
-    default 16
+    range 17 64
+    default 20
     help
       Size of the effect-envelope table (types.rs, MAX_ENVELOPES), CAPS.TOML
       format 8: each `[envelope.NAME]` row bounds one kind of effect (config
-      write, OTA apply, egress, delete, real-time reservation) for one class.
-      More rows are refused. The built-in development topology states five
-      `full` rows (delete, egress, config, ota, rt_time) for each of the three
-      classes its tasks run in, 15 rows, so the table is not smaller than that
-      on any profile.
+      write, OTA apply, egress, delete, real-time reservation) for one class,
+      or grants a privacy effect (`mic`, `cam`) to one. More rows are refused.
+      The built-in development topology states five `full` rows (delete,
+      egress, config, ota, rt_time) for each of the three classes its tasks run
+      in, and the two grants (`cam` to the autorun class, `mic` to the
+      best-effort class), 17 rows, so the table is not smaller than that on any
+      profile.
 
       Cost: 40 B of RAM per entry, either ISA.
 

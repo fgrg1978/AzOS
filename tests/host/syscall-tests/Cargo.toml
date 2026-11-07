@@ -58,6 +58,7 @@ gpio-safety-guard-canary = []
 # frame is taken; a task's every call takes a reader slot; an exit keeps its
 # slot; the pool's view of a frame writes into it.
 frame-copy-skip-canary = []
+effect-default-allow-canary = []
 frame-effect-ignored-canary = []
 frame-unrecorded-canary = []
 frame-first-read-always-canary = []

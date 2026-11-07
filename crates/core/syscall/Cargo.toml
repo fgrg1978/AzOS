@@ -66,6 +66,8 @@ frame-slot-per-call-canary = []
 frame-check-late-canary = []
 # ... a read copies nothing.
 frame-copy-skip-canary = []
+# `effect.rs`: a privacy effect is allowed unless a row contains it (default-allow).
+effect-default-allow-canary = []
 # ... the cam effect is not asked; no decision is written; every read is a first read.
 frame-effect-ignored-canary = []
 frame-unrecorded-canary = []

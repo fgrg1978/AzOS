@@ -657,13 +657,15 @@ fn the_kinds_have_distinct_words() {
 /// The built-in (development) topology says, in rows, what every image did
 /// before the effect gate held deletes, first packets, configuration writes,
 /// update steps and real-time reservations to an envelope: the classes its
-/// tasks run in may do all five (`full`). The rows fit the table (15 of
-/// `TOPOLOGY_MAX_ENVELOPES`, 16 by default on every profile), and a class they
-/// do not name is `full` too.
+/// tasks run in may do all five (`full`). The rows fit the table (17 of
+/// `TOPOLOGY_MAX_ENVELOPES`, 20 by default on every profile), and a class they
+/// do not name is `full` too. The two privacy effects are the exception, default-deny:
+/// `cam` is granted to the autorun class and `mic` to the best-effort class, and to
+/// no other.
 #[test]
 fn the_development_topology_allows_every_gated_effect_in_rows() {
     let t = azos_topology::default_minimal();
-    assert_eq!(t.envelopes().len(), 15);
+    assert_eq!(t.envelopes().len(), 17);
     assert!(t.envelopes().len() <= azos_limits::TOPOLOGY_MAX_ENVELOPES as usize);
     for class in [&b"soft_rt"[..], b"best_effort", b"session"] {
         for kind in [EffectKind::Delete, EffectKind::Egress, EffectKind::Config, EffectKind::Ota, EffectKind::RtTime] {
@@ -674,5 +676,15 @@ fn the_development_topology_allows_every_gated_effect_in_rows() {
     for kind in [EffectKind::Egress, EffectKind::Config, EffectKind::Ota, EffectKind::RtTime] {
         assert_eq!(t.effect_ceiling(b"safety_critical", kind), Envelope::Full);
     }
+    let granted = |kind: EffectKind| -> Vec<String> {
+        let mut v: Vec<String> = t.envelopes().iter()
+            .filter(|r| r.kind == kind && r.level != Envelope::Contained)
+            .map(|r| String::from_utf8_lossy(r.class.as_bytes()).into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(granted(EffectKind::Cam), ["soft_rt"], "the camera is the autorun class's alone");
+    assert_eq!(granted(EffectKind::Mic), ["best_effort"], "the microphone is the best-effort class's alone");
     assert_eq!(t.admission_check(), Ok(()));
 }

@@ -44,6 +44,7 @@ struct Task {
 impl Task {
     fn new() -> Task {
         lend();
+        crate::effect::grant_all(EffectKind::Cam);
         let tid = NEXT_TID.fetch_add(1, Ordering::SeqCst);
         let slot = NEXT_SLOT.fetch_add(1, Ordering::SeqCst);
         ipc_task_pool::shim_bind(tid, slot as usize);
@@ -306,9 +307,41 @@ fn a_class_without_the_cam_effect_is_refused_and_recorded() {
     assert!(!POOL.any_attached(), "a refused task took no slot");
     assert_eq!(records(t.tid), vec![(REFUSE, 0, frame::reason::NO_EFFECT as u64); 2]);
     // A mic withheld is no cam withheld.
+    crate::effect::grant_all(EffectKind::Cam);
     crate::effect::withhold(EffectKind::Mic, t.tid);
     assert_eq!(t.next(b), Out::err(outcome::NOT_READY));
     crate::effect::clear_withheld();
+}
+
+/// **The camera effect is default-deny.** With nothing granting it (no row, no
+/// topology: the host's case) a task is `REFUSED`, takes no slot and the
+/// refusal is a record; the pure rule agrees: only a `cam` row that does not
+/// contain the class grants it.
+///
+/// **Canary.** `effect-default-allow-canary` (a class with no row has the
+/// effect): the row lines fail.
+#[test]
+fn a_task_nothing_grants_the_camera_is_refused_and_recorded() {
+    use azos_topology::{EnvelopeSpec, Envelope, MaybeStr};
+    let _g = serial();
+    let t = Task::new();
+    let b = t.frame_buffer();
+    crate::effect::clear_withheld();
+    assert_eq!(t.next(b), Out::err(outcome::REFUSED));
+    assert!(!POOL.any_attached());
+    assert_eq!(records(t.tid), vec![(REFUSE, 0, frame::reason::NO_EFFECT as u64)]);
+    let row = |kind, class: &'static str, level| EnvelopeSpec {
+        name: MaybeStr::from_bytes(b"r"),
+        kind,
+        class: MaybeStr::from_bytes(class.as_bytes()),
+        level,
+    };
+    let class = |c: &'static str| MaybeStr::from_bytes(c.as_bytes());
+    let rows = [row(EffectKind::Cam, "granted", Envelope::Full), row(EffectKind::Cam, "denied", Envelope::Contained)];
+    assert!(crate::effect::admitted(EffectKind::Cam, &rows, &class("granted")));
+    assert!(!crate::effect::admitted(EffectKind::Cam, &rows, &class("denied")));
+    assert!(!crate::effect::admitted(EffectKind::Cam, &rows, &class("unnamed")), "no row, no effect");
+    assert!(!crate::effect::admitted(EffectKind::Mic, &rows, &class("granted")), "a cam row grants no mic");
 }
 
 /// **Every grant and a reader's first frame are records, once each.** The
