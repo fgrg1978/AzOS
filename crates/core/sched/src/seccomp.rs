@@ -513,7 +513,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_CALL,
         ],
         audit: false,
-        ops: CONSOLE_OPS,
+        // DOMAIN_UPTIME: the clock a sensor sample's age is judged on.
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::MOTOR, azos_devif::key::SENSOR],
     },
     // brain_client: CONFIG.INI through a Cap<File>, the brain link on a
