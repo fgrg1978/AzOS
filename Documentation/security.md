@@ -292,7 +292,9 @@ windows nest). A stray kernel store into a word of the kernel root's own tables 
 |-----|-----|-------|
 | x86_64 | `X86_PKS`: PKS (key 1 in PTE bits 62:59, `CR4.PKS`, `IA32_PKRS`; the window is two WRMSRs) | built; default `n`; on a CPU without PKS (AMD) the boot line says the tables are not protected |
 | aarch64 | `A64_POE`: stage-1 permission overlays | probe and `[ISA]` row only: the EL2 grants for `TCR2_EL1.POE` and `POR_EL1` are not programmed |
-| riscv64 | none | no supervisor key hardware: not protected |
+| riscv64 | none | no supervisor key hardware: not protected, unless `PT_PROTECTION_SOFT` |
+
+`PT_PROTECTION_SOFT` (default `n`) is the window for a CPU with no key, on any ISA: the pool is read-only in the direct map and the funnel flips the one page writable for the store, interrupts off, one window at a time. It is bug hardening, not an attacker boundary: the leaves of the pool's pages sit in ordinary tables, and a CPU that read the page during a window may keep a writable translation until it is evicted.
 
 ## Speculation mitigations
 

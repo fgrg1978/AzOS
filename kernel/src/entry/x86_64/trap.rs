@@ -319,7 +319,7 @@ fn count_nmi() {
 #[cfg(feature = "pt-protection")]
 #[inline(always)]
 fn pool_window_shut() -> Option<u64> {
-    azos_mm::ptprot::engaged().then(|| azos_arch::ArchPlatform::pt_window_shut(&azos_arch::ARCH))
+    azos_mm::ptprot::keyed().then(|| azos_arch::ArchPlatform::pt_window_shut(&azos_arch::ARCH))
 }
 
 /// #MC, on its own IST stack through `ist_common` and, like an NMI, possibly

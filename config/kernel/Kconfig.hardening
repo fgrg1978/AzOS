@@ -172,9 +172,29 @@ config USER_ALLOC_GUARD_PAGES
 # Kernel self-protection of the page tables
 # ---------------------------------------------------------------------------
 
+config PT_PROTECTION_SOFT
+    bool "Page-table pool: software write window where the CPU has no supervisor key"
+    depends on !HYP_MONITOR
+    default n
+    help
+      On a CPU without a supervisor key (riscv64, aarch64, an x86_64 CPU without
+      PKS, or X86_PKS n) the kernel root's page-table pool is mapped read-only in
+      the direct map, and `pt_set` writes a word with that one page flipped
+      writable for the store, interrupts off, one window at a time (the same
+      `ptprot::write` funnel as the key). Where the CPU has the key, the key is
+      used and this is not. Cost per kernel-root PTE word: two leaf stores, two
+      single-page TLB invalidations (a broadcast on aarch64) and an interrupt
+      mask, kernel mappings only; a user page-table word and a fault pay the
+      range compare of the pool. This is bug hardening, not a boundary against
+      an attacker: the leaves of the pool's pages sit in ordinary writable
+      tables, and a CPU that read the page during a window may keep a writable
+      translation until it is evicted. n: nothing built unless a hardware key
+      asks for the pool.
+
 config PT_PROTECTION
     # cargo-feature: pt-protection
     bool
+    default y if PT_PROTECTION_SOFT
     default y if ARCH_X86_64 && !X86_PKS_NEVER && !HYP_MONITOR
     default n
     help

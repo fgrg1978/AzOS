@@ -510,6 +510,37 @@ azos_ktest::ktest! {
     }
 }
 
+// PT_PROTECTION_SOFT: with the software window the pool's pages are read-only in
+// the direct map; a word written through the funnel (a spare pool page, taken
+// and given back) lands, and the page is read-only again afterwards. Runtime
+// canary `canary=pt-soft-leak` (a closed window leaves its page writable): the
+// readback fails. On a CPU with the key the key path is the one under test
+// (`mm_pt_pool_is_write_protected`) and this passes for it too.
+azos_ktest::ktest! {
+    #[cfg(feature = "pt-protection")]
+    fn mm_pt_pool_stays_read_only_between_writes() {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        if !azos_mm::ptprot::engaged() {
+            return Ok(());
+        }
+        let page = azos_mm::ptpool::take(0).map_err(|_| "the pool has no spare page")?;
+        // SAFETY: a zeroed pool page, ours until given back; the direct map covers it.
+        let slot = unsafe { &*(azos_mm::addr::phys_to_virt(page.as_usize()) as *const AtomicU64) };
+        let a = azos_mm::pt::pt_cas(slot, 0, 0x55);
+        let b = azos_mm::pt::pt_cas(slot, 0x55, 0);
+        let after = slot.load(Ordering::Acquire);
+        azos_mm::ptpool::give_back(page);
+        if a != Ok(0) || b != Ok(0x55) || after != 0 {
+            return Err("a word of a pool page did not take through the funnel");
+        }
+        let (pages, bad) = azos_mm::vmm::verify_pt_pool();
+        if pages == 0 || bad != 0 {
+            return Err("a pool page is writable between windows");
+        }
+        Ok(())
+    }
+}
+
 // PT_PROTECTION on every CPU: the secondaries lock themselves as they come up
 // (`x86_64_secondary_entry`), after the early phase has run. A task pinned to
 // each CPU reads its own CR4.PKS and IA32_PKRS back. Without the key there is

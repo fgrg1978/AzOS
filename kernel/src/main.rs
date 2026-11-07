@@ -515,7 +515,13 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     crate::entry::aarch64::ext::hyp_monitor::lock_image();
     // PT_PROTECTION: the pool's writer is a hook, so it is installed before the seal.
     #[cfg(feature = "pt-protection")]
-    azos_mm::vmm::install_pt_protection_hook();
+    {
+        azos_mm::vmm::install_pt_protection_hook();
+        // Runtime gate canary `canary=pt-soft-leak`: a closed software window leaves its page writable.
+        if canary!("pt-soft-leak") {
+            azos_mm::vmm::pt_soft_leak_canary();
+        }
+    }
     if !canary!("ro-seal-skip") {
         boot::seal_ro_after_init();
         // Runtime gate canary `canary=pt-lock-skip`: the pool stays writable.

@@ -12314,6 +12314,8 @@ host_job host_feature_row "mm: pt window lost race (model)" mm-tests pt-protecti
 host_job host_feature_row "mm: pt window nesting (model)" mm-tests pt-protection windows_nest_and_each_restores_what_it_found
 host_job host_canary_row "mm: pt window store outside canary" mm-tests pt-protection,ptprot-store-outside-canary \
     the_store_is_made_inside_the_window_and_the_token_comes_back
+host_job host_canary_row "mm: pt window wrong word canary" mm-tests pt-protection,ptprot-wrong-word-canary \
+    the_store_is_made_inside_the_window_and_the_token_comes_back
 host_job host_canary_row "mm: pool unrouted (model) canary" mm-tests hyp-monitor,ptpool-unrouted-canary \
     words_in_the_armed_pool_go_to_the_monitor_and_nothing_else_does
 # The frame class (cam-ring-tests, the pool): a reader's view of a frame
@@ -17450,6 +17452,16 @@ CPU 5 lacks hwcap bits"
     ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" KCFG_GREP="# CONFIG_KHEAP_LEAKS is not set" ktest_row_cfgline "$@"; }
     par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
     par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
+    # Kconfig PT_PROTECTION_SOFT: no supervisor key on rv and arm, so the pool is read-only in the direct
+    # map and the funnel writes through a software window. The boot line says so, the ktest writes a word
+    # through the funnel and reads the pool back read-only; the canary (`canary=pt-soft-leak`) leaves a
+    # closed window's page writable and the readback fails.
+    KTEST_PTSOFT_RE=$'^\\[MM\\] page tables: kernel-root tables read-only behind a software window\n^ok [0-9]+ - mm_pt_pool_stays_read_only_between_writes$'
+    ktest_row_ptsoft() { KCFG_TAG=ptsoft KCFG_LINE="CONFIG_PT_PROTECTION_SOFT=y" KCFG_GREP="CONFIG_PT_PROTECTION_SOFT=y" ktest_row_cfgline "$@"; }
+    par "ktest pt-protection soft (rv)" ktest_row_ptsoft "ktest pt-protection soft (rv)" rv "" "" "" "$KTEST_PTSOFT_RE"
+    par "ktest pt-protection soft (arm)" ktest_row_ptsoft "ktest pt-protection soft (arm)" arm "" "" "" "$KTEST_PTSOFT_RE"
+    par "ktest pt-protection soft leak canary (rv)" ktest_row_ptsoft "ktest pt-protection soft leak canary (rv)" rv "" "mm_pt_pool_stays_read_only_between_writes" "canary=pt-soft-leak"
+    par "ktest pt-protection soft leak canary (arm)" ktest_row_ptsoft "ktest pt-protection soft leak canary (arm)" arm "" "mm_pt_pool_stays_read_only_between_writes" "canary=pt-soft-leak"
     # Kconfig KASAN: a read past a block and a read through a freed pointer are reported at the
     # access, which the heap guard above cannot (the ERE pins both tests by name: a skip is not an `ok`);
     # the canary is the default kernel, KASAN off, told to expect them (`canary=kasan-expected`): the same
@@ -19439,6 +19451,10 @@ CPU 5 lacks hwcap bits"
         $'^\\[MM\\] page tables: kernel-root tables write-protected \\([0-9]+ pool pages\n^ok [0-9]+ - mm_pt_pool_is_write_protected$\n^ok [0-9]+ - mm_pt_pool_is_write_protected_on_every_cpu$'
     par "ktest pt-protection lock skipped canary (x86)" x86_ktest_row_pks "ktest pt-protection lock skipped canary (x86)" "" \
         "+mm_pt_pool_is_write_protected" "canary=pt-lock-skip"
+    # PT_PROTECTION_SOFT on x86_64 with the key off (X86_PKS n): the same software window.
+    x86_ktest_row_ptsoft() { KCFG_TAG=ptsoft KCFG_LINE=$'CONFIG_PT_PROTECTION_SOFT=y\nCONFIG_X86_PKS_NEVER=y' x86_ktest_row_cfgline "$@"; }
+    par "ktest pt-protection soft (x86)" x86_ktest_row_ptsoft "ktest pt-protection soft (x86)" "" "" "" "" "$KTEST_PTSOFT_RE"
+    par "ktest pt-protection soft leak canary (x86)" x86_ktest_row_ptsoft "ktest pt-protection soft leak canary (x86)" "" "mm_pt_pool_stays_read_only_between_writes" "canary=pt-soft-leak"
     x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
     par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
     par "ktest core file off canary (x86)" x86_ktest_row_coreoff "ktest core file off canary (x86)" "" "$KTEST_CORE_OFF"

@@ -69,7 +69,7 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     // locked, before this CPU does any other work. A CPU that cannot deny
     // writes to it would leave the pool open for the whole system: it stops.
     #[cfg(feature = "pt-protection")]
-    if azos_mm::ptprot::engaged() {
+    if azos_mm::ptprot::keyed() {
         use azos_arch::ArchPlatform;
         if !azos_arch::ARCH.pt_lock_this_cpu() {
             azos_drv_sys::kerr!("[SMP] FAILED: CPU {} cannot deny writes to the page-table pool (CR4.PKS / IA32_PKRS did not take); halting it", cpu);

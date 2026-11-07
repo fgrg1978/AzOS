@@ -146,12 +146,14 @@ mod window {
     }
 
     impl Window for Probe<'_> {
-        fn open(&self) -> u64 {
+        fn open(&self, va: usize) -> u64 {
+            assert_eq!(va, self.slot as *const AtomicU64 as usize, "the window was opened for another word");
             assert_eq!(self.slot.load(Ordering::Acquire), self.before, "the store came before the window opened");
             self.log.borrow_mut().push(("open", 0));
             self.token
         }
-        fn close(&self, saved: u64) {
+        fn close(&self, va: usize, saved: u64) {
+            assert_eq!(va, self.slot as *const AtomicU64 as usize, "the window was closed for another word");
             assert_eq!(self.slot.load(Ordering::Acquire), self.after, "the window closed before the store");
             self.log.borrow_mut().push(("close", saved));
         }
@@ -160,7 +162,8 @@ mod window {
     /// The store is made between an open and a close, and the close gets back
     /// what the open returned.
     /// Canary: `--features ptprot-store-outside-canary` makes the store after the
-    /// close, and `close` sees the old word.
+    /// close, and `close` sees the old word; `ptprot-wrong-word-canary` opens the
+    /// window for address 0.
     #[test]
     fn the_store_is_made_inside_the_window_and_the_token_comes_back() {
         let slot = AtomicU64::new(5);
@@ -186,10 +189,11 @@ mod window {
         let (a, b) = (AtomicU64::new(1), AtomicU64::new(1));
         let outer = Probe { slot: &a, before: 1, after: 2, token: 10, log: RefCell::new(Vec::new()) };
         let inner = Probe { slot: &b, before: 1, after: 2, token: 20, log: RefCell::new(Vec::new()) };
-        let saved = outer.open();
+        let va = &a as *const AtomicU64 as usize;
+        let saved = outer.open(va);
         assert_eq!(write(&inner, &b, 1, 2), Ok(1));
         assert_eq!(a.compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire), Ok(1));
-        outer.close(saved);
+        outer.close(va, saved);
         assert_eq!(*inner.log.borrow(), vec![("open", 0), ("close", 20)]);
         assert_eq!(*outer.log.borrow(), vec![("open", 0), ("close", 10)]);
     }

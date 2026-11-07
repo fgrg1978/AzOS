@@ -27,6 +27,8 @@ hyp-monitor = ["pt-pool"]
 pt-protection = ["pt-pool"]
 # Canary only (host row, tests/host/mm-tests): the pool's store is made after the window has closed.
 ptprot-store-outside-canary = []
+# Canary only (host row): the window is opened for address 0, not for the word written.
+ptprot-wrong-word-canary = []
 # Canary only (host row, tests/host/mm-tests): the pool is never recognised, so its words are stored directly.
 ptpool-unrouted-canary = []
 # Kconfig KASAN: the sanitizer's hooks and shadow (src/kasan.rs); the kernel is built with -Zsanitizer=kernel-address.
