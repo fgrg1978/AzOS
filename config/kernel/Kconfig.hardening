@@ -178,12 +178,14 @@ config PT_PROTECTION
     default y if ARCH_X86_64 && !X86_PKS_NEVER && !HYP_MONITOR
     default n
     help
-      The kernel half's page tables come from a pool (PT_POOL_PAGES) the
+      The kernel root's page tables come from a pool (PT_POOL_PAGES) the
       kernel keeps write-protected from itself: pool pages carry a supervisor
       protection key that denies writes, and `pt_set` (the one funnel every
       kernel-half PTE write goes through) opens the write for the one store
-      and closes it again with interrupts off. A kernel write bug can no longer
-      rewrite a mapping. With the split monitor the same funnel is the
+      and closes it again with interrupts off. A stray kernel store into a word of the kernel
+      root's own tables faults. Not covered: a user root's page tables, which
+      hold their own copies of the kernel's top-level entries (a store there
+      remaps the kernel half while that task runs), and device DMA (the IOMMU). With the split monitor the same funnel is the
       monitor's (stage 2), so this is not built there. Derived, never asked:
       the per-ISA key choice (X86_PKS) is the Kconfig. Cost, where the CPU has
       the key: two WRMSRs per kernel-half PTE word (mapping

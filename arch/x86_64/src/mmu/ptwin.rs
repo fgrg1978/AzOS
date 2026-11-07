@@ -51,6 +51,11 @@ pub const fn pack(pkrs: u64, interrupts_on: bool) -> u64 {
     (pkrs & 0xFFFF_FFFF) | (interrupts_on as u64) << 32
 }
 
+/// The token of a shut: the PKRS found, and no interrupt flag to restore.
+pub const fn shut_token(pkrs: u64) -> u64 {
+    pack(pkrs, false)
+}
+
 /// Inverse of [`pack`].
 pub const fn unpack(token: u64) -> (u64, bool) {
     (token & 0xFFFF_FFFF, token >> 32 != 0)
@@ -82,6 +87,16 @@ pub fn open() -> u64 {
     let pkrs = super::cpu::rdmsr(IA32_PKRS);
     super::cpu::wrmsr(IA32_PKRS, opened(pkrs));
     pack(pkrs, flags & RFLAGS_IF != 0)
+}
+
+/// Deny writes to the pool's key whatever a window below had opened (an NMI or
+/// #MC inside one); the token for [`close`] gives back what was found.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn shut() -> u64 {
+    let pkrs = super::cpu::rdmsr(IA32_PKRS);
+    super::cpu::wrmsr(IA32_PKRS, PKRS_LOCKED);
+    shut_token(pkrs)
 }
 
 /// Restore PKRS and the interrupt flag a window found.

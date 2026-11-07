@@ -12210,6 +12210,11 @@ host_feature_row() { # <label> <suite> <features> <test fn>
 }
 host_job host_feature_row "mm: pool funnel (model)" mm-tests hyp-monitor words_in_the_armed_pool_go_to_the_monitor_and_nothing_else_does
 host_job host_feature_row "mm: pool sizing (model)" mm-tests hyp-monitor the_pool_is_sized_from_the_ram_the_stack_window_and_the_margin
+host_job host_feature_row "mm: pt window (model)" mm-tests pt-protection the_store_is_made_inside_the_window_and_the_token_comes_back
+host_job host_feature_row "mm: pt window lost race (model)" mm-tests pt-protection a_lost_race_closes_the_window_and_reports_the_word_found
+host_job host_feature_row "mm: pt window nesting (model)" mm-tests pt-protection windows_nest_and_each_restores_what_it_found
+host_job host_canary_row "mm: pt window store outside canary" mm-tests pt-protection,ptprot-store-outside-canary \
+    the_store_is_made_inside_the_window_and_the_token_comes_back
 host_job host_canary_row "mm: pool unrouted (model) canary" mm-tests hyp-monitor,ptpool-unrouted-canary \
     words_in_the_armed_pool_go_to_the_monitor_and_nothing_else_does
 # The frame class (cam-ring-tests, the pool): a reader's view of a frame
@@ -18965,7 +18970,8 @@ CPU 5 lacks hwcap bits"
     par -h "netboot riscv64: kernel hash canary"     netboot_row "netboot riscv64: kernel hash canary"     riscv64-tftp-badkernel "$NETBOOT_IMG_RISCV64"
     par -h "netboot riscv64: foreign key canary"     netboot_row "netboot riscv64: foreign key canary"     riscv64-tftp-badkey   "$NETBOOT_IMG_RISCV64"
     x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names> [kernel command line] [disk image target] [ERE the log must match]
-        local label="$1" extra="$2" want="$3" why="" k plan got name
+        local label="$1" extra="$2" want="$3" why="" k plan got name atleast=""
+        case "$want" in +*) atleast=1; want="${want#+}" ;; esac
         local -a app=(); [ -n "${4:-}" ] && app=(-append "$4")
         local -a drv=(); local dimg=""
         printf "  %-26s" "${label}..."
@@ -19253,13 +19259,16 @@ CPU 5 lacks hwcap bits"
     par "ktest kasan above 4 GiB (x86)" x86_ktest_row_kasan_5g "ktest kasan above 4 GiB (x86)" "" "" "" "" \
         "$KTEST_KASAN_RE"$'\n^\\[MM\\] Boot direct map widened by 2 GiB to 0x180000000$'
     par "ktest kasan off canary (x86)" x86_ktest_row "ktest kasan off canary (x86)" "" "$KTEST_KASAN_OFF" "canary=kasan-expected"
-    # Kconfig PT_PROTECTION (X86_PKS probe): the pool is in use and the boot says whether the CPU's
-    # supervisor key protects it. QEMU's TCG has no PKS, so this row sees "not protected" and the
-    # ktest passes without a key; its runtime canary (`canary=pt-lock-skip`) turns the test red on
-    # hardware with PKS only, and is not a row here.
+    # Kconfig PT_PROTECTION (X86_PKS probe) on `-cpu max`, whose TCG offers PKS: the boot must
+    # lock the pool ("write-protected", never the "not protected" line), the early ktest reads
+    # CR4.PKS / IA32_PKRS and the page-table tags back, and the late one reads them on every CPU
+    # (-smp 4: each secondary reports its own lock). A model without PKS fails the row on
+    # purpose. The canary skips the lock: the early ktest fails.
     x86_ktest_row_pks() { KCFG_TAG=pks KCFG_LINE="CONFIG_X86_PKS_PROBE=y" x86_ktest_row_cfgline "$@"; }
     par "ktest pt-protection (x86)" x86_ktest_row_pks "ktest pt-protection (x86)" "" "" "" "" \
-        $'^\\[MM\\] page tables: kernel-half pool (write-protected|in use, not protected)\n^ok [0-9]+ - mm_pt_pool_is_write_protected$'
+        $'^\\[MM\\] page tables: kernel-root tables write-protected \\([0-9]+ pool pages\n^ok [0-9]+ - mm_pt_pool_is_write_protected$\n^ok [0-9]+ - mm_pt_pool_is_write_protected_on_every_cpu$'
+    par "ktest pt-protection lock skipped canary (x86)" x86_ktest_row_pks "ktest pt-protection lock skipped canary (x86)" "" \
+        "+mm_pt_pool_is_write_protected" "canary=pt-lock-skip"
     x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
     par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
     par "ktest core file off canary (x86)" x86_ktest_row_coreoff "ktest core file off canary (x86)" "" "$KTEST_CORE_OFF"

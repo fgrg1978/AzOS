@@ -286,11 +286,11 @@ locked at EL2. Without it, `PT_PROTECTION` (derived from the per-ISA key choice)
 tags the pool's pages with a supervisor protection key after the boot's seal,
 every CPU denies writes to that key, and the pool's writer opens a window for
 the one store (interrupts off, the previous register value restored on close, so
-windows nest). A stray kernel store cannot rewrite a mapping.
+windows nest). A stray kernel store into a word of the kernel root's own tables faults; NMI and #MC close the window while they run. Not covered: a user root's page tables, which hold their own copies of the kernel's top-level entries in ordinary pages (a store there remaps the kernel half while that task runs), and device DMA (the IOMMU). Closing the first gap means tagging those pages too (or sharing one kernel half between roots) and routing their kernel-half words through the window.
 
 | ISA | Key | State |
 |-----|-----|-------|
-| x86_64 | `X86_PKS`: PKS (key 1 in PTE bits 62:59, `CR4.PKS`, `IA32_PKRS`; the window is two WRMSRs) | built; default `n`; on a CPU without PKS (QEMU TCG, AMD) the boot line says the pool is not protected |
+| x86_64 | `X86_PKS`: PKS (key 1 in PTE bits 62:59, `CR4.PKS`, `IA32_PKRS`; the window is two WRMSRs) | built; default `n`; on a CPU without PKS (AMD) the boot line says the tables are not protected |
 | aarch64 | `A64_POE`: stage-1 permission overlays | probe and `[ISA]` row only: the EL2 grants for `TCR2_EL1.POE` and `POR_EL1` are not programmed |
 | riscv64 | none | no supervisor key hardware: not protected |
 

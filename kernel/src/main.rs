@@ -511,6 +511,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // arch-only: the resident monitor exists on aarch64 alone (ARCH_HAS_HYP_MONITOR).
     #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
     crate::entry::aarch64::ext::hyp_monitor::lock_image();
+    // PT_PROTECTION: the pool's writer is a hook, so it is installed before the seal.
+    #[cfg(feature = "pt-protection")]
+    azos_mm::vmm::install_pt_protection_hook();
     if !canary!("ro-seal-skip") {
         boot::seal_ro_after_init();
         // Runtime gate canary `canary=pt-lock-skip`: the pool stays writable.

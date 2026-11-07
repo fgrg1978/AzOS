@@ -255,10 +255,19 @@ pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
     // exception (one would `iretq`, unmask NMIs, and a second NMI would
     // overwrite this frame on the same IST slice). One atomic add takes none.
     if frame.vector as usize == idt::NMI {
+        // PT_PROTECTION: an NMI inside a page-table write window runs with the pool locked.
+        #[cfg(feature = "pt-protection")]
+        let window = pool_window_shut();
         NMIS.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "pt-protection")]
+        if let Some(token) = window {
+            azos_arch::ArchPlatform::pt_window_close(&azos_arch::ARCH, token);
+        }
         return 0;
     }
     if frame.vector as usize == idt::MC {
+        #[cfg(feature = "pt-protection")]
+        let _ = pool_window_shut();
         machine_check(frame);
     }
     // Masked-window tracer (`lat-trace`): a trap from a context with `IF`
@@ -297,6 +306,14 @@ pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
             0
         }
     }
+}
+
+/// PT_PROTECTION: deny writes to the pool on this CPU for an exception that
+/// can arrive inside a write window; `None` when the pool is not locked.
+#[cfg(feature = "pt-protection")]
+#[inline(always)]
+fn pool_window_shut() -> Option<u64> {
+    azos_mm::ptprot::engaged().then(|| azos_arch::ArchPlatform::pt_window_shut(&azos_arch::ARCH))
 }
 
 /// #MC, on its own IST stack through `ist_common` and, like an NMI, possibly

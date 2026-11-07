@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! PT_PROTECTION: the kernel half's page-table pool, write-protected from the
-//! kernel itself (feature `pt-protection`).
+//! PT_PROTECTION: the kernel root's page tables, write-protected from the
+//! kernel itself (feature `pt-protection`). A user root keeps its own copies of
+//! the kernel's top-level entries in ordinary pages, so a stray store there is
+//! not caught; neither is a device's DMA (the IOMMU's job).
 //!
 //! The pool's pages carry the ISA's supervisor protection key and every CPU
 //! denies writes to that key. The pool's writer ([`crate::ptpool`]) is the one
@@ -45,6 +47,9 @@ pub enum Engaged {
     Locked { pages: usize },
     /// The CPU has no key or Kconfig says n: the pool is in use and writable.
     NoKey,
+    /// The CPU has the key, but denying writes to it did not take on this
+    /// CPU: the pool stays unarmed and writable.
+    LockFailed,
     /// The pool's pages could not all be tagged (a block mapping that would
     /// not split): nothing was locked.
     Untaggable,

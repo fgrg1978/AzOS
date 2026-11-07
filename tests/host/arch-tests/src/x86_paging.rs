@@ -414,5 +414,9 @@ mod tests {
             assert_eq!(unpack(pack(pkrs, on)), (pkrs, on));
         }
         assert_ne!(pack(0, true), pack(0, false), "the interrupt flag is in the token");
+        // A shut (NMI, #MC) never turns interrupts on when it is closed.
+        for pkrs in [0u64, PKRS_LOCKED, 0xFFFF_FFFF] {
+            assert_eq!(unpack(shut_token(pkrs)), (pkrs, false));
+        }
     }
 }

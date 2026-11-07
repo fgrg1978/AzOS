@@ -50,7 +50,7 @@ azos_common::ro_hook! {
     static POOL_WRITER: PoolWriter;
 }
 
-/// Route every word in the armed pool through `f`. Before the pool is armed.
+/// Route every word in the armed pool through `f`. Before the seal.
 pub fn set_writer_hook(f: PoolWriter) {
     POOL_WRITER.set(f);
 }
@@ -110,6 +110,12 @@ pub fn give_back(page: PhysAddr) {
 pub fn contains(page: PhysAddr) -> bool {
     let base = BASE.load(Ordering::Relaxed);
     base != 0 && (base..base + COUNT.load(Ordering::Relaxed) * PAGE_SIZE).contains(&page.as_usize())
+}
+
+/// Does `[pa, pa + bytes)` touch a page of the pool?
+pub fn overlaps(pa: usize, bytes: usize) -> bool {
+    let base = BASE.load(Ordering::Relaxed);
+    base != 0 && pa < base + COUNT.load(Ordering::Relaxed) * PAGE_SIZE && base < pa.saturating_add(bytes)
 }
 
 /// `(base, pages in use, pages)`: the run, for the lock and the census.

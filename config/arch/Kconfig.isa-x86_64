@@ -669,15 +669,17 @@ choice
       CPUID.(7,0):ECX[31]: the kernel half's page-table pool (PT_PROTECTION)
       is tagged with protection key 1 in the direct map and every CPU sets
       CR4.PKS with IA32_PKRS denying writes to that key, so a stray kernel
-      store cannot rewrite a mapping. `pt_set` opens the write for one store
+      store into the kernel root's tables faults;
+      NMI and #MC shut the window while they run. `pt_set` opens the write for one store
       (a WRMSR before and after, with interrupts off: about 2 x 100 cycles
       per kernel-half page-table word; user page tables are not in the pool
       and keep the bare store). Any policy but n builds the pool and its
       routing in (PT_PROTECTION); no key is used where the CPU lacks it, and
       the boot line says the tables are not protected.
       n: nothing built, the tables stay writable. probe: the CPUID probe
-      picks. require: the boot refuses a CPU without it. A QEMU CPU model
-      has no PKS: probe boots unprotected there.
+      picks. require: the boot refuses a CPU without it. Which QEMU CPU
+      models offer PKS under TCG is what the gate's pt-protection row checks;
+      a CPU without it boots unprotected under probe.
     config X86_PKS_NEVER
         bool "n: never use it"
     config X86_PKS_PROBE

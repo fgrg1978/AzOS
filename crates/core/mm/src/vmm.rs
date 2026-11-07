@@ -2540,27 +2540,41 @@ fn ro_after_init() -> wx::RoAfterInit {
     }
 }
 
+#[cfg(feature = "pt-protection")]
+struct ArchWindow;
+
+#[cfg(feature = "pt-protection")]
+impl crate::ptprot::Window for ArchWindow {
+    fn open(&self) -> u64 {
+        ARCH.pt_window_open()
+    }
+    fn close(&self, saved: u64) {
+        ARCH.pt_window_close(saved)
+    }
+}
+
+#[cfg(feature = "pt-protection")]
+fn pool_write(pa: usize, expected: u64, new: u64, _level: usize) -> Result<(), u64> {
+    // SAFETY: `pa` is an entry of a pool page, which the direct map covers.
+    let slot = unsafe { &*(crate::addr::phys_to_virt(pa) as *const core::sync::atomic::AtomicU64) };
+    crate::ptprot::write(&ArchWindow, slot, expected, new).map(|_| ())
+}
+
+/// PT_PROTECTION: the pool's writer. Before the seal (the hook is read-only
+/// after it); inert until [`engage_pt_protection`] arms the pool.
+#[cfg(feature = "pt-protection")]
+pub fn install_pt_protection_hook() {
+    crate::ptpool::set_writer_hook(pool_write);
+}
+
 /// PT_PROTECTION: tag the pool's pages in the direct map with the ISA's
-/// supervisor key, route every later word of the pool through the write window
-/// and deny writes to the key on this CPU. After `seal_ro_after_init`, with one
-/// CPU up and no user root yet (the tags are written into the one kernel root).
+/// supervisor key, deny writes to the key on this CPU, and only then arm the
+/// pool so every later word of it goes through the write window. After
+/// `seal_ro_after_init`, with one CPU up and no user root yet (the tags are
+/// written into the one kernel root).
 #[cfg(feature = "pt-protection")]
 pub fn engage_pt_protection() -> crate::ptprot::Engaged {
     use crate::ptprot::Engaged;
-    struct ArchWindow;
-    impl crate::ptprot::Window for ArchWindow {
-        fn open(&self) -> u64 {
-            ARCH.pt_window_open()
-        }
-        fn close(&self, saved: u64) {
-            ARCH.pt_window_close(saved)
-        }
-    }
-    fn pool_write(pa: usize, expected: u64, new: u64, _level: usize) -> Result<(), u64> {
-        // SAFETY: `pa` is an entry of a pool page, which the direct map covers.
-        let slot = unsafe { &*(crate::addr::phys_to_virt(pa) as *const core::sync::atomic::AtomicU64) };
-        crate::ptprot::write(&ArchWindow, slot, expected, new).map(|_| ())
-    }
     if !ARCH.pt_key_present() {
         return Engaged::NoKey;
     }
@@ -2579,11 +2593,10 @@ pub fn engage_pt_protection() -> crate::ptprot::Engaged {
         }
     }
     ARCH.flush_tlb_all();
-    crate::ptpool::set_writer_hook(pool_write);
-    crate::ptpool::arm();
     if !ARCH.pt_lock_this_cpu() {
-        return Engaged::NoKey;
+        return Engaged::LockFailed;
     }
+    crate::ptpool::arm();
     crate::ptprot::mark_engaged();
     Engaged::Locked { pages: crate::ptpool::extent().1 }
 }

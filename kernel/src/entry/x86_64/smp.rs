@@ -65,6 +65,18 @@ pub(crate) fn firmware_labels(n: usize, _dtb_ptr: usize, raw: &mut [CpuRaw]) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     super::ext::cpu_init::init_cpu(cpu);
+    // CR4.PKS and IA32_PKRS are per CPU (Kconfig X86_PKS): the pool the boot CPU
+    // locked, before this CPU does any other work. A CPU that cannot deny
+    // writes to it would leave the pool open for the whole system: it stops.
+    #[cfg(feature = "pt-protection")]
+    if azos_mm::ptprot::engaged() {
+        use azos_arch::ArchPlatform;
+        if !azos_arch::ARCH.pt_lock_this_cpu() {
+            azos_drv_sys::kerr!("[SMP] FAILED: CPU {} cannot deny writes to the page-table pool (CR4.PKS / IA32_PKRS did not take); halting it", cpu);
+            azos_arch::cpu::halt_forever();
+        }
+        kprintln!("[MM] CPU {}: page-table pool write-protected", cpu);
+    }
     // Kconfig X86_UCODE_LOAD: the boot CPU's patch, before this CPU's CPUID
     // is read for its core type and before its mitigation MSRs below.
     super::ext::ucode::this_cpu(cpu);
@@ -81,12 +93,6 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     }
     let caps = crate::boot_hooks::paging_caps();
     let _ = azos_arch::mmu::cpu::setup_paging_regs(&caps);
-    // CR4.PKS and IA32_PKRS are per CPU (Kconfig X86_PKS): the pool the boot CPU locked.
-    #[cfg(feature = "pt-protection")]
-    if azos_mm::ptprot::engaged() {
-        use azos_arch::ArchPlatform;
-        let _ = azos_arch::ARCH.pt_lock_this_cpu();
-    }
     let st = azos_arch::mmu::cpu::enable_access_protection(&caps);
     // Kconfig X86_CET_IBT: CR4.CET and IA32_S_CET are per CPU.
     let ibt = crate::boot_hooks::enable_ibt();

@@ -114,6 +114,15 @@ mod pool {
         // A page of the pool never reaches the page allocator.
         assert_eq!(crate::pmm::free_page(root), Err(azos_common::error::KernelError::PermissionDenied));
 
+        // Nor does a run or a block that overlaps it, from any side.
+        let pfn = crate::frame::Pfn::from_phys(base);
+        assert_eq!(crate::pmm::free(pfn, 0), Err(azos_common::error::KernelError::PermissionDenied));
+        assert_eq!(crate::pmm::free(pfn, 3), Err(azos_common::error::KernelError::PermissionDenied));
+        assert_eq!(crate::pmm::free_run(crate::addr::PhysAddr::new(base), 1), Err(azos_common::error::KernelError::PermissionDenied));
+        assert_eq!(crate::pmm::free_run(crate::addr::PhysAddr::new(base - 4 * PAGE_SIZE), 5), Err(azos_common::error::KernelError::PermissionDenied));
+        assert_eq!(crate::pmm::free_run(crate::addr::PhysAddr::new(base + (ptpool::MAX_PAGES - 1) * PAGE_SIZE), 4), Err(azos_common::error::KernelError::PermissionDenied));
+        assert!(!ptpool::overlaps(base + ptpool::MAX_PAGES * PAGE_SIZE, PAGE_SIZE) && !ptpool::overlaps(base - PAGE_SIZE, PAGE_SIZE));
+
         // The pool is finite.
         while ptpool::take(0).is_ok() {}
         assert_eq!(ptpool::take(0), Err(azos_common::error::KernelError::OutOfMemory));

@@ -119,6 +119,12 @@ pub trait ArchPlatform: Send + Sync {
     /// restores, so windows nest.
     fn pt_window_open(&self) -> u64 { 0 }
 
+    /// Deny writes to the pool's key whatever a window below had opened, for
+    /// the handlers that run on their own stack inside one (NMI, #MC). Returns
+    /// the token for [`Self::pt_window_close`] on the way out; it never turns
+    /// interrupts on.
+    fn pt_window_shut(&self) -> u64 { 0 }
+
     /// Close a window [`Self::pt_window_open`] opened.
     fn pt_window_close(&self, _saved: u64) {}
 

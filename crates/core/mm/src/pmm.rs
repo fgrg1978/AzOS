@@ -407,6 +407,10 @@ fn claim(pfn: Pfn, order: usize) -> KResult<()> {
 /// frame that is not managed, pinned, or neither allocated nor reserved;
 /// `DoubleFree` for one already free.
 pub fn free(pfn: Pfn, order: usize) -> KResult<()> {
+    #[cfg(feature = "pt-pool")]
+    if crate::ptpool::overlaps(pfn.0 * PAGE_SIZE, PAGE_SIZE << order) {
+        return Err(KernelError::PermissionDenied);
+    }
     claim(pfn, order)?;
     let t = table();
     let i0 = t.index(pfn).expect("claimed");
@@ -651,6 +655,10 @@ pub fn zero_frame(addr: PhysAddr) {
 /// frame of the run is not allocated.
 pub fn free_run(addr: PhysAddr, n: usize) -> KResult<()> {
     let phys = addr.as_usize();
+    #[cfg(feature = "pt-pool")]
+    if crate::ptpool::overlaps(phys, n.saturating_mul(PAGE_SIZE)) {
+        return Err(KernelError::PermissionDenied);
+    }
     if n == 0 || !addr.is_page_aligned() || phys < table().first().phys() {
         return Err(KernelError::InvalidArg);
     }
