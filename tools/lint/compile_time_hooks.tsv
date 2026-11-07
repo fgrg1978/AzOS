@@ -345,6 +345,7 @@ pi-heap-no-swap-canary	hot	crates/core/sync/src/pi_heap.rs: every wait-graph set
 owner-scan-one-hold-canary	hot	crates/core/sync/src/waitgraph.rs: every owner change of a lazy-capable object
 abichild-fat-row	pending	adds /fat read-write to the ABICHILD.ELF row of the built-in topology (crates/core/topology/src/builder.rs), as linux-abi-caps-canary does for LXHELLO: a runtime name needs the row gated at run time too (open)
 group-pin-leader-only-canary	pending	crates/core/sched/src/group.rs (any_member): the ktest a_real_time_thread_pins_the_memory_of_its_group goes red with it
+pin-effective-priority-canary	pending	crates/core/sched/src/scheduler/mod.rs (thread_pins_memory): the ktest a_boosted_thread_does_not_pin_memory goes red with it
 hyp-pt-pool-open-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-pt-check-skip-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-pt-probe	pending	

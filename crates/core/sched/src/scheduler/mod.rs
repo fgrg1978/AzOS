@@ -3126,12 +3126,17 @@ pub fn task_class_raw(tid: u32) -> Option<u8> {
 
 /// Does reclaim leave the memory of the thread `tid` alone: its Domain is on a
 /// `mem = "locked"` row, or it is a real-time thread (a real-time class, or a
-/// priority in the real-time band)?
+/// base priority in the real-time band)? A priority inheritance boost does not
+/// count: it comes and goes without an admission, so nothing brings the
+/// thread's pages back when it starts.
+///
+/// Canary `pin-effective-priority-canary`: the boosted priority is read.
 pub fn thread_pins_memory(tid: u32) -> bool {
     let Some(idx) = idx_for_tid(tid) else { return false };
+    let prio = if cfg!(feature = "pin-effective-priority-canary") { task_priority(tid) } else { task_base_priority(tid) };
     crate::domain::mem_locked(task_domain(idx))
         || task_class_raw(tid).and_then(crate::class::SchedClass::from_raw).is_some_and(crate::class::SchedClass::is_realtime)
-        || task_priority(tid).is_some_and(crate::task::is_rt_priority)
+        || prio.is_some_and(crate::task::is_rt_priority)
 }
 
 /// The address space of the task `tid`, if it is live and has one. A read of

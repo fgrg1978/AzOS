@@ -3121,3 +3121,36 @@ azos_ktest::ktest_late! {
         r
     }
 }
+
+// A priority inheritance boost into the real-time band does not pin a thread's
+// memory: only its own (base) priority does, which an admission sets and which
+// brings its pages back (`azos_sched::thread_pins_memory`). Canary
+// `pin-effective-priority-canary`: the boosted priority is read.
+azos_ktest::ktest_late! {
+    fn a_boosted_thread_does_not_pin_memory() {
+        use core::sync::atomic::Ordering::{Acquire, Release};
+        PIN_MEMBER_TID.store(0, Release);
+        PIN_GO.store(false, Release);
+        azos_sched::task_create_affinity("c1-pin-boosted", pin_member, 0, azos_sched::DEFAULT_PRIORITY, -1);
+        wait("the boosted task never started", || PIN_MEMBER_TID.load(Acquire) != 0)?;
+        let t = PIN_MEMBER_TID.load(Acquire);
+        let r = (|| {
+            if azos_sched::thread_pins_memory(t) {
+                return Err("a thread of the default priority pins memory: the case proves nothing");
+            }
+            azos_sched::scheduler::boost_ready_task(t, 5);
+            let boosted = azos_sched::scheduler::task_priority(t) == Some(5);
+            let pinned = azos_sched::thread_pins_memory(t);
+            azos_sched::scheduler::restore_ready_task(t);
+            if !boosted {
+                return Err("the boost did not land");
+            }
+            if pinned {
+                return Err("a boosted thread pins memory with its pages out");
+            }
+            Ok(())
+        })();
+        PIN_GO.store(true, Release);
+        r
+    }
+}

@@ -1289,6 +1289,11 @@ pub fn task_priority(tid: u32) -> Option<u32> {
     unsafe { idx_for_tid(tid).map(|i| task_mut(i).priority.load(Ordering::Relaxed)) }
 }
 
+/// The base priority of the task `tid`: its own, without a donation.
+pub fn task_base_priority(tid: u32) -> Option<u32> {
+    unsafe { idx_for_tid(tid).map(|i| task_ref(i).base_priority.load(Ordering::Relaxed)) }
+}
+
 /// The hart a task is pinned to (`-1` = any), or `None` if no such task.
 pub fn task_cpu_affinity(tid: u32) -> Option<i8> {
     unsafe { idx_for_tid(tid).map(|i| task_ref(i).affinity()) }
