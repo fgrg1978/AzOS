@@ -3,7 +3,7 @@
 //! What the x86_64 board moves and measures: an [`OppActuator`] over the CPU's
 //! own performance-level MSRs, and RAPL's package energy as a meter. The
 //! temperature is [`crate::x86_sensor`]'s; this is the half that fills the
-//! `A` slot of [`crate::x86_sensor::X86Board`].
+//! `A` slot of [`crate::sensor::Joined`].
 //!
 //! What the CPU offers is `azos_arch::cpu::pstate::probe`'s (CPUID, vendor,
 //! model, never a hypervisor); this module is the part that does something
@@ -434,7 +434,7 @@ impl X86Pstate {
 }
 
 /// A tick's actuator: the state and the kernel's access to the CPU. It is the
-/// `A` of [`crate::x86_sensor::X86Board`].
+/// `A` of [`crate::sensor::Joined`].
 pub struct Actuator<'a, P> {
     state: &'a mut X86Pstate,
     platform: P,

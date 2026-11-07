@@ -982,6 +982,9 @@ thermal-smoke = ["qemu", "thermal", "azos_topology/energy-fake-balanced", "azos_
 # Its canaries, one property broken each; the named check must print FAIL.
 # The task never ticks: governor, throttle, degrade and recover all go red.
 thermal-tick-canary = ["thermal-smoke"]
+# The runtime reads a constant instead of the sensor class's instance: the
+# temperature never rises, so throttle goes red.
+thermal-class-canary = ["thermal-smoke"]
 # The framework lowers a clock below the deadline and safety floors: floor.
 thermal-floor-canary = ["thermal-smoke", "azos_energy/thermal-floor-canary"]
 # The energy gate row (`kernel/src/smokes/energy_smoke.rs`): the

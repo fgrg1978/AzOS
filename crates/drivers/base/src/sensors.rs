@@ -145,7 +145,8 @@ pub enum ReadError {
     NotReady,
     /// The record does not fit a sample.
     Unsupported,
-    /// The device or its transport failed.
+    /// The device or its transport failed, or delivered a value its channel
+    /// cannot hold.
     Io,
 }
 
@@ -327,10 +328,21 @@ pub fn count() -> usize {
     SENSORS.count()
 }
 
-/// The first instance whose channel 0 measures `q` in `unit`, searching from
-/// `from`.
-pub fn find(q: Quantity, unit: Unit, from: u32) -> Option<u32> {
-    (from..INSTANCES as u32).find(|&n| {
-        get(n).is_some_and(|s| s.channels().first().is_some_and(|c| c.quantity == q && c.unit == unit))
-    })
+/// The temperature sensor `n` reads, in milli-degrees Celsius: the sensor's
+/// read, decoded by its first channel, which must measure a temperature in that
+/// unit and admit the value (a reading outside what the part can measure is a
+/// transport fault, not a temperature: `Io`). A sensor that is not registered
+/// is not ready.
+pub fn temperature_mdeg(n: u32) -> Result<i32, ReadError> {
+    let s = get(n).ok_or(ReadError::NotReady)?;
+    let ch = *s.channels().first().ok_or(ReadError::Unsupported)?;
+    if ch.quantity != Quantity::Temperature || ch.unit != Unit::MilliDegC {
+        return Err(ReadError::Unsupported);
+    }
+    let sample = s.read()?;
+    let v = value(s.channels(), &sample, 0).ok_or(ReadError::NotReady)?;
+    if !ch.admits(v) {
+        return Err(ReadError::Io);
+    }
+    i32::try_from(v).map_err(|_| ReadError::Io)
 }

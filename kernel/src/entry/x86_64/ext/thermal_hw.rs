@@ -23,17 +23,17 @@ use azos_arch::irq::{apic, encode};
 use azos_thermal::x86 as pc;
 
 #[cfg(feature = "thermal")]
-pub(crate) use sensor::{board, probe};
+pub(crate) use sensor::{probe, sensor};
 
-/// The package sensor (Kconfig THERMAL): what the probe reads and the board
-/// object of a tick that reads it.
+/// The package sensor (Kconfig THERMAL): what the probe reads and the sensor
+/// it makes.
 #[cfg(feature = "thermal")]
 mod sensor {
     use azos_arch::cpu::features::{decode_ident, read_cpuid, Vendor as ArchVendor};
     use azos_arch::platform_impl::cpuid;
     #[cfg(feature = "pci")]
     use azos_thermal::x86_sensor::{SMN_DATA, SMN_INDEX};
-    use azos_thermal::x86_sensor::{self, brand_from_leaves, Kind, MsrBus, Refused, RootComplex, Vendor, X86Board, X86Cpu, X86Sensor};
+    use azos_thermal::x86_sensor::{self, brand_from_leaves, Kind, MsrBus, Refused, RootComplex, Vendor, X86Cpu, X86Sensor};
 
     /// `rdmsr` on the executing CPU.
     pub(crate) struct Msr;
@@ -106,11 +106,9 @@ mod sensor {
         x86_sensor::probe(&this_cpu(), &mut Msr, &Root)
     }
 
-    /// The board object for one tick: the sensor `kind` over the real MSRs and
-    /// root complex, paired with `actuator` (`azos_thermal::x86::X86Pstate::actuator`
-    /// over [`KernelPlatform`]).
-    pub(crate) fn board<A>(kind: Kind, actuator: A) -> X86Board<Msr, Root, A> {
-        X86Board { sensor: X86Sensor::new(kind, Msr, Root), actuator }
+    /// The sensor `kind` over the real MSRs and root complex.
+    pub(crate) fn sensor(kind: Kind) -> X86Sensor<Msr, Root> {
+        X86Sensor::new(kind, Msr, Root)
     }
 }
 

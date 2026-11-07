@@ -57,6 +57,12 @@
 //! * Anything else (QEMU): no sensor and no actuator, so no runtime is built
 //!   and no task exists (invariant I4: nothing changes).
 //!
+//! Every one of those sensors is an instance of the sensor class
+//! (`azos_drv_base::sensors`, registered by its probe after the board's own
+//! ten, one instance per channel); the runtime reads a zone's temperature from
+//! the instance its sensor index offsets from the board's first
+//! ([`ClassSensors`]), so a sensor is read the way a task reads any other.
+//!
 //! The sensors (`sfctemp`, the K1's `TSEN`, the x86 package sensor) are
 //! `THERMAL`'s alone; the clocks (the JH7110's CPU clock, the K1's clusters,
 //! the Pi's ARM clock, the x86 level request) are there with `ENERGY`. The
@@ -101,7 +107,8 @@
 //!
 //! # QEMU row
 //!
-//! With `thermal-smoke` the board is [`azos_thermal::fake::FakeBoard`] over the
+//! With `thermal-smoke` the board is [`azos_thermal::fake::FakeBoard`], and its sensor
+//! an instance of the sensor class like any other ([`azos_thermal::fake::FakeSensor`]), over the
 //! smoke's scripted temperature and one fixture zone, so the row can show
 //! throttle, degrade record and recovery on a machine with no sensor
 //! (`kernel/src/smokes/thermal_smoke.rs`).
@@ -109,10 +116,12 @@
 #[cfg(all(feature = "vf2", feature = "thermal", not(feature = "soc")))]
 compile_error!("THERMAL on the VisionFive 2 needs SOC_FRAMEWORKS: the CPU clock it moves is the frameworks'");
 
+use azos_drv_base::sensors::{self as sensor_class, board, ReadError, Sample, Sensor, SensorChip, Source};
 use azos_energy::model::MAX_DOMAINS;
 use azos_energy::thermal::{Event, LOG_LEN};
 use azos_sync::SpinLock;
 use azos_thermal::runtime::{event_name, stance, Inputs, Runtime, Stance};
+use azos_thermal::sensor::{Joined, SensorBank, SensorError};
 
 use crate::kprintln;
 
@@ -142,17 +151,17 @@ enum Board {
     // The gate row builds the fake board instead, and never constructs this one.
     #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
     #[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
-    Rpi,
-    /// x86_64: the probed package sensor (`None`: no `THERMAL`, or none the
-    /// probe found), and the level request and energy meter the CPU has; the
-    /// board object is built from them for each tick (`thermal_hw::board`).
+    Rpi { sensors: u32 },
+    /// x86_64: whether the probe found a package sensor (registered in the
+    /// sensor class; `false`: no `THERMAL`, or none the probe found), and the
+    /// level request and energy meter the CPU has.
     // arch-only: MSRs and CPUID are x86; the gate row builds the fake board instead
     // and never constructs this one.
     #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
-    X86 { kind: Option<azos_thermal::x86_sensor::Kind>, pc: azos_thermal::x86::X86Pstate },
+    X86 { sensed: bool, pc: azos_thermal::x86::X86Pstate },
     /// QEMU gate row: a scripted temperature and a clock that remembers.
     #[cfg(feature = "thermal-smoke")]
-    Fake(azos_thermal::fake::FakeBoard),
+    Fake(Joined<ClassSensors, azos_thermal::fake::FakeBoard>),
 }
 
 impl Board {
@@ -164,7 +173,7 @@ impl Board {
             Board::K1 { .. } => "k1",
             // arch-only: as the variant.
             #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
-            Board::Rpi => "rpi",
+            Board::Rpi { .. } => "rpi",
             // arch-only: as the variant.
             #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
             Board::X86 { .. } => "x86",
@@ -191,6 +200,77 @@ static STATE: SpinLock<Option<State>> = SpinLock::new(None);
 
 /// The state is out of [`STATE`] for a tick (`tick_once`).
 static TICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+// ── The sensors, as instances of the sensor class ───────────────────────────
+
+/// No instance registered yet.
+const NO_INSTANCE: u32 = u32::MAX;
+
+/// The temperatures the runtime reads: the sensor class's instances `base`,
+/// `base + 1`, ... which a board registers in the order its tree numbers its
+/// sensors (a zone's sensor index is the offset).
+struct ClassSensors {
+    base: u32,
+}
+
+impl SensorBank for ClassSensors {
+    fn read_mdeg(&mut self, sensor: u8) -> Result<i32, SensorError> {
+        // CANARY, never in a real build: a cool machine whatever the sensor says.
+        if cfg!(feature = "thermal-class-canary") {
+            return Ok(40_000);
+        }
+        sensor_class::temperature_mdeg(self.base.saturating_add(sensor as u32)).map_err(|e| match e {
+            ReadError::Io => SensorError::Io,
+            ReadError::Unsupported => SensorError::Absent,
+            ReadError::NotReady => SensorError::Invalid,
+        })
+    }
+}
+
+/// The scripted temperature of the gate row's fixture, as a sensor instance.
+#[cfg(feature = "thermal-smoke")]
+struct FakeChip;
+
+#[cfg(feature = "thermal-smoke")]
+impl SensorChip for FakeChip {
+    fn read(&self) -> Result<Sample, ReadError> {
+        reading(azos_thermal::fake::FakeSensor::new(crate::smokes::thermal_smoke::temp).read_mdeg(0))
+    }
+    fn may_sleep(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "thermal-smoke")]
+static FAKE_SENSOR: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&FakeChip));
+
+/// A board's reading of its sensor as the class's answer, stamped now.
+fn reading(r: Result<i32, SensorError>) -> Result<Sample, ReadError> {
+    match r {
+        Ok(mdeg) => Ok(board::temperature_sample(mdeg, azos_drv_sys::timebase::vdso_ns(azos_drv_sys::timebase::now()))),
+        Err(SensorError::Io) => Err(ReadError::Io),
+        Err(SensorError::Absent) => Err(ReadError::Unsupported),
+        Err(SensorError::Invalid) => Err(ReadError::NotReady),
+    }
+}
+
+/// Register a board's temperature sensors consecutively; the number of the
+/// first, or why not.
+fn register_temperatures(sensors: &[&'static Sensor]) -> Option<u32> {
+    let mut first = None;
+    for s in sensors {
+        match sensor_class::register_board(s) {
+            Ok(n) => {
+                first.get_or_insert(n);
+            }
+            Err(_) => {
+                azos_drv_sys::kwarn!("[THERMAL] Kconfig SENSOR_INSTANCES is full: a temperature sensor of this board is not read");
+                return None;
+            }
+        }
+    }
+    first
+}
 
 // ── JH7110: the sensor ───────────────────────────────────────────────────────
 
@@ -227,7 +307,35 @@ impl azos_thermal::jh7110::SfcTempBus for SfcTempMmio {
 pub(super) fn attach_sfctemp(base: usize) {
     azos_thermal::jh7110::SfcTemp::new(SfcTempMmio(base)).start();
     SFCTEMP_BASE.store(base, core::sync::atomic::Ordering::Release);
+    if let Some(n) = register_temperatures(&[&SFCTEMP]) {
+        SFCTEMP_INSTANCE.store(n, core::sync::atomic::Ordering::Release);
+    }
 }
+
+/// The `sfctemp` as a sensor instance: its last conversion.
+#[cfg(all(feature = "vf2", feature = "thermal"))]
+struct SfcTempChip;
+
+#[cfg(all(feature = "vf2", feature = "thermal"))]
+impl SensorChip for SfcTempChip {
+    fn read(&self) -> Result<Sample, ReadError> {
+        let base = SFCTEMP_BASE.load(core::sync::atomic::Ordering::Acquire);
+        if base == 0 {
+            return Err(ReadError::NotReady);
+        }
+        reading(azos_thermal::jh7110::SfcTemp::new(SfcTempMmio(base)).read_mdeg())
+    }
+    fn may_sleep(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(all(feature = "vf2", feature = "thermal"))]
+static SFCTEMP: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&SfcTempChip));
+
+/// The instance of the `sfctemp` (`NO_INSTANCE`: none registered).
+#[cfg(all(feature = "vf2", feature = "thermal"))]
+static SFCTEMP_INSTANCE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(NO_INSTANCE);
 
 /// A cluster clock the frameworks cannot name: every request is refused, so
 /// the runtime raises the level instead of running hot unannounced.
@@ -272,8 +380,47 @@ impl azos_thermal::k1::K1TsensorBus for K1TsensorMmio {
 pub(super) fn attach_k1_tsensor(base: usize) -> Result<(), azos_thermal::k1::StartError> {
     azos_thermal::k1::K1Tsensor::new(K1TsensorMmio(base)).start()?;
     K1_TSENSOR_BASE.store(base, core::sync::atomic::Ordering::Release);
+    let all: [&'static Sensor; azos_thermal::k1::K1_SENSORS as usize] =
+        [&K1_SENSORS[0], &K1_SENSORS[1], &K1_SENSORS[2], &K1_SENSORS[3], &K1_SENSORS[4]];
+    if let Some(n) = register_temperatures(&all) {
+        K1_INSTANCE.store(n, core::sync::atomic::Ordering::Release);
+    }
     Ok(())
 }
+
+/// Channel `.0` of the K1's `TSEN` block as a sensor instance.
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+struct K1Chip(u8);
+
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+impl SensorChip for K1Chip {
+    fn read(&self) -> Result<Sample, ReadError> {
+        let base = K1_TSENSOR_BASE.load(core::sync::atomic::Ordering::Acquire);
+        if base == 0 {
+            return Err(ReadError::NotReady);
+        }
+        reading(azos_thermal::k1::K1Tsensor::new(K1TsensorMmio(base)).read_mdeg(self.0))
+    }
+    fn may_sleep(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+static K1_CHIPS: [K1Chip; 5] = [K1Chip(0), K1Chip(1), K1Chip(2), K1Chip(3), K1Chip(4)];
+
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+static K1_SENSORS: [Sensor; 5] = [
+    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[0])),
+    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[1])),
+    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[2])),
+    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[3])),
+    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[4])),
+];
+
+/// The instance of the K1's first channel; the others follow it.
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+static K1_INSTANCE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(NO_INSTANCE);
 
 /// Busy-wait `us` microseconds: the rail's ramp, between the rail write and
 /// the clock that needs it.
@@ -305,6 +452,51 @@ impl azos_thermal::k1_soc::K1Clocks for LockedClocks {
     }
 }
 
+// ── Raspberry Pi: the sensor and the clock, both the firmware's ─────────────
+
+/// The SoC temperature the VideoCore reports, as a sensor instance. The read
+/// is a mailbox exchange: the firmware answers in milliseconds, so it waits.
+// arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
+#[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
+#[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
+struct RpiChip;
+
+// arch-only: as the type.
+#[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
+#[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
+impl SensorChip for RpiChip {
+    fn read(&self) -> Result<Sample, ReadError> {
+        match crate::entry::aarch64::ext::rpi_mbox::with(|fw| fw.read_mdeg(0)) {
+            Some(r) => reading(r),
+            None => Err(ReadError::NotReady),
+        }
+    }
+    fn may_sleep(&self) -> bool {
+        true
+    }
+}
+
+// arch-only: as the type.
+#[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
+#[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
+static RPI_SENSOR: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&RpiChip));
+
+/// The ARM clock, moved through the firmware one request at a time.
+// arch-only: as the type.
+#[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
+#[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
+struct RpiClock;
+
+// arch-only: as the type.
+#[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
+#[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
+impl azos_energy::opp::OppActuator for RpiClock {
+    fn set_opp(&mut self, domain: usize, opp: &azos_energy::model::Opp) -> Result<(), azos_energy::opp::ActuateError> {
+        crate::entry::aarch64::ext::rpi_mbox::with(|fw| fw.set_opp(domain, opp))
+            .unwrap_or(Err(azos_energy::opp::ActuateError::Unsupported))
+    }
+}
+
 // ── Construction ────────────────────────────────────────────────────────────
 
 /// Build the board's runtime over the model the energy step resolved: with
@@ -322,7 +514,8 @@ pub(crate) fn install(dtb_ptr: usize) {
         // pleased), so the first request of the governor always reaches the
         // fake clock, whichever OPP it names.
         let rt = Runtime::new(azos_thermal::fake::fixture(model));
-        let board = Board::Fake(azos_thermal::fake::FakeBoard::new(crate::smokes::thermal_smoke::temp));
+        let sensor = ClassSensors { base: register_temperatures(&[&FAKE_SENSOR]).unwrap_or(NO_INSTANCE) };
+        let board = Board::Fake(Joined { sensor, actuator: azos_thermal::fake::FakeBoard::new() });
         publish(rt, board, "fixture zone, scripted temperature");
     }
     // arch-only: x86_64 has no device tree; its zone comes from Kconfig.
@@ -441,6 +634,13 @@ fn install_x86(model: &azos_energy::EnergyModel) {
         return;
     }
     let (kind, dt) = zone.unzip();
+    #[cfg(feature = "thermal")]
+    if let Some(kind) = kind {
+        *X86_KIND.lock() = Some(kind);
+        if let Some(n) = register_temperatures(&[&X86_PACKAGE]) {
+            X86_INSTANCE.store(n, core::sync::atomic::Ordering::Release);
+        }
+    }
     // The clock the firmware left: the whole range of the part, which is each
     // domain's fastest OPP and what a cap is lifted back to.
     let (rt, r) = runtime(dt.as_ref(), model, |d| boot_khz(hw, model, d));
@@ -448,8 +648,39 @@ fn install_x86(model: &azos_energy::EnergyModel) {
         report_tree(r);
     }
     let source = if kind.is_some() { "Kconfig trips" } else { "no zone: the governor's clock alone" };
-    publish(rt, Board::X86 { kind, pc: X86Pstate::new(hw, model) }, source);
+    publish(rt, Board::X86 { sensed: kind.is_some(), pc: X86Pstate::new(hw, model) }, source);
 }
+
+/// The package sensor the probe found.
+// arch-only: MSRs and CPUID are x86.
+#[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), target_arch = "x86_64"))]
+static X86_KIND: SpinLock<Option<azos_thermal::x86_sensor::Kind>> = SpinLock::new(None);
+
+/// The package sensor as a sensor instance.
+// arch-only: MSRs and CPUID are x86.
+#[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), target_arch = "x86_64"))]
+struct X86PackageChip;
+
+// arch-only: as the type.
+#[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), target_arch = "x86_64"))]
+impl SensorChip for X86PackageChip {
+    fn read(&self) -> Result<Sample, ReadError> {
+        let Some(kind) = *X86_KIND.lock() else { return Err(ReadError::NotReady) };
+        reading(crate::entry::x86_64::ext::thermal_hw::sensor(kind).read_mdeg(0))
+    }
+    fn may_sleep(&self) -> bool {
+        false
+    }
+}
+
+// arch-only: as the type.
+#[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), target_arch = "x86_64"))]
+static X86_PACKAGE: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&X86PackageChip));
+
+/// The instance of the package sensor.
+// arch-only: as the type.
+#[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), target_arch = "x86_64"))]
+static X86_INSTANCE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(NO_INSTANCE);
 
 /// x86_64: the package sensor the CPU has and its zone, from Kconfig
 /// `THERMAL_X86_PASSIVE_C` / `THERMAL_X86_HOT_C` / `THERMAL_X86_CRITICAL_C` /
@@ -579,7 +810,8 @@ fn board_runtime(
     .flatten()
     {
         let (rt, r) = built;
-        return Some((rt, r, Board::Rpi));
+        let sensors = register_temperatures(&[&RPI_SENSOR]).unwrap_or(NO_INSTANCE);
+        return Some((rt, r, Board::Rpi { sensors }));
     }
     let _ = (dt, model);
     None
@@ -686,22 +918,22 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
     let settled = match board {
         #[cfg(all(feature = "vf2", feature = "soc"))]
         Board::Jh7110 { clock } => {
-            // A sensor that is not bound (base 0) is never read: its runtime
-            // has no zone.
+            // A sensor that is not registered is never read: its runtime has no
+            // zone.
             #[cfg(feature = "thermal")]
-            let sensor = azos_thermal::jh7110::SfcTemp::new(SfcTempMmio(SFCTEMP_BASE.load(core::sync::atomic::Ordering::Acquire)));
+            let sensor = ClassSensors { base: SFCTEMP_INSTANCE.load(core::sync::atomic::Ordering::Acquire) };
             match *clock {
                 Some((clk, ceiling_khz)) => super::soc::with(|_fdt, soc, bus, fx| {
                     let clock = azos_thermal::soc::SocCpuClock { tree: &mut soc.clocks, bus, fx, clk, ceiling_khz };
                     #[cfg(feature = "thermal")]
-                    let settled = rt.tick(&mut azos_thermal::jh7110::Jh7110 { sensor, clock }, model, now, inp);
+                    let settled = rt.tick(&mut Joined { sensor, actuator: azos_thermal::jh7110::Cluster(clock) }, model, now, inp);
                     #[cfg(not(feature = "thermal"))]
                     let settled = rt.tick(&mut azos_thermal::runtime::NoSensor(azos_thermal::jh7110::Cluster(clock)), model, now, inp);
                     settled
                 })
                 .unwrap_or_else(|| rt.last()),
                 #[cfg(feature = "thermal")]
-                None => rt.tick(&mut azos_thermal::jh7110::Jh7110 { sensor, clock: NoClock }, model, now, inp),
+                None => rt.tick(&mut Joined { sensor, actuator: azos_thermal::jh7110::Cluster(NoClock) }, model, now, inp),
                 // Without a sensor and a clock there is no board (`board_runtime`).
                 #[cfg(not(feature = "thermal"))]
                 None => rt.last(),
@@ -727,13 +959,13 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
                     opp.bind(d, *t);
                 }
             }
-            // A block that is not bound (base 0) is never read: its runtime
-            // has no zone.
+            // A block that is not registered is never read: its runtime has no
+            // zone.
             #[cfg(feature = "thermal")]
             let (settled, mut opp) = {
-                let base = K1_TSENSOR_BASE.load(core::sync::atomic::Ordering::Acquire);
-                let mut b = azos_thermal::k1::K1::new(azos_thermal::k1::K1Tsensor::new(K1TsensorMmio(base)), opp);
-                (rt.tick(&mut b, model, now, inp), b.opp)
+                let sensor = ClassSensors { base: K1_INSTANCE.load(core::sync::atomic::Ordering::Acquire) };
+                let mut b = Joined { sensor, actuator: opp };
+                (rt.tick(&mut b, model, now, inp), b.actuator)
             };
             #[cfg(not(feature = "thermal"))]
             let (settled, mut opp) = {
@@ -746,15 +978,22 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
         }
         // arch-only: as the variant.
         #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
-        Board::Rpi => crate::entry::aarch64::ext::rpi_mbox::with(|fw| rt.tick(fw, model, now, inp))
-            .unwrap_or_else(|| rt.last()),
+        Board::Rpi { sensors } => {
+            // The firmware's lock is taken for each operation and not across
+            // the tick: the sensor's read takes it too.
+            let sensor = ClassSensors { base: *sensors };
+            rt.tick(&mut Joined { sensor, actuator: RpiClock }, model, now, inp)
+        }
         // arch-only: as the variant.
         #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
-        Board::X86 { kind, pc } => {
+        Board::X86 { sensed, pc } => {
             use crate::entry::x86_64::ext::thermal_hw::KernelPlatform;
-            let settled = match *kind {
+            let settled = match *sensed {
                 #[cfg(feature = "thermal")]
-                Some(kind) => rt.tick(&mut crate::entry::x86_64::ext::thermal_hw::board(kind, pc.actuator(KernelPlatform)), model, now, inp),
+                true => {
+                    let sensor = ClassSensors { base: X86_INSTANCE.load(core::sync::atomic::Ordering::Acquire) };
+                    rt.tick(&mut Joined { sensor, actuator: pc.actuator(KernelPlatform) }, model, now, inp)
+                }
                 // No sensor: a runtime with no zone, the clock alone.
                 _ => rt.tick(&mut azos_thermal::runtime::NoSensor(pc.actuator(KernelPlatform)), model, now, inp),
             };
@@ -1045,5 +1284,5 @@ pub(crate) fn smoke_view<R>(f: impl FnOnce(&Runtime, &[u32; MAX_DOMAINS]) -> R) 
     // Irrefutable on riscv64 (the fake is the only board), not on aarch64.
     #[allow(irrefutable_let_patterns)]
     let Board::Fake(fake) = &st.board else { return None };
-    Some(f(&st.rt, &fake.khz))
+    Some(f(&st.rt, &fake.actuator.khz))
 }

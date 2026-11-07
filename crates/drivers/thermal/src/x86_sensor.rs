@@ -27,7 +27,7 @@
 //!
 //! A refused probe is the [`Refused`] reason, which the kernel prints, and
 //! the board has no sensor: the framework stays idle (invariant I4). The
-//! actuator is the pairing board object's business ([`X86Board`]): the CPU's
+//! actuator is the pairing board object's business ([`crate::sensor::Joined`]): the CPU's
 //! own level request ([`crate::x86`]: Intel HWP, AMD CPPC) where the part has
 //! one, and where it has none (or none the OS may drive) its refusal, so heat
 //! raises the degrade level and, at the critical trip, requests the orderly
@@ -72,8 +72,7 @@ use azos_dtb::{
     DtCooler, DtThermal, DT_THERMAL_MAPS, DT_THERMAL_NAME, DT_THERMAL_NO_LIMIT, DT_TRIP_CRITICAL, DT_TRIP_HOT,
     DT_TRIP_PASSIVE, MAX_CPU_REG,
 };
-use azos_energy::model::{EnergyModel, Opp, MAX_MODEL_CPUS};
-use azos_energy::opp::{ActuateError, OppActuator};
+use azos_energy::model::{EnergyModel, MAX_MODEL_CPUS};
 
 use crate::sensor::{SensorBank, SensorError};
 
@@ -441,27 +440,5 @@ impl<M: MsrBus, R: RootComplex> SensorBank for X86Sensor<M, R> {
                 amd_mdeg(reg, tctl_offset_mdeg).ok_or(SensorError::Invalid)
             }
         }
-    }
-}
-
-/// The x86_64 board object: the probed sensor paired with the actuator the
-/// board has ([`crate::x86::Actuator`]: HWP or CPPC level requests, which
-/// refuse every request on a CPU that has neither).
-pub struct X86Board<M, R, A> {
-    /// The package temperature sensor.
-    pub sensor: X86Sensor<M, R>,
-    /// What moves the clock.
-    pub actuator: A,
-}
-
-impl<M: MsrBus, R: RootComplex, A> SensorBank for X86Board<M, R, A> {
-    fn read_mdeg(&mut self, sensor: u8) -> Result<i32, SensorError> {
-        self.sensor.read_mdeg(sensor)
-    }
-}
-
-impl<M, R, A: OppActuator> OppActuator for X86Board<M, R, A> {
-    fn set_opp(&mut self, domain: usize, opp: &Opp) -> Result<(), ActuateError> {
-        self.actuator.set_opp(domain, opp)
     }
 }

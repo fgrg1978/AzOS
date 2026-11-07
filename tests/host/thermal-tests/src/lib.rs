@@ -1286,7 +1286,7 @@ mod jh7110 {
     use azos_energy::model::Opp;
     use azos_energy::opp::{ActuateError, OppActuator};
     use azos_thermal::jh7110::*;
-    use azos_thermal::sensor::{SensorBank, SensorError};
+    use azos_thermal::sensor::SensorError;
 
     #[derive(Default)]
     struct Bus {
@@ -1355,16 +1355,15 @@ mod jh7110 {
     }
 
     #[test]
-    fn the_board_object_answers_sensor_zero_and_domain_zero() {
+    fn the_sensor_reads_a_conversion_and_the_cluster_answers_domain_zero() {
         let mut bus = Bus { reg: CTRL_RSTN | CTRL_RUN | 1829 << DOUT_SHIFT, ..Bus::default() };
-        let mut b = Jh7110 { sensor: SfcTemp::new(&mut bus), clock: Clock(vec![], None) };
-        assert_eq!(b.read_mdeg(0), Ok(25_003));
-        assert_eq!(b.read_mdeg(1), Err(SensorError::Absent));
+        assert_eq!(SfcTemp::new(&mut bus).read_mdeg(), Ok(25_003));
+        let mut b = Cluster(Clock(vec![], None));
         let opp = Opp { freq_khz: 1_500_000, capacity: 512, power_mw: 400 };
         assert_eq!(b.set_opp(0, &opp), Ok(()));
         assert_eq!(b.set_opp(1, &opp), Err(ActuateError::Unsupported));
-        assert_eq!(b.clock.0, [1_500_000]);
-        b.clock.1 = Some(ActuateError::Refused);
+        assert_eq!(b.0.0, [1_500_000]);
+        b.0.1 = Some(ActuateError::Refused);
         assert_eq!(b.set_opp(0, &opp), Err(ActuateError::Refused));
     }
 }
@@ -2956,7 +2955,8 @@ mod k1_tsensor {
 mod fake_board {
     use azos_energy::model::{EnergyModel, ModelSource, Opp, PerfDomain};
     use azos_energy::thermal::{Event, LEVEL_CAUTIOUS, LEVEL_SLOW};
-    use azos_thermal::fake::{fixture, FakeBoard, HOT_MDEG, PASSIVE_MDEG, POLL_MS};
+    use azos_thermal::fake::{fixture, FakeBoard, FakeSensor, HOT_MDEG, PASSIVE_MDEG, POLL_MS};
+    use azos_thermal::sensor::Joined;
     use azos_thermal::runtime::{Inputs, Runtime};
     use core::sync::atomic::{AtomicI32, Ordering};
 
@@ -2987,12 +2987,12 @@ mod fake_board {
         let m = model();
         let mut rt = Runtime::new(fixture(&m));
         rt.assume_boot(&m, |d| Some(m.domains()[d].opps().last().unwrap().freq_khz));
-        let mut hw = FakeBoard::new(temp);
+        let mut hw = Joined { sensor: FakeSensor::new(temp), actuator: FakeBoard::new() };
         // A busy machine: the governor asks for the top OPP of both domains.
         let mut inp = Inputs::IDLE;
         inp.want = [Some(2), Some(3), None, None, None, None, None, None][..azos_energy::model::MAX_DOMAINS].try_into().unwrap();
         let mut now = 0u64;
-        let mut step = |rt: &mut Runtime, hw: &mut FakeBoard, mdeg: i32, n: u32| {
+        let mut step = |rt: &mut Runtime, hw: &mut Joined<FakeSensor, FakeBoard>, mdeg: i32, n: u32| {
             TEMP.store(mdeg, Ordering::Relaxed);
             let mut s = rt.last();
             for _ in 0..n {
@@ -3005,22 +3005,22 @@ mod fake_board {
         // Cool: the governor's request reaches the clock (nothing was set
         // yet, the runtime knew the boot OPP, so nothing moves).
         let s = step(&mut rt, &mut hw, 40_000, 3);
-        assert_eq!((s.level, hw.sets, hw.khz), (0, 0, [0; azos_energy::model::MAX_DOMAINS]));
+        assert_eq!((s.level, hw.actuator.sets, hw.actuator.khz), (0, 0, [0; azos_energy::model::MAX_DOMAINS]));
 
         // Passive: both domains step down to their floors and no further.
         let s = step(&mut rt, &mut hw, PASSIVE_MDEG + 5_000, 6);
-        assert_eq!(&hw.khz[..2], &[800_000, 1_000_000]);
+        assert_eq!(&hw.actuator.khz[..2], &[800_000, 1_000_000]);
         assert_eq!(s.level, LEVEL_CAUTIOUS, "the floors hold the clocks up: cautious");
 
         // Hot: the level rises to slow, the clocks stay at the floors.
         let s = step(&mut rt, &mut hw, HOT_MDEG + 1_000, 2);
         assert_eq!((s.level, s.shutdown), (LEVEL_SLOW, false));
-        assert_eq!(&hw.khz[..2], &[800_000, 1_000_000]);
+        assert_eq!(&hw.actuator.khz[..2], &[800_000, 1_000_000]);
 
         // Cool again: the level falls and the clocks come back to the top.
         let s = step(&mut rt, &mut hw, 40_000, 12);
         assert_eq!((s.level, rt.thermal.level()), (0, 0));
-        assert_eq!(&hw.khz[..2], &[1_200_000, 2_000_000]);
+        assert_eq!(&hw.actuator.khz[..2], &[1_200_000, 2_000_000]);
 
         // The ring told the whole story.
         let events: Vec<(Event, u8)> =
@@ -3043,6 +3043,7 @@ mod x86_sensor {
     use azos_energy::thermal::{Thermal, LEVEL_CAUTIOUS};
     use azos_thermal::runtime::{Inputs, Runtime};
     use azos_thermal::sensor::{SensorBank, SensorError};
+    use azos_thermal::sensor::Joined;
     use azos_thermal::x86_sensor::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -3308,7 +3309,7 @@ mod x86_sensor {
         let kind = probe(&intel(0x3a, 1 | (1 << 6)), &mut M(&msrs), &Cfg(&root)).unwrap();
         // 95 C: 5 C below TjMax, past the passive trip.
         msrs.borrow_mut().has.insert(PKG_THERM_STATUS, status(true, 5));
-        let mut board = X86Board { sensor: X86Sensor::new(kind, M(&msrs), Cfg(&root)), actuator: NoActuator };
+        let mut board = Joined { sensor: X86Sensor::new(kind, M(&msrs), Cfg(&root)), actuator: NoActuator };
         assert_eq!(board.read_mdeg(0), Ok(95_000));
         assert!(95_000 > PASSIVE);
         let mut inp = Inputs::IDLE;
@@ -3329,7 +3330,7 @@ mod x86_sensor {
         let msrs = RefCell::new(Msrs::default());
         let root = new_root(NO_ROOT);
         msrs.borrow_mut().has.insert(THERM_STATUS, status(true, 60));
-        let mut board = X86Board {
+        let mut board = Joined {
             sensor: X86Sensor::new(Kind::Intel { package: false, tjmax_mdeg: 100_000 }, M(&msrs), Cfg(&root)),
             actuator: NoActuator,
         };
@@ -3377,7 +3378,7 @@ mod x86_sensor {
         let msrs = RefCell::new(Msrs::default());
         let root = new_root(NO_ROOT);
         msrs.borrow_mut().has.insert(THERM_STATUS, status(true, 40));
-        let mut board = X86Board {
+        let mut board = Joined {
             sensor: X86Sensor::new(Kind::Intel { package: false, tjmax_mdeg: 100_000 }, M(&msrs), Cfg(&root)),
             actuator: NoActuator,
         };

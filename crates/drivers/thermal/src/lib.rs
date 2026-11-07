@@ -8,9 +8,11 @@
 //!
 //! * [`dt`] — builds the zones from the device tree's `thermal-zones`
 //!   (`azos_dtb::dtb_thermal`), resolving the sensor and the cooled CPUs.
-//! * [`sensor`] — the [`sensor::SensorBank`] seam and its errors.
-//! * [`jh7110`] — the StarFive JH7110 `sfctemp` sensor, and the board object
-//!   that pairs it with the clock framework through [`jh7110::CpuClock`].
+//! * [`sensor`] — the [`sensor::SensorBank`] seam (the kernel's source is the
+//!   sensor class), its errors, and [`sensor::Joined`], the board object that
+//!   pairs a source with an actuator.
+//! * [`jh7110`] — the StarFive JH7110 `sfctemp` sensor, and the CPU cluster's
+//!   clock through [`jh7110::CpuClock`].
 //! * [`soc`] — the CPU clock over the SoC clock framework (`azos_soc`),
 //!   capped at the rate the unmoved supply is known to carry; it implements
 //!   [`jh7110::CpuClock`].
@@ -24,9 +26,8 @@
 //!   clock provider and the P1 PMIC bucks over I2C) and reads the clusters
 //!   from the device tree.
 //! * [`x86_sensor`] — the x86_64 package temperature (Intel `coretemp` MSRs,
-//!   AMD Zen over SMN), probed from CPUID before any register is read, and
-//!   [`x86_sensor::X86Board`], the sensor paired with the actuator the board
-//!   has. [`x86`] is that actuator (Intel HWP or AMD CPPC level requests per
+//!   AMD Zen over SMN), probed from CPUID before any register is read.
+//!   [`x86`] is the board's actuator (Intel HWP or AMD CPPC level requests per
 //!   logical CPU, refusing every request on a CPU with neither) and the RAPL
 //!   package energy meter.
 //! * [`runtime`] — [`runtime::Runtime::from_dt`] builds the board's runtime
@@ -37,7 +38,7 @@
 //! * `fake` (Cargo feature of the QEMU gate row) — a board with a scripted
 //!   temperature and a clock that only remembers.
 //!
-//! A board plugs in as a `SensorBank` + `OppActuator` pair; nothing here is
+//! A board plugs in as a `SensorBank` + `OppActuator` pair ([`sensor::Joined`]); nothing here is
 //! board-specific outside [`jh7110`], [`rpi`], [`k1`], [`x86_sensor`] and [`x86`].
 //! A machine whose x86_64 probe finds no sensor (QEMU, a hypervisor) has no
 //! thermal zone to read and the framework stays idle (invariant I4).

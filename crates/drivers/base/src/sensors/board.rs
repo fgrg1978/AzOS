@@ -79,6 +79,11 @@ pub static POWER_CHANNELS: [Channel; 6] = [
     ch(Q::Flags, U::Bits, 1, false, 0, 1, 0),
     ch(Q::Flags, U::Bits, 1, false, 0, 1, 0),
 ];
+/// A temperature sensor of a thermal zone: milli-degrees Celsius. The range is
+/// what no part can exceed (a reading past it is a transport fault, never a
+/// temperature to act on), wide above any junction limit so that real heat is
+/// never mistaken for a fault.
+pub static TEMPERATURE_CHANNELS: [Channel; 1] = [ch(Q::Temperature, U::MilliDegC, 4, true, -100_000, 300_000, 0)];
 static IMU_TEMP_CHANNELS: [Channel; 1] = [ch(Q::Temperature, U::CentiDegC, 4, true, -4000, 12_500, IMU_HZ)];
 
 pub static IMU_SENSOR: Sensor = Sensor::new(&IMU_CHANNELS, Source::Stream);
@@ -106,6 +111,11 @@ pub fn register(power: &'static Sensor) -> Result<(), RegisterError> {
         debug_assert_eq!(n as usize, i);
     }
     Ok(())
+}
+
+/// A temperature sample of a thermal sensor, milli-degrees Celsius.
+pub fn temperature_sample(mdeg: i32, acq_ns: u64) -> Sample {
+    super::pack(&TEMPERATURE_CHANNELS, &[mdeg as i64], 0, acq_ns)
 }
 
 /// The rangefinders' sample: `None` when the front one has no reading (a board

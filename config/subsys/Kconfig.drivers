@@ -884,7 +884,7 @@ config GPIO_SOFT_EXPANDER
 
 config SENSOR_INSTANCES
     int "Sensors: most instances the Sensor interface serves"
-    range 12 256
+    range 12 255
     default 16
     help
       The sensors the kernel keeps for the `Sensor` interface

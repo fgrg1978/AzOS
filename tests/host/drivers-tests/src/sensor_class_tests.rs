@@ -5,10 +5,8 @@
 //! The registry is a process-wide static: only
 //! `the_board_registers_its_sensors_in_the_topologys_order` touches it.
 
-use super::sensors::{
-    self, board, value, Channel, Quantity, ReadError, Sample, Sensor, SensorChip, Source, Unit, STREAM_DEPTH,
-};
-use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+use super::sensors::{self, board, value, ReadError, Sample, Sensor, SensorChip, Source, STREAM_DEPTH};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering::SeqCst};
 
 /// Samples carrying their number in the first word, so a reader can see a gap
 /// the log itself cannot (a sample that was never published).
@@ -144,23 +142,30 @@ fn a_chip_is_read_when_asked_and_says_whether_it_may_sleep() {
     assert_eq!(NONE.read(), Err(ReadError::Unsupported));
 }
 
-static T_ZONE: Sensor = Sensor::new(&TEMP, Source::Stream);
-static TEMP: [Channel; 1] = [Channel {
-    quantity: Quantity::Temperature,
-    unit: Unit::MilliDegC,
-    width: 4,
-    signed: true,
-    min: -40_000,
-    max: 125_000,
-    rate_hz: 0,
-}];
+static SCRIPTED: AtomicI32 = AtomicI32::new(0);
+
+/// A thermal zone's sensor: whatever the test scripted, as the board's
+/// temperature channel.
+struct Thermometer;
+
+impl SensorChip for Thermometer {
+    fn read(&self) -> Result<Sample, ReadError> {
+        Ok(board::temperature_sample(SCRIPTED.load(SeqCst), 7))
+    }
+    fn may_sleep(&self) -> bool {
+        false
+    }
+}
+
+static THERMOMETER: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&Thermometer));
 
 /// The board's sensors take the numbers the topology's endpoints name, then
-/// the IMU's temperature, then a later sensor the next one; a temperature
-/// sensor is found by what it measures, not by its number.
+/// the IMU's temperature, then a later sensor the next one; a thermal zone
+/// reads the temperature of the instance it names, and only a temperature.
 ///
 /// **Canary:** register the power monitor before the GPS: `sensor.9` is then
-/// the GPS and the assertion on `POWER` fails.
+/// the GPS and the assertion on `POWER` fails. Admit every value in
+/// `temperature_mdeg` (skip the range check): the fault reads as a temperature.
 #[test]
 fn the_board_registers_its_sensors_in_the_topologys_order() {
     board::register(&board::NO_POWER_SENSOR).unwrap();
@@ -175,10 +180,20 @@ fn the_board_registers_its_sensors_in_the_topologys_order() {
         assert!(core::ptr::eq(&*got as *const Sensor, expect as *const Sensor), "sensor {n}");
     }
     assert_eq!(sensors::count(), 11);
-    assert_eq!(sensors::register_board(&T_ZONE), Ok(11));
-    assert_eq!(sensors::find(Quantity::Temperature, Unit::MilliDegC, 0), Some(11));
-    assert_eq!(sensors::find(Quantity::Temperature, Unit::CentiDegC, 0), Some(board::IMU_TEMP));
+    assert_eq!(sensors::register_board(&THERMOMETER), Ok(11));
     assert!(sensors::get(12).is_none());
+
+    SCRIPTED.store(61_250, SeqCst);
+    assert_eq!(sensors::temperature_mdeg(11), Ok(61_250));
+    SCRIPTED.store(-12_000, SeqCst);
+    assert_eq!(sensors::temperature_mdeg(11), Ok(-12_000), "below zero is a temperature");
+    SCRIPTED.store(150_000, SeqCst);
+    assert_eq!(sensors::temperature_mdeg(11), Ok(150_000), "real heat above any junction limit is read");
+    SCRIPTED.store(i32::MAX, SeqCst);
+    assert_eq!(sensors::temperature_mdeg(11), Err(ReadError::Io), "a transport fault is not a temperature");
+    assert_eq!(sensors::temperature_mdeg(12), Err(ReadError::NotReady), "no such sensor");
+    assert_eq!(sensors::temperature_mdeg(board::IMU), Err(ReadError::Unsupported), "an accelerometer is not a thermometer");
+    assert_eq!(sensors::temperature_mdeg(board::IMU_TEMP), Err(ReadError::Unsupported), "centi-degrees are not milli-degrees");
 }
 
 /// **A rangefinder with no reading is no sample, never a zero that reads as

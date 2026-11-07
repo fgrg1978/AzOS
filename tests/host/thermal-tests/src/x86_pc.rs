@@ -4,7 +4,7 @@
 //! MSR layouts word for word, the level an OPP asks for, the order the control
 //! is switched on in, a CPU that gives the OS no control, a request the CPU
 //! does not keep, RAPL across its wrap, and the runtime driving all of it
-//! through the sensor's board object (`x86_sensor::X86Board`): heat caps the
+//! through the board object (`sensor::Joined`): heat caps the
 //! clock, the floors hold, a CPU with no control raises the level instead.
 //!
 //! Canaries (by hand, each must turn the named test red): drop the `+ den - 1`
@@ -21,7 +21,8 @@ use azos_energy::opp::{ActuateError, OppActuator};
 use azos_energy::thermal::{LEVEL_CAUTIOUS, LEVEL_SLOW};
 use azos_thermal::runtime::{Inputs, Runtime};
 use azos_thermal::x86::*;
-use azos_thermal::x86_sensor::{package_zone, Kind, MsrBus, RootComplex, X86Board, X86Sensor};
+use azos_thermal::sensor::Joined;
+use azos_thermal::x86_sensor::{package_zone, Kind, MsrBus, RootComplex, X86Sensor};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
@@ -537,7 +538,7 @@ fn rig(m: EnergyModel, cpu: Cpu, perf: Perf) -> Rig {
 impl Rig {
     fn run(&mut self, inp: &Inputs, from: u64, ticks: u64) {
         for k in from..from + ticks {
-            let mut hw = X86Board {
+            let mut hw = Joined {
                 sensor: X86Sensor::new(Kind::Intel { package: true, tjmax_mdeg: TJMAX_MDEG }, Status(&self.status), NoRoot),
                 actuator: self.st.actuator(Fake(&mut self.cpu)),
             };

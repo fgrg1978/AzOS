@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! A board object with no hardware (Cargo feature `fake`): QEMU has neither a
+//! A board with no hardware (Cargo feature `fake`): QEMU has neither a
 //! temperature sensor nor a clock to move, so the `thermal-smoke` gate row
-//! gives the kernel's thermal task this board instead and drives a
-//! temperature ramp through it. The task, the runtime, the governor seam and
-//! the floors are the real ones; only the two seams that touch hardware are
-//! replaced.
+//! gives the kernel's thermal task these instead and drives a temperature ramp
+//! through them. The task, the runtime, the governor seam and the floors are
+//! the real ones; only the two seams that touch hardware are replaced.
 //!
-//! * [`FakeBoard`] — sensor 0 reads `temp()`; domain `d`'s clock is the last
-//!   OPP the actuator was asked for.
+//! * [`FakeSensor`] — sensor 0 reads `temp()`. The kernel registers it as an
+//!   instance of the sensor class, like every board's sensor.
+//! * [`FakeBoard`] — domain `d`'s clock is the last OPP the actuator was
+//!   asked for.
 //! * [`fixture`] — the zone a machine with no device tree has: passive, hot
 //!   and critical trips, the passive one capping every domain of the model,
 //!   polled every [`POLL_MS`].
@@ -32,9 +33,27 @@ pub const HOT_HYST_MDEG: u32 = 3_000;
 /// Polling delay of the fixture zone, idle and passive alike.
 pub const POLL_MS: u32 = 20;
 
-/// The sensor and the clocks of a machine that has neither.
+/// The temperature sensor of a machine that has none.
+pub struct FakeSensor(fn() -> i32);
+
+impl FakeSensor {
+    /// A sensor whose temperature is `temp()`, milli-degrees Celsius.
+    pub const fn new(temp: fn() -> i32) -> Self {
+        Self(temp)
+    }
+}
+
+impl SensorBank for FakeSensor {
+    fn read_mdeg(&mut self, sensor: u8) -> Result<i32, SensorError> {
+        match sensor {
+            0 => Ok((self.0)()),
+            _ => Err(SensorError::Absent),
+        }
+    }
+}
+
+/// The clocks of a machine that has none.
 pub struct FakeBoard {
-    temp: fn() -> i32,
     /// Per domain, the frequency last set, kHz (0: never asked).
     pub khz: [u32; MAX_DOMAINS],
     /// Requests the actuator took.
@@ -42,18 +61,9 @@ pub struct FakeBoard {
 }
 
 impl FakeBoard {
-    /// A board whose temperature is `temp()`, milli-degrees Celsius.
-    pub const fn new(temp: fn() -> i32) -> Self {
-        Self { temp, khz: [0; MAX_DOMAINS], sets: 0 }
-    }
-}
-
-impl SensorBank for FakeBoard {
-    fn read_mdeg(&mut self, sensor: u8) -> Result<i32, SensorError> {
-        match sensor {
-            0 => Ok((self.temp)()),
-            _ => Err(SensorError::Absent),
-        }
+    /// A board whose clocks remember what they were asked.
+    pub const fn new() -> Self {
+        Self { khz: [0; MAX_DOMAINS], sets: 0 }
     }
 }
 

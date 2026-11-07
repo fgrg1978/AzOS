@@ -110,7 +110,7 @@
 //! # Users
 //!
 //! The kernel's thermal task (`kernel/src/boot/thermal.rs`, `Board::K1`)
-//! builds [`K1`] for each tick and the runtime from [`runtime_from_dt`].
+//! builds [`K1Opp`] for each tick and the runtime from [`runtime_from_dt`].
 //! Host-tested (`tests/host/thermal-tests`, `k1_opp` and `k1_tsensor`
 //! modules, and `tests/host/soc-tests`, the `k1` wire tests over the Jupiter
 //! fixture).
@@ -561,33 +561,6 @@ impl<B: K1TsensorBus> SensorBank for K1Tsensor<B> {
             return Err(SensorError::Invalid);
         }
         Ok((raw as i32 - TEMPERATURE_OFFSET) * 1000)
-    }
-}
-
-/// The K1 board object: the temperature sensor and the DVFS actuator.
-pub struct K1<B, H> {
-    /// The temperature sensor block.
-    pub sensor: K1Tsensor<B>,
-    /// The clusters' clocks and rails.
-    pub opp: K1Opp<H>,
-}
-
-impl<B, H> K1<B, H> {
-    /// The board object over its two halves.
-    pub const fn new(sensor: K1Tsensor<B>, opp: K1Opp<H>) -> Self {
-        Self { sensor, opp }
-    }
-}
-
-impl<B: K1TsensorBus, H: K1Hw> SensorBank for K1<B, H> {
-    fn read_mdeg(&mut self, sensor: u8) -> Result<i32, SensorError> {
-        self.sensor.read_mdeg(sensor)
-    }
-}
-
-impl<B: K1TsensorBus, H: K1Hw> OppActuator for K1<B, H> {
-    fn set_opp(&mut self, domain: usize, opp: &Opp) -> Result<(), ActuateError> {
-        self.opp.set_opp(domain, opp)
     }
 }
 

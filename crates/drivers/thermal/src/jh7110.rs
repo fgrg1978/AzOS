@@ -26,7 +26,7 @@
 use azos_energy::model::Opp;
 use azos_energy::opp::{ActuateError, OppActuator};
 
-use crate::sensor::{SensorBank, SensorError};
+use crate::sensor::SensorError;
 
 /// Register offset of the control/data word.
 pub const REG_CTRL: usize = 0x00;
@@ -107,31 +107,7 @@ pub trait CpuClock {
     fn set_cpu_khz(&mut self, khz: u32) -> Result<(), ActuateError>;
 }
 
-/// The JH7110 board object: sensor 0 is the `sfctemp`, domain 0 the cluster.
-pub struct Jh7110<B, C> {
-    /// The temperature sensor.
-    pub sensor: SfcTemp<B>,
-    /// The CPU clock.
-    pub clock: C,
-}
-
-impl<B: SfcTempBus, C: CpuClock> SensorBank for Jh7110<B, C> {
-    fn read_mdeg(&mut self, sensor: u8) -> Result<i32, SensorError> {
-        match sensor {
-            0 => self.sensor.read_mdeg(),
-            _ => Err(SensorError::Absent),
-        }
-    }
-}
-
-impl<B: SfcTempBus, C: CpuClock> OppActuator for Jh7110<B, C> {
-    fn set_opp(&mut self, domain: usize, opp: &Opp) -> Result<(), ActuateError> {
-        Cluster(&mut self.clock).set_opp(domain, opp)
-    }
-}
-
-/// The JH7110's CPU clock alone, as an actuator: domain 0 is the cluster. The
-/// board object of a runtime with no zone (no sensor to read).
+/// The JH7110's CPU clock as an actuator: domain 0 is the cluster.
 pub struct Cluster<C>(pub C);
 
 impl<C: CpuClock> CpuClock for &mut C {
