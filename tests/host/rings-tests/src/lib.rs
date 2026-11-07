@@ -208,6 +208,28 @@ mod tests {
         assert_eq!(late.next(), Next::Item(40));
     }
 
+    /// **A reader made at an item continues exactly there**: the consumer that
+    /// took items up to `n` gets `n + 1` next, an item already overwritten is
+    /// told as a loss, and item 0 is item 1.
+    ///
+    /// Canary: start `reader_at` one item late: red.
+    #[test]
+    fn a_reader_at_an_item_continues_there() {
+        let log = Log::<u32, 4>::new(0);
+        let mut w = log.writer().unwrap();
+        for i in 1..=3 {
+            w.publish(i * 10);
+        }
+        let mut r = log.reader_at(2);
+        assert_eq!((r.next(), r.next(), r.next()), (Next::Item(20), Next::Item(30), Next::Empty));
+        assert_eq!(log.reader_at(0).next(), Next::Item(10), "item 0 is the initial value, not an item");
+        for i in 4..=10 {
+            w.publish(i * 10);
+        }
+        // Items 1..=6 are overwritten; 7..=10 are retained.
+        assert_eq!(log.reader_at(2).next(), Next::Overrun(5));
+    }
+
     #[test]
     fn log_overrun_counts_and_jumps_ahead() {
         let log = Log::<u32, 4>::new(0);
