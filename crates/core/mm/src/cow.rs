@@ -94,17 +94,26 @@ pub fn fork_cow(parent_pt: usize) -> KResult<usize> {
 /// `[va, va + pages * PAGE_SIZE)` is a mapping of the parent's that the walk
 /// left out of the child; the caller has booked the child's reference and
 /// records the mapping once the leaves are copied. Every page must
-/// be a valid user leaf in the parent. On an error the pages done are
-/// unmapped again, so a refused fork leaves nothing of the range.
-pub fn fork_share_range(parent_pt: usize, child_pt: usize, va: usize, pages: usize) -> KResult<()> {
+/// be a valid user leaf in the parent, unless `sparse` (a swappable object's
+/// page that is out, or restored by another mapper, has none: the child faults
+/// it in). On an error the pages done are unmapped again, so a refused fork
+/// leaves nothing of the range.
+pub fn fork_share_range(parent_pt: usize, child_pt: usize, va: usize, pages: usize, sparse: bool) -> KResult<()> {
     let mut done = 0usize;
     let r = (|| {
         for i in 0..pages {
             let v = va.checked_add(i * PAGE_SIZE).ok_or(KernelError::InvalidArg)?;
-            let src = vmm::walk(parent_pt, v, false)?;
+            let src = match vmm::walk(parent_pt, v, false) {
+                Ok(src) => src,
+                Err(_) if sparse => continue,
+                Err(e) => return Err(e),
+            };
             // SAFETY: `walk` answered a pointer to the parent's leaf entry for `v`.
             let pte = unsafe { core::ptr::read_volatile(src) };
             if !ARCH.pte_is_valid(pte) || !ARCH.pte_is_leaf(pte, 0) || !ARCH.pte_perms(pte).user {
+                if sparse && pte == ARCH.pte_empty() {
+                    continue;
+                }
                 return Err(KernelError::NotMapped);
             }
             let dst = vmm::walk(child_pt, v, true)?;
@@ -132,11 +141,14 @@ pub struct ForkLeaves {
     pub child_pt: usize,
     pub va: usize,
     pub pages: usize,
+    /// The parent may lack a leaf for a page of the mapping
+    /// ([`fork_share_range`]).
+    pub sparse: bool,
 }
 
 impl crate::memobj::ChildLeaves for ForkLeaves {
     fn copy(&mut self) -> bool {
-        fork_share_range(self.parent_pt, self.child_pt, self.va, self.pages).is_ok()
+        fork_share_range(self.parent_pt, self.child_pt, self.va, self.pages, self.sparse).is_ok()
     }
     fn leaf(&self, va: usize) -> Option<(usize, bool)> {
         let phys = vmm::translate_user_readable_nofault(self.child_pt, va)?;

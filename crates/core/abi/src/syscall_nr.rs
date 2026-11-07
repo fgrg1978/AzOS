@@ -603,7 +603,14 @@ pub const SHM_KIND_ANON: u64 = 0;
 /// Not with [`SHM_ATTR_VOLATILE`] or [`SHM_ATTR_SWAPPABLE`] (`-EINVAL`).
 pub const SHM_KIND_CONTIG: u64 = 2;
 
-/// MemObj attribute: the reclaimer may take the frames (stored; no reclaimer yet).
+/// MemObj attribute: memory pressure on the Domain that owns the object may
+/// compress its pages and write them to swap; the fault of any mapper brings a
+/// page back. An object with a mapper whose Domain is `mem = "locked"` or whose
+/// process is real-time is never taken. The kernel does not read the object
+/// through the direct map (as [`SHM_ATTR_NO_KERNEL_MAP`], except for the futex
+/// word of a mapped page), and its owner cannot MOVE it nor clone it while a
+/// page is out (`-EBUSY`). Anon objects only, not with [`SHM_ATTR_VOLATILE`]
+/// (`-EINVAL`).
 pub const SHM_ATTR_SWAPPABLE: u64 = 1;
 
 /// MemObj attribute: the kernel never reads the object through the direct map

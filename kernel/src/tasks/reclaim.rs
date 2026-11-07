@@ -22,8 +22,9 @@
 //!
 //! **Ages.** A Domain with a frame limit whose charge is above its low
 //! watermark has its pages aged every `MM_AGING_INTERVAL_MS`
-//! (`pager::age_slots`): the Accessed bit of each resident anonymous page is
-//! collected and cleared, and the page moves one of four generations older, or
+//! (`pager::age_slots` over its private mappings' slots, `pager::age_objects`
+//! over the swappable objects charged to it): the Accessed bit of each resident
+//! anonymous page is collected and cleared, and the page moves one of four generations older, or
 //! back to the youngest when it was used (`azos_mm::aging`). A storm takes the
 //! oldest generation first, so the page it compresses is the one idle longest,
 //! not the one at the lowest address; a page the compressor gave up on is not
@@ -46,7 +47,8 @@
 //!    `MM_RECLAIM_LOW_PCT` percent in use. Only when the system as a whole is
 //!    low: a Domain over its watermark is not the page cache's doing.
 //! 2. *Compression.* Every Domain over its high watermark gets one storm
-//!    (`zpool::run_storm`): its resident anonymous pages, coldest generation
+//!    (`zpool::run_storm`): its resident anonymous pages and those of the
+//!    swappable shared objects charged to it, coldest generation
 //!    first (see *Ages* below), leave their address spaces for the compressed
 //!    pool until its charge is back at the low watermark
 //!    (`pager::DomainReclaim`). The watermarks are declared
@@ -69,7 +71,9 @@
 //! from) is in that set: the rule is decided on the running CPU's fact, not on
 //! the placement alone. Real-time memory is not its business: a real-time row's
 //! frames are committed at map time (`mem = "locked"` is never offered), and a
-//! real-time task's mappings have no region to take a page from.
+//! real-time task's mappings have no region to take a page from. A shared object
+//! such a task maps is left alone too, whichever Domain is charged for it
+//! (`azos_mm::memobj`, "Swappable objects").
 //!
 //! **A restore is charged back.** The storm gives a stored page's charge back
 //! to its Domain; the fault that restores it charges it again, without

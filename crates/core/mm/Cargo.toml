@@ -132,6 +132,7 @@ as-stale-root-canary = []
 # `syscall-tests` pte_truth.rs, `mm-tests` marker_pte.rs, the ktest
 # `anon_fault_decides_from_the_slot_not_the_leaf`.
 mm-pte-truth-canary = []
+age-slots-ignored-canary = []
 # Host-suite canary: an anonymous fault takes a block leaf's word (a promoted
 # block's) for the page's own 4 KiB leaf and installs one into it:
 # `syscall-tests` thp_vmm.rs `a_fault_on_a_promoted_block_leaves_its_leaf_alone` fails.
@@ -289,6 +290,15 @@ memobj-purge-locked-canary = []
 swappable-ignored-canary = []
 object-mapper-pin-canary = []
 swap-rmap-skip-canary = []
+swappable-volatile-canary = []
+swap-transit-ignored-canary = []
+swap-put-back-lost-canary = []
+swap-discharge-all-canary = []
+swap-word-away-canary = []
+swap-away-guards-canary = []
+swap-map-needs-frames-canary = []
+swap-inherit-dense-canary = []
+swap-forget-skipped-canary = []
 # Front futex-shm-word: a futex's shm word is used with the table unlocked
 # (the frame may change owner under it), and a new mapping leaves a cached
 # "no mapping" answer standing.

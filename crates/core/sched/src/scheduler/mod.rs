@@ -3129,14 +3129,9 @@ pub fn task_class_raw(tid: u32) -> Option<u8> {
 /// priority in the real-time band)?
 pub fn task_pins_memory(tid: u32) -> bool {
     let Some(idx) = idx_for_tid(tid) else { return false };
-    // SAFETY: a read of the scheduling words of a live task slot, as `task_class_raw`.
-    let (class, prio) = unsafe {
-        let t = task_ref(idx);
-        (t.sched_class_raw, t.base_priority.load(Ordering::Relaxed))
-    };
     crate::domain::mem_locked(task_domain(idx))
-        || crate::class::SchedClass::from_raw(class).is_some_and(crate::class::SchedClass::is_realtime)
-        || crate::task::is_rt_priority(prio)
+        || task_class_raw(tid).and_then(crate::class::SchedClass::from_raw).is_some_and(crate::class::SchedClass::is_realtime)
+        || task_priority(tid).is_some_and(crate::task::is_rt_priority)
 }
 
 /// The address space of the task `tid`, if it is live and has one. A read of

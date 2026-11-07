@@ -16,7 +16,7 @@
 #![no_std]
 #![no_main]
 
-use azos_abi::syscall_nr::{SHM_ATTR_VOLATILE, SHM_CREATE_ATTR_SHIFT};
+use azos_abi::syscall_nr::{SHM_ATTR_SWAPPABLE, SHM_ATTR_VOLATILE, SHM_CREATE_ATTR_SHIFT};
 use azos_idl::Cap;
 use azos_libsys as sys;
 use sys::dev::{MemCtlCall, MemCtlClient};
@@ -259,6 +259,40 @@ fn volatile_object(pages: usize) -> (u32, usize) {
     (cap as u32, va as usize)
 }
 
+/// The first page number of the shared object's pages, apart from the runs'.
+const SHARED_FIRST: u64 = 1 << 32;
+
+/// A swappable shared object the program writes once and then leaves alone, so
+/// its pages are the coldest the Domain has when the pressure comes. Its
+/// mapping.
+fn swappable_object(pages: usize) -> usize {
+    let cap = sys::shm_create_typed(pages as u64, sys::SHM_RW | (SHM_ATTR_SWAPPABLE << SHM_CREATE_ATTR_SHIFT));
+    if cap < 0 {
+        fail(b"shared FAIL create", &[(b"pages", pages as u64)]);
+    }
+    let va = sys::shm_map_typed(cap as u32);
+    if va <= 0 {
+        fail(b"shared FAIL map", &[]);
+    }
+    for i in 0..pages {
+        // SAFETY: the page is in the object's mapping.
+        unsafe { write_page(va as usize + i * PAGE, SHARED_FIRST + i as u64, compressible) };
+    }
+    va as usize
+}
+
+/// Every page of the shared object is what was written, whether it stayed or
+/// went to the pool and came back through the object.
+fn verify_object(va: usize, pages: usize) {
+    for i in 0..pages {
+        // SAFETY: the object's mapping is alive for the whole run.
+        if let Some(w) = unsafe { check_page(va + i * PAGE, SHARED_FIRST + i as u64, compressible) } {
+            fail(b"contents FAIL shared", &[(b"page", i as u64), (b"word", w as u64)]);
+        }
+    }
+    say(b"shared PASS", &[(b"pages", pages as u64)]);
+}
+
 struct MemCtl {
     ep: u32,
 }
@@ -401,17 +435,20 @@ pub extern "C" fn _start() -> ! {
     if ctl.say(victim, true) {
         fail(b"purge FAIL marked after a purge nobody asked for", &[]);
     }
+    let shared = swappable_object(OBJECT_PAGES);
 
     let (n, pages) = fill(&mut p, target, chunk);
     if pages < target {
         // Rows that stop reclaim on purpose end here, with what they got back.
         verify(n, chunk, false);
+        verify_object(shared, OBJECT_PAGES);
         say(b"contents of the partial fill PASS", &[(b"pages", pages as u64)]);
         sys::exit(0);
     }
     say(b"past RAM PASS", &[(b"pages", pages as u64), (b"free_at_start", free as u64)]);
     verify(n, chunk, false);
     verify(n, chunk, true);
+    verify_object(shared, OBJECT_PAGES);
     say(b"contents PASS", &[(b"pages", pages as u64), (b"free_now", sys::meminfo().max(0) as u64)]);
     release(n, chunk);
 

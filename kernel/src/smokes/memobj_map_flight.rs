@@ -191,7 +191,7 @@ impl ChildLeaves for RacedLeaves {
 
 fn inherit_once(parent: u32, r: u32, parent_pt: usize, child_pt: usize) -> Result<MapAccess, &'static str> {
     let mut leaves = RacedLeaves {
-        leaves: azos_mm::cow::ForkLeaves { parent_pt, child_pt, va: VA, pages: 1 },
+        leaves: azos_mm::cow::ForkLeaves { parent_pt, child_pt, va: VA, pages: 1, sparse: false },
         parent,
         r,
         copied_write: false,

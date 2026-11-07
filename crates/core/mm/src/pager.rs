@@ -1224,7 +1224,11 @@ fn look_window(r: SpaceRef, base: usize, first: usize, last: usize, obj: usize) 
             continue;
         }
         let frame = slot::frame_of(o.look(m.page_index(va)).0);
-        if frame.is_some_and(|f| pmm::desc_of(f).is_some() && !crate::cow_table::page_is_shared(f)) {
+        // Canary `age-slots-ignored-canary`: every page of the window counts as
+        // resident, whatever its slot says.
+        if frame.is_some_and(|f| pmm::desc_of(f).is_some() && !crate::cow_table::page_is_shared(f))
+            || cfg!(feature = "age-slots-ignored-canary")
+        {
             resident |= 1 << i;
         }
     }
@@ -2770,7 +2774,7 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
             // The range's leaves, after its record: a refusal's `drop_records`
             // clears what was copied.
             if matches!(m.backing, Backing::Phys { .. }) {
-                if let Err(e) = crate::cow::fork_share_range(parent.root(), child.root(), m.start, m.pages()) {
+                if let Err(e) = crate::cow::fork_share_range(parent.root(), child.root(), m.start, m.pages(), false) {
                     drop_records(child);
                     return Err(if e == KernelError::OutOfMemory { MapError::Full } else { MapError::Invalid });
                 }

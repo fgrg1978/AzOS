@@ -13028,6 +13028,65 @@ host_job host_canary_row "demand: kernel copy commits canary" syscall-tests dema
 host_job zpool_host_row "brk: heap page restored, pool on" a_heap_page_the_reclaimer_stores_comes_back_through_its_slot
 host_job zpool_host_canary_row "brk: heap page restored canary" mm-pte-truth-canary \
     a_heap_page_the_reclaimer_stores_comes_back_through_its_slot
+# Reclaim of named objects (ATTR_SWAPPABLE; syscall-tests typed_ipc.rs, swap_rows):
+# the storm takes a shared page out of every mapper, stores it once and any
+# mapper's fault restores it; the object's slots feed the aging pass.
+# swap-rmap-skip-canary: the mappers keep their leaves. restore-flip-canary: the
+# restored page has a bit changed. swappable-ignored-canary: an object that did
+# not opt in is offered and taken. object-mapper-pin-canary: only the owner is
+# asked whether its memory is pinned, so a locked or real-time mapper does not
+# keep the object. swap-forget-skipped-canary: an ended object leaves its pool
+# copy. swap-discharge-all-canary: the pages that were out are discharged twice.
+# swap-word-away-canary: a futex word on a page that is out names no key.
+# swap-away-guards-canary: MOVE and clone go ahead with a page out.
+# swap-map-needs-frames-canary: a map needs every frame. swap-inherit-dense-canary:
+# a fork needs every leaf. age-slots-ignored-canary: aging counts every page of a
+# window as resident.
+host_job zpool_host_row "swap: shared page, every mapper" a_shared_page_leaves_every_mapper_and_comes_back_for_either
+host_job zpool_host_canary_row "swap: shared page, rmap canary" swap-rmap-skip-canary \
+    a_shared_page_leaves_every_mapper_and_comes_back_for_either
+host_job zpool_host_canary_row "swap: restored bytes canary" restore-flip-canary \
+    a_shared_page_leaves_every_mapper_and_comes_back_for_either
+host_job zpool_host_row "swap: opt-in only" an_object_that_did_not_opt_in_is_not_offered_or_taken
+host_job zpool_host_canary_row "swap: opt-in only canary" swappable-ignored-canary \
+    an_object_that_did_not_opt_in_is_not_offered_or_taken
+host_job zpool_host_row "swap: pinned mapper keeps the object" an_object_a_pinned_process_maps_is_not_taken_whoever_owns_it
+host_job zpool_host_canary_row "swap: pinned mapper canary" object-mapper-pin-canary \
+    an_object_a_pinned_process_maps_is_not_taken_whoever_owns_it
+host_job zpool_host_row "swap: ended object, pool and charge" an_ended_object_drops_its_pool_copies_and_discharges_only_what_was_resident
+host_job zpool_host_canary_row "swap: ended object pool canary" swap-forget-skipped-canary \
+    an_ended_object_drops_its_pool_copies_and_discharges_only_what_was_resident
+host_job zpool_host_canary_row "swap: ended object charge canary" swap-discharge-all-canary \
+    an_ended_object_drops_its_pool_copies_and_discharges_only_what_was_resident
+host_job zpool_host_row "swap: futex word of a page out" the_futex_word_of_a_page_that_is_out_keeps_its_key_and_settles
+host_job zpool_host_canary_row "swap: futex word canary" swap-word-away-canary \
+    the_futex_word_of_a_page_that_is_out_keeps_its_key_and_settles
+host_job zpool_host_row "swap: MOVE and clone with a page out" an_object_with_a_page_out_is_not_moved_or_cloned
+host_job zpool_host_canary_row "swap: MOVE and clone canary" swap-away-guards-canary \
+    an_object_with_a_page_out_is_not_moved_or_cloned
+host_job zpool_host_row "swap: map with a page out" a_map_over_a_page_that_is_out_leaves_it_to_the_fault
+host_job zpool_host_canary_row "swap: map with a page out canary" swap-map-needs-frames-canary \
+    a_map_over_a_page_that_is_out_leaves_it_to_the_fault
+host_job zpool_host_row "swap: fork with a page out" a_fork_inherits_a_mapping_whose_page_is_out
+host_job zpool_host_canary_row "swap: fork with a page out canary" swap-inherit-dense-canary \
+    a_fork_inherits_a_mapping_whose_page_is_out
+host_job zpool_host_row "age: slots name the resident pages" aging_tracks_the_pages_the_slots_name_resident
+host_job zpool_host_canary_row "age: slots canary" age-slots-ignored-canary \
+    aging_tracks_the_pages_the_slots_name_resident
+# A fault on a page the storm is storing waits and maps nothing; a store that
+# fails gives the page back; the kernel does not address a swappable object; an
+# object is swappable or volatile. swap-transit-ignored-canary: a page in transit
+# looks like a page with no copy. swap-put-back-lost-canary: the frame is not
+# given back. memobj-no-kernel-map-canary: the hidden attributes are not read.
+# swappable-volatile-canary: both are accepted.
+host_job host_canary_row "swap: fault in transit canary" syscall-tests swap-transit-ignored-canary \
+    a_fault_on_a_page_in_transit_waits_for_the_store
+host_job host_canary_row "swap: failed store canary" syscall-tests swap-put-back-lost-canary \
+    a_store_that_fails_gives_the_page_back_unchanged
+host_job host_canary_row "swap: kernel blind canary" syscall-tests memobj-no-kernel-map-canary \
+    the_kernel_does_not_address_a_swappable_objects_frames
+host_job host_canary_row "swap: exclusive with volatile canary" syscall-tests swappable-volatile-canary \
+    an_object_is_swappable_or_volatile_not_both
 # A fault's wait for a fork's hold is no try (pager::resolve_fault): a kernel
 # copy waits the fork out. fork-wait-counted-canary: it gives up (EFAULT).
 host_job zpool_host_row "anon: kernel copy waits out a fork" a_kernel_copy_waits_out_a_fork_hold

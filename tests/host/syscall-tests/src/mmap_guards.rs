@@ -965,7 +965,7 @@ fn a_fork_child_shares_the_shm_mapping_it_inherited_not_a_copy_of_it() {
 
     let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     assert_eq!(azos_mm::vmm::translate_user(child, SHM_VA, false), None, "the mapping is left out first");
-    azos_mm::cow::fork_share_range(pt, child, SHM_VA, 2).expect("both pages are the parent's");
+    azos_mm::cow::fork_share_range(pt, child, SHM_VA, 2, false).expect("both pages are the parent's");
     assert_eq!(azos_mm::vmm::translate_user(child, SHM_VA, true), Some(f0), "the child writes the region's frame");
     assert_eq!(azos_mm::vmm::translate_user(child, SHM_VA + PAGE_SIZE, true), Some(f1));
     assert_eq!(azos_mm::vmm::translate_user(pt, SHM_VA, true), Some(f0), "and so does the parent: one frame, two views");
@@ -973,7 +973,7 @@ fn a_fork_child_shares_the_shm_mapping_it_inherited_not_a_copy_of_it() {
 
     // A range the parent maps only in part is refused whole.
     let child2 = azos_mm::vmm::fork_cow(pt).expect("fork");
-    assert!(azos_mm::cow::fork_share_range(pt, child2, SHM_VA, 3).is_err(), "the third page is not the parent's");
+    assert!(azos_mm::cow::fork_share_range(pt, child2, SHM_VA, 3, false).is_err(), "the third page is not the parent's");
     assert_eq!(azos_mm::vmm::translate_user(child2, SHM_VA, false), None, "and the pages done were undone");
     assert_eq!(azos_mm::vmm::translate_user(child2, SHM_VA + PAGE_SIZE, false), None);
 

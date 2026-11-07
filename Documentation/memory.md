@@ -125,7 +125,7 @@ Attributes in `MemSpec::attrs`:
 
 | Attribute | Meaning |
 |-----------|---------|
-| `ATTR_SWAPPABLE` | The object's opt-in for a reclaimer of MemObj frames. No reclaimer takes MemObj frames (a mapping of an object is a record whose pages are mapped with it, and no fault supplies one), so only a guest's memory check reads it: a guest's RAM refuses an object that carries it. |
+| `ATTR_SWAPPABLE` | The object's opt-in for the Domain storm (*Swappable objects* below): its pages may be compressed, swapped and restored by the fault of any mapper. Anon only, never with `ATTR_VOLATILE`. The kernel does not address its frames (its word, span and frame calls answer as for `ATTR_NO_KERNEL_MAP`; a futex word of a mapped page still works), and a guest's RAM, a display and a sound buffer refuse it. |
 | `ATTR_NO_KERNEL_MAP` | The kernel never reads the object through the direct map; `memobj_with_word_ref` refuses it, and a reclaimer of MemObj frames would have to leave it alone. |
 | `ATTR_VOLATILE` | Purgeable (Anon only). The owner marks the object droppable with `MemCtl::set_volatile` (kernel-hosted endpoint `memctl`, `WRITE`) and in use again with `set_nonvolatile`, which answers whether the object was purged. While volatile, the first stage of the reclaim pass (`memobj_purge_volatile`) may take its frames whole: every holder's mapping is unmapped, the frames and the charge go back, nothing is written, one `Rule::Purge` record is made. Purged is final: `SYS_MO_MAP` and a clone answer `-EPURGED`, and the holder creates a new object. Stage 0 runs only with `MM_RECLAIM_COMPRESS`: on a `MM_RECLAIM_OFF` image a volatile object is never purged (`set_nonvolatile` always answers `false`). `infsrv` (the inference service) keeps its blob arena in one: droppable between calls, held during a call, rebuilt from the signed bundles when it finds the object purged. Never purged: an object in use, one the kernel holds a reference to (a guest's RAM), one a clone shares frames with, one with a pinned holder, one charged to a `mem = "locked"` Domain. |
 
@@ -709,7 +709,7 @@ objects stay resident.
 |-------|--------|----------|
 | 0. Volatile objects | Objects created with `ATTR_VOLATILE` and marked droppable by their owner (`MemCtl::set_volatile`) give their frames up whole: every mapping is unmapped, the frames and the charge go back, nothing is written. Enough to get from now to `MM_RECLAIM_LOW_PCT` percent in use; runs only when the system as a whole is above `MM_RECLAIM_HIGH_PCT`. A Domain on a `mem = "locked"` row keeps its objects. One `Rule::Purge` record per object (`what` 2); the page cache's clean drop writes the same record (`what` 1). | `memobj_purge_volatile` |
 | 1. Page cache | Write back dirty Paged pages and drop clean ones, enough to get from now to `MM_RECLAIM_LOW_PCT` percent in use. Runs only when the system as a whole is above `MM_RECLAIM_HIGH_PCT`. | `memobj_paged_reclaim` |
-| 2. Compression | Every Domain over its high watermark gets one storm: its resident anonymous pages leave their address spaces for the compressed pool, until its charge is back at the low watermark. | `zpool::run_storm` over `pager::AnonReclaim` |
+| 2. Compression | Every Domain over its high watermark gets one storm: its resident anonymous pages leave their address spaces for the compressed pool, until its charge is back at the low watermark. | `zpool::run_storm` over `pager::DomainReclaim` |
 | 3. Swap | When a storm ended because the pool had no room, one full pool segment is written to the swap area, and compression is asked again. | `pager::swap_segment` |
 
 `reclaim_pass` runs stages 0 and 1, then rounds of stage 2; if a round ended with the
@@ -767,7 +767,7 @@ entry, no bytes), a *blob*, or nothing: a page that does not compress below
 
 A storm picks victims from the source it is given, unmaps each from its address
 space with a shootdown, stores it, frees the frame, and gives the charge back.
-`pager::AnonReclaim` offers resident anonymous mapping pages that are owned by
+`pager::DomainReclaim` offers resident anonymous mapping pages that are owned by
 their space alone and are plain 4 KiB leaves whose slot names their frame,
 coldest generation first (see *Page generations* below). Taking one out turns
 its slot into the `InTransit` marker and clears its leaf. It never offers
@@ -777,15 +777,53 @@ any page of a space with a fork walking it. A storm stops at the first refusal
 that is not "this page does not compress", and is recorded as one
 `Rule::Compress` decision however many pages it took: `Refuse` when candidates reached the pool and
 none was stored, `Admit` otherwise, with no pages when there was no candidate. Shared frames take other paths: the page cache's
-clean frames go through `memobj_paged_drop_clean`, and a shared Anon MemObj is not reclaimed (no fault
-path restores a frame taken from a shared object's mapping).
+clean frames go through `memobj_paged_drop_clean`, and the pages of a named Anon
+MemObj that carries `ATTR_SWAPPABLE` are offered by the same source, as below.
+
+#### Swappable objects
+
+A storm of the Domain that is charged for a `SHM_ATTR_SWAPPABLE` object takes its
+pages through the object, not through any one address space. A page has four
+states under the object table's lock: resident (`phys_pages[i]`), storing (the
+frame is the reclaimer's, the `transit` bit is set), out (the `out` bit: the
+pool or swap holds the bytes) and restoring (`out` and `transit`: one fault owns
+the way back). The pool names a page of an object by `memobj::pool_container`
+and its number in the object, so one entry serves every mapper.
+
+* **Take.** `memobj_swap_take` clears the page's leaf in every recorded mapping
+  of the object (the holder table is the object's reverse map) and shoots it
+  down on every hart, then the frame leaves the object, in one hold of the
+  table. It refuses while a holder is pinned by a failed map, leaves are being
+  built or removed, a fault holds the frame (`installing`), the kernel holds
+  the object, a clone shares its frames, or any holder is a process whose
+  Domain is `mem = "locked"` or which is real-time (`Host::pins_memory`),
+  whichever Domain the object is charged to.
+* **Fault.** A fault in a mapping of the object asks it (`memobj_fault_look`): a
+  resident page is installed (`install_leaf`, shared with the file fault, which
+  checks that the mapping still reaches the page after the leaf is written), a
+  page in transit is waited for (`MARKER_WAIT`, rung by every end of a store or
+  restore), and a page that is out is restored with no lock held across the
+  decompression or the swap device, then installed by the next attempt. A page
+  with neither frame nor copy is not the pager's and the fault fails.
+* **Map and fork.** A map of an object with a page out leaves that page without
+  a leaf; a fork child inherits the mapping the same way (`ForkLeaves::sparse`).
+* **Charge and life.** A page that is out has given its charge back and its
+  restore charges it again (`PageBudget::charge_restore`); the last release
+  gives back what is resident and drops the object's pool entries. MOVE of the
+  owning reference and clone answer `-EBUSY` while a page is out or moving.
+* **Aging.** `pager::age_objects` feeds the same generation table as
+  `pager::age_slots` does for private pages: the object's slots say what is
+  resident, and the Accessed bit is harvested through each recorded mapping.
 
 #### Page generations (`crates/core/mm/src/aging.rs`)
 
 Four generations per page, 2 bits each, fed by the page table's Accessed bit
 (`Mmu::harvest_accessed`, 64 pages per call). Every `MM_AGING_INTERVAL_MS` a
 Domain with a frame limit and a charge above its low watermark is aged
-(`pager::age_slots`, driven by `kernel/src/tasks/reclaim.rs`): a resident
+(`pager::age_slots` over the slots of its private anonymous mappings and
+`pager::age_objects` over its swappable objects, driven by
+`kernel/src/tasks/reclaim.rs`; residency comes from the slots, the Accessed
+bit from the leaves the slots' mappings reach): a resident
 anonymous page moves one generation older, or back to the youngest when its
 Accessed bit was set; a page first seen starts at generation 2 if idle and 0 if
 used. A storm takes generation 3 first (address order inside a generation), so

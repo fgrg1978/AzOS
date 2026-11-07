@@ -46,8 +46,8 @@
 //! * a clean page is droppable at any time ([`memobj_paged_drop_clean`]): the
 //!   object's mapping list unmaps it everywhere (the rmap), the frame goes back
 //!   to the allocator, and the next use reads it again. A page is never
-//!   compressed (the reclaimer's source, `azos_mm::pager::AnonReclaim`, offers
-//!   anonymous region pages only); the file already holds a copy;
+//!   compressed (the reclaimer's source, `azos_mm::pager::DomainReclaim`, offers
+//!   anonymous pages only); the file already holds a copy;
 //! * a dirty page is written back ([`memobj_paged_writeback_ref`]) and then clean. It
 //!   is dirty from a kernel write ([`memobj_paged_write_ref`]), a
 //!   `write` request of [`memobj_paged_frame_ref`], and for as long as a
@@ -1056,9 +1056,11 @@ fn create_core(
     // behind the purger's back).
     // Swapping and purging are two answers to the same pressure, and a
     // Contig run is handed to devices: a kind takes one of them or none.
+    // Canary `swappable-volatile-canary`: both on one object are accepted.
     if spec.attrs & !ATTRS_KNOWN != 0
         || (spec.attrs & ATTR_VOLATILE != 0 && spec.kind != MemKind::Anon)
-        || (spec.attrs & ATTR_SWAPPABLE != 0 && (spec.kind != MemKind::Anon || spec.attrs & ATTR_VOLATILE != 0))
+        || (spec.attrs & ATTR_SWAPPABLE != 0
+            && (spec.kind != MemKind::Anon || (spec.attrs & ATTR_VOLATILE != 0 && !cfg!(feature = "swappable-volatile-canary"))))
     {
         return Err(MemObjError::BadArg);
     }
@@ -1457,7 +1459,7 @@ pub fn memobj_map_begin_ref(tid: u32, r: u32, write: bool, pages: &mut [usize]) 
     let frames = o.phys_pages.get(..pages.len()).filter(|_| pages.len() <= o.page_count).ok_or(MemObjError::Closed)?;
     // A swappable object's page that is out has no leaf to make: the entry is
     // 0 and the first access to it restores the page.
-    if frames.contains(&0) && o.attrs & ATTR_SWAPPABLE == 0 {
+    if frames.contains(&0) && (o.attrs & ATTR_SWAPPABLE == 0 || cfg!(feature = "swap-map-needs-frames-canary")) {
         return Err(MemObjError::Closed);
     }
     pages.copy_from_slice(frames);
@@ -1606,7 +1608,7 @@ fn inherit_commit(
     // A swappable object may have pages with no leaf (out, or restored by
     // another mapper): the child faults them in. A leaf that is there names the
     // object's frame.
-    let sparse = o.attrs & ATTR_SWAPPABLE != 0;
+    let sparse = o.attrs & ATTR_SWAPPABLE != 0 && !cfg!(feature = "swap-inherit-dense-canary");
     if (0..pages).any(|k| match leaves.leaf(va + k * page) {
         Some((f, _)) => f != frames[k],
         None => !sparse,
@@ -1978,7 +1980,10 @@ fn mapped_word_locked(region: &MemObj, i: usize, h: usize, tid: u32, va: usize) 
     // that is out names its (object, offset) all the same, with no frame to
     // read it through.
     if region.phys_pages[pg] == 0 {
-        let away = region.attrs & ATTR_SWAPPABLE != 0 && (region.out | region.transit) & (1u64 << pg) != 0;
+        // Canary `swap-word-away-canary`: it names no word, as a Paged page's.
+        let away = region.attrs & ATTR_SWAPPABLE != 0
+            && (region.out | region.transit) & (1u64 << pg) != 0
+            && !cfg!(feature = "swap-word-away-canary");
         return Ok(away.then_some(MappedWord { idx: i, holder: h, off, page: pg, phys: 0 }));
     }
     Ok(Some(MappedWord { idx: i, holder: h, off, page: pg, phys: region.phys_pages[pg] + off % page }))
@@ -2321,9 +2326,11 @@ fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) -> Reclaim {
         }
         // Given back to the Domain that holds the charge, from whichever task
         // drops the last reference (the budget is atomic).
-        // A page that is out gave its charge back when it left.
+        // A page that is out gave its charge back when it left. Canary
+        // `swap-discharge-all-canary`: it is given back twice.
         if region.charge_key != 0 {
-            host().discharge(region.charge_key, region.page_count as u32 - region.out.count_ones());
+            let resident = if cfg!(feature = "swap-discharge-all-canary") { 0 } else { region.out.count_ones() };
+            host().discharge(region.charge_key, region.page_count as u32 - resident);
         }
         if region.meta_key != 0 {
             host().meta_discharge(region.meta_key, MEMOBJ_KMEM_BYTES);
@@ -2390,7 +2397,7 @@ impl Reclaim {
     /// Give every frame back to the allocator, unless a clone still shares
     /// it. With the table lock dropped.
     fn free(self) {
-        if self.forget != 0 {
+        if self.forget != 0 && !cfg!(feature = "swap-forget-skipped-canary") {
             crate::pager::forget_object(pool_container(self.forget));
         }
         for (k, &p) in self.frames[..self.n].iter().enumerate() {
@@ -2494,6 +2501,8 @@ pub struct MemDesc {
     pub cow_shared: u64,
     /// Where a volatile object stands ([`PurgeState`]).
     pub purge: PurgeState,
+    /// Bit `i`: page `i` of a swappable object is in the pool or on swap.
+    pub out: u64,
 }
 
 /// [`MemDesc`] of the object a packed reference names, or `Stale`.
@@ -2511,6 +2520,7 @@ pub fn memobj_describe_ref(r: u32) -> Result<MemDesc, MemObjError> {
         charge_key: o.charge_key,
         cow_shared: o.cow_shared,
         purge: o.purge,
+        out: o.out,
     })
 }
 
@@ -4359,7 +4369,11 @@ pub fn memobj_swap_put_back(ident: u32, idx: usize, frame: usize) -> bool {
     if idx >= o.page_count || o.transit & bit == 0 || o.out & bit != 0 || o.phys_pages[idx] != 0 {
         return false;
     }
-    o.phys_pages[idx] = frame;
+    // Canary `swap-put-back-lost-canary`: the frame is not given back to the
+    // page, and the caller believes it was.
+    if !cfg!(feature = "swap-put-back-lost-canary") {
+        o.phys_pages[idx] = frame;
+    }
     o.transit &= !bit;
     true
 }
@@ -4394,7 +4408,9 @@ pub fn memobj_fault_look(r: u32, root: usize, idx: usize) -> ObjLook {
     if idx >= o.page_count {
         return ObjLook::Gone;
     }
-    if o.transit & bit != 0 {
+    // Canary `swap-transit-ignored-canary`: a page being stored is taken for a
+    // page that has no copy.
+    if o.transit & bit != 0 && !cfg!(feature = "swap-transit-ignored-canary") {
         return ObjLook::Wait;
     }
     if o.out & bit != 0 {
@@ -4457,8 +4473,10 @@ pub fn memobj_restore_abort(r: u32, idx: usize) {
 }
 
 /// Pages of `o` that are out or moving: what a MOVE or a clone is refused for.
+///
+/// Canary `swap-away-guards-canary`: nothing is ever away.
 fn away_pages(o: &MemObj) -> u32 {
-    (o.out | o.transit).count_ones()
+    if cfg!(feature = "swap-away-guards-canary") { 0 } else { (o.out | o.transit).count_ones() }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

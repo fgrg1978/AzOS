@@ -1331,7 +1331,7 @@ fn a_fork_childs_inherited_record_and_leaves_agree_with_the_parent_at_the_bookin
     let shared = Arc::new(AtomicU32::new(u32::MAX));
     let seen = shared.clone();
     let mut leaves = RacedLeaves {
-        leaves: azos_mm::cow::ForkLeaves { parent_pt: pt_a, child_pt: pt_b, va: uva, pages: 1 },
+        leaves: azos_mm::cow::ForkLeaves { parent_pt: pt_a, child_pt: pt_b, va: uva, pages: 1, sparse: false },
         during_copy: Some(Box::new(move || {
             assert!(writable(pt_b, uva), "precondition: the copied leaf is writable");
             assert_eq!(mo::memobj_protect_ref(a, r, false), Ok(()));
@@ -2037,4 +2037,463 @@ fn the_flip_to_executable_holds_the_spaces_records_until_it_is_done() {
         "a sibling recorded a mapping between the flip's look and its flips"
     );
     assert!(EXEC_SIBLING_DONE.load(std::sync::atomic::Ordering::SeqCst), "and gets in after it");
+}
+
+// ── Reclaim of named objects (ATTR_SWAPPABLE) ───────────────────────────────
+
+mod swap_rows {
+    use super::*;
+    use azos_abi::syscall_nr::{SHM_ATTR_SWAPPABLE, SHM_ATTR_VOLATILE, SHM_CREATE_ATTR_SHIFT};
+    use azos_arch::mmu::PAGE_SIZE;
+    use azos_ipc::memobj as mo;
+    use azos_mm::pager::{self as pg, Ages, DomainReclaim, Victim};
+    use azos_mm::vmm::{translate, translate_user};
+    use azos_mm::zpool::Reclaimee;
+    const SWAPPABLE: u64 = 1 | (SHM_ATTR_SWAPPABLE << SHM_CREATE_ATTR_SHIFT);
+
+    /// The unmap hook of a real kernel: leaves go, shot down, no frame freed.
+    fn hooks() -> MoveHooks {
+        azos_crypto::entropy::mix(&[0x3c; 64], 512);
+        MoveHooks::install()
+    }
+
+    fn bytes<'a>(frame: usize) -> &'a mut [u8] {
+        // SAFETY: a frame of the host arena, which the shim identity-maps.
+        unsafe { core::slice::from_raw_parts_mut(azos_mm::addr::phys_to_virt(frame) as *mut u8, PAGE_SIZE) }
+    }
+
+    /// Two processes that map one swappable object of `pages` pages, `a` its
+    /// owner; `a` is the running task.
+    struct Pair {
+        a: u32,
+        b: u32,
+        pt_a: usize,
+        pt_b: usize,
+        h_a: u64,
+        r: u32,
+        va_a: usize,
+        va_b: usize,
+        key: u32,
+    }
+
+    fn pair(a: u32, b: u32, pages: u64) -> Pair {
+        let pt_a = ring3(a, SLOT_A);
+        let pt_b = ring3(b, SLOT_B);
+        become_task(a, pt_a);
+        let h_a = handle(sys_shm_create_typed(pages, SWAPPABLE));
+        let r = resource_of::<Shm>(a, h_a);
+        let va_a = sys_shm_map_typed(h_a, 0);
+        assert!(va_a > 0, "A's map returned {va_a}");
+        let h_b = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
+        become_task(b, pt_b);
+        let va_b = sys_shm_map_typed(h_b, 0);
+        assert!(va_b > 0, "B's map returned {va_b}");
+        become_task(a, pt_a);
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        Pair { a, b, pt_a, pt_b, h_a, r, va_a: va_a as usize, va_b: va_b as usize, key }
+    }
+
+    fn fill(r: u32, idx: usize, byte: u8) -> usize {
+        let f = mo::memobj_page_phys_ref(r, idx).unwrap().expect("resident");
+        bytes(f).fill(byte);
+        f
+    }
+
+    /// A page that is not one repeated word, so the pool compresses it to a
+    /// blob and the restore decodes one.
+    fn pattern(seed: u8) -> Vec<u8> {
+        (0..PAGE_SIZE).map(|i| seed ^ ((i / 8) % 5) as u8).collect()
+    }
+
+    /// **A shared page leaves every mapper, is stored once, and comes back for
+    /// whichever mapper touches it first.** The storm takes the page out of
+    /// the object: both address spaces lose their leaf (the object's holders
+    /// are its reverse map), the pool holds the bytes, and the page is out. B's
+    /// fault restores it with its own bytes; A's fault finds the frame B's
+    /// restore put back and installs it, with no second restore.
+    ///
+    /// **Canaries.** `swap-rmap-skip-canary`: the leaves stay, and a mapper
+    /// reads a frame the storm frees. `restore-flip-canary`: the restore
+    /// flips a bit.
+    #[test]
+    fn a_shared_page_leaves_every_mapper_and_comes_back_for_either() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 2);
+        let page = pattern(0x5C);
+        bytes(mo::memobj_page_phys_ref(p.r, 0).unwrap().expect("resident")).copy_from_slice(&page);
+        assert!(translate(p.pt_a, p.va_a).is_some() && translate(p.pt_b, p.va_b).is_some(), "mapped by both");
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v), "the page is taken out of the object");
+        assert!(translate(p.pt_a, p.va_a).is_none(), "A lost its leaf");
+        assert!(translate(p.pt_b, p.va_b).is_none(), "B lost its leaf");
+        assert!(src.store(v).is_ok(), "the pool holds it");
+        src.free(v);
+        assert_eq!(mo::memobj_describe_ref(p.r).unwrap().out, 0b01, "page 0 is out");
+        assert_eq!(mo::memobj_page_phys_ref(p.r, 0), Ok(None), "and has no frame");
+        assert_eq!(pg::zpool_stats().entries, 1);
+
+        become_task(p.b, p.pt_b);
+        let fb = translate_user(p.pt_b, p.va_b, false).expect("B's fault restores it");
+        assert!(bytes(fb) == &page[..], "the stored page, not a zero one");
+        assert_eq!(mo::memobj_describe_ref(p.r).unwrap().out, 0, "resident again");
+        assert_eq!(pg::zpool_stats().entries, 0, "the pool's copy went with the restore");
+        become_task(p.a, p.pt_a);
+        assert_eq!(translate_user(p.pt_a, p.va_a, false), Some(fb), "A maps the frame B's restore made");
+    }
+
+    /// **Only an object that opted in is offered or taken.** One Domain holds a
+    /// swappable object and a plain one: the source offers the swappable
+    /// object's page and refuses to take the plain one's.
+    ///
+    /// **Canary.** `swappable-ignored-canary`: the attribute is not read.
+    #[test]
+    fn an_object_that_did_not_opt_in_is_not_offered_or_taken() {
+        if !azos_mm::zpool::ENABLED || azos_mm::aging::CHUNKS == 0 {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let _pt = ring3(a, SLOT_A);
+        let swap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let plain = handle(sys_shm_create_typed(1, 1));
+        let (r_swap, r_plain) = (resource_of::<Shm>(a, swap), resource_of::<Shm>(a, plain));
+        let key = mo::memobj_describe_ref(r_swap).unwrap().charge_key;
+        let mut ages = Ages::new();
+        ages.begin(0);
+        assert!(pg::age_objects(key, 0, &mut ages));
+        ages.end(0);
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let mut offered = Vec::new();
+        while let Some(v) = src.next() {
+            offered.push(v);
+        }
+        assert_eq!(offered, [Victim::Obj { ident: r_swap, idx: 0 }], "only the opted-in page is offered");
+        assert!(!src.unmap(Victim::Obj { ident: r_plain, idx: 0 }), "a plain object's page is not taken");
+        assert_eq!(mo::memobj_page_phys_ref(r_plain, 0).map(|p| p.is_some()), Ok(true), "and stays resident");
+    }
+
+    /// **An object that a locked or real-time process maps is left alone,
+    /// whichever Domain owns it.** B, a real-time process, maps an object the
+    /// unlocked A owns: A's storm cannot take its page, and takes it once B
+    /// no longer pins memory.
+    ///
+    /// **Canary.** `object-mapper-pin-canary`: only the owner is asked.
+    #[test]
+    fn an_object_a_pinned_process_maps_is_not_taken_whoever_owns_it() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        struct Unpin(u32);
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                azos_sched::shim_pin_task_memory(self.0, false);
+            }
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        let _unpin = Unpin(b);
+        azos_sched::shim_pin_task_memory(b, true);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(!src.unmap(v), "a pinned process maps the object");
+        assert!(translate(p.pt_a, p.va_a).is_some() && translate(p.pt_b, p.va_b).is_some(), "both leaves stay");
+        azos_sched::shim_pin_task_memory(b, false);
+        assert!(src.unmap(v), "nobody pins it now");
+        src.keep(v);
+    }
+
+    /// **A fault on a page being stored waits for the store; it never maps a
+    /// zero page, a page of nothing, or a leaf of its own.** The storm holds the
+    /// page in transit: the fault looks, waits (the host's wait queue returns at
+    /// once, so the fault gives up after its tries and the access would retry)
+    /// and installs nothing; once the store ends, the fault installs the page.
+    ///
+    /// **Canary.** `swap-transit-ignored-canary`: a page in transit looks like
+    /// a page that has no copy, and the fault fails.
+    #[test]
+    fn a_fault_on_a_page_in_transit_waits_for_the_store() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        let frame = fill(p.r, 0, 0x6B);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v), "the store is in flight");
+        let r = pg::resolve_fault(azos_sched::shim_space(p.pt_b), p.va_b);
+        assert!(r.is_ok(), "a fault on a page in transit waits, it does not fail: {r:?}");
+        assert!(translate(p.pt_b, p.va_b).is_none(), "and maps nothing while the store runs");
+        src.keep(v);
+        become_task(p.b, p.pt_b);
+        assert_eq!(translate_user(p.pt_b, p.va_b, false), Some(frame), "the page is installed once it is back");
+        assert!(bytes(frame).iter().all(|&x| x == 0x6B));
+    }
+
+    /// **A store that does not happen gives the page back unchanged.** The
+    /// frame is the object's again, no leaf is written, and a fault installs
+    /// the same frame.
+    ///
+    /// **Canary.** `swap-put-back-lost-canary`: the frame is not given back.
+    #[test]
+    fn a_store_that_fails_gives_the_page_back_unchanged() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        let frame = fill(p.r, 0, 0x77);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v));
+        src.keep(v);
+        assert_eq!(mo::memobj_page_phys_ref(p.r, 0), Ok(Some(frame)), "the object has its frame again");
+        assert_eq!(mo::memobj_describe_ref(p.r).unwrap().out, 0);
+        assert!(translate(p.pt_a, p.va_a).is_none(), "no leaf was written for the retry");
+        assert_eq!(translate_user(p.pt_a, p.va_a, false), Some(frame), "the next access installs the same frame");
+        assert!(bytes(frame).iter().all(|&x| x == 0x77));
+    }
+
+    /// **When an object ends its pool copies go with it, and only the pages that
+    /// were resident give their charge back.** A two-page object with page 0
+    /// out is released next to a one-page object of the same Domain.
+    ///
+    /// **Canaries.** `swap-forget-skipped-canary`: the pool keeps the copy.
+    /// `swap-discharge-all-canary`: the page that was out is discharged twice.
+    #[test]
+    fn an_ended_object_drops_its_pool_copies_and_discharges_only_what_was_resident() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let _pt = ring3(a, SLOT_A);
+        let base = azos_sched::shim_user_pages();
+        let swap = handle(sys_shm_create_typed(2, SWAPPABLE));
+        let other = handle(sys_shm_create_typed(1, 1));
+        let r = resource_of::<Shm>(a, swap);
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        assert_eq!(azos_sched::shim_user_pages(), base + 3);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let v = Victim::Obj { ident: r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        // What the storm's accounting does for a page it stored.
+        azos_sched::mm_discharge(1);
+        assert_eq!(pg::zpool_stats().entries, 1);
+        assert_eq!(sys_shm_release_typed(swap), 0);
+        assert_eq!(pg::zpool_stats().entries, 0, "the pool's copy ended with the object");
+        assert_eq!(azos_sched::shim_user_pages(), base + 1, "the other object's page is all that is still charged");
+        assert_eq!(sys_shm_release_typed(other), 0);
+    }
+
+    /// **The futex key of a page that is out is still its (object, offset); the
+    /// look at its word asks to settle, and the settle faults the page in.**
+    ///
+    /// **Canary.** `swap-word-away-canary`: a page that is out names no word,
+    /// as a Paged page that is not cached, and a wake would find a private key.
+    #[test]
+    fn the_futex_word_of_a_page_that_is_out_keeps_its_key_and_settles() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let _pt = ring3(a, SLOT_A);
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        let va = sys_shm_map_typed(cap, 0) as usize;
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let at = mo::memobj_resolve_mapped(a, va);
+        assert_eq!(at, Some((r, 0)));
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let v = Victim::Obj { ident: r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        assert_eq!(mo::memobj_resolve_mapped(a, va), at, "the key does not change when the page goes out");
+        assert!(mo::memobj_try_with_mapped_word(a, va, false, |_, _, _| ()).is_err(), "the word cannot be read: settle");
+        assert!(translate_user(azos_sched::current_user_pt(), va, false).is_some(), "the settle faults the page in");
+        assert_eq!(mo::memobj_try_with_mapped_word(a, va, false, |_, _, _| ()), Ok(Some(())));
+    }
+
+    /// **The kernel does not read a swappable object through the direct map.**
+    ///
+    /// **Canary.** `memobj-no-kernel-map-canary`: the hidden attributes are not
+    /// consulted.
+    #[test]
+    fn the_kernel_does_not_address_a_swappable_objects_frames() {
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _pt = ring3(a, SLOT_A);
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        assert_eq!(mo::memobj_with_word_ref(r, 0, |_| ()), Ok(None));
+        assert_eq!(mo::memobj_kernel_page_phys_ref(r, 0), Ok(None));
+        assert_eq!(mo::memobj_with_span_ref(r, 8, |_| ()), Ok(None));
+    }
+
+    /// **The owner cannot MOVE or clone an object while a page is out: the Domain
+    /// that stored a page is the one that restores it, and a clone has no frame
+    /// to share.**
+    ///
+    /// **Canary.** `swap-away-guards-canary`: a page is never away.
+    #[test]
+    fn an_object_with_a_page_out_is_not_moved_or_cloned() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        assert_eq!(mo::memobj_move(p.a, p.b, p.r).err(), Some(mo::MemObjError::Busy), "MOVE of the owning reference");
+        assert_eq!(mo::memobj_clone(p.a, p.r, p.a, mo::MemPerms::ReadOnly).err(), Some(mo::MemObjError::Busy), "clone");
+    }
+
+    /// **A map of an object with a page out maps the pages it has and the first
+    /// touch of the rest restores them.**
+    ///
+    /// **Canary.** `swap-map-needs-frames-canary`: a map needs every frame, as
+    /// it does for an object that cannot be swapped.
+    #[test]
+    fn a_map_over_a_page_that_is_out_leaves_it_to_the_fault() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let pt_a = ring3(a, SLOT_A);
+        let pt_b = ring3(b, SLOT_B);
+        become_task(a, pt_a);
+        let cap = handle(sys_shm_create_typed(2, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        fill(r, 0, 0x11);
+        fill(r, 1, 0x22);
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let v = Victim::Obj { ident: r, idx: 1 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        let held = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
+        become_task(b, pt_b);
+        let va = sys_shm_map_typed(held, 0);
+        assert!(va > 0, "the map of an object with a page out: {va}");
+        let va = va as usize;
+        assert!(translate(pt_b, va).is_some(), "the resident page has its leaf");
+        assert!(translate(pt_b, va + PAGE_SIZE).is_none(), "the page that is out has none yet");
+        let f = translate_user(pt_b, va + PAGE_SIZE, false).expect("the first touch restores it");
+        assert!(bytes(f).iter().all(|&x| x == 0x22));
+    }
+
+    /// **A fork child inherits a mapping whose page is out: its record is booked
+    /// and the page is restored by its own first touch.**
+    ///
+    /// **Canary.** `swap-inherit-dense-canary`: every leaf must be there.
+    #[test]
+    fn a_fork_inherits_a_mapping_whose_page_is_out() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let pt_a = ring3(a, SLOT_A);
+        let pt_b = ring3(b, SLOT_B);
+        become_task(a, pt_a);
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        let va = sys_shm_map_typed(cap, 0);
+        assert!(va > 0, "map: {va}");
+        let va = va as usize;
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let v = Victim::Obj { ident: r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        // The child holds a reference and no mapping yet, as a fork's child.
+        assert!(mo::memobj_acquire_ref(b, r).is_ok());
+        let mut leaves = azos_mm::cow::ForkLeaves { parent_pt: pt_a, child_pt: pt_b, va, pages: 1, sparse: true };
+        let booked = mo::memobj_inherit_ref(a, b, r, pt_b, va, 1, &mut leaves);
+        assert!(booked.is_ok(), "the child is booked: {booked:?}");
+        assert_eq!(mo::memobj_has_mapping_ref(b, r), Ok(true));
+        assert!(translate(pt_b, va).is_none(), "and has no leaf for the page that is out");
+        assert!(pg::reserve_obj(azos_sched::shim_space(pt_b), va, va + PAGE_SIZE, r).is_ok(), "the child's record, as the fork makes it");
+        become_task(b, pt_b);
+        assert!(translate_user(pt_b, va, false).is_some(), "its first touch restores it");
+    }
+
+    /// **Swapping and purging are exclusive on one object.**
+    ///
+    /// **Canary.** `swappable-volatile-canary`: both are accepted.
+    #[test]
+    fn an_object_is_swappable_or_volatile_not_both() {
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _pt = ring3(a, SLOT_A);
+        let both = SWAPPABLE | (SHM_ATTR_VOLATILE << SHM_CREATE_ATTR_SHIFT);
+        assert_eq!(sys_shm_create_typed(1, both), errno(Errno::EINVAL));
+    }
+
+    /// **The aging pass reads a private mapping's slots: a page that was never
+    /// touched is not tracked and a resident one is.**
+    ///
+    /// **Canary.** `age-slots-ignored-canary`: every page of the window counts as
+    /// resident.
+    #[test]
+    fn aging_tracks_the_pages_the_slots_name_resident() {
+        if !azos_mm::zpool::ENABLED || azos_mm::aging::CHUNKS == 0 {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let pt = ring3(a, SLOT_A);
+        let base = sys_mmap(0, (4 * PAGE_SIZE) as u64, 3, 0, u64::MAX, 0);
+        assert!(base > 0);
+        let base = base as usize;
+        assert!(translate_user(pt, base + PAGE_SIZE, true).is_some(), "page 1 is touched");
+        let mut ages = Ages::new();
+        ages.begin(0);
+        assert!(pg::age_slots(azos_sched::shim_space(pt), 0, &mut ages));
+        ages.end(0);
+        let vpn = |i: usize| (base + i * PAGE_SIZE) / PAGE_SIZE;
+        assert!(ages.age_of(pt, vpn(1)).is_some(), "the touched page is tracked");
+        assert!(ages.age_of(pt, vpn(0)).is_none(), "an untouched page is not");
+        assert!(ages.age_of(pt, vpn(3)).is_none(), "nor the last");
+    }
 }
