@@ -170,8 +170,8 @@ mod host {
                     let _ = azos_dma::unmap_and_free(self.domain, &Pmm, pa, b, len);
                     return None;
                 }
-                Err(_) => {
-                    azos_dma::PageSource::free(&Pmm, pa, len);
+                Err(e) => {
+                    azos_dma::free_after_failed_map(&Pmm, pa, len, e);
                     return None;
                 }
             };

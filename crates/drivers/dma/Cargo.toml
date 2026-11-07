@@ -26,3 +26,6 @@ dma-bind-skip-map-canary = []
 # record is freed instead (`Table::finish`).
 ring3-reuse-canary = []
 park-drop-canary = []
+# Host canary (tests/host/dma-tests): a block whose map the unit did not confirm taking back
+# is freed like any other failed map.
+map-failed-frees-canary = []

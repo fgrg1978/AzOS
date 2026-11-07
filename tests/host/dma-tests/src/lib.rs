@@ -749,6 +749,22 @@ mod unmap_and_free {
         assert_eq!(azos_dma::leaked_bytes() - before, 4096);
     }
 
+    /// **A block whose map the unit did not confirm taking back is kept, a
+    /// block of any other failed map goes back.** The xHCI's regions are the
+    /// kernel caller (`kernel/src/boot/usb.rs`).
+    ///
+    /// **Canary.** `map-failed-frees-canary`: the unconfirmed one is freed.
+    #[test]
+    fn a_block_whose_map_may_have_landed_stays_allocated_and_counted() {
+        let pages = Pages(Cell::new(0));
+        let before = azos_dma::leaked_bytes();
+        azos_dma::free_after_failed_map(&pages, 0x1000, 4096, DmaError::MaybeMapped);
+        assert_eq!(pages.0.get(), 0, "the domain may still map this block");
+        assert_eq!(azos_dma::leaked_bytes() - before, 4096);
+        azos_dma::free_after_failed_map(&pages, 0x2000, 4096, DmaError::Iommu);
+        assert_eq!(pages.0.get(), 1, "a refused map left nothing behind");
+    }
+
     #[test]
     fn a_page_whose_unmap_worked_goes_back() {
         let pages = Pages(Cell::new(0));

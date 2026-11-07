@@ -11,6 +11,9 @@ description = "Host-side tests for crates/drivers/dma (domains, cache-maintenanc
 [dependencies]
 azos_dma = { path = "../../../crates/drivers/dma" }
 
+[features]
+map-failed-frees-canary = ["azos_dma/map-failed-frees-canary"]
+
 [profile.release]
 overflow-checks = true
 

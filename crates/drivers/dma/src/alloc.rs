@@ -59,6 +59,17 @@ pub fn unmap_and_free<S: PageSource>(domain: &dyn DmaDomain, src: &S, pa: u64, b
     r
 }
 
+/// A map of the `len` bytes at `pa` failed with `why`: give the block back to
+/// `src`, unless the domain may still map it ([`DmaError::MaybeMapped`]), when
+/// it stays out for good, counted.
+pub fn free_after_failed_map<S: PageSource>(src: &S, pa: u64, len: usize, why: DmaError) {
+    if why == DmaError::MaybeMapped && !free_anyway() && !cfg!(feature = "map-failed-frees-canary") {
+        note_leak(len);
+        return;
+    }
+    src.free(pa, len);
+}
+
 /// Blocks [`alloc_below`] holds at once while it looks for one under the
 /// mask. More than this above the mask and it gives up.
 pub const MAX_MISSES: usize = 32;
