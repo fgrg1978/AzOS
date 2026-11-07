@@ -388,6 +388,25 @@ pub extern "C" fn aarch64_secondary_ttbr1_attach() -> u64 {
     1
 }
 
+/// Called from `boot.S` on every secondary right after the CFI steps: with the
+/// pool locked by an overlay (Kconfig `A64_POE`, PT_PROTECTION) this CPU denies
+/// writes to it too, before it does any other work. A CPU that cannot would
+/// leave the pool open for the whole system: it stops.
+#[unsafe(no_mangle)]
+pub extern "C" fn aarch64_secondary_pt_lock() {
+    #[cfg(feature = "pt-protection")]
+    if azos_mm::ptprot::keyed() {
+        use azos_arch::ArchPlatform;
+        if !azos_arch::ARCH.pt_lock_this_cpu() {
+            azos_drv_sys::kerr!("[SMP] FAILED: a CPU cannot deny writes to the page-table pool (TCR2_EL1.POE / POR_EL1 did not take); halting it");
+            loop {
+                // SAFETY: parks this CPU.
+                unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
+            }
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn aarch64_secondary_mmu_init() {
     let ttbr0_pa = SECONDARY_TTBR0_PA.load(Ordering::Acquire);

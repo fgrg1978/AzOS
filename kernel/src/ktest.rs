@@ -469,41 +469,37 @@ azos_ktest::ktest! {
     }
 }
 
-// PT_PROTECTION (X86_PKS): on a CPU with the key the boot has tagged every
-// page of the kernel-half pool, CR4.PKS is on and IA32_PKRS denies writes to
-// the key; a write window lifts the denial and restores it. A CPU without the
-// key holds nothing to protect, and the boot said so (the gate row requires
-// the lock on a CPU model that has PKS). Runtime canary `canary=pt-lock-skip`
-// (the boot never locks): the first check fails. A store outside the window
-// is not driven here: only the register state is read back.
+// PT_PROTECTION with the ISA's key (X86_PKS, A64_POE): on a CPU with the key the
+// boot has tagged every page of the pool, this CPU denies writes to it, and a
+// write window lifts the denial and restores it. A CPU without the key holds
+// nothing to protect, and the boot said so (the gate row requires the lock on a
+// CPU model that has the key). Runtime canary `canary=pt-lock-skip` (the boot
+// never locks): the first check fails. A store outside the window is not
+// driven here: only the register state is read back.
 azos_ktest::ktest! {
-    #[cfg(all(feature = "pt-protection", target_arch = "x86_64"))]
+    #[cfg(feature = "pt-protection")]
     fn mm_pt_pool_is_write_protected() {
-        use azos_arch::mmu::ptwin::{CR4_PKS, IA32_PKRS, PKRS_LOCKED, PKRS_WD};
         use azos_arch::ArchPlatform;
         if !azos_arch::ARCH.pt_key_present() {
             return Ok(());
         }
-        if !azos_mm::ptprot::engaged() {
+        if !azos_mm::ptprot::keyed() {
             return Err("the CPU has the key, but the boot did not lock the pool");
         }
         let (pages, untagged) = azos_mm::vmm::verify_pt_pool();
         if pages == 0 || untagged != 0 {
             return Err("a pool page does not carry the key in the direct map");
         }
-        if azos_arch::mmu::cpu::read_cr4() & CR4_PKS == 0 {
-            return Err("CR4.PKS is off");
-        }
-        if azos_arch::cpu::rdmsr(IA32_PKRS) != PKRS_LOCKED {
-            return Err("IA32_PKRS does not deny writes to the pool's key");
+        if !azos_arch::ARCH.pt_locked_this_cpu() {
+            return Err("this CPU does not deny writes to the pool");
         }
         let saved = azos_arch::ARCH.pt_window_open();
-        let open = azos_arch::cpu::rdmsr(IA32_PKRS);
+        let open = azos_arch::ARCH.pt_locked_this_cpu();
         azos_arch::ARCH.pt_window_close(saved);
-        if open & PKRS_WD != 0 {
+        if open {
             return Err("the write window did not lift the denial");
         }
-        if azos_arch::cpu::rdmsr(IA32_PKRS) != PKRS_LOCKED {
+        if !azos_arch::ARCH.pt_locked_this_cpu() {
             return Err("the write window did not restore the denial");
         }
         Ok(())
@@ -597,28 +593,27 @@ azos_ktest::ktest! {
     }
 }
 
-// PT_PROTECTION on every CPU: the secondaries lock themselves as they come up
-// (`x86_64_secondary_entry`), after the early phase has run. A task pinned to
-// each CPU reads its own CR4.PKS and IA32_PKRS back. Without the key there is
-// nothing to read. Runtime canary `canary=pt-lock-skip` fails the early test
-// above; a secondary that does not lock halts and never reports.
-#[cfg(all(feature = "pt-protection", target_arch = "x86_64"))]
+// PT_PROTECTION on every CPU: the secondaries lock themselves as they come up,
+// after the early phase has run. A task pinned to each CPU reads its own lock
+// state back. Without the key there is nothing to read. Runtime canary
+// `canary=pt-lock-skip` fails the early test above; a secondary that does not
+// lock halts and never reports.
+#[cfg(feature = "pt-protection")]
 static PT_LOCKED_CPUS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "pt-protection")]
+static PT_READBACKS: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(all(feature = "pt-protection", target_arch = "x86_64"))]
+#[cfg(feature = "pt-protection")]
 fn pt_lock_readback(_: usize) {
-    use azos_arch::mmu::ptwin::{CR4_PKS, IA32_PKRS, PKRS_LOCKED};
-    if azos_arch::mmu::cpu::read_cr4() & CR4_PKS != 0 && azos_arch::cpu::rdmsr(IA32_PKRS) == PKRS_LOCKED {
+    use azos_arch::ArchPlatform;
+    if azos_arch::ARCH.pt_locked_this_cpu() {
         PT_LOCKED_CPUS.fetch_add(1, Ordering::AcqRel);
     }
     PT_READBACKS.fetch_add(1, Ordering::AcqRel);
 }
 
-#[cfg(all(feature = "pt-protection", target_arch = "x86_64"))]
-static PT_READBACKS: AtomicUsize = AtomicUsize::new(0);
-
 azos_ktest::ktest_late! {
-    #[cfg(all(feature = "pt-protection", target_arch = "x86_64"))]
+    #[cfg(feature = "pt-protection")]
     fn mm_pt_pool_is_write_protected_on_every_cpu() {
         use azos_arch::ArchPlatform;
         if !azos_arch::ARCH.pt_key_present() {
@@ -628,9 +623,9 @@ azos_ktest::ktest_late! {
         for cpu in 0..cpus {
             azos_sched::task_create_affinity("pt-readback", pt_lock_readback, 0, azos_sched::DEFAULT_PRIORITY, cpu as i8);
         }
-        wait("a CPU did not report its PKS state", || PT_READBACKS.load(Ordering::Acquire) == cpus)?;
+        wait("a CPU did not report its lock state", || PT_READBACKS.load(Ordering::Acquire) == cpus)?;
         if PT_LOCKED_CPUS.load(Ordering::Acquire) != cpus {
-            return Err("a CPU runs with CR4.PKS off or IA32_PKRS not denying writes to the pool");
+            return Err("a CPU does not deny writes to the pool");
         }
         Ok(())
     }

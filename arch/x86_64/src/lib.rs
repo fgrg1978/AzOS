@@ -398,6 +398,9 @@ impl ArchPlatform for X86_64 {
     fn pt_window_open(&self) -> u64 {
         on_x86!(mmu::ptwin::open(), "x86_64: pt_window_open: IA32_PKRS")
     }
+    fn pt_locked_this_cpu(&self) -> bool {
+        on_x86!(mmu::ptwin::locked_this_cpu(), "x86_64: pt_locked_this_cpu: CR4.PKS + IA32_PKRS")
+    }
     fn pt_window_shut(&self) -> u64 {
         on_x86!(mmu::ptwin::shut(), "x86_64: pt_window_shut: IA32_PKRS")
     }

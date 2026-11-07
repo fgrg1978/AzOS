@@ -65,6 +65,8 @@ pub mod setup;
 pub mod kaslr;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod kaslr_boot;
+// PT_PROTECTION (Kconfig `A64_POE`): the pool's overlay index and the write window.
+pub mod ptwin;
 
 /// Page size in bytes: the translation granule this build selected
 /// (`azos_arch_api::PAGE_SIZE`; Kconfig `AARCH64_PAGE_*`).

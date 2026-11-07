@@ -168,6 +168,12 @@ impl IdRegs {
         field(self.pfr1, 44) >= 1
     }
 
+    /// FEAT_TCR2: ID_AA64MMFR3_EL1.TCRX [3:0] >= 1 (`TCR2_EL1`, which holds the
+    /// POE enable).
+    pub const fn tcr2(&self) -> bool {
+        field(self.mmfr3, 0) >= 1
+    }
+
     /// FEAT_E0PD: ID_AA64MMFR2_EL1.E0PD [63:60] >= 1. Absent on cores before
     /// Armv8.5 (TCR_EL1.E0PD1 is RES0 there; Cortex-A53/A72/A76).
     pub const fn e0pd(&self) -> bool {
@@ -511,6 +517,8 @@ mod tests {
         assert!(IdRegs { mmfr3: 2 << 16, ..z }.s1poe(), "a larger value still counts");
         // Neighbours: S1PIE [11:8] and TCRX [3:0] of MMFR3, MTE_frac [43:40] of PFR1.
         assert!(!IdRegs { mmfr3: 0xF0FF, ..z }.s1poe(), "S1PIE/TCRX leaked into S1POE");
+        assert!(IdRegs { mmfr3: 1, ..z }.tcr2() && !IdRegs { mmfr3: 1, ..z }.s1poe(), "TCRX is [3:0]");
+        assert!(!IdRegs { mmfr3: 0xFFFF_FFF0, ..z }.tcr2(), "a neighbour leaked into TCRX");
         assert!(!IdRegs { pfr1: 0xF << 40, ..z }.gcs() && !IdRegs { pfr1: 0xF << 48, ..z }.gcs());
     }
 

@@ -8,6 +8,46 @@ use crate::api_impl::Aarch64;
 use azos_arch_api::{ArchPlatform, Mmu};
 
 impl ArchPlatform for Aarch64 {
+    fn pt_tag_leaf(&self, word: u64) -> u64 {
+        crate::mmu::ptwin::tag(word)
+    }
+    fn pt_key_present(&self) -> bool {
+        let regs = crate::cpu::features::read_id_regs();
+        azos_arch_api::isa::aarch64::POE.gate(regs.s1poe() && regs.tcr2())
+    }
+    fn pt_lock_this_cpu(&self) -> bool {
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+        {
+            crate::mmu::ptwin::lock_this_cpu()
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+        unreachable!("aarch64: pt_lock_this_cpu on a host build")
+    }
+    fn pt_locked_this_cpu(&self) -> bool {
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+        {
+            crate::mmu::ptwin::locked_this_cpu()
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+        unreachable!("aarch64: pt_locked_this_cpu on a host build")
+    }
+    #[inline(always)]
+    fn pt_window_open(&self) -> u64 {
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+        {
+            crate::mmu::ptwin::open()
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+        unreachable!("aarch64: pt_window_open on a host build")
+    }
+    #[inline(always)]
+    fn pt_window_close(&self, _saved: u64) {
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+        crate::mmu::ptwin::close(_saved);
+        #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+        unreachable!("aarch64: pt_window_close on a host build")
+    }
+
     /// Arm's instruction fetch does not snoop the data cache: written lines
     /// must be cleaned to the PoU (`DC CVAU`) before the I-cache invalidate.
     #[inline]

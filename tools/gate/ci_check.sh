@@ -17469,6 +17469,14 @@ CPU 5 lacks hwcap bits"
     ktest_row_bti() { KCFG_TAG=bti KCFG_LINE="CONFIG_A64_BTI_ENFORCE=y" KCFG_GREP="CONFIG_A64_BTI_ENFORCE=y" ktest_row_cfgline "$@"; }
     par "ktest bti enforced (arm phase) (arm)" ktest_row_bti "ktest bti enforced (arm phase) (arm)" arm "" "" "" "$KTEST_BTI_RE"
     par "ktest bti guard skipped canary (arm phase) (arm)" ktest_row_bti "ktest bti guard skipped canary (arm phase) (arm)" arm "" "cfi_kernel_text_is_branch_target_guarded" "canary=bti-guard-skip"
+    # Kconfig A64_POE (arm phase): the pool carries overlay index 1, every CPU denies write to it
+    # (TCR2_EL1.POE, POR_EL1) and the funnel opens a window; QEMU `-cpu max` has FEAT_S1POE, and EL2's
+    # grants (HCRX_EL2.TCR2En, nPOR_EL1) are the trampoline's: a wrong bit traps at the first POR_EL1
+    # write and the row never reaches the boot line. The canary skips the lock.
+    KTEST_POE_RE=$'^\\[MM\\] page tables: kernel-root tables write-protected \\([0-9]+ pool pages\n^ok [0-9]+ - mm_pt_pool_is_write_protected$\n^ok [0-9]+ - mm_pt_pool_is_write_protected_on_every_cpu$'
+    ktest_row_poe() { KCFG_TAG=poe KCFG_LINE="CONFIG_A64_POE_PROBE=y" KCFG_GREP="CONFIG_A64_POE_PROBE=y" ktest_row_cfgline "$@"; }
+    par "ktest pt-protection poe (arm phase) (arm)" ktest_row_poe "ktest pt-protection poe (arm phase) (arm)" arm "" "" "" "$KTEST_POE_RE"
+    par "ktest pt-protection poe lock skipped canary (arm phase) (arm)" ktest_row_poe "ktest pt-protection poe lock skipped canary (arm phase) (arm)" arm "" "+mm_pt_pool_is_write_protected" "canary=pt-lock-skip"
     # Kconfig PT_PROTECTION_SOFT: no supervisor key on rv and arm, so the pool is read-only in the direct
     # map and the funnel writes through a software window. The boot line says so, the ktest writes a word
     # through the funnel and reads the pool back read-only; the canary (`canary=pt-soft-leak`) leaves a

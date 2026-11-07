@@ -119,6 +119,10 @@ pub trait ArchPlatform: Send + Sync {
     /// restores, so windows nest.
     fn pt_window_open(&self) -> u64 { 0 }
 
+    /// Is this CPU denying writes to the pool now (the lock took and no window
+    /// is open)? A readback, for the boot's checks and the ktests.
+    fn pt_locked_this_cpu(&self) -> bool { false }
+
     /// Deny writes to the pool's key whatever a window below had opened, for
     /// the handlers that run on their own stack inside one (NMI, #MC). Returns
     /// the token for [`Self::pt_window_close`] on the way out; it never turns

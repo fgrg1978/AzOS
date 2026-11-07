@@ -40,6 +40,8 @@ mod a64_cfi;
 #[cfg(test)]
 mod pac_keys;
 #[cfg(test)]
+mod a64_poe;
+#[cfg(test)]
 mod mmio_width;
 #[cfg(test)]
 mod clock_scale;

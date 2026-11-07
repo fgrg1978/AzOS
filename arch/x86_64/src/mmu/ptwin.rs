@@ -78,6 +78,15 @@ pub fn lock_this_cpu() -> bool {
     super::cpu::rdmsr(IA32_PKRS) == PKRS_LOCKED
 }
 
+/// Is this CPU denying writes to the pool now?
+#[cfg(target_arch = "x86_64")]
+pub fn locked_this_cpu() -> bool {
+    let cr4: u64;
+    // SAFETY: reads CR4.
+    unsafe { core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags)) };
+    cr4 & CR4_PKS != 0 && super::cpu::rdmsr(IA32_PKRS) == PKRS_LOCKED
+}
+
 /// Interrupts off, [`PKEY`]'s write-deny lifted; the token for [`close`].
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]

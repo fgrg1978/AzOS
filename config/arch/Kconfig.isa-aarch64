@@ -230,15 +230,23 @@ choice
     prompt "POE (stage-1 permission overlays, FEAT_S1POE)"
     default A64_POE_NEVER
     help
-      ID_AA64MMFR3_EL1.S1POE: a 3-bit index in the leaf (bits 62:60) picks a
-      4-bit overlay in POR_EL1 that can take write away from a page whatever
-      its AP bits say; the arm twin of x86 PKS for PT_PROTECTION. Detected
-      and reported only: the EL2 grants that let EL1 write TCR2_EL1.POE and
-      POR_EL1 (HCRX_EL2.TCR2En, the HFGRTR_EL2/HFGWTR_EL2 n-bits, SCR_EL3
-      from firmware) are not programmed by the boot trampoline, so nothing
-      uses it and PT_PROTECTION is not derived from it.
-      n: no difference. probe: no difference (the boot line only). require:
-      the boot refuses a CPU without it.
+      ID_AA64MMFR3_EL1.S1POE (and FEAT_TCR2): a 3-bit index in the leaf (bits
+      62:60) picks a 4-bit overlay in POR_EL1 that can take write away from a
+      page whatever its AP bits say; the arm twin of x86 PKS. Any policy but n
+      builds the kernel root's page-table pool and its routing in
+      (PT_PROTECTION): the pool is tagged with index 1 in the direct map, every
+      CPU sets TCR2_EL1.POE with POR_EL1 denying write to index 1, and `pt_set`
+      lifts the denial for one store (a POR_EL1 write and an ISB before and
+      after, IRQ and FIQ masked: about 2 x 20-50 cycles per kernel-root PTE
+      word; user page tables and faults pay one range compare). EL2 must let
+      EL1 at the registers: the boot trampoline sets HCRX_EL2.TCR2En and the
+      nPOR_EL1 bit of HFGRTR_EL2/HFGWTR_EL2 on a CPU that has them (firmware
+      must have granted SCR_EL3). Not used with the split monitor (VIRT_SPLIT),
+      whose stage 2 protects the pool. Never run on a core: default n until
+      the arm-phase rows boot it.
+      n: nothing built. probe: use it where the CPU has it, else the tables stay
+      writable (PT_PROTECTION_SOFT is the fallback window). require: the boot
+      refuses a CPU without it.
     config A64_POE_NEVER
         bool "n: never use it"
     config A64_POE_PROBE
