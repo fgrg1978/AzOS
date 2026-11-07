@@ -18,8 +18,11 @@
 //! | [`MemKind::Contig`] | physically contiguous run, zeroed  | yes     | yes           |
 //! | [`MemKind::Paged`]  | file pages, filled on demand, droppable  | no      | yes (clean or flushed) |
 //!
-//! A `Phys` kind (device or scanout memory with a memory type) is not built: it
-//! waits for its first user, the framebuffer handed to a ring-3 display server.
+//! Physical memory the allocator does not hand out (a device's registers, a
+//! ring page, the vDSO page) is no MemObj: it is a record of the address space
+//! (`crate::mapping::Backing::Phys`), with a memory type. A named, capability-
+//! addressed kind of it waits for its first user, the framebuffer handed to a
+//! ring-3 display server (the kernel maps the framebuffer today, `vmm::map_framebuffer`).
 //!
 //! An Anon object that is only ever mapped by one task does not need a table
 //! slot: that is a private anonymous mapping, an unnamed object of its address

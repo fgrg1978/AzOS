@@ -2679,7 +2679,13 @@ pub(crate) fn map_vdso(space: azos_mm::aspace::SpaceRef) -> u32 {
     }
     let (root, va) = (space.root(), vdso::VDSO_USER_BASE);
     let _ = crate::scheduler::take_current_pt_build();
-    let recorded = azos_mm::pager::reserve_phys(space, va, va + PAGE_SIZE, false, vdso_phys, MemType::WB, true);
+    // The record's release clears whatever leaf is at its address, so the
+    // address is vacant before the record is made.
+    let recorded = if vmm::user_range_vacant(root, va, va + PAGE_SIZE) {
+        azos_mm::pager::reserve_phys(space, va, va + PAGE_SIZE, false, vdso_phys, MemType::WB, true)
+    } else {
+        Err(azos_mm::mapping::MapError::Overlap)
+    };
     let mapped = recorded.is_ok() && vmm::map_phys(root, va, vdso_phys, 1, false, MemType::WB).is_ok();
     let built = crate::scheduler::take_current_pt_build();
     if mapped && vmm::translate(root, va) == Some(vdso_phys) {
@@ -2735,6 +2741,11 @@ fn install_locked_arena(space: azos_mm::aspace::SpaceRef, spec: &MemSpec) -> Res
     let va = LOCKED_ARENA_VA;
     if va.checked_add(bytes).map_or(true, |end| end > USER_STACK_FLOOR) {
         return Err("the region does not fit below the user stack");
+    }
+    // The record's release clears whatever leaf is in its range, so the range
+    // is vacant before the record is made.
+    if !vmm::user_range_vacant(space.root(), va, va + bytes) {
+        return Err("something is mapped where the region goes");
     }
     // Zeroed at every exec: the frames are the row's for the whole boot and
     // the previous instance's data must not reach the next one.

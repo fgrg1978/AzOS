@@ -771,7 +771,7 @@ that is not "this page does not compress", and is recorded as one
 `Rule::Compress` decision however many pages it took: `Refuse` when candidates reached the pool and
 none was stored, `Admit` otherwise, with no pages when there was no candidate. Shared frames take other paths: the page cache's
 clean frames go through `memobj_paged_drop_clean`, and a shared Anon MemObj is not reclaimed (no fault
-path restores a frame taken from an shm window).
+path restores a frame taken from a shared object's mapping).
 
 #### Page generations (`crates/core/mm/src/aging.rs`)
 

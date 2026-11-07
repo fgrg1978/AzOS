@@ -403,9 +403,10 @@ pub struct IoRingState {
     /// to someone else, so [`destroy_locked`] refuses a mapped ring and only
     /// [`io_ring_destroy_mapped_ref`] takes one, calling its unmap before the
     /// free. The exit path ([`io_ring_release_all`]) frees without unmapping:
-    /// the dead task's address space never runs again, and its teardown
-    /// (`process::destroy_user_address_space`) spares every leaf in the window
-    /// the address was reserved from, so the frame is not freed twice.
+    /// the dead task's address space never runs again, and its end
+    /// (`process::destroy_user_address_space`) clears the leaf of the page's
+    /// record (a physical range) without freeing the frame, so it is not freed
+    /// twice.
     pub user_va: usize,
     /// TID of this ring's SQ poller, 0 when it has none. Set once, by the pass
     /// that ran the ring's [`OP_SQPOLL_START`]; the ring keeps its poller until
