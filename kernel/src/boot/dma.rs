@@ -399,7 +399,7 @@ mod hw {
 
     use azos_iommu::domain::IoDomain;
     use azos_iommu::{
-        DmaFault, DomainMode, Flavour, IommuError, IommuUnit, PtFormat, Settled, TableMem, UnitHandle,
+        AttachLog, Attached, DmaFault, DomainMode, Flavour, IommuError, IommuUnit, PtFormat, Settled, TableMem, UnitHandle,
     };
     #[cfg(feature = "iommu-vtd")]
     use azos_drvkit::Mmio;
@@ -518,6 +518,15 @@ mod hw {
     /// `POOL[i]` was handed to ring 3 (`ring3_domain`).
     static RING3: [AtomicBool; DOMAINS] = [const { AtomicBool::new(false) }; DOMAINS];
 
+    /// How the unit has each PCI function attached, as it accepted it.
+    static ATTACHED: SpinLock<AttachLog<{ azos_limits::PCI_MAX_FUNCTIONS as usize }>> = SpinLock::new(AttachLog::new());
+
+    fn attached(rid: u32, how: Attached) {
+        if !ATTACHED.lock().note(rid, how) {
+            azos_drv_sys::kwarn!("[IOMMU] {:#06x}: attach not recorded (PCI_MAX_FUNCTIONS): no writable window for ring 3", rid);
+        }
+    }
+
     /// The drivers that map every DMA of their function through its domain
     /// (`azos_dma::registry::domain_for`) and call `enable` once their
     /// buffers are mapped: the functions they bind get a translating domain.
@@ -571,10 +580,11 @@ mod hw {
     /// nothing until ring 3 maps memory in it). `None`: the IOMMU's own
     /// function, a function a kernel driver's domain is for, or no domain
     /// left (Kconfig `IOMMU_DOMAINS`).
-    /// Can function `rid` have a ring-3 domain at all (not the unit's own, not
-    /// under IOMMU_BYPASS)?
+    /// Will the unit confine function `rid` for ring 3: it can have a ring-3
+    /// domain at all (not the unit's own, not under IOMMU_BYPASS) and is
+    /// attached blocked or translating now.
     pub(crate) fn confinable(rid: u32) -> bool {
-        UNIT.lock().is_some_and(|u| u.own != Some(rid)) && !azos_limits::IOMMU_BYPASS
+        UNIT.lock().is_some_and(|u| u.own != Some(rid)) && !azos_limits::IOMMU_BYPASS && ATTACHED.lock().confines(rid)
     }
 
     pub(crate) fn ring3_domain(rid: u32, live: bool) -> Option<&'static dyn azos_dma::DmaDomain> {
@@ -593,6 +603,7 @@ mod hw {
             let ok = POOL[i].with(|d| azos_dma::bind::reuse_for_ring3(d.enabled(), d.is_empty(), ring3_live)) == Some(true);
             if ok {
                 RING3[i].store(true, Ordering::Release);
+                attached(rid, Attached::Translate);
             }
             return ok.then_some(&POOL[i] as &'static dyn azos_dma::DmaDomain);
         }
@@ -605,6 +616,7 @@ mod hw {
         }
         slot.set(d);
         RING3[i].store(true, Ordering::Release);
+        attached(rid, Attached::Translate);
         if azos_dma::registry::install_for(rid, slot).is_err() {
             azos_drv_sys::kerr!("[IOMMU] {:#06x}: ring-3 domain not recorded (registry full)", rid);
         }
@@ -795,6 +807,7 @@ mod hw {
                 azos_drv_sys::kerr!("[IOMMU] {}: {:?} refused: {:?}", info.bdf, mode, e);
                 continue;
             }
+            attached(rid, mode.into());
             match place {
                 Placement::Translate(driver) => match install(&f, rid, pool.next()) {
                     Ok(()) => kprintln!("[IOMMU] {} {}: domain ready, pass-through until its driver enables it", info.bdf, driver),
@@ -852,6 +865,7 @@ mod hw {
                 Settled::PassThrough => passed += 1,
                 Settled::Blocked => match unit.attach(rid, DomainMode::Block) {
                     Ok(()) => {
+                        attached(rid, Attached::Block);
                         blocked += 1;
                         kprintln!("[IOMMU] {}: DMA blocked (its driver did not bind)", info.bdf);
                     }

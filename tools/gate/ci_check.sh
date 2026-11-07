@@ -13100,6 +13100,8 @@ host_job host_canary_row "ring-3: map flush unconfirmed canary" iommu-tests map-
     a_map_whose_flush_fails_twice_may_still_be_mapped
 host_job host_canary_row "ring-3: map unconfirmed unpinned canary" syscall-tests dma-map-unpin-canary \
     a_map_the_unit_did_not_confirm_keeps_its_frames_and_parks_the_device
+host_job host_canary_row "ring-3: attach assumed confined canary" iommu-tests attach-assumed-canary \
+    a_function_the_unit_did_not_block_is_not_confined
 # Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two
 # segments mapped differently (their union, as before): the refusal test in
 # sched-wake-tests (`elf_bounds_tests`) must fail.

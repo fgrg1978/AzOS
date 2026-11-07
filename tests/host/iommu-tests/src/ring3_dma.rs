@@ -150,6 +150,28 @@ fn a_map_whose_flush_fails_twice_may_still_be_mapped() {
     );
 }
 
+/// **Only a function the unit blocks, or translates, is confined.** The boot
+/// notes what each attach came to: a driverless function whose Block was
+/// refused keeps its pass-through, and a function never noted is unknown.
+/// Neither is a function a writable register window may be granted on.
+///
+/// **Canary.** `attach-assumed-canary`: pass-through and unknown read as
+/// confined.
+#[test]
+fn a_function_the_unit_did_not_block_is_not_confined() {
+    use azos_iommu::{AttachLog, Attached};
+    let mut log: AttachLog<2> = AttachLog::new();
+    assert!(!log.confines(0x10), "never noted");
+    assert!(log.note(0x10, Attached::Bypass));
+    assert!(!log.confines(0x10), "pass-through (a Block the unit refused)");
+    assert!(log.note(0x10, Attached::Block));
+    assert!(log.confines(0x10), "blocked");
+    assert!(log.note(0x18, Attached::from(DomainMode::Translate { root_pa: 0x1000 })));
+    assert!(log.confines(0x18), "translating");
+    assert!(!log.note(0x20, Attached::Block), "a full log");
+    assert!(!log.confines(0x20), "a function the log could not hold is unknown");
+}
+
 /// **One binding per object, and a binding is ended only by the task that
 /// made it.** The exit path drains a task's bindings one at a time and leaves
 /// the others'.

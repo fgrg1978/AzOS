@@ -77,6 +77,69 @@ pub const fn settle(bound: bool, enabled: bool) -> Settled {
     }
 }
 
+/// What the unit was last told for a function (a [`DomainMode`] without its
+/// page table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attached {
+    Block,
+    Bypass,
+    Translate,
+}
+
+impl From<DomainMode> for Attached {
+    fn from(m: DomainMode) -> Self {
+        match m {
+            DomainMode::Block => Attached::Block,
+            DomainMode::Bypass => Attached::Bypass,
+            DomainMode::Translate { .. } => Attached::Translate,
+        }
+    }
+}
+
+/// How each function of the machine is attached right now, as the unit
+/// accepted it: what the policy that hands ring 3 a bus master's registers
+/// asks, instead of assuming the boot confined it.
+pub struct AttachLog<const N: usize> {
+    slots: [Option<(u32, Attached)>; N],
+}
+
+impl<const N: usize> Default for AttachLog<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> AttachLog<N> {
+    pub const fn new() -> Self {
+        AttachLog { slots: [None; N] }
+    }
+
+    /// Function `rid` is attached as `how` (the unit accepted it). `false`
+    /// when the log is full: the function then reads as unknown, which
+    /// confines nothing.
+    pub fn note(&mut self, rid: u32, how: Attached) -> bool {
+        let slot = self.slots.iter().position(|s| matches!(s, Some((r, _)) if *r == rid)).or_else(|| self.slots.iter().position(Option::is_none));
+        match slot {
+            Some(i) => {
+                self.slots[i] = Some((rid, how));
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn get(&self, rid: u32) -> Option<Attached> {
+        self.slots.iter().flatten().find(|(r, _)| *r == rid).map(|&(_, a)| a)
+    }
+
+    /// Does the unit confine function `rid`'s DMA: every access refused, or
+    /// translated through a table. One in pass-through, one whose attach was
+    /// refused (it keeps what it had) and one never noted do not.
+    pub fn confines(&self, rid: u32) -> bool {
+        cfg!(feature = "attach-assumed-canary") || matches!(self.get(rid), Some(Attached::Block | Attached::Translate))
+    }
+}
+
 /// Which IOMMU a unit is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flavour {
