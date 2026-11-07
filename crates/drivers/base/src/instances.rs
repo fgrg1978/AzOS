@@ -146,7 +146,9 @@ impl<C: ?Sized + Sync + 'static, const N: usize> Instances<C, N> {
             return Err(RegisterError::Full);
         }
         for s in &mut slots[..n] {
-            s.owner = Owner::Board;
+            if !cfg!(feature = "sensor-reserve-canary") {
+                s.owner = Owner::Board;
+            }
         }
         Ok(())
     }

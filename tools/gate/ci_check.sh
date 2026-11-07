@@ -5892,7 +5892,7 @@ pkgup_row() { # pkgup_row <riscv64|aarch64> <upgrade|floor|control>
 # never called it, so every file-open syscall returned -1 regardless of
 # whether FAT32 was mounted underneath it. `install_ring3_seams`
 # (`kernel/src/boot/seams.rs`) is now the ONE function both ISAs call — see that
-# function's own doc for the full reasoning, and `install_robot_hw` alongside
+# function's own doc for the full reasoning, and `install_board_hw` alongside
 # it for the matching gap in the GPIO/PWM/I2C/motor-binding boot step
 # `captest`'s cap-refusal checks needed.
 #
@@ -6376,7 +6376,7 @@ par "aarch64 preemption (qemu)" aarch64_phase3_qemu_row
 # munmap-refused check: GICD/GICR/UART, not CLINT/PLIC/UART; the MMIO section
 # maps the hardware-bus devices the topology grants by selector, the PL031 RTC
 # and the PL061 GPIO, found by their identity in the introspection tree's `devices/`), plus
-# `install_robot_hw`'s GPIO/PWM/I2C + motor-binding boot step. Full parity:
+# `install_board_hw`'s GPIO/PWM/I2C + motor-binding boot step. Full parity:
 # ALL PASSED, same as riscv64 — no known gap on this one.
 aarch64_captest_row() {
     local label="aarch64 captest"
@@ -12141,7 +12141,7 @@ host_generic_row() { # <label> <test fn>
         echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
     fi
 }
-host_job host_generic_row "sensor: vdso bind, no robot domain" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain
+host_job host_generic_row "sensor: vdso bind, board-io image without the robot extension" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain
 host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,board-io,vdso-bind-canary \
     a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
 # The frame class (cam-ring-tests, the pool): a reader's view of a frame
@@ -12277,6 +12277,9 @@ host_job host_canary_row "gpio: badge controller canary (endpoint)" syscall-test
 # kept from an acting op.
 host_job host_canary_row "gpio: freed number reuse canary" drivers-tests instances-reuse-canary a_freed_number_is_never_another_devices
 host_job host_canary_row "gpio: unbind drain canary" drivers-tests instances-no-drain-canary an_unbind_waits_for_the_op_inside_the_controller
+host_job host_canary_row "sensor: board block reservation canary" drivers-tests sensor-reserve-canary the_board_block_is_reserved_and_the_thermal_sensors_follow_it
+host_job host_canary_row "sensor: robot numbers canary" behavior-tests robot-sensors-swap-canary the_robot_attaches_each_sensor_at_its_topology_number
+host_job host_canary_row "extension: devices phase canary" actuation-tests devices-phase-canary each_boot_phase_runs_once_and_in_order
 host_job host_canary_row "sensors: stream drop canary" drivers-tests sensor-drop-canary a_stream_loses_no_sample_at_the_rate_it_is_read
 host_job host_canary_row "gpio: unbound falls to board canary" syscall-tests gpio-unbound-falls-to-board-canary a_controller_not_bound_is_no_resource_and_a_pin_past_its_last_is_bad_argument
 host_job host_canary_row "gpio: safety line canary" syscall-tests gpio-safety-guard-canary the_kill_switch_line_is_refused_to_a_holder_of_its_endpoint

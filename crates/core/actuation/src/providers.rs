@@ -165,7 +165,9 @@ pub(crate) fn effects() {
 
 /// The [`BootHook::Devices`] phase.
 pub fn devices() {
-    enter(DEVICES, "devices");
+    if !cfg!(feature = "devices-phase-canary") {
+        enter(DEVICES, "devices");
+    }
     each_hook(|h| {
         if let BootHook::Devices(f) = h {
             f();

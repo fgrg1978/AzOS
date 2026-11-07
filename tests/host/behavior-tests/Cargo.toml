@@ -22,6 +22,11 @@ rt-flush-canary = []
 # once the names have wrapped.
 replay-snapshot-canary = []
 rotate-latch-canary = []
+# providers.rs (pulled via #[path]; actuation-tests runs its canary).
+devices-phase-canary = []
+# azos_robot_sensors: the IMU and the odometry swap numbers
+# (`the_robot_attaches_each_sensor_at_its_topology_number` goes red).
+robot-sensors-swap-canary = ["azos_robot_sensors/robot-sensors-swap-canary"]
 wrap-tail-canary = []
 # logger.rs's ring-reserve gate canary: a known value, never enabled here (the
 # canary row is in actuation-tests).

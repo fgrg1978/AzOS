@@ -15,6 +15,9 @@ k1  = []
 # the ops in flight.
 instances-reuse-canary = []
 instances-no-drain-canary = []
+# Canary of `Instances::reserve_boards` (built by tests/host/drivers-tests): the
+# reservation takes no slot.
+sensor-reserve-canary = []
 # Canary of `sensors.rs` (built by tests/host/drivers-tests and the kernel's
 # `sensor-drop-canary`): a producer drops every 10th sample.
 sensor-drop-canary = []

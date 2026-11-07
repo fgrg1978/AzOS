@@ -17,6 +17,9 @@ effect-issue-before-commit-canary = []
 # effect_gate.rs's envelope gate canary: the Domain's `delete` and `egress`
 # rows are ignored. A known value here, off unless the canary row builds with it.
 envelope-row-canary = []
+# providers.rs: the devices phase is not ordered with the others
+# (`each_boot_phase_runs_once_and_in_order` goes red).
+devices-phase-canary = []
 # logger.rs's RT-flush gate canary: a known value, never enabled.
 rt-flush-canary = []
 # logger.rs's replay and rotation canaries: known values, never enabled here (the

@@ -6,6 +6,10 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 description = "The robot extension's sensors: their channel layouts, streams and the registration into the sensor class's reserved instances."
 
+[features]
+# Gate canary only (host suite `behavior-tests`): the IMU and the odometry swap numbers.
+robot-sensors-swap-canary = []
+
 [dependencies]
 azos_abi     = { workspace = true }
 azos_limits  = { workspace = true }

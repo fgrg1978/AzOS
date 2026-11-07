@@ -69,6 +69,9 @@ overflow-checks = true
 # not wait for the ops in flight (`an_unbind_waits_for_the_op_inside_the_controller`).
 instances-reuse-canary = []
 instances-no-drain-canary = []
+# instances.rs: the board block reserves no slot
+# (`the_board_block_is_reserved_and_the_thermal_sensors_follow_it` goes red).
+sensor-reserve-canary = []
 # sensors.rs (pulled via #[path]): a producer drops every 10th sample
 # (`a_stream_loses_no_sample_at_the_rate_it_is_read` goes red).
 sensor-drop-canary = []

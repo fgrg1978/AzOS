@@ -19,4 +19,5 @@ azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" 
 # never enabled here (drivers-tests runs them).
 instances-reuse-canary = []
 instances-no-drain-canary = []
+sensor-reserve-canary = []
 sensor-drop-canary = []

@@ -81,7 +81,8 @@ sensor!(IMU_TEMP_SENSOR, IMU_TEMP_CHANNELS, stream IMU_TEMP_LOG);
 /// Attach the robot's sensors to their reserved instances.
 pub fn register() {
     let all: [(u32, &'static Sensor); 10] = [
-        (IMU, &IMU_SENSOR), (ODOM, &ODOM_SENSOR), (ENCODER, &ENCODER_SENSOR), (RANGE, &RANGE_SENSOR),
+        (if cfg!(feature = "robot-sensors-swap-canary") { ODOM } else { IMU }, &IMU_SENSOR),
+        (if cfg!(feature = "robot-sensors-swap-canary") { IMU } else { ODOM }, &ODOM_SENSOR), (ENCODER, &ENCODER_SENSOR), (RANGE, &RANGE_SENSOR),
         (BATTERY, &BATTERY_SENSOR), (GPS, &GPS_SENSOR), (LIDAR, &LIDAR_SENSOR), (FLAGS, &FLAGS_SENSOR),
         (CAMERA, &CAMERA_SENSOR), (IMU_TEMP, &IMU_TEMP_SENSOR),
     ];

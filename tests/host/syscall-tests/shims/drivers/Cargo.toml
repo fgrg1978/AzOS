@@ -40,4 +40,4 @@ azos_hwbus = { path = "../../../../../crates/drivers/hwbus" }
 # the condition stays visible in the source. Same treatment, and the same
 # reason, as tests/host/drivers-tests/Cargo.toml.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "instances-reuse-canary", "instances-no-drain-canary", "sensor-drop-canary"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "instances-reuse-canary", "instances-no-drain-canary", "sensor-drop-canary", "sensor-reserve-canary"))'] }
