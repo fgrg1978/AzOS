@@ -209,6 +209,24 @@ fn a_pass_closes_the_batches_it_opened_on_a_nic_that_was_unplugged_meanwhile() {
     assert_eq!(drain(nic), vec![1], "a lone frame on the replugged NIC is on its way at once");
 }
 
+/// **Discriminates.** A batch token dropped without its end (an early return
+/// in a send loop) closes the batch itself. Canary: `Drop for TxBatch` doing
+/// nothing leaves the batch open.
+#[test]
+fn a_dropped_batch_token_closes_its_batches() {
+    static WIRE: std::sync::OnceLock<Wire> = std::sync::OnceLock::new();
+    let _g = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let wire = WIRE.get_or_init(|| Wire::new(8));
+    let nic = register_usb(wire).expect("a free number");
+    let _slot = Registered;
+    let token = batch_begin_all();
+    assert!(batch_open(nic));
+    drop(token);
+    assert!(!batch_open(nic), "the batch outlived its token");
+    submit(nic, &tagged(1)).unwrap();
+    assert_eq!(drain(nic), vec![1]);
+}
+
 /// **Discriminates.** A USB slot comes back with no batch open and no frame
 /// pending, whatever the function before it left behind (a pass that never got
 /// to close). Canary: `net-queue-no-slot-reset` leaves the state, and the lone

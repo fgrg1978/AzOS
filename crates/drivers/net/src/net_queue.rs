@@ -55,7 +55,7 @@ use azos_sync::SpinLock;
 
 // ── Selection, done once ────────────────────────────────────────────────
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 const BACKEND_NONE: u8 = 0;
 const BACKEND_VIRTIO: u8 = 2;
@@ -289,15 +289,36 @@ pub fn batch_begin(nic: usize) {
 pub fn batch_end(nic: usize) {
     if let Some(db) = DOORBELL.get(nic) {
         db.end();
-        if !cfg!(feature = "net-queue-no-end-ring") {
+        if !cfg!(feature = "net-queue-no-end-ring") && !END_SILENT.load(Ordering::Relaxed) {
             ring(nic);
         }
     }
 }
 
-/// The NICs a [`batch_begin_all`] opened a batch on.
+/// The NICs a [`batch_begin_all`] opened a batch on. Dropped without
+/// [`batch_end_all`] (an early return, a `?`), it closes them itself: a batch
+/// cannot be left open.
 #[must_use = "the batch stays open until batch_end_all closes it"]
 pub struct TxBatch(u32);
+
+impl Drop for TxBatch {
+    #[inline]
+    fn drop(&mut self) {
+        close_batches(core::mem::take(&mut self.0));
+    }
+}
+
+#[inline]
+fn close_batches(mask: u32) {
+    if mask == 0 {
+        return;
+    }
+    for nic in 0..MAX_NICS {
+        if mask & (1 << nic) != 0 && (!cfg!(feature = "net-queue-gated-end") || backend(nic) != BACKEND_NONE) {
+            batch_end(nic);
+        }
+    }
+}
 
 /// [`batch_begin`] on every NIC that came up: the stack's receive pass and its
 /// bulk senders answer on whichever interface a frame names.
@@ -316,12 +337,8 @@ pub fn batch_begin_all() -> TxBatch {
 /// [`batch_end`] on exactly the NICs `batch` opened, whatever the table says
 /// now: a USB NIC unplugged meanwhile must not keep a batch open.
 #[inline]
-pub fn batch_end_all(batch: TxBatch) {
-    for nic in 0..MAX_NICS {
-        if batch.0 & (1 << nic) != 0 && (!cfg!(feature = "net-queue-gated-end") || backend(nic) != BACKEND_NONE) {
-            batch_end(nic);
-        }
-    }
+pub fn batch_end_all(mut batch: TxBatch) {
+    close_batches(core::mem::take(&mut batch.0));
 }
 
 /// Is a batch open on NIC number `nic`? (host tests)
@@ -348,6 +365,15 @@ pub fn reap_rx(nic: usize, max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
 #[inline]
 pub fn mac(nic: usize) -> [u8; 6] {
     on_nic!(nic, d => d.mac(), else [0u8; 6])
+}
+
+/// Runtime canary `net-no-end-ring`: the end of a batch announces nothing, so
+/// a lone frame waits for the bound or the next pass.
+static END_SILENT: AtomicBool = AtomicBool::new(false);
+
+/// Arm the `net-no-end-ring` canary. Inert unless `CANARY_RUNTIME`.
+pub fn set_batch_end_silent(on: bool) {
+    END_SILENT.store(on && azos_limits::CANARY_RUNTIME, Ordering::Relaxed);
 }
 
 /// Canary `net-kick-per-frame`: every NIC rings per frame, batches ignored

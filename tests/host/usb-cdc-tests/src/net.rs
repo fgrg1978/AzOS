@@ -727,3 +727,35 @@ fn a_driver_is_told_which_setting_its_endpoints_belong_to() {
     let s = usb.session(azos_usb::Claim::new(slot, 0, usb.device(slot).unwrap().generation));
     assert_eq!(s.info(6).value, 0);
 }
+
+/// **Discriminates.** A block the endpoint refuses is kept, not dropped: the
+/// flush that met the refusal reports it, the next send retries that block
+/// first (so the frames leave in the order they were sent), and a second
+/// refusal during the retry leaves still exactly one block waiting. Canary:
+/// `canary-stuck-dropped` forgets the block without submitting it, and its
+/// frame never reaches the wire.
+#[test]
+fn a_refused_ncm_block_is_kept_and_retried_first_in_order() {
+    let mut b = Bench::new(ncm_device(8192, 8192));
+    let (a, c, d) = (eth(60, 1), eth(61, 2), eth(62, 3));
+    b.net.borrow_mut().send(&a).unwrap();
+    b.net.borrow_mut().refuse_next_submits(1);
+    assert_eq!(b.net.borrow_mut().flush(), Err(SendError::QueueFull), "the refusal reaches the flush");
+    b.run(5);
+    assert!(b.sent(2).is_empty(), "nothing left yet");
+
+    // The retry is refused too: the sender is told, and the one block is still waiting.
+    b.net.borrow_mut().refuse_next_submits(1);
+    assert_eq!(b.net.borrow_mut().send(&c), Err(SendError::QueueFull));
+    b.run(5);
+    assert!(b.sent(2).is_empty());
+
+    // The next send retries it first, then opens the block of its own frame.
+    b.net.borrow_mut().send(&c).unwrap();
+    b.net.borrow_mut().flush().unwrap();
+    b.net.borrow_mut().send(&d).unwrap();
+    b.net.borrow_mut().flush().unwrap();
+    b.run(8);
+    let sent = b.sent(2);
+    assert_eq!(sent.iter().map(|s| datagrams(s)).collect::<Vec<_>>(), vec![vec![a], vec![c], vec![d]], "kept, in order, once each");
+}

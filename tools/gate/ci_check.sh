@@ -12127,6 +12127,7 @@ host_job host_canary_row "net queue: replugged NIC canary" drivers-tests net-que
 host_job host_canary_row "net queue: batch end canary" drivers-tests net-queue-no-end-ring a_lone_frame_rings_at_once_a_batched_one_at_the_end_and_flush_does_not_wait
 host_job host_canary_row "net queue: full ring canary" drivers-tests net-queue-no-full-ring a_full_ring_is_announced_and_the_refused_frame_goes_in_afterwards
 host_job host_canary_row "nicq: kick close canary" syscall-tests nicq-gated-close-canary a_kick_closes_its_batch_when_the_queue_goes_back_to_the_stack_meanwhile
+host_job host_canary_row "usb: refused NCM block canary" usb-cdc-tests canary-stuck-dropped a_refused_ncm_block_is_kept_and_retried_first_in_order
 host_job host_canary_row "net queue: NIC loss canary" drivers-tests net-queue-drop-canary every_frame_posted_through_the_table_arrives_in_order_with_few_doorbells
 host_job host_canary_row "nicq: kick batch canary" syscall-tests nicq-no-batch-canary a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once
 host_job host_canary_row "nicq: stamp flush canary" syscall-tests nicq-no-stamp-flush-canary a_kick_shares_a_doorbell_and_a_stamped_frame_leaves_at_once
@@ -24942,15 +24943,18 @@ PYEOF
     # baseline does not hold is skipped and printed as SKIP. riscv64 runs the net and
     # tcp sections through vsbench_compare.sh, aarch64 through vsbench_aarch64.sh;
     # x86_64's microvm line has no NIC, so it has no row (the x86 PC phase). The
-    # canary row boots the NIC pass with `canary=net-kick-per-frame` and the
-    # `nic-egress` check must then fail (it skips with the rest while there is no
-    # baseline).
+    # canary row boots the NIC pass with `canary=net-no-end-ring` (a batch's end
+    # rings no doorbell, so the TCP bulk lanes' ACKs and segments wait for the
+    # bound or the next pass) and a lane check must then fail; it skips with the
+    # rest while there is no baseline. `net-kick-per-frame` is not used here: the
+    # doorbell is host time under -icount, and `nic-egress` rings once per frame
+    # either way.
     net_lane_row() { # net_lane_row <rv|arm> <pass|canary>
         local isa="$1" want="$2" work="$AZOS_OUT/build/net-lane-$1-$2" rc=0 label="net queue: vsbench lanes ($1)"
         [ "$want" = canary ] && label="net queue: lane gate canary ($1)"
         printf "  %-26s" "$label..."
         rm -rf "$work"
-        local app=""; [ "$want" = canary ] && app="canary=net-kick-per-frame"
+        local app=""; [ "$want" = canary ] && app="canary=net-no-end-ring"
         if [ "$isa" = rv ]; then
             KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" QEMU="$QEMU" WAIT_SECS=90 VSBENCH_LANES=net,tcp VSBENCH_WORK="$work" \
                 VSBENCH_TCP_AZOS_APPEND="$app" bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh" >"$work.out" 2>&1 \
@@ -24963,12 +24967,12 @@ PYEOF
             python3 -I "${REPO_ROOT}/tools/bench/net_lane_gate.py" check arm "$work/aarch64.log" "$work/azos-aarch64-product-tcp.log" >>"$work.out" 2>&1 || rc=$((rc | 2))
         fi
         local skipped=0
-        grep -aq 'net_lane_gate: SKIP .* nic-egress' "$work.out" && skipped=1
+        grep -aq 'net_lane_gate: SKIP ' "$work.out" && skipped=1
         if [ "$want" = pass ] && [ "$rc" -eq 0 ]; then
             ok; grep -a 'net_lane_gate:' "$work.out" | sed 's/^/      /'
         elif [ "$want" = canary ] && [ "$rc" -eq 0 ] && [ "$skipped" -eq 1 ]; then
             ok; echo "      (skipped with the baseline: nothing to compare yet)"
-        elif [ "$want" = canary ] && [ "$rc" -eq 2 ] && grep -aq 'net_lane_gate: .* nic-egress: .*over by' "$work.out"; then
+        elif [ "$want" = canary ] && [ "$rc" -eq 2 ] && grep -aqE 'net_lane_gate: .* (tcp-bulk-tx|tcp-bulk-rx|nic-egress): .*over by' "$work.out"; then
             ok
         else
             bad; grep -a 'net_lane_gate:\|^vsbench' "$work.out" | sed -n '1,8p' | sed 's/^/      /'; echo "      logs in $work"

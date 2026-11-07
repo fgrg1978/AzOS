@@ -1166,6 +1166,9 @@ pub struct CdcNet<'q, M: Memory, C: Clock> {
     /// A finished block whose submit the endpoint refused: buffer and length,
     /// retried by the next `flush` or `send` before anything else is sent.
     tx_stuck: Option<(usize, usize)>,
+    /// Test bench: the next this many submits are refused although a buffer is free.
+    #[cfg(feature = "test-refuse-submit")]
+    refuse_submits: u32,
     halts: Halts,
     bad_run: u32,
     submitted: bool,
@@ -1201,6 +1204,8 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             tx16: Tx16::new(TxParams { max_size: 0, ndp_align: 4, divisor: 4, remainder: 0, max_datagrams: 0 }),
             tx_open: None,
             tx_stuck: None,
+            #[cfg(feature = "test-refuse-submit")]
+            refuse_submits: 0,
             halts: Halts::default(),
             bad_run: 0,
             submitted: false,
@@ -1712,6 +1717,11 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
 
     fn submit_tx(&mut self, i: usize, n: usize) -> Result<(), SendError> {
         let Some(region) = self.region else { return Err(SendError::NotReady) };
+        #[cfg(feature = "test-refuse-submit")]
+        if self.refuse_submits > 0 {
+            self.refuse_submits -= 1;
+            return Err(SendError::QueueFull);
+        }
         if !self.bind.submit_out(TAG_OUT | i as u32, region.bus_at(self.tx_off(i)), n as u32) {
             return Err(SendError::QueueFull);
         }
@@ -1747,6 +1757,12 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
         Ok(())
     }
 
+    /// Test bench: refuse the next `n` submits although a buffer is free.
+    #[cfg(feature = "test-refuse-submit")]
+    pub fn refuse_next_submits(&mut self, n: u32) {
+        self.refuse_submits = n;
+    }
+
     /// Close the block under construction and queue it.
     pub fn flush(&mut self) -> Result<(), SendError> {
         self.retry_stuck()?;
@@ -1780,6 +1796,9 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
     fn retry_stuck(&mut self) -> Result<(), SendError> {
         let Some((i, n)) = self.tx_stuck else { return Ok(()) };
         self.tx_stuck = None;
+        if cfg!(feature = "canary-stuck-dropped") {
+            return Ok(());
+        }
         self.submit_block(i, n)
     }
 }

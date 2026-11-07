@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""NET_TX_BATCH_MAX's default fits the smallest TX ring of the NICs in the build.
+"""NET_TX_BATCH_MAX's default fits the smallest TX ring of the NICs in the build,
+and is the largest value that does.
 
 crates/core/limits/build.rs fails a build whose batch bound exceeds the frames
 the smallest TX ring holds, so a preset must never default to such a value. This
@@ -51,6 +52,17 @@ def rings(cfg):
     return out
 
 
+LADDER = (64, 32, 16, 8, 4, 2, 1)
+
+
+def expected(cfg, limits):
+    """The default NET_TX_BATCH_MAX should resolve to: the class value, lowered
+    to the largest ladder step the smallest ring holds."""
+    klass = 4 if cfg.get("HWCLASS_EMBEDDED") == "y" else 64 if cfg.get("HWCLASS_SERVER") == "y" else 16
+    smallest = min(limits.values())
+    return min(klass, next(t for t in LADDER if t <= smallest))
+
+
 def main():
     base = os.environ.get("AZOS_OUT")
     if not base:
@@ -69,6 +81,10 @@ def main():
             batch, limits = int(cfg["NET_TX_BATCH_MAX"]), rings(cfg)
             cells += 1
             over = {k: v for k, v in limits.items() if batch > v}
+            if "CONFIG_NET_TX_BATCH_MAX=" not in body and batch != expected(cfg, limits):
+                bad += 1
+                print(f"net_batch_bound_check: {os.path.basename(path)} ({label}): batch {batch}, want {expected(cfg, limits)} "
+                      f"(class value lowered to the smallest ring, {min(limits.values())} frames)", file=sys.stderr)
             if over:
                 bad += 1
                 print(f"net_batch_bound_check: {os.path.basename(path)} ({label}): batch {batch} over {over}", file=sys.stderr)

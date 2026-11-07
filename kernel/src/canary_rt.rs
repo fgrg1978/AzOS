@@ -193,6 +193,10 @@ pub(crate) const NAMES: &[&str] = &[
     // RX re-post, batches and NO_NOTIFY ignored (QEMU trace
     // `virtio_queue_notify` count == frames; gate rows `network: TX batch canary`).
     "net-kick-per-frame",
+    // boot/net.rs: the end of a TX batch rings no doorbell, so frames wait for
+    // the bound or the next pass (gate row `net queue: lane gate canary`: the
+    // vsbench TCP bulk lanes move).
+    "net-no-end-ring",
     // boot/sched.rs `rt_console_caller`: a real-time task's console output
     // waits for the wire (ktest `console_rt_lines_only_append`).
     "rt-console-own",

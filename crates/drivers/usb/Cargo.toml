@@ -78,6 +78,11 @@ canary-ntb-bounds = []
 # No byte pads a transmission that ends on a packet boundary (the core queues
 # no zero-length packet, so the device never sees the frame end).
 canary-zlp-pad = []
+# Test bench: `CdcNet::refuse_next_submits` makes the endpoint refuse a submit
+# while a buffer is free (the NCM stuck-block row).
+test-refuse-submit = []
+# The block the endpoint refused is dropped instead of retried.
+canary-stuck-dropped = []
 # The NDP and the datagrams of a block sent are not placed by the device's
 # alignment, divisor and remainder.
 canary-ntb-align = []

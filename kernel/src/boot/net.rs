@@ -187,6 +187,11 @@ pub(crate) fn install_net() -> bool {
             azos_drv_net::net_queue::set_kick_every_frame(true);
             kprintln!("[CANARY] net-kick-per-frame: one doorbell per frame");
         }
+        // Runtime canary: the end of a batch announces nothing.
+        if canary!("net-no-end-ring") {
+            azos_drv_net::net_queue::set_batch_end_silent(true);
+            kprintln!("[CANARY] net-no-end-ring: a batch's end rings no doorbell");
+        }
         // Runtime canary: two receive passes may run at once again (N8).
         if canary!("net-rx-two-consumers") {
             azos_net::set_rx_owner_bypass(true);

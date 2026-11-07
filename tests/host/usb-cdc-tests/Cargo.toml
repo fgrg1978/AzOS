@@ -10,7 +10,7 @@ description = "Host-side tests for the USB network and serial class drivers of c
 # Canaries: `cargo test --release --target aarch64-apple-darwin --features canary-<name>` must FAIL.
 
 [dependencies]
-azos_usb = { path = "../../../crates/drivers/usb", features = ["inspect"] }
+azos_usb = { path = "../../../crates/drivers/usb", features = ["inspect", "test-refuse-submit"] }
 azos_usb_tests = { path = "../usb-tests" }
 azos_rings = { path = "../../../crates/core/rings" }
 azos_idl = { path = "../../../crates/core/idl" }
@@ -24,6 +24,7 @@ azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 [features]
 canary-ntb-bounds = ["azos_usb/canary-ntb-bounds"]
 canary-zlp-pad = ["azos_usb/canary-zlp-pad"]
+canary-stuck-dropped = ["azos_usb/canary-stuck-dropped"]
 canary-ntb-align = ["azos_usb/canary-ntb-align"]
 canary-no-clear-halt = ["azos_usb/canary-no-clear-halt"]
 canary-mismatch = ["azos_usb/canary-mismatch"]
