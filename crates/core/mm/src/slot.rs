@@ -22,7 +22,15 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::zpool::PageWords;
+/// The slot words a marker protocol (`zpool::take_out` and the others) reads and
+/// writes ([`SlotWords`]).
+pub trait PageWords {
+    /// A page the reclaimer may take: resident in a frame.
+    fn is_victim_leaf(&self, word: u64) -> bool;
+    fn is_valid(&self, word: u64) -> bool;
+    fn make_marker(&self, kind: PageMarker, payload: u32) -> u64;
+    fn marker(&self, word: u64) -> Option<(PageMarker, u32)>;
+}
 
 /// What a marker slot says about a page the reclaimer took out of the address
 /// space. Only the pager reads a payload.

@@ -168,6 +168,12 @@ pub mod pmm {
     }
 }
 
+/// The slot word of a page (`memobj.rs` keeps one per page): the REAL
+/// `crates/core/mm/src/slot.rs`, core-only.
+#[allow(dead_code)]
+#[path = "../../../../../../crates/core/mm/src/slot.rs"]
+pub mod slot;
+
 /// The page cache's backing callback and its page arithmetic: the REAL
 /// `crates/core/mm/src/page_backing.rs` (core-only), under the path the real
 /// crate exports it by (`azos_mm::pager`), for `memobj.rs`'s Paged objects.

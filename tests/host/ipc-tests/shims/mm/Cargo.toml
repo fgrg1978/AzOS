@@ -11,3 +11,6 @@ description = "Host stand-in for azos_mm (page allocator only), used only by tes
 [features]
 # A 16 KiB pool page (see `PAGE_SIZE`).
 page-16k = []
+# `cfg(feature = ...)` in the pulled-in `slot.rs`; the host rows are in tests/host/mm-tests.
+mm-pte-truth-canary = []
+keep-leaf-first-canary = []

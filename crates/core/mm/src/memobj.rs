@@ -35,7 +35,7 @@
 //!
 //! A [`MemKind::Paged`] object is a window of up to [`MAX_MEMOBJ_PAGES`] pages
 //! of one file, and it IS that file's page cache: a cached page is one of its
-//! frames (`phys_pages[i] != 0`), the frame a mapper maps, the frame the kernel
+//! frames (a `Frame` slot), the frame a mapper maps, the frame the kernel
 //! reads and writes. There is no second cache to keep coherent. The pages come
 //! from the file through a [`PageBacking`] callback (`azos_mm::pager`, the file
 //! layer implements it) and are filled on first use, outside every lock.
@@ -123,8 +123,8 @@
 //! [`pool_container`] and the page's number in the object, so a page of a
 //! shared object has one entry however many spaces map it.
 //!
-//! **A page has four states.** Resident (`phys_pages[i]` names a frame);
-//! *storing* (`transit` set, `phys_pages[i]` 0, the frame is the reclaimer's);
+//! **A page has four states.** Resident (the slot names a frame);
+//! *storing* (`transit` set, the slot empty, the frame is the reclaimer's);
 //! *out* (`out` set, no frame, the pool holds the bytes); *restoring* (`out` and
 //! `transit` set, a fault owns the way back). One mover at a time, decided under
 //! the table lock, which also makes every transition atomic for the mappers: a
@@ -143,7 +143,7 @@
 //! other state reaches every leaf through the records: [`memobj_swap_take`]
 //! clears the page's leaf in each recorded mapping and shoots it down on every
 //! hart (`unmap_frame_in`, through the unmap hook, which waits out open
-//! user-copy sections) before the frame leaves `phys_pages`, all in one hold of
+//! user-copy sections) before the frame leaves its slot, all in one hold of
 //! the table. After that hold no leaf names the frame and none can again: a
 //! fault finds `transit` and waits, a fault after the publish finds `out` and
 //! restores through the object. A page with neither a frame, `transit` nor `out`
@@ -378,7 +378,7 @@ impl MemSpec {
 /// caller could decrement. `SYS_IPC_UNSHARE` took a raw userspace `shm_id`
 /// and called `memobj_release` unconditionally, so a task could drop references
 /// it never took — sixteen guesses were enough to drive any live region's
-/// count to zero, which frees every `phys_pages[i]` back to the PMM while the
+/// count to zero, which frees every resident frame back to the PMM while the
 /// real holders' `USER_RW` PTEs stay valid. Recording *who* took each
 /// reference makes a release only able to give back what the caller actually
 /// holds.
@@ -516,8 +516,9 @@ impl MemHolder {
 
 /// A shared memory region.
 pub struct MemObj {
-    /// Physical addresses of allocated pages (0 = unused slot in page array).
-    pub phys_pages: [usize; MAX_MEMOBJ_PAGES],
+    /// One slot word per page ([`crate::slot`]): `Frame` while the page is
+    /// resident, `Empty` otherwise.
+    slots: [u64; MAX_MEMOBJ_PAGES],
     /// Number of pages allocated.
     pub page_count: usize,
     /// Task that created this region. Read by [`memobj_owner`]; the untyped
@@ -573,7 +574,7 @@ pub struct MemObj {
     /// (module doc, "Swappable objects"). Always 0 without [`ATTR_SWAPPABLE`].
     out: u64,
     /// Bit `i`: the reclaimer is storing page `i` (its frame is the
-    /// reclaimer's, `phys_pages[i]` is 0 and `out` is clear) or a fault is
+    /// reclaimer's, the slot is empty and `out` is clear) or a fault is
     /// restoring it (`out` is set). One mover at a time.
     transit: u64,
     /// Fault installs in flight, per page (a Paged page's, a swappable page's):
@@ -621,10 +622,32 @@ struct PagedState {
 }
 
 impl MemObj {
+    /// The frame page `i` is resident in.
+    #[inline]
+    pub fn frame(&self, i: usize) -> Option<usize> {
+        crate::slot::frame_of(self.slots[i])
+    }
+
+    #[inline]
+    fn set_frame(&mut self, i: usize, pa: usize) {
+        self.slots[i] = crate::slot::frame(pa);
+    }
+
+    #[inline]
+    fn clear_frame(&mut self, i: usize) {
+        self.slots[i] = crate::slot::EMPTY;
+    }
+
+    /// Whether each of the first `n` pages is resident; `None` for `n` past
+    /// the table.
+    fn all_resident(&self, n: usize) -> Option<bool> {
+        Some(self.slots.get(..n)?.iter().all(|&w| crate::slot::frame_of(w).is_some()))
+    }
+
     pub const fn empty() -> Self {
         const EMPTY_HOLDER: MemHolder = MemHolder::empty();
         Self {
-            phys_pages: [0; MAX_MEMOBJ_PAGES],
+            slots: [crate::slot::EMPTY; MAX_MEMOBJ_PAGES],
             page_count: 0,
             owner_task: 0,
             perms: MemPerms::ReadOnly,
@@ -1188,7 +1211,7 @@ pub fn memobj_create_kernel(page_count: usize, spec: &MemSpec) -> Option<(u32, u
     let r = create_core(MEMOBJ_KERNEL_OWNER, page_count, spec).ok()?;
     // The object is new and only the kernel's reference exists: its first
     // page is its base.
-    let base = MEMOBJS.lock()[LAYOUT.idx(r) as usize].phys_pages[0];
+    let base = MEMOBJS.lock()[LAYOUT.idx(r) as usize].frame(0)?;
     Some((r, base))
 }
 
@@ -1264,7 +1287,11 @@ fn claim_slot_cow(
         regions[slot].generation = gen;
 
         let region = &mut regions[slot];
-        region.phys_pages[..pages.len()].copy_from_slice(pages);
+        for (i, &pa) in pages.iter().enumerate() {
+            if pa != 0 {
+                region.set_frame(i, pa);
+            }
+        }
         region.page_count = pages.len();
         region.owner_task = owner_task;
         region.perms = spec.perms;
@@ -1502,13 +1529,15 @@ pub fn memobj_map_begin_ref(tid: u32, r: u32, write: bool, pages: &mut [usize]) 
     if write && o.cow_shared != 0 {
         return Err(MemObjError::Busy);
     }
-    let frames = o.phys_pages.get(..pages.len()).filter(|_| pages.len() <= o.page_count).ok_or(MemObjError::Closed)?;
+    let resident = o.all_resident(pages.len()).filter(|_| pages.len() <= o.page_count).ok_or(MemObjError::Closed)?;
     // A swappable object's page that is out has no leaf to make: the entry is
     // 0 and the first access to it restores the page.
-    if frames.contains(&0) && (o.attrs & ATTR_SWAPPABLE == 0 || cfg!(feature = "swap-map-needs-frames-canary")) {
+    if !resident && (o.attrs & ATTR_SWAPPABLE == 0 || cfg!(feature = "swap-map-needs-frames-canary")) {
         return Err(MemObjError::Closed);
     }
-    pages.copy_from_slice(frames);
+    for (k, slot) in pages.iter_mut().enumerate() {
+        *slot = o.frame(k).unwrap_or(0);
+    }
     let h = o.holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid).ok_or(MemObjError::Closed)?;
     if h.map_va != 0 || h.building {
         return Err(MemObjError::Busy);
@@ -1650,13 +1679,15 @@ fn inherit_commit(
         return Err(MemObjError::Busy);
     }
     let page = azos_arch::PAGE_SIZE;
-    let frames = o.phys_pages.get(..pages).filter(|_| pages <= o.page_count).ok_or(MemObjError::Closed)?;
+    if pages > o.page_count || pages > MAX_MEMOBJ_PAGES {
+        return Err(MemObjError::Closed);
+    }
     // A swappable object may have pages with no leaf (out, or restored by
     // another mapper): the child faults them in. A leaf that is there names the
     // object's frame.
     let sparse = o.attrs & ATTR_SWAPPABLE != 0 && !cfg!(feature = "swap-inherit-dense-canary");
     if (0..pages).any(|k| match leaves.leaf(va + k * page) {
-        Some((f, _)) => f != frames[k],
+        Some((f, _)) => Some(f) != o.frame(k),
         None => !sparse,
     }) {
         return Err(MemObjError::Closed);
@@ -2031,14 +2062,14 @@ fn mapped_word_locked(region: &MemObj, i: usize, h: usize, tid: u32, va: usize) 
     // A Paged page that is not in the cache names no word. A swappable page
     // that is out names its (object, offset) all the same, with no frame to
     // read it through.
-    if region.phys_pages[pg] == 0 {
+    let Some(frame) = region.frame(pg) else {
         // Canary `swap-word-away-canary`: it names no word, as a Paged page's.
         let away = region.attrs & ATTR_SWAPPABLE != 0
             && (region.out | region.transit) & (1u64 << pg) != 0
             && !cfg!(feature = "swap-word-away-canary");
         return Ok(away.then_some(MappedWord { idx: i, holder: h, off, page: pg, phys: None }));
-    }
-    Ok(Some(MappedWord { idx: i, holder: h, off, page: pg, phys: Some(region.phys_pages[pg] + off % page) }))
+    };
+    Ok(Some(MappedWord { idx: i, holder: h, off, page: pg, phys: Some(frame + off % page) }))
 }
 
 /// The physical address of page `page_idx` of the region a packed reference
@@ -2049,7 +2080,7 @@ pub fn memobj_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usize>, Me
     let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
-    Ok(if page_idx < region.page_count { Some(region.phys_pages[page_idx]).filter(|&p| p != 0) } else { None })
+    Ok(if page_idx < region.page_count { region.frame(page_idx) } else { None })
 }
 
 /// [`memobj_page_phys_ref`] for the KERNEL's own access to the page through
@@ -2060,8 +2091,8 @@ pub fn memobj_kernel_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usi
     let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
-    Ok(if page_idx < region.page_count && region.attrs & KERNEL_BLIND == 0 && region.phys_pages[page_idx] != 0 {
-        Some(region.phys_pages[page_idx])
+    Ok(if page_idx < region.page_count && region.attrs & KERNEL_BLIND == 0 {
+        region.frame(page_idx)
     } else {
         None
     })
@@ -2083,7 +2114,7 @@ pub fn memobj_kernel_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usi
 ///
 /// The offset is split with the build's translation granule
 /// (`azos_arch::PAGE_SIZE`), as [`memobj_resolve_mapped`] splits it:
-/// each entry of `phys_pages` is one granule. It used a fixed 4096, so on an
+/// each slot's frame is one granule. It used a fixed 4096, so on an
 /// aarch64 16/64 KiB build a word past the first 4 KiB of a region was read
 /// from a later frame (or refused past `page_count` 4 KiB "pages").
 pub fn memobj_with_word_ref<R>(
@@ -2108,10 +2139,10 @@ pub fn memobj_with_word_ref<R>(
     // `memobj_resolve_mapped`.
     let page = azos_limits::nospec::array_index_nospec(page, region.page_count);
     // A Paged page that is not in the cache has no word to read.
-    if region.phys_pages[page] == 0 {
+    let Some(frame) = region.frame(page) else {
         return Ok(None);
-    }
-    let va = crate::addr::phys_to_virt(region.phys_pages[page]) + offset % page_size;
+    };
+    let va = crate::addr::phys_to_virt(frame) + offset % page_size;
     // SAFETY: a 4-aligned word inside a live page of the region, which cannot
     // be freed while this guard is held (see the doc).
     let word = unsafe { &*(va as *const AtomicU32) };
@@ -2153,9 +2184,9 @@ pub fn memobj_with_span_ref<R>(r: u32, bytes: usize, f: impl FnOnce(usize) -> R)
     {
         return Ok(None);
     }
-    let first = region.phys_pages[0];
-    // First frame 0: a purged object has none.
-    if first == 0 || (0..pages).any(|k| region.phys_pages[k] != first + k * page) {
+    // No first frame: a purged object has none.
+    let Some(first) = region.frame(0) else { return Ok(None) };
+    if (0..pages).any(|k| region.frame(k) != Some(first + k * page)) {
         return Ok(None);
     }
     let out = f(crate::addr::phys_to_virt(first));
@@ -2189,7 +2220,7 @@ pub fn memobj_write_pin(r: u32, bytes: usize, out: &mut [usize]) -> Result<Optio
         || region.kind == MemKind::Paged
         || region.perms != MemPerms::ReadWrite
         || region.cow_shared & shared_mask != 0
-        || region.phys_pages[..pages].contains(&0)
+        || region.all_resident(pages) != Some(true)
     {
         return Ok(None);
     }
@@ -2199,9 +2230,9 @@ pub fn memobj_write_pin(r: u32, bytes: usize, out: &mut [usize]) -> Result<Optio
     acquire_locked(region, MEMOBJ_KERNEL_OWNER).ok_or(MemObjError::Closed)?;
     for (k, slot) in out[..pages].iter_mut().enumerate() {
         #[cfg(not(feature = "memobj-write-first-frame-canary"))]
-        let pa = region.phys_pages[k];
+        let pa = region.frame(k).unwrap_or(0);
         #[cfg(feature = "memobj-write-first-frame-canary")]
-        let pa = region.phys_pages[0] + k * page;
+        let pa = region.frame(0).unwrap_or(0) + k * page;
         *slot = crate::addr::phys_to_virt(pa);
     }
     Ok(Some(pages))
@@ -2212,7 +2243,7 @@ pub fn memobj_write_pin(r: u32, bytes: usize, out: &mut [usize]) -> Result<Optio
 pub fn __memobj_swap_pages_for_tests(r: u32, a: usize, b: usize) {
     let mut regions = MEMOBJS.lock();
     if let Ok(i) = live_index(&regions, r) {
-        regions[i].phys_pages.swap(a, b);
+        regions[i].slots.swap(a, b);
     }
 }
 
@@ -2432,17 +2463,16 @@ impl Reclaim {
     /// Take page `i`'s frame out of `region` (table lock held): the page slot
     /// is cleared, the frame is this value's. A page with no frame is skipped.
     fn take(&mut self, region: &mut MemObj, i: usize) {
-        let p = region.phys_pages[i];
-        if p == 0 {
+        let Some(p) = region.frame(i) else {
             return;
-        }
+        };
         assert!(!self.is_full(), "memobj: reclaim batch overrun");
         if region.cow_shared & (1u64 << i) != 0 {
             self.shared |= 1u64 << self.n;
         }
         self.frames[self.n] = p;
         self.n += 1;
-        region.phys_pages[i] = 0;
+        region.clear_frame(i);
         region.cow_shared &= !(1u64 << i);
     }
 
@@ -2636,7 +2666,7 @@ fn reclaim_sole_frames(region: &mut MemObj) {
     for page in 0..region.page_count {
         let bit = 1u64 << page;
         if region.cow_shared & bit != 0 {
-            let p = region.phys_pages[page];
+            let p = region.frame(page).unwrap_or(0);
             if crate::cow::page_is_sole(p) && crate::cow::page_forget_if_sole(p) {
                 region.cow_shared &= !bit;
             }
@@ -2663,7 +2693,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
         if o.holders.iter().any(MemHolder::fixes_frames) {
             return Err(MemObjError::Busy);
         }
-        (o.phys_pages[page], o.generation)
+        (o.frame(page).unwrap_or(0), o.generation)
     };
     // The last sharer keeps the frame: the other object let go of it (freed, or
     // broke its own copy first), so nothing is left to protect from. The share
@@ -2672,7 +2702,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     if crate::cow::page_is_sole(old) && crate::cow::page_forget_if_sole(old) {
         let mut regions = MEMOBJS.lock();
         if let Ok(i) = live_index(&regions, r) {
-            if regions[i].generation == key && regions[i].phys_pages[page] == old {
+            if regions[i].generation == key && regions[i].frame(page) == Some(old) {
                 regions[i].cow_shared &= !(1u64 << page);
             }
         }
@@ -2696,7 +2726,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     let still = live_index(&regions, r).ok().filter(|&i| {
         let o = &regions[i];
         o.generation == key
-            && o.phys_pages[page] == old
+            && o.frame(page) == Some(old)
             && o.cow_shared & (1u64 << page) != 0
             && !o.holders.iter().any(MemHolder::fixes_frames)
     });
@@ -2709,7 +2739,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     // Canary `memobj-cow-no-break-canary`: the bit goes and the frame stays, so
     // the two objects write the same bytes.
     if !cfg!(feature = "memobj-cow-no-break-canary") {
-        o.phys_pages[page] = fresh.as_usize();
+        o.set_frame(page, fresh.as_usize());
     }
     o.cow_shared &= !(1u64 << page);
     drop(regions);
@@ -2794,7 +2824,9 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
         }
         let o = &mut regions[i];
         let writable_somewhere = o.holders.iter().any(MemHolder::may_write_frames);
-        pages[..n].copy_from_slice(&o.phys_pages[..n]);
+        for (k, slot) in pages[..n].iter_mut().enumerate() {
+            *slot = o.frame(k).unwrap_or(0);
+        }
         if !writable_somewhere && o.kind == MemKind::Anon {
             let mut shared = 0usize;
             for &p in &pages[..n] {
@@ -3201,11 +3233,10 @@ fn pipe_header(region: &MemObj) -> Option<azos_bytepipe::Header> {
     if region.page_count == 0
         || region.attrs & KERNEL_BLIND != 0
         || region.kind == MemKind::Paged
-        || region.phys_pages[0] == 0
     {
         return None;
     }
-    let va = crate::addr::phys_to_virt(region.phys_pages[0]);
+    let va = crate::addr::phys_to_virt(region.frame(0)?);
     // SAFETY: the first frame of a live region the table lock pins, page
     // aligned, at least HEADER_BYTES long, mapped in the direct map.
     unsafe { azos_bytepipe::Header::at(va) }
@@ -3367,8 +3398,8 @@ pub fn memobj_frames_pin(r: u32, out: &mut [usize]) -> Result<usize, MemObjError
         return Err(MemObjError::Purged);
     }
     acquire_locked(region, MEMOBJ_KERNEL_OWNER).ok_or(MemObjError::Closed)?;
-    for (slot, &pa) in out.iter_mut().zip(&region.phys_pages[..region.page_count]) {
-        *slot = crate::addr::phys_to_virt(pa);
+    for (k, slot) in out.iter_mut().enumerate().take(region.page_count) {
+        *slot = crate::addr::phys_to_virt(region.frame(k).unwrap_or(0));
     }
     Ok(region.page_count)
 }
@@ -3392,7 +3423,7 @@ pub fn memobj_dma_pin(r: u32) -> Result<(u64, usize), MemObjError> {
         return Err(MemObjError::BadArg);
     }
     acquire_locked(region, MEMOBJ_KERNEL_OWNER).ok_or(MemObjError::Closed)?;
-    Ok((region.phys_pages[0] as u64, region.page_count * azos_arch::PAGE_SIZE))
+    Ok((region.frame(0).unwrap_or(0) as u64, region.page_count * azos_arch::PAGE_SIZE))
 }
 
 /// Give back the reference [`memobj_frames_pin`] or [`memobj_dma_pin`] took on `r`.
@@ -3575,7 +3606,7 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
         if idx >= o.page_count {
             return Err(MemObjError::BadArg.into());
         }
-        if o.phys_pages[idx] != 0 {
+        if o.frame(idx).is_some() {
             return Ok(());
         }
         let st = o.paged.as_ref().ok_or(MemObjError::BadArg)?;
@@ -3590,8 +3621,8 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
     }
     let mut regions = MEMOBJS.lock();
     match paged_slot(&regions, r) {
-        Ok(i) if regions[i].phys_pages[idx] == 0 => {
-            regions[i].phys_pages[idx] = frame.as_usize();
+        Ok(i) if regions[i].frame(idx).is_none() => {
+            regions[i].set_frame(idx, frame.as_usize());
             Ok(())
         }
         other => {
@@ -3716,10 +3747,9 @@ fn paged_frame(r: u32, idx: usize, write: bool, pin: bool) -> Result<usize, Page
         let mut regions = MEMOBJS.lock();
         let i = paged_slot(&regions, r)?;
         let o = &mut regions[i];
-        let phys = o.phys_pages[idx];
-        if phys == 0 {
+        let Some(phys) = o.frame(idx) else {
             continue; // dropped between the fill and here: bring it in again
-        }
+        };
         if let Some(st) = o.paged.as_mut() {
             if write {
                 st.dirty |= 1u64 << idx;
@@ -3769,7 +3799,7 @@ fn paged_io(r: u32, off: usize, mut io: PagedIo<'_>) -> Result<(usize, usize), P
                 break;
             }
             let n = (len - done).min(page - pos % page).min((st.size - file_pos).min(usize::MAX as u64) as usize);
-            let phys = o.phys_pages[idx];
+            let phys = o.frame(idx).unwrap_or(0);
             if phys == 0 {
                 Ok(None)
             } else if matches!(io, PagedIo::Write(_)) && st.flushing & (1u64 << idx) != 0 {
@@ -3851,12 +3881,11 @@ pub fn memobj_paged_writeback_ref(r: u32) -> Result<usize, PagedError> {
             let mut regions = MEMOBJS.lock();
             let i = paged_slot(&regions, r)?;
             let o = &mut regions[i];
-            let phys = o.phys_pages[idx];
-            let flush = phys != 0 && must_flush(o, idx);
+            let phys = o.frame(idx).filter(|_| must_flush(o, idx));
             let Some(st) = o.paged.as_mut() else { return Err(MemObjError::BadArg.into()) };
-            if !flush || st.flushing & bit != 0 {
+            let Some(phys) = phys.filter(|_| st.flushing & bit == 0) else {
                 continue;
-            }
+            };
             st.dirty &= !bit;
             st.flushing |= bit;
             (st.backing, st.key, paged_file_off(st, idx), st.size, phys)
@@ -3912,7 +3941,7 @@ pub fn memobj_paged_drop_clean(max_pages: usize) -> usize {
                     continue;
                 }
                 let flushing = o.paged.is_some_and(|st| st.flushing & (1u64 << idx) != 0);
-                if o.phys_pages[idx] == 0 || flushing || must_flush(o, idx) {
+                if o.frame(idx).is_none() || flushing || must_flush(o, idx) {
                     continue;
                 }
                 unmap_frame_in(o, idx);
@@ -3986,7 +4015,7 @@ pub fn memobj_paged_info_ref(r: u32) -> Result<PagedInfo, MemObjError> {
     let Some(st) = o.paged else { return Err(MemObjError::BadArg) };
     let mut info = PagedInfo { first: st.first, size: st.size, resident: 0, dirty: 0, flushing: st.flushing };
     for idx in 0..o.page_count {
-        if o.phys_pages[idx] != 0 {
+        if o.frame(idx).is_some() {
             info.resident |= 1u64 << idx;
             if must_flush(o, idx) {
                 info.dirty |= 1u64 << idx;
@@ -4014,7 +4043,7 @@ fn paged_forget_locked(o: &mut MemObj, from_idx: usize) -> Result<Reclaim, MemOb
         return Err(MemObjError::Busy);
     }
     for idx in from_idx..o.page_count {
-        if o.phys_pages[idx] != 0 {
+        if o.frame(idx).is_some() {
             unmap_frame_in(o, idx);
             freed.take(o, idx);
         }
@@ -4117,7 +4146,7 @@ pub fn memobj_paged_close_ref(r: u32) -> Result<(), PagedError> {
             return Err(MemObjError::Busy.into());
         }
         let busy = (0..o.page_count).any(|idx| {
-            o.phys_pages[idx] != 0
+            o.frame(idx).is_some()
                 && (must_flush(o, idx) || o.paged.is_some_and(|st| st.flushing & (1u64 << idx) != 0))
         });
         if busy {
@@ -4367,8 +4396,7 @@ pub fn memobj_age_next(key: u32, from: usize, harvest: &dyn Fn(usize, usize, usi
     let o = &regions[i];
     let mut resident = 0u64;
     for idx in 0..o.page_count {
-        let frame = o.phys_pages[idx];
-        if frame != 0 && o.transit & (1u64 << idx) == 0 {
+        if o.frame(idx).is_some() && o.transit & (1u64 << idx) == 0 {
             resident |= 1 << idx;
         }
     }
@@ -4409,7 +4437,7 @@ pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Take {
         // its memory is the storm's to say it left the object alone.
         return if mapper == MEMOBJ_KERNEL_OWNER { Take::Not } else { Take::Pinned { mapper, pages: o.page_count } };
     }
-    if !swap_ready(o, idx) || o.phys_pages[idx] == 0 || o.transit & bit != 0 {
+    if !swap_ready(o, idx) || o.frame(idx).is_none() || o.transit & bit != 0 {
         return Take::Not;
     }
     // Every recorded mapping loses its leaf, shot down on every hart, before
@@ -4418,8 +4446,8 @@ pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Take {
     if !cfg!(feature = "swap-rmap-skip-canary") {
         unmap_frame_in(o, idx);
     }
-    let frame = o.phys_pages[idx];
-    o.phys_pages[idx] = 0;
+    let Some(frame) = o.frame(idx) else { return Take::Not };
+    o.clear_frame(idx);
     o.transit |= bit;
     Take::Frame(frame)
 }
@@ -4459,13 +4487,13 @@ pub fn memobj_swap_put_back(ident: u32, idx: usize, frame: usize) -> bool {
     let Ok(i) = live_index(&regions, ident) else { return false };
     let o = &mut regions[i];
     let bit = 1u64 << idx;
-    if idx >= o.page_count || o.transit & bit == 0 || o.out & bit != 0 || o.phys_pages[idx] != 0 {
+    if idx >= o.page_count || o.transit & bit == 0 || o.out & bit != 0 || o.frame(idx).is_some() {
         return false;
     }
     // Canary `swap-put-back-lost-canary`: the frame is not given back to the
     // page, and the caller believes it was.
     if !cfg!(feature = "swap-put-back-lost-canary") {
-        o.phys_pages[idx] = frame;
+        o.set_frame(idx, frame);
     }
     o.transit &= !bit;
     true
@@ -4514,9 +4542,9 @@ pub fn memobj_fault_look(r: u32, root: usize, idx: usize) -> ObjLook {
         o.transit |= bit;
         return ObjLook::Restore;
     }
-    match o.phys_pages[idx] {
-        0 => ObjLook::Gone,
-        frame => {
+    match o.frame(idx) {
+        None => ObjLook::Gone,
+        Some(frame) => {
             o.installing[idx] = o.installing[idx].saturating_add(1);
             ObjLook::Frame { frame, write }
         }
@@ -4545,7 +4573,7 @@ pub fn memobj_maps_frame(r: u32, root: usize, idx: usize, frame: usize, write: b
             !write || cfg!(feature = "swap-access-unchecked-canary") || (h.map_write && o.perms == MemPerms::ReadWrite && o.cow_shared & bit == 0)
         };
         idx < o.page_count
-            && o.phys_pages[idx] == frame
+            && o.frame(idx) == Some(frame)
             && o.holders.iter().any(|h| h.is_mapped() && h.map_root == root && h.maps_page(idx) && allowed(h))
     })
 }
@@ -4618,7 +4646,7 @@ pub fn memobj_restore_install(r: u32, idx: usize, frame: usize) -> bool {
     let Ok(i) = live_index(&regions, r) else { return false };
     let o = &mut regions[i];
     let bit = 1u64 << idx;
-    if idx >= o.page_count || o.transit & bit == 0 || o.out & bit == 0 || o.phys_pages[idx] != 0 {
+    if idx >= o.page_count || o.transit & bit == 0 || o.out & bit == 0 || o.frame(idx).is_some() {
         return false;
     }
     // Charged in the hold that clears `out`: an object that ends right after
@@ -4626,7 +4654,7 @@ pub fn memobj_restore_install(r: u32, idx: usize, frame: usize) -> bool {
     if o.charge_key != 0 {
         host().charge_restore(o.charge_key);
     }
-    o.phys_pages[idx] = frame;
+    o.set_frame(idx, frame);
     o.out &= !bit;
     o.transit &= !bit;
     true
@@ -4868,13 +4896,14 @@ mod tests {
         let fix = |delta: usize| {
             let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r2).unwrap();
-            regions[i].phys_pages[1] = regions[i].phys_pages[0] + page + delta;
+            let first = regions[i].frame(0).unwrap();
+            regions[i].set_frame(1, first + page + delta);
         };
         fix(0);
         assert!(memobj_with_span_ref(r2, 2 * page, |_| ()).unwrap().is_some(), "contiguous frames");
         let kept = {
             let regions = MEMOBJS.lock();
-            regions[live_index(&regions, r2).unwrap()].phys_pages[1]
+            regions[live_index(&regions, r2).unwrap()].frame(1).unwrap()
         };
         fix(page);
         assert_eq!(memobj_with_span_ref(r2, 2 * page, |_| ()), Ok(None), "frames that are not contiguous");
@@ -4883,7 +4912,7 @@ mod tests {
             // Put the real frame back so the release frees what was allocated.
             let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r2).unwrap();
-            regions[i].phys_pages[1] = kept;
+            regions[i].set_frame(1, kept);
         }
 
         cap_store::with_table(A, |t| memobj_release_cap(A, t, cap)).expect("a live tid").expect("released");
@@ -4970,7 +4999,7 @@ mod tests {
     /// `azos_arch::PAGE_SIZE`, and neither carries a page size of its
     /// own. Red on the old `memobj_with_word_ref` (`const PAGE: usize = 4096`).
     ///
-    /// Both also index `phys_pages` with a page number derived from a ring-3
+    /// Both also index the slots with a page number derived from a ring-3
     /// value, so both mask it after the bounds check (Spectre v1, Kconfig
     /// `MITIGATION_SPECTRE_V1_INDEX`). A speculative load is invisible to any
     /// host test, so the mask's presence is asserted in the source.
@@ -4991,9 +5020,9 @@ mod tests {
                 assert!(!b.contains(fixed), "{name} splits the offset with a fixed {fixed}");
             }
             let mask = b.find("nospec::array_index_nospec(")
-                .unwrap_or_else(|| panic!("{name} indexes phys_pages without the Spectre v1 mask"));
-            let load = b.find("phys_pages[").expect("phys_pages load");
-            assert!(mask < load, "{name} masks after its phys_pages load");
+                .unwrap_or_else(|| panic!("{name} indexes the slots without the Spectre v1 mask"));
+            let load = b.find(".frame(").expect("frame load");
+            assert!(mask < load, "{name} masks after its frame load");
         }
     }
 
@@ -5014,7 +5043,7 @@ mod tests {
                 let span = h.map_pages.min(region.page_count) * page;
                 if va >= h.map_va && va - h.map_va < span {
                     let off = va - h.map_va;
-                    if region.phys_pages[off / page] == 0 {
+                    if region.frame(off / page).is_none() {
                         continue;
                     }
                     return Some((LAYOUT.pack(i as u32, region.generation), off));
@@ -5196,7 +5225,7 @@ mod tests {
         {
             let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, holed).unwrap();
-            regions[i].phys_pages[0] = 0;
+            regions[i].clear_frame(0);
         }
         assert_eq!(memobj_write_pin(holed, 1, &mut out), Ok(None), "a page with no frame");
         for r in [ro, rw, hidden] {
@@ -6729,7 +6758,7 @@ mod tests {
     /// file. A failed fill takes no frame and leaves the page out.
     ///
     /// **Canary (by hand, 2026-10-16).** `paged_page_in` filling without the
-    /// `phys_pages[idx] != 0` early return: "a hit read the file again" red.
+    /// resident-slot early return: "a hit read the file again" red.
     #[test]
     fn a_paged_object_reads_through_the_cache_and_fills_each_page_once() {
         let _g = setup();

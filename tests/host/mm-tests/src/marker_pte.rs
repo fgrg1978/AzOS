@@ -50,9 +50,9 @@
 //! by `Rv` below.
 
 use super::budget::PageBudget;
-use super::slot::{self, put_back_page, resolve, PageMarker, PutBack, Resolve, SlotWords};
+use super::slot::{self, put_back_page, resolve, PageMarker, PageWords, PutBack, Resolve, SlotWords};
 use super::zpool::{
-    clear, fill_page, publish, put_back, reclaim_pass, take_out, Backing, Codec, Fetched, Lookup, Packed, PageWords,
+    clear, fill_page, publish, put_back, reclaim_pass, take_out, Backing, Codec, Fetched, Lookup, Packed,
     Pool, Refusal, Round, Stages,
 };
 use azos_arch::mmu::{Pte, PteFlags};

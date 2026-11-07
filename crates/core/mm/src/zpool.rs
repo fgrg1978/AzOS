@@ -137,7 +137,7 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::slot::PageMarker;
+use crate::slot::{PageMarker, PageWords};
 
 use azos_crypto::aes::Aes128;
 use azos_crypto::wkdm;
@@ -1655,17 +1655,8 @@ pub fn run_storm<R: Reclaimee>(
 // compare-and-swap from the exact word read, so whatever got there first wins
 // and the reclaimer leaves the page alone.
 //
-// This file does not know the slot format; `PageWords` is the part of it the
+// This file does not know the slot format; `slot::PageWords` is the part of it the
 // protocol needs.
-
-/// The slot words a marker protocol reads and writes (`slot::SlotWords`).
-pub trait PageWords {
-    /// A page the reclaimer may take: resident in a frame.
-    fn is_victim_leaf(&self, word: u64) -> bool;
-    fn is_valid(&self, word: u64) -> bool;
-    fn make_marker(&self, kind: PageMarker, payload: u32) -> u64;
-    fn marker(&self, word: u64) -> Option<(PageMarker, u32)>;
-}
 
 /// Why [`take_out`] left the slot as it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
