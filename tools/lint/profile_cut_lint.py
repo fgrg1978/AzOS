@@ -29,20 +29,22 @@ import azos_tools  # noqa: E402
 ROOT = azos_tools.ROOT
 ARCHES = ("riscv64", "aarch64", "x86_64")
 
+# Every crate kernel/Cargo.toml's `use-robot` turns on and no other feature does.
+ROBOT_CRATES = ("azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers", "azos_robot_sensors",
+                "azos_flight", "azos_nav", "azos_gps", "azos_imu", "azos_baro", "azos_ahrs", "azos_telemetry",
+                "azos_bench", "azos_multi_stream", "azos_camera")
 # name: (preset of the defconfig with the symbol on, symbol, lines dropped, crates)
 CUTS = {
     "linux": ("generic", "LINUX_ABI", ("CONFIG_LINUX_ABI", "CONFIG_LINUX_RUNTIME"), ("azos_linux_abi",)),
     "board-io": ("robot", "BOARD_IO", ("CONFIG_BOARD_IO", "CONFIG_USE_ROBOT", "CONFIG_PRESET_"),
                  ("azos_drv_sensor", "azos_cam_ring", "azos_drv_actuator", "azos_kill_switch")),
-    "robot": ("robot", "USE_ROBOT", ("CONFIG_USE_ROBOT", "CONFIG_PRESET_"),
-              ("azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers")),
+    "robot": ("robot", "USE_ROBOT", ("CONFIG_USE_ROBOT", "CONFIG_PRESET_"), ROBOT_CRATES),
 }
 # name: (the presets whose defconfigs have the crates between them, preset of the cut, crates)
 PRESET_CUTS = {
     "microvm": (("robot", "generic"), "microvm",
                 ("azos_linux_abi", "azos_tpm", "azos_usb", "azos_usb_hid", "azos_scsi",
-                 "azos_drv_sensor", "azos_cam_ring", "azos_drv_actuator", "azos_kill_switch",
-                 "azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers")),
+                 "azos_drv_sensor", "azos_cam_ring", "azos_drv_actuator", "azos_kill_switch") + ROBOT_CRATES),
 }
 # The overlays of a preset's gate cell (mk/lints.mk CHECK_OVERLAYS).
 OVERLAYS = {"microvm": "qemu"}
