@@ -162,7 +162,7 @@ than allow rules:
 | `proxy-endpoint-not-realtime` | A real-time row holding a grant on a proxy endpoint (`endpoint.rpc-*`) |
 | `proxy-endpoint-served-by-rpcsrv-only` | A row other than `RPCSRV.ELF` serving a proxy endpoint |
 | `msi-slot-one-device` | Two rows holding one `msi.<k>` slot while driving different devices (`mmio.<selector>` and `ioport.*` grants): a vector a holder gave back is kept for its slot, so the slot's holders must share a device. |
-| `msi-grant-not-transferable` | An `msi.<k>` grant, or the device registers of a row that holds one, carrying TRANSFER or DUP (a slot's holder is the only one that may hand it on). |
+| `msi-grant-not-transferable` | An `msi.<k>` grant carrying TRANSFER or DUP, or any `mmio.*`/`ioport.*` grant doing so while a row holds an `msi.<k>` (a slot's holder is the only one that may hand it on; the kernel also refuses a device capability's arrival in a task that holds a slot). |
 
 An exception is a row name plus the exact grants it may hold and a reason, in
 the table in the kernel image; a topology file cannot add one. A refusal is

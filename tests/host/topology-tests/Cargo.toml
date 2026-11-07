@@ -110,6 +110,8 @@ neverallow-canary = ["azos_topology/neverallow-canary"]
 msi-slot-shared-canary = ["azos_topology/msi-slot-shared-canary"]
 # Canaries: an msi grant may carry TRANSFER or DUP; the always-on rules find nothing.
 msi-transfer-canary = ["azos_topology/msi-transfer-canary"]
+admission-always-skip-canary = ["azos_topology/admission-always-skip-canary"]
+msi-register-scope-canary = ["azos_topology/msi-register-scope-canary"]
 neverallow-always-canary = ["azos_topology/neverallow-always-canary"]
 # Placement canary: a move is committed without its record.
 placement-norecord-canary = ["azos_topology/placement-norecord-canary"]

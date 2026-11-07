@@ -152,6 +152,10 @@ msi-slot-shared-canary = []
 # Canaries: an msi grant may carry TRANSFER or DUP; the always-on rules find nothing.
 msi-transfer-canary = []
 neverallow-always-canary = []
+# Canary: admission with `TOPOLOGY_NEVERALLOW` off checks no rule at all.
+admission-always-skip-canary = []
+# Canary: only the registers of a row that holds a slot are held to the transfer rule.
+msi-register-scope-canary = []
 # Shrinks the autorun frame budget so a ring-3 probe can hit it in 16 pages
 # instead of 2048. See `builder.rs`.
 mem-quota-canary = []

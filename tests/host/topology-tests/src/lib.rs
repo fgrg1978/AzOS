@@ -6411,7 +6411,7 @@ mod msi_slot_tests {
         assert_eq!(refused(&row(&[with(slot, CapPerms::RW, true), nic])), Some(id), "TRANSFER on the slot");
         assert_eq!(refused(&row(&[with(slot, CapPerms::RW.union(CapPerms::DUP), false), nic])), Some(id), "DUP on the slot");
         assert_eq!(refused(&row(&[slot, with(nic, CapPerms::RW, true)])), Some(id), "TRANSFER on its device registers");
-        assert_eq!(refused(&row(&[with(nic, CapPerms::RW, true)])), None, "a row with no slot may hand its registers on");
+        assert_eq!(refused(&row(&[with(nic, CapPerms::RW, true)])), None, "with no slot anywhere, registers may be handed on");
         assert_eq!(refused(&row(&[slot, nic])), None);
         // The `always` rules are the safety ones.
         let always: Vec<_> = RULES.iter().filter(|r| r.always).map(|r| r.id).collect();
@@ -6419,6 +6419,54 @@ mod msi_slot_tests {
         let bad = two(&[slot, nic], &[slot, dev(b"mmio.pci:1b36:0010")]);
         assert!(neverallow::check_always(&bad, &env).is_err(), "a lint-off admission still refuses it");
         assert!(neverallow::check_always(&row(&[slot, nic]), &env).is_ok());
+    }
+
+    /// **No device register grant carries TRANSFER or DUP while any row holds
+    /// a slot:** a row's registers could move into the slot's holder, which
+    /// would program that device with the slot's message.
+    ///
+    /// **Canary.** `msi-register-scope-canary`: only a slot-holding row's own
+    /// registers are held to it.
+    #[test]
+    fn a_device_register_grant_is_not_transferable_while_any_row_holds_a_slot() {
+        let env = Env { desktop: false };
+        let id = RULES.iter().position(|r| r.id == "msi-grant-not-transferable").expect("the rule") as u8;
+        let (slot, nic) = (dev(b"msi.0"), dev(b"mmio.pci:8086:100e"));
+        let with = |c: CapSpec<'static>, transfer: bool| CapSpec { perms: CapPerms::RW, transfer, ..c };
+        let refused = |t: &Topology<'_>| neverallow::check(t, &env).err().map(|r| r.rule);
+        let other = [slot, nic];
+        assert_eq!(refused(&two(&other, &[with(dev(b"mmio.pci:1b36:0010"), true)])), Some(id), "another row's registers while a row holds a slot");
+        assert_eq!(refused(&two(&other, &[with(dev(b"ioport.768.32"), true)])), Some(id), "ports too");
+        assert_eq!(refused(&two(&other, &[with(dev(b"ioport.768.32"), false)])), None, "held, not handed on");
+        assert_eq!(refused(&two(&[with(nic, true)], &[with(dev(b"ioport.768.32"), true)])), None, "no slot anywhere");
+    }
+
+    /// **Admission with `TOPOLOGY_NEVERALLOW` off still refuses a topology
+    /// that breaks an `always` rule, and only those.**
+    ///
+    /// **Canary.** `admission-always-skip-canary`: the option-off arm checks
+    /// nothing.
+    #[test]
+    fn admission_with_the_option_off_applies_the_always_rules_only() {
+        let env = Env { desktop: false };
+        let (slot, nic) = (dev(b"msi.0"), dev(b"mmio.pci:8086:100e"));
+        let handed = CapSpec { perms: CapPerms::RW, transfer: true, ..slot };
+        let always = two(&[handed, nic], &[]);
+        assert!(always.neverallow_admission(&env, true).is_err());
+        let rule = |t: &Topology<'_>| match t.neverallow_admission(&env, false) {
+            Err(azos_topology::AdmissionError::Neverallow(r)) => Some(RULES[r.rule as usize].id),
+            other => {
+                assert!(other.is_ok(), "{other:?}");
+                None
+            }
+        };
+        assert_eq!(rule(&always), Some("msi-grant-not-transferable"), "refused with the option off");
+        let mut t = Box::new(Topology::empty());
+        let motor = CapSpec { kind: CapKind::Endpoint, perms: CapPerms::WRITE, target: MaybeStr::from_bytes(b"motor.0"), transfer: false, ops: 0 };
+        t.push_task_profiled(MaybeStr::from_bytes(b"STRAY.ELF"), MaybeStr::from_bytes(b"best_effort"), 0, &[motor], SchedProfile::NONE).unwrap();
+        assert!(t.neverallow_admission(&env, true).is_err(), "the lint rule refuses it with the option on");
+        assert_eq!(rule(&t), None, "and not with it off");
+        assert!(two(&[slot, nic], &[]).neverallow_admission(&env, false).is_ok());
     }
 }
 

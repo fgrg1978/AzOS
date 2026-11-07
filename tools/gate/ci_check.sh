@@ -13433,6 +13433,10 @@ host_job host_canary_row "ring-3: msi transfer canary" topology-tests msi-transf
     an_msi_slot_cannot_be_handed_on_and_its_rules_hold_with_the_option_off
 host_job host_canary_row "ring-3: neverallow always canary" topology-tests neverallow-always-canary \
     an_msi_slot_cannot_be_handed_on_and_its_rules_hold_with_the_option_off
+host_job host_canary_row "ring-3: msi register scope canary" topology-tests msi-register-scope-canary \
+    a_device_register_grant_is_not_transferable_while_any_row_holds_a_slot
+host_job host_canary_row "ring-3: admission option-off arm canary" topology-tests admission-always-skip-canary \
+    admission_with_the_option_off_applies_the_always_rules_only
 host_job host_canary_row "ring-3: msi vector reissue canary" ipc-tests msi-reissue-canary \
     a_given_back_msi_vector_is_reissued_only_to_its_own_slot
 host_job host_canary_row "ring-3: msi slot bound canary" ipc-tests msi-slot-unbounded-canary \

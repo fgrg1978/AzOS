@@ -4343,6 +4343,18 @@ impl<'a> Topology<'a> {
         self.sched_config = cfg;
     }
 
+    /// The `neverallow` half of admission: every rule when `all` (Kconfig
+    /// `TOPOLOGY_NEVERALLOW`), else the rules the kernel's safety rests on.
+    pub fn neverallow_admission(&self, env: &crate::neverallow::Env, all: bool) -> Result<(), AdmissionError> {
+        if all {
+            crate::neverallow::check(self, env).map_err(AdmissionError::Neverallow)
+        } else if cfg!(feature = "admission-always-skip-canary") {
+            Ok(())
+        } else {
+            crate::neverallow::check_always(self, env).map_err(AdmissionError::Neverallow)
+        }
+    }
+
     // REQ-005
     /// Cross-cutting admission check. Returns the **first** error
     /// found; the caller is expected to abort boot on `Err`.
@@ -4406,12 +4418,7 @@ impl<'a> Topology<'a> {
         }
         // What no topology may grant, whatever its file says (`neverallow`).
         // The rules the kernel's safety rests on hold with the option off too.
-        let env = crate::neverallow::Env::BUILD;
-        if azos_limits::TOPOLOGY_NEVERALLOW {
-            crate::neverallow::check(self, &env).map_err(AdmissionError::Neverallow)?;
-        } else {
-            crate::neverallow::check_always(self, &env).map_err(AdmissionError::Neverallow)?;
-        }
+        self.neverallow_admission(&crate::neverallow::Env::BUILD, azos_limits::TOPOLOGY_NEVERALLOW)?;
         // Real-time tasks must be schedulable. The CPU count is not known this
         // early, so this checks against every CPU a mask can name, and the
         // dispatch order is the scheduler's, so this checks under the one

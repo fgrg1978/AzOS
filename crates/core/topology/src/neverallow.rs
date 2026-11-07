@@ -213,10 +213,17 @@ fn is_device_reg(c: &CapSpec<'_>) -> bool {
 
 /// A slot's holder is the only one that may hand it on: a capability that
 /// moves or copies to a task this check never saw puts the slot's kept vector
-/// under another device. Applies to the slot and to the device registers of a
-/// row that holds one.
+/// under another device. Applies to the slot, to the device registers of a row
+/// that holds one, and to every device register grant while any row holds a
+/// slot: one of those could move into the slot's holder at run time, and the
+/// holder would program that device with the slot's message (the kernel refuses
+/// the arrival too, `cap_store`).
 fn msi_grant_not_transferable(_: &Env, t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
-    (is_msi(c) || (is_device_reg(c) && t.caps_of(row).iter().any(is_msi)))
+    let slots = || {
+        let rows: &[TaskSpec<'_>] = if cfg!(feature = "msi-register-scope-canary") { core::slice::from_ref(row) } else { t.tasks() };
+        rows.iter().any(|r| t.caps_of(r).iter().any(is_msi))
+    };
+    (is_msi(c) || (is_device_reg(c) && slots()))
         && (c.grant_perms().contains(CapPerms::TRANSFER) || c.grant_perms().contains(CapPerms::DUP))
         && !cfg!(feature = "msi-transfer-canary")
 }
@@ -321,7 +328,7 @@ pub const RULES: [Rule; 8] = [
     },
     Rule {
         id: "msi-grant-not-transferable",
-        text: "no msi.<k> grant, nor the device registers of a row that holds one, carries TRANSFER or DUP",
+        text: "no msi.<k> grant carries TRANSFER or DUP, nor does any device register grant (mmio.*, ioport.*) while a row holds an msi.<k>",
         always: true,
         exceptions: &[],
         breaks: msi_grant_not_transferable,
