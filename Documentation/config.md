@@ -699,7 +699,7 @@ The index lists every declared option: 1284.
 | `IPC_PORT_NOTICES` | `config/kernel/Kconfig.ipc` | Endpoint no-senders and source-gone notices on event ports |
 | `IPC_RESOLVE_CACHE` | `config/kernel/Kconfig.ipc` | IPC: per-task cache of the last endpoint a fast call resolved |
 | `IRQ_MSI_PER_SLOT` | `config/kernel/Kconfig.sched` | MSI vectors one msi.<k> slot may hold at once |
-| `IRQ_MSI_SLOTS` | `config/kernel/Kconfig.sched` | msi.<k> slots that hold vectors at once |
+| `IRQ_MSI_SLOTS` | `config/kernel/Kconfig.sched` | msi.<k> slots a topology may name |
 | `IRQ_THREADED` | `config/kernel/Kconfig.sched` | Interrupts as scheduled objects: the handler runs on a hard reservation |
 | `IRQ_THREAD_BUDGET_PCT` | `config/kernel/Kconfig.sched` | IRQ thread: budget (% of a CPU) |
 | `IRQ_THREAD_PERIOD_US` | `config/kernel/Kconfig.sched` | IRQ thread: period (us) |

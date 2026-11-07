@@ -287,6 +287,23 @@ fn a_bare_peripheral_token_in_a_compatible_does_not_make_a_peripheral() {
     assert_eq!(dt_role(["snps,designware-i2c", "qcom,geni-i2c"].into_iter()), DtRole::Master);
 }
 
+/// **A node is what its first, most specific, compatible says; a listed
+/// generic fallback after an unknown specific name makes no peripheral.**
+/// `"acme,uart-engine", "ns16550a"` is register-compatible with a 16550, which
+/// says nothing about a DMA engine of its own.
+///
+/// **Canary.** `dt-fallback-canary`: a listed fallback anywhere decides.
+#[test]
+fn a_generic_fallback_after_an_unknown_specific_compatible_is_not_decisive() {
+    assert!(dt(b"acme,uart-engine\0ns16550a\0", "m@1").may_master_bus());
+    assert_eq!(dt_role(["acme,uart-engine", "ns16550a"].into_iter()), DtRole::Unknown);
+    assert!(dt(b"acme,block\0sifive,test0\0syscon\0", "m@2").may_master_bus());
+    assert!(!dt(b"ns16550a\0", "p@1").may_master_bus(), "alone, it is the node's own name");
+    assert!(!dt(b"sifive,test1\0sifive,test0\0syscon\0", "p@2").may_master_bus(), "listed first");
+    assert!(!dt(b"arm,pl011\0arm,primecell\0", "p@3").may_master_bus());
+    assert_eq!(dt_role(["ns16550a", "qcom,geni-uart"].into_iter()), DtRole::Master, "a controller anywhere");
+}
+
 /// **A peripheral that the firmware gave a DMA property is a master:** the
 /// properties are the firmware's statement and outrank the table.
 #[test]

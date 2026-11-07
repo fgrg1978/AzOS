@@ -13423,7 +13423,8 @@ host_dma_share_row() { # <label> [feature]
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     { grep -vE '^(# )?CONFIG_DMA_MAP_ENTRIES[= ]' "$ROBOT_PRIMARY_CONFIG"; echo CONFIG_DMA_MAP_ENTRIES=16; } >"$cfg" \
-        && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1
+        && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null) \
+        || { bad; echo "      no 16-entry DMA table configuration"; return; }
     CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-dma-share${feat:+-canary}" \
         AZOS_REQUIRE_DMA_SHARE=1 KCONFIG_CONFIG="$cfg" \
         host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release ${feat:+--features "$feat"} -- \
@@ -13472,6 +13473,18 @@ host_job host_canary_row "ring-3: msi stray delivery silent canary" ipc-tests ms
     a_delivery_of_a_kept_vector_with_no_binding_is_counted
 host_job host_canary_row "ring-3: device capability beside msi slot canary" ipc-tests msi-arrival-canary \
     a_device_capability_does_not_arrive_in_a_task_that_holds_an_msi_slot
+host_job host_canary_row "ring-3: msi binding without capability canary" ipc-tests msi-bound-canary \
+    a_domain_that_still_drives_a_slot_takes_no_device_capability
+host_job host_canary_row "ring-3: exec keeps msi binding canary" ipc-tests exec-keeps-binding-canary \
+    a_domain_that_still_drives_a_slot_takes_no_device_capability
+host_job host_canary_row "ring-3: interrupts assumed confined canary" dma-tests ir-assumed-canary \
+    a_function_is_confined_for_interrupts_only_where_they_are_remapped_or_unreachable
+host_job host_canary_row "ring-3: msi slots per topology canary" topology-tests msi-slots-unbounded-canary \
+    a_topology_names_no_more_msi_slots_than_the_kernel_keeps_vectors_for
+host_job host_canary_row "ring-3: admission option flag canary" topology-tests admission-flag-canary \
+    admission_check_refuses_a_row_a_rule_forbids
+host_job host_canary_row "ring-3: dt generic fallback canary" hwbus-tests dt-fallback-canary \
+    a_generic_fallback_after_an_unknown_specific_compatible_is_not_decisive
 host_job host_canary_row "ring-3: line grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \
     a_line_past_the_controller_is_refused_and_recorded
 host_job host_canary_row "ring-3: msi grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \

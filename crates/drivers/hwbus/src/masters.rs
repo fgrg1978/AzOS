@@ -20,7 +20,9 @@
 //! name the table does not list is a master, and a device is added to the
 //! table after its binding was read. A master token wins over a peripheral
 //! name: `compatible` lists most specific first, and a node that names a
-//! controller anywhere is one.
+//! controller anywhere is one. Only the first compatible decides a peripheral:
+//! a generic fallback after an unknown specific name (`ns16550a` behind
+//! `acme,uart-engine`) proves register compatibility, not the absence of DMA.
 
 /// What a device's `compatible` list says about its DMA.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,13 +68,19 @@ const PERIPHERALS: &[&str] = &[
 /// Names the old substring rule took for peripherals; kept only for the canary.
 const BARE_TOKENS: &[&str] = &["uart", "serial", "rtc", "gpio", "i2c", "pwm", "wdt", "pinctrl", "thermal"];
 
-/// The role the `compatible` strings `list` (most specific first) give.
+/// The role the `compatible` strings `list` (most specific first) give. A
+/// controller named anywhere makes a master. Otherwise the node is what its
+/// first, most specific, compatible says: a generic fallback listed after an
+/// unknown specific name (`"acme,uart-engine", "ns16550a"`) says only that the
+/// block is register-compatible with one, not that it has no DMA engine, so
+/// it is not decisive.
 pub fn dt_role<'a>(list: impl Iterator<Item = &'a str>) -> DtRole {
     let (mut master, mut peripheral) = (false, false);
-    for c in list {
+    for (i, c) in list.enumerate() {
         master |= MASTERS.iter().any(|t| c.contains(t));
-        peripheral |= PERIPHERALS.contains(&c)
+        let listed = PERIPHERALS.contains(&c)
             || (cfg!(feature = "dt-bare-token-canary") && BARE_TOKENS.iter().any(|t| c.contains(t)));
+        peripheral |= listed && (i == 0 || cfg!(feature = "dt-fallback-canary"));
     }
     if master {
         DtRole::Master

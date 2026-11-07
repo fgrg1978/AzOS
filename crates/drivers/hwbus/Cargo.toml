@@ -29,6 +29,8 @@ unbind-canary = []
 dt-unknown-peripheral-canary = []
 # Canary: a bare peripheral token in a compatible (i2c, uart) makes a peripheral of it.
 dt-bare-token-canary = []
+# Canary: a listed generic fallback after an unknown specific compatible makes a peripheral.
+dt-fallback-canary = []
 # Gate canary only: opening a bus master's I/O ports books nothing, so a native driver can
 # still bind it. The host row that pins the booking must fail.
 ports-claim-canary = []
