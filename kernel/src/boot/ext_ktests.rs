@@ -72,15 +72,23 @@ azos_ktest::ktest! {
 azos_ktest::ktest! {
     fn ext_robot_sensors_are_attached_at_their_topology_numbers() {
         use azos_abi::sensor_sample::instance as n;
-        use azos_drv_base::sensors;
-        for i in [n::IMU, n::ODOM, n::ENCODER, n::RANGE, n::BATTERY, n::GPS, n::LIDAR, n::FLAGS, n::CAMERA, n::IMU_TEMP] {
-            if sensors::get(i).is_none() {
-                return Err("a robot sensor is not attached to its reserved number");
+        use azos_drv_base::sensors::{self, Sensor};
+        use azos_robot_sensors as r;
+        let is = |i: u32, want: &'static Sensor| sensors::get(i).is_some_and(|got| core::ptr::eq(&*got, want));
+        let robot = [
+            (n::IMU, &r::IMU_SENSOR), (n::ODOM, &r::ODOM_SENSOR), (n::ENCODER, &r::ENCODER_SENSOR),
+            (n::RANGE, &r::RANGE_SENSOR), (n::BATTERY, &r::BATTERY_SENSOR), (n::GPS, &r::GPS_SENSOR),
+            (n::LIDAR, &r::LIDAR_SENSOR), (n::FLAGS, &r::FLAGS_SENSOR), (n::CAMERA, &r::CAMERA_SENSOR),
+            (n::IMU_TEMP, &r::IMU_TEMP_SENSOR),
+        ];
+        for (i, want) in robot {
+            if !is(i, want) {
+                return Err("a robot sensor is not the one attached to its reserved number");
             }
         }
         // The power monitor is the board's I/O, which the robot's feature turns on.
-        if sensors::get(n::POWER).is_none() {
-            return Err("the board's power monitor is not attached");
+        if !is(n::POWER, &azos_drv_sensor::ina219::POWER_SENSOR) {
+            return Err("the board's power monitor is not the one attached to its number");
         }
         Ok(())
     }

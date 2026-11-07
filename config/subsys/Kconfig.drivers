@@ -556,7 +556,7 @@ config DRV_RTC_PCF8563
     help
       Kernel feature `rtc-pcf8563`: for a board with no memory-mapped RTC,
       look for a PCF8563 at address 0x51 on bus RTC_PCF8563_I2C_BUS once
-      the I2C controllers are up (`install_robot_hw`) and seed the wall
+      the I2C controllers are up (`install_board_hw`) and seed the wall
       clock from it. The kernel's I2C driver is the transport; QEMU has no
       such chip, so the boot prints that nothing answers. Board validation
       pending.

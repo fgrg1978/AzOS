@@ -312,8 +312,8 @@ fn the_safety_read_drivers_bind_in_their_own_stage_before_the_rest() {
         bus.bind_where(&rules, reg, &mut Quiet, &stage(&["gpio", "wdt"]));
         let first: Vec<&str> = reg.probed.iter().map(|p| p.0.as_str()).collect();
         assert_eq!(first, ["gpio", "wdt"]);
-        assert_eq!(bus.get(hs[2]).unwrap().state, State::Detected, "the I2C waits for the robot hardware stage");
-        // Stage 2 (`install_robot_hw`): the rest.
+        assert_eq!(bus.get(hs[2]).unwrap().state, State::Detected, "the I2C waits for the board hardware stage");
+        // Stage 2 (`install_board_hw`): the rest.
         bus.bind_where(&rules, reg, &mut Quiet, &stage(&["i2c", "pwm", "sfctemp"]));
         let all: Vec<&str> = reg.probed.iter().map(|p| p.0.as_str()).collect();
         assert_eq!(all, ["gpio", "wdt", "i2c", "i2c", "pwm", "sfctemp"]);

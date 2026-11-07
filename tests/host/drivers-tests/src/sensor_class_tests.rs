@@ -23,8 +23,16 @@ fn number(s: &Sample) -> u64 {
     s.w[0]
 }
 
-/// Six signed 32-bit acceleration axes: the shape of an IMU's record.
-static IMU_SHAPE: [Channel; 6] = [Channel::new(Quantity::Acceleration, Unit::MilliG, 4, true, -2000, 2000, 100); 6];
+/// An IMU's record: three acceleration axes (mg) and three angular rates
+/// (mdps), signed 32-bit.
+static IMU_SHAPE: [Channel; 6] = [
+    Channel::new(Quantity::Acceleration, Unit::MilliG, 4, true, -2000, 2000, 100),
+    Channel::new(Quantity::Acceleration, Unit::MilliG, 4, true, -2000, 2000, 100),
+    Channel::new(Quantity::Acceleration, Unit::MilliG, 4, true, -2000, 2000, 100),
+    Channel::new(Quantity::AngularRate, Unit::MilliDegPerSec, 4, true, -250_000, 250_000, 100),
+    Channel::new(Quantity::AngularRate, Unit::MilliDegPerSec, 4, true, -250_000, 250_000, 100),
+    Channel::new(Quantity::AngularRate, Unit::MilliDegPerSec, 4, true, -250_000, 250_000, 100),
+];
 
 static VIRTUAL_LOG: Stream = stream();
 static VIRTUAL: Sensor = Sensor::new(&IMU_SHAPE, Source::Stream(&VIRTUAL_LOG));
@@ -105,7 +113,7 @@ fn a_read_of_a_stream_is_the_newest_sample() {
 /// 4294966296.
 #[test]
 fn a_channel_decodes_its_value_from_the_record() {
-    let vals: [i32; 6] = [-1000, 20, 981, -1999, 7, 2000];
+    let vals: [i32; 6] = [-1000, 20, 981, -250_000, 7, 250_000];
     let mut rec = [0u8; 24];
     for (i, v) in vals.iter().enumerate() {
         rec[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());

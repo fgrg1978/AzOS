@@ -102,8 +102,8 @@ pub struct Instances<C: ?Sized + 'static, const N: usize> {
 
 impl<C: ?Sized + Sync + 'static, const N: usize> Instances<C, N> {
     /// A class with nothing registered: the board's own instances are added
-    /// with [`register_boards`](Self::register_boards), in the order that fixes
-    /// their numbers.
+    /// with [`register_boards`](Self::register_boards), consecutively, or reserved
+    /// first ([`reserve_boards`](Self::reserve_boards)) and attached by number.
     pub const fn empty() -> Self {
         let slots = [Slot { owner: Owner::Nobody, ctrl: None, closing: false }; N];
         Instances { slots: SpinLock::new(slots), inflight: [const { AtomicU32::new(0) }; N] }

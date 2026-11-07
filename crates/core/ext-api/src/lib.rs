@@ -56,9 +56,12 @@ pub enum BootHook {
     /// the gate reads as installed: wire the provider's effect kinds into the
     /// effect interface (the write-ahead gate, the safe-state drivers).
     Effects(fn()),
-    /// With the board's hardware, before any task: attach the extension's
-    /// devices to the instance numbers the base reserves for them (the sensor
-    /// class's), so the base names none of them.
+    /// At the start of the board's bring-up: the hardware bus, entropy, PCI,
+    /// the block device and mounts and the signed configuration are done, the
+    /// scheduler is not up, and the I2C, PWM and temperature controllers are
+    /// not bound yet. Attach static descriptors to the instance numbers the
+    /// base reserves for them (the sensor class's) and probe nothing, so the
+    /// base names none of them.
     Devices(fn()),
     /// With the system watchdog, before the scheduler starts: create the
     /// extension's kernel tasks.
