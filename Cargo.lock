@@ -672,7 +672,6 @@ dependencies = [
  "azos_arch_api",
  "azos_baro",
  "azos_behavior",
- "azos_bench",
  "azos_bytepipe",
  "azos_cam_ring",
  "azos_camera",

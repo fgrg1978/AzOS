@@ -82,6 +82,5 @@ pub fn run(iters: u64) -> u32 {
     report("protocol.build_packet_64B",    &best_of(|| bench_build_packet_64b(iters)));    n += 1;
     report("protocol.parse_packet_64B",    &best_of(|| bench_parse_packet_64b(iters)));    n += 1;
     report("protocol.encode_sensor_packet", &best_of(|| bench_encode_sensor_packet(iters))); n += 1;
-    azos_drv_sys::kconsoleln!("[BENCH-RES] ── robot bench done emitted={} ──", n);
     n
 }

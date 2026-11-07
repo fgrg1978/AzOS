@@ -30,6 +30,9 @@ ROOT = azos_tools.ROOT
 ARCHES = ("riscv64", "aarch64", "x86_64")
 
 # Every crate kernel/Cargo.toml's `use-robot` turns on and no other feature does.
+# azos_bench is a generic harness, but only the robot image's shell `bench` and
+# boot bench run it (through azos_robot_bench); giving every image the harness
+# would take its own Kconfig symbol, which is not decided.
 ROBOT_CRATES = ("azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers", "azos_robot_sensors",
                 "azos_flight", "azos_nav", "azos_gps", "azos_imu", "azos_baro", "azos_ahrs", "azos_telemetry",
                 "azos_bench", "azos_robot_bench", "azos_multi_stream", "azos_camera")

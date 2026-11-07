@@ -6,4 +6,20 @@
 //! The robot extension's benchmarks, reported like `azos_bench`'s.
 
 mod protocol;
-pub use protocol::run;
+
+/// `azos_bench::run_all` and the brain protocol's benches: the one entry the
+/// robot image's shell and boot bench call.
+pub fn run_all(iters: u64) -> u32 {
+    finish(azos_bench::run_all(iters), iters)
+}
+
+/// `azos_bench::run_all_quiescent` and the brain protocol's benches.
+pub fn run_all_quiescent(iters: u64) -> u32 {
+    finish(azos_bench::run_all_quiescent(iters), iters)
+}
+
+fn finish(base: u32, iters: u64) -> u32 {
+    let n = base.saturating_add(protocol::run(iters));
+    azos_drv_sys::kconsoleln!("[BENCH-RES] ── robot run_all done emitted={} ──", n);
+    n
+}

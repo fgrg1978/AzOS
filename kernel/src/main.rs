@@ -422,8 +422,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     #[cfg(all(feature = "qemu", feature = "use-robot"))]
     if azos_config::CFG_BENCH_BOOT.load(Ordering::Relaxed) {
         const BENCH_BOOT_ITERS: u64 = 100;
-        azos_bench::run_all_quiescent(BENCH_BOOT_ITERS);
-        azos_robot_bench::run(BENCH_BOOT_ITERS);
+        azos_robot_bench::run_all_quiescent(BENCH_BOOT_ITERS);
         kprintln!("[BENCH-RES] ── boot-bench complete, halting ──");
         loop {
             azos_arch::Cpu::wait_for_interrupt(&azos_arch::ARCH);

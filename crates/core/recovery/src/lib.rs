@@ -746,7 +746,7 @@ fn cmd_bench(args: &[&[u8]; MAX_ARGS], argc: usize) {
     };
 
     let emitted = match subsystem {
-        b"all"    => azos_bench::run_all(iters) + azos_robot_bench::run(iters),
+        b"all"    => azos_robot_bench::run_all(iters),
         b"ipc"    => azos_bench::ipc::run(iters),
         b"mm"     => azos_bench::mm::run(iters),
         b"sched"  => azos_bench::sched::run(iters),
