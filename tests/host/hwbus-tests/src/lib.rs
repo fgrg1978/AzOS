@@ -230,6 +230,52 @@ fn a_device_declares_nothing_about_coherence_until_the_firmware_does() {
     }
 }
 
+/// **A device-tree node is a bus master by its DMA properties, or by what its
+/// `compatible` names; only a listed peripheral is not, and a node nobody
+/// classified is one.** The K1's USB host and the JH7110's controllers carry
+/// no DMA property on their non-coherent SoCs.
+///
+/// **Canary.** `dt-unknown-peripheral-canary`: an unknown node reads as a
+/// peripheral.
+#[test]
+fn a_dt_node_masters_the_bus_unless_it_is_a_known_peripheral() {
+    let masters: [&[u8]; 8] = [
+        b"spacemit,k1-dwc3\0snps,dwc3\0",
+        b"starfive,jh7110-dwmac\0snps,dwmac-5.20\0",
+        b"starfive,jh7110-mmc\0",
+        b"snps,axi-dma-1.01a\0",
+        b"starfive,jh7110-pcie\0",
+        b"cdns,usb3\0",
+        b"vivante,gc\0",
+        b"vendor,never-heard-of-it\0",
+    ];
+    for c in masters {
+        assert!(dt(c, "m@1").may_master_bus(), "{:?}", String::from_utf8_lossy(c));
+    }
+    let peripherals: [&[u8]; 6] =
+        [b"arm,pl011\0arm,primecell\0", b"google,goldfish-rtc\0", b"arm,pl031\0", b"arm,pl061\0", b"snps,designware-i2c\0", b"sifive,test1\0sifive,test0\0syscon\0"];
+    for c in peripherals {
+        assert!(!dt(c, "p@1").may_master_bus(), "{:?}", String::from_utf8_lossy(c));
+    }
+    // A controller named anywhere in the list wins over a peripheral name.
+    assert!(dt(b"vendor,uart-dma\0", "x@1").may_master_bus());
+    assert_eq!(dt_role(["snps,dwc3"].into_iter()), DtRole::Master);
+    assert_eq!(dt_role(["vendor,never-heard-of-it"].into_iter()), DtRole::Unknown);
+}
+
+/// **A peripheral that the firmware gave a DMA property is a master:** the
+/// properties are the firmware's statement and outrank the table.
+#[test]
+fn a_peripheral_with_a_dma_property_is_a_master() {
+    let uart = || dt(b"arm,pl011\0", "uart@1");
+    assert!(!uart().may_master_bus());
+    assert!(uart().with_dma_coherent(true).may_master_bus());
+    assert!(uart().with_dma_declared(true, false).may_master_bus(), "dma-noncoherent");
+    assert!(uart().with_dma_declared(false, true).may_master_bus(), "iommus");
+    assert!(uart().with_dma_offset(0xc000_0000).may_master_bus(), "dma-ranges that moves it");
+    assert!(uart().with_dma_mask(0xffff_ffff).may_master_bus(), "dma-ranges that limits it");
+}
+
 // ── Tables ──────────────────────────────────────────────────────────────
 
 #[test]

@@ -37,6 +37,7 @@
 
 pub mod bus;
 pub mod device;
+pub mod masters;
 pub mod pattern;
 pub mod policy;
 pub mod record;
@@ -47,6 +48,7 @@ pub use bus::{
     MAX_DEVICES,
 };
 pub use record::{Env, Held, Host, Op, Ops, Power, Record, Records, Unbind};
+pub use masters::{dt_role, DtRole};
 pub use device::{BusKind, Device, Name, PciId, COMPAT_LEN, NAME_LEN};
 pub use pattern::{Pattern, ANY};
 pub use policy::{decide, natural, Choice, Policy, Row, Verdict};

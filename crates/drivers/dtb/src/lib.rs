@@ -3070,6 +3070,9 @@ pub struct DtDevice<'a> {
     /// firmware declares its DMA cache-coherent with the CPU. `false` is
     /// "nothing declared", not "declared non-coherent".
     pub dma_coherent: bool,
+    /// The node, or an ancestor, carries `dma-noncoherent`: the firmware
+    /// declares its DMA non-coherent, which says it does DMA.
+    pub dma_noncoherent: bool,
     /// The node names an IOMMU for its DMA: it has `iommus`, or (a PCI host
     /// bridge) `iommu-map`.
     pub has_iommu: bool,
@@ -3144,6 +3147,8 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
         dma_ranges: Option<&'a [u8]>,
         /// The node has the `dma-coherent` property.
         dma_coherent: bool,
+        /// The node has the `dma-noncoherent` property.
+        dma_noncoherent: bool,
         /// The node has `iommus` or `iommu-map`.
         has_iommu: bool,
         /// `device_type = "pci"` (or `"pciex"`): its children's addresses
@@ -3154,7 +3159,7 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
     }
     let blank = Node {
         name: &[], compatible: None, reg: None, reg2: None, irq: 0, enabled: true, cells: (2, 1), ranges: None,
-        dma_ranges: None, dma_coherent: false, has_iommu: false, pci_bus: false, at: 0,
+        dma_ranges: None, dma_coherent: false, dma_noncoherent: false, has_iommu: false, pci_bus: false, at: 0,
     };
     /// An address of `cells` cells at `off` of `v`: a 3-cell one is its
     /// first cell (the PCI `phys.hi`, or a flags cell) and a 64-bit address;
@@ -3274,7 +3279,8 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                         // `dma-coherent` is inherited: a bus node that has it
                         // speaks for every device behind it.
                         let dma_coherent = stack[1..=depth].iter().any(|a| a.dma_coherent);
-                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, has_iommu: n.has_iommu, pci_host: n.pci_bus, dt_node: n.at });
+                        let dma_noncoherent = stack[1..=depth].iter().any(|a| a.dma_noncoherent);
+                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, dma_noncoherent, has_iommu: n.has_iommu, pci_host: n.pci_bus, dt_node: n.at });
                         count += 1;
                     }
                 }
@@ -3327,6 +3333,8 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                         stack[depth].dma_ranges = Some(val);
                     } else if is(b"dma-coherent") {
                         stack[depth].dma_coherent = true;
+                    } else if is(b"dma-noncoherent") {
+                        stack[depth].dma_noncoherent = true;
                     } else if is(b"iommus") || is(b"iommu-map") {
                         stack[depth].has_iommu = true;
                     } else if is(b"device_type") {

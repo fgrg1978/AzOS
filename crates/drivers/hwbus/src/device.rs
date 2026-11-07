@@ -104,6 +104,11 @@ pub struct Device {
     /// a device that declared it skips the cache maintenance a non-coherent
     /// master needs around each transfer.
     pub dma_coherent: bool,
+    /// The firmware declared it non-coherent (DT `dma-noncoherent`, on the node
+    /// or a bus above it): a statement that it does DMA.
+    pub dma_noncoherent: bool,
+    /// The node names an IOMMU for its DMA (DT `iommus`).
+    pub has_iommu: bool,
     /// Where the device's node sits in the device tree: the offset of its
     /// `FDT_BEGIN_NODE` token in the structure block (`azos_soc::NodeId`),
     /// the key the SoC frameworks resolve the device's `clocks`, `resets`,
@@ -121,12 +126,21 @@ impl Device {
 
     /// May the device master the bus (DMA), so that writing its registers is
     /// pointing it at memory: every PCI function and virtio transport, and a
-    /// device-tree node the firmware gave DMA properties (`dma-coherent`, a
-    /// `dma-ranges` that moves or limits it).
-    pub const fn may_master_bus(&self) -> bool {
+    /// device-tree node the firmware gave DMA properties (`dma-coherent`,
+    /// `dma-noncoherent`, `iommus`, a `dma-ranges` that moves or limits it) or
+    /// whose `compatible` is not known to be a peripheral
+    /// ([`crate::masters::dt_role`]).
+    pub fn may_master_bus(&self) -> bool {
         match self.kind {
             BusKind::Pci | BusKind::VirtioMmio => true,
-            BusKind::Dt => self.dma_coherent || self.dma_offset != 0 || self.dma_mask != u64::MAX,
+            BusKind::Dt => {
+                self.dma_coherent
+                    || self.dma_noncoherent
+                    || self.has_iommu
+                    || self.dma_offset != 0
+                    || self.dma_mask != u64::MAX
+                    || crate::masters::dt_role(self.compatible()) != crate::masters::DtRole::Peripheral
+            }
         }
     }
 
@@ -145,6 +159,8 @@ impl Device {
             dma_mask: u64::MAX,
             dma_offset: 0,
             dma_coherent: false,
+            dma_noncoherent: false,
+            has_iommu: false,
             dt_node: None,
         }
     }
@@ -228,6 +244,14 @@ impl Device {
     /// [`Device::dma_coherent`]).
     pub fn with_dma_coherent(mut self, coherent: bool) -> Self {
         self.dma_coherent = coherent;
+        self
+    }
+
+    /// The device with the DMA properties the firmware gave beyond coherence:
+    /// `dma-noncoherent` and `iommus` (see [`Device::dma_noncoherent`]).
+    pub fn with_dma_declared(mut self, noncoherent: bool, has_iommu: bool) -> Self {
+        self.dma_noncoherent = noncoherent;
+        self.has_iommu = has_iommu;
         self
     }
 

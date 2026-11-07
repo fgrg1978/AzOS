@@ -2892,11 +2892,14 @@ pub(crate) mod host_machine {
                 b.add(hwbus::Device::dt("gpio@9030000", b"arm,pl061\0arm,primecell\0", 0x903_0000, 0x1000, 39), &mut q).unwrap();
                 b.add(hwbus::Device::dt("pl031@9010000", b"arm,pl031\0arm,primecell\0", 0x901_0000, 0x1000, 34), &mut q).unwrap();
                 b.add(hwbus::Device::dt("uart@10000000", b"ns16550a\0", 0x1000_0000, 0x100, 10), &mut q).unwrap();
-                b.add(hwbus::Device::dt("twin@a", b"vendor,twin\0", 0x2000_0000, 0x1000, 0), &mut q).unwrap();
-                b.add(hwbus::Device::dt("twin@b", b"vendor,twin\0", 0x2000_1000, 0x1000, 0), &mut q).unwrap();
+                b.add(hwbus::Device::dt("twin@a", b"vendor,twin-gpio\0", 0x2000_0000, 0x1000, 0), &mut q).unwrap();
+                b.add(hwbus::Device::dt("twin@b", b"vendor,twin-gpio\0", 0x2000_1000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("nowindow@0", b"vendor,nowindow\0", 0x3000_0000, 0, 0), &mut q).unwrap();
                 b.add(hwbus::Device::virtio_mmio(0x1000_2000, 0x1000, 2, 2), &mut q).unwrap();
                 b.add(hwbus::Device::dt("dma@4000000", b"vendor,dmamaster\0", 0x400_0000, 0x1000, 0).with_dma_coherent(true), &mut q).unwrap();
+                b.add(hwbus::Device::dt("usb@6000000", b"spacemit,k1-dwc3\0", 0x600_0000, 0x1000, 0), &mut q).unwrap();
+                b.add(hwbus::Device::dt("dma@6001000", b"snps,axi-dma-1.01a\0", 0x600_1000, 0x1000, 0), &mut q).unwrap();
+                b.add(hwbus::Device::dt("misc@6002000", b"vendor,unlisted\0", 0x600_2000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("sharer@5000000", b"vendor,sharer\0", 0x500_0000, 0x1000, 10), &mut q).unwrap();
                 // What the kernel drives is bound to its driver.
                 let rules = hwbus::Rules {
@@ -3079,6 +3082,27 @@ mod mmio_cap_tests {
         crate::mmio_cap::set_writable_master_policy(|_| false);
     }
 
+    /// **A writable window on a device-tree node nobody classified, or one the
+    /// table names a controller, needs the policy though the firmware gave the
+    /// node no DMA property; a known peripheral does not.** The K1's USB host
+    /// and the JH7110's AXI DMA engine carry none on a non-coherent SoC.
+    ///
+    /// **Canary.** `writable-master-canary` (every grant passes) and hwbus's
+    /// `dt-unknown-peripheral-canary` (an unknown node reads as a peripheral).
+    #[test]
+    fn a_writable_window_on_an_unclassified_or_known_dt_master_needs_the_policy() {
+        machine();
+        let tid = fresh_tid();
+        for sel in ["mmio.dt:spacemit,k1-dwc3", "mmio.dt:snps,axi-dma-1.01a", "mmio.dt:vendor,unlisted"] {
+            assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, sel).is_none(), "{sel}: refused without the policy");
+            assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, sel).is_some(), "{sel}: read-only is granted");
+        }
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:google,goldfish-rtc").is_some(), "a known peripheral");
+        crate::mmio_cap::set_writable_master_policy(|_| true);
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:spacemit,k1-dwc3").is_some(), "the policy admits it");
+        crate::mmio_cap::set_writable_master_policy(|_| false);
+    }
+
     /// A topology `irq.<selector>` grant mints the line the bus found for the
     /// device the selector names, not a number the row wrote: the RTC's line
     /// 11. A selector no device matches, and a device
@@ -3124,12 +3148,12 @@ mod mmio_cap_tests {
         let rtc = handle(RTC);
         let ro = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:google,goldfish-rtc")
             .expect("READ on the RTC mints");
-        let rw = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:vendor,twin")
+        let rw = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:vendor,twin-gpio")
             .expect("RW on a twin mints");
         assert_eq!(cap_store::get(tid, Cap::<targets::MmioRegion>::from_raw(ro), CapPerms::READ), Ok(rtc));
         assert_eq!(
             cap_store::get(tid, Cap::<targets::MmioRegion>::from_raw(rw), CapPerms::WRITE),
-            Ok(handle("dt:vendor,twin"))
+            Ok(handle("dt:vendor,twin-gpio"))
         );
         let held = cap_store::with_table(tid, |t| {
             (
@@ -3147,14 +3171,14 @@ mod mmio_cap_tests {
     #[test]
     fn a_selector_counts_identical_devices_in_slot_order() {
         let tid = fresh_tid();
-        let (a, b) = (handle("dt:vendor,twin"), handle("dt:vendor,twin#1"));
+        let (a, b) = (handle("dt:vendor,twin-gpio"), handle("dt:vendor,twin-gpio#1"));
         assert_ne!(a, b);
         assert_eq!(hwbus::user_window(a), Some((0x2000_0000, 0x1000)));
         assert_eq!(hwbus::user_window(b), Some((0x2000_1000, 0x1000)));
-        let h = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:vendor,twin#1").unwrap();
+        let h = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:vendor,twin-gpio#1").unwrap();
         assert_eq!(cap_store::get(tid, Cap::<targets::MmioRegion>::from_raw(h), CapPerms::READ), Ok(b));
-        assert!(hwbus::resolve("dt:vendor,twin#2").is_none());
-        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:vendor,twin#2").is_none());
+        assert!(hwbus::resolve("dt:vendor,twin-gpio#2").is_none());
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:vendor,twin-gpio#2").is_none());
     }
 
     /// A selector mints nothing unless it names a device of this machine that
@@ -3172,7 +3196,7 @@ mod mmio_cap_tests {
             "mmio.0",                   // an index is not a selector
             "mmio.4294967295",
             "mmio.dt:",
-            "mmio.dt:vendor,twin#x",
+            "mmio.dt:vendor,twin-gpio#x",
             "mmio.usb:1:2",
             "mmio",
             "mmio.",

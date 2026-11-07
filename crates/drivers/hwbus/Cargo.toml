@@ -24,3 +24,6 @@ policy-canary = []
 # whose interrupt line, DMA or window is still held reads as released. The
 # host rows that pin the post-unbind check must fail with this on.
 unbind-canary = []
+# Gate canary only: a device-tree node no list names reads as a peripheral (the old
+# fail-open default). The host rows that pin the classification must fail.
+dt-unknown-peripheral-canary = []

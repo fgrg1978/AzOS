@@ -18,6 +18,7 @@ azos_hwbus = { path = "../../../crates/drivers/hwbus" }
 # Mirrors azos_hwbus's gate canary so the host rows can show they bite.
 policy-canary = ["azos_hwbus/policy-canary"]
 unbind-canary = ["azos_hwbus/unbind-canary"]
+dt-unknown-peripheral-canary = ["azos_hwbus/dt-unknown-peripheral-canary"]
 # The fake virtio-blk record's unbind leaves its interrupt line bound: the
 # unbind/rebind rows must FAIL.
 leak-canary = []

@@ -2386,6 +2386,38 @@ mod device_nodes {
         assert!(!flag("alone@4000"), "a sibling bus does not");
     }
 
+    #[test]
+    fn dma_noncoherent_is_read_from_the_node_and_inherited_from_its_buses() {
+        let mut b = B::new();
+        b.begin("").prop("#address-cells", &be32(2)).prop("#size-cells", &be32(2));
+        b.begin("usb@1000").prop("compatible", &cstr("vendor,usb"))
+            .prop("reg", &[be64(0x1000), be64(0x100)].concat()).prop("dma-noncoherent", &[]).end();
+        b.begin("plain@2000").prop("compatible", &cstr("vendor,plain"))
+            .prop("reg", &[be64(0x2000), be64(0x100)].concat()).end();
+        b.begin("soc").prop("#address-cells", &be32(1)).prop("#size-cells", &be32(1))
+            .prop("ranges", &[]).prop("dma-noncoherent", &[]);
+        b.begin("behind@3000").prop("compatible", &cstr("vendor,behind"))
+            .prop("reg", &[be32(0x3000), be32(0x100)].concat()).end();
+        b.end();
+        b.begin("other").prop("#address-cells", &be32(1)).prop("#size-cells", &be32(1)).prop("ranges", &[]);
+        b.begin("alone@4000").prop("compatible", &cstr("vendor,alone"))
+            .prop("reg", &[be32(0x4000), be32(0x100)].concat()).end();
+        b.end().end();
+        let blob = b.blob();
+        let mut got = Vec::new();
+        unsafe {
+            dtb_devices(blob.as_ptr(), &mut |d: &DtDevice<'_>| {
+                got.push((String::from_utf8_lossy(d.name).into_owned(), d.dma_noncoherent, d.dma_coherent));
+            })
+        };
+        let flag = |n: &str| got.iter().find(|(name, ..)| name == n).unwrap().1;
+        assert!(flag("usb@1000"));
+        assert!(!flag("plain@2000"));
+        assert!(flag("behind@3000"), "a bus that declares it speaks for the devices behind it");
+        assert!(!flag("alone@4000"), "a sibling bus does not");
+        assert!(got.iter().all(|(.., coherent)| !coherent), "the two properties are read apart");
+    }
+
     /// A bus below the root with 1/1 cells and the `ranges` given, one
     /// device at bus-local 0x1000 (size 0x100) below it.
     fn behind(ranges: Option<Vec<u8>>, parent_status: Option<&str>) -> (Option<usize>, Vec<Seen>) {

@@ -25,6 +25,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 writable-master-canary = []
 # Host canary (tests/host/topology-tests): `irq.<selector>` mints a line a kernel device shares.
 irq-selector-shared-canary = []
+dt-unknown-peripheral-canary = ["azos_hwbus/dt-unknown-peripheral-canary"]
 # Declared for the pulled endpoint.rs's `calls_set_link` canary (syscall-tests runs it).
 calls-any-binder-canary = []
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.
