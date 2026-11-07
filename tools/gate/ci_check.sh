@@ -17177,6 +17177,11 @@ PY
     par "ktest fork inherit against a clone canary (rv)" ktest_row "ktest fork inherit against a clone canary (rv)" rv ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
     par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest fork inherit against a clone canary (arm)" ktest_row "ktest fork inherit against a clone canary (arm)" arm ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
+    # A PI boost does not pin a thread's memory (pin-effective-priority-canary: the
+    # boosted priority is read); a group is asked about its members only
+    # (group-member-scan-canary: every task slot is looked at).
+    par "ktest boosted thread pin canary (arm)" ktest_row "ktest boosted thread pin canary (arm)" arm ",pin-effective-priority-canary" "a_boosted_thread_does_not_pin_memory"
+    par "ktest group member index canary (arm)" ktest_row "ktest group member index canary (arm)" arm ",group-member-scan-canary" "a_group_is_asked_about_its_members_only"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (rv)" ktest_row "ktest tid stamp canary (rv)" rv ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task
