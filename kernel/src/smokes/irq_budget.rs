@@ -324,7 +324,7 @@ fn msi_scenario(tid: u32, port: u32) -> Result<(), &'static str> {
             return Err("the MSI message does not name the vector");
         }
         // A self IPI on the vector reaches the LAPIC as a message would.
-        if !azos_arch::irq::apic::send_ipi(cpu as usize, msi.id as u8) {
+        if !self_ipi(cpu as usize, msi.id as u8) {
             return Err("the self IPI was not sent");
         }
         crate::ktest::wait("the MSI never reached the port", || {
@@ -339,7 +339,7 @@ fn msi_scenario(tid: u32, port: u32) -> Result<(), &'static str> {
         // as a stray, and the slot's next bind takes it again.
         irq_bind::irq_unbind_all(tid);
         let strays = irq_bind::irq_msi_stray();
-        if !azos_arch::irq::apic::send_ipi(cpu as usize, msi.id as u8) {
+        if !self_ipi(cpu as usize, msi.id as u8) {
             return Err("the self IPI was not sent");
         }
         crate::ktest::wait("the delivery of a kept vector was not counted", || irq_bind::irq_msi_stray() != strays)?;
@@ -349,4 +349,10 @@ fn msi_scenario(tid: u32, port: u32) -> Result<(), &'static str> {
         }
         Ok(())
     }
+}
+
+/// A self IPI on `vector`: the LAPIC takes it as it takes an MSI.
+#[cfg(target_arch = "x86_64")]
+fn self_ipi(cpu: usize, vector: u8) -> bool {
+    azos_arch::irq::apic::send_ipi(cpu, vector)
 }
