@@ -12159,6 +12159,7 @@ host_job host_canary_row "frame: copy skip canary" syscall-tests frame-copy-skip
 host_job host_canary_row "frame: late check canary" syscall-tests frame-check-late-canary a_buffer_that_cannot_take_the_frame_takes_no_frame
 host_job host_canary_row "frame: slot per call canary" syscall-tests frame-slot-per-call-canary a_reader_slot_is_a_tasks_and_a_full_table_is_busy
 host_job host_canary_row "frame: exit keeps canary" syscall-tests frame-exit-keeps-canary a_task_that_exits_reads_no_more
+host_job host_canary_row "rings: record hook region canary" rings-tests canary-hook-any-region the_hook_waits_for_its_own_region
 host_job host_canary_row "frame: copy under lock canary" syscall-tests frame-copy-under-lock-canary a_frame_goes_page_by_page_into_scattered_frames_with_the_table_free
 host_job host_canary_row "frame: first frame base canary" syscall-tests memobj-write-first-frame-canary a_frame_goes_page_by_page_into_scattered_frames_with_the_table_free
 host_job host_canary_row "memobj: write hold first frame canary" ipc-tests memobj-write-first-frame-canary a_write_hold_addresses_scattered_frames_and_outlives_its_owner
