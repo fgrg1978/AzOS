@@ -590,9 +590,9 @@ fn pin_probe() {
         kprintln!("[HYP] PROBE FAILED: boot wrote a pinned register after the pin ({} refused)", before);
         return;
     }
-    // TCR_EL1.TBI0 and SCTLR_EL1.UCT: nothing the kernel runs on depends on either.
+    // TCR_EL1.SH1 (a walk field, so refused with the pool locked) and SCTLR_EL1.UCT: nothing the kernel runs on depends on either.
     let (tcr, sctlr) = (read_tcr_el1(), read_sctlr_el1());
-    write_tcr_el1(tcr ^ (1 << 37));
+    write_tcr_el1(tcr ^ (1 << 28));
     let tcr_kept = read_tcr_el1() == tcr;
     write_sctlr_el1(sctlr ^ (1 << 15));
     let sctlr_kept = read_sctlr_el1() == sctlr;

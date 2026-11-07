@@ -179,12 +179,13 @@ pub fn image_error(read: impl Fn(u64) -> u64, root: u64, va: u64, pa: u64, len: 
 }
 
 /// `TTBR1_EL1.BADDR` (bits 47:1; bit 0 is CnP) and the ASID field.
-const TTBR1_BADDR: u64 = 0x0000_FFFF_FFFF_FFFE;
+pub const TTBR1_BADDR: u64 = 0x0000_FFFF_FFFF_FFFE;
 const TTBR1_ASID: u64 = 0xFFFF << 48;
 /// The `TCR_EL1` fields that decide how a `TTBR1_EL1` walk reads the tables:
-/// T1SZ, A1, EPD1, IRGN1, ORGN1, SH1 and TG1. The rest (HA, TBI, IPS) is not
-/// the monitor's to compare.
-pub const TCR_WALK: u64 = 0xFFFF_0000;
+/// T1SZ, IRGN1, ORGN1, SH1 and TG1. EPD1 (a boot step turns the half off), A1
+/// and the rest (HA, TBI, IPS) are not the monitor's to compare: with the root
+/// the monitor's, a half that is off or read by another ASID reaches nothing.
+pub const TCR_WALK: u64 = 0xFF3F_0000;
 
 /// Why a PE's `TTBR1_EL1` is not the locked root.
 pub fn ttbr1_error(ttbr1: u64, root: u64) -> Option<&'static str> {
@@ -197,4 +198,51 @@ pub fn ttbr1_error(ttbr1: u64, root: u64) -> Option<&'static str> {
 /// pool was locked under.
 pub fn tcr_error(tcr: u64, locked: u64) -> Option<&'static str> {
     if (tcr ^ locked) & TCR_WALK != 0 { Some("TCR walks the kernel half differently") } else { None }
+}
+
+/// Why a core that is about to run the kernel may not: the pool is locked and its
+/// `TTBR1_EL1` or `TCR_EL1` are not the locked ones.
+pub fn pe_regs_error(ttbr1: u64, tcr: u64, root: u64, locked_tcr: u64) -> Option<&'static str> {
+    ttbr1_error(ttbr1, root).or_else(|| tcr_error(tcr, locked_tcr))
+}
+
+/// Why `pt_lock_pool` is refused for the calling core: it has not pinned, or its
+/// `TTBR1_EL1` is not the root the caller names.
+pub fn lock_regs_error(pinned: bool, ttbr1: u64, root: u64) -> Option<&'static str> {
+    if !pinned { return Some("the calling core has not pinned"); }
+    ttbr1_error(ttbr1, root)
+}
+
+/// What the monitor sets on a core before it enters EL1 at the secondary or
+/// resume entry: once the pool is locked, the locked `TTBR1_EL1` and `TCR_EL1`,
+/// whatever the kernel's data says, with the writes to them trapped.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct EntryPlan {
+    pub ttbr1: u64,
+    pub tcr: u64,
+}
+
+pub fn entry_plan(locked: Option<(u64, u64)>) -> Option<EntryPlan> {
+    locked.map(|(ttbr1, tcr)| EntryPlan { ttbr1, tcr })
+}
+
+/// The registers whose EL1 writes are trapped once the pool is locked.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Vm {
+    Sctlr,
+    Tcr,
+    Ttbr1,
+}
+
+/// May the monitor carry out a trapped EL1 write of `v` to `reg`? Before the pool
+/// is locked, no (the pin refuses them). After it: `TTBR1_EL1` only to the locked
+/// root, `TCR_EL1` only with the locked walk fields, `SCTLR_EL1` only on a core
+/// that has not pinned (the boot turns its MMU on); everything else is dropped.
+pub fn write_allowed(reg: Vm, v: u64, pinned: bool, locked: Option<(u64, u64)>) -> bool {
+    let Some((ttbr1, tcr)) = locked else { return false };
+    match reg {
+        Vm::Ttbr1 => ttbr1_error(v, ttbr1 & TTBR1_BADDR).is_none(),
+        Vm::Tcr => tcr_error(v, tcr).is_none(),
+        Vm::Sctlr => !pinned,
+    }
 }

@@ -175,6 +175,8 @@ fn secondary_entry_pa() -> u64 {
 #[no_mangle]
 pub extern "C" fn hyp_secondary_resume(idx: u64) -> u64 {
     let i = (idx as usize).min(super::MAX_PES - 1);
+    // Before the core runs the kernel: the locked kernel-half registers, writes to them trapped.
+    super::pt::enter_pe();
     // The stub reads x0 back from here as the kernel entry; context is placed
     // into the saved frame by the stub.
     TARGET_ENTRY[i].load(Ordering::Acquire)

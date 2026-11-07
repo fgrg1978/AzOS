@@ -11,6 +11,7 @@
 //! while it comes up, and a secondary does so after the lock. Canary
 //! `hyp-pin-off-canary`: the call succeeds and arms nothing.
 
+use super::ptcheck::{write_allowed, Vm};
 use super::sysreg::*;
 use crate::state::HYP;
 use azos_hyp_api::{Kind, DENIED, INV_PINNED, OK, PIN_FGT, PIN_TVM};
@@ -74,6 +75,37 @@ pub fn walk_regs() -> (u64, u64) {
     (ttbr1, tcr)
 }
 
+/// Trap this PE's EL1 writes to `fgt_bits` of `HFGWTR_EL2` (FEAT_FGT), or, without
+/// it, to every virtual-memory register (`HCR_EL2.TVM`).
+fn arm(fgt: bool, fgt_bits: u64) {
+    // SAFETY: EL2 registers of this PE only.
+    unsafe {
+        if fgt {
+            core::arch::asm!(
+                "mrs {t}, S3_4_C1_C1_5",
+                "orr {t}, {t}, {bits}",
+                "msr S3_4_C1_C1_5, {t}",
+                "isb",
+                t = out(reg) _, bits = in(reg) fgt_bits,
+            );
+        } else {
+            core::arch::asm!(
+                "mrs {t}, HCR_EL2",
+                "orr {t}, {t}, {bits}",
+                "msr HCR_EL2, {t}",
+                "isb",
+                t = out(reg) _, bits = in(reg) HCR_TVM,
+            );
+        }
+    }
+}
+
+/// A core entering EL1 after the pool lock: its `TTBR1_EL1` and `TCR_EL1` writes
+/// trap from the first instruction (`SCTLR_EL1` stays free until it pins).
+pub fn arm_entry() {
+    arm(has_fgt(mmfr0()), HFGWTR_TCR_EL1 | HFGWTR_TTBR1_EL1);
+}
+
 /// `pin()`: arm this PE. `(status, mode, PEs pinned)`. Once the kernel half's
 /// pool is locked, a PE whose `TTBR1_EL1` or `TCR_EL1` is not the one it was
 /// locked under is recorded and parked: it never runs the kernel on tables the
@@ -93,26 +125,7 @@ pub fn pin() -> (i64, u64, u64) {
     }
     let fgt = has_fgt(mmfr0());
     if !cfg!(feature = "hyp-pin-off-canary") {
-        // SAFETY: EL2 registers of this PE only.
-        unsafe {
-            if fgt {
-                core::arch::asm!(
-                    "mrs {t}, S3_4_C1_C1_5",
-                    "orr {t}, {t}, {bits}",
-                    "msr S3_4_C1_C1_5, {t}",
-                    "isb",
-                    t = out(reg) _, bits = in(reg) HFGWTR_PIN,
-                );
-            } else {
-                core::arch::asm!(
-                    "mrs {t}, HCR_EL2",
-                    "orr {t}, {t}, {bits}",
-                    "msr HCR_EL2, {t}",
-                    "isb",
-                    t = out(reg) _, bits = in(reg) HCR_TVM,
-                );
-            }
-        }
+        arm(fgt, HFGWTR_PIN);
         PINNED.fetch_or(1u64 << (pe() & 63), Ordering::AcqRel);
         HYP.set_invariant(INV_PINNED);
     }
@@ -135,7 +148,15 @@ pub fn trap(regs: *mut u64, esr: u64) {
         (Some(t), Some(r)) if !t.read => {
             // SAFETY: `regs` holds x0..x30 as the vector saved them; Rt 31 is XZR.
             let v = if t.rt == 31 { 0 } else { unsafe { *regs.add(t.rt as usize) } };
-            if refused(r) {
+            let vm = match r {
+                Reg::Sctlr => Some(Vm::Sctlr),
+                Reg::Tcr => Some(Vm::Tcr),
+                Reg::Ttbr1 => Some(Vm::Ttbr1),
+                _ => None,
+            };
+            // A refused register is carried out only when the pool is locked and the value is the locked one.
+            let carry = !refused(r) || vm.is_some_and(|vm| write_allowed(vm, v, this_pe_pinned(), super::pt::locked_regs()));
+            if !carry {
                 crate::record(Kind::SysregRefused, pe(), esr, encoding(t), v);
             } else {
                 match r {
@@ -147,7 +168,9 @@ pub fn trap(regs: *mut u64, esr: u64) {
                     Reg::Mair => write_reg!("MAIR_EL1", v),
                     Reg::Amair => write_reg!("AMAIR_EL1", v),
                     Reg::ContextId => write_reg!("CONTEXTIDR_EL1", v),
-                    Reg::Sctlr | Reg::Tcr | Reg::Ttbr1 => {}
+                    Reg::Sctlr => write_reg!("SCTLR_EL1", v),
+                    Reg::Tcr => write_reg!("TCR_EL1", v),
+                    Reg::Ttbr1 => write_reg!("TTBR1_EL1", v),
                 }
             }
         }

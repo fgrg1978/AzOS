@@ -242,6 +242,8 @@ fn a_pe_runs_the_kernel_half_only_on_the_locked_root_and_walk() {
     assert_eq!(tcr_error(tcr, tcr), None);
     // HA is a per-core feature, not a walk field.
     assert_eq!(tcr_error(tcr | 1 << 39, tcr), None);
+    // The boot turns the half off (EPD1) and back on; that reaches nothing under the monitor's root.
+    assert_eq!(tcr_error(tcr | 1 << 23, tcr), None);
     assert_eq!(tcr_error(tcr ^ 1 << 16, tcr), Some("TCR walks the kernel half differently"));
     assert_eq!(tcr_error(tcr ^ 1 << 30, tcr), Some("TCR walks the kernel half differently"));
 }
@@ -258,4 +260,48 @@ fn the_lock_refuses_a_block_over_the_image_and_a_pool_page_nothing_checked() {
     assert_eq!(unreached_error(0, [0u64, 0, 7].into_iter()), Some("a pool page nothing links has words in it"));
     assert_eq!(unreached_error(0, [0u64; 512].into_iter()), None);
     assert_eq!(unreached_error(tag_of(0), [1u64].into_iter()), None);
+}
+
+const ROOT_REG: u64 = POOL | 1;
+const LOCKED_TCR: u64 = 25 << 16 | 2 << 30 | 3 << 28 | 1 << 39;
+
+#[test]
+fn a_core_that_differs_from_the_locked_registers_is_found() {
+    assert_eq!(pe_regs_error(ROOT_REG, LOCKED_TCR, POOL, LOCKED_TCR), None);
+    assert_eq!(pe_regs_error(POOL + 0x1000, LOCKED_TCR, POOL, LOCKED_TCR), Some("TTBR1 is not the locked root"));
+    assert_eq!(pe_regs_error(ROOT_REG, LOCKED_TCR ^ 1 << 30, POOL, LOCKED_TCR), Some("TCR walks the kernel half differently"));
+}
+
+#[test]
+fn the_lock_wants_a_pinned_core_on_the_root_it_names() {
+    assert_eq!(lock_regs_error(true, ROOT_REG, POOL), None);
+    assert_eq!(lock_regs_error(false, ROOT_REG, POOL), Some("the calling core has not pinned"));
+    assert_eq!(lock_regs_error(true, ROOT_REG + 0x1000, POOL), Some("TTBR1 is not the locked root"));
+    assert_eq!(lock_regs_error(true, ROOT_REG | 1 << 48, POOL), Some("TTBR1 carries an ASID"));
+}
+
+#[test]
+fn a_core_enters_on_the_locked_registers_once_the_pool_is_locked_and_not_before() {
+    assert_eq!(entry_plan(None), None);
+    assert_eq!(entry_plan(Some((ROOT_REG, LOCKED_TCR))), Some(EntryPlan { ttbr1: ROOT_REG, tcr: LOCKED_TCR }));
+}
+
+#[test]
+fn a_trapped_write_to_the_walk_registers_is_carried_out_only_when_it_is_the_locked_one() {
+    let locked = Some((ROOT_REG, LOCKED_TCR));
+    // Before the lock none is.
+    for r in [Vm::Sctlr, Vm::Tcr, Vm::Ttbr1] {
+        assert!(!write_allowed(r, 0, false, None));
+    }
+    // The locked root, with or without CnP, and nothing else.
+    assert!(write_allowed(Vm::Ttbr1, POOL, true, locked));
+    assert!(write_allowed(Vm::Ttbr1, ROOT_REG, true, locked));
+    assert!(!write_allowed(Vm::Ttbr1, 0x9000_0000, false, locked), "a forged root");
+    assert!(!write_allowed(Vm::Ttbr1, POOL | 1 << 48, false, locked), "an ASID");
+    // The locked walk fields, whatever else the boot sets.
+    assert!(write_allowed(Vm::Tcr, LOCKED_TCR | 1 << 23 | 1 << 37, true, locked));
+    assert!(!write_allowed(Vm::Tcr, LOCKED_TCR ^ 1 << 16, false, locked), "another T1SZ");
+    // The MMU is turned on by a core that has not pinned, and by none that has.
+    assert!(write_allowed(Vm::Sctlr, 1, false, locked));
+    assert!(!write_allowed(Vm::Sctlr, 1, true, locked));
 }

@@ -26,7 +26,7 @@ static SHIFT: AtomicU64 = AtomicU64::new(0);
 static READY: AtomicU64 = AtomicU64::new(0);
 /// The kernel half's `TTBR1_EL1` root and the `TCR_EL1` the pool was locked
 /// under, which every PE that pins afterwards must have.
-static LOCKED_ROOT: AtomicU64 = AtomicU64::new(0);
+static LOCKED_TTBR1: AtomicU64 = AtomicU64::new(0);
 static LOCKED_TCR: AtomicU64 = AtomicU64::new(0);
 static TAGS: [AtomicU8; PT_POOL_PAGES_MAX as usize] = [const { AtomicU8::new(0) }; PT_POOL_PAGES_MAX as usize];
 
@@ -87,17 +87,33 @@ fn unreached_not_empty(base: u64, pages: u64, shift: u32) -> bool {
     })
 }
 
+/// The `TTBR1_EL1` and `TCR_EL1` the pool was locked under, once it is locked.
+pub fn locked_regs() -> Option<(u64, u64)> {
+    (READY.load(Ordering::Acquire) != 0).then(|| (LOCKED_TTBR1.load(Ordering::Relaxed), LOCKED_TCR.load(Ordering::Relaxed)))
+}
+
 /// Why this PE may not run the kernel half: after the pool lock, its
 /// `TTBR1_EL1` and `TCR_EL1` must be the locked ones.
 pub fn pe_error() -> Option<&'static str> {
-    if READY.load(Ordering::Acquire) == 0 { return None; }
-    let (ttbr1, tcr) = pin::walk_regs();
-    ttbr1_error(ttbr1, LOCKED_ROOT.load(Ordering::Relaxed)).or_else(|| tcr_error(tcr, LOCKED_TCR.load(Ordering::Relaxed)))
+    let (root, tcr) = locked_regs()?;
+    let (live_ttbr1, live_tcr) = pin::walk_regs();
+    pe_regs_error(live_ttbr1, live_tcr, root & TTBR1_BADDR, tcr)
+}
+
+/// A core entering EL1 at the secondary or resume entry, after the pool lock:
+/// it gets the locked `TTBR1_EL1` and `TCR_EL1` and the writes to them are
+/// trapped before it runs, so the kernel's own load of them (writable data) does
+/// not reach the MMU.
+pub fn enter_pe() {
+    let Some(plan) = entry_plan(locked_regs()) else { return };
+    // SAFETY: this PE's EL1 registers, set while it is at EL2 and its MMU is off.
+    unsafe { core::arch::asm!("msr TTBR1_EL1, {a}", "msr TCR_EL1, {b}", "isb", a = in(reg) plan.ttbr1, b = in(reg) plan.tcr) };
+    pin::arm_entry();
 }
 
 /// `pt_lock_pool(pool_pa, pages | page_shift << 32, root_pa)`.
 pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
-    if !s2::locked() || crate::PES_UP.load(Ordering::Acquire) > 1 || !pin::this_pe_pinned() { return DENIED; }
+    if !s2::locked() || crate::PES_UP.load(Ordering::Acquire) > 1 { return DENIED; }
     if ONCE.swap(1, Ordering::AcqRel) != 0 { return DENIED; }
     let (pages, shift) = (packed & 0xffff_ffff, packed >> 32);
     let image = s2::image();
@@ -109,7 +125,7 @@ pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
         return INVALID;
     }
     let (ttbr1, tcr) = pin::walk_regs();
-    if ttbr1_error(ttbr1, root_pa).is_some() { return INVALID; }
+    if lock_regs_error(pin::this_pe_pinned(), ttbr1, root_pa).is_some() { return INVALID; }
     let (shift, end) = (shift as u32, pool_pa + (pages << shift));
     if scan(root_pa, LEVELS - 1, pool_pa, end, shift, &image).is_err() { return INVALID; }
     if unreached_not_empty(pool_pa, pages, shift) { return INVALID; }
@@ -125,7 +141,7 @@ pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
     POOL[0].store(pool_pa, Ordering::Relaxed);
     POOL[1].store(end, Ordering::Relaxed);
     SHIFT.store(shift as u64, Ordering::Relaxed);
-    LOCKED_ROOT.store(root_pa, Ordering::Relaxed);
+    LOCKED_TTBR1.store(ttbr1, Ordering::Relaxed);
     LOCKED_TCR.store(tcr, Ordering::Relaxed);
     READY.store(1, Ordering::Release);
     if !cfg!(feature = "hyp-pt-pool-open-canary") && !cfg!(feature = "hyp-pt-check-skip-canary") {
