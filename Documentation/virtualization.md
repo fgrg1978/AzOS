@@ -51,6 +51,20 @@ guest. QEMU needs the extension turned
 on (`-cpu rv64,h=true`, `virtualization=on`, `-cpu max,svm=on`; `tools/dev/qemu.sh` lists the
 modes). Build commands are in [building.md](building.md).
 
+### What the split costs
+
+`bash tools/bench/vsbench_split.sh` builds a hosted and a split image of one tree and boots
+both on one QEMU line (`virt,virtualization=on`, TCG, `-icount shift=0,sleep=off`, so ns/op is
+instructions per op; TCG shows no two-stage walk cost). The kernel feature `hyp-cost-probe`
+times the monitor's calls (a null call, a PSCI call, a kernel-table map and a table-word write,
+a static-key text patch, a `TTBR0_EL1` write, `CPU_ON` to online) before the image lock and
+after the last lock in one boot, so a split image's pair is one code path with and without the
+monitor; a hosted image's pair is the control. The ring-3 vsbench lanes (syscall floor, IPC, context
+switch, map, thread, fork) run on both, and on Linux under `kvm-arm.mode=nvhe` and `protected`
+when the arm64 image and the initramfs of `vsbench_aarch64.sh` are present.
+`tools/bench/hyp_cost.py` judges the logs and prints the table, naming the Linux pair of each lane
+(or that there is none). The split rows wait for `HYP_MON_ROWS=1`, like every row that boots a monitor.
+
 ## The hypervisor core
 
 Source: `crates/core/hv/src/lib.rs`.

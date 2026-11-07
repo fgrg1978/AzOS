@@ -121,6 +121,7 @@ hyp-guard-skip-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which s
 hyp-guard-probe	pending	
 hyp-pin-off-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-pin-probe	pending	
+hyp-cost-probe	pending	
 hyp-kdf-salt-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-key-root-probe	pending	
 hyp-smmu-window-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
