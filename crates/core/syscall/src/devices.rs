@@ -596,6 +596,24 @@ pub(crate) enum RegionRefusal {
     /// The capability lacks the right asked for (recorded under the region's
     /// kind).
     Denied,
+    /// The object is swappable: the kernel's end of a ring addresses its
+    /// pages, which can be out (recorded as `Rule::SwappableRing`).
+    Swappable,
+}
+
+/// Is the region one a kernel end of a ring may address? A swappable object is
+/// not (`azos_mm::memobj`, "Swappable objects"): the refusal is recorded, with
+/// `site` saying which attach it was (1 a device or sound queue, 2 a NIC queue,
+/// 3 a key buffer).
+///
+/// Canary `swappable-ring-allowed-canary`: the object is let through.
+pub(crate) fn ring_addressable(tid: u32, region: u32, pages: usize, site: u64) -> bool {
+    let swappable = azos_ipc::memobj::memobj_describe_ref(region).is_ok_and(|d| d.attrs & azos_ipc::memobj::ATTR_SWAPPABLE != 0);
+    if swappable && !cfg!(feature = "swappable-ring-allowed-canary") {
+        azos_decision::record(azos_decision::Rule::SwappableRing, azos_decision::Verdict::Deny, tid, [u64::from(region), pages as u64, site]);
+        return false;
+    }
+    true
 }
 
 /// The region the handle `raw` in `tid`'s table names, and its size in bytes,
@@ -603,7 +621,7 @@ pub(crate) enum RegionRefusal {
 /// `READ` for one it drains): the check every queue a client makes goes
 /// through, here and for the NIC queues (`crate::nicq`). The kernel keeps the
 /// packed reference only, never an address.
-pub(crate) fn ring_region(tid: u32, raw: u32, need: CapPerms) -> Result<(u32, usize), RegionRefusal> {
+pub(crate) fn ring_region(tid: u32, raw: u32, need: CapPerms, site: u64) -> Result<(u32, usize), RegionRefusal> {
     let named = azos_ipc::cap_store::read_table(tid, |t| t.peek_raw(CapHandle(raw))).flatten();
     let Some((ty, rights, region)) = named else { return Err(RegionRefusal::NotARegion) };
     if ty != azos_abi::cap::ty::SHM {
@@ -614,6 +632,9 @@ pub(crate) fn ring_region(tid: u32, raw: u32, need: CapPerms) -> Result<(u32, us
         return Err(RegionRefusal::Denied);
     }
     let desc = azos_ipc::memobj::memobj_describe_ref(region).map_err(|_| RegionRefusal::NotARegion)?;
+    if !ring_addressable(tid, region, desc.page_count, site) {
+        return Err(RegionRefusal::Swappable);
+    }
     Ok((region, desc.page_count * azos_arch::PAGE_SIZE))
 }
 
@@ -635,9 +656,10 @@ impl QueueEnd {
     /// (read-only, shared with a clone, hidden from the kernel, or not
     /// physically contiguous).
     pub(crate) fn resolve<const W: usize>(who: &Caller, raw: u32, need: CapPerms) -> Result<QueueEnd, u32> {
-        let (region, bytes) = ring_region(who.tid, raw, need).map_err(|e| match e {
+        let (region, bytes) = ring_region(who.tid, raw, need, 1).map_err(|e| match e {
             RegionRefusal::NotARegion => outcome::BAD_ARGUMENT,
             RegionRefusal::Denied => outcome::DENIED,
+            RegionRefusal::Swappable => outcome::UNSUPPORTED,
         })?;
         let Some(slots) = slots_for::<W>(bytes) else {
             return Err(outcome::BAD_ARGUMENT);

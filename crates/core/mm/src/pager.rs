@@ -862,7 +862,14 @@ pub struct DomainReclaim<'a> {
     cursor: aging::Cursor,
     flight: Option<Flight>,
     held: Option<ObjFlight>,
+    /// The last objects a pinned mapper kept this storm from, so each is
+    /// recorded once ([`Rule::ReclaimSkip`]).
+    skipped: [u32; SKIPPED_MEMORY],
+    skipped_at: usize,
 }
+
+/// Objects remembered as skipped; past that the oldest is forgotten.
+const SKIPPED_MEMORY: usize = 16;
 
 /// A shared object's page in a store: its frame is the reclaimer's.
 #[derive(Clone, Copy)]
@@ -879,7 +886,17 @@ impl<'a> DomainReclaim<'a> {
     /// `key`, whose pool entries are charged to Domain slot `owner`; `ages` is
     /// the table [`age_slots`] and [`age_objects`] fed.
     pub fn new(spaces: &'a [Option<SpaceRef>], key: u32, owner: usize, ages: &'a mut Ages) -> Self {
-        DomainReclaim { spaces, key, owner, ages, cursor: aging::Cursor::default(), flight: None, held: None }
+        DomainReclaim {
+            spaces,
+            key,
+            owner,
+            ages,
+            cursor: aging::Cursor::default(),
+            flight: None,
+            held: None,
+            skipped: [0; SKIPPED_MEMORY],
+            skipped_at: 0,
+        }
     }
 
     /// The space of the source whose root is `root`.
@@ -975,9 +992,36 @@ impl Reclaimee for DomainReclaim<'_> {
 impl DomainReclaim<'_> {
     fn unmap_obj(&mut self, ident: u32, idx: usize) -> bool {
         debug_assert!(self.held.is_none());
-        let Some(frame) = memobj::memobj_swap_take(ident, idx, self.key) else { return false };
+        let frame = match memobj::memobj_swap_take(ident, idx, self.key) {
+            memobj::Take::Frame(frame) => frame,
+            memobj::Take::Pinned { mapper, pages } => {
+                self.note_skip(ident, mapper, pages);
+                return false;
+            }
+            memobj::Take::Not => return false,
+        };
         self.held = Some(ObjFlight { ident, idx, frame: PhysAddr::new(frame), state: FlightState::Out });
         true
+    }
+
+    /// The storm left object `ident` alone for its pinned `mapper`: one record
+    /// per object (the storm offers its pages one by one).
+    ///
+    /// Canaries `swap-skip-unrecorded-canary`: no record; `swap-skip-every-page-canary`:
+    /// one per page offered.
+    fn note_skip(&mut self, ident: u32, mapper: u32, pages: usize) {
+        let seen = self.skipped.contains(&ident) && !cfg!(feature = "swap-skip-every-page-canary");
+        if seen || cfg!(feature = "swap-skip-unrecorded-canary") {
+            return;
+        }
+        self.skipped[self.skipped_at] = ident;
+        self.skipped_at = (self.skipped_at + 1) % SKIPPED_MEMORY;
+        azos_decision::record(
+            azos_decision::Rule::ReclaimSkip,
+            azos_decision::Verdict::Refuse,
+            self.key,
+            [u64::from(ident), u64::from(mapper), pages as u64],
+        );
     }
 
     fn store_obj(&mut self) -> Result<u32, zpool::Error> {

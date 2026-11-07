@@ -158,8 +158,8 @@ pub fn mm_discharge_domain(key: u32, pages: u32) {
     })
 }
 
-/// No task pins its memory here (reclaim is not part of this suite).
-pub fn task_pins_memory(_tid: u32) -> bool {
+/// No thread pins its memory here (reclaim is not part of this suite).
+pub fn thread_pins_memory(_tid: u32) -> bool {
     false
 }
 
@@ -338,6 +338,7 @@ pub mod group {
     pub fn any_groups() -> bool { false }
     pub fn proc_of(_idx: usize, tid: u32) -> u32 { tid }
     pub fn proc_tid(tid: u32) -> u32 { tid }
+    pub fn any_member(leader: u32, f: impl Fn(u32) -> bool) -> bool { f(leader) }
     pub fn live_members(_leader: u32) -> u32 { 1 }
     pub fn current_group_ending() -> bool { false }
     pub fn set_current_clear_tid(_addr: u64) {}

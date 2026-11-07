@@ -18,3 +18,5 @@ on = ["dep:azos_records"]
 # refusal also goes to the durable sink. Independent of `on`. Neither feature:
 # `record` compiles to nothing.
 durable = []
+# Host canary (decisions-tests), never in a real build: a memory kill writes no record.
+mem-kill-unrecorded-canary = []

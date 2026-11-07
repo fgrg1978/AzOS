@@ -69,9 +69,9 @@ fn is_current_domain(key: u32) -> bool {
     cap_test_sched::idx_for_tid(syscall_test_sched::current_task_tid()).is_some_and(|i| task_domain(i) == key)
 }
 
-/// `azos_sched::task_pins_memory`, over the scheduler shim's pinned set.
-pub fn task_pins_memory(tid: u32) -> bool {
-    syscall_test_sched::task_pins_memory(tid)
+/// `azos_sched::thread_pins_memory`, over the scheduler shim's pinned set.
+pub fn thread_pins_memory(tid: u32) -> bool {
+    syscall_test_sched::thread_pins_memory(tid)
 }
 
 /// `azos_sched::mm_charge_domain`, over the one budget stand-in.
@@ -197,6 +197,7 @@ pub mod group {
     pub fn any_groups() -> bool { syscall_test_sched::group::any_groups() }
     pub fn proc_of(_idx: usize, tid: u32) -> u32 { tid }
     pub fn proc_tid(tid: u32) -> u32 { syscall_test_sched::group::proc_tid(tid) }
+    pub fn any_member(leader: u32, f: impl Fn(u32) -> bool) -> bool { syscall_test_sched::group::any_member(leader, f) }
     pub fn live_members(_leader: u32) -> u32 { 1 }
     pub fn current_group_ending() -> bool { false }
     pub fn set_current_clear_tid(_addr: u64) {}

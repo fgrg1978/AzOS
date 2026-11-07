@@ -9,6 +9,13 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ### Changed
 
+- `SHM_ATTR_SWAPPABLE` means something: the owner's Domain may compress and swap the
+  object's pages and any mapper's fault brings them back. The kernel does not read
+  such an object by address, a kernel ring over one is refused, and its owner's MOVE
+  and a clone answer `-EBUSY` while a page is out. `SHM_ATTR_SWAPPABLE` together
+  with `SHM_ATTR_VOLATILE` on one object is refused (`-EINVAL`); it was accepted.
+- Decision rules `mem-kill` (93), `swappable-ring` (94) and `reclaim-skip` (95) are
+  added; a kill for want of memory is `mem-kill`.
 - The GPS sensor record is 14 bytes (latitude and longitude in degrees x 1e7, altitude in mm, fix quality, satellites; the two pad bytes are gone), and a sensor with
   no reading (a battery with no converter, a rangefinder with none, a GPS with no
   fix yet) answers `NOT_READY` instead of an invented or zero record.

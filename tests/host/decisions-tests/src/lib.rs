@@ -371,6 +371,20 @@ mod tests {
         assert_eq!(cli::run(&Cmd::Chain(id), &c, &mut out), Ok(0));
         assert!(out.contains("numbers   runtime_us=500 period_us=1000 available_us=0 reason=2(no-room)"), "{out}");
     }
+    /// A task killed for want of memory is a decision record naming the victim,
+    /// the reason, its Domain's charge and the Domain's pressure level.
+    /// **Canary** `mem-kill-unrecorded-canary`: the kill leaves no record.
+    #[test]
+    fn a_memory_kill_is_a_record_of_its_victim() {
+        let _g = GUARD.lock().unwrap();
+        let before = azos_decision::total();
+        azos_decision::record_mem_kill(4747, azos_decision::MemKillReason::Quota, 321, 2);
+        assert_eq!(azos_decision::total(), before + 1, "the kill was recorded");
+        let p = azos_decision::lookup(azos_decision::total()).expect("a kill is durable");
+        assert_eq!((p.rule, p.verdict, p.subject), (Rule::MemKill as u8, Verdict::Deny as u8, 4747));
+        assert_eq!(p.n, [2, 321, 2]);
+    }
+
     /// A record is stamped on TAI (owner decision 16-10): the timebase's
     /// nanoseconds plus the offset the vDSO publishes. Before the offset is
     /// installed the stamp is time since boot. **Canary.** Stamp with
@@ -625,6 +639,9 @@ mod tests {
             (Rule::LineGrant, 91, "line-grant"),
             (Rule::MsiVector, 92, "msi-vector"),
             (Rule::CamCapture, 93, "cam-capture"),
+            (Rule::MemKill, 94, "mem-kill"),
+            (Rule::SwappableRing, 95, "swappable-ring"),
+            (Rule::ReclaimSkip, 96, "reclaim-skip"),
         ];
         assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {

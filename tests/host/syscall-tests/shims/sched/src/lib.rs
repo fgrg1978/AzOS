@@ -360,8 +360,8 @@ pub fn shim_pin_task_memory(tid: u32, pinned: bool) {
     }
 }
 
-/// Does reclaim leave the memory of task `tid` alone (`scheduler::task_pins_memory`)?
-pub fn task_pins_memory(tid: u32) -> bool {
+/// Does reclaim leave the memory of thread `tid` alone (`scheduler::thread_pins_memory`)?
+pub fn thread_pins_memory(tid: u32) -> bool {
     PINNED_TASKS.lock().unwrap().contains(&tid)
 }
 
@@ -1353,6 +1353,23 @@ pub mod group {
         if m != 0 && (m >> 32) as usize == idx { m as u32 } else { 0 }
     }
     pub fn any_groups() -> bool { MEMBER.load(Ordering::SeqCst) != 0 }
+    /// Test-only: threads of a process other than its leader, `(thread tid, leader)`,
+    /// for [`any_member`].
+    static THREADS: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+    /// Test-only control surface: `tid` is a thread of the process `leader`
+    /// (`leader == 0` takes it out).
+    pub fn shim_join_group(tid: u32, leader: u32) {
+        crate::shim_assert_serial("shim_join_group");
+        let mut v = THREADS.lock().unwrap();
+        v.retain(|&(t, _)| t != tid);
+        if leader != 0 {
+            v.push((tid, leader));
+        }
+    }
+    /// `f` of the process itself, or of any thread joined to it.
+    pub fn any_member(leader: u32, f: impl Fn(u32) -> bool) -> bool {
+        f(leader) || THREADS.lock().unwrap().iter().any(|&(t, l)| l == leader && f(t))
+    }
     pub fn proc_of(_idx: usize, tid: u32) -> u32 { tid }
     /// The member set with [`shim_set_member`] answers its leader.
     pub fn proc_tid(tid: u32) -> u32 {
@@ -1370,6 +1387,7 @@ pub mod group {
         crate::shim_assert_serial("group::shim_reset");
         MEMBER.store(0, Ordering::SeqCst);
         MEMBER_TID.store(0, Ordering::SeqCst);
+        THREADS.lock().unwrap().clear();
     }
     pub fn live_members(_leader: u32) -> u32 { 1 }
     pub fn current_group_ending() -> bool { false }

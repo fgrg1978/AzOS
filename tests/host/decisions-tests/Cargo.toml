@@ -21,6 +21,7 @@ azos_records = { path = "../../../crates/core/records", optional = true }
 # row `decisions(ring)` runs the `journal_` tests with it, where the ring's
 # records make the durable ids sparse.
 ring = ["azos_decision/on", "dep:azos_records"]
+mem-kill-unrecorded-canary = ["azos_decision/mem-kill-unrecorded-canary"]
 
 [profile.release]
 overflow-checks = true

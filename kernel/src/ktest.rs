@@ -2987,3 +2987,57 @@ azos_ktest::ktest_late! {
         if crate::boot::caches::all_sealed() { Ok(()) } else { Err("a boot cache is not filled and sealed") }
     }
 }
+
+// A real-time thread pins its whole group's memory: reclaim leaves alone what
+// a process maps when any thread of the process is real-time, not only the
+// leader (`azos_sched::group::any_member`, `Host::pins_memory`). The member is
+// real-time (priority 5), the test's own task, the leader, is not. Canary
+// `group-pin-leader-only-canary`: only the leader is asked.
+static PIN_MEMBER_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static PIN_GO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn pin_member(_: usize) {
+    use core::sync::atomic::Ordering::{Acquire, Release};
+    PIN_MEMBER_TID.store(azos_sched::scheduler::current_task_tid(), Release);
+    for _ in 0..10_000 {
+        if PIN_GO.load(Acquire) {
+            break;
+        }
+        let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
+        azos_sched::task_block(azos_sched::WaitReason::Timer(azos_drv_sys::timebase::now() + per_ms));
+    }
+}
+
+azos_ktest::ktest_late! {
+    fn a_real_time_thread_pins_the_memory_of_its_group() {
+        use core::sync::atomic::Ordering::{Acquire, Release};
+        PIN_MEMBER_TID.store(0, Release);
+        PIN_GO.store(false, Release);
+        let lead = azos_sched::scheduler::current_task_tid();
+        azos_sched::task_create_affinity("c1-pin-member", pin_member, 0, 5, -1);
+        wait("the member task never started", || PIN_MEMBER_TID.load(Acquire) != 0)?;
+        let t = PIN_MEMBER_TID.load(Acquire);
+        let r = (|| {
+            if azos_sched::thread_pins_memory(lead) {
+                return Err("the test's own task pins memory: the case proves nothing");
+            }
+            if !azos_sched::thread_pins_memory(t) {
+                return Err("a real-time thread does not pin memory");
+            }
+            if !azos_sched::group::ktest_group(lead, t) {
+                return Err("the two tasks could not be made one process");
+            }
+            let pinned = azos_sched::group::any_member(lead, azos_sched::thread_pins_memory);
+            azos_sched::group::ktest_ungroup(lead, t);
+            if !pinned {
+                return Err("a real-time thread of the group does not pin the group's memory");
+            }
+            if azos_sched::group::any_member(lead, azos_sched::thread_pins_memory) {
+                return Err("the member still counts after it left the group");
+            }
+            Ok(())
+        })();
+        PIN_GO.store(true, Release);
+        r
+    }
+}

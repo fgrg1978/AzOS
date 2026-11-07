@@ -42,8 +42,15 @@ impl Host for Up {
     fn sweep_slot(&self, slot: u32) {
         objref::sweep_index(crate::cap::ty::SHM, slot);
     }
-    fn pins_memory(&self, tid: u32) -> bool {
-        azos_sched::task_pins_memory(tid)
+    /// A mapping is the process's: any thread of its group that is real-time, or
+    /// whose Domain is locked, pins it.
+    ///
+    /// Canary `swap-group-leader-only-canary`: only the leader is asked.
+    fn pins_memory(&self, proc: u32) -> bool {
+        if cfg!(feature = "swap-group-leader-only-canary") {
+            return azos_sched::thread_pins_memory(proc);
+        }
+        azos_sched::group::any_member(proc, azos_sched::thread_pins_memory)
     }
 }
 

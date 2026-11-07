@@ -2216,6 +2216,116 @@ mod swap_rows {
         src.keep(v);
     }
 
+    /// **A real-time thread anywhere in a process pins what the process maps.**
+    /// B's leader is an ordinary task and a thread of B's group is real-time:
+    /// the object B maps is left alone, and taken once the thread leaves.
+    ///
+    /// **Canary.** `swap-group-leader-only-canary`: only the leader is asked.
+    #[test]
+    fn a_real_time_thread_in_a_plain_group_pins_the_groups_mappings() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        struct Unpin(u32);
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                azos_sched::shim_pin_task_memory(self.0, false);
+                azos_sched::group::shim_join_group(self.0, 0);
+            }
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let thread = fresh_tid();
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        let _unpin = Unpin(thread);
+        azos_sched::group::shim_join_group(thread, b);
+        azos_sched::shim_pin_task_memory(thread, true);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(!src.unmap(v), "a thread of B's group is real-time");
+        assert!(translate(p.pt_b, p.va_b).is_some(), "B's leaf stays");
+        azos_sched::group::shim_join_group(thread, 0);
+        assert!(src.unmap(v), "the thread left the group");
+        src.keep(v);
+    }
+
+    /// **A storm that leaves a pinned mapper's object alone says so, once per
+    /// object.** Two pages of the object and one of another are offered: two
+    /// records, naming the object, the mapper and the size.
+    ///
+    /// **Canaries.** `swap-skip-unrecorded-canary`: no record.
+    /// `swap-skip-every-page-canary`: one per page offered.
+    #[test]
+    fn a_skipped_pinned_object_is_recorded_once_per_storm() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        struct Unpin(u32);
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                azos_sched::shim_pin_task_memory(self.0, false);
+            }
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 2);
+        let other = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r2 = resource_of::<Shm>(a, other);
+        let h2 = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r2);
+        become_task(b, p.pt_b);
+        assert!(sys_shm_map_typed(h2, 0) > 0);
+        become_task(a, p.pt_a);
+        let _unpin = Unpin(b);
+        azos_sched::shim_pin_task_memory(b, true);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let before = azos_decision::total();
+        for v in [
+            Victim::Obj { ident: p.r, idx: 0 },
+            Victim::Obj { ident: p.r, idx: 1 },
+            Victim::Obj { ident: r2, idx: 0 },
+            Victim::Obj { ident: p.r, idx: 0 },
+        ] {
+            assert!(!src.unmap(v));
+        }
+        assert_eq!(azos_decision::total(), before + 2, "one record for each object, none for each page");
+        let rec = azos_decision::lookup(before + 1).expect("the first record is kept");
+        assert_eq!(
+            (rec.rule, rec.verdict, rec.subject, rec.n),
+            (azos_decision::Rule::ReclaimSkip as u8, azos_decision::Verdict::Refuse as u8, p.key, [u64::from(p.r), u64::from(b), 2])
+        );
+    }
+
+    /// **A swappable object is refused as the region of a ring the kernel
+    /// addresses, by name, and the refusal is a record.** A plain object is
+    /// accepted at the same call.
+    ///
+    /// **Canary.** `swappable-ring-allowed-canary`: the object is let through.
+    #[test]
+    fn a_swappable_object_is_refused_as_a_kernel_ring_and_recorded() {
+        use crate::devices::{ring_addressable, ring_region, RegionRefusal};
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _pt = ring3(a, SLOT_A);
+        let swap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let plain = handle(sys_shm_create_typed(1, 1));
+        let before = azos_decision::total();
+        assert_eq!(ring_region(a, swap as u32, CapPerms::READ, 1), Err(RegionRefusal::Swappable));
+        assert_eq!(azos_decision::total(), before + 1, "the refusal is a record");
+        let rec = azos_decision::lookup(before + 1).expect("kept");
+        assert_eq!((rec.rule, rec.verdict, rec.subject), (azos_decision::Rule::SwappableRing as u8, azos_decision::Verdict::Deny as u8, a));
+        assert_eq!(rec.n[2], 1, "the site");
+        assert!(ring_region(a, plain as u32, CapPerms::READ, 1).is_ok(), "a plain object is a ring");
+        assert!(ring_addressable(a, resource_of::<Shm>(a, plain), 1, 3));
+        assert_eq!(azos_decision::total(), before + 1, "and costs no record");
+    }
+
     /// **A fault on a page being stored waits for the store; it never maps a
     /// zero page, a page of nothing, or a leaf of its own.** The storm holds the
     /// page in transit: the fault looks, waits (the host's wait queue returns at

@@ -404,6 +404,19 @@ pub enum Rule {
     /// A task became a reader of the camera's frames (`Frame::next`), was refused, or read its first
     /// frame; or the frame pool could not be made.
     CamCapture,
+    /// A task was killed because memory ran out under it: the page allocator
+    /// was empty when it broke copy-on-write, or the first touch of a page it
+    /// had reserved needed kernel memory its Domain had no room for.
+    MemKill,
+    /// A client handed the kernel a swappable memory object as the region of a
+    /// ring the kernel's end addresses (a queue, a NIC queue, a key buffer),
+    /// and was refused: the kernel does not address memory that can be out.
+    SwappableRing,
+    /// A storm left a shared object's pages in memory because a process that
+    /// maps it pins its memory (a real-time thread, a `mem = "locked"`
+    /// Domain), whichever Domain the object is charged to. Once per object
+    /// per storm.
+    ReclaimSkip,
 }
 
 impl Rule {
@@ -417,6 +430,27 @@ impl Rule {
             | Rule::EffectUnserved | Rule::BudgetGrow | Rule::SafetyLine | Rule::Ring3Dma
             | Rule::LineGrant | Rule::MsiVector | Rule::CamCapture)
     }
+}
+
+/// Why [`record_mem_kill`] killed a task, as `Rule::MemKill` numbers it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum MemKillReason {
+    /// The page allocator was empty when the task broke copy-on-write.
+    CowOom = 1,
+    /// The first touch of a reserved page needed kernel memory the Domain had no room for.
+    Quota = 2,
+}
+
+/// Record that memory ran out under the task `victim` and it was killed: its
+/// Domain's `charge` in frames and the Domain's pressure level, `step`.
+///
+/// Canary `mem-kill-unrecorded-canary`: the kill leaves no record.
+pub fn record_mem_kill(victim: u32, reason: MemKillReason, charge: u32, step: u8) {
+    if cfg!(feature = "mem-kill-unrecorded-canary") {
+        return;
+    }
+    record(Rule::MemKill, Verdict::Deny, victim, [reason as u64, u64::from(charge), u64::from(step)]);
 }
 
 /// The verdict of a record.
@@ -1375,6 +1409,35 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["camera", "seq", "reason"],
         rejected_if_yes: "let the task read the camera: its class has the cam effect and a slot is free",
         rejected_if_no: "refuse the reader: a camera must not be read without the grant, and every read must have a record",
+    },
+    RuleInfo {
+        // The subject is the victim task. `reason` is 1 the allocator was empty breaking copy-on-write, 2 the
+        // Domain had no room for the kernel memory a first touch needs; `charge` the frames the victim's Domain
+        // held; `step` the Domain's pressure level when the task died (0 normal, 1 warning: reclaim was due, 2
+        // critical: at its limit), so "why was my task killed" can be told from the reclaim steps before it.
+        name: "mem-kill",
+        subject: "tid",
+        fields: ["reason", "charge", "step"],
+        rejected_if_yes: "let the task run on: it could not be given the memory its access needs",
+        rejected_if_no: "-",
+    },
+    RuleInfo {
+        // The subject is the task that handed the region. `region` is the object's packed reference, `pages` its
+        // size, `site` 1 a device or sound queue, 2 a NIC queue, 3 a key buffer.
+        name: "swappable-ring",
+        subject: "tid",
+        fields: ["region", "pages", "site"],
+        rejected_if_yes: "-",
+        rejected_if_no: "address the object: a ring end that reads and writes by address cannot have its page taken out under it",
+    },
+    RuleInfo {
+        // The subject is the Domain whose storm it was. `object` is the object's packed reference, `mapper` the
+        // process that pins it, `pages` the object's size.
+        name: "reclaim-skip",
+        subject: "domain",
+        fields: ["object", "mapper", "pages"],
+        rejected_if_yes: "-",
+        rejected_if_no: "take the object's pages: a real-time or locked mapper would fault on memory that was out",
     },
 ];
 

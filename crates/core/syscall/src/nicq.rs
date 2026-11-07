@@ -245,6 +245,7 @@ fn errno_region(e: RegionRefusal) -> i64 {
     match e {
         RegionRefusal::NotARegion => Errno::ECAPKIND.to_syscall_ret(),
         RegionRefusal::Denied => Errno::ECAPPERMS.to_syscall_ret(),
+        RegionRefusal::Swappable => Errno::EINVAL.to_syscall_ret(),
     }
 }
 
@@ -263,8 +264,8 @@ fn attach(tid: u32, ifindex: IfIndex, queue: u8, rx_raw: u64, tx_raw: u64) -> Re
     let (Ok(rx_raw), Ok(tx_raw)) = (u32::try_from(rx_raw), u32::try_from(tx_raw)) else {
         return Err(Errno::EINVAL.to_syscall_ret());
     };
-    let (rx_region, rx_bytes) = ring_region(tid, rx_raw, CapPerms::WRITE).map_err(errno_region)?;
-    let (tx_region, tx_bytes) = ring_region(tid, tx_raw, CapPerms::READ).map_err(errno_region)?;
+    let (rx_region, rx_bytes) = ring_region(tid, rx_raw, CapPerms::WRITE, 2).map_err(errno_region)?;
+    let (tx_region, tx_bytes) = ring_region(tid, tx_raw, CapPerms::READ, 2).map_err(errno_region)?;
     if rx_region == tx_region {
         return Err(Errno::EINVAL.to_syscall_ret());
     }

@@ -13081,6 +13081,25 @@ host_job zpool_host_canary_row "swap: fork with a page out canary" swap-inherit-
 host_job zpool_host_row "age: slots name the resident pages" aging_tracks_the_pages_the_slots_name_resident
 host_job zpool_host_canary_row "age: slots canary" age-slots-ignored-canary \
     aging_tracks_the_pages_the_slots_name_resident
+# A real-time thread anywhere in a process pins what the process maps
+# (swap-group-leader-only-canary: only the leader is asked); a storm that leaves
+# a pinned mapper's object alone records it once per object
+# (swap-skip-unrecorded-canary: no record; swap-skip-every-page-canary: one per
+# page); a swappable object is refused as a kernel ring and the refusal is
+# recorded (swappable-ring-allowed-canary); a memory kill is a decision record
+# (decisions-tests, mem-kill-unrecorded-canary).
+host_job zpool_host_row "swap: RT thread in a plain group" a_real_time_thread_in_a_plain_group_pins_the_groups_mappings
+host_job zpool_host_canary_row "swap: RT thread in a group canary" swap-group-leader-only-canary \
+    a_real_time_thread_in_a_plain_group_pins_the_groups_mappings
+host_job zpool_host_row "swap: pinned skip recorded" a_skipped_pinned_object_is_recorded_once_per_storm
+host_job zpool_host_canary_row "swap: pinned skip record canary" swap-skip-unrecorded-canary \
+    a_skipped_pinned_object_is_recorded_once_per_storm
+host_job zpool_host_canary_row "swap: pinned skip once canary" swap-skip-every-page-canary \
+    a_skipped_pinned_object_is_recorded_once_per_storm
+host_job host_canary_row "swap: kernel ring refused canary" syscall-tests swappable-ring-allowed-canary \
+    a_swappable_object_is_refused_as_a_kernel_ring_and_recorded
+host_job host_canary_row "decisions: memory kill canary" decisions-tests mem-kill-unrecorded-canary \
+    a_memory_kill_is_a_record_of_its_victim
 # A fault on a page the storm is storing waits and maps nothing; a store that
 # fails gives the page back; the kernel does not address a swappable object; an
 # object is swappable or volatile. swap-transit-ignored-canary: a page in transit

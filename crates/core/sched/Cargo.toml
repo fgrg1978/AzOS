@@ -88,6 +88,8 @@ qos-armed-at-canary = []
 # `signal::pending_of`, the timer tick's `preempt::ktest_probe`). Off:
 # compiled out.
 ktest = ["azos_sync/ktest", "azos_mm/ktest"]
+# Runtime-less canary of the ktest `a_real_time_thread_pins_the_memory_of_its_group`, never in a real build: a group is asked only about its leader.
+group-pin-leader-only-canary = []
 # Wave 15 (VI): the ELF loader's page permissions. `elf-mixed-page-canary`
 # accepts a page shared by segments mapped differently (their union, as
 # before); `rodata-exec-canary` maps read-only segments read-execute (the old

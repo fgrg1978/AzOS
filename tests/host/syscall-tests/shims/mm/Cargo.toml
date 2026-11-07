@@ -76,6 +76,8 @@ as-stale-ref-canary = []
 # ... and the slot-over-leaf canary of the pulled-in `slot.rs`.
 mm-pte-truth-canary = []
 age-slots-ignored-canary = []
+swap-skip-unrecorded-canary = []
+swap-skip-every-page-canary = []
 fault-block-leaf-canary = []
 keep-leaf-first-canary = []
 fork-hold-canary = []

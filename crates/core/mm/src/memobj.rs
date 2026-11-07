@@ -849,8 +849,8 @@ pub trait Host: Sync {
     fn wake_shared(&self, obj: u32, offset: u32);
     /// Revoke the capabilities that name table slot `slot`: its generation wrapped.
     fn sweep_slot(&self, slot: u32);
-    /// Is the process `tid` one whose memory reclaim leaves alone: its Domain is
-    /// on a `mem = "locked"` row, or it is a real-time task?
+    /// Is the process `tid` one whose memory reclaim leaves alone: a thread of its
+    /// group has a Domain on a `mem = "locked"` row, or is a real-time task?
     fn pins_memory(&self, tid: u32) -> bool;
 }
 
@@ -4262,12 +4262,12 @@ pub fn container_ident(container: u64) -> Option<u32> {
 /// only the object's owner is asked whether its memory is pinned, not each
 /// mapper.
 fn swap_candidate(o: &MemObj, key: u32) -> bool {
+    swap_eligible(o, key) && pinning_holder(o).is_none()
+}
+
+/// The object is the storm's by owner, kind and opt-in, whoever maps it.
+fn swap_eligible(o: &MemObj, key: u32) -> bool {
     let opted = o.attrs & ATTR_SWAPPABLE != 0 || cfg!(feature = "swappable-ignored-canary");
-    let pinned = |h: &MemHolder| {
-        h.refs > 0
-            && (h.tid == MEMOBJ_KERNEL_OWNER
-                || ((!cfg!(feature = "object-mapper-pin-canary") || h.tid == o.owner_task) && host().pins_memory(h.tid)))
-    };
     o.active
         && key != 0
         && o.charge_key == key
@@ -4275,7 +4275,22 @@ fn swap_candidate(o: &MemObj, key: u32) -> bool {
         && opted
         && o.attrs & ATTR_VOLATILE == 0
         && o.cow_shared == 0
-        && !o.holders.iter().any(pinned)
+}
+
+/// A holder that keeps the object's memory in place: the kernel, or a process
+/// that pins its memory ([`Host::pins_memory`]). The holder's tid.
+///
+/// Canary `object-mapper-pin-canary`: only the object's owner is asked whether
+/// its memory is pinned, not each mapper.
+fn pinning_holder(o: &MemObj) -> Option<u32> {
+    o.holders
+        .iter()
+        .find(|h| {
+            h.refs > 0
+                && (h.tid == MEMOBJ_KERNEL_OWNER
+                    || ((!cfg!(feature = "object-mapper-pin-canary") || h.tid == o.owner_task) && host().pins_memory(h.tid)))
+        })
+        .map(|h| h.tid)
 }
 
 /// Is nothing in flight on the object that a reclaimer's unmap could miss?
@@ -4334,22 +4349,25 @@ pub fn memobj_swap_owned(container: u64, key: u32) -> bool {
 
 /// Take page `idx` of the object `ident` names out of every mapping, for the
 /// storm of the Domain `key` to store: the frame, which is the caller's now (the
-/// page is in transit). `None`, with nothing changed, when the object is not the
+/// page is in transit). Anything else leaves things as they were, when the object is not the
 /// storm's, something is in flight on it (`swap_ready`), or the page is not
 /// resident (a frame an object keeps is shared with a clone only under
 /// `cow_shared`, which `swap_candidate` refuses).
-pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Option<usize> {
+pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Take {
     let mut regions = MEMOBJS.lock();
-    let i = live_index(&regions, ident).ok()?;
+    let Ok(i) = live_index(&regions, ident) else { return Take::Not };
     let o = &mut regions[i];
     let bit = 1u64 << idx;
-    if idx >= o.page_count
-        || !swap_candidate(o, key)
-        || !swap_ready(o)
-        || o.phys_pages[idx] == 0
-        || o.transit & bit != 0
-    {
-        return None;
+    if idx >= o.page_count || !swap_eligible(o, key) {
+        return Take::Not;
+    }
+    if let Some(mapper) = pinning_holder(o) {
+        // The kernel's own reference is a plain refusal; a process that pins
+        // its memory is the storm's to say it left the object alone.
+        return if mapper == MEMOBJ_KERNEL_OWNER { Take::Not } else { Take::Pinned { mapper, pages: o.page_count } };
+    }
+    if !swap_ready(o) || o.phys_pages[idx] == 0 || o.transit & bit != 0 {
+        return Take::Not;
     }
     // Every recorded mapping loses its leaf, shot down on every hart, before
     // the frame stops being the object's: no mapper can reach it after this
@@ -4360,7 +4378,18 @@ pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Option<usize> {
     let frame = o.phys_pages[idx];
     o.phys_pages[idx] = 0;
     o.transit |= bit;
-    Some(frame)
+    Take::Frame(frame)
+}
+
+/// What [`memobj_swap_take`] found.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Take {
+    /// The page is out of every mapping and the frame is the caller's.
+    Frame(usize),
+    /// A process that maps the object pins its memory: the object is left alone.
+    Pinned { mapper: u32, pages: usize },
+    /// Not the storm's, or not takable now.
+    Not,
 }
 
 /// The store of page `idx` succeeded: the pool holds the bytes, the page is

@@ -256,6 +256,15 @@ pub fn user_fault_report() -> bool {
     }
 }
 
+/// The running task is about to be killed for want of memory: a decision record
+/// with its Domain's charge and pressure level.
+fn record_memory_kill(reason: azos_decision::MemKillReason) {
+    let (charge, step) = azos_sched::current_task_slot()
+        .and_then(|(idx, _)| azos_sched::domain::budget(azos_sched::task_domain(idx)))
+        .map_or((0, 0), |b| (b.used(), b.pressure() as u8));
+    azos_decision::record_mem_kill(azos_sched::current_task_tid(), reason, charge, step);
+}
+
 impl<F: ArchFrame> FaultServices<F> for Kernel {
     #[inline(always)]
     fn trace_fault(addr: u64, cause: u32) {
@@ -299,6 +308,7 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
     }
 
     fn cow_oom(va: u64) {
+        record_memory_kill(azos_decision::MemKillReason::CowOom);
         azos_drv_sys::kerr!();
         azos_drv_sys::kerr!("[PAGE FAULT] OUT OF MEMORY breaking copy-on-write at {:#x} - the task did nothing \
                              wrong; the page allocator is empty", va);
@@ -314,6 +324,7 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
     }
 
     fn mm_quota(va: u64) {
+        record_memory_kill(azos_decision::MemKillReason::Quota);
         azos_drv_sys::kerr!();
         azos_drv_sys::kerr!("[PAGE FAULT] MEMORY LIMIT at {:#x}: the first touch of a reserved page needs \
                              kernel memory (its slot words) the task's Domain has no room for", va);

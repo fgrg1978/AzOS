@@ -457,6 +457,22 @@ pub fn members_of(leader: u32, except: u32, out: &mut [u32]) -> usize {
     n
 }
 
+/// Does `f` hold for the live process `leader` itself or any member of its group?
+///
+/// Canary `group-pin-leader-only-canary`: only the leader is asked.
+pub fn any_member(leader: u32, f: impl Fn(u32) -> bool) -> bool {
+    if f(leader) {
+        return true;
+    }
+    if !any_groups() || cfg!(feature = "group-pin-leader-only-canary") {
+        return false;
+    }
+    (0..MAX_TASKS).any(|idx| {
+        LEAD[idx].load(Ordering::Acquire) == leader
+            && crate::scheduler::tid_for_idx(idx).is_some_and(|tid| tid != 0 && tid != leader && f(tid))
+    })
+}
+
 // ── The group's memory lock ────────────────────────────────────────────────
 
 /// Held across a call that changes the shared address space's layout (the

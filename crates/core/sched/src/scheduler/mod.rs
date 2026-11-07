@@ -3124,10 +3124,10 @@ pub fn task_class_raw(tid: u32) -> Option<u8> {
     unsafe { idx_for_tid(tid).map(|i| task_ref(i).sched_class_raw) }
 }
 
-/// Does reclaim leave the memory of the task `tid` alone: its Domain is on a
-/// `mem = "locked"` row, or it is a real-time task (a real-time class, or a
+/// Does reclaim leave the memory of the thread `tid` alone: its Domain is on a
+/// `mem = "locked"` row, or it is a real-time thread (a real-time class, or a
 /// priority in the real-time band)?
-pub fn task_pins_memory(tid: u32) -> bool {
+pub fn thread_pins_memory(tid: u32) -> bool {
     let Some(idx) = idx_for_tid(tid) else { return false };
     crate::domain::mem_locked(task_domain(idx))
         || task_class_raw(tid).and_then(crate::class::SchedClass::from_raw).is_some_and(crate::class::SchedClass::is_realtime)

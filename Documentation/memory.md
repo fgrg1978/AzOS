@@ -125,7 +125,7 @@ Attributes in `MemSpec::attrs`:
 
 | Attribute | Meaning |
 |-----------|---------|
-| `ATTR_SWAPPABLE` | The object's opt-in for the Domain storm (*Swappable objects* below): its pages may be compressed, swapped and restored by the fault of any mapper. Anon only, never with `ATTR_VOLATILE`. The kernel does not address its frames (its word, span and frame calls answer as for `ATTR_NO_KERNEL_MAP`; a futex word of a mapped page still works), and a guest's RAM, a display and a sound buffer refuse it. |
+| `ATTR_SWAPPABLE` | The object's opt-in for the Domain storm (*Swappable objects* below): its pages may be compressed, swapped and restored by the fault of any mapper. Anon only, never with `ATTR_VOLATILE`. The kernel does not address its frames (its word, span and frame calls answer as for `ATTR_NO_KERNEL_MAP`; a futex word of a mapped page still works; a kernel ring over it is refused, below), and a guest's RAM, a display and a sound buffer refuse it. |
 | `ATTR_NO_KERNEL_MAP` | The kernel never reads the object through the direct map; `memobj_with_word_ref` refuses it, and a reclaimer of MemObj frames would have to leave it alone. |
 | `ATTR_VOLATILE` | Purgeable (Anon only). The owner marks the object droppable with `MemCtl::set_volatile` (kernel-hosted endpoint `memctl`, `WRITE`) and in use again with `set_nonvolatile`, which answers whether the object was purged. While volatile, the first stage of the reclaim pass (`memobj_purge_volatile`) may take its frames whole: every holder's mapping is unmapped, the frames and the charge go back, nothing is written, one `Rule::Purge` record is made. Purged is final: `SYS_MO_MAP` and a clone answer `-EPURGED`, and the holder creates a new object. Stage 0 runs only with `MM_RECLAIM_COMPRESS`: on a `MM_RECLAIM_OFF` image a volatile object is never purged (`set_nonvolatile` always answers `false`). `infsrv` (the inference service) keeps its blob arena in one: droppable between calls, held during a call, rebuilt from the signed bundles when it finds the object purged. Never purged: an object in use, one the kernel holds a reference to (a guest's RAM), one a clone shares frames with, one with a pinned holder, one charged to a `mem = "locked"` Domain. |
 
@@ -805,6 +805,22 @@ and its number in the object, so one entry serves every mapper.
   restore), and a page that is out is restored with no lock held across the
   decompression or the swap device, then installed by the next attempt. A page
   with neither frame nor copy is not the pager's and the fault fails.
+* **Kernel-attached rings.** The kernel's end of a ring (a device or sound queue,
+  a NIC queue, a key buffer) addresses its region's pages directly, and a page
+  that can be out cannot be addressed. A swappable object handed as such a region
+  is refused by name (`ring_region`: `UNSUPPORTED` for a queue and a key buffer,
+  `EINVAL` for a NIC queue) and the refusal is a `swappable-ring` decision record
+  with the attach site. An application that wants swappable memory and a kernel
+  ring uses two objects.
+* **Who pins.** A mapper pins the object when any thread of its process group has a
+  Domain on a `mem = "locked"` row, a real-time class or a priority in the real-time
+  band (`group::any_member`, `thread_pins_memory`), read when the storm looks, not at
+  admission. A storm that leaves an object alone for that reason writes one
+  `reclaim-skip` record for the object (the pages of it are offered one by one,
+  so a storm remembers the last sixteen objects it recorded).
+* **Opt-in.** Private anonymous memory is always reclaimable; a shared object needs
+  `SHM_ATTR_SWAPPABLE`, because its other mappers did not choose to share a
+  Domain's pressure (the asymmetry is intended).
 * **Map and fork.** A map of an object with a page out leaves that page without
   a leaf; a fork child inherits the mapping the same way (`ForkLeaves::sparse`).
 * **Charge and life.** A page that is out has given its charge back and its
