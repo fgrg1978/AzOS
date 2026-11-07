@@ -649,6 +649,7 @@ The index lists every declared option: 1284.
 | `HWCLASS_SERVER` | `config/axes/Kconfig.hwclass` | Server / gateway machine |
 | `HYP_ACCEPT_DMA_HOLE` | `config/axes/Kconfig.virt` | Boot a split image on a board with DMA masters outside any IOMMU |
 | `HYP_MONITOR` | `config/axes/Kconfig.virt` | (no prompt — internal/derived) |
+| `HYP_PT_POOL_PAGES` | `config/axes/Kconfig.virt` | Pages of kernel-half page tables the monitor protects |
 | `I2C_DESIGNWARE` | `config/subsys/Kconfig.drivers` | I2C: Synopsys DesignWare controllers (VisionFive 2, Raspberry Pi 5 RP1, Intel LPSS) |
 | `I2C_DW_RX_FIFO_DEPTH` | `config/subsys/Kconfig.drivers` | I2C: DesignWare controller RX FIFO depth (entries) |
 | `I2C_K1_FAST_MODE` | `config/subsys/Kconfig.drivers` | I2C: SpacemiT K1 controllers in fast mode (400 kHz) |
