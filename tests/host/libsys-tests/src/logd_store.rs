@@ -224,3 +224,23 @@ fn a_source_missing_from_the_newest_file_resumes_by_the_one_before() {
     assert_eq!(tail.rec_seq(), Some(12), "the kernel log by the newest file");
     assert_eq!(tail.last_decision, Some(41), "the decisions by the file before it");
 }
+
+/// A rare source can be absent from more than the newest file: the decisions
+/// resume by the last file that has one, however many rotations ago.
+/// **Canary.** Look no further back than the file before the newest (red).
+#[test]
+fn a_rare_source_resumes_by_the_last_file_that_has_a_line_of_it() {
+    let mut v = Mem::default();
+    let (mut s, _) = Store::recover(&mut v, 4, 100);
+    let mut b = batch(10, 11);
+    b.extend_from_slice(&decision_line(41));
+    assert!(s.write(&mut v, &b, 0, 1_000_000));
+    let mut i = 11;
+    while !v.files.contains_key(&name(2)) {
+        assert!(s.write(&mut v, &batch(i, i + 2), 0, 1_000_000));
+        i += 2;
+    }
+    assert!(!v.files.contains_key(&name(3)), "two rotations since the decision, none that rewrites its file");
+    let (_, tail) = Store::recover(&mut v, 4, 100);
+    assert_eq!(tail.unwrap().last_decision, Some(41));
+}

@@ -120,20 +120,24 @@ impl Store {
             return (Store { slot: 0, serial: 0, size: 0, keep, limit }, None);
         };
         // A source with no line in the newest file (it was rotated in a
-        // moment ago) resumes by the file before it, not from its ring's
-        // oldest record, which would write its lines twice.
-        let mut tail = s.tail;
-        if tail.as_ref().map_or(true, |t| t.rec.is_none() || t.last_decision.is_none() || t.last_telemetry.is_none()) {
-            let prev = (0..keep).filter_map(|k| scan(vol, k)).find(|p| p.serial == Some(serial - 1)).and_then(|p| p.tail);
-            if let Some(p) = prev {
-                let t = tail.get_or_insert(Tail { rec: None, last_decision: None, last_telemetry: None });
-                if t.rec.is_none() {
-                    t.rec = p.rec;
-                }
-                t.last_decision = t.last_decision.or(p.last_decision);
-                t.last_telemetry = t.last_telemetry.or(p.last_telemetry);
+        // moment ago, or the source is rare) resumes by the files before it,
+        // newest first, not from its ring's oldest record, which would write
+        // its lines twice.
+        let mut tail = s.tail.unwrap_or(Tail { rec: None, last_decision: None, last_telemetry: None });
+        for back in 1..u64::from(keep) {
+            if tail.rec.is_some() && tail.last_decision.is_some() && tail.last_telemetry.is_some() {
+                break;
             }
+            let Some(want) = serial.checked_sub(back).filter(|&w| w > 0) else { break };
+            // Serial n was written to slot (n - 1) % keep: the files rotate in order.
+            let Some(p) = scan(vol, ((want - 1) % u64::from(keep)) as u8).filter(|p| p.serial == Some(want)).and_then(|p| p.tail) else { break };
+            if tail.rec.is_none() {
+                tail.rec = p.rec;
+            }
+            tail.last_decision = tail.last_decision.or(p.last_decision);
+            tail.last_telemetry = tail.last_telemetry.or(p.last_telemetry);
         }
+        let tail = (tail.rec.is_some() || tail.last_decision.is_some() || tail.last_telemetry.is_some()).then_some(tail);
         (Store { slot, serial, size: s.size, keep, limit }, tail)
     }
 
