@@ -63,7 +63,7 @@ fn neighbouring_fields_do_not_leak_into_bbm() {
 #[test]
 fn another_register_does_not_leak_into_bbm() {
     let all_but = IdRegs { isar0: u64::MAX, isar1: u64::MAX, pfr0: u64::MAX, pfr1: u64::MAX,
-                           mmfr1: u64::MAX, mmfr2: 0, isar2: u64::MAX, dfr0: u64::MAX };
+                           mmfr1: u64::MAX, mmfr2: 0, isar2: u64::MAX, dfr0: u64::MAX, mmfr3: u64::MAX };
     assert!(!all_but.bbm_level2());
 }
 

@@ -292,8 +292,8 @@ def cfi_rustflags(cfg: dict[str, str]) -> list[str]:
                function entry and indirect-jump target; CR4.CET and
                IA32_S_CET.ENDBR_EN enforce it, arch-x86_64/src/cpu/cfi.rs).
                The kernel shadow stack (X86_CET_SHSTK) is not a codegen mode.
-      riscv64: nothing. Zicfilp (`lpad`) has no symbol until the boot can
-               probe and refuse it; see "Not done" in config/kernel/Kconfig.hardening.
+      riscv64: nothing. RV_ZICFILP and RV_ZICFISS probe and refuse a hart
+               but the kernel enables neither; see "Not done" in config/kernel/Kconfig.hardening.
     """
     if cfg.get("CONFIG_ARCH_AARCH64") == "y":
         modes = [m for sym, m in (("A64_BTI", "bti"), ("A64_PAUTH", "pac-ret"))

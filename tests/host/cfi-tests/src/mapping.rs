@@ -118,15 +118,25 @@ fn x86_64_retpoline_and_branch_protection_compose() {
     assert!(k.contains(CF) && k.contains("-Z retpoline -Z retpoline-external-thunk"), "{k}");
 }
 
+/// Zicfilp and Zicfiss have a probe and a refusal (RV_ZICFILP, RV_ZICFISS) and no
+/// codegen: a `require` changes no flag of the kernel or the user images, which
+/// stay without pads until the compiler and the boot enable them
+/// (config/kernel/Kconfig.hardening, "Not done"). Canary: emit
+/// `-Z cf-protection=branch` for riscv64 and the first assert fails.
 #[test]
-fn riscv64_has_no_cfi_codegen_and_no_choice() {
-    // No Zicfilp symbol until the boot can probe and refuse it
-    // (config/kernel/Kconfig.hardening, "Not done"): no pads in the kernel or the user images.
-    let (k, u) = both(&expand("rv.config", &[RV]));
-    assert!(!k.contains("cf-protection") && !k.contains("zicfilp"), "kernel: {k}");
-    assert!(!u.contains("cf-protection") && !u.contains("zicfilp"), "user: {u}");
+fn riscv64_probes_zicfilp_and_zicfiss_but_emits_no_cfi_codegen() {
+    for (name, lines) in [("rv.config", vec![RV]),
+                          ("rv-lp.config", vec![RV, "CONFIG_RV_ZICFILP_REQUIRE=y"]),
+                          ("rv-ss.config", vec![RV, "CONFIG_RV_ZICFISS_REQUIRE=y"])] {
+        let (k, u) = both(&expand(name, &lines));
+        for flags in [&k, &u] {
+            assert!(!flags.contains("cf-protection") && !flags.contains("zicfilp") && !flags.contains("zicfiss"),
+                    "{name}: {flags}");
+        }
+    }
     let (k, _) = both(&expand("rv-bare.config", &[]));
     assert!(!k.contains("zicfilp"), "{k}");
     let out = std::fs::read_to_string(expand("rv-def.config", &[RV])).unwrap();
-    assert!(!out.contains("ZICFILP"), "a riscv64 CFI symbol came back without its probe");
+    assert!(out.contains("CONFIG_RV_ZICFILP_PROBE=y") && out.contains("CONFIG_RV_ZICFISS_PROBE=y"),
+            "the probe choices are missing from a riscv64 configuration");
 }

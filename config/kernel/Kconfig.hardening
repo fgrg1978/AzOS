@@ -126,7 +126,8 @@ config USER_ALLOC_GUARD_PAGES
 #
 #   aarch64  A64_BTI (landing pads)        A64_PAUTH (signed returns)
 #   x86_64   X86_CET_IBT (ENDBR64)         X86_CET_SHSTK (shadow stack)
-#   riscv64  none yet (Zicfilp, below)
+#   riscv64  RV_ZICFILP, RV_ZICFISS (probe and refusal only, below)
+#   aarch64  also A64_GCS (probe and refusal only, below)
 #
 # Any policy but `n` makes the kernel AND the user images compile with the
 # pads (tools/build/kconfig_to_cargo.py, cfi_rustflags: the pads are architectural
@@ -144,24 +145,22 @@ config USER_ALLOC_GUARD_PAGES
 #     its `call`) off, i.e. X86_MIT_SPECTRE_V2 not `probe` on a CPU that
 #     lacks eIBRS/AutoIBRS. Ring 3 shadow stacks come with the per-process
 #     CET state (XSAVES supervisor component).
-#   * aarch64 GCS (FEAT_GCS, Armv9.4): reserved. The return-address stack is
+#   * aarch64 GCS (FEAT_GCS, Armv9.4): probed (A64_GCS). The return-address stack is
 #     the aarch64 twin of the shadow stack; GCSCR_EL1/GCSPR_EL1 would be
 #     programmed in arch/aarch64/src/cpu/cfi.rs. No compiler mode
 #     is needed beyond `-Z branch-protection=gcs`, which the pinned
 #     compiler does not take.
-#   * riscv64 Zicfilp (`lpad` at every function entry): no symbol until the
-#     boot can use it. The compiler half exists (`-Z cf-protection=branch`
-#     plus the LLVM feature `experimental-zicfilp`), but the pinned compiler
-#     (rustc 1.95 nightly of 2026-02-21, LLVM 22.1) lists the feature as
-#     unknown and unstable and warns once per crate, which tools/gate/ci_check.sh
-#     fails on; and nothing in the tree could enforce or refuse it: a hart
-#     declares `zicfilp` in the device tree, but the S-mode enable belongs to
-#     M-mode (menvcfg.LPE; SBI FWFT feature LANDING_PAD), so it needs the
-#     device-tree probe, an arch-api policy constant, a riscv64 `[ISA]` row,
-#     the FWFT call, `lpad` in the riscv64 entry assembly and a host row. A
-#     choice whose `require` could not refuse would only mislead. Zicfiss
-#     (shadow stack) needs a shadow-stack CSR switched in `context_switch`
-#     and `sspush`/`sspopchk`, illegal on a hart without Zimop.
+#   * riscv64 Zicfilp (`lpad` at every function entry): RV_ZICFILP probes the
+#     device-tree token and refuses a `require` hart, nothing enables it. The
+#     compiler half exists (`-Z cf-protection=branch` plus the LLVM feature
+#     `experimental-zicfilp`), but the pinned compiler (rustc 1.95 nightly of
+#     2026-02-21, LLVM 22.1) lists the feature as unknown and unstable and warns
+#     once per crate, which tools/gate/ci_check.sh fails on. Enabling it needs
+#     the S-mode enable from M-mode (menvcfg.LPE; SBI FWFT feature LANDING_PAD),
+#     `lpad` in the riscv64 entry assembly and the SPELP state in the trap path.
+#     Zicfiss (RV_ZICFISS, shadow stack) needs menvcfg.SSE (FWFT SHADOW_STACK),
+#     a shadow-stack CSR switched in `context_switch` and `sspush`/`sspopchk`,
+#     illegal on a hart without Zimop.
 #   * kCFI (`-Z sanitizer=kcfi`, the software forward-edge check for CPUs
 #     without BTI/IBT/Zicfilp): the pinned compiler takes it for aarch64
 #     and x86_64 and refuses riscv64 ("kcfi sanitizer is not supported for
