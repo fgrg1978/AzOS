@@ -23,6 +23,11 @@ file under kernel/src names a crate of crates/domains, except from an item
 and a crates/core or kernel Cargo.toml lists such a crate only as an optional
 dependency its `use-robot` feature turns on.
 
+And an extension does not reach into the base: a crate under crates/domains/
+depends on crates of its own extension, on ext-api, on crates/drivers and
+crates/lib, and on the base crates SURFACE names, nothing else. SURFACE is the
+set the robot links today; it only shrinks.
+
   python3 tools/lint/extension_lint.py               check (n0)
   python3 tools/lint/extension_lint.py --self-test   a tree with each violation
 """
@@ -37,6 +42,18 @@ import azos_tools  # noqa: E402
 
 ROOT = azos_tools.ROOT
 GATE = "use-robot"
+# The base crates (and arch/facade) the robot extension links today. A new
+# dependency of an extension on one not listed here is a new reach into the
+# base: it is added here by a reviewed edit, or the extension goes through
+# ext-api instead.
+SURFACE = {
+    "arch/facade",
+    "crates/core/abi", "crates/core/actuation", "crates/core/channel", "crates/core/common",
+    "crates/core/config", "crates/core/crypto", "crates/core/ipc", "crates/core/limits", "crates/core/mm",
+    "crates/core/ota", "crates/core/rings", "crates/core/sched", "crates/core/sync", "crates/core/syscall",
+    "crates/core/topology", "crates/core/wcet-macro", "crates/fs", "crates/net/stack",
+}
+EXTENSION_OPEN = ("crates/core/ext-api", "crates/drivers", "crates/lib")
 MANIFEST = re.compile(
     r"\bstatic\s+(\w+)\s*:\s*(?:azos_ext_api::)?Manifest\s*=\s*(?:azos_ext_api::)?Manifest\s*\{\s*name\s*:\s*\"([^\"]*)\"")
 INSTALL = re.compile(r"\bproviders::install\(\s*&\s*(?:\w+::)*(\w+)\s*\)")
@@ -307,6 +324,9 @@ def check(root):
         if n != 1:
             errs.append(f"{sym}: manifest `{static}` is installed {n} times (want exactly 1)")
     all_statics = {s for found in manifests.values() for s, _ in found}
+    for (static, rel), body in sorted(bodies.items()):
+        if not re.search(r"\bapi_level\s*:\s*(?:azos_ext_api::)?API_LEVEL\b", body):
+            errs.append(f"{rel}: manifest `{static}` names its contract level by a literal (use azos_ext_api::API_LEVEL)")
     for name, found in sorted(manifests.items()):
         if name not in wanted:
             for static, rel in found:
@@ -318,6 +338,7 @@ def check(root):
         if static not in all_statics:
             errs.append(f"{rel}: installs `{static}`, which is no `Manifest` static")
 
+    errs.extend(surface_errors(root))
     names = set(domains)
     for root_rs, cargo in crate_roots(root):
         implied = implied_features(cargo)
@@ -332,6 +353,48 @@ def check(root):
         if os.path.exists(cargo):
             errs.extend(cargo_errors(root, cargo, names))
     return sorted(set(errs))
+
+
+def workspace_paths(root):
+    """{package: directory} of the root Cargo.toml's workspace dependencies."""
+    text = read(os.path.join(root, "Cargo.toml")) if os.path.exists(os.path.join(root, "Cargo.toml")) else ""
+    return {m.group(1): m.group(2) for m in re.finditer(r'^(\w+)\s*=\s*\{[^}]*\bpath\s*=\s*"([^"]+)"', text, re.M)}
+
+
+def surface_errors(root):
+    """Dependencies of an extension crate outside its own extension, ext-api,
+    crates/drivers, crates/lib and SURFACE."""
+    errs = []
+    ws = workspace_paths(root)
+    base = os.path.join(root, "crates", "domains")
+    for d, subdirs, names in os.walk(base):
+        subdirs[:] = sorted(s for s in subdirs if s not in ("target", ".git"))
+        if "Cargo.toml" not in names:
+            continue
+        rel_dir = os.path.relpath(d, root)
+        ext = os.path.relpath(d, base).split(os.sep)[0]
+        own = os.path.join("crates", "domains", ext)
+        text = read(os.path.join(d, "Cargo.toml"))
+        for sect in re.split(r"^\[", text, flags=re.M):
+            if not re.match(r"(dev-|build-)?dependencies\]", sect):
+                continue
+            for m in re.finditer(r"^([\w-]+)\s*=\s*(.*)$", sect, re.M):
+                path = re.search(r'\bpath\s*=\s*"([^"]+)"', m.group(2))
+                if path:
+                    target = os.path.normpath(os.path.join(rel_dir, path.group(1)))
+                elif "workspace" in m.group(2) and m.group(1) in ws:
+                    target = os.path.normpath(ws[m.group(1)])
+                else:
+                    continue
+                if target.startswith(own + os.sep) or target == own:
+                    continue
+                if any(target == o or target.startswith(o + os.sep) for o in EXTENSION_OPEN):
+                    continue
+                if target in SURFACE:
+                    continue
+                errs.append(f"{rel_dir}/Cargo.toml: `{m.group(1)}` ({target}) is outside the extension surface "
+                            f"(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)")
+    return errs
 
 
 def package_of(root, rel):
@@ -385,25 +448,29 @@ def self_test():
     files = {
         "config/extensions/Kconfig": "config EXT_FOO\n\tbool\nconfig EXT_BAR\n\tbool\nconfig EXT_BAZ\n\tbool\n",
         "crates/core/ext-api/src/lib.rs": "pub struct Manifest;\n",
-        "crates/domains/foo/foo/Cargo.toml": '[package]\nname = "azos_foo"\n',
+        "Cargo.toml": '[workspace.dependencies]\nazos_hv = { path = "crates/core/hv" }\n',
+        "crates/domains/foo/foo/Cargo.toml":
+            '[package]\nname = "azos_foo"\n[dependencies]\nazos_hv = { workspace = true }\n'
+            'azos_recovery = { path = "../../../core/recovery" }\nazos_gps = { path = "../../../drivers/gps" }\n'
+            'azos_ext_api = { path = "../../../core/ext-api" }\nazos_abi = { path = "../../../core/abi" }\n',
         "crates/domains/foo/foo/src/lib.rs":
-            'pub static FOO: azos_ext_api::Manifest = azos_ext_api::Manifest { name: "foo", api_level: 1, providers: &[] };\n'
+            'pub static FOO: azos_ext_api::Manifest = azos_ext_api::Manifest { name: "foo", api_level: API_LEVEL, providers: &[] };\n'
             "pub fn install() { azos_actuation::providers::install(&FOO); }\n",
         "crates/domains/bar/bar/src/lib.rs":
             'pub static BAR: Manifest = Manifest { name: "bar", api_level: 1, providers: &[] };\n',
         "crates/domains/elsewhere/src/lib.rs":
-            'pub static BAZ: Manifest = Manifest { name: "baz", api_level: 1, providers: &[] };\n'
+            'pub static BAZ: Manifest = Manifest { name: "baz", api_level: API_LEVEL, providers: &[] };\n'
             "pub fn install() { providers::install(&BAZ); providers::install(&NOPE); }\n"
-            'pub static STRAY: Manifest = Manifest { name: "stray", api_level: 1, providers: &[] };\n',
+            'pub static STRAY: Manifest = Manifest { name: "stray", api_level: API_LEVEL, providers: &[] };\n',
         "crates/drivers/sw/Cargo.toml": '[package]\nname = "azos_sw"\n',
         "crates/drivers/sw/src/lib.rs":
-            'pub static SW: Manifest = Manifest { name: "sw", api_level: 1, providers: &[] };\n',
+            'pub static SW: Manifest = Manifest { name: "sw", api_level: API_LEVEL, providers: &[] };\n',
         "crates/drivers/hard/Cargo.toml": '[package]\nname = "azos_hard"\n',
         "crates/drivers/hard/src/lib.rs":
-            'pub static HARD: Manifest = Manifest { name: "hard", api_level: 1, providers: &[] };\n',
+            'pub static HARD: Manifest = Manifest { name: "hard", api_level: API_LEVEL, providers: &[] };\n',
         "crates/drivers/kind/Cargo.toml": '[package]\nname = "azos_kind"\n',
         "crates/drivers/kind/src/lib.rs":
-            'pub static KIND: Manifest = Manifest { name: "kind", api_level: 2, '
+            'pub static KIND: Manifest = Manifest { name: "kind", api_level: API_LEVEL, '
             'providers: &[Provider { name: "p", kinds: &[1] }], hooks: &[] };\n',
         "crates/core/c/Cargo.toml":
             '[features]\nuse-robot = ["dep:azos_foo"]\nsmoke = ["use-robot"]\n[dependencies]\nazos_foo = { path = "x", optional = true }\n',
@@ -432,6 +499,7 @@ def self_test():
         got = check(tmp)
         want = sorted([
             "EXT_BAR: manifest `BAR` is installed 0 times (want exactly 1)",
+            "crates/domains/bar/bar/src/lib.rs: manifest `BAR` names its contract level by a literal (use azos_ext_api::API_LEVEL)",
             "EXT_BAZ: manifest `BAZ` is in crates/domains/elsewhere/src/lib.rs, not under crates/domains/baz/",
             "crates/domains/elsewhere/src/lib.rs: installs `NOPE`, which is no `Manifest` static",
             "crates/domains/elsewhere/src/lib.rs: manifest `STRAY` is named \"stray\", "
@@ -443,6 +511,10 @@ def self_test():
             "crates/drivers/hard/src/lib.rs: base provider `HARD`: `azos_hard` is not an optional dependency of kernel/Cargo.toml",
             "crates/drivers/hard/src/lib.rs: base provider `HARD` is installed 2 times (want exactly 1)",
             "crates/drivers/kind/src/lib.rs: base provider `KIND` declares effect providers (a base provider has `providers: &[]`)",
+            "crates/domains/foo/foo/Cargo.toml: `azos_hv` (crates/core/hv) is outside the extension surface "
+            "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
+            "crates/domains/foo/foo/Cargo.toml: `azos_recovery` (crates/core/recovery) is outside the extension surface "
+            "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
         ])
         if got != want:
             print("self-test FAIL")
@@ -462,6 +534,7 @@ def self_test():
         clean["kernel/Cargo.toml"] = ('[features]\nuse-robot = ["dep:azos_foo"]\n[dependencies]\nazos_foo = { path = "x", optional = true }\n'
                                       'azos_sw = { path = "s", optional = true }\n')
         clean["kernel/src/main.rs"] = "mod boot;\nfn p() { providers::install(&azos_sw::SW); }\n"
+        clean["crates/domains/foo/foo/Cargo.toml"] = '[package]\nname = "azos_foo"\n[dependencies]\nazos_abi = { path = "../../../core/abi" }\n'
         clean["crates/drivers/hard/src/lib.rs"] = ""
         clean["crates/drivers/kind/src/lib.rs"] = ""
         for rel, body in clean.items():
