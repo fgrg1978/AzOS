@@ -769,6 +769,40 @@ mod dma {
         azos_ipc::memobj::memobj_frames_unpin(r);
         assert!(!alive());
     }
+    /// **A process that holds its share of the binding table (a quarter of
+    /// `DMA_MAP_ENTRIES`) is refused the next map, and the refusal is a record
+    /// (`ring3-dma`, why 9).** Each binding pins an object, so the share must
+    /// fit in the object table (`MAX_MEMOBJS`): the gate row for this test
+    /// builds the suite with `DMA_MAP_ENTRIES` 16 and sets
+    /// `AZOS_REQUIRE_DMA_SHARE`, which turns "not reachable under this
+    /// configuration" from a pass into a failure.
+    ///
+    /// **Canary.** `dma-refusal-silent-canary`: the refusal leaves no record.
+    #[test]
+    fn a_process_cannot_hold_more_than_its_share_of_the_table() {
+        let _g = serial();
+        setup();
+        let share = (azos_limits::DMA_MAP_ENTRIES as usize / 4).max(1);
+        if share + 8 > azos_limits::MAX_MEMOBJS as usize {
+            assert!(
+                std::env::var_os("AZOS_REQUIRE_DMA_SHARE").is_none(),
+                "the share ({share}) does not fit the object table ({})",
+                azos_limits::MAX_MEMOBJS
+            );
+            return;
+        }
+        let dev_h = fresh_device("share@7900000", b"vendor,sharedev\0", 0x0790_0000);
+        let dev = device(dev_h, CapPerms::RW);
+        for n in 0..=share {
+            let (o, ..) = object(1, SHM_KIND_CONTIG);
+            let rc = op(dev, DEVICE_DMA_MAP, o, DMA_TO_DEVICE).0;
+            assert_eq!(rc != 0, n == share, "map {n} of {share}");
+            assert_eq!(crate::ipc_handlers::sys_shm_release_typed(o), 0);
+        }
+        assert_eq!(refusals(dev_h, 9), 1, "the refusal is a record");
+        azos_ipc::dma_bind::release_all(TID);
+    }
+
     /// The `Ring3Dma` refusals about `dev` by `tid` with `why` (the third word).
     fn refusals(dev: u32, why: u64) -> usize {
         let mut n = 0;
@@ -789,8 +823,8 @@ mod dma {
     /// (why 6), a device with no domain (7), an object or device already bound
     /// (8), an object that is not a device-visible Contig one (10), a domain
     /// that refused the mapping (11), an unmap of a binding the caller does
-    /// not hold (12). A full table (9) is not reachable here: the suite's
-    /// object table (`MAX_MEMOBJS`) is smaller than a process's share.
+    /// not hold (12). A process holding its share of the table (9) is
+    /// `a_process_cannot_hold_more_than_its_share_of_the_table`.
     ///
     /// **Canary.** `dma-refusal-silent-canary`: those refusals write nothing.
     #[test]

@@ -13415,6 +13415,27 @@ host_job host_canary_row "ring-3: map unconfirmed unpinned canary" syscall-tests
     a_map_the_unit_did_not_confirm_keeps_its_frames_and_parks_the_device
 host_job host_canary_row "ring-3: dma refusal silent canary" syscall-tests dma-refusal-silent-canary \
     every_refused_ring3_map_is_recorded
+# A process's share of the DMA binding table (a quarter of DMA_MAP_ENTRIES) must fit the
+# object table each binding pins an object in, so the share row builds the suite with a
+# 16-entry table; a configuration where the share is out of reach fails the row.
+host_dma_share_row() { # <label> [feature]
+    local label="$1" feat="${2:-}" out cfg="$AZOS_OUT/dma-share.config"
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    { grep -vE '^(# )?CONFIG_DMA_MAP_ENTRIES[= ]' "$ROBOT_PRIMARY_CONFIG"; echo CONFIG_DMA_MAP_ENTRIES=16; } >"$cfg" \
+        && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1
+    CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-dma-share${feat:+-canary}" \
+        AZOS_REQUIRE_DMA_SHARE=1 KCONFIG_CONFIG="$cfg" \
+        host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release ${feat:+--features "$feat"} -- \
+        a_process_cannot_hold_more_than_its_share_of_the_table
+    if [ -z "$feat" ]; then
+        if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
+        else bad; echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'; fi
+    elif echo "$out" | qgrep -qE "test result: FAILED\. 0 passed; 1 failed"; then ok
+    else bad; echo "      $feat: the share test did not fail alone"; fi
+}
+host_job host_dma_share_row "ring-3: dma share of the table"
+host_job host_dma_share_row "ring-3: dma share refusal silent canary" dma-refusal-silent-canary
 host_job host_canary_row "ring-3: attach assumed confined canary" iommu-tests attach-assumed-canary \
     a_function_the_unit_did_not_block_is_not_confined
 host_job host_canary_row "ring-3: dt unclassified master canary" hwbus-tests dt-unknown-peripheral-canary \
