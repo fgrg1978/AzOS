@@ -189,9 +189,9 @@ fn a_typed_map_follows_the_region_and_the_release_unmaps_first() {
 /// freed by the unmap** (the region owns them until its last reference goes).
 /// A 64-page region cost 64 shootdowns before.
 ///
-/// **Canary.** Restore the per-page `vmm::unmap` loop in `unmap_user_pages`:
-/// the release costs 64 shootdowns, not 1; `unmap-stack-batch-canary`: 2. Pass
-/// an empty skip window: the unmap frees the region's frames and the free-page
+/// **Canary.** Restore a per-page `vmm::unmap` loop in `pager::unmap_shared`:
+/// the release costs 64 shootdowns, not 1; `unmap-stack-batch-canary`: 2. Free
+/// what the unmap clears: the unmap frees the region's frames and the free-page
 /// count moves.
 #[test]
 fn a_release_unmaps_a_region_with_one_shootdown_per_batch() {
@@ -223,7 +223,8 @@ fn a_release_unmaps_a_region_with_one_shootdown_per_batch() {
         })
         .flatten()
         .expect("the mapping is recorded");
-        unmap_user_pages(mapping.0, mapping.1);
+        let space = azos_sched::shim_space(pt);
+        azos_mm::pager::release_range(space, mapping.0, mapping.0 + span).expect("the record goes");
         (mapping.1, SHOOTDOWNS_ON_WATCHED_ROOT.load(Ordering::SeqCst))
     };
     SHOOTDOWN_WATCH_ROOT.store(0, Ordering::SeqCst);
@@ -236,7 +237,6 @@ fn a_release_unmaps_a_region_with_one_shootdown_per_batch() {
         let at = va + p * azos_arch::mmu::PAGE_SIZE;
         assert!(azos_mm::vmm::translate_user(pt, at, false).is_none(), "page {p} still maps");
     }
-    let _ = azos_sched::process::release_user_window(va, pages);
     assert_eq!(sys_shm_release_typed(h), 0, "the release after the unmap");
 }
 

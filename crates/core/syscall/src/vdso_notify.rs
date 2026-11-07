@@ -108,7 +108,8 @@ pub fn sys_vdso_task_map() -> i64 {
             return va as i64;
         }
     }
-    match azos_sched::process::shm_map_user(&[claim.phys], false) {
+    let grant = crate::phys_map::Grant { pa: claim.phys, pages: 1, write: false, mem: azos_arch_api::MemType::WB };
+    match crate::phys_map::map_user(&grant) {
         Some(va) => {
             azos_mm::vdso::task_page_set_va(f.idx, f.tid, va);
             va as i64

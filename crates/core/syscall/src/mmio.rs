@@ -7,6 +7,10 @@
 //! written. See `crates/core/ipc/src/mmio_cap.rs` for the argument check.
 
 use crate::handlers::*;
+use azos_arch::PAGE_SIZE;
+
+/// The largest register window one `DOMAIN_MMIO_MAP` maps (1 MiB).
+const WINDOW_MAX_BYTES: u64 = 1024 * 1024;
 
 /// A capability refusal written at dispatch level returns -1, the value of
 /// `dispatch.rs`'s `E_PERM`, not a handler's -99.
@@ -35,7 +39,17 @@ pub fn sys_mmio_map(a0: u64, a1: u64) -> i64 {
     let Some((base, size)) = azos_ipc::mmio_cap::mmio_claim(index) else {
         return azos_abi::error::Errno::EINVAL.to_syscall_ret();
     };
-    match azos_sched::process::mmio_map_user(base as usize, size as usize, writable) {
+    let mapped = (size != 0 && size <= WINDOW_MAX_BYTES && base % PAGE_SIZE as u64 == 0 && size % PAGE_SIZE as u64 == 0)
+        .then(|| {
+            crate::phys_map::map_user(&crate::phys_map::Grant {
+                pa: base as usize,
+                pages: size as usize / PAGE_SIZE,
+                write: writable,
+                mem: azos_arch_api::MemType::Device,
+            })
+        })
+        .flatten();
+    match mapped {
         Some(va) => va as i64,
         None => {
             azos_ipc::mmio_cap::mmio_unclaim(index);

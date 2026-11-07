@@ -1392,6 +1392,28 @@ pub fn map_contig_range(pt_phys: usize, vaddr: usize, phys: &[usize], flags: Pag
     Ok(())
 }
 
+/// The permissions the leaves of a physical range get (`pager::reserve_phys`):
+/// user, never executable, accessed and dirty preset (a range takes no fault),
+/// cached as `mem`.
+///
+/// Canary `phys-memtype-canary`: every range is mapped write-back, so device
+/// registers are cached and merged.
+pub fn phys_leaf_perms(write: bool, mem: azos_arch_api::MemType) -> PagePerms {
+    let mem = if cfg!(feature = "phys-memtype-canary") { azos_arch_api::MemType::WB } else { mem };
+    PagePerms { read: true, write, exec: false, user: true, mem, accessed: true, dirty: true }
+}
+
+/// Map `pages` consecutive pages of a USER table from `vaddr` onto the physical
+/// range at `pa`, with [`phys_leaf_perms`]. A failure leaves the pages done
+/// mapped: the range's record releases them (`pager::release_range`).
+pub fn map_phys(pt_phys: usize, vaddr: usize, pa: usize, pages: usize, write: bool, mem: azos_arch_api::MemType) -> KResult<()> {
+    let flags = phys_leaf_perms(write, mem);
+    for i in 0..pages {
+        map(pt_phys, vaddr + i * PAGE_SIZE, pa + i * PAGE_SIZE, flags)?;
+    }
+    Ok(())
+}
+
 /// One run: `pages` slots from `va` (aligned to the run) onto `run_pa`.
 fn map_contig_run(pt_phys: usize, va: usize, run_pa: usize, pages: usize, flags: PagePerms) -> KResult<()> {
     if write_would_enter_kernel_table(pt_phys, va) {

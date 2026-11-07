@@ -1301,39 +1301,6 @@ pub mod process {
     /// value that was never wrong before this fix either.
     pub const USER_STACK_TOP: usize = 0x0000_0000_8000_0000; // 2 GiB
 
-    /// Transcribed from `crates/core/sched/src/process.rs` (`shm_map_user` and the
-    /// `reserve_window_va` it calls), for `SYS_MO_MAP`: the same
-    /// refusals (a kernel caller, no pages, no room in the window) and the same
-    /// flags, with every PTE installed by the real `azos_mm::vmm::map`, so a
-    /// test reads the mapping back through the real `translate_user`. The
-    /// addresses come from the real `crates/core/sched/src/user_window.rs`, kept per
-    /// task as the kernel keeps them, inside [`super::user_shm_window`].
-    pub fn shm_map_user(phys_pages: &[usize], rw: bool) -> Option<usize> {
-        use azos_arch::mmu::PAGE_SIZE;
-        use azos_arch_api::PagePerms;
-        let user_pt = super::current_user_pt();
-        if user_pt == 0 || phys_pages.is_empty() {
-            return None;
-        }
-        let (window_base, window_limit) = super::user_shm_window();
-        let span = phys_pages.len().checked_mul(PAGE_SIZE)?;
-        let base = super::with_user_window(|w| {
-            super::user_window::reserve(w, window_base, window_limit, span)
-        })?;
-        let flags = if rw {
-            PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW }
-        } else {
-            PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RO }
-        };
-        for (i, &phys) in phys_pages.iter().enumerate() {
-            if azos_mm::vmm::map(user_pt, base + i * PAGE_SIZE, phys, flags).is_err() {
-                return None;
-            }
-        }
-        super::shim_run_once(&super::AFTER_SHM_MAP);
-        Some(base)
-    }
-
     /// Pages `shm_map_at` maps before it fails (`usize::MAX`: it does not).
     static SHM_MAP_FAIL_AFTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
 
@@ -1366,61 +1333,6 @@ pub mod process {
         }
         super::shim_run_once(&super::AFTER_SHM_MAP);
         true
-    }
-
-    /// `process.rs`'s bound on one user MMIO mapping (1 MiB).
-    pub const USER_MMIO_MAX_SIZE: usize = 1024 * 1024;
-
-    /// Transcribed from `crates/core/sched/src/process.rs` (`mmio_map_user`), for
-    /// `DOMAIN_MMIO_MAP`: the same refusals (empty, above the bound,
-    /// misaligned, wrapping, a kernel caller), the same window, the same
-    /// flags, the same roll-back, with every PTE installed by the real
-    /// `azos_mm::vmm::map`. Nothing here reads the device frames: they are
-    /// only written into PTEs, as in the kernel.
-    pub fn mmio_map_user(phys_base: usize, size: usize, writable: bool) -> Option<usize> {
-        use azos_arch::mmu::PAGE_SIZE;
-        use azos_arch_api::PagePerms;
-        if size == 0 || size > USER_MMIO_MAX_SIZE {
-            return None;
-        }
-        if phys_base & (PAGE_SIZE - 1) != 0 || size & (PAGE_SIZE - 1) != 0 {
-            return None;
-        }
-        phys_base.checked_add(size)?;
-        let user_pt = super::current_user_pt();
-        if user_pt == 0 {
-            return None;
-        }
-        let size_pages = size / PAGE_SIZE;
-        let (window_base, window_limit) = super::user_shm_window();
-        let va_base = super::with_user_window(|w| {
-            super::user_window::reserve(w, window_base, window_limit, size)
-        })?;
-        let flags = PagePerms {
-            accessed: true,
-            dirty: true,
-            ..(if writable { PagePerms::USER_RW } else { PagePerms::USER_RO })
-        };
-        for i in 0..size_pages {
-            let va = va_base + i * PAGE_SIZE;
-            if azos_mm::vmm::map(user_pt, va, phys_base + i * PAGE_SIZE, flags).is_err() {
-                for j in 0..i {
-                    azos_mm::vmm::unmap(user_pt, va_base + j * PAGE_SIZE);
-                }
-                release_user_window(va_base, size_pages);
-                return None;
-            }
-        }
-        Some(va_base)
-    }
-
-    /// Mirrors `process.rs`'s `release_user_window`: the same allocator and the
-    /// same exact-pair rule, on the current task's reservations.
-    pub fn release_user_window(va: usize, pages: usize) -> bool {
-        match pages.checked_mul(azos_arch::mmu::PAGE_SIZE) {
-            Some(span) => super::with_user_window(|w| super::user_window::release(w, va, span)),
-            None => false,
-        }
     }
 }
 

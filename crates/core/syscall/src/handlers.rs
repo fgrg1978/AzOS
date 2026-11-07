@@ -3596,14 +3596,14 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
         _ => return Errno::ENOMEM.to_syscall_ret(),
     };
     let _ = shm_hi;
-    if azos_mm::vmm::locked_region_in_range(user_pt, start, end) {
-        return Errno::ENOMEM.to_syscall_ret();
-    }
     // A file mapping keeps the permission it was made with: a shared one's
     // dirty record in the page cache is made from it (`crate::file_map`). A
     // shared object's mapping changes it through `SYS_MO_MAP`'s protect form,
-    // which keeps the object's record and the leaves together.
-    if azos_mm::pager::has_whole(space, start, end) {
+    // which keeps the object's record and the leaves together. A physical
+    // range's permission is its owner's (canary `phys-grant-ends-by-owner-canary`).
+    if azos_mm::pager::has_whole(space, start, end)
+        && !(cfg!(feature = "phys-grant-ends-by-owner-canary") && azos_mm::pager::has_phys(space, start, end))
+    {
         return Errno::EINVAL.to_syscall_ret();
     }
     let none = prot & (MMAP_PROT_READ | MMAP_PROT_WRITE) == 0;
@@ -3766,15 +3766,6 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
         if azos_mm::vmm::va_is_kernel_mapped(va) { return -1; }
         va += page_size;
     }
-    // Kconfig LOCKED_HUGE_LEAVES: a locked row's region is mapped with
-    // level-1 leaves for the task's whole life. Unmapping part of it would
-    // need a split the region exists to avoid, and the frame release below
-    // skips such leaves, so "success" would remove nothing: refused whole.
-    // Compiled out (a constant `false`, inlined) when the option is off.
-    if azos_mm::vmm::locked_region_in_range(user_pt, start, end) {
-        return -1;
-    }
-
     // Release the frames, do not merely forget them.
     //
     // This loop used to call `vmm::unmap`, which clears the PTE and frees
@@ -3814,7 +3805,12 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // their pages go back to the file and their bookings be given up.
     // A shared object's mapping ends with the object's release (`SYS_MO_UNMAP`),
     // which gives back the booking and the references it holds.
-    if azos_mm::pager::has_obj(space, start, end) {
+    // A physical range ends with its owner (a ring's destroy; a locked row's
+    // region and a device window, with the task); canary
+    // `phys-grant-ends-by-owner-canary`.
+    if azos_mm::pager::has_obj(space, start, end)
+        || (azos_mm::pager::has_phys(space, start, end) && !cfg!(feature = "phys-grant-ends-by-owner-canary"))
+    {
         return azos_abi::error::Errno::EINVAL.to_syscall_ret();
     }
     let mut files = [azos_mm::pager::FileRegion::NONE; crate::file_map::MUNMAP_FILES];

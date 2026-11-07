@@ -206,20 +206,23 @@ fn wheels() {
 // ── The ring page in ring 3 ───────────────────────────────────────────────
 
 /// **The create returns a user address the ring page is mapped at, writable,
-/// inside the shm/MMIO window; the destroy removes the PTE and gives the
-/// address back.** The completion the kernel writes is read at that address.
+/// in the mmap area, as a physical range of the space; the destroy removes the
+/// record and the PTE and gives the address back.** The completion the kernel
+/// writes is read at that address.
 ///
-/// **Canaries.** Delete `unmap_user_pages(va, 1)` from `unmap_ring_page`: the
-/// PTE survives the destroy. Delete its `release_user_window` call: the second
-/// create gets another address.
+/// **Canaries.** Delete the `unmap_user` call from `unmap_ring_page`: the PTE
+/// survives the destroy. Delete the `mmap_unmapped` call from
+/// `phys_map::unmap_user`: the second create gets another address.
 #[test]
 fn the_ring_page_is_mapped_at_the_returned_address_and_unmapped_on_destroy() {
     let _g = serial();
     let (_s, pt) = ring3();
     let (cap, va, ring) = create(pt);
-    let (lo, hi) = azos_sched::user_shm_window();
-    assert!(va >= lo && va < hi, "{va:#x} is outside the window [{lo:#x}, {hi:#x})");
+    let (lo, hi) = azos_sched::user_mmap_area();
+    assert!(va >= lo && va < hi, "{va:#x} is outside the mmap area [{lo:#x}, {hi:#x})");
     assert_eq!(va % 4096, 0);
+    let space = azos_sched::shim_space(pt);
+    assert!(azos_mm::pager::has_phys(space, va, va + 4096), "the ring page is not a record of the space");
 
     // The kernel writes a completion; ring 3 reads it through its own mapping.
     let (n, _) = unsafe { submit(cap, ring, sqe(OP_NOP, 0, 0, 0)) };
@@ -230,6 +233,7 @@ fn the_ring_page_is_mapped_at_the_returned_address_and_unmapped_on_destroy() {
 
     assert_eq!(sys_ioring_destroy_typed(cap), 0);
     assert_eq!(azos_mm::vmm::translate_user(pt, va, false), None, "the PTE outlived the ring");
+    assert!(!azos_mm::pager::has_phys(space, va, va + 4096), "the record outlived the ring");
     assert_eq!(sys_ioring_destroy_typed(cap), Errno::ECAPSTALE.to_syscall_ret(), "the capability was revoked");
 
     let (cap2, va2, _) = create(pt);

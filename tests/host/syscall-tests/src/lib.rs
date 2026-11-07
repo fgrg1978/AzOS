@@ -322,6 +322,11 @@ pub mod exec_grant;
 #[path = "../../../../crates/core/syscall/src/mmio.rs"]
 pub mod mmio;
 
+// The physical ranges `DOMAIN_MMIO_MAP`, `SYS_RING_SETUP` and the vDSO page
+// lend to the caller; names `crate::handlers::mmap_place_shared`.
+#[path = "../../../../crates/core/syscall/src/phys_map.rs"]
+pub mod phys_map;
+
 // `DEVICE_IOPORT_ENABLE`, which `invoke.rs` dispatches a `ty::IOPORT` handle to.
 #[path = "../../../../crates/core/syscall/src/ioport.rs"]
 pub mod ioport;
@@ -507,6 +512,12 @@ mod handlers {
     mod fork_clone {
         use super::*;
         include!("fork_clone.rs");
+    }
+
+    #[cfg(test)]
+    mod phys_ranges {
+        use super::*;
+        include!("phys_ranges.rs");
     }
 
     #[cfg(test)]

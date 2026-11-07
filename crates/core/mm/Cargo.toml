@@ -100,6 +100,12 @@ fork-leafless-frame-canary = []
 # Host-suite canary: a space's end leaves the leaves of its shared mappings, and
 # the sweep frees the object's frames: `syscall-tests` shared_obj.rs.
 mm-rmap-missing-canary = []
+# Host-suite canary: a physical range's leaves are all mapped write-back:
+# `syscall-tests` mmio_map.rs.
+phys-memtype-canary = []
+# Host-suite canary: a fork inverts what a physical range says about being
+# inherited: `syscall-tests` phys_ranges.rs.
+phys-inherit-ignored-canary = []
 # Host-suite canary: `set_user_range_exec` does not ask the space's records:
 # `syscall-tests` typed_ipc.rs.
 exec-shared-record-canary = []

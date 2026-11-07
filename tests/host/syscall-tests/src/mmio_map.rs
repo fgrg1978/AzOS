@@ -89,13 +89,9 @@ fn hold(handle: u32, perms: CapPerms) {
     );
 }
 
-/// The first page of the MMIO window: where the first mapping lands.
-fn window_base() -> usize {
-    azos_sched::user_shm_window().0
-}
-
+/// No mapping was recorded in the space of `pt`.
 fn window_is_empty(pt: usize) -> bool {
-    leaf(pt, window_base()).is_none()
+    azos_mm::pager::shim_mappings(azos_sched::shim_space(pt)) == 0
 }
 
 /// The frame and permissions of the leaf mapping `va` in `pt`, read from the
@@ -133,12 +129,15 @@ fn a_read_capability_maps_the_window_read_only() {
     let m = machine();
     hold(m.rtc, CapPerms::READ);
     let va = map(m.rtc as u64, READ);
-    assert_eq!(va, window_base() as i64, "did not map at the window");
+    assert!(va > 0, "did not map");
     let va = va as usize;
+    let (floor, ceiling) = azos_sched::user_mmap_area();
+    assert!(va >= floor && va + 0x1000 <= ceiling, "placed outside the mmap area");
     let (pa, perms) = leaf(pt, va).expect("window not mapped");
     assert_eq!(pa, 0x0010_1000, "wrong frame");
     assert!(perms.user && !perms.write, "RTC mapped writable");
     assert!(leaf(pt, va + 0x1000).is_none(), "mapped past the window");
+    assert!(azos_mm::pager::has_phys(azos_sched::shim_space(pt), va, va + 0x1000), "no record of the window");
 }
 
 /// Admitted: RW with an RW capability is writable.
@@ -154,6 +153,26 @@ fn a_read_write_capability_maps_the_window_writable() {
     assert!(perms.user && perms.write, "RW mapping is not writable");
     // A kernel copy into the window is refused (front uaccess-mmio-buffer).
     assert!(azos_mm::vmm::translate_user(pt, va, false).is_none(), "the user walk accepted a device window");
+}
+
+/// A device window is device memory: its leaf is `Device`, never write-back
+/// (a cached register read returns a stale value, and the CPU may merge or
+/// reorder writes). Canary `phys-memtype-canary` maps it write-back.
+#[test]
+fn a_device_window_is_mapped_as_device_memory() {
+    let _g = serial();
+    let pt = ring3();
+    let m = machine();
+    hold(m.bus, CapPerms::RW);
+    // Svpbmt is the one ISA encoding the host cannot assume; on aarch64 and
+    // x86_64 the type is always in the leaf.
+    azos_arch::mmu::svpbmt_select(true, true);
+    let va = map(m.bus as u64, RW) as usize;
+    let perms = leaf(pt, va).map(|(_, p)| p);
+    azos_arch::mmu::svpbmt_select(false, false);
+    let perms = perms.expect("window not mapped");
+    assert_eq!(perms.mem, azos_arch_api::MemType::Device, "the window's leaf is cached");
+    assert!(!perms.exec, "a device window is executable");
 }
 
 /// Refusal: no capability. `-1` (the dispatch-level `E_PERM`), nothing mapped.

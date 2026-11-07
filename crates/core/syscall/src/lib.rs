@@ -27,6 +27,7 @@ pub mod fastpath;
 #[cfg(feature = "kheap-census")]
 pub mod kheap_census;
 pub mod mmio;
+pub(crate) mod phys_map;
 pub mod ioport;
 pub mod sleep;
 pub mod spawn;

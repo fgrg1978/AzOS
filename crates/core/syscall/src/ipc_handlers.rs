@@ -968,32 +968,6 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
     }
 }
 
-/// Unmap `pages` pages from `va` in the caller's page table, the teardown
-/// `SYS_IPC_UNSHARE` applied to a recorded shm mapping: nothing for a
-/// kernel caller, and stop rather than touch a VA at or above `USER_VA_TOP`.
-/// User and kernel page tables share their upper levels, so unmapping such a VA
-/// edits the kernel's table; a recorded VA there can only be stale (a record
-/// that survived an `exec`). Saturating arithmetic clamps the range to
-/// `USER_VA_TOP` instead of overflowing, which `overflow-checks = true` would
-/// turn into a board reset.
-///
-/// Batched like `munmap`: the PTEs are cleared up to
-/// `vmm::UNMAP_BATCH_PAGES` at a time with ONE TLB shootdown per batch, not
-/// one per page (a 64-page region paid 64 shootdowns). The skip window is the
-/// range itself, so no frame is released here: shm frames belong to the
-/// region (dropped by the reference release that follows), a ring page to its
-/// ring.
-pub(crate) fn unmap_user_pages(va: usize, pages: usize) {
-    let _mm = azos_sched::group::mm_lock();
-    let user_pt = azos_sched::current_user_pt();
-    if user_pt == 0 || va >= crate::handlers::USER_VA_TOP {
-        return;
-    }
-    let len = pages.saturating_mul(azos_arch::PAGE_SIZE);
-    let end = va.saturating_add(len).min(crate::handlers::USER_VA_TOP);
-    let _ = azos_mm::vmm::unmap_user_range_and_free(user_pt, va, end, va, end);
-}
-
 /// `SYS_MO_UNMAP`: a0=cap_handle. Tears down **this task's**
 /// mapping of the region, then gives back **every** reference this task holds
 /// on it (`memobj_release_holder_ref`: the creation reference, 534's and 574's);
@@ -1092,12 +1066,11 @@ pub(crate) fn errno_for_ioring_err(e: azos_ipc::io_ring::IoRingCapError) -> i64 
 }
 
 /// The unmap `io_ring_destroy_mapped_ref` runs for a ring page that
-/// `SYS_RING_SETUP` mapped: the PTE, then the window address it was
-/// reserved at. Runs in the owner's context, the only one the destroy lets
-/// through for a mapped ring.
+/// `SYS_RING_SETUP` mapped: its record and leaf, and the address they held.
+/// Runs in the owner's context, the only one the destroy lets through for a
+/// mapped ring.
 fn unmap_ring_page(va: usize) {
-    unmap_user_pages(va, 1);
-    let _ = azos_sched::process::release_user_window(va, 1);
+    crate::phys_map::unmap_user(va, 1);
 }
 
 /// Undo a ring-3 create that could not complete: the ring, its mapping if one
@@ -1118,14 +1091,14 @@ fn ioring_create_rollback(
 /// `out_ptr`. Returns the raw cap handle (`i64` > 0) on success, or `-Errno`.
 ///
 /// **Ring 3 receives the user virtual address of the ring page**, mapped into
-/// its own address space user RW and never executable, from the same per-task
-/// window `SYS_MO_MAP` maps into (`process::shm_map_user`). The layout
+/// its own address space user RW and never executable, as a physical range
+/// placed in the mmap area (`crate::phys_map`). The layout
 /// at that address is `io_ring::IoRing`, pinned by its offset assertions. The
 /// mapping goes with the ring: `SYS_IORING_DESTROY_TYPED` unmaps it and gives
 /// the address back before the page is freed, and a task that exits with the
 /// ring gets its page freed by the exit hook while its address space, whose
-/// teardown spares that window, is discarded. `fork` leaves the window out of
-/// the child (`vmm::fork_cow`), so a child never shares the page. `-ENOMEM`
+/// record clears the leaf without a free, is discarded. A fork does not give
+/// the child the range, so a child never shares the page. `-ENOMEM`
 /// when the page cannot be mapped, `-EFAULT` when the address cannot be
 /// written; either way the ring and its capability are undone.
 ///
@@ -1153,7 +1126,8 @@ pub fn sys_ioring_create_typed(out_ptr: u64) -> i64 {
         }
         return cap.raw().as_raw() as i64;
     }
-    let Some(va) = azos_sched::process::shm_map_user(&[phys_addr as usize], true) else {
+    let grant = crate::phys_map::Grant { pa: phys_addr as usize, pages: 1, write: true, mem: azos_arch_api::MemType::WB };
+    let Some(va) = crate::phys_map::map_user(&grant) else {
         return ioring_create_rollback(tid, cap, r, Errno::ENOMEM.to_syscall_ret());
     };
     if azos_ipc::io_ring::io_ring_record_user_va(r, tid, va).is_err() {

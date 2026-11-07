@@ -13019,6 +13019,29 @@ host_job host_canary_row "shm: partial map leaves nothing canary" syscall-tests 
     a_map_that_fails_part_way_leaves_nothing_behind
 host_job host_canary_row "shm: release gives the record back canary" syscall-tests shm-release-record-kept-canary \
     a_released_mapping_gives_its_record_and_its_address_back
+# A physical range lent to a task (a device window, a ring page, the vDSO page)
+# is a record of its address space (pager::Backing::Phys). phys-memtype-canary:
+# every range is mapped write-back, device registers included.
+# mm-rmap-missing-canary: the space's end leaves the leaves and the sweep frees
+# the owner's frame. exec-shared-record-canary: the exec flip does not ask the
+# records. phys-grant-ends-by-owner-canary: munmap and mprotect take the range.
+# phys-inherit-ignored-canary: a fork inverts what a range says about being
+# inherited. phys-leaves-unrecorded-canary: a map the space cannot record is
+# made anyway.
+host_job host_canary_row "phys: device window uncached canary" syscall-tests phys-memtype-canary \
+    a_device_window_is_mapped_as_device_memory
+host_job host_canary_row "phys: space end spares the owner canary" syscall-tests mm-rmap-missing-canary \
+    a_space_that_ends_leaves_a_physical_range_to_its_owner
+host_job host_canary_row "phys: never executable canary" syscall-tests exec-shared-record-canary \
+    a_physical_range_is_never_made_executable
+host_job host_canary_row "phys: munmap refused canary" syscall-tests phys-grant-ends-by-owner-canary \
+    a_task_cannot_unmap_a_physical_range
+host_job host_canary_row "phys: mprotect refused canary" syscall-tests phys-grant-ends-by-owner-canary \
+    a_task_cannot_reprotect_a_physical_range
+host_job host_canary_row "phys: fork inheritance canary" syscall-tests phys-inherit-ignored-canary \
+    a_fork_gives_the_child_only_the_ranges_that_say_so
+host_job host_canary_row "phys: record room canary" syscall-tests phys-leaves-unrecorded-canary \
+    a_range_with_no_record_room_maps_nothing
 host_job zpool_host_row "fork: compressed page shared, pool on" a_compressed_page_is_shared_with_the_child_not_restored
 host_job zpool_host_canary_row "fork: compressed page shared canary" fork-marker-canary \
     a_compressed_page_is_shared_with_the_child_not_restored

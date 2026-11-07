@@ -122,7 +122,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use azos_arch::ARCH;
-use azos_arch_api::{Mmu, PagePerms, PAGE_SIZE};
+use azos_arch_api::{MemType, Mmu, PagePerms, PAGE_SIZE};
 use azos_common::error::{KResult, KernelError};
 use azos_sync::SpinLock;
 
@@ -1516,6 +1516,33 @@ pub fn reserve_obj(r: SpaceRef, start: usize, end: usize, obj: u32) -> Result<()
     res
 }
 
+/// Record `[start, end)` as the physical range at `pa`, cached as `mem`,
+/// readable and writable iff `write`; `inherit`: a fork gives the child the
+/// same range. The caller placed the range and maps the frames in it after this
+/// returns (a failure to map releases the record, which takes the leaves done
+/// with it). Charges nothing: the range is the caller's to account for. Never
+/// executable: a record carries no execute bit and the exec flip refuses it.
+///
+/// `Overlap` when a mapping holds part of the range; `Full` when the space's
+/// records are exhausted.
+pub fn reserve_phys(
+    r: SpaceRef,
+    start: usize,
+    end: usize,
+    write: bool,
+    pa: usize,
+    mem: MemType,
+    inherit: bool,
+) -> Result<(), MapError> {
+    let mut sp = r.lock().ok_or(MapError::Full)?;
+    sp.open();
+    let res = sp.set.insert(Mapping::phys(start, end, write, pa, mem, inherit));
+    if res.is_err() && sp.set.is_empty() {
+        sp.close();
+    }
+    res
+}
+
 /// Has a mapping of an object been taken from its holder since `r` last looked
 /// for stale records ([`reap_stale`])? One load.
 #[inline]
@@ -1561,10 +1588,15 @@ pub fn has_obj(r: SpaceRef, s: usize, e: usize) -> bool {
     r.lock().is_some_and(|sp| sp.recorded && sp.set.has_obj(s, e))
 }
 
+/// Does `[s, e)` touch a physical range?
+pub fn has_phys(r: SpaceRef, s: usize, e: usize) -> bool {
+    r.lock().is_some_and(|sp| sp.recorded && sp.set.has_phys(s, e))
+}
+
 /// Clear the leaves of a mapping of frames another owner holds: the shared
-/// file's cache frames, a shared object's. The space's sweeps free every user
-/// leaf they find outside the MMIO, ring and notify window, so these are cleared
-/// first, with the shootdown and without a free.
+/// file's cache frames, a shared object's, a physical range. The space's sweeps
+/// free every user leaf they find, so these are cleared first, with the
+/// shootdown and without a free.
 ///
 /// Canary `mm-rmap-missing-canary`: the leaves stay, and the sweep frees the
 /// object's frames under its other mappers.
@@ -1863,8 +1895,8 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         }
         // The object's frames were mapped with the mapping: a missing leaf is
         // a page the object took back, and no fault supplies it.
-        Backing::Obj { .. } if ARCH.pte_is_valid(seen) => return Ok(Step::Mapped),
-        Backing::Obj { .. } => return Err(KernelError::NotMapped),
+        Backing::Obj { .. } | Backing::Phys { .. } if ARCH.pte_is_valid(seen) => return Ok(Step::Mapped),
+        Backing::Obj { .. } | Backing::Phys { .. } => return Err(KernelError::NotMapped),
         Backing::Anon { obj } => obj,
     };
     let idx = m.page_index(page);
@@ -2210,7 +2242,7 @@ fn release_pass(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError> {
                 }
                 (here, 0)
             }
-            Backing::Obj { .. } => {
+            Backing::Obj { .. } | Backing::Phys { .. } => {
                 unmap_shared(root, a, b);
                 (0, 0)
             }
@@ -2427,8 +2459,8 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
         }
         // A shared file mapping is not inherited: its pages are the cache's
         // frames, which the fork walk leaves out of the child, as it does every
-        // shared mapping.
-        for m in buf[..n].iter().filter(|m| m.charged()) {
+        // shared mapping. A physical range is, when its record says so.
+        for m in buf[..n].iter().filter(|m| m.inherited()) {
             let mut cm = *m;
             let mut made = None;
             if let Backing::Anon { obj } = m.backing {
@@ -2466,6 +2498,14 @@ fn fork_clone_twinned(parent: SpaceRef, child: SpaceRef) -> Result<usize, MapErr
                 // No page-cache count was taken for the child's records yet.
                 drop_records(child);
                 return Err(e);
+            }
+            // The range's leaves, after its record: a refusal's `drop_records`
+            // clears what was copied.
+            if matches!(m.backing, Backing::Phys { .. }) {
+                if let Err(e) = crate::cow::fork_share_range(parent.root(), child.root(), m.start, m.pages()) {
+                    drop_records(child);
+                    return Err(if e == KernelError::OutOfMemory { MapError::Full } else { MapError::Invalid });
+                }
             }
         }
         at += n;
@@ -2596,7 +2636,7 @@ fn clone_objects(parent: SpaceRef, child: SpaceRef, buf: &mut [Mapping; FORK_BAT
                     }
                 }
                 // Shared mappings are not charged and not copied (the filter).
-                Backing::Obj { .. } => {}
+                Backing::Obj { .. } | Backing::Phys { .. } => {}
             }
         }
         at += n;
@@ -2889,16 +2929,19 @@ pub fn shim_set_install_hook(hook: Option<fn()>) {
 
 /// The ranges of the mappings of `r` whose pages a fork's walk leaves alone,
 /// in address order, into `out`; how many (none for a space without records).
-/// An anonymous mapping's pages are [`fork_clone`]'s (`true`: the walk builds the
-/// child's leaf table for them); a shared mapping's frames are another owner's,
-/// and the child does not inherit them with the walk.
+/// An anonymous mapping's pages and an inherited physical range's are
+/// [`fork_clone`]'s (`true`: the walk builds the child's leaf table for them); a
+/// shared mapping's frames are another owner's, and the child does not inherit
+/// them with the walk.
 pub(crate) fn passed_ranges(r: SpaceRef) -> Result<alloc::vec::Vec<(usize, usize, bool)>, MapError> {
     let mut out = alloc::vec::Vec::new();
     // The caller holds the group's layout lock: the set is the same twice.
     let Some(n) = r.lock().filter(|sp| sp.recorded).map(|sp| sp.set.len()) else { return Ok(out) };
     out.try_reserve_exact(n).map_err(|_| MapError::Full)?;
     if let Some(sp) = r.lock().filter(|sp| sp.recorded) {
-        out.extend(sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some() || m.maps_shared_frames()).map(|m| (m.start, m.end, m.anon_obj().is_some())));
+        out.extend(
+            sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some() || m.maps_shared_frames()).map(|m| (m.start, m.end, m.inherited())),
+        );
     }
     Ok(out)
 }
@@ -2959,7 +3002,7 @@ fn close_records(r: SpaceRef, files_counted: bool) {
                     memobj::memobj_paged_region_drop_ref(obj);
                 }
             }
-            Backing::Obj { .. } => unmap_shared(r.root(), m.start, m.end),
+            Backing::Obj { .. } | Backing::Phys { .. } => unmap_shared(r.root(), m.start, m.end),
         }
     }
     break_root(r.root());

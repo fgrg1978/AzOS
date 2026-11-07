@@ -213,7 +213,7 @@ pub use process::{
     exec_user, exec_user_mem, MemSpec, take_current_task_exec_ctx, sret_to_user, ExecHandoff,
     copy_from_user, copy_from_user_resident, copy_to_user, copy_cstr_from_user, user_range_writable,
     user_range_prepare_write,
-    mmio_map_user, shm_map_user, note_clone_invariant,
+    note_clone_invariant,
 };
 
 /// The per-CPU variables this crate keeps in the per-CPU areas (wave 15,

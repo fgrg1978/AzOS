@@ -43,8 +43,17 @@
 //! reverse map reclaim, revoke and teardown reach this space's leaves by. A
 //! shared file mapping is the same thing for a cache object. Like a file
 //! piece, one goes whole or not at all, and the space never owns the frames.
+//!
+//! **Physical ranges.** A [`Backing::Phys`] mapping is a range of physical
+//! memory the allocator does not hand out: a device's registers, a page the
+//! kernel owns and lends (the vDSO, a ring, the notify page), a boot-reserved
+//! run. It has no pages to supply, count or reclaim, so its object is the
+//! record itself: `off` is the first frame number, and `mem` says how the CPU
+//! caches the range. The leaves are made with the mapping and go with it, and
+//! the owner of the range frees it (or nobody does). It is never executable,
+//! never copy-on-write, and not inherited by a fork unless `inherit` says so.
 
-use azos_arch_api::PAGE_SHIFT;
+use azos_arch_api::{MemType, PAGE_SHIFT};
 
 /// What backs a mapping's pages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,6 +69,9 @@ pub enum Backing {
     /// A named shared object (`SYS_MO_MAP`): its packed reference. The pages
     /// are the object's own frames, mapped when the mapping was made.
     Obj { obj: u32 },
+    /// A physical range ([module doc](self)): `off` is the frame number of
+    /// `start`. `inherit`: a fork gives the child the same range, shared.
+    Phys { mem: MemType, inherit: bool },
 }
 
 /// One reserved range. `start`/`end` are page-aligned; `end` is exclusive.
@@ -92,20 +104,39 @@ impl Mapping {
         Mapping { start, end, write: false, backing: Backing::Obj { obj }, off }
     }
 
+    /// The physical range `[pa, pa + len)` at `start`: `off` is its frame number.
+    pub const fn phys(start: usize, end: usize, write: bool, pa: usize, mem: MemType, inherit: bool) -> Self {
+        Mapping { start, end, write, backing: Backing::Phys { mem, inherit }, off: pa >> PAGE_SHIFT }
+    }
+
     /// The anonymous object, if the mapping is one.
     #[inline(always)]
     pub const fn anon_obj(&self) -> Option<usize> {
         match self.backing {
             Backing::Anon { obj } => Some(obj),
-            Backing::File { .. } | Backing::Obj { .. } => None,
+            Backing::File { .. } | Backing::Obj { .. } | Backing::Phys { .. } => None,
         }
     }
 
     /// Are the pages the mapping maps another owner's frames, which this space
-    /// maps and never frees (a shared file's cache frames, a shared object's)?
+    /// maps and never frees (a shared file's cache frames, a shared object's,
+    /// a physical range)?
     #[inline(always)]
     pub const fn maps_shared_frames(&self) -> bool {
-        matches!(self.backing, Backing::File { shared: true, .. } | Backing::Obj { .. })
+        matches!(self.backing, Backing::File { shared: true, .. } | Backing::Obj { .. } | Backing::Phys { .. })
+    }
+
+    /// Does a fork give the child this mapping? The task's own memory is cloned
+    /// into it; of the other owners' frames, only a physical range that says so.
+    ///
+    /// Canary `phys-inherit-ignored-canary`: a range does the opposite of what it says.
+    #[inline(always)]
+    pub const fn inherited(&self) -> bool {
+        self.charged()
+            || match self.backing {
+                Backing::Phys { inherit, .. } => inherit != cfg!(feature = "phys-inherit-ignored-canary"),
+                _ => false,
+            }
     }
 
     /// Does the task pay for this mapping's pages when it reserves them (and
@@ -149,8 +180,8 @@ impl Mapping {
         Some(Mapping { start: a, end: b, off: self.page_index(a), ..*self })
     }
 
-    /// Does the mapping go whole or not at all (a file piece or a shared
-    /// object's mapping)?
+    /// Does the mapping go whole or not at all (a file piece, a shared
+    /// object's mapping or a physical range)?
     fn is_whole(&self) -> bool {
         !matches!(self.backing, Backing::Anon { .. })
     }
@@ -253,6 +284,11 @@ impl<const N: usize> MapSet<N> {
     /// Does `[s, e)` touch a mapping of a shared object?
     pub fn has_obj(&self, s: usize, e: usize) -> bool {
         self.r[..self.n].iter().any(|r| matches!(r.backing, Backing::Obj { .. }) && r.start < e && s < r.end)
+    }
+
+    /// Does `[s, e)` touch a physical range?
+    pub fn has_phys(&self, s: usize, e: usize) -> bool {
+        self.r[..self.n].iter().any(|r| matches!(r.backing, Backing::Phys { .. }) && r.start < e && s < r.end)
     }
 
     /// Does `[s, e)` touch a file piece or a shared object's mapping?

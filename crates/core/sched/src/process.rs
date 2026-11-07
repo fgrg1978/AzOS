@@ -2800,9 +2800,6 @@ pub(crate) const USER_MMAP_CEILING: usize =
     if vdso::VDSO_USER_BASE < USER_MMIO_BASE { vdso::VDSO_USER_BASE } else { USER_MMIO_BASE };
 const _: () = assert!(USER_MMAP_FLOOR < USER_MMAP_CEILING);
 
-/// Maximum size of a single MMIO mapping (1 MiB).
-const USER_MMIO_MAX_SIZE: usize = 1024 * 1024;
-
 /// Hard ceiling for the MMIO/shm VA window: the bottom of the largest user
 /// stack an image may ask for (`USER_STACK_MAX_KB`). A smaller stack leaves
 /// the difference unmapped, a guard below it that no window mapping fills.
@@ -2918,63 +2915,6 @@ fn report_locked_arena(user_pt: usize, row: u16, va: usize, bytes: usize) {
     );
 }
 
-/// Reserve `pages` consecutive pages of the current task's MMIO/shm VA window.
-///
-/// Per task ([`crate::user_window`], `Task::user_window`): a release gives the
-/// addresses back to the task that reserved them ([`release_user_window`]),
-/// and the slot reuse after an exit gives back the rest. `None` when the task's
-/// reservation table is full or no gap below [`USER_MMIO_LIMIT`] fits: a
-/// refused mapping, never an address past the limit (see there).
-///
-/// Per task rather than board-wide is sound because no two tasks share a page
-/// table: fork builds the child its own (and leaves this window out of it, see
-/// `vmm::fork_cow`), and nothing else installs a `user_pt` on a second task.
-fn reserve_window_va(pages: usize) -> Option<usize> {
-    let span = pages.checked_mul(PAGE_SIZE)?;
-    crate::scheduler::reserve_current_user_window(USER_MMIO_BASE, USER_MMIO_LIMIT, span)
-}
-
-/// Give back the window addresses a mapping of `pages` pages at `va` reserved,
-/// once its PTEs are gone. `false` when the current task holds no such
-/// reservation.
-pub fn release_user_window(va: usize, pages: usize) -> bool {
-    match pages.checked_mul(PAGE_SIZE) {
-        Some(span) => crate::scheduler::release_current_user_window(va, span),
-        None => false,
-    }
-}
-
-/// Map a shared memory region (F00.4) into the current task's user page table.
-///
-/// Takes the physical pages directly from the caller to avoid a dependency on
-/// `azos_ipc` (which already depends on `azos_sched` — would be circular).
-///
-/// - `phys_pages`: slice of physical page addresses to map contiguously.
-/// - `rw`: true = read-write, false = read-only.
-///
-/// Returns the virtual base address, or None on failure. The addresses come
-/// from the current task's window ([`reserve_window_va`]); the caller gives
-/// them back with [`release_user_window`] after it unmaps. `SYS_MO_MAP` places
-/// its mapping like any other and uses [`shm_map_at`]; what still comes here
-/// is a vDSO notify page and a ring page.
-pub fn shm_map_user(phys_pages: &[usize], rw: bool) -> Option<usize> {
-    // Wave 13: one layout change at a time per thread group.
-    let _mm = crate::group::mm_lock();
-    let user_pt = crate::scheduler::current_user_pt();
-    if user_pt == 0 {
-        return None; // kernel task
-    }
-    let page_count = phys_pages.len();
-    if page_count == 0 {
-        return None;
-    }
-    let va_base = reserve_window_va(page_count)?;
-    // A partial mapping leaves its addresses reserved until the task exits:
-    // the PTEs already installed are still there, and nothing else may be
-    // mapped over them. The caller pins its reference.
-    shm_map_leaves(user_pt, va_base, phys_pages, rw).then_some(va_base)
-}
-
 /// Map a shared memory region's frames at `va` of the current task's page
 /// table, an address its caller placed and recorded (`pager::reserve_obj`).
 /// Nothing is reserved here. `false` for a kernel caller, no pages, or a leaf
@@ -2997,63 +2937,6 @@ fn shm_map_leaves(user_pt: usize, va: usize, phys_pages: &[usize], rw: bool) -> 
     // Contiguous runs where the frames and the address allow one
     // (`vmm::map_contig_range`); plain 4 KiB leaves elsewhere.
     vmm::map_contig_range(user_pt, va, phys_pages, flags).is_ok()
-}
-
-/// Map the physical MMIO range `phys_base..phys_base + size` into the current
-/// task's user page table. Returns the virtual address in user space, or None
-/// on failure.
-///
-/// The range is mapped exactly: `phys_base` and `size` must both be page
-/// aligned, and nothing is rounded. The caller (`DOMAIN_MMIO_MAP`) passes an
-/// entry of the board's region table, so a misaligned or wrapping range here
-/// is refused rather than widened to the next page.
-///
-/// USER_MMIO_RW when `writable`, USER_MMIO_RO otherwise (user-accessible,
-/// never exec, uncached).
-/// A+D bits are pre-set to avoid software-managed A/D faults on MMIO.
-pub fn mmio_map_user(phys_base: usize, size: usize, writable: bool) -> Option<usize> {
-    // Wave 13: one layout change at a time per thread group.
-    let _mm = crate::group::mm_lock();
-    if size == 0 || size > USER_MMIO_MAX_SIZE {
-        return None;
-    }
-    if phys_base & (PAGE_SIZE - 1) != 0 || size & (PAGE_SIZE - 1) != 0 {
-        return None;
-    }
-    phys_base.checked_add(size)?;
-    let user_pt = crate::scheduler::current_user_pt();
-    if user_pt == 0 {
-        return None; // kernel task — no user page table
-    }
-
-    let size_pages = size / PAGE_SIZE;
-
-    // Allocate contiguous VA range
-    let va_base = reserve_window_va(size_pages)?;
-
-    // Map each page: physical MMIO directly into the user PT, U+R(+W)+A+D,
-    // UNCACHED (device memory). It used USER_RW/RO, which are cacheable.
-    let flags = if writable { PagePerms::USER_MMIO_RW } else { PagePerms::USER_MMIO_RO };
-
-    for i in 0..size_pages {
-        let va = va_base + i * PAGE_SIZE;
-        let pa = phys_base + i * PAGE_SIZE;
-        if vmm::map(user_pt, va, pa, flags).is_err() {
-            // Roll back and fail. The old `break` returned `Some(va_base)` for
-            // a range that was only partially mapped, so the driver got a
-            // pointer that faults somewhere in the middle of the region it was
-            // told it owned. Unmapping is safe here: these are device frames
-            // the PMM never owned, so nothing is freed. With nothing left
-            // mapped, the addresses go back to the task's window.
-            for j in 0..i {
-                vmm::unmap(user_pt, va_base + j * PAGE_SIZE);
-            }
-            release_user_window(va_base, size_pages);
-            return None;
-        }
-    }
-
-    Some(va_base)
 }
 
 // ── Little-endian helpers ─────────────────────────────────────────────────────
