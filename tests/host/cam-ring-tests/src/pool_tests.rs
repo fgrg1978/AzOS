@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host tests for `azos_cam_ring::FanoutRing` (wave 15, B2): one producer,
-//! two consumers with their own cursors, overwrite-oldest and backpressure.
+//! Host tests for `azos_cam_ring::FramePool`: one producer, readers with their
+//! own cursors, references on lent buffers, both lag policies.
 
-use azos_cam_ring::{FanoutRing, FrameFormat, FrameInfo, FrameSink, Policy};
+use azos_cam_ring::{FrameFormat, FrameInfo, FramePool, FrameSink, NoRoom, Policy};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -11,11 +11,20 @@ const N: usize = 4;
 const SZ: usize = 64;
 const TX: usize = 0;
 const STREAM: usize = 1;
-type Ring = FanoutRing<N, SZ, 2>;
+type Ring = FramePool<N, SZ, 2>;
+
+/// A pool with `N` buffers lent from the heap, as the kernel lends memory
+/// objects.
+fn pool(policy: Policy) -> Ring {
+    let p = Ring::new(policy);
+    let bufs: Vec<usize> = (0..N).map(|_| Box::leak(vec![0u8; SZ].into_boxed_slice()).as_mut_ptr() as usize).collect();
+    assert_eq!(p.install(&bufs), Ok(N));
+    p
+}
 
 /// Frame `seq`'s content: its length and every byte derive from `seq`, so a
 /// reader can tell a torn or wrong frame.
-fn fill(buf: &mut [u8; SZ], seq: u64) -> usize {
+fn fill(buf: &mut [u8], seq: u64) -> usize {
     let len = 8 + (seq as usize % (SZ - 8));
     for (i, b) in buf[..len].iter_mut().enumerate() {
         *b = (seq as u8).wrapping_mul(31).wrapping_add(i as u8);
@@ -43,8 +52,25 @@ fn produce(r: &Ring) -> Option<u64> {
 }
 
 #[test]
-fn overwrite_oldest_never_refuses_and_the_latest_frame_wins() {
+fn a_pool_without_buffers_claims_nothing_and_takes_no_reader() {
     let r = Ring::new(Policy::OverwriteOldest);
+    assert!(!r.ready());
+    assert!(r.claim().is_none());
+    assert!(!r.attach(TX));
+    assert!(!r.any_attached());
+    // Fewer buffers than a reader and the newest and the one being written
+    // need: the pool takes none of them.
+    let one = Box::leak(vec![0u8; SZ].into_boxed_slice()).as_mut_ptr() as usize;
+    assert_eq!(r.install(&[one; N - 1]), Err(NoRoom));
+    assert!(!r.ready());
+    assert_eq!(r.install(&[one; N]), Ok(N));
+    assert!(r.ready() && r.attach(TX));
+    assert_eq!(r.install(&[one; N]), Err(NoRoom), "lent once");
+}
+
+#[test]
+fn overwrite_oldest_never_refuses_and_the_latest_frame_wins() {
+    let r = pool(Policy::OverwriteOldest);
     r.attach(TX);
     r.attach(STREAM);
     // Nobody reads: 20 frames into 4 slots.
@@ -53,7 +79,7 @@ fn overwrite_oldest_never_refuses_and_the_latest_frame_wins() {
     }
     assert_eq!(r.refused(), 0);
     assert_eq!(r.produced(), 20);
-    // 20 frames, 4 slots: 16 overwritten before either consumer took them.
+    // 20 frames, 4 slots: 16 overwritten before either reader took them.
     assert_eq!(r.overwritten(), 16);
     let f = r.acquire_latest(TX).expect("the newest frame");
     assert_eq!(f.seq(), 20);
@@ -63,8 +89,8 @@ fn overwrite_oldest_never_refuses_and_the_latest_frame_wins() {
 }
 
 #[test]
-fn two_consumers_keep_their_own_cursors() {
-    let r = Ring::new(Policy::OverwriteOldest);
+fn two_readers_keep_their_own_cursors() {
+    let r = pool(Policy::OverwriteOldest);
     r.attach(TX);
     r.attach(STREAM);
     let mut tx_seen = Vec::new();
@@ -85,19 +111,19 @@ fn two_consumers_keep_their_own_cursors() {
     }
     assert_eq!(tx_seen, vec![(3, 2), (6, 2), (9, 2), (12, 2)]);
     assert!(r.acquire_latest(TX).is_none());
-    // One encode per frame for both consumers: 12 committed, 12 + 4 taken.
+    // One encode per frame for both readers: 12 committed, 12 + 4 taken.
     assert_eq!(r.produced(), 12);
 }
 
 #[test]
-fn a_lagging_consumer_skips_to_the_newest_frame() {
-    let r = Ring::new(Policy::OverwriteOldest);
+fn a_lagging_reader_skips_to_the_newest_frame() {
+    let r = pool(Policy::OverwriteOldest);
     r.attach(TX);
     r.attach(STREAM);
     for _ in 0..10 {
         produce(&r).unwrap();
     }
-    // Each consumer goes straight to frame 10, the nine before it skipped.
+    // Each reader goes straight to frame 10, the nine before it skipped.
     for c in [TX, STREAM] {
         let f = r.acquire_latest(c).unwrap();
         assert_eq!((f.seq(), f.skipped()), (10, 9));
@@ -109,8 +135,8 @@ fn a_lagging_consumer_skips_to_the_newest_frame() {
 }
 
 #[test]
-fn a_pinned_frame_is_never_overwritten() {
-    let r = Ring::new(Policy::OverwriteOldest);
+fn a_referenced_frame_is_never_overwritten() {
+    let r = pool(Policy::OverwriteOldest);
     r.attach(TX);
     r.attach(STREAM);
     produce(&r).unwrap();
@@ -119,8 +145,8 @@ fn a_pinned_frame_is_never_overwritten() {
         produce(&r).unwrap();
         r.acquire_latest(STREAM).unwrap()
     };
-    // Both consumers hold a frame; the producer runs on, 100 frames, never
-    // refused and never into a pinned slot.
+    // Both readers hold a frame; the producer runs on, 100 frames, never
+    // refused and never into a referenced slot.
     for _ in 0..100 {
         assert!(produce(&r).is_some());
     }
@@ -131,15 +157,15 @@ fn a_pinned_frame_is_never_overwritten() {
 }
 
 #[test]
-fn backpressure_refuses_until_the_slowest_consumer_takes_its_frames() {
-    let r = Ring::new(Policy::Backpressure);
+fn backpressure_refuses_until_the_slowest_reader_takes_its_frames() {
+    let r = pool(Policy::Backpressure);
     r.attach(TX);
     r.attach(STREAM);
     // 4 slots, one always the newest: 4 frames fill it, the 5th waits.
     for want in 1..=4 {
         assert_eq!(produce(&r), Some(want));
     }
-    // Slot of frame 1 is free (not newest, not pinned) but TX and STREAM
+    // Slot of frame 1 is free (not newest, not referenced) but TX and STREAM
     // have not taken it: refused.
     assert_eq!(produce(&r), None);
     assert_eq!(r.refused(), 1);
@@ -149,8 +175,8 @@ fn backpressure_refuses_until_the_slowest_consumer_takes_its_frames() {
     // TX takes the newest: everything older is passed over, capture resumes.
     assert_eq!(r.acquire_latest(TX).unwrap().seq(), 4);
     assert_eq!(produce(&r), Some(5));
-    assert_eq!(r.overwritten(), 0, "backpressure never overwrites a frame a consumer is owed");
-    // A detached consumer holds nothing back.
+    assert_eq!(r.overwritten(), 0, "backpressure never overwrites a frame a reader is owed");
+    // A detached reader holds nothing back.
     r.detach(STREAM);
     for _ in 0..10 {
         assert!(produce(&r).is_some() || r.acquire_latest(TX).is_some());
@@ -159,7 +185,7 @@ fn backpressure_refuses_until_the_slowest_consumer_takes_its_frames() {
 
 #[test]
 fn attach_starts_at_the_newest_frame_and_detach_is_idempotent() {
-    let r = Ring::new(Policy::OverwriteOldest);
+    let r = pool(Policy::OverwriteOldest);
     produce(&r).unwrap();
     assert!(!r.any_attached());
     r.attach(TX);
@@ -173,14 +199,14 @@ fn attach_starts_at_the_newest_frame_and_detach_is_idempotent() {
     assert!(!r.any_attached());
 }
 
-/// One producer thread, two consumer threads:
-/// every frame a consumer gets is whole (its bytes and stamp match its
+/// One producer thread, two reader threads:
+/// every frame a reader gets is whole (its bytes and stamp match its
 /// sequence number) and sequence numbers only grow, whatever the
 /// interleaving. The producer is never refused.
 #[test]
 fn concurrent_readers_never_see_a_torn_frame() {
     const FRAMES: u64 = 200_000;
-    let r: Arc<Ring> = Arc::new(Ring::new(Policy::OverwriteOldest));
+    let r: Arc<Ring> = Arc::new(pool(Policy::OverwriteOldest));
     r.attach(TX);
     r.attach(STREAM);
     let done = Arc::new(AtomicBool::new(false));
@@ -193,7 +219,7 @@ fn concurrent_readers_never_see_a_torn_frame() {
             let (mut last, mut got) = (0u64, 0u64);
             while !done.load(Ordering::Acquire) {
                 if let Some(f) = r.acquire_latest(c) {
-                    assert!(f.seq() > last, "consumer {c}: seq went {last} -> {}", f.seq());
+                    assert!(f.seq() > last, "reader {c}: seq went {last} -> {}", f.seq());
                     assert_eq!(f.seq() - last - 1, f.skipped());
                     check(f.bytes(), f.seq());
                     assert_eq!(f.stamp(), stamp_of(f.seq()));
@@ -220,7 +246,7 @@ fn concurrent_readers_never_see_a_torn_frame() {
     done.store(true, Ordering::Release);
     let (ga, gb) = (a.join().unwrap(), b.join().unwrap());
     assert_eq!(r.refused(), 0);
-    assert!(ga >= 1000 && gb >= 1000, "both consumers took frames ({ga}, {gb})");
+    assert!(ga >= 1000 && gb >= 1000, "both readers took frames ({ga}, {gb})");
 }
 
 // ---- The sink hook: a camera driver other than the capture task ----
@@ -240,7 +266,7 @@ fn write_through_sink(sink: &dyn FrameSink, payloads: &[&[u8]], stamp: u64, info
 
 #[test]
 fn a_frame_written_through_the_sink_carries_its_format_and_size() {
-    let r = Ring::new(Policy::OverwriteOldest);
+    let r = pool(Policy::OverwriteOldest);
     r.attach(TX);
     write_through_sink(&r, &[b"\xff\xd8", b"jpeg", b"\xff\xd9"], 11, FrameInfo::JPEG);
     let f = r.acquire_latest(TX).expect("the JPEG");
@@ -263,8 +289,8 @@ fn a_frame_written_through_the_sink_carries_its_format_and_size() {
 }
 
 #[test]
-fn the_sink_is_wanted_only_while_a_consumer_is_attached() {
-    let r = Ring::new(Policy::OverwriteOldest);
+fn the_sink_is_wanted_only_while_a_reader_is_attached() {
+    let r = pool(Policy::OverwriteOldest);
     assert!(!FrameSink::wanted(&r));
     r.attach(TX);
     assert!(FrameSink::wanted(&r));
@@ -274,7 +300,7 @@ fn the_sink_is_wanted_only_while_a_consumer_is_attached() {
 
 #[test]
 fn an_aborted_sink_frame_publishes_nothing() {
-    let r = Ring::new(Policy::OverwriteOldest);
+    let r = pool(Policy::OverwriteOldest);
     r.attach(TX);
     let sink: &dyn FrameSink = &r;
     assert!(sink.claim().is_some());
@@ -288,7 +314,7 @@ fn an_aborted_sink_frame_publishes_nothing() {
 
 #[test]
 fn a_second_producer_cannot_claim_while_the_first_holds_a_slot() {
-    let r = Ring::new(Policy::OverwriteOldest);
+    let r = pool(Policy::OverwriteOldest);
     r.attach(TX);
     // The USB driver holds a slot across turns of its task; the capture task
     // finds the ring taken and writes nothing, instead of racing it.
@@ -307,8 +333,8 @@ fn a_second_producer_cannot_claim_while_the_first_holds_a_slot() {
 #[test]
 fn two_producers_never_write_a_slot_together() {
     // Real threads: each producer writes its own byte over a whole slot
-    // between claim and commit; the consumer must never see a mixed frame.
-    let r = Arc::new(Ring::new(Policy::OverwriteOldest));
+    // between claim and commit; the reader must never see a mixed frame.
+    let r = Arc::new(pool(Policy::OverwriteOldest));
     r.attach(TX);
     let stop = Arc::new(AtomicBool::new(false));
     let wrote = Arc::new(AtomicU64::new(0));
@@ -326,7 +352,8 @@ fn two_producers_never_write_a_slot_together() {
         }));
     }
     let mut seen = 0u64;
-    while wrote.load(Ordering::Relaxed) < 20_000 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while wrote.load(Ordering::Relaxed) < 20_000 && std::time::Instant::now() < deadline {
         if let Some(f) = r.acquire_latest(TX) {
             let b = f.bytes();
             assert!(b[0] == 0xa1 || b[0] == 0xb2);
@@ -338,85 +365,100 @@ fn two_producers_never_write_a_slot_together() {
     for h in hs {
         h.join().unwrap();
     }
+    assert!(wrote.load(Ordering::Relaxed) >= 20_000, "the producers were held up");
     assert!(seen > 0);
 }
 
-// ---- Raw pixels ----
+
+// ---- The guarantees of the class ----
 
 #[test]
-fn the_luma_of_a_yuyv_frame_is_every_other_byte() {
-    use azos_cam_ring::yuyv_luma;
-    // 4x2 pixels: Y values 10..18 interleaved with chroma 200+.
-    let yuyv: Vec<u8> = (0..8u8).flat_map(|i| [10 + i, 200 + i]).collect();
-    let mut dst = [0u8; 8];
-    assert_eq!(yuyv_luma(&yuyv, 4, 2, &mut dst, 8, 8), Some((4, 2)));
-    assert_eq!(dst, [10, 11, 12, 13, 14, 15, 16, 17]);
+fn one_commit_serves_every_reader_and_the_references_end_with_the_reads() {
+    let r = pool(Policy::OverwriteOldest);
+    r.attach(TX);
+    r.attach(STREAM);
+    for k in 1..=1000u64 {
+        assert_eq!(produce(&r), Some(k));
+        let (a, b) = (r.acquire_latest(TX).unwrap(), r.acquire_latest(STREAM).unwrap());
+        assert_eq!(r.references(), 2, "each reader holds one reference on the one buffer");
+        assert_eq!((a.seq(), b.seq()), (k, k));
+        check(a.bytes(), k);
+        check(b.bytes(), k);
+        drop((a, b));
+        assert_eq!(r.references(), 0, "a reference ends with the read");
+    }
+    assert_eq!(r.produced(), 1000, "one frame in the pool, however many readers took it");
+    assert_eq!(r.refused(), 0);
 }
 
 #[test]
-fn a_big_yuyv_frame_is_decimated_to_fit() {
-    use azos_cam_ring::yuyv_luma;
-    // 8x4 pixels into 4x4: every second pixel of every second row (step 2).
-    let yuyv: Vec<u8> = (0..32u8).flat_map(|i| [i, 0xee]).collect();
-    let mut dst = [0u8; 16];
-    assert_eq!(yuyv_luma(&yuyv, 8, 4, &mut dst, 4, 4), Some((4, 2)));
-    assert_eq!(&dst[..8], &[0, 2, 4, 6, 16, 18, 20, 22]);
-    // Height decides the step as well as width.
-    assert_eq!(yuyv_luma(&yuyv, 8, 4, &mut dst, 8, 1), Some((2, 1)));
-    assert_eq!(&dst[..2], &[0, 4]);
+fn a_slow_reader_never_blocks_the_producer() {
+    let r = pool(Policy::OverwriteOldest);
+    r.attach(TX);
+    r.attach(STREAM);
+    // The stream reader never reads, the sender holds one frame the whole run.
+    produce(&r).unwrap();
+    let held = r.acquire_latest(TX).unwrap();
+    for k in 2..=500u64 {
+        assert_eq!(produce(&r), Some(k), "frame {k}: the producer waited for a reader");
+    }
+    assert_eq!(r.refused(), 0);
+    assert_eq!(held.seq(), 1);
+    check(held.bytes(), 1);
+    drop(held);
+    let f = r.acquire_latest(STREAM).unwrap();
+    assert_eq!((f.seq(), f.skipped()), (500, 499), "the lagging reader goes to the newest frame");
 }
 
 #[test]
-fn a_yuyv_frame_that_does_not_add_up_gives_nothing() {
-    use azos_cam_ring::yuyv_luma;
-    let mut dst = [0u8; 16];
-    assert_eq!(yuyv_luma(&[0; 15], 2, 4, &mut dst, 8, 8), None, "a byte short of 2 * w * h");
-    assert_eq!(yuyv_luma(&[0; 16], 0, 4, &mut dst, 8, 8), None);
-    assert_eq!(yuyv_luma(&[0; 16], 2, 4, &mut dst[..7], 8, 8), None, "dst too small");
-    assert_eq!(yuyv_luma(&[0; 16], 2, 4, &mut dst, 0, 8), None);
-}
-
-// ---- JPEG size ----
-
-/// SOI, an APP0 and a DQT segment, then SOF0 for `w` x `h`.
-fn jpeg_head(w: u16, h: u16) -> Vec<u8> {
-    let mut j = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x06, 1, 2, 3, 4, 0xff, 0xdb, 0x00, 0x04, 9, 9];
-    j.extend([0xff, 0xc0, 0x00, 0x0b, 8]);
-    j.extend(h.to_be_bytes());
-    j.extend(w.to_be_bytes());
-    j.extend([1, 1, 0x11, 0]);
-    j
+fn backpressure_keeps_the_frame_a_reader_is_owed() {
+    let r = pool(Policy::Backpressure);
+    r.attach(TX);
+    for want in 1..=N as u64 {
+        assert_eq!(produce(&r), Some(want));
+    }
+    // The producer is refused, counted, and the oldest frame is still there
+    // for the reader that never took it.
+    for _ in 0..5 {
+        assert_eq!(produce(&r), None);
+    }
+    assert_eq!((r.refused(), r.overwritten(), r.produced()), (5, 0, N as u64));
+    let f = r.acquire_latest(TX).unwrap();
+    assert_eq!((f.seq(), f.skipped()), (N as u64, N as u64 - 1));
+    check(f.bytes(), N as u64);
 }
 
 #[test]
-fn a_jpeg_says_its_size_in_the_start_of_frame() {
-    use azos_cam_ring::jpeg_size;
-    assert_eq!(jpeg_size(&jpeg_head(160, 120)), Some((160, 120)));
-    assert_eq!(jpeg_size(&jpeg_head(640, 480)), Some((640, 480)));
-    // Fill bytes before a marker, and a progressive frame (SOF2).
-    let mut j = jpeg_head(320, 240);
-    j.splice(2..2, [0xff, 0xff]);
-    assert_eq!(jpeg_size(&j), Some((320, 240)));
-    let mut j = jpeg_head(320, 240);
-    let sof = j.iter().position(|b| *b == 0xc0).unwrap();
-    j[sof] = 0xc2;
-    assert_eq!(jpeg_size(&j), Some((320, 240)));
+fn a_detached_reader_holds_nothing_back() {
+    let r = pool(Policy::Backpressure);
+    r.attach(TX);
+    r.attach(STREAM);
+    for want in 1..=N as u64 {
+        assert_eq!(produce(&r), Some(want));
+    }
+    assert_eq!(produce(&r), None);
+    // Both readers go away (a task that exited): capture resumes.
+    r.detach(TX);
+    r.detach(STREAM);
+    assert!(!r.any_attached());
+    assert_eq!(produce(&r), Some(N as u64 + 1), "a reader that is gone is still owed frames");
 }
 
 #[test]
-fn bytes_that_are_not_a_jpeg_with_a_frame_header_have_no_size() {
-    use azos_cam_ring::jpeg_size;
-    let j = jpeg_head(160, 120);
-    assert_eq!(jpeg_size(&[]), None);
-    assert_eq!(jpeg_size(&[0xff, 0xd8]), None, "SOI alone");
-    assert_eq!(jpeg_size(&[0, 1, 2, 3, 4, 5]), None, "no SOI");
-    assert_eq!(jpeg_size(&j[..j.len() - 6]), None, "ends inside the SOF");
-    // The scan starts before any frame header.
-    assert_eq!(jpeg_size(&[0xff, 0xd8, 0xff, 0xda, 0, 2, 0, 0]), None);
-    // A segment whose length runs past the end.
-    assert_eq!(jpeg_size(&[0xff, 0xd8, 0xff, 0xe0, 0xff, 0xff, 0, 0]), None);
-    // A zero size is no size.
-    assert_eq!(jpeg_size(&jpeg_head(0, 120)), None);
-    // A DHT (c4) is not a frame header.
-    assert_eq!(jpeg_size(&[0xff, 0xd8, 0xff, 0xc4, 0, 4, 0, 0, 0xff, 0xd9]), None);
+fn a_reader_cannot_change_a_frame_another_reader_will_read() {
+    let r = pool(Policy::OverwriteOldest);
+    r.attach(TX);
+    r.attach(STREAM);
+    produce(&r).unwrap();
+    let a = r.acquire_latest(TX).unwrap();
+    let before = a.bytes().to_vec();
+    check(&before, 1);
+    // The first reader reads it as often as it likes; the second still gets
+    // the bytes the producer committed.
+    for _ in 0..3 {
+        assert_eq!(a.bytes(), &before[..]);
+    }
+    let b = r.acquire_latest(STREAM).unwrap();
+    check(b.bytes(), 1);
+    assert_eq!(b.bytes(), &before[..]);
 }

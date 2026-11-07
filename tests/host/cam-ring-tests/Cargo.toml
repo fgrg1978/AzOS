@@ -4,13 +4,20 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for azos_cam_ring (S1/S6 SPSC frame ring). Excluded from workspace."
+description = "Host-side tests for azos_cam_ring (the frame class pool). Excluded from workspace."
 
 # Same pattern as ota-tests / tftp-tests.
 # Run with:  cd tests/host/cam-ring-tests && cargo +stable test
 
 [dependencies]
-azos_cam_ring = { path = "../../../crates/drivers/cam-ring", features = ["test-util"] }
+azos_cam_ring = { path = "../../../crates/drivers/cam-ring" }
+
+[features]
+canary-reader-writes = ["azos_cam_ring/canary-reader-writes"]
+canary-backpressure-drops = ["azos_cam_ring/canary-backpressure-drops"]
+canary-overwrite-refuses = ["azos_cam_ring/canary-overwrite-refuses"]
+canary-reference-leaks = ["azos_cam_ring/canary-reference-leaks"]
+canary-detach-keeps = ["azos_cam_ring/canary-detach-keeps"]
 
 # Prevents Cargo from merging this crate into the workspace above.
 [workspace]

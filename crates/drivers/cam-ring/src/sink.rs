@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The producer's side of a frame ring as a trait: what a camera driver that
+//! The producer's side of the frame pool as a trait: what a camera driver that
 //! is not the CSI capture task (a USB video class driver, in
-//! `azos_usb::class::uvc`) needs from the ring, and what it tells it about
+//! `azos_usb::class::uvc`) needs from the pool, and what it tells it about
 //! the frame it wrote.
 //!
 //! The driver claims a slot when a frame starts, appends the payloads of the
 //! frame to it as they arrive, and commits or aborts it; it never sees the
-//! ring's consumers, slot count or policy. [`FrameSink::wanted`] is how the
+//! pool's readers, buffer count or policy. [`FrameSink::wanted`] is how the
 //! driver learns whether anyone reads the frames at all, so it does not hold
 //! the camera streaming (and the bus bandwidth with it) for nobody.
 
@@ -15,7 +15,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameFormat {
     /// A baseline JPEG (Motion-JPEG frames of a camera, or the CSI path's
-    /// own encoder). The default of [`FanoutRing::commit`](crate::FanoutRing::commit).
+    /// own encoder). The default of [`FramePool::commit`](crate::FramePool::commit).
     Jpeg,
     /// Packed YUV 4:2:2, `Y0 U Y1 V` per two pixels (YUY2): `2 * width *
     /// height` bytes.
@@ -58,12 +58,12 @@ impl FrameInfo {
     }
 }
 
-/// A ring a camera driver writes frames into.
+/// A pool a camera driver writes frames into.
 pub trait FrameSink {
     /// Does anyone read the frames? A driver streams only while this is true.
     fn wanted(&self) -> bool;
     /// A buffer for the next frame, which is the caller's until
-    /// [`commit`](Self::commit) or [`abort`](Self::abort). `None`: the ring
+    /// [`commit`](Self::commit) or [`abort`](Self::abort). `None`: the pool
     /// refuses a frame now (its policy, or another producer is writing one);
     /// the driver drops the frame it was about to write.
     #[allow(clippy::mut_from_ref)]

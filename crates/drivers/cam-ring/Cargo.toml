@@ -2,7 +2,7 @@
 name = "azos_cam_ring"
 version = "0.1.0"
 edition = "2021"
-description = "Camera frame rings: lock-free SPSC (S1/S6) and the fan-out ring of the camera pipeline (B2). Pure no_std; no heap. Host-testable via tests/host/cam-ring-tests."
+description = "The frame class's pool: refcounted frame buffers, a Log of frame ids for the fan-out to many readers, two lag policies, and the producer's FrameSink. Pure no_std; no heap; buffers are injected. Host-testable via tests/host/cam-ring-tests."
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
@@ -10,10 +10,19 @@ publish = false
 name = "azos_cam_ring"
 
 [features]
-# Exposes FrameRing::with_start_index, a test-only constructor used by
-# tests/host/cam-ring-tests to drive the ring across the usize index-wraparound
-# boundary. Never enabled by the on-target (kernel) build.
-test-util = []
+# Canaries of tests/host/cam-ring-tests; each breaks one guarantee so the row
+# that guards it must go red. Never enabled by the kernel build.
+#
+# A reader's view of a frame writes into it.
+canary-reader-writes = []
+# Backpressure overwrites an owed frame and counts nothing.
+canary-backpressure-drops = []
+# Overwrite-oldest refuses a frame while a reader lags.
+canary-overwrite-refuses = []
+# A dropped frame reference is never given back.
+canary-reference-leaks = []
+# A detached reader still holds the producer back.
+canary-detach-keeps = []
 
 [dependencies]
-# No external dependencies — only core::sync::atomic.
+azos_rings = { workspace = true }
