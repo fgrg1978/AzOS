@@ -181,6 +181,8 @@ mod asym_ktests;
 mod ext_ktests;
 #[cfg(all(feature = "ktest", not(feature = "use-robot")))]
 mod effect_ktests;
+mod board;
+pub(crate) use board::*;
 mod robot;
 pub(crate) use robot::*;
 // Kconfig BOOT_SLOTS: A/B boot trust.

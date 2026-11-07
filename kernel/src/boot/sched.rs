@@ -72,7 +72,7 @@ fn wq_wake_timed(tid: u32) {
 ///
 /// `task_release_all_resources` used to be `#[cfg(target_arch =
 /// "riscv64")]` — dead code on aarch64 with no caller, same reasoning
-/// `install_robot_hw`'s own doc gives for its own former gate — and lost
+/// `install_board_hw`'s own doc gives for its own former gate — and lost
 /// that `#[cfg]` in the same change that added this function, since it is
 /// now called from both `kernel_main`s.
 /// The deferred-preemption callback: [`azos_sched::task_preempt_deferred`]
@@ -643,7 +643,7 @@ fn commander_exit_stop(tid: u32) {
 /// calls, `azos_syscall`/`azos_ipc`/`azos_net`, is a plain `[dependencies]`
 /// entry in `kernel/Cargo.toml`, not ISA-gated). The `#[cfg(target_arch =
 /// "riscv64")]` this used to carry existed only because aarch64 had no
-/// caller, same as `install_robot_hw`'s former gate.
+/// caller, same as `install_board_hw`'s former gate.
 fn task_release_all_resources(tid: u32) {
     let t_ph = azos_sched::prof::t();
     // Wave 15 (owner decision): a ring-3 task that dies commanding a wheel

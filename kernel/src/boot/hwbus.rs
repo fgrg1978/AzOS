@@ -36,7 +36,7 @@
 //! `[SAFETY]` error when either stays absent) bind right after the SoC
 //! frameworks are installed, before any task exists and long before sys-wdt
 //! arms the watchdog; `i2c`, `pwm` and `sfctemp` (and the K1's `pwm` and
-//! `k1-tsensor`) bind with the robot hardware (`install_robot_hw`). The microSD
+//! `k1-tsensor`) bind with the robot hardware (`install_board_hw`). The microSD
 //! controller (`starfive,jh7110-mmc`, `dw-mshc`) binds in the stage right
 //! before the block device is brought up: [`attach_dwmshc`] reads the node's
 //! interrupt, FIFO depth and `ciu` clock rate and refuses the `non-removable`

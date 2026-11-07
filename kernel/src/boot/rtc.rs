@@ -271,7 +271,7 @@ pub(crate) fn install() {
 }
 
 /// The PCF8563 on `RTC_PCF8563_I2C_BUS`, for a board without a memory-mapped
-/// RTC. After the I2C controllers are initialised (`install_robot_hw`). A
+/// RTC. After the I2C controllers are initialised (`install_board_hw`). A
 /// board that already has an RTC keeps it.
 #[cfg(feature = "rtc-pcf8563")]
 pub(crate) fn install_i2c() {

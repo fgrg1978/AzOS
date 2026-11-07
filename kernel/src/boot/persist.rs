@@ -249,7 +249,7 @@ pub(crate) fn recover_persistent_state() {
         // `login` decision record in every build (`azos_decision::RULES`:
         // method 5 the brain link, attempt 0, reason 4 no key to verify
         // with); the console line names its id. It is made before the flight
-        // recorder is armed (`install_robot_hw`, below), so it is in the ring
+        // recorder is armed (`install_board_hw`, below), so it is in the ring
         // and the journal, not on the medium.
         #[cfg(feature = "use-robot")]
         {

@@ -133,7 +133,7 @@ pub(crate) fn install(dtb_ptr: usize) {
         azos_drv_sys::kwarn!("[SOC] {} register window(s) not mapped: their providers are not used", win.failed);
     }
     // The K1's PMIC rails are reached over its I2C master, which attaches
-    // after the frameworks come up (`install_robot_hw`): the transport is given
+    // after the frameworks come up (`install_board_hw`): the transport is given
     // now so the rails are providers (`cpu-supply` resolves, with the rail's
     // constraints), and the always-on pass leaves them (`always-on-pending`:
     // the pass would read the PMIC under the lock). Other boards have no rail
@@ -158,7 +158,7 @@ pub(crate) fn install(dtb_ptr: usize) {
 }
 
 /// Pin the PMIC's `regulator-always-on` rails, now that the I2C master they
-/// are behind is attached (`install_robot_hw`): [`install`] left them pending
+/// are behind is attached (`install_board_hw`): [`install`] left them pending
 /// (`always-on-pending`) because the pass reads the PMIC, and a transfer is
 /// hundreds of microseconds and sleeps between steps, which no spin lock may
 /// be held across. So the state is taken out of the lock for the pass and put
