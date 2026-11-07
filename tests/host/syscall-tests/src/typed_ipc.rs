@@ -2578,8 +2578,8 @@ mod swap_rows {
     #[test]
     fn the_end_of_a_booking_wakes_the_touch_that_waits_for_it() {
         let _g = serial();
-        let (a, b) = (fresh_tid(), fresh_tid());
-        let _s = Scene::new(&[a, b]);
+        let (a, b, c) = (fresh_tid(), fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b, c]);
         let _h = hooks();
         let pt_a = ring3(a, SLOT_A);
         let pt_b = ring3(b, SLOT_B);
@@ -2608,7 +2608,6 @@ mod swap_rows {
         mo::memobj_map_abandon_ref(b, r);
         assert_ne!(pg::shim_marker_seq(), seen, "and so does an abandon");
         // A booking nobody waited on.
-        let c = fresh_tid();
         assert!(mo::memobj_acquire_ref(c, r).is_ok());
         assert!(mo::memobj_map_begin_ref(c, r, true, &mut pages).is_ok());
         let seen = pg::shim_marker_seq();
