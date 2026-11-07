@@ -13,6 +13,7 @@ description = "Host-side tests for azos_rings (Queue and Log). Excluded from the
 azos_rings = { path = "../../../crates/core/rings", features = ["test-hook"] }
 
 [features]
+canary-hook-any-region = ["azos_rings/canary-hook-any-region"]
 # Each forwards a canary of azos_rings; the guarded test must go red.
 canary-no-recheck = ["azos_rings/canary-no-recheck"]
 canary-no-fence = ["azos_rings/canary-no-fence"]

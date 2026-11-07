@@ -453,7 +453,7 @@ impl Ring {
             core::ptr::copy_nonoverlapping(slot.add(ENV_BYTES), payload.as_mut_ptr(), n);
         }
         #[cfg(feature = "test-hook")]
-        test_hook::between_copy_and_recheck();
+        test_hook::between_copy_and_recheck(slot as usize);
         #[cfg(not(feature = "canary-no-fence"))]
         fence(Ordering::Acquire);
         #[cfg(not(feature = "canary-no-recheck"))]
@@ -677,16 +677,28 @@ impl Writer {
 pub const REPLAY_PAYLOAD_MAX: usize = 512;
 
 /// A test's hook between a reader's copy and its stamp re-check, where a
-/// racing producer would land (`tests/host/rings-tests` only).
+/// racing producer would land (`tests/host/rings-tests` only). It is for one
+/// region: a read of another region, by another test of the same process, leaves
+/// it alone.
 #[cfg(feature = "test-hook")]
 pub mod test_hook {
     use core::sync::atomic::{AtomicUsize, Ordering};
     static HOOK: AtomicUsize = AtomicUsize::new(0);
-    /// Call `f` (once) at the next read's window.
-    pub fn set(f: fn()) {
+    static FROM: AtomicUsize = AtomicUsize::new(0);
+    static TO: AtomicUsize = AtomicUsize::new(0);
+    /// Call `f` (once) at the next read's window of a slot in `base..base + len`.
+    pub fn set(base: usize, len: usize, f: fn()) {
+        FROM.store(base, Ordering::SeqCst);
+        TO.store(base + len, Ordering::SeqCst);
         HOOK.store(f as usize, Ordering::SeqCst);
     }
-    pub(super) fn between_copy_and_recheck() {
+    pub(super) fn between_copy_and_recheck(slot: usize) {
+        #[cfg(not(feature = "canary-hook-any-region"))]
+        if slot < FROM.load(Ordering::SeqCst) || slot >= TO.load(Ordering::SeqCst) {
+            return;
+        }
+        #[cfg(feature = "canary-hook-any-region")]
+        let _ = slot;
         let f = HOOK.swap(0, Ordering::SeqCst);
         if f != 0 {
             // SAFETY: only `set` stores here, a `fn()`.

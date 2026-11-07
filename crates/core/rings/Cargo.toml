@@ -21,6 +21,8 @@ canary-record-stale = []
 canary-record-unordered = []
 # The record merge treats a producer mid-store as an empty ring.
 canary-record-pending-empty = []
+# The record test hook fires for a read of any region, not the one it was set for.
+canary-hook-any-region = []
 # The record handover numbers the copies from 0.
 canary-record-renumber = []
 # A hook between a record reader's copy and its re-check (rings-tests only).

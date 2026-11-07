@@ -30,6 +30,15 @@ fn region(specs: &[RingSpec]) -> (Vec<Line>, Region) {
     (mem, r)
 }
 
+/// The address and length of the memory under a region.
+fn mem_base(mem: &[Line]) -> usize {
+    mem.as_ptr() as usize
+}
+
+fn mem_len(mem: &[Line]) -> usize {
+    mem.len() * 64
+}
+
 fn three(entries: u32) -> [RingSpec; 3] {
     [
         RingSpec { source: KLOG, slot_bytes: 320, entries },
@@ -229,7 +238,8 @@ fn a_record_overwritten_during_the_copy_is_not_handed_on() {
     let _keep = mem;
     let _ = R.set(r);
     put(&r, 1, 0, 0, b"first");
-    azos_rings::region::record::test_hook::set(|| {
+    let (base, len) = (mem_base(&_keep), mem_len(&_keep));
+    azos_rings::region::record::test_hook::set(base, len, || {
         let r = R.get().unwrap();
         for i in 1..=4u64 {
             put(r, 1, i, 0, b"lapper");
@@ -239,6 +249,36 @@ fn a_record_overwritten_during_the_copy_is_not_handed_on() {
     let (mut c, mut env, mut buf) = (0u64, Envelope::default(), [0u8; 32]);
     assert_eq!(ring.read(&mut c, &mut env, &mut buf), Read::Lost(1), "the record under the copy was overwritten");
     assert_eq!(c, 1);
+}
+
+/// **The hook is for the region it was set for.** A read of another region
+/// (another test of the process, reading all the time) does not take it, and the
+/// read of its own region does, once.
+///
+/// **Canary.** `canary-hook-any-region`: the neighbour's read takes it.
+#[test]
+fn the_hook_waits_for_its_own_region() {
+    static FIRED: AtomicU64 = AtomicU64::new(0);
+    let (mem_a, a) = region(&three(4));
+    let (mem_b, b) = region(&three(4));
+    put(&a, 1, 0, 0, b"a");
+    put(&b, 1, 0, 0, b"b");
+    azos_rings::region::record::test_hook::set(mem_base(&mem_a), mem_len(&mem_a), || {
+        FIRED.fetch_add(1, Ordering::SeqCst);
+    });
+    let (mut env, mut buf) = (Envelope::default(), [0u8; 32]);
+    for _ in 0..3 {
+        let mut c = 0u64;
+        assert_eq!(b.ring(1).unwrap().read(&mut c, &mut env, &mut buf), Read::Record);
+    }
+    assert_eq!(FIRED.load(Ordering::SeqCst), 0, "another region's read took the hook");
+    let mut c = 0u64;
+    assert_eq!(a.ring(1).unwrap().read(&mut c, &mut env, &mut buf), Read::Record);
+    assert_eq!(FIRED.load(Ordering::SeqCst), 1);
+    let mut c = 0u64;
+    assert_eq!(a.ring(1).unwrap().read(&mut c, &mut env, &mut buf), Read::Record);
+    assert_eq!(FIRED.load(Ordering::SeqCst), 1, "once");
+    drop((mem_a, mem_b));
 }
 
 /// Three producers, one reader, no lap of a producer mid-store expected but
@@ -295,7 +335,14 @@ fn many_producers_one_reader_every_record_whole() {
                             m.skip(ring);
                             skipped += 1;
                         }
-                        std::hint::spin_loop();
+                        // A descheduled producer needs this CPU: give it up now
+                        // and then, a spin that never does can take minutes on a
+                        // loaded host.
+                        if pending_at.1 % 64 == 0 {
+                            std::thread::yield_now();
+                        } else {
+                            std::hint::spin_loop();
+                        }
                     }
                     Step::Lost { .. } | Step::Stale { .. } => {}
                     Step::Empty => {
