@@ -321,6 +321,32 @@ impl Bus {
         Some(window)
     }
 
+    /// Book the opening of the I/O ports `first..=last` to a task, as a mapped
+    /// window is booked: every bus master whose I/O BAR holds one of them is
+    /// booked, so no native driver is bound to it afterwards. `false`, and
+    /// nothing booked, when one of them is a device ring 3 may not have (a
+    /// kernel driver owns it or may still take it).
+    pub fn claim_user_ports(&mut self, first: u16, last: u16) -> bool {
+        let hit = |s: &Slot| s.dev.may_master_bus() && s.dev.io_bar_over(first, last);
+        if self.slots.iter().any(|s| s.state != State::Free && hit(s) && !s.user_settled()) {
+            return false;
+        }
+        if !cfg!(feature = "ports-claim-canary") {
+            for s in self.slots.iter_mut().filter(|s| s.state != State::Free && hit(s)) {
+                s.user_maps = s.user_maps.saturating_add(1);
+            }
+        }
+        true
+    }
+
+    /// Give back the booking of [`claim_user_ports`](Self::claim_user_ports)
+    /// for ports that were not opened.
+    pub fn unclaim_user_ports(&mut self, first: u16, last: u16) {
+        for s in self.slots.iter_mut().filter(|s| s.state != State::Free && s.dev.may_master_bus() && s.dev.io_bar_over(first, last)) {
+            s.user_maps = s.user_maps.saturating_sub(1);
+        }
+    }
+
     /// Give back one booking of [`claim_user_window`](Self::claim_user_window)
     /// whose mapping failed.
     pub fn unclaim_user_window(&mut self, h: Handle) {

@@ -13110,6 +13110,8 @@ host_job host_canary_row "ring-3: dt master window canary" topology-tests dt-unk
     a_writable_window_on_an_unclassified_or_known_dt_master_needs_the_policy
 host_job host_canary_row "ring-3: io port master canary" topology-tests ioport-master-canary \
     a_port_grant_over_a_bus_masters_io_bar_needs_the_policy
+host_job host_canary_row "ring-3: io port booking canary" hwbus-tests ports-claim-canary \
+    a_master_whose_ports_are_open_is_never_given_to_a_kernel_driver
 host_job host_canary_row "ring-3: msi vector reissue canary" ipc-tests msi-reissue-canary \
     a_given_back_msi_vector_is_reissued_only_to_its_own_slot
 host_job host_canary_row "dma: failed map frees unconfirmed block canary" dma-tests map-failed-frees-canary \

@@ -45,12 +45,24 @@ pub(crate) fn ioport_op(c: &mut Call) -> i64 {
     // check and the open hold the table's lock, as a revocation does.
     let r = azos_ipc::cap_store::with_table(c.tid, |t| {
         let range = t.get_op(cap, CapPerms::RW, c.op)?;
-        Ok(ioport_bounds(range).map(|(first, last)| azos_sched::ioport::enable(first, last, table as u32)))
+        // A bus master whose I/O BAR holds one of the ports is booked with the
+        // bus as a mapped window is (`DOMAIN_MMIO_MAP`): no kernel driver
+        // binds it afterwards; one that already owns it refuses the open.
+        Ok(ioport_bounds(range).map(|(first, last)| {
+            if !azos_drv_bus::hwbus::claim_user_ports(first, last) {
+                return Err(None);
+            }
+            azos_sched::ioport::enable(first, last, table as u32).map_err(|e| {
+                azos_drv_bus::hwbus::unclaim_user_ports(first, last);
+                Some(e)
+            })
+        }))
     });
     match r.unwrap_or(Err(CapError::Stale)) {
         Ok(Some(Ok(()))) => 0,
-        Ok(Some(Err(azos_sched::ioport::EnableError::Full))) => Errno::EMFILE.to_syscall_ret(),
-        Ok(Some(Err(azos_sched::ioport::EnableError::NoPorts))) => Errno::ENODEV.to_syscall_ret(),
+        Ok(Some(Err(None))) => Errno::ENODEV.to_syscall_ret(),
+        Ok(Some(Err(Some(azos_sched::ioport::EnableError::Full)))) => Errno::EMFILE.to_syscall_ret(),
+        Ok(Some(Err(Some(azos_sched::ioport::EnableError::NoPorts)))) => Errno::ENODEV.to_syscall_ret(),
         Ok(None) => Errno::EINVAL.to_syscall_ret(),
         Err(e) => {
             crate::handlers::note_typed_denial_for(c.tid, ty::IOPORT, e);

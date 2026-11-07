@@ -92,9 +92,19 @@ pub fn may_master_bus(handle: u32) -> Option<bool> {
 pub fn io_bar_master(first: u16, last: u16) -> Option<(u32, bool)> {
     with(|b| {
         b.iter()
-            .find(|(_, s)| s.dev.may_master_bus() && s.dev.io_bars.iter().flatten().any(|&(f, l)| f <= last && first <= l))
+            .find(|(_, s)| s.dev.may_master_bus() && s.dev.io_bar_over(first, last))
             .map(|(h, s)| (h.0, s.user_settled()))
     })
+}
+
+/// Book the ports `first..=last` about to be opened ([`Bus::claim_user_ports`]).
+pub fn claim_user_ports(first: u16, last: u16) -> bool {
+    with(|b| b.claim_user_ports(first, last))
+}
+
+/// Give back the booking of [`claim_user_ports`] for ports that were not opened.
+pub fn unclaim_user_ports(first: u16, last: u16) {
+    with(|b| b.unclaim_user_ports(first, last))
 }
 
 /// [`user_window`] and book the mapping about to be made ([`Bus::claim_user_window`]).

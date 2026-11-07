@@ -149,6 +149,11 @@ impl Device {
         }
     }
 
+    /// Does one of the device's I/O BARs hold a port of `first..=last`?
+    pub fn io_bar_over(&self, first: u16, last: u16) -> bool {
+        self.io_bars.iter().flatten().any(|&(f, l)| f <= last && first <= l)
+    }
+
     const fn blank(kind: BusKind) -> Self {
         Device {
             kind,
