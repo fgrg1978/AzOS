@@ -197,38 +197,77 @@ fn a_map_that_failed_in_the_page_table_is_flushed_back_or_keeps_its_frames() {
     assert!(!d.0.lock().unwrap().is_empty());
 }
 
-/// **The boot's notes at settle: a Block the unit refused is noted as nothing
-/// and the function keeps the pass-through it was placed in; a translating one
-/// is `Translate`.** This is the sequence `iommu_init` and `iommu_settle` run
-/// (`kernel/src/boot/dma.rs`), over the log the window policy reads.
+/// **The boot's notes: an attach the unit refused is noted as nothing, and
+/// the function keeps the pass-through it was placed in; a translating one is
+/// `Translate`.** This runs the functions the kernel's `iommu_init` and
+/// `iommu_settle` call (`kernel/src/boot/dma.rs`), over the log the window
+/// policy reads.
 ///
-/// **Canary.** `attach-assumed-canary`: a refused Block is noted as Block.
+/// **Canary.** `attach-assumed-canary`: a refused attach is noted as attached.
 #[test]
 fn settle_notes_a_refused_block_as_nothing_and_a_translating_function_as_translate() {
-    use azos_iommu::{settle, settled_as, AttachLog, Attached, Settled};
+    use azos_iommu::{attach_noting, settle, settle_function, AttachLog, Attached, Settled};
+    let unit = FakeUnit::leak(PtKind::RiscvSv, 3);
     let mut log: AttachLog<4> = AttachLog::new();
-    // iommu_init: every function was attached as placed.
-    for rid in [0x10, 0x18, 0x20] {
-        assert!(log.note(rid, Attached::from(DomainMode::Bypass)));
+    // iommu_init: every function is attached as placed; the unit refuses 0x28.
+    unit.refuse_attach.lock().unwrap().push(0x28);
+    for rid in [0x10, 0x18, 0x20, 0x28] {
+        let r = attach_noting(unit, rid, DomainMode::Bypass, &mut |how| {
+            log.note(rid, how);
+        });
+        assert_eq!(r.is_ok(), rid != 0x28);
     }
-    // 0x10: no driver, and the unit refused its Block.
+    assert_eq!(log.get(0x28), None, "a refused attach is not noted");
+    // 0x10: no driver, and the unit refuses its Block.
+    unit.refuse_attach.lock().unwrap().push(0x10);
     let blocked = settle(false, false);
     assert_eq!(blocked, Settled::Blocked);
-    if let Some(how) = settled_as(blocked, false) {
+    assert!(settle_function(unit, 0x10, blocked, &mut |how| {
         log.note(0x10, how);
-    }
+    })
+    .is_err());
+    assert_eq!(log.get(0x10), Some(Attached::Bypass), "the function keeps what it had");
     assert!(!log.confines(0x10), "a function whose Block was refused reads confined");
     // 0x18: no driver, Block accepted.
-    if let Some(how) = settled_as(settle(false, false), true) {
+    settle_function(unit, 0x18, settle(false, false), &mut |how| {
         log.note(0x18, how);
-    }
+    })
+    .unwrap();
     assert!(log.confines(0x18));
+    assert!(unit.attached.lock().unwrap().contains(&(0x18, DomainMode::Block)), "the unit was asked");
     // 0x20: its driver enabled a translating domain.
-    if let Some(how) = settled_as(settle(true, true), true) {
+    settle_function(unit, 0x20, settle(true, true), &mut |how| {
         log.note(0x20, how);
-    }
+    })
+    .unwrap();
     assert_eq!(log.get(0x20), Some(Attached::Translate));
-    assert_eq!(settled_as(settle(true, false), true), None, "pass-through keeps what init noted");
+    // Pass-through keeps what init noted and asks the unit nothing.
+    let asked = unit.attached.lock().unwrap().len();
+    settle_function(unit, 0x20, settle(true, false), &mut |_| panic!("pass-through notes nothing")).unwrap();
+    assert_eq!(unit.attached.lock().unwrap().len(), asked);
+}
+
+/// **A ring-3 domain is noted as translating only once the unit took it.**
+///
+/// **Canary.** `translate-assumed-canary`: it is noted before it is enabled.
+#[test]
+fn a_domain_is_noted_translating_only_once_the_unit_took_it() {
+    use azos_iommu::{enable_noting, AttachLog, Attached};
+    let (mem, unit) = (TestMem::leak(), FakeUnit::leak(PtKind::RiscvSv, 3));
+    let mut log: AttachLog<2> = AttachLog::new();
+    let mut d = IoDomain::<8>::new(0x30, Flavour::Riscv, unit.fmt, unit, mem, true).unwrap();
+    unit.refuse_attach.lock().unwrap().push(0x30);
+    assert!(enable_noting(&mut d, &mut |how| {
+        log.note(0x30, how);
+    })
+    .is_err());
+    assert_eq!(log.get(0x30), None, "the unit refused the domain");
+    unit.refuse_attach.lock().unwrap().clear();
+    enable_noting(&mut d, &mut |how| {
+        log.note(0x30, how);
+    })
+    .unwrap();
+    assert_eq!(log.get(0x30), Some(Attached::Translate));
 }
 
 /// **One binding per object, and a binding is ended only by the task that

@@ -140,16 +140,52 @@ impl<const N: usize> AttachLog<N> {
     }
 }
 
-/// What the boot notes for a function once it is settled ([`settle`]):
-/// `Blocked` is `Block` only if the unit accepted the Block (`block_accepted`;
-/// a refusal leaves the function as it was, so nothing is noted); `Translating`
-/// is `Translate`; a function in pass-through keeps what the boot noted.
-pub const fn settled_as(s: Settled, block_accepted: bool) -> Option<Attached> {
-    match s {
-        Settled::Translating => Some(Attached::Translate),
-        Settled::Blocked if block_accepted || cfg!(feature = "attach-assumed-canary") => Some(Attached::Block),
-        Settled::Blocked | Settled::PassThrough => None,
+/// Attach function `rid` as `mode`; `note` says how it is attached only once
+/// the unit accepted it, so a refused attach leaves the function as it was
+/// (the log the window policy reads must not claim more than the unit did).
+pub fn attach_noting(
+    unit: &dyn UnitHandle,
+    rid: u32,
+    mode: DomainMode,
+    note: &mut dyn FnMut(Attached),
+) -> Result<(), IommuError> {
+    let attached = unit.attach(rid, mode);
+    if attached.is_ok() || cfg!(feature = "attach-assumed-canary") {
+        note(mode.into());
     }
+    attached
+}
+
+/// Settle function `rid` as `s` ([`settle`]): `Translating` is `Translate`
+/// (its driver's domain is enabled); `Blocked` attaches Block and is noted
+/// only if the unit accepted it; a function in pass-through keeps what the
+/// boot noted.
+pub fn settle_function(
+    unit: &dyn UnitHandle,
+    rid: u32,
+    s: Settled,
+    note: &mut dyn FnMut(Attached),
+) -> Result<(), IommuError> {
+    match s {
+        Settled::Translating => {
+            note(Attached::Translate);
+            Ok(())
+        }
+        Settled::Blocked => attach_noting(unit, rid, DomainMode::Block, note),
+        Settled::PassThrough => Ok(()),
+    }
+}
+
+/// Enable `domain`; `note` says `Translate` only if the unit took it.
+pub fn enable_noting(domain: &mut dyn azos_dma::DomainOps, note: &mut dyn FnMut(Attached)) -> Result<(), azos_dma::DmaError> {
+    if cfg!(feature = "translate-assumed-canary") {
+        note(Attached::Translate);
+    }
+    domain.enable()?;
+    if !cfg!(feature = "translate-assumed-canary") {
+        note(Attached::Translate);
+    }
+    Ok(())
 }
 
 /// Which IOMMU a unit is.

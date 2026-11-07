@@ -13421,6 +13421,8 @@ host_job host_canary_row "ring-3: dt unclassified master canary" hwbus-tests dt-
     a_dt_node_masters_the_bus_unless_it_is_a_known_peripheral
 host_job host_canary_row "ring-3: dt master window canary" topology-tests dt-unknown-peripheral-canary \
     a_writable_window_on_an_unclassified_or_known_dt_master_needs_the_policy
+host_job host_canary_row "ring-3: dt bare token canary" hwbus-tests dt-bare-token-canary \
+    a_bare_peripheral_token_in_a_compatible_does_not_make_a_peripheral
 host_job host_canary_row "ring-3: io port master canary" topology-tests ioport-master-canary \
     a_port_grant_over_a_bus_masters_io_bar_needs_the_policy
 host_job host_canary_row "ring-3: io port booking canary" hwbus-tests ports-claim-canary \
@@ -13455,6 +13457,8 @@ host_job host_canary_row "ring-3: msi grant record silent canary (ipc)" ipc-test
     an_msi_slot_is_minted_only_where_the_platform_has_msi
 host_job host_canary_row "ring-3: attach at settle canary" iommu-tests attach-assumed-canary \
     settle_notes_a_refused_block_as_nothing_and_a_translating_function_as_translate
+host_job host_canary_row "ring-3: translate noted before enable canary" iommu-tests translate-assumed-canary \
+    a_domain_is_noted_translating_only_once_the_unit_took_it
 host_job host_canary_row "dma: failed map frees unconfirmed block canary" dma-tests map-failed-frees-canary \
     a_block_whose_map_may_have_landed_stays_allocated_and_counted
 # Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two

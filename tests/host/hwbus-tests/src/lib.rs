@@ -267,6 +267,26 @@ fn a_dt_node_masters_the_bus_unless_it_is_a_known_peripheral() {
     assert_eq!(dt_role(["vendor,never-heard-of-it"].into_iter()), DtRole::Unknown);
 }
 
+/// **A peripheral is known by its whole `compatible`, not by a bare token:**
+/// a vendor's `i2c`, `uart` or `serial` block may carry a DMA engine of its own
+/// (Qualcomm GENI), so a name the table does not list masters the bus, and the
+/// listed ones do not.
+///
+/// **Canary.** `dt-bare-token-canary`: `i2c` or `uart` in a name makes a
+/// peripheral of it.
+#[test]
+fn a_bare_peripheral_token_in_a_compatible_does_not_make_a_peripheral() {
+    for c in [&b"vendor,fast-i2c\0"[..], b"acme,uart\0", b"vendor,serial-engine\0", b"vendor,rtc-v2\0", b"vendor,gpio-wide\0"] {
+        assert!(dt(c, "m@1").may_master_bus(), "{:?}", String::from_utf8_lossy(c));
+        assert_eq!(dt_role([std::str::from_utf8(&c[..c.len() - 1]).unwrap()].into_iter()), DtRole::Unknown);
+    }
+    for c in [&b"snps,designware-i2c\0"[..], b"arm,pl011\0arm,primecell\0", b"ns16550a\0", b"spacemit,k1-i2c\0"] {
+        assert!(!dt(c, "p@1").may_master_bus(), "{:?}", String::from_utf8_lossy(c));
+    }
+    // A listed name next to a controller token is still a master.
+    assert_eq!(dt_role(["snps,designware-i2c", "qcom,geni-i2c"].into_iter()), DtRole::Master);
+}
+
 /// **A peripheral that the firmware gave a DMA property is a master:** the
 /// properties are the firmware's statement and outrank the table.
 #[test]

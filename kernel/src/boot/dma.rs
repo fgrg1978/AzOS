@@ -614,13 +614,12 @@ mod hw {
         let i = POOL.iter().position(|s| s.with(|_| ()).is_none())?;
         let slot = &POOL[i];
         let mut d = IoDomain::<ENTRIES>::new(rid, u.flavour, u.fmt, u.unit, &MEM, u.coherent).ok()?;
-        if azos_dma::DomainOps::enable(&mut d).is_err() {
+        if azos_iommu::enable_noting(&mut d, &mut |how| attached(rid, how)).is_err() {
             azos_drv_sys::kerr!("[IOMMU] {:#06x}: ring-3 domain refused by the unit", rid);
             return None;
         }
         slot.set(d);
         RING3[i].store(true, Ordering::Release);
-        attached(rid, Attached::Translate);
         if azos_dma::registry::install_for(rid, slot).is_err() {
             azos_drv_sys::kerr!("[IOMMU] {:#06x}: ring-3 domain not recorded (registry full)", rid);
         }
@@ -807,11 +806,10 @@ mod hw {
             let rid = info.bdf.requester_id();
             let place = placement(rid, crate::boot::hwbus::driver_of(info), f.own);
             let mode = if matches!(place, Placement::Block) { DomainMode::Block } else { DomainMode::Bypass };
-            if let Err(e) = f.unit.attach(rid, mode) {
+            if let Err(e) = azos_iommu::attach_noting(f.unit, rid, mode, &mut |how| attached(rid, how)) {
                 azos_drv_sys::kerr!("[IOMMU] {}: {:?} refused: {:?}", info.bdf, mode, e);
                 continue;
             }
-            attached(rid, mode.into());
             match place {
                 Placement::Translate(driver) => match install(&f, rid, pool.next()) {
                     Ok(()) => kprintln!("[IOMMU] {} {}: domain ready, pass-through until its driver enables it", info.bdf, driver),
@@ -861,28 +859,22 @@ mod hw {
             let enabled = POOL.iter().any(|s| s.with(|d| d.dev() == rid && d.enabled()) == Some(true));
             // Canary: a function whose driver gave up keeps what the boot gave it.
             let bound = crate::boot::hwbus::pci_bound(info) || canary!("iommu-fail-open");
-            match azos_iommu::settle(bound, enabled) {
-                Settled::Translating => {
-                    if let Some(how) = azos_iommu::settled_as(Settled::Translating, true) {
-                        attached(rid, how);
-                    }
+            let settled = azos_iommu::settle(bound, enabled);
+            let result = azos_iommu::settle_function(unit, rid, settled, &mut |how| attached(rid, how));
+            match (settled, result) {
+                (Settled::Translating, _) => {
                     translated += 1;
                     kprintln!("[IOMMU] {} {}: translating", info.bdf, driver.unwrap_or("?"));
                 }
-                Settled::PassThrough => passed += 1,
-                Settled::Blocked => match unit.attach(rid, DomainMode::Block) {
-                    Ok(()) => {
-                        if let Some(how) = azos_iommu::settled_as(Settled::Blocked, true) {
-                            attached(rid, how);
-                        }
-                        blocked += 1;
-                        kprintln!("[IOMMU] {}: DMA blocked (its driver did not bind)", info.bdf);
-                    }
-                    Err(e) => {
-                        passed += 1;
-                        azos_drv_sys::kerr!("[IOMMU] {}: no driver, Block refused, DMA NOT confined: {:?}", info.bdf, e);
-                    }
-                },
+                (Settled::PassThrough, _) => passed += 1,
+                (Settled::Blocked, Ok(())) => {
+                    blocked += 1;
+                    kprintln!("[IOMMU] {}: DMA blocked (its driver did not bind)", info.bdf);
+                }
+                (Settled::Blocked, Err(e)) => {
+                    passed += 1;
+                    azos_drv_sys::kerr!("[IOMMU] {}: no driver, Block refused, DMA NOT confined: {:?}", info.bdf, e);
+                }
             }
         }
         kprintln!("[IOMMU] {} function(s) translating, {} in pass-through, {} blocked", translated, passed, blocked);

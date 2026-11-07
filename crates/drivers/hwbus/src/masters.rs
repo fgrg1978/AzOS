@@ -11,10 +11,16 @@
 //! registers of a master points it at any memory, so a node nobody classified
 //! is not trusted with a writable window.
 //!
-//! A token matches as a substring of any `compatible` string, so a vendor's
-//! spelling of a family (`snps,dwc3`, `spacemit,k1-dwc3`) lands in the same
-//! row. A master token wins over a peripheral one: `compatible` lists most
-//! specific first, and a node that names a controller anywhere is one.
+//! A master token matches as a substring of any `compatible` string, so a
+//! vendor's spelling of a family (`snps,dwc3`, `spacemit,k1-dwc3`) lands in the
+//! same row. A peripheral is known by its whole `compatible` string, never by
+//! a substring: a bare `i2c`, `uart` or `serial` in a name says what the
+//! register block is, not that it has no DMA engine of its own (Qualcomm's
+//! GENI serial engines, a vendor's UART with a built-in controller), so a
+//! name the table does not list is a master, and a device is added to the
+//! table after its binding was read. A master token wins over a peripheral
+//! name: `compatible` lists most specific first, and a node that names a
+//! controller anywhere is one.
 
 /// What a device's `compatible` list says about its DMA.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,21 +49,30 @@ const MASTERS: &[&str] = &[
     "geni", "qup", "uartdm",
 ];
 
-/// Peripherals that only answer register accesses.
+/// Peripherals that only answer register accesses, by their whole
+/// `compatible` string.
 const PERIPHERALS: &[&str] = &[
-    "uart", "serial", "ns16550", "ns8250", "pl011",
-    "rtc", "pl031",
-    "gpio", "pl061",
-    "i2c", "pwm", "wdt", "watchdog", "pinctrl", "thermal",
-    "sifive,test", "syscon",
+    "arm,pl011", "ns16550a", "ns16550", "ns8250", "brcm,bcm2835-aux-uart",
+    "arm,pl031", "google,goldfish-rtc",
+    "arm,pl061", "spacemit,k1-gpio",
+    "snps,designware-i2c", "spacemit,k1-i2c",
+    "spacemit,k1-pwm", "starfive,jh7110-pwm", "opencores,pwm-v1",
+    "starfive,jh7110-wdt", "starfive,jh7110-sys-pinctrl",
+    "sifive,test0", "sifive,test1", "syscon",
+    "spacemit,k1-syscon-apbc", "spacemit,k1-syscon-mpmu", "spacemit,k1-syscon-apmu",
+    "azos,thermal-fixture",
 ];
+
+/// Names the old substring rule took for peripherals; kept only for the canary.
+const BARE_TOKENS: &[&str] = &["uart", "serial", "rtc", "gpio", "i2c", "pwm", "wdt", "pinctrl", "thermal"];
 
 /// The role the `compatible` strings `list` (most specific first) give.
 pub fn dt_role<'a>(list: impl Iterator<Item = &'a str>) -> DtRole {
     let (mut master, mut peripheral) = (false, false);
     for c in list {
         master |= MASTERS.iter().any(|t| c.contains(t));
-        peripheral |= PERIPHERALS.iter().any(|t| c.contains(t));
+        peripheral |= PERIPHERALS.contains(&c)
+            || (cfg!(feature = "dt-bare-token-canary") && BARE_TOKENS.iter().any(|t| c.contains(t)));
     }
     if master {
         DtRole::Master

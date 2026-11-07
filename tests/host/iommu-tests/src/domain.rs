@@ -17,6 +17,8 @@ pub(crate) struct FakeUnit {
     pub(crate) fail_flush: Mutex<bool>,
     /// The next this many flushes fail, then they succeed.
     pub(crate) fail_flushes: Mutex<u32>,
+    /// Functions whose attach the unit refuses.
+    pub(crate) refuse_attach: Mutex<Vec<u32>>,
 }
 
 impl FakeUnit {
@@ -27,6 +29,7 @@ impl FakeUnit {
             flushes: Mutex::new(vec![]),
             fail_flush: Mutex::new(false),
             fail_flushes: Mutex::new(0),
+            refuse_attach: Mutex::new(vec![]),
         }))
     }
     pub(crate) fn flushed(&self) -> usize {
@@ -36,6 +39,9 @@ impl FakeUnit {
 
 impl UnitHandle for FakeUnit {
     fn attach(&self, dev: u32, mode: DomainMode) -> Result<(), IommuError> {
+        if self.refuse_attach.lock().unwrap().contains(&dev) {
+            return Err(IommuError::Timeout("fake"));
+        }
         self.attached.lock().unwrap().push((dev, mode));
         Ok(())
     }

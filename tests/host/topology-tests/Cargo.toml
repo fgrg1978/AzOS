@@ -32,6 +32,7 @@ ioport-open-silent-canary = []
 # Host canary (tests/host/topology-tests): a refused line grant writes no decision record.
 line-grant-silent-canary = []
 dt-unknown-peripheral-canary = ["azos_hwbus/dt-unknown-peripheral-canary"]
+dt-bare-token-canary = ["azos_hwbus/dt-bare-token-canary"]
 # Declared for the pulled endpoint.rs's `calls_set_link` canary (syscall-tests runs it).
 calls-any-binder-canary = []
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.

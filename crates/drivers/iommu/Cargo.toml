@@ -35,3 +35,5 @@ map-keeps-frames-canary = []
 # Host canary only: a function the log never saw, or saw in pass-through, reads as confined
 # (`a_function_the_unit_did_not_block_is_not_confined` goes red).
 attach-assumed-canary = []
+# Canary: a domain is noted as translating before the unit took it.
+translate-assumed-canary = []

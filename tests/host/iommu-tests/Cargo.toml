@@ -27,6 +27,7 @@ ring3-reuse-canary = ["azos_dma/ring3-reuse-canary"]
 park-drop-canary = ["azos_dma/park-drop-canary"]
 map-keeps-frames-canary = ["azos_iommu/map-keeps-frames-canary"]
 attach-assumed-canary = ["azos_iommu/attach-assumed-canary"]
+translate-assumed-canary = ["azos_iommu/translate-assumed-canary"]
 
 [profile.release]
 overflow-checks = true
