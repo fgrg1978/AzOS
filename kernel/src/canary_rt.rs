@@ -24,6 +24,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// Every runtime canary, by its command-line name. The bit of a name is its
 /// index. Add a name here, then use it at its site with `canary!`.
 pub(crate) const NAMES: &[&str] = &[
+    // boot/thermal.rs `ClassSensors`: the runtime reads a constant, not the
+    // zone's sensor instance (gate rows `thermal: ... class canary`).
+    "thermal-class",
     // boot/early.rs: no task stack gets its guard page
     // (ktest `sched_stack_guards_unmapped`).
     "stack-guard-skip",

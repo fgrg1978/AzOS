@@ -215,8 +215,8 @@ struct ClassSensors {
 
 impl SensorBank for ClassSensors {
     fn read_mdeg(&mut self, sensor: u8) -> Result<i32, SensorError> {
-        // CANARY, never in a real build: a cool machine whatever the sensor says.
-        if cfg!(feature = "thermal-class-canary") {
+        // Runtime canary `thermal-class`: a cool machine whatever the sensor says.
+        if canary!("thermal-class") {
             return Ok(40_000);
         }
         sensor_class::temperature_mdeg(self.base.saturating_add(sensor as u32)).map_err(|e| match e {

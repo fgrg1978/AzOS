@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The `Sensor` interface: one sensor type.
+//! The `Sensor` interface: one sensor instance.
 //!
-//! The endpoint's badge is the sensor type (`endpoint = "sensor.0"` the IMU
-//! ... `"sensor.9"` the power monitor, [`azos_abi::sensor_sample`]'s list);
-//! there is no type argument, so a task cannot ask for a sensor it was not
+//! The endpoint's badge is the instance of the kernel's sensor class
+//! (`azos_drv_base::sensors`): `endpoint = "sensor.0"` the IMU ...
+//! `"sensor.9"` the power monitor, the order the board registers them in.
+//! There is no instance argument, so a task cannot ask for a sensor it was not
 //! granted. Every op observes and needs `READ`.
 //!
 //! A reading is the sample header's two fields and up to [`SAMPLE_BYTES`]
-//! bytes of record. A type whose record is larger (a LiDAR scan, a camera
-//! frame) is not read through this interface, and neither has a ring-3 path
-//! (a camera frame goes to the brain over the kernel's own link).
+//! bytes of record, laid out by the instance's channels. A sensor whose record
+//! is larger (a LiDAR scan, a camera frame) is not read through this interface,
+//! and neither has a ring-3 path (a camera frame goes to the brain over the
+//! kernel's own link).
 //!
 //! The control loops that need a sensor at their own rate bind it to the
 //! vDSO page with `bind_vdso` and read it there with no call at all.
@@ -21,7 +23,7 @@ use azos_idl::{azos_interface, Reader, Wire, Writer};
 /// The interface id (ASCII "SENS").
 pub const SENSOR_ID: u32 = 0x5345_4E53;
 
-/// Sensor types the interface serves: 0 (IMU) to 9 (power monitor).
+/// `sensor.<n>` endpoints a topology can name: 0 (IMU) to 9 (power monitor).
 pub const TYPES: u32 = 10;
 /// Words of record in a reading.
 pub const SAMPLE_WORDS: usize = 3;

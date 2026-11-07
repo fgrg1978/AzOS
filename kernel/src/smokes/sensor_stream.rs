@@ -11,11 +11,12 @@
 //! **Canary**: the kernel feature `sensor-drop-canary` (the producer drops
 //! every 10th sample): delivered falls short of the ticks, `not ok`.
 
-use azos_drv_base::sensors::{board, value, Sensor, Source};
+use azos_drv_base::sensors::{board, stream, value, Sensor, Source, Stream};
 use azos_drv_sys::timebase::{now, vdso_ns, TIMER_FREQ};
 
 /// A sensor of the IMU's shape that only this test feeds.
-static VIRTUAL_IMU: Sensor = Sensor::new(board::IMU_SENSOR.channels(), Source::Stream);
+static VIRTUAL_LOG: Stream = stream();
+static VIRTUAL_IMU: Sensor = Sensor::new(board::IMU_SENSOR.channels(), Source::Stream(&VIRTUAL_LOG));
 
 /// Acquisitions to publish: two seconds at the default rate, and well past
 /// the stream's depth, so the reader keeping up is what keeps the log whole.
@@ -25,7 +26,7 @@ azos_ktest::ktest_late! {
     fn sensors_virtual_imu_stream_loses_no_sample() {
         let period = TIMER_FREQ / azos_limits::SENSOR_IMU_HZ as u64;
         let Some(mut tx) = VIRTUAL_IMU.producer() else { return Err("the virtual IMU's producer was taken") };
-        let mut rx = VIRTUAL_IMU.cursor();
+        let Some(mut rx) = VIRTUAL_IMU.cursor() else { return Err("the virtual IMU has no stream") };
         let (mut next, mut last, mut gaps) = (now(), 0i64, 0u32);
         for n in 1..=TICKS {
             next += period;

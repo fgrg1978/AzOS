@@ -280,6 +280,7 @@ safe-mode-smoke	pending
 sched-hooks-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 sched-rt-smoke	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 sched-tick-probe	pending	
+sensor-drop-canary	host-shared	crates/drivers/base/src/sensors.rs (Producer::publish): drivers-tests builds the same source with this feature
 sensor-ts-freeze	pending	
 sensor-ts-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 slab-freelist-canary	hot	crates/core/mm/src/slab.rs: the slab allocator

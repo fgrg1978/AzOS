@@ -27891,7 +27891,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
             par_ready
             "$QEMU" -machine virt -nographic -bios default -smp 2 -icount shift=0,sleep=off \
-                -kernel "$kimg" >"$log" 2>&1 &
+                -kernel "$kimg" ${app:+-append "$app"} >"$log" 2>&1 &
         else
             if ! a64_kbuild "$feats"; then
                 bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
@@ -27899,7 +27899,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
-                -icount shift=0,sleep=off -nographic -kernel "$kimg" >"$log" 2>&1 &
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" ${app:+-append "$app"} >"$log" 2>&1 &
         fi
         # Measured: about 60 s of host time per run.
         local pid=$! i=0
@@ -27983,11 +27983,11 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # (`[THERMAL] zone 0 trip-up 0`, `... level 2`, `... level 0`). Canaries:
     # `thermal-tick-canary` (the task never ticks) -> throttle FAIL;
     # `thermal-floor-canary` (the framework caps under the floors) -> floor FAIL;
-    # `thermal-class-canary` (the runtime reads a constant, not the zone's sensor
-    # instance of the sensor class, which is where the fake temperature is read
-    # from) -> throttle FAIL.
-    thermal_row() { # thermal_row <label> <isa: rv|arm> <features> <expect: PASS|throttle|floor>
-        local label="$1" isa="$2" feats="$3" expect="$4"
+    # runtime canary `thermal-class` (the runtime reads a constant, not the zone's
+    # sensor instance of the sensor class, which is where the fake temperature is
+    # read from) -> throttle FAIL.
+    thermal_row() { # thermal_row <label> <isa: rv|arm> <features> <expect: PASS|throttle|floor> [kernel command line]
+        local label="$1" isa="$2" feats="$3" expect="$4" app="${5:-}"
         if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -28060,7 +28060,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         th_name=riscv64; [ "$th_isa" = arm ] && th_name=aarch64
         par_row thermal_row "thermal: $th_name throttle/degrade/recover" "$th_isa" "qemu,thermal-smoke" PASS
         par_row thermal_row "thermal: $th_name tick canary" "$th_isa" "qemu,thermal-tick-canary" throttle
-        par_row thermal_row "thermal: $th_name class canary" "$th_isa" "qemu,thermal-class-canary" throttle
+        par_row thermal_row "thermal: $th_name class canary" "$th_isa" "qemu,thermal-smoke" throttle "canary=thermal-class"
         par_row thermal_row "thermal: $th_name floor canary" "$th_isa" "qemu,thermal-floor-canary" floor
     done
 

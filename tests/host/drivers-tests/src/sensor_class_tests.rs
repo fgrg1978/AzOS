@@ -5,7 +5,7 @@
 //! The registry is a process-wide static: only
 //! `the_board_registers_its_sensors_in_the_topologys_order` touches it.
 
-use super::sensors::{self, board, value, ReadError, Sample, Sensor, SensorChip, Source, STREAM_DEPTH};
+use super::sensors::{self, board, stream, value, ReadError, Sample, Sensor, SensorChip, Source, Stream, STREAM_DEPTH};
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering::SeqCst};
 
 /// Samples carrying their number in the first word, so a reader can see a gap
@@ -20,7 +20,8 @@ fn number(s: &Sample) -> u64 {
     s.w[0]
 }
 
-static VIRTUAL: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream);
+static VIRTUAL_LOG: Stream = stream();
+static VIRTUAL: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream(&VIRTUAL_LOG));
 
 /// **A stream loses no sample at the rate it is read.** A virtual IMU is driven
 /// for `TICKS` acquisitions at rate R while one reader drains it every
@@ -36,7 +37,7 @@ fn a_stream_loses_no_sample_at_the_rate_it_is_read() {
     const TICKS: u64 = 100;
     let mut tx = VIRTUAL.producer().expect("the one producer");
     assert!(VIRTUAL.producer().is_none(), "a second producer cannot exist");
-    let mut rx = VIRTUAL.cursor();
+    let mut rx = VIRTUAL.cursor().expect("a stream");
     let mut seen = Vec::new();
     for t in 1..=TICKS {
         tx.publish(numbered(t));
@@ -55,7 +56,8 @@ fn a_stream_loses_no_sample_at_the_rate_it_is_read() {
     assert_eq!(seen, (1..=TICKS).collect::<Vec<_>>(), "in order, no gap");
 }
 
-static SLOW: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream);
+static SLOW_LOG: Stream = stream();
+static SLOW: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream(&SLOW_LOG));
 
 /// A reader that falls further behind than the stream's depth is told how many
 /// samples it lost, and goes on from the oldest one kept.
@@ -65,7 +67,7 @@ static SLOW: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream);
 #[test]
 fn a_reader_that_falls_behind_counts_what_it_lost() {
     let mut tx = SLOW.producer().unwrap();
-    let mut rx = SLOW.cursor();
+    let mut rx = SLOW.cursor().expect("a stream");
     let extra = 5u64;
     for t in 1..=(STREAM_DEPTH as u64 + extra) {
         tx.publish(numbered(t));
@@ -75,7 +77,8 @@ fn a_reader_that_falls_behind_counts_what_it_lost() {
     assert_eq!(number(&first), extra + 1, "it resumes at the oldest kept");
 }
 
-static LATEST: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream);
+static LATEST_LOG: Stream = stream();
+static LATEST: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream(&LATEST_LOG));
 
 /// A read of a stream is the newest sample with the time it was acquired;
 /// before the first publish it is not ready.
@@ -179,7 +182,7 @@ fn the_board_registers_its_sensors_in_the_topologys_order() {
         let got = sensors::get(n).unwrap_or_else(|| panic!("sensor {n} is registered"));
         assert!(core::ptr::eq(&*got as *const Sensor, expect as *const Sensor), "sensor {n}");
     }
-    assert_eq!(sensors::count(), 11);
+    assert!(sensors::get(10).is_some() && sensors::get(11).is_none(), "eleven board sensors, no more");
     assert_eq!(sensors::register_board(&THERMOMETER), Ok(11));
     assert!(sensors::get(12).is_none());
 

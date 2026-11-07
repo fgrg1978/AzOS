@@ -794,7 +794,7 @@ mod geofence {
     }
 
     use super::sensor_bus::{deg7_to_udeg, sample_is_fresh, SensorBus, Sources};
-    use azos_drv_base::sensors::{board, Producer, Sensor, Source};
+    use azos_drv_base::sensors::{board, stream as new_stream, Producer, Sensor, Source};
 
     /// A bus over streams of its own, and the producers of the ones the tests
     /// feed. The board's streams are single-producer statics; a test gets its
@@ -806,7 +806,7 @@ mod geofence {
     }
 
     fn stream(of: &Sensor) -> &'static Sensor {
-        Box::leak(Box::new(Sensor::new(of.channels(), Source::Stream)))
+        Box::leak(Box::new(Sensor::new(of.channels(), Source::Stream(Box::leak(Box::new(new_stream()))))))
     }
 
     fn rig() -> Rig {

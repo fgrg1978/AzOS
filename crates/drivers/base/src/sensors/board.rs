@@ -8,7 +8,7 @@
 //! nothing publishes into it and a read answers `NOT_READY`, which is what the
 //! capability on it was granted for.
 
-use super::{Channel, Quantity as Q, RegisterError, Sample, Sensor, Source, Unit as U};
+use super::{stream, Channel, Quantity as Q, RegisterError, Sample, Sensor, Source, Stream, Unit as U};
 use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
 
 pub const IMU: u32 = 0;
@@ -86,18 +86,31 @@ pub static POWER_CHANNELS: [Channel; 6] = [
 pub static TEMPERATURE_CHANNELS: [Channel; 1] = [ch(Q::Temperature, U::MilliDegC, 4, true, -100_000, 300_000, 0)];
 static IMU_TEMP_CHANNELS: [Channel; 1] = [ch(Q::Temperature, U::CentiDegC, 4, true, -4000, 12_500, IMU_HZ)];
 
-pub static IMU_SENSOR: Sensor = Sensor::new(&IMU_CHANNELS, Source::Stream);
-pub static ODOM_SENSOR: Sensor = Sensor::new(&ODOM_CHANNELS, Source::Stream);
-pub static ENCODER_SENSOR: Sensor = Sensor::new(&ENCODER_CHANNELS, Source::Stream);
-pub static RANGE_SENSOR: Sensor = Sensor::new(&RANGE_CHANNELS, Source::Stream);
-pub static BATTERY_SENSOR: Sensor = Sensor::new(&BATTERY_CHANNELS, Source::Stream);
-pub static GPS_SENSOR: Sensor = Sensor::new(&GPS_CHANNELS, Source::Stream);
-pub static LIDAR_SENSOR: Sensor = Sensor::new(&LIDAR_CHANNELS, Source::Unsupported);
-pub static FLAGS_SENSOR: Sensor = Sensor::new(&FLAGS_CHANNELS, Source::Stream);
-pub static CAMERA_SENSOR: Sensor = Sensor::new(&CAMERA_CHANNELS, Source::Unsupported);
-/// The power monitor of a machine that has none.
-pub static NO_POWER_SENSOR: Sensor = Sensor::new(&POWER_CHANNELS, Source::Stream);
-pub static IMU_TEMP_SENSOR: Sensor = Sensor::new(&IMU_TEMP_CHANNELS, Source::Stream);
+/// A sensor, and its stream when it has one, as the two statics they are.
+macro_rules! sensor {
+    ($(#[$m:meta])* $name:ident, $chans:expr, stream $log:ident) => {
+        static $log: Stream = stream();
+        $(#[$m])* pub static $name: Sensor = Sensor::new(&$chans, Source::Stream(&$log));
+    };
+    ($(#[$m:meta])* $name:ident, $chans:expr, unsupported) => {
+        $(#[$m])* pub static $name: Sensor = Sensor::new(&$chans, Source::Unsupported);
+    };
+}
+
+sensor!(IMU_SENSOR, IMU_CHANNELS, stream IMU_LOG);
+sensor!(ODOM_SENSOR, ODOM_CHANNELS, stream ODOM_LOG);
+sensor!(ENCODER_SENSOR, ENCODER_CHANNELS, stream ENCODER_LOG);
+sensor!(RANGE_SENSOR, RANGE_CHANNELS, stream RANGE_LOG);
+sensor!(BATTERY_SENSOR, BATTERY_CHANNELS, stream BATTERY_LOG);
+sensor!(GPS_SENSOR, GPS_CHANNELS, stream GPS_LOG);
+sensor!(LIDAR_SENSOR, LIDAR_CHANNELS, unsupported);
+sensor!(FLAGS_SENSOR, FLAGS_CHANNELS, stream FLAGS_LOG);
+sensor!(CAMERA_SENSOR, CAMERA_CHANNELS, unsupported);
+sensor!(
+    /// The power monitor of a machine that has none.
+    NO_POWER_SENSOR, POWER_CHANNELS, stream NO_POWER_LOG
+);
+sensor!(IMU_TEMP_SENSOR, IMU_TEMP_CHANNELS, stream IMU_TEMP_LOG);
 
 /// Register the board's sensors in the order of the numbers above. `power` is
 /// the power monitor's (a chip read, or [`NO_POWER_SENSOR`]).

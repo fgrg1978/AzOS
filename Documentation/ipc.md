@@ -558,14 +558,16 @@ never reached, and the window is left as ring 3 wrote it. A pass serves a
 device only when its backing driver declares that the op cannot sleep
 (`khost::ring_served`): the motors and the PWM channels (register writes), a
 GPIO pin on a controller whose `may_sleep` is false (the board's), the I2C
-interface and the I2C-backed sensors (IMU, power monitor) only on a build whose
-bus completes a transfer without sleeping (`i2c::transfer_may_sleep`: not on
-the DesignWare or K1 controllers, which sleep up to `I2C_XFER_TIMEOUT_US` per
-transaction), and the sensors that read a value a task left (encoders,
-odometry, rangefinders, GPS, GPIO lines). Such an op is bounded by its own
-work, not free: it may run inline in a real-time submitter and in the SQ
-poller. Every other device and interface (the ADC and the battery, which wait
-in the ADS1115's queue; the clock, power, network and volume interfaces) and a
+interface and the power monitor (an I2C part, or a ring-3 host's reply) only on
+a build whose bus completes a transfer without sleeping
+(`i2c::transfer_may_sleep`: not on the DesignWare or K1 controllers, which
+sleep up to `I2C_XFER_TIMEOUT_US` per transaction) and a kernel host, and the
+sensors that are streams, copies of the newest sample their task published
+(the IMU, encoders, odometry, rangefinders, battery, GPS, digital lines). Such
+an op is bounded by its own work, not free: it may run inline in a real-time
+submitter and in the SQ poller. Every other device and interface (the ADC,
+which waits in the ADS1115's queue; the clock, power, network and volume
+interfaces) and a
 task-hosted endpoint is refused `-ENOSYS`: the client makes the typed call. `libsys::ioring::Ring::push_call`
 and `reply` write and read the window; `libsys::dev::reply_value` decodes it.
 

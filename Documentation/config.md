@@ -1164,6 +1164,14 @@ The index lists every declared option: 1268.
 | `SECURITY_GENERAL` | `config/axes/Kconfig.security` | General |
 | `SECURITY_HARDENED` | `config/axes/Kconfig.security` | Hardened |
 | `SECURITY_SEPARATION_STATIC` | `config/axes/Kconfig.security` | Separation, static |
+| `SENSOR_IMU_HZ` | `config/subsys/Kconfig.drivers` | Sensors: IMU sample rate (Hz) |
+| `SENSOR_INSTANCES` | `config/subsys/Kconfig.drivers` | Sensors: most instances the Sensor interface serves |
+| `SENSOR_IR_GPIO` | `config/subsys/Kconfig.drivers` | Sensors: GPIO pin of the IR sensor |
+| `SENSOR_ODOM_HZ` | `config/subsys/Kconfig.drivers` | Sensors: odometry and encoder sample rate (Hz) |
+| `SENSOR_PIR_GPIO` | `config/subsys/Kconfig.drivers` | Sensors: GPIO pin of the PIR motion sensor |
+| `SENSOR_SLOW_HZ` | `config/subsys/Kconfig.drivers` | Sensors: rangefinder, battery and digital-line sample rate (Hz) |
+| `SENSOR_SOUND_GPIO` | `config/subsys/Kconfig.drivers` | Sensors: GPIO pin of the sound sensor |
+| `SENSOR_STREAM_DEPTH` | `config/subsys/Kconfig.drivers` | Sensors: samples a stream keeps |
 | `SH_START_TIMEOUT_S` | `config/subsys/Kconfig.console` | User shell: seconds to take the console before the recovery console does |
 | `SLAB_HARDENED` | `config/kernel/Kconfig.hardening` | Harden the slab and buddy free lists (obfuscated links, safe unlink) |
 | `SOC_FRAMEWORKS` | `config/arch/Kconfig.platform` | SoC resource frameworks: clocks, resets, regulators, power domains from the device tree |

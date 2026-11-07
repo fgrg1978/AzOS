@@ -9,6 +9,18 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- The sensor class (`azos_drv_base::sensors`): every sensor is an instance with
+  channels (quantity, unit, width, range, rate), served by the `Sensor`
+  interface and published as a stream (`azos_rings::Log`: one writer, readers
+  with their own cursor and an overrun count). The board's ten sensors keep the
+  topology's `sensor.<n>` numbers; the IMU, odometry, encoders, rangefinders,
+  battery, GPS and digital lines are streams their tasks publish into and the
+  behavior task's sensor bus reads whole; the thermal zones read their
+  temperature from instances (`sfctemp`, the K1's channels, the Pi's firmware,
+  the x86 package sensor). A reading that is not there is not published (the
+  battery and rangefinder no longer answer an invented value), the GPS record is
+  14 bytes, and the rates and digital-line pins are Kconfig
+  ([Documentation/drivers.md](Documentation/drivers.md)).
 - The io_ring carries IDL calls: one entry kind, `OP_CALL`, names a
   kernel-hosted endpoint and a message window in the ring's data buffer, and is
   decided with the checks of `SYS_IPC_CALL` (the owner's profile, the handle in

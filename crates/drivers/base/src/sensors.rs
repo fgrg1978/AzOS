@@ -16,17 +16,17 @@
 //! * [`Source::Unsupported`]: a record that does not fit a sample (a LiDAR
 //!   scan, a camera frame); the descriptor says what the sensor is.
 //!
-//! Instances are numbered by registration. The board's own are registered
-//! first, in the order the topology's `sensor.<n>` endpoints name them
-//! ([`board`]); a bound device's sensor takes the next number and keeps it
-//! for the boot ([`crate::instances`]). The class's limit is Kconfig
-//! `SENSOR_INSTANCES`, the depth of every stream `SENSOR_STREAM_DEPTH`.
+//! Instances are numbered by registration ([`crate::instances`]). The board's
+//! own are registered first, in the order the topology's `sensor.<n>`
+//! endpoints name them ([`board`]), then the temperature sensors a thermal
+//! zone reads. The class's limit is Kconfig `SENSOR_INSTANCES`, the depth of
+//! every stream `SENSOR_STREAM_DEPTH`.
 //!
 //! The single writer of a stream is a property of the type: [`Sensor::producer`]
 //! returns it once. The store masks preemption, so a reader on the same hart
 //! never spins on a store its preempted writer cannot finish.
 
-use crate::instances::{DeviceId, Instances, Lease, RegisterError, UnregisterError};
+use crate::instances::{Instances, Lease, RegisterError};
 pub use azos_devif::sensor::Sample;
 use azos_rings::{Log, Next, Reader, Writer};
 use azos_sync::critical_section;
@@ -36,6 +36,16 @@ pub mod board;
 
 /// Samples every stream keeps.
 pub const STREAM_DEPTH: usize = azos_limits::SENSOR_STREAM_DEPTH as usize;
+
+/// The log a stream sensor publishes into. All zero, so a `static` of it is
+/// `.bss`; it is a static of its own, not a field of the [`Sensor`] (whose
+/// pointers are not zero and would take the log into `.data`).
+pub type Stream = Log<Sample, STREAM_DEPTH>;
+
+/// An empty stream.
+pub const fn stream() -> Stream {
+    Log::new(Sample::EMPTY)
+}
 
 /// Instances the class keeps.
 pub const INSTANCES: usize = azos_limits::SENSOR_INSTANCES as usize;
@@ -164,7 +174,7 @@ pub trait SensorChip: Sync {
 /// Where a sensor's samples come from.
 #[derive(Clone, Copy)]
 pub enum Source {
-    Stream,
+    Stream(&'static Stream),
     Chip(&'static dyn SensorChip),
     Unsupported,
 }
@@ -173,12 +183,11 @@ pub enum Source {
 pub struct Sensor {
     channels: &'static [Channel],
     source: Source,
-    log: Log<Sample, STREAM_DEPTH>,
 }
 
 impl Sensor {
     pub const fn new(channels: &'static [Channel], source: Source) -> Self {
-        Sensor { channels, source, log: Log::new(Sample::EMPTY) }
+        Sensor { channels, source }
     }
 
     pub const fn channels(&self) -> &'static [Channel] {
@@ -198,36 +207,47 @@ impl Sensor {
     pub fn may_sleep(&self) -> bool {
         match self.source {
             Source::Chip(c) => c.may_sleep(),
-            Source::Stream | Source::Unsupported => false,
+            Source::Stream(_) | Source::Unsupported => false,
         }
     }
 
-    /// The sensor's one writer; `None` when it is already out.
-    pub fn producer(&self) -> Option<Producer<'_>> {
-        self.log.writer().map(|w| Producer { w, published: 0 })
+    /// The stream, for a sensor that has one.
+    fn stream(&self) -> Option<&'static Stream> {
+        match self.source {
+            Source::Stream(s) => Some(s),
+            Source::Chip(_) | Source::Unsupported => None,
+        }
+    }
+
+    /// The sensor's one writer; `None` when it is already out, or when the
+    /// sensor has no stream.
+    pub fn producer(&self) -> Option<Producer<'static>> {
+        self.stream()?.writer().map(|w| Producer { w, published: 0 })
     }
 
     /// Samples published so far.
     pub fn published(&self) -> u64 {
-        self.log.head()
+        self.stream().map_or(0, |s| s.head())
     }
 
-    /// The newest sample, or `None` before the first. Bounded: it retries
-    /// only while the producer is inside a store of a few words.
+    /// The newest sample, or `None` before the first (and for a sensor with
+    /// no stream). Bounded: it retries only while the producer is inside a
+    /// store of a few words.
     pub fn latest(&self) -> Option<Sample> {
-        let (seq, s) = self.log.latest();
+        let (seq, s) = self.stream()?.latest();
         (seq != 0).then_some(s)
     }
 
-    /// A reader that sees the samples published from now on.
-    pub fn cursor(&self) -> Cursor<'_> {
-        Cursor { r: self.log.reader(), delivered: 0, overrun: 0 }
+    /// A reader that sees the samples published from now on; `None` for a
+    /// sensor with no stream.
+    pub fn cursor(&self) -> Option<Cursor<'static>> {
+        Some(Cursor { r: self.stream()?.reader(), delivered: 0, overrun: 0 })
     }
 
     /// One reading: the newest published sample, or the device's read.
     pub fn read(&self) -> Result<Sample, ReadError> {
         match self.source {
-            Source::Stream => self.latest().ok_or(ReadError::NotReady),
+            Source::Stream(_) => self.latest().ok_or(ReadError::NotReady),
             Source::Chip(c) => c.read(),
             Source::Unsupported => Err(ReadError::Unsupported),
         }
@@ -311,21 +331,6 @@ pub fn get(n: u32) -> Option<Lease<'static, Sensor>> {
 /// Register one of the board's own sensors; its instance number.
 pub fn register_board(s: &'static Sensor) -> Result<u32, RegisterError> {
     SENSORS.register_board(s)
-}
-
-/// Register bound device `dev`'s sensor; its instance number.
-pub fn register(dev: DeviceId, s: &'static Sensor) -> Result<u32, RegisterError> {
-    SENSORS.register(dev, s)
-}
-
-/// Withdraw device `dev`'s sensor once no read is inside it.
-pub fn unregister(dev: DeviceId, patience: &mut dyn FnMut() -> bool) -> Result<u32, UnregisterError> {
-    SENSORS.unregister(dev, patience)
-}
-
-/// How many sensors are registered.
-pub fn count() -> usize {
-    SENSORS.count()
 }
 
 /// The temperature sensor `n` reads, in milli-degrees Celsius: the sensor's
