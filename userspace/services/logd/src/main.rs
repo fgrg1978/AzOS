@@ -38,9 +38,11 @@ use azos_libsys as sys;
 #[path = "../../../../crates/drivers/sys/src/klog/wire.rs"]
 mod wire;
 mod keep;
+mod stall;
 mod store;
 
 use keep::Keep;
+use stall::Stall;
 use store::{Store, Vol};
 // The record substrate's reader, named by path (the seccomp scanner reads
 // `use sys::` lists as function imports).
@@ -67,9 +69,6 @@ const DIR: &[u8] = b"fat/";
 
 /// Bytes of one batch: the lines a period's write carries at most.
 const BATCH: usize = 4096;
-
-/// Polls a record can stay unfinished before the sink gives up on it.
-const STUCK_POLLS: u32 = 5;
 
 /// The volume, over libsys: opens are beneath the root `Cap<Dir>`, and the
 /// write authority is the row's `/fat` tree.
@@ -266,8 +265,8 @@ struct Sink {
     /// The reader as of the last write the files hold: a failed write puts
     /// `rd` back to it.
     committed: Merge<PAYLOAD>,
-    /// The ring and cursor the reader is stuck on, and for how many polls.
-    stuck: (usize, u64, u32),
+    /// The unfinished record the reader is waiting on.
+    stall: Stall,
     /// Which decision records reach the files.
     keep: Keep,
     /// Periods whose write the volume took, up to the two that print the
@@ -331,7 +330,7 @@ impl Sink {
             }
             match self.rd.next(&mut env, &mut payload) {
                 Step::Record { .. } => {
-                    self.stuck = (0, 0, 0);
+                    self.stall.clear();
                     if env.source == SOURCE_DECISION && !self.keep.admit((env.kind >> 8) as u8) {
                         continue;
                     }
@@ -345,10 +344,9 @@ impl Sink {
                     // A producer claimed it and has not finished: try again
                     // next period, and give up on it if it never does.
                     let c = self.rd.cursor(ring);
-                    self.stuck = if (self.stuck.0, self.stuck.1) == (ring, c) { (ring, c, self.stuck.2 + 1) } else { (ring, c, 1) };
-                    if self.stuck.2 >= STUCK_POLLS {
+                    let (head, entries) = self.rd.region().ring(ring).map_or((c, 0), |r| (r.head(), r.entries()));
+                    if self.stall.give_up(ring, c, head.saturating_sub(c), entries) {
                         self.rd.skip(ring);
-                        self.stuck = (0, 0, 0);
                         self.note(ring, b"records lost: ", 1);
                         continue;
                     }
@@ -421,7 +419,7 @@ fn run() -> i32 {
         }
     }
     say(b"[logd] AzOS record sink (klog.ring to KLOGn.TXT)\n");
-    let mut sink = Sink { vol, store, hz, rd, committed: rd, stuck: (0, 0, 0),
+    let mut sink = Sink { vol, store, hz, rd, committed: rd, stall: Stall::new(),
         keep: Keep::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64),
         written: 0, batch: [0; BATCH], n: 0 };
     // The start line: where this run begins, so a reader of the files sees the

@@ -39,6 +39,9 @@ mod store;
 #[allow(dead_code)]
 #[path = "../../../../userspace/services/logd/src/keep.rs"]
 mod keep;
+#[allow(dead_code)]
+#[path = "../../../../userspace/services/logd/src/stall.rs"]
+mod stall;
 
 // The toolbox's `log` tool: the filter and the layout of what it prints.
 #[allow(dead_code)]
@@ -116,6 +119,7 @@ mod lock_tests {
 mod logd_store;
 #[cfg(test)]
 mod logd_keep;
+mod logd_stall;
 #[cfg(test)]
 mod log_tool;
 

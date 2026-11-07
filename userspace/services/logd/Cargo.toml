@@ -11,6 +11,11 @@ azos_libsys = { path = "../../../crates/core/libsys" }
 azos_abi = { path = "../../../crates/core/abi" }
 azos_limits = { path = "../../../crates/core/limits" }
 
+[features]
+# Gate canaries of the host rows over this program's pure modules
+# (tests/host/libsys-tests); never enabled in an image.
+canary-logd-stall-polls-only = []
+
 [profile.release]
 opt-level = "s"
 lto = true

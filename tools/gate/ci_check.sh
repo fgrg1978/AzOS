@@ -12087,6 +12087,7 @@ host_job host_canary_row "records: overrun canary" rings-tests canary-no-overrun
 host_job host_canary_row "records: recheck canary" rings-tests canary-no-recheck a_record_overwritten_during_the_copy_is_not_handed_on
 host_job host_canary_row "records: pending holds canary" rings-tests canary-record-pending-empty a_producer_mid_store_holds_the_merge_back
 host_job host_canary_row "records: replay renumber canary" rings-tests canary-record-renumber replay_keeps_every_sequence_number
+host_job host_canary_row "logd: stalled record canary" libsys-tests canary-logd-stall-polls-only a_record_the_ring_left_behind_is_given_up_at_once
 # The host dry boot (tools/gate/azos_sim, `make sim`): its suite, and its canary
 # (`sim-cpu-canary`: it admits on one CPU more than it was given), under which
 # the named test, alone, must go red. Its QEMU rows are "topology: dry boot on

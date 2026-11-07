@@ -508,11 +508,7 @@ pub(crate) fn install_sched_hooks() {
     if azos_decision::DURABLE {
         azos_decision::set_durable_sink(azos_actuation::logger::decision_refusal_sink);
     }
-    // The clock the records are stamped with (the ring's and the journal's)
-    // and a capability denial's durable record is rate-limited on
-    // (DECISION_DENY_DURABLE_PER_SEC): the timebase.
     if azos_decision::DURABLE || azos_decision::ON {
-        azos_decision::set_clock(azos_drv_sys::timebase::now, azos_drv_sys::timebase::TIMER_FREQ);
         // Records are stamped on TAI (owner decision 16-10): the timebase plus
         // the offset the vDSO publishes once PTP or NTP has set it.
         azos_decision::set_tai_offset(|| azos_mm::vdso::clock_offsets().tai);

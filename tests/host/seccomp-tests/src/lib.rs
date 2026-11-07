@@ -1252,6 +1252,7 @@ mod image_profiles {
             src!("userspace/services/logd/src/main.rs"),
             src!("userspace/services/logd/src/store.rs"),
             src!("userspace/services/logd/src/keep.rs"),
+            src!("userspace/services/logd/src/stall.rs"),
             src!("crates/drivers/sys/src/klog/wire.rs"),
         ]),
         ("WHY.ELF", Lang::RustStd, &[

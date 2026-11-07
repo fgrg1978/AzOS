@@ -633,14 +633,16 @@ config KLOG_EARLY_ENTRIES
     default 64
     help
       Read only with KLOG. The first lines are printed before the page
-      allocator can make the ring's memory object, so a ring of this many records in .bss takes them
+      allocator can make the ring's memory object, so a ring of this many records in the kernel image takes them
       until `kernel_main` hands over (boot/klog_region.rs), copying its
       records into the real ring with their own timestamps. A line older
       than this many is not in the log (the console had it); the number lost
       is printed by the boot (`[KLOG] ring ...`).
       A power of two.
 
-      Cost: 128 + 320 x this many bytes of .bss, on every ISA, for good.
+      Cost: 256 + 320 x this many bytes of the kernel image's .data (the ring is
+      built with its header), plus 64 + 64 x DECISION_RECORDS_ENTRIES
+      (rounded up to a power of two) with DECISION_RECORDS_DEV, on every ISA, for good.
 
 config LOGD_MAX_LEVEL
     int "logd: highest level kept in the files (3 err, 4 warn, 6 info, 7 debug)"

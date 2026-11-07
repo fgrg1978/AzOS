@@ -102,6 +102,12 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
 
     a.trap_init();
     a.boot_banner(boot_hw_id, fw_table);
+    // The clock the decision records are stamped with and a capability
+    // denial's durable record is rate-limited on (DECISION_DENY_DURABLE_PER_SEC):
+    // the timebase, from the first record on.
+    if azos_decision::DURABLE || azos_decision::ON {
+        azos_decision::set_clock(azos_drv_sys::timebase::now, azos_drv_sys::timebase::TIMER_FREQ);
+    }
 
     // ---- Firmware table: interrupt controller, timer and CPU extensions are
     // chosen from it (`dt`, parsed above) BEFORE `pmm::init` (the page
