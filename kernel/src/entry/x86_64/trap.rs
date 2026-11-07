@@ -68,6 +68,11 @@ impl Frame for TrapFrame {
         self.rip
     }
 
+    #[inline]
+    fn set_pc(&mut self, pc: u64) {
+        self.rip = pc;
+    }
+
     /// `rax`.
     #[inline]
     fn syscall_number(&self) -> u64 {

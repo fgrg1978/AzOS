@@ -153,6 +153,11 @@ impl Frame for TrapFrame {
         self.sepc as u64
     }
 
+    #[inline]
+    fn set_pc(&mut self, pc: u64) {
+        self.sepc = pc as _;
+    }
+
     /// `a7`.
     #[inline]
     fn syscall_number(&self) -> u64 {

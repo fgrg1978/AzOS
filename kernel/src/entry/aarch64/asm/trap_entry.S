@@ -740,7 +740,7 @@ _svc_zero_pair:
 .globl aarch64_ipc_resume_stub
 .balign 4
 aarch64_ipc_resume_stub:
-    hint    #38                             // bti jc: reached by `br x9` from context_switch
+    hint    #38                             // bti jc: reached by `ret x9` from context_switch
 .if RESUME_EXIT_CALL
     bl      azos_ipc_fast_exit
 .else

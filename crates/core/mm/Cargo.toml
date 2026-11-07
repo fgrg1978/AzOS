@@ -25,6 +25,8 @@ pt-pool = []
 hyp-monitor = ["pt-pool"]
 # Kconfig PT_PROTECTION: the kernel protects the pool from itself, a write window opened in `pt_set`.
 pt-protection = ["pt-pool"]
+# Kconfig PT_PROTECTION_SOFT: the software write window for a CPU without a supervisor key.
+pt-protection-soft = ["pt-protection"]
 # Canary only (host row, tests/host/mm-tests): the pool's store is made after the window has closed.
 ptprot-store-outside-canary = []
 # Canary only (host row): the window is opened for address 0, not for the word written.

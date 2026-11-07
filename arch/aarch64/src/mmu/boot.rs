@@ -154,25 +154,26 @@ _azos_drop_to_el1:
 
 .if {poe}
     // FEAT_S1POE (Kconfig A64_POE): let EL1 at TCR2_EL1 (HCRX_EL2.TCR2En,
-    // bit 14, where FEAT_HCX) and at POR_EL1 (the nPOR_EL1 bit, 59, of
-    // HFGRTR_EL2 and HFGWTR_EL2, where FEAT_FGT). Setting an n-bit only stops
-    // a trap, so a wrong number can never trap something new, but a missing
-    // grant traps the first POR_EL1 write to EL2 (arm-phase rows check the
-    // numbers on a core). SCR_EL3.TCR2En / PIEn are the firmware's.
+    // bit 14, where FEAT_HCX) and at POR_EL1 (the nPOR_EL1 bit, `ptwin`'s
+    // HFGXTR_NPOR_EL1, of HFGRTR_EL2 and HFGWTR_EL2, where FEAT_FGT). A missing
+    // grant traps the first POR_EL1 write to EL2 (the arm-phase rows check
+    // the numbers on a core). HCRX_EL2 is written whole (its other fields are
+    // UNKNOWN out of reset and nothing else here needs one). The FGT registers
+    // only get the one n-bit ORed in: a whole value would have to name every
+    // n-bit of the core, and an unnamed one traps. SCR_EL3.TCR2En / PIEn are
+    // the firmware's.
     mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
     ubfx    x10, x10, #16, #4       // S1POE
     cbz     x10, 8f
     mrs     x10, ID_AA64MMFR1_EL1
     ubfx    x10, x10, #40, #4       // HCX
     cbz     x10, 7f
-    mrs     x10, S3_4_C1_C2_2       // HCRX_EL2
-    orr     x10, x10, #(1 << 14)    // TCR2En
-    msr     S3_4_C1_C2_2, x10
+    mov     x10, #(1 << 14)         // TCR2En
+    msr     S3_4_C1_C2_2, x10       // HCRX_EL2
 7:  mrs     x10, ID_AA64MMFR0_EL1
     ubfx    x10, x10, #56, #4       // FGT
     cbz     x10, 8f
-    mov     x11, #1
-    lsl     x11, x11, #59           // nPOR_EL1
+    movz    x11, #{npor_hw}, lsl #48 // nPOR_EL1
     mrs     x10, S3_4_C1_C1_4       // HFGRTR_EL2
     orr     x10, x10, x11
     msr     S3_4_C1_C1_4, x10
@@ -251,7 +252,12 @@ _azos_drop_to_el1:
     hv = const cfg!(all(feature = "hv", target_os = "none")) as u8,
     hyp_mon = const cfg!(all(feature = "hyp-monitor", target_os = "none")) as u8,
     poe = const (!azos_limits::A64_POE_NEVER) as u8,
+    npor_hw = const (crate::mmu::ptwin::HFGXTR_NPOR_EL1 >> 48) as u16,
 );
+
+// The immediate above is the top halfword of the constant.
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(crate::mmu::ptwin::HFGXTR_NPOR_EL1 & !(0xFFFF << 48) == 0);
 
 // The stub (hosted) and the monitor (split) are never in one image.
 #[cfg(target_arch = "aarch64")]

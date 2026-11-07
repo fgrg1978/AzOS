@@ -506,11 +506,35 @@ azos_ktest::ktest! {
     }
 }
 
+// A store at `p` that is expected to fault: the fault resumes after the store
+// (`trap::fault::expected`) and its cause is returned; `None` when the store
+// went through. The resume label is stored from inside the asm, so it is armed
+// before the store can fault.
+#[cfg(feature = "pt-protection")]
+fn store_expecting_fault(p: *mut u64, v: u64) -> Option<u32> {
+    use crate::trap::fault::expected;
+    let slot = expected::resume_slot();
+    expected::arm(0);
+    // SAFETY: the asm stores the address of its own label, then `v` at `p`; a
+    // fault resumes at the label, which is right after the store.
+    unsafe {
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("adr {t}, 2f", "str {t}, [{s}]", "str {v}, [{p}]", "2:",
+            t = out(reg) _, s = in(reg) slot, v = in(reg) v, p = in(reg) p, options(nostack));
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!("lea {t}, [rip + 2f]", "mov [{s}], {t}", "mov [{p}], {v}", "2:",
+            t = out(reg) _, s = in(reg) slot, v = in(reg) v, p = in(reg) p, options(nostack));
+        #[cfg(target_arch = "riscv64")]
+        core::arch::asm!("la {t}, 2f", "sd {t}, 0({s})", "sd {v}, 0({p})", "2:",
+            t = out(reg) _, s = in(reg) slot, v = in(reg) v, p = in(reg) p, options(nostack));
+    }
+    expected::disarm()
+}
+
 // A64_BTI_ENFORCE: where the CPU has FEAT_BTI, the kernel text is mapped as
-// guarded pages (read back from the page table, not from the boot's count) and
-// this CPU checks branch targets (SCTLR_EL1.BT1). A branch to a non-pad is not
-// driven: only the mapping and the register are read. Runtime canary
-// `canary=bti-guard-skip` (the text stays unguarded): the first check fails.
+// guarded pages (read back from the page table, not from the boot's count).
+// Runtime canary `canary=bti-guard-skip` (the text stays unguarded): the first
+// check fails.
 azos_ktest::ktest! {
     #[cfg(target_arch = "aarch64")]
     fn cfi_kernel_text_is_branch_target_guarded() {
@@ -521,16 +545,42 @@ azos_ktest::ktest! {
         let (start, end) = unsafe { (&crate::_text_start as *const u8 as usize, &crate::_text_end as *const u8 as usize) };
         let (checked, open) = azos_mm::vmm::verify_guarded(start, end);
         if checked == 0 || open != 0 {
-            return Err("a page of the kernel text is not a guarded page");
-        }
-        if !azos_arch::cpu::cfi::bti_enforced() {
-            return Err("SCTLR_EL1.BT1 is off on the boot CPU");
+            return Err("a page of the kernel text is not a guarded 4 KiB page");
         }
         Ok(())
     }
 }
 
-// A64_BTI_ENFORCE on every CPU: a task pinned to each reads its own SCTLR_EL1.BT1.
+// A64_BTI_ENFORCE, the enforcement itself: an indirect branch to an instruction
+// that is not a landing pad, inside guarded kernel text, raises a Branch Target
+// Exception (EC 0x0D); the expected-fault fixup resumes after it. Without the GP
+// bit the `nop` just runs: no exception, and the test fails (canary
+// `canary=bti-guard-skip`).
+azos_ktest::ktest! {
+    #[cfg(target_arch = "aarch64")]
+    fn cfi_branch_to_a_non_pad_raises_a_branch_target_exception() {
+        use crate::trap::fault::expected;
+        if !azos_limits::A64_BTI_ENFORCE || !azos_arch_api::isa::aarch64::BTI.gate(azos_arch::cpu::features::detect().bti) {
+            return Ok(());
+        }
+        let slot = expected::resume_slot();
+        expected::arm(0);
+        // SAFETY: the asm stores its own label as the resume address, then
+        // branches to a `nop` that carries no pad; the exception resumes at `2:`.
+        unsafe {
+            core::arch::asm!("adr {t}, 2f", "str {t}, [{s}]", "adr {b}, 3f", "br {b}", "3:", "nop", "2:",
+                t = out(reg) _, b = out(reg) _, s = in(reg) slot, options(nostack));
+        }
+        match expected::disarm() {
+            Some(0x0D) => Ok(()),
+            Some(_) => Err("the branch to a non-pad raised an exception, but not a Branch Target Exception"),
+            None => Err("a branch to a non-pad in the guarded kernel text did not fault"),
+        }
+    }
+}
+
+// A64_BTI_ENFORCE: SCTLR_EL1.BT1 (paciasp strict) on every CPU: a task pinned to
+// each reads its own. Not the enforcement (that is the GP bit, above).
 #[cfg(target_arch = "aarch64")]
 static BTI_CPUS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_arch = "aarch64")]
@@ -538,7 +588,7 @@ static BTI_READBACKS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_arch = "aarch64")]
 fn bti_readback(_: usize) {
-    if azos_arch::cpu::cfi::bti_enforced() {
+    if azos_arch::cpu::cfi::pac_bt_strict_this_cpu() {
         BTI_CPUS.fetch_add(1, Ordering::AcqRel);
     }
     BTI_READBACKS.fetch_add(1, Ordering::AcqRel);
@@ -546,7 +596,7 @@ fn bti_readback(_: usize) {
 
 azos_ktest::ktest_late! {
     #[cfg(target_arch = "aarch64")]
-    fn cfi_bti_is_checked_on_every_cpu() {
+    fn cfi_paciasp_is_strict_on_every_cpu() {
         if !azos_limits::A64_BTI_ENFORCE || !azos_arch_api::isa::aarch64::BTI.gate(azos_arch::cpu::features::detect().bti) {
             return Ok(());
         }
@@ -556,7 +606,41 @@ azos_ktest::ktest_late! {
         }
         wait("a CPU did not report SCTLR_EL1.BT1", || BTI_READBACKS.load(Ordering::Acquire) == cpus)?;
         if BTI_CPUS.load(Ordering::Acquire) != cpus {
-            return Err("a CPU does not check branch targets of the guarded kernel text");
+            return Err("a CPU has SCTLR_EL1.BT1 clear");
+        }
+        Ok(())
+    }
+}
+
+// PT_PROTECTION: a store to a pool page outside a window is refused, whichever
+// window the build has (the key, the overlay or the read-only mapping): the
+// fault is taken (expected-fault fixup) and the word stays zero. Runtime
+// canaries `canary=pt-lock-skip` (the key path never locks) and
+// `canary=pt-soft-leak` (a closed soft window leaves its page writable): the
+// store goes through and the test fails.
+azos_ktest::ktest! {
+    #[cfg(feature = "pt-protection")]
+    fn mm_pt_pool_refuses_a_store_outside_a_window() {
+        use azos_arch::ArchPlatform;
+        // Is this build on this CPU meant to protect the pool at all?
+        if !azos_arch::ARCH.pt_key_present() && !cfg!(feature = "pt-protection-soft") {
+            return Ok(());
+        }
+        if !azos_mm::ptprot::engaged() {
+            return Err("the pool should be protected on this CPU, but the boot did not lock it");
+        }
+        let page = azos_mm::ptpool::take(0).map_err(|_| "the pool has no spare page")?;
+        let p = azos_mm::addr::phys_to_virt(page.as_usize()) as *mut u64;
+        let cause = store_expecting_fault(p, 0xA5A5);
+        // SAFETY: a pool page of ours; the read and the cleanup are the test's own.
+        let landed = unsafe { core::ptr::read_volatile(p) };
+        if landed != 0 {
+            // SAFETY: it was writable, so this store went through too.
+            unsafe { core::ptr::write_volatile(p, 0) };
+        }
+        azos_mm::ptpool::give_back(page);
+        if cause.is_none() || landed != 0 {
+            return Err("a store to a page-table pool page outside a window was not refused");
         }
         Ok(())
     }

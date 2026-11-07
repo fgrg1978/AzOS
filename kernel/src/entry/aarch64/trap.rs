@@ -220,6 +220,11 @@ impl Frame for TrapFrame {
         self.elr_el1
     }
 
+    #[inline]
+    fn set_pc(&mut self, pc: u64) {
+        self.elr_el1 = pc;
+    }
+
     /// `x8`.
     #[inline]
     fn syscall_number(&self) -> u64 {

@@ -22,6 +22,50 @@ use azos_abi::exit_status as es;
 
 use super::frame::{Cow, Demand, Disposition, FaultServices, Frame, KernelFault};
 
+/// A ktest's expected kernel fault: `arm` names where to resume, the first
+/// fault from the kernel then steps there instead of ending the kernel, and
+/// `disarm` says whether one was taken and its cause. Only ktest builds have it.
+#[cfg(feature = "ktest")]
+#[cfg_attr(not(any(feature = "pt-protection", target_arch = "aarch64")), allow(dead_code))]
+pub mod expected {
+    use super::Frame;
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+    static RESUME: AtomicUsize = AtomicUsize::new(0);
+    static CAUSE: AtomicU32 = AtomicU32::new(0);
+
+    /// The next fault from the kernel resumes at `resume`.
+    pub fn arm(resume: usize) {
+        CAUSE.store(0, Ordering::Relaxed);
+        RESUME.store(resume, Ordering::Release);
+    }
+
+    /// Where the next expected fault's resume address goes (for an asm block
+    /// that stores its own label there).
+    pub fn resume_slot() -> *mut usize {
+        RESUME.as_ptr()
+    }
+
+    /// Stop expecting; the cause of the fault taken since `arm`, if any.
+    pub fn disarm() -> Option<u32> {
+        RESUME.store(0, Ordering::Release);
+        CAUSE.swap(0, Ordering::AcqRel).checked_sub(1)
+    }
+
+    pub(super) fn take<F: Frame>(frame: &mut F) -> bool {
+        if frame.came_from_user() {
+            return false;
+        }
+        let at = RESUME.swap(0, Ordering::AcqRel);
+        if at == 0 {
+            return false;
+        }
+        CAUSE.store(frame.fault_cause() + 1, Ordering::Release);
+        frame.set_pc(at as u64);
+        true
+    }
+}
+
 /// The console report of a user task killed by an unresolved page fault: the
 /// banner, what else is worth knowing, and the kill. Exactly two lines carry
 /// `PAGE FAULT` (the gate counts them against its kills). The kill and its
@@ -148,6 +192,10 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
         report_user_fault::<S, F>(frame, va, write);
         kill_user::<S, F>(frame, es::KILLED_SEGV);
     }
+    #[cfg(feature = "ktest")]
+    if expected::take(frame) {
+        return;
+    }
     let fault = KernelFault {
         write,
         va,
@@ -161,6 +209,10 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
 /// Any other synchronous exception (`TrapClass::OtherException`). Out of line, as `page_fault`.
 #[inline(never)]
 pub fn exception<S: FaultServices<F>, F: Frame>(frame: &mut F) {
+    #[cfg(feature = "ktest")]
+    if expected::take(frame) {
+        return;
+    }
     match S::arch_exception(frame) {
         Disposition::Resume => return,
         Disposition::Kill(status) => kill_user::<S, F>(frame, status),

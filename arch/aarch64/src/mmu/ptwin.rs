@@ -9,8 +9,10 @@
 //! permissions with the 4-bit overlay `POR_EL1` holds for the leaf's
 //! `POIndex` (bits 62:60). Index 0 is every other kernel page and stays
 //! read-write-execute. The window is one `POR_EL1` write and an `isb` before
-//! the store and the same after, with IRQ and FIQ masked between; it restores
-//! what it found, so windows nest.
+//! the store and the same after, with every PSTATE.DAIF mask set between (an
+//! SError or a debug exception inside it would run with the pool writable); it
+//! restores what it found, so windows nest. The asm is not `nomem`: it is the
+//! compiler barrier that keeps the store between the two writes.
 //!
 //! EL2 must let EL1 at the registers: `HCRX_EL2.TCR2En` for `TCR2_EL1` and the
 //! `HFGRTR_EL2` / `HFGWTR_EL2` n-bit `nPOR_EL1` for `POR_EL1`
@@ -34,8 +36,10 @@ pub const OVL_W: u64 = 0b100;
 pub const POR_LOCKED: u64 = (OVL_R | OVL_X | OVL_W) | OVL_R << (4 * POINDEX);
 /// `HCRX_EL2.TCR2En` (bit 14): EL1 may access `TCR2_EL1`.
 pub const HCRX_TCR2EN: u64 = 1 << 14;
-/// `HFGRTR_EL2` / `HFGWTR_EL2` `nPOR_EL1` (bit 59): 1 lets EL1 access `POR_EL1`.
-pub const HFGXTR_NPOR_EL1: u64 = 1 << 59;
+/// `HFGRTR_EL2` / `HFGWTR_EL2` `nPOR_EL1` (bit 60): 1 lets EL1 access `POR_EL1`.
+/// Bit 59 is `nPOR_EL0`, EL0's. The boot trampoline builds its immediate from
+/// this constant, so the number exists once.
+pub const HFGXTR_NPOR_EL1: u64 = 1 << 60;
 const DAIF_SHIFT: u32 = 32;
 
 /// The leaf `word` tagged with the pool's overlay index (any other index cleared).
@@ -73,13 +77,13 @@ pub fn lock_this_cpu() -> bool {
     // EL2 let EL1 at the registers, so these accesses do not trap.
     unsafe {
         core::arch::asm!(
-            "mrs {t}, S3_0_C2_C0_3",
-            "orr {t}, {t}, {poe}",
-            "msr S3_0_C2_C0_3, {t}",
+            // Absolute: TCR2_EL1's other fields (PnCH, PIE, E0POE, D128, ...) are
+            // UNKNOWN out of reset and change what a descriptor means.
+            "msr S3_0_C2_C0_3, {poe}",
             "msr S3_0_C10_C2_4, {por}",
             "isb",
-            t = out(reg) _, poe = in(reg) TCR2_EL1_POE, por = in(reg) POR_LOCKED,
-            options(nomem, nostack),
+            poe = in(reg) TCR2_EL1_POE, por = in(reg) POR_LOCKED,
+            options(nostack),
         );
     }
     locked_this_cpu()
@@ -97,17 +101,17 @@ pub fn locked_this_cpu() -> bool {
     denies_writes(tcr2, por)
 }
 
-/// IRQ and FIQ masked, the pool's write-deny lifted; the token for [`close`].
+/// Every DAIF mask set, the pool's write-deny lifted; the token for [`close`].
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 #[inline(always)]
 pub fn open() -> u64 {
     let (daif, por): (u64, u64);
-    // SAFETY: `DAIFSet #3` masks IRQ and FIQ; `close` writes DAIF back. POR_EL1
+    // SAFETY: `DAIFSet #0xf` masks D, A, I and F; `close` writes DAIF back. POR_EL1
     // exists (the lock ran).
     unsafe {
-        core::arch::asm!("mrs {d}, DAIF", "msr DAIFSet, #3", "mrs {p}, S3_0_C10_C2_4",
-            d = out(reg) daif, p = out(reg) por, options(nomem, nostack));
-        core::arch::asm!("msr S3_0_C10_C2_4, {o}", "isb", o = in(reg) opened(por), options(nomem, nostack));
+        core::arch::asm!("mrs {d}, DAIF", "msr DAIFSet, #0xf", "mrs {p}, S3_0_C10_C2_4",
+            d = out(reg) daif, p = out(reg) por, options(nostack));
+        core::arch::asm!("msr S3_0_C10_C2_4, {o}", "isb", o = in(reg) opened(por), options(nostack));
     }
     pack(por, daif)
 }
@@ -120,6 +124,6 @@ pub fn close(token: u64) {
     // SAFETY: puts back what `open` read.
     unsafe {
         core::arch::asm!("msr S3_0_C10_C2_4, {p}", "isb", "msr DAIF, {d}",
-            p = in(reg) por, d = in(reg) daif, options(nomem, nostack));
+            p = in(reg) por, d = in(reg) daif, options(nostack));
     }
 }

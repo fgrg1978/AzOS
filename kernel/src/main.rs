@@ -518,6 +518,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     {
         azos_mm::vmm::install_pt_protection_hook();
         // Runtime gate canary `canary=pt-soft-leak`: a closed software window leaves its page writable.
+        #[cfg(feature = "pt-protection-soft")]
         if canary!("pt-soft-leak") {
             azos_mm::vmm::pt_soft_leak_canary();
         }

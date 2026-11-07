@@ -315,3 +315,26 @@ fn an_isa_decides_its_own_exceptions_before_the_policy() {
     assert!(matches!(ex(&mut f), Ended::Killed(_)));
     assert!(saw("arch_exception"));
 }
+
+/// A ktest's expected kernel fault (`trap::fault::expected`, ktest builds only): the
+/// first fault from the kernel after `arm` resumes at the target with its cause
+/// recorded, in both the page-fault and the exception arm, and the next one is
+/// fatal again; a fault from user mode never takes it. Canary: make `take` return
+/// false and the first assert fails.
+#[cfg(feature = "ktest")]
+#[test]
+fn an_armed_kernel_fault_resumes_at_its_target_once() {
+    use crate::trap::fault::expected;
+    on_each_isa!(false, true, 0xC000, |f| {
+        expected::arm(0x9000);
+        assert!(matches!(pf(&mut f), Ended::Returned));
+        assert_eq!(f.pc(), 0x9000);
+        assert!(expected::disarm().is_some(), "the cause is recorded");
+        assert!(matches!(pf(&mut f), Ended::Halted), "disarmed: fatal again");
+    });
+    on_each_isa!(true, true, 0xC000, |f| {
+        expected::arm(0x9000);
+        assert!(matches!(pf(&mut f), Ended::Killed(_)), "a user fault does not take it");
+        assert!(expected::disarm().is_none());
+    });
+}

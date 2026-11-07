@@ -1117,6 +1117,8 @@ hyp-monitor = ["azos_arch/hyp-monitor", "azos_mm/hyp-monitor", "dep:azos_hyp_api
 # half's tables come from a pool the kernel write-protects from itself, written
 # in a window `pt_set` opens (azos_mm::ptprot).
 pt-protection = ["azos_mm/pt-protection"]
+# Kconfig PT_PROTECTION_SOFT: the software window where the CPU has no key.
+pt-protection-soft = ["pt-protection", "azos_mm/pt-protection-soft"]
 # Gate-only (test hooks): build a split image and its canaries without a
 # reachable Kconfig path (ARCH_HAS_HYP_MONITOR is unset until F5). Each canary
 # `.incbin`s the matching monitor variant its row built (tools/build/hyp_mon.sh

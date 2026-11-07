@@ -81,10 +81,12 @@
 //!
 //! The pads are in the code. Enforcing them is the `GP` bit of the kernel
 //! text's leaves (`vmm::guard_range`, after the W^X pass; the mmu's
-//! `attr_bits` never sets it) plus `SCTLR_EL1.BT1` on every CPU
-//! ([`azos_bti_enable`], from boot.S next to `_azos_cfi_enable`). `paciasp` is
-//! a `bti c` pad: a `blr` may land on it, a `br` only through x16/x17, which
-//! is how the compiler emits an indirect tail call under `bti`. The assembly
+//! `attr_bits` never sets it); that bit alone turns the check on, on every CPU
+//! that sees the leaf. `SCTLR_EL1.BT1` ([`azos_bti_enable`], from boot.S next to
+//! `_azos_cfi_enable`) is a different control: it makes `paciasp` stop being a
+//! valid target of a `br` through a register other than x16/x17, the way the
+//! compiler emits an indirect tail call under `bti`. Linux sets it with
+//! kernel BTI too. The assembly
 //! carries its own pads (`tools/lint/bti_pads_lint.py`), and `context_switch`
 //! resumes a task through `ret x9`, which is not checked, because the resume
 //! point is the instruction after a `bl`. Loaded text (modules, ring 3) is
@@ -92,7 +94,8 @@
 //!
 //! # GCS (FEAT_GCS, Armv9.4)
 //!
-//! Reserved: the hardware return stack twin of x86 CET shadow stacks.
+//! Reserved (`context_switch` resumes through `ret x9`, which a kernel GCS
+//! would check against the stack: it must change with it): the hardware return stack twin of x86 CET shadow stacks.
 //! `GCSCR_EL1` / `GCSPR_EL1` would be set here, with a per-task stack
 //! switched in `context_switch`. No Kconfig symbol until a core has it.
 
@@ -406,14 +409,14 @@ pub extern "C" fn azos_cfi_prepare(primary: u64) -> u64 {
     enable_mask(azos_limits::A64_PAUTH_PROC_KEYS)
 }
 
-/// Is `SCTLR_EL1` checking branch targets of the upper half?
-pub const fn bti_checking(sctlr: u64) -> bool {
+/// Is `SCTLR_EL1.BT1` set: is `paciasp` strict (not a `br` target) at EL1?
+/// This is not "BTI is enforced": the GP bit of the leaves is.
+pub const fn pac_bt_strict(sctlr: u64) -> bool {
     sctlr & crate::sysregs::SCTLR_EL1_BT1 != 0
 }
 
 /// Per CPU, from boot.S: set `SCTLR_EL1.BT1` when Kconfig `A64_BTI_ENFORCE`
-/// asks, `A64_BTI` allows and the CPU has FEAT_BTI. Guarded pages exist only
-/// once the boot CPU has run `vmm::guard_range`; until then this checks nothing.
+/// asks, `A64_BTI` allows and the CPU has FEAT_BTI (see [`pac_bt_strict`]).
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 #[no_mangle]
 pub extern "C" fn azos_bti_enable() {
@@ -424,10 +427,10 @@ pub extern "C" fn azos_bti_enable() {
     }
 }
 
-/// Whether this CPU checks branch targets of guarded kernel pages now.
+/// Whether this CPU has `SCTLR_EL1.BT1` set.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-pub fn bti_enforced() -> bool {
-    bti_checking(crate::sysregs::read_sctlr_el1())
+pub fn pac_bt_strict_this_cpu() -> bool {
+    pac_bt_strict(crate::sysregs::read_sctlr_el1())
 }
 
 /// The kernel's key, `(lo, hi)`: what a process's keys must never equal.

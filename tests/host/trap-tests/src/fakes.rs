@@ -397,6 +397,9 @@ impl Frame for RvFrame {
     fn pc(&self) -> u64 {
         self.sepc
     }
+    fn set_pc(&mut self, pc: u64) {
+        self.sepc = pc;
+    }
     fn syscall_number(&self) -> u64 {
         self.regs[17]
     }
@@ -467,6 +470,9 @@ impl Frame for ArmFrame {
     }
     fn pc(&self) -> u64 {
         self.elr
+    }
+    fn set_pc(&mut self, pc: u64) {
+        self.elr = pc;
     }
     fn syscall_number(&self) -> u64 {
         self.regs[8]
@@ -546,6 +552,9 @@ impl Frame for X86Frame {
     }
     fn pc(&self) -> u64 {
         self.rip
+    }
+    fn set_pc(&mut self, pc: u64) {
+        self.rip = pc;
     }
     fn syscall_number(&self) -> u64 {
         self.rax

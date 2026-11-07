@@ -10,8 +10,8 @@ branch to an instruction that is not a pad raises a Branch Target Exception,
 so the assembly must carry its own. Two rules:
 
   paired   `adr`/`adrp xN, LABEL` followed within a few lines by `br xN` or
-           `blr xN` (x16/x17 excepted): LABEL's first instruction is a pad
-           (`br` needs `bti j`/`jc`, `blr` needs `bti c`/`jc` or `paciasp`)
+           `blr xN`: LABEL's first instruction is a pad (`br` needs `bti j`/`jc`,
+           `blr` needs `bti c`/`jc` or `paciasp`; through x16/x17 any pad)
   listed   tools/lint/bti_pads.tsv names the labels something outside the
            assembly branches to (firmware, a function pointer, `ret`-less
            resumes): each must start with a pad, and the row must still find
@@ -31,7 +31,8 @@ import azos_tools  # noqa: E402
 
 ROOT = azos_tools.ROOT
 LIST = "tools/lint/bti_pads.tsv"
-SCAN = ("kernel/src/entry/aarch64/**/*.S", "kernel/src/entry/aarch64/**/*.rs", "arch/aarch64/src/**/*.rs")
+SCAN = ("kernel/src/entry/aarch64/**/*.S", "kernel/src/entry/aarch64/**/*.rs", "arch/aarch64/src/**/*.rs",
+        "crates/drivers/lx/emul/src/switch/aarch64.rs")
 PAD_J = re.compile(r"^(hint\s+#(36|38)\b|bti\s+(j|jc)\b)")
 PAD_C = re.compile(r"^(hint\s+#(34|38|25)\b|bti\s+(c|jc)\b|paciasp\b)")
 PAD_ANY = re.compile(r"^(hint\s+#(34|36|38|25)\b|bti\b|paciasp\b)")
@@ -102,8 +103,6 @@ def check_file(path, rel, problems):
         if not m:
             continue
         reg, label = m.groups()
-        if reg in ("x16", "x17"):
-            continue
         for _, u in lines[i + 1:i + 7]:
             b = BR.match(u)
             if b and b.group(2) == reg:
@@ -111,7 +110,8 @@ def check_file(path, rel, problems):
                 if j is None:
                     break
                 ln, insn = first_insn(lines, j)
-                ok = PAD_J if b.group(1) == "br" else PAD_C
+                # x16/x17 (BTYPE 01) still land on a pad: any of them, `paciasp` included.
+                ok = PAD_ANY if reg in ("x16", "x17") else PAD_J if b.group(1) == "br" else PAD_C
                 if not ok.match(insn):
                     problems.append(f"{rel}:{n}: `{b.group(1)} {reg}` lands on `{label}`, whose first instruction `{insn}` is no landing pad")
                 break
@@ -169,6 +169,12 @@ def self_test():
             bad += 1
         if not go("    adr x9, 1f\n    br x9\n1:\n    nop\n"):
             print("self-test: a br target with no pad was accepted")
+            bad += 1
+        if not go("    adr x16, 1f\n    br x16\n1:\n    nop\n"):
+            print("self-test: an x16 br target with no pad was accepted")
+            bad += 1
+        if go("    adr x16, 1f\n    br x16\n1:\n    hint #34\n"):
+            print("self-test: an x16 br target with bti c was refused")
             bad += 1
         if not go("    adr x9, 1f\n    br x9\n1:\n    hint #34\n"):
             print("self-test: a br target with only bti c was accepted")

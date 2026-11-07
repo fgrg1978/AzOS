@@ -339,10 +339,18 @@ pub fn tlbi_vmalle1is() {
 /// per-page shootdown RISC-V's `sfence.vma va, zero` performs after a
 /// single-PTE rewrite (COW break, demand materialize, permission widening,
 /// unmap).
+/// The operand of a by-VA `TLBI`: `VA[55:12]` in bits 43:0 and nothing above.
+/// Bits 47:44 are the TTL hint (a level and granule the entry is promised to
+/// be at; a wrong one lets a core skip the invalidation) and 63:48 an ASID:
+/// a kernel VA shifted without the mask would carry ones into both.
+pub const fn tlbi_va_operand(va: u64) -> u64 {
+    (va >> 12) & ((1 << 44) - 1)
+}
+
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn tlbi_vaae1is(va: usize) {
-    let op = (va as u64) >> 12;
+    let op = tlbi_va_operand(va as u64);
     unsafe {
         core::arch::asm!(
             "dsb ishst",
@@ -525,7 +533,8 @@ pub const SCTLR_EL1_I: u64 = 1 << 12;
 /// `SCTLR_EL1.EnIA` (bit 31) — EL0/EL1 instruction-address key A enabled
 /// (FEAT_PAuth); clear, `pacia`/`autia` are no-ops. Gates `HWCAP_A64_PAUTH`.
 pub const SCTLR_EL1_ENIA: u64 = 1 << 31;
-/// `SCTLR_EL1.BT1` (bit 36): guarded pages of the upper (TTBR1) half are branch-target checked at EL1.
+/// `SCTLR_EL1.BT1` (bit 36): at EL1, `PACIASP`/`PACIBSP` are not valid targets of a `br` through a
+/// register other than x16/x17 (`BT0` is bit 35, EL0's). The branch-target check itself is the GP bit of the leaf.
 pub const SCTLR_EL1_BT1: u64 = 1 << 36;
 /// `SCTLR_EL1.ATA0` (bit 42) — EL0 allocation-tag access (FEAT_MTE2);
 /// clear, EL0 tag loads read 0 and tag stores are ignored. Gates

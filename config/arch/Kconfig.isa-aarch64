@@ -191,15 +191,16 @@ choice
 endchoice
 
 config A64_BTI_ENFORCE
-    bool "Enforce BTI on the kernel's text (guarded pages, SCTLR_EL1.BT1)"
+    bool "Enforce BTI on the kernel's text (guarded pages)"
     depends on ARCH_AARCH64 && !A64_BTI_NEVER
     default n
     help
       Maps the kernel's text as guarded pages (the GP bit of the leaf, after
-      the W^X pass) and sets SCTLR_EL1.BT1 on every CPU, so an indirect branch
-      in EL1 that lands on anything but a `bti` pad (or the `paciasp` the
-      compiler uses as one) raises a Branch Target Exception instead of
-      running. The compiler puts the pads in compiled code and the assembly
+      the W^X pass), so an indirect branch that lands on anything but a `bti`
+      pad (or the `paciasp` the compiler uses as one) raises a Branch Target
+      Exception instead of running. The GP bit alone enforces it; SCTLR_EL1.BT1,
+      also set on every CPU, only makes `paciasp` strict (not a target of a
+      `br` through a register other than x16/x17), as Linux does. The compiler puts the pads in compiled code and the assembly
       carries its own (tools/lint/bti_pads_lint.py holds it to that); the
       context switch resumes through `ret`, which is not checked. Where the CPU
       has no FEAT_BTI, or A64_BTI is n, nothing changes. Cost: none on the hot
@@ -242,7 +243,10 @@ choice
       EL1 at the registers: the boot trampoline sets HCRX_EL2.TCR2En and the
       nPOR_EL1 bit of HFGRTR_EL2/HFGWTR_EL2 on a CPU that has them (firmware
       must have granted SCR_EL3). Not used with the split monitor (VIRT_SPLIT),
-      whose stage 2 protects the pool. Never run on a core: default n until
+      whose stage 2 protects the pool, and not selectable with the
+      hypervisor (HV): its world switch does not save TCR2_EL1 and POR_EL1, so
+      a guest could rewrite the host's overlay and the host's would apply to the
+      guest. Never run on a core: default n until
       the arm-phase rows boot it.
       n: nothing built. probe: use it where the CPU has it, else the tables stay
       writable (PT_PROTECTION_SOFT is the fallback window). require: the boot
@@ -251,8 +255,10 @@ choice
         bool "n: never use it"
     config A64_POE_PROBE
         bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !HV
     config A64_POE_REQUIRE
         bool "require: baseline; refuse to boot without it"
+        depends on !HV
 endchoice
 
 choice

@@ -377,7 +377,7 @@ fn fault_hook() {
 fn table_page(root: usize, level: usize) -> KResult<crate::addr::PhysAddr> {
     #[cfg(feature = "pt-pool")]
     if root == KERNEL_ROOT.load(Ordering::Relaxed) {
-        #[cfg(feature = "pt-protection")]
+        #[cfg(feature = "pt-protection-soft")]
         if SOFT_SPLIT.load(Ordering::Relaxed) {
             return pmm::alloc_page_zone(Zone::PageTable);
         }
@@ -2574,38 +2574,50 @@ impl crate::ptprot::Window for ArchWindow {
 /// The software window (Kconfig `PT_PROTECTION_SOFT`): the pool is read-only in
 /// the direct map, and a word is written with its page flipped writable for the
 /// one store, interrupts off, one window at a time. The leaves of the pool's
-/// pages sit in tables of the table zone (`SOFT_SPLIT`), which stay writable.
-/// A CPU that read the page meanwhile may keep a writable translation until it
-/// is evicted: bug hardening, not a boundary against an attacker.
-#[cfg(feature = "pt-protection")]
+/// pages sit in tables of the table zone (re-homed at engage if an earlier
+/// split took them from the pool), which stay writable. It does not nest and
+/// never re-enters itself: a window's own writes are to those tables, never to
+/// the pool. Where the ISA can flush remote TLBs with interrupts masked
+/// (`tlb_remote_flush_masked_ok`) the close reaches every CPU; elsewhere a CPU
+/// that read the page during a window keeps a writable translation until it is
+/// evicted, and the protection holds on the writing CPU only. Bug hardening,
+/// not a boundary against an attacker.
+#[cfg(feature = "pt-protection-soft")]
 struct SoftWindow;
 
-#[cfg(feature = "pt-protection")]
+#[cfg(feature = "pt-protection-soft")]
 static SOFT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-#[cfg(feature = "pt-protection")]
+#[cfg(feature = "pt-protection-soft")]
 static SOFT_BUSY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The tables a split of the pool's range builds come from the table zone, not the pool.
+#[cfg(feature = "pt-protection-soft")]
+static SOFT_SPLIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Runtime canary `canary=pt-soft-leak`: a closed window leaves its page writable.
-#[cfg(feature = "pt-protection")]
+#[cfg(feature = "pt-protection-soft")]
 static SOFT_LEAK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Arm the `pt-soft-leak` canary.
-#[cfg(feature = "pt-protection")]
+#[cfg(feature = "pt-protection-soft")]
 pub fn pt_soft_leak_canary() {
     SOFT_LEAK.store(true, Ordering::Relaxed);
 }
 
-/// The tables a split of the pool's range builds come from the table zone, not the pool.
-#[cfg(feature = "pt-protection")]
-static SOFT_SPLIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Is the leaf at `leaf` in a page of the pool?
+#[cfg(feature = "pt-protection-soft")]
+fn leaf_in_pool(leaf: *const u64) -> bool {
+    crate::ptpool::contains(crate::addr::PhysAddr::new(crate::addr::virt_to_phys(leaf as usize) & !(PAGE_SIZE - 1)))
+}
 
 /// The leaf of the pool page at `va` set writable or read-only, this CPU's
 /// translation of it dropped.
-#[cfg(feature = "pt-protection")]
+#[cfg(feature = "pt-protection-soft")]
 fn pool_leaf(va: usize, writable: bool) {
     let page = va & !(PAGE_SIZE - 1);
     let Ok((leaf, 0)) = walk_level(KERNEL_ROOT.load(Ordering::Relaxed), page, false, false) else {
         panic!("a pool page is not a 4 KiB leaf of the kernel root");
     };
+    // A leaf in a pool page would be written through this window itself.
+    assert!(!leaf_in_pool(leaf), "a pool page's leaf lives in the pool");
     // SAFETY: a live level-0 leaf of the kernel root, in a table outside the pool.
     unsafe {
         let old = core::ptr::read_volatile(leaf);
@@ -2616,7 +2628,7 @@ fn pool_leaf(va: usize, writable: bool) {
     ARCH.flush_tlb_page(page);
 }
 
-#[cfg(feature = "pt-protection")]
+#[cfg(feature = "pt-protection-soft")]
 impl crate::ptprot::Window for SoftWindow {
     fn open(&self, va: usize) -> u64 {
         use azos_arch::Interrupts;
@@ -2631,21 +2643,63 @@ impl crate::ptprot::Window for SoftWindow {
         use azos_arch::Interrupts;
         if !SOFT_LEAK.load(Ordering::Relaxed) {
             pool_leaf(va, false);
+            if ARCH.tlb_remote_flush_masked_ok() {
+                ARCH.flush_tlb_page_all(va & !(PAGE_SIZE - 1));
+            }
         }
         SOFT_BUSY.store(false, Ordering::Release);
         ARCH.restore(azos_arch_api::InterruptState(saved));
     }
 }
 
+/// Every 2 MiB of `[lo, hi)` whose level-0 table came from the pool (an earlier
+/// split of the image or the RAM map took it there) gets a copy in a table-zone
+/// page, and the level-1 entry is swung to it. False when a page is short.
+#[cfg(feature = "pt-protection-soft")]
+fn rehome_pool_leaf_tables(lo: usize, hi: usize) -> bool {
+    let kpt = *KERNEL_PT.lock();
+    let mut addr = lo & !(MEGA_SIZE - 1);
+    while addr < hi {
+        let l2t = l2_table(kpt, addr);
+        if !no_l2(l2t) {
+            let l2_pte = unsafe { core::ptr::read_volatile(crate::addr::phys_to_virt(l2t + ARCH.vpn(addr, 2) * 8) as *const u64) };
+            if ARCH.pte_is_valid(l2_pte) && !ARCH.pte_is_leaf(l2_pte, 2) {
+                let l1_ptr = crate::addr::phys_to_virt(ARCH.pte_phys(l2_pte) + ARCH.vpn(addr, 1) * 8) as *mut u64;
+                let l1_pte = unsafe { core::ptr::read_volatile(l1_ptr) };
+                let l0 = ARCH.pte_phys(l1_pte);
+                if ARCH.pte_is_valid(l1_pte) && !ARCH.pte_is_leaf(l1_pte, 1) && crate::ptpool::contains(crate::addr::PhysAddr::new(l0)) {
+                    let Ok(fresh) = pmm::alloc_page_zone(Zone::PageTable) else {
+                        return false;
+                    };
+                    for i in 0..PTES {
+                        // SAFETY: the old table is live, the new one ours; neither is armed yet.
+                        unsafe {
+                            let w = core::ptr::read_volatile(crate::addr::phys_to_virt(l0 + i * 8) as *const u64);
+                            core::ptr::write_volatile(crate::addr::phys_to_virt(fresh.as_usize() + i * 8) as *mut u64, w);
+                        }
+                    }
+                    // SAFETY: the entry of a live level-1 table; the pool is not armed.
+                    unsafe { crate::pt::pt_set(l1_ptr, ARCH.pte_make_table(fresh.as_usize())) };
+                    for i in 0..PTES {
+                        ARCH.flush_tlb_page(addr + i * PAGE_SIZE);
+                    }
+                }
+            }
+        }
+        addr += MEGA_SIZE;
+    }
+    true
+}
+
 #[cfg(feature = "pt-protection")]
 fn pool_write(pa: usize, expected: u64, new: u64, _level: usize) -> Result<(), u64> {
     // SAFETY: `pa` is an entry of a pool page, which the direct map covers.
     let slot = unsafe { &*(crate::addr::phys_to_virt(pa) as *const core::sync::atomic::AtomicU64) };
+    #[cfg(feature = "pt-protection-soft")]
     if SOFT.load(Ordering::Relaxed) {
-        crate::ptprot::write(&SoftWindow, slot, expected, new).map(|_| ())
-    } else {
-        crate::ptprot::write(&ArchWindow, slot, expected, new).map(|_| ())
+        return crate::ptprot::write(&SoftWindow, slot, expected, new).map(|_| ());
     }
+    crate::ptprot::write(&ArchWindow, slot, expected, new).map(|_| ())
 }
 
 /// PT_PROTECTION: the pool's writer. Before the seal (the hook is read-only
@@ -2665,16 +2719,22 @@ pub fn install_pt_protection_hook() {
 pub fn engage_pt_protection() -> crate::ptprot::Engaged {
     use crate::ptprot::Engaged;
     let keyed = ARCH.pt_key_present();
-    if !keyed && !azos_limits::PT_PROTECTION_SOFT {
+    if !keyed && !cfg!(feature = "pt-protection-soft") {
         return Engaged::NoKey;
     }
     let (base, _, pages) = crate::ptpool::extent();
     let lo = crate::addr::phys_to_virt(base);
     let hi = lo + pages * PAGE_SIZE;
+    #[cfg(feature = "pt-protection-soft")]
     SOFT_SPLIT.store(!keyed, Ordering::Relaxed);
     let unsplit = split_mega_range(lo, hi);
+    #[cfg(feature = "pt-protection-soft")]
     SOFT_SPLIT.store(false, Ordering::Relaxed);
     if unsplit != 0 {
+        return Engaged::Untaggable;
+    }
+    #[cfg(feature = "pt-protection-soft")]
+    if !keyed && !rehome_pool_leaf_tables(lo, hi) {
         return Engaged::Untaggable;
     }
     let kpt = *KERNEL_PT.lock();
@@ -2682,7 +2742,8 @@ pub fn engage_pt_protection() -> crate::ptprot::Engaged {
         match walk_level(kpt, addr, false, false) {
             // SAFETY: a live level-0 leaf of the kernel root; the pool is not armed yet, so this is a store.
             Ok((leaf, 0)) if keyed => unsafe { crate::pt::pt_set(leaf, ARCH.pt_tag_leaf(core::ptr::read_volatile(leaf))) },
-            Ok((_, 0)) => pool_leaf(addr, false),
+            #[cfg(feature = "pt-protection-soft")]
+            Ok((leaf, 0)) if !leaf_in_pool(leaf) => pool_leaf(addr, false),
             _ => return Engaged::Untaggable,
         }
     }
@@ -2690,16 +2751,17 @@ pub fn engage_pt_protection() -> crate::ptprot::Engaged {
     if keyed && !ARCH.pt_lock_this_cpu() {
         return Engaged::LockFailed;
     }
+    #[cfg(feature = "pt-protection-soft")]
     SOFT.store(!keyed, Ordering::Relaxed);
     crate::ptpool::arm();
     crate::ptprot::mark_engaged(keyed);
     let used = crate::ptpool::extent().1;
-    if keyed { Engaged::Locked { pages: used } } else { Engaged::SoftLocked { pages: used } }
+    if keyed { Engaged::Locked { pages: used } } else { Engaged::SoftLocked { pages: used, remote: ARCH.tlb_remote_flush_masked_ok() } }
 }
 
 /// PT_PROTECTION read back from the kernel root: `(pool pages, pages whose leaf
-/// is not a 4 KiB leaf that carries the key, or is still writable under the
-/// software window)`.
+/// is not a 4 KiB leaf that carries the key, or under the software window is
+/// still writable or sits in a table of the pool)`.
 #[cfg(feature = "pt-protection")]
 pub fn verify_pt_pool() -> (usize, usize) {
     let (base, _, pages) = crate::ptpool::extent();
@@ -2711,7 +2773,15 @@ pub fn verify_pt_pool() -> (usize, usize) {
             // SAFETY: a live level-0 leaf of the kernel root.
             Ok((leaf, 0)) => {
                 let w = unsafe { core::ptr::read_volatile(leaf) };
-                let open = if SOFT.load(Ordering::Relaxed) { ARCH.pte_perms(w).write } else { ARCH.pt_tag_leaf(w) != w };
+                #[cfg(feature = "pt-protection-soft")]
+                let soft = SOFT.load(Ordering::Relaxed);
+                #[cfg(not(feature = "pt-protection-soft"))]
+                let soft = false;
+                #[cfg(feature = "pt-protection-soft")]
+                let in_pool = soft && leaf_in_pool(leaf);
+                #[cfg(not(feature = "pt-protection-soft"))]
+                let in_pool = false;
+                let open = in_pool || if soft { ARCH.pte_perms(w).write } else { ARCH.pt_tag_leaf(w) != w };
                 bad += open as usize;
             }
             _ => bad += 1,
@@ -2738,37 +2808,44 @@ fn ro_after_init_spans() -> [(usize, usize); 2] {
 }
 
 /// Map the 4 KiB leaves of `[start, end)` as branch-target-guarded pages
-/// (`Mmu::pte_guarded`), after the W^X pass; returns how many. The caller owns
-/// the TLB flush. A leaf that is not valid or not 4 KiB is skipped.
-pub fn guard_range(start: usize, end: usize) -> usize {
+/// (`Mmu::pte_guarded`), after the W^X pass; returns `(guarded, skipped)`. A
+/// page that is unmapped or in a block is skipped and counted: the range is not
+/// fully guarded then. The caller owns the TLB flush.
+pub fn guard_range(start: usize, end: usize) -> (usize, usize) {
     let kpt = *KERNEL_PT.lock();
-    let mut n = 0;
+    let (mut n, mut skipped) = (0, 0);
     for addr in (start & !(PAGE_SIZE - 1)..end).step_by(PAGE_SIZE) {
-        if let Ok((leaf, 0)) = walk_level(kpt, addr, false, false) {
-            // SAFETY: a live level-0 leaf of the kernel root.
-            let old = unsafe { core::ptr::read_volatile(leaf) };
-            if ARCH.pte_is_valid(old) {
-                // SAFETY: as above.
-                unsafe { crate::pt::pt_set(leaf, ARCH.pte_guarded(old)) };
-                n += 1;
+        match walk_level(kpt, addr, false, false) {
+            Ok((leaf, 0)) => {
+                // SAFETY: a live level-0 leaf of the kernel root.
+                let old = unsafe { core::ptr::read_volatile(leaf) };
+                if ARCH.pte_is_valid(old) {
+                    // SAFETY: as above.
+                    unsafe { crate::pt::pt_set(leaf, ARCH.pte_guarded(old)) };
+                    n += 1;
+                } else {
+                    skipped += 1;
+                }
             }
+            _ => skipped += 1,
         }
     }
-    n
+    (n, skipped)
 }
 
-/// Read back [`guard_range`]: `(valid 4 KiB leaves in [start, end), those not guarded)`.
+/// Read back [`guard_range`]: `(pages in [start, end), those not a guarded 4 KiB leaf)`.
 pub fn verify_guarded(start: usize, end: usize) -> (usize, usize) {
     let kpt = *KERNEL_PT.lock();
     let (mut checked, mut open) = (0, 0);
     for addr in (start & !(PAGE_SIZE - 1)..end).step_by(PAGE_SIZE) {
-        if let Ok((leaf, 0)) = walk_level(kpt, addr, false, false) {
-            // SAFETY: a live level-0 leaf of the kernel root.
-            let w = unsafe { core::ptr::read_volatile(leaf) };
-            if ARCH.pte_is_valid(w) {
-                checked += 1;
-                open += (ARCH.pte_guarded(w) != w) as usize;
+        checked += 1;
+        match walk_level(kpt, addr, false, false) {
+            Ok((leaf, 0)) => {
+                // SAFETY: a live level-0 leaf of the kernel root.
+                let w = unsafe { core::ptr::read_volatile(leaf) };
+                open += (!ARCH.pte_is_valid(w) || ARCH.pte_guarded(w) != w) as usize;
             }
+            _ => open += 1,
         }
     }
     (checked, open)

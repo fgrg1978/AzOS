@@ -68,6 +68,8 @@ impl ArchPlatform for Aarch64 {
         crate::cache::icache_invalidate_all();
     }
 
+    fn tlb_remote_flush_masked_ok(&self) -> bool { true }
+
     /// `flush_tlb_page` is already `TLBI VAAE1IS`, broadcast on this ISA.
     #[inline]
     fn flush_tlb_page_all(&self, va: usize) {

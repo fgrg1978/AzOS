@@ -258,12 +258,12 @@ fn the_enable_bits_are_the_architectures() {
 /// two asserts.
 #[test]
 fn bti_enforcement_uses_the_architectures_bits() {
-    use crate::a64_cfi::bti_checking;
+    use crate::a64_cfi::pac_bt_strict;
     use crate::sysregs::SCTLR_EL1_BT1;
     assert_eq!(SCTLR_EL1_BT1, 1 << 36);
     assert_eq!(crate::aarch64_mmu::guarded(0), 1 << 50);
     for w in [0x0060_0000_4000_0743u64, u64::MAX & !(1 << 50), 1 << 63] {
         assert_eq!(crate::aarch64_mmu::guarded(w) ^ w, 1 << 50, "{w:#x}: guarding moved another bit");
     }
-    assert!(bti_checking(1 << 36) && !bti_checking(!(1 << 36)) && !bti_checking(1 << 35 | 1 << 37));
+    assert!(pac_bt_strict(1 << 36) && !pac_bt_strict(!(1 << 36)) && !pac_bt_strict(1 << 35 | 1 << 37));
 }

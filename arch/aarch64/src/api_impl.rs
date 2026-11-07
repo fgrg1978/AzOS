@@ -400,7 +400,7 @@ impl Mmu for Aarch64 {
             }
         } else {
             let one_page = |a: usize| {
-                let page = (a as u64) >> 12;
+                let page = crate::sysregs::tlbi_va_operand(a as u64);
                 if asid != 0 {
                     let op = tag | page;
                     #[cfg(not(feature = "tlb-local-only"))]

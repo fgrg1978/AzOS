@@ -173,6 +173,7 @@ config USER_ALLOC_GUARD_PAGES
 # ---------------------------------------------------------------------------
 
 config PT_PROTECTION_SOFT
+    # cargo-feature: pt-protection-soft
     bool "Page-table pool: software write window where the CPU has no supervisor key"
     depends on !HYP_MONITOR
     default n
@@ -187,8 +188,11 @@ config PT_PROTECTION_SOFT
       mask, kernel mappings only; a user page-table word and a fault pay the
       range compare of the pool. This is bug hardening, not a boundary against
       an attacker: the leaves of the pool's pages sit in ordinary writable
-      tables, and a CPU that read the page during a window may keep a writable
-      translation until it is evicted. n: nothing built unless a hardware key
+      tables. On aarch64 and riscv64 a window's close flushes every CPU's
+      translation of the page; on x86_64 SMP the flush is local (a shootdown
+      IPI cannot be awaited with interrupts off), so a CPU that read the page
+      during a window may keep a writable translation until it is evicted and
+      the protection holds on the writing CPU only. n: nothing built unless a hardware key
       asks for the pool.
 
 config PT_PROTECTION

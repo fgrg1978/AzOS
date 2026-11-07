@@ -330,9 +330,10 @@ pub fn timer_probe(_fw: &Firmware) {
     }
 }
 
-/// Kconfig `A64_BTI_ENFORCE`: the kernel text's leaves become guarded pages
-/// (`SCTLR_EL1.BT1` is already on, set by boot.S on every CPU), when the CPU has
-/// FEAT_BTI and `A64_BTI` allows it. After the W^X pass, so the leaves are the
+/// Kconfig `A64_BTI_ENFORCE`: the kernel text's leaves become guarded pages (the
+/// GP bit is what enforces BTI; `SCTLR_EL1.BT1`, already set by boot.S on every
+/// CPU, only makes `paciasp` strict), when the CPU has FEAT_BTI and `A64_BTI`
+/// allows it. After the W^X pass, so the leaves are the
 /// final 4 KiB ones. Runtime gate canary `canary=bti-guard-skip`: the text stays
 /// unguarded.
 pub fn guard_kernel_text() {
@@ -345,12 +346,12 @@ pub fn guard_kernel_text() {
     }
     // SAFETY: linker symbols, addresses only.
     let (start, end) = unsafe { (&crate::_text_start as *const u8 as usize, &crate::_text_end as *const u8 as usize) };
-    let pages = azos_mm::vmm::guard_range(start, end);
+    let (pages, skipped) = azos_mm::vmm::guard_range(start, end);
     azos_arch::ARCH.flush_tlb_all();
     BTI_GUARDED_PAGES.store(pages, Ordering::Relaxed);
     // MARKER, asserted by the gate's `bti` rows (arm phase).
-    kprintln!("[CFI] aarch64 bti enforced: {} kernel text pages guarded, SCTLR_EL1.BT1={}",
-        pages, azos_arch::cpu::cfi::bti_enforced());
+    kprintln!("[CFI] aarch64 bti enforced: {} kernel text pages guarded, {} skipped; SCTLR_EL1.BT1={} (paciasp strict)",
+        pages, skipped, azos_arch::cpu::cfi::pac_bt_strict_this_cpu());
 }
 
 /// Pages of kernel text [`guard_kernel_text`] guarded.

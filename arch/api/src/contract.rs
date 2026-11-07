@@ -43,6 +43,12 @@ pub trait ArchPlatform: Send + Sync {
     /// Invalidate the translation of the page holding `va` on EVERY CPU.
     fn flush_tlb_page_all(&self, va: usize);
 
+    /// Can [`Self::flush_tlb_page_all`] run with interrupts masked, and does it
+    /// reach every CPU? aarch64 (a broadcast TLBI) and riscv64 (an SBI remote
+    /// fence, which waits in firmware) can; x86_64's shootdown is an IPI the
+    /// other CPUs must take, so a caller with interrupts off must not wait for it.
+    fn tlb_remote_flush_masked_ok(&self) -> bool { false }
+
     /// Zero `[va, va + len)` with the fastest primitive the CPU offers
     /// (cache-block zero where present, plain stores otherwise).
     ///

@@ -22,7 +22,9 @@ pub(crate) fn lock_pt_pool() {
     match azos_mm::vmm::engage_pt_protection() {
         // MARKER, asserted by the gate's `pt-protection` rows.
         Engaged::Locked { pages } => kprintln!("[MM] page tables: kernel-root tables write-protected ({} pool pages in use; user roots and DMA not covered)", pages),
-        Engaged::SoftLocked { pages } => kprintln!("[MM] page tables: kernel-root tables read-only behind a software window ({} pool pages in use; bug hardening, user roots and DMA not covered)", pages),
+        Engaged::SoftLocked { pages, remote } => kprintln!(
+            "[MM] page tables: kernel-root tables read-only behind a software window ({} pool pages in use; {}; bug hardening, user roots and DMA not covered)",
+            pages, if remote { "every CPU flushed at close" } else { "holds on the writing CPU only on SMP" }),
         Engaged::NoKey => kprintln!("[MM] page tables: kernel-root tables in use, not protected (no supervisor key on this CPU, software window off)"),
         Engaged::LockFailed => azos_drv_sys::kerr!("[MM] page tables: kernel-root tables NOT protected: the CPU has the supervisor key but denying writes to it did not take"),
         Engaged::Untaggable => azos_drv_sys::kerr!("[MM] page tables: kernel-root tables NOT protected: a pool page is not a 4 KiB leaf of the direct map"),

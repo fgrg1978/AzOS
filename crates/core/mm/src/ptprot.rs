@@ -50,7 +50,9 @@ pub enum Engaged {
     Locked { pages: usize },
     /// The pool is read-only in the direct map and a word is written with its
     /// page flipped writable for the one store (no key hardware).
-    SoftLocked { pages: usize },
+    /// `remote`: the window's close flushes every CPU's translation (the ISA can
+    /// with interrupts masked); otherwise the protection holds on the writing CPU only.
+    SoftLocked { pages: usize, remote: bool },
     /// The CPU has no key and the software window is off: the pool is in use and writable.
     NoKey,
     /// The CPU has the key, but denying writes to it did not take on this

@@ -85,6 +85,11 @@ pub trait Frame {
     /// The program counter of the trapped instruction.
     fn pc(&self) -> u64;
 
+    /// Resume at `pc` after the trap (a ktest's expected fault steps over its
+    /// own faulting instruction, `trap::fault::expected`).
+    #[cfg_attr(not(feature = "ktest"), allow(dead_code))]
+    fn set_pc(&mut self, pc: u64);
+
     /// The syscall number the task passed (`a7` / `x8` / `rax`).
     fn syscall_number(&self) -> u64;
 
