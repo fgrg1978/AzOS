@@ -45,7 +45,8 @@
 //! reclaim task touches it.
 //!
 //! This file depends on `core` and `azos_limits` alone, and knows page numbers,
-//! not addresses or page tables; the walk that feeds it is `pager::age_space`.
+//! not addresses or page tables; the walk that feeds it is `pager::age_slots`,
+//! over the objects' slots.
 //! `tests/host/mm-tests` pulls it with `#[path]`.
 
 /// Pages per chunk: what one `Mmu::harvest_accessed` call reports.

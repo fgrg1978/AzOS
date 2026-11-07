@@ -42,6 +42,9 @@ impl Host for Up {
     fn sweep_slot(&self, slot: u32) {
         objref::sweep_index(crate::cap::ty::SHM, slot);
     }
+    fn pins_memory(&self, tid: u32) -> bool {
+        azos_sched::task_pins_memory(tid)
+    }
 }
 
 static UP: Up = Up;

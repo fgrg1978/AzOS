@@ -23,7 +23,7 @@
 
 use super::harness::serial;
 use azos_arch::mmu::PAGE_SIZE;
-use azos_mm::pager::{Ages, AnonReclaim, Victim};
+use azos_mm::pager::{Ages, DomainReclaim, Victim};
 use azos_mm::zpool::Reclaimee;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -60,8 +60,8 @@ fn mprotect_waits_out_a_store_in_flight() {
     let frame = azos_mm::vmm::translate(pt, va).expect("mapped");
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va };
     assert!(reclaim.unmap(victim), "the page is taken out: a store is in flight");
     assert!(azos_mm::vmm::translate(pt, va).is_none(), "the leaf is the marker");
 
@@ -94,8 +94,8 @@ fn the_reclaimer_takes_nothing_while_mprotect_rewrites() {
     let (pt, va) = resident_page();
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va };
     let pause = azos_mm::pager::reclaim_pause(azos_sched::shim_space(pt)).expect("the space has regions");
     assert!(!reclaim.unmap(victim), "no page leaves a space while its leaves are rewritten");
     assert!(azos_mm::vmm::translate(pt, va).is_some(), "the page stayed mapped");
@@ -113,8 +113,8 @@ fn module_map_x_waits_out_a_store_in_flight() {
     let frame = azos_mm::vmm::translate(pt, va).expect("mapped");
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va };
     assert!(reclaim.unmap(victim), "the page is taken out: a store is in flight");
 
     let done = AtomicBool::new(false);

@@ -107,6 +107,10 @@ pub struct AddressSpace {
 
 static SPACES: Cache<AddressSpace> = Cache::retained();
 
+// A space's key (`SpaceRef::key`) has bit 0 clear, so it never equals the name
+// the pool gives a shared object (`memobj::pool_container`).
+const _: () = assert!(core::mem::align_of::<AddressSpace>() >= 2);
+
 /// A reference's tag: the object's physical address in the low bits, the low
 /// bits of its generation above them. Objects lie in the RAM map, below 2^48
 /// on every machine the kernel runs on; [`create`] refuses one above.

@@ -158,6 +158,11 @@ pub fn mm_discharge_domain(key: u32, pages: u32) {
     })
 }
 
+/// No task pins its memory here (reclaim is not part of this suite).
+pub fn task_pins_memory(_tid: u32) -> bool {
+    false
+}
+
 pub fn current_task_tid() -> u32 {
     with(|s| s.current_tid)
 }

@@ -156,7 +156,7 @@ fn a_shrink_or_a_break_past_the_floor_answers_the_break() {
 
 #[test]
 fn a_heap_page_the_reclaimer_stores_comes_back_through_its_slot() {
-    use azos_mm::pager::{Ages, AnonReclaim, Victim};
+    use azos_mm::pager::{Ages, DomainReclaim, Victim};
     use azos_mm::zpool::Reclaimee;
     if !azos_mm::zpool::ENABLED {
         return;
@@ -172,8 +172,8 @@ fn a_heap_page_the_reclaimer_stores_comes_back_through_its_slot() {
     unsafe { core::slice::from_raw_parts_mut(azos_mm::addr::phys_to_virt(f) as *mut u8, PAGE_SIZE) }.fill(0xB7);
     let roots = [Some(s)];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va };
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok(), "the heap page is in the pool");
     reclaim.free(victim);

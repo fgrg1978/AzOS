@@ -9,7 +9,7 @@
 //! the loop are the shipping code. The victim source is a model: a `Vec` of
 //! pages standing for one address space (`Model` below implements
 //! [`Reclaimee`](super::zpool::Reclaimee)). The kernel's source is
-//! `pager::AnonReclaim` (`crates/core/mm/src/pager.rs`): the generation order
+//! `pager::DomainReclaim` (`crates/core/mm/src/pager.rs`): the generation order
 //! of the Domain's anonymous region pages (`aging.rs`, whose rows are in
 //! `aging.rs` next to this file), the shoot-down and the page allocator;
 //! those need page tables and a live MMU, and the candidate walk has no host
@@ -198,7 +198,7 @@ impl<Z: PoolOps> Model<Z> {
 impl<Z: PoolOps> Reclaimee for Model<Z> {
     type Victim = usize;
 
-    /// One pass, as `AnonReclaim::next` makes: a page is offered once, and
+    /// One pass, as `DomainReclaim::next` makes: a page is offered once, and
     /// the hand is back at the start when the pass ends.
     fn next(&mut self) -> Option<usize> {
         while self.hand < self.pages.len() {

@@ -785,7 +785,7 @@ path restores a frame taken from a shared object's mapping).
 Four generations per page, 2 bits each, fed by the page table's Accessed bit
 (`Mmu::harvest_accessed`, 64 pages per call). Every `MM_AGING_INTERVAL_MS` a
 Domain with a frame limit and a charge above its low watermark is aged
-(`pager::age_space`, driven by `kernel/src/tasks/reclaim.rs`): a resident
+(`pager::age_slots`, driven by `kernel/src/tasks/reclaim.rs`): a resident
 anonymous page moves one generation older, or back to the youngest when its
 Accessed bit was set; a page first seen starts at generation 2 if idle and 0 if
 used. A storm takes generation 3 first (address order inside a generation), so

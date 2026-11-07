@@ -1393,9 +1393,21 @@ impl<
     /// wrong): [`Lookup::Wrong`], never restored, so the task that touches it
     /// fails and does not read the wrong bytes.
     pub fn fetch_named(&self, obj: u64, page: u64, gen: u32, out: &mut [u8]) -> Lookup {
+        self.fetch_checked(obj, page, Some(gen), out)
+    }
+
+    /// [`fetch_named`](Self::fetch_named) for a page whose mover is alone by
+    /// construction (a shared object's page is restored by one fault at a time,
+    /// and no store of it runs meanwhile): whatever generation the entry has is
+    /// the page's.
+    pub fn fetch_current(&self, obj: u64, page: u64, out: &mut [u8]) -> Lookup {
+        self.fetch_checked(obj, page, None, out)
+    }
+
+    fn fetch_checked(&self, obj: u64, page: u64, gen: Option<u32>, out: &mut [u8]) -> Lookup {
         let Some(i) = self.find(obj, page) else { return Lookup::Gone };
         let e = &self.entries[i];
-        if e.gen != gen {
+        if gen.is_some_and(|g| e.gen != g) {
             return Lookup::Wrong;
         }
         if e.state == BLOB && self.is_parked(self.blobs[e.data as usize].seg) {

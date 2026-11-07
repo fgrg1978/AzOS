@@ -12,7 +12,7 @@
 //! **What is real and what is a model.** The protocol functions, the slot
 //! words, the decision, the pool, the codec, the pass and the budget are the
 //! shipping code. The fault and the reclaimer below are the order `pager.rs`
-//! runs them in (`fault_once`, `AnonReclaim::unmap`), written out over a page
+//! runs them in (`fault_once`, `DomainReclaim::unmap`), written out over a page
 //! that is a slot word and a leaf word (`AtomicU64`s, the leaf in the RISC-V
 //! encoding of the shim's real `mmu.rs`) and frames that are `Vec`s:
 //! `pager.rs` itself needs the page allocator, the scheduler's wait queue and
@@ -160,7 +160,7 @@ impl Page {
     }
 }
 
-/// The reclaimer's store of `page`, in the order `AnonReclaim` runs it: the
+/// The reclaimer's store of `page`, in the order `DomainReclaim` runs it: the
 /// slot becomes `InTransit`, the leaf is cleared, the frame's bytes are packed
 /// and inserted, the marker is published. The leaf word that was cleared and
 /// the entry's generation.
@@ -341,7 +341,7 @@ fn a_fault_racing_a_store_that_gives_up_finds_the_page_where_it_was() {
     std::thread::scope(|s| {
         let faulting = s.spawn(|| fault(&pool, &pg, &waits));
         wait_for(&waits);
-        // The pool refused: the page goes back (`AnonReclaim::keep`).
+        // The pool refused: the page goes back (`DomainReclaim::keep`).
         let put = put_back_page(&pg.slot, 2, FRAME, || pg.leaf.compare_exchange(0, original, Ordering::AcqRel, Ordering::Acquire).is_ok());
         assert_eq!(put, PutBack::Back);
         assert_eq!(faulting.join().unwrap(), Fate::Present, "the fault retries on the page");

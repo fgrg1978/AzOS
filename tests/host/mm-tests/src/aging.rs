@@ -8,10 +8,10 @@
 //! **What is real and what is a model.** `AgeTable`, the pool, the codec, the
 //! budget and the loop are the shipping code. The address space is a model: a
 //! `Vec` of pages with an Accessed flag each, standing for what
-//! `pager::age_space` reads through `Mmu::harvest_accessed` (the walk of the
-//! page tables behind it needs a live MMU; the harvest itself has its rows in
+//! `pager::age_slots` reads through `Mmu::harvest_accessed` (the slots it
+//! reads need a live space; the harvest itself has its rows in
 //! `tests/host/arch-api-tests/src/aging.rs`) and for what
-//! `pager::AnonReclaim` does with a victim (`AgedSpace` below mirrors its
+//! `pager::DomainReclaim` does with a victim (`AgedSpace` below mirrors its
 //! `next` / `store` / `free`: it takes the order from the table, marks a page
 //! the coder gave up on, and forgets a page that left).
 //!
@@ -338,7 +338,7 @@ fn noise(seed: u64) -> Vec<u8> {
         .collect()
 }
 
-/// An address space of pages, as `pager::AnonReclaim` sees one: what the
+/// An address space of pages, as `pager::DomainReclaim` sees one: what the
 /// table says is the order, `store` asks the real codec and pool, a page the
 /// coder gave up on is marked, a page stored is forgotten.
 struct AgedSpace {
@@ -367,7 +367,7 @@ impl AgedSpace {
         }
     }
 
-    /// `pager::age_space` over the model: one chunk, the resident pages and the
+    /// `pager::age_slots` over the model: one chunk, the resident pages and the
     /// flags harvested (and cleared).
     fn age(&mut self) {
         let (mut resident, mut accessed) = (0u64, 0u64);

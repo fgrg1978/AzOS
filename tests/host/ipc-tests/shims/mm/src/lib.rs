@@ -176,6 +176,9 @@ mod page_backing;
 
 pub mod pager {
     pub use crate::page_backing::*;
+
+    /// No compressed pool here: the pages of an ended object have no entries.
+    pub fn forget_object(_container: u64) {}
 }
 
 /// The COW share count (`cow_table.rs`), over the pool: `0` is untracked, the

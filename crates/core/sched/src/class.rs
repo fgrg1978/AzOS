@@ -78,6 +78,12 @@ impl SchedClass {
         }
     }
 
+    /// Is the class one of the real-time bands, whose tasks' memory is committed
+    /// and never reclaimed?
+    pub const fn is_realtime(self) -> bool {
+        matches!(self, Self::SafetyCritical | Self::HardRT | Self::SoftRT)
+    }
+
     /// The name the class is reported by (log lines, `task_class_raw`): the
     /// Name [`from_name`](Self::from_name) accepts, except that the
     /// interactive class is reported as `interactive` and declared as

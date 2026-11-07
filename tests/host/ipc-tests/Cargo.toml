@@ -104,6 +104,9 @@ memobj-sweep-every-domain-canary = []
 memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
+swappable-ignored-canary = []
+object-mapper-pin-canary = []
+swap-rmap-skip-canary = []
 # Front futex-shm-word: a new mapping leaves the resolution cache's "no
 # mapping" answer standing (the_resolve_cache_answers_what_the_scan_answers).
 memobj-resolve-stale-canary = []

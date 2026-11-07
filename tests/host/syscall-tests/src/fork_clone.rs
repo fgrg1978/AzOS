@@ -49,7 +49,7 @@
 
 use super::harness::serial;
 use azos_arch::mmu::PAGE_SIZE;
-use azos_mm::pager::{Ages, AnonReclaim, Victim};
+use azos_mm::pager::{Ages, DomainReclaim, Victim};
 use azos_mm::zpool::Reclaimee;
 
 const ANON: u64 = u64::MAX;
@@ -271,8 +271,8 @@ fn a_compressed_page_is_shared_with_the_child_not_restored() {
     bytes(f)[MARK] = 0x01;
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok(), "the page is in the pool");
     reclaim.free(victim);

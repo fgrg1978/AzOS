@@ -69,6 +69,11 @@ fn is_current_domain(key: u32) -> bool {
     cap_test_sched::idx_for_tid(syscall_test_sched::current_task_tid()).is_some_and(|i| task_domain(i) == key)
 }
 
+/// `azos_sched::task_pins_memory`, over the scheduler shim's pinned set.
+pub fn task_pins_memory(tid: u32) -> bool {
+    syscall_test_sched::task_pins_memory(tid)
+}
+
 /// `azos_sched::mm_charge_domain`, over the one budget stand-in.
 pub fn mm_charge_domain(key: u32, pages: u32) -> bool {
     !is_current_domain(key) || syscall_test_sched::mm_charge(pages)

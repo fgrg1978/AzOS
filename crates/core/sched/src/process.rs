@@ -2824,8 +2824,8 @@ fn report_locked_arena(user_pt: usize, row: u16, va: usize, bytes: usize) {
 
 /// Map a shared memory region's frames at `va` of the current task's page
 /// table, an address its caller placed and recorded (`pager::reserve_obj`).
-/// Nothing is reserved here. `false` for a kernel caller, no pages, or a leaf
-/// that could not be made; the pages done stay mapped, for the pager's release
+/// Nothing is reserved here. A 0 entry of `phys_pages` gets no leaf. `false` for
+/// a kernel caller, no pages, or a leaf that could not be made; the pages done stay mapped, for the pager's release
 /// of the record to take back.
 pub fn shm_map_at(va: usize, phys_pages: &[usize], rw: bool) -> bool {
     let user_pt = crate::scheduler::current_user_pt();
@@ -2842,8 +2842,22 @@ fn shm_map_leaves(user_pt: usize, va: usize, phys_pages: &[usize], rw: bool) -> 
         PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RO }
     };
     // Contiguous runs where the frames and the address allow one
-    // (`vmm::map_contig_range`); plain 4 KiB leaves elsewhere.
-    vmm::map_contig_range(user_pt, va, phys_pages, flags).is_ok()
+    // (`vmm::map_contig_range`); plain 4 KiB leaves elsewhere. A 0 entry is a
+    // page of a swappable object that is out: it gets no leaf, its first access
+    // restores it.
+    let mut i = 0;
+    while i < phys_pages.len() {
+        if phys_pages[i] == 0 {
+            i += 1;
+            continue;
+        }
+        let end = phys_pages[i..].iter().position(|&p| p == 0).map_or(phys_pages.len(), |n| i + n);
+        if vmm::map_contig_range(user_pt, va + i * azos_arch::PAGE_SIZE, &phys_pages[i..end], flags).is_err() {
+            return false;
+        }
+        i = end;
+    }
+    true
 }
 
 // ── Little-endian helpers ─────────────────────────────────────────────────────

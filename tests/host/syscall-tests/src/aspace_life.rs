@@ -108,7 +108,7 @@ fn same_root_again(pt: usize) {
 // page of the new space is taken out under the old one's Domain.
 #[test]
 fn a_reference_kept_past_its_space_takes_nothing_from_a_space_on_the_same_root() {
-    use azos_mm::pager::{Ages, AnonReclaim, Victim};
+    use azos_mm::pager::{Ages, DomainReclaim, Victim};
     use azos_mm::zpool::Reclaimee;
     let _g = serial();
     let pt = root();
@@ -121,16 +121,16 @@ fn a_reference_kept_past_its_space_takes_nothing_from_a_space_on_the_same_root()
     assert_ne!(b, a, "but another space");
 
     assert_eq!(azos_mm::pager::space_pages(a), (0, 0), "the stale reference reached the next space's records");
-    let victim = Victim { space: pt, va };
+    let victim = Victim::Anon { space: pt, va };
     let stale = [Some(a)];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&stale, 0, &mut ages);
+    let mut reclaim = DomainReclaim::new(&stale, 0, 0, &mut ages);
     assert!(!reclaim.unmap(victim), "the stale reference took a page of the next space");
     assert!(azos_mm::vmm::translate(pt, va).is_some(), "the page stayed mapped");
 
     let live = [Some(b)];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&live, 0, &mut ages);
+    let mut reclaim = DomainReclaim::new(&live, 0, 0, &mut ages);
     assert!(reclaim.unmap(victim), "the live reference takes it");
     reclaim.keep(victim);
     azos_sched::set_current_user_pt(0);
@@ -147,7 +147,7 @@ fn a_reference_kept_past_its_space_takes_nothing_from_a_space_on_the_same_root()
 // it under that configuration); without it there is no store to race.
 #[test]
 fn a_store_that_outlives_its_space_leaves_the_next_space_page_alone() {
-    use azos_mm::pager::{Ages, AnonReclaim, Victim};
+    use azos_mm::pager::{Ages, DomainReclaim, Victim};
     use azos_mm::zpool::Reclaimee;
     if !azos_mm::zpool::ENABLED {
         return;
@@ -157,10 +157,10 @@ fn a_store_that_outlives_its_space_leaves_the_next_space_page_alone() {
     let pt = root();
     let va = resident_page_on(pt);
     let a = azos_sched::shim_space(pt);
-    let victim = Victim { space: pt, va };
+    let victim = Victim::Anon { space: pt, va };
     let dead = [Some(a)];
     let mut dead_ages = Ages::new();
-    let mut late = AnonReclaim::new(&dead, 0, &mut dead_ages);
+    let mut late = DomainReclaim::new(&dead, 0, 0, &mut dead_ages);
     assert!(late.unmap(victim), "the dead space's page is out: its store is in flight");
     same_root_again(pt);
 
@@ -171,7 +171,7 @@ fn a_store_that_outlives_its_space_leaves_the_next_space_page_alone() {
     unsafe { core::ptr::write_bytes(azos_mm::addr::phys_to_virt(frame) as *mut u8, 0xC3, PAGE_SIZE) };
     let live = [Some(b)];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&live, 0, &mut ages);
+    let mut reclaim = DomainReclaim::new(&live, 0, 0, &mut ages);
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok(), "the new space's page is in the pool");
     reclaim.free(victim);

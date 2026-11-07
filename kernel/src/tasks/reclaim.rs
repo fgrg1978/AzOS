@@ -22,7 +22,7 @@
 //!
 //! **Ages.** A Domain with a frame limit whose charge is above its low
 //! watermark has its pages aged every `MM_AGING_INTERVAL_MS`
-//! (`pager::age_space`): the Accessed bit of each resident anonymous page is
+//! (`pager::age_slots`): the Accessed bit of each resident anonymous page is
 //! collected and cleared, and the page moves one of four generations older, or
 //! back to the youngest when it was used (`azos_mm::aging`). A storm takes the
 //! oldest generation first, so the page it compresses is the one idle longest,
@@ -49,7 +49,7 @@
 //!    (`zpool::run_storm`): its resident anonymous pages, coldest generation
 //!    first (see *Ages* below), leave their address spaces for the compressed
 //!    pool until its charge is back at the low watermark
-//!    (`pager::AnonReclaim`). The watermarks are declared
+//!    (`pager::DomainReclaim`). The watermarks are declared
 //!    with the Domain's frame limit, from its topology row (`mem_pages`;
 //!    `domain::set_limit`), and a Domain without a limit has none. A Domain on
 //!    a `mem = "locked"` row is never reclaimed (`PageBudget::storm_begin`): it
@@ -85,7 +85,7 @@ use azos_decision::{Rule, Verdict};
 use azos_ipc::port::{self as ports, PortEvent};
 use azos_mm::budget::{NoStorm, Pressure, StormOutcome};
 use azos_mm::aspace::SpaceRef;
-use azos_mm::pager::{self, Ages, AnonReclaim};
+use azos_mm::pager::{self, Ages, DomainReclaim};
 use azos_mm::zpool::{self, Round, Stages};
 use azos_mm::{budget, pmm};
 use azos_sched::domain;
@@ -227,7 +227,7 @@ fn spaces_of(key: domain::Key, spaces: &mut [Option<SpaceRef>; ROOTS_PER_DOMAIN]
     n
 }
 
-/// Age the pages of the Domain `key` names (`pager::age_space` over each of its
+/// Age the pages of the Domain `key` names (`pager::age_slots` over each of its
 /// address spaces) and note when. A table that could not hold every chunk is
 /// said once per Domain slot: the pages left out are never offered.
 fn age_domain(key: domain::Key, now: u64) {
@@ -239,8 +239,9 @@ fn age_domain(key: domain::Key, now: u64) {
         let mut ages = AGES.lock();
         ages.begin(owner);
         for r in spaces[..n].iter().flatten() {
-            pager::age_space(*r, owner, &mut ages);
+            pager::age_slots(*r, owner, &mut ages);
         }
+        pager::age_objects(key, owner, &mut ages);
         ages.end(owner)
     };
     b.note_aged(now);
@@ -296,7 +297,7 @@ fn storm(key: domain::Key, rt_hart: bool) -> Round {
     let max_steps = b.used().saturating_sub(b.low()).saturating_mul(2).max(1);
     let r = {
         let mut ages = AGES.lock();
-        let mut source = AnonReclaim::new(&spaces[..n], owner, &mut ages);
+        let mut source = DomainReclaim::new(&spaces[..n], key, owner, &mut ages);
         zpool::run_storm(b, &mut source, pinned, rt_hart, max_steps, azos_arch::PAGE_SIZE as u32)
     };
     let locked = canary!("storm-record-locked");

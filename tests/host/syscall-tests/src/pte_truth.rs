@@ -26,7 +26,7 @@
 
 use super::harness::serial;
 use azos_arch::mmu::PAGE_SIZE;
-use azos_mm::pager::{Ages, AnonReclaim, Victim};
+use azos_mm::pager::{Ages, DomainReclaim, Victim};
 use azos_mm::zpool::Reclaimee;
 
 const ANON: u64 = u64::MAX;
@@ -120,8 +120,8 @@ fn a_compressed_page_comes_back_from_its_slot() {
     write(pt, base, 0x5C);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok(), "the page is in the pool");
     reclaim.free(victim);
@@ -151,8 +151,8 @@ fn a_copy_on_write_break_moves_the_slot_with_the_leaf() {
     // The parent's page is its own again, so the reclaimer may take it.
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim), "the slot names the parent's frame, the one its leaf maps");
     reclaim.keep(victim);
     assert_eq!(azos_mm::vmm::translate(pt, base), Some(mine));
@@ -201,8 +201,8 @@ fn a_failed_store_after_the_range_was_mapped_again_puts_nothing_back() {
     write(pt, base, 0x66);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim));
     assert_eq!(sys_munmap(base as u64, (2 * PAGE_SIZE) as u64), 0);
     let used = azos_mm::shim_pages_in_use();
@@ -236,8 +236,8 @@ fn the_reclaimer_takes_no_page_of_a_parent_until_its_fork_is_cloned() {
     write(pt, base + PAGE_SIZE, 0x77);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base + PAGE_SIZE };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base + PAGE_SIZE };
     assert!(!reclaim.unmap(victim), "the reclaimer took a page of a parent its fork is still copying");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
@@ -274,8 +274,8 @@ fn a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it() {
     write(pt, base, 0x5A);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);
@@ -361,8 +361,8 @@ fn a_copy_on_write_break_through_another_tasks_root_moves_its_slot() {
     assert_ne!(mine, shared);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim), "the parent's slot names its new frame");
     reclaim.keep(victim);
     azos_sched::set_current_user_pt(pt);
@@ -416,8 +416,8 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     write(pt, base + PAGE_SIZE, 0x5B);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);
@@ -488,8 +488,8 @@ fn a_kernel_copy_waits_out_a_fork_hold() {
     write(pt, base, 0x5A);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
-    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
-    let victim = Victim { space: pt, va: base };
+    let mut reclaim = DomainReclaim::new(&roots, 0, 0, &mut ages);
+    let victim = Victim::Anon { space: pt, va: base };
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);

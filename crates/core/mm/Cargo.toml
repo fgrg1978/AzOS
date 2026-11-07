@@ -286,6 +286,9 @@ memobj-sweep-every-domain-canary = []
 memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
+swappable-ignored-canary = []
+object-mapper-pin-canary = []
+swap-rmap-skip-canary = []
 # Front futex-shm-word: a futex's shm word is used with the table unlocked
 # (the frame may change owner under it), and a new mapping leaves a cached
 # "no mapping" answer standing.

@@ -47,7 +47,7 @@ pub mod zpool;
 /// Kconfig `MM_RECLAIM_COMPRESS`: page generations for the reclaimer. The table
 /// has host rows (`tests/host/mm-tests` pulls this file with `#[path]`) over a
 /// modelled address space; `Mmu::harvest_accessed` has rows in
-/// `tests/host/arch-api-tests`, and `pager::age_space`, which walks real tables,
+/// `tests/host/arch-api-tests`, and `pager::age_slots`, which reads a live space's slots,
 /// runs only in the `reclaim:` gate rows.
 pub mod aging;
 /// Kconfig `MM_SWAP_BACKEND`: full segments of the pool written to the swap

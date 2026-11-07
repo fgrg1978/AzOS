@@ -3124,6 +3124,21 @@ pub fn task_class_raw(tid: u32) -> Option<u8> {
     unsafe { idx_for_tid(tid).map(|i| task_ref(i).sched_class_raw) }
 }
 
+/// Does reclaim leave the memory of the task `tid` alone: its Domain is on a
+/// `mem = "locked"` row, or it is a real-time task (a real-time class, or a
+/// priority in the real-time band)?
+pub fn task_pins_memory(tid: u32) -> bool {
+    let Some(idx) = idx_for_tid(tid) else { return false };
+    // SAFETY: a read of the scheduling words of a live task slot, as `task_class_raw`.
+    let (class, prio) = unsafe {
+        let t = task_ref(idx);
+        (t.sched_class_raw, t.base_priority.load(Ordering::Relaxed))
+    };
+    crate::domain::mem_locked(task_domain(idx))
+        || crate::class::SchedClass::from_raw(class).is_some_and(crate::class::SchedClass::is_realtime)
+        || crate::task::is_rt_priority(prio)
+}
+
 /// The address space of the task `tid`, if it is live and has one. A read of
 /// another task's slot: the space may end meanwhile (`SpaceRef::lock` says).
 pub fn task_aspace(tid: u32) -> Option<azos_mm::aspace::SpaceRef> {

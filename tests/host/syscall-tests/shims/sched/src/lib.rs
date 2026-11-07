@@ -347,6 +347,24 @@ pub fn mm_charge_request_tid(tid: u32, pages: u32, may_grow: bool) -> bool {
 static MEM_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static MM_REFUSALS: AtomicU32 = AtomicU32::new(0);
 
+static PINNED_TASKS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// Test-only control surface: the process `tid` pins its memory (its Domain is
+/// `mem = "locked"`, or it is a real-time task), or stops.
+pub fn shim_pin_task_memory(tid: u32, pinned: bool) {
+    shim_assert_serial("shim_pin_task_memory");
+    let mut v = PINNED_TASKS.lock().unwrap();
+    v.retain(|&t| t != tid);
+    if pinned {
+        v.push(tid);
+    }
+}
+
+/// Does reclaim leave the memory of task `tid` alone (`scheduler::task_pins_memory`)?
+pub fn task_pins_memory(tid: u32) -> bool {
+    PINNED_TASKS.lock().unwrap().contains(&tid)
+}
+
 /// Test-only control surface: mark the current task `mem = "locked"`.
 pub fn shim_set_mem_locked(locked: bool) {
     shim_assert_serial("shim_set_mem_locked");
@@ -1290,7 +1308,7 @@ pub mod process {
             PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RO }
         };
         let fail_after = SHM_MAP_FAIL_AFTER.load(std::sync::atomic::Ordering::SeqCst);
-        for (i, &phys) in phys_pages.iter().enumerate() {
+        for (i, &phys) in phys_pages.iter().enumerate().filter(|&(_, &p)| p != 0) {
             if i >= fail_after || azos_mm::vmm::map(user_pt, va + i * PAGE_SIZE, phys, flags).is_err() {
                 return false;
             }

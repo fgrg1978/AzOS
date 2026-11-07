@@ -72,8 +72,7 @@
 //!
 //! # Attributes
 //!
-//! [`ATTR_SWAPPABLE`] (opt-in for a reclaimer of MemObj frames, which does not
-//! exist yet: only a guest's memory check reads it), [`ATTR_NO_KERNEL_MAP`] (the kernel
+//! [`ATTR_SWAPPABLE`] (opt-in for the compressed pool and swap, see "Swappable objects" below), [`ATTR_NO_KERNEL_MAP`] (the kernel
 //! never reads the object through the direct map: `memobj_with_word_ref`
 //! refuses it), [`ATTR_VOLATILE`] (purgeable: see the next section).
 //!
@@ -113,6 +112,61 @@
 //! Stage 0 belongs to the reclaim task, which exists only with
 //! `MM_RECLAIM_COMPRESS`: on a `MM_RECLAIM_OFF` image a Volatile object is
 //! never purged.
+//!
+//! # Swappable objects: memory the pool and swap may take
+//!
+//!
+//! A named Anon object that carries [`ATTR_SWAPPABLE`] gives its pages to the
+//! Domain storm like a private anonymous mapping does (`pager::DomainReclaim`):
+//! compressed into the pool, written to swap with the pool's segments, and
+//! brought back by the fault of any mapper. The pool names a page by
+//! [`pool_container`] and the page's number in the object, so a page of a
+//! shared object has one entry however many spaces map it.
+//!
+//! **A page has four states.** Resident (`phys_pages[i]` names a frame);
+//! *storing* (`transit` set, `phys_pages[i]` 0, the frame is the reclaimer's);
+//! *out* (`out` set, no frame, the pool holds the bytes); *restoring* (`out` and
+//! `transit` set, a fault owns the way back). One mover at a time, decided under
+//! the table lock, which also makes every transition atomic for the mappers: a
+//! fault reads the state under it, and a page in `transit` is waited for, never
+//! zero-filled.
+//!
+//! **Why a frame a mapper still uses is never taken.** The holder table is the
+//! object's complete reverse map: a mapper beyond `MAX_MEMOBJ_HOLDERS` is
+//! refused at the acquire, and a mapping is recorded in its holder before any
+//! fault can install a leaf for it ([`memobj_map_commit_ref`]). The four states
+//! in which a leaf exists that no holder record names are each a disjunct of
+//! `swap_ready`: a holder `pinned` by a failed map, leaves `building` (a map, an
+//! unmap or a fork's inheritance in flight), an install in flight (`installing`:
+//! a fault holds the frame before its leaf is written), and the kernel's own
+//! reference (`MEMOBJ_KERNEL_OWNER`, which addresses the frames directly). Any
+//! other state reaches every leaf through the records: [`memobj_swap_take`]
+//! clears the page's leaf in each recorded mapping and shoots it down on every
+//! hart (`unmap_frame_in`, through the unmap hook, which waits out open
+//! user-copy sections) before the frame leaves `phys_pages`, all in one hold of
+//! the table. After that hold no leaf names the frame and none can again: a
+//! fault finds `transit` and waits, a fault after the publish finds `out` and
+//! restores through the object. A page with neither a frame, `transit` nor `out`
+//! is not the pager's, and the fault fails rather than zero-fill it.
+//!
+//! **Who is never taken.** An object with a holder whose Domain is on a
+//! `mem = "locked"` row, or whose process is a real-time task
+//! ([`Host::pins_memory`]), is left alone whichever Domain is charged for it:
+//! that is the object's mapper, not its owner. Nor an object with frames a clone
+//! shares, a volatile one, one the kernel holds, or one charged to no Domain.
+//!
+//! **Kernel access by address.** The kernel does not read a swappable object
+//! through the direct map: its word, span and frame calls answer as for
+//! [`ATTR_NO_KERNEL_MAP`]. The exception is the futex word of a mapped page
+//! ([`memobj_with_mapped_word`]): the key of a page that is out is still its
+//! (object, offset), and the look at its value asks the caller to settle, which
+//! faults the page in.
+//!
+//! **Charge.** A page that is out has given its charge back (the storm's
+//! `storm_note_stored`) and its restore charges it again; the object's last
+//! release gives back what is resident. A MOVE of the owning reference and a
+//! clone are refused (`Busy`) while a page is out or in transit, so the Domain
+//! that stored a page is the one that restores it.
 //!
 //! # Operations
 //!
@@ -229,13 +283,12 @@ impl MemKind {
     }
 }
 
-/// The frames may be taken by a reclaimer. None reads it yet: a MemObj frame
-/// taken out of its mappings has no fault path to restore it (a mapping of a
-/// named object is a pager record whose pages are mapped with it, and no fault
-/// supplies one), so the compressed pool takes anonymous region pages
-/// only (`azos_mm::pager::AnonReclaim`). Kept as the object's opt-in for the
-/// front that adds one; a guest's memory (`syscall/vm.rs`) refuses an object
-/// that carries it.
+/// The frames may be taken by the Domain storm of the object's owner
+/// (`azos_mm::pager::DomainReclaim`): compressed, then swapped, and restored by
+/// the fault of any mapper (module doc, "Swappable objects"). The kernel does
+/// not address the object's frames; a guest's memory (`syscall/vm.rs`), a
+/// display and a sound buffer refuse an object that carries it. Anon only,
+/// never with [`ATTR_VOLATILE`].
 pub const ATTR_SWAPPABLE: u8 = 1 << 0;
 /// The kernel never reads the object through the direct map.
 pub const ATTR_NO_KERNEL_MAP: u8 = 1 << 1;
@@ -244,6 +297,10 @@ pub const ATTR_NO_KERNEL_MAP: u8 = 1 << 1;
 /// frames without writing them ([`memobj_purge_volatile`]). Anon objects only.
 pub const ATTR_VOLATILE: u8 = 1 << 2;
 const ATTRS_KNOWN: u8 = ATTR_SWAPPABLE | ATTR_NO_KERNEL_MAP | ATTR_VOLATILE;
+/// The attributes of an object whose frames the kernel does not address: its
+/// pages are not in the direct map's reach (confidential memory), or may be out
+/// of memory at any moment (swappable memory).
+const KERNEL_BLIND: u8 = ATTR_NO_KERNEL_MAP | ATTR_SWAPPABLE;
 
 /// What to create: the kind, the access mode and the attributes. Built with
 /// [`MemSpec::anon`] and the `with_*` methods.
@@ -470,6 +527,17 @@ pub struct MemObj {
     /// [`ATTR_VOLATILE`] objects only: whether reclaim may take the frames now
     /// (module doc, "Volatile objects").
     purge: PurgeState,
+    /// Bit `i`: page `i` is in the compressed pool or on swap, with no frame
+    /// (module doc, "Swappable objects"). Always 0 without [`ATTR_SWAPPABLE`].
+    out: u64,
+    /// Bit `i`: the reclaimer is storing page `i` (its frame is the
+    /// reclaimer's, `phys_pages[i]` is 0 and `out` is clear) or a fault is
+    /// restoring it (`out` is set). One mover at a time.
+    transit: u64,
+    /// Fault installs in flight (a Paged page's, a swappable page's): a frame
+    /// a fault is about to put in a leaf is not taken, whatever page of the
+    /// object it is.
+    installing: u32,
 }
 
 /// Where a volatile object stands (module doc, "Volatile objects"). Always
@@ -501,10 +569,6 @@ struct PagedState {
     /// Pages being written back now: bit `i` is page `i`. Such a page is not
     /// dropped and not written by the kernel until its write-back ends.
     flushing: u64,
-    /// Fault installs in flight ([`memobj_paged_frame_pinned_ref`] to
-    /// [`memobj_paged_install_done_ref`]): a frame a fault is about to put in a
-    /// leaf is not dropped, whatever page of the object it is.
-    installing: u32,
     /// File regions over the object, and the callers that hold one for the region
     /// they are about to make: the file cache closes an object nobody uses.
     users: u32,
@@ -533,6 +597,9 @@ impl MemObj {
             ident: 0,
             paged: None,
             purge: PurgeState::Held,
+            out: 0,
+            transit: 0,
+            installing: 0,
         }
     }
 }
@@ -772,6 +839,9 @@ pub trait Host: Sync {
     fn wake_shared(&self, obj: u32, offset: u32);
     /// Revoke the capabilities that name table slot `slot`: its generation wrapped.
     fn sweep_slot(&self, slot: u32);
+    /// Is the process `tid` one whose memory reclaim leaves alone: its Domain is
+    /// on a `mem = "locked"` row, or it is a real-time task?
+    fn pins_memory(&self, tid: u32) -> bool;
 }
 
 /// A thin pointer to the [`Host`], which the hook cell can hold.
@@ -984,7 +1054,12 @@ fn create_core(
     // Unknown attributes are refused whatever the kind; only Anon memory is
     // purgeable (a Contig run may be given to a device, which writes it
     // behind the purger's back).
-    if spec.attrs & !ATTRS_KNOWN != 0 || (spec.attrs & ATTR_VOLATILE != 0 && spec.kind != MemKind::Anon) {
+    // Swapping and purging are two answers to the same pressure, and a
+    // Contig run is handed to devices: a kind takes one of them or none.
+    if spec.attrs & !ATTRS_KNOWN != 0
+        || (spec.attrs & ATTR_VOLATILE != 0 && spec.kind != MemKind::Anon)
+        || (spec.attrs & ATTR_SWAPPABLE != 0 && (spec.kind != MemKind::Anon || spec.attrs & ATTR_VOLATILE != 0))
+    {
         return Err(MemObjError::BadArg);
     }
     if !has_room(&MEMOBJS.lock(), owner_task) {
@@ -1380,7 +1455,9 @@ pub fn memobj_map_begin_ref(tid: u32, r: u32, write: bool, pages: &mut [usize]) 
         return Err(MemObjError::Busy);
     }
     let frames = o.phys_pages.get(..pages.len()).filter(|_| pages.len() <= o.page_count).ok_or(MemObjError::Closed)?;
-    if frames.contains(&0) {
+    // A swappable object's page that is out has no leaf to make: the entry is
+    // 0 and the first access to it restores the page.
+    if frames.contains(&0) && o.attrs & ATTR_SWAPPABLE == 0 {
         return Err(MemObjError::Closed);
     }
     pages.copy_from_slice(frames);
@@ -1526,26 +1603,34 @@ fn inherit_commit(
     }
     let page = azos_arch::PAGE_SIZE;
     let frames = o.phys_pages.get(..pages).filter(|_| pages <= o.page_count).ok_or(MemObjError::Closed)?;
-    if (0..pages).any(|k| leaves.leaf(va + k * page).map(|(f, _)| f) != Some(frames[k])) {
+    // A swappable object may have pages with no leaf (out, or restored by
+    // another mapper): the child faults them in. A leaf that is there names the
+    // object's frame.
+    let sparse = o.attrs & ATTR_SWAPPABLE != 0;
+    if (0..pages).any(|k| match leaves.leaf(va + k * page) {
+        Some((f, _)) => f != frames[k],
+        None => !sparse,
+    }) {
         return Err(MemObjError::Closed);
     }
     leaves.set_write(access.write);
     // A frame that refuses write (code, a frame the kernel shares) leaves the
     // child read-only, as its record then says.
-    if access.write && !leaves_agree(leaves, va, pages, true) {
+    if access.write && !leaves_agree(leaves, va, pages, true, sparse) {
         access.write = false;
         leaves.set_write(false);
     }
-    if !leaves_agree(leaves, va, pages, access.write) || !note_mapping_locked(o, child, root, va, 0, pages, access) {
+    if !leaves_agree(leaves, va, pages, access.write, sparse) || !note_mapping_locked(o, child, root, va, 0, pages, access) {
         return Err(MemObjError::Closed);
     }
     regions.map_epoch += u64::from(!cfg!(feature = "memobj-resolve-stale-canary"));
     Ok(access)
 }
 
-/// Is every leaf of the mapping at `va` present, with write permission `write`?
-fn leaves_agree(leaves: &impl ChildLeaves, va: usize, pages: usize, write: bool) -> bool {
-    (0..pages).all(|k| leaves.leaf(va + k * azos_arch::PAGE_SIZE).is_some_and(|(_, w)| w == write))
+/// Is every leaf of the mapping at `va` with write permission `write`, and
+/// (unless `sparse`) present?
+fn leaves_agree(leaves: &impl ChildLeaves, va: usize, pages: usize, write: bool, sparse: bool) -> bool {
+    (0..pages).all(|k| leaves.leaf(va + k * azos_arch::PAGE_SIZE).map_or(sparse, |(_, w)| w == write))
 }
 
 /// The leaves of [`memobj_unmap_begin_ref`] are gone, on every hart.
@@ -1696,7 +1781,7 @@ pub fn memobj_with_mapped_word<R>(
     if va % 4 != 0 {
         return None;
     }
-    with_mapped_word_locked(MEMOBJS.lock(), tid, va, write, f)
+    with_mapped_word_locked(MEMOBJS.lock(), tid, va, write, f).ok().flatten()
 }
 
 /// The region table is held by someone else ([`memobj_try_with_mapped_word`]).
@@ -1705,7 +1790,8 @@ pub struct TableBusy;
 
 /// [`memobj_with_mapped_word`] for a caller under the futex table: never spins
 /// on the region table. `Err(TableBusy)`: drop the futex table, wait with
-/// [`memobj_wait_unlocked`], start over.
+/// [`memobj_wait_unlocked`] (and fault the word's page in: it is a swappable
+/// object's page that is out), start over.
 ///
 /// Canary `memobj-word-spin-canary`: spins, the deadlock against an interrupt
 /// that wakes a futex on a hart holding this lock.
@@ -1720,7 +1806,7 @@ pub fn memobj_try_with_mapped_word<R>(
     } else {
         MEMOBJS.try_lock().ok_or(TableBusy)?
     };
-    Ok(with_mapped_word_locked(regions, tid, va, write, f))
+    with_mapped_word_locked(regions, tid, va, write, f)
 }
 
 /// Until the holder that made a [`memobj_try_with_mapped_word`] answer
@@ -1732,16 +1818,21 @@ pub fn memobj_wait_unlocked() {
 fn with_mapped_word_locked<R>(
     mut regions: SpinLockGuard<'_, MemObjTable>, tid: u32, va: usize, write: bool,
     f: impl FnOnce(u32, usize, &AtomicU32) -> R,
-) -> Option<R> {
+) -> Result<Option<R>, TableBusy> {
     hold_canary();
-    let w = resolve_mapped_locked(&mut regions, tid, va)?;
+    let Some(w) = resolve_mapped_locked(&mut regions, tid, va) else { return Ok(None) };
     let region = &regions[w.idx];
+    // A page that is out has no word to read: the caller settles, which faults
+    // the page in, and looks again.
+    if w.phys == 0 {
+        return Err(TableBusy);
+    }
     if write
         && (!region.holders[w.holder].map_write
             || region.perms != MemPerms::ReadWrite
             || region.cow_shared & (1u64 << w.page) != 0)
     {
-        return None;
+        return Ok(None);
     }
     let packed = LAYOUT.pack(w.idx as u32, region.generation);
     // SAFETY: a 4-aligned word of a frame of a live region, which cannot be
@@ -1765,7 +1856,7 @@ fn with_mapped_word_locked<R>(
     }
     let out = f(packed, w.off, word);
     drop(held);
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Canary `memobj-hold-canary` (the `scale` vsbench lanes): the futex
@@ -1883,9 +1974,12 @@ fn mapped_word_locked(region: &MemObj, i: usize, h: usize, tid: u32, va: usize) 
     // `va` is the caller's (a futex or notify a0): the page index is masked
     // after the check (Spectre v1, `azos_limits::nospec`).
     let pg = azos_limits::nospec::array_index_nospec(off / page, span / page);
-    // A Paged page that is not in the cache names no word.
+    // A Paged page that is not in the cache names no word. A swappable page
+    // that is out names its (object, offset) all the same, with no frame to
+    // read it through.
     if region.phys_pages[pg] == 0 {
-        return Ok(None);
+        let away = region.attrs & ATTR_SWAPPABLE != 0 && (region.out | region.transit) & (1u64 << pg) != 0;
+        return Ok(away.then_some(MappedWord { idx: i, holder: h, off, page: pg, phys: 0 }));
     }
     Ok(Some(MappedWord { idx: i, holder: h, off, page: pg, phys: region.phys_pages[pg] + off % page }))
 }
@@ -1909,7 +2003,7 @@ pub fn memobj_kernel_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usi
     let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
-    Ok(if page_idx < region.page_count && region.attrs & ATTR_NO_KERNEL_MAP == 0 && region.phys_pages[page_idx] != 0 {
+    Ok(if page_idx < region.page_count && region.attrs & KERNEL_BLIND == 0 && region.phys_pages[page_idx] != 0 {
         Some(region.phys_pages[page_idx])
     } else {
         None
@@ -1948,7 +2042,7 @@ pub fn memobj_with_word_ref<R>(
     // `None` for an object the kernel does not map, as for an offset past it:
     // there is no word the kernel may read.
     // Canary `memobj-no-kernel-map-canary`: the attribute is not consulted.
-    let hidden = region.attrs & ATTR_NO_KERNEL_MAP != 0 && !cfg!(feature = "memobj-no-kernel-map-canary");
+    let hidden = region.attrs & KERNEL_BLIND != 0 && !cfg!(feature = "memobj-no-kernel-map-canary");
     if page >= region.page_count || offset % 4 != 0 || hidden {
         return Ok(None);
     }
@@ -1991,7 +2085,7 @@ pub fn memobj_with_span_ref<R>(r: u32, bytes: usize, f: impl FnOnce(usize) -> R)
     let i = live_index(&regions, r)?;
     let region = &regions[i];
     let pages = bytes.div_ceil(page);
-    let hidden = region.attrs & ATTR_NO_KERNEL_MAP != 0 && !cfg!(feature = "memobj-no-kernel-map-canary");
+    let hidden = region.attrs & KERNEL_BLIND != 0 && !cfg!(feature = "memobj-no-kernel-map-canary");
     let shared = pages.min(64) as u32;
     let shared_mask = if shared >= 64 { u64::MAX } else { (1u64 << shared) - 1 };
     if bytes == 0
@@ -2227,11 +2321,15 @@ fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) -> Reclaim {
         }
         // Given back to the Domain that holds the charge, from whichever task
         // drops the last reference (the budget is atomic).
+        // A page that is out gave its charge back when it left.
         if region.charge_key != 0 {
-            host().discharge(region.charge_key, region.page_count as u32);
+            host().discharge(region.charge_key, region.page_count as u32 - region.out.count_ones());
         }
         if region.meta_key != 0 {
             host().meta_discharge(region.meta_key, MEMOBJ_KMEM_BYTES);
+        }
+        if region.out | region.transit != 0 {
+            freed.forget = region.ident;
         }
         *region = MemObj::empty();
     }
@@ -2258,11 +2356,14 @@ struct Reclaim {
     /// sharer frees it.
     shared: u64,
     n: usize,
+    /// The object whose pages are in the compressed pool, which ended: their
+    /// entries go with it. 0: none.
+    forget: u32,
 }
 
 impl Reclaim {
     const fn new() -> Self {
-        Self { frames: [0; MAX_MEMOBJ_PAGES], shared: 0, n: 0 }
+        Self { frames: [0; MAX_MEMOBJ_PAGES], shared: 0, n: 0, forget: 0 }
     }
 
     fn is_full(&self) -> bool {
@@ -2289,6 +2390,9 @@ impl Reclaim {
     /// Give every frame back to the allocator, unless a clone still shares
     /// it. With the table lock dropped.
     fn free(self) {
+        if self.forget != 0 {
+            crate::pager::forget_object(pool_container(self.forget));
+        }
         for (k, &p) in self.frames[..self.n].iter().enumerate() {
             if self.shared & (1u64 << k) == 0 || crate::cow::page_decref(p) {
                 let _ = crate::pmm::free_page(crate::addr::PhysAddr::new(p));
@@ -2610,6 +2714,12 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
             uncharge();
             return Err(MemObjError::Purged);
         }
+        // A page that is out has no frame to share or copy.
+        if away_pages(&regions[i]) != 0 {
+            drop(regions);
+            uncharge();
+            return Err(MemObjError::Busy);
+        }
         if acquire_locked(&mut regions[i], tid).is_none() {
             drop(regions);
             uncharge();
@@ -2884,6 +2994,11 @@ pub fn memobj_move(from: u32, to: u32, r: u32) -> Result<Moved, MemObjError> {
     if regions[i].kind == MemKind::Paged {
         return Err(MemObjError::BadArg);
     }
+    // The Domain that stored a page restores it: the charge stays put while a
+    // page is out or moving.
+    if regions[i].owner_task == from && away_pages(&regions[i]) != 0 {
+        return Err(MemObjError::Busy);
+    }
     let fi = (0..MAX_MEMOBJ_HOLDERS)
         .find(|&k| regions[i].holders[k].refs > 0 && regions[i].holders[k].tid == from)
         .ok_or(MemObjError::Closed)?;
@@ -3016,7 +3131,7 @@ fn pipe_header(region: &MemObj) -> Option<azos_bytepipe::Header> {
     // word, and the header's recovery writes), and its first page may not be in
     // the cache at all (no frame to read).
     if region.page_count == 0
-        || region.attrs & ATTR_NO_KERNEL_MAP != 0
+        || region.attrs & KERNEL_BLIND != 0
         || region.kind == MemKind::Paged
         || region.phys_pages[0] == 0
     {
@@ -3173,7 +3288,7 @@ pub fn memobj_frames_pin(r: u32, out: &mut [usize]) -> Result<usize, MemObjError
     let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &mut regions[i];
-    if region.attrs & ATTR_NO_KERNEL_MAP != 0
+    if region.attrs & KERNEL_BLIND != 0
         || region.perms != MemPerms::ReadWrite
         || region.page_count == 0
         || region.page_count > out.len()
@@ -3375,7 +3490,7 @@ pub fn memobj_create_paged(
         return Err(MemObjError::BadArg);
     }
     let spec = MemSpec { kind: MemKind::Paged, perms, attrs: 0, device_visible: false };
-    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0, installing: 0, users: 0, maps: 0 };
+    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0, users: 0, maps: 0 };
     claim_slot_cow(MEMOBJ_KERNEL_OWNER, &[0usize; MAX_MEMOBJ_PAGES][..pages], &spec, 0, 0, Some(st))
         .ok_or(MemObjError::NoMem)
 }
@@ -3443,7 +3558,7 @@ pub fn memobj_paged_frame_ref(r: u32, idx: usize, write: bool) -> Result<usize, 
 
 /// [`memobj_paged_frame_ref`] for a fault that puts the frame in a leaf at once:
 /// the object's drops (a reclaim pass, a truncate) leave it alone until
-/// [`memobj_paged_install_done_ref`], so the leaf never names a frame that went
+/// [`memobj_install_done_ref`], so the leaf never names a frame that went
 /// back to the allocator between the lookup and the install. The pin is taken
 /// in the hold that reads the frame, and only when it returns a frame.
 pub fn memobj_paged_frame_pinned_ref(r: u32, idx: usize, write: bool) -> Result<usize, PagedError> {
@@ -3519,15 +3634,6 @@ pub fn memobj_paged_users_ref(r: u32) -> u32 {
     paged_slot(&regions, r).ok().and_then(|i| regions[i].paged.as_ref().map(|st| st.users)).unwrap_or(0)
 }
 
-/// End the pin [`memobj_paged_frame_pinned_ref`] took on `r`.
-pub fn memobj_paged_install_done_ref(r: u32) {
-    let mut regions = MEMOBJS.lock();
-    if let Ok(i) = paged_slot(&regions, r) {
-        if let Some(st) = regions[i].paged.as_mut() {
-            st.installing = st.installing.saturating_sub(1);
-        }
-    }
-}
 
 fn paged_frame(r: u32, idx: usize, write: bool, pin: bool) -> Result<usize, PagedError> {
     for _ in 0..PAGED_TRIES {
@@ -3550,9 +3656,9 @@ fn paged_frame(r: u32, idx: usize, write: bool, pin: bool) -> Result<usize, Page
             if write {
                 st.dirty |= 1u64 << idx;
             }
-            if pin {
-                st.installing += 1;
-            }
+        }
+        if pin {
+            o.installing += 1;
         }
         return Ok(phys);
     }
@@ -3726,7 +3832,7 @@ pub fn memobj_paged_drop_clean(max_pages: usize) -> usize {
         'objects: for i in from..MAX_MEMOBJS {
             from = i;
             let o = &mut regions[i];
-            if !o.active || o.kind != MemKind::Paged || any_pinned(o) || o.paged.is_some_and(|st| st.installing != 0) {
+            if !o.active || o.kind != MemKind::Paged || any_pinned(o) || o.installing != 0 {
                 from = i + 1;
                 continue;
             }
@@ -3831,7 +3937,7 @@ fn paged_forget_locked(o: &mut MemObj, from_idx: usize) -> Result<Reclaim, MemOb
     }
     let flushing = o.paged.map_or(0, |st| st.flushing);
     if any_pinned(o)
-        || o.paged.is_some_and(|st| st.installing != 0)
+        || o.installing != 0
         || (from_idx..o.page_count).any(|idx| flushing & (1u64 << idx) != 0)
     {
         return Err(MemObjError::Busy);
@@ -4102,6 +4208,257 @@ pub fn memobj_purge_volatile(max_pages: usize, mem_locked: fn(u32) -> bool) -> u
         freed += pages;
     }
     freed
+}
+
+/// The name the compressed pool gives the object `ident`: an odd value, never
+/// the key of an address space (those name aligned objects).
+pub fn pool_container(ident: u32) -> u64 {
+    (u64::from(ident) << 1) | 1
+}
+
+/// The object a pool container names, if it names one.
+pub fn container_ident(container: u64) -> Option<u32> {
+    (container & 1 == 1).then_some((container >> 1) as u32)
+}
+
+/// Does a Domain's storm reach this object at all: charged to `key`, Anon,
+/// opted in, with no holder that pins its memory? The part of eligibility that
+/// holds for as long as the object does; `swap_ready` is the part that changes
+/// from moment to moment.
+///
+/// Canary `swappable-ignored-canary`: the attribute is not read, so a plain
+/// object is taken like an opted-in one. Canary `object-mapper-pin-canary`:
+/// only the object's owner is asked whether its memory is pinned, not each
+/// mapper.
+fn swap_candidate(o: &MemObj, key: u32) -> bool {
+    let opted = o.attrs & ATTR_SWAPPABLE != 0 || cfg!(feature = "swappable-ignored-canary");
+    let pinned = |h: &MemHolder| {
+        h.refs > 0
+            && (h.tid == MEMOBJ_KERNEL_OWNER
+                || ((!cfg!(feature = "object-mapper-pin-canary") || h.tid == o.owner_task) && host().pins_memory(h.tid)))
+    };
+    o.active
+        && key != 0
+        && o.charge_key == key
+        && o.kind == MemKind::Anon
+        && opted
+        && o.attrs & ATTR_VOLATILE == 0
+        && o.cow_shared == 0
+        && !o.holders.iter().any(pinned)
+}
+
+/// Is nothing in flight on the object that a reclaimer's unmap could miss?
+fn swap_ready(o: &MemObj) -> bool {
+    o.installing == 0 && !any_pinned(o)
+}
+
+/// What the aging pass learned about one swappable object.
+#[derive(Clone, Copy, Debug)]
+pub struct AgedObject {
+    /// The slot to resume the walk at.
+    pub next: usize,
+    pub ident: u32,
+    pub pages: usize,
+    /// Bit `i`: page `i` is resident and could be taken.
+    pub resident: u64,
+    /// Bit `i`: a mapping used page `i` since the last pass.
+    pub accessed: u64,
+}
+
+/// The next swappable object of the Domain `key` at or after slot `from`, with
+/// its resident pages and the pages its mappers used since the last pass.
+/// `harvest(root, va, pages)` is the Accessed-bit harvest of one mapping
+/// (`Mmu::harvest_accessed`); it runs for each recorded mapping of the object
+/// with the table locked, so no address space ends under it (a holder's record
+/// goes before its root does). The slots say what is resident, and a leaf is
+/// only where the bit lives. `None` when no object is left.
+pub fn memobj_age_next(key: u32, from: usize, harvest: &dyn Fn(usize, usize, usize) -> u64) -> Option<AgedObject> {
+    let regions = MEMOBJS.lock();
+    let i = (from..MAX_MEMOBJS).find(|&i| swap_candidate(&regions[i], key))?;
+    let o = &regions[i];
+    let mut resident = 0u64;
+    for idx in 0..o.page_count {
+        let frame = o.phys_pages[idx];
+        if frame != 0 && o.transit & (1u64 << idx) == 0 {
+            resident |= 1 << idx;
+        }
+    }
+    let mut accessed = 0u64;
+    for h in o.holders.iter().filter(|h| h.is_mapped()) {
+        let n = h.map_pages.min(o.page_count.saturating_sub(h.map_off));
+        if n != 0 && n <= 64 {
+            accessed |= harvest(h.map_root, h.map_va, n).checked_shl(h.map_off as u32).unwrap_or(0);
+        }
+    }
+    Some(AgedObject { next: i + 1, ident: o.ident, pages: o.page_count, resident, accessed: accessed & resident })
+}
+
+/// Is `container` an object charged to the Domain `key` that its storm may
+/// ask for pages? For the age table's walk, which keeps Domains apart.
+pub fn memobj_swap_owned(container: u64, key: u32) -> bool {
+    let Some(r) = container_ident(container) else { return false };
+    let regions = MEMOBJS.lock();
+    live_index(&regions, r).is_ok_and(|i| swap_candidate(&regions[i], key))
+}
+
+/// Take page `idx` of the object `ident` names out of every mapping, for the
+/// storm of the Domain `key` to store: the frame, which is the caller's now (the
+/// page is in transit). `None`, with nothing changed, when the object is not the
+/// storm's, something is in flight on it (`swap_ready`), or the page is not
+/// resident (a frame an object keeps is shared with a clone only under
+/// `cow_shared`, which `swap_candidate` refuses).
+pub fn memobj_swap_take(ident: u32, idx: usize, key: u32) -> Option<usize> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, ident).ok()?;
+    let o = &mut regions[i];
+    let bit = 1u64 << idx;
+    if idx >= o.page_count
+        || !swap_candidate(o, key)
+        || !swap_ready(o)
+        || o.phys_pages[idx] == 0
+        || o.transit & bit != 0
+    {
+        return None;
+    }
+    // Every recorded mapping loses its leaf, shot down on every hart, before
+    // the frame stops being the object's: no mapper can reach it after this
+    // hold. Canary `swap-rmap-skip-canary`: the leaves stay.
+    if !cfg!(feature = "swap-rmap-skip-canary") {
+        unmap_frame_in(o, idx);
+    }
+    let frame = o.phys_pages[idx];
+    o.phys_pages[idx] = 0;
+    o.transit |= bit;
+    Some(frame)
+}
+
+/// The store of page `idx` succeeded: the pool holds the bytes, the page is
+/// out. `false` when the object is gone or is not the one the store began on:
+/// the caller drops the pool's copy.
+pub fn memobj_swap_publish(ident: u32, idx: usize) -> bool {
+    let mut regions = MEMOBJS.lock();
+    let Ok(i) = live_index(&regions, ident) else { return false };
+    let o = &mut regions[i];
+    let bit = 1u64 << idx;
+    if idx >= o.page_count || o.transit & bit == 0 || o.out & bit != 0 {
+        return false;
+    }
+    o.transit &= !bit;
+    o.out |= bit;
+    true
+}
+
+/// The store of page `idx` did not happen: `frame` is the object's again. No
+/// leaf is written; the next access faults and installs it. `false` when the
+/// object is gone: the frame is the caller's to free.
+pub fn memobj_swap_put_back(ident: u32, idx: usize, frame: usize) -> bool {
+    let mut regions = MEMOBJS.lock();
+    let Ok(i) = live_index(&regions, ident) else { return false };
+    let o = &mut regions[i];
+    let bit = 1u64 << idx;
+    if idx >= o.page_count || o.transit & bit == 0 || o.out & bit != 0 || o.phys_pages[idx] != 0 {
+        return false;
+    }
+    o.phys_pages[idx] = frame;
+    o.transit &= !bit;
+    true
+}
+
+/// What a fault on a mapped page of a shared object finds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjLook {
+    /// The page is resident: install this frame, writable as the mapping is.
+    /// The object holds off every take until [`memobj_install_done_ref`].
+    Frame { frame: usize, write: bool },
+    /// A store or another fault's restore is moving the page: wait for it to
+    /// end, look again.
+    Wait,
+    /// The page is out and this fault owns the way back:
+    /// [`memobj_restore_install`] or [`memobj_restore_abort`] ends it.
+    Restore,
+    /// Not the pager's: the object is gone, the mapping does not reach the
+    /// page, or the page has neither a frame nor a copy.
+    Gone,
+}
+
+/// Decide a fault of the address space `root` on page `idx` of the object `r`
+/// names, from the object's state under its lock.
+pub fn memobj_fault_look(r: u32, root: usize, idx: usize) -> ObjLook {
+    let mut regions = MEMOBJS.lock();
+    let Ok(i) = live_index(&regions, r) else { return ObjLook::Gone };
+    let o = &mut regions[i];
+    let Some(write) = o.holders.iter().find(|h| h.is_mapped() && h.map_root == root && h.maps_page(idx)).map(|h| h.map_write) else {
+        return ObjLook::Gone;
+    };
+    let bit = 1u64 << idx;
+    if idx >= o.page_count {
+        return ObjLook::Gone;
+    }
+    if o.transit & bit != 0 {
+        return ObjLook::Wait;
+    }
+    if o.out & bit != 0 {
+        o.transit |= bit;
+        return ObjLook::Restore;
+    }
+    match o.phys_pages[idx] {
+        0 => ObjLook::Gone,
+        frame => {
+            o.installing += 1;
+            ObjLook::Frame { frame, write }
+        }
+    }
+}
+
+/// Does the recorded mapping of the address space `root` still reach page `idx`
+/// of the object `r` names, with `frame` as the page's frame? The check that
+/// covers a leaf a fault wrote: from the moment it holds under the table lock,
+/// an unmap, a revoke or a take finds the leaf through the same record.
+pub fn memobj_maps_frame(r: u32, root: usize, idx: usize, frame: usize) -> bool {
+    let regions = MEMOBJS.lock();
+    live_index(&regions, r).is_ok_and(|i| {
+        let o = &regions[i];
+        idx < o.page_count && o.phys_pages[idx] == frame && o.holders.iter().any(|h| h.is_mapped() && h.map_root == root && h.maps_page(idx))
+    })
+}
+
+/// End the hold a [`memobj_fault_look`] `Frame` answer put on `r`.
+pub fn memobj_install_done_ref(r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = live_index(&regions, r) {
+        regions[i].installing = regions[i].installing.saturating_sub(1);
+    }
+}
+
+/// The restore of page `idx` has its bytes in `frame`: the page is resident
+/// again. `false` when the object ended meanwhile (the caller frees the frame).
+pub fn memobj_restore_install(r: u32, idx: usize, frame: usize) -> bool {
+    let mut regions = MEMOBJS.lock();
+    let Ok(i) = live_index(&regions, r) else { return false };
+    let o = &mut regions[i];
+    let bit = 1u64 << idx;
+    if idx >= o.page_count || o.transit & bit == 0 || o.out & bit == 0 || o.phys_pages[idx] != 0 {
+        return false;
+    }
+    o.phys_pages[idx] = frame;
+    o.out &= !bit;
+    o.transit &= !bit;
+    true
+}
+
+/// The restore of page `idx` failed: the page stays out, free for another try.
+pub fn memobj_restore_abort(r: u32, idx: usize) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = live_index(&regions, r) {
+        if idx < regions[i].page_count {
+            regions[i].transit &= !(1u64 << idx);
+        }
+    }
+}
+
+/// Pages of `o` that are out or moving: what a MOVE or a clone is refused for.
+fn away_pages(o: &MemObj) -> u32 {
+    (o.out | o.transit).count_ones()
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -6425,7 +6782,7 @@ mod tests {
         assert_eq!(memobj_paged_drop_clean(8), 0, "dropped a frame whose install was in flight");
         assert_eq!(memobj_paged_forget_ref(r, 0), Err(PagedError::Obj(MemObjError::Busy)), "a truncate waits for the install");
         assert_eq!(memobj_page_phys_ref(r, 1), Ok(Some(p)), "the frame is still the cache's");
-        memobj_paged_install_done_ref(r);
+        memobj_install_done_ref(r);
         assert_eq!(memobj_paged_drop_clean(8), 1, "dropped once the install ended");
         assert_eq!(memobj_page_phys_ref(r, 1), Ok(None));
         assert_eq!(memobj_paged_close_ref(r), Ok(()));
