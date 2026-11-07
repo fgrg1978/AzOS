@@ -46,8 +46,12 @@
 //! capability names a **slot** (`MSI_LINE | k`), not a controller input. The
 //! bind allocates the vector (x86_64: a LAPIC vector, riscv64 with AIA: an
 //! IMSIC identity) from a pool and enables it on the CPU, and answers the
-//! message the device must write (`Msi`: address, data); the unbind gives the
-//! vector back, so a driver that restarts does not spend the pool. An MSI
+//! message the device must write (`Msi`: address, data). An unbind does not
+//! give the vector back to the pool: the device the driver programmed may
+//! still hold the message, and whoever next held the vector would receive its
+//! interrupts. The vector is kept for the slot it was taken for ([`MSI_KEPT`]):
+//! the next bind of that slot gets it first, so a driver that restarts does
+//! not spend the pool, and no other slot ever does. An MSI
 //! cannot be masked at the controller, so the budget rule is different: a
 //! delivery to a binding whose handler is out of budget is **dropped** at the
 //! top half (counted in [`irq_msi_drops`]) instead of the line being held, and
@@ -339,7 +343,7 @@ fn bind(
     // An MSI slot takes its vector now, enabled on `cpu`; it goes back with
     // the binding.
     let msi = if irq & MSI_LINE != 0 {
-        match msi_take(cpu) {
+        match msi_take(irq, cpu) {
             Ok(m) => Some(m),
             Err(e) => {
                 if budgeted {
@@ -365,7 +369,7 @@ fn bind(
         throttled: false,
         held: false,
         msi: msi.is_some(),
-        hw: msi.map_or(0, |m| m.id),
+        hw: msi.map_or(0, |(m, _)| m.id),
     };
     match store(fresh) {
         // A replaced binding gave up its place on the owner's SC.
@@ -374,20 +378,23 @@ fn bind(
                 azos_sched::rt::irq_detach(owner_task);
             }
             if replaced.msi {
-                msi_give_back(replaced.hw);
+                msi_keep(replaced.irq, replaced.hw);
+                msi_kept_note(owner_task, replaced.irq, replaced.hw);
             }
         }
         Err(e) => {
             if budgeted {
                 azos_sched::rt::irq_detach(owner_task);
             }
-            if let Some(m) = msi {
-                msi_give_back(m.id);
+            if let Some((m, reused)) = msi {
+                // The message was never handed out, unless this vector was a
+                // kept one: that one the old device may still raise.
+                msi_unissue(irq, m.id, reused);
             }
             return Err(e);
         }
     }
-    Ok(Bound { cpu, throttled, msi })
+    Ok(Bound { cpu, throttled, msi: msi.map(|(m, _)| m) })
 }
 
 /// Store `fresh`, replacing the same owner's binding of the line (an MSI slot
@@ -521,12 +528,14 @@ fn sc_throttle(tid: u32, throttled: bool, overrun: bool) {
 /// left waiting for a source that no longer exists.
 pub fn irq_unbind_all(owner_task: u32) {
     let mut gone = [(0u32, 0u32, 0u64, 0u32); MAX_IRQ_BINDINGS];
+    let mut kept = [None; MAX_IRQ_BINDINGS];
     let mut n = 0usize;
     let mut budgeted = 0usize;
     {
         let mut bindings = IRQ_BINDINGS.lock_irqsave();
         for b in bindings.iter_mut().filter(|b| b.active && b.owner_task == owner_task) {
             gone[n] = (b.port, b.epoch, b.key, b.irq);
+            kept[n] = b.msi.then_some(b.hw);
             n += 1;
             budgeted += b.budgeted as usize;
             release_line(b);
@@ -539,7 +548,10 @@ pub fn irq_unbind_all(owner_task: u32) {
         azos_sched::rt::irq_detach(owner_task);
     }
     let code = azos_abi::error::Errno::EPEERDIED as u16;
-    for &(port, epoch, key, irq) in &gone[..n] {
+    for (&(port, epoch, key, irq), vector) in gone[..n].iter().zip(&kept[..n]) {
+        if let Some(hw) = *vector {
+            msi_kept_note(owner_task, irq, hw);
+        }
         let _ = crate::port::port_post_gone(port, epoch, crate::port::PortSourceKind::Irq(irq), key, irq, code);
     }
 }
@@ -549,16 +561,19 @@ pub fn irq_unbind_all(owner_task: u32) {
 /// line goes through the release hook, as in [`irq_unbind_all`]. `false` when
 /// there was no such binding.
 pub fn irq_unbind(irq: u32, owner_task: u32) -> bool {
-    let budgeted = {
+    let (budgeted, vector) = {
         let mut bindings = IRQ_BINDINGS.lock_irqsave();
         let Some(b) = bindings.iter_mut().find(|b| b.active && b.irq == irq && b.owner_task == owner_task) else {
             return false;
         };
-        let budgeted = b.budgeted;
+        let (budgeted, vector) = (b.budgeted, b.msi.then_some(b.hw));
         release_line(b);
         *b = IrqBinding::empty();
-        budgeted
+        (budgeted, vector)
     };
+    if let Some(hw) = vector {
+        msi_kept_note(owner_task, irq, hw);
+    }
     if budgeted {
         azos_sched::rt::irq_detach(owner_task);
     }
@@ -586,10 +601,10 @@ pub fn irq_remove(irq: u32, owner_task: u32) -> bool {
 }
 
 /// A binding goes: a controller line is handed back (masked, ring-3 ownership
-/// forgotten); an MSI's vector returns to the pool.
+/// forgotten); an MSI's vector is kept for its slot ([`msi_keep`]).
 fn release_line(b: &IrqBinding) {
     if b.msi {
-        msi_give_back(b.hw);
+        msi_keep(b.irq, b.hw);
     } else {
         line_released(b.irq);
     }
@@ -738,26 +753,83 @@ fn msi_ops() -> Option<MsiOps> {
     *MSI_OPS.lock_irqsave()
 }
 
-/// Take a vector for a binding on `cpu`, with its message.
-fn msi_take(cpu: u32) -> Result<Msi, BindError> {
-    let ops = msi_ops().ok_or(BindError::NoMsi)?;
-    let id = (ops.alloc)().ok_or(BindError::NoMsi)?;
-    if !(ops.enable)(id, cpu) {
-        (ops.free)(id);
-        return Err(BindError::Route);
+/// Vectors a holder gave back, `(slot, vector)`: the device the holder
+/// programmed may still hold the message, so a vector is reissued only to a
+/// bind of the slot it was taken for ([`msi_take`]) and is never freed.
+static MSI_KEPT: SpinLock<[Option<(u32, u32)>; 2 * MAX_IRQ_BINDINGS]> = SpinLock::new([None; 2 * MAX_IRQ_BINDINGS]);
+
+/// Vectors the table had no room to keep: never reissued, never freed.
+static IRQ_MSI_STRANDED: AtomicU32 = AtomicU32::new(0);
+
+/// MSI vectors given back with no room to keep them since boot: lost to the
+/// pool, not reissued to anyone.
+pub fn irq_msi_stranded() -> u32 {
+    IRQ_MSI_STRANDED.load(Ordering::Relaxed)
+}
+
+/// Keep `vector`, given back by a holder of `slot`.
+fn msi_keep(slot: u32, vector: u32) {
+    if cfg!(feature = "msi-reissue-canary") {
+        if let Some(ops) = msi_ops() {
+            (ops.free)(vector);
+        }
+        return;
     }
-    match (ops.message)(id, cpu) {
-        Some((address, data)) => Ok(Msi { address, data, id }),
+    let mut kept = MSI_KEPT.lock_irqsave();
+    match kept.iter_mut().find(|k| k.is_none()) {
+        Some(k) => *k = Some((slot, vector)),
         None => {
-            (ops.free)(id);
-            Err(BindError::NoMsi)
+            IRQ_MSI_STRANDED.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
-fn msi_give_back(id: u32) {
-    if let Some(ops) = msi_ops() {
-        (ops.free)(id);
+/// The kept vector of `slot`, if there is one.
+fn msi_reuse(slot: u32) -> Option<u32> {
+    let mut kept = MSI_KEPT.lock_irqsave();
+    let k = kept.iter_mut().find(|k| matches!(k, Some((s, _)) if *s == slot))?;
+    k.take().map(|(_, v)| v)
+}
+
+/// A vector nobody was told about goes back to the pool; a kept one goes back
+/// to the keep.
+fn msi_unissue(slot: u32, vector: u32, reused: bool) {
+    if reused {
+        msi_keep(slot, vector);
+    } else if let Some(ops) = msi_ops() {
+        (ops.free)(vector);
+    }
+}
+
+/// Say a vector was kept (outside every lock: the decision log may write).
+fn msi_kept_note(owner: u32, slot: u32, vector: u32) {
+    azos_decision::record(Rule::Ring3Dma, Verdict::Refuse, vector, [u64::from(owner), u64::from(slot), WHY_VECTOR_KEPT]);
+}
+
+/// `Rule::Ring3Dma`'s third word for a vector kept from reissue
+/// (`dma_bind.rs` has the others).
+const WHY_VECTOR_KEPT: u64 = 6;
+
+/// Take a vector for a binding of `slot` on `cpu`, with its message, and
+/// whether it is a kept one: the slot's own kept vector first, else a fresh
+/// one from the pool.
+fn msi_take(slot: u32, cpu: u32) -> Result<(Msi, bool), BindError> {
+    let ops = msi_ops().ok_or(BindError::NoMsi)?;
+    let kept = msi_reuse(slot);
+    let id = match kept {
+        Some(id) => id,
+        None => (ops.alloc)().ok_or(BindError::NoMsi)?,
+    };
+    if !(ops.enable)(id, cpu) {
+        msi_unissue(slot, id, kept.is_some());
+        return Err(BindError::Route);
+    }
+    match (ops.message)(id, cpu) {
+        Some((address, data)) => Ok((Msi { address, data, id }, kept.is_some())),
+        None => {
+            msi_unissue(slot, id, kept.is_some());
+            Err(BindError::NoMsi)
+        }
     }
 }
 
@@ -1017,6 +1089,8 @@ pub fn __irq_bind_reset_for_tests() {
     IRQ_OVERRUNS.store(0, Ordering::Relaxed);
     IRQ_MSI_DROPS.store(0, Ordering::Relaxed);
     *MSI_OPS.lock_irqsave() = None;
+    *MSI_KEPT.lock_irqsave() = [None; 2 * MAX_IRQ_BINDINGS];
+    IRQ_MSI_STRANDED.store(0, Ordering::Relaxed);
     CANARY_STORM.store(false, Ordering::Relaxed);
     set_test_line(None);
     LINE_RELEASE_HOOK.clear_for_tests();
@@ -1531,11 +1605,14 @@ mod tests {
 
     // ── Message-signalled slots ─────────────────────────────────────────────
 
-    /// The pool a fake platform hands MSI vectors out of: ids from 40, a
-    /// record of what was taken and given back.
+    /// The pool a fake platform hands MSI vectors out of: ids from 40, the
+    /// ones given back first.
     static MSI_POOL: std::sync::Mutex<(u32, Vec<u32>)> = std::sync::Mutex::new((40, Vec::new()));
     fn msi_alloc() -> Option<u32> {
         let mut g = MSI_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(back) = g.1.pop() {
+            return Some(back);
+        }
         g.0 += 1;
         Some(g.0 - 1)
     }
@@ -1562,18 +1639,20 @@ mod tests {
         MSI_POOL.lock().unwrap_or_else(|e| e.into_inner()).1.clone()
     }
     const SLOT: u32 = MSI_LINE | 3;
+    /// The vectors kept for `slot`.
+    fn kept_for(slot: u32) -> Vec<u32> {
+        MSI_KEPT.lock_irqsave().iter().flatten().filter(|(s, _)| *s == slot).map(|&(_, v)| v).collect()
+    }
 
     /// An MSI slot takes a vector when it is bound, answers the message that
     /// raises it on the CPU asked for, delivers by vector to the port with the
-    /// slot as its source id, and gives the vector back when the binding goes
-    /// (exit, undo, or a replacing bind). Two holders of one slot have a
-    /// binding each. Without MSI ops the bind is refused, and a CPU the
+    /// slot as its source id, and keeps the vector when the binding goes
+    /// (exit, undo, or a replacing bind): the device may still hold the
+    /// message, so it is not returned to the pool. Two holders of one slot
+    /// have a binding each. Without MSI ops the bind is refused, and a CPU the
     /// vector cannot be enabled on is a route error that keeps nothing.
-    ///
-    /// **Canary.** Skip `msi_give_back` in `release_line`: the vectors are
-    /// never returned and the pool is spent by restarts.
     #[test]
-    fn an_msi_slot_takes_a_vector_at_bind_and_gives_it_back() {
+    fn an_msi_slot_takes_a_vector_at_bind_and_keeps_it_when_the_binding_goes() {
         let _g = setup();
         let r = port::port_create_ref(OWNER as usize).expect("create");
         assert_eq!(bind_plain(SLOT, OWNER, r, 1), Err(BindError::NoMsi), "a platform without MSI");
@@ -1595,23 +1674,66 @@ mod tests {
         assert_eq!(key_of(r2), Ok((0x88, PORT_EVENT_IRQ, SLOT)));
         assert!(!port::port_has_events(PORT.idx(r)), "the other holder's vector reached this port");
 
-        // A repeat bind replaces: the old vector goes back, a new one is taken.
+        // A repeat bind replaces: a new vector is taken, the old one is kept.
         let b3 = bind(SLOT, OWNER, r, 0x99, Route::Cpu(2), false).expect("bound");
         assert_eq!(b3.msi.map(|m| m.id), Some(42));
-        assert_eq!(msi_given_back(), vec![40]);
+        assert_eq!(kept_for(SLOT), vec![40]);
 
-        // A CPU the vector cannot be enabled on keeps nothing.
+        // A CPU the vector cannot be enabled on keeps nothing new: the kept
+        // vector it tried stays kept.
         assert_eq!(bind(SLOT, OWNER, r, 1, Route::Cpu(9), false), Err(BindError::Route));
-        assert_eq!(msi_given_back(), vec![40, 43], "the vector of the refused bind stayed taken");
+        assert_eq!(kept_for(SLOT), vec![40]);
         assert_eq!(irq_bindings_of(SLOT), 2);
 
-        // Exit and undo give the rest back.
+        // Exit and undo keep the rest.
         irq_unbind_all(OTHER);
         assert!(irq_unbind(SLOT, OWNER));
-        let mut back = msi_given_back();
-        back.sort();
-        assert_eq!(back, vec![40, 41, 42, 43]);
+        let mut kept = kept_for(SLOT);
+        kept.sort();
+        assert_eq!(kept, vec![40, 41, 42]);
+        assert_eq!(msi_given_back(), Vec::<u32>::new(), "a vector the device may hold went back to the pool");
         assert!(controller().is_empty(), "an MSI is not a controller line: nothing to release");
+    }
+
+    /// **A vector a holder gave back is reissued only to a bind of the slot it
+    /// was taken for.** The device the first holder programmed may still raise
+    /// it; the slot's next holder is the same row's, any other slot's is not.
+    ///
+    /// **Canary.** `msi-reissue-canary`: the given-back vector returns to the
+    /// pool, where the other slot's bind takes it.
+    #[test]
+    fn a_given_back_msi_vector_is_reissued_only_to_its_own_slot() {
+        let _g = setup();
+        let r = port::port_create_ref(OWNER as usize).expect("create");
+        msi_ops_installed();
+        let other_slot = MSI_LINE | 4;
+        assert_eq!(bind(SLOT, OWNER, r, 1, Route::Cpu(0), false).unwrap().msi.map(|m| m.id), Some(40));
+        assert!(irq_unbind(SLOT, OWNER));
+        // Another slot's bind never gets it, though a pool that took it back would offer it.
+        let b = bind(other_slot, OWNER, r, 2, Route::Cpu(0), false).unwrap();
+        assert_ne!(b.msi.map(|m| m.id), Some(40), "another slot received a vector a device of the first may raise");
+        assert!(irq_unbind(other_slot, OWNER));
+        // The slot's own next bind gets it back first: a restart spends nothing.
+        let again = bind(SLOT, OWNER, r, 3, Route::Cpu(1), false).unwrap();
+        assert_eq!(again.msi.map(|m| m.id), Some(40));
+        assert_eq!(again.msi.map(|m| m.address), Some(0xFEE0_1000), "re-enabled on the CPU asked for");
+        assert!(irq_unbind(SLOT, OWNER));
+        assert_eq!(msi_given_back(), Vec::<u32>::new());
+    }
+
+    /// A vector given back with no room left to keep it is lost, not freed:
+    /// it is counted and never reissued.
+    #[test]
+    fn a_vector_with_no_room_to_keep_it_is_stranded_not_freed() {
+        let _g = setup();
+        let r = port::port_create_ref(OWNER as usize).expect("create");
+        msi_ops_installed();
+        for k in 0..(2 * MAX_IRQ_BINDINGS as u32 + 1) {
+            bind(MSI_LINE | (100 + k), OWNER, r, 1, Route::Cpu(0), false).expect("bound");
+            assert!(irq_unbind(MSI_LINE | (100 + k), OWNER));
+        }
+        assert_eq!(irq_msi_stranded(), 1, "the one past the table");
+        assert_eq!(msi_given_back(), Vec::<u32>::new(), "a stranded vector went back to the pool");
     }
 
     /// An `msi.<k>` slot is minted as a `Cap<Irq>` on `MSI_LINE | k` only where

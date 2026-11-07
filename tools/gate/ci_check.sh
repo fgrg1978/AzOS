@@ -13108,6 +13108,8 @@ host_job host_canary_row "ring-3: dt master window canary" topology-tests dt-unk
     a_writable_window_on_an_unclassified_or_known_dt_master_needs_the_policy
 host_job host_canary_row "ring-3: io port master canary" topology-tests ioport-master-canary \
     a_port_grant_over_a_bus_masters_io_bar_needs_the_policy
+host_job host_canary_row "ring-3: msi vector reissue canary" ipc-tests msi-reissue-canary \
+    a_given_back_msi_vector_is_reissued_only_to_its_own_slot
 # Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two
 # segments mapped differently (their union, as before): the refusal test in
 # sched-wake-tests (`elf_bounds_tests`) must fail.
