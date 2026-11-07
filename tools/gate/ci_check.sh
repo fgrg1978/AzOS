@@ -13008,6 +13008,12 @@ host_job host_canary_row "shm: file mapping never executable canary" syscall-tes
     a_shared_file_mapping_is_never_made_executable
 host_job host_canary_row "shm: moved record dropped canary" syscall-tests stale-record-kept-canary \
     every_record_of_a_moved_mapping_is_dropped_by_the_senders_next_look
+host_job host_canary_row "shm: moved address returns canary" syscall-tests stale-va-kept-canary \
+    a_moved_mappings_address_comes_back_to_its_sender
+host_job host_canary_row "shm: exec flip atomic canary" syscall-tests exec-flip-unlocked-canary \
+    the_flip_to_executable_holds_the_spaces_records_until_it_is_done
+host_job host_canary_row "module: placement over a record canary" syscall-tests module-fixed-record-canary \
+    a_placement_over_a_record_without_leaves_is_eexist
 host_job host_canary_row "shm: partial map leaves nothing canary" syscall-tests shm-partial-map-kept-canary \
     a_map_that_fails_part_way_leaves_nothing_behind
 host_job host_canary_row "shm: release gives the record back canary" syscall-tests shm-release-record-kept-canary \

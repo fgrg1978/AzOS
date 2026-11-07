@@ -165,3 +165,20 @@ fn a_placement_that_runs_out_of_frames_unwinds_and_gives_the_charge_back() {
     assert_eq!(azos_sched::shim_user_pages(), 0, "the charge was kept");
     drop(ballast);
 }
+
+/// A record holds its range whatever its leaves are: a shared object's mapping
+/// whose leaves a purge took, in the window, is not committed over (it would
+/// leave frames no record names). `EEXIST`, nothing mapped.
+///
+/// **Canary.** `module-fixed-record-canary`: only the leaves are looked at.
+#[test]
+fn a_placement_over_a_record_without_leaves_is_eexist() {
+    let _g = serial();
+    let pt = fresh();
+    let (lo, _) = win();
+    let space = azos_sched::shim_space(pt);
+    assert!(azos_mm::pager::reserve_obj(space, lo, lo + 2 * PAGE_SIZE, 0).is_ok());
+    assert_eq!(place(pt, lo + PAGE_SIZE, PAGE_SIZE, RW), -17, "a record holds the page");
+    assert!(azos_mm::vmm::translate_user(pt, lo + PAGE_SIZE, false).is_none(), "and nothing was mapped over it");
+    assert_eq!(place(pt, lo + 2 * PAGE_SIZE, PAGE_SIZE, RW), (lo + 2 * PAGE_SIZE) as i64, "the page next to it is free");
+}

@@ -179,6 +179,9 @@ pub fn sys_module_map_x(token: u64, addr: u64, len: u64) -> i64 {
     if pt == 0 {
         return err(Errno::EPERM);
     }
+    // No sibling thread maps or unmaps while the range is checked and flipped
+    // (`set_user_range_exec` holds the space's records as well).
+    let _mm = azos_sched::group::mm_lock();
     let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     match azos_mm::vmm::set_user_range_exec(pt, addr as usize, end as usize, shm_lo, shm_hi) {
         Ok(_) => {}

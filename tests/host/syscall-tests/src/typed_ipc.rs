@@ -1439,7 +1439,8 @@ fn every_record_of_a_moved_mapping_is_dropped_by_the_senders_next_look() {
 
     become_task(a, pt_a);
     let space = azos_sched::shim_space(pt_a);
-    let moves = azos_mm::pager::MAPPINGS_PER_SPACE;
+    let moves = azos_mm::pager::MAPPINGS_PER_SPACE.min(azos_ipc::memobj::MAX_MEMOBJS_PER_TASK);
+    assert!(moves >= 8, "fewer MOVEs than the old table had rows");
     let mut caps = Vec::new();
     for k in 0..moves {
         let cap = handle(sys_shm_create_typed(1, 1));
@@ -1926,4 +1927,117 @@ fn a_munmap_over_more_records_than_one_pass_cuts_takes_them_all() {
     assert_eq!(sys_munmap(first as u64, (n * page) as u64), 0);
     assert_eq!(azos_mm::pager::shim_mappings(space), 0, "one call took them all");
     assert!(azos_mm::vmm::user_range_vacant(pt, first as usize, first as usize + n * page));
+}
+
+/// The unmap and MOVE hooks of a MOVE row, taken off when it ends.
+struct MoveHooks;
+impl MoveHooks {
+    fn install() -> MoveHooks {
+        fn unmap(root: usize, va: usize, pages: usize) {
+            let end = va + pages * azos_arch::PAGE_SIZE;
+            let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
+        }
+        azos_ipc::memobj::set_unmap_hook(unmap);
+        azos_ipc::cap_store::set_move_hook(azos_ipc::memobj::memobj_moved);
+        MoveHooks
+    }
+}
+impl Drop for MoveHooks {
+    fn drop(&mut self) {
+        azos_ipc::memobj::__clear_hooks_for_tests();
+        azos_ipc::cap_store::__clear_move_hook_for_tests();
+    }
+}
+
+/// **The address of a moved mapping comes back to the sender.** A producer maps
+/// a buffer, MOVEs it, and maps the next one: every cycle lands at the same
+/// address, so a loop of them never walks the mmap area's cursor down until
+/// the area is gone.
+///
+/// **Canary.** `stale-va-kept-canary`: the reap drops the record and keeps the
+/// cursor, and each cycle lands one buffer lower.
+#[test]
+fn a_moved_mappings_address_comes_back_to_its_sender() {
+    let _g = serial();
+    let (a, b) = (fresh_tid(), fresh_tid());
+    let _s = Scene::new(&[a, b]);
+    let pt_a = ring3(a, SLOT_A);
+    let _pt_b = ring3(b, SLOT_B);
+    let _hooks = MoveHooks::install();
+    become_task(a, pt_a);
+    let pages = azos_ipc::memobj::MAX_MEMOBJ_PAGES;
+    let mut first = 0;
+    for cycle in 0..12 {
+        let cap = handle(sys_shm_create_typed(pages as u64, 1));
+        let va = sys_shm_map_typed(cap, 0);
+        assert!(va > 0, "cycle {cycle}: map returned {va}");
+        if cycle == 0 {
+            first = va;
+        }
+        assert_eq!(va, first, "cycle {cycle}: the moved mapping's address did not come back");
+        let x = azos_ipc::cap_store::CapXfer::new(CapHandle::from_raw(cap as u32), false);
+        let mut out = [CapHandle::from_raw(0); 1];
+        azos_ipc::cap_store::move_caps(a, b, &[x], false, &mut out).expect("MOVE");
+    }
+}
+
+static EXEC_SIBLING_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EXEC_SIBLING_SPACE: std::sync::Mutex<Option<azos_mm::aspace::SpaceRef>> = std::sync::Mutex::new(None);
+static EXEC_SIBLING_THREAD: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
+static EXEC_SIBLING_RAN_DURING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What a sibling thread does between the flip's checks and its flips: record a
+/// shared mapping over the range. The hook gives it time to finish; it
+/// finishes only if the flip let go of the space's lock.
+fn exec_sibling() {
+    let space = EXEC_SIBLING_SPACE.lock().unwrap().expect("a space");
+    let t = std::thread::spawn(move || {
+        let page = azos_arch::mmu::PAGE_SIZE;
+        let _ = azos_mm::pager::reserve_obj(space, 0x7000_0000, 0x7000_0000 + page, 0);
+        EXEC_SIBLING_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    for _ in 0..200 {
+        if EXEC_SIBLING_DONE.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(250));
+    }
+    EXEC_SIBLING_RAN_DURING.store(EXEC_SIBLING_DONE.load(std::sync::atomic::Ordering::SeqCst), std::sync::atomic::Ordering::SeqCst);
+    *EXEC_SIBLING_THREAD.lock().unwrap() = Some(t);
+}
+
+/// **The flip to RX is atomic against the space's records.** `set_user_range_exec`
+/// holds the space's lock from its look at the records to its last flip, so a
+/// sibling cannot record a shared mapping in between: the sibling here, started
+/// from a hook between the checks and the flips, is still waiting for the lock
+/// when the hook gives up on it.
+///
+/// **Canary.** `exec-flip-unlocked-canary`: the lock is let go after the look
+/// and the sibling gets in during the flip.
+#[test]
+fn the_flip_to_executable_holds_the_spaces_records_until_it_is_done() {
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let pt = ring3(a, SLOT_A);
+    let space = azos_sched::shim_space(pt);
+    let page = azos_arch::mmu::PAGE_SIZE;
+    let va = sys_mmap(0, page as u64, 3, 0, u64::MAX, 0);
+    assert!(va > 0);
+    let va = va as usize;
+    assert!(azos_mm::vmm::handle_demand_fault(space, va).is_ok(), "the page is there");
+    *EXEC_SIBLING_SPACE.lock().unwrap() = Some(space);
+    EXEC_SIBLING_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
+    EXEC_SIBLING_RAN_DURING.store(false, std::sync::atomic::Ordering::SeqCst);
+    azos_mm::vmm::shim_set_exec_hook(Some(exec_sibling));
+    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    let flipped = azos_mm::vmm::set_user_range_exec(pt, va, va + page, shm_lo, shm_hi);
+    azos_mm::vmm::shim_set_exec_hook(None);
+    EXEC_SIBLING_THREAD.lock().unwrap().take().expect("the sibling").join().unwrap();
+    assert_eq!(flipped, Ok(1), "a private page flips");
+    assert!(
+        !EXEC_SIBLING_RAN_DURING.load(std::sync::atomic::Ordering::SeqCst),
+        "a sibling recorded a mapping between the flip's look and its flips"
+    );
+    assert!(EXEC_SIBLING_DONE.load(std::sync::atomic::Ordering::SeqCst), "and gets in after it");
 }

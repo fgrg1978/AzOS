@@ -2753,6 +2753,8 @@ fn unmap_frame_in(region: &MemObj, idx: usize) -> usize {
 /// of the mapping is stale until it drops it. A space asks the epoch before
 /// each `mmap` and `munmap` and looks for stale records only when it moved
 /// since it last looked ([`memobj_books_ref`]).
+/// One epoch for all spaces: a MOVE or a purge knows the holder's root, not its
+/// space object, and the rescan is a pass over the few Obj records of a space.
 static STALE_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 fn note_stale() {

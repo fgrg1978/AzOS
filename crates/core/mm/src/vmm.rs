@@ -4093,16 +4093,25 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
     // for its marker between the rewrite's read and its store would be
     // overwritten with a valid leaf on a frame it is freeing (as `mprotect`).
     // Gate canary `exec-reclaim-canary`: not held.
+    let space = crate::aspace::current_with_root(pt_phys);
     let _reclaim_off = if cfg!(feature = "exec-reclaim-canary") {
         None
     } else {
-        crate::aspace::current_with_root(pt_phys).and_then(crate::pager::reclaim_pause)
+        space.and_then(crate::pager::reclaim_pause)
     };
+    // The space's lock is held from the look at its records to the last flip:
+    // a mapping of a shared object cannot be recorded, nor its frames mapped,
+    // between the two. Canary `exec-flip-unlocked-canary`: it is dropped after
+    // the look.
+    let mut records = space.and_then(|r| r.lock());
     // Canary `exec-shared-record-canary`: the records are not asked.
     if !cfg!(feature = "exec-shared-record-canary")
-        && crate::aspace::current_with_root(pt_phys).is_some_and(|r| crate::pager::has_whole(r, start, end))
+        && records.as_ref().is_some_and(|sp| sp.recorded && sp.set.has_whole(start, end))
     {
         return Err(KernelError::InvalidArg);
+    }
+    if cfg!(feature = "exec-flip-unlocked-canary") {
+        records = None;
     }
     let mut va = start;
     while va < end {
@@ -4118,6 +4127,7 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
         }
         va += PAGE_SIZE;
     }
+    exec_hook();
     let mut changed = 0usize;
     va = start;
     while va < end {
@@ -4133,9 +4143,33 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
         }
         va += PAGE_SIZE;
     }
+    drop(records);
     user_shootdown(pt_phys, start, end - start);
     Ok(changed)
 }
+
+/// Host suites only: run once between [`set_user_range_exec`]'s checks and its
+/// flips, where a sibling thread of the caller would act.
+#[cfg(not(target_os = "none"))]
+static EXEC_HOOK: SpinLock<Option<fn()>> = SpinLock::new(None);
+
+/// Host suites only: install or remove [`EXEC_HOOK`].
+#[cfg(not(target_os = "none"))]
+pub fn shim_set_exec_hook(hook: Option<fn()>) {
+    *EXEC_HOOK.lock() = hook;
+}
+
+#[cfg(not(target_os = "none"))]
+fn exec_hook() {
+    let h = *EXEC_HOOK.lock();
+    if let Some(f) = h {
+        f();
+    }
+}
+
+#[cfg(target_os = "none")]
+#[inline(always)]
+fn exec_hook() {}
 
 /// The valid 4 KiB leaf PTE at `vaddr` in a user table, by the hand descent
 /// [`take_user_leaf`] uses, or `None` (a kernel table, a megapage/gigapage,

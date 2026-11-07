@@ -103,6 +103,9 @@ mm-rmap-missing-canary = []
 # Host-suite canary: `set_user_range_exec` does not ask the space's records:
 # `syscall-tests` typed_ipc.rs.
 exec-shared-record-canary = []
+# Host-suite canary: `set_user_range_exec` lets go of the space's lock after
+# the look at its records: `syscall-tests` typed_ipc.rs.
+exec-flip-unlocked-canary = []
 # Host-suite canary: `release_range` cuts a range over more records than its
 # pass holds in one pass (rows under a Kconfig with more records than 8):
 # `syscall-tests` typed_ipc.rs.

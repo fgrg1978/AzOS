@@ -859,7 +859,14 @@ pub(crate) fn reap_stale_mappings() {
         return;
     }
     let _mm = azos_sched::group::mm_lock();
-    azos_mm::pager::reap_stale(space);
+    azos_mm::pager::reap_stale(space, |start, end| {
+        // The address goes back: a sender that MOVEs mappings in a loop would
+        // otherwise walk the cursor of its mmap area down until it ran out.
+        // Canary `stale-va-kept-canary`: it does not.
+        if !cfg!(feature = "stale-va-kept-canary") {
+            crate::handlers::mmap_unmapped(start, end);
+        }
+    });
 }
 
 /// The mapping half of [`sys_shm_map_typed`], once an authority has resolved

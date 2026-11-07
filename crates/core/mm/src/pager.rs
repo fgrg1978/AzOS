@@ -1525,8 +1525,9 @@ pub fn stale_pending(r: SpaceRef) -> bool {
 
 /// Drop the records of `r`'s shared-object mappings that their object no longer
 /// books: a MOVE, a revoke or a purge took the mapping's leaves away and left
-/// the record to its own space. Under the group's layout lock.
-pub fn reap_stale(r: SpaceRef) {
+/// the record to its own space; `dropped` is told each range, for the caller
+/// to give its address back. Under the group's layout lock.
+pub fn reap_stale(r: SpaceRef, mut dropped: impl FnMut(usize, usize)) {
     let epoch = memobj::memobj_stale_epoch();
     r.stale_seen().store(epoch, Ordering::Relaxed);
     let root = r.root();
@@ -1537,16 +1538,22 @@ pub fn reap_stale(r: SpaceRef) {
         if n == 0 {
             return;
         }
-        let mut dropped = 0;
+        let mut gone = 0;
         for m in &buf[..n] {
             if let Backing::Obj { obj } = m.backing {
                 if !memobj::memobj_books_ref(obj, root, m.start) && release_range(r, m.start, m.end).is_ok() {
-                    dropped += 1;
+                    dropped(m.start, m.end);
+                    gone += 1;
                 }
             }
         }
-        at += n - dropped;
+        at += n - gone;
     }
+}
+
+/// Does any mapping hold a page of `[s, e)`?
+pub fn covers(r: SpaceRef, s: usize, e: usize) -> bool {
+    r.lock().is_some_and(|sp| sp.recorded && sp.set.covered_pages(s, e) != 0)
 }
 
 /// Does `[s, e)` touch a mapping of a shared object?
@@ -1556,8 +1563,8 @@ pub fn has_obj(r: SpaceRef, s: usize, e: usize) -> bool {
 
 /// Clear the leaves of a mapping of frames another owner holds: the shared
 /// file's cache frames, a shared object's. The space's sweeps free every user
-/// leaf they find outside the shm window, so these are cleared first, with the
-/// shootdown and without a free.
+/// leaf they find outside the MMIO, ring and notify window, so these are cleared
+/// first, with the shootdown and without a free.
 ///
 /// Canary `mm-rmap-missing-canary`: the leaves stay, and the sweep frees the
 /// object's frames under its other mappers.
@@ -2086,6 +2093,51 @@ const CHUNKS_FREED: usize = MAX_MAP_BYTES / (anon_obj::PER_CHUNK * PAGE_SIZE) + 
 /// `Full` (nothing changed) when cutting a mapping in two needs a record the
 /// space does not have.
 pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError> {
+    // A file or shared-object mapping goes whole or not at all, or the page
+    // cache's count of mappings would be wrong (`MapSet::whole_cut_ok`): asked
+    // of the whole range first, so no pass leaves a half-done cut.
+    if !r.lock().filter(|sp| sp.recorded).is_none_or(|sp| sp.set.whole_cut_ok(s, e)) {
+        return Err(MapError::Invalid);
+    }
+    // A range over more records than one pass holds is cut in passes, each
+    // ending at a record's end, with one frame of the stack for all of them.
+    // Only a record that holds the whole range needs a free record, and then it
+    // is the only one: no later pass is refused.
+    let (mut from, mut owed) = (s, 0);
+    loop {
+        let cut = pass_end(r, from, e);
+        owed += release_pass(r, from, cut)?;
+        if cut >= e {
+            return Ok(owed);
+        }
+        from = cut;
+    }
+}
+
+/// Where the pass over `[s, e)` ends: `e`, or the end of the last record that
+/// fits [`MAX_PIECES`].
+fn pass_end(r: SpaceRef, s: usize, e: usize) -> usize {
+    // Canary `release-one-pass-canary`: one pass whatever the count.
+    if cfg!(feature = "release-one-pass-canary") {
+        return e;
+    }
+    let Some(sp) = r.lock().filter(|sp| sp.recorded) else { return e };
+    if sp.set.overlapping(s, e) <= MAX_PIECES {
+        return e;
+    }
+    let mut end = e;
+    let mut k = 0;
+    sp.set.for_each_overlap(s, e, |_, b, _| {
+        k += 1;
+        if k == MAX_PIECES {
+            end = b;
+        }
+    });
+    end
+}
+
+/// One pass of [`release_range`]: at most [`MAX_PIECES`] records of `[s, e)`.
+fn release_pass(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError> {
     let root = r.root();
     // `(start, end, pays, backing, first object page)` of each piece.
     let mut pieces = [(0usize, 0usize, false, Backing::Anon { obj: 0 }, 0usize); MAX_PIECES];
@@ -2095,28 +2147,6 @@ pub fn release_range(r: SpaceRef, s: usize, e: usize) -> Result<usize, MapError>
     let mut nd = 0;
     {
         let Some(mut sp) = r.lock().filter(|sp| sp.recorded) else { return Ok(0) };
-        // A file or shared-object mapping goes whole or not at all, or the page
-        // cache's count of mappings would be wrong (`MapSet::whole_cut_ok`).
-        if !sp.set.whole_cut_ok(s, e) {
-            return Err(MapError::Invalid);
-        }
-        // Canary `release-one-pass-canary`: one pass whatever the count.
-        if sp.set.overlapping(s, e) > MAX_PIECES && !cfg!(feature = "release-one-pass-canary") {
-            // Cut at the end of the last record this pass takes. Only a record
-            // that holds the whole range needs a free record, and then it is
-            // the only one: the passes cannot be refused.
-            let mut ends = [0usize; MAX_PIECES];
-            let mut k = 0;
-            sp.set.for_each_overlap(s, e, |_, b, _| {
-                if k < MAX_PIECES {
-                    ends[k] = b;
-                    k += 1;
-                }
-            });
-            drop(sp);
-            let cut = ends[MAX_PIECES - 1];
-            return Ok(release_range(r, s, cut)? + release_range(r, cut, e)?);
-        }
         sp.set.for_each_overlap(s, e, |a, b, m| {
             pieces[np] = (a, b, m.charged(), m.backing, m.page_index(a));
             np += 1;

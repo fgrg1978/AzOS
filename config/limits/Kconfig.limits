@@ -799,7 +799,7 @@ config MM_REGIONS_PER_SPACE
     default 12  if HWCLASS_EMBEDDED
     default 24  if (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 40  if HWCLASS_SERVER
-    default 8
+    default 24
     help
       Each user address space keeps this many mapping records
       (crates/core/mm/src/mapping.rs), in its address space object

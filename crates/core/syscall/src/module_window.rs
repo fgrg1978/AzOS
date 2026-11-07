@@ -50,7 +50,8 @@ pub fn caller_may_place() -> bool {
 /// `SYS_MO_MAP` with [`MMAP_MAP_FIXED_NOREPLACE`] in `user_pt`: `addr`, or
 /// `-EPERM` (`allowed` is false: the caller holds no module token),
 /// `-EINVAL` (not page-aligned, outside the window, `PROT_NONE`, or a page
-/// the kernel maps), `-EEXIST` (a page of the range is mapped), `-ENOMEM`
+/// the kernel maps), `-EEXIST` (a page of the range is mapped or held by a
+/// mapping's record), `-ENOMEM`
 /// (the frame budget or the frames ran out; nothing stays mapped). The caller
 /// holds the address-space lock and has refused `PROT_EXEC`.
 pub fn map_fixed(user_pt: usize, addr: u64, len: usize, prot: u64, allowed: bool) -> i64 {
@@ -68,6 +69,14 @@ pub fn map_fixed(user_pt: usize, addr: u64, len: usize, prot: u64, allowed: bool
     };
     if !contains(start, end) {
         return Errno::EINVAL.to_syscall_ret();
+    }
+    // A record of a mapping holds the range, whatever its leaves are now (a
+    // purged object's, an anonymous page not touched yet): committing over it
+    // would leave frames no record names. Canary `module-fixed-record-canary`.
+    if !cfg!(feature = "module-fixed-record-canary")
+        && azos_mm::aspace::current_with_root(user_pt).is_some_and(|space| azos_mm::pager::covers(space, start, end))
+    {
+        return Errno::EEXIST.to_syscall_ret();
     }
     let mut va = start;
     while va < end {
