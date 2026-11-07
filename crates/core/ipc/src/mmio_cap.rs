@@ -152,8 +152,7 @@ pub fn mmio_device_line(tid: u32, selector: &str) -> Option<u32> {
     Some(line)
 }
 
-/// `Rule::LineGrant`'s third word.
-pub(crate) const LINE_NUMBER_KERNEL: u64 = 0;
+/// `Rule::LineGrant`'s third word (0 is the numeric form, `cap_seed.rs`).
 const LINE_DEVICE_NOT_RING3: u64 = 1;
 const LINE_SHARED: u64 = 2;
 

@@ -285,6 +285,9 @@ pub fn seed_one_cap_ops(
     })
 }
 
+/// `Rule::LineGrant`'s third word for `irq.<N>`: a kernel device raises the line.
+const LINE_NUMBER_KERNEL: u64 = 0;
+
 /// A `Device` row: `"irq.<N>"` (the target convention `crates/core/topology`'s
 /// parser accepts; `irq_grant_cap` PLIC-range-checks `N`; refused for a line
 /// a device a kernel driver owns raises), `"irq.<selector>"`
@@ -303,7 +306,7 @@ fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     if let Some(n) = parse_dotted(target, "irq") {
         // A line a kernel device raises is the kernel's, polled or not.
         if !crate::mmio_cap::mmio_line_free(n) {
-            crate::mmio_cap::line_refused(tid, n, crate::mmio_cap::LINE_NUMBER_KERNEL);
+            crate::mmio_cap::line_refused(tid, n, LINE_NUMBER_KERNEL);
             return None;
         }
         return crate::irq_bind::irq_grant_cap(tid, n, perms).map(|c| c.raw());
