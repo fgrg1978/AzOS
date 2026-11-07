@@ -139,6 +139,7 @@ impl Caller {
 
     /// [`with_buffer`](Self::with_buffer) for a buffer of any frames: `f(offset,
     /// address, len)` runs for each page of the first `bytes` bytes (`Frame::next`).
+    #[cfg(feature = "use-robot")]
     pub(crate) fn with_buffer_pages(&self, raw: u32, least: usize, bytes: usize, f: impl FnMut(usize, usize, usize)) -> Result<(), u32> {
         let region = self.shm_region(raw, least)?;
         match azos_ipc::memobj::memobj_with_pages_ref(region, bytes, f) {
