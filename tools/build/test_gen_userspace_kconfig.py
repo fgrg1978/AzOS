@@ -18,7 +18,9 @@ of the Kconfig tree and of the program metadata under userspace/:
      instead of reading a stale menu;
   5. every console program the choice offers has its effect: its image in
      CONSOLE_PATH, its argv in CONSOLE_ARGS, and
-     the choice offers exactly those (native sh, BusyBox sh, none).
+     the choice offers exactly those (native sh, BusyBox sh, none);
+  6. every USERLAND choice has its effect on LINUX_ABI, USERSPACE_GPL, BUSYBOX
+     and the console program, per preset default, ISA and build type.
 
     python3 tools/build/test_gen_userspace_kconfig.py      (exit 0 = all pass)
 """
@@ -225,6 +227,53 @@ def main():
         v = values(cfg)
         check(rc == 0 and all(v.get(ln[len("CONFIG_"):-2]) == "y" for ln in lines),
               "--all-on lines survive olddefconfig on a large board: every program is on")
+
+        # 6. USERLAND: each member changes what the image is built from.
+        def userland(lines):
+            with open(cfg, "w") as f:
+                f.write("".join(l + "\n" for l in lines))
+            rc, log = olddefconfig(tmp, cfg)
+            return rc, values(cfg)
+
+        def member(v):
+            return [m for m in ("NATIVE", "LINUX", "BOTH") if v.get(f"USERLAND_{m}") == "y"]
+
+        for preset, want in (("GENERIC", "NATIVE"), ("ROBOT", "NATIVE"), ("INDUSTRIAL", "NATIVE"),
+                             ("AUTOMOTIVE", "NATIVE"), ("FIRMWARE", "NATIVE"), ("IOT_HMI", "NATIVE"),
+                             ("WEARABLE", "NATIVE"), ("GATEWAY", "NATIVE"), ("MICROVM", "NATIVE"),
+                             ("DESKTOP", "BOTH"), ("SERVER", "BOTH")):
+            rc, v = userland([f"CONFIG_PRESET_{preset}=y", "CONFIG_ARCH_AARCH64=y", "CONFIG_BUILD_TYPE_DEV=y"])
+            check(rc == 0 and member(v) == [want], f"USERLAND default of {preset} is {want} ({member(v)})")
+        base = ["CONFIG_PRESET_GENERIC=y", "CONFIG_BUILD_TYPE_DEV=y"]
+        for arch in ("RISCV64", "AARCH64", "X86_64"):
+            isa = [f"CONFIG_ARCH_{arch}=y"]
+            rc, v = userland(base + isa + ["CONFIG_USERLAND_NATIVE=y"])
+            check(rc == 0 and v.get("LINUX_ABI") is None and v.get("BUSYBOX") is None
+                  and v.get("USERSPACE_GPL") is None and v.get("LINUX_RUNTIME") is None
+                  and v.get("CONSOLE_PROGRAM_SH") == "y",
+                  f"{arch} native: no Linux personality, no BusyBox, native console")
+            rc, v = userland(base + isa + ["CONFIG_USERLAND_LINUX=y"])
+            bb = arch != "X86_64"
+            check(rc == 0 and v.get("LINUX_ABI") == "y" and v.get("USERSPACE_GPL") == "y" and v.get("BUSYBOX") == "y"
+                  and (v.get("CONSOLE_PROGRAM_BUSYBOX_SH") == "y") == bb and (v.get("CONSOLE_PROGRAM_SH") == "y") != bb
+                  and v.get("CONSOLE_PATH") == ('"/fat/BUSYBOX.ELF"' if bb else '"/fat/TERMD.ELF"'),
+                  f"{arch} linux: personality, GPL, BusyBox on; console {'BusyBox' if bb else 'native (no console input in the ring-3 runtime)'}")
+            rc, v = userland(base + isa + ["CONFIG_USERLAND_BOTH=y"])
+            check(rc == 0 and v.get("LINUX_ABI") == "y" and v.get("BUSYBOX") == "y" and v.get("CONSOLE_PROGRAM_SH") == "y",
+                  f"{arch} both: personality and BusyBox on, native console")
+        rc, v = userland(["CONFIG_PRESET_GENERIC=y", "CONFIG_ARCH_RISCV64=y", "CONFIG_USERLAND_LINUX=y"])
+        check(rc == 0 and v.get("LINUX_ABI") == "y" and v.get("USERSPACE_GPL") == "y" and v.get("BUSYBOX") == "y",
+              "linux in a release build: choosing it opts in to BusyBox")
+        rc, v = userland(["CONFIG_PRESET_GENERIC=y", "CONFIG_ARCH_RISCV64=y", "CONFIG_USERLAND_BOTH=y"])
+        check(rc == 0 and v.get("LINUX_ABI") == "y" and v.get("USERSPACE_GPL") is None and v.get("BUSYBOX") is None,
+              "both in a release build: personality on, no GPL code by default")
+        rc, v = userland(["CONFIG_PRESET_GENERIC=y", "CONFIG_ARCH_RISCV64=y", "CONFIG_HWCLASS_EMBEDDED=y",
+                          "CONFIG_USERLAND_LINUX=y"])
+        check(rc == 0 and member(v) == ["NATIVE"] and v.get("LINUX_ABI") is None,
+              "a small board is not offered linux or both")
+        rc, v = userland(base + ["CONFIG_ARCH_RISCV64=y", "CONFIG_USERLAND_NATIVE=y", "CONFIG_LINUX_ABI=y"])
+        check(rc == 0 and v.get("LINUX_ABI") == "y" and member(v) == ["NATIVE"],
+              "a value set by hand wins over the choice")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"{len(FAILS)} failed")
