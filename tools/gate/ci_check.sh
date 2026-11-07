@@ -13256,9 +13256,10 @@ host_job host_canary_row "decisions: memory kill canary" decisions-tests mem-kil
 # (swap-ready-ignored-canary); a failed restore gives its claim up
 # (swap-abort-leaves-claim-canary); an object ending mid-store or mid-restore
 # leaves nothing (swap-gone-entry-kept-canary, swap-forget-skipped-canary); a
-# pinned mapper maps with nothing out and a process that becomes real-time has its
-# pages brought back (swap-pinned-map-no-restore-canary,
-# swap-class-change-no-restore-canary).
+# process that pins memory is refused a map of an object with a page out
+# (pinned-map-pages-out-canary), and one that becomes real-time or whose Domain is
+# locked has its pages brought back (swap-class-change-no-restore-canary,
+# pin-late-canary).
 host_job zpool_host_row "swap: fork keeps shared leaf tables" a_fork_keeps_the_blank_leaf_table_of_a_shared_mapping
 host_job zpool_host_canary_row "swap: fork prune canary" fork-prunes-shared-canary \
     a_fork_keeps_the_blank_leaf_table_of_a_shared_mapping
@@ -13289,25 +13290,24 @@ host_job zpool_host_canary_row "swap: mid-store entry canary" swap-gone-entry-ke
     an_object_that_ends_mid_store_or_mid_restore_leaves_nothing
 host_job zpool_host_canary_row "swap: mid-restore entry canary" swap-forget-skipped-canary \
     an_object_that_ends_mid_store_or_mid_restore_leaves_nothing
-host_job zpool_host_row "swap: pinned mapper maps nothing out" a_pinned_mapper_maps_an_object_with_nothing_out
-host_job zpool_host_canary_row "swap: pinned map canary" swap-pinned-map-no-restore-canary \
-    a_pinned_mapper_maps_an_object_with_nothing_out
+host_job zpool_host_row "swap: pinned map refused, page out" a_pinned_process_is_refused_a_map_with_a_page_out
+host_job zpool_host_canary_row "swap: pinned map refused canary" pinned-map-pages-out-canary \
+    a_pinned_process_is_refused_a_map_with_a_page_out
+host_job zpool_host_row "swap: Domain lock restores" a_domain_locked_with_live_processes_has_their_pages_back
+host_job zpool_host_canary_row "swap: Domain lock restores canary" pin-late-canary \
+    a_domain_locked_with_live_processes_has_their_pages_back
 host_job zpool_host_row "swap: class change restores" a_change_to_a_real_time_class_brings_the_objects_pages_back
 host_job zpool_host_canary_row "swap: class change canary" swap-class-change-no-restore-canary \
     a_change_to_a_real_time_class_brings_the_objects_pages_back
 # A class change through SYS_SCHEDCTL is in force while the pages come back, and
 # is undone, with a pin-restore record, when they cannot (swap-class-change-order-canary:
-# they come back first); a pinning fork child has nothing out at its inheritance
-# (swap-pinned-map-no-restore-canary); a page installing holds off only itself and
+# they come back first); a page installing holds off only itself and
 # every installer counts (swap-ready-ignored-canary, swap-install-count-narrow-canary:
 # a byte); a restored page is charged once; a swappable call buffer is a record
 # (swappable-ring-allowed-canary).
 host_job zpool_host_canary_row "swap: class change order canary" swap-class-change-order-canary \
     a_change_to_a_real_time_class_brings_the_objects_pages_back
 host_job zpool_host_row "swap: class change rollback" a_class_change_whose_pages_cannot_come_back_is_undone_and_recorded
-host_job zpool_host_row "swap: pinning child inherits" a_pinning_child_has_nothing_out_when_it_inherits_an_object
-host_job zpool_host_canary_row "swap: pinning child canary" swap-pinned-map-no-restore-canary \
-    a_pinning_child_has_nothing_out_when_it_inherits_an_object
 host_job zpool_host_row "swap: install per page" an_install_holds_off_only_its_page_and_every_installer_counts
 host_job zpool_host_canary_row "swap: install per page canary" swap-ready-ignored-canary \
     an_install_holds_off_only_its_page_and_every_installer_counts

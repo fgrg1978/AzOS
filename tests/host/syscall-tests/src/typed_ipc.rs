@@ -2500,12 +2500,16 @@ mod swap_rows {
         assert!(azos_mm::shim_pages_in_use() <= used, "no frame is left behind");
     }
 
-    /// **A mapper that pins memory finds nothing out when its map is booked.**
-    /// B is real-time: the object's page the storm took is back when B's map ends.
+    /// **A process that pins memory is refused a map of an object with a page
+    /// out.** Its admission brought back what it held; a later map does not wait
+    /// for a restore on its real-time path: `EBUSY`, a `pin-restore` record of
+    /// site 1, and nothing booked. Once the owner has brought the page back the
+    /// map goes ahead.
     ///
-    /// **Canary.** `swap-pinned-map-no-restore-canary`: nothing is brought back.
+    /// **Canary.** `pinned-map-pages-out-canary`: the map goes ahead with the
+    /// page out.
     #[test]
-    fn a_pinned_mapper_maps_an_object_with_nothing_out() {
+    fn a_pinned_process_is_refused_a_map_with_a_page_out() {
         if !azos_mm::zpool::ENABLED {
             return;
         }
@@ -2519,28 +2523,19 @@ mod swap_rows {
         let (a, b) = (fresh_tid(), fresh_tid());
         let _s = Scene::new(&[a, b]);
         let _h = hooks();
-        let pt_a = ring3(a, SLOT_A);
+        let r = object_with_page_out(a);
         let pt_b = ring3(b, SLOT_B);
-        become_task(a, pt_a);
-        let cap = handle(sys_shm_create_typed(2, SWAPPABLE));
-        let r = resource_of::<Shm>(a, cap);
-        fill(r, 0, 0x61);
-        fill(r, 1, 0x62);
-        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
-        let mut ages = Ages::new();
-        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
-        for idx in 0..2 {
-            let v = Victim::Obj { ident: r, idx };
-            assert!(src.unmap(v) && src.store(v).is_ok());
-            src.free(v);
-        }
-        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0b11);
         let _unpin = Unpin(b);
         azos_sched::shim_pin_task_memory(b, true);
         let hb = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
         become_task(b, pt_b);
-        assert!(sys_shm_map_typed(hb, 0) > 0);
-        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "a pinned mapper has no page out");
+        let before = azos_decision::total();
+        assert_eq!(sys_shm_map_typed(hb, 0), azos_abi::error::Errno::EBUSY.to_syscall_ret(), "a page is out");
+        let rec = azos_decision::lookup(before + 1).expect("recorded");
+        assert_eq!((rec.rule, rec.subject, rec.n[0], rec.n[1]), (azos_decision::Rule::PinRestore as u8, b, u64::from(r), 1));
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1, "nothing was brought back for it");
+        assert!(azos_mm::pager::restore_objects_of(a).is_ok());
+        assert!(sys_shm_map_typed(hb, 0) > 0, "with nothing out the map goes ahead");
     }
 
     /// Binds `tid` to a Domain so the scheduler shim answers for its slot, and a
@@ -2563,7 +2558,12 @@ mod swap_rows {
 
     /// An object of `a`'s with its page out and the task `a` current.
     fn object_with_page_out(a: u32) -> u32 {
-        let pt = ring3(a, SLOT_A);
+        object_with_page_out_at(a, SLOT_A)
+    }
+
+    /// [`object_with_page_out`] with `a` in pool slot `slot`.
+    fn object_with_page_out_at(a: u32, slot: usize) -> u32 {
+        let pt = ring3(a, slot);
         become_task(a, pt);
         let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
         let r = resource_of::<Shm>(a, cap);
@@ -2633,58 +2633,29 @@ mod swap_rows {
         assert_eq!(rec.n[1], 3, "the site");
     }
 
-    /// **A fork's child that pins memory has none of the object's pages out when
-    /// the inheritance is booked; one that cannot be restored is refused with a
-    /// `pin-restore` record of site 2.** The row drives the helper the fork calls
-    /// (`natfork` is not compiled here); `natfork_calls_the_restore_before_the_inheritance`
-    /// pins the call's place.
+    /// **A Domain that is locked with live processes has their objects' pages
+    /// back, and only theirs.** A's object and C's have a page out; A's Domain is
+    /// locked (an exec into a `mem = "locked"` row admits it, with the lock
+    /// already in force): A's page comes back, C's, in another Domain, stays out.
     ///
-    /// **Canary.** `swap-pinned-map-no-restore-canary`: nothing is brought back.
+    /// **Canary.** `pin-late-canary`: nothing comes back at the lock, the page
+    /// waits for a mapper's touch.
     #[test]
-    fn a_pinning_child_has_nothing_out_when_it_inherits_an_object() {
+    fn a_domain_locked_with_live_processes_has_their_pages_back() {
         if !azos_mm::zpool::ENABLED {
             return;
         }
         let _g = serial();
-        let (a, child) = (fresh_tid(), fresh_tid());
-        let _s = Scene::new(&[a, child]);
+        let (a, c) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, c]);
         let _h = hooks();
-        let r = object_with_page_out(a);
-        assert!(mo::memobj_acquire_ref(child, r).is_ok());
-        let _unpin = SchedScene::new(child);
-        azos_sched::shim_pin_task_memory(child, true);
-        assert!(crate::ipc_handlers::restore_for_pinning(child, r, 1, 2).is_ok());
-        azos_sched::shim_pin_task_memory(child, false);
-        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "the page is back before the child maps it");
-        // Out again, and the pool loses it: the inheritance is refused and recorded.
-        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
-        let mut ages = Ages::new();
-        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
-        let v = Victim::Obj { ident: r, idx: 0 };
-        assert!(src.unmap(v) && src.store(v).is_ok());
-        src.free(v);
-        pg::shim_forget_pool();
-        azos_sched::shim_pin_task_memory(child, true);
-        let before = azos_decision::total();
-        assert!(crate::ipc_handlers::restore_for_pinning(child, r, 1, 2).is_err());
-        let rec = azos_decision::lookup(before + 1).expect("recorded");
-        assert_eq!((rec.rule, rec.subject, rec.n[1]), (azos_decision::Rule::PinRestore as u8, child, 2));
-    }
-
-    /// The fork restores a pinning child's pages before it books the inheritance:
-    /// `natfork` is not compiled in the host suite, so the order is read from its
-    /// source. **Canary (by hand).** Move the call below `memobj_inherit_ref`, or
-    /// delete it: red.
-    #[test]
-    fn natfork_calls_the_restore_before_the_inheritance() {
-        let src: String = include_str!("../../../../crates/core/syscall/src/natfork.rs")
-            .lines()
-            .map(|l| l.split("//").next().unwrap())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let body = &src[src.find("fn inherit_shm_pinned").expect("moved")..];
-        let at = |n: &str| body.find(n).unwrap_or_else(|| panic!("inherit_shm_pinned no longer calls {n}"));
-        assert!(at("restore_for_pinning(child, r, d.page_count, 2)") < at("memobj_inherit_ref("));
+        let rc = object_with_page_out_at(c, SLOT_B);
+        let ra = object_with_page_out(a);
+        let key = mo::memobj_describe_ref(ra).unwrap().charge_key;
+        assert_ne!(mo::memobj_describe_ref(rc).unwrap().charge_key, key, "C is in another Domain");
+        assert!(azos_mm::pager::restore_domain_objects(key).is_ok());
+        assert_eq!(mo::memobj_describe_ref(ra).unwrap().out, 0, "the locked Domain's page is back");
+        assert_eq!(mo::memobj_describe_ref(rc).unwrap().out, 1, "another Domain's is not");
     }
 
     /// **Another page of an object is taken while one installs, and the count of

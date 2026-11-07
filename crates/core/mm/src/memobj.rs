@@ -180,9 +180,11 @@
 //! **Who is never taken.** An object with a holder whose Domain is on a
 //! `mem = "locked"` row, or with a real-time thread anywhere in its process
 //! ([`Host::pins_memory`]), is left alone whichever Domain is charged for it:
-//! that is the object's mapper, not its owner. Such a mapper has no page out
-//! when it maps or inherits an object (they are restored before the mapping is
-//! booked) or when it changes to a real-time class (`SYS_SCHEDCTL`); a pinned
+//! that is the object's mapper, not its owner. Such a mapper has no page out:
+//! its admission (a real-time class through `SYS_SCHEDCTL`, an exec that locks
+//! its Domain) brings back every page of the objects it holds, and a map of an
+//! object with a page out by a process already admitted is refused, never a
+//! wait on the pool or the swap device on its real-time path; a pinned
 //! holder, like a failed map, keeps the whole object out of reach until it ends. Nor an object with frames a clone
 //! shares, a volatile one, one the kernel holds, or one charged to no Domain.
 //!
@@ -4707,8 +4709,8 @@ pub enum RestoreClaim {
 }
 
 /// Claim the restore of page `idx` of the object `r` names without a fault:
-/// what a mapper that pins memory does for every page before its mapping is
-/// booked ([`memobj_holder_pins`]).
+/// what the admission of a process that pins memory does for every page of
+/// the objects it holds.
 pub fn memobj_claim_restore(r: u32, idx: usize) -> RestoreClaim {
     let mut regions = MEMOBJS.lock();
     let Ok(i) = live_index(&regions, r) else { return RestoreClaim::Gone };
@@ -4727,21 +4729,39 @@ pub fn memobj_claim_restore(r: u32, idx: usize) -> RestoreClaim {
     RestoreClaim::Claimed
 }
 
-/// Does reclaim leave the memory of the process `tid` alone ([`Host::pins_memory`])?
-pub fn memobj_holder_pins(tid: u32) -> bool {
-    host().pins_memory(tid)
-}
-
 /// The packed reference and page count of the first swappable object at or after
 /// slot `from` that `tid` holds and has a page out or moving, and where to go on.
 pub fn memobj_out_object_of(tid: u32, from: usize) -> Option<(usize, u32, usize)> {
+    out_object(from, |h| h.tid == tid)
+}
+
+/// [`memobj_out_object_of`] for every process of the Domain `key`: what its
+/// lock brings back (`pager::restore_domain_objects`).
+pub fn memobj_out_object_in_domain(key: u32, from: usize) -> Option<(usize, u32, usize)> {
+    out_object(from, |h| host().domain_of(h.tid) == Some(key))
+}
+
+fn out_object(from: usize, holds: impl Fn(&MemHolder) -> bool) -> Option<(usize, u32, usize)> {
     let regions = MEMOBJS.lock();
     (from..MAX_MEMOBJS)
         .find(|&i| {
             let o = &regions[i];
-            o.active && o.attrs & ATTR_SWAPPABLE != 0 && away_pages(o) != 0 && o.holders.iter().any(|h| h.refs > 0 && h.tid == tid)
+            o.active && o.attrs & ATTR_SWAPPABLE != 0 && away_pages(o) != 0 && o.holders.iter().any(|h| h.refs > 0 && holds(h))
         })
         .map(|i| (i + 1, regions[i].ident, regions[i].page_count))
+}
+
+/// Does `tid`, which holds the object `r` names, pin its memory while a page of
+/// the object is out or moving? A process pins what it maps from its admission
+/// (a real-time class, a locked Domain), which brings its pages back
+/// (`pager::restore_objects_of`, `pager::restore_domain_objects`); a map or an
+/// inheritance after it does not wait for a restore, it is refused. From the
+/// moment the holder's reference exists no take reaches the object, so a
+/// `false` stays true for as long as the process pins.
+pub fn memobj_pins_with_pages_away(tid: u32, r: u32) -> Result<bool, MemObjError> {
+    let regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    Ok(away_pages(&regions[i]) != 0 && host().pins_memory(tid))
 }
 
 /// End the hold a [`memobj_fault_look`] `Frame` answer put on `r`.

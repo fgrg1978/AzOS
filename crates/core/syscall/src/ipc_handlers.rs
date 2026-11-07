@@ -869,17 +869,21 @@ pub(crate) fn reap_stale_mappings() {
     });
 }
 
-/// A mapper that pins memory (a real-time thread in its group, a locked Domain)
-/// has no page of a shared swappable object out once it maps or inherits it: they
-/// are brought back before the mapping is booked, and the map is refused if one
-/// cannot be (`site` 1 a map, 2 a fork's inheritance; recorded as `pin-restore`).
+/// A process that pins memory (a real-time thread in its group, a locked Domain)
+/// was admitted with every page of its objects in memory; a map of a shared
+/// swappable object with a page out is refused, not made to wait on the pool
+/// or the swap device on its real-time path (`EBUSY`, recorded as
+/// `pin-restore`, site 1).
 ///
-/// Canary `swap-pinned-map-no-restore-canary`: nothing is brought back.
-pub(crate) fn restore_for_pinning(tid: u32, r: u32, pages: usize, site: u64) -> Result<(), i64> {
-    if cfg!(feature = "swap-pinned-map-no-restore-canary") || !azos_ipc::memobj::memobj_holder_pins(tid) {
+/// Canary `pinned-map-pages-out-canary`: the map goes ahead with the page out.
+pub(crate) fn refuse_pinned_with_pages_out(tid: u32, r: u32) -> Result<(), i64> {
+    use azos_abi::error::Errno;
+    if cfg!(feature = "pinned-map-pages-out-canary") || azos_ipc::memobj::memobj_pins_with_pages_away(tid, r) != Ok(true) {
         return Ok(());
     }
-    azos_mm::pager::restore_object(r, pages).map_err(|e| refused_pin_restore(tid, u64::from(r), site, e))
+    let errno = Errno::EBUSY;
+    azos_decision::record(azos_decision::Rule::PinRestore, azos_decision::Verdict::Refuse, tid, [u64::from(r), 1, errno.to_syscall_ret().unsigned_abs()]);
+    Err(errno.to_syscall_ret())
 }
 
 /// A task has just become real-time (`SYS_SCHEDCTL` class or priority, already
@@ -941,7 +945,7 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
             return errno_for_memobj_err(e);
         }
     };
-    if let Err(e) = restore_for_pinning(tid, r, desc.page_count, 1) {
+    if let Err(e) = refuse_pinned_with_pages_out(tid, r) {
         let _ = memobj::memobj_release_ref(tid, r);
         return e;
     }

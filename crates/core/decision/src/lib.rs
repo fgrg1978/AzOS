@@ -417,9 +417,10 @@ pub enum Rule {
     /// Domain), whichever Domain the object is charged to. Once per object
     /// per storm.
     ReclaimSkip,
-    /// A mapper that pins memory (real-time, or a locked Domain) could not be
-    /// given back the pages of a shared swappable object that were out, and its
-    /// map, its fork's inheritance or its change of class was refused.
+    /// A process that pins memory (real-time, or a locked Domain) was refused
+    /// over a shared swappable object's pages that were out: a map by a process
+    /// already admitted (site 1), a change to a real-time class (site 3) or an
+    /// exec that locks its Domain (site 4) whose pages could not come back.
     PinRestore,
 }
 
@@ -1453,9 +1454,10 @@ pub const RULES: &[RuleInfo] = &[
         rejected_if_no: "take the object's pages: a real-time or locked mapper would fault on memory that was out",
     },
     RuleInfo {
-        // The subject is the task that asked. `object` is the object's packed reference (0 for a change of class,
-        // which concerns all of the process's), `site` 1 a map, 2 a fork's inheritance, 3 a change to a real-time class
-        // or priority, `errno` why the pages could not be brought back.
+        // The subject is the task that asked. `object` is the object's packed reference (0 for a change of class
+        // or a Domain lock, which concern all of the process's or the Domain's), `site` 1 a map by a process already
+        // admitted, 3 a change to a real-time class or priority, 4 an exec that locks its Domain, `errno` why it was
+        // refused.
         name: "pin-restore",
         subject: "tid",
         fields: ["object", "site", "errno"],

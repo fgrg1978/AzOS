@@ -371,6 +371,9 @@ pub struct PreparedExec {
     /// row differs from it (an instance of `spec.row` was then claimed).
     cur_row: u16,
     row_change: bool,
+    /// The exec locked its Domain at admission ([`admit_domain_lock`]);
+    /// [`exec_abort`] unlocks it.
+    locked_domain: bool,
 }
 
 /// [`exec_user_mem`] up to the commit: `None` when the image does not load or
@@ -471,7 +474,36 @@ fn exec_admit(
         // The lazy part of the stack (`finish_user_space`), charged with the image.
         let _ = azos_mm::pager::reserve(space, USER_STACK_TOP - ctx.stack, USER_STACK_TOP - PAGE_SIZE, true);
     }
-    Some(PreparedExec { ctx, space, spec, cur_row, row_change })
+    let locked_domain = spec.locked && !cur_locked;
+    if locked_domain && !admit_domain_lock() {
+        azos_drv_sys::kwarn!("[MEM] exec REFUSED: its Domain's pages out could not come back for the locked row");
+        if row_change {
+            crate::scheduler::row_release(spec.row);
+        }
+        azos_mm::aspace::destroy(space);
+        return None;
+    }
+    Some(PreparedExec { ctx, space, spec, cur_row, row_change, locked_domain })
+}
+
+/// An exec into a `mem = "locked"` row locks its Domain, whose live processes
+/// pin what they hold from then on. The lock lands first, so a storm takes no
+/// more of their objects' pages, then every page they have out comes back:
+/// the admission pays for the restore, not a later fault on a real-time path.
+/// `false`, with the Domain unlocked again and a `pin-restore` record (site 4),
+/// when one cannot come back.
+fn admit_domain_lock() -> bool {
+    let Some(d) = crate::scheduler::set_current_mem_locked(true) else { return false };
+    let Err(e) = azos_mm::pager::restore_domain_objects(d) else { return true };
+    let _ = crate::scheduler::set_current_mem_locked(false);
+    let errno = if e == azos_common::error::KernelError::OutOfMemory { azos_abi::error::Errno::ENOMEM } else { azos_abi::error::Errno::EBUSY };
+    azos_decision::record(
+        azos_decision::Rule::PinRestore,
+        azos_decision::Verdict::Refuse,
+        crate::current_task_tid(),
+        [0, 4, errno.to_syscall_ret().unsigned_abs()],
+    );
+    false
 }
 
 /// Give back an admitted exec that will not run: its address space and
@@ -481,6 +513,9 @@ pub fn exec_abort(p: PreparedExec) {
     if p.row_change {
         crate::scheduler::row_release(p.spec.row);
     }
+    if p.locked_domain {
+        let _ = crate::scheduler::set_current_mem_locked(false);
+    }
 }
 
 /// Switch the current task to an admitted exec. Cannot fail: returns 0.
@@ -488,7 +523,7 @@ pub fn exec_abort(p: PreparedExec) {
 /// `scheduler::exec_end_other_threads`, whose PID hand-over put the process's
 /// state on this slot when a thread that was not the leader execs).
 pub fn exec_commit(p: PreparedExec) -> i64 {
-    let PreparedExec { ctx, space, spec, cur_row, row_change } = p;
+    let PreparedExec { ctx, space, spec, cur_row, row_change, .. } = p;
     // K-C22(A): capture the address space this task is abandoning
     // BEFORE `set_current_user_info` overwrites `aspace` with the
     // new one — this is the only moment the old space is still

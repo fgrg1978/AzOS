@@ -2111,10 +2111,9 @@ fn restore_claimed(obj: u32, idx: usize) -> KResult<()> {
     Ok(())
 }
 
-/// Bring back every page of the object `obj` that is out, for a mapper that
-/// pins memory ([`memobj::memobj_holder_pins`]): it has none out when its
-/// mapping is booked, or when it becomes real-time. A page a store is moving is
-/// waited for. `Err` when a page cannot be brought back; nothing is half done
+/// Bring back every page of the object `obj` that is out, for a process that
+/// is admitted to pinning its memory (a real-time class, a locked Domain): it
+/// has none out from then on. A page a store is moving is waited for. `Err` when a page cannot be brought back; nothing is half done
 /// that matters, the pages restored stay in memory.
 pub fn restore_object(obj: u32, pages: usize) -> KResult<()> {
     for idx in 0..pages {
@@ -2142,10 +2141,27 @@ pub fn restore_object(obj: u32, pages: usize) -> KResult<()> {
 
 /// [`restore_object`] for every swappable object the process `tid` holds.
 pub fn restore_objects_of(tid: u32) -> KResult<()> {
+    restore_each(|from| memobj::memobj_out_object_of(tid, from))
+}
+
+/// [`restore_object`] for every swappable object a process of the Domain `key`
+/// holds: the Domain is being locked (an exec into a `mem = "locked"` row) with
+/// live tasks, and the lock is already in force, so no storm takes another.
+///
+/// Canary `pin-late-canary`: nothing comes back at the lock; the pages stay out
+/// until a mapper touches them, on its real-time path.
+pub fn restore_domain_objects(key: u32) -> KResult<()> {
+    if cfg!(feature = "pin-late-canary") {
+        return Ok(());
+    }
+    restore_each(|from| memobj::memobj_out_object_in_domain(key, from))
+}
+
+fn restore_each(next: impl Fn(usize) -> Option<(usize, u32, usize)>) -> KResult<()> {
     let mut from = 0;
-    while let Some((next, obj, pages)) = memobj::memobj_out_object_of(tid, from) {
+    while let Some((after, obj, pages)) = next(from) {
         restore_object(obj, pages)?;
-        from = next;
+        from = after;
     }
     Ok(())
 }
