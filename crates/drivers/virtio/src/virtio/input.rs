@@ -235,7 +235,8 @@ pub fn init_at(base: usize) -> Result<(), ()> {
     let dma = d.dma;
     match dma.map(d.bufs.as_ptr() as *const u8, EVQ * core::mem::size_of::<EvBuf>(), Direction::FromDevice) {
         Ok(bus) => d.bufs_bus = bus,
-        Err(()) => {
+        // The buffers are static and never freed: a map the unit did not confirm needs no more.
+        Err(_) => {
             kprintln!("[VIRTIO-INPUT] slot {}: event buffers not mappable", slot);
             return Err(());
         }

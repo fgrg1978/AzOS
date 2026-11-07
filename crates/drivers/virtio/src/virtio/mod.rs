@@ -20,7 +20,7 @@ pub mod snd_proto;
 
 use core::sync::atomic::{fence, Ordering};
 
-use azos_dma::{Direction, DmaDomain};
+use azos_dma::{Direction, DmaDomain, DmaError};
 
 pub use azos_virtio_proto::{
     VIRTIO_DEV_BLOCK, VIRTIO_DEV_GPU, VIRTIO_DEV_INPUT, VIRTIO_DEV_NET, VIRTIO_DEV_RNG, VIRTIO_DEV_SND,
@@ -271,6 +271,12 @@ impl Dma {
         Dma { domain: azos_dma::registry::domain_for_mmio(base as u64) }
     }
 
+    /// Over a domain of the host suite's own.
+    #[cfg(test)]
+    pub fn over(domain: &'static dyn DmaDomain) -> Dma {
+        Dma { domain }
+    }
+
     /// The PCI function with requester id `rid` (`bus << 8 | dev << 3 | fn`).
     pub fn pci(rid: u32) -> Dma {
         Dma { domain: azos_dma::registry::domain_for(Some(rid)) }
@@ -287,16 +293,18 @@ impl Dma {
     }
 
     /// Map `len` bytes at the physical address `pa` for `dir`; the bus
-    /// address of the first byte.
-    pub fn map_phys(&self, pa: u64, len: usize, dir: Direction) -> Result<u64, ()> {
-        self.domain.map(pa, len, dir).map(|b| b.0).map_err(|e| {
+    /// address of the first byte. [`DmaError::MaybeMapped`] says the domain
+    /// may still map the range: a caller that gives memory back on a failed
+    /// map must keep it then.
+    pub fn map_phys(&self, pa: u64, len: usize, dir: Direction) -> Result<u64, DmaError> {
+        self.domain.map(pa, len, dir).map(|b| b.0).inspect_err(|e| {
             azos_drv_sys::kerr!("[VIRTIO] DMA map of {:#x}+{:#x} refused: {:?}", pa, len, e);
         })
     }
 
     /// Map `len` bytes at the kernel address `ptr` (physically contiguous:
     /// kernel image storage or one page-allocator block).
-    pub fn map<T: ?Sized>(&self, ptr: *const T, len: usize, dir: Direction) -> Result<u64, ()> {
+    pub fn map<T: ?Sized>(&self, ptr: *const T, len: usize, dir: Direction) -> Result<u64, DmaError> {
         self.map_phys(azos_mm::addr::virt_to_phys(ptr as *const u8 as usize) as u64, len, dir)
     }
 
@@ -500,7 +508,7 @@ pub unsafe fn virtq_init_sized(
         // mapping; the device is told the BUS frame number of the same block
         // below (the domain's answer: the physical one without an IOMMU).
         let queue_mem = dma_page_ptr(first_page) as *mut u8;
-        let bus = dma.map_phys(first_page as u64, pages_needed * page_sz, Direction::Bidirectional)?;
+        let bus = dma.map_phys(first_page as u64, pages_needed * page_sz, Direction::Bidirectional).map_err(|_| ())?;
 
         vq.desc  = queue_mem as *mut VirtqDesc;
         vq.avail = queue_mem.add(desc_size) as *mut VirtqAvail;
@@ -519,9 +527,9 @@ pub unsafe fn virtq_init_sized(
         // The device's view: the bus address of each ring page.
         let page = azos_arch::PAGE_SIZE;
         vq.bus = [
-            dma.map_phys(desc_page  as u64, page, Direction::Bidirectional)?,
-            dma.map_phys(avail_page as u64, page, Direction::Bidirectional)?,
-            dma.map_phys(used_page  as u64, page, Direction::Bidirectional)?,
+            dma.map_phys(desc_page  as u64, page, Direction::Bidirectional).map_err(|_| ())?,
+            dma.map_phys(avail_page as u64, page, Direction::Bidirectional).map_err(|_| ())?,
+            dma.map_phys(used_page  as u64, page, Direction::Bidirectional).map_err(|_| ())?,
         ];
     }
     virtq_reprogram(dev, queue_idx, vq)
@@ -664,7 +672,7 @@ pub unsafe fn virtq_remap(vq: &mut Virtq, dma: &Dma, legacy: bool) -> Result<(),
     let mut bus = [0u64; 3];
     for (i, (ptr, len)) in ring_spans(vq, legacy).into_iter().enumerate() {
         if len != 0 {
-            bus[i] = dma.map(ptr, len, Direction::Bidirectional)?;
+            bus[i] = dma.map(ptr, len, Direction::Bidirectional).map_err(|_| ())?;
         }
     }
     vq.bus = bus;
@@ -830,9 +838,9 @@ pub unsafe fn virtq_alloc_rings(vq: &mut Virtq, queue_size: u16, dma: &Dma) -> R
     vq.clean(vq.avail, page);
     vq.refresh(vq.used, page);
     vq.bus = [
-        dma.map_phys(desc_page as u64, page, Direction::Bidirectional)?,
-        dma.map_phys(avail_page as u64, page, Direction::Bidirectional)?,
-        dma.map_phys(used_page as u64, page, Direction::Bidirectional)?,
+        dma.map_phys(desc_page as u64, page, Direction::Bidirectional).map_err(|_| ())?,
+        dma.map_phys(avail_page as u64, page, Direction::Bidirectional).map_err(|_| ())?,
+        dma.map_phys(used_page as u64, page, Direction::Bidirectional).map_err(|_| ())?,
     ];
     Ok((vq.bus[0], vq.bus[1], vq.bus[2]))
 }

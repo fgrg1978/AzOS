@@ -103,6 +103,12 @@ impl<const N: usize> IoDomain<N> {
     /// may hold a stale translation, or (caching mode on VT-d, `NpCache` on
     /// AMD-Vi) a cached "not present" for a page that is mapped now.
     fn sync_pages(&mut self, first: u64, last: u64) -> Result<bool, DmaError> {
+        let (changed, r) = self.sync_progress(first, last);
+        r.map(|()| changed)
+    }
+
+    /// [`Self::sync_pages`], also saying whether any page changed before an error.
+    fn sync_progress(&mut self, first: u64, last: u64) -> (bool, Result<(), DmaError>) {
         let mut changed = false;
         let mut page = first;
         loop {
@@ -112,35 +118,48 @@ impl<const N: usize> IoDomain<N> {
                 .flatten()
                 .filter(|e| e.covers(page))
                 .fold(Perm::NONE, |acc, e| acc.union(e.perm));
-            changed |= if perm.is_none() {
-                self.pt.unmap_page(self.mem, page).map_err(pt_err)?
+            let step = if perm.is_none() {
+                self.pt.unmap_page(self.mem, page)
             } else {
-                self.pt.map_page(self.mem, page, page, perm).map_err(pt_err)?
+                self.pt.map_page(self.mem, page, page, perm)
             };
+            match step {
+                Ok(c) => changed |= c,
+                Err(e) => return (changed, Err(pt_err(e))),
+            }
             if page == last {
-                return Ok(changed);
+                return (changed, Ok(()));
             }
             page += PAGE;
         }
     }
 
+    /// Flush the unit's cached translations of this device. A flush that
+    /// succeeds drops everything the unit held, so it also clears `stale`.
     fn flush(&mut self) -> Result<(), DmaError> {
         let r = self.unit.flush(self.dev).map_err(|_| DmaError::Iommu);
-        if r.is_err() {
-            self.stale = true;
-        }
+        self.stale = r.is_err();
         r
     }
 
-    /// A map whose flush failed: take `entry` out of the table again and
-    /// flush once more. `Iommu`: the unit now agrees with the table, nothing
-    /// is mapped. `MaybeMapped`: it does not, the domain is stale and the
-    /// caller must keep the frames.
-    fn take_back(&mut self, slot: usize, entry: Entry) -> DmaError {
+    /// A map that failed with `why` after it started writing the table: take
+    /// `entry` (in `slot`) out again, and flush when the unit may have seen
+    /// it (`flushed_once`: the map's own flush ran and failed; else when the
+    /// rollback changed a page). `why` if the unit now agrees with the table,
+    /// nothing is mapped; `MaybeMapped` if it does not (the domain is stale and
+    /// the caller must keep the frames).
+    fn take_back(&mut self, slot: usize, entry: Entry, why: DmaError, flushed_once: bool) -> DmaError {
         self.entries[slot] = None;
-        let undone = self.sync_pages(entry.first_page(), entry.last_page()).is_ok() && self.flush().is_ok();
-        if undone || cfg!(feature = "map-keeps-frames-canary") {
-            DmaError::Iommu
+        let undone = match self.sync_pages(entry.first_page(), entry.last_page()) {
+            Ok(changed) => !(changed || flushed_once) || self.flush().is_ok(),
+            Err(_) => false,
+        };
+        if undone {
+            return why;
+        }
+        self.stale = true;
+        if cfg!(feature = "map-keeps-frames-canary") {
+            why
         } else {
             DmaError::MaybeMapped
         }
@@ -156,17 +175,17 @@ impl<const N: usize> DomainOps for IoDomain<N> {
         let slot = self.entries.iter().position(|e| e.is_none()).ok_or(DmaError::TableFull)?;
         let entry = Entry { pa, len, perm: Perm::of(dir) };
         self.entries[slot] = Some(entry);
-        match self.sync_pages(entry.first_page(), entry.last_page()) {
-            Ok(changed) => {
+        match self.sync_progress(entry.first_page(), entry.last_page()) {
+            (changed, Ok(())) => {
                 if changed && self.flush().is_err() {
-                    return Err(self.take_back(slot, entry));
+                    return Err(self.take_back(slot, entry, DmaError::Iommu, true));
                 }
                 Ok(DmaAddr(pa))
             }
-            Err(e) => {
-                // Put the table back the way the other mappings want it.
+            // Pages before the failing one may be written, and cached.
+            (true, Err(e)) => Err(self.take_back(slot, entry, e, false)),
+            (false, Err(e)) => {
                 self.entries[slot] = None;
-                let _ = self.sync_pages(entry.first_page(), entry.last_page());
                 Err(e)
             }
         }

@@ -142,8 +142,9 @@ pub enum Error {
     NotReady,
     /// The device failed the request or did not answer.
     Fault,
-    /// The arena could not be taken back from the device: it may still reach
-    /// it. The caller keeps its pin for good.
+    /// The arena could not be taken back from the device, or its map was not
+    /// confirmed: the device may still reach it. The caller keeps its pin for
+    /// good.
     ArenaHeld,
 }
 
@@ -1022,7 +1023,15 @@ impl Device {
             let bus = data
                 .dma
                 .map_phys(arena_phys, geo.arena_bytes as usize, Direction::Bidirectional)
-                .map_err(|_| Error::Fault)?;
+                .map_err(|e| {
+                    if e == azos_dma::DmaError::MaybeMapped && !cfg!(feature = "virtio-map-fault-canary") {
+                        // The domain may still map the user's arena: the caller keeps its pin.
+                        azos_dma::note_leak(geo.arena_bytes as usize);
+                        Error::ArenaHeld
+                    } else {
+                        Error::Fault
+                    }
+                })?;
             let dma = data.dma;
             data.xfer[d].0 = p::xfer(caps.stream_id);
             // SAFETY: the transfer header is this driver's mapped storage.
@@ -2450,6 +2459,45 @@ mod tests {
         r.sim().mute = true;
         assert_eq!(r.dev.close(DIR_PLAYBACK), Err(Error::Fault));
         assert_eq!(RESETS.load(Ordering::Relaxed), 1, "the device still holds the period when its arena goes back");
+    }
+
+    /// A domain whose map is never confirmed.
+    struct Unconfirmed;
+    impl azos_dma::DmaDomain for Unconfirmed {
+        fn map(&self, _pa: u64, _len: usize, _dir: azos_dma::Direction) -> Result<azos_dma::DmaAddr, azos_dma::DmaError> {
+            Err(azos_dma::DmaError::MaybeMapped)
+        }
+        fn unmap(&self, _bus: azos_dma::DmaAddr, _len: usize) -> Result<(), azos_dma::DmaError> {
+            Ok(())
+        }
+        fn coherent(&self) -> bool {
+            true
+        }
+        fn kind(&self) -> azos_dma::DomainKind {
+            azos_dma::DomainKind::Identity
+        }
+        fn enable(&self) -> Result<(), azos_dma::DmaError> {
+            Ok(())
+        }
+        fn allow_msi(&self, _doorbell: u64) -> Result<(), azos_dma::DmaError> {
+            Ok(())
+        }
+    }
+    static UNCONFIRMED: Unconfirmed = Unconfirmed;
+
+    /// **An `open` whose arena map the unit did not confirm answers
+    /// `ArenaHeld`, not `Fault`:** the host then keeps its pin on the user's
+    /// arena (`sound_host`: it unpins for anything but `ArenaHeld`), and the
+    /// bytes are counted.
+    ///
+    /// **Canary.** `virtio-map-fault-canary`: every map error is a `Fault`.
+    #[test]
+    fn an_arena_the_domain_may_still_map_is_held_not_faulted() {
+        let r = rig();
+        r.dev.data.lock().dma = Dma::over(&UNCONFIRMED);
+        let kept = azos_dma::leaked_bytes();
+        assert_eq!(r.open(DIR_PLAYBACK), Err(Error::ArenaHeld));
+        assert!(azos_dma::leaked_bytes() > kept, "the arena's bytes are counted");
     }
 
     #[test]

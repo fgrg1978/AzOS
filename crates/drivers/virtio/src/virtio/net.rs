@@ -295,7 +295,7 @@ fn tx_buf_ptr(idx: usize) -> *mut u8 {
 fn map_buffers(net: &mut NetState, dma: Dma) -> Result<(), ()> {
     net.dma = dma;
     RX_BUS.store(
-        dma.map(RX_BUFS.0.get() as *const u8, NUM_RX_BUFS * RX_STRIDE as usize, Direction::FromDevice)?,
+        dma.map(RX_BUFS.0.get() as *const u8, NUM_RX_BUFS * RX_STRIDE as usize, Direction::FromDevice).map_err(|_| ())?,
         Ordering::Release,
     );
     // Gate canary `iommu-tx-canary`: the TX staging buffers are left unmapped,
@@ -304,9 +304,9 @@ fn map_buffers(net: &mut NetState, dma: Dma) -> Result<(), ()> {
     net.tx_bus = if cfg!(feature = "iommu-tx-canary") {
         azos_mm::addr::virt_to_phys(TX_BUFS.0.get() as usize) as u64
     } else {
-        dma.map(TX_BUFS.0.get() as *const u8, NUM_TX_BUFS * TX_BUF_SIZE, Direction::ToDevice)?
+        dma.map(TX_BUFS.0.get() as *const u8, NUM_TX_BUFS * TX_BUF_SIZE, Direction::ToDevice).map_err(|_| ())?
     };
-    net.tx_hdr_bus = dma.map(TX_HDR.0.as_ptr(), NET_HDR_MODERN, Direction::ToDevice)?;
+    net.tx_hdr_bus = dma.map(TX_HDR.0.as_ptr(), NET_HDR_MODERN, Direction::ToDevice).map_err(|_| ())?;
     // The header is never written again: out to RAM once.
     unsafe { dma.sync_for_device(TX_HDR.0.as_ptr(), NET_HDR_MODERN, Direction::ToDevice) };
     Ok(())

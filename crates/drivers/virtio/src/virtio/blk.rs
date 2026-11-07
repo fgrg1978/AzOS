@@ -816,9 +816,9 @@ fn remap_and_unpark() -> Result<(), ()> {
     // SAFETY: the device is released: reset, nothing submits, `BLK_LOCK` held.
     let dev = unsafe { &mut *(&raw mut BLK_DEV) };
     let dma = dev.dma;
-    dev.hdr_bus = dma.map((&raw const BLK_REQ_HDR) as *const u8, SLOTS * HDR_STRIDE as usize, Direction::ToDevice)?;
-    dev.status_bus = dma.map((&raw const BLK_STATUS) as *const u8, SLOTS * STATUS_STRIDE as usize, Direction::FromDevice)?;
-    dev.buf_bus = dma.map((&raw const BLK_DMA_BUF) as *const u8, SLOTS * BUF_STRIDE as usize, Direction::Bidirectional)?;
+    dev.hdr_bus = dma.map((&raw const BLK_REQ_HDR) as *const u8, SLOTS * HDR_STRIDE as usize, Direction::ToDevice).map_err(|_| ())?;
+    dev.status_bus = dma.map((&raw const BLK_STATUS) as *const u8, SLOTS * STATUS_STRIDE as usize, Direction::FromDevice).map_err(|_| ())?;
+    dev.buf_bus = dma.map((&raw const BLK_DMA_BUF) as *const u8, SLOTS * BUF_STRIDE as usize, Direction::Bidirectional).map_err(|_| ())?;
     for q in 0..dev.queues {
         // SAFETY: as above.
         unsafe { virtq_remap(&mut (*(&raw mut VQS))[q], &dma, dev.vdev.version == 1)? };

@@ -29,6 +29,8 @@ iommu-tx-canary = []
 virtio-cap-bounds-canary = []
 # Gate canary only: a stuck virtio-snd is not reset before its arena goes back.
 snd-no-reset-canary = []
+# Host canary (tests/host/drivers-tests): an arena map the unit did not confirm answers a plain fault.
+virtio-map-fault-canary = []
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []

@@ -141,7 +141,7 @@ fn a_map_whose_flush_fails_twice_may_still_be_mapped() {
     *unit.fail_flushes.lock().unwrap() = 1;
     assert_eq!(d.map(0x8070_0000, PAGE as usize, Direction::ToDevice), Err(DmaError::Iommu), "taken back");
     assert_eq!(walk(mem, unit.fmt, 0x8070_0000), None, "a map taken back left a translation");
-    assert!(!d.0.lock().unwrap().is_empty(), "a failed flush left the domain reading empty");
+    assert!(d.0.lock().unwrap().is_empty(), "the second flush confirmed the table: the domain is as it was");
     *unit.fail_flush.lock().unwrap() = true;
     assert_eq!(
         d.map(0x8078_0000, PAGE as usize, Direction::ToDevice),
@@ -170,6 +170,31 @@ fn a_function_the_unit_did_not_block_is_not_confined() {
     assert!(log.confines(0x18), "translating");
     assert!(!log.note(0x20, Attached::Block), "a full log");
     assert!(!log.confines(0x20), "a function the log could not hold is unknown");
+}
+
+/// **A map that fails in the page table after it wrote some pages is flushed
+/// back like one whose flush failed.** The pages before the failing one may be
+/// cached by the unit: when the rollback is flushed the error stands (the
+/// caller frees); when the flush fails too the frames stay (`MaybeMapped`),
+/// and the domain reads as not empty.
+///
+/// **Canary.** `map-keeps-frames-canary`: the unconfirmed rollback answers the
+/// plain error.
+#[test]
+fn a_map_that_failed_in_the_page_table_is_flushed_back_or_keeps_its_frames() {
+    // Two pages either side of a 2 MiB boundary: the second needs a new leaf table.
+    let (len, base) = (2 * PAGE as usize, 0x8020_0000 - PAGE);
+    let (mem, unit, d) = ring3_domain();
+    mem.set_limit(mem.count() + 2);
+    let flushes = unit.flushed();
+    assert_eq!(d.map(base, len, Direction::ToDevice), Err(DmaError::NoMemory));
+    assert_eq!(walk(mem, unit.fmt, base), None, "the first page stayed mapped");
+    assert!(unit.flushed() > flushes, "the rollback was not flushed");
+    let (mem, unit, d) = ring3_domain();
+    mem.set_limit(mem.count() + 2);
+    *unit.fail_flush.lock().unwrap() = true;
+    assert_eq!(d.map(base, len, Direction::ToDevice), Err(DmaError::MaybeMapped), "the unit confirmed nothing");
+    assert!(!d.0.lock().unwrap().is_empty());
 }
 
 /// **One binding per object, and a binding is ended only by the task that

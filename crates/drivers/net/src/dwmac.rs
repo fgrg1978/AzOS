@@ -416,7 +416,7 @@ pub trait DmaOps: Copy {
 
 impl DmaOps for azos_drv_virtio::virtio::Dma {
     fn map(&self, ptr: *const u8, len: usize, dir: Direction) -> Result<u64, ()> {
-        azos_drv_virtio::virtio::Dma::map(self, ptr, len, dir)
+        azos_drv_virtio::virtio::Dma::map(self, ptr, len, dir).map_err(|_| ())
     }
     fn enable(&self) -> Result<(), ()> {
         azos_drv_virtio::virtio::Dma::enable(self)

@@ -261,7 +261,7 @@ mod device {
                     st.dma = Dma::mmio(st.base);
                     let dma = st.dma;
                     let legacy = dev.version == 1;
-                    let mapped = dma.map(st.buf.0.as_ptr(), BUF_BYTES, Direction::FromDevice).and_then(|bus| {
+                    let mapped = dma.map(st.buf.0.as_ptr(), BUF_BYTES, Direction::FromDevice).map_err(|_| ()).and_then(|bus| {
                         st.buf_bus = bus;
                         // SAFETY: the device is reset; the queue is the driver's.
                         unsafe { virtq_remap(&mut st.vq, &dma, legacy) }?;
@@ -286,7 +286,8 @@ mod device {
                 let dma = st.dma;
                 match dma.map(st.buf.0.as_ptr(), BUF_BYTES, Direction::FromDevice) {
                     Ok(bus) => st.buf_bus = bus,
-                    Err(()) => {
+                    // Static buffer, never freed: nothing more to keep on an unconfirmed map.
+                    Err(_) => {
                         st.dead = true;
                         return SeedRead::Failed("staging buffer not mappable");
                     }
