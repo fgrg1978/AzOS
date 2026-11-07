@@ -395,6 +395,9 @@ pub enum Rule {
     /// A ring-3 driver gave a device memory (`DEVICE_DMA_MAP`, `azos_ipc::dma_bind`)
     /// where no IOMMU confines the device, or was refused it, or its pages were kept.
     Ring3Dma,
+    /// A topology row's interrupt line grant (`irq.<N>`, `irq.<selector>`) was
+    /// refused because a device ring 3 may not have raises the line, or owns it.
+    LineGrant,
 }
 
 impl Rule {
@@ -1328,6 +1331,16 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["tid", "bytes", "why"],
         rejected_if_yes: "refuse ring 3 every device no IOMMU confines: its drivers stay in the kernel",
         rejected_if_no: "let a ring-3 driver program a device that reaches any physical address: the kernel's memory is the driver's to write",
+    },
+    RuleInfo {
+        // why: 0 `irq.<N>`: a device ring 3 may not have raises the line, 1
+        // `irq.<selector>`: the device is not one ring 3 may have, 2
+        // `irq.<selector>`: its line is shared with one.
+        name: "line-grant",
+        subject: "tid",
+        fields: ["line", "selector hash", "why"],
+        rejected_if_yes: "refuse a ring-3 driver every line a kernel driver's device raises, polled or not",
+        rejected_if_no: "grant a line a kernel device shares: the ring-3 holder takes interrupts of a device it does not drive",
     },
 ];
 

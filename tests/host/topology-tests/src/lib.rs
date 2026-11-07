@@ -3187,17 +3187,32 @@ mod mmio_cap_tests {
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.11").is_some(), "the RTC's line, by number");
     }
 
-    /// **`irq.<selector>` mints no line a kernel device shares.** The sharer
-    /// has a window ring 3 may map, but its line is the kernel UART's too.
+    /// **`irq.<selector>` mints no line a kernel device shares, and every
+    /// refused line grant is a decision record** (`line-grant`: the line and
+    /// why): the numeric form of a kernel device's line, a selector whose
+    /// device ring 3 may not have, and a selector whose line is shared. The
+    /// sharer has a window ring 3 may map, but its line is the kernel UART's too.
     ///
-    /// **Canary.** `irq-selector-shared-canary`: the selector form skips the
-    /// shared-line test and mints line 10.
+    /// **Canaries.** `irq-selector-shared-canary`: the selector form skips the
+    /// shared-line test and mints line 10. `line-grant-silent-canary`: the
+    /// refusals write nothing.
     #[test]
     fn a_topology_irq_grant_by_selector_refuses_a_line_a_kernel_device_shares() {
+        use azos_decision::Rule;
         machine();
         let tid = fresh_tid();
         assert!(hwbus::user_window(handle("dt:vendor,sharer")).is_some(), "the sharer is mappable");
-        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:vendor,sharer").is_none(), "line 10 is the UART's too");
+        for target in ["irq.dt:vendor,sharer", "irq.10", "irq.dt:ns16550a"] {
+            assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, target).is_none(), "{target}");
+        }
+        let mut got = Vec::new();
+        azos_decision::for_each(|r| {
+            if r.rule == Rule::LineGrant as u8 && r.subject == tid {
+                got.push((r.n[0], r.n[2]));
+            }
+        });
+        got.sort();
+        assert_eq!(got, vec![(0, 1), (10, 0), (10, 2)], "line and why of each refusal");
     }
 
     /// A topology `mmio.<selector>` grant mints a capability whose resource is

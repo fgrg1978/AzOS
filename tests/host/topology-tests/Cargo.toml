@@ -27,6 +27,8 @@ writable-master-canary = []
 irq-selector-shared-canary = []
 # Host canary (tests/host/topology-tests): an I/O port grant over a bus master's BAR skips the master policy.
 ioport-master-canary = []
+# Host canary (tests/host/topology-tests): a refused line grant writes no decision record.
+line-grant-silent-canary = []
 dt-unknown-peripheral-canary = ["azos_hwbus/dt-unknown-peripheral-canary"]
 # Declared for the pulled endpoint.rs's `calls_set_link` canary (syscall-tests runs it).
 calls-any-binder-canary = []

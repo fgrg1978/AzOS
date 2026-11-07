@@ -303,12 +303,13 @@ fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     if let Some(n) = parse_dotted(target, "irq") {
         // A line a kernel device raises is the kernel's, polled or not.
         if !crate::mmio_cap::mmio_line_free(n) {
+            crate::mmio_cap::line_refused(tid, n, crate::mmio_cap::LINE_NUMBER_KERNEL);
             return None;
         }
         return crate::irq_bind::irq_grant_cap(tid, n, perms).map(|c| c.raw());
     }
     if let Some(selector) = target.strip_prefix("irq.") {
-        let line = crate::mmio_cap::mmio_device_line(selector)?;
+        let line = crate::mmio_cap::mmio_device_line(tid, selector)?;
         return crate::irq_bind::irq_grant_cap(tid, line, perms).map(|c| c.raw());
     }
     if let Some(k) = parse_dotted(target, "msi") {

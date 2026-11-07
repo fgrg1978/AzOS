@@ -13,6 +13,8 @@ writable-master-canary = []
 irq-selector-shared-canary = []
 # Host canary (tests/host/topology-tests): an I/O port grant over a bus master's BAR skips the master policy.
 ioport-master-canary = []
+# Host canary (tests/host/topology-tests): a refused line grant writes no decision record.
+line-grant-silent-canary = []
 # Host canary (tests/host/ipc-tests): a given-back MSI vector returns to the pool.
 msi-reissue-canary = []
 # Declared for the pulled `dma_bind.rs`'s canary.

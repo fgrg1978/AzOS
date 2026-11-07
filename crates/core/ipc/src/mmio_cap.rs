@@ -138,11 +138,30 @@ pub fn mmio_grant_cap(
 /// device matches, a device with no line known, one ring 3 may not have
 /// (a kernel driver owns it or may still take it, as for its window), and a
 /// line a device ring 3 may not have raises too (a shared line).
-pub fn mmio_device_line(selector: &str) -> Option<u32> {
+pub fn mmio_device_line(tid: u32, selector: &str) -> Option<u32> {
     let h = hwbus::resolve(selector)?;
-    hwbus::user_window(h)?;
+    if hwbus::user_window(h).is_none() {
+        line_refused(tid, 0, LINE_DEVICE_NOT_RING3);
+        return None;
+    }
     let line = hwbus::line_of(h)?;
-    (mmio_line_free(line) || cfg!(feature = "irq-selector-shared-canary")).then_some(line)
+    if !mmio_line_free(line) && !cfg!(feature = "irq-selector-shared-canary") {
+        line_refused(tid, line, LINE_SHARED);
+        return None;
+    }
+    Some(line)
+}
+
+/// `Rule::LineGrant`'s third word.
+pub(crate) const LINE_NUMBER_KERNEL: u64 = 0;
+const LINE_DEVICE_NOT_RING3: u64 = 1;
+const LINE_SHARED: u64 = 2;
+
+/// A line grant refused: recorded (`Rule::LineGrant`).
+pub(crate) fn line_refused(tid: u32, line: u32, why: u64) {
+    if !cfg!(feature = "line-grant-silent-canary") {
+        azos_decision::record(azos_decision::Rule::LineGrant, azos_decision::Verdict::Refuse, tid, [u64::from(line), 0, why]);
+    }
 }
 
 /// May a topology row `"irq.<N>"` mint line `line`: no device a kernel
