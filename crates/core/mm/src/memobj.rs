@@ -2012,6 +2012,36 @@ pub fn memobj_with_span_ref<R>(r: u32, bytes: usize, f: impl FnOnce(usize) -> R)
     Ok(Some(out))
 }
 
+/// [`memobj_with_span_ref`] for an object whose frames need not be contiguous:
+/// `f(offset, address, len)` runs once for each page the first `bytes` bytes
+/// touch, with the region table locked across all of them. `Ok(None)` for what
+/// a span refuses except contiguity: longer than the region, hidden from the
+/// kernel, read-only, shared with a clone, or a page with no frame.
+pub fn memobj_with_pages_ref(r: u32, bytes: usize, mut f: impl FnMut(usize, usize, usize)) -> Result<Option<()>, MemObjError> {
+    let page = azos_arch::PAGE_SIZE;
+    let regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let region = &regions[i];
+    let pages = bytes.div_ceil(page);
+    let hidden = region.attrs & ATTR_NO_KERNEL_MAP != 0 && !cfg!(feature = "memobj-no-kernel-map-canary");
+    let shared = pages.min(64) as u32;
+    let shared_mask = if shared >= 64 { u64::MAX } else { (1u64 << shared) - 1 };
+    if bytes == 0
+        || pages > region.page_count
+        || hidden
+        || region.perms != MemPerms::ReadWrite
+        || region.cow_shared & shared_mask != 0
+        || region.phys_pages[..pages].contains(&0)
+    {
+        return Ok(None);
+    }
+    for k in 0..pages {
+        let off = k * page;
+        f(off, crate::addr::phys_to_virt(region.phys_pages[k]), page.min(bytes - off));
+    }
+    Ok(Some(()))
+}
+
 /// Is the region table's lock free right now? For the F5 test of
 /// [`memobj_with_word_ref`] only: called from inside its closure, `false` proves
 /// the table was locked across the load.
