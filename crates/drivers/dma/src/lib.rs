@@ -28,10 +28,12 @@ pub mod bind;
 pub mod cache;
 pub mod ccache;
 pub mod domain;
+pub mod irq_remap;
 pub mod order;
 pub mod registry;
 
 pub use alloc::{alloc_below, canary_free_anyway, free_after_failed_map, leaked_bytes, note_leak, unmap_and_free, PageSource};
+pub use irq_remap::InterruptRemapping;
 pub use domain::{DmaDomain, DomainKind, DomainOps, IdentityDomain, SoftState};
 
 /// A bus address, as seen by the device. IOVA when an IOMMU domain is

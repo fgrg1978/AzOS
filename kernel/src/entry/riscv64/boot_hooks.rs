@@ -518,7 +518,7 @@ pub fn line_hooks() -> azos_arch_api::LineHooks {
         unmask: azos_drv_irqchip::user_irq::unmask,
         // MSI for ring 3 only with AIA: the IMSIC identity, enabled in the
         // file of the hart that binds it.
-        msi_supported: azos_drv_irqchip::irqchip::is_aia,
+        msi_supported: || azos_drv_irqchip::irqchip::is_aia() && crate::boot::dma::ring3_msi_allowed(),
         msi_alloc: azos_drv_irqchip::irqchip::user_msi_alloc,
         msi_free: azos_drv_irqchip::irqchip::user_msi_free,
         msi_enable: |id, hart| {

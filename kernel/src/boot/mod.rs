@@ -169,7 +169,7 @@ compile_error!("Kconfig PKG_BOOT_APPLY needs BOOT_SLOTS: its trial reads the boo
 #[cfg(feature = "pci")]
 pub(crate) mod pci;
 // DMA domains and IOMMUs (Kconfig "DMA and IOMMU").
-mod dma;
+pub(crate) mod dma;
 pub(crate) use dma::*;
 mod seams;
 pub(crate) use seams::*;

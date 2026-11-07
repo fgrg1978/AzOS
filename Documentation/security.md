@@ -72,6 +72,7 @@ mechanism.
 **Known limits of the current tree.**
 - **Large subsystems still run in ring 0:** the network stack, the FAT32 file system, the in-kernel Linux personality, the robot brain link and behaviour tasks, and many drivers. A defect there is a kernel defect.
 - **DMA without an IOMMU:** a ring-3 driver for a DMA-capable device is only as contained as the platform's DMA isolation. On boards without an IOMMU (VF2, K1), such a driver can reach physical memory through its device ([DMA](#dma)).
+- **Interrupts on x86_64:** an IOMMU domain confines a ring-3 driver's memory but not the interrupts its device can send: without interrupt remapping (never enabled in this tree) a message-signalled write carries any vector and delivery mode. A ring-3 PCI driver on x86_64 is therefore treated as unconfined: it needs `DMA_RING3_WITHOUT_IOMMU` and is kernel-trust, and `msi.<k>` is refused without it.
 - **Partial CFI:** control-flow integrity coverage is incomplete; see [Control-flow integrity](#control-flow-integrity).
 - **Advisory Linux-level seccomp:** a filter a Linux program installs inside the hosted runtime is not enforced. Only the native per-image filter is.
 - **No external review yet:** the tree has had no external security audit, and fuzzing covers only parts of the ABI and the parsers.

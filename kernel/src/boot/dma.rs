@@ -299,15 +299,68 @@ fn ring3_window_policy(dev: u32) -> bool {
     false
 }
 
+/// How the platform confines the interrupts a PCI function sends. x86_64 has
+/// no remapping enabled anywhere in the tree (the DMAR flag only says the
+/// hardware has it), so an IOMMU domain there confines memory and not
+/// interrupts; the other ISAs' translated functions do not reach the
+/// interrupt controller.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    feature = "iommu-riscv",
+    feature = "iommu-smmuv3",
+    feature = "iommu-vtd",
+    feature = "iommu-amdvi"
+))]
+fn interrupt_remapping() -> azos_dma::InterruptRemapping {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::boot_hooks::interrupt_remapping()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        azos_dma::InterruptRemapping::NotNeeded
+    }
+}
+
+/// May ring 3 be given a message-signalled interrupt (`msi.<k>`): where the
+/// build accepts a kernel-trust driver (`DMA_RING3_WITHOUT_IOMMU`), or where
+/// a function it drives under an IOMMU cannot send an interrupt the kernel
+/// did not route (x86_64: remapping on). riscv64 delivers an MSI through the
+/// hart's IMSIC page, which no ring-3 domain maps, so a translated function
+/// cannot deliver one: allowed only with no IOMMU up.
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+pub(crate) fn ring3_msi_allowed() -> bool {
+    if RING3_UNCONFINED.load(core::sync::atomic::Ordering::Acquire) {
+        return true;
+    }
+    let doorbell_unmapped = cfg!(target_arch = "riscv64") && iommu_running();
+    interrupt_remapping().confines_interrupts() && !doorbell_unmapped
+}
+
+/// Is an IOMMU being driven.
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+fn iommu_running() -> bool {
+    #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
+    {
+        hw::iommu_up()
+    }
+    #[cfg(not(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi")))]
+    {
+        false
+    }
+}
+
 /// Will an IOMMU confine device `dev` for ring 3: a PCI function while one is
-/// up (`hw::ring3_domain` gives it a translating domain of its own).
+/// up (`hw::ring3_domain` gives it a translating domain of its own) and the
+/// platform confines its interrupts too.
 fn ring3_confinable(dev: u32) -> bool {
     use azos_drv_bus::hwbus::{self, BusKind, Handle};
     let Some(d) = hwbus::with(|b| b.get(Handle(dev)).map(|s| s.dev)) else { return false };
     #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
     if d.kind == BusKind::Pci {
         let rid = azos_pci::Bdf::new(d.pci.bus, d.pci.device, d.pci.function).requester_id();
-        return hw::iommu_up() && hw::confinable(rid);
+        return hw::iommu_up() && hw::confinable(rid) && interrupt_remapping().confines_interrupts();
     }
     let _ = (d, BusKind::Pci);
     false

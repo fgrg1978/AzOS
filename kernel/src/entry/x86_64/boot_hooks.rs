@@ -1059,7 +1059,7 @@ pub fn line_hooks() -> azos_arch_api::LineHooks {
         unmask: azos_drv_irqchip::user_irq::unmask,
         // A message-signalled interrupt targets a LAPIC directly: the vector
         // is global (one IDT), the message names the CPU.
-        msi_supported: || true,
+        msi_supported: crate::boot::dma::ring3_msi_allowed,
         msi_alloc: || azos_arch::irq::apic::msi_alloc_one().map(u32::from),
         msi_free: |v| azos_arch::irq::apic::msi_free(v as u8),
         msi_enable: |_, _| true,
@@ -1206,6 +1206,17 @@ pub fn pci_ecam_bus0() -> Option<(usize, &'static str)> {
         (Some(m), _) => Some((m.base as usize, "acpi mcfg")),
         (None, 0) => None,
         (None, base) => Some((base, "kconfig")),
+    }
+}
+
+/// Interrupt remapping as the platform stands: the DMAR flag says the
+/// hardware has it, and nothing in the tree enables it, so it is never `On`
+/// (AMD-Vi's support bit lives in the IVHD's extended features, which is not
+/// parsed: `Absent`, which confines no more than `PresentOff` does).
+pub fn interrupt_remapping() -> azos_dma::InterruptRemapping {
+    match &platform().acpi.dmar {
+        Some(d) if d.intr_remap() => azos_dma::InterruptRemapping::PresentOff,
+        _ => azos_dma::InterruptRemapping::Absent,
     }
 }
 

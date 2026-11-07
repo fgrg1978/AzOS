@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2865108
-aarch64-microvm	.rodata	351824
+aarch64-microvm	.text	2868676
+aarch64-microvm	.rodata	355944
 aarch64-microvm	.data	468904
 aarch64-microvm	.bss	947752
-aarch64-microvm	reason	non-robot images no longer link the robot sensor streams
+aarch64-microvm	reason	topology admission names the msi slots (a new refusal and its distinct-slot count), the x86 interrupt-remapping state and the msi gate in the boot hooks, and the dt role keyed on the first compatible
 riscv64-qemu	.text	2930486
 riscv64-qemu	.rodata	498528
 riscv64-qemu	.data	580240
 riscv64-qemu	.bss	2289384
 riscv64-qemu	reason	robot sensors to their own crate, bench harness to crates/lib/bench, board bring-up split from the robot boot
-x86_64-microvm	.text	2724553
+x86_64-microvm	.text	2728713
 x86_64-microvm	.rodata	179064
-x86_64-microvm	.data	627088
+x86_64-microvm	.data	627344
 x86_64-microvm	.bss	966736
-x86_64-microvm	reason	non-robot images no longer link the robot sensor streams
+x86_64-microvm	reason	topology admission names the msi slots (a new refusal and its distinct-slot count), the x86 interrupt-remapping state and the msi gate in the boot hooks, and the dt role keyed on the first compatible

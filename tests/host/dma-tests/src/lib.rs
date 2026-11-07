@@ -773,3 +773,19 @@ mod unmap_and_free {
         assert_eq!(pages.0.get(), 1);
     }
 }
+
+/// **An IOMMU confines a function's memory, and its interrupts only where the
+/// platform remaps them or the function cannot reach the interrupt
+/// controller.** Absent, or present and not enabled, is not confined: on x86_64
+/// a ring-3 driver of a translated function could otherwise send any vector
+/// and delivery mode.
+///
+/// **Canary.** `ir-assumed-canary`: absent and off read as confined.
+#[test]
+fn a_function_is_confined_for_interrupts_only_where_they_are_remapped_or_unreachable() {
+    use azos_dma::InterruptRemapping::*;
+    assert!(NotNeeded.confines_interrupts());
+    assert!(On.confines_interrupts());
+    assert!(!Absent.confines_interrupts(), "no remapping in the firmware's tables");
+    assert!(!PresentOff.confines_interrupts(), "the hardware has it and nothing turned it on");
+}

@@ -29,3 +29,5 @@ park-drop-canary = []
 # Host canary (tests/host/dma-tests): a block whose map the unit did not confirm taking back
 # is freed like any other failed map.
 map-failed-frees-canary = []
+# Host canary (tests/host/dma-tests): interrupts count as confined without remapping.
+ir-assumed-canary = []

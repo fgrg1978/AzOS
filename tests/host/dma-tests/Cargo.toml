@@ -13,6 +13,7 @@ azos_dma = { path = "../../../crates/drivers/dma" }
 
 [features]
 map-failed-frees-canary = ["azos_dma/map-failed-frees-canary"]
+ir-assumed-canary = ["azos_dma/ir-assumed-canary"]
 
 [profile.release]
 overflow-checks = true
