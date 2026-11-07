@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2834564
-aarch64-microvm	.rodata	347536
+aarch64-microvm	.text	2839188
+aarch64-microvm	.rodata	351680
 aarch64-microvm	.data	468008
 aarch64-microvm	.bss	1013288
-aarch64-microvm	reason	follow-ups of the ring-3 DMA/IRQ gaps: Device record, role table, MSI keep table, attach log, line-grant rule, msi-slot rule
-riscv64-qemu	.text	2905208
+aarch64-microvm	reason	review follow-ups of the ring-3 DMA/IRQ gaps: MSI per-slot bound, ISA DMA ports, rule table, virtio map errors
+riscv64-qemu	.text	2908374
 riscv64-qemu	.rodata	490696
 riscv64-qemu	.data	732688
 riscv64-qemu	.bss	2289384
-riscv64-qemu	reason	follow-ups of the ring-3 DMA/IRQ gaps: Device record, role table, MSI keep table, attach log, line-grant rule, msi-slot rule
-x86_64-microvm	.text	2702601
-x86_64-microvm	.rodata	175528
-x86_64-microvm	.data	624560
+riscv64-qemu	reason	review follow-ups of the ring-3 DMA/IRQ gaps: MSI per-slot bound, ISA DMA ports, rule table, virtio map errors
+x86_64-microvm	.text	2706697
+x86_64-microvm	.rodata	175496
+x86_64-microvm	.data	625264
 x86_64-microvm	.bss	974928
-x86_64-microvm	reason	follow-ups of the ring-3 DMA/IRQ gaps: Device record, role table, MSI keep table, attach log, line-grant rule, msi-slot rule
+x86_64-microvm	reason	review follow-ups of the ring-3 DMA/IRQ gaps: MSI per-slot bound, ISA DMA ports, rule table, virtio map errors
