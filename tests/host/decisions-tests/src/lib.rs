@@ -454,6 +454,24 @@ mod tests {
         assert_eq!((r.rule, r.verdict, r.subject, r.n), (Rule::WaitCycle as u8, Verdict::Refuse as u8, 42, [7, 8, 9]));
     }
 
+    /// A decision stamped before the timebase runs at its rate (x86_64 until
+    /// `timer_probe`) carries `FLAG_CLOCK_UNCALIBRATED`, so a reader knows its
+    /// `ts` is not to be scaled. **Canary.** Leave the flags out of `write`'s
+    /// head: the flag assertion goes red.
+    #[cfg(feature = "ring")]
+    #[test]
+    fn ring_a_decision_stamped_on_an_uncalibrated_clock_says_so() {
+        use azos_records::record::{Envelope, Read};
+        let _g = GUARD.lock().unwrap();
+        azos_decision::set_clock_flags(|| azos_records::FLAG_CLOCK_UNCALIBRATED);
+        azos_decision::record(Rule::WaitCycle, Verdict::Refuse, 43, [1, 2, 3]);
+        let id = azos_decision::total();
+        let ring = azos_records::reader(azos_records::SOURCE_DECISION).unwrap();
+        let (mut c, mut env, mut p) = (id - 1, Envelope::default(), [0u8; azos_records::DECISION_PAYLOAD]);
+        assert_eq!(ring.read(&mut c, &mut env, &mut p), Read::Record);
+        assert_eq!(env.flags & azos_records::FLAG_CLOCK_UNCALIBRATED, azos_records::FLAG_CLOCK_UNCALIBRATED);
+    }
+
     /// **The journal keeps the last N durable records, however many ids the
     /// ring's records claim in between.** With the ring built (the gate's dev
     /// cell; this suite's `ring` feature, its own gate row) every verdict

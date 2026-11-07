@@ -2434,9 +2434,15 @@ fn telemetry(kind: u8, payload: [u8; LOG_PAYLOAD_BYTES]) {
         kind: kind as u16,
         len: LOG_PAYLOAD_BYTES as u16,
         cpu: azos_drv_sys::klog::cpu_tag(),
-        flags: 0,
+        flags: azos_drv_sys::timebase::stamp_flags(),
     };
     w.publish(&h, |p| p.bytes(0, &payload));
+}
+
+/// Telemetry records taken so far, the sequence of the next (0 without a
+/// telemetry ring).
+pub fn telemetry_recorded() -> u64 {
+    azos_records::reader(azos_records::SOURCE_TELEMETRY).map_or(0, |r| r.head())
 }
 
 /// Push a record on the flight recorder's ring, returning the position it took
@@ -3031,12 +3037,12 @@ pub fn logger_current_serial() -> u32 {
 
 #[cfg(test)]
 std::thread_local! {
-    static TELEMETRY_ON_RING: core::cell::Cell<bool> = const { core::cell::Cell::new(true) };
+    static TELEMETRY_ON_RING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 /// Host suites, per thread: the telemetry encoders push onto the flight
-/// recorder's ring (`on`, the default) or into the record region's telemetry
-/// ring.
+/// recorder's ring (`on`: the ring's own tests use them to generate ordinary
+/// records) or, by default, into the record region's telemetry ring.
 #[cfg(test)]
 pub fn telemetry_on_ring_for_test(on: bool) {
     TELEMETRY_ON_RING.with(|c| c.set(on));

@@ -156,8 +156,7 @@ fn rt_no() -> bool {
 }
 
 /// A full telemetry ring overwrites its oldest record, never blocks the
-/// producer, and tells the reader how many it lost. **Canary**
-/// `canary-no-overrun` (the ring crate's): the jump goes unreported (red).
+/// producer, and tells the reader how many it lost.
 #[test]
 fn a_full_telemetry_ring_overwrites_its_oldest_and_the_reader_is_told() {
     let _g = start();
@@ -180,8 +179,7 @@ fn a_full_telemetry_ring_overwrites_its_oldest_and_the_reader_is_told() {
 
 /// **A record with a stale sequence** (written under the sequence before the
 /// one it took) is dropped by the one reader and counted, never handed on as
-/// the record its slot should hold. **Canary** `canary-record-stale` (the
-/// ring crate's): the reader hands it on (red).
+/// the record its slot should hold.
 #[test]
 fn a_telemetry_record_with_a_stale_sequence_is_dropped_and_counted() {
     let _g = start();

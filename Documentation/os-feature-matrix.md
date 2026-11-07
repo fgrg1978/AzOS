@@ -89,7 +89,7 @@ Options and choices: 848. Defconfigs: 27.
 | `USERSPACE_DECISD` | DECISD.ELF (userspace/services/decisd) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_FLIGHT` | FLIGHT.ELF (userspace/services/famtools) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_INPUTD` | INPUTD.ELF (userspace/services/inputd) | n | n | n | y | n | n | y | n | n | y | n | n | n | n | n | n | n | y | n | n | n | y | n | y | n | n | n |
-| `USERSPACE_LOGD` | LOGD.ELF (userspace/services/logd) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
+| `USERSPACE_LOGD` | LOGD.ELF (userspace/services/logd) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_LOGIND` | LOGIND.ELF (userspace/services/logind) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `USERSPACE_LXSRV` | LXSRV.ELF (userspace/services/lxsrv) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `USERSPACE_MCPD` | MCPD.ELF (userspace/services/mcpd) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
@@ -950,7 +950,7 @@ Options and choices: 848. Defconfigs: 27.
 | `CONSOLE_RT_APPEND_ONLY` | Real-time callers of the kernel log only append to the console | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `DOMAIN_ENTRY_COUNTERS` | Count kernel entries per Domain by foundational case | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `INSPECT` | Introspection tree: kernel state as read-only memory (no /proc, no system call) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `KLOG` | Structured kernel log: every log line as a record in a ring ring 3 reads | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
+| `KLOG` | Structured kernel log: every log line as a record in a ring ring 3 reads | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `KTRACE` | Kernel event tracer, read live from ring 3 | n | n | y | y | y | y | y | y | n | y | y | n | y | y | y | n | n | y | y | n | n | y | y | y | y | y | n |
 | `KTRACE_CLASS_FAULT` | Trace class: page faults | n | n | y | y | y | y | y | y | n | y | y | n | y | y | y | n | n | y | y | n | n | y | y | y | y | y | n |
 | `KTRACE_CLASS_IPC` | Trace class: fast IPC (call, reply) | n | n | y | y | y | y | y | y | n | y | y | n | y | y | y | n | n | y | y | n | n | y | y | y | y | y | n |

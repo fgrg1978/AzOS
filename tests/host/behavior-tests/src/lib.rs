@@ -1987,6 +1987,8 @@ mod flight_recorder {
     pub(crate) fn begin(ts: u64) -> RecorderGuard {
         let envelope = super::envelope::serial();
         let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // This ring's tests generate their ordinary records with the telemetry encoders.
+        telemetry_on_ring_for_test(true);
 
         // `LOG_SERIAL` is a process-wide monotonic counter with no public
         // reset, so once any test (`the_wrap_notice_is_logged_before_the_
@@ -2283,11 +2285,13 @@ mod flight_recorder {
             }
         });
         let pusher_a = std::thread::spawn(|| {
+            telemetry_on_ring_for_test(true);
             for i in 0..ITERS {
                 log_skill_start(i as u16);
             }
         });
         let pusher_b = std::thread::spawn(|| {
+            telemetry_on_ring_for_test(true);
             for i in 0..ITERS {
                 log_mode_change((i % 4) as u8, ((i + 1) % 4) as u8);
             }
@@ -2435,6 +2439,7 @@ mod flight_recorder_rt {
             while !s2.load(Ordering::SeqCst) { let _ = logger_flush(); }
         });
         let pushers: Vec<_> = (0..THREADS).map(|t| std::thread::spawn(move || {
+            telemetry_on_ring_for_test(true);
             for i in 0..PER {
                 let x = ((t << 24) | i) as i32;
                 log_waypoint(x, !x, (x as u16) ^ 0x5A5A, 0x77);
@@ -2530,6 +2535,7 @@ mod flight_recorder_rt {
         let pushers: Vec<_> = (0..THREADS).map(|t| {
             let go = go.clone();
             std::thread::spawn(move || {
+            telemetry_on_ring_for_test(true);
                 go.wait();
                 for i in 0..PER {
                     log_waypoint(((t << 24) | i) as i32, 0, 0, MARK);
@@ -3892,6 +3898,7 @@ mod logger_serial_survives_a_reboot {
         // an already-active logger, which would silently reuse whatever
         // file THAT test had open instead of opening "boot 1" fresh.
         // Idempotent: a no-op when the logger is already inactive.
+        telemetry_on_ring_for_test(true);
         logger_shutdown();
         fsmock::reset();
         set_serial_for_test(0);
@@ -3982,6 +3989,7 @@ mod logger_serial_survives_a_reboot {
     fn without_the_seed_boot_2_would_truncate_boot_1_serial_0_again() {
         let _g = super::flight_recorder::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         logger_shutdown(); // defensive — see the sibling test's comment.
+        telemetry_on_ring_for_test(true);
         reset_sdisk();
         set_serial_for_test(0);
         logger_set_storage(&SSTORAGE);

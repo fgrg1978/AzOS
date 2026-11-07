@@ -157,6 +157,9 @@ impl Cpu for X86_64 {
     fn now_ticks(&self) -> u64 {
         on_x86!(timer::now_ticks(), "x86_64: now_ticks: invariant TSC via rdtsc")
     }
+    fn clock_calibrated(&self) -> bool {
+        on_x86!(timer::tsc_hz() != 0, "x86_64: clock_calibrated")
+    }
     /// The CPU id stored at `%gs:0`: the kernel GS base is this CPU's
     /// `cpu::PerCpu` (swapped with `IA32_KERNEL_GS_BASE` by `swapgs` on
     /// every user/kernel transition), whose first word is the id.

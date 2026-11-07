@@ -46,6 +46,13 @@ use crate::timer_arm;
 #[path = "nohz.rs"]
 pub mod nohz;
 
+/// The `flags` a record stamped now carries: [`azos_records::FLAG_CLOCK_UNCALIBRATED`]
+/// while [`now`] does not yet run at `TIMER_FREQ` (x86_64 before `timer_probe`).
+#[inline]
+pub fn stamp_flags() -> u8 {
+    if azos_arch::ARCH.clock_calibrated() { 0 } else { azos_records::FLAG_CLOCK_UNCALIBRATED }
+}
+
 /// Read the monotonic tick counter.
 #[inline(always)]
 pub fn now() -> u64 {

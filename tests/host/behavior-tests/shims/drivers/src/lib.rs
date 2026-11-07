@@ -229,6 +229,11 @@ pub mod timebase {
         super::clint::get_time()
     }
 
+    /// Mirrors `azos_drv_sys::timebase::stamp_flags`: the host clock is calibrated.
+    pub fn stamp_flags() -> u8 {
+        0
+    }
+
     /// Mirrors `azos_drv_sys::timebase::vdso_ns`.
     pub const fn vdso_ns(ticks: u64) -> u64 {
         if ticks == 0 { 0 } else { azos_abi::time::ticks_to_ns(ticks, TIMER_FREQ) }

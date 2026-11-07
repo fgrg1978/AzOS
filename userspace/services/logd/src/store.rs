@@ -18,9 +18,16 @@
 //! line came from, and the sink resumes every ring after its own last line
 //! (the decisions' and the telemetry's by their sequence numbers); anything
 //! else (a new boot, a ring that lapped the line) restarts every ring at its
-//! oldest record.
+//! oldest record. A restart that starts every ring afresh writes the line
+//! [`START_FRESH`]: a seam, the files before it belong to another boot, and
+//! resuming never looks across it (a record number of another boot would skip
+//! records of this one).
 
 use crate::wire::{self, Lines, LINE_MAX};
+
+/// The message of the start line of a run that read every ring from its oldest
+/// record: a new boot, or a ring the files no longer matched.
+pub const START_FRESH: &[u8] = b"start: from the oldest record in the ring";
 
 /// The volume: two operations, so a test can script it.
 pub trait Vol {
@@ -63,11 +70,13 @@ struct Scan {
     size: u64,
     serial: Option<u64>,
     tail: Option<Tail>,
+    /// The file holds a [`START_FRESH`] line; `tail` is what follows the last.
+    seam: bool,
 }
 
 fn scan<V: Vol>(vol: &mut V, slot: u8) -> Option<Scan> {
     let mut lines = Lines::new();
-    let mut s = Scan { size: 0, serial: None, tail: None };
+    let mut s = Scan { size: 0, serial: None, tail: None, seam: false };
     let mut first = true;
     let name = wire::file_name(slot);
     let ok = vol.read_file(&name, &mut |chunk: &[u8]| {
@@ -79,7 +88,17 @@ fn scan<V: Vol>(vol: &mut V, slot: u8) -> Option<Scan> {
                 s.serial = wire::head_serial(&l);
             }
             let tail = s.tail.get_or_insert(Tail { rec: None, last_decision: None, last_telemetry: None });
-            if l.module == wire::DECISION_MODULE {
+            // Canary: a start line is no seam.
+            #[cfg(feature = "canary-logd-resume-across-seam")]
+            let fresh = false;
+            #[cfg(not(feature = "canary-logd-resume-across-seam"))]
+            let fresh = l.module == wire::LOGD_MODULE && l.msg == START_FRESH;
+            if fresh {
+                s.seam = true;
+                tail.rec = None;
+                tail.last_decision = None;
+                tail.last_telemetry = None;
+            } else if l.module == wire::DECISION_MODULE {
                 tail.last_decision = Some(l.seq);
             } else if l.module == wire::TELEMETRY_MODULE {
                 tail.last_telemetry = Some(l.seq);
@@ -124,13 +143,24 @@ impl Store {
         // newest first, not from its ring's oldest record, which would write
         // its lines twice.
         let mut tail = s.tail.unwrap_or(Tail { rec: None, last_decision: None, last_telemetry: None });
-        for back in 1..u64::from(keep) {
+        let mut crossed = s.seam;
+        // Canary: look no further back than the file before the newest.
+        #[cfg(feature = "canary-logd-resume-one-file")]
+        let reach = 2;
+        #[cfg(not(feature = "canary-logd-resume-one-file"))]
+        let reach = u64::from(keep);
+        for back in 1..reach {
+            if crossed {
+                break;
+            }
             if tail.rec.is_some() && tail.last_decision.is_some() && tail.last_telemetry.is_some() {
                 break;
             }
             let Some(want) = serial.checked_sub(back).filter(|&w| w > 0) else { break };
             // Serial n was written to slot (n - 1) % keep: the files rotate in order.
-            let Some(p) = scan(vol, ((want - 1) % u64::from(keep)) as u8).filter(|p| p.serial == Some(want)).and_then(|p| p.tail) else { break };
+            let Some(p) = scan(vol, ((want - 1) % u64::from(keep)) as u8).filter(|p| p.serial == Some(want)) else { break };
+            crossed = p.seam;
+            let Some(p) = p.tail else { break };
             if tail.rec.is_none() {
                 tail.rec = p.rec;
             }

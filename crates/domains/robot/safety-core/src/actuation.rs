@@ -296,10 +296,10 @@ pub fn install() {
     // Backward, 2 Brake, 3 Coast), `ch1` the effective speed 0-100; `ch2`/
     // `ch3` are unused (0).
     //
-    // Ring-only, like the capability-denial hooks beside it: durability
-    // waits for the watchdog's existing periodic flush
-    // (`azos_behavior::logger::logger_tick`) — no second durable path
-    // invented for this, per Q1.3's own constraint. A held command's
+    // Telemetry, not a safety record: it goes to the record region's telemetry
+    // ring (loss-tolerant, no lock, no allocation), which `logd` writes to its
+    // files; the flight recorder's ring and its durable path are for the
+    // safety records. A held command's
     // control-loop cadence never reaches this function at all (no change,
     // no call), so the cost on `rt_motor`'s cadence is the unchanged case:
     // not measured beyond that.
@@ -317,15 +317,15 @@ pub fn install() {
         if let Some((cdir, cspeed)) = catch_up {
             azos_behavior::logger::log_actuator_cmd(id as u8, cdir as i16, cspeed as i16, 0, 0);
             #[cfg(feature = "actuation-smoke")]
-            kprintln!("[ACTREC] motor id={} dir={} duty={} ring_len={} (catch-up)",
-                id, cdir, cspeed, azos_behavior::logger::logger_ring_len());
+            kprintln!("[ACTREC] motor id={} dir={} duty={} telemetry={} (catch-up)",
+                id, cdir, cspeed, azos_behavior::logger::telemetry_recorded());
         }
 
         if !admit { return; }
         azos_behavior::logger::log_actuator_cmd(id as u8, dir_code as i16, speed as i16, 0, 0);
         #[cfg(feature = "actuation-smoke")]
-        kprintln!("[ACTREC] motor id={} dir={} duty={} ring_len={}",
-            id, dir_code, speed, azos_behavior::logger::logger_ring_len());
+        kprintln!("[ACTREC] motor id={} dir={} duty={} telemetry={}",
+            id, dir_code, speed, azos_behavior::logger::telemetry_recorded());
     }
     azos_robot::motor::set_motor_recorder(record_motor_change);
     kprintln!("[SAFETY] actuation record armed (motor commands logged on change)");

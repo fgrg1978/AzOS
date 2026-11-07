@@ -33,6 +33,10 @@ CHECK_TABLE_x86_64  := $(OUT_BUILD)/image_hashes_x86_64.rs $(THIRDPARTY_HASHES_X
 # CHECK_SELECT is a selection on the cell (`make check CHECK_SELECT=ktest`,
 # tools/build/kconfig_to_cargo.py --select): a ktest-only file is otherwise never compiled.
 CHECK_SELECT ?=
+# CHECK_APPEND adds lines to the cell's config before it is expanded
+# (`make check CHECK_APPEND='# CONFIG_KLOG is not set'`: a cell the defconfigs
+# do not name, such as the structured log off with its sink built).
+CHECK_APPEND ?=
 # The profile of the type-check: release (the default) or validate
 # (.cargo/config.toml: release's code, 16 codegen units, incremental), which
 # `make check0 COMPILE_ONLY=1` and `make check-compile` use. Neither emits code.
@@ -48,6 +52,7 @@ check: | $(CHECK_TABLE_$(ARCH))
 	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
 	@mkdir -p $(OUT_BUILD)
 	cp "$(CHECK_DEFCONFIG_$(ARCH))" "$(CHECK_KCONFIG)"
+	@if [ -n "$(CHECK_APPEND)" ]; then printf '%s\n' "$(CHECK_APPEND)" >> "$(CHECK_KCONFIG)"; fi
 	KCONFIG_CONFIG="$(CHECK_KCONFIG)" $(PYTHON) -m olddefconfig
 	$(call kernel_select,$(CHECK_KCONFIG),$(CHECK_SELECT),$(CHECK_KCONFIG:.config=-sel.config)); \
 	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags "$(CHECK_KCONFIG)")"; \

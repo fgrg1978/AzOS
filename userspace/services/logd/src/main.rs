@@ -41,9 +41,9 @@ mod keep;
 mod stall;
 mod store;
 
-use keep::Keep;
+use keep::{Keep, Sample, SAMPLE_BYTES};
 use stall::Stall;
-use store::{Store, Vol};
+use store::{Store, Vol, START_FRESH};
 // The record substrate's reader, named by path (the seccomp scanner reads
 // `use sys::` lists as function imports).
 type Envelope = sys::record::Envelope;
@@ -54,6 +54,9 @@ const SOURCE_KLOG: u8 = sys::record::SOURCE_KLOG;
 const SOURCE_DECISION: u8 = sys::record::SOURCE_DECISION;
 const SOURCE_TELEMETRY: u8 = sys::record::SOURCE_TELEMETRY;
 use wire::{Record, LINE_MAX};
+
+/// Telemetry budgets tracked in a period (Kconfig `LOGD_TELEMETRY_KEYS`).
+const KEYS: usize = azos_limits::LOGD_TELEMETRY_KEYS as usize;
 
 /// Payload bytes the reader keeps per ring: the largest, the kernel log's.
 const PAYLOAD: usize = wire::PAYLOAD_BYTES;
@@ -216,6 +219,9 @@ fn other_msg(env: &Envelope, payload: &[u8], out: &mut [u8; 160]) -> usize {
             }
             put_dec(out, &mut n, word(payload, 1 + i));
         }
+        if env.flags & sys::record::FLAG_CLOCK_UNCALIBRATED != 0 {
+            put(out, &mut n, b" clock=uncalibrated");
+        }
     } else {
         put(out, &mut n, b"kind=");
         put_dec(out, &mut n, env.kind as u64);
@@ -250,6 +256,18 @@ fn render(env: &Envelope, payload: &[u8], hz: u64, out: &mut [u8]) -> Option<usi
     }
 }
 
+fn sample_of(env: &Envelope, payload: &[u8]) -> Sample {
+    let mut p = [0u8; SAMPLE_BYTES];
+    let n = payload.len().min(SAMPLE_BYTES);
+    p[..n].copy_from_slice(&payload[..n]);
+    Sample { seq: env.seq, ts: env.ts, kind: env.kind, flags: env.flags, cpu: env.cpu, len: env.len, payload: p }
+}
+
+fn env_of(s: &Sample) -> (Envelope, [u8; SAMPLE_BYTES]) {
+    let env = Envelope { seq: s.seq, ts: s.ts, clock: 0, source: SOURCE_TELEMETRY, kind: s.kind, len: s.len, cpu: s.cpu, flags: s.flags };
+    (env, s.payload)
+}
+
 /// The ring of `source` in the region, if it has one.
 fn ring_index(region: &Region, source: u8) -> Option<usize> {
     (0..region.rings()).find(|&i| region.ring(i).is_some_and(|r| r.source() == source))
@@ -268,7 +286,7 @@ struct Sink {
     /// The unfinished record the reader is waiting on.
     stall: Stall,
     /// Which decision records reach the files.
-    keep: Keep,
+    keep: Keep<KEYS>,
     /// Periods whose write the volume took, up to the two that print the
     /// marker the gate's read-back row waits for.
     written: u32,
@@ -320,6 +338,13 @@ impl Sink {
         self.n += notice(&mut self.batch[self.n..], wire::LEVEL_WARN, seq, ts, self.hz, &m[..k]);
     }
 
+    /// Is a ring other than `ring` more than half a lap past the reader?
+    fn other_ring_late(&self, ring: usize) -> bool {
+        (0..self.rd.region().rings()).filter(|&i| i != ring).any(|i| {
+            self.rd.region().ring(i).is_some_and(|r| r.head().saturating_sub(self.rd.cursor(i)) > r.entries() / 2)
+        })
+    }
+
     /// One period: everything the region has, in as few writes as fit.
     fn drain(&mut self) {
         let mut env = Envelope::default();
@@ -334,7 +359,7 @@ impl Sink {
                     if env.source == SOURCE_DECISION && !self.keep.admit((env.kind >> 8) as u8) {
                         continue;
                     }
-                    if env.source == SOURCE_TELEMETRY && !self.keep.admit_telemetry(env.kind) {
+                    if env.source == SOURCE_TELEMETRY && !self.keep.admit_telemetry(&sample_of(&env, &payload)) {
                         continue;
                     }
                     if let Some(k) = render(&env, &payload, self.hz, &mut self.batch[self.n..]) {
@@ -348,7 +373,8 @@ impl Sink {
                     // next period, and give up on it if it never does.
                     let c = self.rd.cursor(ring);
                     let (head, entries) = self.rd.region().ring(ring).map_or((c, 0), |r| (r.head(), r.entries()));
-                    if self.stall.give_up(ring, c, head.saturating_sub(c), entries) {
+                    let late = self.other_ring_late(ring);
+                    if self.stall.give_up(ring, c, head.saturating_sub(c), entries, late) {
                         self.rd.skip(ring);
                         self.note(ring, b"records lost: ", 1);
                         continue;
@@ -364,10 +390,23 @@ impl Sink {
                 self.note(i, b"records held back by LOGD_DECISIONS_PER_SEC: ", held);
             }
         }
-        let held = self.keep.telemetry_period();
-        if held > 0 {
+        // What the budgets held back: each bucket's newest sample, then the count.
+        while let Some((sample, held)) = self.keep.telemetry_held() {
+            let (env, payload) = env_of(&sample);
+            if self.n + LINE_MAX > BATCH && !self.flush() {
+                return;
+            }
+            if let Some(k) = render(&env, &payload, self.hz, &mut self.batch[self.n..]) {
+                self.n += k;
+            }
             if let Some(i) = ring_index(self.rd.region(), SOURCE_TELEMETRY) {
                 self.note(i, b"records held back by LOGD_TELEMETRY_PER_SEC: ", held);
+            }
+        }
+        let unplaced = self.keep.telemetry_period();
+        if unplaced > 0 {
+            if let Some(i) = ring_index(self.rd.region(), SOURCE_TELEMETRY) {
+                self.note(i, b"records held back for want of LOGD_TELEMETRY_KEYS: ", unplaced);
             }
         }
         if self.flush() && self.written < 2 {
@@ -429,7 +468,7 @@ fn run() -> i32 {
     }
     say(b"[logd] AzOS record sink (klog.ring to KLOGn.TXT)\n");
     let mut sink = Sink { vol, store, hz, rd, committed: rd, stall: Stall::new(),
-        keep: Keep::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64,
+        keep: Keep::<KEYS>::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64,
             azos_limits::LOGD_TELEMETRY_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64),
         written: 0, batch: [0; BATCH], n: 0 };
     // The start line: where this run begins, so a reader of the files sees the
@@ -437,7 +476,7 @@ fn run() -> i32 {
     {
         let ts = sink.ticks();
         let seq = ring_index(&region, SOURCE_KLOG).map_or(0, |k| sink.rd.cursor(k)).saturating_sub(1);
-        let msg: &[u8] = if resumed { b"start: resumed after the last record" } else { b"start: from the oldest record in the ring" };
+        let msg: &[u8] = if resumed { b"start: resumed after the last record" } else { START_FRESH };
         sink.n += notice(&mut sink.batch, wire::LEVEL_INFO, seq, ts, hz, msg);
     }
     let period_ns = azos_limits::LOGD_POLL_MS as u64 * 1_000_000;

@@ -411,9 +411,9 @@ pub(super) fn capture<F: ArchFrame>(frame: &F, status: i32) {
         return;
     }
     let tid = azos_sched::current_task_tid();
-    // The record on the flight recorder's ring (queue only, no I/O): task and
-    // status, kept across a reset, whether or not there is room in the crash
-    // ring or a directory to write the dump to.
+    // The record in the telemetry ring of the record region (no lock, no I/O):
+    // task and status, which `logd` writes down whether or not there is room in
+    // the crash ring or a directory to write the dump to.
     azos_actuation::logger::log_error(LOG_SUBSYSTEM, status as u16, tid);
     // No write tree, no file, so no dump: nothing reads a dump that is not one.
     let mut root = [0u8; TREE_PATH_MAX];

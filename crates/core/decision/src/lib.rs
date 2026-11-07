@@ -1421,6 +1421,17 @@ azos_common::ro_hook! {
 }
 static CLOCK_HZ: AtomicU64 = AtomicU64::new(1);
 
+azos_common::ro_hook! {
+    /// The `flags` of a record stamped now (`azos_records::FLAG_CLOCK_UNCALIBRATED`
+    /// while the clock does not run at its rate yet).
+    static CLOCK_FLAGS: fn() -> u8;
+}
+
+/// Install the record flags source (the kernel, at boot, with the clock).
+pub fn set_clock_flags(f: fn() -> u8) {
+    CLOCK_FLAGS.set(f);
+}
+
 /// Records of caller-paced rules the rate limit dropped since boot.
 static DENY_DROPPED: AtomicU64 = AtomicU64::new(0);
 
@@ -1769,7 +1780,7 @@ fn write(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3]) -> u64 {
             len: azos_records::DECISION_PAYLOAD as u16,
             // The crate has no CPU id: a decision's envelope says 0.
             cpu: 0,
-            flags: 0,
+            flags: CLOCK_FLAGS.get().map_or(0, |f| f()),
         };
         let i = w.publish(&h, |p| {
             p.word(0, subject as u64);

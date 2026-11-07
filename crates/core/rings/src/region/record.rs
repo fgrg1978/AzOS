@@ -109,6 +109,10 @@ const _: () = assert!(OFF_TABLE + MAX_RINGS * DESC_BYTES <= HDR_BYTES && HDR_BYT
 /// The monotonic timebase every producer stamps with (`ts_hz` ticks a second).
 pub const CLOCK_TIMEBASE: u8 = 0;
 
+/// `flags` bit of a record stamped before the timebase was calibrated (x86_64
+/// until `timer_probe`): its `ts` runs fast, only its order is good.
+pub const FLAG_CLOCK_UNCALIBRATED: u8 = 0x80;
+
 /// The kernel log: every `kerr!` .. `kprintln!` line.
 pub const SOURCE_KLOG: u8 = 1;
 /// The explainable decision records (`azos_decision`).

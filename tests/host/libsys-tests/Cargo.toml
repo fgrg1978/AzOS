@@ -20,6 +20,9 @@ azos_ktest = { path = "../../../crates/core/ktest" }
 # Gate canaries: each one breaks the code a row tests (tools/gate/ci_check.sh).
 canary-logd-stall-polls-only = []
 canary-logd-telemetry-one-bucket = []
+canary-logd-telemetry-first-wins = []
+canary-logd-resume-across-seam = []
+canary-logd-resume-one-file = []
 
 # Reproduce the kernel's release profile: overflow-checks is what turns a
 # wrapping computation into a panic, and the clock conversion below exists

@@ -30,6 +30,11 @@ sh and none; a defconfig that names a console program gets it; and CONSOLE_LOGIN
 with the native shell as the console program (the build refuses it otherwise).
 A canary (login with no shell) must trip the same function.
 
+The robot extension records its motor commands and user faults in the record
+region (robot_sink_violations below), whose only sink is `logd`: USE_ROBOT without
+KLOG would record them nowhere. Checked on every expansion and every defconfig; a
+canary (the robot extension with the structured log forced off) must trip it.
+
 The kernels are not built; that is `make check` / the gate. Usage:
 
     python3 tools/lint/check_presets.py [--list]
@@ -175,6 +180,43 @@ def console_violations(kconf):
     return bad, seen
 
 
+def robot_sink_violations(kconf):
+    """USE_ROBOT without KLOG: the actuation telemetry would be recorded nowhere.
+    (violations, {"robot": n}); n counts the configs the rule looked at."""
+    if kconf.syms["USE_ROBOT"].str_value != "y":
+        return [], {"robot": 0}
+    bad = []
+    if kconf.syms["KLOG"].str_value != "y":
+        bad.append("USE_ROBOT is on and KLOG is off: motor commands and user faults are recorded nowhere")
+    return bad, {"robot": 1}
+
+
+def _robot_sweep(kconf, td, archs, failures):
+    """Every defconfig with the robot extension has the structured log, and the
+    canary: the robot extension with KLOG forced off trips robot_sink_violations.
+    Returns the number of expansions."""
+    cfg = os.path.join(td, "robot.config")
+    done, robots = 0, 0
+    defdir = os.path.join(ROOT, "config", "defconfigs")
+    for fname in sorted(os.listdir(defdir)):
+        kconf.load_config(os.path.join(defdir, fname))
+        done += 1
+        bad, seen = robot_sink_violations(kconf)
+        robots += seen["robot"]
+        if bad:
+            failures.append((f"defconfig {fname}", bad))
+    if robots == 0:
+        failures.append(("robot sink", ["no defconfig has the robot extension: the rule looked at nothing"]))
+    for arch in archs:
+        tag = f"robot sink canary on {arch.removeprefix('CONFIG_ARCH_').lower()}"
+        _expand(kconf, cfg, [f"{arch}=y", "CONFIG_PRESET_ROBOT=y", "# CONFIG_KLOG is not set"])
+        bad, seen = robot_sink_violations(kconf)
+        if not bad or not seen["robot"]:
+            failures.append((tag, ["the robot sink rule did not flag the robot extension with KLOG off"]))
+        done += 1
+    return done
+
+
 def _console_sweep(kconf, td, archs, failures):
     """Every defconfig names the console program it gets, and the canary: a
     login with no shell trips console_violations. Returns the number of expansions."""
@@ -314,6 +356,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         small_boards = _small_board_sweep(kconf, td, names, archs, failures)
         console_expansions = _console_sweep(kconf, td, archs, failures)
+        robot_expansions = _robot_sweep(kconf, td, archs, failures)
         defconfigs = _dropped_sweep(kconf, failures)
         for preset in names:
             for arch in archs:
@@ -328,6 +371,7 @@ def main() -> int:
                     small_boards += 1
                     bad += small_board_violations(kconf)[0]
                 bad += console_violations(kconf)[0]
+                bad += robot_sink_violations(kconf)[0]
                 kconf.write_config(cfg)
                 bad += list(kconf.warnings[before:])
                 if kconf.syms[preset].str_value != "y":
@@ -373,6 +417,7 @@ def main() -> int:
         return 1
     print(f"check-presets: ok ({len(names)} presets x {len(archs)} ISAs, "
           f"{small_boards} small-board expansions, {console_expansions} console-program expansions, "
+          f"{robot_expansions} robot-sink expansions, "
           f"{defconfigs} defconfigs with no refused ask)")
     return 0
 

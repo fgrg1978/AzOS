@@ -12090,11 +12090,13 @@ host_job host_canary_row "records: recheck canary" rings-tests canary-no-recheck
 host_job host_canary_row "records: pending holds canary" rings-tests canary-record-pending-empty a_producer_mid_store_holds_the_merge_back
 host_job host_canary_row "records: replay renumber canary" rings-tests canary-record-renumber replay_keeps_every_sequence_number
 host_job host_canary_row "logd: stalled record canary" libsys-tests canary-logd-stall-polls-only a_record_the_ring_left_behind_is_given_up_at_once
-host_job host_canary_row "logd: telemetry budget canary" libsys-tests canary-logd-telemetry-one-bucket a_chatty_telemetry_kind_is_cut_at_the_rate_and_does_not_hold_back_the_others
+host_job host_canary_row "logd: quiet ring stall canary" libsys-tests canary-logd-stall-polls-only a_quiet_rings_stalled_record_does_not_hold_a_busy_ring_to_be_lapped
+host_job host_canary_row "logd: resume walk-back canary" libsys-tests canary-logd-resume-one-file a_rare_source_resumes_by_the_last_file_that_has_a_line_of_it
+host_job host_canary_row "logd: resume seam canary" libsys-tests canary-logd-resume-across-seam the_walk_back_stops_at_the_first_file_of_the_boot
+host_job host_canary_row "logd: telemetry budget canary" libsys-tests canary-logd-telemetry-one-bucket a_chatty_motor_does_not_hold_back_another_motor_or_another_kind
+host_job host_canary_row "logd: telemetry newest canary" libsys-tests canary-logd-telemetry-first-wins the_newest_held_value_of_a_budget_survives_the_period
 host_job host_canary_row "telemetry: encoders canary" behavior-tests telemetry-ring-canary each_encoder_lands_its_fields_in_the_telemetry_ring
 host_job host_canary_row "telemetry: flood canary" behavior-tests telemetry-ring-canary a_telemetry_flood_leaves_the_flight_recorders_ring_alone
-host_job host_canary_row "telemetry: stale canary" behavior-tests canary-record-stale a_telemetry_record_with_a_stale_sequence_is_dropped_and_counted
-host_job host_canary_row "telemetry: overrun canary" behavior-tests canary-no-overrun a_full_telemetry_ring_overwrites_its_oldest_and_the_reader_is_told
 # The host dry boot (tools/gate/azos_sim, `make sim`): its suite, and its canary
 # (`sim-cpu-canary`: it admits on one CPU more than it was given), under which
 # the named test, alone, must go red. Its QEMU rows are "topology: dry boot on
@@ -13397,6 +13399,40 @@ if ci_row_begin "perfetto_export"; then
 printf "  %-26s" "perfetto_export..."
 if pf_out="$(python3 "${REPO_ROOT}/tools/dev/perfetto_export.py" --self-test 2>&1)"; then ok
 else bad; printf '%s\n' "$pf_out" | sed -n 1,6p | sed 's/^/      /'; fi
+fi; ci_row_end
+
+# The robot extension records its motor commands and user faults in the record
+# region, whose only sink is logd: every config with USE_ROBOT has KLOG
+# (tools/lint/check_presets.py: all presets, all defconfigs, a canary).
+if ci_row_begin "config: robot configs keep the structured log"; then
+printf "  %-26s" "config: robot configs keep the structured log..."
+if cp_out="$(python3 "${REPO_ROOT}/tools/lint/check_presets.py" 2>&1)"; then ok
+else bad; printf '%s\n' "$cp_out" | sed -n 1,6p | sed 's/^/      /'; fi
+fi; ci_row_end
+
+# The structured log off with its sink built (USERSPACE_LOGD stays on at the
+# class default): LOGD.ELF compiles, and so does the kernel; a Kconfig int that
+# only exists with KLOG would be missing from azos_limits here.
+if ci_row_begin "config: KLOG off with logd built"; then
+printf "  %-26s" "config: KLOG off with logd built..."
+mkdir -p "$AZOS_OUT/build"
+kl_cfg="$AZOS_OUT/build/klog-off.config"
+cp "${REPO_ROOT}/config/defconfigs/generic-sbc-aarch64-dev+qemu+linux+gui.config" "$kl_cfg"
+echo "# CONFIG_KLOG is not set" >>"$kl_cfg"
+if KCONFIG_CONFIG="$kl_cfg" python3 -m olddefconfig >/dev/null 2>&1 \
+   && grep -q '^CONFIG_USERSPACE_LOGD=y' "$kl_cfg" && ! grep -q '^CONFIG_KLOG=y' "$kl_cfg" \
+   && kl_out="$(KCONFIG_CONFIG="$kl_cfg" make -s ARCH=aarch64 "$AZOS_OUT/build/aarch64/logd.elf" 2>&1 \
+        && make -s ARCH=aarch64 CHECK_APPEND='# CONFIG_KLOG is not set' check 2>&1)"; then ok
+else bad; printf '%s\n' "${kl_out:-the cell did not expand to KLOG off with logd on}" | grep -E "^error" -A4 | sed -n 1,8p | sed 's/^/      /'; fi
+fi; ci_row_end
+
+# The small robot board: robot-embedded (a 64 MiB class, KLOG on by USE_ROBOT)
+# type-checks as the dev QEMU image.
+if ci_row_begin "config: robot-embedded type-checks"; then
+printf "  %-26s" "config: robot-embedded type-checks..."
+if re_out="$(make -s ARCH=riscv64 CHECK_DEFCONFIG_riscv64=config/defconfigs/robot-embedded-riscv64+board-generic.config CHECK_APPEND='CONFIG_BUILD_TYPE_DEV=y' CHECK_SELECT=qemu check 2>&1)" \
+   && grep -q '^CONFIG_KLOG=y' "$AZOS_OUT/build/check-riscv64-generic.config"; then ok
+else bad; printf '%s\n' "$re_out" | grep -E "^error" -A4 | sed -n 1,8p | sed 's/^/      /'; fi
 fi; ci_row_end
 
 # K-C5: aead-link-tests asserts the LINK_PROVISIONING_ENFORCED const in BOTH
@@ -20012,14 +20048,15 @@ CPU 5 lacks hwcap bits"
         ok; rm -f "$baseline_log" "$skip_log"
     }
 
-    # ── Row 2: Q1.3 — an admitted actuation command reaches the flight recorder ─
+    # ── Row 2: Q1.3 — an admitted actuation command reaches the telemetry ring ─
     #
     # Same baseline boot (gate armed, `actuation-smoke` on) already commands both
     # wheels via reflex. `[ACTREC]` (crates/domains/robot/safety-core/src/actuation.rs,
     # `record_motor_change`) is the record hook itself printing its own
     # admission, `duty=` the value it just wrote to `log_actuator_cmd`, and
-    # `ring_len=` the flight recorder's ring depth read back immediately after —
-    # a NUMBER through the real `logger_ring_len()`, not merely a line's
+    # `telemetry=` the telemetry ring's head (the record region's, which logd
+    # writes to its files) read back immediately after — a NUMBER through the
+    # real `telemetry_recorded()`, not merely a line's
     # presence. Failure mode this discriminates against: a build where the
     # record hook is never installed, or is installed but never called
     # (canary below).
@@ -20061,11 +20098,11 @@ CPU 5 lacks hwcap bits"
         # the ring depth it reports is > 0 (it went somewhere, not just printed).
         local seen=0
         for id in 0 1; do
-            if grep -aq "ACTREC] motor id=$id dir=1 duty=30 ring_len=" "$log" 2>/dev/null; then
-                local ring_len
-                ring_len=$(grep -a "ACTREC] motor id=$id dir=1 duty=30 ring_len=" "$log" \
-                    | sed -n '1{s/.*ring_len=\([0-9]*\).*/\1/p;}')
-                if [ -n "$ring_len" ] && [ "$ring_len" -gt 0 ]; then
+            if grep -aq "ACTREC] motor id=$id dir=1 duty=30 telemetry=" "$log" 2>/dev/null; then
+                local telemetry
+                telemetry=$(grep -a "ACTREC] motor id=$id dir=1 duty=30 telemetry=" "$log" \
+                    | sed -n '1{s/.*telemetry=\([0-9]*\).*/\1/p;}')
+                if [ -n "$telemetry" ] && [ "$telemetry" -gt 0 ]; then
                     seen=$((seen + 1))
                 fi
             fi

@@ -44,7 +44,7 @@ pub fn record(level: usize, module: &'static str, msg: &[u8], partial: bool, tru
     if truncated {
         flags |= wire::FLAG_TRUNC;
     }
-    let (len, flags) = wire::encoded(msg, flags);
+    let (len, flags) = wire::encoded(msg, flags | crate::timebase::stamp_flags());
     let h = azos_records::Head {
         ts: crate::timebase::now(),
         clock: azos_records::CLOCK_TIMEBASE,

@@ -29,8 +29,6 @@ ring-reserve-canary = []
 # logger.rs's telemetry gate canary and the ring crate's: known values, never
 # enabled by default (the canary rows are in this suite).
 telemetry-ring-canary = []
-canary-record-stale = ["azos_rings/canary-record-stale"]
-canary-no-overrun = ["azos_rings/canary-no-overrun"]
 # estop.rs's unrecorded-release gate canary: a known value, never enabled by default.
 estop-unrecorded-canary = []
 # Wave 15: `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`

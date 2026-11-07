@@ -233,6 +233,8 @@ pub(crate) mod tests {
 
     /// [`fresh`] for a caller that already holds the lock.
     fn fresh_in_place() {
+        // This ring's tests generate their ordinary records with the telemetry encoders.
+        telemetry_on_ring_for_test(true);
         // No device is held in its safe state by an earlier test.
         crate::safe_state::clear_holds_for_test();
         logger_set_rt_probe(rt_no);

@@ -5,7 +5,7 @@
 //!
 //! Each test names the change that turns it red.
 
-use crate::store::{Store, Tail, Vol};
+use crate::store::{self, Store, Tail, Vol};
 use crate::wire::{self, Record, LINE_MAX};
 use std::collections::HashMap;
 
@@ -227,7 +227,8 @@ fn a_source_missing_from_the_newest_file_resumes_by_the_one_before() {
 
 /// A rare source can be absent from more than the newest file: the decisions
 /// resume by the last file that has one, however many rotations ago.
-/// **Canary.** Look no further back than the file before the newest (red).
+/// **Canary** `canary-logd-resume-one-file`: look no further back than the file
+/// before the newest (red).
 #[test]
 fn a_rare_source_resumes_by_the_last_file_that_has_a_line_of_it() {
     let mut v = Mem::default();
@@ -243,4 +244,30 @@ fn a_rare_source_resumes_by_the_last_file_that_has_a_line_of_it() {
     assert!(!v.files.contains_key(&name(3)), "two rotations since the decision, none that rewrites its file");
     let (_, tail) = Store::recover(&mut v, 4, 100);
     assert_eq!(tail.unwrap().last_decision, Some(41));
+}
+
+/// A restart that read every ring from its oldest record (a new boot) wrote a
+/// start line; the decisions of the boot before it are another stream, and a
+/// later restart must not resume by them. **Canary**
+/// `canary-logd-resume-across-seam`: the walk crosses the seam (red).
+#[test]
+fn the_walk_back_stops_at_the_first_file_of_the_boot() {
+    let mut v = Mem::default();
+    let (mut s, _) = Store::recover(&mut v, 4, 100);
+    // Boot A: a decision, then a rotation.
+    let mut b = batch(10, 11);
+    b.extend_from_slice(&decision_line(41));
+    assert!(s.write(&mut v, &b, 0, 1_000_000));
+    // Boot B starts from the oldest record: its start line is in the next file.
+    let seam = Record::make(0, 9, wire::LEVEL_INFO, 0, 0, "logd", store::START_FRESH);
+    let mut l = [0u8; LINE_MAX];
+    let n = wire::line(&seam, 1_000_000, &mut l);
+    let mut b = l[..n].to_vec();
+    b.extend_from_slice(&batch(0, 2));
+    assert!(s.write(&mut v, &b, 0, 1_000_000));
+    assert!(s.write(&mut v, &batch(2, 4), 0, 1_000_000));
+    let (_, tail) = Store::recover(&mut v, 4, 100);
+    let tail = tail.unwrap();
+    assert_eq!(tail.last_decision, None, "boot A's decision 41 is not boot B's");
+    assert_eq!(tail.rec_seq(), Some(3));
 }

@@ -693,7 +693,10 @@ envelope (its kind is the event kind). It has no early ring: a boot records it f
 handover on. A producer (the real-time motor loop, a fault handler) takes no lock, allocates
 nothing and prints nothing, and a full ring overwrites its oldest record: telemetry is
 loss-tolerant. `logd` writes it as lines of module `@telemetry`, at most
-`LOGD_TELEMETRY_PER_SEC` a second of each kind. The safety records (the e-stop latch, the
+`LOGD_TELEMETRY_PER_SEC` a second of each kind and source. The robot extension turns `KLOG` on
+(`USE_ROBOT`): the region is where a motor command or a user fault is recorded, so a robot image
+always has it. A record stamped on the x86_64 TSC before its calibration carries
+`FLAG_CLOCK_UNCALIBRATED` (its `ts` runs fast; `logd` marks a decision line `clock=uncalibrated`). The safety records (the e-stop latch, the
 release floors, an effect's write-ahead record, the other safety violations) are not
 telemetry: they keep the flight recorder's own ring and files below.
 

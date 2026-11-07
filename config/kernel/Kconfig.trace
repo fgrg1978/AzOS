@@ -579,6 +579,7 @@ config WAKE_RING_SAMPLE_LOG2
 
 config KLOG
     bool "Structured kernel log: every log line as a record in a ring ring 3 reads"
+    default y if USE_ROBOT
     default n if HWCLASS_EMBEDDED
     default y
     help
@@ -598,6 +599,11 @@ config KLOG
       A task is granted the ring by its topology row, `MemObj klog.ring`
       (READ|MAP): it can neither write the ring nor hand it on.
 
+      Always on with the robot extension (USE_ROBOT): the region is also where the
+      actuation telemetry (a motor command, a user fault) is recorded and `logd` the only
+      sink that writes it down, so a robot image without it would record that nowhere.
+      The small-board depths below apply (HWCLASS_EMBEDDED).
+
       Off: no ring, no record, no region; the console path is the one it
       was, and `logd` is not started. The level filter is LOG_LEVEL's, at
       compile time: a line compiled out is in neither the console nor the
@@ -613,6 +619,7 @@ config KLOG
 config KLOG_ENTRIES
     int "Structured kernel log: records the ring holds (power of two)"
     range 64 512
+    default 64 if HWCLASS_EMBEDDED
     default 256
     help
       Read only with KLOG. Records the ring holds before it overwrites its
@@ -628,7 +635,7 @@ config KLOG_ENTRIES
 
 config TELEMETRY_RING_ENTRIES
     int "Actuation telemetry: records the ring holds (power of two)" if KLOG
-    range 16 1024
+    range 16 512
     default 64 if HWCLASS_EMBEDDED
     default 256
     help
@@ -651,11 +658,14 @@ config TELEMETRY_RING_ENTRIES
       that. A power of two (the build refuses anything else). 56 bytes a
       slot (the envelope and 24 bytes of payload); the region is one memory
       object of at most 64 pages shared with the kernel log's and the
-      decisions' rings, and the build refuses a sum that does not fit.
+      decisions' rings. The ranges are set so that the largest of the three together fit it
+      (4 KiB pages: 160 KiB + 64 KiB + 28 KiB of the 256 KiB), and the build still
+      refuses a sum that does not.
 
 config KLOG_EARLY_ENTRIES
     int "Structured kernel log: records kept before the ring exists (power of two)"
     range 8 512
+    default 32 if HWCLASS_EMBEDDED
     default 128 if LOG_LEVEL_INFO || LOG_LEVEL_DEBUG
     default 64
     help
@@ -738,16 +748,30 @@ config LOGD_DECISIONS_PER_SEC
       log out of the files.
 
 config LOGD_TELEMETRY_PER_SEC
-    int "logd: telemetry records written per second at most, per kind"
-    depends on KLOG
+    int "logd: telemetry records written per second at most, per kind and source"
     range 0 1000
     default 5
     help
       Read only with KLOG. A period of LOGD_POLL_MS writes at most this many
-      per second of each kind of the actuation telemetry (one at least; a
-      mode change and a waypoint are not held back by a chatty motor); the
-      rest are counted and written as one `records held back` line. 0 writes
-      no telemetry to the files (it stays in the ring).
+      per second of each kind of the actuation telemetry and of each source
+      (a motor, a subsystem of an error; one at least), so a chatty motor
+      holds back neither another motor, nor a mode change nor an error. The
+      newest record a budget held back is written at the end of the period,
+      so a settled value survives it, with the count on one `records held back`
+      line. 0 writes no telemetry to the files (it stays in the ring). The
+      motor loop records at most 4 changes per motor per second, and a
+      catch-up one.
+
+config LOGD_TELEMETRY_KEYS
+    int "logd: telemetry budgets (kinds and sources) tracked in a period"
+    range 2 64
+    default 8
+    help
+      Read only with KLOG. Each kind of telemetry event, and each motor or
+      subsystem of one, takes a budget (LOGD_TELEMETRY_PER_SEC) for a period.
+      A record that finds every budget taken by other keys is not written and
+      is counted on the `records held back` line. 24 bytes more of the sink's
+      stack for each.
 
 config WCET
     # cargo-feature: wcet

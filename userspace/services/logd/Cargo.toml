@@ -16,6 +16,9 @@ azos_limits = { path = "../../../crates/core/limits" }
 # (tests/host/libsys-tests); never enabled in an image.
 canary-logd-stall-polls-only = []
 canary-logd-telemetry-one-bucket = []
+canary-logd-telemetry-first-wins = []
+canary-logd-resume-across-seam = []
+canary-logd-resume-one-file = []
 
 [profile.release]
 opt-level = "s"

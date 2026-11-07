@@ -144,6 +144,11 @@ pub trait Cpu: Send + Sync {
     /// The counter's epoch is reset-time and comparing readings across a
     /// reboot is meaningless.
     fn now_ticks(&self) -> u64;
+    /// Does `now_ticks` run at the rate `TIMER_FREQ` names? False only while
+    /// the x86_64 TSC is read before its calibration: those stamps run fast.
+    fn clock_calibrated(&self) -> bool {
+        true
+    }
 
     // ── Per-CPU base register (wave 15, NRCPUS) ─────────────────────────
     //

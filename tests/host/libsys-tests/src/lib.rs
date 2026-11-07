@@ -119,6 +119,7 @@ mod lock_tests {
 mod logd_store;
 #[cfg(test)]
 mod logd_keep;
+#[cfg(test)]
 mod logd_stall;
 #[cfg(test)]
 mod log_tool;
