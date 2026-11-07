@@ -2897,6 +2897,7 @@ pub(crate) mod host_machine {
                 b.add(hwbus::Device::dt("nowindow@0", b"vendor,nowindow\0", 0x3000_0000, 0, 0), &mut q).unwrap();
                 b.add(hwbus::Device::virtio_mmio(0x1000_2000, 0x1000, 2, 2), &mut q).unwrap();
                 b.add(hwbus::Device::dt("dma@4000000", b"vendor,dmamaster\0", 0x400_0000, 0x1000, 0).with_dma_coherent(true), &mut q).unwrap();
+                b.add(hwbus::Device::dt("sharer@5000000", b"vendor,sharer\0", 0x500_0000, 0x1000, 10), &mut q).unwrap();
                 // What the kernel drives is bound to its driver.
                 let rules = hwbus::Rules {
                     native: &[
@@ -3099,6 +3100,19 @@ mod mmio_cap_tests {
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:ns16550a").is_none(), "the kernel's UART's line");
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.10").is_none(), "the kernel's UART's line, by number");
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.11").is_some(), "the RTC's line, by number");
+    }
+
+    /// **`irq.<selector>` mints no line a kernel device shares.** The sharer
+    /// has a window ring 3 may map, but its line is the kernel UART's too.
+    ///
+    /// **Canary.** `irq-selector-shared-canary`: the selector form skips the
+    /// shared-line test and mints line 10.
+    #[test]
+    fn a_topology_irq_grant_by_selector_refuses_a_line_a_kernel_device_shares() {
+        machine();
+        let tid = fresh_tid();
+        assert!(hwbus::user_window(handle("dt:vendor,sharer")).is_some(), "the sharer is mappable");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.dt:vendor,sharer").is_none(), "line 10 is the UART's too");
     }
 
     /// A topology `mmio.<selector>` grant mints a capability whose resource is

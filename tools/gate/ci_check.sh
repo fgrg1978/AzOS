@@ -13092,6 +13092,10 @@ host_job host_canary_row "hwbus: unbind taken on the driver's word canary" hwbus
     a_record_whose_unbind_leaves_the_irq_bound_keeps_its_device_and_the_rebind_fails
 host_job host_canary_row "hwbus: unbind leaves the line bound canary" hwbus-tests leak-canary \
     unbind_and_rebind_each_bound_driver_once_and_the_device_is_driven_after
+# Ring-3 device authority (crates/core/ipc, crates/drivers/hwbus, crates/drivers/iommu):
+# each canary puts one gap back and requires its test to fail alone.
+host_job host_canary_row "ring-3: irq selector shared line canary" topology-tests irq-selector-shared-canary \
+    a_topology_irq_grant_by_selector_refuses_a_line_a_kernel_device_shares
 # Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two
 # segments mapped differently (their union, as before): the refusal test in
 # sched-wake-tests (`elf_bounds_tests`) must fail.

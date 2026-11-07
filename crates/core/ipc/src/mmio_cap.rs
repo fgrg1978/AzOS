@@ -119,12 +119,14 @@ pub fn mmio_grant_cap(
 /// The interrupt line of the device `selector` names, for a topology row
 /// `"irq.<selector>"`: the line the bus found for it, so a row names the
 /// device and not the number a machine wired it to. `None` for a selector no
-/// device matches, a device with no line known, and one ring 3 may not have
-/// (a kernel driver owns it or may still take it, as for its window).
+/// device matches, a device with no line known, one ring 3 may not have
+/// (a kernel driver owns it or may still take it, as for its window), and a
+/// line a device ring 3 may not have raises too (a shared line).
 pub fn mmio_device_line(selector: &str) -> Option<u32> {
     let h = hwbus::resolve(selector)?;
     hwbus::user_window(h)?;
-    hwbus::line_of(h)
+    let line = hwbus::line_of(h)?;
+    (mmio_line_free(line) || cfg!(feature = "irq-selector-shared-canary")).then_some(line)
 }
 
 /// May a topology row `"irq.<N>"` mint line `line`: no device a kernel

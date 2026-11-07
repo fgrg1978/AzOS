@@ -9,6 +9,8 @@ description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests
 [features]
 # Declared for the pulled `mmio_cap.rs`'s canary.
 writable-master-canary = []
+# Host canary (tests/host/topology-tests): `irq.<selector>` mints a line a kernel device shares.
+irq-selector-shared-canary = []
 # Declared for the pulled `dma_bind.rs`'s canary.
 dma-ring3-unconfined-canary = []
 # Pulled-in source declares it (cap_store.rs `cell_source`); the cfg is kernel-only.

@@ -23,6 +23,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 # The pulled mmio_cap.rs's canary: a writable window on a bus master is granted
 # whatever the policy (`a_writable_window_on_a_bus_master_needs_the_policy` goes red).
 writable-master-canary = []
+# Host canary (tests/host/topology-tests): `irq.<selector>` mints a line a kernel device shares.
+irq-selector-shared-canary = []
 # Declared for the pulled endpoint.rs's `calls_set_link` canary (syscall-tests runs it).
 calls-any-binder-canary = []
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.
