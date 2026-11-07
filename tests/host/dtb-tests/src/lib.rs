@@ -2418,6 +2418,26 @@ mod device_nodes {
         assert!(got.iter().all(|(.., coherent)| !coherent), "the two properties are read apart");
     }
 
+    #[test]
+    fn iommus_is_inherited_from_the_bus_node() {
+        let mut b = B::new();
+        b.begin("").prop("#address-cells", &be32(2)).prop("#size-cells", &be32(2));
+        b.begin("geni@1000").prop("#address-cells", &be32(1)).prop("#size-cells", &be32(1)).prop("ranges", &[]).prop("iommus", &be32(7));
+        b.begin("serial@1100").prop("compatible", &cstr("qcom,geni-uart")).prop("reg", &[be32(0x1100), be32(0x100)].concat()).end();
+        b.end();
+        b.begin("plain").prop("#address-cells", &be32(1)).prop("#size-cells", &be32(1)).prop("ranges", &[]);
+        b.begin("serial@2100").prop("compatible", &cstr("vendor,uart")).prop("reg", &[be32(0x2100), be32(0x100)].concat()).end();
+        b.end().end();
+        let blob = b.blob();
+        let mut got = Vec::new();
+        unsafe {
+            dtb_devices(blob.as_ptr(), &mut |d: &DtDevice<'_>| got.push((String::from_utf8_lossy(d.name).into_owned(), d.has_iommu)));
+        }
+        let flag = |n: &str| got.iter().find(|(name, _)| name == n).unwrap().1;
+        assert!(flag("serial@1100"), "the wrapper's iommus names the engine's IOMMU");
+        assert!(!flag("serial@2100"), "a sibling bus's does not");
+    }
+
     /// A bus below the root with 1/1 cells and the `ranges` given, one
     /// device at bus-local 0x1000 (size 0x100) below it.
     fn behind(ranges: Option<Vec<u8>>, parent_status: Option<&str>) -> (Option<usize>, Vec<Seen>) {

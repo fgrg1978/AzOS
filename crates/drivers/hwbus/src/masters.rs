@@ -28,7 +28,9 @@ pub enum DtRole {
 }
 
 /// Controllers that read or write memory on their own: USB, Ethernet, SD/MMC,
-/// DMA engines, storage, GPU, display, video and camera blocks, PCIe hosts.
+/// DMA engines, storage, GPU, display, video and camera blocks, PCIe hosts,
+/// and the serial engines with a DMA of their own (Qualcomm GENI and QUP,
+/// whose `iommus` sits on the wrapper above them).
 const MASTERS: &[&str] = &[
     "dwc2", "dwc3", "xhci", "ehci", "ohci", "uhci", "usb", "cdns3", "cdnsp", "musb",
     "ethernet", "gmac", "dwmac", "stmmac", "emac", "eqos", "macb", "genet", "fec",
@@ -38,6 +40,7 @@ const MASTERS: &[&str] = &[
     "gpu", "mali", "vivante", "etnaviv", "drm", "display", "dsi", "hdmi", "vop", "lcdc", "dpu",
     "vpu", "video", "isp", "csi", "jpeg", "venc", "vdec",
     "pcie", "pci-host",
+    "geni", "qup", "uartdm",
 ];
 
 /// Peripherals that only answer register accesses.

@@ -239,7 +239,7 @@ fn a_device_declares_nothing_about_coherence_until_the_firmware_does() {
 /// peripheral.
 #[test]
 fn a_dt_node_masters_the_bus_unless_it_is_a_known_peripheral() {
-    let masters: [&[u8]; 9] = [
+    let masters: [&[u8]; 12] = [
         b"spacemit,k1-dwc3\0snps,dwc3\0",
         b"starfive,jh7110-dwmac\0snps,dwmac-5.20\0",
         b"starfive,jh7110-mmc\0",
@@ -248,6 +248,9 @@ fn a_dt_node_masters_the_bus_unless_it_is_a_known_peripheral() {
         b"cdns,usb3\0",
         b"vivante,gc\0",
         b"qcom,sm8250-venus\0",
+        b"qcom,geni-uart\0",
+        b"qcom,geni-i2c\0",
+        b"qcom,msm-uartdm-v1.4\0",
         b"vendor,never-heard-of-it\0",
     ];
     for c in masters {

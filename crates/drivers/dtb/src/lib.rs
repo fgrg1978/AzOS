@@ -3073,8 +3073,8 @@ pub struct DtDevice<'a> {
     /// The node, or an ancestor, carries `dma-noncoherent`: the firmware
     /// declares its DMA non-coherent, which says it does DMA.
     pub dma_noncoherent: bool,
-    /// The node names an IOMMU for its DMA: it has `iommus`, or (a PCI host
-    /// bridge) `iommu-map`.
+    /// The node, or an ancestor, names an IOMMU for its DMA: it has `iommus`,
+    /// or (a PCI host bridge) `iommu-map`.
     pub has_iommu: bool,
     /// `device_type` is `pci` or `pciex`: a host bridge whose functions do the
     /// DMA the bridge's `iommu-map` covers.
@@ -3280,7 +3280,9 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                         // speaks for every device behind it.
                         let dma_coherent = stack[1..=depth].iter().any(|a| a.dma_coherent);
                         let dma_noncoherent = stack[1..=depth].iter().any(|a| a.dma_noncoherent);
-                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, dma_noncoherent, has_iommu: n.has_iommu, pci_host: n.pci_bus, dt_node: n.at });
+                        // `iommus` of a bus node (a GENI wrapper's) names the IOMMU for the engines behind it.
+                        let has_iommu = stack[1..=depth].iter().any(|a| a.has_iommu);
+                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, dma_noncoherent, has_iommu, pci_host: n.pci_bus, dt_node: n.at });
                         count += 1;
                     }
                 }
