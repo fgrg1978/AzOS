@@ -200,6 +200,8 @@ fn a_pi_swap_keeps_its_shm_frame_until_the_swap_ends() {
         memobj_with_mapped_word(TID, VA, true, |_, _, w| match w.compare_exchange(THEIRS, 9, SeqCst, SeqCst) {
             Ok(v) | Err(v) => v,
         })
+        .ok()
+        .flatten()
     }
     let o = race(swap);
     assert!(

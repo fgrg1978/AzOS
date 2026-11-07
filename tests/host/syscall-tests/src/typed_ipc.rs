@@ -2338,6 +2338,65 @@ mod swap_rows {
         assert_eq!(mo::memobj_try_with_mapped_word(a, va, false, |_, _, _| ()), Ok(Some(())));
     }
 
+    /// **An exec forgets the shared mappings of the image it leaves, so the aging
+    /// pass and a take never reach a page table that is gone.** B maps the
+    /// object, then execs: only A's mapping is asked for its Accessed bits.
+    ///
+    /// **Canary.** `swap-exec-stale-canary`: the record stays and names B's old
+    /// root.
+    #[test]
+    fn an_exec_forgets_the_mapping_records_that_reclaim_reaches_through() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        mo::memobj_exec(b);
+        let roots = std::cell::RefCell::new(Vec::new());
+        let aged = mo::memobj_age_next(p.key, 0, &|root, _, _| {
+            roots.borrow_mut().push(root);
+            0
+        });
+        assert!(aged.is_some(), "the object is aged");
+        assert_eq!(*roots.borrow(), [p.pt_a], "only the mapping that is still there is asked");
+        assert_eq!(mo::memobj_has_mapping_ref(b, p.r), Ok(false), "B's record is gone");
+    }
+
+    /// **A priority-inheritance step on a shm word whose page is out settles by
+    /// faulting the page in, and then succeeds.** The step reads its word through
+    /// the object with the futex table held; with the page out it answers "settle",
+    /// and the settle must not give up for good.
+    ///
+    /// **Canary.** `swap-settle-canary`: the settle gives up.
+    #[test]
+    fn a_pi_step_on_a_page_that_is_out_settles_by_faulting_it_in() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let _pt = ring3(a, SLOT_A);
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        let va = sys_shm_map_typed(cap, 0) as usize;
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let at = mo::memobj_resolve_mapped(a, va).expect("a shm word");
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let v = Victim::Obj { ident: r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        assert_eq!(
+            crate::vdso_notify::with_keyed_shm_word(a, va as u64, at, false, |_| ()),
+            None,
+            "the look under the futex table finds the page out"
+        );
+        assert!(crate::vdso_notify::keyed_shm_word_settle(a, va as u64, at, false), "the settle faults it in");
+        assert_eq!(crate::vdso_notify::with_keyed_shm_word(a, va as u64, at, false, |_| ()), Some(()), "and the step goes through");
+    }
+
     /// **The kernel does not read a swappable object through the direct map.**
     ///
     /// **Canary.** `memobj-no-kernel-map-canary`: the hidden attributes are not

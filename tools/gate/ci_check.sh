@@ -13041,7 +13041,15 @@ host_job zpool_host_canary_row "brk: heap page restored canary" mm-pte-truth-can
 # swap-away-guards-canary: MOVE and clone go ahead with a page out.
 # swap-map-needs-frames-canary: a map needs every frame. swap-inherit-dense-canary:
 # a fork needs every leaf. age-slots-ignored-canary: aging counts every page of a
-# window as resident.
+# window as resident. swap-exec-stale-canary: an exec leaves the mapping records
+# of the image it left, and reclaim reaches through a root that is gone.
+# swap-settle-canary: a PI step on a page that is out gives up instead of
+# faulting it in.
+host_job host_canary_row "swap: exec forgets mappings canary" syscall-tests swap-exec-stale-canary \
+    an_exec_forgets_the_mapping_records_that_reclaim_reaches_through
+host_job zpool_host_row "swap: PI step on a page out" a_pi_step_on_a_page_that_is_out_settles_by_faulting_it_in
+host_job zpool_host_canary_row "swap: PI step canary" swap-settle-canary \
+    a_pi_step_on_a_page_that_is_out_settles_by_faulting_it_in
 host_job zpool_host_row "swap: shared page, every mapper" a_shared_page_leaves_every_mapper_and_comes_back_for_either
 host_job zpool_host_canary_row "swap: shared page, rmap canary" swap-rmap-skip-canary \
     a_shared_page_leaves_every_mapper_and_comes_back_for_either

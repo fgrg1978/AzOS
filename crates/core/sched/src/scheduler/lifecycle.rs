@@ -1052,6 +1052,27 @@ pub fn set_task_exit_hook(f: fn(u32)) {
 }
 
 azos_common::ro_hook! {
+    /// Called by an exec's commit with the process's tid, after the task has the
+    /// new image and before the old address space is destroyed: what other
+    /// crates keep for the process that names the old image's page tables
+    /// (`azos_ipc`'s shared-memory mapping records, which reclaim and revoke
+    /// reach through) is forgotten here. Registered by the kernel at boot, as
+    /// [`TASK_EXIT_HOOK`].
+    static TASK_EXEC_HOOK: fn(u32);
+}
+
+/// Register the [`TASK_EXEC_HOOK`]. Call once, during boot.
+pub fn set_task_exec_hook(f: fn(u32)) {
+    TASK_EXEC_HOOK.set(f);
+}
+
+pub(crate) fn invoke_task_exec_hook(tid: u32) {
+    if let Some(f) = TASK_EXEC_HOOK.get() {
+        f(tid);
+    }
+}
+
+azos_common::ro_hook! {
     /// Wave 15 (plan 4a): called when an exec'ing thread takes its process's
     /// identity from the leader (`exec_take_over`) with `(from_idx, to_idx, tid)`:
     /// what other crates keep per pool slot for the process (`azos_ipc`'s

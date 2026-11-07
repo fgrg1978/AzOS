@@ -283,8 +283,13 @@ pub fn with_keyed_shm_word<R>(
 /// `uaddr` names another word or none, or (for `write`) is not writable.
 pub fn keyed_shm_word_settle(tid: u32, uaddr: u64, key: (u32, usize), write: bool) -> bool {
     let any = cfg!(feature = "futex-key-outside-canary");
-    azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, write, |obj, off, _| any || (obj, off) == key)
-        == Some(true)
+    match azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, write, |obj, off, _| any || (obj, off) == key) {
+        Ok(same) => same == Some(true),
+        // The word's page is out: reading it through the user's mapping faults
+        // it in, and the step can be tried again. Canary `swap-settle-canary`:
+        // it cannot, and the step gives up for good.
+        Err(_) => !cfg!(feature = "swap-settle-canary") && azos_sched::UserPtr::<u32>::new(uaddr).read().is_ok(),
+    }
 }
 
 /// One read of the futex word at `uaddr` through the caller's own mapping

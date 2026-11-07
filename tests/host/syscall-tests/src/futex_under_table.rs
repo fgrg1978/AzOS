@@ -142,7 +142,7 @@ fn a_futex_look_never_spins_on_the_region_table() {
     assert!(WOKE.load(SeqCst), "the look spins on the region table holding the futex table: deadlock");
     assert_eq!(looker.join().expect("looker"), Err(WaitResult::Fault), "busy reads as not now");
     azos_sched::shim_serial_enter();
-    assert_eq!(holder.join().expect("holder"), Some(()));
+    assert_eq!(holder.join().expect("holder"), Ok(Some(())));
     shim_set_word_hook(None);
     azos_mm::vmm::unmap(pt, VA);
     azos_sched::set_current_user_pt(0);

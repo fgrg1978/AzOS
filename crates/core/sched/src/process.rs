@@ -505,6 +505,9 @@ pub fn exec_commit(p: PreparedExec) -> i64 {
     crate::scheduler::set_current_partition(spec.partition);
     // The old image's foreign-ABI registration goes with it.
     crate::foreign::on_exec();
+    // The old image's shared-memory mapping records name page tables that are
+    // about to go.
+    crate::scheduler::invoke_task_exec_hook(crate::scheduler::current_proc_tid());
     // A locked row's region starts from zeros for this instance. Not before the
     // exec is certain: every instance of the row maps the same frames, and a
     // refused exec must leave a live one's bytes alone.

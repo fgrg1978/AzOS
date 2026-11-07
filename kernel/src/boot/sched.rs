@@ -119,6 +119,8 @@ pub(crate) fn install_sched_hooks() {
     // that does all three; registering anything narrower here re-opens the
     // leak silently, because nothing reports an un-revoked capability.
     azos_sched::set_task_exit_hook(task_release_all_resources);
+    // An exec forgets the shared-memory mapping records of the image it leaves.
+    azos_sched::set_task_exec_hook(azos_ipc::memobj::memobj_exec);
     // Wave 12 (EXIT2): what must wait for the dying task's address space to
     // go — the driver supervisor's wake.
     azos_sched::set_task_exit_late_hook(crate::drv_supervisor::exit_after_teardown);

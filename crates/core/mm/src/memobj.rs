@@ -149,6 +149,16 @@
 //! restores through the object. A page with neither a frame, `transit` nor `out`
 //! is not the pager's, and the fault fails rather than zero-fill it.
 //!
+//! **Why the roots the holders name are alive.** The aging pass harvests the
+//! Accessed bits through each recorded mapping, and a take clears a leaf through
+//! it, both with the table locked and no lock of the address space. A holder's
+//! `map_root` is a live page-table root for as long as the record is set: a
+//! task's exit clears it in [`memobj_release_all`] (the exit hook, which runs
+//! before the task's address space is destroyed), an exec in [`memobj_exec`]
+//! (the exec hook of `exec_commit`, before the old space is destroyed), a MOVE,
+//! a revoke, a purge and an unmap in the same hold that removes the leaves. A
+//! fork child's record is made with its root already live.
+//!
 //! **Who is never taken.** An object with a holder whose Domain is on a
 //! `mem = "locked"` row, or whose process is a real-time task
 //! ([`Host::pins_memory`]), is left alone whichever Domain is charged for it:
@@ -1777,42 +1787,50 @@ pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize)> {
 /// this lock (one atomic access). Never called under the futex table: a holder
 /// of this lock may take an interrupt whose handler wakes a futex, so a hart
 /// that holds the table must not spin here ([`memobj_try_with_mapped_word`]).
+/// `Err(WordBusy::PageOut)`: the word's page is out, and the caller settles.
 pub fn memobj_with_mapped_word<R>(
     tid: u32, va: usize, write: bool, f: impl FnOnce(u32, usize, &AtomicU32) -> R,
-) -> Option<R> {
+) -> Result<Option<R>, WordBusy> {
     if va % 4 != 0 {
-        return None;
+        return Ok(None);
     }
-    with_mapped_word_locked(MEMOBJS.lock(), tid, va, write, f).ok().flatten()
+    with_mapped_word_locked(MEMOBJS.lock(), tid, va, write, f)
 }
 
-/// The region table is held by someone else ([`memobj_try_with_mapped_word`]).
+/// Why a shm word cannot be read now. In both cases the caller lets go of what
+/// it holds, settles (`memobj_wait_unlocked` for the table, a read of the word
+/// through the user's mapping for the page, which faults it in) and looks again.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TableBusy;
+pub enum WordBusy {
+    /// The region table is held by someone else ([`memobj_try_with_mapped_word`]).
+    Table,
+    /// The word's page is out: it belongs to a swappable object whose page the
+    /// storm took.
+    PageOut,
+}
 
 /// [`memobj_with_mapped_word`] for a caller under the futex table: never spins
-/// on the region table. `Err(TableBusy)`: drop the futex table, wait with
-/// [`memobj_wait_unlocked`] (and fault the word's page in: it is a swappable
-/// object's page that is out), start over.
+/// on the region table. `Err`: drop the futex table, settle as [`WordBusy`]
+/// says, start over.
 ///
 /// Canary `memobj-word-spin-canary`: spins, the deadlock against an interrupt
 /// that wakes a futex on a hart holding this lock.
 pub fn memobj_try_with_mapped_word<R>(
     tid: u32, va: usize, write: bool, f: impl FnOnce(u32, usize, &AtomicU32) -> R,
-) -> Result<Option<R>, TableBusy> {
+) -> Result<Option<R>, WordBusy> {
     if va % 4 != 0 {
         return Ok(None);
     }
     let regions = if cfg!(feature = "memobj-word-spin-canary") {
         MEMOBJS.lock()
     } else {
-        MEMOBJS.try_lock().ok_or(TableBusy)?
+        MEMOBJS.try_lock().ok_or(WordBusy::Table)?
     };
     with_mapped_word_locked(regions, tid, va, write, f)
 }
 
 /// Until the holder that made a [`memobj_try_with_mapped_word`] answer
-/// [`TableBusy`] has let go. No lock held.
+/// [`WordBusy::Table`] has let go. No lock held.
 pub fn memobj_wait_unlocked() {
     drop(MEMOBJS.lock());
 }
@@ -1820,15 +1838,12 @@ pub fn memobj_wait_unlocked() {
 fn with_mapped_word_locked<R>(
     mut regions: SpinLockGuard<'_, MemObjTable>, tid: u32, va: usize, write: bool,
     f: impl FnOnce(u32, usize, &AtomicU32) -> R,
-) -> Result<Option<R>, TableBusy> {
+) -> Result<Option<R>, WordBusy> {
     hold_canary();
     let Some(w) = resolve_mapped_locked(&mut regions, tid, va) else { return Ok(None) };
     let region = &regions[w.idx];
-    // A page that is out has no word to read: the caller settles, which faults
-    // the page in, and looks again.
-    if w.phys == 0 {
-        return Err(TableBusy);
-    }
+    // A page that is out has no word to read.
+    let Some(phys) = w.phys else { return Err(WordBusy::PageOut) };
     if write
         && (!region.holders[w.holder].map_write
             || region.perms != MemPerms::ReadWrite
@@ -1840,7 +1855,7 @@ fn with_mapped_word_locked<R>(
     // SAFETY: a 4-aligned word of a frame of a live region, which cannot be
     // freed while the guard is held (see the doc); the direct map of a RAM
     // frame is valid for an atomic 32-bit access.
-    let word = unsafe { &*(crate::addr::phys_to_virt(w.phys) as *const AtomicU32) };
+    let word = unsafe { &*(crate::addr::phys_to_virt(phys) as *const AtomicU32) };
     // Canary `memobj-word-unlocked-canary`: the word is used with the table
     // unlocked, as the futex paths did with the frame they had resolved.
     let held = if cfg!(feature = "memobj-word-unlocked-canary") {
@@ -1853,7 +1868,7 @@ fn with_mapped_word_locked<R>(
     {
         let h = *WORD_HOOK.lock();
         if let Some(h) = h {
-            h(w.phys);
+            h(phys);
         }
     }
     let out = f(packed, w.off, word);
@@ -1893,7 +1908,8 @@ struct MappedWord {
     holder: usize,
     off: usize,
     page: usize,
-    phys: usize,
+    /// The word's physical address; `None` while its page is out.
+    phys: Option<usize>,
 }
 
 /// [`memobj_resolve_mapped`] under the lock: from one of `tid`'s two cache
@@ -1984,9 +2000,9 @@ fn mapped_word_locked(region: &MemObj, i: usize, h: usize, tid: u32, va: usize) 
         let away = region.attrs & ATTR_SWAPPABLE != 0
             && (region.out | region.transit) & (1u64 << pg) != 0
             && !cfg!(feature = "swap-word-away-canary");
-        return Ok(away.then_some(MappedWord { idx: i, holder: h, off, page: pg, phys: 0 }));
+        return Ok(away.then_some(MappedWord { idx: i, holder: h, off, page: pg, phys: None }));
     }
-    Ok(Some(MappedWord { idx: i, holder: h, off, page: pg, phys: region.phys_pages[pg] + off % page }))
+    Ok(Some(MappedWord { idx: i, holder: h, off, page: pg, phys: Some(region.phys_pages[pg] + off % page) }))
 }
 
 /// The physical address of page `page_idx` of the region a packed reference
@@ -2458,7 +2474,12 @@ pub fn memobj_release_all(tid: u32) {
 /// nothing else runs in it), and the references stay; a MOVE or a protect that
 /// ran afterwards would otherwise edit a freed page table. Must run before the
 /// old root is freed.
+///
+/// Canary `swap-exec-stale-canary`: the records stay, naming a root that is gone.
 pub fn memobj_exec(tid: u32) {
+    if cfg!(feature = "swap-exec-stale-canary") {
+        return;
+    }
     let mut regions = MEMOBJS.lock();
     for region in regions.regions.iter_mut().filter(|r| r.active) {
         let _ = take_mapping_locked(region, tid);
