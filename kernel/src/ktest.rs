@@ -3159,23 +3159,58 @@ azos_ktest::ktest_late! {
 // The Domain-lock admission of an exec into a `mem = "locked"` row
 // (`azos_sched::process::admit_domain_lock`, run by `exec_admit`) locks the
 // caller's Domain before the exec commits; with nothing out it is not refused.
-// The order and the refusal are the host suite's rows (`pager::admit_domain_lock`).
-// Canary `exec-domain-lock-skipped-canary`: the admission does not lock.
+// It runs in a task of its own, with a Domain of its own, so the ktest task's
+// Domain is never locked or restored. The order and the refusal are the host
+// suite's rows (`pager::admit_domain_lock`). Canary
+// `exec-domain-lock-skipped-canary`: the admission does not lock.
+static ADMIT_DONE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Bits of [`ADMIT_DONE`]: the task ran, had a Domain of its own, found it
+/// unlocked, was admitted, found it locked after.
+const ADMIT_RAN: u32 = 1;
+const ADMIT_OWN: u32 = 2;
+const ADMIT_WAS_OPEN: u32 = 4;
+const ADMIT_OK: u32 = 8;
+const ADMIT_LOCKED: u32 = 16;
+
+fn admit_in_own_domain(parent_domain: usize) {
+    let mut bits = ADMIT_RAN;
+    if let Some(d) = azos_sched::scheduler::current_domain() {
+        if d as usize != parent_domain {
+            bits |= ADMIT_OWN;
+            if !azos_sched::domain::mem_locked(d) {
+                bits |= ADMIT_WAS_OPEN;
+                if azos_sched::process::admit_domain_lock() {
+                    bits |= ADMIT_OK;
+                }
+                if azos_sched::domain::mem_locked(d) {
+                    bits |= ADMIT_LOCKED;
+                }
+                azos_sched::domain::set_mem_locked(d, false);
+            }
+        }
+    }
+    ADMIT_DONE.store(bits, core::sync::atomic::Ordering::Release);
+}
+
 azos_ktest::ktest_late! {
     fn exec_admission_locks_the_callers_domain() {
-        let Some(d) = azos_sched::scheduler::current_domain() else {
-            return Err("the test's task has no Domain");
-        };
-        if azos_sched::domain::mem_locked(d) {
-            return Err("the test's Domain is already locked: the case proves nothing");
+        use core::sync::atomic::Ordering::Acquire;
+        ADMIT_DONE.store(0, core::sync::atomic::Ordering::Release);
+        let parent = azos_sched::scheduler::current_domain().map_or(usize::MAX, |d| d as usize);
+        azos_sched::task_create_affinity("c1-admit-lock", admit_in_own_domain, parent, azos_sched::DEFAULT_PRIORITY, -1);
+        wait("the admission task never ran", || ADMIT_DONE.load(Acquire) != 0)?;
+        let bits = ADMIT_DONE.load(Acquire);
+        if bits & ADMIT_OWN == 0 {
+            return Err("the admission task shares the ktest task's Domain: the case would lock it");
         }
-        let admitted = azos_sched::process::admit_domain_lock();
-        let locked = azos_sched::domain::mem_locked(d);
-        azos_sched::domain::set_mem_locked(d, false);
-        if !admitted {
+        if bits & ADMIT_WAS_OPEN == 0 {
+            return Err("the task's Domain is already locked: the case proves nothing");
+        }
+        if bits & ADMIT_OK == 0 {
             return Err("the admission was refused with nothing out");
         }
-        if !locked {
+        if bits & ADMIT_LOCKED == 0 {
             return Err("the admission did not lock the Domain");
         }
         Ok(())
