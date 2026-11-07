@@ -254,23 +254,28 @@ fn reading(r: Result<i32, SensorError>) -> Result<Sample, ReadError> {
     }
 }
 
-/// Register a board's temperature sensors consecutively; the number of the
-/// first, or why not.
+/// Register a board's temperature sensors consecutively, all or none; the number
+/// of the first, or why not (said, and the zones then read nothing).
 fn register_temperatures(sensors: &[&'static Sensor]) -> Option<u32> {
-    let mut first = None;
-    for s in sensors {
-        match sensor_class::register_board(s) {
-            Ok(n) => {
-                first.get_or_insert(n);
-            }
-            Err(_) => {
-                azos_drv_sys::kwarn!("[THERMAL] Kconfig SENSOR_INSTANCES is full: a temperature sensor of this board is not read");
-                return None;
-            }
+    match sensor_class::register_boards(sensors) {
+        Ok(first) => Some(first),
+        Err(_) => {
+            azos_drv_sys::kwarn!("[THERMAL] Kconfig SENSOR_INSTANCES is full: this board's temperature sensors are not read");
+            None
         }
     }
-    first
 }
+
+// The largest board's sensors must fit the class: the K1's five channels after
+// the board's own.
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
+const _: () = assert!(
+    sensor_class::INSTANCES >= board::COUNT + azos_thermal::k1::K1_SENSORS as usize,
+    "Kconfig SENSOR_INSTANCES is below the K1's temperature channels after the board's own sensors"
+);
+// Any other thermal board reads one.
+#[cfg(all(feature = "thermal", not(feature = "soc-k1")))]
+const _: () = assert!(sensor_class::INSTANCES > board::COUNT, "Kconfig SENSOR_INSTANCES leaves no room for a temperature sensor");
 
 // ── JH7110: the sensor ───────────────────────────────────────────────────────
 

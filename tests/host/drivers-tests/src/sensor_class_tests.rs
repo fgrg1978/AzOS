@@ -183,7 +183,7 @@ fn the_board_registers_its_sensors_in_the_topologys_order() {
         assert!(core::ptr::eq(&*got as *const Sensor, expect as *const Sensor), "sensor {n}");
     }
     assert!(sensors::get(10).is_some() && sensors::get(11).is_none(), "eleven board sensors, no more");
-    assert_eq!(sensors::register_board(&THERMOMETER), Ok(11));
+    assert_eq!(sensors::register_boards(&[&THERMOMETER]), Ok(11));
     assert!(sensors::get(12).is_none());
 
     SCRIPTED.store(61_250, SeqCst);
@@ -229,4 +229,23 @@ fn an_unread_battery_is_no_sample_and_the_lines_pack_to_their_bits() {
         let f = board::flags_sample(p, so, ir, 1);
         assert_eq!(value(&board::FLAGS_SENSOR.channels(), &f, 0), Some(bits));
     }
+}
+
+static THERMOMETERS: [&Sensor; 3] = [&THERMOMETER, &THERMOMETER, &THERMOMETER];
+
+/// **A board whose sensors do not all fit takes no instance.** Three
+/// temperature channels asked of a table with two free slots: refused, and the
+/// slots are still free for a board that fits (no number is left registered
+/// with nobody to use it).
+///
+/// **Canary.** Drop the room check in `Instances::register_boards`: the first
+/// two are taken before the third is refused, and the small board no longer fits.
+#[test]
+fn a_board_that_does_not_fit_takes_no_instance() {
+    use super::instances::{Instances, RegisterError};
+    let t: Instances<Sensor, 2> = Instances::empty();
+    assert_eq!(t.register_boards(&THERMOMETERS), Err(RegisterError::Full));
+    assert!(t.get(0).is_none(), "a refused board left a sensor registered");
+    assert_eq!(t.register_boards(&THERMOMETERS[..2]), Ok(0));
+    assert_eq!(t.register_boards(&THERMOMETERS[..1]), Err(RegisterError::Full), "the table is full");
 }

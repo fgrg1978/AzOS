@@ -6445,7 +6445,7 @@ sensor_ts_captest_row() { # sensor_ts_captest_row <label> <log>
         grep -aE "CAPTEST\]  FAIL  sensor_read_ts|CAPTEST\] sensorts" "$log" | tr -d '\r' | sed 's|^|        |'
         return
     fi
-    if ! grep -aqF "[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired < 500 ms before the call (IMU ODOM ENCODER RANGE), monotonic" "$log" \
+    if ! grep -aqF "[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired within their bound before the call (IMU ODOM ENCODER RANGE), monotonic" "$log" \
         || ! grep -aqF "[CAPTEST]   ok   sensor read(IMU, 23-byte buffer) reports the 24-byte record" "$log"; then
         bad; echo "      captest never printed the stamped-read summary and the short-buffer report:"
         grep -a "sensorts\|sensor_read_ts" "$log" | tr -d '\r' | sed 's|^|        |'
@@ -12168,6 +12168,7 @@ host_job host_canary_row "gpio: badge controller canary (endpoint)" syscall-test
 # kept from an acting op.
 host_job host_canary_row "gpio: freed number reuse canary" drivers-tests instances-reuse-canary a_freed_number_is_never_another_devices
 host_job host_canary_row "gpio: unbind drain canary" drivers-tests instances-no-drain-canary an_unbind_waits_for_the_op_inside_the_controller
+host_job host_canary_row "sensors: stream drop canary" drivers-tests sensor-drop-canary a_stream_loses_no_sample_at_the_rate_it_is_read
 host_job host_canary_row "gpio: unbound falls to board canary" syscall-tests gpio-unbound-falls-to-board-canary a_controller_not_bound_is_no_resource_and_a_pin_past_its_last_is_bad_argument
 host_job host_canary_row "gpio: safety line canary" syscall-tests gpio-safety-guard-canary the_kill_switch_line_is_refused_to_a_holder_of_its_endpoint
 # The same line through the io_ring: the SQ poller's `OP_CALL Gpio::set_dir`.
@@ -24434,7 +24435,7 @@ PYEOF
             bad; echo "      the kernel did not enter at EL2, so the offset was never set — log kept: $log"; return
         fi
         if grep -aqE "CAPTEST\]  FAIL|AARCH64-TRAP\] unhandled" "$log" \
-            || ! grep -aqF "[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired < 500 ms before the call (IMU ODOM ENCODER RANGE), monotonic" "$log" \
+            || ! grep -aqF "[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired within their bound before the call (IMU ODOM ENCODER RANGE), monotonic" "$log" \
             || ! grep -aqF "[CAPTEST] ALL PASSED" "$log"; then
             bad; echo "      kernel stamps and the vDSO clock disagree under CNTVOFF_EL2 != 0:"
             grep -aE "CAPTEST\]  FAIL|CAPTEST\] sensorts" "$log" | tr -d '\r' | sed -n 1,6p | sed 's|^|        |'

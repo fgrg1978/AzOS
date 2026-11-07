@@ -161,7 +161,8 @@ pub(crate) fn sensor_slow_task(_: usize) {
             range_tx.publish(s);
         }
         // No converter, or one that did not answer: nothing is published, and
-        // the bus reads 0, "no reading". A made-up voltage below the safety
+        // the bus reads 0, "no reading" (at once if none ever was, once the last
+        // sample is stale if one was). A made-up voltage below the safety
         // layer's thresholds read as a flat pack and held the e-stop on every
         // tick from boot under QEMU, which has no ADS1115.
         let mv = if azos_drv_sensor::ads1115::ads1115_is_initialized() {

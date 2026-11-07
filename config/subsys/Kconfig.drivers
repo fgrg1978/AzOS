@@ -884,29 +884,32 @@ config GPIO_SOFT_EXPANDER
 
 config SENSOR_INSTANCES
     int "Sensors: most instances the Sensor interface serves"
-    range 12 255
+    range 16 255
     default 16
     help
       The sensors the kernel keeps for the `Sensor` interface
       (crates/drivers/base/src/sensors.rs): the board's own come first,
       in the order the topology's `sensor.<n>` endpoints name them (the
       IMU is 0, the power monitor 9; the IMU's die temperature follows
-      them), then every temperature sensor a thermal zone reads. A
-      capability on an instance past this limit, or on one not
-      registered, answers BAD_ARGUMENT or NOT_READY. Cost: a stream
-      (SENSOR_STREAM_DEPTH samples) per instance.
+      them: 11), then every temperature sensor a thermal zone reads (the
+      SpacemiT K1's TSEN block has five, the other boards one). 16 is
+      what the largest board needs; a board whose sensors do not fit
+      does not build. A capability on an instance past the limit, or on
+      one not registered, answers BAD_ARGUMENT or NOT_READY. Cost: a
+      registry slot per instance; the streams are the board's nine
+      statics (SENSOR_STREAM_DEPTH samples each).
 
 config SENSOR_STREAM_DEPTH
     int "Sensors: samples a stream keeps"
     range 2 1024
     default 16
     help
-      Every sensor instance publishes into a log of this many samples
-      (azos_rings::Log: one writer, any number of readers, each with its
-      own cursor). A reader that falls further behind than this loses the
-      oldest samples and is told how many. At the IMU's rate the default
-      leaves a reader 160 ms. Cost: 48 bytes of .bss per sample per
-      instance.
+      Every sensor instance with a stream publishes into a log of this many
+      samples (azos_rings::Log: one writer, any number of readers, each
+      with its own cursor). A reader that falls further behind than this
+      loses the oldest samples and is told how many. At the IMU's rate the
+      default leaves a reader 160 ms. Cost: 48 bytes of .bss per sample
+      per stream, nine streams.
 
 config SENSOR_IMU_HZ
     int "Sensors: IMU sample rate (Hz)"
@@ -914,7 +917,10 @@ config SENSOR_IMU_HZ
     default 100
     help
       The rate of the real-time `imu` task, and the IMU's channel
-      descriptor.
+      descriptor, which every image carries and ring-3 readers (captest,
+      reflex) derive their age bounds from. A reader judges a sample stale
+      after five periods (never under 200 ms for the IMU), so the rate sets
+      how long a silent IMU takes to hold the safety layer's stop.
 
 config SENSOR_ODOM_HZ
     int "Sensors: odometry and encoder sample rate (Hz)"
@@ -925,9 +931,14 @@ config SENSOR_SLOW_HZ
     int "Sensors: rangefinder, battery and digital-line sample rate (Hz)"
     range 1 100
     default 10
+    help
+      The battery, the rangefinders and the digital lines read 0, "no
+      reading", once their sample is older than five periods (never under
+      500 ms).
 
 config SENSOR_PIR_GPIO
     int "Sensors: GPIO pin of the PIR motion sensor"
+    depends on USE_ROBOT
     range 0 63
     default 13
     help
@@ -936,6 +947,7 @@ config SENSOR_PIR_GPIO
 
 config SENSOR_IR_GPIO
     int "Sensors: GPIO pin of the IR sensor"
+    depends on USE_ROBOT
     range 0 63
     default 14
     help
@@ -943,6 +955,7 @@ config SENSOR_IR_GPIO
 
 config SENSOR_SOUND_GPIO
     int "Sensors: GPIO pin of the sound sensor"
+    depends on USE_ROBOT
     range 0 63
     default 15
     help

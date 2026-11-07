@@ -11,22 +11,18 @@
 use super::{stream, Channel, Quantity as Q, RegisterError, Sample, Sensor, Source, Stream, Unit as U};
 use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
 
-pub const IMU: u32 = 0;
-pub const ODOM: u32 = 1;
-pub const ENCODER: u32 = 2;
-pub const RANGE: u32 = 3;
-pub const BATTERY: u32 = 4;
-pub const GPS: u32 = 5;
-pub const LIDAR: u32 = 6;
-pub const FLAGS: u32 = 7;
-pub const CAMERA: u32 = 8;
-pub const POWER: u32 = 9;
+pub use azos_abi::sensor_sample::instance::{BATTERY, CAMERA, ENCODER, FLAGS, GPS, IMU, LIDAR, ODOM, POWER, RANGE};
+
 /// The IMU's die temperature, registered after the topology's ten.
 pub const IMU_TEMP: u32 = 10;
 
-const IMU_HZ: u32 = azos_limits::SENSOR_IMU_HZ as u32;
-const ODOM_HZ: u32 = azos_limits::SENSOR_ODOM_HZ as u32;
-const SLOW_HZ: u32 = azos_limits::SENSOR_SLOW_HZ as u32;
+/// Instances the board registers by itself: the topology's ten and the IMU's
+/// temperature.
+pub const COUNT: usize = 11;
+
+pub const IMU_HZ: u32 = azos_limits::SENSOR_IMU_HZ as u32;
+pub const ODOM_HZ: u32 = azos_limits::SENSOR_ODOM_HZ as u32;
+pub const SLOW_HZ: u32 = azos_limits::SENSOR_SLOW_HZ as u32;
 
 const fn ch(quantity: Q, unit: U, width: u8, signed: bool, min: i64, max: i64, rate_hz: u32) -> Channel {
     Channel { quantity, unit, width, signed, min, max, rate_hz }
@@ -115,15 +111,11 @@ sensor!(IMU_TEMP_SENSOR, IMU_TEMP_CHANNELS, stream IMU_TEMP_LOG);
 /// Register the board's sensors in the order of the numbers above. `power` is
 /// the power monitor's (a chip read, or [`NO_POWER_SENSOR`]).
 pub fn register(power: &'static Sensor) -> Result<(), RegisterError> {
-    let all: [&'static Sensor; 11] = [
+    let all: [&'static Sensor; COUNT] = [
         &IMU_SENSOR, &ODOM_SENSOR, &ENCODER_SENSOR, &RANGE_SENSOR, &BATTERY_SENSOR, &GPS_SENSOR,
         &LIDAR_SENSOR, &FLAGS_SENSOR, &CAMERA_SENSOR, power, &IMU_TEMP_SENSOR,
     ];
-    for (i, s) in all.iter().enumerate() {
-        let n = super::register_board(s)?;
-        debug_assert_eq!(n as usize, i);
-    }
-    Ok(())
+    super::register_boards(&all).map(|first| debug_assert_eq!(first, 0))
 }
 
 /// A temperature sample of a thermal sensor, milli-degrees Celsius.

@@ -143,8 +143,8 @@ fn with_no_motor_bound_a_control_write_reaches_nothing() {
 ///
 /// The sensor write used to take only `(buf_ptr, data)` and copy
 /// `data.len()` bytes, so the caller's declared length was enforced solely by
-/// the nine per-type `if buf_len < SIZE` checks in `sensor_read_into`: one rule
-/// written nine times. The record now travels in a `Sample` of at most
+/// the nine per-type `if buf_len < SIZE` checks of the old sensor read: one
+/// rule written nine times. The record now travels in a `Sample` of at most
 /// `SAMPLE_BYTES` and `copy_to` takes the destination slice, so the bound is
 /// the slice's own length: a short buffer gets a prefix (the sample's `len`
 /// still says how long the record is), never a write past it.

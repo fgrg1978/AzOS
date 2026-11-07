@@ -156,16 +156,16 @@ use azos_abi::syscall_nr::{
 };
 
 // Sensor type IDs: the badge of a `sensor.<type>` endpoint (`dev::lookup(key::SENSOR, ty)`)
-pub const SENSOR_TYPE_IMU: u64 = 0;
-pub const SENSOR_TYPE_ODOM: u64 = 1;
-pub const SENSOR_TYPE_ENCODER: u64 = 2;
-pub const SENSOR_TYPE_RANGE: u64 = 3;
-pub const SENSOR_TYPE_BATTERY: u64 = 4;
-pub const SENSOR_TYPE_GPS: u64 = 5;
-pub const SENSOR_TYPE_LIDAR: u64 = 6;
-pub const SENSOR_TYPE_GPIO_FLAGS: u64 = 7;
-pub const SENSOR_TYPE_CAMERA: u64 = 8;
-pub const SENSOR_TYPE_POWER: u64 = 9;
+pub const SENSOR_TYPE_IMU: u64 = azos_abi::sensor_sample::instance::IMU as u64;
+pub const SENSOR_TYPE_ODOM: u64 = azos_abi::sensor_sample::instance::ODOM as u64;
+pub const SENSOR_TYPE_ENCODER: u64 = azos_abi::sensor_sample::instance::ENCODER as u64;
+pub const SENSOR_TYPE_RANGE: u64 = azos_abi::sensor_sample::instance::RANGE as u64;
+pub const SENSOR_TYPE_BATTERY: u64 = azos_abi::sensor_sample::instance::BATTERY as u64;
+pub const SENSOR_TYPE_GPS: u64 = azos_abi::sensor_sample::instance::GPS as u64;
+pub const SENSOR_TYPE_LIDAR: u64 = azos_abi::sensor_sample::instance::LIDAR as u64;
+pub const SENSOR_TYPE_GPIO_FLAGS: u64 = azos_abi::sensor_sample::instance::FLAGS as u64;
+pub const SENSOR_TYPE_CAMERA: u64 = azos_abi::sensor_sample::instance::CAMERA as u64;
+pub const SENSOR_TYPE_POWER: u64 = azos_abi::sensor_sample::instance::POWER as u64;
 
 // Untyped shared memory (F00.4). `SYS_IPC_MAP` is gated to the region's
 // creator (`dispatch.rs`, SYS_IPC_MAP arm) — cross-task sharing is the

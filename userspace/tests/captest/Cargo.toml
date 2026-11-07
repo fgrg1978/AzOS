@@ -13,6 +13,8 @@ azos_inspect_lib = { path = "../../lib/inspect" }
 # `DOMAIN_MMIO_MAP` and `CapPerms` for the raw region-index call; libsys has no
 # wrapper for it.
 azos_abi = { path = "../../../crates/core/abi" }
+# Kconfig SENSOR_IMU_HZ / SENSOR_ODOM_HZ / SENSOR_SLOW_HZ: how old a sample may be.
+azos_limits = { path = "../../../crates/core/limits" }
 
 [profile.release]
 opt-level = "s"

@@ -803,6 +803,8 @@ mod geofence {
         bus: SensorBus,
         imu: Producer<'static>,
         gps: Producer<'static>,
+        battery: Producer<'static>,
+        range: Producer<'static>,
     }
 
     fn stream(of: &Sensor) -> &'static Sensor {
@@ -810,20 +812,29 @@ mod geofence {
     }
 
     fn rig() -> Rig {
-        let (imu, gps) = (stream(&board::IMU_SENSOR), stream(&board::GPS_SENSOR));
+        rig_with_imu(&board::IMU_CHANNELS)
+    }
+
+    /// A rig whose IMU declares the channels given (a rate of its own).
+    fn rig_with_imu(imu_channels: &'static [azos_drv_base::sensors::Channel]) -> Rig {
+        let imu: &'static Sensor =
+            Box::leak(Box::new(Sensor::new(imu_channels, Source::Stream(Box::leak(Box::new(new_stream()))))));
+        let (gps, battery, range) = (stream(&board::GPS_SENSOR), stream(&board::BATTERY_SENSOR), stream(&board::RANGE_SENSOR));
         Rig {
             bus: SensorBus::new(Sources {
                 imu,
                 imu_temp: stream(&board::IMU_TEMP_SENSOR),
                 odom: stream(&board::ODOM_SENSOR),
                 encoder: stream(&board::ENCODER_SENSOR),
-                range: stream(&board::RANGE_SENSOR),
-                battery: stream(&board::BATTERY_SENSOR),
+                range,
+                battery,
                 flags: stream(&board::FLAGS_SENSOR),
                 gps,
             }),
             imu: imu.producer().unwrap(),
             gps: gps.producer().unwrap(),
+            battery: battery.producer().unwrap(),
+            range: range.producer().unwrap(),
         }
     }
 
@@ -842,6 +853,18 @@ mod geofence {
     }
 
     const MS: u64 = 1_000_000;
+
+    /// The IMU's channels at the lowest rate Kconfig allows (`SENSOR_IMU_HZ`
+    /// 1): the bound must follow the rate.
+    static ONE_HZ_IMU: [azos_drv_base::sensors::Channel; 6] = {
+        let mut c = board::IMU_CHANNELS;
+        let mut i = 0;
+        while i < 6 {
+            c[i].rate_hz = 1;
+            i += 1;
+        }
+        c
+    };
 
     /// The kernel's simulated fix (`crates/drivers/gps`, `gps_init`), in the driver's
     /// units: 48.1351000° N, 11.5820000° E, quality 1, 9 satellites.
@@ -875,7 +898,7 @@ mod geofence {
         let mut r = rig();
         let t = 5 * MS;
         r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, t);
-        let max = SensorBus::GPS_MAX_AGE_NS;
+        let max = r.bus.gps_max_age_ns();
         assert_eq!(max, 2_000_000_000, "2 s");
 
         let mut s = SensorState::new();
@@ -917,12 +940,12 @@ mod geofence {
         let acq = 50 * MS;
         r.imu([0, 0, 1000], [0, 0, 0], acq);
         let mut s = SensorState::new();
-        r.bus.snapshot_at(&mut s, acq + SensorBus::IMU_MAX_AGE_NS - 1);
+        r.bus.snapshot_at(&mut s, acq + r.bus.imu_max_age_ns() - 1);
         assert!(s.imu_valid, "one tick short of the bound, by acquisition");
         // Re-delivered with the same (frozen) stamp: still the old sample.
         r.imu([0, 0, 1000], [0, 0, 0], acq);
         let mut s = SensorState::new();
-        r.bus.snapshot_at(&mut s, acq + SensorBus::IMU_MAX_AGE_NS);
+        r.bus.snapshot_at(&mut s, acq + r.bus.imu_max_age_ns());
         assert!(!s.imu_valid, "a re-delivered old sample is stale");
     }
 
@@ -978,6 +1001,67 @@ mod geofence {
         assert!(checked > 0, "the writer published nothing the reader could see");
     }
 
+    /// **A battery that stops publishing reads 0 ("unknown"), not its last
+    /// value.** A pack that sagged to 6400 mV once, and a converter that then
+    /// timed out on every read, must not hold the low-battery stop for good:
+    /// the stale sample is no reading, which the safety layer treats as
+    /// unknown. A fresh one is read as published.
+    ///
+    /// **Canary.** Read the battery through `Latest::of` (no age gate): the
+    /// stale 6400 mV is still in the snapshot.
+    #[test]
+    fn a_battery_that_stops_publishing_reads_unknown() {
+        let mut r = rig();
+        let t = 5 * MS;
+        r.battery.publish(board::battery_sample(Some(6400), t).unwrap());
+        let max = SensorBus::max_age_ns(&board::BATTERY_SENSOR, SensorBus::SLOW_FLOOR_NS);
+        let mut s = SensorState::new();
+        r.bus.snapshot_at(&mut s, t + max - 1);
+        assert_eq!(s.battery_mv, 6400, "fresh");
+        let mut s = SensorState::new();
+        r.bus.snapshot_at(&mut s, t + max);
+        assert_eq!(s.battery_mv, 0, "stale is unknown");
+    }
+
+    /// The same for the rangefinders: a "clear 2000 mm" from before the driver
+    /// went quiet must not stay past the obstacle check.
+    ///
+    /// **Canary.** Read the range through `Latest::of`: the stale distance stays.
+    #[test]
+    fn a_range_that_stops_publishing_reads_unknown() {
+        let mut r = rig();
+        let t = 5 * MS;
+        r.range.publish(board::range_sample(Some(2000), Some(1500), t).unwrap());
+        let max = SensorBus::max_age_ns(&board::RANGE_SENSOR, SensorBus::SLOW_FLOOR_NS);
+        let mut s = SensorState::new();
+        r.bus.snapshot_at(&mut s, t + max - 1);
+        assert_eq!((s.cam_dist_front, s.cam_dist_right), (2000, 1500), "fresh");
+        let mut s = SensorState::new();
+        r.bus.snapshot_at(&mut s, t + max);
+        assert_eq!((s.cam_dist_front, s.cam_dist_right), (0, 0), "stale is unknown");
+    }
+
+    /// **The age bound follows the rate.** An IMU at the lowest rate Kconfig
+    /// allows (1 Hz) is valid between its samples and stale only after
+    /// `STALE_PERIODS` of them; a fixed 200 ms would hold L0 in e-stop on
+    /// every tick.
+    ///
+    /// **Canary.** Judge the IMU against a fixed 200 ms (`IMU_FLOOR_NS`
+    /// alone): the one-second-old sample reads stale.
+    #[test]
+    fn an_imu_at_one_hertz_is_valid_between_its_samples() {
+        let mut r = rig_with_imu(&ONE_HZ_IMU);
+        let t = 5 * MS;
+        r.imu([0, 0, 1000], [0, 0, 0], t);
+        assert_eq!(r.bus.imu_max_age_ns(), azos_abi::sensor_sample::STALE_PERIODS * 1_000 * MS);
+        let mut s = SensorState::new();
+        r.bus.snapshot_at(&mut s, t + 1_000 * MS);
+        assert!(s.imu_valid, "a sample one period old is current");
+        let mut s = SensorState::new();
+        r.bus.snapshot_at(&mut s, t + r.bus.imu_max_age_ns());
+        assert!(!s.imu_valid, "several periods without one is a silent IMU");
+    }
+
     /// **A silent receiver's last fix goes stale.** The driver keeps answering
     /// with the fix of its last sentence; published with that sentence's stamp,
     /// it expires two seconds after the receiver went quiet, however often it
@@ -998,7 +1082,7 @@ mod geofence {
         r.bus.snapshot_at(&mut s, sentence + 1);
         assert_eq!(geofence_status(&s), GeofenceStatus::Inside);
         // The AHRS task re-publishes the same driver fix 3 s later.
-        let later = sentence + SensorBus::GPS_MAX_AGE_NS + 1_000 * MS;
+        let later = sentence + r.bus.gps_max_age_ns() + 1_000 * MS;
         r.gps(SIM_LAT_DEG7, SIM_LON_DEG7, 1, 9, sentence);
         let mut s = SensorState::new();
         r.bus.snapshot_at(&mut s, later);
@@ -1052,7 +1136,7 @@ mod geofence {
         assert_eq!(rep.action, SafetyAction::EmergencyStop);
 
         let mut s = SensorState::new();
-        r.bus.snapshot_at(&mut s, t + SensorBus::GPS_MAX_AGE_NS);
+        r.bus.snapshot_at(&mut s, t + r.bus.gps_max_age_ns());
         assert_eq!(geofence_status(&s), GeofenceStatus::Unknown,
             "a stale fix must not keep reporting a position");
         assert_eq!(safety_check(&s).violation, SafetyViolation::None);

@@ -67,11 +67,23 @@ pub struct SensorBus(Sources);
 struct Latest {
     sensor: &'static Sensor,
     sample: Option<Sample>,
+    /// Whether the sample is still usable at the snapshot's time (always, for
+    /// a stream read with [`Latest::of`]).
+    fresh: bool,
 }
 
 impl Latest {
     fn of(sensor: &'static Sensor) -> Self {
-        Self { sensor, sample: sensor.latest() }
+        Self { sensor, sample: sensor.latest(), fresh: true }
+    }
+
+    /// The newest sample, judged by its acquisition stamp against
+    /// [`SensorBus::max_age_ns`] at `now_ns`.
+    fn within(sensor: &'static Sensor, now_ns: u64, floor_ns: u64) -> Self {
+        let sample = sensor.latest();
+        let max = SensorBus::max_age_ns(sensor, floor_ns);
+        let fresh = sample.is_some_and(|s| sample_is_fresh(s.acq_ns, now_ns, max));
+        Self { sensor, sample, fresh }
     }
 
     /// Channel `idx`, narrowed to the type `SensorState` holds; `None` before
@@ -80,8 +92,10 @@ impl Latest {
         T::try_from(value(self.sensor.channels(), self.sample.as_ref()?, idx)?).ok()
     }
 
-    fn acq_ns(&self) -> Option<u64> {
-        self.sample.map(|s| s.acq_ns)
+    /// [`channel`](Self::channel) of a sample that is still fresh: a stale one
+    /// is no reading, which every consumer treats as unknown.
+    fn live<T: TryFrom<i64>>(&self, idx: usize) -> Option<T> {
+        self.fresh.then(|| self.channel(idx)).flatten()
     }
 }
 
@@ -104,23 +118,40 @@ impl SensorBus {
         })
     }
 
-    /// How long an IMU sample stays usable, nanoseconds on the vDSO clock: 200
-    /// ms, so it is 200 ms on QEMU, the VF2 and the K1 alike.
-    ///
-    /// Two orders of magnitude above the IMU's period, so a missed sample or a
-    /// scheduling hiccup does not blind the safety layer; two orders below
-    /// the time a falling robot takes to matter.
-    pub const IMU_MAX_AGE_NS: u64 = 200_000_000;
+    /// The IMU is judged against at least 200 ms: two orders of magnitude above
+    /// its period at the default rate, so a missed sample or a scheduling
+    /// hiccup does not blind the safety layer, and two orders below the time a
+    /// falling robot takes to matter.
+    pub const IMU_FLOOR_NS: u64 = 200_000_000;
 
-    /// How long a GPS fix stays usable: 2 s.
-    ///
-    /// Not the IMU's 200 ms. The kernel publishes GPS at the slow rate and
-    /// common receivers produce 1-10 fixes a second, so 200 ms would be one or
-    /// two periods and a scheduling hiccup under TCG would flap the fence to
-    /// `Unknown`. Two seconds is twenty publishes at the kernel's rate and two
-    /// fixes from a 1 Hz receiver; a wheeled robot at 1 m/s covers 2 m in it,
-    /// small against any fence radius worth configuring.
-    pub const GPS_MAX_AGE_NS: u64 = 2_000_000_000;
+    /// A GPS fix is judged against at least 2 s. Not the IMU's: common
+    /// receivers produce 1-10 fixes a second, so 200 ms would be one or two
+    /// periods and a scheduling hiccup under TCG would flap the fence to
+    /// `Unknown`. A wheeled robot at 1 m/s covers 2 m in 2 s, small against any
+    /// fence radius worth configuring.
+    pub const GPS_FLOOR_NS: u64 = 2_000_000_000;
+
+    /// The slow streams (battery, rangefinders, digital lines) against at
+    /// least 500 ms.
+    pub const SLOW_FLOOR_NS: u64 = 500_000_000;
+
+    /// How old a sample of `sensor` may be, nanoseconds on the vDSO clock:
+    /// `STALE_PERIODS` of the period its first channel declares (the rate is
+    /// Kconfig's, so a slow IMU is not held in e-stop for being slow), never
+    /// under `floor_ns`.
+    pub fn max_age_ns(sensor: &Sensor, floor_ns: u64) -> u64 {
+        azos_abi::sensor_sample::max_age_ns(sensor.channels().first().map_or(0, |c| c.rate_hz), floor_ns)
+    }
+
+    /// The IMU's bound on this bus.
+    pub fn imu_max_age_ns(&self) -> u64 {
+        Self::max_age_ns(self.0.imu, Self::IMU_FLOOR_NS)
+    }
+
+    /// The GPS's bound on this bus.
+    pub fn gps_max_age_ns(&self) -> u64 {
+        Self::max_age_ns(self.0.gps, Self::GPS_FLOOR_NS)
+    }
 
     /// Take the newest sample of every stream into `state`.
     pub fn snapshot(&self, state: &mut crate::types::SensorState) {
@@ -135,8 +166,8 @@ impl SensorBus {
         // leaves its last sample in the stream, and judging delivery would
         // keep every tilt, fall and spin check evaluating a frozen reading
         // and reporting it as good.
-        let imu = Latest::of(s.imu);
-        state.imu_valid = imu.acq_ns().is_some_and(|t| sample_is_fresh(t, now_ns, Self::IMU_MAX_AGE_NS));
+        let imu = Latest::within(s.imu, now_ns, Self::IMU_FLOOR_NS);
+        state.imu_valid = imu.fresh;
         for i in 0..3 {
             // 1 g upright until the first sample.
             state.accel_mg[i] = imu.channel(i).unwrap_or(if i == 2 { 1000 } else { 0 });
@@ -150,13 +181,15 @@ impl SensorBus {
         state.enc_right = enc.channel(1).unwrap_or(0);
         // 0 is "no reading", and it has to be: the safety layer guards every
         // battery check with `battery_mv > 0`, so a machine with no fuel gauge
-        // is not judged as empty.
-        let range = Latest::of(s.range);
-        state.cam_dist_front = range.channel(0).unwrap_or(0);
-        state.cam_dist_right = range.channel(1).unwrap_or(0);
-        state.battery_mv = Latest::of(s.battery).channel(0).unwrap_or(0);
-        state.temp_cdeg = Latest::of(s.imu_temp).channel(0).unwrap_or(0);
-        state.sensor_flags = Latest::of(s.flags).channel(0).unwrap_or(0);
+        // is not judged as empty. A stream that stopped publishing (a
+        // converter that times out) reads 0 too: its last value, a sagging
+        // 6400 mV, would otherwise hold the low-battery stop for good.
+        let range = Latest::within(s.range, now_ns, Self::SLOW_FLOOR_NS);
+        state.cam_dist_front = range.live(0).unwrap_or(0);
+        state.cam_dist_right = range.live(1).unwrap_or(0);
+        state.battery_mv = Latest::within(s.battery, now_ns, Self::SLOW_FLOOR_NS).live(0).unwrap_or(0);
+        state.temp_cdeg = Latest::within(s.imu_temp, now_ns, Self::IMU_FLOOR_NS).live(0).unwrap_or(0);
+        state.sensor_flags = Latest::within(s.flags, now_ns, Self::SLOW_FLOOR_NS).live(0).unwrap_or(0);
 
         // A stale fix is no fix: quality and satellites both read zero, so
         // `safety::geofence_status` returns `Unknown` whatever threshold it
@@ -164,8 +197,8 @@ impl SensorBus {
         // the quality. The fix ages from the receiver's sentence (its
         // acquisition stamp), not from the publication: a silent receiver's
         // last fix, republished every period, goes stale all the same.
-        let gps = Latest::of(s.gps);
-        let gps_fresh = gps.acq_ns().is_some_and(|t| sample_is_fresh(t, now_ns, Self::GPS_MAX_AGE_NS));
+        let gps = Latest::within(s.gps, now_ns, Self::GPS_FLOOR_NS);
+        let gps_fresh = gps.fresh;
         state.gps_lat_udeg = deg7_to_udeg(gps.channel(0).unwrap_or(0));
         state.gps_lon_udeg = deg7_to_udeg(gps.channel(1).unwrap_or(0));
         state.gps_fix = if gps_fresh { gps.channel(3).unwrap_or(0) } else { 0 };

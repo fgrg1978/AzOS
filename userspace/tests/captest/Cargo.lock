@@ -129,6 +129,7 @@ dependencies = [
  "azos_arch_api",
  "azos_inspect_lib",
  "azos_libsys",
+ "azos_limits",
 ]
 
 [[package]]

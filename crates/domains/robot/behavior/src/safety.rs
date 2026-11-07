@@ -363,7 +363,7 @@ pub fn safety_check(state: &SensorState) -> SafetyResult {
 // Common checks (all robot types)
 // ---------------------------------------------------------------------------
 
-/// Second, longer bound on top of `SensorBus::IMU_MAX_AGE_TICKS` (200 ms,
+/// Second, longer bound on top of `SensorBus::imu_max_age_ns` (200 ms at the default rate,
 /// which is already what `SensorState.imu_valid` means: "a sample arrived
 /// AND it is fresh"). Owner decision, 2026-09-26 (V1.6): fail-operational on
 /// a dead IMU forever — the behaviour before this decision — reads a robot
@@ -667,7 +667,7 @@ fn isqrt(n: u64) -> u64 {
 // (`sensor_bus.rs`), fed by the kernel's `sensor-ahrs` task on every `CH_GPS`
 // publish. `SensorBus::snapshot` fills `SensorState.gps_*` in micro-degrees
 // and zeroes the quality and satellite count of a fix older than
-// `SensorBus::GPS_MAX_AGE_TICKS`, so a receiver that goes silent reads
+// `SensorBus::gps_max_age_ns`, so a receiver that goes silent reads
 // `Unknown` rather than its last `Inside`.
 //
 // The behavior loop arms the fence once per boot at the first trusted fix

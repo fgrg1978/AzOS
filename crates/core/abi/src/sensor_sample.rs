@@ -40,3 +40,43 @@ pub const SENSOR_SAMPLE_FLAG_SYNTHETIC: u16 = 1 << 0;
 pub const fn sample_is_fresh_ns(acq_ns: u64, now_ns: u64, max_age_ns: u64) -> bool {
     acq_ns != 0 && acq_ns <= now_ns && now_ns - acq_ns < max_age_ns
 }
+
+/// The sensor instances a topology names (`sensor.<n>`), by number: the one
+/// place the numbering is written. The kernel's board registers its sensors in
+/// this order (`azos_drv_base::sensors::board`) and libsys names them for
+/// ring-3 programs.
+pub mod instance {
+    /// The accelerometer and gyroscope.
+    pub const IMU: u32 = 0;
+    /// The dead-reckoned distance and heading.
+    pub const ODOM: u32 = 1;
+    /// The wheel encoder counts.
+    pub const ENCODER: u32 = 2;
+    /// The front and right rangefinders.
+    pub const RANGE: u32 = 3;
+    /// The battery voltage.
+    pub const BATTERY: u32 = 4;
+    /// The position fix.
+    pub const GPS: u32 = 5;
+    /// The LiDAR scan (no sample record).
+    pub const LIDAR: u32 = 6;
+    /// The digital lines: PIR, sound, IR.
+    pub const FLAGS: u32 = 7;
+    /// The camera frame (no sample record).
+    pub const CAMERA: u32 = 8;
+    /// The power monitor.
+    pub const POWER: u32 = 9;
+}
+
+/// Periods of a stream a sample may be old before a reader treats it as
+/// stale: a producer that missed a few is late, one that stopped is gone.
+pub const STALE_PERIODS: u64 = 5;
+
+/// How old a sample of a stream published `rate_hz` times a second may be
+/// before it is stale: [`STALE_PERIODS`] of its period, and never less than
+/// `floor_ns` (a reader's own tolerance for scheduling hiccups). A stream with
+/// no rate (0) is bounded by the floor alone.
+pub const fn max_age_ns(rate_hz: u32, floor_ns: u64) -> u64 {
+    let periods = if rate_hz == 0 { 0 } else { STALE_PERIODS * 1_000_000_000 / rate_hz as u64 };
+    if periods > floor_ns { periods } else { floor_ns }
+}

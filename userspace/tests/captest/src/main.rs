@@ -280,34 +280,37 @@ fn read_sensor(sensor_type: u64, buf: &mut [u8]) -> isize {
     }
 }
 
-/// Bound on the age of a sample when it is read: the sensor class's streams
-/// hold the newest sample their task published (the IMU every 10 ms, the
-/// slowest every 100 ms by default; five periods of the slowest bound the age), so a read finds one acquired before the
-/// call, and a stream whose producer stalled finds an old one.
-const CACHED_MAX_AGE_NS: u64 = 500_000_000;
+/// How old a sample may be when it is read: five periods of its stream's rate
+/// (Kconfig `SENSOR_*_HZ`, the kernel's own bound, `azos_abi::sensor_sample::max_age_ns`),
+/// never under this floor. The sensor class's streams hold the newest sample
+/// their task published, so a read finds one acquired before the call, and a
+/// stream whose producer stalled finds an old one.
+const SAMPLE_FLOOR_NS: u64 = 500_000_000;
 
 /// Each granted sensor read through its `sensor` endpoint, between two reads
 /// of the vDSO clock: the record has the length of the type, and the
-/// acquisition stamp is on the same clock as the reader's — at most
-/// [`CACHED_MAX_AGE_NS`] (500 ms) before the call, never after it — and never goes
-/// backwards across two reads. The battery has a reading only where a
-/// converter is fitted (QEMU has none): a stamped 2-byte sample, or
-/// `NOT_READY`, never an invented value.
+/// acquisition stamp is on the same clock as the reader's — within its bound
+/// before the call, never after it — and never goes backwards across two
+/// reads. The battery has a reading only where a converter is fitted (QEMU has
+/// none): a measured 2-byte sample, or `NOT_READY`, never an invented value
+/// (a simulated one carries the synthetic flag).
 ///
 /// The summary line is printed only when every check held; the gate row
 /// greps it on both ISAs. Canary: the `sensor-ts-freeze` kernel feature (the
-/// IMU driver reports its first stamp forever) fails `IMU acquired within 500 ms
-/// before the call`.
+/// IMU driver reports its first stamp forever) fails `IMU acquired within its
+/// bound before the call`.
 fn stamped_reads() {
-    // (type, payload bytes)
-    const TYPES: [(u64, usize, &[u8]); 4] = [
-        (sys::SENSOR_TYPE_IMU, 24, b"IMU"),
-        (sys::SENSOR_TYPE_ODOM, 16, b"ODOM"),
-        (sys::SENSOR_TYPE_ENCODER, 16, b"ENCODER"),
-        (sys::SENSOR_TYPE_RANGE, 4, b"RANGE"),
+    use azos_abi::sensor_sample::max_age_ns;
+    // (type, payload bytes, the stream's rate in Hz)
+    const TYPES: [(u64, usize, u32, &[u8]); 4] = [
+        (sys::SENSOR_TYPE_IMU, 24, azos_limits::SENSOR_IMU_HZ as u32, b"IMU"),
+        (sys::SENSOR_TYPE_ODOM, 16, azos_limits::SENSOR_ODOM_HZ as u32, b"ODOM"),
+        (sys::SENSOR_TYPE_ENCODER, 16, azos_limits::SENSOR_ODOM_HZ as u32, b"ENCODER"),
+        (sys::SENSOR_TYPE_RANGE, 4, azos_limits::SENSOR_SLOW_HZ as u32, b"RANGE"),
     ];
     let before = unsafe { FAILURES };
-    for &(ty, plen, name) in TYPES.iter() {
+    for &(ty, plen, rate, name) in TYPES.iter() {
+        let max_age = max_age_ns(rate, SAMPLE_FLOOR_NS);
         let Some(cap) = sys::dev::lookup(sys::dev::key::SENSOR, ty as u32) else {
             report(b"sensor_read_ts: sensor endpoint lookup", false, -2);
             continue;
@@ -322,7 +325,7 @@ fn stamped_reads() {
             let ok_len = n == plen as isize;
             let ok_hdr = r.is_ok();
             let acq = r.map(|smp| smp.acq_ns).unwrap_or(0);
-            let ok_time = acq != 0 && acq <= t1 && t0.saturating_sub(acq) < CACHED_MAX_AGE_NS;
+            let ok_time = acq != 0 && acq <= t1 && t0.saturating_sub(acq) < max_age;
             let ok_mono = acq >= prev;
             prev = acq;
             if round == 0 {
@@ -337,19 +340,21 @@ fn stamped_reads() {
                 stamped_fail(name, b"length/header", n);
             }
             if !ok_time {
-                stamped_fail(name, b"acquired within 500 ms before the call", acq as isize);
+                stamped_fail(name, b"acquired within its bound before the call", acq as isize);
             }
             if !ok_mono {
                 stamped_fail(name, b"stamp went backwards", acq as isize);
             }
         }
     }
-    // No converter, no battery: a sample is a measurement, its absence is
-    // NOT_READY.
+    // No converter, no battery: a measured sample, or NOT_READY. A made-up
+    // voltage (the old ring read answered 3700 mV flagged synthetic) fails.
     let mut batt = [0u8; 64];
     let battery = sys::dev::lookup(sys::dev::key::SENSOR, sys::SENSOR_TYPE_BATTERY as u32).map(|e| sys::dev::sensor_read(e, &mut batt));
-    report(b"sensor read(BATTERY) is a 2-byte sample or NOT_READY",
-           matches!(battery, Some(Ok(smp)) if smp.len == 2) || matches!(battery, Some(Err(sys::dev::outcome::NOT_READY))), 0);
+    let synthetic = azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC as u32;
+    report(b"sensor read(BATTERY) is a measured 2-byte sample or NOT_READY",
+           matches!(battery, Some(Ok(smp)) if smp.len == 2 && smp.flags & synthetic == 0)
+               || matches!(battery, Some(Err(sys::dev::outcome::NOT_READY))), 0);
     // A buffer too short for the record: the reply still carries the whole
     // record and its length, and the client copies what fits, so the
     // truncation is visible, never silent.
@@ -358,7 +363,7 @@ fn stamped_reads() {
     report(b"sensor read(IMU, 23-byte buffer) reports the 24-byte record",
            matches!(imu.map(|e| sys::dev::sensor_read(e, &mut short)), Some(Ok(smp)) if smp.len == 24), 0);
     if unsafe { FAILURES } == before {
-        sys::println(b"[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired < 500 ms before the call (IMU ODOM ENCODER RANGE), monotonic");
+        sys::println(b"[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired within their bound before the call (IMU ODOM ENCODER RANGE), monotonic");
     }
 }
 

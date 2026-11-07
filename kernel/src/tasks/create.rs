@@ -340,7 +340,8 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     #[cfg(feature = "use-robot")]
     azos_sched::task_create("sensor-slow", sensor_slow_task, 0, azos_sched::DEFAULT_PRIORITY);
     #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Sensor tasks: imu(RT,100Hz) odom(50Hz) sensor-slow(10Hz)");
+    kprintln!("[SCHED] Sensor tasks: imu(RT,{}Hz) odom({}Hz) sensor-slow({}Hz)",
+        azos_limits::SENSOR_IMU_HZ, azos_limits::SENSOR_ODOM_HZ, azos_limits::SENSOR_SLOW_HZ);
 
     // Fast-IPC slot census, diagnostic only. Gated so production builds and
     // ordinary QEMU runs never create the task at all.

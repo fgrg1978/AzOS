@@ -64,6 +64,20 @@ const ESTOP_HOLD_MS: u64 = 2000;         // hold e-stop for 2s before re-checkin
 // Sensor types — re-exported from libsys
 use sys::{SENSOR_TYPE_IMU, SENSOR_TYPE_RANGE};
 
+/// How old a sample may be, by sensor: five periods of the stream's rate
+/// (Kconfig), never under this floor. A read answers the stream's newest sample,
+/// not a measurement made during the call, so a producer that stopped is told by
+/// its stamp.
+const SAMPLE_FLOOR_NS: u64 = 200_000_000;
+
+fn fresh(acq_ns: u64, rate_hz: u32) -> bool {
+    azos_abi::sensor_sample::sample_is_fresh_ns(
+        acq_ns,
+        sys::vdso_now_ns(),
+        azos_abi::sensor_sample::max_age_ns(rate_hz, SAMPLE_FLOOR_NS),
+    )
+}
+
 // Motor IDs
 const MOTOR_LEFT: u64 = 0;
 const MOTOR_RIGHT: u64 = 1;
@@ -93,14 +107,16 @@ impl ReflexSensors {
         // Rangefinder: 4 bytes
         let mut range_buf = [0u8; 4];
         // SAFETY: written once by `motor_caps_init` before this loop runs.
-        if matches!(sys::dev::sensor_read(unsafe { CAP_RANGE }, &mut range_buf), Ok(s) if s.len >= 4) {
+        if matches!(sys::dev::sensor_read(unsafe { CAP_RANGE }, &mut range_buf),
+                    Ok(s) if s.len >= 4 && fresh(s.acq_ns, azos_limits::SENSOR_SLOW_HZ as u32)) {
             self.range_front = u16::from_le_bytes([range_buf[0], range_buf[1]]);
             self.range_right = u16::from_le_bytes([range_buf[2], range_buf[3]]);
         }
 
         // IMU: 24 bytes (only need accel for tilt detection)
         let mut imu_buf = [0u8; 24];
-        if matches!(sys::dev::sensor_read(unsafe { CAP_IMU }, &mut imu_buf), Ok(s) if s.len >= 12) {
+        if matches!(sys::dev::sensor_read(unsafe { CAP_IMU }, &mut imu_buf),
+                    Ok(s) if s.len >= 12 && fresh(s.acq_ns, azos_limits::SENSOR_IMU_HZ as u32)) {
             self.accel_x_mg = i32::from_le_bytes([
                 imu_buf[0], imu_buf[1], imu_buf[2], imu_buf[3],
             ]);
@@ -177,8 +193,18 @@ fn motor_caps_init() -> bool {
     // distance only under QEMU): starting anyway would call a robot that
     // cannot see an obstacle "watched", so the daemon declares itself
     // unavailable instead and says why on the console.
+    // The stream may not have published yet when this starts: ask for a few
+    // of its periods before giving up.
     let mut probe = [0u8; 4];
-    if !matches!(sys::dev::sensor_read(rng, &mut probe), Ok(s) if s.len >= 4) {
+    let mut reports = false;
+    for _ in 0..10 {
+        reports = matches!(sys::dev::sensor_read(rng, &mut probe), Ok(s) if s.len >= 4);
+        if reports {
+            break;
+        }
+        sys::sleep(1000 / azos_limits::SENSOR_SLOW_HZ as u64);
+    }
+    if !reports {
         sys::println(b"[reflex] UNAVAILABLE: no rangefinder reports on this board");
         return false;
     }

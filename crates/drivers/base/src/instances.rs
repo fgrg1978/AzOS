@@ -102,7 +102,7 @@ pub struct Instances<C: ?Sized + 'static, const N: usize> {
 
 impl<C: ?Sized + Sync + 'static, const N: usize> Instances<C, N> {
     /// A class with nothing registered: the board's own instances are added
-    /// with [`register_board`](Self::register_board), in the order that fixes
+    /// with [`register_boards`](Self::register_boards), in the order that fixes
     /// their numbers.
     pub const fn empty() -> Self {
         let slots = [Slot { owner: Owner::Nobody, ctrl: None, closing: false }; N];
@@ -117,13 +117,23 @@ impl<C: ?Sized + Sync + 'static, const N: usize> Instances<C, N> {
         Instances { slots: SpinLock::new(slots), inflight: [const { AtomicU32::new(0) }; N] }
     }
 
-    /// Register one of the board's own instances, never given back: the lowest
-    /// number nobody has had.
-    pub fn register_board(&self, ctrl: &'static C) -> Result<u32, RegisterError> {
+    /// Register several of the board's own instances at once, consecutively,
+    /// or none: the number of the first, or `Full` when they do not all fit
+    /// (nothing is taken then, so no number is left registered with nobody to
+    /// use it). Never given back.
+    pub fn register_boards(&self, ctrls: &[&'static C]) -> Result<u32, RegisterError> {
         let mut slots = self.slots.lock();
-        let i = fresh(&slots[..]).ok_or(RegisterError::Full)?;
-        slots[i] = Slot { owner: Owner::Board, ctrl: Some(ctrl), closing: false };
-        Ok(i as u32)
+        let free = slots.iter().filter(|s| s.owner == Owner::Nobody).count();
+        if free < ctrls.len() || ctrls.is_empty() {
+            return Err(RegisterError::Full);
+        }
+        let mut first = None;
+        for c in ctrls {
+            let i = fresh(&slots[..]).ok_or(RegisterError::Full)?;
+            slots[i] = Slot { owner: Owner::Board, ctrl: Some(*c), closing: false };
+            first.get_or_insert(i as u32);
+        }
+        first.ok_or(RegisterError::Full)
     }
 
     /// Register device `dev`'s controller: the instance number it had before,

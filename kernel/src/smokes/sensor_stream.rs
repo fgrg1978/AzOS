@@ -18,9 +18,11 @@ use azos_drv_sys::timebase::{now, vdso_ns, TIMER_FREQ};
 static VIRTUAL_LOG: Stream = stream();
 static VIRTUAL_IMU: Sensor = Sensor::new(board::IMU_SENSOR.channels(), Source::Stream(&VIRTUAL_LOG));
 
-/// Acquisitions to publish: two seconds at the default rate, and well past
-/// the stream's depth, so the reader keeping up is what keeps the log whole.
-const TICKS: u64 = 200;
+/// Acquisitions to publish: two seconds at the configured rate, and at least
+/// twenty (so the producer's every-10th drop shows at the lowest rate), well
+/// past the stream's depth at the default rate, so the reader keeping up is
+/// what keeps the log whole.
+const TICKS: u64 = if azos_limits::SENSOR_IMU_HZ as u64 * 2 > 20 { azos_limits::SENSOR_IMU_HZ as u64 * 2 } else { 20 };
 
 azos_ktest::ktest_late! {
     fn sensors_virtual_imu_stream_loses_no_sample() {

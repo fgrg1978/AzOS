@@ -328,10 +328,13 @@ pub fn get(n: u32) -> Option<Lease<'static, Sensor>> {
     SENSORS.get(n)
 }
 
-/// Register one of the board's own sensors; its instance number.
-pub fn register_board(s: &'static Sensor) -> Result<u32, RegisterError> {
-    SENSORS.register_board(s)
+/// Register the board's own sensors consecutively, or none; the instance number
+/// of the first.
+pub fn register_boards(sensors: &[&'static Sensor]) -> Result<u32, RegisterError> {
+    SENSORS.register_boards(sensors)
 }
+
+const _: () = assert!(INSTANCES >= board::COUNT, "Kconfig SENSOR_INSTANCES is below the board's own sensors");
 
 /// The temperature sensor `n` reads, in milli-degrees Celsius: the sensor's
 /// read, decoded by its first channel, which must measure a temperature in that

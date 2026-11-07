@@ -10,7 +10,7 @@
 //!      taken just before and just after its call, and none goes backwards.
 //!   2. **The bus ages the sample from that stamp.** `SENSOR_BUS`, reading the
 //!      IMU stream the kernel's `imu` task publishes into, is snapshotted and
-//!      the newest sample's age compared with `SensorBus::IMU_MAX_AGE_NS` — the
+//!      the newest sample's age compared with `SensorBus::imu_max_age_ns` — the
 //!      check `SensorState::imu_valid` carries into L0 (`safety::check_common`).
 //!
 //! `[SENSORTS] PASS: ...` when both hold. `[SENSORTS] STALE: ...` is printed
@@ -42,7 +42,7 @@ fn sleep_ms(ms: u64) {
 }
 
 pub(crate) fn sensor_ts_smoke_task(_: usize) {
-    use azos_behavior::sensor_bus::{SensorBus, SENSOR_BUS};
+    use azos_behavior::sensor_bus::SENSOR_BUS;
     use azos_behavior::types::SensorState;
     use azos_drv_base::sensors::board::IMU_SENSOR;
     use core::sync::atomic::Ordering as O;
@@ -82,7 +82,7 @@ pub(crate) fn sensor_ts_smoke_task(_: usize) {
     let mut s = SensorState::new();
     SENSOR_BUS.snapshot_at(&mut s, now);
     let age = now.saturating_sub(IMU_SENSOR.latest().map_or(0, |i| i.acq_ns));
-    let bound = SensorBus::IMU_MAX_AGE_NS;
+    let bound = SENSOR_BUS.imu_max_age_ns();
     let mut verdict = azos_behavior::safety::safety_check(&s);
     // A stale bus sample: give L0 its grace (1 s) and up to half a second
     // more to act on it, judging fresh snapshots, as the behaviour loop does.

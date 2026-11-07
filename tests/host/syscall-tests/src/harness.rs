@@ -222,9 +222,7 @@ pub mod sensor_rig {
                 &board::GPS_SENSOR, &board::LIDAR_SENSOR, &board::FLAGS_SENSOR, &board::CAMERA_SENSOR, &POWER,
                 &board::IMU_TEMP_SENSOR,
             ];
-            for (n, s) in all.iter().enumerate() {
-                assert_eq!(sensors::register_board(s), Ok(n as u32));
-            }
+            assert_eq!(sensors::register_boards(&all), Ok(0));
         });
     }
 }
