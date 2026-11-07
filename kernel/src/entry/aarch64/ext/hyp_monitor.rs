@@ -422,7 +422,7 @@ pub(crate) fn lock_image() {
     };
     if r[0] as i64 == OK {
         azos_mm::text_poke::set_word_hook(text_patch);
-        azos_mm::ptpool::set_monitor_hook(pt_set);
+        azos_mm::ptpool::set_writer_hook(pt_set);
         // SAFETY: written once above, before the call.
         let n = unsafe { (*core::ptr::addr_of!(LOCK_DESC)).nsites };
         kprintln!("[BOOT] EL2:        kernel image locked (text, rodata; {} key sites)", n);

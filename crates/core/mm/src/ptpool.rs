@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel half's page-table pool (VIRT_SPLIT, Kconfig `HYP_PT_POOL_PAGES`).
+//! The kernel half's page-table pool (VIRT_SPLIT or PT_PROTECTION, Kconfig
+//! `HYP_PT_POOL_PAGES`).
 //!
 //! The tables under the kernel root come from one contiguous run, carved at
-//! boot, so the monitor can make exactly those pages read-only for the host
-//! (`pt_lock_pool`) and take every later word into them through `pt_set`
-//! ([`crate::pt`] is the only caller). A table is never freed: the kernel half
+//! boot, so exactly those pages can be made read-only (the monitor's
+//! `pt_lock_pool`, or the kernel's own mapping) and every later word into them
+//! goes through the pool's writer ([`crate::pt`] is the only caller). A table is never freed: the kernel half
 //! only grows, and a page handed back is one a lost race left unlinked and empty,
 //! which goes to the next table of the same level (the monitor fixes the level a
 //! page serves at its first use).
@@ -36,22 +37,22 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The level each handed-out page serves, read without the lock by every write.
 static LEVEL: [AtomicU8; MAX_PAGES] = [const { AtomicU8::new(0) }; MAX_PAGES];
 
-/// The pool's range in the direct map, set when the monitor has made it read-only.
+/// The pool's range in the direct map, set when it has been made read-only.
 static ARMED_LO: AtomicUsize = AtomicUsize::new(0);
 static ARMED_LEN: AtomicUsize = AtomicUsize::new(0);
 
-/// What the monitor does for a word in the pool: replace `expected` by `new` in
+/// What the pool's writer (the monitor, or the kernel in its write window) does for a word in the pool: replace `expected` by `new` in
 /// the entry at physical `entry_pa`, a table of `level`. `Err` carries the word
 /// found when it was not `expected`; a refusal never returns.
-pub type MonitorSet = fn(entry_pa: usize, expected: u64, new: u64, level: usize) -> Result<(), u64>;
+pub type PoolWriter = fn(entry_pa: usize, expected: u64, new: u64, level: usize) -> Result<(), u64>;
 
 azos_common::ro_hook! {
-    static MONITOR_SET: MonitorSet;
+    static POOL_WRITER: PoolWriter;
 }
 
-/// Route every word in the armed pool through `f`. Before the seal.
-pub fn set_monitor_hook(f: MonitorSet) {
-    MONITOR_SET.set(f);
+/// Route every word in the armed pool through `f`. Before the pool is armed.
+pub fn set_writer_hook(f: PoolWriter) {
+    POOL_WRITER.set(f);
 }
 
 /// Pages the kernel half's tables need for `ram` bytes of RAM, one table of
@@ -116,7 +117,7 @@ pub fn extent() -> (usize, usize, usize) {
     (BASE.load(Ordering::Relaxed), POOL.lock_irqsave().next, COUNT.load(Ordering::Relaxed))
 }
 
-/// Words in the pool go through the monitor from here on.
+/// Words in the pool go through the writer from here on.
 pub fn arm() {
     ARMED_LEN.store(COUNT.load(Ordering::Relaxed) * PAGE_SIZE, Ordering::Relaxed);
     ARMED_LO.store(phys_to_virt(BASE.load(Ordering::Relaxed)), Ordering::Release);
@@ -133,15 +134,15 @@ pub(crate) fn route(slot: usize, seen: u64, new: u64) -> Option<Result<u64, u64>
     if !owns(slot) {
         return None;
     }
-    Some(through_monitor(slot, seen, new))
+    Some(through_writer(slot, seen, new))
 }
 
 #[cold]
 #[inline(never)]
-fn through_monitor(slot: usize, seen: u64, new: u64) -> Result<u64, u64> {
+fn through_writer(slot: usize, seen: u64, new: u64) -> Result<u64, u64> {
     let pa = virt_to_phys(slot);
     let level = LEVEL[(pa - BASE.load(Ordering::Relaxed)) / PAGE_SIZE].load(Ordering::Relaxed) as usize;
-    let set = MONITOR_SET.get().expect("the pool is armed after the hook is set");
+    let set = POOL_WRITER.get().expect("the pool is armed after the hook is set");
     match set(pa, seen, new, level) {
         Ok(()) => Ok(seen),
         Err(cur) => Err(cur),
@@ -153,7 +154,7 @@ fn through_monitor(slot: usize, seen: u64, new: u64) -> Result<u64, u64> {
 #[inline(never)]
 pub(crate) fn replace(slot: &core::sync::atomic::AtomicU64, word: u64) {
     let mut cur = slot.load(Ordering::Relaxed);
-    while let Err(now) = through_monitor(slot as *const _ as usize, cur, word) {
+    while let Err(now) = through_writer(slot as *const _ as usize, cur, word) {
         cur = now;
     }
 }

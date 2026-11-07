@@ -16,8 +16,8 @@ pub mod pmm;
 pub mod vmm;
 /// The funnel every page-table word goes through (host-tested, `#[path]`).
 pub mod pt;
-/// The kernel half's page-table pool the resident monitor protects.
-#[cfg(feature = "hyp-monitor")]
+/// The kernel half's page-table pool.
+#[cfg(feature = "pt-pool")]
 pub mod ptpool;
 /// N12h: CAS installs of page-table words the user mapper and the kernel-half
 /// merge race for (host-tested, `#[path]`).

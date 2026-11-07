@@ -68,7 +68,7 @@ mod pool {
         // SAFETY: a zeroed allocation of the pool's size, kept for the process.
         let base = unsafe { std::alloc::alloc_zeroed(layout) } as usize;
         ptpool::init(crate::addr::PhysAddr::new(base), ptpool::MAX_PAGES);
-        ptpool::set_monitor_hook(hook);
+        ptpool::set_writer_hook(hook);
 
         let root = ptpool::take(2).unwrap();
         let mid = ptpool::take(1).unwrap();

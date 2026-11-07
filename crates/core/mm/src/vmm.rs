@@ -372,20 +372,20 @@ fn fault_hook() {
 }
 
 /// A zeroed page for a table of `level` under `root`: the kernel-half pool
-/// for the kernel's root when the monitor protects it, the table zone otherwise.
+/// for the kernel's root when the pool is in use, the table zone otherwise.
 fn table_page(root: usize, level: usize) -> KResult<crate::addr::PhysAddr> {
-    #[cfg(feature = "hyp-monitor")]
+    #[cfg(feature = "pt-pool")]
     if root == KERNEL_ROOT.load(Ordering::Relaxed) {
         return crate::ptpool::take(level);
     }
-    #[cfg(not(feature = "hyp-monitor"))]
+    #[cfg(not(feature = "pt-pool"))]
     let _ = (root, level);
     pmm::alloc_page_zone(Zone::PageTable)
 }
 
 /// Give back a table page a lost race left unlinked.
 fn table_page_free(page: crate::addr::PhysAddr) {
-    #[cfg(feature = "hyp-monitor")]
+    #[cfg(feature = "pt-pool")]
     if crate::ptpool::contains(page) {
         return crate::ptpool::give_back(page);
     }
@@ -557,12 +557,12 @@ pub fn create_pagetable() -> KResult<usize> {
     Ok(pt_phys)
 }
 
-/// The kernel's root: the first page of the monitor's pool when it protects
-/// the kernel half, a table-zone page otherwise.
+/// The kernel's root: the first page of the pool when the kernel half has one,
+/// a table-zone page otherwise.
 fn create_kernel_pagetable(ram: usize) -> KResult<usize> {
-    #[cfg(not(feature = "hyp-monitor"))]
+    #[cfg(not(feature = "pt-pool"))]
     let _ = ram;
-    #[cfg(feature = "hyp-monitor")]
+    #[cfg(feature = "pt-pool")]
     {
         let pages = crate::ptpool::pages_for(ram, ARCH.levels(), entries_per_table(), crate::kstack::TABLES, azos_limits::HYP_PT_POOL_MARGIN as usize)
             .ok_or(KernelError::OutOfMemory)?;
@@ -571,7 +571,7 @@ fn create_kernel_pagetable(ram: usize) -> KResult<usize> {
         meta_add(page.as_usize())?;
         Ok(page.as_usize())
     }
-    #[cfg(not(feature = "hyp-monitor"))]
+    #[cfg(not(feature = "pt-pool"))]
     create_pagetable()
 }
 

@@ -19,8 +19,12 @@ azos_bytepipe = { workspace = true }
 azos_decision = { workspace = true }
 
 [features]
-# Kconfig HYP_MONITOR: the kernel half's tables come from a pool the resident monitor protects (src/ptpool.rs).
-hyp-monitor = []
+# The kernel half's tables come from one pool (src/ptpool.rs); the features below say who protects it.
+pt-pool = []
+# Kconfig HYP_MONITOR: the resident monitor protects the pool.
+hyp-monitor = ["pt-pool"]
+# Kconfig PT_PROTECTION: the kernel protects the pool from itself, a write window opened in `pt_set`.
+pt-protection = ["pt-pool"]
 # Canary only (host row, tests/host/mm-tests): the pool is never recognised, so its words are stored directly.
 ptpool-unrouted-canary = []
 # Kconfig KASAN: the sanitizer's hooks and shadow (src/kasan.rs); the kernel is built with -Zsanitizer=kernel-address.

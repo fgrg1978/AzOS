@@ -676,8 +676,8 @@ pub fn free_run(addr: PhysAddr, n: usize) -> KResult<()> {
 /// Free a single 4 KiB physical page.
 pub fn free_page(addr: PhysAddr) -> KResult<()> {
     let phys = addr.as_usize();
-    // A page of the kernel half's pool is read-only to the host and never the allocator's.
-    #[cfg(feature = "hyp-monitor")]
+    // A page of the kernel half's pool is never the allocator's.
+    #[cfg(feature = "pt-pool")]
     if crate::ptpool::contains(addr) {
         return Err(KernelError::PermissionDenied);
     }
