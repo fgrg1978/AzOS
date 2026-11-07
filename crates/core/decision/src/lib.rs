@@ -419,8 +419,9 @@ pub enum Rule {
     ReclaimSkip,
     /// A process that pins memory (real-time, or a locked Domain) was refused
     /// over a shared swappable object's pages that were out: a map by a process
-    /// already admitted (site 1), a change to a real-time class (site 3) or an
-    /// exec that locks its Domain (site 4) whose pages could not come back.
+    /// already admitted (site 1), a change to a real-time class (site 3), an
+    /// exec that locks its Domain (site 4) or a `MEMOBJ_RESTORE` (site 5) whose
+    /// pages could not come back.
     PinRestore,
 }
 
@@ -1456,8 +1457,8 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // The subject is the task that asked. `object` is the object's packed reference (0 for a change of class
         // or a Domain lock, which concern all of the process's or the Domain's), `site` 1 a map by a process already
-        // admitted, 3 a change to a real-time class or priority, 4 an exec that locks its Domain, `errno` why it was
-        // refused.
+        // admitted, 3 a change to a real-time class or priority, 4 an exec that locks its Domain, 5 a
+        // `MEMOBJ_RESTORE`, `errno` why it was refused.
         name: "pin-restore",
         subject: "tid",
         fields: ["object", "site", "errno"],

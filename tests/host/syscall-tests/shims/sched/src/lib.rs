@@ -460,8 +460,27 @@ pub fn shim_pin_task_memory(tid: u32, pinned: bool) {
 }
 
 /// Does reclaim leave the memory of thread `tid` alone (`scheduler::thread_pins_memory`)?
+/// A task [`shim_pin_task_memory`] or [`shim_set_realtime`] named.
 pub fn thread_pins_memory(tid: u32) -> bool {
-    PINNED_TASKS.lock().unwrap().contains(&tid)
+    PINNED_TASKS.lock().unwrap().contains(&tid) || thread_is_realtime(tid)
+}
+
+static REALTIME_TASKS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// Test-only control surface: make `tid` a real-time thread
+/// (`scheduler::thread_is_realtime`), which also pins its memory.
+pub fn shim_set_realtime(tid: u32, rt: bool) {
+    shim_assert_serial("shim_set_realtime");
+    let mut v = REALTIME_TASKS.lock().unwrap();
+    v.retain(|&t| t != tid);
+    if rt {
+        v.push(tid);
+    }
+}
+
+/// Is `tid` a real-time thread (`scheduler::thread_is_realtime`)?
+pub fn thread_is_realtime(tid: u32) -> bool {
+    REALTIME_TASKS.lock().unwrap().contains(&tid)
 }
 
 /// Test-only control surface: mark the current task `mem = "locked"`.

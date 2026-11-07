@@ -147,8 +147,9 @@ struct Group {
     /// longer be abandoned.
     handing: bool,
     /// The TIDs of the members other than the leader, 0 for a free entry: who
-    /// [`members_of`] and [`any_member`] ask, without a pass over every task
-    /// slot (reclaim asks for every holder of every page it takes).
+    /// [`any_member`] asks, without a pass over every task slot (reclaim asks
+    /// for every holder of every page it takes, under the object table, which
+    /// orders before this table).
     members: [u32; GROUP_THREADS_MAX as usize],
 }
 
@@ -287,17 +288,23 @@ pub(crate) fn unadmit(leader: u32, leader_idx: usize) {
 }
 
 /// The new member in slot `idx` belongs to `leader`'s group. Before it can
-/// run (the slot is parked until its hand-off is published).
-pub(crate) fn join(idx: usize, leader: u32) {
+/// run (the slot is parked until its hand-off is published). `false` when it
+/// is in the group but not in its member list (no task in the slot, or no
+/// entry left, which [`admit`]'s count rules out): [`any_member`] would not
+/// see it, so the caller must not let it run.
+#[must_use]
+pub(crate) fn join(idx: usize, leader: u32) -> bool {
     if idx >= MAX_TASKS {
-        return;
+        return false;
     }
     LEAD[idx].store(leader, Ordering::Release);
-    let Some(tid) = crate::scheduler::tid_for_idx(idx) else { return };
+    let Some(tid) = crate::scheduler::tid_for_idx(idx) else { return false };
     let mut g = GROUPS.lock();
-    if let Some(m) = g.iter_mut().find(|e| e.leader == leader).and_then(|e| e.members.iter_mut().find(|m| **m == 0)) {
-        *m = tid;
-    }
+    let Some(m) = g.iter_mut().find(|e| e.leader == leader).and_then(|e| e.members.iter_mut().find(|m| **m == 0)) else {
+        return false;
+    };
+    *m = tid;
+    true
 }
 
 /// Ktest hook (`signal_retarget_on_thread_detach`): make live task
@@ -312,7 +319,10 @@ pub fn ktest_group(leader: u32, member: u32) -> bool {
     if !admit(leader, li) {
         return false;
     }
-    join(mi, leader);
+    if !join(mi, leader) {
+        ktest_ungroup(leader, member);
+        return false;
+    }
     true
 }
 
@@ -471,11 +481,17 @@ fn group_tids(leader: u32) -> [u32; GROUP_THREADS_MAX as usize + 1] {
 }
 
 /// The live members of `leader`'s group other than `except`, into `out`;
-/// how many. The hook a process-directed signal and `exit_group` use.
+/// how many. The hook a process-directed signal and `exit_group` use. A pass
+/// over the per-slot leaders and no lock: a signal may be posted from an
+/// interrupt (`signal_state::post`), where the group table cannot be taken.
 pub fn members_of(leader: u32, except: u32, out: &mut [u32]) -> usize {
     let mut n = 0;
-    for tid in group_tids(leader) {
-        if tid == 0 || tid == except || crate::scheduler::idx_for_tid(tid).is_none() {
+    for idx in 0..MAX_TASKS {
+        if LEAD[idx].load(Ordering::Acquire) != leader {
+            continue;
+        }
+        let Some(tid) = crate::scheduler::tid_for_idx(idx) else { continue };
+        if tid == except || tid == 0 {
             continue;
         }
         if n < out.len() {

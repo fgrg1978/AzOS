@@ -3363,6 +3363,15 @@ pub fn shm_end_drop_typed(cap: u32, ends: u64) -> isize {
     invoke(cap, invoke_abi::MEMOBJ_END_DROP, [ends, 0, 0, 0]).0
 }
 
+/// Bring every page of the object behind a `Cap<Shm>` that is out back into
+/// memory, with this process's reference on it (`MEMOBJ_RESTORE`): what a
+/// real-time process calls in its setup phase, before it maps a shared
+/// swappable object, never in its loop (it may wait on the swap device).
+/// Requires `READ`. 0 or `-Errno`.
+pub fn shm_restore_typed(cap: u32) -> isize {
+    invoke(cap, invoke_abi::MEMOBJ_RESTORE, [0; 4]).0
+}
+
 /// Allocate an io_ring, mint a `Cap<IoRing>`, map the ring page into this
 /// task, and write its **user virtual address** as `u64` LE into `addr_out`.
 ///

@@ -145,7 +145,7 @@ Operations on an object, all in `memobj.rs`:
 
 | Operation | Functions |
 |-----------|-----------|
-| Map/unmap | The mapping a task made is recorded on its holder record (`MemHolder::map_va`, `map_root`, `map_pages`, `map_write`). `memobj_resolve_map` bounds a map by the capability's rights; `memobj_protect_ref` changes access within what the map was allowed. |
+| Map/unmap | The mapping a task made is recorded on its holder record (`MemHolder::map_va`, `map_space`, `map_pages`, `map_write`). `memobj_resolve_map` bounds a map by the capability's rights; `memobj_protect_ref` changes access within what the map was allowed. |
 | Revoke | A share is taken back with the warrant it derived from: the sweep of `SYS_CAP_REVOKE` hands each swept `Cap<Shm>` to `memobj_warrant_swept` (the `SweptHook` of `cap_store.rs`, registered at boot), which unmaps the Domain's holders on every hart and gives back their references. The sweep first drops the objects the Domain still names by another `Cap<Shm>` slot (`SweptSet::retain_unheld`, asked under the table's lock), and other Domains' holders are untouched. There is no resize operation: an object's page count is fixed at creation, and reclaim takes frames only from a volatile object (`ATTR_VOLATILE`). |
 | Clone | `memobj_clone`: frames are shared through `FrameDesc::refcount` until a write mapping or `memobj_cow_break` gives the clone its own. |
 | Move | `memobj_move` hands a task's references, its charge (when it holds the owning reference) and its ownership to another task. |
@@ -813,11 +813,28 @@ and its number in the object, so one entry serves every mapper.
   with the attach site. An application that wants swappable memory and a kernel
   ring uses two objects.
 * **Who pins.** A mapper pins the object when any thread of its process group has a
-  Domain on a `mem = "locked"` row, a real-time class or a priority in the real-time
-  band (`group::any_member`, `thread_pins_memory`), read when the storm looks, not at
-  admission. A storm that leaves an object alone for that reason writes one
+  Domain on a `mem = "locked"` row, a real-time class or a base priority in the
+  real-time band (`group::any_member`, `thread_pins_memory`; a priority inheritance
+  boost does not count). A storm that leaves an object alone for that reason writes one
   `reclaim-skip` record for the object (the pages of it are offered one by one,
   so a storm remembers the last sixteen objects it recorded).
+* **Pinning starts with nothing out.** A process is admitted to pinning by a
+  `SYS_SCHEDCTL` change to a real-time class or priority (the class lands first,
+  then the pages of every object it holds come back; the change is undone and
+  recorded, `pin-restore` site 3, when one cannot), or by an exec into a
+  `mem = "locked"` row (the Domain is locked first, then every page out of an object
+  any of its processes holds comes back; the exec is refused and the Domain unlocked,
+  site 4, when one cannot: such an exec may wait on the swap device). A map after
+  the admission, of an object another Domain's storm took pages from, is the one
+  case left:
+  - a process with no real-time thread (a locked Domain alone) is not on a
+    real-time path, and its map waits for the pages (refused, site 1, when one
+    cannot come back);
+  - a process with a real-time thread is refused, `-EBUSY` with a `pin-restore`
+    record of site 1, and never waits on the pool or the swap device on its
+    real-time path. Its contract: map such objects before it becomes real-time,
+    or call `MEMOBJ_RESTORE` on the object in its setup phase (its reference then
+    keeps every storm off the object) and map after it, never in the loop.
 * **Opt-in.** Private anonymous memory is always reclaimable; a shared object needs
   `SHM_ATTR_SWAPPABLE`, because its other mappers did not choose to share a
   Domain's pressure (the asymmetry is intended).

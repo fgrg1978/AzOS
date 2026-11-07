@@ -220,7 +220,9 @@ held.
   the sender keeps its handle and mapping.
 
 **Invoke ops** on a `Cap<Shm>`: `MEMOBJ_ACQUIRE` takes a reference and reads
-the geometry; `MEMOBJ_END_DROP` gives up a pipe end ([POSIX byte pipe](#posix-byte-pipe)).
+the geometry; `MEMOBJ_END_DROP` gives up a pipe end ([POSIX byte pipe](#posix-byte-pipe));
+`MEMOBJ_RESTORE` takes a reference and brings a swappable object's pages back
+(the setup-phase call of a real-time mapper, [memory.md](memory.md#swappable-objects)).
 
 A clone shares frames with its source through the frame reference count until
 a write mapping or an explicit break gives the clone its own. A paged object

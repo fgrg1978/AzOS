@@ -2163,11 +2163,6 @@ mod swap_rows {
         assert_eq!(translate_user(p.pt_a, p.va_a, false), Some(fb), "A maps the frame B's restore made");
     }
 
-    /// **Only an object that opted in is offered or taken.** One Domain holds a
-    /// swappable object and a plain one: the source offers the swappable
-    /// object's page and refuses to take the plain one's.
-    ///
-    /// **Canary.** `swappable-ignored-canary`: the attribute is not read.
     /// **A take shoots its page down after it drops the object table, in each
     /// space that maps it.** Both mappers lose their leaf in the take's hold;
     /// the two shootdowns come after it, so no fault, map or object call waits
@@ -2177,6 +2172,9 @@ mod swap_rows {
     /// the table held.
     #[test]
     fn a_take_shoots_its_page_down_after_the_table() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
         let _g = serial();
         let (a, b) = (fresh_tid(), fresh_tid());
         let _s = Scene::new(&[a, b]);
@@ -2195,6 +2193,11 @@ mod swap_rows {
         src.keep(v);
     }
 
+    /// **Only an object that opted in is offered or taken.** One Domain holds a
+    /// swappable object and a plain one: the source offers the swappable
+    /// object's page and refuses to take the plain one's.
+    ///
+    /// **Canary.** `swappable-ignored-canary`: the attribute is not read.
     #[test]
     fn an_object_that_did_not_opt_in_is_not_offered_or_taken() {
         if !azos_mm::zpool::ENABLED || azos_mm::aging::CHUNKS == 0 {
@@ -2500,24 +2503,26 @@ mod swap_rows {
         assert!(azos_mm::shim_pages_in_use() <= used, "no frame is left behind");
     }
 
-    /// **A process that pins memory is refused a map of an object with a page
-    /// out.** Its admission brought back what it held; a later map does not wait
-    /// for a restore on its real-time path: `EBUSY`, a `pin-restore` record of
-    /// site 1, and nothing booked. Once the owner has brought the page back the
-    /// map goes ahead.
+    /// Undoes [`azos_sched::shim_pin_task_memory`] and
+    /// [`azos_sched::shim_set_realtime`] for a task when dropped.
+    struct Unpin(u32);
+    impl Drop for Unpin {
+        fn drop(&mut self) {
+            azos_sched::shim_pin_task_memory(self.0, false);
+            azos_sched::shim_set_realtime(self.0, false);
+        }
+    }
+
+    /// **A process that pins memory with no real-time thread (a locked Domain
+    /// alone) waits for the pages at its map.** It is not on a real-time path:
+    /// the map brings back the page another Domain's storm took and goes ahead.
     ///
     /// **Canary.** `pinned-map-pages-out-canary`: the map goes ahead with the
     /// page out.
     #[test]
-    fn a_pinned_process_is_refused_a_map_with_a_page_out() {
+    fn a_locked_process_with_no_real_time_thread_waits_for_the_pages_at_its_map() {
         if !azos_mm::zpool::ENABLED {
             return;
-        }
-        struct Unpin(u32);
-        impl Drop for Unpin {
-            fn drop(&mut self) {
-                azos_sched::shim_pin_task_memory(self.0, false);
-            }
         }
         let _g = serial();
         let (a, b) = (fresh_tid(), fresh_tid());
@@ -2529,13 +2534,72 @@ mod swap_rows {
         azos_sched::shim_pin_task_memory(b, true);
         let hb = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
         become_task(b, pt_b);
+        assert!(sys_shm_map_typed(hb, 0) > 0, "the map waits for the page");
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "a pinned mapper has no page out");
+    }
+
+    /// **A real-time process is refused a map of an object with a page out, and
+    /// `MEMOBJ_RESTORE` is its way out.** The map answers `EBUSY` with a
+    /// `pin-restore` record of site 1 and brings nothing back (it would wait on
+    /// the pool or the swap device on a real-time path). The setup-phase op takes
+    /// the process's reference and brings the page back; from then on no storm
+    /// takes one, and the map goes ahead.
+    ///
+    /// **Canaries.** `pinned-map-pages-out-canary`: the map goes ahead with the
+    /// page out. `pinned-map-rt-restores-canary`: the real-time map waits for the
+    /// page. `memobj-restore-op-skip-canary`: the op brings nothing back.
+    #[test]
+    fn a_real_time_process_is_refused_a_map_with_a_page_out_until_it_restores_the_object() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let pt_b = ring3(b, SLOT_B);
+        let _unpin = Unpin(b);
+        azos_sched::shim_set_realtime(b, true);
+        let hb = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
+        become_task(b, pt_b);
         let before = azos_decision::total();
         assert_eq!(sys_shm_map_typed(hb, 0), azos_abi::error::Errno::EBUSY.to_syscall_ret(), "a page is out");
         let rec = azos_decision::lookup(before + 1).expect("recorded");
         assert_eq!((rec.rule, rec.subject, rec.n[0], rec.n[1]), (azos_decision::Rule::PinRestore as u8, b, u64::from(r), 1));
-        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1, "nothing was brought back for it");
-        assert!(azos_mm::pager::restore_objects_of(a).is_ok());
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1, "the map brought nothing back");
+        assert_eq!(crate::ipc_handlers::sys_shm_restore_typed(hb), 0);
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "the op brought the page back");
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        assert!(!src.unmap(Victim::Obj { ident: r, idx: 0 }), "the op's reference keeps the storm off");
         assert!(sys_shm_map_typed(hb, 0) > 0, "with nothing out the map goes ahead");
+    }
+
+    /// **A `MEMOBJ_RESTORE` that cannot bring a page back is refused and
+    /// recorded, and gives its reference back.** The pool lost the page.
+    ///
+    /// **Canary.** `memobj-restore-op-skip-canary`: the op answers 0.
+    #[test]
+    fn a_restore_op_that_cannot_bring_a_page_back_is_refused_and_recorded() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        let pt_b = ring3(b, SLOT_B);
+        let hb = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
+        become_task(b, pt_b);
+        pg::shim_forget_pool();
+        let before = azos_decision::total();
+        assert!(crate::ipc_handlers::sys_shm_restore_typed(hb) < 0, "the page cannot come back");
+        let rec = azos_decision::lookup(before + 1).expect("recorded");
+        assert_eq!((rec.rule, rec.subject, rec.n[1]), (azos_decision::Rule::PinRestore as u8, b, 5));
+        assert_eq!(mo::memobj_release_ref(b, r), Err(mo::MemObjError::Closed), "the reference went back");
     }
 
     /// Binds `tid` to a Domain so the scheduler shim answers for its slot, and a

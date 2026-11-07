@@ -869,21 +869,61 @@ pub(crate) fn reap_stale_mappings() {
     });
 }
 
-/// A process that pins memory (a real-time thread in its group, a locked Domain)
-/// was admitted with every page of its objects in memory; a map of a shared
-/// swappable object with a page out is refused, not made to wait on the pool
-/// or the swap device on its real-time path (`EBUSY`, recorded as
-/// `pin-restore`, site 1).
+/// A map, by a process that pins memory, of a shared swappable object with a
+/// page out. The caller's reference is already held, so no storm takes another
+/// page; what was taken before is out:
+/// * with no real-time thread in the group (a `mem = "locked"` Domain alone) the
+///   map is not on a real-time path and waits for the pages, as an admission
+///   does; refused (`pin-restore`, site 1) when one cannot come back;
+/// * with one, the map is refused (`EBUSY`, `pin-restore`, site 1) instead of
+///   waiting on the pool or the swap device on its real-time path; the process
+///   brings the object back first with `MEMOBJ_RESTORE`, in its setup phase.
 ///
 /// Canary `pinned-map-pages-out-canary`: the map goes ahead with the page out.
-pub(crate) fn refuse_pinned_with_pages_out(tid: u32, r: u32) -> Result<(), i64> {
+/// Canary `pinned-map-rt-restores-canary`: a real-time caller waits too.
+pub(crate) fn admit_pinned_map(tid: u32, r: u32, pages: usize) -> Result<(), i64> {
     use azos_abi::error::Errno;
     if cfg!(feature = "pinned-map-pages-out-canary") || azos_ipc::memobj::memobj_pins_with_pages_away(tid, r) != Ok(true) {
         return Ok(());
     }
+    let realtime = azos_sched::group::any_member(tid, azos_sched::thread_is_realtime);
+    if !realtime || cfg!(feature = "pinned-map-rt-restores-canary") {
+        return azos_mm::pager::restore_object(r, pages).map_err(|e| refused_pin_restore(tid, u64::from(r), 1, e));
+    }
     let errno = Errno::EBUSY;
     azos_decision::record(azos_decision::Rule::PinRestore, azos_decision::Verdict::Refuse, tid, [u64::from(r), 1, errno.to_syscall_ret().unsigned_abs()]);
     Err(errno.to_syscall_ret())
+}
+
+/// `MEMOBJ_RESTORE`: a0=cap (`Cap<Shm>`, `READ`). The caller's reference on the
+/// object, then every page of it that is out back in memory
+/// (`azos_abi::invoke::MEMOBJ_RESTORE` has the contract). 0, or the refusal of
+/// [`refused_pin_restore`] (site 5) with the reference given back.
+pub fn sys_shm_restore_typed(cap_raw: u64) -> i64 {
+    use azos_abi::cap::CapHandle;
+    use azos_ipc::cap::{targets::Shm, Cap};
+    let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
+    let tid = azos_sched::current_proc_tid();
+    let acquired = azos_ipc::cap_store::with_table(tid, |table| {
+        let r = table.get_op(cap, azos_ipc::cap::CapPerms::READ, azos_abi::invoke::MEMOBJ_RESTORE)?;
+        azos_ipc::memobj::memobj_acquire_ref(tid, r).map(|(pages, _)| (r, pages))
+    });
+    let (r, pages) = match acquired {
+        Some(Ok(rp)) => rp,
+        Some(Err(e)) => return errno_for_memobj_err(e),
+        None => return azos_abi::error::Errno::EINVAL.to_syscall_ret(),
+    };
+    // Canary `memobj-restore-op-skip-canary`: nothing is brought back.
+    if cfg!(feature = "memobj-restore-op-skip-canary") {
+        return 0;
+    }
+    match azos_mm::pager::restore_object(r, pages) {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = azos_ipc::memobj::memobj_release_ref(tid, r);
+            refused_pin_restore(tid, u64::from(r), 5, e)
+        }
+    }
 }
 
 /// A task has just become real-time (`SYS_SCHEDCTL` class or priority, already
@@ -945,7 +985,7 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
             return errno_for_memobj_err(e);
         }
     };
-    if let Err(e) = refuse_pinned_with_pages_out(tid, r) {
+    if let Err(e) = admit_pinned_map(tid, r, desc.page_count) {
         let _ = memobj::memobj_release_ref(tid, r);
         return e;
     }

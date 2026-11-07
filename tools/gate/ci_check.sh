@@ -13290,9 +13290,25 @@ host_job zpool_host_canary_row "swap: mid-store entry canary" swap-gone-entry-ke
     an_object_that_ends_mid_store_or_mid_restore_leaves_nothing
 host_job zpool_host_canary_row "swap: mid-restore entry canary" swap-forget-skipped-canary \
     an_object_that_ends_mid_store_or_mid_restore_leaves_nothing
-host_job zpool_host_row "swap: pinned map refused, page out" a_pinned_process_is_refused_a_map_with_a_page_out
-host_job zpool_host_canary_row "swap: pinned map refused canary" pinned-map-pages-out-canary \
-    a_pinned_process_is_refused_a_map_with_a_page_out
+# A pinning process's map of an object with a page out: a locked Domain with no
+# real-time thread waits for the pages; a real-time process is refused (EBUSY,
+# pin-restore 1) until MEMOBJ_RESTORE, its setup-phase op, brought them back
+# (pinned-map-pages-out-canary: the map goes ahead with a page out;
+# pinned-map-rt-restores-canary: the real-time map waits too;
+# memobj-restore-op-skip-canary: the op brings nothing back).
+host_job zpool_host_row "swap: locked map waits for pages" a_locked_process_with_no_real_time_thread_waits_for_the_pages_at_its_map
+host_job zpool_host_canary_row "swap: locked map waits canary" pinned-map-pages-out-canary \
+    a_locked_process_with_no_real_time_thread_waits_for_the_pages_at_its_map
+host_job zpool_host_row "swap: RT map refused until restore" a_real_time_process_is_refused_a_map_with_a_page_out_until_it_restores_the_object
+host_job zpool_host_canary_row "swap: RT map refused canary" pinned-map-pages-out-canary \
+    a_real_time_process_is_refused_a_map_with_a_page_out_until_it_restores_the_object
+host_job zpool_host_canary_row "swap: RT map waits canary" pinned-map-rt-restores-canary \
+    a_real_time_process_is_refused_a_map_with_a_page_out_until_it_restores_the_object
+host_job zpool_host_canary_row "swap: restore op canary" memobj-restore-op-skip-canary \
+    a_real_time_process_is_refused_a_map_with_a_page_out_until_it_restores_the_object
+host_job zpool_host_row "swap: restore op refused" a_restore_op_that_cannot_bring_a_page_back_is_refused_and_recorded
+host_job zpool_host_canary_row "swap: restore op refused canary" memobj-restore-op-skip-canary \
+    a_restore_op_that_cannot_bring_a_page_back_is_refused_and_recorded
 host_job zpool_host_row "swap: Domain lock restores" a_domain_locked_with_live_processes_has_their_pages_back
 host_job zpool_host_canary_row "swap: Domain lock restores canary" pin-late-canary \
     a_domain_locked_with_live_processes_has_their_pages_back

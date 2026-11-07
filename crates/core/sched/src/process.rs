@@ -2512,7 +2512,10 @@ pub fn thread_create_impl(
         crate::group::unadmit(leader, leader_idx);
         return EAGAIN;
     };
-    crate::group::join(child_idx, leader);
+    // A member the group's list could not take would be invisible to the
+    // memory pin (`group::any_member`): it is stopped before it runs, as a
+    // refused hook stops it below.
+    let unlisted = !crate::group::join(child_idx, leader);
     // The thread is already queued and may be running on another hart, with
     // no `aspace` yet and its `task_satp` still `kernel_task_satp()` (every
     // new task starts on the kernel's root, `try_task_create_init`), which
@@ -2527,7 +2530,7 @@ pub fn thread_create_impl(
     // hand-off. Pinned by the host test `thread_user_pt_is_set_before_its_hand_off`.
     crate::scheduler::set_task_thread_info(child_idx, satp, space);
     crate::group::set_clear_tid(child_idx, ctid);
-    let refused = !before_release(child);
+    let refused = !before_release(child) || unlisted;
     if refused {
         crate::scheduler::task_stop(child, true, 9);
     }

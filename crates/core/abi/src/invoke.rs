@@ -304,6 +304,18 @@ pub const MEMOBJ_ACQUIRE: u16 = op(CapKind::MemObj, CLASS_CTL, 1);
 /// Needs `READ`. 0, `-EINVAL` for a `w0` of no end or an end the caller does
 /// not hold on this region (a region that is no pipe holds none).
 pub const MEMOBJ_END_DROP: u16 = op(CapKind::MemObj, CLASS_CTL, 4);
+/// Bring every page of the object that is out back into memory, after taking
+/// the caller's reference on it as [`MEMOBJ_ACQUIRE`] does (given back the same
+/// way). For a process that pins memory (a real-time thread, a `mem =
+/// "locked"` Domain) that reference keeps every storm off the object from then
+/// on, so its `SYS_MO_MAP` that follows finds nothing out. A setup-phase call: it
+/// may wait on the compressed pool and on the swap device, and is made before a
+/// real-time loop, never in it (a real-time process's map of an object with a
+/// page out is refused, `-EBUSY`, and this is its way out). Needs `READ`. 0;
+/// `-ENOMEM` or `-EBUSY` when a page cannot come back (a `pin-restore` record of
+/// site 5; the reference is given back). A kernel without the op answers
+/// `-EINVAL`, as for every op it does not know.
+pub const MEMOBJ_RESTORE: u16 = op(CapKind::MemObj, CLASS_CTL, 5);
 /// [`MEMOBJ_END_DROP`]'s read end.
 pub const SHM_END_READ: u64 = 1;
 /// [`MEMOBJ_END_DROP`]'s write end.

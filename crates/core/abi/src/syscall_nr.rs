@@ -532,7 +532,9 @@ pub const SYS_MO_CREATE: u64 = 14;
 /// when the region has no room for another holder; `-EPURGED` when the region
 /// was created volatile ([`SHM_ATTR_VOLATILE`]) and reclaim took its frames;
 /// `-ENOMEM` when the pages could not be mapped (the reference is kept then,
-/// until the caller exits).
+/// until the caller exits); `-EBUSY` also when the caller has a real-time thread
+/// and a page of the swappable region is out (`invoke::MEMOBJ_RESTORE` brings it
+/// back first, in the caller's setup phase).
 /// With [`SHM_MAP_OP_PROTECT`] in `a1`: the protect form.
 ///
 /// **Anonymous memory** (`a0` 0): `a1` the address hint (ignored for a native

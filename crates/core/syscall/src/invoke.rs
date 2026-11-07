@@ -26,7 +26,7 @@ use azos_abi::invoke::{
     DOMAIN_MMIO_MAP, DOMAIN_SUP_GIVE_UP,
     DEVICE_IRQ_ACK, ENDPOINT_DERIVE, EndpointDerive,
     DOMAIN_MPROTECT, DOMAIN_SET_CLEAR_TID, DOMAIN_UPTIME, DOMAIN_VDSO_MAP, DOMAIN_WAIT,
-    MEMOBJ_ACQUIRE, MEMOBJ_END_DROP,
+    MEMOBJ_ACQUIRE, MEMOBJ_END_DROP, MEMOBJ_RESTORE,
     PORT_BIND, PORT_DESTROY, PORT_POLL,
     DOMAIN_CREATE_ENDPOINT, DOMAIN_CREATE_PORT, DOMAIN_EXIT_STATS, DOMAIN_PLEDGE, DOMAIN_SET_FILTER,
     DOMAIN_SUBREAPER,
@@ -417,6 +417,7 @@ fn memobj_op(c: &mut Call) -> i64 {
     match c.op {
         MEMOBJ_ACQUIRE => crate::ipc_handlers::sys_shm_acquire_typed(h, c.w[0]),
         MEMOBJ_END_DROP => crate::ipc_handlers::sys_shm_end_drop_typed(h, c.w[0]),
+        MEMOBJ_RESTORE => crate::ipc_handlers::sys_shm_restore_typed(h),
         _ => Errno::EINVAL.to_syscall_ret(),
     }
 }

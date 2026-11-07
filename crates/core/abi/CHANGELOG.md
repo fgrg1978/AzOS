@@ -48,6 +48,11 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ### Added
 
+- `MEMOBJ_RESTORE` (0x2305), an op on a `Cap<Shm>`: take a reference and bring the
+  pages of a swappable object that are out back into memory, the setup-phase call of
+  a real-time process before it maps such an object. A real-time process's
+  `SYS_MO_MAP` of an object with a page out answers `-EBUSY`; a `mem = "locked"`
+  process with no real-time thread waits for the pages instead.
 - `PORT_SRC_IRQ = 7`: `PORT_BIND` of a `ty::IRQ` handle (`w1`), its CPU in
   `w3` (`DEVICE_IRQ_CPU_ANY`), an MSI slot's message replied in `a1..a3`; with
   `PORT_BIND_F_REMOVE` the caller's binding goes and the port gets a
