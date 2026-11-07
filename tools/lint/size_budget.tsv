@@ -11,11 +11,11 @@ aarch64-microvm	.rodata	351680
 aarch64-microvm	.data	468008
 aarch64-microvm	.bss	1013288
 aarch64-microvm	reason	review follow-ups of the ring-3 DMA/IRQ gaps: MSI per-slot bound, ISA DMA ports, rule table, virtio map errors
-riscv64-qemu	.text	2908374
-riscv64-qemu	.rodata	490696
-riscv64-qemu	.data	732688
+riscv64-qemu	.text	2916150
+riscv64-qemu	.rodata	494920
+riscv64-qemu	.data	579344
 riscv64-qemu	.bss	2289384
-riscv64-qemu	reason	review follow-ups of the ring-3 DMA/IRQ gaps: MSI per-slot bound, ISA DMA ports, rule table, virtio map errors
+riscv64-qemu	reason	frame class: the camera pool's buffers are boot-time memory objects instead of .data, the Frame interface and its pool
 x86_64-microvm	.text	2706697
 x86_64-microvm	.rodata	175496
 x86_64-microvm	.data	625264
