@@ -18,8 +18,8 @@
 //! would have skipped anyway. It captures only while a reader is attached,
 //! every `CAMERA_TX_CAPTURE_PERIOD_MS`.
 //!
-//! The pool's buffers are kernel-owned contiguous memory objects made at boot
-//! ([`lend_buffers`]); a frame's stamp is the vDSO clock in nanoseconds.
+//! The pool's buffers are kernel-owned contiguous memory objects made when the
+//! first reader attaches ([`lend_buffers`]); a frame's stamp is the vDSO clock in nanoseconds.
 
 use crate::kprintln;
 use azos_cam_ring::{NoRoom, Policy};
@@ -39,25 +39,30 @@ const _: () = assert!(frames::BYTES >= 2 * csi::JPEG_CAP_W * csi::JPEG_CAP_H, "F
 const BUFFER_PAGES: usize = frames::BYTES.div_ceil(azos_arch::PAGE_SIZE);
 const _: () = assert!(BUFFER_PAGES <= MAX_MEMOBJ_PAGES, "FRAME_BYTES is more than one memory object holds");
 const PER_OBJECT: usize = MAX_MEMOBJ_PAGES / BUFFER_PAGES;
-/// Memory objects the pool takes from the table; a quarter of it at most, the
-/// rest being the kernel's own regions and the tasks' objects.
-const POOL_OBJECTS: usize = frames::SLOTS.div_ceil(PER_OBJECT);
-const _: () = assert!(
-    POOL_OBJECTS * 4 <= azos_mm::memobj::MAX_MEMOBJS,
-    "the frame pool needs more than a quarter of the memory-object table: lower FRAME_POOL_SLOTS or FRAME_BYTES, or raise MAX_MEMOBJS"
-);
+/// Memory objects the pool may take from the table: a quarter of it, the rest
+/// being the kernel's own regions and the tasks' objects.
+const OBJECT_BUDGET: usize = if azos_mm::memobj::MAX_MEMOBJS >= 4 { azos_mm::memobj::MAX_MEMOBJS / 4 } else { 1 };
 
-/// Lend the pool its buffers: kernel-owned contiguous memory objects (never
-/// released), as many buffers in each as fit. A pool that gets fewer than it
-/// needs stays without any: the camera then has no readers.
+/// Lend the pool its buffers, once, when the first reader attaches
+/// (`frames::set_lend`): kernel-owned contiguous memory objects, as many
+/// buffers in each as fit, at most [`OBJECT_BUDGET`] objects. A pool that gets
+/// fewer buffers than its readers need is refused: the objects made are given
+/// back, a `cam-capture` record says so, and the camera has no readers.
 fn lend_buffers() {
+    static TRIED: AtomicBool = AtomicBool::new(false);
+    if TRIED.swap(true, Ordering::AcqRel) {
+        return;
+    }
     let mut bases = [0usize; frames::SLOTS];
-    let mut n = 0;
-    while n < frames::SLOTS {
+    let mut objects = [0u32; OBJECT_BUDGET];
+    let (mut n, mut made) = (0, 0);
+    while n < frames::SLOTS && made < OBJECT_BUDGET {
         let here = (frames::SLOTS - n).min(PER_OBJECT);
-        let Some((_, phys)) = memobj_create_kernel(here * BUFFER_PAGES, &MemSpec::contig(MemPerms::ReadWrite, false)) else {
+        let Some((obj, phys)) = memobj_create_kernel(here * BUFFER_PAGES, &MemSpec::contig(MemPerms::ReadWrite, false)) else {
             break;
         };
+        objects[made] = obj;
+        made += 1;
         let base = azos_mm::addr::phys_to_virt(phys) as usize;
         for k in 0..here {
             bases[n + k] = base + k * BUFFER_PAGES * azos_arch::PAGE_SIZE;
@@ -70,6 +75,9 @@ fn lend_buffers() {
             Policy::Backpressure => "backpressure",
         }),
         Err(NoRoom) => {
+            for obj in &objects[..made] {
+                let _ = azos_ipc::memobj::memobj_release_ref(azos_ipc::memobj::MEMOBJ_KERNEL_OWNER, *obj);
+            }
             azos_syscall::frame_host::refuse_pool(n);
             azos_drv_sys::kerr!("[CAM] no memory for the frame pool ({} of {} buffers): refused, the camera has no readers", n, frames::SLOTS);
         }
@@ -101,7 +109,7 @@ pub(crate) fn camera_consumer_detach() {
 }
 
 /// The producer's one step: capture and encode a frame into the ring.
-/// `false`: refused (`CAMERA_RING_BACKPRESSURE`) or no frame (camera off,
+/// `false`: refused (`FRAME_POOL_BACKPRESSURE`) or no frame (camera off,
 /// or its scratch buffer busy).
 pub(crate) fn camera_capture_once() -> bool {
     // The ring has one source at a time: a USB camera's frames, not a test
@@ -134,7 +142,7 @@ pub(crate) fn camera_with_frame<R>(f: impl FnOnce(&[u8], u64) -> R) -> Option<R>
     if canary!("camera-encode-per-consumer") {
         return own_encode(f);
     }
-    let frame = POOL.acquire_latest(LINK)?;
+    let frame = POOL.acquire(LINK)?;
     #[cfg(feature = "usb-uvc")]
     if frame.info().format == azos_cam_ring::FrameFormat::Yuyv {
         return yuyv_to_jpeg(frame.bytes(), frame.info(), frame.stamp(), f);
@@ -178,7 +186,7 @@ fn own_encode<R>(f: impl FnOnce(&[u8], u64) -> R) -> Option<R> {
 
 /// Boot: start the capture task. It idles until the sender attaches.
 pub(crate) fn camera_capture_init() {
-    lend_buffers();
+    frames::set_lend(lend_buffers);
     frames::set_producer_wake(wake_producers);
     azos_sched::task_create("cam-capture", camera_capture_task, 0, azos_sched::DEFAULT_PRIORITY);
 }
@@ -225,9 +233,6 @@ azos_ktest::ktest! {
         }
         if !csi::csi_is_powered() {
             csi::csi_power_on();
-        }
-        if !POOL.ready() {
-            lend_buffers();
         }
         camera_consumer_attach();
         let (e0, p0) = (csi::csi_jpeg_encodes(), POOL.produced());

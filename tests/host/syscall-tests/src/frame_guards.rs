@@ -89,6 +89,20 @@ impl Task {
         out
     }
 
+    /// The first `len` bytes of the buffer, page by page (its frames may be in any order).
+    fn get_by_pages(&self, cap: u32, len: usize) -> Vec<u8> {
+        let page = azos_arch::PAGE_SIZE;
+        let r = self.region(cap);
+        let mut out = Vec::new();
+        for k in 0..len.div_ceil(page) {
+            let pa = azos_ipc::memobj::memobj_page_phys_ref(r, k).unwrap().unwrap();
+            let va = azos_mm::addr::phys_to_virt(pa) as *const u8;
+            // SAFETY: the page of an object this task holds, in the direct map.
+            out.extend_from_slice(unsafe { core::slice::from_raw_parts(va, page.min(len - k * page)) });
+        }
+        out
+    }
+
     fn put(&self, cap: u32, byte: u8) {
         let ok = memobj_with_span_ref(self.region(cap), BYTES, |base| {
             // SAFETY: as in `get`.
@@ -148,6 +162,28 @@ fn the_frame_a_producer_committed_is_the_frame_a_task_reads() {
     let m = t.next(buf).value;
     assert_eq!((m.seq, m.format, m.size, m.len), (seq2, frame::format::YUYV, 4 << 16 | 3, 24));
     assert_eq!(t.get(buf, 24), pattern(0x33, 24));
+}
+
+/// **The frame goes into the frames the buffer has, in the order it has them,
+/// and the region table is free while it does.** A buffer of three pages whose
+/// first and last frames are swapped gets a nine-thousand-byte frame page by
+/// page; the table was not locked during the copy.
+///
+/// **Canaries.** `memobj-write-first-frame-canary` (page `k` at the first
+/// frame plus `k` pages): the bytes are in the wrong frames.
+/// `frame-copy-under-lock-canary` (the copy runs with the table locked): the
+/// table was not free.
+#[test]
+fn a_frame_goes_page_by_page_into_scattered_frames_with_the_table_free() {
+    let _g = serial();
+    let t = Task::new();
+    let b = t.frame_buffer();
+    azos_ipc::memobj::__memobj_swap_pages_for_tests(t.region(b), 0, 2);
+    assert_eq!(t.next(b), Out::err(outcome::NOT_READY));
+    commit(0x61, 9_000, 3, FrameInfo::JPEG);
+    assert!(t.next(b).is_ok());
+    assert!(crate::khost::COPY_WITH_TABLE_FREE.load(std::sync::atomic::Ordering::SeqCst), "the copy held the region table");
+    assert_eq!(t.get_by_pages(b, 9_000), pattern(0x61, 9_000));
 }
 
 /// **A buffer that cannot take the frame takes no frame.** A buffer below the

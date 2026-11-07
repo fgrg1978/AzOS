@@ -114,6 +114,13 @@ impl<T: Copy, const N: usize, D: Doorbell> Log<T, N, D> {
         Reader { log: self, cursor: self.head() + 1 }
     }
 
+    /// A reader whose next item is number `item` (1-based): the one a consumer
+    /// that took items up to `item - 1` continues with. If `item` is already
+    /// overwritten its first `next` says how many were lost.
+    pub fn reader_at(&self, item: u64) -> Reader<'_, T, N, D> {
+        Reader { log: self, cursor: item.max(1) }
+    }
+
     /// A reader that starts at the oldest item still retained.
     pub fn reader_oldest(&self) -> Reader<'_, T, N, D> {
         let h = self.head();

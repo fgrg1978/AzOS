@@ -58,6 +58,8 @@ gpio-safety-guard-canary = []
 # frame is taken; a task's every call takes a reader slot; an exit keeps its
 # slot; the pool's view of a frame writes into it.
 frame-copy-skip-canary = []
+# ... the frame is copied with the region table locked.
+frame-copy-under-lock-canary = []
 effect-default-allow-canary = []
 frame-effect-ignored-canary = []
 frame-unrecorded-canary = []
@@ -163,6 +165,7 @@ memobj-charge-stays-canary = ["azos_ipc/memobj-charge-stays-canary"]
 memobj-protect-max-canary = ["azos_ipc/memobj-protect-max-canary"]
 memobj-cow-no-break-canary = ["azos_ipc/memobj-cow-no-break-canary"]
 memobj-no-kernel-map-canary = ["azos_ipc/memobj-no-kernel-map-canary"]
+memobj-write-first-frame-canary = ["azos_ipc/memobj-write-first-frame-canary"]
 memobj-refcount-wrap-canary = ["azos_ipc/memobj-refcount-wrap-canary"]
 memobj-sweep-no-hook-canary = ["azos_ipc/memobj-sweep-no-hook-canary"]
 memobj-sweep-no-retain-canary = ["azos_ipc/memobj-sweep-no-retain-canary"]

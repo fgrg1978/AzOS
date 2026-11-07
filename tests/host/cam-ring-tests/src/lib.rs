@@ -38,3 +38,5 @@
 mod pixel_tests;
 #[cfg(test)]
 mod pool_tests;
+#[cfg(test)]
+mod race_tests;

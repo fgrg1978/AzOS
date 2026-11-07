@@ -767,15 +767,27 @@ config ADS1115_CONVERSION_POLL_ITERS
       enough that 150000 reads take less than that. Costs no RAM; bounds
       the read's worst case at this many bus transactions.
 
+# The frame class is the robot domain's (its camera); off USE_ROBOT the options
+# are hidden and keep their defaults, which the code every host suite builds reads.
+menu "Frame class (the camera's frames)"
+    visible if USE_ROBOT
+
 config FRAME_POOL_SLOTS
     int "Frame class: buffers in the pool"
     default 4 if HWCLASS_EMBEDDED
     default 4 if (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 8 if HWCLASS_SERVER
     default 4
-    range 4 16
+    range 4 16 if FRAME_READERS <= 1
+    range 5 16 if FRAME_READERS = 2
+    range 6 16 if FRAME_READERS = 3
+    range 7 16 if FRAME_READERS = 4
+    range 8 16 if FRAME_READERS = 5
+    range 9 16 if FRAME_READERS = 6
+    range 10 16 if FRAME_READERS = 7
+    range 11 16
     help
-      The frame class (crates/drivers/cam-ring, azos_drv_base::frames): the
+      The frame class (crates/drivers/cam-ring, azos_syscall::frame_host): the
       capture task (or a USB camera's class driver) captures and encodes each
       camera frame once into one of these buffers; the brain link's sender
       (camera-tx, or the behavior task's inline path) and every ring-3 reader
@@ -783,51 +795,56 @@ config FRAME_POOL_SLOTS
       encoded once per frame, however many readers there are.
 
       Each buffer is a kernel-owned contiguous memory object of FRAME_BYTES
-      (as many buffers in one object as MAX_MEMOBJ_PAGES holds), made at boot
-      when the camera is set up; with no camera nothing is made. The pool may
-      take at most a quarter of MAX_MEMOBJS (a build error otherwise). If the
-      memory is not there the pool is refused, a cam-capture decision record
-      says so, and the camera has no readers.
-      The pool needs FRAME_READERS + 3 buffers (a reference per reader, the
-      newest frame, the one being written, and one spare): a smaller number
-      with more readers is a build error. More buffers only matter under
-      FRAME_POOL_BACKPRESSURE, where they are frames a slow reader may fall
-      behind before capture stops; with the default overwrite policy a reader
-      takes the newest frame. The same on every ISA.
+      (as many buffers in one object as MAX_MEMOBJ_PAGES holds), made when the
+      first reader attaches; a boot where nobody reads takes none. The pool
+      takes at most a quarter of MAX_MEMOBJS in objects, and fewer buffers
+      than the readers need refuse the pool: a cam-capture decision record
+      says so, the objects it had made are given back, and the camera has no
+      readers. The pool needs FRAME_READERS + 3 buffers (a reference per
+      reader, the sender's, the newest frame, the one being written and one
+      spare), which the range enforces. More buffers only matter under
+      FRAME_POOL_BACKPRESSURE, where they are the frames the sender may fall
+      behind by before capture stops. The same on every ISA.
 
 config FRAME_BYTES
     int "Frame class: bytes of a frame buffer"
     default 38400 if USB_UVC
     default 19200
-    range 4096 262144
+    range 38400 65536 if (HWCLASS_EMBEDDED && USB_UVC)
+    range 19200 65536 if HWCLASS_EMBEDDED
+    range 38400 262144 if USB_UVC
+    range 19200 262144
     help
       The biggest frame a buffer holds: a JPEG up to csi::JPEG_MAX_SIZE
-      (19,200 B) and, with USB_UVC, a raw YUY2 frame of the JPEG path's capture
-      size (38,400 B), which the sender converts to the JPEG the link carries.
-      A smaller number than the camera's bound is a build error; a bigger one
-      only costs memory (FRAME_POOL_SLOTS x this, rounded up to pages). The
-      most one memory object holds is 256 KiB. A ring-3 reader's buffer is
-      this size at least (Frame::buffer_bytes says it).
+      (19,200 B, the floor of the range) and, with USB_UVC, a raw YUY2 frame
+      of the JPEG path's capture size (38,400 B, its floor), which the sender
+      converts to the JPEG the link carries. A bigger number only costs memory
+      (FRAME_POOL_SLOTS x this, rounded up to pages). The most one memory
+      object holds is 64 pages, and an embedded class, whose memory-object
+      table is small, stops at 64 KiB. A ring-3 reader's buffer is this size at
+      least (Frame::buffer_bytes says it).
 
 config FRAME_READERS
     int "Frame class: most ring-3 readers at once"
     range 1 8
     default 1
     help
-      How many tasks may read the camera through the Frame interface (Frame::next) together;
-      each needs the `cam` effect of its scheduler class;
-      another one is answered BUSY until a reader closes or exits. Each costs
-      the pool one more buffer (FRAME_POOL_SLOTS must stay at least this + 3)
-      and one cursor. The brain link's sender is a reader of its own and not
-      counted. A reader that exits without closing is detached by the
-      kernel's task-exit hook.
+      How many tasks may read the camera through the Frame interface
+      (Frame::next) together; each needs the `cam` effect of its scheduler
+      class, which is asked once, at its first read. Another one is answered
+      BUSY until a reader closes or exits. Each costs the pool one more buffer
+      (FRAME_POOL_SLOTS' range rises with it) and one cursor. The brain link's
+      sender is a reader of its own and not counted. A reader that exits
+      without closing is detached by the kernel's task-exit hook.
 
 choice FRAME_POOL_POLICY
-    prompt "Frame class: when a reader lags"
+    prompt "Frame class: when the brain link's sender lags"
     default FRAME_POOL_OVERWRITE_OLDEST
     help
-      What the producer does when every free buffer of the frame pool holds a
-      frame an attached reader has not taken yet.
+      What the capture task does when every free buffer of the frame pool holds
+      a frame the brain link's sender has not taken yet. Ring-3 readers never
+      hold capture back, whatever the policy: they take the newest frame, and
+      a reader that stops reading costs nobody a frame.
 
 config FRAME_POOL_OVERWRITE_OLDEST
     bool "Overwrite the oldest frame (the latest frame wins)"
@@ -837,15 +854,17 @@ config FRAME_POOL_OVERWRITE_OLDEST
       its own acquisition stamp.
 
 config FRAME_POOL_BACKPRESSURE
-    bool "Back-pressure (capture waits for the slowest reader)"
+    bool "Back-pressure (capture waits for the brain link's sender)"
     help
       The producer refuses a frame (counted, no capture) rather than
-      overwrite one an attached reader is owed. A sender stuck behind a
-      closed TCP window, or a ring-3 reader that stopped reading, then holds
-      back capture for every reader. Only for readers that must see every
-      frame they are owed.
+      overwrite one the sender has not taken, and the sender takes every frame
+      in order. A sender stuck behind a closed TCP window then holds back
+      capture. Only for a brain that must see every frame. Ring-3 readers are
+      not held back by it and see the newest frame.
 
 endchoice
+
+endmenu # Frame class
 
 config CAMERA_TX_CAPTURE_PERIOD_MS
     int "Frame class: capture period for the brain link's sender"

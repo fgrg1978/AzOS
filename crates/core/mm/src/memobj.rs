@@ -2012,34 +2012,64 @@ pub fn memobj_with_span_ref<R>(r: u32, bytes: usize, f: impl FnOnce(usize) -> R)
     Ok(Some(out))
 }
 
-/// [`memobj_with_span_ref`] for an object whose frames need not be contiguous:
-/// `f(offset, address, len)` runs once for each page the first `bytes` bytes
-/// touch, with the region table locked across all of them. `Ok(None)` for what
-/// a span refuses except contiguity: longer than the region, hidden from the
-/// kernel, read-only, shared with a clone, or a page with no frame.
-pub fn memobj_with_pages_ref(r: u32, bytes: usize, mut f: impl FnMut(usize, usize, usize)) -> Result<Option<()>, MemObjError> {
+/// The kernel's hold on the first `bytes` bytes of a task's object, to write
+/// them outside the table's lock (`Frame::next` copies a camera frame into a
+/// reader's buffer): the direct-map address of each page is written to `out`,
+/// the pages' count answered, and the kernel takes a reference of its own, booked
+/// to no task, so the frames outlive a holder that lets go of the object
+/// during the copy; [`memobj_frames_unpin`] gives it back, and the object is not
+/// purged while it is held. `Ok(None)` for an object the kernel must not write:
+/// longer than the region or than `out`, hidden from the kernel, read-only,
+/// sharing a frame with a clone (a clone made once it is held copies instead),
+/// a page cache's (`Paged`), or a page with no frame.
+pub fn memobj_write_pin(r: u32, bytes: usize, out: &mut [usize]) -> Result<Option<usize>, MemObjError> {
     let page = azos_arch::PAGE_SIZE;
-    let regions = MEMOBJS.lock();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
-    let region = &regions[i];
+    let region = &mut regions[i];
     let pages = bytes.div_ceil(page);
     let hidden = region.attrs & ATTR_NO_KERNEL_MAP != 0 && !cfg!(feature = "memobj-no-kernel-map-canary");
     let shared = pages.min(64) as u32;
     let shared_mask = if shared >= 64 { u64::MAX } else { (1u64 << shared) - 1 };
     if bytes == 0
         || pages > region.page_count
+        || pages > out.len()
         || hidden
+        || region.kind == MemKind::Paged
         || region.perms != MemPerms::ReadWrite
         || region.cow_shared & shared_mask != 0
         || region.phys_pages[..pages].contains(&0)
     {
         return Ok(None);
     }
-    for k in 0..pages {
-        let off = k * page;
-        f(off, crate::addr::phys_to_virt(region.phys_pages[k]), page.min(bytes - off));
+    if region.purge == PurgeState::Purged {
+        return Err(MemObjError::Purged);
     }
-    Ok(Some(()))
+    acquire_locked(region, MEMOBJ_KERNEL_OWNER).ok_or(MemObjError::Closed)?;
+    for (k, slot) in out[..pages].iter_mut().enumerate() {
+        #[cfg(not(feature = "memobj-write-first-frame-canary"))]
+        let pa = region.phys_pages[k];
+        #[cfg(feature = "memobj-write-first-frame-canary")]
+        let pa = region.phys_pages[0] + k * page;
+        *slot = crate::addr::phys_to_virt(pa);
+    }
+    Ok(Some(pages))
+}
+
+/// Swap two pages' frames of the object `r`, so a host test has an object whose
+/// frames are not in order.
+pub fn __memobj_swap_pages_for_tests(r: u32, a: usize, b: usize) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = live_index(&regions, r) {
+        regions[i].phys_pages.swap(a, b);
+    }
+}
+
+/// Run `f` with the region table locked, for the host tests that prove a copy
+/// runs outside it.
+pub fn __memobj_with_table_locked_for_tests<R>(f: impl FnOnce() -> R) -> R {
+    let _regions = MEMOBJS.lock();
+    f()
 }
 
 /// Is the region table's lock free right now? For the F5 test of
@@ -4558,6 +4588,76 @@ mod tests {
         assert!(!shared(pinned), "a clone shared frames the kernel may write");
         assert_ne!(frame(c), frame(pinned));
         memobj_frames_unpin(pinned);
+    }
+
+    /// **The kernel's write hold addresses each page of an object whose frames
+    /// are not in order**, covers a partial last page, leaves the table free
+    /// while the kernel writes, and keeps the frames when the owner lets go.
+    ///
+    /// Canary `memobj-write-first-frame-canary` (page `k` is the first frame plus
+    /// `k` pages): red.
+    #[test]
+    fn a_write_hold_addresses_scattered_frames_and_outlives_its_owner() {
+        let _g = setup();
+        let page = azos_arch::PAGE_SIZE;
+        let r = memobj_create_ref(A, 3, MemPerms::ReadWrite).expect("create");
+        __memobj_swap_pages_for_tests(r, 0, 2);
+        let want: [usize; 3] = core::array::from_fn(|k| crate::addr::phys_to_virt(memobj_page_phys_ref(r, k).unwrap().unwrap()));
+        assert_ne!(want[1], want[0] + page, "the frames are not in order");
+        let mut out = [0usize; 4];
+        assert_eq!(memobj_write_pin(r, 2 * page + 10, &mut out), Ok(Some(3)), "a partial last page counts whole");
+        assert_eq!(out[..3], want);
+        assert!(__memobj_table_unlocked_for_tests(), "the table is free while the kernel writes");
+        let before = azos_mm::shim_pages_in_use();
+        assert_eq!(memobj_release_ref(A, r), Ok(()));
+        assert_eq!(azos_mm::shim_pages_in_use(), before, "the hold keeps the frames the owner let go of");
+        memobj_frames_unpin(r);
+        assert_eq!(azos_mm::shim_pages_in_use(), 0, "and gives them back");
+    }
+
+    /// **The kernel's write hold refuses what it must not write**, and a refusal
+    /// holds nothing: an object that is read-only, shares a frame with a clone,
+    /// is hidden from the kernel, is a page cache's, has a page with no frame,
+    /// is shorter than the span or the room.
+    ///
+    /// Canary: drop the `Paged` test in `memobj_write_pin`: red.
+    #[test]
+    fn a_write_hold_refuses_what_the_kernel_must_not_write_and_holds_nothing() {
+        let _g = setup();
+        let page = azos_arch::PAGE_SIZE;
+        let mut out = [0usize; 2];
+        let ro = memobj_create_ref(A, 1, MemPerms::ReadOnly).expect("create");
+        assert_eq!(memobj_write_pin(ro, 1, &mut out), Ok(None), "read-only");
+        let rw = memobj_create_ref(A, 2, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_write_pin(rw, 3 * page, &mut [0usize; 4]), Ok(None), "longer than the object");
+        assert_eq!(memobj_write_pin(rw, 0, &mut out), Ok(None), "nothing to write");
+        assert_eq!(memobj_write_pin(rw, 2 * page, &mut out[..1]), Ok(None), "more pages than room");
+        let hidden = memobj_create_spec(A, 1, &MemSpec { attrs: ATTR_NO_KERNEL_MAP, ..MemSpec::anon(MemPerms::ReadWrite) }).expect("create");
+        assert_eq!(memobj_write_pin(hidden, 1, &mut out), Ok(None), "hidden from the kernel");
+        let clone = memobj_clone(A, rw, A, MemPerms::ReadOnly).expect("clone");
+        assert_eq!(memobj_write_pin(rw, 1, &mut out), Ok(None), "shares a frame with a clone");
+        assert_eq!(memobj_release_ref(A, clone), Ok(()));
+        let cached = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let set_kind = |kind| {
+            let mut regions = MEMOBJS.lock();
+            let i = live_index(&regions, cached).unwrap();
+            regions[i].kind = kind;
+        };
+        set_kind(MemKind::Paged);
+        assert_eq!(memobj_write_pin(cached, 1, &mut out), Ok(None), "a page cache's");
+        set_kind(MemKind::Anon);
+        assert_eq!(memobj_release_ref(A, cached), Ok(()));
+        let holed = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        {
+            let mut regions = MEMOBJS.lock();
+            let i = live_index(&regions, holed).unwrap();
+            regions[i].phys_pages[0] = 0;
+        }
+        assert_eq!(memobj_write_pin(holed, 1, &mut out), Ok(None), "a page with no frame");
+        for r in [ro, rw, hidden] {
+            assert_eq!(memobj_release_ref(A, r), Ok(()));
+        }
+        assert_eq!(memobj_write_pin(rw, 1, &mut out), Err(MemObjError::Cap(CapError::Stale)), "a released object");
     }
 
     /// **A purge leaves an object with a map in flight**, and a map does not start

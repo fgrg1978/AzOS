@@ -377,7 +377,7 @@ fn stamped_reads() {
 /// is printed.
 ///
 /// The summary line is printed only when every check held; the gate row greps
-/// it. Canary: the `frame-class-canary` kernel feature (a read copies nothing).
+/// it. Canary: the runtime canary `frame-blank` (the capture task commits zeros).
 fn frame_reads() {
     let Some(ep) = sys::dev::lookup(sys::dev::key::FRAME, 0) else { return };
     let before = unsafe { FAILURES };

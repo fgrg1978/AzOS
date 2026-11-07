@@ -277,6 +277,8 @@ memobj-charge-stays-canary = []
 memobj-protect-max-canary = []
 memobj-cow-no-break-canary = []
 memobj-no-kernel-map-canary = []
+# `memobj_write_pin` addresses page `k` as the first frame plus `k` pages (tests/host/ipc-tests).
+memobj-write-first-frame-canary = []
 memobj-refcount-wrap-canary = []
 memobj-sweep-no-hook-canary = []
 memobj-sweep-no-retain-canary = []

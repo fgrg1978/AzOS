@@ -137,13 +137,16 @@ impl Caller {
         }
     }
 
-    /// [`with_buffer`](Self::with_buffer) for a buffer of any frames: `f(offset,
-    /// address, len)` runs for each page of the first `bytes` bytes (`Frame::next`).
+    /// The kernel's hold on the first `bytes` bytes of the caller's buffer
+    /// `raw`, which may be of any frames, to write them outside the region
+    /// table's lock (`Frame::next`); the same refusals as
+    /// [`with_buffer`](Self::with_buffer).
     #[cfg(feature = "use-robot")]
-    pub(crate) fn with_buffer_pages(&self, raw: u32, least: usize, bytes: usize, f: impl FnMut(usize, usize, usize)) -> Result<(), u32> {
+    pub(crate) fn pin_buffer(&self, raw: u32, least: usize, bytes: usize) -> Result<Pinned, u32> {
         let region = self.shm_region(raw, least)?;
-        match azos_ipc::memobj::memobj_with_pages_ref(region, bytes, f) {
-            Ok(Some(())) => Ok(()),
+        let mut addrs = [0usize; azos_ipc::memobj::MAX_MEMOBJ_PAGES];
+        match azos_ipc::memobj::memobj_write_pin(region, bytes, &mut addrs) {
+            Ok(Some(pages)) => Ok(Pinned { region, addrs, pages }),
             Ok(None) => Err(azos_devif::outcome::UNSUPPORTED),
             Err(_) => Err(azos_devif::outcome::BAD_ARGUMENT),
         }
@@ -184,6 +187,52 @@ impl Caller {
         }
     }
 }
+
+/// The kernel's hold on a caller's buffer (`Caller::pin_buffer`): the pages
+/// stay, whatever the caller does with the object, until this is dropped.
+#[cfg(feature = "use-robot")]
+pub(crate) struct Pinned {
+    region: u32,
+    addrs: [usize; azos_ipc::memobj::MAX_MEMOBJ_PAGES],
+    pages: usize,
+}
+
+#[cfg(feature = "use-robot")]
+impl Pinned {
+    /// Write `src` over the start of the buffer, page by page, with no lock held.
+    pub(crate) fn write(&self, src: &[u8]) {
+        #[cfg(feature = "frame-copy-under-lock-canary")]
+        return azos_ipc::memobj::__memobj_with_table_locked_for_tests(|| self.copy(src));
+        #[cfg(not(feature = "frame-copy-under-lock-canary"))]
+        self.copy(src)
+    }
+
+    fn copy(&self, src: &[u8]) {
+        #[cfg(test)]
+        COPY_WITH_TABLE_FREE.store(azos_ipc::memobj::__memobj_table_unlocked_for_tests(), core::sync::atomic::Ordering::SeqCst);
+        let page = azos_arch::PAGE_SIZE;
+        for (k, addr) in self.addrs[..self.pages].iter().enumerate() {
+            let off = k * page;
+            let n = page.min(src.len().saturating_sub(off));
+            // SAFETY: `addr` is the direct-map address of page `k` of a
+            // read-write object nobody shares a frame of, held by the kernel's
+            // reference for as long as `self` lives; `n` is within the page and
+            // `off + n` within `src`.
+            unsafe { core::ptr::copy_nonoverlapping(src.as_ptr().add(off), *addr as *mut u8, n) }
+        }
+    }
+}
+
+#[cfg(feature = "use-robot")]
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        azos_ipc::memobj::memobj_frames_unpin(self.region);
+    }
+}
+
+/// Whether the region table was free during the last copy (host suites).
+#[cfg(all(test, feature = "use-robot"))]
+pub static COPY_WITH_TABLE_FREE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// The caller `tid` is, through the endpoint capability `ep_raw` it holds.
 pub fn caller(tid: u32, ep_raw: u32) -> Option<Caller> {

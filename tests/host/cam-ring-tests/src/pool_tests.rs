@@ -157,29 +157,38 @@ fn a_referenced_frame_is_never_overwritten() {
 }
 
 #[test]
-fn backpressure_refuses_until_the_slowest_reader_takes_its_frames() {
+fn backpressure_refuses_until_the_slowest_owed_reader_takes_its_frames() {
     let r = pool(Policy::Backpressure);
-    r.attach(TX);
-    r.attach(STREAM);
+    r.attach_owed(TX);
+    r.attach_owed(STREAM);
     // 4 slots, one always the newest: 4 frames fill it, the 5th waits.
     for want in 1..=4 {
         assert_eq!(produce(&r), Some(want));
     }
-    // Slot of frame 1 is free (not newest, not referenced) but TX and STREAM
-    // have not taken it: refused.
+    // The slot of frame 1 is free (not newest, not referenced) but TX and
+    // STREAM have not taken it: refused.
     assert_eq!(produce(&r), None);
     assert_eq!(r.refused(), 1);
-    // The stream catches up; TX still holds frame 1 back.
-    assert_eq!(r.acquire_latest(STREAM).unwrap().seq(), 4);
+    // The stream takes frame 1; TX still holds it back.
+    assert_eq!(r.acquire(STREAM).unwrap().seq(), 1);
     assert_eq!(produce(&r), None);
-    // TX takes the newest: everything older is passed over, capture resumes.
-    assert_eq!(r.acquire_latest(TX).unwrap().seq(), 4);
+    // TX takes it too: capture resumes, and nothing an owed reader had not
+    // taken was overwritten.
+    assert_eq!(r.acquire(TX).unwrap().seq(), 1);
     assert_eq!(produce(&r), Some(5));
     assert_eq!(r.overwritten(), 0, "backpressure never overwrites a frame a reader is owed");
+    // Every frame comes in order, none skipped.
+    for want in 2..=5 {
+        for c in [TX, STREAM] {
+            let f = r.acquire(c).unwrap();
+            assert_eq!((f.seq(), f.skipped()), (want, 0));
+            check(f.bytes(), want);
+        }
+    }
     // A detached reader holds nothing back.
     r.detach(STREAM);
     for _ in 0..10 {
-        assert!(produce(&r).is_some() || r.acquire_latest(TX).is_some());
+        assert!(produce(&r).is_some() || r.acquire(TX).is_some());
     }
 }
 
@@ -413,7 +422,7 @@ fn a_slow_reader_never_blocks_the_producer() {
 #[test]
 fn backpressure_keeps_the_frame_a_reader_is_owed() {
     let r = pool(Policy::Backpressure);
-    r.attach(TX);
+    r.attach_owed(TX);
     for want in 1..=N as u64 {
         assert_eq!(produce(&r), Some(want));
     }
@@ -423,16 +432,32 @@ fn backpressure_keeps_the_frame_a_reader_is_owed() {
         assert_eq!(produce(&r), None);
     }
     assert_eq!((r.refused(), r.overwritten(), r.produced()), (5, 0, N as u64));
-    let f = r.acquire_latest(TX).unwrap();
-    assert_eq!((f.seq(), f.skipped()), (N as u64, N as u64 - 1));
-    check(f.bytes(), N as u64);
+    let f = r.acquire(TX).unwrap();
+    assert_eq!((f.seq(), f.skipped()), (1, 0), "the oldest frame, not the newest");
+    check(f.bytes(), 1);
+}
+
+#[test]
+fn a_reader_the_pool_is_not_owed_to_never_holds_the_producer_back() {
+    let r = pool(Policy::Backpressure);
+    r.attach_owed(TX);
+    // The stream reader attaches plainly, takes nothing and does not go away.
+    r.attach(STREAM);
+    for want in 1..=50u64 {
+        assert_eq!(produce(&r), Some(want), "frame {want}: a quiet reader stalled the producer");
+        let f = r.acquire(TX).unwrap();
+        assert_eq!((f.seq(), f.skipped()), (want, 0));
+    }
+    assert_eq!(r.refused(), 0);
+    let f = r.acquire(STREAM).unwrap();
+    assert_eq!((f.seq(), f.skipped()), (50, 49), "the quiet reader goes to the newest frame");
 }
 
 #[test]
 fn a_detached_reader_holds_nothing_back() {
     let r = pool(Policy::Backpressure);
-    r.attach(TX);
-    r.attach(STREAM);
+    r.attach_owed(TX);
+    r.attach_owed(STREAM);
     for want in 1..=N as u64 {
         assert_eq!(produce(&r), Some(want));
     }

@@ -23,6 +23,14 @@ canary-overwrite-refuses = []
 canary-reference-leaks = []
 # A detached reader still holds the producer back.
 canary-detach-keeps = []
+# A reader the pool is not owed to holds the producer back.
+canary-unowed-holds-back = []
+# A reader does not re-read the buffer's sequence number after taking its reference.
+canary-reader-skips-recheck = []
+# The producer does not re-read the references after marking a buffer filling.
+canary-producer-skips-recheck = []
+# Stop points in the reader/producer handshake for the host tests (`pool::race`).
+race-hook = []
 
 [dependencies]
 azos_rings = { workspace = true }

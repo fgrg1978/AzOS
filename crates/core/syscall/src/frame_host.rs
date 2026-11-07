@@ -6,8 +6,8 @@
 //! The pool is `azos_cam_ring::FramePool` sized by Kconfig (`FRAME_POOL_SLOTS`
 //! buffers of `FRAME_BYTES`, the sender and `FRAME_READERS` ring-3 readers,
 //! the policy `FRAME_POOL_*`). It starts with no buffer: the boot lends it
-//! kernel memory objects when a camera is set up, and until then nothing is
-//! claimed and no reader attaches. A reader is a cursor: reader [`LINK`] is the
+//! kernel memory objects when the first reader attaches, and until then
+//! nothing is claimed and no reader attaches. A reader is a cursor: reader [`LINK`] is the
 //! brain link's sender, readers `1..` are the ring-3 tasks that called `next`.
 //! The producers (the capture task, a USB camera's class driver) write frames
 //! in the nanoseconds of the vDSO clock.
@@ -76,6 +76,17 @@ azos_common::ro_hook! {
     static PRODUCER_WAKE: fn(bool);
 }
 
+azos_common::ro_hook! {
+    /// Give the pool its buffers: called by the first attach that finds it
+    /// without. Installed by the boot of a camera.
+    static LEND: fn();
+}
+
+/// Install the lender of the pool's buffers. Called once at boot.
+pub fn set_lend(lend: fn()) {
+    LEND.set(lend);
+}
+
 /// Install the producers' wake. Called once at boot, before any reader.
 pub fn set_producer_wake(wake: fn(bool)) {
     PRODUCER_WAKE.set(wake);
@@ -84,8 +95,14 @@ pub fn set_producer_wake(wake: fn(bool)) {
 /// Attach reader `c` and wake the producers if it is the first. `false`: the
 /// pool has no buffers.
 pub fn attach(c: usize) -> bool {
+    if !POOL.ready() {
+        if let Some(lend) = LEND.get() {
+            lend();
+        }
+    }
     let first = !POOL.any_attached();
-    let attached = POOL.attach(c);
+    // The sender is the reader the pool is owed to; ring 3 never holds capture back.
+    let attached = if c == LINK { POOL.attach_owed(c) } else { POOL.attach(c) };
     if attached {
         if let Some(wake) = PRODUCER_WAKE.get() {
             wake(first);
@@ -137,10 +154,14 @@ fn first_read(tid: u32) -> bool {
 
 /// End `tid`'s reading, if it has any.
 fn end_reading(tid: u32) {
-    let mut h = HOLDERS.lock();
-    if let Some(i) = h.iter().position(|x| x.tid == tid) {
-        h[i] = Holder { tid: 0, read: false };
-        POOL.detach(1 + i);
+    let ended = {
+        let mut h = HOLDERS.lock();
+        h.iter().position(|x| x.tid == tid).map(|i| {
+            h[i] = Holder { tid: 0, read: false };
+            POOL.detach(1 + i);
+        })
+    };
+    if ended.is_some() {
         azos_drv_sys::kwarn!("[CAMERA] frame reader of tid {} ended", tid);
     }
 }
@@ -203,9 +224,12 @@ impl azos_devif::Frame for Server {
             return Out::err(outcome::NOT_READY);
         }
         #[cfg(not(feature = "frame-check-late-canary"))]
-        if let Err(code) = self.0.with_buffer_pages(buf.raw(), BYTES, BYTES, |_, _, _| ()) {
-            return Out::err(code);
-        }
+        let held = match self.0.pin_buffer(buf.raw(), BYTES, BYTES) {
+            Ok(h) => Some(h),
+            Err(code) => return Out::err(code),
+        };
+        #[cfg(feature = "frame-check-late-canary")]
+        let held = None;
         let Some(c) = cursor_of(tid) else {
             record(Verdict::Refuse, tid, 0, frame::reason::NO_SLOT);
             return Out::err(outcome::BUSY);
@@ -219,20 +243,17 @@ impl azos_devif::Frame for Server {
         }
         let Some(f) = POOL.acquire_latest(c) else { return Out::err(outcome::NOT_READY) };
         let bytes = f.bytes();
-        let copied = if bytes.is_empty() || cfg!(feature = "frame-copy-skip-canary") {
-            Ok(())
-        } else {
-            self.0.with_buffer_pages(buf.raw(), BYTES, bytes.len(), |off, addr, len| {
-                // SAFETY: `addr` addresses `len` bytes of one page of the
-                // object, kernel-mapped, held by the region table's lock for
-                // this closure; the object is read-write and is not a pool
-                // buffer; `off + len` is within `bytes`.
-                unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr().add(off), addr as *mut u8, len) }
-            })
+        let held = match held {
+            Some(h) => h,
+            None => match self.0.pin_buffer(buf.raw(), BYTES, BYTES) {
+                Ok(h) => h,
+                Err(_) => return Out::err(outcome::FAULT),
+            },
         };
-        if copied.is_err() {
-            return Out::err(outcome::FAULT);
+        if !cfg!(feature = "frame-copy-skip-canary") {
+            held.write(bytes);
         }
+        drop(held);
         #[cfg(not(feature = "frame-first-read-always-canary"))]
         let first = first_read(tid);
         #[cfg(feature = "frame-first-read-always-canary")]

@@ -10,7 +10,7 @@ description = "Host-side tests for azos_cam_ring (the frame class pool). Exclude
 # Run with:  cd tests/host/cam-ring-tests && cargo +stable test
 
 [dependencies]
-azos_cam_ring = { path = "../../../crates/drivers/cam-ring" }
+azos_cam_ring = { path = "../../../crates/drivers/cam-ring", features = ["race-hook"] }
 
 [features]
 canary-reader-writes = ["azos_cam_ring/canary-reader-writes"]
@@ -18,6 +18,9 @@ canary-backpressure-drops = ["azos_cam_ring/canary-backpressure-drops"]
 canary-overwrite-refuses = ["azos_cam_ring/canary-overwrite-refuses"]
 canary-reference-leaks = ["azos_cam_ring/canary-reference-leaks"]
 canary-detach-keeps = ["azos_cam_ring/canary-detach-keeps"]
+canary-unowed-holds-back = ["azos_cam_ring/canary-unowed-holds-back"]
+canary-reader-skips-recheck = ["azos_cam_ring/canary-reader-skips-recheck"]
+canary-producer-skips-recheck = ["azos_cam_ring/canary-producer-skips-recheck"]
 
 # Prevents Cargo from merging this crate into the workspace above.
 [workspace]

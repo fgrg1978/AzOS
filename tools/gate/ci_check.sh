@@ -12159,6 +12159,12 @@ host_job host_canary_row "frame: copy skip canary" syscall-tests frame-copy-skip
 host_job host_canary_row "frame: late check canary" syscall-tests frame-check-late-canary a_buffer_that_cannot_take_the_frame_takes_no_frame
 host_job host_canary_row "frame: slot per call canary" syscall-tests frame-slot-per-call-canary a_reader_slot_is_a_tasks_and_a_full_table_is_busy
 host_job host_canary_row "frame: exit keeps canary" syscall-tests frame-exit-keeps-canary a_task_that_exits_reads_no_more
+host_job host_canary_row "frame: copy under lock canary" syscall-tests frame-copy-under-lock-canary a_frame_goes_page_by_page_into_scattered_frames_with_the_table_free
+host_job host_canary_row "frame: first frame base canary" syscall-tests memobj-write-first-frame-canary a_frame_goes_page_by_page_into_scattered_frames_with_the_table_free
+host_job host_canary_row "memobj: write hold first frame canary" ipc-tests memobj-write-first-frame-canary a_write_hold_addresses_scattered_frames_and_outlives_its_owner
+host_job host_canary_row "frame: unowed reader holds back canary" cam-ring-tests canary-unowed-holds-back a_reader_the_pool_is_not_owed_to_never_holds_the_producer_back
+host_job host_canary_row "frame: reader recheck canary" cam-ring-tests canary-reader-skips-recheck a_reader_whose_buffer_was_reused_takes_the_newest_frame_instead
+host_job host_canary_row "frame: producer recheck canary" cam-ring-tests canary-producer-skips-recheck a_producer_that_chose_a_buffer_a_reader_then_took_leaves_it_alone
 host_job host_canary_row "frame: cam default-allow canary" syscall-tests effect-default-allow-canary a_task_nothing_grants_the_camera_is_refused_and_recorded
 host_job host_canary_row "sound: mic default-allow canary" syscall-tests effect-default-allow-canary the_mic_effect_is_granted_only_by_a_row_that_does_not_contain_it
 host_job host_canary_row "frame: cam effect ignored canary" syscall-tests frame-effect-ignored-canary a_class_without_the_cam_effect_is_refused_and_recorded

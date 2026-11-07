@@ -26,8 +26,11 @@
 //!   [`FramePool::refused`]).
 //! - [`Policy::Backpressure`]: the producer refuses ([`FramePool::claim`]
 //!   returns `None`, counted in [`FramePool::refused`]) rather than overwrite
-//!   a frame an attached reader has not taken yet. A slow reader then holds
-//!   back capture for every reader.
+//!   a frame a reader the pool is *owed* to ([`FramePool::attach_owed`]) has not
+//!   taken yet, and that reader takes every frame in order
+//!   ([`FramePool::acquire`]). A slow owed reader then holds back capture for
+//!   every reader; a reader attached plainly never does, and is
+//!   overwrite-oldest whatever the policy.
 //!
 //! # A reader never sees a frame change under it, and cannot change it
 //!
@@ -58,9 +61,37 @@
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use azos_rings::Log;
+use azos_rings::{Log, Next};
 
 use crate::sink::{FrameInfo, FrameSink};
+
+/// Points of the reader/producer handshake where a host test may stop a thread
+/// (`fn(pool address)` addresses; 0: none). Compiled only with the `race-hook` feature,
+/// which the kernel never enables.
+#[cfg(feature = "race-hook")]
+pub mod race {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    /// A reader has the id of the newest frame and is about to take a reference.
+    pub static BEFORE_REF: AtomicUsize = AtomicUsize::new(0);
+    /// A reader took its reference and the buffer still held the frame.
+    pub static AFTER_REF: AtomicUsize = AtomicUsize::new(0);
+    /// The producer chose a free buffer and is about to mark it filling.
+    pub static BEFORE_FILL: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn at(point: &AtomicUsize, pool: usize) {
+        let f = point.load(Ordering::Acquire);
+        if f != 0 {
+            // SAFETY: only a `fn(usize)` is ever stored here (`set`).
+            unsafe { core::mem::transmute::<usize, fn(usize)>(f)(pool) }
+        }
+    }
+
+    /// Run `f` (told the address of the pool that reached the point) at
+    /// `point` from now on (`None`: stop).
+    pub fn set(point: &AtomicUsize, f: Option<fn(usize)>) {
+        point.store(f.map_or(0, |f| f as usize), Ordering::Release);
+    }
+}
 
 /// What the producer does when every free buffer still holds a frame some
 /// attached reader has not taken.
@@ -122,6 +153,9 @@ pub struct FramePool<const N: usize, const SZ: usize, const C: usize> {
     cursors: [AtomicU64; C],
     /// Bit `c` set: reader `c` is attached.
     attached: AtomicUsize,
+    /// Bit `c` set: the producer holds frames for reader `c` under
+    /// [`Policy::Backpressure`], and `c` reads them in order.
+    owed: AtomicUsize,
     policy: Policy,
     produced: AtomicU64,
     refused: AtomicU64,
@@ -207,6 +241,7 @@ impl<const N: usize, const SZ: usize, const C: usize> FramePool<N, SZ, C> {
             writing: AtomicUsize::new(NO_SLOT),
             cursors,
             attached: AtomicUsize::new(0),
+            owed: AtomicUsize::new(0),
             policy,
             produced: AtomicU64::new(0),
             refused: AtomicU64::new(0),
@@ -258,11 +293,25 @@ impl<const N: usize, const SZ: usize, const C: usize> FramePool<N, SZ, C> {
         true
     }
 
+    /// [`attach`](Self::attach) reader `c` as one the pool is owed to: under
+    /// [`Policy::Backpressure`] the producer holds back for it, and
+    /// [`acquire`](Self::acquire) hands it every frame in order. The kernel's
+    /// sender is such a reader; a reader that attaches with `attach` never holds
+    /// the producer back, whatever the policy.
+    pub fn attach_owed(&self, c: usize) -> bool {
+        let attached = self.attach(c);
+        if attached {
+            self.owed.fetch_or(1usize << c, Ordering::AcqRel);
+        }
+        attached
+    }
+
     /// Detach reader `c`: the producer stops holding frames for it.
     pub fn detach(&self, c: usize) {
         assert!(c < C);
         #[cfg(not(feature = "canary-detach-keeps"))]
         self.attached.fetch_and(!(1usize << c), Ordering::AcqRel);
+        self.owed.fetch_and(!(1usize << c), Ordering::AcqRel);
     }
 
     /// Whether reader `c` is attached.
@@ -290,8 +339,16 @@ impl<const N: usize, const SZ: usize, const C: usize> FramePool<N, SZ, C> {
                 return None;
             }
             let s = &self.slots[id.slot as usize];
+            #[cfg(feature = "race-hook")]
+            race::at(&race::BEFORE_REF, self as *const Self as usize);
             s.refs.fetch_add(1, Ordering::SeqCst);
-            if s.seq.load(Ordering::SeqCst) == id.seq {
+            #[cfg(not(feature = "canary-reader-skips-recheck"))]
+            let whole = s.seq.load(Ordering::SeqCst) == id.seq;
+            #[cfg(feature = "canary-reader-skips-recheck")]
+            let whole = true;
+            if whole {
+                #[cfg(feature = "race-hook")]
+                race::at(&race::AFTER_REF, self as *const Self as usize);
                 self.cursors[c].store(id.seq, Ordering::Release);
                 return Some(FrameRef { pool: self, idx: id.slot as usize, seq: id.seq, skipped: id.seq - cursor - 1 });
             }
@@ -300,11 +357,46 @@ impl<const N: usize, const SZ: usize, const C: usize> FramePool<N, SZ, C> {
         None
     }
 
+    /// The next frame for reader `c`: under [`Policy::Backpressure`], for a
+    /// reader attached with [`attach_owed`](Self::attach_owed), the oldest
+    /// frame it has not taken (the producer kept it, so none is skipped);
+    /// otherwise [`acquire_latest`](Self::acquire_latest).
+    pub fn acquire(&self, c: usize) -> Option<FrameRef<'_, N, SZ, C>> {
+        if self.policy == Policy::Backpressure && self.owed.load(Ordering::Acquire) & (1usize << c) != 0 {
+            self.acquire_next(c)
+        } else {
+            self.acquire_latest(c)
+        }
+    }
+
+    /// The oldest frame reader `c` has not taken, read from the log in order;
+    /// one the log or the pool already overwrote counts as skipped.
+    fn acquire_next(&self, c: usize) -> Option<FrameRef<'_, N, SZ, C>> {
+        assert!(c < C);
+        let cursor = self.cursors[c].load(Ordering::Acquire);
+        let mut ids = self.ids.reader_at(cursor + 1);
+        for _ in 0..2 * N {
+            match ids.next() {
+                Next::Empty => return None,
+                Next::Overrun(_) => {}
+                Next::Item(id) => {
+                    let s = &self.slots[id.slot as usize];
+                    s.refs.fetch_add(1, Ordering::SeqCst);
+                    if s.seq.load(Ordering::SeqCst) == id.seq {
+                        self.cursors[c].store(id.seq, Ordering::Release);
+                        return Some(FrameRef { pool: self, idx: id.slot as usize, seq: id.seq, skipped: id.seq - cursor - 1 });
+                    }
+                    s.refs.fetch_sub(1, Ordering::Release);
+                }
+            }
+        }
+        None
+    }
+
     // ── Producer (exactly one) ───────────────────────────────────────────
 
-    /// The smallest cursor among attached readers, or `None` with none.
-    fn min_cursor(&self) -> Option<u64> {
-        let mask = self.attached.load(Ordering::Acquire);
+    /// The smallest cursor among the readers of `mask`, or `None` with none.
+    fn min_cursor(&self, mask: usize) -> Option<u64> {
         (0..C).filter(|c| mask & (1usize << c) != 0)
             .map(|c| self.cursors[c].load(Ordering::Acquire))
             .min()
@@ -349,9 +441,15 @@ impl<const N: usize, const SZ: usize, const C: usize> FramePool<N, SZ, C> {
             // N >= C + 2 leaves a free buffer at any instant: at most one
             // reference per reader.
             let Some((idx, old)) = pick else { continue };
-            let pending = old != EMPTY && self.min_cursor().is_some_and(|m| old > m);
+            let attached = self.attached.load(Ordering::Acquire);
+            let pending = old != EMPTY && self.min_cursor(attached).is_some_and(|m| old > m);
+            #[cfg(not(feature = "canary-unowed-holds-back"))]
+            let owed = attached & self.owed.load(Ordering::Acquire);
+            #[cfg(feature = "canary-unowed-holds-back")]
+            let owed = attached;
+            let owed_pending = old != EMPTY && self.min_cursor(owed).is_some_and(|m| old > m);
             #[cfg(not(feature = "canary-backpressure-drops"))]
-            if pending && self.policy == Policy::Backpressure {
+            if owed_pending && self.policy == Policy::Backpressure {
                 self.refused.fetch_add(1, Ordering::Relaxed);
                 self.writing.store(NO_SLOT, Ordering::Release);
                 return None;
@@ -363,8 +461,14 @@ impl<const N: usize, const SZ: usize, const C: usize> FramePool<N, SZ, C> {
                 return None;
             }
             let s = &self.slots[idx];
+            #[cfg(feature = "race-hook")]
+            race::at(&race::BEFORE_FILL, self as *const Self as usize);
             s.seq.store(FILLING, Ordering::SeqCst);
-            if s.refs.load(Ordering::SeqCst) != 0 {
+            #[cfg(not(feature = "canary-producer-skips-recheck"))]
+            let held = s.refs.load(Ordering::SeqCst) != 0;
+            #[cfg(feature = "canary-producer-skips-recheck")]
+            let held = false;
+            if held {
                 // A reader referenced it between the scan and the store.
                 s.seq.store(old, Ordering::SeqCst);
                 continue;
