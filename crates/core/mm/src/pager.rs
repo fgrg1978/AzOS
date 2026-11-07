@@ -1170,7 +1170,7 @@ impl DomainReclaim<'_> {
                 let leaf = Self::leaf_of(&sp, &f);
                 let put = slot::put_back_page(slot, f.ticket, f.frame.as_usize(), || {
                     leaf.is_some_and(|l| {
-                        l.compare_exchange(ARCH.pte_empty(), f.original, Ordering::AcqRel, Ordering::Acquire).is_ok()
+                        crate::pt::pt_cas(l, ARCH.pte_empty(), f.original).is_ok()
                     })
                 });
                 // An emptied slot is a reserved page that is not committed.
@@ -1224,7 +1224,7 @@ impl DomainReclaim<'_> {
         zpool::take_out(&SlotWords, slot, ticket).ok()?;
         // The leaf may have changed since the read (the hardware's Accessed or
         // Dirty bit): the page stays.
-        if leaf.compare_exchange(w, ARCH.pte_empty(), Ordering::AcqRel, Ordering::Acquire).is_err() {
+        if crate::pt::pt_cas(leaf, w, ARCH.pte_empty()).is_err() {
             slot.store(slot::frame(frame), Ordering::Release);
             return None;
         }
@@ -2032,7 +2032,7 @@ fn install_leaf(space: SpaceRef, page: usize, r: &Mapping, frame: PhysAddr, writ
     }
     // SAFETY: as above.
     let slot = unsafe { &*(pte_ptr as *const AtomicU64) };
-    if slot.compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire).is_err() {
+    if crate::pt::pt_cas(slot, old, new).is_err() {
         drop(t);
         give_back(frame);
         return Ok(());
@@ -2468,7 +2468,7 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
         // serialised by the space's lock, but the leaf is shared with walkers
         // that do not take it (a fork, `munmap`'s sweep).
         if slot.load(Ordering::Relaxed) != word
-            || leaf_word.compare_exchange(seen, new, Ordering::AcqRel, Ordering::Acquire).is_err()
+            || crate::pt::pt_cas(leaf_word, seen, new).is_err()
         {
             return false;
         }
@@ -2764,7 +2764,7 @@ pub(crate) fn cow_swap(root: usize, va: usize, leaf: &AtomicU64, old: u64, new: 
         return Swap::Held(seq);
     }
     let slot = guard.as_ref().and_then(|sp| anon_slot(sp, va));
-    if leaf.compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire).is_err() {
+    if crate::pt::pt_cas(leaf, old, new).is_err() {
         return Swap::Lost;
     }
     if let Some(s) = slot.filter(|_| !cfg!(feature = "cow-slot-canary")) {
@@ -3304,7 +3304,7 @@ fn share_leaf(leaf: Option<&AtomicU64>, f: usize, write: bool, c: &mut Cloned) -
             let shared = ARCH.pte_share_cow(cur);
             // The hardware's Accessed or Dirty bit, or a sibling, may change
             // the word meanwhile: taken again as it now is.
-            match a.compare_exchange(cur, shared, Ordering::AcqRel, Ordering::Acquire) {
+            match crate::pt::pt_cas(a, cur, shared) {
                 Ok(_) => {
                     c.downgraded = true;
                     return Ok(shared);

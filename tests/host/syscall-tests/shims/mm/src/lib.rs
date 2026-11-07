@@ -71,6 +71,8 @@ pub mod pmm;
 pub mod wx;
 
 // N12g/N12h/N12i: vmm.rs installs page-table words through pte_install.
+#[path = "../../../../../../crates/core/mm/src/pt.rs"]
+pub mod pt;
 #[path = "../../../../../../crates/core/mm/src/pte_install.rs"]
 pub mod pte_install;
 // FX8: vmm.rs walks the merged-root roster through roster.rs.

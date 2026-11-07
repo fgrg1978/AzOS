@@ -108,16 +108,15 @@ fn l2_table_alloc_upper(root: usize, vaddr: usize) -> KResult<(usize, usize)> {
         } else if ARCH.pte_is_valid(pte) {
             return Err(KernelError::AlreadyMapped);
         } else {
-            let new_pt = alloc_table(root, false)?;
+            let new_pt = alloc_table(root, false, level - 1)?;
             let new_pte = ARCH.pte_make_table(new_pt.as_usize());
             // SAFETY: `pte_ptr` is an aligned entry of a live table page. CAS
             // as in `walk`: threads of one process share the root.
             let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
-            match slot.compare_exchange(pte, new_pte, core::sync::atomic::Ordering::AcqRel,
-                                        core::sync::atomic::Ordering::Acquire) {
+            match crate::pt::pt_cas(slot, pte, new_pte) {
                 Ok(_) => pt = new_pt.as_usize(),
                 Err(cur) => {
-                    let _ = pmm::free_page(new_pt);
+                    table_page_free(new_pt);
                     let _ = table_charge(root, TableCharge::Return);
                     if !ARCH.pte_is_table(cur, level) {
                         return Err(KernelError::NotMapped);
@@ -372,14 +371,35 @@ fn fault_hook() {
     }
 }
 
+/// A zeroed page for a table of `level` under `root`: the kernel-half pool
+/// for the kernel's root when the monitor protects it, the table zone otherwise.
+fn table_page(root: usize, level: usize) -> KResult<crate::addr::PhysAddr> {
+    #[cfg(feature = "hyp-monitor")]
+    if root == KERNEL_ROOT.load(Ordering::Relaxed) {
+        return crate::ptpool::take(level);
+    }
+    #[cfg(not(feature = "hyp-monitor"))]
+    let _ = (root, level);
+    pmm::alloc_page_zone(Zone::PageTable)
+}
+
+/// Give back a table page a lost race left unlinked.
+fn table_page_free(page: crate::addr::PhysAddr) {
+    #[cfg(feature = "hyp-monitor")]
+    if crate::ptpool::contains(page) {
+        return crate::ptpool::give_back(page);
+    }
+    let _ = pmm::free_page(page);
+}
+
 /// Allocate a page-table frame under `root`, charged through [`TABLE_HOOK`]:
 /// `promised` for the table a reserved page's first touch needs.
-fn alloc_table(root: usize, promised: bool) -> KResult<crate::addr::PhysAddr> {
+fn alloc_table(root: usize, promised: bool, level: usize) -> KResult<crate::addr::PhysAddr> {
     let take = if promised { TableCharge::Promised } else { TableCharge::Take };
     if !table_charge(root, take) {
         return Err(KernelError::OutOfMemory);
     }
-    match pmm::alloc_page_zone(Zone::PageTable) {
+    match table_page(root, level) {
         Ok(p) => Ok(p),
         Err(e) => {
             let _ = table_charge(root, TableCharge::Return);
@@ -535,6 +555,20 @@ pub fn create_pagetable() -> KResult<usize> {
         return Err(e);
     }
     Ok(pt_phys)
+}
+
+/// The kernel's root: the first page of the monitor's pool when it protects
+/// the kernel half, a table-zone page otherwise.
+fn create_kernel_pagetable() -> KResult<usize> {
+    #[cfg(feature = "hyp-monitor")]
+    {
+        crate::ptpool::init(pmm::alloc_contiguous(crate::ptpool::PAGES)?);
+        let page = crate::ptpool::take(root_level())?;
+        meta_add(page.as_usize())?;
+        Ok(page.as_usize())
+    }
+    #[cfg(not(feature = "hyp-monitor"))]
+    create_pagetable()
 }
 
 /// Walk the page table to find the PTE for `vaddr`.
@@ -798,18 +832,17 @@ pub(crate) fn walk_level(pt_phys: usize, vaddr: usize, alloc: bool, promised: bo
             }
             // Allocate intermediate page table, charged to whoever owns
             // `pt_phys`.
-            let new_pt = alloc_table(pt_phys, promised)?;
+            let new_pt = alloc_table(pt_phys, promised, level - 1)?;
             let new_pte = ARCH.pte_make_table(new_pt.as_usize());
             // Installed by compare-and-swap (wave 13): the threads of one
             // process walk one table, and two of them may both find this slot
             // empty. The loser frees its table and follows the winner's.
             // SAFETY: `pte_ptr` is an aligned entry of a live table page.
             let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
-            let child = match slot.compare_exchange(pte, new_pte, core::sync::atomic::Ordering::AcqRel,
-                                        core::sync::atomic::Ordering::Acquire) {
+            let child = match crate::pt::pt_cas(slot, pte, new_pte) {
                 Ok(_) => new_pt.as_usize(),
                 Err(cur) => {
-                    let _ = pmm::free_page(new_pt);
+                    table_page_free(new_pt);
                     let _ = table_charge(pt_phys, TableCharge::Return);
                     if !ARCH.pte_is_valid(cur) {
                         return Err(KernelError::NotMapped);
@@ -990,7 +1023,7 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
         }
         ARCH.pte_phys(l2_pte)
     } else {
-        let new_pt = alloc_table(pt_phys, false)?;
+        let new_pt = alloc_table(pt_phys, false, 1)?;
         let new_pte = ARCH.pte_make_table(new_pt.as_usize());
         // By CAS (N12h), as in `walk`: the kernel-half merge or another
         // thread of this process may install this word meanwhile; the loser
@@ -998,7 +1031,7 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
         match crate::pte_install::install(pt_word(l2t, vpn2), l2_pte, new_pte) {
             Ok(()) => new_pt.as_usize(),
             Err(cur) => {
-                let _ = pmm::free_page(new_pt);
+                table_page_free(new_pt);
                 let _ = table_charge(pt_phys, TableCharge::Return);
                 if !ARCH.pte_is_table(cur, 2) {
                     return Err(KernelError::AlreadyMapped);
@@ -1109,7 +1142,7 @@ pub fn add_user_leaf_perms(pt_phys: usize, vaddr: usize, add: PagePerms) -> KRes
                 Err(e) => return Err(mmu_error_to_kernel_error(e)),
             };
             unsafe {
-                core::ptr::write_volatile(pte_ptr, new_word);
+                crate::pt::pt_set(pte_ptr, new_word);
             }
             ARCH.flush_tlb_page(vaddr);
             return Ok(());
@@ -1195,7 +1228,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
         let mega_base = ARCH.pte_phys(l1_pte);
         let flags = ARCH.pte_perms(l1_pte);
 
-        let l0_pt = match pmm::alloc_page_zone(Zone::PageTable) {
+        let l0_pt = match table_page(pt_phys, 0) {
             Ok(p) => p.as_usize(),
             Err(_) => return, // OOM — cannot split, bail out.
         };
@@ -1208,12 +1241,12 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
             // perms an ISA cannot express, neither of which changed here.
             let pte = ARCH.pte_make_leaf(paddr, flags, 0).expect("re-encoding a decoded leaf")
                 | keep_global(l1_pte);
-            unsafe { core::ptr::write_volatile((crate::addr::phys_to_virt(l0_pt + i * 8)) as *mut u64, pte) };
+            unsafe { crate::pt::pt_set((crate::addr::phys_to_virt(l0_pt + i * 8)) as *mut u64, pte) };
         }
 
         // Replace the L1 leaf PTE with a pointer to the new L0 table.
         let new_l1_pte = ARCH.pte_make_table(l0_pt);
-        unsafe { core::ptr::write_volatile(l1_pte_ptr, new_l1_pte) };
+        unsafe { crate::pt::pt_set(l1_pte_ptr, new_l1_pte) };
 
         // Full TLB flush — the megapage TLB entry must be invalidated.
         if shoot {
@@ -1232,7 +1265,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
         if user_root && !user_may_modify(unsafe { core::ptr::read_volatile(pte_ptr) }, vaddr, 0) {
             return;
         }
-        unsafe { core::ptr::write_volatile(pte_ptr, ARCH.pte_empty()) };
+        unsafe { crate::pt::pt_set(pte_ptr, ARCH.pte_empty()) };
         if shoot {
             user_shootdown(pt_phys, vaddr, PAGE_SIZE);
         } else {
@@ -1290,7 +1323,7 @@ pub fn map_user_mega_range(pt_phys: usize, vaddr: usize, paddr: usize, len: usiz
             let mut undo = 0;
             while undo < off {
                 if let Ok(p) = walk(pt_phys, vaddr + undo, false) {
-                    unsafe { core::ptr::write_volatile(p, ARCH.pte_empty()) };
+                    unsafe { crate::pt::pt_set(p, ARCH.pte_empty()) };
                 }
                 undo += MEGA_SIZE;
             }
@@ -1419,7 +1452,7 @@ fn map_contig_run(pt_phys: usize, va: usize, run_pa: usize, pages: usize, flags:
         let word = ARCH.pte_make_contig_leaf(run_pa, k, flags).map_err(mmu_error_to_kernel_error)? | g;
         if crate::pte_install::install(slot(k), old, word).is_err() {
             for j in 0..k {
-                slot(j).store(ARCH.pte_empty(), Ordering::Release);
+                crate::pt::pt_store(slot(j), ARCH.pte_empty(), Ordering::Release);
             }
             return Err(KernelError::AlreadyMapped);
         }
@@ -1466,7 +1499,7 @@ fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
         for k in 0..run {
             let w = member(k).load(Ordering::Acquire);
             if ARCH.pte_is_contig(w) {
-                let _ = member(k).compare_exchange(w, ARCH.pte_contig_member(w, k), Ordering::AcqRel, Ordering::Acquire);
+                let _ = crate::pt::pt_cas(member(k), w, ARCH.pte_contig_member(w, k));
             }
         }
         user_shootdown(pt_phys, base_va, run * PAGE_SIZE);
@@ -1479,7 +1512,7 @@ fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
     for k in 0..run {
         let w = member(k).load(Ordering::Acquire);
         if ARCH.pte_is_contig(w)
-            && member(k).compare_exchange(w, azos_arch_api::PTE_BBM_PARK, Ordering::AcqRel, Ordering::Acquire).is_ok()
+            && crate::pt::pt_cas(member(k), w, azos_arch_api::PTE_BBM_PARK).is_ok()
         {
             old[k] = w;
             broke = true;
@@ -1489,7 +1522,7 @@ fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
         user_shootdown(pt_phys, base_va, run * PAGE_SIZE);
         for k in 0..run {
             if old[k] != 0 {
-                member(k).store(ARCH.pte_contig_member(old[k], k), Ordering::Release);
+                crate::pt::pt_store(member(k), ARCH.pte_contig_member(old[k], k), Ordering::Release);
             }
         }
         // The barrier every install ends with: the walker sees the words.
@@ -1979,7 +2012,7 @@ pub fn split_mega_range(start: usize, end: usize) -> usize {
         let mega_flags = ARCH.pte_perms(l1_pte);
 
         // Allocate a new L0 page table
-        let l0_page = match pmm::alloc_page_zone(Zone::PageTable) {
+        let l0_page = match table_page(kpt, 0) {
             Ok(p) => p,
             Err(_) => {
                 // OOM — this megapage stays a 2 MiB leaf. Counted, not
@@ -1999,13 +2032,13 @@ pub fn split_mega_range(start: usize, end: usize) -> usize {
                 .expect("re-encoding a decoded leaf at a page-aligned address")
                 | keep_global(l1_pte);
             unsafe {
-                core::ptr::write_volatile((crate::addr::phys_to_virt(l0_pt + i * 8)) as *mut u64, pte);
+                crate::pt::pt_set((crate::addr::phys_to_virt(l0_pt + i * 8)) as *mut u64, pte);
             }
         }
 
         // Replace the L1 megapage entry with a pointer to the L0 table
         let new_l1 = ARCH.pte_make_table(l0_pt);
-        unsafe { core::ptr::write_volatile(l1_pte_ptr, new_l1) };
+        unsafe { crate::pt::pt_set(l1_pte_ptr, new_l1) };
 
         // Flush TLB for this range
         for i in 0..PTES {
@@ -2046,7 +2079,7 @@ pub fn ram_end() -> usize {
 }
 
 pub fn init(mem_start: usize, mem_size: usize) -> KResult<()> {
-    let kpt = create_pagetable()?;
+    let kpt = create_kernel_pagetable()?;
     *KERNEL_PT.lock() = kpt;
     KERNEL_ROOT.store(kpt, Ordering::Relaxed);
     // The device windows recorded belong to the kernel table `init` replaces:
@@ -2718,7 +2751,7 @@ pub fn strip_exec_outside_image(
                 let new_word = ARCH.pte_make_leaf(ARCH.pte_phys(pte), flags, level)
                     .expect("re-encoding a decoded leaf")
                     | keep_global(pte);
-                unsafe { core::ptr::write_volatile(ptr, new_word) };
+                unsafe { crate::pt::pt_set(ptr, new_word) };
                 if level > 0 { rep.record_mega(vaddr) } else { rep.record_page(vaddr) }
             }
         });
@@ -2811,7 +2844,7 @@ fn remap_range(pt_phys: usize, start: usize, end: usize, flags: PagePerms) {
                 let new_pte = ARCH.pte_make_leaf(ARCH.pte_phys(old), flags, 0)
                     .expect("re-encoding a page-aligned leaf at level 0")
                     | keep_global(old);
-                unsafe { core::ptr::write_volatile(pte_ptr, new_pte) };
+                unsafe { crate::pt::pt_set(pte_ptr, new_pte) };
             }
         }
         addr += PAGE_SIZE;
@@ -3261,7 +3294,7 @@ fn canary_private_l1(_kpt: usize, vpn2: usize, kpte: u64) -> u64 {
     let dst = crate::addr::phys_to_virt(copy.as_usize()) as *mut u64;
     for i in 0..entries_per_table() {
         // SAFETY: both are whole, mapped page-table frames.
-        unsafe { core::ptr::write_volatile(dst.add(i), core::ptr::read_volatile(src.add(i))) };
+        unsafe { crate::pt::pt_set(dst.add(i), core::ptr::read_volatile(src.add(i))) };
     }
     ARCH.pte_make_table(copy.as_usize())
 }
@@ -3986,10 +4019,10 @@ fn rewrite_leaf_write(ptr: *mut u64, pte: u64, f: PagePerms, write: bool) -> boo
     let cow = checked && crate::cow_table::page_is_shared(phys);
     let word = if cow { ARCH.pte_share_cow(word) } else { word };
     // SAFETY: `ptr` is an aligned L0 entry of a live user table.
-    unsafe { core::ptr::write_volatile(ptr, word) };
+    unsafe { crate::pt::pt_set(ptr, word) };
     if checked && !cow && crate::cow_table::page_is_shared(phys) {
         // SAFETY: as above.
-        unsafe { core::ptr::write_volatile(ptr, ARCH.pte_share_cow(word)) };
+        unsafe { crate::pt::pt_set(ptr, ARCH.pte_share_cow(word)) };
     }
     true
 }
@@ -4119,7 +4152,7 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize) -> KResult<
             // well, so the readback in `DOMAIN_MODULE_MAP_X` must catch it.
             let rx = PagePerms { write: cfg!(feature = "lx-wx-canary"), exec: true, ..f };
             let word = ARCH.pte_make_leaf(ARCH.pte_phys(pte), rx, 0).map_err(mmu_error_to_kernel_error)?;
-            unsafe { core::ptr::write_volatile(l0_ptr, word) };
+            unsafe { crate::pt::pt_set(l0_ptr, word) };
             changed += 1;
         }
         va += PAGE_SIZE;
@@ -4215,7 +4248,7 @@ fn take_user_leaf(pt_phys: usize, vaddr: usize, free: bool) -> Option<usize> {
     let owned = free && user_leaf_is_task_owned(l0, crate::vdso::sigtramp_phys());
     let phys = ARCH.pte_phys(l0);
 
-    unsafe { core::ptr::write_volatile(l0_ptr, ARCH.pte_empty()) };
+    unsafe { crate::pt::pt_set(l0_ptr, ARCH.pte_empty()) };
 
     Some(if owned { phys } else { 0 })
 }
@@ -4502,7 +4535,7 @@ fn clear_user_megas(pt_phys: usize, start: usize, end: usize) {
                 && ARCH.pte_is_leaf(w, 1)
                 && ARCH.pte_perms(w).user
                 && locked_region_frame(ARCH.pte_phys(w))
-                && slot.compare_exchange(w, ARCH.pte_empty(), Ordering::AcqRel, Ordering::Acquire).is_ok()
+                && crate::pt::pt_cas(slot, w, ARCH.pte_empty()).is_ok()
             {
                 cleared = true;
             }
@@ -4595,14 +4628,14 @@ pub(crate) fn user_block_untouched(pt_phys: usize, block_va: usize) -> bool {
 /// the window, so the handler runs after the make.
 fn l1_replace(pt_phys: usize, block_va: usize, slot: &core::sync::atomic::AtomicU64, old: u64, new: u64) -> Option<bool> {
     if !ARCH.block_change_needs_bbm() {
-        return slot.compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire).ok().map(|_| false);
+        return crate::pt::pt_cas(slot, old, new).ok().map(|_| false);
     }
     use azos_arch_api::Interrupts;
     let irq = ARCH.disable_all();
-    let broke = slot.compare_exchange(old, azos_arch_api::PTE_BBM_PARK, Ordering::AcqRel, Ordering::Acquire).is_ok();
+    let broke = crate::pt::pt_cas(slot, old, azos_arch_api::PTE_BBM_PARK).is_ok();
     if broke {
         user_shootdown(pt_phys, block_va, MEGA_SIZE);
-        slot.store(new, Ordering::Release);
+        crate::pt::pt_store(slot, new, Ordering::Release);
         // The barrier every install ends with: the walker sees the word.
         ARCH.flush_tlb_page(block_va);
     }
@@ -4707,7 +4740,7 @@ pub(crate) fn split_user_mega(pt_phys: usize, vaddr: usize) -> bool {
     for i in 0..entries_per_table() {
         // `perms` decoded from a valid leaf encodes again (`unmap`'s split).
         let word = ARCH.pte_make_leaf(base + i * PAGE_SIZE, perms, 0).expect("re-encoding a decoded leaf");
-        pt_word(l0, i).store(word, Ordering::Relaxed);
+        crate::pt::pt_store(pt_word(l0, i), word, Ordering::Relaxed);
     }
     let block = vaddr & !(MEGA_SIZE - 1);
     let Some(flushed) = l1_replace(pt_phys, block, slot, w, ARCH.pte_make_table(l0)) else {
@@ -4786,7 +4819,7 @@ fn free_mega_frames(base: usize) -> u32 {
 /// down, then free its frames. Returns the frames released.
 fn free_user_mega(pt_phys: usize, block_va: usize) -> u32 {
     let Some((slot, w)) = promoted_leaf(pt_phys, block_va) else { return 0 };
-    if slot.compare_exchange(w, ARCH.pte_empty(), Ordering::AcqRel, Ordering::Acquire).is_err() {
+    if crate::pt::pt_cas(slot, w, ARCH.pte_empty()).is_err() {
         return 0;
     }
     user_shootdown(pt_phys, block_va, MEGA_SIZE);
@@ -4838,7 +4871,7 @@ fn protect_megas(pt_phys: usize, start: usize, end: usize, write: bool) -> usize
                 if f.write != write {
                     let perms = PagePerms { write, accessed: true, dirty: f.dirty || write, ..f };
                     if let Ok(word) = ARCH.pte_make_leaf(ARCH.pte_phys(w), perms, 1) {
-                        if slot.compare_exchange(w, word | keep_global(w), Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                        if crate::pt::pt_cas(slot, w, word | keep_global(w)).is_ok() {
                             changed += entries_per_table();
                         }
                     }

@@ -12,7 +12,7 @@
 use azos_drv_sys::kprintln;
 use azos_hyp_api::{
     is_monitor_call, words_to_out, DeriveReq, LockDesc, TextSite, CALL_GUARD_PAGES, CALL_KEY_DERIVE,
-    CALL_KEY_ROOT_SET, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PIN, CALL_PROBE, CALL_TEXT_PATCH, INVARIANT_NAMES, KEY_LEN, KEY_ROOTS, LOCK_RAM_MAX, OK, PIN_FGT, TEXT_SITES_MAX,
+    CALL_KEY_ROOT_SET, CALL_LOCK_KERNEL_IMAGE, CALL_LOCK_RO_DATA, CALL_PIN, CALL_PROBE, CALL_PT_LOCK_POOL, CALL_PT_SET, CALL_TEXT_PATCH, INVARIANT_NAMES, KEY_LEN, KEY_ROOTS, LOCK_RAM_MAX, OK, PIN_FGT, PT_POOL_PAGES_MAX, RACED, TEXT_SITES_MAX,
 };
 
 // The blob, placed in `.hyp` (a non-exec `alloc` section the linker keeps out
@@ -48,7 +48,9 @@ macro_rules! hyp_blob {
     feature = "hyp-smmu-window-canary",
     feature = "hyp-its-window-canary",
     feature = "hyp-rd-open-canary",
-    feature = "hyp-its-skip-mapti-canary"
+    feature = "hyp-its-skip-mapti-canary",
+    feature = "hyp-pt-pool-open-canary",
+    feature = "hyp-pt-check-skip-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -77,6 +79,10 @@ hyp_blob!("/build/aarch64/hyp-mon-its-window.bin");
 hyp_blob!("/build/aarch64/hyp-mon-rd-open.bin");
 #[cfg(feature = "hyp-its-skip-mapti-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-its-skip-mapti.bin");
+#[cfg(feature = "hyp-pt-pool-open-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-pt-pool-open.bin");
+#[cfg(feature = "hyp-pt-check-skip-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-pt-check-skip.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
 /// x0..x4). An HVC, which the monitor traps at EL2.
@@ -93,12 +99,12 @@ fn monitor_call2(id: u64, a1: u64, a2: u64) -> [u64; 4] {
 
 #[inline]
 fn monitor_call5(id: u64, a1: u64, a2: u64) -> [u64; 5] {
-    monitor_call_n(id, a1, a2, 0)
+    monitor_call_n(id, a1, a2, 0, 0)
 }
 
 #[inline]
-fn monitor_call_n(id: u64, a1: u64, a2: u64, a3: u64) -> [u64; 5] {
-    let (mut x0, mut x1, mut x2, mut x3, mut x4) = (id, a1, a2, a3, 0u64);
+fn monitor_call_n(id: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> [u64; 5] {
+    let (mut x0, mut x1, mut x2, mut x3, mut x4) = (id, a1, a2, a3, a4);
     // SAFETY: the monitor is resident (HYP_MONITOR built it in and the
     // trampoline started it) before this runs.
     unsafe {
@@ -213,6 +219,17 @@ static mut LOCK_SITES: [TextSite; TEXT_SITES_MAX] = [TextSite::ZERO; TEXT_SITES_
 /// `text_poke`'s back end after the lock.
 fn text_patch(pa: usize, word: u32) -> bool {
     monitor_call2(CALL_TEXT_PATCH, pa as u64, word as u64)[0] as i64 == OK
+}
+
+/// `pt_set`, the monitor's side of a word in the kernel-half pool. A refusal
+/// is the kernel writing a table it must not: it stops.
+fn pt_set(entry_pa: usize, expected: u64, new: u64, level: usize) -> Result<(), u64> {
+    let r = monitor_call_n(CALL_PT_SET, entry_pa as u64, expected, new, level as u64);
+    match r[0] as i64 {
+        OK => Ok(()),
+        RACED => Err(r[1]),
+        status => panic!("[HYP] pt_set of {:#x} refused ({}): {:#x} over {:#x}", entry_pa, status, new, expected),
+    }
 }
 
 fn pa_of(va: usize) -> u64 { azos_mm::addr::virt_to_phys(va) as u64 }
@@ -346,7 +363,7 @@ pub(crate) struct ItsCalls;
 
 impl azos_arch::irq::its::ItsRemote for ItsCalls {
     fn init(&self, its_base: usize, rd_base: usize, rd_stride: usize, ncpu: usize) -> bool {
-        let r = monitor_call_n(azos_hyp_api::CALL_ITS_INIT, its_base as u64, rd_base as u64, rd_stride as u64 | (ncpu as u64) << 32);
+        let r = monitor_call_n(azos_hyp_api::CALL_ITS_INIT, its_base as u64, rd_base as u64, rd_stride as u64 | (ncpu as u64) << 32, 0);
         r[0] as i64 == OK
     }
 
@@ -404,6 +421,7 @@ pub(crate) fn lock_image() {
     };
     if r[0] as i64 == OK {
         azos_mm::text_poke::set_word_hook(text_patch);
+        azos_mm::ptpool::set_monitor_hook(pt_set);
         // SAFETY: written once above, before the call.
         let n = unsafe { (*core::ptr::addr_of!(LOCK_DESC)).nsites };
         kprintln!("[BOOT] EL2:        kernel image locked (text, rodata; {} key sites)", n);
@@ -426,6 +444,7 @@ pub(crate) fn lock_ro_data() {
     } else {
         kprintln!("[BOOT] EL2:        ro_after_init lock refused ({})", r[0] as i64);
     }
+    lock_pt_pool();
     report();
     #[cfg(feature = "hyp-lock-probe")]
     text_write_probe();
@@ -441,10 +460,29 @@ pub(crate) fn lock_ro_data() {
     smmu_probe();
     #[cfg(feature = "hyp-its-probe")]
     its_probe();
+    #[cfg(feature = "hyp-pt-probe")]
+    pt_probe();
+}
+
+const _: () = assert!(azos_limits::HYP_PT_POOL_PAGES as u64 <= PT_POOL_PAGES_MAX);
+
+/// The kernel half's tables, built and sealed, become the monitor's: the pool
+/// goes read-only for the host and every later word in it goes through `pt_set`
+/// (I3). Last of the boot's table writes, after `ro_after_init` is sealed.
+fn lock_pt_pool() {
+    let (pool, used, pages) = azos_mm::ptpool::extent();
+    let root = azos_mm::vmm::kernel_pagetable();
+    let r = monitor_call_n(CALL_PT_LOCK_POOL, pool as u64, pages as u64 | (azos_arch::PAGE_SHIFT as u64) << 32, root as u64, 0);
+    if r[0] as i64 == OK {
+        azos_mm::ptpool::arm();
+        kprintln!("[BOOT] EL2:        kernel-half tables locked ({} of {} pool pages used)", used, pages);
+    } else {
+        kprintln!("[BOOT] EL2:        kernel-half table lock refused ({})", r[0] as i64);
+    }
 }
 
 /// How many records of `kind` the ring holds.
-#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe", feature = "hyp-key-root-probe", feature = "hyp-smmu-probe", feature = "hyp-its-probe"))]
+#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-pin-probe", feature = "hyp-key-root-probe", feature = "hyp-smmu-probe", feature = "hyp-its-probe", feature = "hyp-pt-probe"))]
 fn ring_count(kind: azos_hyp_api::Kind) -> u32 {
     let (mut cursor, mut n) = (0, 0);
     loop {
@@ -711,4 +749,76 @@ fn its_probe() {
     // SAFETY: the probe's purpose is this write; it must not return.
     unsafe { azos_arch_api::mmio::write64(its::ITS_BASE + 0x80, 0) };
     kprintln!("[HYP] PROBE FAILED: GITS_CBASER was written from EL1");
+}
+
+/// A page the pt probe points a table at: not the pool's.
+#[cfg(feature = "hyp-pt-probe")]
+#[repr(C, align(4096))]
+struct PtProbePage([u8; 4096]);
+#[cfg(feature = "hyp-pt-probe")]
+static mut PT_PROBE_PAGE: PtProbePage = PtProbePage([0; 4096]);
+
+/// Feature `hyp-pt-probe` (the `hyp: R11` rows): words that break a rule, written
+/// into a free slot of the kernel root, are refused and recorded: writable and
+/// executable, without AF, a table outside the pool, a table of the wrong level,
+/// and the slot that leads to the kernel's text. A good word is written and
+/// cleared, a stale expectation answers RACED, and a map and an unmap through
+/// the funnel work. Then a direct store into a table of the pool, which must
+/// fault. Never in a real build.
+#[cfg(feature = "hyp-pt-probe")]
+fn pt_probe() {
+    use azos_arch::mmu::{make_table, pte_fmt::{AF, PXN, UXN}};
+    use azos_hyp_api::{Kind, DENIED, INV_KERNEL_TABLES, RACED};
+    if monitor_call(CALL_PROBE, 0)[2] & INV_KERNEL_TABLES == 0 {
+        kprintln!("[HYP] PROBE FAILED: probe does not report kernel-tables");
+    }
+    let root = azos_mm::vmm::kernel_pagetable();
+    let word_at = |i: usize| unsafe { core::ptr::read_volatile(azos_mm::addr::phys_to_virt(root + i * 8) as *const u64) };
+    let Some(free) = (0..512).find(|&i| word_at(i) == 0) else {
+        kprintln!("[HYP] PROBE FAILED: the kernel root has no free slot");
+        return;
+    };
+    let entry = (root + free * 8) as u64;
+    let set = |slot: u64, expected: u64, new: u64| monitor_call_n(CALL_PT_SET, slot, expected, new, 2);
+    // A 1 GiB block of Device-like memory at the root: valid, inner-shareable, attribute index 1.
+    let block = |pa: u64, flags: u64| pa | 1 | AF | 0b11 << 8 | 1 << 2 | flags;
+    let page = pa_of(core::ptr::addr_of!(PT_PROBE_PAGE) as usize);
+    let text = core::ptr::addr_of!(_text_start) as usize;
+    let before = ring_count(Kind::CallRefused);
+    let wx = set(entry, 0, block(1 << 32, 0))[0] as i64;
+    let no_af = set(entry, 0, block(1 << 32, PXN | UXN) & !AF)[0] as i64;
+    let foreign = set(entry, 0, make_table(page as usize))[0] as i64;
+    let wrong_level = set(entry, 0, make_table(root))[0] as i64;
+    let text_slot = (root + azos_arch::mmu::vpn(text, 2) * 8) as u64;
+    let text_word = word_at(azos_arch::mmu::vpn(text, 2));
+    let image = set(text_slot, text_word, 0)[0] as i64;
+    let refused = ring_count(Kind::CallRefused) - before;
+    if [wx, no_af, foreign, wrong_level, image] == [DENIED; 5] && refused == 5 {
+        kprintln!("[HYP] pt: words that break a rule are refused and recorded");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: pt_set refused {:?} and recorded {}", [wx, no_af, foreign, wrong_level, image], refused);
+    }
+    let good = block(1 << 32, PXN | UXN);
+    let wrote = set(entry, 0, good)[0] as i64;
+    let raced = set(entry, 0, 0);
+    let cleared = set(entry, good, 0)[0] as i64;
+    if wrote == OK && raced[0] as i64 == RACED && raced[1] == good && cleared == OK && word_at(free) == 0 {
+        kprintln!("[HYP] pt: a good word is written and cleared, a stale expectation is raced");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: pt_set gave {} / {} / {}", wrote, raced[0] as i64, cleared);
+    }
+    let va = azos_mm::kstack::first_guard() & !(azos_arch::PAGE_SIZE - 1);
+    let kpt = root;
+    let mapped = azos_mm::vmm::map(kpt, va, page as usize, azos_arch_api::PagePerms::KERNEL_RW).is_ok()
+        && azos_mm::vmm::translate(kpt, va) == Some(page as usize);
+    azos_mm::vmm::unmap_kernel(kpt, va);
+    if mapped && azos_mm::vmm::translate(kpt, va).is_none() {
+        kprintln!("[HYP] pt: a map and an unmap go through the monitor");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: the map or the unmap did not take (mapped {})", mapped);
+    }
+    kprintln!("[HYP] pt: writing a table of the pool from EL1 (must fault)");
+    // SAFETY: the probe's purpose is this write; it must not return.
+    unsafe { core::ptr::write_volatile(azos_mm::addr::phys_to_virt(root + free * 8) as *mut u64, 0) };
+    kprintln!("[HYP] PROBE FAILED: a table of the pool was written from EL1");
 }

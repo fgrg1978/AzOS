@@ -101,8 +101,16 @@ mod slab_harden;
 // N12h: the CAS installs the user mapper and the kernel-half merge race for.
 // Depends on `core` only.
 #[allow(dead_code)]
+#[path = "../../../../crates/core/mm/src/pt.rs"]
+mod pt;
+#[cfg(feature = "hyp-monitor")]
+#[allow(dead_code)]
+#[path = "../../../../crates/core/mm/src/ptpool.rs"]
+mod ptpool;
+#[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/pte_install.rs"]
 mod pte_install;
+mod pt_funnel;
 
 /// N12h: a merge-slot level-1 word two writers race for (the task's mapper
 /// and the kernel-half push) is installed by CAS; the loser adopts the

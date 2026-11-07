@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# tools/lint/pt_writes_lint.py: the raw write sites of the scanned files that are
+# not page-table words, per file: <file><TAB><count><TAB><what they are>. Edited by
+# hand: a page-table word goes through pt_set, pt_store or pt_cas instead.
+arch/aarch64/src/mmu/setup.rs	4	the boot tables' own statics, written before the MMU is on (arch cannot reach the mm funnel)
+arch/x86_64/src/mmu.rs	1	the x86_64 boot table writer, used before the kernel's tables exist (the monitor is aarch64 only)
+arch/x86_64/src/mmu/kaslr_boot.rs	2	two words of the boot PDPT, written before the MMU's final tables exist
+crates/core/mm/src/pager.rs	8	object slot words and the stale epoch (MemObj state), not page-table words

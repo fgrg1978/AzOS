@@ -138,6 +138,20 @@ config HYP_ACCEPT_DMA_HOLE
       controllers the supported boards carry; a master it does not name is a
       hole this walk cannot see.
 
+config HYP_PT_POOL_PAGES
+    int "Pages of kernel-half page tables the monitor protects" if HYP_MONITOR
+    range 16 1024
+    default 128
+    help
+      The tables under the kernel root come from one run of this many pages,
+      carved at boot; the monitor makes the run read-only for the host and
+      takes every later change to a kernel-half table through pt_set (I3). A
+      table is never given back, so the run bounds how much the kernel half can
+      map: kernel stacks, device windows and the split direct map. A map that
+      needs another table past the run is refused. The boot prints how many
+      pages the tables used when the run was locked. Not read without
+      HYP_MONITOR (no run is carved).
+
 config HV_MAX_VCPUS
     int "vCPUs over all guests"
     range 1 64

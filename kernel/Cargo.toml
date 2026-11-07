@@ -1106,7 +1106,7 @@ hv = ["dep:azos_hv", "azos_syscall/hv", "azos_arch/hv"]
 # Kconfig HYP_MONITOR (derived from VIRT_SPLIT): the resident monitor. The boot
 # trampoline keeps EL2 to start it (azos_arch/hyp-monitor) and the kernel
 # `.incbin`s the monitor blob into the `.hyp` section. No guest core (not `hv`).
-hyp-monitor = ["azos_arch/hyp-monitor", "dep:azos_hyp_api"]
+hyp-monitor = ["azos_arch/hyp-monitor", "azos_mm/hyp-monitor", "dep:azos_hyp_api"]
 # Gate-only (test hooks): build a split image and its canaries without a
 # reachable Kconfig path (ARCH_HAS_HYP_MONITOR is unset until F5). Each canary
 # `.incbin`s the matching monitor variant its row built (tools/build/hyp_mon.sh
@@ -1132,6 +1132,9 @@ hyp-its-window-canary = ["hyp-monitor-row"]
 hyp-rd-open-canary = ["hyp-monitor-row"]
 hyp-its-probe = ["hyp-monitor-row"]
 hyp-its-skip-mapti-canary = ["hyp-monitor-row"]
+hyp-pt-probe = ["hyp-monitor-row"]
+hyp-pt-pool-open-canary = ["hyp-monitor-row"]
+hyp-pt-check-skip-canary = ["hyp-monitor-row"]
 # Kconfig INSPECT: the introspection tree (crates/core/inspect), published
 # by kernel/src/boot/inspect.rs. A `base` tag: emitted unless the symbol is n.
 # With the USB host, its `usb/devN` listing joins the tree.

@@ -165,6 +165,18 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# The page-table write lint (tools/lint/pt_writes_lint.py), as the gate's row does.
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "pt writes lint..."
+    if out="$(python3 tools/lint/pt_writes_lint.py --self-test 2>&1)" \
+       && out="$(python3 tools/lint/pt_writes_lint.py 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 # The boot sequence lint (tools/lint/boot_seq_lint.py), as the gate's row does.
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "boot seq lint..."

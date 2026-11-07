@@ -119,7 +119,7 @@ pub fn fork_share_range(parent_pt: usize, child_pt: usize, va: usize, pages: usi
             let dst = vmm::walk(child_pt, v, true)?;
             // SAFETY: the child's leaf entry for `v`, in a table its root owns
             // and no CPU runs on yet.
-            unsafe { core::ptr::write_volatile(dst, pte) };
+            unsafe { crate::pt::pt_set(dst, pte) };
             done += 1;
         }
         Ok(())
@@ -447,7 +447,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 && crate::vmm::next_present(l0_pt, 0, entries) >= entries
             {
                 let l1_ptr = crate::addr::phys_to_virt(l1_pt + vpn1 * 8) as *mut u64;
-                unsafe { core::ptr::write_volatile(l1_ptr, 0) };
+                unsafe { crate::pt::pt_set(l1_ptr, 0) };
                 pruned.tables[pruned.n] = l0_pt;
                 pruned.n += 1;
                 continue;
@@ -500,7 +500,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 // and moves on to the next entry with nothing to give back.)
                 if tramp != 0 && phys == tramp {
                     // SAFETY: the child's leaf table walked above, entry vpn0.
-                    unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
+                    unsafe { crate::pt::pt_set(child_l0.add(vpn0), l0_pte) };
                     break None;
                 }
 
@@ -525,7 +525,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 // `cow-ro-canary` brings that back.
                 let writable = perms.write;
                 if !writable && !cfg!(feature = "cow-ro-canary") {
-                    unsafe { core::ptr::write_volatile(child_l0.add(vpn0), l0_pte) };
+                    unsafe { crate::pt::pt_set(child_l0.add(vpn0), l0_pte) };
                     break None;
                 }
                 // Parent: clear WRITE, set COW marker. By compare-and-swap
@@ -535,13 +535,12 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 // taken again as it now is.
                 let cow_pte = ARCH.pte_share_cow(l0_pte);
                 if !CONCURRENT {
-                    unsafe { core::ptr::write_volatile(l0_pte_ptr, cow_pte) };
+                    unsafe { crate::pt::pt_set(l0_pte_ptr, cow_pte) };
                     break Some(cow_pte);
                 }
                 // SAFETY: an aligned entry of the parent's live leaf table.
                 let slot = unsafe { &*(l0_pte_ptr as *const core::sync::atomic::AtomicU64) };
-                match slot.compare_exchange(l0_pte, cow_pte, core::sync::atomic::Ordering::AcqRel,
-                                            core::sync::atomic::Ordering::Acquire) {
+                match crate::pt::pt_cas(slot, l0_pte, cow_pte) {
                     Ok(_) => break Some(cow_pte),
                     Err(cur) => {
                         let _ = page_decref(phys);
@@ -557,7 +556,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
 
                 // Child: same physical page, same COW word, same index in its
                 // own leaf table.
-                unsafe { core::ptr::write_volatile(child_l0.add(vpn0), cow_pte) };
+                unsafe { crate::pt::pt_set(child_l0.add(vpn0), cow_pte) };
             }
         }
     }
@@ -671,16 +670,12 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
             };
             // SAFETY: `pte_ptr` is an aligned entry of a live table page.
             let slot = unsafe { &*(pte_ptr as *const core::sync::atomic::AtomicU64) };
-            let won = slot
-                .compare_exchange(pte, new_pte, core::sync::atomic::Ordering::AcqRel,
-                                  core::sync::atomic::Ordering::Acquire)
-                .is_ok();
+            let won = crate::pt::pt_cas(slot, pte, new_pte).is_ok();
             if won && !crate::cow_table::page_forget_if_sole(old_phys) {
                 // A fork counted the frame since the read: undo the write
                 // bit. A lost swap back means that fork already rewrote the
                 // entry itself, which is the state this wanted.
-                let _ = slot.compare_exchange(new_pte, pte, core::sync::atomic::Ordering::AcqRel,
-                                              core::sync::atomic::Ordering::Acquire);
+                let _ = crate::pt::pt_cas(slot, new_pte, pte);
                 crate::vmm::user_shootdown(pt, aligned_addr, PAGE_SIZE);
                 return Ok(true);
             }

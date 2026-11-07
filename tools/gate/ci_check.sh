@@ -2838,6 +2838,18 @@ else
     bad; printf '%s\n' "$mal_out" | sed 's/^/      /'
 fi
 
+# Page-table write lint (tools/lint/pt_writes_lint.py): a stage-1 word is written
+# only through the mm funnel (pt_set, pt_store, pt_cas), so a monitor that
+# protects the kernel half's tables has one place to take over. Also its
+# canaries (`--self-test`).
+printf "  %-26s" "pt writes lint..."
+if ptw_out="$(python3 "${REPO_ROOT}/tools/lint/pt_writes_lint.py" --self-test 2>&1)" \
+   && ptw_out="$(python3 "${REPO_ROOT}/tools/lint/pt_writes_lint.py" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$ptw_out" | sed 's/^/      /'
+fi
+
 # Boot sequence lint (tools/lint/boot_seq_lint.py): the common early-boot steps
 # (console, firmware table, memory map, page tables, W^X/NX, guards, heap, ...)
 # run from boot::early_main, not from each ISA's boot_hooks.rs, unless a
@@ -3810,6 +3822,8 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-its-window-canary)        name=hyp-mon-its-window ;;
         hyp-rd-open-canary)           name=hyp-mon-rd-open ;;
         hyp-its-skip-mapti-canary)    name=hyp-mon-its-skip-mapti ;;
+        hyp-pt-pool-open-canary)      name=hyp-mon-pt-pool-open ;;
+        hyp-pt-check-skip-canary)     name=hyp-mon-pt-check-skip ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3837,6 +3851,8 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *its-window*) hyp_mon_blob hyp-its-window-canary ;;
         *rd-open*) hyp_mon_blob hyp-rd-open-canary ;;
         *its-skip-mapti*) hyp_mon_blob hyp-its-skip-mapti-canary ;;
+        *pt-pool-open*) hyp_mon_blob hyp-pt-pool-open-canary ;;
+        *pt-check-skip*) hyp_mon_blob hyp-pt-check-skip-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     # A canary must build: "did not build" is its own failure (the third bucket),
@@ -4037,6 +4053,28 @@ par "hyp: R10 msi through the monitor's its (arm)" hyp_monitor_row "hyp: R10 msi
 HYP_QEMU="$R10_NET" HYP_WAIT='ITS\] LPI vector 1 delivered|AARCH64-TRAP\] unhandled|delivery FAILED' \
 par "hyp: R10 its skip-mapti canary (arm)" hyp_monitor_row "hyp: R10 its skip-mapti canary (arm)" "hyp-its-skip-mapti-canary,pci" canary \
     "[ITS] LPI vector 1 delivered"
+
+# R11, the kernel half's tables (I3): they live in a pool the monitor makes
+# read-only for the host, and every word written there goes through pt_set. A
+# word that is writable and executable, has no AF, links a table outside the
+# pool or of the wrong level, or changes the slot that leads to the kernel's text
+# is refused and recorded; a good word is written and cleared; a map and an
+# unmap work; and a direct store into a table of the pool faults.
+# Canaries: the pool left writable (the last store goes through), and pt_set
+# writing any word (the refusals do not happen).
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R11 kernel tables owned by the monitor (arm)" hyp_monitor_row "hyp: R11 kernel tables owned by the monitor (arm)" "hyp-pt-probe" pass \
+    "[BOOT] EL2:        kernel-half tables locked" "[BOOT] EL2:        invariant kernel-tables in force" \
+    "[HYP] pt: words that break a rule are refused and recorded" \
+    "[HYP] pt: a good word is written and cleared, a stale expectation is raced" \
+    "[HYP] pt: a map and an unmap go through the monitor" \
+    "[HYP] pt: writing a table of the pool from EL1 (must fault)" "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R11 pool open canary (arm)" hyp_monitor_row "hyp: R11 pool open canary (arm)" "hyp-pt-pool-open-canary,hyp-pt-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: R11 pt check canary (arm)" hyp_monitor_row "hyp: R11 pt check canary (arm)" "hyp-pt-check-skip-canary,hyp-pt-probe" canary \
+    "[HYP] pt: words that break a rule are refused and recorded"
 
 # F9, the DMA the monitor cannot confine: the device tree's masters that name
 # no IOMMU are counted by kind on the boot line (QEMU `virt` has virtio-mmio

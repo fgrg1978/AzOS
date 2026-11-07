@@ -26,8 +26,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// it, or reports the slot taken) and frees anything it built for `new`.
 #[inline]
 pub fn install(slot: &AtomicU64, seen: u64, new: u64) -> Result<(), u64> {
-    slot.compare_exchange(seen, new, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
+    crate::pt::pt_cas(slot, seen, new).map(|_| ())
 }
 
 /// Copy into `dst` every word of `src` that is valid and that `take` accepts,
