@@ -2920,8 +2920,8 @@ pub(crate) mod host_machine {
                 b.add(hwbus::Device::dt("gpio@9030000", b"arm,pl061\0arm,primecell\0", 0x903_0000, 0x1000, 39), &mut q).unwrap();
                 b.add(hwbus::Device::dt("pl031@9010000", b"arm,pl031\0arm,primecell\0", 0x901_0000, 0x1000, 34), &mut q).unwrap();
                 b.add(hwbus::Device::dt("uart@10000000", b"ns16550a\0", 0x1000_0000, 0x100, 10), &mut q).unwrap();
-                b.add(hwbus::Device::dt("twin@a", b"vendor,twin-gpio\0", 0x2000_0000, 0x1000, 0), &mut q).unwrap();
-                b.add(hwbus::Device::dt("twin@b", b"vendor,twin-gpio\0", 0x2000_1000, 0x1000, 0), &mut q).unwrap();
+                b.add(hwbus::Device::dt("twin@a", b"spacemit,k1-gpio\0", 0x2000_0000, 0x1000, 0), &mut q).unwrap();
+                b.add(hwbus::Device::dt("twin@b", b"spacemit,k1-gpio\0", 0x2000_1000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("nowindow@0", b"vendor,nowindow\0", 0x3000_0000, 0, 0), &mut q).unwrap();
                 b.add(hwbus::Device::virtio_mmio(0x1000_2000, 0x1000, 2, 2), &mut q).unwrap();
                 b.add(hwbus::Device::dt("dma@4000000", b"vendor,dmamaster\0", 0x400_0000, 0x1000, 0).with_dma_coherent(true), &mut q).unwrap();
@@ -3280,12 +3280,12 @@ mod mmio_cap_tests {
         let rtc = handle(RTC);
         let ro = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:google,goldfish-rtc")
             .expect("READ on the RTC mints");
-        let rw = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:vendor,twin-gpio")
+        let rw = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "mmio.dt:spacemit,k1-gpio")
             .expect("RW on a twin mints");
         assert_eq!(cap_store::get(tid, Cap::<targets::MmioRegion>::from_raw(ro), CapPerms::READ), Ok(rtc));
         assert_eq!(
             cap_store::get(tid, Cap::<targets::MmioRegion>::from_raw(rw), CapPerms::WRITE),
-            Ok(handle("dt:vendor,twin-gpio"))
+            Ok(handle("dt:spacemit,k1-gpio"))
         );
         let held = cap_store::with_table(tid, |t| {
             (
@@ -3303,14 +3303,14 @@ mod mmio_cap_tests {
     #[test]
     fn a_selector_counts_identical_devices_in_slot_order() {
         let tid = fresh_tid();
-        let (a, b) = (handle("dt:vendor,twin-gpio"), handle("dt:vendor,twin-gpio#1"));
+        let (a, b) = (handle("dt:spacemit,k1-gpio"), handle("dt:spacemit,k1-gpio#1"));
         assert_ne!(a, b);
         assert_eq!(hwbus::user_window(a), Some((0x2000_0000, 0x1000)));
         assert_eq!(hwbus::user_window(b), Some((0x2000_1000, 0x1000)));
-        let h = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:vendor,twin-gpio#1").unwrap();
+        let h = seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:spacemit,k1-gpio#1").unwrap();
         assert_eq!(cap_store::get(tid, Cap::<targets::MmioRegion>::from_raw(h), CapPerms::READ), Ok(b));
-        assert!(hwbus::resolve("dt:vendor,twin-gpio#2").is_none());
-        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:vendor,twin-gpio#2").is_none());
+        assert!(hwbus::resolve("dt:spacemit,k1-gpio#2").is_none());
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "mmio.dt:spacemit,k1-gpio#2").is_none());
     }
 
     /// A selector mints nothing unless it names a device of this machine that
@@ -3328,7 +3328,7 @@ mod mmio_cap_tests {
             "mmio.0",                   // an index is not a selector
             "mmio.4294967295",
             "mmio.dt:",
-            "mmio.dt:vendor,twin-gpio#x",
+            "mmio.dt:spacemit,k1-gpio#x",
             "mmio.usb:1:2",
             "mmio",
             "mmio.",
