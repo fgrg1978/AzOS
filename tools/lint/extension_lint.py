@@ -40,7 +40,6 @@ import os
 import re
 import sys
 import tempfile
-import tomllib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402
@@ -364,45 +363,84 @@ def check(root):
     return sorted(set(errs))
 
 
-def one_line_tables(text):
-    """Cargo accepts an inline table that continues over several lines (TOML
-    1.1); tomllib does not. Join such a table onto one line."""
+def logical_lines(text):
+    """The manifest's lines, comments dropped, with an inline table or an array
+    that continues over several lines (Cargo accepts them; the gate's python3
+    may be the system 3.9, which has no tomllib) joined onto one."""
     out, buf, depth = [], "", 0
     for line in text.split("\n"):
-        code = re.sub(r'"[^"]*"', '""', line.split("#", 1)[0])
-        depth += code.count("{") - code.count("}")
-        if buf:
-            buf += " " + line.split("#", 1)[0].strip()
+        masked = re.sub(r'"[^"]*"|\'[^\']*\'', lambda m: "_" * len(m.group(0)), line)
+        code = line[:masked.index("#")] if "#" in masked else line
+        depth += masked[:len(code)].count("{") + masked[:len(code)].count("[") - masked[:len(code)].count("}") - masked[:len(code)].count("]")
+        if buf or depth > 0:
+            buf = (buf + " " + code.strip()).strip()
         else:
-            buf = line.split("#", 1)[0] if depth > 0 else line
+            buf = code.strip()
         if depth <= 0:
-            out.append(buf)
+            if buf and not (buf.startswith("[") and "=" not in buf and not buf.endswith("]")):
+                out.append(buf)
             buf, depth = "", 0
-    return "\n".join(out + ([buf] if buf else []))
+    return out
 
 
-def load_toml(path):
+def scalar(v):
+    v = v.strip()
+    if v in ("true", "false"):
+        return v == "true"
+    m = re.match(r'^"([^"]*)"$|^\'([^\']*)\'$', v)
+    return (m.group(1) if m.group(1) is not None else m.group(2)) if m else v
+
+
+def inline_table(body):
+    """`{ a = "x", b = true, c = [..] }` as a dict (arrays are kept as text)."""
+    out = {}
+    for m in re.finditer(r'([\w-]+)\s*=\s*("[^"]*"|\'[^\']*\'|\[[^\]]*\]|[^,}\s]+)', body):
+        out[m.group(1)] = scalar(m.group(2))
+    return out
+
+
+HEADER = re.compile(r"^\[+\s*(?:target\s*\.\s*(?:'[^']*'|\"[^\"]*\"|[^.\]]+)\s*\.\s*)?"
+                    r"((?:dev-|build-)?dependencies|workspace\s*\.\s*dependencies)\s*(?:\.\s*([\w-]+))?\s*\]+$")
+
+
+def read_deps(path):
+    """[(table, name, spec)] of a manifest: `table` is dependencies,
+    dev-dependencies, build-dependencies or workspace.dependencies, in the
+    normal tables, under `[target.<cfg>.*]`, and as `[dependencies.<name>]`."""
+    out, cur, single = [], None, None
     with open(path, encoding="utf-8") as fh:
-        return tomllib.loads(one_line_tables(fh.read()))
+        lines = logical_lines(fh.read())
+    for line in lines:
+        if line.startswith("["):
+            m = HEADER.match(line)
+            cur = re.sub(r"\s+", "", m.group(1)) if m else None
+            single = (m.group(2), {}) if m and m.group(2) else None
+            if single:
+                out.append((cur, single[0], single[1]))
+            continue
+        kv = re.match(r"^([\w-]+)\s*=\s*(.*)$", line)
+        if cur is None or not kv:
+            continue
+        if single:
+            single[1][kv.group(1)] = scalar(kv.group(2))
+        else:
+            val = kv.group(2).strip()
+            out.append((cur, kv.group(1), inline_table(val[1:-1]) if val.startswith("{") else {"version": scalar(val)}))
+    return out
 
 
 def workspace_paths(root):
     """{package: directory} of the root Cargo.toml's workspace dependencies."""
     path = os.path.join(root, "Cargo.toml")
-    deps = load_toml(path).get("workspace", {}).get("dependencies", {}) if os.path.exists(path) else {}
-    return {n: v["path"] for n, v in deps.items() if isinstance(v, dict) and "path" in v}
+    deps = read_deps(path) if os.path.exists(path) else []
+    return {n: spec["path"] for t, n, spec in deps if t == "workspace.dependencies" and "path" in spec}
 
 
 def manifest_deps(path):
-    """(name, table, spec) of every dependency a manifest declares: the
-    normal, dev and build tables, those under `[target.<cfg>.*]`, and the
-    `[dependencies.<name>]` form, which the parser already folds in."""
-    data = load_toml(path)
-    tables = [data] + list(data.get("target", {}).values())
-    for t in tables:
-        for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
-            for name, spec in t.get(kind, {}).items():
-                yield name, kind, spec if isinstance(spec, dict) else {"version": spec}
+    """(name, table, spec) of every dependency a manifest declares."""
+    for table, name, spec in read_deps(path):
+        if table != "workspace.dependencies":
+            yield name, table, spec
 
 
 def dep_target(root, rel_dir, name, spec, ws):
@@ -436,12 +474,7 @@ def surface_errors(root):
             continue
         rel_dir = os.path.relpath(d, root)
         own = os.path.join("crates", "domains", os.path.relpath(d, base).split(os.sep)[0])
-        try:
-            deps = list(manifest_deps(os.path.join(d, "Cargo.toml")))
-        except tomllib.TOMLDecodeError as e:
-            errs.append(f"{rel_dir}/Cargo.toml: cannot be read: {e}")
-            continue
-        for name, _, spec in deps:
+        for name, _, spec in manifest_deps(os.path.join(d, "Cargo.toml")):
             target = dep_target(root, rel_dir, name, spec, ws)
             if target is None:
                 continue
