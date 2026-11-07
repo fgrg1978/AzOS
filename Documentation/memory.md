@@ -299,8 +299,15 @@ Svpbmt on riscv64) and whether a fork gives it to the child.
   reference counted. A device window, a ring page and the notify page are not
   inherited.
 
+A ring keeps its address across an `exec` and its destroy releases a record
+only when it is that ring's page; a pool slot's vDSO page leaves the group's
+space when the thread that mapped it ends (`vdso_notify::release_task_page`),
+before the slot is reissued. A forked child's runtime still holds the addresses
+of the ranges it was not given; they lie above the cursor it copied, so nothing
+it maps lands there.
+
 The vDSO data page and a locked row's region are recorded by exec and spawn
-(`process::map_vdso`, `install_locked_arena`) once the address space exists. The
+(`process::map_vdso`, `install_locked_arena`) once the address space exists; the region's bytes are zeroed at the exec's commit, not at admission. The
 riscv64 sigreturn trampoline stays a plain loader mapping: it is executable, which
 a physical range never is.
 

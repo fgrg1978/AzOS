@@ -133,6 +133,8 @@ module-fixed-record-canary = []
 # physical range, and a map the space cannot record makes its leaves anyway.
 phys-grant-ends-by-owner-canary = []
 phys-leaves-unrecorded-canary = []
+phys-unmap-any-canary = []
+vdso-page-kept-canary = []
 # `vdso_notify.rs` `TICK_HARTS`: eight harts' previous-interrupt times are kept,
 # whatever the kernel's CPU count (host test `tick_interval_covers_every_cpu`).
 vdso-8cpu-canary = []

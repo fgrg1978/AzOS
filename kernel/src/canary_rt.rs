@@ -422,6 +422,10 @@ pub(crate) const NAMES: &[&str] = &[
     // leaves its records in the object, so the next space made from it
     // starts with them (ktest `aspace_made_again_starts_with_no_records`).
     "as-stale-root",
+    // crates/core/sched/src/process.rs `install_locked_arena`: a locked row's
+    // region is zeroed at the exec's admission, before the exec is certain
+    // (ktest `locked_region_is_not_zeroed_by_admission`).
+    "arena-zero-early",
     // crates/core/ipc/src/cap.rs `clear_all`: a table wipe (a task's exit)
     // does not count its endpoint send capabilities out, so no no-senders
     // notice follows a sender's exit (ktests

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // Host tests for a user device window used as a buffer (front
 // uaccess-mmio-buffer). A task that holds a `Device` capability maps its
-// registers with `DOMAIN_MMIO_MAP` (`process::mmio_map_user`, a
+// registers with `DOMAIN_MMIO_MAP` (`phys_map::map_user`, a
 // `PagePerms::USER_MMIO_*` leaf) and can pass that VA to `read`, `write` or
 // any call taking a buffer. The walk used to accept the leaf: USER and R/W
 // are set. The copy then went through `addr::phys_to_virt` of a device frame,

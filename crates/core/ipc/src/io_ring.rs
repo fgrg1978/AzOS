@@ -1016,7 +1016,7 @@ pub fn io_ring_user_va(r: u32) -> Result<usize, IoRingCapError> {
 pub fn io_ring_destroy_mapped_ref(
     r: u32,
     tid: u32,
-    unmap: fn(va: usize),
+    unmap: fn(va: usize, phys: usize),
 ) -> Result<(), IoRingCapError> {
     let (phys, va, poller, link, drain) = {
         let mut rings = IO_RINGS.lock_irqsave();
@@ -1034,7 +1034,7 @@ pub fn io_ring_destroy_mapped_ref(
     };
     drain.finish();
     if va != 0 {
-        unmap(va);
+        unmap(va, phys);
     }
     let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(phys));
     sqpoll_wake(poller);
@@ -4851,7 +4851,7 @@ mod tests {
     /// `(va, frees of the ring page when the unmap ran)` for each unmap call.
     static UNMAPS: Mutex<Vec<(usize, u32)>> = Mutex::new(Vec::new());
     static UNMAP_PHYS: AtomicUsize = AtomicUsize::new(0);
-    fn record_unmap(va: usize) {
+    fn record_unmap(va: usize, _phys: usize) {
         let frees = azos_mm::shim_free_count(UNMAP_PHYS.load(AOrd::SeqCst));
         UNMAPS.lock().unwrap_or_else(|e| e.into_inner()).push((va, frees));
     }

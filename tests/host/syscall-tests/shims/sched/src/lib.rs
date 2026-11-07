@@ -61,7 +61,7 @@ fn shim_run_once(hook: &OnceHook) {
     }
 }
 
-/// Test-only: what another hart does once [`process::shm_map_user`] has
+/// Test-only: what another hart does once [`process::shm_map_at`] has
 /// installed its leaves, before it returns to the map call. Runs once.
 pub fn shim_after_shm_map(f: Box<dyn FnOnce() + Send>) {
     *AFTER_SHM_MAP.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);

@@ -149,9 +149,8 @@ pub mod uaccess;
 #[path = "../../../../../../crates/core/mm/src/image_frames.rs"]
 pub mod image_frames;
 
-// Pulled only because `vmm::destroy_user_pagetable_skip_range` asks it which
-// page backs the vDSO, so that teardown does not free a page shared with
-// every other task. Nothing under test calls into it; it is here to keep the
+// Pulled only because `vmm::kernel_shared_user_frame` asks it which
+// page backs the vDSO, so that no mapping of it is made writable. Nothing under test calls into it; it is here to keep the
 // real `vmm.rs` compiling unmodified, which is the whole point.
 #[allow(dead_code)]
 #[path = "../../../../../../crates/core/mm/src/vdso.rs"]

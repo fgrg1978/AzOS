@@ -234,6 +234,10 @@ pub(crate) fn install_sched_hooks() {
     if canary!("as-stale-root") {
         azos_mm::aspace::CANARY_STALE_ROOT.store(true, core::sync::atomic::Ordering::Relaxed);
     }
+    // A locked row's region is zeroed at admission, not at the exec's commit.
+    if canary!("arena-zero-early") {
+        azos_sched::process::CANARY_ARENA_ZERO_EARLY.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     // Wave 15 N5b (Kconfig IPC_PORT_NOTICES): every send capability to an
     // endpoint is counted where a table slot changes, and an endpoint left
     // with none tells the port its server bound it to. Before the first
@@ -667,6 +671,9 @@ fn task_release_all_resources(tid: u32) {
     // object bookings that mark their pages dirty still stand (the references
     // are given back by `task_release_all` below).
     azos_syscall::file_map::exit_writeback(tid);
+    // Its per-task vDSO page leaves the group's address space before the pool
+    // slot (and the page) can go to another task.
+    azos_syscall::vdso_notify::release_task_page(tid);
     // The queues the dying task attached to a `Uart` port or an `Adc` channel
     // end with it (`azos_syscall::devices`).
     azos_syscall::devices::release_all(tid);

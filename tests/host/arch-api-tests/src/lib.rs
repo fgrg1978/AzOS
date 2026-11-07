@@ -200,7 +200,7 @@ mod tests {
 
     /// A user driver's device window must encode as DEVICE memory on
     /// aarch64, through the real VMSAv8 encoder — the bug was a cacheable
-    /// `USER_RW` handed to `mmio_map_user`, which that encoder turns into
+    /// `USER_RW` handed to a device window, which that encoder turns into
     /// MAIR Normal write-back.
     #[test]
     fn user_mmio_windows_encode_as_device_memory() {

@@ -3171,7 +3171,7 @@ mod mmio_cap_tests {
     ///
     /// **Canaries.** Mint `hwbus::line_of` of the handle + 1 in
     /// `mmio_device_line`: the RTC's grant names line 12. Drop the
-    /// `user_window` test there: the kernel UART's line is minted. Drop the
+    /// `hwbus::user_window` test there: the kernel UART's line is minted. Drop the
     /// `mmio_line_free` test in `cap_seed::device_seed`: `irq.10` is minted.
     #[test]
     fn a_topology_irq_grant_by_selector_mints_the_devices_line() {

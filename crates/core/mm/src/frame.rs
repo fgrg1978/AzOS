@@ -79,7 +79,11 @@ pub const F_ALLOCATED: u32 = 1 << 1;
 /// map holes, the panic record region. `free` accepts a reserved frame (a
 /// frame taken with `reserve_range` and given back, such as the DMA pool's).
 pub const F_RESERVED: u32 = 1 << 2;
-/// Allocated and not to be freed or moved while the bit is set (modifier).
+/// Allocated and not to be freed or moved while the bit is set (modifier). The
+/// one setter is a locked row's boot-reserved region
+/// (`scheduler::row_arena_reserve`), and `vmm` reads the bit to tell that
+/// region's level-1 leaf from a promoted block: another user of the bit needs a
+/// flag of its own.
 pub const F_PINNED: u32 = 1 << 3;
 /// Allocated, its contents held compressed elsewhere (modifier).
 pub const F_COMPRESSED: u32 = 1 << 4;

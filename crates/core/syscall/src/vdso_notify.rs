@@ -118,6 +118,26 @@ pub fn sys_vdso_task_map() -> i64 {
     }
 }
 
+/// A task ends: its per-task page leaves the address space it was mapped in.
+/// The page is the pool slot's, and the slot goes to another task whose claim
+/// zeroes the frame and makes it theirs; a thread-group member's record outlives
+/// the member in the group's space, where the next owner's counters and sensor
+/// samples would show. Called with the dying task current.
+///
+/// Canary `vdso-page-kept-canary`: the record stays.
+pub fn release_task_page(tid: u32) {
+    if cfg!(feature = "vdso-page-kept-canary") {
+        return;
+    }
+    let Some(f) = azos_sched::scheduler::current_task_vdso_facts() else { return };
+    if f.tid != tid {
+        return;
+    }
+    if let Some((phys, va)) = azos_mm::vdso::task_page_take_va(f.idx, tid) {
+        crate::phys_map::unmap_user(va, phys, 1);
+    }
+}
+
 /// Publish sensor type `t` into the caller's page (the `Sensor` interface's
 /// `bind_vdso`; the capability question is the server's). `Ok(true)` when the
 /// type is published at every timer interrupt, `Ok(false)` when it is bound

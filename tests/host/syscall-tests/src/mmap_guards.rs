@@ -862,8 +862,9 @@ fn a_mapped_then_unmapped_range_gives_every_frame_back() {
 /// COW page another task still holds — are not constructible from this
 /// harness, and that is stated rather than papered over.
 ///
-/// **Canary.** `phys-grant-ends-by-owner-canary`: `munmap` takes the range and
-/// frees its frame.
+/// **Canary.** `phys-grant-ends-by-owner-canary`: `munmap` takes the range. The
+/// row goes red on its return code; the release of a range never frees a frame,
+/// and the count assertions guard that.
 #[test]
 fn munmap_does_not_free_a_frame_the_task_does_not_own() {
     let _g = serial();

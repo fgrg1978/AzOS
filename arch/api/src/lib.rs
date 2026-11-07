@@ -755,7 +755,7 @@ impl PagePerms {
         accessed: false, dirty: false,
     };
     /// A device window mapped into a USER driver (`DOMAIN_MMIO_MAP`): R/W,
-    /// uncached, never exec, A+D preset. `mmio_map_user` used `USER_RW`,
+    /// uncached, never exec, A+D preset. The first mapper used `USER_RW`,
     /// which is `MemType::WB` — on aarch64 that is MAIR Normal write-back,
     /// so device registers could be speculatively read, merged and cached.
     /// riscv64 ignores the bit (PMAs decide), which is why nothing failed.

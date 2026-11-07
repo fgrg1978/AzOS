@@ -1588,6 +1588,17 @@ pub fn has_obj(r: SpaceRef, s: usize, e: usize) -> bool {
     r.lock().is_some_and(|sp| sp.recorded && sp.set.has_obj(s, e))
 }
 
+/// Is the one mapping of `r` that starts at `s` the physical range
+/// `[s, e)` at `pa`?
+pub fn is_phys_range(r: SpaceRef, s: usize, e: usize, pa: usize) -> bool {
+    r.lock().is_some_and(|sp| {
+        sp.recorded
+            && sp.set.find(s).is_some_and(|m| {
+                m.start == s && m.end == e && matches!(m.backing, Backing::Phys { .. }) && m.off == pa >> azos_arch_api::PAGE_SHIFT
+            })
+    })
+}
+
 /// Does `[s, e)` touch a physical range?
 pub fn has_phys(r: SpaceRef, s: usize, e: usize) -> bool {
     r.lock().is_some_and(|sp| sp.recorded && sp.set.has_phys(s, e))

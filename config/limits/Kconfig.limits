@@ -796,10 +796,10 @@ config MM_REGIONS_PER_SPACE
     int "Mapping records per address space"
     range 2 256
     default 140 if HV
-    default 22  if HWCLASS_EMBEDDED
-    default 34  if (HWCLASS_SBC || HWCLASS_DESKTOP)
-    default 50  if HWCLASS_SERVER
-    default 34
+    default 30  if HWCLASS_EMBEDDED
+    default 42  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 58  if HWCLASS_SERVER
+    default 42
     help
       Each user address space keeps this many mapping records
       (crates/core/mm/src/mapping.rs), in its address space object
@@ -819,12 +819,12 @@ config MM_REGIONS_PER_SPACE
 
       The default is what a task of the preset can have mapped: the
       MemObjs it may own (half of MAX_MEMOBJS, one record each when it
-      maps them), 8 for its anonymous and file mappings and 10 for its
-      physical ranges (8 device windows, the vDSO page and the notify
-      page). A hypervisor host's monitor (VMMD.ELF) maps every MemObj of a
+      maps them), 8 for its anonymous and file mappings and 18 for its
+      physical ranges (8 device windows, the vDSO page, the notify page and
+      8 ring pages, half of MAX_IO_RINGS at its default). A hypervisor host's monitor (VMMD.ELF) maps every MemObj of a
       guest's RAM, the trap page and the rings of its backends: 140 holds a
-      32 MiB guest at a 4 KiB granule (128 objects, 3 more, 8 of its own,
-      the vDSO page and the notify page);
+      31 MiB guest at a 4 KiB granule (124 objects, 3 more, 8 of its own,
+      the vDSO page and the notify page: 137);
       HV_EXAMPLE_GUEST_MEM_MIB is checked against it at build time
       (crates/core/mm/src/memobj.rs).
 
@@ -1303,8 +1303,8 @@ config MAX_MEMOBJS
       about 28 KiB at the default 32 with the table's generations and lock), the same
       on every 64-bit ISA; plus the frames of the objects that exist, taken from
       the page allocator (up to 64 pages each, charged to the holder's Domain);
-      plus 8 B per slot in every task, whose mapping window holds as many shm
-      mappings as it may own objects (crates/core/sched/src/user_window.rs).
+      plus the address space's mapping records, one per object a task maps
+      (MM_REGIONS_PER_SPACE, crates/core/mm/src/aspace.rs).
 
 config MEMOBJ_RESOLVE_WAYS
     int "MemObj: processes whose last shm-word lookup is remembered"

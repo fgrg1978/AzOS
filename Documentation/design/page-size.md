@@ -99,13 +99,13 @@ topology row declare `mem_huge_mib = N` (N even, at most `MAX_HUGE_MIB`). The
 region is for a model, a tensor arena or a pipeline buffer: big, long-lived,
 fully populated, never forked.
 
-- **Reservation at boot.** `azos_mm::huge::reserve` takes N MiB of physically
+- **Reservation at boot.** `scheduler::row_arena_reserve` takes N MiB of physically
   contiguous RAM, aligned to the level-1 leaf size, from the allocator once, at
   boot, right after memory admission counted it. A 2 MiB-aligned run is exactly
   what fragmentation makes impossible later, so it is not allocated at run time.
-  The region is keyed by the row and never given back (`huge::release_all`
+  The region is keyed by the row and never given back (`scheduler::row_arena_release_all`
   frees them only when the topology they were reserved for is refused before
-  it is installed); the row's next instance gets the same frames, zeroed again.
+  it is installed); the row's next instance gets the same frames, zeroed again, at the exec's commit.
 - **Admission.** The region counts as locked pages, N x 256 topology pages
   (`crates/core/pkg/src/admit.rs`, `crates/core/topology/src/memory.rs`). A row
   that declares it without `mem = "locked"`, or with more than one instance, is
@@ -189,7 +189,7 @@ entry, as a hint the hardware may ignore.
   word one set of attributes. The ISA supplies `pte_make_contig_leaf`,
   `pte_is_contig` and `pte_contig_member` through the `Mmu` trait.
 - **Where runs are written.** The user mapper of a memory object
-  (`vmm::map_contig_range`, reached from `shm_map_user`) writes a run for every
+  (`vmm::map_contig_range`, reached from `SYS_MO_MAP`) writes a run for every
   aligned stretch of consecutive frames and a plain leaf for everything else.
   The frames come from the page allocator in whatever order its lists gave
   them, so a run is the stretch that happens to be aligned and consecutive. A

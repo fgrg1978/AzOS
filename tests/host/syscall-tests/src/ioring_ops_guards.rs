@@ -11,7 +11,7 @@
 // effect gate's seam, the real `motor_set_reporting` with its halt rule from
 // `shims/robot`, the real commander table), and the call on the same state
 // wherever the two doors must give the same answer. The ring page is mapped by the
-// `shm_map_user` stand-in into a real Sv39 table and read back through the
+// `phys_map::map_user` into a real Sv39 table and read back through the
 // real `translate_user`.
 //
 // **What is not.** The sensor is the encoder pair `shims/robot` reports, and
@@ -239,6 +239,31 @@ fn the_ring_page_is_mapped_at_the_returned_address_and_unmapped_on_destroy() {
     let (cap2, va2, _) = create(pt);
     assert_eq!(va2, va, "the destroy did not give the window address back");
     assert_eq!(sys_ioring_destroy_typed(cap2), 0);
+}
+
+/// **A ring keeps its address across an `exec`, and its destroy then leaves
+/// the new image's mapping at that address alone.** The ring's capability and
+/// page outlive the exec; the record of the page went with the old space. The
+/// destroy releases a record only when it is the ring's own page.
+///
+/// **Canary.** `phys-unmap-any-canary`: the destroy releases whatever record
+/// starts at the address, and the new image's anonymous page goes with it.
+#[test]
+fn a_ring_destroyed_after_an_exec_leaves_the_new_images_mapping() {
+    let _g = serial();
+    let (_s, pt) = ring3();
+    let (cap, va, _ring) = create(pt);
+    // The exec: a new space, with an anonymous page of its own at the ring's old address.
+    let pt2 = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
+    azos_sched::set_current_user_pt(pt2);
+    let space2 = azos_sched::shim_space(pt2);
+    azos_mm::pager::reserve(space2, va, va + 4096, true).expect("reserved");
+    azos_mm::pager::resolve_fault(space2, va).expect("committed");
+    assert!(azos_mm::vmm::translate_user(pt2, va, true).is_some());
+
+    assert_eq!(sys_ioring_destroy_typed(cap), 0);
+    assert!(azos_mm::pager::contains(space2, va), "the destroy released the new image's mapping");
+    assert!(azos_mm::vmm::translate_user(pt2, va, true).is_some(), "the new image's page was unmapped");
 }
 
 /// **The kernel writes the layout version at setup**, readable at

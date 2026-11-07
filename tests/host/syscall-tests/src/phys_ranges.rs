@@ -20,6 +20,11 @@
 //   is inverted).
 // * `a_range_with_no_record_room_maps_nothing`: a map the space cannot record
 //   makes no leaf. Canary `phys-leaves-unrecorded-canary`.
+// * `a_threads_vdso_page_leaves_the_group_space_when_the_thread_ends`: the
+//   per-task page is the pool slot's, which another task is given. Canary
+//   `vdso-page-kept-canary`.
+// * `the_exec_flip_refuses_a_root_with_no_address_space`: Canary
+//   `exec-no-space-canary`.
 //
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
 
@@ -156,5 +161,39 @@ fn a_range_with_no_record_room_maps_nothing() {
     assert_eq!(azos_mm::vmm::translate(pt, next), None, "a range the space could not record got a leaf");
     azos_sched::shim_end_space(pt);
     azos_sched::set_current_user_pt(0);
+    let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa));
+}
+
+#[test]
+fn a_threads_vdso_page_leaves_the_group_space_when_the_thread_ends() {
+    let _g = serial();
+    let pt = space();
+    let va = crate::vdso_notify::sys_vdso_task_map();
+    assert!(va > 0, "the map returned {va}");
+    let va = va as usize;
+    let space_ref = azos_sched::shim_space(pt);
+    assert!(azos_mm::pager::has_phys(space_ref, va, va + PAGE_SIZE), "the page is not a record of the space");
+
+    // The thread ends while its group lives on; the slot goes to another task.
+    crate::vdso_notify::release_task_page(1);
+    azos_sched::set_current_task_tid(2);
+    assert!(azos_mm::vdso::task_page_claim(0, 2).is_some(), "the slot's next owner claims the page");
+    assert!(!azos_mm::pager::has_phys(space_ref, va, va + PAGE_SIZE), "the group still maps the slot's page");
+    assert_eq!(azos_mm::vmm::translate(pt, va), None, "and reads the next owner's counters through it");
+    azos_sched::shim_end_space(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+#[test]
+fn the_exec_flip_refuses_a_root_with_no_address_space() {
+    let _g = serial();
+    // A root nobody made a space for: no record says whose its pages are.
+    let pt = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
+    let pa = owner_page();
+    azos_mm::vmm::map_phys(pt, 0x40_0000, pa, 1, true, MemType::WB).expect("mapped");
+    assert!(
+        azos_mm::vmm::set_user_range_exec(pt, 0x40_0000, 0x40_0000 + PAGE_SIZE).is_err(),
+        "a page was made executable with no record to say it is private"
+    );
     let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa));
 }

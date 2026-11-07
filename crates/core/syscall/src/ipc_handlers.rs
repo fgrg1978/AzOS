@@ -1068,9 +1068,10 @@ pub(crate) fn errno_for_ioring_err(e: azos_ipc::io_ring::IoRingCapError) -> i64 
 /// The unmap `io_ring_destroy_mapped_ref` runs for a ring page that
 /// `SYS_RING_SETUP` mapped: its record and leaf, and the address they held.
 /// Runs in the owner's context, the only one the destroy lets through for a
-/// mapped ring.
-fn unmap_ring_page(va: usize) {
-    crate::phys_map::unmap_user(va, 1);
+/// mapped ring. The ring keeps its address across an `exec`, so the record is
+/// released only when it is this ring's page.
+fn unmap_ring_page(va: usize, phys: usize) {
+    crate::phys_map::unmap_user(va, phys, 1);
 }
 
 /// Undo a ring-3 create that could not complete: the ring, its mapping if one
@@ -1098,7 +1099,10 @@ fn ioring_create_rollback(
 /// the address back before the page is freed, and a task that exits with the
 /// ring gets its page freed by the exit hook while its address space, whose
 /// record clears the leaf without a free, is discarded. A fork does not give
-/// the child the range, so a child never shares the page. `-ENOMEM`
+/// the child the range, so a child never shares the page; the address its
+/// runtime still holds lies above the child's mmap cursor, and nothing the
+/// child maps lands there. The ring keeps its address across an `exec`, and its
+/// destroy then releases nothing of the new image's. `-ENOMEM`
 /// when the page cannot be mapped, `-EFAULT` when the address cannot be
 /// written; either way the ring and its capability are undone.
 ///
@@ -1134,7 +1138,7 @@ pub fn sys_ioring_create_typed(out_ptr: u64) -> i64 {
         // Unreachable for a ring this call created: nothing else can destroy
         // it or record a mapping for it. The PTE is removed here because the
         // rollback's destroy does not know of an unrecorded one.
-        unmap_ring_page(va);
+        unmap_ring_page(va, phys_addr as usize);
         return ioring_create_rollback(tid, cap, r, Errno::ENOMEM.to_syscall_ret());
     }
     let buf = (va as u64).to_le_bytes();

@@ -765,12 +765,24 @@ pub fn row_arena_reserve(row: u16, bytes: usize) -> azos_common::error::KResult<
     }
     let pa = azos_mm::pmm::alloc_contiguous_aligned(bytes / page, azos_mm::vmm::MEGA_SIZE)?.as_usize();
     for off in (0..bytes).step_by(page) {
-        let pinned = azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, true);
-        debug_assert!(pinned);
+        // A frame that cannot be pinned would be taken for a promoted block's
+        // and freed under the row: the run goes back and the row is refused.
+        if !azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, true) {
+            unpin_and_free(pa, off);
+            return Err(KernelError::InvalidArg);
+        }
     }
     ROW_ARENA_BYTES[row as usize - 1].store(bytes, Ordering::Relaxed);
     slot.store(pa, Ordering::Release);
     Ok(pa)
+}
+
+/// Unpin and free `bytes` from `pa`.
+fn unpin_and_free(pa: usize, bytes: usize) {
+    for off in (0..bytes).step_by(azos_arch::PAGE_SIZE) {
+        let _ = azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, false);
+        let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa + off));
+    }
 }
 
 /// `(physical base, bytes)` of `row`'s region, if it has one.
@@ -780,20 +792,23 @@ pub fn row_arena(row: u16) -> Option<(usize, usize)> {
     (pa != 0).then(|| (pa, ROW_ARENA_BYTES[i].load(Ordering::Relaxed)))
 }
 
-/// Undo every [`row_arena_reserve`]: the frames go back to the allocator. For
-/// boot admission only, when the topology the regions were reserved for is
-/// refused before it is installed.
+/// Undo [`row_arena_reserve`] for `row`: the frames go back to the allocator.
+/// Boot admission, when the topology the region was reserved for is refused;
+/// a test that reserved a region of its own.
+pub fn row_arena_release(row: u16) {
+    let i = (row as usize).wrapping_sub(1);
+    let Some(slot) = ROW_ARENA.get(i) else { return };
+    let pa = slot.swap(0, Ordering::AcqRel);
+    if pa != 0 {
+        unpin_and_free(pa, ROW_ARENA_BYTES[i].swap(0, Ordering::Relaxed));
+    }
+}
+
+/// Undo every [`row_arena_reserve`]. For boot admission only, when the topology
+/// the regions were reserved for is refused before it is installed.
 pub fn row_arena_release_all() {
-    let page = azos_arch::PAGE_SIZE;
-    for (i, slot) in ROW_ARENA.iter().enumerate() {
-        let pa = slot.swap(0, Ordering::AcqRel);
-        if pa == 0 {
-            continue;
-        }
-        for off in (0..ROW_ARENA_BYTES[i].swap(0, Ordering::Relaxed)).step_by(page) {
-            let _ = azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, false);
-            let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa + off));
-        }
+    for row in 1..=ARENA_SLOTS as u16 {
+        row_arena_release(row);
     }
 }
 

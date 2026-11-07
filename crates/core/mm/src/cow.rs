@@ -11,7 +11,7 @@
 //! A fork shares the pages of anonymous mappings through their objects
 //! (`pager::fork_clone`: slot by slot, no walk of the parent's table). The
 //! walk here is for the pages no anonymous mapping holds: the image, the
-//! stack, the vDSO and trampoline, eager commits and private file pages.
+//! stack, the trampoline, eager commits and private file pages.
 //!
 //! Design notes:
 //!   - The refcount is one `u16` per managed physical frame, indexed by frame

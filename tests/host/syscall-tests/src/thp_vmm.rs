@@ -22,7 +22,7 @@
 //   `munmap_of_the_whole...` goes red.
 // * `mprotect` of the whole block rewrites the leaf, of a part splits it.
 // * A fork splits the parent's promoted blocks (the clone shares 4 KiB
-//   leaves only). Canary: drop `fork_begin` from `cow::fork_cow_shared`: the
+//   leaves only). Canary: drop `fork_begin` from `cow::fork_cow_shared_held`: the
 //   clone refuses the block and `fork_splits...` goes red.
 // * Promotion waits for every running fork walk of the space, not the first
 //   to end (`a_block_filled_while_any_fork_walk_runs_is_not_promoted`).
@@ -44,7 +44,7 @@
 //   Canary: drop the call from `vmm::handle_demand_fault`:
 //   `a_fault_on_a_word_a_run_break_has_parked_waits_for_the_plain_leaf` goes red.
 // * Teardown frees a promoted block's frames and a partly used block's run.
-//   Canary: drop the promoted arm of `destroy_user_pagetable_skip_range`.
+//   Canary: drop the promoted arm of `destroy_user_pagetable`.
 //
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
 

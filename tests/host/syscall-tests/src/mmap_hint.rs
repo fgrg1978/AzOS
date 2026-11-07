@@ -235,3 +235,35 @@ fn mprotect_opens_a_prot_none_mapping_in_the_area() {
     // Below the cursor nothing was handed out: still refused.
     assert_eq!(sys_mprotect((m as usize - 16 * PAGE_SIZE) as u64, PAGE_SIZE as u64, RW), ENOMEM);
 }
+
+/// **A forked child is not handed the address of a range its parent had and it
+/// did not inherit.** A ring page, a device window or the notify page sits in the
+/// parent's mmap area, above its cursor; the child copies the cursor, gets no
+/// record of the range, and its runtime still holds the address. Nothing the
+/// child maps, with a hint at that address or without one, lands there.
+///
+/// **Canary.** `mmap-hint-window-canary`: a hint is honoured anywhere vacant,
+/// outside the area too, and the child maps at the stale address.
+#[test]
+fn a_childs_mappings_never_land_on_a_range_it_was_not_given() {
+    let _g = serial();
+    let _parent = linux_space();
+    let stale = crate::phys_map::map_user(&crate::phys_map::Grant {
+        pa: azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize(),
+        pages: 1,
+        write: true,
+        mem: azos_arch_api::MemType::WB,
+    })
+    .expect("lent");
+    let cursor = azos_sched::update_user_mmap_low(0);
+    assert_eq!(cursor as usize, stale, "the range lowered the parent's cursor");
+
+    // The child: a space of its own, the parent's cursor, no record of the range.
+    let _child = linux_space();
+    azos_sched::update_user_mmap_low(cursor);
+    let hinted = map_at(stale, 1, RW, 0);
+    assert!(hinted > 0 && hinted as usize != stale, "a hint put the child's mapping on the stale address: {hinted:#x}");
+    for _ in 0..8 {
+        assert_ne!(map(1), stale, "the child's mapping reached the stale address");
+    }
+}

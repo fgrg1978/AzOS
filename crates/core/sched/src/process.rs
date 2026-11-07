@@ -505,6 +505,12 @@ pub fn exec_commit(p: PreparedExec) -> i64 {
     crate::scheduler::set_current_partition(spec.partition);
     // The old image's foreign-ABI registration goes with it.
     crate::foreign::on_exec();
+    // A locked row's region starts from zeros for this instance. Not before the
+    // exec is certain: every instance of the row maps the same frames, and a
+    // refused exec must leave a live one's bytes alone.
+    if spec.huge_mib != 0 {
+        zero_locked_region(spec.row);
+    }
     if row_change {
         crate::scheduler::row_release(cur_row);
         crate::scheduler::set_current_mem_row(spec.row);
@@ -2727,7 +2733,7 @@ const _: () = assert!(
 /// a physical range of the space: its record first, then the level-1 leaves, so
 /// a refusal after the record takes the leaves with it. Returns `(va, bytes)`;
 /// the reason as text when refused, with nothing mapped and no record kept.
-fn install_locked_arena(space: azos_mm::aspace::SpaceRef, spec: &MemSpec) -> Result<(usize, usize), &'static str> {
+pub fn install_locked_arena(space: azos_mm::aspace::SpaceRef, spec: &MemSpec) -> Result<(usize, usize), &'static str> {
     if !azos_limits::LOCKED_HUGE_LEAVES {
         return Err("this kernel was built without LOCKED_HUGE_LEAVES");
     }
@@ -2747,9 +2753,11 @@ fn install_locked_arena(space: azos_mm::aspace::SpaceRef, spec: &MemSpec) -> Res
     if !vmm::user_range_vacant(space.root(), va, va + bytes) {
         return Err("something is mapped where the region goes");
     }
-    // Zeroed at every exec: the frames are the row's for the whole boot and
-    // the previous instance's data must not reach the next one.
-    unsafe { core::ptr::write_bytes(azos_mm::addr::phys_to_virt(pa) as *mut u8, 0, bytes) };
+    // Canary `arena-zero-early`: the bytes are zeroed here, before the exec is
+    // certain, and a refused exec wipes a live instance's region.
+    if CANARY_ARENA_ZERO_EARLY.load(core::sync::atomic::Ordering::Relaxed) {
+        zero_locked_region(spec.row);
+    }
     azos_mm::pager::reserve_phys(space, va, va + bytes, true, pa, MemType::WB, false)
         .map_err(|_| "the address space has no record for the region")?;
     let flags = vmm::phys_leaf_perms(true, MemType::WB);
@@ -2772,6 +2780,20 @@ fn install_locked_arena(space: azos_mm::aspace::SpaceRef, spec: &MemSpec) -> Res
         return Err("the page table refused the mapping");
     }
     Ok((va, bytes))
+}
+
+/// Runtime canary `arena-zero-early` (`kernel/src/canary_rt.rs`), see
+/// [`install_locked_arena`].
+pub static CANARY_ARENA_ZERO_EARLY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Zero the row's region: the frames are the row's for the whole boot, and the
+/// previous instance's data must not reach the next one. The exec's commit does
+/// it, once nothing can refuse the exec any more.
+fn zero_locked_region(row: u16) {
+    if let Some((pa, bytes)) = crate::scheduler::row_arena(row) {
+        // SAFETY: the row's pinned region, in the kernel's map of RAM.
+        unsafe { core::ptr::write_bytes(azos_mm::addr::phys_to_virt(pa) as *mut u8, 0, bytes) };
+    }
 }
 
 /// The exec-time evidence for [`install_locked_arena`], from the page table

@@ -2748,6 +2748,54 @@ azos_ktest::ktest_late! {
     }
 }
 
+// A locked row's region is the row's for the whole boot and every instance maps
+// the same frames: an exec's admission records the region in the new space and
+// writes none of its bytes, so a refused exec (the row's instance is taken, a
+// budget, a stack) leaves a live instance's data alone; the commit zeroes it.
+// Needs Kconfig LOCKED_HUGE_LEAVES (riscv64's gate row builds it). Runtime
+// canary `arena-zero-early`: the admission zeroes the region.
+azos_ktest::ktest_late! {
+    fn locked_region_is_not_zeroed_by_admission() {
+        use azos_mm::{addr, aspace, vmm};
+        if !azos_limits::LOCKED_HUGE_LEAVES {
+            return Ok(());
+        }
+        // The last row slot: no topology row uses it.
+        const ROW: u16 = azos_limits::MAX_TASKS as u16;
+        const MARK: u64 = 0x1122_3344_5566_7788;
+        let bytes = vmm::MEGA_SIZE;
+        let pa = azos_sched::scheduler::row_arena_reserve(ROW, bytes).map_err(|_| "no region for the test row")?;
+        let word = addr::phys_to_virt(pa) as *mut u64;
+        // SAFETY: the test row's pinned region, in the kernel's map of RAM.
+        unsafe { core::ptr::write_volatile(word, MARK) };
+        let spec = azos_sched::MemSpec {
+            limit: 0, locked: true, row: ROW, instances: 1, huge_mib: (bytes >> 20) as u16,
+            kmem_kib: 0, ceiling: 0, partition: 0,
+        };
+        let Ok(pt) = vmm::create_pagetable() else {
+            azos_sched::scheduler::row_arena_release(ROW);
+            return Err("no root");
+        };
+        let Some(space) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            azos_sched::scheduler::row_arena_release(ROW);
+            return Err("no address space");
+        };
+        let admitted = azos_sched::process::install_locked_arena(space, &spec).is_ok();
+        // SAFETY: as above.
+        let kept = unsafe { core::ptr::read_volatile(word) } == MARK;
+        let _ = aspace::destroy(space);
+        azos_sched::scheduler::row_arena_release(ROW);
+        if !admitted {
+            return Err("the region was not admitted");
+        }
+        if !kept {
+            return Err("an admission wrote the region of a row: a refused exec would wipe a live instance");
+        }
+        Ok(())
+    }
+}
+
 // A private anonymous page's state is its object's slot, and its leaf a cache
 // of it: a fault on a page whose leaf was cleared while its slot still names
 // its frame installs that frame again, with its bytes. Canary

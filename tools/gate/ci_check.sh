@@ -13055,6 +13055,19 @@ host_job host_canary_row "phys: locked region record end canary" syscall-tests m
     huge_region_is_two_level1_leaves_that_munmap_cannot_take
 host_job host_canary_row "phys: inherited range count canary" syscall-tests fork-passes-nothing-canary \
     a_fork_gives_the_child_only_the_ranges_that_say_so
+# A ring keeps its address across an exec: its destroy releases only its own
+# record (phys-unmap-any-canary). A pool slot's vDSO page leaves the group's
+# space when the thread ends (vdso-page-kept-canary). The exec flip refuses a
+# root with no space (exec-no-space-canary). A forked child's mappings never
+# land on a range it was not given (mmap-hint-window-canary).
+host_job host_canary_row "phys: ring destroy after exec canary" syscall-tests phys-unmap-any-canary \
+    a_ring_destroyed_after_an_exec_leaves_the_new_images_mapping
+host_job host_canary_row "phys: thread vDSO page canary" syscall-tests vdso-page-kept-canary \
+    a_threads_vdso_page_leaves_the_group_space_when_the_thread_ends
+host_job host_canary_row "phys: exec flip no space canary" syscall-tests exec-no-space-canary \
+    the_exec_flip_refuses_a_root_with_no_address_space
+host_job host_canary_row "phys: child stale range canary" syscall-tests mmap-hint-window-canary \
+    a_childs_mappings_never_land_on_a_range_it_was_not_given
 host_job zpool_host_row "fork: compressed page shared, pool on" a_compressed_page_is_shared_with_the_child_not_restored
 host_job zpool_host_canary_row "fork: compressed page shared canary" fork-marker-canary \
     a_compressed_page_is_shared_with_the_child_not_restored
@@ -16512,6 +16525,24 @@ PY
             || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with DECISION_REFUSALS_DURABLE off ($cfg)"; return; }
         if [ "$isa" = rv ]; then KCONFIG_CONFIG="$cfg" ktest_row "$@"; else AARCH64_CONFIG="$cfg" ktest_row "$@"; fi
     }
+    # A locked row's region is not written by an exec's admission (Kconfig
+    # LOCKED_HUGE_LEAVES, riscv64): the ktest needs the option, so the kernel is
+    # built from the primary ktest config with it on. Canary `arena-zero-early`:
+    # the admission zeroes the region.
+    ktest_row_huge() {
+        local isa="$2" defc cfg
+        defc="$(gate_defc rv "$KTEST_FEATS")"
+        mkdir -p "$CI_LOG_DIR"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-huge-${isa}.config"
+        cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg" \
+            && echo "CONFIG_LOCKED_HUGE_LEAVES=y" >>"$cfg" \
+            && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+            && grep -q "^CONFIG_LOCKED_HUGE_LEAVES=y" "$cfg" \
+            || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with LOCKED_HUGE_LEAVES on ($cfg)"; return; }
+        KCONFIG_CONFIG="$cfg" ktest_row "$@"
+    }
+    par "ktest locked region admission (rv)" ktest_row_huge "ktest locked region admission (rv)" rv "" "" "" '^ok [0-9]+ - locked_region_is_not_zeroed_by_admission$'
+    par "ktest locked region admission canary (rv)" ktest_row_huge "ktest locked region admission canary (rv)" rv "" "locked_region_is_not_zeroed_by_admission" "canary=arena-zero-early"
     par "ktest inspect guard canary (rv)" ktest_row "ktest inspect guard canary (rv)" rv "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest inspect guard canary (arm)" ktest_row "ktest inspect guard canary (arm)" arm "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     # The ERE pins the test by name: the row is green only if it ran and passed.

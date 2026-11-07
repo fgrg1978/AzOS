@@ -43,13 +43,18 @@ pub(crate) fn map_user(g: &Grant) -> Option<usize> {
     Some(va)
 }
 
-/// End the calling task's mapping of `pages` pages at `va`: its record and
-/// leaves go, the address comes back, no frame is freed.
-pub(crate) fn unmap_user(va: usize, pages: usize) {
+/// End the calling task's mapping of `pages` pages at `va` that lent the range
+/// at `pa`: its record and leaves go, the address comes back, no frame is
+/// freed. The owner keeps its address across an `exec`, so a record that is not
+/// exactly this range (the new image's own mapping at that address) is left
+/// alone.
+pub(crate) fn unmap_user(va: usize, pa: usize, pages: usize) {
     let _mm = azos_sched::group::mm_lock();
     let Some(space) = azos_sched::current_aspace() else { return };
     let end = va.saturating_add(pages.saturating_mul(PAGE_SIZE));
-    if azos_mm::pager::release_range(space, va, end).is_ok() {
+    // Canary `phys-unmap-any-canary`: whatever record is there is released.
+    let ours = cfg!(feature = "phys-unmap-any-canary") || azos_mm::pager::is_phys_range(space, va, end, pa);
+    if ours && azos_mm::pager::release_range(space, va, end).is_ok() {
         crate::handlers::mmap_unmapped(va, end);
     }
 }

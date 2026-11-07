@@ -325,8 +325,7 @@ pub fn spawn_prepare(
         return Err(SpawnError::BadImage);
     }
     // Kconfig LOCKED_HUGE_LEAVES: a row's 2 MiB-leaf region is installed by
-    // exec, on the task that will own it (its window reservation is that
-    // task's). Spawning such a row would start it without the region it was
+    // exec, on the task that will own it. Spawning such a row would start it without the region it was
     // admitted with, so it is refused.
     if mem.huge_mib != 0 {
         azos_drv_sys::kwarn!(

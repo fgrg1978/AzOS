@@ -5,7 +5,7 @@
 // Real on this path: the handler (`crates/core/syscall/src/mmio.rs`), the argument
 // check (`crates/core/ipc/src/mmio_cap.rs`), the capability table, the hardware
 // bus (`crates/drivers/hwbus`, `crates/drivers/bus/src/hwbus.rs`) and the Sv39
-// walker. Transcribed: `process::mmio_map_user` (see `shims/sched`), whose PTEs
+// walker. The mapper is the real `phys_map::map_user`, whose PTEs
 // are read back here by a walk of the table ([`leaf`]). Not through
 // `translate_user`: that one is the kernel's own access to user memory, and it
 // refuses a device window (front uaccess-mmio-buffer, `uaccess_mmio.rs`).

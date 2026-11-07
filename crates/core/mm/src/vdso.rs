@@ -750,6 +750,18 @@ pub fn task_page_set_va(idx: usize, tid: u32, va: usize) {
     }
 }
 
+/// Take back where `tid` mapped slot `idx`'s page: `(frame, address)`, or
+/// `None` if `tid` does not own the page or has it mapped nowhere. The caller
+/// ends that mapping: the page is the slot's, and the slot is reissued.
+pub fn task_page_take_va(idx: usize, tid: u32) -> Option<(usize, usize)> {
+    let slot = TASK_PAGES.get(idx)?;
+    if slot.owner.load(Ordering::Acquire) != tid {
+        return None;
+    }
+    let va = slot.va.swap(0, Ordering::AcqRel);
+    (va != 0).then(|| (slot.phys.load(Ordering::Acquire), va))
+}
+
 /// Set the bit for `sensor_type` in `tid`'s page. The caller has checked the
 /// capability. `false` if `tid` has no page in slot `idx` or the type has no slot.
 pub fn task_page_bind_sensor(idx: usize, tid: u32, sensor_type: u32) -> bool {

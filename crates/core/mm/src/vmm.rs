@@ -4066,6 +4066,11 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize) -> KResult<
     // overwritten with a valid leaf on a frame it is freeing (as `mprotect`).
     // Gate canary `exec-reclaim-canary`: not held.
     let space = crate::aspace::current_with_root(pt_phys);
+    // No space for the root: nothing says which of its pages are another
+    // owner's, so none is flipped. Canary `exec-no-space-canary`: they are.
+    if space.is_none() && !cfg!(feature = "exec-no-space-canary") {
+        return Err(KernelError::InvalidArg);
+    }
     let _reclaim_off = if cfg!(feature = "exec-reclaim-canary") {
         None
     } else {
