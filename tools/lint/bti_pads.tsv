@@ -1,0 +1,10 @@
+# Assembly labels that something outside the assembly branches to: each must start with a BTI pad.
+# file	label	entered by
+kernel/src/entry/aarch64/asm/boot.S	_aarch64_secondary_entry	PSCI CPU_ON, the spin pen
+kernel/src/entry/aarch64/asm/boot.S	_aarch64_spin_pen	the firmware's release address
+kernel/src/entry/aarch64/asm/trap_entry.S	aarch64_ret_to_user	a Rust tail call through a function pointer
+kernel/src/entry/aarch64/asm/trap_entry.S	aarch64_ret_to_user_tls	a Rust tail call through a function pointer
+kernel/src/entry/aarch64/asm/trap_entry.S	aarch64_ipc_resume_stub	a saved resume address
+kernel/src/entry/aarch64/asm/context_switch.S	context_switch	a call through a function pointer
+arch/aarch64/src/cpu/cfi.rs	_azos_cfi_enable	boot.S's call
+kernel/src/entry/aarch64/resume.rs	azos_cpu_save_run	a call through a function pointer

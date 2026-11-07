@@ -2737,6 +2737,43 @@ fn ro_after_init_spans() -> [(usize, usize); 2] {
     }
 }
 
+/// Map the 4 KiB leaves of `[start, end)` as branch-target-guarded pages
+/// (`Mmu::pte_guarded`), after the W^X pass; returns how many. The caller owns
+/// the TLB flush. A leaf that is not valid or not 4 KiB is skipped.
+pub fn guard_range(start: usize, end: usize) -> usize {
+    let kpt = *KERNEL_PT.lock();
+    let mut n = 0;
+    for addr in (start & !(PAGE_SIZE - 1)..end).step_by(PAGE_SIZE) {
+        if let Ok((leaf, 0)) = walk_level(kpt, addr, false, false) {
+            // SAFETY: a live level-0 leaf of the kernel root.
+            let old = unsafe { core::ptr::read_volatile(leaf) };
+            if ARCH.pte_is_valid(old) {
+                // SAFETY: as above.
+                unsafe { crate::pt::pt_set(leaf, ARCH.pte_guarded(old)) };
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Read back [`guard_range`]: `(valid 4 KiB leaves in [start, end), those not guarded)`.
+pub fn verify_guarded(start: usize, end: usize) -> (usize, usize) {
+    let kpt = *KERNEL_PT.lock();
+    let (mut checked, mut open) = (0, 0);
+    for addr in (start & !(PAGE_SIZE - 1)..end).step_by(PAGE_SIZE) {
+        if let Ok((leaf, 0)) = walk_level(kpt, addr, false, false) {
+            // SAFETY: a live level-0 leaf of the kernel root.
+            let w = unsafe { core::ptr::read_volatile(leaf) };
+            if ARCH.pte_is_valid(w) {
+                checked += 1;
+                open += (ARCH.pte_guarded(w) != w) as usize;
+            }
+        }
+    }
+    (checked, open)
+}
+
 /// Make `.data.ro_after_init` read-only, in the image's mapping and, on
 /// x86_64, in its direct-map alias (a writable alias would defeat the point).
 /// Call once every boot-time hook is installed and no other CPU runs: the

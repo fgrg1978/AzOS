@@ -592,6 +592,9 @@ pub(crate) const NAMES: &[&str] = &[
     // kernel_main: the boot does not lock the page-table pool with the
     // supervisor key (ktest `mm_pt_pool_is_write_protected`, on a CPU with PKS).
     "pt-lock-skip",
+    // entry/aarch64/boot_hooks.rs `guard_kernel_text`: the kernel text stays
+    // unguarded (ktest `cfi_kernel_text_is_branch_target_guarded`, A64_BTI_ENFORCE).
+    "bti-guard-skip",
     // vmm: a closed software page-table window leaves its page writable (ktest
     // `mm_pt_pool_stays_read_only_between_writes`, PT_PROTECTION_SOFT).
     "pt-soft-leak",

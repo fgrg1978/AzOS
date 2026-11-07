@@ -61,6 +61,8 @@ impl ArchEntry for Entry {
     #[inline(always)]
     fn mmu_enabled(&self) { crate::boot_hooks::mmu_enabled() }
     #[inline(always)]
+    fn text_final(&self) { crate::boot_hooks::guard_kernel_text() }
+    #[inline(always)]
     fn restrict_low_half(&self) { crate::boot_hooks::restrict_low_half() }
     #[inline(always)]
     fn verify_guards(&self) { crate::boot_hooks::verify_guards() }

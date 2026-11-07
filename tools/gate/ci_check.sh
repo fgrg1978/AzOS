@@ -2861,6 +2861,16 @@ else
     bad; printf '%s\n' "$ptw_out" | sed 's/^/      /'
 fi
 
+# BTI landing-pad lint (tools/lint/bti_pads_lint.py): every aarch64 assembly
+# indirect-branch target carries a pad (Kconfig A64_BTI_ENFORCE); with its canaries.
+printf "  %-26s" "bti pads lint..."
+if bti_out="$(python3 "${REPO_ROOT}/tools/lint/bti_pads_lint.py" --self-test 2>&1)" \
+   && bti_out="$(python3 "${REPO_ROOT}/tools/lint/bti_pads_lint.py" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$bti_out" | sed 's/^/      /'
+fi
+
 # Boot sequence lint (tools/lint/boot_seq_lint.py): the common early-boot steps
 # (console, firmware table, memory map, page tables, W^X/NX, guards, heap, ...)
 # run from boot::early_main, not from each ISA's boot_hooks.rs, unless a
@@ -17452,6 +17462,13 @@ CPU 5 lacks hwcap bits"
     ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" KCFG_GREP="# CONFIG_KHEAP_LEAKS is not set" ktest_row_cfgline "$@"; }
     par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
     par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
+    # Kconfig A64_BTI_ENFORCE (arm phase): the kernel text is mapped as guarded pages and SCTLR_EL1.BT1 is
+    # on every CPU; the canary (`canary=bti-guard-skip`) leaves the text unguarded. Run on QEMU `-cpu max`
+    # (FEAT_BTI) in the arm phase; a core without BTI skips the tests, so the boot line is required too.
+    KTEST_BTI_RE=$'^\\[CFI\\] aarch64 bti enforced: [1-9][0-9]* kernel text pages guarded, SCTLR_EL1.BT1=true\n^ok [0-9]+ - cfi_kernel_text_is_branch_target_guarded$\n^ok [0-9]+ - cfi_bti_is_checked_on_every_cpu$'
+    ktest_row_bti() { KCFG_TAG=bti KCFG_LINE="CONFIG_A64_BTI_ENFORCE=y" KCFG_GREP="CONFIG_A64_BTI_ENFORCE=y" ktest_row_cfgline "$@"; }
+    par "ktest bti enforced (arm phase) (arm)" ktest_row_bti "ktest bti enforced (arm phase) (arm)" arm "" "" "" "$KTEST_BTI_RE"
+    par "ktest bti guard skipped canary (arm phase) (arm)" ktest_row_bti "ktest bti guard skipped canary (arm phase) (arm)" arm "" "cfi_kernel_text_is_branch_target_guarded" "canary=bti-guard-skip"
     # Kconfig PT_PROTECTION_SOFT: no supervisor key on rv and arm, so the pool is read-only in the direct
     # map and the funnel writes through a software window. The boot line says so, the ktest writes a word
     # through the funnel and reads the pool back read-only; the canary (`canary=pt-soft-leak`) leaves a

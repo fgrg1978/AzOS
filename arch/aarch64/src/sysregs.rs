@@ -525,6 +525,8 @@ pub const SCTLR_EL1_I: u64 = 1 << 12;
 /// `SCTLR_EL1.EnIA` (bit 31) — EL0/EL1 instruction-address key A enabled
 /// (FEAT_PAuth); clear, `pacia`/`autia` are no-ops. Gates `HWCAP_A64_PAUTH`.
 pub const SCTLR_EL1_ENIA: u64 = 1 << 31;
+/// `SCTLR_EL1.BT1` (bit 36): guarded pages of the upper (TTBR1) half are branch-target checked at EL1.
+pub const SCTLR_EL1_BT1: u64 = 1 << 36;
 /// `SCTLR_EL1.ATA0` (bit 42) — EL0 allocation-tag access (FEAT_MTE2);
 /// clear, EL0 tag loads read 0 and tag stores are ignored. Gates
 /// `HWCAP_A64_MTE`.

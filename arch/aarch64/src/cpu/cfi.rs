@@ -77,17 +77,18 @@
 //!   process but not independent of the kernel key. The pool is seeded long
 //!   before the first ring-3 process on every board that has a seed source.
 //!
-//! # BTI, not enforced yet
+//! # BTI (Kconfig `A64_BTI_ENFORCE`)
 //!
-//! The pads are in, but nothing is enforced: that is the `GP` bit of the
-//! page-table leaf (mmu `attr_bits` never sets it) plus `SCTLR_EL1.BT0/BT1`.
-//! `BT1` stays 0 for good with this compiler: it emits `paciasp` as the
-//! landing pad of a signing function and `BT1 = 1` would reject it as the
-//! target of a `blr`/`br` through anything but x16/x17. What a guarded kernel
-//! text needs first: `context_switch`'s final `br x9` lands on a Rust
-//! return point (use `ret x9`), and `br x9` in boot.S lands on `bti j`
-//! (done). Loaded text (modules, ring 3) is guarded per ELF
-//! (`.note.gnu.property` BTI), not wholesale.
+//! The pads are in the code. Enforcing them is the `GP` bit of the kernel
+//! text's leaves (`vmm::guard_range`, after the W^X pass; the mmu's
+//! `attr_bits` never sets it) plus `SCTLR_EL1.BT1` on every CPU
+//! ([`azos_bti_enable`], from boot.S next to `_azos_cfi_enable`). `paciasp` is
+//! a `bti c` pad: a `blr` may land on it, a `br` only through x16/x17, which
+//! is how the compiler emits an indirect tail call under `bti`. The assembly
+//! carries its own pads (`tools/lint/bti_pads_lint.py`), and `context_switch`
+//! resumes a task through `ret x9`, which is not checked, because the resume
+//! point is the instruction after a `bl`. Loaded text (modules, ring 3) is
+//! guarded per ELF (`.note.gnu.property` BTI), not wholesale.
 //!
 //! # GCS (FEAT_GCS, Armv9.4)
 //!
@@ -403,6 +404,30 @@ pub extern "C" fn azos_cfi_prepare(primary: u64) -> u64 {
     // the EL0 boundary from now on.
     AZOS_PAC_ON.store(1, Ordering::Release);
     enable_mask(azos_limits::A64_PAUTH_PROC_KEYS)
+}
+
+/// Is `SCTLR_EL1` checking branch targets of the upper half?
+pub const fn bti_checking(sctlr: u64) -> bool {
+    sctlr & crate::sysregs::SCTLR_EL1_BT1 != 0
+}
+
+/// Per CPU, from boot.S: set `SCTLR_EL1.BT1` when Kconfig `A64_BTI_ENFORCE`
+/// asks, `A64_BTI` allows and the CPU has FEAT_BTI. Guarded pages exist only
+/// once the boot CPU has run `vmm::guard_range`; until then this checks nothing.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[no_mangle]
+pub extern "C" fn azos_bti_enable() {
+    if azos_limits::A64_BTI_ENFORCE && azos_arch_api::isa::aarch64::BTI.gate(super::features::detect().bti) {
+        crate::sysregs::write_sctlr_el1(crate::sysregs::read_sctlr_el1() | crate::sysregs::SCTLR_EL1_BT1);
+        // SAFETY: a context-synchronization event for the SCTLR write.
+        unsafe { core::arch::asm!("isb", options(nomem, nostack, preserves_flags)) };
+    }
+}
+
+/// Whether this CPU checks branch targets of guarded kernel pages now.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub fn bti_enforced() -> bool {
+    bti_checking(crate::sysregs::read_sctlr_el1())
 }
 
 /// The kernel's key, `(lo, hi)`: what a process's keys must never equal.

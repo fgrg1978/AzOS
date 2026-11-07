@@ -425,6 +425,7 @@ clear_bss_done:
     cbz     x0, 1f
     bl      _azos_cfi_enable
 1:
+    bl      azos_bti_enable          // SCTLR_EL1.BT1 where A64_BTI_ENFORCE asks (nothing is guarded yet)
 
     // ── Call Rust kernel_main(hart_id, dtb_ptr) ────────────────────────
     mov     x0, x20
@@ -625,6 +626,7 @@ _aarch64_secondary_entry:
     cbz     x0, 1f
     bl      _azos_cfi_enable
 1:
+    bl      azos_bti_enable          // BT1: the boot CPU has guarded the text by now
 
     // ── A PE that left through the saved-context path ────────────────────
     // A power-down CPU_SUSPEND or a hotplug stop (kernel/src/entry/aarch64/
@@ -703,6 +705,7 @@ boot_entry_el:
 .extern azos_spec_apply
 .extern azos_cfi_prepare
 .extern _azos_cfi_enable
+.extern azos_bti_enable
 .extern aarch64_early_ttbr1_alias
 .if {kaslr}
 .extern aarch64_early_kaslr

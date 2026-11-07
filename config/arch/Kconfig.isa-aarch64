@@ -190,6 +190,23 @@ choice
         bool "require: baseline; refuse to boot without it"
 endchoice
 
+config A64_BTI_ENFORCE
+    bool "Enforce BTI on the kernel's text (guarded pages, SCTLR_EL1.BT1)"
+    depends on ARCH_AARCH64 && !A64_BTI_NEVER
+    default n
+    help
+      Maps the kernel's text as guarded pages (the GP bit of the leaf, after
+      the W^X pass) and sets SCTLR_EL1.BT1 on every CPU, so an indirect branch
+      in EL1 that lands on anything but a `bti` pad (or the `paciasp` the
+      compiler uses as one) raises a Branch Target Exception instead of
+      running. The compiler puts the pads in compiled code and the assembly
+      carries its own (tools/lint/bti_pads_lint.py holds it to that); the
+      context switch resumes through `ret`, which is not checked. Where the CPU
+      has no FEAT_BTI, or A64_BTI is n, nothing changes. Cost: none on the hot
+      paths (the pads are no-ops and the check is in the branch unit); 4 KiB
+      pages for the text, as W^X already needs. Default n: it has never run on
+      a core; an arm-phase boot row proves it. y: enforce where the CPU has it.
+
 choice
     prompt "Guarded control stack (FEAT_GCS)"
     default A64_GCS_PROBE

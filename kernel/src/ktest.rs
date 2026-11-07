@@ -510,6 +510,62 @@ azos_ktest::ktest! {
     }
 }
 
+// A64_BTI_ENFORCE: where the CPU has FEAT_BTI, the kernel text is mapped as
+// guarded pages (read back from the page table, not from the boot's count) and
+// this CPU checks branch targets (SCTLR_EL1.BT1). A branch to a non-pad is not
+// driven: only the mapping and the register are read. Runtime canary
+// `canary=bti-guard-skip` (the text stays unguarded): the first check fails.
+azos_ktest::ktest! {
+    #[cfg(target_arch = "aarch64")]
+    fn cfi_kernel_text_is_branch_target_guarded() {
+        if !azos_limits::A64_BTI_ENFORCE || !azos_arch_api::isa::aarch64::BTI.gate(azos_arch::cpu::features::detect().bti) {
+            return Ok(());
+        }
+        // SAFETY: linker symbols, addresses only.
+        let (start, end) = unsafe { (&crate::_text_start as *const u8 as usize, &crate::_text_end as *const u8 as usize) };
+        let (checked, open) = azos_mm::vmm::verify_guarded(start, end);
+        if checked == 0 || open != 0 {
+            return Err("a page of the kernel text is not a guarded page");
+        }
+        if !azos_arch::cpu::cfi::bti_enforced() {
+            return Err("SCTLR_EL1.BT1 is off on the boot CPU");
+        }
+        Ok(())
+    }
+}
+
+// A64_BTI_ENFORCE on every CPU: a task pinned to each reads its own SCTLR_EL1.BT1.
+#[cfg(target_arch = "aarch64")]
+static BTI_CPUS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_arch = "aarch64")]
+static BTI_READBACKS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_arch = "aarch64")]
+fn bti_readback(_: usize) {
+    if azos_arch::cpu::cfi::bti_enforced() {
+        BTI_CPUS.fetch_add(1, Ordering::AcqRel);
+    }
+    BTI_READBACKS.fetch_add(1, Ordering::AcqRel);
+}
+
+azos_ktest::ktest_late! {
+    #[cfg(target_arch = "aarch64")]
+    fn cfi_bti_is_checked_on_every_cpu() {
+        if !azos_limits::A64_BTI_ENFORCE || !azos_arch_api::isa::aarch64::BTI.gate(azos_arch::cpu::features::detect().bti) {
+            return Ok(());
+        }
+        let cpus = azos_percpu::nr_cpu_ids();
+        for cpu in 0..cpus {
+            azos_sched::task_create_affinity("bti-readback", bti_readback, 0, azos_sched::DEFAULT_PRIORITY, cpu as i8);
+        }
+        wait("a CPU did not report SCTLR_EL1.BT1", || BTI_READBACKS.load(Ordering::Acquire) == cpus)?;
+        if BTI_CPUS.load(Ordering::Acquire) != cpus {
+            return Err("a CPU does not check branch targets of the guarded kernel text");
+        }
+        Ok(())
+    }
+}
+
 // PT_PROTECTION_SOFT: with the software window the pool's pages are read-only in
 // the direct map; a word written through the funnel (a spare pool page, taken
 // and given back) lands, and the page is read-only again afterwards. Runtime

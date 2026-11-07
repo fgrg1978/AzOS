@@ -453,6 +453,12 @@ pub trait Mmu: Send + Sync {
     /// is the counterpart, not yet used for the kernel half.
     fn pte_global_bit(&self) -> u64 { 0 }
 
+    /// The leaf `word` mapped as a branch-target-guarded page (aarch64 GP,
+    /// bit 50): an indirect branch into it must land on a landing pad. The
+    /// word itself on an ISA without guarded pages. Only for a CPU with the
+    /// extension: the bit is reserved without it.
+    fn pte_guarded(&self, word: u64) -> u64 { word }
+
     /// Decode a leaf word's permissions. Level-independent: the
     /// attribute bits (R/W/X/U/mem/A/D) live in the same positions
     /// regardless of which level the leaf was found at.

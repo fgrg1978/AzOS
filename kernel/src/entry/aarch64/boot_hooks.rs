@@ -330,6 +330,32 @@ pub fn timer_probe(_fw: &Firmware) {
     }
 }
 
+/// Kconfig `A64_BTI_ENFORCE`: the kernel text's leaves become guarded pages
+/// (`SCTLR_EL1.BT1` is already on, set by boot.S on every CPU), when the CPU has
+/// FEAT_BTI and `A64_BTI` allows it. After the W^X pass, so the leaves are the
+/// final 4 KiB ones. Runtime gate canary `canary=bti-guard-skip`: the text stays
+/// unguarded.
+pub fn guard_kernel_text() {
+    use azos_arch::Mmu;
+    if !azos_limits::A64_BTI_ENFORCE
+        || !policy::BTI.gate(azos_arch::cpu::features::detect().bti)
+        || canary!("bti-guard-skip")
+    {
+        return;
+    }
+    // SAFETY: linker symbols, addresses only.
+    let (start, end) = unsafe { (&crate::_text_start as *const u8 as usize, &crate::_text_end as *const u8 as usize) };
+    let pages = azos_mm::vmm::guard_range(start, end);
+    azos_arch::ARCH.flush_tlb_all();
+    BTI_GUARDED_PAGES.store(pages, Ordering::Relaxed);
+    // MARKER, asserted by the gate's `bti` rows (arm phase).
+    kprintln!("[CFI] aarch64 bti enforced: {} kernel text pages guarded, SCTLR_EL1.BT1={}",
+        pages, azos_arch::cpu::cfi::bti_enforced());
+}
+
+/// Pages of kernel text [`guard_kernel_text`] guarded.
+pub(crate) static BTI_GUARDED_PAGES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 /// The `[ISA]` line: each extension's Kconfig choice against the ID
 /// registers (`azos_arch::cpu::features`; the DTB plays no part). The users act
 /// on the same resolution: the vDSO hwcap and the SHA-256 selection
@@ -390,7 +416,7 @@ pub fn cpu_features(_fw: &Firmware) {
     // text has no GP pages, so nothing is enforced. The line prints the readback.
     // `proc-keys` (Kconfig A64_PAUTH_PROC_KEYS): every process has keys of its
     // own and the trap entry swaps APIA at the EL0 boundary.
-    kprintln!("[CFI] aarch64 pac-ret={} proc-keys={} (A64_PAUTH {}); bti: landing pads built in, GP pages off (A64_BTI {})",
+    kprintln!("[CFI] aarch64 pac-ret={} proc-keys={} (A64_PAUTH {}); bti: landing pads built in (A64_BTI {}; enforcement is reported after W^X)",
         azos_arch::cpu::cfi::signing_enabled(),
         azos_arch::cpu::cfi::proc_keys_active(),
         if policy::PAUTH.allowed() { "probe/require" } else { "n" },

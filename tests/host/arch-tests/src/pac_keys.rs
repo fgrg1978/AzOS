@@ -251,3 +251,19 @@ fn the_enable_bits_are_the_architectures() {
     assert_eq!(enable_mask(false), SCTLR_EL1_ENIA);
     assert_eq!(enable_mask(true), SCTLR_EL1_ENIA | SCTLR_ENIB | SCTLR_ENDA | SCTLR_ENDB);
 }
+
+/// BTI enforcement's two bits are the architecture's: `SCTLR_EL1.BT1` is bit 36
+/// and the guarded-page bit of a leaf is bit 50, and guarding a leaf changes
+/// that bit and no other. Canary: GP at bit 51 or BT1 at bit 37 fails the first
+/// two asserts.
+#[test]
+fn bti_enforcement_uses_the_architectures_bits() {
+    use crate::a64_cfi::bti_checking;
+    use crate::sysregs::SCTLR_EL1_BT1;
+    assert_eq!(SCTLR_EL1_BT1, 1 << 36);
+    assert_eq!(crate::aarch64_mmu::guarded(0), 1 << 50);
+    for w in [0x0060_0000_4000_0743u64, u64::MAX & !(1 << 50), 1 << 63] {
+        assert_eq!(crate::aarch64_mmu::guarded(w) ^ w, 1 << 50, "{w:#x}: guarding moved another bit");
+    }
+    assert!(bti_checking(1 << 36) && !bti_checking(!(1 << 36)) && !bti_checking(1 << 35 | 1 << 37));
+}

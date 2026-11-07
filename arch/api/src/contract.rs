@@ -306,6 +306,10 @@ pub trait ArchEntry {
     /// it and publish what secondary CPUs attach.
     fn mmu_enabled(&self);
 
+    /// After W^X/NX, before anything else runs from the image: the ISA's last
+    /// word on the kernel text's mapping (aarch64: guarded pages for BTI).
+    fn text_final(&self) {}
+
     /// After W^X/NX: take RAM out of the half of the address space user
     /// tables share (aarch64: TTBR0 keeps device windows only).
     fn restrict_low_half(&self);

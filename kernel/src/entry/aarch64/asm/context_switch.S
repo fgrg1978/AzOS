@@ -326,12 +326,10 @@ ctx_have_satp:
     isb                     // before any translation can use the new table
 
 ctx_skip_pt_switch:
-    // The one indirect branch that lands in compiled code with no landing
-    // pad (the instruction after the caller's `bl context_switch`). It is
-    // not checked while the kernel's text has no GP pages; a kernel that
-    // maps its text guarded must resume through `ret x9` (RET is not
-    // BTI-checked) instead.
-    br x9               // jump to new task's PC
+    // The resume point is the instruction after the caller's `bl
+    // context_switch`, which has no landing pad: `ret` is not BTI-checked,
+    // `br` would be (Kconfig A64_BTI_ENFORCE).
+    ret x9              // jump to new task's PC
 
 .extern AARCH64_KERNEL_TTBR0
 .extern AARCH64_FP_LIVE

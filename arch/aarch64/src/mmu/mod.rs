@@ -484,6 +484,12 @@ fn attr_bits(perms: PagePerms) -> Result<u64, MmuError> {
 /// GP (bit 50): FEAT_BTI guarded page. [`attr_bits`] never sets it.
 const GP: u64 = 1 << 50;
 
+/// The leaf `word` as a guarded page (FEAT_BTI only: the bit is reserved
+/// without it).
+pub const fn guarded(word: u64) -> u64 {
+    word | GP
+}
+
 /// Whether ring 3's text is mapped as BTI guarded pages (the GP bit on a
 /// [`PagePerms::USER_RX`] leaf): the condition under which a `bti` landing
 /// pad is enforced at EL0. The vDSO's `HWCAP_A64_BTI` is gated on it.

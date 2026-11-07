@@ -463,6 +463,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
             }
         }
 
+        a.text_final();
         a.restrict_low_half();
 
         // Null pointer guard: page 0 unmapped, so a null dereference faults.

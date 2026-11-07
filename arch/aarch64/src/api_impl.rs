@@ -276,6 +276,9 @@ impl Mmu for Aarch64 {
     fn pte_is_cow(&self, word: u64) -> bool { crate::mmu::is_cow(word) }
 
     #[inline]
+    fn pte_guarded(&self, word: u64) -> u64 { crate::mmu::guarded(word) }
+
+    #[inline]
     fn pte_share_cow(&self, word: u64) -> u64 { crate::mmu::share_cow(word) }
 
     #[inline]
