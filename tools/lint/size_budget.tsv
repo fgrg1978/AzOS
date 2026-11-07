@@ -11,11 +11,11 @@ aarch64-microvm	.rodata	355944
 aarch64-microvm	.data	468904
 aarch64-microvm	.bss	947752
 aarch64-microvm	reason	topology admission names the msi slots (a new refusal and its distinct-slot count), the x86 interrupt-remapping state and the msi gate in the boot hooks, and the dt role keyed on the first compatible
-riscv64-qemu	.text	2930486
-riscv64-qemu	.rodata	498528
+riscv64-qemu	.text	2938894
+riscv64-qemu	.rodata	498336
 riscv64-qemu	.data	580240
 riscv64-qemu	.bss	2289384
-riscv64-qemu	reason	robot sensors to their own crate, bench harness to crates/lib/bench, board bring-up split from the robot boot
+riscv64-qemu	reason	U11 pin at admission: +4480 B .text (two-phase take with per-holder space references, group member list, booking wake, exec Domain-lock admission) over +3928 B drift since the last baseline (base 2b117b87a measured at 2934414 B)
 x86_64-microvm	.text	2728713
 x86_64-microvm	.rodata	179064
 x86_64-microvm	.data	627344
