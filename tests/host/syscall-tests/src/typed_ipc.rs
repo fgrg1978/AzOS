@@ -2360,6 +2360,36 @@ mod swap_rows {
         mo::memobj_map_abandon_ref(b, r);
     }
 
+    /// **The touch that waits for a booking is woken when the booking ends**,
+    /// committed or abandoned, not after a whole wait slice: each end moves the
+    /// sequence the fault sleeps on.
+    ///
+    /// **Canary.** `booking-wake-skipped-canary`: nobody is woken.
+    #[test]
+    fn the_end_of_a_booking_wakes_the_touch_that_waits_for_it() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let pt_a = ring3(a, SLOT_A);
+        let pt_b = ring3(b, SLOT_B);
+        become_task(a, pt_a);
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        assert!(mo::memobj_acquire_ref(b, r).is_ok());
+        let mut pages = [0usize; 1];
+        assert!(mo::memobj_map_begin_ref(b, r, true, &mut pages).is_ok());
+        assert_eq!(mo::memobj_fault_look(r, pt_b, 0), mo::ObjLook::Wait);
+        let seen = pg::shim_marker_seq();
+        assert_eq!(mo::memobj_map_commit_ref(b, r, pt_b, 0x4000_0000, 1, mo::MapAccess::RW), Ok(true));
+        assert_ne!(pg::shim_marker_seq(), seen, "the commit wakes the waiter");
+        assert!(matches!(mo::memobj_take_mapping_ref(b, r), Ok(Some(_))));
+        assert!(mo::memobj_map_begin_ref(b, r, true, &mut pages).is_ok());
+        let seen = pg::shim_marker_seq();
+        mo::memobj_map_abandon_ref(b, r);
+        assert_ne!(pg::shim_marker_seq(), seen, "and so does an abandon");
+    }
+
     /// **A restore that fails gives its claim up.** The pool lost the page's
     /// entry: the fault fails, the page stays out, and the next fault is the
     /// restore's again, not a waiter for one that never ends.

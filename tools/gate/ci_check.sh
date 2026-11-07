@@ -13272,6 +13272,10 @@ host_job host_canary_row "swap: touch before booking canary" syscall-tests swap-
 # writable after a protect (clone-install-ignored-canary: installs are not asked).
 host_job host_canary_row "swap: clone under an install canary" syscall-tests clone-install-ignored-canary \
     a_clone_is_refused_while_an_install_is_in_flight
+# The end of a booking (commit, abandon, inherit, unmap) wakes the touch that
+# waits for it (booking-wake-skipped-canary: it sleeps a whole slice).
+host_job host_canary_row "swap: booking end wakes canary" syscall-tests booking-wake-skipped-canary \
+    the_end_of_a_booking_wakes_the_touch_that_waits_for_it
 host_job zpool_host_row "swap: restore abort" a_failed_restore_gives_its_claim_up
 host_job zpool_host_canary_row "swap: restore abort canary" swap-abort-leaves-claim-canary \
     a_failed_restore_gives_its_claim_up

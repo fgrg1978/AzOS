@@ -1558,7 +1558,19 @@ pub fn memobj_map_commit_ref(tid: u32, r: u32, root: usize, va: usize, pages: us
     }
     let noted = note_mapping_locked(&mut regions[i], tid, root, va, 0, pages, access);
     regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
+    drop(regions);
+    booking_ended();
     Ok(noted)
+}
+
+/// A holder's leaves are no longer in flight: a fault that found the mapping
+/// being booked ([`ObjLook::Wait`]) looks again now, not after a full wait.
+///
+/// Canary `booking-wake-skipped-canary`: nobody is woken.
+fn booking_ended() {
+    if !cfg!(feature = "booking-wake-skipped-canary") {
+        crate::pager::store_ended();
+    }
 }
 
 /// The map of [`memobj_map_begin_ref`] will not be booked and may have left
@@ -1571,6 +1583,8 @@ pub fn memobj_map_abandon_ref(tid: u32, r: u32) {
             h.building = false;
         }
     }
+    drop(regions);
+    booking_ended();
 }
 
 /// [`memobj_take_mapping_ref`] for a caller that removes the leaves after this
@@ -1631,7 +1645,7 @@ pub fn memobj_inherit_ref(
         memobj_unmap_end_ref(child, r);
         return Err(MemObjError::NoMem);
     }
-    inherit_commit(parent, child, r, root, va, pages, leaves).inspect_err(|_| {
+    inherit_commit(parent, child, r, root, va, pages, leaves).inspect(|_| booking_ended()).inspect_err(|_| {
         leaves.remove();
         memobj_unmap_end_ref(child, r);
     })
@@ -1720,6 +1734,8 @@ pub fn memobj_unmap_end_ref(tid: u32, r: u32) {
             h.building = false;
         }
     }
+    drop(regions);
+    booking_ended();
 }
 
 /// The access a recorded mapping has and the most it may be given back

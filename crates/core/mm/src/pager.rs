@@ -281,7 +281,8 @@ static ZSTORED: AtomicUsize = AtomicUsize::new(0);
 /// pool yet. `munmap` looks for markers to clear while this or the pool is not
 /// empty.
 static RECLAIMING: AtomicU32 = AtomicU32::new(0);
-/// Counts the ends of stores. A fault that finds a page in transit reads it
+/// Counts the ends of stores and of bookings of a shared object's mapping. A
+/// fault that finds a page in transit, or a mapping being booked, reads it
 /// before it reads the slot and sleeps only while it is unchanged, so an end
 /// between the two cannot be missed (as `SWAP_STEPS`).
 static MARKER_SEQ: AtomicU32 = AtomicU32::new(0);
@@ -332,8 +333,10 @@ fn restore_hook(owner: usize) {
     }
 }
 
-/// A store ended (or none started): wake the faults and forks that waited.
-fn store_ended() {
+/// A store ended (or none started), or a booking of a shared object's mapping
+/// did ([`memobj`]'s map, inherit and unmap ends): wake the faults and forks that
+/// waited.
+pub(crate) fn store_ended() {
     MARKER_SEQ.fetch_add(1, Ordering::AcqRel);
     MARKER_WAIT.wake_all();
 }
@@ -749,6 +752,12 @@ fn zpool_restore_once(obj: u64, pg: u64, kind: PageMarker, gen: Option<u32>) -> 
 fn zpool_release(space: usize, va: usize, gen: u32) {
     let (obj, pg) = zkey(space, va);
     with_pool(|p| p.remove_if(obj, pg, gen));
+}
+
+/// Host suites only: how many stores and bookings have ended ([`MARKER_SEQ`]).
+#[cfg(not(target_os = "none"))]
+pub fn shim_marker_seq() -> u32 {
+    MARKER_SEQ.load(Ordering::Acquire)
 }
 
 /// Host suites only: the pool starts empty again. A test's arena is given back
