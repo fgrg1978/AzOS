@@ -833,3 +833,64 @@ mod dma {
         assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
     }
 }
+
+/// **The open of I/O ports a kernel driver took after the grant is refused
+/// (`-ENODEV`), books nothing and is recorded (`ring3-dma`, why 5) with the
+/// function's handle and the ports.** The ISA with no port space answers
+/// before this (`ioport_op`); the open is called past that test.
+///
+/// **Canary.** `ioport-open-silent-canary`: the refusal leaves no record.
+#[test]
+fn the_open_of_ports_a_kernel_driver_took_since_the_grant_is_refused_and_recorded() {
+    use azos_abi::invoke::DEVICE_IOPORT_ENABLE;
+    let _g = serial();
+    ring3();
+    let function = hwbus::with(|b| {
+        let mut q = Quiet;
+        let h = b
+            .add(
+                hwbus::Device::pci(hwbus::PciId { bus: 0, device: 9, function: 0, vendor: 0x1af4, device_id: 0x1000, class: 0x02_0000 })
+                    .with_io_bar(0x300, 0x20),
+                &mut q,
+            )
+            .unwrap();
+        let rules = hwbus::Rules {
+            native: &[hwbus::NativeEntry {
+                pattern: hwbus::Pattern::Pci { vendor: 0x1af4, device: 0x1000, class: 0, class_mask: 0 },
+                driver: "nic",
+                boot: true,
+            }],
+            linux: &[],
+            rows: &[],
+            policy: hwbus::Policy::Auto,
+        };
+        b.bind_all(&rules, &mut Accepting, &mut q);
+        h.0
+    });
+    let range = azos_abi::cap::ioport_range(0x300, 0x20).expect("a range");
+    let handle = azos_ipc::cap_store::grant::<azos_ipc::cap::targets::IoPorts>(TID, CapPerms::RW, range).expect("cap table full").raw();
+    let mut call = crate::invoke::Call {
+        tid: TID,
+        handle: handle.as_raw(),
+        op: DEVICE_IOPORT_ENABLE,
+        w: [0; azos_abi::ipc_msg::MSG_WORDS_MAX],
+        rep: [0; azos_abi::ipc_msg::MSG_WORDS_MAX],
+        nrep: 0,
+    };
+    let recorded = || {
+        let mut n = 0;
+        azos_decision::for_each(|r| {
+            n += usize::from(
+                r.rule == azos_decision::Rule::Ring3Dma as u8
+                    && r.subject == function
+                    && r.n[0] == u64::from(TID)
+                    && r.n[1] == (0x300 | 0x31f << 16)
+                    && r.n[2] == 5,
+            );
+        });
+        n
+    };
+    assert_eq!(crate::ioport::open_ports(&mut call), Errno::ENODEV.to_syscall_ret(), "a kernel driver's function");
+    assert_eq!(recorded(), 1, "the open-time refusal is a record");
+    assert_eq!(hwbus::may_master_bus(function), Some(true));
+}

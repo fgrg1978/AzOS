@@ -21,6 +21,9 @@ dma-map-unpin-canary = ["azos_ipc/dma-map-unpin-canary"]
 # `dma_bind.rs`'s canary: a refused map writes no decision record
 # (`every_refused_ring3_map_is_recorded` goes red).
 dma-refusal-silent-canary = ["azos_ipc/dma-refusal-silent-canary"]
+# `ioport.rs`'s canary: the open of ports skips the call that records its refusal
+# (`the_open_of_ports_a_kernel_driver_took_since_the_grant_is_refused_and_recorded` goes red).
+ioport-open-unrecorded-canary = []
 # The syscall sources pulled in below name the robot crates through the shims
 # in `shims/` (robot, imu, gps); `use-robot` is what makes them do so
 # instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).

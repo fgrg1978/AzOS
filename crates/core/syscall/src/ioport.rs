@@ -36,6 +36,11 @@ pub(crate) fn ioport_op(c: &mut Call) -> i64 {
     if azos_arch_api::ioport::PORTS == 0 {
         return Errno::ENODEV.to_syscall_ret();
     }
+    open_ports(c)
+}
+
+/// The open itself, on an ISA that has a port space.
+pub(crate) fn open_ports(c: &mut Call) -> i64 {
     if c.w[..azos_abi::invoke::INVOKE_REG_WORDS].iter().any(|&w| w != 0) {
         return Errno::EINVAL.to_syscall_ret();
     }
@@ -51,7 +56,9 @@ pub(crate) fn ioport_op(c: &mut Call) -> i64 {
         Ok(ioport_bounds(range).map(|(first, last)| {
             if let Err(dev) = azos_drv_bus::hwbus::claim_user_ports(first, last) {
                 // A kernel driver bound the function since the grant.
-                azos_ipc::ioport_cap::record_open_refusal(c.tid, dev, first, last);
+                if !cfg!(feature = "ioport-open-unrecorded-canary") {
+                    azos_ipc::ioport_cap::record_open_refusal(c.tid, dev, first, last);
+                }
                 return Err(None);
             }
             azos_sched::ioport::enable(first, last, table as u32).map_err(|e| {

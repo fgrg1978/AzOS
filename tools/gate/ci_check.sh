@@ -13427,6 +13427,8 @@ host_job host_canary_row "ring-3: io port booking canary" hwbus-tests ports-clai
     a_master_whose_ports_are_open_is_never_given_to_a_kernel_driver
 host_job host_canary_row "ring-3: io port open refusal silent canary" topology-tests ioport-open-silent-canary \
     a_port_grant_over_a_bus_masters_io_bar_needs_the_policy
+host_job host_canary_row "ring-3: io port open call site canary" syscall-tests ioport-open-unrecorded-canary \
+    the_open_of_ports_a_kernel_driver_took_since_the_grant_is_refused_and_recorded
 host_job host_canary_row "ring-3: msi slot shared canary" topology-tests msi-slot-shared-canary \
     two_rows_of_one_msi_slot_drive_one_device
 host_job host_canary_row "ring-3: msi transfer canary" topology-tests msi-transfer-canary \

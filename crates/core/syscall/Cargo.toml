@@ -56,6 +56,8 @@ azos_crypto = { workspace = true }
 # that is not registered is answered by the board's; the safety core's lines
 # are not kept from an acting Gpio op.
 gpio-unbound-falls-to-board-canary = []
+# Host canary (tests/host/syscall-tests): the open of I/O ports skips the call that records its refusal.
+ioport-open-unrecorded-canary = []
 gpio-safety-guard-canary = []
 # `frame_host.rs` (built by tests/host/syscall-tests): a task that exits keeps
 # its reader slot, and with it the pool's hold on capture.
