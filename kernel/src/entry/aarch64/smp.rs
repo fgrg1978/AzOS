@@ -35,6 +35,8 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
             core::mem::size_of_val(&crate::AZOS_SECONDARY_SP),
         )
     };
+    #[cfg(feature = "hyp-cost-probe")]
+    let cpu_on_start = azos_drv_sys::timebase::now();
     let online = unsafe { azos_sched::smp::wake_harts(dtb_num_cpus) };
     if online != dtb_num_cpus {
         azos_drv_sys::kwarn!("[SMP] WARNING: only {}/{} harts started — degraded to {} online CPU(s)",
@@ -73,6 +75,10 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
                 ARCH.wait_for_interrupt();
             }
             if crate::entry::aarch64::CORE_ONLINE[hart].load(Ordering::Acquire) {
+                #[cfg(feature = "hyp-cost-probe")]
+                if hart == 1 {
+                    crate::entry::aarch64::ext::hyp_cost::cpu_on_online(azos_drv_sys::timebase::now() - cpu_on_start);
+                }
                 let mpidr = crate::entry::aarch64::CORE_MPIDR[hart].load(Ordering::Acquire);
                 let got_id = crate::entry::aarch64::CORE_HART_ID[hart].load(Ordering::Acquire);
                 kprintln!("[SMP] hart {} online: MPIDR_EL1={:#x} current_cpu_id()={}",

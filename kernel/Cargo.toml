@@ -1137,6 +1137,10 @@ hyp-rd-open-canary = ["hyp-monitor-row"]
 hyp-its-probe = ["hyp-monitor-row"]
 hyp-its-skip-mapti-canary = ["hyp-monitor-row"]
 hyp-pt-probe = ["hyp-monitor-row"]
+# Cost lanes of the split (bench and gate only): every lane timed before the
+# image lock and after the last lock, so the pair is one boot. Built with
+# `hyp-monitor-row` for the split image and alone on a hosted one.
+hyp-cost-probe = []
 hyp-pt-pool-open-canary = ["hyp-monitor-row"]
 hyp-pt-check-skip-canary = ["hyp-monitor-row"]
 # Kconfig INSPECT: the introspection tree (crates/core/inspect), published

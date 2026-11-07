@@ -3,6 +3,8 @@
 //! aarch64-only boot extras with no counterpart on the other ISAs.
 
 pub(crate) mod hv_vectors;
+#[cfg(feature = "hyp-cost-probe")]
+pub(crate) mod hyp_cost;
 #[cfg(feature = "hyp-monitor")]
 pub(crate) mod hyp_monitor;
 #[cfg(feature = "pci")]

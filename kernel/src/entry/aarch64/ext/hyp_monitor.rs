@@ -216,6 +216,12 @@ static mut LOCK_DESC: LockDesc = LockDesc {
 /// kernel rewrites after the lock, for the monitor's table.
 static mut LOCK_SITES: [TextSite; TEXT_SITES_MAX] = [TextSite::ZERO; TEXT_SITES_MAX];
 
+/// One `probe` round trip, for the cost lanes: whether the monitor answered.
+#[cfg(feature = "hyp-cost-probe")]
+pub(super) fn null_call() -> bool {
+    monitor_call(CALL_PROBE, 0)[0] as i64 == OK
+}
+
 /// `text_poke`'s back end after the lock.
 fn text_patch(pa: usize, word: u32) -> bool {
     monitor_call2(CALL_TEXT_PATCH, pa as u64, word as u64)[0] as i64 == OK
@@ -223,7 +229,7 @@ fn text_patch(pa: usize, word: u32) -> bool {
 
 /// `pt_set`, the monitor's side of a word in the kernel-half pool. A refusal
 /// is the kernel writing a table it must not: it stops.
-fn pt_set(entry_pa: usize, expected: u64, new: u64, level: usize) -> Result<(), u64> {
+pub(super) fn pt_set(entry_pa: usize, expected: u64, new: u64, level: usize) -> Result<(), u64> {
     let r = monitor_call_n(CALL_PT_SET, entry_pa as u64, expected, new, level as u64);
     match r[0] as i64 {
         OK => Ok(()),

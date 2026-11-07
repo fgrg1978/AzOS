@@ -509,6 +509,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // VIRT_SPLIT (Kconfig HYP_MONITOR): the monitor locks text and rodata,
     // then `ro_after_init` with the seal.
     // arch-only: the resident monitor exists on aarch64 alone (ARCH_HAS_HYP_MONITOR).
+    #[cfg(all(target_arch = "aarch64", feature = "hyp-cost-probe"))]
+    crate::entry::aarch64::ext::hyp_cost::before_lock();
     #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
     crate::entry::aarch64::ext::hyp_monitor::lock_image();
     // PT_PROTECTION: the pool's writer is a hook, so it is installed before the seal.
@@ -525,6 +527,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         #[cfg(all(target_arch = "aarch64", feature = "hyp-monitor"))]
         crate::entry::aarch64::ext::hyp_monitor::lock_ro_data();
     }
+    // Gate and bench only: the cost lanes' second reading, after every lock.
+    #[cfg(all(target_arch = "aarch64", feature = "hyp-cost-probe"))]
+    crate::entry::aarch64::ext::hyp_cost::after_lock();
 
     // Kconfig KHEAP_LEAKS: the blocks the heap guard tracks from here on carry
     // the call chain that allocated them.
