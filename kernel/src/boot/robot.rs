@@ -273,17 +273,18 @@ pub(crate) fn install_robot_payload_and_sensors() {
     kprintln!();
 }
 
-/// The board's sensor instances, in the order the topology's `sensor.<n>`
-/// endpoints name them (`azos_drv_base::sensors::board`), before any task can
-/// read one. The power monitor is the INA219's, where the image has the
-/// board's I/O.
+/// The sensor numbers the topology's `sensor.<n>` endpoints name, reserved
+/// before any temperature sensor registers, then filled by whatever this image
+/// builds to produce them: the extensions' devices phase, the board I/O's power
+/// monitor.
 fn register_sensors() {
-    #[cfg(feature = "board-io")]
-    let power = &azos_drv_sensor::ina219::POWER_SENSOR;
-    #[cfg(not(feature = "board-io"))]
-    let power = &azos_drv_base::sensors::board::NO_POWER_SENSOR;
-    if azos_drv_base::sensors::board::register(power).is_err() {
+    if azos_drv_base::sensors::reserve_board_block().is_err() {
         panic!("sensors: Kconfig SENSOR_INSTANCES is below the board's own sensors");
+    }
+    azos_actuation::providers::devices();
+    #[cfg(feature = "board-io")]
+    if azos_drv_base::sensors::attach_board(azos_abi::sensor_sample::instance::POWER, &azos_drv_sensor::ina219::POWER_SENSOR).is_err() {
+        panic!("sensors: the power monitor was refused its instance");
     }
 }
 

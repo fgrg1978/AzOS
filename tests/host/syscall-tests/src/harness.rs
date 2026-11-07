@@ -184,7 +184,9 @@ pub fn classes(classes: &[u8]) -> u64 {
 /// a chip whose read waits when the I2C stand-in's transfers do.
 #[cfg(feature = "use-robot")]
 pub mod sensor_rig {
-    use azos_drv_base::sensors::{self, board, ReadError, Sample, Sensor, SensorChip, Source};
+    use azos_abi::sensor_sample::instance;
+    use azos_drv_base::sensors::{self, ReadError, Sample, Sensor, SensorChip, Source, POWER_CHANNELS};
+    use azos_robot_sensors as board;
     use std::sync::Once;
 
     struct Encoder;
@@ -211,18 +213,23 @@ pub mod sensor_rig {
     }
 
     static ENCODER: Sensor = Sensor::new(board::ENCODER_SENSOR.channels(), Source::Chip(&Encoder));
-    static POWER: Sensor = Sensor::new(&board::POWER_CHANNELS, Source::Chip(&Power));
+    static POWER: Sensor = Sensor::new(&POWER_CHANNELS, Source::Chip(&Power));
 
     /// Register the instances once for the process.
     pub fn ready() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
-            let all: [&'static Sensor; 11] = [
-                &board::IMU_SENSOR, &board::ODOM_SENSOR, &ENCODER, &board::RANGE_SENSOR, &board::BATTERY_SENSOR,
-                &board::GPS_SENSOR, &board::LIDAR_SENSOR, &board::FLAGS_SENSOR, &board::CAMERA_SENSOR, &POWER,
-                &board::IMU_TEMP_SENSOR,
+            let all: [(u32, &'static Sensor); 11] = [
+                (board::IMU, &board::IMU_SENSOR), (board::ODOM, &board::ODOM_SENSOR), (board::ENCODER, &ENCODER),
+                (board::RANGE, &board::RANGE_SENSOR), (board::BATTERY, &board::BATTERY_SENSOR),
+                (board::GPS, &board::GPS_SENSOR), (board::LIDAR, &board::LIDAR_SENSOR),
+                (board::FLAGS, &board::FLAGS_SENSOR), (board::CAMERA, &board::CAMERA_SENSOR),
+                (instance::POWER, &POWER), (board::IMU_TEMP, &board::IMU_TEMP_SENSOR),
             ];
-            assert_eq!(sensors::register_boards(&all), Ok(0));
+            sensors::reserve_board_block().unwrap();
+            for (n, s) in all {
+                sensors::attach_board(n, s).unwrap();
+            }
         });
     }
 }

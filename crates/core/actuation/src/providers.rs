@@ -12,7 +12,7 @@
 //! Installation happens once per extension, at boot, before the scheduler
 //! starts; an install after the boot seal (`azos_common::hook::seal`) is
 //! refused, and so is one after the first boot phase. The manifests are kept too, for their boot hooks
-//! ([`config_loaded`], [`start_tasks`], and the effects phase the gate's
+//! ([`config_loaded`], [`devices`], [`start_tasks`], and the effects phase the gate's
 //! install runs).
 
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -97,7 +97,8 @@ fn register(p: &'static Provider) -> Result<(), Refused> {
 const INSTALLING: u8 = 0;
 const EFFECTS: u8 = 1;
 const CONFIG_LOADED: u8 = 2;
-const TASKS: u8 = 3;
+const DEVICES: u8 = 3;
+const TASKS: u8 = 4;
 static PHASE: AtomicU8 = AtomicU8::new(INSTALLING);
 
 /// Enter `phase`. Panics when it, or a later one, has already run: a boot-
@@ -157,6 +158,16 @@ pub(crate) fn effects() {
     enter(EFFECTS, "effects");
     each_hook(|h| {
         if let BootHook::Effects(f) = h {
+            f();
+        }
+    });
+}
+
+/// The [`BootHook::Devices`] phase.
+pub fn devices() {
+    enter(DEVICES, "devices");
+    each_hook(|h| {
+        if let BootHook::Devices(f) = h {
             f();
         }
     });

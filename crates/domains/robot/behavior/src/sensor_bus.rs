@@ -20,7 +20,8 @@
 //!
 //!   behavior_task        → state = sensor_bus.snapshot()
 
-use azos_drv_base::sensors::{board, value, Sample, Sensor};
+use azos_drv_base::sensors::{value, Sample, Sensor};
+use azos_robot_sensors as board;
 
 /// Degrees × 10⁷ (the GPS driver's `lat_deg7`/`lon_deg7`) to micro-degrees
 /// (`SensorState::gps_lat_udeg`, the geofence's unit).

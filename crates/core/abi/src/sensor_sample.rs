@@ -42,9 +42,10 @@ pub const fn sample_is_fresh_ns(acq_ns: u64, now_ns: u64, max_age_ns: u64) -> bo
 }
 
 /// The sensor instances a topology names (`sensor.<n>`), by number: the one
-/// place the numbering is written. The kernel's board registers its sensors in
-/// this order (`azos_drv_base::sensors::board`) and libsys names them for
-/// ring-3 programs.
+/// place the numbering is written. The first [`COUNT`] numbers are reserved
+/// for them on every image (`azos_drv_base::sensors::reserve_board_block`):
+/// an extension or the board's I/O attaches the ones it produces, and the
+/// others read as not ready. libsys names them for ring-3 programs.
 pub mod instance {
     /// The accelerometer and gyroscope.
     pub const IMU: u32 = 0;
@@ -66,6 +67,11 @@ pub mod instance {
     pub const CAMERA: u32 = 8;
     /// The power monitor.
     pub const POWER: u32 = 9;
+    /// The IMU's die temperature: not a topology endpoint.
+    pub const IMU_TEMP: u32 = 10;
+    /// Numbers reserved for the above; the temperature sensors a thermal zone
+    /// reads follow.
+    pub const COUNT: usize = 11;
 }
 
 /// Periods of a stream a sample may be old before a reader treats it as

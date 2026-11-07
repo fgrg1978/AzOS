@@ -18,3 +18,22 @@ azos_ktest::ktest! {
         }
     }
 }
+
+azos_ktest::ktest! {
+    fn effect_the_robot_sensor_numbers_are_reserved_and_vacant() {
+        use azos_abi::sensor_sample::instance as n;
+        use azos_drv_base::sensors;
+        for i in [n::IMU, n::ODOM, n::ENCODER, n::RANGE, n::BATTERY, n::GPS, n::LIDAR, n::FLAGS, n::CAMERA, n::IMU_TEMP] {
+            if sensors::get(i).is_some() {
+                return Err("a robot sensor is attached in an image without the robot extension");
+            }
+        }
+        if sensors::get(n::POWER).is_some() != cfg!(feature = "board-io") {
+            return Err("the power monitor is attached only where the board's I/O is built");
+        }
+        if sensors::reserve_board_block().is_ok() {
+            return Err("the topology's sensor numbers were not reserved at boot");
+        }
+        Ok(())
+    }
+}

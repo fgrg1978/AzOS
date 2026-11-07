@@ -794,7 +794,8 @@ mod geofence {
     }
 
     use super::sensor_bus::{deg7_to_udeg, sample_is_fresh, SensorBus, Sources};
-    use azos_drv_base::sensors::{board, stream as new_stream, Producer, Sensor, Source};
+    use azos_drv_base::sensors::{stream as new_stream, Producer, Sensor, Source};
+    use azos_robot_sensors as board;
 
     /// A bus over streams of its own, and the producers of the ones the tests
     /// feed. The board's streams are single-producer statics; a test gets its
@@ -2557,6 +2558,9 @@ mod flight_recorder_rt {
 
 #[cfg(test)]
 mod telemetry_ring;
+
+#[cfg(test)]
+mod robot_sensor_tests;
 
 #[cfg(test)]
 mod flight_recorder_format {

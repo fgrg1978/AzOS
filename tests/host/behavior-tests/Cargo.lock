@@ -49,6 +49,7 @@ dependencies = [
  "beh_test_ipc",
  "beh_test_limits",
  "beh_test_robot",
+ "beh_test_robot_sensors",
  "cap_test_sync",
  "ed25519-dalek",
  "wcet-macro",
@@ -165,6 +166,15 @@ dependencies = [
  "azos_common",
  "beh_test_drivers",
  "beh_test_robot_sync",
+]
+
+[[package]]
+name = "beh_test_robot_sensors"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_limits",
+ "beh_test_drivers",
 ]
 
 [[package]]

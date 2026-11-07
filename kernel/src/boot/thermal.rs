@@ -116,7 +116,8 @@
 #[cfg(all(feature = "vf2", feature = "thermal", not(feature = "soc")))]
 compile_error!("THERMAL on the VisionFive 2 needs SOC_FRAMEWORKS: the CPU clock it moves is the frameworks'");
 
-use azos_drv_base::sensors::{self as sensor_class, board, ReadError, Sample, Sensor, SensorChip, Source};
+use azos_abi::sensor_sample::instance;
+use azos_drv_base::sensors::{self as sensor_class, ReadError, Sample, Sensor, SensorChip, Source};
 use azos_energy::model::MAX_DOMAINS;
 use azos_energy::thermal::{Event, LOG_LEN};
 use azos_sync::SpinLock;
@@ -242,12 +243,12 @@ impl SensorChip for FakeChip {
 }
 
 #[cfg(feature = "thermal-smoke")]
-static FAKE_SENSOR: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&FakeChip));
+static FAKE_SENSOR: Sensor = Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&FakeChip));
 
 /// A board's reading of its sensor as the class's answer, stamped now.
 fn reading(r: Result<i32, SensorError>) -> Result<Sample, ReadError> {
     match r {
-        Ok(mdeg) => Ok(board::temperature_sample(mdeg, azos_drv_sys::timebase::vdso_ns(azos_drv_sys::timebase::now()))),
+        Ok(mdeg) => Ok(sensor_class::temperature_sample(mdeg, azos_drv_sys::timebase::vdso_ns(azos_drv_sys::timebase::now()))),
         Err(SensorError::Io) => Err(ReadError::Io),
         Err(SensorError::Absent) => Err(ReadError::Unsupported),
         Err(SensorError::Invalid) => Err(ReadError::NotReady),
@@ -270,12 +271,12 @@ fn register_temperatures(sensors: &[&'static Sensor]) -> Option<u32> {
 // the board's own.
 #[cfg(all(feature = "soc-k1", feature = "thermal"))]
 const _: () = assert!(
-    sensor_class::INSTANCES >= board::COUNT + azos_thermal::k1::K1_SENSORS as usize,
+    sensor_class::INSTANCES >= instance::COUNT + azos_thermal::k1::K1_SENSORS as usize,
     "Kconfig SENSOR_INSTANCES is below the K1's temperature channels after the board's own sensors"
 );
 // Any other thermal board reads one.
 #[cfg(all(feature = "thermal", not(feature = "soc-k1")))]
-const _: () = assert!(sensor_class::INSTANCES > board::COUNT, "Kconfig SENSOR_INSTANCES leaves no room for a temperature sensor");
+const _: () = assert!(sensor_class::INSTANCES > instance::COUNT, "Kconfig SENSOR_INSTANCES leaves no room for a temperature sensor");
 
 // ── JH7110: the sensor ───────────────────────────────────────────────────────
 
@@ -336,7 +337,7 @@ impl SensorChip for SfcTempChip {
 }
 
 #[cfg(all(feature = "vf2", feature = "thermal"))]
-static SFCTEMP: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&SfcTempChip));
+static SFCTEMP: Sensor = Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&SfcTempChip));
 
 /// The instance of the `sfctemp` (`NO_INSTANCE`: none registered).
 #[cfg(all(feature = "vf2", feature = "thermal"))]
@@ -416,11 +417,11 @@ static K1_CHIPS: [K1Chip; 5] = [K1Chip(0), K1Chip(1), K1Chip(2), K1Chip(3), K1Ch
 
 #[cfg(all(feature = "soc-k1", feature = "thermal"))]
 static K1_SENSORS: [Sensor; 5] = [
-    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[0])),
-    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[1])),
-    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[2])),
-    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[3])),
-    Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[4])),
+    Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[0])),
+    Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[1])),
+    Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[2])),
+    Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[3])),
+    Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&K1_CHIPS[4])),
 ];
 
 /// The instance of the K1's first channel; the others follow it.
@@ -484,7 +485,7 @@ impl SensorChip for RpiChip {
 // arch-only: as the type.
 #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
 #[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
-static RPI_SENSOR: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&RpiChip));
+static RPI_SENSOR: Sensor = Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&RpiChip));
 
 /// The ARM clock, moved through the firmware one request at a time.
 // arch-only: as the type.
@@ -680,7 +681,7 @@ impl SensorChip for X86PackageChip {
 
 // arch-only: as the type.
 #[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), target_arch = "x86_64"))]
-static X86_PACKAGE: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&X86PackageChip));
+static X86_PACKAGE: Sensor = Sensor::new(&sensor_class::TEMPERATURE_CHANNELS, Source::Chip(&X86PackageChip));
 
 /// The instance of the package sensor.
 // arch-only: as the type.

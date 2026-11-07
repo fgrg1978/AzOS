@@ -192,9 +192,10 @@ fn wire_motor_effects() {
 }
 
 #[cfg(feature = "effect-gate")]
-const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[azos_ext_api::BootHook::Effects(wire_motor_effects)];
+const ROBOT_HOOKS: &[azos_ext_api::BootHook] =
+    &[azos_ext_api::BootHook::Devices(azos_robot_sensors::register), azos_ext_api::BootHook::Effects(wire_motor_effects)];
 #[cfg(not(feature = "effect-gate"))]
-const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[];
+const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[azos_ext_api::BootHook::Devices(azos_robot_sensors::register)];
 
 /// The robot extension, as the actuation core sees it: one effect provider
 /// for the wheels, the ESC and the payload, which owns the motor kind. The

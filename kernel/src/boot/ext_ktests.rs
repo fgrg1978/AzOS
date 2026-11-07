@@ -68,3 +68,20 @@ azos_ktest::ktest! {
         }
     }
 }
+
+azos_ktest::ktest! {
+    fn ext_robot_sensors_are_attached_at_their_topology_numbers() {
+        use azos_abi::sensor_sample::instance as n;
+        use azos_drv_base::sensors;
+        for i in [n::IMU, n::ODOM, n::ENCODER, n::RANGE, n::BATTERY, n::GPS, n::LIDAR, n::FLAGS, n::CAMERA, n::IMU_TEMP] {
+            if sensors::get(i).is_none() {
+                return Err("a robot sensor is not attached to its reserved number");
+            }
+        }
+        // The power monitor is the board's I/O, which the robot's feature turns on.
+        if sensors::get(n::POWER).is_none() {
+            return Err("the board's power monitor is not attached");
+        }
+        Ok(())
+    }
+}

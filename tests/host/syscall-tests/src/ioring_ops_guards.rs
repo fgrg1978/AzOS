@@ -27,7 +27,7 @@ use azos_abi::cap::{CapPerms, ty};
 use azos_abi::error::Errno;
 use azos_abi::syscall_nr as nr;
 use azos_arch_api::PagePerms;
-use azos_drv_base::sensors::board;
+use azos_robot_sensors as board;
 use azos_drv_gpio::gpio::{set_gpio_probe, GpioOp};
 use azos_drv_actuator::pwm::{set_pwm_probe, PwmOp};
 use azos_ipc::cap::CapTarget;
@@ -2156,7 +2156,7 @@ fn an_interface_that_may_wait_is_not_served_from_a_pass() {
     // writes).
     assert!(crate::khost::ring_served(key::SENSOR, board::ENCODER));
     assert!(crate::khost::ring_served(key::SENSOR, board::BATTERY), "a stream is a copy of what a task published");
-    assert_eq!(crate::khost::ring_served(key::SENSOR, board::POWER), !azos_drv_bus::i2c::transfer_may_sleep());
+    assert_eq!(crate::khost::ring_served(key::SENSOR, azos_abi::sensor_sample::instance::POWER), !azos_drv_bus::i2c::transfer_may_sleep());
     assert!(crate::khost::ring_served(key::MOTOR, 0) && crate::khost::ring_served(key::PWM, FREE_CH));
     assert_eq!(crate::khost::ring_served(key::I2C, 0), !azos_drv_bus::i2c::transfer_may_sleep());
 }
@@ -2191,7 +2191,7 @@ fn a_device_whose_bus_may_sleep_is_not_served_from_a_pass() {
     set_gpio_probe(Some(board_probe));
     assert_eq!(azos_drv_gpio::chips::register(super::harness::GPIO_EXPANDER_DEV, &RING_EXPANDER), Ok(1));
     let i2c = grant_ep(s.tid, azos_devif::key::I2C, azos_devif::i2c::badge(1, 0x68), CapPerms::RW, 0);
-    let power = grant_ep(s.tid, azos_devif::key::SENSOR, board::POWER, CapPerms::READ, 0);
+    let power = grant_ep(s.tid, azos_devif::key::SENSOR, azos_abi::sensor_sample::instance::POWER, CapPerms::READ, 0);
     let enc = grant_ep(s.tid, azos_devif::key::SENSOR, board::ENCODER, CapPerms::READ, 0);
     let x = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(1, 3), CapPerms::RW, 0);
     let board = grant_ep(s.tid, azos_devif::key::GPIO, azos_devif::gpio::badge(0, 9), CapPerms::RW, 0);

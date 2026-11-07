@@ -136,6 +136,34 @@ impl<C: ?Sized + Sync + 'static, const N: usize> Instances<C, N> {
         first.ok_or(RegisterError::Full)
     }
 
+    /// Reserve the first `n` numbers for the board's own instances, which
+    /// [`attach_board`](Self::attach_board) fills in as their producers are
+    /// built into the image; until then the number reads as not registered.
+    /// Refused when any of them is taken already.
+    pub fn reserve_boards(&self, n: usize) -> Result<(), RegisterError> {
+        let mut slots = self.slots.lock();
+        if n > slots.len() || slots[..n].iter().any(|s| s.owner != Owner::Nobody) {
+            return Err(RegisterError::Full);
+        }
+        for s in &mut slots[..n] {
+            s.owner = Owner::Board;
+        }
+        Ok(())
+    }
+
+    /// Give reserved instance `i` its controller; never given back.
+    pub fn attach_board(&self, i: u32, ctrl: &'static C) -> Result<(), RegisterError> {
+        let mut slots = self.slots.lock();
+        match slots.get_mut(i as usize) {
+            Some(s) if s.owner == Owner::Board && s.ctrl.is_none() => {
+                s.ctrl = Some(ctrl);
+                Ok(())
+            }
+            Some(s) if s.owner == Owner::Board => Err(RegisterError::Registered),
+            _ => Err(RegisterError::Full),
+        }
+    }
+
     /// Register device `dev`'s controller: the instance number it had before,
     /// else the lowest no device has had.
     pub fn register(&self, dev: DeviceId, ctrl: &'static C) -> Result<u32, RegisterError> {

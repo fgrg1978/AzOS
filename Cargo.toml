@@ -440,6 +440,7 @@ members = [
     "crates/drivers/firmware",
     "crates/drivers/thermal",
     "crates/domains/robot/behavior",
+    "crates/domains/robot/sensors",
     "crates/core/channel",
     "crates/core/rings",
     "crates/core/records",
@@ -587,6 +588,7 @@ azos_firmware = { path = "crates/drivers/firmware" }
 azos_thermal  = { path = "crates/drivers/thermal" }
 azos_soc      = { path = "crates/drivers/soc" }
 azos_behavior = { path = "crates/domains/robot/behavior" }
+azos_robot_sensors = { path = "crates/domains/robot/sensors" }
 azos_channel  = { path = "crates/core/channel" }
 azos_rings    = { path = "crates/core/rings" }
 azos_records  = { path = "crates/core/records" }

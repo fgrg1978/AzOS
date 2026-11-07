@@ -33,7 +33,7 @@ default = []
 # kernel/src/main.rs refuses (compile error) a .config that selects
 # USE_ROBOT without this feature.
 use-robot = [
-    "dep:azos_behavior", "dep:azos_robot", "dep:azos_safety_core",
+    "dep:azos_behavior", "dep:azos_robot", "dep:azos_safety_core", "dep:azos_robot_sensors",
     "dep:azos_flight", "dep:azos_nav", "dep:azos_gps",
     "dep:azos_imu", "dep:azos_baro", "dep:azos_ahrs",
     "dep:azos_telemetry", "dep:azos_bench", "dep:azos_multi_stream",
@@ -1430,6 +1430,7 @@ azos_thermal  = { workspace = true, optional = true }
 azos_firmware = { workspace = true, optional = true }
 azos_soc      = { workspace = true, optional = true }
 azos_behavior = { workspace = true, optional = true }
+azos_robot_sensors = { workspace = true, optional = true }
 azos_ahrs     = { workspace = true, optional = true }
 azos_gps       = { workspace = true, optional = true }
 azos_flight    = { workspace = true, optional = true }

@@ -16,10 +16,11 @@
 //! * [`Source::Unsupported`]: a record that does not fit a sample (a LiDAR
 //!   scan, a camera frame); the descriptor says what the sensor is.
 //!
-//! Instances are numbered by registration ([`crate::instances`]). The board's
-//! own are registered first, in the order the topology's `sensor.<n>`
-//! endpoints name them ([`board`]), then the temperature sensors a thermal
-//! zone reads. The class's limit is Kconfig `SENSOR_INSTANCES`, the depth of
+//! Instances are numbered by registration ([`crate::instances`]). The first
+//! `azos_abi::sensor_sample::instance::COUNT` numbers are the topology's
+//! `sensor.<n>` endpoints, reserved on every image ([`reserve_board_block`]) and
+//! attached by whatever produces them ([`attach_board`]); then come the
+//! temperature sensors a thermal zone reads. The class's limit is Kconfig `SENSOR_INSTANCES`, the depth of
 //! every stream `SENSOR_STREAM_DEPTH`.
 //!
 //! The single writer of a stream is a property of the type: [`Sensor::producer`]
@@ -27,12 +28,10 @@
 //! never spins on a store its preempted writer cannot finish.
 
 use crate::instances::{Instances, Lease, RegisterError};
+use azos_abi::sensor_sample::instance;
 pub use azos_devif::sensor::Sample;
 use azos_rings::{Log, Next, Reader, Writer};
 use azos_sync::critical_section;
-
-#[path = "sensors/board.rs"]
-pub mod board;
 
 /// Samples every stream keeps.
 pub const STREAM_DEPTH: usize = azos_limits::SENSOR_STREAM_DEPTH as usize;
@@ -104,6 +103,10 @@ pub struct Channel {
 }
 
 impl Channel {
+    pub const fn new(quantity: Quantity, unit: Unit, width: u8, signed: bool, min: i64, max: i64, rate_hz: u32) -> Self {
+        Channel { quantity, unit, width, signed, min, max, rate_hz }
+    }
+
     /// Is `v` a value this channel can hold?
     pub const fn admits(&self, v: i64) -> bool {
         self.min <= v && v <= self.max
@@ -334,7 +337,42 @@ pub fn register_boards(sensors: &[&'static Sensor]) -> Result<u32, RegisterError
     SENSORS.register_boards(sensors)
 }
 
-const _: () = assert!(INSTANCES >= board::COUNT, "Kconfig SENSOR_INSTANCES is below the board's own sensors");
+/// Reserve the numbers of the topology's sensor endpoints, before any sensor
+/// registers, so a temperature sensor never takes one on an image that lacks
+/// the producer.
+pub fn reserve_board_block() -> Result<(), RegisterError> {
+    SENSORS.reserve_boards(instance::COUNT)
+}
+
+/// Attach `sensor` as reserved instance `n`.
+pub fn attach_board(n: u32, sensor: &'static Sensor) -> Result<(), RegisterError> {
+    SENSORS.attach_board(n, sensor)
+}
+
+const _: () = assert!(INSTANCES >= instance::COUNT, "Kconfig SENSOR_INSTANCES is below the board's own sensors");
+
+/// A temperature sensor of a thermal zone: milli-degrees Celsius. The range is
+/// what no part can exceed (a reading past it is a transport fault, never a
+/// temperature to act on), wide above any junction limit so that real heat is
+/// never mistaken for a fault.
+pub static TEMPERATURE_CHANNELS: [Channel; 1] =
+    [Channel::new(Quantity::Temperature, Unit::MilliDegC, 4, true, -100_000, 300_000, 0)];
+
+/// A temperature sample of a thermal sensor, milli-degrees Celsius.
+pub fn temperature_sample(mdeg: i32, acq_ns: u64) -> Sample {
+    pack(&TEMPERATURE_CHANNELS, &[mdeg as i64], 0, acq_ns)
+}
+
+/// The power monitor's record: voltage (mV), current (mA), charge used (mAh),
+/// percent, sag, failsafe.
+pub static POWER_CHANNELS: [Channel; 6] = [
+    Channel::new(Quantity::Voltage, Unit::MilliVolt, 2, false, 0, u16::MAX as i64, 0),
+    Channel::new(Quantity::Current, Unit::MilliAmp, 2, false, 0, u16::MAX as i64, 0),
+    Channel::new(Quantity::Charge, Unit::MilliAmpHour, 4, false, 0, u32::MAX as i64, 0),
+    Channel::new(Quantity::Ratio, Unit::Percent, 1, false, 0, 100, 0),
+    Channel::new(Quantity::Flags, Unit::Bits, 1, false, 0, 1, 0),
+    Channel::new(Quantity::Flags, Unit::Bits, 1, false, 0, 1, 0),
+];
 
 /// The temperature sensor `n` reads, in milli-degrees Celsius: the sensor's
 /// read, decoded by its first channel, which must measure a temperature in that

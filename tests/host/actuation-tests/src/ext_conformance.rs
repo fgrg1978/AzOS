@@ -105,6 +105,14 @@ macro_rules! hook {
             run
         })
     };
+    (Devices, $name:literal) => {
+        BootHook::Devices({
+            fn run() {
+                note(Ev::Hook($name));
+            }
+            run
+        })
+    };
     (Tasks, $name:literal, line: $line:literal) => {
         BootHook::Tasks({
             fn run(enable_line: azos_ext_api::EnableLine) {
@@ -136,7 +144,7 @@ static ROBOT_SHAPED: Manifest = Manifest {
     name: "robot-shaped",
     api_level: API_LEVEL,
     providers: &[provider!("actuators", kinds: &[KIND_MOTOR], latch: true, ready: Some(yes))],
-    hooks: &[hook!(Effects, "robot-shaped effects")],
+    hooks: &[hook!(Effects, "robot-shaped effects"), hook!(Devices, "robot-shaped devices")],
 };
 
 static MIXED: Manifest = Manifest {
@@ -152,6 +160,7 @@ static MIXED: Manifest = Manifest {
         hook!(ConfigLoaded, "mixed config"),
         hook!(Effects, "mixed effects"),
         hook!(ConfigLoaded, "mixed config again"),
+        hook!(Devices, "mixed devices"),
     ],
 };
 
@@ -161,7 +170,7 @@ fn hooks_at(m: &Manifest, phase: fn(&BootHook) -> bool) -> Vec<Ev> {
     take();
     for h in m.hooks.iter().filter(|h| phase(h)) {
         match *h {
-            BootHook::ConfigLoaded(f) | BootHook::Effects(f) => f(),
+            BootHook::ConfigLoaded(f) | BootHook::Effects(f) | BootHook::Devices(f) => f(),
             BootHook::Tasks(f) => f(enable_line),
         }
     }
@@ -194,6 +203,7 @@ fn check_a_manifest_after_the_effects_phase_is_refused(m: &'static Manifest) {
         assert!(!providers::serves(kind), "`{}`: a refused manifest serves kind {}", m.name, kind);
     }
     providers::config_loaded();
+    providers::devices();
     providers::start_tasks(enable_line);
     assert!(take().is_empty(), "`{}`: a hook of a refused manifest ran", m.name);
 }
@@ -219,6 +229,7 @@ fn check_hooks_run_once_at_their_phase(m: &'static Manifest) {
     let _g = fresh();
     let want_config = hooks_at(m, |h| matches!(h, BootHook::ConfigLoaded(_)));
     let want_effects = hooks_at(m, |h| matches!(h, BootHook::Effects(_)));
+    let want_devices = hooks_at(m, |h| matches!(h, BootHook::Devices(_)));
     let want_tasks = hooks_at(m, |h| matches!(h, BootHook::Tasks(_)));
     install(m);
     install(m);
@@ -228,6 +239,8 @@ fn check_hooks_run_once_at_their_phase(m: &'static Manifest) {
     assert_eq!(take(), want_effects, "`{}`: the effects phase ran other hooks, or these out of order", m.name);
     providers::config_loaded();
     assert_eq!(take(), want_config, "`{}`: the config phase ran other hooks, or these out of order", m.name);
+    providers::devices();
+    assert_eq!(take(), want_devices, "`{}`: the devices phase ran other hooks, or these out of order", m.name);
     providers::start_tasks(enable_line);
     assert_eq!(take(), want_tasks, "`{}`: the task phase ran other hooks, or without the line enable", m.name);
 }
@@ -289,6 +302,7 @@ fn each_boot_phase_runs_once_and_in_order() {
     providers::start_tasks(enable_line);
     for (name, run) in [
         ("effects twice", (|| providers::effects()) as fn()),
+        ("devices after tasks", || providers::devices()),
         ("config after tasks", || providers::config_loaded()),
         ("tasks twice", || providers::start_tasks(enable_line)),
     ] {

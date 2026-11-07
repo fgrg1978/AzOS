@@ -231,6 +231,7 @@ dependencies = [
  "syscall_test_mm",
  "syscall_test_net",
  "syscall_test_robot",
+ "syscall_test_robot_sensors",
  "syscall_test_sched",
 ]
 
@@ -656,6 +657,15 @@ dependencies = [
  "azos_common",
  "syscall_test_drivers",
  "syscall_test_robot_sync",
+]
+
+[[package]]
+name = "syscall_test_robot_sensors"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_limits",
+ "syscall_test_drivers",
 ]
 
 [[package]]

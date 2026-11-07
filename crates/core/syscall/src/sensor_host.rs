@@ -18,7 +18,8 @@
 use azos_abi::cap::CapPerms;
 use azos_devif::sensor::{Sample, TYPES};
 use azos_devif::{outcome, Out};
-use azos_drv_base::sensors::{self, board, ReadError};
+use azos_abi::sensor_sample::instance;
+use azos_drv_base::sensors::{self, ReadError};
 
 use crate::khost::Caller;
 
@@ -37,8 +38,8 @@ pub(crate) fn ring_served(badge: u32) -> bool {
 /// timer interrupt never publishes a slot nothing feeds.
 fn produced_in_this_image(badge: u32) -> bool {
     match badge {
-        board::IMU | board::ODOM | board::ENCODER | board::GPS => cfg!(feature = "use-robot"),
-        board::RANGE | board::BATTERY | board::LIDAR | board::POWER | board::CAMERA => cfg!(feature = "board-io"),
+        instance::IMU | instance::ODOM | instance::ENCODER | instance::GPS => cfg!(feature = "use-robot"),
+        instance::RANGE | instance::BATTERY | instance::LIDAR | instance::POWER | instance::CAMERA => cfg!(feature = "board-io"),
         _ => true,
     }
 }

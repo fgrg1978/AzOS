@@ -15,7 +15,7 @@ use crate::no_robot::{robot as azos_robot};
 use core::sync::atomic::{AtomicU64, Ordering};
 use azos_abi::error::Errno;
 
-use azos_drv_base::sensors::board::{ENCODER, ODOM};
+use azos_abi::sensor_sample::instance::{ENCODER, ODOM};
 
 // ── Per-task vDSO page ──────────────────────────────────────────────────────
 

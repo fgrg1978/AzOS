@@ -25,8 +25,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use azos_devif::powermon::{PowerMonCall, PowerMonClient, PowerMonDirect, PowerMonPlaced, PowerStats, RECORD_BYTES};
 use azos_devif::{IdlError, IdlResult, MsgDesc, Transport};
-use azos_drv_base::sensors::board::POWER_CHANNELS;
-use azos_drv_base::sensors::{ReadError, Sample, Sensor, SensorChip, Source};
+use azos_drv_base::sensors::{ReadError, POWER_CHANNELS, Sample, Sensor, SensorChip, Source};
 use azos_sync::SpinLock;
 
 pub mod kernel_host;
@@ -152,7 +151,7 @@ impl SensorChip for PowerChip {
     }
 }
 
-/// Instance 9 of the sensor class (`azos_drv_base::sensors::board::POWER`).
+/// Instance 9 of the sensor class (`azos_abi::sensor_sample::instance::POWER`).
 pub static POWER_SENSOR: Sensor = Sensor::new(&POWER_CHANNELS, Source::Chip(&PowerChip));
 
 /// The monitor's counters, `None` without an answering host.

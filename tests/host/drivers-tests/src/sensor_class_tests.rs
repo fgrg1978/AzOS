@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The sensor class (`sensors.rs`, `sensors/board.rs`), the real files.
+//! The sensor class (`sensors.rs`), the real file.
 //!
 //! The registry is a process-wide static: only
-//! `the_board_registers_its_sensors_in_the_topologys_order` touches it.
+//! `the_board_block_is_reserved_and_the_thermal_sensors_follow_it` touches it.
 
-use super::sensors::{self, board, stream, value, ReadError, Sample, Sensor, SensorChip, Source, Stream, STREAM_DEPTH};
+use super::sensors::{
+    self, stream, value, Channel, Quantity, ReadError, Sample, Sensor, SensorChip, Source, Stream, Unit, POWER_CHANNELS,
+    STREAM_DEPTH, TEMPERATURE_CHANNELS,
+};
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering::SeqCst};
 
 /// Samples carrying their number in the first word, so a reader can see a gap
@@ -20,8 +23,11 @@ fn number(s: &Sample) -> u64 {
     s.w[0]
 }
 
+/// Six signed 32-bit acceleration axes: the shape of an IMU's record.
+static IMU_SHAPE: [Channel; 6] = [Channel::new(Quantity::Acceleration, Unit::MilliG, 4, true, -2000, 2000, 100); 6];
+
 static VIRTUAL_LOG: Stream = stream();
-static VIRTUAL: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream(&VIRTUAL_LOG));
+static VIRTUAL: Sensor = Sensor::new(&IMU_SHAPE, Source::Stream(&VIRTUAL_LOG));
 
 /// **A stream loses no sample at the rate it is read.** A virtual IMU is driven
 /// for `TICKS` acquisitions at rate R while one reader drains it every
@@ -57,7 +63,7 @@ fn a_stream_loses_no_sample_at_the_rate_it_is_read() {
 }
 
 static SLOW_LOG: Stream = stream();
-static SLOW: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream(&SLOW_LOG));
+static SLOW: Sensor = Sensor::new(&IMU_SHAPE, Source::Stream(&SLOW_LOG));
 
 /// A reader that falls further behind than the stream's depth is told how many
 /// samples it lost, and goes on from the oldest one kept.
@@ -78,7 +84,7 @@ fn a_reader_that_falls_behind_counts_what_it_lost() {
 }
 
 static LATEST_LOG: Stream = stream();
-static LATEST: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Stream(&LATEST_LOG));
+static LATEST: Sensor = Sensor::new(&IMU_SHAPE, Source::Stream(&LATEST_LOG));
 
 /// A read of a stream is the newest sample with the time it was acquired;
 /// before the first publish it is not ready.
@@ -99,19 +105,19 @@ fn a_read_of_a_stream_is_the_newest_sample() {
 /// 4294966296.
 #[test]
 fn a_channel_decodes_its_value_from_the_record() {
-    let vals: [i32; 6] = [-1000, 20, 981, -250_000, 7, 250_000];
+    let vals: [i32; 6] = [-1000, 20, 981, -1999, 7, 2000];
     let mut rec = [0u8; 24];
     for (i, v) in vals.iter().enumerate() {
         rec[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
     let s = Sample::new(&rec, 0, 1);
     for (i, v) in vals.iter().enumerate() {
-        assert_eq!(value(&board::IMU_CHANNELS, &s, i), Some(*v as i64), "channel {i}");
+        assert_eq!(value(&IMU_SHAPE, &s, i), Some(*v as i64), "channel {i}");
     }
-    assert_eq!(value(&board::IMU_CHANNELS, &s, 6), None, "no seventh channel");
+    assert_eq!(value(&IMU_SHAPE, &s, 6), None, "no seventh channel");
     let short = Sample::new(&rec[..10], 0, 1);
-    assert_eq!(value(&board::IMU_CHANNELS, &short, 2), None, "the record does not reach it");
-    assert!(board::IMU_CHANNELS[0].admits(-1000) && !board::IMU_CHANNELS[0].admits(2001));
+    assert_eq!(value(&IMU_SHAPE, &short, 2), None, "the record does not reach it");
+    assert!(IMU_SHAPE[0].admits(-1000) && !IMU_SHAPE[0].admits(2001));
 }
 
 struct Chip(AtomicU32, bool);
@@ -127,9 +133,9 @@ impl SensorChip for Chip {
 
 static BUS_CHIP: Chip = Chip(AtomicU32::new(0), true);
 static REG_CHIP: Chip = Chip(AtomicU32::new(0), false);
-static BUS: Sensor = Sensor::new(&board::POWER_CHANNELS, Source::Chip(&BUS_CHIP));
-static REGS: Sensor = Sensor::new(&board::POWER_CHANNELS, Source::Chip(&REG_CHIP));
-static NONE: Sensor = Sensor::new(&board::IMU_CHANNELS, Source::Unsupported);
+static BUS: Sensor = Sensor::new(&POWER_CHANNELS, Source::Chip(&BUS_CHIP));
+static REGS: Sensor = Sensor::new(&POWER_CHANNELS, Source::Chip(&REG_CHIP));
+static NONE: Sensor = Sensor::new(&IMU_SHAPE, Source::Unsupported);
 
 /// A chip is read when asked and says whether the read may sleep; a stream
 /// and an unsupported record never do.
@@ -153,82 +159,58 @@ struct Thermometer;
 
 impl SensorChip for Thermometer {
     fn read(&self) -> Result<Sample, ReadError> {
-        Ok(board::temperature_sample(SCRIPTED.load(SeqCst), 7))
+        Ok(sensors::temperature_sample(SCRIPTED.load(SeqCst), 7))
     }
     fn may_sleep(&self) -> bool {
         false
     }
 }
 
-static THERMOMETER: Sensor = Sensor::new(&board::TEMPERATURE_CHANNELS, Source::Chip(&Thermometer));
+static THERMOMETER: Sensor = Sensor::new(&TEMPERATURE_CHANNELS, Source::Chip(&Thermometer));
 
-/// The board's sensors take the numbers the topology's endpoints name, then
-/// the IMU's temperature, then a later sensor the next one; a thermal zone
-/// reads the temperature of the instance it names, and only a temperature.
+static ACCEL: Sensor = Sensor::new(&IMU_SHAPE, Source::Unsupported);
+static CENTI_CHANNELS: [Channel; 1] = [Channel::new(Quantity::Temperature, Unit::CentiDegC, 4, true, -4000, 12_500, 0)];
+static CENTI: Sensor = Sensor::new(&CENTI_CHANNELS, Source::Unsupported);
+
+/// The numbers of the topology's sensor endpoints are reserved before anything
+/// registers, whoever produces them: a vacant one reads nothing, an attached
+/// one is the producer's, and a thermal zone's sensors take the numbers after
+/// the block on every image. A zone reads the temperature of the instance it
+/// names, and only a temperature.
 ///
-/// **Canary:** register the power monitor before the GPS: `sensor.9` is then
-/// the GPS and the assertion on `POWER` fails. Admit every value in
-/// `temperature_mdeg` (skip the range check): the fault reads as a temperature.
+/// **Canary:** skip the reservation (`reserve_board_block` does nothing): the
+/// thermometer takes instance 0 and the assertion on the block's end fails.
+/// Admit every value in `temperature_mdeg` (skip the range check): the fault
+/// reads as a temperature.
 #[test]
-fn the_board_registers_its_sensors_in_the_topologys_order() {
-    board::register(&board::NO_POWER_SENSOR).unwrap();
-    for (n, expect) in [
-        (board::IMU, &board::IMU_SENSOR),
-        (board::ODOM, &board::ODOM_SENSOR),
-        (board::GPS, &board::GPS_SENSOR),
-        (board::POWER, &board::NO_POWER_SENSOR),
-        (board::IMU_TEMP, &board::IMU_TEMP_SENSOR),
-    ] {
-        let got = sensors::get(n).unwrap_or_else(|| panic!("sensor {n} is registered"));
-        assert!(core::ptr::eq(&*got as *const Sensor, expect as *const Sensor), "sensor {n}");
-    }
-    assert!(sensors::get(10).is_some() && sensors::get(11).is_none(), "eleven board sensors, no more");
-    assert_eq!(sensors::register_boards(&[&THERMOMETER]), Ok(11));
-    assert!(sensors::get(12).is_none());
+fn the_board_block_is_reserved_and_the_thermal_sensors_follow_it() {
+    use azos_abi::sensor_sample::instance as slot;
+    sensors::reserve_board_block().unwrap();
+    assert_eq!(sensors::reserve_board_block(), Err(super::instances::RegisterError::Full), "reserved once");
+    assert!((0..slot::COUNT as u32).all(|n| sensors::get(n).is_none()), "a number nobody produces reads nothing");
+    sensors::attach_board(slot::IMU, &ACCEL).unwrap();
+    sensors::attach_board(slot::IMU_TEMP, &CENTI).unwrap();
+    assert_eq!(sensors::attach_board(slot::IMU, &ACCEL), Err(super::instances::RegisterError::Registered));
+    assert_eq!(sensors::attach_board(slot::COUNT as u32, &ACCEL), Err(super::instances::RegisterError::Full), "past the block");
+    let got = sensors::get(slot::IMU).expect("attached");
+    assert!(core::ptr::eq(&*got as *const Sensor, &ACCEL as *const Sensor));
+    drop(got);
+    assert!(sensors::get(slot::POWER).is_none() && sensors::get(slot::ODOM).is_none());
+    let first = slot::COUNT as u32;
+    assert_eq!(sensors::register_boards(&[&THERMOMETER]), Ok(first), "after the block, with a producer or without");
+    assert!(sensors::get(first + 1).is_none());
 
     SCRIPTED.store(61_250, SeqCst);
-    assert_eq!(sensors::temperature_mdeg(11), Ok(61_250));
+    assert_eq!(sensors::temperature_mdeg(first), Ok(61_250));
     SCRIPTED.store(-12_000, SeqCst);
-    assert_eq!(sensors::temperature_mdeg(11), Ok(-12_000), "below zero is a temperature");
+    assert_eq!(sensors::temperature_mdeg(first), Ok(-12_000), "below zero is a temperature");
     SCRIPTED.store(150_000, SeqCst);
-    assert_eq!(sensors::temperature_mdeg(11), Ok(150_000), "real heat above any junction limit is read");
+    assert_eq!(sensors::temperature_mdeg(first), Ok(150_000), "real heat above any junction limit is read");
     SCRIPTED.store(i32::MAX, SeqCst);
-    assert_eq!(sensors::temperature_mdeg(11), Err(ReadError::Io), "a transport fault is not a temperature");
-    assert_eq!(sensors::temperature_mdeg(12), Err(ReadError::NotReady), "no such sensor");
-    assert_eq!(sensors::temperature_mdeg(board::IMU), Err(ReadError::Unsupported), "an accelerometer is not a thermometer");
-    assert_eq!(sensors::temperature_mdeg(board::IMU_TEMP), Err(ReadError::Unsupported), "centi-degrees are not milli-degrees");
-}
-
-/// **A rangefinder with no reading is no sample, never a zero that reads as
-/// "clear"; a reading is flagged synthetic, the driver only simulating.**
-///
-/// **Canary:** answer `front.unwrap_or(0)` for a missing front reading: the
-/// first assertion sees a sample.
-#[test]
-fn a_missing_range_is_no_sample_and_a_simulated_one_is_flagged() {
-    use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC as SYN;
-    assert_eq!(board::range_sample(None, Some(800), 5), None);
-    let s = board::range_sample(Some(1500), None, 5).unwrap();
-    assert_eq!(s.flags, SYN as u32);
-    assert_eq!(value(&board::RANGE_SENSOR.channels(), &s, 0), Some(1500));
-    assert_eq!(value(&board::RANGE_SENSOR.channels(), &s, 1), Some(0), "no right reading is 0");
-    assert_eq!(s.acq_ns, 5);
-}
-
-/// A converter with no reading publishes nothing, and the lines pack to the
-/// bits the brain's protocol names.
-///
-/// **Canary:** make `battery_sample` answer a fixed 3700 mV for `None`: the
-/// first assertion sees a sample.
-#[test]
-fn an_unread_battery_is_no_sample_and_the_lines_pack_to_their_bits() {
-    assert_eq!(board::battery_sample(None, 1), None);
-    let s = board::battery_sample(Some(7400), 1).unwrap();
-    assert_eq!(value(&board::BATTERY_SENSOR.channels(), &s, 0), Some(7400));
-    for (p, so, ir, bits) in [(true, false, false, 1), (false, true, false, 2), (false, false, true, 4), (true, true, true, 7)] {
-        let f = board::flags_sample(p, so, ir, 1);
-        assert_eq!(value(&board::FLAGS_SENSOR.channels(), &f, 0), Some(bits));
-    }
+    assert_eq!(sensors::temperature_mdeg(first), Err(ReadError::Io), "a transport fault is not a temperature");
+    assert_eq!(sensors::temperature_mdeg(first + 1), Err(ReadError::NotReady), "no such sensor");
+    assert_eq!(sensors::temperature_mdeg(slot::IMU), Err(ReadError::Unsupported), "an accelerometer is not a thermometer");
+    assert_eq!(sensors::temperature_mdeg(slot::IMU_TEMP), Err(ReadError::Unsupported), "centi-degrees are not milli-degrees");
 }
 
 static THERMOMETERS: [&Sensor; 3] = [&THERMOMETER, &THERMOMETER, &THERMOMETER];

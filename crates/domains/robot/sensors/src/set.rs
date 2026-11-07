@@ -1,31 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The sensors the board registers first. Their numbers are the topology's
-//! `sensor.<n>` endpoints (`azos_topology`'s `sensor.0` .. `sensor.9`), so the
-//! order of [`register`] is the ABI.
-//!
-//! A machine without the sensor's hardware or domain still has the instance:
-//! nothing publishes into it and a read answers `NOT_READY`, which is what the
-//! capability on it was granted for.
 
-use super::{stream, Channel, Quantity as Q, RegisterError, Sample, Sensor, Source, Stream, Unit as U};
-use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
+use azos_abi::sensor_sample::{instance, SENSOR_SAMPLE_FLAG_SYNTHETIC};
+use azos_drv_base::sensors::{
+    self, stream, Channel, Quantity as Q, Sample, Sensor, Source, Stream, Unit as U,
+};
 
-pub use azos_abi::sensor_sample::instance::{BATTERY, CAMERA, ENCODER, FLAGS, GPS, IMU, LIDAR, ODOM, POWER, RANGE};
-
-/// The IMU's die temperature, registered after the topology's ten.
-pub const IMU_TEMP: u32 = 10;
-
-/// Instances the board registers by itself: the topology's ten and the IMU's
-/// temperature.
-pub const COUNT: usize = 11;
+pub use instance::{BATTERY, CAMERA, ENCODER, FLAGS, GPS, IMU, IMU_TEMP, LIDAR, ODOM, RANGE};
 
 pub const IMU_HZ: u32 = azos_limits::SENSOR_IMU_HZ as u32;
 pub const ODOM_HZ: u32 = azos_limits::SENSOR_ODOM_HZ as u32;
 pub const SLOW_HZ: u32 = azos_limits::SENSOR_SLOW_HZ as u32;
 
 const fn ch(quantity: Q, unit: U, width: u8, signed: bool, min: i64, max: i64, rate_hz: u32) -> Channel {
-    Channel { quantity, unit, width, signed, min, max, rate_hz }
+    Channel::new(quantity, unit, width, signed, min, max, rate_hz)
 }
 
 /// Accel x y z (mg), gyro x y z (mdps), as i32 little-endian: the MPU-6050 at
@@ -66,30 +54,16 @@ static LIDAR_CHANNELS: [Channel; 1] = [ch(Q::Image, U::None, 4, false, 0, u32::M
 static FLAGS_CHANNELS: [Channel; 1] = [ch(Q::Flags, U::Bits, 2, false, 0, 7, SLOW_HZ)];
 /// A frame too big for a sample: the `Frame` interface carries it.
 static CAMERA_CHANNELS: [Channel; 1] = [ch(Q::Image, U::None, 4, false, 0, u32::MAX as i64, 0)];
-/// Voltage (mV), current (mA), charge used (mAh), percent, sag, failsafe.
-pub static POWER_CHANNELS: [Channel; 6] = [
-    ch(Q::Voltage, U::MilliVolt, 2, false, 0, u16::MAX as i64, 0),
-    ch(Q::Current, U::MilliAmp, 2, false, 0, u16::MAX as i64, 0),
-    ch(Q::Charge, U::MilliAmpHour, 4, false, 0, u32::MAX as i64, 0),
-    ch(Q::Ratio, U::Percent, 1, false, 0, 100, 0),
-    ch(Q::Flags, U::Bits, 1, false, 0, 1, 0),
-    ch(Q::Flags, U::Bits, 1, false, 0, 1, 0),
-];
-/// A temperature sensor of a thermal zone: milli-degrees Celsius. The range is
-/// what no part can exceed (a reading past it is a transport fault, never a
-/// temperature to act on), wide above any junction limit so that real heat is
-/// never mistaken for a fault.
-pub static TEMPERATURE_CHANNELS: [Channel; 1] = [ch(Q::Temperature, U::MilliDegC, 4, true, -100_000, 300_000, 0)];
 static IMU_TEMP_CHANNELS: [Channel; 1] = [ch(Q::Temperature, U::CentiDegC, 4, true, -4000, 12_500, IMU_HZ)];
 
 /// A sensor, and its stream when it has one, as the two statics they are.
 macro_rules! sensor {
-    ($(#[$m:meta])* $name:ident, $chans:expr, stream $log:ident) => {
+    ($name:ident, $chans:expr, stream $log:ident) => {
         static $log: Stream = stream();
-        $(#[$m])* pub static $name: Sensor = Sensor::new(&$chans, Source::Stream(&$log));
+        pub static $name: Sensor = Sensor::new(&$chans, Source::Stream(&$log));
     };
-    ($(#[$m:meta])* $name:ident, $chans:expr, unsupported) => {
-        $(#[$m])* pub static $name: Sensor = Sensor::new(&$chans, Source::Unsupported);
+    ($name:ident, $chans:expr, unsupported) => {
+        pub static $name: Sensor = Sensor::new(&$chans, Source::Unsupported);
     };
 }
 
@@ -102,25 +76,20 @@ sensor!(GPS_SENSOR, GPS_CHANNELS, stream GPS_LOG);
 sensor!(LIDAR_SENSOR, LIDAR_CHANNELS, unsupported);
 sensor!(FLAGS_SENSOR, FLAGS_CHANNELS, stream FLAGS_LOG);
 sensor!(CAMERA_SENSOR, CAMERA_CHANNELS, unsupported);
-sensor!(
-    /// The power monitor of a machine that has none.
-    NO_POWER_SENSOR, POWER_CHANNELS, stream NO_POWER_LOG
-);
 sensor!(IMU_TEMP_SENSOR, IMU_TEMP_CHANNELS, stream IMU_TEMP_LOG);
 
-/// Register the board's sensors in the order of the numbers above. `power` is
-/// the power monitor's (a chip read, or [`NO_POWER_SENSOR`]).
-pub fn register(power: &'static Sensor) -> Result<(), RegisterError> {
-    let all: [&'static Sensor; COUNT] = [
-        &IMU_SENSOR, &ODOM_SENSOR, &ENCODER_SENSOR, &RANGE_SENSOR, &BATTERY_SENSOR, &GPS_SENSOR,
-        &LIDAR_SENSOR, &FLAGS_SENSOR, &CAMERA_SENSOR, power, &IMU_TEMP_SENSOR,
+/// Attach the robot's sensors to their reserved instances.
+pub fn register() {
+    let all: [(u32, &'static Sensor); 10] = [
+        (IMU, &IMU_SENSOR), (ODOM, &ODOM_SENSOR), (ENCODER, &ENCODER_SENSOR), (RANGE, &RANGE_SENSOR),
+        (BATTERY, &BATTERY_SENSOR), (GPS, &GPS_SENSOR), (LIDAR, &LIDAR_SENSOR), (FLAGS, &FLAGS_SENSOR),
+        (CAMERA, &CAMERA_SENSOR), (IMU_TEMP, &IMU_TEMP_SENSOR),
     ];
-    super::register_boards(&all).map(|first| debug_assert_eq!(first, 0))
-}
-
-/// A temperature sample of a thermal sensor, milli-degrees Celsius.
-pub fn temperature_sample(mdeg: i32, acq_ns: u64) -> Sample {
-    super::pack(&TEMPERATURE_CHANNELS, &[mdeg as i64], 0, acq_ns)
+    for (n, s) in all {
+        if let Err(e) = sensors::attach_board(n, s) {
+            panic!("robot sensor {} was refused its instance: {:?}", n, e);
+        }
+    }
 }
 
 /// The rangefinders' sample: `None` when the front one has no reading (a board

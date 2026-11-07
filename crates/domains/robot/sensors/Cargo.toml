@@ -1,0 +1,12 @@
+[package]
+name = "azos_robot_sensors"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The robot extension's sensors: their channel layouts, streams and the registration into the sensor class's reserved instances."
+
+[dependencies]
+azos_abi     = { workspace = true }
+azos_limits  = { workspace = true }
+azos_drv_base = { workspace = true }

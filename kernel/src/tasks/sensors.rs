@@ -41,7 +41,7 @@ struct ImuStreams {
 
 impl ImuStreams {
     fn take() -> Self {
-        use azos_drv_base::sensors::board;
+        use azos_robot_sensors as board;
         Self {
             imu: board::IMU_SENSOR.producer().expect("IMU stream: second producer"),
             temp: board::IMU_TEMP_SENSOR.producer().expect("IMU temperature stream: second producer"),
@@ -49,7 +49,7 @@ impl ImuStreams {
     }
 
     fn publish(&mut self, d: &azos_imu::ImuData, acq: u64) {
-        use azos_drv_base::sensors::board;
+        use azos_robot_sensors as board;
         let ns = azos_drv_sys::timebase::vdso_ns(acq);
         let [ax, ay, az] = d.accel_mg.map(i64::from);
         let [gx, gy, gz] = d.gyro_mdps.map(i64::from);
@@ -126,7 +126,7 @@ fn i2c_service_kick() {
 
 /// Odometry + encoder task at Kconfig `SENSOR_ODOM_HZ`.
 pub(crate) fn odom_task(_: usize) {
-    use azos_drv_base::sensors::board;
+    use azos_robot_sensors as board;
     kprintln!("[ODOM-TASK] Started ({} Hz)", azos_limits::SENSOR_ODOM_HZ);
     let odom_interval: u64 = azos_drv_sys::timebase::freq() / azos_limits::SENSOR_ODOM_HZ as u64;
     let mut odom_tx = board::ODOM_SENSOR.producer().expect("odometry stream: second producer");
@@ -146,7 +146,7 @@ pub(crate) fn odom_task(_: usize) {
 /// Slow sensor task: rangefinder + battery + digital lines at Kconfig
 /// `SENSOR_SLOW_HZ`.
 pub(crate) fn sensor_slow_task(_: usize) {
-    use azos_drv_base::sensors::board;
+    use azos_robot_sensors as board;
     use azos_drv_sys::timebase::{now, vdso_ns};
     kprintln!("[SENSOR-SLOW] Started ({} Hz)", azos_limits::SENSOR_SLOW_HZ);
     let slow_interval: u64 = azos_drv_sys::timebase::freq() / azos_limits::SENSOR_SLOW_HZ as u64;
@@ -215,7 +215,7 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
     let mut gps_tx = CH_GPS.publisher().expect("CH_GPS: second publisher");
     let mut prox_tx = CH_PROXIMITY.publisher().expect("CH_PROXIMITY: second publisher");
 
-    let mut gps_stream = azos_drv_base::sensors::board::GPS_SENSOR.producer().expect("GPS stream: second producer");
+    let mut gps_stream = azos_robot_sensors::GPS_SENSOR.producer().expect("GPS stream: second producer");
 
     // Fusion period: the IMU's rate (Kconfig `SENSOR_IMU_HZ`).
     let ahrs_interval: u64 = azos_drv_sys::timebase::freq() / azos_limits::SENSOR_IMU_HZ as u64;
@@ -281,7 +281,7 @@ pub(crate) fn sensor_ahrs_task(_: usize) {
                 // fix's acquisition stamp): a silent receiver's last fix
                 // goes stale in the geofence instead of being re-stamped at
                 // every poll.
-                use azos_drv_base::sensors::board::GPS_SENSOR;
+                use azos_robot_sensors::GPS_SENSOR;
                 let flags = if fix.synthetic { azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC as u32 } else { 0 };
                 gps_stream.publish(GPS_SENSOR.pack(
                     &[pos.lat_deg7 as i64, pos.lon_deg7 as i64, pos.alt_mm as i64, pos.fix as i64, pos.sats as i64],

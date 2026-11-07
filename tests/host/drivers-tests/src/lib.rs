@@ -6271,8 +6271,7 @@ mod gpio_chips_tests;
 
 // ── The sensor class (front sensor-class) ───────────────────────────────────
 //
-// The class (`sensors.rs`: channels, instances, streams) and the sensors the
-// board registers first (`sensors/board.rs`), the real files
+// The class (`sensors.rs`: channels, instances, streams), the real file
 // (`sensor_class_tests.rs`).
 #[allow(dead_code, unused_imports)]
 #[path = "../../../../crates/drivers/base/src/sensors.rs"]

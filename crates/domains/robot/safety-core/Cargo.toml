@@ -54,6 +54,7 @@ azos_syscall  = { workspace = true }
 azos_actuation = { workspace = true }
 azos_ext_api = { workspace = true }
 azos_behavior = { workspace = true }
+azos_robot_sensors = { workspace = true }
 azos_robot    = { workspace = true }
 azos_config   = { workspace = true }
 azos_limits   = { workspace = true }

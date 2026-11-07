@@ -44,7 +44,7 @@ fn sleep_ms(ms: u64) {
 pub(crate) fn sensor_ts_smoke_task(_: usize) {
     use azos_behavior::sensor_bus::SENSOR_BUS;
     use azos_behavior::types::SensorState;
-    use azos_drv_base::sensors::board::IMU_SENSOR;
+    use azos_robot_sensors::IMU_SENSOR;
     use core::sync::atomic::Ordering as O;
 
     // The `imu` task's first publication, waited for on the clock (10 s).

@@ -23,7 +23,7 @@
 use super::harness::serial;
 use crate::khost::Caller;
 use crate::sensor_host::SensorServer;
-use azos_drv_base::sensors::board;
+use azos_robot_sensors as board;
 use azos_abi::cap::CapPerms;
 use azos_devif::{outcome, Sensor};
 

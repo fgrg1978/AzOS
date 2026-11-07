@@ -141,6 +141,7 @@ dependencies = [
  "azos_ipc",
  "azos_limits",
  "azos_rings",
+ "azos_robot_sensors",
  "azos_sync",
  "azos_topology",
  "wcet-macro",
@@ -729,6 +730,7 @@ dependencies = [
  "azos_rings",
  "azos_robot",
  "azos_robot_drivers",
+ "azos_robot_sensors",
  "azos_rtc",
  "azos_safety_core",
  "azos_sched",
@@ -964,6 +966,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_robot_sensors"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_drv_base",
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_rtc"
 version = "0.1.0"
 dependencies = [
@@ -990,6 +1001,7 @@ dependencies = [
  "azos_limits",
  "azos_robot",
  "azos_robot_drivers",
+ "azos_robot_sensors",
  "azos_sched",
  "azos_sync",
  "azos_syscall",

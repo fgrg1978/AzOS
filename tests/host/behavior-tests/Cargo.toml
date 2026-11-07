@@ -74,6 +74,7 @@ beh_test_drivers = { path = "shims/drivers" }
 # `azos_sync` alias this crate uses for everything else. See
 # `shims/robot`'s own doc. Motor-gate/record suite (Q1.3/Q1.4, 2026-09-25).
 azos_robot = { path = "shims/robot", package = "beh_test_robot" }
+azos_robot_sensors = { path = "shims/robot_sensors", package = "beh_test_robot_sensors" }
 azos_limits = { path = "shims/limits", package = "beh_test_limits" }
 # The flight recorder's `LogStorage` seam is a trait `logger.rs` defines
 # itself now (crates/domains/robot/behavior no longer depends on azos_fs at all -- see

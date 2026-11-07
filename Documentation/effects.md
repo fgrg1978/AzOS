@@ -98,8 +98,10 @@ shared by every domain with an actuator.
   the robot extension a `Motor` op answers `UNSUPPORTED` and an io_ring motor
   entry `-ENODEV`, before the effect gate or the motor layer is reached.
 - A manifest also declares boot hooks at named phases (`ext_api::BootHook`):
-  after CONFIG.INI is loaded, at the effects phase, and with the system
-  watchdog's task. The GPIO kill switch is a base provider of the board's I/O
+  after CONFIG.INI is loaded, at the effects phase, with the board's devices
+  (the extension attaches what it produces to the instance numbers the base
+  reserves: the robot's ten sensors), and with the system watchdog's task.
+  The GPIO kill switch is a base provider of the board's I/O
   (`crates/drivers/kill-switch`, Kconfig `BOARD_IO`, which the robot's kernel
   feature turns on): its manifest has no effect of its own, a hook that
   reports the configured pin and a hook that creates its task, whose press

@@ -11,12 +11,15 @@
 //! **Canary**: the kernel feature `sensor-drop-canary` (the producer drops
 //! every 10th sample): delivered falls short of the ticks, `not ok`.
 
-use azos_drv_base::sensors::{board, stream, value, Sensor, Source, Stream};
+use azos_drv_base::sensors::{stream, value, Channel, Quantity, Sensor, Source, Stream, Unit};
 use azos_drv_sys::timebase::{now, vdso_ns, TIMER_FREQ};
 
-/// A sensor of the IMU's shape that only this test feeds.
+/// A sensor of an IMU's shape (six axes at its rate) that only this test feeds.
+static SHAPE: [Channel; 6] =
+    [Channel::new(Quantity::Acceleration, Unit::MilliG, 4, true, -2000, 2000, azos_limits::SENSOR_IMU_HZ as u32); 6];
+
 static VIRTUAL_LOG: Stream = stream();
-static VIRTUAL_IMU: Sensor = Sensor::new(board::IMU_SENSOR.channels(), Source::Stream(&VIRTUAL_LOG));
+static VIRTUAL_IMU: Sensor = Sensor::new(&SHAPE, Source::Stream(&VIRTUAL_LOG));
 
 /// Acquisitions to publish: two seconds at the configured rate, and at least
 /// twenty (so the producer's every-10th drop shows at the lowest rate), well

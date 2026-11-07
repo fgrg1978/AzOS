@@ -17,7 +17,7 @@
 
 /// The contract's level. A change to [`Provider`] or [`Manifest`] that an
 /// extension built against the old shape could not meet raises it.
-pub const API_LEVEL: u16 = 2;
+pub const API_LEVEL: u16 = 3;
 
 /// What an extension owns of the machine's effects, as the actuation core
 /// drives it.
@@ -56,6 +56,10 @@ pub enum BootHook {
     /// the gate reads as installed: wire the provider's effect kinds into the
     /// effect interface (the write-ahead gate, the safe-state drivers).
     Effects(fn()),
+    /// With the board's hardware, before any task: attach the extension's
+    /// devices to the instance numbers the base reserves for them (the sensor
+    /// class's), so the base names none of them.
+    Devices(fn()),
     /// With the system watchdog, before the scheduler starts: create the
     /// extension's kernel tasks.
     Tasks(fn(EnableLine)),
