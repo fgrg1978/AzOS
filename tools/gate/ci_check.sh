@@ -6456,6 +6456,49 @@ sensor_ts_captest_row() { # sensor_ts_captest_row <label> <log>
     ok; grep -a "CAPTEST\] sensorts: IMU" "$log" | tr -d '\r' | sed 's|^|      |'
 }
 
+# The frame class, both ISAs: read from the same captest boot. captest opens the
+# camera's `frame.0`, copies a frame into a buffer it made, and prints its
+# summary line only when every check held: the frame is a JPEG (SOI to EOI) of
+# the format the reply says, acquired before the call on the vDSO clock, the
+# next one is a later frame, a buffer below the pool's is refused, and `close`
+# answers. A frame reaches ring 3 as the producer wrote it. Canary: the
+# runtime canary `frame-blank` (the capture task commits zeros) fails
+# `frame is a JPEG` and prints no summary (rows `... frame canary`).
+frame_class_captest_row() { # frame_class_captest_row <label> <log>
+    local label="$1" log="$2"
+    printf "  %-26s" "${label}..."
+    if [ ! -s "$log" ]; then
+        bad; echo "      no captest log to read (the captest row did not keep one)"; return
+    fi
+    if grep -aqE "CAPTEST\]  FAIL  (frame|the next frame)" "$log"; then
+        bad; echo "      a frame check failed:"
+        grep -aE "CAPTEST\]  FAIL  (frame|the next frame)" "$log" | tr -d '\r' | sed 's|^|        |'
+        return
+    fi
+    if ! grep -aqF "[CAPTEST] frame: a camera frame reached ring 3 in a buffer of its own, a JPEG acquired before the call, the next one later" "$log"; then
+        bad; echo "      captest never printed the frame summary:"
+        grep -a "CAPTEST\] frame\|frame_next" "$log" | tr -d '\r' | sed 's|^|        |'
+        return
+    fi
+    ok
+}
+
+# The canary of the row above: the same captest boot with `canary=frame-blank`
+# must fail on the frame's bytes and print no summary line. <log> is a boot's.
+frame_class_canary_verdict() { # frame_class_canary_verdict <label> <log>
+    local label="$1" log="$2"
+    printf "  %-26s" "${label}..."
+    if grep -aqF "[CAPTEST] frame: a camera frame reached ring 3" "$log"; then
+        bad; echo "      the canary kernel still printed the frame summary: the row does not discriminate"
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "CAPTEST]  FAIL  frame is a JPEG" "$log"; then
+        bad; echo "      the canary kernel did not fail on the frame's bytes"
+        echo "      log kept: $log"; return
+    fi
+    ok; echo "      canary failed as it must: the frame that reached ring 3 was not the producer's"; rm -f "$log"
+}
+
 # Wave 10 IRQ5, both ISAs: captest binds a line the capability range admits
 # and QEMU `virt`'s controller does not implement (riscv64 source 100: PLIC
 # 1..=95, APLIC 1..=96; aarch64 SPI 1000: past GICD_TYPER.ITLinesNumber) with
@@ -6534,12 +6577,40 @@ aarch64_ring3_irq_row() {
 aarch64_captest_group() {
     aarch64_captest_row
     sensor_ts_captest_row "aarch64 sensors: stamped read" "$CI_LOG_DIR/aarch64-captest.log"
+    frame_class_captest_row "aarch64 frame reaches ring 3" "$CI_LOG_DIR/aarch64-captest.log"
     aarch64_ring3_irq_row
     # The rows after this one boot the plain kernel, not the one with captest's
     # row (it needs four CPUs). A parallel job has its own copy of the kernel.
     [ -n "$PAR_JOB" ] || a64_kbuild "qemu"
 }
 par "aarch64 captest" aarch64_captest_group
+
+# The same canary on aarch64: the captest boot with `canary=frame-blank`.
+aarch64_frame_canary_group() {
+    local log="$CI_LOG_DIR/aarch64-frame-canary.log" img="$CI_LOG_DIR/kernel-aarch64-frame-canary.img" disk="$CI_LOG_DIR/disk-aarch64-frame-canary.img"
+    rm -f "$log"
+    printf "  %-26s" "aarch64 frame canary boot..."
+    if ! a64_kbuild "qemu,captest-row" || ! make $AZOS_OUT/build/disk-aarch64-captest.img >/dev/null 2>&1; then
+        bad; echo "      the aarch64 captest kernel or disk did not build"; return
+    fi
+    cp "$A64_IMG" "$img"; cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$img" \
+        -append canary=frame-blank -global virtio-mmio.force-legacy=false \
+        -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 90 ]; do
+        grep -aqF "CAPTEST]  FAIL  frame is a JPEG" "$log" 2>/dev/null && break
+        grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$img" "$disk"
+    ok
+    frame_class_canary_verdict "aarch64 frame reaches ring 3 canary" "$log"
+    [ -n "$PAR_JOB" ] || a64_kbuild "qemu"
+}
+par "aarch64 frame canary" aarch64_frame_canary_group
 
 # aarch64 DRV1 (wave 9): the buzzer and INA219 ring-3 drivers on this ISA.
 # The riscv64 rows `drivers: buzzer` / `drivers: INA219 power monitor` state
@@ -12073,6 +12144,22 @@ host_generic_row() { # <label> <test fn>
 host_job host_generic_row "sensor: vdso bind, no robot domain" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain
 host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,board-io,vdso-bind-canary \
     a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
+# The frame class (cam-ring-tests, the pool): a reader's view of a frame
+# writes into it; back-pressure overwrites a frame a reader is owed; overwrite-
+# oldest refuses while a reader lags; a dropped frame reference is never given
+# back; a detached reader still holds the producer back. Each makes the row
+# that guards it fail alone.
+host_job host_canary_row "frame: reader writes canary" cam-ring-tests canary-reader-writes a_reader_cannot_change_a_frame_another_reader_will_read
+host_job host_canary_row "frame: backpressure drops canary" cam-ring-tests canary-backpressure-drops backpressure_keeps_the_frame_a_reader_is_owed
+host_job host_canary_row "frame: overwrite refuses canary" cam-ring-tests canary-overwrite-refuses a_slow_reader_never_blocks_the_producer
+host_job host_canary_row "frame: reference leaks canary" cam-ring-tests canary-reference-leaks one_commit_serves_every_reader_and_the_references_end_with_the_reads
+host_job host_canary_row "frame: detach keeps canary" cam-ring-tests canary-detach-keeps a_detached_reader_holds_nothing_back
+# The Frame interface the kernel hosts (syscall-tests, frame_guards).
+host_job host_canary_row "frame: copy skip canary" syscall-tests frame-copy-skip-canary the_frame_a_producer_committed_is_the_frame_a_task_reads
+host_job host_canary_row "frame: late check canary" syscall-tests frame-check-late-canary a_buffer_that_cannot_take_the_frame_takes_no_frame
+host_job host_canary_row "frame: slot per call canary" syscall-tests frame-slot-per-call-canary a_reader_slot_is_a_tasks_and_a_full_table_is_busy
+host_job host_canary_row "frame: exit keeps canary" syscall-tests frame-exit-keeps-canary a_task_that_exits_reads_no_more
+host_job host_canary_row "frame: task writes canary" syscall-tests frame-reader-writes-canary what_a_task_writes_to_its_buffer_never_reaches_another_reader
 host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mismatch_is_refused
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused
 host_job host_canary_row "tls: rsa key canary" tls-tests canary-rsa-keys the_server_refuses_an_rsa_private_key
@@ -15576,9 +15663,21 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         -drive file=$AZOS_OUT/build/disk-captest.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
     sensor_ts_captest_row "sensors: stamped read" "$CI_LOG_DIR/userspace-capabilities.log"
+    frame_class_captest_row "frame reaches ring 3" "$CI_LOG_DIR/userspace-capabilities.log"
     riscv64_ring3_irq_row
     }
     par "userspace: capabilities" rv_captest_group
+
+    # The frame canary, riscv64: the captest boot again with the runtime canary
+    # armed (`canary=frame-blank`), on the same kernel and a disk of its own.
+    rv_frame_canary_group() {
+        QEMU_KEEP_LOG=1 QEMU_FAIL_RE='\[FATAL\]' qemu_run "userspace: frame canary boot" "CAPTEST\]  FAIL  frame is a JPEG" 180 \
+            -smp 4 -global virtio-mmio.force-legacy=false -append canary=frame-blank \
+            -drive file=$AZOS_OUT/build/disk-captest.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+        frame_class_canary_verdict "frame reaches ring 3 canary" "$CI_LOG_DIR/userspace-frame-canary-boot.log"
+    }
+    par "userspace: frame canary" rv_frame_canary_group
 
     # The same captest boot on `virt,aia=aplic-imsic` (wave 10 IRQ5): APLIC in
     # MSI mode + per-hart IMSIC files, no PLIC. The route is the APLIC
