@@ -152,7 +152,7 @@ impl<const N: usize, const SZ: usize, const C: usize> FrameRef<'_, N, SZ, C> {
         #[cfg(feature = "canary-reader-writes")]
         if len > 0 {
             // SAFETY: the canary is the reader writing a frame it holds.
-            unsafe { base.write_volatile(0xEE) };
+            unsafe { base.write(0xEE) };
         }
         // SAFETY: the buffer is referenced and holds committed frame
         // `self.seq`; the producer never writes a referenced buffer (module

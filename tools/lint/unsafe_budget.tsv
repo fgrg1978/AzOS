@@ -38,7 +38,7 @@ crates/core/image	0	0	0	0	1	0
 crates/core/inspect	1	1	0	0	0	3
 crates/core/ipc	36	9	6	0	0	51
 crates/core/ktest	3	0	0	0	0	66
-crates/core/libsys	95	10	2	0	0	94
+crates/core/libsys	96	10	2	0	0	94
 crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	9
 crates/core/linux-abi	0	0	0	0	1	0
@@ -53,7 +53,7 @@ crates/core/rings	45	14	8	0	0	99
 crates/core/sched	421	160	14	3	0	67
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	47	9	20	0	0	82
-crates/core/syscall	36	2	1	0	0	37
+crates/core/syscall	37	2	1	0	0	37
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	26	0	1	0	0	30
 crates/core/wcet-macro	0	0	0	0	1	-
@@ -72,7 +72,7 @@ crates/drivers/base	0	0	0	0	1	0
 crates/drivers/block	84	6	1	0	0	91
 crates/drivers/bus	11	1	1	0	0	60
 crates/drivers/buzzer	0	0	0	0	1	0
-crates/drivers/cam-ring	7	0	3	0	0	80
+crates/drivers/cam-ring	5	0	1	0	0	75
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	11	0	0	0	0	100
 crates/drivers/dma	22	12	2	0	0	42

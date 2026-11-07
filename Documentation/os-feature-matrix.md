@@ -1027,8 +1027,6 @@ Options and choices: 848. Defconfigs: 27.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `ADS1115_PIPELINE` | ADS1115 ADC: pipelined battery reading (no conversion polling) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `BOARD_IO` | Board I/O: sensors, PWM, motor PID loop, buzzer, kill switch | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| `CAMERA_RING_BACKPRESSURE` | Back-pressure (capture waits for the slowest consumer) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `CAMERA_RING_OVERWRITE_OLDEST` | Overwrite the oldest frame (the latest frame wins) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `DRV_AHCI` | SATA disk over PCIe (native AHCI 1.3 host) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n |
 | `DRV_BUZZER_PLACEMENT_KERNEL` | kernel | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `DRV_BUZZER_PLACEMENT_RING3` | ring3 | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
@@ -1045,6 +1043,8 @@ Options and choices: 848. Defconfigs: 27.
 | `DRV_VIRTIO_INPUT` | virtio-input keyboards and mice (QEMU) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `DRV_VIRTIO_SND` | virtio-sound audio device (QEMU) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `E1000E_EXT_DESC` | e1000e extended descriptors (RFCTL.EXTEN receive, DEXT transmit) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
+| `FRAME_POOL_BACKPRESSURE` | Back-pressure (capture waits for the slowest reader) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `FRAME_POOL_OVERWRITE_OLDEST` | Overwrite the oldest frame (the latest frame wins) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `GPIO_SOFT_EXPANDER` | GPIO: a soft 16-line expander as a second controller (test) | n | n | y | y | y | y | y | y | y | y | y | n | y | y | y | n | n | y | y | n | n | y | y | y | y | y | n |
 | `HWBUS_AUTOBIND_AUTO` | Auto: bind every device a driver table matches | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | n | n | n | n | n | n | n | n | n | n | n | n |
 | `HWBUS_AUTOBIND_TOPOLOGY` | Topology only: bind what the signed topology admits | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
@@ -1054,9 +1054,9 @@ Options and choices: 848. Defconfigs: 27.
 | `WDT_BCM2835_PM_ARM` | Raspberry Pi PM block: arm it as the hardware watchdog | n | n | y | y | y | n | n | n | n | n | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
 | `WDT_SBSA` | Arm SBSA Generic Watchdog | n | n | y | y | y | n | n | n | n | n | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
 | `WDT_SP5100_TCO` | AMD FCH watchdog (SP5100 TCO) on Zen chipsets | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n |
-| choice `CAMERA_RING_POLICY` | Camera frame ring: when a consumer lags | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST |
 | choice `DRV_BUZZER_PLACEMENT` | Piezo buzzer: starting placement | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 |
 | choice `DRV_INA219_PLACEMENT` | INA219 power monitor: placement | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 |
+| choice `FRAME_POOL_POLICY` | Frame class: when a reader lags | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST |
 | choice `HWBUS_AUTOBIND` | Hardware bus: which detected devices get a driver (HWBUS_AUTOBIND) | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY |
 
 ### Drivers / DMA and IOMMU
