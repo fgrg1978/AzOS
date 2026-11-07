@@ -72,7 +72,7 @@ crates/drivers/base	0	0	0	0	1	0
 crates/drivers/block	84	6	1	0	0	91
 crates/drivers/bus	11	1	1	0	0	60
 crates/drivers/buzzer	0	0	0	0	1	0
-crates/drivers/cam-ring	5	0	1	0	0	75
+crates/drivers/cam-ring	6	0	1	0	0	79
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	11	0	0	0	0	100
 crates/drivers/dma	22	12	2	0	0	42

@@ -598,7 +598,7 @@ The index lists every declared option: 1283.
 | `FP_RVV` | `config/arch/Kconfig.isa` | RISC-V V extension (32 × vlen-bit + control regs) |
 | `FP_SVE` | `config/arch/Kconfig.isa` | Aarch64 SVE (variable-length, up to 2048-bit per reg) |
 | `FRAME_BYTES` | `config/subsys/Kconfig.drivers` | Frame class: bytes of a frame buffer |
-| `FRAME_POOL_BACKPRESSURE` | `config/subsys/Kconfig.drivers` | Back-pressure (capture waits for the slowest reader) |
+| `FRAME_POOL_BACKPRESSURE` | `config/subsys/Kconfig.drivers` | Back-pressure (capture waits for the brain link's sender) |
 | `FRAME_POOL_OVERWRITE_OLDEST` | `config/subsys/Kconfig.drivers` | Overwrite the oldest frame (the latest frame wins) |
 | `FRAME_POOL_SLOTS` | `config/subsys/Kconfig.drivers` | Frame class: buffers in the pool |
 | `FRAME_READERS` | `config/subsys/Kconfig.drivers` | Frame class: most ring-3 readers at once |

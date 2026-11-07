@@ -1043,8 +1043,6 @@ Options and choices: 848. Defconfigs: 27.
 | `DRV_VIRTIO_INPUT` | virtio-input keyboards and mice (QEMU) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `DRV_VIRTIO_SND` | virtio-sound audio device (QEMU) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `E1000E_EXT_DESC` | e1000e extended descriptors (RFCTL.EXTEN receive, DEXT transmit) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `FRAME_POOL_BACKPRESSURE` | Back-pressure (capture waits for the slowest reader) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `FRAME_POOL_OVERWRITE_OLDEST` | Overwrite the oldest frame (the latest frame wins) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `GPIO_SOFT_EXPANDER` | GPIO: a soft 16-line expander as a second controller (test) | n | n | y | y | y | y | y | y | y | y | y | n | y | y | y | n | n | y | y | n | n | y | y | y | y | y | n |
 | `HWBUS_AUTOBIND_AUTO` | Auto: bind every device a driver table matches | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | n | n | n | n | n | n | n | n | n | n | n | n |
 | `HWBUS_AUTOBIND_TOPOLOGY` | Topology only: bind what the signed topology admits | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
@@ -1056,7 +1054,6 @@ Options and choices: 848. Defconfigs: 27.
 | `WDT_SP5100_TCO` | AMD FCH watchdog (SP5100 TCO) on Zen chipsets | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n |
 | choice `DRV_BUZZER_PLACEMENT` | Piezo buzzer: starting placement | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 |
 | choice `DRV_INA219_PLACEMENT` | INA219 power monitor: placement | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 | RING3 |
-| choice `FRAME_POOL_POLICY` | Frame class: when a reader lags | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST |
 | choice `HWBUS_AUTOBIND` | Hardware bus: which detected devices get a driver (HWBUS_AUTOBIND) | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | AUTO | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY | TOPOLOGY |
 
 ### Drivers / DMA and IOMMU
@@ -1073,6 +1070,14 @@ Options and choices: 848. Defconfigs: 27.
 | `IOMMU_SMMUV3` | Arm SMMUv3 (QEMU virt iommu=smmuv3): confine PCI DMA | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | n |
 | `IOMMU_VTD` | Intel VT-d (QEMU q35 intel-iommu): confine PCI DMA | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n |
 | choice | DMA domain of a device with no IOMMU in front of it | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT | SOFT |
+
+### Drivers / Frame class (the camera's frames)
+
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-aarch64-dev+qemu+reclaim | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+reclaim | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-sbc-x86_64-dev+qemu+reclaim | generic-server-riscv64+board-generic | microvm-sbc-aarch64-dev+qemu | microvm-sbc-riscv64-dev+qemu | microvm-sbc-x86_64-dev+qemu | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `FRAME_POOL_BACKPRESSURE` | Back-pressure (capture waits for the brain link's sender) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `FRAME_POOL_OVERWRITE_OLDEST` | Overwrite the oldest frame (the latest frame wins) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| choice `FRAME_POOL_POLICY` | Frame class: when the brain link's sender lags | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST |
 
 ### Drivers / I2C bus transactions
 
