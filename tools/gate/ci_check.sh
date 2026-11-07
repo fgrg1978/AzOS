@@ -27537,7 +27537,10 @@ input watch -n 100 &
         case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/${GATE_DEFC_X86}.config" ;; esac
         mkdir -p "$dir"; cfg="$dir/con.config"; tmp="$(mktemp -d)"
         cp "$base" "$tmp/c.config"
-        [ "$isa" = x86 ] && set -- CONFIG_LINUX_RUNTIME=y "$@"
+        # CON_STRIP_RE: lines of the base dropped first, so what the lines given
+        # leave unsaid is derived by Kconfig (the USERLAND rows name one choice).
+        if [ -n "${CON_STRIP_RE:-}" ]; then grep -Ev -- "$CON_STRIP_RE" "$tmp/c.config" >"$tmp/d"; mv "$tmp/d" "$tmp/c.config"; fi
+        if [ "$isa" = x86 ]; then case " $* " in *" CONFIG_USERLAND_NATIVE=y "*) ;; *) set -- CONFIG_LINUX_RUNTIME=y "$@" ;; esac; fi
         for l in "$@"; do
             k="${l%%=*}"
             grep -v -e "^$k=" -e "^# $k is not set" "$tmp/c.config" >"$tmp/d"; mv "$tmp/d" "$tmp/c.config"
@@ -27691,6 +27694,79 @@ x=con; echo bb\$x-ok
                 "[compmgr] start BUSYBOX.ELF" "bbcon-ok"
         fi
     done
+    # ── userland: native, linux, both (Kconfig USERLAND, three ISAs) ───────
+    #
+    # NOT RUN YET (arm phase): written without a QEMU run; `CI_USERLAND=1`
+    # includes the rows, and until they have passed once on arm they are not
+    # part of the gate. Each kernel is the primary column's config with the
+    # USERLAND group (CON_STRIP_RE) dropped and ONE choice named: LINUX_ABI,
+    # USERSPACE_GPL, BUSYBOX and the console program are Kconfig's derivation,
+    # not lines here. All boot the BusyBox volume (it also carries SH.ELF).
+    #   native  the native session is the console, and `busybox` is refused:
+    #           the topology has no BUSYBOX.ELF row without LINUX_ABI.
+    #   both    the native session is the console; `busybox sh -c` runs.
+    #   linux   rv, arm: BusyBox sh is the console program, SH.ELF does not
+    #           start. x86_64: the ring-3 runtime gives a hosted task no console
+    #           input, so the console stays the native shell and BusyBox runs
+    #           from it.
+    # Every choice keeps the recovery console: the recovery prompt is forbidden
+    # in each row because the console program took the console. Canaries: the
+    # native row on the `both` kernel (`busybox` runs: forbidden line printed)
+    # and the linux row (rv, arm) on the `both` kernel (SH.ELF starts, BusyBox
+    # does not).
+    ul_strip='^(CONFIG_(USERLAND_[A-Z]+|LINUX_ABI|LINUX_RUNTIME|BUSYBOX|USERSPACE_GPL|CONSOLE_PROGRAM_[A-Z_]+|CONSOLE_PATH|CONSOLE_ARGS)=|# CONFIG_(USERLAND_[A-Z]+|LINUX_ABI|LINUX_RUNTIME|BUSYBOX|USERSPACE_GPL|CONSOLE_PROGRAM_[A-Z_]+) is not set)'
+    ul_native_script="#wait start SH.ELF tid=
+#sleep 3
+busybox sh -c 'x=nat; echo bb-\$x-ok'
+echo after-nat \$?
+#wait after-nat"
+    ul_box_script="#wait start SH.ELF tid=
+#sleep 3
+busybox sh -c 'x=box; echo bb-\$x-ok'
+#wait bb-box-ok"
+    if [ "${CI_USERLAND:-0}" = 1 ]; then
+        for ul_isa in rv arm x86; do
+            ul_keys=("userland: native ($ul_isa)" "userland: native canary, busybox runs ($ul_isa)" "userland: both ($ul_isa)" "userland: linux ($ul_isa)")
+            [ "$ul_isa" != x86 ] && ul_keys+=("userland: linux canary, native console starts ($ul_isa)")
+            if ! ci_wants "${ul_keys[@]}"; then ci_skip_rows "${ul_keys[@]}"; continue; fi
+            if ! lx_busybox_ready || { [ "$ul_isa" = x86 ] && [ "${LX_BUSYBOX_X86:-}" != yes ]; }; then
+                for ul_key in "${ul_keys[@]}"; do
+                    printf "  %-26s%s\n" "$ul_key..." "SKIP (no current BusyBox cache and no zig or no fetched tree to build it: make busybox, tools/build/third_party_fetch.sh busybox)"
+                done
+                continue
+            fi
+            case "$ul_isa" in
+                rv) ul_disk=$AZOS_OUT/build/disk-busybox.img ;;
+                arm) ul_disk=$AZOS_OUT/build/disk-aarch64-busybox.img ;;
+                *) ul_disk=$AZOS_OUT/build/disk-x86_64-busybox.img ;;
+            esac
+            ul_kn=""; ul_kb=""; ul_kl=""
+            ul_kn="$(CON_STRIP_RE="$ul_strip" con_kernel "$ul_isa" ul-native qemu CONFIG_USERLAND_NATIVE=y)"
+            ul_kb="$(CON_STRIP_RE="$ul_strip" con_kernel "$ul_isa" ul-both qemu CONFIG_USERLAND_BOTH=y)"
+            ul_kl="$(CON_STRIP_RE="$ul_strip" con_kernel "$ul_isa" ul-linux qemu CONFIG_USERLAND_LINUX=y)"
+            CON_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP|bb-nat-ok|\[compmgr\] start BUSYBOX.ELF" \
+                par_row con_row "userland: native ($ul_isa)" "$ul_isa" "$ul_kn" "$ul_disk" "" PASS "$ul_native_script" 120 \
+                "[compmgr] start SH.ELF tid=" "after-nat"
+            CON_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP|bb-nat-ok|\[compmgr\] start BUSYBOX.ELF" \
+                par_row con_row "userland: native canary, busybox runs ($ul_isa)" "$ul_isa" "$ul_kb" "$ul_disk" "" FAIL "$ul_native_script" 120 \
+                "[compmgr] start SH.ELF tid=" "after-nat"
+            CON_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP" \
+                par_row con_row "userland: both ($ul_isa)" "$ul_isa" "$ul_kb" "$ul_disk" "" PASS "$ul_box_script" 120 \
+                "[compmgr] start SH.ELF tid=" "bb-box-ok"
+            if [ "$ul_isa" = x86 ]; then
+                CON_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP" \
+                    par_row con_row "userland: linux ($ul_isa)" "$ul_isa" "$ul_kl" "$ul_disk" "" PASS "$ul_box_script" 120 \
+                    "[compmgr] start SH.ELF tid=" "bb-box-ok"
+            else
+                CON_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP|\[compmgr\] start SH.ELF" \
+                    par_row con_row "userland: linux ($ul_isa)" "$ul_isa" "$ul_kl" "$ul_disk" "" PASS "$con_bb_script" 150 \
+                    "[compmgr] start BUSYBOX.ELF" "[CONSOLE] user shell tid=" "bbcon-ok"
+                CON_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP|\[compmgr\] start SH.ELF" \
+                    par_row con_row "userland: linux canary, native console starts ($ul_isa)" "$ul_isa" "$ul_kb" "$ul_disk" "" FAIL "$con_bb_script" 150 \
+                    "[compmgr] start BUSYBOX.ELF" "[CONSOLE] user shell tid=" "bbcon-ok"
+            fi
+        done
+    fi
     # CONSOLE_LOGIN needs the native shell as the console program: `azos_limits`
     # refuses the others (build.rs), instead of building a login nothing asks for.
     # Canary: the refusal compiled out, the two refused cases build.
