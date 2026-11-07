@@ -337,10 +337,9 @@ pub fn create(root: usize) -> Option<SpaceRef> {
 }
 
 /// End the space `r`: its records go (`pager::forget`: mappings and their
-/// anonymous objects, reservations, pool pages, the page cache's counts), then
-/// the object, then its
-/// page tables, sparing the leaf frames in `[skip_lo, skip_hi)`
-/// ([`crate::vmm::destroy_user_pagetable_skip_range`]). Returns that call's
+/// anonymous objects, reservations, pool pages, the page cache's counts, the
+/// leaves of every mapping of frames another owner holds), then the object, then
+/// its page tables ([`crate::vmm::destroy_user_pagetable`]). Returns that call's
 /// answer: the mask of harts still on the root, the tables then leaked.
 ///
 /// Canary `as-stale-root-canary` (host suites), runtime canary `as-stale-root`
@@ -348,7 +347,7 @@ pub fn create(root: usize) -> Option<SpaceRef> {
 /// from the object starts with them.
 ///
 /// The caller holds the only live reference: no task runs on the space.
-pub fn destroy(r: SpaceRef, skip_lo: usize, skip_hi: usize) -> usize {
+pub fn destroy(r: SpaceRef) -> usize {
     if !cfg!(feature = "as-stale-root-canary") && !CANARY_STALE_ROOT.load(Ordering::Relaxed) {
         crate::pager::forget(r);
     }
@@ -360,5 +359,5 @@ pub fn destroy(r: SpaceRef, skip_lo: usize, skip_hi: usize) -> usize {
     }
     // SAFETY: the object came from this cache and is no space any more.
     unsafe { SPACES.free(a as *const AddressSpace as *mut AddressSpace) };
-    crate::vmm::destroy_user_pagetable_skip_range(r.root(), skip_lo, skip_hi)
+    crate::vmm::destroy_user_pagetable(r.root())
 }

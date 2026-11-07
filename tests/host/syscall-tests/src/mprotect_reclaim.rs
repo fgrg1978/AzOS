@@ -121,7 +121,7 @@ fn module_map_x_waits_out_a_store_in_flight() {
     azos_sched::shim_serial_share(true);
     std::thread::scope(|sc| {
         let call = sc.spawn(|| {
-            let r = azos_mm::vmm::set_user_range_exec(pt, va, va + PAGE_SIZE, 0, 0);
+            let r = azos_mm::vmm::set_user_range_exec(pt, va, va + PAGE_SIZE);
             done.store(true, Ordering::SeqCst);
             r
         });

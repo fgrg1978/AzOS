@@ -130,8 +130,9 @@ const _: () = assert!(FOREIGN_FRAME_SIZE == 34 * 8);
 /// Where a hosted process's runtime is linked and mapped: the page after the
 /// vDSO's two, in the vDSO's 2 MiB slot (which every ISA keeps for ring-3
 /// fixtures). `userspace/services/lxrt/build.rs` links the runtime here
-/// (`tests/host/linux-rt-tests`). The window is clear of the shm/MMIO window
-/// on every board (`azos_sched::process`'s `USER_MMIO_BASE` starts at or above
+/// (`tests/host/linux-rt-tests`). The window is clear of the mmap area and of
+/// the locked rows' regions on every board (`azos_sched::process`'s
+/// `USER_MMAP_CEILING` is below [`RUNTIME_BASE`], `LOCKED_ARENA_VA` at or above
 /// [`RUNTIME_LIMIT`]), so a fork copies it.
 pub const RUNTIME_BASE: usize = crate::vdso::VDSO_USER_BASE + 0x1_0000;
 /// The end of the runtime's window (1 MiB from the vDSO).

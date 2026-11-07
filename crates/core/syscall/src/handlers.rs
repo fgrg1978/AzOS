@@ -3284,14 +3284,13 @@ pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> 
         let base = azos_sched::update_user_brk(0) as usize;
         if base < azos_mm::vmm::USER_GUARD_LIMIT { return Err(-1); }
         let aligned = base.saturating_add(page - 1) & !(page - 1);
-        // The mapping must end at or below the shm/MMIO window (and so
+        // The mapping must end at or below the mmap area's ceiling (and so
         // strictly below the user VA ceiling: above it the "user" page table is
-        // the kernel's): `shm_map_user` and `mmio_map_user` hand out addresses
-        // there, and `sys_munmap` and teardown never free a frame there, so an
-        // anonymous page placed in it would never be freed.
+        // the kernel's): the area is where shared objects and physical ranges
+        // are placed, and the vacancy check steps around them.
         let at_break = aligned
             .checked_add(span)
-            .is_some_and(|end| end <= azos_sched::user_shm_window().0 && azos_mm::vmm::user_range_vacant(user_pt, aligned, end));
+            .is_some_and(|end| end <= azos_sched::user_mmap_area().1 && azos_mm::vmm::user_range_vacant(user_pt, aligned, end));
         if at_break {
             return Ok(aligned);
         }
@@ -3572,7 +3571,7 @@ fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
 ///   Copy-on-write pages keep their sharing (`vmm::protect_user_range`).
 ///
 /// `-EINVAL` for a misaligned or empty range or unknown bits, `-ENOMEM` for a
-/// page past those or one the kernel owns (shm/MMIO window, a kernel
+/// page past those or one the kernel owns (a physical range, a kernel
 /// mapping, a locked region). Nothing changes on a refusal.
 pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     use azos_abi::error::Errno;
@@ -3590,12 +3589,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     let user_pt = space.root();
     let start = addr as usize;
     let rounded = (length as usize).saturating_add(page_size - 1) & !(page_size - 1);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let end = match start.checked_add(rounded) {
-        Some(e) if start >= azos_mm::vmm::USER_GUARD_LIMIT && e <= shm_lo => e,
+        Some(e) if start >= azos_mm::vmm::USER_GUARD_LIMIT && e <= azos_sched::user_mmap_area().1 => e,
         _ => return Errno::ENOMEM.to_syscall_ret(),
     };
-    let _ = shm_hi;
     // A file mapping keeps the permission it was made with: a shared one's
     // dirty record in the page cache is made from it (`crate::file_map`). A
     // shared object's mapping changes it through `SYS_MO_MAP`'s protect form,
@@ -3646,8 +3643,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
             Ok(n) => n as u32,
             Err(_) => return Errno::ENOMEM.to_syscall_ret(),
         };
-        let freed = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end, shm_lo, shm_hi)
-            .saturating_add(reserved);
+        let freed = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end).saturating_add(reserved);
         azos_sched::mm_discharge(freed);
         return 0;
     }
@@ -3778,14 +3774,11 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // worse, because it looks like it is still running.
     //
     // The rule for "the task's own frame" is `vmm`'s, shared with the exit
-    // path rather than restated here: a `USER` leaf, outside the shared-memory
-    // window, not the vDSO page, and with no other COW holder. The window
-    // bounds come from `sched`, where they are defined.
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    // path rather than restated here: a `USER` leaf that no record of another
+    // owner's frames covers (refused above), with no other COW holder.
     // Owner decision 102 — discharge exactly what was FREED, not what was
     // asked for. `unmap_user_range_and_free` counts exactly that: nothing for a VA
-    // that held nothing of ours, a shared-memory page, the vDSO, or a frame
-    // another COW holder still owns. Discharging the requested length instead
+    // that held nothing of ours, or a frame another COW holder still owns. Discharging the requested length instead
     // would credit a task for frames it never had, which is the direction that
     // silently disables the budget.
     //
@@ -3822,7 +3815,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
         Ok(n) => n as u32,
         Err(_) => return azos_abi::error::Errno::ENOMEM.to_syscall_ret(),
     };
-    let freed: u32 = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end, shm_lo, shm_hi)
+    let freed: u32 = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end)
         .saturating_add(reserved);
     crate::file_map::unmap_finish(&files[..nfiles]);
     azos_sched::mm_discharge(freed);

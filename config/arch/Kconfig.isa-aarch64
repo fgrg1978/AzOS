@@ -422,7 +422,7 @@ config A64_CONTIG_HINT
       Descriptor bit 52 on sixteen adjacent, identically attributed level-3
       pages (128 at a 16 KiB granule, 32 at 64 KiB: 2 MiB there) lets the
       TLB cache them as one entry. The user mapper of a memory object
-      (`vmm::map_contig_range`, from `shm_map_user`) writes the hint on
+      (`vmm::map_contig_range`, from `SYS_MO_MAP`) writes the hint on
       every run whose virtual and physical addresses are aligned to the
       run's size, and breaks the run before any per-page change (unmap,
       mprotect): through break-before-make where an aarch64 CPU needs it

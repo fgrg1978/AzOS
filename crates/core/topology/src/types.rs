@@ -610,10 +610,8 @@ impl RestartPolicy {
     }
 }
 
-/// Largest `mem_huge_mib` a row may declare: 256 MiB, half of the 512 MiB
-/// shm/MMIO window the region is placed in, which leaves the other half for
-/// the task's shm and MMIO mappings.
-pub const MAX_HUGE_MIB: u16 = 256;
+/// Largest `mem_huge_mib` a row may declare (Kconfig `LOCKED_HUGE_MAX_MIB`).
+pub const MAX_HUGE_MIB: u16 = azos_limits::LOCKED_HUGE_MAX_MIB as u16;
 
 impl<'a> TaskSpec<'a> {
     /// Construct an empty placeholder.

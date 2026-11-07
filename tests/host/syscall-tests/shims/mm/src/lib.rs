@@ -104,13 +104,10 @@ pub mod anon_obj;
 
 // Kconfig `MM_THP_RESV`: `pager.rs` keeps the superpage reservations in this
 // pure table, and `vmm.rs` tells a promoted block from a locked row's region
-// by asking the huge-leaf table (`huge.rs`) whose frames a leaf maps.
+// by the frames being pinned.
 #[allow(dead_code)]
 #[path = "../../../../../../crates/core/mm/src/resv.rs"]
 pub mod resv;
-#[allow(dead_code)]
-#[path = "../../../../../../crates/core/mm/src/huge.rs"]
-pub mod huge;
 
 // Kconfig `MM_RECLAIM_COMPRESS`: the compressed-page pool `pager.rs` stores to
 // and restores from (the host rows are in tests/host/mm-tests).

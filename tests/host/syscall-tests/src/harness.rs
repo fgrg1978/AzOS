@@ -87,7 +87,6 @@ pub fn reset_state() {
     // failed in 1 shuffled run of 3, "a reservation committed 16416 pages").
     azos_sched::shim_forget_all_spaces();
     azos_sched::shim_reset();
-    azos_sched::shim_reset_user_windows();
     azos_mm::shim_reset();
     azos_ipc::memobj::install_host();
     // The page was a frame of the arena just rebuilt: it is free again.

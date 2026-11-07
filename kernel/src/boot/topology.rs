@@ -591,14 +591,14 @@ fn admit(
     };
 
     // 4. The 2 MiB-leaf regions, each one physically contiguous and 2 MiB
-    // aligned (`azos_mm::huge`); exec maps them with 2 MiB leaves.
+    // aligned (`azos_sched::scheduler::row_arena_reserve`); exec maps them with 2 MiB leaves.
     if azos_limits::LOCKED_HUGE_LEAVES {
         for (i, t) in topo.tasks().iter().enumerate() {
             if t.mem_huge_mib == 0 {
                 continue;
             }
             let bytes = t.mem_huge_mib as usize * 1024 * 1024;
-            match azos_mm::huge::reserve((i + 1) as u16, bytes) {
+            match azos_sched::scheduler::row_arena_reserve((i + 1) as u16, bytes) {
                 Ok(pa) => kprintln!(
                     "[MM] huge region: row {} ({}) {} MiB reserved at pa {:#x}, mapped with 2 MiB leaves at exec",
                     i, t.name.as_str(), t.mem_huge_mib, pa,
@@ -608,7 +608,7 @@ fn admit(
                         halt_refused(format_args!("[TOPO] Memory admission REFUSED: row {} ({}) huge region of {} MiB: {:?}",
                             i, t.name.as_str(), t.mem_huge_mib, err));
                     }
-                    azos_mm::huge::release_all();
+                    azos_sched::scheduler::row_arena_release_all();
                     azos_mm::pmm::release_dma_pool();
                     return Err(SignedRefusal::Admission(AdmissionError::Memory(
                         MemoryRefusal::HugeRegion { task: i as u16, mib: t.mem_huge_mib })));

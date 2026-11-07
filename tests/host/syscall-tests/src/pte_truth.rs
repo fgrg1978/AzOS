@@ -139,8 +139,7 @@ fn a_copy_on_write_break_moves_the_slot_with_the_leaf() {
     let pt = space();
     let base = map(4);
     let shared = write(pt, base, 0x11);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
@@ -158,7 +157,7 @@ fn a_copy_on_write_break_moves_the_slot_with_the_leaf() {
     reclaim.keep(victim);
     assert_eq!(azos_mm::vmm::translate(pt, base), Some(mine));
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -169,8 +168,7 @@ fn a_page_committed_before_the_clone_is_shared_with_the_child() {
     let pt = space();
     let base = map(8);
     write(pt, base, 0x33);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     // A sibling's commit, after the walk and before the mappings are cloned.
     let late = write(pt, base + 2 * PAGE_SIZE, 0x44);
     azos_sched::shim_forget_space(child);
@@ -183,7 +181,7 @@ fn a_page_committed_before_the_clone_is_shared_with_the_child() {
     assert_ne!(mine, late, "the parent's store broke the share");
     assert!(bytes(late).iter().all(|&b| b == 0x44), "the parent's store reached the child");
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -233,9 +231,8 @@ fn the_reclaimer_takes_no_page_of_a_parent_until_its_fork_is_cloned() {
     let pt = space();
     let base = map(4);
     write(pt, base, 0x10);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     write(pt, base + PAGE_SIZE, 0x77);
     let roots = [Some(azos_sched::shim_space(pt))];
     let mut ages = Ages::new();
@@ -252,7 +249,7 @@ fn the_reclaimer_takes_no_page_of_a_parent_until_its_fork_is_cloned() {
     assert!(reclaim.unmap(victim), "the fork is over: the page may be taken");
     reclaim.keep(victim);
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -282,9 +279,8 @@ fn a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it() {
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     let parent_space = azos_sched::shim_space(pt);
     azos_sched::shim_serial_share(true);
     std::thread::scope(|sc| {
@@ -312,7 +308,7 @@ fn a_page_compressed_at_the_fork_is_the_childs_though_a_sibling_restores_it() {
     let cf = azos_mm::vmm::translate(child, base).expect("restored in the child");
     assert!(bytes(cf).iter().all(|&b| b == 0x5A), "the child reads the parent's page, not zeros");
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -355,8 +351,7 @@ fn a_copy_on_write_break_through_another_tasks_root_moves_its_slot() {
     let pt = space();
     let base = map(4);
     let shared = write(pt, base, 0x11);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
@@ -372,7 +367,7 @@ fn a_copy_on_write_break_through_another_tasks_root_moves_its_slot() {
     reclaim.keep(victim);
     azos_sched::set_current_user_pt(pt);
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -391,9 +386,8 @@ fn recheck_held() {
 
 fn fork_at_install() {
     let pt = HOOK_PARENT.load(std::sync::atomic::Ordering::SeqCst);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     *HOOK_FORK.lock().unwrap() = Some((child, hold));
 }
 
@@ -433,7 +427,6 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     azos_mm::pager::shim_set_install_hook(Some(fork_at_install));
     let parent_space = azos_sched::shim_space(pt);
     azos_sched::shim_serial_share(true);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let child = std::thread::scope(|sc| {
         let sibling = sc.spawn(|| {
             while azos_mm::vmm::translate(pt, base).is_none() {
@@ -472,7 +465,7 @@ fn a_restore_begun_before_the_fork_does_not_install_during_it() {
     let cf = azos_mm::vmm::translate(child, base).expect("restored in the child");
     assert!(bytes(cf).iter().all(|&b| b == 0x5A), "the child reads the parent's page, not zeros");
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -500,9 +493,8 @@ fn a_kernel_copy_waits_out_a_fork_hold() {
     assert!(reclaim.unmap(victim));
     assert!(reclaim.store(victim).is_ok());
     reclaim.free(victim);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     azos_sched::shim_serial_share(true);
     let copied = std::thread::scope(|sc| {
         let sibling = sc.spawn(|| azos_mm::vmm::translate_user(pt, base, true));
@@ -517,7 +509,7 @@ fn a_kernel_copy_waits_out_a_fork_hold() {
     let f = copied.expect("the copy gave up on a page the fork kept out");
     assert!(bytes(f & !(PAGE_SIZE - 1)).iter().all(|&b| b == 0x5A));
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -653,8 +645,7 @@ fn a_released_page_of_a_mapping_is_a_hole() {
     assert_eq!(azos_mm::pager::space_pages(s), (4, 2), "two touches, two pages committed");
     let kept = write(pt, base + PAGE_SIZE, 0x6E);
     assert!(azos_mm::pager::release_range(s, base, base + PAGE_SIZE).is_ok());
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let _ = azos_mm::vmm::unmap_user_range_and_free(pt, base, base + PAGE_SIZE, shm_lo, shm_hi);
+    let _ = azos_mm::vmm::unmap_user_range_and_free(pt, base, base + PAGE_SIZE);
     let r = azos_mm::pager::resolve_fault(s, base);
     assert!(r.as_ref().is_err_and(|e| format!("{e:?}") == "NotMapped"), "a hole: {r:?}");
     assert_eq!(azos_mm::vmm::user_page(pt, base), azos_mm::vmm::UserPage::Missing, "no leaf");

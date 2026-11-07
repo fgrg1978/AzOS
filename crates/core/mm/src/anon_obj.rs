@@ -38,7 +38,7 @@
 //! (`pager::fork_clone`) gives the child's object the same `Frame` word and
 //! leaf, read-only on both sides, with one more reference on the frame. The leaf sweep of
 //! `munmap` and of the space's end frees the frame (`vmm::unmap_user_range_and_free`,
-//! `vmm::destroy_user_pagetable_skip_range`); the object never frees one, so a
+//! `vmm::destroy_user_pagetable`); the object never frees one, so a
 //! frame is freed once.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

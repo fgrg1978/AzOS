@@ -110,9 +110,8 @@ fn read(pt: usize, va: usize) -> u8 {
 /// The fork of the current space, as `sys_fork` runs it: the walk, then the
 /// clone of the mappings into task 2's root. The child's root.
 fn fork(pt: usize) -> usize {
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2), "the clone was refused");
@@ -308,9 +307,8 @@ fn a_copy_on_write_break_waits_for_the_fork_to_end() {
     let pt = space();
     let base = map(2);
     let f = write(pt, base, 0x31);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
@@ -346,9 +344,8 @@ fn a_frame_whose_parent_leaf_is_missing_refuses_the_fork() {
     let f = write(pt, base, 0x41);
     // The leaf goes, the slot keeps the frame.
     azos_mm::vmm::unmap(pt, base);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     let reported = azos_sched::shim_clone_invariants();
@@ -358,7 +355,7 @@ fn a_frame_whose_parent_leaf_is_missing_refuses_the_fork() {
     assert_eq!(azos_sched::shim_clone_invariants(), reported + 1, "the refusal was taken for memory pressure, not reported");
     assert!(azos_mm::cow::page_getref(f) <= 1, "the refusal kept a reference");
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     done(pt);
 }
 
@@ -374,9 +371,8 @@ fn a_parent_that_grew_past_its_base_still_forks() {
     write(pt, base + 520 * PAGE_SIZE, 0x52);
     write(pt, base + 1040 * PAGE_SIZE, 0x53);
     azos_sched::shim_charge_tables(true);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let (child, hold) =
-        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+        azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
     // The walk's tables are the sched layer's own check, as `sys_fork` does.
     let _ = azos_sched::take_current_pt_build();
     azos_sched::shim_forget_space(child);

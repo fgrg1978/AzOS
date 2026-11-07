@@ -151,7 +151,7 @@ fn race(copy: fn(usize) -> bool, change: fn(usize) -> u32, fill_reissued: fn(*mu
 
 /// The unmap a sibling thread's `munmap` runs.
 fn unmap(pt: usize) -> u32 {
-    azos_mm::vmm::unmap_user_range_and_free(pt, VA, VA + PAGE_SIZE, 0, 0)
+    azos_mm::vmm::unmap_user_range_and_free(pt, VA, VA + PAGE_SIZE)
 }
 
 fn nothing(_: *mut u8) {}
@@ -253,7 +253,7 @@ fn a_fork_waits_for_a_write_in_flight() {
         azos_mm::uaccess::copy_out(pt, VA, src.as_ptr(), PAGE_SIZE)
     }
     fn fork(pt: usize) -> u32 {
-        let child = azos_mm::vmm::fork_cow(pt, 0, 0).expect("fork");
+        let child = azos_mm::vmm::fork_cow(pt).expect("fork");
         CHILD.store(child, SeqCst);
         0
     }

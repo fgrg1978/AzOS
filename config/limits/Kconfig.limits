@@ -796,10 +796,10 @@ config MM_REGIONS_PER_SPACE
     int "Mapping records per address space"
     range 2 256
     default 140 if HV
-    default 12  if HWCLASS_EMBEDDED
-    default 24  if (HWCLASS_SBC || HWCLASS_DESKTOP)
-    default 40  if HWCLASS_SERVER
-    default 24
+    default 22  if HWCLASS_EMBEDDED
+    default 34  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 50  if HWCLASS_SERVER
+    default 34
     help
       Each user address space keeps this many mapping records
       (crates/core/mm/src/mapping.rs), in its address space object
@@ -807,8 +807,9 @@ config MM_REGIONS_PER_SPACE
       mapping of an anonymous object of the space's own, a file mmap a
       mapping of the file's page cache, a shared memory object
       (SYS_MO_MAP) a mapping of that object whose frames are mapped when
-      the mapping is made, and each other page is installed on first
-      touch.  A mapping that continues the previous one with the
+      the mapping is made, a physical range (a device's registers, a ring
+      page, the vDSO page, a locked row's region) a mapping of that range,
+      and each other page is installed on first touch.  A mapping that continues the previous one with the
       same permissions grows that one's object instead, so a task that
       only grows its mappings uses one record; mprotect and a munmap in
       the middle of a mapping cut records.  A mapping that finds no free
@@ -818,10 +819,12 @@ config MM_REGIONS_PER_SPACE
 
       The default is what a task of the preset can have mapped: the
       MemObjs it may own (half of MAX_MEMOBJS, one record each when it
-      maps them) plus 8 for its anonymous and file mappings. A hypervisor
-      host's monitor (VMMD.ELF) maps every MemObj of a guest's RAM, the
-      trap page and the rings of its backends: 140 holds a 32 MiB guest
-      at a 4 KiB granule (128 objects, 3 more, 8 of its own);
+      maps them), 8 for its anonymous and file mappings and 10 for its
+      physical ranges (8 device windows, the vDSO page and the notify
+      page). A hypervisor host's monitor (VMMD.ELF) maps every MemObj of a
+      guest's RAM, the trap page and the rings of its backends: 140 holds a
+      32 MiB guest at a 4 KiB granule (128 objects, 3 more, 8 of its own,
+      the vDSO page and the notify page);
       HV_EXAMPLE_GUEST_MEM_MIB is checked against it at build time
       (crates/core/mm/src/memobj.rs).
 
@@ -829,6 +832,17 @@ config MM_REGIONS_PER_SPACE
       (448 B at 8), taken from the kernel heap's ceiling when a space is
       made; the object cache keeps the pages it took.
 
+
+config LOCKED_HUGE_MAX_MIB
+    int "Largest mem_huge_mib a locked row may declare (MiB)"
+    default 256
+    help
+      The largest region one row's `mem_huge_mib` may name (LOCKED_HUGE_LEAVES,
+      config/arch/Kconfig.isa-riscv64): the topology parser refuses a row above
+      it, and the fixed address the regions are mapped at
+      (crates/core/sched/src/process.rs, LOCKED_ARENA_VA) is sized for two of
+      them below the user stack. The build refuses a value that does not fit.
+      Inert without LOCKED_HUGE_LEAVES.
 config MM_SLOTS_INLINE
     int "Page slots held inside an anonymous object"
     range 0 128
@@ -1114,9 +1128,9 @@ config USER_STACK_MAX_KB
       sized from the program (tools/lint/stack_chain.py reads the deepest static
       chain of an ELF; the gate row `ring-3 stacks` checks each image's
       request against it) and the ceiling only bounds a bad ELF.  The
-      window below the stack (USER_MMIO_LIMIT) starts here, so the
+      floor of the stack (USER_STACK_FLOOR) starts here, so the
       difference between this and a smaller stack stays unmapped: an
-      overflow past the request faults instead of running into a shm/MMIO
+      overflow past the request faults instead of running into a
       mapping.  Costs no frames and no static RAM; a task pays only for the
       stack it asks for, charged to its row's mem_pages.
       Must be a multiple of 4 (one page), and at least USER_STACK_SIZE_KB;

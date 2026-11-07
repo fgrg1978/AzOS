@@ -13002,7 +13002,7 @@ host_job host_canary_row "fork: invariant refusal reported canary" syscall-tests
 host_job host_canary_row "shm: space end spares the object canary" syscall-tests mm-rmap-missing-canary \
     a_space_that_ends_leaves_a_shared_object_to_its_other_mapper
 host_job host_canary_row "shm: file mapping space end canary" syscall-tests mm-rmap-missing-canary \
-    a_shared_file_mapping_outside_the_window_ends_with_its_space
+    a_shared_file_mapping_ends_with_its_space
 host_job host_canary_row "shm: mapping never executable canary" syscall-tests exec-shared-record-canary \
     a_shared_mapping_is_placed_in_the_mmap_area_and_never_made_executable
 host_job host_canary_row "shm: file mapping never executable canary" syscall-tests exec-shared-record-canary \
@@ -13042,6 +13042,19 @@ host_job host_canary_row "phys: fork inheritance canary" syscall-tests phys-inhe
     a_fork_gives_the_child_only_the_ranges_that_say_so
 host_job host_canary_row "phys: record room canary" syscall-tests phys-leaves-unrecorded-canary \
     a_range_with_no_record_room_maps_nothing
+# The same records hold the other owners' frames through munmap, fork and the
+# space's end. fork-passes-nothing-canary: the fork's walk passes no mapping of
+# the parent's, so a range's frame is shared copy-on-write with a count.
+host_job host_canary_row "phys: munmap spares the owner's frame canary" syscall-tests phys-grant-ends-by-owner-canary \
+    munmap_does_not_free_a_frame_the_task_does_not_own
+host_job host_canary_row "phys: fork walk passes a range canary" syscall-tests fork-passes-nothing-canary \
+    fork_leaves_a_physical_range_out_of_the_child
+host_job host_canary_row "phys: locked region munmap canary" syscall-tests phys-grant-ends-by-owner-canary \
+    huge_region_is_two_level1_leaves_that_munmap_cannot_take
+host_job host_canary_row "phys: locked region record end canary" syscall-tests mm-rmap-missing-canary \
+    huge_region_is_two_level1_leaves_that_munmap_cannot_take
+host_job host_canary_row "phys: inherited range count canary" syscall-tests fork-passes-nothing-canary \
+    a_fork_gives_the_child_only_the_ranges_that_say_so
 host_job zpool_host_row "fork: compressed page shared, pool on" a_compressed_page_is_shared_with_the_child_not_restored
 host_job zpool_host_canary_row "fork: compressed page shared canary" fork-marker-canary \
     a_compressed_page_is_shared_with_the_child_not_restored

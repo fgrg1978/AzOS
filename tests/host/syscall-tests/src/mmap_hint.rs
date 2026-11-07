@@ -207,7 +207,6 @@ fn a_hint_outside_the_area_is_ignored() {
     let _g = serial();
     let _pt = linux_space();
     let (floor, ceiling) = azos_sched::user_mmap_area();
-    let (shm_lo, _) = azos_sched::user_shm_window();
     let mut cursor = ceiling;
     for hint in [
         0x1000,                     // the null guard
@@ -215,7 +214,7 @@ fn a_hint_outside_the_area_is_ignored() {
         floor - 4 * PAGE_SIZE,      // the break's zone, up to the floor
         ceiling,                    // the vDSO page
         ceiling - 2 * PAGE_SIZE,    // across the ceiling
-        shm_lo,                     // the shm/MMIO window
+        ceiling + 16 * PAGE_SIZE,   // above the ceiling: the runtime and the locked regions
     ] {
         let m = map_at(hint, 4, RW, 0);
         assert_eq!(m, (cursor - 4 * PAGE_SIZE) as i64, "hint {hint:#x}: the default placement");

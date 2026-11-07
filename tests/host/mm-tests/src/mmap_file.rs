@@ -159,3 +159,44 @@ fn a_clip_keeps_the_object_page() {
     let r = s.find(13 * P).unwrap();
     assert_eq!((r.start, r.off, r.backing), (13 * P, 8, Backing::File { obj: 7, shared: true }));
 }
+
+// ── Physical ranges (`Backing::Phys`) ────────────────────────────────────────
+
+fn phys(a: usize, b: usize, pa: usize, inherit: bool) -> Mapping {
+    Mapping::phys(a * P, b * P, true, pa, azos_arch_api::MemType::Device, inherit)
+}
+
+/// A physical range is one piece, goes whole or not at all, is not charged and
+/// not folded into a neighbour whose frames are the next ones, and names its
+/// frames by the frame number of its start. By hand, 2026-11-07: `joins`
+/// folding two ranges makes the length red; `whole_cut_ok` answering true makes
+/// the cut red; `charged` answering true makes the charge red; `has_phys`
+/// reading every record makes the last assertion red.
+#[test]
+fn a_physical_range_goes_whole_and_never_folds() {
+    let mut s = MapSet::<4>::new();
+    s.insert(phys(10, 12, 0x1000_0000, false)).unwrap();
+    s.insert(phys(12, 14, 0x1000_2000, false)).unwrap();
+    assert_eq!(s.len(), 2, "two ranges on consecutive frames folded");
+    assert!(!s.whole_cut_ok(11 * P, 13 * P), "a cut took a range in part");
+    assert!(s.whole_cut_ok(10 * P, 14 * P));
+    assert_eq!(s.charged_pages(), 0, "a range was charged to the task");
+    assert_eq!(s.find(11 * P).unwrap().page_index(11 * P), (0x1000_0000 >> 12) + 1, "the frame number of the page");
+    assert!(s.has_phys(11 * P, 12 * P) && s.has_whole(11 * P, 12 * P));
+    assert!(!s.has_phys(14 * P, 15 * P), "a range clear of it");
+    s.insert(anon(20, 22)).unwrap();
+    assert!(!s.has_phys(20 * P, 22 * P), "an anonymous mapping is not a range");
+}
+
+/// What a fork gives the child: the task's own memory and a range that says so,
+/// not any other owner's frames. By hand, 2026-11-07: `inherited` answering
+/// `charged` alone makes the range row red; answering true makes the file row red.
+#[test]
+fn a_fork_inherits_a_range_only_when_it_says_so() {
+    assert!(phys(1, 2, 0x1000, true).inherited());
+    assert!(!phys(1, 2, 0x1000, false).inherited());
+    assert!(anon(1, 2).inherited());
+    assert!(file(1, 2, true, false, 7, 0).inherited(), "a private file mapping is the task's own copy");
+    assert!(!file(1, 2, true, true, 7, 0).inherited(), "a shared file mapping is the cache's frames");
+    assert!(!Mapping::obj(P, 2 * P, 7, 0).inherited());
+}

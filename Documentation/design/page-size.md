@@ -112,19 +112,22 @@ fully populated, never forked.
   refused. With the option off, a topology that declares `mem_huge_mib` is
   refused at boot rather than run without the region.
 - **Mapping.** `exec` maps the region (`install_locked_arena` in
-  `crates/core/sched/src/process.rs`) at `LOCKED_ARENA_VA`, the first level-1
-  leaf boundary at or above the shm/MMIO window's base, with level-1 leaves
-  (`vmm::map_user_mega_range`): read-write, never executable, with accessed and
-  dirty preset because a locked task must take no fault. Only `exec` installs it;
-  spawning such a row is refused.
+  `crates/core/sched/src/process.rs`) at `LOCKED_ARENA_VA`, a fixed level-1
+  leaf boundary above the Linux runtime's window and below the user stack, as a
+  physical range of the address space (`pager::reserve_phys`, recorded before
+  its leaves) with level-1 leaves (`vmm::map_user_mega_range`): read-write,
+  never executable, with accessed and dirty preset because a locked task must
+  take no fault. Only `exec` installs it; spawning such a row is refused. The
+  largest region is Kconfig `LOCKED_HUGE_MAX_MIB`.
 - **Lifetime.** Never forked (a locked row cannot fork), never demand-paged,
-  never copy-on-write. `munmap` of any part of it is refused. Teardown skips the
-  level-1 user leaf (`vmm::destroy_user_pagetable_skip_range`) and never frees
-  the frames.
+  never copy-on-write. `munmap` and `mprotect` of any part of it are refused
+  (it is a physical range). Its record clears the level-1 leaves at the space's
+  end (`vmm::unmap_user_range_keep`) and never frees the frames, which are pinned
+  (`F_PINNED`) for the whole boot.
 - **Cost of the shape.** Memory is pinned and unreclaimable. Internal
   fragmentation is explicit: the topology author sizes the region.
 
-Source: `config/arch/Kconfig.isa-riscv64` (`LOCKED_HUGE_LEAVES`), `crates/core/mm/src/huge.rs`,
+Source: `config/arch/Kconfig.isa-riscv64` (`LOCKED_HUGE_LEAVES`), `crates/core/sched/src/scheduler/budget.rs`,
 `crates/core/mm/src/vmm.rs`, `crates/core/sched/src/process.rs`,
 `crates/core/pkg/src/admit.rs`, `crates/core/topology/src/memory.rs`,
 `crates/core/topology/src/types.rs`.

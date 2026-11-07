@@ -75,6 +75,3 @@ pub mod cache;
 #[cfg(feature = "kheap-census")]
 pub mod kheap_census;
 pub mod vdso;
-/// Kconfig `LOCKED_HUGE_LEAVES`: boot-reserved regions of locked rows,
-/// mapped with level-1 leaves.
-pub mod huge;

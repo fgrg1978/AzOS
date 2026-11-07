@@ -733,6 +733,70 @@ pub fn row_live(row: u16) -> u32 {
     ROW_LIVE[i - 1].load(Ordering::Relaxed)
 }
 
+// ── Kconfig `LOCKED_HUGE_LEAVES`: the boot-reserved region of a row ──────────
+//
+// A row that declares `mem_huge_mib = N` gets N MiB of physically contiguous
+// RAM, aligned to the level-1 leaf size, taken from the allocator ONCE, at
+// boot, right after memory admission counted it: a 2 MiB-aligned run is exactly
+// what fragmentation makes impossible later. The run is keyed by the row (index
+// + 1) and is the row's for the whole boot: its next instance gets the same
+// frames, zeroed again by exec. Its frames are pinned (`F_PINNED`), so the
+// allocator refuses to free them whatever a teardown does, and each instance
+// maps it as a physical range of its address space (`process::install_locked_arena`).
+
+const ARENA_SLOTS: usize = if azos_limits::LOCKED_HUGE_LEAVES { ROW_SLOTS } else { 0 };
+
+/// Physical base of each row's region, 0 = none, and its bytes.
+static ROW_ARENA: [AtomicUsize; ARENA_SLOTS] = [const { AtomicUsize::new(0) }; ARENA_SLOTS];
+static ROW_ARENA_BYTES: [AtomicUsize; ARENA_SLOTS] = [const { AtomicUsize::new(0) }; ARENA_SLOTS];
+
+/// Reserve `bytes` (a whole number of level-1 leaves) for `row` (index + 1) and
+/// return the physical base. Refused when the row already has one, the row has
+/// no slot, or no aligned run is free.
+pub fn row_arena_reserve(row: u16, bytes: usize) -> azos_common::error::KResult<usize> {
+    use azos_common::error::KernelError;
+    let page = azos_arch::PAGE_SIZE;
+    let slot = ROW_ARENA.get((row as usize).wrapping_sub(1)).ok_or(KernelError::OutOfMemory)?;
+    if bytes == 0 || bytes % azos_mm::vmm::MEGA_SIZE != 0 {
+        return Err(KernelError::InvalidArg);
+    }
+    if slot.load(Ordering::Acquire) != 0 {
+        return Err(KernelError::AlreadyMapped);
+    }
+    let pa = azos_mm::pmm::alloc_contiguous_aligned(bytes / page, azos_mm::vmm::MEGA_SIZE)?.as_usize();
+    for off in (0..bytes).step_by(page) {
+        let pinned = azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, true);
+        debug_assert!(pinned);
+    }
+    ROW_ARENA_BYTES[row as usize - 1].store(bytes, Ordering::Relaxed);
+    slot.store(pa, Ordering::Release);
+    Ok(pa)
+}
+
+/// `(physical base, bytes)` of `row`'s region, if it has one.
+pub fn row_arena(row: u16) -> Option<(usize, usize)> {
+    let i = (row as usize).wrapping_sub(1);
+    let pa = ROW_ARENA.get(i)?.load(Ordering::Acquire);
+    (pa != 0).then(|| (pa, ROW_ARENA_BYTES[i].load(Ordering::Relaxed)))
+}
+
+/// Undo every [`row_arena_reserve`]: the frames go back to the allocator. For
+/// boot admission only, when the topology the regions were reserved for is
+/// refused before it is installed.
+pub fn row_arena_release_all() {
+    let page = azos_arch::PAGE_SIZE;
+    for (i, slot) in ROW_ARENA.iter().enumerate() {
+        let pa = slot.swap(0, Ordering::AcqRel);
+        if pa == 0 {
+            continue;
+        }
+        for off in (0..ROW_ARENA_BYTES[i].swap(0, Ordering::Relaxed)).step_by(page) {
+            let _ = azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, false);
+            let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa + off));
+        }
+    }
+}
+
 /// The row whose count the current task holds ([`crate::task::TaskMem::row`]).
 pub fn current_mem_row() -> u16 {
     let idx = my_idx();

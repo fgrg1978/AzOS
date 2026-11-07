@@ -226,15 +226,14 @@ fn a_fork_child_inherits_the_reservation_and_is_charged_for_it() {
     assert!(azos_mm::vmm::translate_user(pt, base, true).is_some());
     assert!(azos_mm::vmm::translate_user(pt, base + PAGE_SIZE, true).is_some());
 
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2));
     assert_eq!(azos_mm::pager::space_pages(azos_sched::shim_space(child)), (8, 2), "the records, and what the COW fork shares");
     assert_eq!(azos_sched::shim_other_pages(), 6, "charged for the six it may still commit");
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
 
     // A child whose budget cannot take it: the fork is refused, no records stay.
     let child = azos_mm::pmm::alloc_page().unwrap().as_usize();

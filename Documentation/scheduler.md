@@ -301,7 +301,7 @@ The crate root (`lib.rs`) declares the model modules and re-exports the API. The
 | `smp`, `wait`, `process`, `group`, `futex`, `futex_table`, `domain`, `spawn`, `task`, `asid` | `src/*.rs` | secondary CPU start and liveness, block API, processes, threads and futexes, task control block, address-space ids |
 | `spawn_policy`, `filter`, `seccomp` | `src/*.rs` | `SYS_SPAWN_EX` decisions before a task exists, task-policy types, syscall filter profiles |
 | `driver`, `supervisor` | `src/*.rs` | driver registry with heartbeat and crash bookkeeping, cold restart of what the kernel keeps up (the component manager, the ML service, kernel hosts) |
-| `qos`, `fp`, `pac`, `foreign`, `user_window` | `src/*.rs` | resource-partition tag at switch (riscv64 Ssqosid), riscv64 F/D state of Linux tasks, aarch64 per-process PAC keys, foreign-ABI entry and reflect, shm/MMIO VA window allocator |
+| `qos`, `fp`, `pac`, `foreign` | `src/*.rs` | resource-partition tag at switch (riscv64 Ssqosid), riscv64 F/D state of Linux tasks, aarch64 per-process PAC keys, foreign-ABI entry and reflect |
 | `swcensus`, `prof`, `cpuid_probe`, `percpu_audit` | `src/*.rs` | switch instruction census (`SWITCH_CENSUS`), fork/exit/wait phase profile (`fork-profile`), hart-id cross-check (`cpuid-probe`), per-hart read audit (`ktest`) |
 
 Only the dispatcher's own state (`TASKS`, `PER_CPU`, the locks) lives in `scheduler/mod.rs`; children reach it through `use super::*`.

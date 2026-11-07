@@ -1290,16 +1290,6 @@ pub struct Task {
     /// Context switches the timer took from it.
     pub switches_preempted: core::sync::atomic::AtomicU64,
 
-    /// This task's reservations in the shm/MMIO VA window, as `[base, span]`
-    /// pairs ([`crate::user_window`]; `span == 0` is a free pair, so the
-    /// zeroed pool starts empty). Written by the task's own shm and MMIO map
-    /// and release calls, and cleared when the slot is reused, next to
-    /// `user_brk`. Exec leaves it alone: a shm mapping record survives exec
-    /// with its address, and the release that names that address must not
-    /// find it handed to another mapping. Appended at the end so
-    /// `TASK_SATP_OFFSET` stays stable.
-    pub user_window: [[usize; 2]; crate::user_window::USER_WINDOW_RANGES],
-
     /// Wave 8: the memory state beside `budget` that the
     /// charging paths and the locked-row policy need. Appended at the end so
     /// `TASK_SATP_OFFSET` stays stable; all-zero is its initial state.

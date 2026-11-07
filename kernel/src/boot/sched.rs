@@ -578,15 +578,14 @@ fn cap_event(e: azos_ipc::cap_store::CapEvent) {
 }
 
 /// `azos_ipc::memobj::UnmapHook`: remove a MOVE's, a revoke's or a shrink's
-/// mapping from the holder's page table and shoot it down on every hart that may hold it. The skip
-/// window is the whole range, so no frame is freed (`user_leaf_is_task_owned`
-/// answers before `page_decref`): the frames are the region's, given back by
-/// the booked reference afterwards. Called with the MemObj table held, never
+/// mapping from the holder's page table and shoot it down on every hart that may hold it. No frame
+/// is freed: they are the region's, given back by the booked reference
+/// afterwards. Called with the MemObj table held, never
 /// from an interrupt: the walk's kernel-table guard takes `KERNEL_PT`'s plain
 /// lock.
 fn mapping_unmap(root: usize, va: usize, pages: usize) {
     let end = va.saturating_add(pages.saturating_mul(azos_arch::PAGE_SIZE));
-    let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
+    azos_mm::vmm::unmap_user_range_keep(root, va, end);
 }
 
 /// Wave 15 (plan 4a): the process's per-slot state outside `azos_sched`

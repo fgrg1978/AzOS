@@ -106,6 +106,9 @@ phys-memtype-canary = []
 # Host-suite canary: a fork inverts what a physical range says about being
 # inherited: `syscall-tests` phys_ranges.rs.
 phys-inherit-ignored-canary = []
+# Host-suite canary: a fork's walk passes no mapping of the parent's:
+# `syscall-tests` mmap_guards.rs.
+fork-passes-nothing-canary = []
 # Host-suite canary: `set_user_range_exec` does not ask the space's records:
 # `syscall-tests` typed_ipc.rs.
 exec-shared-record-canary = []

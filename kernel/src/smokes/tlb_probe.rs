@@ -481,7 +481,7 @@ pub fn runner(touch_hart: usize) {
     // frees nothing here (a kernel-permission leaf is not a task's own
     // frame) but clears, batches and shoots down exactly as `munmap` does.
     vmm::unmap(pt, VA);
-    let _ = vmm::unmap_user_range_and_free(pt, VA2, VA2 + RANGE_PAGES * azos_arch::PAGE_SIZE, 0, 0);
+    let _ = vmm::unmap_user_range_and_free(pt, VA2, VA2 + RANGE_PAGES * azos_arch::PAGE_SIZE);
     // Reuse of the frames the PTEs named.
     fill(frame, NEW);
     for &f in &range_frames { fill(f, NEW); }

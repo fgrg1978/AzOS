@@ -549,13 +549,12 @@ pub fn vdso_update(uptime_ticks: u64, uptime_ms: u64) {
 // sensor readings are not everyone's, so they live in a page of their own —
 // one frame per task-pool slot, mapped only into the task that asked for it.
 //
-// It is mapped on request (`DOMAIN_VDSO_MAP`) into the caller's shm/MMIO
-// window, not at a fixed address at exec, because that window is the one
-// part of an address space the kernel already handles the way this page
-// needs: `fork_cow` leaves it out of the child (so a child never reads its
-// parent's counters through an inherited PTE) and exit teardown does not
-// free its frames (so the kernel keeps owning this one). A fixed address
-// would have needed both of those rules restated in `vmm` for a new frame.
+// It is mapped on request (`DOMAIN_VDSO_MAP`) as a physical range of the
+// caller's address space, placed in its mmap area, not at a fixed address at
+// exec. A range that does not say a fork shares it stays out of the child (so a
+// child never reads its parent's counters through an inherited PTE), and the
+// space's end clears its leaf without freeing the frame (so the kernel keeps
+// owning this one).
 //
 // ## Scope: which task, which sensors
 //

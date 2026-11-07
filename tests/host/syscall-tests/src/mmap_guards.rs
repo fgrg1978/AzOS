@@ -271,29 +271,30 @@ fn munmap_gives_the_frames_back_to_the_budget() {
     azos_sched::shim_set_page_limit(0);
 }
 
-/// The VA ceiling: a mapping ends at or below the base of the shm/MMIO window.
-/// Above `USER_VA_TOP` the "user" page table is the kernel's, so a USER_RW page
-/// there is a user-writable window into kernel address space. The shm/MMIO
-/// window lies below that, and a frame mapped inside it is never freed
-/// (`sys_munmap` and teardown skip the window).
+/// The VA ceiling: a mapping at the break ends at or below the ceiling of the
+/// mmap area. Above `USER_VA_TOP` the "user" page table is the kernel's, so a
+/// USER_RW page there is a user-writable window into kernel address space; the
+/// area's ceiling lies below that, under the vDSO page.
 ///
 /// **Divergence:** the mutant `>=` differs only when the mapping ends flush
-/// against the window base, which must SUCCEED; the old ceiling `USER_VA_TOP`
-/// differs when it ends one page past the base, which must be refused. The
-/// refusal is asserted first: after the accepted call the page below the base
-/// is mapped, and a call over it could then fail for that reason alone.
+/// against the ceiling, which must SUCCEED; the old ceiling `USER_VA_TOP`
+/// differs when it ends one page past the ceiling, which must be refused. The
+/// refusal is asserted first: after the accepted call the page below the
+/// ceiling is mapped, and a call over it could then fail for that reason alone.
 #[test]
 fn mmap_va_ceiling_is_exclusive_at_the_top_and_inclusive_below_it() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let (window_base, _) = azos_sched::user_shm_window();
+    let (_, window_base) = azos_sched::user_mmap_area();
 
-    // One byte more than a page needs a second page, which lies in the window:
+    // One byte more than a page needs a second page, which lies above the ceiling:
     // not at the break, then.
     azos_sched::shim_set_brk((window_base - PAGE_SIZE) as u64);
     let past = sys_mmap(0, PAGE_SIZE as u64 + 1, 3, 0, ANON, 0);
-    assert!(past > 0 && past as usize + 2 * PAGE_SIZE <= window_base - PAGE_SIZE, "{past:#x}");
+    assert!(past > 0 && past as usize + 2 * PAGE_SIZE <= window_base, "{past:#x}");
+    assert_ne!(past as usize, window_base - PAGE_SIZE, "placed at the break, across the ceiling");
     assert_eq!(azos_mm::vmm::translate_user(pt, window_base, false), None);
+    assert_eq!(sys_munmap(past as u64, 2 * PAGE_SIZE as u64), 0);
 
     azos_sched::shim_set_brk((window_base - PAGE_SIZE) as u64);
     assert_eq!(
@@ -851,96 +852,93 @@ fn a_mapped_then_unmapped_range_gives_every_frame_back() {
 /// Freeing too little is a leak, and the machine eventually stops. Freeing too
 /// much hands one frame to two owners, and the machine keeps running while a
 /// device buffer and someone's heap occupy the same memory. That is the worse
-/// failure and it is silent, so it needs a test of its own — when the
-/// "release the frames" change was written, mutating the shared-memory window
-/// out of the ownership rule failed nothing in the entire tree.
+/// failure and it is silent, so it needs a test of its own.
 ///
-/// The shm window is the case exercised here because it is the one a VA can
-/// reach: `shm_map_user` and `mmio_map_user` install real `USER` leaves there
-/// whose frames belong to a device or to another task. The other two arms of
-/// the rule — the vDSO page and a COW page another task still holds — are not
-/// constructible from this harness, and that is stated rather than papered
-/// over.
+/// A physical range lent to the task (a device's registers, a ring page) is the
+/// case exercised here: its leaves are USER leaves whose frames belong to a
+/// device or to the kernel, and only its record tells them from the task's own.
+/// `munmap` refuses the range, and its owner's end clears the leaf and frees
+/// nothing. The other arms of the ownership rule — the trampoline page and a
+/// COW page another task still holds — are not constructible from this
+/// harness, and that is stated rather than papered over.
+///
+/// **Canary.** `phys-grant-ends-by-owner-canary`: `munmap` takes the range and
+/// frees its frame.
 #[test]
 fn munmap_does_not_free_a_frame_the_task_does_not_own() {
     let _g = serial();
     let pt = fresh_user_pt();
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
+    const VA: usize = 0x1000_0000;
 
-    let (shm_lo, _shm_hi) = azos_sched::user_shm_window();
-
-    // A frame standing in for one a device or another task owns, mapped USER
-    // inside the window exactly as `shm_map_user` would.
     let borrowed = a_page();
-    azos_mm::vmm::map(pt, shm_lo, borrowed, PagePerms::USER_RW).unwrap();
+    let space = azos_sched::shim_space(pt);
+    azos_mm::pager::reserve_phys(space, VA, VA + PAGE_SIZE, true, borrowed, azos_arch_api::MemType::WB, false).unwrap();
+    azos_mm::vmm::map_phys(pt, VA, borrowed, 1, true, azos_arch_api::MemType::WB).unwrap();
 
     let before = azos_mm::shim_pages_in_use();
-    assert_eq!(sys_munmap(shm_lo as u64, PAGE_SIZE as u64), 0);
-    let after = azos_mm::shim_pages_in_use();
+    assert_eq!(sys_munmap(VA as u64, PAGE_SIZE as u64), azos_abi::error::Errno::EINVAL.to_syscall_ret());
+    assert_eq!(
+        azos_mm::shim_pages_in_use(), before,
+        "munmap released a frame a physical range lent. The allocator will now hand it to someone else as well.",
+    );
+    assert_eq!(azos_mm::vmm::translate_user(pt, VA, false), Some(borrowed), "the range was unmapped");
 
-    assert_eq!(
-        after, before,
-        "munmap released a frame inside the shared-memory window. The mapping \
-         going away is correct; returning the frame to the allocator is not — \
-         it is still owned by whoever mapped it here, and the allocator will \
-         now hand it to someone else as well.",
-    );
-    assert_eq!(
-        azos_mm::vmm::translate_user(pt, shm_lo, false), None,
-        "the mapping itself must still be removed — refusing to free is not \
-         refusing to unmap",
-    );
+    azos_mm::pager::release_range(space, VA, VA + PAGE_SIZE).unwrap();
+    assert_eq!(azos_mm::shim_pages_in_use(), before, "the owner's end released the frame");
+    assert_eq!(azos_mm::vmm::translate_user(pt, VA, false), None, "the owner's end left the leaf");
 }
 
-/// **Fork leaves the shm/MMIO window out of the child.** `fork_cow` made every
-/// `USER` leaf copy-on-write, the window's included. A frame there belongs to
-/// a shm region or a device: the parent's next store landed on a private
-/// copy while the region kept the original, the second task to write freed
-/// the region's frame under it, and a page nobody wrote kept its refcount
-/// entry for good, since teardown skips the window.
+/// **The fork's walk leaves a physical range out of the child.** `fork_cow` made
+/// every `USER` leaf copy-on-write, a range's included. A frame there belongs
+/// to a device or to the kernel: the parent's next store landed on a private
+/// copy while the owner kept the original, the second task to write freed the
+/// owner's frame under it, and a page nobody wrote kept its refcount entry for
+/// good, since teardown never decrefs it.
 ///
-/// A private page outside the window is forked alongside, so the test also
-/// fails if the skip takes more than the window.
+/// A private page outside the range is forked alongside, so the test also
+/// fails if the walk passes more than the range.
 ///
-/// **Canary.** Remove the window `continue` in `fork_cow_inner`: the child
-/// maps the window's frame.
+/// **Canary.** `fork-passes-nothing-canary`: the walk passes no mapping, and
+/// the child maps the range's frame with a refcount entry.
 #[test]
-fn fork_leaves_the_shm_window_out_of_the_child() {
+fn fork_leaves_a_physical_range_out_of_the_child() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    const RANGE_VA: usize = 0x1000_0000;
     let rw = PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW };
     const PRIVATE_VA: usize = 0x2_0000;
 
-    let region_frame = a_page();
-    azos_mm::vmm::map(pt, shm_lo, region_frame, rw).unwrap();
+    let owner_frame = a_page();
+    azos_mm::pager::reserve_phys(azos_sched::shim_space(pt), RANGE_VA, RANGE_VA + PAGE_SIZE, true, owner_frame, azos_arch_api::MemType::WB, false).unwrap();
+    azos_mm::vmm::map_phys(pt, RANGE_VA, owner_frame, 1, true, azos_arch_api::MemType::WB).unwrap();
     let private = a_page();
     azos_mm::vmm::map(pt, PRIVATE_VA, private, rw).unwrap();
 
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
 
     assert_eq!(
-        azos_mm::vmm::translate_user(child, shm_lo, false), None,
-        "the child holds no capability or record for the window and must not map it",
+        azos_mm::vmm::translate_user(child, RANGE_VA, false), None,
+        "the child holds no record for the range and must not map it",
     );
-    assert_eq!(azos_mm::vmm::page_getref(region_frame), 0, "a window frame takes no refcount entry");
+    assert_eq!(azos_mm::vmm::page_getref(owner_frame), 0, "a range's frame takes no refcount entry");
     assert_eq!(
-        azos_mm::vmm::translate_user(pt, shm_lo, true), Some(region_frame),
-        "the parent's store must reach the region's frame, not a copy",
+        azos_mm::vmm::translate_user(pt, RANGE_VA, true), Some(owner_frame),
+        "the parent's store must reach the owner's frame, not a copy",
     );
 
     assert_eq!(azos_mm::vmm::translate_user(child, PRIVATE_VA, false), Some(private));
-    assert_eq!(azos_mm::vmm::page_getref(private), 2, "a page outside the window is still shared");
+    assert_eq!(azos_mm::vmm::page_getref(private), 2, "a page outside the range is still shared");
 
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
-    let _ = azos_mm::vmm::unmap_user_and_free(pt, PRIVATE_VA, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
+    let _ = azos_mm::vmm::unmap_user_and_free(pt, PRIVATE_VA);
     assert_eq!(azos_mm::vmm::page_getref(private), 0, "the entry went back with the last holder");
 }
 
 /// **The fork rule for a shared-memory mapping (owner decision 16-10).** A
 /// child that inherits a `Cap<Shm>` inherits its mapping **shared, not
-/// copy-on-write**: `fork_cow` leaves the window out of the child and
+/// copy-on-write**: the fork's walk leaves the mapping out of the child and
 /// `fork_share_range` gives the child the parent's leaves entry for entry, so
 /// a store by either lands in the region both see (the POSIX pipe's ring).
 /// No frame takes a refcount entry (the region owns them), a range the parent
@@ -953,28 +951,33 @@ fn fork_leaves_the_shm_window_out_of_the_child() {
 fn a_fork_child_shares_the_shm_mapping_it_inherited_not_a_copy_of_it() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
+    const SHM_VA: usize = 0x1000_0000;
     let rw = PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW };
     let (f0, f1) = (a_page(), a_page());
-    azos_mm::vmm::map(pt, shm_lo, f0, rw).unwrap();
-    azos_mm::vmm::map(pt, shm_lo + PAGE_SIZE, f1, rw).unwrap();
+    // Two pages of a shared object, as its record and leaves are made.
+    let space = azos_sched::shim_space(pt);
+    for (i, f) in [f0, f1].into_iter().enumerate() {
+        let va = SHM_VA + i * PAGE_SIZE;
+        azos_mm::pager::reserve_phys(space, va, va + PAGE_SIZE, true, f, azos_arch_api::MemType::WB, false).unwrap();
+        azos_mm::vmm::map(pt, va, f, rw).unwrap();
+    }
 
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
-    assert_eq!(azos_mm::vmm::translate_user(child, shm_lo, false), None, "the window is left out first");
-    azos_mm::cow::fork_share_range(pt, child, shm_lo, 2).expect("both pages are the parent's");
-    assert_eq!(azos_mm::vmm::translate_user(child, shm_lo, true), Some(f0), "the child writes the region's frame");
-    assert_eq!(azos_mm::vmm::translate_user(child, shm_lo + PAGE_SIZE, true), Some(f1));
-    assert_eq!(azos_mm::vmm::translate_user(pt, shm_lo, true), Some(f0), "and so does the parent: one frame, two views");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
+    assert_eq!(azos_mm::vmm::translate_user(child, SHM_VA, false), None, "the mapping is left out first");
+    azos_mm::cow::fork_share_range(pt, child, SHM_VA, 2).expect("both pages are the parent's");
+    assert_eq!(azos_mm::vmm::translate_user(child, SHM_VA, true), Some(f0), "the child writes the region's frame");
+    assert_eq!(azos_mm::vmm::translate_user(child, SHM_VA + PAGE_SIZE, true), Some(f1));
+    assert_eq!(azos_mm::vmm::translate_user(pt, SHM_VA, true), Some(f0), "and so does the parent: one frame, two views");
     assert_eq!(azos_mm::vmm::page_getref(f0), 0, "the region owns its frames: no count");
 
     // A range the parent maps only in part is refused whole.
-    let child2 = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
-    assert!(azos_mm::cow::fork_share_range(pt, child2, shm_lo, 3).is_err(), "the third page is not the parent's");
-    assert_eq!(azos_mm::vmm::translate_user(child2, shm_lo, false), None, "and the pages done were undone");
-    assert_eq!(azos_mm::vmm::translate_user(child2, shm_lo + PAGE_SIZE, false), None);
+    let child2 = azos_mm::vmm::fork_cow(pt).expect("fork");
+    assert!(azos_mm::cow::fork_share_range(pt, child2, SHM_VA, 3).is_err(), "the third page is not the parent's");
+    assert_eq!(azos_mm::vmm::translate_user(child2, SHM_VA, false), None, "and the pages done were undone");
+    assert_eq!(azos_mm::vmm::translate_user(child2, SHM_VA + PAGE_SIZE, false), None);
 
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child2, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
+    azos_mm::vmm::destroy_user_pagetable(child2);
 }
 
 /// **W^X across fork (wave 13, security).** `fork_cow` marked every user
@@ -990,7 +993,6 @@ fn a_fork_child_shares_the_shm_mapping_it_inherited_not_a_copy_of_it() {
 fn fork_keeps_code_and_rodata_read_only() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let rx = PagePerms { read: true, write: false, exec: true, accessed: true, dirty: false, ..PagePerms::USER_RW };
     let ro = PagePerms { read: true, write: false, exec: false, accessed: true, dirty: false, ..PagePerms::USER_RW };
     const CODE_VA: usize = 0x2_0000;
@@ -1000,7 +1002,7 @@ fn fork_keeps_code_and_rodata_read_only() {
     azos_mm::vmm::map(pt, CODE_VA, code, rx).unwrap();
     azos_mm::vmm::map(pt, RODATA_VA, rodata, ro).unwrap();
 
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
 
     for (va, frame) in [(CODE_VA, code), (RODATA_VA, rodata)] {
         assert_eq!(azos_mm::vmm::translate_user(child, va, false), Some(frame), "still shared, readable");
@@ -1014,9 +1016,9 @@ fn fork_keeps_code_and_rodata_read_only() {
         assert_eq!(azos_mm::vmm::translate_user(pt, va, true), None, "the parent's stays read-only too");
     }
 
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
-    let _ = azos_mm::vmm::unmap_user_and_free(pt, CODE_VA, shm_lo, shm_hi);
-    let _ = azos_mm::vmm::unmap_user_and_free(pt, RODATA_VA, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
+    let _ = azos_mm::vmm::unmap_user_and_free(pt, CODE_VA);
+    let _ = azos_mm::vmm::unmap_user_and_free(pt, RODATA_VA);
     assert_eq!(azos_mm::vmm::page_getref(code), 0);
     assert_eq!(azos_mm::vmm::page_getref(rodata), 0);
 }
@@ -1034,7 +1036,6 @@ fn fork_keeps_code_and_rodata_read_only() {
 fn cow_break_by_the_last_holder_keeps_the_frame() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let rw = PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW };
     const DATA: usize = 0x2_0000;
     const KEPT: usize = 0x2_1000;
@@ -1043,7 +1044,8 @@ fn cow_break_by_the_last_holder_keeps_the_frame() {
     azos_mm::vmm::map(pt, DATA, data, rw).unwrap();
     azos_mm::vmm::map(pt, KEPT, kept, rw).unwrap();
 
-    let child = azos_mm::vmm::fork_cow_shared(azos_sched::shim_space(pt), shm_lo, shm_hi, false).expect("fork");
+    let (child, hold) = azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(pt), false).expect("fork");
+    drop(hold);
     assert_eq!(azos_mm::vmm::page_getref(data), 2);
 
     // Shared: the child's break copies, and the parent keeps the original.
@@ -1061,14 +1063,14 @@ fn cow_break_by_the_last_holder_keeps_the_frame() {
 
     // The child exits: `kept` goes back to one holder, and the parent's
     // break of it is a reuse as well.
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     assert_eq!(azos_mm::vmm::page_getref(kept), 1);
     azos_mm::vmm::handle_cow_fault(pt, KEPT).expect("break after the child's exit");
     assert_eq!(azos_mm::vmm::translate_user(pt, KEPT, true), Some(kept));
     assert_eq!(azos_mm::vmm::page_getref(kept), 0);
 
-    assert!(azos_mm::vmm::unmap_user_and_free(pt, DATA, shm_lo, shm_hi), "a private page is freed on unmap");
-    assert!(azos_mm::vmm::unmap_user_and_free(pt, KEPT, shm_lo, shm_hi));
+    assert!(azos_mm::vmm::unmap_user_and_free(pt, DATA), "a private page is freed on unmap");
+    assert!(azos_mm::vmm::unmap_user_and_free(pt, KEPT));
 }
 
 /// **`mprotect`'s write permission is exact (wave 13, security).**
@@ -1083,7 +1085,6 @@ fn cow_break_by_the_last_holder_keeps_the_frame() {
 fn mprotect_sets_write_exactly_and_respects_cow_and_exec() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let rw = PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW };
     let rx = PagePerms { read: true, write: false, exec: true, accessed: true, dirty: false, ..PagePerms::USER_RW };
     const DATA: usize = 0x2_0000;
@@ -1102,7 +1103,7 @@ fn mprotect_sets_write_exactly_and_respects_cow_and_exec() {
     assert_eq!(azos_mm::vmm::user_page(pt, CODE), azos_mm::vmm::UserPage::Leaf { exec: true });
 
     // Copy-on-write: fork shares DATA (COW in both tables).
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     assert_eq!(azos_mm::vmm::protect_user_range(child, DATA, DATA + 4096, true), 0,
                "a COW leaf made writable stays COW");
     assert!(azos_mm::vmm::user_write_would_be_permitted(child, DATA));
@@ -1112,14 +1113,14 @@ fn mprotect_sets_write_exactly_and_respects_cow_and_exec() {
     assert!(azos_mm::vmm::handle_cow_fault(child, DATA).is_err(), "no COW break into a writable copy");
     assert_eq!(azos_mm::vmm::page_getref(data), 2, "still shared, still counted");
 
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
-    let _ = azos_mm::vmm::unmap_user_and_free(pt, DATA, shm_lo, shm_hi);
-    let _ = azos_mm::vmm::unmap_user_and_free(pt, CODE, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
+    let _ = azos_mm::vmm::unmap_user_and_free(pt, DATA);
+    let _ = azos_mm::vmm::unmap_user_and_free(pt, CODE);
     assert_eq!(azos_mm::vmm::page_getref(data), 0);
 }
 
 /// **A page-table root some hart still translates through is not freed — any
-/// of it.** `destroy_user_pagetable_skip_range` asks `Mmu::root_holders`
+/// of it.** `destroy_user_pagetable` asks `Mmu::root_holders`
 /// first and, while the answer is non-zero, returns it and releases nothing:
 /// not the root, not its L1/L0 tables, not the leaf behind them. The hart
 /// still on the root reaches all of them. Asked again once no hart holds it,
@@ -1131,7 +1132,7 @@ fn mprotect_sets_write_exactly_and_respects_cow_and_exec() {
 /// the table down, and the frame came back as someone else's page.
 ///
 /// **Canary.** Drop the `root_holders` check at the top of
-/// `destroy_user_pagetable_skip_range`: the held call returns 0 having freed
+/// `destroy_user_pagetable`: the held call returns 0 having freed
 /// the four frames, and the test fails there.
 #[test]
 fn a_root_still_live_on_a_hart_is_refused_whole() {
@@ -1144,7 +1145,7 @@ fn a_root_still_live_on_a_hart_is_refused_whole() {
     let refusals = azos_mm::vmm::LIVE_ROOT_REFUSALS.load(Ordering::SeqCst);
 
     azos_arch::LIVE_ROOT.store(pt, Ordering::SeqCst);
-    let held = azos_mm::vmm::destroy_user_pagetable_skip_range(pt, 0, 0);
+    let held = azos_mm::vmm::destroy_user_pagetable(pt);
     azos_arch::LIVE_ROOT.store(0, Ordering::SeqCst);
     assert_eq!(held, 1 << 2, "the holder mask comes back to the caller, who prints it");
     assert_eq!(
@@ -1153,7 +1154,7 @@ fn a_root_still_live_on_a_hart_is_refused_whole() {
     );
     assert_eq!(azos_mm::vmm::LIVE_ROOT_REFUSALS.load(Ordering::SeqCst), refusals + 1);
 
-    assert_eq!(azos_mm::vmm::destroy_user_pagetable_skip_range(pt, 0, 0), 0);
+    assert_eq!(azos_mm::vmm::destroy_user_pagetable(pt), 0);
     assert_eq!(
         before - azos_mm::shim_pages_in_use(), 4,
         "released: root, L1, L0 and the leaf",
@@ -1237,48 +1238,65 @@ fn a_task_sharing_the_kernels_mmio_tables() -> (usize, usize) {
 
 // ── Kconfig LOCKED_HUGE_LEAVES: a locked row's 2 MiB-leaf region ───────────
 //
-// The mapper (`vmm::map_user_mega_range`), the range check `sys_munmap` uses
-// to refuse it (`vmm::user_range_has_mega_leaf`), and teardown, on the real
-// Sv39 walker. `sys_munmap`'s own refusal is compiled only when the option is
-// on, which this host build's `.config` does not set, so it is not reached
-// here; its predicate is.
+// The mapper (`vmm::map_user_mega_range`), the record the region is mapped as
+// (`pager::Backing::Phys`, which `sys_munmap` refuses and whose end clears the
+// level-1 leaves), and teardown, on the real Sv39 walker. The region's frames
+// are the row's for the whole boot: pinned, as `scheduler::row_arena_reserve`
+// pins them.
 
 /// 2 MiB, the Sv39 level-1 leaf.
 const MEGA: usize = 2 * 1024 * 1024;
-/// Where `LOCKED_ARENA_VA` lands on QEMU riscv64 (the shm/MMIO window base).
+/// Where `LOCKED_ARENA_VA` lands on QEMU riscv64.
 const ARENA: usize = 0x6000_0000;
 
 fn huge_flags() -> PagePerms {
     PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW }
 }
 
-/// Two 2 MiB leaves map the region; a user-permission walk resolves inside
-/// it; the munmap predicate sees it; the page-by-page unmap leaves it whole.
+/// A 2 MiB-aligned run of `bytes`, its frames pinned: a locked row's region.
+fn locked_region(bytes: usize) -> usize {
+    let pa = azos_mm::pmm::alloc_contiguous_aligned(bytes / PAGE_SIZE, MEGA).expect("a 2 MiB-aligned run in the arena").as_usize();
+    for off in (0..bytes).step_by(PAGE_SIZE) {
+        assert!(azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, true));
+    }
+    pa
+}
+
+fn release_locked_region(pa: usize, bytes: usize) {
+    for off in (0..bytes).step_by(PAGE_SIZE) {
+        assert!(azos_mm::pmm::set_frame_modifier(pa + off, azos_mm::frame::F_PINNED, false));
+        let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa + off));
+    }
+}
+
+/// Two 2 MiB leaves map the region as a record; a user-permission walk
+/// resolves inside it; `munmap` refuses the range; the owner's end clears the
+/// leaves and frees no frame.
 ///
 /// **Canary.** Make `map_user_mega_range` map page leaves (`vmm::map` per
 /// 4 KiB) instead of `map_mega`: `leaf_level` reads 0 and the first
-/// assertion fails.
+/// assertion fails. `phys-grant-ends-by-owner-canary`: `munmap` takes the
+/// record. `mm-rmap-missing-canary`: the record's end leaves its leaves.
 #[test]
 fn huge_region_is_two_level1_leaves_that_munmap_cannot_take() {
     let _g = serial();
     let pt = fresh_user_pt();
-    // Registered as a locked row's region, as the kernel does (`huge::reserve`):
-    // a level-1 USER leaf is told from a promoted superpage (Kconfig
-    // MM_THP_RESV) by its frames being in that table.
-    let pa = azos_mm::huge::reserve(1, 2 * MEGA).expect("a 2 MiB-aligned 4 MiB run in the arena");
+    let space = azos_sched::shim_space(pt);
+    let pa = locked_region(2 * MEGA);
+    azos_mm::pager::reserve_phys(space, ARENA, ARENA + 2 * MEGA, true, pa, azos_arch_api::MemType::WB, false).expect("recorded");
     azos_mm::vmm::map_user_mega_range(pt, ARENA, pa, 2 * MEGA, huge_flags()).expect("mapped");
     assert_eq!(azos_mm::vmm::leaf_level(pt, ARENA), Some(1));
     assert_eq!(azos_mm::vmm::leaf_level(pt, ARENA + MEGA + 5 * PAGE_SIZE), Some(1));
     assert_eq!(azos_mm::vmm::translate_user(pt, ARENA + MEGA + 123, true), Some(pa + MEGA + 123));
-    assert!(azos_mm::vmm::user_range_has_mega_leaf(pt, ARENA + PAGE_SIZE, ARENA + 2 * PAGE_SIZE));
-    assert!(!azos_mm::vmm::user_range_has_mega_leaf(pt, ARENA + 2 * MEGA, ARENA + 3 * MEGA),
-        "the slot past the region holds no leaf");
-    let free = azos_mm::pmm::free_pages();
-    assert_eq!(azos_mm::vmm::unmap_user_range_and_free(pt, ARENA, ARENA + 2 * MEGA, 0, 0), 0,
-        "no 4 KiB frame of the region is the task's to free");
-    assert_eq!(azos_mm::pmm::free_pages(), free);
+    assert!(azos_mm::pager::has_phys(space, ARENA + PAGE_SIZE, ARENA + 2 * PAGE_SIZE));
+    assert!(!azos_mm::pager::has_phys(space, ARENA + 2 * MEGA, ARENA + 3 * MEGA), "the slot past the region holds no record");
+    assert_eq!(sys_munmap(ARENA as u64, (2 * MEGA) as u64), azos_abi::error::Errno::EINVAL.to_syscall_ret(), "munmap took the region");
     assert_eq!(azos_mm::vmm::leaf_level(pt, ARENA), Some(1), "still mapped");
-    azos_mm::huge::release_all();
+    let free = azos_mm::pmm::free_pages();
+    azos_mm::pager::release_range(space, ARENA, ARENA + 2 * MEGA).expect("the owner's end");
+    assert_eq!(azos_mm::pmm::free_pages(), free, "no frame of the region is the task's to free");
+    assert_eq!(azos_mm::vmm::leaf_level(pt, ARENA), None, "the record's end left its leaves");
+    release_locked_region(pa, 2 * MEGA);
 }
 
 /// Refused before anything is written: executable, unaligned, or onto a
@@ -1299,26 +1317,28 @@ fn map_user_mega_range_refuses_and_writes_nothing() {
     assert_eq!(azos_mm::vmm::leaf_level(pt, ARENA), None, "the first slot was not written");
 }
 
-/// Teardown frees the tables and never the region: the frames are the row's
-/// for the whole boot.
+/// The space's end frees the tables and never the region: the frames are the
+/// row's for the whole boot.
 ///
-/// **Canary.** Let `destroy_user_pagetable_skip_range` treat a level-1 leaf
-/// like a page leaf (free its base through `page_decref`): two more frames
-/// come back and the count is off.
+/// No canary discriminates: the region's frames are pinned, so a sweep that
+/// freed a level-1 leaf's frames would be refused by `free_page`, and the
+/// count here would not move. The row holds the table accounting.
 #[test]
 fn teardown_frees_the_tables_not_the_region() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let pa = azos_mm::huge::reserve(1, 2 * MEGA).expect("a 2 MiB-aligned 4 MiB run in the arena");
+    let space = azos_sched::shim_space(pt);
+    let pa = locked_region(2 * MEGA);
+    azos_mm::pager::reserve_phys(space, ARENA, ARENA + 2 * MEGA, true, pa, azos_arch_api::MemType::WB, false).expect("recorded");
     let before = azos_mm::pmm::free_pages();
     azos_mm::vmm::map_user_mega_range(pt, ARENA, pa, 2 * MEGA, huge_flags()).expect("mapped");
     let tables = before - azos_mm::pmm::free_pages();
     assert_eq!(tables, 1, "one level-1 table under the root");
     azos_sched::set_current_user_pt(0);
-    assert_eq!(azos_mm::vmm::destroy_user_pagetable_skip_range(pt, 0, 0), 0);
+    azos_sched::shim_end_space(pt);
     assert_eq!(azos_mm::pmm::free_pages(), before + 1,
         "the level-1 table and the root come back, the 1024 region frames do not");
-    azos_mm::huge::release_all();
+    release_locked_region(pa, 2 * MEGA);
 }
 
 /// **A fork child's `mprotect(RW)` of a page its parent shares read-only
@@ -1336,7 +1356,6 @@ fn teardown_frees_the_tables_not_the_region() {
 fn mprotect_shared_lands_on_a_private_copy() {
     let _g = serial();
     let pt = fresh_user_pt();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     const RO_VA: usize = 0x2_4000;
     const RW_VA: usize = 0x2_5000;
     let ro = PagePerms { read: true, write: false, exec: false, accessed: true, dirty: false, ..PagePerms::USER_RW };
@@ -1347,7 +1366,7 @@ fn mprotect_shared_lands_on_a_private_copy() {
     unsafe { *(azos_mm::addr::phys_to_virt(rw_frame) as *mut u8) = 0x3c; }
     azos_mm::vmm::map(pt, RO_VA, ro_frame, ro).unwrap();
     azos_mm::vmm::map(pt, RW_VA, rw_frame, rw).unwrap();
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     assert_eq!(azos_mm::vmm::page_getref(ro_frame), 2);
 
     // mprotect(RW) in the child, then its store (a kernel write for it
@@ -1364,7 +1383,7 @@ fn mprotect_shared_lands_on_a_private_copy() {
         assert_eq!(unsafe { *(azos_mm::addr::phys_to_virt(mine) as *const u8) }, 0xa5, "{va:#x}: child's byte");
     }
     // A sole page still becomes writable in place.
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     azos_mm::vmm::protect_user_range(pt, RO_VA, RO_VA + PAGE_SIZE, true);
     assert_eq!(azos_mm::vmm::translate_user(pt, RO_VA, true), Some(ro_frame), "sole: written in place");
 }

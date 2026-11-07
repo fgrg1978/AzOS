@@ -15,8 +15,8 @@
 //! * the descriptor table: a descriptor's owner is the process id
 //!   (`current_proc_tid`), and the Linux personality's per-process state is
 //!   keyed by it;
-//! * the frame budget is the domain's; the program break and the shm/MMIO
-//!   window reservations live on the leader's slot (`scheduler::proc_slot`).
+//! * the frame budget is the domain's; the program break and the mmap
+//!   area's cursor live on the leader's slot (`scheduler::proc_slot`).
 //!
 //! # Lifetime
 //!

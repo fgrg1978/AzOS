@@ -378,6 +378,14 @@ pub fn spawn_prepare(
     } else {
         None
     };
+    // The address space exists from here: what the loader left out of the page
+    // table (the vDSO) is recorded in it, and every refusal below ends it.
+    let Some(space) = azos_mm::aspace::create(user_pt) else {
+        azos_drv_sys::kwarn!("[SPAWN] REFUSED: {} -- no memory for its address space object", name);
+        vmm::destroy_user_pagetable(user_pt);
+        return Err(SpawnError::NoMemory);
+    };
+    ctx.frames = ctx.frames.saturating_add(crate::process::map_vdso(space));
     // An image that does not fit its row's budget is refused
     // before any task exists for it.
     if mem.limit != 0 && ctx.frames > mem.limit {
@@ -386,7 +394,7 @@ pub fn spawn_prepare(
             name, ctx.frames, mem.limit,
         );
         crate::scheduler::note_mm_quota_refusal();
-        vmm::destroy_user_pagetable(user_pt);
+        azos_mm::aspace::destroy(space);
         return Err(SpawnError::OverBudget);
     }
 
@@ -401,15 +409,9 @@ pub fn spawn_prepare(
             "[MEM] spawn REFUSED: {} -- its row already has {} of {} live instance(s) (instance refusals: {})",
             name, live, mem.instances, n,
         );
-        vmm::destroy_user_pagetable(user_pt);
+        azos_mm::aspace::destroy(space);
         return Err(SpawnError::Instances);
     }
-    let Some(space) = azos_mm::aspace::create(user_pt) else {
-        azos_drv_sys::kwarn!("[SPAWN] REFUSED: {} -- no memory for its address space object", name);
-        vmm::destroy_user_pagetable(user_pt);
-        crate::scheduler::row_release(mem.row);
-        return Err(SpawnError::NoMemory);
-    };
 
     let (priority, class_raw) = match sched {
         Some((p, c)) => (p, Some(c)),
@@ -436,7 +438,7 @@ pub fn spawn_prepare(
     ) {
         Some(idx) => idx,
         None => {
-            azos_mm::aspace::destroy(space, 0, 0);
+            azos_mm::aspace::destroy(space);
             crate::scheduler::row_release(mem.row);
             return Err(SpawnError::NoTask);
         }
@@ -446,7 +448,7 @@ pub fn spawn_prepare(
     let tid = match crate::tid_for_idx(idx) {
         Some(tid) => tid,
         None => {
-            azos_mm::aspace::destroy(space, 0, 0);
+            azos_mm::aspace::destroy(space);
             crate::scheduler::row_release(mem.row);
             return Err(SpawnError::NoTask);
         }

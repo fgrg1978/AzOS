@@ -880,8 +880,9 @@ const _: () = assert!(
     "HV_EXAMPLE_GUEST_MEM_MIB needs more MemObjs than VMMD.ELF may own: raise MAX_MEMOBJS"
 );
 /// Mapping records the monitor needs besides the RAM objects: its trap page,
-/// the NIC ring and the console ring, and 8 of its own (anonymous and file).
-const VMMD_OTHER_RECORDS: usize = 3 + 8;
+/// the NIC ring and the console ring, 8 of its own (anonymous and file), the
+/// vDSO page and the notify page.
+const VMMD_OTHER_RECORDS: usize = 3 + 8 + 2;
 const _: () = assert!(
     !azos_limits::HV_EXAMPLE_GUEST || EXAMPLE_GUEST_RAM_OBJS + VMMD_OTHER_RECORDS <= azos_limits::MM_REGIONS_PER_SPACE as usize,
     "HV_EXAMPLE_GUEST_MEM_MIB needs more mapping records than VMMD.ELF's address space has: raise MM_REGIONS_PER_SPACE"

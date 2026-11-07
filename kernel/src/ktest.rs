@@ -2403,7 +2403,7 @@ azos_ktest::ktest_late! {
             return Err("no object for the first space");
         };
         let held = pager::reserve(a, BASE, BASE + 8 * azos_arch::PAGE_SIZE, true).is_ok() && pager::space_pages(a) == (8, 0);
-        if aspace::destroy(a, 0, 0) != 0 {
+        if aspace::destroy(a) != 0 {
             return Err("a hart is on a root no task ran on");
         }
         if !held {
@@ -2417,7 +2417,7 @@ azos_ktest::ktest_late! {
         let clean = pager::space_pages(b) == (0, 0);
         let mine = pager::reserve(b, BASE, BASE + 2 * azos_arch::PAGE_SIZE, true).is_ok() && pager::space_pages(b) == (2, 0);
         let stale = a != b && pager::space_pages(a) == (0, 0) && !pager::contains(a, BASE);
-        let _ = aspace::destroy(b, 0, 0);
+        let _ = aspace::destroy(b);
         if !clean {
             return Err("the next space started with the dead one's records");
         }
@@ -2448,7 +2448,7 @@ azos_ktest::ktest_late! {
             return Err("no address space");
         };
         let Ok(run) = pmm::alloc_contiguous_aligned(pages, mega) else {
-            let _ = aspace::destroy(a, 0, 0);
+            let _ = aspace::destroy(a);
             return Err("no run");
         };
         let mapped = pager::reserve(a, base, base + mega, true).is_ok()
@@ -2462,7 +2462,7 @@ azos_ktest::ktest_late! {
         for i in 0..pages {
             vmm::unmap(pt, base + i * page);
         }
-        let _ = aspace::destroy(a, 0, 0);
+        let _ = aspace::destroy(a);
         let _ = pmm::free_run(run, pages);
         if !mapped {
             return Err("the block was not mapped");
@@ -2510,15 +2510,14 @@ azos_ktest::ktest_late! {
             unsafe { core::ptr::write_bytes(addr::phys_to_virt(f) as *mut u8, 0x6E, page) };
         }
         let released = pager::release_range(a, BASE, BASE + page).is_ok();
-        let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-        let _ = vmm::unmap_user_range_and_free(pt, BASE, BASE + page, shm_lo, shm_hi);
+        let _ = vmm::unmap_user_range_and_free(pt, BASE, BASE + page);
         let hole = matches!(pager::resolve_fault(a, BASE), Err(azos_common::error::KernelError::NotMapped));
         let cleared = empty(BASE);
         // SAFETY: as above.
         let bytes = kept.is_some_and(|f| unsafe {
             core::slice::from_raw_parts(addr::phys_to_virt(f) as *const u8, page).iter().all(|&b| b == 0x6E)
         }) && vmm::translate(pt, BASE + page) == kept;
-        let _ = aspace::destroy(a, 0, 0);
+        let _ = aspace::destroy(a);
         if !made || kept.is_none() {
             return Err("the first touches were not resolved");
         }
@@ -2562,7 +2561,7 @@ azos_ktest::ktest_late! {
         };
         let made = pager::reserve_obj(a, BASE, BASE + page, 0).is_ok()
             && vmm::map(pt, BASE, frame.as_usize(), PagePerms::USER_RW).is_ok();
-        let _ = aspace::destroy(a, 0, 0);
+        let _ = aspace::destroy(a);
         let kept = !pmm::range_is_free(frame.as_usize(), page);
         // Freed already when it was not kept: the end of the space did it.
         if kept {
@@ -2573,6 +2572,177 @@ azos_ktest::ktest_late! {
         }
         if !kept {
             return Err("the end of a space freed the frame of a shared mapping");
+        }
+        Ok(())
+    }
+}
+
+// A physical range lent to a task (a device's registers, a ring page, the vDSO
+// page) is a record of its space that ends with it on every ISA, and the sweep
+// leaves the owner's frame alone. Host twin: syscall-tests phys_ranges.rs
+// `a_space_that_ends_leaves_a_physical_range_to_its_owner`. Canary by hand: the
+// host feature `mm-rmap-missing-canary` (`unmap_shared` returning at once): the
+// frame is free after the space's end.
+azos_ktest::ktest_late! {
+    fn physical_range_ends_with_its_space_on_every_isa() {
+        use azos_arch_api::MemType;
+        use azos_mm::{aspace, pager, pmm, vmm};
+        const BASE: usize = 0x40_0000;
+        let page = azos_arch::PAGE_SIZE;
+        let frame = pmm::alloc_page().map_err(|_| "no frame")?;
+        let pt = match vmm::create_pagetable() {
+            Ok(pt) => pt,
+            Err(_) => {
+                let _ = pmm::free_page(frame);
+                return Err("no root");
+            }
+        };
+        let Some(a) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            let _ = pmm::free_page(frame);
+            return Err("no address space");
+        };
+        let pa = frame.as_usize();
+        let made = pager::reserve_phys(a, BASE, BASE + page, true, pa, MemType::WB, false).is_ok()
+            && vmm::map_phys(pt, BASE, pa, 1, true, MemType::WB).is_ok();
+        let mapped = vmm::translate(pt, BASE) == Some(pa);
+        let _ = aspace::destroy(a);
+        let kept = !pmm::range_is_free(pa, page);
+        if kept {
+            let _ = pmm::free_page(frame);
+        }
+        if !made || !mapped {
+            return Err("the physical range was not made");
+        }
+        if !kept {
+            return Err("the end of a space freed the frame of a physical range");
+        }
+        Ok(())
+    }
+}
+
+// The memory type of a physical range is in its leaf on every ISA: a Device
+// range is device memory to the kernel's user walk, which refuses to copy
+// through it (PAT on x86_64, MAIR on aarch64, Svpbmt on riscv64 where the CPU
+// has it), and a write-back range is not. Host twin: syscall-tests mmio_map.rs
+// `a_device_window_is_mapped_as_device_memory`. Canary by hand: the host
+// feature `phys-memtype-canary` (every range write-back).
+azos_ktest::ktest_late! {
+    fn physical_range_memory_type_is_in_its_leaf_on_every_isa() {
+        use azos_arch_api::MemType;
+        use azos_mm::{aspace, pager, pmm, vmm};
+        const DEVICE: usize = 0x40_0000;
+        const CACHED: usize = 0x40_1000;
+        let page = azos_arch::PAGE_SIZE;
+        let frame = pmm::alloc_page().map_err(|_| "no frame")?;
+        let pa = frame.as_usize();
+        let pt = match vmm::create_pagetable() {
+            Ok(pt) => pt,
+            Err(_) => {
+                let _ = pmm::free_page(frame);
+                return Err("no root");
+            }
+        };
+        let Some(a) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            let _ = pmm::free_page(frame);
+            return Err("no address space");
+        };
+        let made = pager::reserve_phys(a, DEVICE, DEVICE + page, true, pa, MemType::Device, false).is_ok()
+            && pager::reserve_phys(a, CACHED, CACHED + page, true, pa, MemType::WB, false).is_ok()
+            && vmm::map_phys(pt, DEVICE, pa, 1, true, MemType::Device).is_ok()
+            && vmm::map_phys(pt, CACHED, pa, 1, true, MemType::WB).is_ok();
+        // Svpbmt is optional on riscv64: without it the leaf cannot say.
+        #[cfg(target_arch = "riscv64")]
+        let encoded = azos_arch::mmu::svpbmt_on();
+        #[cfg(not(target_arch = "riscv64"))]
+        let encoded = true;
+        let device_refused = vmm::translate_user_readable_nofault(pt, DEVICE).is_none();
+        let cached_read = vmm::translate_user_readable_nofault(pt, CACHED) == Some(pa);
+        let _ = aspace::destroy(a);
+        let _ = pmm::free_page(frame);
+        if !made {
+            return Err("the ranges were not made");
+        }
+        if !cached_read {
+            return Err("a write-back range was not read as memory");
+        }
+        if encoded && !device_refused {
+            return Err("a device range was read as memory: its leaf is cached");
+        }
+        Ok(())
+    }
+}
+
+// A fork gives the child a physical range that says so, as a record and the
+// same frame with no count, and not one that does not (the vDSO page is the
+// first kind, a device window or a ring page the second). Host twin:
+// syscall-tests phys_ranges.rs `a_fork_gives_the_child_only_the_ranges_that_say_so`.
+// Canary by hand: the host feature `phys-inherit-ignored-canary`.
+azos_ktest::ktest_late! {
+    fn fork_gives_the_child_only_the_ranges_that_say_so_on_every_isa() {
+        use azos_arch_api::MemType;
+        use azos_mm::{aspace, cow, pager, pmm, vmm};
+        const SHARED: usize = 0x40_0000;
+        const OWN: usize = 0x40_1000;
+        let page = azos_arch::PAGE_SIZE;
+        let (shared, own) = (pmm::alloc_page().map_err(|_| "no frame")?, pmm::alloc_page().map_err(|_| "no frame")?);
+        let (sp, op) = (shared.as_usize(), own.as_usize());
+        let free_frames = || {
+            let _ = pmm::free_page(shared);
+            let _ = pmm::free_page(own);
+        };
+        let pt = match vmm::create_pagetable() {
+            Ok(pt) => pt,
+            Err(_) => {
+                free_frames();
+                return Err("no root");
+            }
+        };
+        let Some(a) = aspace::create(pt) else {
+            vmm::destroy_user_pagetable(pt);
+            free_frames();
+            return Err("no address space");
+        };
+        let made = pager::reserve_phys(a, SHARED, SHARED + page, false, sp, MemType::WB, true).is_ok()
+            && vmm::map_phys(pt, SHARED, sp, 1, false, MemType::WB).is_ok()
+            && pager::reserve_phys(a, OWN, OWN + page, true, op, MemType::WB, false).is_ok()
+            && vmm::map_phys(pt, OWN, op, 1, true, MemType::WB).is_ok();
+        let Ok((cpt, hold)) = cow::fork_cow_shared_held(a, false) else {
+            let _ = aspace::destroy(a);
+            free_frames();
+            return Err("the fork's walk was refused");
+        };
+        let Some(c) = aspace::create(cpt) else {
+            drop(hold);
+            vmm::destroy_user_pagetable(cpt);
+            let _ = aspace::destroy(a);
+            free_frames();
+            return Err("no address space for the child");
+        };
+        let cloned = pager::fork_clone(a, c).is_ok();
+        drop(hold);
+        let gave = vmm::translate(cpt, SHARED) == Some(sp);
+        let withheld = vmm::translate(cpt, OWN).is_none();
+        let uncounted = cow::page_getref(sp) == 0 && cow::page_getref(op) == 0;
+        let _ = aspace::destroy(c);
+        let parent_keeps = vmm::translate(pt, SHARED) == Some(sp);
+        let _ = aspace::destroy(a);
+        free_frames();
+        if !made || !cloned {
+            return Err("the ranges were not made or the clone was refused");
+        }
+        if !gave {
+            return Err("the child lacks the range that says so");
+        }
+        if !withheld {
+            return Err("the child holds a range that does not");
+        }
+        if !uncounted {
+            return Err("a range's frame was counted as a shared page");
+        }
+        if !parent_keeps {
+            return Err("the child's end took the parent's leaf");
         }
         Ok(())
     }
@@ -2607,7 +2777,7 @@ azos_ktest::ktest_late! {
         let kept = now.is_some_and(|f| unsafe {
             core::slice::from_raw_parts(addr::phys_to_virt(f) as *const u8, page).iter().all(|&b| b == 0x3D)
         });
-        let _ = aspace::destroy(a, 0, 0);
+        let _ = aspace::destroy(a);
         if !first || frame.is_none() {
             return Err("the first touch was not resolved");
         }
@@ -2650,15 +2820,14 @@ azos_ktest::ktest_late! {
         if let Some(f) = f0 {
             fill(f, 0x5A);
         }
-        let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-        let Ok((cpt, hold)) = cow::fork_cow_shared_held(a, shm_lo, shm_hi, false) else {
-            let _ = aspace::destroy(a, 0, 0);
+        let Ok((cpt, hold)) = cow::fork_cow_shared_held(a, false) else {
+            let _ = aspace::destroy(a);
             return Err("the fork's walk was refused");
         };
         let Some(c) = aspace::create(cpt) else {
             drop(hold);
             vmm::destroy_user_pagetable(cpt);
-            let _ = aspace::destroy(a, 0, 0);
+            let _ = aspace::destroy(a);
             return Err("no address space for the child");
         };
         let cloned = pager::fork_clone(a, c).is_ok_and(|uncommitted| uncommitted == 0);
@@ -2679,10 +2848,10 @@ azos_ktest::ktest_late! {
             fill(f, 0x6B);
         }
         let kept = vmm::translate(cpt, BASE) == f0 && f0.is_some_and(|f| first(f) == 0x5A);
-        let _ = aspace::destroy(c, 0, 0);
+        let _ = aspace::destroy(c);
         let alone = f0.is_some_and(|f| cow::page_getref(f) <= 1)
             && vmm::translate(pt, BASE + page).is_some_and(|f| cow::page_getref(f) <= 1);
-        let _ = aspace::destroy(a, 0, 0);
+        let _ = aspace::destroy(a);
         if !made || f0.is_none() {
             return Err("the heap was not committed");
         }

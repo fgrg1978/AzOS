@@ -3158,31 +3158,6 @@ fn update_group_word(addr: u64, pick: fn(&mut Task) -> &mut u64) -> u64 {
     }
 }
 
-/// Reserve `span` bytes of the current task's shm/MMIO window `[lo, hi)`
-/// ([`crate::user_window::reserve`]). `None` when no task is current.
-///
-/// Unlocked, like [`update_user_brk`]: a task's reservations are written only
-/// by its own syscalls, and by the slot reuse that clears them after it has
-/// exited.
-pub fn reserve_current_user_window(lo: usize, hi: usize, span: usize) -> Option<usize> {
-    let idx = my_idx();
-    unsafe {
-        if idx == usize::MAX { return None; }
-        crate::user_window::reserve(&mut task_mut(proc_slot(idx)).user_window, lo, hi, span)
-    }
-}
-
-/// Give back the current task's reservation `[base, base + span)`
-/// ([`crate::user_window::release`]). `false` when no task is current or the
-/// task holds no such reservation.
-pub fn release_current_user_window(base: usize, span: usize) -> bool {
-    let idx = my_idx();
-    unsafe {
-        if idx == usize::MAX { return false; }
-        crate::user_window::release(&mut task_mut(proc_slot(idx)).user_window, base, span)
-    }
-}
-
 /// Set user info for a specific task by pool index (used by fork, whose child
 /// copies the parent's break and mmap cursor with its address space, and by
 /// spawn, whose new address space has handed nothing out: cursor 0).

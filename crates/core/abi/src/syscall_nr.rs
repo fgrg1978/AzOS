@@ -777,8 +777,8 @@ pub const SYS_IPC_REPLY_DELEGATE: u64 = 24;
 /// `Cap<IoRing>` into the caller's cap-table.
 ///
 /// `a0 = out_ptr` (8 bytes, `u64 LE`): ring 3 receives the user address
-/// of the ring page, mapped user RW and never executable in the task's
-/// shm/MMIO window and unmapped by [`SYS_CAP_CLOSE`]; a kernel
+/// of the ring page, mapped user RW and never executable, as a physical
+/// range of the task's address space, and unmapped by [`SYS_CAP_CLOSE`]; a kernel
 /// caller receives the physical address.
 ///
 /// Returns the raw `CapHandle` as `i64` (positive) on success, or

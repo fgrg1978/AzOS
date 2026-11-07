@@ -52,35 +52,35 @@ pub use crate::cow_table::shim_set_cow_breaks;
 
 /// Create a COW copy of a user page table.
 ///
-/// Marks every USER leaf (4 KiB) page outside `[skip_lo, skip_hi)` and outside
-/// the anonymous mappings of the space (`pager::fork_clone` clones those) as
-/// read-only + COW in both parent and child.  Kernel entries (megapages / no
-/// USER bit) are skipped — use `vmm::copy_kernel_entries_to_user()` separately.
+/// Marks every USER leaf (4 KiB) page outside the anonymous mappings of the
+/// space (`pager::fork_clone` clones those) and outside its mappings of other
+/// owners' frames as read-only + COW in both parent and child.  Kernel entries
+/// (megapages / no USER bit) are skipped — use
+/// `vmm::copy_kernel_entries_to_user()` separately.
 ///
 /// Returns the new page table's physical address.
 ///
-/// Leaves inside `[skip_lo, skip_hi)` — the MMIO, ring and notify window, the
-/// same range exec and exit pass to [`vmm::destroy_user_pagetable_skip_range`]
-/// — stay writable in the parent and are not mapped in the child, and so are
-/// the pages of the parent's shared-object and shared-file mappings (its
-/// records say which). Their frames belong to a region, a cache or a device,
-/// not to the address space. Made COW, the parent's next store landed on a
-/// private copy while the owner kept the original; once both tasks had
+/// The pages of the parent's shared-object, shared-file and physical-range
+/// mappings (its records say which) stay writable in the parent and are not
+/// mapped in the child by the walk. Their frames belong to a region, a cache or
+/// a device, not to the address space. Made COW, the parent's next store landed
+/// on a private copy while the owner kept the original; once both tasks had
 /// written, the second copy's decref returned the owner's frame to the
 /// allocator while it was still owned; and a page nobody wrote kept its
 /// refcount entry for good, because teardown never decrefs them. The child
-/// holds no capability or mapping record for them in any case.
+/// holds no capability or mapping record for them unless the fork gives it one
+/// (`pager::fork_clone`).
 ///
 /// On any error the partially built `child_pt` is torn down here (see
 /// [`vmm::destroy_user_pagetable`]) before returning. It used to be the
 /// caller's job, and no caller did it: `fork()` is reachable from ring 3 in a
 /// loop, so every `CapacityFull` from the refcount table leaked a root page
 /// table plus every intermediate table built so far.
-pub fn fork_cow(parent_pt: usize, skip_lo: usize, skip_hi: usize) -> KResult<usize> {
-    // (See [`fork_share_range`] for the one thing a fork gives the child out
-    // of that window: a shared-memory mapping the child inherits.)
+pub fn fork_cow(parent_pt: usize) -> KResult<usize> {
+    // (See [`fork_share_range`] for what a fork gives the child out of the
+    // mappings the walk passes: a shared-memory mapping the child inherits.)
     let parent = crate::aspace::current_with_root(parent_pt);
-    fork_cow_walk_held(parent, parent_pt, skip_lo, skip_hi, false).map(|(pt, _)| pt)
+    fork_cow_walk_held(parent, parent_pt, false).map(|(pt, _)| pt)
 }
 
 /// The fork rule for a shared-memory mapping (owner decision 16-10, the
@@ -91,7 +91,7 @@ pub fn fork_cow(parent_pt: usize, skip_lo: usize, skip_hi: usize) -> KResult<usi
 /// parent), and the child's teardown spares them: the child's record of the
 /// mapping (`pager::reserve_obj`) clears its leaves first.
 ///
-/// `[va, va + pages * PAGE_SIZE)` is a mapping of the parent's that `fork_cow`
+/// `[va, va + pages * PAGE_SIZE)` is a mapping of the parent's that the walk
 /// left out of the child; the caller has booked the child's reference and
 /// records the mapping once the leaves are copied. Every page must
 /// be a valid user leaf in the parent. On an error the pages done are
@@ -161,21 +161,12 @@ impl crate::memobj::ChildLeaves for ForkLeaves {
 ///
 /// Returns the child's root. Its mappings, and what they reserve, are the
 /// pager's to clone (`pager::fork_clone`).
-pub fn fork_cow_shared(parent: SpaceRef, skip_lo: usize, skip_hi: usize, concurrent: bool) -> KResult<usize> {
-    fork_cow_shared_held(parent, skip_lo, skip_hi, concurrent).map(|(pt, _)| pt)
-}
-
-/// [`fork_cow_shared`] that keeps the fork's hold on the parent
-/// ([`crate::pager::ForkHold`]): the caller drops it once the child's mappings
-/// are cloned (`pager::fork_clone`), so the parent's pages stay as the walk saw
-/// them meanwhile.
-pub fn fork_cow_shared_held(
-    parent: SpaceRef,
-    skip_lo: usize,
-    skip_hi: usize,
-    concurrent: bool,
-) -> KResult<(usize, crate::pager::ForkHold)> {
-    fork_cow_walk_held(Some(parent), parent.root(), skip_lo, skip_hi, concurrent)
+/// The fork's hold on the parent ([`crate::pager::ForkHold`]) comes with the
+/// child's root: the caller drops it once the child's mappings are cloned
+/// (`pager::fork_clone`), so the parent's pages stay as the walk saw them
+/// meanwhile.
+pub fn fork_cow_shared_held(parent: SpaceRef, concurrent: bool) -> KResult<(usize, crate::pager::ForkHold)> {
+    fork_cow_walk_held(Some(parent), parent.root(), concurrent)
 }
 
 /// The walk of `parent_pt`, with the space's pager held off it (`parent`:
@@ -183,8 +174,6 @@ pub fn fork_cow_shared_held(
 fn fork_cow_walk_held(
     parent: Option<SpaceRef>,
     parent_pt: usize,
-    skip_lo: usize,
-    skip_hi: usize,
     concurrent: bool,
 ) -> KResult<(usize, crate::pager::ForkHold)> {
     // Superpage reservations (Kconfig `MM_THP_RESV`): the walk below skips
@@ -203,15 +192,15 @@ fn fork_cow_walk_held(
         Some(p) => crate::pager::passed_ranges(p).map_err(|_| KernelError::OutOfMemory)?,
         None => alloc::vec::Vec::new(),
     };
-    let pt = fork_cow_walk(parent_pt, skip_lo, skip_hi, &anon, concurrent)?;
+    let pt = fork_cow_walk(parent_pt, &anon, concurrent)?;
     Ok((pt, hold))
 }
 
-fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, anon: &[(usize, usize, bool)], concurrent: bool) -> KResult<usize> {
+fn fork_cow_walk(parent_pt: usize, anon: &[(usize, usize, bool)], concurrent: bool) -> KResult<usize> {
     let child_pt = vmm::create_pagetable()?;
 
     let mut pruned = Pruned { tables: [0; PRUNE_MAX], n: 0 };
-    let skip = Skip { lo: skip_lo, hi: skip_hi, anon };
+    let skip = Skip { anon };
     let r = if concurrent {
         fork_cow_inner::<true>(parent_pt, child_pt, &skip, &mut pruned)
     } else {
@@ -257,12 +246,10 @@ struct Pruned {
     n: usize,
 }
 
-/// What the walk passes: the shm/MMIO window `[lo, hi)`, and the anonymous and
-/// shared mappings (sorted, disjoint; `true`: anonymous, whose pages the clone
-/// shares).
+/// What the walk passes: the anonymous mappings, the physical ranges a fork
+/// gives the child and the shared mappings (sorted, disjoint; `true`: the clone
+/// makes the child's pages, which needs its leaf table).
 struct Skip<'a> {
-    lo: usize,
-    hi: usize,
     anon: &'a [(usize, usize, bool)],
 }
 
@@ -286,15 +273,15 @@ impl Skip<'_> {
         }
     }
 
-    /// Does an anonymous mapping hold a page of `[lo, hi)`? Its pages are the
-    /// clone's, which needs the child's leaf table.
+    /// Does a mapping the clone fills hold a page of `[lo, hi)`? Its pages are
+    /// the clone's, which needs the child's leaf table.
     #[inline]
     fn anon_holds(&self, lo: usize, hi: usize) -> bool {
         let i = self.anon.partition_point(|&(_, e, _)| e <= lo);
         self.anon[i..].iter().take_while(|&&(s, _, _)| s < hi).any(|&(_, _, a)| a)
     }
 
-    /// Does an anonymous mapping hold the page at `va`?
+    /// Does a mapping the walk passes hold the page at `va`?
     #[inline]
     fn anon_at(&self, va: usize) -> bool {
         let i = self.anon.partition_point(|&(_, e, _)| e <= va);
@@ -402,17 +389,13 @@ fn fork_cow_l2<const CONCURRENT: bool>(
             // ~150 of a fork's ~600 instructions per page).
             let mut child_l0: *mut u64 = core::ptr::null_mut();
             let mut vpn0_next = 0usize;
-            // A leaf table wholly inside the shm/MMIO window holds nothing a
-            // child gets (see `fork_cow`), and one an anonymous mapping holds
-            // whole is the clone's: not walked at all.
+            // A leaf table one anonymous or shared mapping holds whole is the
+            // clone's or nobody's: not walked at all.
             let part = {
                 const L0_SPAN_SHIFT: usize = azos_arch_api::PAGE_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
                 const L1_SPAN_SHIFT: usize = L0_SPAN_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
                 let lo = base | (vpn2 << L1_SPAN_SHIFT) | (vpn1 << L0_SPAN_SHIFT);
                 let hi = lo + (1usize << L0_SPAN_SHIFT);
-                if lo >= skip.lo && hi <= skip.hi {
-                    continue;
-                }
                 let held = skip.held(lo, hi);
                 // The child's leaf table for the clone, made now, before the
                 // kernel's entries are merged into the child's root: the merge
@@ -461,11 +444,10 @@ fn fork_cow_l2<const CONCURRENT: bool>(
 
                 let vaddr = base | leaf_vaddr(vpn2, vpn1, vpn0);
 
-                // The shm/MMIO window is neither COW nor shared (see
-                // `fork_cow`), and an anonymous mapping's page is the clone's.
-                // Checked before the addref, or every skipped page would still
-                // take a refcount entry.
-                if (vaddr >= skip.lo && vaddr < skip.hi) || (part && skip.anon_at(vaddr)) {
+                // A page of a mapping the walk passes is neither COW nor shared
+                // by it (see `fork_cow`). Checked before the addref, or every
+                // skipped page would still take a refcount entry.
+                if part && skip.anon_at(vaddr) {
                     continue;
                 }
 
@@ -642,7 +624,7 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
     //
     // The count is read, the entry rewritten and the count cleared as three
     // steps, no lock between them. A concurrent fork from another thread of
-    // this process (`fork_cow_shared`: addref, then swap the parent's entry)
+    // this process (`fork_cow_shared_held`: addref, then swap the parent's entry)
     // either counted the frame before the read (2: this takes the copy path),
     // or finds the entry already writable (its swap fails and it retakes it),
     // or counts it between the read and the clear: `page_forget_if_sole`

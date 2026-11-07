@@ -71,9 +71,8 @@ fn a_physical_range_is_never_made_executable() {
     let pt = space();
     let pa = owner_page();
     let va = lend(pa, true, MemType::WB).expect("lent");
-    let (lo, hi) = azos_sched::user_shm_window();
     assert!(
-        azos_mm::vmm::set_user_range_exec(pt, va, va + PAGE_SIZE, lo, hi).is_err(),
+        azos_mm::vmm::set_user_range_exec(pt, va, va + PAGE_SIZE).is_err(),
         "a physical range's frame was made executable"
     );
     let perms = azos_mm::vmm::translate_user(pt, va, true);
@@ -122,8 +121,7 @@ fn a_fork_gives_the_child_only_the_ranges_that_say_so() {
     azos_mm::pager::reserve_phys(space_ref, va_shared, va_shared + PAGE_SIZE, false, shared, MemType::WB, true).expect("recorded");
     azos_mm::vmm::map_phys(pt, va_shared, shared, 1, false, MemType::WB).expect("mapped");
 
-    let (lo, hi) = azos_sched::user_shm_window();
-    let (child, hold) = azos_mm::vmm::fork_cow_shared_held(space_ref, lo, hi, false).expect("fork");
+    let (child, hold) = azos_mm::vmm::fork_cow_shared_held(space_ref, false).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 0);
     assert!(fork_regions_to_child(2), "the clone was refused");

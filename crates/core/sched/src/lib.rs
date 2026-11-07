@@ -59,7 +59,6 @@ pub mod ioport;
 pub mod pac;
 pub mod foreign;
 pub mod spawn_policy;
-pub mod user_window;
 /// Typed pointers into the current task's memory (front uaccess-pin).
 pub mod uptr;
 pub use uptr::{Efault, Pod, UserCStr, UserPtr, UserSlice};
@@ -191,17 +190,6 @@ pub use wait::{
 };
 #[cfg(feature = "ktest")]
 pub use wait::{ktest_take_tick_pass_max, ktest_wake_order, ktest_wake_order_reset};
-
-/// The shared-memory / MMIO VA window, `[base, limit)`.
-///
-/// Exported because `sys_munmap` has to release the task's own frames and must
-/// not release the ones mapped here: `shm_map_user` and `mmio_map_user` install
-/// real `USER` leaves whose frames belong to a device or to another task. The
-/// exit path already skips exactly this window, and restating the bounds in the
-/// syscall crate is how the two would drift.
-pub fn user_shm_window() -> (usize, usize) {
-    (process::USER_MMIO_BASE, process::USER_MMIO_LIMIT)
-}
 
 /// A Linux task's mmap area, `[floor, ceiling)` (`process::USER_MMAP_FLOOR`):
 /// where `sys_mmap` places its mappings, top-down, apart from the break.

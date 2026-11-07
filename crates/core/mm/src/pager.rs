@@ -1154,7 +1154,7 @@ fn break_range(root: usize, s: usize, e: usize) {
     }
 }
 
-/// Before a fork copies the space `r` (`cow::fork_cow_shared`, then
+/// Before a fork copies the space `r` (`cow::fork_cow_shared_held`, then
 /// [`fork_clone`]): wait for the stores in flight in it to end and keep the
 /// reclaimer from starting more, stop any block of it being promoted, break its
 /// reservations, and split the blocks already promoted (the clone shares 4 KiB
@@ -1604,7 +1604,7 @@ fn unmap_shared(root: usize, a: usize, b: usize) {
     if cfg!(feature = "mm-rmap-missing-canary") {
         return;
     }
-    let _ = vmm::unmap_user_range_and_free(root, a, b, a, b);
+    vmm::unmap_user_range_keep(root, a, b);
 }
 
 /// A file mapping as [`file_regions_in`] reports it.
@@ -1881,7 +1881,7 @@ fn fault_once(space: SpaceRef, page: usize) -> KResult<Step> {
             None => (*sp.set.find(page).ok_or(KernelError::NotMapped)?, slot::EMPTY, 0, false),
         }
     };
-    // Mappings are made below the shm window and above the null guard, but the
+    // Mappings are made below the stack and above the null guard, but the
     // walk below allocates tables: never into a table the kernel shares.
     if vmm::write_would_enter_kernel_table(root, page) {
         return Err(KernelError::InvalidArg);
@@ -2936,7 +2936,10 @@ pub fn shim_set_install_hook(hook: Option<fn()>) {
 pub(crate) fn passed_ranges(r: SpaceRef) -> Result<alloc::vec::Vec<(usize, usize, bool)>, MapError> {
     let mut out = alloc::vec::Vec::new();
     // The caller holds the group's layout lock: the set is the same twice.
-    let Some(n) = r.lock().filter(|sp| sp.recorded).map(|sp| sp.set.len()) else { return Ok(out) };
+    // Canary `fork-passes-nothing-canary`: the walk passes no mapping.
+    let Some(n) = r.lock().filter(|sp| sp.recorded && !cfg!(feature = "fork-passes-nothing-canary")).map(|sp| sp.set.len()) else {
+        return Ok(out);
+    };
     out.try_reserve_exact(n).map_err(|_| MapError::Full)?;
     if let Some(sp) = r.lock().filter(|sp| sp.recorded) {
         out.extend(

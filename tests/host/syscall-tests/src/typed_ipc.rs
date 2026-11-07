@@ -519,9 +519,8 @@ fn a_shared_mapping_is_placed_in_the_mmap_area_and_never_made_executable() {
     let (floor, ceiling) = azos_sched::user_mmap_area();
     assert!(va >= floor && va + 2 * azos_arch::mmu::PAGE_SIZE <= ceiling, "placed in the mmap area");
     assert_eq!(azos_sched::update_user_brk(0), brk, "the break did not move");
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     let end = va + 2 * azos_arch::mmu::PAGE_SIZE;
-    assert!(azos_mm::vmm::set_user_range_exec(pt, va, end, shm_lo, shm_hi).is_err(), "a shared object's frames were made executable");
+    assert!(azos_mm::vmm::set_user_range_exec(pt, va, end).is_err(), "a shared object's frames were made executable");
     assert!(azos_mm::vmm::translate_user(pt, va, true).is_some(), "and the refusal left the mapping writable");
 }
 
@@ -1375,7 +1374,7 @@ fn a_moved_capability_takes_the_senders_mapping_with_it() {
     let _pt_b = ring3(b, SLOT_B);
     fn unmap(root: usize, va: usize, pages: usize) {
         let end = va + pages * azos_arch::PAGE_SIZE;
-        let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
+        azos_mm::vmm::unmap_user_range_keep(root, va, end);
     }
     azos_ipc::memobj::set_unmap_hook(unmap);
     azos_ipc::cap_store::set_move_hook(azos_ipc::memobj::memobj_moved);
@@ -1424,7 +1423,7 @@ fn every_record_of_a_moved_mapping_is_dropped_by_the_senders_next_look() {
     let _pt_b = ring3(b, SLOT_B);
     fn unmap(root: usize, va: usize, pages: usize) {
         let end = va + pages * azos_arch::PAGE_SIZE;
-        let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
+        azos_mm::vmm::unmap_user_range_keep(root, va, end);
     }
     azos_ipc::memobj::set_unmap_hook(unmap);
     azos_ipc::cap_store::set_move_hook(azos_ipc::memobj::memobj_moved);
@@ -1482,7 +1481,7 @@ fn a_share_survives_the_sharers_close_and_dies_with_an_explicit_revoke() {
     let pt_b = ring3(b, SLOT_B);
     fn unmap(root: usize, va: usize, pages: usize) {
         let end = va + pages * azos_arch::PAGE_SIZE;
-        let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
+        azos_mm::vmm::unmap_user_range_keep(root, va, end);
     }
     azos_ipc::memobj::set_unmap_hook(unmap);
     azos_ipc::cap_store::set_swept_hook(azos_ipc::memobj::memobj_warrant_swept);
@@ -1793,8 +1792,8 @@ fn a_move_inside_a_map_leaves_no_leaf_and_frees_no_frame_under_it() {
         assert!(azos_ipc::memobj::memobj_page_phys_ref(rs, 0).is_ok(), "the frames went back under the leaves");
     }));
     assert_eq!(sys_shm_map_typed(src, 0), errno(Errno::EBADF));
-    let (lo, _) = azos_sched::user_shm_window();
-    assert!(azos_mm::vmm::translate_user(pt, lo, false).is_none(), "a leaf stayed after the failed map");
+    let (_, hi) = azos_sched::user_mmap_area();
+    assert!(azos_mm::vmm::translate_user(pt, hi - azos_arch::mmu::PAGE_SIZE, false).is_none(), "a leaf stayed after the failed map");
 }
 
 /// **One map at a time per holder**: a second thread's map finds the first in
@@ -1885,8 +1884,7 @@ fn a_space_maps_as_many_objects_as_it_has_records_and_ends_without_freeing_them(
     assert!(sys_mmap(0, azos_arch::mmu::PAGE_SIZE as u64, 3, 0, u64::MAX, 0) > 0, "and an anonymous mapping");
     assert_eq!(azos_mm::pager::shim_mappings(space), objs + 1);
 
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let (child, hold) = azos_mm::vmm::fork_cow_shared_held(space, shm_lo, shm_hi, false).expect("the fork's walk");
+    let (child, hold) = azos_mm::vmm::fork_cow_shared_held(space, false).expect("the fork's walk");
     for &va in &vas {
         assert!(translate(child, va).is_none(), "the walk gave the child a shared page");
     }
@@ -1935,7 +1933,7 @@ impl MoveHooks {
     fn install() -> MoveHooks {
         fn unmap(root: usize, va: usize, pages: usize) {
             let end = va + pages * azos_arch::PAGE_SIZE;
-            let _ = azos_mm::vmm::unmap_user_range_and_free(root, va, end, va, end);
+            azos_mm::vmm::unmap_user_range_keep(root, va, end);
         }
         azos_ipc::memobj::set_unmap_hook(unmap);
         azos_ipc::cap_store::set_move_hook(azos_ipc::memobj::memobj_moved);
@@ -2030,8 +2028,7 @@ fn the_flip_to_executable_holds_the_spaces_records_until_it_is_done() {
     EXEC_SIBLING_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
     EXEC_SIBLING_RAN_DURING.store(false, std::sync::atomic::Ordering::SeqCst);
     azos_mm::vmm::shim_set_exec_hook(Some(exec_sibling));
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let flipped = azos_mm::vmm::set_user_range_exec(pt, va, va + page, shm_lo, shm_hi);
+    let flipped = azos_mm::vmm::set_user_range_exec(pt, va, va + page);
     azos_mm::vmm::shim_set_exec_hook(None);
     EXEC_SIBLING_THREAD.lock().unwrap().take().expect("the sibling").join().unwrap();
     assert_eq!(flipped, Ok(1), "a private page flips");

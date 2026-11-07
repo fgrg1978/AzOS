@@ -281,7 +281,7 @@ fn munmap_as(t: &Task, va: usize, len: usize) -> i64 {
 /// The file region of `t` that holds `va`.
 fn region_at(t: &Task, va: usize) -> azos_mm::pager::FileRegion {
     let mut out = [azos_mm::pager::FileRegion::NONE; 8];
-    let n = azos_mm::pager::file_regions_in(azos_sched::shim_space(t.pt), 0, azos_sched::user_shm_window().1, &mut out).expect("regions");
+    let n = azos_mm::pager::file_regions_in(azos_sched::shim_space(t.pt), 0, azos_sched::user_mmap_area().1, &mut out).expect("regions");
     *out[..n].iter().find(|r| r.start <= va && va < r.end).expect("a file region holds the address")
 }
 
@@ -466,7 +466,7 @@ fn a_mapping_across_windows_is_one_range_of_two_objects() {
 /// Canary `mm-rmap-missing-canary`: the end leaves the leaves and the sweep
 /// frees the cache's frame.
 #[test]
-fn a_shared_file_mapping_outside_the_window_ends_with_its_space() {
+fn a_shared_file_mapping_ends_with_its_space() {
     let _g = serial();
     clean();
     let pages = azos_ipc::memobj::MAX_MEMOBJ_PAGES;
@@ -475,8 +475,8 @@ fn a_shared_file_mapping_outside_the_window_ends_with_its_space() {
     let (fa, fb) = (open_as(&a, b'A', O_RDWR), open_as(&b, b'A', O_RDWR));
     // Pages 2..4 of the first window, in both spaces.
     let (va, vb) = (mmap_ok(&a, fa, 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW, SHARED), mmap_ok(&b, fb, 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW, SHARED));
-    let (shm_lo, _) = azos_sched::user_shm_window();
-    assert!(va < shm_lo && vb < shm_lo, "placed like an anonymous mapping, not in the shm window");
+    let (floor, ceiling) = azos_sched::user_mmap_area();
+    assert!(va >= floor && va < ceiling && vb >= floor && vb < ceiling, "placed like an anonymous mapping, in the mmap area");
     fault(&a, va + PAGE_SIZE);
     fault(&b, vb + PAGE_SIZE);
     let fr = frame(&a, va + PAGE_SIZE);
@@ -511,9 +511,8 @@ fn a_shared_file_mapping_is_never_made_executable() {
     let fa = open_as(&a, b'A', O_RDWR);
     let va = mmap_ok(&a, fa, PAGE_SIZE, 0, RW, SHARED);
     fault(&a, va);
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
     assert!(
-        azos_mm::vmm::set_user_range_exec(a.pt, va, va + PAGE_SIZE, shm_lo, shm_hi).is_err(),
+        azos_mm::vmm::set_user_range_exec(a.pt, va, va + PAGE_SIZE).is_err(),
         "the cache's frame was made executable"
     );
     assert_eq!(munmap_as(&a, va, PAGE_SIZE), 0);
@@ -709,7 +708,7 @@ fn a_fork_child_gets_the_private_regions_only() {
     let owed = azos_mm::pager::fork_clone(azos_sched::shim_space(parent.pt), azos_sched::shim_space(child.pt)).expect("fork_clone");
     assert_eq!(owed, 2, "the child owes the private region's pages, nothing for the shared one");
     let mut out = [azos_mm::pager::FileRegion::NONE; 8];
-    let n = azos_mm::pager::file_regions_in(azos_sched::shim_space(child.pt), 0, azos_sched::user_shm_window().1, &mut out).unwrap();
+    let n = azos_mm::pager::file_regions_in(azos_sched::shim_space(child.pt), 0, azos_sched::user_mmap_area().1, &mut out).unwrap();
     assert_eq!(n, 1, "the shared mapping is not inherited");
     assert_eq!((out[0].start, out[0].shared), (private, false));
 

@@ -250,8 +250,7 @@ fn a_fork_childs_growth_past_its_base_is_its_own() {
     azos_sched::shim_set_page_ceiling(16);
     assert_eq!(sys_brk(BRK + 8 * PG), (BRK + 8 * PG) as i64, "the parent grows to 8");
     let pool = azos_mm::budget::growth_pool();
-    let (shm_lo, shm_hi) = azos_sched::user_shm_window();
-    let child = azos_mm::vmm::fork_cow(pt, shm_lo, shm_hi).expect("fork");
+    let child = azos_mm::vmm::fork_cow(pt).expect("fork");
     azos_sched::shim_forget_space(child);
     azos_sched::shim_set_other_task(2, child, 4);
     azos_sched::shim_set_other_ceiling(16);
@@ -259,6 +258,6 @@ fn a_fork_childs_growth_past_its_base_is_its_own() {
     assert_eq!(azos_sched::shim_other_limit_grown(), (8, 4), "the child grew from its base");
     assert_eq!(azos_mm::budget::growth_pool(), pool - 4, "from the pool");
     azos_sched::shim_forget_space(child);
-    azos_mm::vmm::destroy_user_pagetable_skip_range(child, shm_lo, shm_hi);
+    azos_mm::vmm::destroy_user_pagetable(child);
     done(pt);
 }

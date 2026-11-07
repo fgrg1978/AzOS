@@ -122,7 +122,7 @@ choice
     help
       A 4 KiB leaf with the N bit (PTE bit 63) and PPN[3:0] = 0b1000 is one
       64 KiB translation: sixteen identical words, one TLB entry. The user
-      mapper of a memory object (`vmm::map_contig_range`, from `shm_map_user`)
+      mapper of a memory object (`vmm::map_contig_range`, from `SYS_MO_MAP`)
       writes one for every 64 KiB-aligned run of 16 consecutive frames whose
       virtual address is aligned alike, and breaks it back into sixteen
       4 KiB leaves before any per-page change (unmap, mprotect). Svnapot has
@@ -537,8 +537,8 @@ config LOCKED_HUGE_LEAVES
       The region is fixed for the task's life: never forked (a locked row
       cannot fork), never demand-paged, never COW, never returned to the
       allocator; munmap of any part of it is refused, and it is data only
-      (read-write, not executable). It sits at the bottom of the task's
-      shm/MMIO window (crates/core/sched/src/process.rs,
+      (read-write, not executable). It is a physical range recorded in the
+      task's address space at a fixed address (crates/core/sched/src/process.rs,
       LOCKED_ARENA_VA) and is zeroed at every exec. Memory admission
       counts it as locked pages (N x 256 topology pages). Only exec
       (autorun, the Linux `execve`) installs it; spawning such a row is refused.

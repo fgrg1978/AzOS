@@ -18,7 +18,7 @@
 //! other value sets it and returns it. `sys_mmap` and `sys_brk`
 //! both take it as the base of the range they hand out, so the null-brk
 //! refusal (`base < USER_GUARD_LIMIT`) and the VA-ceiling check (`end_va`
-//! against the base of [`user_shm_window`]) are both functions of it — a `todo!()` here
+//! against the ceiling of [`user_mmap_area`]) are both functions of it — a `todo!()` here
 //! means zero mmap coverage. [`shim_set_brk`] is the test-only writer.
 //!
 //! **`copy_from_user` / `copy_to_user` / `copy_cstr_from_user` keep only
@@ -110,7 +110,7 @@ pub fn shim_end_space(pt: usize) {
         v.iter().position(|r| r.root() == pt).map(|i| v.swap_remove(i))
     };
     if let Some(r) = r {
-        assert_eq!(azos_mm::aspace::destroy(r, 0, 0), 0, "no hart is on the root");
+        assert_eq!(azos_mm::aspace::destroy(r), 0, "no hart is on the root");
     }
 }
 
@@ -517,35 +517,6 @@ pub fn current_task_slot() -> Option<(usize, u32)> {
     idx_for_tid(tid).map(|i| (i, tid))
 }
 
-/// The real per-task window allocator, pulled unmodified — see
-/// [`process::shm_map_user`].
-#[path = "../../../../../../crates/core/sched/src/user_window.rs"]
-mod user_window;
-
-/// Each task's window reservations, keyed by [`current_task_tid`], as the
-/// kernel keeps them on `Task::user_window`.
-static USER_WINDOWS: std::sync::Mutex<Vec<(u32, [[usize; 2]; user_window::USER_WINDOW_RANGES])>> =
-    std::sync::Mutex::new(Vec::new());
-
-fn with_user_window<R>(f: impl FnOnce(&mut [[usize; 2]]) -> R) -> R {
-    let tid = current_task_tid();
-    let mut all = USER_WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
-    let i = match all.iter().position(|(t, _)| *t == tid) {
-        Some(i) => i,
-        None => {
-            all.push((tid, [[0; 2]; user_window::USER_WINDOW_RANGES]));
-            all.len() - 1
-        }
-    };
-    f(&mut all[i].1)
-}
-
-/// Test-only control surface: forget every task's window reservations, what
-/// slot reuse does for one task.
-pub fn shim_reset_user_windows() {
-    USER_WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
 /// The real typed pointers (front uaccess-pin) over the copies below, as the
 /// kernel's `azos_sched` exports them.
 #[path = "../../../../../../crates/core/sched/src/uptr.rs"]
@@ -832,12 +803,11 @@ pub fn update_user_mmap_low(addr: u64) -> u64 {
     USER_MMAP_LOW.load(Ordering::SeqCst)
 }
 
-/// `process::USER_MMAP_FLOOR` / `USER_MMAP_CEILING`, restated as
-/// [`user_shm_window`] is: the floor is the break's ceiling (`USER_LOW_MAX`,
-/// 32 MiB), the ceiling the vDSO page (`azos_abi::vdso::VDSO_USER_BASE`) or
-/// the shm window's base, whichever is lower.
+/// `process::USER_MMAP_FLOOR` / `USER_MMAP_CEILING`, restated: the floor is the
+/// break's ceiling (`USER_LOW_MAX`, 32 MiB), the ceiling the vDSO page
+/// (`azos_abi::vdso::VDSO_USER_BASE`).
 pub fn user_mmap_area() -> (usize, usize) {
-    (0x0200_0000, azos_abi::vdso::VDSO_USER_BASE.min(user_shm_window().0))
+    (0x0200_0000, azos_abi::vdso::VDSO_USER_BASE)
 }
 
 /// The kernel's semantics verbatim (`scheduler.rs:3147`): `addr == 0` reads
@@ -900,12 +870,6 @@ pub mod scheduler {
     /// Mirrors `scheduler::current_is_linux` (set by `shim_set_linux`).
     pub fn current_is_linux() -> bool {
         super::CURRENT_IS_LINUX.load(super::Ordering::SeqCst)
-    }
-
-    /// Mirrors `scheduler::reserve_current_user_window`: `span` bytes of the
-    /// current task's window `[lo, hi)`, from the real `user_window.rs`.
-    pub fn reserve_current_user_window(lo: usize, hi: usize, span: usize) -> Option<usize> {
-        super::with_user_window(|w| super::user_window::reserve(w, lo, hi, span))
     }
 
     /// The running task's own priority (`scheduler::current_task_base_priority`):
@@ -1290,7 +1254,7 @@ pub mod process {
         FORK.lock().unwrap_or_else(|e| e.into_inner()).take().map(|(_, c)| c)
     }
 
-    /// Restated, not pulled — same reason as `user_shm_window` below:
+    /// Restated, not pulled:
     /// `process.rs` does not build on the host. `handlers.rs` now imports the
     /// real `USER_STACK_TOP` as `USER_VA_TOP` (see its comment) instead of
     /// carrying a second hardcoded `0x8000_0000` literal, so this shim has to
@@ -1334,19 +1298,6 @@ pub mod process {
         super::shim_run_once(&super::AFTER_SHM_MAP);
         true
     }
-}
-
-/// The shared-memory / MMIO VA window, matching `process.rs`'s
-/// `USER_MMIO_BASE` (`USER_STACK_TOP` minus the 512 MiB window) and
-/// `USER_MMIO_LIMIT` (`USER_STACK_TOP` minus the largest user stack an
-/// image may ask for, 256 KiB, `CONFIG_USER_STACK_MAX_KB`).
-///
-/// Restated rather than pulled: `process.rs` is a 4,000-line RV64 module that
-/// does not build on the host. Both bounds are exact because tests assert at
-/// them: the mmap and demand-allocation ceilings sit at the base, and a
-/// released-mapping test cycles through more than the whole window.
-pub fn user_shm_window() -> (usize, usize) {
-    (process::USER_STACK_TOP - 0x2000_0000, process::USER_STACK_TOP - 256 * 1024)
 }
 
 // exec installs the image filter through the crate root (2026-09-26)

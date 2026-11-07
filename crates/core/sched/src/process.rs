@@ -5,7 +5,7 @@
 
 use azos_arch::{ArchPlatform, ARCH};
 use azos_arch::PAGE_SIZE;
-use azos_arch_api::PagePerms;
+use azos_arch_api::{MemType, PagePerms};
 
 /// O3.2 (owner decision, PAN/SUM): one name for the RAII "I am about to
 /// touch user-tagged memory on purpose" guard on either ISA —
@@ -53,7 +53,7 @@ const _: () = assert!(USER_STACK_SIZE <= USER_STACK_MAX, "USER_STACK_SIZE_KB mus
 /// is exactly QEMU's `RAM_BASE` — the two have always had to be the same
 /// number, they were just never written as the same *expression*. On the VF2
 /// (`RAM_BASE = 0x4000_0000`), the literal put the user stack and the whole
-/// MMIO/shm window (`USER_MMIO_BASE = 0x6000_0000`) *inside* VPN[2]=1, which
+/// locked rows' region (`LOCKED_ARENA_VA = 0x6000_0000`) *inside* VPN[2]=1, which
 /// is entirely kernel RAM there on any board with >=1 GiB installed (VF2
 /// ships with 2/4/8 GiB) — so `vmm::kernel_entry_collision` refused every
 /// `exec`, unconditionally, on real VF2 hardware. Deriving from `RAM_BASE`
@@ -406,13 +406,22 @@ fn exec_admit(
         kmem_kib: crate::scheduler::current_kmem_kib(), partition: 0,
         ceiling: crate::scheduler::current_mem_ceiling(),
     });
+    // The address space exists from here: what the loader left out of the page
+    // table (the vDSO, a locked row's region) is recorded in it, and every
+    // refusal below ends it with its records.
+    let Some(space) = azos_mm::aspace::create(ctx.user_pt as usize) else {
+        azos_drv_sys::kwarn!("[MEM] exec REFUSED: no memory for its address space object");
+        vmm::destroy_user_pagetable(ctx.user_pt as usize);
+        return None;
+    };
+    ctx.frames = ctx.frames.saturating_add(map_vdso(space));
     // Kconfig LOCKED_HUGE_LEAVES: the row's region, mapped now that
     // the address space exists and before anything is charged or
     // claimed, so a refusal leaves nothing behind but the new table.
     // The tables the mapping hung (one level-1 table at most) are
     // charged with the rest of the address space.
     if spec.huge_mib != 0 {
-        match install_locked_arena(ctx.user_pt as usize, &spec) {
+        match install_locked_arena(space, &spec) {
             Ok((va, bytes)) => {
                 ctx.frames = ctx.frames.saturating_add(crate::scheduler::take_current_pt_build());
                 report_locked_arena(ctx.user_pt as usize, spec.row, va, bytes);
@@ -420,7 +429,7 @@ fn exec_admit(
             Err(why) => {
                 let _ = crate::scheduler::take_current_pt_build();
                 azos_drv_sys::kwarn!("[MEM] exec REFUSED: the row's 2 MiB-leaf region: {}", why);
-                vmm::destroy_user_pagetable(ctx.user_pt as usize);
+                azos_mm::aspace::destroy(space);
                 return None;
             }
         }
@@ -431,14 +440,14 @@ fn exec_admit(
             ctx.frames, spec.limit,
         );
         crate::scheduler::note_mm_quota_refusal();
-        vmm::destroy_user_pagetable(ctx.user_pt as usize);
+        azos_mm::aspace::destroy(space);
         return None;
     }
     if let Some((aux, f)) = stack {
         match f(ctx.user_pt as usize, aux) {
             Some(sp) => ctx.user_sp = sp,
             None => {
-                vmm::destroy_user_pagetable(ctx.user_pt as usize);
+                azos_mm::aspace::destroy(space);
                 return None;
             }
         }
@@ -455,17 +464,9 @@ fn exec_admit(
             "[MEM] exec REFUSED: its row already has {} of {} live instance(s) (instance refusals: {})",
             live, spec.instances, n,
         );
-        vmm::destroy_user_pagetable(ctx.user_pt as usize);
+        azos_mm::aspace::destroy(space);
         return None;
     }
-    let Some(space) = azos_mm::aspace::create(ctx.user_pt as usize) else {
-        azos_drv_sys::kwarn!("[MEM] exec REFUSED: no memory for its address space object");
-        vmm::destroy_user_pagetable(ctx.user_pt as usize);
-        if row_change {
-            crate::scheduler::row_release(spec.row);
-        }
-        return None;
-    };
     if cfg!(feature = "mem-locked-canary") && ctx.stack > PAGE_SIZE {
         // The lazy part of the stack (`finish_user_space`), charged with the image.
         let _ = azos_mm::pager::reserve(space, USER_STACK_TOP - ctx.stack, USER_STACK_TOP - PAGE_SIZE, true);
@@ -476,7 +477,7 @@ fn exec_admit(
 /// Give back an admitted exec that will not run: its address space and
 /// the row instance it claimed. The caller keeps its image.
 pub fn exec_abort(p: PreparedExec) {
-    azos_mm::aspace::destroy(p.space, 0, 0);
+    azos_mm::aspace::destroy(p.space);
     if p.row_change {
         crate::scheduler::row_release(p.spec.row);
     }
@@ -592,21 +593,17 @@ fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
 /// may have had frames mapped USER into its PT that are NOT owned by the
 /// address space — a shared object's or a shared file's (other processes may
 /// map them; freeing here is a cross-process use-after-free), MMIO frames
-/// (they belong to the hardware), ring and vDSO-notify pages.
+/// (they belong to the hardware), ring and vDSO pages.
 ///
-/// Two things keep them out of the sweep. The mappings of a shared object or
-/// file are records of the space, and `aspace::destroy` clears their leaves
-/// first (`pager::unmap_shared`). MMIO, ring and notify pages ([`mmio_map_user`],
-/// [`shm_map_user`]) live in the [`USER_MMIO_BASE`, [`USER_MMIO_LIMIT`]) VA
-/// window ([`reserve_window_va`] is the single allocator), and the teardown
-/// spares every leaf frame in that window while still freeing the window's
-/// L0/L1 tables — those ARE this PT's own.
+/// What keeps them out of the sweep: each is a record of the space (a shared
+/// object, a shared file, a physical range), and `aspace::destroy` clears their
+/// leaves first (`pager::unmap_shared`).
 ///
 /// Refused, and the address space leaked, when a hart still translates
-/// through it (`vmm::destroy_user_pagetable_skip_range`). Printed, because
+/// through it (`vmm::destroy_user_pagetable`). Printed, because
 /// every caller has just argued that cannot happen.
 pub fn destroy_user_address_space(space: azos_mm::aspace::SpaceRef) {
-    let holders = azos_mm::aspace::destroy(space, USER_MMIO_BASE, USER_MMIO_LIMIT);
+    let holders = azos_mm::aspace::destroy(space);
     if holders != 0 {
         azos_drv_sys::kerr!(
             "[MM] page-table root {:#x} still live on hart mask {:#x}: teardown refused, address space leaked (refusals: {})",
@@ -1057,8 +1054,8 @@ pub fn in_stack_area(va: usize) -> bool {
 fn finish_user_space(user_pt: usize, e_entry: u64, brk_va: usize, mut frames: u32, stack: usize) -> Option<ExecContext> {
     // User stack: `stack` bytes (a whole number of pages, at most
     // USER_STACK_MAX), eagerly. The gap between its bottom and
-    // USER_MMIO_LIMIT stays unmapped, which is the guard below it: an
-    // overflow past the request faults instead of running into the window.
+    // USER_STACK_FLOOR stays unmapped, which is the guard below it: an
+    // overflow past the request faults instead of running into a mapping.
     let stack_bottom = USER_STACK_TOP - stack;
     let mut va = stack_bottom;
     while va < USER_STACK_TOP {
@@ -1084,85 +1081,9 @@ fn finish_user_space(user_pt: usize, e_entry: u64, brk_va: usize, mut frames: u3
         va += PAGE_SIZE;
     }
 
-    // Map vDSO page (read-only) so user-space can read kernel time data
-    // without issuing an ecall.
-    //
-    // Gated by `VDSO_FITS_BELOW_USER_CEILING`: this call runs *before* the
-    // `kernel_entry_collision` check below, on a user root that has no
-    // kernel entries yet, so `vmm::map` would happily install a user-owned
-    // L1 at whatever VPN[2] `vdso::VDSO_USER_BASE` falls in — including one
-    // the kernel's own identity map claims, if it ever did again. Mapping it
-    // anyway would turn "vDSO missing, ecall fallback" (the documented,
-    // non-fatal case below) into "exec refused", for a mapping the loader
-    // added on its own rather than one the image asked for. As of the
-    // 2026-09-22 fix this gate and `crates/drivers/base/src/platform.rs`'s
-    // per-board `const` asserts both hold for every board, so this branch
-    // should always be taken — the readback below is what actually proves
-    // that on hardware whose installed RAM the compile-time asserts cannot
-    // see (VF2/K1 DTB-sized RAM; see `crates/core/abi/src/vdso.rs`).
-    let vdso_phys = vdso::vdso_phys();
-    if vdso_phys != 0 && VDSO_FITS_BELOW_USER_CEILING {
-        // A failure here is not fatal — the vDSO is an optimisation and
-        // userspace falls back to the ecall path. It cannot collide with the
-        // image either (USER_LOW_MAX) or the stack (different VPN[1]) —
-        // and, now, it is not even attempted where it would collide with the
-        // kernel's own RAM map instead.
-        let map_result = vmm::map(
-            user_pt,
-            vdso::VDSO_USER_BASE,
-            vdso_phys,
-            PagePerms { accessed: true, ..PagePerms::USER_RO },
-        );
-        // A readback, not just "map returned
-        // Ok" — `translate` walks the SAME user page table `map` just wrote
-        // and reports what is actually there, which is the only thing that
-        // discriminates "mapped at the address we asked for" from "map
-        // silently landed somewhere else" or "map returned Ok but the PTE
-        // reads back invalid" (lesson from gate 143: a persistence claim
-        // must print after the write, read back). Checked on every exec —
-        // cheap (one page-table walk of an already-hot table) and this is
-        // the one place this fact is knowable; a boot-time-only check would
-        // miss a per-process page-table bug. A mismatch always prints.
-        match vmm::translate(user_pt, vdso::VDSO_USER_BASE) {
-            // Wave 14: the success line is debug output (owner: console
-            // output only in debug modes; feature `spawn-log`); no gate row
-            // reads it. The two lines below, which report a fallback, stay.
-            Some(pa) if map_result.is_ok() && pa == vdso_phys => {
-                if cfg!(feature = "spawn-log") {
-                    azos_drv_sys::kprintln!(
-                        "[VDSO] mapped: user VA {:#x} -> PA {:#x} (readback OK)",
-                        vdso::VDSO_USER_BASE, pa,
-                    );
-                }
-            }
-            // Neither arm below uses the `FAILED:` prefix the gate greps for
-            // a row failure: this branch (`VDSO_FITS_BELOW_USER_CEILING`
-            // true, map attempted) is expected to always succeed on the
-            // four boards this task covers, proven by the compile-time
-            // asserts — but the vDSO is documented as an optimisation ring
-            // 3 falls back from (ecall path), never a hard requirement, so
-            // a real board this task did not enumerate (DTB-sized RAM on
-            // VF2/K1 real hardware) must not turn a soft fallback into a
-            // gate-failing row.
-            Some(pa) => {
-                azos_drv_sys::kwarn!(
-                    "[VDSO] not mapped as requested: user VA {:#x} reads back PA {:#x}, \
-                     expected {:#x} (map result {:?}) — falling back to the ecall path",
-                    vdso::VDSO_USER_BASE, pa, vdso_phys, map_result,
-                );
-            }
-            None => {
-                azos_drv_sys::kwarn!(
-                    "[VDSO] not mapped: user VA {:#x} unmapped after vmm::map (result {:?}) — \
-                     falling back to the ecall path",
-                    vdso::VDSO_USER_BASE, map_result,
-                );
-            }
-        }
-    }
-
     // Wave 13: the riscv64 sigreturn trampoline, read-execute, the page after
-    // the vDSO (`vdso::SIGTRAMP_USER_VA`). Shared, never written by a task:
+    // the vDSO (`vdso::SIGTRAMP_USER_VA`; the vDSO itself is `map_vdso`'s, once
+    // the address space exists). Shared, never written by a task:
     // a fork shares the leaf as it is (`cow::fork_cow`) and teardown never
     // frees it. Absent (0) on aarch64, whose musl passes its own restorer. A
     // failure is not fatal: a handler without its return path is refused at
@@ -2201,8 +2122,9 @@ pub fn fork_refusal_counts() -> [u32; FORK_REFUSAL_SITES] {
 ///
 /// Limitations:
 ///  - Only works for user-mode tasks (user_pt != 0).
-///  - The shm/MMIO window is not inherited: the child holds no capability or
-///    mapping record for what is mapped there (see `vmm::fork_cow`).
+///  - A shared object's mapping, a device window and a ring page are not
+///    inherited by the walk: the child holds a record of them only when the
+///    fork gives it one (`pager::fork_clone`, `natfork::inherit_shm`).
 ///  - Descriptors and capabilities are not this function's: the caller's
 ///    `before_release` hook gives the child its own (a native child's
 ///    descriptors and row, `azos_syscall::natfork`; a Linux child's,
@@ -2246,7 +2168,7 @@ fn fork_hooked_inner(
 
     // AQ9: Copy-on-Write fork — share all user pages read-only instead of
     // copying them eagerly.  The COW fault handler allocates new pages on write.
-    // The shm/MMIO window is left out of the child.
+    // The mappings of other owners' frames are left out of the child by the walk.
     // A `mem = "locked"` task is born by exec and never forks —
     // a fork would put its every page under copy-on-write, and the break is a
     // fault a locked task must never take. Checked here, not only by its
@@ -2260,11 +2182,11 @@ fn fork_hooked_inner(
     let _ = crate::scheduler::take_current_pt_build();
     let t_ph = crate::prof::t();
     // Wave 13: a thread group's other members may fault on the parent's
-    // entries while they are walked (`fork_cow_shared`).
+    // entries while they are walked (`fork_cow_shared_held`).
     let concurrent = crate::scheduler::current_slot().is_some_and(|i| crate::group::lead_of_idx(i) != 0);
     // The hold on the parent lasts until `before_release` has cloned its
     // mappings into the child's (`azos_mm::pager::ForkHold`).
-    let (child_pt, fork_hold) = match vmm::fork_cow_shared_held(parent, USER_MMIO_BASE, USER_MMIO_LIMIT, concurrent) {
+    let (child_pt, fork_hold) = match vmm::fork_cow_shared_held(parent, concurrent) {
         Ok(r) => r,
         Err(_) => {
             let _ = crate::scheduler::take_current_pt_build();
@@ -2357,7 +2279,7 @@ fn fork_hooked_inner(
     ) {
         Some(idx) => idx,
         None => {
-            azos_mm::aspace::destroy(child_space, 0, 0);
+            azos_mm::aspace::destroy(child_space);
             return note_fork_refusal(ForkRefusalSite::PoolExhausted);
         }
     };
@@ -2376,7 +2298,7 @@ fn fork_hooked_inner(
         None => {
             // Unreachable: the slot was just allocated. Still release the
             // address space — it is not yet published on any task.
-            azos_mm::aspace::destroy(child_space, 0, 0);
+            azos_mm::aspace::destroy(child_space);
             return note_fork_refusal(ForkRefusalSite::TidLookupMiss);
         }
     };
@@ -2711,165 +2633,117 @@ pub(crate) fn fork_child_entry(_arg: usize) {
     }
 }
 
-// ── MMIO mapping for userspace drivers (F00.2) ──────────────────────────────
-
-/// Size of the MMIO/shm VA window below [`USER_STACK_TOP`] (512 MiB).
-///
-/// A fixed *size*, not a fixed base: on QEMU this reproduces the historical
-/// `USER_MMIO_BASE = 0x6000_0000` exactly (`0x8000_0000 - 0x2000_0000`). On a
-/// board with a lower [`USER_STACK_TOP`] (VF2), the window keeps the same
-/// capacity and just slides down with the ceiling, rather than shrinking —
-/// there is no reason a smaller board should hand userspace drivers fewer or
-/// smaller MMIO mappings.
-const USER_MMIO_WINDOW_SIZE: usize = 0x2000_0000; // 512 MiB
-
-/// The raw "512 MiB below the stack" base [`USER_MMIO_WINDOW_SIZE`]'s own doc
-/// describes. Named separately from [`USER_MMIO_BASE`] because on a board
-/// where this collides with the vDSO page (see that constant's doc), the
-/// real base clamps upward and this identifier is what a reader needs to see
-/// the un-clamped value the doc comment is talking about.
-const USER_MMIO_BASE_RAW: usize = USER_STACK_TOP - USER_MMIO_WINDOW_SIZE;
-
-/// Base virtual address for user-space MMIO mappings.
-///
-/// See [`USER_MMIO_WINDOW_SIZE`] for why this is `USER_STACK_TOP` minus a
-/// fixed window rather than a board-independent literal — normally exactly
-/// [`USER_MMIO_BASE_RAW`].
-///
-/// **Clamped above the vDSO page, found 2026-09-22 the hard way.** The vDSO
-/// is a SEPARATE fixed address (`vdso::VDSO_USER_BASE`, `crates/core/abi/src/
-/// vdso.rs`), not derived from `USER_STACK_TOP` at all — nothing before this
-/// clamp related the two. On RISC-V (`RAM_BASE = 0x8000_0000`)
-/// `USER_MMIO_BASE_RAW` lands at `0x6000_0000`, far above
-/// `VDSO_USER_BASE = 0x2000_0000`, so the two windows never met and this was
-/// never exercised. On aarch64's QEMU `virt` (`RAM_BASE = 0x4000_0000`,
-/// exactly `VDSO_USER_BASE + USER_MMIO_WINDOW_SIZE`) `USER_MMIO_BASE_RAW`
-/// computes to `0x2000_0000` — THE SAME ADDRESS as the vDSO page. `fork_cow`
-/// treats `[USER_MMIO_BASE, USER_MMIO_LIMIT)` as the shm/MMIO window it
-/// deliberately does not COW-copy into a forked child (see its own doc); with
-/// the collision, that window swallowed the vDSO page too, so every forked
-/// child's page table had NO mapping at `VDSO_USER_BASE` at all. Silent right
-/// up until the child's first vDSO read (e.g. `sys::uptime()`'s fast path)
-/// took an instruction/data abort at `FAR_EL1 = 0x2000_0000` — measured on
-/// `ipctest`'s phase A (8 forked children racing a fast-IPC server; every one
-/// died on its first `uptime()` call) once `sret_to_user_forked`'s aarch64
-/// arm existed to let a child run far enough to hit it. `fork()` itself, and
-/// every check that never calls `sys::uptime()`/`sys::clock()`, was
-/// unaffected — which is why `abitest`'s and `ipctest`'s simpler fork checks
-/// passed clean while this one didn't.
-///
-/// Clamping the base to `max(USER_MMIO_BASE_RAW, VDSO_USER_BASE + PAGE_SIZE)`
-/// keeps riscv64's value EXACTLY `0x6000_0000` (the raw value already clears
-/// the clamp there) while giving aarch64's QEMU `virt` a window that starts
-/// one page later — negligible against 512 MiB of capacity, and correct on
-/// every other board's arithmetic too, present or future, without a
-/// per-board special case.
-pub(crate) const USER_MMIO_BASE: usize = {
-    // ... and above the Linux runtime's window (`azos_abi::foreign`), which
-    // sits just above the vDSO: the same fork would otherwise leave a child
-    // without the runtime it hosts (found on aarch64, where the window
-    // starts at the vDSO).
-    let vdso_clearance = azos_abi::foreign::RUNTIME_LIMIT;
-    if USER_MMIO_BASE_RAW < vdso_clearance { vdso_clearance } else { USER_MMIO_BASE_RAW }
-};
-
-// The window must stay clear of the image/heap ceiling on every board this
-// derives a value for (K1's pre-existing brokenness aside, per the note on
-// `USER_STACK_TOP`) — otherwise a `brk` at its cap and an MMIO mapping at its
-// base would land on the same page.
-const _: () = assert!(USER_MMIO_BASE > USER_LOW_MAX);
-
-// The clamp above is the general form of this fact; assert it directly too,
-// so a future edit to either constant fails loudly here instead of silently
-// reproducing the 2026-09-22 aarch64 vDSO-in-a-forked-child bug this clamp
-// exists to prevent.
-const _: () = assert!(USER_MMIO_BASE >= vdso::VDSO_USER_BASE + PAGE_SIZE);
-const _: () = assert!(USER_MMIO_BASE >= azos_abi::foreign::RUNTIME_LIMIT);
-
 /// The mmap area of a Linux task, `[USER_MMAP_FLOOR, USER_MMAP_CEILING)`:
 /// `sys_mmap` places its mappings top-down from the ceiling, as Linux places
 /// them below its mmap base, and apart from the program break. The floor is
 /// the break's own ceiling ([`USER_LOW_MAX`], where `sys_brk` stops), so
 /// the break can never grow into a mapping and no mapping sits where it
-/// grows. The ceiling is the vDSO page, below the Linux runtime's window and
-/// (on every board) the shm/MMIO window. What the kernel maps into the area
+/// grows. The ceiling is the vDSO page, below the Linux runtime's window. A
+/// shared object, a file window and a physical range (a device's registers, a
+/// ring page) are placed in the area as well. What the kernel maps into the area
 /// on a board (riscv64's CLINT, PLIC and UART slots) is not restated here:
 /// the placement asks the page table and steps over it.
 pub(crate) const USER_MMAP_FLOOR: usize = USER_LOW_MAX;
-pub(crate) const USER_MMAP_CEILING: usize =
-    if vdso::VDSO_USER_BASE < USER_MMIO_BASE { vdso::VDSO_USER_BASE } else { USER_MMIO_BASE };
+pub(crate) const USER_MMAP_CEILING: usize = vdso::VDSO_USER_BASE;
 const _: () = assert!(USER_MMAP_FLOOR < USER_MMAP_CEILING);
+const _: () = assert!(USER_MMAP_CEILING + PAGE_SIZE <= azos_abi::foreign::RUNTIME_BASE);
 
-/// Hard ceiling for the MMIO/shm VA window: the bottom of the largest user
-/// stack an image may ask for (`USER_STACK_MAX_KB`). A smaller stack leaves
-/// the difference unmapped, a guard below it that no window mapping fills.
+/// The bottom of the largest user stack an image may ask for
+/// (`USER_STACK_MAX_KB`): nothing is mapped at or above it but the stack. A
+/// smaller stack leaves the difference unmapped, a guard below it.
 ///
-/// No reservation ([`reserve_window_va`]) may end past it. Past it lies the
-/// user stack, and past that `0x8000_0000` — the VPN[2]=2 slot that
-/// [`vmm::copy_kernel_entries_to_user`] grafts in wholesale, meaning the L2
+/// Past it lies the user stack, and past that `0x8000_0000` — the VPN[2]=2 slot
+/// that [`vmm::copy_kernel_entries_to_user`] grafts in wholesale, meaning the L2
 /// entry there points at the *kernel's own* L1 table. A `vmm::map` at such a
 /// VA would allocate an L0 table inside the kernel page table and publish
 /// USER leaves in it: the same address-space corruption the loader ordering
 /// fix removes, arriving through a different door.
-pub(crate) const USER_MMIO_LIMIT: usize = USER_STACK_TOP - USER_STACK_MAX;
+const USER_STACK_FLOOR: usize = USER_STACK_TOP - USER_STACK_MAX;
 
-// `USER_MMIO_BASE` must sit strictly below `USER_MMIO_LIMIT`, i.e. the window
-// must not invert. Only reachable if `USER_STACK_MAX` (a build-time config
-// value, see `azos_limits`) were ever configured larger than
-// `USER_MMIO_WINDOW_SIZE` (512 MiB) — nothing this tree ships does, but a
-// future config change should fail the build, not silently reserve a
-// negative-size window.
-const _: () = assert!(USER_MMIO_BASE < USER_MMIO_LIMIT);
+/// Map the vDSO page read-only at [`vdso::VDSO_USER_BASE`] so user space can
+/// read the kernel's time data without an `ecall`, as a physical range of
+/// `space` that a fork gives its child. Returns the page-table frames the
+/// mapping built, for the caller to charge with the image.
+///
+/// Not fatal on any failure: the vDSO is an optimisation and userspace falls
+/// back to the `ecall` path. The record comes first, so a refusal after it
+/// takes the leaf with it. Mapped after the loader merged the kernel's entries
+/// (the page is out of reach where a kernel table is shared, which the
+/// per-board asserts of `VDSO_FITS_BELOW_USER_CEILING` rule out), and read
+/// back: `translate` walks the table `map` just wrote and reports what is there,
+/// which tells a mapping at the address from one that landed elsewhere.
+pub(crate) fn map_vdso(space: azos_mm::aspace::SpaceRef) -> u32 {
+    let vdso_phys = vdso::vdso_phys();
+    if vdso_phys == 0 || !VDSO_FITS_BELOW_USER_CEILING {
+        return 0;
+    }
+    let (root, va) = (space.root(), vdso::VDSO_USER_BASE);
+    let _ = crate::scheduler::take_current_pt_build();
+    let recorded = azos_mm::pager::reserve_phys(space, va, va + PAGE_SIZE, false, vdso_phys, MemType::WB, true);
+    let mapped = recorded.is_ok() && vmm::map_phys(root, va, vdso_phys, 1, false, MemType::WB).is_ok();
+    let built = crate::scheduler::take_current_pt_build();
+    if mapped && vmm::translate(root, va) == Some(vdso_phys) {
+        if cfg!(feature = "spawn-log") {
+            azos_drv_sys::kprintln!("[VDSO] mapped: user VA {:#x} -> PA {:#x} (readback OK)", va, vdso_phys);
+        }
+        return built;
+    }
+    azos_drv_sys::kwarn!(
+        "[VDSO] not mapped at user VA {:#x} (record {:?}, readback {:?}) -- falling back to the ecall path",
+        va, recorded, vmm::translate(root, va),
+    );
+    let _ = azos_mm::pager::release_range(space, va, va + PAGE_SIZE);
+    built
+}
+
+/// The largest region a row may declare, in bytes (Kconfig `LOCKED_HUGE_MAX_MIB`).
+const MAX_HUGE_BYTES: usize = azos_limits::LOCKED_HUGE_MAX_MIB as usize * 1024 * 1024;
 
 /// Kconfig `LOCKED_HUGE_LEAVES`: where exec maps a locked row's boot-reserved
-/// region (`mem_huge_mib`) — the first level-1 leaf boundary (2 MiB) at or
-/// above the shm/MMIO window's base. Derived from the window, so it follows
-/// every board's `RAM_BASE` the way the window does; inside the window, so
-/// `sys_brk`/`sys_mmap` (capped at the window's base) never reach it, the
-/// exit path never frees its frames, and the window allocator is told about
-/// it (the exec reserves it in the task's window table) so no shm or MMIO
-/// mapping is placed on it.
-pub const LOCKED_ARENA_VA: usize = (USER_MMIO_BASE + vmm::MEGA_SIZE - 1) & !(vmm::MEGA_SIZE - 1);
-/// `azos_topology::MAX_HUGE_MIB` (256) in bytes, restated because this
-/// crate does not depend on the topology crate; `tests/host/topology-tests`
-/// pins the topology side.
-const MAX_HUGE_BYTES: usize = 256 * 1024 * 1024;
+/// region (`mem_huge_mib`): the first level-1 leaf boundary (2 MiB) at or above
+/// twice the largest region below the user stack, and above the Linux
+/// runtime's window. Derived from the stack, so it follows every board's
+/// `RAM_BASE`. Above the mmap area, so `sys_brk` and `sys_mmap` never reach it.
+pub const LOCKED_ARENA_VA: usize = {
+    let raw = USER_STACK_TOP - 2 * MAX_HUGE_BYTES;
+    let floor = azos_abi::foreign::RUNTIME_LIMIT;
+    let base = if raw < floor { floor } else { raw };
+    (base + vmm::MEGA_SIZE - 1) & !(vmm::MEGA_SIZE - 1)
+};
 const _: () = assert!(
-    !azos_limits::LOCKED_HUGE_LEAVES || LOCKED_ARENA_VA + MAX_HUGE_BYTES <= USER_MMIO_LIMIT,
-    "the largest mem_huge_mib region must fit the shm/MMIO window above LOCKED_ARENA_VA",
+    !azos_limits::LOCKED_HUGE_LEAVES || LOCKED_ARENA_VA + MAX_HUGE_BYTES <= USER_STACK_FLOOR,
+    "the largest mem_huge_mib region must fit between the Linux runtime's window and the user stack: lower LOCKED_HUGE_MAX_MIB",
 );
 
 /// Map the row's 2 MiB-leaf region into the address space exec just built
 /// (Kconfig `LOCKED_HUGE_LEAVES`), zeroed, at [`LOCKED_ARENA_VA`], read-write
-/// and never executable, with A/D preset (a locked task must take no fault).
-/// Returns `(va, bytes)`; the reason as text when refused, with nothing
-/// mapped and no reservation kept.
-fn install_locked_arena(user_pt: usize, spec: &MemSpec) -> Result<(usize, usize), &'static str> {
+/// and never executable, with A/D preset (a locked task must take no fault), as
+/// a physical range of the space: its record first, then the level-1 leaves, so
+/// a refusal after the record takes the leaves with it. Returns `(va, bytes)`;
+/// the reason as text when refused, with nothing mapped and no record kept.
+fn install_locked_arena(space: azos_mm::aspace::SpaceRef, spec: &MemSpec) -> Result<(usize, usize), &'static str> {
     if !azos_limits::LOCKED_HUGE_LEAVES {
         return Err("this kernel was built without LOCKED_HUGE_LEAVES");
     }
     if !spec.locked {
         return Err("the row is not mem = \"locked\"");
     }
-    let (pa, bytes) = azos_mm::huge::region(spec.row).ok_or("no region was reserved for the row at boot")?;
+    let (pa, bytes) = crate::scheduler::row_arena(spec.row).ok_or("no region was reserved for the row at boot")?;
     if bytes != spec.huge_mib as usize * 1024 * 1024 {
         return Err("the reserved region is not the size the row declares");
     }
     let va = LOCKED_ARENA_VA;
-    if va.checked_add(bytes).map_or(true, |end| end > USER_MMIO_LIMIT) {
-        return Err("the region does not fit the shm/MMIO window");
-    }
-    // The task's window table: a re-exec holds the exact reservation already.
-    let _ = crate::scheduler::release_current_user_window(va, bytes);
-    if crate::scheduler::reserve_current_user_window(va, va + bytes, bytes) != Some(va) {
-        return Err("the window is taken where the region goes");
+    if va.checked_add(bytes).map_or(true, |end| end > USER_STACK_FLOOR) {
+        return Err("the region does not fit below the user stack");
     }
     // Zeroed at every exec: the frames are the row's for the whole boot and
     // the previous instance's data must not reach the next one.
     unsafe { core::ptr::write_bytes(azos_mm::addr::phys_to_virt(pa) as *mut u8, 0, bytes) };
-    let flags = PagePerms { accessed: true, dirty: true, ..PagePerms::USER_RW };
+    azos_mm::pager::reserve_phys(space, va, va + bytes, true, pa, MemType::WB, false)
+        .map_err(|_| "the address space has no record for the region")?;
+    let flags = vmm::phys_leaf_perms(true, MemType::WB);
     #[cfg(not(feature = "huge-leaves-canary"))]
-    let mapped = vmm::map_user_mega_range(user_pt, va, pa, bytes, flags);
+    let mapped = vmm::map_user_mega_range(space.root(), va, pa, bytes, flags);
     // Canary: the same frames as page leaves. The exec-time walk must then
     // report page-mapped slots, and the gate row must fail.
     #[cfg(feature = "huge-leaves-canary")]
@@ -2877,13 +2751,13 @@ fn install_locked_arena(user_pt: usize, spec: &MemSpec) -> Result<(usize, usize)
         let mut r = Ok(());
         let mut off = 0;
         while off < bytes && r.is_ok() {
-            r = vmm::map(user_pt, va + off, pa + off, flags);
+            r = vmm::map(space.root(), va + off, pa + off, flags);
             off += PAGE_SIZE;
         }
         r
     };
     if mapped.is_err() {
-        let _ = crate::scheduler::release_current_user_window(va, bytes);
+        let _ = azos_mm::pager::release_range(space, va, va + bytes);
         return Err("the page table refused the mapping");
     }
     Ok((va, bytes))
@@ -2894,7 +2768,7 @@ fn install_locked_arena(user_pt: usize, spec: &MemSpec) -> Result<(usize, usize)
 /// are page-mapped instead, and whether a user-permission walk resolves the
 /// first, a middle and the last byte to the reserved frames.
 fn report_locked_arena(user_pt: usize, row: u16, va: usize, bytes: usize) {
-    let pa = azos_mm::huge::region(row).map_or(0, |r| r.0);
+    let pa = crate::scheduler::row_arena(row).map_or(0, |r| r.0);
     let (mut leaves, mut paged, mut other) = (0usize, 0usize, 0usize);
     let mut off = 0;
     while off < bytes {

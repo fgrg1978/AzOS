@@ -716,7 +716,7 @@ pub fn try_task_create_init(
                     // the register restore) touching only kernel text /
                     // stacks / .bss — all of which resolve through the
                     // kernel L1 tables the teardown BORROWS and never frees
-                    // (`destroy_user_pagetable_skip_range` skips
+                    // (`destroy_user_pagetable` skips
                     // `k_l1 == u_l1`). The only frame that hart still needs
                     // is the PT ROOT, which the teardown frees LAST — after
                     // this claim finishes slot init + enqueue under two more
@@ -754,7 +754,6 @@ pub fn try_task_create_init(
                         // it), so a slot cannot hand its next tenant the
                         // previous one's spent count or ceiling.
                         task.mem = crate::task::TaskMem::new();
-                        task.user_window = [[0; 2]; crate::user_window::USER_WINDOW_RANGES];
                         task.reap_on_resume = 0;
                         // Chain E commit 9: a resume point is spent by every
                         // resume, so a slot's last tenant leaves none; reset
@@ -863,9 +862,9 @@ pub fn try_task_create_init(
 /// exit path's switch-then-free argument, or the reuse-time argument in
 /// `try_task_create_affinity`.
 /// Goes through `process::destroy_user_address_space` — not bare
-/// `vmm::destroy_user_pagetable` — so shm/MMIO frames mapped into the dead
-/// address space are spared (they are owned by the shm registry / the
-/// hardware, not by the page table; see that function).
+/// `vmm::destroy_user_pagetable` — so the frames of the dead address space's
+/// shared and physical-range mappings are spared (they are owned by the shm
+/// registry / the hardware, not by the page table; see that function).
 fn reclaim_stale_spaces(space: Option<azos_mm::aspace::SpaceRef>, exec_old: Option<azos_mm::aspace::SpaceRef>) {
     if let Some(r) = space {
         crate::process::destroy_user_address_space(r);
@@ -1453,7 +1452,6 @@ unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
             core::mem::swap(&mut a.name, &mut b.name);
             core::mem::swap(&mut a.user_brk, &mut b.user_brk);
             core::mem::swap(&mut a.user_mmap_low, &mut b.user_mmap_low);
-            core::mem::swap(&mut a.user_window, &mut b.user_window);
             core::mem::swap(&mut a.mem, &mut b.mem);
             for arr in [&PARENT_TID, &DWP_TID] {
                 let v = arr[idx].swap(arr[to].load(Ordering::Relaxed), Ordering::AcqRel);

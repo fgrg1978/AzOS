@@ -542,8 +542,8 @@ static VDSO_TASK_VA: core::sync::atomic::AtomicUsize = core::sync::atomic::Atomi
 /// Map this task's own vDSO page (`DOMAIN_VDSO_MAP`) and remember
 /// where. Returns the user address, or `-Errno`. Idempotent.
 ///
-/// A forked child does not inherit the mapping (the kernel leaves the
-/// shm/MMIO window out of a fork), and the remembered address is the
+/// A forked child does not inherit the mapping (the kernel gives a child no
+/// per-task page), and the remembered address is the
 /// parent's: a child calls this again before reading.
 pub fn vdso_task_map() -> isize {
     let r = domain_op(invoke_abi::DOMAIN_VDSO_MAP, [0; 4]);

@@ -547,7 +547,7 @@ pub fn create_pagetable() -> KResult<usize> {
 ///
 /// `vpn1 = None` asks for the kernel's L1 under `vpn2`; `Some(v)` asks for its
 /// L0 under that L1. These are the same two comparisons
-/// `destroy_user_pagetable_skip_range` already makes to decide what it must
+/// `destroy_user_pagetable` already makes to decide what it must
 /// not free — stated once here so the two cannot drift.
 fn kernel_table_at(vaddr: usize, vpn1: Option<usize>) -> usize {
     let kpt = l2_table(*KERNEL_PT.lock(), vaddr);
@@ -1251,35 +1251,6 @@ pub fn leaf_level(pt_phys: usize, vaddr: usize) -> Option<usize> {
     None
 }
 
-/// Does any level-1 USER leaf map an address in `[start, end)` of the user
-/// table `pt_phys`? Such a leaf is a locked row's region (Kconfig
-/// `LOCKED_HUGE_LEAVES`), which `sys_munmap` must refuse rather than report
-/// as unmapped: `take_user_leaf` leaves it alone, so a "successful" munmap
-/// would remove nothing. A promoted block (Kconfig `MM_THP_RESV`) is a
-/// level-1 USER leaf too but the task's own, and `munmap` handles it; it is
-/// told apart by its frames (`locked_region_frame`).
-pub fn user_range_has_mega_leaf(pt_phys: usize, start: usize, end: usize) -> bool {
-    let mut va = start & !(MEGA_SIZE - 1);
-    while va < end {
-        if leaf_level(pt_phys, va) == Some(1)
-            && user_leaf(pt_phys, va)
-                .map_or(false, |(w, _)| ARCH.pte_perms(w).user && locked_region_frame(ARCH.pte_phys(w)))
-        {
-            return true;
-        }
-        va = match va.checked_add(MEGA_SIZE) { Some(v) => v, None => break };
-    }
-    false
-}
-
-/// [`user_range_has_mega_leaf`] behind Kconfig `LOCKED_HUGE_LEAVES`: `false`
-/// without a walk when the option is off (the constant folds once inlined),
-/// so `sys_munmap` pays nothing for a region that cannot exist.
-#[inline]
-pub fn locked_region_in_range(pt_phys: usize, start: usize, end: usize) -> bool {
-    azos_limits::LOCKED_HUGE_LEAVES && user_range_has_mega_leaf(pt_phys, start, end)
-}
-
 /// Map `[vaddr, vaddr + len)` of a USER table to `[paddr, ..)` with level-1
 /// (2 MiB at 4 KiB) leaves: a locked row's boot-reserved region (Kconfig
 /// `LOCKED_HUGE_LEAVES`). The only path that puts a level-1 leaf in a user
@@ -1366,10 +1337,10 @@ pub fn l1_slot_is_empty(pt_phys: usize, vaddr: usize) -> bool {
 /// everything on an ISA, build or CPU without runs (x86_64: no equivalent
 /// below 2 MiB; riscv64 without Svnapot; aarch64 with `A64_CONTIG_HINT` n).
 ///
-/// The user is the MemObj mapper (`shm_map_user`): its region's frames come
+/// The user is the MemObj mapper (`SYS_MO_MAP`): its region's frames come
 /// from the page allocator, in whatever order the buddy lists gave them, and
 /// a run is the stretch that happens to be consecutive and aligned. A
-/// failure leaves the pages done mapped, as `shm_map_user`'s loop always did
+/// failure leaves the pages done mapped, as the mapper's loop always did
 /// (the caller's reservation keeps the addresses). A run is written whole or
 /// not at all: every slot is checked empty first, and a slot another writer
 /// took meanwhile takes back the ones this call wrote.
@@ -1729,7 +1700,7 @@ pub fn translate_user_readable_nofault(pt_phys: usize, vaddr: usize) -> Option<u
 /// Can the kernel reach the frame of a user leaf through its own map of RAM
 /// (`addr::phys_to_virt`), which is how every kernel access to user memory is
 /// made? Not for a user device window (`DOMAIN_MMIO_MAP`,
-/// `process::mmio_map_user`: `PagePerms::USER_MMIO_*`). Its frame is device
+/// `phys_map::map_user` with `MemType::Device`). Its frame is device
 /// space, outside the RAM the PMM manages. aarch64's linear map and x86_64's
 /// direct map hold RAM only (x86_64 also takes the E820 holes out), so the
 /// kernel access was a fatal kernel page fault that ring 3 could trigger with
@@ -2852,7 +2823,7 @@ pub fn enable_paging() {
 
 // COW (AQ9) lives in the sibling module `cow`; its public API is re-exported
 // here for the callers that reach it through `vmm::`.
-pub use crate::cow::{fork_cow, fork_cow_shared, fork_cow_shared_held, handle_cow_fault, page_addref, page_decref, page_getref};
+pub use crate::cow::{fork_cow, fork_cow_shared_held, handle_cow_fault, page_addref, page_decref, page_getref};
 
 /// Resolve a fault on a page of a mapping of `space` (`crate::pager`: a first
 /// touch, a page the reclaimer has out, a file page), refusing anything in the
@@ -2977,7 +2948,7 @@ pub fn handle_accessed_fault(pt: usize, fault_addr: usize) -> bool {
 /// path below — the branch that keeps kernel and user separate — is the one
 /// that actually runs. A fork's child gets its anonymous pages' leaves after
 /// this (`pager::fork_clone`), into leaf tables the fork's walk built before
-/// it (`cow::fork_cow_shared`); an allocating walk refuses a table the kernel
+/// it (`cow::fork_cow_shared_held`); an allocating walk refuses a table the kernel
 /// shares in any case ([`walk_level`]).
 ///
 /// Because the copy grafts kernel-owned tables into `user_pt`, any teardown
@@ -3670,37 +3641,7 @@ fn kernel_collision_l2(kpt: usize, user_pt: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// Tear down a **user** page table: free its own intermediate tables and its
-/// USER leaf pages, and release its `PT_META` slot.
-///
-/// This is the teardown [`destroy_pagetable`] cannot be: that one recurses
-/// into every valid non-leaf entry, which on a user PT that has been through
-/// [`copy_kernel_entries_to_user`] means walking into — and freeing — the
-/// kernel's own L1/L0 tables. Handing those frames back to the PMM while the
-/// kernel is still executing out of them is not a leak, it is a machine that
-/// stops.
-///
-/// Kernel tables are grafted in at two different depths and both must be
-/// recognised:
-///   - **L2**: a VPN[2] slot the user never touched holds a copy of the
-///     kernel's L2 PTE, i.e. a pointer to the kernel's L1 table.
-///   - **L1**: at VPN[2]=0 the user owns the L1 table, but individual slots
-///     inside it (CLINT, PLIC, UART, …) point at the kernel's L0 tables.
-///     A teardown that compared only at L2 would recurse into the user's own
-///     L1, reach slot 16, and free the kernel's CLINT L0 table — a corruption
-///     that surfaces at a random later moment, nowhere near this code.
-///
-/// Leaf pages are released through [`crate::cow::page_decref`], so a page
-/// still shared with a forked peer survives; an untracked (sole-owner) page is
-/// freed. The vDSO frame is kernel-owned and mapped USER_RO into every address
-/// space, so it is skipped explicitly.
-pub fn destroy_user_pagetable(pt_phys: usize) {
-    // No reserved window: on the construction paths nothing can have mapped
-    // shm/MMIO into this PT yet (see `destroy_user_pagetable_skip_range`).
-    let _ = destroy_user_pagetable_skip_range(pt_phys, 0, 0);
-}
-
-/// Page-table teardowns [`destroy_user_pagetable_skip_range`] refused because
+/// Page-table teardowns [`destroy_user_pagetable`] refused because
 /// a hart still translated through the root. Zero on a correct kernel: every
 /// path that frees a lived table first moves every hart off it.
 pub static LIVE_ROOT_REFUSALS: core::sync::atomic::AtomicU32 =
@@ -3744,28 +3685,25 @@ pub static LIVE_ROOT_REFUSALS: core::sync::atomic::AtomicU32 =
 ///   So the property holds, and it holds through two independent mechanisms
 ///   in different functions. A reader deleting one of them on the strength of
 ///   the other is the failure this note exists to prevent.
-/// * **Inside `skip_lo..skip_hi`** — the MMIO, ring and notify window.
-///   `mmio_map_user` and `shm_map_user` install real `USER` leaves there whose
-///   frames belong to a device or to another task.
-/// * **A shared mapping's leaf, anywhere else.** Nothing here tells it from a
-///   task's own: no count, no marker. The space's records do, and the callers
-///   clear those leaves first (`pager::unmap_shared`, from `release_range` and
-///   `aspace::destroy`). A reader who drops that call brings back a free of
-///   a frame another mapper holds.
-/// * **The vDSO page** — one frame, mapped into every address space.
+/// * **A mapping of frames another owner holds, anywhere.** Nothing here tells
+///   it from a task's own: no count, no marker. The space's records do (a
+///   shared object, a shared file, a physical range: the vDSO page, a device
+///   window, a ring page), and the callers clear those leaves first
+///   (`pager::unmap_shared`, from `release_range` and `aspace::destroy`). A
+///   reader who drops that call brings back a free of a frame another mapper
+///   or a device holds.
+/// * **The riscv64 sigreturn trampoline** — the kernel's own page, mapped
+///   executable in every address space by the loader, with no record: it is
+///   not a physical range, which is never executable.
 /// * **`cow::page_decref` says no** — a COW page another task still holds.
 ///
-/// Extracted so `unmap_user_and_free` and `destroy_user_pagetable_skip_range`
+/// Extracted so `unmap_user_and_free` and `destroy_user_pagetable`
 /// cannot disagree about what a task owns. They used to be the same rule
 /// written once: teardown had it, and `sys_munmap` had nothing at all, which
 /// is how every mmap/munmap pair leaked its frames for the life of the boot.
-fn user_leaf_is_task_owned(
-    l0: u64, va: usize, skip_lo: usize, skip_hi: usize, vdso_phys: usize, tramp_phys: usize,
-) -> bool {
+fn user_leaf_is_task_owned(l0: u64, tramp_phys: usize) -> bool {
     if !ARCH.pte_perms(l0).user { return false; }
-    if va >= skip_lo && va < skip_hi { return false; }
     let phys = ARCH.pte_phys(l0);
-    if vdso_phys != 0 && phys == vdso_phys { return false; }
     // Wave 13: nor the riscv64 sigreturn trampoline (the kernel's own page).
     if tramp_phys != 0 && phys == tramp_phys { return false; }
     crate::cow::page_decref(phys)
@@ -3790,14 +3728,12 @@ fn user_leaf_is_task_owned(
 ///
 /// Single-page form of [`unmap_user_range_and_free`]; `sys_munmap` uses the
 /// range form. Kept for callers that remove one page (host tests today).
-pub fn unmap_user_and_free(
-    pt_phys: usize, vaddr: usize, skip_lo: usize, skip_hi: usize,
-) -> bool {
+pub fn unmap_user_and_free(pt_phys: usize, vaddr: usize) -> bool {
     // A page of a promoted block: split it first (`false` if it stays whole).
     if !split_user_mega(pt_phys, vaddr) {
         return false;
     }
-    match take_user_leaf(pt_phys, vaddr, skip_lo, skip_hi) {
+    match take_user_leaf(pt_phys, vaddr, true) {
         None => false,
         Some(owned) => {
             // Shoot down BEFORE the free: another hart must not read a frame
@@ -3827,12 +3763,28 @@ pub const UNMAP_GATHER_PAGES: usize = PAGE_SIZE / core::mem::size_of::<usize>();
 /// reach `TLB_FLUSH_CEILING_PAGES`: a range past it then flushes each batch
 /// whole, as the ISA's shootdown does with any batch past it.
 /// Returns the frames released.
-pub fn unmap_user_range_and_free(
-    pt_phys: usize, start: usize, end: usize, skip_lo: usize, skip_hi: usize,
-) -> u32 {
+pub fn unmap_user_range_and_free(pt_phys: usize, start: usize, end: usize) -> u32 {
+    unmap_user_range(pt_phys, start, end, true)
+}
+
+/// [`unmap_user_range_and_free`] for a range of frames another owner holds (a
+/// shared object, a shared file, a physical range): the leaves go, the
+/// shootdown completes, and no frame is freed. A level-1 leaf in the range (a
+/// locked row's region) goes too.
+pub fn unmap_user_range_keep(pt_phys: usize, start: usize, end: usize) {
+    unmap_user_range(pt_phys, start, end, false);
+}
+
+fn unmap_user_range(pt_phys: usize, start: usize, end: usize, free: bool) -> u32 {
     // Promoted blocks (Kconfig `MM_THP_RESV`) first: a whole one is freed
-    // here, a partly covered one is split for the loop below.
-    let mut freed: u32 = release_megas(pt_phys, start, end);
+    // here, a partly covered one is split for the loop below. A locked row's
+    // region is cleared whole, and never freed.
+    let mut freed: u32 = 0;
+    if free {
+        freed = release_megas(pt_phys, start, end);
+    } else {
+        clear_user_megas(pt_phys, start, end);
+    }
     let mut va = start & !(PAGE_SIZE - 1);
     let span = end.saturating_sub(va).div_ceil(PAGE_SIZE);
     let ceiling = azos_limits::TLB_FLUSH_CEILING_PAGES as usize;
@@ -3857,7 +3809,7 @@ pub fn unmap_user_range_and_free(
         let mut cleared = false;
         let mut i = 0;
         while i < frames.len() && va < end {
-            if let Some(owned) = take_user_leaf(pt_phys, va, skip_lo, skip_hi) {
+            if let Some(owned) = take_user_leaf(pt_phys, va, free) {
                 cleared = true;
                 if owned != 0 { frames[n] = owned; n += 1; }
             }
@@ -4015,7 +3967,7 @@ pub fn protect_user_range(pt_phys: usize, start: usize, end: usize, write: bool)
 /// own copy; setting the bit would let this space write a frame another
 /// space maps (a fork child's `mprotect(RW)` wrote its parent's page). The
 /// count is read, the entry written, and the count read again: a fork that
-/// counts the frame (`fork_cow_shared`: addref, then swap the parent's entry)
+/// counts the frame (`fork_cow_shared_held`: addref, then swap the parent's entry)
 /// between the first read and the write either swaps the entry after it (and
 /// makes it copy-on-write itself) or is seen by the second read, which makes
 /// it copy-on-write here.
@@ -4088,20 +4040,18 @@ pub fn set_user_range_write(pt_phys: usize, start: usize, end: usize, write: boo
 /// * not copy-on-write and held by no other task (`page_getref` <= 1): a
 ///   frame another address space still maps would become executable there
 ///   through a write here, or change under this task's code;
-/// * outside `[skip_lo, skip_hi)` (the shared-memory/MMIO window, whose
-///   frames other tasks or devices write) and not the vDSO page;
-/// * in no mapping of a shared object or of a file (`pager::has_whole`): their
-///   frames are another owner's and carry no count, so only the record says
-///   another writer reaches them.
+/// * in no mapping of a shared object, of a file or of a physical range
+///   (`pager::has_whole`; a device window, the vDSO page): their frames are
+///   another owner's and carry no count, so only the record says another
+///   writer reaches them.
 ///
 /// The write permission is removed in the same PTE update that adds execute,
 /// so no instant exists where the page is both (W^X). Instruction-cache
 /// synchronisation is the caller's (`DOMAIN_MODULE_MAP_X`), after this returns.
-pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: usize, skip_hi: usize) -> KResult<usize> {
+pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize) -> KResult<usize> {
     if start & (PAGE_SIZE - 1) != 0 || end <= start || end & (PAGE_SIZE - 1) != 0 {
         return Err(KernelError::InvalidArg);
     }
-    let vdso = crate::vdso::vdso_phys();
     // Promoted blocks (Kconfig `MM_THP_RESV`) into 4 KiB leaves: the checks
     // below read level-0 leaves only. One that cannot be split refuses.
     if crate::resv::ENABLED {
@@ -4137,14 +4087,11 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
     }
     let mut va = start;
     while va < end {
-        if va < skip_hi && va.saturating_add(PAGE_SIZE) > skip_lo { return Err(KernelError::InvalidArg); }
         let Some(l0_ptr) = user_l0_leaf(pt_phys, va) else { return Err(KernelError::InvalidArg) };
         let pte: u64 = unsafe { core::ptr::read_volatile(l0_ptr) };
         let f = ARCH.pte_perms(pte);
         let phys = ARCH.pte_phys(pte);
-        if !f.user || !f.read || !f.write || f.exec || ARCH.pte_is_cow(pte)
-            || (vdso != 0 && phys == vdso) || crate::cow::page_getref(phys) > 1
-        {
+        if !f.user || !f.read || !f.write || f.exec || ARCH.pte_is_cow(pte) || crate::cow::page_getref(phys) > 1 {
             return Err(KernelError::InvalidArg);
         }
         va += PAGE_SIZE;
@@ -4220,10 +4167,10 @@ fn user_l0_leaf(pt_phys: usize, vaddr: usize) -> Option<*mut u64> {
 /// what the caller must release once it has: `None` if there was no leaf of
 /// ours to clear (not mapped, a megapage/gigapage — the kernel's, or a locked
 /// row's region —, a kernel table), `Some(0)`
-/// if one was cleared but its frame is not the task's (shm window, vDSO, a
-/// COW sibling still holds it), `Some(phys)` if the frame is the task's own.
+/// if one was cleared but its frame is not the task's (`free` was not asked,
+/// the trampoline, a COW sibling still holds it), `Some(phys)` if the frame is the task's own.
 /// The caller MUST shoot the address down before freeing `phys`.
-fn take_user_leaf(pt_phys: usize, vaddr: usize, skip_lo: usize, skip_hi: usize) -> Option<usize> {
+fn take_user_leaf(pt_phys: usize, vaddr: usize, free: bool) -> Option<usize> {
     if write_would_enter_kernel_table(pt_phys, vaddr) { return None; }
 
     // Descend by hand rather than through `walk`, for the same reason `unmap`
@@ -4253,10 +4200,7 @@ fn take_user_leaf(pt_phys: usize, vaddr: usize, skip_lo: usize, skip_hi: usize) 
     // frame free.
     if !user_may_modify(l0, vaddr, 0) { return None; }
 
-    let owned = user_leaf_is_task_owned(
-        l0, vaddr & !(PAGE_SIZE - 1), skip_lo, skip_hi, crate::vdso::vdso_phys(),
-        crate::vdso::sigtramp_phys(),
-    );
+    let owned = free && user_leaf_is_task_owned(l0, crate::vdso::sigtramp_phys());
     let phys = ARCH.pte_phys(l0);
 
     unsafe { core::ptr::write_volatile(l0_ptr, ARCH.pte_empty()) };
@@ -4264,45 +4208,43 @@ fn take_user_leaf(pt_phys: usize, vaddr: usize, skip_lo: usize, skip_hi: usize) 
     Some(if owned { phys } else { 0 })
 }
 
-/// [`destroy_user_pagetable`] for a *post-construction* address space: leaf
-/// frames whose VA falls in `[skip_lo, skip_hi)` are left un-freed.
+/// Tear down a **user** page table: free its own intermediate tables and its
+/// USER leaf pages, and release its `PT_META` slot.
 ///
-/// K-C22 wired teardown into exec replacement and task-slot reuse — page
-/// tables that have LIVED, which the plain variant was never safe for: a
-/// running process may have shm and MMIO frames mapped USER into its PT
-/// (`shm_map_user` / `mmio_map_user` in the sched crate), and those frames
-/// are not the address space's to free. Shm pages are PMM pages owned by the
-/// shm registry and possibly mapped by other processes — `page_decref` has
-/// never tracked them, so it would report "sole owner" and this walk would
-/// hand a page another process is actively using back to the allocator. MMIO
-/// frames merely bounce off `pmm::free_page`'s range check, but skipping
-/// them keeps the ownership rule uniform instead of leaning on that.
+/// This is the teardown [`destroy_pagetable`] cannot be: that one recurses
+/// into every valid non-leaf entry, which on a user PT that has been through
+/// [`copy_kernel_entries_to_user`] means walking into — and freeing — the
+/// kernel's own L1/L0 tables. Handing those frames back to the PMM while the
+/// kernel is still executing out of them is not a leak, it is a machine that
+/// stops.
 ///
-/// Both kinds only ever land in one VA window (`reserve_window_va` in the
-/// sched crate is the single allocator for it), so callers pass that window. The window's own
-/// L1/L0 *tables* were allocated by `vmm::map` on this PT and ARE freed —
-/// the mappings die with the address space; the frames survive under their
-/// real owner.
+/// Kernel tables are grafted in at two different depths and both must be
+/// recognised:
+///   - **L2**: a VPN[2] slot the user never touched holds a copy of the
+///     kernel's L2 PTE, i.e. a pointer to the kernel's L1 table.
+///   - **L1**: at VPN[2]=0 the user owns the L1 table, but individual slots
+///     inside it (CLINT, PLIC, UART, …) point at the kernel's L0 tables.
+///     A teardown that compared only at L2 would recurse into the user's own
+///     L1, reach slot 16, and free the kernel's CLINT L0 table — a corruption
+///     that surfaces at a random later moment, nowhere near this code.
 ///
-/// **Free order**: the ROOT frame is freed last, after the full 512-slot L2
-/// walk. That used to be the whole argument for the reuse-time reclaim in the
-/// scheduler (`try_task_create_affinity`, K-C22(B)) running while the hart
-/// that zombified this address space was still a few instructions short of
-/// its `csrw satp` away from it: the root is the only frame that hart still
-/// translates through, and it goes last. A few instructions of guest time are
-/// not a bound once the host deschedules that hart's vCPU, and the root was
-/// then reissued under it (see the refusal below). The order stays; the
-/// refusal is what makes it safe.
+/// Leaf pages are released through [`crate::cow::page_decref`], so a page
+/// still shared with a forked peer survives; an untracked (sole-owner) page is
+/// freed. The mappings of frames another owner holds (a shared object, a
+/// shared file, a physical range such as the vDSO page) are records of the
+/// address space, and their leaves are cleared before this runs
+/// (`pager::forget`): no leaf here is one.
 ///
-/// **Refused, whole, while any hart still translates through `pt_phys`**
-/// ([`azos_arch_api::Mmu::root_holders`]): returns that hart mask and
-/// frees nothing — leaf pages, L0/L1 tables and the root alike, because a
-/// live root reaches all of them. A leaked address space is a bounded loss;
-/// its frames reissued under a hart that still walks them is the page fault
-/// on kernel text this check was added for (a dying hart kept the root in
-/// `satp` while another hart's slot claim freed it and reused the frame).
-/// Returns 0 when the table was torn down (or `pt_phys` is 0).
-pub fn destroy_user_pagetable_skip_range(pt_phys: usize, skip_lo: usize, skip_hi: usize) -> usize {
+/// The ROOT frame is freed last, after the full 512-slot L2 walk, and the
+/// teardown is **refused, whole, while any hart still translates through
+/// `pt_phys`** ([`azos_arch_api::Mmu::root_holders`]): it returns that hart mask
+/// and frees nothing — leaf pages, L0/L1 tables and the root alike, because a
+/// live root reaches all of them. A leaked address space is a bounded loss; its
+/// frames reissued under a hart that still walks them is the page fault on
+/// kernel text this check was added for (a dying hart kept the root in `satp`
+/// while another hart's slot claim freed it and reused the frame). Returns 0
+/// when the table was torn down (or `pt_phys` is 0).
+pub fn destroy_user_pagetable(pt_phys: usize) -> usize {
     if pt_phys == 0 { return 0; }
     // Out of the merged-root roster before the first frame is freed (N12g):
     // `propagate_kernel_entries` writes into roster roots under `PT_META`,
@@ -4318,7 +4260,6 @@ pub fn destroy_user_pagetable_skip_range(pt_phys: usize, skip_lo: usize, skip_hi
     }
 
     let kpt = *KERNEL_PT.lock();
-    let vdso_phys = crate::vdso::vdso_phys();
     let tramp_phys = crate::vdso::sigtramp_phys();
 
     let _ = for_each_user_l2(pt_phys, kpt, |u_l2, k_l2, base| {
@@ -4362,10 +4303,11 @@ pub fn destroy_user_pagetable_skip_range(pt_phys: usize, skip_lo: usize, skip_hi
                 };
                 // A level-1 leaf is not this table's to free: a kernel mapping
                 // (the aarch64 device windows) or a locked row's region
-                // (`map_user_mega_range`, Kconfig LOCKED_HUGE_LEAVES), whose frames
-                // are the row's for the whole boot (`crate::huge`) — leave it alone.
-                // The exception is a promoted block (Kconfig MM_THP_RESV): a USER
-                // leaf onto frames the task's own, freed one by one.
+                // (`map_user_mega_range`, Kconfig LOCKED_HUGE_LEAVES), which is
+                // a physical range of the space and was cleared with its record —
+                // leave it alone. The exception is a promoted block (Kconfig
+                // MM_THP_RESV): a USER leaf onto frames the task's own, freed one
+                // by one.
                 if !ARCH.pte_is_valid(l1) { continue; }
                 if ARCH.pte_is_leaf(l1, 1) {
                     if crate::resv::ENABLED && ARCH.pte_perms(l1).user
@@ -4387,12 +4329,6 @@ pub fn destroy_user_pagetable_skip_range(pt_phys: usize, skip_lo: usize, skip_hi
                 }
 
                 let mut vpn0_next = 0usize;
-                // A leaf table wholly inside the skipped window owns no frame:
-                // only the table itself goes (wave 13: not walked).
-                let lo = base | (vpn2 << L2_SHIFT) | (vpn1 << L1_SHIFT);
-                if lo >= skip_lo && lo + (1usize << L1_SHIFT) <= skip_hi {
-                    vpn0_next = entries_per_table();
-                }
                 loop {
                     let vpn0 = crate::vmm::next_valid(u_l0, vpn0_next, entries_per_table());
                     if vpn0 >= entries_per_table() { break; }
@@ -4403,14 +4339,7 @@ pub fn destroy_user_pagetable_skip_range(pt_phys: usize, skip_lo: usize, skip_hi
                     if !ARCH.pte_is_valid(l0) || !ARCH.pte_is_leaf(l0, 0) { continue; }
                     // A leaf without USER is a kernel mapping that found its way
                     // in — never ours to free.
-                    //
-                    // USER leaves installed by `shm_map_user`/`mmio_map_user` are
-                    // *not* owned by this address space either — that is what
-                    // `skip_lo..skip_hi` exists for (see the function doc); the
-                    // construction-failure paths pass an empty window because no
-                    // such mapping can exist before the loader/fork returns.
-                    let va = base | (vpn2 << L2_SHIFT) | (vpn1 << L1_SHIFT) | (vpn0 << PAGE_SHIFT);
-                    if user_leaf_is_task_owned(l0, va, skip_lo, skip_hi, vdso_phys, tramp_phys) {
+                    if user_leaf_is_task_owned(l0, tramp_phys) {
                         let _ = pmm::free_page(PhysAddr::new(ARCH.pte_phys(l0)));
                     }
                 }
@@ -4534,7 +4463,7 @@ pub fn user_runs(pt_phys: usize, out: &mut [UserRun]) -> (usize, usize) {
 // 4 KiB leaves first settles the promoted blocks in its range, because most of
 // this file reads a user level-1 leaf as a locked row's region (never the
 // task's to touch). A promoted block is told from one by its frame: a locked
-// region's lie in `crate::huge`'s table, a promoted block's came from the
+// region's are pinned for the whole boot, a promoted block's came from the
 // page allocator and are the task's own, freed one by one.
 //
 // All of it folds to nothing when `resv::ENABLED` is false: `promoted_leaf`
@@ -4542,14 +4471,35 @@ pub fn user_runs(pt_phys: usize, out: &mut [UserRun]) -> (usize, usize) {
 
 const _: () = assert!(crate::resv::BLOCK_SIZE == MEGA_SIZE);
 
-/// Does the frame at `pa` lie in a locked row's boot-reserved region?
+/// Does the frame at `pa` lie in a locked row's boot-reserved region? Those
+/// frames are pinned for the whole boot (`pmm::F_PINNED`), which no promoted
+/// block's frame is.
 fn locked_region_frame(pa: usize) -> bool {
-    // One lock when the kernel has no locked row's region (the common case).
-    if crate::huge::reserved().0 == 0 {
-        return false;
+    pmm::frame_state(pa).is_some_and(|f| f & crate::frame::F_PINNED != 0)
+}
+
+/// Clear the level-1 leaves of the locked rows' regions in `[start, end)`,
+/// then shoot the range down. No frame is freed: the row keeps its region.
+fn clear_user_megas(pt_phys: usize, start: usize, end: usize) {
+    let mut cleared = false;
+    let mut b = start & !(MEGA_SIZE - 1);
+    while b < end {
+        if let Some(slot) = user_l1_slot(pt_phys, b) {
+            let w = l1_load(slot);
+            if ARCH.pte_is_valid(w)
+                && ARCH.pte_is_leaf(w, 1)
+                && ARCH.pte_perms(w).user
+                && locked_region_frame(ARCH.pte_phys(w))
+                && slot.compare_exchange(w, ARCH.pte_empty(), Ordering::AcqRel, Ordering::Acquire).is_ok()
+            {
+                cleared = true;
+            }
+        }
+        b = match b.checked_add(MEGA_SIZE) { Some(v) => v, None => break };
     }
-    (1..=crate::huge::MAX_HUGE_REGIONS as u16)
-        .any(|row| crate::huge::region(row).is_some_and(|(base, len)| pa >= base && pa - base < len))
+    if cleared {
+        user_shootdown(pt_phys, start & !(MEGA_SIZE - 1), end.saturating_sub(start & !(MEGA_SIZE - 1)));
+    }
 }
 
 /// The level-1 slot that maps `vaddr` in the user table `pt_phys`, or `None`
@@ -4780,7 +4730,7 @@ pub fn demote_all_user_megas(pt_phys: usize) -> bool {
             let l2 = pt_word(u_l2, vpn2).load(Ordering::Acquire);
             if !ARCH.pte_is_valid(l2) || ARCH.pte_is_leaf(l2, 2) { continue; }
             let u_l1 = ARCH.pte_phys(l2);
-            // The kernel's tables are not the task's (see `destroy_user_pagetable_skip_range`).
+            // The kernel's tables are not the task's (see `destroy_user_pagetable`).
             let k_l1 = if k_l2 != 0 {
                 let kpte = pt_word(k_l2, vpn2).load(Ordering::Acquire);
                 if ARCH.pte_is_valid(kpte) && !ARCH.pte_is_leaf(kpte, 2) { ARCH.pte_phys(kpte) } else { 0 }

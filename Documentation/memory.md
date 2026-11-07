@@ -272,6 +272,42 @@ in-kernel pager does, and a `Pending` answer is treated as unresolved.
 Source: `crates/core/syscall/src/file_map.rs`,
 `crates/core/mm/src/pager.rs`, `crates/core/mm/src/mapping.rs`.
 
+## Physical ranges
+
+A range of physical memory the allocator does not hand out is lent to a task as
+a `Backing::Phys` mapping (`crates/core/mm/src/mapping.rs`): a device's
+register window (`DOMAIN_MMIO_MAP`), a ring page (`SYS_RING_SETUP`), the
+per-task vDSO page (`DOMAIN_VDSO_MAP`), the vDSO data page every space maps, a
+locked row's region. It has no pages to supply, count or reclaim, so its object
+is the record itself: `off` is the first frame number, the memory type (`WB`,
+`WC`, `NC` or `Device`, in the leaf as PAT on x86_64, MAIR on aarch64 and
+Svpbmt on riscv64) and whether a fork gives it to the child.
+
+* **Placement and order.** `syscall::phys_map` places the range in the mmap area
+  like a shared object, records it (`pager::reserve_phys`) and then maps its
+  leaves (`vmm::map_phys`): a refusal after the record releases it, which takes
+  the leaves done with it. Charged to nobody: the range is its owner's.
+* **Never executable, never taken back by the task.** The record carries no
+  execute bit and the exec flip (`vmm::set_user_range_exec`) refuses it; `munmap`
+  and `mprotect` refuse it whole. Its owner ends it (`phys_map::unmap_user`, a
+  ring's destroy) or the space does.
+* **Torn down by its record.** `release_range` and the space's end clear its
+  leaves (`vmm::unmap_user_range_keep`, level-1 leaves included) with the
+  shootdown and free no frame; the sweep never meets one.
+* **Fork.** The walk passes it; the child gets it only when the record says
+  `inherit` (the vDSO data page), as a record and the same leaf with no
+  reference counted. A device window, a ring page and the notify page are not
+  inherited.
+
+The vDSO data page and a locked row's region are recorded by exec and spawn
+(`process::map_vdso`, `install_locked_arena`) once the address space exists. The
+riscv64 sigreturn trampoline stays a plain loader mapping: it is executable, which
+a physical range never is.
+
+Source: `crates/core/mm/src/mapping.rs`, `crates/core/mm/src/pager.rs`,
+`crates/core/mm/src/vmm.rs`, `crates/core/syscall/src/phys_map.rs`,
+`crates/core/sched/src/process.rs`.
+
 ## Anonymous objects and slots
 
 A private anonymous `mmap` is a mapping of an anonymous object the address
@@ -433,14 +469,15 @@ use `Mmu::pte_leaf0_span`, because a NAPOT word names the whole run.
 
 ### Boot-reserved 2 MiB regions (Kconfig `LOCKED_HUGE_LEAVES`)
 
-A topology row with `mem = "locked"` may declare `mem_huge_mib`. `huge::reserve`
-takes that much physically contiguous, 2 MiB-aligned RAM from the allocator
-once, at boot, keyed by the row; it is never given back, except that `huge::release_all` undoes every reservation when boot admission refuses the topology they were reserved for. `vmm::map_user_mega_range`
+A topology row with `mem = "locked"` may declare `mem_huge_mib`.
+`scheduler::row_arena_reserve` takes that much physically contiguous, 2 MiB-aligned RAM from the allocator
+once, at boot, keyed by the row, and pins its frames (`F_PINNED`: the allocator refuses to free them); it is never given back, except that `scheduler::row_arena_release_all` undoes every reservation when boot admission refuses the topology they were reserved for. Exec records the region as a physical range of the new
+address space and `vmm::map_user_mega_range`
 maps it with level-1 leaves; it refuses unaligned or empty ranges, a slot whose
 table is borrowed from the kernel, and any slot already mapped, before writing
-anything. Teardown skips these leaves.
+anything. The record clears these leaves at the space's end.
 
-Source: `crates/core/mm/src/resv.rs`, `crates/core/mm/src/huge.rs`,
+Source: `crates/core/mm/src/resv.rs`, `crates/core/sched/src/scheduler/budget.rs`,
 `crates/core/mm/src/vmm.rs`, `crates/core/mm/src/pager.rs`,
 `arch/api/src/lib.rs`, `arch/api/src/contig.rs`,
 `arch/aarch64/src/cpu/features.rs`,
@@ -462,9 +499,8 @@ it (`MLSRV.ELF`, whose image asks for 64 KiB: a small row's 64 pages plus 16,
 `MLSRV_MEM_PAGES` in `crates/core/topology/src/builder.rs`). The cached image of a spawn keeps the
 size with its entry and break.
 
-Below the stack lies nothing mapped up to `USER_MMIO_LIMIT`, which is
-`USER_STACK_TOP - USER_STACK_MAX_KB`: the window that device mappings, ring pages and
-the vDSO notify page are placed in stops there, so a stack that outgrows its request faults instead
+Below the stack lies nothing mapped up to `USER_STACK_FLOOR`, which is
+`USER_STACK_TOP - USER_STACK_MAX_KB`: the locked rows' regions end there, so a stack that outgrows its request faults instead
 of running into a mapping. The fault report says so (`stack: below the stack
 this image asked for`). There is no demand growth on purpose: a `mem = "locked"`
 row must take no fault at run time, and a stack sized from the program is
