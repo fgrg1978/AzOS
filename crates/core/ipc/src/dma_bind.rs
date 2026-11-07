@@ -124,8 +124,26 @@ const WHY_ADMITTED: u32 = 0;
 const WHY_UNCONFINED: u32 = 1;
 const WHY_PARKED: u32 = 2;
 const WHY_KEPT: u32 = 3;
+// 4 and 5 are the window and port refusals of `mmio_cap` and `ioport_cap`.
+/// A kernel driver owns the device or may still take it, or the hooks are not installed.
+const WHY_CLAIMED: u32 = 6;
+/// The device has no domain ring 3 may map into.
+const WHY_NO_DOMAIN: u32 = 7;
+/// The object or the device is bound already, or being ended.
+const WHY_BUSY: u32 = 8;
+/// No free record, or the caller holds its share of the table.
+const WHY_FULL: u32 = 9;
+/// The object is not one a device may be given.
+const WHY_BAD_OBJECT: u32 = 10;
+/// The domain refused the mapping and nothing of it landed.
+const WHY_MAP_FAILED: u32 = 11;
+/// An unmap of a binding the caller does not hold.
+const WHY_NOT_BOUND: u32 = 12;
 
 fn record(verdict: azos_decision::Verdict, dev: u32, tid: u32, bytes: usize, why: u32) {
+    if cfg!(feature = "dma-refusal-silent-canary") && verdict == azos_decision::Verdict::Refuse && why >= WHY_CLAIMED {
+        return;
+    }
     azos_decision::record(azos_decision::Rule::Ring3Dma, verdict, dev, [u64::from(tid), bytes as u64, u64::from(why)]);
 }
 
@@ -146,11 +164,15 @@ pub struct Mapped {
 /// Map the object `obj` for device `dev` on behalf of `owner`, moving data
 /// `dir`.
 pub fn map(owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<Mapped, DmaBindError> {
-    let hooks = (*HOOKS.lock()).ok_or(DmaBindError::NoDomain)?;
+    let Some(hooks) = *HOOKS.lock() else {
+        record(azos_decision::Verdict::Refuse, dev, owner, 0, WHY_CLAIMED);
+        return Err(DmaBindError::NoDomain);
+    };
     // A device a kernel driver owns, or may still take, keeps its domain; one
     // ring 3 gives memory to is booked like a mapped window, so no kernel
     // driver binds it while the binding lives.
     if azos_drv_bus::hwbus::claim_user_window(dev).is_none() {
+        record(azos_decision::Verdict::Refuse, dev, owner, 0, WHY_CLAIMED);
         return Err(DmaBindError::NoDomain);
     }
     let r = bind_claimed(hooks, owner, dev, obj, dir);
@@ -162,13 +184,20 @@ pub fn map(owner: u32, dev: u32, obj: u32, dir: Direction) -> Result<Mapped, Dma
 }
 
 fn refusal(e: BindError, dev: u32, owner: u32) -> DmaBindError {
+    use azos_decision::Verdict::Refuse;
     match e {
-        BindError::Busy => DmaBindError::Busy,
-        BindError::Parked => {
-            record(azos_decision::Verdict::Refuse, dev, owner, 0, WHY_PARKED);
+        BindError::Busy => {
+            record(Refuse, dev, owner, 0, WHY_BUSY);
             DmaBindError::Busy
         }
-        _ => DmaBindError::Full,
+        BindError::Parked => {
+            record(Refuse, dev, owner, 0, WHY_PARKED);
+            DmaBindError::Busy
+        }
+        _ => {
+            record(Refuse, dev, owner, 0, WHY_FULL);
+            DmaBindError::Full
+        }
     }
 }
 
@@ -182,7 +211,10 @@ fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) ->
         (t.can_insert(group, dev, obj), t.has_live(dev))
     };
     admitted.map_err(|e| refusal(e, dev, owner))?;
-    let domain = (hooks.domain)(dev, live).ok_or(DmaBindError::NoDomain)?;
+    let Some(domain) = (hooks.domain)(dev, live) else {
+        record(Verdict::Refuse, dev, owner, 0, WHY_NO_DOMAIN);
+        return Err(DmaBindError::NoDomain);
+    };
     let unconfined = !confined(domain);
     if unconfined && !(hooks.unconfined || cfg!(feature = "dma-ring3-unconfined-canary")) {
         record(Verdict::Refuse, dev, owner, 0, WHY_UNCONFINED);
@@ -193,7 +225,11 @@ fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) ->
         drop(t);
         return Err(refusal(e, dev, owner));
     }
-    let (pa, len) = crate::memobj::memobj_dma_pin(obj).map_err(|_| DmaBindError::BadObject)?;
+    let Ok((pa, len)) = crate::memobj::memobj_dma_pin(obj) else {
+        drop(t);
+        record(Verdict::Refuse, dev, owner, 0, WHY_BAD_OBJECT);
+        return Err(DmaBindError::BadObject);
+    };
     let bus = match bind::map(domain, pa, len, dir) {
         Ok(b) => b,
         Err(DmaError::MaybeMapped) if !cfg!(feature = "dma-map-unpin-canary") => {
@@ -211,6 +247,7 @@ fn bind_claimed(hooks: Hooks, owner: u32, dev: u32, obj: u32, dir: Direction) ->
         Err(_) => {
             drop(t);
             crate::memobj::memobj_frames_unpin(obj);
+            record(Verdict::Refuse, dev, owner, len, WHY_MAP_FAILED);
             return Err(DmaBindError::Refused);
         }
     };
@@ -256,7 +293,10 @@ fn end(t: Taken, hooks: Hooks, exit: bool) -> Result<(), DmaBindError> {
 /// by the kernel first, whatever the driver did.
 pub fn unmap(owner: u32, dev: u32, obj: u32) -> Result<(), DmaBindError> {
     let hooks = (*HOOKS.lock()).ok_or(DmaBindError::NotBound)?;
-    let t = TABLE.lock().take(owner, dev, obj).ok_or(DmaBindError::NotBound)?;
+    let Some(t) = TABLE.lock().take(owner, dev, obj) else {
+        record(azos_decision::Verdict::Refuse, dev, owner, 0, WHY_NOT_BOUND);
+        return Err(DmaBindError::NotBound);
+    };
     end(t, hooks, false)
 }
 

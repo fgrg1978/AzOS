@@ -13413,6 +13413,8 @@ host_job host_canary_row "virtio-snd: unconfirmed arena map canary" drivers-test
     an_arena_the_domain_may_still_map_is_held_not_faulted
 host_job host_canary_row "ring-3: map unconfirmed unpinned canary" syscall-tests dma-map-unpin-canary \
     a_map_the_unit_did_not_confirm_keeps_its_frames_and_parks_the_device
+host_job host_canary_row "ring-3: dma refusal silent canary" syscall-tests dma-refusal-silent-canary \
+    every_refused_ring3_map_is_recorded
 host_job host_canary_row "ring-3: attach assumed confined canary" iommu-tests attach-assumed-canary \
     a_function_the_unit_did_not_block_is_not_confined
 host_job host_canary_row "ring-3: dt unclassified master canary" hwbus-tests dt-unknown-peripheral-canary \

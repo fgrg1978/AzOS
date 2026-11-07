@@ -342,10 +342,17 @@ mod dma {
         azos_ipc::memobj::memobj_info(OBJ.load(Ordering::SeqCst)).is_some()
     }
 
+    /// The domain model refuses the next maps (plain error) / the hook has no domain.
+    static FAIL_MAP: AtomicBool = AtomicBool::new(false);
+    static NO_DOMAIN: AtomicBool = AtomicBool::new(false);
+
     struct Rec;
     impl DmaDomain for Rec {
         fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
             EVENTS.lock().unwrap().push(("map", alive()));
+            if FAIL_MAP.load(Ordering::SeqCst) {
+                return Err(DmaError::NoMemory);
+            }
             Ok(DmaAddr(pa + BUS_OFFSET))
         }
         fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
@@ -368,6 +375,9 @@ mod dma {
     static REC: Rec = Rec;
 
     fn domain(_dev: u32, _live: bool) -> Option<&'static dyn DmaDomain> {
+        if NO_DOMAIN.load(Ordering::SeqCst) {
+            return None;
+        }
         Some(&REC)
     }
     fn quiesce(_dev: u32) -> bool {
@@ -758,5 +768,68 @@ mod dma {
         // nothing in the kernel ever gives it back.
         azos_ipc::memobj::memobj_frames_unpin(r);
         assert!(!alive());
+    }
+    /// The `Ring3Dma` refusals about `dev` by `tid` with `why` (the third word).
+    fn refusals(dev: u32, why: u64) -> usize {
+        let mut n = 0;
+        azos_decision::for_each(|r| {
+            n += usize::from(
+                r.rule == azos_decision::Rule::Ring3Dma as u8
+                    && r.verdict == azos_decision::Verdict::Refuse as u8
+                    && r.subject == dev
+                    && r.n[0] == u64::from(TID)
+                    && r.n[2] == why,
+            );
+        });
+        n
+    }
+
+    /// **Every refusal of a ring-3 map or unmap is a decision record
+    /// (`ring3-dma`), whatever stopped it:** a device a kernel driver owns
+    /// (why 6), a device with no domain (7), an object or device already bound
+    /// (8), an object that is not a device-visible Contig one (10), a domain
+    /// that refused the mapping (11), an unmap of a binding the caller does
+    /// not hold (12). A full table (9) is not reachable here: the suite's
+    /// object table (`MAX_MEMOBJS`) is smaller than a process's share.
+    ///
+    /// **Canary.** `dma-refusal-silent-canary`: those refusals write nothing.
+    #[test]
+    fn every_refused_ring3_map_is_recorded() {
+        let _g = serial();
+        setup();
+        let m = machine();
+        let dev_h = fresh_device("rec@7800000", b"vendor,recdev\0", 0x0780_0000);
+        let dev = device(dev_h, CapPerms::RW);
+        let (anon, ..) = object(1, 0);
+        let (obj, idx, _) = object(1, SHM_KIND_CONTIG);
+        OBJ.store(idx, Ordering::SeqCst);
+        let refused = |rc: i64| assert_ne!(rc, 0, "the call was admitted");
+
+        refused(op(device(m.uart, CapPerms::RW), DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0);
+        assert_eq!(refusals(m.uart, 6), 1, "a kernel driver's device");
+
+        NO_DOMAIN.store(true, Ordering::SeqCst);
+        refused(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0);
+        NO_DOMAIN.store(false, Ordering::SeqCst);
+        assert_eq!(refusals(dev_h, 7), 1, "no domain");
+
+        refused(op(dev, DEVICE_DMA_MAP, anon, DMA_TO_DEVICE).0);
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(anon), 0);
+        assert_eq!(refusals(dev_h, 10), 1, "an object a device may not have");
+
+        FAIL_MAP.store(true, Ordering::SeqCst);
+        refused(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0);
+        FAIL_MAP.store(false, Ordering::SeqCst);
+        assert_eq!(refusals(dev_h, 11), 1, "the domain refused");
+
+        assert_eq!(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0, 0);
+        refused(op(dev, DEVICE_DMA_MAP, obj, DMA_TO_DEVICE).0);
+        assert_eq!(refusals(dev_h, 8), 1, "bound twice");
+
+        assert_eq!(op(dev, DEVICE_DMA_UNMAP, obj, 0).0, 0);
+        refused(op(dev, DEVICE_DMA_UNMAP, obj, 0).0);
+        assert_eq!(refusals(dev_h, 12), 1, "an unmap of nothing");
+
+        assert_eq!(crate::ipc_handlers::sys_shm_release_typed(obj), 0);
     }
 }
