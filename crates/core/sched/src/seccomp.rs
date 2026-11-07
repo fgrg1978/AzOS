@@ -552,7 +552,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "CAPTEST.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_MO_UNMAP,
+            SYS_EXIT, SYS_INVOKE, SYS_MO_UNMAP, SYS_MO_CREATE,
             SYS_IPC_CALL,
             SYS_CAP_INFO, SYS_CAP_CLOSE,
             // The ring-3 IRQ section, both ISAs since wave 9 (RTC alarm bound

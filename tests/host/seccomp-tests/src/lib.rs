@@ -1045,6 +1045,14 @@ mod image_profiles {
         // reply is a five-word sample, past the register form).
         ("sensor_read", &["SYS_IPC_CALL"]),
         ("sensor_bind_vdso", &["SYS_IPC_CALL"]),
+        // A camera frame: the buffer is a contiguous memory object made,
+        // mapped and given back (the type's `bytes` reads it, issuing nothing);
+        // the camera's calls go over the v2 call.
+        ("frame_buffer", &["SYS_MO_CREATE", "SYS_MO_MAP", "SYS_MO_UNMAP"]),
+        ("bytes", &[]),
+        ("frame_buffer_bytes", &["SYS_IPC_CALL"]),
+        ("frame_next", &["SYS_IPC_CALL"]),
+        ("frame_close", &["SYS_IPC_CALL"]),
     ];
 
     /// The POSIX pipe of a process (`sys::pipe::NAME(..)`): the bodies reach the

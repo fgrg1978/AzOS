@@ -11,7 +11,7 @@ those crates. `--self-test` runs the cut's on defconfig as is, where every
 crate must appear: the lint can see what it forbids.
 
   linux     LINUX_ABI (LINUX_RUNTIME depends on it): azos_linux_abi
-  board-io  BOARD_IO: the board's sensors, actuators, kill switch and the camera frame ring
+  board-io  BOARD_IO: the board's sensors, actuators, kill switch and the camera frame pool
   robot     USE_ROBOT: the robot extension's crates (core and kernel name none)
   microvm   PRESET_MICROVM: no Linux personality, no physical-hardware driver
             (TPM, USB and its storage), no board I/O, no extension

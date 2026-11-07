@@ -379,16 +379,15 @@ fn stamped_reads() {
 /// The summary line is printed only when every check held; the gate row greps
 /// it. Canary: the `frame-class-canary` kernel feature (a read copies nothing).
 fn frame_reads() {
-    use sys::dev::outcome;
     let Some(ep) = sys::dev::lookup(sys::dev::key::FRAME, 0) else { return };
     let before = unsafe { FAILURES };
     let bytes = sys::dev::frame_buffer_bytes(ep).unwrap_or(0) as usize;
-    let (Some(mut buf), Some(mut small)) = (sys::dev::FrameBuffer::new(bytes).ok(), sys::dev::FrameBuffer::new(1).ok()) else {
+    let (Some(mut buf), Some(mut small)) = (sys::dev::frame_buffer(bytes).ok(), sys::dev::frame_buffer(1).ok()) else {
         report(b"frame: buffers", false, -1);
         return;
     };
     report(b"frame_next(a buffer below the pool's) is refused",
-           bytes > sys::PAGE_SIZE && sys::dev::frame_next(ep, &mut small) == Err(outcome::BAD_ARGUMENT), 0);
+           bytes > sys::PAGE_SIZE && sys::dev::frame_next(ep, &mut small) == Err(sys::dev::outcome::BAD_ARGUMENT), 0);
     let mut first = None;
     for _ in 0..50 {
         match sys::dev::frame_next(ep, &mut buf) {
@@ -396,7 +395,7 @@ fn frame_reads() {
                 first = Some(m);
                 break;
             }
-            Err(outcome::NOT_READY) => sys::sleep(100),
+            Err(sys::dev::outcome::NOT_READY) => sys::sleep(100),
             Err(c) => {
                 report(b"frame_next", false, -(c as isize));
                 return;
@@ -419,7 +418,7 @@ fn frame_reads() {
                 next = Some(n);
                 break;
             }
-            Err(outcome::NOT_READY) => sys::sleep(100),
+            Err(sys::dev::outcome::NOT_READY) => sys::sleep(100),
             Err(_) => break,
         }
     }

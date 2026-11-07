@@ -17023,7 +17023,7 @@ CPU 5 lacks hwcap bits"
     # `why_resolves_a_refused_reservation`: no id is claimed, so nothing is kept);
     # `ioring-fsync-inline` (K1): an io_ring OP_FSYNC waits for the device in
     # the submit and completes there (`ioring_fsync_completes_after_flush`).
-    # `camera-encode-per-consumer`: each camera ring consumer encodes its own
+    # `camera-encode-per-consumer`: each camera pool reader encodes its own
     # frame again, three encodes per frame (`camera_one_encode_per_frame`).
     # `preempt-isr-leak` (Chain E commit 7): the timer interrupt's probe
     # keeps the preempt guard it takes on top of the test's, so the per-hart

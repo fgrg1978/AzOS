@@ -2111,6 +2111,16 @@ mod builder_tests {
         assert_eq!(en.len(), 1, "exactly one entropy endpoint grant in the default topology");
         assert_eq!(en[0].perms, CapPerms::READ, "the entropy pool is read, never written");
         assert!(!en[0].transfer, "the entropy capability must not be transferable");
+        // The camera's frames: the kernel-hosted `frame.0`, READ only, one grant,
+        // never transferable. The kernel withholds it from any image whose
+        // seccomp row does not list the interface.
+        let fr: Vec<_> = caps
+            .iter()
+            .filter(|c| c.kind == CapKind::Endpoint && azos_devif::parse_target(c.target.as_str()).is_some_and(|(i, _)| i.name == "frame"))
+            .collect();
+        assert_eq!(fr.len(), 1, "exactly one frame endpoint grant in the default topology");
+        assert_eq!((fr[0].perms, fr[0].transfer), (CapPerms::READ, false), "a camera frame is read, never written or passed on");
+        assert_eq!(fr[0].target, MaybeStr::from_bytes(b"frame.0"));
         let motors = if crate::AUTORUN_DRIVETRAIN { 2 } else { 0 };
         // `disk.part.1` RW and (wave 10) `disk.part.0` READ under
         // `disk-part-row` only (partition-scoped block gate row).
@@ -2122,13 +2132,13 @@ mod builder_tests {
                     // `ipc-endpoint-canary`: the demo and bench endpoints,
                     // and (wave 12) `Cap<Launch>` on TOOLBOX.ELF for
                     // vsbench's `spawn+wait` lane.
-                    (true, true) => 24, (true, false) => 21,
-                    (false, true) => 19, (false, false) => 16,
+                    (true, true) => 25, (true, false) => 22,
+                    (false, true) => 20, (false, false) => 17,
                 }
                 // Kconfig INSPECT: the task view, the public region and (with an
                 // admin region) the admin one, last.
                 + if azos_limits::INSPECT { 2 + (azos_limits::INSPECT_ADMIN_PAGES != 0) as usize } else { 0 },
-            "sensor.0-9 READ + pwm.4 RW + gpio.20 RW + i2c.0.0x68 READ + linkkey READ \
+            "sensor.0-9 READ + frame.0 READ + pwm.4 RW + gpio.20 RW + i2c.0.0x68 READ + linkkey READ \
              + entropy READ, \
              plus pwm.0/gpio.0/mmio.dt:sifive,test1 and the /fat and /tmp trees under the canary, plus \
              motor.0/1 RW only under the actuation profile"
@@ -2709,13 +2719,13 @@ mod cap_seed_bridge_tests {
                     // `ipc-endpoint-canary`: the demo and bench endpoints,
                     // and (wave 12) `Cap<Launch>` on TOOLBOX.ELF for
                     // vsbench's `spawn+wait` lane.
-                    (true, true) => 24, (true, false) => 21,
-                    (false, true) => 19, (false, false) => 16,
+                    (true, true) => 25, (true, false) => 22,
+                    (false, true) => 20, (false, false) => 17,
                 }
                 // Kconfig INSPECT: the task view mints; the regions have no
                 // minter on the host.
                 + azos_limits::INSPECT as usize,
-            "driver-registry + 10 sensor types + 1 pwm + 1 gpio + 1 i2c + linkkey + entropy, \
+            "driver-registry + 10 sensor types + 1 camera frame + 1 pwm + 1 gpio + 1 i2c + linkkey + entropy, \
              plus pwm.0/gpio.0/mmio.dt:sifive,test1 and the /fat and /tmp trees under the canary, plus the \
              2 motors only under the actuation profile"
         );
@@ -2853,6 +2863,15 @@ mod sensor_endpoint_tests {
         assert!(seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, "sensor.9").is_some(),
                 "9 is SENSOR_TYPE_POWER, the highest the kernel serves");
         for bad in ["sensor.10", "sensor.11", "sensor.255", "sensor.4294967295", "sensor.imu", "sensor"] {
+            assert!(
+                seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, bad).is_none(),
+                "{bad} must not be mintable"
+            );
+        }
+        // The camera the kernel serves is `frame.0`: a camera past it, or a
+        // spelling that is not an index, cannot be minted either.
+        assert!(seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, "frame.0").is_some());
+        for bad in ["frame.1", "frame.255", "frame.cam", "frame"] {
             assert!(
                 seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, bad).is_none(),
                 "{bad} must not be mintable"

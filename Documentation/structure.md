@@ -119,7 +119,7 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `ina219` | INA219 power-monitor chip logic, one source for both placements. |
 | `sensor` | INA219, ADS1115 ADC, LD19 LiDAR, range finders, MIPI CSI-2 camera interface. |
 | `baro`, `imu`, `gps` | BMP280 barometer, MPU-6050 IMU, NMEA GPS parser. |
-| `camera`, `cam-ring` | A virtual camera; the lock-free camera frame ring and the one-to-many fan-out ring. |
+| `camera`, `cam-ring` | A virtual camera; the frame class's pool (refcounted buffers, one producer, many readers). |
 | `thermal` | The thermal framework's runtime (the part that touches hardware). |
 | `power` | System suspend. |
 | `tpm` | The TPM 2.0 TIS/FIFO and CRB interfaces and the commands. |

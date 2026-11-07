@@ -229,27 +229,6 @@ pub struct FrameBuffer {
 }
 
 impl FrameBuffer {
-    /// A buffer of at least `bytes` bytes (ask the camera with
-    /// [`frame_buffer_bytes`]). `Err` is the outcome: `FAULT` when the object
-    /// could not be made or mapped.
-    pub fn new(bytes: usize) -> Result<FrameBuffer, u32> {
-        let pages = bytes.div_ceil(crate::PAGE_SIZE).max(1);
-        let cap = crate::shm_create_typed(
-            pages as u64,
-            crate::SHM_RW | azos_abi::syscall_nr::SHM_KIND_CONTIG << azos_abi::syscall_nr::SHM_CREATE_KIND_SHIFT,
-        );
-        if cap <= 0 {
-            return Err(outcome::FAULT);
-        }
-        let cap = cap as u32;
-        let va = crate::shm_map_typed(cap);
-        if va <= 0 {
-            let _ = crate::shm_release_typed(cap);
-            return Err(outcome::FAULT);
-        }
-        Ok(FrameBuffer { cap, base: va as usize as *const u8, bytes: pages * crate::PAGE_SIZE })
-    }
-
     /// The first `len` bytes of the buffer (at most its size): the frame the
     /// last [`frame_next`] copied, with `len` its [`frame::Meta::len`].
     pub fn bytes(&self, len: usize) -> &[u8] {
@@ -259,6 +238,27 @@ impl FrameBuffer {
         // is live then.
         unsafe { core::slice::from_raw_parts(self.base, len.min(self.bytes)) }
     }
+}
+
+/// A [`FrameBuffer`] of at least `bytes` bytes (ask the camera with
+/// [`frame_buffer_bytes`]). `Err` is the outcome: `FAULT` when the object could
+/// not be made or mapped.
+pub fn frame_buffer(bytes: usize) -> Result<FrameBuffer, u32> {
+    let pages = bytes.div_ceil(crate::PAGE_SIZE).max(1);
+    let cap = crate::shm_create_typed(
+        pages as u64,
+        crate::SHM_RW | azos_abi::syscall_nr::SHM_KIND_CONTIG << azos_abi::syscall_nr::SHM_CREATE_KIND_SHIFT,
+    );
+    if cap <= 0 {
+        return Err(outcome::FAULT);
+    }
+    let cap = cap as u32;
+    let va = crate::shm_map_typed(cap);
+    if va <= 0 {
+        let _ = crate::shm_release_typed(cap);
+        return Err(outcome::FAULT);
+    }
+    Ok(FrameBuffer { cap, base: va as usize as *const u8, bytes: pages * crate::PAGE_SIZE })
 }
 
 impl Drop for FrameBuffer {

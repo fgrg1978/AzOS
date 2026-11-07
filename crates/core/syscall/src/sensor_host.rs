@@ -12,9 +12,8 @@
 //! is the sensor's newest published sample or its chip's read, and when it was
 //! acquired (`azos_devif::Sample`: the stamp the stamped read used to carry in
 //! its header). A sensor whose record does not fit a reply, the LiDAR scan and
-//! the camera frame, answers `UNSUPPORTED`: neither has a ring-3 path yet (a
-//! camera frame goes to the brain over the kernel's own link, `azos_cam_ring`'s
-//! fan-out ring, kernel consumers only).
+//! the camera frame, answers `UNSUPPORTED`: a scan has no ring-3 path yet, and a
+//! camera frame is the `Frame` interface's (`crate::frame_host`).
 
 use azos_abi::cap::CapPerms;
 use azos_devif::sensor::{Sample, TYPES};

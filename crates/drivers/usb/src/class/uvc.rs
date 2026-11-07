@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The USB video class driver: a UVC 1.0 / 1.1 / 1.5 camera as a producer of
-//! frames into a camera frame ring (`azos_cam_ring`), for the perception
+//! frames into the frame class's pool (`azos_cam_ring`), for the perception
 //! camera of a Pi or a PC.
 //!
 //! It is a class driver like the mass-storage one ([`super::msc`]): it serves
@@ -30,7 +30,7 @@
 //!    is the bandwidth the stream needs). The block is 26 bytes for a 1.0
 //!    camera and 34 for 1.1 and later, as the host stack of Linux sends it.
 //! 3. **Streams while somebody reads.** The camera is idle until
-//!    [`FrameSink::wanted`] is true (the ring has a consumer): then
+//!    [`FrameSink::wanted`] is true (the pool has a reader): then
 //!    `SET_CUR(VS_COMMIT_CONTROL)`, the pipe of the streaming endpoint, and
 //!    for an isochronous camera `SET_INTERFACE` to the smallest alternate
 //!    setting whose bytes per service interval carry the negotiated payload.
@@ -52,7 +52,7 @@
 //! An isochronous transfer is one service interval (the setting's bytes per
 //! interval), a bulk one up to `dwMaxPayloadTransferSize`; [`PIPE_DEPTH`]
 //! of them are outstanding and each is resubmitted as it completes, so the
-//! camera never finds the ring empty for longer than the `usb` task takes to
+//! camera never finds the pool empty for longer than the `usb` task takes to
 //! come round. The buffers are one region under the controller's DMA mask,
 //! placed so that none crosses a 64 KiB boundary (a TRB may not).
 //!
@@ -137,7 +137,7 @@ const CTL_TIMEOUT_US: u64 = 2_000_000;
 const STALL_US: u64 = 3_000_000;
 /// Restarts in a row, with no frame between, before the camera is failed.
 const MAX_RESTARTS: u32 = 4;
-/// How long nobody reading the ring is tolerated before the stream stops.
+/// How long nobody reading the pool is tolerated before the stream stops.
 pub const IDLE_STOP_US: u64 = 500_000;
 
 /// Transfers kept outstanding on the streaming pipe.
@@ -633,7 +633,7 @@ struct Frame<'q> {
     bad: bool,
 }
 
-/// The camera driver. `S` is the ring the frames go to.
+/// The camera driver. `S` is the pool the frames go to.
 pub struct Uvc<'q, M: Memory, C: Clock, S: FrameSink> {
     mem: M,
     clock: C,
@@ -641,7 +641,7 @@ pub struct Uvc<'q, M: Memory, C: Clock, S: FrameSink> {
     rings: &'q [PipeRings],
     sink: &'q S,
     want: Want,
-    /// The clock the ring's stamps are in.
+    /// The clock the pool's stamps are in.
     stamp: fn() -> u64,
     state: State,
     claim: Option<Claim>,
@@ -690,7 +690,7 @@ pub struct Uvc<'q, M: Memory, C: Clock, S: FrameSink> {
 
 impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
     /// A driver with no camera. `mask` is the controller's DMA mask, `rings`
-    /// the pipe rings the core indexes by pipe number, `sink` the ring the
+    /// the pipe rings the core indexes by pipe number, `sink` the pool the
     /// frames go to, `stamp` the clock a frame's acquisition stamp is read
     /// from.
     pub fn new(mem: M, clock: C, mask: u64, rings: &'q [PipeRings], sink: &'q S, want: Want, stamp: fn() -> u64) -> Self {

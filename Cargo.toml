@@ -212,7 +212,7 @@ exclude = [
     # decrypt correctly with crates/core/crypto::secure_channel.
     # Run with:  cd tests/host/aead-link-tests && cargo +stable test --release
     "tests/host/aead-link-tests",
-    # cam-ring-tests — host-side SPSC frame ring tests (S1/S6 multi-stream).
+    # cam-ring-tests — host-side tests of the frame class's pool.
     # Run with:  cd tests/host/cam-ring-tests && cargo +stable test
     "tests/host/cam-ring-tests",
     # rings-tests — host-side tests for azos_rings (Queue, Log), with the
@@ -490,7 +490,7 @@ members = [
     # riscv64; `tools/gate/ci_check.sh` builds and tests it for aarch64 so it cannot
     # rot unnoticed the way the parked copy did for a month.
     "arch/aarch64",
-    # S1/S6 — lock-free SPSC camera frame ring for zero-copy pipelines.
+    # The frame class's pool: refcounted camera frame buffers, many readers.
     # Pure no_std; host-tested via tests/host/cam-ring-tests.
     "crates/drivers/cam-ring",
     # Stream-ID-prefixed wire multiplexer for the brain↔kernel link.

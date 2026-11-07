@@ -537,7 +537,7 @@ usb-smsc95xx = ["usb-net"]
 # (kernel/src/boot/usb/console.rs); taps the console through the drv_sys hook.
 usb-cdc-console = ["usb-cdc", "azos_drv_sys/console-mirror"]
 # Kconfig USB_UVC: the USB video class driver (crates/drivers/usb/src/class/uvc.rs)
-# as a producer of the camera frame ring of the camera pipeline
+# as a producer of the frame class's pool of the camera pipeline
 # (kernel/src/tasks/cam_capture.rs, which `use-robot` compiles).
 usb-uvc = ["usb-hc", "use-robot", "azos_usb/uvc"]
 # An IOMMU in front of the PCI functions, one feature per

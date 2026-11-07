@@ -13,6 +13,9 @@ version = "1.0.0"
 [[package]]
 name = "azos_cam_ring"
 version = "0.1.0"
+dependencies = [
+ "azos_rings",
+]
 
 [[package]]
 name = "azos_chaos"

@@ -64,7 +64,7 @@ static GPS_CHANNELS: [Channel; 5] = [
 static LIDAR_CHANNELS: [Channel; 1] = [ch(Q::Image, U::None, 4, false, 0, u32::MAX as i64, 0)];
 /// PIR (bit 0), sound (bit 1), IR (bit 2).
 static FLAGS_CHANNELS: [Channel; 1] = [ch(Q::Flags, U::Bits, 2, false, 0, 7, SLOW_HZ)];
-/// A frame too big for a sample: `azos_cam_ring`'s ring carries it.
+/// A frame too big for a sample: the `Frame` interface carries it.
 static CAMERA_CHANNELS: [Channel; 1] = [ch(Q::Image, U::None, 4, false, 0, u32::MAX as i64, 0)];
 /// Voltage (mV), current (mA), charge used (mAh), percent, sag, failsafe.
 pub static POWER_CHANNELS: [Channel; 6] = [

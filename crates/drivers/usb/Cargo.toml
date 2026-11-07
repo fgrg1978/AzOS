@@ -133,7 +133,7 @@ canary-smsc-zlp = []
 canary-smsc-rx-bounds = []
 
 # The USB video class driver (`class::uvc`, kernel feature `usb-uvc`;
-# tests/host/usb-uvc-tests). Its frames go to a camera frame ring.
+# tests/host/usb-uvc-tests). Its frames go to the frame class's pool.
 uvc = ["dep:azos_cam_ring"]
 #
 # A payload the camera flags with the error bit is appended to its frame anyway.

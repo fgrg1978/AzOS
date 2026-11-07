@@ -90,11 +90,11 @@ sensor / status packet -> sealed record (encrypted session)
   single `STREAM_CONTROL` frame, which is the unit the brain's control reader
   opens. With the framing off the bytes go out unchanged.
 - **No encoder stage in the stream path.** Camera frames are captured and
-  JPEG-encoded once by the capture task into a lock-free frame ring
-  (`crates/drivers/cam-ring`, `FanoutRing`); with a USB camera (`USB_UVC`)
-  the class driver writes the camera's frames into the same ring, and a raw
+  JPEG-encoded once by the capture task into the frame class's pool
+  (`crates/drivers/cam-ring`, `FramePool`); with a USB camera (`USB_UVC`)
+  the class driver writes the camera's frames into the same pool, and a raw
   YUY2 frame is converted to JPEG when the sender reads it. The capture task
-  never waits for the sender; by default (`CAMERA_RING_OVERWRITE_OLDEST`) a slow sender loses
+  never waits for the sender; by default (`FRAME_POOL_OVERWRITE_OLDEST`) a slow sender loses
   only frames it would have skipped, and takes the newest frame it has not
   taken. The sender packs the JPEG into a `PKT_CAMERA` brain packet and sends
   it through the same sealing path as every other packet.

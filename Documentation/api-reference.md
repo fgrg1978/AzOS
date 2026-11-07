@@ -191,6 +191,7 @@ target `<iface>[.<resource>]` to an interface and a badge (`parse_target`,
 | `MemCtl` | `memctl` | none |
 | `Sound` | `sound` | `sound.<device>`; the ring-3 audio server serves it on `endpoint.audio` |
 | `Volume` | `volume` | `volume.<n>` (0 the boot volume, `p` the row on partition `p`) |
+| `Frame` | `frame` | `frame.<camera>` |
 | `time` endpoint | `time` | none |
 | `Buzzer` | `buzzer` | not in `IFACES` |
 | `VmCtl` | `vmctl` | not in `IFACES` |
