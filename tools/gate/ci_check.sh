@@ -19253,6 +19253,13 @@ CPU 5 lacks hwcap bits"
     par "ktest kasan above 4 GiB (x86)" x86_ktest_row_kasan_5g "ktest kasan above 4 GiB (x86)" "" "" "" "" \
         "$KTEST_KASAN_RE"$'\n^\\[MM\\] Boot direct map widened by 2 GiB to 0x180000000$'
     par "ktest kasan off canary (x86)" x86_ktest_row "ktest kasan off canary (x86)" "" "$KTEST_KASAN_OFF" "canary=kasan-expected"
+    # Kconfig PT_PROTECTION (X86_PKS probe): the pool is in use and the boot says whether the CPU's
+    # supervisor key protects it. QEMU's TCG has no PKS, so this row sees "not protected" and the
+    # ktest passes without a key; its runtime canary (`canary=pt-lock-skip`) turns the test red on
+    # hardware with PKS only, and is not a row here.
+    x86_ktest_row_pks() { KCFG_TAG=pks KCFG_LINE="CONFIG_X86_PKS_PROBE=y" x86_ktest_row_cfgline "$@"; }
+    par "ktest pt-protection (x86)" x86_ktest_row_pks "ktest pt-protection (x86)" "" "" "" "" \
+        $'^\\[MM\\] page tables: kernel-half pool (write-protected|in use, not protected)\n^ok [0-9]+ - mm_pt_pool_is_write_protected$'
     x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
     par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
     par "ktest core file off canary (x86)" x86_ktest_row_coreoff "ktest core file off canary (x86)" "" "$KTEST_CORE_OFF"

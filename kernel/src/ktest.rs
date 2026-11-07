@@ -469,6 +469,46 @@ azos_ktest::ktest! {
     }
 }
 
+// PT_PROTECTION (X86_PKS): on a CPU with the key the boot has tagged every
+// page of the kernel-half pool, CR4.PKS is on and IA32_PKRS denies writes to
+// the key; a write window lifts the denial and restores it. A CPU without the
+// key holds nothing to protect, and the boot said so. Runtime canary
+// `canary=pt-lock-skip` (the boot never locks): the first check fails, on
+// hardware with PKS only (QEMU's TCG has none).
+azos_ktest::ktest! {
+    #[cfg(all(feature = "pt-protection", target_arch = "x86_64"))]
+    fn mm_pt_pool_is_write_protected() {
+        use azos_arch::mmu::ptwin::{CR4_PKS, IA32_PKRS, PKRS_LOCKED, PKRS_WD};
+        use azos_arch::ArchPlatform;
+        if !azos_arch::ARCH.pt_key_present() {
+            return Ok(());
+        }
+        if !azos_mm::ptprot::engaged() {
+            return Err("the CPU has the key, but the boot did not lock the pool");
+        }
+        let (pages, untagged) = azos_mm::vmm::verify_pt_pool();
+        if pages == 0 || untagged != 0 {
+            return Err("a pool page does not carry the key in the direct map");
+        }
+        if azos_arch::mmu::cpu::read_cr4() & CR4_PKS == 0 {
+            return Err("CR4.PKS is off");
+        }
+        if azos_arch::cpu::rdmsr(IA32_PKRS) != PKRS_LOCKED {
+            return Err("IA32_PKRS does not deny writes to the pool's key");
+        }
+        let saved = azos_arch::ARCH.pt_window_open();
+        let open = azos_arch::cpu::rdmsr(IA32_PKRS);
+        azos_arch::ARCH.pt_window_close(saved);
+        if open & PKRS_WD != 0 {
+            return Err("the write window did not lift the denial");
+        }
+        if azos_arch::cpu::rdmsr(IA32_PKRS) != PKRS_LOCKED {
+            return Err("the write window did not restore the denial");
+        }
+        Ok(())
+    }
+}
+
 // Virtual KASLR: a pointer the linker stored in data (one `R_*_RELATIVE` entry,
 // zero until the boot's walk) and the same function's address as the code
 // computes it (PC-relative, right wherever the image runs) must be one number.

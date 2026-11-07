@@ -2588,6 +2588,27 @@ pub fn engage_pt_protection() -> crate::ptprot::Engaged {
     Engaged::Locked { pages: crate::ptpool::extent().1 }
 }
 
+/// PT_PROTECTION read back from the kernel root: `(pool pages, pages whose leaf
+/// is not a 4 KiB leaf carrying the key)`.
+#[cfg(feature = "pt-protection")]
+pub fn verify_pt_pool() -> (usize, usize) {
+    let (base, _, pages) = crate::ptpool::extent();
+    let lo = crate::addr::phys_to_virt(base);
+    let kpt = *KERNEL_PT.lock();
+    let mut untagged = 0;
+    for addr in (lo..lo + pages * PAGE_SIZE).step_by(PAGE_SIZE) {
+        match walk_level(kpt, addr, false, false) {
+            // SAFETY: a live level-0 leaf of the kernel root.
+            Ok((leaf, 0)) => {
+                let w = unsafe { core::ptr::read_volatile(leaf) };
+                untagged += (ARCH.pt_tag_leaf(w) != w) as usize;
+            }
+            _ => untagged += 1,
+        }
+    }
+    (pages, untagged)
+}
+
 /// The span as 4 KiB-aligned `(start, end)` in the image's VAs, and, where the
 /// image is mapped twice (x86_64: link address and direct map), its alias.
 fn ro_after_init_spans() -> [(usize, usize); 2] {

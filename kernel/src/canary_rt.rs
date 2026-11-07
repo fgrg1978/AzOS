@@ -589,6 +589,9 @@ pub(crate) const NAMES: &[&str] = &[
     // kernel_main: the boot never seals the hooks and leaves
     // `.data.ro_after_init` writable (ktest `mm_ro_after_init_sealed`).
     "ro-seal-skip",
+    // kernel_main: the boot does not lock the page-table pool with the
+    // supervisor key (ktest `mm_pt_pool_is_write_protected`, on a CPU with PKS).
+    "pt-lock-skip",
     // entry/riscv64/boot_hooks.rs `cpu_features`: the DTB's Zicboz is ignored,
     // the scalar fallback stays (ktest `mm_zicboz_zero_fill`, riscv64 only).
     "zicboz-skip",

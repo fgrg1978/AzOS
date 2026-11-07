@@ -15,7 +15,7 @@ arch/aarch64	202	49	1	2	0	74
 arch/api	32	10	0	0	0	41
 arch/facade	0	0	0	0	1	0
 arch/riscv	160	42	0	3	0	92
-arch/x86_64	157	18	4	11	0	59
+arch/x86_64	160	18	4	11	0	59
 crates/core/abi	0	0	0	0	1	0
 crates/core/actuation	0	0	0	0	1	0
 crates/core/azos-config	0	0	0	0	1	-
@@ -43,7 +43,7 @@ crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	9
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	315	50	13	0	0	82
+crates/core/mm	318	50	13	0	0	82
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	74
 crates/core/pkg	0	0	0	0	1	0

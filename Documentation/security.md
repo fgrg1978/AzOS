@@ -268,7 +268,31 @@ extension when the CPU has it (`probe`) or refuses the CPU (`require`).
 | riscv64 | None: no landing-pad or shadow-stack code is generated or enabled (Zicfilp and Zicfiss are not used). | None |
 
 Also not implemented, per the Kconfig notes: aarch64 GCS, and kCFI (the
-compiler does not support it for riscv64).
+compiler does not support it for riscv64). `A64_GCS`, `RV_ZICFISS` and
+`RV_ZICFILP` are `n` / `probe` / `require` choices whose probe and `[ISA]` row
+exist (a `require` refuses a CPU without the extension), but the kernel enables
+none of them: they need EL2/M-mode grants, a stack or pad per task and a
+compiler mode the pinned toolchain lacks.
+
+## Kernel page tables (PT_PROTECTION)
+
+Source: `crates/core/mm/src/{pt,ptpool,ptprot}.rs`,
+`arch/x86_64/src/mmu/ptwin.rs`, `config/kernel/Kconfig.hardening`.
+
+Every kernel-half page-table word is written through `pt_set` / `pt_store` /
+`pt_cas` (`tools/lint/pt_writes_lint.py` fails a bypass). The kernel half's
+tables come from one pool (`PT_POOL_PAGES`). With the split monitor the pool is
+locked at EL2. Without it, `PT_PROTECTION` (derived from the per-ISA key choice)
+tags the pool's pages with a supervisor protection key after the boot's seal,
+every CPU denies writes to that key, and the pool's writer opens a window for
+the one store (interrupts off, the previous register value restored on close, so
+windows nest). A stray kernel store cannot rewrite a mapping.
+
+| ISA | Key | State |
+|-----|-----|-------|
+| x86_64 | `X86_PKS`: PKS (key 1 in PTE bits 62:59, `CR4.PKS`, `IA32_PKRS`; the window is two WRMSRs) | built; default `n`; on a CPU without PKS (QEMU TCG, AMD) the boot line says the pool is not protected |
+| aarch64 | `A64_POE`: stage-1 permission overlays | probe and `[ISA]` row only: the EL2 grants for `TCR2_EL1.POE` and `POR_EL1` are not programmed |
+| riscv64 | none | no supervisor key hardware: not protected |
 
 ## Speculation mitigations
 
