@@ -2906,7 +2906,7 @@ fi
 # programs of the image it boots, the optional crates and test-hook files of
 # its features, the files that print its markers): a row whose deps missed
 # its source was never picked for a change to it (the bench row and
-# crates/domains/robot/bench). The row runs the tool's canaries first.
+# crates/lib/bench). The row runs the tool's canaries first.
 printf "  %-26s" "gate rows manifest..."
 if grm_out="$(python3 "${REPO_ROOT}/tools/gate/gate_rows.py" --self-test 2>&1)" \
    && grm_out="$(python3 "${REPO_ROOT}/tools/gate/gate_rows.py" --check 2>&1)"; then
@@ -23308,9 +23308,9 @@ PYEOF
 
     # ── The 41 measurements nobody was reading ─────────────────────────
     #
-    # `crates/domains/robot/bench` (10 subsystems) runs on **every** boot and emits 41
-    # `[BENCH-RES]` lines: ipc, mm, sched, net, fs, crypto, cap, ota, protocol,
-    # asyncrt. The gate looked at none of them. A subsystem
+    # `crates/lib/bench` (9 subsystems: ipc, mm, sched, net, fs, crypto, cap, ota, asyncrt)
+    # runs on every boot and emits 37 `[BENCH-RES]` lines, and the robot extension's
+    # `crates/domains/robot/bench` the 4 of the brain protocol. The gate looked at none of them. A subsystem
     # whose benchmark stopped emitting -- because it panicked, was cfg'd out,
     # or was quietly deleted -- would take its measurement with it and the gate
     # would stay green.
@@ -23335,7 +23335,12 @@ PYEOF
     # a live brain server on the host (their console harness had no
     # caller and was deleted on 2026-10-24).
     fresh_disk $AZOS_OUT/build/disk-uhello.img
-    par_row qemu_run "bench: all 41 measurements" "run_all done emitted=41 " 180 \
+    par_row qemu_run "bench: the 37 measurements of azos_bench" "run_all done emitted=37 " 180 \
+        -smp 4 -global virtio-mmio.force-legacy=false \
+        -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
+        -device virtio-blk-device,drive=hd0
+    fresh_disk $AZOS_OUT/build/disk-uhello.img
+    par_row qemu_run "bench: the 4 measurements of the robot extension" "robot bench done emitted=4 " 180 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0

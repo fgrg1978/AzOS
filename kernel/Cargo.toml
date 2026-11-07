@@ -36,7 +36,7 @@ use-robot = [
     "dep:azos_behavior", "dep:azos_robot", "dep:azos_safety_core", "dep:azos_robot_sensors",
     "dep:azos_flight", "dep:azos_nav", "dep:azos_gps",
     "dep:azos_imu", "dep:azos_baro", "dep:azos_ahrs",
-    "dep:azos_telemetry", "dep:azos_bench", "dep:azos_multi_stream",
+    "dep:azos_telemetry", "dep:azos_bench", "dep:azos_robot_bench", "dep:azos_multi_stream",
     "dep:azos_camera", "dep:azos_robot_drivers", "dep:azos_cam_ring",
     "azos_recovery/use-robot", "azos_syscall/use-robot", "board-io",
 ]
@@ -1441,7 +1441,8 @@ azos_ota       = { workspace = true }
 # triggers a one-shot `run_all` from behavior_task post-boot so the
 # bench harness scrapes [BENCH-RES] lines without needing shell input
 # (which is unreliable end-to-end under QEMU TCG SMP).
-azos_bench     = { path = "../crates/domains/robot/bench", features = ["all"], optional = true }
+azos_bench     = { path = "../crates/lib/bench", features = ["all"], optional = true }
+azos_robot_bench = { workspace = true, optional = true }
 azos_trace     = { workspace = true }
 azos_ktest     = { workspace = true, optional = true }
 azos_chaos     = { workspace = true }

@@ -151,7 +151,6 @@ dependencies = [
 name = "azos_bench"
 version = "0.1.0"
 dependencies = [
- "azos_behavior",
  "azos_crypto",
  "azos_drv_sys",
  "azos_fs",
@@ -729,6 +728,7 @@ dependencies = [
  "azos_recovery",
  "azos_rings",
  "azos_robot",
+ "azos_robot_bench",
  "azos_robot_drivers",
  "azos_robot_sensors",
  "azos_rtc",
@@ -933,6 +933,7 @@ dependencies = [
  "azos_net",
  "azos_ota",
  "azos_robot",
+ "azos_robot_bench",
  "azos_robot_drivers",
  "azos_sched",
 ]
@@ -952,6 +953,15 @@ dependencies = [
  "azos_drv_sys",
  "azos_rings",
  "azos_sync",
+]
+
+[[package]]
+name = "azos_robot_bench"
+version = "0.1.0"
+dependencies = [
+ "azos_behavior",
+ "azos_bench",
+ "azos_drv_sys",
 ]
 
 [[package]]
@@ -1105,7 +1115,6 @@ dependencies = [
  "azos_drv_sys",
  "azos_gps",
  "azos_imu",
- "azos_net",
 ]
 
 [[package]]

@@ -88,7 +88,7 @@ crate_dir() {
         */*) printf '%s' "$CRATES_DIR/$1"; return 0 ;;
     esac
     if [ -f "$REPO_ROOT/crates/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/crates/$1"; return 0; fi
-    for g in crates/core crates/net crates/drivers crates/lib/control crates/domains/robot; do
+    for g in crates/core crates/net crates/drivers crates/lib/control crates/lib crates/domains/robot; do
         if [ -f "$REPO_ROOT/$g/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/$g/$1"; return 0; fi
     done
     printf '%s' "$CRATES_DIR/$1"
@@ -186,7 +186,7 @@ kit image hyp-api
 # `record` is empty.
 
 PROFILE_CRATES="
-behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core rc-esc sensors
+behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core rc-esc sensors domains/robot/bench
 lx-loader
 "
 

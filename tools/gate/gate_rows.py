@@ -1470,10 +1470,10 @@ def self_test():
         ("suite closure", dict(syn, fn="host_canary_row", args=["syn", "tls-tests", "canary-no-pin", "t"]),
          "userspace/lib/tls/**"),
         ("image", dict(syn, body="fresh_disk $AZOS_OUT/build/disk-uhello.img"), "userspace/tests/uhello/**"),
-        ("feature dep", dict(syn, body='kbuild "qemu,use-robot"'), "crates/domains/robot/bench/**"),
+        ("feature dep", dict(syn, body='kbuild "qemu,use-robot"'), "crates/lib/bench/**"),
         ("feature dep closure", dict(syn, body='kbuild "qemu,use-robot"'), "crates/core/ipc/**"),
         ("marker", dict(syn, call='par_row qemu_run "syn" "run_all done emitted=49" 180'),
-         "crates/domains/robot/bench/src/lib.rs"),
+         "crates/lib/bench/src/lib.rs"),
     ]
     with contextlib.redirect_stdout(io.StringIO()):
         for what, r, want in cases:

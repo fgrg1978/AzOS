@@ -428,6 +428,7 @@ members = [
     "crates/domains/robot/robot",
     "crates/core/recovery",
     "crates/domains/robot/bench",
+    "crates/lib/bench",
     "crates/drivers/camera",
     "crates/drivers/display",
     "crates/drivers/fb",
@@ -588,6 +589,8 @@ azos_firmware = { path = "crates/drivers/firmware" }
 azos_thermal  = { path = "crates/drivers/thermal" }
 azos_soc      = { path = "crates/drivers/soc" }
 azos_behavior = { path = "crates/domains/robot/behavior" }
+azos_bench = { path = "crates/lib/bench" }
+azos_robot_bench = { path = "crates/domains/robot/bench" }
 azos_robot_sensors = { path = "crates/domains/robot/sensors" }
 azos_channel  = { path = "crates/core/channel" }
 azos_rings    = { path = "crates/core/rings" }

@@ -1226,4 +1226,5 @@ pub(crate) fn behavior_task(_: usize) {
 #[cfg(feature = "qemu")]
 fn bench_boot_task(_arg: usize) {
     azos_bench::run_all(azos_limits::BOOT_BENCH_ITERS as u64);
+    azos_robot_bench::run(azos_limits::BOOT_BENCH_ITERS as u64);
 }

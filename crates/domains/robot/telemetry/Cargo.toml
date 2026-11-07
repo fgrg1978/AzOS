@@ -10,4 +10,3 @@ azos_ahrs    = { workspace = true }
 azos_gps     = { workspace = true }
 azos_imu     = { workspace = true }
 azos_drv_sys = { workspace = true }
-azos_net     = { workspace = true }

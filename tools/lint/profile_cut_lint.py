@@ -32,7 +32,7 @@ ARCHES = ("riscv64", "aarch64", "x86_64")
 # Every crate kernel/Cargo.toml's `use-robot` turns on and no other feature does.
 ROBOT_CRATES = ("azos_robot", "azos_behavior", "azos_safety_core", "azos_robot_drivers", "azos_robot_sensors",
                 "azos_flight", "azos_nav", "azos_gps", "azos_imu", "azos_baro", "azos_ahrs", "azos_telemetry",
-                "azos_bench", "azos_multi_stream", "azos_camera")
+                "azos_bench", "azos_robot_bench", "azos_multi_stream", "azos_camera")
 # name: (preset of the defconfig with the symbol on, symbol, lines dropped, crates)
 CUTS = {
     "linux": ("generic", "LINUX_ABI", ("CONFIG_LINUX_ABI", "CONFIG_LINUX_RUNTIME"), ("azos_linux_abi",)),

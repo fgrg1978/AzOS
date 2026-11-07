@@ -12,7 +12,7 @@ no-ml   = ["azos_behavior?/no-ml"]
 # image has no Robot domain.
 use-robot = [
     "dep:azos_robot", "dep:azos_behavior", "dep:azos_flight",
-    "dep:azos_bench", "dep:azos_robot_drivers",
+    "dep:azos_bench", "dep:azos_robot_bench", "dep:azos_robot_drivers",
 ]
 
 # Kconfig BOOT_SLOTS: the `ota` command, the `ota-recv` task and the Ota
@@ -39,7 +39,8 @@ azos_abi       = { workspace = true }
 # `CONSOLE_LOCKDOWN` (config/axes/Kconfig.security), read by `authority.rs`.
 azos_limits    = { workspace = true }
 # `wcet`/`bench`, typed by hand on the console.
-azos_bench     = { path = "../../../crates/domains/robot/bench", features = ["all"], optional = true }
+azos_bench     = { path = "../../../crates/lib/bench", features = ["all"], optional = true }
+azos_robot_bench = { workspace = true, optional = true }
 azos_actuation = { workspace = true }
 # `why`: the decision query.
 azos_decision  = { workspace = true }

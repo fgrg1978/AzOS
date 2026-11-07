@@ -110,6 +110,7 @@ crates/drivers/virtio	156	45	8	0	0	91
 crates/drivers/virtio-proto	0	0	0	0	1	0
 crates/drivers/virtio-rng	0	0	0	0	1	-
 crates/fs	29	3	5	0	0	57
+crates/lib/bench	0	0	0	0	1	0
 crates/lib/control/ahrs	0	0	0	0	1	0
 crates/lib/control/flight-math	0	0	0	0	1	0
 crates/net/ethercat	0	0	0	0	1	-

@@ -7,13 +7,13 @@
 //! synthetic number here is the contention-free baseline to compare the
 //! runtime distribution against.
 
-use crate::{BenchResult, report, best_of};
+use azos_bench::{BenchResult, report, best_of};
 use azos_drv_sys::wcet::read_cycles;
 use azos_behavior::brain_protocol as bp;
 
 /// CRC-8/MAXIM (poly 0x31) over a 64-byte sensor payload.  Pure bit-twiddle
 /// loop — 8 shifts per byte; the integrity-check cost on every frame.
-pub fn bench_crc8_64B(iters: u64) -> BenchResult {
+fn bench_crc8_64b(iters: u64) -> BenchResult {
     let data = [0x42u8; bp::SENSOR_PAYLOAD_SIZE];
 
     let start = read_cycles();
@@ -25,7 +25,7 @@ pub fn bench_crc8_64B(iters: u64) -> BenchResult {
 }
 
 /// `build_packet` — frame a 64-byte payload (header + payload copy + CRC).
-pub fn bench_build_packet_64B(iters: u64) -> BenchResult {
+fn bench_build_packet_64b(iters: u64) -> BenchResult {
     let payload = [0x42u8; bp::SENSOR_PAYLOAD_SIZE];
     // header(5) + payload + crc(1)
     let mut out = [0u8; bp::SENSOR_PAYLOAD_SIZE + 6];
@@ -40,7 +40,7 @@ pub fn bench_build_packet_64B(iters: u64) -> BenchResult {
 
 /// `parse_packet` — validate MAGIC + length + CRC over a pre-built frame.
 /// Pre-frame outside the timed loop so we measure parse, not build.
-pub fn bench_parse_packet_64B(iters: u64) -> BenchResult {
+fn bench_parse_packet_64b(iters: u64) -> BenchResult {
     let payload = [0x42u8; bp::SENSOR_PAYLOAD_SIZE];
     let mut frame = [0u8; bp::SENSOR_PAYLOAD_SIZE + 6];
     let n = bp::build_packet(bp::PKT_SENSOR, &payload, &mut frame);
@@ -55,7 +55,7 @@ pub fn bench_parse_packet_64B(iters: u64) -> BenchResult {
 
 /// `encode_sensor_packet` — fill the 64-byte wheeled sensor struct.  Pure
 /// little-endian scalar writes; the per-frame serialise cost robot-side.
-pub fn bench_encode_sensor_packet(iters: u64) -> BenchResult {
+fn bench_encode_sensor_packet(iters: u64) -> BenchResult {
     let mut buf = [0u8; bp::SENSOR_PAYLOAD_SIZE];
 
     let start = read_cycles();
@@ -78,9 +78,10 @@ pub fn bench_encode_sensor_packet(iters: u64) -> BenchResult {
 
 pub fn run(iters: u64) -> u32 {
     let mut n = 0u32;
-    report("protocol.crc8_64B",            &best_of(|| bench_crc8_64B(iters)));            n += 1;
-    report("protocol.build_packet_64B",    &best_of(|| bench_build_packet_64B(iters)));    n += 1;
-    report("protocol.parse_packet_64B",    &best_of(|| bench_parse_packet_64B(iters)));    n += 1;
+    report("protocol.crc8_64B",            &best_of(|| bench_crc8_64b(iters)));            n += 1;
+    report("protocol.build_packet_64B",    &best_of(|| bench_build_packet_64b(iters)));    n += 1;
+    report("protocol.parse_packet_64B",    &best_of(|| bench_parse_packet_64b(iters)));    n += 1;
     report("protocol.encode_sensor_packet", &best_of(|| bench_encode_sensor_packet(iters))); n += 1;
+    azos_drv_sys::kconsoleln!("[BENCH-RES] ── robot bench done emitted={} ──", n);
     n
 }
