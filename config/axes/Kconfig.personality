@@ -106,8 +106,85 @@ config LX_MODULE_WINDOW_SIZE
       takes under 2 MiB. Address space only: nothing is reserved or
       committed until a module is placed.
 
+# USERLAND is one choice of the image's user-visible programs; it acts only
+# through the defaults of the symbols below and of CONSOLE_PROGRAM
+# (config/Kconfig.userspace, generated), so `make build` builds what it names.
+choice
+    prompt "Userland (the programs a user finds in the image)"
+    default USERLAND_BOTH if PRESET_DESKTOP || PRESET_SERVER
+    default USERLAND_NATIVE
+    help
+      Which userland the image carries. The in-kernel recovery console is
+      in every choice, so a boot that cannot start the console program, or
+      that is in safe mode, ends at the recovery prompt whichever is chosen.
+      The choice sets defaults: a value set by hand (LINUX_ABI, BUSYBOX,
+      CONSOLE_PROGRAM) wins over it.
+
+      Defaults per preset, and why:
+        desktop, server   both: people there bring Linux programs (a
+                          container, a script, a tool nobody ported) and
+                          also want the native shell and tools.
+        every other       native: robot, industrial, automotive, firmware,
+                          wearable, IoT/HMI, gateway and microvm images are
+                          appliances. A personality, a GPL program and the
+                          code that serves them add attack surface and
+                          flash for nothing the product runs, and the
+                          small boards cannot hold them (the Linux
+                          members below are not offered on HWCLASS_EMBEDDED).
+      linux is never a preset's default: it is the choice of an image whose
+      whole purpose is a Linux userland (a container host, a comparison
+      against Linux), so it is made by hand.
+
+      The native programs (SH.ELF, TERMD.ELF, NAMESD.ELF, TOOLBOX.ELF, the
+      family tools) are rows of the built-in topology, so they stay on the
+      volume in every choice; what the choice moves is the console program
+      and whether anything Linux is built.
+
+    config USERLAND_NATIVE
+        bool "Native: our shell and tools, no Linux personality"
+        help
+          The native userland (sh, toolbox, the family tools, built against
+          the SDK) and nothing Linux: LINUX_ABI, the ring-3 Linux runtime
+          and BusyBox are off by default, so no Linux code is compiled and
+          the system volume carries no BUSYBOX.ELF. The console program is
+          the native shell. The way to bring ported programs in is the
+          relibc front; the coreutils tools a port would add (uutils) are
+          not in the tree.
+
+    config USERLAND_LINUX
+        bool "Linux: BusyBox through the Linux personality"
+        depends on !HWCLASS_EMBEDDED
+        help
+          BusyBox is the console program: its ash runs as `sh` through the
+          Linux personality (LINUX_ABI; on x86_64 the ring-3 runtime), and
+          BUSYBOX.ELF is on the system volume. The native shell session is
+          not the console (except on x86_64, below). Choosing it is the by-hand opt-in to GPL-2.0-only
+          code (USERSPACE_GPL turns on with it in any build type; see its
+          licence note). Needs the pinned BusyBox source and zig to build
+          (`make busybox`).
+
+          On x86_64 the ring-3 runtime gives a hosted task no console
+          input, so BusyBox's shell would read end of file and exit and the
+          recovery console would take over: there the console program stays
+          the native shell and BusyBox is reached from it, as with both,
+          until the runtime serves console input.
+
+    config USERLAND_BOTH
+        bool "Both: native userland plus a Linux box"
+        depends on !HWCLASS_EMBEDDED
+        help
+          The native userland as the console, and the Linux personality
+          with BusyBox beside it, reached from the native shell as
+          `busybox sh`. In a development build BusyBox is on (USERSPACE_GPL
+          and BUSYBOX default y); in a release build the personality is on
+          and BusyBox stays off until USERSPACE_GPL is turned on by hand, so
+          a release never ships GPL code by default.
+
+endchoice
+
 config USERSPACE_GPL
     bool "Allow third-party GPL userspace programs (e.g. BusyBox)"
+    default y if LINUX_ABI && USERLAND_LINUX
     default y if BUILD_TYPE_DEV && LINUX_ABI
     help
       LICENCE NOTE: with this on, a volume that carries a program below is a
@@ -118,12 +195,13 @@ config USERSPACE_GPL
 
       The switch without which no third-party GPL program is built or put
       in an image. A development build (BUILD_TYPE_DEV) with the Linux
-      personality turns it on; a release build leaves it off until you
+      personality turns it on, and so does USERLAND linux, whose only
+      content is BusyBox; a release build otherwise leaves it off until you
       turn it on by hand, so a product never ships GPL code by default.
 
 config BUSYBOX
     bool "BusyBox (static, run through the Linux personality)"
-    default y if BUILD_TYPE_DEV
+    default y if BUILD_TYPE_DEV || USERLAND_LINUX
     depends on USERSPACE_GPL && LINUX_ABI && (!ARCH_X86_64 || LINUX_RUNTIME)
     help
       BusyBox on the system volume as BUSYBOX.ELF, reachable as `busybox sh`
@@ -148,11 +226,13 @@ config BUSYBOX
 config LINUX_ABI
     # cargo-feature: linux-abi
     bool "Linux syscall personality (static Linux binaries)"
+    default y if USERLAND_LINUX || USERLAND_BOTH
     default n
     help
-      Off by default in every profile (owner, 2026-10-04: running Linux
-      programs is parked; Linux DRIVERS are LINUX_DRIVERS and do not need
-      this). The QEMU test defconfigs turn it on so the gate keeps testing it.
+      On with USERLAND linux or both, off with native (the USERLAND choice
+      above says which presets default to which; Linux DRIVERS are
+      LINUX_DRIVERS and do not need this). The QEMU test defconfigs name
+      their USERLAND so the gate keeps testing it.
 
       Run a static Linux binary (riscv64 or aarch64, asm-generic syscall
       table) unmodified: the kernel translates each Linux call onto the

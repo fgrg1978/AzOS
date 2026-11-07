@@ -28432,7 +28432,8 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/${GATE_DEFC_X86}.config" ;; esac
         mkdir -p "$dir"; cfg="$dir/linux.config"; tmp="$(mktemp -d)"
         if [ "$mode" = off ]; then
-            sed -e 's/^CONFIG_LINUX_ABI=y$/# CONFIG_LINUX_ABI is not set/' -e '/^CONFIG_LINUX_RUNTIME=y$/d' "$base" >"$tmp/c.config"
+            sed -e 's/^CONFIG_LINUX_ABI=y$/# CONFIG_LINUX_ABI is not set/' -e '/^CONFIG_LINUX_RUNTIME=y$/d' \
+                -e 's/^CONFIG_USERLAND_BOTH=y$/CONFIG_USERLAND_NATIVE=y/' "$base" >"$tmp/c.config"
         else
             cp "$base" "$tmp/c.config"
             [ "$isa" = x86 ] && printf 'CONFIG_LINUX_RUNTIME=y\n' >>"$tmp/c.config"

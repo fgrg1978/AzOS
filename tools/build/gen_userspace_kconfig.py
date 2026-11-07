@@ -264,6 +264,8 @@ def render(root):
     a("")
     a("choice CONSOLE_PROGRAM")
     a('    prompt "Console program (started on the console at boot)"')
+    if bb:
+        a("    default CONSOLE_PROGRAM_BUSYBOX_SH if USERLAND_LINUX && !ARCH_X86_64")
     a("    default CONSOLE_PROGRAM_SH if !HWCLASS_EMBEDDED")
     a("    default CONSOLE_PROGRAM_NONE")
     a("    help")
@@ -279,7 +281,9 @@ def render(root):
         "on the kernel command line starts another image instead (its row must "
         "say start = true); with secure boot on it is ignored and the boot log says so. "
         "Only programs meant to run on the console are offered: the native shell "
-        "and BusyBox sh. Whenever the "
+        "and BusyBox sh. The default follows USERLAND: BusyBox sh with linux "
+        "(on x86_64 the ring-3 runtime gives it no console input, so the native "
+        "shell stays), the native shell otherwise. Whenever the "
         "console program ends and is not restarted, or does not take the console in "
         "time, the console prints one `console program NAME gave up` line and the "
         "recovery console takes over. The console login (CONSOLE_LOGIN) is a layer "
