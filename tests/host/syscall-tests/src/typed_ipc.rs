@@ -2570,8 +2570,9 @@ mod swap_rows {
     }
 
     /// **The touch that waits for a booking is woken when the booking ends**,
-    /// committed or abandoned, not after a whole wait slice: each end moves the
-    /// sequence the fault sleeps on.
+    /// committed, abandoned or an unmap's, not after a whole wait slice: each
+    /// end moves the sequence the fault sleeps on. A booking no fault waited on
+    /// wakes nobody (the wake walks the pager's wait queue).
     ///
     /// **Canary.** `booking-wake-skipped-canary`: nobody is woken.
     #[test]
@@ -2587,16 +2588,32 @@ mod swap_rows {
         let r = resource_of::<Shm>(a, cap);
         assert!(mo::memobj_acquire_ref(b, r).is_ok());
         let mut pages = [0usize; 1];
+        let va = 0x4000_0000;
+        // Commit.
         assert!(mo::memobj_map_begin_ref(b, r, true, &mut pages).is_ok());
         assert_eq!(mo::memobj_fault_look(r, pt_b, 0), mo::ObjLook::Wait);
         let seen = pg::shim_marker_seq();
-        assert_eq!(mo::memobj_map_commit_ref(b, r, azos_sched::shim_space(pt_b), 0x4000_0000, 1, mo::MapAccess::RW), Ok(true));
+        assert_eq!(mo::memobj_map_commit_ref(b, r, azos_sched::shim_space(pt_b), va, 1, mo::MapAccess::RW), Ok(true));
         assert_ne!(pg::shim_marker_seq(), seen, "the commit wakes the waiter");
-        assert!(matches!(mo::memobj_take_mapping_ref(b, r), Ok(Some(_))));
+        // An unmap's end (the touch of a sibling between its begin and end).
+        assert!(matches!(mo::memobj_unmap_begin_ref(b, r), Ok(Some(_))));
+        assert_eq!(mo::memobj_fault_look(r, pt_b, 0), mo::ObjLook::Wait);
+        let seen = pg::shim_marker_seq();
+        mo::memobj_unmap_end_ref(b, r);
+        assert_ne!(pg::shim_marker_seq(), seen, "and so does an unmap's end");
+        // Abandon.
         assert!(mo::memobj_map_begin_ref(b, r, true, &mut pages).is_ok());
+        assert_eq!(mo::memobj_fault_look(r, pt_b, 0), mo::ObjLook::Wait);
         let seen = pg::shim_marker_seq();
         mo::memobj_map_abandon_ref(b, r);
         assert_ne!(pg::shim_marker_seq(), seen, "and so does an abandon");
+        // A booking nobody waited on.
+        let c = fresh_tid();
+        assert!(mo::memobj_acquire_ref(c, r).is_ok());
+        assert!(mo::memobj_map_begin_ref(c, r, true, &mut pages).is_ok());
+        let seen = pg::shim_marker_seq();
+        mo::memobj_map_abandon_ref(c, r);
+        assert_eq!(pg::shim_marker_seq(), seen, "no waiter, no wake");
     }
 
     /// **A restore that fails gives its claim up.** The pool lost the page's

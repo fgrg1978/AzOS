@@ -597,6 +597,9 @@ pub struct MemObj {
     /// of one page holds off no other page. Each task has one fault in flight, so
     /// the count of a page is at most `MAX_TASKS` ([`InstallCount`]).
     installing: [InstallCount; MAX_MEMOBJ_PAGES],
+    /// A fault was told to wait for a mapping being booked ([`ObjLook::Wait`]):
+    /// the end of a booking wakes the faults only then ([`booking_ended`]).
+    booking_waited: bool,
 }
 
 /// Where a volatile object stands (module doc, "Volatile objects"). Always
@@ -681,6 +684,7 @@ impl MemObj {
             out: 0,
             transit: 0,
             installing: [0; MAX_MEMOBJ_PAGES],
+            booking_waited: false,
         }
     }
 }
@@ -1617,16 +1621,22 @@ pub fn memobj_map_commit_ref(tid: u32, r: u32, space: SpaceRef, va: usize, pages
     let noted = note_mapping_locked(&mut regions[i], tid, space, va, 0, pages, access);
     regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
     drop(regions);
-    booking_ended();
+    booking_ended(r);
     Ok(noted)
 }
 
-/// A holder's leaves are no longer in flight: a fault that found the mapping
-/// being booked ([`ObjLook::Wait`]) looks again now, not after a full wait.
+/// A holder's leaves on the object `r` names are no longer in flight: a fault
+/// that found the mapping being booked ([`ObjLook::Wait`]) looks again now, not
+/// after a full wait. Called with the table unlocked; the wake (a walk of the
+/// pager's wait queue) is made only when a fault waited on this object.
 ///
 /// Canary `booking-wake-skipped-canary`: nobody is woken.
-fn booking_ended() {
-    if !cfg!(feature = "booking-wake-skipped-canary") {
+fn booking_ended(r: u32) {
+    let waited = {
+        let mut regions = MEMOBJS.lock();
+        live_index(&regions, r).is_ok_and(|i| core::mem::take(&mut regions[i].booking_waited))
+    };
+    if waited && !cfg!(feature = "booking-wake-skipped-canary") {
         crate::pager::store_ended();
     }
 }
@@ -1642,7 +1652,7 @@ pub fn memobj_map_abandon_ref(tid: u32, r: u32) {
         }
     }
     drop(regions);
-    booking_ended();
+    booking_ended(r);
 }
 
 /// [`memobj_take_mapping_ref`] for a caller that removes the leaves after this
@@ -1703,7 +1713,7 @@ pub fn memobj_inherit_ref(
         memobj_unmap_end_ref(child, r);
         return Err(MemObjError::NoMem);
     }
-    inherit_commit(parent, child, r, space, va, pages, leaves).inspect(|_| booking_ended()).inspect_err(|_| {
+    inherit_commit(parent, child, r, space, va, pages, leaves).inspect(|_| booking_ended(r)).inspect_err(|_| {
         leaves.remove();
         memobj_unmap_end_ref(child, r);
     })
@@ -1793,7 +1803,7 @@ pub fn memobj_unmap_end_ref(tid: u32, r: u32) {
         }
     }
     drop(regions);
-    booking_ended();
+    booking_ended(r);
 }
 
 /// The access a recorded mapping has and the most it may be given back
@@ -4681,6 +4691,7 @@ pub fn memobj_fault_look(r: u32, root: usize, idx: usize) -> ObjLook {
         // a retry for a sibling thread that touches it, not a bad address.
         // Canary `swap-building-gone-canary`: it is a bad address.
         let booking = o.holders.iter().any(MemHolder::leaves_in_flight) && !cfg!(feature = "swap-building-gone-canary");
+        o.booking_waited |= booking;
         return if booking { ObjLook::Wait } else { ObjLook::Gone };
     };
     let bit = 1u64 << idx;
