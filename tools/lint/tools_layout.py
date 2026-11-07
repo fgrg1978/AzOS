@@ -104,9 +104,9 @@ ROLES = {
         "seed_provision.py", "sigalg.py", "sign_ota.py", "test_sign_ota_epoch.py",
     ],
     "bench": [
-        "lat_linux/", "limits_cost.py", "linux_seccomp_launch/", "net_lane_baseline.tsv", "net_lane_gate.py", "net_lane_gate_selftest.py",
+        "hyp_cost.py", "hyp_cost_selftest.py", "lat_linux/", "limits_cost.py", "linux_seccomp_launch/", "net_lane_baseline.tsv", "net_lane_gate.py", "net_lane_gate_selftest.py",
         "vsbench_aarch64.sh", "vsbench_compare.sh", "vsbench_cost.sh", "vsbench_linux.conf",
-        "vsbench_tcp_pcap.py", "vsbench_tcp_peer.py", "vsbench_x86_64.sh",
+        "vsbench_split.sh", "vsbench_tcp_pcap.py", "vsbench_tcp_peer.py", "vsbench_x86_64.sh",
     ],
     "dev": [
         "buildq", "debug_script.py", "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
