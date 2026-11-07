@@ -686,6 +686,17 @@ before the page allocator exists sit in a small region in `.bss` (the kernel log
 object (`kernel/src/boot/klog_region.rs`) and the handover copies them under their own
 sequence numbers, so a decision's id names the same record before and after.
 
+**Actuation telemetry** (`crates/core/actuation/src/logger.rs`) is the substrate's third ring,
+`TELEMETRY_RING_ENTRIES` slots: a motor command, a mode change, a skill start or end, a
+waypoint, an error, a sensor snapshot, each an event of the logger's 20-byte payload under the
+envelope (its kind is the event kind). It has no early ring: a boot records it from the
+handover on. A producer (the real-time motor loop, a fault handler) takes no lock, allocates
+nothing and prints nothing, and a full ring overwrites its oldest record: telemetry is
+loss-tolerant. `logd` writes it as lines of module `@telemetry`, at most
+`LOGD_TELEMETRY_PER_SEC` a second of each kind. The safety records (the e-stop latch, the
+release floors, an effect's write-ahead record, the other safety violations) are not
+telemetry: they keep the flight recorder's own ring and files below.
+
 **Structured log** (Kconfig `KLOG`; `crates/drivers/sys/src/klog.rs`, `klog/wire.rs`). Each
 line the macros above print is also a record of the substrate's kernel-log ring of
 `KLOG_ENTRIES` slots of 320 bytes: the envelope (its kind is the level) and a payload of a

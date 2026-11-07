@@ -49,6 +49,7 @@ dependencies = [
  "azos_ipc",
  "azos_limits",
  "azos_net",
+ "azos_records",
  "azos_sched",
  "azos_sync",
  "azos_syscall",

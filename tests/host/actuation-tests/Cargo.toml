@@ -27,6 +27,8 @@ wrap-tail-canary = []
 # logger.rs's reserve canary: effect and ordinary records may use the slots
 # kept for safety records. Off unless the canary row builds with it.
 ring-reserve-canary = []
+# logger.rs's telemetry gate canary: a known value, never enabled here (the canary row is in behavior-tests).
+telemetry-ring-canary = []
 # estop.rs's unrecorded-release gate canary: a known value, never enabled by default.
 estop-unrecorded-canary = []
 
@@ -47,6 +49,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"
 # gate's envelope ceilings are pinned to (src/b4.rs).
 azos_degrade_policy = { path = "../../../crates/domains/robot/degrade-policy" }
 # Real: the receipt of a refusal is one of its records.
+azos_records = { path = "../../../crates/core/records" }
 azos_decision = { path = "../../../crates/core/decision", features = ["on", "durable"] }
 
 # Reproduce the kernel's release profile (see behavior-tests).

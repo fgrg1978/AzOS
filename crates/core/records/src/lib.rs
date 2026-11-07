@@ -38,6 +38,12 @@ pub const DECISIONS: bool = azos_limits::DECISION_RECORDS_DEV;
 pub const KLOG_PAYLOAD: usize = 288;
 /// Payload bytes of a decision record (`azos_decision`'s layout).
 pub const DECISION_PAYLOAD: usize = 32;
+/// Payload bytes of a telemetry record (`azos_actuation::logger`'s 20-byte
+/// event, padded to a slot's 8).
+pub const TELEMETRY_PAYLOAD: usize = 24;
+/// The telemetry ring's depth (Kconfig `TELEMETRY_RING_ENTRIES`).
+pub const TELEMETRY_ENTRIES: usize = azos_limits::TELEMETRY_RING_ENTRIES as usize;
+
 /// The decision ring's depth: Kconfig `DECISION_RECORDS_ENTRIES` rounded up
 /// to a power of two (the slot is index & (entries - 1)).
 pub const DECISION_ENTRIES: usize = (azos_limits::DECISION_RECORDS_ENTRIES as usize).next_power_of_two();
@@ -46,7 +52,7 @@ const fn ring(source: u8, payload: usize, entries: usize) -> RingSpec {
     RingSpec { source, slot_bytes: (ENV_BYTES + payload) as u32, entries: entries as u32 }
 }
 
-const MAX: usize = 2;
+const MAX: usize = 3;
 
 const fn layout(early: bool) -> ([RingSpec; MAX], usize) {
     let mut r = [ring(0, 8, 1); MAX];
@@ -58,6 +64,10 @@ const fn layout(early: bool) -> ([RingSpec; MAX], usize) {
     }
     if DECISIONS {
         r[n] = ring(SOURCE_DECISION, DECISION_PAYLOAD, DECISION_ENTRIES);
+        n += 1;
+    }
+    if KLOG && !early {
+        r[n] = ring(SOURCE_TELEMETRY, TELEMETRY_PAYLOAD, TELEMETRY_ENTRIES);
         n += 1;
     }
     (r, n)
@@ -73,7 +83,11 @@ pub const RINGS: &[RingSpec] = FULL_L.0.split_at(FULL_L.1).0;
 const _: () = {
     let mut i = 0;
     while i < RINGS.len() {
-        assert!(RINGS[i].entries.is_power_of_two(), "KLOG_ENTRIES must be a power of two");
+        assert!(RINGS[i].entries.is_power_of_two(), "KLOG_ENTRIES, DECISION_RECORDS_ENTRIES and TELEMETRY_RING_ENTRIES must be powers of two");
+        i += 1;
+    }
+    i = 0;
+    while i < EARLY_RINGS.len() {
         assert!(EARLY_RINGS[i].entries.is_power_of_two(), "KLOG_EARLY_ENTRIES must be a power of two");
         i += 1;
     }

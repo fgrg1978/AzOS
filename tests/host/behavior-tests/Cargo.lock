@@ -43,6 +43,7 @@ dependencies = [
  "azos_degrade_policy",
  "azos_devif",
  "azos_ext_api",
+ "azos_records",
  "azos_rings",
  "beh_test_drivers",
  "beh_test_ipc",

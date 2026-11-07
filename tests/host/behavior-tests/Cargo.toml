@@ -26,6 +26,11 @@ wrap-tail-canary = []
 # logger.rs's ring-reserve gate canary: a known value, never enabled here (the
 # canary row is in actuation-tests).
 ring-reserve-canary = []
+# logger.rs's telemetry gate canary and the ring crate's: known values, never
+# enabled by default (the canary rows are in this suite).
+telemetry-ring-canary = []
+canary-record-stale = ["azos_rings/canary-record-stale"]
+canary-no-overrun = ["azos_rings/canary-no-overrun"]
 # estop.rs's unrecorded-release gate canary: a known value, never enabled by default.
 estop-unrecorded-canary = []
 # Wave 15: `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
@@ -60,6 +65,7 @@ azos_rings = { path = "../../../crates/core/rings" }
 # Real crates: both build for the host and have their own suites, so the code
 # under test uses the kernel's own decision and crypto code rather than
 # stand-ins that could drift from them.
+azos_records = { path = "../../../crates/core/records" }
 azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
 azos_crypto = { path = "../../../crates/core/crypto" }
 beh_test_drivers = { path = "shims/drivers" }

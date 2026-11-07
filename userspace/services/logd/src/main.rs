@@ -334,6 +334,9 @@ impl Sink {
                     if env.source == SOURCE_DECISION && !self.keep.admit((env.kind >> 8) as u8) {
                         continue;
                     }
+                    if env.source == SOURCE_TELEMETRY && !self.keep.admit_telemetry(env.kind) {
+                        continue;
+                    }
                     if let Some(k) = render(&env, &payload, self.hz, &mut self.batch[self.n..]) {
                         self.n += k;
                     }
@@ -359,6 +362,12 @@ impl Sink {
         if held > 0 {
             if let Some(i) = ring_index(self.rd.region(), SOURCE_DECISION) {
                 self.note(i, b"records held back by LOGD_DECISIONS_PER_SEC: ", held);
+            }
+        }
+        let held = self.keep.telemetry_period();
+        if held > 0 {
+            if let Some(i) = ring_index(self.rd.region(), SOURCE_TELEMETRY) {
+                self.note(i, b"records held back by LOGD_TELEMETRY_PER_SEC: ", held);
             }
         }
         if self.flush() && self.written < 2 {
@@ -420,7 +429,8 @@ fn run() -> i32 {
     }
     say(b"[logd] AzOS record sink (klog.ring to KLOGn.TXT)\n");
     let mut sink = Sink { vol, store, hz, rd, committed: rd, stall: Stall::new(),
-        keep: Keep::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64),
+        keep: Keep::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64,
+            azos_limits::LOGD_TELEMETRY_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64),
         written: 0, batch: [0; BATCH], n: 0 };
     // The start line: where this run begins, so a reader of the files sees the
     // seam (a new boot, or a restart).

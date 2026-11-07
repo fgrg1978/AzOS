@@ -34,6 +34,10 @@ envelope-row-canary = []
 # may use the ring's safety reserve, so a full ring has no slot for the
 # e-stop record and the reserve tests must go red.
 ring-reserve-canary = []
+# Gate canary only (host suite `behavior-tests`): the telemetry encoders push
+# onto the flight recorder's ring instead of the record region's, so a flood of
+# telemetry evicts a pending latch record and the telemetry tests must go red.
+telemetry-ring-canary = []
 # Gate canary only (host suites `behavior-tests`, `actuation-tests`): a release
 # proof is accepted with no durable recorder in every build, so the fail-closed
 # release tests must go red.
@@ -51,6 +55,7 @@ azos_syscall  = { workspace = true }
 azos_config   = { workspace = true }
 azos_limits   = { workspace = true }
 azos_decision = { workspace = true }
+azos_records  = { workspace = true }
 azos_crypto   = { workspace = true }
 azos_net      = { workspace = true }
 azos_topology = { workspace = true }

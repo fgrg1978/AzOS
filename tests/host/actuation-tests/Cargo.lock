@@ -29,6 +29,10 @@ name = "azos-config"
 version = "0.1.0"
 
 [[package]]
+name = "azos_abi"
+version = "1.0.0"
+
+[[package]]
 name = "azos_actuation_tests"
 version = "0.1.0"
 dependencies = [
@@ -37,6 +41,7 @@ dependencies = [
  "azos_decision",
  "azos_degrade_policy",
  "azos_ext_api",
+ "azos_records",
  "beh_test_drivers",
  "beh_test_limits",
  "cap_test_sync",
@@ -79,8 +84,34 @@ name = "azos_degrade_policy"
 version = "0.1.0"
 
 [[package]]
+name = "azos_devif"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl",
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_ext_api"
 version = "0.1.0"
+
+[[package]]
+name = "azos_idl"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl_macros",
+]
+
+[[package]]
+name = "azos_idl_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "azos_limits"
@@ -105,6 +136,13 @@ version = "0.1.0"
 [[package]]
 name = "beh_test_drivers"
 version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_devif",
+ "azos_limits",
+ "azos_rings",
+ "cap_test_sync",
+]
 
 [[package]]
 name = "beh_test_limits"

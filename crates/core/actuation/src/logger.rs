@@ -2,9 +2,16 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! E06 — Mission logging / replay / analytics.
 //!
-//! Ring buffer of compact event records in RAM, periodically flushed to FAT32
-//! for post-mortem analysis. All events are fixed-size (32 bytes on-wire) so
-//! that replay readers don't have to parse variable-length records.
+//! Ring buffer of compact safety records in RAM, periodically flushed to FAT32
+//! for post-mortem analysis: the e-stop latch, the release floors, an effect's
+//! write-ahead record, the other safety violations. All records are fixed-size
+//! (32 bytes on-wire) so that replay readers don't have to parse variable-length
+//! records.
+//!
+//! The telemetry events (a motor command, a mode change, a skill, a waypoint,
+//! an error, a sensor snapshot) are not on this ring: they are loss-tolerant
+//! and go to their own ring of the record region (`azos_records`), which
+//! `logd` writes to its files.
 //!
 //! File layout on disk:
 //!   /LOG/LOGNNNNN.BIN          N = monotonic session serial (5 digits)
@@ -1941,7 +1948,7 @@ fn flush_one_batch(storage: &'static dyn LogStorage, open: &mut OpenLogFile) -> 
 }
 
 // ---------------------------------------------------------------------------
-// Event encoders — each wraps `push_event()`.
+// Telemetry encoders — each wraps `telemetry()`, the record region's ring.
 // ---------------------------------------------------------------------------
 
 /// Log an odometry/sensor snapshot. Also updates the distance counter if
@@ -1960,7 +1967,7 @@ pub fn log_sensor_snapshot(
     payload[2..4].copy_from_slice(&velocity_mm_s.to_le_bytes());
     payload[4..8].copy_from_slice(&distance_delta_mm.to_le_bytes());
     payload[8..12].copy_from_slice(&heading_cdeg.to_le_bytes());
-    push_event(LOG_EVT_SENSOR_SNAPSHOT, 0, payload);
+    telemetry(LOG_EVT_SENSOR_SNAPSHOT, payload);
 }
 
 /// Log an actuator command (speed_l, speed_r for wheeled; channel/value generic).
@@ -1971,7 +1978,7 @@ pub fn log_actuator_cmd(actuator_type: u8, ch0: i16, ch1: i16, ch2: i16, ch3: i1
     payload[4..6].copy_from_slice(&ch1.to_le_bytes());
     payload[6..8].copy_from_slice(&ch2.to_le_bytes());
     payload[8..10].copy_from_slice(&ch3.to_le_bytes());
-    push_event(LOG_EVT_ACTUATOR_CMD, 0, payload);
+    telemetry(LOG_EVT_ACTUATOR_CMD, payload);
 }
 
 /// How [`commit_effect_record`] fared.
@@ -2314,14 +2321,14 @@ pub fn log_mode_change(old_mode: u8, new_mode: u8) {
     let mut payload = [0u8; LOG_PAYLOAD_BYTES];
     payload[0] = old_mode;
     payload[1] = new_mode;
-    push_event(LOG_EVT_MODE_CHANGE, 0, payload);
+    telemetry(LOG_EVT_MODE_CHANGE, payload);
 }
 
 /// Log skill start.
 pub fn log_skill_start(skill_id: u16) {
     let mut payload = [0u8; LOG_PAYLOAD_BYTES];
     payload[0..2].copy_from_slice(&skill_id.to_le_bytes());
-    push_event(LOG_EVT_SKILL_START, 0, payload);
+    telemetry(LOG_EVT_SKILL_START, payload);
 }
 
 /// Log skill end with a result code.
@@ -2329,7 +2336,7 @@ pub fn log_skill_end(skill_id: u16, result_code: u8) {
     let mut payload = [0u8; LOG_PAYLOAD_BYTES];
     payload[0..2].copy_from_slice(&skill_id.to_le_bytes());
     payload[2] = result_code;
-    push_event(LOG_EVT_SKILL_END, 0, payload);
+    telemetry(LOG_EVT_SKILL_END, payload);
 }
 
 /// Log a waypoint event (reached / updated).
@@ -2339,7 +2346,7 @@ pub fn log_waypoint(x_mm: i32, y_mm: i32, index: u16, kind: u8) {
     payload[4..8].copy_from_slice(&y_mm.to_le_bytes());
     payload[8..10].copy_from_slice(&index.to_le_bytes());
     payload[10] = kind;
-    push_event(LOG_EVT_WAYPOINT, 0, payload);
+    telemetry(LOG_EVT_WAYPOINT, payload);
 }
 
 /// Log an error condition.
@@ -2348,7 +2355,7 @@ pub fn log_error(subsystem: u8, error_code: u16, detail: u32) {
     payload[0] = subsystem;
     payload[1..3].copy_from_slice(&error_code.to_le_bytes());
     payload[4..8].copy_from_slice(&detail.to_le_bytes());
-    push_event(LOG_EVT_ERROR, 0, payload);
+    telemetry(LOG_EVT_ERROR, payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -2402,12 +2409,38 @@ pub fn logger_analytics_reset() {
 // Internals.
 // ---------------------------------------------------------------------------
 
-fn push_event(kind: u8, flags: u8, payload: [u8; LOG_PAYLOAD_BYTES]) {
-    let _ = push_event_at(kind, flags, payload, Admit::Evict);
+/// Record one telemetry event in its ring of the record region. No lock, no
+/// allocation and no console: the real-time motor loop and a fault handler
+/// call it. A build with no region (Kconfig `KLOG` off), or a boot before the
+/// handover, records nothing.
+fn telemetry(kind: u8, payload: [u8; LOG_PAYLOAD_BYTES]) {
+    // Gate canary: telemetry takes the safety records' ring, where a flood of
+    // it evicts what the ring exists to keep.
+    if cfg!(feature = "telemetry-ring-canary") {
+        let _ = push_event_at(kind, 0, payload, Admit::Evict);
+        return;
+    }
+    // Host suites: the encoders are also the generators of ordinary records
+    // for the ring's own tests (its eviction, its pin and reserve, its flush).
+    #[cfg(test)]
+    if TELEMETRY_ON_RING.with(|c| c.get()) {
+        let _ = push_event_at(kind, 0, payload, Admit::Evict);
+        return;
+    }
+    let Some(w) = azos_records::writer(azos_records::SOURCE_TELEMETRY) else { return };
+    let h = azos_records::Head {
+        ts: now_ticks(),
+        clock: azos_records::CLOCK_TIMEBASE,
+        kind: kind as u16,
+        len: LOG_PAYLOAD_BYTES as u16,
+        cpu: azos_drv_sys::klog::cpu_tag(),
+        flags: 0,
+    };
+    w.publish(&h, |p| p.bytes(0, &payload));
 }
 
-/// [`push_event`], returning the ring position the record took (`None`:
-/// the logger is off, or the record was dropped, see [`ring_push`]).
+/// Push a record on the flight recorder's ring, returning the position it took
+/// (`None`: the logger is off, or the record was dropped, see [`ring_push`]).
 fn push_event_at(kind: u8, flags: u8, payload: [u8; LOG_PAYLOAD_BYTES], admit: Admit) -> Option<u64> {
     if !LOG_ACTIVE.load(Ordering::Acquire) { return None; }
     let rec = LogRecord { ts: now_ticks(), kind, flags, payload };
@@ -2893,14 +2926,14 @@ fn open_log_file_inner(serial: u32, notice_already_written: bool) -> Result<(), 
     // The rotate branch of `logger_flush` now does it upstream, while the
     // old handle is still open, and passes `notice_already_written = true`.
     // Its one boundary: the notice has to REACH the ring. If the ring is
-    // exactly full when the rotation triggers, `push_event` drops it and
+    // exactly full when the rotation triggers, `push_event_at` drops it and
     // bumps `LOG_DROPPED`, and no amount of flushing recovers it — the drain
     // that would have made room is the thing that just failed. That case
     // leaves the `LOG_SAFETY_COUNT` bump as the only trace, same as the cold
     // path below.
     // What is left here is the cold path: `logger_init` at a serial already
     // past the wrap point, where there is no old file to land in anyway.
-    // (`LOG_ACTIVE` is still false there, so `push_event` drops the record
+    // (`LOG_ACTIVE` is still false there, so `push_event_at` drops the record
     // before the ring while `LOG_SAFETY_COUNT` still moves —
     // `log_safety_violation` bumps that counter unconditionally. The counter
     // is the only durable trace on that path; it is only reachable via
@@ -2994,6 +3027,19 @@ pub fn logger_ring_len() -> usize {
 /// Current session serial number (mostly for tests).
 pub fn logger_current_serial() -> u32 {
     LOG_FILE.acquire().as_ref().map(|f| f.serial).unwrap_or(0)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TELEMETRY_ON_RING: core::cell::Cell<bool> = const { core::cell::Cell::new(true) };
+}
+
+/// Host suites, per thread: the telemetry encoders push onto the flight
+/// recorder's ring (`on`, the default) or into the record region's telemetry
+/// ring.
+#[cfg(test)]
+pub fn telemetry_on_ring_for_test(on: bool) {
+    TELEMETRY_ON_RING.with(|c| c.set(on));
 }
 
 /// Force the serial counter. Test-only: exercising the wrap path

@@ -20,6 +20,14 @@ pub const ENABLED: bool = azos_limits::KLOG;
 
 const _: () = assert!(wire::PAYLOAD_BYTES == azos_records::KLOG_PAYLOAD);
 
+/// The CPU tag every record carries: the executing hart, for display only.
+#[inline]
+pub fn cpu_tag() -> u8 {
+    use azos_arch::Cpu;
+    // percpu-hint: the cpu tag of a record: display only
+    azos_arch::ARCH.hart_id() as u8
+}
+
 /// Record one kernel line: `msg` is the formatted line without its newline,
 /// `partial` that it had none (a `kprint!` fragment), `truncated` that
 /// formatting stopped at the console's pre-format buffer.
@@ -29,7 +37,6 @@ pub fn record(level: usize, module: &'static str, msg: &[u8], partial: bool, tru
         return;
     }
     let Some(w) = azos_records::writer(azos_records::SOURCE_KLOG) else { return };
-    use azos_arch::Cpu;
     let mut flags = 0;
     if partial {
         flags |= wire::FLAG_PARTIAL;
@@ -43,8 +50,7 @@ pub fn record(level: usize, module: &'static str, msg: &[u8], partial: bool, tru
         clock: azos_records::CLOCK_TIMEBASE,
         kind: level as u16,
         len,
-        // percpu-hint: the cpu tag of a log line: display only
-        cpu: azos_arch::ARCH.hart_id() as u8,
+        cpu: cpu_tag(),
         flags,
     };
     let fill = |p: &mut azos_records::Payload| {

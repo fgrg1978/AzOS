@@ -89,6 +89,13 @@ macro_rules! kconsole {
 /// `azos_drv_sys::wcet::read_cycles`, used by `dns.rs` to stamp its
 /// WCET probes. The absolute value is irrelevant to every caller here; it
 /// only has to advance.
+/// Mirrors `azos_drv_sys::klog::cpu_tag`.
+pub mod klog {
+    pub fn cpu_tag() -> u8 {
+        0
+    }
+}
+
 pub mod wcet {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CYCLES: AtomicU64 = AtomicU64::new(0);

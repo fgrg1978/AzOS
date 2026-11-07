@@ -61,6 +61,10 @@ pub(crate) const NAMES: &[&str] = &[
     // written under a stale sequence; `logd` must drop it and count it (gate
     // row `records logd drops a stale sequence`).
     "record-stale",
+    // boot/klog_region.rs: one actuation telemetry event (a mode change) is
+    // recorded right after the record handover, so the read-back rows have a
+    // telemetry line to find (gate rows `records read back from logd`).
+    "record-telemetry-event",
     // boot/chaos.rs: the durable rate limit of caller-paced refusals holds
     // nothing back (ktest `refusal_flood_costs_no_other_domain`).
     "refusal-limit-off",

@@ -15,6 +15,7 @@ azos_limits = { path = "../../../crates/core/limits" }
 # Gate canaries of the host rows over this program's pure modules
 # (tests/host/libsys-tests); never enabled in an image.
 canary-logd-stall-polls-only = []
+canary-logd-telemetry-one-bucket = []
 
 [profile.release]
 opt-level = "s"

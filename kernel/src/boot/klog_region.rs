@@ -18,7 +18,7 @@ use azos_ipc::memobj::{memobj_create_kernel, MemPerms, MemSpec};
 
 const _: () = assert!(
     azos_records::REGION_BYTES <= azos_mm::memobj::MAX_MEMOBJ_PAGES * azos_arch::PAGE_SIZE,
-    "the record region (KLOG_ENTRIES x 320 + DECISION_RECORDS_ENTRIES x 64 bytes) must fit one memory object"
+    "the record region (KLOG_ENTRIES x 320 + DECISION_RECORDS_ENTRIES x 64 + TELEMETRY_RING_ENTRIES x 56 bytes) must fit one memory object"
 );
 
 /// Create the region, hand the records over to it and publish it.
@@ -48,11 +48,15 @@ pub(crate) fn install() {
     };
     azos_ipc::kregion::publish(azos_ipc::kregion::Region::KlogRing, obj);
     azos_drv_sys::kprintln!(
-        "[KLOG] record region {} KiB, granted as MemObj klog.ring: kernel log {} records ({} lost before the handover), decisions {} lost",
-        pages * azos_arch::PAGE_SIZE / 1024, ring_entries(azos_records::SOURCE_KLOG), h.klog_lost, h.decisions_lost
+        "[KLOG] record region {} KiB, granted as MemObj klog.ring: kernel log {} records ({} lost before the handover), decisions {} lost, telemetry {} records",
+        pages * azos_arch::PAGE_SIZE / 1024, ring_entries(azos_records::SOURCE_KLOG), h.klog_lost, h.decisions_lost,
+        ring_entries(azos_records::SOURCE_TELEMETRY)
     );
     // After the line above, which the read-back row looks for.
     azos_drv_sys::klog::arm_stale_canary();
+    if canary!("record-telemetry-event") {
+        azos_actuation::logger::log_mode_change(0, 1);
+    }
 }
 
 /// Held, with interrupts masked, across the handover.

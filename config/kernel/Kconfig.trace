@@ -626,6 +626,32 @@ config KLOG_ENTRIES
       the ring lapped it between two polls: a burst of more than this many
       lines in LOGD_POLL_MS); lower it to save RAM.
 
+config TELEMETRY_RING_ENTRIES
+    int "Actuation telemetry: records the ring holds (power of two)"
+    range 16 1024
+    default 64 if HWCLASS_EMBEDDED
+    default 256
+    help
+      Read only with KLOG. The actuation telemetry (a motor command, a mode
+      change, a skill, a waypoint, an error, a sensor snapshot:
+      crates/core/actuation/src/logger.rs) is one ring of the record region,
+      beside the kernel log's and the decisions'. A producer (the real-time
+      motor loop, a fault handler) claims a slot with one atomic add, takes
+      no lock, allocates nothing and prints nothing, and a full ring
+      overwrites its oldest record: telemetry is loss-tolerant, and what
+      the ring lapped is counted and written as a `lost` line. The safety
+      records (the e-stop latch, the release floors, an effect's record)
+      are not here: they keep the flight recorder's ring and its
+      never-evicted slots.
+
+      Size it for the polling period: the motor loop records at most 4
+      changes per motor per second, so the default holds many periods of
+      LOGD_POLL_MS; raise it for a skill or waypoint stream faster than
+      that. A power of two (the build refuses anything else). 56 bytes a
+      slot (the envelope and 24 bytes of payload); the region is one memory
+      object of at most 64 pages shared with the kernel log's and the
+      decisions' rings, and the build refuses a sum that does not fit.
+
 config KLOG_EARLY_ENTRIES
     int "Structured kernel log: records kept before the ring exists (power of two)"
     range 8 512
@@ -709,6 +735,17 @@ config LOGD_DECISIONS_PER_SEC
       (one at least); the rest are counted and written as one
       `records held back` line, so a refusal storm cannot push the kernel
       log out of the files.
+
+config LOGD_TELEMETRY_PER_SEC
+    int "logd: telemetry records written per second at most, per kind"
+    range 0 1000
+    default 5
+    help
+      Read only with KLOG. A period of LOGD_POLL_MS writes at most this many
+      per second of each kind of the actuation telemetry (one at least; a
+      mode change and a waypoint are not held back by a chatty motor); the
+      rest are counted and written as one `records held back` line. 0 writes
+      no telemetry to the files (it stays in the ring).
 
 config WCET
     # cargo-feature: wcet

@@ -2550,6 +2550,9 @@ mod flight_recorder_rt {
 }
 
 #[cfg(test)]
+mod telemetry_ring;
+
+#[cfg(test)]
 mod flight_recorder_format {
     use super::logger::*;
     use super::log_storage_mock as fsmock;
@@ -2599,81 +2602,6 @@ mod flight_recorder_format {
         assert_eq!(back.kind, rec.kind);
         assert_eq!(back.flags, rec.flags);
         assert_eq!(back.payload, rec.payload);
-    }
-
-    /// `log_error` writes `subsystem` at 0, `error_code` at 1..3, then skips
-    /// byte 3 and puts `detail` at 4..8. The hole is alignment padding, not a
-    /// bug — pinned so a decoder written against this layout stays right and
-    /// so the gap is not quietly reused.
-    #[test]
-    fn log_error_leaves_byte_three_as_a_hole() {
-        let _g = start();
-        logger_init().expect("mount succeeds");
-        log_error(0x7A, 0xBEEF, 0xDEAD_C0DE);
-        logger_flush().unwrap();
-        let bytes = fsmock::file_bytes(0);
-        let mut rec = [0u8; LOG_RECORD_SIZE];
-        rec.copy_from_slice(&bytes[LOG_FILE_HEADER_BYTES..LOG_FILE_HEADER_BYTES + LOG_RECORD_SIZE]);
-        let r = LogRecord::decode(&rec);
-        assert_eq!(r.kind, LOG_EVT_ERROR);
-        assert_eq!(r.payload[0], 0x7A);
-        assert_eq!(u16::from_le_bytes([r.payload[1], r.payload[2]]), 0xBEEF);
-        assert_eq!(r.payload[3], 0, "byte 3 is padding between the code and the detail");
-        let mut d = [0u8; 4];
-        d.copy_from_slice(&r.payload[4..8]);
-        assert_eq!(u32::from_le_bytes(d), 0xDEAD_C0DE);
-        logger_shutdown();
-    }
-
-    /// Every event encoder writes its arguments where the format says.
-    #[test]
-    fn each_event_encoder_lands_its_fields_where_the_format_says() {
-        let _g = start();
-        logger_init().expect("mount succeeds");
-        log_sensor_snapshot(0x1234, -300, 0x0000_ABCD, -12345);
-        log_waypoint(-1000, 2000, 7, 0x5A);
-        log_skill_end(0x0BAD, 0x33);
-        logger_flush().unwrap();
-
-        let bytes = fsmock::file_bytes(0);
-        let body = &bytes[LOG_FILE_HEADER_BYTES..];
-        let rec = |i: usize| {
-            let mut b = [0u8; LOG_RECORD_SIZE];
-            b.copy_from_slice(&body[i * LOG_RECORD_SIZE..(i + 1) * LOG_RECORD_SIZE]);
-            LogRecord::decode(&b)
-        };
-
-        let s = rec(0);
-        assert_eq!(s.kind, LOG_EVT_SENSOR_SNAPSHOT);
-        assert_eq!(u16::from_le_bytes([s.payload[0], s.payload[1]]), 0x1234);
-        assert_eq!(i16::from_le_bytes([s.payload[2], s.payload[3]]), -300);
-        assert_eq!(
-            u32::from_le_bytes([s.payload[4], s.payload[5], s.payload[6], s.payload[7]]),
-            0x0000_ABCD,
-        );
-        assert_eq!(
-            i32::from_le_bytes([s.payload[8], s.payload[9], s.payload[10], s.payload[11]]),
-            -12345,
-        );
-
-        let w = rec(1);
-        assert_eq!(w.kind, LOG_EVT_WAYPOINT);
-        assert_eq!(
-            i32::from_le_bytes([w.payload[0], w.payload[1], w.payload[2], w.payload[3]]),
-            -1000,
-        );
-        assert_eq!(
-            i32::from_le_bytes([w.payload[4], w.payload[5], w.payload[6], w.payload[7]]),
-            2000,
-        );
-        assert_eq!(u16::from_le_bytes([w.payload[8], w.payload[9]]), 7);
-        assert_eq!(w.payload[10], 0x5A);
-
-        let e = rec(2);
-        assert_eq!(e.kind, LOG_EVT_SKILL_END);
-        assert_eq!(u16::from_le_bytes([e.payload[0], e.payload[1]]), 0x0BAD);
-        assert_eq!(e.payload[2], 0x33);
-        logger_shutdown();
     }
 
     /// A ring at its limit (`ORDINARY_RING_LIMIT`; the rest is the safety

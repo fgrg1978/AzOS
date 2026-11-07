@@ -5304,8 +5304,9 @@ ota_update_row() { # ota_update_row <riscv64|aarch64> <good|forged>
 # oldest first (azos_rings::region::record::Merge) into KLOGn.TXT. Booted with
 # the volume, the row stops QEMU once logd says two periods are on the volume
 # (`[logd] two periods on the volume`, after its second fsync'd write) and
-# reads the files back with mtools: a kernel log line and a `@decision` line
-# are there (logd writes refusals and denials only, LOGD_DECISIONS_ALL off, so
+# reads the files back with mtools: a kernel log line, a `@decision` line and
+# a `@telemetry` line (an actuation event, written once after the handover by
+# `canary=record-telemetry-event`) are there (logd writes refusals and denials only, LOGD_DECISIONS_ALL off, so
 # the row boots the captest kernel and volume: captest's ungranted ADC channel
 # and forged motor handle are capability denials every boot makes), each source's sequence numbers only grow, and where the
 # lines change source the timestamp does not go back (one reader, in time
@@ -5323,6 +5324,7 @@ records_files_check() { # records_files_check <disk> <pass|stale> <boot log>: 0 
     tr -d '\r' <"$files" >"$files.lf"
     if ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ [EWID?]\+? [^ @]+ \[KLOG\] record region' "$files.lf" \
        || ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @decision id=[0-9]+ rule=[0-9]+ verdict=[0-9]+ ' "$files.lf" \
+       || ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @telemetry kind=4 flags=0 payload=0001' "$files.lf" \
        || ! awk '$5 == "logd" || $2 !~ /^[0-9]+$/ { next }
                  { src = ($5 ~ /^@/) ? $5 : "klog"
                    if (src in seq && $1 + 0 <= seq[src]) bad = 1
@@ -5330,8 +5332,8 @@ records_files_check() { # records_files_check <disk> <pass|stale> <boot log>: 0 
                    if (src != prev && $2 + 0 < last) bad = 1
                    last = $2 + 0; prev = src }
                  END { exit bad }' "$files.lf"; then
-        echo "      the files do not hold a kernel log line and a decision record in time order:"
-        grep -aE '\[KLOG\]|@decision|logd' "$files.lf" | sed -n '1,8p' | sed 's/^/        /'
+        echo "      the files do not hold a kernel log line, a decision record and a telemetry event in time order:"
+        grep -aE '\[KLOG\]|@decision|@telemetry|logd' "$files.lf" | sed -n '1,8p' | sed 's/^/        /'
         echo "      log kept: $log (volume: $disk)"; return 1
     fi
     if [ "$mode" = stale ] && [ "$(grep -acF 'records dropped (stale sequence): 1' "$files.lf")" != 1 ]; then
@@ -5367,7 +5369,7 @@ records_logd_row() { # records_logd_row <riscv64|aarch64> <pass|stale>
         cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk"
     fi
     par_ready
-    OTAE2E_APPEND=""; [ "$mode" = stale ] && OTAE2E_APPEND="canary=record-stale"
+    OTAE2E_APPEND="canary=record-telemetry-event"; [ "$mode" = stale ] && OTAE2E_APPEND="canary=record-stale,record-telemetry-event"
     if ! otae2e_qemu "$isa" "$kernel" "$disk" "$log"; then OTAE2E_APPEND=""; bad; echo "      QEMU did not start (log: $log)"; return; fi
     OTAE2E_APPEND=""
     if ! otae2e_wait "$log" '\[logd\] two periods on the volume' 180; then
@@ -12088,6 +12090,11 @@ host_job host_canary_row "records: recheck canary" rings-tests canary-no-recheck
 host_job host_canary_row "records: pending holds canary" rings-tests canary-record-pending-empty a_producer_mid_store_holds_the_merge_back
 host_job host_canary_row "records: replay renumber canary" rings-tests canary-record-renumber replay_keeps_every_sequence_number
 host_job host_canary_row "logd: stalled record canary" libsys-tests canary-logd-stall-polls-only a_record_the_ring_left_behind_is_given_up_at_once
+host_job host_canary_row "logd: telemetry budget canary" libsys-tests canary-logd-telemetry-one-bucket a_chatty_telemetry_kind_is_cut_at_the_rate_and_does_not_hold_back_the_others
+host_job host_canary_row "telemetry: encoders canary" behavior-tests telemetry-ring-canary each_encoder_lands_its_fields_in_the_telemetry_ring
+host_job host_canary_row "telemetry: flood canary" behavior-tests telemetry-ring-canary a_telemetry_flood_leaves_the_flight_recorders_ring_alone
+host_job host_canary_row "telemetry: stale canary" behavior-tests canary-record-stale a_telemetry_record_with_a_stale_sequence_is_dropped_and_counted
+host_job host_canary_row "telemetry: overrun canary" behavior-tests canary-no-overrun a_full_telemetry_ring_overwrites_its_oldest_and_the_reader_is_told
 # The host dry boot (tools/gate/azos_sim, `make sim`): its suite, and its canary
 # (`sim-cpu-canary`: it admits on one CPU more than it was given), under which
 # the named test, alone, must go red. Its QEMU rows are "topology: dry boot on
@@ -17835,7 +17842,7 @@ CPU 5 lacks hwcap bits"
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
-        local -a app=(); [ "$mode" = stale ] && app=(-append "canary=record-stale")
+        local -a app=(-append "canary=record-telemetry-event"); [ "$mode" = stale ] && app=(-append "canary=record-stale,record-telemetry-event")
         x86_kbuild "captest-row" "$kimg" || { bad; echo "      make x86_64 X86_64_SELECT=captest-row did not build"; return; }
         make $AZOS_OUT/build/disk-x86_64-captest.img >/dev/null 2>&1 && cp $AZOS_OUT/build/disk-x86_64-captest.img "$dimg" \
             || { bad; echo "      $AZOS_OUT/build/disk-x86_64-captest.img did not build"; return; }
