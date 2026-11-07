@@ -82,7 +82,6 @@ pub fn set_writable_master_policy(f: fn(u32) -> bool) {
 
 /// Why a master's registers were refused (`Rule::Ring3Dma`, the record's third word).
 pub(crate) const WHY_WINDOW: u64 = 4;
-pub(crate) const WHY_IOPORT: u64 = 5;
 
 /// May `tid` be given registers or ports that point device `handle`, a bus
 /// master, at memory: only where the kernel's policy says so

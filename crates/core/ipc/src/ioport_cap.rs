@@ -51,6 +51,9 @@
 
 use azos_decision::{Rule, Verdict};
 
+/// `Rule::Ring3Dma`'s third word for a port range over a bus master's I/O BAR.
+const WHY_IOPORT: u64 = 5;
+
 use crate::cap::{targets, Cap, CapPerms};
 
 /// The resource `"<first>.<count>"` names, when the range fits a port space
@@ -97,7 +100,7 @@ pub fn ioport_grant_in(
     // address, an IDE bus master's table pointer).
     if let Some(dev) = azos_drv_bus::hwbus::io_bar_master(first, last) {
         if !cfg!(feature = "ioport-master-canary")
-            && !crate::mmio_cap::master_window_ok(dev, tid, u64::from(first) | u64::from(last) << 16, crate::mmio_cap::WHY_IOPORT)
+            && !crate::mmio_cap::master_window_ok(dev, tid, u64::from(first) | u64::from(last) << 16, WHY_IOPORT)
         {
             return None;
         }
