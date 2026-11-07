@@ -93,7 +93,9 @@ pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
     POOL[1].store(end, Ordering::Relaxed);
     SHIFT.store(shift as u64, Ordering::Relaxed);
     READY.store(1, Ordering::Release);
-    HYP.set_invariant(INV_KERNEL_TABLES);
+    if !cfg!(feature = "hyp-pt-pool-open-canary") && !cfg!(feature = "hyp-pt-check-skip-canary") {
+        HYP.set_invariant(INV_KERNEL_TABLES);
+    }
     OK
 }
 

@@ -84,7 +84,7 @@ hyp_blob!("/build/aarch64/hyp-mon-pt-pool-open.bin");
 #[cfg(feature = "hyp-pt-check-skip-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-pt-check-skip.bin");
 
-/// Issue a monitor call (SMCCC: id in x0, args in x1..x3, results back in
+/// Issue a monitor call (SMCCC: id in x0, args in x1..x4, results back in
 /// x0..x4). An HVC, which the monitor traps at EL2.
 #[inline]
 fn monitor_call(id: u64, a1: u64) -> [u64; 4] {
