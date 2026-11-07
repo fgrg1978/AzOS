@@ -13309,6 +13309,18 @@ host_job zpool_host_canary_row "swap: restore op canary" memobj-restore-op-skip-
 host_job zpool_host_row "swap: restore op refused" a_restore_op_that_cannot_bring_a_page_back_is_refused_and_recorded
 host_job zpool_host_canary_row "swap: restore op refused canary" memobj-restore-op-skip-canary \
     a_restore_op_that_cannot_bring_a_page_back_is_refused_and_recorded
+# The Domain-lock admission: lock first, then restore; a refusal unlocks and is
+# a pin-restore record of site 4 (domain-restore-before-lock-canary,
+# domain-lock-kept-canary, domain-lock-unrecorded-canary); exec_admit and
+# exec_abort carry it (source row, canary by hand).
+host_job zpool_host_row "swap: Domain lock admission" a_domain_lock_is_admitted_lock_first_and_taken_back_when_its_pages_cannot_come_back
+host_job zpool_host_canary_row "swap: Domain lock order canary" domain-restore-before-lock-canary \
+    a_domain_lock_is_admitted_lock_first_and_taken_back_when_its_pages_cannot_come_back
+host_job zpool_host_canary_row "swap: Domain lock kept canary" domain-lock-kept-canary \
+    a_domain_lock_is_admitted_lock_first_and_taken_back_when_its_pages_cannot_come_back
+host_job zpool_host_canary_row "swap: Domain lock record canary" domain-lock-unrecorded-canary \
+    a_domain_lock_is_admitted_lock_first_and_taken_back_when_its_pages_cannot_come_back
+host_job zpool_host_row "swap: exec admits the Domain lock" the_exec_admits_its_domain_lock_and_its_abort_gives_it_back
 host_job zpool_host_row "swap: Domain lock restores" a_domain_locked_with_live_processes_has_their_pages_back
 host_job zpool_host_canary_row "swap: Domain lock restores canary" pin-late-canary \
     a_domain_locked_with_live_processes_has_their_pages_back
@@ -17198,6 +17210,9 @@ PY
     # (group-member-scan-canary: every task slot is looked at).
     par "ktest boosted thread pin canary (arm)" ktest_row "ktest boosted thread pin canary (arm)" arm ",pin-effective-priority-canary" "a_boosted_thread_does_not_pin_memory"
     par "ktest group member index canary (arm)" ktest_row "ktest group member index canary (arm)" arm ",group-member-scan-canary" "a_group_is_asked_about_its_members_only"
+    # The exec's Domain-lock admission locks the caller's Domain
+    # (exec-domain-lock-skipped-canary: it does not).
+    par "ktest exec Domain lock admission canary (arm)" ktest_row "ktest exec Domain lock admission canary (arm)" arm ",exec-domain-lock-skipped-canary" "exec_admission_locks_the_callers_domain"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest tid stamp canary (rv)" ktest_row "ktest tid stamp canary (rv)" rv ",tid-stamp-canary" "tid_wake_leaves_a_reused_slot_alone tid_wake_after_read_leaves_a_reused_slot_alone" "" "^not ok [0-9]+ - tid_wake_leaves_a_reused_slot_alone # .*stamped the slot's new task

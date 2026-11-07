@@ -3156,6 +3156,32 @@ azos_ktest::ktest_late! {
     }
 }
 
+// The Domain-lock admission of an exec into a `mem = "locked"` row
+// (`azos_sched::process::admit_domain_lock`, run by `exec_admit`) locks the
+// caller's Domain before the exec commits; with nothing out it is not refused.
+// The order and the refusal are the host suite's rows (`pager::admit_domain_lock`).
+// Canary `exec-domain-lock-skipped-canary`: the admission does not lock.
+azos_ktest::ktest_late! {
+    fn exec_admission_locks_the_callers_domain() {
+        let Some(d) = azos_sched::scheduler::current_domain() else {
+            return Err("the test's task has no Domain");
+        };
+        if azos_sched::domain::mem_locked(d) {
+            return Err("the test's Domain is already locked: the case proves nothing");
+        }
+        let admitted = azos_sched::process::admit_domain_lock();
+        let locked = azos_sched::domain::mem_locked(d);
+        azos_sched::domain::set_mem_locked(d, false);
+        if !admitted {
+            return Err("the admission was refused with nothing out");
+        }
+        if !locked {
+            return Err("the admission did not lock the Domain");
+        }
+        Ok(())
+    }
+}
+
 // A priority inheritance boost into the real-time band does not pin a thread's
 // memory: only its own (base) priority does, which an admission sets and which
 // brings its pages back (`azos_sched::thread_pins_memory`). Canary

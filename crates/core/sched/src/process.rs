@@ -487,23 +487,20 @@ fn exec_admit(
 }
 
 /// An exec into a `mem = "locked"` row locks its Domain, whose live processes
-/// pin what they hold from then on. The lock lands first, so a storm takes no
-/// more of their objects' pages, then every page they have out comes back:
-/// the admission pays for the restore, not a later fault on a real-time path.
-/// `false`, with the Domain unlocked again and a `pin-restore` record (site 4),
-/// when one cannot come back.
-fn admit_domain_lock() -> bool {
-    let Some(d) = crate::scheduler::set_current_mem_locked(true) else { return false };
-    let Err(e) = azos_mm::pager::restore_domain_objects(d) else { return true };
-    let _ = crate::scheduler::set_current_mem_locked(false);
-    let errno = if e == azos_common::error::KernelError::OutOfMemory { azos_abi::error::Errno::ENOMEM } else { azos_abi::error::Errno::EBUSY };
-    azos_decision::record(
-        azos_decision::Rule::PinRestore,
-        azos_decision::Verdict::Refuse,
-        crate::current_task_tid(),
-        [0, 4, errno.to_syscall_ret().unsigned_abs()],
-    );
-    false
+/// pin what they hold from then on: the lock lands first, then every page they
+/// have out comes back (`pager::admit_domain_lock` has the order). The
+/// admission pays for the restore, not a later fault on a real-time path; such
+/// an exec may wait on the swap device, before it is certain. `false`, with the
+/// Domain unlocked again and a `pin-restore` record (site 4), when a page cannot
+/// come back.
+///
+/// Canary `exec-domain-lock-skipped-canary`: the Domain is not locked here.
+pub fn admit_domain_lock() -> bool {
+    if cfg!(feature = "exec-domain-lock-skipped-canary") {
+        return true;
+    }
+    let Some(d) = crate::scheduler::current_domain() else { return false };
+    azos_mm::pager::admit_domain_lock(d, crate::current_task_tid(), &|locked| crate::domain::set_mem_locked(d, locked)).is_ok()
 }
 
 /// Give back an admitted exec that will not run: its address space and
@@ -514,7 +511,9 @@ pub fn exec_abort(p: PreparedExec) {
         crate::scheduler::row_release(p.spec.row);
     }
     if p.locked_domain {
-        let _ = crate::scheduler::set_current_mem_locked(false);
+        if let Some(d) = crate::scheduler::current_domain() {
+            crate::domain::set_mem_locked(d, false);
+        }
     }
 }
 

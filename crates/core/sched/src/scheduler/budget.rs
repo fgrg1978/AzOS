@@ -539,15 +539,10 @@ pub fn current_mem_ceiling() -> u32 {
     crate::domain::ceiling(TASKS[idx].domain())
 }
 
-/// Lock (`true`) or unlock the memory of the CURRENT task's Domain: the key,
-/// `None` with no current task. What an exec into a `mem = "locked"` row admits
-/// before it commits.
-pub fn set_current_mem_locked(locked: bool) -> Option<crate::domain::Key> {
+/// The CURRENT task's Domain, `None` with no current task.
+pub fn current_domain() -> Option<crate::domain::Key> {
     let idx = my_idx();
-    if idx >= MAX_TASKS { return None; }
-    let d = TASKS[idx].domain();
-    crate::domain::set_mem_locked(d, locked);
-    Some(d)
+    (idx < MAX_TASKS).then(|| TASKS[idx].domain())
 }
 
 /// `(faults, peak, locked)` of the current task, for the exit report.

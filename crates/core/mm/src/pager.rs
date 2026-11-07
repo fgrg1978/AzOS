@@ -2157,6 +2157,58 @@ pub fn restore_domain_objects(key: u32) -> KResult<()> {
     restore_each(|from| memobj::memobj_out_object_in_domain(key, from))
 }
 
+/// The admission of a Domain lock with live processes (an exec into a `mem =
+/// "locked"` row, `azos_sched::process`): `lock(true)` puts the lock in force
+/// first, so a storm takes no more of their objects' pages, then every page they
+/// have out comes back ([`restore_domain_objects`]). When one cannot,
+/// `lock(false)` takes the lock back and the refusal is a `pin-restore` record
+/// of site 4 with `tid`, the task that asked, its subject.
+///
+/// Canaries: `domain-restore-before-lock-canary` (the pages come back before the
+/// lock lands, so a storm in between takes one again), `domain-lock-kept-canary`
+/// (a refusal leaves the Domain locked), `domain-lock-unrecorded-canary` (a
+/// refusal writes no record).
+pub fn admit_domain_lock(key: u32, tid: u32, lock: &dyn Fn(bool)) -> KResult<()> {
+    let restored = if cfg!(feature = "domain-restore-before-lock-canary") {
+        let r = restore_domain_objects(key);
+        between_lock_and_restore();
+        lock(true);
+        r
+    } else {
+        lock(true);
+        between_lock_and_restore();
+        restore_domain_objects(key)
+    };
+    let Err(e) = restored else { return Ok(()) };
+    if !cfg!(feature = "domain-lock-kept-canary") {
+        lock(false);
+    }
+    if !cfg!(feature = "domain-lock-unrecorded-canary") {
+        let errno = if e == KernelError::OutOfMemory { azos_abi::error::Errno::ENOMEM } else { azos_abi::error::Errno::EBUSY };
+        azos_decision::record(azos_decision::Rule::PinRestore, azos_decision::Verdict::Refuse, tid, [0, 4, errno.to_syscall_ret().unsigned_abs()]);
+    }
+    Err(e)
+}
+
+/// Host suites only: what runs between a Domain lock and the restore of
+/// [`admit_domain_lock`] (a storm, in the row that checks the order).
+#[cfg(not(target_os = "none"))]
+static ADMIT_HOOK: SpinLock<Option<fn()>> = SpinLock::new(None);
+
+/// Host suites only: install or remove [`ADMIT_HOOK`].
+#[cfg(not(target_os = "none"))]
+pub fn shim_set_admit_hook(hook: Option<fn()>) {
+    *ADMIT_HOOK.lock() = hook;
+}
+
+#[inline(always)]
+fn between_lock_and_restore() {
+    #[cfg(not(target_os = "none"))]
+    if let Some(f) = *ADMIT_HOOK.lock() {
+        f();
+    }
+}
+
 fn restore_each(next: impl Fn(usize) -> Option<(usize, u32, usize)>) -> KResult<()> {
     let mut from = 0;
     while let Some((after, obj, pages)) = next(from) {

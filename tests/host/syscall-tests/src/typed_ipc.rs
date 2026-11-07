@@ -2722,6 +2722,98 @@ mod swap_rows {
         assert_eq!(mo::memobj_describe_ref(rc).unwrap().out, 1, "another Domain's is not");
     }
 
+    static ADMIT_OBJ: AtomicU32 = AtomicU32::new(0);
+    static ADMIT_KEY: AtomicU32 = AtomicU32::new(0);
+    static ADMIT_LOCKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+    /// A storm of the Domain under admission, between its lock and its restore.
+    fn storm_between() {
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], ADMIT_KEY.load(Ordering::SeqCst), 0, &mut ages);
+        let v = Victim::Obj { ident: ADMIT_OBJ.load(Ordering::SeqCst), idx: 0 };
+        if src.unmap(v) {
+            assert!(src.store(v).is_ok());
+            src.free(v);
+        }
+    }
+
+    /// **A Domain lock is admitted lock first, restore second, and a lock whose
+    /// pages cannot come back is taken back and recorded.** A's Domain is locked
+    /// with A's page out; a storm runs between the lock and the restore and finds
+    /// A pinned, so the page is back at the end. Then the pool loses a page: the
+    /// admission is refused, the Domain is unlocked, and the refusal is a
+    /// `pin-restore` record of site 4.
+    ///
+    /// **Canaries.** `domain-restore-before-lock-canary`: the restore comes first
+    /// and the storm takes the page again. `domain-lock-kept-canary`: the refusal
+    /// leaves the Domain locked. `domain-lock-unrecorded-canary`: no record.
+    #[test]
+    fn a_domain_lock_is_admitted_lock_first_and_taken_back_when_its_pages_cannot_come_back() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        struct Unhook(u32);
+        impl Drop for Unhook {
+            fn drop(&mut self) {
+                pg::shim_set_admit_hook(None);
+                azos_sched::shim_pin_task_memory(self.0, false);
+            }
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        ADMIT_OBJ.store(r, Ordering::SeqCst);
+        ADMIT_KEY.store(key, Ordering::SeqCst);
+        let _unhook = Unhook(a);
+        pg::shim_set_admit_hook(Some(storm_between));
+        let lock = |locked: bool| {
+            ADMIT_LOCKED.store(locked, Ordering::SeqCst);
+            azos_sched::shim_pin_task_memory(a, locked);
+        };
+        assert!(pg::admit_domain_lock(key, a, &lock).is_ok());
+        assert!(ADMIT_LOCKED.load(Ordering::SeqCst), "the Domain is locked");
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "nothing is out once the lock is admitted");
+        // Out again, and the pool loses it.
+        lock(false);
+        pg::shim_set_admit_hook(None);
+        storm_between();
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1);
+        pg::shim_forget_pool();
+        let before = azos_decision::total();
+        assert!(pg::admit_domain_lock(key, a, &lock).is_err(), "the page cannot come back");
+        assert!(!ADMIT_LOCKED.load(Ordering::SeqCst), "and the lock is taken back");
+        let rec = azos_decision::lookup(before + 1).expect("recorded");
+        assert_eq!((rec.rule, rec.verdict, rec.subject, rec.n[1]), (azos_decision::Rule::PinRestore as u8, azos_decision::Verdict::Refuse as u8, a, 4));
+    }
+
+    /// The exec admits its Domain's lock (`admit_domain_lock`) as the last step
+    /// that may refuse it, and gives the lock back when it is aborted: `process.rs`
+    /// is not compiled here, so the wiring is read from its source. **Canary (by
+    /// hand).** Delete the call in `exec_admit`, the refusal's row release, or the
+    /// unlock in `exec_abort`: red.
+    #[test]
+    fn the_exec_admits_its_domain_lock_and_its_abort_gives_it_back() {
+        let src: String = include_str!("../../../../crates/core/sched/src/process.rs")
+            .lines()
+            .map(|l| l.split("//").next().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = |f: &str| {
+            let at = src.find(f).unwrap_or_else(|| panic!("{f} moved"));
+            let end = src[at..].find("\n}\n").map_or(src.len(), |e| at + e);
+            src[at..end].to_string()
+        };
+        let admit = body("fn exec_admit(");
+        let lock = admit.find("locked_domain && !admit_domain_lock()").expect("exec_admit admits the Domain lock");
+        assert!(admit[..lock].contains("row_claim("), "after the row claim, the last refusable step");
+        assert!(admit[lock..].contains("row_release(spec.row)") && admit[lock..].contains("aspace::destroy(space)"), "a refusal gives back the row and the space");
+        let abort = body("pub fn exec_abort(");
+        assert!(abort.contains("if p.locked_domain") && abort.contains("set_mem_locked(d, false)"), "an abort unlocks");
+    }
+
     /// **Another page of an object is taken while one installs, and the count of
     /// installers does not wrap.** A fault holds page 0; page 1 is taken at once.
     /// 300 installers hold page 0 (more than a byte counts) and the page is taken

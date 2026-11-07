@@ -96,6 +96,9 @@ pin-effective-priority-canary = []
 # Runtime-less canary of the ktest `a_group_is_asked_about_its_members_only`:
 # `group::any_member` looks at every task slot, not the group's member list.
 group-member-scan-canary = []
+# Runtime-less canary of the ktest `exec_admission_locks_the_callers_domain`:
+# an exec into a locked row does not lock its Domain at admission.
+exec-domain-lock-skipped-canary = []
 # Wave 15 (VI): the ELF loader's page permissions. `elf-mixed-page-canary`
 # accepts a page shared by segments mapped differently (their union, as
 # before); `rodata-exec-canary` maps read-only segments read-execute (the old
