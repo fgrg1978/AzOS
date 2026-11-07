@@ -49,7 +49,9 @@ pub(crate) fn ioport_op(c: &mut Call) -> i64 {
         // bus as a mapped window is (`DOMAIN_MMIO_MAP`): no kernel driver
         // binds it afterwards; one that already owns it refuses the open.
         Ok(ioport_bounds(range).map(|(first, last)| {
-            if !azos_drv_bus::hwbus::claim_user_ports(first, last) {
+            if let Err(dev) = azos_drv_bus::hwbus::claim_user_ports(first, last) {
+                // A kernel driver bound the function since the grant.
+                azos_ipc::ioport_cap::record_open_refusal(c.tid, dev, first, last);
                 return Err(None);
             }
             azos_sched::ioport::enable(first, last, table as u32).map_err(|e| {

@@ -85,21 +85,23 @@ pub fn may_master_bus(handle: u32) -> Option<bool> {
     with(|b| b.get(Handle(handle)).map(|s| s.dev.may_master_bus()))
 }
 
-/// The device that masters the bus and has an I/O BAR over the ports
-/// `first..=last` (an overlap of any port): its handle, and whether ring 3 may
-/// have it (no kernel driver owns it or may still take it); `None` when no
-/// such device.
-pub fn io_bar_master(first: u16, last: u16) -> Option<(u32, bool)> {
+/// The `n`th device (in slot order) that masters the bus and has an I/O BAR
+/// over the ports `first..=last` (an overlap of any port): its handle, and
+/// whether ring 3 may have it (no kernel driver owns it or may still take
+/// it); `None` past the last such device.
+pub fn io_bar_master(first: u16, last: u16, n: usize) -> Option<(u32, bool)> {
     with(|b| {
         b.iter()
-            .find(|(_, s)| s.dev.may_master_bus() && s.dev.io_bar_over(first, last))
+            .filter(|(_, s)| s.dev.may_master_bus() && s.dev.io_bar_over(first, last))
+            .nth(n)
             .map(|(h, s)| (h.0, s.user_settled()))
     })
 }
 
-/// Book the ports `first..=last` about to be opened ([`Bus::claim_user_ports`]).
-pub fn claim_user_ports(first: u16, last: u16) -> bool {
-    with(|b| b.claim_user_ports(first, last))
+/// Book the ports `first..=last` about to be opened ([`Bus::claim_user_ports`]);
+/// the handle of a device ring 3 may not have, when one holds them.
+pub fn claim_user_ports(first: u16, last: u16) -> Result<(), u32> {
+    with(|b| b.claim_user_ports(first, last)).map_err(|h| h.0)
 }
 
 /// Give back the booking of [`claim_user_ports`] for ports that were not opened.

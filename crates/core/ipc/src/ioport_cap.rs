@@ -51,8 +51,13 @@
 
 use azos_decision::{Rule, Verdict};
 
-/// `Rule::Ring3Dma`'s third word for a port range over a bus master's I/O BAR.
-const WHY_IOPORT: u64 = 5;
+/// `Rule::Ring3Dma`'s third word for a port range over a bus master's I/O BAR
+/// or the ISA DMA controllers.
+pub const WHY_IOPORT: u64 = 5;
+
+/// The "device" of the legacy ISA DMA ports in the policy and the records: no
+/// hardware-bus handle.
+pub const ISA_DMA_DEVICE: u32 = u32::MAX;
 
 use crate::cap::{targets, Cap, CapPerms};
 
@@ -68,6 +73,14 @@ pub fn ioport_resolve(spec: &str, perms: CapPerms, ports: u32) -> Option<u32> {
         return None;
     }
     azos_abi::cap::ioport_range(first, count)
+}
+
+/// The open of ports `first..=last` by `tid` was refused because the bus master
+/// `dev` holding them is a kernel driver's: recorded (`Rule::Ring3Dma`, why 5).
+pub fn record_open_refusal(tid: u32, dev: u32, first: u16, last: u16) {
+    if !cfg!(feature = "ioport-open-silent-canary") {
+        azos_decision::record(Rule::Ring3Dma, Verdict::Refuse, dev, [u64::from(tid), u64::from(first) | u64::from(last) << 16, WHY_IOPORT]);
+    }
 }
 
 /// Topology-loader entry: grant `tid` a `Cap<Device>` over the ports
@@ -97,11 +110,21 @@ pub fn ioport_grant_in(
     }
     // The ports of a bus master's I/O BAR are its registers: writing them is
     // pointing it at memory, as a writable window is (legacy virtio's queue
-    // address, an IDE bus master's table pointer).
-    if let Some((dev, ring3_device)) = azos_drv_bus::hwbus::io_bar_master(first, last) {
-        let range = u64::from(first) | u64::from(last) << 16;
-        if !cfg!(feature = "ioport-master-canary") && !crate::mmio_cap::master_window_ok(dev, ring3_device, tid, range, WHY_IOPORT) {
+    // address, an IDE bus master's table pointer). Every master the range
+    // touches is asked, not the first. So are the legacy ISA DMA controllers'
+    // ports, which no BAR holds ([`ISA_DMA_DEVICE`]).
+    let range_word = u64::from(first) | u64::from(last) << 16;
+    if !cfg!(feature = "ioport-master-canary") {
+        let ask = |dev: u32, ring3_device: bool| crate::mmio_cap::master_window_ok(dev, ring3_device, tid, range_word, WHY_IOPORT);
+        if azos_arch_api::ioport::isa_dma_over(first, last) && !ask(ISA_DMA_DEVICE, true) {
             return None;
+        }
+        let mut n = 0;
+        while let Some((dev, ring3_device)) = azos_drv_bus::hwbus::io_bar_master(first, last, n) {
+            if !ask(dev, ring3_device) {
+                return None;
+            }
+            n += 1;
         }
     }
     crate::cap_store::grant::<targets::IoPorts>(tid, perms, range)

@@ -238,6 +238,17 @@ pub fn reserve(first: u16, last: u16) {
     KERNEL_PORTS.insert(first, last)
 }
 
+/// The legacy ISA DMA controllers' ports and page registers (the 8237 pair
+/// and the page registers). Programming them points a requester behind the
+/// LPC bridge at memory below 16 MiB, and no IOMMU confines that: ring 3 gets
+/// them only where the policy for a bus master's registers allows it.
+pub const ISA_DMA_PORTS: [(u16, u16); 3] = [(0x00, 0x1f), (0x80, 0x9f), (0xc0, 0xdf)];
+
+/// Does `first..=last` hold a port of [`ISA_DMA_PORTS`]?
+pub fn isa_dma_over(first: u16, last: u16) -> bool {
+    ISA_DMA_PORTS.iter().any(|&(f, l)| f <= last && first <= l)
+}
+
 /// The first port of `first..=last` the kernel [`reserve`]d.
 pub fn reserved(first: u16, last: u16) -> Option<u16> {
     KERNEL_PORTS.first_in(first, last)

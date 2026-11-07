@@ -2904,6 +2904,12 @@ pub(crate) mod host_machine {
                 )
                 .unwrap();
                 b.add(
+                    hwbus::Device::pci(hwbus::PciId { bus: 0, device: 5, function: 0, vendor: 0x1af4, device_id: 0x1001, class: 0x02_0000 })
+                        .with_io_bar(0x340, 0x20),
+                    &mut q,
+                )
+                .unwrap();
+                b.add(
                     hwbus::Device::pci(hwbus::PciId { bus: 0, device: 4, function: 0, vendor: 0x8086, device_id: 0x100e, class: 0x02_0000 })
                         .with_io_bar(0x200, 0x20),
                     &mut q,
@@ -3026,7 +3032,7 @@ mod ioport_cap_tests {
         let all = vec![refused([0x3F8, 0x3F8, 0x3F8]), refused([0x3F0, 0x3FF, 0x3F8]), refused([0x40, 0x43, 0x40])];
         assert_eq!(records(tid), all);
         // The positive controls: no kernel port in the range, a grant and no record.
-        for spec in ["66.2", "97.1", "128.1", "1000.8"] {
+        for spec in ["66.2", "97.1", "160.1", "1000.8"] {
             assert!(ioport_grant_in(tid, spec, CapPerms::RW, 1024, reserved).is_some(), "{spec}");
         }
         // A target the minter refuses first is not a kernel-port refusal.
@@ -3160,8 +3166,26 @@ mod mmio_cap_tests {
             ioport_grant_in(tid, "512.32", CapPerms::RW, 1024, nowhere).is_none(),
             "a function a kernel driver owns is refused whatever the policy says"
         );
+        // Every master the range touches is asked: the policy says yes for the
+        // function at 0x300 only, and the range holds the one at 0x340 too.
+        let first = handle("pci:1af4:1000");
+        crate::mmio_cap::set_writable_master_policy(|h| h == hwbus::resolve("pci:1af4:1000").unwrap());
+        assert!(ioport_grant_in(tid, "768.32", CapPerms::RW, 1024, nowhere).is_some(), "the one the policy admits");
+        assert!(ioport_grant_in(tid, "768.96", CapPerms::RW, 1024, nowhere).is_none(), "a second master in the range");
+        let _ = first;
+        // The legacy ISA DMA controllers' ports have no BAR: the same policy asks.
         crate::mmio_cap::set_writable_master_policy(|_| false);
-        assert_eq!(refusals(tid), 5);
+        for spec in ["0.32", "128.16", "192.32", "31.2"] {
+            assert!(ioport_grant_in(tid, spec, CapPerms::RW, 1024, nowhere).is_none(), "{spec}: the ISA DMA ports");
+        }
+        crate::mmio_cap::set_writable_master_policy(|_| true);
+        assert!(ioport_grant_in(tid, "0.32", CapPerms::RW, 1024, nowhere).is_some(), "the policy admits the ISA DMA ports");
+        assert!(ioport_grant_in(tid, "33.2", CapPerms::RW, 1024, nowhere).is_some(), "the PIC is not a DMA controller");
+        crate::mmio_cap::set_writable_master_policy(|_| false);
+        assert_eq!(refusals(tid), 5 + 1 + 4, "each refusal is recorded");
+        // The open of ports a kernel driver took after the grant is refused and recorded too.
+        crate::ioport_cap::record_open_refusal(tid, handle("pci:1af4:1000"), 0x300, 0x31f);
+        assert_eq!(refusals(tid), 5 + 1 + 4 + 1, "the open-time refusal is recorded");
     }
 
     /// A topology `irq.<selector>` grant mints the line the bus found for the

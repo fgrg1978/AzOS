@@ -714,15 +714,15 @@ fn a_master_whose_ports_are_open_is_never_given_to_a_kernel_driver() {
     let mut drv = Fake::with(ALL);
     bus.bind_all(&rules(&[], Policy::TopologyOnly), &mut drv, &mut rec);
     let rows = [Row { select: Pattern::pci(0x1af4, 0x1041), admit: true, driver: None }];
-    assert!(bus.claim_user_ports(0x310, 0x311), "a range inside the BAR");
-    assert!(bus.claim_user_ports(0x500, 0x501), "ports no master holds: nothing to book");
+    assert_eq!(bus.claim_user_ports(0x310, 0x311), Ok(()), "a range inside the BAR");
+    assert_eq!(bus.claim_user_ports(0x500, 0x501), Ok(()), "ports no master holds: nothing to book");
     bus.reconcile(&rules(&rows, Policy::TopologyOnly), &mut drv, &mut rec);
     assert_eq!(bus.get(h).unwrap().state, State::ProbeFailed, "a kernel driver took a function whose ports are open");
     // A booking given back leaves the function free to bind.
     let mut bus = Bus::new();
     let h = bus.add(pci(0x1af4, 0x1041, 0x02_0000, 4).with_io_bar(0x300, 0x20), &mut rec).unwrap();
     bus.bind_all(&rules(&[], Policy::TopologyOnly), &mut drv, &mut rec);
-    assert!(bus.claim_user_ports(0x300, 0x31f));
+    assert_eq!(bus.claim_user_ports(0x300, 0x31f), Ok(()));
     bus.unclaim_user_ports(0x300, 0x31f);
     bus.reconcile(&rules(&rows, Policy::TopologyOnly), &mut drv, &mut rec);
     assert_eq!(bus.get(h).unwrap().state, State::Bound);
@@ -731,7 +731,7 @@ fn a_master_whose_ports_are_open_is_never_given_to_a_kernel_driver() {
     let k = bus.add(pci(0x1af4, 0x1041, 0x02_0000, 5).with_io_bar(0x400, 0x20), &mut rec).unwrap();
     bus.bind_all(&rules(&[], Policy::Auto), &mut drv, &mut rec);
     assert_eq!(bus.get(k).unwrap().state, State::Bound);
-    assert!(!bus.claim_user_ports(0x400, 0x41f), "a kernel-owned function's ports");
+    assert_eq!(bus.claim_user_ports(0x400, 0x41f), Err(k), "a kernel-owned function's ports");
 }
 
 // ── The lock is released around drivers and reports ─────────────────────

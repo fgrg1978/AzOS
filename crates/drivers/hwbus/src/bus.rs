@@ -323,20 +323,20 @@ impl Bus {
 
     /// Book the opening of the I/O ports `first..=last` to a task, as a mapped
     /// window is booked: every bus master whose I/O BAR holds one of them is
-    /// booked, so no native driver is bound to it afterwards. `false`, and
-    /// nothing booked, when one of them is a device ring 3 may not have (a
+    /// booked, so no native driver is bound to it afterwards. `Err(handle)`,
+    /// and nothing booked, when one of them is a device ring 3 may not have (a
     /// kernel driver owns it or may still take it).
-    pub fn claim_user_ports(&mut self, first: u16, last: u16) -> bool {
+    pub fn claim_user_ports(&mut self, first: u16, last: u16) -> Result<(), Handle> {
         let hit = |s: &Slot| s.dev.may_master_bus() && s.dev.io_bar_over(first, last);
-        if self.slots.iter().any(|s| s.state != State::Free && hit(s) && !s.user_settled()) {
-            return false;
+        if let Some(i) = self.slots.iter().position(|s| s.state != State::Free && hit(s) && !s.user_settled()) {
+            return Err(Handle::new(i));
         }
         if !cfg!(feature = "ports-claim-canary") {
             for s in self.slots.iter_mut().filter(|s| s.state != State::Free && hit(s)) {
                 s.user_maps = s.user_maps.saturating_add(1);
             }
         }
-        true
+        Ok(())
     }
 
     /// Give back the booking of [`claim_user_ports`](Self::claim_user_ports)
