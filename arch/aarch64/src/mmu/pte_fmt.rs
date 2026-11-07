@@ -23,6 +23,8 @@ pub const AF: u64 = 1 << 10;
 pub const OA_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 /// DBM (bit 51): the hardware dirty state writes the descriptor.
 pub const DBM: u64 = 1 << 51;
+/// Contiguous hint (bit 52): the TLB may cache a run of descriptors as one.
+pub const CONT: u64 = 1 << 52;
 pub const PXN: u64 = 1 << 53;
 pub const UXN: u64 = 1 << 54;
 

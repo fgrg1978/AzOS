@@ -61,10 +61,35 @@ pub fn init_pe() {
     }
 }
 
-/// `pin()`: arm this PE. `(status, mode, PEs pinned)`.
+/// Has this PE called `pin`?
+pub fn this_pe_pinned() -> bool {
+    PINNED.load(Ordering::Acquire) & (1u64 << (pe() & 63)) != 0
+}
+
+/// This PE's `TTBR1_EL1` and `TCR_EL1`.
+pub fn walk_regs() -> (u64, u64) {
+    let (ttbr1, tcr): (u64, u64);
+    // SAFETY: reads of this PE's EL1 registers.
+    unsafe { core::arch::asm!("mrs {}, TTBR1_EL1", "mrs {}, TCR_EL1", out(reg) ttbr1, out(reg) tcr) };
+    (ttbr1, tcr)
+}
+
+/// `pin()`: arm this PE. `(status, mode, PEs pinned)`. Once the kernel half's
+/// pool is locked, a PE whose `TTBR1_EL1` or `TCR_EL1` is not the one it was
+/// locked under is recorded and parked: it never runs the kernel on tables the
+/// monitor has not seen, and `kernel-tables` stops being reported.
 pub fn pin() -> (i64, u64, u64) {
     if !super::s2::locked() {
         return (DENIED, 0, 0);
+    }
+    if super::pt::pe_error().is_some() {
+        let (ttbr1, tcr) = walk_regs();
+        crate::record(Kind::CallRefused, pe(), azos_hyp_api::CALL_PIN, ttbr1, tcr);
+        HYP.clear_invariant(azos_hyp_api::INV_KERNEL_TABLES);
+        loop {
+            // SAFETY: parks this PE.
+            unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
+        }
     }
     let fgt = has_fgt(mmfr0());
     if !cfg!(feature = "hyp-pin-off-canary") {

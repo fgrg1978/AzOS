@@ -17,6 +17,7 @@ mod ptcheck;
 use azos_hyp_api::{pt_entry_error, pt_pool_error, Guarded};
 use ptcheck::pte_fmt::*;
 use ptcheck::*;
+use std::collections::HashMap;
 
 const SHIFT: u32 = 12;
 const POOL: u64 = 0x8100_0000;
@@ -167,4 +168,94 @@ fn the_entry_call_checks_the_slot_and_the_level() {
     assert_eq!(pt_entry_error(END, 0, POOL, PAGES, 12, 3), Some("entry outside the pool"));
     assert_eq!(pt_entry_error(POOL - 8, 0, POOL, PAGES, 12, 3), Some("entry outside the pool"));
     assert_eq!(pt_entry_error(POOL, 3, POOL, PAGES, 12, 3), Some("level"));
+}
+
+#[test]
+fn a_leaf_with_the_contiguous_hint_is_refused() {
+    let l0 = leaf(0x9000_0000, PXN | UXN | CONT);
+    assert_eq!(write(0, l0, 0, 0, tag_none), Err("leaf with the contiguous hint"));
+    assert_eq!(write(0, block(0x9020_0000, PXN | UXN | CONT), 1, 0, tag_none), Err("leaf with the contiguous hint"));
+}
+
+#[test]
+fn rewriting_a_slot_with_the_word_it_holds_is_not_a_change() {
+    let text_leaf = leaf(TEXT[0] + 0x1000, AP_RO | UXN);
+    assert!(write(text_leaf, text_leaf, 0, 0, tag_none).is_ok());
+    let link = make_table(POOL as usize + 0x2000);
+    let tag = |pa: u64| if pa == POOL + 0x2000 { tag_of(0) | TAG_IMAGE } else { 0 };
+    assert!(write(link, link, 1, 0, tag).is_ok());
+}
+
+/// A three-level tree in a map: the root at POOL, one table per level, and the
+/// pages of an image at `VA` leading to frames from `PA`.
+fn tree(frame: impl Fn(u64) -> u64, flags: u64) -> HashMap<u64, u64> {
+    const VA: u64 = 0xffff_0000_0000_0000;
+    let mut m = HashMap::new();
+    let (root, mid, last) = (POOL, POOL + 0x1000, POOL + 0x2000);
+    let idx = |l: u32| (VA >> (12 + 9 * l)) & 511;
+    m.insert(root + idx(2) * 8, make_table(mid as usize));
+    m.insert(mid + idx(1) * 8, make_table(last as usize));
+    for i in 0..4u64 {
+        m.insert(last + (idx(0) + i) * 8, leaf(frame(i), flags));
+    }
+    m
+}
+
+const VA: u64 = 0xffff_0000_0000_0000;
+const FRAMES: u64 = 0x8008_0000;
+
+fn image(m: &HashMap<u64, u64>, text: bool) -> Option<&'static str> {
+    image_error(|pa| *m.get(&pa).unwrap_or(&0), POOL, VA, FRAMES, 4 * 4096, text, 12)
+}
+
+#[test]
+fn the_image_pages_must_resolve_to_the_image_frames_read_only() {
+    let ok = tree(|i| FRAMES + i * 4096, AP_RO | UXN);
+    assert_eq!(image(&ok, true), None);
+    assert_eq!(image(&tree(|i| FRAMES + i * 4096, AP_RO | PXN | UXN), false), None);
+    assert_eq!(image(&tree(|i| if i == 2 { 0x9000_0000 } else { FRAMES + i * 4096 }, AP_RO | UXN), true), Some("image page maps another frame"));
+    assert_eq!(image(&tree(|i| FRAMES + i * 4096, PXN | UXN), false), Some("image page writable"));
+    assert_eq!(image(&ok, false), Some("data page executable"));
+    assert_eq!(image(&tree(|i| FRAMES + i * 4096, AP_RO | PXN | UXN), true), Some("text page not executable"));
+    let mut hole = ok.clone();
+    hole.remove(&(POOL + 0x2000 + ((VA >> 12) & 511) * 8 + 16));
+    assert_eq!(image(&hole, true), Some("image page not mapped"));
+}
+
+#[test]
+fn a_block_resolves_to_the_frame_at_its_offset() {
+    let mut m = HashMap::new();
+    let (root, mid) = (POOL, POOL + 0x1000);
+    m.insert(root + ((VA >> 30) & 511) * 8, make_table(mid as usize));
+    m.insert(mid + ((VA >> 21) & 511) * 8, block(0x8000_0000, AP_RO | UXN));
+    assert_eq!(resolve(|pa| *m.get(&pa).unwrap_or(&0), root, VA + 0x1234, 12).map(|r| r.0), Some(0x8000_1234));
+}
+
+#[test]
+fn a_pe_runs_the_kernel_half_only_on_the_locked_root_and_walk() {
+    assert_eq!(ttbr1_error(POOL, POOL), None);
+    // CnP is not part of the root.
+    assert_eq!(ttbr1_error(POOL | 1, POOL), None);
+    assert_eq!(ttbr1_error(POOL + 0x1000, POOL), Some("TTBR1 is not the locked root"));
+    assert_eq!(ttbr1_error(POOL | 1 << 48, POOL), Some("TTBR1 carries an ASID"));
+    let tcr = 25 << 16 | 2 << 30 | 3 << 28;
+    assert_eq!(tcr_error(tcr, tcr), None);
+    // HA is a per-core feature, not a walk field.
+    assert_eq!(tcr_error(tcr | 1 << 39, tcr), None);
+    assert_eq!(tcr_error(tcr ^ 1 << 16, tcr), Some("TCR walks the kernel half differently"));
+    assert_eq!(tcr_error(tcr ^ 1 << 30, tcr), Some("TCR walks the kernel half differently"));
+}
+
+#[test]
+fn the_lock_refuses_a_block_over_the_image_and_a_pool_page_nothing_checked() {
+    let blk = block(TEXT[0] & !((2 << 20) - 1), AP_RO | UXN);
+    assert_eq!(lock_word_error(classify(blk, 1, 12).unwrap(), blk, 1, &[TEXT]), Some("a block leaf over the image"));
+    // The same words as 4 KiB leaves, and a block elsewhere, are the boot's own.
+    let page = leaf(TEXT[0], AP_RO | UXN);
+    assert_eq!(lock_word_error(classify(page, 0, 12).unwrap(), page, 0, &[TEXT]), None);
+    let far = block(0x9020_0000, PXN | UXN);
+    assert_eq!(lock_word_error(classify(far, 1, 12).unwrap(), far, 1, &[TEXT]), None);
+    assert_eq!(unreached_error(0, [0u64, 0, 7].into_iter()), Some("a pool page nothing links has words in it"));
+    assert_eq!(unreached_error(0, [0u64; 512].into_iter()), None);
+    assert_eq!(unreached_error(tag_of(0), [1u64].into_iter()), None);
 }

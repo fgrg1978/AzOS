@@ -81,6 +81,8 @@ static mut RAM: [[u64; 2]; LOCK_RAM_MAX] = [[0; 2]; LOCK_RAM_MAX];
 static NRAM: AtomicU64 = AtomicU64::new(0);
 static mut IMAGE: [[u64; 2]; 3] = [[0; 2]; 3];
 static IMAGE_SET: AtomicU64 = AtomicU64::new(0);
+/// The kernel VAs of the three image ranges, for the pool lock's walk.
+static IMAGE_VA: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static RO_RANGE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static LOCK_ONCE: AtomicU64 = AtomicU64::new(0);
 /// The sites the lock listed, sorted by PA (`NSITES` of them), and the text
@@ -236,6 +238,7 @@ fn lock_locked(desc_pa: u64) -> i64 {
         *core::ptr::addr_of_mut!(RAM) = d.ram;
         *core::ptr::addr_of_mut!(IMAGE) = [d.text, d.rodata, d.ro_after_init];
     }
+    for (slot, va) in IMAGE_VA.iter().zip(d.va) { slot.store(va, Ordering::Relaxed); }
     NRAM.store(d.nram, Ordering::Release);
     IMAGE_SET.store(1, Ordering::Release);
     RO_RANGE[0].store(d.ro_after_init[0], Ordering::Relaxed);
@@ -294,6 +297,11 @@ pub fn image() -> [[u64; 2]; 3] {
     if IMAGE_SET.load(Ordering::Acquire) == 0 { return [[0; 2]; 3]; }
     // SAFETY: written once at the lock, before `IMAGE_SET` was published.
     unsafe { *core::ptr::addr_of!(IMAGE) }
+}
+
+/// The kernel VAs of the image ranges the lock named (text, rodata, `ro_after_init`).
+pub fn image_va() -> [u64; 3] {
+    [IMAGE_VA[0].load(Ordering::Relaxed), IMAGE_VA[1].load(Ordering::Relaxed), IMAGE_VA[2].load(Ordering::Relaxed)]
 }
 
 /// The monitor's own range.

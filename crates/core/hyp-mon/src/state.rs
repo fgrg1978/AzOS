@@ -44,6 +44,10 @@ impl Hyp {
         self.inv.fetch_or(bit, Ordering::AcqRel);
     }
 
+    pub fn clear_invariant(&self, bit: u64) {
+        self.inv.fetch_and(!bit, Ordering::AcqRel);
+    }
+
     pub fn invariants(&self) -> u64 {
         self.inv.load(Ordering::Acquire)
     }

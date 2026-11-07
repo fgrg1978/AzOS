@@ -335,7 +335,7 @@ mod monitor_ptcheck;
 /// The words the aarch64 code builds are the words the monitor accepts into the
 /// kernel half's tables (VIRT_SPLIT): a leaf the page-table code can produce has
 /// AF and no DBM, so the walker never needs a stage-2 write to a read-only
-/// table, and only a writable-and-executable kernel leaf is refused.
+/// table, and only a writable-and-executable kernel leaf is refused, and a member of a contiguous run (the kernel half has none).
 #[cfg(test)]
 mod aarch64_monitor_words {
     use super::aarch64_mmu::{break_cow, make_contig_leaf, make_leaf, share_cow, CONT_PAGES, CONT_SIZE, LEVELS, PAGE_SIZE};
@@ -377,11 +377,11 @@ mod aarch64_monitor_words {
     }
 
     #[test]
-    fn a_contiguous_run_member_is_accepted_too() {
+    fn a_contiguous_run_member_is_refused() {
         let p = PagePerms { read: true, write: true, exec: false, user: false, mem: MemType::WB, accessed: true, dirty: false };
         if CONT_PAGES > 1 {
             for k in 0..CONT_PAGES {
-                assert_eq!(verdict(make_contig_leaf(CONT_SIZE * 4, k, p).unwrap(), 0), None);
+                assert_eq!(verdict(make_contig_leaf(CONT_SIZE * 4, k, p).unwrap(), 0), Some("leaf with the contiguous hint"));
             }
         }
     }

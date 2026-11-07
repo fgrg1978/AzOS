@@ -309,6 +309,9 @@ pub struct LockDesc {
     pub text: [u64; 2],
     pub rodata: [u64; 2],
     pub ro_after_init: [u64; 2],
+    /// The kernel VA each of `text`, `rodata` and `ro_after_init` starts at,
+    /// which the pool lock walks to prove the image lives where it is locked.
+    pub va: [u64; 3],
     /// `[base, end)` pairs; everything outside them is a device window.
     pub ram: [[u64; 2]; LOCK_RAM_MAX],
     pub nram: u64,

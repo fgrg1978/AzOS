@@ -354,7 +354,7 @@ const _: () = assert!(vpn(0x7F_FFFF_F000, 2) == GRANULE.vpn(0x7F_FFFF_F000, 2));
 pub mod pte_fmt;
 #[allow(unused_imports)] // reason: the crate's public surface; a #[path] host include uses few of them
 pub use pte_fmt::{empty, is_leaf, is_table, is_valid, make_table, phys_addr, AF};
-use pte_fmt::{AP_EL0, AP_RO, OA_MASK, PXN, TYPE_TABLE_OR_PAGE, UXN, VALID};
+use pte_fmt::{AP_EL0, AP_RO, CONT, OA_MASK, PXN, TYPE_TABLE_OR_PAGE, UXN, VALID};
 const ATTRIDX_SHIFT: u32 = 2;
 /// `AttrIdx` values as `mmu/setup.rs` actually programs `MAIR_EL1`
 /// (`MAIR_VALUE = (0xFF << 8) | 0x04`): idx 0 = Device-nGnRE (`0x04`),
@@ -409,9 +409,6 @@ const NG: u64 = 1 << 11;
 const SW_COW: u64 = 1 << 55;
 /// Software bit: mm's software-tracked dirty marker (see module doc).
 const SW_DIRTY: u64 = 1 << 56;
-/// Contiguous hint (bit 52): this level-3 page is one of a run of
-/// [`CONT_PAGES`] adjacent pages the TLB may cache as one entry.
-const CONT: u64 = 1 << 52;
 
 /// Encode the level-independent attribute bits `perms` implies (AttrIdx,
 /// AP, PXN/UXN, nG — everything except `VALID`/the type bit/the physical

@@ -208,7 +208,7 @@ extern "C" {
 /// The descriptor the monitor reads by physical address: a static, since a
 /// stack has none (`virt_to_phys` refuses the stack window).
 static mut LOCK_DESC: LockDesc = LockDesc {
-    text: [0; 2], rodata: [0; 2], ro_after_init: [0; 2], ram: [[0; 2]; LOCK_RAM_MAX], nram: 0, secondary_entry: 0,
+    text: [0; 2], rodata: [0; 2], ro_after_init: [0; 2], va: [0; 3], ram: [[0; 2]; LOCK_RAM_MAX], nram: 0, secondary_entry: 0,
     sites: 0, nsites: 0,
 };
 
@@ -404,6 +404,7 @@ pub(crate) fn lock_image() {
         // The monitor's extent ends the rodata range (`.hyp`), and is the monitor's: rodata stops where it starts.
         d.rodata = [down(pa_of(&_rodata_start as *const u8 as usize)), down(pa_of(_hyp_blob_start as *const () as usize))];
         d.ro_after_init = span(&__ro_after_init_start, &__ro_after_init_end);
+        d.va = [&_text_start as *const u8 as u64, &_rodata_start as *const u8 as u64, &__ro_after_init_start as *const u8 as u64];
         d.ram[0] = [down(ram_pa as u64), up((ram_pa + ram_len) as u64)];
         d.nram = 1;
         d.secondary_entry = pa_of(_aarch64_secondary_entry as *const () as usize);
@@ -779,19 +780,27 @@ fn pt_probe() {
         return;
     };
     let entry = (root + free * 8) as u64;
-    let set = |slot: u64, expected: u64, new: u64| monitor_call_n(CALL_PT_SET, slot, expected, new, 2);
+    let set = |slot: u64, expected: u64, new: u64, level: u64| monitor_call_n(CALL_PT_SET, slot, expected, new, level);
     // A 1 GiB block of Device-like memory at the root: valid, inner-shareable, attribute index 1.
     let block = |pa: u64, flags: u64| pa | 1 | AF | 0b11 << 8 | 1 << 2 | flags;
     let page = pa_of(core::ptr::addr_of!(PT_PROBE_PAGE) as usize);
     let text = core::ptr::addr_of!(_text_start) as usize;
     let before = ring_count(Kind::CallRefused);
-    let wx = set(entry, 0, block(1 << 32, 0))[0] as i64;
-    let no_af = set(entry, 0, block(1 << 32, PXN | UXN) & !AF)[0] as i64;
-    let foreign = set(entry, 0, make_table(page as usize))[0] as i64;
-    let wrong_level = set(entry, 0, make_table(root))[0] as i64;
-    let text_slot = (root + azos_arch::mmu::vpn(text, 2) * 8) as u64;
-    let text_word = word_at(azos_arch::mmu::vpn(text, 2));
-    let image = set(text_slot, text_word, 0)[0] as i64;
+    let wx = set(entry, 0, block(1 << 32, 0), 2)[0] as i64;
+    let no_af = set(entry, 0, block(1 << 32, PXN | UXN) & !AF, 2)[0] as i64;
+    let foreign = set(entry, 0, make_table(page as usize), 2)[0] as i64;
+    let wrong_level = set(entry, 0, make_table(root), 2)[0] as i64;
+    // The leaf that maps the first page of text, with a software bit set: harmless
+    // were it written, refused because the slot maps the image.
+    let (mut table, mut text_leaf) = (root, None);
+    for level in (0..azos_arch::mmu::LEVELS).rev() {
+        let slot = table + azos_arch::mmu::vpn(text, level) * 8;
+        let w = unsafe { core::ptr::read_volatile(azos_mm::addr::phys_to_virt(slot) as *const u64) };
+        if azos_arch::mmu::is_leaf(w, level) { text_leaf = Some((slot as u64, w, level as u64)); break; }
+        if !azos_arch::mmu::is_table(w, level) { break; }
+        table = azos_arch::mmu::phys_addr(w);
+    }
+    let image = text_leaf.map_or(OK as i64 + 1, |(slot, w, level)| set(slot, w, w | 1 << 57, level)[0] as i64);
     let refused = ring_count(Kind::CallRefused) - before;
     if [wx, no_af, foreign, wrong_level, image] == [DENIED; 5] && refused == 5 {
         kprintln!("[HYP] pt: words that break a rule are refused and recorded");
@@ -799,9 +808,9 @@ fn pt_probe() {
         kprintln!("[HYP] PROBE FAILED: pt_set refused {:?} and recorded {}", [wx, no_af, foreign, wrong_level, image], refused);
     }
     let good = block(1 << 32, PXN | UXN);
-    let wrote = set(entry, 0, good)[0] as i64;
-    let raced = set(entry, 0, 0);
-    let cleared = set(entry, good, 0)[0] as i64;
+    let wrote = set(entry, 0, good, 2)[0] as i64;
+    let raced = set(entry, 0, 0, 2);
+    let cleared = set(entry, good, 0, 2)[0] as i64;
     if wrote == OK && raced[0] as i64 == RACED && raced[1] == good && cleared == OK && word_at(free) == 0 {
         kprintln!("[HYP] pt: a good word is written and cleared, a stale expectation is raced");
     } else {

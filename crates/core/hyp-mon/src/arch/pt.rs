@@ -8,6 +8,7 @@
 //! Canaries: `hyp-pt-pool-open-canary` leaves the pool writable,
 //! `hyp-pt-check-skip-canary` writes whatever it is asked.
 
+use super::pin;
 use super::ptcheck::*;
 use super::s2;
 use crate::state::HYP;
@@ -23,6 +24,10 @@ static ONCE: AtomicU64 = AtomicU64::new(0);
 static POOL: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static SHIFT: AtomicU64 = AtomicU64::new(0);
 static READY: AtomicU64 = AtomicU64::new(0);
+/// The kernel half's `TTBR1_EL1` root and the `TCR_EL1` the pool was locked
+/// under, which every PE that pins afterwards must have.
+static LOCKED_ROOT: AtomicU64 = AtomicU64::new(0);
+static LOCKED_TCR: AtomicU64 = AtomicU64::new(0);
 static TAGS: [AtomicU8; PT_POOL_PAGES_MAX as usize] = [const { AtomicU8::new(0) }; PT_POOL_PAGES_MAX as usize];
 
 fn page_index(pa: u64, base: u64, shift: u32) -> usize {
@@ -55,7 +60,7 @@ fn scan(pa: u64, level: usize, base: u64, end: u64, shift: u32, image: &[[u64; 2
         // SAFETY: the EL2 identity map covers RAM; the page is in the pool, the kernel's until the pool is locked.
         let word = unsafe { core::ptr::read_volatile((pa + i * 8) as *const u64) };
         let w = classify(word, level, shift)?;
-        if let Some(e) = word_error(w, word) { return Err(e); }
+        if let Some(e) = lock_word_error(w, word, level, image) { return Err(e); }
         match w {
             Word::Table(t) => {
                 if !in_pool(t, base, end, shift) { return Err("table outside the pool"); }
@@ -70,9 +75,29 @@ fn scan(pa: u64, level: usize, base: u64, end: u64, shift: u32, image: &[[u64; 2
     Ok(has_image)
 }
 
+/// Is any page of the pool that the scan did not reach not empty? A page with
+/// words in it that nothing checked would go live unchecked when it is linked.
+fn unreached_not_empty(base: u64, pages: u64, shift: u32) -> bool {
+    (0..pages as usize).any(|i| {
+        let words = (0..1u64 << (shift - 3)).map(|w| {
+            // SAFETY: the EL2 identity map covers RAM; the page is in the pool.
+            unsafe { core::ptr::read_volatile((base + ((i as u64) << shift) + w * 8) as *const u64) }
+        });
+        unreached_error(TAGS[i].load(Ordering::Acquire), words).is_some()
+    })
+}
+
+/// Why this PE may not run the kernel half: after the pool lock, its
+/// `TTBR1_EL1` and `TCR_EL1` must be the locked ones.
+pub fn pe_error() -> Option<&'static str> {
+    if READY.load(Ordering::Acquire) == 0 { return None; }
+    let (ttbr1, tcr) = pin::walk_regs();
+    ttbr1_error(ttbr1, LOCKED_ROOT.load(Ordering::Relaxed)).or_else(|| tcr_error(tcr, LOCKED_TCR.load(Ordering::Relaxed)))
+}
+
 /// `pt_lock_pool(pool_pa, pages | page_shift << 32, root_pa)`.
 pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
-    if !s2::locked() || crate::PES_UP.load(Ordering::Acquire) > 1 { return DENIED; }
+    if !s2::locked() || crate::PES_UP.load(Ordering::Acquire) > 1 || !pin::this_pe_pinned() { return DENIED; }
     if ONCE.swap(1, Ordering::AcqRel) != 0 { return DENIED; }
     let (pages, shift) = (packed & 0xffff_ffff, packed >> 32);
     let image = s2::image();
@@ -83,8 +108,16 @@ pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
     {
         return INVALID;
     }
+    let (ttbr1, tcr) = pin::walk_regs();
+    if ttbr1_error(ttbr1, root_pa).is_some() { return INVALID; }
     let (shift, end) = (shift as u32, pool_pa + (pages << shift));
     if scan(root_pa, LEVELS - 1, pool_pa, end, shift, &image).is_err() { return INVALID; }
+    if unreached_not_empty(pool_pa, pages, shift) { return INVALID; }
+    // SAFETY: the EL2 identity map covers RAM; the tables are the kernel's until the pool is locked.
+    let read = |pa: u64| unsafe { core::ptr::read_volatile(pa as *const u64) };
+    for (i, va) in s2::image_va().into_iter().enumerate() {
+        if image_error(read, root_pa, va, image[i][0], image[i][1] - image[i][0], i == 0, shift).is_some() { return INVALID; }
+    }
     if !cfg!(feature = "hyp-pt-pool-open-canary") {
         let r = s2::pool_read_only(pool_pa, end - pool_pa);
         if r != OK { return r; }
@@ -92,6 +125,8 @@ pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
     POOL[0].store(pool_pa, Ordering::Relaxed);
     POOL[1].store(end, Ordering::Relaxed);
     SHIFT.store(shift as u64, Ordering::Relaxed);
+    LOCKED_ROOT.store(root_pa, Ordering::Relaxed);
+    LOCKED_TCR.store(tcr, Ordering::Relaxed);
     READY.store(1, Ordering::Release);
     if !cfg!(feature = "hyp-pt-pool-open-canary") && !cfg!(feature = "hyp-pt-check-skip-canary") {
         HYP.set_invariant(INV_KERNEL_TABLES);
