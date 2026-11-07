@@ -27,6 +27,7 @@ pub const PKRS_AD: u64 = 1 << (2 * PKEY);
 pub const PKRS_WD: u64 = 2 << (2 * PKEY);
 /// `IA32_PKRS` while the pool is locked: reads of the key allowed, writes denied.
 pub const PKRS_LOCKED: u64 = PKRS_WD;
+#[cfg(target_arch = "x86_64")]
 const RFLAGS_IF: u64 = 1 << 9;
 
 /// The key bits a pool leaf carries.

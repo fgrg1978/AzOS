@@ -402,8 +402,8 @@ impl ArchPlatform for X86_64 {
         on_x86!(mmu::ptwin::shut(), "x86_64: pt_window_shut: IA32_PKRS")
     }
     #[inline(always)]
-    fn pt_window_close(&self, saved: u64) {
-        on_x86!(mmu::ptwin::close(saved), "x86_64: pt_window_close: IA32_PKRS")
+    fn pt_window_close(&self, _saved: u64) {
+        on_x86!(mmu::ptwin::close(_saved), "x86_64: pt_window_close: IA32_PKRS")
     }
     /// x86 instruction fetch snoops the data cache (self-modifying code is
     /// coherent after a serializing instruction): no clean needed.
