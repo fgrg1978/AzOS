@@ -116,6 +116,8 @@ fn pt_set_lane(locked: bool) -> Option<u64> {
             core::ptr::write_volatile(slot_at(free), 0);
         }
     });
+    // A walk may have cached the block while it was valid; the slot is free again.
+    azos_arch::sysregs::tlbi_vmalle1is();
     let _ = locked;
     (!failed.get()).then_some(ticks)
 }
