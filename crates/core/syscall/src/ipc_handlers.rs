@@ -903,15 +903,26 @@ pub fn sys_shm_restore_typed(cap_raw: u64) -> i64 {
     use azos_abi::cap::CapHandle;
     use azos_ipc::cap::{targets::Shm, Cap};
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
+    use azos_ipc::cap::CapPerms;
     let tid = azos_sched::current_proc_tid();
-    let acquired = azos_ipc::cap_store::with_table(tid, |table| {
-        let r = table.get_op(cap, azos_ipc::cap::CapPerms::READ, azos_abi::invoke::MEMOBJ_RESTORE)?;
-        azos_ipc::memobj::memobj_acquire_ref(tid, r).map(|(pages, _)| (r, pages))
-    });
-    let (r, pages) = match acquired {
-        Some(Ok(rp)) => rp,
-        Some(Err(e)) => return errno_for_memobj_err(e),
+    // The op precedes a map, so it needs what a map needs. Canary
+    // `memobj-restore-op-read-only-canary`: `READ` alone is enough.
+    let rights = if cfg!(feature = "memobj-restore-op-read-only-canary") { CapPerms::READ } else { CapPerms::READ.union(CapPerms::MAP) };
+    let resolved = azos_ipc::cap_store::with_table(tid, |table| table.get_op(cap, rights, azos_abi::invoke::MEMOBJ_RESTORE));
+    let r = match resolved {
+        Some(Ok(r)) => r,
+        Some(Err(e)) => return errno_for_memobj_err(e.into()),
         None => return azos_abi::error::Errno::EINVAL.to_syscall_ret(),
+    };
+    // For a process that does not pin memory the next storm takes the pages
+    // again: the op would only make another Domain's owner pay for restores.
+    // Canary `memobj-restore-op-unpinned-canary`: any caller restores.
+    if !cfg!(feature = "memobj-restore-op-unpinned-canary") && !azos_ipc::memobj::memobj_holder_pins(tid) {
+        return azos_abi::error::Errno::EINVAL.to_syscall_ret();
+    }
+    let pages = match azos_ipc::memobj::memobj_acquire_ref(tid, r) {
+        Ok((pages, _)) => pages,
+        Err(e) => return errno_for_memobj_err(e),
     };
     // Canary `memobj-restore-op-skip-canary`: nothing is brought back.
     if cfg!(feature = "memobj-restore-op-skip-canary") {

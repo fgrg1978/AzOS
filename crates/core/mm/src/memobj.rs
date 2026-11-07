@@ -4777,6 +4777,12 @@ pub fn memobj_claim_restore(r: u32, idx: usize) -> RestoreClaim {
     RestoreClaim::Claimed
 }
 
+/// Does reclaim leave the memory of the process `tid` alone ([`Host::pins_memory`])?
+/// What `MEMOBJ_RESTORE` asks before it restores for the caller.
+pub fn memobj_holder_pins(tid: u32) -> bool {
+    host().pins_memory(tid)
+}
+
 /// The packed reference and page count of the first swappable object at or after
 /// slot `from` that `tid` holds and has a page out or moving, and where to go on.
 pub fn memobj_out_object_of(tid: u32, from: usize) -> Option<(usize, u32, usize)> {

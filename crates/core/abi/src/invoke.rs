@@ -311,7 +311,10 @@ pub const MEMOBJ_END_DROP: u16 = op(CapKind::MemObj, CLASS_CTL, 4);
 /// on, so its `SYS_MO_MAP` that follows finds nothing out. A setup-phase call: it
 /// may wait on the compressed pool and on the swap device, and is made before a
 /// real-time loop, never in it (a real-time process's map of an object with a
-/// page out is refused, `-EBUSY`, and this is its way out). Needs `READ`. 0;
+/// page out is refused, `-EBUSY`, and this is its way out). Needs `READ` and
+/// `MAP`, what the map it precedes needs. `-EINVAL`, with no reference taken and
+/// nothing brought back, for a caller whose process does not pin memory (the
+/// next storm would take the pages again, at the owner's charge). 0;
 /// `-ENOMEM` or `-EBUSY` when a page cannot come back (a `pin-restore` record of
 /// site 5; the reference is given back). A kernel without the op answers
 /// `-EINVAL`, as for every op it does not know.

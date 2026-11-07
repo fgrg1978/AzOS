@@ -13320,6 +13320,13 @@ host_job zpool_host_canary_row "swap: RT map waits canary" pinned-map-rt-restore
     a_real_time_process_is_refused_a_map_with_a_page_out_until_it_restores_the_object
 host_job zpool_host_canary_row "swap: restore op canary" memobj-restore-op-skip-canary \
     a_real_time_process_is_refused_a_map_with_a_page_out_until_it_restores_the_object
+# MEMOBJ_RESTORE needs READ and MAP and a caller that pins memory
+# (memobj-restore-op-read-only-canary, memobj-restore-op-unpinned-canary).
+host_job zpool_host_row "swap: restore op rights" a_restore_op_needs_the_map_right_and_a_caller_that_pins
+host_job zpool_host_canary_row "swap: restore op MAP canary" memobj-restore-op-read-only-canary \
+    a_restore_op_needs_the_map_right_and_a_caller_that_pins
+host_job zpool_host_canary_row "swap: restore op pin canary" memobj-restore-op-unpinned-canary \
+    a_restore_op_needs_the_map_right_and_a_caller_that_pins
 host_job zpool_host_row "swap: restore op refused" a_restore_op_that_cannot_bring_a_page_back_is_refused_and_recorded
 host_job zpool_host_canary_row "swap: restore op refused canary" memobj-restore-op-skip-canary \
     a_restore_op_that_cannot_bring_a_page_back_is_refused_and_recorded

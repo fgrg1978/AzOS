@@ -3367,7 +3367,8 @@ pub fn shm_end_drop_typed(cap: u32, ends: u64) -> isize {
 /// memory, with this process's reference on it (`MEMOBJ_RESTORE`): what a
 /// real-time process calls in its setup phase, before it maps a shared
 /// swappable object, never in its loop (it may wait on the swap device).
-/// Requires `READ`. 0 or `-Errno`.
+/// Requires `READ` and `MAP`, and a process that pins memory (`-EINVAL`
+/// otherwise). 0 or `-Errno`.
 pub fn shm_restore_typed(cap: u32) -> isize {
     invoke(cap, invoke_abi::MEMOBJ_RESTORE, [0; 4]).0
 }

@@ -2758,6 +2758,39 @@ mod swap_rows {
         assert!(sys_shm_map_typed(hb, 0) > 0, "with nothing out the map goes ahead");
     }
 
+    /// **`MEMOBJ_RESTORE` is refused, with nothing brought back and no reference
+    /// taken, to a caller without `MAP` and to one whose process does not pin
+    /// memory.** The op precedes a map, so it needs a map's rights; and for a
+    /// process that does not pin, the next storm takes the pages again, so the op
+    /// would only charge restores to the object's owner.
+    ///
+    /// **Canaries.** `memobj-restore-op-read-only-canary`: `READ` alone is
+    /// enough. `memobj-restore-op-unpinned-canary`: any caller restores.
+    #[test]
+    fn a_restore_op_needs_the_map_right_and_a_caller_that_pins() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        let pt_b = ring3(b, SLOT_B);
+        let _unpin = Unpin(b);
+        azos_sched::shim_set_realtime(b, true);
+        let read_only = held::<Shm>(b, CapPerms::READ, r);
+        become_task(b, pt_b);
+        assert_eq!(crate::ipc_handlers::sys_shm_restore_typed(read_only), errno(Errno::ECAPPERMS), "READ alone");
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1, "nothing came back for it");
+        azos_sched::shim_set_realtime(b, false);
+        let mapper = held::<Shm>(b, CapPerms::READ.union(CapPerms::MAP), r);
+        become_task(b, pt_b);
+        assert_eq!(crate::ipc_handlers::sys_shm_restore_typed(mapper), errno(Errno::EINVAL), "a caller that does not pin");
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1, "nothing came back for it");
+        assert_eq!(mo::memobj_release_ref(b, r), Err(mo::MemObjError::Closed), "and no reference was taken");
+    }
+
     /// **A `MEMOBJ_RESTORE` that cannot bring a page back is refused and
     /// recorded, and gives its reference back.** The pool lost the page.
     ///
@@ -2773,6 +2806,8 @@ mod swap_rows {
         let _h = hooks();
         let r = object_with_page_out(a);
         let pt_b = ring3(b, SLOT_B);
+        let _unpin = Unpin(b);
+        azos_sched::shim_set_realtime(b, true);
         let hb = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
         become_task(b, pt_b);
         pg::shim_forget_pool();

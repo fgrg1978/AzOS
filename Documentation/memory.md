@@ -834,7 +834,10 @@ and its number in the object, so one entry serves every mapper.
     record of site 1, and never waits on the pool or the swap device on its
     real-time path. Its contract: map such objects before it becomes real-time,
     or call `MEMOBJ_RESTORE` on the object in its setup phase (its reference then
-    keeps every storm off the object) and map after it, never in the loop.
+    keeps every storm off the object) and map after it, never in the loop. The
+    op needs `READ` and `MAP`, and refuses (`-EINVAL`, nothing done) a process
+    that does not pin memory: for it the next storm takes the pages again, and
+    the restores would be charged to the object's owner.
 * **Opt-in.** Private anonymous memory is always reclaimable; a shared object needs
   `SHM_ATTR_SWAPPABLE`, because its other mappers did not choose to share a
   Domain's pressure (the asymmetry is intended).

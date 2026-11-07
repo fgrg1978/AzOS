@@ -315,7 +315,7 @@ where the source states them.
 |---|---|---|---|
 | `MEMOBJ_ACQUIRE` | 0x2301 | CTL | Take a reference and read the geometry (`page_count` u32, `perms` u8) into an 8-byte buffer. Needs `READ`. |
 | `MEMOBJ_END_DROP` | 0x2304 | CTL | Give up the read and/or write end (`SHM_END_READ`, `SHM_END_WRITE`) the caller holds on a pipe region. |
-| `MEMOBJ_RESTORE` | 0x2305 | CTL | Take a reference, as `MEMOBJ_ACQUIRE` does, and bring every page of a swappable object that is out back into memory. A setup-phase call (it may wait on the swap device): a real-time process makes it before it maps such an object, never in its loop. Needs `READ`. `-ENOMEM`/`-EBUSY` (`pin-restore`, site 5) when a page cannot come back. See [memory.md](memory.md#swappable-objects). |
+| `MEMOBJ_RESTORE` | 0x2305 | CTL | Take a reference, as `MEMOBJ_ACQUIRE` does, and bring every page of a swappable object that is out back into memory. A setup-phase call (it may wait on the swap device): a real-time process makes it before it maps such an object, never in its loop. Needs `READ` and `MAP`; `-EINVAL`, with nothing done, for a caller whose process does not pin memory. `-ENOMEM`/`-EBUSY` (`pin-restore`, site 5) when a page cannot come back. See [memory.md](memory.md#swappable-objects). |
 
 **Node** (kind 6): files and sockets the caller holds
 
