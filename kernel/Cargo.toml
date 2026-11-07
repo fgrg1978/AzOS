@@ -269,6 +269,7 @@ kmem-cache-cross-type-canary = ["azos_mm/kmem-cache-cross-type-canary"]
 mm-pte-truth-canary = ["azos_mm/mm-pte-truth-canary"]
 group-pin-leader-only-canary = ["azos_sched/group-pin-leader-only-canary"]
 pin-effective-priority-canary = ["azos_sched/pin-effective-priority-canary"]
+group-member-scan-canary = ["azos_sched/group-member-scan-canary"]
 # A demand fault the Domain's limit refused is killed as SIGSEGV with no
 # record (kernel/src/trap/fault.rs): trap-tests
 # `a_demand_fault_at_the_memory_limit_is_named_and_killed_as_such` fails.

@@ -146,10 +146,23 @@ struct Group {
     /// The leader has begun handing the process to `exec_by`: the exec can no
     /// longer be abandoned.
     handing: bool,
+    /// The TIDs of the members other than the leader, 0 for a free entry: who
+    /// [`members_of`] and [`any_member`] ask, without a pass over every task
+    /// slot (reclaim asks for every holder of every page it takes).
+    members: [u32; GROUP_THREADS_MAX as usize],
 }
 
-const GROUP_FREE: Group =
-    Group { leader: 0, live: 0, exiting: false, code: 0, mm_owner: 0, mm_depth: 0, exec_by: 0, handing: false };
+const GROUP_FREE: Group = Group {
+    leader: 0,
+    live: 0,
+    exiting: false,
+    code: 0,
+    mm_owner: 0,
+    mm_depth: 0,
+    exec_by: 0,
+    handing: false,
+    members: [0; GROUP_THREADS_MAX as usize],
+};
 
 static GROUPS: SpinLock<[Group; GROUPS_MAX]> = SpinLock::new([GROUP_FREE; GROUPS_MAX]);
 
@@ -276,8 +289,14 @@ pub(crate) fn unadmit(leader: u32, leader_idx: usize) {
 /// The new member in slot `idx` belongs to `leader`'s group. Before it can
 /// run (the slot is parked until its hand-off is published).
 pub(crate) fn join(idx: usize, leader: u32) {
-    if idx < MAX_TASKS {
-        LEAD[idx].store(leader, Ordering::Release);
+    if idx >= MAX_TASKS {
+        return;
+    }
+    LEAD[idx].store(leader, Ordering::Release);
+    let Some(tid) = crate::scheduler::tid_for_idx(idx) else { return };
+    let mut g = GROUPS.lock();
+    if let Some(m) = g.iter_mut().find(|e| e.leader == leader).and_then(|e| e.members.iter_mut().find(|m| **m == 0)) {
+        *m = tid;
     }
 }
 
@@ -383,6 +402,9 @@ pub(crate) fn member_gone(leader: u32, tid: u32) -> u32 {
     let mut g = GROUPS.lock();
     let Some(e) = g.iter_mut().find(|e| e.leader == leader) else { return 1 };
     e.live = e.live.saturating_sub(1);
+    if let Some(m) = e.members.iter_mut().find(|m| **m == tid) {
+        *m = 0;
+    }
     if e.mm_owner == tid {
         e.mm_owner = 0;
         e.mm_depth = 0;
@@ -437,16 +459,23 @@ pub(crate) fn dissolve(leader: u32, leader_idx: usize) {
     }
 }
 
+/// The leader and the members of `leader`'s group, 0 where an entry is free;
+/// all 0 when it has no group. One hold of the group table.
+fn group_tids(leader: u32) -> [u32; GROUP_THREADS_MAX as usize + 1] {
+    let mut tids = [0u32; GROUP_THREADS_MAX as usize + 1];
+    if let Some(e) = GROUPS.lock().iter().find(|e| e.leader == leader) {
+        tids[0] = leader;
+        tids[1..].copy_from_slice(&e.members);
+    }
+    tids
+}
+
 /// The live members of `leader`'s group other than `except`, into `out`;
 /// how many. The hook a process-directed signal and `exit_group` use.
 pub fn members_of(leader: u32, except: u32, out: &mut [u32]) -> usize {
     let mut n = 0;
-    for idx in 0..MAX_TASKS {
-        if LEAD[idx].load(Ordering::Acquire) != leader {
-            continue;
-        }
-        let Some(tid) = crate::scheduler::tid_for_idx(idx) else { continue };
-        if tid == except || tid == 0 {
+    for tid in group_tids(leader) {
+        if tid == 0 || tid == except || crate::scheduler::idx_for_tid(tid).is_none() {
             continue;
         }
         if n < out.len() {
@@ -457,9 +486,22 @@ pub fn members_of(leader: u32, except: u32, out: &mut [u32]) -> usize {
     n
 }
 
+/// Ktest: task slots or member entries [`any_member`] looked at since boot.
+#[cfg(feature = "ktest")]
+pub static KTEST_MEMBER_LOOKS: AtomicU32 = AtomicU32::new(0);
+
+#[inline(always)]
+fn note_member_looks(_n: usize) {
+    #[cfg(feature = "ktest")]
+    KTEST_MEMBER_LOOKS.fetch_add(_n as u32, Ordering::Relaxed);
+}
+
 /// Does `f` hold for the live process `leader` itself or any member of its group?
+/// Asks the group's own member list, so a holder's check costs its group's size,
+/// not the task table's.
 ///
-/// Canary `group-pin-leader-only-canary`: only the leader is asked.
+/// Canary `group-pin-leader-only-canary`: only the leader is asked. Canary
+/// `group-member-scan-canary`: every task slot is looked at.
 pub fn any_member(leader: u32, f: impl Fn(u32) -> bool) -> bool {
     if f(leader) {
         return true;
@@ -467,10 +509,16 @@ pub fn any_member(leader: u32, f: impl Fn(u32) -> bool) -> bool {
     if !any_groups() || cfg!(feature = "group-pin-leader-only-canary") {
         return false;
     }
-    (0..MAX_TASKS).any(|idx| {
-        LEAD[idx].load(Ordering::Acquire) == leader
-            && crate::scheduler::tid_for_idx(idx).is_some_and(|tid| tid != 0 && tid != leader && f(tid))
-    })
+    if cfg!(feature = "group-member-scan-canary") {
+        note_member_looks(MAX_TASKS);
+        return (0..MAX_TASKS).any(|idx| {
+            LEAD[idx].load(Ordering::Acquire) == leader
+                && crate::scheduler::tid_for_idx(idx).is_some_and(|tid| tid != 0 && tid != leader && f(tid))
+        });
+    }
+    let tids = group_tids(leader);
+    note_member_looks(tids.len());
+    tids[1..].iter().any(|&tid| tid != 0 && crate::scheduler::idx_for_tid(tid).is_some() && f(tid))
 }
 
 // ── The group's memory lock ────────────────────────────────────────────────

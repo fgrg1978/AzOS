@@ -93,6 +93,9 @@ group-pin-leader-only-canary = []
 # Runtime-less canary of the ktest `a_boosted_thread_does_not_pin_memory`: the
 # PI-boosted priority decides whether a thread pins memory.
 pin-effective-priority-canary = []
+# Runtime-less canary of the ktest `a_group_is_asked_about_its_members_only`:
+# `group::any_member` looks at every task slot, not the group's member list.
+group-member-scan-canary = []
 # Wave 15 (VI): the ELF loader's page permissions. `elf-mixed-page-canary`
 # accepts a page shared by segments mapped differently (their union, as
 # before); `rodata-exec-canary` maps read-only segments read-execute (the old

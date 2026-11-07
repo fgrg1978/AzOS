@@ -3122,6 +3122,40 @@ azos_ktest::ktest_late! {
     }
 }
 
+// Whether a process pins memory asks its group's members, not every task slot:
+// reclaim asks it for every holder of every page it takes, under the object
+// table's lock (`azos_sched::group::any_member`). Canary
+// `group-member-scan-canary`: every slot is looked at.
+azos_ktest::ktest_late! {
+    fn a_group_is_asked_about_its_members_only() {
+        use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+        PIN_MEMBER_TID.store(0, Release);
+        PIN_GO.store(false, Release);
+        let lead = azos_sched::scheduler::current_task_tid();
+        azos_sched::task_create_affinity("c1-pin-index", pin_member, 0, azos_sched::DEFAULT_PRIORITY, -1);
+        wait("the member task never started", || PIN_MEMBER_TID.load(Acquire) != 0)?;
+        let t = PIN_MEMBER_TID.load(Acquire);
+        let r = (|| {
+            if !azos_sched::group::ktest_group(lead, t) {
+                return Err("the two tasks could not be made one process");
+            }
+            let before = azos_sched::group::KTEST_MEMBER_LOOKS.load(Relaxed);
+            let found = azos_sched::group::any_member(lead, |tid| tid == t);
+            let looks = azos_sched::group::KTEST_MEMBER_LOOKS.load(Relaxed).wrapping_sub(before);
+            azos_sched::group::ktest_ungroup(lead, t);
+            if !found {
+                return Err("the member is not asked");
+            }
+            if looks > azos_sched::group::GROUP_THREADS_MAX + 1 {
+                return Err("more entries are looked at than a group has members");
+            }
+            Ok(())
+        })();
+        PIN_GO.store(true, Release);
+        r
+    }
+}
+
 // A priority inheritance boost into the real-time band does not pin a thread's
 // memory: only its own (base) priority does, which an admission sets and which
 // brings its pages back (`azos_sched::thread_pins_memory`). Canary
