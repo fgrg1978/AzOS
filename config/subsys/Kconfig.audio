@@ -92,7 +92,8 @@ config AUDIO_CAPTURE
     help
       y: the audio server opens `DIR_CAPTURE` streams. The kernel's gate
       admits each one on the `mic` effect of the REQUESTER's scheduler class
-      (an `[envelope.NAME]` row with `kind = "mic"`): the client that made the
+      (an `[envelope.NAME]` row with `kind = "mic"` that does not contain it:
+      default-deny, a class with no row has no microphone): the client that made the
       call the server is serving, which the server names to the kernel by the
       call's warrant (`Sound::open`'s `on_behalf`). The server's own class is
       never consulted and the `audio-capture` decision record names the

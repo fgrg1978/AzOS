@@ -887,8 +887,8 @@ the **one** playback stream it holds on the device and returns each period on `d
   the kernel does not check; and the client's class is that of the topology row its calling
   thread was seeded from, so only the image's main thread has one; and the kernel does not stop a
   server that went wrong from calling `sound.0` with `on_behalf` 0, which is decided on the
-  server's own class (the effect unless an `[envelope]` `mic` row contains it): a deployment that
-  must rule that out gives the audio server's row a class with a contained `mic` row.
+  server's own class (default-deny: the effect only through a `mic` row that does not contain it): a deployment that
+  must rule that out gives the audio server's row a class with no `mic` row or a contained one.
 * **Two threads.** The main thread accepts calls (the endpoint's `READ` grant is stamped
   with it) and makes every capture call, because the kernel binds a stream to the thread
   that opened it, and the warrant of the call is held by the thread that accepted it; the pump

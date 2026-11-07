@@ -12159,6 +12159,8 @@ host_job host_canary_row "frame: copy skip canary" syscall-tests frame-copy-skip
 host_job host_canary_row "frame: late check canary" syscall-tests frame-check-late-canary a_buffer_that_cannot_take_the_frame_takes_no_frame
 host_job host_canary_row "frame: slot per call canary" syscall-tests frame-slot-per-call-canary a_reader_slot_is_a_tasks_and_a_full_table_is_busy
 host_job host_canary_row "frame: exit keeps canary" syscall-tests frame-exit-keeps-canary a_task_that_exits_reads_no_more
+host_job host_canary_row "frame: cam default-allow canary" syscall-tests effect-default-allow-canary a_task_nothing_grants_the_camera_is_refused_and_recorded
+host_job host_canary_row "sound: mic default-allow canary" syscall-tests effect-default-allow-canary the_mic_effect_is_granted_only_by_a_row_that_does_not_contain_it
 host_job host_canary_row "frame: cam effect ignored canary" syscall-tests frame-effect-ignored-canary a_class_without_the_cam_effect_is_refused_and_recorded
 host_job host_canary_row "frame: unrecorded canary" syscall-tests frame-unrecorded-canary the_grant_the_first_frame_and_the_refusals_are_recorded
 host_job host_canary_row "frame: first read always canary" syscall-tests frame-first-read-always-canary the_grant_the_first_frame_and_the_refusals_are_recorded

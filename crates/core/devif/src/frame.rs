@@ -22,8 +22,8 @@
 //! The capability's `READ` is the right to read: a camera frame is what the
 //! camera saw. A task's first `next` also needs the **`cam` effect** of its
 //! scheduler class (`azos_topology::EffectKind::Cam`), as a capture stream needs
-//! `mic`: a class an `[envelope.NAME]` row of kind `cam` caps at `contained` is
-//! refused. The grant, each refusal and the first frame are `cam-capture`
+//! `mic` and default-deny: only a class an `[envelope.NAME]` row of kind `cam`
+//! names at a level other than `contained` has it; any other is refused. The grant, each refusal and the first frame are `cam-capture`
 //! decision records.
 //!
 //! # The buffer

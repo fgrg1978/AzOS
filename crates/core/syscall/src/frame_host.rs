@@ -14,8 +14,9 @@
 //!
 //! * **The camera effect.** A camera frame is what the camera saw, so a task's
 //!   first `next` needs the `cam` effect of its scheduler class, as a capture
-//!   stream needs `mic` (`crate::effect`); a class an `[envelope.NAME]` row of
-//!   kind `cam` caps at `contained` is refused (`REFUSED`) before it learns
+//!   stream needs `mic` (`crate::effect`); default-deny: only a class an
+//!   `[envelope.NAME]` row of kind `cam` names at a level other than `contained`
+//!   has it, any other is refused (`REFUSED`) before it learns
 //!   anything of the pool. The grant, each refusal and a reader's first frame
 //!   are `cam-capture` decision records, and the console says when a reader
 //!   opens and ends.

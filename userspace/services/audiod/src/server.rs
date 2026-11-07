@@ -107,8 +107,8 @@
 //!   client with the effect waits in a call. It could not for a client that is
 //!   not in a call to it. Nor does the kernel stop it asking for itself
 //!   (`on_behalf` 0): that is decided on its own class, which has the effect
-//!   unless an `[envelope]` `mic` row contains it, so a deployment that must
-//!   rule that out gives this server's row a class with a contained `mic` row;
+//!   only through a `mic` row that does not contain it, so a deployment that must
+//!   rule that out gives this server's row a class with no `mic` row or a contained one;
 //! * the client's class is the one of the topology row its calling thread was
 //!   seeded from: a thread of the client that is not the image's main thread
 //!   has no row, so no grant;

@@ -65,9 +65,9 @@
 //! it is never granted by the capability alone. [`Sound::open`] with
 //! [`DIR_CAPTURE`] needs the **`mic` effect** (`azos_topology::EffectKind::Mic`)
 //! to be admitted for the **requester's** scheduler class: an `[envelope.NAME]`
-//! row with `kind = "mic"` whose ceiling is `contained` withholds it (a class
-//! with no such row has the full effect), exactly as the effect gate treats any
-//! other kind. Every attempt, admitted or refused, writes a decision record
+//! row with `kind = "mic"` at a level other than `contained` grants it, and a
+//! class with no such row, or a build with no topology, does not have it
+//! (default-deny). Every attempt, admitted or refused, writes a decision record
 //! (`azos_decision::Rule::AudioCapture`: device, rate, reason) whose subject is
 //! the requester. [`capture_reason`] is the order the reasons are decided in,
 //! so the server and its tests agree on which one a refusal reports. A refused
@@ -481,8 +481,8 @@ impl Posted {
 
 /// [`capture_reason`]: admitted.
 pub const MIC_ADMITTED: u32 = 0;
-/// [`capture_reason`]: the requester's class has no microphone effect (its
-/// `mic` envelope ceiling is `contained`).
+/// [`capture_reason`]: the requester's class has no microphone effect (no
+/// `mic` row grants it, or its row is `contained`).
 pub const MIC_NO_GRANT: u32 = 1;
 /// [`capture_reason`]: the indicator that tells the person a microphone is
 /// live is not available.
