@@ -210,6 +210,7 @@ pub fn shim_user_pages() -> u32 {
 
 /// A page restored from the pool: charged, never refused.
 pub fn mm_charge_restore(pages: u32) {
+    *RESTORE_SAW_PIN.lock().unwrap() = Some(thread_pins_memory(current_task_tid()));
     BUDGET.charge_restore(pages);
 }
 
@@ -300,7 +301,100 @@ pub fn shim_set_sched_class(class: u8) {
 }
 
 pub fn current_sched_params() -> (u32, u8) {
-    (0, SCHED_CLASS.load(Ordering::SeqCst))
+    (base_priority_of(current_task_tid()), SCHED_CLASS.load(Ordering::SeqCst))
+}
+
+/// The base priority each task was given with [`rt::set_base_priority`]; a
+/// task not in the list has the default.
+static BASE_PRIORITIES: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+
+fn base_priority_of(tid: u32) -> u32 {
+    BASE_PRIORITIES.lock().unwrap().iter().find(|&&(t, _)| t == tid).map_or(DEFAULT_PRIORITY, |&(_, p)| p)
+}
+
+/// Test-only control surface: the base priority of `tid` (the default if none was given).
+pub fn shim_base_priority(tid: u32) -> u32 {
+    base_priority_of(tid)
+}
+
+/// Does the thread `tid` count as real-time: a base priority in the band.
+fn set_base(tid: u32, prio: u32) {
+    let mut v = BASE_PRIORITIES.lock().unwrap();
+    v.retain(|&(t, _)| t != tid);
+    v.push((tid, prio));
+    drop(v);
+    shim_pin_task_memory(tid, prio < RT_PRIORITY_THRESHOLD);
+}
+
+/// What `mm_charge_restore` found: whether the current task pinned its memory
+/// at the moment a page was restored for it (`None` before any restore).
+static RESTORE_SAW_PIN: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+
+/// Test-only control surface: the last restore's view of the pin, and forget it.
+pub fn shim_take_restore_saw_pin() -> Option<bool> {
+    RESTORE_SAW_PIN.lock().unwrap().take()
+}
+
+pub const IDLE_PRIORITY: u32 = 31;
+
+/// The scheduling contexts and reservations `SYS_SCHEDCTL` reaches, as far as
+/// the host harness needs them: a class follows the base priority.
+pub mod sc {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Class {
+        Stop,
+        Dl,
+        Rt,
+        Fair,
+    }
+    pub struct SchedContext;
+    impl SchedContext {
+        pub fn set_qos(&self, _q: u32) -> bool {
+            true
+        }
+    }
+}
+
+pub mod classes {
+    use super::sc::{Class, SchedContext};
+    pub fn class_of(idx: usize) -> Option<Class> {
+        Some(if super::base_priority_of(idx as u32) < super::RT_PRIORITY_THRESHOLD { Class::Rt } else { Class::Fair })
+    }
+    pub fn sc_of(_idx: usize) -> Option<&'static SchedContext> {
+        static SC: SchedContext = SchedContext;
+        Some(&SC)
+    }
+}
+
+pub mod rt {
+    pub struct Reservation {
+        pub runtime_us: u64,
+        pub period_us: u64,
+        pub deadline_us: u64,
+        pub hard: bool,
+        pub cpu_mask: u64,
+        pub band: bool,
+        pub level: u32,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub enum Refusal {
+        NoRoom,
+    }
+    impl Refusal {
+        pub fn errno(self) -> i32 {
+            16
+        }
+    }
+    pub fn reserve(_idx: usize, _r: Reservation) -> Result<usize, Refusal> {
+        Ok(0)
+    }
+    /// A task's slot is its tid here (`idx_for_tid`).
+    pub fn set_base_priority(idx: usize, prio: u32) {
+        super::set_base(idx as u32, prio);
+    }
+    pub fn withdraw(idx: usize, base: u32) {
+        set_base_priority(idx, base);
+    }
 }
 
 /// Test-only control surface: give task `tid` (not the current one) a

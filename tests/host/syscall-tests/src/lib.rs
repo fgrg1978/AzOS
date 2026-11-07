@@ -164,6 +164,9 @@ pub mod memctl;
 // The `Keys` interface (the keystore the kernel hosts).
 #[path = "../../../../crates/core/syscall/src/keys.rs"]
 pub mod keys;
+// `SYS_SCHEDCTL`, the real file, over the scheduler shim's priorities.
+#[path = "../../../../crates/core/syscall/src/schedctl.rs"]
+pub mod schedctl;
 // The envelope rule of the `mic` and `cam` effects.
 #[path = "../../../../crates/core/syscall/src/effect.rs"]
 pub mod effect;

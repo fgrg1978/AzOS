@@ -17,7 +17,7 @@ use crate::ipc_handlers::*;
 use azos_abi::cap::{CapHandle, CapKind, CapPerms, ty, CapType};
 use azos_abi::error::Errno;
 use azos_abi::syscall_nr::{
-    PORT_BIND_F_REMOVE, PORT_SRC_CALLS, PORT_SRC_DOORBELL, PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER,
+    SCHEDCTL_CLASS_RT, PORT_BIND_F_REMOVE, PORT_SRC_CALLS, PORT_SRC_DOORBELL, PORT_SRC_ENDPOINT, PORT_SRC_PRESSURE, PORT_SRC_RING, PORT_SRC_TIMER,
 };
 use azos_arch_api::PagePerms;
 use azos_ipc::cap::objref::PORT;
@@ -2446,20 +2446,28 @@ mod swap_rows {
         assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "a pinned mapper has no page out");
     }
 
-    /// **A process that becomes real-time has its objects' pages brought back
-    /// first.**
-    ///
-    /// **Canary.** `swap-class-change-no-restore-canary`: nothing is brought back.
-    #[test]
-    fn a_change_to_a_real_time_class_brings_the_objects_pages_back() {
-        if !azos_mm::zpool::ENABLED {
-            return;
+    /// Binds `tid` to a Domain so the scheduler shim answers for its slot, and a
+    /// time warrant for `SYS_SCHEDCTL`; undone when dropped.
+    struct SchedScene(u64, u32);
+    impl SchedScene {
+        fn new(tid: u32) -> Self {
+            azos_sched::shim_bind_domain(tid, 1);
+            let w = azos_ipc::endpoint::kernel_endpoint_cap(tid, CapPerms::WRITE, azos_devif::key::TIME, 0)
+                .map_or(0, |c| c.raw().as_raw());
+            SchedScene(u64::from(w), tid)
         }
-        let _g = serial();
-        let a = fresh_tid();
-        let _s = Scene::new(&[a]);
-        let _h = hooks();
-        let _pt = ring3(a, SLOT_A);
+    }
+    impl Drop for SchedScene {
+        fn drop(&mut self) {
+            azos_sched::shim_unbind_domains();
+            azos_sched::shim_pin_task_memory(self.1, false);
+        }
+    }
+
+    /// An object of `a`'s with its page out and the task `a` current.
+    fn object_with_page_out(a: u32) -> u32 {
+        let pt = ring3(a, SLOT_A);
+        become_task(a, pt);
         let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
         let r = resource_of::<Shm>(a, cap);
         fill(r, 0, 0x71);
@@ -2469,8 +2477,199 @@ mod swap_rows {
         let v = Victim::Obj { ident: r, idx: 0 };
         assert!(src.unmap(v) && src.store(v).is_ok());
         src.free(v);
-        assert!(crate::ipc_handlers::restore_before_pinning(a).is_ok());
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1);
+        r
+    }
+
+    /// **`SYS_SCHEDCTL` to a real-time class puts the class in force and then
+    /// brings the process's objects' pages back.** The class first, so a storm
+    /// between the two finds the process pinned and takes nothing more; the pages
+    /// after, so none stays out.
+    ///
+    /// **Canaries.** `swap-class-change-no-restore-canary`: nothing is brought
+    /// back. `swap-class-change-order-canary`: they come back before the class.
+    #[test]
+    fn a_change_to_a_real_time_class_brings_the_objects_pages_back() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        let sc = SchedScene::new(a);
+        let _ = azos_sched::shim_take_restore_saw_pin();
+        assert_eq!(crate::schedctl::sys_schedctl(0, SCHEDCTL_CLASS_RT, 5, 0, 0, sc.0), 0);
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "the page is back");
+        assert_eq!(azos_sched::shim_take_restore_saw_pin(), Some(true), "and the class was in force while it came back");
+        assert_eq!(azos_sched::shim_base_priority(a), 5);
+    }
+
+    /// **A class change whose pages cannot come back is undone and recorded.** The
+    /// pool lost the page: the call fails, the task has its old priority and does
+    /// not pin memory, and the refusal is a `pin-restore` record.
+    ///
+    /// **Canary (by hand).** Leave the class in force when the restore fails
+    /// (drop the `withdraw` in `sys_schedctl`): red.
+    #[test]
+    fn a_class_change_whose_pages_cannot_come_back_is_undone_and_recorded() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        let sc = SchedScene::new(a);
+        let before_prio = azos_sched::shim_base_priority(a);
+        pg::shim_forget_pool();
+        let before = azos_decision::total();
+        let ret = crate::schedctl::sys_schedctl(0, SCHEDCTL_CLASS_RT, 5, 0, 0, sc.0);
+        assert!(ret < 0, "the change is refused: {ret}");
+        assert_eq!(azos_sched::shim_base_priority(a), before_prio, "the old priority is back");
+        assert!(!azos_sched::thread_pins_memory(a), "and the task pins nothing");
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 1, "the page is still out");
+        let rec = azos_decision::lookup(before + 1).expect("recorded");
+        assert_eq!((rec.rule, rec.verdict, rec.subject), (azos_decision::Rule::PinRestore as u8, azos_decision::Verdict::Refuse as u8, a));
+        assert_eq!(rec.n[1], 3, "the site");
+    }
+
+    /// **A fork's child that pins memory has none of the object's pages out when
+    /// the inheritance is booked; one that cannot be restored is refused with a
+    /// `pin-restore` record of site 2.** The row drives the helper the fork calls
+    /// (`natfork` is not compiled here); `natfork_calls_the_restore_before_the_inheritance`
+    /// pins the call's place.
+    ///
+    /// **Canary.** `swap-pinned-map-no-restore-canary`: nothing is brought back.
+    #[test]
+    fn a_pinning_child_has_nothing_out_when_it_inherits_an_object() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, child) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, child]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        assert!(mo::memobj_acquire_ref(child, r).is_ok());
+        let _unpin = SchedScene::new(child);
+        azos_sched::shim_pin_task_memory(child, true);
+        assert!(crate::ipc_handlers::restore_for_pinning(child, r, 1, 2).is_ok());
+        azos_sched::shim_pin_task_memory(child, false);
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "the page is back before the child maps it");
+        // Out again, and the pool loses it: the inheritance is refused and recorded.
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let v = Victim::Obj { ident: r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        pg::shim_forget_pool();
+        azos_sched::shim_pin_task_memory(child, true);
+        let before = azos_decision::total();
+        assert!(crate::ipc_handlers::restore_for_pinning(child, r, 1, 2).is_err());
+        let rec = azos_decision::lookup(before + 1).expect("recorded");
+        assert_eq!((rec.rule, rec.subject, rec.n[1]), (azos_decision::Rule::PinRestore as u8, child, 2));
+    }
+
+    /// The fork restores a pinning child's pages before it books the inheritance:
+    /// `natfork` is not compiled in the host suite, so the order is read from its
+    /// source. **Canary (by hand).** Move the call below `memobj_inherit_ref`, or
+    /// delete it: red.
+    #[test]
+    fn natfork_calls_the_restore_before_the_inheritance() {
+        let src: String = include_str!("../../../../crates/core/syscall/src/natfork.rs")
+            .lines()
+            .map(|l| l.split("//").next().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = &src[src.find("fn inherit_shm_pinned").expect("moved")..];
+        let at = |n: &str| body.find(n).unwrap_or_else(|| panic!("inherit_shm_pinned no longer calls {n}"));
+        assert!(at("restore_for_pinning(child, r, d.page_count, 2)") < at("memobj_inherit_ref("));
+    }
+
+    /// **Another page of an object is taken while one installs, and the count of
+    /// installers does not wrap.** A fault holds page 0; page 1 is taken at once.
+    /// 300 installers hold page 0 (more than a byte counts) and the page is taken
+    /// only when the last one is done.
+    ///
+    /// **Canaries.** `swap-ready-ignored-canary`: page 0 is taken under its
+    /// installers. `swap-install-count-narrow-canary`: a byte count reads zero
+    /// with installs still in flight.
+    #[test]
+    fn an_install_holds_off_only_its_page_and_every_installer_counts() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 2);
+        for idx in 0..2 {
+            fill(p.r, idx, 0x40 + idx as u8);
+        }
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let (v0, v1) = (Victim::Obj { ident: p.r, idx: 0 }, Victim::Obj { ident: p.r, idx: 1 });
+        const INSTALLERS: usize = 300;
+        for _ in 0..INSTALLERS {
+            assert!(matches!(mo::memobj_fault_look(p.r, p.pt_b, 0), mo::ObjLook::Frame { .. }));
+        }
+        assert!(src.unmap(v1), "page 1 is taken while page 0 installs");
+        src.keep(v1);
+        assert!(!src.unmap(v0), "page 0 is not");
+        for _ in 0..INSTALLERS - 1 {
+            mo::memobj_install_done_ref(p.r, 0);
+        }
+        assert!(!src.unmap(v0), "and not while one installer is left");
+        mo::memobj_install_done_ref(p.r, 0);
+        assert!(src.unmap(v0), "it is, when the last is done");
+        src.keep(v0);
+    }
+
+    /// **A restored page is charged once, to the task that restores it, in the
+    /// hold that installs it.**
+    #[test]
+    fn a_restored_page_is_charged_once_when_it_is_installed() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let r = object_with_page_out(a);
+        let used = azos_sched::shim_user_pages();
+        let _ = azos_sched::shim_take_restore_saw_pin();
+        assert!(azos_mm::pager::restore_objects_of(a).is_ok());
         assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0);
+        assert!(azos_sched::shim_take_restore_saw_pin().is_some(), "the restore charged its page");
+        assert_eq!(azos_sched::shim_user_pages(), used + 1, "once");
+    }
+
+    /// **A swappable object handed to the kernel as a call buffer (a key buffer, a
+    /// frame buffer) is refused and recorded; a plain one is not.**
+    ///
+    /// **Canary.** `swappable-ring-allowed-canary`: the object is let through the
+    /// record (the buffer is still refused by the kernel-blind attribute, but
+    /// nothing says why).
+    #[test]
+    fn a_swappable_object_is_refused_as_a_call_buffer_and_recorded() {
+        use crate::khost::Caller;
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _pt = ring3(a, SLOT_A);
+        let swap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let plain = handle(sys_shm_create_typed(1, 1));
+        let who = Caller { tid: a, badge: 0, rights: CapPerms::RW };
+        let before = azos_decision::total();
+        assert_eq!(who.with_buffer(swap as u32, 64, 64, |_| {}), Err(azos_devif::outcome::UNSUPPORTED));
+        assert_eq!(azos_decision::total(), before + 1, "the refusal is a record");
+        let rec = azos_decision::lookup(before + 1).expect("kept");
+        assert_eq!((rec.rule, rec.n[2]), (azos_decision::Rule::SwappableRing as u8, 3), "of site 3");
+        assert!(who.with_buffer(plain as u32, 64, 64, |_| {}).is_ok(), "a plain object is a buffer");
+        assert_eq!(azos_decision::total(), before + 1);
     }
 
     /// **A fork does not free the leaf table of a shared mapping whose pages are

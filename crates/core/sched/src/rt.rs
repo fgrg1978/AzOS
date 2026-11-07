@@ -1436,6 +1436,14 @@ pub fn check(r: &Reservation) -> Result<usize, Refusal> {
     rt_core::first_fit_by(&load[..online], mask, density, r.band, BAND_LIMIT_PPM, |h| levels_ok(h, cand))
 }
 
+/// Undo what [`reserve`] and [`set_base_priority`] gave the running task `idx`
+/// through `SYS_SCHEDCTL`: its reservation, if any, goes and its base priority
+/// is `base` again.
+pub fn withdraw(idx: usize, base: u32) {
+    release(idx);
+    set_base_priority(idx, base);
+}
+
 /// Give task `idx` the base priority `prio`, re-bucketing it if it is queued,
 /// under its donation lock (a donation in progress keeps its boost; the base
 /// lands when the last one returns). For a task that is not running: a

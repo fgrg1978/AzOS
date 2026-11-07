@@ -249,6 +249,19 @@ const LAYOUT: Layout = slot_ref::SHM;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// The type of an install count: a task has one fault in flight, so a page
+/// has at most `MAX_TASKS` installs, and the count must hold that.
+///
+/// Canary `swap-install-count-narrow-canary`: a byte, which 256 installs on
+/// one page pass.
+#[cfg(not(feature = "swap-install-count-narrow-canary"))]
+type InstallCount = u16;
+#[cfg(feature = "swap-install-count-narrow-canary")]
+type InstallCount = u8;
+const _: () = assert!(
+    cfg!(feature = "swap-install-count-narrow-canary") || azos_limits::MAX_TASKS as usize <= InstallCount::MAX as usize
+);
+
 /// Maximum number of MemObjs system-wide (Kconfig `MAX_MEMOBJS`).
 pub const MAX_MEMOBJS: usize = azos_limits::MAX_MEMOBJS as usize;
 
@@ -565,8 +578,9 @@ pub struct MemObj {
     transit: u64,
     /// Fault installs in flight, per page (a Paged page's, a swappable page's):
     /// a frame a fault is about to put in a leaf is not taken, and the install
-    /// of one page holds off no other page.
-    installing: [u8; MAX_MEMOBJ_PAGES],
+    /// of one page holds off no other page. Each task has one fault in flight, so
+    /// the count of a page is at most `MAX_TASKS` ([`InstallCount`]).
+    installing: [InstallCount; MAX_MEMOBJ_PAGES],
 }
 
 /// Where a volatile object stands (module doc, "Volatile objects"). Always

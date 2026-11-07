@@ -882,10 +882,10 @@ pub(crate) fn restore_for_pinning(tid: u32, r: u32, pages: usize, site: u64) -> 
     azos_mm::pager::restore_object(r, pages).map_err(|e| refused_pin_restore(tid, u64::from(r), site, e))
 }
 
-/// A task is about to become real-time (`SYS_SCHEDCTL` class or priority): every
-/// swappable object it holds has its pages brought back first, and the change is
-/// refused if one cannot be (recorded as `pin-restore`, site 3). The class takes
-/// effect for the process's threads at their next storm, which finds it pinned.
+/// A task has just become real-time (`SYS_SCHEDCTL` class or priority, already
+/// in force, so a storm finds the process pinned): every swappable object it
+/// holds has its pages brought back, and the change is undone by the caller if
+/// one cannot be (recorded as `pin-restore`, site 3).
 ///
 /// Canary `swap-class-change-no-restore-canary`: nothing is brought back.
 pub(crate) fn restore_before_pinning(tid: u32) -> Result<(), i64> {

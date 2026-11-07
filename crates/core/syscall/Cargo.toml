@@ -117,6 +117,7 @@ swap-settle-canary = []
 swappable-ring-allowed-canary = []
 swap-pinned-map-no-restore-canary = []
 swap-class-change-no-restore-canary = []
+swap-class-change-order-canary = []
 # tls-hygiene canary, never in a real build: `SYS_THREAD_CREATE` with tls = 0
 # keeps the creator's thread pointer (the old riscv64 rule). abitest's
 # `threads: tls = 0 starts with 0` line goes red on riscv64.

@@ -85,9 +85,6 @@ pub fn sys_schedctl(target: u64, class: u64, prio: u64, runtime_us: u64, period_
             if prio >= RT_PRIORITY_THRESHOLD as u64 {
                 return Errno::EINVAL.to_syscall_ret();
             }
-            if let Err(e) = crate::ipc_handlers::restore_before_pinning(tid) {
-                return e;
-            }
             if class == SCHEDCTL_CLASS_RT {
                 if !azos_limits::SCHED_CLASS_RT {
                     return Errno::ENOSYS.to_syscall_ret();
@@ -95,35 +92,53 @@ pub fn sys_schedctl(target: u64, class: u64, prio: u64, runtime_us: u64, period_
                 if cur == Some(Class::Dl) {
                     return Errno::EBUSY.to_syscall_ret();
                 }
-                azos_sched::rt::set_base_priority(idx, prio as u32);
-                return 0;
-            }
-            if !azos_limits::SCHED_CLASS_DL {
-                return Errno::ENOSYS.to_syscall_ret();
-            }
-            if cur == Some(Class::Dl) {
-                return Errno::EBUSY.to_syscall_ret();
-            }
-            if runtime_us == 0 || period_us == 0 || runtime_us > period_us {
-                return Errno::EINVAL.to_syscall_ret();
-            }
-            let r = azos_sched::rt::Reservation {
-                runtime_us,
-                period_us,
-                deadline_us: 0,
-                hard: true,
-                cpu_mask: 0,
-                band: true,
-                level: prio as u32,
-            };
-            match azos_sched::rt::reserve(idx, r) {
-                Ok(_) => {
-                    azos_sched::rt::set_base_priority(idx, prio as u32);
-                    0
+            } else {
+                if !azos_limits::SCHED_CLASS_DL {
+                    return Errno::ENOSYS.to_syscall_ret();
                 }
-                // Admission's own errno (`Refusal::errno`), as spawn reports it.
-                Err(e) => -(e.errno() as i64),
+                if cur == Some(Class::Dl) {
+                    return Errno::EBUSY.to_syscall_ret();
+                }
+                if runtime_us == 0 || period_us == 0 || runtime_us > period_us {
+                    return Errno::EINVAL.to_syscall_ret();
+                }
             }
+            // Canary `swap-class-change-order-canary`: the pages come back before
+            // the class lands, so a storm between the two takes one again.
+            if cfg!(feature = "swap-class-change-order-canary") {
+                if let Err(e) = crate::ipc_handlers::restore_before_pinning(tid) {
+                    return e;
+                }
+            }
+            let base = azos_sched::current_sched_params().0;
+            if class == SCHEDCTL_CLASS_RT {
+                azos_sched::rt::set_base_priority(idx, prio as u32);
+            } else {
+                let r = azos_sched::rt::Reservation {
+                    runtime_us,
+                    period_us,
+                    deadline_us: 0,
+                    hard: true,
+                    cpu_mask: 0,
+                    band: true,
+                    level: prio as u32,
+                };
+                match azos_sched::rt::reserve(idx, r) {
+                    Ok(_) => azos_sched::rt::set_base_priority(idx, prio as u32),
+                    // Admission's own errno (`Refusal::errno`), as spawn reports it.
+                    Err(e) => return -(e.errno() as i64),
+                }
+            }
+            // The class is in force, so a storm finds the process pinned and takes
+            // nothing more; what it took before is brought back now. If that fails
+            // the change is undone.
+            if !cfg!(feature = "swap-class-change-order-canary") {
+                if let Err(e) = crate::ipc_handlers::restore_before_pinning(tid) {
+                    azos_sched::rt::withdraw(idx, base);
+                    return e;
+                }
+            }
+            0
         }
         _ => Errno::EINVAL.to_syscall_ret(),
     }
