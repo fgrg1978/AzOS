@@ -185,6 +185,9 @@ pub mod pager {
 
     /// No compressed pool here: the pages of an ended object have no entries.
     pub fn forget_object(_container: u64) {}
+
+    /// No fault waits here for a booking to end.
+    pub fn store_ended() {}
 }
 
 /// The COW share count (`cow_table.rs`), over the pool: `0` is untracked, the
