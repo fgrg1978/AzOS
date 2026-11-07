@@ -208,6 +208,11 @@ pub fn shim_user_pages() -> u32 {
     BUDGET.used()
 }
 
+/// A page restored from the pool: charged, never refused.
+pub fn mm_charge_restore(pages: u32) {
+    BUDGET.charge_restore(pages);
+}
+
 pub fn mm_charge(pages: u32) -> bool {
     shim_assert_serial("mm_charge");
     BUDGET.charge(pages)

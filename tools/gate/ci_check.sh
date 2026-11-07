@@ -13100,6 +13100,44 @@ host_job host_canary_row "swap: kernel ring refused canary" syscall-tests swappa
     a_swappable_object_is_refused_as_a_kernel_ring_and_recorded
 host_job host_canary_row "decisions: memory kill canary" decisions-tests mem-kill-unrecorded-canary \
     a_memory_kill_is_a_record_of_its_victim
+# Review fixes: a fork keeps a shared mapping's blank leaf table (fork-prunes-shared-canary);
+# a protect between a fault's look and its install leaves no writable leaf
+# (swap-access-unchecked-canary); an unmap between them takes the leaf back
+# (swap-cover-unchecked-canary); a take waits for an install or a map in flight
+# (swap-ready-ignored-canary); a failed restore gives its claim up
+# (swap-abort-leaves-claim-canary); an object ending mid-store or mid-restore
+# leaves nothing (swap-gone-entry-kept-canary, swap-forget-skipped-canary); a
+# pinned mapper maps with nothing out and a process that becomes real-time has its
+# pages brought back (swap-pinned-map-no-restore-canary,
+# swap-class-change-no-restore-canary).
+host_job zpool_host_row "swap: fork keeps shared leaf tables" a_fork_keeps_the_blank_leaf_table_of_a_shared_mapping
+host_job zpool_host_canary_row "swap: fork prune canary" fork-prunes-shared-canary \
+    a_fork_keeps_the_blank_leaf_table_of_a_shared_mapping
+host_job zpool_host_row "swap: protect before install" a_protect_between_look_and_install_leaves_no_writable_leaf
+host_job zpool_host_canary_row "swap: protect before install canary" swap-access-unchecked-canary \
+    a_protect_between_look_and_install_leaves_no_writable_leaf
+host_job zpool_host_row "swap: unmap before install" an_unmap_between_look_and_install_takes_the_leaf_back
+host_job zpool_host_canary_row "swap: unmap before install canary" swap-cover-unchecked-canary \
+    an_unmap_between_look_and_install_takes_the_leaf_back
+host_job zpool_host_row "swap: take waits for installs" a_take_waits_for_an_install_in_flight_and_for_a_map_being_built
+host_job zpool_host_canary_row "swap: take waits canary" swap-ready-ignored-canary \
+    a_take_waits_for_an_install_in_flight_and_for_a_map_being_built
+host_job host_canary_row "swap: touch before booking canary" syscall-tests swap-building-gone-canary \
+    a_touch_of_a_mapping_being_booked_is_a_retry
+host_job zpool_host_row "swap: restore abort" a_failed_restore_gives_its_claim_up
+host_job zpool_host_canary_row "swap: restore abort canary" swap-abort-leaves-claim-canary \
+    a_failed_restore_gives_its_claim_up
+host_job zpool_host_row "swap: object ends mid-move" an_object_that_ends_mid_store_or_mid_restore_leaves_nothing
+host_job zpool_host_canary_row "swap: mid-store entry canary" swap-gone-entry-kept-canary \
+    an_object_that_ends_mid_store_or_mid_restore_leaves_nothing
+host_job zpool_host_canary_row "swap: mid-restore entry canary" swap-forget-skipped-canary \
+    an_object_that_ends_mid_store_or_mid_restore_leaves_nothing
+host_job zpool_host_row "swap: pinned mapper maps nothing out" a_pinned_mapper_maps_an_object_with_nothing_out
+host_job zpool_host_canary_row "swap: pinned map canary" swap-pinned-map-no-restore-canary \
+    a_pinned_mapper_maps_an_object_with_nothing_out
+host_job zpool_host_row "swap: class change restores" a_change_to_a_real_time_class_brings_the_objects_pages_back
+host_job zpool_host_canary_row "swap: class change canary" swap-class-change-no-restore-canary \
+    a_change_to_a_real_time_class_brings_the_objects_pages_back
 # A fault on a page the storm is storing waits and maps nothing; a store that
 # fails gives the page back; the kernel does not address a swappable object; an
 # object is swappable or volatile. swap-transit-ignored-canary: a page in transit

@@ -417,6 +417,10 @@ pub enum Rule {
     /// Domain), whichever Domain the object is charged to. Once per object
     /// per storm.
     ReclaimSkip,
+    /// A mapper that pins memory (real-time, or a locked Domain) could not be
+    /// given back the pages of a shared swappable object that were out, and its
+    /// map, its fork's inheritance or its change of class was refused.
+    PinRestore,
 }
 
 impl Rule {
@@ -450,7 +454,7 @@ pub fn record_mem_kill(victim: u32, reason: MemKillReason, charge: u32, step: u8
     if cfg!(feature = "mem-kill-unrecorded-canary") {
         return;
     }
-    record(Rule::MemKill, Verdict::Deny, victim, [reason as u64, u64::from(charge), u64::from(step)]);
+    record(Rule::MemKill, Verdict::Refuse, victim, [reason as u64, u64::from(charge), u64::from(step)]);
 }
 
 /// The verdict of a record.
@@ -1438,6 +1442,16 @@ pub const RULES: &[RuleInfo] = &[
         fields: ["object", "mapper", "pages"],
         rejected_if_yes: "-",
         rejected_if_no: "take the object's pages: a real-time or locked mapper would fault on memory that was out",
+    },
+    RuleInfo {
+        // The subject is the task that asked. `object` is the object's packed reference (0 for a change of class,
+        // which concerns all of the process's), `site` 1 a map, 2 a fork's inheritance, 3 a change to a real-time class
+        // or priority, `errno` why the pages could not be brought back.
+        name: "pin-restore",
+        subject: "tid",
+        fields: ["object", "site", "errno"],
+        rejected_if_yes: "-",
+        rejected_if_no: "book the mapping or the class: a real-time task would take its first fault on memory that is out",
     },
 ];
 

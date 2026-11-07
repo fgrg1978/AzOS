@@ -656,6 +656,14 @@ pub fn discharge(key: Key, pages: u32) {
     }
 }
 
+/// Charge one page to the Domain `key` names for a page restored from the pool,
+/// never refused (`PageBudget::charge_restore`).
+pub fn charge_restore(key: Key) {
+    if let Some(d) = get(key) {
+        d.budget.charge_restore(1);
+    }
+}
+
 /// Forget the used count and the peak: the address space they described is
 /// gone. The limit stays.
 pub fn reset_budget(key: Key) {

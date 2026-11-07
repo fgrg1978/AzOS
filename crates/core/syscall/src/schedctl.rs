@@ -85,6 +85,9 @@ pub fn sys_schedctl(target: u64, class: u64, prio: u64, runtime_us: u64, period_
             if prio >= RT_PRIORITY_THRESHOLD as u64 {
                 return Errno::EINVAL.to_syscall_ret();
             }
+            if let Err(e) = crate::ipc_handlers::restore_before_pinning(tid) {
+                return e;
+            }
             if class == SCHEDCTL_CLASS_RT {
                 if !azos_limits::SCHED_CLASS_RT {
                     return Errno::ENOSYS.to_syscall_ret();

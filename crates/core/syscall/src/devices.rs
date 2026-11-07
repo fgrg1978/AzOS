@@ -610,7 +610,7 @@ pub(crate) enum RegionRefusal {
 pub(crate) fn ring_addressable(tid: u32, region: u32, pages: usize, site: u64) -> bool {
     let swappable = azos_ipc::memobj::memobj_describe_ref(region).is_ok_and(|d| d.attrs & azos_ipc::memobj::ATTR_SWAPPABLE != 0);
     if swappable && !cfg!(feature = "swappable-ring-allowed-canary") {
-        azos_decision::record(azos_decision::Rule::SwappableRing, azos_decision::Verdict::Deny, tid, [u64::from(region), pages as u64, site]);
+        azos_decision::record(azos_decision::Rule::SwappableRing, azos_decision::Verdict::Refuse, tid, [u64::from(region), pages as u64, site]);
         return false;
     }
     true

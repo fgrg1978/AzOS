@@ -34,8 +34,9 @@
 //!   into a frame of the task's own, charged and freed like anonymous memory,
 //!   so its stores never reach the cache or the file. See [`resolve_file_fault`].
 //! * A named shared object (`SYS_MO_MAP`) is mapped as a [`Backing::Obj`]
-//!   mapping: its frames are mapped when the mapping is made, so no fault
-//!   supplies one, and the space's records are where the mapping is placed,
+//!   mapping: its resident frames are mapped when the mapping is made, a page
+//!   of a swappable object that is out is supplied by the fault
+//!   ([`resolve_obj_fault`]), and the space's records are where the mapping is placed,
 //!   cut out whole and torn down ([`unmap_shared`]). The object's mapper list
 //!   ([`crate::memobj`]'s holders) is the reverse map.
 //! * An IPC pager (a ring-3 server answering page requests) is what
@@ -304,6 +305,25 @@ azos_common::ro_hook! {
 /// (host tests) it does nothing.
 pub fn set_restore_hook(f: fn(usize)) {
     RESTORE_HOOK.set(f);
+}
+
+azos_common::ro_hook! {
+    /// What a restore of a shared object's page does once its charge is made
+    /// (the object's hold makes it): back off a Domain at its limit.
+    static RESTORE_WAIT_HOOK: fn(usize);
+}
+
+/// Install the hook a restore of a shared object's page calls after it
+/// installed the page ([`set_restore_hook`] does the charge for the private
+/// pages; the object's own hold does it for these).
+pub fn set_restore_wait_hook(f: fn(usize)) {
+    RESTORE_WAIT_HOOK.set(f);
+}
+
+fn restore_wait(owner: usize) {
+    if let Some(f) = RESTORE_WAIT_HOOK.get() {
+        f(owner);
+    }
 }
 
 fn restore_hook(owner: usize) {
@@ -1044,7 +1064,9 @@ impl DomainReclaim<'_> {
         }
         // The object ended while the page was being stored: nobody can ask for
         // this copy.
-        with_pool(|p| p.remove_if(container, f.idx as u64, gen));
+        if !cfg!(feature = "swap-gone-entry-kept-canary") {
+            with_pool(|p| p.remove_if(container, f.idx as u64, gen));
+        }
         f.state = FlightState::Gone;
         Err(zpool::Error::Incompressible)
     }
@@ -1900,7 +1922,7 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Mapping, obj: u32, share
     let mut _pin = InstallHold(None);
     let frame = if shared {
         let f = memobj::memobj_paged_frame_pinned_ref(obj, idx, r.write).map(PhysAddr::new).map_err(file_err)?;
-        _pin = InstallHold(Some(obj));
+        _pin = InstallHold(Some((obj, idx)));
         f
     } else {
         // SAFETY: filled right below, before the entry that exposes it exists.
@@ -1924,12 +1946,12 @@ fn resolve_file_fault(space: SpaceRef, page: usize, r: &Mapping, obj: u32, share
 
 /// The object's hold on a frame a fault is about to put in a leaf, until the
 /// install is over (`memobj_fault_look`, `memobj_paged_frame_pinned_ref`).
-struct InstallHold(Option<u32>);
+struct InstallHold(Option<(u32, usize)>);
 
 impl Drop for InstallHold {
     fn drop(&mut self) {
-        if let Some(obj) = self.0 {
-            memobj::memobj_install_done_ref(obj);
+        if let Some((obj, idx)) = self.0 {
+            memobj::memobj_install_done_ref(obj, idx);
         }
     }
 }
@@ -1985,6 +2007,13 @@ fn install_leaf(space: SpaceRef, page: usize, r: &Mapping, frame: PhysAddr, writ
         }
     };
 
+    #[cfg(not(target_os = "none"))]
+    {
+        let h = INSTALL_HOOK.lock().take();
+        if let Some(h) = h {
+            h();
+        }
+    }
     let same = space.lock().filter(|sp| {
         sp.recorded && sp.set.find(page).is_some_and(|now| now.write == r.write && now.backing == r.backing)
     });
@@ -2017,7 +2046,7 @@ fn install_leaf(space: SpaceRef, page: usize, r: &Mapping, frame: PhysAddr, writ
     let covered = match kind {
         Leaf::Owned => return Ok(()),
         Leaf::Cache { obj, idx } => memobj::memobj_page_phys_ref(obj, idx).ok().flatten().map(PhysAddr::new) == Some(frame),
-        Leaf::Shared { obj, idx } => memobj::memobj_maps_frame(obj, root, idx, frame.as_usize()),
+        Leaf::Shared { obj, idx } => memobj::memobj_maps_frame(obj, root, idx, frame.as_usize(), write),
     };
     if !covered {
         // The object let the page go before the install could be covered.
@@ -2041,11 +2070,75 @@ struct RestoreClaim {
 
 impl Drop for RestoreClaim {
     fn drop(&mut self) {
-        if !self.installed {
+        // Canary `swap-abort-leaves-claim-canary`: a restore that failed keeps
+        // its claim, and the page cannot be asked for again.
+        if !self.installed && !cfg!(feature = "swap-abort-leaves-claim-canary") {
             memobj::memobj_restore_abort(self.obj, self.idx);
         }
         store_ended();
     }
+}
+
+/// Bring back page `idx` of the object `obj`, whose restore the caller claimed
+/// ([`memobj::ObjLook::Restore`], [`memobj::RestoreClaim::Claimed`]): the claim ends
+/// here, installed or given up, and the faults waiting for it are woken. No lock
+/// is held across the decompression or the swap device (rule F1).
+fn restore_claimed(obj: u32, idx: usize) -> KResult<()> {
+    let mut claim = RestoreClaim { obj, idx, installed: false };
+    let container = memobj::pool_container(obj);
+    // The page is out, so the pool has it; an entry that is gone is a page
+    // lost, and the task that touched it dies.
+    let (frame, gen, owner) =
+        zpool_restore_at(container, idx as u64, PageMarker::Compressed, None)?.ok_or(KernelError::InvalidArg)?;
+    // The charge is made in the hold that installs the page.
+    if !memobj::memobj_restore_install(obj, idx, frame.as_usize()) {
+        // The object ended while the page was fetched.
+        let _ = pmm::free_page(frame);
+        return Err(KernelError::NotMapped);
+    }
+    claim.installed = true;
+    with_pool(|p| p.remove_if(container, idx as u64, gen));
+    restore_wait(owner);
+    Ok(())
+}
+
+/// Bring back every page of the object `obj` that is out, for a mapper that
+/// pins memory ([`memobj::memobj_holder_pins`]): it has none out when its
+/// mapping is booked, or when it becomes real-time. A page a store is moving is
+/// waited for. `Err` when a page cannot be brought back; nothing is half done
+/// that matters, the pages restored stay in memory.
+pub fn restore_object(obj: u32, pages: usize) -> KResult<()> {
+    for idx in 0..pages {
+        let mut tries = 0;
+        loop {
+            let seq = MARKER_SEQ.load(Ordering::Acquire);
+            match memobj::memobj_claim_restore(obj, idx) {
+                memobj::RestoreClaim::Claimed => {
+                    restore_claimed(obj, idx)?;
+                    break;
+                }
+                memobj::RestoreClaim::Resident | memobj::RestoreClaim::Gone => break,
+                memobj::RestoreClaim::Moving => {
+                    tries += 1;
+                    if tries > FAULT_TRIES {
+                        return Err(KernelError::CapacityFull);
+                    }
+                    MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seq);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`restore_object`] for every swappable object the process `tid` holds.
+pub fn restore_objects_of(tid: u32) -> KResult<()> {
+    let mut from = 0;
+    while let Some((next, obj, pages)) = memobj::memobj_out_object_of(tid, from) {
+        restore_object(obj, pages)?;
+        from = next;
+    }
+    Ok(())
 }
 
 /// Resolve a fault in a mapping of a shared object (`m`, of the object `obj`),
@@ -2063,25 +2156,12 @@ fn resolve_obj_fault(space: SpaceRef, page: usize, m: &Mapping, obj: u32, seq: u
             Ok(Step::Again)
         }
         ObjLook::Frame { frame, write } => {
-            let _hold = InstallHold(Some(obj));
+            let _hold = InstallHold(Some((obj, idx)));
             install_leaf(space, page, m, PhysAddr::new(frame), write, Leaf::Shared { obj, idx })?;
             Ok(Step::Done)
         }
         ObjLook::Restore => {
-            let mut claim = RestoreClaim { obj, idx, installed: false };
-            let container = memobj::pool_container(obj);
-            // The page is out, so the pool has it; an entry that is gone is a
-            // page lost, and the task that touched it dies.
-            let (frame, gen, owner) = zpool_restore_at(container, idx as u64, PageMarker::Compressed, None)?
-                .ok_or(KernelError::InvalidArg)?;
-            if !memobj::memobj_restore_install(obj, idx, frame.as_usize()) {
-                // The object ended while the page was fetched.
-                let _ = pmm::free_page(frame);
-                return Err(KernelError::NotMapped);
-            }
-            claim.installed = true;
-            with_pool(|p| p.remove_if(container, idx as u64, gen));
-            restore_hook(owner);
+            restore_claimed(obj, idx)?;
             Ok(Step::Again)
         }
     }
@@ -3260,7 +3340,7 @@ pub fn shim_set_install_hook(hook: Option<fn()>) {
 /// [`fork_clone`]'s (`true`: the walk builds the child's leaf table for them); a
 /// shared mapping's frames are another owner's, and the child does not inherit
 /// them with the walk.
-pub(crate) fn passed_ranges(r: SpaceRef) -> Result<alloc::vec::Vec<(usize, usize, bool)>, MapError> {
+pub(crate) fn passed_ranges(r: SpaceRef) -> Result<alloc::vec::Vec<crate::cow::PassedRange>, MapError> {
     let mut out = alloc::vec::Vec::new();
     // The caller holds the group's layout lock: the set is the same twice.
     // Canary `fork-passes-nothing-canary`: the walk passes no mapping.
@@ -3270,7 +3350,7 @@ pub(crate) fn passed_ranges(r: SpaceRef) -> Result<alloc::vec::Vec<(usize, usize
     out.try_reserve_exact(n).map_err(|_| MapError::Full)?;
     if let Some(sp) = r.lock().filter(|sp| sp.recorded) {
         out.extend(
-            sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some() || m.maps_shared_frames()).map(|m| (m.start, m.end, m.inherited())),
+            sp.set.as_slice().iter().filter(|m| m.anon_obj().is_some() || m.maps_shared_frames()).map(|m| (m.start, m.end, m.inherited(), m.maps_shared_frames())),
         );
     }
     Ok(out)

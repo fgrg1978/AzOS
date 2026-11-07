@@ -208,7 +208,7 @@ fn fork_cow_walk_held(
     Ok((pt, hold))
 }
 
-fn fork_cow_walk(parent_pt: usize, anon: &[(usize, usize, bool)], concurrent: bool) -> KResult<usize> {
+fn fork_cow_walk(parent_pt: usize, anon: &[PassedRange], concurrent: bool) -> KResult<usize> {
     let child_pt = vmm::create_pagetable()?;
 
     let mut pruned = Pruned { tables: [0; PRUNE_MAX], n: 0 };
@@ -261,8 +261,14 @@ struct Pruned {
 /// What the walk passes: the anonymous mappings, the physical ranges a fork
 /// gives the child and the shared mappings (sorted, disjoint; `true`: the clone
 /// makes the child's pages, which needs its leaf table).
+/// A mapping a fork's walk passes: its range, whether the clone fills the child's
+/// pages (`true`), and whether its frames are another owner's, a shared
+/// object's or the cache's, whose walkers reach the table through records
+/// without the space's lock.
+pub(crate) type PassedRange = (usize, usize, bool, bool);
+
 struct Skip<'a> {
-    anon: &'a [(usize, usize, bool)],
+    anon: &'a [PassedRange],
 }
 
 /// How much of a leaf table's span the anonymous mappings hold.
@@ -277,10 +283,10 @@ impl Skip<'_> {
     /// The anonymous mappings' hold on `[lo, hi)`.
     #[inline]
     fn held(&self, lo: usize, hi: usize) -> Held {
-        let i = self.anon.partition_point(|&(_, e, _)| e <= lo);
+        let i = self.anon.partition_point(|&(_, e, _, _)| e <= lo);
         match self.anon.get(i) {
-            Some(&(s, e, _)) if s <= lo && e >= hi => Held::All,
-            Some(&(s, _, _)) if s < hi => Held::Part,
+            Some(&(s, e, _, _)) if s <= lo && e >= hi => Held::All,
+            Some(&(s, _, _, _)) if s < hi => Held::Part,
             _ => Held::None,
         }
     }
@@ -289,15 +295,26 @@ impl Skip<'_> {
     /// the clone's, which needs the child's leaf table.
     #[inline]
     fn anon_holds(&self, lo: usize, hi: usize) -> bool {
-        let i = self.anon.partition_point(|&(_, e, _)| e <= lo);
-        self.anon[i..].iter().take_while(|&&(s, _, _)| s < hi).any(|&(_, _, a)| a)
+        let i = self.anon.partition_point(|&(_, e, _, _)| e <= lo);
+        self.anon[i..].iter().take_while(|&&(s, _, _, _)| s < hi).any(|&(_, _, a, _)| a)
+    }
+
+    /// Does a shared mapping hold a page of `[lo, hi)`? The reclaim of its
+    /// object reaches this table through the object's records, with no lock of
+    /// the space or the fork's hold, so the table stays hooked even when blank.
+    ///
+    /// Canary `fork-prunes-shared-canary`: no table is kept for them.
+    #[inline]
+    fn shared_holds(&self, lo: usize, hi: usize) -> bool {
+        let i = self.anon.partition_point(|&(_, e, _, _)| e <= lo);
+        !cfg!(feature = "fork-prunes-shared-canary") && self.anon[i..].iter().take_while(|&&(s, _, _, _)| s < hi).any(|&(_, _, _, sh)| sh)
     }
 
     /// Does a mapping the walk passes hold the page at `va`?
     #[inline]
     fn anon_at(&self, va: usize) -> bool {
-        let i = self.anon.partition_point(|&(_, e, _)| e <= va);
-        self.anon.get(i).is_some_and(|&(s, _, _)| s <= va)
+        let i = self.anon.partition_point(|&(_, e, _, _)| e <= va);
+        self.anon.get(i).is_some_and(|&(s, _, _, _)| s <= va)
     }
 }
 
@@ -403,11 +420,11 @@ fn fork_cow_l2<const CONCURRENT: bool>(
             let mut vpn0_next = 0usize;
             // A leaf table one anonymous or shared mapping holds whole is the
             // clone's or nobody's: not walked at all.
+            const L0_SPAN_SHIFT: usize = azos_arch_api::PAGE_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
+            const L1_SPAN_SHIFT: usize = L0_SPAN_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
+            let lo = base | (vpn2 << L1_SPAN_SHIFT) | (vpn1 << L0_SPAN_SHIFT);
+            let hi = lo + (1usize << L0_SPAN_SHIFT);
             let part = {
-                const L0_SPAN_SHIFT: usize = azos_arch_api::PAGE_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
-                const L1_SPAN_SHIFT: usize = L0_SPAN_SHIFT + (azos_arch_api::PAGE_SHIFT - 3);
-                let lo = base | (vpn2 << L1_SPAN_SHIFT) | (vpn1 << L0_SPAN_SHIFT);
-                let hi = lo + (1usize << L0_SPAN_SHIFT);
                 let held = skip.held(lo, hi);
                 // The child's leaf table for the clone, made now, before the
                 // kernel's entries are merged into the child's root: the merge
@@ -426,6 +443,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
             // under `next_present` is the whole-table blank test.
             if !CONCURRENT
                 && pruned.n < PRUNE_MAX
+                && !skip.shared_holds(lo, hi)
                 && crate::vmm::next_present(l0_pt, 0, entries) >= entries
             {
                 let l1_ptr = crate::addr::phys_to_virt(l1_pt + vpn1 * 8) as *mut u64;

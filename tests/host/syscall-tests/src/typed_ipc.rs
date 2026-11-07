@@ -2216,6 +2216,292 @@ mod swap_rows {
         src.keep(v);
     }
 
+    static HOOK_TID: AtomicU32 = AtomicU32::new(0);
+    static HOOK_OBJ: AtomicU32 = AtomicU32::new(0);
+
+    fn protect_read_only_now() {
+        let _ = mo::memobj_protect_ref(HOOK_TID.load(Ordering::SeqCst), HOOK_OBJ.load(Ordering::SeqCst), false);
+    }
+
+    fn unmap_now() {
+        let _ = mo::memobj_take_mapping_ref(HOOK_TID.load(Ordering::SeqCst), HOOK_OBJ.load(Ordering::SeqCst));
+    }
+
+    /// A page that is resident with no leaf anywhere: stored and put back.
+    fn resident_without_leaf(p: &Pair) -> usize {
+        let frame = fill(p.r, 0, 0x33);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v));
+        src.keep(v);
+        assert_eq!(mo::memobj_page_phys_ref(p.r, 0), Ok(Some(frame)));
+        frame
+    }
+
+    /// **A protect between a fault's look and its install does not leave a writable
+    /// leaf on a read-only mapping.** The hook runs the protect where the fault is
+    /// about to write the leaf; the install is found uncovered and undone.
+    ///
+    /// **Canary.** `swap-access-unchecked-canary`: the access is not compared.
+    #[test]
+    fn a_protect_between_look_and_install_leaves_no_writable_leaf() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        mo::set_protect_hook(host_protect);
+        let p = pair(a, b, 1);
+        resident_without_leaf(&p);
+        HOOK_TID.store(b, Ordering::SeqCst);
+        HOOK_OBJ.store(p.r, Ordering::SeqCst);
+        pg::shim_set_install_hook(Some(protect_read_only_now));
+        let r = pg::resolve_fault(azos_sched::shim_space(p.pt_b), p.va_b);
+        pg::shim_set_install_hook(None);
+        assert!(r.is_ok());
+        assert!(!azos_mm::vmm::user_write_would_be_permitted(p.pt_b, p.va_b), "a writable leaf on a read-only mapping");
+    }
+
+    /// **An unmap between a fault's look and its install takes the leaf the fault
+    /// wrote.** The record no longer reaches the page, so the install is undone.
+    ///
+    /// **Canary.** `swap-cover-unchecked-canary`: the leaf is never found uncovered.
+    #[test]
+    fn an_unmap_between_look_and_install_takes_the_leaf_back() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        resident_without_leaf(&p);
+        HOOK_TID.store(b, Ordering::SeqCst);
+        HOOK_OBJ.store(p.r, Ordering::SeqCst);
+        pg::shim_set_install_hook(Some(unmap_now));
+        let _ = pg::resolve_fault(azos_sched::shim_space(p.pt_b), p.va_b);
+        pg::shim_set_install_hook(None);
+        assert!(translate(p.pt_b, p.va_b).is_none(), "the record went, and the leaf with it");
+    }
+
+    /// **A take waits for an install in flight and for a map being built.**
+    ///
+    /// **Canary.** `swap-ready-ignored-canary`: neither stops it.
+    #[test]
+    fn a_take_waits_for_an_install_in_flight_and_for_a_map_being_built() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        resident_without_leaf(&p);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        // A fault holds the frame between its look and its install.
+        let look = mo::memobj_fault_look(p.r, p.pt_b, 0);
+        assert!(matches!(look, mo::ObjLook::Frame { .. }));
+        assert!(!src.unmap(v), "an install is in flight");
+        mo::memobj_install_done_ref(p.r, 0);
+        // A map is being built: its leaves are in flight, no record names them.
+        let held = held::<Shm>(a, CapPerms::RW.union(CapPerms::MAP), p.r);
+        let _ = held;
+        assert!(mo::memobj_unmap_begin_ref(b, p.r).is_ok());
+        assert!(!src.unmap(v), "an unmap is being built");
+        mo::memobj_unmap_end_ref(b, p.r);
+        assert!(src.unmap(v), "nothing is in flight now");
+        src.keep(v);
+    }
+
+    /// **A thread that touches a mapping before it is booked gets a retry, not a
+    /// kill.** The map's leaves are being made and no record names them yet: the
+    /// fault waits and tries again.
+    ///
+    /// **Canary.** `swap-building-gone-canary`: it is a bad address.
+    #[test]
+    fn a_touch_of_a_mapping_being_booked_is_a_retry() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let pt_a = ring3(a, SLOT_A);
+        let pt_b = ring3(b, SLOT_B);
+        become_task(a, pt_a);
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        assert!(mo::memobj_acquire_ref(b, r).is_ok());
+        let mut pages = [0usize; 1];
+        assert!(mo::memobj_map_begin_ref(b, r, true, &mut pages).is_ok(), "the map is being built");
+        assert_eq!(mo::memobj_fault_look(r, pt_b, 0), mo::ObjLook::Wait);
+        mo::memobj_map_abandon_ref(b, r);
+    }
+
+    /// **A restore that fails gives its claim up.** The pool lost the page's
+    /// entry: the fault fails, the page stays out, and the next fault is the
+    /// restore's again, not a waiter for one that never ends.
+    ///
+    /// **Canary.** `swap-abort-leaves-claim-canary`: the claim stays.
+    #[test]
+    fn a_failed_restore_gives_its_claim_up() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 1);
+        fill(p.r, 0, 0x44);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        let v = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        pg::shim_forget_pool();
+        become_task(p.b, p.pt_b);
+        assert!(translate_user(p.pt_b, p.va_b, false).is_none(), "the page is lost");
+        assert_eq!(mo::memobj_describe_ref(p.r).unwrap().out, 1, "and stays out");
+        assert_eq!(mo::memobj_fault_look(p.r, p.pt_b, 0), mo::ObjLook::Restore, "the next fault owns the restore");
+        mo::memobj_restore_abort(p.r, 0);
+    }
+
+    /// **An object that ends while a page is being stored drops the pool's copy
+    /// and the frame, and one that ends while a page is being restored leaves no
+    /// entry.**
+    ///
+    /// **Canaries.** `swap-gone-entry-kept-canary`: the store's copy stays.
+    /// `swap-forget-skipped-canary`: the restoring page's entry stays.
+    #[test]
+    fn an_object_that_ends_mid_store_or_mid_restore_leaves_nothing() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 2);
+        fill(p.r, 0, 0x55);
+        fill(p.r, 1, 0x56);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        // Page 1 is out, page 0 is being stored when the object ends.
+        let v1 = Victim::Obj { ident: p.r, idx: 1 };
+        assert!(src.unmap(v1) && src.store(v1).is_ok());
+        src.free(v1);
+        let used = azos_mm::shim_pages_in_use();
+        let v0 = Victim::Obj { ident: p.r, idx: 0 };
+        assert!(src.unmap(v0));
+        // A fault claims page 1's restore.
+        assert_eq!(mo::memobj_claim_restore(p.r, 1), mo::RestoreClaim::Claimed);
+        for t in [a, b] {
+            azos_ipc::memobj::memobj_release_all(t);
+        }
+        assert_eq!(pg::zpool_stats().entries, 0, "the object's pool copies went with it");
+        assert!(src.store(v0).is_err(), "the store finds the object gone");
+        assert_eq!(pg::zpool_stats().entries, 0, "and its copy does not stay");
+        src.keep(v0);
+        assert!(!mo::memobj_restore_install(p.r, 1, 0), "the restore finds the object gone");
+        assert!(azos_mm::shim_pages_in_use() <= used, "no frame is left behind");
+    }
+
+    /// **A mapper that pins memory finds nothing out when its map is booked.**
+    /// B is real-time: the object's page the storm took is back when B's map ends.
+    ///
+    /// **Canary.** `swap-pinned-map-no-restore-canary`: nothing is brought back.
+    #[test]
+    fn a_pinned_mapper_maps_an_object_with_nothing_out() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        struct Unpin(u32);
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                azos_sched::shim_pin_task_memory(self.0, false);
+            }
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let pt_a = ring3(a, SLOT_A);
+        let pt_b = ring3(b, SLOT_B);
+        become_task(a, pt_a);
+        let cap = handle(sys_shm_create_typed(2, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        fill(r, 0, 0x61);
+        fill(r, 1, 0x62);
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        for idx in 0..2 {
+            let v = Victim::Obj { ident: r, idx };
+            assert!(src.unmap(v) && src.store(v).is_ok());
+            src.free(v);
+        }
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0b11);
+        let _unpin = Unpin(b);
+        azos_sched::shim_pin_task_memory(b, true);
+        let hb = held::<Shm>(b, CapPerms::RW.union(CapPerms::MAP), r);
+        become_task(b, pt_b);
+        assert!(sys_shm_map_typed(hb, 0) > 0);
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0, "a pinned mapper has no page out");
+    }
+
+    /// **A process that becomes real-time has its objects' pages brought back
+    /// first.**
+    ///
+    /// **Canary.** `swap-class-change-no-restore-canary`: nothing is brought back.
+    #[test]
+    fn a_change_to_a_real_time_class_brings_the_objects_pages_back() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let a = fresh_tid();
+        let _s = Scene::new(&[a]);
+        let _h = hooks();
+        let _pt = ring3(a, SLOT_A);
+        let cap = handle(sys_shm_create_typed(1, SWAPPABLE));
+        let r = resource_of::<Shm>(a, cap);
+        fill(r, 0, 0x71);
+        let key = mo::memobj_describe_ref(r).unwrap().charge_key;
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], key, 0, &mut ages);
+        let v = Victim::Obj { ident: r, idx: 0 };
+        assert!(src.unmap(v) && src.store(v).is_ok());
+        src.free(v);
+        assert!(crate::ipc_handlers::restore_before_pinning(a).is_ok());
+        assert_eq!(mo::memobj_describe_ref(r).unwrap().out, 0);
+    }
+
+    /// **A fork does not free the leaf table of a shared mapping whose pages are
+    /// all out.** The reclaim reaches that table through the object's records with
+    /// no lock of the space, so it must stay hooked even when it holds no leaf.
+    ///
+    /// **Canary.** `fork-prunes-shared-canary`: a blank table is unhooked and freed.
+    #[test]
+    fn a_fork_keeps_the_blank_leaf_table_of_a_shared_mapping() {
+        if !azos_mm::zpool::ENABLED {
+            return;
+        }
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        let p = pair(a, b, 2);
+        let mut ages = Ages::new();
+        let mut src = DomainReclaim::new(&[], p.key, 0, &mut ages);
+        for idx in 0..2 {
+            let v = Victim::Obj { ident: p.r, idx };
+            assert!(src.unmap(v) && src.store(v).is_ok());
+            src.free(v);
+        }
+        assert!(azos_mm::vmm::leaf_table_present(p.pt_a, p.va_a), "the table holds the mapping's window");
+        let (child, hold) = azos_mm::vmm::fork_cow_shared_held(azos_sched::shim_space(p.pt_a), false).expect("fork");
+        assert!(azos_mm::vmm::leaf_table_present(p.pt_a, p.va_a), "and a fork leaves it hooked");
+        drop(hold);
+        azos_mm::vmm::destroy_user_pagetable(child);
+    }
+
     /// **A real-time thread anywhere in a process pins what the process maps.**
     /// B's leader is an ordinary task and a thread of B's group is real-time:
     /// the object B maps is left alone, and taken once the thread leaves.
@@ -2319,7 +2605,7 @@ mod swap_rows {
         assert_eq!(ring_region(a, swap as u32, CapPerms::READ, 1), Err(RegionRefusal::Swappable));
         assert_eq!(azos_decision::total(), before + 1, "the refusal is a record");
         let rec = azos_decision::lookup(before + 1).expect("kept");
-        assert_eq!((rec.rule, rec.verdict, rec.subject), (azos_decision::Rule::SwappableRing as u8, azos_decision::Verdict::Deny as u8, a));
+        assert_eq!((rec.rule, rec.verdict, rec.subject), (azos_decision::Rule::SwappableRing as u8, azos_decision::Verdict::Refuse as u8, a));
         assert_eq!(rec.n[2], 1, "the site");
         assert!(ring_region(a, plain as u32, CapPerms::READ, 1).is_ok(), "a plain object is a ring");
         assert!(ring_addressable(a, resource_of::<Shm>(a, plain), 1, 3));

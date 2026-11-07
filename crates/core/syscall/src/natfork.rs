@@ -296,6 +296,13 @@ fn inherit_shm_pinned(parent: u32, child: u32, h: CapHandle, perms: CapPerms, r:
         memobj::memobj_pipe_drop_all_ref(child, r);
         let _ = memobj::memobj_release_ref(child, r);
     };
+    // A child that pins memory has none of the object's pages out.
+    if let Ok(d) = memobj::memobj_describe_ref(r) {
+        if crate::ipc_handlers::restore_for_pinning(child, r, d.page_count, 2).is_err() {
+            release_child();
+            return Err(Errno::ENOMEM);
+        }
+    }
     // A swappable object's pages that are out have no leaf to copy.
     let sparse = memobj::memobj_describe_ref(r).is_ok_and(|d| d.attrs & memobj::ATTR_SWAPPABLE != 0);
     let mut leaves = azos_mm::cow::ForkLeaves { parent_pt, child_pt, va, pages, sparse };

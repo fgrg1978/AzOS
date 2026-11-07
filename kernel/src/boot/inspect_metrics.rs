@@ -116,7 +116,7 @@ use azos_inspect::{Builder, Error, NodeId, Writer};
 /// CPUs the trace and scheduler nodes can name.
 pub(crate) const CPUS_MAX: usize = 64;
 /// Decision rules the by-rule directory can hold.
-pub(crate) const RULES_MAX: usize = 96;
+pub(crate) const RULES_MAX: usize = 128;
 /// Network interfaces the net directory can name.
 pub(crate) const IFACES_MAX: usize = 8;
 /// Idle states and power domains of the energy model (`azos_energy`).

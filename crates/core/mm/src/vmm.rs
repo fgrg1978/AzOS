@@ -739,6 +739,13 @@ fn kernel_shadow_step(kt: usize, vpn: usize, level: usize, child: usize) -> KRes
     .map_err(|()| KernelError::AlreadyMapped)
 }
 
+/// Host suites only: is the leaf table that maps `vaddr` hooked into the tree
+/// (blank or not)?
+#[cfg(not(target_os = "none"))]
+pub fn leaf_table_present(pt_phys: usize, vaddr: usize) -> bool {
+    walk(pt_phys, vaddr, false).is_ok()
+}
+
 pub(crate) fn walk(pt_phys: usize, vaddr: usize, alloc: bool) -> KResult<*mut u64> {
     walk_charged(pt_phys, vaddr, alloc, false)
 }

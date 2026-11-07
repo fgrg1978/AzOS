@@ -26,6 +26,9 @@ impl Host for Up {
     fn meta_discharge(&self, key: u32, bytes: u64) {
         crate::cap_store::kmem_discharge(key, crate::cap_store::KMEM_MEMOBJ_META, bytes)
     }
+    fn charge_restore(&self, key: u32) {
+        azos_sched::mm_charge_restore_domain(key)
+    }
     fn task_charge(&self, pages: u32) -> bool {
         azos_sched::mm_charge(pages)
     }

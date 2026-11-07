@@ -929,6 +929,11 @@ pub fn mm_discharge_domain(key: crate::domain::Key, pages: u32) {
     }
 }
 
+/// Charge a restored page to the Domain `key` names, never refused.
+pub fn mm_charge_restore_domain(key: crate::domain::Key) {
+    crate::domain::charge_restore(key);
+}
+
 /// Declare the current task's budget, in 4 KiB pages. `0` = no limit.
 pub fn set_current_user_page_limit(limit: u32) {
     let idx = my_idx();

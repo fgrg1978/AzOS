@@ -2080,3 +2080,29 @@ mod proxy_tests {
         assert_eq!(c.proxy(A, 16), None);
     }
 }
+
+/// **An exec forgets the shared-memory mapping records of the image it leaves, and
+/// something makes it.** The commit calls the exec hook before the old space goes,
+/// and the kernel registers the object table's `memobj_exec` there: if either
+/// line goes, a record keeps naming a root that is destroyed, and reclaim walks it.
+///
+/// **Canary (by hand).** Delete the call in `exec_commit` or the registration in
+/// `install_sched_hooks`: red.
+#[cfg(test)]
+mod exec_hook {
+    fn code(src: &str) -> String {
+        src.lines().map(|l| l.split("//").next().unwrap()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_exec_commit_calls_the_hook_and_the_kernel_registers_the_object_tables_forget() {
+        let process = code(include_str!("../../../../crates/core/sched/src/process.rs"));
+        let commit = &process[process.find("pub fn exec_commit").expect("exec_commit moved")..];
+        assert!(commit.contains("invoke_task_exec_hook("), "exec_commit no longer calls the exec hook");
+        let boot = code(include_str!("../../../../kernel/src/boot/sched.rs"));
+        assert!(
+            boot.contains("set_task_exec_hook(azos_ipc::memobj::memobj_exec)"),
+            "the kernel no longer registers memobj_exec as the exec hook"
+        );
+    }
+}

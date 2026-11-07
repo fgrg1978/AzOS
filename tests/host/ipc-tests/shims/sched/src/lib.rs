@@ -151,6 +151,8 @@ pub fn mm_charge_domain(key: u32, pages: u32) -> bool {
 
 /// `azos_sched::mm_discharge_domain`. Applied at once here (the kernel posts
 /// it for the Domain's next charge to fold in; the observable is the same).
+pub fn mm_charge_restore_domain(_key: u32) {}
+
 pub fn mm_discharge_domain(key: u32, pages: u32) {
     with(|s| {
         let c = charged_mut(s, key);

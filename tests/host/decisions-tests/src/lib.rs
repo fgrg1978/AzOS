@@ -381,7 +381,7 @@ mod tests {
         azos_decision::record_mem_kill(4747, azos_decision::MemKillReason::Quota, 321, 2);
         assert_eq!(azos_decision::total(), before + 1, "the kill was recorded");
         let p = azos_decision::lookup(azos_decision::total()).expect("a kill is durable");
-        assert_eq!((p.rule, p.verdict, p.subject), (Rule::MemKill as u8, Verdict::Deny as u8, 4747));
+        assert_eq!((p.rule, p.verdict, p.subject), (Rule::MemKill as u8, Verdict::Refuse as u8, 4747));
         assert_eq!(p.n, [2, 321, 2]);
     }
 
@@ -642,6 +642,7 @@ mod tests {
             (Rule::MemKill, 94, "mem-kill"),
             (Rule::SwappableRing, 95, "swappable-ring"),
             (Rule::ReclaimSkip, 96, "reclaim-skip"),
+            (Rule::PinRestore, 97, "pin-restore"),
         ];
         assert!(azos_decision::RULES.len() >= all.len(), "a pinned rule lost its entry");
         for &(rule, num, name) in all {

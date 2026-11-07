@@ -79,6 +79,13 @@ pub fn mm_charge_domain(key: u32, pages: u32) -> bool {
     !is_current_domain(key) || syscall_test_sched::mm_charge(pages)
 }
 
+/// `azos_sched::mm_charge_restore_domain`, over the one budget stand-in.
+pub fn mm_charge_restore_domain(key: u32) {
+    if is_current_domain(key) {
+        syscall_test_sched::mm_charge_restore(1)
+    }
+}
+
 /// `azos_sched::mm_discharge_domain`, over the one budget stand-in.
 pub fn mm_discharge_domain(key: u32, pages: u32) {
     if is_current_domain(key) {

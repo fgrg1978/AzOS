@@ -869,6 +869,39 @@ pub(crate) fn reap_stale_mappings() {
     });
 }
 
+/// A mapper that pins memory (a real-time thread in its group, a locked Domain)
+/// has no page of a shared swappable object out once it maps or inherits it: they
+/// are brought back before the mapping is booked, and the map is refused if one
+/// cannot be (`site` 1 a map, 2 a fork's inheritance; recorded as `pin-restore`).
+///
+/// Canary `swap-pinned-map-no-restore-canary`: nothing is brought back.
+pub(crate) fn restore_for_pinning(tid: u32, r: u32, pages: usize, site: u64) -> Result<(), i64> {
+    if cfg!(feature = "swap-pinned-map-no-restore-canary") || !azos_ipc::memobj::memobj_holder_pins(tid) {
+        return Ok(());
+    }
+    azos_mm::pager::restore_object(r, pages).map_err(|e| refused_pin_restore(tid, u64::from(r), site, e))
+}
+
+/// A task is about to become real-time (`SYS_SCHEDCTL` class or priority): every
+/// swappable object it holds has its pages brought back first, and the change is
+/// refused if one cannot be (recorded as `pin-restore`, site 3). The class takes
+/// effect for the process's threads at their next storm, which finds it pinned.
+///
+/// Canary `swap-class-change-no-restore-canary`: nothing is brought back.
+pub(crate) fn restore_before_pinning(tid: u32) -> Result<(), i64> {
+    if cfg!(feature = "swap-class-change-no-restore-canary") {
+        return Ok(());
+    }
+    azos_mm::pager::restore_objects_of(azos_sched::group::proc_tid(tid)).map_err(|e| refused_pin_restore(tid, 0, 3, e))
+}
+
+fn refused_pin_restore(tid: u32, object: u64, site: u64, e: azos_common::error::KernelError) -> i64 {
+    use azos_abi::error::Errno;
+    let errno = if e == azos_common::error::KernelError::OutOfMemory { Errno::ENOMEM } else { Errno::EBUSY };
+    azos_decision::record(azos_decision::Rule::PinRestore, azos_decision::Verdict::Refuse, tid, [object, site, errno.to_syscall_ret().unsigned_abs()]);
+    errno.to_syscall_ret()
+}
+
 /// The mapping half of [`sys_shm_map_typed`], once an authority has resolved
 /// region `r` for `tid` (a `Cap<Shm>` there; a `Cap<Trace>` for the tracer's
 /// region, `crate::trace_ctl`): map it into the caller, book the mapping,
@@ -908,6 +941,10 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
             return errno_for_memobj_err(e);
         }
     };
+    if let Err(e) = restore_for_pinning(tid, r, desc.page_count, 1) {
+        let _ = memobj::memobj_release_ref(tid, r);
+        return e;
+    }
     // A clone's shared frames are read-only to every mapper: a write mapping
     // gives the object frames of its own first.
     if writable && desc.cow_shared != 0 {

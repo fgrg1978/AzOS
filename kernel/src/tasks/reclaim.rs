@@ -390,6 +390,14 @@ fn restore_backoff() {
 fn charge_restore(owner: usize) {
     if let Some(b) = domain::slot_budget(owner) {
         b.charge_restore(1);
+    }
+    restore_wait(owner);
+}
+
+/// A Domain at its limit backs off for a poll after a restore (the charge is made
+/// already, by [`charge_restore`] or by the shared object's hold).
+fn restore_wait(owner: usize) {
+    if let Some(b) = domain::slot_budget(owner) {
         if b.limit() != 0 && b.used() >= b.limit() && !canary!("reclaim-restore-no-wait") {
             restore_backoff();
         }
@@ -436,6 +444,7 @@ pub(crate) fn create_reclaim_task() {
     };
     RT_CPUS.store(rt, SeqCst);
     pager::set_restore_hook(charge_restore);
+    pager::set_restore_wait_hook(restore_wait);
     azos_sched::task_create_affinity("reclaim", reclaim_task, 0, azos_limits::MM_RECLAIM_PRIORITY as u32, cpu as i8);
     kprintln!(
         "[SCHED] Created reclaim task (prio {}, CPU {}, poll {} ms, watermarks {}%/{}%)",
