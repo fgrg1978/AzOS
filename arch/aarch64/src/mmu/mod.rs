@@ -352,6 +352,7 @@ const _: () = assert!(vpn(0x7F_FFFF_F000, 2) == GRANULE.vpn(0x7F_FFFF_F000, 2));
 
 #[path = "pte_fmt.rs"]
 pub mod pte_fmt;
+#[allow(unused_imports)] // reason: the crate's public surface; a #[path] host include uses few of them
 pub use pte_fmt::{empty, is_leaf, is_table, is_valid, make_table, phys_addr, AF};
 use pte_fmt::{AP_EL0, AP_RO, OA_MASK, PXN, TYPE_TABLE_OR_PAGE, UXN, VALID};
 const ATTRIDX_SHIFT: u32 = 2;

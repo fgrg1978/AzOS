@@ -326,6 +326,67 @@ mod shootdown_wait;
 #[path = "../../../../arch/aarch64/src/mmu/mod.rs"]
 mod aarch64_mmu;
 
+/// The monitor's check of a kernel-half word (pure, shared by source).
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../../crates/core/hyp-mon/src/arch/ptcheck.rs"]
+mod monitor_ptcheck;
+
+/// The words the aarch64 code builds are the words the monitor accepts into the
+/// kernel half's tables (VIRT_SPLIT): a leaf the page-table code can produce has
+/// AF and no DBM, so the walker never needs a stage-2 write to a read-only
+/// table, and only a writable-and-executable kernel leaf is refused.
+#[cfg(test)]
+mod aarch64_monitor_words {
+    use super::aarch64_mmu::{break_cow, make_contig_leaf, make_leaf, share_cow, CONT_PAGES, CONT_SIZE, LEVELS, PAGE_SIZE};
+    use azos_arch_api::{MemType, PagePerms};
+
+    use super::monitor_ptcheck as ptcheck;
+
+    fn all_perms() -> Vec<PagePerms> {
+        let mut v = Vec::new();
+        for bits in 0..64u32 {
+            for mem in [MemType::WB, MemType::WC, MemType::NC, MemType::Device] {
+                let (write, exec, user) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+                v.push(PagePerms { read: true, write, exec, user, mem, accessed: bits & 8 != 0, dirty: bits & 16 != 0 });
+            }
+        }
+        v
+    }
+
+    /// What the monitor says of `word` written at `level`.
+    fn verdict(word: u64, level: usize) -> Option<&'static str> {
+        let w = ptcheck::classify(word, level, PAGE_SIZE.trailing_zeros()).expect("a built leaf is well formed");
+        ptcheck::word_error(w, word)
+    }
+
+    #[test]
+    fn every_leaf_the_page_table_code_builds_is_accepted_but_a_writable_executable_kernel_one() {
+        for level in 0..LEVELS {
+            let pa = 1usize << 33;
+            for p in all_perms() {
+                let word = make_leaf(pa, p, level).unwrap();
+                let wx_kernel = p.write && p.exec && !p.user;
+                assert_eq!(verdict(word, level), wx_kernel.then_some("leaf writable and executable"), "{p:?} at level {level}");
+                if p.write && !p.user {
+                    // The software-dirty write a fork's break takes keeps AF.
+                    assert_eq!(verdict(break_cow(share_cow(word)), level).is_none(), !wx_kernel);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_contiguous_run_member_is_accepted_too() {
+        let p = PagePerms { read: true, write: true, exec: false, user: false, mem: MemType::WB, accessed: true, dirty: false };
+        if CONT_PAGES > 1 {
+            for k in 0..CONT_PAGES {
+                assert_eq!(verdict(make_contig_leaf(CONT_SIZE * 4, k, p).unwrap(), 0), None);
+            }
+        }
+    }
+}
+
 /// The bootstrap identity map on a board whose RAM is not QEMU `virt`'s: the
 /// Device gigabyte follows the DRAM base, and the DRAM window's tail past the
 /// end of RAM (a Raspberry Pi 3's peripherals) is what turns Device.
