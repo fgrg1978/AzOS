@@ -6445,7 +6445,7 @@ sensor_ts_captest_row() { # sensor_ts_captest_row <label> <log>
         grep -aE "CAPTEST\]  FAIL  sensor_read_ts|CAPTEST\] sensorts" "$log" | tr -d '\r' | sed 's|^|        |'
         return
     fi
-    if ! grep -aqF "[CAPTEST] sensorts: 5 sensors stamped on the vDSO clock, inside the call (IMU ENCODER RANGE BATTERY) or < 1 s before it (ODOM), monotonic" "$log" \
+    if ! grep -aqF "[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired < 500 ms before the call (IMU ODOM ENCODER RANGE), monotonic" "$log" \
         || ! grep -aqF "[CAPTEST]   ok   sensor read(IMU, 23-byte buffer) reports the 24-byte record" "$log"; then
         bad; echo "      captest never printed the stamped-read summary and the short-buffer report:"
         grep -a "sensorts\|sensor_read_ts" "$log" | tr -d '\r' | sed 's|^|        |'
@@ -24434,7 +24434,7 @@ PYEOF
             bad; echo "      the kernel did not enter at EL2, so the offset was never set — log kept: $log"; return
         fi
         if grep -aqE "CAPTEST\]  FAIL|AARCH64-TRAP\] unhandled" "$log" \
-            || ! grep -aqF "[CAPTEST] sensorts: 5 sensors stamped on the vDSO clock, inside the call (IMU ENCODER RANGE BATTERY) or < 1 s before it (ODOM), monotonic" "$log" \
+            || ! grep -aqF "[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired < 500 ms before the call (IMU ODOM ENCODER RANGE), monotonic" "$log" \
             || ! grep -aqF "[CAPTEST] ALL PASSED" "$log"; then
             bad; echo "      kernel stamps and the vDSO clock disagree under CNTVOFF_EL2 != 0:"
             grep -aE "CAPTEST\]  FAIL|CAPTEST\] sensorts" "$log" | tr -d '\r' | sed -n 1,6p | sed 's|^|        |'

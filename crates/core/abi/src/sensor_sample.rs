@@ -28,9 +28,9 @@
 //! not report one): such a sample is never fresh.
 
 /// The value was not measured by a device: a simulated source stands in for
-/// the sensor (QEMU's fixed GPS fix, the simulated rangefinder, the battery
-/// voltage reported when no ADC is fitted). The stamp is when the simulation
-/// produced it.
+/// the sensor (QEMU's fixed GPS fix, the simulated rangefinder). The stamp is
+/// when the simulation produced it. A battery with no ADC is not simulated:
+/// it has no reading.
 pub const SENSOR_SAMPLE_FLAG_SYNTHETIC: u16 = 1 << 0;
 
 /// Whether a sample acquired at `acq_ns` is still usable at `now_ns`: the

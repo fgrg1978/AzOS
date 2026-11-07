@@ -1716,14 +1716,15 @@ fn vdso_task_lanes(abi: &impl Abi, floor_ns: u64) {
         }
         None => fail_line(abi, b"vdso-sensor encoder unreadable", -5),
     }
-    // Canary (wave 11): the reading carries its acquisition stamp, taken
-    // inside the call on the reader's clock, and the encoder's 16 bytes.
+    // Canary (wave 11): the reading carries its acquisition stamp, on the
+    // reader's clock, taken by the odometry task no later than the call and
+    // within a second before it, and the encoder's 16 bytes.
     let mut tsbuf = [0u8; 64];
     let t0 = sys::vdso_now_ns();
     let r = sys::dev::sensor_read(cap, &mut tsbuf);
     let t1 = sys::vdso_now_ns();
     match r {
-        Ok(smp) if smp.len == 16 && smp.acq_ns >= t0 && smp.acq_ns <= t1 => {}
+        Ok(smp) if smp.len == 16 && smp.acq_ns <= t1 && t0 - smp.acq_ns.min(t0) < 1_000_000_000 && smp.acq_ns != 0 => {}
         Ok(smp) => fail_line(abi, b"sensor-read stamp/length", smp.len as i64),
         Err(c) => fail_line(abi, b"sensor-read", c as i64),
     }

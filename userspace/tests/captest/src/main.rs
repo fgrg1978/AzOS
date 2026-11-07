@@ -280,32 +280,34 @@ fn read_sensor(sensor_type: u64, buf: &mut [u8]) -> isize {
     }
 }
 
-/// Bound on the age of a CACHED sample (odometry, integrated by the kernel's
-/// 50 Hz `odom` task) when it is read: fifty of its periods.
-const CACHED_MAX_AGE_NS: u64 = 1_000_000_000;
+/// Bound on the age of a sample when it is read: the sensor class's streams
+/// hold the newest sample their task published (the IMU every 10 ms, the
+/// slowest every 100 ms by default; five periods of the slowest bound the age), so a read finds one acquired before the
+/// call, and a stream whose producer stalled finds an old one.
+const CACHED_MAX_AGE_NS: u64 = 500_000_000;
 
 /// Each granted sensor read through its `sensor` endpoint, between two reads
 /// of the vDSO clock: the record has the length of the type, and the
-/// acquisition stamp is on the same clock as the reader's —
-/// inside the call for a value the kernel reads during it (IMU, encoder,
-/// rangefinder, battery), at most [`CACHED_MAX_AGE_NS`] before it for
-/// odometry — and never goes backwards across two reads.
+/// acquisition stamp is on the same clock as the reader's — at most
+/// [`CACHED_MAX_AGE_NS`] (500 ms) before the call, never after it — and never goes
+/// backwards across two reads. The battery has a reading only where a
+/// converter is fitted (QEMU has none): a stamped 2-byte sample, or
+/// `NOT_READY`, never an invented value.
 ///
 /// The summary line is printed only when every check held; the gate row
 /// greps it on both ISAs. Canary: the `sensor-ts-freeze` kernel feature (the
-/// IMU driver reports its first stamp forever) fails `IMU acquired inside the
-/// call`.
+/// IMU driver reports its first stamp forever) fails `IMU acquired within 500 ms
+/// before the call`.
 fn stamped_reads() {
-    // (type, payload bytes, read during the call)
-    const TYPES: [(u64, usize, bool, &[u8]); 5] = [
-        (sys::SENSOR_TYPE_IMU, 24, true, b"IMU"),
-        (sys::SENSOR_TYPE_ODOM, 16, false, b"ODOM"),
-        (sys::SENSOR_TYPE_ENCODER, 16, true, b"ENCODER"),
-        (sys::SENSOR_TYPE_RANGE, 4, true, b"RANGE"),
-        (sys::SENSOR_TYPE_BATTERY, 2, true, b"BATTERY"),
+    // (type, payload bytes)
+    const TYPES: [(u64, usize, &[u8]); 4] = [
+        (sys::SENSOR_TYPE_IMU, 24, b"IMU"),
+        (sys::SENSOR_TYPE_ODOM, 16, b"ODOM"),
+        (sys::SENSOR_TYPE_ENCODER, 16, b"ENCODER"),
+        (sys::SENSOR_TYPE_RANGE, 4, b"RANGE"),
     ];
     let before = unsafe { FAILURES };
-    for &(ty, plen, during, name) in TYPES.iter() {
+    for &(ty, plen, name) in TYPES.iter() {
         let Some(cap) = sys::dev::lookup(sys::dev::key::SENSOR, ty as u32) else {
             report(b"sensor_read_ts: sensor endpoint lookup", false, -2);
             continue;
@@ -320,8 +322,7 @@ fn stamped_reads() {
             let ok_len = n == plen as isize;
             let ok_hdr = r.is_ok();
             let acq = r.map(|smp| smp.acq_ns).unwrap_or(0);
-            let ok_time = acq != 0 && acq <= t1
-                && if during { acq >= t0 } else { t1 - acq < CACHED_MAX_AGE_NS };
+            let ok_time = acq != 0 && acq <= t1 && t0.saturating_sub(acq) < CACHED_MAX_AGE_NS;
             let ok_mono = acq >= prev;
             prev = acq;
             if round == 0 {
@@ -336,14 +337,19 @@ fn stamped_reads() {
                 stamped_fail(name, b"length/header", n);
             }
             if !ok_time {
-                stamped_fail(name, if during { b"acquired inside the call" as &[u8] }
-                                   else { b"acquired within 1 s before the call" }, acq as isize);
+                stamped_fail(name, b"acquired within 500 ms before the call", acq as isize);
             }
             if !ok_mono {
                 stamped_fail(name, b"stamp went backwards", acq as isize);
             }
         }
     }
+    // No converter, no battery: a sample is a measurement, its absence is
+    // NOT_READY.
+    let mut batt = [0u8; 64];
+    let battery = sys::dev::lookup(sys::dev::key::SENSOR, sys::SENSOR_TYPE_BATTERY as u32).map(|e| sys::dev::sensor_read(e, &mut batt));
+    report(b"sensor read(BATTERY) is a 2-byte sample or NOT_READY",
+           matches!(battery, Some(Ok(smp)) if smp.len == 2) || matches!(battery, Some(Err(sys::dev::outcome::NOT_READY))), 0);
     // A buffer too short for the record: the reply still carries the whole
     // record and its length, and the client copies what fits, so the
     // truncation is visible, never silent.
@@ -352,7 +358,7 @@ fn stamped_reads() {
     report(b"sensor read(IMU, 23-byte buffer) reports the 24-byte record",
            matches!(imu.map(|e| sys::dev::sensor_read(e, &mut short)), Some(Ok(smp)) if smp.len == 24), 0);
     if unsafe { FAILURES } == before {
-        sys::println(b"[CAPTEST] sensorts: 5 sensors stamped on the vDSO clock, inside the call (IMU ENCODER RANGE BATTERY) or < 1 s before it (ODOM), monotonic");
+        sys::println(b"[CAPTEST] sensorts: 4 sensors stamped on the vDSO clock, acquired < 500 ms before the call (IMU ODOM ENCODER RANGE), monotonic");
     }
 }
 

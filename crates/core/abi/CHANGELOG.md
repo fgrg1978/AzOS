@@ -9,6 +9,9 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ### Changed
 
+- The GPS sensor record is 14 bytes (latitude and longitude in degrees x 1e7, altitude in mm, fix quality, satellites; the two pad bytes are gone), and a sensor with
+  no reading (a battery with no converter, a rangefinder with none, a GPS with no
+  fix yet) answers `NOT_READY` instead of an invented or zero record.
 - The io_ring layout is version 3 (`IO_RING_VERSION`): `OP_CALL` (14) carries an
   IDL call on a kernel-hosted endpoint in a message window of the data buffer
   (`CALL_WORDS`, `CALL_WINDOW`), and the device opcodes are gone (below).
