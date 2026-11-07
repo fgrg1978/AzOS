@@ -18,7 +18,7 @@
 //!
 //! The robot's own manifest links the whole robot stack and cannot be built on
 //! the host; [`ROBOT_SHAPED`] has its shape (one provider with all four hooks,
-//! owning the motor kind, and an effects hook) and [`MIXED`] covers a bare
+//! owning the motor kind, an effects hook and a devices hook) and [`MIXED`] covers a bare
 //! provider, a provider with no latch work and a hook at every phase.
 //! The robot's manifest meets the same clauses through the table, and the
 //! kernel's ktest holds that the table carries its providers.
