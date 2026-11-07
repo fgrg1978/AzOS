@@ -27,6 +27,10 @@ And an extension does not reach into the base: a crate under crates/domains/
 depends on crates of its own extension, on ext-api, on crates/drivers and
 crates/lib, and on the base crates SURFACE names, nothing else. SURFACE is the
 set the robot links today; it only shrinks.
+Every dependency table counts (normal, dev, build, `[target.*]`,
+`[dependencies.X]`), and what a crates/lib crate links in turn is held to the
+same surface, except `crates/lib/bench` (BENCH_ONLY: it links the subsystems it
+measures).
 
   python3 tools/lint/extension_lint.py               check (n0)
   python3 tools/lint/extension_lint.py --self-test   a tree with each violation
@@ -36,6 +40,7 @@ import os
 import re
 import sys
 import tempfile
+import tomllib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402
@@ -53,6 +58,11 @@ SURFACE = {
     "crates/core/sched", "crates/core/sync", "crates/core/syscall", "crates/core/topology", "crates/core/wcet-macro",
 }
 EXTENSION_OPEN = ("crates/core/ext-api", "crates/drivers", "crates/lib")
+# crates/lib crates whose own dependencies the closure check skips. The bench
+# harness links mm, ota, fs and net/stack because those are what it measures;
+# it is a measuring tool, not a path from the extension into those subsystems,
+# and the kernel that runs it links them anyway.
+BENCH_ONLY = {"crates/lib/bench"}
 MANIFEST = re.compile(
     r"\bstatic\s+(\w+)\s*:\s*(?:azos_ext_api::)?Manifest\s*=\s*(?:azos_ext_api::)?Manifest\s*\{\s*name\s*:\s*\"([^\"]*)\"")
 INSTALL = re.compile(r"\bproviders::install\(\s*&\s*(?:\w+::)*(\w+)\s*\)")
@@ -354,15 +364,69 @@ def check(root):
     return sorted(set(errs))
 
 
+def one_line_tables(text):
+    """Cargo accepts an inline table that continues over several lines (TOML
+    1.1); tomllib does not. Join such a table onto one line."""
+    out, buf, depth = [], "", 0
+    for line in text.split("\n"):
+        code = re.sub(r'"[^"]*"', '""', line.split("#", 1)[0])
+        depth += code.count("{") - code.count("}")
+        if buf:
+            buf += " " + line.split("#", 1)[0].strip()
+        else:
+            buf = line.split("#", 1)[0] if depth > 0 else line
+        if depth <= 0:
+            out.append(buf)
+            buf, depth = "", 0
+    return "\n".join(out + ([buf] if buf else []))
+
+
+def load_toml(path):
+    with open(path, encoding="utf-8") as fh:
+        return tomllib.loads(one_line_tables(fh.read()))
+
+
 def workspace_paths(root):
     """{package: directory} of the root Cargo.toml's workspace dependencies."""
-    text = read(os.path.join(root, "Cargo.toml")) if os.path.exists(os.path.join(root, "Cargo.toml")) else ""
-    return {m.group(1): m.group(2) for m in re.finditer(r'^(\w+)\s*=\s*\{[^}]*\bpath\s*=\s*"([^"]+)"', text, re.M)}
+    path = os.path.join(root, "Cargo.toml")
+    deps = load_toml(path).get("workspace", {}).get("dependencies", {}) if os.path.exists(path) else {}
+    return {n: v["path"] for n, v in deps.items() if isinstance(v, dict) and "path" in v}
+
+
+def manifest_deps(path):
+    """(name, table, spec) of every dependency a manifest declares: the
+    normal, dev and build tables, those under `[target.<cfg>.*]`, and the
+    `[dependencies.<name>]` form, which the parser already folds in."""
+    data = load_toml(path)
+    tables = [data] + list(data.get("target", {}).values())
+    for t in tables:
+        for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
+            for name, spec in t.get(kind, {}).items():
+                yield name, kind, spec if isinstance(spec, dict) else {"version": spec}
+
+
+def dep_target(root, rel_dir, name, spec, ws):
+    """The directory (relative to the root) a dependency names, or None."""
+    if "path" in spec:
+        return os.path.normpath(os.path.join(rel_dir, spec["path"]))
+    if spec.get("workspace") and name in ws:
+        return os.path.normpath(ws[name])
+    return None
+
+
+def outside_surface(target, own):
+    """Is `target` a crate an extension may not depend on?"""
+    if target == own or target.startswith(own + os.sep):
+        return False
+    if any(target == o or target.startswith(o + os.sep) for o in EXTENSION_OPEN):
+        return False
+    return target not in SURFACE
 
 
 def surface_errors(root):
     """Dependencies of an extension crate outside its own extension, ext-api,
-    crates/drivers, crates/lib and SURFACE."""
+    crates/drivers, crates/lib and SURFACE, and what a crates/lib crate it
+    uses links in turn (BENCH_ONLY excepted)."""
     errs = []
     ws = workspace_paths(root)
     base = os.path.join(root, "crates", "domains")
@@ -371,28 +435,43 @@ def surface_errors(root):
         if "Cargo.toml" not in names:
             continue
         rel_dir = os.path.relpath(d, root)
-        ext = os.path.relpath(d, base).split(os.sep)[0]
-        own = os.path.join("crates", "domains", ext)
-        text = read(os.path.join(d, "Cargo.toml"))
-        for sect in re.split(r"^\[", text, flags=re.M):
-            if not re.match(r"(dev-|build-)?dependencies\]", sect):
+        own = os.path.join("crates", "domains", os.path.relpath(d, base).split(os.sep)[0])
+        try:
+            deps = list(manifest_deps(os.path.join(d, "Cargo.toml")))
+        except tomllib.TOMLDecodeError as e:
+            errs.append(f"{rel_dir}/Cargo.toml: cannot be read: {e}")
+            continue
+        for name, _, spec in deps:
+            target = dep_target(root, rel_dir, name, spec, ws)
+            if target is None:
                 continue
-            for m in re.finditer(r"^([\w-]+)\s*=\s*(.*)$", sect, re.M):
-                path = re.search(r'\bpath\s*=\s*"([^"]+)"', m.group(2))
-                if path:
-                    target = os.path.normpath(os.path.join(rel_dir, path.group(1)))
-                elif "workspace" in m.group(2) and m.group(1) in ws:
-                    target = os.path.normpath(ws[m.group(1)])
-                else:
-                    continue
-                if target.startswith(own + os.sep) or target == own:
-                    continue
-                if any(target == o or target.startswith(o + os.sep) for o in EXTENSION_OPEN):
-                    continue
-                if target in SURFACE:
-                    continue
-                errs.append(f"{rel_dir}/Cargo.toml: `{m.group(1)}` ({target}) is outside the extension surface "
+            if outside_surface(target, own):
+                errs.append(f"{rel_dir}/Cargo.toml: `{name}` ({target}) is outside the extension surface "
                             f"(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)")
+            elif target.startswith("crates/lib" + os.sep):
+                errs.extend(lib_closure_errors(root, rel_dir, name, target, own, ws))
+    return errs
+
+
+def lib_closure_errors(root, rel_dir, via_name, start, own, ws):
+    """What the crates/lib crate `start` links, through further crates/lib crates."""
+    errs, seen, todo = [], set(), [start]
+    while todo:
+        cur = todo.pop()
+        if cur in seen or cur in BENCH_ONLY or not os.path.exists(os.path.join(root, cur, "Cargo.toml")):
+            continue
+        seen.add(cur)
+        for name, kind, spec in manifest_deps(os.path.join(root, cur, "Cargo.toml")):
+            if kind == "dev-dependencies":
+                continue
+            target = dep_target(root, cur, name, spec, ws)
+            if target is None:
+                continue
+            if target.startswith("crates/lib" + os.sep):
+                todo.append(target)
+            elif outside_surface(target, own):
+                errs.append(f"{rel_dir}/Cargo.toml: `{via_name}` links `{name}` ({target}) through {cur}, "
+                            f"outside the extension surface")
     return errs
 
 
@@ -424,21 +503,16 @@ def base_provider_errors(root, static, rel, installs, body):
 
 
 def cargo_errors(root, cargo, names):
-    text = read(cargo)
     rel = os.path.relpath(cargo, root)
     out = []
-    feats = features(text)
-    for m in re.finditer(r"^(\w+)\s*=\s*(.*)$", text, re.M):
-        if m.group(1) not in names:
+    feats = features(read(cargo))
+    for name, _, spec in manifest_deps(cargo):
+        if spec.get("package", name) not in names and name not in names:
             continue
-        section = text.rfind("\n[", 0, m.start())
-        header = text[section + 1:text.find("\n", section + 1)] if section >= 0 else ""
-        if "dependencies" not in header:
-            continue
-        if "optional = true" not in m.group(2):
-            out.append(f"{rel}: depends on `{m.group(1)}` without `optional = true`")
-        elif f"dep:{m.group(1)}" not in feats.get(GATE, []):
-            out.append(f"{rel}: optional dependency `{m.group(1)}` is not turned on by `{GATE}` alone")
+        if not spec.get("optional"):
+            out.append(f"{rel}: depends on `{name}` without `optional = true`")
+        elif f"dep:{name}" not in feats.get(GATE, []):
+            out.append(f"{rel}: optional dependency `{name}` is not turned on by `{GATE}` alone")
     return out
 
 
@@ -447,11 +521,21 @@ def self_test():
     files = {
         "config/extensions/Kconfig": "config EXT_FOO\n\tbool\nconfig EXT_BAR\n\tbool\nconfig EXT_BAZ\n\tbool\n",
         "crates/core/ext-api/src/lib.rs": "pub struct Manifest;\n",
-        "Cargo.toml": '[workspace.dependencies]\nazos_hv = { path = "crates/core/hv" }\n',
+        "Cargo.toml": '[workspace.dependencies]\nazos_hv = { path = "crates/core/hv" }\n'
+            'azos_energy = { path = "crates/core/energy" }\nazos_pkg = { path = "crates/core/pkg" }\n'
+            'azos_trace = { path = "crates/core/trace" }\n',
         "crates/domains/foo/foo/Cargo.toml":
             '[package]\nname = "azos_foo"\n[dependencies]\nazos_hv = { workspace = true }\n'
-            'azos_recovery = { path = "../../../core/recovery" }\nazos_gps = { path = "../../../drivers/gps" }\n'
-            'azos_ext_api = { path = "../../../core/ext-api" }\nazos_abi = { path = "../../../core/abi" }\n',
+            'azos_recovery = {\n  path = "../../../core/recovery"\n}\nazos_gps = { path = "../../../drivers/gps" }\n'
+            'azos_ext_api = { path = "../../../core/ext-api" }\nazos_abi = { path = "../../../core/abi" }\n'
+            'azos_wrap = { path = "../../../lib/wrap" }\nazos_bench = { path = "../../../lib/bench" }\n'
+            '[dependencies.azos_energy]\nworkspace = true\n'
+            "[target.'cfg(target_arch = \"riscv64\")'.dependencies]\nazos_pkg = { workspace = true }\n"
+            '[dev-dependencies]\nazos_trace = { workspace = true }\n'
+            '[build-dependencies]\nazos_inspect = { path = "../../../core/inspect" }\n',
+        "crates/lib/wrap/Cargo.toml": '[package]\nname = "azos_wrap"\n[dependencies]\nazos_mm = { path = "../../core/mm" }\n'
+            'azos_gps = { path = "../../drivers/gps" }\n[dev-dependencies]\nazos_net = { path = "../../net/stack" }\n',
+        "crates/lib/bench/Cargo.toml": '[package]\nname = "azos_bench"\n[dependencies]\nazos_fs = { path = "../../fs" }\n',
         "crates/domains/foo/foo/src/lib.rs":
             'pub static FOO: azos_ext_api::Manifest = azos_ext_api::Manifest { name: "foo", api_level: API_LEVEL, providers: &[] };\n'
             "pub fn install() { azos_actuation::providers::install(&FOO); }\n",
@@ -514,6 +598,16 @@ def self_test():
             "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
             "crates/domains/foo/foo/Cargo.toml: `azos_recovery` (crates/core/recovery) is outside the extension surface "
             "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
+            "crates/domains/foo/foo/Cargo.toml: `azos_energy` (crates/core/energy) is outside the extension surface "
+            "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
+            "crates/domains/foo/foo/Cargo.toml: `azos_pkg` (crates/core/pkg) is outside the extension surface "
+            "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
+            "crates/domains/foo/foo/Cargo.toml: `azos_trace` (crates/core/trace) is outside the extension surface "
+            "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
+            "crates/domains/foo/foo/Cargo.toml: `azos_inspect` (crates/core/inspect) is outside the extension surface "
+            "(its own extension, ext-api, crates/drivers, crates/lib, SURFACE)",
+            "crates/domains/foo/foo/Cargo.toml: `azos_wrap` links `azos_mm` (crates/core/mm) through crates/lib/wrap, "
+            "outside the extension surface",
         ])
         if got != want:
             print("self-test FAIL")
@@ -533,6 +627,7 @@ def self_test():
         clean["kernel/Cargo.toml"] = ('[features]\nuse-robot = ["dep:azos_foo"]\n[dependencies]\nazos_foo = { path = "x", optional = true }\n'
                                       'azos_sw = { path = "s", optional = true }\n')
         clean["kernel/src/main.rs"] = "mod boot;\nfn p() { providers::install(&azos_sw::SW); }\n"
+        clean["crates/lib/wrap/Cargo.toml"] = '[package]\nname = "azos_wrap"\n'
         clean["crates/domains/foo/foo/Cargo.toml"] = '[package]\nname = "azos_foo"\n[dependencies]\nazos_abi = { path = "../../../core/abi" }\n'
         clean["crates/drivers/hard/src/lib.rs"] = ""
         clean["crates/drivers/kind/src/lib.rs"] = ""
