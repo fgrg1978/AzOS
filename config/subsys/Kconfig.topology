@@ -234,7 +234,7 @@ config TOPOLOGY_NEVERALLOW
       `make check-neverallow` runs the same rules over every preset's
       topology, with this option ignored.
 
-      With n the rules are not applied at boot or by `admission_check`.
+      With n the other rules are not applied at boot or by `admission_check`.
       Cost: one pass over the rows' grants at install, either ISA, and a
       few hundred bytes of rule table.
 
