@@ -2262,6 +2262,32 @@ mod swap_rows {
         assert!(!azos_mm::vmm::user_write_would_be_permitted(p.pt_b, p.va_b), "a writable leaf on a read-only mapping");
     }
 
+    /// **A clone is refused while a fault's install is in flight.** B's fault
+    /// looked while the mapping was writable; both mappings are then made
+    /// read-only, so no record can write the frames, but B's leaf, once
+    /// written, would be writable until its cover check. A snapshot that shared
+    /// the frames then would see B's stores. When the install is done the clone
+    /// goes ahead.
+    ///
+    /// **Canary.** `clone-install-ignored-canary`: installs in flight are not
+    /// asked, and the clone shares the frames under the leaf.
+    #[test]
+    fn a_clone_is_refused_while_an_install_is_in_flight() {
+        let _g = serial();
+        let (a, b) = (fresh_tid(), fresh_tid());
+        let _s = Scene::new(&[a, b]);
+        let _h = hooks();
+        mo::set_protect_hook(host_protect);
+        let p = pair(a, b, 1);
+        resident_without_leaf(&p);
+        assert!(matches!(mo::memobj_fault_look(p.r, p.pt_b, 0), mo::ObjLook::Frame { write: true, .. }));
+        assert_eq!(mo::memobj_protect_ref(a, p.r, false), Ok(()));
+        assert_eq!(mo::memobj_protect_ref(b, p.r, false), Ok(()));
+        assert_eq!(mo::memobj_clone(a, p.r, a, mo::MemPerms::ReadOnly).err(), Some(mo::MemObjError::Busy), "an install is in flight");
+        mo::memobj_install_done_ref(p.r, 0);
+        assert!(mo::memobj_clone(a, p.r, a, mo::MemPerms::ReadOnly).is_ok(), "nothing is in flight now");
+    }
+
     /// **An unmap between a fault's look and its install takes the leaf the fault
     /// wrote.** The record no longer reaches the page, so the install is undone.
     ///

@@ -13268,6 +13268,10 @@ host_job zpool_host_canary_row "swap: take waits canary" swap-ready-ignored-cana
     a_take_waits_for_an_install_in_flight_and_for_a_map_being_built
 host_job host_canary_row "swap: touch before booking canary" syscall-tests swap-building-gone-canary \
     a_touch_of_a_mapping_being_booked_is_a_retry
+# A clone is refused while a fault's install is in flight: the leaf may be
+# writable after a protect (clone-install-ignored-canary: installs are not asked).
+host_job host_canary_row "swap: clone under an install canary" syscall-tests clone-install-ignored-canary \
+    a_clone_is_refused_while_an_install_is_in_flight
 host_job zpool_host_row "swap: restore abort" a_failed_restore_gives_its_claim_up
 host_job zpool_host_canary_row "swap: restore abort canary" swap-abort-leaves-claim-canary \
     a_failed_restore_gives_its_claim_up

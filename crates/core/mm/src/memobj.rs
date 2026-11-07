@@ -2771,6 +2771,9 @@ pub fn memobj_cow_break_all(r: u32) -> Result<(), MemObjError> {
 /// clone copies them now. `tid` takes a reference on the source for the length
 /// of the call, which keeps the frames alive while they are copied.
 ///
+/// `Busy` while a page is out or a fault's install is in flight (its leaf may
+/// still be writable after a protect).
+///
 /// A Paged source is refused (`BadArg`): there are no frames to snapshot.
 /// The clone's frames are charged to `owner_task`'s Domain whichever way they
 /// are made.
@@ -2811,8 +2814,12 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
             uncharge();
             return Err(MemObjError::Purged);
         }
-        // A page that is out has no frame to share or copy.
-        if away_pages(&regions[i]) != 0 {
+        // A page that is out has no frame to share or copy. A leaf an install
+        // wrote and has not yet covered may still be writable after a protect,
+        // which `may_write_frames` cannot see: no snapshot until it is.
+        // Canary `clone-install-ignored-canary`: installs in flight are not asked.
+        let installing = regions[i].installing.iter().any(|&n| n != 0) && !cfg!(feature = "clone-install-ignored-canary");
+        if away_pages(&regions[i]) != 0 || installing {
             drop(regions);
             uncharge();
             return Err(MemObjError::Busy);
