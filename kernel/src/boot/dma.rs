@@ -859,6 +859,7 @@ mod hw {
             let bound = crate::boot::hwbus::pci_bound(info) || canary!("iommu-fail-open");
             match azos_iommu::settle(bound, enabled) {
                 Settled::Translating => {
+                    attached(rid, Attached::Translate);
                     translated += 1;
                     kprintln!("[IOMMU] {} {}: translating", info.bdf, driver.unwrap_or("?"));
                 }

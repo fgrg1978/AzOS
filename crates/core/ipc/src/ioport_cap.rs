@@ -98,10 +98,9 @@ pub fn ioport_grant_in(
     // The ports of a bus master's I/O BAR are its registers: writing them is
     // pointing it at memory, as a writable window is (legacy virtio's queue
     // address, an IDE bus master's table pointer).
-    if let Some(dev) = azos_drv_bus::hwbus::io_bar_master(first, last) {
-        if !cfg!(feature = "ioport-master-canary")
-            && !crate::mmio_cap::master_window_ok(dev, tid, u64::from(first) | u64::from(last) << 16, WHY_IOPORT)
-        {
+    if let Some((dev, ring3_device)) = azos_drv_bus::hwbus::io_bar_master(first, last) {
+        let range = u64::from(first) | u64::from(last) << 16;
+        if !cfg!(feature = "ioport-master-canary") && !crate::mmio_cap::master_window_ok(dev, ring3_device, tid, range, WHY_IOPORT) {
             return None;
         }
     }

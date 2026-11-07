@@ -2903,6 +2903,12 @@ pub(crate) mod host_machine {
                     &mut q,
                 )
                 .unwrap();
+                b.add(
+                    hwbus::Device::pci(hwbus::PciId { bus: 0, device: 4, function: 0, vendor: 0x8086, device_id: 0x100e, class: 0x02_0000 })
+                        .with_io_bar(0x200, 0x20),
+                    &mut q,
+                )
+                .unwrap();
                 b.add(hwbus::Device::dt("usb@6000000", b"spacemit,k1-dwc3\0", 0x600_0000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("dma@6001000", b"snps,axi-dma-1.01a\0", 0x600_1000, 0x1000, 0), &mut q).unwrap();
                 b.add(hwbus::Device::dt("misc@6002000", b"vendor,unlisted\0", 0x600_2000, 0x1000, 0), &mut q).unwrap();
@@ -2912,6 +2918,11 @@ pub(crate) mod host_machine {
                     native: &[
                         hwbus::NativeEntry { pattern: hwbus::Pattern::Dt("ns16550a"), driver: "uart", boot: true },
                         hwbus::NativeEntry { pattern: hwbus::Pattern::Virtio(2), driver: "virtio-blk", boot: false },
+                        hwbus::NativeEntry {
+                            pattern: hwbus::Pattern::Pci { vendor: 0x8086, device: 0x100e, class: 0, class_mask: 0 },
+                            driver: "nic",
+                            boot: true,
+                        },
                     ],
                     linux: &[],
                     rows: &[],
@@ -3145,8 +3156,12 @@ mod mmio_cap_tests {
         }
         crate::mmio_cap::set_writable_master_policy(|_| true);
         assert!(ioport_grant_in(tid, "768.32", CapPerms::RW, 1024, nowhere).is_some(), "the policy admits it");
+        assert!(
+            ioport_grant_in(tid, "512.32", CapPerms::RW, 1024, nowhere).is_none(),
+            "a function a kernel driver owns is refused whatever the policy says"
+        );
         crate::mmio_cap::set_writable_master_policy(|_| false);
-        assert_eq!(refusals(tid), 4);
+        assert_eq!(refusals(tid), 5);
     }
 
     /// A topology `irq.<selector>` grant mints the line the bus found for the

@@ -106,6 +106,17 @@ impl Slot {
     pub fn generation(&self) -> u32 {
         self.generation
     }
+
+    /// Is the device one no kernel driver owns or may still take, and none is
+    /// being asked: its registers are not the kernel's. (A window also needs a
+    /// `size`: [`Bus::user_window`].)
+    pub fn user_settled(&self) -> bool {
+        match self.state {
+            State::Bound => matches!(self.binding, Binding::Linux { .. }),
+            State::Unbound | State::NotAdmitted | State::Unmatched => true,
+            State::Free | State::Detected | State::Probing | State::ProbeFailed => false,
+        }
+    }
 }
 
 /// Why a native probe said no.
@@ -291,12 +302,7 @@ impl Bus {
     /// registers are the kernel's).
     pub fn user_window(&self, h: Handle) -> Option<(u64, u64)> {
         let s = self.get(h)?;
-        let settled = match s.state {
-            State::Bound => matches!(s.binding, Binding::Linux { .. }),
-            State::Unbound | State::NotAdmitted | State::Unmatched => true,
-            State::Free | State::Detected | State::Probing | State::ProbeFailed => false,
-        };
-        if !settled || s.dev.size == 0 {
+        if !s.user_settled() || s.dev.size == 0 {
             return None;
         }
         Some((s.dev.base, s.dev.size))

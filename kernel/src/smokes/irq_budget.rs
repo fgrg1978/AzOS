@@ -335,11 +335,11 @@ fn msi_scenario(tid: u32, port: u32) -> Result<(), &'static str> {
                 && e.source_type == azos_abi::syscall_nr::PORT_EVENT_IRQ => {}
             _ => return Err("the MSI event does not carry the slot and the key"),
         }
-        // Unbound, the vector is given back: the next bind takes it again.
+        // Unbound, the vector is kept for its slot: the slot's next bind takes it again.
         irq_bind::irq_unbind_all(tid);
         let again = irq_bind::irq_bind_port(SLOT, tid, port, 1, Route::Cpu(cpu)).map(|b| b.msi.map(|m| m.id));
         if again != Ok(Some(msi.id)) {
-            return Err("the vector was not given back when the binding went");
+            return Err("the slot's vector was not kept when the binding went");
         }
         Ok(())
     }

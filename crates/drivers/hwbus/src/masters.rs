@@ -42,7 +42,7 @@ const MASTERS: &[&str] = &[
 
 /// Peripherals that only answer register accesses.
 const PERIPHERALS: &[&str] = &[
-    "uart", "serial", "ns16550", "ns8250", "pl011", "8250",
+    "uart", "serial", "ns16550", "ns8250", "pl011",
     "rtc", "pl031",
     "gpio", "pl061",
     "i2c", "pwm", "wdt", "watchdog", "pinctrl", "thermal",
