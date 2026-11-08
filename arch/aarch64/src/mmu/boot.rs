@@ -154,34 +154,47 @@ _azos_drop_to_el1:
 
 .if {poe}
     // FEAT_S1POE (Kconfig A64_POE): let EL1 at TCR2_EL1 (HCRX_EL2.TCR2En,
-    // bit 14, where FEAT_HCX) and at POR_EL1 (the nPOR_EL1 bit, `ptwin`'s
-    // HFGXTR_NPOR_EL1, of HFGRTR_EL2 and HFGWTR_EL2, where FEAT_FGT). A missing
-    // grant traps the first POR_EL1 write to EL2 (the arm-phase rows check
-    // the numbers on a core). HCRX_EL2 is written whole (its other fields are
-    // UNKNOWN out of reset and nothing else here needs one). The FGT registers
-    // only get the one n-bit ORed in: a whole value would have to name every
-    // n-bit of the core, and an unnamed one traps. SCR_EL3.TCR2En / PIEn are
-    // the firmware's.
+    // bit 14, where FEAT_HCX); POR_EL1's grant is the FGT block below. A
+    // missing grant traps the first POR_EL1 write to EL2 (the arm-phase rows
+    // check the numbers on a core). HCRX_EL2 is written whole (its other
+    // fields are UNKNOWN out of reset and nothing else here needs one).
+    // SCR_EL3.TCR2En / PIEn are the firmware's.
     mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
     ubfx    x10, x10, #16, #4       // S1POE
     cbz     x10, 8f
     mrs     x10, ID_AA64MMFR1_EL1
     ubfx    x10, x10, #40, #4       // HCX
-    cbz     x10, 7f
+    cbz     x10, 8f
     mov     x10, #(1 << 14)         // TCR2En
     msr     S3_4_C1_C2_2, x10       // HCRX_EL2
-7:  mrs     x10, ID_AA64MMFR0_EL1
-    ubfx    x10, x10, #56, #4       // FGT
-    cbz     x10, 8f
-    movz    x11, #{npor_hw}, lsl #48 // nPOR_EL1
-    mrs     x10, S3_4_C1_C1_4       // HFGRTR_EL2
-    orr     x10, x10, x11
-    msr     S3_4_C1_C1_4, x10
-    mrs     x10, S3_4_C1_C1_5       // HFGWTR_EL2
-    orr     x10, x10, x11
-    msr     S3_4_C1_C1_5, x10
 8:
 .endif
+
+    // FEAT_FGT: HFGRTR_EL2, HFGWTR_EL2, HFGITR_EL2, HDFGRTR_EL2 and
+    // HDFGWTR_EL2 are UNKNOWN out of reset, and a plain trap bit left set
+    // traps a register or instruction EL1 uses (SCTLR_EL1, TCR_EL1, TTBRx_EL1,
+    // TLBI, ...) to an EL2 with no handler for it. So, as Linux's
+    // `__init_el2_fgt`, they are written whole: 0 (no plain trap; every n-bit
+    // traps a register the kernel never touches) plus the n-bits the kernel
+    // does use, `ptwin`'s HFGXTR_NPOR_EL1 (nPOR_EL1, bit 60) with A64_POE on a
+    // core with S1POE. SCR_EL3.FGTEn is the firmware's.
+    mrs     x10, ID_AA64MMFR0_EL1
+    ubfx    x10, x10, #56, #4       // FGT
+    cbz     x10, 9f
+    mov     x11, #0
+.if {poe}
+    mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
+    ubfx    x10, x10, #16, #4       // S1POE
+    cbz     x10, 6f
+    movz    x11, #{npor_hw}, lsl #48 // nPOR_EL1
+6:
+.endif
+    msr     S3_4_C1_C1_4, x11       // HFGRTR_EL2
+    msr     S3_4_C1_C1_5, x11       // HFGWTR_EL2
+    msr     S3_4_C1_C1_6, xzr       // HFGITR_EL2
+    msr     S3_4_C3_C1_4, xzr       // HDFGRTR_EL2
+    msr     S3_4_C3_C1_5, xzr       // HDFGWTR_EL2
+9:
 
     // MDCR_EL2 resets UNKNOWN but for HPMN: TDE would route EL1's debug
     // exceptions to an EL2 with no handler for them, TDA/TDOSA trap the

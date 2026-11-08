@@ -103,6 +103,19 @@ fn aarch64_entry_paths_write_sctlr_and_the_drop_defines_the_el2_traps() {
     }
 }
 
+/// **The EL2 drop writes the fine-grained trap registers whole** (HFGRTR,
+/// HFGWTR, HFGITR, HDFGRTR, HDFGWTR): a value ORed into their UNKNOWN reset
+/// keeps whatever plain trap bits firmware left set. Canary: read HFGRTR_EL2
+/// back and OR into it, as before, and the second assert fails.
+#[test]
+fn the_el2_drop_writes_the_fine_grained_traps_whole() {
+    let drop = between("arch/aarch64/src/mmu/boot.rs", "//", "_azos_drop_to_el1:", "eret");
+    for reg in ["S3_4_C1_C1_4", "S3_4_C1_C1_5", "S3_4_C1_C1_6", "S3_4_C3_C1_4", "S3_4_C3_C1_5"] {
+        assert!(drop.iter().any(|l| l.starts_with("msr") && l.contains(&format!("{reg},"))), "the drop does not write {reg}");
+        assert!(!drop.iter().any(|l| l.starts_with("mrs") && l.ends_with(reg)), "{reg} is read back and ORed into its reset value");
+    }
+}
+
 /// **M3: an aarch64 IRQ/FIQ never decodes the stale `ESR_EL1`**: `class()`
 /// and the FP first-use arm both ask the vector first.
 #[test]
