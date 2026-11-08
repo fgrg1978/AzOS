@@ -38,7 +38,9 @@ impl<S: BlockSource> Volume<S> {
 
     fn map_extent(&mut self, ino: &Inode, lblk: u32) -> Result<Run, Error> {
         let bs = self.sb.block_size as usize;
-        let mut node = [0u8; crate::MAX_BLOCK];
+        // The node being read lives in the volume's block buffer: a map is
+        // always made before the block it finds is loaded there.
+        let node = &mut self.blk;
         node[..60].copy_from_slice(&ino.block);
         let mut len = 60usize;
         let mut cap = EXT_ROOT_MAX;
@@ -100,14 +102,14 @@ impl<S: BlockSource> Volume<S> {
             }
             let Some(e) = hit else { return Ok(Run { start: None, len: next_start.map_or(1, |s| s - lblk) }) };
             let child = (le16(n, e + 8)? as u64) << 32 | le32(n, e + 4)? as u64;
-            crate::read_run(&mut self.src, &self.sb, child, 0, &mut node[..bs])?;
+            crate::read_run(&mut self.src, &self.sb, child, 0, &mut node[..bs], false)?;
             len = bs;
             cap = ((bs - EXT_HEADER - 4) / EXT_ENTRY) as u16;
             want_depth = Some(depth - 1);
             if self.sb.features.metadata_csum() {
-                let max = le16(&node, 4)? as usize;
+                let max = le16(&node[..], 4)? as usize;
                 let tail = EXT_HEADER + max.min(cap as usize) * EXT_ENTRY;
-                if csum(ino.csum_seed, &node[..tail]) != le32(&node, tail)? {
+                if csum(ino.csum_seed, &node[..tail]) != le32(&node[..], tail)? {
                     return Err(Corrupt::Checksum.into());
                 }
             }

@@ -246,6 +246,11 @@ pub const SHM_KLOG_RING: u32 = 0x5354_0006;
 /// event. A page of its own, so no other holder of the input regions can write
 /// it.
 pub const SHM_INPUT_FOCUS: u32 = 0x5354_000D;
+/// [`SHM_INPUT_EVENTS`] for the region the kernel shares with a ring-3 file
+/// server (`MemObj fs.share`, Kconfig FS_EXT4_RING3), granted
+/// `READ|WRITE|MAP` to that server's row alone: the names the kernel asks
+/// about and the data the server answers with (`azos_devif::fs::Extent`).
+pub const SHM_FS_SHARE: u32 = 0x5354_000E;
 
 /// `SYS_CAP_INFO(ty::SHM, SHM_INSPECT_NAMES)`: the handle of this task's
 /// `Cap<Shm>` to the name server's view of the topology (`MemObj
@@ -270,7 +275,7 @@ const _: () = {
     let keys = [
         SHM_INSPECT_PUBLIC, SHM_INSPECT_ADMIN, SHM_INPUT_EVENTS, SHM_CONSOLE_SCREEN, SHM_KLOG_RING,
         SHM_INPUT_FOCUS, SHM_INSPECT_NAMES, SHM_INSPECT_RPC, SHM_INSPECT_MCP, SHM_INSPECT_COMPONENTS,
-        SHM_INSPECT_LOGINS, SHM_INSPECT_CLOCK,
+        SHM_INSPECT_LOGINS, SHM_INSPECT_CLOCK, SHM_FS_SHARE,
     ];
     let mut i = 0;
     while i < keys.len() {

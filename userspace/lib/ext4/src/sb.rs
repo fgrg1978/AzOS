@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The superblock and the group descriptors.
 
-use crate::{csum, le16, le32, BlockSource, Corrupt, Error, MountError, Volume, MAX_BLOCK};
+use crate::{csum, le16, le32, BlockSource, Corrupt, Error, MountError, Volume};
 
 const SB_OFFSET: u64 = 1024;
 const SB_BYTES: usize = 1024;
@@ -37,6 +37,8 @@ const RO_COMPAT_METADATA_CSUM: u32 = 0x400;
 const RO_COMPAT_ADDRESSING: u32 = RO_COMPAT_BIGALLOC;
 
 const CSUM_TYPE_CRC32C: u8 = 1;
+/// `EXT4_MAX_DESC_SIZE`: the largest descriptor the superblock check admits.
+const DESC_MAX: usize = 1024;
 
 /// `bg_flags`: the group's inode table is not initialised.
 const BG_INODE_UNINIT: u16 = 0x1;
@@ -140,7 +142,7 @@ impl Super {
         }
         let desc_size = if features.is_64bit() {
             let d = r16(0xFE) as u32;
-            if !(64..=1024).contains(&d) || !d.is_power_of_two() || d > block_size {
+            if !(64..=DESC_MAX as u32).contains(&d) || !d.is_power_of_two() || d > block_size {
                 return Err(MountError::DescSize(d));
             }
             d
@@ -230,7 +232,7 @@ impl<S: BlockSource> Volume<S> {
         let bs = self.sb.block_size as u64;
         let at = g as u64 * ds as u64;
         let pblk = self.sb.first_data_block as u64 + 1 + at / bs;
-        let mut d = [0u8; MAX_BLOCK];
+        let mut d = [0u8; DESC_MAX];
         let d = &mut d[..ds];
         self.read_blocks(pblk, (at % bs) as usize, d)?;
         if self.sb.features.metadata_csum() {

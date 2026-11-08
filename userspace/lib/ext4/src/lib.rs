@@ -65,8 +65,14 @@ pub struct IoError;
 
 /// The partition, read by byte offset.
 pub trait BlockSource {
-    /// Fill `buf` from byte `off` of the partition.
+    /// Fill `buf` from byte `off` of the partition: metadata (the superblock,
+    /// descriptors, inodes, directory, extent and indirect blocks).
     fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<(), IoError>;
+    /// The same for a file's contents, which a source that caches metadata
+    /// need not keep (the reader of the file has its own cache).
+    fn read_data(&mut self, off: u64, buf: &mut [u8]) -> Result<(), IoError> {
+        self.read_at(off, buf)
+    }
     /// The partition's length in bytes.
     fn len(&self) -> u64;
 }
@@ -182,7 +188,14 @@ pub(crate) fn csum(seed: u32, data: &[u8]) -> u32 {
 
 /// Read `buf.len()` bytes at byte `off` of the run that starts at block
 /// `pblk`, checking that the run lies inside the volume.
-pub(crate) fn read_run<S: BlockSource>(src: &mut S, sb: &Super, pblk: u64, off: usize, buf: &mut [u8]) -> Result<(), Error> {
+pub(crate) fn read_run<S: BlockSource>(
+    src: &mut S,
+    sb: &Super,
+    pblk: u64,
+    off: usize,
+    buf: &mut [u8],
+    data: bool,
+) -> Result<(), Error> {
     let bs = sb.block_size as u64;
     let end = (off as u64).checked_add(buf.len() as u64).ok_or(Corrupt::BlockRange)?;
     let blocks = end.div_ceil(bs);
@@ -190,7 +203,11 @@ pub(crate) fn read_run<S: BlockSource>(src: &mut S, sb: &Super, pblk: u64, off: 
         return Err(Corrupt::BlockRange.into());
     }
     let at = pblk.checked_mul(bs).and_then(|b| b.checked_add(off as u64)).ok_or(Corrupt::BlockRange)?;
-    src.read_at(at, buf)?;
+    if data {
+        src.read_data(at, buf)?;
+    } else {
+        src.read_at(at, buf)?;
+    }
     Ok(())
 }
 
@@ -226,13 +243,13 @@ impl<S: BlockSource> Volume<S> {
 
     /// Read `buf.len()` bytes at byte `off` of block `pblk`'s run.
     pub(crate) fn read_blocks(&mut self, pblk: u64, off: usize, buf: &mut [u8]) -> Result<(), Error> {
-        read_run(&mut self.src, &self.sb, pblk, off, buf)
+        read_run(&mut self.src, &self.sb, pblk, off, buf, false)
     }
 
     /// Read block `pblk` whole into the volume's block buffer.
     pub(crate) fn load_block(&mut self, pblk: u64) -> Result<(), Error> {
         let bs = self.sb.block_size as usize;
-        read_run(&mut self.src, &self.sb, pblk, 0, &mut self.blk[..bs])
+        read_run(&mut self.src, &self.sb, pblk, 0, &mut self.blk[..bs], false)
     }
 
     /// Bytes of the file `ino` from `off` into `dst`: the count, short only
@@ -265,7 +282,7 @@ impl<S: BlockSource> Volume<S> {
             let n = run_bytes.min((want - done) as u64) as usize;
             let out = &mut dst[done..done + n];
             match run.start {
-                Some(p) => self.read_blocks(p, inblk, out)?,
+                Some(p) => read_run(&mut self.src, &self.sb, p, inblk, out, true)?,
                 None => out.fill(0),
             }
             done += n;

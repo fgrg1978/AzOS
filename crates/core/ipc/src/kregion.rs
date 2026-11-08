@@ -5,8 +5,10 @@
 //! `input.focus` (the input server's word saying who holds the keyboard, which
 //! the drivers read) and `console.screen` (the framebuffer console's screen
 //! region, whose reader writes the overlay words), all for reading AND
-//! writing; and `klog.ring` (the structured kernel log, whose readers keep
-//! their own cursors) for reading only.
+//! writing; `fs.share` (the names and data the kernel exchanges with a ring-3
+//! file server, `azos_fs::endpoint`), for reading and writing; and
+//! `klog.ring` (the structured kernel log, whose readers keep their own
+//! cursors) for reading only.
 //!
 //! Like the introspection regions ([`crate::inspect_region`]): the kernel
 //! creates a contiguous memory object at boot and publishes its packed
@@ -37,6 +39,7 @@ static INPUT_EVENTS: AtomicU32 = AtomicU32::new(NONE);
 static INPUT_FOCUS: AtomicU32 = AtomicU32::new(NONE);
 static CONSOLE_SCREEN: AtomicU32 = AtomicU32::new(NONE);
 static KLOG_RING: AtomicU32 = AtomicU32::new(NONE);
+static FS_SHARE: AtomicU32 = AtomicU32::new(NONE);
 
 /// What a row asks for and the capability carries.
 pub const RW: CapPerms = CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP);
@@ -52,6 +55,8 @@ pub const TARGET_INPUT_FOCUS: &str = "input.focus";
 pub const TARGET_CONSOLE_SCREEN: &str = "console.screen";
 /// The target of the structured kernel log's row.
 pub const TARGET_KLOG_RING: &str = "klog.ring";
+/// The target of the ring-3 file server's shared region's row.
+pub const TARGET_FS_SHARE: &str = "fs.share";
 
 /// Which region.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,6 +65,7 @@ pub enum Region {
     InputFocus,
     ConsoleScreen,
     KlogRing,
+    FsShare,
 }
 
 impl Region {
@@ -69,13 +75,14 @@ impl Region {
             Region::InputFocus => &INPUT_FOCUS,
             Region::ConsoleScreen => &CONSOLE_SCREEN,
             Region::KlogRing => &KLOG_RING,
+            Region::FsShare => &FS_SHARE,
         }
     }
 
     /// The rights a row for this region asks for, and the capability carries.
     pub const fn perms(self) -> CapPerms {
         match self {
-            Region::InputEvents | Region::InputFocus | Region::ConsoleScreen => RW,
+            Region::InputEvents | Region::InputFocus | Region::ConsoleScreen | Region::FsShare => RW,
             Region::KlogRing => VIEW,
         }
     }
@@ -86,6 +93,7 @@ impl Region {
             TARGET_INPUT_FOCUS => Some(Region::InputFocus),
             TARGET_CONSOLE_SCREEN => Some(Region::ConsoleScreen),
             TARGET_KLOG_RING => Some(Region::KlogRing),
+            TARGET_FS_SHARE => Some(Region::FsShare),
             _ => None,
         }
     }
@@ -136,12 +144,13 @@ pub fn seed_mint_any(tid: u32, target: &str, perms: CapPerms) -> Option<CapHandl
 /// returned as given (it then matches nothing: a key is above every pool
 /// index).
 pub fn lookup_resource(resource: u32) -> u32 {
-    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_INPUT_EVENTS, SHM_INPUT_FOCUS, SHM_KLOG_RING};
+    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_FS_SHARE, SHM_INPUT_EVENTS, SHM_INPUT_FOCUS, SHM_KLOG_RING};
     let region = match resource {
         SHM_INPUT_EVENTS => Region::InputEvents,
         SHM_INPUT_FOCUS => Region::InputFocus,
         SHM_CONSOLE_SCREEN => Region::ConsoleScreen,
         SHM_KLOG_RING => Region::KlogRing,
+        SHM_FS_SHARE => Region::FsShare,
         _ => return resource,
     };
     match published(region) {
@@ -173,6 +182,7 @@ mod tests {
         publish(Region::InputFocus, NONE);
         publish(Region::ConsoleScreen, NONE);
         publish(Region::KlogRing, NONE);
+        publish(Region::FsShare, NONE);
     }
 
     #[test]
@@ -185,6 +195,8 @@ mod tests {
         assert_eq!(lookup_resource(SHM_CONSOLE_SCREEN), SHM_CONSOLE_SCREEN);
         assert!(seed_mint(40, TARGET_KLOG_RING, VIEW).is_none());
         assert_eq!(lookup_resource(SHM_KLOG_RING), SHM_KLOG_RING);
+        assert!(seed_mint(40, TARGET_FS_SHARE, RW).is_none());
+        assert_eq!(lookup_resource(azos_abi::cap::SHM_FS_SHARE), azos_abi::cap::SHM_FS_SHARE);
     }
 
     /// The log is granted `READ|MAP` and nothing else: a row that asks to

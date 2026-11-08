@@ -17,11 +17,19 @@ description = "Host-side tests for the read-only ext4 parser (userspace/lib/ext4
 #     against NAME_MAX (`corrupt::mangled_images_never_panic`)
 #   csum-skip-canary: an inode's checksum is not verified
 #     (`refuse::a_flipped_inode_is_refused`)
+#   short-read-canary: the server answers half of every read without saying
+#     the file ended (`protocol::a_file_reads_whole_through_the_protocol`)
 dirent-bound-canary = ["azos_ext4/dirent-bound-canary"]
 csum-skip-canary = ["azos_ext4/csum-skip-canary"]
+short-read-canary = []
 
 [dependencies]
 azos_ext4 = { path = "../../../userspace/lib/ext4" }
+# The server's protocol (userspace/services/ext4d/src/service.rs, pulled by
+# `#[path]`) and the generated client it is checked against.
+azos_abi = { path = "../../../crates/core/abi" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_idl = { path = "../../../crates/core/idl" }
 
 [profile.release]
 overflow-checks = true

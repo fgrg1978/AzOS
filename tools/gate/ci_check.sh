@@ -12307,6 +12307,7 @@ host_job host_canary_row "coreutils: cut ranges canary" coreutils-tests cut-rang
 host_job host_canary_row "coreutils: tr ranges canary" coreutils-tests tr-range-canary tr_range_includes_the_last_letter
 host_job host_canary_row "ext4: a name past NAME_MAX canary" ext4-tests dirent-bound-canary mangled_images_never_panic
 host_job host_canary_row "ext4: inode checksum canary" ext4-tests csum-skip-canary a_flipped_inode_is_refused
+host_job host_canary_row "ext4: a short read as success canary" ext4-tests short-read-canary a_file_reads_whole_through_the_protocol
 host_job host_canary_row "coreutils: uniq -c canary" coreutils-tests uniq-count-canary uniq_c_counts_the_run
 # The kernel half's page-table pool and its funnel (mm-tests, feature hyp-monitor,
 # which the default run of the suite does not build): words of the armed pool go
