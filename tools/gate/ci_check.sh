@@ -26583,18 +26583,23 @@ fd -e zzz . /fat/FDT" 150 \
 tr a-z A-Z < /fat/KB.TXT"
             USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: kibi edits and saves a file ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_KIBI=y" PASS \
                 "$kibi_script" 240 "KIBI-WROTE-THIS"
+            # The canary's termd is another ELF: the image table the kernel binds
+            # digests with is made again from it (the kernel the row builds
+            # includes the table), and both are put back once the row is done.
             par_drain
             kibi_canary_img="$CI_LOG_DIR/ush-kibi-keep-mode.img"
             rm -f "$kibi_canary_img" "$AZOS_OUT/build/disk-aarch64-sh.img"
-            if make TERMD_FEATURES=canary-keep-mode "$AZOS_OUT/build/disk-aarch64-sh.img" >"$CI_LOG_DIR/kibi-canary-disk.log" 2>&1; then
+            if make TERMD_FEATURES=canary-keep-mode "$AZOS_OUT/build/disk-aarch64-sh.img" "$AZOS_OUT/build/image_hashes_aarch64.rs" \
+                    >"$CI_LOG_DIR/kibi-canary-disk.log" 2>&1; then
                 cp "$AZOS_OUT/build/disk-aarch64-sh.img" "$kibi_canary_img"
-                USH_IMG="$kibi_canary_img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" ushell_row "sh: kibi mode not restored canary ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_KIBI=y" FAIL \
+                USH_IMG="$kibi_canary_img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: kibi mode not restored canary ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_KIBI=y" FAIL \
                     "$kibi_script" 240 "KIBI-WROTE-THIS"
+                par_drain
             else
                 printf "  %-26s" "sh: kibi mode not restored canary ($ush_isa)..."; bad; echo "      the canary volume did not build (see $CI_LOG_DIR/kibi-canary-disk.log)"
             fi
             rm -f "$AZOS_OUT/build/disk-aarch64-sh.img"
-            make "$AZOS_OUT/build/disk-aarch64-sh.img" >/dev/null 2>&1 \
+            make "$AZOS_OUT/build/disk-aarch64-sh.img" "$AZOS_OUT/build/image_hashes_aarch64.rs" >/dev/null 2>&1 \
                 && cp -p "$AZOS_OUT/build/disk-aarch64-sh.img" "$AZOS_OUT/build/disk-aarch64-sh.img.pristine"
         fi
         # The images that ask for more stack than a task gets by default, run:

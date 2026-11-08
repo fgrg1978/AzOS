@@ -340,10 +340,11 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             continue;
         }
         let h = CapHandle::from_raw(m.handle);
-        let peek = azos_ipc::cap_store::with_table(me, |t| t.peek_raw(h).zip(t.ext_of(h))).flatten();
-        let Some(((kind, held, resource), ext)) = peek else { return err(Errno::ECAPSTALE) };
+        let peek = azos_ipc::cap_store::with_table(me, |t| t.peek_raw(h)).flatten();
+        let Some((kind, held, resource)) = peek else { return err(Errno::ECAPSTALE) };
         if m.is_endpoint() {
-            if let Err(e) = crate::spawn_handoff::check_held(kind, held, ext.badge) {
+            let badge = azos_ipc::cap_store::with_table(me, |t| t.ext_of(h)).flatten().map_or(0, |e| e.badge);
+            if let Err(e) = crate::spawn_handoff::check_held(kind, held, badge) {
                 return err(e);
             }
             moving[nmoving] = Moving {
