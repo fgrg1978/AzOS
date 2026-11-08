@@ -2,14 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! E06 — Mission logging / replay / analytics.
 //!
-//! Ring buffer of compact safety records in RAM, periodically flushed to FAT32
-//! for post-mortem analysis: the e-stop latch, the release floors, an effect's
-//! write-ahead record, the other safety violations. All records are fixed-size
+//! Compact safety records in RAM, one queue per CPU, flushed to FAT32 in the
+//! order they were pushed for post-mortem analysis: the e-stop latch, the
+//! release floors, an effect's write-ahead record, the other safety
+//! violations. All records are fixed-size
 //! (32 bytes on-wire) so that replay readers don't have to parse variable-length
 //! records.
 //!
 //! The telemetry events (a motor command, a mode change, a skill, a waypoint,
-//! an error, a sensor snapshot) are not on this ring: they are loss-tolerant
+//! an error, a sensor snapshot) are not in these queues: they are loss-tolerant
 //! and go to their own ring of the record region (`azos_records`), which
 //! `logd` writes to its files.
 //!
@@ -32,7 +33,7 @@
 //!   - mission_duration_ticks (CLINT ticks since logger_init)
 //!   - battery_mah_used       (INA219 integration, caller feeds microamp-hours)
 //!   - safety_violations      (incremented per SafetyViolation event)
-//!   - events_dropped         (ring-buffer overflow counter)
+//!   - events_dropped         (records a full queue refused)
 //!   - flush_errors           (storage errors during flush)
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -90,7 +91,7 @@ pub enum LogStorageError {
     /// write/fsync/close error from the underlying device.
     Io,
     /// The caller is a real-time task, which never does block I/O (owner
-    /// rule, wave 15): its records are on the ring and the log flusher task
+    /// rule, wave 15): its records are queued and the log flusher task
     /// has been woken to write them. Not durable yet when this returns.
     Deferred,
 }
@@ -365,11 +366,11 @@ pub const SAFETY_CAP_DENIED_TYPED: u8 = 0x0A;
 ///
 /// ## Why denials are bounded at all
 ///
-/// Both denial codes above only reach the in-memory ring, and the ring
-/// overwrites its oldest record. A ring-3 loop presenting forged handles wrote
-/// one record per syscall, which between two watchdog flushes evicted the
-/// ring-only records next to it — degrade-level changes, sys-wdt events,
-/// `SAFETY_UNKNOWN_PKT`. So `crates/core/syscall` admits a few denial records per
+/// Both denial codes above only reach the in-memory queue of their CPU, which
+/// holds a bounded number of records. A ring-3 loop presenting forged handles
+/// wrote one record per syscall, which between two watchdog flushes took the
+/// room of the queue-only records next to it — degrade-level changes, sys-wdt
+/// events, `SAFETY_UNKNOWN_PKT`. So `crates/core/syscall` admits a few denial records per
 /// task per window and counts the rest (`admit_denial_record` in
 /// `handlers.rs`). Per task, so one task's flood cannot silence another's
 /// denials.
@@ -393,12 +394,12 @@ pub const SAFETY_CAP_DENIED_SUPPRESSED: u8 = 0x0B;
 /// in-memory trace ring. `action_code` is 0; `detail` is the syscall number,
 /// narrowed to the 16 bits the filter compares.
 ///
-/// Recorded the way the capability denials are: into the ring, through their
+/// Recorded the way the capability denials are: into the queue, through their
 /// per-task bound (`admit_denial_record` in `crates/core/syscall/src/handlers.rs`)
 /// with a budget of its own, onto the disk with the watchdog's flush. A loop of
 /// unlisted calls writes at most four of these per task per window and one
 /// `SAFETY_CAP_DENIED_SUPPRESSED` summary with `action_code` `0xFE`, cannot push
-/// the records beside it out of the ring, and cannot be silenced by the same
+/// the records beside it out of the queue, and cannot be silenced by the same
 /// task's capability denials.
 pub const SAFETY_SECCOMP_AUDIT: u8 = 0x0C;
 
@@ -430,7 +431,7 @@ pub const SAFETY_SECCOMP_AUDIT: u8 = 0x0C;
 /// The autorun loader and the shell write it durably: a refused autorun is a
 /// robot that did not start its program, and the likely next event is a person
 /// power-cycling it. The ring-3 refusal goes through the capability denials'
-/// per-task bound, on a budget of its own, into the ring (summary `action_code`
+/// per-task bound, on a budget of its own, into the queue (summary `action_code`
 /// `0xFD`), so a program
 /// retrying exec in a loop gets neither a synchronous write per call nor a way
 /// to push other records out.
@@ -702,9 +703,9 @@ pub const fn decision_refusal_payload(rule: u8, verdict: u8, subject: u32, n: [u
 /// not durable in v1: see `azos_decision::ProvenanceRecord`).
 ///
 /// A real-time caller, and one that may not block, does not flush: the record
-/// is queued on the logger's ring for the log flusher (`logger_flush`'s rule,
-/// through `push_durable`); only a ring full of a pinned latch record drops
-/// it, and that is the `Err`. Any other caller flushes itself. Does not count
+/// is queued for the log flusher (`logger_flush`'s rule, through
+/// `push_durable`); only a queue at its limit drops it, and that is the `Err`.
+/// Any other caller flushes itself. Does not count
 /// as a safety violation (`LOG_SAFETY_COUNT` is the e-stop path's).
 pub fn log_decision_provenance_durable(p: &azos_decision::ProvenanceRecord) -> Result<usize, LogStorageError> {
     push_durable(decision_refusal_payload(p.rule, p.verdict, p.subject, p.n))?;
@@ -847,7 +848,7 @@ pub const fn semantic_level_record(
 // Record layout — 32 bytes fixed.
 // ---------------------------------------------------------------------------
 
-/// Size of a log record on-disk and in-ring (bytes).
+/// Size of a log record on disk (bytes).
 pub const LOG_RECORD_SIZE: usize = 32;
 /// Payload bytes per record (after fixed 12-byte header).
 pub const LOG_PAYLOAD_BYTES: usize = 20;
@@ -888,317 +889,202 @@ impl LogRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Ring buffer: lock-free, bounded, many producers, one consumer.
+// Durable queues: one per CPU, one producer each, never evicted.
 // ---------------------------------------------------------------------------
 //
 // Owner rule (wave 15): a real-time task never does block I/O, and never
 // waits for a task that does. Every encoder below runs in whatever task logs
-// the event (the 1 kHz motor loop, the RT watchdog, the syscall path), so the
-// ring they push into takes no lock. Positions only grow (u64); slot
-// `pos % CAPACITY` carries a sequence word:
+// the event (the 1 kHz motor loop, the RT watchdog, the syscall path, a fault
+// handler), so the queue it pushes into takes no lock. Each CPU has its own
+// `azos_rings::Queue`: single producer, single consumer, every record taken
+// exactly once. The producer handle is the queue's one writer (`producer()`
+// hands it out once, it is not `Clone`); a push takes it with interrupts off
+// on its CPU, so no other context of that CPU can be its second writer, and
+// a context that finds it out (a CPU sharing the queue past `LOG_QUEUES`)
+// takes the next queue's.
 //
-//   seq == pos       free for the producer of position `pos`
-//   seq == pos + 1   holds position `pos`'s record (published)
+// Nothing is evicted. A queue at its limit for the record's class refuses the
+// record ([`Admit`]): an effect is refused with a receipt, any other record
+// is counted lost (`events_dropped`; a latching e-stop also in
+// `logger_latch_stats` and on the console). So a record the recorder took is
+// on the medium after the flusher's pass, or still in RAM.
 //
-// A producer claims `RING_HEAD` with a compare-and-swap, stores the encoded
-// record and publishes it (D. Vyukov's bounded queue). When the ring is full
-// it EVICTS the oldest record — a compare-and-swap of `RING_TAIL` from that
-// record's position, counted in `LOG_DROPPED` — and frees its slot: the
-// newest events are the ones that explain a crash. It never sleeps and never
-// waits for a lock; the only wait is for a producer of the same slot that
-// claimed it and has not published yet, which runs with preemption off.
-//
-// The consumer (whoever holds the flush lock `LOG_FILE`: the log flusher, or
-// a non-RT `*_durable` caller) copies records without removing them
-// (`ring_peek`), writes them, and removes only what the medium took
-// (`ring_consume`). A record evicted while it was being copied is detected
-// by its sequence word (a seqlock read) and not written.
+// Order across CPUs: a push takes a number from one counter (`NEXT_SEQ`)
+// while it holds the writer handle and after it checked the room, so the push
+// that follows cannot fail and every number taken is pushed. The flusher (the
+// one consumer, under the flush claim `LOG_FILE`) writes the records in that
+// order: the next number is at the front of one of the queues, or its
+// producer is between taking it and publishing it (a few stores with
+// interrupts off) and the flusher waits for it.
 
-/// Records held in RAM before flushing (Kconfig `LOG_RING_ENTRIES`, a power
-/// of two).
-pub const LOG_RING_CAPACITY: usize = azos_limits::LOG_RING_ENTRIES as usize;
-const _: () = assert!(LOG_RING_CAPACITY.is_power_of_two() && LOG_RING_CAPACITY >= 2);
-const RING_CAP: u64 = LOG_RING_CAPACITY as u64;
-const RING_MASK: u64 = RING_CAP - 1;
-const RING_WORDS: usize = LOG_RECORD_SIZE / 8;
+/// Records one CPU's queue holds before the flusher writes them (Kconfig
+/// `LOG_QUEUE_ENTRIES`, a power of two).
+pub const LOG_QUEUE_CAPACITY: usize = azos_limits::LOG_QUEUE_ENTRIES as usize;
+const _: () = assert!(LOG_QUEUE_CAPACITY.is_power_of_two() && LOG_QUEUE_CAPACITY >= 2);
 
-/// One slot. The record is stored encoded, as words, so a reader never
-/// touches a non-atomic byte a writer might be storing.
-struct RingSlot {
-    seq: AtomicU64,
-    w:   [AtomicU64; RING_WORDS],
+/// Queues (Kconfig `LOG_QUEUES`, at most `NR_CPUS`): a CPU past them shares
+/// the queue of its number modulo this.
+pub const LOG_QUEUES: usize = {
+    let (q, cpus) = (azos_limits::LOG_QUEUES as usize, azos_limits::NR_CPUS as usize);
+    if q < cpus { q } else { cpus }
+};
+const _: () = assert!(LOG_QUEUES >= 1);
+
+/// One queued record and its place in the order of every push.
+#[derive(Clone, Copy)]
+struct Queued {
+    seq: u64,
+    rec: LogRecord,
 }
 
-static RING_SLOTS: [RingSlot; LOG_RING_CAPACITY] = {
-    let mut slots = [const { RingSlot { seq: AtomicU64::new(0), w: [const { AtomicU64::new(0) }; RING_WORDS] } };
-        LOG_RING_CAPACITY];
-    let mut i = 0;
-    while i < LOG_RING_CAPACITY {
-        slots[i].seq = AtomicU64::new(i as u64);
-        i += 1;
-    }
-    slots
-};
-/// Next position a producer claims.
-static RING_HEAD: AtomicU64 = AtomicU64::new(0);
-/// Oldest position still in the ring. Advanced one position at a time, by
-/// compare-and-swap, by the consumer (consumed) or a producer (evicted);
-/// whoever wins position `p` frees its slot (`seq = p + CAPACITY`).
-static RING_TAIL: AtomicU64 = AtomicU64::new(0);
-/// Ring position + 1 of the newest committed write-ahead effect record; no
-/// producer evicts a position below it ([`ring_push`]). The effect gate
-/// promises a record for every effect it let through, so those records
-/// leave the ring only by the flusher consuming them: not by an ordinary
-/// record, and not by the latching e-stop either. Positions only grow, so the
-/// pin lapses by itself once the flusher passes it.
-///
-/// It is a watermark, not a per-record flag: ordinary records queued between
-/// two effect records are below it too. The span it covers is bounded: no
-/// producer but a safety record queues more than [`ORDINARY_RING_LIMIT`]
-/// records, so the [`RING_SAFETY_RESERVE`] slots above the limit are free for
-/// a safety record whatever the pinned span holds.
-static EFFECT_PIN: AtomicU64 = AtomicU64::new(0);
-/// What a record may do to the ring.
+impl Queued {
+    const EMPTY: Queued = Queued { seq: 0, rec: LogRecord::zeroed() };
+}
+
+type DurableQueue = azos_rings::Queue<Queued, LOG_QUEUE_CAPACITY>;
+
+static QUEUES: [DurableQueue; LOG_QUEUES] =
+    [const { azos_rings::Queue::new(azos_rings::Full::Backpressure) }; LOG_QUEUES];
+
+/// The number the next push takes; every number below it was pushed or is
+/// being published.
+static NEXT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Records the recorder holds in RAM: pushed, and not yet taken by the medium
+/// (queued, or with the flusher).
+static HELD: AtomicU64 = AtomicU64::new(0);
+
+/// What a record may do in its queue.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Admit {
-    /// An ordinary record. It queues only while fewer than
-    /// [`ORDINARY_RING_LIMIT`] records are queued; at the limit it evicts the
-    /// oldest, except a pending latch record and a pinned effect record (then
-    /// the NEW record is lost instead).
-    Evict,
+    /// An ordinary record: admitted while fewer than [`ORDINARY_QUEUE_LIMIT`]
+    /// records are queued, else lost (counted).
+    Ordinary,
     /// A safety record (a latching or releasing `SAFETY_ESTOP`, the release
-    /// nonce floor): it may take any free slot, the reserve included, and at a
-    /// full ring evicts the oldest on the same terms as `Evict`. The ring
-    /// never gives it a slot by evicting a pinned effect record.
+    /// nonce floor, the release-key pin): it may take any free slot, the
+    /// reserve included.
     Safety,
-    /// A write-ahead effect record: never evicts. Refused while
-    /// [`ORDINARY_RING_LIMIT`] records are queued; committed, it is pinned.
+    /// A write-ahead effect record: refused while [`ORDINARY_QUEUE_LIMIT`]
+    /// records are queued.
     Commit,
     /// The record of a stop (an effect toward a device's safe state, never
     /// refused): it may take the reserve's slots down to the last
-    /// [`STOP_KEEPS_FREE`], and past that behaves as `Evict` (the oldest
-    /// unpinned record goes; a pinned tail loses the new record). Not pinned:
-    /// a stop must not make the latching e-stop's own eviction fail.
+    /// [`STOP_KEEPS_FREE`]; past that it is lost and counted.
     Stop,
 }
-/// Slots only a safety record may use (Kconfig `LOG_RING_SAFETY_RESERVE`): a
-/// latching or releasing `SAFETY_ESTOP`, the restore record of the boot
-/// replay, the release nonce floor. Nothing else queues into them, so such a
-/// record finds a slot with every other record already on the ring, an
-/// effect record pinned at the tail included, and nothing is evicted to make
-/// room.
-pub const RING_SAFETY_RESERVE: usize = azos_limits::LOG_RING_SAFETY_RESERVE as usize;
-const _: () = assert!(RING_SAFETY_RESERVE >= 1 && RING_SAFETY_RESERVE <= LOG_RING_CAPACITY / 2);
-/// Records an ordinary record or an effect record may leave queued: the ring
+
+/// Slots of each queue only a safety record may use (Kconfig
+/// `LOG_QUEUE_SAFETY_RESERVE`): a latching or releasing `SAFETY_ESTOP`, the
+/// restore record of the boot replay, the release nonce floor, the key pin.
+/// Nothing else queues into them, so such a record finds a slot with every
+/// other record already queued.
+pub const QUEUE_SAFETY_RESERVE: usize = azos_limits::LOG_QUEUE_SAFETY_RESERVE as usize;
+const _: () = assert!(QUEUE_SAFETY_RESERVE >= 1 && QUEUE_SAFETY_RESERVE <= LOG_QUEUE_CAPACITY / 2);
+/// Records an ordinary record or an effect record may leave queued: the queue
 /// minus the reserve. (Canary `ring-reserve-canary`, host suites only: the
-/// reserve is open to everyone, so a full ring has no slot for a safety
+/// reserve is open to everyone, so a full queue has no slot for a safety
 /// record.)
 #[cfg(not(feature = "ring-reserve-canary"))]
-pub const ORDINARY_RING_LIMIT: usize = LOG_RING_CAPACITY - RING_SAFETY_RESERVE;
+pub const ORDINARY_QUEUE_LIMIT: usize = LOG_QUEUE_CAPACITY - QUEUE_SAFETY_RESERVE;
 #[cfg(feature = "ring-reserve-canary")]
-pub const ORDINARY_RING_LIMIT: usize = LOG_RING_CAPACITY;
-const ORDINARY_LIMIT: u64 = ORDINARY_RING_LIMIT as u64;
+pub const ORDINARY_QUEUE_LIMIT: usize = LOG_QUEUE_CAPACITY;
 /// Reserve slots a stop's record leaves to the safety records proper (half of
 /// them): a stop is recorded in the reserve, but a loop of stops (a task that
 /// holds a wheel may stop it at any rate) cannot fill the slots the latching
-/// e-stop needs behind a pinned tail.
+/// e-stop needs.
 #[cfg(not(feature = "ring-reserve-canary"))]
-pub const STOP_KEEPS_FREE: usize = RING_SAFETY_RESERVE / 2;
+pub const STOP_KEEPS_FREE: usize = QUEUE_SAFETY_RESERVE / 2;
 #[cfg(feature = "ring-reserve-canary")]
 pub const STOP_KEEPS_FREE: usize = 0;
-const STOP_LIMIT: u64 = (LOG_RING_CAPACITY - STOP_KEEPS_FREE) as u64;
 
-#[inline(always)]
-fn ring_slot(pos: u64) -> &'static RingSlot {
-    &RING_SLOTS[(pos & RING_MASK) as usize]
+impl Admit {
+    const fn limit(self) -> usize {
+        match self {
+            Admit::Safety => LOG_QUEUE_CAPACITY,
+            Admit::Stop => LOG_QUEUE_CAPACITY - STOP_KEEPS_FREE,
+            Admit::Ordinary | Admit::Commit => ORDINARY_QUEUE_LIMIT,
+        }
+    }
 }
 
-/// Records queued (claimed, published or not, and not yet removed).
-fn ring_len() -> usize {
-    let tail = RING_TAIL.load(Ordering::Acquire);
-    let head = RING_HEAD.load(Ordering::Acquire);
-    head.saturating_sub(tail).min(RING_CAP) as usize
+/// Why a push took no slot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Refused {
+    /// The queue holds the record's limit ([`Admit::limit`]).
+    Full,
+    /// Every queue's writer handle was out, twice round.
+    Busy,
 }
 
-/// What [`evict_oldest`] found at the position it was asked about.
-enum Evicted {
-    /// This call removed it and freed its slot.
-    Yes,
-    /// It is a pending latch record or a pinned effect record: it stays.
-    Pinned,
-    /// Someone else moved the tail, or the record's producer has not published
-    /// yet: look again.
-    Retry,
+/// Where a push went.
+#[derive(Clone, Copy)]
+struct Pushed {
+    seq: u64,
+    /// Records in that queue after it.
+    queued: usize,
 }
 
-/// Evict the record at ring position `old`, the tail as the caller read it.
-fn evict_oldest(old: u64) -> Evicted {
-    let slot = ring_slot(old);
-    if slot.seq.load(Ordering::Acquire) != old + 1 {
-        // Claimed but not published: its producer runs with preemption off;
-        // wait. Or already freed by the consumer.
-        core::hint::spin_loop();
-        return Evicted::Retry;
-    }
-    if old + 1 == LATCH_PENDING.load(Ordering::Acquire)
-        && !LOG_CANARY_LATCH_DEFER.load(Ordering::Relaxed) {
-        return Evicted::Pinned;
-    }
-    if old < EFFECT_PIN.load(Ordering::Acquire) {
-        return Evicted::Pinned;
-    }
-    if RING_TAIL.compare_exchange(old, old + 1, Ordering::AcqRel, Ordering::Relaxed).is_err() {
-        return Evicted::Retry;
-    }
-    // Won the tail: the slot is ours until the store below.
-    slot.seq.store(old + RING_CAP, Ordering::Release);
+/// The CPU whose queue a push tries first.
+fn home_queue() -> usize {
     #[cfg(test)]
-    ring_after_evict_hook();
-    Evicted::Yes
+    if let Some(cpu) = CPU_FOR_TEST.with(|c| c.get()) {
+        return cpu % LOG_QUEUES;
+    }
+    // percpu-hint: a placement hint under the caller's interrupt mask; the
+    // writer handle, not the CPU number, is what keeps one producer per queue
+    azos_drv_sys::klog::cpu_tag() as usize % LOG_QUEUES
 }
 
-/// Push one record; returns how many records it evicted to fit (the caller
-/// counts each one as a loss). Never blocks.
-///
-/// A count, not a flag: a producer that frees a slot by eviction can lose
-/// that slot to another producer, which claims it first, and then has to
-/// evict again for the next position. Each eviction is one record gone; a
-/// `bool` counted the two as one (behavior-tests
-/// `flight_recorder_rt::an_eviction_whose_slot_is_stolen_is_counted_twice`).
-///
-/// Also returns the position the record took, or `u64::MAX` when it took
-/// none: the oldest record is a latching `SAFETY_ESTOP` not yet known
-/// durable ([`LATCH_PENDING`]) or a committed write-ahead effect record
-/// ([`EFFECT_PIN`]), neither of which is ever evicted, so the NEW record is
-/// the one lost (counted with the evictions). A safety record is lost this
-/// way only when the reserve itself is full, which needs [`RING_SAFETY_RESERVE`]
-/// safety records queued behind a pinned tail.
-///
-/// `admit` is [`Admit::Evict`] for an ordinary record; it holds the ring to
-/// [`ORDINARY_RING_LIMIT`] records ([`Admit::Stop`]: to `STOP_LIMIT`). For [`Admit::Commit`] the record may not
-/// evict anything: it is refused, `(u64::MAX, 0)` with nothing counted
-/// dropped, at that limit; and a record it commits is pinned.
-fn ring_push(rec: &LogRecord, admit: Admit) -> (u64, u32) {
-    let mut buf = [0u8; LOG_RECORD_SIZE];
-    rec.encode(&mut buf);
-    let mut evicted = 0u32;
-    // Claim and publish without being preempted: a consumer or a lapping
-    // producer that finds this slot claimed-but-unpublished waits for it
-    // (`ring_peek`, `evict_oldest`), and that wait must stay a few stores long.
-    let _np = azos_sync::preempt::critical_section();
-    let mut pos = RING_HEAD.load(Ordering::Relaxed);
-    loop {
-        let slot = ring_slot(pos);
-        let seq = slot.seq.load(Ordering::Acquire);
-        if seq > pos {
-            // The head moved on.
-            pos = RING_HEAD.load(Ordering::Relaxed);
+/// Set by a queue's producer from before it takes its number until the record
+/// is published: the flusher waits for a number it cannot find only while a
+/// producer is between the two.
+static WRITING: [AtomicBool; LOG_QUEUES] = [const { AtomicBool::new(false) }; LOG_QUEUES];
+
+/// Push one record into this CPU's queue. Never blocks, takes no lock and
+/// evicts nothing.
+fn queue_push(rec: &LogRecord, admit: Admit) -> Result<Pushed, Refused> {
+    // Interrupts off: a handler on this CPU cannot become a second writer of
+    // the queue in the middle of the push, and the producer is not moved to
+    // another CPU between the two.
+    let _irq = azos_sync::scope::IrqOff::new();
+    let home = home_queue();
+    for i in 0..2 * LOG_QUEUES {
+        let at = (home + i) % LOG_QUEUES;
+        let q = &QUEUES[at];
+        let Some(mut w) = q.producer() else {
+            core::hint::spin_loop();
             continue;
-        }
-        // `seq == pos`: the slot is free. `seq < pos`: the ring is full, the
-        // slot still holds position `pos - RING_CAP`. A record that is not a
-        // safety record also finds the ring full once the limit is queued;
-        // the head is the CAS's expected value, so the limit is exact (the
-        // tail only grows, which can only make the count too high, never low).
-        let tail = RING_TAIL.load(Ordering::Acquire);
-        let limit = if admit == Admit::Stop { STOP_LIMIT } else { ORDINARY_LIMIT };
-        let oldest = if seq < pos { Some(pos - RING_CAP) }
-            else if admit != Admit::Safety && pos.saturating_sub(tail) >= limit { Some(tail) }
-            else { None };
-        if let Some(old) = oldest {
-            if admit == Admit::Commit {
-                return (u64::MAX, 0);
+        };
+        // The consumer only takes records out, so the room this sees stays.
+        let queued = q.len();
+        if queued >= admit.limit() {
+            if !cfg!(feature = "durable-full-canary") {
+                return Err(Refused::Full);
             }
-            match evict_oldest(old) {
-                Evicted::Yes => evicted += 1,
-                Evicted::Pinned => return (u64::MAX, evicted + 1),
-                Evicted::Retry => {}
-            }
-            pos = RING_HEAD.load(Ordering::Relaxed);
-            continue;
+            // Canary: the full queue takes a number and keeps nothing, and
+            // answers as if it had the record.
+            return Ok(Pushed { seq: NEXT_SEQ.fetch_add(1, Ordering::SeqCst), queued });
         }
-        match RING_HEAD.compare_exchange_weak(pos, pos + 1, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => {
-                // The pin goes up before the record is published, so no
-                // producer can find it published and unpinned.
-                if admit == Admit::Commit {
-                    EFFECT_PIN.fetch_max(pos + 1, Ordering::AcqRel);
-                }
-                // Seqlock writer side: the slot's last sequence change
-                // (its release, which this thread acquired above) is
-                // ordered before the data a racing reader may see.
-                core::sync::atomic::fence(Ordering::Release);
-                for (i, w) in slot.w.iter().enumerate() {
-                    let mut b = [0u8; 8];
-                    b.copy_from_slice(&buf[i * 8..i * 8 + 8]);
-                    w.store(u64::from_le_bytes(b), Ordering::Relaxed);
-                }
-                slot.seq.store(pos + 1, Ordering::Release);
-                return (pos, evicted);
-            }
-            Err(now) => pos = now,
+        WRITING[at].store(true, Ordering::SeqCst);
+        let seq = NEXT_SEQ.fetch_add(1, Ordering::SeqCst);
+        HELD.fetch_add(1, Ordering::AcqRel);
+        let pushed = matches!(w.push(Queued { seq, rec: *rec }), azos_rings::Push::Pushed);
+        WRITING[at].store(false, Ordering::SeqCst);
+        if pushed {
+            return Ok(Pushed { seq, queued: queued + 1 });
         }
+        // Not reached: the room was checked with the one writer handle held.
+        // The number is a hole the flusher steps over.
+        HELD.fetch_sub(1, Ordering::AcqRel);
+        return Err(Refused::Full);
     }
+    Err(Refused::Busy)
 }
 
-/// Copy up to `out.len() / LOG_RECORD_SIZE` encoded records from the oldest
-/// WITHOUT removing them; returns `(first position, count)`. Consumer only
-/// (flush lock held).
-///
-/// Records leave the ring only through [`ring_consume`], once the medium
-/// took them: the destructive drain this replaces destroyed exactly the
-/// records around a failed write — the ones a flight recorder exists to keep.
-/// A position claimed but not yet published is waited for (its producer runs
-/// with preemption off), so a record pushed before a flush began is in it.
-fn ring_peek(out: &mut [u8]) -> (u64, usize) {
-    let max = out.len() / LOG_RECORD_SIZE;
-    'restart: loop {
-        let first = RING_TAIL.load(Ordering::Acquire);
-        let mut n = 0;
-        while n < max {
-            let pos = first + n as u64;
-            if pos >= RING_HEAD.load(Ordering::Acquire) {
-                break;
-            }
-            let slot = ring_slot(pos);
-            loop {
-                let seq = slot.seq.load(Ordering::Acquire);
-                if seq == pos + 1 {
-                    break;
-                }
-                if seq != pos {
-                    // Evicted (and maybe rewritten) since `first` was read.
-                    if n == 0 { continue 'restart; }
-                    return (first, n);
-                }
-                core::hint::spin_loop();
-            }
-            let o = n * LOG_RECORD_SIZE;
-            for (i, w) in slot.w.iter().enumerate() {
-                out[o + i * 8..o + i * 8 + 8].copy_from_slice(&w.load(Ordering::Relaxed).to_le_bytes());
-            }
-            // Seqlock reader side: a record evicted while it was copied is
-            // not this position's record.
-            core::sync::atomic::fence(Ordering::Acquire);
-            if slot.seq.load(Ordering::Relaxed) != pos + 1 {
-                if n == 0 { continue 'restart; }
-                return (first, n);
-            }
-            n += 1;
-        }
-        return (first, n);
-    }
-}
-
-/// Remove positions `first .. first + n` — records the medium accepted.
-/// Consumer only. A position a producer evicted meanwhile is already gone
-/// (and counted dropped, although it reached the medium).
-fn ring_consume(first: u64, n: usize) {
-    for pos in first..first + n as u64 {
-        if RING_TAIL.compare_exchange(pos, pos + 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-            ring_slot(pos).seq.store(pos + RING_CAP, Ordering::Release);
-        }
-    }
+/// Records the recorder holds in RAM (queued, or taken by the flusher and not
+/// yet by the medium).
+fn ring_len() -> usize {
+    HELD.load(Ordering::Acquire) as usize
 }
 
 // ---------------------------------------------------------------------------
@@ -1225,23 +1111,9 @@ static LOG_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// already is.
 static LOG_SERIAL: AtomicU32 = AtomicU32::new(0);
 
-/// Currently-open logfile (None if not yet opened or rotation in progress).
-///
-/// The flush claim: owned for the WHOLE flush, which is a loop of
-/// `LogStorage::write` calls plus an `fsync` — real disk I/O on the other
-/// side of the seam. Owning it is what serialises two flushers (and makes
-/// the ring's consumer single). It is a [`Claim`](azos_sync::claim::Claim),
-/// not a `Mutex` (owner rule F1: no `Mutex` across device I/O; the claim's
-/// exchange mutex is held for the instant of taking and giving it): no
-/// real-time task ever takes it — an RT caller of [`logger_flush`] wakes the
-/// log flusher instead — so there is no RT waiter whose priority an owner
-/// would need to inherit, and a waiter sleeps rather than spinning.
-///
-/// Every caller is task context: the log flusher, `logger_shutdown`, and
-/// non-RT `*_durable` callers. No interrupt handler touches this.
 /// The release-key fingerprint every file this logger opens must carry (G1),
 /// set when a boot installs the key and cleared by [`logger_shutdown`] (it
-/// lives as long as the logger session, like the ring). A file opened by a
+/// lives as long as the logger session). A file opened by a
 /// rotation writes it with its header ([`write_file_header`]), so the newest
 /// file always holds the pin and the wrap, which overwrites the OLDEST file,
 /// cannot take the only copy. A `SpinLock`: it guards a 16-byte copy.
@@ -1254,9 +1126,48 @@ const LATCH_SET: u32 = 0x100;
 /// The highest release nonce durably recorded, carried like [`LATCH_CARRY`].
 static NONCE_CARRY: AtomicU64 = AtomicU64::new(0);
 
-static LOG_FILE: azos_sync::claim::Claim<Option<OpenLogFile>> = azos_sync::claim::Claim::new(None);
+/// What the one consumer holds: the open file and the records it took off the
+/// queues and the medium has not taken yet.
+///
+/// The flush claim: owned for the WHOLE flush, which is a loop of
+/// `LogStorage::write` calls plus an `fsync` — real disk I/O on the other
+/// side of the seam. Owning it is what serialises two flushers and makes the
+/// queues' consumer single. It is a [`Claim`](azos_sync::claim::Claim), not a
+/// `Mutex` (owner rule F1: no `Mutex` across device I/O; the claim's exchange
+/// mutex is held for the instant of taking and giving it): no real-time task
+/// ever takes it — an RT caller of [`logger_flush`] wakes the log flusher
+/// instead — so there is no RT waiter whose priority an owner would need to
+/// inherit, and a waiter sleeps rather than spinning.
+///
+/// Every caller is task context: the log flusher, `logger_shutdown`, and
+/// non-RT `*_durable` callers. No interrupt handler touches this. Its owner
+/// is counted for the panic path by `azos_sync::claim::held_by`.
+static LOG_FILE: azos_sync::claim::Claim<Flush> = azos_sync::claim::Claim::new(Flush::EMPTY);
 
-// Its owner is counted for the panic path by `azos_sync::claim::held_by`.
+/// The consumer's side of the queues.
+struct Flush {
+    /// The open file (`None` if not yet opened or rotation in progress).
+    file: Option<OpenLogFile>,
+    /// A record taken off each queue that is not the next to stage yet.
+    fronts: [Option<Queued>; LOG_QUEUES],
+    /// The number of the next record to stage.
+    next: u64,
+    /// Records taken off the queues, in their order, that the medium has not
+    /// taken: they leave only once a write took them, so a failed write, a
+    /// short one or a cut in the middle of one keeps them.
+    staged: [Queued; LOG_FLUSH_BATCH_MAX],
+    staged_n: usize,
+}
+
+impl Flush {
+    const EMPTY: Flush = Flush {
+        file: None,
+        fronts: [None; LOG_QUEUES],
+        next: 0,
+        staged: [Queued::EMPTY; LOG_FLUSH_BATCH_MAX],
+        staged_n: 0,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // The log flusher: the one place RT tasks' records reach the medium.
@@ -1266,7 +1177,7 @@ static LOG_FILE: azos_sync::claim::Claim<Option<OpenLogFile>> = azos_sync::claim
 // of `logger_flush` (the RT watchdog's periodic flush, a `*_durable` record
 // from the motor loop after its SAFE STOP) bumps `FLUSH_REQ` and wakes the
 // flusher, a kernel task at `LOG_FLUSHER_PRIORITY` (outside the RT band),
-// which flushes the whole ring — records in push order, the RT caller's
+// which flushes every queue — records in push order, the RT caller's
 // included — and runs any deferred I/O job (`defer_io`). The RT caller
 // returns at once.
 //
@@ -1286,25 +1197,25 @@ static FLUSH_REQ: AtomicU32 = AtomicU32::new(0);
 // property: the next boot starts latched only if the latching `SAFETY_ESTOP`
 // reached the medium, so the system says "durable" only after a flush whose
 // `fsync` (a device flush on the kernel's storage) covered that record's
-// ring position — the marker follows the write, from the task that wrote.
-// Until then the record is pinned: no producer evicts it (`ring_push`).
+// number — the marker follows the write, from the task that wrote. Until then
+// the record is in RAM: in its queue or with the flusher, never evicted.
 // ---------------------------------------------------------------------------
 
-/// Ring position + 1 of the newest latching `SAFETY_ESTOP` not yet known
-/// durable; 0: none pending.
+/// Number + 1 of the newest latching `SAFETY_ESTOP` not yet known durable; 0:
+/// none pending.
 static LATCH_PENDING: AtomicU64 = AtomicU64::new(0);
 /// Its action code, for the marker.
 static LATCH_PENDING_ACTION: AtomicU32 = AtomicU32::new(0);
-/// Ring positions below this were written AND covered by an `Ok` fsync.
+/// Records numbered below this were written AND covered by an `Ok` fsync.
 static DURABLE_POS: AtomicU64 = AtomicU64::new(0);
-/// Ring position + 1 of the newest record a `*_durable` call pushed
+/// Number + 1 of the newest record a `*_durable` call pushed
 /// ([`push_durable`]); the records below it are durable once [`DURABLE_POS`]
 /// reaches it.
 static DURABLE_WANT: AtomicU64 = AtomicU64::new(0);
 
 /// Is a record pushed by a `*_durable` call (an e-stop, the operator-release
-/// nonce floor, a decision refusal) still waiting for the medium: on the ring
-/// or written, and not yet covered by an `Ok` fsync?
+/// nonce floor, a decision refusal) still waiting for the medium: queued or
+/// written, and not yet covered by an `Ok` fsync?
 ///
 /// The condition of the block request layer's real-time class (Kconfig
 /// `BLK_IOSCHED_RT_DEADLINE`), with [`rt_request_class_now`] and the FAT32
@@ -1354,15 +1265,14 @@ pub fn rt_request_class_now() -> bool {
     let tid = azos_sync::waitqueue::caller_tid();
     tid != 0 && FLUSHING_TID.load(Ordering::Acquire) == tid && durable_record_pending()
 }
-/// Latching records announced durable / dropped before reaching the ring.
+/// Latching records announced durable / refused by a full queue.
 static LATCH_DURABLE: AtomicU32 = AtomicU32::new(0);
 static LATCH_LOST: AtomicU32 = AtomicU32::new(0);
 
 /// Runtime gate canary `log-latch-defer` (`canary=log-latch-defer`, armed
 /// by the kernel at boot): every flush is held back while a latching record
-/// is pending (and the record is not pinned), so its durable write is
-/// deferred past any kill: no durable marker, and the next boot starts
-/// released. `safety: kill switch (gpio)` and `safety: latch survives
+/// is pending, so its durable write is deferred past any kill: no durable
+/// marker, and the next boot starts released. `safety: kill switch (gpio)` and `safety: latch survives
 /// reboot` must both go red under it.
 static LOG_CANARY_LATCH_DEFER: AtomicBool = AtomicBool::new(false);
 
@@ -1446,7 +1356,7 @@ fn atomic_caller() -> bool {
         && !LOG_CANARY_ATOMIC_FLUSH.load(Ordering::Relaxed)
 }
 
-/// Set by the gate's `orderly-drain-smoke`: a flusher pass leaves the ring
+/// Set by the gate's `orderly-drain-smoke`: a flusher pass leaves the queues
 /// alone until [`logger_drain`], so only the drain can write what is queued.
 static LOG_FLUSHER_HELD: AtomicBool = AtomicBool::new(false);
 
@@ -1523,7 +1433,7 @@ pub fn logger_set_pass_hook(f: fn()) {
     PASS_HOOK.set(f);
 }
 
-/// The log flusher task body: sleep until a request, flush the ring, run the
+/// The log flusher task body: sleep until a request, flush the queues, run the
 /// deferred jobs, repeat. Spawned by the kernel at `LOG_FLUSHER_PRIORITY`.
 pub fn logger_flusher_task(_: usize) {
     loop {
@@ -1540,7 +1450,7 @@ pub fn logger_flusher_task(_: usize) {
     }
 }
 
-/// One pass of the flusher: flush the ring, then run the deferred jobs.
+/// One pass of the flusher: flush the queues, then run the deferred jobs.
 /// Returns the request count read before the pass (every request up to it
 /// is served). The task body, and what a host test drives in its place.
 pub fn logger_flusher_pass() -> u32 {
@@ -1591,8 +1501,9 @@ struct OpenLogFile {
 
 /// Rotate the log file when it exceeds this many bytes.
 pub const LOG_FILE_ROTATE_BYTES: u32 = 1024 * 1024;
-/// Flush the ring to disk when this many records are queued.
-pub const LOG_FLUSH_WATERMARK: usize = LOG_RING_CAPACITY / 2;
+/// Flush to disk when this many records are queued (one queue's, or the
+/// recorder's in all for [`logger_tick`]).
+pub const LOG_FLUSH_WATERMARK: usize = LOG_QUEUE_CAPACITY / 2;
 /// Log directory (always ASCII uppercase for FAT32 8.3).
 pub const LOG_DIR_PATH: &[u8] = b"/LOG";
 /// File magic identifying a azos log file.
@@ -1611,12 +1522,12 @@ pub const REPLAY_MAX_FILES: u32 = 64;
 pub const LOG_FILE_HEADER_BYTES: usize = 16;
 /// Records encoded per write inside a flush (tune for WCET).
 ///
-/// **Not the ring capacity.** It used to be, which put a 128-record batch
+/// **Not the queue capacity.** It used to be, which put a 128-record batch
 /// (4 KiB) and a 4 KiB encode buffer in one `logger_flush` frame — 8 KiB on a
 /// kernel stack of 16 KiB, which is what `CONFIG_KERNEL_STACK_SIZE_KB` was
 /// everywhere until 2026-09-16 and still is on embedded, with the FAT32
 /// write path and its own sector buffering called from underneath it. A flush
-/// now loops over chunks, so the ring still empties in one call but the frame
+/// now loops over chunks, so the queues still empty in one call but the frame
 /// stays small: 16 records is 512 B of encode buffer, exactly one sector.
 pub const LOG_FLUSH_BATCH_MAX: usize = 16;
 
@@ -1690,7 +1601,7 @@ pub fn logger_shutdown() {
     NONCE_CARRY.store(0, Ordering::Relaxed);
     let _ = logger_flush();
     let mut guard = LOG_FILE.acquire();
-    if let Some(open) = guard.take() {
+    if let Some(open) = guard.file.take() {
         if let Ok(storage) = current_storage() {
             let _ = storage.fsync(open.handle);
             let _ = storage.close(open.handle);
@@ -1698,7 +1609,7 @@ pub fn logger_shutdown() {
     }
 }
 
-/// Periodic tick — call from a kernel timer (~1 Hz). Flushes when the ring
+/// Periodic tick — call from a kernel timer (~1 Hz). Flushes when the recorder
 /// watermark is reached.
 pub fn logger_tick() {
     if !LOG_ACTIVE.load(Ordering::Acquire) { return; }
@@ -1706,8 +1617,8 @@ pub fn logger_tick() {
     if should_flush { let _ = logger_flush(); }
 }
 
-/// Force a flush of the ring buffer to disk. Returns the number of records
-/// written (can be 0 if the ring was empty), or `Err` when a write failed OR
+/// Force a flush of the queues to disk. Returns the number of records
+/// written (can be 0 if they were empty), or `Err` when a write failed OR
 /// when records were written but the storage's `fsync` did not confirm them
 /// durable (see `flush_one_batch`).
 ///
@@ -1715,7 +1626,7 @@ pub fn logger_tick() {
 /// block I/O), and neither does a task in a SpinLock section or with
 /// interrupts masked: `block_current` refuses its sleep, and the wait for the
 /// disk would spin with preemption off. Both get `Err(Deferred)` at once and
-/// the record stays on the ring for the flusher ([`FlushBy`]).
+/// the record stays queued for the flusher ([`FlushBy`]).
 pub fn logger_flush() -> Result<usize, LogStorageError> {
     match flush_by() {
         FlushBy::Caller => logger_flush_now(),
@@ -1760,24 +1671,21 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
         }
     };
 
-    // The file lock is held for the whole flush, which is what serialises two
-    // flushers (a timer tick and `logger_shutdown` on another hart) now that
-    // records are no longer removed from the ring up front: without it both
-    // would peek the same records and write them twice.
+    // The claim is held for the whole flush, which is what serialises two
+    // flushers (a timer tick and `logger_shutdown` on another hart) and makes
+    // the queues' consumer single.
     //
-    // LOCK ORDER: there is one lock left. The ring takes none (producers
-    // claim a slot with a CAS), so pushing a record while `LOG_FILE` is held
-    // — the wrap notice below does — cannot invert anything. Host-checked
-    // under real thread contention by
+    // LOCK ORDER: there is one lock left. The queues take none (a producer
+    // takes its queue's writer handle with an atomic), so pushing a record
+    // while `LOG_FILE` is held — the wrap notice below does — cannot invert
+    // anything. Host-checked under real thread contention by
     // `behavior-tests::flight_recorder::concurrent_flush_and_push_never_invert_the_file_ring_order`.
     let mut guard = LOG_FILE.acquire();
-    let open = match guard.as_mut() {
-        Some(o) => o,
-        None => {
-            LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
-            return Err(LogStorageError::Unavailable);
-        }
-    };
+    let st: &mut Flush = &mut guard;
+    if st.file.is_none() {
+        LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
+        return Err(LogStorageError::Unavailable);
+    }
     let _flushing = FlushingHere::enter();
 
     let mut total = 0usize;
@@ -1785,7 +1693,7 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
     let mut failure: Option<LogStorageError> = None;
 
     loop {
-        let r = flush_one_batch(storage, open);
+        let r = flush_one_batch(storage, st);
         total += r.consumed;
         torn |= r.torn;
         if failure.is_none() { failure = r.failure; }
@@ -1795,7 +1703,7 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
     // ── The wrap notice belongs in the file whose ending it describes ──────
     //
     // It used to be emitted inside `open_log_file`, which runs AFTER the old
-    // handle is closed below — so the record stayed on the ring and reached
+    // handle is closed below — so the record stayed queued and reached
     // disk inside the NEXT file, the one that had just truncated the history
     // the notice was about. `open_log_file`'s own comment said so and called
     // the fix "real work, not attempted here". This is that work.
@@ -1805,9 +1713,9 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
     // handle is still open. `open_log_file` is told not to emit it again, so
     // it is written exactly once.
     //
-    // `log_safety_violation` takes no lock (the ring is lock-free), so pushing
-    // it while FILE is held here orders nothing.
-    let rotate = torn || open.bytes_written >= LOG_FILE_ROTATE_BYTES;
+    // `log_safety_violation` takes no lock (the queues are lock-free), so
+    // pushing it while FILE is held here orders nothing.
+    let rotate = torn || st.file.as_ref().is_some_and(|f| f.bytes_written >= LOG_FILE_ROTATE_BYTES);
     // One read, used for both the decision and the record: `fetch_add` below
     // returns this same value as `next_serial` (it returns the OLD one), and
     // no other hart can be between the two — a concurrent flusher finds
@@ -1816,18 +1724,18 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
     let wrapping = rotate && next_serial >= LOG_SERIAL_WRAP;
     if wrapping {
         log_safety_violation(SAFETY_LOG_WRAPPED, 0, next_serial);
-        // Drain, not one pass. The notice goes to the TAIL of the ring while
-        // `flush_one_batch` takes at most `LOG_FLUSH_BATCH_MAX` (16) from the
-        // head, so a single pass only reaches it when fewer than 16 records
+        // Drain, not one pass. The notice is the newest record while
+        // `flush_one_batch` takes at most `LOG_FLUSH_BATCH_MAX` (16) in
+        // order, so a single pass only reaches it when fewer than 16 records
         // are queued ahead of it. That is true after a clean drain and false
         // exactly where it matters: the loop above stops early on a torn or
-        // failed write WITHOUT consuming, so the ring can still hold a full
-        // 128 records at this point — and the notice would ride them into
-        // the new file, which is the defect this whole branch exists to fix.
+        // failed write WITHOUT consuming, so the queues can still hold many
+        // records at this point — and the notice would ride them into the
+        // new file, which is the defect this whole branch exists to fix.
         // `stop` still terminates on failure or on no progress, so this
         // cannot spin.
         loop {
-            let r = flush_one_batch(storage, open);
+            let r = flush_one_batch(storage, st);
             total += r.consumed;
             if r.stop { break; }
         }
@@ -1843,10 +1751,10 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
     }
 
     if rotate {
-        let handle = open.handle;
-        let _ = storage.fsync(handle);
-        let _ = storage.close(handle);
-        *guard = None;
+        if let Some(open) = st.file.take() {
+            let _ = storage.fsync(open.handle);
+            let _ = storage.close(open.handle);
+        }
         drop(guard);
         // Evaluate the bump on its own line: `debug_assert_eq!` does NOT
         // evaluate its arguments in a release build, and the gate builds
@@ -1865,7 +1773,7 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
 
 /// What one pass of the flush loop did.
 struct BatchOutcome {
-    /// Records the medium actually took, and which therefore left the ring.
+    /// Records the medium actually took, and which therefore left RAM.
     consumed: usize,
     /// The write stopped mid-record: the file now ends with a partial record,
     /// so the caller must rotate.
@@ -1875,8 +1783,58 @@ struct BatchOutcome {
     stop: bool,
 }
 
-/// Encode and write one batch from the ring into `open`, retrying a short
-/// write, and consume from the ring only what the medium took.
+/// The next record in push order: off a queue's front, or `None` once every
+/// number taken so far is staged or written. Consumer only (flush claim held).
+fn next_record(st: &mut Flush) -> Option<Queued> {
+    let mut rescanned = false;
+    loop {
+        let mut lowest: Option<(usize, u64)> = None;
+        for (i, front) in st.fronts.iter_mut().enumerate() {
+            if front.is_none() {
+                *front = QUEUES[i].consumer().and_then(|mut c| c.pop());
+            }
+            if let Some(f) = front {
+                if lowest.is_none_or(|(_, seq)| f.seq < seq) {
+                    lowest = Some((i, f.seq));
+                }
+                // Canary: the queues are written one after another, not
+                // merged in push order.
+                if cfg!(feature = "durable-merge-canary") {
+                    break;
+                }
+            }
+        }
+        if let Some((i, seq)) = lowest {
+            if seq <= st.next || cfg!(feature = "durable-merge-canary") {
+                st.next = st.next.max(seq + 1);
+                return st.fronts[i].take();
+            }
+        }
+        // The next number is at no front.
+        if NEXT_SEQ.load(Ordering::SeqCst) <= st.next {
+            return None;
+        }
+        if WRITING.iter().any(|w| w.load(Ordering::SeqCst)) {
+            // Its producer is publishing it (interrupts off, a few stores).
+            rescanned = false;
+            core::hint::spin_loop();
+            continue;
+        }
+        if !rescanned {
+            // No producer is between taking a number and publishing it, so
+            // a record published since the scan is at a front now.
+            rescanned = true;
+            continue;
+        }
+        // Taken and never pushed: a hole, counted as a lost record.
+        LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+        st.next += 1;
+        rescanned = false;
+    }
+}
+
+/// Encode and write the next batch into the open file, retrying a short
+/// write; records leave RAM only once the medium took them.
 ///
 /// Extracted from `logger_flush` so the wrap notice can be carried to disk by
 /// **one more pass over the same code** rather than a second copy of it. A
@@ -1885,12 +1843,24 @@ struct BatchOutcome {
 /// equals `buf.len()`, and adding that count to `bytes_written` and moving on
 /// leaves a torn 32-byte record that misframes every record after it — the
 /// whole rest of the file, not just the tail.
-fn flush_one_batch(storage: &'static dyn LogStorage, open: &mut OpenLogFile) -> BatchOutcome {
-    // The ring stores records encoded: peek straight into the write buffer.
-    let mut out = [0u8; LOG_FLUSH_BATCH_MAX * LOG_RECORD_SIZE];
-    let (first, n) = ring_peek(&mut out);
+fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOutcome {
+    while st.staged_n < LOG_FLUSH_BATCH_MAX {
+        let Some(q) = next_record(st) else { break };
+        st.staged[st.staged_n] = q;
+        st.staged_n += 1;
+    }
+    let n = st.staged_n;
+    let Some(open) = st.file.as_mut() else {
+        return BatchOutcome { consumed: 0, torn: false, failure: Some(LogStorageError::Unavailable), stop: true };
+    };
     if n == 0 {
         return BatchOutcome { consumed: 0, torn: false, failure: None, stop: true };
+    }
+    let mut out = [0u8; LOG_FLUSH_BATCH_MAX * LOG_RECORD_SIZE];
+    for (q, raw) in st.staged[..n].iter().zip(out.chunks_exact_mut(LOG_RECORD_SIZE)) {
+        let mut buf = [0u8; LOG_RECORD_SIZE];
+        q.rec.encode(&mut buf);
+        raw.copy_from_slice(&buf);
     }
 
     // Write the whole chunk, retrying the remainder. A short write is a
@@ -1907,9 +1877,12 @@ fn flush_one_batch(storage: &'static dyn LogStorage, open: &mut OpenLogFile) -> 
     }
 
     open.bytes_written = open.bytes_written.saturating_add(off as u32);
-    // Only records the medium actually took leave the ring.
+    // Only records the medium actually took leave RAM.
     let whole = off / LOG_RECORD_SIZE;
-    ring_consume(first, whole);
+    let end = if whole > 0 { st.staged[whole - 1].seq + 1 } else { 0 };
+    st.staged.copy_within(whole..n, 0);
+    st.staged_n = n - whole;
+    HELD.fetch_sub(whole as u64, Ordering::AcqRel);
 
     if off != len {
         // Either the device stopped making progress or it errored. If it
@@ -1927,17 +1900,17 @@ fn flush_one_batch(storage: &'static dyn LogStorage, open: &mut OpenLogFile) -> 
 
     // The records are written; `fsync` is what makes them durable (the
     // kernel's implementation ends in a device flush). Its failure does not
-    // stop the drain: the records have already left the ring, and writing
-    // them again would not make them any more durable. It IS this batch's
-    // result, so `logger_flush` -- and through it every `*_durable` call --
-    // answers `Err` for records that are written but not known durable.
+    // stop the drain: the records have already left RAM, and writing them
+    // again would not make them any more durable. It IS this batch's result,
+    // so `logger_flush` -- and through it every `*_durable` call -- answers
+    // `Err` for records that are written but not known durable.
     let synced = storage.fsync(open.handle);
     if synced.is_err() {
         LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
     } else {
-        // The fsync is file-wide: every record written before it, this
-        // batch's last included, is durable.
-        DURABLE_POS.fetch_max(first + whole as u64, Ordering::AcqRel);
+        // The fsync is file-wide and the records go in number order: every
+        // record numbered below this batch's last, it included, is durable.
+        DURABLE_POS.fetch_max(end, Ordering::AcqRel);
     }
     BatchOutcome {
         consumed: whole,
@@ -1984,12 +1957,13 @@ pub fn log_actuator_cmd(actuator_type: u8, ch0: i16, ch1: i16, ch2: i16, ch3: i1
 /// How [`commit_effect_record`] fared.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EffectCommit {
-    /// On the ring, at this position, and pinned there until the flusher
-    /// consumes it ([`EFFECT_PIN`]).
+    /// In this CPU's queue, with this number in the order of every push; it
+    /// leaves RAM only when the medium took it.
     Committed(u64),
-    /// Not on the ring: it is at its limit ([`ORDINARY_RING_LIMIT`] records
-    /// queued; the [`RING_SAFETY_RESERVE`] slots above stay free). Nothing
-    /// was evicted or counted dropped.
+    /// Not queued: the queue is at its limit ([`ORDINARY_QUEUE_LIMIT`]
+    /// records for an effect, the [`QUEUE_SAFETY_RESERVE`] slots above stay
+    /// free; down to [`STOP_KEEPS_FREE`] free slots for a stop). Nothing was
+    /// evicted; a stop's lost record is counted dropped.
     Full,
     /// The logger is off (no medium opened): there is nowhere to commit to.
     Inactive,
@@ -2003,8 +1977,8 @@ pub enum EffectCommit {
 // the op only after it. A warrant can be conditioned on one (the `RECEIPT`
 // caveat, `azos_ipc::cap::caveat::receipt`), and the resolve asks here, so the
 // question "did this device stop in the last 200 ms, and has nothing moved it
-// since" is two loads, not a walk of the ring (which is bounded, flushed and
-// evicted, and is no index).
+// since" is two loads, not a walk of the queues (which are bounded and
+// flushed, and are no index).
 //
 // A receipt is named by a device and a kind. The device is `effect kind << 8 |
 // subject` (`effect_gate::Effect`: the wheel for a motor); the kind is the
@@ -2086,44 +2060,37 @@ pub fn receipt_ages(device: u16, kind: u8) -> (u64, u64) {
     receipt_ages_at(device, kind, now_ticks())
 }
 
-/// Commit a write-ahead effect record (`effect_gate`) to the ring.
+/// Commit a write-ahead effect record (`effect_gate`) to this CPU's queue.
 ///
-/// `refusable`: the record may be refused (`EffectCommit::Full`) and, once
-/// committed, is pinned; it never evicts. Not `refusable` (an effect that
-/// moves toward a safe state, which is never refused): the record is
-/// [`Admit::Stop`]: it uses the safety reserve (owner decision 16-10: a stop
-/// is always recorded) down to [`STOP_KEEPS_FREE`] free slots, is not pinned,
-/// and past that may evict the oldest unpinned record; `Full` then means the
-/// ring was at that limit with a pinned tail and this one was lost.
+/// `refusable`: the record may be refused (`EffectCommit::Full`, nothing
+/// counted). Not `refusable` (an effect that moves toward a safe state, which
+/// is never refused): the record is [`Admit::Stop`]: it uses the safety
+/// reserve (owner decision 16-10: a stop is always recorded) down to
+/// [`STOP_KEEPS_FREE`] free slots; past that `Full` means this one was lost
+/// (counted dropped, and by the gate as unrecorded).
 ///
-/// Lock-free, no I/O: a `refusable` commit past the flush watermark also
-/// wakes the log flusher, so a pinned record waits for the medium for the
-/// flusher's pass, not for the watchdog's cadence.
+/// Lock-free, no I/O: a `refusable` commit that fills its queue past the
+/// flush watermark also wakes the log flusher, so the record waits for the
+/// medium for the flusher's pass, not for the watchdog's cadence.
 pub fn commit_effect_record(payload: [u8; LOG_PAYLOAD_BYTES], refusable: bool) -> EffectCommit {
     if !LOG_ACTIVE.load(Ordering::Acquire) {
         return EffectCommit::Inactive;
     }
     let rec = LogRecord { ts: now_ticks(), kind: LOG_EVT_ACTUATOR_CMD, flags: LOG_FLAG_EFFECT, payload };
-    if refusable {
-        let (pos, _) = ring_push(&rec, Admit::Commit);
-        if pos == u64::MAX {
-            return EffectCommit::Full;
+    match queue_push(&rec, if refusable { Admit::Commit } else { Admit::Stop }) {
+        Ok(p) => {
+            receipt_note(&payload, rec.ts);
+            if refusable && p.queued >= LOG_FLUSH_WATERMARK {
+                logger_request_flush();
+            }
+            EffectCommit::Committed(p.seq)
         }
-        receipt_note(&payload, rec.ts);
-        if ring_len() >= LOG_FLUSH_WATERMARK {
-            logger_request_flush();
+        Err(_) => {
+            if !refusable {
+                LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+            EffectCommit::Full
         }
-        EffectCommit::Committed(pos)
-    } else {
-        let (pos, evicted) = ring_push(&rec, Admit::Stop);
-        if evicted != 0 {
-            LOG_DROPPED.fetch_add(evicted, Ordering::Relaxed);
-        }
-        if pos == u64::MAX {
-            return EffectCommit::Full;
-        }
-        receipt_note(&payload, rec.ts);
-        EffectCommit::Committed(pos)
     }
 }
 
@@ -2145,7 +2112,7 @@ pub fn log_safety_violation(violation_code: u8, action_code: u8, detail: u32) {
     let _ = log_safety_violation_admitted(violation_code, action_code, detail);
 }
 
-/// [`log_safety_violation`], saying whether the ring took the record (never
+/// [`log_safety_violation`], saying whether a queue took the record (never
 /// while the recorder is inactive: no volume).
 pub fn log_safety_violation_admitted(violation_code: u8, action_code: u8, detail: u32) -> bool {
     LOG_SAFETY_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -2163,7 +2130,7 @@ pub fn log_safety_violation_admitted(violation_code: u8, action_code: u8, detail
 
 /// Record a safety violation AND push it to disk before returning.
 ///
-/// `log_safety_violation` alone only reaches the in-memory ring; durability
+/// `log_safety_violation` alone only reaches the in-memory queue; durability
 /// waits for the watchdog's periodic flush, roughly half a second away. For
 /// most events that is the right trade -- a flush blocks on the block device,
 /// and the watchdog is the one task that already does I/O-shaped work on a
@@ -2196,8 +2163,8 @@ pub fn log_safety_violation_durable(
     payload[1] = action_code;
     payload[4..8].copy_from_slice(&detail.to_le_bytes());
     let pos = push_durable(payload)?;
-    // A latching e-stop is tracked to the medium: pinned in the ring until a
-    // flush whose fsync covered it, which then prints the durable marker
+    // A latching e-stop is tracked to the medium: pending until a flush whose
+    // fsync covered its number, which then prints the durable marker
     // (`announce_latch_durable`), from whichever task did the write — the
     // log flusher for an RT caller, the caller itself otherwise.
     if violation_code == SAFETY_ESTOP && estop_action_latches(action_code) == Some(true) {
@@ -2269,17 +2236,16 @@ pub fn logger_carry_key_pin(fp: &[u8; OPERATOR_KEY_FP_BYTES]) {
 }
 
 /// Push a `SAFETY_VIOLATION` record a `*_durable` caller is about to call
-/// durable. An ordinary record is refused while a pending latch record or a
-/// pinned write-ahead effect record is at the tail of a ring at its limit
-/// (`ring_push`); a record that uses the safety reserve ([`reserve_admit`])
-/// is refused only when the reserve is full as well. A caller [`FlushBy::Caller`]
-/// names then drains the ring itself and pushes again; any other does not
-/// drain, and the flush it requested runs after it returns. Nothing evicts a pinned effect
-/// record to make room. A record still refused is `Err`: the flush after it
-/// would answer `Ok` for OTHER records (for the release nonce floor that `Ok`
-/// would advance the in-memory floor with nothing on disk;
-/// `verify_operator_release` refuses on `Err`). `Ok(None)`: the logger is off,
-/// as before (the flush reports it).
+/// durable. An ordinary record is refused while this CPU's queue holds
+/// [`ORDINARY_QUEUE_LIMIT`] records; a record that uses the safety reserve
+/// ([`reserve_admit`]) only when the reserve is full as well. A caller
+/// [`FlushBy::Caller`] names then drains the queues itself and pushes again;
+/// any other does not drain, and the flush it requested runs after it
+/// returns. A record still refused is `Err`: the flush after it would answer
+/// `Ok` for OTHER records (for the release nonce floor that `Ok` would
+/// advance the in-memory floor with nothing on disk;
+/// `verify_operator_release` refuses on `Err`). `Ok(None)`: the logger is
+/// off, as before (the flush reports it).
 fn push_durable(payload: [u8; LOG_PAYLOAD_BYTES]) -> Result<Option<u64>, LogStorageError> {
     let admit = reserve_admit(&payload);
     if let Some(p) = push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, admit) {
@@ -2298,7 +2264,7 @@ fn push_durable(payload: [u8; LOG_PAYLOAD_BYTES]) -> Result<Option<u64>, LogStor
         }
     }
     note_latch_lost(&payload);
-    // Dropped, not deferred: nothing of this call is on the ring.
+    // Dropped, not deferred: nothing of this call is queued.
     match by {
         FlushBy::Caller => {}
         FlushBy::FlusherNow => logger_request_flush(),
@@ -2414,17 +2380,17 @@ pub fn logger_analytics_reset() {
 /// call it. A build with no region (Kconfig `KLOG` off), or a boot before the
 /// handover, records nothing.
 fn telemetry(kind: u8, payload: [u8; LOG_PAYLOAD_BYTES]) {
-    // Gate canary: telemetry takes the safety records' ring, where a flood of
-    // it evicts what the ring exists to keep.
+    // Gate canary: telemetry takes the safety records' queues, where a flood
+    // of it takes the room they exist to keep.
     if cfg!(feature = "telemetry-ring-canary") {
-        let _ = push_event_at(kind, 0, payload, Admit::Evict);
+        let _ = push_event_at(kind, 0, payload, Admit::Ordinary);
         return;
     }
     // Host suites: the encoders are also the generators of ordinary records
-    // for the ring's own tests (its eviction, its pin and reserve, its flush).
+    // for the queues' own tests (their limits, their reserve, their flush).
     #[cfg(test)]
     if TELEMETRY_ON_RING.with(|c| c.get()) {
-        let _ = push_event_at(kind, 0, payload, Admit::Evict);
+        let _ = push_event_at(kind, 0, payload, Admit::Ordinary);
         return;
     }
     let Some(w) = azos_records::writer(azos_records::SOURCE_TELEMETRY) else { return };
@@ -2445,23 +2411,25 @@ pub fn telemetry_recorded() -> u64 {
     azos_records::reader(azos_records::SOURCE_TELEMETRY).map_or(0, |r| r.head())
 }
 
-/// Push a record on the flight recorder's ring, returning the position it took
-/// (`None`: the logger is off, or the record was dropped, see [`ring_push`]).
+/// Push a record into this CPU's queue, returning its number (`None`: the
+/// logger is off, or the queue refused it, counted dropped).
 fn push_event_at(kind: u8, flags: u8, payload: [u8; LOG_PAYLOAD_BYTES], admit: Admit) -> Option<u64> {
     if !LOG_ACTIVE.load(Ordering::Acquire) { return None; }
     let rec = LogRecord { ts: now_ticks(), kind, flags, payload };
-    let (pos, evicted) = ring_push(&rec, admit);
-    if evicted != 0 {
-        LOG_DROPPED.fetch_add(evicted, Ordering::Relaxed);
+    match queue_push(&rec, admit) {
+        Ok(p) => Some(p.seq),
+        Err(_) => {
+            LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+            None
+        }
     }
-    (pos != u64::MAX).then_some(pos)
 }
 
 /// How a `SAFETY_VIOLATION` payload is admitted: [`Admit::Safety`], the
 /// records that may use the reserve, for a `SAFETY_ESTOP` that latches or
 /// releases (the next boot's latch is decided by it), for the release nonce
 /// floor (a replayed signed release is refused by it) and for the release-key
-/// pin (a swapped key is refused by it); [`Admit::Evict`]
+/// pin (a swapped key is refused by it); [`Admit::Ordinary`]
 /// for every other record, a commander-lost stop and the boot self-check's
 /// synthetic record included.
 fn reserve_admit(payload: &[u8; LOG_PAYLOAD_BYTES]) -> Admit {
@@ -2469,17 +2437,17 @@ fn reserve_admit(payload: &[u8; LOG_PAYLOAD_BYTES]) -> Admit {
     if latch || payload[0] == SAFETY_RELEASE_NONCE || payload[0] == SAFETY_OPERATOR_KEY {
         Admit::Safety
     } else {
-        Admit::Evict
+        Admit::Ordinary
     }
 }
 
 /// A record that uses the reserve found no slot: count a latching e-stop as
-/// lost (`logger_latch_stats`) and say so. Only possible with the reserve
-/// full of safety records behind a pinned tail.
+/// lost (`logger_latch_stats`) and say so. Only possible with this CPU's
+/// queue's reserve full of safety records the flusher has not taken yet.
 fn note_latch_lost(payload: &[u8; LOG_PAYLOAD_BYTES]) {
     if payload[0] == SAFETY_ESTOP && estop_action_latches(payload[1]) == Some(true) {
         LATCH_LOST.fetch_add(1, Ordering::Relaxed);
-        azos_drv_sys::kwarn!("[SAFETY] ESTOP record LOST (action {}): the ring has no slot for it (a pending latch record or a pinned effect record at the tail, the safety reserve full)", payload[1]);
+        azos_drv_sys::kwarn!("[SAFETY] ESTOP record LOST (action {}): this CPU's recorder queue has no slot for it (the safety reserve full)", payload[1]);
     }
 }
 
@@ -2931,8 +2899,8 @@ fn open_log_file_inner(serial: u32, notice_already_written: bool) -> Result<(), 
     //
     // The rotate branch of `logger_flush` now does it upstream, while the
     // old handle is still open, and passes `notice_already_written = true`.
-    // Its one boundary: the notice has to REACH the ring. If the ring is
-    // exactly full when the rotation triggers, `push_event_at` drops it and
+    // Its one boundary: the notice has to REACH a queue. If this CPU's queue
+    // is at its limit when the rotation triggers, `push_event_at` drops it and
     // bumps `LOG_DROPPED`, and no amount of flushing recovers it — the drain
     // that would have made room is the thing that just failed. That case
     // leaves the `LOG_SAFETY_COUNT` bump as the only trace, same as the cold
@@ -2940,7 +2908,7 @@ fn open_log_file_inner(serial: u32, notice_already_written: bool) -> Result<(), 
     // What is left here is the cold path: `logger_init` at a serial already
     // past the wrap point, where there is no old file to land in anyway.
     // (`LOG_ACTIVE` is still false there, so `push_event_at` drops the record
-    // before the ring while `LOG_SAFETY_COUNT` still moves —
+    // before any queue while `LOG_SAFETY_COUNT` still moves —
     // `log_safety_violation` bumps that counter unconditionally. The counter
     // is the only durable trace on that path; it is only reachable via
     // `set_serial_for_test`, since `LOG_SERIAL` does not survive a boot.)
@@ -2966,7 +2934,7 @@ fn open_log_file_inner(serial: u32, notice_already_written: bool) -> Result<(), 
     }
     let _ = storage.fsync(handle);
 
-    *LOG_FILE.acquire() = Some(OpenLogFile {
+    LOG_FILE.acquire().file = Some(OpenLogFile {
         handle,
         bytes_written: len as u32,
         serial,
@@ -3025,14 +2993,15 @@ fn write_file_header(serial: u32, buf: &mut [u8; LOG_FILE_HEADER_BYTES + SNAPSHO
 // Helpful test-friendly accessors.
 // ---------------------------------------------------------------------------
 
-/// Number of records currently in the ring (for tests / diagnostics).
+/// Records the recorder holds in RAM, every queue's and the flusher's (for
+/// tests / diagnostics).
 pub fn logger_ring_len() -> usize {
     ring_len()
 }
 
 /// Current session serial number (mostly for tests).
 pub fn logger_current_serial() -> u32 {
-    LOG_FILE.acquire().as_ref().map(|f| f.serial).unwrap_or(0)
+    LOG_FILE.acquire().file.as_ref().map(|f| f.serial).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -3040,9 +3009,9 @@ std::thread_local! {
     static TELEMETRY_ON_RING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
-/// Host suites, per thread: the telemetry encoders push onto the flight
-/// recorder's ring (`on`: the ring's own tests use them to generate ordinary
-/// records) or, by default, into the record region's telemetry ring.
+/// Host suites, per thread: the telemetry encoders push into the flight
+/// recorder's queues (`on`: the queues' own tests use them to generate
+/// ordinary records) or, by default, into the record region's telemetry ring.
 #[cfg(test)]
 pub fn telemetry_on_ring_for_test(on: bool) {
     TELEMETRY_ON_RING.with(|c| c.set(on));
@@ -3058,24 +3027,16 @@ pub fn set_serial_for_test(n: u32) {
     LOG_SERIAL.store(n, Ordering::Relaxed);
 }
 
-/// Run once by the next producer that evicts, right after it freed the
-/// slot and before it reloads the head: the window in which another
-/// producer can claim that slot. Test-only, compiled out like
-/// [`set_serial_for_test`]; it lets a host test take that window
-/// deterministically (a nested push from the hook is the other producer).
 #[cfg(test)]
-static RING_EVICT_HOOK: AtomicFn<fn()> = AtomicFn::new();
-
-#[cfg(test)]
-pub fn set_ring_evict_hook_for_test(f: Option<fn()>) {
-    RING_EVICT_HOOK.set(f);
+std::thread_local! {
+    static CPU_FOR_TEST: core::cell::Cell<Option<usize>> = const { core::cell::Cell::new(None) };
 }
 
+/// Host suites, per thread: the CPU whose queue this thread's pushes try
+/// first (`None`: the build's `cpu_tag`, 0 on the host).
 #[cfg(test)]
-fn ring_after_evict_hook() {
-    if let Some(f) = RING_EVICT_HOOK.take() {
-        f();
-    }
+pub fn cpu_for_test(cpu: Option<usize>) {
+    CPU_FOR_TEST.with(|c| c.set(cpu));
 }
 
 /// The receipt index (B3). Each test takes its own device, so the statics the

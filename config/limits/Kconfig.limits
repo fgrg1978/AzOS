@@ -1535,52 +1535,70 @@ config FAT_PI_IO_SITES
       Cost: only in a diagnostic build: 24 B of .bss per site and a scan of
       this many entries per offending I/O (none when F1 holds), on every ISA.
 
-config LOG_RING_ENTRIES
-    int "Flight-recorder ring entries (power of two)"
+config LOG_QUEUES
+    int "Flight-recorder durable queues (one per CPU, up to this many)"
+    range 1 64
+    default 4 if HWCLASS_EMBEDDED
+    default 8
+    help
+      crates/core/actuation/src/logger.rs: the flight recorder keeps its
+      records (the e-stop latch and release, the release nonce floor and
+      key pin, the write-ahead effect and stop records, every other safety
+      record) in one single-producer queue per CPU, and the log flusher
+      merges them into the file in the order they were pushed. A CPU past
+      this many (NR_CPUS is the other bound) shares the queue of its number
+      modulo it; a producer that finds a queue's single writer handle
+      taken takes the next one.
+
+      Cost: LOG_QUEUE_ENTRIES x 40 bytes plus 256 bytes of RAM per queue
+      (40 KiB at 8 x 128); the flusher looks at every queue per record it
+      stages.
+
+config LOG_QUEUE_ENTRIES
+    int "Flight-recorder durable queue entries per CPU (power of two)"
     range 16 4096
     default 64 if HWCLASS_EMBEDDED
-    default 128 if ARCH_RISCV64 || ARCH_AARCH64 || ARCH_X86_64
     default 128
     help
-      crates/core/actuation/src/logger.rs: records the flight recorder holds
-      in RAM until the log flusher writes them. The ring is lock-free (one
-      compare-and-swap per record, many producers, one consumer): a
-      real-time task logs into it and never waits. Full, a new record
-      evicts the oldest, counted in the logger's `events_dropped`. Must be
-      a power of two.
+      crates/core/actuation/src/logger.rs: records one CPU's queue holds in
+      RAM until the log flusher writes them. A producer takes no lock and
+      never waits; nothing is ever evicted: a full queue refuses the new
+      record (counted in the logger's `events_dropped`), refuses a
+      reversible effect with a receipt (EFFECT_WRITE_AHEAD), and keeps
+      LOG_QUEUE_SAFETY_RESERVE slots for the safety records. Must be a
+      power of two.
 
-      Cost: 40 bytes of RAM per entry (32-byte record + sequence word),
-      5 KiB at 128; no instructions depend on it. Raise it when
-      `events_dropped` climbs between two flushes; embedded boards
-      default to 64.
+      Cost: 40 bytes of RAM per entry and queue (32-byte record + sequence
+      number), 5 KiB per queue at 128; no instructions depend on it. Raise
+      it when `events_dropped` climbs between two flushes or effects are
+      refused with `RingFull`; embedded boards default to 64.
 
-config LOG_RING_SAFETY_RESERVE
-    int "Flight-recorder ring slots kept for safety records"
+config LOG_QUEUE_SAFETY_RESERVE
+    int "Flight-recorder queue slots kept for safety records"
     range 4 32
     default 16
     help
-      crates/core/actuation/src/logger.rs: of LOG_RING_ENTRIES, this many
-      slots are used only by safety records: a latching or releasing
-      SAFETY_ESTOP (the next boot's latch is decided by it), the boot
-      replay's restore record, the release nonce floor. Every other record,
-      a write-ahead effect record included, queues only while fewer than
-      LOG_RING_ENTRIES minus this many records are queued: an ordinary
-      record then evicts the oldest unpinned one, an effect is refused with
-      a receipt (EFFECT_WRITE_AHEAD). So a safety record always finds a slot
-      and nothing is evicted to make room: a committed effect record leaves
-      the ring only by being flushed. Must be at most half the ring.
+      crates/core/actuation/src/logger.rs: of each queue's
+      LOG_QUEUE_ENTRIES, this many slots are used only by safety records:
+      a latching or releasing SAFETY_ESTOP (the next boot's latch is
+      decided by it), the boot replay's restore record, the release nonce
+      floor, the release-key pin. Every other record, a write-ahead effect
+      record included, is admitted only while fewer than LOG_QUEUE_ENTRIES
+      minus this many records are queued: an ordinary record past that is
+      refused and counted, an effect is refused with a receipt. So a safety
+      record finds a slot until the reserve itself is full of safety
+      records. Must be at most half the queue.
 
       The record of a stop (an effect toward a device's safe state, never
-      refused) is also written into the reserve, so a stop is recorded even
-      with the ring at its effect limit (owner decision 16-10); it leaves the
-      last half of the reserve to the safety records proper, so a loop of
-      stops cannot take the e-stop's slots. That sharing is why the default
-      is 16 (was 8). On the 64-entry embedded ring the ordinary limit is 48.
+      refused) is also admitted into the reserve, so a stop is recorded
+      even with the queue at its effect limit (owner decision 16-10); it
+      leaves the last half of the reserve to the safety records proper, so
+      a loop of stops cannot take the e-stop's slots. On the 64-entry
+      embedded queue the ordinary limit is 48.
 
-      Cost: none in RAM or instructions (a limit read at compile time); the
-      ring holds this many fewer ordinary records before it evicts. Raise it
-      if records of an e-stop storm (several sources, refused clears) are
-      reported lost.
+      Cost: none in RAM or instructions (a limit read at compile time); a
+      queue holds this many fewer ordinary records. Raise it if records of
+      an e-stop storm (several sources, refused clears) are reported lost.
 
 config LOG_FLUSHER_JOBS
     int "Deferred block-I/O job slots on the log flusher"

@@ -67,7 +67,7 @@ fn a_soc_change_is_on_the_ring_when_the_gate_returns_and_reaches_the_medium_whol
 #[test]
 fn a_full_ring_refuses_a_soc_change_with_a_receipt_but_never_one_toward_quiescence() {
     let _g = fresh();
-    let limit = LOG_RING_CAPACITY - RING_SAFETY_RESERVE;
+    let limit = LOG_QUEUE_CAPACITY - QUEUE_SAFETY_RESERVE;
     for i in 0..limit as u32 {
         effect_gate::record(&soc(KIND_CLOCK, Class::Reversible, i)).expect("under the limit");
     }

@@ -16,7 +16,7 @@
 //!   `a_stop_is_never_refused_...`;
 //! * a committed record survives any amount of ordinary logging:
 //!   `committed_effect_records_are_never_evicted`;
-//! * the ring keeps `RING_SAFETY_RESERVE` slots for safety records (latching
+//! * the ring keeps `QUEUE_SAFETY_RESERVE` slots for safety records (latching
 //!   and releasing e-stops, the release nonce floor) alone, so such a record
 //!   always fits and no effect record is ever evicted for it, over 1000
 //!   random sequences too: `the_estop_is_recorded_when_...`,
@@ -306,9 +306,9 @@ pub(crate) mod tests {
     }
 
     /// The slots an effect or an ordinary record may take. Written out here,
-    /// not read from `ORDINARY_RING_LIMIT`: the reserve canary changes that
+    /// not read from `ORDINARY_QUEUE_LIMIT`: the reserve canary changes that
     /// constant, and a test that read it would agree with the canary.
-    const LIMIT: usize = LOG_RING_CAPACITY - RING_SAFETY_RESERVE;
+    const LIMIT: usize = LOG_QUEUE_CAPACITY - QUEUE_SAFETY_RESERVE;
 
     /// **Full ring.** Effects are admitted up to the limit; the next one is
     /// refused with a receipt that `why` can look up, the op does not run,
@@ -387,12 +387,12 @@ pub(crate) mod tests {
             issue0(&effect(Class::Reversible, 100 + i), || ()).unwrap();
         }
         let ran = AtomicU32::new(0);
-        for k in 0..4 * RING_SAFETY_RESERVE as u32 {
+        for k in 0..4 * QUEUE_SAFETY_RESERVE as u32 {
             issue0(&effect(Class::Safe, 7000 + k), || { ran.fetch_add(1, Ordering::Relaxed); }).expect("a stop");
         }
-        assert_eq!(ran.load(Ordering::Relaxed), 4 * RING_SAFETY_RESERVE as u32, "a stop was refused");
+        assert_eq!(ran.load(Ordering::Relaxed), 4 * QUEUE_SAFETY_RESERVE as u32, "a stop was refused");
         // Written out, not read from `STOP_KEEPS_FREE`: the canary changes it.
-        let half = RING_SAFETY_RESERVE / 2;
+        let half = QUEUE_SAFETY_RESERVE / 2;
         assert_eq!(logger_ring_len(), LIMIT + half, "stops did not stop at half the reserve");
 
         let lost0 = logger_latch_stats().1;
@@ -400,7 +400,7 @@ pub(crate) mod tests {
             log_safety_violation(SAFETY_ESTOP, 1, 0xE5_00 + k);
         }
         assert_eq!(logger_latch_stats().1, lost0, "the e-stop lost its slot to a loop of stops");
-        assert_eq!(logger_ring_len(), LOG_RING_CAPACITY);
+        assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY);
         logger_flusher_pass();
         let files = medium::durable();
         assert_eq!(estop_details(&files), (0..half as u32).map(|k| 0xE5_00 + k).collect::<Vec<_>>());
@@ -419,7 +419,7 @@ pub(crate) mod tests {
             issue0(&effect(Class::Reversible, i), || ()).unwrap();
         }
         let dropped0 = logger_analytics().events_dropped;
-        for _ in 0..4 * LOG_RING_CAPACITY {
+        for _ in 0..4 * LOG_QUEUE_CAPACITY {
             log_error(2, 2, 0);
         }
         assert!(logger_analytics().events_dropped > dropped0, "the overrun must cost ordinary records");
@@ -538,10 +538,10 @@ pub(crate) mod tests {
         assert_eq!(logger_latch_stats().1, lost0);
         assert_eq!(logger_ring_len(), LIMIT + 3);
         // The rest of the reserve.
-        for k in 3..RING_SAFETY_RESERVE as u32 {
+        for k in 3..QUEUE_SAFETY_RESERVE as u32 {
             log_safety_violation(SAFETY_ESTOP, 1, 0xC3 + k);
         }
-        assert_eq!(logger_ring_len(), LOG_RING_CAPACITY, "the reserve is not all usable");
+        assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY, "the reserve is not all usable");
         assert_eq!(logger_latch_stats().1, lost0, "a safety record was lost with the reserve not yet full");
 
         logger_flusher_pass();
@@ -685,18 +685,18 @@ pub(crate) mod tests {
             assert_eq!(logger_ring_len(), LIMIT, "code {code:#x} action {action}: it took a slot of the reserve");
         }
 
-        for k in 0..RING_SAFETY_RESERVE as u32 {
+        for k in 0..QUEUE_SAFETY_RESERVE as u32 {
             log_safety_violation(SAFETY_ESTOP, 1, 0xA0 + k);
         }
-        assert_eq!(logger_ring_len(), LOG_RING_CAPACITY);
+        assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY);
         let lost0 = logger_latch_stats().1;
         log_safety_violation(SAFETY_ESTOP, 1, 0xBAD);
         assert_eq!(logger_latch_stats().1, lost0 + 1, "a latching record lost to a full reserve must be counted");
-        assert_eq!(logger_ring_len(), LOG_RING_CAPACITY);
+        assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY);
 
         logger_flusher_pass();
         let files = medium::durable();
-        assert_eq!(estop_details(&files), (0..RING_SAFETY_RESERVE as u32).map(|k| 0xA0 + k).collect::<Vec<_>>());
+        assert_eq!(estop_details(&files), (0..QUEUE_SAFETY_RESERVE as u32).map(|k| 0xA0 + k).collect::<Vec<_>>());
         let tags: Vec<u32> = effect_records(&files).iter().map(|e| e.a0).collect();
         assert_eq!(tags, (100..100 + LIMIT as u32).collect::<Vec<_>>(), "an effect record was evicted");
     }
@@ -708,7 +708,7 @@ pub(crate) mod tests {
     #[test]
     fn ordinary_records_never_queue_into_the_reserve() {
         let _g = fresh();
-        for _ in 0..3 * LOG_RING_CAPACITY {
+        for _ in 0..3 * LOG_QUEUE_CAPACITY {
             log_error(3, 3, 0);
             assert!(logger_ring_len() <= LIMIT, "an ordinary record took a slot of the reserve");
         }
@@ -782,7 +782,7 @@ pub(crate) mod tests {
                     Op::Estop | Op::Release | Op::DurableRt | Op::DurableNonRt => {
                         let action = if matches!(op, Op::Release) { 3 } else { 1 };
                         let latching = action != 3;
-                        let needs = since_flush < RING_SAFETY_RESERVE / 2;
+                        let needs = since_flush < QUEUE_SAFETY_RESERVE / 2;
                         safety_pushed += 1;
                         match op {
                             Op::DurableRt => {

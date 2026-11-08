@@ -147,10 +147,10 @@ fn a_ring_at_its_limit_refuses_an_admitted_delete_under_a_row_only() {
     let _g = fresh();
     effect_gate::set_envelope_probe(probe);
     let ran = AtomicU32::new(0);
-    for _ in 0..ORDINARY_RING_LIMIT {
+    for _ in 0..ORDINARY_QUEUE_LIMIT {
         run(&delete(CAUTIOUS, DeleteOp::Unlink, 0), &ran).expect("room left");
     }
-    assert_eq!(logger_ring_len(), ORDINARY_RING_LIMIT, "each admitted delete under a row is on the ring first");
+    assert_eq!(logger_ring_len(), ORDINARY_QUEUE_LIMIT, "each admitted delete under a row is on the ring first");
     let before = ran.load(Ordering::SeqCst);
     assert_eq!(run(&delete(CAUTIOUS, DeleteOp::Unlink, 0), &ran).err().map(|r| r.why), Some(Why::RingFull));
     run(&delete(DEV, DeleteOp::Unlink, 0), &ran).expect("a full row is not refused for a full ring");
@@ -334,7 +334,7 @@ fn a_full_row_holds_no_config_write_update_step_or_reservation() {
     effect_gate::set_envelope_probe(probe);
     let base = azos_decision::total();
     let ran = AtomicU32::new(0);
-    for _ in 0..ORDINARY_RING_LIMIT + 4 {
+    for _ in 0..ORDINARY_QUEUE_LIMIT + 4 {
         for tid in [DEV, KERNEL] {
             run(&config(tid, b"autorun"), &ran).expect("full");
             run(&ota(tid, OtaOp::Switch, 1), &ran).expect("full");

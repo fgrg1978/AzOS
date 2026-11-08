@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Write-ahead receipts (innovation B1): the effect gate issues a device op
 //! only AFTER the record that describes it is committed to the flight
-//! recorder's ring. Every effect that reached a device therefore has a
+//! recorder (its CPU's queue). Every effect that reached a device therefore has a
 //! record; a record without an effect (the machine stopped between the two)
 //! is the only other state a stop can leave, and it is harmless.
 //!
@@ -13,22 +13,19 @@
 //!
 //! * [`Class::Safe`]: the effect moves a device toward its safe state (stop,
 //!   brake, coast). It is NEVER refused: a task entitled to drive must always
-//!   be able to stop, and a full ring must not make the machine unstoppable
+//!   be able to stop, and a full queue must not make the machine unstoppable
 //!   (`motor_host.rs`, `motor.rs`). Its record uses the safety reserve (owner
 //!   decision 16-10: a stop is always recorded), down to the last
 //!   [`crate::logger::STOP_KEEPS_FREE`] slots, which stay for the safety
-//!   records proper so a loop of stops cannot fill the e-stop's slots. It is
-//!   not pinned. Past that limit it takes the ordinary path, which may evict
-//!   the oldest unpinned record; with a pinned tail the effect still goes
-//!   ahead and is counted as unrecorded (a warning at each power of two). The
-//!   one place the promise gives way, on purpose, and it gives way toward
-//!   safety.
-//! * [`Class::Reversible`]: the record must be on the ring. A ring holding
-//!   [`crate::logger::ORDINARY_RING_LIMIT`] records REFUSES the effect with a
-//!   receipt; the [`crate::logger::RING_SAFETY_RESERVE`] slots above stay for
-//!   the safety records (e-stop, release, latch). A committed record is
-//!   pinned: no record evicts it, the latching `SAFETY_ESTOP` included (it
-//!   uses the reserve), so it leaves the ring only when the flusher takes it.
+//!   records proper so a loop of stops cannot fill the e-stop's slots. Past
+//!   that limit the effect still goes ahead and its record is lost, counted
+//!   as unrecorded (a warning at each power of two). The one place the promise
+//!   gives way, on purpose, and it gives way toward safety.
+//! * [`Class::Reversible`]: the record must be queued. A queue holding
+//!   [`crate::logger::ORDINARY_QUEUE_LIMIT`] records REFUSES the effect with a
+//!   receipt; the [`crate::logger::QUEUE_SAFETY_RESERVE`] slots above stay for
+//!   the safety records (e-stop, release, latch). Nothing is evicted from a
+//!   queue, so a committed record leaves RAM only when the flusher wrote it.
 //!   Durability is the flusher's, a flush interval later.
 //!
 //! # Deadline and safe state (innovation B2)
@@ -116,10 +113,10 @@
 //! `full` behave as before.
 //!
 //! **Cost.** A delete or egress held by no envelope (level `full`, no meet)
-//! adds the probe and nothing else: no record, no ring slot, so a full ring
+//! adds the probe and nothing else: no record, no queue slot, so a full queue
 //! cannot refuse an unlink on a dev image. An effect held by a restriction
 //! that the restriction lets through takes the ordinary reversible path: its
-//! record is committed first, and a ring at its limit refuses it
+//! record is committed first, and a queue at its limit refuses it
 //! ([`Why::RingFull`]), as for any reversible effect.
 //!
 //! # Configuration, update and real-time-time envelopes
@@ -149,18 +146,19 @@
 //! # The receipt
 //!
 //! A refusal is a decision record (`azos_decision`; `Rule::EffectRecord` for a
-//! full ring or watch table, see [`Why`] for the others) and its id is the
+//! full queue or watch table, see [`Why`] for the others) and its id is the
 //! receipt: `why <id>` shows the effect, the reason and how many records were
 //! queued. The refusal path and the B2 miss and compensation paths
 //! ([`crate::safe_state`]) are the only places that write a decision record;
-//! the issue path writes one ring record and nothing else.
+//! the issue path writes one recorder record and nothing else.
 //!
 //! # Cost on the issue path
 //!
-//! A reversible effect adds to the device op: one clock read, a 32-byte encode,
-//! a preemption-off section around one compare-and-swap of the ring head, five
-//! stores (four data words, one release), one `fetch_max` (the pin), and, past
-//! the flush watermark only, a wake of the log flusher. No lock, no I/O, no
+//! A reversible effect adds to the device op: one clock read, an
+//! interrupts-off section around its CPU queue's writer handle (two atomic
+//! read-modify-writes), the number (one `fetch_add`), a 40-byte slot store and
+//! the head's release, and, past the flush watermark only, a wake of the log
+//! flusher. No lock, no I/O, no
 //! allocation. Kconfig `EFFECT_WRITE_AHEAD` off: the gate is not installed and
 //! the op pays none of it.
 //!
@@ -361,7 +359,7 @@ impl Timing {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Why {
-    /// The recorder's ring is at its effect limit.
+    /// The recorder's queue on this CPU is at its effect limit.
     RingFull = 1,
     /// The device cannot commit within the effect's deadline: placement
     /// latency plus `commit_ns` is longer (`Rule::EffectDeadline`).
@@ -392,8 +390,8 @@ pub struct Refusal {
     pub why: Why,
 }
 
-/// Effects issued without a record on the ring since boot: a safe effect on a
-/// ring whose tail is pinned, or any effect with the recorder off. The target
+/// Effects issued without a recorder record since boot: a safe effect whose
+/// queue was past its stop limit, or any effect with the recorder off. The target
 /// is 0 in a normal run, so each power of two is a warning.
 #[cfg(not(feature = "effect-issue-before-commit-canary"))]
 static UNRECORDED: AtomicU32 = AtomicU32::new(0);
@@ -465,7 +463,7 @@ fn provenance(tid: u32) -> (u32, u8) {
 ///
 /// # What is and is not enforced here
 ///
-/// This function enforces that the record is on the ring (or the effect is
+/// This function enforces that the record is queued (or the effect is
 /// refused) when it returns; it cannot see the write that follows. That the
 /// write does not come first is the manager's property, and it is tested there
 /// (`tests/host/soc-tests`, the rows that go red under the feature

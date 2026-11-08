@@ -2370,7 +2370,7 @@ mod flight_recorder_rt {
         let r = log_safety_violation_durable(SAFETY_ESTOP, 2, 30);
         assert_eq!(r, Err(LogStorageError::Deferred));
         assert!(logger_latch_stats().2, "the latch record is pending until fsync");
-        for i in 0..(3 * LOG_RING_CAPACITY) as i32 {
+        for i in 0..(3 * LOG_QUEUE_CAPACITY) as i32 {
             log_waypoint(i, -i, i as u16, 0x77);
         }
         logger_set_rt_probe(rt_no);
@@ -2395,7 +2395,7 @@ mod flight_recorder_rt {
         logger_init().expect("mount succeeds");
         logger_set_rt_probe(rt_yes);
         let _ = log_safety_violation_durable(SAFETY_ESTOP, 2, 31);
-        for i in 0..(2 * LOG_RING_CAPACITY) as i32 {
+        for i in 0..(2 * LOG_QUEUE_CAPACITY) as i32 {
             log_waypoint(i, -i, i as u16, 0x77);
         }
         logger_set_rt_probe(rt_no);
@@ -2472,60 +2472,60 @@ mod flight_recorder_rt {
         logger_shutdown();
     }
 
-    /// The interleaving behind `concurrent_producers_past_capacity_…`'s
-    /// rare "a loss went uncounted" (2 of 40 suite runs before the fix),
-    /// taken deterministically: producer A finds the ring full and evicts
-    /// the oldest record, and before A reloads the head another producer
-    /// (the hook's nested push) claims the slot A freed. A must evict again
-    /// for the next position: two records gone, and both must be counted.
-    /// Before the fix `ring_push` returned a `bool` and this counted 1.
+    /// **Nothing is evicted.** A queue at its ordinary limit refuses the
+    /// newest record and counts it; every record it took stays and reaches
+    /// the medium, in order. (The overwrite ring this replaced evicted the
+    /// oldest, and a slot stolen between the eviction and the claim cost two.)
     ///
-    /// Other modules' tests (safety, payload, e-stop) log through the same
-    /// recorder under their own locks: a foreign flush can drain the ring
-    /// or a foreign push evict, inside this window. An attempt that saw the
-    /// ring not full is retried; the broken count is 1 on every attempt.
+    /// **Canary** `durable-full-canary`: the full queue answers as if it took
+    /// the record and keeps nothing, so nothing is counted and this goes red.
     #[test]
-    fn an_eviction_whose_slot_is_stolen_is_counted_twice() {
+    fn a_full_queue_refuses_the_newest_record_counted_and_keeps_the_rest() {
         let _g = begin(0x0A0B_0C10);
         logger_init().expect("mount succeeds");
-        fn steal() { log_waypoint(-2, 1, 2, 0x22); }
+        // Other modules' tests log through the same recorder under their own
+        // locks: a foreign flush may drain the queue inside the window, and
+        // that attempt is retried. The broken count is 0 on every attempt.
         let mut seen = Vec::new();
-        for _ in 0..10 {
-            for i in 0..ORDINARY_RING_LIMIT as i32 {
-                log_waypoint(i, !i, 1, 0x11);
-            }
-            if logger_ring_len() != ORDINARY_RING_LIMIT {
-                continue;
+        for attempt in 0..10u8 {
+            let mark = 0x40 + attempt;
+            let _ = logger_flush();
+            cpu_for_test(Some(2));
+            for i in 0..ORDINARY_QUEUE_LIMIT as i32 {
+                log_waypoint(i, !i, 1, mark);
             }
             let d0 = logger_analytics().events_dropped;
-            set_ring_evict_hook_for_test(Some(steal));
             log_waypoint(-3, 2, 3, 0x33);
-            // Disarmed whether it ran or not: never a later test's push.
-            set_ring_evict_hook_for_test(None);
-            let evicted = logger_analytics().events_dropped - d0;
-            seen.push(evicted);
-            if evicted == 2 && logger_ring_len() == ORDINARY_RING_LIMIT {
-                let _ = logger_flush();
-                let marks: Vec<u8> = decode_file(0).iter()
-                    .filter(|r| r.kind == LOG_EVT_WAYPOINT).map(|r| r.payload[10]).collect();
-                assert_eq!(&marks[marks.len() - 2..], &[0x22, 0x33], "the thief's record, then A's");
-                logger_shutdown();
-                return;
+            log_safety_violation(SAFETY_CAP_DENIED, 0, 9);
+            let refused = logger_analytics().events_dropped - d0;
+            cpu_for_test(None);
+            seen.push(refused);
+            if refused < 2 {
+                continue;
             }
+            let _ = logger_flush();
+            let recs = decode_file(0);
+            let marks: Vec<i32> = recs.iter()
+                .filter(|r| r.kind == LOG_EVT_WAYPOINT && r.payload[10] == mark)
+                .map(|r| i32::from_le_bytes(r.payload[0..4].try_into().unwrap())).collect();
+            assert_eq!(marks, (0..ORDINARY_QUEUE_LIMIT as i32).collect::<Vec<_>>(), "a queued record was evicted");
+            assert!(!recs.iter().any(|r| r.kind == LOG_EVT_WAYPOINT && r.payload[10] == 0x33),
+                "a record past the limit reached the medium");
+            logger_shutdown();
+            return;
         }
         let _ = logger_flush();
         logger_shutdown();
-        panic!("two pushes into a full ring evicted two records; counted per attempt: {seen:?}");
+        panic!("a full queue took records past its limit, or lost them uncounted; refused per attempt: {seen:?}");
     }
 
-    /// Stress, no consumer of its own: four producers into a saturated
-    /// ring, so nearly every push evicts and the stolen-slot window above
-    /// opens constantly (the bool count lost about half of them). Every
-    /// record pushed is on the medium or counted dropped. `>=`, as in the
+    /// Stress, no consumer of its own: four producers into saturated queues,
+    /// so nearly every push is refused, and the four contend for the writer
+    /// handles. Every record pushed is on the medium or counted dropped. `>=`, as in the
     /// test above it: a foreign test's push or flush in the same window
     /// adds to the right side, never takes from it.
     #[test]
-    fn a_saturated_ring_counts_every_eviction_under_contention() {
+    fn a_saturated_queue_counts_every_refusal_under_contention() {
         let _g = begin(0x0A0B_0C11);
         logger_init().expect("mount succeeds");
         const PER: u32 = 20_000;
@@ -2614,37 +2614,36 @@ mod flight_recorder_format {
         assert_eq!(back.payload, rec.payload);
     }
 
-    /// A ring at its limit (`ORDINARY_RING_LIMIT`; the rest is the safety
-    /// reserve) overwrites the oldest record and counts the loss. Losing
-    /// the oldest is the right direction for a flight recorder — the newest
-    /// events are the ones that explain a crash — but it must be counted,
-    /// or an analyst reads a gapped log as a complete one.
+    /// A queue at its limit (`ORDINARY_QUEUE_LIMIT`; the rest is the safety
+    /// reserve) refuses the newest record and counts the loss. Nothing it
+    /// took is ever evicted, so what reaches the medium is the run up to the
+    /// limit, in order; and the loss must be counted, or an analyst reads a
+    /// gapped log as a complete one.
     #[test]
-    fn a_full_ring_drops_the_oldest_and_says_how_many() {
+    fn a_full_queue_refuses_the_newest_and_says_how_many() {
         let _g = start();
         logger_init().expect("mount succeeds");
-        for i in 0..(ORDINARY_RING_LIMIT + 5) {
+        for i in 0..(ORDINARY_QUEUE_LIMIT + 5) {
             log_skill_start(i as u16);
         }
-        assert_eq!(logger_ring_len(), ORDINARY_RING_LIMIT, "the ring is bounded");
+        assert_eq!(logger_ring_len(), ORDINARY_QUEUE_LIMIT, "the queue is bounded");
         assert_eq!(
             logger_analytics().events_dropped, 5,
-            "every overwritten record must be counted",
+            "every refused record must be counted",
         );
-        // The survivors are the NEWEST, and they are still in order.
+        // The survivors are the OLDEST, and they are still in order.
         logger_flush().unwrap();
         let bytes = fsmock::file_bytes(0);
         let body = &bytes[LOG_FILE_HEADER_BYTES..];
-        assert_eq!(body.len() / LOG_RECORD_SIZE, ORDINARY_RING_LIMIT);
-        let first = {
+        assert_eq!(body.len() / LOG_RECORD_SIZE, ORDINARY_QUEUE_LIMIT);
+        let skill = |k: usize| {
             let mut b = [0u8; LOG_RECORD_SIZE];
-            b.copy_from_slice(&body[..LOG_RECORD_SIZE]);
-            LogRecord::decode(&b)
+            b.copy_from_slice(&body[k * LOG_RECORD_SIZE..(k + 1) * LOG_RECORD_SIZE]);
+            let r = LogRecord::decode(&b);
+            u16::from_le_bytes([r.payload[0], r.payload[1]])
         };
-        assert_eq!(
-            u16::from_le_bytes([first.payload[0], first.payload[1]]), 5,
-            "records 0..4 were the ones overwritten",
-        );
+        assert_eq!((skill(0), skill(ORDINARY_QUEUE_LIMIT - 1)), (0, ORDINARY_QUEUE_LIMIT as u16 - 1),
+            "the records past the limit were the ones refused");
         logger_shutdown();
     }
 
@@ -2655,11 +2654,11 @@ mod flight_recorder_format {
     fn one_flush_empties_a_full_ring_despite_chunking() {
         let _g = start();
         logger_init().expect("mount succeeds");
-        for i in 0..ORDINARY_RING_LIMIT {
+        for i in 0..ORDINARY_QUEUE_LIMIT {
             log_skill_start(i as u16);
         }
-        assert!(ORDINARY_RING_LIMIT > LOG_FLUSH_BATCH_MAX, "otherwise this proves nothing");
-        assert_eq!(logger_flush().unwrap(), ORDINARY_RING_LIMIT);
+        assert!(ORDINARY_QUEUE_LIMIT > LOG_FLUSH_BATCH_MAX, "otherwise this proves nothing");
+        assert_eq!(logger_flush().unwrap(), ORDINARY_QUEUE_LIMIT);
         assert_eq!(logger_ring_len(), 0);
         logger_shutdown();
     }
@@ -2785,7 +2784,7 @@ mod flight_recorder_format {
 
         let queued = LOG_FLUSH_BATCH_MAX * 2 + 1;
         assert!(
-            queued + 1 < LOG_RING_CAPACITY,
+            queued + 1 < LOG_QUEUE_CAPACITY,
             "the notice must still fit on the ring, or this measures a drop instead",
         );
         for i in 0..queued { log_skill_start(i as u16); }
@@ -2837,10 +2836,10 @@ mod flight_recorder_format {
         // Fill until `bytes_written` crosses LOG_FILE_ROTATE_BYTES. Bounded
         // by construction, and the loop stops the moment the second file
         // appears so nothing is written into it by accident.
-        let rounds = LOG_FILE_ROTATE_BYTES as usize / LOG_RECORD_SIZE / ORDINARY_RING_LIMIT + 2;
+        let rounds = LOG_FILE_ROTATE_BYTES as usize / LOG_RECORD_SIZE / ORDINARY_QUEUE_LIMIT + 2;
         for _ in 0..rounds {
             if fsmock::file_count() > 1 { break; }
-            for i in 0..ORDINARY_RING_LIMIT { log_skill_start(i as u16); }
+            for i in 0..ORDINARY_QUEUE_LIMIT { log_skill_start(i as u16); }
             logger_flush().expect("no faults are injected here");
         }
         assert_eq!(
@@ -4717,7 +4716,7 @@ mod motor_actuation_reaches_the_flight_recorder {
     /// had zero callers anywhere in the tree (`grep -rn log_actuator_cmd`),
     /// so a successful motor command reached no recorder and this ring
     /// stayed empty for the life of a boot — the first assertion below has
-    /// nothing to be equal to `LOG_RING_CAPACITY` against a pre-fix tree
+    /// nothing to be equal to `LOG_QUEUE_CAPACITY` against a pre-fix tree
     /// that never calls this function outside a test. It is the SAME ring
     /// `log_safety_violation` uses, so a burst past capacity drops the
     /// oldest motor record exactly as it drops the oldest safety record —
@@ -4727,10 +4726,10 @@ mod motor_actuation_reaches_the_flight_recorder {
         let _g = begin(0x1000);
         let _ = logger_init();
 
-        for i in 0..(ORDINARY_RING_LIMIT + 5) {
+        for i in 0..(ORDINARY_QUEUE_LIMIT + 5) {
             log_actuator_cmd(0, (i % 4) as i16, (i % 101) as i16, 0, 0);
         }
-        assert_eq!(logger_ring_len(), ORDINARY_RING_LIMIT, "the ring is bounded for actuator records too");
+        assert_eq!(logger_ring_len(), ORDINARY_QUEUE_LIMIT, "the ring is bounded for actuator records too");
         assert_eq!(logger_analytics().events_dropped, 5, "5 pushed past capacity must be counted dropped");
 
         logger_shutdown();

@@ -68,7 +68,7 @@ fn an_issued_effect_leaves_a_receipt_and_a_stop_contradicts_a_drive() {
 fn a_refused_effect_leaves_no_receipt() {
     let _g = fresh();
     at(2_000);
-    let limit = LOG_RING_CAPACITY - RING_SAFETY_RESERVE;
+    let limit = LOG_QUEUE_CAPACITY - QUEUE_SAFETY_RESERVE;
     for _ in 0..limit {
         issue(&wheel(27, Class::Reversible)).expect("under the limit");
     }

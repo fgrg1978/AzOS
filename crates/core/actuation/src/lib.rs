@@ -15,7 +15,7 @@
 //!   no installed provider owns is refused with a receipt.
 //! - `effect_gate` (feature `effect-gate`, Kconfig `EFFECT_WRITE_AHEAD`):
 //!   write-ahead receipts, the device op is issued only after its record is
-//!   committed to the flight recorder's ring (innovation B1); a ring at its
+//!   committed to the flight recorder's queue (innovation B1); a queue at its
 //!   limit refuses the effect with a receipt.
 //! - `safe_state` (same feature; innovation B2): the other half of the gate.
 //!   An effect with a declared deadline is admitted against the device's
@@ -26,7 +26,7 @@
 //!   device then stays held (a stop does not lift it) for at least
 //!   `B2_HOLD_MIN_MS`, and only `safe_state::release`, with the operator's
 //!   signed warrant of the e-stop release, lifts it.
-//! - [`logger`]: the flight recorder (ring + durable FAT32 log) every safety
+//! - [`logger`]: the flight recorder (per-CPU queues + durable FAT32 log) every safety
 //!   record goes to, and the boot replay of the latch.
 //! - [`boot_latch`], [`sys_wdt`], [`watchdog`]: the boot latch replay, the
 //!   system watchdog task and the timer-ISR tick / heartbeat /

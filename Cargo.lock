@@ -50,6 +50,7 @@ dependencies = [
  "azos_limits",
  "azos_net",
  "azos_records",
+ "azos_rings",
  "azos_sched",
  "azos_sync",
  "azos_syscall",

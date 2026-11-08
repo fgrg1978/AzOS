@@ -294,3 +294,15 @@ pub mod preempt {
     }
 }
 pub use preempt::{critical_section, PreemptGuard};
+
+/// The real `scope::IrqOff` surface. The host has no interrupts to mask; the
+/// token counts as a section that may not block, as the kernel's does.
+pub mod scope {
+    pub struct IrqOff(crate::preempt::PreemptGuard);
+    impl IrqOff {
+        #[must_use = "interrupts are restored the instant the token is dropped"]
+        pub fn new() -> Self {
+            IrqOff(crate::preempt::critical_section())
+        }
+    }
+}

@@ -134,7 +134,7 @@ fn a_telemetry_flood_leaves_the_flight_recorders_ring_alone() {
     let r = log_safety_violation_durable(SAFETY_ESTOP, 2, 30);
     assert_eq!(r, Err(LogStorageError::Deferred));
     let (len0, dropped0) = (logger_ring_len(), logger_analytics().events_dropped);
-    for i in 0..(3 * LOG_RING_CAPACITY) as i32 {
+    for i in 0..(3 * LOG_QUEUE_CAPACITY) as i32 {
         log_waypoint(i, -i, i as u16, 0x77);
         log_actuator_cmd(1, 2, 3, 0, 0);
     }
