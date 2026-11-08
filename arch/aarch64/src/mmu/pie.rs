@@ -227,9 +227,18 @@ pub const fn indirect(word: u64, pir: u64, pire0: u64, ndirty_removes_write: boo
 
 /// The kernel GCS leaf made from `rw`, a kernel read-write leaf: index
 /// [`GCS_INDEX`] (PXN set; UXN, DBM, AP\[1\] and AP\[2\] clear), every other
-/// bit as it was.
+/// bit as it was. Under the direct permissions (PIE off, or a secondary or
+/// resumed CPU before `aarch64_secondary_stage1`) the same word is a kernel
+/// read-write page that EL0 may execute: such a CPU runs no EL0 and maps no
+/// GCS page in that window.
 pub const fn gcs_leaf(rw: u64) -> u64 {
     (rw & !(UXN | DBM | AP_EL0 | AP_RO)) | PXN
+}
+
+/// Does the leaf `word` carry the kernel GCS index? The generic decoder
+/// (`mmu::perms_of`) reads such a leaf read-only.
+pub const fn is_gcs_leaf(word: u64) -> bool {
+    pi_index(word) == GCS_INDEX
 }
 
 /// `TCR2_EL1` whole: POE (`ptwin`) and PIE as asked, every other field 0
@@ -279,7 +288,7 @@ pub unsafe fn write_tcr2(poe: bool, pie: bool) {
                 "msr S3_0_C10_C2_2, {e0}", // PIRE0_EL1
                 "msr S3_0_C10_C2_3, {e1}", // PIR_EL1
                 e0 = in(reg) PIRE0_EL1_VALUE, e1 = in(reg) pir_live(),
-                options(nomem, nostack, preserves_flags),
+                options(nostack, preserves_flags),
             );
         }
         core::arch::asm!("msr S3_0_C2_C0_3, {t}", "isb", t = in(reg) tcr2_value(poe, pie), options(nostack));

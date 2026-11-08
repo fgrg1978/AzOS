@@ -977,8 +977,9 @@ pub fn map(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) -> KRes
 }
 
 /// Map `vaddr` in the kernel's table to the frame `paddr` as a kernel
-/// guarded-control-stack page (`Mmu::pte_make_gcs_leaf`: EL1 reads it, the GCS
-/// instructions write it, a plain store faults). `InvalidArg` where the
+/// guarded-control-stack page (`Mmu::pte_make_gcs_leaf`: EL1 reads it, a plain
+/// store faults, and only the GCS instructions may write it once GCS is
+/// enabled, which it is not yet). `InvalidArg` where the
 /// ISA or this boot has no such page (aarch64 without `A64_S1PIE`, FEAT_S1PIE
 /// or FEAT_GCS).
 pub fn map_gcs(vaddr: usize, paddr: usize) -> KResult<()> {

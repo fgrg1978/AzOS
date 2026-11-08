@@ -79,7 +79,7 @@ pub fn lock_this_cpu() -> bool {
     // EL2 let EL1 at the registers, so these accesses do not trap; PIE is asked
     // only when the boot CPU found FEAT_S1PIE, on the kernel's tables.
     unsafe {
-        core::arch::asm!("msr S3_0_C10_C2_4, {por}", por = in(reg) POR_LOCKED, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("msr S3_0_C10_C2_4, {por}", por = in(reg) POR_LOCKED, options(nostack, preserves_flags));
         super::pie::write_tcr2(true, super::pie::on());
     }
     locked_this_cpu()

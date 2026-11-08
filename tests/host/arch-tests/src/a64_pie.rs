@@ -9,7 +9,7 @@
 
 use crate::aarch64_mmu::pie::*;
 use crate::aarch64_mmu::pte_fmt::{AF, AP_EL0, AP_RO, CONT, DBM, PXN, UXN, VALID, TYPE_TABLE_OR_PAGE};
-use crate::aarch64_mmu::{attr_bits_with, break_cow_with, guarded, make_table, ptwin, share_cow_with, tcr_with_ha};
+use crate::aarch64_mmu::{attr_bits_with, break_cow_with, guarded, make_table, perms_of, ptwin, share_cow_with, tcr_with_ha};
 use azos_arch_api::{MemType, PagePerms};
 
 /// Every `PagePerms` `attr_bits` accepts (read is always set on aarch64).
@@ -191,4 +191,21 @@ fn table_descriptors_carry_no_hierarchical_permissions() {
     for pa in [0usize, 0x4000_0000, 0x0000_FFFF_FFFF_F000, 0x1234_5000] {
         assert_eq!(make_table(pa) & (0x1F << 59), 0, "{pa:#x}");
     }
+}
+
+/// The generic decoder reads a kernel GCS leaf read-only (and not executable,
+/// not user), so rebuilding a leaf from its decoded permissions turns a GCS
+/// page into a read-only one, never a writable one; and no leaf the
+/// page-table code builds is mistaken for one. Canary: drop `is_gcs_leaf`
+/// from `perms_from_attr_bits` and the first assert fails.
+#[test]
+fn a_gcs_leaf_decodes_read_only_and_never_rebuilds_writable() {
+    let rw = 0x4000_3000 | VALID | TYPE_TABLE_OR_PAGE | attr_bits_with(PagePerms::KERNEL_RW, DBM).unwrap();
+    let g = gcs_leaf(rw);
+    assert!(is_gcs_leaf(g));
+    let p = perms_of(g);
+    assert!(!p.write && !p.exec && !p.user, "{p:?}");
+    let rebuilt = attr_bits_with(p, DBM).unwrap();
+    assert_eq!((rebuilt & AP_RO, rebuilt & DBM), (AP_RO, 0), "a rebuilt GCS leaf is writable");
+    assert!(produced_words().iter().all(|&w| !is_gcs_leaf(w)), "a built leaf carries the GCS index");
 }

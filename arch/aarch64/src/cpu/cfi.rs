@@ -118,7 +118,7 @@
 //!
 //! | path | under a kernel GCS |
 //! |---|---|
-//! | the GCS pages themselves | kernel GCS leaves (`vmm::map_gcs`, index 4) outside the linear map, and the frames' linear-map alias unmapped or read-only: through the alias a plain store still lands |
+//! | the GCS pages themselves | **hard prerequisite, before `PCRSEL` is ever set:** kernel GCS leaves (`vmm::map_gcs`, index 4) outside the linear map, and each frame's linear-map alias unmapped or read-only; `vmm::map_gcs` leaves the alias read-write, through which a plain store still lands |
 //! | a secondary or resumed CPU before `aarch64_secondary_stage1` | runs the direct permissions (a GCS leaf, AP=00 with UXN clear, reads there as kernel RW and EL0 execute-only), so `PCRSEL` flips only after that call and no EL0 runs before it |
 //! | `context_switch` `ret x9` | save `GCSPR_EL1` in `TaskContext` before the `context_saving` release, load new's after; `x9 = CTX_PC = CTX_RA` is what new's own `bl context_switch` pushed, so the `ret` checks the saved PC |
 //! | a new task's first switch (`lifecycle.rs`, `pc = ra = entry`) | its GCS is seeded with `entry` (`GCSSTR` with `GCSCR_EL1.STREn`, or the frame's linear alias before it is mapped as GCS) |

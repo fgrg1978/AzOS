@@ -536,7 +536,10 @@ pub const fn mair_has_tagged_normal() -> bool {
 /// of whether the word is a page (L3) or block (L1/L2) descriptor.
 fn perms_from_attr_bits(word: u64) -> PagePerms {
     let user = word & AP_EL0 != 0;
-    let ro = word & AP_RO != 0;
+    // A kernel GCS leaf (`pie::gcs_leaf`) has AP[2] clear but grants no plain
+    // store: it decodes read-only, so a decode-and-rebuild (`make_leaf` of
+    // `perms_of`) makes it a read-only page, never a writable one.
+    let ro = word & AP_RO != 0 || pie::is_gcs_leaf(word);
     // M38/U10-3: `attr_bits` now sets PXN unconditionally on every user
     // page (EL1 must never execute a page EL0 can reach — the ret2usr
     // hardening), so PXN alone no longer tells us whether the ORIGINAL

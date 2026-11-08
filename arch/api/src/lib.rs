@@ -460,9 +460,10 @@ pub trait Mmu: Send + Sync {
     fn pte_guarded(&self, word: u64) -> u64 { word }
 
     /// A level-0 leaf for `pa` as a kernel guarded-control-stack page: EL1
-    /// reads it and the GCS instructions read and write it, a plain store
-    /// faults, EL0 has no access (aarch64 FEAT_GCS, a stage-1 indirect
-    /// permission, Kconfig `A64_S1PIE`, on a core with FEAT_GCS).
+    /// reads it, a plain store faults, EL0 has no access, and only the GCS
+    /// instructions may write it, which needs GCS enabled (it is not yet:
+    /// nothing can write such a page). aarch64 FEAT_GCS, a stage-1 indirect
+    /// permission (Kconfig `A64_S1PIE`, on a core with FEAT_GCS).
     /// `UnrepresentablePerms` on an ISA, a CPU or a boot without such a page
     /// type.
     fn pte_make_gcs_leaf(&self, pa: usize) -> Result<u64, MmuError> {
