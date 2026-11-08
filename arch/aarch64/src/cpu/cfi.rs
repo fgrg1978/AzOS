@@ -119,7 +119,7 @@
 //! | path | under a kernel GCS |
 //! |---|---|
 //! | the GCS pages themselves | kernel GCS leaves (`vmm::map_gcs`, index 4) outside the linear map, and the frames' linear-map alias unmapped or read-only: through the alias a plain store still lands |
-//! | a secondary or resumed CPU before `aarch64_secondary_stage1` | runs the direct permissions (a GCS page reads as kernel RW there), so `PCRSEL` flips only after that call |
+//! | a secondary or resumed CPU before `aarch64_secondary_stage1` | runs the direct permissions (a GCS leaf, AP=00 with UXN clear, reads there as kernel RW and EL0 execute-only), so `PCRSEL` flips only after that call and no EL0 runs before it |
 //! | `context_switch` `ret x9` | save `GCSPR_EL1` in `TaskContext` before the `context_saving` release, load new's after; `x9 = CTX_PC = CTX_RA` is what new's own `bl context_switch` pushed, so the `ret` checks the saved PC |
 //! | a new task's first switch (`lifecycle.rs`, `pc = ra = entry`) | its GCS is seeded with `entry` (`GCSSTR` with `GCSCR_EL1.STREn`, or the frame's linear alias before it is mapped as GCS) |
 //! | `aarch64_ipc_resume_stub`, `ipc_ktest_resume_tramp` (IPC_FASTPATH_RESUME: `ipc_fast_start_at` rewrites `CTX_PC`, the frames it blocked in are abandoned) | the same rewrite resets the task's GCS to empty plus the stub's address, else the `ret x9` meets the abandoned `bl context_switch` entry |

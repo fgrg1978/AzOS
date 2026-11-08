@@ -9,7 +9,7 @@
 
 use crate::aarch64_mmu::pie::*;
 use crate::aarch64_mmu::pte_fmt::{AF, AP_EL0, AP_RO, CONT, DBM, PXN, UXN, VALID, TYPE_TABLE_OR_PAGE};
-use crate::aarch64_mmu::{attr_bits_with, break_cow_with, guarded, ptwin, share_cow_with, tcr_with_ha};
+use crate::aarch64_mmu::{attr_bits_with, break_cow_with, guarded, make_table, ptwin, share_cow_with, tcr_with_ha};
 use azos_arch_api::{MemType, PagePerms};
 
 /// Every `PagePerms` `attr_bits` accepts (read is always set on aarch64).
@@ -180,4 +180,15 @@ fn tcr2_is_composed_and_hd_stays_off() {
     assert_eq!(tcr2_value(true, true), 0b1010);
     assert!(ptwin::denies_writes(tcr2_value(true, true), ptwin::POR_LOCKED));
     assert_eq!(tcr_with_ha(0), 1 << 39);
+}
+
+/// No table descriptor carries hierarchical permissions (APTable 62:61,
+/// UXNTable 60, PXNTable 59, NSTable 63), so the indirect scheme's handling of
+/// them cannot change what a leaf grants. Canary: OR APTable into `make_table`
+/// and this fails.
+#[test]
+fn table_descriptors_carry_no_hierarchical_permissions() {
+    for pa in [0usize, 0x4000_0000, 0x0000_FFFF_FFFF_F000, 0x1234_5000] {
+        assert_eq!(make_table(pa) & (0x1F << 59), 0, "{pa:#x}");
+    }
 }

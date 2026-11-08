@@ -279,7 +279,8 @@ impl Mmu for Aarch64 {
     fn pte_guarded(&self, word: u64) -> u64 { crate::mmu::guarded(word) }
 
     fn pte_make_gcs_leaf(&self, pa: usize) -> Result<u64, MmuError> {
-        if azos_limits::A64_S1PIE_NEVER || !crate::mmu::pie::on() {
+        // Without FEAT_GCS the GCS nibble is a reserved encoding: no such page.
+        if azos_limits::A64_S1PIE_NEVER || !crate::mmu::pie::on() || !crate::cpu::features::read_id_regs().gcs() {
             return Err(MmuError::UnrepresentablePerms);
         }
         Ok(crate::mmu::pie::gcs_leaf(crate::mmu::make_leaf(pa, PagePerms::KERNEL_RW, 0)?))

@@ -668,9 +668,12 @@ azos_ktest::ktest! {
 // PIR_EL1 holds the GCS permission there, a plain load reads it, and a plain
 // store faults (EC 0x25) and lands nothing. Run on QEMU `-cpu max` (FEAT_S1PIE)
 // in the arm phase; a core without it skips, so the gate row requires the boot
-// line too. Runtime canaries: `canary=s1pie-skip` (PIE stays off: the first
-// check fails) and `canary=s1pie-gcs-rw` (the GCS index grants a plain store:
-// the PIR check and the store check fail).
+// line too. The GCS nibble means something only with FEAT_GCS (reserved
+// otherwise), so a core with S1PIE and no GCS fails here rather than skip: the
+// row needs a QEMU whose `-cpu max` has both. Runtime canaries:
+// `canary=s1pie-skip` (PIE stays off: the first check fails) and
+// `canary=s1pie-gcs-rw` (the GCS index grants a plain store: the PIR check and
+// the store check fail).
 azos_ktest::ktest! {
     #[cfg(target_arch = "aarch64")]
     fn cfi_gcs_page_refuses_a_plain_store() {
@@ -680,6 +683,9 @@ azos_ktest::ktest! {
         }
         if !pie::on() || !pie::active_this_cpu() {
             return Err("the CPU has FEAT_S1PIE, but the boot did not turn indirect permissions on");
+        }
+        if !azos_arch::cpu::features::read_id_regs().gcs() {
+            return Err("S1PIE without FEAT_GCS: the GCS index's encoding is reserved, there is no GCS page to test");
         }
         with_scratch_page(
             |va, pa| azos_mm::vmm::map_gcs(va, pa).is_ok(),

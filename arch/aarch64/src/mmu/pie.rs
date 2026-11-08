@@ -24,8 +24,11 @@
 //! applies to a page EL0 can read or write under `PIRE0_EL1`, as it does to
 //! AP\[1\] under the direct bits (the kernel and user indices give EL0 the same
 //! access either way, so the outcome is the same if PAN also counts EL0
-//! execute); hierarchical permissions play no part (no table descriptor here
-//! carries APTable/XNTable). Whether bit 7 removes write under PIE does not
+//! execute; Linux's `PIE_E0` grants EL0 read on its user pages and its uaccess
+//! still relies on PAN; a ktest checks it on the S1PIE row). This one carries
+//! security weight: were it wrong, EL1 would reach user pages freely with PIE
+//! on. Hierarchical permissions play no part: no table descriptor here carries
+//! APTable/XNTable (`make_table`, a host row holds it). Whether bit 7 removes write under PIE does not
 //! matter: no word the code builds has bit 7 set on a writable index.
 //!
 //! EL2 must let EL1 at the registers: `HCRX_EL2.TCR2En` and the
@@ -61,7 +64,9 @@ pub const PIE_RX_O: u64 = 0x3;
 pub const PIE_RW_O: u64 = 0x5;
 pub const PIE_RWX_O: u64 = 0x7;
 pub const PIE_R: u64 = 0x8;
-/// Read, and GCS read and write: a plain store is refused.
+/// Read, and GCS read and write: a plain store is refused. Defined with
+/// FEAT_GCS only (reserved without it); Linux installs it on every S1PIE core
+/// (pgtable-prot.h `PIE_E0`), and so does [`PIR_EL1_VALUE`].
 pub const PIE_GCS: u64 = 0x9;
 pub const PIE_RX: u64 = 0xa;
 pub const PIE_RW: u64 = 0xc;

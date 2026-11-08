@@ -17487,7 +17487,8 @@ CPU 5 lacks hwcap bits"
     # Kconfig A64_S1PIE (arm phase): every CPU runs stage-1 indirect permissions (TCR2_EL1.PIE, PIR_EL1,
     # PIRE0_EL1) and the boot line reads the registers back; a kernel GCS page (`vmm::map_gcs`) carries the
     # GCS index, reads, and refuses a plain store; PAN still refuses an EL1 read of a user page under
-    # PIRE0_EL1 (a premise of the scheme, `mmu::pie`). QEMU `-cpu max` has FEAT_S1PIE; where the kernel enters
+    # PIRE0_EL1 (a premise of the scheme, `mmu::pie`). The GCS test needs a QEMU whose `-cpu max` has FEAT_S1PIE
+    # and FEAT_GCS (it fails on S1PIE alone: the GCS nibble is reserved there); where the kernel enters
     # at EL2, a missing grant (HCRX_EL2.TCR2En, nPIR_EL1) traps at the first PIR_EL1 write and the row never
     # reaches the line. With A64_POE as well, the pool rows must pass too: the overlay applies through
     # PIR_EL1's `_O` encodings. Canaries: `s1pie-skip` (PIE stays off), `s1pie-gcs-rw` (the GCS index

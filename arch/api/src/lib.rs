@@ -462,8 +462,9 @@ pub trait Mmu: Send + Sync {
     /// A level-0 leaf for `pa` as a kernel guarded-control-stack page: EL1
     /// reads it and the GCS instructions read and write it, a plain store
     /// faults, EL0 has no access (aarch64 FEAT_GCS, a stage-1 indirect
-    /// permission, Kconfig `A64_S1PIE`). `UnrepresentablePerms` on an ISA or
-    /// a boot without such a page type.
+    /// permission, Kconfig `A64_S1PIE`, on a core with FEAT_GCS).
+    /// `UnrepresentablePerms` on an ISA, a CPU or a boot without such a page
+    /// type.
     fn pte_make_gcs_leaf(&self, pa: usize) -> Result<u64, MmuError> {
         let _ = pa;
         Err(MmuError::UnrepresentablePerms)
