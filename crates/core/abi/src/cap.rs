@@ -34,10 +34,11 @@
 //!   and the cap-denial payload (`tests/host/syscall-tests/src/cap_denial_record.rs`)
 //!   record `CapKind::denial_code()` (the kind's discriminant) plus a raw
 //!   resource id. Neither field is a packed `CapHandle`.
-//! - The brain wire protocol (`../AzOSRobotBrain/protocol.py`) reserves a
-//!   `CAPS = 0x06` packet type for a future capability-declaration payload
-//!   but documents it as "not yet sent or handled on either
-//!   side"; nothing there encodes `kind|perms|gen|slot` today.
+//! - The robot extension's wire protocol
+//!   (`crates/domains/robot/behavior/src/brain_protocol.rs`) reserves a
+//!   `PKT_CAPS = 0x06` packet type for a future capability-declaration payload
+//!   that is not sent or handled yet; nothing there encodes
+//!   `kind|perms|gen|slot` today.
 //!
 //! Because nothing stored or transmitted depends on the current bit
 //! widths, the field boundaries below are free to move within a boot.

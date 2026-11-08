@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The brain link's secure channel: a Noise handshake (`noise.rs`) and the
+//! The encrypted link's secure channel (the robot extension's brain link is its user): a Noise handshake (`noise.rs`) and the
 //! Noise transport it yields, framed for a TCP byte stream.
 //!
 //! Pure `no_std`, no allocation, no RNG, no clock: the caller hands in every
 //! ephemeral private key and every buffer, so a session is a function of its
-//! inputs and the host tests can pin every wire byte against the brain's
-//! Python implementation (`AzOSRobotBrain/secure_channel.py`).
+//! inputs and the host tests can pin every wire byte an external peer's Python
+//! implementation (`AzOSRobotBrain/secure_channel.py`) must reproduce.
 //!
 //! ## Roles
 //!

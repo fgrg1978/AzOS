@@ -212,8 +212,8 @@ exclude = [
     # wind estimator). Run with:  cd tests/host/flight-math-tests && cargo test
     "tests/host/flight-math-tests",
     # aead-link-tests — host-side cross-side compat pin for the encrypted-link AEAD
-    # link. Verifies that frames produced by AzOSRobotBrain/secure_channel.py
-    # decrypt correctly with crates/core/crypto::secure_channel.
+    # link. Pins the wire bytes of crates/core/crypto::secure_channel that an
+    # external peer implementation (AzOSRobotBrain/secure_channel.py) must reproduce.
     # Run with:  cd tests/host/aead-link-tests && cargo +stable test --release
     "tests/host/aead-link-tests",
     # cam-ring-tests — host-side tests of the frame class's pool.

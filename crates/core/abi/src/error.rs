@@ -124,9 +124,9 @@ pub enum Errno {
     ETOPOLOGY = 203,
     /// Safety policy violation (geofence, max-speed, ESTOP).
     ESAFETY = 204,
-    /// Authentication failure on brain link (HMAC mismatch).
+    /// Authentication failure on an encrypted link (HMAC mismatch).
     EAUTH = 205,
-    /// Replay detected on brain link (counter regressed).
+    /// Replay detected on an encrypted link (counter regressed).
     EREPLAY = 206,
     /// OTA signature verification failed.
     EOTASIG = 207,

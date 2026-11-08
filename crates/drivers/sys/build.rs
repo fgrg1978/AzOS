@@ -18,8 +18,8 @@
 //!    it from there, so nothing is generated into the source tree.
 //! 5. Writes `crates/drivers/sys/wcet_points.json` (committed) only when its
 //!    content changes, through a temp file in the same directory and a rename.
-//!    AzOSRobotBrain's `tools/bench_e2e_collect.py` reads it by this path, so
-//!    the file must not move or be renamed.
+//!    An external bench collector (the brain repo's `tools/bench_e2e_collect.py`)
+//!    reads it by this path; nothing in this repository does.
 //!
 //! **Stable IDs**: sorting by module-qualified name before assignment means
 //! IDs don't shift when new annotations are added to other modules — only
