@@ -62,6 +62,7 @@ dependencies = [
 name = "azos_seclog_tests"
 version = "0.1.0"
 dependencies = [
+ "azos_rings",
  "azos_seclog",
  "seclog_verify",
 ]

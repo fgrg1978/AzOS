@@ -1119,6 +1119,7 @@ fn thermal_task(_: usize) {
             Some((wait, false)) => wait,
             Some((_, true)) => {
                 kprintln!("[THERMAL] critical trip: orderly shutdown");
+                crate::boot::seclog::critical();
                 azos_syscall::handlers::power_off_orderly()
             }
             None => return,

@@ -11,6 +11,8 @@ description = "Host-side tests for azos_seclog: the sealed security log's chain,
 
 [dependencies]
 azos_seclog = { path = "../../../crates/core/seclog" }
+# The ring the pass reads (azos_seclog::pass).
+azos_rings = { path = "../../../crates/core/rings" }
 # The forensic tool, over files written as logd writes them.
 seclog_verify = { path = "../../../tools/forensic/seclog_verify" }
 
@@ -20,4 +22,5 @@ canary-no-gap-check = ["azos_seclog/canary-no-gap-check"]
 canary-no-chain-check = ["azos_seclog/canary-no-chain-check"]
 canary-no-order-check = ["azos_seclog/canary-no-order-check"]
 canary-no-anchor-check = ["azos_seclog/canary-no-anchor-check"]
+canary-no-declaration-check = ["azos_seclog/canary-no-declaration-check"]
 canary-no-external-check = ["seclog_verify/canary-no-external-check"]

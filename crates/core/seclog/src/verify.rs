@@ -18,7 +18,7 @@
 //! the hardware holds now, or seals a receiver kept off the device, refute
 //! it; the tool compares those ([`Verifier::live`], [`Summary::seals`]).
 
-use crate::chain::{data_of, extend, fold_canon, genesis, seal_data};
+use crate::chain::{data_of, extend, fold_canon, genesis, seal_data, SealNumbers};
 use crate::{
     canon, kind, Anchor, Backend, Class, Envelope, Hash, Held, Loss, Reason, Seal, CANON_MAX, CLASSES, FLAG_DIVERGED,
 };
@@ -96,6 +96,13 @@ pub enum Finding {
     /// A record whose payload does not decode as its kind, or a seal or
     /// anchor of a shape the kernel never writes.
     Malformed { boot: u32, seq: u64 },
+    /// The sink-loss declarations before the seal at `seq` do not add up to
+    /// what the seal says the kernel declared: one was added or removed.
+    DeclarationMismatch { boot: u32, seq: u64 },
+    /// A loss declared at `seq` that no seal covers (after the boot's last
+    /// seal): it explains nothing, and anyone who can write the volume can
+    /// add one.
+    UncoveredDeclaration { boot: u32, seq: u64 },
 }
 
 impl Finding {
@@ -113,6 +120,8 @@ impl Finding {
             | Finding::Diverged { .. }
             | Finding::LinkBroken { .. }
             | Finding::CounterGap { .. }
+            | Finding::DeclarationMismatch { .. }
+            | Finding::UncoveredDeclaration { .. }
             | Finding::Malformed { .. } => true,
             // A loss the kernel declared, by class: what was lost is named
             // (the tool prints it), and an honest flood shows it too.
@@ -189,18 +198,34 @@ struct Range {
 struct Ranges {
     r: [Range; PENDING],
     n: usize,
-    /// More were declared than fit: what does not fit counts as undeclared.
-    over: bool,
 }
 
+const NO_RANGES: Ranges = Ranges { r: [Range { first: 0, end: 0 }; PENDING], n: 0 };
+
 impl Ranges {
+    /// Add `count` from `first`, merged with a range it touches. Full, the
+    /// oldest goes: what the ranges are for (declarations, pending gaps) is
+    /// resolved at every seal, so only a seal interval's worth is ever held.
     fn add(&mut self, first: u64, count: u64) {
-        if self.n == PENDING {
-            self.over = true;
+        let end = first.saturating_add(count);
+        if count == 0 {
             return;
         }
-        self.r[self.n] = Range { first, end: first.saturating_add(count) };
+        if let Some(r) = self.r[..self.n].iter_mut().find(|r| r.first <= end && first <= r.end) {
+            (r.first, r.end) = (r.first.min(first), r.end.max(end));
+            return;
+        }
+        if self.n == PENDING {
+            self.r.copy_within(1.., 0);
+            self.n -= 1;
+        }
+        self.r[self.n] = Range { first, end };
         self.n += 1;
+    }
+
+    fn remove(&mut self, i: usize) {
+        self.r.copy_within(i + 1..self.n, i);
+        self.n -= 1;
     }
 
     fn covers(&self, first: u64, end: u64) -> bool {
@@ -240,18 +265,42 @@ struct Boot {
     last_seal_seq: u64,
     advisory: bool,
     since_seal: u64,
-    /// The records since the last seal that were not folded for want of the
-    /// boot's start: refolded once a seal or the anchor gives it.
+    /// Gaps no declaration has explained yet, and those since the last seal.
     gaps: Ranges,
-    /// Gaps since the last seal (undecided until the boot ends).
-    open_gaps: usize,
+    recent: Ranges,
+    /// What the sealer declared it never folded (checked by the heads), and
+    /// what the sink lost and a seal's count confirmed.
     sealer_loss: Ranges,
     sink_loss: Ranges,
-    /// Seals whose head did not match with gaps before them: their gaps'
-    /// first index in `gaps` and the seal's sequence number.
-    unverified: [(usize, usize, u64); PENDING],
+    /// Sink-loss declarations no seal has confirmed yet: `(seq, first,
+    /// count)`, and whether more came than fit.
+    pending: [(u64, u64, u64); UNVERIFIED],
+    npending: usize,
+    pending_over: bool,
+    /// The sealer-loss declaration no seal covers yet (its sequence number).
+    loss_uncovered: Option<u64>,
+    /// The sink's count of the last seal whose anchor checked out.
+    sink_lost: Option<u64>,
+    /// Where the sink started this boot, from a seal whose anchor checked
+    /// out and whose boot is linked.
+    sink_start: u64,
+    link_ok: bool,
+    /// Seals whose head did not match with gaps before them.
+    unverified: [Unverified; UNVERIFIED],
     nunverified: usize,
 }
+
+/// A seal whose head did not match with gaps before it: decided once
+/// declarations explain its gaps, or the boot ends.
+#[derive(Clone, Copy)]
+struct Unverified {
+    seq: u64,
+    gaps: [Range; 8],
+    n: usize,
+}
+
+/// Seals pending a decision, and sink-loss declarations pending a seal.
+const UNVERIFIED: usize = 16;
 
 const NEW_BOOT: Boot = Boot {
     first: 0,
@@ -266,11 +315,18 @@ const NEW_BOOT: Boot = Boot {
     last_seal_seq: 0,
     advisory: false,
     since_seal: 0,
-    gaps: Ranges { r: [Range { first: 0, end: 0 }; PENDING], n: 0, over: false },
-    open_gaps: 0,
-    sealer_loss: Ranges { r: [Range { first: 0, end: 0 }; PENDING], n: 0, over: false },
-    sink_loss: Ranges { r: [Range { first: 0, end: 0 }; PENDING], n: 0, over: false },
-    unverified: [(0, 0, 0); PENDING],
+    gaps: NO_RANGES,
+    recent: NO_RANGES,
+    sealer_loss: NO_RANGES,
+    sink_loss: NO_RANGES,
+    pending: [(0, 0, 0); UNVERIFIED],
+    npending: 0,
+    pending_over: false,
+    loss_uncovered: None,
+    sink_lost: None,
+    sink_start: 0,
+    link_ok: false,
+    unverified: [Unverified { seq: 0, gaps: [Range { first: 0, end: 0 }; 8], n: 0 }; UNVERIFIED],
     nunverified: 0,
 };
 
@@ -283,6 +339,8 @@ struct Ended {
     prev: Hash,
     count: u32,
     counter: u64,
+    sink_lost: u64,
+    sink_start: u64,
     /// The heads after each record past the boot's last seal: `(through, head)`.
     tail: [(u64, Hash); DUPS],
     ntail: usize,
@@ -361,19 +419,57 @@ impl Verifier {
         (self.at, self.held) = (0, 0);
     }
 
-    /// The records before `first` are declared lost (by the sealer or the
-    /// sink), or this is the export's first boot.
+    /// The records before `first` are gone honestly: this is the export's
+    /// first boot (rotation drops the oldest file), or a seal of the boot
+    /// says the sink started reading at or after `first`.
     fn start_explained(&self) -> bool {
-        self.boot == 1
-            || self.b.sink_loss.covers(0, self.b.first)
-            || self.b.sealer_loss.covers(0, self.b.first)
-            || {
-                let mut u = self.b.sink_loss;
-                for r in &self.b.sealer_loss.r[..self.b.sealer_loss.n] {
-                    u.add(r.first, r.end - r.first);
-                }
-                u.covers(0, self.b.first)
+        self.boot == 1 || self.b.sink_start >= self.b.first
+    }
+
+    /// Decide the gaps and unverified seals the declarations now explain;
+    /// at the boot's end (`last`), all that is left.
+    fn resolve(&mut self, last: bool, out: &mut dyn FnMut(Finding)) {
+        let by = |b: &Boot, g: &Range| {
+            if b.sealer_loss.covers(g.first, g.end) {
+                Some(By::Sealer)
+            } else if b.sink_loss.covers(g.first, g.end) {
+                Some(By::Sink)
+            } else if last {
+                Some(By::Nobody)
+            } else {
+                None
             }
+        };
+        let mut i = 0;
+        while i < self.b.gaps.n {
+            let g = self.b.gaps.r[i];
+            match by(&self.b, &g) {
+                Some(by) => {
+                    self.emit(Finding::Gap { boot: self.boot, first: g.first, count: g.end - g.first, by }, out);
+                    self.b.gaps.remove(i);
+                }
+                None => i += 1,
+            }
+        }
+        let mut i = 0;
+        while i < self.b.nunverified {
+            let u = self.b.unverified[i];
+            let bys: [Option<By>; 8] = core::array::from_fn(|k| if k < u.n { by(&self.b, &u.gaps[k]) } else { Some(By::Sealer) });
+            if bys.iter().any(|b| b.is_none()) {
+                i += 1;
+                continue;
+            }
+            let f = if bys.iter().all(|&b| b == Some(By::Sealer)) {
+                // The sealer never folded those records: its head is the
+                // present records', which did not match.
+                Finding::Rewrite { boot: self.boot, seq: u.seq }
+            } else {
+                Finding::Unverifiable { boot: self.boot, seq: u.seq, declared: !bys.contains(&Some(By::Nobody)) }
+            };
+            self.emit(f, out);
+            self.b.unverified.copy_within(i + 1..self.b.nunverified, i);
+            self.b.nunverified -= 1;
+        }
     }
 
     fn end_boot(&mut self, out: &mut dyn FnMut(Finding)) {
@@ -390,35 +486,14 @@ impl Verifier {
         } else if !b.has_anchor && b.last_seal.is_some() {
             self.emit(Finding::AnchorMissing { boot: self.boot, explained: false }, out);
         }
-        let by = |g: &Range| {
-            if b.sealer_loss.covers(g.first, g.end) && !b.sealer_loss.over {
-                By::Sealer
-            } else if b.sink_loss.covers(g.first, g.end) && !b.sink_loss.over {
-                By::Sink
-            } else {
-                By::Nobody
-            }
-        };
-        for g in &b.gaps.r[..b.gaps.n] {
-            let f = Finding::Gap { boot: self.boot, first: g.first, count: g.end - g.first, by: by(g) };
-            self.emit(f, out);
+        // A declaration no seal covers (after the last one, or more than
+        // could be held) explains nothing: anyone who can write the volume
+        // can add one.
+        let uncovered = if b.npending > 0 || b.pending_over { Some(b.pending[0].0) } else { b.loss_uncovered };
+        if let Some(seq) = uncovered {
+            self.emit(Finding::UncoveredDeclaration { boot: self.boot, seq }, out);
         }
-        if b.gaps.over {
-            self.emit(Finding::Gap { boot: self.boot, first: 0, count: 0, by: By::Nobody }, out);
-        }
-        for &(from, to, seq) in &b.unverified[..b.nunverified] {
-            let all: [By; 2] = [By::Sink, By::Sealer];
-            let declared = from < to && b.gaps.r[from..to].iter().all(|g| all.contains(&by(g)));
-            let only_sealer = from < to && b.gaps.r[from..to].iter().all(|g| by(g) == By::Sealer);
-            let f = if only_sealer {
-                // The sealer never folded those records: its head is the
-                // present records', which did not match.
-                Finding::Rewrite { boot: self.boot, seq }
-            } else {
-                Finding::Unverifiable { boot: self.boot, seq, declared }
-            };
-            self.emit(f, out);
-        }
+        self.resolve(true, out);
         if b.since_seal > 0 {
             self.emit(Finding::Unsealed { boot: self.boot, count: b.since_seal }, out);
         }
@@ -435,7 +510,17 @@ impl Verifier {
         }
         let count = self.b.last_seal.map_or(0, |s| s.count);
         let prev = self.hw.unwrap_or(id.0);
-        let mut e = Ended { id, prev, count, counter: self.hw_counter.unwrap_or(0), tail: [(0, [0; 32]); DUPS], ntail: 0 };
+        let (sink_lost, sink_start) = self.b.last_seal.map_or((0, 0), |s| (s.sink_lost, s.sink_start));
+        let mut e = Ended {
+            id,
+            prev,
+            count,
+            counter: self.hw_counter.unwrap_or(0),
+            sink_lost,
+            sink_start,
+            tail: [(0, [0; 32]); DUPS],
+            ntail: 0,
+        };
         let from = self.b.last_seal.map_or(self.b.first, |_| self.b.last_seal_seq);
         let mut k = 0;
         while k < self.held && e.ntail < DUPS {
@@ -454,7 +539,8 @@ impl Verifier {
     /// whose anchor is `target`.
     fn crash_seal(e: &Ended, target: &Hash) -> Option<u64> {
         e.tail[..e.ntail].iter().find_map(|&(through, head)| {
-            let data = seal_data(&e.id.0, e.id.1, e.count + 1, e.counter + 1, through, &head);
+            let n = SealNumbers { count: e.count + 1, counter: e.counter + 1, through, sink_lost: e.sink_lost, sink_start: e.sink_start };
+            let data = seal_data(&e.id.0, e.id.1, &n, &head);
             (extend(&e.prev, &data) == *target).then_some(through)
         })
     }
@@ -465,6 +551,7 @@ impl Verifier {
         self.b.linked = true;
         let Some(hw) = self.hw else {
             self.hw_counter = counter.filter(|&c| c != 0).or(self.hw_counter);
+            self.b.link_ok = true;
             return;
         };
         let mut want_counter = self.hw_counter;
@@ -484,6 +571,7 @@ impl Verifier {
         if !linked && !cfg!(feature = "canary-no-anchor-check") {
             self.emit(Finding::LinkBroken { boot: self.boot }, out);
         }
+        self.b.link_ok = linked;
         if let (Some(c), Some(w)) = (counter, want_counter) {
             if c != w && !cfg!(feature = "canary-no-anchor-check") {
                 self.emit(Finding::CounterGap { boot: self.boot, seq: u64::MAX }, out);
@@ -597,10 +685,21 @@ impl Verifier {
         let want = self.head_before(s.through);
         let head_ok = cfg!(feature = "canary-no-chain-check") || want == Some(s.head);
         if !head_ok {
-            let gaps = self.b.open_gaps < self.b.gaps.n;
-            if gaps {
-                if self.b.nunverified < PENDING {
-                    self.b.unverified[self.b.nunverified] = (self.b.open_gaps, self.b.gaps.n, seq);
+            if self.b.recent.n > 0 {
+                let mut u = Unverified { seq, gaps: [Range { first: 0, end: 0 }; 8], n: 0 };
+                for r in &self.b.recent.r[..self.b.recent.n] {
+                    if u.n == 8 {
+                        // More gaps than kept: the last one stands for the rest.
+                        u.gaps[7].end = r.end;
+                    } else {
+                        u.gaps[u.n] = *r;
+                        u.n += 1;
+                    }
+                }
+                if self.b.nunverified == UNVERIFIED {
+                    self.emit(Finding::Unverifiable { boot, seq, declared: false }, out);
+                } else {
+                    self.b.unverified[self.b.nunverified] = u;
                     self.b.nunverified += 1;
                 }
             } else if want.is_some() {
@@ -608,6 +707,7 @@ impl Verifier {
             }
             self.resync(s);
         }
+        self.confirm_declarations(seq, s, anchor_ok, out);
         // The counter: one increment per seal the hardware counted.
         if s.counter != 0 && s.backend == Backend::TpmNv {
             if let Some(c) = self.hw_counter {
@@ -630,8 +730,55 @@ impl Verifier {
         self.sum.backend = Some(s.backend);
         self.b.last_seal = Some(*s);
         self.b.last_seal_seq = seq;
-        self.b.open_gaps = self.b.gaps.n;
+        self.b.recent = NO_RANGES;
         self.b.since_seal = 0;
+        self.resolve(false, out);
+    }
+
+    /// The sink-loss declarations the seal covers: their counts must add up to
+    /// what the seal (whose anchor checked out) says the kernel declared since
+    /// the last such seal. Then they explain gaps; a mismatch is evidence.
+    fn confirm_declarations(&mut self, seq: u64, s: &Seal, anchor_ok: bool, out: &mut dyn FnMut(Finding)) {
+        let boot = self.boot;
+        if self.b.loss_uncovered.is_some_and(|l| l < s.through) {
+            self.b.loss_uncovered = None;
+        }
+        if !anchor_ok {
+            return;
+        }
+        if s.backend == Backend::Forward || self.b.link_ok {
+            self.b.sink_start = self.b.sink_start.max(s.sink_start);
+        }
+        let base = match self.b.sink_lost {
+            Some(v) => Some(v),
+            None if self.b.first == 0 || s.sink_start >= self.b.first => Some(0),
+            None => None,
+        };
+        let (mut sum, mut i) = (0u64, 0);
+        let covered: [(u64, u64, u64); UNVERIFIED] = self.b.pending;
+        let mut kept = [(0, 0, 0); UNVERIFIED];
+        let mut nkept = 0;
+        for &(dseq, first, count) in &covered[..self.b.npending] {
+            if dseq < s.through {
+                sum += count;
+                i += 1;
+            } else {
+                kept[nkept] = (dseq, first, count);
+                nkept += 1;
+            }
+        }
+        let confirmed = !self.b.pending_over && base.is_some_and(|b| s.sink_lost.checked_sub(b) == Some(sum));
+        if confirmed || cfg!(feature = "canary-no-declaration-check") {
+            for &(dseq, first, count) in &covered[..self.b.npending] {
+                if dseq < s.through {
+                    self.b.sink_loss.add(first, count);
+                }
+            }
+        } else if i > 0 || self.b.pending_over || base.is_some_and(|b| s.sink_lost != b) {
+            self.emit(Finding::DeclarationMismatch { boot, seq }, out);
+        }
+        (self.b.pending, self.b.npending, self.b.pending_over) = (kept, nkept, false);
+        self.b.sink_lost = Some(s.sink_lost);
     }
 
     /// The boot's start became known: fold every held record from genesis.
@@ -755,6 +902,7 @@ impl Verifier {
                 }
             } else if seq > last + 1 && !cfg!(feature = "canary-no-gap-check") {
                 self.b.gaps.add(last + 1, seq - last - 1);
+                self.b.recent.add(last + 1, seq - last - 1);
             }
         }
         self.seam = false;
@@ -786,8 +934,14 @@ impl Verifier {
                 Some(l) => {
                     let sink = env.kind == kind::SINK_LOSS;
                     if sink {
-                        self.b.sink_loss.add(l.first, l.count);
+                        if self.b.npending == UNVERIFIED {
+                            self.b.pending_over = true;
+                        } else {
+                            self.b.pending[self.b.npending] = (seq, l.first, l.count);
+                            self.b.npending += 1;
+                        }
                     } else {
+                        self.b.loss_uncovered = self.b.loss_uncovered.or(Some(seq));
                         self.b.sealer_loss.add(l.first, l.count);
                         // Records of the range logd did write were folded
                         // here and never by the sealer: fold again without them.

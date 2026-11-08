@@ -4,8 +4,8 @@
 //! the canonical bytes, so a reader recomputes the chain from the text alone.
 //!
 //! ```text
-//! v2 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex> [<what>]
-//! v2 seam
+//! v3 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex> [<what>]
+//! v3 seam
 //! ```
 //!
 //! Numbers are decimal, the payload is lowercase hex (its length is the
@@ -20,7 +20,7 @@ use crate::{kind, Envelope, Event, Seal, PAYLOAD, VERSION};
 /// Bytes of the longest message.
 pub const MSG_MAX: usize = 3 + 6 * 21 + 2 * PAYLOAD + 1 + 64;
 
-const SEAM: &[u8] = b"v2 seam";
+const SEAM: &[u8] = b"v3 seam";
 
 struct Put<'a> {
     out: &'a mut [u8],

@@ -59,7 +59,7 @@ fn seclog_the_rate_cap_holds_a_flood_back_and_counts_it() {
     let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
     clock();
     let from = head();
-    let (_, held0) = azos_decision::security_tally();
+    let (_, held0, _) = azos_decision::security_tally();
     // A denial of a rule that is not paced by the durable bucket: Neverallow.
     for i in 0..(azos_limits::SEC_LOG_PER_S as u32) {
         azos_decision::record(Rule::Neverallow, Verdict::Refuse, 100 + i, [0, 0, 0]);
@@ -69,7 +69,8 @@ fn seclog_the_rate_cap_holds_a_flood_back_and_counts_it() {
     let denials = ev.iter().filter(|e| e.0 == SecClass::CapDenial as u8).count() as u32;
     assert!(denials <= azos_limits::SEC_LOG_PER_S as u32 / 4, "{denials} denials copied");
     assert!(ev.contains(&(SecClass::Camera as u8, Rule::CamCapture as u8, Verdict::Admit as u8, 9)), "{ev:?}");
-    let (copied, held) = azos_decision::security_tally();
+    let (copied, held, top) = azos_decision::security_tally();
+    assert!(top.iter().any(|t| t.1 > 0), "the subjects held back: {top:?}");
     assert!(held[SecClass::CapDenial as usize] > held0[SecClass::CapDenial as usize]);
     assert!(copied[SecClass::Camera as usize] >= 1);
     // A second later every class's share has refilled, the drained one's
@@ -130,4 +131,28 @@ fn seclog_the_cap_refills_at_its_rate_whatever_the_spacing() {
         assert!(egress >= 2 * share - 1, "{spacing} ns apart: {egress} egress copied, want about {}", 2 * share);
         assert!(ev.contains(&(SecClass::Microphone as u8, Rule::AudioCapture as u8, Verdict::Admit as u8, subject)), "{spacing} ns apart: the microphone record was held");
     }
+}
+
+/// One task's egress cannot spend another's: a task that floods its own
+/// share leaves a second task's first destination recorded; and a socket
+/// alternating two destinations is two records, not a flood.
+#[test]
+fn seclog_each_task_has_its_own_egress_share() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
+    TIME.store(TIME.load(Ordering::Relaxed) + 10_000, Ordering::Relaxed);
+    let from = head();
+    for i in 0..64u64 {
+        azos_decision::record(Rule::EnvelopeEgress, Verdict::Admit, 8001, [1000 + i, 3, 0]);
+    }
+    azos_decision::record(Rule::EnvelopeEgress, Verdict::Admit, 8002, [42, 3, 0]);
+    for _ in 0..64 {
+        azos_decision::record(Rule::EnvelopeEgress, Verdict::Admit, 8003, [7, 3, 0]);
+        azos_decision::record(Rule::EnvelopeEgress, Verdict::Admit, 8003, [8, 3, 0]);
+    }
+    let (ev, _) = events(from);
+    let of = |s: u32| ev.iter().filter(|e| e.0 == SecClass::Egress as u8 && e.3 == s).count();
+    assert!(of(8001) <= azos_limits::SEC_LOG_PER_S as usize / 4, "{} copied for the flooding task", of(8001));
+    assert_eq!(of(8002), 1, "the other task's destination");
+    assert_eq!(of(8003), 2, "two destinations, alternated");
 }

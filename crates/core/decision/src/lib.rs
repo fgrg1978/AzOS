@@ -1919,30 +1919,50 @@ static SEC_HELD: [core::sync::atomic::AtomicU32; azos_seclog::CLASSES] =
     [const { core::sync::atomic::AtomicU32::new(0) }; azos_seclog::CLASSES];
 
 /// The security records copied so far and those the rate cap held back,
-/// by class; a copy is counted once its record is in the ring.
-pub fn security_tally() -> ([u32; azos_seclog::CLASSES], [u32; azos_seclog::CLASSES]) {
-    let mut t = ([0u32; azos_seclog::CLASSES], [0u32; azos_seclog::CLASSES]);
+/// by class; a copy is counted once its record is in the ring. Also the
+/// subjects the cap held back most since boot, `(subject, count)`.
+pub fn security_tally() -> (
+    [u32; azos_seclog::CLASSES],
+    [u32; azos_seclog::CLASSES],
+    [(u32, u32); azos_seclog::Held::SUBJECTS],
+) {
+    let mut t = ([0u32; azos_seclog::CLASSES], [0u32; azos_seclog::CLASSES], [(0, 0); azos_seclog::Held::SUBJECTS]);
     for i in 0..azos_seclog::CLASSES {
         t.0[i] = SEC_COPIED[i].load(Ordering::Acquire);
         t.1[i] = SEC_HELD[i].load(Ordering::Relaxed);
     }
+    t.2 = sec_cap(|c| c.top);
     t
 }
 
 /// The security records' rate cap (Kconfig `SEC_LOG_PER_S`): a bucket for
-/// them all, and one per class for the classes a task can raise in a loop
-/// (capability denials, the bucket's own reports, egress), each a quarter
-/// of the whole, so a flood of one cannot push a microphone's record out of
-/// the ring. Tokens in thousandths.
+/// them all; a quarter of it for each class a task can raise in a loop
+/// (capability denials, the decision layer's reports of them), half of it
+/// for egress and logins and a quarter for each of their subjects, so a
+/// flood of one class leaves the others room and one task cannot spend its
+/// class's share to hide another's records. A record costs 1000 of the
+/// whole's tokens and 4000 of a share's, both refilled at the whole's rate:
+/// no division drops a remainder, and the time the tokens did not account
+/// for is kept for the next call.
 struct SecCap {
     busy: AtomicBool,
     s: core::cell::UnsafeCell<SecTokens>,
 }
 
+/// Subjects with a share of their own, and the subjects held most.
+const SEC_SUBJECTS: usize = 16;
+
 struct SecTokens {
     at: u64,
     all: u64,
     class: [u64; azos_seclog::CLASSES],
+    /// `(class, subject, tokens)`; class 0: free.
+    subj: [(u8, u32, u64); SEC_SUBJECTS],
+    /// Egress destinations each subject was last let out to: a socket that
+    /// alternates between them is not a new destination each time.
+    dests: [(u32, u64); SEC_SUBJECTS],
+    next_dest: usize,
+    top: [(u32, u32); azos_seclog::Held::SUBJECTS],
     started: bool,
 }
 
@@ -1951,43 +1971,119 @@ unsafe impl Sync for SecCap {}
 
 static SEC_CAP: SecCap = SecCap {
     busy: AtomicBool::new(false),
-    s: core::cell::UnsafeCell::new(SecTokens { at: 0, all: 0, class: [0; azos_seclog::CLASSES], started: false }),
+    s: core::cell::UnsafeCell::new(SecTokens {
+        at: 0,
+        all: 0,
+        class: [0; azos_seclog::CLASSES],
+        subj: [(0, 0, 0); SEC_SUBJECTS],
+        dests: [(0, 0); SEC_SUBJECTS],
+        next_dest: 0,
+        top: [(0, 0); azos_seclog::Held::SUBJECTS],
+        started: false,
+    }),
 };
 
-const fn sec_paced(class: SecClass) -> bool {
-    matches!(class, SecClass::CapDenial | SecClass::Limited | SecClass::Egress)
-}
-
-/// May a security record of `class` be copied now?
-fn sec_admit(class: SecClass) -> bool {
-    let rate = azos_limits::SEC_LOG_PER_S as u64 * 1000;
-    let (all_max, class_max) = (rate, rate / 4);
-    let (now, hz) = (clock_now(), CLOCK_HZ.load(Ordering::Relaxed));
+fn sec_cap<R>(f: impl FnOnce(&mut SecTokens) -> R) -> R {
     while SEC_CAP.busy.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         core::hint::spin_loop();
     }
     // SAFETY: `busy` is held.
-    let t = unsafe { &mut *SEC_CAP.s.get() };
-    if !t.started {
-        (t.at, t.all, t.class, t.started) = (now, all_max, [class_max; azos_seclog::CLASSES], true);
-    }
-    let gained = (now.saturating_sub(t.at) as u128 * rate as u128 / hz.max(1) as u128).min(u64::MAX as u128) as u64;
-    t.at = now;
-    t.all = (t.all + gained).min(all_max);
-    for x in t.class.iter_mut() {
-        *x = (*x + gained / 4).min(class_max);
-    }
-    let c = class as usize;
-    let paced = sec_paced(class);
-    let ok = t.all >= 1000 && (!paced || t.class[c] >= 1000);
-    if ok {
-        t.all -= 1000;
-        if paced {
-            t.class[c] -= 1000;
-        }
-    }
+    let r = f(unsafe { &mut *SEC_CAP.s.get() });
     SEC_CAP.busy.store(false, Ordering::Release);
-    ok
+    r
+}
+
+const fn sec_paced(class: SecClass) -> bool {
+    matches!(class, SecClass::CapDenial | SecClass::Limited | SecClass::Egress | SecClass::Login)
+}
+
+const fn sec_per_subject(class: SecClass) -> bool {
+    matches!(class, SecClass::Egress | SecClass::Login)
+}
+
+/// What the cap says of a record.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SecAdmit {
+    Copy,
+    Hold,
+    /// An egress admit to a destination the subject was let out to last: no
+    /// new destination, nothing to record.
+    Repeat,
+}
+
+/// May a security record of `class` about `subject` be copied now? `dest`:
+/// an egress admit's destination.
+fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
+    const ONE: u64 = 1000;
+    const SHARE: u64 = 4 * ONE;
+    let rate = azos_limits::SEC_LOG_PER_S as u64 * ONE;
+    let (now, hz) = (clock_now(), CLOCK_HZ.load(Ordering::Relaxed).max(1));
+    sec_cap(|t| {
+        if !t.started {
+            (t.at, t.all, t.class, t.started) = (now, rate, [rate; azos_seclog::CLASSES], true);
+        }
+        // A clock installed or set back since: the count starts again from now.
+        if now < t.at {
+            t.at = now;
+        }
+        let gained = (now.saturating_sub(t.at) as u128 * rate as u128 / hz as u128).min(u64::MAX as u128) as u64;
+        if gained > 0 {
+            // The ticks the tokens account for; the rest waits for the next call.
+            t.at += (gained as u128 * hz as u128 / rate as u128) as u64;
+            t.all = (t.all + gained).min(rate);
+            for x in t.class.iter_mut() {
+                *x = (*x + gained).min(rate);
+            }
+            for x in t.subj.iter_mut() {
+                x.2 = (x.2 + gained).min(rate);
+            }
+        }
+        let c = class as usize;
+        if let Some(d) = dest {
+            let key = (subject, d);
+            if t.dests.contains(&key) {
+                return SecAdmit::Repeat;
+            }
+            t.dests[t.next_dest] = key;
+            t.next_dest = (t.next_dest + 1) % SEC_SUBJECTS;
+        }
+        let slot = sec_per_subject(class).then(|| {
+            match t.subj.iter().position(|x| x.0 == class as u8 && x.1 == subject) {
+                Some(i) => i,
+                None => {
+                    // A new subject takes the slot whose holder has waited
+                    // longest (the fullest): it starts with a full share.
+                    let i = (0..SEC_SUBJECTS).max_by_key(|&i| if t.subj[i].0 == 0 { u64::MAX } else { t.subj[i].2 }).unwrap_or(0);
+                    t.subj[i] = (class as u8, subject, rate);
+                    i
+                }
+            }
+        });
+        let paced = sec_paced(class);
+        // A class shared by subjects takes half the whole, a subject a quarter.
+        let class_cost = if slot.is_some() { SHARE / 2 } else { SHARE };
+        let ok = t.all >= ONE && (!paced || t.class[c] >= class_cost) && slot.is_none_or(|i| t.subj[i].2 >= SHARE);
+        if ok {
+            t.all -= ONE;
+            if paced {
+                t.class[c] -= class_cost;
+            }
+            if let Some(i) = slot {
+                t.subj[i].2 -= SHARE;
+            }
+            return SecAdmit::Copy;
+        }
+        match t.top.iter().position(|x| x.0 == subject && x.1 != 0) {
+            Some(i) => t.top[i].1 += 1,
+            None => {
+                let i = (0..t.top.len()).min_by_key(|&i| t.top[i].1).unwrap_or(0);
+                if t.top[i].1 == 0 {
+                    t.top[i] = (subject, 1);
+                }
+            }
+        }
+        SecAdmit::Hold
+    })
 }
 
 /// Copy a record to the security ring (`azos_seclog`'s event), within the
@@ -1996,9 +2092,14 @@ fn sec_admit(class: SecClass) -> bool {
 #[inline(never)]
 fn security(class: SecClass, rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, origin: Origin) {
     let Some(w) = azos_records::writer(azos_records::SOURCE_SECURITY) else { return };
-    if !sec_admit(class) {
-        SEC_HELD[class as usize].fetch_add(1, Ordering::Relaxed);
-        return;
+    let dest = (rule == Rule::EnvelopeEgress && verdict == Verdict::Admit).then_some(n[0]);
+    match sec_admit(class, subject, dest) {
+        SecAdmit::Copy => {}
+        SecAdmit::Repeat => return,
+        SecAdmit::Hold => {
+            SEC_HELD[class as usize].fetch_add(1, Ordering::Relaxed);
+            return;
+        }
     }
     let e = azos_seclog::Event {
         id: seq,

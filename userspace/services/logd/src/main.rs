@@ -547,6 +547,9 @@ fn run() -> i32 {
     let mut next = sys::vdso_now_ns() + period_ns;
     loop {
         sink.drain();
+        if let Some(p) = sink.ack {
+            p.beat.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         let _ = sys::sleep_until_ns(next);
         next = next.max(sys::vdso_now_ns()) + period_ns;
     }

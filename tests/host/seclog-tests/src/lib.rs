@@ -13,6 +13,7 @@
 
 #![cfg(test)]
 
+mod pass;
 mod tool;
 
 use azos_seclog::chain::{extend, Sealer};
@@ -151,8 +152,15 @@ impl Boot {
         (first, n as u64)
     }
 
-    /// The kernel declares that the sink lost `count` records from `first`.
+    /// The kernel declares that the sink lost `count` records from `first`:
+    /// the record, and the count the next seals carry.
     fn sink_loss(&mut self, first: u64, count: u64) {
+        self.forged_sink_loss(first, count);
+        self.sealer.sink_lost(first, count);
+    }
+
+    /// A `sink-loss` record only: what whoever writes the volume can add.
+    fn forged_sink_loss(&mut self, first: u64, count: u64) {
         let mut by_class = [0u32; CLASSES];
         by_class[0] = count as u32;
         self.publish(kind::SINK_LOSS, &Loss { first, count, by_class }.encode());
@@ -635,12 +643,12 @@ fn unhex(s: &str) -> Vec<u8> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
 }
 
-/// Format version 2, byte for byte: the payloads, the canonical bytes, the
+/// Format version 3, byte for byte: the payloads, the canonical bytes, the
 /// genesis head, one fold, one seal's data and extend, and the line. The
 /// vectors were computed apart from this crate (Python's struct and hashlib);
 /// a change to any field is a new format version, never an edit of these.
 #[test]
-fn format_v2_is_frozen() {
+fn format_v3_is_frozen() {
     let e = Event {
         id: 0x0102_0304_0506_0708,
         subject: 0x1122_3344,
@@ -670,30 +678,34 @@ fn format_v2_is_frozen() {
         anchor: [0xbb; 32],
         prev: [0xcc; 32],
         boot_anchor: [0xdd; 32],
+        sink_lost: 11,
+        sink_start: 4,
     };
-    assert_eq!(seal.encode().to_vec(), unhex("0201000003000000090000000000000008000000000000009900000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"));
+    assert_eq!(seal.encode().to_vec(), unhex("0201000003000000090000000000000008000000000000009900000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0b000000000000000400000000000000"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::Egress as usize] = 2;
     assert_eq!(Loss { first: 5, count: 2, by_class }.encode().to_vec(), unhex("05000000000000000200000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::CapDenial as usize] = 3;
-    assert_eq!(azos_seclog::Held { by_class }.encode().to_vec(), unhex("000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000"));
+    let subjects = [(42, 7), (0, 0), (0, 0), (0, 0)];
+    assert_eq!(azos_seclog::Held { by_class, subjects }.encode().to_vec(), unhex("0000000000000000000000000000000000000000030000000000000000000000000000000000000000000000000000002a00000007000000000000000000000000000000000000000000000000000000"));
 
     let env = Envelope { seq: 4, ts: 1000, clock: 0, source: 4, kind: kind::EVENT, len: Event::LEN as u16, cpu: 2, flags: 1 };
     let mut payload = [0u8; PAYLOAD];
     payload[..Event::LEN].copy_from_slice(&e.encode());
     let mut c = [0u8; azos_seclog::CANON_MAX];
     let n = azos_seclog::canon(&env, &payload, &mut c);
-    assert_eq!(c[..n].to_vec(), unhex("020400000000000000e803000000000000000100020134000807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000"));
+    assert_eq!(c[..n].to_vec(), unhex("030400000000000000e803000000000000000100020134000807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000"));
     let genesis = azos_seclog::chain::genesis(&[0xdd; 32], 0x99);
-    assert_eq!(genesis.to_vec(), unhex("c832eb721e23cdc02020c87f46ed641b693fcec5483b286576f9a133a3e96d35"));
+    assert_eq!(genesis.to_vec(), unhex("e2e4e0e8a3f79d5a42a6138f871909dc5903d1cb440ce331f36bc2414e3052d0"));
     let head = azos_seclog::chain::fold(&genesis, &env, &payload);
-    assert_eq!(head.to_vec(), unhex("60ef312c645072a8afc12ac7278a5ac764c623504435aad06d9eb395ffd50cf7"));
-    let data = azos_seclog::chain::seal_data(&[0xdd; 32], 0x99, 1, 8, 5, &head);
-    assert_eq!(data.to_vec(), unhex("571ffbcd050b120c867b94daefd6ab860b644c00d979f158f7702685320ae58a"));
-    assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("b3a83283e7c18d77bbbada2ba1a4aa3085b75672b7f9b3221d3c82d95336fb84"));
+    assert_eq!(head.to_vec(), unhex("a0055624af540eb6c54661bac1979b88df8f4b6e48d99582872fb0f7d00e2c18"));
+    let n = azos_seclog::chain::SealNumbers { count: 1, counter: 8, through: 5, sink_lost: 0, sink_start: 0 };
+    let data = azos_seclog::chain::seal_data(&[0xdd; 32], 0x99, &n, &head);
+    assert_eq!(data.to_vec(), unhex("8e839dfd5f4eeabd65dd53372de2b26d40456f1fa8bd3a2d601e59e9056b1cb0"));
+    assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("fc036d7038259811f521c41e9ea523f87f7ee6d9dac7fdca74a58bfca4551d50"));
     let r = Rec { env, payload };
-    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v2 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
+    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v3 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
 }
 
 // Proofs of the review of the sealed security log: each asserts the right
@@ -729,6 +741,8 @@ fn review_p1b_a_forged_refused_seal_is_evidence() {
         anchor: b2.tpm,
         prev: b1.tpm,
         boot_anchor: b1.tpm,
+        sink_lost: 0,
+        sink_start: 0,
     };
     let mut payload = [0u8; PAYLOAD];
     payload[..Seal::LEN].copy_from_slice(&s.encode());
@@ -776,7 +790,7 @@ fn review_p2_a_declared_loss_logd_kept_is_not_evidence() {
 fn verify_v1_a_forged_sink_loss_after_the_last_seal_hides_a_deleted_record() {
     let mut b = tpm_boot([0; 32], 2);
     // The microphone record of round 1 is at 3 (2 events and the anchor first).
-    b.sink_loss(3, 1);
+    b.forged_sink_loss(3, 1);
     let mut lines = b.lines();
     lines.remove(3);
     let (found, _) = verify(&lines);
@@ -794,7 +808,7 @@ fn verify_v2_a_forged_sink_loss_hides_a_deleted_boot_start() {
     let b1 = tpm_boot([0; 32], 2);
     let mut b2 = tpm_boot(b1.tpm, 2);
     let first_seal = b2.recs.iter().position(|r| r.env.kind == kind::SEAL).unwrap();
-    b2.sink_loss(0, first_seal as u64);
+    b2.forged_sink_loss(0, first_seal as u64);
     let mut lines = b1.lines();
     lines.push(seam());
     lines.extend(b2.lines()[first_seal..].to_vec());
@@ -823,4 +837,43 @@ fn verify_v4_a_long_boot_with_many_declared_losses_is_not_evidence() {
     let lines: Vec<_> = b.recs.iter().filter(|r| !lost.iter().any(|&(f, n)| r.env.seq >= f && r.env.seq < f + n)).map(line).collect();
     let (found, _) = verify(&lines);
     assert_eq!(evidence(&found), vec![], "{} evidence findings", evidence(&found).len());
+}
+
+/// The control of V1: logd lost a sealed record, the kernel declared it and
+/// the next seal counts it: declared, not evidence.
+#[test]
+fn a_sink_loss_the_next_seal_counts_is_not_evidence() {
+    let mut b = tpm_boot([0; 32], 1);
+    b.event(Class::Microphone, 77);
+    let lost = b.recs.len() as u64 - 1;
+    b.seal();
+    b.sink_loss(lost, 1);
+    b.event(Class::Camera, 78);
+    b.seal();
+    let lines: Vec<_> = b.recs.iter().filter(|r| r.env.seq != lost).map(line).collect();
+    let (found, _) = verify(&lines);
+    assert_eq!(evidence(&found), vec![], "{found:?}");
+    assert!(found.contains(&Finding::Gap { boot: 1, first: lost, count: 1, by: By::Sink }), "{found:?}");
+}
+
+/// A forged sink-loss inserted before a seal that does not count it: the
+/// declarations do not add up to the seal's count.
+///
+/// **Canary.** `canary-no-declaration-check`: the forged line explains the
+/// deletion, red.
+#[test]
+fn a_forged_sink_loss_a_seal_does_not_count_is_evidence() {
+    let mut b = tpm_boot([0; 32], 1);
+    b.event(Class::Microphone, 77);
+    let lost = b.recs.len() as u64 - 1;
+    b.seal();
+    b.forged_sink_loss(lost, 1);
+    b.event(Class::Camera, 78);
+    b.seal();
+    let lines: Vec<_> = b.recs.iter().filter(|r| r.env.seq != lost).map(line).collect();
+    let (found, _) = verify(&lines);
+    assert!(found.iter().any(|f| matches!(f, Finding::DeclarationMismatch { .. })), "{found:?}");
+    assert!(!evidence(&found).is_empty());
+    let unv = found.iter().any(|f| matches!(f, Finding::Unverifiable { declared: false, .. }));
+    assert!(unv, "the seal over the deleted record stays unverified: {found:?}");
 }

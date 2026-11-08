@@ -29,11 +29,12 @@
 //!
 //! # The chain
 //!
-//! Per boot, in sequence order: `head_0 = SHA-256("azos/seclog/v2" ||
+//! Per boot, in sequence order: `head_0 = SHA-256("azos/seclog/v3" ||
 //! boot_anchor || nonce)`, `head_i = SHA-256(0x01 || head_{i-1} || canon_i)`,
 //! `canon` the record's [canonical bytes](canon) (every envelope field but the
 //! source, and the payload). Seal `k` commits `data_k = SHA-256(0x02 ||
-//! boot_anchor || nonce || k || counter_k || through_k || head)` to the
+//! boot_anchor || nonce || k || counter_k || through_k || sink_lost_k ||
+//! sink_start_k || head)` to the
 //! backend, whose value becomes `anchor_k = SHA-256(anchor_{k-1} || data_k)`:
 //! the rule of a TPM 2.0 `NV_Extend` into a SHA-256 index, which the TPM
 //! computes itself. Every seal carries `anchor_{k-1}`, the boot anchor and the
@@ -58,6 +59,8 @@
 pub mod ack;
 #[cfg(feature = "chain")]
 pub mod chain;
+#[cfg(feature = "chain")]
+pub mod pass;
 pub mod text;
 #[cfg(feature = "chain")]
 pub mod verify;
@@ -66,9 +69,9 @@ pub use azos_rings::region::record::Envelope;
 
 /// The version of the format: the first byte of every record's canonical
 /// bytes and the first word of its line.
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 /// Payload bytes a security ring slot holds: the largest kind's, a seal's.
-pub const PAYLOAD: usize = 160;
+pub const PAYLOAD: usize = 176;
 /// Class numbers a by-class count covers (index = the class's number).
 pub const CLASSES: usize = 12;
 /// SHA-256 digest bytes.
@@ -373,10 +376,17 @@ pub struct Seal {
     /// anchor.
     pub prev: Hash,
     pub boot_anchor: Hash,
+    /// Records the kernel has declared the sink lost this boot, through
+    /// `through`: what the `sink-loss` records the seal covers must add up to.
+    pub sink_lost: u64,
+    /// Where the sink started reading this boot (the end of its first claim
+    /// from 0; 0 if it started at the boot's first record): the records
+    /// before it are gone honestly.
+    pub sink_start: u64,
 }
 
 impl Seal {
-    pub const LEN: usize = 160;
+    pub const LEN: usize = 176;
 
     pub fn hardware(&self) -> bool {
         self.flags & FLAG_HARDWARE != 0
@@ -393,6 +403,8 @@ impl Seal {
         p[64..96].copy_from_slice(&self.anchor);
         p[96..128].copy_from_slice(&self.prev);
         p[128..160].copy_from_slice(&self.boot_anchor);
+        p[160..168].copy_from_slice(&self.sink_lost.to_le_bytes());
+        p[168..176].copy_from_slice(&self.sink_start.to_le_bytes());
         p
     }
 
@@ -411,6 +423,8 @@ impl Seal {
             anchor: hash_at(p, 64),
             prev: hash_at(p, 96),
             boot_anchor: hash_at(p, 128),
+            sink_lost: le64(p, 160),
+            sink_start: le64(p, 168),
         })
     }
 }
@@ -443,23 +457,34 @@ impl Loss {
 }
 
 /// Records the producers' rate cap held back since the last such record, by
-/// class (Kconfig `SEC_LOG_PER_S`).
+/// class (Kconfig `SEC_LOG_PER_S`), and the subjects (tasks) it held back
+/// most since boot, with their counts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Held {
     pub by_class: [u32; CLASSES],
+    pub subjects: [(u32, u32); Held::SUBJECTS],
 }
 
 impl Held {
-    pub const LEN: usize = 4 * CLASSES;
+    pub const SUBJECTS: usize = 4;
+    pub const LEN: usize = 4 * CLASSES + 8 * Self::SUBJECTS;
 
     pub fn encode(&self) -> [u8; Self::LEN] {
         let mut p = [0u8; Self::LEN];
         put_classes(&mut p, 0, &self.by_class);
+        for (i, (s, n)) in self.subjects.iter().enumerate() {
+            let at = 4 * CLASSES + 8 * i;
+            p[at..at + 4].copy_from_slice(&s.to_le_bytes());
+            p[at + 4..at + 8].copy_from_slice(&n.to_le_bytes());
+        }
         p
     }
 
     pub fn decode(p: &[u8]) -> Option<Held> {
-        (p.len() >= Self::LEN).then(|| Held { by_class: classes_at(p, 0) })
+        (p.len() >= Self::LEN).then(|| Held {
+            by_class: classes_at(p, 0),
+            subjects: core::array::from_fn(|i| (le32(p, 4 * CLASSES + 8 * i), le32(p, 4 * CLASSES + 8 * i + 4))),
+        })
     }
 }
 

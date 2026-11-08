@@ -13,7 +13,7 @@ const TAG_SEAL: u8 = 2;
 /// `boot_anchor` and whose nonce is `nonce`.
 pub fn genesis(boot_anchor: &Hash, nonce: u64) -> Hash {
     let mut h = Sha256::new();
-    h.update(b"azos/seclog/v2");
+    h.update(b"azos/seclog/v3");
     h.update(boot_anchor);
     h.update(&nonce.to_le_bytes());
     h.finalize()
@@ -35,24 +35,37 @@ pub fn fold(head: &Hash, env: &Envelope, payload: &[u8]) -> Hash {
     fold_canon(head, &c[..n])
 }
 
-/// What seal `count` of a boot commits to the backend: the boot, the seal's
-/// number, the backend's counter, the first sequence number it does not
-/// cover and the head.
-pub fn seal_data(boot_anchor: &Hash, nonce: u64, count: u32, counter: u64, through: u64, head: &Hash) -> Hash {
+/// What a seal commits to the backend besides its boot and head.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SealNumbers {
+    pub count: u32,
+    pub counter: u64,
+    pub through: u64,
+    pub sink_lost: u64,
+    pub sink_start: u64,
+}
+
+/// What a seal commits to the backend: the boot, the seal's number, the
+/// backend's counter, the first sequence number it does not cover, what the
+/// sink lost and where it started, and the head.
+pub fn seal_data(boot_anchor: &Hash, nonce: u64, n: &SealNumbers, head: &Hash) -> Hash {
     let mut h = Sha256::new();
     h.update(&[TAG_SEAL]);
     h.update(boot_anchor);
     h.update(&nonce.to_le_bytes());
-    h.update(&count.to_le_bytes());
-    h.update(&counter.to_le_bytes());
-    h.update(&through.to_le_bytes());
+    h.update(&n.count.to_le_bytes());
+    h.update(&n.counter.to_le_bytes());
+    h.update(&n.through.to_le_bytes());
+    h.update(&n.sink_lost.to_le_bytes());
+    h.update(&n.sink_start.to_le_bytes());
     h.update(head);
     h.finalize()
 }
 
 /// What a seal committed.
 pub fn data_of(s: &Seal) -> Hash {
-    seal_data(&s.boot_anchor, s.nonce, s.count, s.counter, s.through, &s.head)
+    let n = SealNumbers { count: s.count, counter: s.counter, through: s.through, sink_lost: s.sink_lost, sink_start: s.sink_start };
+    seal_data(&s.boot_anchor, s.nonce, &n, &s.head)
 }
 
 /// The backend's value after `anchor` took `data` (TPM2_NV_Extend of a
@@ -76,6 +89,8 @@ pub struct Sealer {
     next: u64,
     count: u32,
     unsealed: u64,
+    sink_lost: u64,
+    sink_start: u64,
 }
 
 impl Sealer {
@@ -91,6 +106,8 @@ impl Sealer {
             next: 0,
             count: 0,
             unsealed: 0,
+            sink_lost: 0,
+            sink_start: 0,
         }
     }
 
@@ -150,10 +167,24 @@ impl Sealer {
         true
     }
 
+    /// The kernel declared that the sink lost `count` records from `first`:
+    /// the next seals say so. A loss from where the sink's start left off
+    /// moves the start.
+    pub fn sink_lost(&mut self, first: u64, count: u64) {
+        self.sink_lost += count;
+        if first <= self.sink_start {
+            self.sink_start = self.sink_start.max(first + count);
+        }
+    }
+
+    fn numbers(&self, counter: u64) -> SealNumbers {
+        SealNumbers { count: self.count + 1, counter, through: self.next, sink_lost: self.sink_lost, sink_start: self.sink_start }
+    }
+
     /// What the next seal commits, under the backend's counter after its
     /// increment (0 without one).
     pub fn data(&self, counter: u64) -> Hash {
-        seal_data(&self.boot_anchor, self.nonce, self.count + 1, counter, self.next, &self.head)
+        seal_data(&self.boot_anchor, self.nonce, &self.numbers(counter), &self.head)
     }
 
     /// The seal of the head now. `hardware`: the backend took the commit;
@@ -189,6 +220,8 @@ impl Sealer {
             anchor,
             prev,
             boot_anchor: self.boot_anchor,
+            sink_lost: self.sink_lost,
+            sink_start: self.sink_start,
         }
     }
 }

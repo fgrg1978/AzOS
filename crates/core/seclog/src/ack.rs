@@ -24,6 +24,8 @@ pub struct Page {
     /// every one before it is written or claimed lost. What a new reader
     /// starts from.
     pub next: AtomicU64,
+    /// Bumped by the sink every period: the kernel knows it is alive.
+    pub beat: AtomicU64,
     /// Claims written since the page was made; claim `k` is in slot
     /// `k % CLAIMS`.
     pub claims: AtomicU64,
@@ -48,11 +50,16 @@ impl Page {
 
     /// The kernel: the claims after the `seen` first ones, oldest first, and
     /// how many there are now. A sink that wrote more than [`CLAIMS`] since
-    /// the last read loses the oldest: `f` is given `None` for each.
+    /// the last read loses the oldest: `f` is given one `None` for them.
+    /// The count is the sink's to write: whatever it says, the kernel makes
+    /// at most `CLAIMS + 1` calls.
     pub fn read_claims(&self, seen: u64, mut f: impl FnMut(Option<(u64, u64)>)) -> u64 {
         let now = self.claims.load(Ordering::Acquire);
+        if now < seen {
+            return now;
+        }
         let from = seen.max(now.saturating_sub(CLAIMS as u64));
-        for _ in seen..from {
+        if from > seen {
             f(None);
         }
         for k in from..now {

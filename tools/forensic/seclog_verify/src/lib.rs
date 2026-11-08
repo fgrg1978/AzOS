@@ -248,6 +248,12 @@ fn describe(f: &Finding) -> String {
         }
         Finding::Held { boot, class, count } => format!("boot {boot}: the rate cap held back {count} {} records", class_name(class)),
         Finding::Malformed { boot, seq } => format!("boot {boot}: record {seq} does not decode as its kind, or has a shape the kernel never writes"),
+        Finding::DeclarationMismatch { boot, seq } => format!(
+            "boot {boot}: the sink-loss declarations before the seal at {seq} do not add up to what the seal says the kernel declared: one was added or removed"
+        ),
+        Finding::UncoveredDeclaration { boot, seq } => format!(
+            "boot {boot}: the loss declared at {seq} is covered by no seal: anyone who can write the volume can add one, and it explains nothing"
+        ),
     }
 }
 

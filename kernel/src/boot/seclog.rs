@@ -1,35 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The sealer of the sealed security log (Kconfig `SEC_LOG`): the `seclog`
-//! task folds every record of the record substrate's security ring into the
-//! chain (`azos_seclog::chain::Sealer`) and seals it.
-//!
-//! The task runs at the log flusher's priority, outside the real-time band:
-//! a seal on a TPM is two commands of milliseconds. Each pass reads the ring
-//! from where the last one stopped. What it declares, in records that are
-//! themselves in the chain: a record the ring overwrote before the pass read
-//! it, or one a producer never finished (still pending three passes later),
-//! with the classes the producers copied and the pass never saw (`loss`);
-//! records the producers' rate cap held back, by class (`held`); and records
-//! `logd` says on its page it never wrote, with the classes this pass folded
-//! (`sink-loss`). It seals at its first pass, every `SEC_LOG_SEAL_S`,
-//! `SEC_LOG_SEAL_URGENT_S` after a record of a high-value class, and at an
-//! orderly power-off (after which it waits for `logd` to have the seal on
-//! the volume); the console gets one `seclog: seal` line per seal.
+//! task runs the pass (`azos_seclog::pass`) over the record substrate's
+//! security ring every second, at the log flusher's priority, outside the
+//! real-time band (a seal on a TPM is three commands of milliseconds).
 //!
 //! The backend is what [`install_hw`] installed at boot (the TPM's indexes,
 //! Kconfig `SEC_LOG_SEAL_TPM_NV`), never what Kconfig asked for: with none,
-//! the seals are forward-only and the anchor record says why. A seal on the
-//! TPM increments the counter, extends the anchor with the seal's data and
-//! reads the anchor back. An increment or an extend the TPM refuses ends the
-//! hardware seals for the boot: that seal and the later ones are advisory.
-//! A value read back that the extend does not give is the seal's anchor,
-//! flagged diverged: something else extended the index.
+//! the seals are forward-only and the anchor record says why. This file is
+//! the kernel's side of the pass: the TPM, the clock, the ring, the
+//! producers' tallies, the console, and the orderly power-off's last seal.
 
 use azos_drv_sys::{kerr, kprintln, timebase};
 use azos_seclog::ack::Page;
 use azos_seclog::chain::Sealer;
-use azos_seclog::{kind, Anchor, Backend, Event, Hash, Held, Loss, Reason, CLASSES, FLAG_HARDWARE, FLAG_UNDELETABLE};
+use azos_seclog::pass::{Config, Note, Pass};
+use azos_seclog::{kind, Anchor, Backend, Hash, Reason, CLASSES, FLAG_HARDWARE, FLAG_UNDELETABLE};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// The hardware a boot seals to.
@@ -54,11 +40,7 @@ static BOOT: azos_sync::SpinLock<(Hash, u64, bool)> = azos_sync::SpinLock::new((
 /// Why the boot seals forward-only, when it does.
 static REASON: AtomicU8 =
     AtomicU8::new(if azos_limits::SEC_LOG_SEAL_FORWARD { Reason::Configured as u8 } else { Reason::NoTpm as u8 });
-/// The hardware refused a commit this boot.
-static HW_FAILED: AtomicBool = AtomicBool::new(false);
 
-/// Passes a record may stay pending before the sealer declares it lost.
-const PENDING_PASSES: u32 = 3;
 /// Records whose class the sealer remembers, by sequence number: what a
 /// `sink-loss` can name.
 const CLASS_LOG: usize = 2 * azos_limits::SEC_LOG_ENTRIES as usize;
@@ -94,8 +76,8 @@ impl core::fmt::Display for HexHash<'_> {
     }
 }
 
-fn publish(k: u16, payload: &[u8]) {
-    let Some(w) = azos_records::writer(azos_records::SOURCE_SECURITY) else { return };
+fn publish(k: u16, payload: &[u8]) -> u64 {
+    let Some(w) = azos_records::writer(azos_records::SOURCE_SECURITY) else { return 0 };
     let h = azos_records::Head {
         ts: timebase::now(),
         clock: azos_records::CLOCK_TIMEBASE,
@@ -104,31 +86,67 @@ fn publish(k: u16, payload: &[u8]) {
         cpu: 0,
         flags: 0,
     };
-    w.publish(&h, |p| p.bytes(0, payload));
+    w.publish(&h, |p| p.bytes(0, payload))
 }
 
-/// The sealer's state across passes.
-struct State {
-    s: Sealer,
-    cursor: u64,
-    pending: u32,
-    /// Events folded, and declared lost, by class.
-    folded: [u32; CLASSES],
-    declared: [u32; CLASSES],
-    held_seen: [u32; CLASSES],
-    /// The class of each record folded, by sequence number.
-    classes: [u8; CLASS_LOG],
-    /// A loss the pass found, declared once the pass has read what there is.
-    loss: Option<(u64, u64)>,
-    sink_seen: u64,
-    last_seal: u64,
-    /// When a high-value record came that no seal covers yet.
-    urgent_since: Option<u64>,
-    sealed: bool,
-    flags: u8,
+struct KHw(&'static Hw);
+
+impl azos_seclog::pass::Hw for KHw {
+    fn increment(&mut self) -> Option<u64> {
+        (self.0.increment)()
+    }
+    fn extend(&mut self, data: &Hash) -> bool {
+        (self.0.extend)(data)
+    }
+    fn read(&mut self) -> Option<Hash> {
+        (self.0.read)()
+    }
 }
 
-static STATE: azos_sync::kmutex::Mutex<Option<State>> = azos_sync::kmutex::Mutex::new(None);
+struct KHost;
+
+impl azos_seclog::pass::Host for KHost {
+    fn now(&self) -> u64 {
+        timebase::now()
+    }
+    fn tally(&self) -> ([u32; CLASSES], [u32; CLASSES], [(u32, u32); azos_seclog::Held::SUBJECTS]) {
+        azos_decision::security_tally()
+    }
+    fn publish(&mut self, k: u16, payload: &[u8]) -> u64 {
+        publish(k, payload)
+    }
+    fn sealed(&mut self, seal: &azos_seclog::Seal, hardware: bool) {
+        kprintln!(
+            "seclog: seal {} through {} counter {} nonce {:016x} head {} anchor {} {}",
+            seal.count,
+            seal.through,
+            seal.counter,
+            seal.nonce,
+            HexHash(&seal.head),
+            HexHash(&seal.anchor),
+            if hardware { seal.backend.name() } else { "advisory" }
+        );
+    }
+    fn note(&mut self, n: Note) {
+        match n {
+            Note::Refused => kerr!("[SECLOG] the TPM refused a seal: the seals of this boot are advisory from here"),
+            Note::Diverged => kerr!("[SECLOG] the TPM's anchor is not the one this seal extended: something else extended the index"),
+            Note::ClaimsLapped => kerr!("[SECLOG] logd's page lapped the sealer: a sink-loss claim was not read"),
+            Note::UrgentBudget => {}
+        }
+    }
+}
+
+const CONFIG: Config = Config {
+    hz: timebase::TIMER_FREQ,
+    seal_s: azos_limits::SEC_LOG_SEAL_S as u64,
+    urgent_s: azos_limits::SEC_LOG_SEAL_URGENT_S as u64,
+    urgent_per_day: azos_limits::SEC_LOG_URGENT_PER_DAY as u32,
+};
+
+static STATE: azos_sync::kmutex::Mutex<Option<Pass<CLASS_LOG>>> = azos_sync::kmutex::Mutex::new(None);
+/// A thermal critical trip is powering off: no seal, no wait.
+static CRITICAL: AtomicBool = AtomicBool::new(false);
 
 /// Create the task (with the security ring only).
 pub(crate) fn create_task() {
@@ -151,6 +169,14 @@ fn nonce() -> u64 {
 /// The security ring (the shared region's once the task runs).
 fn ring() -> Option<azos_records::record::Ring> {
     azos_records::reader(azos_records::SOURCE_SECURITY)
+}
+
+/// One pass under the state's lock: the seal's sequence number if one was
+/// taken.
+fn run(st: &mut Pass<CLASS_LOG>, force: bool) -> Option<u64> {
+    let ring = ring()?;
+    let mut hw = HW.get().map(KHw);
+    st.run(&ring, SINK.get(), hw.as_mut().map(|h| h as &mut dyn azos_seclog::pass::Hw), &mut KHost, &CONFIG, force)
 }
 
 fn seclog_task(_: usize) {
@@ -182,24 +208,10 @@ fn seclog_task(_: usize) {
     if hw.is_none() {
         kprintln!("[SECLOG] forward-only because: {}", reason.name());
     }
-    *STATE.lock() = Some(State {
-        s: Sealer::new(backend, anchor, nonce),
-        cursor: 0,
-        pending: 0,
-        folded: [0; CLASSES],
-        declared: [0; CLASSES],
-        held_seen: [0; CLASSES],
-        classes: [0; CLASS_LOG],
-        loss: None,
-        sink_seen: 0,
-        last_seal: timebase::now(),
-        urgent_since: None,
-        sealed: false,
-        flags: flags & FLAG_UNDELETABLE,
-    });
+    *STATE.lock() = Some(Pass::new(Sealer::new(backend, anchor, nonce), flags & FLAG_UNDELETABLE, timebase::now()));
     loop {
         if let Some(st) = STATE.lock().as_mut() {
-            st.pass(false);
+            run(st, false);
         }
         let end = timebase::now() + timebase::TIMER_FREQ;
         while timebase::now() < end {
@@ -208,200 +220,49 @@ fn seclog_task(_: usize) {
     }
 }
 
-impl State {
-    /// Fold what the ring holds, declare what was lost or held, and seal if
-    /// one is due (or `force`d). The seal's sequence number when one was
-    /// taken.
-    fn pass(&mut self, force: bool) -> Option<u64> {
-        self.drain();
-        self.declare();
-        let now = timebase::now();
-        let urgent =
-            self.urgent_since.is_some_and(|t| now.wrapping_sub(t) >= azos_limits::SEC_LOG_SEAL_URGENT_S as u64 * timebase::TIMER_FREQ);
-        let period = now.wrapping_sub(self.last_seal) >= azos_limits::SEC_LOG_SEAL_S as u64 * timebase::TIMER_FREQ;
-        if self.s.unsealed() > 0 && (force || !self.sealed || urgent || period) {
-            return Some(self.seal(now));
-        }
-        None
-    }
-
-    fn drain(&mut self) {
-        let Some(ring) = ring() else { return };
-        let (mut env, mut p) = (azos_records::record::Envelope::default(), [0u8; azos_seclog::PAYLOAD]);
-        loop {
-            match ring.read(&mut self.cursor, &mut env, &mut p) {
-                azos_records::record::Read::Record => {
-                    self.pending = 0;
-                    let skipped = self.s.skip_to(env.seq);
-                    self.note_loss(skipped);
-                    if self.s.fold(&env, &p) {
-                        let class = (env.kind == kind::EVENT).then(|| Event::decode(&p[..Event::LEN]).map(|e| e.class)).flatten();
-                        self.classes[(env.seq % CLASS_LOG as u64) as usize] = class.map_or(0, |c| c as u8);
-                        if let Some(c) = class {
-                            self.folded[c as usize] += 1;
-                            if c.high_value() && self.urgent_since.is_none() {
-                                self.urgent_since = Some(timebase::now());
-                            }
-                        }
-                    }
-                }
-                azos_records::record::Read::Pending if self.pending < PENDING_PASSES => {
-                    self.pending += 1;
-                    break;
-                }
-                azos_records::record::Read::Pending => {
-                    self.pending = 0;
-                    ring.skip(&mut self.cursor);
-                    let skipped = self.s.skip_to(self.cursor);
-                    self.note_loss(skipped);
-                }
-                azos_records::record::Read::Lost(_) | azos_records::record::Read::Stale => {
-                    let skipped = self.s.skip_to(self.cursor);
-                    self.note_loss(skipped);
-                }
-                azos_records::record::Read::Empty => break,
-            }
-        }
-    }
-
-    fn note_loss(&mut self, l: Option<(u64, u64)>) {
-        if let Some((first, count)) = l {
-            self.loss = Some(match self.loss {
-                Some((f, c)) if f + c == first => (f, c + count),
-                Some(prev) => {
-                    self.publish_loss(prev);
-                    (first, count)
-                }
-                None => (first, count),
-            });
-        }
-    }
-
-    /// The loss, with the classes the producers copied and no pass folded
-    /// (an upper bound: a record copied while the pass ran counts here too).
-    fn publish_loss(&mut self, (first, count): (u64, u64)) {
-        let (copied, _) = azos_decision::security_tally();
-        let mut by_class = [0u32; CLASSES];
-        for c in 0..CLASSES {
-            by_class[c] = copied[c].saturating_sub(self.folded[c]).saturating_sub(self.declared[c]);
-            self.declared[c] += by_class[c];
-        }
-        publish(kind::LOSS, &Loss { first, count, by_class }.encode());
-    }
-
-    fn declare(&mut self) {
-        if let Some(l) = self.loss.take() {
-            self.publish_loss(l);
-        }
-        let (_, held) = azos_decision::security_tally();
-        let mut delta = [0u32; CLASSES];
-        for c in 0..CLASSES {
-            delta[c] = held[c].wrapping_sub(self.held_seen[c]);
-        }
-        if delta.iter().any(|&d| d != 0) {
-            self.held_seen = held;
-            publish(kind::HELD, &Held { by_class: delta }.encode());
-        }
-        if let Some(page) = SINK.get() {
-            let (oldest, next) = (ring().map_or(0, |r| r.oldest()), self.s.next());
-            let mut claims = [None; azos_seclog::ack::CLAIMS];
-            let mut n = 0;
-            let mut lapped = false;
-            self.sink_seen = page.read_claims(self.sink_seen, |c| match c {
-                Some(r) if n < claims.len() => {
-                    claims[n] = Some(r);
-                    n += 1;
-                }
-                _ => lapped = true,
-            });
-            if lapped {
-                kerr!("[SECLOG] logd's page lapped the sealer: a sink-loss claim was not read");
-            }
-            for c in &claims[..n] {
-                match *c {
-                    // Only what the ring has dropped and the pass has read.
-                    Some((first, count)) => {
-                        let end = first.saturating_add(count).min(oldest).min(next);
-                        if end > first {
-                            self.publish_sink_loss(first, end - first);
-                        }
-                    }
-                    None => {}
-                }
-            }
-        }
-    }
-
-    fn publish_sink_loss(&mut self, first: u64, count: u64) {
-        let next = self.s.next();
-        let mut by_class = [0u32; CLASSES];
-        for seq in first..first + count {
-            // Index 0: a record that is not an event, or one the log forgot.
-            let known = seq + (CLASS_LOG as u64) >= next && seq < next;
-            let c = if known { self.classes[(seq % CLASS_LOG as u64) as usize] } else { 0 };
-            by_class[c as usize] += 1;
-        }
-        publish(kind::SINK_LOSS, &Loss { first, count, by_class }.encode());
-    }
-
-    fn seal(&mut self, now: u64) -> u64 {
-        let hw = HW.get().filter(|_| !HW_FAILED.load(Ordering::Relaxed));
-        let (hardware, counter, held) = match hw {
-            Some(h) => match (h.increment)() {
-                Some(c) => {
-                    let ok = (h.extend)(&self.s.data(c));
-                    if !ok {
-                        HW_FAILED.store(true, Ordering::Relaxed);
-                    }
-                    (ok, c, if ok { (h.read)() } else { None })
-                }
-                None => {
-                    HW_FAILED.store(true, Ordering::Relaxed);
-                    (false, 0, None)
-                }
-            },
-            None => (false, 0, None),
-        };
-        if hw.is_some() && !hardware {
-            kerr!("[SECLOG] the TPM refused a seal: the seals of this boot are advisory from here");
-        }
-        let seal = self.s.seal(hardware, counter, held, self.flags);
-        if seal.flags & azos_seclog::FLAG_DIVERGED != 0 {
-            kerr!("[SECLOG] the TPM's anchor is not the one this seal extended: something else extended the index");
-        }
-        let seq = ring().map_or(0, |r| r.head());
-        publish(kind::SEAL, &seal.encode());
-        kprintln!(
-            "seclog: seal {} through {} counter {} nonce {:016x} head {} anchor {} {}",
-            seal.count,
-            seal.through,
-            seal.counter,
-            seal.nonce,
-            HexHash(&seal.head),
-            HexHash(&seal.anchor),
-            if hardware { self.s.backend().name() } else { "advisory" }
-        );
-        (self.last_seal, self.urgent_since, self.sealed) = (now, None, true);
-        seq
-    }
+/// A thermal critical trip powers off: the seal and the wait for logd are
+/// skipped, the shutdown goes on at once.
+#[cfg(feature = "energy")]
+pub(crate) fn critical() {
+    CRITICAL.store(true, Ordering::Relaxed);
 }
 
-/// The orderly power-off: seal what the ring holds and give `logd` up to two
-/// of its periods to have the seal on the volume (its page's `next` past it),
-/// so the boot ends sealed and its last seal is in the export. Called while
-/// the tasks still run, before the filesystems go down.
+/// The orderly power-off: seal what the ring holds and give `logd` the rest
+/// of the step's budget (Kconfig `POWER_OFF_STEP_TIMEOUT_MS`, and at most two
+/// of its periods) to have the seal on the volume (its page's `next` past
+/// it), so the boot ends sealed and its last seal is in the export. Not on a
+/// thermal critical trip; no wait when logd's heartbeat stopped. Called
+/// while the tasks still run, before the filesystems go down.
 pub(crate) fn seal_at_power_off() {
-    if !azos_records::SECURITY {
+    if !azos_records::SECURITY || CRITICAL.load(Ordering::Relaxed) {
         return;
     }
-    let seq = match STATE.lock().as_mut() {
-        Some(st) => st.pass(true),
-        None => return,
+    let ms = |n: u64| n * timebase::TIMER_FREQ / 1000;
+    let start = timebase::now();
+    let budget_end = start + ms(azos_limits::POWER_OFF_STEP_TIMEOUT_MS as u64);
+    // A pass in progress holds the state: wait for it within the budget.
+    let mut g = loop {
+        if let Some(g) = STATE.try_lock() {
+            break g;
+        }
+        if timebase::now() >= budget_end {
+            kerr!("[SECLOG] the sealer was busy past the power-off step's budget: no last seal");
+            return;
+        }
+        azos_sched::task_block(azos_sched::WaitReason::Timer(timebase::now() + ms(1)));
     };
+    let Some(st) = g.as_mut() else { return };
+    let seq = run(st, true);
+    let alive = timebase::now().wrapping_sub(st.sink_alive_at()) <= ms(2 * azos_limits::LOGD_POLL_MS as u64);
+    drop(g);
     let (Some(seq), Some(page)) = (seq, SINK.get()) else { return };
-    let end = timebase::now() + 2 * azos_limits::LOGD_POLL_MS as u64 * timebase::TIMER_FREQ / 1000;
+    if !alive {
+        kerr!("[SECLOG] logd's heartbeat stopped: the last seal is on the console and the TPM only");
+        return;
+    }
+    let end = budget_end.min(start + ms(2 * azos_limits::LOGD_POLL_MS as u64));
     while page.next.load(Ordering::Acquire) <= seq && timebase::now() < end {
-        let at = (timebase::now() + timebase::TIMER_FREQ / 100).min(end);
+        let at = (timebase::now() + ms(10)).min(end);
         azos_sched::task_block(azos_sched::WaitReason::Timer(at));
     }
     if page.next.load(Ordering::Acquire) <= seq {

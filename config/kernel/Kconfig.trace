@@ -842,9 +842,10 @@ config SEC_LOG_SEAL_S
       anyone who can write the log volume, could still rewrite or delete
       unseen: shorter is a smaller window. On a TPM each seal is two NV
       writes (TPM2_NV_Increment of the counter, TPM2_NV_Extend of the
-      anchor): a TPM rated for 100 000 writes of an index lasts about 70 days
-      at one seal a minute, every minute; raise this on a device whose
-      security records never stop.
+      anchor), one write to each index: an index rated for 100 000 writes
+      lasts about 70 days at one seal a minute, every minute, and the urgent
+      seals come on top (SEC_LOG_URGENT_PER_DAY says how many at most); raise
+      this on a device whose security records never stop.
 
 config SEC_LOG_SEAL_URGENT_S
     int "Sealed security log: seconds before a high-value record is sealed" if SEC_LOG
@@ -853,9 +854,22 @@ config SEC_LOG_SEAL_URGENT_S
     help
       Asked with SEC_LOG only. A record of a class whose loss hides what
       spyware does (every class but the capability denials and their
-      reports) is sealed this long after it comes, whatever SEC_LOG_SEAL_S
-      says. Each such seal is TPM wear as SEC_LOG_SEAL_S describes; at most
-      one every this many seconds.
+      reports), or a loss the sealer just declared, is sealed this long after
+      it comes, whatever SEC_LOG_SEAL_S says: an urgent seal, at most one
+      every this many seconds and SEC_LOG_URGENT_PER_DAY a day.
+
+config SEC_LOG_URGENT_PER_DAY
+    int "Sealed security log: urgent seals a day at most" if SEC_LOG
+    range 0 17280
+    default 288
+    help
+      Asked with SEC_LOG only. The urgent seals (SEC_LOG_SEAL_URGENT_S) any
+      day may take, whatever triggers them (a task opening the microphone in a
+      loop, a remote client failing SSH logins): with the periodic ones, at
+      most 86400 / SEC_LOG_SEAL_S + SEC_LOG_URGENT_PER_DAY seals a day, each
+      two NV writes on a TPM. At the defaults that is 1728 a day: an index
+      rated for 100 000 writes lasts at least 57 days under any load. Past the
+      budget a high-value record waits for the period's seal.
 
 choice
     prompt "Sealed security log: where the seals are committed (SEC_LOG_SEAL)"
