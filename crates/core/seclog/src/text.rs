@@ -4,23 +4,23 @@
 //! the canonical bytes, so a reader recomputes the chain from the text alone.
 //!
 //! ```text
-//! v1 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex> [<what>]
-//! v1 seam
+//! v2 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex> [<what>]
+//! v2 seam
 //! ```
 //!
 //! Numbers are decimal, the payload is lowercase hex (its length is the
 //! envelope's `len`), and what follows the payload is for a reader's eyes
-//! only: the kind's name and an event's class and verdict. `seam` is the line
+//! only: the kind's name, an event's class and verdict, a seal's number. `seam` is the line
 //! `logd` writes when it starts reading the ring from its oldest record (a new
 //! boot, or files that no longer match the ring): the next record may begin
 //! a boot.
 
-use crate::{kind, Envelope, Event, PAYLOAD, VERSION};
+use crate::{kind, Envelope, Event, Seal, PAYLOAD, VERSION};
 
 /// Bytes of the longest message.
-pub const MSG_MAX: usize = 3 + 6 * 21 + 2 * PAYLOAD + 1 + 40;
+pub const MSG_MAX: usize = 3 + 6 * 21 + 2 * PAYLOAD + 1 + 64;
 
-const SEAM: &[u8] = b"v1 seam";
+const SEAM: &[u8] = b"v2 seam";
 
 struct Put<'a> {
     out: &'a mut [u8],
@@ -72,6 +72,8 @@ pub fn render(env: &Envelope, payload: &[u8], out: &mut [u8]) -> usize {
         kind::ANCHOR => "anchor",
         kind::SEAL => "seal",
         kind::LOSS => "loss",
+        kind::HELD => "held",
+        kind::SINK_LOSS => "sink-loss",
         _ => "",
     };
     if !what.is_empty() {
@@ -85,6 +87,12 @@ pub fn render(env: &Envelope, payload: &[u8], out: &mut [u8]) -> usize {
         p.dec(e.rule as u64);
         p.bytes(b" verdict=");
         p.dec(e.verdict as u64);
+    }
+    if let Some(s) = (env.kind == kind::SEAL).then(|| Seal::decode(&payload[..len])).flatten() {
+        p.bytes(b" n=");
+        p.dec(s.count as u64);
+        p.bytes(b" counter=");
+        p.dec(s.counter);
     }
     p.n
 }

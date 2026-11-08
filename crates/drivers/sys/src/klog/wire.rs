@@ -213,26 +213,34 @@ impl Put<'_> {
 /// always one line: `\\`, `\n`, `\r`, `\t` and `\xNN` for any other control
 /// byte; every other byte is as stored.
 pub fn line(r: &Record, ts_hz: u64, out: &mut [u8]) -> usize {
-    let ts_us = if ts_hz == 0 { r.ts } else { (r.ts as u128 * 1_000_000 / ts_hz as u128) as u64 };
+    line_of(r.seq, r.ts, ts_hz, r.cpu, r.level, r.flags & FLAG_PARTIAL != 0, r.module(), r.msg(), out)
+}
+
+/// [`line`] from its parts, with a message of any length (`out` holds it):
+/// a security record's line, whose message is longer than a kernel log
+/// record's.
+#[allow(clippy::too_many_arguments)]
+pub fn line_of(seq: u64, ts: u64, ts_hz: u64, cpu: u8, level: u8, partial: bool, module: &[u8], msg: &[u8], out: &mut [u8]) -> usize {
+    let ts_us = if ts_hz == 0 { ts } else { (ts as u128 * 1_000_000 / ts_hz as u128) as u64 };
     let mut p = Put { out, n: 0 };
-    p.dec(r.seq);
+    p.dec(seq);
     p.byte(b' ');
     p.dec(ts_us);
     p.byte(b' ');
-    p.dec(r.cpu as u64);
+    p.dec(cpu as u64);
     p.byte(b' ');
-    p.byte(level_letter(r.level));
-    if r.flags & FLAG_PARTIAL != 0 {
+    p.byte(level_letter(level));
+    if partial {
         p.byte(b'+');
     }
     p.byte(b' ');
-    if r.module().is_empty() {
+    if module.is_empty() {
         p.byte(b'-');
     } else {
-        p.bytes(r.module());
+        p.bytes(module);
     }
     p.byte(b' ');
-    for &b in r.msg() {
+    for &b in msg {
         match b {
             b'\\' => p.bytes(b"\\\\"),
             b'\n' => p.bytes(b"\\n"),

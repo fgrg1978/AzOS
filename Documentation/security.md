@@ -778,97 +778,155 @@ The kernel uses the TPM for three things:
    derived from public inputs (`azos_ota::floor::nv_auth`): it keeps out software
    that does not know the scheme, not an attacker who has read the source, who
    can raise the floor and so refuse images. A policy bound to PCRs is not used.
-4. The sealed security log's anchor, an NV index of type extend (below).
+   The index the kernel defines is in the owner hierarchy, whose password is
+   empty wherever that works: whoever can send TPM owner commands can undefine
+   it and define it again at zero, which, with BOOTMETA rewritten on the volume,
+   lowers the floor. The kernel adopts a floor index the platform hierarchy
+   created undeletable (the provisioning requirement of "Sealed security log",
+   below) and says at boot which one it found.
+4. The sealed security log's anchor and counter, NV indexes of type extend and counter (below).
 
 ## Sealed security log
 
-Source: `crates/core/seclog` (format, chain, sealer, verifier),
-`kernel/src/boot/seclog.rs` (the `seclog` task), `kernel/src/boot/tpm.rs`
-(the anchor index), `userspace/services/logd`, `tools/forensic/seclog_verify`;
-Kconfig `SEC_LOG`, `SEC_LOG_ENTRIES`, `SEC_LOG_SEAL_S`, `SEC_LOG_SEAL`
-(`config/kernel/Kconfig.trace`). On by default with the Hardened,
-Separation-static and Confidential postures; it needs `KLOG`, so it is off where
-the kernel log is (the embedded hardware class).
+Source: `crates/core/seclog` (format, chain, sealer, verifier, the sink's
+page), `kernel/src/boot/seclog.rs` (the `seclog` task),
+`kernel/src/boot/tpm.rs` (the anchor and counter indexes),
+`userspace/services/logd`, `tools/forensic/seclog_verify`; Kconfig `SEC_LOG`,
+`SEC_LOG_ENTRIES`, `SEC_LOG_PER_S`, `SEC_LOG_SEAL_S`, `SEC_LOG_SEAL_URGENT_S`,
+`SEC_LOG_SEAL` (`config/kernel/Kconfig.trace`). On by default with the
+Hardened, Separation-static and Confidential postures; it needs `KLOG`, so it
+is off where the kernel log is (the embedded hardware class).
 
 What spyware does on a device is visible in a handful of records: a microphone
-or camera stream opened, a first packet to a new destination, a capability
+or camera stream opened, traffic let out to a destination, a capability
 refused, an image loaded, an update applied, a login. Those records are kept so
 that removing or rewriting one later is itself evidence.
 
 **What is recorded.** The decision records of these rules are copied, as they
 are written, into the record substrate's security ring (one substrate, one
-sink: `logd` writes them as `@security` lines in its `KLOGn.TXT` files,
-unfiltered and never rate-limited):
+sink: `logd` writes them as `@security` lines in its `KLOGn.TXT` files):
 
 | Class | Rules (producers) |
 |-------|-------------------|
 | `microphone` | `AudioCapture` (`azos_syscall::sound_host`) |
 | `camera` | `CamCapture` (`azos_syscall::frame_host`) |
-| `egress` | `EnvelopeEgress` (a Domain's first packet off the node), `GuestEgress` |
+| `egress` | `EnvelopeEgress`: a destination a Domain's socket starts talking to, let out (each connect, and each change of an unconnected socket's destination, wherever the egress gate is installed) or refused; `GuestEgress` (refused only) |
 | `cap-denial` | `CapDenial`, `Neverallow` |
 | `image-load` | `ExecGrant`, `Livepatch`, `BootChain`, `MeasuredBoot` |
 | `update` | `EnvelopeOta`, `PackageInstall` |
-| `login` | `Login` |
+| `login` | `Login`: the console (method 4), the brain link (5), SSH by key (2: the SSH server reports what it decided through `keys`' `login_report`, and the kernel writes the record) |
 | `usb` | `UsbAuthorize` |
 | `limited` | `RefusalLimited` naming one of the rules above |
 
 Screen capture has no producer (no rule records it) and neither has a
 debugger's attach (`Rule::ThreadControl` has no caller); their class numbers (3
-and 8) are reserved. A capability denial passes the same per-Domain bucket as
-its durable receipt: what the bucket holds back is not copied, and the
-bucket's `RefusalLimited` report is, so a flood of denials cannot push a
-microphone record out of the ring unseen. With a rate of 0
-(`DECISION_DENY_DURABLE_PER_SEC`) there is no bucket and no report, and every
-denial is copied: a flood then laps the ring, which the sealer declares.
+and 8) are reserved. A package removal pkgd stages but no boot applies is in
+pkgd's journal, not here.
+
+**The rate cap.** Every copy passes a bucket of `SEC_LOG_PER_S` records a
+second, and the classes a task can raise in a loop (capability denials, their
+reports, egress) a quarter of it each, so a flood of one cannot push a
+microphone record out of the ring. A capability denial also passes the
+per-Domain bucket of its durable receipt: what that bucket holds back is not
+copied, and its `RefusalLimited` report is. What the cap holds back is counted
+by class and declared in the chain (a `held` record).
 
 **The chain.** Per boot, the `seclog` task folds every record of the ring, in
-sequence order, into `head_i = SHA-256(head_{i-1} || canon_i)` (`canon`: the
-format version, every envelope field but the source, the payload). Every
-`SEC_LOG_SEAL_S`, when records came, it seals: the head goes to the backend,
-whose value becomes `anchor_k = SHA-256(anchor_{k-1} || head_k)`, and a `seal`
-record (the head, the first sequence number it does not cover, the anchor, the
-backend and whether the hardware took it) goes to the ring, so it is in the
-next head. A record the ring overwrote before the task read it, or one a
-producer never finished, is declared by a `loss` record. The boot's first record
-of the task, `anchor`, names `anchor_0`: the value the backend held at boot.
+sequence order, into `head_i = SHA-256(0x01 || head_{i-1} || canon_i)`
+(`canon`: the format version, every envelope field but the source, the
+payload), from `head_0 = SHA-256("azos/seclog/v2" || boot anchor || nonce)`.
+It seals at its first pass, every `SEC_LOG_SEAL_S`, `SEC_LOG_SEAL_URGENT_S`
+after a record of a class whose loss hides what spyware does (every class but
+the denials and their reports), and at an orderly power-off, when records came
+since the last seal. Seal `k` commits `data_k = SHA-256(0x02 || boot anchor ||
+nonce || k || counter || through || head)` to the backend, whose value becomes
+`anchor_k = SHA-256(anchor_{k-1} || data_k)` (what `TPM2_NV_Extend` computes),
+and a `seal` record carries the head, the first sequence number it does not
+cover, the counter, the anchors before and after, the boot anchor and the
+nonce, so it is checked, and its boot linked, without the records before it.
+The boot's first record of the task, `anchor`, names the boot: the backend's
+value and counter at boot, a random nonce, and why it seals without hardware
+if it does (configured, no TPM, an index someone else defined, an index that
+cannot be read).
+
+**What is declared lost.** In records that are themselves in the chain, by
+class: a record the ring overwrote before the sealer read it, or one a
+producer never finished (`loss`; its classes are the producers' copies the
+sealer never saw, an upper bound); a record `logd` never wrote (`sink-loss`).
+`logd` says what it lost on its page, `MemObj klog.ack` (`READ|WRITE|MAP`,
+its row alone): the ring lapped its reader, or it started after the ring had
+dropped records no earlier run wrote. The kernel declares only the part the
+ring has really dropped, with the classes it folded: a sink that claims a loss
+to hide records it has can hide only what was gone, and the classes say what
+it was. The orderly power-off waits up to two of `logd`'s periods for the last
+seal to be on the volume (the page's `next` past it).
 
 **What seals it, by board class.** The backend is what the boot found, never
 what Kconfig asked for, and every record says which:
 
-| Board class | Seal | Link to the previous boot |
-|-------------|------|----------------------------|
-| A TPM 2.0 (x86_64 ACPI `TPM2`; a `tcg,tpm_tis-spi` node on riscv64 and aarch64), `SEC_LOG_SEAL_TPM_NV` | `TPM2_NV_Extend` of each head into an NV index of type `TPM_NT_EXTEND` (`0x01500003`): the OS can add to it and never set it | the index's value at boot is the previous boot's last seal the TPM took |
-| No TPM: QEMU, the VF2, the K1, the Raspberry Pi 3 and 5, a microVM | forward-only: each seal is printed on the console (`seclog: seal <n> through <seq> head <hex> anchor <hex> <backend>`) for a receiver to keep; the local seal is advisory, and the records say so | none on the device (`anchor_0` is zero); the receiver's capture links the boots |
-| eMMC RPMB, a secure element, a TEE | not a backend: no driver in the tree | |
+| Board class | Seal | Link to the previous boot | What it proves against whoever can send TPM owner commands |
+|-------------|------|----------------------------|-----------------------------|
+| A TPM 2.0 (x86_64 ACPI `TPM2`; a `tcg,tpm_tis-spi` node on riscv64 and aarch64), `SEC_LOG_SEAL_TPM_NV`, indexes the kernel defined | each seal: `TPM2_NV_Increment` of a `TPM_NT_COUNTER` index (`0x01500004`), `TPM2_NV_Extend` of an extend index (`0x01500003`) with the seal's data, the extend index read back | the extend index's value at boot is the previous boot's last seal the TPM took | a removed seal, a removed boot or a cut tail (the live counter, and the counter in every seal, must follow one by one); not a rewritten record |
+| The same, with an extend index the platform hierarchy created undeletable (records flagged `undeletable`) | as above | as above | also a rewritten record: the index cannot be reset |
+| No TPM: QEMU, the VF2, the K1, the Raspberry Pi 3 and 5, a microVM | forward-only: each seal is printed on the console (`seclog: seal <n> through <seq> counter 0 nonce <hex> head <hex> anchor <hex> <backend>`) for a receiver to keep; the local seal is advisory, and the records say so | none on the device (the anchor is zero, the nonce random); the receiver's capture links the boots | nothing on the device |
+| eMMC RPMB, a secure element, a TEE | not a backend: no driver in the tree | | |
 
-A TPM extend that fails ends the hardware seals for the boot: that seal and the
-later ones are advisory, the next boot's anchor is the last seal the TPM took,
-and the verifier links the boots there (or at the first refused seal, whose
-extend the TPM may have taken with its answer lost) and reports the boot
-advisory, not tampered with. The value it compares with the live TPM is the
-last one the export says the hardware holds.
-Each seal is one NV write: `SEC_LOG_SEAL_S` (60 s) bounds the wear, and an idle
-system seals nothing. The index's password is derived from public inputs, as the
-floor's: whoever has it can only extend the index, which breaks the chain
-visibly. What the TPM cannot stop: the owner hierarchy can undefine and redefine
-the index (its value starts again from zero), which the next export shows as a
-broken link, and records written after the last seal can still be rewritten by a
-compromised kernel.
+The owner hierarchy's password is empty wherever the kernel can define an index
+there, so a compromised kernel, a task holding the TPM's bus, or another OS
+booted from removable media can undefine the extend index, define it again and
+replay the seals' public data to any value of the chain, or to the last anchor
+of a forged export. The counter cannot be brought back: a counter defined anew
+starts above the highest value any counter on the TPM has held, and TPM2_Clear
+does not lower that value (TPM 2.0 Library, Part 1, NV counters, and Part 3,
+`TPM2_NV_Increment`; the swtpm row of the arm phase holds both). So against that
+actor the TPM detects that seals are missing, not that a record was rewritten.
+**Requirement for the rewrite to be evidence on a board:** before the OS runs,
+the firmware or a provisioning step defines index `0x01500003` in the platform
+hierarchy with the kernel's attributes (`AUTHWRITE | AUTHREAD | NO_DA`, type
+extend, 32 bytes, SHA-256) plus `TPMA_NV_PLATFORMCREATE | TPMA_NV_POLICY_DELETE`
+and an `authPolicy` of 32 bytes that no policy session can satisfy, with the
+password `SHA-256("azos/seclog/v2" || 0x01500003)`; the kernel adopts such an
+index and flags every record `undeletable`. The same holds for the counter
+(`0x01500004`, type counter, 8 bytes) and for the OTA floor (`0x01500001`, see
+"Measured boot"). A PCR-bound policy would also keep other software from
+extending the index; the driver has no policy sessions.
+
+A TPM increment or extend that fails ends the hardware seals for the boot: that
+seal and the later ones are advisory, the next boot's anchor is the last seal
+the TPM took, and the verifier links the boots there (or at the first refused
+seal, whose extend the TPM may have taken with its answer lost). After each
+extend the kernel reads the index back: a value its extend does not give
+(something else extended it) becomes the seal's anchor, flagged `diverged`,
+which the verifier tells apart from a rewritten record. Each seal is two NV
+writes: `SEC_LOG_SEAL_S` and `SEC_LOG_SEAL_URGENT_S` bound the wear, and an
+idle system seals nothing. A panic seals nothing: the records a seal would cover
+never reach the volume, and the next boot could not link to it.
 
 **Checking an export.** `make seclog-verify SECLOG_EXPORT=<the KLOGn.TXT files
 or their directory>` (no network) reads the files in the order of their serials
-and reports, per boot: records missing from the export (and whether the kernel
-declared the loss), a seal whose head the records before it do not give
-(a rewritten, inserted or removed record), records out of order, a seal whose
-anchor does not follow from the previous one (a forged seal), a boot whose
-anchor is not the last seal the TPM took before it, records after the last seal, and
-advisory seals. Offline, an export rewritten whole, every head and anchor
-recomputed, is consistent with itself; two references refute it:
-`SECLOG_TPM_ANCHOR=<hex>`, the index's value read from the live TPM (a whole
-export ends with it), and `SECLOG_WITNESS=<console capture>`, whose every seal
-must be in the export. The verdict is `Intact`, `Incomplete` (rotated files, a
-declared loss, an unsealed tail, advisory seals, or no reference given) or
-`Evidence` (exit 0, 1, 2).
+(a serial missing between two present ones is evidence) and reports, per boot:
+records missing from the export (and who declared the loss: the sealer, or the
+sink through the kernel), the classes of what was declared lost, a seal whose
+head the records before it do not give (a rewritten, inserted or removed
+record), records out of order, a seal whose anchor does not follow from the one
+before it (a forged seal), a counter that skips, a boot whose anchor is not the
+last seal the TPM took before it, a boot with seals and no anchor record, a boot
+whose first records are gone (evidence unless it is the export's first boot or
+the kernel declared their loss), a boot that seals forward-only after one the
+TPM sealed (evidence when the index was someone else's), a seal the TPM took
+whose record a crash lost (it checks it against the records before it),
+records after the last seal, and advisory seals. A fresh `logd` restart that
+reads the ring again is the same boot, not a new one. Offline, an export
+rewritten whole, every head and anchor recomputed, is consistent with itself;
+two references refute it: `SECLOG_TPM_ANCHOR=<hex>` and
+`SECLOG_TPM_COUNTER=<n>`, the indexes' values read from the live TPM (a whole
+export ends with them), and `SECLOG_WITNESS=<console capture>`, whose every seal
+line (at the start of a line) must be in the export. A task that writes the same
+console can print a seal line too: a witness line that matches no seal is
+evidence of a removed seal or of someone else's line. The verdict is `Intact`,
+`Incomplete` (rotated files, a declared loss, an unsealed tail, advisory seals,
+or no reference given) or `Evidence` (exit 0, 1, 2); a declared loss of a
+high-value class is printed as `LOSS`.
 
 ## Node identity
 

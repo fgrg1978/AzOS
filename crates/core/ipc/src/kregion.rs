@@ -6,7 +6,8 @@
 //! the drivers read) and `console.screen` (the framebuffer console's screen
 //! region, whose reader writes the overlay words), all for reading AND
 //! writing; `fs.share` (the names and data the kernel exchanges with a ring-3
-//! file server, `azos_fs::endpoint`), for reading and writing; and
+//! file server, `azos_fs::endpoint`) and `klog.ack` (the log sink's page, where
+//! it says which security records it lost), for reading and writing; and
 //! `klog.ring` (the structured kernel log, whose readers keep their own
 //! cursors) for reading only.
 //!
@@ -40,6 +41,7 @@ static INPUT_FOCUS: AtomicU32 = AtomicU32::new(NONE);
 static CONSOLE_SCREEN: AtomicU32 = AtomicU32::new(NONE);
 static KLOG_RING: AtomicU32 = AtomicU32::new(NONE);
 static FS_SHARE: AtomicU32 = AtomicU32::new(NONE);
+static KLOG_ACK: AtomicU32 = AtomicU32::new(NONE);
 
 /// What a row asks for and the capability carries.
 pub const RW: CapPerms = CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP);
@@ -57,6 +59,8 @@ pub const TARGET_CONSOLE_SCREEN: &str = "console.screen";
 pub const TARGET_KLOG_RING: &str = "klog.ring";
 /// The target of the ring-3 file server's shared region's row.
 pub const TARGET_FS_SHARE: &str = "fs.share";
+/// The target of the log sink's page (`logd`'s row alone).
+pub const TARGET_KLOG_ACK: &str = "klog.ack";
 
 /// Which region.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,6 +70,7 @@ pub enum Region {
     ConsoleScreen,
     KlogRing,
     FsShare,
+    KlogAck,
 }
 
 impl Region {
@@ -76,13 +81,14 @@ impl Region {
             Region::ConsoleScreen => &CONSOLE_SCREEN,
             Region::KlogRing => &KLOG_RING,
             Region::FsShare => &FS_SHARE,
+            Region::KlogAck => &KLOG_ACK,
         }
     }
 
     /// The rights a row for this region asks for, and the capability carries.
     pub const fn perms(self) -> CapPerms {
         match self {
-            Region::InputEvents | Region::InputFocus | Region::ConsoleScreen | Region::FsShare => RW,
+            Region::InputEvents | Region::InputFocus | Region::ConsoleScreen | Region::FsShare | Region::KlogAck => RW,
             Region::KlogRing => VIEW,
         }
     }
@@ -94,6 +100,7 @@ impl Region {
             TARGET_CONSOLE_SCREEN => Some(Region::ConsoleScreen),
             TARGET_KLOG_RING => Some(Region::KlogRing),
             TARGET_FS_SHARE => Some(Region::FsShare),
+            TARGET_KLOG_ACK => Some(Region::KlogAck),
             _ => None,
         }
     }
@@ -144,13 +151,14 @@ pub fn seed_mint_any(tid: u32, target: &str, perms: CapPerms) -> Option<CapHandl
 /// returned as given (it then matches nothing: a key is above every pool
 /// index).
 pub fn lookup_resource(resource: u32) -> u32 {
-    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_FS_SHARE, SHM_INPUT_EVENTS, SHM_INPUT_FOCUS, SHM_KLOG_RING};
+    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_FS_SHARE, SHM_INPUT_EVENTS, SHM_INPUT_FOCUS, SHM_KLOG_ACK, SHM_KLOG_RING};
     let region = match resource {
         SHM_INPUT_EVENTS => Region::InputEvents,
         SHM_INPUT_FOCUS => Region::InputFocus,
         SHM_CONSOLE_SCREEN => Region::ConsoleScreen,
         SHM_KLOG_RING => Region::KlogRing,
         SHM_FS_SHARE => Region::FsShare,
+        SHM_KLOG_ACK => Region::KlogAck,
         _ => return resource,
     };
     match published(region) {

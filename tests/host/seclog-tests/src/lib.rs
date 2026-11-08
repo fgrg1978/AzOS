@@ -17,8 +17,8 @@ mod tool;
 
 use azos_seclog::chain::{extend, Sealer};
 use azos_seclog::text::{self, Parsed};
-use azos_seclog::verify::{Finding, Summary, Verifier};
-use azos_seclog::{kind, Anchor, Backend, Class, Envelope, Event, Hash, Loss, Seal, PAYLOAD};
+use azos_seclog::verify::{By, Finding, Summary, Verifier};
+use azos_seclog::{kind, Anchor, Backend, Class, Envelope, Event, Hash, Loss, Reason, Seal, CLASSES, FLAG_HARDWARE, PAYLOAD};
 
 #[derive(Clone)]
 pub(crate) struct Rec {
@@ -26,22 +26,55 @@ pub(crate) struct Rec {
     pub(crate) payload: [u8; PAYLOAD],
 }
 
+thread_local! {
+    /// The simulated TPM's counter after each anchor value it held, so a boot
+    /// started from an anchor goes on from its counter.
+    static COUNTERS: std::cell::RefCell<std::collections::HashMap<Hash, u64>> = Default::default();
+    static NONCE: std::cell::Cell<u64> = const { std::cell::Cell::new(0x5eed) };
+}
+
+fn counter_at(anchor: &Hash) -> u64 {
+    COUNTERS.with(|c| c.borrow().get(anchor).copied().unwrap_or(0))
+}
+
+fn note_counter(anchor: Hash, counter: u64) {
+    COUNTERS.with(|c| c.borrow_mut().insert(anchor, counter));
+}
+
+fn next_nonce() -> u64 {
+    NONCE.with(|n| {
+        n.set(n.get().wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407));
+        n.get()
+    })
+}
+
 /// One boot of the simulated kernel: a ring, its producers and the sealer.
 pub(crate) struct Boot {
     pub(crate) recs: Vec<Rec>,
     sealer: Sealer,
     hardware: bool,
+    failed: bool,
     pub(crate) tpm: Hash,
+    pub(crate) counter: u64,
 }
 
 impl Boot {
     pub(crate) fn new(backend: Backend, tpm: Hash) -> Boot {
         let hardware = backend == Backend::TpmNv;
-        let mut b = Boot { recs: Vec::new(), sealer: Sealer::new(backend, tpm), hardware, tpm };
+        let nonce = next_nonce();
+        let counter = if hardware { counter_at(&tpm) } else { 0 };
+        let mut b = Boot { recs: Vec::new(), sealer: Sealer::new(backend, tpm, nonce), hardware, failed: false, tpm, counter };
         // Records written before the sealer starts (the boot's own denials).
         b.event(Class::CapDenial, 1);
         b.event(Class::ImageLoad, 2);
-        let a = Anchor { backend, hardware, value: tpm };
+        let a = Anchor {
+            backend,
+            flags: if hardware { FLAG_HARDWARE } else { 0 },
+            reason: if hardware { Reason::Hardware } else { Reason::Configured },
+            nonce,
+            counter,
+            value: tpm,
+        };
         b.publish(kind::ANCHOR, &a.encode());
         b
     }
@@ -60,48 +93,74 @@ impl Boot {
         self.publish(kind::EVENT, &e.encode());
     }
 
-    /// The kernel's pass: fold what the ring holds, then seal.
-    pub(crate) fn seal(&mut self) {
+    fn fold_all(&mut self) {
         let from = self.sealer.next() as usize;
         for r in self.recs[from..].to_vec() {
             self.sealer.fold(&r.env, &r.payload);
         }
-        let s = self.sealer.seal(self.hardware);
-        if self.hardware {
-            self.tpm = extend(&self.tpm, &s.head);
-        }
+    }
+
+    /// The kernel's pass: fold what the ring holds, then seal (on a TPM:
+    /// increment the counter, extend the anchor, read it back).
+    pub(crate) fn seal(&mut self) {
+        self.fold_all();
+        let s = if self.hardware {
+            self.counter += 1;
+            self.tpm = extend(&self.tpm, &self.sealer.data(self.counter));
+            note_counter(self.tpm, self.counter);
+            self.sealer.seal(true, self.counter, Some(self.tpm), 0)
+        } else {
+            self.sealer.seal(false, 0, None, 0)
+        };
         self.publish(kind::SEAL, &s.encode());
     }
 
     /// The kernel's pass when the TPM refuses the extend: the seal is
-    /// advisory. `taken`: the TPM did extend, and only its answer was lost.
+    /// advisory, and so is every later one of the boot, which takes no
+    /// counter. `taken`: the TPM did extend, and only its answer was lost.
     fn seal_refused(&mut self, taken: bool) {
-        let from = self.sealer.next() as usize;
-        for r in self.recs[from..].to_vec() {
-            self.sealer.fold(&r.env, &r.payload);
+        self.fold_all();
+        let counter = if self.failed {
+            0
+        } else {
+            self.counter += 1;
+            self.counter
+        };
+        if taken && !self.failed {
+            self.tpm = extend(&self.tpm, &self.sealer.data(counter));
         }
-        let s = self.sealer.seal(false);
-        if taken {
-            self.tpm = extend(&self.tpm, &s.head);
-        }
+        note_counter(self.tpm, self.counter);
+        self.failed = true;
+        let s = self.sealer.seal(false, counter, None, 0);
         self.publish(kind::SEAL, &s.encode());
     }
 
     /// The ring lapped the sealer: `n` records it never folds, and the loss
     /// it declares.
     fn lapped(&mut self, n: usize) -> (u64, u64) {
-        let from = self.sealer.next() as usize;
-        for r in self.recs[from..].to_vec() {
-            self.sealer.fold(&r.env, &r.payload);
-        }
+        self.fold_all();
         let first = self.recs.len() as u64;
         for i in 0..n {
             self.event(Class::Egress, 500 + i as u32);
         }
-        let loss = self.sealer.skip_to(self.recs.len() as u64).unwrap();
-        assert_eq!((loss.first, loss.count), (first, n as u64));
-        self.publish(kind::LOSS, &loss.encode());
+        let (f, count) = self.sealer.skip_to(self.recs.len() as u64).unwrap();
+        assert_eq!((f, count), (first, n as u64));
+        let mut by_class = [0u32; CLASSES];
+        by_class[Class::Egress as usize] = n as u32;
+        self.publish(kind::LOSS, &Loss { first, count, by_class }.encode());
         (first, n as u64)
+    }
+
+    /// The kernel declares that the sink lost `count` records from `first`.
+    fn sink_loss(&mut self, first: u64, count: u64) {
+        let mut by_class = [0u32; CLASSES];
+        by_class[0] = count as u32;
+        self.publish(kind::SINK_LOSS, &Loss { first, count, by_class }.encode());
+    }
+
+    /// Something else extends the TPM's index.
+    fn foreign_extend(&mut self) {
+        self.tpm = extend(&self.tpm, &[0x66; 32]);
     }
 
     pub(crate) fn lines(&self) -> Vec<Vec<u8>> {
@@ -179,8 +238,8 @@ fn a_dropped_record_is_an_undeclared_gap() {
     // 3..5 and the seal at 6. Drop the camera record.
     lines.remove(4);
     let (found, _) = verify(&lines);
-    assert!(found.contains(&Finding::Gap { boot: 1, first: 4, count: 1, declared: false }), "{found:?}");
-    assert!(found.contains(&Finding::Unverifiable { boot: 1, seq: 6 }), "{found:?}");
+    assert!(found.contains(&Finding::Gap { boot: 1, first: 4, count: 1, by: By::Nobody }), "{found:?}");
+    assert!(found.contains(&Finding::Unverifiable { boot: 1, seq: 6, declared: false }), "{found:?}");
 }
 
 #[test]
@@ -267,7 +326,13 @@ fn a_loss_the_kernel_declares_is_not_evidence() {
     b.seal();
     let lines: Vec<_> = b.recs.iter().filter(|r| r.env.seq < first || r.env.seq >= first + n).map(line).collect();
     let (found, s) = verify(&lines);
-    assert_eq!(found, vec![Finding::Gap { boot: 1, first, count: n, declared: true }]);
+    assert_eq!(
+        found,
+        vec![
+            Finding::ClassLost { boot: 1, class: Class::Egress as u8, count: n as u32, sink: false },
+            Finding::Gap { boot: 1, first, count: n, by: By::Sealer }
+        ]
+    );
     assert_eq!(s.seals_verified, s.seals);
 }
 
@@ -280,7 +345,7 @@ fn records_the_sealer_folded_but_the_export_lacks_are_evidence() {
     let mut lines = b.lines();
     lines.remove(8);
     let (found, _) = verify(&lines);
-    assert!(found.contains(&Finding::Gap { boot: 1, first: 8, count: 1, declared: false }), "{found:?}");
+    assert!(found.contains(&Finding::Gap { boot: 1, first: 8, count: 1, by: By::Nobody }), "{found:?}");
 }
 
 #[test]
@@ -289,7 +354,7 @@ fn a_rotated_start_is_incomplete_not_evidence() {
     let lines = b.lines()[7..].to_vec();
     let (found, s) = verify(&lines);
     assert_eq!(evidence(&found), vec![]);
-    assert!(found.contains(&Finding::Truncated { boot: 1, first: 7 }));
+    assert!(found.contains(&Finding::Truncated { boot: 1, first: 7, explained: true }));
     // The first seal is adopted unchecked; the next ones are checked.
     assert_eq!((s.seals, s.seals_verified), (2, 1));
 }
@@ -365,7 +430,8 @@ fn a_tpm_boot_links_over_a_forward_only_boot() {
         lines.extend(b.lines());
     }
     let (found, s) = verify(&lines);
-    assert_eq!(found, vec![Finding::Advisory { boot: 2 }]);
+    assert_eq!(found, vec![Finding::Downgrade { boot: 2, reason: Reason::Configured }, Finding::Advisory { boot: 2 }]);
+    assert!(evidence(&found).is_empty());
     assert_eq!(s.last_anchor, Some(b3.tpm));
     // The same three boots with the second TPM boot anchored elsewhere.
     let b3 = tpm_boot([9; 32], 1);
@@ -376,6 +442,122 @@ fn a_tpm_boot_links_over_a_forward_only_boot() {
     }
     let (found, _) = verify(&lines);
     assert!(found.contains(&Finding::LinkBroken { boot: 3 }), "{found:?}");
+}
+
+/// A fresh logd restart inside a boot reads the ring again from its oldest
+/// record: what it writes again is the same boot, not a new one.
+#[test]
+fn a_fresh_logd_restart_rereads_the_same_boot() {
+    let b = tpm_boot([0; 32], 2);
+    let mut lines = b.lines();
+    lines.push(seam());
+    lines.extend(b.lines());
+    let (found, s) = verify(&lines);
+    assert_eq!((found, s.boots), (vec![], 1));
+}
+
+/// A re-read that ends where another boot begins: the next boot is still one.
+#[test]
+fn a_reread_then_a_new_boot() {
+    let b1 = tpm_boot([0; 32], 2);
+    let b2 = tpm_boot(b1.tpm, 1);
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b1.lines()[..4].to_vec());
+    lines.push(seam());
+    lines.extend(b2.lines());
+    let (found, s) = verify(&lines);
+    assert_eq!((evidence(&found), s.boots), (vec![], 2), "{found:?}");
+}
+
+/// A boot whose anchor record was removed from the middle of the export.
+#[test]
+fn a_boot_without_its_anchor_record_is_evidence() {
+    let (b1, _, mut lines) = two_boots();
+    // b2 starts after b1's lines and the seam: its anchor is its record 2.
+    lines.remove(b1.recs.len() + 1 + 2);
+    let (found, _) = verify(&lines);
+    assert!(found.contains(&Finding::AnchorMissing { boot: 2, explained: false }), "{found:?}");
+}
+
+/// The kernel declared that logd lost the first records of a boot (the ring
+/// lapped before logd read it): a truncated boot inside the export, honest.
+#[test]
+fn a_boot_start_the_kernel_declares_lost_by_the_sink_is_not_evidence() {
+    let b1 = tpm_boot([0; 32], 2);
+    let mut b2 = tpm_boot(b1.tpm, 1);
+    b2.sink_loss(0, 4);
+    b2.event(Class::Login, 3);
+    b2.seal();
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b2.lines()[4..].to_vec());
+    let (found, _) = verify(&lines);
+    assert_eq!(evidence(&found), vec![], "{found:?}");
+    assert!(found.contains(&Finding::Truncated { boot: 2, first: 4, explained: true }), "{found:?}");
+}
+
+/// The TPM took a seal and the boot ended before logd wrote its record: the
+/// next boot's anchor is that seal's, which the records before it give.
+#[test]
+fn a_seal_a_crash_lost_still_links_the_next_boot() {
+    let mut b1 = tpm_boot([0; 32], 2);
+    b1.event(Class::Update, 5);
+    let before = b1.recs.len();
+    b1.seal();
+    let b2 = tpm_boot(b1.tpm, 1);
+    let mut lines = b1.lines()[..before].to_vec();
+    lines.push(seam());
+    lines.extend(b2.lines());
+    let (found, _) = verify(&lines);
+    assert_eq!(evidence(&found), vec![], "{found:?}");
+    assert!(found.contains(&Finding::CrashSeal { boot: 1, through: before as u64 }), "{found:?}");
+}
+
+/// The anchor index was reset and replayed to the value after a boot's
+/// second seal, and the export cut there: the counter the TPM kept going
+/// says two seals are missing.
+#[test]
+fn a_replayed_anchor_leaves_a_counter_gap() {
+    let b1 = tpm_boot([0; 32], 4);
+    let seal2 = b1.recs.iter().filter(|r| r.env.kind == kind::SEAL).nth(1).unwrap();
+    let s2 = Seal::decode(&seal2.payload).unwrap();
+    note_counter(s2.anchor, b1.counter);
+    let b2 = tpm_boot(s2.anchor, 1);
+    let mut lines = b1.lines()[..=seal2.env.seq as usize].to_vec();
+    lines.push(seam());
+    lines.extend(b2.lines());
+    let (found, _) = verify(&lines);
+    assert!(found.contains(&Finding::CounterGap { boot: 2, seq: u64::MAX }), "{found:?}");
+}
+
+/// Something else extended the index between two seals: the seal says the
+/// TPM held a value it did not extend.
+#[test]
+fn a_foreign_extend_is_reported_as_diverged() {
+    let mut b = tpm_boot([0; 32], 1);
+    b.event(Class::Camera, 4);
+    b.foreign_extend();
+    b.seal();
+    let (found, _) = verify(&b.lines());
+    let seq = b.recs.len() as u64 - 1;
+    assert!(found.contains(&Finding::Diverged { boot: 1, seq }), "{found:?}");
+}
+
+/// A forward-only seal that claims the hardware held it.
+#[test]
+fn a_shape_the_kernel_never_writes_is_malformed() {
+    let mut b = Boot::new(Backend::Forward, [0; 32]);
+    b.event(Class::Microphone, 1);
+    b.seal();
+    let mut r = b.recs.last().unwrap().clone();
+    let mut s = Seal::decode(&r.payload).unwrap();
+    s.flags |= FLAG_HARDWARE;
+    r.payload[..Seal::LEN].copy_from_slice(&s.encode());
+    let mut lines = b.lines();
+    *lines.last_mut().unwrap() = line(&r);
+    let (found, _) = verify(&lines);
+    assert!(found.contains(&Finding::Malformed { boot: 1, seq: r.env.seq }), "{found:?}");
 }
 
 #[test]
@@ -397,18 +579,26 @@ fn a_restart_of_logd_inside_a_boot_is_not_a_new_boot() {
 
 #[test]
 fn the_sealer_folds_each_record_once_and_seals_skip_the_seal_count() {
-    let mut s = Sealer::new(Backend::TpmNv, [7; 32]);
+    let mut s = Sealer::new(Backend::TpmNv, [7; 32], 9);
     let env = Envelope { seq: 0, kind: kind::EVENT, len: 4, ..Default::default() };
     assert!(s.fold(&env, &[1, 2, 3, 4]));
     assert!(!s.fold(&env, &[1, 2, 3, 4]), "a record before next is not folded again");
     assert_eq!(s.unsealed(), 1);
-    let seal = s.seal(true);
-    assert_eq!((seal.through, seal.count, seal.anchor), (1, 1, extend(&[7; 32], &seal.head)));
+    let data = s.data(41);
+    let seal = s.seal(true, 41, None, 0);
+    assert_eq!((seal.through, seal.count, seal.counter, seal.anchor), (1, 1, 41, extend(&[7; 32], &data)));
+    assert_eq!((seal.prev, seal.boot_anchor, seal.nonce, seal.flags), ([7; 32], [7; 32], 9, FLAG_HARDWARE));
+    assert_eq!(azos_seclog::chain::data_of(&seal), data);
     let env = Envelope { seq: 1, kind: kind::SEAL, len: Seal::LEN as u16, ..Default::default() };
     s.fold(&env, &seal.encode());
     assert_eq!(s.unsealed(), 0, "folding its own seal does not make another one due");
     assert_eq!(s.skip_to(1), None);
-    assert_eq!(s.skip_to(5), Some(Loss { first: 2, count: 3 }));
+    assert_eq!(s.skip_to(5), Some((2, 3)));
+    // A value read back that the extend does not give is the seal's anchor,
+    // and the seal says so.
+    let held = s.seal(true, 42, Some([1; 32]), 0);
+    assert_eq!((held.anchor, held.flags), ([1; 32], FLAG_HARDWARE | azos_seclog::FLAG_DIVERGED));
+    assert_eq!(s.anchor(), [1; 32]);
 }
 
 #[test]
@@ -419,7 +609,7 @@ fn lines_round_trip_and_bad_lines_are_refused() {
         assert_eq!((env.seq, env.ts, env.kind, env.len, env.cpu, payload), (r.env.seq, r.env.ts, r.env.kind, r.env.len, r.env.cpu, r.payload));
     }
     assert_eq!(text::parse(&seam()), Some(Parsed::Seam));
-    for bad in ["v2 1 2 0 1 0 0 00", "v1 1 2 0 1 0 0 0", "v1 1 2 0 1 0 0 0g", "v1 1 2 300 1 0 0 00", "v1 x 2 0 1 0 0 00", "v1 1 2 0 1 0"] {
+    for bad in ["v1 1 2 0 1 0 0 00", "v2 1 2 0 1 0 0 0", "v2 1 2 0 1 0 0 0g", "v2 1 2 300 1 0 0 00", "v2 x 2 0 1 0 0 00", "v2 1 2 0 1 0"] {
         assert_eq!(text::parse(bad.as_bytes()), None, "{bad}");
     }
     let mut r = b.recs[0].clone();
@@ -445,12 +635,12 @@ fn unhex(s: &str) -> Vec<u8> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
 }
 
-/// Format version 1, byte for byte: the payloads, the canonical bytes, the
-/// genesis head, one fold, one extend and the line. The vectors were computed
-/// apart from this crate (Python's struct and hashlib); a change to any field
-/// is a new format version, never an edit of these.
+/// Format version 2, byte for byte: the payloads, the canonical bytes, the
+/// genesis head, one fold, one seal's data and extend, and the line. The
+/// vectors were computed apart from this crate (Python's struct and hashlib);
+/// a change to any field is a new format version, never an edit of these.
 #[test]
-fn format_v1_is_frozen() {
+fn format_v2_is_frozen() {
     let e = Event {
         id: 0x0102_0304_0506_0708,
         subject: 0x1122_3344,
@@ -467,28 +657,43 @@ fn format_v1_is_frozen() {
     for (i, b) in v.iter_mut().enumerate() {
         *b = i as u8;
     }
-    let a = Anchor { backend: Backend::TpmNv, hardware: true, value: v };
-    assert_eq!(a.encode().to_vec(), unhex("0201000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"));
-    let seal = Seal { backend: Backend::Forward, hardware: false, count: 3, through: 9, head: [0xaa; 32], anchor: [0xbb; 32] };
-    let mut want = unhex("01000000030000000900000000000000");
-    want.extend([0xaa; 32]);
-    want.extend([0xbb; 32]);
-    assert_eq!(seal.encode().to_vec(), want);
-    assert_eq!(Loss { first: 5, count: 2 }.encode().to_vec(), unhex("05000000000000000200000000000000"));
+    let a = Anchor { backend: Backend::TpmNv, flags: FLAG_HARDWARE, reason: Reason::Hardware, nonce: 0x1122_3344_5566_7788, counter: 7, value: v };
+    assert_eq!(a.encode().to_vec(), unhex("020100000000000088776655443322110700000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"));
+    let seal = Seal {
+        backend: Backend::TpmNv,
+        flags: FLAG_HARDWARE,
+        count: 3,
+        through: 9,
+        counter: 8,
+        nonce: 0x99,
+        head: [0xaa; 32],
+        anchor: [0xbb; 32],
+        prev: [0xcc; 32],
+        boot_anchor: [0xdd; 32],
+    };
+    assert_eq!(seal.encode().to_vec(), unhex("0201000003000000090000000000000008000000000000009900000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"));
+    let mut by_class = [0u32; CLASSES];
+    by_class[Class::Egress as usize] = 2;
+    assert_eq!(Loss { first: 5, count: 2, by_class }.encode().to_vec(), unhex("05000000000000000200000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000"));
+    let mut by_class = [0u32; CLASSES];
+    by_class[Class::CapDenial as usize] = 3;
+    assert_eq!(azos_seclog::Held { by_class }.encode().to_vec(), unhex("000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000"));
 
     let env = Envelope { seq: 4, ts: 1000, clock: 0, source: 4, kind: kind::EVENT, len: Event::LEN as u16, cpu: 2, flags: 1 };
     let mut payload = [0u8; PAYLOAD];
     payload[..Event::LEN].copy_from_slice(&e.encode());
     let mut c = [0u8; azos_seclog::CANON_MAX];
     let n = azos_seclog::canon(&env, &payload, &mut c);
-    assert_eq!(c[..n].to_vec(), unhex(&format!("010400000000000000e80300000000000000010002013400{ev}")));
-    let genesis = azos_seclog::chain::genesis();
-    assert_eq!(genesis.to_vec(), unhex("17281353216267c1bf28c9bfd1a21646dca81d39157ebc2bb413333552044d2d"));
+    assert_eq!(c[..n].to_vec(), unhex("020400000000000000e803000000000000000100020134000807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000"));
+    let genesis = azos_seclog::chain::genesis(&[0xdd; 32], 0x99);
+    assert_eq!(genesis.to_vec(), unhex("c832eb721e23cdc02020c87f46ed641b693fcec5483b286576f9a133a3e96d35"));
     let head = azos_seclog::chain::fold(&genesis, &env, &payload);
-    assert_eq!(head.to_vec(), unhex("1c51514985cf0b56db5b046ac02e2b019a0815a2c50698d8f488bf60f40385b6"));
-    assert_eq!(extend(&[0; 32], &head).to_vec(), unhex("3ca45c9bd392f242e67f216dbd9f2224c9e0ca6871ed3e024e12df0a4409d6e5"));
+    assert_eq!(head.to_vec(), unhex("60ef312c645072a8afc12ac7278a5ac764c623504435aad06d9eb395ffd50cf7"));
+    let data = azos_seclog::chain::seal_data(&[0xdd; 32], 0x99, 1, 8, 5, &head);
+    assert_eq!(data.to_vec(), unhex("571ffbcd050b120c867b94daefd6ab860b644c00d979f158f7702685320ae58a"));
+    assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("b3a83283e7c18d77bbbada2ba1a4aa3085b75672b7f9b3221d3c82d95336fb84"));
     let r = Rec { env, payload };
-    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v1 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
+    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v2 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
 }
 
 // Proofs of the review of the sealed security log: each asserts the right
@@ -511,7 +716,20 @@ fn review_p1b_a_forged_refused_seal_is_evidence() {
     let b1 = tpm_boot([0; 32], 3);
     let b2 = tpm_boot(b1.tpm, 2);
     let b3 = tpm_boot(b2.tpm, 2);
-    let s = Seal { backend: Backend::TpmNv, hardware: false, count: 1, through: 0, head: azos_seclog::chain::genesis(), anchor: b2.tpm };
+    // Format v2: a forged refused seal names a boot and the value before it;
+    // its anchor is the next boot's real one.
+    let s = Seal {
+        backend: Backend::TpmNv,
+        flags: 0,
+        count: 1,
+        through: 0,
+        counter: 0,
+        nonce: 1,
+        head: azos_seclog::chain::genesis(&b1.tpm, 1),
+        anchor: b2.tpm,
+        prev: b1.tpm,
+        boot_anchor: b1.tpm,
+    };
     let mut payload = [0u8; PAYLOAD];
     payload[..Seal::LEN].copy_from_slice(&s.encode());
     let env = Envelope { seq: 0, ts: 1, clock: 0, source: 4, kind: kind::SEAL, len: Seal::LEN as u16, cpu: 0, flags: 0 };

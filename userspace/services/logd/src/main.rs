@@ -56,6 +56,9 @@ const SOURCE_TELEMETRY: u8 = sys::record::SOURCE_TELEMETRY;
 const SOURCE_SECURITY: u8 = sys::record::SOURCE_SECURITY;
 use wire::{Record, LINE_MAX};
 
+// A security record's line fits a line's room whole.
+const _: () = assert!(20 + 1 + 20 + 1 + 3 + 1 + 2 + 1 + wire::SECURITY_MODULE.len() + 1 + azos_seclog::text::MSG_MAX + 1 <= LINE_MAX);
+
 /// Telemetry budgets tracked in a period (Kconfig `LOGD_TELEMETRY_KEYS`).
 const KEYS: usize = azos_limits::LOGD_TELEMETRY_KEYS as usize;
 
@@ -131,13 +134,29 @@ impl Vol for SysVol {
     }
 }
 
+/// The sink's page, when the row grants it (Kconfig `SEC_LOG`).
+fn map_ack() -> Option<&'static azos_seclog::ack::Page> {
+    let (base, bytes) = map_region(azos_abi::cap::SHM_KLOG_ACK)?;
+    (bytes >= core::mem::size_of::<azos_seclog::ack::Page>() && base % 8 == 0).then(|| {
+        // SAFETY: a read-write mapping of the kernel's page, held for the
+        // life of the program, large and aligned enough; every field is an
+        // atomic the kernel only reads.
+        unsafe { &*(base as *const azos_seclog::ack::Page) }
+    })
+}
+
 fn say(b: &[u8]) {
     let _ = sys::console_write(sys::STDOUT, b);
 }
 
 /// Map the ring the row grants: `(base, bytes)`.
 fn map_ring() -> Option<(usize, usize)> {
-    let cap = sys::cap_lookup(sys::ty::SHM.raw(), azos_abi::cap::SHM_KLOG_RING);
+    map_region(azos_abi::cap::SHM_KLOG_RING)
+}
+
+/// Map the kernel-owned region of key `key` the row grants: `(base, bytes)`.
+fn map_region(key: u32) -> Option<(usize, usize)> {
+    let cap = sys::cap_lookup(sys::ty::SHM.raw(), key);
     if cap < 0 {
         return None;
     }
@@ -247,10 +266,10 @@ fn render(env: &Envelope, payload: &[u8], hz: u64, out: &mut [u8]) -> Option<usi
             Some(wire::line(&r, hz, out))
         }
         SOURCE_SECURITY => {
+            // Longer than a kernel log record's message: rendered whole, never cut.
             let mut m = [0u8; azos_seclog::text::MSG_MAX];
             let k = azos_seclog::text::render(env, payload, &mut m);
-            let r = Record::make(env.seq, env.ts, wire::LEVEL_INFO, 0, env.cpu, "@security", &m[..k]);
-            Some(wire::line(&r, hz, out))
+            Some(wire::line_of(env.seq, env.ts, hz, env.cpu, wire::LEVEL_INFO, false, wire::SECURITY_MODULE, &m[..k], out))
         }
         SOURCE_DECISION | SOURCE_TELEMETRY => {
             let module = if env.source == SOURCE_DECISION { wire::DECISION_MODULE } else { wire::TELEMETRY_MODULE };
@@ -299,9 +318,21 @@ struct Sink {
     written: u32,
     batch: [u8; BATCH],
     n: usize,
+    /// The security ring, and the page where the sink says which of its
+    /// records it lost (`MemObj klog.ack`).
+    sec: Option<usize>,
+    ack: Option<&'static azos_seclog::ack::Page>,
 }
 
 impl Sink {
+    /// The security records from `first`, `count` of them, will never be
+    /// written: say so on the page, for the kernel to declare.
+    fn claim(&self, ring: usize, first: u64, count: u64) {
+        if let (Some(p), true) = (self.ack, self.sec == Some(ring)) {
+            p.claim(first, count);
+        }
+    }
+
     /// The tick of `now`, in the region's timebase.
     fn ticks(&self) -> u64 {
         (sys::vdso_now_ns() as u128 * self.hz as u128 / 1_000_000_000) as u64
@@ -318,6 +349,9 @@ impl Sink {
         if self.store.write(&mut self.vol, &self.batch[..self.n], ts, self.hz) {
             self.n = 0;
             self.committed = self.rd;
+            if let (Some(p), Some(i)) = (self.ack, self.sec) {
+                p.next.store(self.rd.cursor(i), core::sync::atomic::Ordering::Release);
+            }
             true
         } else {
             self.n = 0;
@@ -374,7 +408,11 @@ impl Sink {
                         self.n += k;
                     }
                 }
-                Step::Lost { ring, n } => self.note(ring, b"records lost: ", n),
+                Step::Lost { ring, n } => {
+                    let c = self.rd.cursor(ring);
+                    self.claim(ring, c.saturating_sub(n), n);
+                    self.note(ring, b"records lost: ", n)
+                }
                 Step::Stale { ring } => self.note(ring, b"records dropped (stale sequence): ", self.rd.stale(ring)),
                 Step::Pending { ring } => {
                     // A producer claimed it and has not finished: try again
@@ -384,6 +422,7 @@ impl Sink {
                     let late = self.other_ring_late(ring);
                     if self.stall.give_up(ring, c, head.saturating_sub(c), entries, late) {
                         self.rd.skip(ring);
+                        self.claim(ring, self.rd.cursor(ring).saturating_sub(1), 1);
                         self.note(ring, b"records lost: ", 1);
                         continue;
                     }
@@ -480,7 +519,15 @@ fn run() -> i32 {
     let mut sink = Sink { vol, store, hz, rd, committed: rd, stall: Stall::new(),
         keep: Keep::<KEYS>::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64,
             azos_limits::LOGD_TELEMETRY_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64),
-        written: 0, batch: [0; BATCH], n: 0 };
+        written: 0, batch: [0; BATCH], n: 0, sec: ring_index(&region, SOURCE_SECURITY), ack: map_ack() };
+    // What the ring dropped before this run read it, and no earlier run
+    // wrote (the page's `next` is where the last one stopped): lost.
+    if let (Some(p), Some(i)) = (sink.ack, sink.sec) {
+        let (start, before) = (sink.rd.cursor(i), p.next.load(core::sync::atomic::Ordering::Acquire));
+        if start > before {
+            sink.claim(i, before, start - before);
+        }
+    }
     // The start line: where this run begins, so a reader of the files sees the
     // seam (a new boot, or a restart).
     {

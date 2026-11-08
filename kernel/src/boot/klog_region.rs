@@ -59,10 +59,28 @@ pub(crate) fn install() {
             "[KLOG] security ring {} records ({} lost before the handover)",
             ring_entries(azos_records::SOURCE_SECURITY), h.security_lost
         );
+        install_ack();
     }
     if canary!("record-telemetry-event") {
         azos_actuation::logger::log_mode_change(0, 1);
     }
+}
+
+/// The sink's page (`MemObj klog.ack`, `READ|WRITE|MAP`, `logd`'s row only):
+/// where `logd` says which security records it lost, which the sealer
+/// declares in the chain. A page of its own: the region stays read-only.
+fn install_ack() {
+    let Some((obj, phys)) = memobj_create_kernel(1, &MemSpec::contig(MemPerms::ReadWrite, false)) else {
+        azos_drv_sys::kwarn!("[KLOG] no memory for logd's page: the sink's losses go undeclared");
+        return;
+    };
+    // SAFETY: a fresh, zeroed, page-aligned kernel-owned page that is never
+    // freed; every field of the page is an atomic, so what the sink writes
+    // into it is a value the sealer reads, never an access it makes.
+    let page = unsafe { &*(azos_mm::addr::phys_to_virt(phys) as *const azos_seclog::ack::Page) };
+    crate::boot::seclog::install_sink(page);
+    azos_ipc::kregion::publish(azos_ipc::kregion::Region::KlogAck, obj);
+    azos_drv_sys::kprintln!("[KLOG] logd's page, granted as MemObj klog.ack");
 }
 
 /// Held, with interrupts masked, across the handover.

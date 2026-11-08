@@ -57,7 +57,7 @@
 
 use azos_decision::{Rule, Verdict};
 use azos_tpm::tis::{Clock, Tis};
-use azos_tpm::tpm::{Tpm, CHAIN_INDEX, FLOOR_INDEX};
+use azos_tpm::tpm::{Tpm, CHAIN_INDEX, COUNTER_INDEX, FLOOR_INDEX};
 use azos_tpm::Error;
 use azos_arch_api::entropy::CpuCredit;
 use azos_sync::kmutex::Mutex;
@@ -634,13 +634,22 @@ fn install_floor() {
     }
     let auth = floor_auth();
     let r = with(|t| {
-        t.floor_provision(&[], FLOOR_INDEX, &auth)?;
-        t.floor_read(FLOOR_INDEX, &auth)
+        let kind = t.floor_provision(&[], FLOOR_INDEX, &auth)?;
+        Ok::<_, Error>((kind, t.floor_read(FLOOR_INDEX, &auth)?))
     });
     match r {
-        Some(Ok(now)) => {
+        Some(Ok((kind, now))) => {
             azos_ota::floor::install(&FLOOR, now);
-            kprintln!("[TPM] OTA rollback floor: NV index {:#010x}, holds epoch {}", FLOOR_INDEX, now);
+            kprintln!(
+                "[TPM] OTA rollback floor: NV index {:#010x}, holds epoch {}{}",
+                FLOOR_INDEX,
+                now,
+                if kind == azos_tpm::tpm::Adopted::Undeletable {
+                    " (undeletable)"
+                } else {
+                    " (owner hierarchy: whoever can send TPM owner commands can undefine it and lower the floor)"
+                }
+            );
         }
         Some(Err(Error::NvMismatch)) => azos_drv_sys::kerr!(
             "[TPM] OTA rollback floor: NV index {:#010x} exists and is not ours (attributes, size or \
@@ -652,18 +661,31 @@ fn install_floor() {
     }
 }
 
-// ── The sealed security log's anchor ────────────────────────────────────────
+// ── The sealed security log's anchor and counter ────────────────────────────
 
-/// The password of the anchor's index: public inputs, as the floor's, so it
-/// keeps out software that does not know the scheme. Whoever has it can only
-/// extend the index, which the verifier then reports as a broken chain.
-fn chain_auth() -> [u8; 32] {
-    index_auth(b"azos/seclog/v1", CHAIN_INDEX)
+/// The password of the anchor's and the counter's indexes: public inputs, as
+/// the floor's, so it keeps out software that does not know the scheme.
+/// Whoever has it can extend the anchor (which the next seal reads back and
+/// reports as diverged) and increment the counter (which shows as a gap);
+/// neither moves either index back.
+fn chain_auth(index: u32) -> [u8; 32] {
+    index_auth(b"azos/seclog/v2", index)
 }
 
-fn chain_extend(head: &[u8; 32]) -> bool {
-    let auth = chain_auth();
-    match with(|t| t.nv_extend(CHAIN_INDEX, &auth, head)) {
+fn chain_increment() -> Option<u64> {
+    let auth = chain_auth(COUNTER_INDEX);
+    match with(|t| t.counter_increment(COUNTER_INDEX, &auth))? {
+        Ok(v) => Some(v),
+        Err(e) => {
+            azos_drv_sys::kerr!("[TPM] security log: NV_Increment FAILED ({:?})", e);
+            None
+        }
+    }
+}
+
+fn chain_extend(data: &[u8; 32]) -> bool {
+    let auth = chain_auth(CHAIN_INDEX);
+    match with(|t| t.nv_extend(CHAIN_INDEX, &auth, data)) {
         Some(Ok(())) => true,
         Some(Err(e)) => {
             azos_drv_sys::kerr!("[TPM] security log: NV_Extend FAILED ({:?})", e);
@@ -673,28 +695,51 @@ fn chain_extend(head: &[u8; 32]) -> bool {
     }
 }
 
-static CHAIN: super::seclog::Hw = super::seclog::Hw { extend: chain_extend };
+fn chain_value() -> Option<[u8; 32]> {
+    let auth = chain_auth(CHAIN_INDEX);
+    with(|t| t.chain_read(CHAIN_INDEX, &auth).ok()).flatten()
+}
 
-/// Define the anchor's extend index (once per TPM), read it, and install it
-/// as the security log's seal. Any failure leaves the log forward-only, and
-/// says so.
+static CHAIN: super::seclog::Hw =
+    super::seclog::Hw { increment: chain_increment, extend: chain_extend, read: chain_value };
+
+/// Define the anchor's extend index and the counter (once per TPM), read
+/// both, and install them as the security log's seal. Any failure leaves the
+/// log forward-only, and its anchor record says why.
 fn install_seclog() {
+    use azos_seclog::Reason;
     if !azos_limits::SEC_LOG_SEAL_TPM_NV || !azos_records::SECURITY {
         return;
     }
-    let auth = chain_auth();
+    let (a_auth, c_auth) = (chain_auth(CHAIN_INDEX), chain_auth(COUNTER_INDEX));
     let r = with(|t| {
-        t.chain_provision(&[], CHAIN_INDEX, &auth)?;
-        t.chain_read(CHAIN_INDEX, &auth)
+        let kind = t.chain_provision(&[], CHAIN_INDEX, &a_auth)?;
+        t.counter_provision(&[], COUNTER_INDEX, &c_auth)?;
+        Ok::<_, Error>((kind, t.chain_read(CHAIN_INDEX, &a_auth)?, t.counter_read(COUNTER_INDEX, &c_auth)?))
     });
     match r {
-        Some(Ok(anchor)) => {
-            super::seclog::install_hw(&CHAIN, anchor);
-            kprintln!("[TPM] security log: anchor in NV index {:#010x}", CHAIN_INDEX);
+        Some(Ok((kind, anchor, counter))) => {
+            let undeletable = kind == azos_tpm::tpm::Adopted::Undeletable;
+            super::seclog::install_hw(&CHAIN, anchor, counter, undeletable);
+            kprintln!(
+                "[TPM] security log: anchor in NV index {:#010x}{}, counter in {:#010x} at {}",
+                CHAIN_INDEX,
+                if undeletable {
+                    " (undeletable)"
+                } else {
+                    " (owner hierarchy: whoever can send TPM owner commands can reset it; the counter shows a removed seal, not a rewrite)"
+                },
+                COUNTER_INDEX,
+                counter
+            );
         }
-        Some(Err(e)) => azos_drv_sys::kerr!(
-            "[TPM] security log: NV index {:#010x} cannot be provisioned or read ({:?}): the seals are forward-only",
-            CHAIN_INDEX, e),
+        Some(Err(e)) => {
+            let reason = if e == Error::NvMismatch { Reason::IndexUnusable } else { Reason::ReadFailed };
+            super::seclog::forward_because(reason);
+            azos_drv_sys::kerr!(
+                "[TPM] security log: NV indexes {:#010x}/{:#010x} cannot be provisioned or read ({:?}): the seals are forward-only",
+                CHAIN_INDEX, COUNTER_INDEX, e)
+        }
         None => {}
     }
 }

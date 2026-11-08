@@ -779,19 +779,22 @@ config SEC_LOG
     default n
     help
       The security records (a microphone or camera stream opened or refused,
-      a first packet off the node, a capability denial, an image load, an
-      update step, a login, a USB authorization: the decision records of
-      those rules) are also written to a security ring of the record
-      substrate, beside the kernel log's (crates/core/seclog). A kernel pass
-      folds every record of it into a SHA-256 chain, per boot, and every
-      SEC_LOG_SEAL_S commits the chain's head to the backend
-      SEC_LOG_SEAL names; the boot's first record links it to the previous
-      boot's last seal. `logd` writes every security record to its files,
-      unfiltered and never rate-limited, as `@security` lines, and
-      tools/forensic/seclog_verify checks an exported log: a missing,
-      rewritten or reordered record, a forged seal, a broken link to the
-      previous boot. Nothing here adds a syscall or an authority: the ring is
-      a ring of the `klog.ring` region `logd` already maps.
+      a destination a Domain's traffic was let out to or refused, a
+      capability denial, an image load, an update step, a console, brain-link
+      or SSH login, a USB authorization: the decision records of those rules)
+      are also written to a security ring of the record substrate, beside the
+      kernel log's (crates/core/seclog). A kernel pass folds every record of
+      it into a SHA-256 chain, per boot, and commits the chain's head to the
+      backend SEC_LOG_SEAL names: at the first pass, every SEC_LOG_SEAL_S,
+      SEC_LOG_SEAL_URGENT_S after a record of a class whose loss hides what
+      spyware does, and at an orderly power-off. Every seal names its boot
+      and the backend's value before it, so a boot whose first records are
+      gone is still linked to the one before. `logd` writes every security
+      record to its files as `@security` lines; what it loses it says on its
+      page (`MemObj klog.ack`) and the kernel declares in the chain, by
+      class. tools/forensic/seclog_verify checks an exported log: a missing,
+      rewritten or reordered record, a forged seal, a removed boot, a broken
+      link to the previous boot, a counter that skips.
 
       On by default with the Hardened, Separation-static and Confidential
       postures (SECURITY, `imply`). Needs KLOG: `logd` is the only sink.
@@ -802,13 +805,31 @@ config SEC_LOG_ENTRIES
     range 32 256
     default 128
     help
-      Asked with SEC_LOG only. 112 bytes a slot (the envelope and an 80-byte
+      Asked with SEC_LOG only. 192 bytes a slot (the envelope and a 160-byte
       payload), in the shared region and again in the early region the boot
-      writes before the region exists. A burst larger than the ring between
-      two passes of the sealer loses records: the sealer says how many in a
-      `loss` record, which is in the chain. The region holds the kernel log's,
-      the decisions', the telemetry's and this ring in one memory object of at
-      most 64 pages: the build refuses a sum that does not fit.
+      writes before the region exists. More records between two passes of
+      the sealer or of `logd` than the ring holds are lost: the sealer
+      declares its own loss in a `loss` record and `logd`'s in a `sink-loss`
+      record, both in the chain and both by class. The rate cap
+      (SEC_LOG_PER_S) keeps that from happening while both keep their
+      period. The region holds the kernel log's, the decisions', the
+      telemetry's and this ring in one memory object of at most 64 pages: the
+      build refuses a sum that does not fit.
+
+config SEC_LOG_PER_S
+    int "Sealed security log: records a second the producers may copy" if SEC_LOG
+    range 4 1024
+    default 32
+    help
+      Asked with SEC_LOG only. A bucket for every security record, of this
+      many a second and as many at once, and a quarter of it for each class
+      a task can raise in a loop (capability denials, the decision layer's
+      reports of them, egress), so one flooding class leaves the others room.
+      What the cap holds back is counted by class and declared in the chain
+      (a `held` record). At most a quarter of the ring a second by default:
+      the sealer and `logd` read it every second. Before the kernel installs
+      the decision clock time stands still, and the buckets give only what
+      they start with.
 
 config SEC_LOG_SEAL_S
     int "Sealed security log: seconds between seals" if SEC_LOG
@@ -817,11 +838,24 @@ config SEC_LOG_SEAL_S
     help
       Asked with SEC_LOG only. A seal is taken when this long has passed since
       the last one and records came since; an idle system seals nothing. The
-      records since the last seal are the ones a compromised kernel could
-      still rewrite unseen: shorter is a smaller window. On a TPM each seal is
-      one NV write (TPM2_NV_Extend): a TPM rated for 100 000 writes of an
-      index lasts about 70 days at one seal a minute, every minute; raise
-      this on a device whose security records never stop.
+      records since the last seal are the ones a compromised kernel, or
+      anyone who can write the log volume, could still rewrite or delete
+      unseen: shorter is a smaller window. On a TPM each seal is two NV
+      writes (TPM2_NV_Increment of the counter, TPM2_NV_Extend of the
+      anchor): a TPM rated for 100 000 writes of an index lasts about 70 days
+      at one seal a minute, every minute; raise this on a device whose
+      security records never stop.
+
+config SEC_LOG_SEAL_URGENT_S
+    int "Sealed security log: seconds before a high-value record is sealed" if SEC_LOG
+    range 1 86400
+    default 5
+    help
+      Asked with SEC_LOG only. A record of a class whose loss hides what
+      spyware does (every class but the capability denials and their
+      reports) is sealed this long after it comes, whatever SEC_LOG_SEAL_S
+      says. Each such seal is TPM wear as SEC_LOG_SEAL_S describes; at most
+      one every this many seconds.
 
 choice
     prompt "Sealed security log: where the seals are committed (SEC_LOG_SEAL)"
@@ -834,16 +868,30 @@ choice
       reports a boot sealed without hardware as advisory.
 
     config SEC_LOG_SEAL_TPM_NV
-        bool "tpm-nv: a TPM 2.0 NV index of type extend"
+        bool "tpm-nv: a TPM 2.0 extend index and counter index"
         depends on TPM
         help
-          An NV index of type extend (owner range, next to the OTA floor's):
-          each seal is TPM2_NV_Extend of the head, which the TPM folds into
-          the index itself, so the OS can add to it and never set it back.
-          The index's value at boot is the boot's anchor, which is the
-          previous boot's last seal, and the value a forensic reader takes
-          from the live TPM tells whether the export it has is whole. A board
-          where no TPM answers seals forward-only, and its records say so.
+          Two NV indexes: an extend index (0x01500003) whose value is the
+          chain of seals (each seal is TPM2_NV_Extend, which the TPM folds
+          into the index itself), and a counter index (0x01500004) the kernel
+          increments once per seal, whose value never goes down. The extend
+          index's value at boot is the boot's anchor, the previous boot's last
+          seal; a forensic reader compares both with the live TPM.
+
+          What it proves depends on who can send the TPM owner commands. The
+          kernel defines both indexes in the owner hierarchy, and the owner
+          password is empty on every TPM where that works: whoever can send
+          TPM commands (a compromised kernel, a task holding the TPM's bus,
+          another OS booted from removable media) can undefine the extend
+          index, define it again and replay the seals' data to any value of
+          the chain. Against that actor the counter still shows a removed
+          seal or boot, but a rewritten record is not detected. An extend
+          index the firmware or a provisioning step created in the platform
+          hierarchy, with TPMA_NV_POLICY_DELETE and a policy nothing
+          satisfies, cannot be deleted by anyone: the kernel adopts such an
+          index and its records say so (Documentation/security.md, "Sealed
+          security log"). A board where no TPM answers, or whose indexes are
+          not the kernel's, seals forward-only, and its records say why.
 
     config SEC_LOG_SEAL_FORWARD
         bool "forward-only: print each seal on the console, local seal advisory"
@@ -851,9 +899,9 @@ choice
           No hardware holds the anchor: the kernel keeps it in memory, every
           seal is printed on the console (`seclog: seal ...`) for a receiver
           off the device to keep, and each record says the seal is advisory.
-          The boot's anchor is zero: on the device nothing that survives a
-          reset links one boot to the next; the console a receiver kept does.
-          QEMU, and boards without a TPM.
+          The boot's anchor is zero and its nonce random: on the device
+          nothing that survives a reset links one boot to the next; the
+          console a receiver kept does. QEMU, and boards without a TPM.
 endchoice
 
 config WCET

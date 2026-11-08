@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `seclog_verify [--tpm-anchor HEX] [--witness CAPTURE] EXPORT...`: check an
+//! `seclog_verify [--tpm-anchor HEX [--tpm-counter N]] [--witness CAPTURE] EXPORT...`: check an
 //! exported security log. EXPORT is a `KLOGn.TXT` file or a directory of
 //! them (the volume `logd` writes). Exit 0 intact, 1 incomplete, 2 evidence
 //! of tampering, 3 a usage or read error.
@@ -9,7 +9,7 @@ use seclog_verify::{hex32, parse_witness, render, verify, Options};
 use std::path::Path;
 
 fn usage(why: &str) -> ! {
-    eprintln!("seclog_verify: {why}\nusage: seclog_verify [--tpm-anchor HEX] [--witness CAPTURE] EXPORT...");
+    eprintln!("seclog_verify: {why}\nusage: seclog_verify [--tpm-anchor HEX [--tpm-counter N]] [--witness CAPTURE] EXPORT...");
     std::process::exit(3);
 }
 
@@ -41,6 +41,10 @@ fn main() {
             "--tpm-anchor" => {
                 let v = args.next().unwrap_or_else(|| usage("--tpm-anchor needs a value"));
                 opts.tpm_anchor = Some(hex32(&v).unwrap_or_else(|| usage("--tpm-anchor takes 64 hex digits")));
+            }
+            "--tpm-counter" => {
+                let v = args.next().unwrap_or_else(|| usage("--tpm-counter needs a value"));
+                opts.tpm_counter = Some(v.parse().unwrap_or_else(|_| usage("--tpm-counter takes a decimal number")));
             }
             "--witness" => {
                 let v = args.next().unwrap_or_else(|| usage("--witness needs a file"));

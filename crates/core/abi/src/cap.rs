@@ -251,6 +251,9 @@ pub const SHM_INPUT_FOCUS: u32 = 0x5354_000D;
 /// `READ|WRITE|MAP` to that server's row alone: the names the kernel asks
 /// about and the data the server answers with (`azos_devif::fs::Extent`).
 pub const SHM_FS_SHARE: u32 = 0x5354_000E;
+/// [`SHM_KLOG_RING`]'s sink page: where `logd` says which security records it
+/// lost (`MemObj klog.ack`, Kconfig `SEC_LOG`, `logd`'s row alone).
+pub const SHM_KLOG_ACK: u32 = 0x5354_000F;
 
 /// `SYS_CAP_INFO(ty::SHM, SHM_INSPECT_NAMES)`: the handle of this task's
 /// `Cap<Shm>` to the name server's view of the topology (`MemObj
@@ -274,7 +277,7 @@ pub const SHM_INSPECT_CLOCK: u32 = 0x5354_000C;
 const _: () = {
     let keys = [
         SHM_INSPECT_PUBLIC, SHM_INSPECT_ADMIN, SHM_INPUT_EVENTS, SHM_CONSOLE_SCREEN, SHM_KLOG_RING,
-        SHM_INPUT_FOCUS, SHM_INSPECT_NAMES, SHM_INSPECT_RPC, SHM_INSPECT_MCP, SHM_INSPECT_COMPONENTS,
+        SHM_INPUT_FOCUS, SHM_KLOG_ACK, SHM_INSPECT_NAMES, SHM_INSPECT_RPC, SHM_INSPECT_MCP, SHM_INSPECT_COMPONENTS,
         SHM_INSPECT_LOGINS, SHM_INSPECT_CLOCK, SHM_FS_SHARE,
     ];
     let mut i = 0;

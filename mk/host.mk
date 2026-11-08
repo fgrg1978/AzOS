@@ -94,13 +94,13 @@ doc:
 
 # ── Forensic check of an exported security log (tools/forensic/seclog_verify) ─
 # `make seclog-verify SECLOG_EXPORT=<dir or KLOGn.TXT files>`, with
-# SECLOG_TPM_ANCHOR=<64 hex digits> (the TPM index's value now) and/or
+# SECLOG_TPM_ANCHOR=<64 hex digits> and SECLOG_TPM_COUNTER=<n> (the TPM indexes' values now) and/or
 # SECLOG_WITNESS=<console capture>. Exit 0 intact, 1 incomplete, 2 evidence.
 .PHONY: seclog-verify
 seclog-verify:
 	@test -n "$(SECLOG_EXPORT)" || { echo "[SECLOG] SECLOG_EXPORT= names the exported files or their directory"; exit 3; }
 	cd tools/forensic/seclog_verify && CARGO_TARGET_DIR="$(OUT_TGT)/tools/forensic/seclog_verify" \
-		$(CARGO) run -q --release -- $(if $(SECLOG_TPM_ANCHOR),--tpm-anchor $(SECLOG_TPM_ANCHOR)) \
+		$(CARGO) run -q --release -- $(if $(SECLOG_TPM_ANCHOR),--tpm-anchor $(SECLOG_TPM_ANCHOR)) $(if $(SECLOG_TPM_COUNTER),--tpm-counter $(SECLOG_TPM_COUNTER)) \
 		$(if $(SECLOG_WITNESS),--witness "$(abspath $(SECLOG_WITNESS))") $(foreach f,$(SECLOG_EXPORT),"$(abspath $(f))")
 
 # ── Host dry boot of a topology (tools/gate/azos_sim) ────────────────────────────

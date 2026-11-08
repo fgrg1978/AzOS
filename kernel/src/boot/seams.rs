@@ -1024,6 +1024,8 @@ pub(crate) fn install_ring3_seams() {
         // calls it directly; `sys_reboot`/`sys_shutdown` reach it through this
         // hook, which also leaves the next boot a fresh entropy seed.
         fn orderly_power_off() {
+            // The security log's last seal, while logd can still write it.
+            crate::boot::seclog::seal_at_power_off();
             #[cfg(feature = "boot-slots")]
             let _ = azos_ota::ota_void_unconfirmed_boot();
             crate::boot::entropy_seed_refresh_at_power_off();
